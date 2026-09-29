@@ -364,7 +364,10 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 		if err == nil && result != nil {
 			if result.ShouldBlock {
 				w.blocked = true
-				w.writeErr = fmt.Errorf("output stream blocked by response interceptor")
+				// R25-F: wrap the protocol-terminal sentinel so the handler's
+				// execErr fallback recognizes the policy terminal frame we
+				// already rendered and does not emit a second terminal.
+				w.writeErr = fmt.Errorf("output stream blocked by response interceptor: %w", errorsx.ErrProtocolTerminalRendered)
 				return
 			}
 			// Suppression withholds the current frame from the wire. A
@@ -3051,8 +3054,24 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── v2.0 auto-route ────────────────────────────────────────────────
 	// If the client requested model="auto", classify the task and pick
 	// the best credential. Rewrites body model + sets X-Gw-Auto-Decision.
+	//
+	// 2026-09-29: X-Gw-Test-Mode header (see auto_route.go) overrides the
+	// auto-routing flow, but only for callers that prove authorisation with
+	// the X-Gw-Test-Mode-Token shared secret (testModeAllowed):
+	//   - mock / auto-only: run maybeResolveAuto for the decision wire, then
+	//     short-circuit with a synthetic OpenAI-format response. No
+	//     upstream call is made. The auto decision is still observable via
+	//     X-Gw-Auto-Decision and the response body.
+	//   - other-only: skip maybeResolveAuto entirely. The explicit body
+	//     model (NOT "auto" — caller must supply one) is honoured; the
+	//     rest of the pipeline runs, including a real upstream call.
+	//   - live / full / absent: legacy behaviour, unchanged.
+	testMode, testModeSet := ParseTestMode(r, testModeAllowed(r))
+	if testModeSet {
+		logCtx.SetTestMode(testMode.String())
+	}
 	preAutoModel := clientModel
-	if clientModel == autoRequestMagic {
+	if clientModel == autoRequestMagic && !testMode.SkipsAutoRoute() {
 		apiKeyID := 0
 		if keyInfo != nil {
 			apiKeyID = keyInfo.ID
@@ -3087,6 +3106,37 @@ func (h *ChatHandler) serveWithExecutor(
 		// 2026-07-14: keep the client-facing model name lowercase.
 		clientModel = modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 		logCtx.SetClientModel(clientModel)
+	}
+
+	// ── 2026-09-29 X-Gw-Test-Mode mock short-circuit ───────────────────
+	// For mock / auto-only modes, the auto decision above is the entire
+	// observable behaviour we want to verify. Skip dispatch, candidate
+	// resolution, and the upstream call; emit a synthetic OpenAI-format
+	// chat completion that echoes the chosen model back so a test runner
+	// can assert "the gateway did resolve model=auto and produced this
+	// decision" without burning upstream tokens. The synthetic body is
+	// byte-for-byte valid OpenAI shape (chat.completion) so consumers
+	// that parse the body keep working.
+	//
+	// Two invariants this branch must preserve:
+	//
+	//  1. The handler's safety net requires exactly one request_logs row
+	//     per request. Returning via markLogged() alone would mark the row
+	//     written while writing NOTHING, so mock traffic would be invisible
+	//     in the dashboard AND in the audit trail. recordMockRequestLog
+	//     writes a real terminal row (status=success, error_kind='<mode>_mock')
+	//     before the response goes out.
+	//  2. A streaming client must receive SSE framing; see
+	//     writeMockChatResponse's stream branch (covered by
+	//     TestWriteMockChatResponse_Stream_EmitsSSEWithDoneSentinel).
+	if testMode.IsMockMode() && preAutoModel == autoRequestMagic {
+		h.emitAction(r.Context(), requestID, liveactions.ActionRouteResolved, map[string]string{
+			"test_mode": testMode.String(),
+			"mock":      "true",
+		})
+		h.recordMockRequestLog(logCtx, testMode, clientModel, keyInfo)
+		writeMockChatResponse(w, testMode, requestID, clientModel, reqBody.Stream)
+		return
 	}
 
 	// ── Tenant model policy — post-auto check (Round 48) ─────────────
@@ -4517,6 +4567,17 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── SR-W2 request survival (doc 18 §5.1) ──────────────────────────────
 	// Streaming requests with survival enabled for this tenant skip the
 	// goal-retry loop entirely: the SurvivalCoordinator owns every retry
+	// R25-C/R25-D: the authenticated key owner and the client protocol lane
+	// must reach the interceptor chain; empty CallerOwner makes the owner
+	// compare always fail (over-redaction) and empty ClientProtocol degrades
+	// protocol-shaped terminal frames to the OpenAI default.
+	_, callerOwner, _ := keyMetaFromKeyInfo(keyInfo)
+	clientProtocolLane := "openai-chat"
+	// R25-A: with output compliance active on a non-streaming request, the
+	// executor writes into a capture buffer instead of the client, so the
+	// interceptor can block or rewrite before the first byte leaves. A fresh
+	// buffer per attempt keeps retried writes from concatenating.
+	var deferredWriter *deferredNonStreamWriter
 	// in-connection behind a per-attempt buffered commit gate (ExecuteAttempt
 	// suppresses the executor's internal retry ladder). Flag-off requests
 	// never enter this branch — the loop below is byte-for-byte the legacy path.
@@ -4528,10 +4589,12 @@ func (h *ChatHandler) serveWithExecutor(
 		base := w
 		if h.responseInterceptor != nil {
 			base = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: clientProtocolLane,
+				ClientModel:    clientModel,
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
@@ -4591,12 +4654,18 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if isStream && h.responseInterceptor != nil {
 			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: clientProtocolLane,
+				ClientModel:    clientModel,
 			})
 			streamWriter = interceptedWriter
+		}
+		if !isStream && h.responseInterceptor != nil {
+			deferredWriter = newDeferredNonStreamWriter()
+			streamWriter = deferredWriter
 		}
 		// SP-02: state machine — executor has accepted the request and is now
 		// sending it upstream (no first byte yet).
@@ -4764,6 +4833,11 @@ goalRetryLoopDone:
 			h.unregisterStreamConnection(requestID, "cached_replay")
 			preStream.stop()
 			preStream = nil
+		}
+		// The replayed body went into the capture buffer (params.W); release
+		// it to the client before returning (R25-A).
+		if deferredWriter != nil {
+			deferredWriter.commit(w, nil)
 		}
 		return
 	}
@@ -5477,11 +5551,13 @@ goalRetryLoopDone:
 		}
 
 		interceptReq := &ResponseInterceptRequest{
-			SessionID:    gwSessionID,
-			RequestID:    requestID,
-			TenantID:     tenantID,
-			ClientModel:  clientModel,
-			ResponseBody: result.ResponseBody,
+			SessionID:      gwSessionID,
+			RequestID:      requestID,
+			TenantID:       tenantID,
+			CallerOwner:    callerOwner,
+			ClientProtocol: clientProtocolLane,
+			ClientModel:    clientModel,
+			ResponseBody:   result.ResponseBody,
 			TokensUsed:   extractTotalTokens(result.ResponseBody, streamCapture),
 			ContextWindow: func() int {
 				if len(candidates) > 0 && candidates[0].ContextWindow != nil {
@@ -5558,7 +5634,11 @@ goalRetryLoopDone:
 			} else if interceptResult != nil {
 				if interceptResult.ShouldBlock {
 					slog.Info("response_interceptor_blocked", "session_id", gwSessionID, "action", interceptResult.Action)
-					// Response was blocked, don't continue
+					// R25-A: with the deferred capture writer the client has
+					// not seen the response yet — reject with an explicit
+					// policy block instead of silently returning nothing.
+					writeErrorJSON(w, http.StatusForbidden, requestID,
+						"Response blocked by output policy", "api_error", "output_policy_blocked")
 					return
 				}
 				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
@@ -5578,14 +5658,10 @@ goalRetryLoopDone:
 				}
 				// Apply ModifiedBody (e.g. output-compliance redaction).
 				//
-				// NOTE (2026-07-09): for the historical non-stream path the bytes
-				// are already written to the client inside executor.Execute, so
-				// this rewrite takes effect for downstream telemetry, the request
-				// log, the session-cache, and any buffered/pending-store path —
-				// NOT a retroactive client rewrite. Stream-end redaction is
-				// applied at write-time via the transform pipeline; this metadata
-				// path ensures the persisted/observed body matches what policy
-				// intended (so pii_stripped tagging + session_tags stay accurate).
+				// R25-A (2026-09-29): with the interceptor active the
+				// executor's bytes sit in the deferred capture buffer, so this
+				// rewrite — and a ShouldBlock rejection — now reach the actual
+				// client body, not only telemetry/request-log/session-cache.
 				if len(interceptResult.ModifiedBody) > 0 && result != nil {
 					result.ResponseBody = interceptResult.ModifiedBody
 					if interceptResult.Metadata != nil {
@@ -5593,6 +5669,13 @@ goalRetryLoopDone:
 							"session_id", gwSessionID, "action", interceptResult.Action)
 					}
 				}
+			}
+			// R25-A: release the captured executor write to the client now
+			// that policy approved it (ModifiedBody, if any, already
+			// replaced result.ResponseBody above). Interceptor failure keeps
+			// the legacy fail-open behavior and commits the original bytes.
+			if deferredWriter != nil {
+				deferredWriter.commit(w, result.ResponseBody)
 			}
 		}
 	}
@@ -7965,6 +8048,76 @@ func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
 		}
 	}
 	h.telemetryClient.EmitRequestLogInsert(minimal)
+}
+
+// recordMockRequestLog writes the terminal request_logs row for a request
+// that was short-circuited by X-Gw-Test-Mode mock / auto-only
+// (2026-09-29 audit).
+//
+// Why this exists: the mock branch returns from serveWithExecutor long
+// before recordInitialRequestLog runs, so the handler's safety net — which
+// only backfills a row when ErrCode is set — would leave the request with
+// NO row at all. The first cut of the mock branch called markLogged()
+// instead, which is strictly worse: it declares the row written while
+// writing nothing, so mock traffic disappeared from the dashboard and from
+// every audit that joins on request_id.
+//
+// The row is a SUCCESS with zero token usage, tagged through ErrorKind
+// with the test mode ("mock_mock" / "auto-only_mock") so operators can
+// filter internal test traffic out of production dashboards with
+// `WHERE error_kind LIKE '%_mock'` without needing a schema migration.
+// Writing a real row — not skipping one — is what keeps "exactly one
+// request_logs row per request" true across every exit path.
+func (h *ChatHandler) recordMockRequestLog(
+	logCtx *RequestLogContext,
+	mode TestMode,
+	chosenModel string,
+	keyInfo *authentication.KeyInfo,
+) {
+	if logCtx == nil {
+		return
+	}
+	logCtx.SetClientModel(chosenModel)
+	// ErrorKind carries the mode; message stays empty so the row is not
+	// mistaken for a failure by dashboards that key off a non-empty error.
+	mockKind := string(mode) + "_mock"
+	logCtx.SetError(mockKind, "")
+	logCtx.MarkLogged()
+
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	entry := &telemetry.RequestLogEntry{
+		RequestID:     logCtx.RequestID,
+		TenantID:      "default",
+		ClientModel:   strPtr(chosenModel),
+		RequestStatus: strPtr(telemetry.RequestStatusSuccess),
+		Success:       true,
+		ErrorKind:     strPtr(mockKind),
+		// Zero token usage: no upstream was called. Consumers that treat a
+		// non-nil 0 as "upstream reported zero" must be checked before
+		// trusting cost rollups to exclude mock rows.
+		PromptTokens:     intPtr(0),
+		CompletionTokens: intPtr(0),
+	}
+	if sessionID, _ := logCtx.SessionTask(); sessionID != "" {
+		entry.GwSessionID = strPtr(sessionID)
+	}
+	if len(logCtx.AutoDecision) > 0 {
+		v := string(logCtx.AutoDecision)
+		entry.AutoDecision = &v
+		entry.IsAutoRequest = boolPtr(true)
+	}
+	if keyInfo != nil {
+		entry.TenantID = keyInfo.TenantID
+		kid := keyInfo.ID
+		entry.APIKeyID = &kid
+		if aid := appID(keyInfo); aid != nil {
+			a := *aid
+			entry.ApplicationID = &a
+		}
+	}
+	h.telemetryClient.EmitRequestLog(entry)
 }
 
 // resolveEndUser picks the best end-user identifier available for this

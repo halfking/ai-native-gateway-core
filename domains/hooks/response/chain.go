@@ -132,19 +132,26 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 			// interceptor's release decision and must not escape through
 			// the writer.
 			finalResult.SuppressChunk = true
-			finalResult.ModifiedChunk = nil
-			finalResult.InjectAfter = nil
+			// R24-C regression fix (2026-09-30): a suppressing interceptor may
+			// simultaneously RELEASE an earlier held frame — result.ModifiedChunk
+			// then carries that released payload, never the withheld current
+			// frame (hold-to-terminal terminal release shape:
+			// {SuppressChunk:true, ModifiedChunk: prior+terminal},
+			// outputcompliance/stream_compliance.go). Replace, don't clear:
+			// stale replacements from earlier interceptors must not survive,
+			// but the same-result release must reach the writer
+			// (interceptingStreamWriter.writeFrame contract). ee101fa68
+			// cleared both unconditionally and dropped the release, emptying
+			// the wire for every governed stream.
+			finalResult.ModifiedChunk = append([]byte(nil), result.ModifiedChunk...)
+			finalResult.InjectAfter = append([]byte(nil), result.InjectAfter...)
 		}
-		if len(result.ModifiedChunk) > 0 {
-			if !finalResult.SuppressChunk || result.SuppressChunk {
-				finalResult.ModifiedChunk = result.ModifiedChunk
-				currentChunk = result.ModifiedChunk
-			}
+		if len(result.ModifiedChunk) > 0 && !finalResult.SuppressChunk {
+			finalResult.ModifiedChunk = result.ModifiedChunk
+			currentChunk = result.ModifiedChunk
 		}
-		if len(result.InjectAfter) > 0 {
-			if !finalResult.SuppressChunk || result.SuppressChunk {
-				finalResult.InjectAfter = result.InjectAfter
-			}
+		if len(result.InjectAfter) > 0 && !finalResult.SuppressChunk {
+			finalResult.InjectAfter = result.InjectAfter
 		}
 
 		if result.ShouldBlock || result.SuppressChunk {

@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -122,5 +123,28 @@ func TestExplicitTypeAndZeroBudgetAnthropicStillEnabledWithDefault(t *testing.T)
 	}
 	if out.Thinking.Type != "enabled" || out.Thinking.BudgetTokens == nil {
 		t.Fatalf("want {enabled, default budget} (Type wins over zero), got raw=%s", raw)
+	}
+}
+
+// R25-U4 (round 27): an explicit disabled Type must outrank a concurrent
+// Effort value on the OpenAI serializer too — the Effort short-circuit used
+// to run first and silently upgrade the disabled intent into an active
+// reasoning_effort.
+func TestOpenAIDisabledTypeOutranksEffort(t *testing.T) {
+	disabled := "disabled"
+	req := &InternalRequest{
+		Model: "gpt-5.6",
+		Reasoning: &ReasoningConfig{
+			Type:    disabled,
+			Effort:  "high",
+		},
+	}
+	body, err := SerializeOpenAI(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte(`"reasoning_effort"："high"`)) ||
+		bytes.Contains(body, []byte(`"reasoning_effort":"high"`)) {
+		t.Fatalf("disabled Type must not be upgraded by a concurrent Effort: %s", body)
 	}
 }

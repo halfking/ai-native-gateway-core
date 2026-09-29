@@ -35,7 +35,7 @@ func newProtocolFailoverExecutor(t *testing.T) *executors.Executor {
 		nil,
 		nil,
 	)
-	pipeline := exec.NewDispatchPipeline()
+	pipeline := exec.NewDispatchPipeline(nil)
 	pipeline.Start()
 	t.Cleanup(pipeline.Stop)
 	exec.SetDispatchPipeline(pipeline)

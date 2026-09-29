@@ -34,10 +34,12 @@ type TaskSummary struct {
 	TotalErrors     int       `json:"total_errors"`
 	StartedAt       time.Time `json:"started_at"`
 	LastActivityAt  time.Time `json:"last_activity_at"`
-	DurationSeconds int       `json:"duration_seconds"`
-	Status          string    `json:"status"`
-	ModelsUsed      []string  `json:"models_used"`
-	AllUserTags     []string  `json:"all_user_tags"`
+	// DurationSeconds 是任务 wall-clock 跨度：首会话 first_request_at →
+	// 末会话 last_request_at（R33 P-5 前为 MAX(单会话时长)，语义错位）。
+	DurationSeconds int      `json:"duration_seconds"`
+	Status          string   `json:"status"`
+	ModelsUsed      []string `json:"models_used"`
+	AllUserTags     []string `json:"all_user_tags"`
 }
 
 // TaskSessionItem 任务中的会话项（带顺序和关系）
@@ -83,8 +85,10 @@ type ProjectSummary struct {
 	TotalRequests   int       `json:"total_requests"`
 	StartedAt       time.Time `json:"started_at"`
 	LastActivityAt  time.Time `json:"last_activity_at"`
-	DurationSeconds int       `json:"duration_seconds"`
-	Status          string    `json:"status"`
+	// DurationSeconds 是项目 wall-clock 跨度（首会话开始→末会话活动），
+	// 语义对齐 TaskSummary.DurationSeconds（R33 P-5）。
+	DurationSeconds int    `json:"duration_seconds"`
+	Status          string `json:"status"`
 }
 
 // ProjectTaskItem 项目中的任务项
@@ -243,13 +247,16 @@ func (h *Handler) queryTaskSummary(ctx context.Context, r *http.Request, taskID 
 			COALESCE(SUM(ss.total_tokens), 0), COALESCE(SUM(ss.request_count), 0)::int,
 			COALESCE(SUM(ss.success_count), 0)::int, COALESCE(SUM(ss.error_count), 0)::int,
 			MIN(ss.first_request_at), MAX(ss.last_request_at),
-			COALESCE(MAX(ss.duration_seconds), 0)::int,
 			COALESCE((array_agg(ss.session_status ORDER BY ss.last_request_at DESC))[1], '')
 		FROM session_summaries ss
 		JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
 		WHERE %s`, strings.Join(where, " AND "))
 
 	var projectID sql.NullString
+	// R32-P-1 (2026-09-30 round 32): an empty match set makes MIN/MAX return
+	// NULL — scanning into non-nullable time.Time 500s before the
+	// SessionCount==0 → 404 branch can fire. Scan NULL-safely.
+	var startedAt, lastActivityAt sql.NullTime
 	err := h.db.QueryRow(ctx, query, args...).Scan(
 		&projectID,
 		&result.Summary.SessionCount,
@@ -258,18 +265,61 @@ func (h *Handler) queryTaskSummary(ctx context.Context, r *http.Request, taskID 
 		&result.Summary.TotalRequests,
 		&result.Summary.TotalSuccess,
 		&result.Summary.TotalErrors,
-		&result.Summary.StartedAt,
-		&result.Summary.LastActivityAt,
-		&result.Summary.DurationSeconds,
+		&startedAt,
+		&lastActivityAt,
 		&result.Summary.Status,
 	)
 	if err != nil {
 		return result, err
 	}
+	if startedAt.Valid {
+		result.Summary.StartedAt = startedAt.Time
+	}
+	if lastActivityAt.Valid {
+		result.Summary.LastActivityAt = lastActivityAt.Time
+	}
+	if startedAt.Valid && lastActivityAt.Valid {
+		result.Summary.DurationSeconds = int(lastActivityAt.Time.Sub(startedAt.Time).Seconds())
+	}
 	if projectID.Valid {
 		result.ProjectID = &projectID.String
 	}
+	// R33 P-5: models/tags 此前从未查询（恒 null）；models_used 由 310/350
+	// 触发器维护，user_tags 列存在但尚无写入方（空数组属预期）。
+	result.Summary.ModelsUsed, err = h.queryDistinctArrayValues(ctx, where, args, "ss.models_used")
+	if err != nil {
+		return result, err
+	}
+	result.Summary.AllUserTags, err = h.queryDistinctArrayValues(ctx, where, args, "ss.user_tags")
+	if err != nil {
+		return result, err
+	}
 	return result, nil
+}
+
+// queryDistinctArrayValues 对任务/项目范围内某个 text[] 列做 DISTINCT 展开
+// 聚合（R33 P-5）。where/args 与主查询共用 scopedDimensionWhere 的产出；
+// column 只接收本文件两个硬编码调用点（models_used/user_tags），无注入面。
+func (h *Handler) queryDistinctArrayValues(ctx context.Context, where []string, args []interface{}, column string) ([]string, error) {
+	query := fmt.Sprintf(`
+		SELECT DISTINCT v FROM session_summaries ss
+		JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
+		CROSS JOIN LATERAL unnest(%s) AS v
+		WHERE %s`, column, strings.Join(where, " AND "))
+	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := make([]string, 0)
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		values = append(values, v)
+	}
+	return values, rows.Err()
 }
 
 // queryTaskSessions 查询任务中的所有会话
@@ -348,21 +398,37 @@ func (h *Handler) queryProjectSummary(ctx context.Context, r *http.Request, proj
 	query := fmt.Sprintf(`
 		SELECT COUNT(DISTINCT sd.task_id)::int, COUNT(*)::int, COALESCE(SUM(ss.total_cost_usd), 0),
 		       COALESCE(SUM(ss.total_tokens), 0), COALESCE(SUM(ss.request_count), 0)::int,
-		       MIN(ss.first_request_at), MAX(ss.last_request_at), COALESCE(MAX(ss.duration_seconds), 0)::int,
+		       MIN(ss.first_request_at), MAX(ss.last_request_at),
 		       COALESCE((array_agg(ss.session_status ORDER BY ss.last_request_at DESC))[1], '')
 		FROM session_summaries ss
 		JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
 		WHERE %s`, strings.Join(where, " AND "))
+	// R32-P-1: NULL-safe scan for the empty-set case (see queryTaskSummary).
+	// R33 P-5: DurationSeconds 改为 Go 侧 wall-clock 跨度（同 TaskSummary）。
+	var startedAt, lastActivityAt sql.NullTime
 	err := h.db.QueryRow(ctx, query, args...).Scan(
 		&summary.TaskCount, &summary.SessionCount, &summary.TotalCostUSD, &summary.TotalTokens,
-		&summary.TotalRequests, &summary.StartedAt, &summary.LastActivityAt, &summary.DurationSeconds, &summary.Status,
+		&summary.TotalRequests, &startedAt, &lastActivityAt, &summary.Status,
 	)
+	if startedAt.Valid {
+		summary.StartedAt = startedAt.Time
+	}
+	if lastActivityAt.Valid {
+		summary.LastActivityAt = lastActivityAt.Time
+	}
+	if startedAt.Valid && lastActivityAt.Valid {
+		summary.DurationSeconds = int(lastActivityAt.Time.Sub(startedAt.Time).Seconds())
+	}
 	return summary, err
 }
 
 // queryProjectTasks 查询项目中的所有任务
 func (h *Handler) queryProjectTasks(ctx context.Context, r *http.Request, projectID string) ([]ProjectTaskItem, error) {
 	where, args := scopedDimensionWhere(r, "ss.gw_project_id", projectID)
+	// R34-P1: session_dim.task_id 大面积为 NULL（绝大多数会话无任务归属），
+	// NULL 组进入 GROUP BY 后 Scan 进 string 失败 → 端点 500。无任务归属的
+	// 会话不构成任务项，过滤而非 NullString 兜底（语义：任务列表只列任务）。
+	where = append(where, "sd.task_id IS NOT NULL")
 	query := fmt.Sprintf(`
 		SELECT sd.task_id, COUNT(*)::int, COALESCE(SUM(ss.total_cost_usd), 0), COALESCE(SUM(ss.total_tokens), 0),
 		       COALESCE((array_agg(ss.session_status ORDER BY ss.last_request_at DESC))[1], ''),

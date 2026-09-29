@@ -479,6 +479,14 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// 参数化既有行为（批判式审计证伪了初稿的说法）。跑在本函数
 	// （pm.interval，main.go 传 24h）而非 1h 的 runCleanup。
 	pm.cleanupSessionTurnLogsByTTL(ctx)
+
+	// 12. 2026-09-30 (R27-HC-1/HC-2): analysis_events / stats_event_inbox
+	// 终态行 TTL 清理。两表此前只做状态流转、全仓零 DELETE——本地真库
+	// 实测 analysis_events 102 万行/864MB（全部已处理）、inbox default 分区
+	// 138 万行（其中 processed 23 万）。分批 ctid 删除（R72「首扫无界
+	// DELETE」教训），每 tick 每表有界。
+	pm.cleanupOldAnalysisEvents(ctx)
+	pm.cleanupOldStatsEventInboxTerminal(ctx)
 }
 
 // clampRequestLogsArchiveDays keeps the retention the SQL guard would accept.
@@ -1955,4 +1963,83 @@ func (pm *PartitionManager) runWithBypass(ctx context.Context, fn func(pgx.Tx) (
 		return zero, fmt.Errorf("commit: %w", err)
 	}
 	return tag, nil
+}
+
+// deleteTerminalRowsBatched deletes at most limit rows matching predicate in
+// bounded ctid batches (single statement, atomic visibility — the same shape
+// the turn-logs fix landed in the 15th 12h audit round). Returns rows
+// deleted. R72 lesson: an unbounded first-sweep DELETE on a million-row
+// table stalls replication and bloats the WAL in one shot.
+func (pm *PartitionManager) deleteTerminalRowsBatched(ctx context.Context, table, predicate string, retentionDays, limit int) int64 {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	tag, err := pm.db.Exec(timeoutCtx,
+		"DELETE FROM "+table+" WHERE ctid IN (SELECT ctid FROM "+table+" WHERE "+predicate+" LIMIT $2)",
+		retentionDays, limit)
+	if err != nil {
+		slog.Error("partition_manager: terminal-row TTL batch delete failed",
+			"table", table, "retention_days", retentionDays, "error", err)
+		return 0
+	}
+	return tag.RowsAffected()
+}
+
+// cleanupOldAnalysisEvents deletes PROCESSED analysis_events rows older than
+// the TTL (R27-HC-1, 2026-09-30): the table previously had zero DELETE
+// paths and grew to 1.02M rows / 864MB on the local shard, all already
+// consumed (processed_at set). Unprocessed rows are never touched — they are
+// pending work for pg_poll. Retention:
+// lifecycle.analysis_events_ttl_days (default 7, hot-reloadable). Backed by
+// idx_analysis_events_processed_old (migration 760).
+func (pm *PartitionManager) cleanupOldAnalysisEvents(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.analysis_events_ttl_days", 7)
+	if retentionDays < 1 {
+		retentionDays = 7
+	}
+	const batchLimit = 20000
+	total := int64(0)
+	for round := 0; round < 10; round++ {
+		n := pm.deleteTerminalRowsBatched(ctx, "analysis_events",
+			"processed_at IS NOT NULL AND occurred_at < now() - ($1 || ' days')::interval",
+			retentionDays, batchLimit)
+		total += n
+		if n < batchLimit {
+			break
+		}
+	}
+	if total > 0 {
+		slog.Info("partition_manager: cleaned analysis_events processed rows",
+			"deleted_rows", total, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldStatsEventInboxTerminal deletes TERMINAL inbox rows (processing
+// status processed / dead_letter) older than the TTL (R27-HC-2, 2026-09-30):
+// the inbox previously only transitioned state — the local shard's default
+// partition reached 1.38M rows. Active rows (pending / retryable /
+// processing) are never touched, including the currently-stuck pending
+// backlog (R27-HC-10, owner decision required). Retention:
+// lifecycle.stats_event_inbox_ttl_days (default 7, hot-reloadable). Backed
+// by idx_stats_event_inbox_terminal_old (migration 760). stats_event_inbox
+// is a partitioned parent; DELETE routes to partitions automatically.
+func (pm *PartitionManager) cleanupOldStatsEventInboxTerminal(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.stats_event_inbox_ttl_days", 7)
+	if retentionDays < 1 {
+		retentionDays = 7
+	}
+	const batchLimit = 20000
+	total := int64(0)
+	for round := 0; round < 10; round++ {
+		n := pm.deleteTerminalRowsBatched(ctx, "stats_event_inbox",
+			"processing_status IN ('processed','dead_letter') AND occurred_at < now() - ($1 || ' days')::interval",
+			retentionDays, batchLimit)
+		total += n
+		if n < batchLimit {
+			break
+		}
+	}
+	if total > 0 {
+		slog.Info("partition_manager: cleaned stats_event_inbox terminal rows",
+			"deleted_rows", total, "retention_days", retentionDays)
+	}
 }

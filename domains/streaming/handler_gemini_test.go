@@ -540,3 +540,34 @@ func TestGeminiMultiCandidateCollapsesToFirst(t *testing.T) {
 		t.Fatalf("expected surviving candidate[0] text 'first', got %v", part0["text"])
 	}
 }
+
+// R26-U1: an OpenAI chat error payload mid-stream — the output-policy block
+// terminal emitted by the interceptor chain is exactly this shape — must be
+// re-emitted as a Gemini-native terminal error frame, and the writer must
+// swallow everything after it (the trailing [DONE] never leaks).
+func TestGeminiStreamWriter_ReemitsOpenAIErrorFrameAsGeminiTerminal(t *testing.T) {
+	w := &geminiFlushWriter{header: make(http.Header)}
+	gw := newGeminiStreamWriter(w)
+	gw.WriteHeader(http.StatusOK)
+
+	frame := `data: {"error":{"type":"api_error","message":"Response blocked by output policy"}}` + "\n\n"
+	if _, err := gw.Write([]byte(frame)); err != nil {
+		t.Fatalf("error frame write: %v", err)
+	}
+	body := w.body.String()
+	if !strings.Contains(body, `"error"`) || !strings.Contains(body, "Response blocked by output policy") {
+		t.Fatalf("missing Gemini-native error frame: %s", body)
+	}
+	if strings.Contains(body, `"type":"api_error"`) {
+		t.Fatalf("OpenAI-shaped error payload leaked verbatim: %s", body)
+	}
+	if !gw.failed {
+		t.Fatal("writer must be terminal after the error frame")
+	}
+	if _, err := gw.Write([]byte("data: [DONE]\n\n")); err != nil {
+		t.Fatalf("post-terminal write: %v", err)
+	}
+	if strings.Contains(w.body.String(), "[DONE]") {
+		t.Fatalf("OpenAI DONE sentinel leaked after terminal: %s", w.body.String())
+	}
+}

@@ -338,7 +338,16 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	requestedModel := reqBody.Model
 
 	// model=auto: classify + rewrite before CanonicalizeClientModel.
-	if reqBody.Model == autoRequestMagic {
+	//
+	// 2026-09-29 X-Gw-Test-Mode (see auto_route.go) overrides the auto path
+	// for authorised callers. mock / auto-only short-circuit with a
+	// synthetic Anthropic-format message after the auto decision lands;
+	// other-only skips the auto call entirely.
+	testMode, testModeSet := ParseTestMode(r, testModeAllowed(r))
+	if testModeSet {
+		logCtx.SetTestMode(testMode.String())
+	}
+	if reqBody.Model == autoRequestMagic && !testMode.SkipsAutoRoute() {
 		var apiKeyID int
 		if keyInfo != nil {
 			apiKeyID = keyInfo.ID
@@ -367,6 +376,24 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			autoWire = wire
 		} else {
 			logCtx.IsAutoRequest = true
+		}
+
+		// 2026-09-29 X-Gw-Test-Mode mock short-circuit: same behaviour as
+		// the chat path — write a synthetic Anthropic-format message and
+		// stop. reqBody.Model at this point is the chosen post-decider
+		// model; that's what we surface back to the caller so the test
+		// runner can verify "the gateway did resolve model=auto and chose
+		// this canonical name" without paying for an upstream call.
+		//
+		// recordMockRequestLog (not a bare *attemptLogged = true) so the
+		// request still produces its one request_logs row; see the chat
+		// path for the full rationale.
+		if testMode.IsMockMode() {
+			chosen := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
+			h.chatHandler.recordMockRequestLog(logCtx, testMode, chosen, keyInfo)
+			*attemptLogged = true
+			writeMockMessagesResponse(w, testMode, requestID, chosen, reqBody.Stream)
+			return
 		}
 	}
 
@@ -463,7 +490,20 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		// verbatim honor left bare-UUID client identities in a heterogeneous
 		// namespace (turn aggregation stuck at 1) and never registered the
 		// session, so every follow-up request re-hit ErrSessionNotFound.
-		sessionID, sessionInfo, _ = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		var sessErr error
+		sessionID, sessionInfo, sessErr = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		if errors.Is(sessErr, errClientSessionForbidden) {
+			// R24-B (V3-A02): a client-supplied session owned by another
+			// key/tenant is rejected before any turn is created (chat-path
+			// parity; previously the foreign sessionInfo flowed unchecked).
+			attemptErrCode = "session_forbidden"
+			attemptErrMsg = "session not owned by this api key"
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusForbidden, "permission_error", "session not owned by this api key")
+			return
+		}
 	}
 	if sessionID == "" {
 		// Last-resort fallback: use the provisional id so downstream
@@ -753,6 +793,9 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// R25-C: authenticated key owner for the interceptor's owner compare;
+	// empty means "owner unknown" → conservative redaction on every field.
+	_, callerOwner, _ := keyMetaFromKeyInfo(keyInfo)
 	usedSurvival := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
 	var result *executors.ExecuteResult
 	var execErr error
@@ -760,10 +803,12 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		base := w
 		if h.chatHandler.responseInterceptor != nil {
 			base = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
@@ -780,7 +825,23 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		}
 		// SP-02: state machine — executor has accepted the request.
 		rt.Emit(state.EventDispatching)
-		result, execErr = h.chatHandler.executor.Execute(buildExecParams(w))
+		// R25-G: the non-survival stream must flow through the same
+		// intercepting writer as the survival lane; a bare writer left the
+		// whole compliance chain bypassed for ordinary streams.
+		execWriter := http.ResponseWriter(w)
+		if isStream && h.chatHandler.responseInterceptor != nil {
+			iw := newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
+			})
+			defer iw.finish()
+			execWriter = iw
+		}
+		result, execErr = h.chatHandler.executor.Execute(buildExecParams(execWriter))
 	}
 
 	if execErr != nil {
@@ -852,7 +913,21 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 
 	var responseBody []byte
 	if !isStream {
-		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID, executors.EstimateAnthropicInputTokens(bodyBytes))
+		// R25-B: carry full request identity into the non-stream
+		// interception — the zero-value default previously left
+		// TenantID/SessionID empty, disabling tenant policy and owner
+		// resolution for native non-stream responses.
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID, executors.EstimateAnthropicInputTokens(bodyBytes), nativeResponseInterception{
+			ctx: r.Context(),
+			request: response.InterceptRequest{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
+			},
+		})
 	}
 
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
@@ -1369,6 +1444,12 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 		if opt.request.ResponseBody == nil {
 			opt.request.ResponseBody = anthropicBody
 		}
+		// R25-U3 (2026-09-30 round 27, ruling): on interceptor ERROR the
+		// original body passes through (fail-open). This mirrors the chat
+		// path and processBody's documented rationale — a transient infra
+		// failure (policy DB down) must not kill all traffic. The stream
+		// path stays fail-closed because mid-stream bytes already left and
+		// cannot be recalled; the asymmetry is deliberate.
 		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, anthropicBody); err == nil && !blocked && modified != nil {
 			anthropicBody = modified
 		} else if blocked {

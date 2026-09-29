@@ -71,3 +71,81 @@ func TestInterceptorChainPropagatesFirstStreamModification(t *testing.T) {
 		t.Fatalf("result = %+v, err = %v", result, err)
 	}
 }
+
+// R24-C (round 26, corrected 2026-09-30): the suppress branch REPLACE, not
+// clear. The original always-true guard (`!finalResult.SuppressChunk ||
+// result.SuppressChunk`) was misjudged as dead logic: a suppressing
+// interceptor that simultaneously RELEASES an earlier held frame carries
+// that payload in the same result's ModifiedChunk — never the withheld
+// current frame (production shape: outputcompliance/stream_compliance.go
+// terminal release `{SuppressChunk:true, ModifiedChunk: prior+terminal}`),
+// and interceptingStreamWriter.writeFrame writes exactly that payload.
+// ee101fa68 cleared both fields unconditionally and dropped the release,
+// emptying the wire for every governed stream (red: both cross-frame
+// compliance integration tests in domains/streaming returned "").
+//
+// Three invariants pinned here:
+//  1. same-result release survives (and stale earlier replacements do not);
+//  2. a suppressing result without a release leaves the fields empty;
+//  3. a stale replacement from an earlier interceptor is dropped once a
+//     later interceptor suppresses without releasing.
+func TestInterceptorChainSuppressResultCarriesOnlySameResultRelease(t *testing.T) {
+	t.Run("same_result_release_survives", func(t *testing.T) {
+		chain := NewInterceptorChain(
+			chainTestInterceptor{chunk: func([]byte) *ChunkResult {
+				return &ChunkResult{SuppressChunk: true, ModifiedChunk: []byte("released-prior")}
+			}},
+		)
+		result, err := chain.InterceptStreamChunk(context.Background(), []byte("raw-frame"), &StreamMeta{})
+		if err != nil {
+			t.Fatalf("InterceptStreamChunk: %v", err)
+		}
+		if result == nil || !result.SuppressChunk {
+			t.Fatalf("result = %+v, want suppression", result)
+		}
+		if string(result.ModifiedChunk) != "released-prior" {
+			t.Fatalf("same-result release dropped: modified=%q", result.ModifiedChunk)
+		}
+	})
+
+	t.Run("suppress_without_release_keeps_fields_empty", func(t *testing.T) {
+		chain := NewInterceptorChain(
+			chainTestInterceptor{chunk: func([]byte) *ChunkResult {
+				return &ChunkResult{SuppressChunk: true}
+			}},
+		)
+		result, err := chain.InterceptStreamChunk(context.Background(), []byte("raw-frame"), &StreamMeta{})
+		if err != nil {
+			t.Fatalf("InterceptStreamChunk: %v", err)
+		}
+		if result == nil || !result.SuppressChunk {
+			t.Fatalf("result = %+v, want suppression", result)
+		}
+		if len(result.ModifiedChunk) > 0 || len(result.InjectAfter) > 0 {
+			t.Fatalf("suppressed result leaked withheld content: modified=%q inject=%q",
+				result.ModifiedChunk, result.InjectAfter)
+		}
+	})
+
+	t.Run("stale_earlier_replacement_dropped_on_suppress", func(t *testing.T) {
+		chain := NewInterceptorChain(
+			chainTestInterceptor{chunk: func([]byte) *ChunkResult {
+				return &ChunkResult{ModifiedChunk: []byte("stale-earlier")}
+			}},
+			chainTestInterceptor{chunk: func([]byte) *ChunkResult {
+				return &ChunkResult{SuppressChunk: true}
+			}},
+		)
+		result, err := chain.InterceptStreamChunk(context.Background(), []byte("raw-frame"), &StreamMeta{})
+		if err != nil {
+			t.Fatalf("InterceptStreamChunk: %v", err)
+		}
+		if result == nil || !result.SuppressChunk {
+			t.Fatalf("result = %+v, want suppression", result)
+		}
+		if len(result.ModifiedChunk) > 0 || len(result.InjectAfter) > 0 {
+			t.Fatalf("stale replacement survived suppression: modified=%q inject=%q",
+				result.ModifiedChunk, result.InjectAfter)
+		}
+	})
+}

@@ -570,3 +570,37 @@ func TestFileCacheResizeMax(t *testing.T) {
 		t.Fatalf("非法 ResizeMax 修改了值: maxSize = %d", got)
 	}
 }
+
+// BenchmarkFileCacheGet H1 验收补充（2026-09-30 审计轮）：Get 索引命中分支
+// 静态不含 os.Stat（cache_v2_file.go 的 indexed 分支仅 ReadFile；Stat 只在
+// 索引 miss 回填分支出现），即"热路径减少 1 次 Stat"。本基准给出命中与
+// miss 两态的单次 Get 时延对照作旁证；系统调用级计数需 dtruss/dtrace
+// （macOS SIP 阻断、CI 不可复现），故不作机器级断言。
+func BenchmarkFileCacheGet(b *testing.B) {
+	dir := b.TempDir()
+	fc, err := NewFileCache(filepath.Join(dir, "l15"), time.Hour, 1<<20)
+	if err != nil {
+		b.Fatalf("NewFileCache: %v", err)
+	}
+	state := newTestFileState("bench-tenant", "bench-sess", 1)
+	if err := fc.Set(state); err != nil {
+		b.Fatalf("Set: %v", err)
+	}
+
+	b.Run("index_hit", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := fc.Get("bench-tenant", "bench-sess"); err != nil {
+				b.Fatalf("Get(hit): %v", err)
+			}
+		}
+	})
+	b.Run("index_miss_absent", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := fc.Get("bench-tenant", "no-such-sess"); !errors.Is(err, errCacheMiss) {
+				b.Fatalf("Get(miss) = %v, want errCacheMiss", err)
+			}
+		}
+	})
+}

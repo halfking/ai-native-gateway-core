@@ -100,6 +100,8 @@ type Handler struct {
 	// 避免改动所有 Handler 构造点。请求路径不会启动后台 goroutine。
 	proxyOnce  sync.Once
 	proxyMgr   *proxy.Manager
+	// liteSessions 为 lite(sqlite) 存储模式的会话读面（R28-S-2）；nil=非 lite 模式。
+	liteSessions LiteSessionsReader
 	proxyStore proxy.Store
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
@@ -1088,6 +1090,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-analytics/users", admin(h.handleUserAnalyticsList))
 	mux.HandleFunc("/api/admin/session-analytics/users/", admin(h.handleUserAnalyticsDetail))
 
+	// 2026-09-30 统计 UI 优化轮：/users 页面用户级用量统计
+	// （api_key_owner_user 维度；不依赖缺失的 session_owners 视图，
+	//   详见 admin/user_usage_stats.go 头注）。注意精确路径必须在
+	// /api/admin/users/ 前缀路由之前注册。
+	mux.HandleFunc("/api/admin/users/usage-summary", admin(h.handleUserUsageSummary))
+	mux.HandleFunc("/api/admin/users/", admin(h.handleUserStatsDispatcher))
+
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))
 	mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath))
@@ -1320,6 +1329,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
 
 	// 2026-08-29 代理管理（出口基础设施，仅 superAdmin）
+	// R28-S-2: lite(sqlite) 会话读面——lite 模式此前只写不读。
+	mux.HandleFunc("/api/lite/sessions", h.admin(h.handleLiteSessions))
 	mux.HandleFunc("/api/proxy/status", h.superAdmin(h.handleProxyStatus))
 	mux.HandleFunc("/api/proxy/subscriptions", h.superAdmin(h.handleProxySubscriptionsRoot))
 	mux.HandleFunc("/api/proxy/subscriptions/", h.superAdmin(h.handleProxySubscriptions))

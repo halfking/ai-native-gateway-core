@@ -19,6 +19,7 @@ import { isSuperAdmin } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
 import ProviderPicker from '../components/ProviderPicker.vue'
 import AnomalyTypePicker, { type AnomalyTypeOption } from '../components/AnomalyTypePicker.vue'
+import KxDatePicker from '../components/ui/KxDatePicker.vue'
 import { refreshRequestAnomalyBadge } from '../composables/useRequestAnomalyBadge'
 
 const { t } = useI18n()
@@ -548,7 +549,9 @@ onUnmounted(() => {
       <div class="filters">
         <div class="filter-field">
           <label for="req-day-filter">{{ t('formatAnomaliesView.requestTab.filter.day') }}</label>
-          <input id="req-day-filter" v-model="reqDayFilter" type="date" class="input" />
+          <!-- 2026-09-30 统一日历轮：单日过滤换 KxDatePicker。原生 date 与组件契约
+               同为 'YYYY-MM-DD'；原 v-model 无 @change（查询由按钮触发），v-model 直连即可。 -->
+          <KxDatePicker id="req-day-filter" v-model="reqDayFilter" type="date" />
         </div>
         <div class="filter-field">
           <label for="req-provider-filter">{{ t('formatAnomaliesView.filter.provider') }}</label>

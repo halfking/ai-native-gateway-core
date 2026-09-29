@@ -169,6 +169,9 @@ func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, i
 	if err != nil {
 		return nil, err
 	}
+	// R28-P-1: stamp the provider so the shared upstream client can route
+	// egress_profile='proxy' providers through their subscription node pool.
+	req = upstreampkg.WithEgressMeta(req, cand.ProviderID)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", cand.APIKey)
 	req.Header.Set("anthropic-version", anthropicVersion)

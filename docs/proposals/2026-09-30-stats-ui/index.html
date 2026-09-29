@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>效果图目录 · 统计 UI 优化方案 2026-09-30</title>
+<link rel="stylesheet" href="assets/mockup.css">
+</head>
+<body>
+<button class="btn theme-fab" onclick="mockToggleTheme()">🌓 切换主题</button>
+<div class="page" style="max-width:960px">
+  <div class="page-header">
+    <h1>统计 UI 优化 · 效果图目录</h1>
+    <span class="sub">2026-09-30 方案轮 · 待确认后实施</span>
+  </div>
+  <div class="mock-banner">📐 全部为静态 HTML 效果图（演示数据），可切换明暗主题核对全站皮肤一致性。完整方案见 <a class="nav-link" href="plan.md">plan.md</a>。</div>
+
+  <div class="card clickable" style="cursor:pointer" onclick="location.href='reconciliation.html'">
+    <div class="card-title"><h3>效果图 A · 对账结算页改版</h3><span class="spacer"></span><span class="badge badge-blue">/admin/reconciliation</span></div>
+    <p class="text-muted" style="font-size:13px">供应商 / 内部双视角 · KPI 主副指标卡 · 请求成本趋势 + Token 构成堆叠图 · 分布表占比条 + 按 Token / 按金额切换 · 失败原因徽章化 · 按人员 / 按天明细</p>
+  </div>
+  <div class="card mt-3 clickable" style="cursor:pointer" onclick="location.href='tenant-stats.html'">
+    <div class="card-title"><h3>效果图 B · 租户详情统计改版</h3><span class="spacer"></span><span class="badge badge-blue">/tenants/:code → 统计 / 概览</span></div>
+    <p class="text-muted" style="font-size:13px">统计 tab：KPI 8 卡 + 请求失败 / Token 积分双趋势图 + 模型 / 应用分布占比条（按 Token / 按积分切换）；概览 tab：KPI 卡升级带 sparkline 与环比</p>
+  </div>
+  <div class="card mt-3 clickable" style="cursor:pointer" onclick="location.href='users.html'">
+    <div class="card-title"><h3>效果图 C · 用户列表 + 用户详情</h3><span class="spacer"></span><span class="badge badge-blue">/users</span></div>
+    <p class="text-muted" style="font-size:13px">顶部统计条（总用户 / 活跃 / 管理员 / 禁用 / 30 天请求 / 积分）· 每行近 30 天请求 / Token / 积分列 + 占比条 · 点击行打开详情抽屉（KPI / 趋势 / Top 模型应用 / 最近请求）</p>
+  </div>
+
+  <div class="section-title"><h2>参考图还原要点</h2></div>
+  <div class="card">
+    <p style="font-size:13px">参考看板（暗色 slate + 蓝 #3b82f6）经 OCR + 像素分析还原的版式，本方案全部移植到全站 --kx-* 令牌体系：</p>
+    <ul style="font-size:13px;margin:10px 0 0 18px;line-height:1.9">
+      <li><b>KPI 卡</b>：图标 + 大号主值 + 副指标（总请求数 31,178 / 总 Token 1.32B 输入输出 / 总消费 实际与标准双口径 / 平均耗时 每次请求）</li>
+      <li><b>分布表</b>：模型分布、分组使用分布、端点分布，列为 名称｜请求数｜Token｜实际｜标准，右上「按 Token / 按实际消费」切换</li>
+      <li><b>Token 使用趋势</b>：堆叠面积（Input / Output / Cache Creation / Cache Read）+ Cache Hit Rate 虚线（右轴），按小时粒度</li>
+      <li><b>底部</b>：密钥级统计条 + 最近请求表（密钥｜模型｜消费｜耗时｜时间｜User-Agent）</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

@@ -262,6 +262,31 @@ func normalizeAndRegisterClientSession(
 	}
 	si, getErr := getter.Get(r.Context(), sessionID)
 	if getErr == nil && si != nil {
+		// R24-B (V3-A02, 2026-09-29 round 26): a client-supplied session id
+		// must belong to the authenticated key. The chat path has enforced
+		// this since handler.go's own lookup (orphan sessions bind to the
+		// first key, mismatched owners get 403); without the same check here
+		// a sessionInfo from another tenant/key flowed straight into
+		// applyResolvedGatewaySession and logCtx. Cross-key usage of a known
+		// session is rejected; an orphan (APIKeyID == 0, e.g. legacy rows) is
+		// bound to the requesting key before it is adopted.
+		if si.APIKeyID != keyInfo.ID {
+			if si.APIKeyID == 0 {
+				if binder, ok := getter.(interface {
+					BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
+				}); ok {
+					if bindErr := binder.BindAPIKey(r.Context(), sessionID, keyInfo.ID, keyInfo.TenantID); bindErr == nil {
+						si.APIKeyID = keyInfo.ID
+						si.TenantID = keyInfo.TenantID
+						return sessionID, si, nil
+					} else {
+						slog.Warn("client session bind failed",
+							"session_id", sessionID, "error", bindErr)
+					}
+				}
+			}
+			return sessionID, nil, errClientSessionForbidden
+		}
 		return sessionID, si, nil
 	}
 	if getErr == session.ErrSessionNotFound &&
