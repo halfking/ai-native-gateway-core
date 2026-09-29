@@ -332,6 +332,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// fresh-install path as well as the revision sequence for upgrades.
 			"757_session_turns_origin_actor_projection.sql",
 			"758_routeincident_missing_columns.sql",
+			// 760 (2026-09-30, R27-HC-1/HC-2): analysis_events /
+			// stats_event_inbox 终态 TTL 清扫支撑索引（部分索引，仅终态行）。
+			"760_analysis_events_inbox_ttl_indexes.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
