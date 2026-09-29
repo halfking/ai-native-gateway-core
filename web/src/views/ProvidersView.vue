@@ -1490,31 +1490,31 @@ onUnmounted(() => {
                   </td>
                 </tr>
                 <tr v-if="expandedCredId === r.credential_id">
-                  <td colspan="7" style="background:rgba(0,0,0,0.2);padding:12px">
+                  <td colspan="7" class="diag-row">
                     <div class="diag-section">
                       <h4>{{ pm('diagnose.reqHeader') }}</h4>
                       <div><strong>{{ pm('diagnose.reqUrlLabel') }}</strong> <code style="font-size:12px">{{ r.request_url || pm('diagnose.reqNotSent') }}</code></div>
                       <div><strong>{{ pm('diagnose.reqMethodLabel') }}</strong> <code>{{ r.request_method }}</code></div>
                       <div><strong>{{ pm('diagnose.reqHeadersLabel') }}</strong>
-                        <pre style="margin:4px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;overflow-x:auto">{{ asJson(r.request_headers_sanitized) }}</pre>
+                        <pre class="diag-pre">{{ asJson(r.request_headers_sanitized) }}</pre>
                       </div>
                       <div v-if="r.request_body_preview"><strong>{{ pm('diagnose.reqBodyLabel') }}</strong>
-                        <pre style="margin:4px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;overflow-x:auto">{{ r.request_body_preview }}</pre>
+                        <pre class="diag-pre">{{ r.request_body_preview }}</pre>
                       </div>
                     </div>
                     <div class="diag-section" style="margin-top:12px">
                       <h4>{{ pm('diagnose.respHeader') }}</h4>
                       <div><strong>{{ pm('diagnose.respStatusLabel') }}</strong> <code>{{ r.response_status || pm('diagnose.respNoResponse') }}</code></div>
                       <div v-if="r.response_headers && Object.keys(r.response_headers).length"><strong>{{ pm('diagnose.respHeadersLabel') }}</strong>
-                        <pre style="margin:4px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;overflow-x:auto">{{ asJson(r.response_headers) }}</pre>
+                        <pre class="diag-pre">{{ asJson(r.response_headers) }}</pre>
                       </div>
                       <div v-if="r.response_body_preview"><strong>{{ pm('diagnose.respBodyLabel') }}</strong>
-                        <pre style="margin:4px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;overflow-x:auto;max-height:200px">{{ r.response_body_preview }}</pre>
+                        <pre class="diag-pre diag-pre--scroll">{{ r.response_body_preview }}</pre>
                       </div>
                     </div>
                     <div v-if="r.health_error" class="diag-section" style="margin-top:12px">
                       <h4>{{ pm('diagnose.errHeader') }}</h4>
-                      <pre style="margin:4px 0;padding:8px;background:rgba(180,40,40,0.2);border-radius:4px;font-size:11px;overflow-x:auto">{{ r.health_error }}</pre>
+                      <pre class="diag-pre diag-pre--error">{{ r.health_error }}</pre>
                     </div>
                     <div v-if="r.returned_models && r.returned_models.length" class="diag-section" style="margin-top:12px">
                       <h4>{{ pm('diagnose.modelsHeader', { n: r.returned_models.length }) }}</h4>
@@ -1750,6 +1750,26 @@ table code {
   font-size: 13px;
   color: var(--muted);
   font-weight: 600;
+}
+/* 2026-09-29 暗色修复：原模板用 inline `background:rgba(0,0,0,0.x)` 黑底，
+   亮色下突兀、暗色下与深色页面背景几乎看不出"嵌套"。改用项目级次级表面色
+   --bg-subtle（亮色浅灰、暗色微提亮），错误块保留 `--danger` 浅红的语义。 */
+.diag-row { background: var(--bg-subtle); padding: 12px; }
+.diag-pre {
+  margin: 4px 0;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  overflow-x: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.diag-pre--scroll { max-height: 200px; }
+.diag-pre--error {
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-card));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
 }
 .diag-section pre {
   white-space: pre-wrap;
