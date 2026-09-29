@@ -3,6 +3,7 @@ package reportrollup
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -467,5 +468,62 @@ func TestBuildRangeReport_ProviderQualityScorePopulated(t *testing.T) {
 	p := rep.Providers[0]
 	if p.QualityScore != 100 {
 		t.Errorf("quality_score = %v, want 100 (all success, no latency penalty)", p.QualityScore)
+	}
+}
+
+// TestViewScopes_LegacyFaceRefusesCredentialAndKey 旧读面**不得**为
+// credential / key 视角返回任何 scope。
+//
+// 这道门守的是一个具体的失败形态：这两个视角改由 grain 读面承担，而旧
+// 读面聚合到 daily_by_provider / internal_tenant 就停了，物理上做不出凭据
+// 级或 api-key 级行。若这里悄悄回落到供应商口径，调用方会拿到形状不同的
+// 数据当成凭据行用——报错比给错形状便宜。
+func TestViewScopes_LegacyFaceRefusesCredentialAndKey(t *testing.T) {
+	for _, view := range []View{ViewCredential, ViewKey} {
+		scopes, err := viewScopes(view)
+		if err == nil {
+			t.Fatalf("viewScopes(%q) = %v, want error（旧读面做不出这两个视角的行）", view, scopes)
+		}
+		if !strings.Contains(err.Error(), "grain") {
+			t.Errorf("viewScopes(%q) 错误信息应指向 grain 读面，实际：%v", view, err)
+		}
+	}
+}
+
+// TestGrainScopes_CredentialAndKeyMapToRealFaces credential / key 视角必须
+// 落到**真实存在**的 grain scope 上，不能落到已删除的 daily_by_credential /
+// internal_by_key（那两个 scope 已被 grain 收编、停止写入）。
+func TestGrainScopes_CredentialAndKeyMapToRealFaces(t *testing.T) {
+	cases := []struct {
+		view    View
+		want    Scope
+		notWant Scope
+	}{
+		{ViewProvider, ScopeDailyGrain, ScopeInternalGrain},
+		{ViewCredential, ScopeDailyGrain, ScopeInternalGrain},
+		{ViewInternal, ScopeInternalGrain, ScopeDailyGrain},
+		{ViewKey, ScopeInternalGrain, ScopeDailyGrain},
+	}
+	for _, c := range cases {
+		got, legacy, err := GrainScopes(c.view)
+		if err != nil {
+			t.Fatalf("GrainScopes(%q): %v", c.view, err)
+		}
+		if got != c.want {
+			t.Errorf("GrainScopes(%q) 面 = %q, want %q", c.view, got, c.want)
+		}
+		if got == c.notWant {
+			t.Errorf("GrainScopes(%q) 落到了对面 scope %q", c.view, got)
+		}
+		// 回落 scope 里不得再出现被收编的两个中等粒度 scope。
+		for _, s := range legacy {
+			if s == "daily_by_credential" || s == "internal_by_key" {
+				t.Errorf("GrainScopes(%q) 回落集合仍含已停写的 %q", c.view, s)
+			}
+		}
+	}
+	// 未登记视角必须报错，不能默认落到某个面。
+	if _, _, err := GrainScopes("credential_typo"); err == nil {
+		t.Error("GrainScopes 对未登记视角应报错")
 	}
 }

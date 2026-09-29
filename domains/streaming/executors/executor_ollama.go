@@ -170,6 +170,9 @@ func (o *OllamaExecutor) BuildRequest(cand provider.Candidate, body []byte, isSt
 	if err != nil {
 		return nil, fmt.Errorf("ollama executor: build request: %w", err)
 	}
+	// R28-P-1: stamp the provider so the shared upstream client can route
+	// egress_profile='proxy' providers through their subscription node pool.
+	req = upstreampkg.WithEgressMeta(req, cand.ProviderID)
 	req.Header.Set("Content-Type", "application/json")
 	if cand.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+cand.APIKey)

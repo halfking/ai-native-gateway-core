@@ -332,6 +332,22 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// fresh-install path as well as the revision sequence for upgrades.
 			"757_session_turns_origin_actor_projection.sql",
 			"758_routeincident_missing_columns.sql",
+			// 759 (2026-09-29, 对帐多维筛选轮): report_snapshots 增加
+			// credential_id / api_key_id / person 三列与两个最细粒度 scope
+			// 所需的 4 个 partial 索引。没有这三列，凭据 / apikey / 用户
+			// 三类筛选在 schema 层就无处可取（不是读面没实现）。
+			"759_report_snapshots_grain_dims.sql",
+			// 760 (2026-09-30, R27-HC-1/HC-2): analysis_events /
+			// stats_event_inbox 终态 TTL 清扫支撑索引（部分索引，仅终态行）。
+			"760_analysis_events_inbox_ttl_indexes.sql",
+			// 761 (2026-09-30, R28-HC-10): 同步投影行 processing_status
+			// 回填——writer 漏翻状态留下的假 pending 历史行一次性修复。
+			"761_stats_inbox_sync_status_backfill.sql",
+			// 762 (2026-09-30, R32-P-3 / 三十三轮 Track C): session_summaries
+			// 项目维度回填链——两级口径解析函数 + session_dim 触发器写链 +
+			// 回填扫描索引。只建链不搬数据；存量 33 万行由
+			// bg/project_backfill_worker.go 分批回填（共用 sync 函数）。
+			"762_session_project_backfill_chain.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

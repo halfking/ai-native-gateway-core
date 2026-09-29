@@ -461,6 +461,14 @@ func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, st
 	if !settings.IsEnabled("session_cache") {
 		return nil
 	}
+	// A-G1 (修订审计三十二轮 §四A): three-tier provenance check at the
+	// single chokepoint where the merged raw/compressed/sanitized state is
+	// persisted — this is where "algn" and "san_msg_refs" get serialised
+	// (encodeSessionStateFields), covering all three writers (updateCache,
+	// CommitFinal, recovery coordinator). Observability-only: a misaligned
+	// state is logged and counted, never blocks the write. No-op when the
+	// threetier verifier is not linked into the binary.
+	runThreeTierCheck(ctx, tenantID, gwSessionID, state)
 	key := l1Key(tenantID, gwSessionID)
 	c.setL1(key, state, outboundBody)
 

@@ -2,12 +2,12 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -105,16 +105,14 @@ func (h *Handler) handleAttachmentFilesystemStats(w http.ResponseWriter, r *http
 		return
 	}
 
-	// 查询磁盘空间 (syscall.Statfs)
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(absDir, &stat); err != nil {
-		writeInternalErr(w, "statfs", err)
+	// 查询磁盘空间（跨平台，见 diskusage_*.go）
+	diskTotal, diskAvail, diskFree := statfsBytes(absDir)
+	if diskTotal == 0 {
+		writeInternalErr(w, "statfs", fmt.Errorf("disk usage unavailable for %s", absDir))
 		return
 	}
 
-	diskTotal := stat.Blocks * uint64(stat.Bsize)
-	diskAvail := stat.Bavail * uint64(stat.Bsize)
-	diskUsed := diskTotal - diskAvail
+	diskUsed := diskTotal - diskFree
 	diskUsagePercent := float64(diskUsed) / float64(diskTotal) * 100
 
 	warningLevel := "safe"

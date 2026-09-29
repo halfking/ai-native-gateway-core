@@ -66,6 +66,29 @@ var lossinessCounter = prometheus.NewCounterVec(
 	[]string{"lossiness"},
 )
 
+// threeTierCounter tracks the outcome of the three-tier (raw / compressed /
+// sanitized) provenance consistency check run at session-cache write time
+// (修订审计三十二轮 §四A A-G1; see threetier_hook.go). result is "pass"
+// (tiers consistent), "fail" (misaligned — also logged via slog), or
+// "unregistered" (the threetier verifier is not linked into this binary,
+// e.g. unit tests of this package that do not import threetier). A "fail"
+// never blocks the request; it exists for operator alerting on cross-tier
+// drift.
+var threeTierCounter = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "compression_threetier_check_total",
+		Help: "Three-tier (raw/compressed/sanitized) provenance consistency checks at session-cache write time, by result (pass|fail|unregistered). fail is observability-only: logged and counted, never blocking.",
+	},
+	[]string{"result"},
+)
+
+// Three-tier check outcome labels for compression_threetier_check_total.
+const (
+	ThreeTierResultPass         = "pass"
+	ThreeTierResultFail         = "fail"
+	ThreeTierResultUnregistered = "unregistered"
+)
+
 // memoCounter tracks compression result memo outcomes (docs/omni-ref3 C3).
 // result is "hit" (a cached compression was replayed, so the LLM summary /
 // mechanical trim was skipped) or "miss" (the memo was consulted and empty, so
@@ -122,6 +145,7 @@ func init() {
 		defaultMetrics.ratio,
 		lossinessCounter,
 		memoCounter,
+		threeTierCounter,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -174,6 +198,29 @@ func RecordMemo(result string) {
 // outcome. Production callers should scrape the Prometheus endpoint.
 func MemoCount(result string) float64 {
 	m, err := memoCounter.GetMetricWithLabelValues(result)
+	if err != nil || m == nil {
+		return 0
+	}
+	pb := &dto.Metric{}
+	_ = m.(prometheus.Metric).Write(pb)
+	if pb.Counter != nil && pb.Counter.Value != nil {
+		return *pb.Counter.Value
+	}
+	return 0
+}
+
+// RecordThreeTierCheck emits one compression_threetier_check_total{result}
+// sample. Called by runThreeTierCheck (threetier_hook.go) on every
+// SessionCache.Set of a non-nil state.
+func RecordThreeTierCheck(result string) {
+	threeTierCounter.WithLabelValues(result).Inc()
+}
+
+// ThreeTierCheckCount is a test helper returning the current counter value
+// for a three-tier check outcome. Production callers should scrape the
+// Prometheus endpoint.
+func ThreeTierCheckCount(result string) float64 {
+	m, err := threeTierCounter.GetMetricWithLabelValues(result)
 	if err != nil || m == nil {
 		return 0
 	}

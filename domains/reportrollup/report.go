@@ -26,10 +26,15 @@ type View string
 const (
 	ViewProvider View = "provider"
 	ViewInternal View = "internal"
+	// R28-B-2：计帐/对帐细化粒度视角。
+	ViewCredential View = "credential"
+	ViewKey        View = "key"
 )
 
 // Valid 校验视图字符串。
-func (v View) Valid() bool { return v == ViewProvider || v == ViewInternal }
+func (v View) Valid() bool {
+	return v == ViewProvider || v == ViewInternal || v == ViewCredential || v == ViewKey
+}
 
 // Totals 一组聚合指标。ErrorCount = RequestCount - SuccessCount（终态
 // success 之外一律计失败，含 rate_limited）。
@@ -78,6 +83,10 @@ type ModelRow struct {
 	RawModelName   string           `json:"raw_model_name"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	// QualityScore 见 ProviderRow.QualityScore：公式与维度无关，任何分组
+	// 都能算（2026-09-29 多维轮补齐——目标把质量评分列为通用列，不该只有
+	// 供应商维度有值）。
+	QualityScore float64 `json:"quality_score,omitempty"`
 }
 
 // TenantRow 租户汇总行。
@@ -85,6 +94,7 @@ type TenantRow struct {
 	TenantID       string           `json:"tenant_id"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	QualityScore   float64          `json:"quality_score,omitempty"`
 }
 
 // PersonRow 人员汇总行（person = end_user_id，缺失回落 person:hash）。
@@ -93,12 +103,16 @@ type PersonRow struct {
 	Person         string           `json:"person"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	QualityScore   float64          `json:"quality_score,omitempty"`
 }
 
 // DayRow 单日汇总行。
 type DayRow struct {
-	Date   string `json:"date"`
-	Totals Totals `json:"totals"`
+	Date string `json:"date"`
+	// ErrorBreakdown 仅 grain 读面填充（旧读面的按天行不携带，导出时
+	// 「主要错误」列留空）；旧消费方忽略该字段即可。
+	ErrorBreakdown map[string]int64 `json:"error_breakdown,omitempty"`
+	Totals         Totals           `json:"totals"`
 }
 
 // RangeReport 区间汇总结果。
@@ -367,7 +381,7 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 
 	// ---- 总计 + 错误透视 ----
 	total := &acc{}
-	if view == ViewProvider && filter.empty() {
+	if (view == ViewProvider || view == ViewCredential || view == ViewKey) && filter.empty() {
 		// 全流量单行 scope：每日一行，全部相加。
 		for _, a := range daysByDate {
 			total.addAcc(a)
@@ -510,6 +524,13 @@ func viewScopes(view View) ([]Scope, error) {
 		return []Scope{ScopeDailyTotal, ScopeDailyByProvider, ScopeDailyByModel}, nil
 	case ViewInternal:
 		return []Scope{ScopeInternalTenant, ScopeInternalPerson, ScopeInternalModel}, nil
+	case ViewCredential, ViewKey:
+		// 这两个视角由 grain 读面承担（grainreport.go：凭据/api-key 是
+		// 最细粒度行上的两个分组集，行内还带租户/人员/模型）。旧读面
+		// 聚合到 daily_by_provider / internal_tenant 就停了，做不出
+		// 凭据级或 api-key 级行——这里必须显式报错而不是悄悄回落到
+		// 供应商口径，否则调用方会拿到形状不同的数据当成凭据行。
+		return nil, fmt.Errorf("view %q requires the grain read face (BuildGrainReport)", view)
 	default:
 		return nil, fmt.Errorf("unknown view %q", view)
 	}

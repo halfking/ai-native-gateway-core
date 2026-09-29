@@ -175,4 +175,26 @@ export default {
   copied: 'Copied',
 
   add: 'Add',
+
+  // 2026-09-30 统一日历组件族（KxDateRangePicker / KxDatePicker）共用词条
+  dateRange: {
+    title: 'Rango de tiempo',
+    custom: 'Personalizado',
+    startDate: 'Fecha de inicio',
+    endDate: 'Fecha de fin',
+    openAria: 'Seleccionar rango de tiempo',
+    endBeforeStart: 'El fin no puede ser anterior al inicio',
+    spanTooLong: 'El rango supera {n} días',
+    pickDate: 'Elegir fecha',
+    preset: {
+      today: 'Hoy',
+      yesterday: 'Ayer',
+      last24h: 'Últimas 24 horas',
+      last7d: 'Últimos 7 días',
+      last14d: 'Últimos 14 días',
+      last30d: 'Últimos 30 días',
+      thisMonth: 'Este mes',
+      lastMonth: 'Mes pasado',
+    },
+  },
 }

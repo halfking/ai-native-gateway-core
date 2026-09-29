@@ -129,6 +129,9 @@ func (c *ChatExecutor) BuildRequest(cand provider.Candidate, body []byte, isStre
 	if err != nil {
 		return nil, err
 	}
+	// R28-P-1: stamp the provider so the shared upstream client can route
+	// egress_profile='proxy' providers through their subscription node pool.
+	req = upstreampkg.WithEgressMeta(req, cand.ProviderID)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cand.APIKey)
 	if isStream {
@@ -664,6 +667,12 @@ func (e *Executor) executeOpenAI(
 				return nil, err
 			}
 
+			// R30 (2026-09-30): the LIVE chat request build (the
+			// BuildRequest method below is not on this path — it has no
+			// production callers). Stamp the provider so the shared upstream
+			// client can route egress_profile='proxy' providers through
+			// their subscription node pool (R28-P-1).
+			req = upstreampkg.WithEgressMeta(req, cand.ProviderID)
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+cand.APIKey)
 			if params.IsStream {

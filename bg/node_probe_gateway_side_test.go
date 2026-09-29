@@ -154,14 +154,17 @@ func TestRunOneGatewaySideSkipsSharedStateWrites(t *testing.T) {
 		t.Errorf("tick path must log the skipped availability update for gateway-side errors")
 	}
 
+	// 2026-09-29 (R-vapeur2): the URSM view write moved BEFORE the failure
+	// branch (recovery-race fix), so the sync segment now ends at the audit
+	// emission that follows the winner delivery.
 	sync := sourceBetween(t, src,
 		"isGatewaySideProbeError(res.direct.errCode)",
-		"w.updateURSMv2ProbeState(ctx, tenantID")
+		"if err := w.emitSyncAudit(bookCtx")
 	if !strings.Contains(sync, "gateway-side direct probe error (sync)") {
 		t.Errorf("sync path must log the skipped availability update for gateway-side errors")
 	}
-	if !strings.Contains(sync, "w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)") ||
-		!strings.Contains(sync, "w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode") {
+	if !strings.Contains(sync, "w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)") ||
+		!strings.Contains(sync, "w.updateObservedState(bookCtx, j.credID, j.model, false, res.direct.errCode") {
 		t.Errorf("sync path must keep the genuine-upstream-error write branch")
 	}
 	if !strings.Contains(sync, "!w.credentialSpecificDecryptFailure(res.direct.errDetail)") {

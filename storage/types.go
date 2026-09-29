@@ -7,12 +7,12 @@ import (
 
 // Session 会话元数据。
 type Session struct {
-	ID        string
-	TenantID  string
-	UserID    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Metadata  map[string]interface{}
+	ID        string                 `json:"id"`
+	TenantID  string                 `json:"tenant_id"`
+	UserID    string                 `json:"user_id,omitempty"`
+	CreatedAt time.Time              `json:"created_at"`
+	UpdatedAt time.Time              `json:"updated_at"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // SessionBody 会话内容（大对象），按轮次存储请求/响应原文。

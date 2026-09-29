@@ -1716,13 +1716,40 @@ func (w *NodeProbeWorker) ProbeSync(
 			defer w.finishProbe(j.key)
 			res := freshResult{job: j}
 			res.direct = w.probeDirect(ctx, j.credID, j.model)
+			// 2026-09-29 (R-vapeur2): URSM 视图写 + 候选缓存失效先行。这个
+			// Redis 写是 authoritative 路由唯一的恢复信号（毫秒级、自身已
+			// WithoutCancel 免疫 hold 过期），原顺序把它排在 binding/observed/
+			// health 各段 DB 簿记之后 —— DB 抖动时每段挂起数秒，视图翻转被
+			// 拖到 hold 边界之后，winner 投递随之超时：2026-09-29 gpt-6-astra
+			// 事故三次实证（探针成功、视图翻绿、请求仍 503，winner 无人接收）。
+			// 提前它使 executor 的 re-plan 立即看到恢复。
+			// 2026-08-18: the sync path also drives the URSM v2 authoritative
+			// router. Without this write the probe "recovered" only the PG
+			// binding while PlanCandidatesWithContext kept rejecting the node
+			// for its missing/expired Redis node key, so the executor's retry
+			// after ProbeSync returned 503 again (glm-5.2 outage on 154).
+			// Success reflects the direct round only: the gateway round is
+			// routed through this same URSM filter and can 503 circularly
+			// while the key is missing.
+			// R42: failures honor the gateway-side predicate (see runOne) —
+			// a misconfigured instance must not poison the shared node key.
+			if res.direct.ok || w.ursmFailureWritable(res.direct.errCode, res.direct.errDetail) {
+				w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)
+			}
+			if w.invalidateCandidateCache != nil {
+				w.invalidateCandidateCache(j.credID)
+			}
+			// hold ctx 过期只应终止"等待结果"，不应把收尾簿记腰斩成半态
+			// （binding 已写而 audit 永缺）。bookCtx 与 hold 解耦，5s 自限。
+			bookCtx, bookCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer bookCancel()
 			if res.direct.ok {
 				// CRITICAL: update state BEFORE probeGateway so the
 				// routing layer sees the restored credential, not the
 				// stale cooling state left by the original 5xx.
-				w.updateBindingAvailability(ctx, j.credID, j.model, true, "", 0, "")
-				w.updateCredentialHealth(ctx, j.credID)
-				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
+				w.updateBindingAvailability(bookCtx, j.credID, j.model, true, "", 0, "")
+				w.updateCredentialHealth(bookCtx, j.credID)
+				w.updateObservedState(bookCtx, j.credID, j.model, true, "", time.Now())
 				// 2026-08-24: smart-fallback tentative restore (需求 6
 				// bullet 6). A sync probe "passed in isolation" — stamp a
 				// revert deadline so bg.ProbeRollback reverts the binding
@@ -1741,7 +1768,6 @@ func (w *NodeProbeWorker) ProbeSync(
 					}
 					markCancel()
 				}
-				res.gateway = w.probeGateway(ctx, j.credID, j.model)
 			} else {
 				// 2026-09-17: gateway-side errors (decrypt/endpoint build) must
 				// not touch the shared availability surfaces — same doctrine as
@@ -1759,28 +1785,21 @@ func (w *NodeProbeWorker) ProbeSync(
 					// keeps the generic 5-minute cooldown for a first 404 —
 					// the tick/queue paths escalate to the model-not-served
 					// horizon once their attempt counts confirm it.
-					w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)
+					w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)
 					recoverAt := time.Now().Add(5 * time.Minute)
-					w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
+					w.updateObservedState(bookCtx, j.credID, j.model, false, res.direct.errCode, recoverAt)
 				}
 			}
-			// 2026-08-18: the sync path also drives the URSM v2 authoritative
-			// router. Without this write the probe "recovered" only the PG
-			// binding while PlanCandidatesWithContext kept rejecting the node
-			// for its missing/expired Redis node key, so the executor's retry
-			// after ProbeSync returned 503 again (glm-5.2 outage on 154).
-			// Success reflects the direct round only: the gateway round is
-			// routed through this same URSM filter and can 503 circularly
-			// while the key is missing.
-			// R42: failures honor the gateway-side predicate (see runOne) —
-			// a misconfigured instance must not poison the shared node key.
-			if res.direct.ok || w.ursmFailureWritable(res.direct.errCode, res.direct.errDetail) {
-				w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)
+			// 先投递 winner（契约=direct 轮）。gateway round 与 audit 是诊断
+			// 簿记：各自要再打一次上游/DB，DB 抖动时同样可能秒级挂起，不应
+			// 扣住已成功的恢复。投递后不得再改 res（channel 接收方并发拷贝），
+			// gateway 结果走独立变量仅供 audit。
+			results <- res
+			var gwRound nodeProbeRoundResult
+			if res.direct.ok {
+				gwRound = w.probeGateway(bookCtx, j.credID, j.model)
 			}
-			if w.invalidateCandidateCache != nil {
-				w.invalidateCandidateCache(j.credID)
-			}
-			if err := w.emitSyncAudit(ctx, j.credID, j.model, res.direct, res.gateway, start, parentReqID); err != nil {
+			if err := w.emitSyncAudit(bookCtx, j.credID, j.model, res.direct, gwRound, start, parentReqID); err != nil {
 				slog.Warn("node_probe_worker: sync audit persist failed",
 					"credential_id", j.credID,
 					"raw_model", j.model,
@@ -1788,7 +1807,6 @@ func (w *NodeProbeWorker) ProbeSync(
 					"parent_request_id", parentReqID,
 					"error", err)
 			}
-			results <- res
 		}()
 	}
 
@@ -1848,6 +1866,21 @@ drainLoop:
 			}
 		case <-ctx.Done():
 			break drainLoop
+		}
+	}
+
+	// 2026-09-29 (R-vapeur2): ctx 过期与结果投递存在边界竞态 —— 实测投递可
+	// 恰好落在 ctx.Done 之后几十毫秒（结果投递含 Redis 写，DB 抖动时被拖到
+	// hold 边界）。退出前做一次非阻塞清扫，已到达的恢复不再丢弃。
+sweep:
+	for {
+		select {
+		case res := <-results:
+			if !winnerIsSet() && probeRecovered(res.direct) {
+				takeWinner(res.direct, res.gateway)
+			}
+		default:
+			break sweep
 		}
 	}
 

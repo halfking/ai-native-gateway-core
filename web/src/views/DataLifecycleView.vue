@@ -124,12 +124,13 @@
           </div>
           <div class="form-row form-row-dates">
             <div class="date-group">
-              <label class="form-label">起始日期：</label>
-              <input type="date" v-model="cleanupForm.from" class="form-input" />
-            </div>
-            <div class="date-group">
-              <label class="form-label">结束日期：</label>
-              <input type="date" v-model="cleanupForm.to" class="form-input" />
+              <label class="form-label">{{ t('common.dateRange.title') }}：</label>
+              <KxDateRangePicker
+                :model-value="cleanupRangeValue"
+                :presets="[]"
+                instant
+                @apply="onCleanupRangeApply"
+              />
             </div>
           </div>
           <div class="form-actions">
@@ -194,7 +195,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
-import { ref, onMounted, onUnmounted, nextTick, reactive } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, reactive, computed } from 'vue'
 import { Chart, ChartConfiguration, registerables } from 'chart.js'
 import {
   dataLifecycleStats,
@@ -210,6 +211,8 @@ import StorageConfig from './data-lifecycle/StorageConfig.vue'
 import DegradationRecovery from './data-lifecycle/DegradationRecovery.vue'
 import LogManagement from './data-lifecycle/LogManagement.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 
 const { t } = useI18n()
 
@@ -233,6 +236,16 @@ const tabs: { key: TabKey; label: string; badge?: string }[] = [
 const activeTab = ref<TabKey>('storage')
 const stats = ref<DataLifecycleStatsResponse | null>(null)
 const cleanupForm = reactive({ action: 'archive', from: '', to: '' })
+
+// 2026-09-30 统一日历轮：清理范围双 date input → KxDateRangePicker（表单读值语义，instant 仅同步）。
+const cleanupRangeValue = computed<KxDateRange | null>(() =>
+  cleanupForm.from && cleanupForm.to ? { start: cleanupForm.from, end: cleanupForm.to } : null,
+)
+function onCleanupRangeApply(range: KxDateRange) {
+  cleanupForm.from = range.start
+  cleanupForm.to = range.end
+}
+
 const previewResult = ref<any>(null)
 const isLoading = ref(false)
 const distributionChart = ref<HTMLCanvasElement | null>(null)

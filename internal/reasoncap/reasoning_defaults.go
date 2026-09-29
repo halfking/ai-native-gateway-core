@@ -198,18 +198,42 @@ var reasoningRules = []reasoningRule{
 		Efforts:    []string{"low", "high", "max"},
 		CanDisable: false, HistoryField: "clear_thinking",
 	}},
-	{"glm-4.5", 1, Caps{
-		Supported: true, Dialect: DialectGLM,
-		Efforts:    []string{"max", "xhigh", "high", "medium", "low", "minimal", "none"},
-		CanDisable: true, HistoryField: "clear_thinking",
-	}},
+	// 2026-09-30 真机（方舟 ark.cn-beijing.volces.com/api/coding/v3/chat/completions，
+	// model=glm-5-2-260617，即网关 `glm-5.2` 的实际出站名；间隔 7s，none/low 各
+	// n=3 复验，其余档 n=1 全扫）推翻本表原先的 7 档声明：
+	//
+	//   none     → 400 `reasoning_effort 'none' is not supported by this model`（3/3）
+	//   minimal  → 400 同上（方舟把 minimal 归一化成 none 后按 none 拒）
+	//   low      → 200，reasoning_content 长度 0（3/3，即"关闭思考"的真实档）
+	//   medium   → 200，reasoning_content 长度 0
+	//   high     → 200，reasoning_content 长度 0
+	//   xhigh    → 200，reasoning_content 759 字符（真开启）
+	//   max      → 200，reasoning_content 937 字符（真开启）
+	//
+	// 即：关闭档是 low 而非 none/minimal；且 low/medium/high 三档在方舟侧
+	// 都不产生思考。此前声明 none/minimal 会让 ClampEffort 把客户端的关闭意图
+	// 改写成上游明确拒绝的值（400），把"原样透传被上游拒"变成"被网关改写成
+	// 上游拒绝的值"——错误归属从上游转移到网关，且对调用方不可见。
+	//
+	// 只对 glm-5 家族落此结论：真机可验的只有 glm-5-2-260617。glm-4.5 / glm-z1
+	// 未取得真机证据，保留原 7 档声明（宁可多声明也不误删，见下方 KEEP 说明）。
+	// 智谱原生端点（api/paas/v4）在方舟凭据下 404，无法交叉验证。
 	{"glm-5", 1, Caps{
 		Supported: true, Dialect: DialectGLM,
+		// 真机七档全扫（见上）：none/minimal 被拒，low 才是关闭档。
+		Efforts:    []string{"max", "xhigh", "high", "medium", "low"},
+		CanDisable: true, HistoryField: "clear_thinking",
+	}},
+	{"glm-4.5", 1, Caps{
+		Supported: true, Dialect: DialectGLM,
+		// KEEP: 无真机证据，维持原声明。移除 none/minimal 是有实测支撑的改动，
+		// 在 glm-4.5 上没有；凭同族推断删档等于把未验证的判断写成事实。
 		Efforts:    []string{"max", "xhigh", "high", "medium", "low", "minimal", "none"},
 		CanDisable: true, HistoryField: "clear_thinking",
 	}},
 	{"glm-z1", 1, Caps{
 		Supported: true, Dialect: DialectGLM,
+		// KEEP: 同 glm-4.5，无真机证据，维持原声明。
 		Efforts:    []string{"max", "xhigh", "high", "medium", "low", "minimal", "none"},
 		CanDisable: true, HistoryField: "clear_thinking",
 	}},

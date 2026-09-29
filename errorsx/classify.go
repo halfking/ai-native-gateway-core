@@ -3,6 +3,7 @@ package errorsx
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -737,6 +738,16 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		}
 		if errors.Is(err, context.Canceled) {
 			return KindCanceled
+		}
+		// R32-U1 (2026-09-30 round 32): structural DNS check beats message
+		// matching — local resolvers/interceptors word failures differently
+		// ("no such host" vs "server misbehaving"), and a resolver that
+		// SINKS unknown domains answers at the TCP layer instead, which never
+		// reaches this branch. Resolution failure is network-class regardless
+		// of wording.
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) {
+			return KindNetwork
 		}
 		msg := strings.ToLower(err.Error())
 		// Order matters: overload and EOF-without-done are checked

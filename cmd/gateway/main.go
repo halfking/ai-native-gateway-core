@@ -132,6 +132,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/proxy"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
@@ -142,6 +143,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/storage"
 	"github.com/kaixuan/llm-gateway-go/tenantops"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/kaixuan/llm-gateway-go/vibecoding"
@@ -424,10 +426,13 @@ func main() {
 			"hint", "rotate to ops_-prefixed value at next maintenance window")
 	}
 
-	// ── 双模式存储装配（Task 4.2）─────────────────────────────────────────
-	// LLM_GATEWAY_STORAGE_MODE 未设置或为 full 时 storageRt 为 nil，以下全部
-	// 走既有装配路径（行为零变化）；lite 模式在此初始化存储工厂、L1.5 文件
-	// 缓存与后台清理任务，Shutdown 挂在优雅关闭段末尾。
+	// ── 双模式存储装配（Task 4.2 + 2026-09-24 方案 H2/P3）───────────────────
+	// LLM_GATEWAY_STORAGE_MODE 未设置/非法时 storageRt 为 nil；显式 full 且
+	// 热区关闭（config 通道）时同样为 nil——两者都走既有装配路径（行为零变化）。
+	// lite 模式在此初始化存储工厂、L1.5 文件缓存与后台清理任务；full+热区
+	// 装配 hotZoneOnly runtime（非 nil 但 liteMode()==false）。⚠ 一切「lite
+	// 语义」判据必须用 storageRt.liteMode()，不得直接判 storageRt != nil。
+	// Shutdown 挂在优雅关闭段末尾。
 	storageCfg := loadStorageConfig(configFile)
 	storageRt, storageInitErr := initStorageMode(cfg, storageCfg)
 	if storageInitErr != nil {
@@ -453,7 +458,7 @@ func main() {
 	// "postgres connected max_conns=N" 日志为准。
 	// （已知噪音：deploy-252-gateway.sh / start-full.sh 会无条件 export 该
 	// env，full 模式下每次启动一条 Warn——脚本侧待清理，见 R43 轮文档遗留。）
-	if storageRt == nil {
+	if !storageRt.liteMode() {
 		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS")); v != "" {
 			slog.Warn("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS set but does NOT cap the full-mode gateway PG pool",
 				"effective_knob", "LLM_GATEWAY_DB_MAX_CONNS",
@@ -494,7 +499,7 @@ func main() {
 	// PostgreSQL 初始化（openDBWithBootRetry 对空 URL 返回 nil，即既有 no-DB
 	// 降级路径），避免无谓的连接重试拖慢启动。
 	bootDatabaseURL := cfg.DatabaseURL
-	if storageRt != nil {
+	if storageRt.liteMode() {
 		slog.Warn("storage lite mode: PostgreSQL disabled, using SQLite + local dirs",
 			"database_url_configured", cfg.DatabaseURL != "")
 		bootDatabaseURL = ""
@@ -905,11 +910,12 @@ func main() {
 	// 成功时（ROUTING_OPT_ENABLED=true 且有 DB pool）非 nil，否则保持 nil
 	// （关闭路径零开销）。
 	var routingOptimizerForShutdown *routingopt.RealOptimizer
-	// 2026-09-14 R28 #16: lite 模式（storageRt != nil）按策略禁用 Redis——
+	// 2026-09-14 R28 #16: lite 模式（storageRt.liteMode()）按策略禁用 Redis——
 	// 主 Config 在上方 env 收口之前已完成解析，cfg.RedisAddr 可能仍残留值，
-	// 此处以 storageRt == nil 为准做二次门控；跳过本段后 sessionMgr 等
-	// 保持 nil，走与"Redis 未配置/不可达"一致的既有降级路径。
-	if cfg.RedisAddr != "" && storageRt == nil {
+	// 此处以 !liteMode() 为准做二次门控（full 热区装配 P3 的 runtime 非 nil
+	// 但不是 lite，Redis 必须照常装配——它是 L2 治理缓存）；跳过本段后
+	// sessionMgr 等保持 nil，走与"Redis 未配置/不可达"一致的既有降级路径。
+	if cfg.RedisAddr != "" && !storageRt.liteMode() {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		// 2026-09-04 availability: bounded boot-ping retry so a Redis that
 		// comes up slightly after the gateway (container ordering, short
@@ -2305,7 +2311,16 @@ func main() {
 		chatHandler.SetStaticDataPlaneKey(cfg.SecretKey)
 		slog.Warn("API key authentication: DB verifier unavailable — static secret-key-only auth enforced for all data-plane requests (sk-* keys rejected)")
 	} else {
-		exposed := storageRt != nil // lite 模式即常态开放；full 降级态为临时暴露
+		exposed := storageRt.liteMode() // lite 模式即常态开放；full 降级态为临时暴露（full 热区装配 P3 的 runtime 非 nil 但非 lite）
+		if exposed && os.Getenv("LLM_GATEWAY_LITE_ALLOW_UNAUTHENTICATED") != "1" {
+			// R28-S-3 (2026-09-30 round 31): lite is a deliberate deployment
+			// mode, not a transient degradation — shipping its data plane with
+			// zero auth is a configuration hole. Refuse to start unless the
+			// operator explicitly opts in to an open data plane. The full-mode
+			// degraded boot below keeps the historical warn-and-continue.
+			slog.Error("lite mode requires data-plane authentication: set LLM_GATEWAY_SECRET_KEY (static-key fallback), LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR (snapshot auth), or LLM_GATEWAY_LITE_ALLOW_UNAUTHENTICATED=1 to explicitly accept an unauthenticated data plane")
+			os.Exit(1)
+		}
 		slog.Error("DATA PLANE UNAUTHENTICATED: api key verification unavailable and no static key configured — any bearer token is accepted. Set LLM_GATEWAY_SECRET_KEY (static-key fallback) or LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR (snapshot auth) to close this.",
 			"lite_mode", exposed)
 	}
@@ -2319,10 +2334,33 @@ func main() {
 	// 2026-09-05 审计 B2 接线：lite 模式（无 PG，telemetry Enabled 恒 false、
 	// 请求日志不落盘）把 telemetry 持久化管道桥接到存储工厂——SQLite
 	// request_logs/sessions/session_turns + FileBodies 原文文件。full/未启用
-	// 模式（storageRt == nil）不注册 sink，全部路径行为零变化。
-	if storageRt != nil {
+	// 模式不注册 sink，全部路径行为零变化（full 热区装配 P3 的 runtime 非 nil
+	// 但 liteMode()==false，必须走历史 PG 持久化，factory 亦为 nil）。
+	// lite 会话读面（R28-S-2）：lite 块先捕获 reader，admin handler 创建后
+	// 再注入（adminHandler 在本函数更晚处构造）。
+	var liteSessionsReader func(ctx context.Context, tenantID string, opts *storage.ListOptions) ([]*storage.Session, error)
+	if storageRt.liteMode() {
 		telemetryClient.SetRequestLogSink(storageRt.newLiteRequestLogSink())
 		slog.Info("storage lite mode: telemetry request log sink wired (SQLite request_logs + session journal + file bodies)")
+		// R28-S-1/S-2 (2026-09-30 round 31): lite 模式的能力边界显式声明——
+		// 计费面（积分扣费/usage_ledger/对帐）不运行；cost_usd 依赖 PG 价表
+		// （model_offers/pricing_plans），lite 无 PG 时恒 NULL（价表进 lite
+		// 属产品决策，登记待 owner 拍板）；管理面 PG 端点 503，会话数据经
+		// /api/lite/sessions 读 SQLite。
+		slog.Warn("storage lite mode capability boundary: NO billing face (credits/usage_ledger/reconciliation); cost_usd is NULL without the PG price tables; admin PG endpoints return 503; sessions are readable via /api/lite/sessions")
+		if sessionsStore := storageRt.factory.NewSessionStore(); sessionsStore != nil {
+			liteSessionsReader = func(ctx context.Context, tenantID string, opts *storage.ListOptions) ([]*storage.Session, error) {
+				return sessionsStore.ListSessions(ctx, tenantID, opts)
+			}
+		}
+	}
+	// H3 请求侧镜像（2026-09-24 方案）：full 热区装配时把 RequestMirror 的
+	// fire-and-forget 投递闭包注入 telemetry——persistRequestLog 顶部与 PG 往返
+	// 之前镜像三件套，PG 不可用时镜像仍写入。lite / 热区关闭 / request_mirror
+	// 关闭时 bodyMirrorFn() 为 nil，telemetry 保持纯落库行为。
+	if mirrorFn := storageRt.bodyMirrorFn(); mirrorFn != nil {
+		telemetryClient.SetBodyMirror(mirrorFn)
+		slog.Info("storage hotzone: telemetry request body mirror wired (fire-and-forget, fail-open)")
 	}
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
@@ -2553,6 +2591,15 @@ func main() {
 	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
 		sessionV2Writer = initSessionV2Writer(dbConn.Pool())
 		if sessionV2Writer != nil {
+			// H3 请求侧镜像（2026-09-24 方案）：full 热区装配时给
+			// SessionWriterV2 注入镜像 seam——turn bodies 写入成功后
+			// fire-and-forget 投递三件套（per-turn + final_full）。lite /
+			// 热区关闭 / request_mirror 关闭时 bodyMirrorFn() 为 nil，
+			// SessionWriterV2 零开销 no-op。
+			if mirrorFn := storageRt.bodyMirrorFn(); mirrorFn != nil {
+				sessionV2Writer.SetBodyMirror(mirrorFn)
+				slog.Info("storage hotzone: session v2 body mirror wired (fire-and-forget, fail-open)")
+			}
 			// session_dim 维度（任务/项目/属主/客户端）随同一 hook 维护：
 			// 旧 350/358 触发器链路在部分环境缺失，这里以 Go 侧 best-effort
 			// UPSERT 兜底，/admin/turns 的项目→任务层级依赖该表。
@@ -2624,8 +2671,9 @@ func main() {
 			// Use cfg.RedisAddr + cfg.RedisDB from outer scope (2026-08-25:
 			// session:v2 governance cache must respect db isolation, no longer
 			// hardcoded to db=0).
-			// Task 4.2: lite 模式走 mode-aware 装配（摘除 L2、注入 L1.5 文件缓存）；
-			// full/未启用模式（storageRt == nil）保持历史构造行为不变。
+			// Task 4.2 + H2/P3: lite 走 mode-aware 装配（摘除 L2、注入 L1.5）；
+			// full 热区走 WithMode(full, fileCache)（保留 L2、注入 L1.5，读链
+			// L1→L1.5→L2→L3）；未启用双模式（runtime nil）保持历史构造不变。
 			sessionCacheV2 = storageRt.newSessionCacheV2(dbConn.Pool(), cfg.RedisAddr, cfg.RedisDB)
 			sessionCacheV2ForShutdown = sessionCacheV2
 
@@ -2633,7 +2681,7 @@ func main() {
 				"outbound_builder", outboundBuilder != nil,
 				"session_cache_v2", sessionCacheV2 != nil,
 				"redis_addr", cfg.RedisAddr)
-		} else if storageRt != nil {
+		} else if storageRt.liteMode() {
 			// Task 4.2: lite 模式且 PG 被跳过时仍装配 V2 缓存（L1 + L1.5 文件
 			// 两层，L3 无 db 时等价于永远 miss），保证压缩链路不依赖 PostgreSQL。
 			sessionCacheV2 = storageRt.newSessionCacheV2(nil, "", 0)
@@ -2924,6 +2972,24 @@ func main() {
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
 		if adminHandler != nil {
 			adminHandler.StartProxyRuntime()
+		}
+		// R28-P-1 (2026-09-30 round 29): data-plane egress routing —
+		// providers marked egress_profile='proxy' leave through their
+		// subscription node pool instead of the env single proxy / direct.
+		// R28-P-3: providers marked 'direct' join the never-proxy list so
+		// policy, not the hardcoded domestic table, decides who bypasses
+		// the env proxy.
+		if adminHandler != nil && liteSessionsReader != nil {
+			adminHandler.SetLiteSessionsReader(liteSessionsReader)
+		}
+		if adminHandler != nil && adminDB != nil {
+			if egressMgr := adminHandler.EgressProxyManager(); egressMgr != nil {
+				upClient.SetEgressProvider(proxy.NewEgressProvider(egressMgr, adminDB, 0))
+				if directHosts := loadDirectEgressHosts(context.Background(), adminDB); len(directHosts) > 0 {
+					upClient.Proxy().AddDomesticHosts(directHosts...)
+					slog.Info("egress: injected direct-profile provider hosts into never-proxy list", "hosts", len(directHosts))
+				}
+			}
 		}
 		// Wave 1 A1 (2026-09-22): /api/routing/resolve 的 plan_order 与真实
 		// 选路同源——resolve 经同一 Router.PlanCandidatesPinned 产出运行时
@@ -4295,7 +4361,7 @@ func main() {
 				if routingExec != nil {
 					syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
 					routingExec.SyncNoCandidateProbe = syncOn
-					routingExec.SyncNoCandidateTimeout = 5 * time.Second
+					routingExec.SyncNoCandidateTimeout = syncNoCandidateTimeoutEnv()
 					routingExec.ProbeSync = nodeProbeWorker.ProbeSync
 					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
@@ -4515,7 +4581,7 @@ func main() {
 			if routingExec != nil {
 				syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
 				routingExec.SyncNoCandidateProbe = syncOn
-				routingExec.SyncNoCandidateTimeout = 5 * time.Second
+				routingExec.SyncNoCandidateTimeout = syncNoCandidateTimeoutEnv()
 				routingExec.ProbeSync = nodeProbeWorker.ProbeSync
 				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
@@ -5360,6 +5426,14 @@ func main() {
 			sessionSummariesTrimmer := bg.NewSessionSummariesTrimmer(dbConn.Pool())
 			sessionSummariesTrimmer.Start(context.Background())
 			defer sessionSummariesTrimmer.Stop()
+
+			// 2026-09-30 (R33 P-3): session_summaries.gw_project_id 存量
+			// 分批回填（迁移 762 触发器负责增量写链）。批上限走 settings
+			// lifecycle.session_project_backfill_batches（HotReload），
+			// tick 10m；排空后批次为 0 自动转为空转轮询。
+			sessionProjectBackfillWorker := bg.NewSessionProjectBackfillWorker(dbConn.Pool())
+			sessionProjectBackfillWorker.Start(context.Background())
+			defer sessionProjectBackfillWorker.Stop()
 
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
@@ -7063,7 +7137,7 @@ func main() {
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
-	pipeline := wireDispatchPipeline(routingExec)
+	pipeline := wireDispatchPipeline(routingExec, executorHotConfig)
 	// Wire every dependency that affects lazily-created forwarders before
 	// starting the worker pool. This guarantees the first credential lane
 	// observes Redis/local Governor policy and the optional snapshot observer.

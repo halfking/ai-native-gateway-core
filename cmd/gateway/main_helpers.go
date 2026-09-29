@@ -10,11 +10,13 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -85,6 +87,23 @@ func liveStreamCachedDurationsFromEnv() (time.Duration, time.Duration) {
 	ttl := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL", admin.LiveStreamLaneRetention)
 	cleanup := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL", ttl)
 	return ttl, cleanup
+}
+
+// syncNoCandidateProbeHoldDefault is the executor's no-candidates probe-hold
+// budget. 5s structurally lost the recovery race against a fan-out sync
+// probe on an openai-responses provider (responses leg + chat fallback =
+// 3-6s wall before the direct verdict) — 2026-09-29 gpt-6-astra incident:
+// every all-red request 503'd while the probe that would have restored the
+// view finished 0.4s after the hold expired. 10s covers the probe + a
+// re-plan + one upstream attempt; the cost when every candidate is genuinely
+// dead is a bounded extra 5s before the same 503.
+const syncNoCandidateProbeHoldDefault = 10 * time.Second
+
+// syncNoCandidateTimeoutEnv returns the no-candidates probe-hold budget from
+// LLM_GATEWAY_SYNC_NO_CANDIDATE_TIMEOUT (Go duration), falling back to
+// syncNoCandidateProbeHoldDefault when unset or malformed.
+func syncNoCandidateTimeoutEnv() time.Duration {
+	return positiveDurationEnv("LLM_GATEWAY_SYNC_NO_CANDIDATE_TIMEOUT", syncNoCandidateProbeHoldDefault)
 }
 
 // bootRetryBudgetEnv parses a non-negative duration used as a bounded
@@ -326,4 +345,35 @@ func startMockProbeRunner(ctx context.Context, cfg *config.Config, dbConn *db.DB
 	}
 	client := mockprobe.NewClient(mockprobe.BaseURLFromListen(cfg.Listen))
 	return mockprobe.NewRunner(client, cfg.MockProbeInterval, cfg.MockProbeFailureThreshold, history, nil)
+}
+
+// loadDirectEgressHosts returns the hostnames of providers explicitly
+// marked egress_profile='direct' (R28-P-3). These hosts join the
+// ProxyResolver's never-proxy allow-list so policy — not the hardcoded
+// domestic table — decides who may bypass the env proxy. Best-effort: on
+// DB failure the list is empty and the resolver keeps its defaults.
+func loadDirectEgressHosts(ctx context.Context, db *pgxpool.Pool) []string {
+	if db == nil {
+		return nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := db.Query(queryCtx,
+		`SELECT DISTINCT base_url FROM providers WHERE egress_profile = 'direct' AND base_url IS NOT NULL AND base_url <> ''`)
+	if err != nil {
+		slog.Warn("egress: direct-profile host query failed; keeping default domestic list", "error", err)
+		return nil
+	}
+	defer rows.Close()
+	var hosts []string
+	for rows.Next() {
+		var baseURL string
+		if err := rows.Scan(&baseURL); err != nil {
+			continue
+		}
+		if u, err := url.Parse(strings.TrimSpace(baseURL)); err == nil && u.Hostname() != "" {
+			hosts = append(hosts, u.Hostname())
+		}
+	}
+	return hosts
 }

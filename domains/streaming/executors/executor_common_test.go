@@ -25,7 +25,7 @@ func newLimiterForTest() *credential.Limiter {
 // so Execute-driven tests exercise the production path.
 func wireDispatchPipelineForTest(t *testing.T, e *Executor) {
 	t.Helper()
-	p := e.NewDispatchPipeline()
+	p := e.NewDispatchPipeline(nil)
 	p.Start()
 	t.Cleanup(p.Stop)
 	e.SetDispatchPipeline(p)

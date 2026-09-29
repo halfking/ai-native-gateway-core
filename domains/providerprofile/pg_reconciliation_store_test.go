@@ -107,33 +107,35 @@ func TestPGReconciliationStore_GatewayUpsertPreservesBill(t *testing.T) {
 	}
 }
 
-// TestPGGatewayMonthlyUsageSource 验证从 request_logs_hot + request_logs
-// 按 provider + 月度聚合，且跨表重复 request_id 只计一次。
+// TestPGGatewayMonthlyUsageSource 验证从 usage_ledger（计帐真相源，R28-B-1）
+// 按 provider + 月度聚合，且 promote 重叠窗口的重复 request_id 只计一次。
+// S4 停写 request_logs 不再影响对帐网关侧（回归注释：旧实现读
+// request_logs(_hot)，S4 停写即归零）。
 func TestPGGatewayMonthlyUsageSource(t *testing.T) {
 	pool := setupTestDB(t)
 	cleanupReconData(t)
 	ctx := context.Background()
 	month := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 
-	// 热表两行（同一供应商），冷表一行与热表重复 request_id（迁移中的重叠），
-	// 一行为冷表独有。聚合应只计 3 个不同 request_id。
+	// usage_ledger_hot 两行（同一供应商），分区父表一行与 hot 重复
+	// request_id（promote 重叠），一行分区独有。聚合应只计 3 个 request_id。
 	seed := []string{
-		`INSERT INTO request_logs_hot (request_id, ts, tenant_id, provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, success)
+		`INSERT INTO usage_ledger_hot (request_id, ts, tenant_id, provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, success)
 		 VALUES ('recon-test-1', '2026-07-10T00:00:00Z', 'recon-test', 990001, 100, 200, 300, 1.5, true)
 			 ON CONFLICT DO NOTHING`,
-		`INSERT INTO request_logs_hot (request_id, ts, tenant_id, provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, success)
+		`INSERT INTO usage_ledger_hot (request_id, ts, tenant_id, provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, success)
 		 VALUES ('recon-test-2', '2026-07-11T00:00:00Z', 'recon-test', 990001, 10, 20, 30, 0.25, true)
 			 ON CONFLICT DO NOTHING`,
-		`INSERT INTO request_logs (request_id, ts, tenant_id, provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, success)
+		`INSERT INTO usage_ledger (request_id, ts, tenant_id, provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, success)
 		 VALUES ('recon-test-1', '2026-07-10T00:00:00Z', 'recon-test', 990001, 100, 200, 300, 1.5, true)
 			 ON CONFLICT DO NOTHING`,
-		`INSERT INTO request_logs (request_id, ts, tenant_id, provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, success)
+		`INSERT INTO usage_ledger (request_id, ts, tenant_id, provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, success)
 		 VALUES ('recon-test-3', '2026-07-12T00:00:00Z', 'recon-test', 990002, 7, 8, 15, 0.75, true)
 			 ON CONFLICT DO NOTHING`,
 	}
 	t.Cleanup(func() {
-		pool.Exec(ctx, `DELETE FROM request_logs_hot WHERE tenant_id='recon-test'`)
-		pool.Exec(ctx, `DELETE FROM request_logs WHERE tenant_id='recon-test'`)
+		pool.Exec(ctx, `DELETE FROM usage_ledger_hot WHERE tenant_id='recon-test'`)
+		pool.Exec(ctx, `DELETE FROM usage_ledger WHERE tenant_id='recon-test'`)
 	})
 	for _, q := range seed {
 		if _, err := pool.Exec(ctx, q); err != nil {

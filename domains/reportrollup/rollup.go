@@ -2,16 +2,19 @@
 //
 // 数据流：usage_facts（请求级真相源，含 success/failure/rate_limited 终态、
 // error_kind 分类、四类 token、供应商成本 cost_amount 与内部计费
-// credits_charged）→ RollupDay 按天聚合成六个 scope 的快照行写入
-// report_snapshots（迁移 745+746）→ RangeReport 只读快照行按任意时间
-// 区间（日/周/月/自定义）二次汇总，导出 Excel 双 sheet（用量 / 模型质量
-// 与错误分析）。日维度落地一次、区间汇总不回扫原始请求日志。
+// credits_charged）→ RollupDay 按天聚合成**八个** scope 的快照行写入
+// report_snapshots（迁移 745+746+759）→ 区间汇总读面只读快照行按任意时间
+// 区间（日/周/月/自定义）二次汇总。日维度落地一次、区间汇总不回扫原始
+// 请求日志。
 //
 // scope 口径（SSOT = sql/objects/tables/report_snapshots.sql）：
 //   - provider 面三 scope（daily_total / daily_by_provider /
 //     daily_by_model）含全部流量类——探针/自检同样烧供应商钱，对帐须全量；
 //   - internal 面三 scope（internal_tenant / internal_person /
-//     internal_model）仅 business 流量——内部计费口径。
+//     internal_model）仅 business 流量——内部计费口径；
+//   - 两个 grain scope（daily_grain / internal_grain，759 增）是**最细
+//     粒度**行，六个边缘汇总留给旧读面与历史导出兼容；新多维读面只吃
+//     grain，见 grain.go / grainreport.go。
 package reportrollup
 
 import (
@@ -106,11 +109,17 @@ type Snapshot struct {
 
 // Bucket 是一次聚合产出的待写快照行（RollupDay 内部产物）。
 type Bucket struct {
-	Scope              Scope
-	ScopeKey           string
-	RawModelName       string
-	ProviderID         *int64
-	TenantID           *string
+	Scope        Scope
+	ScopeKey     string
+	RawModelName string
+	ProviderID   *int64
+	TenantID     *string
+	// CredentialID / APIKeyID / Person 是 grain scope 专用的三维（759 增列）。
+	// 旧 scope 的桶留 nil，upsert 写入 NULL —— 读面按日期回落时据此区分
+	// 「该日无 grain 维度」与「该维度真值为空」。
+	CredentialID       *int64
+	APIKeyID           *int64
+	Person             *string
 	RequestCount       int64
 	SuccessCount       int64
 	InputTokens        int64
@@ -193,7 +202,20 @@ func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, erro
 		return stats, fmt.Errorf("aggregate internal model: %w", err)
 	}
 
-	buckets := make([]Bucket, 0, len(providerModelRows)+len(tenantRows)+len(personRows)+len(internalModelRows)+1)
+	// ④ grain 面（2026-09-29 多维筛选轮）：两个口径的最细粒度行，读面
+	// 「任意维度组合过滤」与按天×模型图表的唯一数据源。daily_grain 不做
+	// provider_id IS NOT NULL 收窄 —— 未落定 provider 的失败行同样要进
+	// 供应商口径总计（与 daily_total 的独立聚合同源，见 queryTotalDay 注记）。
+	dailyGrain, err := queryGrainDay(ctx, q, ScopeDailyGrain, start, end, 0)
+	if err != nil {
+		return stats, fmt.Errorf("aggregate daily grain: %w", err)
+	}
+	internalGrain, err := queryGrainDay(ctx, q, ScopeInternalGrain, start, end, centsPerCredit)
+	if err != nil {
+		return stats, fmt.Errorf("aggregate internal grain: %w", err)
+	}
+
+	buckets := make([]Bucket, 0, len(providerModelRows)+len(tenantRows)+len(personRows)+len(internalModelRows)+len(dailyGrain)+len(internalGrain)+1)
 	buckets = append(buckets, providerModelRows...)
 	buckets = append(buckets, byProvider...)
 	if totalRow != nil {
@@ -202,6 +224,8 @@ func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, erro
 	buckets = append(buckets, tenantRows...)
 	buckets = append(buckets, personRows...)
 	buckets = append(buckets, internalModelRows...)
+	buckets = append(buckets, dailyGrain...)
+	buckets = append(buckets, internalGrain...)
 
 	for i := range buckets {
 		if err := upsertBucket(ctx, q, start, &buckets[i]); err != nil {
@@ -601,6 +625,7 @@ func upsertBucket(ctx context.Context, q Querier, day time.Time, b *Bucket) erro
 		    error_kind_breakdown, cache_hit_ratio,
 		    estimated_cost_cents, currency, price_snapshot,
 		    provider_id, canonical_id, tenant_id,
+		    credential_id, api_key_id, person,
 		    credits_charged, latency_p50_ms, latency_p95_ms, updated_at
 		) VALUES (
 		    $1, $2, $3, $4,
@@ -609,7 +634,8 @@ func upsertBucket(ctx context.Context, q Querier, day time.Time, b *Bucket) erro
 		    $12::text::jsonb, $13,
 		    $14, $15, $16::text::jsonb,
 		    $17, $18, $19,
-		    $20, $21, $22, now()
+		    $20, $21, $22,
+		    $23, $24, $25, now()
 		)
 		ON CONFLICT (scope, scope_key, report_date, raw_model_name) DO UPDATE SET
 		    request_count = EXCLUDED.request_count,
@@ -627,6 +653,9 @@ func upsertBucket(ctx context.Context, q Querier, day time.Time, b *Bucket) erro
 		    provider_id = EXCLUDED.provider_id,
 		    canonical_id = EXCLUDED.canonical_id,
 		    tenant_id = EXCLUDED.tenant_id,
+		    credential_id = EXCLUDED.credential_id,
+		    api_key_id = EXCLUDED.api_key_id,
+		    person = EXCLUDED.person,
 		    credits_charged = EXCLUDED.credits_charged,
 		    latency_p50_ms = EXCLUDED.latency_p50_ms,
 		    latency_p95_ms = EXCLUDED.latency_p95_ms,
@@ -638,6 +667,7 @@ func upsertBucket(ctx context.Context, q Querier, day time.Time, b *Bucket) erro
 		string(breakdownJSON), successRatio,
 		b.CostCents, currencyOr(b.Currency), string(priceJSON),
 		b.ProviderID, nil, b.TenantID,
+		b.CredentialID, b.APIKeyID, b.Person,
 		b.CreditsCharged, b.LatencyP50Ms, b.LatencyP95Ms,
 	)
 	return err

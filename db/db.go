@@ -1018,6 +1018,9 @@ func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 			    provider_id         BIGINT,
 			    canonical_id        BIGINT,
 			    tenant_id           TEXT,
+			    credential_id       BIGINT,
+			    api_key_id          BIGINT,
+			    person              TEXT,
 			    credits_charged     BIGINT NOT NULL DEFAULT 0,
 			    latency_p50_ms      BIGINT NOT NULL DEFAULT 0,
 			    latency_p95_ms      BIGINT NOT NULL DEFAULT 0,
@@ -1028,31 +1031,62 @@ func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 			);
 			CREATE INDEX IF NOT EXISTS idx_report_snapshots_scope_date
 			    ON report_snapshots (scope, report_date DESC);
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_grain_date
+			    ON report_snapshots (report_date) WHERE scope = 'daily_grain';
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_internal_grain_date
+			    ON report_snapshots (report_date) WHERE scope = 'internal_grain';
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_credential_date
+			    ON report_snapshots (credential_id, report_date DESC)
+			    WHERE scope IN ('daily_grain', 'internal_grain');
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_api_key_date
+			    ON report_snapshots (api_key_id, report_date DESC)
+			    WHERE scope IN ('daily_grain', 'internal_grain');
 		`); err != nil {
 			return fmt.Errorf("ensure report_snapshots: %w", err)
 		}
 	} else if !d.columnsAllPresent(ctx, "report_snapshots",
-		[]string{"credits_charged", "latency_p50_ms", "latency_p95_ms"}) {
-		// 存量库（745 已建、746 未跑）：tenant_id bigint→text + 三列补齐，
-		// 与 746 迁移体逐字等价（ALTER TYPE USING text::text 可重入）。
+		[]string{"credits_charged", "latency_p50_ms", "latency_p95_ms", "credential_id", "api_key_id", "person"}) {
+		// 存量库：tenant_id bigint→text + 746 三列 + 759 grain 三列补齐，
+		// 与 746/759 迁移体逐字等价（ALTER TYPE USING text::text 可重入）。
+		// 一条语句覆盖两轮：缺 746 列的库补六列，已补齐的库 ADD COLUMN IF
+		// NOT EXISTS 全部 no-op。
 		if _, err := d.pool.Exec(ctx, `
 			ALTER TABLE report_snapshots ALTER COLUMN tenant_id TYPE text USING tenant_id::text;
 			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS credits_charged BIGINT NOT NULL DEFAULT 0;
 			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS latency_p50_ms BIGINT NOT NULL DEFAULT 0;
 			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS latency_p95_ms BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS credential_id BIGINT;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS api_key_id BIGINT;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS person TEXT;
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_grain_date
+			    ON report_snapshots (report_date) WHERE scope = 'daily_grain';
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_internal_grain_date
+			    ON report_snapshots (report_date) WHERE scope = 'internal_grain';
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_credential_date
+			    ON report_snapshots (credential_id, report_date DESC)
+			    WHERE scope IN ('daily_grain', 'internal_grain');
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_api_key_date
+			    ON report_snapshots (api_key_id, report_date DESC)
+			    WHERE scope IN ('daily_grain', 'internal_grain');
 		`); err != nil {
-			return fmt.Errorf("upgrade report_snapshots to 746: %w", err)
+			return fmt.Errorf("upgrade report_snapshots to 759: %w", err)
 		}
 	}
 	// R65：boot ensure 不执行迁移体尾部的 COMMENT——无论新建/升级/既有
-	// 健康库，幂等补齐三列注释，使 col_description 与迁移直跑库一致。
+	// 健康库，幂等补齐列注释，使 col_description 与迁移直跑库一致。
 	if _, err := d.pool.Exec(ctx, `
 		COMMENT ON COLUMN report_snapshots.scope IS
-		    'daily_total | daily_by_provider | daily_by_model | internal_tenant | internal_person | internal_model; provider-facing scopes include all traffic classes, internal scopes are business traffic only';
+		    'daily_total | daily_by_provider | daily_by_model | internal_tenant | internal_person | internal_model | daily_grain | internal_grain; provider-facing scopes include all traffic classes, internal scopes are business traffic only. *_grain scopes carry the finest dimension tuple (provider/credential/api_key/tenant/person x outbound model) so the read face can fold any dimension combination';
 		COMMENT ON COLUMN report_snapshots.tenant_id IS
 		    'text tenant id (usage_facts.tenant_id); set for internal_tenant / internal_person / internal_model';
 		COMMENT ON COLUMN report_snapshots.credits_charged IS
 		    'internal billing credits summed from usage_facts.credits_charged (internal pricing caliber); money = credits * price_snapshot.cents_per_credit';
+		COMMENT ON COLUMN report_snapshots.credential_id IS
+		    'grain scopes only: usage_facts.credential_id (outbound provider credential)';
+		COMMENT ON COLUMN report_snapshots.api_key_id IS
+		    'grain scopes only: usage_facts.api_key_id (inbound gateway API key)';
+		COMMENT ON COLUMN report_snapshots.person IS
+		    'grain/internal_person scopes: usage_facts.end_user_id, falling back to ''person:''||person_hash then ''unknown''';
 	`); err != nil {
 		return fmt.Errorf("comment report_snapshots columns: %w", err)
 	}
@@ -1069,6 +1103,13 @@ func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 		ON CONFLICT (version) DO NOTHING;
 	`); err != nil {
 		return fmt.Errorf("stamp 747: %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('759', 'report snapshots: grain dims (credential_id/api_key_id/person + daily_grain/internal_grain scopes)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 759: %w", err)
 	}
 	slog.Info("report_snapshots ensured (745+746)", "table_present_before", present)
 	return nil

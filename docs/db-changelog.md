@@ -762,4 +762,5 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 756 | `756_request_logs_id_index.sql` | `b0297ac4f44b9b997dd241f5e1e2c345e75b889f43844e63b50376005485db65` | applied+verified |
 | 757 | `757_session_turns_origin_actor_projection.sql` | `b2ddded4ec9c18a31f16be8ae5063b2b651c8a6cf42081d8225b9bdc41b91808` | applied+verified |
 | 758 | `758_routeincident_missing_columns.sql` | `f68ad115a07a97871b61e4ec47e179795156f70846b404a8a0e7e40768cfde3d` | applied+verified |
+| 759 | `759_report_snapshots_grain_dims.sql` | `716bfc85aad899bb126b7a9b564040978541d75e6bdd9a76229a11a3751cb930` | applied+verified（本地真库；生产待部署后回填。索引注释改为 366 天 / 68 万行热缓存 A/B 实测：带索引 vs 不带索引，汇总 22ms vs 43ms、21ms vs 37ms，明细 39ms vs 49ms、52ms vs 60ms） |
 
