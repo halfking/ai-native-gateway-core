@@ -23,6 +23,7 @@ import {
   type RoutingOverrideCreate,
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import KxDatePicker from '../components/ui/KxDatePicker.vue'
 
 const { t } = useI18n()
 
@@ -86,7 +87,11 @@ async function submitCreate() {
       mode: createForm.value.mode,
       model_chosen: createForm.value.model_chosen?.trim() || undefined,
       reason: createForm.value.reason.trim(),
-      expires_at: createForm.value.expires_at || undefined,
+      // 2026-09-30 统一日历轮：KxDatePicker(datetime) 值为 'YYYY-MM-DD HH:mm'（空格分隔），
+      // 提交边界转回原 datetime-local 的 'YYYY-MM-DDTHH:mm' 契约。
+      expires_at: createForm.value.expires_at
+        ? createForm.value.expires_at.replace(' ', 'T')
+        : undefined,
     })
     // Reset form + reload list
     createForm.value = { task_type: '', profile: 'smart', mode: 'ban', model_chosen: '', reason: '' }
@@ -127,7 +132,8 @@ function openExtend(o: RoutingOverride) {
   // Default to 1 day from now
   const d = new Date()
   d.setDate(d.getDate() + 1)
-  extendDate.value = d.toISOString().slice(0, 16) // YYYY-MM-DDTHH:mm
+  // KxDatePicker(datetime) 契约为 'YYYY-MM-DD HH:mm'（空格分隔），边界处 T ↔ 空格互换
+  extendDate.value = d.toISOString().slice(0, 16).replace('T', ' ')
   extendError.value = null
 }
 
@@ -144,8 +150,8 @@ async function confirmExtend() {
     return
   }
   try {
-    // Convert datetime-local to RFC3339
-    const iso = new Date(extendDate.value).toISOString()
+    // Convert picker value ('YYYY-MM-DD HH:mm') back to datetime-local 'T' form, then RFC3339
+    const iso = new Date(extendDate.value.replace(' ', 'T')).toISOString()
     await extendRoutingOverride(extendId.value, iso)
     cancelExtend()
     await loadOverrides()
@@ -272,7 +278,12 @@ onMounted(loadOverrides)
           <input v-model="createForm.model_chosen" placeholder="e.g. gpt-4o, claude-3-5-sonnet" />
         </label>
         <label>Expires at (optional)
-          <input v-model="createForm.expires_at" type="datetime-local" />
+          <!-- expires_at 在表单重置后为 undefined（类型 string|undefined），显式回退 '' 以适配组件 modelValue: string -->
+          <KxDatePicker
+            :model-value="createForm.expires_at ?? ''"
+            type="datetime"
+            @update:model-value="createForm.expires_at = $event"
+          />
         </label>
         <label class="full-width">Reason * (audit trail)
           <input v-model="createForm.reason" placeholder="e.g. P7.2 correlation shows 45% success on reasoning" />
@@ -295,7 +306,7 @@ onMounted(loadOverrides)
         <h3>Extend override #{{ extendId }}</h3>
         <p class="hint">Pick a new expires_at. Pass empty date to make it permanent.</p>
         <label>New expires_at:
-          <input v-model="extendDate" type="datetime-local" />
+          <KxDatePicker v-model="extendDate" type="datetime" />
         </label>
         <p v-if="extendError" class="error">⚠️ {{ extendError }}</p>
         <div class="form-actions">

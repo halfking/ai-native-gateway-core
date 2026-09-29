@@ -17,7 +17,9 @@ import ActiveFilterChips from '../ActiveFilterChips.vue'
 import type { FilterChip } from '../../composables/useFilterChips'
 import { useFilterChips } from '../../composables/useFilterChips'
 import { useBreakpoint } from '../../composables/useBreakpoint'
+import KxDateRangePicker from './KxDateRangePicker.vue'
 import type { FilterDefinition } from './filter-types'
+import type { KxDateRange } from './kx-date-types'
 
 const props = defineProps<{
   definitions: FilterDefinition[]
@@ -72,6 +74,31 @@ function onSelectOptions(def: FilterDefinition): { label: string; value: string 
   return (def.options ?? []).map((o) => (typeof o === 'string' ? { label: o, value: o } : o))
 }
 
+// ── daterange（2026-09-30 统一日历轮）────────────────────────────────────
+// 两个 datetime-local input 收敛为 KxDateRangePicker（datetime 精度、instant——
+// 原 @change 每端独立写入即生效）。filters 值契约不变：仍存 datetime-local 的
+// 'YYYY-MM-DDTHH:mm'，仅在此边界与组件的空格分隔格式互转。
+// instant 提交发生在两端均有值时（组件 canApply），apply 一次性写回两个键。
+function rangeKeys(def: FilterDefinition): { from: string; to: string } {
+  return { from: def.fromKey ?? `${def.key}From`, to: def.toKey ?? `${def.key}To` }
+}
+
+function rangeValueOf(def: FilterDefinition): KxDateRange | null {
+  const { from, to } = rangeKeys(def)
+  const fv = (props.modelValue[from] ?? '').replace('T', ' ')
+  const tv = (props.modelValue[to] ?? '').replace('T', ' ')
+  return fv && tv ? { start: fv, end: tv } : null
+}
+
+function onRangeApply(def: FilterDefinition, range: KxDateRange) {
+  const { from, to } = rangeKeys(def)
+  emit('update:modelValue', {
+    ...props.modelValue,
+    [from]: range.start.replace(' ', 'T'),
+    [to]: range.end.replace(' ', 'T'),
+  })
+}
+
 function onSearch() {
   emit('search')
 }
@@ -107,20 +134,14 @@ function onSearch() {
             </select>
           </label>
 
-          <label v-else-if="def.type === 'daterange'" class="filter-bar__field filter-bar__field--range">
-            <span v-if="def.fromLabel" class="filter-bar__label">{{ def.fromLabel }}</span>
-            <input
-              type="datetime-local"
-              class="input filter-bar__control"
-              :value="modelValue[def.fromKey ?? `${def.key}From`] ?? ''"
-              @change="setValue(def.fromKey ?? `${def.key}From`, ($event.target as HTMLInputElement).value)"
-            />
-            <span v-if="def.toLabel" class="filter-bar__label">{{ def.toLabel }}</span>
-            <input
-              type="datetime-local"
-              class="input filter-bar__control"
-              :value="modelValue[def.toKey ?? `${def.key}To`] ?? ''"
-              @change="setValue(def.toKey ?? `${def.key}To`, ($event.target as HTMLInputElement).value)"
+          <label v-else-if="def.type === 'daterange'" class="filter-bar__field">
+            <span v-if="def.label" class="filter-bar__label">{{ def.label }}</span>
+            <KxDateRangePicker
+              :model-value="rangeValueOf(def)"
+              :presets="[]"
+              precision="datetime"
+              instant
+              @apply="onRangeApply(def, $event)"
             />
           </label>
 
@@ -186,9 +207,6 @@ function onSearch() {
   align-items: center;
   gap: var(--kx-space-2);
   min-width: 0;
-}
-.filter-bar__field--range {
-  flex-wrap: wrap;
 }
 .filter-bar__label {
   font-size: 12px;

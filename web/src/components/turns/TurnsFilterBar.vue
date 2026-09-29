@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ElDatePicker, ElOption, ElSelect } from 'element-plus'
+import { ElOption, ElSelect } from 'element-plus'
+import KxDateRangePicker from '../ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../ui/kx-date-types'
 import type { TurnsFilterOptions } from '../../api/turns'
 import {
   activeFilterChips,
@@ -47,28 +49,23 @@ const showCustomRange = computed(() => props.state.timePreset === 'custom')
 const advancedCount = computed(() => chips.value.filter(c =>
   !['search', 'model', 'time'].includes(c.key)).length)
 
-const customRange = computed({
-  get(): [Date, Date] | null {
-    const from = props.state.dateFrom ? new Date(props.state.dateFrom) : null
-    const to = props.state.dateTo ? new Date(props.state.dateTo) : null
-    if (from && to && !Number.isNaN(from.getTime()) && !Number.isNaN(to.getTime())) {
-      return [from, to]
-    }
-    if (from && !Number.isNaN(from.getTime())) return [from, from]
-    return null
-  },
-  set(range: [Date, Date] | null) {
-    if (!range) {
-      patch({ dateFrom: '', dateTo: '', timePreset: 'custom' })
-      return
-    }
-    patch({
-      timePreset: 'custom',
-      dateFrom: localDatetime(range[0]),
-      dateTo: localDatetime(range[1]),
-    })
-  },
+// 2026-09-30 统一日历轮：custom 分支换 KxDateRangePicker（datetime 精度）。
+// state.dateFrom/dateTo 为 localDatetime 的 'YYYY-MM-DDTHH:mm'，与组件契约仅差分隔符。
+const customRangeValue = computed<KxDateRange | null>(() => {
+  const from = props.state.dateFrom
+  const to = props.state.dateTo
+  if (!from || !to) return null
+  return { start: from.replace('T', ' '), end: to.replace('T', ' ') }
 })
+
+function onKxRangeApply(range: KxDateRange) {
+  patch({
+    timePreset: 'custom',
+    dateFrom: range.start.replace(' ', 'T'),
+    dateTo: range.end.replace(' ', 'T'),
+  })
+  emit('query')
+}
 
 function patch(partial: Partial<TurnsFilterState>) {
   emit('update:state', { ...props.state, ...partial })
@@ -89,11 +86,6 @@ function onPresetChange(value: string) {
   const from = new Date(Date.now() - h * 3600 * 1000)
   patch({ timePreset: value, dateFrom: localDatetime(from), dateTo: '' })
   emit('query')
-}
-
-function onCustomRangeChange(range: [Date, Date] | null) {
-  customRange.value = range
-  if (range) emit('query')
 }
 </script>
 
@@ -126,16 +118,13 @@ function onCustomRangeChange(range: [Date, Date] | null) {
       >
         <option v-for="p in timePresets" :key="p.value" :value="p.value">{{ p.label }}</option>
       </select>
-      <el-date-picker
+      <KxDateRangePicker
         v-if="showCustomRange"
-        :model-value="customRange"
-        type="datetimerange"
-        range-separator="~"
-        start-placeholder="开始"
-        end-placeholder="结束"
-        format="YYYY-MM-DD HH:mm"
-        class="filter-date-range"
-        @update:model-value="onCustomRangeChange"
+        :model-value="customRangeValue"
+        :presets="[]"
+        precision="datetime"
+        block
+        @apply="onKxRangeApply"
       />
     </div>
 

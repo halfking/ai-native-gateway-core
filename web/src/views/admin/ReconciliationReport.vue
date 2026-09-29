@@ -26,7 +26,6 @@ import {
   ElCheckboxGroup,
   ElCollapse,
   ElCollapseItem,
-  ElDatePicker,
   ElDropdown,
   ElMessage,
   ElOption,
@@ -40,6 +39,8 @@ import {
 import { Download, Filter, Refresh } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import ReconciliationCharts from '../../components/reconciliation/ReconciliationCharts.vue'
+import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../../components/ui/kx-date-types'
 import {
   downloadReportExport,
   getReportDimensions,
@@ -72,6 +73,13 @@ function fmtDay(d: Date): string {
 }
 function defaultRange(): [string, string] {
   return [fmtDay(new Date(Date.now() - 7 * 86400000)), fmtDay(new Date(Date.now() - 86400000))]
+}
+
+// 2026-09-30 统一日历轮：daterange 控件换 KxDateRangePicker。
+// 本页刷新语义为显式按钮（无 @change 自动刷新），apply 只更新范围、不触发请求。
+const kxRange = computed<KxDateRange>(() => ({ start: range.value[0], end: range.value[1] }))
+function onKxRangeApply(value: KxDateRange) {
+  range.value = [value.start, value.end]
 }
 const range = ref<[string, string]>(defaultRange())
 
@@ -406,14 +414,10 @@ onMounted(reload)
         <el-radio-button value="provider">{{ t('reports.providerView', '供应商对帐') }}</el-radio-button>
         <el-radio-button value="internal">{{ t('reports.internalView', '内部对帐') }}</el-radio-button>
       </el-radio-group>
-      <el-date-picker
-        v-model="range"
-        type="daterange"
-        value-format="YYYY-MM-DD"
-        :clearable="false"
-        :start-placeholder="t('common.startDate', '开始日期')"
-        :end-placeholder="t('common.endDate', '结束日期')"
-        style="width: 260px"
+      <KxDateRangePicker
+        :model-value="kxRange"
+        :presets="[]"
+        @apply="onKxRangeApply"
       />
       <el-radio-group v-model="detail">
         <el-radio-button :value="false">{{ t('reports.summaryOnly', '汇总') }}</el-radio-button>

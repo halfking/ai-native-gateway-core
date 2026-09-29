@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import FilterBar from './FilterBar.vue'
+import KxDateRangePicker from './KxDateRangePicker.vue'
 import type { FilterDefinition } from './filter-types'
 
 const source = readFileSync(resolve(process.cwd(), 'src/components/ui/FilterBar.vue'), 'utf8')
@@ -30,7 +31,11 @@ const i18n = createI18n({
   locale: 'zh-CN',
   messages: {
     'zh-CN': {
-      common: { button: { filter: '筛选', search: '搜索', clear: '清除' } },
+      common: {
+        button: { filter: '筛选', search: '搜索', clear: '清除' },
+        // KxDateRangePicker 触发器词条（daterange 断言用）
+        dateRange: { title: '时间范围', custom: '自定义', startDate: '开始日期', endDate: '结束日期' },
+      },
     },
   },
 })
@@ -62,8 +67,36 @@ describe('FilterBar', () => {
     const w = mountBar()
     expect(w.find('input[type="text"]').exists()).toBe(true)
     expect(w.find('select').exists()).toBe(true)
-    expect(w.findAll('input[type="datetime-local"]').length).toBe(2)
+    // 2026-09-30 统一日历轮：daterange 由两个 datetime-local input 收敛为单个
+    // KxDateRangePicker（datetime 精度、instant 即时生效、无预设网格）
+    const picker = w.findComponent(KxDateRangePicker)
+    expect(picker.exists()).toBe(true)
+    expect(picker.props('precision')).toBe('datetime')
+    expect(picker.props('instant')).toBe(true)
+    expect(picker.props('presets')).toEqual([])
+    expect(w.find('.kx-dr-trigger').exists()).toBe(true)
     expect(w.text()).toContain('关键词')
+  })
+
+  it('daterange：datetime-local ↔ 组件空格分隔边界互转，apply 一次写回两端键', async () => {
+    // filters 存 datetime-local 的 'T' 分隔（外部契约不变），组件模型为空格分隔
+    const w = mountBar({ modelValue: { keyword: '', status: '', from: '2026-09-01T00:00', to: '2026-09-02T23:30' } })
+    const picker = w.findComponent(KxDateRangePicker)
+    expect(picker.props('modelValue')).toEqual({ start: '2026-09-01 00:00', end: '2026-09-02 23:30' })
+    // 触发器标签展示两端（shortRangeLabel：MM/DD HH:mm）
+    expect(w.find('.kx-dr-trigger__label').text()).toContain('09/01 00:00 – 09/02 23:30')
+
+    // 组件 apply（空格分隔）→ 同一次 update:modelValue 写回两个 'T' 分隔键
+    await picker.vm.$emit('apply', { start: '2026-09-03 08:00', end: '2026-09-04 09:30' })
+    const events = w.emitted('update:modelValue')!
+    expect(events[events.length - 1][0]).toEqual({ keyword: '', status: '', from: '2026-09-03T08:00', to: '2026-09-04T09:30' })
+  })
+
+  it('daterange：任一端为空时组件收 null（半选不整体生效，两端齐备才有效）', () => {
+    const w = mountBar({ modelValue: { keyword: '', status: '', from: '2026-09-01T00:00', to: '' } })
+    expect(w.findComponent(KxDateRangePicker).props('modelValue')).toBe(null)
+    // 半选端仍以 chip 呈现（filters 键值未被丢弃，fromLabel 承接标签）
+    expect(w.find('.active-filter-chip').text()).toContain('开始: 2026-09-01T00:00')
   })
 
   it('输入更新 v-model:filters（不可变更新）', async () => {
