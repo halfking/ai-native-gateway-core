@@ -6,6 +6,14 @@
 > 触发：本会话早些时候（commit `1d6a6822b` 推 F04 设计提案前后）跑 `go build ./...` 是干净的；
 > 在 README 索引 commit (`cce0e640b`) 之后或任务期间，WIP 被改动为 build 失败。
 
+## 0. 接力会话 15:55 进展
+
+| 时间 | 状态 |
+|---|---|
+| 15:50 | 6 个 build 错误（WIP 测试 + committed 文件双漂） |
+| 15:55 | commit `610826c7d` 修好**生产 build**：`go build ./...` 干净 |
+| 15:55+ | WIP **测试 build** 仍有 4 类错误（`nativeNonStreamInterceptor` 未定义、`writer.blocked` 不可访问、`writeNonStreamResponse` 签名不匹配、`normalizeAndRegisterClientSession` 签名不匹配）—— 不在本批范围，原作者应核 WIP 内部接口一致性 |
+
 ## 1. 现状（实测）
 
 `go build ./... 2>&1` 在 15:50 输出：
