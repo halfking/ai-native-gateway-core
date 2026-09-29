@@ -248,6 +248,108 @@ func (e *Extractor) ExtractFromAnthropicBody(requestID string, body []byte) *Ext
 	return result
 }
 
+// ExtractFromResponsesBody 从 OpenAI Responses 格式的请求体中提取 base64 附件。
+//
+// Responses 的输入是顶层 input[]（纯字符串或 item 数组），item 有两种形态：
+//   - 平铺块：item 本身就是媒体块（input_image / input_audio / input_file）
+//   - 包裹式：item 是 {type:"message", content:[块...]}，媒体块在 content[] 里
+//
+// 媒体块形态：
+//   - input_image：image_url 为 data URI 字符串（Responses 标准形态）；
+//     兼容 {url} 对象（chat 方言混入，与 responses.go 转换分支同宽容度）
+//   - input_audio：{input_audio:{data,format}}，与 openai-chat 同形
+//   - input_file：file_data 为 data URI 字符串；兼容 {file:{file_data}} 形态
+//
+// 仅提取 data: URI，HTTP URL 维持不拉取（与既有纪律一致）。
+func (e *Extractor) ExtractFromResponsesBody(requestID string, body []byte) *ExtractResult {
+	result := &ExtractResult{}
+
+	var bodyMap map[string]any
+	if err := json.Unmarshal(body, &bodyMap); err != nil {
+		slog.Debug("attachments: body is not a JSON object, skip",
+			"request_id", requestID, "error", err)
+		return result
+	}
+
+	items, ok := bodyMap["input"].([]any)
+	if !ok {
+		return result
+	}
+
+	for itemIdx, item := range items {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		// 平铺块形态：item 本身就是媒体块（识别命中即跳过 content 扫描）
+		if e.scanResponsesBlock(requestID, itemMap, itemIdx, 0, result) {
+			continue
+		}
+		// 包裹式形态：媒体块在 content[] 里
+		contentArr, ok := itemMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		for blockIdx, block := range contentArr {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			e.scanResponsesBlock(requestID, blockMap, itemIdx, blockIdx, result)
+		}
+	}
+
+	return result
+}
+
+// scanResponsesBlock 识别单个 Responses 媒体块；返回 true 表示该 map 是
+// 识别过的媒体块类型（含无 data URI 的 file_id/file URL 引用形态）。
+func (e *Extractor) scanResponsesBlock(requestID string, block map[string]any, itemIdx, blockIdx int, result *ExtractResult) bool {
+	switch block["type"] {
+	case "input_image", "image_url":
+		var url string
+		switch v := block["image_url"].(type) {
+		case string:
+			url = v
+		case map[string]any:
+			url, _ = v["url"].(string)
+		}
+		if !strings.HasPrefix(url, "data:") {
+			return true
+		}
+		result.TotalFound++
+		e.processOne(requestID, url, itemIdx, blockIdx, "image", result)
+		return true
+	case "input_audio":
+		ia, ok := block["input_audio"].(map[string]any)
+		if !ok {
+			return true
+		}
+		data, _ := ia["data"].(string)
+		if data == "" {
+			return true
+		}
+		format, _ := ia["format"].(string)
+		result.TotalFound++
+		e.processOne(requestID, audioDataURI(format, data), itemIdx, blockIdx, "audio", result)
+		return true
+	case "input_file", "file":
+		var fileData string
+		if fd, ok := block["file_data"].(string); ok {
+			fileData = fd
+		} else if fi, ok := block["file"].(map[string]any); ok {
+			fileData, _ = fi["file_data"].(string)
+		}
+		if !strings.HasPrefix(fileData, "data:") {
+			return true
+		}
+		result.TotalFound++
+		e.processOne(requestID, fileData, itemIdx, blockIdx, "file", result)
+		return true
+	}
+	return false
+}
+
 // processOne 处理单个附件（同步或异步）。kind 是来源块的媒体种类
 // （image/audio/video/file），同时用于成功与失败记录的类型标注。
 func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, kind string, result *ExtractResult) {
