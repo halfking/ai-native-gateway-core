@@ -11,6 +11,7 @@ import {
   type CacheEconomicsResponse,
   type CostTrendGroupBy,
 } from '../../api/usage'
+import KxDatePicker from '../../components/ui/KxDatePicker.vue'
 
 // 注册 Chart.js 组件
 Chart.register(...registerables)
@@ -327,8 +328,14 @@ onMounted(() => {
       <div class="compare-cards">
         <div class="card compare-card">
           <div class="compare-period-selector">
-            <label>{{ t('dataLifecycle.usageCost.compare.currentPeriod') }}<input v-model="currentPeriod" type="month" class="period-input" /></label>
-            <label>{{ t('dataLifecycle.usageCost.compare.previousPeriod') }}<input v-model="previousPeriod" type="month" class="period-input" /></label>
+            <!-- 2026-09-30 统一日历轮：原生 month 输入换 KxDatePicker(month)。
+                 'YYYY-MM' 格式两侧一致无需转换；v-model 变更仍由下方 watch 触发即时查询。 -->
+            <label>{{ t('dataLifecycle.usageCost.compare.currentPeriod') }}
+              <div class="period-picker"><KxDatePicker v-model="currentPeriod" type="month" /></div>
+            </label>
+            <label>{{ t('dataLifecycle.usageCost.compare.previousPeriod') }}
+              <div class="period-picker"><KxDatePicker v-model="previousPeriod" type="month" /></div>
+            </label>
           </div>
 
           <div v-if="periodCompareData" class="compare-content">
@@ -613,6 +620,10 @@ onMounted(() => {
   gap: 8px;
   font-size: 13px;
   color: var(--text-secondary);
+}
+/* KxDatePicker 自身 width:100%，由定宽容器控制尺寸（对齐原 month 输入的紧凑宽度） */
+.compare-period-selector .period-picker {
+  width: 130px;
 }
 
 .compare-content {

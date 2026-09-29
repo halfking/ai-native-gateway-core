@@ -32,7 +32,8 @@ import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElDatePicker } from 'element-plus'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 const { isSpanning } = useViewportSegments()
 
 const rows = ref<RequestLogRow[]>([])
@@ -338,6 +339,29 @@ function onProviderFilterChange() {
 function onCustomRangeChange() {
   normalizeTimePresetForTenant()
   resetPageAndLoad()
+}
+
+// 2026-09-30 统一日历轮：custom 分支换 KxDateRangePicker（datetime 精度）。
+// ISO ↔ 'YYYY-MM-DD HH:mm'（本地时区）双向转换；chips 预设行保持原交互与租户钳制。
+function isoToLocalMinute(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+const customRangeValue = computed<KxDateRange | null>(() => {
+  if (!customDateRange.value) return null
+  const [s, e] = customDateRange.value
+  return { start: isoToLocalMinute(s), end: isoToLocalMinute(e) }
+})
+
+function onKxRangeApply(range: KxDateRange) {
+  const s = new Date(range.start)
+  const e = new Date(range.end)
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e <= s) return
+  customDateRange.value = [s.toISOString(), e.toISOString()]
+  onCustomRangeChange()
 }
 
 // 一键回到默认 24h
@@ -1313,17 +1337,13 @@ onMounted(async () => {
               {{ opt.label }}
             </button>
           </template>
-          <el-date-picker
+          <KxDateRangePicker
             v-if="timePreset === 'custom'"
-            v-model="customDateRange"
-            type="datetimerange"
-            :placeholder="t('requests.list.dateRangePlaceholder')"
-            range-separator="→"
-            format="YYYY-MM-DD HH:mm"
-            value-format="YYYY-MM-DDTHH:mm:ssZ"
-            :clearable="false"
-            style="height: 32px; width: 360px"
-            @change="onCustomRangeChange"
+            :model-value="customRangeValue"
+            :presets="[]"
+            precision="datetime"
+            :max-span-days="isDefaultTenant() ? 0 : 3"
+            @apply="onKxRangeApply"
           />
           <button v-if="timePreset !== 'h24'" class="btn btn-sm" style="cursor:pointer;white-space:nowrap" title="重置为24小时" @click="resetTimeFilter">
             ⟲ 重置

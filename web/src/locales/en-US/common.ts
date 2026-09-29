@@ -174,4 +174,26 @@ export default {
     lightTitle: 'Light mode',
     darkTitle: 'Dark mode',
   },
+
+  // 2026-09-30 统一日历组件族（KxDateRangePicker / KxDatePicker）共用词条
+  dateRange: {
+    title: 'Time range',
+    custom: 'Custom',
+    startDate: 'Start date',
+    endDate: 'End date',
+    openAria: 'Select time range',
+    endBeforeStart: 'End must be on or after start',
+    spanTooLong: 'Span exceeds {n} days',
+    pickDate: 'Pick a date',
+    preset: {
+      today: 'Today',
+      yesterday: 'Yesterday',
+      last24h: 'Last 24 hours',
+      last7d: 'Last 7 days',
+      last14d: 'Last 14 days',
+      last30d: 'Last 30 days',
+      thisMonth: 'This month',
+      lastMonth: 'Last month',
+    },
+  },
 }

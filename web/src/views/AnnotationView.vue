@@ -25,6 +25,8 @@ import { getUnifiedRequestDetail, type UnifiedRequestDetail } from '../api/reque
 import DataTable from '../components/ui/DataTable.vue'
 import PaginationBar from '../components/ui/PaginationBar.vue'
 import AppModal from '../components/ui/AppModal.vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 import AnnotationForm from '../components/AnnotationForm.vue'
 
 const { t } = useI18n()
@@ -52,6 +54,21 @@ const filterHumanTaskType = ref('')
 const filterAnnotated = ref<boolean | undefined>(undefined)
 const filterMinConfidence = ref<number | undefined>(undefined)
 const filterMaxConfidence = ref<number | undefined>(undefined)
+
+// 2026-09-30 统一日历轮：开始/结束两个原生 date input 收敛为 KxDateRangePicker
+// （date 精度、presets=[]、instant）。原生 date 与组件契约同为 'YYYY-MM-DD'，
+// 无需格式转换；原 v-model 无 @change（查询由「查询」按钮触发），故 instant 仅
+// 同步两端值，不在此处发起请求。
+const filterDateRange = computed<KxDateRange | null>(() =>
+  filterStartDate.value && filterEndDate.value
+    ? { start: filterStartDate.value, end: filterEndDate.value }
+    : null,
+)
+
+function onFilterDateRangeApply(range: KxDateRange) {
+  filterStartDate.value = range.start
+  filterEndDate.value = range.end
+}
 
 // Option sources
 const taskTypeOptions = ref<{ key: string; label: string }[]>(L1_TASK_TYPES.map(x => ({ key: x.key, label: x.label })))
@@ -328,12 +345,14 @@ onMounted(() => {
     <div class="compact-filter-bar compact-filter-bar--stacked">
       <div class="cf-row">
         <div class="cf-field">
-          <span class="cf-label">{{ t('annotation.filter.startDate') }}</span>
-          <input v-model="filterStartDate" type="date" class="cf-input" :aria-label="t('annotation.filter.startDate')" />
-        </div>
-        <div class="cf-field">
-          <span class="cf-label">{{ t('annotation.filter.endDate') }}</span>
-          <input v-model="filterEndDate" type="date" class="cf-input" :aria-label="t('annotation.filter.endDate')" />
+          <span class="cf-label">{{ t('common.dateRange.title') }}</span>
+          <KxDateRangePicker
+            :model-value="filterDateRange"
+            :presets="[]"
+            precision="date"
+            instant
+            @apply="onFilterDateRangeApply"
+          />
         </div>
         <div class="cf-field">
           <span class="cf-label">{{ t('annotation.filter.taskType') }}</span>

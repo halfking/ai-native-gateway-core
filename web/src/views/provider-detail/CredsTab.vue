@@ -22,6 +22,7 @@ import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 import CredentialStatusBar from '../../components/CredentialStatusBar.vue'
 import CredentialKeyField from '../../components/CredentialKeyField.vue'
 import CredentialModelsPanel from './CredentialModelsPanel.vue'
+import KxDatePicker from '../../components/ui/KxDatePicker.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t: td } = useI18n()
@@ -298,8 +299,10 @@ function money(v: number | string | null | undefined) {
   return Number.isNaN(n) ? '—' : `$${n.toFixed(4)}`
 }
 
+// 2026-09-30 统一日历轮：凭据生效/过期时间换 KxDatePicker(datetime)。
+// 组件值 'YYYY-MM-DD HH:mm'（空格分隔），存储仍为 ISO；边界处 T ↔ 空格互换，清空（''）→ null 语义不变。
 function asDateInput(v: string | null | undefined) {
-  return v ? v.slice(0, 16) : ''
+  return v ? v.slice(0, 16).replace('T', ' ') : ''
 }
 
 function sourceLabel(s?: string | null) {
@@ -917,18 +920,16 @@ function holderShort(h: string): string {
   return h.length > 12 ? `…${h.slice(-8)}` : h
 }
 
-function onEffectiveInput(ev: Event) {
+function onEffectiveInput(v: string) {
   const c = selected.value
   if (!c) return
-  const v = (ev.target as HTMLInputElement).value
-  c.effective_at = v ? new Date(v).toISOString() : null
+  c.effective_at = v ? new Date(v.replace(' ', 'T')).toISOString() : null
 }
 
-function onExpiresInput(ev: Event) {
+function onExpiresInput(v: string) {
   const c = selected.value
   if (!c) return
-  const v = (ev.target as HTMLInputElement).value
-  c.expires_at = v ? new Date(v).toISOString() : null
+  c.expires_at = v ? new Date(v.replace(' ', 'T')).toISOString() : null
 }
 
 function onTagsInput(ev: Event) {
@@ -1253,22 +1254,20 @@ function onTagsInput(ev: Event) {
             <div class="field-grid" style="margin-top:8px">
               <div>
                 <label class="field-label">{{ pd('creds.drawerEffectiveAt') }}</label>
-                <input
-                  :value="asDateInput(selected.effective_at)"
-                  type="datetime-local"
-                  class="field-input"
+                <KxDatePicker
+                  :model-value="asDateInput(selected.effective_at)"
+                  type="datetime"
                   :disabled="!canManageCreds"
-                  @input="onEffectiveInput"
+                  @update:model-value="onEffectiveInput"
                 />
               </div>
               <div>
                 <label class="field-label">{{ pd('creds.drawerExpiresAt') }}</label>
-                <input
-                  :value="asDateInput(selected.expires_at)"
-                  type="datetime-local"
-                  class="field-input"
+                <KxDatePicker
+                  :model-value="asDateInput(selected.expires_at)"
+                  type="datetime"
                   :disabled="!canManageCreds"
-                  @input="onExpiresInput"
+                  @update:model-value="onExpiresInput"
                 />
               </div>
             </div>
