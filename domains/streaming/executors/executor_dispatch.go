@@ -11,6 +11,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -71,14 +72,27 @@ func (e *Executor) SetDispatchModelRecommender(d DispatchModelRecommender) {
 // NewDispatchPipeline builds the shared, long-lived dispatch.Pipeline with
 // adapters that read per-request context from QueuedRequest.Payload. Call once
 // at startup (cmd/gateway), then SetDispatchPipeline + pipeline.Start().
-func (e *Executor) NewDispatchPipeline() *dispatch.Pipeline {
-	return dispatch.NewPipeline(dispatch.Deps{
+//
+// R28-Q-1 (2026-09-30 round 29): hotCfg seeds the pipeline from the
+// llmgw_dispatch_* hotconfig keys. It was previously accepted by
+// dispatch.Deps but never passed, so every knob (total queue capacity,
+// queue depth, worker counts, retry budgets) was permanently stuck at
+// DefaultConfig in production. Pass nil to keep the defaults (tests).
+func (e *Executor) NewDispatchPipeline(hotCfg *hotconfig.Config) *dispatch.Pipeline {
+	deps := dispatch.Deps{
 		RouteFunc:            e.dispatchRoute,
 		ModelResolveFunc:     e.dispatchResolveModel,
 		ModelRecommendFunc:   e.dispatchRecommendModels,
 		ForwardFunc:          e.dispatchForward,
 		AllowModelChangeFunc: dispatch.IsModelChangeEnabled,
-	})
+	}
+	if hotCfg != nil {
+		cfg := dispatch.LoadConfig(hotCfg)
+		hot := &atomic.Value{}
+		hot.Store(&cfg)
+		deps.HotCfg = hot
+	}
+	return dispatch.NewPipeline(deps)
 }
 
 // dispatchRoute is the executor-supplied RouteFunc: it re-ranks the request's

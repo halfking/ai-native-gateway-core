@@ -10,11 +10,13 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -343,4 +345,35 @@ func startMockProbeRunner(ctx context.Context, cfg *config.Config, dbConn *db.DB
 	}
 	client := mockprobe.NewClient(mockprobe.BaseURLFromListen(cfg.Listen))
 	return mockprobe.NewRunner(client, cfg.MockProbeInterval, cfg.MockProbeFailureThreshold, history, nil)
+}
+
+// loadDirectEgressHosts returns the hostnames of providers explicitly
+// marked egress_profile='direct' (R28-P-3). These hosts join the
+// ProxyResolver's never-proxy allow-list so policy — not the hardcoded
+// domestic table — decides who may bypass the env proxy. Best-effort: on
+// DB failure the list is empty and the resolver keeps its defaults.
+func loadDirectEgressHosts(ctx context.Context, db *pgxpool.Pool) []string {
+	if db == nil {
+		return nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := db.Query(queryCtx,
+		`SELECT DISTINCT base_url FROM providers WHERE egress_profile = 'direct' AND base_url IS NOT NULL AND base_url <> ''`)
+	if err != nil {
+		slog.Warn("egress: direct-profile host query failed; keeping default domestic list", "error", err)
+		return nil
+	}
+	defer rows.Close()
+	var hosts []string
+	for rows.Next() {
+		var baseURL string
+		if err := rows.Scan(&baseURL); err != nil {
+			continue
+		}
+		if u, err := url.Parse(strings.TrimSpace(baseURL)); err == nil && u.Hostname() != "" {
+			hosts = append(hosts, u.Hostname())
+		}
+	}
+	return hosts
 }

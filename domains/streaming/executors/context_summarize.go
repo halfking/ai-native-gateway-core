@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -488,6 +489,9 @@ func (e *Executor) doCompactionUpstream(
 		url = upstreamurl.ChatCompletionsURL(cand.BaseURL)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	// R28-P-1: compaction is itself an upstream provider call — honor the
+	// provider's egress profile like every other upstream request.
+	req = upstreampkg.WithEgressMeta(req, cand.ProviderID)
 	if err != nil {
 		// 2026-08-07 audit fix: if request construction fails after Allow()
 		// consumed the half-open probe (line 444), release it before returning.
