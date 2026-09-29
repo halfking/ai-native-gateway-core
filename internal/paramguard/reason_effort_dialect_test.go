@@ -56,7 +56,16 @@ func TestReasonDialectMatchesParamDialect_CoversEffortCapableFamilies(t *testing
 }
 
 // 端到端钉死：GLM 上游收到"关闭思考"意图时，出站体必须被收窄成
-// 该模型支持的最低档，而不是原样透传。
+// 该模型支持的最便宜档，而不是原样透传。
+//
+// 2026-09-30 真机订正：原断言 want "none"，依据是能力表声明 glm-5.2 支持
+// 7 档含 none。实测（方舟 coding 端点，model=glm-5-2-260617，间隔 7s，
+// none n=3 复验）证明 none 被上游明确拒绝：
+//
+//	400 `reasoning_effort 'none' is not supported by this model`
+//
+// 而 low 200 且 reasoning_content 长度 0（真关闭）。故真实最便宜档是 low。
+// 详见 glm_effort_upstream_contract_test.go 顶部的完整档位图谱。
 func TestApplyReported_GLMNarrowesDisableIntent(t *testing.T) {
 	out, reports := ApplyReported(
 		[]byte(`{"model":"glm-5.2","reasoning_effort":"disabled","max_tokens":512}`),
@@ -66,8 +75,8 @@ func TestApplyReported_GLMNarrowesDisableIntent(t *testing.T) {
 	if err := json.Unmarshal(out, &obj); err != nil {
 		t.Fatalf("unmarshal out: %v", err)
 	}
-	if got := obj["reasoning_effort"]; got != "none" {
-		t.Errorf("reasoning_effort = %v, want \"none\" (glm-5.2 支持的最低档)", got)
+	if got := obj["reasoning_effort"]; got != "low" {
+		t.Errorf("reasoning_effort = %v, want \"low\" (glm-5.2 真机可用的最便宜/关闭档)", got)
 	}
 	if len(reports) == 0 {
 		t.Error("expected a clamp report so the paramledger records the rewrite")
@@ -91,8 +100,14 @@ func TestApplyReported_DeepSeekNarrowesDisableIntentToLow(t *testing.T) {
 }
 
 // 合法档位在 GLM 上必须原样通过，不得被规则改动。
+//
+// 2026-09-30 真机订正：none 从"合法档位"清单中移除。实测 glm-5-2-260617
+// 对 none 报 400（n=3），对 minimal 报同一错误（方舟把 minimal 归一化为
+// none）。网关若把客户端的 none 视为合法而原样透传，上游会 400；
+// 现在它被收窄到 low（有实测支撑），因此**有** clamp 报告是正确行为，
+// 不再断言"零报告"。
 func TestApplyReported_GLMKeepsSupportedEffortUntouched(t *testing.T) {
-	for _, effort := range []string{"low", "high", "max", "none"} {
+	for _, effort := range []string{"low", "high", "max", "medium", "xhigh"} {
 		out, reports := ApplyReported(
 			[]byte(`{"model":"glm-5.2","reasoning_effort":"`+effort+`","max_tokens":512}`),
 			paramreg.DialectGLM,
@@ -106,6 +121,31 @@ func TestApplyReported_GLMKeepsSupportedEffortUntouched(t *testing.T) {
 		}
 		if len(reports) != 0 {
 			t.Errorf("effort %q is already supported, expected no report, got %+v", effort, reports)
+		}
+	}
+}
+
+// 真机拒绝的取值不得被当成合法档位原样透传：网关必须收窄到一个上游接受的
+// 档，并留 clamp 报告（否则 paramledger 静默，调用方无从得知被改写）。
+func TestApplyReported_GLMDowngradesUpstreamRejectedEffort(t *testing.T) {
+	for _, effort := range []string{"none", "minimal"} {
+		out, reports := ApplyReported(
+			[]byte(`{"model":"glm-5.2","reasoning_effort":"`+effort+`","max_tokens":512}`),
+			paramreg.DialectGLM,
+		)
+		var obj map[string]any
+		if err := json.Unmarshal(out, &obj); err != nil {
+			t.Fatalf("unmarshal out: %v", err)
+		}
+		got, _ := obj["reasoning_effort"].(string)
+		if got == effort {
+			t.Errorf("effort=%q 被真机证实会 400（见上游错误消息），不得原样透传", effort)
+		}
+		if got != "low" {
+			t.Errorf("effort=%q → %q, want \"low\"（真机唯一可用的关闭档）", effort, got)
+		}
+		if len(reports) == 0 {
+			t.Errorf("effort=%q 被改写却没有 clamp 报告，paramledger 会静默", effort)
 		}
 	}
 }

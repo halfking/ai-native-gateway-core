@@ -106,6 +106,10 @@ go test ./internal/reasonnorm/... ./internal/paramguard/... \
   `google-gemini` 五处 `catalogToDialect` 缺口并明确"逐上游真机验证接受度，
   勿盲登"。本轮新加的三个 case（GLM/DeepSeek/Ark）在方舟同源 code 上仍是
   该立场下的"未来守势"，不构成本轮 live 受益。
+  **2026-09-30 更新**：该立场的**守势部分已被推翻**——见 §8，直连方舟取得
+  真实接受度证据（Ark 确实暴露 `reasoning_effort`，且按值校验），
+  并因此发现能力表本身与上游不符的真缺陷。仍成立的部分只有
+  `catalogToDialect` 缺口未补这一点。
 - **本轮修的是潜伏缺陷 / 拆雷**，不是性能修复。若上游日后补登
   `code=zhipu/code=deepseek/code=doubao` 等的活跃凭据，方言门立即生效。
   验证手段：见 §7 三态证据表。
@@ -176,5 +180,109 @@ vcs.time 2026-09-28T15:54:28Z）。对照组 8782 镜像 `2.5.6.2308`，构建�
 | 「max_tokens=128 必空回复」 | **已推翻**（1/3 命中，真边界在 ~100–200 token） |
 | 「64 档必空、≥256 档不空」 | **已证实**（3/3 与 0/3） |
 | 修复在真机上有效 | **未证实**（未触达，且无阳性对照） |
-| Ark 在线暴露 reasoning_effort | **与方舟能力表对齐**（`{minimal,low,medium,high}`，且 `doubao-pro-thinking` 模式条目命中），但本环境 `provider 7` 0 凭据无法真机探针 |
+| Ark 在线暴露 reasoning_effort | **已证实（2026-09-30 补测推翻前一轮"无法探针"的保留）**，见 §8 |
 | 报障根因仍是客户端未声明 `tools[]` | 维持原判，本轮未触及 |
+
+## 8. 直连方舟真机取证（2026-09-30，纠正前一轮的错误归因）
+
+### 8.1 先说被推翻的结论
+
+前一轮（旁挂实例复审）曾据**一次** `upstream_status=400` + reqprobe 日志
+`stripped="reasoning_effort"`，判定「方舟不接受 `reasoning_effort` 字段」，
+并据此建议**回退** `reasoncap.DialectArk → paramreg.DialectArk` 这个 case。
+
+**该归因错误，本轮已推翻。** 两点错因：
+
+1. **单样本归因**。上游 400 可能是「值非法」而不是「字段不支持」，
+   两者在响应上不可区分，只有错误消息能区分。
+2. **绕过了 reqprobe 就以为是上游原话**。reqprobe 的
+   `stripped=reasoning_effort` 是**网关自己的探测结论**（它试剥了参数、
+   仍失败，于是归因为该参数），不是上游对「字段是否存在」的表态。
+
+直连方舟后，上游错误消息把真相直接说出来了：
+
+```
+400 InvalidParameter
+  "The parameter `reasoning_effort` specified in the request are not valid:
+   value `disabled` is invalid."
+```
+
+字段被**识别并按值校验**。若字段不存在，错误会是
+`unknown parameter` / `unrecognized request argument` 一类。**因此 Ark case
+必须保留，回退建议作废。**
+
+### 8.2 实验设计
+
+- 端点：`https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions`
+- 凭据：provider 34（`volcano-tokenplan`，`catalog_code=volcengine-coding`），
+  明文经 `secret.DecryptAESGCM` 在本机解出，**不出本机、不入仓、不入日志**。
+  provider 35 凭据实测 `401 API key status is not active`（已失效），
+  基线不通的实验全部作废。
+- 采样纪律：间隔 **7s**；`none` / `low` 各 **n=3 复验**（确认组），
+  其余档 **n=1** 全扫（探索组）。
+- 对照组设计：把「合法档位」与「非法值」分两组跑。上一轮的错误正在于
+  只跑了非法值（`disabled`）就下"字段不支持"的结论。
+
+### 8.3 表 4：`glm-5-2-260617` 七档全扫（= 网关 `glm-5.2` 的实际出站名）
+
+| effort | HTTP | reasoning_content | 语义 |
+|---|---|---|---|
+| `none` | 400 `none is not supported by this model` | — | **被拒**（n=3 复验） |
+| `minimal` | 400 `none is not supported by this model` | — | **被拒**（方舟把 minimal 归一化为 none） |
+| `low` | 200 | **0 字符** | **关闭档**（n=3 复验） |
+| `medium` | 200 | 0 字符 | 关闭 |
+| `high` | 200 | 0 字符 | 关闭 |
+| `xhigh` | 200 | 759 字符 | 真开启 |
+| `max` | 200 | 937 字符 | 真开启 |
+
+对照组（同端点同模型）：`kimi-k2-thinking-251104` 对
+`minimal`/`low`/`high`/`disabled`/`zzz_bogus` **全部 200**（12/12），
+说明方舟是「收下但按模型能力处理」，不是「拒绝字段」。
+
+### 8.4 本轮据此修的缺陷（真实、可复现）
+
+`internal/reasoncap/reasoning_defaults.go` 的 `glm-5` 条目原声明 7 档
+`{max,xhigh,high,medium,low,minimal,none}`。表 4 证明 `none`/`minimal`
+被上游拒绝，而 `low` 才是关闭档。
+
+**危害链**：`ClampEffort` 的 `cheapestEffort` 取能力表最低档 →
+关闭类写法（`disabled`/`off`/`none`/`no`/`false`）被改写成 `none` → 上游 400。
+即：**修复前是"原样透传给上游被拒"（网关没动手，责任在上游），
+修复后是"网关主动改写成一个自己能力表宣称合法、实则被拒的值"（责任转移到
+网关）**。而且 paramledger 会把它记成一次合法的 `clamp` 收窄，
+调用方从账本上看不出任何异常。
+
+这是 §3「两处互为前提」的第三层：**放宽方言门之前，能力表本身得先跟上游
+对齐**，否则修复会把上游的拒绝搬进网关内部。
+
+修法：`glm-5` 档位改为 `{max,xhigh,high,medium,low}`。
+`glm-4.5` / `glm-z1` **保留原 7 档**——真机只验到 `glm-5-2-260617`，
+凭同族推断删档等于把未验证的判断写成事实。智谱原生端点
+（`api/paas/v4`）在方舟凭据下 404，无法交叉验证。
+
+### 8.5 守门与变异验证
+
+新增 `internal/paramguard/glm_effort_upstream_contract_test.go`（3 条），
+改 `internal/paramguard/reason_effort_dialect_test.go`（2 条改期望 + 1 条新增）。
+
+| 变异 | 结果 |
+|---|---|
+| 把 `none`/`minimal` 加回 `glm-5` 能力表 | 新门 **FAIL**（出站 `none`，被真机证实会 400） |
+| 摘掉 `DialectGLM` 方言门（使 `none` 原样透传） | **FAIL**（`none`/`minimal` 不得原样透传 + 缺 clamp 报告） |
+| 两处还原 | 全绿 |
+
+### 8.6 本轮未闭合的边界
+
+- **`catalogToDialect` 缺口仍在**（`volcengine-coding` 未登记）。
+  机制已查实：provider 34/35 的 `catalog_code` 是 `volcengine-coding`，
+  不在表内 → `Resolve` 回退协议得 `DialectOpenAIChat` → 方言门不开。
+  **维持 R45 立场（登记不修 + 逐上游真机验证接受度，勿盲登）**——
+  本轮已在方舟侧取得接受度证据，但补登记会影响 thinking 渲染路径，
+  超出本轮范围。
+- `doubao-pro-thinking`（能力表里 Ark 的唯一条目）**在本环境不存在**：
+  provider 34/35 的模型清单里只有 `doubao-1-5-thinking-*` /
+  `doubao-seed-1-6-thinking-*` / `kimi-k2-thinking-*`。
+  即 `TestArk_EffortIsTierNotKillSwitch` 钉的那条能力表在真机上是**不可达的**。
+- GLM 家族的真机覆盖只有 `glm-5-2-260617` 一条路径（方舟 coding 端点）。
+  智谱原生 `api/paas/v4` 未能取证。
+
