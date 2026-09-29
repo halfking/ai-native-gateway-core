@@ -578,11 +578,17 @@ func (w *SelfCheckWorker) doConversationRound(ctx context.Context, model string,
 	switch roundIdx {
 	case 1:
 		messages = []map[string]any{
-			{"role": "user", "content": "请用 get_current_time 工具查询当前北京时间。只调用工具，不要输出其他内容。"},
+			// 2026-07-18 self-check tool continuation fix (branch
+			// backup/fix-self-check-tool-continuation, merged 2026-09-29):
+			// "只调用工具，不要输出其他内容" lets models answer round 1
+			// with an intentionally empty assistant message, which the
+			// gateway then correctly classifies as empty_response — a
+			// false negative. Ask for the tool result instead.
+			{"role": "user", "content": "请用 get_current_time 工具查询当前北京时间。调用工具后只输出查询结果。"},
 		}
 	case 2:
 		messages = []map[string]any{
-			{"role": "user", "content": "请用 get_current_time 工具查询当前北京时间。只调用工具，不要输出其他内容。"},
+			{"role": "user", "content": "请用 get_current_time 工具查询当前北京时间。调用工具后只输出查询结果。"},
 			{
 				"role": "assistant",
 				"tool_calls": []map[string]any{

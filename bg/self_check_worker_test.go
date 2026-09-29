@@ -1,6 +1,10 @@
 package bg
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -97,5 +101,53 @@ func TestSystemAPIKeyHashMatchesVerifier(t *testing.T) {
 	if storedHash != lookupHash {
 		t.Fatalf("stored key_hash %q != verifier lookup hash %q — worker key will never authenticate",
 			storedHash, lookupHash)
+	}
+}
+
+// TestSelfCheckWorkerConversationRoundRequestsToolResultOutput pins the
+// 2026-07-18 tool-continuation prompt fix (merged from branch
+// backup/fix-self-check-tool-continuation on 2026-09-29): the round-1/2
+// prompt must ask for the final tool result so models do not answer with
+// an intentionally empty assistant message the gateway would classify
+// as empty_response.
+func TestSelfCheckWorkerConversationRoundRequestsToolResultOutput(t *testing.T) {
+	type requestBody struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+
+	requests := make(chan requestBody, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body requestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode self-check request failed: %v", err)
+		}
+		requests <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"2026-09-29 04:55:00"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	worker := &SelfCheckWorker{
+		baseURL: server.URL,
+		apiKey:  "test-key",
+		client:  server.Client(),
+	}
+	result := worker.doConversationRound(context.Background(), "gpt-5.6-luna", 2, 64)
+	if !result.Success {
+		t.Fatalf("conversation round failed: type=%s detail=%s", result.ErrType, result.ErrDetail)
+	}
+
+	body := <-requests
+	if len(body.Messages) == 0 {
+		t.Fatal("self-check request has no messages")
+	}
+	prompt := body.Messages[0].Content
+	if !strings.Contains(prompt, "调用工具后只输出查询结果") {
+		t.Fatalf("self-check prompt does not request a final tool result: %q", prompt)
+	}
+	if strings.Contains(prompt, "不要输出其他内容") {
+		t.Fatalf("self-check prompt still permits an intentionally empty response: %q", prompt)
 	}
 }
