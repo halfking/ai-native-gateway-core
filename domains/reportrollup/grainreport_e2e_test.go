@@ -71,6 +71,38 @@ func xlsxSheetNames(t *testing.T, b []byte) []string {
 	return nil
 }
 
+// xlsxSheetRowCount 数第一张 sheet 的数据行数（含表头行）。
+//
+// 用来判「汇总表是不是空表」：sheet 数量对了但里面没数据，同样是坏出口。
+func xlsxSheetRowCount(t *testing.T, b []byte) int {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatalf("open xlsx zip: %v", err)
+	}
+	for _, f := range zr.File {
+		if f.Name != "xl/worksheets/sheet1.xml" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open sheet1.xml: %v", err)
+		}
+		defer rc.Close()
+		var sh struct {
+			Rows struct {
+				Row []struct{} `xml:"row"`
+			} `xml:"sheetData"`
+		}
+		if err := xml.NewDecoder(rc).Decode(&sh); err != nil {
+			t.Fatalf("decode sheet1.xml: %v", err)
+		}
+		return len(sh.Rows.Row)
+	}
+	t.Fatal("xlsx 里没有 xl/worksheets/sheet1.xml")
+	return 0
+}
+
 // xlsxSheet3Text 取第 3 张 sheet 的全部文本（sheet 顺序由构造固定：汇总/
 // 按天/按天×X/按天明细，所以第 3 张就是那张随 group 变的）。
 func xlsxSheet3Text(t *testing.T, b []byte) string {
@@ -442,7 +474,7 @@ func TestGrainReport_RealDB_E2E(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildGrainReport: %v", err)
 		}
-		b, err := BuildGrainWorkbookBytes(rep, GrainGroupModel)
+		b, err := BuildGrainWorkbookBytes(rep, GrainGroupModel, true)
 		if err != nil {
 			t.Fatalf("BuildGrainWorkbookBytes: %v", err)
 		}
@@ -471,7 +503,7 @@ func TestGrainReport_RealDB_E2E(t *testing.T) {
 			{GrainGroupAPIKey, "apikey-a"},
 		}
 		for _, c := range cases {
-			b, err := BuildGrainWorkbookBytes(rep, c.group)
+			b, err := BuildGrainWorkbookBytes(rep, c.group, true)
 			if err != nil {
 				t.Fatalf("%s: BuildGrainWorkbookBytes: %v", c.group, err)
 			}
@@ -492,6 +524,40 @@ func TestGrainReport_RealDB_E2E(t *testing.T) {
 				t.Errorf("group=%s 的「%s」sheet 里找不到该维度取值 %q——sheet 只是改了名字，内容仍是别的维度",
 					c.group, c.group.SheetName(), c.mustIn)
 			}
+		}
+	})
+
+	t.Run("只要汇总：detail=false 时只出「汇总」一张，且仍有真数据", func(t *testing.T) {
+		// 需求原话是「报表及导出的输出，可以只看汇总，也可以看到详细的每天
+		// 的数据」。早先导出的「汇总 ⇄ 按天明细」开关完全无效：detail=false 与
+		// detail=true 导出的文件字节数完全相同（真库实测 50171B vs 50171B）。
+		// 这里把两条口径的 sheet 集合都钉住。
+		rep, err := BuildGrainReport(ctx, pool, start, end, ViewProvider, GrainFilter{}, names, true)
+		if err != nil {
+			t.Fatalf("BuildGrainReport: %v", err)
+		}
+		full, err := BuildGrainWorkbookBytes(rep, GrainGroupModel, true)
+		if err != nil {
+			t.Fatalf("detail=true: %v", err)
+		}
+		sum, err := BuildGrainWorkbookBytes(rep, GrainGroupModel, false)
+		if err != nil {
+			t.Fatalf("detail=false: %v", err)
+		}
+		fullSheets := xlsxSheetNames(t, full)
+		sumSheets := xlsxSheetNames(t, sum)
+		if len(fullSheets) != 4 {
+			t.Errorf("detail=true 应出 4 张，实际 %d：%v", len(fullSheets), fullSheets)
+		}
+		if len(sumSheets) != 1 || sumSheets[0] != SheetGrainSummary {
+			t.Errorf("detail=false 应只出「%s」一张，实际 %v", SheetGrainSummary, sumSheets)
+		}
+		// 只出汇总还不够：汇总表本身必须真有行，否则「只要汇总」等于给一张空表。
+		if rows := xlsxSheetRowCount(t, sum); rows < 2 { // 1 行表头
+			t.Errorf("汇总表只有 %d 行，疑似空表", rows)
+		}
+		if len(sum) >= len(full) {
+			t.Errorf("汇总口径(%dB) 应明显小于全量(%dB)，两者相同说明开关没生效", len(sum), len(full))
 		}
 	})
 
