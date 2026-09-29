@@ -114,6 +114,43 @@ case "$TARGET" in
         ;;
 esac
 
+# ------ 密钥互异校验门（N20-6，2026-09-29）------
+# 事故模式（docs/audit/2026-09-28-vapeur-protocol-adaptation.md §七）：
+# .env.local 曾出现 SK 与 CEK 同值，容器解密全挂 → 全部候选标记不可用
+# → dispatch ErrNoRoute → 5/5 全 503。该文件不入版本控制（.gitignore），
+# 同值漂移可无痕复发，故在统一加载出口设门。
+# 语义：两者同时非空且相等 → 硬失败（source 场景 return 1 终止加载，
+# 调用方 set -e 下部署即中止；直接执行场景 exit 1）。CEK 留空合法
+# （运行时从 SK 派生 keyring，见 config.go HostedTasksConfig 注释）；
+# 长度偏离已知形态仅告警不阻塞——base64 两种 padding 形态均合法，
+# 未来换钥匙形态不应被门卡死。
+check_secret_key_distinct() {
+    local sk="${LLM_GATEWAY_SECRET_KEY:-${SECRET_KEY:-}}"
+    local cek="${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-${CREDENTIAL_ENCRYPTION_KEY:-}}"
+    if [ -z "$sk" ] || [ -z "$cek" ]; then
+        return 0
+    fi
+    if [ "$sk" = "$cek" ]; then
+        echo "[load-env] ❌ 密钥校验失败（N20-6）: SECRET_KEY 与 CREDENTIAL_ENCRYPTION_KEY 同值" >&2
+        echo "[load-env]    该组合即 2026-09-28 全 503 事故模式（解密全挂）。请修正 .env.local：" >&2
+        echo "[load-env]    SK 64 位、CEK 43/44 位且互异；或将 CEK 留空由 SK 派生" >&2
+        return 1
+    fi
+    if [ "${#sk}" -ne 64 ]; then
+        echo "[load-env] ⚠️  LLM_GATEWAY_SECRET_KEY 长度 ${#sk}（已知形态 64 位），请人工确认" >&2
+    fi
+    if [ "${#cek}" -ne 44 ] && [ "${#cek}" -ne 43 ]; then
+        echo "[load-env] ⚠️  LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY 长度 ${#cek}（已知形态 43/44 位），请人工确认" >&2
+    fi
+    return 0
+}
+
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+    check_secret_key_distinct || return 1
+else
+    check_secret_key_distinct || exit 1
+fi
+
 # 导出关键变量（标准化命名）
 export LLM_GATEWAY_252_HOST="${LLM_GATEWAY_252_HOST:-${HOST_252_INTERNAL_IP:-172.16.2.210}}"
 export LLM_GATEWAY_154_HOST="${LLM_GATEWAY_154_HOST:-${HOST_154_INTERNAL_IP:-172.16.2.209}}"
