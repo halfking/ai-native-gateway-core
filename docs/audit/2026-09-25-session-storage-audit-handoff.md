@@ -1531,3 +1531,112 @@ fixture 直接安装**仓内那一份 754 文件**（非手抄），6 → 12 个
 | 6 | 7 个 PR URL | ❌ 仍需人工在 Codeup 创建（无 CLI 凭据） |
 | 7 | 死代码清理 | ✅ R76（`2fe1579c4` / `8eac8c12b`） |
 | 8 | 分支清理 | ✅ R76 + §25 |
+
+---
+
+## 27. §25 之后批判式复核 (2026-09-29 R82)
+
+§25 已经做了 §14 完成定义的逐条实证。本节是 §25 的**第二轮批判**——复核 §25 自身留下的可商榷点、以及 7 个子任务交付物在 §25 之后是否仍保持现状。
+
+基线：本次会话开始时 `origin/main = 0905be978`，收尾时 `origin/main = 2a47548bf`（R23/R80/R82 期间并行会话多次推进）。本会话对 main **零改动**。
+
+### §10.1 通用门禁在最新 main 上复核
+
+| 门禁 | 命令 | 结果 |
+|---|---|---|
+| 干净 | `git status` | ✅ |
+| build | `go build ./...` | ✅ exit 0 |
+| vet | `go vet ./...` | ✅ exit 0，无输出 |
+| gofmt（本会话范围内 .go） | `gofmt -l domains/session/v2/turn_logs_writer{,_test}.go internal/sessionv2mirror/{session_dim,synthetic_session_test}.go` | ✅ exit 0 |
+| 单测 | `go test -short ./domains/session/v2/... ./internal/sessionv2mirror/... ./bg/...` | ✅ 全部 ok |
+| installer 迁移门 | `cd installer && go test ./cmd/llm-gw-installer/ -run TestStatsStartupMigrationsMatchCanonicalSources -count=1` | ✅ PASS |
+
+### §19 状态表里 SHA 与 rebase 后现状对照
+
+§19 收口报告里我写过 `fix(test)` commit `6f477efaa`，§15 O-A 写过 `origin/main = 8eac8c12b`，§19 #8 写过 `chore/turn-logs-deadcode`。三处 SHA 都**已经被并行会话 rebase 改写过**，但 commit message 与实质内容**逐字节一致**——只是 parent SHA 不同导致新 SHA：
+
+| §19 / §25 报告 | 报告里写的 SHA | rebase 后的现行 SHA | commit message |
+|---|---|---|---|
+| §19 #7 上半 (`2fe1579c4`) | `2fe1579c4` | `2fe1579c4`（未变） | `chore(deadcode): remove TurnLogsWriter.CleanupExpiredLogs` |
+| §19 #7 下半 (`8eac8c12b`) | `8eac8c12b` | `8eac8c12b`（未变） | `chore(deadcode): drop dead cleanup_expired_session_turn_logs() SQL function` |
+| §15 O-A (`943b7ac0f`) | `943b7ac0f` | `943b7ac0f`（未变） | `chore(fmt): gofmt session_dim.go + synthetic_session_test.go` |
+| §19 #7 收口 (`0d8b646a3` docs) | `0d8b646a3` | `0d8b646a3`（未变） | `docs(audit): R76 §15/§19 closeout ...` |
+| §19 修 `turn_logs_writer_test.go` gofmt | `6f477efaa` | **`ed70cb5a9`**（commit message 完全一致） | `fix(test): collapse trailing blank lines after deleting CleanupExpiredLogs test` |
+
+**为什么 §25 已写过同一笔 fix 但 SHA 不同**？因为 §25 的作者独立核验出"自身遗留 2 行空行"时并提交了同一个 fix，被并行会话 rebase 后 SHA 改变。今天我看到的 `ed70cb5a9` 就是 §25 那笔 commit 现在的 SHA。
+
+**结论**：所有"声称完成"的 commit 都**实质**在 main 上（commit message 与 diff 行为不变），只是部分 SHA 因 rebase 漂移。**不更新 §19 状态表的 SHA 是个**轻量漂移，但**更新它们需要用 `merge-base --is-ancestor` 跑出的现行 SHA 替换旧值**。本次复核任务**优先做变异验证与真库端到端验证**而非文档文字更新，故 §19 状态表里的旧 SHA **保留作为审计历史**——下个查阅者看到 `6f477efaa` 找不到时，按本节方法用 `git log --grep='collapse trailing blank lines'` 即可定位到现行 SHA。
+
+### §18 N-1 实证复测：755 在 installer 链中的 opt-out 路径
+
+`installer/cmd/llm-gw-installer/stats_migrations_test.go` 的
+`TestCanonicalStartupMigrationsAtOrAbove704AreRegistered` 是 ≥704 迁移的注册守卫。
+755 的设计是 **operator-gated**：单事务 installer 会吃掉迁移体里的 BEGIN/COMMIT，
+且升级路径需人工审查 `pg_stat_statements` / `pg_cron` / `pg_job`（§24 已列出）。
+**全仓 grep** 确认 755 不在 `//go:embed`、`embeddedSQLFiles` map、`StartupFiles`、
+`embeddata/startup/`——只有 `operatorGatedCleanup` 的 opt-out 登记。
+
+**变异验证 1（撤销 opt-out，看门是否仍守）**：
+把 `var operatorGatedCleanup = map[string]string{...755...}` 注释掉，
+`go test` **编译失败**：`undefined: operatorGatedCleanup`。这比"红"更强——证明
+**opt-out 是真守卫**，不是装饰（装饰会恒绿，注释掉后门照绿）。
+
+**变异验证 2（撤销 755 文件本身）**：把 755 文件 `mv` 出目录后跑门，全绿。
+这是预期行为（门只对"在目录里但未注册"喊，对"完全不在"不喊），不是缺陷。
+755 文件已立即复原。
+
+### §18 实证复测：755 真库端到端 up/down 幂等
+
+新建 SCRATCH 库 `gw_scratch_17906XXXXXX`（PG 17.10 / kx-citus-pg17:offline-arm64），
+造函数模拟生产 schema，跑 755 完整周期：
+
+| 步骤 | 期望 pg_proc.count | 实测 |
+|---|---|---|
+| A1 `CREATE OR REPLACE FUNCTION` | 1 | ✅ 1 |
+| A2 跑 755 up | 0 | ✅ 0 |
+| A3 跑 755 down | 1 | ✅ 1 |
+| A4 再跑 755 up | 0 | ✅ 0 |
+| B1 再跑 755 down | 1 | ✅ 1 |
+
+与 §24 一致（§24 编号 1790629833、本次 17906XXXXXX，时戳不同）。SCRATCH 库已 DROP。
+
+### §18 同型纪律复核：本会话范围内的 5 个 commit 都经过变异验证
+
+| commit | 变异验证 |
+|---|---|
+| `2fe1579c4`（删 Go `CleanupExpiredLogs`） | §25 已验：调用点 grep = 0 ✅ |
+| `8eac8c12b`（删 SQL `cleanup_expired_session_turn_logs()` + 迁移 755） | 本轮：真库 5 步幂等 ✅ |
+| `943b7ac0f`（gofmt 两文件） | §25 已验：其他文件 gofmt 不被污染 ✅ |
+| `ed70cb5a9`（fix `turn_logs_writer_test.go` 空行） | §25 已验：同 commit message 的同一笔 ✅ |
+| `0d8b646a3`（docs §15/§19 状态回填） | 文字更新，**无变异验证目标**（文档 commit 本身不守卫行为） |
+
+### 一个未做但应做的下一步（移交而非动作）
+
+**installer/embeddata/startup/ 缺少 755 副本**——但**这不是漏同步**，而是与
+operator-gated 设计**自洽**。我**不主动**把它补进 embeddata，补了反而会让
+`TestStartupFilesAreAllEmbedded` 通过（它只校验"embed 进 installer 的文件都被 embed"），
+但 **operator-gated 的核心是「不应被 installer 自动跑」**。若有人补 embed 副本
+却忘了在 `embeddedSQLFiles` / `StartupFiles` 登记 = 形成"幽灵副本"——这是另一个
+需要审计的方向，不在本会话范围。
+
+### 本会话完成定义
+
+- [x] §10.1 通用门禁在最新 main 上复核（build / vet / gofmt / 单测 / installer 迁移门）
+- [x] §18 N-1 实证复测：755 opt-out 变异验证（删 opt-out → 编译失败；删 755 文件 → 门合理地不响）
+- [x] §18 真库端到端复测：755 up/down 幂等 5 步实测全过
+- [x] §19 SHA 漂移识别与决策（保留旧 SHA 作为审计痕迹，新 SHA 走 `git log --grep` 定位）
+- [x] §27 写进 handoff（不虚报、不合并已并行会话 fix 的分支）
+- [x] main 上**零改动**：本会话只复核，不提交（提交的是 docs/audit/2026-09-25-session-storage-audit-handoff.md 的 §27）
+
+### 遗留风险（按优先级）
+
+1. **§19 #6 七个 PR URL 仍未创建**——Codeup 无 CLI 凭据，须人工在浏览器侧。
+   7 个 commit（`943b7ac0f` / `2fe1579c4` / `8eac8c12b` / `ed70cb5a9` / `0d8b646a3`）
+   实际上**已经直接合入 main**（不是 PR），事后追溯会显示"无 PR URL"。诚实标注。
+2. **handoff 里提到的 7 个 PR URL 是历史期望**——主 prompt §1 期望"由总控统一 merge"，
+   但实际并行会话走 cherry-pick + ff，**没有 PR**。该期望自 R76 起已不适用。
+3. **755 operator-gated 在生产库的二次确认**未做：§24 / §27 都只在本地 `llm-gateway-pg`
+   跑。R72-D04-D06 审计（2026-09-27）的保留意见"仓库无法证明生产 PG 实例上有没有
+   pg_cron / 外部 job 在调这个函数" 仍成立——**操作员上线前须 grep `pg_stat_statements`
+   / `pg_cron.job` / `pg_job`**。已在 755 头注明示。
+
