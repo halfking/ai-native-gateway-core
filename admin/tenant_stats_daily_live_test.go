@@ -124,4 +124,37 @@ func TestTenantStatsDaily_Live(t *testing.T) {
 			t.Fatalf("daily not consecutive at %d: %s -> %s", i, got.Daily[i-1].Date, got.Daily[i].Date)
 		}
 	}
+
+	// ── days=30：R36-A1 回归（days>7 必须走并集视图，热尾不得为零）──
+	// 种子只落 request_logs_hot；修复前 days>7 读父表 request_logs，
+	// 尚未晋升的热尾整段为零且与同响应 byModel/byApp 矛盾——本断言即
+	// 红/绿分界（2026-09-30 三十六轮补真库实证）。
+	rec30 := httptest.NewRecorder()
+	req30 := httptest.NewRequest(http.MethodGet, "/api/admin/tenants/"+code+"/stats?days=30", nil)
+	h.getTenantStats(rec30, req30, code)
+	if rec30.Code != http.StatusOK {
+		t.Fatalf("days=30 status = %d, body = %s", rec30.Code, rec30.Body.String())
+	}
+	var got30 struct {
+		Daily []struct {
+			Date     string `json:"date"`
+			Requests int64  `json:"requests"`
+			Success  int64  `json:"success"`
+			Errors   int64  `json:"errors"`
+		} `json:"daily"`
+	}
+	if err := json.Unmarshal(rec30.Body.Bytes(), &got30); err != nil {
+		t.Fatalf("decode days=30: %v", err)
+	}
+	if len(got30.Daily) != 30 {
+		t.Fatalf("days=30 daily len = %d, want 30 (generate_series zero-fill)", len(got30.Daily))
+	}
+	today30 := got30.Daily[29]
+	yesterday30 := got30.Daily[28]
+	if today30.Requests != 2 || today30.Success != 1 || today30.Errors != 1 {
+		t.Fatalf("days=30 today bucket = %+v, want requests=2 success=1 errors=1（热尾漏读回归：days>7 走了父表而非并集视图）", today30)
+	}
+	if yesterday30.Requests != 1 || yesterday30.Success != 1 {
+		t.Fatalf("days=30 yesterday bucket = %+v, want requests=1 success=1", yesterday30)
+	}
 }

@@ -113,11 +113,18 @@ export function shortRangeLabel(range: KxDateRange): string {
   return `${short(range.start)} – ${short(range.end)}`
 }
 
-/** 范围天数（date 精度按含首尾日；datetime 按时刻差向上取整）。 */
-export function rangeSpanDays(range: KxDateRange): number {
+/**
+ * 范围天数（2026-09-30 审计 P3-1：按精度区分口径）。
+ * - date 精度：含首尾日的日历天数（同日=1，7 天窗=7）= floor(diff/DAY)+1。
+ * - datetime 精度：时刻差向上取整 = ceil(diff/DAY)（72h=3 天，超界 1 分钟即 4 天），
+ *   与旧后端「允许恰好 72h」的钳制口径一致（RequestLogsView max-span-days=3）。
+ * 分钟级串长度为 16，无秒不属规范格式，补 ':00' 后按 UTC 解析。
+ */
+export function rangeSpanDays(range: KxDateRange, precision: KxDatePrecision = 'date'): number {
   const parse = (v: string) => Date.parse(v.length === 10 ? `${v}T00:00:00Z` : `${v.replace(' ', 'T')}:00Z`)
   const start = parse(range.start)
   const end = parse(range.end)
   if (Number.isNaN(start) || Number.isNaN(end)) return 0
-  return Math.floor((end - start) / DAY_MS) + 1
+  const diff = (end - start) / DAY_MS
+  return precision === 'datetime' ? Math.ceil(diff) : Math.floor(diff) + 1
 }

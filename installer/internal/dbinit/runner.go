@@ -354,6 +354,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 无 PK、无序列），全新安装每次都复现同一漂移——不登记则 fresh install
 			// 拿不到契约态。文件已按 --single-transaction 纪律去掉显式事务。
 			"763_provider_events_contract.sql",
+			// 764 (2026-09-30, R36-B3 / 三十六轮): request_logs 分区家族补
+			// (tenant_id, ts DESC) 索引——341 只索引了 hot 侧，分区父表从未
+			// 有 tenant 前导索引，tenant 维度 days>7 聚合对每分区全表扫
+			//（252-dev 实测 3 行租户 6.5s）。父表 CREATE INDEX 级联全部分区。
+			"764_request_logs_tenant_ts_index.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

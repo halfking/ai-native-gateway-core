@@ -11,6 +11,7 @@ import { useI18n } from 'vue-i18n'
 import { ElDatePicker, ElPopover } from 'element-plus'
 import type { KxDatePrecision, KxDateRange, KxDateRangePreset } from './kx-date-types'
 import { makeDateRangePresets, rangeSpanDays, shortRangeLabel } from './kxDatePresets'
+import { parseLocalMinute } from '../../utils/datetime'
 
 const props = withDefaults(
   defineProps<{
@@ -70,7 +71,8 @@ const triggerLabel = computed(() => {
 
 const draftInvalid = computed(() => {
   if (!draftStart.value || !draftEnd.value) return false
-  if (Date.parse(draftEnd.value.replace(' ', 'T')) < Date.parse(draftStart.value.replace(' ', 'T'))) {
+  // 无秒的 'YYYY-MM-DD[T]HH:mm' 非规范格式，统一走 parseLocalMinute 补秒解析（P3-3）
+  if (parseLocalMinute(draftEnd.value).getTime() < parseLocalMinute(draftStart.value).getTime()) {
     return 'endBeforeStart'
   }
   return null
@@ -78,7 +80,10 @@ const draftInvalid = computed(() => {
 
 const draftTooLong = computed(() => {
   if (!draftStart.value || !draftEnd.value || draftInvalid.value) return false
-  return props.maxSpanDays > 0 && rangeSpanDays({ start: draftStart.value, end: draftEnd.value }) > props.maxSpanDays
+  return (
+    props.maxSpanDays > 0 &&
+    rangeSpanDays({ start: draftStart.value, end: draftEnd.value }, props.precision) > props.maxSpanDays
+  )
 })
 
 const canApply = computed(() => !!draftStart.value && !!draftEnd.value && !draftInvalid.value && !draftTooLong.value)
@@ -100,7 +105,9 @@ function selectPreset(preset: KxDateRangePreset) {
   const r = preset.resolve()
   draftStart.value = r.start
   draftEnd.value = r.end
-  if (props.instant) {
+  // instant 模式同样受 canApply 约束（2026-09-30 审计 P3-2）：
+  // presets + maxSpanDays 并存时超限预设不得绕过校验直接提交，面板保持展开供调整。
+  if (props.instant && canApply.value) {
     commit(r)
     panelOpen.value = false
   }

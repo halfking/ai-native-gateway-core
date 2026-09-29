@@ -12,7 +12,7 @@
 //   4. Extend modal (per-row)
 
 import { ref, computed, onMounted } from 'vue'
-import { formatDateTime } from '../utils/datetime'
+import { formatDateTime, parseLocalMinute } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import {
   getRoutingOverrides,
@@ -150,8 +150,8 @@ async function confirmExtend() {
     return
   }
   try {
-    // Convert picker value ('YYYY-MM-DD HH:mm') back to datetime-local 'T' form, then RFC3339
-    const iso = new Date(extendDate.value.replace(' ', 'T')).toISOString()
+    // Convert picker value ('YYYY-MM-DD HH:mm', 无秒非规范格式 → 补秒解析) back to RFC3339
+    const iso = parseLocalMinute(extendDate.value).toISOString()
     await extendRoutingOverride(extendId.value, iso)
     cancelExtend()
     await loadOverrides()

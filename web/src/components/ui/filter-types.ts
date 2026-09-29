@@ -15,6 +15,4 @@ export type FilterDefinition = {
   /** daterange：区间两端绑定的 filters 键 */
   fromKey?: string
   toKey?: string
-  fromLabel?: string
-  toLabel?: string
 }

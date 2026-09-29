@@ -61,8 +61,9 @@ const chips = useFilterChips(() =>
       const fv = props.modelValue[fk]?.trim()
       const tv = props.modelValue[tk]?.trim()
       return [
-        fv ? makeChip(fk, def.fromLabel ?? def.label ?? fk, fv) : null,
-        tv ? makeChip(tk, def.toLabel ?? def.label ?? tk, tv) : null,
+        // 2026-09-30 审计 P3-5：fromLabel/toLabel 死契约已删，chip 标签统一回退 def.label
+        fv ? makeChip(fk, def.label ?? fk, fv) : null,
+        tv ? makeChip(tk, def.label ?? tk, tv) : null,
       ]
     }
     const v = props.modelValue[def.key]?.trim()

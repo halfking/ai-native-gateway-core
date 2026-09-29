@@ -13,7 +13,7 @@ import {
 } from '../api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { useFilterChips, type FilterChip } from '../composables/useFilterChips'
-import { formatDateTimeIso } from '../utils/datetime'
+import { formatDateTimeIso, parseLocalMinute } from '../utils/datetime'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
@@ -172,8 +172,9 @@ const computedTimeRange = computed(() => {
       if (!customTimeStart.value || !customTimeEnd.value) {
         start = new Date(now.getTime() - 24 * 60 * 60 * 1000)
       } else {
-        start = new Date(customTimeStart.value)
-        end = new Date(customTimeEnd.value)
+        // 'YYYY-MM-DDTHH:mm' 无秒非规范格式，补秒解析（P3-3）
+        start = parseLocalMinute(customTimeStart.value)
+        end = parseLocalMinute(customTimeEnd.value)
       }
       break
     default:
