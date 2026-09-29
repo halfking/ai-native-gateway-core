@@ -426,10 +426,13 @@ func main() {
 			"hint", "rotate to ops_-prefixed value at next maintenance window")
 	}
 
-	// ── 双模式存储装配（Task 4.2）─────────────────────────────────────────
-	// LLM_GATEWAY_STORAGE_MODE 未设置或为 full 时 storageRt 为 nil，以下全部
-	// 走既有装配路径（行为零变化）；lite 模式在此初始化存储工厂、L1.5 文件
-	// 缓存与后台清理任务，Shutdown 挂在优雅关闭段末尾。
+	// ── 双模式存储装配（Task 4.2 + 2026-09-24 方案 H2/P3）───────────────────
+	// LLM_GATEWAY_STORAGE_MODE 未设置/非法时 storageRt 为 nil；显式 full 且
+	// 热区关闭（config 通道）时同样为 nil——两者都走既有装配路径（行为零变化）。
+	// lite 模式在此初始化存储工厂、L1.5 文件缓存与后台清理任务；full+热区
+	// 装配 hotZoneOnly runtime（非 nil 但 liteMode()==false）。⚠ 一切「lite
+	// 语义」判据必须用 storageRt.liteMode()，不得直接判 storageRt != nil。
+	// Shutdown 挂在优雅关闭段末尾。
 	storageCfg := loadStorageConfig(configFile)
 	storageRt, storageInitErr := initStorageMode(cfg, storageCfg)
 	if storageInitErr != nil {
@@ -455,7 +458,7 @@ func main() {
 	// "postgres connected max_conns=N" 日志为准。
 	// （已知噪音：deploy-252-gateway.sh / start-full.sh 会无条件 export 该
 	// env，full 模式下每次启动一条 Warn——脚本侧待清理，见 R43 轮文档遗留。）
-	if storageRt == nil {
+	if !storageRt.liteMode() {
 		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS")); v != "" {
 			slog.Warn("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS set but does NOT cap the full-mode gateway PG pool",
 				"effective_knob", "LLM_GATEWAY_DB_MAX_CONNS",
@@ -496,7 +499,7 @@ func main() {
 	// PostgreSQL 初始化（openDBWithBootRetry 对空 URL 返回 nil，即既有 no-DB
 	// 降级路径），避免无谓的连接重试拖慢启动。
 	bootDatabaseURL := cfg.DatabaseURL
-	if storageRt != nil {
+	if storageRt.liteMode() {
 		slog.Warn("storage lite mode: PostgreSQL disabled, using SQLite + local dirs",
 			"database_url_configured", cfg.DatabaseURL != "")
 		bootDatabaseURL = ""
@@ -907,11 +910,12 @@ func main() {
 	// 成功时（ROUTING_OPT_ENABLED=true 且有 DB pool）非 nil，否则保持 nil
 	// （关闭路径零开销）。
 	var routingOptimizerForShutdown *routingopt.RealOptimizer
-	// 2026-09-14 R28 #16: lite 模式（storageRt != nil）按策略禁用 Redis——
+	// 2026-09-14 R28 #16: lite 模式（storageRt.liteMode()）按策略禁用 Redis——
 	// 主 Config 在上方 env 收口之前已完成解析，cfg.RedisAddr 可能仍残留值，
-	// 此处以 storageRt == nil 为准做二次门控；跳过本段后 sessionMgr 等
-	// 保持 nil，走与"Redis 未配置/不可达"一致的既有降级路径。
-	if cfg.RedisAddr != "" && storageRt == nil {
+	// 此处以 !liteMode() 为准做二次门控（full 热区装配 P3 的 runtime 非 nil
+	// 但不是 lite，Redis 必须照常装配——它是 L2 治理缓存）；跳过本段后
+	// sessionMgr 等保持 nil，走与"Redis 未配置/不可达"一致的既有降级路径。
+	if cfg.RedisAddr != "" && !storageRt.liteMode() {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		// 2026-09-04 availability: bounded boot-ping retry so a Redis that
 		// comes up slightly after the gateway (container ordering, short
@@ -2307,7 +2311,7 @@ func main() {
 		chatHandler.SetStaticDataPlaneKey(cfg.SecretKey)
 		slog.Warn("API key authentication: DB verifier unavailable — static secret-key-only auth enforced for all data-plane requests (sk-* keys rejected)")
 	} else {
-		exposed := storageRt != nil // lite 模式即常态开放；full 降级态为临时暴露
+		exposed := storageRt.liteMode() // lite 模式即常态开放；full 降级态为临时暴露（full 热区装配 P3 的 runtime 非 nil 但非 lite）
 		if exposed && os.Getenv("LLM_GATEWAY_LITE_ALLOW_UNAUTHENTICATED") != "1" {
 			// R28-S-3 (2026-09-30 round 31): lite is a deliberate deployment
 			// mode, not a transient degradation — shipping its data plane with
@@ -2330,11 +2334,12 @@ func main() {
 	// 2026-09-05 审计 B2 接线：lite 模式（无 PG，telemetry Enabled 恒 false、
 	// 请求日志不落盘）把 telemetry 持久化管道桥接到存储工厂——SQLite
 	// request_logs/sessions/session_turns + FileBodies 原文文件。full/未启用
-	// 模式（storageRt == nil）不注册 sink，全部路径行为零变化。
+	// 模式不注册 sink，全部路径行为零变化（full 热区装配 P3 的 runtime 非 nil
+	// 但 liteMode()==false，必须走历史 PG 持久化，factory 亦为 nil）。
 	// lite 会话读面（R28-S-2）：lite 块先捕获 reader，admin handler 创建后
 	// 再注入（adminHandler 在本函数更晚处构造）。
 	var liteSessionsReader func(ctx context.Context, tenantID string, opts *storage.ListOptions) ([]*storage.Session, error)
-	if storageRt != nil {
+	if storageRt.liteMode() {
 		telemetryClient.SetRequestLogSink(storageRt.newLiteRequestLogSink())
 		slog.Info("storage lite mode: telemetry request log sink wired (SQLite request_logs + session journal + file bodies)")
 		// R28-S-1/S-2 (2026-09-30 round 31): lite 模式的能力边界显式声明——
@@ -2649,8 +2654,9 @@ func main() {
 			// Use cfg.RedisAddr + cfg.RedisDB from outer scope (2026-08-25:
 			// session:v2 governance cache must respect db isolation, no longer
 			// hardcoded to db=0).
-			// Task 4.2: lite 模式走 mode-aware 装配（摘除 L2、注入 L1.5 文件缓存）；
-			// full/未启用模式（storageRt == nil）保持历史构造行为不变。
+			// Task 4.2 + H2/P3: lite 走 mode-aware 装配（摘除 L2、注入 L1.5）；
+			// full 热区走 WithMode(full, fileCache)（保留 L2、注入 L1.5，读链
+			// L1→L1.5→L2→L3）；未启用双模式（runtime nil）保持历史构造不变。
 			sessionCacheV2 = storageRt.newSessionCacheV2(dbConn.Pool(), cfg.RedisAddr, cfg.RedisDB)
 			sessionCacheV2ForShutdown = sessionCacheV2
 
@@ -2658,7 +2664,7 @@ func main() {
 				"outbound_builder", outboundBuilder != nil,
 				"session_cache_v2", sessionCacheV2 != nil,
 				"redis_addr", cfg.RedisAddr)
-		} else if storageRt != nil {
+		} else if storageRt.liteMode() {
 			// Task 4.2: lite 模式且 PG 被跳过时仍装配 V2 缓存（L1 + L1.5 文件
 			// 两层，L3 无 db 时等价于永远 miss），保证压缩链路不依赖 PostgreSQL。
 			sessionCacheV2 = storageRt.newSessionCacheV2(nil, "", 0)
