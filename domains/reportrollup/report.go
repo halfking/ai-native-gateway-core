@@ -13,6 +13,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strconv"
 	"fmt"
 	"math"
 	"sort"
@@ -26,10 +27,15 @@ type View string
 const (
 	ViewProvider View = "provider"
 	ViewInternal View = "internal"
+	// R28-B-2：计帐/对帐细化粒度视角。
+	ViewCredential View = "credential"
+	ViewKey        View = "key"
 )
 
 // Valid 校验视图字符串。
-func (v View) Valid() bool { return v == ViewProvider || v == ViewInternal }
+func (v View) Valid() bool {
+	return v == ViewProvider || v == ViewInternal || v == ViewCredential || v == ViewKey
+}
 
 // Totals 一组聚合指标。ErrorCount = RequestCount - SuccessCount（终态
 // success 之外一律计失败，含 rate_limited）。
@@ -87,6 +93,22 @@ type TenantRow struct {
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
 }
 
+// CredentialRow 凭据级汇总行（R28-B-2，provider 面）。CredentialID 是
+// credentials.id；展示名由 admin 联表补全。
+type CredentialRow struct {
+	CredentialID   int64            `json:"credential_id"`
+	Totals         Totals           `json:"totals"`
+	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+}
+
+// KeyRow api-key 级汇总行（R28-B-2，internal 面）。APIKeyID 是
+// api_keys.id。
+type KeyRow struct {
+	APIKeyID       int64            `json:"api_key_id"`
+	Totals         Totals           `json:"totals"`
+	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+}
+
 // PersonRow 人员汇总行（person = end_user_id，缺失回落 person:hash）。
 type PersonRow struct {
 	TenantID       string           `json:"tenant_id"`
@@ -113,6 +135,9 @@ type RangeReport struct {
 	Models         []ModelRow       `json:"models"`
 	Tenants        []TenantRow      `json:"tenants,omitempty"`
 	Persons        []PersonRow      `json:"persons,omitempty"`
+	// R28-B-2：凭据级 / api-key 级行（credential / key 视角）。
+	Credentials []CredentialRow `json:"credentials,omitempty"`
+	APIKeys     []KeyRow        `json:"api_keys,omitempty"`
 	// SnapshotDates 已落快照的日期集合（缺失日期 = worker 未跑或当日
 	// 无流量，供前端标注覆盖率）。
 	SnapshotDates []string `json:"snapshot_dates"`
@@ -293,6 +318,9 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 	tenantByKey := map[string]*acc{}
 	// ---- 人员分组（internal 视角）----
 	personsByKey := map[string]*keyed{}
+	// ---- R28-B-2：凭据 / api-key 分组（credential / key 视角）----
+	credByID := map[int64]*acc{}
+	keyByID := map[int64]*acc{}
 
 	dates := map[string]bool{}
 	for _, s := range snaps {
@@ -354,6 +382,17 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 			if filter.Model == "" {
 				groupAccStr(tenantByKey, s.ScopeKey).add(s)
 			}
+		case ScopeDailyByCredential:
+			// 不进按天序列：无过滤时 DailyTotal 单行已覆盖（此处再累加
+			// 即双计）；带过滤时 credential 行（provider/tenant/model 列
+			// 均空）被 SQL 过滤整族排除，无按天可填。
+			if id, perr := strconv.ParseInt(s.ScopeKey, 10, 64); perr == nil {
+				groupAcc(credByID, id).add(s)
+			}
+		case ScopeInternalKey:
+			if id, perr := strconv.ParseInt(s.ScopeKey, 10, 64); perr == nil {
+				groupAcc(keyByID, id).add(s)
+			}
 		case ScopeInternalPerson:
 			key := deref(s.TenantID) + "\x00" + s.ScopeKey
 			k := personsByKey[key]
@@ -367,7 +406,7 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 
 	// ---- 总计 + 错误透视 ----
 	total := &acc{}
-	if view == ViewProvider && filter.empty() {
+	if (view == ViewProvider || view == ViewCredential || view == ViewKey) && filter.empty() {
 		// 全流量单行 scope：每日一行，全部相加。
 		for _, a := range daysByDate {
 			total.addAcc(a)
@@ -454,6 +493,28 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 		})
 	}
 
+	// ---- 按凭据 / 按 api-key（R28-B-2 细化视角）----
+	if view == ViewCredential {
+		for id, a := range credByID {
+			rep.Credentials = append(rep.Credentials, CredentialRow{
+				CredentialID: id, Totals: a.finalize(), ErrorBreakdown: a.br,
+			})
+		}
+		sort.Slice(rep.Credentials, func(i, j int) bool {
+			return rep.Credentials[i].Totals.RequestCount > rep.Credentials[j].Totals.RequestCount
+		})
+	}
+	if view == ViewKey {
+		for id, a := range keyByID {
+			rep.APIKeys = append(rep.APIKeys, KeyRow{
+				APIKeyID: id, Totals: a.finalize(), ErrorBreakdown: a.br,
+			})
+		}
+		sort.Slice(rep.APIKeys, func(i, j int) bool {
+			return rep.APIKeys[i].Totals.RequestCount > rep.APIKeys[j].Totals.RequestCount
+		})
+	}
+
 	for date := range dates {
 		rep.SnapshotDates = append(rep.SnapshotDates, date)
 	}
@@ -510,6 +571,10 @@ func viewScopes(view View) ([]Scope, error) {
 		return []Scope{ScopeDailyTotal, ScopeDailyByProvider, ScopeDailyByModel}, nil
 	case ViewInternal:
 		return []Scope{ScopeInternalTenant, ScopeInternalPerson, ScopeInternalModel}, nil
+	case ViewCredential:
+		return []Scope{ScopeDailyTotal, ScopeDailyByCredential}, nil
+	case ViewKey:
+		return []Scope{ScopeDailyTotal, ScopeInternalKey}, nil
 	default:
 		return nil, fmt.Errorf("unknown view %q", view)
 	}
