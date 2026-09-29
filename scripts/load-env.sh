@@ -157,6 +157,48 @@ export LLM_GATEWAY_154_HOST="${LLM_GATEWAY_154_HOST:-${HOST_154_INTERNAL_IP:-172
 export LLM_GATEWAY_KAIXUAN_1_HOST="${LLM_GATEWAY_KAIXUAN_1_HOST:-${KAIXUAN_1_IP:-192.168.31.28}}"
 export LLM_GATEWAY_252_SSH_PORT="${LLM_GATEWAY_252_SSH_PORT:-25022}"
 
+# ------ SK/CEK 一致性守门（防一个 .env 只换一半密钥） ------
+# 检测逻辑：两个密钥都设且都以 "sk-" 开头时，比较前缀（网关侧前缀 vs 密钥本体）。
+# 任意一个未设置或非 sk- 格式（如 LDAP/机器码）时静默跳过，不阻塞加载。
+check_key_pair() {
+    local key_var="$1" sec_var="$2" label="$3"
+    local key="${!key_var:-}" sec="${!sec_var:-}"
+    [ -n "$key" ] && [ -n "$sec" ] || return 0
+    case "$key" in sk-*) ;; *) return 0 ;; esac
+    case "$sec" in sk-*) ;; *) return 0 ;; esac
+    local key_prefix="${key%%-*}"  # sk
+    local sec_part="${sec#sk-}"
+    local sec_prefix="${sec_part%%-*}"  # 网关前缀，如 3425/3421
+    if [ "$key" = "$sec" ]; then
+        return 0  # 完全相同（本地开发同值），不告警
+    fi
+    if [ "$key_prefix" = "sk" ] && [ "${#sec_prefix}" -ge 4 ] && [ "${#sec_prefix}" -le 12 ] && \
+       [[ "$sec_prefix" =~ ^[0-9]+$ ]] && \
+       [ "${key#sk-${sec_prefix}-}" != "$key" ]; then
+        return 0  # key 形如 sk-<sec_prefix>-...，与 secret 同网关
+    fi
+    echo "[load-env] ⚠️  ${label}: ${key_var} 与 ${sec_var} 前缀不一致（${key_var}=${key:0:12}... ${sec_var}=${sec:0:12}...），疑似半换密钥" >&2
+    return 1
+}
+
+check_key_pairs() {
+    local fail=0
+    check_key_pair LLM_GATEWAY_API_KEY LLM_GATEWAY_API_SECRET "LLM_GATEWAY API" || fail=1
+    if [ "$fail" -ne 0 ]; then
+        echo "[load-env] ❌ 密钥对一致性校验失败，中止加载（export 为空则不阻塞）" >&2
+        return 1
+    fi
+    return 0
+}
+
+# 仅 source 模式（被脚本引用）时守门；独立执行时只打印
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+    check_key_pairs || {
+        echo "[load-env] ❌ 中止：请检查 .env 密钥对（SK 与 CEK 需同网关同批）" >&2
+        return 1
+    }
+fi
+
 
 # ------ 打印已加载的变量（仅 source 模式） ------
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
