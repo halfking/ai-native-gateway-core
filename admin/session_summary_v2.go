@@ -225,7 +225,13 @@ func (api *SessionSummaryV2API) summarize(ctx context.Context, r *http.Request, 
 		if err == nil && strings.TrimSpace(s) != "" {
 			return t, s, "llm"
 		}
-		slog.WarnContext(ctx, "session summary: LLM 生成失败，退化为截断摘要", "err", err)
+		// 2026-09-29 (审计二十二轮): err==nil 但摘要为空时打「空摘要」
+		// 事实日志——此前统一打「生成失败」+err=nil，误导排障方向。
+		if err != nil {
+			slog.WarnContext(ctx, "session summary: LLM 生成失败，退化为截断摘要", "err", err)
+		} else {
+			slog.WarnContext(ctx, "session summary: LLM 返回空摘要，退化为截断摘要")
+		}
 	} else {
 		slog.WarnContext(ctx, "session summary: LLM caller 未接线，退化为截断摘要")
 	}

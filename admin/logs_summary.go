@@ -319,11 +319,16 @@ func buildSummaryCorpus(logs []sessionLogForSummary) string {
 		b.WriteString(buildTurnCorpusLine(ts, d, row.RequestStatus, row.ErrorKind))
 	}
 	corpus := strings.TrimSpace(b.String())
-	if len(corpus) > sessionSummaryMaxCorpusLen {
-		// 2026-09-29 (审计二十一轮): 按 rune 截断——corpus 常含 CJK，
-		// 字节切会截出非法 UTF-8 前缀进 LLM 语料（与 generateFallbackSummary
-		// 同款修正）。
-		corpus = string([]rune(corpus)[:sessionSummaryMaxCorpusLen])
+	// 2026-09-29 (审计二十一轮): 按 rune 截断——corpus 常含 CJK，
+	// 字节切会截出非法 UTF-8 前缀进 LLM 语料（与 generateFallbackSummary
+	// 同款修正）。
+	// 2026-09-29 (审计二十二轮): 守卫必须同为 rune 口径——原实现守卫按字节
+	// （len(corpus)）而截断按 rune，CJK 语料落在 12001~36000 字节且 rune 数
+	// <12000 的带宽（如 5000 个 CJK 字符=15000B）时 runes[:12000] 直接
+	// slice bounds out of range panic，logs-summary 端点被打挂。PoC 复现于
+	// TestBuildSummaryCorpusRuneGuardCJKBand。
+	if runes := []rune(corpus); len(runes) > sessionSummaryMaxCorpusLen {
+		corpus = string(runes[:sessionSummaryMaxCorpusLen])
 	}
 	return corpus
 }
