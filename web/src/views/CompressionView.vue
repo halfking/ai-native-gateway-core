@@ -10,6 +10,7 @@ import {
   type CompressionSessionItem,
 } from '../api'
 import { getSetting } from '../api/settings'
+import { parseLocalMinute } from '../utils/datetime'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 
@@ -218,7 +219,8 @@ const timeBucketLabel = computed(() => {
   if (!stats.value?.hourly_series?.length) return ''
   const hours = activeTab.value === 'custom'
     ? (customFrom.value && customTo.value
-        ? (new Date(customTo.value).getTime() - new Date(customFrom.value).getTime()) / 3600000
+        // 'YYYY-MM-DDTHH:mm' 无秒非规范格式，补秒解析（P3-3）
+        ? (parseLocalMinute(customTo.value).getTime() - parseLocalMinute(customFrom.value).getTime()) / 3600000
         : 24)
     : (displayHours.value || 24)
   if (hours <= 48) return t('compression.timeBucketHour')

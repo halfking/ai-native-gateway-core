@@ -43,7 +43,7 @@ const i18n = createI18n({
 const defs: FilterDefinition[] = [
   { key: 'keyword', type: 'search', label: '关键词', placeholder: '输入关键词' },
   { key: 'status', type: 'select', label: '状态', options: ['ok', 'bad'], placeholder: '全部' },
-  { key: 'time', type: 'daterange', fromKey: 'from', toKey: 'to', fromLabel: '开始', toLabel: '结束' },
+  { key: 'time', type: 'daterange', fromKey: 'from', toKey: 'to', label: '时间' },
 ]
 
 function mountBar(props: Record<string, unknown> = {}) {
@@ -95,8 +95,8 @@ describe('FilterBar', () => {
   it('daterange：任一端为空时组件收 null（半选不整体生效，两端齐备才有效）', () => {
     const w = mountBar({ modelValue: { keyword: '', status: '', from: '2026-09-01T00:00', to: '' } })
     expect(w.findComponent(KxDateRangePicker).props('modelValue')).toBe(null)
-    // 半选端仍以 chip 呈现（filters 键值未被丢弃，fromLabel 承接标签）
-    expect(w.find('.active-filter-chip').text()).toContain('开始: 2026-09-01T00:00')
+    // 半选端仍以 chip 呈现（filters 键值未被丢弃；P3-5 后 chip 标签回退 def.label）
+    expect(w.find('.active-filter-chip').text()).toContain('时间: 2026-09-01T00:00')
   })
 
   it('输入更新 v-model:filters（不可变更新）', async () => {

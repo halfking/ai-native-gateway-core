@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
-import { formatDateTime, formatTimeOnly } from '../utils/datetime'
+import { formatDateTime, formatTimeOnly, parseLocalMinute } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
 import { useRoute, useRouter } from 'vue-router'
@@ -357,8 +357,9 @@ const customRangeValue = computed<KxDateRange | null>(() => {
 })
 
 function onKxRangeApply(range: KxDateRange) {
-  const s = new Date(range.start)
-  const e = new Date(range.end)
+  // isoToLocalMinute 的对偶方向：'YYYY-MM-DD HH:mm' 无秒非规范格式，走补秒解析（P3-3）
+  const s = parseLocalMinute(range.start)
+  const e = parseLocalMinute(range.end)
   if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e <= s) return
   customDateRange.value = [s.toISOString(), e.toISOString()]
   onCustomRangeChange()

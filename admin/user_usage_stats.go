@@ -196,7 +196,10 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	if IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
 		myTenant := GetTenantID(r)
 		if myTenant != "" && myTenant != "default" && myTenant != tenantID {
-			writeError(w, http.StatusForbidden, "user not in your tenant")
+			// 跨租户目标与不存在统一 404 掩蔽（R36-A4，对齐兄弟实现
+			// requireSessionTaskAccess 的口径）：先 403 会构成跨租户用户
+			// ID 存在性 oracle。
+			writeError(w, http.StatusNotFound, "user not found")
 			return
 		}
 	}
@@ -233,12 +236,18 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 		resp.Kpi.ErrorRate = float64(resp.Kpi.Errors) / float64(resp.Kpi.Requests)
 	}
 
-	// 按天序列（generate_series 零填充，与租户统计同形状）。
+	// 按天序列（generate_series 零填充，与租户统计同形状）。日切显式钉
+	// Asia/Shanghai（R36-A3）：与 usage_facts 日分区边界（迁移 750/751）及
+	// 租户统计 daily 同口径；不随会话时区漂移（UTC 服务器上否则与分区
+	// 归属差最多 8h）。对账页保持显式 UTC 日（结算口径，有意分叉）。
 	if dailyRows, derr := h.db.Query(ctx, `
 		WITH days AS (
-			SELECT generate_series(CURRENT_DATE - ($3::int - 1), CURRENT_DATE, INTERVAL '1 day')::date AS d
+			SELECT generate_series(
+				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - (($3::int - 1) * INTERVAL '1 day'),
+				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'),
+				INTERVAL '1 day')::date AS d
 		), agg AS (
-			SELECT date_trunc('day', f.occurred_at)::date AS d,
+			SELECT date_trunc('day', f.occurred_at AT TIME ZONE 'Asia/Shanghai')::date AS d,
 			       COUNT(*)::bigint AS requests,
 			       COUNT(*) FILTER (WHERE f.status = 'success')::bigint AS success,
 			       COUNT(*) FILTER (WHERE f.status <> 'success')::bigint AS errors,

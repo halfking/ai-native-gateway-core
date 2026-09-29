@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { formatDateTime } from '../utils/datetime'
+import { formatDateTime, parseLocalMinute } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
@@ -631,7 +631,8 @@ function asDateInput(v: string | null): string {
 }
 
 function setDateInput(c: ProviderCredential, field: 'effective_at' | 'expires_at', value: string) {
-  c[field] = value ? new Date(value.replace(' ', 'T')).toISOString() : null
+  // 'YYYY-MM-DD HH:mm' 无秒非规范格式，补秒解析（P3-3）
+  c[field] = value ? parseLocalMinute(value).toISOString() : null
 }
 
 function tagsText(c: ProviderCredential): string {

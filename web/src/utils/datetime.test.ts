@@ -5,6 +5,7 @@ import {
   formatDateTimeIso,
   formatRelativeTime,
   formatTimeOnly,
+  parseLocalMinute,
 } from './datetime'
 
 // 固定时区无关的构造：全部用本地时间 Date 再喂给被测函数。
@@ -77,6 +78,25 @@ describe('formatDateTimeIso', () => {
   it('YYYY-MM-DD HH:mm 确定性输出', () => {
     const out = formatDateTimeIso(d('2026-01-05T09:07:00'))
     expect(out).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+  })
+})
+
+describe('parseLocalMinute（2026-09-30 审计 P3-3：无秒日期串补秒走规范解析）', () => {
+  it('空格分隔与 T 分隔的分钟串等价，均按本地时区解析', () => {
+    expect(parseLocalMinute('2026-09-30 12:00').getTime()).toBe(new Date(2026, 8, 30, 12, 0, 0).getTime())
+    expect(parseLocalMinute('2026-09-30T12:00').getTime()).toBe(new Date(2026, 8, 30, 12, 0, 0).getTime())
+  })
+
+  it('已带秒的串与 date-only 串原样通过', () => {
+    expect(parseLocalMinute('2026-09-30T12:00:00').getTime()).toBe(new Date(2026, 8, 30, 12, 0, 0).getTime())
+    // date-only 本身是规范格式：按 UTC 零点解析（与 Date.parse 直通一致）
+    expect(parseLocalMinute('2026-09-30').getTime()).toBe(Date.parse('2026-09-30'))
+    const iso = '2026-09-30T12:00:00.500Z'
+    expect(parseLocalMinute(iso).getTime()).toBe(Date.parse(iso))
+  })
+
+  it('脏输入产生 Invalid Date（调用方按 NaN 分支处理）', () => {
+    expect(Number.isNaN(parseLocalMinute('garbage').getTime())).toBe(true)
   })
 })
 

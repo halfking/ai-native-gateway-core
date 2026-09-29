@@ -583,6 +583,9 @@ var sessionProjectBackfillChainMigration762 []byte
 //go:embed embeddata/startup/763_provider_events_contract.sql
 var providerEventsContractMigration763 []byte
 
+//go:embed embeddata/startup/764_request_logs_tenant_ts_index.sql
+var requestLogsTenantTsIndexMigration764 []byte
+
 //go:embed embeddata/startup/800_provider_endpoint_protocols.sql
 var providerEndpointProtocolsMigration800 []byte
 
@@ -761,6 +764,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/761_stats_inbox_sync_status_backfill.sql":                               statsInboxSyncStatusBackfillMigration761,
 	"startup/762_session_project_backfill_chain.sql":                                 sessionProjectBackfillChainMigration762,
 	"startup/763_provider_events_contract.sql":                                       providerEventsContractMigration763,
+	"startup/764_request_logs_tenant_ts_index.sql":                                   requestLogsTenantTsIndexMigration764,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 }
 

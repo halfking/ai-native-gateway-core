@@ -259,6 +259,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 自 c8c102698 起持续变红，本轮补齐。补 parity 第 5 点的理由同 759：
 		// 本守卫只遍历本 map，不反向要求全量，缺条目时 embed 副本漂移无人发现。
 		"763_provider_events_contract.sql": providerEventsContractMigration763,
+		// 764 (2026-09-30, 三十六轮 R36-B3): request_logs 分区家族 tenant_ts
+		// 索引。parity 第 5 点与 759/763 同理：缺条目时 embed 副本漂移无人发现。
+		"764_request_logs_tenant_ts_index.sql": requestLogsTenantTsIndexMigration764,
 	}
 
 	for name, embedded := range expected {

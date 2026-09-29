@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
+import { parseLocalMinute } from '../../utils/datetime'
 import { ElMessage } from 'element-plus'
 import {
   updateCredential, deleteCredential, checkCredential,
@@ -923,13 +924,14 @@ function holderShort(h: string): string {
 function onEffectiveInput(v: string) {
   const c = selected.value
   if (!c) return
-  c.effective_at = v ? new Date(v.replace(' ', 'T')).toISOString() : null
+  // KxDatePicker(datetime) 值 'YYYY-MM-DD HH:mm' 无秒非规范格式，补秒解析（P3-3）
+  c.effective_at = v ? parseLocalMinute(v).toISOString() : null
 }
 
 function onExpiresInput(v: string) {
   const c = selected.value
   if (!c) return
-  c.expires_at = v ? new Date(v.replace(' ', 'T')).toISOString() : null
+  c.expires_at = v ? parseLocalMinute(v).toISOString() : null
 }
 
 function onTagsInput(ev: Event) {

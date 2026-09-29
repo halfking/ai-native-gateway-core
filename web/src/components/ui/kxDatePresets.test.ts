@@ -73,9 +73,16 @@ describe('shortRangeLabel / rangeSpanDays', () => {
     expect(shortRangeLabel({ start: '2026-09-29 08:30', end: '2026-09-30 12:00' })).toBe('09/29 08:30 – 09/30 12:00')
   })
 
-  it('rangeSpanDays 含首尾；同日为 1', () => {
+  // 2026-09-30 审计 P3-1：date/datetime 精度拆分口径。原实现对两种精度统一
+  // floor+1，datetime 下整 24h 倍数区间会多算 1 天（72h 算 4 天）。
+  it('rangeSpanDays date 精度：含首尾日；同日为 1', () => {
     expect(rangeSpanDays({ start: utcDate(FIXED), end: utcDate(FIXED) })).toBe(1)
     expect(rangeSpanDays({ start: '2026-09-24', end: '2026-09-30' })).toBe(7)
-    expect(rangeSpanDays({ start: '2026-09-30 10:00', end: '2026-09-30 11:30' })).toBe(1)
+  })
+
+  it('rangeSpanDays datetime 精度：时刻差向上取整（72h=3 天，超界 1 分钟=4 天）', () => {
+    expect(rangeSpanDays({ start: '2026-09-30 10:00', end: '2026-09-30 11:30' }, 'datetime')).toBe(1)
+    expect(rangeSpanDays({ start: '2026-09-27 12:00', end: '2026-09-30 12:00' }, 'datetime')).toBe(3)
+    expect(rangeSpanDays({ start: '2026-09-27 12:00', end: '2026-09-30 12:01' }, 'datetime')).toBe(4)
   })
 })

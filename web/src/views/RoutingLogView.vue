@@ -6,6 +6,7 @@ import {
   type RoutingLogKind,
   type RoutingLogResult,
 } from '../api'
+import { parseLocalMinute } from '../utils/datetime'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 
@@ -78,8 +79,9 @@ function computeRange(): { start: string; end: string } {
       start = new Date(now.getFullYear(), now.getMonth(), 1)
       break
     case 'custom':
-      start = customTimeStart.value ? new Date(customTimeStart.value) : new Date(now.getTime() - 24 * 3600 * 1000)
-      end = customTimeEnd.value ? new Date(customTimeEnd.value) : now
+      // 'YYYY-MM-DDTHH:mm' 无秒非规范格式，补秒解析（P3-3）
+      start = customTimeStart.value ? parseLocalMinute(customTimeStart.value) : new Date(now.getTime() - 24 * 3600 * 1000)
+      end = customTimeEnd.value ? parseLocalMinute(customTimeEnd.value) : now
       break
   }
   return { start: start.toISOString(), end: end.toISOString() }

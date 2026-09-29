@@ -675,6 +675,11 @@ files=(
   # ALTER + conname 守卫 PK + is_called 感知防回退 setval；存量 id 有重复时
   # PK 显式失败（fail-closed）。252/本机已手工修复，重放为 no-op 并补台账。
   "$ROOT_DIR/sql/migrations/startup/763_provider_events_contract.sql"
+  # 2026-09-30 三十六轮 R36-B3：request_logs 分区家族补 (tenant_id, ts DESC)
+  # 索引——341 只索引 hot 侧，分区父表从未有 tenant 前导索引，tenant 维度
+  # days>7 聚合对每分区全表扫（252-dev 实测 3 行租户 6.5s / default 21.5s）。
+  # 父表 CREATE INDEX IF NOT EXISTS 级联全部分区，重放 no-op 并补台账。
+  "$ROOT_DIR/sql/migrations/startup/764_request_logs_tenant_ts_index.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

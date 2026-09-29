@@ -6,7 +6,7 @@ import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import KxDateRangePicker from './KxDateRangePicker.vue'
-import { makeDateRangePresets } from './kxDatePresets'
+import { makeDateRangePresets, rangeSpanDays } from './kxDatePresets'
 
 // 固定时钟：触发器「近 7 天」匹配依赖当前日期，必须冻结
 const FIXED = Date.UTC(2026, 8, 30, 12, 0, 0)
@@ -127,9 +127,16 @@ describe('KxDateRangePicker', () => {
     const range = apply[0][0] as { start: string; end: string }
     expect(range.start).toBe(range.end)
   })
+
+  // 2026-09-30 审计 P3-2：instant 分支此前直接 commit，绕过 canApply/maxSpanDays。
+  it('instant 模式：maxSpanDays 超限预设被 canApply 拦截，限内预设照常提交', async () => {
+    const w = mountPicker({ instant: true, maxSpanDays: 3 })
+    const presets = w.findAll('.kx-dr-preset')
+    await presets.find((b) => b.text() === '近 30 天')!.trigger('click')
+    expect(w.emitted('apply')).toBeUndefined()
+    await presets.find((b) => b.text() === '今天')!.trigger('click')
+    const apply = w.emitted('apply')!
+    expect(apply).toHaveLength(1)
+  })
 })
 
-function rangeSpanDays(range: { start: string; end: string }) {
-  const parse = (v: string) => Date.parse(v.length === 10 ? `${v}T00:00:00Z` : `${v.replace(' ', 'T')}:00Z`)
-  return Math.floor((parse(range.end) - parse(range.start)) / 86_400_000) + 1
-}
