@@ -4295,7 +4295,7 @@ func main() {
 				if routingExec != nil {
 					syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
 					routingExec.SyncNoCandidateProbe = syncOn
-					routingExec.SyncNoCandidateTimeout = 5 * time.Second
+					routingExec.SyncNoCandidateTimeout = syncNoCandidateTimeoutEnv()
 					routingExec.ProbeSync = nodeProbeWorker.ProbeSync
 					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
@@ -4515,7 +4515,7 @@ func main() {
 			if routingExec != nil {
 				syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
 				routingExec.SyncNoCandidateProbe = syncOn
-				routingExec.SyncNoCandidateTimeout = 5 * time.Second
+				routingExec.SyncNoCandidateTimeout = syncNoCandidateTimeoutEnv()
 				routingExec.ProbeSync = nodeProbeWorker.ProbeSync
 				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
