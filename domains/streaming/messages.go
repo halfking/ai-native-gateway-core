@@ -490,7 +490,20 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		// verbatim honor left bare-UUID client identities in a heterogeneous
 		// namespace (turn aggregation stuck at 1) and never registered the
 		// session, so every follow-up request re-hit ErrSessionNotFound.
-		sessionID, sessionInfo, _ = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		var sessErr error
+		sessionID, sessionInfo, sessErr = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		if errors.Is(sessErr, errClientSessionForbidden) {
+			// R24-B (V3-A02): a client-supplied session owned by another
+			// key/tenant is rejected before any turn is created (chat-path
+			// parity; previously the foreign sessionInfo flowed unchecked).
+			attemptErrCode = "session_forbidden"
+			attemptErrMsg = "session not owned by this api key"
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusForbidden, "permission_error", "session not owned by this api key")
+			return
+		}
 	}
 	if sessionID == "" {
 		// Last-resort fallback: use the provisional id so downstream
