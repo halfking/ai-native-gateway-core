@@ -158,7 +158,7 @@ func TestSetBodyMirrorNilIsNoOp(t *testing.T) {
 }
 
 // TestMirrorRequestBodiesNoRequestID：缺 request_id 直接 no-op
-//（镜像文件路径以 requestID 命名，validMirrorID 必拒）。
+// （镜像文件路径以 requestID 命名，validMirrorID 必拒）。
 func TestMirrorRequestBodiesNoRequestID(t *testing.T) {
 	entry := &RequestLogEntry{}
 	entry.RequestBody = strptr(`{"a":1}`)
@@ -192,7 +192,7 @@ func TestPersistRequestLogMirrorsBeforePGRoundtrip(t *testing.T) {
 }
 
 // TestPersistRequestLogMirrorFollowsStopWriteGate：S4 停写门控与镜像同门
-//（storage.request_logs_write_enabled）——false 时镜像整体跳过；true 时照常
+// （storage.request_logs_write_enabled）——false 时镜像整体跳过；true 时照常
 // 投递（PG down 即可证投递，无需完整落库编排）。
 func TestPersistRequestLogMirrorFollowsStopWriteGate(t *testing.T) {
 	entry := &RequestLogEntry{RequestID: "req-gate", TenantID: "tenant-gate"}

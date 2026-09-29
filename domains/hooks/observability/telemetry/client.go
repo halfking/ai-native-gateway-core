@@ -1186,7 +1186,7 @@ func (entry *RequestLogEntry) releaseBodies() {
 // 照落库；镜像侧两类都跳过——无正文内容可对账，字面 "null"/"{}" 文件只是
 // 噪声（对账脚本需豁免 PG 侧对应行）。tenant 取 application_code（与
 // bodies_hot 的 tenant 口径一致），空串回退 entry.TenantID，双空则整体跳过
-//（镜像路径以 tenant 命名目录，空值必被 validMirrorID 拒绝并误计失败指标，
+// （镜像路径以 tenant 命名目录，空值必被 validMirrorID 拒绝并误计失败指标，
 // 静默跳过更干净）。未注入镜像（nil）时整体 no-op。独立成方法是为了测试
 // 不依赖 DB。
 func (c *Client) mirrorRequestBodies(entry *RequestLogEntry) {
@@ -1220,7 +1220,7 @@ func (c *Client) mirrorRequestBodies(entry *RequestLogEntry) {
 }
 
 // mirrorableBody 报告换算后的载荷是否值得镜像："null"（无数据）与 "{}"
-//（空串/非法 JSON 的收敛值）跳过。
+// （空串/非法 JSON 的收敛值）跳过。
 func mirrorableBody(payload string) bool {
 	return payload != "null" && payload != "{}"
 }

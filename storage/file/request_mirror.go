@@ -23,7 +23,7 @@
 //  4. ✅ cfg.HotZone.Dir 驱动子树父目录（NewRequestMirror(hz.Dir, 0)）。
 //
 // 装配开关：HotZone.RequestMirrorEnabled（默认 true）；lite 模式不装配
-//（沿用既有 session_bodies 写入路径，不重复镜像）。
+// （沿用既有 session_bodies 写入路径，不重复镜像）。
 package file
 
 import (
