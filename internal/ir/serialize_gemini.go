@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
 // SerializeGemini serializes an InternalRequest into a Gemini generateContent request body.
@@ -761,17 +763,15 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 			b, ok := reasonnormEffortToBudget(req.Reasoning.Effort)
 			if ok && b > 0 {
 				budgetTokens = &b
-			} else if ok && b == 0 {
-				// effort=="none" maps to budget 0. On Gemini 2.5+ the
-				// absence of thinkingConfig leaves the model at its default
-				// (dynamic thinking ENABLED), so "none" must explicitly emit
-				// the disable sentinel (thinkingBudget=0) below rather than
-				// silently omitting the block.
+			} else if reasonnorm.IsDisableEffort(req.Reasoning.Effort) {
+				// Cross-protocol "none" / "disabled" / " DISABLED " spelling
+				// must explicitly emit the disable sentinel (thinkingBudget=0)
+				// below rather than silently omitting the block.
 				disableThinking = true
 			}
 		}
 
-		if req.Reasoning.Type == "disabled" || disableThinking {
+		if req.Reasoning.Type == "disabled" || reasonnorm.IsDisableEffort(req.Reasoning.Effort) || disableThinking {
 			// Gemini sentinel: thinkingBudget=0 means disabled.
 			zero := 0
 			gc["thinkingConfig"] = map[string]any{
