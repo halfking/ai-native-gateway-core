@@ -111,7 +111,7 @@ func reportViewFilter(r *http.Request) (reportrollup.View, reportrollup.GrainFil
 		view = reportrollup.ViewProvider
 	}
 	if !view.Valid() {
-		return "", reportrollup.GrainFilter{}, fmt.Errorf("view must be provider or internal")
+		return "", reportrollup.GrainFilter{}, fmt.Errorf("view must be provider, internal, credential or key")
 	}
 	q := r.URL.Query()
 	var filter reportrollup.GrainFilter

@@ -195,9 +195,11 @@ func queryGrainDay(ctx context.Context, q Querier, scope Scope, start, end time.
 // 枚举，避免两处各写一个字面量后漂移）。
 func GrainScopes(view View) (Scope, []Scope, error) {
 	switch view {
-	case ViewProvider:
+	case ViewProvider, ViewCredential:
+		// credential 视角与 provider 视角同面（全流量）——凭据不是另一种
+		// 流量口径，只是同一份流量换一种切分维度。
 		return ScopeDailyGrain, []Scope{ScopeDailyTotal, ScopeDailyByProvider, ScopeDailyByModel}, nil
-	case ViewInternal:
+	case ViewInternal, ViewKey:
 		return ScopeInternalGrain, []Scope{ScopeInternalTenant, ScopeInternalPerson, ScopeInternalModel}, nil
 	default:
 		return "", nil, fmt.Errorf("unknown view %q", view)
