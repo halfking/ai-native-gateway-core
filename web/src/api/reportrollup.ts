@@ -183,7 +183,10 @@ function rangeQs(q: ReportQuery): string {
   p.set('start', q.start)
   p.set('end', q.end)
   p.set('view', q.view)
-  if (q.detail) p.set('detail', 'daily')
+  // detail 必须**总是**显式发。早先只在打开时发 detail=daily，关掉就不发这个
+  // 参数——后端于是分不清「用户要汇总」和「调用方没指定」，导出的「汇总 ⇄ 按天
+  // 明细」开关成了摆设（实测 detail=false / true 导出字节数完全相同）。
+  p.set('detail', q.detail ? 'daily' : 'summary')
   if (q.group) p.set('group', q.group)
   if (q.provider_id != null) p.set('provider_id', String(q.provider_id))
   if (q.credential_id != null) p.set('credential_id', String(q.credential_id))

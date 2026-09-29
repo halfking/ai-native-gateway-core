@@ -151,6 +151,19 @@ func reportDailyDetail(r *http.Request) bool {
 	return false
 }
 
+// reportExportDetail 解析**导出**的口径，与 reportDailyDetail 的缺省相反。
+//
+// 页面缺省是汇总（detail=false），导出缺省是全量（detail=true）：导出是交给
+// 对账人手里的交接件，缺省给全量更安全；而页面默认落在汇总视图上，用户主动
+// 点开「按天明细」才把 detail=daily 发过来，两边各自自洽。
+func reportExportDetail(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("detail"))) {
+	case "0", "false", "no", "summary":
+		return false
+	}
+	return true
+}
+
 // dimensionNames 一次性拉齐三个 id 维度的展示名映射（缺表/失败均退化为
 // 显示 id，不阻断报表）。
 //
@@ -336,7 +349,13 @@ func (h *Handler) handleReportRollupExport(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "report export query failed")
 		return
 	}
-	xlsxBytes, err := reportrollup.BuildGrainWorkbookBytes(rep, group)
+	// 导出口径：显式 detail=summary/false 时只出「汇总」一张表。**缺省 true**
+	// ——早先导出恒为全量 4 张，让只带 ?group= 的老调用方保持原样，不因这次
+	// 改动而变窄。之所以要显式解析：页面上的「汇总 ⇄ 按天明细」开关此前对导出
+	// 完全无效（前端只在打开时才发 detail=daily，关掉就不发这个参数，后端
+	// 分不清「要汇总」和「没指定」）。
+	detail := reportExportDetail(r)
+	xlsxBytes, err := reportrollup.BuildGrainWorkbookBytes(rep, group, detail)
 	if err != nil {
 		slog.Error("report rollup xlsx build failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "report xlsx build failed")

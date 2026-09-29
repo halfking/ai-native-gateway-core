@@ -400,7 +400,15 @@ func grainWidths(withDim bool) []float64 {
 }
 
 // BuildGrainWorkbookBytes 按多维报表渲染 xlsx（admin 导出端点入口）。
-func BuildGrainWorkbookBytes(rep *GrainReport, group GrainGroup) ([]byte, error) {
+//
+// detail=false 时**只出「汇总」一张表**，不给按天三张。需求原话是「报表及导出
+// 的输出，可以只看汇总，也可以看到详细的每天的数据」——导出也在这句话里，
+// 早先这里恒定出 4 张、把界面上的「汇总 ⇄ 按天明细」开关对导出做成摆设。
+//
+// 早先的理由是「导出永远取明细口径：多导一层的成本远小于对账人拿到汇总却
+// 没法下钻的代价」。那个理由在**缺省**口径下依然成立，所以 detail 缺省为
+// true、老调用方拿到的还是全量；这里补的是**显式要汇总**的那条通路。
+func BuildGrainWorkbookBytes(rep *GrainReport, group GrainGroup, detail bool) ([]byte, error) {
 	summaryWidths := grainWidths(true)
 	dayWidths := grainWidths(false)
 	// 「按天×X」有 2 列（日期/取值）或 3 列（多一个名称）两种形态。
@@ -411,9 +419,13 @@ func BuildGrainWorkbookBytes(rep *GrainReport, group GrainGroup) ([]byte, error)
 	detailWidths := append([]float64{12, 10, 22, 26}, dayWidths...)
 	sheets := []sheetSheet{
 		{name: SheetGrainSummary, rows: grainSummaryRows(rep), widths: summaryWidths},
-		{name: SheetGrainDays, rows: grainDayRows(rep), widths: dayWidths},
-		{name: group.SheetName(), rows: grainDayGroupRows(rep, group), widths: groupWidths},
-		{name: SheetGrainDetail, rows: grainDetailRows(rep), widths: detailWidths},
+	}
+	if detail {
+		sheets = append(sheets,
+			sheetSheet{name: SheetGrainDays, rows: grainDayRows(rep), widths: dayWidths},
+			sheetSheet{name: group.SheetName(), rows: grainDayGroupRows(rep, group), widths: groupWidths},
+			sheetSheet{name: SheetGrainDetail, rows: grainDetailRows(rep), widths: detailWidths},
+		)
 	}
 	return buildWorkbookBytes(sheets)
 }

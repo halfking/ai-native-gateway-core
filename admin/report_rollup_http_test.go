@@ -331,13 +331,13 @@ func TestReportRollup_HTTPContract(t *testing.T) {
 
 	t.Run("导出按 ?group= 切「按天×X」那张 sheet", func(t *testing.T) {
 		// 缺省必须是 model（老调用方不传 group 也能拿到原来的表）。
-		def := exportSheetNames(t, h, start, end, "internal", "")
+		def := exportSheetNames(t, h, start, end, "internal", "", "")
 		if !slices.Contains(def, "按天×模型") {
 			t.Errorf("缺省 group 的 sheet 列表里没有「按天×模型」：%v", def)
 		}
 		// 逐个维度都要真的换掉那张 sheet，而不只是换个名字。
 		for _, g := range []string{"provider", "credential", "tenant", "person", "apikey"} {
-			got := exportSheetNames(t, h, start, end, "internal", g)
+			got := exportSheetNames(t, h, start, end, "internal", g, "")
 			want := "按天×" + map[string]string{
 				"provider": "供应商", "credential": "凭据", "tenant": "租户",
 				"person": "用户", "apikey": "apikey",
@@ -362,18 +362,44 @@ func TestReportRollup_HTTPContract(t *testing.T) {
 			t.Errorf("400 的错误信息应点名参数非法，实际：%s", badRec.Body.String())
 		}
 	})
+
+	t.Run("导出口径跟着 detail 走：summary 只给「汇总」一张", func(t *testing.T) {
+		// 需求原话：「报表及导出的输出，可以只看汇总，也可以看到详细的每天的
+		// 数据」。早先导出的口径开关完全无效——handleReportRollupExport 只解析
+		// group，从不读 detail，真库实测 detail=false / detail=true 导出的文件
+		// 字节数完全相同（50171B vs 50171B）。
+		//
+		// 这条必须在**HTTP 层**断言：只测 BuildGrainWorkbookBytes 的话，把
+		// handler 里那行接线撤掉，builder 的门照样绿。
+		sum := exportSheetNames(t, h, start, end, "internal", "", "summary")
+		if len(sum) != 1 || sum[0] != "汇总" {
+			t.Errorf("detail=summary 应只出「汇总」一张，实际：%v", sum)
+		}
+		daily := exportSheetNames(t, h, start, end, "internal", "", "daily")
+		if len(daily) != 4 {
+			t.Errorf("detail=daily 应出 4 张，实际 %d：%v", len(daily), daily)
+		}
+		// 缺省必须仍是全量：只带 group 的老调用方不能因为这次改动而变窄。
+		if def := exportSheetNames(t, h, start, end, "internal", "", ""); len(def) != 4 {
+			t.Errorf("缺省 detail 应仍出 4 张，实际 %d：%v", len(def), def)
+		}
+	})
 }
 
 // exportSheetNames 走真端点导出，再解出 sheet 名。
-func exportSheetNames(t *testing.T, h *Handler, start, end, view, group string) []string {
+// detail 空串 = 不带该参数（走缺省）；否则原样拼进 query。
+func exportSheetNames(t *testing.T, h *Handler, start, end, view, group, detail string) []string {
 	t.Helper()
 	u := fmt.Sprintf("/api/admin/report-rollup/export?start=%s&end=%s&view=%s", start, end, view)
 	if group != "" {
 		u += "&group=" + group
 	}
+	if detail != "" {
+		u += "&detail=" + detail
+	}
 	rec := reportRollupGet(t, h, u)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("export %s: HTTP %d", group, rec.Code)
+		t.Fatalf("export group=%s detail=%s: HTTP %d", group, detail, rec.Code)
 	}
 	body, _ := io.ReadAll(rec.Body)
 	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
