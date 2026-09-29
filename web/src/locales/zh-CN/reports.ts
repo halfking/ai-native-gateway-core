@@ -35,5 +35,48 @@ export default {
   date: '日期',
   errorBreakdown: '失败原因分布',
   qualityScore: '质量评分',
+  // ── 2026-09-29 多维筛选轮 ──────────────────────────────────────────────
+  // 筛选栏
+  filters: '筛选条件',
+  all: '全部',
+  activeFilters: '已启用',
+  clearFilters: '清除筛选',
+  // 新维度
+  credential: '凭据',
+  apiKey: 'apikey',
+  byCredential: '按凭据',
+  byApiKey: '按 apikey',
+  // 粒度
+  summaryOnly: '汇总',
+  dailyDetail: '按天明细',
+  // 表格
+  columns: '显示列',
+  rows: '行',
+  inputTokens: '输入 tokens',
+  cacheTokens: '缓存 tokens',
+  outputTokens: '输出 tokens',
+  cacheRate: '缓存率',
+  errorRate: '失败率',
+  topError: '主要错误',
+  noErrors: '无失败记录',
+  tokens: 'Token 拆分',
+  unassigned: '未落定',
+  qualityHint: '成功率 × 时效因子（P95 越低越高）',
+  // 模型统计折叠面板
+  modelStats: '模型统计清单',
+  modelStatsHint: '点击展开，可直接挑模型名做筛选',
+  actions: '操作',
+  filterBy: '筛选',
+  // 图表
+  chartTrend: '请求量与失败率趋势',
+  chartByModel: '每天各模型的量',
+  chartErrors: '主要错误类型 Top 10',
+  chartOther: '其它',
+  chartFolded: '仅显示请求量前',
+  chartFoldedRest: '个模型，其余归入「其它」',
+  noData: '暂无数据',
+  // 快照口径披露
+  legacyCoverage: '有旧口径快照的天数：',
+  legacyCoverageRest: ' 天只计入总计与按天，凭据/用户/apikey 维度需回填后可见（点「重跑结束日」逐日补算）',
 
 }

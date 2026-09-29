@@ -245,6 +245,13 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"756_request_logs_id_index.sql":                 requestLogsIDIndexMigration756,
 		"757_session_turns_origin_actor_projection.sql": sessionTurnsOriginActorProjectionMigration757,
 		"758_routeincident_missing_columns.sql":         routeincidentMissingColumnsMigration758,
+		// 759 (2026-09-29, 对帐报表多维筛选轮): report_snapshots 增
+		// credential_id / api_key_id / person 三列 + daily_grain /
+		// internal_grain 两个最细粒度 scope + 4 个 partial 索引。
+		// 五点同步第 5 点（parity）：缺这一条时本守卫**不会**变红——
+		// 它只遍历本 map，不反向要求所有 canonical 文件都在 map 里，
+		// 于是 759 的 embed 副本若与源漂移将无人发现。补上。
+		"759_report_snapshots_grain_dims.sql": reportSnapshotsGrainDimsMigration759,
 	}
 
 	for name, embedded := range expected {
