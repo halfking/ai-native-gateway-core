@@ -155,6 +155,38 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 	return finalResult, nil
 }
 
+// FlushStreamPending releases checked frames held by optional interceptors.
+// It is deliberately separate from InterceptStreamEnd, which runs goal and
+// audit hooks once with the assembled response in the HTTP handler.
+func (c *InterceptorChain) FlushStreamPending(ctx context.Context, meta *StreamMeta) ([]byte, error) {
+	if c == nil {
+		return nil, nil
+	}
+	var out []byte
+	for _, interceptor := range c.interceptors {
+		flusher, ok := interceptor.(StreamPendingFlusher)
+		if !ok {
+			continue
+		}
+		chunk, err := flusher.FlushStreamPending(ctx, meta)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, chunk...)
+	}
+	return out, nil
+}
+
+// StreamPendingFlusher is the optional interface implemented by interceptors
+// that buffer outbound text for cross-frame compliance checks. Passthrough
+// interceptors (most output governance that doesn't combine frames) do not
+// implement it; writers that call chain.FlushStreamPending must fall back
+// to "no frame to emit" when none of the registered interceptors return a
+// release.
+type StreamPendingFlusher interface {
+	FlushStreamPending(ctx context.Context, meta *StreamMeta) ([]byte, error)
+}
+
 // InterceptStreamEnd executes all interceptors when a stream ends.
 func (c *InterceptorChain) InterceptStreamEnd(ctx context.Context, meta *StreamMeta) (*EndResult, error) {
 	if c == nil || len(c.interceptors) == 0 {

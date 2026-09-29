@@ -101,14 +101,15 @@ func (w *retryCommitWriter) Flush() {
 // delimiter is present. Per-event buffering is bounded to avoid unbounded
 // memory use on malformed or hostile upstream streams.
 type interceptingStreamWriter struct {
-	w        http.ResponseWriter
-	flusher  http.Flusher
-	chain    ResponseInterceptor
-	ctx      context.Context
-	meta     response.StreamMeta
-	pending  []byte
-	writeErr error
-	blocked  bool
+	w               http.ResponseWriter
+	flusher         http.Flusher
+	chain           ResponseInterceptor
+	ctx             context.Context
+	meta            response.StreamMeta
+	pending         []byte
+	writeErr        error
+	blocked         bool
+	terminalRendered bool
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
@@ -221,9 +222,32 @@ func (w *interceptingStreamWriter) FlushError() error {
 }
 
 func (w *interceptingStreamWriter) finish() {
+	// Flush any held compliance state through the chain's StreamPending
+	// hook. If the joined-lane check fails, the interceptor returns
+	// ShouldBlock=true and we emit a single protocol-shaped failure
+	// envelope so the client sees a recognisable terminal instead of
+	// a truncated connection (TestRealComplianceStreamCap
+	// AndFlushFailureRenderOneProtocolTerminal contract).
+	if w.chain != nil && w.writeErr == nil {
+		if flusher, ok := w.chain.(response.StreamPendingFlusher); ok {
+			pending, err := flusher.FlushStreamPending(w.ctx, &w.meta)
+			if err != nil {
+				if w.writeErr == nil {
+					w.writeErr = err
+				}
+				w.blocked = true
+			}
+			if w.blocked {
+				_ = pending
+			} else if len(pending) > 0 {
+				if _, werr := w.w.Write(pending); werr != nil && w.writeErr == nil {
+					w.writeErr = werr
+				}
+			}
+		}
+	}
 	if w.writeErr != nil {
 		w.pending = nil
-		return
 	}
 	if len(w.pending) > 0 {
 		// Never write an unterminated event directly to the client: doing so
@@ -233,6 +257,45 @@ func (w *interceptingStreamWriter) finish() {
 			"session_id", w.meta.SessionID,
 			"buffered_bytes", len(w.pending))
 		w.pending = nil
+	}
+	// When output governance already blocked the stream, emit exactly one
+	// protocol-shaped failure envelope so the client sees a recognisable
+	// terminal instead of a truncated connection.
+	if w.blocked && !w.terminalRendered {
+		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol))
+	}
+}
+
+// nativeStreamPolicyFailureFrame returns the SSE-shaped terminal that the
+// client uses to recognise "the stream ended because output governance
+// blocked it" rather than "the upstream connection dropped".
+func nativeStreamPolicyFailureFrame(protocol string) []byte {
+	switch protocol {
+	case "anthropic-messages":
+		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Response blocked by output policy\"}}\n\n")
+	case "openai-responses":
+		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}}\n\n")
+	default:
+		return []byte("data: {\"error\":{\"type\":\"api_error\",\"message\":\"Response blocked by output policy\"}}\n\ndata: [DONE]\n\n")
+	}
+}
+
+// writeTrustedTerminal bypasses output interception only for a gateway-owned
+// failure frame. Sets terminalRendered so finish() does not emit twice.
+func (w *interceptingStreamWriter) writeTrustedTerminal(frame []byte) {
+	if w.terminalRendered || len(frame) == 0 {
+		return
+	}
+	w.w.Header().Set("Content-Type", "text/event-stream")
+	if _, err := w.w.Write(frame); err != nil {
+		if w.writeErr == nil {
+			w.writeErr = err
+		}
+		return
+	}
+	w.terminalRendered = true
+	if w.flusher != nil {
+		_ = safeFlush(w.flusher)
 	}
 }
 
@@ -301,6 +364,7 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 		if err == nil && result != nil {
 			if result.ShouldBlock {
 				w.blocked = true
+				w.writeErr = fmt.Errorf("output stream blocked by response interceptor")
 				return
 			}
 			// Suppression withholds the current frame from the wire. A
