@@ -2,10 +2,14 @@ package admin
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // user_usage_stats.go — /users 页面用户级统计端点（2026-09-30 统计 UI 优化轮）。
@@ -176,10 +180,17 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	defer cancel()
 
 	// 解析用户 + 权限（tenant_admin 只能看本租户用户）。
+	// 仅 ErrNoRows 映射 404；基础设施错误（DB 不可达/超时）走 500，
+	// 不与「用户不存在」混淆（R36-A2 审计修复，先例 analytics.go R46 F9）。
 	var username, tenantID string
 	err := h.db.QueryRow(ctx, `SELECT username, tenant_id FROM users WHERE id = $1`, id).Scan(&username, &tenantID)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if err != nil {
+		slog.Warn("user_stats: lookup user failed", "user_id", id, "err", err)
+		writeError(w, http.StatusInternalServerError, "lookup user failed")
 		return
 	}
 	if IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
@@ -294,19 +305,30 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 			GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 5`},
 	}
 	for _, bq := range bucketQueries {
-		if bRows, berr := h.db.Query(ctx, bq.sql, username, tenantID, days); berr == nil {
-			for bRows.Next() {
-				var b userStatsBucket
-				if serr := bRows.Scan(&b.Name, &b.Requests, &b.Tokens, &b.Credits, &b.CostUSD); serr == nil {
-					*bq.target = append(*bq.target, b)
-				}
-			}
-			bRows.Close()
+		// 桶查询失败/中断只降级该桶（fail-open），但必须留日志并可感知
+		// rows.Err()——15s ctx 中途超时会把截断的 Top 列表当完整数据
+		// 返回（R36-A2 审计修复）。
+		bRows, berr := h.db.Query(ctx, bq.sql, username, tenantID, days)
+		if berr != nil {
+			slog.Warn("user_stats: bucket query failed", "user_id", id, "err", berr)
+			continue
 		}
+		for bRows.Next() {
+			var b userStatsBucket
+			if serr := bRows.Scan(&b.Name, &b.Requests, &b.Tokens, &b.Credits, &b.CostUSD); serr != nil {
+				slog.Warn("user_stats: bucket scan failed", "user_id", id, "err", serr)
+				continue
+			}
+			*bq.target = append(*bq.target, b)
+		}
+		if rerr := bRows.Err(); rerr != nil {
+			slog.Warn("user_stats: bucket rows aborted", "user_id", id, "err", rerr)
+		}
+		bRows.Close()
 	}
 
 	// 最近请求（10 行，窗口内）。
-	if rRows, rerr := h.db.Query(ctx, `
+	rRows, rerr := h.db.Query(ctx, `
 		SELECT f.occurred_at,
 		       COALESCE(NULLIF(f.raw_model_name, ''), '-'),
 		       f.ttft_ms, f.latency_ms,
@@ -315,12 +337,21 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 		FROM usage_facts f
 		WHERE `+factFilter+`
 		ORDER BY f.occurred_at DESC LIMIT 10
-	`, username, tenantID, days); rerr == nil {
+	`, username, tenantID, days)
+	// 同上：失败/中断降级留日志，不把截断列表当完整数据（R36-A2）。
+	if rerr != nil {
+		slog.Warn("user_stats: recent query failed", "user_id", id, "err", rerr)
+	} else {
 		for rRows.Next() {
 			var rr userStatsRecentRequest
-			if serr := rRows.Scan(&rr.Ts, &rr.Model, &rr.FirstChunkMs, &rr.TotalMs, &rr.Credits, &rr.Status); serr == nil {
-				resp.Recent = append(resp.Recent, rr)
+			if serr := rRows.Scan(&rr.Ts, &rr.Model, &rr.FirstChunkMs, &rr.TotalMs, &rr.Credits, &rr.Status); serr != nil {
+				slog.Warn("user_stats: recent scan failed", "user_id", id, "err", serr)
+				continue
 			}
+			resp.Recent = append(resp.Recent, rr)
+		}
+		if rerr2 := rRows.Err(); rerr2 != nil {
+			slog.Warn("user_stats: recent rows aborted", "user_id", id, "err", rerr2)
 		}
 		rRows.Close()
 	}
