@@ -750,40 +750,56 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 	// 2026-08-11: Extended to support effort-only configs (fills the gap where
 	// an effort-only ReasoningConfig from an OpenAI client targeting Gemini
 	// was previously silently dropped because BudgetTokens was nil).
+	//
+	// Precedence (mirrors reasoningDisabled in reasoning_dialect.go and the
+	// Anthropic branch): Type > BudgetTokens > Effort spelling. Explicit zero
+	// budget disables; explicit positive budget beats effort "none"/"disabled".
 	if req.Reasoning != nil {
-		var budgetTokens *int
+		thinkingType := "enabled"
+		thinkingBudget := -1 // Gemini default: -1 = dynamic budget
+		emitBlock := false
 		includeThoughts := true
-		disableThinking := false
 
-		// Explicit budget takes priority.
-		if req.Reasoning.BudgetTokens != nil {
-			budgetTokens = req.Reasoning.BudgetTokens
-		} else if req.Reasoning.Effort != "" {
-			// Convert effort → budget using canonical table.
-			b, ok := reasonnormEffortToBudget(req.Reasoning.Effort)
-			if ok && b > 0 {
-				budgetTokens = &b
-			} else if reasonnorm.IsDisableEffort(req.Reasoning.Effort) {
-				// Cross-protocol "none" / "disabled" / " DISABLED " spelling
-				// must explicitly emit the disable sentinel (thinkingBudget=0)
-				// below rather than silently omitting the block.
-				disableThinking = true
+		switch {
+		case req.Reasoning.Type != "":
+			thinkingType = req.Reasoning.Type
+			if thinkingType == "disabled" {
+				thinkingBudget = 0
+			}
+			emitBlock = true
+		case req.Reasoning.BudgetTokens != nil:
+			if *req.Reasoning.BudgetTokens == 0 {
+				thinkingType = "disabled"
+				thinkingBudget = 0
+			} else {
+				thinkingBudget = *req.Reasoning.BudgetTokens
+			}
+			emitBlock = true
+		case req.Reasoning.Effort != "":
+			if reasonnorm.IsDisableEffort(req.Reasoning.Effort) {
+				thinkingType = "disabled"
+				thinkingBudget = 0
+				emitBlock = true
+			} else if b, ok := reasonnormEffortToBudget(req.Reasoning.Effort); ok && b > 0 {
+				thinkingBudget = b
+				emitBlock = true
 			}
 		}
 
-		if req.Reasoning.Type == "disabled" || reasonnorm.IsDisableEffort(req.Reasoning.Effort) || disableThinking {
-			// Gemini sentinel: thinkingBudget=0 means disabled.
-			zero := 0
+		if !emitBlock {
+			// No explicit signal; do not emit thinkingConfig.
+			// Skip the emission block below; hasAny remains unchanged.
+		} else if thinkingType == "disabled" {
+			// Gemini sentinel: thinkingBudget=0 means disabled; do not
+			// attach a positive budget to the disabled block.
 			gc["thinkingConfig"] = map[string]any{
-				"thinkingBudget": zero,
+				"thinkingBudget": thinkingBudget,
 			}
 			hasAny = true
-		} else if budgetTokens != nil {
+		} else {
 			tc := map[string]any{
-				"thinkingBudget": *budgetTokens,
+				"thinkingBudget": thinkingBudget,
 			}
-			// includeThoughts is always true here; the flag exists for
-			// future per-dialect overrides.
 			tc["includeThoughts"] = includeThoughts
 			gc["thinkingConfig"] = tc
 			hasAny = true

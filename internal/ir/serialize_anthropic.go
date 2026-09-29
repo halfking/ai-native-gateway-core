@@ -109,33 +109,51 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	// reasonnorm (based on LiteLLM production constants), replacing the ad-hoc
 	// mapEffortToBudget that had different values (low→2048 vs canonical 1024).
 	if req.Reasoning != nil && req.Thinking == nil {
+		// Resolve intent by precedence (mirrors reasoningDisabled in reasoning_dialect.go):
+		//   1. explicit Type wins
+		//   2. explicit BudgetTokens: zero disables, positive beats "none"/"disabled" effort
+		//   3. Effort spelling (cross-protocol "none" / "disabled" / " DISABLED ") is the fallback
+		thinkingType := "enabled"
+		thinkingBudget := 0
+		hasBudget := false
+		switch {
+		case req.Reasoning.Type != "":
+			thinkingType = req.Reasoning.Type
+			// TestAnthropicExplicitEnabledBeatsDisabledEffort: explicit
+			// enabled still gets a default budget when no explicit one.
+			if thinkingType != "disabled" && req.Reasoning.BudgetTokens == nil {
+				thinkingBudget = 8192
+				hasBudget = true
+			}
+		case req.Reasoning.BudgetTokens != nil:
+			if *req.Reasoning.BudgetTokens == 0 {
+				thinkingType = "disabled"
+			} else {
+				thinkingBudget = *req.Reasoning.BudgetTokens
+				hasBudget = true
+			}
+		case req.Reasoning.Effort != "":
+			if reasonnorm.IsDisableEffort(req.Reasoning.Effort) {
+				thinkingType = "disabled"
+			} else if b, ok := reasonnormEffortToBudget(req.Reasoning.Effort); ok && b > 0 {
+				thinkingBudget = b
+				hasBudget = true
+			} else {
+				thinkingBudget = 8192 // safe default (xhigh)
+				hasBudget = true
+			}
+		}
 		thinking := map[string]any{}
-		if req.Reasoning.Type != "" {
-			thinking["type"] = req.Reasoning.Type
-		} else if reasonnorm.IsDisableEffort(req.Reasoning.Effort) {
-			// Cross-protocol "none" / "disabled" spelling → explicit disabled.
-			// Without this branch, the effort table would map to budget 0 and
-			// emit no thinking block at all (Anthropic then defaults to enabled).
-			thinking["type"] = "disabled"
-		} else {
-			thinking["type"] = "enabled"
+		thinking["type"] = thinkingType
+		if hasBudget && thinkingType != "disabled" {
+			thinking["budget_tokens"] = thinkingBudget
 		}
-		if req.Reasoning.BudgetTokens != nil {
-			thinking["budget_tokens"] = *req.Reasoning.BudgetTokens
-		} else if req.Reasoning.Effort != "" && thinking["type"] != "disabled" {
-			budget, ok := reasonnormEffortToBudget(req.Reasoning.Effort)
-			if !ok {
-				budget = 8192 // safe default (xhigh)
-			}
-			if budget > 0 {
-				thinking["budget_tokens"] = budget
-			}
-			// effort=="none" → budget==0 → no thinking block emitted
-			if budget == 0 {
-				thinking = nil
-			}
+		if thinkingType == "disabled" && hasBudget {
+			// Disabled thinking cannot carry a budget_tokens field
+			// (mirrors TestReasoningDisabledConflictPrecedence/type_disabled_beats_budget).
+			delete(thinking, "budget_tokens")
 		}
-		if thinking != nil {
+		if len(thinking) > 0 {
 			out["thinking"] = thinking
 		}
 	}
