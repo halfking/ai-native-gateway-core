@@ -213,10 +213,13 @@ onMounted(load)
 .meta-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .model-count { font-size: 12px; color: var(--muted); }
 .model-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+/* 2026-09-29 暗色修复：原 `color-mix(--on-primary 5%, transparent)` 把文字色令牌当
+   表面色混入。--on-primary 在亮色/暗色都是 #ffffff，暗色下与页面背景混合后偏白。
+   改用项目已有的次级表面 --bg-subtle，标签在两套皮肤下都贴合。 */
 .model-tag {
   display: inline-block;
   padding: 1px 7px;
-  background: color-mix(in srgb, var(--on-primary) 5%, transparent);
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 11px;

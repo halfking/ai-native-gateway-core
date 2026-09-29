@@ -104,8 +104,11 @@ watch(
   z-index: 1000;
   padding: 1rem;
 }
+/* 2026-09-29 暗色修复（与 ServiceLandingPage.vue 同根因）：背景原为 var(--on-primary)，
+   而 --on-primary → --kx-text-on-primary → #ffffff 在明暗两套皮肤里都是同一个纯白。
+   改用 --card（→ --kx-surface：亮色 #ffffff，暗色 #1a222d），弹窗主体随之皮肤切换。 */
 .dialog-content {
-  background: var(--on-primary);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 1.5rem;

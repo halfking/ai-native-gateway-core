@@ -8,6 +8,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
+import { getChartTheme } from '../../composables/useChart'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -35,6 +36,7 @@ const emit = defineEmits<{
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
 const isDestroyed = ref(false)
+let themeObserver: MutationObserver | null = null
 
 const hasData = computed(() => props.data.length > 0)
 
@@ -60,6 +62,11 @@ function initChart() {
 function updateChart() {
   if (!chartInstance || !hasData.value || isDestroyed.value) return
 
+  // 2026-09-29 暗色修复：原 option 全部硬编码 GitHub 暗色 hex（#e6edf3/#8b949e/#30363d 等），
+  // 亮色皮肤下文字与背景几乎同色、看不清。每次 setOption 前从 CSS 读当前主题，
+  // 并在 onMounted 里挂 data-theme 监听 → 主题切换时再次 setOption 重画。
+  const theme = getChartTheme()
+
   const dates = props.data.map(d => d.date)
   const newSessions = props.data.map(d => d.new_sessions)
   const activeSessions = props.data.map(d => d.active_sessions)
@@ -70,9 +77,9 @@ function updateChart() {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross' },
-      backgroundColor: 'rgba(28, 33, 40, 0.95)',
-      borderColor: 'rgba(48, 54, 61, 0.8)',
-      textStyle: { color: '#e6edf3', fontSize: 12 },
+      backgroundColor: theme.cardBorder,
+      borderColor: theme.grid,
+      textStyle: { color: theme.text, fontSize: 12 },
     },
     legend: {
       data: [
@@ -82,7 +89,7 @@ function updateChart() {
         t('dashboard.charts.costUSD'),
       ],
       top: 0,
-      textStyle: { color: '#8b949e', fontSize: 11 },
+      textStyle: { color: theme.muted, fontSize: 11 },
     },
     grid: {
       left: 50,
@@ -94,29 +101,29 @@ function updateChart() {
       type: 'category',
       data: dates,
       axisLabel: {
-        color: '#8b949e',
+        color: theme.muted,
         fontSize: 11,
         formatter: (value: string) => {
           const date = new Date(value)
           return `${date.getMonth() + 1}/${date.getDate()}`
         },
       },
-      axisLine: { lineStyle: { color: '#30363d' } },
+      axisLine: { lineStyle: { color: theme.cardBorder } },
     },
     yAxis: [
       {
         type: 'value',
         name: t('dashboard.charts.sessionCount'),
         position: 'left',
-        axisLabel: { color: '#8b949e', fontSize: 11 },
-        splitLine: { lineStyle: { color: 'rgba(48, 54, 61, 0.5)' } },
+        axisLabel: { color: theme.muted, fontSize: 11 },
+        splitLine: { lineStyle: { color: theme.grid } },
       },
       {
         type: 'value',
         name: t('dashboard.charts.costUSD'),
         position: 'right',
         axisLabel: {
-          color: '#8b949e',
+          color: theme.muted,
           fontSize: 11,
           formatter: '${value}',
         },
@@ -145,7 +152,7 @@ function updateChart() {
         type: 'bar',
         stack: 'sessions',
         data: closedSessions,
-        itemStyle: { color: '#8b949e' },
+        itemStyle: { color: '#3b82f6' },
         barMaxWidth: 24,
       },
       {
@@ -177,6 +184,8 @@ function handleResize() {
 function cleanupChart() {
   isDestroyed.value = true
   window.removeEventListener('resize', handleResize)
+  themeObserver?.disconnect()
+  themeObserver = null
   if (chartInstance) {
     chartInstance.dispose()
     chartInstance = null
@@ -186,6 +195,15 @@ function cleanupChart() {
 onMounted(() => {
   initChart()
   window.addEventListener('resize', handleResize)
+  // 2026-09-29：data-theme 变化时重画，让 chart 颜色随皮肤切换
+  themeObserver = new MutationObserver(() => {
+    if (isDestroyed.value) return
+    nextTick(() => updateChart())
+  })
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme']
+  })
 })
 
 onUnmounted(() => {
