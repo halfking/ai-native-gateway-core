@@ -331,6 +331,17 @@ type RequestLogEntry struct {
 	AutoConfidence *float64 `json:"auto_confidence,omitempty"`
 	WorkType       *string  `json:"work_type,omitempty"`
 
+	// 2026-09-29 X-Gw-Test-Mode (see streaming/auto_route.go) is held in the
+	// RequestLogContext for now — persistence into request_logs is tracked
+	// separately as a follow-up migration so this commit stays a runtime-only
+	// change. Test traffic is observable today via:
+	//   1. the X-Gw-Mock-Marker response header on every mock-mode reply,
+	//   2. the mock_marker field in the synthetic response body,
+	//   3. the X-Gw-Source-Actor header that authorises the caller
+	//      (auto-testbench / autoroute-e2e-audit / manual-probe).
+	// The struct field is intentionally absent so the existing INSERT/
+	// UPDATE column lists and DB schema stay byte-for-byte unchanged.
+
 	// P7.2: promoted from auto_decision JSONB to dedicated columns
 	// for indexable queries (see ensureRequestLogAutoDecisionColumns).
 	TaskTypeChosen *string  `json:"task_type_chosen,omitempty"`
