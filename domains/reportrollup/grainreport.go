@@ -641,7 +641,7 @@ func nullInt(v sql.NullInt64) *int64 {
 // 含未落定 provider 的失败行的口径），internal 面取 internal_tenant
 // （business 流量的完整分区）。
 func legacyTotalScope(view View) Scope {
-	if view == ViewInternal {
+	if view == ViewInternal || view == ViewKey {
 		return ScopeInternalTenant
 	}
 	return ScopeDailyTotal
@@ -922,26 +922,11 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	})
 
 	if daily {
-		rep.DailyProviders = dailyGroups(dayProviders, names.Providers, func(key string) (string, string) {
-			d, k := splitKey(key)
-			return d, dailyDimName(names.Providers, k)
-		})
-		rep.DailyCredentials = dailyGroups(dayCredentials, names.Credentials, func(key string) (string, string) {
-			d, k := splitKey(key)
-			return d, dailyDimName(names.Credentials, k)
-		})
-		rep.DailyTenants = dailyGroups(dayTenants, nil, func(key string) (string, string) {
-			d, k := splitKey(key)
-			return d, k
-		})
-		rep.DailyPersons = dailyGroups(dayPersons, nil, func(key string) (string, string) {
-			d, k := splitKey(key)
-			return d, k
-		})
-		rep.DailyAPIKeys = dailyGroups(dayAPIKeys, names.APIKeys, func(key string) (string, string) {
-			d, k := splitKey(key)
-			return d, dailyDimName(names.APIKeys, k)
-		})
+		rep.DailyProviders = dailyGroups(dayProviders, idDimSplit(names.Providers))
+		rep.DailyCredentials = dailyGroups(dayCredentials, idDimSplit(names.Credentials))
+		rep.DailyTenants = dailyGroups(dayTenants, textDimSplit)
+		rep.DailyPersons = dailyGroups(dayPersons, textDimSplit)
+		rep.DailyAPIKeys = dailyGroups(dayAPIKeys, idDimSplit(names.APIKeys))
 	}
 
 	for d := range grainDates {
@@ -983,31 +968,48 @@ func legacySink(total *grainAccumulator, days map[string]*grainAccumulator, lega
 	}
 }
 
-// dailyDimName 解析 id 维度（供应商/凭据/apikey）在**日行**里的取值。
+// dimDisplayName 解析 id 维度（供应商/凭据/apikey）的展示名。
 //
-// 为什么不是直接取 names[id]：未落定哨兵（UnassignedID）在名字表里查不到，
-// 取出来是空串。前端 dayRows 拿这个值去 nameOf 里查汇总行，汇总行的 key 是
-// "-1"，空串永远查不到 → 回落成空 → **按天明细里近两成的行名称列是空的**
-// （真库实测 36 行里 7 行）。所以哨兵这里返回 "-1"，让前端能命中汇总那条
-// 哨兵行、由 idText 显示「未落定」。
-func dailyDimName(names map[int64]string, k string) string {
-	id := parseInt64(k)
-	if name := names[id]; name != "" {
-		return name
-	}
-	if id == UnassignedID {
-		return strconv.FormatInt(UnassignedID, 10)
-	}
-	return ""
+// 查不到就是查不到，返回空串——**不**拿未落定哨兵（UnassignedID）的值冒充
+// 名字。早前这里对哨兵返回 "-1"，是为了让「Key 装名字」的老形态能被前端
+// join 上；Key 改成原始键之后这个补丁不再需要，留着只会让「取值」列出现
+// 一个并不存在的名字。哨兵的身份由 Key=-1 承载，展示文案由前端 idText 负责。
+func dimDisplayName(names map[int64]string, k string) string {
+	return names[parseInt64(k)]
 }
 
-func dailyGroups(m map[string]*grainAccumulator, _ map[int64]string, name func(string) (string, string)) []DailyGroupRow {
+// idDimSplit 拆出 (日期, 原始 id 键, 展示名) —— id 类维度的日行。
+func idDimSplit(names map[int64]string) func(string) (string, string, string) {
+	return func(k string) (string, string, string) {
+		d, key := splitKey(k)
+		return d, key, dimDisplayName(names, key)
+	}
+}
+
+// textDimSplit 拆出 (日期, 原始文本键, 展示名) —— 文本类维度（模型/租户/
+// 用户）本身就是名字，键与名同值。
+func textDimSplit(k string) (string, string, string) {
+	d, key := splitKey(k)
+	return d, key, key
+}
+
+// dailyGroups 把「日期\0维度键」聚合表摊成按天行。
+//
+// dim(k) 返回 (日期, 维度原始键, 展示名)。**Key 必须是原始键、展示名必须
+// 走 Name 字段**，两侧与汇总行对齐：早前这里把展示名塞进 Key，于是
+//   - 前端拿日行 Key 去汇总行里 join 永远匹配不上，只能回落成「直接显示
+//     Key」，恰好显示对——是巧合，不是逻辑；
+//   - 导出的「取值」列装的是名字、「名称」列对 id 维度全空，列语义反了。
+//
+// 原始键与展示名分开之后，join 成立、导出两列各归各位；名字查不到时 Name
+// 为空串，前端回落到原始键（显示 id），而不是留一片空白。
+func dailyGroups(m map[string]*grainAccumulator, dim func(k string) (date, dimKey, dimName string)) []DailyGroupRow {
 	keys := sortedKeysStr(m)
 	out := make([]DailyGroupRow, 0, len(keys))
 	for _, k := range keys {
-		date, key := name(k)
+		date, dimKey, dimName := dim(k)
 		tot := m[k].finalize()
-		out = append(out, DailyGroupRow{Date: date, Key: key, Totals: tot,
+		out = append(out, DailyGroupRow{Date: date, Key: dimKey, Name: dimName, Totals: tot,
 			ErrorBreakdown: m[k].breakdown(), QualityScore: ProviderQualityScore(tot)})
 	}
 	sort.Slice(out, func(i, j int) bool {

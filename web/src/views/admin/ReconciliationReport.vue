@@ -303,6 +303,9 @@ const groupRows = computed<GroupCell[]>(() => {
 const dayRows = computed<GroupCell[]>(() => {
   const r = report.value
   if (!r || !detail.value) return []
+  // 明细行的名称：后端日行自带 name（key 是原始 id 键，与汇总行同口径，
+  // 这里能真正 join 上）。name 缺失时回落到汇总行的名字，再回落到原始键
+  // （显示 id / 未落定哨兵），任何一步都不会留空白。
   const nameOf = (key: string) => {
     const hit = groupRows.value.find((g) => g.key === key)
     return hit?.name ?? key
@@ -310,6 +313,7 @@ const dayRows = computed<GroupCell[]>(() => {
   const src: {
     date: string
     key: string
+    name?: string
     totals: RangeReport['totals']
     error_breakdown?: Record<string, number>
     quality_score?: number
@@ -328,7 +332,7 @@ const dayRows = computed<GroupCell[]>(() => {
       }))
   return src.map((d) => ({
     key: `${d.date}\u0000${d.key}`,
-    name: groupDim.value === 'model' ? d.key : `${d.date} · ${nameOf(d.key)}`,
+    name: groupDim.value === 'model' ? d.key : `${d.date} · ${d.name || nameOf(d.key)}`,
     totals: d.totals,
     error_breakdown: d.error_breakdown ?? {},
     // 明细行也要带评分：漏了这一句，「质量评分」列在按天明细模式下整列为空，

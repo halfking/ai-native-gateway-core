@@ -314,6 +314,116 @@ func TestReportRollup_HTTPContract(t *testing.T) {
 		}
 	})
 
+	t.Run("credential / key 视角由 grain 读面承担：端到端出凭据行与 apikey 行", func(t *testing.T) {
+		// 收编前的形态：这两个视角靠 daily_by_credential / internal_by_key
+		// 两个专用 scope，那两个 scope 已停止写入。门要证明视角仍然可用，
+		// 且行比旧形态更全（grain 行额外带 provider 归属与质量评分——旧
+		// 读面聚合到 credential 就停了，这两列拿不到）。
+		rec := reportRollupGet(t, h, "/api/admin/report-rollup/summary?start="+start+"&end="+end+"&view=credential")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("view=credential 状态码 %d：%s", rec.Code, rec.Body.String())
+		}
+		var env struct {
+			Report struct {
+				Credentials []struct {
+					CredentialID   int64  `json:"credential_id"`
+					CredentialName string `json:"credential_name"`
+					Totals         struct {
+						RequestCount int64 `json:"request_count"`
+					} `json:"totals"`
+				} `json:"credentials"`
+				APIKeys []struct {
+					APIKeyID int64 `json:"api_key_id"`
+				} `json:"api_keys"`
+			} `json:"report"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(env.Report.Credentials) == 0 {
+			t.Fatalf("view=credential 没有凭据行：%s", rec.Body.String())
+		}
+		var withName int
+		for i, c := range env.Report.Credentials {
+			if c.Totals.RequestCount <= 0 {
+				t.Errorf("凭据 %d 请求数 = %d，应 > 0（空行不该出现在结果里）", c.CredentialID, c.Totals.RequestCount)
+			}
+			// 按请求数降序——收编前的旧读面就有这个契约，不该在搬迁中丢掉。
+			if i > 0 && env.Report.Credentials[i-1].Totals.RequestCount < c.Totals.RequestCount {
+				t.Errorf("凭据行未按请求数降序：第 %d 行 %d < 第 %d 行 %d",
+					i-1, env.Report.Credentials[i-1].Totals.RequestCount, i, c.Totals.RequestCount)
+			}
+			if c.CredentialName != "" {
+				withName++
+			}
+		}
+		if withName == 0 {
+			t.Error("凭据行全部缺展示名")
+		}
+
+		// 判别性断言：凭据视角能和其它维度**交叉**过滤。
+		//
+		// 收编前的旧读面做不到——它的凭据行来自 daily_by_credential 这个
+		// 「聚合到 credential 就停」的 scope，行里 tenant_id / model 列都是
+		// NULL，于是任何带租户或模型的过滤都会在 SQL 层把整族凭据行排除，
+		// 返回空（旧实现的注释原话：「被 SQL 过滤整族排除」）。grain 面按
+		// 最细粒度行折叠，凭据 × 租户是合法组合。
+		crossed := reportRollupGet(t, h, "/api/admin/report-rollup/summary?start="+start+"&end="+end+"&view=credential&tenant_id=tenantB")
+		if crossed.Code != http.StatusOK {
+			t.Fatalf("凭据 × 租户 交叉过滤状态码 %d：%s", crossed.Code, crossed.Body.String())
+		}
+		var crossed2 struct {
+			Report struct {
+				Credentials []struct {
+					CredentialID int64 `json:"credential_id"`
+					Totals       struct {
+						RequestCount int64 `json:"request_count"`
+					} `json:"totals"`
+				} `json:"credentials"`
+				Totals struct {
+					RequestCount int64 `json:"request_count"`
+				} `json:"totals"`
+			} `json:"report"`
+		}
+		if err := json.Unmarshal(crossed.Body.Bytes(), &crossed2); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(crossed2.Report.Credentials) == 0 {
+			t.Error("按 tenant_id 过滤后凭据行清空 —— 凭据视角与租户维度无法交叉，" +
+				"这正是收编前那条专用读面的结构性缺陷")
+		}
+		// 交叉过滤后 Σ凭据行必须仍等于总计（过滤不能把口径改掉）。
+		var sum int64
+		for _, c := range crossed2.Report.Credentials {
+			sum += c.Totals.RequestCount
+		}
+		if crossed2.Report.Totals.RequestCount != 0 && sum != crossed2.Report.Totals.RequestCount {
+			t.Errorf("Σ凭据行 = %d，总计 = %d：过滤后分组与总计不自洽", sum, crossed2.Report.Totals.RequestCount)
+		}
+
+		rec2 := reportRollupGet(t, h, "/api/admin/report-rollup/summary?start="+start+"&end="+end+"&view=key")
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("view=key 状态码 %d：%s", rec2.Code, rec2.Body.String())
+		}
+		var env2 struct {
+			Report struct {
+				APIKeys []struct {
+					APIKeyID int64 `json:"api_key_id"`
+				} `json:"api_keys"`
+			} `json:"report"`
+		}
+		if err := json.Unmarshal(rec2.Body.Bytes(), &env2); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(env2.Report.APIKeys) == 0 {
+			t.Fatalf("view=key 没有 apikey 行：%s", rec2.Body.String())
+		}
+		// 视角切到 key 就必须走 internal 面：凭据行（provider 面）不该出现。
+		if len(env2.Report.APIKeys) == 0 {
+			t.Error("apikey 行恒空")
+		}
+	})
+
 	t.Run("导出 xlsx", func(t *testing.T) {
 		rec := reportRollupGet(t, h, "/api/admin/report-rollup/export?start="+start+"&end="+end+"&view=internal")
 		ct := rec.Header().Get("Content-Type")

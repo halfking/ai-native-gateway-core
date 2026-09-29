@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -470,6 +471,50 @@ func TestGrainReport_RealDB_E2E(t *testing.T) {
 		}
 	})
 
+	t.Run("日行的 key 与汇总行同口径（两边能 join 上）", func(t *testing.T) {
+		// 结构性不变量：按天明细行的 key 必须是**维度原始键**，与汇总行的
+		// key 完全同一套取值。早前台面把展示名塞进日行 Key，于是前端
+		// `groupRows.find(g => g.key === d.key)` 永远匹配不上，只能靠
+		// `?? key` 回落——显示是对的，但那是巧合：名字解析一失效（新增凭据
+		// 还没跑名称回填）就变成空白，且导出的「取值/名称」两列语义互换。
+		// 没有任何断言能守住这个不变量，所以在这里钉死。
+		rep, err := BuildGrainReport(ctx, pool, start, end, ViewProvider, GrainFilter{}, names, true)
+		if err != nil {
+			t.Fatalf("BuildGrainReport: %v", err)
+		}
+		summaryKeys := map[string]string{} // key → 展示名
+		for _, p := range rep.Providers {
+			summaryKeys[strconv.FormatInt(p.ProviderID, 10)] = p.ProviderName
+		}
+		if len(summaryKeys) == 0 {
+			t.Fatalf("夹具应含供应商汇总行，否则这条门测不到东西")
+		}
+		if len(rep.DailyProviders) == 0 {
+			t.Fatalf("daily=true 却没有任何日行，这条门测不到东西")
+		}
+		for _, d := range rep.DailyProviders {
+			_, ok := summaryKeys[d.Key]
+			if !ok {
+				t.Errorf("%s 日行 key=%q 在汇总行里不存在（汇总键：%v）", d.Date, d.Key, keysOf(summaryKeys))
+			}
+		}
+		// 展示名必须在 Name 字段，且不能和 key 一样——一样就说明名字又装回
+		// Key 去了，这个不变量就白钉了。
+		var named int
+		for _, d := range rep.DailyProviders {
+			if d.Name == "" {
+				continue
+			}
+			named++
+			if d.Name == d.Key {
+				t.Errorf("%s 日行的 Name 与 Key 相同（%q）——名字不该装进 Key", d.Date, d.Name)
+			}
+		}
+		if named == 0 {
+			t.Error("没有任何日行带展示名：名称解析没生效，这条门失去意义")
+		}
+	})
+
 	t.Run("旧口径日期只进总计与按天", func(t *testing.T) {
 		// 只取那一天：既无 grain 行。此时 source=legacy，维度分组应为空，
 		// 总计 = 该日 daily_total。
@@ -875,3 +920,13 @@ CREATE TABLE public.report_snapshots (
     CONSTRAINT report_snapshots_scope_key_date_raw_model_key
         UNIQUE (scope, scope_key, report_date, raw_model_name)
 )`
+
+// keysOf 返回映射的键集合，仅用于失败信息。
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
