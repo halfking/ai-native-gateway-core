@@ -42,7 +42,7 @@ const auditRoot = "../"
 // repoRoot is the module root. This test's CWD is the package directory
 // tests/48h-audit/gates, so the root is THREE levels up (gates -> 48h-audit ->
 // tests -> repo). Getting this wrong is silent and catastrophic: with two
-// levels, every path resolved to <repo>/tests/<pattern> and hasGoPackage
+// levels, every path resolved to <repo>/tests/<pattern> and hasGoFileWithSuffix
 // returned false for real packages, so the guard flagged sound domains as
 // vacuous. TestRepoRootIsCorrect pins it against go.mod.
 const repoRoot = "../../.."
@@ -93,18 +93,28 @@ func listDomains(t *testing.T) []string {
 	return out
 }
 
-// hasGoPackage reports whether dir — or anything under it, since a `./dir/...`
-// pattern includes subdirectories — contains at least one .go file. Without the
-// recursion this helper reports D01/D02/D14 as package-less when their tests
-// live in business/ safety/ stress/ subpackages, which is the normal layout.
-func hasGoPackage(dir string) bool {
+// hasGoFileWithSuffix reports whether dir contains a file with the given
+// suffix — and, when recursive, anything under it, since a `./dir/...`
+// pattern includes subdirectories. Without the recursion this helper
+// reported D01/D02/D14 as package-less when their tests live in business/
+// safety/ stress/ subpackages, which is the normal layout. When !recursive,
+// subdirectories are excluded: `go test ./pkg` runs exactly that package,
+// so a test file below it proves nothing (N20-2).
+func hasGoFileWithSuffix(dir, suffix string, recursive bool) bool {
 	found := false
 	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || found {
+			return filepath.SkipAll
+		}
+		if !d.IsDir() {
+			if strings.HasSuffix(d.Name(), suffix) {
+				found = true
+				return filepath.SkipAll
+			}
 			return nil
 		}
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
-			found = true
+		if !recursive && path != dir {
+			return filepath.SkipDir
 		}
 		return nil
 	})
@@ -155,14 +165,31 @@ func gateSection(body string) string {
 	return strings.Join(lines[start+1:], "\n")
 }
 
-// packagePatterns extracts relative Go package patterns from a gate block and
-// de-duplicates them. The regex is anchored on a full path segment so it
-// cannot degenerate to a bare "./" prefix — an earlier non-greedy version
-// matched only "./" and made this function return junk, which silently made
-// the guard skip every domain and pass while testing nothing.
-func packagePatterns(gate string) []string {
+// patternRef binds an extracted package pattern to the go subcommand that
+// invokes it. The distinction decides what "resolves" means (N20-2): a
+// `go test ./pkg` line whose package holds only non-test .go files prints
+// "no test files" and exits 0 — vacuous green — so it needs a *_test.go
+// behind the pattern. `go build`/`go vet` already act on plain .go source,
+// so for those any .go file makes the line meaningful.
+type patternRef struct {
+	cmd     string
+	pattern string
+	// recursive mirrors a `/...` suffix: only then do subdirectories count.
+	// A single-package pattern like `./cmd/gateway` must not be satisfied by
+	// a _test.go in one of its children — `go test ./cmd/gateway` runs
+	// exactly that package and nothing under it.
+	recursive bool
+}
+
+// packagePatterns extracts the go invocations from a gate block as
+// (subcommand, pattern) pairs, de-duplicated on the pair. The regex is
+// anchored on a full path segment so it cannot degenerate to a bare "./"
+// prefix — an earlier non-greedy version matched only "./" and made this
+// function return junk, which silently made the guard skip every domain and
+// pass while testing nothing.
+func packagePatterns(gate string) []patternRef {
 	seen := make(map[string]struct{})
-	var out []string
+	var out []patternRef
 	for _, line := range strings.Split(gate, "\n") {
 		// Only lines that actually invoke a go tool count. A gate block often
 		// contains prose explaining where the evidence lives ("证据在 ./proxy
@@ -172,25 +199,35 @@ func packagePatterns(gate string) []string {
 		// runnable while the guard still reports it sound. It bit this guard
 		// for real — D12/D15/D16 all carry a prose path that kept a mutated,
 		// non-runnable gate green.
-		if !strings.HasPrefix(strings.TrimSpace(line), "go ") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "go ") {
 			continue
 		}
+		fields := strings.Fields(trimmed)
+		cmd := ""
+		if len(fields) > 1 {
+			cmd = fields[1]
+		}
 		for _, m := range packagePatternRe.FindAllString(line, -1) {
-			if _, dup := seen[m]; dup {
+			ref := patternRef{cmd: cmd, pattern: m, recursive: strings.HasSuffix(m, "/...")}
+			key := ref.cmd + "\x00" + ref.pattern
+			if _, dup := seen[key]; dup {
 				continue
 			}
-			seen[m] = struct{}{}
-			out = append(out, m)
+			seen[key] = struct{}{}
+			out = append(out, ref)
 		}
 	}
 	return out
 }
 
-// gateResolves reports whether any package pattern in the gate block names a
-// directory that actually contains Go source.
+// gateResolves reports whether any pattern in the gate block names a
+// directory backed by the kind of Go file its command consumes: *_test.go
+// for `go test` lines (N20-2 — a test-less package exits 0 without running
+// anything), any .go file for build/vet lines.
 func gateResolves(gate string) bool {
-	for _, pat := range packagePatterns(gate) {
-		dir := strings.TrimSuffix(pat, "/...")
+	for _, ref := range packagePatterns(gate) {
+		dir := strings.TrimSuffix(ref.pattern, "/...")
 		dir = strings.TrimSuffix(dir, "...")
 		dir = strings.TrimSuffix(dir, "/")
 		if dir == "" || dir == "." {
@@ -198,7 +235,11 @@ func gateResolves(gate string) bool {
 		}
 		// Gate patterns are repo-root relative (they are what you would type
 		// from the repo root), not relative to this test's CWD.
-		if hasGoPackage(filepath.Join(repoRoot, dir)) {
+		suffix := ".go"
+		if ref.cmd == "test" {
+			suffix = "_test.go"
+		}
+		if hasGoFileWithSuffix(filepath.Join(repoRoot, dir), suffix, ref.recursive) {
 			return true
 		}
 	}
@@ -283,5 +324,98 @@ func TestVacuousGateDebtIsReported(t *testing.T) {
 		if reason, ok := knownVacuousGates[dom]; ok {
 			t.Logf("  %-26s %s", dom, reason)
 		}
+	}
+}
+
+// TestPackagePatternsExtractsSubcommand pins the (cmd, pattern) extraction the
+// N20-2 kind-awareness depends on: the subcommand comes from the second word
+// of the invoking line, recursiveness from the `/...` suffix, and dedup is on
+// the pair (the same pattern under two commands is two different claims).
+func TestPackagePatternsExtractsSubcommand(t *testing.T) {
+	gate := strings.Join([]string{
+		"go build ./...",
+		"go vet ./...",
+		"go test -race -timeout 120s ./dom/business/... -count=1",
+		"go test ./cmd/single -run 'TestX' -count=1",
+		"prose mentioning ./dom/business is not a go invocation",
+	}, "\n")
+	got := packagePatterns(gate)
+	want := []patternRef{
+		{cmd: "build", pattern: "./...", recursive: true},
+		{cmd: "vet", pattern: "./...", recursive: true},
+		{cmd: "test", pattern: "./dom/business/...", recursive: true},
+		{cmd: "test", pattern: "./cmd/single", recursive: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("packagePatterns = %+v, want %+v", got, want)
+	}
+	for i, g := range got {
+		if g != want[i] {
+			t.Errorf("packagePatterns[%d] = %+v, want %+v", i, g, want[i])
+		}
+	}
+}
+
+// TestHasGoFileWithSuffixScopesAndRecursion covers the walker semantics that
+// gateResolves delegates to: suffix filtering (_test.go vs plain .go), and
+// subdirectory exclusion for single-package patterns (N20-2 — `go test ./pkg`
+// runs exactly that package, so a test file below it proves nothing).
+func TestHasGoFileWithSuffixScopesAndRecursion(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(dir, "impl.go"), "package tmp\n")
+	write(filepath.Join(sub, "impl_test.go"), "package tmp\n")
+
+	if hasGoFileWithSuffix(dir, "_test.go", false) {
+		t.Error("non-recursive: _test.go found although it only exists in a subdirectory")
+	}
+	if !hasGoFileWithSuffix(dir, "_test.go", true) {
+		t.Error("recursive: _test.go in subdirectory not found")
+	}
+	if !hasGoFileWithSuffix(dir, ".go", false) {
+		t.Error("plain .go in the directory itself not found")
+	}
+}
+
+// TestGateResolvesKindAwareness is the N20-2 regression proper: a `go test`
+// line behind a test-less package is vacuous green (`go test` prints "no
+// test files" and exits 0) and must not count as resolving, while the same
+// package behind `go build` does — build consumes plain .go source.
+//
+// The negative cases are pinned to a real test-less package directory. If
+// cmd/env-injector ever grows a _test.go, repoint this test at whichever
+// production package is then test-less; do not delete the case.
+func TestGateResolvesKindAwareness(t *testing.T) {
+	const testLess = "./cmd/env-injector"
+	if hasGoFileWithSuffix(filepath.Join(repoRoot, testLess), "_test.go", false) {
+		t.Fatalf("%s gained a _test.go — repoint TestGateResolvesKindAwareness at a test-less package", testLess)
+	}
+	if !hasGoFileWithSuffix(filepath.Join(repoRoot, testLess), ".go", false) {
+		t.Fatalf("%s lost its .go files — repoint TestGateResolvesKindAwareness at a test-less package", testLess)
+	}
+
+	if gateResolves("go test -race -timeout 60s "+testLess+"\n") {
+		t.Errorf("go test line behind test-less package %s resolved: gate can fail only by accident", testLess)
+	}
+	if !gateResolves("go build "+testLess+"\n") {
+		t.Errorf("go build line behind plain-source package %s did not resolve: build gates need only .go", testLess)
+	}
+	// The composed shape every domain plan uses: the test line is what can
+	// make the gate fail, not the repo-wide build/vet (./... is skipped).
+	if gateResolves(strings.Join([]string{
+		"go build ./...",
+		"go vet ./...",
+		"go test -race -timeout 60s " + testLess + " -count=1",
+	}, "\n")) {
+		t.Error("gate resolved via ./... build/vet lines although its only test pattern is test-less")
 	}
 }
