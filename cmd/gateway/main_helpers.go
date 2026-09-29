@@ -87,6 +87,23 @@ func liveStreamCachedDurationsFromEnv() (time.Duration, time.Duration) {
 	return ttl, cleanup
 }
 
+// syncNoCandidateProbeHoldDefault is the executor's no-candidates probe-hold
+// budget. 5s structurally lost the recovery race against a fan-out sync
+// probe on an openai-responses provider (responses leg + chat fallback =
+// 3-6s wall before the direct verdict) — 2026-09-29 gpt-6-astra incident:
+// every all-red request 503'd while the probe that would have restored the
+// view finished 0.4s after the hold expired. 10s covers the probe + a
+// re-plan + one upstream attempt; the cost when every candidate is genuinely
+// dead is a bounded extra 5s before the same 503.
+const syncNoCandidateProbeHoldDefault = 10 * time.Second
+
+// syncNoCandidateTimeoutEnv returns the no-candidates probe-hold budget from
+// LLM_GATEWAY_SYNC_NO_CANDIDATE_TIMEOUT (Go duration), falling back to
+// syncNoCandidateProbeHoldDefault when unset or malformed.
+func syncNoCandidateTimeoutEnv() time.Duration {
+	return positiveDurationEnv("LLM_GATEWAY_SYNC_NO_CANDIDATE_TIMEOUT", syncNoCandidateProbeHoldDefault)
+}
+
 // bootRetryBudgetEnv parses a non-negative duration used as a bounded
 // startup retry budget (2026-09-04 availability work). Unlike
 // positiveDurationEnv, an explicit "0" is honoured as "single attempt, no
