@@ -710,18 +710,16 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	var s tenantStats
 	s.Days = days
 
-	// 2026-07-05 migration 341: 当 days <= 7 时查询 *_hot 热表（heap，最快）。
-	// 当 days > 7 时必须走 *_with_current_month 并集视图（hot ∪ 父表全分区）：
-	// 近期写入只落 _hot，超过 7 天的行由 promote 任务搬入分区——读父表会漏掉
-	// 尚未晋升的热尾（最近约 7 天恒零，2026-09-30 R36-A1 审计修复；migration 330
-	// 设计注释亦要求 analytics 页同时看到热行与历史分区行）。与本函数 byModel/
-	// byApp 及 R30 计帐真相源（usage_ledger_with_current_month）同口径。
+	// 一律走 *_with_current_month 并集视图（hot ∪ 父表全分区）。
+	// 2026-09-30 R36-A1 修复 days>7 漏热尾后遗留半修：days<=7 分支只读 *_hot，
+	// 而 hot 保留窗仅 8h（partition_manager.DefaultRetentionWindow），默认
+	// "近 7 天" 视图 totals/credits/daily 只见最近 ~8h、前 ~6 天恒零，且与
+	// 同响应内无条件读并集视图的 byModel/byApp 自相矛盾（ thirty-six 轮审计
+	// P1 实勘）。migration 341 的"热表最快"前提已不成立（promote 8h 即搬），
+	// 并集视图有 tenant+ts 索引支撑。与本函数 byModel/byApp 及 R30 计帐真相源
+	// （usage_ledger_with_current_month）全窗口同口径。
 	logsTable := "request_logs_with_current_month"
 	usageTable := "usage_ledger_with_current_month"
-	if days <= 7 {
-		logsTable = "request_logs_hot"
-		usageTable = "usage_ledger_hot"
-	}
 
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)
 	_ = h.db.QueryRow(ctx, `

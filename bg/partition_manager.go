@@ -1974,7 +1974,10 @@ func (pm *PartitionManager) deleteTerminalRowsBatched(ctx context.Context, table
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	tag, err := pm.db.Exec(timeoutCtx,
-		"DELETE FROM "+table+" WHERE ctid IN (SELECT ctid FROM "+table+" WHERE "+predicate+" LIMIT $2)",
+		// (tableoid, ctid) 复合键：table 可能是分区父表（stats_event_inbox），
+		// 裸 ctid 只在分区内唯一，多分区时跨分区同位行会被误删——与 e92eaebab
+		// 修掉的 candidate_failure_logs P1 同型（三十七轮审计闭合）。
+		"DELETE FROM "+table+" WHERE (tableoid, ctid) IN (SELECT tableoid, ctid FROM "+table+" WHERE "+predicate+" LIMIT $2)",
 		retentionDays, limit)
 	if err != nil {
 		slog.Error("partition_manager: terminal-row TTL batch delete failed",

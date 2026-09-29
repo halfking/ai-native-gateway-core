@@ -67,11 +67,15 @@ if [[ -x "$scanner" ]]; then
   baseline="$repo_root/scripts/scan-secrets.baseline"
   baseline_arg=""
   [[ -f "$baseline" ]] && baseline_arg="--baseline=$baseline"
-  if ! "$scanner" --mode="$scan_mode" --paths=. --tracked-only $baseline_arg --format=text >/tmp/scan-output.txt 2>&1; then
+  # mktemp 而非固定 /tmp/scan-output.txt（三十七轮审计）：并发推送互踩 +
+  # 扫描摘录 0644 对同机其他用户可读。
+  scan_out="$(mktemp "${TMPDIR:-/tmp}/scan-output.XXXXXX")"
+  if ! "$scanner" --mode="$scan_mode" --paths=. --tracked-only $baseline_arg --format=text >"$scan_out" 2>&1; then
     echo "❌ Sensitive findings detected:" >&2
-    head -50 /tmp/scan-output.txt
+    head -50 "$scan_out" >&2
     scan_failed=1
   fi
+  rm -f "$scan_out"
 fi
 
 if [[ $scan_failed -eq 1 ]]; then

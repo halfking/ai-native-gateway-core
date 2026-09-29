@@ -659,3 +659,57 @@ func TestSerializeResponsesRequest_AssistantToolCallSanitized(t *testing.T) {
 		t.Errorf("function_call.call_id = %q, want call_xyz", fc["call_id"])
 	}
 }
+
+// TestSerializeResponsesRequest_SummaryVocabGate钉死 N21-2 第四出口（三十七轮
+// 审计）：Reasoning.Type 双词汇（思考指令 vs summary 偏好）中，只有已知
+// summary 词汇（auto/concise/detailed）允许回显为 reasoning.summary；
+// 指令词汇（enabled/disabled/adaptive，Gemini/Anthropic 来源）整体不发射，
+// 否则严格 Responses 上游收 {"summary":"enabled"} 报 400。
+func TestSerializeResponsesRequest_SummaryVocabGate(t *testing.T) {
+	cases := []struct {
+		name    string
+		typ     string
+		summary any // 期望的 reasoning.summary（nil=不发射）
+	}{
+		{"summary vocab echoed", "detailed", "detailed"},
+		{"auto echoed", "auto", "auto"},
+		{"directive enabled dropped", "enabled", nil},
+		{"directive disabled dropped", "disabled", nil},
+		{"adaptive dropped", "adaptive", nil},
+		{"unknown dropped", "concise-with-notes", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &InternalRequest{
+				Model: "gpt-5",
+				Messages: []Message{
+					{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}},
+				},
+				Reasoning: &ReasoningConfig{Type: tc.typ},
+			}
+			body, err := SerializeResponsesRequest(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out map[string]any
+			if err := json.Unmarshal(body, &out); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, hasReasoning := out["reasoning"].(map[string]any)
+			if tc.summary == nil {
+				if hasReasoning {
+					if s, ok := reasoning["summary"]; ok {
+						t.Fatalf("Type=%q 不得回显 summary，got %v", tc.typ, s)
+					}
+				}
+				return
+			}
+			if !hasReasoning {
+				t.Fatalf("Type=%q 应发射 reasoning 对象", tc.typ)
+			}
+			if reasoning["summary"] != tc.summary {
+				t.Fatalf("summary = %v, want %v", reasoning["summary"], tc.summary)
+			}
+		})
+	}
+}

@@ -176,9 +176,13 @@ func (w *CandidateFailureWriter) logFailure(
 	}
 
 	// 供应商错误唯一事实源（V371）：同一行数据投影写入 supplier_errors_hot。
-	// 共用同一 3s 独立超时上下文；读端（趋势 API、凭据详情、供应商统计）
-	// 统一走 supplier_errors_unified / supplier_error_stats。
-	w.persistSupplierError(ctx, row)
+	// 读端（趋势 API、凭据详情、供应商统计）统一走 supplier_errors_unified /
+	// supplier_error_stats。独立 3s ctx：若复用上方候选表写入的 ctx，首写
+	// 吃满 3s 后投影必以 deadline 失败静默丢弃——DB 抖动窗口内凭据详情页
+	// 该失败凭空消失（三十七轮审计 P2 闭合）。
+	projCtx, projCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	w.persistSupplierError(projCtx, row)
+	projCancel()
 }
 
 // buildRow extracts fields from the error chain. Walks errors.Unwrap to
