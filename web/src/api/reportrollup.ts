@@ -97,6 +97,8 @@ export interface DailyModelRow {
   provider_name?: string
   totals: ReportTotals
   error_breakdown?: Breakdown
+  /** 见 DailyGroupRow.quality_score。 */
+  quality_score?: number
 }
 
 export interface DailyGroupRow {
@@ -105,6 +107,8 @@ export interface DailyGroupRow {
   name?: string
   totals: ReportTotals
   error_breakdown?: Breakdown
+  /** 明细模式主表的「质量评分」列；缺它那一列在按天明细里整列为空。 */
+  quality_score?: number
 }
 
 export interface ReportCoverage {
