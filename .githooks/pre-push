@@ -30,6 +30,20 @@ fi
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
 scanner="$repo_root/scripts/scan-secrets.sh"
 
+# ── 0. Worktree sanity guard ────────────────────────────────────────────
+# Shared checkouts have twice (2026-09-30 05:09 / 05:24) been found with
+# core.bare=true + core.worktree in the module config — an invalid state
+# written by unknown tooling. It makes `git status`/`git check-ignore`
+# exit 128 ("must be run in a work tree") and breaks `go build` VCS
+# stamping tree-wide. Heal before scanning/testing so the gate fails on
+# real findings, not on a poisoned host config.
+if [[ "$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]]; then
+  if [[ "$(git -C "$repo_root" config core.bare 2>/dev/null)" == "true" ]]; then
+    git -C "$repo_root" config core.bare false
+    echo "⚠️  healed core.bare=true + core.worktree conflict (was breaking git ops + go build VCS stamping)" >&2
+  fi
+fi
+
 # ── 1. Sensitive-info scan (BLOCK-level findings) ────────────────────────
 
 if [[ ! -x "$scanner" ]]; then
