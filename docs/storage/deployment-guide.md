@@ -227,6 +227,36 @@ go run ./cmd/gateway
 | `async_writers` | bodies 异步落盘的写 worker 数 |
 | `retention.*` | 各类数据保留期，由后台清理任务执行，见"保留期与磁盘规划" |
 
+#### hotzone 段（全量模式热区，2026-09-24 方案 / 2026-09-30 落地）
+
+full 模式可选叠加本地热区层（`data/hotzone/` 三子树 cache / session_bodies /
+requests 共享磁盘预算）。架构与指标说明见 [README「全量模式热区」](README.md)。
+
+**三通道优先级：settings > env > YAML > default**（settings 热重载仅作用于运行期；
+装配门见下方"装配语义"）。配置定义 `config/storage.go:59-69` 与
+`settings/spec_storage.go`（CategoryStorage）。
+
+| 字段 | env | settings key | 默认值 | 生效通道与说明 |
+|------|-----|--------------|--------|----------------|
+| `hotzone.enabled` | `LLM_GATEWAY_HOTZONE_ENABLED` | `storage.hotzone_enabled`（默认 true） | `true` | **装配门只认 config 通道**（env/YAML，进程启动判定）；settings 运行期 false 仅让 trimmer 跳过清理轮，不卸载已装配热区，停新装配需改 config 通道后重启 |
+| `hotzone.dir` | `LLM_GATEWAY_HOTZONE_DIR` | — | `data/hotzone` | 热区根目录；已存在且为 symlink/非目录时告警并降级历史装配 |
+| `hotzone.max_size_gb` | `LLM_GATEWAY_HOTZONE_MAX_SIZE_GB` | `storage.hotzone_max_size_gb` | `1`（范围 1–100） | 三子树共享字节预算；settings 热重载扩容经 `FileCache.ResizeMax` 立即生效，缩容交由下一轮 trimmer |
+| `hotzone.retention_hours` | `LLM_GATEWAY_HOTZONE_RETENTION_HOURS` | `storage.hotzone_retention_hours` | `7`（范围 1–168） | 三子树 mtime 过期线（= L1.5 TTL 同参数）；settings 热重载由 trimmer 每 tick 原子替换 |
+| `hotzone.request_mirror` | `LLM_GATEWAY_HOTZONE_REQUEST_MIRROR` | — | `true` | 请求侧镜像（telemetry 三件套 + session bodies 三件套），fire-and-forget fail-open，可独立关闭 |
+
+运维提示：
+
+- **回滚**：热区纯缓存语义，`LLM_GATEWAY_HOTZONE_ENABLED=false` 一键关闭新装配，
+  删除 `data/hotzone/` 目录即完成数据回滚。
+- **对账口径（镜像 vs PG，审计 F4 留档）**：镜像落盘的是换算后、body summary
+  摘要**之前**的原文——开启 `requestBodiesSummaryEnabled` 的租户上，镜像=全文、
+  PG=摘要信封，「gunzip 与 PG 内容一致」抽查会对不上，属预期；另外空/非法 JSON
+  会收敛为 `"{}"`，镜像侧跳过 `"{}"` 而 PG 侧照落库。对账脚本须按此口径豁免
+  `null`/`{}` 行，且失败重试可能对同一路径产生一次覆盖式重写（内容一致，幂等无害，
+  量级看 `mirror.by_mode` 计数）。
+- 指标：`/metrics/storage` 的 `mirror.by_mode`、`l1_5_by_mode`（含命中率）、
+  `hotzone.hit_total_by_mode`、`hotzone_enabled`。
+
 ---
 
 ## 三、性能调优

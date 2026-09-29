@@ -25,8 +25,12 @@ const KX_HOSTS = new Set([
 /** 存量待迁移白名单（ratchet：迁一处删一行，最终清空）。 */
 const PENDING_MIGRATION = new Set<string>([])
 
-const NATIVE_INPUT_RE = /<input[^>]+type=["'](date|datetime-local|month)["'][^>]*>/g
-const EL_DATE_RE = /<el-date-picker[\s>]/
+// 静态 type：容忍等号两侧空格；动态 :type 绑定：字符串字面量含日期类型即算。
+// el-date-picker 同时匹配 kebab-case 与 PascalCase（R36 审计 P3-6：防绕过）。
+const NATIVE_INPUT_RE = /<input[^>]+type\s*=\s*["'](date|datetime-local|month)["'][^>]*>/g
+const NATIVE_INPUT_TEST = /<input[^>]+type\s*=\s*["'](date|datetime-local|month)["']/
+const NATIVE_DYNAMIC_TEST = /<input[^>]+:type\s*=\s*["'][^"']*\b(date|datetime-local|month)\b/
+const EL_DATE_RE = /<(el-date-picker|ElDatePicker)[\s>]/
 
 function* walkVue(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {
@@ -39,7 +43,8 @@ function* walkVue(dir: string): Generator<string> {
 }
 
 describe('date input unification guard', () => {
-  it('无裸原生日期输入、el-date-picker 仅存在于 Kx 组件族', () => {
+  // 冷缓存下同步遍历全树 ~700 个 .vue 可能超过 vitest 默认 5s（R36 审计 P3-7）。
+  it('无裸原生日期输入、el-date-picker 仅存在于 Kx 组件族', { timeout: 30_000 }, () => {
     const violations: string[] = []
     let scanned = 0
     for (const file of walkVue(SRC)) {
@@ -51,6 +56,7 @@ describe('date input unification guard', () => {
       const tpl = src.match(/<template[^>]*>([\s\S]*)<\/template>/)?.[1] ?? src
       const native = tpl.match(NATIVE_INPUT_RE)
       if (native) violations.push(`${rel}: 裸日期输入 ${native.join(' ')}`)
+      if (NATIVE_DYNAMIC_TEST.test(tpl)) violations.push(`${rel}: 动态绑定日期类型输入`)
       if (EL_DATE_RE.test(tpl)) violations.push(`${rel}: 模板直用 el-date-picker（应使用 Kx 组件族）`)
     }
     expect(violations, `发现 ${violations.length} 处违规（统一走 KxDateRangePicker/KxDatePicker，或迁毕后从 PENDING_MIGRATION 删除）:\n${violations.join('\n')}`).toEqual([])
@@ -62,7 +68,8 @@ describe('date input unification guard', () => {
       const file = join(SRC, rel)
       expect(statSync(file, { throwIfNoEntry: false }), `白名单条目不存在: ${rel}`).toBeTruthy()
       const src = readFileSync(file, 'utf8')
-      const hasDateInput = NATIVE_INPUT_RE.test(src) || EL_DATE_RE.test(src)
+      // 不用带 /g 的 NATIVE_INPUT_RE.test（lastIndex 跨文件残留会假阴）。
+      const hasDateInput = NATIVE_INPUT_TEST.test(src) || NATIVE_DYNAMIC_TEST.test(src) || EL_DATE_RE.test(src)
       expect(hasDateInput, `白名单条目已无日期输入，应删除: ${rel}`).toBe(true)
     }
   })
