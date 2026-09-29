@@ -1818,3 +1818,121 @@ ROLLBACK
 `db/request_logs_view_schema.go:174-179` 里有一条列数守卫：列数不在 `{113,115}`
 就 `keeping v1 body`（不升级到 v2 体）。所以这个契约**有运行时守卫**，
 不只活在测试里——这解释了为什么它值得被认真对待，而不是随手改个数字。
+
+## R79 续十九 · 修掉一个 P1 数据损坏：裸 `ctid` 打在分区父表上会跨分区误删
+
+这一轮原本是去做 armor_judgments / candidate_failure_logs / credential_probe_model_log
+三条大表 DELETE 的形态优化。做到一半发现**并发会话已经把 armor 和 cfl 都改过了**，
+于是转而复核他们的改法——复核的结果是：**cfl 那条改法是数据损坏缺陷，且已上 main。**
+
+### 一、先证伪「ctid 形态」这个通用结论
+
+`bg/opslog_trimmer.go` 当时的写法：
+
+```sql
+DELETE FROM candidate_failure_logs
+WHERE ctid IN (SELECT ctid FROM candidate_failure_logs WHERE ts < … LIMIT 5000)
+```
+
+`candidate_failure_logs` 是 **11 个分区的父表**。而 **ctid 只在单个分区内唯一**，
+物理地址在分区之间会重复。子查询返回的 ctid 会被下推到**每一个**分区，于是每个
+分区都删掉处在同一物理偏移上的行——**那些行从未被保留期谓词选中过**。
+
+合成分区表（两个分区各放一行、全在 `(0,1)`）四条形态对照，一眼看穿：
+
+| 形态 | 实删 | 对不对 |
+|---|---|---|
+| `id IN`（改之前） | 0 | ✗ TTL 失效（但**不删错**） |
+| `ctid IN` 打父表（改之后） | **2** | ✗ **删错** |
+| `(tableoid, ctid)` 打父表 | 1 | ✓ |
+| 逐叶子分区 `ctid IN` | 1 | ✓ |
+
+### 二、用真库数据量把损害量化
+
+TEMP 分区表，数据取自生产 83,584 行，全程 `BEGIN…ROLLBACK`，零持久变更：
+
+```
+最坏布局（9 月分区全过期、10 月分区全未过期）
+  ctid IN            选中 5,000 → 实删 10,000，误删未过期行 4,722
+  (tableoid, ctid)  实删 5,000，                误删 0
+```
+
+被误删的是**近期**失败记录——`bg/candidate_failure_monitor.go` 的 `checkAutoCool`
+读的正是最近 5 分钟的这批行，`model_probe_passive_boost` 同依赖它。删掉的正是让
+自动冷却能触发的那批。
+
+**为什么现在还没炸**：真库 11 个分区里只有 `candidate_failure_logs_2026_09` 有数据，
+其余 10 个空分区，跨分区误删命中 0 行。**这不是「没 bug」，是「还没武装」**——写入
+318 行/天、约 105MB/月，第二个非空月分区出现后每 tick 都会开始咬人。定级按
+「已 armed 且机制确定」计 P1，不按「今天损失多少行」计。
+
+### 三、修法：复合键
+
+```sql
+DELETE FROM candidate_failure_logs
+WHERE (tableoid, ctid) IN (
+    SELECT tableoid, ctid FROM candidate_failure_logs
+    WHERE ts < NOW() - $1::interval
+    LIMIT 5000
+)
+```
+
+`tableoid` 是「这行物理上属于哪个分区」，`ctid` 只在 `tableoid` 之内寻址，于是谓词与
+定位都收敛到同一分区。真库 EXPLAIN 印证：计划按 `(tableoid, ctid)` 分组，每层过滤
+条件是 `ANY_subquery.tableoid = tableoid AND ctid = ANY_subquery.ctid`——**被限制在
+各自分区内**。旧形态则是 `Hash Join` + 全分区 `Seq Scan` + top-N `Sort`。
+`PREPARE(interval)` 通过。
+
+### 四、这条错误是怎么被写出来的——比 bug 本身更值得记
+
+那轮改法的理由是一句实测：**「411ms → 19ms（22 倍）」**。但那个数字是在
+**单个叶子分区**上量的，而代码删的是**父表**。**用子对象上的实测支撑对父对象的
+结论**，与记忆里「形态相似当可达」是同一种错：我把「ctid 形态在 armor_judgments 上
+快 40 倍」当成了「ctid 形态到处都快」，对方照做，就落进了分区语义这个坑。
+
+顺带更正两处被污染的数字：
+
+1. **「22 倍」在父表上不成立**。复合键在父表上实测 5,000 行需 **16.8ms**，量级本就
+   接近 19ms。结论「去掉 ORDER BY 有收益」成立，但那个倍数不能当父表上的提速依据。
+2. **armor 的「870.7ms → 7.0ms（124 倍）」是冷缓存单次读数**。同一张表 TEMP 复刻
+   （804,569 行 + 同 4 条索引）、7 天截止、**3 轮取稳定值**：
+
+   | 形态 | 3 轮稳定值 |
+   |---|---|
+   | `id IN` + `ORDER BY` + LIMIT 5000 | 203.4 ms |
+   | `id IN` 去 `ORDER BY` | 77.3 ms |
+   | `ctid IN` + LIMIT 5000 | **5.0 ms** |
+
+   方向不变（量级 **40.7 倍**），但 124 倍不可复现。**比值才是结论，绝对值随缓存状态变。**
+
+还记下一条量出来的现状：armor_judgments 最早行 `created_at = 2026-07-04`，90 天
+保留下**当前 0 行过期**（2026-10-02 起才开始积压），所以现在每轮第一个批量就 break
+——但那一次 Seq Scan 仍要全跑 80 万行，这正是形态改造要消掉的成本。
+
+### 五、三张表给出三种不同结论
+
+| 表 | 形态 | 结论 |
+|---|---|---|
+| `armor_judgments`（单表 heap，无 created_at 首列索引） | `ctid IN` | **改**，40.7×，并把批量提到能覆盖 6,318 行/天写入 |
+| `candidate_failure_logs`（分区父表，id 全 NULL） | `(tableoid, ctid)` | **改，但为的是正确性** |
+| `credential_probe_model_log`（heap，已有 created_at 索引） | 三形态 3.0/4.3/4.9ms | **不改** |
+
+第三条与 `session_aggregate_outbox` 同为反例：**外层本来就不贵的表，改形态等于没改**。
+逐表实测、不整类推广——这次是靠三张表给出三种不同结论才落地的。
+
+### 六、新门：分区父表禁用裸 ctid
+
+`partitioned_parent_ctid_form_test.go` 两道：
+
+- `NoBareCTIDOnPartitionedParent`：全仓扫 **35 张真库分区父表**（`pg_inherits JOIN
+  relkind='p'` 查得后登记），裸 ctid 打父表判红。已确认缺陷走 `knownBareCTIDDefects`
+  **棘轮**——不让门长期红，因为长期红的门会被习惯性忽略，久了等于没有门。
+- `CandidateFailureLogsUsesTableoidCTID`：把本轮唯一在犯的表单独钉死。
+
+**三次变异检验，分别证明门的三种行为**：
+
+1. 把 cfl 改回裸 ctid → 专表门红并**指名被改的那一行**；泛化门因已登记而绿
+   ⇒ 棘轮在起作用。
+2. 新增一个**未登记**的裸 ctid（`session_turns`）→ 泛化门红并指名
+   `文件:行号` 与表名 ⇒ **它不是橡皮章**。
+3. 叶子分区用裸 ctid → **正确放过、不误伤** ⇒ 否则这道门会反过来阻止正确写法。
