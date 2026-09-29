@@ -8,7 +8,9 @@ repo_root="$(git rev-parse --show-toplevel)"
 scanner="$repo_root/scripts/scan-secrets.sh"
 replacements="$repo_root/scripts/scan-secrets.replacements"
 private_replacements="$repo_root/scripts/scan-secrets.private.replacements"
-mirror_dir="/tmp/llmgw-github-mirror"
+# mktemp 而非固定路径（三十七轮审计）：并发两跑会在固定 /tmp/llmgw-github-mirror
+# 上互删对方 mirror——最坏把半重写镜像 force-push 到公开仓库（历史截断）。
+mirror_dir="$(mktemp -d "${TMPDIR:-/tmp}/llmgw-github-mirror.XXXXXX")"
 github_url="$(git remote get-url github 2>/dev/null || echo "")"
 
 DRY_RUN=0
@@ -27,6 +29,7 @@ done
 [[ -x "$scanner" ]] || { echo "❌ scanner not executable: $scanner"; exit 1; }
 
 cleanup() {
+  [[ -n "${mirror_dir:-}" && -d "${mirror_dir:-}" ]] && rm -rf "$mirror_dir"
   [[ -n "${filter_replacements:-}" ]] && rm -f "$filter_replacements"
   [[ -n "${verify_dir:-}" ]] && rm -rf "$verify_dir"
 }
