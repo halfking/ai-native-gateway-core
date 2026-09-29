@@ -177,16 +177,26 @@ func TestInitStorageModeNonLiteReturnsNil(t *testing.T) {
 	if rt, err := initStorageMode(nil, empty); err != nil || rt != nil {
 		t.Errorf("initStorageMode(empty mode) = (%v, %v), want (nil, nil)", rt, err)
 	}
-	// 显式 full
+	// 显式 full + 热区关闭（config 通道）→ nil runtime（历史装配）。
+	// 2026-09-24 方案 H2（P3）起，full + 热区启用（默认）装配 hotZoneOnly
+	// runtime，见 storage_mode_init_full_hotzone_test.go；本用例保留
+	// 「关闭开关后行为与 main 历史一致」的对照半边。
+	off := false
 	full := &config.StorageConfig{
 		Mode: "full",
 		Full: &config.FullStorageConfig{
 			PostgresURL: "postgres://gateway:secret@127.0.0.1:5432/gateway",
 			RedisURL:    "127.0.0.1:6379",
 		},
+		HotZone: &config.HotZoneConfig{
+			Dir:            filepath.Join(t.TempDir(), "hotzone"),
+			Enabled:        &off,
+			RetentionHours: 7,
+			MaxSizeGB:      1,
+		},
 	}
 	if rt, err := initStorageMode(nil, full); err != nil || rt != nil {
-		t.Errorf("initStorageMode(full) = (%v, %v), want (nil, nil)", rt, err)
+		t.Errorf("initStorageMode(full, hotzone off) = (%v, %v), want (nil, nil)", rt, err)
 	}
 }
 

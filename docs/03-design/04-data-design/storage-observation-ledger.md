@@ -338,3 +338,14 @@ ROUND_RESULT|sessions=6|fail=0|global_g2=0|verdict=PASS|at=2026-09-29T01:01:59Z
 - **可评估触发 S4 停写**（plan §4-S4）：settings 一键收口 telemetry/admin ingest 对 request_logs_hot 与 bodies_hot 的写入（usage_ledger、session 族 turns/bodies 写入不变）；停写后 §6 的 1.8GB/月 outbound_body 收益 + request_logs 归零增长生效。触发前建议：①确认生产 252 已应用 711/712 且同类观察（生产侧数据形态与本机不同，gate 判定应各自独立）；②复核 claim 置位 is_final_success 结构性漏镜像待办在停写后的语义（停写后 v1 行消失，该类"v1 有账 turns 缺"的度量自然消亡，但 turn-only 写链下 hook gate 静默跳过语义仍建议在加固轮处理）。
 - **运维**：每日观察 cron（automation-15b858fd）已完成使命，请用户删除该定时任务。
 - 计数史：09-15 PG recovery FAIL（清零）→ 09-16/17 双 PASS → 09-18 claim 漏镜像 FAIL（清零）→ 09-19 PASS → 09-20 claim FAIL（清零）→ 09-21 PASS → 09-22 claim FAIL（清零）→ **09-23~09-29 七连 PASS 达标**。claim 结构性漏镜像观察期内共 3 例（09-15/18/20/22 计 5 行，均在清零日内回填兜回），09-22 后未再复发。
+
+### S4 停写触发评估（2026-09-30 03:2x，审计第十四轮 D6' 窗口）
+
+- **gate 达标事实（复核）**：GLOBAL_G2 连续 7 个自然日归零（09-23~09-29）+ 判定前夜确认轮共 8 轮 PASS；G1 四项与 G3 全程零漂移；探针流量三日翻 3.5 倍背景下零缺失。
+- **前置①（生产 schema）**：252 生产库 711/712/747 均已应用（2026-09-30 03:0x 实测 schema_migrations）。
+- **前置①（生产观察）**：**未满足**——同类 7 天观察仅在本机（8782 本地构建）执行；生产 252 数据形态为真实多租户流量，gate 判定按环境独立（台账 09-29 节既定原则）。**生产触发前需在生产侧建同类观察期。**
+- **前置②（claim 置位漏镜像语义）**：D12 同事务补偿登记（迁移 747）09-25 随三台部署上线，观察期内 claim 源登记 0 行、G2 零复发（round13 §三直查）；停写后 v1 行停止增长，该度量自然消亡——不构成阻塞。hook gate 静默跳过语义的加固仍留加固轮（09-29 节注记维持）。
+- **评估结论**：
+  - **本机：具备触发条件。** S4 停写动作 = plan §4-S4 settings 一键收口（telemetry/admin ingest 停写 request_logs_hot 与 bodies_hot；usage_ledger、session 族 turns/bodies 写入不变；710 拼装视图已就位，历史窗口经 v1 分支正常供数）。实际拨动属存储行为变更，**留待用户拍板执行**（可随 252-dev 新构建已在位的下一部署窗一并做）。
+  - **生产 252：不触发**（schema 前置满足、观察前置未满足）。
+- **运维收口**：automation-15b858fd（每日观察轮，09-29 已跑满使命）与 automation-3497ecaa（Day7 收口判定，09-29 09:30 已执行）于本轮删除；后续如需重启观察期（含生产侧），重建 cron 时复用 `scripts/audit/storage_observation_round.sh` 流程。
