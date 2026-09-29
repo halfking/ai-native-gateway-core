@@ -250,6 +250,10 @@ func (h *Handler) queryTaskSummary(ctx context.Context, r *http.Request, taskID 
 		WHERE %s`, strings.Join(where, " AND "))
 
 	var projectID sql.NullString
+	// R32-P-1 (2026-09-30 round 32): an empty match set makes MIN/MAX return
+	// NULL — scanning into non-nullable time.Time 500s before the
+	// SessionCount==0 → 404 branch can fire. Scan NULL-safely.
+	var startedAt, lastActivityAt sql.NullTime
 	err := h.db.QueryRow(ctx, query, args...).Scan(
 		&projectID,
 		&result.Summary.SessionCount,
@@ -258,13 +262,19 @@ func (h *Handler) queryTaskSummary(ctx context.Context, r *http.Request, taskID 
 		&result.Summary.TotalRequests,
 		&result.Summary.TotalSuccess,
 		&result.Summary.TotalErrors,
-		&result.Summary.StartedAt,
-		&result.Summary.LastActivityAt,
+		&startedAt,
+		&lastActivityAt,
 		&result.Summary.DurationSeconds,
 		&result.Summary.Status,
 	)
 	if err != nil {
 		return result, err
+	}
+	if startedAt.Valid {
+		result.Summary.StartedAt = startedAt.Time
+	}
+	if lastActivityAt.Valid {
+		result.Summary.LastActivityAt = lastActivityAt.Time
 	}
 	if projectID.Valid {
 		result.ProjectID = &projectID.String
@@ -353,10 +363,18 @@ func (h *Handler) queryProjectSummary(ctx context.Context, r *http.Request, proj
 		FROM session_summaries ss
 		JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
 		WHERE %s`, strings.Join(where, " AND "))
+	// R32-P-1: NULL-safe scan for the empty-set case (see queryTaskSummary).
+	var startedAt, lastActivityAt sql.NullTime
 	err := h.db.QueryRow(ctx, query, args...).Scan(
 		&summary.TaskCount, &summary.SessionCount, &summary.TotalCostUSD, &summary.TotalTokens,
-		&summary.TotalRequests, &summary.StartedAt, &summary.LastActivityAt, &summary.DurationSeconds, &summary.Status,
+		&summary.TotalRequests, &startedAt, &lastActivityAt, &summary.DurationSeconds, &summary.Status,
 	)
+	if startedAt.Valid {
+		summary.StartedAt = startedAt.Time
+	}
+	if lastActivityAt.Valid {
+		summary.LastActivityAt = lastActivityAt.Time
+	}
 	return summary, err
 }
 
