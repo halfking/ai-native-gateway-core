@@ -126,15 +126,28 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 		if result.ShouldBlock {
 			finalResult.ShouldBlock = true
 		}
+		if result.SuppressChunk {
+			// A later interceptor is withholding this frame. Earlier
+			// replacements or injections have not passed that
+			// interceptor's release decision and must not escape through
+			// the writer.
+			finalResult.SuppressChunk = true
+			finalResult.ModifiedChunk = nil
+			finalResult.InjectAfter = nil
+		}
 		if len(result.ModifiedChunk) > 0 {
-			finalResult.ModifiedChunk = result.ModifiedChunk
-			currentChunk = result.ModifiedChunk
+			if !finalResult.SuppressChunk || result.SuppressChunk {
+				finalResult.ModifiedChunk = result.ModifiedChunk
+				currentChunk = result.ModifiedChunk
+			}
 		}
 		if len(result.InjectAfter) > 0 {
-			finalResult.InjectAfter = result.InjectAfter
+			if !finalResult.SuppressChunk || result.SuppressChunk {
+				finalResult.InjectAfter = result.InjectAfter
+			}
 		}
 
-		if result.ShouldBlock {
+		if result.ShouldBlock || result.SuppressChunk {
 			break
 		}
 	}

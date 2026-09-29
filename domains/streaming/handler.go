@@ -108,6 +108,7 @@ type interceptingStreamWriter struct {
 	meta     response.StreamMeta
 	pending  []byte
 	writeErr error
+	blocked  bool
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
@@ -299,7 +300,17 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 		result, err := w.chain.InterceptStreamChunk(w.ctx, frame, &w.meta)
 		if err == nil && result != nil {
 			if result.ShouldBlock {
+				w.blocked = true
 				return
+			}
+			// Suppression withholds the current frame from the wire. A
+			// same-result ModifiedChunk may carry an earlier frame
+			// explicitly released by the last interceptor; the chain
+			// discards stale replacements from interceptors that ran
+			// before a suppressing hook. Final stays at the original
+			// frame, which we will not emit.
+			if result.SuppressChunk {
+				final = nil
 			}
 			if len(result.ModifiedChunk) > 0 {
 				final = result.ModifiedChunk
@@ -308,6 +319,9 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 				final = append(append([]byte(nil), final...), result.InjectAfter...)
 			}
 		}
+	}
+	if len(final) == 0 {
+		return
 	}
 	if _, err := w.w.Write(final); err != nil {
 		w.writeErr = err

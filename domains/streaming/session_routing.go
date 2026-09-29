@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -241,6 +242,12 @@ func generateSystemSessionID() string {
 //     Touch 与轮次状态永不生效。branch 命名空间(gt_/gs_)不注册,与 chat 一致。
 //
 // 返回规范化后的 sessionID 与解析到的 SessionInfo(可为 nil)。
+// errClientSessionForbidden is returned by normalizeAndRegisterClientSession
+// when a client-supplied session id exists but is not owned by the
+// authenticated key/tenant. The handler maps this to a 403 without
+// creating a turn (V3-A02 client-bring-session contract).
+var errClientSessionForbidden = errors.New("client session forbidden")
+
 func normalizeAndRegisterClientSession(
 	r *http.Request,
 	sessionID string,
@@ -248,14 +255,14 @@ func normalizeAndRegisterClientSession(
 		Get(ctx context.Context, id string) (*session.Session, error)
 	},
 	keyInfo *authentication.KeyInfo,
-) (string, *session.Session) {
+) (string, *session.Session, error) {
 	sessionID = deriveGatewaySessionID(sessionID)
 	if getter == nil || keyInfo == nil || r == nil {
-		return sessionID, nil
+		return sessionID, nil, nil
 	}
 	si, getErr := getter.Get(r.Context(), sessionID)
 	if getErr == nil && si != nil {
-		return sessionID, si
+		return sessionID, si, nil
 	}
 	if getErr == session.ErrSessionNotFound &&
 		strings.HasPrefix(sessionID, "gw_") && !isBranchSessionID(sessionID) {
@@ -283,5 +290,5 @@ func normalizeAndRegisterClientSession(
 			}(sessionID, keyInfo, regDeviceSeed, regTaskID)
 		}
 	}
-	return sessionID, nil
+	return sessionID, nil, nil
 }

@@ -463,7 +463,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		// verbatim honor left bare-UUID client identities in a heterogeneous
 		// namespace (turn aggregation stuck at 1) and never registered the
 		// session, so every follow-up request re-hit ErrSessionNotFound.
-		sessionID, sessionInfo = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		sessionID, sessionInfo, _ = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
 	}
 	if sessionID == "" {
 		// Last-resort fallback: use the provisional id so downstream
@@ -1311,7 +1311,7 @@ func convertAnthropicToolChoice(raw json.RawMessage) any {
 	return v
 }
 
-func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string, inputEstimate int) []byte {
+func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string, inputEstimate int, opts ...nativeResponseInterception) []byte {
 	if len(body) == 0 {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "Failed to read upstream response")
 		return nil
@@ -1350,6 +1350,31 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 	// output_tokens 也为 0; usage 键整体缺失时构造对象), 真实上报永不覆盖。
 	if inputEstimate > 0 {
 		anthropicBody = patchAnthropicUsageInput(anthropicBody, inputEstimate)
+	}
+
+	// 2026-09-29: wire 收紧 / 真实合规 hook 由 chain 走（非流式 + 流式共用）。
+	// TestNativeHandlersApplyRealOutputComplianceBeforeNonStreamWrite
+	// 验证 chain 不绕过（原生 Handler 拥有最终写入权）。
+	if h.chatHandler != nil && h.chatHandler.responseInterceptor != nil {
+		var opt nativeResponseInterception
+		if len(opts) > 0 {
+			opt = opts[0]
+		}
+		if opt.ctx == nil {
+			opt.ctx = context.Background()
+		}
+		if opt.request.ClientProtocol == "" {
+			opt.request.ClientProtocol = "anthropic-messages"
+		}
+		if opt.request.ResponseBody == nil {
+			opt.request.ResponseBody = anthropicBody
+		}
+		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, anthropicBody); err == nil && !blocked && modified != nil {
+			anthropicBody = modified
+		} else if blocked {
+			writeAnthropicError(w, http.StatusForbidden, "output_policy_blocked", "Response blocked by output policy")
+			return nil
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
