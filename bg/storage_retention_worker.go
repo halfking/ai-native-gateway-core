@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -275,15 +274,11 @@ func (w *StorageRetentionWorker) diskUsagePercent(path string) float64 {
 	if err != nil {
 		return 0
 	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(abs, &stat); err != nil {
-		return 0
-	}
-	total := stat.Blocks * uint64(stat.Bsize)
+	total, _, free := statfsTotals(abs)
 	if total == 0 {
 		return 0
 	}
-	used := total - (stat.Bfree * uint64(stat.Bsize))
+	used := total - free
 	return float64(used) / float64(total) * 100
 }
 

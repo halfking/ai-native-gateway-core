@@ -9,7 +9,7 @@
 //   - 给运维一个"还剩多少、谁在涨"的总览面板
 //
 // 实现要点：
-//   - 不引入新依赖；用 syscall.Statfs（stdlib）拿磁盘容量
+//   - 不引入新依赖；跨平台拿磁盘容量（diskusage_unix/windows.go）
 //   - 复用 h.db 查询 pg_database_size（标准 PG / Citus 均可用）
 //   - 2026-07-03: 移除 pg_total_database_size — Citus 不提供该函数
 //     改为 SUM(pg_total_relation_size) 近似估算
@@ -28,7 +28,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -348,19 +347,19 @@ func queryColumnarStorage(ctx context.Context, h *Handler) columnarStorageInfo {
 	return out
 }
 
-// queryFilesystem syscall.Statfs 探测 path 所在 filesystem 容量
+// queryFilesystem 探测 path 所在 filesystem 容量（跨平台，见 diskusage_*.go）
 func queryFilesystem(path string) (*filesystemInfo, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(abs, &stat); err != nil {
-		return nil, err
+	totalU, availU, freeU := statfsBytes(abs)
+	if totalU == 0 {
+		return nil, fmt.Errorf("statfs %s: 不可用", abs)
 	}
-	total := int64(stat.Blocks) * int64(stat.Bsize)
-	free := int64(stat.Bavail) * int64(stat.Bsize)
-	used := total - int64(stat.Bfree)*int64(stat.Bsize)
+	total := int64(totalU)
+	free := int64(availU)
+	used := total - int64(freeU)
 	pct := 0
 	if total > 0 {
 		pct = int(used * 100 / total)
