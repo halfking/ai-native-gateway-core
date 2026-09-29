@@ -438,7 +438,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		// verbatim honor left bare-UUID client identities in a heterogeneous
 		// namespace (turn aggregation stuck at 1) and never registered the
 		// session, so every follow-up request re-hit ErrSessionNotFound.
-		sessionID, sessionInfo = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		sessionID, sessionInfo, _ = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
 	}
 	if sessionID == "" {
 		sessionID = provisionalSessionID
@@ -1201,7 +1201,7 @@ func normalizeResponsesTools(value any) any {
 	return normalized
 }
 
-func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
+func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string, opts ...nativeResponseInterception) []byte {
 	if len(body) == 0 {
 		writeResponsesError(w, http.StatusInternalServerError, "Failed to read upstream response", "server_error", "upstream_read_error")
 		return nil
@@ -1216,6 +1216,29 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []
 	respBody := body
 	if format != nonStreamResponseResponses {
 		respBody = convertChatResponseToResponses(body, clientModel, requestID)
+	}
+
+	// 2026-09-29: wire 收紧 / 真实合规 hook 由 chain 走。
+	if h.chatHandler != nil && h.chatHandler.responseInterceptor != nil {
+		var opt nativeResponseInterception
+		if len(opts) > 0 {
+			opt = opts[0]
+		}
+		if opt.ctx == nil {
+			opt.ctx = context.Background()
+		}
+		if opt.request.ClientProtocol == "" {
+			opt.request.ClientProtocol = "openai-responses"
+		}
+		if opt.request.ResponseBody == nil {
+			opt.request.ResponseBody = respBody
+		}
+		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, respBody); err == nil && !blocked && modified != nil {
+			respBody = modified
+		} else if blocked {
+			writeResponsesError(w, http.StatusForbidden, "Response blocked by output policy", "output_policy_blocked", "blocked")
+			return nil
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

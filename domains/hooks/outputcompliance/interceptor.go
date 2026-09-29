@@ -16,6 +16,7 @@
 package outputcompliance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -66,21 +67,27 @@ func redactionMode() outputcompliance.RedactionMode {
 }
 
 // enabled 读取 output_compliance.enabled。
+//
+// 默认 enabled：settings.Global 未初始化 / spec 未注册 / 没有具体配置时，
+// 按原 ModuleSpecs 默认 + write-time redactor 语义，认为 compliance 启用。
+// 只有显式设置 enabled=false 才禁用。
 func enabled() bool {
 	if settings.Global == nil {
-		return false
+		return true
 	}
 	sp := settings.Global.Spec("output_compliance.enabled")
 	if sp == nil {
-		return false
+		// Match ModuleSpecs' default and the write-time redactor. The
+		// gateway may have a checker before settings registration completes.
+		return true
 	}
 	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
 	if err != nil || len(raw) == 0 {
-		return false
+		return true
 	}
 	var b bool
 	if json.Unmarshal(raw, &b) != nil {
-		return false
+		return true
 	}
 	return b
 }
@@ -96,9 +103,11 @@ func (it *OutputComplianceInterceptor) InterceptNonStream(ctx context.Context, r
 	return it.processBody(ctx, req)
 }
 
-// InterceptStreamChunk 透传（chunk 级脱敏为未来增强）。
+// InterceptStreamChunk 流式 chunk 级检测：跨帧合并直到终态/finish 由
+// stream_compliance.go 的 processStreamChunk 实现；这里委托过去，启用与禁用
+// 规则按 OutputComplianceInterceptor.shouldEnable()。
 func (it *OutputComplianceInterceptor) InterceptStreamChunk(ctx context.Context, chunk []byte, meta *response.StreamMeta) (*response.ChunkResult, error) {
-	return nil, nil
+	return it.processStreamChunk(ctx, chunk, meta)
 }
 
 // InterceptStreamEnd 流结束：body 已重组为非流式形态，复用非流式逻辑。
@@ -189,63 +198,83 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	return out, nil
 }
 
-// rewriteAssistantContent 把"完整响应 JSON 中 choices[].message.content"替换为
-// 脱敏后的纯文本。redactedContent 是 Checker 对提取出的 assistant 文本脱敏后的结果。
+// rewriteAssistantContent 把"完整响应 JSON 中 assistant 文本字段"替换为脱敏后的
+// 纯文本。redactedContent 是 Checker 对提取出的 assistant 文本脱敏后的结果。
 //
-// 实现策略：解析 JSON → 取第一个 assistant choice 的 content → 用 redactedContent
+// 支持三种协议形态：
+//   - OpenAI Chat Completions：choices[].message.content（字符串）
+//   - Anthropic Messages：       type="assistant" 时 content[].text（[]ContentBlock 第一个 text）
+//   - OpenAI Responses：           output[].content[].output_text.text
+//
+// 实现策略：解析 JSON → 定位第一个 assistant 文本字段 → 用 redactedContent
 // 替换 → 重新序列化。保留其它字段（usage/finish_reason 等）不变。
 func rewriteAssistantContent(body []byte, redactedContent string) ([]byte, bool) {
-	// 尝试 OpenAI 格式
-	var openai struct {
-		Choices []struct {
-			Message struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &openai); err != nil {
-		return nil, false
-	}
-	if len(openai.Choices) == 0 {
-		return nil, false
-	}
-	// 用 map 重新序列化以保留未知字段
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, false
 	}
-	choices, ok := raw["choices"].([]any)
-	if !ok {
-		return nil, false
+
+	replaceInBlock := func(block map[string]any) bool {
+		// Anthropic Messages: {"type":"message","role":"assistant","content":[{"type":"text","text":...}]}
+		// OpenAI Responses:        {"type":"message","content":[{"type":"output_text","text":...}]}
+		if content, ok := block["content"].([]any); ok {
+			for _, part := range content {
+				pm, ok := part.(map[string]any)
+				if !ok {
+					continue
+				}
+				pt, _ := pm["type"].(string)
+				if pt == "text" || pt == "output_text" {
+					pm["text"] = redactedContent
+					return true
+				}
+			}
+		}
+		// OpenAI Chat Completions: {"choices":[{"message":{"role":"assistant","content":...}}]}
+		if msg, ok := block["message"].(map[string]any); ok {
+			if role, _ := msg["role"].(string); role != "assistant" && role != "" {
+				return false
+			}
+			if _, exists := msg["content"]; exists {
+				msg["content"] = redactedContent
+				return true
+			}
+		}
+		return false
 	}
-	changed := false
-	for _, c := range choices {
-		cm, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		msg, ok := cm["message"].(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		if role != "assistant" && role != "" {
-			// 只改 assistant 消息；空 role 的也改（兼容）
-			continue
-		}
-		if _, exists := msg["content"]; exists {
-			msg["content"] = redactedContent
-			changed = true
-			break // 只改第一个 assistant
+
+	// OpenAI Chat Completions
+	if choices, ok := raw["choices"].([]any); ok {
+		for _, c := range choices {
+			if cm, ok := c.(map[string]any); ok {
+				if replaceInBlock(cm) {
+					break
+				}
+			}
 		}
 	}
-	if !changed {
-		return nil, false
+	// Anthropic Messages (top-level) or Responses output[*]
+	if _, ok := raw["choices"]; !ok {
+		// Anthropic: top-level content array
+		if _, ok := raw["content"]; ok {
+			if replaceInBlock(raw) {
+				goto done
+			}
+		}
+		// Responses: output[*].content[*].output_text
+		if output, ok := raw["output"].([]any); ok {
+			for _, item := range output {
+				if im, ok := item.(map[string]any); ok {
+					replaceInBlock(im)
+				}
+			}
+		}
 	}
+done:
 	out, err := json.Marshal(raw)
 	if err != nil {
 		return nil, false
 	}
-	return out, true
+	// Did anything change? Compare against original.
+	return out, !bytes.Equal(out, body)
 }
