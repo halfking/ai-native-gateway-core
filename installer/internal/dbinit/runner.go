@@ -343,6 +343,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 761 (2026-09-30, R28-HC-10): 同步投影行 processing_status
 			// 回填——writer 漏翻状态留下的假 pending 历史行一次性修复。
 			"761_stats_inbox_sync_status_backfill.sql",
+			// 762 (2026-09-30, R32-P-3 / 三十三轮 Track C): session_summaries
+			// 项目维度回填链——两级口径解析函数 + session_dim 触发器写链 +
+			// 回填扫描索引。只建链不搬数据；存量 33 万行由
+			// bg/project_backfill_worker.go 分批回填（共用 sync 函数）。
+			"762_session_project_backfill_chain.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
