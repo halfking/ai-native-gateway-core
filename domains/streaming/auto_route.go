@@ -16,11 +16,14 @@ package streaming
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
@@ -89,6 +92,198 @@ const autoRequestMagic = "auto"
 //
 // v2.0.3 audit fix #16.
 const maxWireDecisionBytes = 16 * 1024
+
+// autoTestModeHeader (2026-09-29) selects how a request interacts with the
+// production upstream layer. The default (header absent) is "live": every
+// stage of the handler pipeline runs and a real upstream LLM call is issued.
+//
+// Modes:
+//
+//	mock         — auto routing runs; the dispatch / upstream call is replaced
+//	               by a synthetic protocol-correct response carrying the
+//	               X-Gw-Auto-Decision header. Use this to test the auto
+//	               matching pipeline against a live gateway without burning
+//	               upstream tokens. Requires authorisation — see
+//	               testModeAllowed().
+//	auto-only    — alias of "mock" today; kept separate so future revisions
+//	               can diverge (e.g. "auto-only" might exercise additional
+//	               auto-route-side hooks that "mock" skips). Same runtime
+//	               behaviour as mock.
+//	other-only   — auto routing is SKIPPED: the body's explicit model name
+//	               is honoured verbatim, and the rest of the pipeline
+//	               (auth, policy, dispatch, upstream call) proceeds normally.
+//	               Use this to isolate non-auto regressions.
+//	live / full  — full production pipeline, including a real upstream call.
+//	               Header absent and the two literal values are equivalent.
+//
+// Every mode honours the request's "stream" flag: a streaming request gets
+// protocol-correct SSE framing ending in the protocol's terminator, never a
+// bare JSON object.
+//
+// Authorisation is enforced once per request at handler entry (see
+// testModeAllowed): it requires a shared secret presented in
+// X-Gw-Test-Mode-Token, and is fail-closed when that secret is unconfigured.
+// An unauthorised caller that names a non-empty mode is downgraded to
+// TestModeLive silently, so a hostile probe can't toggle behaviour purely
+// by setting a header.
+const autoTestModeHeader = "X-Gw-Test-Mode"
+
+// TestMode is the parsed value of the X-Gw-Test-Mode header. The zero value
+// (TestModeLive) is the production default — see autoTestModeHeader doc.
+type TestMode string
+
+const (
+	// TestModeLive runs the full production pipeline. Header absent and
+	// "live" / "full" are equivalent.
+	TestModeLive TestMode = ""
+	// TestModeMock runs auto routing, then short-circuits with a synthetic
+	// OpenAI-compatible response. No upstream LLM call is made.
+	TestModeMock TestMode = "mock"
+	// TestModeAutoOnly is a future-proofed alias of TestModeMock. The two
+	// share runtime semantics today; the names are kept distinct so the
+	// reports can tell whether the caller asked for "whole-pipeline mock"
+	// or "auto-only mock" once their semantics diverge.
+	TestModeAutoOnly TestMode = "auto-only"
+	// TestModeOtherOnly skips auto routing entirely; the explicit model name
+	// is honoured and the request proceeds through the production pipeline.
+	// Use to isolate non-auto regressions.
+	TestModeOtherOnly TestMode = "other-only"
+	// TestModeFull is the explicit "do everything normally" alias.
+	TestModeFull TestMode = "full"
+)
+
+// ParseTestMode reads and validates the X-Gw-Test-Mode header. Returns
+// (mode, true) when the header is present AND the value is recognised AND
+// the caller is authorised to use non-live modes; (TestModeLive, false) when
+// the header is absent, malformed, or unauthorised.
+//
+// Authorisation is gated by testModeAllowed(); an unauthorised client that
+// sets X-Gw-Test-Mode gets the live behaviour silently so a probe can't
+// toggle the production code path by guessing a header value.
+func ParseTestMode(r *http.Request, allowed bool) (TestMode, bool) {
+	if r == nil {
+		return TestModeLive, false
+	}
+	raw := strings.TrimSpace(r.Header.Get(autoTestModeHeader))
+	if raw == "" {
+		return TestModeLive, false
+	}
+	switch TestMode(strings.ToLower(raw)) {
+	case TestModeMock:
+		if !allowed {
+			return TestModeLive, false
+		}
+		return TestModeMock, true
+	case TestModeAutoOnly:
+		if !allowed {
+			return TestModeLive, false
+		}
+		return TestModeAutoOnly, true
+	case TestModeOtherOnly:
+		if !allowed {
+			return TestModeLive, false
+		}
+		return TestModeOtherOnly, true
+	case TestModeFull, TestModeLive:
+		return TestModeLive, true
+	default:
+		// Unrecognised mode — treat as live (and report "not set" so the
+		// log row stays at the default test_mode value rather than recording
+		// an unparseable user-supplied string).
+		return TestModeLive, false
+	}
+}
+
+// IsMockMode reports whether mode is one of the upstream-bypassing modes
+// (mock / auto-only). Use this to decide whether to short-circuit before
+// dispatch.
+func (m TestMode) IsMockMode() bool {
+	return m == TestModeMock || m == TestModeAutoOnly
+}
+
+// SkipsAutoRoute reports whether mode is TestModeOtherOnly.
+func (m TestMode) SkipsAutoRoute() bool {
+	return m == TestModeOtherOnly
+}
+
+// String returns the canonical lowercase mode name; empty string for live.
+func (m TestMode) String() string {
+	if m == "" {
+		return "live"
+	}
+	return string(m)
+}
+
+// testModeTokenHeader carries the shared secret that authorises the
+// non-live test modes for callers that do NOT originate inside this
+// process (cmd/autoroute-e2e-audit, manual curl from an operator
+// workstation, CI jobs).
+//
+// Why a dedicated secret instead of X-Gw-Source-Actor (2026-09-29 audit):
+// X-Gw-Source-Actor is listed in loopback.CorrelationHeaders, so
+// middleware.StripUntrustedCorrelationHeaders DELETES it from every
+// request that lacks this process's per-boot loopback token
+// (internal/loopback/token.go). By the time an external audit tool's
+// request reaches the handler, the actor header is already gone — the
+// original actor-based gate therefore evaluated to false for exactly
+// the callers it was written for, silently downgrading mock to live
+// and re-introducing the real upstream call the mode exists to avoid.
+//
+// The secret is configured out-of-band (LLM_GW_TEST_MODE_TOKEN) and
+// compared in constant time. An unset env var means the external path
+// is unavailable (fail-closed), NOT that every caller is authorised.
+const testModeTokenHeader = "X-Gw-Test-Mode-Token"
+
+// testModeTokenEnv names the env var holding the shared secret.
+const testModeTokenEnv = "LLM_GW_TEST_MODE_TOKEN"
+
+// testModeActors are the in-process loopback actors that may enable test
+// modes without presenting the shared secret. Every one of them is a
+// gateway-internal caller that already survived the loopback-token
+// check, so this list is an allowlist of already-trusted inners, not an
+// authentication mechanism. It is intentionally empty-by-default: none
+// of the production loopbacks (auto-title / auto-summary / session-summary)
+// have any use for mock mode, and listing them would mean a future
+// caller could silence a real upstream call. Test-mode requests from
+// outside this process must use the shared secret.
+var testModeActors = map[string]bool{}
+
+// testModeAllowed (2026-09-29) is the access-control gate for the
+// non-live test modes. It returns true only when the caller proves
+// authorisation by one of two means:
+//
+//  1. It is an in-process loopback actor listed in testModeActors
+//     (already trusted: such requests carry the per-boot loopback
+//     token and thus survived header stripping).
+//  2. It presents X-Gw-Test-Mode-Token matching LLM_GW_TEST_MODE_TOKEN
+//     (constant-time compare, same posture as middleware.AdminToken).
+//
+// Fail-closed in every other case: an unauthorised caller that names a
+// non-live mode is downgraded to TestModeLive, so a hostile probe
+// cannot toggle the production code path by guessing header values.
+// When the env var is unset the secret path is unavailable entirely.
+func testModeAllowed(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if actor := strings.TrimSpace(r.Header.Get(autoSourceActorHeader)); actor != "" {
+		if testModeActors[actor] {
+			return true
+		}
+		// A non-empty actor that is not allowlisted is still a loopback
+		// caller; fall through to the secret check rather than failing
+		// early, so the same policy applies to every caller shape.
+	}
+	expected := strings.TrimSpace(os.Getenv(testModeTokenEnv))
+	if expected == "" {
+		return false
+	}
+	provided := r.Header.Get(testModeTokenHeader)
+	if provided == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
 
 // autoRouteDecision is the wire format of X-Gw-Auto-Decision. Stable
 // JSON schema — clients may parse it for observability.
@@ -675,4 +870,357 @@ func countToolsInBody(body []byte) int {
 		return 0
 	}
 	return countJSONArrayLen(toolsRaw)
+}
+
+// mockChatResponse is the OpenAI-compatible body shape we emit when an
+// authorised caller asks for a mock / auto-only response. The model field is
+// the post-decider chosen model so the client can verify the auto routing
+// actually rewrote model="auto" to the expected canonical name; the choice
+// stays in X-Gw-Auto-Decision and the body model MUST match it so a downstream
+// log scraper can JOIN the two without a lookup table.
+type mockChatResponse struct {
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	Model   string         `json:"model"`
+	Choices []mockChoice   `json:"choices"`
+	Usage   map[string]any `json:"usage"`
+	// mock_marker surfaces the test mode and the x-gw-test-mode value back
+	// to the caller so a test runner can grep its own response and verify
+	// the requested mode was honoured. It is NOT a standard OpenAI field;
+	// documented as a test-only extension under X-Gw-Mock-Marker.
+	MockMarker string `json:"mock_marker,omitempty"`
+}
+
+type mockChoice struct {
+	Index        int            `json:"index"`
+	Message      map[string]any `json:"message"`
+	FinishReason string         `json:"finish_reason"`
+}
+
+// mockAutoResponseContent is the assistant message we return for a mock
+// chat completion. It is intentionally short and self-describing so a human
+// inspecting the response can tell the answer did not come from a real LLM.
+const mockAutoResponseContent = "[auto-test mock] routing decision verified; no upstream call was made."
+
+// mockMarkerHeaders sets the two response headers every mock reply carries.
+//
+//	X-Gw-Mock-Marker  — the test mode that fired; lets a runner assert the
+//	                    mode was honoured without parsing the body.
+//	X-Gw-Test-Mode    — the request-time mode, echoed for symmetry with
+//	                    other X-Gw-* request/response pairs.
+func mockMarkerHeaders(w http.ResponseWriter, mode TestMode) {
+	w.Header().Set("X-Gw-Mock-Marker", mode.String())
+	w.Header().Set("X-Gw-Test-Mode", mode.String())
+}
+
+// writeMockChatResponse emits a synthetic OpenAI-format chat completion that
+// echoes the auto-routing decision back to the caller and short-circuits the
+// dispatch / upstream call. The header set:
+//
+//	X-Gw-Auto-Decision    — the same wire the live path emits
+//	X-Gw-Mock-Marker      — human-readable marker of the test mode that fired
+//
+// mockModel is the chosen model (post-decider). mode is the parsed TestMode.
+// requestID is propagated into the mock body id so a test can correlate
+// request_logs rows with the response.
+//
+// stream selects the SSE framing. A client that sent "stream": true is
+// holding an SSE connection open and will block until the stream is
+// terminated by a [DONE] sentinel; replying with a single JSON object
+// would leave such a client hanging until its own timeout, and an SDK
+// would fail to parse it. See writeMockChatStream.
+func writeMockChatResponse(w http.ResponseWriter, mode TestMode, requestID, mockModel string, stream bool) {
+	if stream {
+		writeMockChatStream(w, mode, requestID, mockModel)
+		return
+	}
+	body := mockChatResponse{
+		ID:      "chatcmpl-mock-" + requestID,
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   mockModel,
+		Choices: []mockChoice{{
+			Index: 0,
+			Message: map[string]any{
+				"role":    "assistant",
+				"content": mockAutoResponseContent,
+			},
+			FinishReason: "stop",
+		}},
+		Usage: map[string]any{
+			"prompt_tokens":     0,
+			"completion_tokens": 0,
+			"total_tokens":      0,
+			"mock":              true,
+		},
+		MockMarker: mode.String(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	mockMarkerHeaders(w, mode)
+	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck // best-effort; HTTP write error is terminal for the response anyway
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// writeSSEFrame writes one `data: <json>` SSE frame plus the blank line
+// separator the SSE grammar requires. Shared by all three protocol
+// mock stream writers.
+func writeSSEFrame(w http.ResponseWriter, payload any) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	//nolint:errcheck // best-effort; client disconnect ends the response anyway
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+}
+
+// writeSSEEvent writes one named SSE event (`event: <name>` + data),
+// required by the Anthropic and Responses stream grammars.
+func writeSSEEvent(w http.ResponseWriter, event string, payload any) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	//nolint:errcheck
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+}
+
+// writeMockChatStream emits the OpenAI chat-completions SSE framing:
+// a role delta, a content delta carrying the marker text, a finish
+// chunk, and the terminating `data: [DONE]` sentinel. Without the
+// sentinel an SSE reader never sees end-of-stream.
+func writeMockChatStream(w http.ResponseWriter, mode TestMode, requestID, mockModel string) {
+	id := "chatcmpl-mock-" + requestID
+	created := time.Now().Unix()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	mockMarkerHeaders(w, mode)
+	w.WriteHeader(http.StatusOK)
+
+	chunk := func(delta map[string]any, finish any) map[string]any {
+		return map[string]any{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   mockModel,
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         delta,
+				"finish_reason": finish,
+			}},
+		}
+	}
+	writeSSEFrame(w, chunk(map[string]any{"role": "assistant", "content": ""}, nil))
+	writeSSEFrame(w, chunk(map[string]any{"content": mockAutoResponseContent}, nil))
+	writeSSEFrame(w, chunk(map[string]any{}, "stop"))
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	//nolint:errcheck
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// writeMockMessagesResponse emits a synthetic Anthropic-format /v1/messages
+// response. Mirror of writeMockChatResponse for the Anthropic protocol —
+// same shape (content blocks), same MockMarker, same X-Gw-Mock-Marker
+// response header so test runners can find the mark regardless of endpoint.
+func writeMockMessagesResponse(w http.ResponseWriter, mode TestMode, requestID, mockModel string, stream bool) {
+	if stream {
+		writeMockMessagesStream(w, mode, requestID, mockModel)
+		return
+	}
+	body := map[string]any{
+		"id":            "msg-mock-" + requestID,
+		"type":          "message",
+		"role":          "assistant",
+		"model":         mockModel,
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"content": []map[string]any{
+			{"type": "text", "text": mockAutoResponseContent},
+		},
+		"usage": map[string]any{
+			"input_tokens":  0,
+			"output_tokens": 0,
+			"mock":          true,
+		},
+		"mock_marker": mode.String(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	mockMarkerHeaders(w, mode)
+	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// writeMockMessagesStream emits the Anthropic Messages SSE grammar:
+// message_start → content_block_start → content_block_delta →
+// content_block_stop → message_delta → message_stop. The event names and
+// their order are part of the protocol contract; an SDK that sees them
+// out of order (or missing message_stop) treats the turn as truncated.
+func writeMockMessagesStream(w http.ResponseWriter, mode TestMode, requestID, mockModel string) {
+	id := "msg-mock-" + requestID
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	mockMarkerHeaders(w, mode)
+	w.WriteHeader(http.StatusOK)
+
+	writeSSEEvent(w, "message_start", map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":            id,
+			"type":          "message",
+			"role":          "assistant",
+			"model":         mockModel,
+			"content":       []any{},
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage": map[string]any{
+				"input_tokens":  0,
+				"output_tokens": 0,
+			},
+		},
+	})
+	writeSSEEvent(w, "content_block_start", map[string]any{
+		"type":          "content_block_start",
+		"index":         0,
+		"content_block": map[string]any{"type": "text", "text": ""},
+	})
+	writeSSEEvent(w, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": 0,
+		"delta": map[string]any{"type": "text_delta", "text": mockAutoResponseContent},
+	})
+	writeSSEEvent(w, "content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": 0,
+	})
+	writeSSEEvent(w, "message_delta", map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+		"usage": map[string]any{"output_tokens": 0},
+	})
+	writeSSEEvent(w, "message_stop", map[string]any{"type": "message_stop"})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// writeMockResponsesResponse emits a synthetic OpenAI Responses API
+// (/v1/responses) shape. Mirror of writeMockChatResponse for the Responses
+// protocol.
+func writeMockResponsesResponse(w http.ResponseWriter, mode TestMode, requestID, mockModel string, stream bool) {
+	if stream {
+		writeMockResponsesStream(w, mode, requestID, mockModel)
+		return
+	}
+	body := map[string]any{
+		"id":         "resp-mock-" + requestID,
+		"object":     "response",
+		"created_at": time.Now().Unix(),
+		"model":      mockModel,
+		"status":     "completed",
+		"output": []map[string]any{
+			{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": mockAutoResponseContent}},
+			},
+		},
+		"usage": map[string]any{
+			"input_tokens":  0,
+			"output_tokens": 0,
+			"mock":          true,
+		},
+		"mock_marker": mode.String(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	mockMarkerHeaders(w, mode)
+	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// writeMockResponsesStream emits the OpenAI Responses SSE grammar:
+// response.created → response.output_item.added →
+// response.output_text.delta → response.output_item.done →
+// response.completed. The terminal response.completed event is what a
+// Responses SDK waits for; without it the client blocks.
+func writeMockResponsesStream(w http.ResponseWriter, mode TestMode, requestID, mockModel string) {
+	id := "resp-mock-" + requestID
+	created := time.Now().Unix()
+
+	shell := func(status string) map[string]any {
+		return map[string]any{
+			"id":          id,
+			"object":      "response",
+			"created_at":  created,
+			"model":       mockModel,
+			"status":      status,
+			"output":      []any{},
+			"usage":       nil,
+			"mock_marker": mode.String(),
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	mockMarkerHeaders(w, mode)
+	w.WriteHeader(http.StatusOK)
+
+	writeSSEEvent(w, "response.created", map[string]any{
+		"type": "response.created", "response": shell("in_progress"),
+	})
+	writeSSEEvent(w, "response.output_item.added", map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"type": "message", "id": id + "-msg", "role": "assistant", "content": []any{},
+		},
+	})
+	writeSSEEvent(w, "response.output_text.delta", map[string]any{
+		"type":         "response.output_text.delta",
+		"output_index": 0,
+		"item_id":      id + "-msg",
+		"delta":        mockAutoResponseContent,
+	})
+	writeSSEEvent(w, "response.output_text.done", map[string]any{
+		"type":         "response.output_text.done",
+		"output_index": 0,
+		"item_id":      id + "-msg",
+		"text":         mockAutoResponseContent,
+	})
+	writeSSEEvent(w, "response.output_item.done", map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item": map[string]any{
+			"type": "message", "id": id + "-msg", "role": "assistant",
+			"content": []map[string]any{{"type": "output_text", "text": mockAutoResponseContent}},
+		},
+	})
+	completed := shell("completed")
+	completed["output"] = []map[string]any{{
+		"type":    "message",
+		"id":      id + "-msg",
+		"role":    "assistant",
+		"content": []map[string]any{{"type": "output_text", "text": mockAutoResponseContent}},
+	}}
+	completed["usage"] = map[string]any{
+		"input_tokens": 0, "output_tokens": 0, "mock": true,
+	}
+	writeSSEEvent(w, "response.completed", map[string]any{
+		"type": "response.completed", "response": completed,
+	})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }

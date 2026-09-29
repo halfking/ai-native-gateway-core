@@ -314,7 +314,16 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	requestedModel := reqBody.Model
 
 	// model=auto: classify + rewrite before CanonicalizeClientModel.
-	if reqBody.Model == autoRequestMagic {
+	//
+	// 2026-09-29 X-Gw-Test-Mode (see auto_route.go) overrides the auto path
+	// for authorised callers. mock / auto-only short-circuit with a
+	// synthetic Responses-format body after the auto decision lands;
+	// other-only skips the auto call entirely.
+	testMode, testModeSet := ParseTestMode(r, testModeAllowed(r))
+	if testModeSet {
+		logCtx.SetTestMode(testMode.String())
+	}
+	if reqBody.Model == autoRequestMagic && !testMode.SkipsAutoRoute() {
 		var apiKeyID int
 		if keyInfo != nil {
 			apiKeyID = keyInfo.ID
@@ -340,6 +349,20 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			autoWire = wire
 		} else {
 			logCtx.IsAutoRequest = true
+		}
+
+		// 2026-09-29 X-Gw-Test-Mode mock short-circuit: mirror the chat
+		// path — write a synthetic Responses body and stop. The chosen
+		// post-decider model is the one the test runner verifies against.
+		//
+		// recordMockRequestLog (not a bare *attemptLogged = true) so the
+		// request still produces its one request_logs row.
+		if testMode.IsMockMode() {
+			chosen := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
+			h.chatHandler.recordMockRequestLog(logCtx, testMode, chosen, keyInfo)
+			*attemptLogged = true
+			writeMockResponsesResponse(w, testMode, requestID, chosen, reqBody.Stream)
+			return
 		}
 	}
 
