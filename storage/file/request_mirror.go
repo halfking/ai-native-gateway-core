@@ -10,16 +10,20 @@
 //   - 读路径不参与 L3 回源：admin 请求详情查 PG 即可（避免文件缺失导致详情 404 的
 //     语义分裂），镜像只服务灾备人工取数 + G2「文件命中」观察。
 //
-// 接线点：流式终态落库处（streaming handler 的 bodies 写入事务提交后），
-// fire-and-forget 投递镜像。
+// 接线状态（2026-09-30 P4 落地）：
+//  1. ✅ telemetry（request_logs_bodies_hot 三件套）：Client.persistRequestLog
+//     顶部（PG 往返与 degraded 早退之前）经 SetBodyMirror 注入闭包投递，
+//     PG 不可用时镜像仍写入；S4 停写门同键同门。
+//  2. ✅ session bodies 三件套（turn bodies 成功后 + final_full 行）：
+//     SessionWriterV2.SetBodyMirror（domains/session/v2），装配闭包由
+//     cmd/gateway storageRuntime.bodyMirrorFn() 注入两个消费方。
+//  3. ✖ admin 查询详情路径**有意不接**镜像兜底读——方案 §3-H3.3 明确读路径
+//     不参与 L3 回源（避免文件缺失导致详情 404 的语义分裂），镜像只服务
+//     灾备人工取数 + 文件命中观察。
+//  4. ✅ cfg.HotZone.Dir 驱动子树父目录（NewRequestMirror(hz.Dir, 0)）。
 //
-// TODO(wiring-pending): 当前仅完成编码层（validMirrorID / WriteRequest* / fire-and-forget
-// 异步管线 + 单元测试覆盖）。未完成：
-//  1. 在 streaming handler 终态落库后调用 Mirror.WriteRequest(... DirOutput)；
-//  2. 在 admin 查询详情路径接入镜像兜底读（当前依赖 PG，L3 文件命中仅作灾备）；
-//  3. 让 cfg.HotZone.Dir 可配置驱动本子树的父目录。
-//
-// 预期接入 PR：feature/wire-request-mirror，独立提交以保证本提交可单独回滚。
+// 装配开关：HotZone.RequestMirrorEnabled（默认 true）；lite 模式不装配
+//（沿用既有 session_bodies 写入路径，不重复镜像）。
 package file
 
 import (

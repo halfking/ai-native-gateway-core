@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -76,6 +77,14 @@ type storageRuntime struct {
 	// 归工厂惰性单例（factory.NewBodiesStore），此字段恒 nil。full 模式的
 	// 写方接线属后续波次，实例先行装配使目录生命周期归 Shutdown/trimmer 管。
 	bodiesStore *filestore.FileBodiesStore
+
+	// requestMirror 是请求侧 body 镜像器（H3：HotZone.Dir/requests 子树，
+	// fire-and-forget 异步写、失败仅计数）。full 热区装配时按
+	// HotZone.RequestMirrorEnabled 创建，经 bodyMirrorFn 注入 telemetry
+	//（request_logs_bodies_hot 三件套）与 SessionWriterV2（session bodies
+	// 三件套）。lite 模式不装配（沿用既有 session_bodies 写入路径，不重复
+	// 镜像），此字段恒 nil。
+	requestMirror *filestore.RequestMirror
 
 	// consistencyWorker 是 lite 一致性对账 worker（审计 B-#2 接线）；
 	// 配置关闭或 session store 不支持空闲枚举时为 nil。快照持有仅供
@@ -255,13 +264,21 @@ func initFullHotZoneStorageMode(storageCfg *config.StorageConfig) (*storageRunti
 	// 由 AsyncFileWriter 取默认（与 factory defaultFileWorkers=4 同值）。
 	bodiesStore := filestore.NewFileBodiesStore(bodiesDir, 0)
 
+	// 请求侧 body 镜像器（H3）：HotZone.RequestMirror 默认开启；关闭时镜像
+	// 整体缺席（bodyMirrorFn 返回 nil，两个消费方自然 no-op）。
+	var requestMirror *filestore.RequestMirror
+	if hz.RequestMirrorEnabled(true) {
+		requestMirror = filestore.NewRequestMirror(hz.Dir, 0)
+	}
+
 	rt := &storageRuntime{
-		fileCache:   fileCache,
-		bodiesStore: bodiesStore,
-		mode:        storageModeFull,
-		hotZoneOnly: true,
-		bodiesDir:   bodiesDir,
-		cacheDir:    cacheDir,
+		fileCache:     fileCache,
+		bodiesStore:   bodiesStore,
+		requestMirror: requestMirror,
+		mode:          storageModeFull,
+		hotZoneOnly:   true,
+		bodiesDir:     bodiesDir,
+		cacheDir:      cacheDir,
 	}
 
 	// 热区清理 worker：三子树（cache / session_bodies / requests）共享
@@ -507,6 +524,21 @@ func (r *storageRuntime) startHotZoneTrimmer(ctx context.Context, hzCfg *config.
 		"trim_interval", "30m")
 }
 
+// bodyMirrorFn 返回 H3 请求侧镜像的投递闭包：把 storage/file.RequestMirror
+// 的 MirrorAsync（fire-and-forget、失败仅计数）适配为 v2.BodyMirrorFunc /
+// telemetry.BodyMirrorFunc 共用的函数形态（两处 direction 字面量同词表）。
+// 未装配（nil requestMirror：lite 模式 / full 热区关闭 / request_mirror=false
+// / runtime nil）恒返回 nil，消费方零开销 no-op。
+func (r *storageRuntime) bodyMirrorFn() func(tenantID, requestID, direction string, payload json.RawMessage, at time.Time) {
+	if r == nil || r.requestMirror == nil {
+		return nil
+	}
+	mirror := r.requestMirror
+	return func(tenantID, requestID, direction string, payload json.RawMessage, at time.Time) {
+		mirror.MirrorAsync(tenantID, requestID, filestore.RequestDirection(direction), payload, at)
+	}
+}
+
 // liteMode 报告当前是否处于 lite 模式：runtime 存在且非 hotZoneOnly。
 // full 热区装配（P3）的 runtime 非 nil 但 mode=full，不得被误判为 lite——
 // main 侧所有「lite 语义」门控（跳过 PG 初始化、Redis env 收口与 Redis
@@ -583,6 +615,11 @@ func (r *storageRuntime) Shutdown() {
 		if r.bodiesStore != nil {
 			if err := r.bodiesStore.Close(); err != nil {
 				slog.Warn("storage runtime: 热区会话 body 存储关闭失败", "error", err)
+			}
+		}
+		if r.requestMirror != nil {
+			if err := r.requestMirror.Close(); err != nil {
+				slog.Warn("storage runtime: 请求镜像写入器关闭失败", "error", err)
 			}
 		}
 		if r.factory != nil {
