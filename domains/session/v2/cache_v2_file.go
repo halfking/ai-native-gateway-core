@@ -44,6 +44,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/atomicrename"
 )
 
 // errCacheMiss 表示文件缓存未命中（不存在 / 已过期 / 内容损坏）。
@@ -359,7 +361,9 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("file cache: chmod %s: %w", tmpPath, err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	// Windows 上并发替换同目标（同会话并行轮次的快照覆盖写）会得瞬态
+	// ACCESS_DENIED，经 atomicrename 有界重试对齐 POSIX 语义。
+	if err := atomicrename.Replace(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("file cache: rename %s -> %s: %w", tmpPath, path, err)
 	}
@@ -405,11 +409,9 @@ func (fc *FileCache) Delete(tenantID, sessionID string) error {
 		delete(fc.index, key)
 		return nil
 	}
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			delete(fc.index, key)
-			return nil // 并发下已被删除，同样视为幂等成功
-		}
+	// Windows 上与并发读者（Get 打开快照）冲突会报瞬态共享冲突，
+	// atomicrename.Remove 幂等 + 有界重试对齐 POSIX unlink 语义。
+	if err := atomicrename.Remove(path); err != nil {
 		return fmt.Errorf("file cache: remove %s: %w", path, err)
 	}
 	fc.sizeUsed -= fi.Size()
@@ -467,7 +469,7 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) (healed
 		if fc.sizeUsed+needed <= fc.maxSize {
 			break
 		}
-		if err := os.Remove(it.path); err == nil {
+		if err := atomicrename.Remove(it.path); err == nil {
 			// 删成功才扣减
 			fc.sizeUsed -= it.size
 			if fc.sizeUsed < 0 {
@@ -503,12 +505,9 @@ func (fc *FileCache) removeExpiredLocked(path string) {
 	if err != nil || !fc.expired(fi.ModTime()) {
 		return // 已被并发删除，或已被并发 Set 刷新
 	}
-	if err := os.Remove(path); err != nil {
-		if !os.IsNotExist(err) {
-			slog.Warn("file cache: remove expired failed", "path", path, "error", err)
-			return // 删除失败不扣减记账
-		}
-		return
+	if err := atomicrename.Remove(path); err != nil {
+		slog.Warn("file cache: remove expired failed", "path", path, "error", err)
+		return // 删除失败不扣减记账
 	}
 	fc.sizeUsed -= fi.Size()
 	if fc.sizeUsed < 0 {
@@ -532,11 +531,8 @@ func (fc *FileCache) removeIfUnchanged(path string, seen os.FileInfo) {
 	if err != nil || !fi.ModTime().Equal(seen.ModTime()) || fi.Size() != seen.Size() {
 		return // 文件已被并发替换/删除，不动它
 	}
-	if err := os.Remove(path); err != nil {
-		if !os.IsNotExist(err) {
-			slog.Warn("file cache: remove corrupt failed", "path", path, "error", err)
-			return
-		}
+	if err := atomicrename.Remove(path); err != nil {
+		slog.Warn("file cache: remove corrupt failed", "path", path, "error", err)
 		return
 	}
 	fc.sizeUsed -= fi.Size()

@@ -201,7 +201,7 @@
 | P3(H2 full 装配) | ✅ 完成 | `5250eede0`(dispatcher 化 initStorageMode + hotZoneOnly runtime + main.go 六处 liteMode() 门控改写 + 运行期开关语义钉死) |
 | P4(H3 镜像接线) | ✅ 完成 | `4edc7574f`(两接线点:telemetry persistRequestLog 顶部 + SessionWriterV2 turn bodies/final_full 成功后;装配闭包注入)、`b67fe45b4`(行为钉死:三件套路径断言 + PG 不可用仍写入) |
 | P5(H5 指标分维度) | ✅ 完成 | `205864527`(l1_5_by_mode/mirror.by_mode/hotzone.hit_total_by_mode + SetStorageMode/SetHotZoneEnabled 接线,闭合 hotzone_enabled 恒 false 预存缺口) |
-| P5(H5 文档:README 增补/ADR amendment/deployment-guide 配置矩阵) | ⬜ 未做(指标先行,文档子项待下轮) | — |
+| P5(H5 文档:README 增补/ADR amendment/deployment-guide 配置矩阵) | ✅ 完成 | R36(2026-09-30)落地:README「全量模式热区」章节 + ADR-0019 Amendment(2026-09-30) + deployment-guide hotzone 配置矩阵(env/YAML/settings 三通道)+ F4 对账口径入运维文档 |
 
 批判式审计全文: docs/audit/2026-09-30-hotzone-p1p2-critical-audit.md
 (F1 过期相记账超删已由 21 轮修复 / F2 ced9eb9b1 提交信息 gauge 声明失实留档 /

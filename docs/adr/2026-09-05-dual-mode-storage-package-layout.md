@@ -55,3 +55,15 @@ lite 实现子包 `storage/memory` 更名为 `storage/lite`（package `memory` �
 Redis 状态存储同义易混，且无法表达"这是 lite 模式的持久化实现之一"。
 依赖方向不变（`storage/lite → storage ← storage/factory`），本 ADR 其余
 决定不受影响；正文表格中的 `storage/memory` 按历史记录保留原文。
+
+## Amendment (2026-09-30)
+
+全模式热区层（[2026-09-24 方案](../storage/2026-09-24-hotzone-dual-mode-plan.md)，
+P1–P5 已于 2026-09-30 落地并经
+[批判式审计](../audit/2026-09-30-hotzone-p3p4-critical-audit.md)）不改变本 ADR
+的任何接口与包布局决定：**热区层不引入新的存储接口，也不改动工厂契约**，
+仅是 `cmd/gateway/storage_mode_init.go` 装配层的运行时差异——full 模式在热区
+启用时复用 lite 的 `FileCache` / `FileBodiesStore` 实现（落在 `data/hotzone/`
+三子树，由 `bg.HotZoneTrimmer` 统一治理），叠加请求侧镜像器
+（`storage/file/request_mirror.go`）与按 mode 分维度的
+`monitoring` 指标。工厂 full 分支的 `ErrNotImplemented` 桩语义不变。

@@ -710,13 +710,14 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	var s tenantStats
 	s.Days = days
 
-	// 2026-07-05 migration 341: 当 days <= 7 时查询 *_default（等价于 _hot），
-	// 当 days > 7 时跨月查询 request_logs_with_current_month 视图（聚合热表 + 月度分区）。
-	// 符合 docs/partition/partition-standards.md 查询规范。
-	// 当 days <= 7 时查 _default 热表（heap，最快）
-	// 当 days > 7 时查询父表（自动聚合所有 ATTACHED 月度分区）
-	logsTable := "request_logs"
-	usageTable := "usage_ledger"
+	// 2026-07-05 migration 341: 当 days <= 7 时查询 *_hot 热表（heap，最快）。
+	// 当 days > 7 时必须走 *_with_current_month 并集视图（hot ∪ 父表全分区）：
+	// 近期写入只落 _hot，超过 7 天的行由 promote 任务搬入分区——读父表会漏掉
+	// 尚未晋升的热尾（最近约 7 天恒零，2026-09-30 R36-A1 审计修复；migration 330
+	// 设计注释亦要求 analytics 页同时看到热行与历史分区行）。与本函数 byModel/
+	// byApp 及 R30 计帐真相源（usage_ledger_with_current_month）同口径。
+	logsTable := "request_logs_with_current_month"
+	usageTable := "usage_ledger_with_current_month"
 	if days <= 7 {
 		logsTable = "request_logs_hot"
 		usageTable = "usage_ledger_hot"
@@ -797,8 +798,8 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		), agg AS (
 			SELECT date_trunc('day', ts)::date AS d,
 			       COUNT(*)::bigint AS requests,
-			       COUNT(*) FILTER (WHERE COALESCE(success, true))::bigint AS success,
-			       COUNT(*) FILTER (WHERE NOT COALESCE(success, true))::bigint AS errors,
+			       COUNT(*) FILTER (WHERE success IS TRUE)::bigint AS success,
+			       COUNT(*) FILTER (WHERE success IS NOT TRUE)::bigint AS errors,
 			       COALESCE(SUM(COALESCE(total_tokens, 0)), 0)::bigint AS tokens,
 			       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint AS credits,
 			       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8 AS cost
