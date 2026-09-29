@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kaixuan/llm-gateway-go/internal/atomicrename"
 	"golang.org/x/sys/windows"
 )
 
@@ -42,7 +43,7 @@ func lockAndWrite(final, tmp string, body []byte) error {
 	if err := os.WriteFile(tmp, body, 0o644); err != nil {
 		return fmt.Errorf("fsstore: write tmp: %w", err)
 	}
-	if err := os.Rename(tmp, final); err != nil {
+	if err := atomicrename.Replace(tmp, final); err != nil {
 		return fmt.Errorf("fsstore: rename: %w", err)
 	}
 	return nil

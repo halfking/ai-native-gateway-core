@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // cacheEntry 缓存条目，包含节点列表和过期时间（阶段 2 优化：TTL 机制）。
@@ -99,18 +101,27 @@ type Manager struct {
 func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	metrics := NewMetrics(nil)
-	factory := NewTransportFactory(nil)
+	// 2026-09-30 三十七轮：业务 transport 与直连侧同源——
+	// ResponseHeaderTimeout 走 LLM_GATEWAY_RESPONSE_HEADER_TIMEOUT（默认
+	// 120s），不再用工厂硬编码 30s：推理型模型经池首字节常超 30s，会被
+	// 传输层砍断误判 KindTimeout 并错误冷却凭据（"只有走池的凭据坏"假画像）。
+	// 连接池容量对齐直连（128/32）。
+	factory := NewTransportFactory(&TransportFactoryConfig{
+		MaxIdleConns:          128,
+		MaxIdleConnsPerHost:   32,
+		ResponseHeaderTimeout: upstream.ResponseHeaderTimeout(),
+	})
 	factory.metrics = metrics
 
 	return &Manager{
-		store:                 store,
-		parser:                parser,
-		checker:               checker,
-		loadBalancer:          NewLoadBalancer(StrategyBestOnly),
-		transportFactory:      factory,
-		metrics:               metrics,
-		selectionPolicy:       DefaultSelectionPolicy(),
-		active:                make(map[string]*activeSelection),
+		store:            store,
+		parser:           parser,
+		checker:          checker,
+		loadBalancer:     NewLoadBalancer(StrategyBestOnly),
+		transportFactory: factory,
+		metrics:          metrics,
+		selectionPolicy:  DefaultSelectionPolicy(),
+		active:           make(map[string]*activeSelection),
 		// S8-F4 (R60)：订阅刷新 / 全节点探活间隔原为硬编码（1h / 5m），
 		// 改为 env 可配，默认值不变。非法或非正值 warn 后回退默认，不 fatal。
 		autoRefreshInterval:   envDurationOrDefault("LLM_GATEWAY_PROXY_SUBSCRIPTION_REFRESH", time.Hour),

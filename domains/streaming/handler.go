@@ -101,14 +101,14 @@ func (w *retryCommitWriter) Flush() {
 // delimiter is present. Per-event buffering is bounded to avoid unbounded
 // memory use on malformed or hostile upstream streams.
 type interceptingStreamWriter struct {
-	w               http.ResponseWriter
-	flusher         http.Flusher
-	chain           ResponseInterceptor
-	ctx             context.Context
-	meta            response.StreamMeta
-	pending         []byte
-	writeErr        error
-	blocked         bool
+	w                http.ResponseWriter
+	flusher          http.Flusher
+	chain            ResponseInterceptor
+	ctx              context.Context
+	meta             response.StreamMeta
+	pending          []byte
+	writeErr         error
+	blocked          bool
 	terminalRendered bool
 }
 
@@ -5558,7 +5558,7 @@ goalRetryLoopDone:
 			ClientProtocol: clientProtocolLane,
 			ClientModel:    clientModel,
 			ResponseBody:   result.ResponseBody,
-			TokensUsed:   extractTotalTokens(result.ResponseBody, streamCapture),
+			TokensUsed:     extractTotalTokens(result.ResponseBody, streamCapture),
 			ContextWindow: func() int {
 				if len(candidates) > 0 && candidates[0].ContextWindow != nil {
 					return *candidates[0].ContextWindow
@@ -8975,7 +8975,26 @@ func overloadRetryAfterSeconds(err error) int {
 // of a wrapped *upstreampkg.Error (looking for error.message,
 // error.error.message, or message), then falls back to the raw error
 // string. The result is capped at 200 characters.
+//
+// 2026-09-30 三十七轮：出口统一过 SanitizeErrorText——上游错误体可能回显
+// 网关凭据（candidate_failure_logger.go 自认该威胁："credentials echoed by
+// the vendor"），此 reason 会进入客户端可见的 debug/reason 字段，脱敏标准
+// 此前与 DB 写路径（supplier_errors 落库前脱敏）不一致。
 func extractUpstreamReason(err error) string {
+	return sanitizeUpstreamReasonPreview(extractUpstreamReasonRaw(err))
+}
+
+func sanitizeUpstreamReasonPreview(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	return string(errorsx.SanitizeErrorText([]byte(reason), 200))
+}
+
+func extractUpstreamReasonRaw(err error) string {
 	if ue, ok := extractUpstreamError(err); ok && len(ue.Body) > 0 {
 		var parsed struct {
 			Error *struct {
@@ -8985,32 +9004,16 @@ func extractUpstreamReason(err error) string {
 		}
 		if json.Unmarshal(ue.Body, &parsed) == nil {
 			if parsed.Error != nil && parsed.Error.Message != "" {
-				msg := parsed.Error.Message
-				if len(msg) > 200 {
-					msg = msg[:200]
-				}
-				return msg
+				return parsed.Error.Message
 			}
 			if parsed.Message != "" {
-				msg := parsed.Message
-				if len(msg) > 200 {
-					msg = msg[:200]
-				}
-				return msg
+				return parsed.Message
 			}
 		}
 		// JSON parse failed — return raw body preview.
-		raw := string(ue.Body)
-		if len(raw) > 200 {
-			raw = raw[:200]
-		}
-		return raw
+		return string(ue.Body)
 	}
-	msg := err.Error()
-	if len(msg) > 200 {
-		msg = msg[:200]
-	}
-	return msg
+	return err.Error()
 }
 
 // captureAttemptBody reads the request body (capped at 1MB) into bodyOut
