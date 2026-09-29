@@ -323,3 +323,18 @@ ROUND_RESULT|sessions=7|fail=0|global_g2=0|verdict=PASS|at=2026-09-28T01:01:07Z
 - 抽样 7/7 PASS（biz_multi×4、loop_single×3），G1 四项零漂移。
 - claim 置位结构性漏镜像连续第 8 天未产生缺失。
 - **连续归零累计 6/7**（09-28 计 Day 6）。**明日（09-29）每日轮 PASS 即满 7 天**，届时台账标注"S4 停写 gate 观察期达标，可评估触发停写"。
+
+### 每日观察 2026-09-29 09:01 (+08)，build=e1b73e88/2322 —— **PASS —— 连续归零 Day 7/7，S4 停写 gate 观察期达标 ✅**
+
+构建身份：e1b73e88/2322 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=6|fail=0|global_g2=0|verdict=PASS|at=2026-09-29T01:01:59Z
+```
+
+- 抽样 6/6 PASS（biz_multi×3、loop_single×3），G1 四项零漂移。
+- **✅ S4 停写 gate 观察期达标**：GLOBAL_G2 连续 7 个自然日归零（09-23 / 09-24 / 09-25 / 09-26 / 09-27 / 09-28 / 09-29），加上判定前夜的确认轮共 8 轮全 PASS；观察期内 G1 四项（token/cost/success/credits）与 G3 每日零漂移，抽样覆盖 biz_multi/loop_single/sys 三层与 3-5 万轮探针流量尖峰。
+- **可评估触发 S4 停写**（plan §4-S4）：settings 一键收口 telemetry/admin ingest 对 request_logs_hot 与 bodies_hot 的写入（usage_ledger、session 族 turns/bodies 写入不变）；停写后 §6 的 1.8GB/月 outbound_body 收益 + request_logs 归零增长生效。触发前建议：①确认生产 252 已应用 711/712 且同类观察（生产侧数据形态与本机不同，gate 判定应各自独立）；②复核 claim 置位 is_final_success 结构性漏镜像待办在停写后的语义（停写后 v1 行消失，该类"v1 有账 turns 缺"的度量自然消亡，但 turn-only 写链下 hook gate 静默跳过语义仍建议在加固轮处理）。
+- **运维**：每日观察 cron（automation-15b858fd）已完成使命，请用户删除该定时任务。
+- 计数史：09-15 PG recovery FAIL（清零）→ 09-16/17 双 PASS → 09-18 claim 漏镜像 FAIL（清零）→ 09-19 PASS → 09-20 claim FAIL（清零）→ 09-21 PASS → 09-22 claim FAIL（清零）→ **09-23~09-29 七连 PASS 达标**。claim 结构性漏镜像观察期内共 3 例（09-15/18/20/22 计 5 行，均在清零日内回填兜回），09-22 后未再复发。
