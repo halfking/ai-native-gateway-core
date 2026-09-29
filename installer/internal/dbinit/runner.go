@@ -332,6 +332,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// fresh-install path as well as the revision sequence for upgrades.
 			"757_session_turns_origin_actor_projection.sql",
 			"758_routeincident_missing_columns.sql",
+			// 759 (2026-09-29, 对帐多维筛选轮): report_snapshots 增加
+			// credential_id / api_key_id / person 三列与两个最细粒度 scope
+			// 所需的 4 个 partial 索引。没有这三列，凭据 / apikey / 用户
+			// 三类筛选在 schema 层就无处可取（不是读面没实现）。
+			"759_report_snapshots_grain_dims.sql",
 			// 760 (2026-09-30, R27-HC-1/HC-2): analysis_events /
 			// stats_event_inbox 终态 TTL 清扫支撑索引（部分索引，仅终态行）。
 			"760_analysis_events_inbox_ttl_indexes.sql",

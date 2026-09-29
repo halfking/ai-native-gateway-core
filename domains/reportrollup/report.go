@@ -84,6 +84,10 @@ type ModelRow struct {
 	RawModelName   string           `json:"raw_model_name"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	// QualityScore 见 ProviderRow.QualityScore：公式与维度无关，任何分组
+	// 都能算（2026-09-29 多维轮补齐——目标把质量评分列为通用列，不该只有
+	// 供应商维度有值）。
+	QualityScore float64 `json:"quality_score,omitempty"`
 }
 
 // TenantRow 租户汇总行。
@@ -91,6 +95,7 @@ type TenantRow struct {
 	TenantID       string           `json:"tenant_id"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	QualityScore   float64          `json:"quality_score,omitempty"`
 }
 
 // CredentialRow 凭据级汇总行（R28-B-2，provider 面）。CredentialID 是
@@ -115,12 +120,16 @@ type PersonRow struct {
 	Person         string           `json:"person"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	QualityScore   float64          `json:"quality_score,omitempty"`
 }
 
 // DayRow 单日汇总行。
 type DayRow struct {
-	Date   string `json:"date"`
-	Totals Totals `json:"totals"`
+	Date string `json:"date"`
+	// ErrorBreakdown 仅 grain 读面填充（旧读面的按天行不携带，导出时
+	// 「主要错误」列留空）；旧消费方忽略该字段即可。
+	ErrorBreakdown map[string]int64 `json:"error_breakdown,omitempty"`
+	Totals         Totals           `json:"totals"`
 }
 
 // RangeReport 区间汇总结果。
