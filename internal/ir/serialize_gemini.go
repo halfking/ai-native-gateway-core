@@ -792,6 +792,12 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 			thinkingType = req.Reasoning.Type
 			if thinkingType == "disabled" {
 				thinkingBudget = 0
+			} else if req.Reasoning.BudgetTokens != nil && *req.Reasoning.BudgetTokens > 0 {
+				// Explicit Type wins, but must not drop an explicit positive
+				// budget (R23-A): parse_gemini builds {Type:"enabled",
+				// BudgetTokens} for positive thinkingBudget; falling back to
+				// the -1 dynamic default silently discards the caller's cap.
+				thinkingBudget = *req.Reasoning.BudgetTokens
 			}
 			emitBlock = true
 		case req.Reasoning.BudgetTokens != nil:
