@@ -100,6 +100,8 @@ type Handler struct {
 	// 避免改动所有 Handler 构造点。请求路径不会启动后台 goroutine。
 	proxyOnce  sync.Once
 	proxyMgr   *proxy.Manager
+	// liteSessions 为 lite(sqlite) 存储模式的会话读面（R28-S-2）；nil=非 lite 模式。
+	liteSessions LiteSessionsReader
 	proxyStore proxy.Store
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
@@ -1320,6 +1322,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
 
 	// 2026-08-29 代理管理（出口基础设施，仅 superAdmin）
+	// R28-S-2: lite(sqlite) 会话读面——lite 模式此前只写不读。
+	mux.HandleFunc("/api/lite/sessions", h.admin(h.handleLiteSessions))
 	mux.HandleFunc("/api/proxy/status", h.superAdmin(h.handleProxyStatus))
 	mux.HandleFunc("/api/proxy/subscriptions", h.superAdmin(h.handleProxySubscriptionsRoot))
 	mux.HandleFunc("/api/proxy/subscriptions/", h.superAdmin(h.handleProxySubscriptions))

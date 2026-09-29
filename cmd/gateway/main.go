@@ -141,6 +141,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
+	"github.com/kaixuan/llm-gateway-go/storage"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/tenantops"
 	"github.com/kaixuan/llm-gateway-go/proxy"
@@ -2307,6 +2308,15 @@ func main() {
 		slog.Warn("API key authentication: DB verifier unavailable — static secret-key-only auth enforced for all data-plane requests (sk-* keys rejected)")
 	} else {
 		exposed := storageRt != nil // lite 模式即常态开放；full 降级态为临时暴露
+		if exposed && os.Getenv("LLM_GATEWAY_LITE_ALLOW_UNAUTHENTICATED") != "1" {
+			// R28-S-3 (2026-09-30 round 31): lite is a deliberate deployment
+			// mode, not a transient degradation — shipping its data plane with
+			// zero auth is a configuration hole. Refuse to start unless the
+			// operator explicitly opts in to an open data plane. The full-mode
+			// degraded boot below keeps the historical warn-and-continue.
+			slog.Error("lite mode requires data-plane authentication: set LLM_GATEWAY_SECRET_KEY (static-key fallback), LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR (snapshot auth), or LLM_GATEWAY_LITE_ALLOW_UNAUTHENTICATED=1 to explicitly accept an unauthenticated data plane")
+			os.Exit(1)
+		}
 		slog.Error("DATA PLANE UNAUTHENTICATED: api key verification unavailable and no static key configured — any bearer token is accepted. Set LLM_GATEWAY_SECRET_KEY (static-key fallback) or LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR (snapshot auth) to close this.",
 			"lite_mode", exposed)
 	}
@@ -2321,9 +2331,23 @@ func main() {
 	// 请求日志不落盘）把 telemetry 持久化管道桥接到存储工厂——SQLite
 	// request_logs/sessions/session_turns + FileBodies 原文文件。full/未启用
 	// 模式（storageRt == nil）不注册 sink，全部路径行为零变化。
+	// lite 会话读面（R28-S-2）：lite 块先捕获 reader，admin handler 创建后
+	// 再注入（adminHandler 在本函数更晚处构造）。
+	var liteSessionsReader func(ctx context.Context, tenantID string, opts *storage.ListOptions) ([]*storage.Session, error)
 	if storageRt != nil {
 		telemetryClient.SetRequestLogSink(storageRt.newLiteRequestLogSink())
 		slog.Info("storage lite mode: telemetry request log sink wired (SQLite request_logs + session journal + file bodies)")
+		// R28-S-1/S-2 (2026-09-30 round 31): lite 模式的能力边界显式声明——
+		// 计费面（积分扣费/usage_ledger/对帐）不运行；cost_usd 依赖 PG 价表
+		// （model_offers/pricing_plans），lite 无 PG 时恒 NULL（价表进 lite
+		// 属产品决策，登记待 owner 拍板）；管理面 PG 端点 503，会话数据经
+		// /api/lite/sessions 读 SQLite。
+		slog.Warn("storage lite mode capability boundary: NO billing face (credits/usage_ledger/reconciliation); cost_usd is NULL without the PG price tables; admin PG endpoints return 503; sessions are readable via /api/lite/sessions")
+		if sessionsStore := storageRt.factory.NewSessionStore(); sessionsStore != nil {
+			liteSessionsReader = func(ctx context.Context, tenantID string, opts *storage.ListOptions) ([]*storage.Session, error) {
+				return sessionsStore.ListSessions(ctx, tenantID, opts)
+			}
+		}
 	}
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
@@ -2932,6 +2956,9 @@ func main() {
 		// R28-P-3: providers marked 'direct' join the never-proxy list so
 		// policy, not the hardcoded domestic table, decides who bypasses
 		// the env proxy.
+		if adminHandler != nil && liteSessionsReader != nil {
+			adminHandler.SetLiteSessionsReader(liteSessionsReader)
+		}
 		if adminHandler != nil && adminDB != nil {
 			if egressMgr := adminHandler.EgressProxyManager(); egressMgr != nil {
 				upClient.SetEgressProvider(proxy.NewEgressProvider(egressMgr, adminDB, 0))
