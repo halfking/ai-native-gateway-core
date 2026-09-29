@@ -469,3 +469,60 @@ func TestBuildRangeReport_ProviderQualityScorePopulated(t *testing.T) {
 		t.Errorf("quality_score = %v, want 100 (all success, no latency penalty)", p.QualityScore)
 	}
 }
+
+// TestRangeReportCredentialView R28-B-2：credential 视角按凭据分组、
+// 总计来自 DailyTotal（无过滤），凭据行不进按天序列（防双计）。
+func TestRangeReportCredentialView(t *testing.T) {
+	snaps := []Snapshot{
+		mkSnap(ScopeDailyTotal, "all", "2026-09-01", "", 10, 9, nil, nil, nil),
+		mkSnap(ScopeDailyByCredential, "101", "2026-09-01", "", 6, 6, map[string]int64{"auth": 1}, nil, nil),
+		mkSnap(ScopeDailyByCredential, "202", "2026-09-01", "", 4, 3, map[string]int64{"timeout": 1}, nil, nil),
+	}
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+	mustSnapshotRows(t, mock, snaps, 3)
+	rep, err := BuildRangeReport(context.Background(), mock, day(t, "2026-09-01"), day(t, "2026-09-01"), ViewCredential, RangeFilter{}, nil)
+	if err != nil {
+		t.Fatalf("BuildRangeReport: %v", err)
+	}
+	if len(rep.Credentials) != 2 {
+		t.Fatalf("credentials = %d, want 2", len(rep.Credentials))
+	}
+	if rep.Credentials[0].CredentialID != 101 || rep.Credentials[0].Totals.RequestCount != 6 {
+		t.Fatalf("top credential = %+v, want id=101 req=6", rep.Credentials[0])
+	}
+	if rep.Totals.RequestCount != 10 {
+		t.Fatalf("totals = %d, want 10 (from DailyTotal, not double-counted)", rep.Totals.RequestCount)
+	}
+	if len(rep.Days) != 1 || rep.Days[0].Totals.RequestCount != 10 {
+		t.Fatalf("days = %+v, want single day req=10 from DailyTotal only", rep.Days)
+	}
+}
+
+// TestRangeReportKeyView R28-B-2：key 视角按 api-key 分组。
+func TestRangeReportKeyView(t *testing.T) {
+	snaps := []Snapshot{
+		mkSnap(ScopeDailyTotal, "all", "2026-09-01", "", 8, 8, nil, nil, nil),
+		mkSnap(ScopeInternalKey, "760", "2026-09-01", "", 5, 5, nil, nil, nil),
+		mkSnap(ScopeInternalKey, "761", "2026-09-01", "", 3, 2, map[string]int64{"rate_limited": 1}, nil, nil),
+	}
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+	mustSnapshotRows(t, mock, snaps, 3)
+	rep, err := BuildRangeReport(context.Background(), mock, day(t, "2026-09-01"), day(t, "2026-09-01"), ViewKey, RangeFilter{}, nil)
+	if err != nil {
+		t.Fatalf("BuildRangeReport: %v", err)
+	}
+	if len(rep.APIKeys) != 2 || rep.APIKeys[0].APIKeyID != 760 {
+		t.Fatalf("api keys = %+v, want 2 sorted by count", rep.APIKeys)
+	}
+	if rep.APIKeys[1].ErrorBreakdown["rate_limited"] != 1 {
+		t.Fatalf("key 761 error breakdown missing: %+v", rep.APIKeys[1].ErrorBreakdown)
+	}
+}

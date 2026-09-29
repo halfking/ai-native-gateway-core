@@ -96,7 +96,7 @@ func reportViewFilter(r *http.Request) (reportrollup.View, reportrollup.RangeFil
 		view = reportrollup.ViewProvider
 	}
 	if !view.Valid() {
-		return "", reportrollup.RangeFilter{}, fmt.Errorf("view must be provider or internal")
+		return "", reportrollup.RangeFilter{}, fmt.Errorf("view must be provider, internal, credential or key")
 	}
 	var filter reportrollup.RangeFilter
 	if raw := strings.TrimSpace(r.URL.Query().Get("provider_id")); raw != "" {
