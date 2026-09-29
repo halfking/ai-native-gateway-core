@@ -29,5 +29,6 @@
 ## 2026-09-30 本轮
 
 - [修订审计三十六轮](2026-09-30/24-修订审计三十六轮.md)：R36-A1 stats days>7 漏热尾根修（并集视图）+ R36-B1/B2 Windows 预存在红根修（internal/atomicrename 跨平台原子替换/删除包，async_writer+FileCache 六处接线）+ R36-A2/C1 stats P3 修（吞错/404 映射/rows.Err/success 语义）+ R36-C2 日历守卫测试加固（正则防绕过+超时+lastIndex 隐患）+ hotzone P5-6 文档子项落地（README/ADR-0019/deployment-guide/方案状态表）；双子代理并行审计 stats 后端（1×P2）与 web 看板（7×P3）均不阻断；A-2 迁移 759 让号继续移交主仓会话。三十五轮文档见 `docs/12小时内修订审计-20260930-0420.md`。
+- [修订审计三十七轮](2026-09-30/25-修订审计三十七轮.md)：24h 全量轮（窗口 122+ 提交）。前置：三方同步闭环 + 共享树 core.bare=true 双次毒化实勘与 pre-push 自愈守卫 + 镜像门 4 套件「测试↔策略反向漂移」修复（sops/DSN 回退/bump-version floor 语义/env_injector SKIP）。主体：codegraph 全量重建 + 六域子代理并行 + 主代理逐项实证，11 项根修——P1×2（tenants.go days<=7 只读 8h 热表漏热尾=R36-A1 半修；deleteTerminalRowsBatched 裸 ctid 打 stats_event_inbox 父表，动态表名系 D07 门正则盲区）+ P2×9（summary 词汇第四出口/两桥 DrainPending/投影独立 ctx/reason 出口脱敏/egress 池 30s 同源/apikey reveal 审计/白名单差集 11 码棘轮/atomicrename 四接线/固定 tmp mktemp）；登记不修 15 项（N21-5 六族 TTL、N21-4 LRU 悬挂、suppress 饿死 restore、熔断三面死、bg panic 无包装等）；下一迁移 765。
 
 本目录是逐轮更新的工作记录；未打勾的验收项不得据此宣称系统全域通过。历史 R73–R76 审计与 D01–D17 检查表仍保留在 `docs/audit`，本轮从具体源码重新核实后再引用。
