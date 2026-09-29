@@ -223,6 +223,20 @@ func NormalizeEffortAlias(effort string) string {
 	}
 }
 
+// IsDisableEffort reports whether the given effort spelling means "no
+// thinking / disabled". The IR disables intent resolves through this
+// function as the last-resort spelling check; explicit Type and explicit
+// zero BudgetTokens take precedence in reasoningDisabled.
+// Cross-protocol aliases accepted: "none" (OpenAI/Anthropic conventional
+// disable), "disabled" (newer IR spelling), case-insensitive, trimmed.
+func IsDisableEffort(effort string) bool {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "disabled":
+		return true
+	}
+	return false
+}
+
 // ─── Render: Intent → per-dialect output ──────────────────────────────────────
 
 // Result is the rendered reasoning configuration ready to be merged into the

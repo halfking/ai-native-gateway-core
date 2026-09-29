@@ -32,12 +32,16 @@ type OwnerContextFunc func(sessionID, tenantID string) (callerOwner, dataOwner s
 
 // OutputComplianceInterceptor 实现 response.ResponseInterceptor。
 type OutputComplianceInterceptor struct {
-	checker *outputcompliance.Checker
+	checker interface {
+		Check(context.Context, string, string) (*outputcompliance.ComplianceResult, error)
+	}
 	ownerFn OwnerContextFunc // 可空：为 nil 时 caller/data owner 均视为空（保守脱敏）
 }
 
 // NewOutputComplianceInterceptor 构造拦截器。checker 必须非 nil；ownerFn 可为 nil。
-func NewOutputComplianceInterceptor(checker *outputcompliance.Checker, ownerFn OwnerContextFunc) *OutputComplianceInterceptor {
+func NewOutputComplianceInterceptor(checker interface {
+	Check(context.Context, string, string) (*outputcompliance.ComplianceResult, error)
+}, ownerFn OwnerContextFunc) *OutputComplianceInterceptor {
 	return &OutputComplianceInterceptor{checker: checker, ownerFn: ownerFn}
 }
 
