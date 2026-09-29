@@ -436,7 +436,14 @@ func isTableNotFound(err error, table string) bool {
 
 // getPolicy 获取策略
 func (c *Checker) getPolicy(ctx context.Context, tenantID string) (*Policy, error) {
-	query := `SELECT tenant_id, enabled, enforcement_mode, check_pii, check_toxicity, check_bias, 
+	// R25-E: one SQL load per request, not one per visible text field.
+	// The stream path wraps its check context with WithRequestPolicyCache;
+	// without this read the cache value was written but never consulted.
+	cache, _ := ctx.Value(requestPolicyCacheKey{}).(*requestPolicyCache)
+	if p := cache.get(c, tenantID); p != nil {
+		return p, nil
+	}
+	query := `SELECT tenant_id, enabled, enforcement_mode, check_pii, check_toxicity, check_bias,
 		check_hallucination, pii_threshold, toxicity_threshold, bias_threshold, hallucination_threshold,
 		action_on_pii, action_on_toxicity, action_on_bias, action_on_hallucination,
 		auto_redact, redact_email, redact_phone, redact_id_card, redact_credit_card,
@@ -454,7 +461,12 @@ func (c *Checker) getPolicy(ctx context.Context, tenantID string) (*Policy, erro
 	)
 
 	if err == sql.ErrNoRows {
-		return defaultPolicy(tenantID), nil
+		def := defaultPolicy(tenantID)
+		cache.put(c, tenantID, def)
+		return def, nil
+	}
+	if err == nil {
+		cache.put(c, tenantID, policy)
 	}
 
 	return policy, err

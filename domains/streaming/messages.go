@@ -753,6 +753,9 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// R25-C: authenticated key owner for the interceptor's owner compare;
+	// empty means "owner unknown" → conservative redaction on every field.
+	_, callerOwner, _ := keyMetaFromKeyInfo(keyInfo)
 	usedSurvival := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
 	var result *executors.ExecuteResult
 	var execErr error
@@ -760,10 +763,12 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		base := w
 		if h.chatHandler.responseInterceptor != nil {
 			base = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
@@ -780,7 +785,23 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		}
 		// SP-02: state machine — executor has accepted the request.
 		rt.Emit(state.EventDispatching)
-		result, execErr = h.chatHandler.executor.Execute(buildExecParams(w))
+		// R25-G: the non-survival stream must flow through the same
+		// intercepting writer as the survival lane; a bare writer left the
+		// whole compliance chain bypassed for ordinary streams.
+		execWriter := http.ResponseWriter(w)
+		if isStream && h.chatHandler.responseInterceptor != nil {
+			iw := newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
+			})
+			defer iw.finish()
+			execWriter = iw
+		}
+		result, execErr = h.chatHandler.executor.Execute(buildExecParams(execWriter))
 	}
 
 	if execErr != nil {
@@ -852,7 +873,21 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 
 	var responseBody []byte
 	if !isStream {
-		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID, executors.EstimateAnthropicInputTokens(bodyBytes))
+		// R25-B: carry full request identity into the non-stream
+		// interception — the zero-value default previously left
+		// TenantID/SessionID empty, disabling tenant policy and owner
+		// resolution for native non-stream responses.
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID, executors.EstimateAnthropicInputTokens(bodyBytes), nativeResponseInterception{
+			ctx: r.Context(),
+			request: response.InterceptRequest{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
+			},
+		})
 	}
 
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
