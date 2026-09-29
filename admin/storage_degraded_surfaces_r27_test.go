@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"os"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -66,4 +67,35 @@ func TestSessionSummarizeTitle_DegradedContract(t *testing.T) {
 	req = SetAuthContext(req, &AuthContext{TenantID: "t1", Role: "admin", IsJWT: true})
 	h.handleSessionSummarizeTitle(rec, req, "task-audit")
 	assertDegraded(t, rec, "summary")
+}
+
+// R32-P-1 (round 32): a nonexistent task/project id must 404, not 500 —
+// MIN/MAX over an empty set returns NULL and the old non-nullable
+// time.Time scan errored before the SessionCount==0 branch could fire.
+// Runs against TEST_DATABASE_URL when set (real-DB gate, sentinel id).
+func TestTaskFlowUnknownIDReturns404RealDB(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping real-DB 404 regression")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	h := &Handler{db: pool}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/task-flow/r32-no-such-task", nil)
+	req = SetAuthContext(req, &AuthContext{TenantID: "t1", Role: "admin", IsJWT: true})
+	h.handleTaskFlow(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown task = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/sessions/project-costs/r32-no-such-project", nil)
+	req = SetAuthContext(req, &AuthContext{TenantID: "t1", Role: "admin", IsJWT: true})
+	h.handleProjectCosts(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown project = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+	}
 }
