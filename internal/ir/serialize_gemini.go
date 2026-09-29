@@ -207,6 +207,32 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 	}
 }
 
+// reportSerializeGeminiUnsupportedThinking records that a Gemini model
+// rejected thinkingBudget=0 (e.g. Gemini 2.5 Pro / Gemini 3 / unknown
+// aliases — only Gemini 2.5 Flash family supports it). The IR's disable
+// intent is reported as an ir_protocol_loss with reason="unsupported" so
+// the request still goes upstream without the unsupported sentinel.
+func reportSerializeGeminiUnsupportedThinking(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	fieldPath := "reasoning"
+	if req.SourceProtocol == ProtocolGeminiGenerate {
+		fieldPath = "reasoning" // native path
+	} else {
+		fieldPath = "reasoning_effort"
+	}
+	ReportProtocolLoss(
+		irRequestID(req),
+		fieldPath,
+		req.SourceProtocol,
+		ProtocolGeminiGenerate,
+		"unsupported",
+		"Gemini model rejected thinkingBudget=0; omitted thinkingConfig to keep request valid",
+		map[string]any{"model": req.Model},
+	)
+}
+
 // buildGeminiSystemInstruction converts IR System → Gemini systemInstruction.
 func buildGeminiSystemInstruction(sys *SystemPrompt) map[string]any {
 	if sys == nil {
@@ -758,6 +784,7 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 		thinkingType := "enabled"
 		thinkingBudget := -1 // Gemini default: -1 = dynamic budget
 		emitBlock := false
+		disableUnsupported := false
 		includeThoughts := true
 
 		switch {
@@ -786,8 +813,20 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 			}
 		}
 
+		// Model-specific gate: Gemini Pro / Gemini 3 / unknown aliases do
+		// not accept thinkingBudget=0; fall through to model-default
+		// (dynamic) thinking and record an unsupported loss.
+		if emitBlock && thinkingType == "disabled" && !geminiSupportsDisabledThinking(req.Model) {
+			disableUnsupported = true
+			emitBlock = false
+		}
+
 		if !emitBlock {
-			// No explicit signal; do not emit thinkingConfig.
+			// No explicit signal, or disable was unsupported on this model;
+			// the latter records a loss via reportSerializeGeminiLosses below.
+			if disableUnsupported {
+				reportSerializeGeminiUnsupportedThinking(req)
+			}
 			// Skip the emission block below; hasAny remains unchanged.
 		} else if thinkingType == "disabled" {
 			// Gemini sentinel: thinkingBudget=0 means disabled; do not
