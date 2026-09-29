@@ -132,16 +132,20 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 			// interceptor's release decision and must not escape through
 			// the writer.
 			finalResult.SuppressChunk = true
-			finalResult.ModifiedChunk = nil
-			finalResult.InjectAfter = nil
+			// R24-C regression fix (2026-09-30): a suppressing interceptor may
+			// simultaneously RELEASE an earlier held frame — result.ModifiedChunk
+			// then carries that released payload, never the withheld current
+			// frame (hold-to-terminal terminal release shape:
+			// {SuppressChunk:true, ModifiedChunk: prior+terminal},
+			// outputcompliance/stream_compliance.go). Replace, don't clear:
+			// stale replacements from earlier interceptors must not survive,
+			// but the same-result release must reach the writer
+			// (interceptingStreamWriter.writeFrame contract). ee101fa68
+			// cleared both unconditionally and dropped the release, emptying
+			// the wire for every governed stream.
+			finalResult.ModifiedChunk = append([]byte(nil), result.ModifiedChunk...)
+			finalResult.InjectAfter = append([]byte(nil), result.InjectAfter...)
 		}
-		// R24-C (2026-09-29 round 26): the historical guard here was
-		// `!finalResult.SuppressChunk || result.SuppressChunk`, which is
-		// always true — a withholding result carrying its own replacement
-		// re-populated the fields the suppress branch had just cleared, and
-		// the withheld frame's content stayed visible to any consumer of
-		// the chain result. Once suppression is set, replacements and
-		// injections must stay empty.
 		if len(result.ModifiedChunk) > 0 && !finalResult.SuppressChunk {
 			finalResult.ModifiedChunk = result.ModifiedChunk
 			currentChunk = result.ModifiedChunk
