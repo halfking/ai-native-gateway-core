@@ -198,9 +198,10 @@
 |---|---|---|
 | P1(H1 FileCache 索引) | ✅ 完成 | `ced9eb9b1`(索引+测试)、`50847b6b8`(补基准,验收项原缺失) |
 | P2(H4 spec+Trimmer+ResizeMax+热重载接线) | ✅ 完成 | `9b9061276`/`87dbead05`/`31e468a66` + 后继加固 `964c0060a`(非正配置 fail-safe)、`d141c8036`(子树白名单/symlink/TOCTOU)、`4ba3a3be3`(ResizeMax 缩容描述订正) |
-| P3(H2 full 装配) | ⬜ 未开工(读链已就绪:da6b95627 契约翻转,仅欠装配点) | — |
-| P4(H3 镜像接线) | ⬜ 未开工(编码层 ced9eb9b1 就绪,TODO(wiring-pending)) | — |
-| P5(指标+文档) | ⬜ 未开工 | — |
+| P3(H2 full 装配) | ✅ 完成 | `5250eede0`(dispatcher 化 initStorageMode + hotZoneOnly runtime + main.go 六处 liteMode() 门控改写 + 运行期开关语义钉死) |
+| P4(H3 镜像接线) | ✅ 完成 | `4edc7574f`(两接线点:telemetry persistRequestLog 顶部 + SessionWriterV2 turn bodies/final_full 成功后;装配闭包注入)、`b67fe45b4`(行为钉死:三件套路径断言 + PG 不可用仍写入) |
+| P5(H5 指标分维度) | ✅ 完成 | `205864527`(l1_5_by_mode/mirror.by_mode/hotzone.hit_total_by_mode + SetStorageMode/SetHotZoneEnabled 接线,闭合 hotzone_enabled 恒 false 预存缺口) |
+| P5(H5 文档:README 增补/ADR amendment/deployment-guide 配置矩阵) | ⬜ 未做(指标先行,文档子项待下轮) | — |
 
 批判式审计全文: docs/audit/2026-09-30-hotzone-p1p2-critical-audit.md
 (F1 过期相记账超删已由 21 轮修复 / F2 ced9eb9b1 提交信息 gauge 声明失实留档 /
@@ -209,3 +210,5 @@ F4 本条口径修订:§3-H4 改动2 的"遍历范围=整个 HotZone.Dir"实施�
 删除 root 下未知文件,白名单方向为少删不误删;热重载接线实证:settings
 GetPlatform* 无缓存直查、hotconfig 仅轮 `llmgw_%` 前缀键,故 §3-H4 改动3
 的 hotconfig 接线假设对 storage.hotzone_* 不成立,实施采用 trimmer tick 直查)。
+P3+P4+P5(指标)批判式审计: docs/audit/2026-09-30-hotzone-p3p4-critical-audit.md
+(§6 验收清单逐项状态 + P3 运行期开关语义定义 + P4 镜像激发位置论证与遗留)。
