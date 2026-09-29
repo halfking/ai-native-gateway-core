@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // session_turns_v2.go — V2 会话详情端点实现（2026-08-07）。
@@ -834,6 +835,13 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		slog.ErrorContext(r.Context(), "serveSessionSummaryGenerate failed",
 			"session_id", sessionID, "tenant_id", tenantID, "error", err.Error())
+		// 2026-09-29 (审计二十二轮): 存储不可用走 503 降级契约——与兄弟端点
+		// /api/admin/sessions/summary（session_summary_v2.go writeSummaryError，
+		// 二十一轮接齐）对齐，存储抖动不再呈现为 500 代码缺陷告警。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentSummary, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "summary failed")
 		return
 	}
@@ -853,6 +861,11 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 	if uerr != nil {
 		slog.ErrorContext(r.Context(), "serveSessionSummaryGenerate update failed",
 			"session_id", sessionID, "tenant_id", tenantID, "error", uerr.Error())
+		// 2026-09-29 (审计二十二轮): 回写失败同走 503 降级契约（见上方注记）。
+		if IsStorageUnavailable(uerr) {
+			WriteStorageDegraded(w, observability.StorageComponentSummary, uerr)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "update snapshot failed")
 		return
 	}
