@@ -20,6 +20,8 @@ package startup
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -121,6 +123,44 @@ func TestMigration759_ThreeWayConsistency(t *testing.T) {
 	}
 	if !bytes.Equal(embed, up) {
 		t.Error("installer embeddata/startup/759 与权威迁移不一致 —— 五点同步断裂")
+	}
+}
+
+// TestMigration759_ChangelogRow 钉住 docs/db-changelog.md 的 759 行。
+//
+// 为什么单独立一道：上面那道门覆盖「权威迁移 ↔ SSOT ↔ db/db.go ↔ installer
+// 副本」，但 changelog 是**人读的迁移账本**，它不参与建库、不参与启动，于是
+// 漏写或写错没有任何现有门会红——真出现过「迁移已应用、changelog 最后一行还
+// 是 758」的状态，两边互相矛盾而全绿。
+//
+// 断言两件事：
+//   - 存在 `| 759 | ` 行（漏写即红）；
+//   - 行内记录的 sha256 等于权威迁移文件的实际 sha256（写错即红）。
+//     只断言「有这一行」不够——行在但 sha 指向旧内容，等于账本记的是另一份迁移。
+func TestMigration759_ChangelogRow(t *testing.T) {
+	const changelog = "../../../docs/db-changelog.md"
+	doc := readOrFatal(t, changelog)
+
+	rowRe := regexp.MustCompile(`(?m)^\|\s*759\s*\|.*$`)
+	row := rowRe.FindString(doc)
+	if row == "" {
+		t.Fatalf("%s 没有 | 759 | 行：迁移已落地但账本缺行，SSOT 一致性无从核对", changelog)
+	}
+
+	if !strings.Contains(row, m759Canonical) {
+		t.Errorf("changelog 的 759 行没点名迁移文件 %q：%s", m759Canonical, row)
+	}
+
+	// 账本记的 sha 必须等于文件实际内容。
+	raw, err := os.ReadFile(m759Canonical)
+	if err != nil {
+		t.Fatalf("read canonical 759 for sha: %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	want := hex.EncodeToString(sum[:])
+	if !strings.Contains(row, want) {
+		t.Errorf("changelog 的 759 行 sha 与文件实际 sha 不一致：\n  文件 = %s\n  账本 = %s",
+			want, strings.TrimSpace(row))
 	}
 }
 
