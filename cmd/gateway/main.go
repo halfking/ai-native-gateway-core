@@ -143,6 +143,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/tenantops"
+	"github.com/kaixuan/llm-gateway-go/proxy"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/kaixuan/llm-gateway-go/vibecoding"
 	"github.com/labstack/echo/v4"
@@ -2924,6 +2925,21 @@ func main() {
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
 		if adminHandler != nil {
 			adminHandler.StartProxyRuntime()
+		}
+		// R28-P-1 (2026-09-30 round 29): data-plane egress routing —
+		// providers marked egress_profile='proxy' leave through their
+		// subscription node pool instead of the env single proxy / direct.
+		// R28-P-3: providers marked 'direct' join the never-proxy list so
+		// policy, not the hardcoded domestic table, decides who bypasses
+		// the env proxy.
+		if adminHandler != nil && adminDB != nil {
+			if egressMgr := adminHandler.EgressProxyManager(); egressMgr != nil {
+				upClient.SetEgressProvider(proxy.NewEgressProvider(egressMgr, adminDB, 0))
+				if directHosts := loadDirectEgressHosts(context.Background(), adminDB); len(directHosts) > 0 {
+					upClient.Proxy().AddDomesticHosts(directHosts...)
+					slog.Info("egress: injected direct-profile provider hosts into never-proxy list", "hosts", len(directHosts))
+				}
+			}
 		}
 		// Wave 1 A1 (2026-09-22): /api/routing/resolve 的 plan_order 与真实
 		// 选路同源——resolve 经同一 Router.PlanCandidatesPinned 产出运行时
@@ -7063,7 +7079,7 @@ func main() {
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
-	pipeline := wireDispatchPipeline(routingExec)
+	pipeline := wireDispatchPipeline(routingExec, executorHotConfig)
 	// Wire every dependency that affects lazily-created forwarders before
 	// starting the worker pool. This guarantees the first credential lane
 	// observes Redis/local Governor policy and the optional snapshot observer.

@@ -71,7 +71,7 @@ func TestGLM52PrematureEOFFailsOverThroughRealStreamBridge(t *testing.T) {
 		},
 		nil,
 	)
-	pipeline := exec.NewDispatchPipeline()
+	pipeline := exec.NewDispatchPipeline(nil)
 	pipeline.Start()
 	defer pipeline.Stop()
 	exec.SetDispatchPipeline(pipeline)

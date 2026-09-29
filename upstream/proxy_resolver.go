@@ -255,6 +255,26 @@ func (r *ProxyResolver) IsDomestic(host string) bool {
 	return r.isDomestic(strings.ToLower(host))
 }
 
+// AddDomesticHosts extends the never-proxy allow-list at runtime (R28-P-3):
+// hosts of providers explicitly marked egress_profile='direct' are injected
+// at startup so policy, not a hardcoded list, decides who may bypass the
+// env proxy.
+func (r *ProxyResolver) AddDomesticHosts(hosts ...string) {
+	if r == nil || len(hosts) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.domesticHosts == nil {
+		r.domesticHosts = make(map[string]bool)
+	}
+	for _, h := range hosts {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			r.domesticHosts[h] = true
+		}
+	}
+}
+
 func (r *ProxyResolver) isDomestic(host string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

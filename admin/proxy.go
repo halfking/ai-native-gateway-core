@@ -1233,3 +1233,14 @@ func writeProxyLookupError(w http.ResponseWriter, err error, kind string) {
 	}
 	writeError(w, http.StatusInternalServerError, kind+" lookup failed: "+msg)
 }
+
+// EgressProxyManager exposes the subscription node-pool manager for the
+// data-plane egress router (R28-P-1). It lazily creates the runtime and
+// starts it (Manager.Start is idempotent); returns nil without a DB.
+func (h *Handler) EgressProxyManager() *proxy.Manager {
+	mgr, _ := h.proxyRuntime()
+	if mgr != nil {
+		mgr.Start()
+	}
+	return mgr
+}
