@@ -94,11 +94,21 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		}
 	}
 
-	// Thinking config
+	// Thinking config (native Anthropic). Budget tokens are only emitted
+	// when the type is explicit "enabled" — adaptive / disabled omit it
+	// (mirrors TestAnthropicNativeThinkingPrecedesReasoning).
 	if req.Thinking != nil {
-		out["thinking"] = map[string]any{
-			"type":          req.Thinking.Type,
-			"budget_tokens": req.Thinking.BudgetTokens,
+		t := map[string]any{
+			"type": req.Thinking.Type,
+		}
+		if req.Thinking.Type == "enabled" {
+			t["budget_tokens"] = req.Thinking.BudgetTokens
+		}
+		out["thinking"] = t
+		// claude-opus-5-5 always thinks; record loss when native disabled intent
+		// is requested (TestNativeDisabledModelLossesRemainVisible/Anthropic_native_thinking).
+		if req.Thinking.Type == "disabled" && anthropicRejectsDisabledThinking(req.Model) {
+			reportSerializeAnthropicUnsupportedDisable(req)
 		}
 	}
 
@@ -116,6 +126,7 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		thinkingType := "enabled"
 		thinkingBudget := 0
 		hasBudget := false
+		disableUnsupported := false
 		switch {
 		case req.Reasoning.Type != "":
 			thinkingType = req.Reasoning.Type
@@ -143,18 +154,33 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 				hasBudget = true
 			}
 		}
-		thinking := map[string]any{}
-		thinking["type"] = thinkingType
-		if hasBudget && thinkingType != "disabled" {
-			thinking["budget_tokens"] = thinkingBudget
+
+		// Model-specific gate: claude-opus-5-5 always thinks; the API
+		// rejects thinking.type=disabled. Per TestAnthropicOpus55Disabled
+		// OmittedAndReported, omit the entire thinking block on this model
+		// (the client intent to disable is recorded as a loss instead).
+		if thinkingType == "disabled" && anthropicRejectsDisabledThinking(req.Model) {
+			disableUnsupported = true
+			thinkingType = "" // omit the entire block
 		}
-		if thinkingType == "disabled" && hasBudget {
-			// Disabled thinking cannot carry a budget_tokens field
-			// (mirrors TestReasoningDisabledConflictPrecedence/type_disabled_beats_budget).
-			delete(thinking, "budget_tokens")
+
+		if thinkingType != "" {
+			thinking := map[string]any{}
+			thinking["type"] = thinkingType
+			if hasBudget && thinkingType != "disabled" {
+				thinking["budget_tokens"] = thinkingBudget
+			}
+			if thinkingType == "disabled" && hasBudget {
+				// Disabled thinking cannot carry a budget_tokens field
+				// (mirrors TestReasoningDisabledConflictPrecedence/type_disabled_beats_budget).
+				delete(thinking, "budget_tokens")
+			}
+			if len(thinking) > 0 {
+				out["thinking"] = thinking
+			}
 		}
-		if len(thinking) > 0 {
-			out["thinking"] = thinking
+		if disableUnsupported {
+			reportSerializeAnthropicUnsupportedDisable(req)
 		}
 	}
 
@@ -332,6 +358,29 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 			map[string]any{"top_k_value": 0},
 		)
 	}
+}
+
+// reportSerializeAnthropicUnsupportedDisable records that a model rejected
+// thinking.type=disabled (e.g. claude-opus-5-5 always thinks). The IR's
+// disable intent is reported as an ir_protocol_loss with reason="unsupported"
+// so the request still goes upstream but the loss is observable downstream.
+func reportSerializeAnthropicUnsupportedDisable(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	fieldPath := "reasoning_effort"
+	if req.SourceProtocol == ProtocolAnthropicMessages && req.Thinking != nil {
+		fieldPath = "thinking.type"
+	}
+	ReportProtocolLoss(
+		irRequestID(req),
+		fieldPath,
+		req.SourceProtocol,
+		ProtocolAnthropicMessages,
+		"unsupported",
+		"Anthropic model rejected thinking.type=disabled; omitted thinking block to keep request valid",
+		map[string]any{"model": req.Model},
+	)
 }
 
 // serializeAnthropicSystem serializes the system prompt.
