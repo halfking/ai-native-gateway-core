@@ -5404,6 +5404,14 @@ func main() {
 			sessionSummariesTrimmer.Start(context.Background())
 			defer sessionSummariesTrimmer.Stop()
 
+			// 2026-09-30 (R33 P-3): session_summaries.gw_project_id 存量
+			// 分批回填（迁移 762 触发器负责增量写链）。批上限走 settings
+			// lifecycle.session_project_backfill_batches（HotReload），
+			// tick 10m；排空后批次为 0 自动转为空转轮询。
+			sessionProjectBackfillWorker := bg.NewSessionProjectBackfillWorker(dbConn.Pool())
+			sessionProjectBackfillWorker.Start(context.Background())
+			defer sessionProjectBackfillWorker.Stop()
+
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
 			// mode to avoid write load on the secondary instance.
