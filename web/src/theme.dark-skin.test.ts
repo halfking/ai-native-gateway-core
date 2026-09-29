@@ -154,3 +154,58 @@ describe('text tokens must not be used as surfaces', () => {
     expect(new Set(decls)).toEqual(new Set(['#ffffff']))
   })
 })
+
+// 2026-09-29 全站皮肤一致性巡检后追加：禁用「皮肤不变的黑底/白底当背景」
+// 的两类形态——它们与 `--on-primary` 同源（文字/背景色令牌被错用），但形态不同。
+describe('inline background should not be theme-invariant white or black', () => {
+  const SRC = resolve(process.cwd(), 'src')
+  const TEXT_TOKENS = ['--on-primary', '--kx-text-on-primary']
+
+  // 1. inline `background: rgba(0,0,0,...)` 当面背景（不是遮罩层 drawback）
+  function findFiles(): string[] {
+    const out: string[] = []
+    const fs = require('node:fs') as typeof import('node:fs')
+    const path = require('node:path') as typeof import('node:path')
+    const stack = [SRC]
+    while (stack.length) {
+      const dir = stack.pop()!
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name)
+        if (e.isDirectory()) stack.push(full)
+        else if (/\.(vue|css|ts)$/.test(e.name)) out.push(full)
+      }
+    }
+    return out
+  }
+
+  function inlineBlackBackgrounds(css: string): Array<{ line: number; val: string }> {
+    // 找 background/background-color: rgba(0, 0, 0, ...) 形式，排除 .drawer-backdrop 类遮罩
+    const out: Array<{ line: number; val: string }> = []
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    for (const m of stripped.matchAll(/background(?:-color)?\s*:\s*([^;]+);/g)) {
+      const val = m[1].trim()
+      if (/^rgba?\(\s*0\s*,\s*0\s*,\s*0\s*,/.test(val)) {
+        // 排除遮罩层（命名以 .drawer-backdrop / .overlay / .modal-mask 开头或 inline style 上以 modal/mask/backdrop 出现）
+        out.push({ line: -1, val })
+      }
+    }
+    return out
+  }
+
+  it('no inline background uses rgba(0,0,0,...) outside drawer/overlay masks', () => {
+    const exceptions = /(drawer-backdrop|overlay|mask-backdrop|modal-backdrop)/i
+    const offenders: Array<{ file: string; val: string }> = []
+    for (const f of findFiles()) {
+      const src = require('node:fs').readFileSync(f, 'utf8')
+      for (const { val } of inlineBlackBackgrounds(src)) {
+        // 看上下 8 行有没有例外标签
+        const idx = src.indexOf(val)
+        const nearby = src.slice(Math.max(0, idx - 200), idx + val.length + 200)
+        if (!exceptions.test(nearby)) {
+          offenders.push({ file: f.replace(process.cwd() + '/', ''), val })
+        }
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+})
