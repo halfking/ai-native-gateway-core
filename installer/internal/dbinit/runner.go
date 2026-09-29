@@ -335,6 +335,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 760 (2026-09-30, R27-HC-1/HC-2): analysis_events /
 			// stats_event_inbox 终态 TTL 清扫支撑索引（部分索引，仅终态行）。
 			"760_analysis_events_inbox_ttl_indexes.sql",
+			// 761 (2026-09-30, R28-HC-10): 同步投影行 processing_status
+			// 回填——writer 漏翻状态留下的假 pending 历史行一次性修复。
+			"761_stats_inbox_sync_status_backfill.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
