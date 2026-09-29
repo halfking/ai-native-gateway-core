@@ -71,6 +71,11 @@ func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *t
 		t.Fatalf("expected default scope baseline with request-a, got %#v", entryBeforeEmptyRead)
 	}
 	accessedBeforeEmptyRead := entryBeforeEmptyRead.lastAccessed
+	// Coarse clocks (Windows VM interrupt time, ~15.6ms) can return
+	// identical time.Now() values for the baseline set and the empty-read
+	// refresh microseconds apart, failing the .After assertion below
+	// without any production defect. Sleep past the granularity.
+	time.Sleep(30 * time.Millisecond)
 
 	if err := rdb.Del(ctx,
 		tenantLiveStreamKey("default", "main"),

@@ -100,6 +100,11 @@ func listDomains(t *testing.T) []string {
 // safety/ stress/ subpackages, which is the normal layout. When !recursive,
 // subdirectories are excluded: `go test ./pkg` runs exactly that package,
 // so a test file below it proves nothing (N20-2).
+//
+// N20-2 (2026-09-29 audit round 21) is embodied in the callers: `go test`
+// on a package without test files prints "no test files" and exits 0 — a
+// gate naming such a package still cannot fail — so gateResolves demands a
+// *_test.go behind test lines and only a plain .go behind build/vet lines.
 func hasGoFileWithSuffix(dir, suffix string, recursive bool) bool {
 	found := false
 	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
