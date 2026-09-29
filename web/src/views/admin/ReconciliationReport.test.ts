@@ -154,6 +154,11 @@ const switchGroup = clickRadioButton
 beforeEach(() => {
   vi.clearAllMocks()
   getReportDimensionsMock.mockResolvedValue(emptyDims)
+  // el-dropdown 的内容 teleport 到 body，组件卸载时不跟着消失。不清的话下一个
+  // 用例会搜到 12×N 个复选框（实测 72 = 12×6，前面几轮留下的），断言「有 12 个」
+  // 会以一个和功能完全无关的方式失败。
+  for (const n of document.body.querySelectorAll('.el-popper')) n.remove()
+  document.body.querySelectorAll('.col-picker').forEach((n) => n.remove())
 })
 
 describe('ReconciliationReport 挂载渲染', () => {
@@ -228,5 +233,85 @@ describe('ReconciliationReport 挂载渲染', () => {
     // 主表换成按天行；按天汇总表 v-if="!detail" 收起 → 总表数仍为 2。
     expect(wrapper.findAll('.el-table')[0].findAll('tr.el-table__row').length).toBe(2)
     expect(wrapper.text()).toContain('2026-09-22')
+  })
+})
+
+describe('ReconciliationReport 列显隐（需求：可以根据条件过滤显示字段）', () => {
+  /**
+   * 打开「显示列」下拉并返回那 12 个复选框。
+   *
+   * 必须查 **document** 而不是 wrapper：el-dropdown 的内容 teleport 到 body，
+   * wrapper.findAll 只在自己的 DOM 树里找，翻开下拉也一个都搜不到。
+   * 这也是真实浏览器里它的所在位置，用 document 反而更贴近。
+   */
+  async function openColumnPicker(wrapper: Awaited<ReturnType<typeof mountView>>) {
+    const btn = wrapper.findAll('button').find((b) => b.text().includes('显示列'))
+    expect(btn, '找不到「显示列」按钮').toBeTruthy()
+    await btn!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    const pickers = [...document.querySelectorAll<HTMLElement>('.col-picker')]
+    expect(pickers.length, '列选择器浮层应存在').toBeGreaterThan(0)
+    // 取最后一个：即使有残留也只认刚打开的那个
+    const boxes = [...pickers[pickers.length - 1].querySelectorAll<HTMLElement>('.el-checkbox')]
+    expect(boxes.length, '列选择器应有 12 个复选框').toBe(12)
+    return boxes
+  }
+
+  /** 勾选/取消某个名字的列。用原生 click 而不是 setValue：
+   *  el-checkbox 的 v-model 监听的是 input 的 change，原生点击会带上。 */
+  async function setColumn(boxes: HTMLElement[], name: string, on: boolean) {
+    const box = boxes.find((b) => (b.textContent ?? '').includes(name))
+    expect(box, `列选择器里找不到「${name}」`).toBeTruthy()
+    const input = box!.querySelector('input')!
+    if (input.checked !== on) input.click()
+    await flushPromises()
+  }
+
+  /** 当前表头文本（第一张表的 header row）。 */
+  function headers(wrapper: Awaited<ReturnType<typeof mountView>>): string {
+    const ths = wrapper.findAll('.el-table__header-wrapper th')
+    return ths.map((th) => th.text()).join('|')
+  }
+
+  it('默认 9/12 列，勾掉一个 → 表头少一列、计数变 8/12；勾回来 → 复原', async () => {
+    routeState.query = {}
+    getReportSummaryMock.mockResolvedValue(providerReport())
+    const wrapper = await mountView()
+
+    // 默认勾选 9 项（共 12 个可选列）
+    expect(wrapper.text()).toContain('(9/12)')
+    const before = headers(wrapper)
+    expect(before).toContain('质量评分')
+    expect(before).toContain('成本')
+
+    const boxes = await openColumnPicker(wrapper)
+
+    // 勾掉「质量评分」
+    await setColumn(boxes, '质量评分', false)
+
+    expect(headers(wrapper), '取消勾选后表头仍含该列').not.toContain('质量评分')
+    expect(wrapper.text()).toContain('(8/12)')
+    // 其余列不能被连带干掉——只验「少了一列」会漏掉「整表清空」这种坏法。
+    expect(headers(wrapper)).toContain('成本')
+    expect(headers(wrapper)).toContain('请求数')
+
+    // 勾回来
+    await setColumn(boxes, '质量评分', true)
+    expect(headers(wrapper)).toContain('质量评分')
+    expect(wrapper.text()).toContain('(9/12)')
+  })
+
+  it('取消勾选不影响数据行——只是把那一列藏起来，不是把那一行藏起来', async () => {
+    routeState.query = {}
+    getReportSummaryMock.mockResolvedValue(providerReport())
+    const wrapper = await mountView()
+    const rowsBefore = wrapper.findAll('tr.el-table__row').length
+
+    const boxes = await openColumnPicker(wrapper)
+    await setColumn(boxes, '成本', false)
+
+    expect(wrapper.findAll('tr.el-table__row').length, '藏列不应藏行').toBe(rowsBefore)
+    expect(rowsBefore).toBeGreaterThan(0)
   })
 })
