@@ -3,6 +3,8 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
 // SerializeAnthropic serializes an InternalRequest into an Anthropic Messages request body.
@@ -110,12 +112,17 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		thinking := map[string]any{}
 		if req.Reasoning.Type != "" {
 			thinking["type"] = req.Reasoning.Type
+		} else if reasonnorm.IsDisableEffort(req.Reasoning.Effort) {
+			// Cross-protocol "none" / "disabled" spelling → explicit disabled.
+			// Without this branch, the effort table would map to budget 0 and
+			// emit no thinking block at all (Anthropic then defaults to enabled).
+			thinking["type"] = "disabled"
 		} else {
 			thinking["type"] = "enabled"
 		}
 		if req.Reasoning.BudgetTokens != nil {
 			thinking["budget_tokens"] = *req.Reasoning.BudgetTokens
-		} else if req.Reasoning.Effort != "" {
+		} else if req.Reasoning.Effort != "" && thinking["type"] != "disabled" {
 			budget, ok := reasonnormEffortToBudget(req.Reasoning.Effort)
 			if !ok {
 				budget = 8192 // safe default (xhigh)
