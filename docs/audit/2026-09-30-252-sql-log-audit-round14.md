@@ -75,7 +75,7 @@
 
 | 项 | 本轮回执取证（podman logs --since 09-29 06:01） | 状态 |
 |---|---|---|
-| **E6 pocket $4** | `integer versus bigint` DETAIL ×44/20.8h（最近 1h ×13 ≈ 4.6min 节奏，同 round13 ~5min 节奏）；签名未变（char135 `enabled = CASE WHEN $4=0`） | **未修复，持续**。维持移交 pocket 轨道；写方非本仓（round13 A3 grep 铁证不变） |
+| **E6 pocket $4** | `integer versus bigint` DETAIL ×44/20.8h（**全天均值其实低于 round13 ~6×**；夜间节奏近 1h ×13 ≈ 4.6min 与 round13 ~5min 相当，日间更稀疏）；签名未变（char135 `enabled = CASE WHEN $4=0`） | **未修复，持续**。维持移交 pocket 轨道；写方非本仓（round13 A3 grep 铁证不变） |
 | **F2 smm 股票 SQL** | fundamentals/limit_up_temp 命中 ×19 + daily_kline 慢查 ×19/20.8h（05:55 突发型在后续窗口持续出现） | **未修复，持续**。维持移交 smm 轨道（与 E7 同轨） |
 | E7 smm 认证失败 | 本窗未专项采样（round13 窗口 ×0） | 维持观察 |
 
@@ -132,3 +132,27 @@
 - **事件后实测（全部 PASS）**：252-dev 服务身份仍 = dd7e4527-2338（/healthz）+ systemd active;252 schema_migrations max 仍 = 758（并行线 759-762 尚未触碰生产库）。
 - **处置**：按 09-25 实战协议——不动并行会话的分支/工作区,用 `git worktree` 临时检出 origin/main,只提交本文档与台账两文件后推送删 worktree;**不触碰并行线的 version.json**,部署身份以服务器侧为准。
 - **教训（并入纪律㉟族）**：共享工作树长窗作业（本窗 02:30-04:00 跨部署+取证）期间,未提交的文档/版本改动随时可能被并行轨道切分支吞没——**长窗内应分段及时提交**,至少在部署动作完成后立即提交版本身份文件。
+
+## §十、同日批判式复审（修正轮，04:4x-05:2x）——发现 4 项实质问题并修正
+
+复审原则：只认新取证,不认本文件前文的声明。逐项复核后发现并修正：
+
+**F-A（P1，已修正）：D16 只修了存量库,源头未闭环。** `sql/objects/tables/provider_events.sql` 基线仍是裸表（无 PK/无序列/全 nullable）,parity 文件依旧无投递通道——新环境会重新产出漂移态,手工 DDL 也无台账重放保障。**修正 = 启动迁移 `763_provider_events_contract.sql`**（752 收编 036 同款）：与 parity 文件逐列一致 + conname 守卫 PK + **is_called 感知防回退 setval**（无脑 setval(max(id)) 在删行场景会把序列拨低 → 默认取号撞主键）+ fail-closed（存量 id 重复则 PK 显式失败）+ 文件自带 schema_migrations 自登记（695-705 定式）;`.down.sql` + 契约测试 `migration_763_test.go`（C1-C7,含 parity 双通道漂移守卫与 `apply-db-revision-sequence.sh` 注册断言）;登记进 `apply-db-revision-sequence.sh`。本机真库双跑幂等 PASS（数据 18 行零变化,seqval≥max_id,双台账行在位）。**758 纪律自检：全部 DDL 顶层语句,DO 块只做守卫/setval 逻辑。**
+
+**F-B（P1，自纠）：763 初版把 credential_id/event_kind 收紧为 NOT NULL——会炸新环境。** `pg_reconciliation_store.go:287` 实证存在 `credential_id=NULL` 的真实写入路径。已改回 parity 文件逐列形态（仅 id/ts NOT NULL）。教训：**"契约对齐"禁止顺手收紧约束——以真实写入路径为准,不以理想形态为准。**
+
+**F-C（P2，已修正措辞）：§四 E6"同率持续"不准确。** ×44/20.8h 全天均值比 round13（×20/98min）低 ~6×,只是夜间节奏（近 1h ×13≈4.6min）与 round13 窗（同为夜间）相当。已改为"夜间节奏相当、全天均值更低"。
+
+**F-D（P2，登记局限）：单相位收敛的 winner 归属只钉实了 2/4 窗。** 03:20（pid 49503→241）与 03:30（pid 50846→210）已钉到单台;03:00/03:10（pid 49244）连接已关闭,只能收敛到 {154,245} 集合。"每窗恰 1 winner"的结论不受影响（PG 日志频率铁证）,但归属精度有上限——复审窗口内尽快查 pg_stat_activity,连接会失效。
+
+**F-E（P2，新事实）：schema_migrations 混名陷阱。** 台账混有 V 前缀（V359,applied_at 回溯 2026-08-18,疑并行线台账回填）与日期命名行——`max(version)` 按文本序会返回 V359 而非数字链最高版本。**数字链水位必须 `WHERE version ~ '^[0-9]+$'` 过滤**（本文 §九 的"max=758"读数当时凑巧正确,方法学不严谨）。修正后复测：数字链 max 仍 758,759 空号、760-762 为并行线在途（文件在库、未登记 `apply-db-revision-sequence.sh`,755 同未登记）。
+
+**F-F（P3，登记）：本机 dev 库账本缺口。** 本机缺 754-758/760-762 → `apply-db-revision-sequence.sh` 整链在本机盲跑会连带应用 756（request_logs 建索引,持写锁）等越权项——763 走外科手术通道（单文件双跑 + 双台账手工登记,形状与脚本一致）。本机 763 台账行先行于 754-758 属已知缺口,不遮蔽后续补应用（各迁移独立判账）。
+
+**F-G（P3，复核补充证据）：部署二进制身份哈希闭环。** 本轮补做 sha256 双端比对:本地构建物 = 服务器 `/opt/llm-gateway-go/bin/gateway` = `86de03f9ecfaf33f…`（备份 a0e4d9c5 = d4b217bf… 另一值,身位无误）。前文 §一 的 /healthz 身份证据只读服务器侧 version.json,**单独不构成二进制证据**——此后部署验收必须含哈希比对。
+
+**F-H（P3，观察登记）：provider_events 活写速率异常。** D16 修复后 1.5h 内 146→177（+31 行）,远超历史月级基线——疑并行轨道压测/告警风暴,D16 语义不受影响（PK 全程无冲突=活写验证）,登记观察不处置。
+
+**F-I（P3，历史注记失真澄清）**：台账 09-26 节"automation-15b858fd 已达 maxRuns=12 停止"与实测 runCount=15 矛盾（实际持续跑到 09-29 使命完成）——不影响 Day 计数判定（每日一轮记录在案）,仅注记更正。
+
+**复审后仍成立的结论**：D6' 部署/单相位收敛/checkpoint 900s/S4 评估/cron 删除/E6-F2 登记——全部经新取证复核无翻案。
