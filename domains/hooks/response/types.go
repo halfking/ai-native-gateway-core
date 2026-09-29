@@ -16,6 +16,8 @@ type InterceptRequest struct {
 	SessionID      string
 	RequestID      string
 	TenantID       string
+	CallerOwner    string // Authenticated key owner (V3-A01); empty means data owner unknown → conservative redaction.
+	ClientProtocol string // "openai-chat" / "anthropic-messages" / "openai-responses" / "openai-completions"; empty means unknown protocol lane.
 	ClientModel    string
 	ResponseBody   []byte
 	TokensUsed     int
@@ -71,6 +73,8 @@ type StreamMeta struct {
 	SessionID      string
 	RequestID      string
 	TenantID       string
+	CallerOwner    string // Authenticated key owner (V3-A01); empty means data owner unknown → conservative redaction.
+	ClientProtocol string // "openai-chat" / "anthropic-messages" / "openai-responses" / "openai-completions"; empty means unknown protocol lane.
 	ClientModel    string
 	ContextWindow  int
 	MessageCount   int
@@ -125,6 +129,7 @@ func (s *StreamState) GetOrCreate(key string, create func() any) any {
 // ChunkResult contains the outcome of stream chunk interception.
 type ChunkResult struct {
 	ShouldBlock   bool
+	SuppressChunk bool // Withhold the current frame from the wire; ModifiedChunk may carry an earlier frame explicitly released by the same interceptor.
 	ModifiedChunk []byte
 	InjectAfter   []byte
 }
