@@ -125,6 +125,18 @@ func (h *ChatHandler) runSurvivalCoordinator(
 			if params.OnNodeJump == nil {
 				return nil
 			}
+			// 2026-10-01 R74: a resume_blocked notice does NOT promise a
+			// retry. ADR-Disp-003 bars a transparent switch once content is
+			// committed, so rendering the generic "正在等待可用节点并重试
+			// （…，等待 0s）" here would tell the client a retry is coming and
+			// then immediately terminate the stream. Say what actually
+			// happened instead: part of the answer was delivered, the stream
+			// is ending, and starting a new session continues the work.
+			if decision.Reason == "partial_answer_delivered_stop" {
+				params.OnNodeJump("本次回答已输出部分内容后中断，网关不会透明重试以避免重复；" +
+					"请开启新会话继续。")
+				return nil
+			}
 			params.OnNodeJump(fmt.Sprintf("正在等待可用节点并重试（第 %d 次，原因=%s，等待 %s）", attempt, decision.Reason, wait.Round(time.Second)))
 			return nil
 		},
