@@ -7,8 +7,8 @@ import { ElBadge, ElButton, ElOption, ElRadioButton, ElRadioGroup, ElSelect } fr
 import type { DimensionOptions, ReportFilter, ReportView } from '../../api/reportrollup'
 import KxDateRangePicker from '../ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../ui/kx-date-types'
-import { makeDateRangePresets } from '../ui/kxDatePresets'
 import { fmtInt } from './format'
+import { snapshotDatePresets } from './snapshotRange'
 
 const props = defineProps<{
   view: ReportView
@@ -34,7 +34,8 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const moreOpen = ref(false)
-const presets = computed(() => makeDateRangePresets('date'))
+// 367 inclusive days matches reportRange: end-start > 366 days is rejected.
+const presets = computed(() => snapshotDatePresets())
 
 const extraCount = computed(() => {
   const f = props.filters
@@ -60,7 +61,7 @@ function onView(value: string | number | boolean | undefined) {
     <KxDateRangePicker
       :model-value="range"
       :presets="presets"
-      :max-span-days="92"
+      :max-span-days="367"
       :disabled="loading"
       @apply="emit('applyRange', $event)"
     />

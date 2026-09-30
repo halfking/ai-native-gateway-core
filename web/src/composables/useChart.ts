@@ -83,7 +83,7 @@ export interface ChartDataset {
   data: number[]
   borderColor?: string
   backgroundColor?: string
-  fill?: boolean
+  fill?: boolean | 'stack'
   yAxisID?: string
   borderWidth?: number
   tension?: number
