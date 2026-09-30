@@ -207,6 +207,7 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 		if err := rows.Scan(&row.Ts, &row.RequestPreview, &row.ResponsePreview,
 			&row.RequestBody, &row.ResponseBody,
 			&row.RequestStatus, &errKind, &clientModel); err != nil {
+			warnRowSkip("loadSessionLogsForSummary", err)
 			continue
 		}
 		row.ErrorKind = errKind
@@ -365,9 +366,14 @@ func (h *Handler) loadSessionTitlesBatch(ctx context.Context, keys [][2]string) 
 	for rows.Next() {
 		var taskID, scopedID, title string
 		if err := rows.Scan(&taskID, &scopedID, &title); err != nil {
+			warnRowSkip("loadSessionTitlesBatch", err)
 			continue
 		}
 		out[sessionTitleMapKey(taskID, scopedID)] = title
+	}
+	// 批量标题富化属降级通道，迭代中断留痕后按已取到的映射继续。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("loadSessionTitlesBatch iteration aborted; titles degraded", "error", rerr)
 	}
 	return out
 }

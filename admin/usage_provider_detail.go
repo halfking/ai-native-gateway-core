@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -188,9 +189,13 @@ func (h *Handler) usageProviderTrend(w http.ResponseWriter, r *http.Request, pro
 	for rows.Next() {
 		var e trendEntry
 		if err := rows.Scan(&e.Period, &e.Requests, &e.PromptTokens, &e.CompletionTokens, &e.TotalTokens, &e.CostUSD); err != nil {
+			warnRowSkip("usageProviderTrend", err)
 			continue
 		}
 		out = append(out, e)
+	}
+	if writeAggRowsErr(w, "usageProviderTrend", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -261,6 +266,7 @@ func (h *Handler) usageProvidersExport(w http.ResponseWriter, r *http.Request) {
 		var reqs, pt, ct, tt int64
 		var cost, sr float64
 		if err := rows.Scan(&id, &name, &code, &reqs, &pt, &ct, &tt, &cost, &sr); err != nil {
+			warnRowSkip("usageProvidersExport", err)
 			continue
 		}
 		_ = cw.Write([]string{
@@ -273,6 +279,11 @@ func (h *Handler) usageProvidersExport(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("%.4f", sr),
 			periodStart, periodEnd,
 		})
+	}
+	// CSV 响应头已 200 无法收回：迭代中断只能留服务端痕迹（对账 CSV 静默
+	// 截断比对账结论致命，与 usageProviderDetailExport 同语义）。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("usage providers export csv aborted; output truncated", "error", rerr)
 	}
 	cw.Flush()
 }

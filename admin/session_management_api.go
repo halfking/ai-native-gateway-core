@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -338,7 +339,13 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 					req.LatencyMs = &latency
 				}
 				requests = append(requests, req)
+			} else {
+				warnRowSkip("sessionDetail.requests", err)
 			}
+		}
+		if rerr := rows.Err(); rerr != nil {
+			// 非关键面板（头注同因）：中断留痕后按已取到的请求继续。
+			slog.Warn("sessionDetail requests iteration aborted; panel degraded", "error", rerr)
 		}
 		detail.Requests = requests
 	}

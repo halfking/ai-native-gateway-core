@@ -28,6 +28,19 @@ func TestWithTenantTransaction_RLSIsolation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*1000*1000*1000)
 	defer cancel()
 
+	// R65 环境前置：RLS 隔离只在 NOSUPERUSER/NOBYPASSRLS 角色下可观测
+	//（本文件头注的 role-aware runner 前提）。本地 TEST_DATABASE_URL 常以
+	// superuser+BYPASSRLS 连接（llm_gateway 实测 usesuper=t usebypassrls=t，
+	// 且 session_summaries relforcerowsecurity=f）——该前提下两租户都见全量
+	// 行是 PG 语义的必然，不是隔离破洞；修前此景实锤假红。显式 skip 并说明
+	// 前提，把隔离验证留给角色受控的 RLS 门（Makefile test-rls）。
+	var roleBypasses bool
+	if err := pool.QueryRow(ctx,
+		`SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+	).Scan(&roleBypasses); err != nil || roleBypasses {
+		t.Skipf("connected role bypasses RLS (superuser/bypassrls=%v, err=%v); run via the role-aware RLS gate", roleBypasses, err)
+	}
+
 	probeQuery := func(tenant string) (int, error) {
 		var n int
 		err := withTenantTx(ctx, pool, tenant, func(tx pgx.Tx) error {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -171,6 +172,7 @@ func (h *Handler) handleSessionAuditList(w http.ResponseWriter, r *http.Request)
 		for rows.Next() {
 			record, serr := scanSessionAuditRecord(rows)
 			if serr != nil {
+				warnRowSkip("sessionAuditList", serr)
 				continue // 跳过损坏的记录
 			}
 			records = append(records, record)
@@ -335,7 +337,12 @@ func (h *Handler) handleSessionAuditStats(w http.ResponseWriter, r *http.Request
 				var count int
 				if err := rows.Scan(&status, &count); err == nil {
 					stats.ByStatus[status] = count
+				} else {
+					warnRowSkip("sessionAuditStats.byStatus", err)
 				}
+			}
+			if rerr := rows.Err(); rerr != nil {
+				slog.Warn("sessionAuditStats byStatus iteration aborted; panel degraded", "error", rerr)
 			}
 			rows.Close()
 		}
@@ -358,7 +365,12 @@ func (h *Handler) handleSessionAuditStats(w http.ResponseWriter, r *http.Request
 				var count int
 				if err := rows.Scan(&status, &count); err == nil {
 					stats.ByApproval[status] = count
+				} else {
+					warnRowSkip("sessionAuditStats.byApproval", err)
 				}
+			}
+			if rerr := rows.Err(); rerr != nil {
+				slog.Warn("sessionAuditStats byApproval iteration aborted; panel degraded", "error", rerr)
 			}
 			rows.Close()
 		}
@@ -505,6 +517,7 @@ func (h *Handler) handleSessionAuditExport(w http.ResponseWriter, r *http.Reques
 			&status, &approvalStatus,
 			&createdAt,
 		); err != nil {
+			warnRowSkip("sessionAuditExport", err)
 			continue
 		}
 
@@ -534,6 +547,10 @@ func (h *Handler) handleSessionAuditExport(w http.ResponseWriter, r *http.Reques
 			createdAt.Format(time.RFC3339),
 		}
 		writer.Write(row)
+	}
+	// CSV 响应头已 200 无法收回：迭代中断留服务端痕迹（与 usage 导出同语义）。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("session audit export csv aborted; output truncated", "error", rerr)
 	}
 	writer.Flush()
 }

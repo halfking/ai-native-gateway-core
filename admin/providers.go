@@ -1549,6 +1549,11 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 	case "check", "check-health":
 		if r.Method == http.MethodPost {
 			h.startCheckCredentialHealth(w, r, providerID, credID)
+		} else if r.Method == http.MethodGet {
+			// R65：同步健康检查——文件头注（provider_cred_lifecycle.go）自
+			// 声明的 GET 面此前从未接线（handler 挂 //nolint:unused 死代码），
+			// 本次接线使其成为真实 API。
+			h.checkCredentialHealth(w, r, providerID, credID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}

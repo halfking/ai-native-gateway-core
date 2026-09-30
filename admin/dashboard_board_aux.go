@@ -137,12 +137,16 @@ func (h *Handler) queryErrorDrillMinute(
 	for rows.Next() {
 		var item boardPieItem
 		if err := rows.Scan(&item.Key, &item.Requests, &item.Tokens, &item.Credits, &item.CostUSD); err != nil {
+			warnRowSkip("error drill minute", err)
 			continue
 		}
 		items = append(items, item)
 	}
 	if dimension == "provider" {
 		items = h.resolveProviderPieLabels(ctx, items)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

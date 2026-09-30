@@ -392,13 +392,19 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 	}, nil
 }
 
-func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) { //nolint:unused
+func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	result, err := h.doHealthCheck(ctx, providerID, credID, strings.TrimSpace(r.URL.Query().Get("model")))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "credential not found")
+		// R65 错误通道重构（R35-N1 登记遗留）：旧形态「一切 err 都 404
+		// credential not found」把 DB 故障/连接超时伪装成"凭据不存在"，
+		// 把运维引向错误方向。三门分类：ErrNoRows→404 原文案（真不存在）；
+		// 42P01→503 analytics_view_missing（缺表是可修复环境态）；其余→500
+		// 且不外泄 err 细节。注：解密失败/探测失败不走本通道——doHealthCheck
+		// 以带内 health_status/result 表达（ unreachable + health_error）。
+		writeLookupErr(w, "credential not found", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

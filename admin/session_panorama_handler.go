@@ -17,6 +17,8 @@ package admin
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -196,6 +198,9 @@ func (h *Handler) loadSessionDetailDataInTx(ctx context.Context, tx pgx.Tx, tena
 		}
 		e.CreatedAt = ts
 		timeline = append(timeline, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate panorama timeline: %w", err)
 	}
 	analysis, err := h.buildSessionAnalysisInTx(ctx, tx, tenantID, gwSessionID, timeline)
 	if err != nil {
@@ -477,7 +482,12 @@ func (h *Handler) loadStepSummaries(ctx context.Context, gwSessionID string, ten
 		if err := rows.Scan(&s.StepIndex, &s.RequestID, &s.RequestSummary, &s.ResponseSummary,
 			&s.IsLLMGenerated, &s.ToolCallsSummary); err == nil {
 			out = append(out, s)
+		} else {
+			warnRowSkip("panoramaStepSummaries", err)
 		}
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("panorama step summaries iteration aborted; panel degraded", "error", rerr)
 	}
 	return out
 }
@@ -502,7 +512,12 @@ func (h *Handler) loadTags(ctx context.Context, gwSessionID string, tenantID str
 		var t SessionTag
 		if err := rows.Scan(&t.ID, &t.TagKey, &t.TagValue, &t.TagSource, &t.Confidence, &t.CreatedBy, &t.CreatedAt); err == nil {
 			out = append(out, t)
+		} else {
+			warnRowSkip("panoramaTags", err)
 		}
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("panorama tags iteration aborted; panel degraded", "error", rerr)
 	}
 	return out
 }
@@ -529,7 +544,12 @@ func (h *Handler) loadSuggestions(ctx context.Context, gwSessionID string, tenan
 		if err := rows.Scan(&s.ID, &s.Category, &s.Severity, &s.Title, &s.Description,
 			&s.PotentialSavingsTokens, &s.PotentialSavingsCost, &s.Applied, &s.Dismissed, &s.CreatedAt); err == nil {
 			out = append(out, s)
+		} else {
+			warnRowSkip("panoramaSuggestions", err)
 		}
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("panorama suggestions iteration aborted; panel degraded", "error", rerr)
 	}
 	return out
 }

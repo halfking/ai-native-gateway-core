@@ -234,6 +234,7 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 				reqBody, respBody                    *string
 			)
 			if err := rows.Scan(&id, &role, &parentID, &reason, &strategy, &compMeta, &attachments, &createdAt, &reqBody, &respBody); err != nil {
+				warnRowSkip("sessionExport.messages", err)
 				continue
 			}
 			turn++
@@ -270,6 +271,11 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 					}
 				}
 			}
+		}
+		// 导出是完整性通道（头未发出可安全失败）：迭代中断上抛，绝不
+		// 静默截断导出包（R35-N1 对账导出教训）。
+		if rerr := rows.Err(); rerr != nil {
+			return fmt.Errorf("iterate export messages: %w", rerr)
 		}
 		rows.Close()
 

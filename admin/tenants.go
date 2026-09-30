@@ -818,13 +818,19 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	}
 
 	// By application (credits + cost from request_logs)
+	//
+	// R65: 别名 `rl` 必须从新行开始——logsTable 片段以 `-- sqlreadguard:allow`
+	// 行注释收尾，同一行拼接的任何 token 都会被注释吞掉（修前实锤
+	// 42P01 missing FROM-clause entry for table "rl"，TestTenantStatsDaily_Live
+	// 是本修法的回归网）。
 	appRows, err := h.db.Query(ctx, `
 		SELECT COALESCE(app.code, '<none>') AS app_code,
 		       COUNT(*)::bigint,
 		       COALESCE(SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(rl.credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(rl.cost_usd, 0)), 0)::float8
-		FROM `+logsTable+` rl
+		FROM `+logsTable+`
+		rl
 		LEFT JOIN applications app ON app.id = rl.application_id
 		WHERE rl.tenant_id = $1 AND rl.ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY app.code

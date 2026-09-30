@@ -238,6 +238,7 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 			&createdAt, &providerID,
 		)
 		if err != nil {
+			warnRowSkip("loadCompareData", err)
 			continue
 		}
 
@@ -370,6 +371,9 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 
 		turns = append(turns, tv)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate compare turns: %w", err)
+	}
 
 	if len(allOriginal) == 0 && len(allCompressed) == 0 {
 		return nil, nil
@@ -436,9 +440,13 @@ func loadSessionTagsForCompare(ctx context.Context, q pgx.Tx, sessionID, tenantI
 	for rows.Next() {
 		var t SessionTagView
 		if err := rows.Scan(&t.TagKey, &t.TagValue, &t.TagSource, &t.Confidence); err != nil {
+			warnRowSkip("loadSessionTagsForCompare", err)
 			continue
 		}
 		out = append(out, t)
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("loadSessionTagsForCompare iteration aborted; tags degraded", "error", rerr)
 	}
 	return out
 }
@@ -803,6 +811,7 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 			var reqBody, respBody *string
 			var createdAt time.Time
 			if err := rows.Scan(&reqBody, &respBody, &createdAt); err != nil {
+				warnRowSkip("generateHandoffSummary", err)
 				continue
 			}
 			s := fmt.Sprintf("[%s] ", createdAt.Format("15:04:05"))
@@ -813,6 +822,11 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 				s += " → " + extractResponseSummary(*respBody)
 			}
 			summaries = append(summaries, s)
+		}
+		// 摘要富化降级通道：中断留痕后按已取到的摘要继续（闭包返回 err 会
+		// 把富化失败升格成端点 500，与 best-effort 语义不符）。
+		if rerr := rows.Err(); rerr != nil {
+			slog.Warn("generateHandoffSummary iteration aborted; summary degraded", "error", rerr)
 		}
 		return nil
 	})

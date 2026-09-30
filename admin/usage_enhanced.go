@@ -185,6 +185,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 			&entry.ErrorRate,
 			&entry.Percentage,
 		); err != nil {
+			warnRowSkip("usageCostTrend", err)
 			continue
 		}
 
@@ -197,6 +198,9 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 		} else {
 			entries = append(entries, entry)
 		}
+	}
+	if writeAggRowsErr(w, "usageCostTrend", rows.Err()) {
+		return
 	}
 
 	entries = append([]CostTrendEntry{}, entries...) // never serialize nil
@@ -461,9 +465,13 @@ func (h *Handler) queryDimensionChanges(ctx context.Context, tenantID string,
 	for rows.Next() {
 		var change DimChange
 		if err := rows.Scan(&change.DimensionValue, &change.CurrentCost, &change.PreviousCost, &change.ChangePct); err != nil {
+			warnRowSkip("queryDimensionChanges", err)
 			continue
 		}
 		changes = append(changes, change)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dimension changes: %w", err)
 	}
 
 	return changes, nil
