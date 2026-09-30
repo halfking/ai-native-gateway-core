@@ -184,6 +184,7 @@ export default {
     endDate: 'تاريخ النهاية',
     openAria: 'اختر النطاق الزمني',
     endBeforeStart: 'يجب ألا يكون تاريخ النهاية قبل البداية',
+    afterLatest: 'لا يمكن أن يكون بعد {date}',
     spanTooLong: 'المدة تتجاوز {n} يومًا',
     pickDate: 'اختر تاريخًا',
     preset: {
