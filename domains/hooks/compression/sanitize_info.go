@@ -140,6 +140,10 @@ func BuildSanitizeInfo(tenantHash, sessionID string, placeholderTypeOf func(plac
 			info.Stats.CreditCardCount++
 		case "secret":
 			info.Stats.SecretCount++
+		default:
+			// Every placeholder must land in exactly one bucket, otherwise the
+			// named counts do not add up to PlaceholderCount.
+			info.Stats.OtherCount++
 		}
 	}
 	return info

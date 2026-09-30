@@ -72,10 +72,14 @@ type SanitizeInputMiddleware struct {
 	logger    *slog.Logger
 	// getSessionID 从请求头提取会话ID（由调用方注入，便于测试）
 	getSessionID func(r *http.Request) string
-	// stateMu serializes offset read/allocate/write on this middleware instance.
-	// Redis keys remain tenant scoped for cross-process isolation; the mutex
-	// closes the in-process read-modify-write race for concurrent requests.
-	stateMu sync.Mutex
+	// sessionLocks serializes offset read/allocate/write per (tenant, session)
+	// on this middleware instance. Redis keys remain tenant scoped for
+	// cross-process isolation; this lock only removes the in-process
+	// read-modify-write race, so it is keyed by session rather than global —
+	// a process-wide mutex would also serialize unrelated sessions together
+	// with their Redis round trips and regex scan, capping gateway throughput
+	// at one request per detect latency.
+	sessionLocks sanitizeSessionLocks
 	// offsetLeaseTTL bounds crash recovery; an owner renews while sanitizing.
 	// Tests can shorten it to exercise slow detector and lease-loss paths.
 	offsetLeaseTTL time.Duration
@@ -120,6 +124,49 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 			return ""
 		},
 	}, nil
+}
+
+// sanitizeSessionLocks is a keyed mutex: callers holding the same key run one
+// at a time, callers on different keys run fully in parallel. Entries are
+// reference counted and removed when the last holder leaves, so the map cannot
+// grow with the number of distinct sessions the process has ever served.
+type sanitizeSessionLocks struct {
+	mu    sync.Mutex
+	locks map[string]*sanitizeSessionLock
+}
+
+type sanitizeSessionLock struct {
+	// ch carries a single slot. Sending acquires; receiving releases.
+	ch   chan struct{}
+	refs int
+}
+
+func (l *sanitizeSessionLocks) lock(key string) func() {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = make(map[string]*sanitizeSessionLock)
+	}
+	entry, ok := l.locks[key]
+	if !ok {
+		entry = &sanitizeSessionLock{ch: make(chan struct{}, 1)}
+		l.locks[key] = entry
+	}
+	// Count the holder BEFORE acquiring: the entry must outlive every waiter,
+	// otherwise the last release could delete a key another goroutine is
+	// already blocked on and a third caller would get a fresh lock.
+	entry.refs++
+	l.mu.Unlock()
+
+	entry.ch <- struct{}{}
+	return func() {
+		<-entry.ch
+		l.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(l.locks, key)
+		}
+		l.mu.Unlock()
+	}
 }
 
 // sessionIDHeaderPriority 与 chatHandler 一致的会话 ID header 候选。
@@ -179,10 +226,16 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			sessionID = bodySessionID
 		}
 
-		// 解析并脱敏
-		m.stateMu.Lock()
+		// 解析并脱敏。只有存在跨请求共享的会话状态（Redis 租约 + offset +
+		// 映射表）时才需要加锁，且按 (租户, 会话) 键控：同一会话的并发
+		// 轮次仍串行，不同会话互不阻塞。没有会话 ID 或没有 Redis 时，
+		// offset 与映射表都是本次调用私有的，不加锁也不会有竞态。
+		release := func() {}
+		if m.redis != nil && sessionID != "" {
+			release = m.sessionLocks.lock(sanitizeOffsetKey(tenantID, sessionID))
+		}
 		sanitizedBody, sm, messageRefs, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID, r.URL.Path)
-		m.stateMu.Unlock()
+		release()
 		if err != nil {
 			m.logger.Warn("sanitize_middleware: sanitize failed",
 				"error", err, "session_id", sessionID)
@@ -574,6 +627,14 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 		return nil, nil
 	}
 	if req.SessionID == "" {
+		// Without a session we cannot load the mapping table, so nothing in
+		// this body can be restored. A reserved marker must still not reach
+		// the client (the stream wing blocks for the same reason); mask it
+		// rather than pass the internal token through.
+		if hasReservedPlaceholder(req.ResponseBody) {
+			it.logger.WarnContext(ctx, "sanitize_restore: no session id, masking placeholders")
+			return it.maskUnrecognizedBody(ctx, req, SanitizeMap{})
+		}
 		return nil, nil
 	}
 
@@ -654,17 +715,28 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 	// (chat_restore_test contract). Legacy chat choices are rewritten too,
 	// so the same residual check applies with the escaped-variant probe;
 	// genuinely malformed JSON with a raw marker also blocks.
+	//
+	// A body that is valid JSON but matches NONE of the three known envelopes
+	// (vendor-specific error envelopes, Gemini `candidates`, bare `output_text`)
+	// used to fall through every guard and reach `return nil, nil` with the
+	// internal marker intact. Blocking outright would turn a routine upstream
+	// error envelope into a gateway 502, so mask instead: known placeholders
+	// are restored, unknown ones become [REDACTED], and the client still gets
+	// a well-formed response.
 	if hasReservedPlaceholder(req.ResponseBody) {
-		if nativeRoot != nil && (isNativeMessagesShape(nativeRoot) || isNativeResponsesShape(nativeRoot)) {
-			it.logger.WarnContext(ctx, "sanitize_restore: residual marker in recognized native body",
-				"session_id", req.SessionID)
-			return &response.InterceptResult{ShouldBlock: true}, nil
-		}
 		if nativeRoot == nil {
 			// Truncated / malformed JSON body containing a marker.
 			it.logger.WarnContext(ctx, "sanitize_restore: malformed body carries reserved marker",
 				"session_id", req.SessionID)
 			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+		if isNativeMessagesShape(nativeRoot) || isNativeResponsesShape(nativeRoot) {
+			it.logger.WarnContext(ctx, "sanitize_restore: residual marker in recognized native body",
+				"session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+		if !isChatChoicesShape(nativeRoot) {
+			return it.maskUnrecognizedBody(ctx, req, sm)
 		}
 	}
 
@@ -774,6 +846,44 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 	}, nil
 }
 
+// maskUnrecognizedBody is the last-resort fail-closed path: the body is valid
+// JSON but matches none of the envelopes the structured restorers understand
+// (or no mapping table is available at all), so no lane-based restorer will
+// ever touch the bytes carrying a marker. Restore what we can from the raw
+// text, redact the rest, and hand the body back — a leaked internal token and
+// a 502 on a routine upstream error envelope are both worse than a redacted
+// field.
+func (it *SanitizeRestoreInterceptor) maskUnrecognizedBody(ctx context.Context, req *response.InterceptRequest, sm SanitizeMap) (*response.InterceptResult, error) {
+	if req == nil || len(req.ResponseBody) == 0 {
+		return nil, nil
+	}
+	if len(sm) == 0 {
+		sm = SanitizeMap{}
+	}
+	masked, err := it.sanitizer.RestoreOutputOrMask(ctx, string(req.ResponseBody), sm)
+	if err != nil {
+		it.logger.WarnContext(ctx, "sanitize_restore: mask unrecognized body failed, blocking",
+			"session_id", req.SessionID, "error", err)
+		return &response.InterceptResult{ShouldBlock: true}, nil
+	}
+	if masked == string(req.ResponseBody) || hasReservedPlaceholder([]byte(masked)) {
+		it.logger.WarnContext(ctx, "sanitize_restore: unrecognized body still carries marker after mask, blocking",
+			"session_id", req.SessionID)
+		return &response.InterceptResult{ShouldBlock: true}, nil
+	}
+	it.logger.WarnContext(ctx, "sanitize_restore: unrecognized envelope, masked placeholders",
+		"session_id", req.SessionID, "placeholder_count", len(sm))
+	return &response.InterceptResult{
+		ModifiedBody: []byte(masked),
+		Action:       "sanitize_restore_masked",
+		Metadata: map[string]any{
+			"sanitize_restored": true,
+			"placeholder_count": len(sm),
+			"masked":            true,
+		},
+	}, nil
+}
+
 // mustDecodeJSONMap decodes body, tolerating malformed JSON (returns nil,
 // which callers treat as unrecognized). Numbers decode as json.Number so
 // token counts beyond 2^53 round-trip exactly through restore + re-marshal.
@@ -814,7 +924,11 @@ func isNativeResponsesShape(root map[string]any) bool {
 }
 
 // InterceptStreamEnd 流结束时 body 已重组为非流式形态，复用非流式还原。
-// 注：流式响应字节已在流中发送给客户端，还原只影响持久化/观测。
+//
+// 顺序契约决定了这里只能「试还原」，不能把结果写回：流式字节早已下发，
+// 而 OutputCompliance 必须先看到占位符。因此本次调用不改变任何输出，只用
+// 于观测——restored 非 nil 表示该响应体存在可还原的可见 lane。
+// 注意 meta.ResponseBody 仍保持占位符原文。
 func (it *SanitizeRestoreInterceptor) InterceptStreamEnd(ctx context.Context, meta *response.StreamMeta) (*response.EndResult, error) {
 	if it == nil || it.sanitizer == nil || meta == nil || len(meta.ResponseBody) == 0 || meta.SessionID == "" {
 		return nil, nil
@@ -1301,9 +1415,12 @@ func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, 
 //   - 顶层 tool_calls[*].function.arguments：同上（部分 schema 把 tool_calls
 //     直接挂在 choices 而非 message 上）
 func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, body []byte, sm SanitizeMap) ([]byte, error) {
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, err
+	// UseNumber, like the native branch: a plain Unmarshal would re-render any
+	// usage/token count above 2^53 in float form and silently rewrite the
+	// client's accounting numbers (native_restore contract).
+	raw := mustDecodeJSONMap(body)
+	if raw == nil {
+		return nil, errors.New("sanitize_restore: response body is not a JSON object")
 	}
 	choices, ok := raw["choices"].([]any)
 	if !ok {
