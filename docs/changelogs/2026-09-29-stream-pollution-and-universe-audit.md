@@ -498,3 +498,77 @@ statement_timeout 的窗口内执行，失败可安全重试。
 + 重启才能加载新二进制，重启后 `postgres` 需在 boot 期成功连上，
 `hasReportedRawModels` 才可能为真、模型分区才会渲染。
 **在此之前，第 2 项（glm-5.3 / glm-5.2 目视验收）仍不得声明通过。**
+
+## 2026-10-01 拓扑定案：验收目标环境从未部署过被验收的修复
+
+本节纠正前面两节连续两个错误归因，并给出可复核的定案结论。
+
+### 三个主机，三个角色（实测）
+
+| 主机 | unit | 入口 | 当时的 build_seq |
+| --- | --- | --- | --- |
+| **154**（生产） | `llm-gateway-go-canary@8782` | **`llmgateway.internal.example.com` 实际落点** | **2356 / `2d750fb4`** |
+| 245（预发布闸门） | `llmgo-245-canary@8781\|8782` | `llmgateway.internal.example.com` 等 | 2372 / `d2af305a` |
+| 252 | `llmgo-252-dev` + PG17 | 仅 dev | —— |
+
+定位手法：`curl -fsS -m 10 https://llmgateway.internal.example.com/healthz` 读回 `build_seq`，
+再在 154 上 `curl 127.0.0.1:8782/healthz` 逐字对上。**连续 8 次采样一致**，
+不是抖动。
+
+### 两个被推翻的错误
+
+1. 「llmgateway.internal.example.com 的后端在 252」——**错**。252 只有 dev 与 PG17；
+   252 的 `stream.d/sni-proxy.conf` 把 `llmgateway.internal.example.com` 转给
+   `itestu_nginx_backend`，而终点是 **154 生产**。
+2. 「252 dev 处于 postgres 降级态、所以模型分组不渲染」——**因果错**。
+   252 dev 确实三次 boot 降级（`ensure candidate_failure_logs` 超时，见上节），
+   但**它不是 `llmgateway.internal.example.com` 的服务对象**，那组日志解释不了线上现象。
+   本节之前把两件事连成一条因果链，是错的。
+
+### 决定性事实
+
+```
+9cb842d3e (canonical 精确形优先 + 不变式真门)  in  2d750fb4 (154 现网)?  NO
+6f629ad8b (689 self-heal 独立预算)             in  2d750fb4?             NO
+317f28556 (悬空 rows.Err 事故源)               in  2d750fb4?             NO
+
+154 现网落后 main：175 个提交
+```
+
+**本文件开头「已交付」那一节的修复，从来没有到过验收所用的那个环境。**
+在 `llmgateway.internal.example.com` 上筛选 glm-5.3 看不到正确的 glm-5.3 分组，是
+**必然结果**，不是回归、也不是环境问题 —— 那个实例上根本不存在被验收的逻辑。
+
+推论：第 2 项目视验收此前全部无效，无论 UI 表现如何都不能作为
+9cb842d3e 的验收证据。要真正验收，必须先把修复推进到 154；
+而按 deploy-245/deploy-154 的闸门约定，顺序是 **245 先 → 验证 → 154**。
+
+### 附带：245 一次失败部署的副作用（如实登记）
+
+向 245 部署 `build_seq 2373` **失败并自动回滚**到 2372。触发点是
+`[9.5/9] 验证目标机自身 nginx→gateway (127.0.0.1:443/healthz)` 30s 超时，
+按 skill 约定立即回滚（回滚本身成功：healthz + running release + PG 均 OK）。
+
+但 nginx 事后复查是 `active` 且 443 返回 200 —— 即该次超时疑为**误报**，
+发生在 handoff 耗时 `351591ms`（约 5.9 分钟）之后的窗口内。
+
+更值得注意的是 adopt 检测的误判链：
+
+```
+⚠ 8781/8782 均无监听 —— 按 fresh 主机处理，active 取契约端口 8781
+⚠ active unit 无法从监听进程归属解析，按端口推导为 llmgo-245.service
+```
+
+`llmgo-245.service` 正是 skill 明令「**弃用遗留 unit，勿使用**」的那个。
+回滚后 245 实际状态（实测 `ss -ltnp` + `systemctl show`）：
+
+- 监听 8781 的是 `llmgo-245.service`（**弃用 unit**），`ExecMainStart=05:07:07`
+  —— 正是失败部署期间被误启用的
+- `llmgo-245-canary@8781.service`：`failed`（原 02:42 实例）
+- `llmgo-245-canary@8782.service`：`active/running` 但 **8782 无监听**（僵尸 unit）
+- `run/active-port` 记录 8782，实测服务在 8781 —— **记录与实际不一致**
+
+即：站点对外仍在正常服务（无对外故障），但 245 的蓝绿 unit 拓扑已被
+这次失败部署搞乱，与 `deploy-seamless` 的契约不符，下次部署会被同样的
+归属解析继续误导。**修复该拓扑需重启 245 上的 unit，属对外可见操作，
+本轮未擅自执行。**
