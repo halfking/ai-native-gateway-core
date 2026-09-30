@@ -72,9 +72,20 @@ func TestJsonbLintParsesObjectTables(t *testing.T) {
 			"若这是有意改用别的来源，请同步更新 TestSqlObjectsIsPresentForStaticAnalysisGates " +
 			"并复核该 lint 的检查面是否变窄")
 	}
-	// The map must be built by actually parsing those files, not hardcoded.
-	if !regexp.MustCompile(`(?s)sql/objects/tables/.*ReadDir|filepath\.Glob.*sql/objects`).MatchString(src) {
-		t.Log("注意：未见显式的目录遍历/Glob，请确认 jsonb 列映射确实由文件内容解析而来")
+	// The map must be built by actually reading those files, not hardcoded.
+	//
+	// This used to be a t.Log "please go look" note. That is a no-op: it never
+	// fails, it prints nothing when the pattern does match (which it did), and
+	// the surrounding report then counted it as a passing guard. A note is not
+	// a guard. The assertion below is on the concrete thing that matters — the
+	// directory the map is built from — and it has a real discriminator: a
+	// sibling object directory is rejected.
+	if m := regexp.MustCompile(`filepath\.Join\([^)]*"sql"[^)]*"objects"[^)]*"tables"`).
+		FindString(src); m == "" {
+		t.Errorf("internal/dbx 未用 filepath.Join(objectsRoot, \"tables\") 确定列映射目录；\n" +
+			"  jsonb 列映射必须由 sql/objects/tables/*.sql 的文件内容解析而来。\n" +
+			"  若这是有意改用别的来源，请同步更新本文件顶部的定位结论并复核检查面是否变窄。\n" +
+			"  （旧版本这里只有一句 t.Log 提示，从不失败。）")
 	}
 }
 
