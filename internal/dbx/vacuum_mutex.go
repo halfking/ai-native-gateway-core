@@ -172,7 +172,27 @@ func VacuumFullMutex(
 	); err != nil {
 		// Distinguish lock-busy from other errors so callers can
 		// surface "another replica is running" cleanly.
-		if isLockNotAvailable(err) {
+		//
+		// Two different SQLSTATEs reach here, and missing the second one made
+		// ErrVacuumFullMutexBusy unreachable in the real contention path:
+		//
+		//   55P03 lock_not_available — only ever returned by the NON-blocking
+		//     pg_try_advisory_xact_lock. We do not call that, so this branch was
+		//     dead on this code path.
+		//   57014 query_canceled — what actually happens. We use the blocking
+		//     pg_advisory_xact_lock, so a contended lock makes us WAIT; the wait
+		//     is then cut short by the SET LOCAL statement_timeout above, and
+		//     PostgreSQL reports the cancellation, not a lock error.
+		//
+		// The regression guard for this is
+		// TestVacuumFullMutexStatementTimeoutInsideTxn, which asserts the
+		// observable contract (busy surfaces as ErrVacuumFullMutexBusy). That
+		// test had never run: it has no build tag, resolves its DSN from
+		// TEST_AUDIT_ISOLATED_DB_URL / TEST_PG_DSN / TEST_DATABASE_URL, and
+		// t.Skipf's when it cannot connect — so every default `go test ./...`
+		// and every CI run reported "ok" without executing it. It surfaced only
+		// once the integration gate started supplying a real DSN.
+		if isLockNotAvailable(err) || isLockWaitCanceled(err) {
 			return fmt.Errorf("%w: %v", ErrVacuumFullMutexBusy, err)
 		}
 		return fmt.Errorf("acquire advisory lock: %w", err)
@@ -193,9 +213,13 @@ func VacuumFullMutex(
 }
 
 // isLockNotAvailable reports whether err comes from a Postgres lock
-// acquisition timeout (55P03). We use stringly-typed matching here
+// acquisition refusal (55P03). We use stringly-typed matching here
 // because pgconn.PgError wrapping is not guaranteed across pgx
 // versions and the SQLSTATE is the stable contract.
+//
+// Scope: 55P03 is what pg_try_advisory_xact_lock returns. VacuumFullMutex
+// uses the BLOCKING pg_advisory_xact_lock, so on its own this predicate never
+// fires there — see isLockWaitCanceled for the code that actually arrives.
 func isLockNotAvailable(err error) bool {
 	if err == nil {
 		return false
@@ -204,6 +228,27 @@ func isLockNotAvailable(err error) bool {
 	// We avoid importing pgconn just for this one error code.
 	const lockNotAvailable = "55P03"
 	return errContainsCode(err, lockNotAvailable)
+}
+
+// isLockWaitCanceled reports whether err is a statement cancellation (57014)
+// raised while waiting on the advisory lock.
+//
+// At the VacuumFullMutex call site this is unambiguous rather than a guess: the
+// lock transaction executes exactly two statements — SET LOCAL
+// statement_timeout and the lock itself — so a 57014 after the SET can only
+// come from the lock wait being cut short. It is therefore the "someone else
+// holds the mutex" signal, and callers matching on ErrVacuumFullMutexBusy
+// depend on it being classified as busy.
+//
+// This predicate is deliberately narrower than isLockNotAvailable's error set
+// and must not be widened to other cancellation causes without re-checking
+// that call site.
+func isLockWaitCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	const queryCanceled = "57014"
+	return errContainsCode(err, queryCanceled)
 }
 
 // errContainsCode walks an error chain looking for the SQLSTATE.

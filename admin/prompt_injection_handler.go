@@ -354,6 +354,12 @@ func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Reques
 		}
 		rules = append(rules, rule)
 	}
+	// 迭代中断只让 Next() 返回 false。不查 Err() 就 200，规则清单会
+	// 静默少一截 —— 安全规则的缺失等于检测被静默关闭。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate rules", err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"rules": rules, "count": len(rules)})
 }
@@ -596,6 +602,12 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 		}
 		detections = append(detections, d)
 	}
+	// 检测记录是安全审计证据链：静默截断会让"这批请求没有注入命中"
+	// 成为假结论。上抛，不返回半份 detections。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate detections", err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"detections": detections, "page": page, "page_size": pageSize, "total": total,
@@ -751,6 +763,11 @@ func (h *PromptInjectionHandler) listEngines(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		engines = append(engines, e)
+	}
+	// 引擎清单少一截 → 优先级排序后派发到哪个 LLM 引擎的结论失真。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate engines", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"engines": engines, "count": len(engines)})
@@ -963,6 +980,11 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 			_ = json.Unmarshal([]byte(channelsJSON), &s.NotifyChannels)
 			matrix = append(matrix, s)
 		}
+		// 处置矩阵缺行 = 某个 severity 没有动作 = 该级别命中后"不处置"。
+		if err := rows.Err(); err != nil {
+			writeInternalErrStr(w, "Failed to iterate severity matrix", err)
+			return
+		}
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{"matrix": matrix})
 
@@ -1075,6 +1097,11 @@ func (h *PromptInjectionHandler) listCanaryTokens(w http.ResponseWriter, r *http
 			return
 		}
 		tokens = append(tokens, t)
+	}
+	// 蜜罐 token 清单少一截 = 泄露探针少一批 = 泄露事件被静默漏报。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate tokens", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"tokens": tokens, "count": len(tokens)})
@@ -1206,6 +1233,11 @@ func (h *PromptInjectionHandler) handleAttackVectors(w http.ResponseWriter, r *h
 			return
 		}
 		vectors = append(vectors, v)
+	}
+	// 攻击向量清单是威胁情报读面，截断即"没有更多攻击手法"的假结论。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate attack vectors", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"vectors": vectors, "page": page, "page_size": pageSize})

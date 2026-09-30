@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // transientErrorKinds are the error types that indicate a credential/network
@@ -294,7 +295,9 @@ func (l *PassiveProbeListener) reviewPromotion(ctx context.Context) {
 					var credID int
 					var rawModel string
 					if err := rows.Scan(&credID, &rawModel); err != nil {
-						continue
+						if dbrows.SkipOrFail("bg.PassiveProbeListener.reviewPromotion/cachePrime", err) {
+							continue
+						}
 					}
 					nextRetryAt := time.Now().Add(5 * time.Minute)
 					_ = l.cache.Set(timeout, credID, rawModel, modelAvailabilityFields(
@@ -308,6 +311,13 @@ func (l *PassiveProbeListener) reviewPromotion(ctx context.Context) {
 						&nextRetryAt,
 						"passive_probe",
 					))
+				}
+				// R66: 缓存预热是尽力而为——被截断只意味着少数 reviewing
+				// 条目没进缓存（下一轮补上），但必须留痕，否则路由侧会
+				// 观察到「无理由的少量 reviewing 不在缓存」。
+				if err := rows.Err(); err != nil {
+					slog.Warn("passive probe: cache prime row iteration aborted; batch truncated",
+						"error", err)
 				}
 			}
 		}
@@ -356,9 +366,17 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 	for rows.Next() {
 		var p pending
 		if err := rows.Scan(&p.credentialID, &p.rawModel, &p.errorKind, &p.errCount); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.PassiveProbeListener.reviewResolution", err) {
+				continue
+			}
 		}
 		toResolve = append(toResolve, p)
+	}
+	// R66: 到期批被截断 = 少把若干 reviewing 条目送去裁决（漏标
+	// unreachable，方向偏保守），但静默不可接受。
+	if err := rows.Err(); err != nil {
+		slog.Warn("passive probe: resolution row iteration aborted; batch truncated",
+			"error", err, "pending", len(toResolve))
 	}
 
 	if len(toResolve) == 0 {

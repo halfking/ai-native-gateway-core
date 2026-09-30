@@ -126,6 +126,7 @@ func (h *Handler) handleDataLifecycleBlobTop(w http.ResponseWriter, r *http.Requ
 			&b.RequestID, &b.SessionKey, &b.TenantID, &ts,
 			&b.RequestBodyBytes, &b.OutboundBodyBytes, &b.Model,
 		); err != nil {
+			warnRowSkip("dataLifecycle.blobs.top", err)
 			continue
 		}
 		b.OccurredAt = ts.UTC().Format(time.RFC3339)
@@ -133,6 +134,10 @@ func (h *Handler) handleDataLifecycleBlobTop(w http.ResponseWriter, r *http.Requ
 		b.TotalHuman = humanBytes(b.TotalBytes)
 		totalBytes += b.TotalBytes
 		out = append(out, b)
+	}
+	// Top-N blob 清单的截断会让运维漏掉最大的存储占用行。
+	if writeAggRowsErr(w, "dataLifecycle.blobs.top", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, blobTopResponse{

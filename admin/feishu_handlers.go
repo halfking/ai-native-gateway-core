@@ -142,6 +142,9 @@ func (h *Handler) handleFeishuRoutingList(w http.ResponseWriter, r *http.Request
 		}
 		out = append(out, r)
 	}
+	if writeAggRowsErr(w, "feishu.routingList", rows.Err()) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":     out,
 		"count":     len(out),
@@ -430,6 +433,10 @@ func (h *Handler) handleFeishuSendLogList(w http.ResponseWriter, r *http.Request
 		e.ErrorCode = errCode
 		e.LatencyMS = lat
 		out = append(out, e)
+	}
+	// 发送日志少一截 = 失败的飞书通知被静默从排查列表里抹掉。
+	if writeAggRowsErr(w, "feishu.sendLogList", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":     out,

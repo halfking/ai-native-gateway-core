@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 type PgxStore struct {
@@ -347,9 +349,18 @@ func (s *PgxStore) GetDashboardStats(ctx context.Context) (*DashboardStats, erro
 		var sev string
 		var count int
 		if err := rows.Scan(&sev, &count); err != nil {
-			continue
+			if dbrows.SkipOrFail("fault.PgxStore.GetDashboardStats/bySeverity", err) {
+				continue
+			}
 		}
 		stats.BySeverity[Severity(sev)] = count
+	}
+	// R66: severity 分组被截断 = 仪表盘严重度分布静默失真（分母
+	// TotalEvents 用的是 COUNT(*)，不随本读截断，缺口无痕）。上抛。
+	// 直接消费 rows.Err()（非 dbrows.Err 包装），使站位级守卫能逐循环
+	// 判定；单行跳行留痕仍走 dbrows.SkipOrFail。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fault.PgxStore.GetDashboardStats: iterate rows: %w", err)
 	}
 
 	return stats, nil

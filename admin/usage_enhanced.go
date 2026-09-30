@@ -336,8 +336,15 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 按模型维度细分（可选，简化实现只返回模型维度）
+	// R68 修正：原先丢弃错误，于是查询失败时 byDimension 静默少一个 key，
+	// 响应里看不出「没查」与「查了但无变化」的差别。省略本身在契约内
+	// （本来就可能只有模型维度），但必须留痕，否则「维度总是缺」会一直无人查。
 	byDimension := make(map[string][]DimChange)
-	modelChanges, _ := h.queryDimensionChanges(ctx, tid, currentStart, currentEnd, previousStart, previousEnd, "model")
+	modelChanges, dimErr := h.queryDimensionChanges(ctx, tid, currentStart, currentEnd, previousStart, previousEnd, "model")
+	if dimErr != nil {
+		slog.Warn("usage period compare: model-dimension query failed; dimension omitted",
+			"tenant", tid, "error", dimErr)
+	}
 	if len(modelChanges) > 0 {
 		byDimension["model"] = modelChanges
 	}

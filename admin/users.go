@@ -321,9 +321,14 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u userInfo
 		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
+			warnRowSkip("users.list", err)
 			continue
 		}
 		users = append(users, u)
+	}
+	// 账号清单少一截 = 管理员看不见某个租户的用户（且前端以为就是全部）。
+	if writeAggRowsErr(w, "users.list", rows.Err()) {
+		return
 	}
 	if users == nil {
 		users = []userInfo{}

@@ -113,6 +113,7 @@ func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 		var e auditLogEntry
 		var beforeJSON, afterJSON []byte
 		if err := rows.Scan(&e.ID, &e.TS, &e.Actor, &e.Action, &e.TargetType, &e.TargetID, &beforeJSON, &afterJSON); err != nil {
+			warnRowSkip("auditLog.list", err)
 			continue
 		}
 		if len(beforeJSON) > 0 {
@@ -122,6 +123,11 @@ func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(afterJSON, &e.AfterJSON)
 		}
 		entries = append(entries, e)
+	}
+	// 路由审计日志少一截 = 变更证据少了几条（且 total 与列表对不上，
+	// 前端会以为翻到底了）。审计面不返回半份。
+	if writeAggRowsErr(w, "auditLog.list", rows.Err()) {
+		return
 	}
 	if entries == nil {
 		entries = []auditLogEntry{}

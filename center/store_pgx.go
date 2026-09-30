@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // PgxStore PostgreSQL实现
@@ -117,6 +118,11 @@ func (s *PgxStore) ListInstances(ctx context.Context, status string, offset, lim
 		}
 		instances = append(instances, instance)
 	}
+	// R66: 迭代中断只让 Next() 返回 false；不终检就把「读到第 N 个实例时
+	// 连接断了」当成「实例列表已读完」，调用方拿到残缺列表 + nil。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("center.PgxStore.ListInstances: iterate rows: %w", err)
+	}
 
 	return instances, total, nil
 }
@@ -211,6 +217,10 @@ func (s *PgxStore) GetHeartbeatHistory(ctx context.Context, instanceID string, s
 		}
 		records = append(records, record)
 	}
+	// R66: 心跳历史被静默截断 = 实例存活曲线凭空少一段。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("center.PgxStore.GetHeartbeatHistory: iterate rows: %w", err)
+	}
 
 	return records, nil
 }
@@ -258,12 +268,11 @@ func (s *PgxStore) GetCommand(ctx context.Context, commandID string) (*Command, 
 		return nil, err
 	}
 
-	if len(argsJSON) > 0 {
-		_ = json.Unmarshal(argsJSON, &cmd.Args)
-	}
-	if len(resultJSON) > 0 {
-		_ = json.Unmarshal(resultJSON, &cmd.Result)
-	}
+	// R67：jsonb 反序列化失败按零值继续并留痕，不上抛——单行数据坏了不应
+	// 把整个命令查询变成错误。原先 `_ = json.Unmarshal(...)` 零痕迹，运维
+	// 无法区分「这行本来就是空的」与「这行数据坏了」。
+	jsoncol.Decode("center.PgxStore.GetCommand/args", argsJSON, &cmd.Args)
+	jsoncol.Decode("center.PgxStore.GetCommand/result", resultJSON, &cmd.Result)
 
 	return cmd, nil
 }
@@ -292,10 +301,12 @@ func (s *PgxStore) ListPendingCommands(ctx context.Context, instanceID string) (
 		); err != nil {
 			return nil, err
 		}
-		if len(argsJSON) > 0 {
-			_ = json.Unmarshal(argsJSON, &cmd.Args)
-		}
+		jsoncol.Decode("center.PgxStore.ListPendingCommands/args", argsJSON, &cmd.Args)
 		commands = append(commands, cmd)
+	}
+	// R66: 待执行命令被静默截断 = 节点侧永远收不到后半批命令。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("center.PgxStore.ListPendingCommands: iterate rows: %w", err)
 	}
 
 	return commands, nil
@@ -346,13 +357,13 @@ func (s *PgxStore) GetCommandHistory(ctx context.Context, instanceID string, lim
 		); err != nil {
 			return nil, err
 		}
-		if len(argsJSON) > 0 {
-			_ = json.Unmarshal(argsJSON, &cmd.Args)
-		}
-		if len(resultJSON) > 0 {
-			_ = json.Unmarshal(resultJSON, &cmd.Result)
-		}
+		jsoncol.Decode("center.PgxStore.GetCommandHistory/args", argsJSON, &cmd.Args)
+		jsoncol.Decode("center.PgxStore.GetCommandHistory/result", resultJSON, &cmd.Result)
 		commands = append(commands, cmd)
+	}
+	// R66: 命令历史被静默截断 = 运维审计面凭空少若干条下发记录。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("center.PgxStore.GetCommandHistory: iterate rows: %w", err)
 	}
 
 	return commands, nil
@@ -499,6 +510,7 @@ func (s *PgxStore) GetRuntimeMetricsSummary(ctx context.Context, hours int) ([]R
 		}
 		summaries = append(summaries, summary)
 	}
-
+	// R66: 聚合面被静默截断 = 集群运行时指标凭空少若干实例。直接消费
+	// rows.Err()（非 dbrows.Err 包装），使站位级守卫能逐循环判定。
 	return summaries, rows.Err()
 }

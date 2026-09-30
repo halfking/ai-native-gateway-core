@@ -797,11 +797,15 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 
 	// Non-nil so the caller (and the JSON response) gets [] rather than null.
 	out := make([]credentialhealth.CallEntry, 0)
+	scanFailures := 0
 	for rows.Next() {
 		var e credentialhealth.CallEntry
 		var ok bool
 		var errKind string
-		if err := rows.Scan(&e.RequestID, &e.Timestamp, &ok, &e.LatencyMs, &errKind); err != nil {
+		if scanErr := rows.Scan(&e.RequestID, &e.Timestamp, &ok, &e.LatencyMs, &errKind); scanErr != nil {
+			scanFailures++
+			slog.Warn("sliding window scan failed",
+				"credential_id", credentialID, "error", scanErr.Error())
 			continue
 		}
 		e.Success = ok
@@ -809,6 +813,15 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 			e.ErrorKind = errKind
 		}
 		out = append(out, e)
+	}
+	// rows.Next() returning false on a mid-iteration connection abort is
+	// indistinguishable from normal completion; without this the caller would
+	// render a silently truncated timeline (and Redis-recorder-unavailable is
+	// exactly when a flapping connection is likely).
+	if rows.Err() != nil {
+		slog.Error("sliding window rows iteration failed",
+			"credential_id", credentialID, "scan_failures", scanFailures, "error", rows.Err().Error())
+		return out, fmt.Errorf("rows iteration failed: %w", rows.Err())
 	}
 	return out, nil
 }

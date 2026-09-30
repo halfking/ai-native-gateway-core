@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -129,6 +130,12 @@ func (s *PgxStore) ListReleases(ctx context.Context, channel Channel, offset, li
 		releases = append(releases, rel)
 	}
 
+	// 迭代终检：连接中断时 Next() 提前返回 false，与「正常读完」无法区分。
+	// 不查 Err() 就把半个发布列表连同 nil error 交给调用方——升级决策会
+	// 基于一份静默截断的清单做。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("autoupdate.PgxStore.ListReleases: iterate rows: %w", err)
+	}
 	return releases, total, nil
 }
 
