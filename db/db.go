@@ -582,15 +582,53 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// 2026-09-10 (handoff-20260910): 689 (columnar→heap monthly partitions +
 	// per-table TTL drop functions) never reached ensure-chain environments,
 	// so the opslog trimmer's row-level DELETE kept dying on ColumnarScan.
-	if err := db.ensureCandidateFailureLogsHeapPartitions(migCtx); err != nil {
+	//
+	// 2026-10-01: 这一步原本直接吃 migCtx 的 3 分钟总预算，而它排在 78 条
+	// ensure 链的倒数第二位。生产（252 / llmgo-252-dev）实证：前面任一
+	// ensure 因 ACCESS EXCLUSIVE 锁等待吃掉预算后，轮到本步时剩余时间不够，
+	// 报 `ensure candidate_failure_logs heap partitions: timeout: context
+	// deadline exceeded`（04:26:10 / 04:34:19 / 04:38:14 三次 boot 均复现），
+	// 冒泡令整条 ensure 链失败 → `postgres disabled` → telemetry 关闭 →
+	// live stream hub 无 DB（node status disabled）→ dashboard 模型分组因
+	// hasReportedRawModels 恒 false 而整块隐藏。
+	//
+	// 注意 SQL 内的 `SET LOCAL statement_timeout='10min'` 救不了：context
+	// 到期由客户端直接掐断连接，服务端超时设置根本没机会生效。外层 context
+	// 才是真正的杀手。
+	//
+	// 修法只给本步独立预算，不动 78 条链共用的 3 分钟约定（改全局影响面
+	// 过大，且 3 分钟对绝大多数幂等 no-op ensure 是合适的）。本步 SQL 自身
+	// 幂等（注释与函数体均声明 all-partitions-heap 后为 no-op），且仍在
+	// migrationsPinned 抬升 statement_timeout 的窗口内执行，失败可安全重试。
+	cflCtx, cflCancel := context.WithTimeout(context.WithoutCancel(migCtx), candidateFailureLogsHeapPartitionsBudget)
+	defer cflCancel()
+	if err := db.ensureCandidateFailureLogsHeapPartitions(cflCtx); err != nil {
 		return err
 	}
 	db.ensureProbeHealthDashboardViews(migCtx)
 	return nil
 }
 
-// sessionSummariesArchival backfill bounds: 2000-row chunks keep per-statement
-// row-lock windows in the milliseconds range (far below the shared PG's 30s
+// candidateFailureLogsHeapPartitionsBudget is the independent wall-clock
+// budget for ensureCandidateFailureLogsHeapPartitions, deliberately detached
+// from the 3-minute migCtx shared by the 78-call ensure chain.
+//
+// 2026-10-01 (252 llmgo-252-dev production evidence): the shared budget was
+// being exhausted by upstream ACCESS EXCLUSIVE lock waits before this step
+// (last-but-one in the chain) ever ran, so the conversion was killed with
+// `context deadline exceeded` and the error aborted the whole ensure chain —
+// `postgres disabled` → telemetry off → live-stream hub without DB → the
+// dashboard model-group panel hidden behind a permanently-false
+// hasReportedRawModels gate. The SQL's own `SET LOCAL statement_timeout`
+// could not help: client-side context expiry aborts the connection outright,
+// so the server-side timeout never gets a chance to fire.
+//
+// 5 minutes matches the SQL's own statement_timeout ceiling, so the two are
+// consistent: whichever trips first produces the same error shape, and the
+// caller's 10-minute boot retry budget still bounds the whole thing.
+const candidateFailureLogsHeapPartitionsBudget = 5 * time.Minute
+
+// sessionSummariesArchival backfill bounds: 2000-row chunks keep per-statement// row-lock windows in the milliseconds range (far below the shared PG's 30s
 // statement_timeout), and the per-boot wall-clock slice means a leftover
 // backfill simply resumes on the next boot — NULL last_accessed_at is
 // archival-safe (predicates treat it as "not accessed recently"), so boot
