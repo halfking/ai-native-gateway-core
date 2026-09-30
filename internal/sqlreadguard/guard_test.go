@@ -66,28 +66,28 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// session_list.go / usage.go / session_online.go 已在 R48 §5 双腿化为
 	// request_logs_with_current_month 视图（view 已在白名单 LEGIT），对应
 	// 白名单条目按 self-cleaning 守卫自动清除（TestSQLReadGuardWhitelistCurrent）。
-	"admin/session_extract.go":                           "DEBT(R47): 裸母表",
-	"admin/session_analytics_timeseries.go":              "DEBT(R47): 裸母表",
-	"admin/session_analytics_handler.go":                 "DEBT(R47): 裸母表",
-	"admin/session_panorama_handler.go":                  "DEBT(R47): 裸母表",
-	"admin/memora_handlers.go":                           "DEBT(R47): 裸母表",
-	"admin/quality_correlations.go":                      "DEBT(R47): 裸母表",
-	"admin/provider_models.go":                           "DEBT(R47): 裸母表",
-	"admin/probe_history.go":                             "DEBT(R47): 裸母表",
-	"admin/session_sanitize_matches.go":                  "DEBT(R47): 裸母表",
-	"cmd/gateway/output_compliance_control.go":           "DEBT(R47): 网关运行时读面裸母表",
-	"cmd/gateway/main_v3_wiring.go":                      "DEBT(R47): 接线读面裸母表",
-	"domains/analysis/optimizer.go":                      "DEBT(R47): 裸母表",
-	"domains/analysis/request_summary.go":                "DEBT(R47): 裸母表",
-	"domains/analysis/projectattr/store.go":              "DEBT(R47): 裸母表",
-	"domains/sessionforensics/export.go":                 "DEBT(R47): 裸母表",
+	"admin/session_extract.go":                 "DEBT(R47): 裸母表",
+	"admin/session_analytics_timeseries.go":    "DEBT(R47): 裸母表",
+	"admin/session_analytics_handler.go":       "DEBT(R47): 裸母表",
+	"admin/session_panorama_handler.go":        "DEBT(R47): 裸母表",
+	"admin/memora_handlers.go":                 "DEBT(R47): 裸母表",
+	"admin/quality_correlations.go":            "DEBT(R47): 裸母表",
+	"admin/provider_models.go":                 "DEBT(R47): 裸母表",
+	"admin/probe_history.go":                   "DEBT(R47): 裸母表",
+	"admin/session_sanitize_matches.go":        "DEBT(R47): 裸母表",
+	"cmd/gateway/output_compliance_control.go": "DEBT(R47): 网关运行时读面裸母表",
+	"cmd/gateway/main_v3_wiring.go":            "DEBT(R47): 接线读面裸母表",
+	"domains/analysis/optimizer.go":            "DEBT(R47): 裸母表",
+	"domains/analysis/request_summary.go":      "DEBT(R47): 裸母表",
+	"domains/analysis/projectattr/store.go":    "DEBT(R47): 裸母表",
+	"domains/sessionforensics/export.go":       "DEBT(R47): 裸母表",
 	// domains/providerprofile/pg_reconciliation_store.go 条目已按 R28-B-1（round 30）
 	// 聚合源切换移除：该文件现已只读计帐侧月分区，无 request_logs 裸读命中，
 	// 由 TestSQLReadGuardWhitelistCurrent 自清洁守卫报出。
-	"domains/hooks/goal/history_store.go":                "DEBT(R47): 裸母表",
-	"domains/hooks/observability/telemetry/client.go":    "DEBT(R47): 裸母表",
-	"autoroute/recommend_v2.go":                          "DEBT(R47): 裸母表",
-	"discovery/discovery.go":                             "DEBT(R47): 裸母表",
+	"domains/hooks/goal/history_store.go":             "DEBT(R47): 裸母表",
+	"domains/hooks/observability/telemetry/client.go": "DEBT(R47): 裸母表",
+	"autoroute/recommend_v2.go":                       "DEBT(R47): 裸母表",
+	"discovery/discovery.go":                          "DEBT(R47): 裸母表",
 }
 
 var sqlReadGuardAllowSQLFiles = map[string]string{

@@ -175,4 +175,26 @@ export default {
     lightTitle: '浅色模式',
     darkTitle: '深色模式',
   },
+
+  // 2026-09-30 统一日历组件族（KxDateRangePicker / KxDatePicker）共用词条
+  dateRange: {
+    title: '时间范围',
+    custom: '自定义',
+    startDate: '开始日期',
+    endDate: '结束日期',
+    openAria: '选择时间范围',
+    endBeforeStart: '结束需不早于开始',
+    spanTooLong: '跨度超过 {n} 天',
+    pickDate: '选择日期',
+    preset: {
+      today: '今天',
+      yesterday: '昨天',
+      last24h: '近 24 小时',
+      last7d: '近 7 天',
+      last14d: '近 14 天',
+      last30d: '近 30 天',
+      thisMonth: '本月',
+      lastMonth: '上月',
+    },
+  },
 }

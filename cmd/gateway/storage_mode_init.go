@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -37,10 +38,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/config"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/monitoring"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/storage"
-	filestore "github.com/kaixuan/llm-gateway-go/storage/file"
 	storagefactory "github.com/kaixuan/llm-gateway-go/storage/factory"
+	filestore "github.com/kaixuan/llm-gateway-go/storage/file"
 )
 
 // storageModeLite 是 lite 模式的字符串字面量（与 config.StorageModeLite 一致），
@@ -76,6 +78,14 @@ type storageRuntime struct {
 	// 归工厂惰性单例（factory.NewBodiesStore），此字段恒 nil。full 模式的
 	// 写方接线属后续波次，实例先行装配使目录生命周期归 Shutdown/trimmer 管。
 	bodiesStore *filestore.FileBodiesStore
+
+	// requestMirror 是请求侧 body 镜像器（H3：HotZone.Dir/requests 子树，
+	// fire-and-forget 异步写、失败仅计数）。full 热区装配时按
+	// HotZone.RequestMirrorEnabled 创建，经 bodyMirrorFn 注入 telemetry
+	//（request_logs_bodies_hot 三件套）与 SessionWriterV2（session bodies
+	// 三件套）。lite 模式不装配（沿用既有 session_bodies 写入路径，不重复
+	// 镜像），此字段恒 nil。
+	requestMirror *filestore.RequestMirror
 
 	// consistencyWorker 是 lite 一致性对账 worker（审计 B-#2 接线）；
 	// 配置关闭或 session store 不支持空闲枚举时为 nil。快照持有仅供
@@ -175,7 +185,8 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 	case config.StorageModeFull:
 		return initFullHotZoneStorageMode(storageCfg)
 	default:
-		// 未设置 / 非法 mode：未启用双模式，历史装配，行为零变化。
+		// 未设置 / 非法 mode：未启用双模式，历史装配（full 语义），行为零变化。
+		monitoring.Default().SetStorageMode(monitoring.ModeFull)
 		return nil, nil
 	}
 }
@@ -207,6 +218,15 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 // 存在但为 symlink/普通文件时告警并降级为历史装配（返回 nil——升级路径上
 // 已有目录形态的部署不应被拒绝启动）。
 func initFullHotZoneStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, error) {
+	// H5（P5）：进程模式戳与热区启用标记（镜像 per-mode 计数分桶依据；
+	// /metrics/storage 的 hotzone_enabled 此前恒 false——setter 无调用方的
+	// 预存缺口，随本项闭合）。无论热区开关与否，full 语义的进程模式都是 full；
+	// hotzone_enabled 以「装配是否真正走通」为准（关闭/降级/失败均 false），
+	// 单 defer 出口统一盖章，避免多路径漏记。
+	monitoring.Default().SetStorageMode(monitoring.ModeFull)
+	hotzoneActive := false
+	defer func() { monitoring.Default().SetHotZoneEnabled(hotzoneActive) }()
+
 	// H4：HotZone 段默认值补齐（nil-safe、幂等），full 分支不走 ApplyLiteDefaults。
 	storageCfg.ApplyHotZoneDefaults()
 	hz := storageCfg.HotZone
@@ -255,13 +275,21 @@ func initFullHotZoneStorageMode(storageCfg *config.StorageConfig) (*storageRunti
 	// 由 AsyncFileWriter 取默认（与 factory defaultFileWorkers=4 同值）。
 	bodiesStore := filestore.NewFileBodiesStore(bodiesDir, 0)
 
+	// 请求侧 body 镜像器（H3）：HotZone.RequestMirror 默认开启；关闭时镜像
+	// 整体缺席（bodyMirrorFn 返回 nil，两个消费方自然 no-op）。
+	var requestMirror *filestore.RequestMirror
+	if hz.RequestMirrorEnabled(true) {
+		requestMirror = filestore.NewRequestMirror(hz.Dir, 0)
+	}
+
 	rt := &storageRuntime{
-		fileCache:   fileCache,
-		bodiesStore: bodiesStore,
-		mode:        storageModeFull,
-		hotZoneOnly: true,
-		bodiesDir:   bodiesDir,
-		cacheDir:    cacheDir,
+		fileCache:     fileCache,
+		bodiesStore:   bodiesStore,
+		requestMirror: requestMirror,
+		mode:          storageModeFull,
+		hotZoneOnly:   true,
+		bodiesDir:     bodiesDir,
+		cacheDir:      cacheDir,
 	}
 
 	// 热区清理 worker：三子树（cache / session_bodies / requests）共享
@@ -281,6 +309,7 @@ func initFullHotZoneStorageMode(storageCfg *config.StorageConfig) (*storageRunti
 		"sqlite_factory", false,
 		"redis_env_untouched", true,
 		"lite_workers", false)
+	hotzoneActive = true // 装配走通，defer 出口据此盖章 hotzone_enabled=true
 	return rt, nil
 }
 
@@ -290,6 +319,8 @@ func initFullHotZoneStorageMode(storageCfg *config.StorageConfig) (*storageRunti
 // 的 PG 初始化之前执行，不创建 SessionCacheV2（其装配点在压缩链路里，见
 // storageRuntime.newSessionCacheV2）。
 func initLiteStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, error) {
+	// H5（P5）：进程模式戳（镜像 per-mode 计数分桶依据）。
+	monitoring.Default().SetStorageMode(monitoring.ModeLite)
 
 	// R52：S4 停写门控（storage.request_logs_write_enabled）此前在 lite
 	// 形态结构性失效——specs 只在 main.go 的 dbConn.Enabled() 分支注册，
@@ -432,7 +463,9 @@ func initLiteStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, err
 		// 同步驱动 FileCache.maxSize（H4 §改动3 统一预算 + ResizeMax 联动）。
 		// lite 默认 cache_dir 独立于热区，恒不触发。
 		rt.startHotZoneTrimmer(trimmerCtx, hzCfg, rt.fileCache != nil && hzCfg.Contains(lite.CacheDir))
+		monitoring.Default().SetHotZoneEnabled(true)
 	} else {
+		monitoring.Default().SetHotZoneEnabled(false)
 		slog.Info("storage hotzone 关闭，trimmer 未装配",
 			"config_enabled", storageCfg.HotZone.IsEnabled(false),
 			"settings_enabled", settings.GetPlatformBool("storage.hotzone_enabled", true))
@@ -460,18 +493,18 @@ func initLiteStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, err
 
 // startHotZoneTrimmer 装配并启动热区清理 worker（2026-09-24 方案 H4 P2；lite /
 // full 两模式共用）。每 30 分钟一轮遍历 HotZone.Dir 三个受管子树
-//（cache / session_bodies / requests），先按 mtime 删过期、超配额再最旧先删。
+// （cache / session_bodies / requests），先按 mtime 删过期、超配额再最旧先删。
 // 前置：rt.trimmerCancel/trimmerWG 生命周期组已初始化、调用方已持有 ctx。
 //
 // 开关语义（AND，lite 分支）：config（YAML/env HotZone.Enabled）与 settings
-//（storage.hotzone_enabled）双通道同时为真才装配——settings 只能关停、不能
+// （storage.hotzone_enabled）双通道同时为真才装配——settings 只能关停、不能
 // 强行打开 config 已显式关闭的 Dangerous 级特性。（full 分支的装配门仅
 // config 通道，差异原因见 initFullHotZoneStorageMode 注释：装配点无 settings
 // 后端可读，settings 的运行期语义=停清不卸载。）
 //
 // 热重载方式（已实证 2026-09-28）：settings.GetPlatformBool/Int 每次调用
 // 走 Global.EffectiveValue 直查 settings_kv→env→default，无缓存层
-//（settings/helpers.go 头注，热重载测试钉死禁止加缓存）。故经 WithReload
+// （settings/helpers.go 头注，热重载测试钉死禁止加缓存）。故经 WithReload
 // 在每轮 tick 前直查刷新即可，变更 ≤1 个 trimmer 周期（30 分钟）生效；
 // 不经 hotconfig——其只轮询 llmgw_% 前缀键，storage.hotzone_* 不在视野。
 //
@@ -505,6 +538,21 @@ func (r *storageRuntime) startHotZoneTrimmer(ctx context.Context, hzCfg *config.
 		"max_size_gb", settings.GetPlatformInt("storage.hotzone_max_size_gb", hzCfg.MaxSizeGB),
 		"cache_dir_in_hotzone", resizeInHotzone,
 		"trim_interval", "30m")
+}
+
+// bodyMirrorFn 返回 H3 请求侧镜像的投递闭包：把 storage/file.RequestMirror
+// 的 MirrorAsync（fire-and-forget、失败仅计数）适配为 v2.BodyMirrorFunc /
+// telemetry.BodyMirrorFunc 共用的函数形态（两处 direction 字面量同词表）。
+// 未装配（nil requestMirror：lite 模式 / full 热区关闭 / request_mirror=false
+// / runtime nil）恒返回 nil，消费方零开销 no-op。
+func (r *storageRuntime) bodyMirrorFn() func(tenantID, requestID, direction string, payload json.RawMessage, at time.Time) {
+	if r == nil || r.requestMirror == nil {
+		return nil
+	}
+	mirror := r.requestMirror
+	return func(tenantID, requestID, direction string, payload json.RawMessage, at time.Time) {
+		mirror.MirrorAsync(tenantID, requestID, filestore.RequestDirection(direction), payload, at)
+	}
 }
 
 // liteMode 报告当前是否处于 lite 模式：runtime 存在且非 hotZoneOnly。
@@ -583,6 +631,11 @@ func (r *storageRuntime) Shutdown() {
 		if r.bodiesStore != nil {
 			if err := r.bodiesStore.Close(); err != nil {
 				slog.Warn("storage runtime: 热区会话 body 存储关闭失败", "error", err)
+			}
+		}
+		if r.requestMirror != nil {
+			if err := r.requestMirror.Close(); err != nil {
+				slog.Warn("storage runtime: 请求镜像写入器关闭失败", "error", err)
 			}
 		}
 		if r.factory != nil {

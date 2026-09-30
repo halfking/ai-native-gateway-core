@@ -83,6 +83,44 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
 - `Invalidate` 与模式无关：只要对应层非空就逐层失效（L1、L1.5、L2），避免模式切换后残留脏数据。
 - 缓存层全部 fail-open：下层读/写失败只记日志并回源，不阻断主链路。
 
+## 全量模式热区（Hot Zone，2026-09-24 方案 H1–H5）
+
+full 模式可选叠加**热区层**：在 PG/Redis 之外引入本地磁盘缓存，把热会话的 L1.5
+快照、轮次 body 与请求侧镜像落到 `data/hotzone/`，降低冷启动回源对 PG 的压力。
+方案全文见 [2026-09-24-hotzone-dual-mode-plan.md](2026-09-24-hotzone-dual-mode-plan.md)，
+批判式审计见 `docs/audit/2026-09-30-hotzone-p1p2-critical-audit.md`（P1/P2）与
+`docs/audit/2026-09-30-hotzone-p3p4-critical-audit.md`（P3/P4/P5）。
+
+### 装配与目录布局
+
+装配入口 `cmd/gateway/storage_mode_init.go` 的 `initFullHotZoneStorageMode`（H2/P3）：
+
+- **装配门只认 config 通道**（YAML `hotzone.enabled` / env `LLM_GATEWAY_HOTZONE_ENABLED`）。
+  settings_kv 后端挂在 PG 之上，装配点（PG 初始化之前）读不到——`storage.hotzone_enabled`
+  的 settings 运行期 false **不卸载**已装配热区，仅让 HotZoneTrimmer 跳过清理轮；
+  「停新装配」须改 config 通道并在下一次进程启动生效。
+- 装配内容：L1.5 FileCache（`hotzone/cache`）+ FileBodiesStore（`hotzone/session_bodies`）
+  + HotZoneTrimmer（`bg/hot_zone_trimmer.go`，30 分钟周期）。三子树
+  （`cache` / `session_bodies` / `requests`）**共享同一磁盘预算**（默认 1GB），
+  超限按 mtime 从旧到新淘汰；过期判定即 `retention_hours`（默认 7h，与 L1.5 TTL 同参数）。
+- 热区自身装配失败 fail-fast（进程退出）；`hotzone.dir` 已存在但为 symlink 或非目录时
+  告警并降级为历史装配（升级路径上已有目录形态的部署不被拒绝启动）。
+- 请求侧镜像（H3/P4）：`storage/file/request_mirror.go`，两个接线点——telemetry
+  持久化三件套（`persistRequestLog` 顶部）与 session bodies 三件套；fire-and-forget、
+  fail-open，失败只计指标不阻断主链路。`request_mirror` 可独立关闭。
+
+### 指标（H5/P5，`/metrics/storage`）
+
+`monitoring/storage_metrics.go` 按 mode 分维度暴露：`mirror.by_mode`（镜像写成功/失败）、
+`l1_5_by_mode`（含命中率）、`hotzone.hit_total_by_mode`（与 l1_5 同源别名，避免双计数）、
+`hotzone_enabled`（以装配是否真正走通为准，关闭/降级/失败均 false）。
+
+### 与 lite L1.5 的关系
+
+热区复用 lite 的 `FileCache` / `FileBodiesStore` 实现，仅目录与生命周期治理不同：
+lite 由 cache/bodies 两个 trimmer 各管各的；full 热区由单个 HotZoneTrimmer 统一治理
+三子树。热区纯缓存语义，删除目录即回滚。
+
 ## 存储组件清单
 
 | 组件 | 接口 / 类型 | lite 实现 | full 实现 | 代码位置 |

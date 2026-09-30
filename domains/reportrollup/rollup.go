@@ -2,18 +2,19 @@
 //
 // 数据流：usage_facts（请求级真相源，含 success/failure/rate_limited 终态、
 // error_kind 分类、四类 token、供应商成本 cost_amount 与内部计费
-// credits_charged）→ RollupDay 按天聚合成八个 scope 的快照行写入
-// report_snapshots（迁移 745+746）→ RangeReport 只读快照行按任意时间
-// 区间（日/周/月/自定义）二次汇总，导出 Excel 双 sheet（用量 / 模型质量
-// 与错误分析）。日维度落地一次、区间汇总不回扫原始请求日志。
+// credits_charged）→ RollupDay 按天聚合成**八个** scope 的快照行写入
+// report_snapshots（迁移 745+746+759）→ 区间汇总读面只读快照行按任意时间
+// 区间（日/周/月/自定义）二次汇总。日维度落地一次、区间汇总不回扫原始
+// 请求日志。
 //
 // scope 口径（SSOT = sql/objects/tables/report_snapshots.sql）：
 //   - provider 面三 scope（daily_total / daily_by_provider /
 //     daily_by_model）含全部流量类——探针/自检同样烧供应商钱，对帐须全量；
 //   - internal 面三 scope（internal_tenant / internal_person /
 //     internal_model）仅 business 流量——内部计费口径；
-//   - R28-B-2 细化粒度：daily_by_credential（provider 面，凭据级）与
-//     internal_by_key（internal 面，api-key 级）。
+//   - 两个 grain scope（daily_grain / internal_grain，759 增）是**最细
+//     粒度**行，六个边缘汇总留给旧读面与历史导出兼容；新多维读面只吃
+//     grain，见 grain.go / grainreport.go。
 package reportrollup
 
 import (
@@ -69,12 +70,6 @@ const (
 	ScopeInternalTenant  Scope = "internal_tenant"
 	ScopeInternalPerson  Scope = "internal_person"
 	ScopeInternalModel   Scope = "internal_model"
-	// R28-B-2（2026-09-30 三十轮）：契约要求计帐/对帐细化到 apikey 与
-	// 凭据。credential scope 属 provider 面（全部流量类——探针同样烧凭据
-	// 额度）；key scope 属 internal 面（仅 business 流量）。scope_key 存
-	// 数字 id 字符串（读面由 admin 联表取名）。
-	ScopeDailyByCredential Scope = "daily_by_credential"
-	ScopeInternalKey       Scope = "internal_by_key"
 )
 
 // Querier 是聚合与写入所需的最小数据库面；*pgxpool.Pool 与 pgx.Tx 均满足，
@@ -114,11 +109,17 @@ type Snapshot struct {
 
 // Bucket 是一次聚合产出的待写快照行（RollupDay 内部产物）。
 type Bucket struct {
-	Scope              Scope
-	ScopeKey           string
-	RawModelName       string
-	ProviderID         *int64
-	TenantID           *string
+	Scope        Scope
+	ScopeKey     string
+	RawModelName string
+	ProviderID   *int64
+	TenantID     *string
+	// CredentialID / APIKeyID / Person 是 grain scope 专用的三维（759 增列）。
+	// 旧 scope 的桶留 nil，upsert 写入 NULL —— 读面按日期回落时据此区分
+	// 「该日无 grain 维度」与「该维度真值为空」。
+	CredentialID       *int64
+	APIKeyID           *int64
+	Person             *string
 	RequestCount       int64
 	SuccessCount       int64
 	InputTokens        int64
@@ -201,17 +202,20 @@ func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, erro
 		return stats, fmt.Errorf("aggregate internal model: %w", err)
 	}
 
-	// ④ R28-B-2 细化粒度：凭据级（provider 面）与 api-key 级（internal 面）。
-	credentialRows, _, err := queryCredentialDay(ctx, q, start, end)
+	// ④ grain 面（2026-09-29 多维筛选轮）：两个口径的最细粒度行，读面
+	// 「任意维度组合过滤」与按天×模型图表的唯一数据源。daily_grain 不做
+	// provider_id IS NOT NULL 收窄 —— 未落定 provider 的失败行同样要进
+	// 供应商口径总计（与 daily_total 的独立聚合同源，见 queryTotalDay 注记）。
+	dailyGrain, err := queryGrainDay(ctx, q, ScopeDailyGrain, start, end, 0)
 	if err != nil {
-		return stats, fmt.Errorf("aggregate credential: %w", err)
+		return stats, fmt.Errorf("aggregate daily grain: %w", err)
 	}
-	keyRows, _, err := queryInternalKeyDay(ctx, q, start, end)
+	internalGrain, err := queryGrainDay(ctx, q, ScopeInternalGrain, start, end, centsPerCredit)
 	if err != nil {
-		return stats, fmt.Errorf("aggregate api key: %w", err)
+		return stats, fmt.Errorf("aggregate internal grain: %w", err)
 	}
 
-	buckets := make([]Bucket, 0, len(providerModelRows)+len(tenantRows)+len(personRows)+len(internalModelRows)+1)
+	buckets := make([]Bucket, 0, len(providerModelRows)+len(tenantRows)+len(personRows)+len(internalModelRows)+len(dailyGrain)+len(internalGrain)+1)
 	buckets = append(buckets, providerModelRows...)
 	buckets = append(buckets, byProvider...)
 	if totalRow != nil {
@@ -220,8 +224,8 @@ func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, erro
 	buckets = append(buckets, tenantRows...)
 	buckets = append(buckets, personRows...)
 	buckets = append(buckets, internalModelRows...)
-	buckets = append(buckets, credentialRows...)
-	buckets = append(buckets, keyRows...)
+	buckets = append(buckets, dailyGrain...)
+	buckets = append(buckets, internalGrain...)
 
 	for i := range buckets {
 		if err := upsertBucket(ctx, q, start, &buckets[i]); err != nil {
@@ -565,135 +569,6 @@ func queryInternalModelDay(ctx context.Context, q Querier, start, end time.Time,
 // foldProviderBuckets 把 provider×model 行折叠成 daily_by_provider 行。
 // latency 分位不可跨桶折叠，by_provider 行置 0（报表只在模型粒度展示
 // 延迟，文档见设计 §3）。
-// credentialDaySQL 聚合 credential × day（provider 面，全部流量类；
-// R28-B-2）。无模型维度——凭据×模型的交叉由 daily_by_model ×
-// report_snapshots.credential_id 缺列约束下暂不提供，避免行数爆炸。
-const credentialDaySQL = `
-WITH f AS (
-    SELECT credential_id, status, error_kind,
-           prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens,
-           credits_charged, cost_amount, cost_currency, latency_ms
-    FROM usage_facts
-    WHERE occurred_at >= $1 AND occurred_at < $2
-      AND credential_id IS NOT NULL
-),
-errb AS (
-    SELECT credential_id, jsonb_object_agg(kind, n) AS breakdown
-    FROM (
-        SELECT credential_id, COALESCE(NULLIF(error_kind, ''), 'unknown') AS kind, COUNT(*)::bigint AS n
-        FROM f WHERE status <> 'success' GROUP BY 1, 3
-    ) e
-    GROUP BY 1
-)
-SELECT f.credential_id,
-       COUNT(*)::bigint,
-       COUNT(*) FILTER (WHERE f.status = 'success')::bigint,
-       COALESCE(SUM(f.prompt_tokens), 0)::bigint,
-       COALESCE(SUM(f.completion_tokens), 0)::bigint,
-       COALESCE(SUM(f.cache_read_tokens), 0)::bigint,
-       COALESCE(SUM(f.cache_write_tokens), 0)::bigint,
-       COALESCE(SUM(f.credits_charged), 0)::bigint,
-       COALESCE(ROUND(SUM(f.cost_amount) * 100), 0)::bigint,
-       COALESCE(MAX(f.cost_currency), 'USD'),
-       COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY f.latency_ms)
-                FILTER (WHERE f.status = 'success'), 0)::bigint,
-       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY f.latency_ms)
-                FILTER (WHERE f.status = 'success'), 0)::bigint,
-       COALESCE(errb.breakdown, '{}'::jsonb)
-FROM f
-LEFT JOIN errb ON errb.credential_id = f.credential_id
-GROUP BY f.credential_id, errb.breakdown`
-
-func queryCredentialDay(ctx context.Context, q Querier, start, end time.Time) ([]Bucket, int64, error) {
-	rows, err := q.Query(ctx, credentialDaySQL, start, end)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	var seen int64
-	buckets := make([]Bucket, 0, 16)
-	for rows.Next() {
-		var credentialID int64
-		b := Bucket{Scope: ScopeDailyByCredential, PriceSnapshot: map[string]any{}}
-		var breakdown []byte
-		if err := rows.Scan(&credentialID, &b.RequestCount, &b.SuccessCount,
-			&b.InputTokens, &b.OutputTokens, &b.CacheReadTokens, &b.CacheWriteTokens,
-			&b.CreditsCharged, &b.CostCents, &b.Currency,
-			&b.LatencyP50Ms, &b.LatencyP95Ms, &breakdown); err != nil {
-			return nil, 0, err
-		}
-		b.ScopeKey = fmt.Sprintf("%d", credentialID)
-		if err := decodeBreakdown(breakdown, &b.ErrorKindBreakdown); err != nil {
-			return nil, 0, err
-		}
-		seen += b.RequestCount
-		buckets = append(buckets, b)
-	}
-	return buckets, seen, rows.Err()
-}
-
-// internalKeyDaySQL 聚合 api_key × day（internal 面，仅 business 流量；
-// R28-B-2）。
-const internalKeyDaySQL = `
-WITH f AS (
-    SELECT api_key_id, status, error_kind,
-           prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens,
-           credits_charged, cost_amount, cost_currency
-    FROM usage_facts
-    WHERE occurred_at >= $1 AND occurred_at < $2
-      AND traffic_class = 'business'
-      AND api_key_id IS NOT NULL
-),
-errb AS (
-    SELECT api_key_id, jsonb_object_agg(kind, n) AS breakdown
-    FROM (
-        SELECT api_key_id, COALESCE(NULLIF(error_kind, ''), 'unknown') AS kind, COUNT(*)::bigint AS n
-        FROM f WHERE status <> 'success' GROUP BY 1, 3
-    ) e
-    GROUP BY 1
-)
-SELECT f.api_key_id,
-       COUNT(*)::bigint,
-       COUNT(*) FILTER (WHERE f.status = 'success')::bigint,
-       COALESCE(SUM(f.prompt_tokens), 0)::bigint,
-       COALESCE(SUM(f.completion_tokens), 0)::bigint,
-       COALESCE(SUM(f.cache_read_tokens), 0)::bigint,
-       COALESCE(SUM(f.cache_write_tokens), 0)::bigint,
-       COALESCE(SUM(f.credits_charged), 0)::bigint,
-       COALESCE(ROUND(SUM(f.cost_amount) * 100), 0)::bigint,
-       COALESCE(MAX(f.cost_currency), 'USD'),
-       COALESCE(errb.breakdown, '{}'::jsonb)
-FROM f
-LEFT JOIN errb ON errb.api_key_id = f.api_key_id
-GROUP BY f.api_key_id, errb.breakdown`
-
-func queryInternalKeyDay(ctx context.Context, q Querier, start, end time.Time) ([]Bucket, int64, error) {
-	rows, err := q.Query(ctx, internalKeyDaySQL, start, end)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	var seen int64
-	buckets := make([]Bucket, 0, 16)
-	for rows.Next() {
-		var apiKeyID int64
-		b := Bucket{Scope: ScopeInternalKey, PriceSnapshot: map[string]any{}}
-		var breakdown []byte
-		if err := rows.Scan(&apiKeyID, &b.RequestCount, &b.SuccessCount,
-			&b.InputTokens, &b.OutputTokens, &b.CacheReadTokens, &b.CacheWriteTokens,
-			&b.CreditsCharged, &b.CostCents, &b.Currency, &breakdown); err != nil {
-			return nil, 0, err
-		}
-		b.ScopeKey = fmt.Sprintf("%d", apiKeyID)
-		if err := decodeBreakdown(breakdown, &b.ErrorKindBreakdown); err != nil {
-			return nil, 0, err
-		}
-		seen += b.RequestCount
-		buckets = append(buckets, b)
-	}
-	return buckets, seen, rows.Err()
-}
-
 func foldProviderBuckets(modelRows []Bucket) []Bucket {
 	byProvider := make(map[int64]*Bucket)
 	for i := range modelRows {
@@ -750,6 +625,7 @@ func upsertBucket(ctx context.Context, q Querier, day time.Time, b *Bucket) erro
 		    error_kind_breakdown, cache_hit_ratio,
 		    estimated_cost_cents, currency, price_snapshot,
 		    provider_id, canonical_id, tenant_id,
+		    credential_id, api_key_id, person,
 		    credits_charged, latency_p50_ms, latency_p95_ms, updated_at
 		) VALUES (
 		    $1, $2, $3, $4,
@@ -758,7 +634,8 @@ func upsertBucket(ctx context.Context, q Querier, day time.Time, b *Bucket) erro
 		    $12::text::jsonb, $13,
 		    $14, $15, $16::text::jsonb,
 		    $17, $18, $19,
-		    $20, $21, $22, now()
+		    $20, $21, $22,
+		    $23, $24, $25, now()
 		)
 		ON CONFLICT (scope, scope_key, report_date, raw_model_name) DO UPDATE SET
 		    request_count = EXCLUDED.request_count,
@@ -776,6 +653,9 @@ func upsertBucket(ctx context.Context, q Querier, day time.Time, b *Bucket) erro
 		    provider_id = EXCLUDED.provider_id,
 		    canonical_id = EXCLUDED.canonical_id,
 		    tenant_id = EXCLUDED.tenant_id,
+		    credential_id = EXCLUDED.credential_id,
+		    api_key_id = EXCLUDED.api_key_id,
+		    person = EXCLUDED.person,
 		    credits_charged = EXCLUDED.credits_charged,
 		    latency_p50_ms = EXCLUDED.latency_p50_ms,
 		    latency_p95_ms = EXCLUDED.latency_p95_ms,
@@ -787,6 +667,7 @@ func upsertBucket(ctx context.Context, q Querier, day time.Time, b *Bucket) erro
 		string(breakdownJSON), successRatio,
 		b.CostCents, currencyOr(b.Currency), string(priceJSON),
 		b.ProviderID, nil, b.TenantID,
+		b.CredentialID, b.APIKeyID, b.Person,
 		b.CreditsCharged, b.LatencyP50Ms, b.LatencyP95Ms,
 	)
 	return err

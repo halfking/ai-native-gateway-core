@@ -332,13 +332,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// fresh-install path as well as the revision sequence for upgrades.
 			"757_session_turns_origin_actor_projection.sql",
 			"758_routeincident_missing_columns.sql",
-			// 759 (2026-09-30, migration 759 follow-up): session_turn_details
-			// 重复行无损排水。它有界且幂等（真冲突行留在 hot 等人工裁决），
-			// 全新安装必须与升级路径走同一份脚本，否则新库会带着迁移前就
-			// 存在的重复行——而升级库已经排过水，两种起点会长期分叉。
-			// 补登原因：embeddata 副本早已就位，但 StartupFiles 漏登记，
-			// 被 TestStartupFilesAreAllEmbedded / TestCanonical...AreRegistered
-			// 双向抓到（真库 audit，2026-09-30 三十五轮）。
+			// 759 (2026-09-29, 对帐多维筛选轮): report_snapshots 增加
+			// credential_id / api_key_id / person 三列与两个最细粒度 scope
+			// 所需的 4 个 partial 索引。没有这三列，凭据 / apikey / 用户
+			// 三类筛选在 schema 层就无处可取（不是读面没实现）。
+			"759_report_snapshots_grain_dims.sql",
 			// 760 (2026-09-30, R27-HC-1/HC-2): analysis_events /
 			// stats_event_inbox 终态 TTL 清扫支撑索引（部分索引，仅终态行）。
 			"760_analysis_events_inbox_ttl_indexes.sql",
@@ -350,6 +348,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 回填扫描索引。只建链不搬数据；存量 33 万行由
 			// bg/project_backfill_worker.go 分批回填（共用 sync 函数）。
 			"762_session_project_backfill_chain.sql",
+			// 763 (2026-09-30, R14 批判式复审 D16): provider_events 契约对齐
+			// （序列 + id 默认值 + fail-closed PK + (credential_id, ts) 索引）。
+			// installer 的 01-schema.sql 至今把该表建成裸表（id 可空、无默认、
+			// 无 PK、无序列），全新安装每次都复现同一漂移——不登记则 fresh install
+			// 拿不到契约态。文件已按 --single-transaction 纪律去掉显式事务。
+			"763_provider_events_contract.sql",
+			// 764 (2026-09-30, R36-B3 / 三十六轮): request_logs 分区家族补
+			// (tenant_id, ts DESC) 索引——341 只索引了 hot 侧，分区父表从未
+			// 有 tenant 前导索引，tenant 维度 days>7 聚合对每分区全表扫
+			//（252-dev 实测 3 行租户 6.5s）。父表 CREATE INDEX 级联全部分区。
+			"764_request_logs_tenant_ts_index.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

@@ -3,6 +3,7 @@ package reportrollup
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -470,59 +471,59 @@ func TestBuildRangeReport_ProviderQualityScorePopulated(t *testing.T) {
 	}
 }
 
-// TestRangeReportCredentialView R28-B-2：credential 视角按凭据分组、
-// 总计来自 DailyTotal（无过滤），凭据行不进按天序列（防双计）。
-func TestRangeReportCredentialView(t *testing.T) {
-	snaps := []Snapshot{
-		mkSnap(ScopeDailyTotal, "all", "2026-09-01", "", 10, 9, nil, nil, nil),
-		mkSnap(ScopeDailyByCredential, "101", "2026-09-01", "", 6, 6, map[string]int64{"auth": 1}, nil, nil),
-		mkSnap(ScopeDailyByCredential, "202", "2026-09-01", "", 4, 3, map[string]int64{"timeout": 1}, nil, nil),
-	}
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatalf("pgxmock: %v", err)
-	}
-	defer mock.Close()
-	mustSnapshotRows(t, mock, snaps, 3)
-	rep, err := BuildRangeReport(context.Background(), mock, day(t, "2026-09-01"), day(t, "2026-09-01"), ViewCredential, RangeFilter{}, nil)
-	if err != nil {
-		t.Fatalf("BuildRangeReport: %v", err)
-	}
-	if len(rep.Credentials) != 2 {
-		t.Fatalf("credentials = %d, want 2", len(rep.Credentials))
-	}
-	if rep.Credentials[0].CredentialID != 101 || rep.Credentials[0].Totals.RequestCount != 6 {
-		t.Fatalf("top credential = %+v, want id=101 req=6", rep.Credentials[0])
-	}
-	if rep.Totals.RequestCount != 10 {
-		t.Fatalf("totals = %d, want 10 (from DailyTotal, not double-counted)", rep.Totals.RequestCount)
-	}
-	if len(rep.Days) != 1 || rep.Days[0].Totals.RequestCount != 10 {
-		t.Fatalf("days = %+v, want single day req=10 from DailyTotal only", rep.Days)
+// TestViewScopes_LegacyFaceRefusesCredentialAndKey 旧读面**不得**为
+// credential / key 视角返回任何 scope。
+//
+// 这道门守的是一个具体的失败形态：这两个视角改由 grain 读面承担，而旧
+// 读面聚合到 daily_by_provider / internal_tenant 就停了，物理上做不出凭据
+// 级或 api-key 级行。若这里悄悄回落到供应商口径，调用方会拿到形状不同的
+// 数据当成凭据行用——报错比给错形状便宜。
+func TestViewScopes_LegacyFaceRefusesCredentialAndKey(t *testing.T) {
+	for _, view := range []View{ViewCredential, ViewKey} {
+		scopes, err := viewScopes(view)
+		if err == nil {
+			t.Fatalf("viewScopes(%q) = %v, want error（旧读面做不出这两个视角的行）", view, scopes)
+		}
+		if !strings.Contains(err.Error(), "grain") {
+			t.Errorf("viewScopes(%q) 错误信息应指向 grain 读面，实际：%v", view, err)
+		}
 	}
 }
 
-// TestRangeReportKeyView R28-B-2：key 视角按 api-key 分组。
-func TestRangeReportKeyView(t *testing.T) {
-	snaps := []Snapshot{
-		mkSnap(ScopeDailyTotal, "all", "2026-09-01", "", 8, 8, nil, nil, nil),
-		mkSnap(ScopeInternalKey, "760", "2026-09-01", "", 5, 5, nil, nil, nil),
-		mkSnap(ScopeInternalKey, "761", "2026-09-01", "", 3, 2, map[string]int64{"rate_limited": 1}, nil, nil),
+// TestGrainScopes_CredentialAndKeyMapToRealFaces credential / key 视角必须
+// 落到**真实存在**的 grain scope 上，不能落到已删除的 daily_by_credential /
+// internal_by_key（那两个 scope 已被 grain 收编、停止写入）。
+func TestGrainScopes_CredentialAndKeyMapToRealFaces(t *testing.T) {
+	cases := []struct {
+		view    View
+		want    Scope
+		notWant Scope
+	}{
+		{ViewProvider, ScopeDailyGrain, ScopeInternalGrain},
+		{ViewCredential, ScopeDailyGrain, ScopeInternalGrain},
+		{ViewInternal, ScopeInternalGrain, ScopeDailyGrain},
+		{ViewKey, ScopeInternalGrain, ScopeDailyGrain},
 	}
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatalf("pgxmock: %v", err)
+	for _, c := range cases {
+		got, legacy, err := GrainScopes(c.view)
+		if err != nil {
+			t.Fatalf("GrainScopes(%q): %v", c.view, err)
+		}
+		if got != c.want {
+			t.Errorf("GrainScopes(%q) 面 = %q, want %q", c.view, got, c.want)
+		}
+		if got == c.notWant {
+			t.Errorf("GrainScopes(%q) 落到了对面 scope %q", c.view, got)
+		}
+		// 回落 scope 里不得再出现被收编的两个中等粒度 scope。
+		for _, s := range legacy {
+			if s == "daily_by_credential" || s == "internal_by_key" {
+				t.Errorf("GrainScopes(%q) 回落集合仍含已停写的 %q", c.view, s)
+			}
+		}
 	}
-	defer mock.Close()
-	mustSnapshotRows(t, mock, snaps, 3)
-	rep, err := BuildRangeReport(context.Background(), mock, day(t, "2026-09-01"), day(t, "2026-09-01"), ViewKey, RangeFilter{}, nil)
-	if err != nil {
-		t.Fatalf("BuildRangeReport: %v", err)
-	}
-	if len(rep.APIKeys) != 2 || rep.APIKeys[0].APIKeyID != 760 {
-		t.Fatalf("api keys = %+v, want 2 sorted by count", rep.APIKeys)
-	}
-	if rep.APIKeys[1].ErrorBreakdown["rate_limited"] != 1 {
-		t.Fatalf("key 761 error breakdown missing: %+v", rep.APIKeys[1].ErrorBreakdown)
+	// 未登记视角必须报错，不能默认落到某个面。
+	if _, _, err := GrainScopes("credential_typo"); err == nil {
+		t.Error("GrainScopes 对未登记视角应报错")
 	}
 }

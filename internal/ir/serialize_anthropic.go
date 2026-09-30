@@ -120,21 +120,28 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	// mapEffortToBudget that had different values (low→2048 vs canonical 1024).
 	if req.Reasoning != nil && req.Thinking == nil {
 		// Resolve intent by precedence (mirrors reasoningDisabled in reasoning_dialect.go):
-		//   1. explicit Type wins
+		//   1. explicit Type wins — but only the known directive vocabulary
+		//      (enabled/disabled/adaptive). Responses reasoning.summary values
+		//      ("auto"/"concise"/"detailed") collide into this field
+		//      (parseResponsesReasoning) and are NOT thinking directives;
+		//      emitting them as thinking.type is an upstream 400
+		//      (N21-2 residue, fixed 2026-09-30).
 		//   2. explicit BudgetTokens: zero disables, positive beats "none"/"disabled" effort
 		//   3. Effort spelling (cross-protocol "none" / "disabled" / " DISABLED ") is the fallback
+		typeIsDirective := req.Reasoning.Type == "enabled" ||
+			req.Reasoning.Type == "disabled" || req.Reasoning.Type == "adaptive"
 		thinkingType := "enabled"
 		thinkingBudget := 0
 		hasBudget := false
 		disableUnsupported := false
 		switch {
-		case req.Reasoning.Type != "":
+		case typeIsDirective:
 			thinkingType = req.Reasoning.Type
-			// Explicit Type wins, but must not drop an explicit positive
-			// budget (R23-A): parse_gemini builds {Type:"enabled",
-			// BudgetTokens} for any positive thinkingBudget, and Anthropic
-			// requires budget_tokens whenever thinking is enabled.
-			if thinkingType != "disabled" {
+			if thinkingType == "enabled" {
+				// Explicit Type wins, but must not drop an explicit positive
+				// budget (R23-A): parse_gemini builds {Type:"enabled",
+				// BudgetTokens} for any positive thinkingBudget, and Anthropic
+				// requires budget_tokens whenever thinking is enabled.
 				hasBudget = true
 				if req.Reasoning.BudgetTokens != nil && *req.Reasoning.BudgetTokens > 0 {
 					thinkingBudget = *req.Reasoning.BudgetTokens
@@ -142,6 +149,9 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 					thinkingBudget = 8192 // safe default (xhigh); enabled without budget is an API error
 				}
 			}
+			// disabled / adaptive carry no budget: the adaptive canonical form
+			// is budgetless (reasonnorm renders native adaptive without one),
+			// mirroring the native Thinking path.
 		case req.Reasoning.BudgetTokens != nil:
 			if *req.Reasoning.BudgetTokens == 0 {
 				thinkingType = "disabled"
@@ -159,6 +169,11 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 				thinkingBudget = 8192 // safe default (xhigh)
 				hasBudget = true
 			}
+		default:
+			// No recognizable intent (unknown Type vocabulary only, no budget,
+			// no effort): omit the thinking block entirely — a budgetless
+			// {"type":"enabled"} is an Anthropic 400.
+			thinkingType = ""
 		}
 
 		// Model-specific gate: claude-opus-5-5 always thinks; the API

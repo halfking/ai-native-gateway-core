@@ -3,6 +3,7 @@ package attachments
 import (
 	"context"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/atomicrename"
 	"io"
 	"os"
 	"path/filepath"
@@ -77,8 +78,8 @@ func (s *LocalStorageBackend) Save(ctx context.Context, key string, data []byte)
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	// Atomic rename
-	if err := os.Rename(tmpPath, filePath); err != nil {
+	// Atomic rename — atomicrename.Windows 并发读安全（三十七轮接线）
+	if err := atomicrename.Replace(tmpPath, filePath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
@@ -233,8 +234,8 @@ func (s *LocalStorageBackend) SaveReader(ctx context.Context, key string, reader
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	// Atomic rename
-	if err := os.Rename(tmpPath, filePath); err != nil {
+	// Atomic rename — atomicrename.Windows 并发读安全（三十七轮接线）
+	if err := atomicrename.Replace(tmpPath, filePath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 

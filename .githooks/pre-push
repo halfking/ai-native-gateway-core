@@ -30,6 +30,20 @@ fi
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
 scanner="$repo_root/scripts/scan-secrets.sh"
 
+# ── 0. Worktree sanity guard ────────────────────────────────────────────
+# Shared checkouts have twice (2026-09-30 05:09 / 05:24) been found with
+# core.bare=true + core.worktree in the module config — an invalid state
+# written by unknown tooling. It makes `git status`/`git check-ignore`
+# exit 128 ("must be run in a work tree") and breaks `go build` VCS
+# stamping tree-wide. Heal before scanning/testing so the gate fails on
+# real findings, not on a poisoned host config.
+if [[ "$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]]; then
+  if [[ "$(git -C "$repo_root" config core.bare 2>/dev/null)" == "true" ]]; then
+    git -C "$repo_root" config core.bare false
+    echo "⚠️  healed core.bare=true + core.worktree conflict (was breaking git ops + go build VCS stamping)" >&2
+  fi
+fi
+
 # ── 1. Sensitive-info scan (BLOCK-level findings) ────────────────────────
 
 if [[ ! -x "$scanner" ]]; then
@@ -53,11 +67,15 @@ if [[ -x "$scanner" ]]; then
   baseline="$repo_root/scripts/scan-secrets.baseline"
   baseline_arg=""
   [[ -f "$baseline" ]] && baseline_arg="--baseline=$baseline"
-  if ! "$scanner" --mode="$scan_mode" --paths=. --tracked-only $baseline_arg --format=text >/tmp/scan-output.txt 2>&1; then
+  # mktemp 而非固定 /tmp/scan-output.txt（三十七轮审计）：并发推送互踩 +
+  # 扫描摘录 0644 对同机其他用户可读。
+  scan_out="$(mktemp "${TMPDIR:-/tmp}/scan-output.XXXXXX")"
+  if ! "$scanner" --mode="$scan_mode" --paths=. --tracked-only $baseline_arg --format=text >"$scan_out" 2>&1; then
     echo "❌ Sensitive findings detected:" >&2
-    head -50 /tmp/scan-output.txt
+    head -50 "$scan_out" >&2
     scan_failed=1
   fi
+  rm -f "$scan_out"
 fi
 
 if [[ $scan_failed -eq 1 ]]; then

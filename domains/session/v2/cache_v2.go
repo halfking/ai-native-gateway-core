@@ -209,6 +209,12 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 	// 与「回填 L1」之间把已删除的旧状态重新播种进 L1。
 	if c.l1_5 != nil {
 		var l15State *SessionStateV2
+		// H5（P5）：L1.5 命中按存储模式分列。cache 自持 effectiveMode
+		//（测试可能单进程构造两种模式），故用显式 mode 参数而非进程戳。
+		l15Mode := monitoring.ModeFull
+		if c.effectiveMode() == storage.StorageModeLite {
+			l15Mode = monitoring.ModeLite
+		}
 		g := c.guardFor(tenantID, sessionID)
 		g.Lock()
 		s, err := c.l1_5.Get(tenantID, sessionID)
@@ -220,11 +226,11 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		}
 		g.Unlock()
 		if l15State != nil {
-			monitoring.Default().RecordL15Hit()
+			monitoring.Default().RecordL15HitForMode(l15Mode)
 			slog.DebugContext(ctx, "cache v2 l1.5 hit", "session_id", sessionID)
 			return l15State, nil
 		}
-		monitoring.Default().RecordL15Miss()
+		monitoring.Default().RecordL15MissForMode(l15Mode)
 		if err != nil && !errors.Is(err, errCacheMiss) {
 			slog.WarnContext(ctx, "cache v2 l1.5 get failed", "session_id", sessionID, "error", err)
 		}

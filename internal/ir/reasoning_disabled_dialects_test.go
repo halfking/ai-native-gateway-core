@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -336,6 +337,141 @@ func TestNativeDisabledModelLossesRemainVisible(t *testing.T) {
 				if len(losses) != 1 || losses[0].FieldPath != tc.field {
 					t.Fatalf("Anthropic native loss=%+v: %s", losses, body)
 				}
+			}
+		})
+	}
+}
+
+// ── 2026-09-30 批判式复审修正轮 ─────────────────────────────────────────────
+// N21-2 残留：二十三轮「优先级重构实质收口」结论不完整——
+// parseResponsesReasoning 把 Responses reasoning.summary（"auto"/"concise"/
+// "detailed"）灌进 Reasoning.Type（词汇碰撞本体），未知值会被序列化成
+// 非法 thinking.type（Anthropic {"type":"auto","budget_tokens":8192} 上游
+// 400；修复前 PoC 实录）。已知指令值只有 enabled/disabled/adaptive；其余
+// 词汇不是思考开关，必须回落 Budget/Effort 或整体不发射。
+
+func TestResponsesSummaryVocabIsNotAThinkingDirective(t *testing.T) {
+	for _, typ := range []string{"auto", "concise", "detailed"} {
+		t.Run("anthropic/"+typ, func(t *testing.T) {
+			body, err := SerializeAnthropic(&InternalRequest{Model: "claude-sonnet-4-5",
+				Reasoning: &ReasoningConfig{Type: typ}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out map[string]any
+			if err := json.Unmarshal(body, &out); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := out["thinking"]; ok {
+				t.Fatalf("summary vocab %q must not become thinking.type: %s", typ, body)
+			}
+		})
+		t.Run("gemini/"+typ, func(t *testing.T) {
+			body, err := SerializeGemini(&InternalRequest{Model: "gemini-2.5-flash",
+				Reasoning: &ReasoningConfig{Type: typ}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out struct {
+				Gen struct {
+					TC map[string]any `json:"thinkingConfig"`
+				} `json:"generationConfig"`
+			}
+			if err := json.Unmarshal(body, &out); err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Gen.TC) > 0 {
+				t.Fatalf("summary vocab %q must not emit thinkingConfig: %s", typ, body)
+			}
+		})
+	}
+	// 未知 Type 与真实 Effort 并存时 effort 仍生效（回落而非吞掉）。
+	body, err := SerializeAnthropic(&InternalRequest{Model: "claude-sonnet-4-5",
+		Reasoning: &ReasoningConfig{Type: "concise", Effort: "high"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Thinking struct {
+			Type         string `json:"type"`
+			BudgetTokens *int   `json:"budget_tokens"`
+		} `json:"thinking"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Thinking.Type != "enabled" || out.Thinking.BudgetTokens == nil || *out.Thinking.BudgetTokens != 4096 {
+		t.Fatalf("unknown Type must fall back to Effort: %s", body)
+	}
+}
+
+// 修复前：reasoning 路径 Type=adaptive 发 {"type":"adaptive",
+// "budget_tokens":8192}，违背 native canonical（norm.go adaptive 无预算、
+// TestAnthropicNativeThinkingPrecedesReasoning 同款形态）。
+func TestAnthropicReasoningAdaptiveOmitsBudget(t *testing.T) {
+	body, err := SerializeAnthropic(&InternalRequest{Model: "claude-sonnet-4-5",
+		Reasoning: &ReasoningConfig{Type: "adaptive"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Thinking map[string]any `json:"thinking"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Thinking["type"] != "adaptive" {
+		t.Fatalf("type=%v, want adaptive: %s", out.Thinking["type"], body)
+	}
+	if _, ok := out.Thinking["budget_tokens"]; ok {
+		t.Fatalf("adaptive canonical form carries no budget: %s", body)
+	}
+}
+
+// 修复前：SerializeGemini 完全忽略 req.Thinking，原生意图被并发 Reasoning
+// 反超（PoC：Thinking budget=2048 + Effort=high → 输出 4096）。镜像
+// TestAnthropicNativeThinkingPrecedesReasoning 钉 Gemini 侧原生优先。
+func TestGeminiNativeThinkingPrecedesReasoning(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		thinking   ThinkingConfig
+		effort     string
+		model      string
+		wantBudget float64 // -1 = dynamic block present; math.MinInt = block must be absent
+	}{
+		{name: "native enabled beats disabled effort", thinking: ThinkingConfig{Type: "enabled", BudgetTokens: 2048}, effort: "disabled", model: "gemini-2.5-flash", wantBudget: 2048},
+		{name: "native disabled on flash", thinking: ThinkingConfig{Type: "disabled"}, effort: "high", model: "gemini-2.5-flash", wantBudget: 0},
+		{name: "native disabled unsupported on pro omits block", thinking: ThinkingConfig{Type: "disabled"}, effort: "high", model: "gemini-2.5-pro", wantBudget: math.MinInt},
+		{name: "native adaptive is dynamic", thinking: ThinkingConfig{Type: "adaptive"}, effort: "high", model: "gemini-2.5-flash", wantBudget: -1},
+		{name: "native enabled without budget is dynamic", thinking: ThinkingConfig{Type: "enabled"}, effort: "high", model: "gemini-2.5-flash", wantBudget: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &InternalRequest{Model: tc.model, MaxTokens: 4096,
+				Thinking: &tc.thinking, Reasoning: &ReasoningConfig{Effort: tc.effort}}
+			body, err := SerializeGemini(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out struct {
+				Gen struct {
+					TC map[string]any `json:"thinkingConfig"`
+				} `json:"generationConfig"`
+			}
+			if err := json.Unmarshal(body, &out); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantBudget == math.MinInt {
+				if len(out.Gen.TC) > 0 {
+					t.Fatalf("unsupported native disable must omit thinkingConfig: %s", body)
+				}
+				return
+			}
+			got, ok := out.Gen.TC["thinkingBudget"]
+			if !ok {
+				t.Fatalf("thinkingConfig missing: %s", body)
+			}
+			if got != tc.wantBudget {
+				t.Fatalf("thinkingBudget=%v, want %v: %s", got, tc.wantBudget, body)
 			}
 		})
 	}

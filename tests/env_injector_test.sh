@@ -52,6 +52,7 @@ FAILED_NAMES=()
 
 log_pass()  { printf '  \033[0;32mPASS\033[0m %s\n' "$1"; TESTS_PASSED=$((TESTS_PASSED+1)); }
 log_fail()  { printf '  \033[0;31mFAIL\033[0m %s\n' "$1"; TESTS_FAILED=$((TESTS_FAILED+1)); FAILED_NAMES+=("$1"); }
+log_skip()  { printf '  \033[0;33mSKIP\033[0m %s\n' "$1"; }
 
 echo "── env-injector CLI tests ──────────────────────────────────────"
 
@@ -86,7 +87,13 @@ if [[ -f "$REPO_ROOT/.env.252.enc" ]]; then
     && log_pass "AC-I6: JSON format is valid JSON" \
     || log_fail "AC-I6: JSON format is not valid JSON"
 else
-  log_fail "AC-I2: .env.252.enc not found"
+  # 53971b270 起策略反转：*.enc 一律不入仓（操作者本地产物）。
+  # 文件缺席=策略一致状态，跳过注入断言；在位时才校验。
+  if git -C "$REPO_ROOT" ls-files -- '.env.252.enc' | grep -q .; then
+    log_fail "AC-I2: .env.252.enc tracked in repo but inject failed — policy violation + functional issue"
+  else
+    log_skip "AC-I2: .env.252.enc absent (untracked-by-policy since 53971b270) — inject path not exercised"
+  fi
 fi
 
 # ── AC-I5: unknown target ──────────────────────────────────────────

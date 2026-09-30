@@ -60,6 +60,7 @@ import (
 
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/mapping"
+	"github.com/kaixuan/llm-gateway-go/internal/atomicrename"
 )
 
 // Config configures a Store. Zero value is not usable; call New
@@ -684,7 +685,9 @@ func appendGzippedLine(path string, line []byte) error {
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	// atomicrename：Windows 并发读者打开 final 时裸 rename 会瞬态失败
+	// （无 FILE_SHARE_DELETE），三十七轮审计接线。
+	return atomicrename.Replace(tmp, path)
 }
 
 func readGzippedLines(path string) ([][]byte, error) {

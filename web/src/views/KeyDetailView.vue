@@ -15,6 +15,8 @@ import {
   type ModelUsageForKey,
   type TrendEntry,
 } from '../api'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 
 // ── Route params ──────────────────────────────────────────────────────────
 const route = useRoute()
@@ -162,6 +164,19 @@ const TREND_WINDOW_LIMITS: Record<'minute' | 'hour', number> = {
 const useCustomRange = ref(false)
 const customStart = ref('')
 const customEnd = ref('')
+
+// 2026-09-30 统一日历轮：自定义区间换 KxDateRangePicker（date 精度，instant——
+// 原 @change 即刷新；presets=[] 因页面自带预设按钮组）。原生 date 与组件契约
+// 同为 'YYYY-MM-DD'，无需转换；结束<起始由组件内置禁用，回写仅发生在 apply。
+const customRangeValue = computed<KxDateRange | null>(() =>
+  customStart.value && customEnd.value ? { start: customStart.value, end: customEnd.value } : null
+)
+
+function onCustomRangeApply(range: KxDateRange) {
+  customStart.value = range.start
+  customEnd.value = range.end
+  changePeriod()
+}
 
 function trendValue(t: TrendEntry): number {
   return trendMetric.value === 'cost' ? t.cost_usd : t.requests
@@ -729,11 +744,14 @@ watch(keyId, async () => {
                     :class="useCustomRange ? 'btn-primary' : 'btn-ghost'"
                     @click="useCustomRange = true; changePeriod()"
                   >{{ t('keys.detail.trend.customRange') }}</button>
-                  <template v-if="useCustomRange">
-                    <input type="date" v-model="customStart" @change="changePeriod" class="date-input">
-                    <span class="range-sep">{{ t('keys.detail.trend.rangeSeparator') }}</span>
-                    <input type="date" v-model="customEnd" @change="changePeriod" class="date-input">
-                  </template>
+                  <KxDateRangePicker
+                    v-if="useCustomRange"
+                    :model-value="customRangeValue"
+                    :presets="[]"
+                    precision="date"
+                    instant
+                    @apply="onCustomRangeApply"
+                  />
                 </div>
                 <span class="trend-divider" aria-hidden="true"></span>
                 <div class="trend-granularity">
@@ -956,14 +974,6 @@ watch(keyId, async () => {
   margin-left: 8px;
 }
 
-.date-input {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 12px;
-  margin-left: 4px;
-}
-
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
@@ -1082,21 +1092,6 @@ watch(keyId, async () => {
   flex-wrap: nowrap;
   gap: 4px;
   align-items: center;
-  flex-shrink: 0;
-}
-
-.range-sep {
-  font-size: 11px;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-
-.date-input {
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 11px;
-  width: auto;
   flex-shrink: 0;
 }
 

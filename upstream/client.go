@@ -189,6 +189,15 @@ func responseHeaderTimeout() time.Duration {
 	return defaultHeaderTimeout
 }
 
+// ResponseHeaderTimeout exposes the direct-connection first-byte budget to
+// sibling transports (egress subscription pools). The stream executor owns
+// the first-byte product policy; a proxy-routed reasoning request must not
+// be cut at a shorter transport ceiling (proxy factory hardcoded 30s) while
+// the direct path honors this value — that mismatch produced "only
+// pool-routed credentials look broken" failure portraits (2026-09-30
+// round-37 audit).
+func ResponseHeaderTimeout() time.Duration { return responseHeaderTimeout() }
+
 // ProxyStatus returns a snapshot of the proxy resolver state.
 func (c *Client) ProxyStatus() map[string]any {
 	if c.proxy == nil {

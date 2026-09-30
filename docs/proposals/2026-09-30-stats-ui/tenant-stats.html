@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>效果图 B · 租户详情统计改版 — llm-gateway</title>
+<link rel="stylesheet" href="assets/mockup.css">
+</head>
+<body>
+<button class="btn theme-fab" onclick="mockToggleTheme()">🌓 切换主题</button>
+
+<div class="page">
+  <div class="page-header">
+    <button class="btn btn-ghost btn-sm">← 返回租户列表</button>
+    <h1>KX 科技 <span class="badge badge-green">正常</span></h1>
+    <code class="badge badge-outline mono">default</code>
+    <span class="sub">📧 ops@kxtech.example · 创建于 2026-03-12</span>
+    <span class="header-spacer"></span>
+    <button class="btn btn-primary">编辑</button>
+  </div>
+
+  <div class="mock-banner">📐 本页为静态效果图（数据为演示值）。展示「统计」tab 重做（趋势图 + 占比条分布表）与「概览」tab KPI 升级（带 sparkline）两个落点。</div>
+
+  <!-- tab 栏（复刻现有手写 tabs，统计为当前态） -->
+  <div class="toolbar" style="border-bottom:1px solid var(--kx-border);padding-bottom:0;gap:2px">
+    <button class="btn btn-ghost">概览</button>
+    <button class="btn btn-ghost">用户 (34)</button>
+    <button class="btn btn-ghost">密钥 (47)</button>
+    <button class="btn btn-ghost">模型管控</button>
+    <button class="btn btn-primary">📊 统计</button>
+    <button class="btn btn-ghost">计费审计</button>
+    <button class="btn btn-ghost">钱包</button>
+    <button class="btn btn-ghost">订单</button>
+    <button class="btn btn-ghost">账本</button>
+  </div>
+
+  <!-- ═══ 统计 tab ═══ -->
+  <div class="mt-4">
+    <div class="toolbar">
+      <label>时间窗口</label>
+      <div class="chips">
+        <button class="chip">近 7 天</button>
+        <button class="chip active">近 30 天</button>
+        <button class="chip">近 90 天</button>
+        <button class="chip">近 365 天</button>
+      </div>
+      <span class="header-spacer"></span>
+      <span class="text-muted" style="font-size:12px">数据截至 2026-09-29（T+1 快照 + 当日实时）</span>
+    </div>
+
+    <!-- KPI 8 卡 -->
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-icon tone-blue">📥</div><div class="kpi-body">
+        <div class="kpi-label">总请求</div><div class="kpi-value">128,473</div>
+        <div class="kpi-sub">失败 <b class="down">7,451</b>（5.8%）</div></div></div>
+      <div class="kpi"><div class="kpi-icon tone-cyan">🔢</div><div class="kpi-body">
+        <div class="kpi-label">总 Token</div><div class="kpi-value">4.82B</div>
+        <div class="kpi-sub">输入 1.21B · 输出 389M · 缓存 3.22B</div></div></div>
+      <div class="kpi"><div class="kpi-icon tone-green">🪙</div><div class="kpi-body">
+        <div class="kpi-label">总费用</div><div class="kpi-value">8,234,120<span class="unit">积分</span></div>
+        <div class="kpi-sub">上游成本 <b>$18,432.67</b>（平台视角）</div></div></div>
+      <div class="kpi"><div class="kpi-icon tone-orange">📈</div><div class="kpi-body">
+        <div class="kpi-label">日均请求</div><div class="kpi-value">4,282</div>
+        <div class="kpi-sub">环比上一 30 天 <b class="up">+9.4%</b></div></div></div>
+      <div class="kpi"><div class="kpi-icon tone-purple">🔑</div><div class="kpi-body">
+        <div class="kpi-label">独立密钥</div><div class="kpi-value">47</div>
+        <div class="kpi-sub">活跃 21 · Top 密钥 codex-prod</div></div></div>
+      <div class="kpi"><div class="kpi-icon tone-blue">🤖</div><div class="kpi-body">
+        <div class="kpi-label">独立模型</div><div class="kpi-value">23</div>
+        <div class="kpi-sub">主力 claude-opus-5（32.1%）</div></div></div>
+      <div class="kpi"><div class="kpi-icon tone-cyan">🧩</div><div class="kpi-body">
+        <div class="kpi-label">独立应用</div><div class="kpi-value">12</div>
+        <div class="kpi-sub">Top 应用 codex-cli（29.7%）</div></div></div>
+      <div class="kpi"><div class="kpi-icon tone-green">⏱️</div><div class="kpi-body">
+        <div class="kpi-label">平均耗时</div><div class="kpi-value">8.9s</div>
+        <div class="kpi-sub">P50 3.8s · P95 31.2s</div></div></div>
+    </div>
+
+    <!-- 趋势 2 卡 -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">
+          <h3>请求与失败趋势</h3><span class="spacer"></span>
+          <div class="chart-legend">
+            <span class="item"><span class="dot" style="background:var(--chart-1)"></span>成功</span>
+            <span class="item"><span class="dot" style="background:var(--chart-6)"></span>失败</span>
+          </div>
+        </div>
+        <div class="chart-box" id="chartReq"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          <h3>Token 与积分趋势</h3><span class="spacer"></span>
+          <div class="chart-legend">
+            <span class="item"><span class="dot" style="background:var(--chart-1)"></span>输入</span>
+            <span class="item"><span class="dot" style="background:var(--chart-2)"></span>输出</span>
+            <span class="item"><span class="dot" style="background:var(--chart-5)"></span>积分/日（右轴）</span>
+          </div>
+        </div>
+        <div class="chart-box" id="chartTok"></div>
+      </div>
+    </div>
+
+    <!-- 分布 2 卡（对标参考图分布表 + 按 Token/按金额切换） -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">
+          <h3>模型分布 · Top 20</h3><span class="spacer"></span>
+          <div class="chips" id="metricChips">
+            <button class="chip active" data-metric="token">按 Token</button>
+            <button class="chip" data-metric="money">按积分</button>
+          </div>
+        </div>
+        <div id="modelWrap"></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><h3>应用分布 · Top 20</h3><span class="spacer"></span>
+          <span class="text-muted" style="font-size:12px">按请求排序 · 点击行跳转密钥列表（带应用过滤）</span></div>
+        <div id="appWrap"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ 概览 tab 升级预览 ═══ -->
+  <div class="section-title">
+    <h2>概览 tab 升级预览</h2><span class="hint">KPI 卡从纯数字升级为「主值 + 环比 + 7 天 sparkline」，复用 ui/StatCard 扩展槽位</span>
+  </div>
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-icon tone-blue">👥</div><div class="kpi-body">
+      <div class="kpi-label">用户数</div><div class="kpi-value">34</div>
+      <div class="kpi-sub">本月新增 <b class="up">+3</b></div></div>
+      <div style="width:88px;height:34px;align-self:flex-end" id="sparkUsers"></div></div>
+    <div class="kpi"><div class="kpi-icon tone-purple">🔑</div><div class="kpi-body">
+      <div class="kpi-label">密钥数</div><div class="kpi-value">47</div>
+      <div class="kpi-sub">启用 42 · 禁用 5</div></div>
+      <div style="width:88px;height:34px;align-self:flex-end" id="sparkKeys"></div></div>
+    <div class="kpi"><div class="kpi-icon tone-cyan">📥</div><div class="kpi-body">
+      <div class="kpi-label">7 天请求</div><div class="kpi-value">28,447</div>
+      <div class="kpi-sub">环比 <b class="up">+12.6%</b></div></div>
+      <div style="width:88px;height:34px;align-self:flex-end" id="sparkReq"></div></div>
+    <div class="kpi"><div class="kpi-icon tone-blue">🔢</div><div class="kpi-body">
+      <div class="kpi-label">7 天 Token</div><div class="kpi-value">1.12B</div>
+      <div class="kpi-sub">缓存命中 <b>64.8%</b></div></div>
+      <div style="width:88px;height:34px;align-self:flex-end" id="sparkTok"></div></div>
+    <div class="kpi"><div class="kpi-icon tone-green">🪙</div><div class="kpi-body">
+      <div class="kpi-label">7 天费用</div><div class="kpi-value">1,982,340<span class="unit">积分</span></div>
+      <div class="kpi-sub">上游成本 $4,494.02</div></div>
+      <div style="width:88px;height:34px;align-self:flex-end" id="sparkFee"></div></div>
+    <div class="kpi"><div class="kpi-icon tone-orange">📚</div><div class="kpi-body">
+      <div class="kpi-label">总请求数（历史）</div><div class="kpi-value">3.21M</div>
+      <div class="kpi-sub">自 2026-03-12 起</div></div></div>
+  </div>
+
+  <p class="mt-4 text-muted" style="font-size:12px">
+    <a class="nav-link" href="index.html">← 返回效果图目录</a> ·
+    <a class="nav-link" href="users.html">下一页：用户列表 + 详情 →</a>
+  </p>
+</div>
+
+<script src="assets/mockup.js"></script>
+<script>
+var DAY_LABELS = ['09-01','09-03','09-05','09-07','09-09','09-11','09-13','09-15','09-17','09-19','09-21','09-23','09-25','09-27','09-29'];
+var REQ_OK = [3210,3850,3420,4010,4330,3980,4510,4890,4300,4020,4650,5230,4880,5340,5620];
+var REQ_FAIL = [186,240,198,235,262,219,290,312,254,228,289,341,297,328,352];
+var TOK_IN = [28,34,30,36,39,35,41,45,39,36,42,47,44,48,51];   // M
+var TOK_OUT = [9,11,10,12,13,11,13,15,13,12,14,16,15,16,17];    // M
+var CRED_DAY = [201,248,213,252,278,251,292,324,276,254,301,342,312,346,368]; // K 积分
+
+var MODELS = [
+  { model:'claude-opus-5',  prov:'Anthropic', req:41203, tokM:1920, credits:3012400, cost:7832.10 },
+  { model:'gpt-5.6-terra',  prov:'OpenAI',    req:28442, tokM:1210, credits:1923110, cost:5018.40 },
+  { model:'claude-haiku-5', prov:'Anthropic', req:18907, tokM: 412, credits: 918230, cost:2394.70 },
+  { model:'grok-4.7',       prov:'xAI',       req:15338, tokM: 588, credits: 842150, cost:2196.30 },
+  { model:'gemini-3-pro',   prov:'Google',    req:12907, tokM: 301, credits: 703940, cost:1835.20 },
+  { model:'deepseek-v4',    prov:'DeepSeek',  req: 8432, tokM: 254, credits: 491070, cost:1280.10 },
+  { model:'kimi-k3',        prov:'Moonshot',  req: 3644, tokM: 138, credits: 343220, cost: 894.60 }
+];
+var APPS = [
+  { app:'codex-cli',   req:38201, tokM:1620, credits:2812400, cost:7328.10 },
+  { app:'claude-code', req:31905, tokM:1380, credits:2241100, cost:5842.30 },
+  { app:'cursor',      req:21447, tokM: 782, credits:1428700, cost:3721.90 },
+  { app:'web-chat',    req:18442, tokM: 612, credits:1102300, cost:2873.40 },
+  { app:'openpocket',  req: 9847, tokM: 254, credits: 421600, cost:1099.20 },
+  { app:'api-direct',  req: 8631, tokM: 172, credits: 128020, cost: 567.80 }
+];
+
+var metric = 'token';
+function fmtInt(n){ return n.toLocaleString('en-US'); }
+function renderModels(){
+  var key = metric==='token' ? 'tokM' : 'credits';
+  var rows = MODELS.slice().sort(function(a,b){ return b[key]-a[key]; });
+  var max = Math.max.apply(null, rows.map(function(r){ return r[key]; }));
+  var totalReq = MODELS.reduce(function(a,r){ return a+r.req; },0);
+  document.getElementById('modelWrap').innerHTML = '<table class="tbl"><thead><tr><th>模型</th><th class="num">请求</th><th class="num">Token</th><th class="num">积分</th><th class="num">成本 (USD)</th></tr></thead><tbody>'
+    + rows.map(function(m){
+      return '<tr class="clickable">'
+        + '<td><div class="bar-cell"><div class="name mono" style="font-size:12.5px">'+m.model+' <span class="cell-sub">'+m.prov+'</span></div>'
+        + '<div class="track"><div class="fill" style="width:'+(m[key]/max*100).toFixed(1)+'%"></div></div></div></td>'
+        + '<td class="num">'+fmtInt(m.req)+'<div class="cell-sub">'+(m.req/totalReq*100).toFixed(1)+'%</div></td>'
+        + '<td class="num">'+(m.tokM>=1000?(m.tokM/1000).toFixed(2)+'B':m.tokM+'M')+'</td>'
+        + '<td class="num">'+fmtInt(m.credits)+'</td>'
+        + '<td class="num">$'+m.cost.toLocaleString('en-US',{minimumFractionDigits:2})+'</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+function renderApps(){
+  var max = APPS[0].req;
+  document.getElementById('appWrap').innerHTML = '<table class="tbl"><thead><tr><th>应用</th><th class="num">请求</th><th class="num">Token</th><th class="num">积分</th><th class="num">成本 (USD)</th></tr></thead><tbody>'
+    + APPS.map(function(a){
+      return '<tr class="clickable">'
+        + '<td><div class="bar-cell"><div class="name"><span class="badge badge-blue">'+a.app+'</span></div>'
+        + '<div class="track"><div class="fill tone-cyan" style="width:'+(a.req/max*100).toFixed(1)+'%"></div></div></div></td>'
+        + '<td class="num">'+fmtInt(a.req)+'</td><td class="num">'+a.tokM+'M</td>'
+        + '<td class="num">'+fmtInt(a.credits)+'</td>'
+        + '<td class="num">$'+a.cost.toLocaleString('en-US',{minimumFractionDigits:2})+'</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+function cssVarC(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+function renderCharts(){
+  mockAutoRedraw(function(){
+    mockStackedBars('chartReq', { labels: DAY_LABELS, series: [
+      { name:'成功', data: REQ_OK, color: cssVarC('--chart-1') },
+      { name:'失败', data: REQ_FAIL, color: cssVarC('--chart-6') }
+    ]});
+    mockStackedArea('chartTok', { labels: DAY_LABELS, series: [
+      { name:'输入', data: TOK_IN, color: cssVarC('--chart-1') },
+      { name:'输出', data: TOK_OUT, color: cssVarC('--chart-2') },
+      { name:'积分', data: CRED_DAY, color: cssVarC('--chart-5'), axis:'right', fmtY: function(v){ return v.toFixed(0)+'M'; } }
+    ]});
+    mockSpark('sparkUsers', [2,2,3,3,3,3,3,4], '--chart-3');
+    mockSpark('sparkKeys', [38,39,41,42,44,45,46,47], '--chart-3');
+    mockSpark('sparkReq', REQ_OK.slice(-8), '--chart-1');
+    mockSpark('sparkTok', TOK_IN.slice(-8), '--chart-4');
+    mockSpark('sparkFee', CRED_DAY.slice(-8), '--chart-2');
+  });
+}
+document.getElementById('metricChips').addEventListener('click', function(e){
+  var b = e.target.closest('button'); if(!b) return;
+  document.querySelectorAll('#metricChips .chip').forEach(function(x){ x.classList.remove('active'); });
+  b.classList.add('active'); metric = b.dataset.metric; renderModels();
+});
+renderModels(); renderApps(); renderCharts();
+</script>
+</body>
+</html>

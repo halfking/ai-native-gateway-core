@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,6 +65,18 @@ type tenantModelBreakdown struct {
 type tenantAppBreakdown struct {
 	AppCode  string  `json:"application_code"`
 	Requests int64   `json:"requests"`
+	Tokens   int64   `json:"tokens"`
+	Credits  int64   `json:"credits"`
+	Cost     float64 `json:"cost_usd"`
+}
+
+// tenantDailyStat — 租户统计按天时序行（2026-09-30 统计 UI 优化轮）。
+// 无流量日由 SQL generate_series 左连接补零，前端趋势图拿到连续序列。
+type tenantDailyStat struct {
+	Date     string  `json:"date"` // YYYY-MM-DD
+	Requests int64   `json:"requests"`
+	Success  int64   `json:"success"`
+	Errors   int64   `json:"errors"`
 	Tokens   int64   `json:"tokens"`
 	Credits  int64   `json:"credits"`
 	Cost     float64 `json:"cost_usd"`
@@ -661,7 +674,10 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 // ── getTenantStats: GET /api/admin/tenants/{code}/stats ───────────
 
 func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code string) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// 2026-09-30 R36-B3：5s 在真库上不够——byModel/byApp/daily 聚合在
+	// 百万行级 usage/request 家族上实测可达 3s+（252-dev 实测），5s 会把
+	// 后续查询饿死成静默空序列。上调至 10s（与 users 端点 15s 同量级）。
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	// Verify tenant exists
@@ -692,22 +708,32 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		UniqueApps    int                    `json:"unique_apps"`
 		ByModel       []tenantModelBreakdown `json:"by_model"`
 		ByApplication []tenantAppBreakdown   `json:"by_application"`
+		Daily         []tenantDailyStat      `json:"daily"`
 	}
 
 	var s tenantStats
 	s.Days = days
 
-	// 2026-07-05 migration 341: 当 days <= 7 时查询 *_default（等价于 _hot），
-	// 当 days > 7 时跨月查询 request_logs_with_current_month 视图（聚合热表 + 月度分区）。
-	// 符合 docs/partition/partition-standards.md 查询规范。
-	// 当 days <= 7 时查 _default 热表（heap，最快）
-	// 当 days > 7 时查询父表（自动聚合所有 ATTACHED 月度分区）
-	logsTable := "request_logs"
-	usageTable := "usage_ledger"
-	if days <= 7 {
-		logsTable = "request_logs_hot"
-		usageTable = "usage_ledger_hot"
-	}
+	// 2026-09-30 三十六轮合并定稿（远端十五轮 P1 实勘 + 本轮 R36-B3 真库根修）：
+	// ① hot 保留窗仅 8h（partition_manager.DefaultRetentionWindow）——days<=7
+	// 走 hot-only 会让默认"近 7 天"视图 totals/credits/daily 只见最近 ~8h、
+	// 前 ~6 天恒零，且与同响应 byModel/byApp 自相矛盾 → 全窗口统一读并集。
+	// ② 富化视图 request_logs_with_current_month（LATERAL request_class + 双
+	// NOT EXISTS 反连接 session_turns）带租户过滤 COUNT 即 30s 超时（252-dev
+	// 实测，users 端点头注同因放弃该视图）→ 聚合读面改走内联 raw union
+	//（migration 330 首发形态）：显式 11 列投影——真库 hot 与父表列数已漂移，
+	// SELECT * UNION 报 42601。语义：不排除已进 session_turns 的请求（与
+	// totals/修复前父表读法一致，统计聚合数全量请求）。
+	logsTable := `(SELECT tenant_id, ts, application_id, outbound_model, client_model,
+	                       success, total_tokens, prompt_tokens, completion_tokens,
+	                       credits_charged, cost_usd
+	                FROM request_logs_hot
+	        UNION ALL
+	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
+	                      success, total_tokens, prompt_tokens, completion_tokens,
+	                      credits_charged, cost_usd
+	        FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）`
+	usageTable := "usage_ledger_with_current_month"
 
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)
 	_ = h.db.QueryRow(ctx, `
@@ -731,7 +757,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
-		FROM request_logs_with_current_month
+		FROM `+logsTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY 1
 		ORDER BY SUM(COALESCE(credits_charged, 0)) DESC, SUM(COALESCE(cost_usd, 0)) DESC
@@ -756,7 +782,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		       COALESCE(SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(rl.credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(rl.cost_usd, 0)), 0)::float8
-		FROM request_logs_with_current_month rl
+		FROM `+logsTable+` rl
 		LEFT JOIN applications app ON app.id = rl.application_id
 		WHERE rl.tenant_id = $1 AND rl.ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY app.code
@@ -773,6 +799,58 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	}
 	if s.ByApplication == nil {
 		s.ByApplication = []tenantAppBreakdown{}
+	}
+
+	// Daily time series (2026-09-30 统计 UI 优化轮)：generate_series 左连接
+	// 补零，保证前端趋势图拿到 days 条连续日期。表选择与上方 credits/byModel/
+	// byApp 同口径（全窗口 raw union 含热尾，三十六轮合并定稿）。
+	// 日切显式钉 Asia/Shanghai（R36-A3）：与 usage_facts 日分区边界（迁移
+	// 750/751）及用户统计 daily 同口径，不随会话时区漂移；对账页保持显式
+	// UTC 日（结算口径，有意分叉）。
+	dailyRows, err := h.db.Query(ctx, `
+		WITH days AS (
+			SELECT generate_series(
+				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - (($2::int - 1) * INTERVAL '1 day'),
+				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'),
+				INTERVAL '1 day')::date AS d
+		), agg AS (
+			SELECT date_trunc('day', ts AT TIME ZONE 'Asia/Shanghai')::date AS d,
+			       COUNT(*)::bigint AS requests,
+			       COUNT(*) FILTER (WHERE success IS TRUE)::bigint AS success,
+			       COUNT(*) FILTER (WHERE success IS NOT TRUE)::bigint AS errors,
+			       COALESCE(SUM(COALESCE(total_tokens, 0)), 0)::bigint AS tokens,
+			       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint AS credits,
+			       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8 AS cost
+			FROM `+logsTable+`
+			WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
+			GROUP BY 1
+		)
+		SELECT to_char(days.d, 'YYYY-MM-DD'),
+		       COALESCE(agg.requests, 0), COALESCE(agg.success, 0), COALESCE(agg.errors, 0),
+		       COALESCE(agg.tokens, 0), COALESCE(agg.credits, 0), COALESCE(agg.cost, 0)
+		FROM days LEFT JOIN agg ON agg.d = days.d
+		ORDER BY days.d
+	`, code, days)
+	if err != nil {
+		// R36-A2 收口：daily 查询失败不得静默返回空序列（前端拿到全零
+		// 趋势图无从分辨），至少留日志可观测。
+		slog.Warn("tenant stats: daily query failed", "tenant", code, "days", days, "err", err)
+	} else {
+		for dailyRows.Next() {
+			var d tenantDailyStat
+			if scanErr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); scanErr != nil {
+				slog.Warn("tenant stats: daily scan failed", "tenant", code, "err", scanErr)
+				break
+			}
+			s.Daily = append(s.Daily, d)
+		}
+		if rerr := dailyRows.Err(); rerr != nil {
+			slog.Warn("tenant stats: daily rows aborted", "tenant", code, "err", rerr)
+		}
+		dailyRows.Close()
+	}
+	if s.Daily == nil {
+		s.Daily = []tenantDailyStat{}
 	}
 
 	writeJSON(w, http.StatusOK, s)
