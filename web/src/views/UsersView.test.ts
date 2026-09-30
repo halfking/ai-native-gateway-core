@@ -1,8 +1,12 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount, enableAutoUnmount } from '@vue/test-utils'
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import UsersView from './UsersView.vue'
 import usersMessages from '../locales/zh-CN/users'
+
+// 详情抽屉 Teleport 到 body：每个用例后卸载，避免上个用例的抽屉残留在
+// document.body 干扰后续对抽屉内容的断言。
+enableAutoUnmount(afterEach)
 
 const i18n = createI18n({
   legacy: false,
@@ -28,6 +32,7 @@ const getUserUsageSummaryMock = vi.fn()
 const getUserStatsMock = vi.fn()
 let readOnlyMode = true
 let tenantAdminMode = true
+let superAdminMode = true
 
 vi.mock('../api', () => ({
   getUsers: (...args: any[]) => getUsersMock(...args),
@@ -46,12 +51,14 @@ vi.mock('../store', () => ({
   },
   isReadOnlyMode: () => readOnlyMode,
   isTenantAdmin: () => tenantAdminMode,
+  isSuperAdmin: () => superAdminMode,
 }))
 
 describe('UsersView tenant admin permissions', () => {
   beforeEach(() => {
     readOnlyMode = true
     tenantAdminMode = true
+    superAdminMode = true
     getUsersMock.mockReset()
     getTenantsAdminMock.mockReset()
     createUserMock.mockReset()
@@ -143,6 +150,7 @@ describe('UsersView 统计 UI 优化轮（2026-09-30）', () => {
   beforeEach(() => {
     readOnlyMode = false
     tenantAdminMode = false
+    superAdminMode = true
     getUsersMock.mockReset()
     getTenantsAdminMock.mockReset()
     getUserUsageSummaryMock.mockReset()
@@ -225,6 +233,28 @@ describe('UsersView 统计 UI 优化轮（2026-09-30）', () => {
     const keysLink = document.body.querySelector('a[href*="tab=keys"]')
     expect(keysLink?.getAttribute('href')).toContain('/tenants/tenant-a?')
     expect(keysLink?.textContent).toContain('2')
+  })
+
+  it('非 super（tenant_admin）查看抽屉：API 密钥不下钻，仅展示数字', async () => {
+    getUserStatsMock.mockResolvedValue({
+      user_id: 11, username: 'alice', days: 30,
+      kpi: { requests: 5, tokens: 100, credits: 2, errors: 0, error_rate: 0, latency_p95_ms: 900 },
+      daily: [], top_models: [], top_apps: [], top_keys: [],
+      key_count: 42, recent_requests: [],
+    })
+    superAdminMode = false
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
+    await flushPromises()
+
+    const row = wrapper.findAll('tbody tr')[0]
+    await row.trigger('click')
+    await flushPromises()
+
+    // /tenants/:tenantId 挂 requiresSuper 路由门：非 super 不渲染死链，只留数字展示
+    expect(document.body.querySelector('a[href*="tab=keys"]')).toBeNull()
+    expect(document.body.textContent).toContain('42')
+    // 日志链接（/request-logs）无路由门，保持展示
+    expect(document.body.querySelector('a[href*="owner_user=alice"]')).not.toBeNull()
   })
 
   it('搜索过滤：无匹配时显示空态行', async () => {
