@@ -88,7 +88,7 @@ func (r *GenericRecovery) execute(ctx context.Context, task *RecoveryTask, archi
 	task.mu.Unlock()
 
 	sawLegacy := false
-	err = r.reader.ReadRecords(ctx, task.Filename, func(record BackupRecord) error {
+	salvage, err := r.reader.ReadRecordsWithStats(ctx, task.Filename, func(record BackupRecord) error {
 		if record.Type != "request_log" && record.Type != "request_wal" {
 			sawLegacy = true
 			task.mu.Lock()
@@ -115,10 +115,16 @@ func (r *GenericRecovery) execute(ctx context.Context, task *RecoveryTask, archi
 	})
 
 	// 先在锁内判定终态，需要归档时把 I/O 放到锁外再回写结果。
+	// 2026-09-30 O5：ReadRecords 带打捞后，文件可能部分恢复（坏行跳过/
+	// 字节丢失）——有损失时不得归档/删除原文件，否则剩余内容永久丢失。
 	task.mu.Lock()
 	needArchive := false
 	if err != nil {
 		task.Status, task.Error = "failed", err.Error()
+	} else if salvage.HasLoss() {
+		task.Status = "completed_with_errors"
+		task.Error = fmt.Sprintf("recovered %d records; salvage lost content (%d skipped line(s), %d lost byte(s)); file kept",
+			task.SuccessCount, salvage.SkippedLines, salvage.LostBytes)
 	} else if task.FailureCount > 0 {
 		task.Status = "completed_with_errors"
 		task.Error = fmt.Sprintf("recovered %d records, %d failed", task.SuccessCount, task.FailureCount)
