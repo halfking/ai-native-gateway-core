@@ -901,6 +901,35 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				}
 			}
 			_ = finishGateWriter(gw, gate)
+
+			// 2026-10-01 R74: tell the client WHY the stream is ending before
+			// the terminal envelope lands. This branch previously emitted no
+			// transport frame at all, so a committed-then-interrupted request
+			// — arguably the case that most needs explaining, since the
+			// client already holds a partial answer and cannot tell a
+			// deliberate stop from a truncation — gave the client nothing but
+			// a bare error. Every other failure class on this path gets a
+			// think notice (notifyRetry above); this one did not.
+			//
+			// The notice is a comment frame, so it cannot corrupt the answer
+			// bytes the client already received, and it carries no upstream
+			// text — only the decision reason, which is a closed enum here.
+			//
+			// It does NOT reuse notifyRetry: that renders "正在等待可用节点并重试
+			// （…，等待 0s）", which promises a retry that this branch is
+			// explicitly forbidden from making (ADR-Disp-003 bars a transparent
+			// switch once content is committed, to avoid duplicate answers).
+			// Promise-then-stop is worse than silence.
+			if res.Decision.Action == TaskActionResumeBlocked && c.RetryNotice != nil {
+				if err := c.RetryNotice(ctx, res.Attempts, TaskDecision{
+					Action: TaskActionResumeBlocked,
+					Reason: "partial_answer_delivered_stop",
+				}, 0); err != nil {
+					slog.Warn("survival resume-blocked notice failed",
+						"attempt", res.Attempts, "reason", res.Decision.Reason, "error", err)
+				}
+			}
+
 			// An L2 replay that missed leaves the LAST gate uncommitted (the
 			// replay was voided), but the client already saw the interrupted
 			// attempt's bytes — the terminal must render as committed so the
