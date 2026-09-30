@@ -78,7 +78,7 @@ func NewCallHistoryAggregator(
 func (a *CallHistoryAggregator) Start(ctx context.Context) {
 	slog.Info("call_history_aggregator started", "interval", a.interval)
 
-	go func() {
+	SpawnLoop(ctx, "call_history_aggregator.loop", func(context.Context) {
 		ticker := time.NewTicker(a.interval)
 		defer ticker.Stop()
 
@@ -96,7 +96,7 @@ func (a *CallHistoryAggregator) Start(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 // Stop gracefully stops the worker. Idempotent; safe on a

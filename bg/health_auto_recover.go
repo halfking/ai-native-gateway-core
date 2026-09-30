@@ -98,7 +98,7 @@ func (w *HealthAutoRecover) currentInterval() time.Duration {
 func (w *HealthAutoRecover) Start(ctx context.Context) {
 	slog.Info("health_auto_recover started", "interval", w.currentInterval().String())
 
-	go func() {
+	SpawnLoop(ctx, "health_auto_recover.loop", func(context.Context) {
 		// resolveInterval maps the configured value to the ticker period we
 		// actually use. 0 (disabled) → disabledProbeInterval so the loop can
 		// still notice a subsequent SetTickInterval(<positive>). Any other
@@ -138,7 +138,7 @@ func (w *HealthAutoRecover) Start(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 // Stop gracefully stops the worker. Idempotent; safe on a

@@ -93,7 +93,7 @@ func NewSessionProjectBackfillWorker(pool *pgxpool.Pool) *SessionProjectBackfill
 // pass runs on startup so a fresh deploy drains the 762-era backlog without
 // waiting a full tick.
 func (w *SessionProjectBackfillWorker) Start(ctx context.Context) {
-	go w.run(ctx)
+	Go("project_backfill_worker.run", func() { w.run(ctx) })
 	slog.Info("session project backfill worker started",
 		"interval", w.tick.String(),
 		"batch_size", projectBackfillBatchSize)

@@ -59,7 +59,7 @@ func (l *PassiveProbeListener) SetAvailabilityCache(cache *ModelAvailabilityCach
 
 func (l *PassiveProbeListener) Start(ctx context.Context) {
 	ctx, l.cancel = context.WithCancel(ctx)
-	go l.run(ctx)
+	Go("passive_probe_listener.run", func() { l.run(ctx) })
 	slog.Info("passive probe listener (Layer 5) started",
 		"poll_interval", l.pollInterval,
 	)

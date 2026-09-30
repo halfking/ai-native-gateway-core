@@ -53,7 +53,7 @@ func NewBrokenProbeReviver(db *pgxpool.Pool, interval, reviveAfter time.Duration
 
 func (w *BrokenProbeReviver) Start(ctx context.Context) {
 	slog.Info("broken_probe_reviver started", "interval", w.interval, "revive_after", w.reviveAfter)
-	go func() {
+	SpawnLoop(ctx, "broken_probe_reviver.loop", func(context.Context) {
 		w.runOnce(ctx)
 		ticker := time.NewTicker(w.interval)
 		defer ticker.Stop()
@@ -71,7 +71,7 @@ func (w *BrokenProbeReviver) Start(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 func (w *BrokenProbeReviver) runOnce(ctx context.Context) {

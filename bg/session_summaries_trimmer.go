@@ -73,7 +73,7 @@ func NewSessionSummariesTrimmer(pool *pgxpool.Pool) *SessionSummariesTrimmer {
 // Performs an initial trim on startup so a fresh deploy drains any
 // pre-existing backlog without waiting 24h.
 func (t *SessionSummariesTrimmer) Start(ctx context.Context) {
-	go t.run(ctx)
+	Go("session_summaries_trimmer.run", func() { t.run(ctx) })
 	slog.Info("session_summaries trimmer started",
 		"retention", t.retention.String(),
 		"interval", t.tick.String(),

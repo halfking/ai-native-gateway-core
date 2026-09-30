@@ -26,7 +26,7 @@ func NewWeeklyPeakRollup(db *pgxpool.Pool) *WeeklyPeakRollup {
 func (w *WeeklyPeakRollup) Start(ctx context.Context) {
 	cctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
-	go w.run(cctx)
+	Go("weekly_peak_rollup.run", func() { w.run(cctx) })
 	slog.Info("weekly peak rollup started", "schedule", "00:05 UTC daily")
 }
 

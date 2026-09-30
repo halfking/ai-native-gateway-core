@@ -79,7 +79,7 @@ func StartProjectACCSync(ctx context.Context, db *pgxpool.Pool, syncFn ProjectSy
 			"interval", interval.String(),
 			"tenant", tenantID)
 	}
-	go func() {
+	SpawnLoop(ctx, "project_acc_sync.loop", func(context.Context) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -95,5 +95,5 @@ func StartProjectACCSync(ctx context.Context, db *pgxpool.Pool, syncFn ProjectSy
 				cancel()
 			}
 		}
-	}()
+	})
 }

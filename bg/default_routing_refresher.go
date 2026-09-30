@@ -46,7 +46,7 @@ func NewDefaultRoutingStoreRefresher(pool *pgxpool.Pool, store *autoroute.Defaul
 
 // Start spawns the background goroutine. Performs an initial Reload.
 func (r *DefaultRoutingStoreRefresher) Start(ctx context.Context) {
-	go r.run(ctx)
+	Go("default_routing_refresher.run", func() { r.run(ctx) })
 	slog.Info("default routing store refresher started", "interval", r.tick.String())
 }
 

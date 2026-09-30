@@ -267,7 +267,7 @@ func (c *CredentialProbeV2) start(ctx context.Context, legacyCycle bool) {
 	c.probeCtx = ctx
 	c.probeCtxMu.Unlock()
 	c.lifecycleMu.Unlock()
-	go c.run(ctx, legacyCycle)
+	Go("credential_probe_v2.run", func() { c.run(ctx, legacyCycle) })
 	slog.Info("credential probe v2 started",
 		"interval", c.interval, "legacy_cycle", legacyCycle)
 }
@@ -331,7 +331,7 @@ func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
 	c.immediateProbeMu.Unlock()
 	c.probeWG.Add(1)
 	c.lifecycleMu.Unlock()
-	go func() {
+	Go("credential_probe_v2.probeNow", func() {
 		defer c.probeWG.Done()
 		defer func() {
 			c.immediateProbeMu.Lock()
@@ -339,7 +339,7 @@ func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
 			c.immediateProbeMu.Unlock()
 		}()
 		c.ProbeNow(ctx, credID)
-	}()
+	})
 }
 
 func (c *CredentialProbeV2) run(ctx context.Context, legacyCycle bool) {
@@ -376,7 +376,7 @@ func (c *CredentialProbeV2) run(ctx context.Context, legacyCycle bool) {
 			// Track the delayed goroutine so Stop waits for its cancellation
 			// path and it always releases the per-credential pending mark.
 			c.probeWG.Add(1)
-			go func(id int) {
+			GoArg("credential_probe_v2.fastReprobe", credID, func(id int) {
 				defer c.probeWG.Done()
 				defer c.releaseFastProbe(id)
 				select {
@@ -387,7 +387,7 @@ func (c *CredentialProbeV2) run(ctx context.Context, legacyCycle bool) {
 				slog.Info("credential probe v2: fast reprobe triggered",
 					"credential_id", id, "delay", c.fastReprobeDelay)
 				c.probeOne(ctx, id)
-			}(credID)
+			})
 		}
 	}
 }

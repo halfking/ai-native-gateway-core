@@ -267,8 +267,8 @@ func (r *CredentialRecovery) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
 	r.started = true
 	r.lifecycleMu.Unlock()
-	go r.run(ctx)
-	go r.runLookbackScan(ctx)
+	Go("credential_recovery.run", func() { r.run(ctx) })
+	Go("credential_recovery.runLookbackScan", func() { r.runLookbackScan(ctx) })
 	slog.Info("credential recovery task started",
 		"interval", r.tickIntervalLocked().String(),
 		"lookback_scan_interval", r.lookbackScanIntervalLocked().String())
@@ -326,12 +326,12 @@ func (r *CredentialRecovery) dispatchProbe(fn func()) {
 	sem := r.probeDispatchSem
 	r.probeDispatchWG.Add(1)
 	r.probeDispatchMu.Unlock()
-	go func() {
+	Go("credential_recovery.dispatchProbe", func() {
 		defer r.probeDispatchWG.Done()
 		sem <- struct{}{}
 		defer func() { <-sem }()
 		fn()
-	}()
+	})
 }
 
 func (r *CredentialRecovery) waitProbeDispatch() {

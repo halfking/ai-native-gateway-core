@@ -414,7 +414,7 @@ func (w *NodeProbeWorker) resetDecryptFailures() {
 	w.decryptFailures.Store(0)
 	w.decryptTrippedAt.Store(0)
 	if wasTripped {
-		go w.deescalateGatewaySideProbeState(context.Background())
+		Go("node_probe.deescalate", func() { w.deescalateGatewaySideProbeState(context.Background()) })
 	}
 }
 
@@ -609,7 +609,7 @@ func (w *NodeProbeWorker) Start(ctx context.Context) {
 	// misconfigured instance already wrote can still hold hours-future
 	// next_retry_at ladders and probe_endpoint_build-poisoned bindings. Sweep
 	// them once at startup so recovery does not wait out every backoff.
-	go w.deescalateGatewaySideProbeState(ctx)
+	Go("node_probe.deescalate", func() { w.deescalateGatewaySideProbeState(ctx) })
 	slog.Info("node_probe_worker started",
 		"tick_interval", nodeProbeTickInterval,
 		"max_attempts", nodeProbeMaxAttempts,
@@ -1702,7 +1702,7 @@ func (w *NodeProbeWorker) ProbeSync(
 	for _, j := range freshJobs {
 		j := j
 		wg.Add(1)
-		go func() {
+		Go("node_probe.probeSyncFanout", func() {
 			defer wg.Done()
 			// Wave 3 B2③: per-credential ≤2 on top of the global fanout.
 			// R57 §三.2：获取序为 per-cred → 全局（原为全局先取、goroutine
@@ -1819,7 +1819,7 @@ func (w *NodeProbeWorker) ProbeSync(
 					"parent_request_id", parentReqID,
 					"error", err)
 			}
-		}()
+		})
 	}
 
 	var (
@@ -1853,10 +1853,10 @@ func (w *NodeProbeWorker) ProbeSync(
 	}
 
 	doneFresh := make(chan struct{})
-	go func() {
+	Go("node_probe.freshWait", func() {
 		wg.Wait()
 		close(doneFresh)
-	}()
+	})
 
 drainLoop:
 	for {

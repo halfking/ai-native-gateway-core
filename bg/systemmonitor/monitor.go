@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/redis/go-redis/v9"
@@ -543,12 +544,12 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 	)
 	for i := 0; i < sm.workerCount; i++ {
 		sm.wg.Add(1)
-		go sm.workerLoop(ctx, i)
+		bg.GoArg("systemmonitor.workerLoop", i, func(i int) { sm.workerLoop(ctx, i) })
 	}
 	sm.wg.Add(1)
-	go sm.healthCheckLoop(ctx)
+	bg.Go("systemmonitor.healthCheckLoop", func() { sm.healthCheckLoop(ctx) })
 	sm.wg.Add(1)
-	go sm.reclaimLoop(ctx)
+	bg.Go("systemmonitor.reclaimLoop", func() { sm.reclaimLoop(ctx) })
 }
 
 // reclaimLoop periodically restores tasks whose owning worker crashed or
@@ -792,20 +793,24 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 			}
 		} else {
 			// Fallback: push to in-memory queue with delayed dispatch.
-			go func(t *Task, at time.Time) {
-				timer := time.NewTimer(time.Until(at))
-				defer timer.Stop()
-				select {
-				case <-timer.C:
+			bg.Go("systemmonitor.fallbackRequeue", func() {
+				// 实参在 spawn 时刻求值，保留原 `go func(t, at){...}(task, nextRun)`
+				// 的捕获语义（t/at 是循环外变量，这里显式绑定而非闭包捕获）。
+				func(t *Task, at time.Time) {
+					timer := time.NewTimer(time.Until(at))
+					defer timer.Stop()
 					select {
-					case sm.fallbackCh <- t:
-					default:
-						workerLog.Warn("system_monitor: fallback requeue dropped", "task_id", t.ID)
+					case <-timer.C:
+						select {
+						case sm.fallbackCh <- t:
+						default:
+							workerLog.Warn("system_monitor: fallback requeue dropped", "task_id", t.ID)
+						}
+					case <-sm.stopCh:
+						return
 					}
-				case <-sm.stopCh:
-					return
-				}
-			}(task, nextRun)
+				}(task, nextRun)
+			})
 		}
 	}
 }

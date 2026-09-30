@@ -52,7 +52,7 @@ func NewFeatureStatsWorker(db *pgxpool.Pool, interval time.Duration) *FeatureSta
 // Start 启动后台 goroutine。Stop 之前不能重复 Start。
 func (w *FeatureStatsWorker) Start(ctx context.Context) {
 	ctx, w.cancel = context.WithCancel(ctx)
-	go w.run(ctx)
+	Go("feature_stats_worker.run", func() { w.run(ctx) })
 	slog.Info("feature stats worker started", "interval", w.interval)
 }
 

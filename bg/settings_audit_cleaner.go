@@ -34,7 +34,7 @@ func NewSettingsAuditCleaner(db *pgxpool.Pool) *SettingsAuditCleaner {
 // Start begins the daily cleanup loop. Call Stop() to terminate.
 func (c *SettingsAuditCleaner) Start(ctx context.Context) {
 	ctx, c.cancel = context.WithCancel(ctx)
-	go c.run(ctx)
+	Go("settings_audit_cleaner.run", func() { c.run(ctx) })
 	slog.Info("settings_audit cleaner started",
 		"interval", c.interval.String(),
 		"retention", c.retention.String())

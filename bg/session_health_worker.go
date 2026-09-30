@@ -81,7 +81,7 @@ func (w *SessionHealthWorker) SetExecutor(exec *moduleexec.Executor) {
 // Start 启动后台 goroutine。Stop 之前不能重复 Start。
 func (w *SessionHealthWorker) Start(ctx context.Context) {
 	ctx, w.cancel = context.WithCancel(ctx)
-	go w.run(ctx)
+	Go("session_health_worker.run", func() { w.run(ctx) })
 	slog.Info("session health worker started", "interval", "60m")
 }
 

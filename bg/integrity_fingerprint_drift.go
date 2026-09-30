@@ -101,7 +101,7 @@ func (w *IntegrityFingerprintDrift) Start(ctx context.Context) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
-	go w.run(runCtx)
+	Go("integrity_fingerprint_drift.run", func() { w.run(runCtx) })
 	slog.Info("integrity_fingerprint_drift started",
 		"interval", w.interval,
 		"days", w.days,

@@ -20,7 +20,7 @@ func NewStickyCleaner(db *pgxpool.Pool) *StickyCleaner {
 
 func (c *StickyCleaner) Start(ctx context.Context) {
 	ctx, c.cancel = context.WithCancel(ctx)
-	go c.run(ctx)
+	Go("sticky_cleaner.run", func() { c.run(ctx) })
 	slog.Info("sticky session cleaner started", "interval", "300s")
 }
 

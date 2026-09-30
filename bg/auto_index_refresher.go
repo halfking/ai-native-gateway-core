@@ -83,7 +83,7 @@ func NewAutoIndexRefresher(db *pgxpool.Pool, idx *autoroute.Index) *AutoIndexRef
 func (r *AutoIndexRefresher) Start(ctx context.Context) {
 	cctx, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
-	go r.run(cctx)
+	Go("auto_index_refresher.run", func() { r.run(cctx) })
 	slog.Info("auto index refresher started",
 		"interval", r.RefreshInterval.String(),
 		"timeout", r.RefreshTimeout.String(),
