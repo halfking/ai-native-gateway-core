@@ -173,14 +173,30 @@ func (o *governorSnapshotObserver) tick() {
 		// the invariant is violated (State=Unknown ⇔ BackendErr!=nil).
 		// We recover here so a single bad snapshot doesn't kill the
 		// tick goroutine — the warn message carries enough context.
+		//
+		// 2026-10-01 R73: the recovered snapshot is DROPPED, not emitted.
+		// Previously recover only kept the tick alive and execution fell
+		// through to `collected = append(...)`, so a snapshot violating
+		// the invariant still published its State — e.g. State=Ready
+		// together with a non-nil BackendErr rendered `ready=1`, which
+		// is exactly the "backend faulted, look healthy" reading the
+		// invariant exists to prevent (governor_snapshot.go:73-76 claims
+		// Validate() "never masks a backend fault"; it did).
+		valid := true
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Warn("dispatch: observer recovered from snapshot.Validate panic", "panic", r)
+					valid = false
+					slog.Warn("dispatch: observer recovered from snapshot.Validate panic",
+						"panic", r, "state", string(snap.State), "backend_err", snap.BackendErr != nil)
+					metricGovernorUnknownLabelDrops.Inc()
 				}
 			}()
 			snap.Validate()
 		}()
+		if !valid {
+			return nil
+		}
 
 		// Drop snapshots with off-list labels — same allowlist as the
 		// metric registration guard. We trust the SnapshotProvider to
@@ -217,7 +233,8 @@ func (o *governorSnapshotObserver) tick() {
 		return nil
 	})
 
-	for _, snap := range collected {
-		RecordSnapshot(snap)
-	}
+	// 2026-10-01 R73: publish the whole tick at once. RecordSnapshotBatch
+	// aggregates per (backend, mode) so the gauge no longer depends on the
+	// order ForEachCredSnapshot happened to visit credentials in.
+	RecordSnapshotBatch(collected)
 }

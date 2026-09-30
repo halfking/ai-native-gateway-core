@@ -32,7 +32,7 @@ type GovernorSpec struct {
 	// ApplyPolicy can hot-reload a live forwarder's queue depth (Stage F
 	// residual: a forwarder otherwise reads depth once at construction and
 	// keeps the stale value after a max_queue_depth UPDATE).
-	MaxQueueDepth int
+	MaxQueueDepth  int
 	MaxQueueWaitMS int
 	// LeaseTTL is the Stage B Redis lease duration. Stage A: declared but
 	// ignored by all backends. Zero is treated as "backend default".
