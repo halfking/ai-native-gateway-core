@@ -181,6 +181,36 @@ func TestFileCacheTTLExpiry(t *testing.T) {
 	}
 }
 
+func TestFileCacheSetTTLHotReload(t *testing.T) {
+	fc := newTestFileCache(t, t.TempDir(), time.Hour, 1<<20)
+
+	if err := fc.Set(newTestFileState("tenant-ttlhot", "sess-ttlhot", 1)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// 热重载缩 TTL：读侧过期判定立即按新值（H4 retention 热重载接线，
+	// 2026-10-01 审计 F2——TTL 构造期钉死时扩 retention 读侧不生效）
+	fc.SetTTL(20 * time.Millisecond)
+	if got := fc.TTL(); got != 20*time.Millisecond {
+		t.Fatalf("TTL after SetTTL(20ms) = %v, want 20ms", got)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if _, err := fc.Get("tenant-ttlhot", "sess-ttlhot"); !errors.Is(err, errCacheMiss) {
+		t.Fatalf("Get after TTL shrink: want errCacheMiss (expired), got %v", err)
+	}
+
+	// 非正值拒绝：TTL 维持现值（与 ResizeMax 同款守卫）
+	fc.SetTTL(0)
+	fc.SetTTL(-time.Second)
+	if got := fc.TTL(); got != 20*time.Millisecond {
+		t.Fatalf("TTL after SetTTL(<=0) = %v, want unchanged 20ms", got)
+	}
+
+	// nil-safe
+	var nilFC *FileCache
+	nilFC.SetTTL(time.Hour)
+}
+
 func TestFileCacheEvictionLRU(t *testing.T) {
 	// 用探针条目测量单条 JSON 大小，maxSize 恰好容纳 2 条：
 	// 写第 3 条时必须淘汰最旧的 s1，最终 sizeUsed == 2*entrySize <= maxSize。

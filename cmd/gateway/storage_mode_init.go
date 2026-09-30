@@ -517,8 +517,8 @@ func initLiteStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, err
 // 不经 hotconfig——其只轮询 llmgw_% 前缀键，storage.hotzone_* 不在视野。
 //
 // resizeInHotzone 由调用方按「L1.5 cache 子树是否位于热区目录内」判定：
-// 是则 settings 预算热重载同步驱动 FileCache.ResizeMax（仅当 enabled）；
-// 缩容交由本轮 trimmer 执行（H4 §改动3）。
+// 是则 settings 预算/保留期热重载同步驱动 FileCache.ResizeMax + SetTTL（仅当
+// enabled）；缩容交由本轮 trimmer 执行（H4 §改动3）。
 func (r *storageRuntime) startHotZoneTrimmer(ctx context.Context, hzCfg *config.HotZoneConfig, resizeInHotzone bool) {
 	hotZoneTrimmer := bg.NewHotZoneTrimmer(
 		hzCfg.Dir,
@@ -530,6 +530,7 @@ func (r *storageRuntime) startHotZoneTrimmer(ctx context.Context, hzCfg *config.
 		enabled := settings.GetPlatformBool("storage.hotzone_enabled", true)
 		if enabled && resizeInHotzone {
 			r.fileCache.ResizeMax(maxBytes) // 内部持锁；扩容即生效，缩容由本轮 trimmer 执行
+			r.fileCache.SetTTL(retention)   // 内部持锁；读删同界（2026-10-01 审计 F2：TTL 构造期钉死时，retention 热重载扩容对 L1.5 读侧不生效）
 		}
 		return retention, maxBytes, enabled
 	})
