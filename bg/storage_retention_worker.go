@@ -42,6 +42,11 @@ type StorageRetentionWorker struct {
 	// 由调用方注入（从 settings_kv 读取）。返回 enabled=false 则 worker 空转。
 	ConfigProvider StorageRetentionConfigFunc
 
+	// RefChecker 附件删除前的引用反查（§三#2 悬挂删除守卫）。由 main 注入
+	// request_attachments 反查实现；为 nil 时附件清理整体跳过（fail-closed：
+	// 无引用核验能力就绝不 mtime 盲删）。反查报错时本轮同样跳过删除。
+	RefChecker AttachmentReferenceChecker
+
 	// lifecycle 由 BaseWorker 统一管理（审计报告 2026-08-31 模式 C）。
 	*BaseWorker
 }
@@ -223,7 +228,18 @@ func (w *StorageRetentionWorker) cleanupLogs(ctx context.Context) {
 	})
 }
 
-// cleanupAttachmentsLRU 按 LRU（最老优先）清理附件至降到 quotaPct 以下
+// cleanupAttachmentsLRU 按 LRU（最老优先）清理附件至降到 quotaPct 以下。
+//
+// §三#2（2026-09-30 三十七轮续）悬挂删除守卫：候选文件删除前先反查
+// request_attachments 存活引用（RefChecker），被引用文件一律跳过——内容
+// 寻址存储按 hash 去重共享，盲删会打断多轮回放旧媒体并断取证链。
+// fail-closed 语义：RefChecker 为 nil 或反查失败时本轮不删任何附件
+// （磁盘压力留给既有告警面，绝不用数据损坏换空间）。
+//
+// GC 闭环边界（诚实登记）：request_attachments 行本身无 TTL（N21-5 同族
+// owner 拍板项），行永生 ⇒ 被引用文件在本守卫下永不回收，本函数实际只
+// 收割无引用孤儿（插入失败/迁移残留）。引用行侧的保留策略属 owner 决策，
+// 不在本修复范围。
 func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, attachmentDir string, quotaPct float64) {
 	if attachmentDir == "" || !dirExistsBG(attachmentDir) {
 		return
@@ -251,18 +267,74 @@ func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, atta
 		}
 		return nil
 	})
+	if len(items) == 0 {
+		return
+	}
+
+	if w.RefChecker == nil {
+		slog.Warn("storage retention: skip attachment cleanup, no reference checker wired (fail-closed)",
+			"expired_candidates", len(items))
+		return
+	}
+	refs := make([]AttachmentRef, len(items))
+	for i, it := range items {
+		rel, err := filepath.Rel(attachmentDir, it.path)
+		if err != nil {
+			// 相对化失败的候选不进反查（零值 Ref），删除循环按存活跳过
+			slog.Warn("storage retention: skip attachment with unresolvable relative path",
+				"path", it.path, "error", err)
+			continue
+		}
+		refs[i] = AttachmentRef{RelPath: filepath.ToSlash(rel), Hash: attachmentContentHash(rel)}
+	}
+	referenced, err := w.RefChecker.ReferencedPaths(ctx, refs)
+	if err != nil {
+		slog.Warn("storage retention: skip attachment cleanup, reference lookup failed (fail-closed)",
+			"expired_candidates", len(items), "error", err)
+		return
+	}
 
 	// 按 mtime 升序（最老优先）
+	deleted, kept := 0, 0
 	for i := 0; i < len(items); i++ {
 		// 检查是否已降到告警水位以下
 		if w.diskUsagePercent(attachmentDir) < quotaPct {
 			break
 		}
+		rel, err := filepath.Rel(attachmentDir, items[i].path)
+		if err != nil {
+			kept++ // 相对化失败按存活处理（与收集侧对称）
+			continue
+		}
+		if referenced[filepath.ToSlash(rel)] {
+			kept++ // 仍有 request_attachments 引用，跳过（§三#2）
+			continue
+		}
 		if rmErr := os.Remove(items[i].path); rmErr == nil {
+			deleted++
 			slog.Info("storage retention: deleted expired attachment (LRU)",
 				"path", items[i].path, "mtime", items[i].mtime.Format(time.RFC3339))
 		}
 	}
+	slog.Info("storage retention: attachment LRU sweep done",
+		"expired_candidates", len(items), "deleted", deleted, "kept_referenced", kept)
+}
+
+// attachmentContentHash 从内容寻址文件名提取 sha256（<64hex><ext> 形态），
+// 非 hex64 文件名（legacy req_<requestID>/ 布局）返回空串——仅按路径臂反查。
+func attachmentContentHash(relPath string) string {
+	base := filepath.Base(relPath)
+	ext := filepath.Ext(base)
+	stem := base[:len(base)-len(ext)]
+	if len(stem) != 64 {
+		return ""
+	}
+	for _, c := range stem {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return ""
+		}
+	}
+	return stem
 }
 
 // diskUsagePercent 返回 path 所在磁盘的使用率（0-100）

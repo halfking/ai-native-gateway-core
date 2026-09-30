@@ -25,10 +25,15 @@ grep -Fx 'Applying ursm/080-ursm-key-migration-ledger.sql' "$TMP/runner.out" >/d
 grep -Fx 'Applying ursm/081-ursm-key-migration-ledger-add-rollback-deadline.sql' "$TMP/runner.out" >/dev/null
 grep -Fx 'Applying ursm/082-ursm-key-migration-state-machine.sql' "$TMP/runner.out" >/dev/null
 grep -Fx 'Applying ursm/083-ursm-key-migration-add-dual-checkpoint.sql' "$TMP/runner.out" >/dev/null
-grep -F -- '-v scope=ursm -v version=080 -v name=080-ursm-key-migration-ledger.sql' "$TMP/psql.log" >/dev/null
-grep -F -- '-v scope=ursm -v version=081 -v name=081-ursm-key-migration-ledger-add-rollback-deadline.sql' "$TMP/psql.log" >/dev/null
-grep -F -- '-v scope=ursm -v version=082 -v name=082-ursm-key-migration-state-machine.sql' "$TMP/psql.log" >/dev/null
-grep -F -- '-v scope=ursm -v version=083 -v name=083-ursm-key-migration-add-dual-checkpoint.sql' "$TMP/psql.log" >/dev/null
+# 2026-10-01（三十七轮续四）：账本写入自 cd56ac0be（09-03）起改为字面
+# VALUES + checksum 列（LEDGER_CHECKSUMS 预载），旧 `-v scope=...` 变量
+# 传递形态已死——本套件钉旧形态致 github 门全量跑时红约四周（此前推送
+# 均 SKIP_TESTS=1 未暴露）。现钉新形态：逐文件断言 scope/version/name
+# 三元组如实落账（checksum 随文件内容漂移，不钉值）。
+grep -F -- "VALUES ('ursm', '080', '080-ursm-key-migration-ledger.sql'" "$TMP/psql.log" >/dev/null
+grep -F -- "VALUES ('ursm', '081', '081-ursm-key-migration-ledger-add-rollback-deadline.sql'" "$TMP/psql.log" >/dev/null
+grep -F -- "VALUES ('ursm', '082', '082-ursm-key-migration-state-machine.sql'" "$TMP/psql.log" >/dev/null
+grep -F -- "VALUES ('ursm', '083', '083-ursm-key-migration-add-dual-checkpoint.sql'" "$TMP/psql.log" >/dev/null
 
 OUT="$TMP/bundle"
 DRY_RUN=1 "$ROOT/scripts/build-db-release-bundle.sh" runner-test --out "$OUT" >/dev/null
