@@ -572,3 +572,59 @@ statement_timeout 的窗口内执行，失败可安全重试。
 这次失败部署搞乱，与 `deploy-seamless` 的契约不符，下次部署会被同样的
 归属解析继续误导。**修复该拓扑需重启 245 上的 unit，属对外可见操作，
 本轮未擅自执行。**
+
+## 2026-10-01 154 生产侧取证：第三条独立故障
+
+在 154（`llm.kxpms.cn` 真实后端）上继续取证，发现**第三条、与前两条都不同的**故障。
+
+### 154 的功能与缺陷都在
+
+模型分组功能**存在于 154 现网版本** 2d750fb4：
+
+```
+b2e6e1dd2 (qp-layer--model-groups 引入)  in 2d750fb4?  YES
+e295bdeb3 (hasReportedRawModels 门引入)  in 2d750fb4?  YES
+```
+
+故上一节「验的环境里没有被验的东西」需**精确化**：不是"功能不存在"，
+而是"**功能在、缺陷也在**"——`9cb842d3e`（canonical 精确形优先 +
+不变式真门）不在 154 上，这正是本任务要修的那个 bug。
+
+### 154 的 node status 反复超时
+
+```
+09-30 21:47:20  postgres connected
+09-30 21:47:33  live stream hub: DB-backed replay and node status enabled
+10-01 04:50:51 / 05:02:53 / 05:05:57 / 05:08:15
+  WARN live stream: node status refresh failed  error="timeout: context deadline exceeded"
+10-01 05:14:03  ERROR router: URSM v2 FilterAndScore failed …
+  error="ursm.v2: redis unavailable: … redis HGETALL pipeline failed: context deadline exceeded"
+```
+
+`main_livestream.go:498` 给 provider 的预算是 **1.5 秒**。而
+`decorateFPNodeState` 里的 Redis 批量取节点态吃的就是这个预算。252 的
+Redis 明显在争用（URSM 的 HGETALL 管线同样超时），二者指向同一压力源。
+
+### 已排除的两个猜测（都不是原因）
+
+| 猜测 | 实测 | 判定 |
+| --- | --- | --- |
+| 绑定 JOIN 查询慢，吃掉 1.5s | `credential_model_bindings ⋈ provider_models` 实测 **5.476 ms** | 排除，SQL 不是瓶颈 |
+| `main_livestream.go:591` 的 `len(keys)==0` 早退 | 73 凭据中 **65 个有绑定、1889 行**，`keys` 必非空 | 排除，该早退不是本次原因 |
+
+（该早退本身仍是独立的健壮性缺口，见上文登记，此处仅澄清它**不是**本次成因。）
+
+### 仍未闭合的一环（如实标注，不硬下结论）
+
+告警按 30s 限频，25 分钟内只出现 4 次，说明**多数刷新其实是成功的** ——
+按 `liveNodeStatusCache.refreshWith`（`main_livestream.go:727-745`）的语义，
+成功即写入快照、失败仅保留上次快照，那么 154 的 `nodes` 快照**本应非空**，
+前端 `hasReportedRawModels` 也**本应为真**。
+
+但前端节点矩阵实际报「暂无节点数据」。**这一矛盾本轮未闭合**：
+可能是 SSE 推送路径未把节点快照送到前端，也可能是 1.5s 预算下的
+间歇失败叠加首次快照为空造成长时间空窗。
+
+**因此第 2 项维持未通过，且本轮不把「Redis 争用」写成已证实的根因** ——
+它是一个有证据支撑的**嫌疑方向**，不是已闭环的结论。下一步需要在 154 上
+直接取一次 SSE 首帧的 `nodes` 载荷来判定，这需要登录态 API 取证。
