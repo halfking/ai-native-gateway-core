@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -146,12 +147,24 @@ func applyInstallerSQL(t *testing.T, dsn, path string) {
 	}
 }
 
+// psqlScalar returns the single value produced by `query`.
+//
+// stdout only: citus emits background-worker warnings on stderr
+// ("could not start maintenance background worker") whenever a connection
+// touches a database that has the citus extension, and CombinedOutput would fold
+// those into the scalar. The caller's equality checks then fail on a database
+// that is in fact in the expected state -- the empty-database precondition check
+// reported "found WARNING: ... 0 non-extension public relations" for a genuinely
+// empty database. A query failure is still fatal, but it is reported with the
+// stderr text so the reason is not lost.
 func psqlScalar(t *testing.T, dsn, query string) string {
 	t.Helper()
 	cmd := exec.Command("psql", "-At", "-v", "ON_ERROR_STOP=1", "--dbname", dsn, "-c", query)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("query installer integration database: %v\n%s", err, out)
+		t.Fatalf("query installer integration database: %v\n%s", err, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
 }
