@@ -39,7 +39,7 @@ const cards = computed(() => {
       tone: 'warning' as const,
       label: t('reports.kpiLatency'),
       value: fmtDuration(row.latency_p50_ms),
-      sub: `P50 ${fmtDuration(row.latency_p50_ms)} · P95 ${fmtDuration(row.latency_p95_ms)}`,
+      sub: `P95 ${fmtDuration(row.latency_p95_ms)}`,
     },
     {
       icon: '📈',

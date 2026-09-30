@@ -1,10 +1,28 @@
 // ReconciliationCharts.seriesdata.test.ts — trend series must carry real numbers.
 // Uncovered zero-fill days stay off the axis; success+fail equals the day's requests.
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
 import { reconTrendSeries, type TrendDay } from './chartSeries'
+import ReconciliationCharts from './ReconciliationCharts.vue'
 import realSummary from '../../views/admin/__fixtures__/real_internal_summary.json'
+
+const drawn: { labels?: string[]; datasets?: { data?: number[] }[] }[] = []
+
+vi.mock('chart.js', () => ({
+  Chart: class {
+    static register() {}
+    static getChart() { return undefined }
+    static defaults: { color?: string; borderColor?: string } = {}
+    constructor(_canvas: unknown, config: { data?: { labels?: string[]; datasets?: { data?: number[] }[] } }) {
+      drawn.push(config.data ?? {})
+    }
+    destroy() {}
+    stop() {}
+    update() {}
+  },
+  registerables: [],
+}))
 
 const fixture = (realSummary as unknown as { report: { days: TrendDay[]; snapshot_dates: string[] } }).report
 
@@ -35,9 +53,23 @@ describe('reconTrendSeries', () => {
     expect(series.money[0]).toBeCloseTo(totals.estimated_cost_cents / 100)
   })
 
-  it('is what the chart component feeds to chart.js', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/components/reconciliation/ReconciliationCharts.vue'), 'utf8')
-    expect(source).toContain('reconTrendSeries')
-    expect(source).not.toContain('echarts')
+  it('drops every day when coverage is an empty list', () => {
+    expect(reconTrendSeries(fixture.days, [], 'credits').labels).toEqual([])
+  })
+
+  it('passes those series into chart.js instead of only mentioning them in source', async () => {
+    drawn.length = 0
+    const series = reconTrendSeries(fixture.days, fixture.snapshot_dates, 'credits')
+    const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: { 'zh-CN': {} } })
+    const wrapper = mount(ReconciliationCharts, {
+      props: { days: fixture.days, coveredDates: fixture.snapshot_dates, money: 'credits' },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    const firstSeries = drawn.map((chart) => chart.datasets?.[0]?.data)
+    expect(firstSeries).toContainEqual(series.success)
+    expect(firstSeries).toContainEqual(series.input)
+    wrapper.unmount()
   })
 })

@@ -51,7 +51,7 @@ export default {
   allModels: 'Todos los modelos',
   clearFilter: 'Borrar filtros',
   kpiTenants: 'Inquilinos liquidados',
-  kpiLatency: 'Latencia media',
+  kpiLatency: 'Latencia P50',
   kpiDaily: 'Solicitudes/día',
   kpiPersons: 'Personas activas',
   kpiPerPersonReq: 'Solicitudes por persona',

@@ -51,7 +51,7 @@ export default {
   allModels: '全部模型',
   clearFilter: '清除篩選',
   kpiTenants: '結算租戶',
-  kpiLatency: '平均耗時',
+  kpiLatency: 'P50 耗時',
   kpiDaily: '日均請求',
   kpiPersons: '活躍人員',
   kpiPerPersonReq: '人均請求',

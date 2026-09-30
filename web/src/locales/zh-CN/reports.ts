@@ -89,7 +89,7 @@ export default {
   allModels: '全部模型',
   clearFilter: '清除筛选',
   kpiTenants: '结算租户',
-  kpiLatency: '平均耗时',
+  kpiLatency: 'P50 耗时',
   kpiDaily: '日均请求',
   kpiPersons: '活跃人员',
   kpiPerPersonReq: '人均请求',
