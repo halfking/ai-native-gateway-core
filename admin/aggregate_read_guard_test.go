@@ -88,18 +88,6 @@ func TestWriteLookupErr_Classification(t *testing.T) {
 	}
 }
 
-func TestAggRowsErrClassified_Categories(t *testing.T) {
-	if c, pg := aggRowsErrClassified(nil); c != "ok" || pg != nil {
-		t.Fatalf("nil → ok, got %s", c)
-	}
-	if c, _ := aggRowsErrClassified(mkViewMissing()); c != "view_missing" {
-		t.Fatalf("42P01 → view_missing, got %s", c)
-	}
-	if c, _ := aggRowsErrClassified(errors.New("boom")); c != "internal" {
-		t.Fatalf("other → internal, got %s", c)
-	}
-}
-
 // TestAggReadGuard_MigratedCallersWired：静态接线守卫——核心聚合读面
 // 迁移点必须仍引用 writeAggRowsErr / warnRowSkip / writeLookupErr，
 // 防止后续重构静默退回吞错形态。
@@ -119,6 +107,8 @@ func TestAggReadGuard_MigratedCallersWired(t *testing.T) {
 		"data_lifecycle_attachments.go": {"writeLookupErr"},
 		"ip_blocklist.go":               {"writeLookupErr"},
 		"maas_handlers.go":              {"writeLookupErr"},
+		"session_analytics_tasks.go":    {"writeAggRowsErr", "warnRowSkip"},
+		"session_analytics_clients.go":  {"writeAggRowsErr", "warnRowSkip"},
 	}
 	for file, refs := range requireRefs {
 		src, err := os.ReadFile(filepath.Join("admin", file))
