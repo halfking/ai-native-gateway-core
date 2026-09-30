@@ -31,6 +31,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
+	outputcompliancehook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
@@ -560,8 +561,8 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 		slog.Info("smart_sani_guard: input middleware wired")
 	}
 
-	// 2. 响应侧还原拦截器：把链挂到 chatHandler 已有的 response chain
-	//    之后（保证 output_compliance 先于 sanitize_restore 执行）。
+	// 2. 响应侧还原拦截器：先恢复输出中的原文，再让 output_compliance
+	//    检查真实客户端可见内容。此前反向排序会让合规检查只看到占位符。
 	restoreHook, restoreErr := buildSanitizeRestoreInterceptor(redisClient, detector)
 	if restoreErr != nil || restoreHook == nil {
 		slog.Warn("smart_sani_guard: restore interceptor init failed, skip response-side",
@@ -578,12 +579,33 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 		// 单独创建一个只含 sanitize_restore 的 chain。
 		chatHandler.SetResponseInterceptor(response.NewInterceptorChain(restoreHook))
 	} else {
-		// 追加到现有 chain 末尾（在 output_compliance 之后）。
-		chatHandler.SetResponseInterceptor(response.NewInterceptorChain(append(existing.ListInterceptors(), restoreHook)...))
+		ordered := insertSanitizeRestoreBeforeOutputCompliance(existing.ListInterceptors(), restoreHook)
+		chatHandler.SetResponseInterceptor(response.NewInterceptorChain(ordered...))
 	}
 	slog.Info("smart_sani_guard: restore interceptor wired",
 		"chain_length", len(existing.ListInterceptors())+1)
 	return detector
+}
+
+// insertSanitizeRestoreBeforeOutputCompliance preserves the existing response
+// chain order while placing restoration before the checker that evaluates
+// client-visible output. If output compliance is absent, restoration remains
+// the final interceptor.
+func insertSanitizeRestoreBeforeOutputCompliance(
+	existing []response.ResponseInterceptor,
+	restore response.ResponseInterceptor,
+) []response.ResponseInterceptor {
+	ordered := append([]response.ResponseInterceptor(nil), existing...)
+	for index, interceptor := range ordered {
+		if _, ok := interceptor.(*outputcompliancehook.OutputComplianceInterceptor); !ok {
+			continue
+		}
+		ordered = append(ordered, nil)
+		copy(ordered[index+1:], ordered[index:])
+		ordered[index] = restore
+		return ordered
+	}
+	return append(ordered, restore)
 }
 
 // buildGoalLLMCaller builds the LLMCaller used by completion detection + audit.

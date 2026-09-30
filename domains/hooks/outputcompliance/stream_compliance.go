@@ -12,6 +12,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 )
 
 // The checker can load arbitrary tenant regexes. Even its built-in password
@@ -434,49 +435,11 @@ func isIncrementalStreamText(root map[string]any) bool {
 }
 
 // sseFrameData follows SSE's data-line joining rule and keeps non-data lines
-// and the original LF/CRLF style when a redaction changes the JSON value.
+// and original line endings when a redaction changes the JSON value.
 func sseFrameData(frame []byte) ([]byte, func([]byte) []byte, error) {
-	lines := bytes.Split(frame, []byte{'\n'})
-	parts := make([][]byte, 0, 1)
-	first := -1
-	for i, line := range lines {
-		trimmed := bytes.TrimSuffix(line, []byte{'\r'})
-		if !bytes.HasPrefix(trimmed, []byte("data:")) {
-			continue
-		}
-		if first < 0 {
-			first = i
-		}
-		value := trimmed[len("data:"):]
-		value = bytes.TrimPrefix(value, []byte{' '})
-		parts = append(parts, value)
-	}
-	if first < 0 {
+	data, hasData, rebuild := sseparser.ParseDataFrame(frame)
+	if !hasData {
 		return nil, nil, nil
-	}
-	data := bytes.Join(parts, []byte{'\n'})
-	rebuild := func(rewritten []byte) []byte {
-		out := make([][]byte, 0, len(lines))
-		for i, line := range lines {
-			trimmed := bytes.TrimSuffix(line, []byte{'\r'})
-			if !bytes.HasPrefix(trimmed, []byte("data:")) {
-				out = append(out, line)
-				continue
-			}
-			if i != first {
-				continue
-			}
-			prefix := []byte("data:")
-			if bytes.HasPrefix(trimmed[len("data:"):], []byte{' '}) {
-				prefix = []byte("data: ")
-			}
-			next := append(append([]byte(nil), prefix...), rewritten...)
-			if bytes.HasSuffix(line, []byte{'\r'}) {
-				next = append(next, '\r')
-			}
-			out = append(out, next)
-		}
-		return bytes.Join(out, []byte{'\n'})
 	}
 	return data, rebuild, nil
 }

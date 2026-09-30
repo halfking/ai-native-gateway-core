@@ -811,10 +811,11 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	usedSurvival := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
 	var result *executors.ExecuteResult
 	var execErr error
+	var nativeStreamWriter *interceptingStreamWriter
 	if usedSurvival {
 		base := w
 		if h.chatHandler.responseInterceptor != nil {
-			base = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+			nativeStreamWriter = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -822,7 +823,8 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				ClientProtocol: "anthropic-messages",
 				ClientModel:    clientModel,
 			})
-			defer base.(*interceptingStreamWriter).finish()
+			base = nativeStreamWriter
+			defer nativeStreamWriter.finish()
 		}
 		// SP-02: state machine — survival branch dispatches upstream.
 		rt.Emit(state.EventDispatching)
@@ -842,7 +844,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		// whole compliance chain bypassed for ordinary streams.
 		execWriter := http.ResponseWriter(w)
 		if isStream && h.chatHandler.responseInterceptor != nil {
-			iw := newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+			nativeStreamWriter = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -850,10 +852,46 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				ClientProtocol: "anthropic-messages",
 				ClientModel:    clientModel,
 			})
-			defer iw.finish()
-			execWriter = iw
+			defer nativeStreamWriter.finish()
+			execWriter = nativeStreamWriter
 		}
 		result, execErr = h.chatHandler.executor.Execute(buildExecParams(execWriter))
+	}
+	if nativeStreamWriter != nil {
+		// Finalize buffered output before the generic execErr branch. A policy
+		// rejection already writes its one protocol terminal from finish(); the
+		// request must be logged as a policy failure without adding an upstream
+		// error terminal or success audit.
+		nativeStreamWriter.finish()
+		if nativeStreamWriter.OutputPolicyBlocked() {
+			const blockCode = "output_policy_blocked"
+			const blockMessage = "Response blocked by output policy"
+			attemptErrCode, attemptErrMsg = blockCode, blockMessage
+			auditBuilder.Success(false)
+			rt.Emit(state.EventFailed)
+			providerID, credentialID := attemptProviderID, attemptCredentialID
+			if result != nil {
+				if result.Candidate.ProviderID != 0 {
+					id := result.Candidate.ProviderID
+					providerID = &id
+				}
+				if result.Candidate.CredentialID != 0 {
+					id := result.Candidate.CredentialID
+					credentialID = &id
+				}
+			}
+			if logCtx != nil {
+				logCtx.SetRoute(providerID, credentialID)
+				logCtx.SetError(blockCode, blockMessage)
+				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID)
+			} else {
+				latency := int(time.Since(startTime).Milliseconds())
+				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+					providerID, credentialID, blockCode, blockMessage, latency, upstreamBody, keyInfo, r)
+			}
+			*attemptLogged = true
+			return
+		}
 	}
 
 	if execErr != nil {

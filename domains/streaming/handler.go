@@ -50,6 +50,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -110,6 +111,7 @@ type interceptingStreamWriter struct {
 	writeErr         error
 	blocked          bool
 	terminalRendered bool
+	finished         bool
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
@@ -151,6 +153,11 @@ func (w *interceptingStreamWriter) WriteHeader(statusCode int) { w.w.WriteHeader
 // Mirrors monitoredResponseWriter.Unwrap (connection_monitor.go:165).
 func (w *interceptingStreamWriter) Unwrap() http.ResponseWriter { return w.w }
 
+// OutputPolicyBlocked reports whether a response interceptor rejected any
+// part of this stream. Native handlers inspect it after finish() so they can
+// record a policy failure before handling a wrapped executor write error.
+func (w *interceptingStreamWriter) OutputPolicyBlocked() bool { return w != nil && w.blocked }
+
 func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
 	if w.writeErr != nil {
 		return 0, w.writeErr
@@ -158,9 +165,9 @@ func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
 	consumed := 0
 	for len(p) > 0 {
 		// Check delimiters crossing the Write boundary before searching p by
-		// itself. The pending suffix may already contain the first part of LF
-		// or CRLF framing.
-		if delimiterBytes, ok := sseDelimiterPrefixAtBoundary(w.pending, p); ok {
+		// itself. The pending suffix may already contain a prefix of the blank
+		// line separator, including a CRLF that spans writes.
+		if delimiterBytes, ok := sseparser.DelimiterPrefixAtBoundary(w.pending, p); ok {
 			if len(w.pending)+len(delimiterBytes) > maxInterceptingSSEFrameBytes {
 				return consumed, w.rejectOversizedFrame(len(w.pending) + len(delimiterBytes))
 			}
@@ -176,7 +183,7 @@ func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
 			continue
 		}
 
-		if end, ok := findSSEFrameEnd(p); ok {
+		if end, ok := sseparser.FrameEnd(p); ok {
 			framePart := p[:end]
 			if len(w.pending)+len(framePart) > maxInterceptingSSEFrameBytes {
 				return consumed, w.rejectOversizedFrame(len(w.pending) + len(framePart))
@@ -222,6 +229,24 @@ func (w *interceptingStreamWriter) FlushError() error {
 }
 
 func (w *interceptingStreamWriter) finish() {
+	if w.finished {
+		return
+	}
+	w.finished = true
+	// A trailing CR is ambiguous until EOF or the next write. At EOF it is a
+	// valid lone-CR line ending, so inspect any complete frame it closes.
+	for len(w.pending) > 0 {
+		end, ok := sseparser.FrameEndAtEOF(w.pending)
+		if !ok {
+			break
+		}
+		frame := append([]byte(nil), w.pending[:end]...)
+		w.pending = append([]byte(nil), w.pending[end:]...)
+		w.writeFrame(frame)
+		if w.writeErr != nil {
+			break
+		}
+	}
 	// Flush any held compliance state through the chain's StreamPending
 	// hook. If the joined-lane check fails, the interceptor returns
 	// ShouldBlock=true and we emit a single protocol-shaped failure
@@ -308,53 +333,6 @@ func (w *interceptingStreamWriter) rejectOversizedFrame(size int) error {
 		"observed_bytes", size,
 		"limit_bytes", maxInterceptingSSEFrameBytes)
 	return w.writeErr
-}
-
-// findSSEFrameEnd returns the byte count through the first SSE event
-// delimiter. Both LF and CRLF line endings are valid SSE framing.
-func findSSEFrameEnd(p []byte) (int, bool) {
-	lf := bytes.Index(p, []byte("\n\n"))
-	crlf := bytes.Index(p, []byte("\r\n\r\n"))
-	if lf < 0 && crlf < 0 {
-		return 0, false
-	}
-	if crlf >= 0 && (lf < 0 || crlf+4 < lf+2) {
-		return crlf + 4, true
-	}
-	return lf + 2, true
-}
-
-// sseDelimiterPrefixAtBoundary reports the shortest bytes from p that finish
-// an LF or CRLF delimiter whose prefix is already at the end of pending.
-func sseDelimiterPrefixAtBoundary(pending, p []byte) ([]byte, bool) {
-	if len(pending) == 0 || len(p) == 0 {
-		return nil, false
-	}
-	separators := [][]byte{[]byte("\n\n"), []byte("\r\n\r\n")}
-	best := 0
-	for _, separator := range separators {
-		maxPrefix := len(separator) - 1
-		if maxPrefix > len(pending) {
-			maxPrefix = len(pending)
-		}
-		for prefixLen := maxPrefix; prefixLen > 0; prefixLen-- {
-			if !bytes.Equal(pending[len(pending)-prefixLen:], separator[:prefixLen]) {
-				continue
-			}
-			needed := len(separator) - prefixLen
-			if needed > len(p) || !bytes.Equal(p[:needed], separator[prefixLen:]) {
-				continue
-			}
-			if best == 0 || needed < best {
-				best = needed
-			}
-			break
-		}
-	}
-	if best == 0 {
-		return nil, false
-	}
-	return p[:best], true
 }
 
 func (w *interceptingStreamWriter) writeFrame(frame []byte) {
@@ -4388,10 +4366,10 @@ func (h *ChatHandler) serveWithExecutor(
 	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
-			W:                          streamWriter,
-			UpstreamAttempts:           upstreamAttempts,
-			AttachmentMetadata:         attachmentsForOutbound(logCtx),
-			FailoverNotices:            executors.NewFailoverNoticeCollector(),
+			W:                  streamWriter,
+			UpstreamAttempts:   upstreamAttempts,
+			AttachmentMetadata: attachmentsForOutbound(logCtx),
+			FailoverNotices:    executors.NewFailoverNoticeCollector(),
 			// R25-V: non-stream + interceptor → the executor writes into the
 			// deferred capture buffer; cached-replay consumption and
 			// LogClientResponse stay on the handler lane (governed commit).
