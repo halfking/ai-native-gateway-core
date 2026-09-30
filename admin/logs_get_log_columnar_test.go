@@ -55,7 +55,9 @@ func TestFetchRequestBodies_HotOnly_PassesInUnderOneSecond(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-fetch-bodies-hot-" + time.Now().Format("20060102-150405.000000")
 	insertTestRequestLogWithBodies(t, pool, requestID)
-	t.Cleanup(func() { cleanupTestRequestLog(t, pool, requestID) })
+	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
+	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
+	defer cleanupTestRequestLog(t, pool, requestID)
 
 	h := &Handler{db: pool}
 	start := time.Now()
@@ -204,7 +206,9 @@ func TestBodyFetchCache_HitUnderOneMillisecond(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-cache-hit-" + time.Now().Format("20060102-150405.000000")
 	insertTestRequestLogWithBodies(t, pool, requestID)
-	t.Cleanup(func() { cleanupTestRequestLog(t, pool, requestID) })
+	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
+	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
+	defer cleanupTestRequestLog(t, pool, requestID)
 
 	// Per-test cache (avoid cross-test pollution). 100 entries, 1min TTL is
 	// sufficient for this single-key test.
@@ -241,7 +245,9 @@ func TestBodyFetchCache_TTLExpires(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-cache-ttl-" + time.Now().Format("20060102-150405.000000")
 	insertTestRequestLogWithBodies(t, pool, requestID)
-	t.Cleanup(func() { cleanupTestRequestLog(t, pool, requestID) })
+	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
+	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
+	defer cleanupTestRequestLog(t, pool, requestID)
 
 	// 1ms TTL — guaranteed expiry on the second call.
 	h := &Handler{db: pool, bodyFetchCache: newBodyFetchCache(100, time.Millisecond)}
