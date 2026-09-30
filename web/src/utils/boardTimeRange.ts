@@ -70,6 +70,20 @@ export function toBoardTimeQuery(range: BoardTimeRange): BoardTimeQuery {
   return { days: range.days }
 }
 
+/** 用量接口在只有 days 时，起点是 now-N 天再截到 UTC 零点。
+ * days=1 因此从昨天 00:00 起，比看板预设「今天」（当天 00:00 到现在）多一整天。
+ * 成本卡要传看板同一对日历日。days 字段留下供展示，usageTimeQs 在有 start/end 时不会把它发给接口。
+ * 不改 usage API 的 days 语义，看板汇总接口仍走 toBoardTimeQuery。 */
+export function usageQueryForBoardRange(range: BoardTimeRange, now = Date.now()): BoardTimeQuery {
+  if (range.preset === 'custom' && range.start && range.end) {
+    return { start: range.start, end: range.end, days: range.days }
+  }
+  const { startMs, endMs } = resolveBoardRangeMs(range, now)
+  const start = new Date(startMs).toISOString().slice(0, 10)
+  const end = new Date(Math.max(startMs, endMs - 1)).toISOString().slice(0, 10)
+  return { start, end, days: range.days }
+}
+
 export function utcRollingStartMs(days: number, endMs = Date.now()): number {
   const end = new Date(endMs)
   end.setUTCHours(0, 0, 0, 0)

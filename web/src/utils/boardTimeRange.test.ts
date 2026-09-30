@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boardRangeElapsedMinutes } from './boardTimeRange'
+import { boardRangeElapsedMinutes, usageQueryForBoardRange } from './boardTimeRange'
 
 const now = Date.parse('2026-09-30T03:00:00Z')
 
@@ -24,5 +24,50 @@ describe('boardRangeElapsedMinutes', () => {
       start: '2026-09-28',
       end: '2026-09-28',
     }, now)).toBe(24 * 60)
+  })
+})
+
+describe('usageQueryForBoardRange', () => {
+  it('预设今天传 UTC 日历日，避免 usage days=1 从昨天零点起算', () => {
+    expect(usageQueryForBoardRange({ preset: 'today', days: 1 }, now)).toEqual({
+      start: '2026-09-30',
+      end: '2026-09-30',
+      days: 1,
+    })
+  })
+
+  it('UTC 零点整不把结束日滑到前一天', () => {
+    const midnight = Date.parse('2026-09-30T00:00:00.000Z')
+    expect(usageQueryForBoardRange({ preset: 'today', days: 1 }, midnight)).toEqual({
+      start: '2026-09-30',
+      end: '2026-09-30',
+      days: 1,
+    })
+  })
+
+  it('预设 7 天和 30 天与看板同一起点', () => {
+    expect(usageQueryForBoardRange({ preset: '7d', days: 7 }, now)).toEqual({
+      start: '2026-09-24',
+      end: '2026-09-30',
+      days: 7,
+    })
+    expect(usageQueryForBoardRange({ preset: '30d', days: 30 }, now)).toEqual({
+      start: '2026-09-01',
+      end: '2026-09-30',
+      days: 30,
+    })
+  })
+
+  it('自定义范围原样传 start/end', () => {
+    expect(usageQueryForBoardRange({
+      preset: 'custom',
+      days: 1,
+      start: '2026-09-28',
+      end: '2026-09-28',
+    }, now)).toEqual({
+      start: '2026-09-28',
+      end: '2026-09-28',
+      days: 1,
+    })
   })
 })
