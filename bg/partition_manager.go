@@ -35,13 +35,19 @@ var partitionTZ = time.FixedZone("Asia/Shanghai", 8*60*60)
 // DefaultRetentionWindow is the *_default "hot data" keep-window. Rows
 // in *_default whose ts_col is older than (now - DefaultRetentionWindow)
 // are eligible to be migrated to the matching monthly partition by the
-// promote_*_default_batch functions installed in migration 336.
+// promote_*_default_batch functions. R78 订正：原文写「installed in
+// migration 336」，但 336 的三个文件在本机均为 .skip（.sql.skip / .bak.skip /
+// .down.sql.skip），该迁移从未在本环境执行；实际安装的是
+// promote_*_hot_to_partition 模式（见本文件 promoteSpecs 注释）。
 //
 // 2026-07 hot-table architecture:
 //   - most *_hot tables keep an 8-hour hot window by default, then promote
 //     into monthly partitions on the promote scheduler;
 //   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
-//     promotes and is cleaned by direct TTL DELETE.
+//     promotes and is cleaned by direct TTL DELETE (14 天, 非 8h)。
+//     R78 订正：原文让人以为分区结构已废弃，实际父表 model_probe_runs 仍
+//     保留 4 个月度分区（3 个 columnar），只是无任何写入方、count(*)=0——
+//     空壳结构，占 152 kB。全仓无 model_probe_runs 的非 hot 写入。
 const DefaultRetentionWindow = 8 * time.Hour
 
 // promoteCycleTimeout bounds one promote scheduler cycle so a large backlog

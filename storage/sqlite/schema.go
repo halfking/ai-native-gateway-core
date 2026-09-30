@@ -79,8 +79,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_details_request ON session_turn_detai
 CREATE INDEX IF NOT EXISTS idx_turn_details_ts ON session_turn_details (ts);
 
 -- 拼装视图：turns 元数据 × details 特征（LEFT：无特征行的轮次仍输出，
--- 与 PG17 canonical 视图 734 的 LEFT 语义对齐）。Lite 管理端读端由此
--- 逐步替代 request_logs 直读（S4 停写后唯一读路径）。
+-- 与 PG17 canonical 视图 734 的 LEFT 语义对齐）。
+--
+-- R78 订正：本视图当前**零生产消费者**——全仓 Go 代码里除本条 CREATE VIEW
+-- 外没有任何 SELECT（已全文件类型扫描确认）。原文写「S4 停写后唯一读路径」
+-- 不成立：lite 管理端目前只有 /api/lite/sessions（仅返回会话列表），没有任何
+-- request-log 查询端点。若运维按 storage.request_logs_write_enabled=false
+-- 停写，lite 将既不写也不读该数据。视图保留为迁移目标，读端待接线。
 CREATE VIEW IF NOT EXISTS session_logs_view AS
 SELECT
 	t.tenant_id, t.session_id, t.turn_no, t.ts,
