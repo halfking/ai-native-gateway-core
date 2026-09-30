@@ -100,6 +100,16 @@ if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
 else
   echo "🧪 Running 11-suite shell test gate (v2 Phase 3B-3)..."
 
+  # ── Git env 消毒（三十七轮续五根修，2026-10-01）────────────────────
+  # 真实 push 时 git 向本钩子导出 GIT_DIR（指向 module gitdir）。套件若为
+  # 自建 fixture 跑 `git init`（bump_version_collision_test.sh:34，三秒
+  # 复现），会在毒化态下 reinit 本仓 gitdir 并写入 core.bare=true——
+  # 数周"未知工具毒化"与多轮 github 门集体假红的同一根源。套件必须
+  # 在中性 git 环境里执行；钩子自身的 git 调用都在此之前已用绝对路径
+  # 完成，不受影响。
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_QUARANTINE_PATH
+
   test_failures=0
   while IFS= read -r t; do
     # Ensure executable — some tests are tracked without +x bit.
