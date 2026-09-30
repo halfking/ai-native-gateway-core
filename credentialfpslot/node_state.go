@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	nodeStateTTLSec = 3600
+	nodeStateTTLSec      = 3600
+	nodeCapabilityTTLSec = 3600
 )
 
 // NodeState tracks health state for (credentialID, model) dimension.
@@ -55,9 +56,8 @@ type NodeState struct {
 	// 是「这个 credential 上的这个模型，永远不支持这个协议」的持久结论。
 	// 没有它，每次新请求都会先打一发注定失败的 Responses 再回退。
 	//
-	// 生命周期与 NodeState 整体绑定（nodeStateTTLSec，3600s）。TTL 过期后
-	// capabilities 随整个 key 消失 → 读端视为「未知」，回到实时检测路径，
-	// 不会因为一次误标而永久阻塞。
+	// capability verdict 有独立的 3600s 过期时间。NodeState key 可能因健康
+	// 请求续期；续期不能延长旧协议能力结论的寿命。
 	//
 	// POINTER, not a value: a value struct is never omitted by
 	// `json:",omitempty"`, so every node would always carry `"capabilities":{}`.
@@ -67,6 +67,7 @@ type NodeState struct {
 	// from the payload entirely, so cjson never sees an empty object here.
 	Capabilities        *NodeCapabilities `json:"capabilities,omitempty"`
 	CapabilityUpdatedAt int64             `json:"capability_updated_at,omitempty"` // unix seconds
+	CapabilityExpiresAt int64             `json:"capability_expires_at,omitempty"` // unix seconds
 }
 
 // NodeCapabilities holds durable protocol-capability verdicts for one
@@ -260,21 +261,19 @@ func (m *Manager) RecordNodeSuccess(ctx context.Context, credentialID int, model
 	return m.recordNodeOutcome(ctx, credentialID, model, "success", requestID, "")
 }
 
-// SetSupportsResponses records a durable protocol-capability verdict for one
-// (credential, model) node. F04: the probe is the authority, so its verdict
-// must survive past the 1h cooldown that only suppresses routing.
+// SetSupportsResponses records a protocol-capability verdict for one
+// (credential, model) node. Its independent expiry must not be extended by
+// the NodeState health-key TTL.
 //
 // It runs its own Lua script rather than read-modify-write in Go, because
 // SetNodeState would overwrite the concurrent health fields written by
 // recordNodeOutcomeScript (sliding window / cooldown / counters). The two
 // writers touch disjoint sub-trees of the same JSON key, so each script only
-// rewrites its own fields and leaves the rest byte-identical.
+// changes its own fields and preserves the other subtrees semantically.
 //
-// supported=false  → durable "do not attempt Responses" verdict.
-// supported=true   → durable "Responses works" verdict; also the reverse
-//
-// recovery path required by F04 §3.4, so a mislabel self-heals on the first
-// successful native attempt instead of blocking Responses for a full TTL.
+// supported=false  → "do not attempt Responses" until CapabilityExpiresAt.
+// supported=true   → "Responses works" until CapabilityExpiresAt; an actual
+// native success or probe can also replace a still-live negative verdict.
 //
 // A nil/disabled Redis (lite mode) is a no-op by contract: capabilities stay
 // absent and the read path keeps using live detection.
@@ -282,15 +281,11 @@ func (m *Manager) SetSupportsResponses(ctx context.Context, credentialID int, mo
 	if !m.Enabled() || m.client == nil {
 		return nil
 	}
-	now, err := m.redisNow(ctx)
-	if err != nil {
-		return fmt.Errorf("get redis time for capability write failed (credential_id=%d, model=%s): %w", credentialID, model, err)
-	}
 	if _, err := setNodeCapabilityScript.Run(ctx, m.client,
 		[]string{nodeKey(credentialID, model)},
 		supported,
-		now,
 		nodeStateTTLSec,
+		nodeCapabilityTTLSec,
 	).Result(); err != nil {
 		return fmt.Errorf("set node capability: %w", err)
 	}
@@ -298,14 +293,27 @@ func (m *Manager) SetSupportsResponses(ctx context.Context, credentialID int, mo
 }
 
 // GetSupportsResponses returns the durable verdict. ok=false means "no
-// verdict on record" (never probed, or the node key expired), which callers
-// must treat as "keep using live detection", not as "unsupported".
+// current verdict" (never probed, capability expiry elapsed, or the node key
+// expired), which callers must treat as "keep using live detection", not as
+// "unsupported".
 func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, model string) (supported bool, ok bool, err error) {
 	state, err := m.GetNodeState(ctx, credentialID, model)
 	if err != nil {
 		return false, false, err
 	}
 	if state == nil || !state.Capabilities.SupportsResponsesKnown() {
+		return false, false, nil
+	}
+	if state.CapabilityExpiresAt <= 0 {
+		// Older payloads have no independent expiry. Treat them as unknown so
+		// traffic-driven NodeState TTL refreshes cannot keep legacy verdicts alive.
+		return false, false, nil
+	}
+	now, err := m.redisNow(ctx)
+	if err != nil {
+		return false, false, fmt.Errorf("get redis time for capability read failed (credential_id=%d, model=%s): %w", credentialID, model, err)
+	}
+	if state.CapabilityExpiresAt <= now {
 		return false, false, nil
 	}
 	return *state.Capabilities.SupportsResponses, true, nil
@@ -412,12 +420,10 @@ const (
 // sub-tree, and re-encode. Doing this in Go would be a read-modify-write race
 // against the per-request outcome path.
 //
-// KEYS[1] = node state key
-// ARGV[1] = supported (bool; go-redis sends "1"/"0", the script also accepts
-//           the "true"/"false" spelling)
-// ARGV[2] = now (unix seconds, as string)
-// ARGV[3] = ttl seconds (refreshes the whole node state key, matching the
-//           outcome path so a capability write never shortens a live cooldown)
+// KEYS[1] = node state key.
+// ARGV[1] = supported bool (go-redis uses "1"/"0"; "true"/"false" also work).
+// ARGV[2] = node-state TTL in seconds; do not shorten an active cooldown.
+// ARGV[3] = independent capability TTL in seconds.
 var setNodeCapabilityScript = redis.NewScript(`
 	local key = KEYS[1]
 	-- go-redis serializes a Go bool arg as "1"/"0", not "true"/"false".
@@ -425,7 +431,9 @@ var setNodeCapabilityScript = redis.NewScript(`
 	-- verdict if the caller ever switches to a string argument.
 	local raw_supported = ARGV[1]
 	local supported = (raw_supported == 'true' or raw_supported == '1')
-	local now = tonumber(ARGV[2])
+	local ttl = tonumber(ARGV[3])
+	local redis_time = redis.call('TIME')
+	local now = tonumber(redis_time[1])
 
 	local raw = redis.call('GET', key)
 	local state = {}
@@ -456,10 +464,11 @@ var setNodeCapabilityScript = redis.NewScript(`
 	if type(state.capabilities) ~= 'table' then state.capabilities = {} end
 	state.capabilities.supports_responses = supported
 	state.capability_updated_at = now
+	state.capability_expires_at = now + ttl
 
 	local ok, encoded = pcall(cjson.encode, state)
 	if not ok then return redis.error_reply('encode node state failed') end
-	redis.call('SET', key, encoded, 'EX', ARGV[3])
+	redis.call('SET', key, encoded, 'EX', ARGV[2])
 	return 1
 `)
 

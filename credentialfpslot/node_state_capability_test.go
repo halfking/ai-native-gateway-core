@@ -66,6 +66,55 @@ func TestF04_DurableCapabilityBlocksRepeatedNativeAttempt(t *testing.T) {
 	assert.True(t, supported, "successful re-probe must flip the verdict back")
 }
 
+// TestF04_CapabilityExpiryIsIndependentFromRefreshingNodeHealth ensures a
+// steady stream of healthy requests cannot keep an old protocol verdict alive
+// by extending the shared NodeState key TTL.
+func TestF04_CapabilityExpiryIsIndependentFromRefreshingNodeHealth(t *testing.T) {
+	mgr, mr := newCapabilityTestManager(t)
+	ctx := context.Background()
+
+	require.NoError(t, mgr.SetSupportsResponses(ctx, 43, "gpt-5.6-terra", false))
+	initialState, err := mgr.GetNodeState(ctx, 43, "gpt-5.6-terra")
+	require.NoError(t, err)
+	require.NotNil(t, initialState)
+	initialExpiry := initialState.CapabilityExpiresAt
+	require.Positive(t, initialExpiry)
+	mr.FastForward(30 * time.Minute)
+	require.NoError(t, mgr.RecordNodeSuccess(ctx, 43, "gpt-5.6-terra", "healthy-request"))
+
+	state, err := mgr.GetNodeState(ctx, 43, "gpt-5.6-terra")
+	require.NoError(t, err)
+	require.NotNil(t, state, "the health write should have refreshed and preserved the shared node-state key")
+	require.Equal(t, initialExpiry, state.CapabilityExpiresAt, "health writes must not refresh capability expiry")
+	now, err := mgr.redisNow(ctx)
+	require.NoError(t, err)
+	state.CapabilityExpiresAt = now - 1 // simulate elapsed capability TTL while health state remains live
+	require.NoError(t, mgr.SetNodeState(ctx, state))
+	require.True(t, mr.Exists(nodeKey(43, "gpt-5.6-terra")), "node health key must remain live after the capability expiry")
+
+	supported, known, err := mgr.GetSupportsResponses(ctx, 43, "gpt-5.6-terra")
+	require.NoError(t, err)
+	assert.False(t, known, "capability verdict must expire on its own TTL despite a still-live node health key")
+	assert.False(t, supported)
+}
+
+func TestF04_LegacyCapabilityWithoutExpiryReadsAsUnknown(t *testing.T) {
+	mgr, _ := newCapabilityTestManager(t)
+	ctx := context.Background()
+	require.NoError(t, mgr.SetSupportsResponses(ctx, 44, "gpt-5.6-terra", false))
+
+	state, err := mgr.GetNodeState(ctx, 44, "gpt-5.6-terra")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	state.CapabilityExpiresAt = 0 // matches pre-migration Redis payload shape
+	require.NoError(t, mgr.SetNodeState(ctx, state))
+
+	supported, known, err := mgr.GetSupportsResponses(ctx, 44, "gpt-5.6-terra")
+	require.NoError(t, err)
+	assert.False(t, known, "legacy capability without expiry must re-enter live detection")
+	assert.False(t, supported)
+}
+
 // TestF04_CapabilityRecoveryFlipsBackToSupported covers the §3.4 reverse
 // recovery in isolation: a mislabel must not block native Responses for a
 // full TTL.
@@ -214,4 +263,3 @@ func TestF04_EmptyCapabilitiesNeverCorruptNodeState(t *testing.T) {
 	assert.Equal(t, int64(1), state.FailureCount, "outcome write must still apply")
 	assert.False(t, state.Capabilities.SupportsResponsesKnown())
 }
-

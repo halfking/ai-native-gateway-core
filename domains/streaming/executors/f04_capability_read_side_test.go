@@ -231,10 +231,27 @@ func TestF04_LiveSuccessfulResponsesPersistsSupportedVerdict(t *testing.T) {
 	if err := fpMgr.SetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel, false); err != nil {
 		t.Fatalf("seed stale unsupported capability: %v", err)
 	}
-	// A durable negative verdict must suppress native attempts until its node
-	// state expires. After expiry, this real native success is fresh evidence
-	// that can persist a positive verdict.
-	redisServer.FastForward(2 * time.Hour)
+	state, err := fpMgr.GetNodeState(t.Context(), candidate.CredentialID, candidate.RawModel)
+	if err != nil {
+		t.Fatalf("read seeded node state: %v", err)
+	}
+	if state == nil {
+		t.Fatal("seeded node state missing")
+	}
+	// Expire only the protocol verdict while keeping the shared health key
+	// alive, then prove the executor retries native Responses on fresh evidence.
+	state.CapabilityExpiresAt = time.Now().Add(-time.Minute).Unix()
+	if err := fpMgr.SetNodeState(t.Context(), state); err != nil {
+		t.Fatalf("expire test capability verdict: %v", err)
+	}
+	if !redisServer.Exists("llmgw:cred_fp_node:22:gpt-5.6-terra") {
+		t.Fatal("node health key should remain present while capability verdict is expired")
+	}
+	if _, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel); err != nil {
+		t.Fatalf("read expired capability verdict: %v", err)
+	} else if known {
+		t.Fatal("expired capability verdict must return to unknown before native retry")
+	}
 
 	params := f04ExecParams(`{"model":"gpt-5.6-terra","input":"hello"}`)
 	if _, err := exec.executeOpenAI(params, candidate, 0, time.Now(), nil); err != nil {
