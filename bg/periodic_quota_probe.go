@@ -287,6 +287,12 @@ func (p *PeriodicQuotaProbe) probePeriodicExhausted(ctx context.Context) (int, e
 		}
 		count++
 	}
+	// R66: 到期批被截断 = 本轮少提交若干 periodic_exhausted 探针，
+	// credential 恢复探测静默延迟。worker 继续跑，只留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("periodic_quota_probe: post-expiry row iteration aborted; batch truncated",
+			"error", err, "submitted", count)
+	}
 	return count, nil
 }
 
@@ -353,6 +359,12 @@ func (p *PeriodicQuotaProbe) probePreExhausted(ctx context.Context) (int, error)
 			p.probeSubmitter(credID)
 		}
 		count++
+	}
+	// R66: 同上——预探批被静默截断会让临近恢复的 credential 多等一个
+	// 完整 5min 周期，边界卡顿现象失去可查证据。
+	if err := rows.Err(); err != nil {
+		slog.Warn("periodic_quota_probe: pre-expiry row iteration aborted; batch truncated",
+			"error", err, "submitted", count)
 	}
 	return count, nil
 }

@@ -145,9 +145,14 @@ func (h *Handler) handleStatsTrend(w http.ResponseWriter, r *http.Request, start
 		var day time.Time
 		var req, ok, fail, tokens, credits int64
 		var cost float64
-		if rows.Scan(&day, &req, &ok, &fail, &tokens, &cost, &credits) == nil {
-			items = append(items, map[string]any{"bucket": day.Format("2006-01-02"), "requests": req, "success": ok, "failures": fail, "total_tokens": tokens, "cost_usd": cost, "credits_charged": credits})
+		if err := rows.Scan(&day, &req, &ok, &fail, &tokens, &cost, &credits); err != nil {
+			warnRowSkip("stats.trend", err)
+			continue
 		}
+		items = append(items, map[string]any{"bucket": day.Format("2006-01-02"), "requests": req, "success": ok, "failures": fail, "total_tokens": tokens, "cost_usd": cost, "credits_charged": credits})
+	}
+	if writeAggRowsErr(w, "stats.trend", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"source": "stats_usage_daily", "items": items})
 }
@@ -167,13 +172,18 @@ func (h *Handler) handleStatsMonthly(w http.ResponseWriter, r *http.Request, sta
 		var provider, credential, canonical, req, ok, fail, tokens, credits int64
 		var cost float64
 		var closed sql.NullTime
-		if rows.Scan(&month, &status, &tenantID, &provider, &credential, &canonical, &model, &dimensionType, &dimensionKey, &trafficClass, &req, &ok, &fail, &tokens, &credits, &cost, &checksum, &closed) == nil {
-			item := map[string]any{"month": month.Format("2006-01"), "status": status, "tenant_id": tenantID, "provider_id": provider, "credential_id": credential, "canonical_id": canonical, "model": model, "dimension_type": dimensionType, "dimension_key": dimensionKey, "traffic_class": trafficClass, "requests": req, "success": ok, "failures": fail, "total_tokens": tokens, "credits_charged": credits, "cost_usd": cost, "checksum": checksum}
-			if closed.Valid {
-				item["closed_at"] = closed.Time.UTC().Format(time.RFC3339)
-			}
-			items = append(items, item)
+		if err := rows.Scan(&month, &status, &tenantID, &provider, &credential, &canonical, &model, &dimensionType, &dimensionKey, &trafficClass, &req, &ok, &fail, &tokens, &credits, &cost, &checksum, &closed); err != nil {
+			warnRowSkip("stats.monthly", err)
+			continue
 		}
+		item := map[string]any{"month": month.Format("2006-01"), "status": status, "tenant_id": tenantID, "provider_id": provider, "credential_id": credential, "canonical_id": canonical, "model": model, "dimension_type": dimensionType, "dimension_key": dimensionKey, "traffic_class": trafficClass, "requests": req, "success": ok, "failures": fail, "total_tokens": tokens, "credits_charged": credits, "cost_usd": cost, "checksum": checksum}
+		if closed.Valid {
+			item["closed_at"] = closed.Time.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	if writeAggRowsErr(w, "stats.monthly", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"source": "stats_usage_monthly", "items": items})
 }
@@ -207,9 +217,14 @@ func (h *Handler) handleStatsBreakdown(w http.ResponseWriter, r *http.Request, s
 		var key string
 		var requests, success, tokens, credits int64
 		var cost float64
-		if rows.Scan(&key, &requests, &success, &tokens, &cost, &credits) == nil {
-			items = append(items, map[string]any{"key": key, "requests": requests, "success": success, "total_tokens": tokens, "cost_usd": cost, "credits_charged": credits})
+		if err := rows.Scan(&key, &requests, &success, &tokens, &cost, &credits); err != nil {
+			warnRowSkip("stats.breakdown", err)
+			continue
 		}
+		items = append(items, map[string]any{"key": key, "requests": requests, "success": success, "total_tokens": tokens, "cost_usd": cost, "credits_charged": credits})
+	}
+	if writeAggRowsErr(w, "stats.breakdown", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"source": "stats_usage_daily", "dimension": dimension, "items": items})
 }
@@ -229,9 +244,14 @@ func (h *Handler) handleStatsErrors(w http.ResponseWriter, r *http.Request, star
 		var key string
 		var failures, requests, tokens int64
 		var cost float64
-		if rows.Scan(&key, &failures, &requests, &tokens, &cost) == nil {
-			items = append(items, map[string]any{"error": key, "failures": failures, "requests": requests, "total_tokens": tokens, "cost_usd": cost})
+		if err := rows.Scan(&key, &failures, &requests, &tokens, &cost); err != nil {
+			warnRowSkip("stats.errors", err)
+			continue
 		}
+		items = append(items, map[string]any{"error": key, "failures": failures, "requests": requests, "total_tokens": tokens, "cost_usd": cost})
+	}
+	if writeAggRowsErr(w, "stats.errors", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"source": "stats_usage_daily", "items": items})
 }
@@ -266,9 +286,15 @@ func (h *Handler) handleStatsReconciliation(w http.ResponseWriter, r *http.Reque
 		var start, end, started time.Time
 		var finished, watermark sql.NullTime
 		var seen, compared, repaired, diffs int64
-		if runs.Scan(&id, &start, &end, &scope, &status, &seen, &compared, &repaired, &diffs, &watermark, &started, &finished) == nil {
-			runItems = append(runItems, map[string]any{"run_id": id, "period_start": start, "period_end": end, "scope": scope, "status": status, "events_seen": seen, "rows_compared": compared, "rows_repaired": repaired, "diff_count": diffs, "started_at": started, "finished_at": finished, "source_watermark": watermark})
+		if err := runs.Scan(&id, &start, &end, &scope, &status, &seen, &compared, &repaired, &diffs, &watermark, &started, &finished); err != nil {
+			warnRowSkip("stats.reconciliation.runs", err)
+			continue
 		}
+		runItems = append(runItems, map[string]any{"run_id": id, "period_start": start, "period_end": end, "scope": scope, "status": status, "events_seen": seen, "rows_compared": compared, "rows_repaired": repaired, "diff_count": diffs, "started_at": started, "finished_at": finished, "source_watermark": watermark})
+	}
+	// 对账页是完整性视图：run 列表被截断会让"没有差异"看起来像真结论。
+	if writeAggRowsErr(w, "stats.reconciliation.runs", runs.Err()) {
+		return
 	}
 	diffWhere := "1=1"
 	diffArgs := []any{}
@@ -293,9 +319,14 @@ func (h *Handler) handleStatsReconciliation(w http.ResponseWriter, r *http.Reque
 		var runID, tenantID, dimensionType, dimensionKey, metric, resolution string
 		var source, projected, difference float64
 		var created time.Time
-		if diffRows.Scan(&runID, &tenantID, &dimensionType, &dimensionKey, &metric, &source, &projected, &difference, &resolution, &created) == nil {
-			diffItems = append(diffItems, map[string]any{"run_id": runID, "tenant_id": tenantID, "dimension_type": dimensionType, "dimension_key": dimensionKey, "metric": metric, "source_value": source, "projected_value": projected, "difference": difference, "resolution": resolution, "created_at": created})
+		if err := diffRows.Scan(&runID, &tenantID, &dimensionType, &dimensionKey, &metric, &source, &projected, &difference, &resolution, &created); err != nil {
+			warnRowSkip("stats.reconciliation.diffs", err)
+			continue
 		}
+		diffItems = append(diffItems, map[string]any{"run_id": runID, "tenant_id": tenantID, "dimension_type": dimensionType, "dimension_key": dimensionKey, "metric": metric, "source_value": source, "projected_value": projected, "difference": difference, "resolution": resolution, "created_at": created})
+	}
+	if writeAggRowsErr(w, "stats.reconciliation.diffs", diffRows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runItems, "diffs": diffItems})
 }

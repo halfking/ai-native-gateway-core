@@ -166,6 +166,13 @@ func (w *ConcurrencyAutoScaleUp) scaleUp(ctx context.Context) error {
 		count++
 	}
 
+	// R66: 候选批被截断 = 少扩容若干本该扩容的 credential×model，
+	// 并发上限长期偏低表现为「莫名其妙的速度上限」。
+	if err := rows.Err(); err != nil {
+		slog.Warn("concurrency_auto_scaleup: row iteration aborted; candidate batch truncated",
+			"error", err, "scaled_up", count)
+	}
+
 	if count > 0 {
 		slog.Info("concurrency_auto_scaleup: scaled up", "count", count)
 	}

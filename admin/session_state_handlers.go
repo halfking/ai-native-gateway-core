@@ -379,6 +379,8 @@ func (h *Handler) listActiveSessions(ctx context.Context, tenantID string, limit
 	for iter.Next(ctx) {
 		members, err := rc.Client().SRandMemberN(ctx, iter.Val(), int64(limit)).Result()
 		if err != nil {
+			slog.Warn("admin listActiveSessions: SRandMemberN failed; key skipped",
+				"op", "admin.listActiveSessions", "key", iter.Val(), "error", err)
 			continue
 		}
 		for _, id := range members {
@@ -393,6 +395,16 @@ func (h *Handler) listActiveSessions(ctx context.Context, tenantID string, limit
 				return ids
 			}
 		}
+	}
+	// Redis SCAN 迭代中断只会让 Next() 返回 false，不带错误；不查 Err()
+	// 就把「扫到一半连接断了」和「扫完了」当成同一件事。这里的选择是
+	// **降级不失败**：签名为 []string 且无 error 通道，改签名会波及
+	// 列表端点（本函数的调用方已忽略其他错误并按已取到的 ID 继续渲染），
+	// 而少列几条 session 不会选错任何凭据/模型——故返回已取到的部分并
+	// 留痕，而不是把整页打成 500。
+	if err := iter.Err(); err != nil {
+		slog.Warn("admin listActiveSessions: scan iteration aborted; active session list truncated",
+			"op", "admin.listActiveSessions", "collected", len(ids), "error", err)
 	}
 	return ids
 }

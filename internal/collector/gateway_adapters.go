@@ -2,11 +2,13 @@ package collector
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 )
 
@@ -70,9 +72,18 @@ func (r *PgTrafficReader) Snapshot(ctx context.Context) (TrafficSnapshot, error)
 		for rows.Next() {
 			var model string
 			var count int64
-			if scanErr := rows.Scan(&model, &count); scanErr == nil {
-				snap.ModelUsage[model] = count
+			if scanErr := rows.Scan(&model, &count); scanErr != nil {
+				dbrows.WarnRowSkip("collector.PgTrafficReader.Snapshot/modelUsage", scanErr)
+				continue
 			}
+			snap.ModelUsage[model] = count
+		}
+		// R66: 本函数整体是尽力而为的遥测载荷（连 query 失败都降级为
+		// 空快照返回 nil），故不上抛；但 Top-20 模型用量被静默截断必须
+		// 留痕，否则「某模型不上榜」永远无法与「确实没流量」区分。
+		if rowsErr := rows.Err(); rowsErr != nil {
+			slog.Warn("collector.PgTrafficReader.Snapshot: model usage rows iteration aborted; batch truncated",
+				"error", rowsErr, "models", len(snap.ModelUsage))
 		}
 	}
 
