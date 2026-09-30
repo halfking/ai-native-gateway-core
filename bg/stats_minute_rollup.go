@@ -132,7 +132,17 @@ func (w *StatsMinuteRollup) rollup(ctx context.Context) {
 	`, now)
 }
 
+// rollupScanSince 把扫描下界拉回该分钟的起点。
+// 写入是整桶替换。下界停在游标中间时，后一次只会留下这一分钟的后半段。
+func rollupScanSince(since time.Time) time.Time {
+	if since.IsZero() {
+		return since
+	}
+	return since.UTC().Truncate(time.Minute)
+}
+
 func (w *StatsMinuteRollup) rollupWindow(ctx context.Context, since, until time.Time) error {
+	since = rollupScanSince(since)
 	creditsExpr := maas.RequestLogCreditsSQL("r", true)
 	if err := w.rollupMain(ctx, since, until, creditsExpr); err != nil {
 		return err
@@ -190,7 +200,7 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 			COALESCE(SUM(r.latency_ms), 0)::bigint
 		FROM request_logs_with_current_month r
 		WHERE r.request_status IN ('success', 'failure', 'rate_limited')
-		  AND r.ts > $1 AND r.ts <= $2
+		  AND r.ts >= $1 AND r.ts <= $2
 		GROUP BY 1, 2, 3, 4
 		ON CONFLICT (bucket, tenant_id, provider_id, canonical_id) DO UPDATE SET
 			requests = EXCLUDED.requests,
@@ -227,7 +237,7 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 				COALESCE(SUM(r.cost_usd), 0)
 			FROM request_logs_with_current_month r
 			WHERE r.request_status IN ('success', 'failure', 'rate_limited')
-			  AND r.ts > $1 AND r.ts <= $2
+			  AND r.ts >= $1 AND r.ts <= $2
 			  AND ($3 <> 'error_kind' OR r.request_status = 'failure')
 			GROUP BY 1, 2, 4
 			ON CONFLICT (bucket, tenant_id, dim_type, dim_key) DO UPDATE SET
@@ -256,7 +266,7 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 			COUNT(*)::bigint
 		FROM request_logs_with_current_month r
 		WHERE r.request_status = 'failure'
-		  AND r.ts > $1 AND r.ts <= $2
+		  AND r.ts >= $1 AND r.ts <= $2
 		GROUP BY 1, 2, 3, 4, 5, 6
 		ON CONFLICT (bucket, tenant_id, error_kind, model_name, provider_id, client_profile) DO UPDATE SET
 			requests = EXCLUDED.requests
