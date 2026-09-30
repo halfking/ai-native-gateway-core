@@ -223,3 +223,44 @@ func TestDBStateSyncDropsOnFullQueue(t *testing.T) {
 		t.Fatalf("Dropped = %d, want 8", got)
 	}
 }
+
+// TestDBStateSyncDrainsOnCancel：ctx 取消后 Run 不得立刻退出——已入队事件
+// 要经有界排水落库（注释曾声称"停机尽量写完"而实现直接 return，审计 D1
+// 对齐）。排空后 Run 返回，dropped 计数为 0。
+func TestDBStateSyncDrainsOnCancel(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mockDB.Close()
+	for i := 0; i < 3; i++ {
+		mockDB.ExpectExec("UPDATE credentials").
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	}
+
+	// queueSize 4 容纳 3 条事件；Run 尚未启动，事件先全部入队。
+	s := NewDBStateSync(mockDB, 4)
+	ev := StateChange{ProviderID: 1, CredentialID: 7, From: StateClosed, To: StateOpen, Kind: KindNetwork}
+	for i := 0; i < 3; i++ {
+		s.Observe(ev)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	cancel()
+
+	select {
+	case <-done:
+		// Run 返回 = 排水完成。
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after ctx cancel")
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("drain did not persist queued events: %v", err)
+	}
+	if got := s.Dropped(); got != 0 {
+		t.Fatalf("Dropped = %d, want 0 (drain should persist all queued events)", got)
+	}
+}
