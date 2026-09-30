@@ -53,6 +53,8 @@
 | **[当前系统架构](./03-design/01-architecture/architecture/ARCHITECTURE.md)** | 内部权威架构文（证据分级 CURRENT/SHADOW/PARALLEL，快照 2026-10-01）⭐ | 2026-10-01 |
 | **[新旧并行实现对比](./03-design/01-architecture/parallel-implementations-comparison.md)** | 同功能新旧两版实现的重点标注与收敛方案（10 组并行对 + 7 处死代码）⭐ | 2026-10-01 |
 | **[统一优化提示词方案](./03-design/01-architecture/unified-optimization-prompts.md)** | 逐项可执行的收敛提示词包（U-01~U-10） | 2026-10-01 |
+| **[系统架构与业务流程图集](./architecture-diagrams.md)** | 全图集（Mermaid）：系统上下文/容器/请求主链/双层路由/存储/部署/Worker 体系 ⭐ | 2026-10-01 |
+| **[会话处理生命周期](./session-lifecycle.md)** | 会话三层模型、指派决策、单轮时序、状态机、粘性绑定、压缩与数据归档全流程图 ⭐ | 2026-10-01 |
 | **[项目总览](./PROJECT_OVERVIEW.md)** | 项目概述、架构设计、核心功能模块 ⭐ | 2026-10-01 |
 | **[功能模块指南](./MODULES_GUIDE.md)** | 详细的模块功能说明与使用指南 ⭐ | 2026-10-01 |
 | **[快速参考手册](./QUICK_REFERENCE.md)** | 常用命令、API端点、故障排查 ⭐ | 2026-09-06 |
@@ -102,6 +104,7 @@ docs/
 | 想找什么 | 看这里 |
 |---|---|
 | 架构决策、API 契约 | [architecture/](./architecture/) · [03-design/01-architecture/architecture/API.md](./03-design/01-architecture/architecture/API.md) · [adr/](./adr/) |
+| 架构图、流程图、会话生命周期 | [architecture-diagrams.md](./architecture-diagrams.md) · [session-lifecycle.md](./session-lifecycle.md) |
 | 部署、迁移、配置 | [deployment/](./deployment/) · [deploy/](./deploy/) · [migrations/](./migrations/) · [06-deployment/](./06-deployment/) |
 | 运维、Runbook、故障排查 | [operations/](./operations/) · [runbooks/](./runbooks/) · [troubleshooting/](./troubleshooting/) |
 | 设计文档、设计方案 | [design/](./design/) · [03-design/](./03-design/)（含原 modules/features 专题） |
