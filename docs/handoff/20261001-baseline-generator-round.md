@@ -182,18 +182,24 @@ fresh install 反而正常（无约束 ⇒ 走 `ADD` 分支）。
 > fresh-install 的问题，**它同样让任何依赖 `ensure*` 的真库门禁无法在
 > 一次性空库上运行**。
 
-**仍存的口径限制（本轮未解，已知非产品缺陷）**：harness 的起始库是
-`prereqs + 01-schema.sql`（328 relations）。但 `01-schema.sql` 相对迁移目录
-**陈旧**——`session_aggregate_outbox`（迁移 630）、`usage_facts`（迁移 537）
-只由 startup 迁移创建，基线里没有。于是：
+**已解（本轮末）**：harness 起始库口径已补齐——默认 `GATE_APPLY_STARTUP=1`，
+在 `prereqs + 01-schema.sql` 之后按 `StartupFiles` 顺序应用启动迁移。
 
-    db_744_ensure_realdb_test.go:45  relation "public.session_aggregate_outbox" does not exist
-    db_749_ensure_realdb_test.go:52  relation "public.usage_facts" does not exist
+    仅基线          = 328 relations
+    基线 + 启动迁移 = 421 relations   ← 与真实 installer 路径一致
 
-这两个用例因此仍红。**这与本轮 §二 记录的基线陈旧是同一件事**，不是新缺陷。
-彻底解需要「基线 + StartupFiles 迁移」的起始库，而全量迁移在空库上有 236 处
-失败（§二），故本轮不做。下一步要么等基线重建，要么给 harness 加
-`GATE_APPLY_STARTUP=1` 并显式接受其中的已知失败清单。
+`session_aggregate_outbox`（630）、`usage_facts`（537）因此到位，
+`db_744` / `db_749` 等 8 个用例由红转绿。**`./db` 整包现为
+68 PASS / 5 SKIP / 0 FAIL（exit=0）**，且 5 个 skip 按约定标为
+「green with skips」而非全绿。
+
+两处实现要点：
+- 启动迁移里 18 条仍不应用（与本轮 §二 的 20 处缺口同族，差 2 条是因为
+  本 harness **识别 `dbinit:no-transaction` 标记**，718/719 因此不再假失败）。
+  这些按「已知 fresh-install 缺口」列出，**不计为门禁失败**。
+- 守卫 `TestGateAppliesStartupMigrations` 同时钉住「默认值为 1」——
+  默认关掉会静默退回陈旧基线，正���复现本次要消除的那批假失败。
+  （该守卫第一版只查变量存在性，被 `:-0` 变异穿过；已加固。）
 
 ## 六、测试与验证
 
