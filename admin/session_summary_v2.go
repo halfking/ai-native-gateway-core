@@ -24,6 +24,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -161,6 +162,18 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 func (api *SessionSummaryV2API) writeSummaryError(w http.ResponseWriter, err error) {
 	if IsStorageUnavailable(err) {
 		WriteStorageDegraded(w, observability.StorageComponentSummary, err)
+		return
+	}
+	// 正文取数并发已满 → 503「现在忙」，不是 500「坏了」。调用方对这两者的
+	// 重试含义不同（503 可退避重试，500 不该重试）。见
+	// session_bodies_batch.go 的并发闸注释。
+	if errors.Is(err, ErrBodyFetchSaturated) {
+		slog.Warn("session summary rejected: body fetch saturated", "err", err, "limit", maxConcurrentBodyFetches)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":  "error",
+			"message": "Session body data is temporarily unavailable — too many concurrent scans. Retry shortly.",
+			"code":    "session_body_fetch_saturated",
+		})
 		return
 	}
 	writeInternalErrStr(w, "summary failed", err)
