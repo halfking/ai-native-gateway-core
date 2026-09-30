@@ -1590,6 +1590,11 @@ type firstSemanticResponseWriter struct {
 
 func (w *firstSemanticResponseWriter) FirstSemanticByteCallback() func() { return w.callback }
 
+func (w *firstSemanticResponseWriter) OutputPolicyBlocked() bool {
+	blocker, ok := w.ResponseWriter.(interface{ OutputPolicyBlocked() bool })
+	return ok && blocker.OutputPolicyBlocked()
+}
+
 func (w *firstSemanticResponseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
@@ -3552,6 +3557,10 @@ func (e *contextLengthExhaustedError) Unwrap() error {
 func classifyExecError(err error) errorsx.ErrorKind {
 	if err == nil {
 		return ""
+	}
+	var interrupted *streamInterruptedError
+	if errors.As(err, &interrupted) && interrupted != nil && interrupted.kind != "" {
+		return interrupted.kind
 	}
 	var ue *upstreampkg.Error
 	if errors.As(err, &ue) && ue != nil {
