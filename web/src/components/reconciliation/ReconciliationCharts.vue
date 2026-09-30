@@ -83,6 +83,8 @@ const tokChart = useChart(tokCanvas, tokConfig)
 
 async function redraw() {
   await nextTick()
+  // v-if, not v-show: chart.destroy() runs after this tick and restores the
+  // canvas inline style, which would undo display:none and leave a blank 260px box.
   if (!hasPoints.value) {
     reqChart.destroyChart()
     tokChart.destroyChart()
@@ -101,15 +103,15 @@ onMounted(() => void redraw())
     <section class="chart-card">
       <header>{{ money === 'cost' ? t('reports.reqCostTrend') : t('reports.reqCreditsTrend') }}</header>
       <div class="chart-box">
-        <canvas v-show="hasPoints" ref="reqCanvas" />
-        <p v-if="!hasPoints" class="empty">{{ t('reports.noData') }}</p>
+        <canvas v-if="hasPoints" ref="reqCanvas" />
+        <p v-else class="empty">{{ t('reports.noData') }}</p>
       </div>
     </section>
     <section class="chart-card">
       <header>{{ t('reports.tokenTrend') }}</header>
       <div class="chart-box">
-        <canvas v-show="hasPoints" ref="tokCanvas" />
-        <p v-if="!hasPoints" class="empty">{{ t('reports.noData') }}</p>
+        <canvas v-if="hasPoints" ref="tokCanvas" />
+        <p v-else class="empty">{{ t('reports.noData') }}</p>
       </div>
     </section>
   </div>
@@ -133,8 +135,13 @@ onMounted(() => void redraw())
 .chart-box { position: relative; height: 260px; }
 .chart-box canvas { width: 100% !important; height: 260px !important; }
 .empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
   color: var(--text-muted, var(--el-text-color-secondary));
   text-align: center;
-  padding: 80px 12px;
 }
 </style>
