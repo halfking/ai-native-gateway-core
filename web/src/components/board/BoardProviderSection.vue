@@ -27,6 +27,7 @@ const { t } = useI18n()
 const router = useRouter()
 
 const explorerOpen = ref(false)
+const exportError = ref('')
 const usageRows = ref<ProviderUsageRow[]>([])
 const usageLoading = ref(false)
 const qualityByName = ref<Map<string, number>>(new Map())
@@ -138,6 +139,7 @@ async function loadBalances() {
         }
         balanceById.value.set(r.provider_id, hasBalance ? sum : hasPlan ? 'plan' : undefined)
       } catch {
+        balanceFetchedFor.delete(r.provider_id)
         balanceById.value.set(r.provider_id, undefined)
       }
     }),
@@ -150,10 +152,11 @@ function openProvider(id?: number) {
 }
 
 async function exportExcel() {
+  exportError.value = ''
   try {
     await downloadProviderUsageExport(props.timeQuery)
-  } catch {
-    // 导出失败静默（后续可接统一错误提示）
+  } catch (e: unknown) {
+    exportError.value = e instanceof Error && e.message ? e.message : t('dashboard.loadError')
   }
 }
 
@@ -261,6 +264,7 @@ watch(usageRows, () => void loadBalances())
           ⬇ {{ t('dashboard.board.providerExport') }}
         </button>
       </div>
+      <p v-if="exportError" class="pv-export-error" role="alert">{{ exportError }}</p>
       <div class="pv-table-wrap">
         <table class="pv-list">
           <thead>
@@ -535,6 +539,11 @@ watch(usageRows, () => void loadBalances())
 .pv-table__empty {
   text-align: center;
   color: var(--text-muted);
+}
+.pv-export-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
 }
 @media (max-width: 1440px) {
   .pv-grid {

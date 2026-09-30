@@ -65,6 +65,22 @@ function shortKey(key: string) {
   return key.length > 14 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key
 }
 
+function restSum(items: BoardPieItem[]) {
+  const topKeys = new Set(topItems(items).map((item) => item.key))
+  return items.filter((item) => !topKeys.has(item.key)).reduce((acc, item) => acc + (item[metric.value] ?? 0), 0)
+}
+
+function restLabel(items: BoardPieItem[], asCount: boolean) {
+  const rest = restSum(items)
+  if (asCount) return fmtValue(rest)
+  return ((rest / totalOf(items)) * 100).toFixed(1) + '%'
+}
+
+function restWidth(items: BoardPieItem[]) {
+  const pct = (restSum(items) / maxOf(items)) * 100
+  return Math.min(100, Math.max(2, pct)).toFixed(1) + '%'
+}
+
 // ── 错误下钻（保留原有交互：三维度 tab + fetchBoardErrorDrill） ──
 const errorDrillKind = ref<string | null>(null)
 const errorDrillDim = ref<'model' | 'provider' | 'client'>('model')
@@ -138,6 +154,8 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
           </div>
           <div v-if="restCount(card.items) > 0" class="rank-row rank-row--rest">
             <span class="rank-row__name">{{ t('dashboard.board.distOthers', { n: restCount(card.items) }) }}</span>
+            <span class="rank-row__bar" aria-hidden="true"><i :style="{ width: restWidth(card.items) }"></i></span>
+            <span class="rank-row__val">{{ restLabel(card.items, !!card.clickable) }}</span>
           </div>
           <div v-if="card.clickable" class="dist-card__hint">{{ t('dashboard.board.distDrillHint') }}</div>
         </div>
