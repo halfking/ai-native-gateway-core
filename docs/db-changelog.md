@@ -718,20 +718,20 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 750 | `750_usage_facts_daily_partition.sql` | `a75a89b22091e5d1af29eb4b2128bd373df07aa8a7aa9a95cf04d3f4ad3c0527` | applied+verified |
+| 750 | `750_usage_facts_daily_partition.sql` | `e575663389c50d5372ead08e910209932d2a812626b69ba120d5da5931b65a4d` | applied+verified（补正台账 2026-09-30：R69 P2 `0ba35dc2b` 改写文件（函数级时区钉扎 + 上海日历预建）后未同步台账 SHA，`a75a89b2`→`e5756633`，原值对应 `1dfe88c08` 版本。已部署库的 applied 状态早于该改写，新内容随下次部署走 sequence 通道） |
 
 ## 2026-09-27T04:57:54Z — deploy 245 build_seq 2275 (1c9c753c) — mock-probe 收口轮副产物（752 未部署；751 补登）
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 751 | `751_usage_facts_partition_tz_pin.sql` | `4f788a566c2c00f2d3fdd4f2af0cc2c0611bdd13fd3f0456bb0eb661a5f4d7c2` | applied+verified（补登：eff61ecd/2273 已部署 245，台账当时漏记） |
-| 752 | `752_mock_probe_history.sql` | `1caf5efdf0223bb3bd1dd246926965d1b39c98bdb20336d05dd665e2295e009e` | pending deploy（本机库双轮幂等实跑 + UTC 钉扎 + move-then-attach 实证，docs/audit/2026-09-27-mock-probe-production-entry-audit.md §三） |
+| 752 | `752_mock_probe_history.sql` | `d0a9bc0b938e4d617d629ab4bbbb96445f1eba7b25d82b8ccd4785646e136ec4` | pending deploy（本机库双轮幂等实跑 + UTC 钉扎 + move-then-attach 实证，docs/audit/2026-09-27-mock-probe-production-entry-audit.md §三；补正台账 2026-09-30：R73 `5955fcdb0` 改写文件后未同步台账 SHA，`1caf5efdf`→`d0a9bc0b`，原值对应 `5193d88f2` 版本） |
 
 ## 2026-09-27T14:14:35Z — 12h 审计十五轮补登（753 未部署；canonical/embeddata SHA 一致）
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 753 | `753_session_turn_logs_ttl.sql` | `9c8493f9dc1a4cd65a7828260ddc9baf11ae9f7b9901f145e9854a2f04da35af` | pending deploy（五点同步齐备：embeddata/var+map/StartupFiles/parity 一致，契约测试 migration_753_test.go 钉桩；R71 轮补齐 embed 时漏登本台账行，十五轮 D-3 补登） |
+| 753 | `753_session_turn_logs_ttl.sql` | `60ef1ccf5d6c3b63da1760f4091c152982b7017391015b8e9d9fb98c69e5eb32` | pending deploy（五点同步齐备：embeddata/var+map/StartupFiles/parity 一致，契约测试 migration_753_test.go 钉桩；R71 轮补齐 embed 时漏登本台账行，十五轮 D-3 补登；补正台账 2026-09-30：R72 P2 `7230ea1b3` 改写文件（首扫无界 DELETE 收口）后未同步台账 SHA，`9c8493f9`→`60ef1ccf`，原值对应 `14d34867f` 版本） |
 
 ## 2026-09-28 — R73 审计轮补登（754 未部署；canonical/embeddata SHA 一致）
 
