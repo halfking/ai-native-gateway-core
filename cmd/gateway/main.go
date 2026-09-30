@@ -6287,10 +6287,10 @@ func main() {
 	// fallback inside v2DispatchHandler; the Pipeline re-routes
 	// through them on a stage error or feature-flag off path.
 	if v2DispatchEnabled {
-		if _, v2Deps, ok := v2DispatchMux(chatRouteHandler, messagesRouteHandler, responsesRouteHandler); ok && v2Deps != nil {
-			// 2026-07-18 P1 fix: Wire the sensitive word engine created above
-			// into v2Deps so the Pipeline plugins can reference it.
-			v2Deps.SensitiveWordEngine = swEngine
+		// Pass the engine in so the Pipeline's sensitive-word plugins scan with
+		// the SAME instance the admin handler reloads. Assigning it to v2Deps
+		// afterwards was a dead wire: buildV2DispatchPipeline had already run.
+		if _, v2Deps, ok := v2DispatchMux(chatRouteHandler, messagesRouteHandler, responsesRouteHandler, swEngine); ok && v2Deps != nil {
 
 			// PR-V4-09 / PR-V4-10: 注入 DB pool + ApprovalManager + Publisher +
 			// IntentStore 后再启动 Loop 和 Flusher。

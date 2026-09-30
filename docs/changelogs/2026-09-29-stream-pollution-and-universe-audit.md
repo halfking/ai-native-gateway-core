@@ -316,6 +316,71 @@ dashboard 侧由 `web/src/utils/modelScopeOwnership.ts` 的绑定级 canonical
   的消费方式或响应组装，本轮刻意未做。
 - `canonicalIDByVariantPriority` 的平局分支（同名重复）生产不可达，
   属防卫性代码。
-- 2026-09-28 记录的另一并发会话 `admin/session_panorama_handler.go`
+- ~~2026-09-28 记录的另一并发会话 `admin/session_panorama_handler.go`
   在本轮审计期间处于半成品状态（重构到 `loadSessionTimelineInTx` 后
-  残留 `rows.Err()`，致 `admin` 包编译失败），与本轮改动无关。
+  残留 `rows.Err()`，致 `admin` 包编译失败），与本轮改动无关。~~
+  **已于 2026-10-01 由 d2ff2c3b1 在 origin/main 修复**（删除悬空块 +
+  随之无引用的 `fmt` import；错误传播由 `loadSessionTimelineInTx` 的
+  `return timeline, rows.Err()` 承担，调用方原样上抛，未削弱检查）。
+  本地快进到 907d67b85 后 `go build ./...` / `go vet ./admin/` 均通过，
+  `go test ./admin/` 全包 66.8s 绿。该遗留项就此关闭。
+
+## 2026-10-01 生产复核（修复上线后）
+
+修复（9cb842d3e）推上 origin/main 后的**线上真实响应**复核，走已登录
+浏览器直接读生产 API（非 DB 直连、非 fixture）：
+
+```
+GET https://llm.kxpms.cn/api/routing/resolve?model=glm-5.3
+  resolution_path = canonical                       ← 精确形优先，未回退变体矩阵
+  canonical_id    = 2422803 / canonical_name = glm-5.3
+  candidates      = 17 条，全部 canonical_id=2422803、
+                    standardized_name 全部 glm-5.3   ✅ 不变式在生产成立
+  raw_models      = ['glm-5.3','glm-5-3']           ❌ 仍含词法变体
+
+GET https://llm.kxpms.cn/api/routing/resolve?model=glm-5.2-flash
+  resolution_path = canonical
+  candidates      = 21 条，全部 canonical_id=173264  ✅ 未把别的 canonical 放进候选
+  raw_models      = ['glm-5.2-flash','glm-5-2-flash','glm-5.2','glm-5-2']
+                                                        ❌ 剥掉包装词后混进 base
+```
+
+即勘误 3 的结论在生产**原样成立**：不变式覆盖 candidates、不覆盖
+raw_models。`TestResolveRawModelsStillLeak` 本轮复跑仍绿，输出
+`[glm-5.3-flash glm-5-3-flash glm-5.3 glm-5-3]`，与生产实测逐字一致 ——
+钉住用例与生产事实同源，不是各自独立的断言。
+
+`TestResolveCandidatesInvariant_Live` 本轮**未跑**（本地无
+`TEST_RESOLVE_INVARIANT_DB_URL`，输出显式 `SKIPPING … A skip is NOT
+evidence`）。958/958 的全目录门证据仍属 09-29 那次；本轮的生产复核
+是**抽样两个真实模型**的实际响应，比 DB 全目录门覆盖面窄，
+两者不可互相替代。
+
+### dashboard 侧人工验收：未能完成（环境阻断，非回归）
+
+原计划在 `dashboard?tab=stream` 按模型分组筛 `glm-5.3` 目视确认
+出现 `glm-5.3` 分组而非 `glm-5.3-flash`。实际打开后：
+
+- 「按处理队列」确为默认激活态（`control-btn--active`），
+  「实时请求流」tab 亦激活 —— 视图入口正确。
+- 但**模型分区整块不渲染**，页面只显示
+  `队列数据未接入（dispatch 未启用或未 wired）`，
+  节点状态矩阵同时显示「暂无节点数据」。
+
+代码侧定位（`web/src/components/QueuePerspectivePanel.vue:1256`）：
+模型分区的渲染门是
+
+```js
+v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScopeError)"
+```
+
+而 `hasReportedRawModels`（同文件 :860）= `nodes.some(n => Array.isArray(n.raw_models))`，
+数据源是**实时 SSE 的 `LiveNodeStatus.raw_models`**，不是 resolve 接口。
+线上此刻 SSE 节点链路无数据 ⇒ 门恒 false ⇒ 整个模型分区缺省隐藏
+（该设计意图见源码注释：「实时 SSE 不提供 raw_models 时保持整个分区隐藏，
+避免把未知误报为无绑定」）。
+
+因此**本轮无法取得模型分组的目视证据**。这不是 9cb842d3e 引入的回归
+（该提交只改 canonical 选取优先级与不变式门，未触及 `nodes`/SSE 投影），
+而是 SSE 节点链路当前无数据。同一阻断对 `glm-5.2` 同样成立，
+故「glm-5.2 组正常」这一项本轮**同样未取得证据**，不做通过声明。

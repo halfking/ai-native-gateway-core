@@ -11,7 +11,12 @@ import (
 
 // BuildSanitizeStats constructs compression.SanitizeStats from a SanitizeResult.
 //
-// This function lives in security/sanitize (not compression) to avoid import cycles.
+// Deprecated: the production path does not use this. The HTTP middleware merges
+// the placeholder map across messages and only has the map, so the live
+// implementation is compression.BuildSanitizeInfo (see
+// smart_sani_guard.go buildSanitizeInfoForSession). Keeping a second,
+// never-called copy of the same bucketing logic here is how the two drifted
+// apart. Kept for API compatibility; new callers should build SanitizeInfo.
 func BuildSanitizeStats(result *SanitizeResult) compression.SanitizeStats {
 	if result == nil || len(result.Fragments) == 0 {
 		return compression.SanitizeStats{}
@@ -35,6 +40,8 @@ func BuildSanitizeStats(result *SanitizeResult) compression.SanitizeStats {
 			stats.CreditCardCount++
 		case TypeSecret:
 			stats.SecretCount++
+		default:
+			stats.OtherCount++
 		}
 	}
 
