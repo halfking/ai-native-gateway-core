@@ -386,7 +386,14 @@ func TestResponsesSummaryVocabIsNotAThinkingDirective(t *testing.T) {
 		})
 	}
 	// 未知 Type 与真实 Effort 并存时 effort 仍生效（回落而非吞掉）。
+	// 2026-10-01 审计订正：fixture 补显式 MaxTokens=8192。原 fixture 省略
+	// max_tokens（序列化默认 4096），effort high 兜出的 budget=4096 恰是
+	// `budget_tokens(4096) >= max_tokens(4096)` 的非法 wire 对（本轮一致性
+	// 钳制的取缔对象，钳后 4095 与「回落失效走 8192 兜底再钳 8191」此前
+	// 不可区分，守卫会钝化）。显式 8192 下 4096 在界内逐字保留，回落失效
+	// 时 8192→8191，两者可精确区分。
 	body, err := SerializeAnthropic(&InternalRequest{Model: "claude-sonnet-4-5",
+		MaxTokens: 8192,
 		Reasoning: &ReasoningConfig{Type: "concise", Effort: "high"}})
 	if err != nil {
 		t.Fatal(err)

@@ -814,19 +814,19 @@ func (s *PgStore) scanSubscription(ctx context.Context, q string, args ...interf
 // scanSubscriptionRow 将一行扫描结果组装成 Subscription，对可空列使用指针避免 NULL 扫描错误。
 func (s *PgStore) scanSubscriptionRow(scan func(...interface{}) error) (*Subscription, error) {
 	var (
-		id               int
-		name             string
-		subscribeURL     string
-		status           string
-		lastFetchAt      *time.Time
-		lastFetchStatus  *string
-		lastError        *string
-		nodeCount        int
-		priority         int
-		notes            *string
-		bannedRegions    []string
-		createdAt        time.Time
-		updatedAt        time.Time
+		id              int
+		name            string
+		subscribeURL    string
+		status          string
+		lastFetchAt     *time.Time
+		lastFetchStatus *string
+		lastError       *string
+		nodeCount       int
+		priority        int
+		notes           *string
+		bannedRegions   []string
+		createdAt       time.Time
+		updatedAt       time.Time
 	)
 	if err := scan(
 		&id, &name, &subscribeURL, &status, &lastFetchAt, &lastFetchStatus,
@@ -836,15 +836,15 @@ func (s *PgStore) scanSubscriptionRow(scan func(...interface{}) error) (*Subscri
 	}
 
 	sub := &Subscription{
-		ID:              id,
-		Name:            name,
-		SubscribeURL:    subscribeURL,
-		Status:          status,
-		NodeCount:       nodeCount,
-		Priority:        priority,
-		BannedRegions:   normalizeRegions(bannedRegions),
-		CreatedAt:       createdAt,
-		UpdatedAt:       updatedAt,
+		ID:            id,
+		Name:          name,
+		SubscribeURL:  subscribeURL,
+		Status:        status,
+		NodeCount:     nodeCount,
+		Priority:      priority,
+		BannedRegions: normalizeRegions(bannedRegions),
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
 	}
 	if lastFetchAt != nil {
 		sub.LastFetchAt = *lastFetchAt
@@ -892,26 +892,26 @@ func (s *PgStore) scanNode(ctx context.Context, q string, args ...interface{}) (
 // scanNodeRow 将一行扫描结果组装成 Node，对可空列使用指针，并在读取时按需解密密码。
 func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 	var (
-		id                     int
-		subscriptionID         int
-		name                   string
-		protocol               string
-		server                 string
-		port                   int
-		username               *string
-		password               *string
-		config                 []byte
-		location               *string
-		status                 string
-		healthCheckURL         string
-		lastHealthCheckAt      *time.Time
-		lastHealthCheckStatus  *string
-		responseTimeMs         *int
-		successRate            *float64
-		consecutiveFailures    *int
-		bannedRegions          []string
-		createdAt              time.Time
-		updatedAt              time.Time
+		id                    int
+		subscriptionID        int
+		name                  string
+		protocol              string
+		server                string
+		port                  int
+		username              *string
+		password              *string
+		config                []byte
+		location              *string
+		status                string
+		healthCheckURL        string
+		lastHealthCheckAt     *time.Time
+		lastHealthCheckStatus *string
+		responseTimeMs        *int
+		successRate           *float64
+		consecutiveFailures   *int
+		bannedRegions         []string
+		createdAt             time.Time
+		updatedAt             time.Time
 	)
 	if err := scan(
 		&id, &subscriptionID, &name, &protocol, &server, &port, &username, &password, &config,
@@ -922,17 +922,17 @@ func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 	}
 
 	node := &Node{
-		ID:                id,
-		SubscriptionID:    subscriptionID,
-		Name:              name,
-		Protocol:          protocol,
-		Server:            server,
-		Port:              port,
-		Status:            status,
-		HealthCheckURL:    healthCheckURL,
-		BannedRegions:     normalizeRegions(bannedRegions),
-		CreatedAt:         createdAt,
-		UpdatedAt:         updatedAt,
+		ID:             id,
+		SubscriptionID: subscriptionID,
+		Name:           name,
+		Protocol:       protocol,
+		Server:         server,
+		Port:           port,
+		Status:         status,
+		HealthCheckURL: healthCheckURL,
+		BannedRegions:  normalizeRegions(bannedRegions),
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
 	}
 	if username != nil {
 		node.Username = *username

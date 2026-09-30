@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -62,6 +63,10 @@ type AsyncFileWriter struct {
 	totalWrites  uint64     // 成功写入次数
 	totalBytes   uint64     // 成功写入的字节总数
 	failedWrites uint64     // 失败写入次数
+
+	// droppedEnqueues 是 TryEnqueue 因队列满被丢弃的任务累计数。
+	// Write/WriteAsync 的阻塞入队不存在丢弃，该计数只反映 fire-and-forget 面。
+	droppedEnqueues atomic.Uint64
 }
 
 // NewAsyncFileWriter 创建异步文件写入器并启动 worker 协程。
@@ -134,15 +139,57 @@ func (w *AsyncFileWriter) enqueue(path string, data []byte) (chan error, error) 
 	return task.Done, nil
 }
 
+// TryEnqueue 尝试**非阻塞**入队一个写入任务：队列满或写入器已关闭时立即
+// 丢弃任务并返回 (nil, false)，绝不阻塞调用方。成功时返回任务的结果通道
+// （只读视图，语义同 WriteAsync）。
+//
+// 仅限 fire-and-forget 语义的调用路径使用（2026-10-01 审计：请求侧 body 镜像
+// 经 telemetry 落库 goroutine 投递，磁盘停滞时阻塞入队会把 persistRequestLog
+// 拖住，违背其注释承诺的 fire-and-forget）。丢弃意味着数据丢失：关键路径
+// （FileBodiesStore 等）必须继续走 Write/WriteAsync 的阻塞入队，语义不变。
+// 丢弃计数进 Stats()["dropped_enqueues"]，并做节流 Warn（首条 + 每 1000 条）。
+func (w *AsyncFileWriter) TryEnqueue(path string, data []byte) (<-chan error, bool) {
+	// 快速失败路径：已关闭时无需竞争锁（与 enqueue 同款）
+	select {
+	case <-w.ctx.Done():
+		return nil, false
+	default:
+	}
+
+	w.enqMu.Lock()
+	defer w.enqMu.Unlock()
+	if !w.accepting.Load() {
+		return nil, false
+	}
+	task := &WriteTask{
+		Path: path,
+		Data: data,
+		Done: make(chan error, 1), // 缓冲为 1，worker 写入后 close，不会阻塞也不会泄漏
+	}
+	select {
+	case w.queue <- task:
+		return task.Done, true
+	default:
+		n := w.droppedEnqueues.Add(1)
+		if n == 1 || n%1000 == 0 {
+			slog.Warn("async file writer: queue full, dropping fire-and-forget task",
+				"path", path, "dropped_total", n)
+		}
+		return nil, false
+	}
+}
+
 // Stats 返回写入统计快照。
-// total_writes：成功写入次数；total_bytes：成功写入字节总数；failed_writes：失败次数。
+// total_writes：成功写入次数；total_bytes：成功写入字节总数；failed_writes：失败次数；
+// dropped_enqueues：TryEnqueue 因队列满丢弃的任务数（阻塞入队不计入）。
 func (w *AsyncFileWriter) Stats() map[string]uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return map[string]uint64{
-		"total_writes":  w.totalWrites,
-		"total_bytes":   w.totalBytes,
-		"failed_writes": w.failedWrites,
+		"total_writes":     w.totalWrites,
+		"total_bytes":      w.totalBytes,
+		"failed_writes":    w.failedWrites,
+		"dropped_enqueues": w.droppedEnqueues.Load(),
 	}
 }
 

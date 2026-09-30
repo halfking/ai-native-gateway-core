@@ -702,6 +702,13 @@ files=(
   # COMMENT ON（重复执行覆盖注释，无副作用）。位置约束同 StartupFiles：
   # 必须晚于 733（建表与分区）与 801（同族），故排在序列末尾。
   "$ROOT_DIR/sql/migrations/startup/802_session_turn_details_gw_task_id_index.sql"
+  # 2026-10-01 审计十七轮（807）：request_logs_bodies_hot 删除被同列 UNIQUE
+  # 索引 idx_request_logs_bodies_hot_request_id（455/678 建，承重
+  # ON CONFLICT (request_id) upsert）全量影蔽的冗余普通索引。DROP INDEX
+  # CONCURRENTLY 不允许在事务块内执行——文件带 dbinit:no-transaction 标记
+  # 走非事务通道；幂等（IF EXISTS + NOTICE skipping）。位置约束：晚于
+  # 455/678（保留侧创建者），排在序列末尾。
+  "$ROOT_DIR/sql/migrations/startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

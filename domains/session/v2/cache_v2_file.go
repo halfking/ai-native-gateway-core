@@ -153,6 +153,7 @@ func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache,
 //   - 热区外（lite 独立 cache 目录）：确无配额型 trimmer（bg/cache_trimmer.go
 //     只按 TTL 删），靠后续写入触发 ensureSpaceLocked 的写时淘汰回落，低写入
 //     场景下超限占用要等 TTL 到期才回落。
+//
 // 零值或负值拒绝（与构造时校验一致）。
 // 内部持 fc.mu 写 maxSize：热重载由 settings/admin goroutine 调用，与 Set
 // 锁内的 `sizeUsed+needed <= maxSize` 判定并发，必须同锁互斥（mu 是私有
@@ -211,21 +212,28 @@ func validCacheID(s string) bool {
 	return !strings.ContainsAny(s, `/\`)
 }
 
-// expired 判断 mtime 是否已超过 TTL。
-func (fc *FileCache) expired(modTime time.Time) bool {
-	return fc.ttl > 0 && time.Since(modTime) >= fc.ttl
+// expired 判断 mtime 是否已超过 ttl。ttl 必须由调用方在持 fc.mu 的窗口内
+// 读取后传入：fc.ttl 可被 SetTTL 热重载并发写（2026-10-01 审计 F2 补充），
+// 锁外读取是数据竞争（-race 可报）。
+func fileCacheExpired(ttl time.Duration, modTime time.Time) bool {
+	return ttl > 0 && time.Since(modTime) >= ttl
 }
 
-// TTL 返回构造时生效的缓存 TTL（nil-safe，返回 0）。
+// TTL 返回当前生效的缓存 TTL（nil-safe，返回 0）。
 //
 // 读侧（Get 按 mtime 判过期）与删侧（bg.CacheTrimmer 按 mtime 删文件）必须
 // 共享同一个 TTL 口径，否则删除侧会删掉读侧仍视为有效的条目。装配层
 // （cmd/gateway initStorageMode）用本方法在启动期断言这一不变量，配置校验
 // 与日志都以此为唯一事实来源，不从配置字段二次推导。
+//
+// 内部持 fc.mu 读：SetTTL 热重载会并发写 fc.ttl（2026-10-01 审计补充，
+// 与 ResizeMax/SetTTL 的锁纪律一致）。
 func (fc *FileCache) TTL() time.Duration {
 	if fc == nil {
 		return 0
 	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
 	return fc.ttl
 }
 
@@ -246,8 +254,12 @@ func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 	key := cacheIndexKey(tenantID, sessionID)
 
 	fc.mu.Lock()
+	// ttl 必须在锁窗口内快照：fc.ttl 可被 SetTTL 热重载并发写，锁外读取
+	// 是数据竞争。下方非索引路径（锁外 Stat 后判过期）复用本快照——热重载
+	// 与单次 Get 并发时按旧值或新值判定皆可接受（单次读的线性化点取快照）。
+	ttl := fc.ttl
 	entry, indexed := fc.index[key]
-	if indexed && fc.expired(entry.modTime) {
+	if indexed && fileCacheExpired(ttl, entry.modTime) {
 		// 索引条目已过期：复检磁盘后删除（避免误删并发 Set 刚刷新的同名文件）
 		fc.removeExpiredLocked(path)
 		delete(fc.index, key)
@@ -262,7 +274,7 @@ func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 		if err != nil {
 			return nil, fmt.Errorf("file cache: get %s: %w", path, errCacheMiss)
 		}
-		if fc.expired(fi.ModTime()) {
+		if fileCacheExpired(ttl, fi.ModTime()) {
 			fc.removeExpired(path)
 			return nil, fmt.Errorf("file cache: get %s: expired: %w", path, errCacheMiss)
 		}
@@ -508,7 +520,7 @@ func (fc *FileCache) removeExpired(path string) {
 // Get 在检测到索引过期时会先持锁调用本函数，避免重复加锁。
 func (fc *FileCache) removeExpiredLocked(path string) {
 	fi, err := os.Stat(path)
-	if err != nil || !fc.expired(fi.ModTime()) {
+	if err != nil || !fileCacheExpired(fc.ttl, fi.ModTime()) {
 		return // 已被并发删除，或已被并发 Set 刷新
 	}
 	if err := atomicrename.Remove(path); err != nil {
