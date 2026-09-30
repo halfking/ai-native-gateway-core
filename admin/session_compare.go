@@ -1012,7 +1012,14 @@ func countCompletedTasks(summary string) int {
 // The actual settings are registered via settings/spec_compression.go:
 //
 //	compression.enabled  (bool, default=true)  — master switch
-//	handoff.enabled      (bool, default=true)  — handoff master switch
+//	handoff.enabled      (bool, default=false) — handoff master switch
+//
+// 2026-10-01 R74 (comment correction): this used to say handoff.enabled
+// defaults to true. It does not — settings/handoff_specs.go:45 ships
+// Default: false, and cmd/gateway/goal_control.go's boot-time default agrees.
+// Anyone sizing capacity or reasoning about behaviour off this comment would
+// conclude the handoff path is live by default when it is off by default and
+// additionally inert under the default client_mode=transparent.
 
 // HandoffEnabled checks if handoff feature is available for a tenant.
 // This is a server-side safety check. The UI also checks the settings.
