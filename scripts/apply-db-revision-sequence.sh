@@ -680,6 +680,18 @@ files=(
   # days>7 聚合对每分区全表扫（252-dev 实测 3 行租户 6.5s / default 21.5s）。
   # 父表 CREATE INDEX IF NOT EXISTS 级联全部分区，重放 no-op 并补台账。
   "$ROOT_DIR/sql/migrations/startup/764_request_logs_tenant_ts_index.sql"
+  # 2026-09-30 补登 800/801 升级通道（ec5edcfd7 只落了 installer StartupFiles，
+  # 序列通道缺席 → 目录驱动门报「startup migration 801 exists but is missing
+  # from the channel files=(...) array」，正是该门注释里点名的 693/699/701/703
+  # 复发形态：fresh install 有、存量库升级永远不落地）。
+  # 800：每 provider 多端点表 + providers 旧行回填，CREATE TABLE IF NOT
+  # EXISTS + ON CONFLICT DO NOTHING 幂等。
+  # 801（原 759，撞号让位后改号）：只 CREATE OR REPLACE 733 建的
+  # promote_session_turn_details_hot_to_partition，不跑批量 DELETE、不改
+  # 存量分区，重放安全。位置约束同 StartupFiles：必须晚于 733（其目标函数
+  # 依赖 733 建的 session_turn_details 表与 hot 表），故排在序列末尾。
+  "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
+  "$ROOT_DIR/sql/migrations/startup/801_session_turn_details_duplicate_drain.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -739,6 +751,10 @@ intentional_function_chains=(
   # registration and aborted every later deploy at the pre-flight guard,
   # 2026-09-14 deploy-local incident).
   'promote_supplier_errors_hot_to_partition|V371__supplier_errors_hot_and_stats.sql|703_supplier_errors_promote_timezone_pin.sql|'
+  # 801（原 759 撞号让位后改号）以有界无损版本重定义 733 建的
+  # promote_session_turn_details_hot_to_partition：733 的 parent anti-join 在
+  # backfill 已插入同一 request key 时滞留旧 hot 行。801 必须保持为后项。
+  'promote_session_turn_details_hot_to_partition|733_session_turn_details.sql|801_session_turn_details_duplicate_drain.sql|'
   # 705 rewrote ensure_request_logs_partition as the attached-aware body
   # (detached-shell re-attach + default-gap self-heal) on top of 694's
   # timezone-pinned body; the rewrite must stay the later entry. 705 landed
