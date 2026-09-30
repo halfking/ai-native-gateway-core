@@ -17,7 +17,6 @@ package admin
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -175,9 +174,6 @@ func (h *Handler) loadSessionDetailDataInTx(ctx context.Context, tx pgx.Tx, tena
 	// 本端点历史上空结果序列化成 [] 而不是 null，保持不变。
 	if timeline == nil {
 		timeline = []RequestEvent{}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate panorama timeline: %w", err)
 	}
 	analysis, err := h.buildSessionAnalysisInTx(ctx, tx, tenantID, gwSessionID, timeline)
 	if err != nil {
