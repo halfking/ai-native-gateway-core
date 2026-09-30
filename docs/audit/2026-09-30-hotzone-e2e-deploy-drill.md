@@ -142,9 +142,13 @@ INFO storage hotzone: session v2 body mirror wired (fire-and-forget, fail-open)
 2. ~~D2~~ **已修**(克隆 .env.local 改字面量;2353 起的管线部署实测不再中止)。
 3. O1(启动窗口瞬态 no-candidate):挂账,建议专项(URSM/候选装配预热)。本地观察窗口
    最长可达数分钟,且 mock 进程死亡后 binding 退避需三表恢复法手工拉回。
-4. O2:对账脚本(若建)按「按租户目录判源:telemetry={ApplicationCode||TenantID}/信封粒度,
-   v2=会话租户/turn 粒度 + final_full」+「镜像可能多于 PG 单向容错」+「null/{} 豁免」三规则;
-   单请求六点全映射实证见 §八 R-10。
+4. ~~O2:对账脚本(若建)~~ **已建(2026-10-01)**:`scripts/hotzone-request-mirror-reconcile.sh`。
+   按本节三规则实现(按租户目录判源 + 镜像可能多于 PG 单向容错 + null/{} 豁免),
+   并加两条判据纪律:① 三态 PASS/EMPTY/FAIL——空目录若报 PASS 会让「镜像根本没装配」
+   伪装成「对账通过」,门无法区分「没查」与「查过且一致」时结论没有信息量;
+   ② 汇总只计真正体检过的文件,与 files_seen 分开,避免「扫到500/体检200」被读成
+   「500个都验过了」。已用真实 fixture 验证(损坏→FAIL/空→EMPTY/双写方去重/各类过滤)。
+   用法见脚本头注。
 5. O4:已修复接线(storage_mode_init.go 同 defer 出口),三测试钉死 + 2353/2354 两个生产
    构建 live 验证 hotzone_on=true。
 6. O5:PG 停机窗口 PG 侧行未回放(镜像侧正常)——回放缺失根因(fallback 队列/重试上限)挂账。

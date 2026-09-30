@@ -130,21 +130,32 @@ func TestDerivedBaselineLagIsSuppliedByMigrations(t *testing.T) {
 		len(canon), len(derived), len(baselineLagObjects))
 }
 
-// TestBaselineDumpScriptIsRunnable prevents the silent-death shape: a
-// committed generator wrapper that cannot run looks like a working tool to
-// every reader, which is why nobody noticed the copies were hand-edited.
+// TestBaselineGeneratorLibraryResolves prevents the silent-death shape: a
+// committed generator wrapper whose sourced library is missing looks like a
+// working tool to every reader, which is why nobody noticed the copies were
+// hand-edited.
 //
-// This gate is red on purpose and stays red until someone either restores
-// db-init-lib.sh into this repository or deletes the wrapper. That is the
-// decision recorded for this round: mark the generator dead rather than
-// pretend the copies are reproducible.
-func TestBaselineDumpScriptIsRunnable(t *testing.T) {
+// WHAT THIS DOES NOT TEST, stated plainly because the previous name claimed
+// otherwise: it does not run the generator. Running it needs a live SSOT
+// database whose schema is known-good, and no such database exists in this
+// repository — the local dev database was found to be a half-migrated
+// intermediate state (migration 434's four indexes are three present,
+// handoff_logs has no primary key). So "runnable" is not a property this
+// repository can currently assert, and naming the test that way turned an
+// unverified claim into a passing result.
+//
+// The split, stated so the next reader does not have to rediscover it:
+//   - resolvable  — asserted here;
+//   - produces a baseline that applies to an empty database — verified
+//     manually on 2026-10-01 (generated baseline applied exit=0, 660
+//     relations, matching the source database), NOT asserted by any test.
+func TestBaselineGeneratorLibraryResolves(t *testing.T) {
 	const script = "../../sql/scripts/dump-schema.sh"
 
-	// Desired end state is binary: either the generator is restored (its
-	// library resolves) or the wrapper is gone. Asserting the *current* broken
-	// state instead would make this permanently red and teach everyone to
-	// ignore it. This shape goes green the moment either resolution lands.
+	// Desired end state is binary: either the generator library is present (its
+	// sourced path resolves) or the wrapper is gone. Asserting the *current*
+	// broken state instead would make this permanently red and teach everyone
+	// to ignore it. This shape goes green the moment either resolution lands.
 	b, err := os.ReadFile(script)
 	if os.IsNotExist(err) {
 		t.Log("dump-schema.sh 已移除：无生成器的手工基线由 " +
@@ -172,10 +183,8 @@ func TestBaselineDumpScriptIsRunnable(t *testing.T) {
 		t.Fatalf("%s 里找不到 source 行，dump-schema.sh 结构变了", script)
 	}
 
-	// sql/scripts -> repo root is two levels up; from there to sql/scripts is
+	// sql/scripts -> repo root is two levels up; from there to sql/schema is
 	// where $SCRIPT_DIR and $REPO_ROOT-resolved paths are anchored.
-	scriptDir := cleanJoin("../../sql/scripts", "x")
-	_ = scriptDir
 	repoRoot := "../.."
 	resolved := libPath
 	resolved = strings.ReplaceAll(resolved, "$SCRIPT_DIR", "../..")
