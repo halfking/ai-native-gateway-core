@@ -469,6 +469,10 @@ func (e *Executor) executeOpenAI(
 	// 模式回退时需要从这里恢复。
 	clientSourceBody := sourceBody
 	var bodyBytes []byte
+	// R34-A1: responses 专属压缩链的 provenance JSON（strategy + dropped
+	// indexes + AlignmentMap）。proactive 与 4xx recovery 两条路径写入，
+	// preTrimMeta 构建处统一合入 request_logs.compression_meta。
+	var responsesProvenance []byte
 	if nativeNonStream || nativeStream {
 		sourceBody = append([]byte(nil), params.ResponsesBodyBytes...)
 		if len(sourceBody) == 0 {
@@ -483,7 +487,11 @@ func (e *Executor) executeOpenAI(
 			contextWindow = *cand.ContextWindow
 		}
 		reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
-		bodyBytes = transformation.CompressResponsesInputIfNeeded(sourceBody, contextWindow, reserve)
+		// R34-A1: responses 专属压缩链带 provenance（dropped indexes 等），
+		// 由 recordResponsesInputTrim 合入 request_logs.compression_meta。
+		var responsesTrimMeta *transformation.ResponsesInputTrimMeta
+		bodyBytes, responsesTrimMeta = transformation.CompressResponsesInputIfNeededWithMeta(sourceBody, contextWindow, reserve)
+		recordResponsesInputTrimMeta(&responsesProvenance, sourceBody, bodyBytes, responsesTrimMeta)
 		bodyBytes = transformation.RewriteResponsesModel(bodyBytes, cand.RawModel)
 		// paramledger (2026-09-22): native responses 分支不经过
 		// finalizeOpenAIUpstreamBody，paramguard（嵌套 reasoning.effort 的
@@ -527,6 +535,9 @@ func (e *Executor) executeOpenAI(
 	// no 4xx happened. Without this the pre-request trim runs silently
 	// and operators can't see how many bytes were saved.
 	preTrimMeta := buildPreRequestTrimMeta(len(sourceBody), len(bodyBytes), cand.ContextWindow)
+	// R34-A1: responsesProvenance 的合并在下方三处 result 构造点进行——
+	// 4xx recovery 会在此之后覆盖 responsesProvenance，提前合并会丢
+	// recovery 侧证据。
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
 		outboundModel = cand.RawModel
@@ -1306,7 +1317,13 @@ func (e *Executor) executeOpenAI(
 									contextWindow = *cand.ContextWindow
 								}
 								reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
-								sourceBody = transformation.CompressResponsesInputAggressively(sourceBody, contextWindow, reserve)
+								// R34-A1: 4xx recovery 的 aggressive 裁剪同样留
+								// provenance；覆盖 proactive 侧（后者是同一次
+								// attempt 链的前置 trim，recovery 值反映最终形态）。
+								preRecoveryBody := sourceBody
+								var recoveryTrimMeta *transformation.ResponsesInputTrimMeta
+								sourceBody, recoveryTrimMeta = transformation.CompressResponsesInputAggressivelyWithMeta(sourceBody, contextWindow, reserve)
+								recordResponsesInputTrimMeta(&responsesProvenance, preRecoveryBody, sourceBody, recoveryTrimMeta)
 								bodyBytes = transformation.RewriteResponsesModel(sourceBody, cand.RawModel)
 							} else {
 								bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
@@ -1664,7 +1681,7 @@ func (e *Executor) executeOpenAI(
 					// metadata so emitTelemetry can write compression_meta.
 					CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 					CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta)),
 					// 2026-06-19 quality fix mode: relay/stream.go populated
 					// capture.QualityFlags as each chunk was processed.
 					// relay/handler.go emitTelemetry writes these into
@@ -1760,7 +1777,7 @@ func (e *Executor) executeOpenAI(
 					IntegrityObserved:   e.IntegrityDetector != nil && !params.SuppressSuccessWrite && params.W != nil && len(respBody) > 0,
 					CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 					CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta)),
 					RoutingTracker:      params.RoutingTracker,
 				}, nil
 			}
@@ -1943,7 +1960,7 @@ func (e *Executor) executeOpenAI(
 				// request_logs.compression_*.
 				CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 				CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-				CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+				CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta)),
 				// Round 47 compression v7 T-NEW-4: pre-request trim
 				// metadata merged in via mergeCompressionMeta above.
 				// 2026-06-19 quality fix mode: relay/handler.go emitTelemetry
