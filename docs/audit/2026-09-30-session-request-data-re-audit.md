@@ -1080,9 +1080,170 @@ text 值**，那个 cast 是有意为之。收窄到 `jsonb?` 才既正确又可
 
 守卫与真库门在这一轮全部按预期工作（4 次变异全部转红），修复重做后复绿。
 
+## 5.9 顺手把同一形状的慢端点也修了，并挖出两个既存缺陷
+
+§5.6 修完 summary 后，去查还有哪些端点踩在同一个 bodies 坑上。按**外侧行数**分类
+（单行 `request_id` 反查不受影响，会话级多行才会触发逐轮列存扫描）后，
+`session_compare` 是最严重的一个。
+
+### 5.9.1 性能：compare 4,183 ms → 267 ms
+
+| 形态 | Execution |
+|------|-----------|
+| 旧单查询（12 列 `LEFT JOIN`，500 轮上限） | **4,183 ms** |
+| 新 phase 1（轮次元数据，9 → 5 列） | 170 ms |
+| 新 phase 2（批量半连接） | 97 ms |
+
+顺带发现原查询 `SELECT` 了 `outbound_msg_count` / `outbound_token_est` /
+`provider_id` 三个列并扫进变量，而**没有任何分支读过它们**——已删除。
+
+### 5.9.2 挖出缺陷一：配对键 `(request_id, ts)` 根本配不上
+
+改造时我一度把 compare 的关联键从 `request_id` 收紧成 `(request_id, ts)`——
+理由是 summary 那边用的是元组，看起来更严谨。**等价性门当场转红**，
+把我带到一个此前没人注意的事实：
+
+```
+request_id   session_turns.ts              request_logs_bodies.ts
+d5ddec11…    2026-09-11 09:19:57.824743+08  2026-09-11 09:19:49.062849+08
+```
+
+**`request_logs_bodies.ts` 是正文写入时间，不是轮次时间。** 全库实测：
+
+| 口径 | 数量 |
+|------|------|
+| 两表能 join 上的 request_id | 811,128 |
+| 其中 ts **相等** | 1,236 |
+| ts **不等** | 809,892（**99.85%**） |
+
+所以按 `(request_id, ts)` 配对**几乎永远返回空**。而
+`session_compare` / `session_export` / `sessionforensics` / `session_title`
+全都只按 `request_id` 配对——那是既有且正确的口径。
+
+**这意味着 `session_summary_v2.go` 的原查询（`AND rb.ts = rl.ts`）长期拿不到正文。**
+§5.6 的等价性门是绿的（因为新旧用的是同一个键），它证明了「等价」，
+但没有也不可能证明「这个键本身对不对」。
+
+处置：**两种键都保留**，分别对应两个端点各自的既有行为，不在重构里夹带变更。
+`querySessionBodiesByRequestID` 与 `querySessionBodiesByRequestIDAndTS` 并存，
+注释写清各自理由。**是否把 summary 也改成 `request_id` 口径是一个独立的产品决策**，
+改了之后总结正文会从几乎全空变成有内容——影响面大，需你拍板（见 §8）。
+
+### 5.9.3 挖出缺陷二：compare 静默丢掉 17.32% 的轮次
+
+`client_model` 被扫进裸 `string`，而它可空；`rows.Scan` 遇 NULL 报错，
+紧跟的 `if err != nil { continue }` 就把**整轮丢掉**。
+
+| 口径 | 数量 |
+|------|------|
+| `gw_session_id` 非空的轮次 | 964,990 |
+| 其中 `client_model IS NULL` | 167,133（**17.32%**） |
+
+这**不是我引入的**——`git show HEAD:admin/session_compare.go` 确认改动前就是这样。
+但重构不能原样保留一个已知的数据丢失。已把扫描改为 `*string` + `derefOrEmpty`。
+
+**行为变化**：compare 现在会比以前多给约 17% 的轮次。
+
+### 5.9.4 守卫
+
+| 门 | 变异验证 |
+|----|---------|
+| `TestSessionCompareSplitMatchesLegacyQuery`（真库，4 组探针） | 键错配时转红——**正是它抓出 §5.9.2** |
+| `TestSessionBodyPairingKeysMatchTheirCallers` | 见下 |
+| `TestSessionBodiesBatchSQLIsNotALefiJoin` | 退回 `unnest + LEFT JOIN` → 转红 |
+| `TestCompareKeepsTurnsWithNullClientModel` | `clientModel` 退回裸 `string` → 转红 |
+
+> 一个值得记的细节：把 compare 的键改回元组的那个变异**根本编译不过**——
+> `querySessionBodiesByRequestID` 返回 `map[string]sessionBody`，用
+> `fallbackTurnKey` 去索引是类型错误。**map 的键类型才是真正的守卫**，
+> 源码文本断言只是防重构时手滑的文档。
+
+## 5.10 合并 S4 批次：39 文件的合并不是「无冲突 = 正确」（2026-10-01）
+
+本会话的工作树基于 `c54ab8dc1`，另一会话的 S4 读端迁移批次是 `38d59b2eb`。
+两者 merge-base 是 `c19baebd4`（比双方 HEAD 都老），所以这是一次**真正的三方合并**，
+不是快进。`git merge` 报「无冲突」，但那只说明**没有文本冲突**。
+
+### 5.10.1 第一例：文本层无冲突的语义混合体
+
+`admin/session_panorama_handler.go` 合并后编译失败：
+
+```
+admin/session_panorama_handler.go:179:2: undefined: rows
+```
+
+成因是三方合并把「`38d59b2eb` 把内联 timeline 查询换成
+`loadSessionTimelineInTx`」与「`origin/main` 给内联版本补的 `rows.Err()`
+处理」拼在了一起 —— 前者删掉了 `rows` 变量，后者还在引用它。
+git 看到的是「一边删 27 行、一边加 4 行」，行级不重叠，**因此判定无冲突**。
+
+删掉残留块后仍留一个未使用的 `fmt` import，编译再次报错。**编译通过是最低门槛，
+不是正确性证据**：这次是我运气好，残留的是未定义变量而不是一个恰好能编译的
+错误表达式。
+
+### 5.10.2 第二例：`warnRowSkip` 被「重构顺手清理」掉了（更危险）
+
+单测 `TestAggReadGuard_MigratedCallersWired` 在合并后转红：
+
+```
+admin/session_compare.go lost guard wiring: warnRowSkip no longer referenced
+```
+
+追查结果是两层叠加：
+
+1. `38d59b2eb` 的 `session_compare.go` 里 `warnRowSkip` 出现 **0 次**，
+   而 `origin/main` 有 3 次 —— S4 批次把 `loadCompareData` 整体改写成原生源时，
+   把 R35-N1 的三处跳行留痕一起删了。**这是 S4 批次自身引入的回归**。
+2. 三方合并恰好把 `origin/main` 那 3 处补了回来（因为它们落在 S4 未改动的
+   上下文行上）。**这是运气，不是设计。**
+3. 我随后用 `git checkout stash@{0} -- admin/session_compare.go` 恢复自己的
+   两段式拆分版本 —— 而我的 stash 基线是 `c54ab8dc1`，**早于 R35-N1 那批提交**，
+   于是刚被合并补回来的 3 处又被我抹掉了。
+
+所以最终结论是：**两边都丢过，只是被合并的运气掩盖了。**
+
+修复方式不是照抄 `origin/main`，而是核对了 `c54ab8dc1..541c766ba` 之间
+`session_compare.go` 的**全部**变更 —— 结果正好就是这 4 处（3 处
+`warnRowSkip` + 2 处 `rows.Err()`），无其他内容。因此在我的两段式版本上
+逐一补回即为正确超集。
+
+同批核对其余 4 个被 checkout 的文件（`quality_correlations.go`、
+`session_summary_v2.go`、`session_summary_v2_fallback_test.go`、
+`sessionforensics/export.go`）：`c54ab8dc1..541c766ba` 对它们的 diff **全为空**，
+说明我的版本没有回退任何 origin/main 的后续修复。
+
+### 5.10.3 排查方法：按「两侧都改过」筛风险区，而不是靠人眼看 diff
+
+合并后 88 个文件有差异，但只有 **5 个**同时相对两个父版本都发生变更
+（`session_compare.go`、`session_export.go`、`session_management_api.go`、
+`session_panorama_handler.go`、`session_title.go`）—— 这 5 个是必须逐个人工
+审的语义混合体候选。筛法：
+
+```bash
+comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
+```
+
+另外对 26 个受 `aggregate_read_guard_test.go` 静态守卫的文件做了
+「origin/main / S4 / 合并结果」三态计数对撞，确认合并在**其余 20 个文件上
+零差异**，守卫接线未被合并破坏。
+
+### 5.10.4 守卫本身在这一轮证明有效
+
+`TestAggReadGuard_MigratedCallersWired` 是纯文本守卫（`strings.Contains`），
+按 §5.5.6 的标准它算「弱守卫」。但本轮它是**唯一**发现语义回归的机制 ——
+编译全绿、vet 全绿、其余单测全绿，只有它红了。补记一条判据：
+**文本守卫在「引用是否存在」这件事上足够可靠**（引用要么在要么不在），
+不可靠的只是它无法区分「在正确的位置」与「在注释里」。
+
 ## 6. 未完成项（不得写成已完成）
 
 **P0 已全部清零**（9 个文件）。以下为剩余项：
+
+**本轮合并状态（2026-10-01）**：S4 批次 `38d59b2eb` 已合入 `main`
+（merge commit `317f28556`）。合并发现并修掉 2 处语义缺陷，详见 §5.10。
+需要注意的是，S4 批次**自身**曾回归掉 `session_compare.go` 的 R35-N1
+跳行留痕接线，本轮已补回；其余 20 个受静态守卫的文件经三态计数对撞
+确认合并零差异。
 
 **本轮引入的口径变化（需知悉，不是缺陷）**：`session_analytics_timeseries.go`
 三条趋势查询切到 734 视图后，**跨月的 pre-mirror v1 历史行不再计入**
@@ -1140,4 +1301,34 @@ text 值**，那个 cast 是有意为之。收窄到 `jsonb?` 才既正确又可
    若后续再现欠账，脚本现已具备「复活死信 + 幂等重跑」能力。
 5. **决策正文存储**：S6 前必须定 `session_bodies` 是否补全量字段。
 6. **S6 DROP**。
+
+## 8. 待你拍板（截至 2026-10-01，共 6 项待决 + 1 项已关闭）
+
+第 6 项因本轮合并而自动关闭，第 7 项是 2026-10-01 新增的。
+
+| # | 事项 | 性质 | 状态 |
+|---|------|------|------|
+| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支 | 等决定 |
+| 2 | **`session_list.go:140/167` ⚠️ 半等价类** | 迁过去会让 `request_count`/`error_count`/`is_compressed` 变小 2.5% | 等决定 |
+| 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
+| 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
+| 5 | **`request_logs_bodies_hot` 重复索引** | 已实测可安全删除（事务内 DROP + ROLLBACK，3.940 ms 无回退）；需新开 803 走五点同步，属 765 范围 | 等决定 |
+| 6 | ~~**工作区 131 文件陈旧暂存区**~~ | **已作废**：`reset --soft origin/main` 的残留已被本轮合并（`317f28556`）清空；当前工作区仅 14 个文件、全部是本轮有意改动 | 已关闭 |
+| 7 | **`session_summary_v2` 的正文配对键** | 见下 | 等决定 |
+
+### 8.1 第 7 项：`session_summary_v2` 的正文几乎全是空
+
+§5.9.2 实测：它的查询用 `(request_id, ts)` 配对正文，而 `request_logs_bodies.ts`
+是**正文写入时间**，两者 99.85% 不等，所以绝大多数轮次取不到正文。
+
+改成 `request_id` 口径是**一行改动**，但它不是重构，是行为变更：
+总结的输入正文会从「几乎全空」变成「有内容」，直接改变 LLM 总结的结果，
+也可能改变 token 计费与缓存命中。
+
+- 不改：端点保持现状（但要知道它长期在用空正文做总结）。
+- 改：与 `session_compare` / `session_export` / `sessionforensics` /
+  `session_title` 四个既有口径对齐，一致性更好。
+
+**建议改**，但需要你确认影响面可接受。改动本身已就位（两个函数并存），
+只差把 `queryRequestLogsFallback` 从 `…AndTS` 切到 `…ByRequestID`。
 
