@@ -65,6 +65,10 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		RepetitionPenalty *float64        `json:"repetition_penalty,omitempty"`
 		MaskSensitiveInfo *bool           `json:"mask_sensitive_info,omitempty"`
 		BotSetting        json.RawMessage `json:"bot_setting,omitempty"`
+
+		// Legacy Completions text input (mutually exclusive with `messages`).
+		// Promoted into a user message below — see the handling site.
+		Prompt string `json:"prompt,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -85,6 +89,11 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		"previous_response_id": true, "truncation": true,
 		// 2026-09-21 audit: promoted to first-class IR fields.
 		"repetition_penalty": true, "mask_sensitive_info": true, "bot_setting": true,
+		// Legacy Completions text input. Must be listed here, otherwise it is
+		// ALSO captured into Extensions and paramreg then drops it as a
+		// DialectResponses-only key — reintroducing exactly the data loss the
+		// promotion below exists to prevent.
+		"prompt": true,
 	}
 
 	extensions := make(map[string]json.RawMessage)
@@ -213,6 +222,25 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 			return nil, fmt.Errorf("parse messages: %w", err)
 		}
 		ir.Messages = messages
+	}
+
+	// Legacy OpenAI Completions carries the input in a top-level `prompt`
+	// string instead of `messages`. Without this promotion the field falls
+	// through to Extensions, where paramreg classifies `prompt` as a
+	// DialectResponses-only key (the reusable prompt-TEMPLATE reference
+	// {id,version,variables}) and drops it for an openai-chat source — the
+	// request then went upstream with no content at all, silently losing the
+	// user's entire input. Same key, two unrelated meanings; the meaning is
+	// decided by which fields the body actually carries, not by the key name.
+	//
+	// `messages` wins when both are present: it is the richer, structured
+	// form, and the legacy `prompt` is then a redundant echo. This matches
+	// the Completions API itself, where `prompt` is a convenience alias.
+	if len(ir.Messages) == 0 && len(src.Prompt) > 0 {
+		ir.Messages = []Message{{
+			Role:    "user",
+			Content: []ContentBlock{{Type: "text", Text: src.Prompt}},
+		}}
 	}
 
 	// Parse tools

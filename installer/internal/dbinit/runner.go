@@ -364,6 +364,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
 			// 本轮移入 startup 并补登记。
 			"800_provider_endpoint_protocols.sql",
+			// 801 (原 759, 2026-09-29): session_turn_details hot 排水的有界无损
+			// 重定义——733 的 parent anti-join 在 backfill 已插入同一 request key 时
+			// 会滞留旧 hot 行，其不可达 ON CONFLICT DO UPDATE 还会把 parent-only
+			// 补字段擦成 hot 的 NULL。
+			//
+			// 编号 801：759 已被 upstream 占用（759_report_snapshots_grain_dims，
+			// docs/12小时内修订审计-20260929-1635.md §R22-A 订的「先提交方占号」规则）。
+			// 位置在 800 之后：本迁移 CREATE OR REPLACE 的目标函数依赖 733 建的
+			// session_turn_details 表与其 hot 表，必须晚于 733 生效；旧位置（758 与
+			// 760 之间）会让 applySQL 顺序执行时在依赖对象存在前就替换函数。
+			"801_session_turn_details_duplicate_drain.sql",
 		},
 	}
 }

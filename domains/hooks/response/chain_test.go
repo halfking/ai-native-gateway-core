@@ -1,6 +1,7 @@
 package response
 
 import (
+	"bytes"
 	"context"
 	"testing"
 )
@@ -26,6 +27,67 @@ func (i chainTestInterceptor) InterceptStreamChunk(_ context.Context, chunk []by
 
 func (chainTestInterceptor) InterceptStreamEnd(context.Context, *StreamMeta) (*EndResult, error) {
 	return nil, nil
+}
+
+// holdingTestInterceptor is a StreamPendingFlusher: it models the F02
+// output-compliance interceptor that withholds frames across events and
+// releases every checked frame at the terminal event as
+// SuppressChunk(dropped raw frame) + ModifiedChunk(checked wire).
+type holdingTestInterceptor struct {
+	chainTestInterceptor
+	release []byte
+}
+
+func (h holdingTestInterceptor) FlushStreamPending(context.Context, *StreamMeta) ([]byte, error) {
+	return nil, nil
+}
+
+// F02: a frame-holding interceptor's terminal release must stay visible
+// through the chain result. R24-C cleared ModifiedChunk on ANY suppressing
+// result, which also destroyed this legitimate release payload — the client
+// then received nothing for the whole withheld stream.
+func TestInterceptorChainSuppressResultKeepsHolderReleaseVisible(t *testing.T) {
+	chain := NewInterceptorChain(holdingTestInterceptor{
+		chainTestInterceptor: chainTestInterceptor{chunk: func([]byte) *ChunkResult {
+			return &ChunkResult{SuppressChunk: true, ModifiedChunk: []byte("event: done\ndata: {\"checked\":true}\n\n")}
+		}},
+		release: []byte("event: done\n"),
+	})
+	result, err := chain.InterceptStreamChunk(context.Background(), []byte("raw-terminal"), &StreamMeta{})
+	if err != nil {
+		t.Fatalf("InterceptStreamChunk: %v", err)
+	}
+	if result == nil || !result.SuppressChunk {
+		t.Fatalf("result = %+v, want suppression", result)
+	}
+	if len(result.ModifiedChunk) == 0 || !bytes.Contains(result.ModifiedChunk, []byte("\"checked\":true")) {
+		t.Fatalf("holder release lost: modified=%q", result.ModifiedChunk)
+	}
+}
+
+// R24-C regression twin: the same result shape from an interceptor WITHOUT
+// StreamPendingFlusher is the leak shape and must stay hidden.
+func TestInterceptorChainSuppressResultCarriesNoReplacementWithoutHolder(t *testing.T) {
+	chain := NewInterceptorChain(
+		chainTestInterceptor{chunk: func([]byte) *ChunkResult {
+			return &ChunkResult{
+				SuppressChunk: true,
+				ModifiedChunk: []byte("withheld-replacement"),
+				InjectAfter:   []byte("withheld-injection"),
+			}
+		}},
+	)
+	result, err := chain.InterceptStreamChunk(context.Background(), []byte("raw-frame"), &StreamMeta{})
+	if err != nil {
+		t.Fatalf("InterceptStreamChunk: %v", err)
+	}
+	if result == nil || !result.SuppressChunk {
+		t.Fatalf("result = %+v, want suppression", result)
+	}
+	if len(result.ModifiedChunk) > 0 || len(result.InjectAfter) > 0 {
+		t.Fatalf("suppressed result leaked withheld content: modified=%q inject=%q",
+			result.ModifiedChunk, result.InjectAfter)
+	}
 }
 
 func TestInterceptorChainPropagatesFirstNonStreamModification(t *testing.T) {
@@ -90,12 +152,21 @@ func TestInterceptorChainPropagatesFirstStreamModification(t *testing.T) {
 //  3. a stale replacement from an earlier interceptor is dropped once a
 //     later interceptor suppresses without releasing.
 func TestInterceptorChainSuppressResultCarriesOnlySameResultRelease(t *testing.T) {
+	// The release payload is produced by a frame-HOLDING interceptor: the only
+	// production producer of {SuppressChunk:true, ModifiedChunk:prior+terminal}
+	// is OutputComplianceInterceptor (stream_compliance.go:127), which also
+	// implements StreamPendingFlusher (:159). Modelling the same shape with a
+	// plain non-holder interceptor asserted a state the chain never sees, and
+	// forced the implementation to forward withheld content from arbitrary
+	// suppressors — the R24-C leak. The holder is used here so this test and
+	// TestInterceptorChainSuppressResultCarriesNoReplacementWithoutHolder assert
+	// complementary contracts on the same branch.
 	t.Run("same_result_release_survives", func(t *testing.T) {
-		chain := NewInterceptorChain(
-			chainTestInterceptor{chunk: func([]byte) *ChunkResult {
+		chain := NewInterceptorChain(holdingTestInterceptor{
+			chainTestInterceptor: chainTestInterceptor{chunk: func([]byte) *ChunkResult {
 				return &ChunkResult{SuppressChunk: true, ModifiedChunk: []byte("released-prior")}
 			}},
-		)
+		})
 		result, err := chain.InterceptStreamChunk(context.Background(), []byte("raw-frame"), &StreamMeta{})
 		if err != nil {
 			t.Fatalf("InterceptStreamChunk: %v", err)

@@ -1373,6 +1373,15 @@ type ExecParams struct {
 	// accounting.
 	FailoverNotices      *FailoverNoticeCollector
 	SuppressSuccessWrite bool
+	// DeferredOutputGovernance (R25-V): the handler owns the client write
+	// and runs output governance at commit time (deferredNonStreamWriter on
+	// the chat lane). Distinct from SuppressSuccessWrite: the chat lane still
+	// needs the success write to land in the capture buffer (W != nil), but
+	// must NOT consume the cached-replay slot here (GetLatest) nor record
+	// LogClientResponse — the handler governs those bytes and may still block
+	// or rewrite them, so replaying the cache would bypass governance and
+	// logging here would persist a blocked provider body as approved.
+	DeferredOutputGovernance bool
 	// AttachmentMetadata carries the extractor's stored-attachment records
 	// (MM-1) so the executor can swap inline base64 blocks for gateway URLs
 	// per outbound candidate. nil on the legacy path (feature off).
@@ -2204,7 +2213,16 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		}
 		// Native protocol handlers own the non-stream success write and
 		// conversion. A cached chat-shaped body cannot bypass that boundary.
-		if isRetry && !params.SuppressSuccessWrite {
+		// R25-V (2026-09-30 round 30): under SuppressSuccessWrite the handler
+		// owns the client write and runs output governance at commit time —
+		// replaying the cache here would bypass that governance AND consume
+		// the fallback slot (GetLatest) so the governed lane could never see
+		// it. When suppressed, leave the retry to the handler lane.
+		// DeferredOutputGovernance covers the chat lane: the body still lands
+		// in the handler's capture buffer (W is a deferredNonStreamWriter, not
+		// nil), but the handler governs it at commit — the cache must not be
+		// consumed here for the same reason.
+		if isRetry && !params.SuppressSuccessWrite && !params.DeferredOutputGovernance {
 			entry, requestID, found, _ := e.PendingStore.GetLatest(params.R.Context(), params.SessionID)
 			if found && entry != nil && entry.Body != "" && entry.Status == pending.StatusCompleted {
 				slog.Info("executor: retry keyword, replaying cached completed response",

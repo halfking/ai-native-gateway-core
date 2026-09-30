@@ -55,7 +55,7 @@ func buildAlignmentMapForProtocol(before, after []byte, summaryIdx int, protocol
 		info := AlignmentInfo{
 			OriginalIndex: i, CompressedIndex: -1, IsCompressed: true,
 			CompressedInto: -1, Hash: h, Occurrence: occurrence,
-			TargetKind: "dropped", TargetSpace: "none",
+			TargetKind: TargetKindDropped, TargetSpace: TargetSpaceNone,
 		}
 		if h != "" {
 			positions := afterByHash[h]
@@ -63,17 +63,17 @@ func buildAlignmentMapForProtocol(before, after []byte, summaryIdx int, protocol
 			if used < len(positions) {
 				info.IsCompressed = false
 				info.CompressedIndex = positions[used]
-				info.TargetKind = "retained"
-				info.TargetSpace = "messages"
+				info.TargetKind = TargetKindRetained
+				info.TargetSpace = TargetSpaceMessages
 				usedAfter[h] = used + 1
 			} else if summaryIdx >= 0 {
 				info.CompressedIndex = summaryIdx
 				info.CompressedInto = summaryIdx
-				info.TargetKind = "summary"
-				info.TargetSpace = "messages"
+				info.TargetKind = TargetKindSummary
+				info.TargetSpace = TargetSpaceMessages
 			} else if summaryInSystem {
-				info.TargetKind = "summary"
-				info.TargetSpace = "top_level_system"
+				info.TargetKind = TargetKindSummary
+				info.TargetSpace = TargetSpaceTopLevelSystem
 			}
 		}
 		align = append(align, info)

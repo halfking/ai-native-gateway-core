@@ -504,6 +504,18 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			writeAnthropicError(w, http.StatusForbidden, "permission_error", "session not owned by this api key")
 			return
 		}
+		if errors.Is(sessErr, errClientSessionUnavailable) {
+			// R25-W (V3-A02): the session store faulted — ownership could not
+			// be verified. Dispatching anyway would trust an unverified
+			// client-supplied id; 503 tells the client to retry.
+			attemptErrCode = "session_unavailable"
+			attemptErrMsg = "session store unavailable"
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "session store unavailable")
+			return
+		}
 	}
 	if sessionID == "" {
 		// Last-resort fallback: use the provisional id so downstream
@@ -912,6 +924,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 
 	var responseBody []byte
+	outputBlocked := false
 	if !isStream {
 		// R25-B: carry full request identity into the non-stream
 		// interception — the zero-value default previously left
@@ -927,7 +940,23 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				ClientProtocol: "anthropic-messages",
 				ClientModel:    clientModel,
 			},
+			failureEmit: func() {
+				outputBlocked = true
+				if logCtx != nil {
+					providerID, credentialID := result.Candidate.ProviderID, result.Candidate.CredentialID
+					logCtx.EmitFailure("output_policy_blocked", "Response blocked by output policy", &providerID, &credentialID)
+				}
+			},
 		})
+	}
+	if outputBlocked {
+		// R25-V (2026-09-30 round 30): the failure row emitted inside
+		// failureEmit is the terminal audit record for this request. A
+		// follow-up success telemetry row would contradict it — the audit
+		// trail must show exactly one output_policy_blocked failure, never
+		// a success row for a response the client never received.
+		*attemptLogged = true
+		return
 	}
 
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
@@ -1453,6 +1482,14 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, anthropicBody); err == nil && !blocked && modified != nil {
 			anthropicBody = modified
 		} else if blocked {
+			// R25-V (2026-09-30 round 30): the blocked provider body must be
+			// reflected in the audit trail — a success row (or no row) hides
+			// that output governance rejected this response. Emit a failure
+			// row attributed to the chosen provider/credential before the
+			// terminal error write; the provider body itself never persists.
+			if opt.failureEmit != nil {
+				opt.failureEmit()
+			}
 			writeAnthropicError(w, http.StatusForbidden, "output_policy_blocked", "Response blocked by output policy")
 			return nil
 		}
