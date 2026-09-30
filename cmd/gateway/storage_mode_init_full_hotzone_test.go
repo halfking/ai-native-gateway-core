@@ -25,6 +25,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/config"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/monitoring"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -86,6 +87,10 @@ func TestInitStorageModeFullHotZoneAssembly(t *testing.T) {
 	require.NotNil(t, rt.bodiesStore)
 	require.NotNil(t, rt.hotZoneTrimmer)
 
+	// O4（2026-09-30 部署演练）：mirror.hotzone_on 同 defer 出口盖章，默认
+	// RequestMirror 开启时必须为 true（此前恒 false = setter-without-caller）。
+	require.True(t, monitoring.Default().Snapshot()["mirror"].(map[string]interface{})["hotzone_on"].(bool))
+
 	// 目录：热区根 + cache 子树（NewFileCache 构造期 MkdirAll）。
 	st, err := os.Stat(cfg.HotZone.Dir)
 	require.NoError(t, err, "full 启动后热区根目录应存在")
@@ -127,6 +132,8 @@ func TestInitStorageModeFullHotZoneDisabledMatchesLegacy(t *testing.T) {
 	rt, err := initStorageMode(nil, cfg)
 	require.NoError(t, err)
 	require.Nil(t, rt, "热区关闭时 full 必须返回 nil runtime（历史装配）")
+	// kill-switch 路径同样把 mirror.hotzone_on 盖回 false（O4 对照）。
+	require.False(t, monitoring.Default().Snapshot()["mirror"].(map[string]interface{})["hotzone_on"].(bool))
 	_, err = os.Stat(cfg.HotZone.Dir)
 	require.True(t, os.IsNotExist(err), "热区关闭时不得创建热区目录")
 
@@ -181,6 +188,26 @@ func TestInitStorageModeFullHotZoneEnvKillSwitch(t *testing.T) {
 		require.NoError(t, err, "HotZone.Dir env 指定的目录应被消费")
 		require.True(t, st.IsDir())
 	})
+}
+
+// TestInitStorageModeFullHotZoneMirrorOffFlag O4 双开关分立对照：热区开而
+// REQUEST_MIRROR 关 → hotzone_enabled=true 与 mirror.hotzone_on=false 同帧
+// 成立（两键各自独立盖章，不得互相污染）。
+func TestInitStorageModeFullHotZoneMirrorOffFlag(t *testing.T) {
+	pinHotZoneSettingsEnv(t)
+	cfg := fullHotZoneConfigForTest(t)
+	off := false
+	cfg.HotZone.RequestMirror = &off
+
+	rt, err := initStorageMode(nil, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+	defer rt.Shutdown()
+
+	snap := monitoring.Default().Snapshot()
+	require.True(t, snap["hotzone_enabled"].(bool), "热区本体应盖章 true")
+	require.False(t, snap["mirror"].(map[string]interface{})["hotzone_on"].(bool),
+		"REQUEST_MIRROR 关闭时 mirror.hotzone_on 必须为 false")
 }
 
 // TestInitStorageModeFullHotZoneRootNotDir 热区根目录形态防护：已存在且为
