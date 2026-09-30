@@ -910,3 +910,92 @@ func TestEscalatedCoolingBacksOffExponentially(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// R87（2026-10-01）：失败计数的「同一事件」判定补时间窗
+//
+// 缺陷：transientFamily 只覆盖 4 种，KindUpstreamDown 不在其中
+// ⇒ Timeout↔UpstreamDown 交替时每次都判「族变化」⇒ consecutive 清零
+// ⇒ 永远够不到 threshold ⇒ 熔断永不跳闸。
+// 详见 breaker.go RecordFailure 内的 R87 注释。
+// ---------------------------------------------------------------------------
+
+// T1：交替族在**同一事件**窗口内 ⇒ 计数继续累积 ⇒ 最终跳闸。
+// 修复前：每次族变化都清零 ⇒ consecutive 恒为 1 ⇒ 永远 Closed。
+func TestAlternatingErrorFamiliesWithinIncidentStillTrip(t *testing.T) {
+	b := New(1, 1)
+	b.RecordFailure(KindTimeout)
+	b.RecordFailure(KindUpstreamDown)
+	b.RecordFailure(KindTimeout)
+	if b.State() != StateOpen {
+		t.Fatalf("交替错误族在同一次事件内应累积到阈值并跳闸，"+
+			"实际 state=%s consecutive=%d（修复前恒为 Closed，consecutive 恒 1）",
+			b.State(), b.ConsecutiveFailures())
+	}
+}
+
+// T2：交替族但**间隔超出**事件窗口 ⇒ 判为新事件 ⇒ 计数归零 ⇒ 不跳闸。
+// 这是新增时间窗判据的反向护栏：防止「窗口过宽导致任何失败都算同一次事件」。
+func TestAlternatingErrorFamiliesBeyondWindowDoNotAccumulate(t *testing.T) {
+	b := New(1, 1)
+	backdate := func() {
+		b.mu.Lock()
+		b.lastFailureAt = time.Now().Add(-1 * time.Hour) // 远超任何策略窗口
+		b.mu.Unlock()
+	}
+	b.RecordFailure(KindTimeout)
+	backdate()
+	b.RecordFailure(KindUpstreamDown)
+	backdate()
+	b.RecordFailure(KindTimeout)
+	if b.State() != StateClosed {
+		t.Fatalf("超出事件窗口的交替族应判为新事件并清零计数，实际 state=%s consecutive=%d",
+			b.State(), b.ConsecutiveFailures())
+	}
+}
+
+// T3：同一事件内的族变化仍要把 coolingCycle 归零并从 1 重新起步。
+// 这是 R34（2026-09-17）记录的意图：族变化不继承陈旧升级档，
+// 否则下次升级会直接从 2³× 起步。本门保证 R87 的修复没有把它一起废掉。
+func TestFamilyChangeStillResetsCoolingCycleWithinIncident(t *testing.T) {
+	b := New(1, 1)
+	for i := 0; i < 3; i++ {
+		b.RecordFailure(KindTimeout)
+	}
+	b.mu.Lock()
+	cycleBefore := b.coolingCycle
+	b.mu.Unlock()
+	if cycleBefore == 0 {
+		t.Skip("该策略路径未推进 coolingCycle，本用例的前提不成立")
+	}
+
+	b.RecordFailure(KindUpstreamDown) // 同事件窗口内的族变化
+	b.mu.Lock()
+	cycleAfter := b.coolingCycle
+	b.mu.Unlock()
+	// 注意：不能断言 cycleAfter == 0 —— 归零之后**同一次调用内**就会因
+	// KindUpstreamDown 是 RecoveryExponential 而 coolingCycle++，所以终值是 1。
+	// R34 的意图是「不从陈旧档位继续爬」，即重新起步到 1，而不是接着 2 走到 3。
+	if cycleAfter != 1 {
+		t.Fatalf("族变化应把 coolingCycle 归零后从 1 重新起步（R34 意图：不得继承陈旧档），"+
+			"实际 修复前=%d 修复后=%d（若为 %d 说明归零那行被删/失效）",
+			cycleBefore, cycleAfter, cycleBefore+1)
+	}
+}
+
+// T4：既有行为不回归 —— RecordSuccess 后计数与升级档均归零。
+func TestSuccessStillResetsCountersAfterR87Change(t *testing.T) {
+	b := New(1, 1)
+	b.RecordFailure(KindTimeout)
+	b.RecordFailure(KindTimeout)
+	b.RecordSuccess()
+	if got := b.ConsecutiveFailures(); got != 0 {
+		t.Fatalf("RecordSuccess 后 consecutive 应为 0，实际 %d", got)
+	}
+	b.mu.Lock()
+	cycle := b.coolingCycle
+	b.mu.Unlock()
+	if cycle != 0 {
+		t.Fatalf("RecordSuccess 后 coolingCycle 应为 0，实际 %d", cycle)
+	}
+}

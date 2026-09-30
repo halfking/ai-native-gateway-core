@@ -435,10 +435,37 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		}
 	}
 	// 2026-07-09: 同族错误不重置连续失败计数
+	//
+	// R87（2026-10-01）修正：原判据只看**错误族名**，覆盖面不足。
+	// transientFamily 只有 4 种（Transient/Timeout/Network/StreamTimeout），
+	// 而 KindUpstreamDown 走 RecoveryExponential（Initial 30s / Max 30min）
+	// 却**不在**其中 ⇒ Timeout ↔ UpstreamDown 交替时每次都判为「族变化」
+	// ⇒ consecutive 被清零 ⇒ 永远够不到 failureConfirmationThreshold
+	// ⇒ **熔断永不跳闸**。这与本段上方 2026-07-09 注释写的初衷正好相反：
+	// 那次修复只想解决「错误类型切换就重置计数导致永远达不到降级阈值」，
+	// 但只覆盖了瞬时族**内部**交替，漏了最常见的「瞬时族 ↔ UpstreamDown」。
+	//
+	// 改为：**同一次事件**的判定加一层**时间窗**（参照 OmniRoute
+	// accountFallback.ts:640 的 resetAfter+lastCooldown 窗口判据）。
+	// 冷却期内到达的失败属同一次事件；已关闭态用该策略的 InitialCooling
+	// 作「是否延续」窗口（本仓 CoolingPolicy 无 ResetAfter 字段，
+	// InitialCooling 是语义最接近的既有量）。
+	//
+	// 注意：coolingCycle 仍按 R34 意图在族变化时归零 —— 同事件内不继承
+	// 陈旧升级档，避免下次升级直接从 2³× 起步。代价是交替族下冷却停在
+	// 第 1 档不指数爬升（比「永不跳闸」好得多，但不是完美解）；
+	// 要两者都保留需推翻 R34 的记录决策，须先取得产品认可。
 	lastIsTransient := transientFamily[b.lastErrorKind]
 	nowIsTransient := transientFamily[kind]
+	incidentWindow := policy.InitialCooling
+	if remaining := time.Until(b.coolingExpires); remaining > incidentWindow {
+		incidentWindow = remaining
+	}
+	sameIncident := !b.lastFailureAt.IsZero() && now.Sub(b.lastFailureAt) <= incidentWindow
 	if b.lastErrorKind != "" && b.lastErrorKind != kind && !(lastIsTransient && nowIsTransient) {
-		b.consecutive.Store(0)
+		if !sameIncident {
+			b.consecutive.Store(0)
+		}
 		// R34 (2026-09-17 audit): reset the cooling cycle on any error-family
 		// change. Previously only a successor whose own policy was exponential
 		// reset it, so upstream_down(cycle 3) → timeout kept the stale cycle
