@@ -16,7 +16,19 @@ Categories reported, per pg_dump "-- Name: X; Type: Y; Schema:" banner:
 Usage:
   baseline-reconcile.py --committed sql/schema/01-schema.sql \
                         --generated /tmp/baseline/01-schema.sql \
+                        [--objects-dir sql/objects] \
                         [--report docs/....md]
+
+--objects-dir adds a third representation to the comparison. Round 43
+established that sql/objects/ is a fourth copy of the schema with a life of
+its own: it is the column-map source for the internal/dbx static jsonb lint
+(load-bearing) and the only provenance for some baseline objects, yet it is
+never applied anywhere and deploy/sql/objects/ was never materialised.
+Measured drift against the canonical baseline is BIDIRECTIONAL — 31 objects
+only in sql/objects, 618 only in the baseline — so the two are not merely
+offset generations, they have drifted apart in both directions. A guard
+demanding they be equal would be a false invariant; this tool reports the
+drift instead.
 """
 import argparse
 import os
@@ -48,8 +60,29 @@ def load(path):
     return out
 
 
+def load_objects_dir(root):
+    """Return {type:name -> name} for every pg_dump banner under root/*/*.sql."""
+    out = OrderedDict()
+    if not os.path.isdir(root):
+        return None
+    for sub in sorted(os.listdir(root)):
+        subdir = os.path.join(root, sub)
+        if not os.path.isdir(subdir):
+            continue
+        for name in sorted(os.listdir(subdir)):
+            if not name.endswith(".sql"):
+                continue
+            got = load(os.path.join(subdir, name))
+            if not got:
+                continue
+            for k, v in got.items():
+                out.setdefault(k, v)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--objects-dir")
     ap.add_argument("--committed", required=True)
     ap.add_argument("--generated", required=True)
     ap.add_argument("--report")
@@ -107,6 +140,34 @@ def main():
     block("REORDERED — 位置不同", reordered, gen,
           "位置变化本身不必然是缺陷；关键是重排后 `LANGUAGE sql` 函数体与 "
           "`COMMENT ON` 仍满足校验顺序（新生成器已把自包含单行 `COMMENT ON` 后置）。")
+
+    if args.objects_dir:
+        objs = load_objects_dir(args.objects_dir)
+        if not objs:
+            print("ERROR: %s yielded no objects — refusing to report" % args.objects_dir,
+                  file=sys.stderr)
+            return 1
+        L.append("\n## 第三份表示：%s（%d 对象）\n" % (args.objects_dir, len(objs)))
+        L.append("`sql/objects/` 既是 `internal/dbx` 静态 jsonb lint 的列映射来源（承重），"
+                 "又是部分基线对象的唯一出处；但它**从不参与任何 apply**，"
+                 "`deploy/sql/objects/` 镜像也从未产出。\n")
+        L.append("与已提交基线的差异是**双向的**，因此不能用「二者应当一致」当不变式——"
+                 "那是一条不成立的门。下表只作测量。\n")
+        L.append("| 相对基线 | 数量 | 样例 |")
+        L.append("|---|---|---|")
+        def label(v):
+            # load() yields (name, type, lineno); load_objects_dir yields a bare name.
+            return v[0] if isinstance(v, (tuple, list)) else v
+
+        for title, keys, src in (
+            ("仅 sql/objects 有", [k for k in objs if k not in com], objs),
+            ("仅已提交基线有", [k for k in com if k not in objs], com),
+        ):
+            sample = "、".join("`%s`" % label(src[k]) for k in keys[:3]) or "（无）"
+            L.append("| %s | %d | %s |" % (title, len(keys), sample))
+        L.append("\n> 处置建议见 `docs/audit/2026-10-01-802-missing-breaks-installer-build.md`"
+                 " 同批留档；替换基线前需先决定 `sql/objects/` 是继续做静态分析 SSOT，"
+                 "还是降级为历史归档。")
 
     text = "\n".join(L) + "\n"
 

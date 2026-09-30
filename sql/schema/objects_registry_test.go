@@ -27,6 +27,7 @@ package schema
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -99,5 +100,48 @@ func TestObjectsDirIsNotAppliedAnywhere(t *testing.T) {
 		t.Log("deploy/sql/objects 现已存在；该镜像与 sql/objects 的漂移需要单独守卫")
 	} else {
 		t.Log("deploy/sql/objects 不存在 —— 同步脚本从未产出过镜像（与「objects 对部署惰性」一致）")
+	}
+}
+
+// TestReconcileToolSupportsThirdRepresentation runs the reconcile tool in its
+// three-way mode against the real directories.
+//
+// This is an execution test rather than a text test on purpose: the tool
+// previously only handled two file arguments, and the third-representation
+// path was added late. A text assertion would have passed while the tool
+// crashed on the first real run — the same shape as the audit-script
+// ERRFILE bug. Its exit code and report content are what matter.
+func TestReconcileToolSupportsThirdRepresentation(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 不可用；跳过（本跳过不构成该工具可用的证据）")
+	}
+	tool := "../../scripts/audit/baseline-reconcile.py"
+	if _, err := os.Stat(tool); err != nil {
+		t.Fatalf("reconcile tool missing: %v", err)
+	}
+
+	out, err := exec.Command("python3", tool,
+		"--committed", "../../sql/schema/01-schema.sql",
+		"--generated", "../../sql/schema/01-schema.sql", // self-compare: must be a clean zero-drift run
+		"--objects-dir", objectsRoot,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("reconcile tool failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	// Self-comparison must report zero in every category, otherwise the
+	// comparison itself is unsound.
+	for _, want := range []string{
+		"ADDED             : 0",
+		"MISSING           : 0",
+		"REORDERED         : 0",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("同一文件自比应为零漂移，缺 %q；实际输出：\n%s", want, s)
+		}
+	}
+	// And the third representation must actually be counted, not silently 0.
+	if !strings.Contains(s, "第三份表示") {
+		t.Error("未输出第三份表示（sql/objects）的对比小节")
 	}
 }
