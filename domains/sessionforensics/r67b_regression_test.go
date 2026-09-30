@@ -62,17 +62,61 @@ func funcSource(t *testing.T, file, recv, name string) (string, int) {
 }
 
 // stripComments 去掉行注释与块注释，避免判据匹配到说明文字本身。
+//
+// 块注释用跨行状态机（12h 审计 P3 鲁棒性补齐：旧版只剥 //，一旦判据
+// 锚的函数里出现 /* ... */ 说明块，说明文字里的 `defer rows.Close()`
+// 等字样会让 Contains 判据假绿/假红）。同行的 /* 与 // 取先出现者；
+// 行注释之后的 /* 属于注释内容，不再开块。
 func stripComments(src string) string {
 	var b strings.Builder
-	lines := strings.Split(src, "\n")
-	for _, l := range lines {
-		if i := strings.Index(l, "//"); i >= 0 {
-			l = l[:i]
+	inBlock := false
+	for _, l := range strings.Split(src, "\n") {
+		for {
+			if inBlock {
+				i := strings.Index(l, "*/")
+				if i < 0 {
+					l = ""
+					break
+				}
+				l = l[i+2:]
+				inBlock = false
+				continue
+			}
+			block := strings.Index(l, "/*")
+			line := strings.Index(l, "//")
+			if block >= 0 && (line < 0 || block < line) {
+				b.WriteString(l[:block])
+				l = l[block+2:]
+				inBlock = true
+				continue
+			}
+			if line >= 0 {
+				l = l[:line]
+			}
+			break
 		}
 		b.WriteString(l)
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// TestStripCommentsBehavior 钉住判据辅助的行为：块注释跨行剥离、行注释
+// 内的 /* 不开块、块注释内的 // 不是行注释——判据匹配的输入一旦变形，
+// 这里的失败先于假绿/假红的判据事故。
+func TestStripCommentsBehavior(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"a // tail", "a \n"},
+		{"a /* mid */ b", "a  b\n"},
+		{"a /* open\nstill comment\n*/ b", "a \n\n b\n"},
+		{"a // not /* open", "a \n"},
+		{"a /* // not line */ b", "a  b\n"},
+	}
+	for _, c := range cases {
+		if got := stripComments(c.in); got != c.want {
+			t.Errorf("stripComments(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
 }
 
 func TestR67B_ExportFromTxMustCloseRows(t *testing.T) {

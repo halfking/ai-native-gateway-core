@@ -407,8 +407,11 @@ v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScope
 前端因此 `nodes` 恒空 → 节点矩阵报「暂无节点数据」→ 模型分区因门控隐藏。
 
 这三点互相印证，指向服务端 live-stream hub 未产出快照。
-继续定位需要**部署侧日志**（hub 的发送条件 / 快照源是否被上游关闭），
-超出本仓范围，不在本轮凭代码可判定的范围内，故记录为待部署侧取证项。
+
+> **本节结论已被下一节推翻并订正。** 下面两句当时是错的：
+> 「继续定位需要部署侧日志……超出本仓范围」「待部署侧取证项」。
+> 252 本机 SSH 可达，日志取回后根因立刻明确，且**与当时「PG 不可达」的
+> 推测不同**。留此痕迹以免重演同一个错误判断。
 
 附带发现一处**独立的健壮性缺口**（本轮未修，仅登记）：
 `main_livestream.go:591` 的 `if len(keys) == 0 { return nil }` 位于
@@ -419,3 +422,153 @@ v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScope
 说明绑定表非空），但一旦绑定表真的为空，
 `RawModels` 的缺失将无法与「查询失败」区分 —— 与本仓既有的
 「错误不得渲染成看起来合法的零」是同一类形状，建议后续单独处理。
+
+## 2026-10-01 根因定位与修复（6f629ad8b）
+
+### 拓扑与取证入口
+
+`llm.kxpms.cn` 在 252 上是 **SNI 流代理**转给 `itestu_nginx_backend`，
+后端即 `llmgo-252-dev.service`（不是 154/245）。确认路径：
+`/etc/nginx/stream.d/sni-proxy.conf` 的 `llm.kxpms.cn → itestu_nginx_backend`。
+注意本地 `dig llm.kxpms.cn` 被代理劫持成 `198.18.0.4`，**不能用 DNS 判源站**。
+
+### 真实根因（不是「PG 不可达」）
+
+当时推测是「数据库不可达」。**该推测错误** —— `psql` 手工连库完全正常，
+PG 本身健康。日志实况：
+
+```
+04:26:10 WARN postgres disabled error="timeout: context deadline exceeded" retry_budget=10m0s
+04:26:10 WARN telemetry DISABLED — no request logs will be persisted; live stream will be empty
+04:26:10 WARN live stream hub created WITHOUT database — initial replay empty, node status disabled
+04:34:19 WARN postgres unreachable at boot, retrying attempt=1
+         error="ensure candidate_failure_logs heap partitions: timeout: context deadline exceeded"
+04:38:14 WARN postgres disabled error="ensure candidate_failure_logs heap partitions: …" retry_budget=10m0s
+04:38:14 WARN live stream hub created WITHOUT database …
+```
+
+真正的因果链是**启动期迁移抢连接超时**，不是数据库故障：
+
+```
+689 self-heal 超时
+  → 整条 ensure 链返回 err → postgres disabled
+  → telemetry DISABLED → live stream hub 无 DB（node status disabled）
+  → SSE 推不出 nodes 快照 → hasReportedRawModels 恒 false
+  → 「按模型分组的可用节点」整块永久隐藏
+```
+
+### 结构性成因
+
+`migCtx` 只有 **3 分钟**总预算（`db/db.go:218` `context.WithTimeout(ctx, 3*time.Minute)`），
+而 **78 条 `ensure*` 共享它**；`ensureCandidateFailureLogsHeapPartitions` 排在
+倒数第二位。共享库持续写流下，前面任一 ensure 的 ACCESS EXCLUSIVE 锁等待
+吃掉预算后，轮到本步时剩余时间不够 → `context deadline exceeded` → 冒泡
+令整条链失败。
+
+**SQL 内的 `SET LOCAL statement_timeout='10min'`（`db.go:1405`）救不了**：
+context 到期由客户端直接掐断连接，服务端超时设置根本没机会生效。
+**外层 context 才是真正的杀手** —— 这是本案最容易看错的一层。
+
+### 修法
+
+只给这一步独立 5 分钟预算（`candidateFailureLogsHeapPartitionsBudget`），
+**不动 78 条链共用的 3 分钟约定**（改全局影响面过大，且 3 分钟对绝大多数
+幂等 no-op ensure 是合适的）。用 `context.WithoutCancel(migCtx)` 脱离共享
+取消链；本步 SQL 自身幂等，且仍在 `migrationsPinned` 抬升
+statement_timeout 的窗口内执行，失败可安全重试。
+
+### 顺带修掉一个「锚错形状」的静态门
+
+`TestMigration694SelfHealPinsShanghaiTimezone` 原本断言字面量
+`ensureCandidateFailureLogsHeapPartitions(migCtx)` —— 锚的是**变量名**而非
+意图，所以本轮修复必然让它转红。改为锚意图：调用存在、仍在
+`if err := …; err != nil { return err }` 守卫内、传入带超时的 `…Ctx` 变量。
+694 的时区收敛断言与 heap 存储契约断言原样保留，未削弱。
+
+变异验证：删掉调用 → 红；改成 `_ = db.ensure…` 吞错误 → 红；
+仅换 context 变量 / 是否 `WithoutCancel` → 绿（设计如此：门锚意图不锚实现）。
+
+**自曝两处自己写错的判据**（都是门当场报红纠正，非静默通过）：
+① 用 `strings.Index(callLine, "\n")` 截行，命中了转义序列里的反斜杠 n，把行腰斩；
+② 从匹配点而非行首取片段，把 `if err := ` 前缀切掉。
+
+### 尚未复验
+
+修复已推 origin/main（`6f629ad8b`），但**生产复验未做**：252 需重新部署
++ 重启才能加载新二进制，重启后 `postgres` 需在 boot 期成功连上，
+`hasReportedRawModels` 才可能为真、模型分区才会渲染。
+**在此之前，第 2 项（glm-5.3 / glm-5.2 目视验收）仍不得声明通过。**
+
+## 2026-10-01 拓扑定案：验收目标环境从未部署过被验收的修复
+
+本节纠正前面两节连续两个错误归因，并给出可复核的定案结论。
+
+### 三个主机，三个角色（实测）
+
+| 主机 | unit | 入口 | 当时的 build_seq |
+| --- | --- | --- | --- |
+| **154**（生产） | `llm-gateway-go-canary@8782` | **`llm.kxpms.cn` 实际落点** | **2356 / `2d750fb4`** |
+| 245（预发布闸门） | `llmgo-245-canary@8781\|8782` | `llmgo.kxpms.cn` 等 | 2372 / `d2af305a` |
+| 252 | `llmgo-252-dev` + PG17 | 仅 dev | —— |
+
+定位手法：`curl -fsS -m 10 https://llm.kxpms.cn/healthz` 读回 `build_seq`，
+再在 154 上 `curl 127.0.0.1:8782/healthz` 逐字对上。**连续 8 次采样一致**，
+不是抖动。
+
+### 两个被推翻的错误
+
+1. 「llm.kxpms.cn 的后端在 252」——**错**。252 只有 dev 与 PG17；
+   252 的 `stream.d/sni-proxy.conf` 把 `llm.kxpms.cn` 转给
+   `itestu_nginx_backend`，而终点是 **154 生产**。
+2. 「252 dev 处于 postgres 降级态、所以模型分组不渲染」——**因果错**。
+   252 dev 确实三次 boot 降级（`ensure candidate_failure_logs` 超时，见上节），
+   但**它不是 `llm.kxpms.cn` 的服务对象**，那组日志解释不了线上现象。
+   本节之前把两件事连成一条因果链，是错的。
+
+### 决定性事实
+
+```
+9cb842d3e (canonical 精确形优先 + 不变式真门)  in  2d750fb4 (154 现网)?  NO
+6f629ad8b (689 self-heal 独立预算)             in  2d750fb4?             NO
+317f28556 (悬空 rows.Err 事故源)               in  2d750fb4?             NO
+
+154 现网落后 main：175 个提交
+```
+
+**本文件开头「已交付」那一节的修复，从来没有到过验收所用的那个环境。**
+在 `llm.kxpms.cn` 上筛选 glm-5.3 看不到正确的 glm-5.3 分组，是
+**必然结果**，不是回归、也不是环境问题 —— 那个实例上根本不存在被验收的逻辑。
+
+推论：第 2 项目视验收此前全部无效，无论 UI 表现如何都不能作为
+9cb842d3e 的验收证据。要真正验收，必须先把修复推进到 154；
+而按 deploy-245/deploy-154 的闸门约定，顺序是 **245 先 → 验证 → 154**。
+
+### 附带：245 一次失败部署的副作用（如实登记）
+
+向 245 部署 `build_seq 2373` **失败并自动回滚**到 2372。触发点是
+`[9.5/9] 验证目标机自身 nginx→gateway (127.0.0.1:443/healthz)` 30s 超时，
+按 skill 约定立即回滚（回滚本身成功：healthz + running release + PG 均 OK）。
+
+但 nginx 事后复查是 `active` 且 443 返回 200 —— 即该次超时疑为**误报**，
+发生在 handoff 耗时 `351591ms`（约 5.9 分钟）之后的窗口内。
+
+更值得注意的是 adopt 检测的误判链：
+
+```
+⚠ 8781/8782 均无监听 —— 按 fresh 主机处理，active 取契约端口 8781
+⚠ active unit 无法从监听进程归属解析，按端口推导为 llmgo-245.service
+```
+
+`llmgo-245.service` 正是 skill 明令「**弃用遗留 unit，勿使用**」的那个。
+回滚后 245 实际状态（实测 `ss -ltnp` + `systemctl show`）：
+
+- 监听 8781 的是 `llmgo-245.service`（**弃用 unit**），`ExecMainStart=05:07:07`
+  —— 正是失败部署期间被误启用的
+- `llmgo-245-canary@8781.service`：`failed`（原 02:42 实例）
+- `llmgo-245-canary@8782.service`：`active/running` 但 **8782 无监听**（僵尸 unit）
+- `run/active-port` 记录 8782，实测服务在 8781 —— **记录与实际不一致**
+
+即：站点对外仍在正常服务（无对外故障），但 245 的蓝绿 unit 拓扑已被
+这次失败部署搞乱，与 `deploy-seamless` 的契约不符，下次部署会被同样的
+归属解析继续误导。**修复该拓扑需重启 245 上的 unit，属对外可见操作，
+本轮未擅自执行。**

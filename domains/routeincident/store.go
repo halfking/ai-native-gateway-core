@@ -21,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // Store is the persistent layer. All methods are safe for concurrent
@@ -671,7 +672,7 @@ func (s *Store) Events(ctx context.Context, tenantID, incidentID string, limit i
 			return nil, err
 		}
 		if len(evidenceJSON) > 0 {
-			_ = json.Unmarshal(evidenceJSON, &e.Evidence)
+			jsoncol.Decode("routeincident.Events/evidence", evidenceJSON, &e.Evidence)
 			e.Evidence = SanitizeEvidence(e.Evidence)
 		}
 		out = append(out, e)

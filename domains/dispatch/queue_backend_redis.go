@@ -143,7 +143,7 @@ type redisQueueBackend struct {
 	client     *redis.Client
 	instanceID string
 
-	degraded atomic.Bool
+	degraded  atomic.Bool
 	heldTotal atomic.Int64
 	heldModel atomic.Int64
 	heldCred  atomic.Int64
@@ -359,7 +359,7 @@ func (b *redisQueueBackend) ParkDue(ctx context.Context, requestID string, dueAt
 	// Score is instance epoch ms (D4 note: Redis TIME yields "now", not a
 	// future due timestamp; the sweep uses the same epoch family).
 	return b.client.ZAdd(ctx, queueDueKey, redis.Z{
-		Score: float64(dueAt.UnixMilli()),
+		Score:  float64(dueAt.UnixMilli()),
 		Member: member,
 	}).Err()
 }
