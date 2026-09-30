@@ -6,7 +6,7 @@ import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import KxDateRangePicker from './KxDateRangePicker.vue'
-import { makeDateRangePresets, rangeSpanDays } from './kxDatePresets'
+import { calendarDayKey, isAfterDay, makeDateRangePresets, rangeSpanDays } from './kxDatePresets'
 
 // 固定时钟：触发器「近 7 天」匹配依赖当前日期，必须冻结
 const FIXED = Date.UTC(2026, 8, 30, 12, 0, 0)
@@ -33,6 +33,7 @@ const i18n = createI18n({
           endDate: '结束日期',
           openAria: '选择时间范围',
           endBeforeStart: '结束需不早于开始',
+          afterLatest: '不能晚于 {date}',
           spanTooLong: '跨度超过 {n} 天',
           preset: {
             today: '今天',
@@ -55,7 +56,7 @@ const ElPopoverStub = {
   template: `<div class="popover-stub"><slot name="reference" /><slot /></div>`,
 }
 const ElDatePickerStub = {
-  props: ['modelValue', 'type', 'valueFormat', 'format', 'clearable'],
+  props: ['modelValue', 'type', 'valueFormat', 'format', 'clearable', 'disabledDate'],
   emits: ['update:modelValue', 'change'],
   template: `<input class="dp-stub" :value="modelValue" @input="$emit('update:modelValue', $event.target.value); $emit('change', $event.target.value)" />`,
 }
@@ -135,6 +136,33 @@ describe('KxDateRangePicker', () => {
   })
 
   // 2026-09-30 审计 P3-2：instant 分支此前直接 commit，绕过 canApply/maxSpanDays。
+  it('未传 notAfter 时今天仍可选，看板预设不受影响', () => {
+    const w = mountPicker()
+    const disable = w.findAllComponents(ElDatePickerStub)[0].props('disabledDate') as (cell: Date) => boolean
+    expect(disable(new Date(2026, 8, 30))).toBe(false)
+    expect(isAfterDay('2026-09-30 12:00', '2026-09-30')).toBe(false)
+  })
+
+  it('notAfter 拦住今天和未来：日历禁用，应用按钮不可用', async () => {
+    const w = mountPicker({
+      notAfter: '2026-09-29',
+      modelValue: { start: '2026-09-23', end: '2026-09-29' },
+    })
+    const disable = w.findAllComponents(ElDatePickerStub)[1].props('disabledDate') as (cell: Date) => boolean
+    expect(disable(new Date(2026, 8, 30))).toBe(true)
+    expect(disable(new Date(2026, 8, 29))).toBe(false)
+    expect(calendarDayKey(new Date(2026, 8, 29))).toBe('2026-09-29')
+    const stubs = w.findAll('.dp-stub')
+    await stubs[0].setValue('2026-09-23')
+    await stubs[1].setValue('2026-09-30')
+    expect(w.get('.kx-dr-apply').attributes('disabled')).toBeDefined()
+    expect(w.text()).toContain('不能晚于 2026-09-29')
+    await w.get('.kx-dr-apply').trigger('click')
+    expect(w.emitted('apply')).toBeUndefined()
+    await stubs[1].setValue('2026-09-29')
+    expect(w.get('.kx-dr-apply').attributes('disabled')).toBeUndefined()
+  })
+
   it('instant 模式：maxSpanDays 超限预设被 canApply 拦截，限内预设照常提交', async () => {
     const w = mountPicker({ instant: true, maxSpanDays: 3 })
     const presets = w.findAll('.kx-dr-preset')

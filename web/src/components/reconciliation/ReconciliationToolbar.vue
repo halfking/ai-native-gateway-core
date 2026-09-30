@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// ReconciliationToolbar.vue — view, range chips, provider/model filters, actions.
+// ReconciliationToolbar.vue — view, snapshot date range, provider/model filters, actions.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Download, Filter, Refresh } from '@element-plus/icons-vue'
@@ -8,7 +8,7 @@ import type { DimensionOptions, ReportFilter, ReportView } from '../../api/repor
 import KxDateRangePicker from '../ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../ui/kx-date-types'
 import { fmtInt } from './format'
-import { snapshotDatePresets } from './snapshotRange'
+import { snapshotDatePresets, snapshotNotAfter } from './snapshotRange'
 
 const props = defineProps<{
   view: ReportView
@@ -36,6 +36,7 @@ const { t } = useI18n()
 const moreOpen = ref(false)
 // 367 inclusive days matches reportRange: end-start > 366 days is rejected.
 const presets = computed(() => snapshotDatePresets())
+const notAfter = computed(() => snapshotNotAfter())
 
 const extraCount = computed(() => {
   const f = props.filters
@@ -62,6 +63,7 @@ function onView(value: string | number | boolean | undefined) {
       :model-value="range"
       :presets="presets"
       :max-span-days="367"
+      :not-after="notAfter"
       :disabled="loading"
       @apply="emit('applyRange', $event)"
     />

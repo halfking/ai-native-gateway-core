@@ -50,3 +50,8 @@ export function defaultSnapshotRange(now = Date.now()): [string, string] {
   const range = snapshotDatePresets(now).find((item) => item.id === 'last7d')?.resolve()
   return range ? [range.start, range.end] : ['', '']
 }
+
+/** Inclusive latest day a reconciliation query may ask for: UTC yesterday. */
+export function snapshotNotAfter(now = Date.now()): string {
+  return utcDateStr(utcDayStart(now) - DAY_MS)
+}

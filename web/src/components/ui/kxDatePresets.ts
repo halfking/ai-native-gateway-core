@@ -119,6 +119,18 @@ export function makeDateRangePresets(precision: KxDatePrecision, only?: string[]
   return filtered
 }
 
+/** Local civil day of a calendar cell, matching date value-format YYYY-MM-DD. */
+export function calendarDayKey(cell: Date): string {
+  const month = String(cell.getMonth() + 1).padStart(2, '0')
+  const day = String(cell.getDate()).padStart(2, '0')
+  return `${cell.getFullYear()}-${month}-${day}`
+}
+
+/** True when the value's calendar day is strictly after notAfter (YYYY-MM-DD). */
+export function isAfterDay(value: string, notAfter: string): boolean {
+  return value.slice(0, 10) > notAfter
+}
+
 /** 短显示：2026-09-24 → 09/24；2026-09-24 08:30 → 09/24 08:30。 */
 export function shortRangeLabel(range: KxDateRange): string {
   const short = (v: string) => {
