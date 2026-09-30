@@ -22,13 +22,7 @@ if [[ -z "$remote_name" || -z "$remote_url" ]]; then
   exit 0
 fi
 
-# 仅对 github 远端做严格检查
-if [[ "$remote_url" != *"github.com"* ]]; then
-  exit 0
-fi
-
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
-scanner="$repo_root/scripts/scan-secrets.sh"
 
 # ── 0. Worktree sanity guard ────────────────────────────────────────────
 # Shared checkouts have twice (2026-09-30 05:09 / 05:24) been found with
@@ -37,12 +31,22 @@ scanner="$repo_root/scripts/scan-secrets.sh"
 # exit 128 ("must be run in a work tree") and breaks `go build` VCS
 # stamping tree-wide. Heal before scanning/testing so the gate fails on
 # real findings, not on a poisoned host config.
+# 三十七轮 §三#14 (2026-09-30): 这段守卫原先排在 github-only 早退之后，
+# 推 codeup（主远端）时永远走不到；现移到早退之前，所有远端的推送都
+# 触发自愈。pre-commit 侧同款守卫见 scripts/pre-commit-check.sh §0。
 if [[ "$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]]; then
   if [[ "$(git -C "$repo_root" config core.bare 2>/dev/null)" == "true" ]]; then
     git -C "$repo_root" config core.bare false
     echo "⚠️  healed core.bare=true + core.worktree conflict (was breaking git ops + go build VCS stamping)" >&2
   fi
 fi
+
+# 仅对 github 远端做严格检查
+if [[ "$remote_url" != *"github.com"* ]]; then
+  exit 0
+fi
+
+scanner="$repo_root/scripts/scan-secrets.sh"
 
 # ── 1. Sensitive-info scan (BLOCK-level findings) ────────────────────────
 
