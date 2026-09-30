@@ -117,8 +117,34 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
 - ~~部署演练~~ **已完成(2026-09-30 当日)**:见 docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md
   (新遗留:管线 env 白名单 D1、.env.local D2、镜像对账口径 O2/O3、PG 停机遥测丢失 O5)。
 - ~~F5 决策:admin ingest 是否接镜像,owner 拍板。~~ **已决策并落地(2026-10-01)**:owner 选「接镜像,补齐第三落库点」,实现与测试见 §三 F5 行。
-- **F5 未验证项(勿当已闭环)**:① 无部署级实证(未在任何环境跑通真实 ingest 流量并读镜像文件);② 仓内无 /api/telemetry 生产者,真实流量未取证;③ admin 侧「PG 停机仍落镜像」是推断,只有 telemetry 侧被 E2E 演练 O5 实测过。要收口需按 `docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md` 同样的部署级手法补一轮(需 env-injector 注入 245/154 + owner 授权有副作用操作)。
-- ~~**F5-R2 留档待 owner 拍板**~~ **已裁决并落地(2026-10-01)**:owner 选「删」——清掉 `keepAllBodies()` 死代码、承认 admin 全量留存、把留存策略文档移到真实生效点。零生产行为变更。详见 §二 F5-R2 行。
+- **F5 未验证项(勿当已闭环)**:① 无部署级实证(未在任何环境跑通真实 ingest 流量并读镜像文件);② 仓内无 /api/telemetry 生产者,真实流量未取证;③ admin 侧「PG 停机仍落镜像」是推断,只有 telemetry 侧被 E2E 演练 O5 实测过。
+  - **2026-10-01 245 环境侧只读勘查(owner 明确授权后执行)——结论:演练当时无法进行,原因已取证**:
+    - 245 实际形态与 handoff 假设**不符**:无 `llm-gateway-go.service`(该 unit 不存在),而是**蓝绿 slot 形态**——`llmgo-245-canary@8781`(active running)与 `llmgo-245-canary@8782`(failed),`llmgo-245.service` 为 inactive dead。「重启服务」需按 slot 语义操作。
+    - **部署版本不含 F5-R1**:`/opt/llm-gateway-go/slots/8781` → `releases/2369-bdc13ccc`,VERSION `2.5.8-bdc13ccc-20260930-2369`。`bdc13ccc` commit-date 2026-10-01 02:34,含 F5(`f9947d3a3` 01:32)但**不含 F5-R1**(`5cd64600e` 02:56,晚 22 分钟)。即 F5-R1 的 S4 停写门修复在 245 上**根本没上线**——演练的对照项无从谈起。
+    - **热区未装配**:`.env` 无 `LLM_GATEWAY_STORAGE_MODE`/`LLM_GATEWAY_HOTZONE_ENABLED`,运行进程 environ 亦无;全盘 `find` 无任何 `hotzone` 目录。镜像子树 `requests/` 不存在。
+    - **待办②(/api/telemetry 真实流量)已取证——结论:245 上该端点无真实流量**:`request_logs_bodies_hot` 24h 9,135 行、1h 770 行、`max_ts` 距查询 2 分钟,ingest 链路本身是活的;但**全部来自 telemetry client 与 health probe,无一条来自 admin HTTP ingest**。四路交叉才定性(前两轮取证法各有误,教训见下):
+      1. nginx 全部 access log 对 `api/telemetry` 命中 **0**(逐个 access_log 文件 grep,含全部轮转 .gz)。
+      2. `journalctl` 近 6h 命中 26 行,其中 24 行是 client 路径的 `probe-direct-*` 告警
+         (`telemetry success_response_body_missing` / `JSON field discarded`),余 2 行是勘查者
+         自己的 curl 探测(04:02,user_agent=curl/7.61.1,status=401)。**无第三方调用**。
+      3. 24h 内 `application_id IS NULL` 的 3,915 行:3,886 行是 `probe-*`;余 29 行
+         `request_mode=chat|anthropic`(client 路径特征,**非** admin 路径的 mode 空值特征),
+         且时间戳止于 01:03(即当前构建部署时刻),之后无新增。
+      4. 端点本身**是活的**、路由已装配:nginx `llmgateway.internal.example.com` → `127.0.0.1:8781`,
+         直连 `POST /api/telemetry/request-log` 返回 401 `authentication required`
+         → 不是「端点不存在」,而是**无人携带凭据调用**。
+    - **154 同样不具备条件**(只读勘查):`llm-gateway-go-canary@8782`(active)/`@8781`(failed),
+      release `2356-2d750fb4`(`2.5.8-2d750fb4-20260930-2356`,比 245 更旧)、无 `STORAGE_MODE`、
+      无 hotzone 目录。**245/154 两台均不可用于该演练。**
+    - **取证法纠错(本轮自身失误,值得记)**:
+      - ① 首轮判「journalctl ingest 日志 0 条」用了过窄的 grep 模式
+        (`telemetry ingest`),而现网日志文案是 `telemetry success_response_body_missing`
+        等,故「0」是**模式写错的假零**,不是事实。按模式取数得到 0 时,须先确认模式能匹配到
+        已知的正例(此处即我自己 curl 出的那 2 行),否则 0 无信息量。
+      - ② 次轮判「nginx 0 命中」时,差点据此断言「端点无流量」——但 `/api/telemetry`
+        实际**在 nginx 路由内且端点存活**。nginx 0 只能说明「未经该 vhost」,
+        不能证明「无人调用」;必须叠加直连探测(401 存活)+ 按写入方特征拆 PG + 日志三路。
+    - **综合判定:F5 在 245 上是「接线已部署但无收益也无镜像产物」**——既无 admin 流量可打,也无热区可落。要收口需先①部署含 F5-R1 的新构建 ②显式开启 `STORAGE_MODE=full` + 热区 ③**制造** admin `/api/telemetry` 流量(环境无自然生产者,须外部 HTTP 调用方)。三者均为新决策,非本轮授权范围。- ~~**F5-R2 留档待 owner 拍板**~~ **已裁决并落地(2026-10-01)**:owner 选「删」——清掉 `keepAllBodies()` 死代码、承认 admin 全量留存、把留存策略文档移到真实生效点。零生产行为变更。详见 §二 F5-R2 行。
 - **F5-R1 教训(接线类缺陷的通用形态)**:「同一语义门在两处调用点各自内联键字面量」是分裂入口。三个镜像消费方接入时,凡是**复用同一个 settings 键**的判定一律抽 helper 收口,并加一条「键字面量只出现一次」的结构性钉桩——行为用例钉不住这类缺陷。
 - 若做「full 热区 session_bodies 写入方」(§五.4),复用 rt.bodiesStore 实例,勿再建第二实例(AsyncFileWriter 双实例会双倍写 worker)。
 - 对账脚本(若建):按 F4 口径豁免 null/{} 行,并注意 v2 侧镜像以 tx.Commit 为界(修订轮 R-A)、telemetry 侧以 persistRequestLog 入口为界(天然含 PG-down 投递)——两侧孤儿语义不同向,脚本按「镜像可能多于 PG」单向容错。
