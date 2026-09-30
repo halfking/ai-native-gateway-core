@@ -2,8 +2,8 @@
 
 **日期**：2026-09-30
 **检出**：`/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go`（official-deploy 树；注意与 ai-native-tools 检出是两条独立工作线）
-**基线**：重锚 ff 至 `4b00d57f8`（并行会话三十八~四十一轮已推进 12 提交），本续轮在其上新增提交（见 git log）
-**状态**：已提交、待推送（或已推送，视本文件生成时点）
+**基线**：重锚 ff 至 `4b00d57f8` → 本续轮 3 提交（b4717d7b1 生产 / 4e73e2e6e hooks / d957669fc docs）→ 合并 codeup 10 入站（ad8153469）→ **已推送三方全等 `ad8153469`**（local=codeup=github，github 从 2585e9df9 追平 16+ 提交）
+**状态**：已推送，三方全等 ad8153469（2026-09-30 22:0x +08:00）
 
 ---
 
