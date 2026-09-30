@@ -14,7 +14,7 @@
 ```
 docs/audit/playbook/
 ├── README.md                 # 本文件：索引与用法
-├── conventions.md            # 通用纪律：分级/证据/复核/git/上下文预算（所有子代理必读）
+├── conventions.md            # 通用纪律：分级/证据/复核/git/上下文预算/**§9 新增静态守卫准入清单**（所有子代理必读）
 ├── orchestrator-prompt.md    # 主代理总控提示词（每轮审计的入口，直接拷贝）
 ├── extension-guide.md        # 如何新增域、如何回注新检查项（体系生长规则）
 ├── CHANGELOG.md              # playbook 自身演进记录
