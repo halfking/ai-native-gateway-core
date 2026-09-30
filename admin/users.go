@@ -423,7 +423,7 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 		err := h.db.QueryRow(ctx, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
 		cancel()
 		if err != nil {
-			writeError(w, http.StatusNotFound, "user not found")
+			writeLookupErr(w, "user not found", err)
 			return
 		}
 		if userTenant != GetTenantID(r) {
@@ -526,7 +526,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 		err := h.db.QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
 		cancelCheck()
 		if err != nil {
-			writeError(w, http.StatusNotFound, "user not found")
+			writeLookupErr(w, "user not found", err)
 			return
 		}
 		if userTenant != GetTenantID(r) {
@@ -557,7 +557,7 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 		err := h.db.QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
 		cancelCheck()
 		if err != nil {
-			writeError(w, http.StatusNotFound, "user not found")
+			writeLookupErr(w, "user not found", err)
 			return
 		}
 		if userTenant != GetTenantID(r) {
@@ -684,7 +684,7 @@ func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var currentHash string
 	err := h.db.QueryRow(ctx, "SELECT password_hash FROM users WHERE id = $1", auth.UserID).Scan(&currentHash)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		writeLookupErr(w, "user not found", err)
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(req.OldPassword)); err != nil {

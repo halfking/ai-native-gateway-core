@@ -123,7 +123,8 @@ func (h *Handler) patchIPBlocklist(w http.ResponseWriter, r *http.Request, id in
 func (h *Handler) deleteIPBlocklist(w http.ResponseWriter, r *http.Request, id int64) {
 	cur, err := h.ipBlocklist.Store.Get(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not found")
+		// PgxStore.Get 透传 pgx 错误（R35-N1）：连接故障此前一并吞成 404。
+		writeLookupErr(w, "not found", err)
 		return
 	}
 	if err := h.ipBlocklist.Store.Delete(r.Context(), id); err != nil {
