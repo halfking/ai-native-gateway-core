@@ -241,13 +241,18 @@ requests 共享磁盘预算）。架构与指标说明见 [README「全量模式
 | `hotzone.enabled` | `LLM_GATEWAY_HOTZONE_ENABLED` | `storage.hotzone_enabled`（默认 true） | `true` | **装配门只认 config 通道**（env/YAML，进程启动判定）；settings 运行期 false 仅让 trimmer 跳过清理轮，不卸载已装配热区，停新装配需改 config 通道后重启 |
 | `hotzone.dir` | `LLM_GATEWAY_HOTZONE_DIR` | — | `data/hotzone` | 热区根目录；已存在且为 symlink/非目录时告警并降级历史装配 |
 | `hotzone.max_size_gb` | `LLM_GATEWAY_HOTZONE_MAX_SIZE_GB` | `storage.hotzone_max_size_gb` | `1`（范围 1–100） | 三子树共享字节预算；settings 热重载扩容经 `FileCache.ResizeMax` 立即生效，缩容交由下一轮 trimmer |
-| `hotzone.retention_hours` | `LLM_GATEWAY_HOTZONE_RETENTION_HOURS` | `storage.hotzone_retention_hours` | `7`（范围 1–168） | 三子树 mtime 过期线（= L1.5 TTL 同参数）；settings 热重载由 trimmer 每 tick 原子替换 |
+| `hotzone.retention_hours` | `LLM_GATEWAY_HOTZONE_RETENTION_HOURS` | `storage.hotzone_retention_hours` | `7`（范围 1–168） | 三子树 mtime 过期线（= L1.5 TTL 同参数）；settings 热重载由 trimmer 每 tick 原子替换，L1.5 读侧 TTL 经 `FileCache.SetTTL` 同步同界（2026-10-01 审计 F2 收口，此前扩容仅删侧生效） |
 | `hotzone.request_mirror` | `LLM_GATEWAY_HOTZONE_REQUEST_MIRROR` | — | `true` | 请求侧镜像（telemetry 三件套 + session bodies 三件套），fire-and-forget fail-open，可独立关闭 |
 
 运维提示：
 
 - **回滚**：热区纯缓存语义，`LLM_GATEWAY_HOTZONE_ENABLED=false` 一键关闭新装配，
   删除 `data/hotzone/` 目录即完成数据回滚。
+- **临时文件回收**：trimmer 豁免在飞临时文件（含 `.tmp` 的文件名）于配额相，
+  但 mtime 早于 retention 过期线的 `.tmp` 会按过期清理回收（在飞写入存活
+  毫秒级，过期 `.tmp` = 写入方崩溃遗留的孤儿；2026-10-01 审计 F1 收口，此前
+  全量豁免导致无界累积且不进配额口径）。retention 被误配为极小值时注意此
+  清扫与主过期相同线生效。
 - **对账口径（镜像 vs PG，审计 F4 留档）**：镜像落盘的是换算后、body summary
   摘要**之前**的原文——开启 `requestBodiesSummaryEnabled` 的租户上，镜像=全文、
   PG=摘要信封，「gunzip 与 PG 内容一致」抽查会对不上，属预期；另外空/非法 JSON

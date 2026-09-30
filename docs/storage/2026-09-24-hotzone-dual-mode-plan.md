@@ -216,3 +216,8 @@ GetPlatform* 无缓存直查、hotconfig 仅轮 `llmgw_%` 前缀键,故 §3-H4 �
 的 hotconfig 接线假设对 storage.hotzone_* 不成立,实施采用 trimmer tick 直查)。
 P3+P4+P5(指标)批判式审计: docs/audit/2026-09-30-hotzone-p3p4-critical-audit.md
 (§6 验收清单逐项状态 + P3 运行期开关语义定义 + P4 镜像激发位置论证与遗留)。
+P1+P2 第二轮批判式审计(2026-10-01): docs/audit/2026-10-01-hotzone-p1p2-critical-audit-r2.md
+(G1 孤儿临时文件无界累积→过期相清扫收口 / G2 retention 热重载对 L1.5 读侧
+不生效→FileCache.SetTTL 接线收口 / G3 fakeFileInfo 死码删除 / G4 ResizeMax
+缩容口径两段式订正;§3-H4 改动2 的临时文件语义随之修订:**新鲜 .tmp 豁免
+配额相,过期 .tmp 参与过期清扫**——原"临时文件不参与 trimmer"口径作废)。
