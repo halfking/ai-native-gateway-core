@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultSnapshotRange, snapshotDatePresets } from './snapshotRange'
+import { defaultSnapshotRange, snapshotDatePresets, snapshotNotAfter } from './snapshotRange'
 
 const now = Date.parse('2026-09-30T15:00:00Z')
 
@@ -18,6 +18,7 @@ describe('snapshotDatePresets', () => {
       end: '2026-09-29',
     })
     expect(defaultSnapshotRange(now)).toEqual(['2026-09-23', '2026-09-29'])
+    expect(snapshotNotAfter(now)).toBe('2026-09-29')
   })
 
   it('keeps this month inside yesterday when today is the first UTC day', () => {
