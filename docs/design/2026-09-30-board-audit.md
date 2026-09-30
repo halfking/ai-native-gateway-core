@@ -65,8 +65,16 @@ UTC 窗口 `[2026-09-24 00:00, 当时的整分钟)` 实测：
 | 重算后 provider 维度 | $151.806657 | 1097841 |
 | `request_logs`（success / failure / rate_limited） | $151.806657 | 1097722 |
 
-主表里和日志键一致的行，费用差和请求差都是 0。多出来的 $0.284508 / 267 笔是日志里已经对不上的旧键。其中 $0.284420 是一笔：`2026-09-26 10:37+08`、provider 314。现在的成功日志 `canonical_id` 为空、费用 $0.284420；分钟表仍留着 `canonical_id=887407` 的旧键。同分钟里 `canonical_id=887407` 的日志是 `in_progress`，不进 rollup。整键替换不会删掉改键后留下的旧行。这 267 行没有删。
+主表里和 `request_logs` 键一致的行，费用差和请求差都是 0。多出来的 $0.284508 / 267 笔当时写成「`canonical_id` 已清空后留下的旧键」。同日再核，这句不成立。`2026-09-26 10:37+08`、provider 314、费用 `0.284420` 的成功行，`request_logs.canonical_id` 仍是 887407。同 `request_id`（`882e82824f6eab693fdddba571b92316`）的 `session_turns.canonical_id` 为空，时间戳是 10:37:33，日志是 10:37:29。rollup 读 `request_logs_with_current_month`：已有 turn 时用 turn，不用日志上的 canonical。这一分钟视图里已结束的行是 canonical 空、5 笔、费用 `0.62888750`，与分钟表 canonical 0 那一行一致。分钟表上的 canonical 887407（1 笔、`0.284420`）是累加器按日志 canonical 再写的，同一笔费用进了英雄卡两次。同分钟视图里 canonical 887407 的两行是 `in_progress`，不进 rollup。这 267 行没有删。
 
 维度表在主表重算之后仍是大约一半。9 个维度和错误下钻按同一条 rollup SQL 补写了已关闭的分钟。provider 维度费用与日志费用到小数点后 6 位相同，请求数仍多 119。看板缓存删掉后重启，`days=7` 接口里英雄卡是 $152.091165，供应商饼图 21 项费用合计 $151.806657。英雄卡仍读分钟表，没有改成用量合计。
 
 同一轮重启里，744 的 ATTACH 只检查规范索引名是不是已经挂上。11 月分区当时挂的是同定义的 `session_turns_2026_11_ts_id_idx`，再挂 `session_turns_2026_11_digest_null_idx` 得到 SQLSTATE 55000，启动把数据库判成不可用。现把「该分区表上已有任意子索引」视为已挂接。当时的库把已挂接索引改成了规范名；多出来的未挂接索引叫 `session_turns_2026_11_digest_null_extra`，没有删除。这次提交没有换 8782 二进制。正在跑的进程仍含 `rollupScanSince`，`/healthz` 在缓存重建后是 `2.5.8-f50cc0d8-20260930-2367`。新的 ATTACH 守卫要等下一次部署才进进程。
+
+## 再核（2026-10-01 03:00 左右，同一台本地库）
+
+`/healthz` 已是 `2.5.8-bdc13ccc-20260930-2368`。容器内 `/opt/llm-gateway-go/gateway` 含 `AND tbl.relname = part`。11 月已挂接的子索引是 `session_turns_2026_11_digest_null_idx`，父索引 `idx_session_turns_digest_null`。未挂接的 `session_turns_2026_11_digest_null_extra` 还在。
+
+`BoardHeroRow` 费用卡仍只渲染 `summary.total_cost_usd`。`queryBoardSummary` 只对 `request_stats_minute.cost_usd` 求和；没有行时才改走日志的单独求和，两列不相加。
+
+闭分钟重算后，视图不再产出的键会被删掉。当前这一分钟不删，累加器还在按日志 canonical 往里加。历史 267 行不在游标窗口里，这次提交没有重扫，也没有删。事务里重算 `2026-09-26 10:37+08` 后 canonical 887407 那一行消失，该分钟合计与视图一致，然后回滚；库里的 1 笔 / `0.284420` 还在。
