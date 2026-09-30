@@ -118,3 +118,45 @@ func TestGateReportsFailureReason(t *testing.T) {
 			"之前，向后抓只能得到空报告")
 	}
 }
+
+// TestWorkflowWiresTheGate pins that the harness is actually reachable from CI.
+//
+// A harness nobody invokes is not orchestration: it can sit in the tree looking
+// complete while CI keeps running the vacuous form. This asserts the workflow
+// names the script, and — more importantly — that it provisions a database and
+// sets a PG_CONTAINER, because the pre-round-43 job ran
+// `go test -tags=integration ./...` with no database service and no URL in the
+// environment at all.
+func TestWorkflowWiresTheGate(t *testing.T) {
+	const wf = "../../.github/workflows/integration-testcontainers-ci.yml"
+	b, err := os.ReadFile(wf)
+	if err != nil {
+		t.Fatalf("read %s: %v", wf, err)
+	}
+	src := string(b)
+
+	if !strings.Contains(src, "run-integration-gate.sh") {
+		t.Error("CI workflow 未调用 scripts/audit/run-integration-gate.sh；" +
+			"harness 存在但不可达，等于没有编排")
+	}
+	// A database must be started, not assumed.
+	if !strings.Contains(src, "docker run -d --name") {
+		t.Error("workflow 未启动数据库容器；没有库时 DB 门控的测试全部 skip，CI 仍显示绿")
+	}
+	// The stock-postgres trap: a vanilla image dies at CREATE EXTENSION citus,
+	// so pinning the project's build is what keeps the gate meaningful.
+	if !strings.Contains(src, "registry.kxpms.cn/kx-citus-pg17") {
+		t.Error("workflow 未钉住项目的 kx-citus-pg17 镜像；换 stock postgres 会让 " +
+			"citus / citus_columnar 不可用，门禁转而测环境而非 schema")
+	}
+	// Preflight the extensions so a wrong image fails with one clear error
+	// instead of a cascade of columnar assertion failures.
+	if !strings.Contains(src, "pg_available_extensions") {
+		t.Error("workflow 未预检扩展可用性；镜像不对时报错会淹没在逐条断言失败里")
+	}
+	// PG_CONTAINER must be defined, because the harness defaults to a local-only
+	// container name and would then not find CI's.
+	if !regexp.MustCompile(`PG_CONTAINER:\s*\S+`).MatchString(src) {
+		t.Error("workflow 未设置 PG_CONTAINER；harness 会去找本机默认容器名并 die")
+	}
+}
