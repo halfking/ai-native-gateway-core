@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { formatLatency } from '../../types/swimlane'
 import { formatBytes } from '../../utils/format'
 import type { BoardPayload } from '../../api/board'
-import { resolveBoardRangeMs, type BoardTimeRange } from '../../utils/boardTimeRange'
+import { boardRangeElapsedMinutes, type BoardTimeRange } from '../../utils/boardTimeRange'
 
 const props = defineProps<{
   board: BoardPayload | null | undefined
@@ -19,11 +19,8 @@ const { t } = useI18n()
 const summary = computed(() => props.board?.summary)
 const bodyStats = computed(() => props.board?.body_stats)
 
-/** 窗口分钟数：预设取 utc 滚动起点→now，custom 取首日 00:00 → 末日次日 00:00。 */
-const rangeMinutes = computed(() => {
-  const { startMs, endMs } = resolveBoardRangeMs(props.timeRange)
-  return Math.max(1, (endMs - startMs) / 60_000)
-})
+/** 已发生的分钟数。含今天的 custom 范围不把未来小时算进 RPM/TPM。 */
+const rangeMinutes = computed(() => boardRangeElapsedMinutes(props.timeRange))
 
 const rpm = computed(() => {
   const total = summary.value?.total_requests
@@ -122,6 +119,7 @@ function fmtCompact(n: number | undefined) {
   white-space: nowrap;
 }
 .mini-card__value small {
+  margin-left: 4px;
   font-size: 10px;
   color: var(--text-muted);
   font-weight: 500;
