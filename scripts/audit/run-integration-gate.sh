@@ -242,9 +242,70 @@ if [[ "$GATE_APPLY_STARTUP" == "1" ]]; then
     die "只从 StartupFiles 解析出 $sf_total 条迁移，明显少于 installer 实际注册的 " \
 "条数（173）。解析多半是部分失配；继续跑等于拿半个起始库当门禁库。"
   fi
+  # Known fresh-install gaps are a RATCHET, not a disclaimer.
+  #
+  # Round 43 collected this list and printed it, which made it neither a gate nor
+  # a record: the run stayed green no matter how many entries there were, so the
+  # list could grow silently and nobody would learn about it from a red build.
+  #
+  # Round 44 measures the same 19 failures on the installer's own path
+  # (embeddata 00-prereqs -> 01-schema -> 02-seed + all 173 registered startup
+  # files), so they are real fresh-install gaps rather than an artifact of this
+  # harness. They are now enumerated in sql/schema/startup_known_gaps.tsv with a
+  # reason each, and:
+  #
+  #   * a failure NOT in that file  -> die. A 20th gap turns the gate red until
+  #     someone adds the line with a reason.
+  #   * a line that did NOT fail   -> reported as stale, so a fixed migration
+  #     gets its entry retired instead of the list quietly becoming a blanket
+  #     exemption. (Not fatal: a genuine fix must not be blocked on paperwork.)
+  #
+  # Note the asymmetry that makes the list unable to rot silently: exemptions are
+  # enumerated, so removing the whole file turns every gap fatal rather than
+  # permissive. The guard tests also assert the file is non-empty.
+  GAP_MANIFEST="$REPO_ROOT/sql/schema/startup_known_gaps.tsv"
   if (( sf_fail > 0 )); then
-    echo "  startup migrations that did not apply (known fresh-install gaps, not gate failures):"
-    printf '    - %s\n' "${sf_failed[@]}"
+    if [[ ! -f "$GAP_MANIFEST" ]]; then
+      die "有 ${sf_fail} 条启动迁移未应用，但找不到已知缺口清单 ${GAP_MANIFEST}。" \
+"清单缺失时无法区分「已知缺口」与「新回归」，而放行等于把新回归当已知缺口吞掉。"
+    fi
+    mapfile -t gap_known < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                              -e 's/[[:space:]].*$//' "$GAP_MANIFEST" | sort -u)
+    if (( ${#gap_known[@]} == 0 )); then
+      die "已知缺口清单 ${GAP_MANIFEST} 解析出 0 条。清单本身坏了，" \
+"此时任何未应用迁移都会被当成未登记缺口而致命退出——但那不是可接受的失败原因，请先修清单。"
+    fi
+    declare -a gap_unlisted=()
+    declare -a gap_hit=()
+    for entry in "${sf_failed[@]}"; do
+      f="${entry%% :: *}"
+      if printf '%s\n' "${gap_known[@]}" | grep -qxF "$f"; then
+        gap_hit+=("$entry")
+      else
+        gap_unlisted+=("$entry")
+      fi
+    done
+    echo "  startup: ${#gap_hit[@]} 条已知缺口（见 sql/schema/startup_known_gaps.tsv）"
+    printf '    - %s\n' "${gap_hit[@]}"
+    if (( ${#gap_unlisted[@]} > 0 )); then
+      echo "  ✗ 新增未登记的启动迁移失败（${#gap_unlisted[@]} 条），这不在已知缺口清单里："
+      printf '    - %s\n' "${gap_unlisted[@]}"
+      die "有 ${#gap_unlisted[@]} 条启动迁移在全新安装路径上失败且未登记为已知缺口。" \
+"这意味着又出现了一批真实的新鲜安装缺口，或某条已修迁移回归了。" \
+"确认是真实缺口后，把文件与原因补进 sql/schema/startup_known_gaps.tsv 再重跑；" \
+"不要为了让门禁变绿而放宽这里的判据。"
+    fi
+    # Stale entries: a listed migration that applied fine this run. Surfaced, not
+    # fatal, so a real fix is not blocked — but it must not be forgotten either.
+    declare -a gap_stale=()
+    mapfile -t gap_actual < <(for e in "${sf_failed[@]}"; do echo "${e%% :: *}"; done | sort -u)
+    for known in "${gap_known[@]}"; do
+      printf '%s\n' "${gap_actual[@]}" | grep -qxF "$known" || gap_stale+=("$known")
+    done
+    if (( ${#gap_stale[@]} > 0 )); then
+      echo "  ⚠ 已知缺口清单里有 ${#gap_stale[@]} 条本轮未复现（可能已修复），请从清单中删除："
+      printf '    - %s\n' "${gap_stale[@]}"
+    fi
   fi
 fi
 

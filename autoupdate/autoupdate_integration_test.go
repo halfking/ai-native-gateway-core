@@ -39,11 +39,49 @@ func TestAutoUpdateIntegration(t *testing.T) {
 
 	store := NewPgxStore(pool)
 
-	// Clean up test data
+	// Clean up test data.
+	//
+	// Round 44: this used to DELETE FROM autoupdate_upgrade_logs /
+	// autoupdate_gray_rules / autoupdate_releases. None of those three tables
+	// exists in the schema, and no product code has ever referenced them — the
+	// store is a *PgxStore, which writes `releases` / `upgrade_logs` /
+	// `gray_release_rules` / `instance_release_status`. So all three DELETEs
+	// errored out into `_, _ =` and were silently discarded, and the rows these
+	// subtests actually wrote were never removed.
+	//
+	// The damage was not self-contained: the leaked rows sit in `releases` on
+	// ChannelStable with a high build_seq, so TestPgxStore_GetLatestReleaseAfter
+	// in store_pgx_test.go picked them up instead of its own fixtures and failed
+	// three subtests. One test file's broken cleanup silently broke a different
+	// test file.
+	//
+	// Deletion order follows the dependencies: upgrade_logs has no release_id
+	// (it keys on old_version/new_version), gray_release_rules.release_id
+	// points at releases.id, and instance_release_status.release_id is an
+	// ON DELETE CASCADE FK, so deleting the releases rows clears those too.
+	//
+	// The cleanup gets its own context: `ctx` above is a 60s timeout shared with
+	// the test body, so on a slow run every DELETE here would fail on a cancelled
+	// context and leak the rows again — the same silent failure by another route.
 	defer func() {
-		_, _ = pool.Exec(ctx, "DELETE FROM autoupdate_upgrade_logs WHERE release_id IN (SELECT id FROM autoupdate_releases WHERE version LIKE 'v0.0.0-test-%')")
-		_, _ = pool.Exec(ctx, "DELETE FROM autoupdate_gray_rules WHERE release_id IN (SELECT id FROM autoupdate_releases WHERE version LIKE 'v0.0.0-test-%')")
-		_, _ = pool.Exec(ctx, "DELETE FROM autoupdate_releases WHERE version LIKE 'v0.0.0-test-%'")
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		stmts := []string{
+			`DELETE FROM upgrade_logs WHERE new_version LIKE 'v0.0.0-test-%' OR old_version LIKE 'v0.0.0-test-%'`,
+			`DELETE FROM gray_release_rules WHERE release_id IN (SELECT id FROM releases WHERE version LIKE 'v0.0.0-test-%')`,
+			`DELETE FROM instance_release_status WHERE version LIKE 'v0.0.0-test-%'`,
+			`DELETE FROM releases WHERE version LIKE 'v0.0.0-test-%'`,
+		}
+		for _, s := range stmts {
+			if tag, err := pool.Exec(cleanupCtx, s); err != nil {
+				// Previously swallowed by `_, _ =`. A cleanup that fails is how
+				// the cross-file pollution above went unnoticed, so it is now
+				// reported on stderr instead of being dropped.
+				t.Logf("autoupdate cleanup failed (may leak rows into later tests): %v", err)
+			} else {
+				t.Logf("autoupdate cleanup: %s -> %d row(s)", s, tag.RowsAffected())
+			}
+		}
 	}()
 
 	t.Run("CompleteReleaseFlow", func(t *testing.T) {
@@ -166,6 +204,17 @@ func TestAutoUpdateIntegration(t *testing.T) {
 
 			err := store.CreateRelease(ctx, release)
 			require.NoError(t, err, "CreateRelease should succeed for %s", ver)
+
+			// Round 44: these releases were created but never published, and the
+			// query below is
+			//   GetLatestRelease -> WHERE channel = $1 AND published_at IS NOT NULL
+			// so it matched nothing and the subtest failed with "no rows in result
+			// set". The sibling fixture in store_pgx_test.go does call
+			// UpdateReleaseStatus(id, true) after each CreateRelease; this one had
+			// no such call, so it was never exercised before this round — without a
+			// DB URL the whole file skips.
+			err = store.UpdateReleaseStatus(ctx, release.ID, true)
+			require.NoError(t, err, "publishing %s should succeed", ver)
 			time.Sleep(10 * time.Millisecond)
 		}
 
@@ -456,7 +505,17 @@ func TestUpgradeRetry(t *testing.T) {
 		assert.Equal(t, StatusSuccess, finalStatus.Status)
 		assert.Equal(t, maxRetries+1, finalStatus.RetryCount)
 
-		// Clean up
-		_, _ = pool.Exec(ctx, "DELETE FROM autoupdate_upgrade_logs WHERE id = $1", logID)
+		// Clean up.
+		//
+		// Round 44: this targeted autoupdate_upgrade_logs, which is not a table in
+		// this schema. The store is a *PgxStore and writes `upgrade_logs`, which
+		// does have an `id` column, so the fix is a rename rather than a redesign.
+		// The error was discarded by `_, _ =`, so this delete had never run and
+		// never will — the same silent no-op as the parent test's cleanup.
+		if tag, err := pool.Exec(ctx, "DELETE FROM upgrade_logs WHERE id = $1", logID); err != nil {
+			t.Logf("retry subtest cleanup failed: %v", err)
+		} else {
+			t.Logf("retry subtest cleanup: upgrade_logs id=%v -> %d row(s)", logID, tag.RowsAffected())
+		}
 	})
 }

@@ -364,12 +364,167 @@ func TestGateAppliesStartupMigrations(t *testing.T) {
 			"718/719 会因 CONCURRENTLY 落在事务块里而假失败")
 	}
 	// A migration that does not apply is a known fresh-install gap, not a gate
-	// failure. It must be reported without failing the run.
+	// failure — but ONLY if it is enumerated in the known-gaps manifest. Round
+	// 43 collected the list and printed it, which made it neither a gate nor a
+	// record: the run stayed green at any list length, so the list could grow
+	// silently. Round 44 turns it into a ratchet. The enforcement itself is
+	// guarded by TestGateRatchetsUnlistedStartupGaps; this only asserts the
+	// collection still happens.
 	if !strings.Contains(act, "sf_failed+=") {
 		t.Error("未收集未应用的启动迁移清单")
 	}
-	if !strings.Contains(act, "known fresh-install gaps") {
-		t.Error("未把「启动迁移未应用」标为已知缺口而非门禁失败")
+	if !strings.Contains(act, "startup_known_gaps.tsv") {
+		t.Error("未把「启动迁移未应用」与已知缺口清单 sql/schema/startup_known_gaps.tsv 对账；" +
+			"不对账就只能靠人肉读列表，列表会静默增长")
+	}
+}
+
+// TestGateRatchetsUnlistedStartupGaps is the guard for the ratchet itself.
+//
+// The failure this prevents is subtle and worth stating: an allowlist of known
+// gaps is a ratchet ONLY if adding a new gap is fatal. If the harness merely
+// prints failures, then every future fresh-install gap is absorbed into the same
+// green run, and the list becomes a blanket exemption that nobody re-reads.
+//
+// The three required properties, each of which was faked in a first draft of
+// this change:
+//   - the manifest is actually read (not hardcoded in the shell),
+//   - an unlisted failure is FATAL, not a warning,
+//   - a listed-but-not-reproduced entry is surfaced, so the list can be retired
+//     instead of accumulating dead exemptions.
+func TestGateRatchetsUnlistedStartupGaps(t *testing.T) {
+	act := active(gateSource(t))
+
+	// The manifest must be READ FROM THE FILE, not hardcoded in the shell.
+	//
+	// This assertion is deliberately narrower than it looks. A first draft
+	// checked only `strings.Contains(act, "GAP_MANIFEST")`, and the mutation
+	// suite proved it fake: renaming the variable to UNUSED_MANIFEST left the
+	// guard green, because the string "GAP_MANIFEST" still occurs inside two
+	// die() messages. A bare substring cannot tell a binding from a mention.
+	// So assert the assignment itself, and separately assert the variable is
+	// consumed by the reader.
+	if !strings.Contains(act, `GAP_MANIFEST="$REPO_ROOT/sql/schema/startup_known_gaps.tsv"`) {
+		t.Error("harness 未把 GAP_MANIFEST 绑定到 sql/schema/startup_known_gaps.tsv；" +
+			"只检查变量名出现过是不够的——die 消息里提到它就能满足那种判据")
+	}
+	// Consumed, not merely named: the reader must pass the variable to sed.
+	if !strings.Contains(act, `"$GAP_MANIFEST" | sort -u`) {
+		t.Error("harness 没有真正用 GAP_MANIFEST 读取清单内容；" +
+			"绑定存在但清单没被读，缺口比对会对空集合静默放行")
+	}
+
+	// The exemptions are enumerated, which is what makes an unlisted failure
+	// detectable. Assert the comparison is exact-match on the filename, not a
+	// substring: a substring match would let 622 match 6221_whatever.
+	if !strings.Contains(act, "grep -qxF") {
+		t.Error("缺口比对未使用整行精确匹配（grep -qxF）；子串匹配会让一条缺口" +
+			"意外豁免另一个前缀相同的迁移")
+	}
+	if !strings.Contains(act, "gap_unlisted+=") {
+		t.Error("未收集「未登记」的启动迁移失败；没有这个集合就无法与已知缺口区分")
+	}
+	if !strings.Contains(act, "gap_stale+=") {
+		t.Error("未检测清单中已不复现的条目；清单只进不出会变成永久豁免")
+	}
+
+	// The load-bearing assertion: unlisted => die. Checking only that the words
+	// "unlisted"/"gap" appear would be satisfied by an echo.
+	//
+	// Two halves, because either alone is weak. The non-empty test alone is
+	// satisfied by a block that only prints; the die message alone could sit
+	// outside the conditional entirely. Together they pin "when the unlisted set
+	// is non-empty, control reaches this specific die".
+	//
+	// The repeat bound is 1000, not 4000: Go's regexp rejects a repeat count
+	// above 1000 at compile time, which panics the whole test binary rather than
+	// failing one test. Measured distance from the test to the die is ~250 chars.
+	unlistedFatal := regexp.MustCompile(`\$\{#gap_unlisted\[\@\]\} > 0[\s\S]{0,1000}?\bdie\b`)
+	if !unlistedFatal.MatchString(act) {
+		t.Error("未登记的启动迁移失败没有致命退出（未在 gap_unlisted 非空时 die）；" +
+			"只要它不致命，这份清单就只是一份可以无限变长的免责声明")
+	}
+	// Anchor on the message text too, so the block cannot be satisfied by an
+	// unrelated `die` that happens to fall inside the window.
+	if !strings.Contains(act, "未登记为已知缺口") {
+		t.Error("未登记缺口的 die 消息缺失或被改写；" +
+			"守卫必须锚定这条具体诊断文案，否则窗口内的任意 die 都能满足判据")
+	}
+}
+
+// TestKnownStartupGapsManifestIsAnnotated guards the manifest file itself.
+//
+// A hand-maintained list rots. Three separate ways this one could rot silently:
+// a line with no reason (so nobody can triage it later), a line naming a file
+// that no longer exists or is no longer registered (so the entry is fiction),
+// and the file being emptied or deleted (so every gap becomes "unlisted" and
+// the harness dies with a misleading reason).
+func TestKnownStartupGapsManifestIsAnnotated(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("startup_known_gaps.tsv"))
+	if err != nil {
+		t.Fatalf("读不到已知缺口清单：%v", err)
+	}
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+
+	type entry struct{ file, reason string }
+	var entries []entry
+	seen := map[string]bool{}
+	for i, raw := range lines {
+		if strings.TrimSpace(raw) == "" || strings.HasPrefix(strings.TrimSpace(raw), "#") {
+			continue
+		}
+		parts := strings.Split(raw, "\t")
+		if len(parts) != 2 {
+			t.Errorf("第 %d 行不是「文件名<TAB>原因」两段：%q", i+1, raw)
+			continue
+		}
+		f, reason := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if f == "" || reason == "" {
+			t.Errorf("第 %d 行有空字段：%q", i+1, raw)
+			continue
+		}
+		if seen[f] {
+			t.Errorf("重复条目：%s", f)
+		}
+		seen[f] = true
+		entries = append(entries, entry{f, reason})
+	}
+
+	// The non-empty self-check. A guard over an empty file passes trivially, and
+	// an empty manifest makes every startup failure "unlisted" — the harness
+	// would then die for a reason that has nothing to do with the real cause.
+	// Measured round 44 on the installer's own path: 154 of 173 applied, 19 did not.
+	if len(entries) == 0 {
+		t.Fatal("已知缺口清单为空；实测有 19 条启动迁移在全新安装路径上不落地。" +
+			"空清单会让任何未应用迁移都被当成「新回归」而致命退出，诊断方向会被带偏")
+	}
+	if len(entries) < 19 {
+		t.Errorf("已知缺口只有 %d 条，实测为 19 条；清单被削减过——"+
+			"若确有迁移被修复，请连带更新本注释与清单，而不是让数量无声漂移", len(entries))
+	}
+
+	// Every entry must name a file that is both present and registered. An entry
+	// pointing at a nonexistent file is worse than no entry: it silently grants
+	// an exemption to whatever gets added at that name later.
+	registered := map[string]bool{}
+	startupDir := filepath.Join("..", "..", "installer", "cmd", "llm-gw-installer", "embeddata", "startup")
+	runner, err := os.ReadFile(filepath.Join("..", "..", "installer", "internal", "dbinit", "runner.go"))
+	if err != nil {
+		t.Fatalf("读不到 runner.go：%v", err)
+	}
+	for _, m := range regexp.MustCompile(`"[0-9a-zA-Z_]+\.sql"`).FindAllString(string(runner), -1) {
+		registered[strings.Trim(m, `"`)] = true
+	}
+	if len(registered) == 0 {
+		t.Fatal("从 runner.go 解析出 0 条已注册启动迁移；解析失败会让下面的校验全部变成空转")
+	}
+	for _, e := range entries {
+		if !registered[e.file] {
+			t.Errorf("清单条目 %s 不在 runner.go 的 StartupFiles 里；它不会被应用，条目无意义", e.file)
+		}
+		if _, err := os.Stat(filepath.Join(startupDir, e.file)); err != nil {
+			t.Errorf("清单条目 %s 在 embeddata/startup 下不存在：%v", e.file, err)
+		}
 	}
 }
 
