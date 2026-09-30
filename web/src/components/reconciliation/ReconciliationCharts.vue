@@ -54,11 +54,13 @@ const reqConfig = computed(() => createComboChartConfig('bar', series.value.labe
   },
 }))
 
+// fill: 'stack' — chart.js treats fill:true as 'origin', which paints each
+// token series down to zero instead of the stacked band.
 const tokConfig = computed(() => createComboChartConfig('line', series.value.labels, [
-  { label: t('reports.legendIn'), data: series.value.input, stack: 'tok', borderColor: chartColors.blue, backgroundColor: `${chartColors.blue}66`, fill: true, yAxisID: 'y' },
-  { label: t('reports.legendOut'), data: series.value.output, stack: 'tok', borderColor: chartColors.green, backgroundColor: `${chartColors.green}66`, fill: true, yAxisID: 'y' },
-  { label: t('reports.legendCacheRead'), data: series.value.cacheRead, stack: 'tok', borderColor: chartColors.cyan, backgroundColor: `${chartColors.cyan}66`, fill: true, yAxisID: 'y' },
-  { label: t('reports.legendCacheWrite'), data: series.value.cacheWrite, stack: 'tok', borderColor: chartColors.purple, backgroundColor: `${chartColors.purple}66`, fill: true, yAxisID: 'y' },
+  { label: t('reports.legendIn'), data: series.value.input, stack: 'tok', borderColor: chartColors.blue, backgroundColor: `${chartColors.blue}66`, fill: 'stack', yAxisID: 'y' },
+  { label: t('reports.legendOut'), data: series.value.output, stack: 'tok', borderColor: chartColors.green, backgroundColor: `${chartColors.green}66`, fill: 'stack', yAxisID: 'y' },
+  { label: t('reports.legendCacheRead'), data: series.value.cacheRead, stack: 'tok', borderColor: chartColors.cyan, backgroundColor: `${chartColors.cyan}66`, fill: 'stack', yAxisID: 'y' },
+  { label: t('reports.legendCacheWrite'), data: series.value.cacheWrite, stack: 'tok', borderColor: chartColors.purple, backgroundColor: `${chartColors.purple}66`, fill: 'stack', yAxisID: 'y' },
   {
     label: t('reports.legendHitRate'),
     data: series.value.hit,

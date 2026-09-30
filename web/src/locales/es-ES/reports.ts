@@ -10,6 +10,7 @@ export default {
   rerunFailed: 'Error en el recálculo',
   // Cobertura / estado vacío
   daysCovered: 'días de instantáneas',
+  unaggregatedDay: 'Sin agregar',
   noSnapshots: 'No hay instantáneas de informes en este intervalo (el trabajo de agregación diaria genera los datos del día anterior de madrugada, o use «Recalcular día final» para recuperarlos)',
   // Tarjetas de resumen
   requests: 'Solicitudes',

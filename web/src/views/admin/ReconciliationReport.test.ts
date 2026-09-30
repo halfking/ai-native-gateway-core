@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import zhCN from '../../locales/zh-CN'
 import ReconciliationReport from './ReconciliationReport.vue'
-import { quickRange } from '../../components/reconciliation/format'
+import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
+import { snapshotDatePresets } from '../../components/reconciliation/snapshotRange'
 import type { DimensionOptions, RangeReport } from '../../api/reportrollup'
 
 const getReportSummaryMock = vi.fn()
@@ -113,6 +114,18 @@ async function mountView() {
   return wrapper
 }
 
+function presetRange(id: string) {
+  const preset = snapshotDatePresets().find((item) => item.id === id)
+  if (!preset) throw new Error(`missing preset ${id}`)
+  return preset.resolve()
+}
+
+async function applyPreset(wrapper: Awaited<ReturnType<typeof mountView>>, id: string) {
+  const picker = wrapper.findComponent(KxDateRangePicker)
+  await picker.vm.$emit('apply', presetRange(id))
+  await flushPromises()
+}
+
 async function clickRadio(wrapper: Awaited<ReturnType<typeof mountView>>, value: string) {
   const input = wrapper
     .findAll<HTMLInputElement>('input.el-radio-button__original-radio')
@@ -197,7 +210,7 @@ describe('ReconciliationReport', () => {
     await flushPromises()
     const fresh = providerReport()
     getReportSummaryMock.mockResolvedValue(fresh)
-    await wrapper.get('[data-quick="yesterday"]').trigger('click')
+    await applyPreset(wrapper, 'yesterday')
     await flushPromises()
     releaseStale({
       ...providerReport(),
@@ -228,13 +241,52 @@ describe('ReconciliationReport', () => {
     expect(wrapper.text()).toContain(zhCN.reports.reasonFilterHint)
   })
 
-  it('shows the empty-snapshot alert and applies the yesterday chip', async () => {
+  it('uses T+1 snapshot presets ending yesterday and applies yesterday from that panel', async () => {
     getReportSummaryMock.mockResolvedValue({ ...providerReport(), snapshot_dates: [], days: [] })
     const wrapper = await mountView()
+    expect(wrapper.find('[data-quick]').exists()).toBe(false)
+    const picker = wrapper.getComponent(KxDateRangePicker)
+    const ids = (picker.props('presets') as { id: string }[]).map((item) => item.id)
+    expect(ids).toEqual(['yesterday', 'last7d', 'last30d', 'thisMonth', 'lastMonth'])
+    expect(ids).not.toContain('today')
+    expect(picker.props('maxSpanDays')).toBe(367)
+    const last7 = presetRange('last7d')
+    const today = new Date().toISOString().slice(0, 10)
+    expect(last7.end).not.toBe(today)
+    expect(getReportSummaryMock.mock.calls[0][0]).toEqual(expect.objectContaining({ start: last7.start, end: last7.end }))
     expect(wrapper.text()).toContain(zhCN.reports.noSnapshots)
-    await wrapper.get('[data-quick="yesterday"]').trigger('click')
+    await applyPreset(wrapper, 'yesterday')
+    const yesterday = presetRange('yesterday')
+    expect(getReportSummaryMock).toHaveBeenCalledWith(expect.objectContaining({
+      start: yesterday.start,
+      end: yesterday.end,
+    }))
+  })
+
+  it('marks an uncovered zero-fill day and leaves a covered day unmarked', async () => {
+    const report = providerReport()
+    report.days = [
+      ...report.days,
+      {
+        date: '2026-09-22',
+        totals: {
+          ...report.days[0].totals,
+          request_count: 0,
+          success_count: 0,
+          error_count: 0,
+          error_rate: 0,
+          total_tokens: 0,
+          credits_charged: 0,
+          estimated_cost_cents: 0,
+        },
+      },
+    ]
+    getReportSummaryMock.mockResolvedValue(report)
+    const wrapper = await mountView()
+    await wrapper.get('.el-collapse-item__header').trigger('click')
     await flushPromises()
-    const [start, end] = quickRange('yesterday')
-    expect(getReportSummaryMock).toHaveBeenCalledWith(expect.objectContaining({ start, end }))
+    const rows = wrapper.get('[data-testid="day-dist"]').findAll('tr.el-table__row').map((row) => row.text())
+    expect(rows.find((text) => text.includes('2026-09-21'))).not.toContain('未聚合')
+    expect(rows.find((text) => text.includes('2026-09-22'))).toContain('未聚合')
   })
 })

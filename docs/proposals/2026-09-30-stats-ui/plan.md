@@ -92,11 +92,15 @@ P1 已写进前端，未改后端。与本节原稿的偏差以代码和测试�
 - 导出固定 summary，分组随供应商/租户视角。旧页的 6 维主表、列选择器和 summary/daily 切换不再作为主交互。凭证 / 租户 / 人员 / api_key 仍在「更多筛选」。
 - 非平台运营视角不显示 USD，第三张卡改为缓存命中。页面测试没有登录成平台运营，USD 卡只在 `providerDist(..., showCost: true)` 单测里覆盖。
 - 慢响应用 `fetchGen` 丢弃。按天明细默认不挂载表，展开后才出现。
-- `element:check` 通过。`color:check --strict` 仍被无关页面（AutoTuning / TaskProfile 等）打红，对账文件不在这份违例里，没有改颜色基线。`vue-tsc` 全量仍失败在既有 `useLiveStreamUrl.test.ts` / `useSessionSummaryJump.test.ts`，对账路径无报错。
-- 2026-09-30 晚间用 Vite 开发服务（`127.0.0.1:5793`，接口代理本机 8782，当时镜像 `2.5.8 #2353`）打开页面。这不是镜像里的旧构建，也没有把新前端装进 8782。
-  - 下钻 MiniMax：地址变为 `?view=provider&provider_id=14`，请求数 12,317 → 285。后退后地址无 query，请求数回到 12,317，近 7 天 chip 仍选中。
-  - 展开「按天」：2026-09-23 至 09-29 共 7 行。
-  - 空区间 2019-01-01～01-03 覆盖 0 天。修正前 `chart.destroy()` 在 `nextTick` 之后恢复 canvas 行内样式，`v-show` 的 `display: none` 被清掉，260px 空白画布留在卡片里，「暂无数据」落在卡片外。现改为 `v-if` 卸掉 canvas，空文案绝对定位在图框内。复测时两张卡片内都可见「暂无数据」且没有 canvas；再点近 7 天，两张图重新绘制。
+- `element:check` 通过。`color:check --strict` 仍被无关页面（AutoTuning / TaskProfile 等）打红，对账文件不在这份违例里，没有改颜色基线。`useLiveStreamUrl.test.ts` / `useSessionSummaryJump.test.ts` 的 vitest 5 `Mock` 泛型已改；这不等于全量 `vue-tsc` 已经通过。
+- 2026-09-30 晚间用 Vite 开发服务打开过页面。那次代理的是本机接口，不是镜像里的旧构建，也没有把新前端装进 8782。
+  - 下钻 MiniMax：地址变为 `?view=provider&provider_id=14`，请求数 12,317 → 285。后退后地址无 query，请求数回到 12,317。
+  - 展开「按天」：2026-09-23 至 09-29 共 7 行。其中 09-29 请求为 0 且不在 `snapshot_dates` 里，是补零日。当时把「7 行」当成展开成功，没有标出这一行。
+  - 空区间卸掉 canvas 后，卡片内可见「暂无数据」。根因是 `chart.destroy()` 会清掉 `v-show` 的 `display: none`。
+- 同日后续：看板日期预设的 `last7d` 结束日是今天。对账若直接复用，首屏会请求尚未聚合的当天。`reportRange` 缺省是 UTC 昨天往前 7 天。对账预设改回这个窗口，不提供「今天」。跨度上限 367（含首尾），对应 `end-start > 366 days` 才拒绝。2026-09-30 22:30 在 Vite `127.0.0.1:5781` 打开页面，触发器为「近 7 天 09/23–09/29」，预设只有昨天 / 近 7 天 / 近 30 天 / 本月 / 上月。该 Vite 的 `/api` 代理指向 `localhost:8781`，summary 返回 500 且响应体为空，所以按天表和趋势图这次没有在浏览器里看到。8782 在听，但不是这个代理目标。
+- 租户表「占比」列原先固定为请求占比。现与占比条同一分母。请求占比仍留在请求数副文案。
+- 按天表对不在 `snapshot_dates` 里的补零日显示「未聚合」。有快照的真零日不标。`snapshot_dates` 为 `undefined` 时不标。
+- Token 构成图的 `fill: true` 在 Chart.js 4 里等于 `origin`。改为 `fill: 'stack'`。命中率折线仍是 `fill: false`。测试只断言传给 Chart 的 `fill`，不看像素。
 - 方案 B/C 未做。§8 的 1–3 仍无产品确认。8782 镜像内的前端未替换。
 
 ---
