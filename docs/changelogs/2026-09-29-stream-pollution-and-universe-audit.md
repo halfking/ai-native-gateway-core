@@ -384,3 +384,38 @@ v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScope
 （该提交只改 canonical 选取优先级与不变式门，未触及 `nodes`/SSE 投影），
 而是 SSE 节点链路当前无数据。同一阻断对 `glm-5.2` 同样成立，
 故「glm-5.2 组正常」这一项本轮**同样未取得证据**，不做通过声明。
+
+### 补充：SSE 节点链路取证（同一根因的更深一层）
+
+上一节把阻断归到「SSE 节点链路无数据」。本轮继续沿链向下定位，
+结论是**断点在服务端推不出快照，而非前端渲染门或本轮改动**。
+
+已排除的环节（逐个查证，不是推测）：
+
+| 环节 | 位置 | 结论 |
+| --- | --- | --- |
+| 前端渲染门 | `QueuePerspectivePanel.vue:1256/860` | 逻辑正确，门读 SSE 的 `raw_models`，无数据即按设计隐藏 |
+| SSE 端点存在 | `admin/handler.go:1014` `/api/admin/live-stream` | 存在；线上实测 `EventSource` 请求 `outcome=pending`（长连接已建立） |
+| provider 注入 | `main.go:2527` `SetNodeStatusProvider(liveNodeStatusCache.get)` | 接线存在 |
+| `fps` 非空 | `main.go:1329` `credentialfpslot.New` | `slot.go:199` 该构造函数**从不返回 nil**（只做默认值兜底），故 `decorateFPNodeState` 外层 `if fps != nil` 恒真 |
+| 刷新循环 | `main_livestream.go:727-751` | 正常；DB 失败保留上次快照并限频告警，不会把快照洗成空 |
+| 节点查询 | `main_livestream.go:500-513` | 全表扫 `credentials`，无线上不可达因素 |
+
+线上同时可见的事实：SSE 连接状态**长期停在「连接中」**（`status--warn`），
+网络面板只有那一条 `eventsource` 常驻请求、无任何数据型 XHR，
+控制台无报错。即**连接建成了，但一帧快照都没推出来**，
+前端因此 `nodes` 恒空 → 节点矩阵报「暂无节点数据」→ 模型分区因门控隐藏。
+
+这三点互相印证，指向服务端 live-stream hub 未产出快照。
+继续定位需要**部署侧日志**（hub 的发送条件 / 快照源是否被上游关闭），
+超出本仓范围，不在本轮凭代码可判定的范围内，故记录为待部署侧取证项。
+
+附带发现一处**独立的健壮性缺口**（本轮未修，仅登记）：
+`main_livestream.go:591` 的 `if len(keys) == 0 { return nil }` 位于
+`modelsByCred` 已经查得之后、`RawModels` 赋值之前。当
+`credential_model_bindings ⋈ provider_models` 返回空（即无任何绑定行）时，
+该早退会让**已经查到的绑定信息一并被丢弃**。
+当前它对本次现象不构成解释（线上 resolve 能返回 17/21 条 candidate，
+说明绑定表非空），但一旦绑定表真的为空，
+`RawModels` 的缺失将无法与「查询失败」区分 —— 与本仓既有的
+「错误不得渲染成看起来合法的零」是同一类形状，建议后续单独处理。
