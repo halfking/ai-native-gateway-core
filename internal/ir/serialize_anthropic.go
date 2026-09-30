@@ -15,7 +15,7 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 
 	out := map[string]any{
 		"model":      req.Model,
-		"max_tokens": req.MaxTokens,
+		"max_tokens": anthropicMaxTokens(req.MaxTokens),
 	}
 
 	// Streaming
@@ -1177,4 +1177,24 @@ func reasonnormEffortToBudget(effort string) (int, bool) {
 	}
 	v, ok := effortBudgets[effort]
 	return v, ok
+}
+
+// DefaultAnthropicMaxTokens matches the pre-IR conversion path
+// (domains/transformation/anthropic/chat_to_anthropic.go used 4096 when the
+// client sent no max_tokens).
+const DefaultAnthropicMaxTokens = 4096
+
+// anthropicMaxTokens guards Anthropic's hard requirement: `max_tokens` is
+// mandatory and must be > 0.
+//
+// The IR path used to emit `req.MaxTokens` verbatim, so an OpenAI client that
+// omitted max_tokens (very common, streaming in particular) produced
+// `{"max_tokens": 0}`, which the upstream rejects with 400. The pre-IR
+// conversion defaulted to 4096, so this was a regression introduced when
+// Anthropic requests were routed through the IR serializer.
+func anthropicMaxTokens(n int) int {
+	if n > 0 {
+		return n
+	}
+	return DefaultAnthropicMaxTokens
 }
