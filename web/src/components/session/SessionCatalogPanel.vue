@@ -5,7 +5,7 @@
  * 带标题、轮次、token、费用、健康度。q 交给服务端检索会话摘要，
  * 同时在已返回行上按会话键、标题、模型、标签即时过滤。结果上限 200。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listCatalogSessions, type CatalogSession } from '../../api/session'
 import { formatDateTime } from '../../utils/datetime'
@@ -22,7 +22,11 @@ const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
 
+// 代际号防竞态（样板见 useReconciliationPage.ts 的 fetchGen）：快速切换
+// status chips / 防抖搜索时，旧响应后到不得覆盖新结果。
+let fetchGen = 0
 async function load() {
+  const gen = ++fetchGen
   loading.value = true
   error.value = ''
   const q = query.value.trim()
@@ -32,13 +36,15 @@ async function load() {
       limit: 200,
       q: q || undefined,
     })
+    if (gen !== fetchGen) return
     rows.value = r.sessions ?? []
     loaded.value = true
   } catch (e) {
+    if (gen !== fetchGen) return
     error.value = e instanceof Error ? e.message : String(e)
     rows.value = []
   } finally {
-    loading.value = false
+    if (gen === fetchGen) loading.value = false
   }
 }
 
@@ -48,6 +54,9 @@ watch(query, () => {
   searchTimer = setTimeout(() => {
     void load()
   }, 300)
+})
+onUnmounted(() => {
+  if (searchTimer) clearTimeout(searchTimer)
 })
 
 const filtered = computed(() => {

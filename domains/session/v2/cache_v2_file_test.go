@@ -634,3 +634,81 @@ func BenchmarkFileCacheGet(b *testing.B) {
 		}
 	})
 }
+
+// TestFileCacheSetTTLGetRace 钉住 2026-10-01 审计修复：SetTTL 写 fc.ttl 持
+// fc.mu，Get 的两条过期判定路径必须在锁窗口内取 ttl——索引命中路径原本就在
+// 锁内；非索引路径（索引 miss → 磁盘 Stat 后判过期）修复前在 Unlock 后直接
+// fc.expired()（无锁读 fc.ttl），与并发 SetTTL 是数据竞争（-race 必报）。
+//
+// 运行方式：go test -race -run TestFileCacheSetTTLGetRace ./domains/session/v2/
+// 变异验证：把 Get 非索引路径改回锁外 fc.expired(fi.ModTime()) → -race 红。
+func TestFileCacheSetTTLGetRace(t *testing.T) {
+	dir := t.TempDir()
+	fc, err := NewFileCache(filepath.Join(dir, "l15"), time.Hour, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tenant, session := "tenant-race", "sessionrace1"
+	// 直接落盘（绕过 Set）：磁盘有文件而索引无条目，迫使 Get 走非索引路径
+	// （Stat 后判过期），这正是修复前锁外读 fc.ttl 的竞争窗口。
+	shard := session[:2]
+	fileDir := filepath.Join(fc.baseDir, tenant, shard)
+	if err := os.MkdirAll(fileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := newTestFileState(tenant, session, 1)
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fileDir, session+".json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// goroutine A：热重载循环改写 fc.ttl（写侧持锁）。
+	go func() {
+		defer wg.Done()
+		toggle := false
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if toggle {
+				fc.SetTTL(2 * time.Hour)
+			} else {
+				fc.SetTTL(24 * time.Hour)
+			}
+			toggle = !toggle
+		}
+	}()
+
+	// goroutine B：持续 Get，覆盖索引 miss（本 key 未入索引）与索引命中
+	// （Set 一次后）两条过期判定路径。
+	go func() {
+		defer wg.Done()
+		seeded := false
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = fc.Get(tenant, session) // 结果不论（命中/过期/miss 都合法）
+			if !seeded {
+				_ = fc.Set(state) // 让索引命中路径也参与并发
+				seeded = true
+			}
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}

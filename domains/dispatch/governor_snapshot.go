@@ -43,11 +43,19 @@ const (
 //   - Limit: GovernorSpec.Limit at snapshot time.
 //   - Used: current consumers (in-flight for ModeConcurrency; tokens
 //     floor for ModeRPM / ModeTPM).
-//   - InFlight: forwarder.CurrentDepth()-style count.
-//   - QueueDepth: forwarder.CurrentDepth() snapshot.
+//   - InFlight / QueueDepth: currently filled from the SAME source —
+//     pipeline.snapshotForCredForwarderLocked assigns both from one
+//     cf.depth.Load() read (pipeline.go, snapshot fill), so the two fields
+//     are always equal; the forwarder has no separate Tier-2 wait-depth
+//     counter today. Distinct semantics would require a second counter
+//     (registered in R73 §5).
 //   - State: see SnapshotState constants.
-//   - AgeMS: milliseconds since the underlying source state changed;
-//     Stage C will define a max-age budget and drop stale entries.
+//   - AgeMS: currently the milliseconds elapsed since the observer's
+//     PREVIOUS visit to this credential (pipeline.go: delta from the last
+//     snapshotAgeMS stamp; 0 on the first visit) — so it always tracks the
+//     observer tick period, not any backend state-change time. The
+//     "age of the underlying source state" reading and the max-age budget
+//     mentioned below are NOT implemented (registered in R73 §5 / §3 #10).
 //   - BackendErr: non-nil ONLY when the snapshot could not be filled
 //     from the backend (e.g. Redis DOWN). When non-nil, State MUST be
 //     SnapshotStateUnknown and metric consumers MUST drop the row.
