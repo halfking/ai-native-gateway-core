@@ -1217,7 +1217,32 @@ func (p *Pipeline) drainTotalOne(qr *QueuedRequest) {
 			p.drainTotalQueueResidue()
 			return
 		}
-		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+		// 2026-10-01 R73: enqueueModelFromTotal fails for two very
+		// different reasons and they must not be collapsed into
+		// ctxOf(qr).Err(). That expression is nil whenever the caller's
+		// context is still alive, and the dominant failure here is NOT a
+		// context failure: getOrCreateModelQueue returns nil when
+		// MaxModelLanes is at capacity (or when the lane was reclaimed
+		// twice), while the context is perfectly healthy. Completing with
+		// a nil Err made Submit return (nil, nil) — a request that never
+		// reached a single provider reported as success — and terminalActionOf
+		// then wrote NextActionCompleted into the journal, so the bogus
+		// success also landed in the request's execution trace and stage
+		// metrics.
+		//
+		// Resolve the context FIRST: if it really is done, its error is the
+		// truthful cause. Otherwise the lane was unavailable and the request
+		// is an admission rejection, which must surface as the same explicit
+		// OverflowError the other backpressure paths use.
+		if ctxErr := ctxOf(qr).Err(); ctxErr != nil {
+			p.complete(qr, ForwardOutcome{Err: ctxErr})
+			return
+		}
+		p.observeOverflow("model_lane_unavailable")
+		p.complete(qr, ForwardOutcome{Err: &OverflowError{
+			Reason:     "model_lane_unavailable",
+			RetryAfter: DefaultOverflowRetryAfter,
+		}})
 	} else {
 		p.releaseTotal(qr)
 	}

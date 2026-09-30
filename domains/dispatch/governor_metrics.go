@@ -222,7 +222,7 @@ var (
 
 	metricGovernorSnapshotState = MustNewBackendModeStateGaugeVec(prometheus.GaugeOpts{
 		Name: "dispatch_governor_snapshot_state",
-		Help: "Latest per-credGovernorSnapshot.State value (1 for the current state, 0 elsewhere).",
+		Help: "Number of credentials observed in each GovernorSnapshot.State during the last observation tick (0 for states no credential is in).",
 	}, []string{"backend", "mode", "state"})
 
 	metricGovernorSnapshotAgeMS = MustNewBackendModeHistogramVec(prometheus.HistogramOpts{
@@ -266,34 +266,79 @@ func RecordRelease(backend GovernorBackendKind, mode, result string) {
 	metricGovernorRelease.WithLabelValues(string(backend), mode, result).Inc()
 }
 
-// RecordSnapshot emits the snapshot's state into the {backend, mode, state}
-// gauge (1 for the current state, 0 elsewhere so panels can still show
-// "never observed = X" rather than missing series) and records its age
-// into the histogram. State == SnapshotStateUnknown is dropped here —
-// callers should consult snap.BackendErr first; an unknown-state snapshot
-// has no valid downstream consumer and Validate() already panicked.
+// RecordSnapshot emits a single snapshot. It is a one-element
+// RecordSnapshotBatch and carries the same caveat: the {backend, mode, state}
+// gauge is an AGGREGATE over every credential sharing those two labels, so
+// emitting one snapshot at a time makes the gauge describe only the last
+// snapshot written. Production callers must use RecordSnapshotBatch with a
+// whole tick's worth of snapshots (the governor snapshot observer does).
 func RecordSnapshot(snap GovernorSnapshot) {
-	if !isBackend(snap.Backend) || !isMode(snap.Mode) {
-		slog.Warn("dispatch: RecordSnapshot skipped off-list label",
-			"backend", snap.Backend, "mode", snap.Mode, "state", string(snap.State))
-		metricGovernorUnknownLabelDrops.Inc()
+	RecordSnapshotBatch([]GovernorSnapshot{snap})
+}
+
+// RecordSnapshotBatch publishes one observation tick's snapshots.
+//
+// 2026-10-01 R73 (audit of domains/dispatch): this used to be a per-snapshot
+// loop that set the observed state to 1 and every other state to 0. Because
+// the gauge carries no credential label, the LAST credential visited in a
+// tick overwrote every other credential's state — with two or more
+// credentials, one saturated credential zeroed the ready reading of every
+// healthy one, and a credential that went away left its state stuck at 1
+// forever. Operators saw "no credential saturated" during a real saturation.
+//
+// The gauge is now a per-tick COUNT per (backend, mode, state), which is
+// order-independent, self-clearing (a state no credential is in is set to
+// 0 on every tick that touched that backend/mode pair), and cardinality
+// stays bounded by the closed enums — no credential label is introduced.
+//
+// This is a coordinate break for dashboards that read the old flag
+// semantics (`== 1` becomes `> 0`; `== 0` becomes `== 0` still meaning "no
+// credential in this state", which is now finally true).
+func RecordSnapshotBatch(snaps []GovernorSnapshot) {
+	if len(snaps) == 0 {
 		return
 	}
-	if snap.State == SnapshotStateUnknown {
-		// Validate() guarantees State=Unknown ⇔ BackendErr!=nil; we never
-		// emit an unknown row. No warn here — it's the normal "backend
-		// faulted" path that Stage D treats as not-saturated.
-		return
+	type backendMode struct{ backend, mode string }
+	counts := make(map[backendMode]map[string]int, 4)
+	seenPair := make(map[backendMode]struct{}, 4)
+	var ages []struct {
+		backend, mode string
+		ageMS         float64
 	}
-	for _, s := range stateValues {
-		if s == string(snap.State) {
-			metricGovernorSnapshotState.WithLabelValues(snap.Backend, snap.Mode, s).Set(1)
-		} else {
-			metricGovernorSnapshotState.WithLabelValues(snap.Backend, snap.Mode, s).Set(0)
+	for _, snap := range snaps {
+		if !isBackend(snap.Backend) || !isMode(snap.Mode) {
+			slog.Warn("dispatch: RecordSnapshot skipped off-list label",
+				"backend", snap.Backend, "mode", snap.Mode, "state", string(snap.State))
+			metricGovernorUnknownLabelDrops.Inc()
+			continue
+		}
+		if snap.State == SnapshotStateUnknown {
+			// BackendErr != nil in this branch; it is the normal "backend
+			// faulted" path that downstream treats as not-saturated, so it
+			// contributes to no state count.
+			continue
+		}
+		pair := backendMode{snap.Backend, snap.Mode}
+		if counts[pair] == nil {
+			counts[pair] = make(map[string]int, len(stateValues))
+			seenPair[pair] = struct{}{}
+		}
+		counts[pair][string(snap.State)]++
+		if snap.AgeMS > 0 {
+			ages = append(ages, struct {
+				backend, mode string
+				ageMS         float64
+			}{snap.Backend, snap.Mode, float64(snap.AgeMS)})
 		}
 	}
-	if snap.AgeMS > 0 {
-		metricGovernorSnapshotAgeMS.WithLabelValues(snap.Backend, snap.Mode).Observe(float64(snap.AgeMS))
+	for pair := range seenPair {
+		for _, s := range stateValues {
+			metricGovernorSnapshotState.WithLabelValues(pair.backend, pair.mode, s).
+				Set(float64(counts[pair][s]))
+		}
+	}
+	for _, a := range ages {
+		metricGovernorSnapshotAgeMS.WithLabelValues(a.backend, a.mode).Observe(a.ageMS)
 	}
 }
 

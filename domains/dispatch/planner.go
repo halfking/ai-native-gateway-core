@@ -135,7 +135,18 @@ func isCentralPolicyKind(kind errorsx.ErrorKind) bool {
 		errorsx.KindStreamTimeout, errorsx.KindToolCallIdMismatch, errorsx.KindContextLength,
 		errorsx.KindUnsupportedFeature, errorsx.KindModelDeprecated, errorsx.KindContentFilter,
 		errorsx.KindEmptyResponse, errorsx.KindConversion, errorsx.KindUpstreamContextLoss,
-		errorsx.KindUpstreamOverloaded, errorsx.KindNoAvailableChannel:
+		errorsx.KindUpstreamOverloaded, errorsx.KindNoAvailableChannel,
+		// 2026-10-01 R73: these two were missing. errorsx
+		// terminalActionKind (action_policy.go:247-256) classifies
+		// circuit_open / fp_slot_saturated as TERMINAL on purpose — they are
+		// pure gateway-side admission signals emitted by dispatch preflight
+		// rejections, no upstream call was made, so re-trying the same node
+		// only burns a concurrency slot and delays the switch to a healthy
+		// sibling. They fell through to the legacy-label bucket below, were
+		// rewritten to KindTransient, and became ActionRetrySameNode —
+		// contradicting both the errorsx policy and PlanAfterFailure's own
+		// FatalCredential short-circuit above.
+		errorsx.KindCircuitOpen, errorsx.KindFpSlotSaturated:
 		return true
 	default:
 		return false
