@@ -1309,12 +1309,57 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 | # | 事项 | 性质 | 状态 |
 |---|------|------|------|
 | 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支 | 等决定 |
-| 2 | **`session_list.go:140/167` ⚠️ 半等价类** | 迁过去会让 `request_count`/`error_count`/`is_compressed` 变小 2.5% | 等决定 |
+| 2 | **`session_list.go:140/167` ⚠️ 半等价类** | **2026-10-01 重测，结论与旧「计数变小 2.5%」相反**：计数几乎不变（共有会话里 `request_count` 仅 6 个会话不同、+35 轮 = 0.07%，`error_count` 逐会话全等，`is_compressed` 两边同为 1,418 行）；真正变的是 **1,428 条会话（9.46%）会从列表整条消失，而它们 100% 是 internal_loopback / non_terminal**（真业务轮次 0）。见 §8.2 | 等决定（性质已变，从「数字缩水」变成「内部会话是否该出现在用户列表」） |
 | 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
 | 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
 | 5 | **`request_logs_bodies_hot` 重复索引** | 已实测可安全删除（事务内 DROP + ROLLBACK，3.940 ms 无回退）；需新开 803 走五点同步，属 765 范围 | 等决定 |
 | 6 | ~~**工作区 131 文件陈旧暂存区**~~ | **已作废**：`reset --soft origin/main` 的残留已被本轮合并（`317f28556`）清空；当前工作区仅 14 个文件、全部是本轮有意改动 | 已关闭 |
 | 7 | ~~**`session_summary_v2` 的正文配对键**~~ | **已拍板并落地**（`09419da13`）。实测元组键在 v1 源上只命中 0.007%（1/14,546），单键 100%；真库门实测 169 轮里单键救回 168 轮。**同批还修掉一个此前未知的缺陷 7**（fallback turns 腿被 S4 批次改接成同源原生源，见 §5.11） | 已关闭 |
+
+### 8.2 第 2 项重测：`session_list` 迁原生源的**真实**代价
+
+旧结论「迁过去会让 `request_count`/`error_count`/`is_compressed` 变小 2.5%」是
+上一轮的口头数字，本轮按纪律在真库重测（`default` 租户，近 3 天窗口，PG 17.10）。
+`loadSessions`（`admin/session_list.go:132-180`）现在读
+`request_logs_with_current_month`，对照口径 = `session_turns_hot UNION ALL session_turns`。
+
+| 口径 | v1 视图（现状） | 原生源（迁后） | 差 |
+|---|---|---|---|
+| 会话数 | 15,088 | 13,660 | **−1,428（−9.46%）** |
+| `request_count` 合计 | 15,710 | 14,156 | −1,554（−9.89%） |
+| 只在 v1 出现的会话 | 1,428 | — | 会话整条消失 |
+| 只在原生源出现的会话 | — | **0** | 无凭空新增 |
+
+**关键：消失的 1,428 条是什么？**
+
+| class | 会话数 | 轮数 |
+|---|---|---|
+| `internal_loopback` | 1,354 | 1,445 |
+| `non_terminal` | 73 | 73 |
+| **`genuine_loss`（真业务轮次）** | **0** | **0** |
+
+即：**没有任何一条真实用户对话会从列表里消失**，消失的全是网关自己生成的
+标题/摘要 LLM 调用与会话开始时的 `in_progress` 占位。
+
+**共有会话的逐项等价性**（13,659 条）：
+
+| 字段 | 结果 |
+|---|---|
+| `request_count` | 仅 **6** 条会话不同，合计 +35 轮（0.07%） |
+| `error_count` | **逐会话全等**（v1 9,323 = 原生 9,323） |
+| `is_compressed` | 两边同为 **1,418** 行有 `compression_strategy` |
+| `total`（会话去重计数） | `COUNT(DISTINCT gw_session_id)` 与原生源同口径 |
+
+`error_count` 语义差异是本轮特意验的疑点：v1 写 `request_status = 'failure'`，
+原生源只有 `NOT success`。实测 v1 的 `request_status` 分布为
+`failure 9,339 / success 6,262 / in_progress 108`，两式在 13,659 条共有会话上
+**完全相等**（`in_progress` 那 108 行未被任何一边计入 `error_count`，因为镜像
+只写 `success = true`）。
+
+**结论**：这一项的性质已经从「迁过去数字会缩水」变成
+「**1,428 条纯内部会话会从用户可见列表里消失**」。按语义这是**修正**而非退化，
+但它确实是可见的行为变更，故仍需拍板。`is_compressed` / `error_count` /
+`model_used` 三个字段都有可用替身，不是迁移的障碍。
 
 ### 8.1 第 7 项：`session_summary_v2` 的正文几乎全是空
 
