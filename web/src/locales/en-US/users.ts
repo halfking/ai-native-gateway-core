@@ -134,6 +134,8 @@ export default {
     status: 'Status',
     basic: 'Basic info',
     hotKeys: 'Hot keys',
+    keyCount: 'API keys',
+    viewAllLogs: 'View all in logs',
     requests: 'Requests',
   },
 }

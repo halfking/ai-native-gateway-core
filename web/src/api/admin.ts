@@ -441,6 +441,11 @@ export interface TenantStats {
   unique_keys: number
   unique_models: number
   unique_apps: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  avg_latency_ms: number
   by_model: Array<{ model: string; requests: number; tokens: number; credits: number; cost_usd: number }>
   by_application: Array<{ application_code: string; requests: number; tokens: number; credits: number; cost_usd: number }>
   // 2026-09-30 统计 UI 优化轮：按天时序（无流量日已由后端 generate_series 补零）。
@@ -508,6 +513,7 @@ export interface UserStats {
   top_models: UserStatsBucket[]
   top_apps: UserStatsBucket[]
   top_keys: UserStatsBucket[]
+  key_count: number
   recent_requests: UserStatsRecentRequest[]
 }
 

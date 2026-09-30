@@ -155,6 +155,7 @@ type userStatsResponse struct {
 	TopModels []userStatsBucket        `json:"top_models"`
 	TopApps   []userStatsBucket        `json:"top_apps"`
 	TopKeys   []userStatsBucket        `json:"top_keys"`
+	KeyCount  int                      `json:"key_count"`
 	Recent    []userStatsRecentRequest `json:"recent_requests"`
 }
 
@@ -212,6 +213,12 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 		TopApps:   []userStatsBucket{},
 		TopKeys:   []userStatsBucket{},
 		Recent:    []userStatsRecentRequest{},
+	}
+	// 密钥数是抽屉上的导航计数，失败不把整份画像打成 500。
+	if err := h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM api_keys WHERE owner_user = $1 AND tenant_id = $2`,
+		username, tenantID).Scan(&resp.KeyCount); err != nil {
+		slog.Warn("user_stats: key count failed", "user_id", id, "err", err)
 	}
 
 	// 事实行统一过滤片：该账号名下密钥 + 租户 + 窗口。

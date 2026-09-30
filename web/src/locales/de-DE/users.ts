@@ -134,6 +134,8 @@ export default {
     status: 'Status',
     basic: 'Grunddaten',
     hotKeys: 'Häufige Schlüssel',
+    keyCount: 'API-Schlüssel',
+    viewAllLogs: 'Alle in den Logs ansehen',
     requests: 'Anfragen',
   },
 }
