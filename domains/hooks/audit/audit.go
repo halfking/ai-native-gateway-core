@@ -122,7 +122,24 @@ func isInterruptionCode(s string) bool {
 		"anthropic_empty_response",
 		"openai_empty_response",
 		"empty_stream_no_content",
-		"early_empty_detection":
+		"early_empty_detection",
+		// 2026-09-30 (三十七轮审计): 与 MarkInterruptedWithReason 字面量发射点
+		// 的差集清零——以下码此前缺席 → failure_detail_code 恒丢、
+		// streamErrorKindForDetailCode 落 stream_error 兜底、专用指标恒零
+		// （与二十轮修掉的 empty_response 恒零同构）。差集由
+		// Test_isInterruptionCode_covers_all_MarkInterruptedWithReason_literals
+		// 源码扫描棘轮钉住（非字面量发射点不在此列，新增变量发射需手检）。
+		"client_write_failed",
+		"incomplete_tool_call",
+		"incomplete_tool_call_interrupted",
+		"invalid_chunk",
+		"json_error_in_stream",
+		"malformed_sse_frame",
+		"malformed_sse_frame_mid_stream",
+		"minimax_base_resp_error",
+		"native_response_failed",
+		"stream_panic",
+		"upstream_error":
 		return true
 	}
 	return false

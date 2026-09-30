@@ -298,6 +298,72 @@ export function createTimeSeriesConfig(
 }
 
 /**
+ * 组合图配置生成器（2026-09-30 统计 UI 优化轮）
+ *
+ * 对标数据看板的两类混合形态：
+ *   1) 堆叠柱 + 右轴折线（请求成功/失败堆叠柱 + 成本/积分右轴线）；
+ *   2) 堆叠面积 + 右轴折线（Token 输入/输出/缓存构成 + 命中率右轴线）。
+ *
+ * baseType 决定 dataset 缺省类型；每个 dataset 可用 type:'line'|'bar' 覆盖、
+ * stack 指定堆叠组、yAxisID 绑定到调用方在 options.scales 里声明的坐标轴。
+ * 轴级 stacking 由调用方经 options.scales 控制（y:{stacked:true} 等），
+ * 右轴线所在的 y1 不要开 stacked，避免把折线也叠进面积/柱。
+ */
+export interface ComboDataset extends ChartDataset {
+  /** 覆盖本 dataset 的图表类型（缺省 = baseType） */
+  type?: 'line' | 'bar'
+  /** 堆叠组名（同一组内柱/面积互相堆叠） */
+  stack?: string
+  /** 背景色（面积图 fill 时必需；柱图为纯色或带 alpha 的字面量） */
+  backgroundColor?: string
+  /** 折线虚线样式（如 '5,4'，右轴比率线常用） */
+  borderDash?: number[]
+  /** 数据点半径（折线缺省 0，标记线可给 2） */
+  pointRadius?: number
+  /** 顺序权重（Chart.js order 越小越靠上层） */
+  order?: number
+}
+
+export function createComboChartConfig(
+  baseType: 'line' | 'bar',
+  labels: string[],
+  datasets: ComboDataset[],
+  options?: ChartOptions
+): ChartConfiguration {
+  const { scales: scaleOverrides, ...restOptions } = options ?? {}
+  return {
+    type: baseType,
+    data: {
+      labels,
+      datasets: datasets.map(ds => ({
+        ...ds,
+        type: ds.type ?? baseType,
+        borderWidth: ds.borderWidth ?? 2,
+        // 折线默认平滑；柱图忽略 tension。
+        tension: (ds.type ?? baseType) === 'line' ? (ds.tension ?? 0.35) : undefined,
+        pointRadius: ds.pointRadius ?? (ds.type !== 'bar' ? 0 : undefined),
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, position: 'top' },
+        tooltip: { enabled: true },
+      },
+      scales: {
+        x: { grid: { display: false } },
+        y: { beginAtZero: true, grid: { color: 'rgba(255, 255, 255, 0.06)' } },
+        ...(scaleOverrides as Record<string, unknown> | undefined),
+      },
+      ...restOptions,
+    },
+  } as ChartConfiguration
+}
+
+/**
  * 环形图配置生成器
  */
 export function createDoughnutConfig(

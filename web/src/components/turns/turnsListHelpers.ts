@@ -1,6 +1,6 @@
 // turnsListHelpers.ts — TurnsListView 纯函数：标签、分组、参数、格式化
 import type { TurnsSessionGroup, TurnsSessionsParams } from '../../api/turns'
-import { formatDateTime } from '../../utils/datetime'
+import { formatDateTime, parseLocalMinute } from '../../utils/datetime'
 
 export type TurnsGroupBy = 'project' | 'owner' | 'client' | 'apikey' | 'flat'
 
@@ -97,7 +97,8 @@ export function formatTokens(value: number): string {
 
 export function toRFC3339(value: string): string {
   if (!value) return ''
-  const date = new Date(value)
+  // 入参为 localDatetime 的 'YYYY-MM-DDTHH:mm'（无秒非规范格式），补秒解析（P3-3）
+  const date = parseLocalMinute(value)
   return Number.isNaN(date.getTime()) ? '' : date.toISOString()
 }
 

@@ -561,8 +561,16 @@ func buildResponsesReasoning(r *ReasoningConfig) map[string]any {
 		out["effort"] = r.Effort
 	}
 	if r.Type != "" {
-		// Some Responses-compatible providers accept a summary toggle.
-		out["summary"] = r.Type
+		// Responses 的 reasoning.summary 合法枚举仅 auto/concise/detailed。
+		// Type 同时承载思考指令词汇（enabled/disabled/adaptive，见
+		// parse_gemini.go / parse_anthropic.go）——跨协议来源若照搬回显会发出
+		// 非法 summary 枚举（严格上游 400），与 c86c79dfd 堵住的
+		// anthropic/gemini 出口同型（N21-2 第四出口，三十七轮审计闭合）。
+		// 仅已知 summary 词汇回显；指令词汇整体丢弃（effort 已单独携带）。
+		switch r.Type {
+		case "auto", "concise", "detailed":
+			out["summary"] = r.Type
+		}
 	}
 	if len(out) == 0 {
 		return nil

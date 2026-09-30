@@ -659,6 +659,27 @@ files=(
   # also registered in the installer for fresh databases.
   "$ROOT_DIR/sql/migrations/startup/757_session_turns_origin_actor_projection.sql"
   "$ROOT_DIR/sql/migrations/startup/758_routeincident_missing_columns.sql"
+  # 760/761/762 (2026-09-29/30 审计 R27/R28/R33，此前只在 installer 新库通道
+  # 登记、漏掉本升级序列——R63 "迁移双轨制死区"教训的补登)：760 给
+  # analysis_events / stats_event_inbox 补 TTL 部分索引；761 回填 stats inbox
+  # processing_status（R28 HC-10 收口）；762 项目维度回填链（resolve/sync
+  # 函数 + session_dim 双触发器 + 回填扫描部分索引，R33 P-3）。三者均幂等，
+  # 且已在 installer embeddata 完成五点同步。
+  "$ROOT_DIR/sql/migrations/startup/760_analysis_events_inbox_ttl_indexes.sql"
+  "$ROOT_DIR/sql/migrations/startup/761_stats_inbox_sync_status_backfill.sql"
+  "$ROOT_DIR/sql/migrations/startup/762_session_project_backfill_chain.sql"
+  # 2026-09-30 R14 批判式复审轮：763 provider_events 契约对齐收编正典通道
+  # （round11 D16 登记 → round14 部署窗手工执行的 parity 文件
+  # deploy/sql/migrations/2026-07-26-provider-events-local.sql 从未进任何
+  # 投递通道，752 收编 036 同款病）。幂等：CREATE IF NOT EXISTS ×3 + 幂等
+  # ALTER + conname 守卫 PK + is_called 感知防回退 setval；存量 id 有重复时
+  # PK 显式失败（fail-closed）。252/本机已手工修复，重放为 no-op 并补台账。
+  "$ROOT_DIR/sql/migrations/startup/763_provider_events_contract.sql"
+  # 2026-09-30 三十六轮 R36-B3：request_logs 分区家族补 (tenant_id, ts DESC)
+  # 索引——341 只索引 hot 侧，分区父表从未有 tenant 前导索引，tenant 维度
+  # days>7 聚合对每分区全表扫（252-dev 实测 3 行租户 6.5s / default 21.5s）。
+  # 父表 CREATE INDEX IF NOT EXISTS 级联全部分区，重放 no-op 并补台账。
+  "$ROOT_DIR/sql/migrations/startup/764_request_logs_tenant_ts_index.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

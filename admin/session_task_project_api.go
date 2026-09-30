@@ -425,6 +425,10 @@ func (h *Handler) queryProjectSummary(ctx context.Context, r *http.Request, proj
 // queryProjectTasks 查询项目中的所有任务
 func (h *Handler) queryProjectTasks(ctx context.Context, r *http.Request, projectID string) ([]ProjectTaskItem, error) {
 	where, args := scopedDimensionWhere(r, "ss.gw_project_id", projectID)
+	// R34-P1: session_dim.task_id 大面积为 NULL（绝大多数会话无任务归属），
+	// NULL 组进入 GROUP BY 后 Scan 进 string 失败 → 端点 500。无任务归属的
+	// 会话不构成任务项，过滤而非 NullString 兜底（语义：任务列表只列任务）。
+	where = append(where, "sd.task_id IS NOT NULL")
 	query := fmt.Sprintf(`
 		SELECT sd.task_id, COUNT(*)::int, COALESCE(SUM(ss.total_cost_usd), 0), COALESCE(SUM(ss.total_tokens), 0),
 		       COALESCE((array_agg(ss.session_status ORDER BY ss.last_request_at DESC))[1], ''),

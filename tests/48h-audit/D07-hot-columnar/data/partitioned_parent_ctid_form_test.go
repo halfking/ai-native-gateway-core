@@ -100,11 +100,13 @@ var partitionedParents = map[string]bool{
 //
 // 为什么不直接让门为它一直红：长期红的门会被习惯性忽略，久了等于没有门。
 // 登记 + 棘轮是折中——门只在出现登记表以外的新位置时红。
-var knownBareCTIDDefects = map[string]string{
-	"bg/opslog_trimmer.go": "candidate_failure_logs 是 11 分区父表；实测跨分区误删 4,722 行/批",
-}
+//
+// 2026-09-30 三十七轮：opslog_trimmer（e92eaebag 复合键修复）与
+// partition_manager.deleteTerminalRowsBatched（动态表名，曾打
+// stats_event_inbox 父表，本门正则因动态拼接而盲视）均已修复，登记清零。
+var knownBareCTIDDefects = map[string]string{}
 
-const expectedBareCTIDDefects = 1
+const expectedBareCTIDDefects = 0
 
 // bareCTIDStmtRe 抓一条 DELETE 的语句体。终止条件是行尾反引号或双引号，
 // 与 retention_trim_index_test.go 的扫描口径保持一致。
@@ -256,4 +258,29 @@ func uniqueStrings(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestData_DynamicTableCTIDDelete_UsesCompositeKey 兜住正则门的盲区：
+// deleteTerminalRowsBatched 用 Go 变量拼接表名（"DELETE FROM "+table+"…"），
+// bareCTIDStmtRe 的 FROM <word> 首段失配，扫不到。直接钉该函数的语句模板
+// 必须是 (tableoid, ctid) 复合键——2026-09-30 三十七轮曾以裸 ctid 打
+// stats_event_inbox 分区父表（stats_event_inbox 在 partitionedParents 内）。
+func TestData_DynamicTableCTIDDelete_UsesCompositeKey(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "bg", "partition_manager.go"))
+	if err != nil {
+		t.Fatalf("read partition_manager.go: %v", err)
+	}
+	body := string(src)
+	idx := strings.Index(body, "func (pm *PartitionManager) deleteTerminalRowsBatched")
+	if idx < 0 {
+		t.Fatal("deleteTerminalRowsBatched not found — 函数改名/移走时请同步本门")
+	}
+	end := strings.Index(body[idx:], "\nfunc ")
+	if end < 0 {
+		end = len(body) - idx
+	}
+	fn := body[idx : idx+end]
+	if !strings.Contains(fn, "(tableoid, ctid)") {
+		t.Fatal("deleteTerminalRowsBatched 的 DELETE 模板退回裸 ctid —— 分区父表上会跨分区误删，必须用 (tableoid, ctid) 复合键")
+	}
 }

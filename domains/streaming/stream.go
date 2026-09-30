@@ -348,6 +348,11 @@ func runEmptyStreamGateWithVendor(
 
 		// [DONE] while buffering: classify and decide.
 		if transformedPayload == "[DONE]" {
+			// R-vapeur3 (2026-09-30): the break used to drop the [DONE] line
+			// itself, so a stream whose terminal arrived while the gate was
+			// still buffering flushed everything except the terminal. Mirror
+			// the hasCombinedDone branch above and carry the line through.
+			buffered = append(buffered, line)
 			break
 		}
 
@@ -693,6 +698,17 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// Disabled (default) this is the identity function — legacy wire bytes.
 	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
 	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIChat)
+	// R-vapeur3 (2026-09-30): an upstream that closes without the SSE
+	// blank-line terminator (vapeur relay ends streams with `data: [DONE]\n`
+	// + close, raw-log proven) strands the terminal frame in the GateWriter
+	// assembly buffer — attempt end is the last chance to put it on the wire.
+	// No-op whenever the stream ended with complete frames (pending empty);
+	// a discarded attempt's gate refuses the frame, which is ignored here.
+	defer func() {
+		if gw, ok := w.(*GateWriter); ok {
+			_ = gw.DrainPending()
+		}
+	}()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)

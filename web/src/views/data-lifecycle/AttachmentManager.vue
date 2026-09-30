@@ -120,8 +120,12 @@
       <div class="card-header">
         <h3 class="card-title">最近含附件的请求</h3>
         <div class="filter-row">
-          <input type="date" v-model="filter.since" @change="load" title="起始日期" />
-          <input type="date" v-model="filter.until" @change="load" title="结束日期" />
+          <KxDateRangePicker
+            :model-value="filterRangeValue"
+            :presets="[]"
+            instant
+            @apply="onFilterRangeApply"
+          />
           <button class="btn btn-ghost btn-sm" @click="load" :disabled="loading">
             {{ loading ? '加载中…' : '查询' }}
           </button>
@@ -178,7 +182,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { localeRef } from '../../i18n'
 import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
@@ -193,6 +197,8 @@ import {
 } from '../../api'
 import { confirmDialog } from '../../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
+import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../../components/ui/kx-date-types'
 
 const { t } = useI18n()
 
@@ -202,6 +208,16 @@ const policy = ref<AttachmentPolicyResponse | null>(null)
 const detail = ref<AttachmentListItem | null>(null)
 const loading = ref(false)
 const filter = reactive({ since: '', until: '' })
+
+// 2026-09-30 统一日历轮：双 date input → KxDateRangePicker（原 @change=load 立即生效 → instant + apply 时 load）。
+const filterRangeValue = computed<KxDateRange | null>(() =>
+  filter.since && filter.until ? { start: filter.since, end: filter.until } : null,
+)
+function onFilterRangeApply(range: KxDateRange) {
+  filter.since = range.start
+  filter.until = range.end
+  void load()
+}
 const cleanup = reactive({ older_than_days: 30, reason: '' })
 
 const lastResult = ref<any>(null)

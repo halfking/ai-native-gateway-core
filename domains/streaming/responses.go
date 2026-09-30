@@ -272,6 +272,21 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
 		logCtx.OutboundProvenance = prov
 	}
+	// N21-3（2026-09-30）：/v1/responses 入口此前零附件提取——含媒体轮次的
+	// attachments 列恒空。与 messages lane 同构：body 读取后即刻提取，
+	// strict 模式（显式 opt-in）下存储失败 503，默认 lenient 仅记录。
+	if h.chatHandler.attachmentExtractor != nil {
+		extractResult := h.chatHandler.attachmentExtractor.ExtractFromResponsesBody(requestID, bodyBytes)
+		if applyAttachmentResult(logCtx, extractResult) && attachmentStrictMode() {
+			attemptErrCode = "attachment_store_failed"
+			attemptErrMsg = "attachment storage failed"
+			logCtx.SetError(attemptErrCode, attemptErrMsg)
+			logCtx.EmitFailure(attemptErrCode, attemptErrMsg, nil, nil)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusServiceUnavailable, "Attachment storage failed", "api_error", "attachment_store_failed")
+			return
+		}
+	}
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"
 		attemptErrMsg = "request body too large"

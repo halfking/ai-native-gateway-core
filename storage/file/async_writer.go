@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/atomicrename"
 )
 
 const (
@@ -236,7 +238,8 @@ func (w *AsyncFileWriter) writeAtomic(path string, data []byte) error {
 		return fmt.Errorf("async file writer: close tmp %s: %w", tmp, err)
 	}
 	// 同目录 rename，保证原子替换；唯一临时文件允许同一目标并发写入而不互相覆盖。
-	if err := os.Rename(tmp, path); err != nil {
+	// Windows 上并发替换同目标会得瞬态 ACCESS_DENIED，经 atomicrename 有界重试对齐 POSIX 语义。
+	if err := atomicrename.Replace(tmp, path); err != nil {
 		return fmt.Errorf("async file writer: rename %s -> %s: %w", tmp, path, err)
 	}
 	cleanup = false

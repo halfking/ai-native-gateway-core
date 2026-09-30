@@ -757,6 +757,9 @@ func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"key_id": id, "api_key": plaintext})
+	// 与 credential.secret_revealed 对称（三十七轮审计 P2）：API key 明文
+	// reveal 此前零审计，取证链断裂。审计写在响应之后（同凭据 reveal 口径）。
+	h.writeAuditLog(r, "apikey.secret_revealed", "api_key", id, nil)
 }
 
 // isRevealableKeyCiphertext returns false for empty or placeholder values that

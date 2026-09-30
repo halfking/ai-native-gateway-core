@@ -114,6 +114,27 @@ type requestLogSinkHolder struct {
 	sink RequestLogSink
 }
 
+// BodyMirrorFunc 是热区请求侧 body 镜像的投递回调（2026-09-24 方案 H3，
+// docs/storage/2026-09-24-hotzone-dual-mode-plan.md §3-H3）。由存储装配层
+// 注入，底层为 storage/file.RequestMirror 的 fire-and-forget 异步写（失败仅
+// 计数，绝不阻断主链路）。
+//
+// 契约：
+//   - direction 取 "req"（上行请求 body）/ "resp"（下行响应 body）/
+//     "out"（流式终态 outbound body），与 storage/file 的
+//     DirRequest/DirResponse/DirOutput 字面值一一对应；
+//   - payload 与 request_logs_bodies_hot 落库同源换算（strPtrToJSON /
+//     jsonOrNull），空载荷（"null"/"{}"）已在调用侧跳过；
+//   - at 是镜像文件日期分区取样时刻（对位 PG 侧 ts=now() 的语义）。
+//
+// telemetry 侧不等待、不重试、不因镜像失败改变持久化结果。
+type BodyMirrorFunc func(tenantID, requestID, direction string, payload json.RawMessage, at time.Time)
+
+// bodyMirrorHolder 是 atomic.Value 的装载类型（要求 Load 端类型断言稳定）。
+type bodyMirrorHolder struct {
+	fn BodyMirrorFunc
+}
+
 type Client struct {
 	dbPool       *pgxpool.Pool
 	requestLogDB requestLogDB
@@ -121,9 +142,12 @@ type Client struct {
 	// requestLogSinkStore 持有 lite 存储模式注入的非 PG 请求日志 sink
 	// （atomic.Value 一致性要求包装为同一具体类型）。
 	requestLogSinkStore atomic.Value // requestLogSinkHolder
-	queue               chan any
-	done                chan struct{}
-	wg                  sync.WaitGroup
+	// bodyMirrorStore 持有热区请求侧镜像回调（H3；与 requestLogSinkStore
+	// 同款 atomic.Value 装载，与运行中的 worker 并发安全）。
+	bodyMirrorStore atomic.Value // bodyMirrorHolder
+	queue           chan any
+	done            chan struct{}
+	wg              sync.WaitGroup
 
 	lifecycleMu sync.RWMutex
 	stopped     atomic.Bool
@@ -633,6 +657,28 @@ func (c *Client) requestSink() RequestLogSink {
 	return nil
 }
 
+// SetBodyMirror 注入热区请求侧 body 镜像回调（见 BodyMirrorFunc 文档）。
+// 传入 nil 等价于摘除镜像，Client 回到纯落库行为（no-op）。可在任意时刻调用
+// （内部 atomic.Value 存储，与运行中的 worker 并发安全）。装配层仅在 full
+// 模式热区启用时注入（lite 沿用既有 session_bodies 写入路径，不重复镜像）。
+func (c *Client) SetBodyMirror(fn BodyMirrorFunc) {
+	if c == nil {
+		return
+	}
+	c.bodyMirrorStore.Store(bodyMirrorHolder{fn: fn})
+}
+
+// bodyMirrorFn 返回当前注入的镜像回调（未注入时 nil）。atomic 读，热路径安全。
+func (c *Client) bodyMirrorFn() BodyMirrorFunc {
+	if c == nil {
+		return nil
+	}
+	if h, ok := c.bodyMirrorStore.Load().(bodyMirrorHolder); ok {
+		return h.fn
+	}
+	return nil
+}
+
 func (c *Client) requestLogDatabase() requestLogDB {
 	if c == nil {
 		return nil
@@ -1083,6 +1129,16 @@ func (c *Client) firePersistedHooks(entry *RequestLogEntry) {
 
 func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	normalizeRequestStatus(entry)
+	// H3 请求侧镜像（2026-09-24 方案 §3-H3）：在任何 PG 往返（含 tx.Begin）
+	// 与 degraded 早退之前 fire-and-forget 投递三件套镜像——PG 不可用、
+	// degraded 回落、lite sink 路径下镜像仍持续写入（H3 验收项「PG 不可用时
+	// 镜像仍写入」）。显式复用 requestLogsWriteEnabled()（S4 停写 gate，与
+	// request_logs_bodies_hot 正文家族同键同门，insert/update 两个落库点
+	// 快照的是同一设置），停写时镜像同步停，避免「停写却仍落盘」语义分裂。
+	// 空载荷在 helper 内逐项跳过；三件套换算与 upsertRequestLogBodies 同源。
+	if requestLogsWriteEnabled() {
+		c.mirrorRequestBodies(entry)
+	}
 	if c.degraded.Load() {
 		if c.fallback == nil {
 			return errNoTelemetryDB
@@ -1129,6 +1185,58 @@ func (entry *RequestLogEntry) releaseBodies() {
 	entry.RequestBody = nil
 	entry.ResponseBody = nil
 	entry.OutboundBody = nil
+}
+
+// mirrorRequestBodies 把 request_logs_bodies_hot 的三件套（request/response/
+// outbound）按与 upsertRequestLogBodies（insert/update 两个落库点）完全相同
+// 的换算函数投递给热区镜像：
+//
+//	requestBody  = strPtrToJSON(entry.RequestBody)  → "req"
+//	responseBody = strPtrToJSON(entry.ResponseBody) → "resp"
+//	outbound     = jsonOrNull(entry.OutboundBody)   → "out"
+//
+// 换算的空值语义：strPtrToJSON 对 nil → "null"、空串/非法 JSON → "{}"；
+// jsonOrNull 对空 RawMessage → "null"。PG 侧 NULLIF 仅剔除 'null'，"{}" 会
+// 照落库；镜像侧两类都跳过——无正文内容可对账，字面 "null"/"{}" 文件只是
+// 噪声（对账脚本需豁免 PG 侧对应行）。tenant 取 application_code（与
+// bodies_hot 的 tenant 口径一致），空串回退 entry.TenantID，双空则整体跳过
+// （镜像路径以 tenant 命名目录，空值必被 validMirrorID 拒绝并误计失败指标，
+// 静默跳过更干净）。未注入镜像（nil）时整体 no-op。独立成方法是为了测试
+// 不依赖 DB。
+func (c *Client) mirrorRequestBodies(entry *RequestLogEntry) {
+	mirror := c.bodyMirrorFn()
+	if mirror == nil || entry == nil || entry.RequestID == "" {
+		return
+	}
+	tenant := stringValue(entry.ApplicationCode)
+	if tenant == "" {
+		tenant = entry.TenantID
+	}
+	if tenant == "" {
+		return
+	}
+	// request_logs_hot.ts 由 INSERT 侧 now() 生成，request_logs_bodies_hot
+	// 复制该 ts；entry.EventAt 目前无 emitter 盖章（仅 merge / ReplayFallback
+	// 反序列化可能携带），非 nil 时优先采用以对齐重放语义。
+	at := time.Now()
+	if entry.EventAt != nil {
+		at = *entry.EventAt
+	}
+	if req := strPtrToJSON(entry.RequestBody); mirrorableBody(req) {
+		mirror(tenant, entry.RequestID, "req", json.RawMessage(req), at)
+	}
+	if resp := strPtrToJSON(entry.ResponseBody); mirrorableBody(resp) {
+		mirror(tenant, entry.RequestID, "resp", json.RawMessage(resp), at)
+	}
+	if out := jsonOrNull(entry.OutboundBody); mirrorableBody(out) {
+		mirror(tenant, entry.RequestID, "out", json.RawMessage(out), at)
+	}
+}
+
+// mirrorableBody 报告换算后的载荷是否值得镜像："null"（无数据）与 "{}"
+// （空串/非法 JSON 的收敛值）跳过。
+func mirrorableBody(payload string) bool {
+	return payload != "null" && payload != "{}"
 }
 
 func (c *Client) insertRequestLog(entry *RequestLogEntry) error {

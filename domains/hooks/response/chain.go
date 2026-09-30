@@ -163,26 +163,47 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 			// any other interceptor the combination is the R24-C leak
 			// shape and the replacement stays hidden.
 			finalResult.SuppressChunk = true
-			finalResult.InjectAfter = nil
-			if _, holdsFrames := interceptor.(StreamPendingFlusher); holdsFrames && len(result.ModifiedChunk) > 0 {
-				finalResult.ModifiedChunk = result.ModifiedChunk
+			// R24-C regression fix (2026-09-30): a suppressing interceptor may
+			// simultaneously RELEASE an earlier held frame — result.ModifiedChunk
+			// then carries that released payload, never the withheld current
+			// frame (hold-to-terminal terminal release shape:
+			// {SuppressChunk:true, ModifiedChunk: prior+terminal},
+			// outputcompliance/stream_compliance.go). Replace, don't clear:
+			// stale replacements from earlier interceptors must not survive,
+			// but the same-result release must reach the writer
+			// (interceptingStreamWriter.writeFrame contract). ee101fa68
+			// cleared both unconditionally and dropped the release, emptying
+			// the wire for every governed stream.
+			//
+			// The replacement is gated on the holder check the comment above
+			// already states: only an interceptor that HOLDS frames across
+			// events (StreamPendingFlusher) may combine SuppressChunk with a
+			// non-empty replacement. Unconditionally forwarding it lets a
+			// non-holder's withheld replacement reach the wire — the R24-C leak
+			// shape that this branch exists to prevent
+			// (TestInterceptorChainSuppressResultCarriesNoReplacementWithoutHolder).
+			// Replace, don't clear, so stale replacements from earlier
+			// interceptors still cannot survive.
+			if _, holdsFrames := interceptor.(StreamPendingFlusher); holdsFrames {
+				finalResult.ModifiedChunk = append([]byte(nil), result.ModifiedChunk...)
+				finalResult.InjectAfter = append([]byte(nil), result.InjectAfter...)
 			} else {
 				finalResult.ModifiedChunk = nil
+				finalResult.InjectAfter = nil
 			}
-			break
 		}
-		// R24-C (2026-09-29 round 26): the historical guard here was
-		// `!finalResult.SuppressChunk || result.SuppressChunk`, which is
-		// always true — a withholding result carrying its own replacement
-		// re-populated the fields the suppress branch had just cleared, and
-		// the withheld frame's content stayed visible to any consumer of
-		// the chain result. The suppress branch above now clears them; this
-		// branch only runs for non-suppressing results.
-		if len(result.ModifiedChunk) > 0 {
+		if len(result.ModifiedChunk) > 0 && !finalResult.SuppressChunk {
 			finalResult.ModifiedChunk = result.ModifiedChunk
 			currentChunk = result.ModifiedChunk
 		}
-		if len(result.InjectAfter) > 0 {
+		// Injection obeys the same gate as the replacement above. Without
+		// !finalResult.SuppressChunk this line re-populated InjectAfter right
+		// after the suppress branch cleared it, so a suppressing non-holder's
+		// withheld injection still reached the wire
+		// (TestInterceptorChainSuppressResultCarriesNoReplacementWithoutHolder).
+		// A holder's release keeps both fields, because that branch above
+		// already forwarded them.
+		if len(result.InjectAfter) > 0 && !finalResult.SuppressChunk {
 			finalResult.InjectAfter = result.InjectAfter
 		}
 

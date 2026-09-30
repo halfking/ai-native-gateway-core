@@ -245,6 +245,23 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"756_request_logs_id_index.sql":                 requestLogsIDIndexMigration756,
 		"757_session_turns_origin_actor_projection.sql": sessionTurnsOriginActorProjectionMigration757,
 		"758_routeincident_missing_columns.sql":         routeincidentMissingColumnsMigration758,
+		// 759 (2026-09-29, 对帐报表多维筛选轮): report_snapshots 增
+		// credential_id / api_key_id / person 三列 + daily_grain /
+		// internal_grain 两个最细粒度 scope + 4 个 partial 索引。
+		// 五点同步第 5 点（parity）：缺这一条时本守卫**不会**变红——
+		// 它只遍历本 map，不反向要求所有 canonical 文件都在 map 里，
+		// 于是 759 的 embed 副本若与源漂移将无人发现。补上。
+		"759_report_snapshots_grain_dims.sql": reportSnapshotsGrainDimsMigration759,
+		// 763 (2026-09-30, R14 批判式复审 D16): provider_events 契约对齐。
+		// 上游 c8c102698 只落了 canonical 文件 + sequence 通道登记
+		// （scripts/apply-db-revision-sequence.sh:677），五点同步的前四点全
+		// 缺——TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 因此
+		// 自 c8c102698 起持续变红，本轮补齐。补 parity 第 5 点的理由同 759：
+		// 本守卫只遍历本 map，不反向要求全量，缺条目时 embed 副本漂移无人发现。
+		"763_provider_events_contract.sql": providerEventsContractMigration763,
+		// 764 (2026-09-30, 三十六轮 R36-B3): request_logs 分区家族 tenant_ts
+		// 索引。parity 第 5 点与 759/763 同理：缺条目时 embed 副本漂移无人发现。
+		"764_request_logs_tenant_ts_index.sql": requestLogsTenantTsIndexMigration764,
 	}
 
 	for name, embedded := range expected {
