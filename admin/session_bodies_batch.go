@@ -35,8 +35,18 @@ import (
 //
 // # 批量半连接是形态上的关键，不是风格问题
 //
-//	IN (SELECT unnest) → Index Scan using request_logs_bodies_2026_09_pkey     7 ms
-//	unnest + LEFT JOIN → ColumnarScan over all 2,216,660 rows              10,365 ms
+// 三种形态，同一批 200 个真实 request_id、同一列选三列正文，同一分区
+// （2026-10-01 真库实测，见审计报告 §8.3）：
+//
+//	IN (SELECT unnest($1)) → Index Scan using _2026_09_pkey          1.77~2.20 s
+//	= ANY($1::text[])      → ColumnarScan, Rows Removed 2,217,398   15.85~17.43 s
+//	unnest + LEFT JOIN      → ColumnarScan, 逐轮扫                    10,365 ms
+//
+// **注意第二行。** `= ANY(数组)` 长得像半连接，实际上与 `IN (SELECT unnest)`
+// 不是一回事：前者让规划器放弃主键探针，即使数组里只有 1 个元素也一样
+// （实测 N=1/2/4/8/16/32/64 全部 ColumnarScan），而 `= '字面量'` 或
+// `IN (SELECT unnest)` 都会走 Index Scan。两者返回的行完全相同，代价差 8~9 倍。
+// 这不是估算误差：`= ANY` 那条在列存分区上要解压整列正文。
 //
 // LEFT JOIN 贴着函数扫描时规划器没法重排，判定全表列存扫描最便宜，于是真扫一遍。
 // 半连接把一小撮 id 的哈希交给它，它就会走主键探针。用数组而不是 `VALUES`

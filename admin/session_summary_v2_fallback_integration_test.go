@@ -124,20 +124,37 @@ func TestSessionSummaryV2FallbackMatchesLegacyQueryOnRealRows(t *testing.T) {
 }
 
 // TestSessionSummaryV2FallbackBodiesStaysOnIndexPath pins the *plan*, not the
-// SQL text. The shapes measured on 2026-10-01:
+// SQL text. The shapes measured on 2026-10-01 (200 real request_ids, one
+// session, same three body columns, real database — audit report §8.3):
 //
-//	IN (VALUES ...)       → Index Scan using request_logs_bodies_2026_09_pkey    7 ms
-//	IN (SELECT unnest)    → Index Scan using request_logs_bodies_2026_09_pkey    7 ms
-//	unnest + LEFT JOIN    → ColumnarScan 全扫 2,216,660 行                   10,365 ms
-//	（旧的整体 LEFT JOIN） → 逐轮 ColumnarScan                              40,483 ms
+//	IN (SELECT unnest($1)) → Index Scan using _2026_09_pkey          1.77~2.20 s
+//	= ANY($1::text[])      → ColumnarScan, Rows Removed 2,217,398   15.85~17.43 s
 //
-// The SQL-text guard cannot tell the first two from the third: all three name
-// the same view and the same columns. What separates them is whether the planner
-// walks the primary key or scans columnar chunks — so that is what is asserted.
+// The SQL-text guard cannot tell the first from the second: both name the same
+// view and the same columns, and both look like a batched semi-join. What
+// separates them is whether the planner walks the primary key or scans columnar
+// chunks — so that is what is asserted.
+//
+// 两条本轮实测换掉的旧认知：
+//   - **计划缓存不是原因。** 同一 prepared statement 连跑 7 次（含第 7 次的
+//     通用计划，Planning 0.033 ms），2026_09 分区每一次都是 ColumnarScan。
+//   - **不是「EXPLAIN 插桩」也不是「投影宽度」。** 真实生产函数
+//     querySessionBodiesByRequestID 连测 15.85 / 15.88 / 17.43 s，与 EXPLAIN
+//     ANALYZE 同量级；而只选 request_id 不选正文列，代价几乎不变。
+//     反过来 `SELECT count(*)` 包住同一个子查询只要 2.0 s —— 那是规划器把
+//     投影整个消掉了，量的不是同一件事，别拿它当「其实不慢」的证据。
 func TestSessionSummaryV2FallbackBodiesStaysOnIndexPath(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_URL")
 	if dsn == "" {
 		t.Skip("TEST_PG_URL unset — skipping does NOT constitute evidence that phase 2 stays on the index path")
+	}
+	// 主机防护必须排在 EXPLAIN ANALYZE **之前**：这道门要真跑一次分析型扫描，
+	// 而同族扫描在 252 上独占 IO 1h32m、把生产写链饿死（252 审计 R17 §二.5）。
+	// 集成门能被一个环境变量指向任意主机，所以默认只准回环。
+	if allowed, why := heavyMeasurementAllowed(dsn, os.Getenv(heavyMeasurementOptInEnv)); !allowed {
+		t.Skipf("skipping the measurement-grade phase 2 plan: %s", why)
+	} else if why != "" {
+		t.Logf("running against a non-local host: %s", why)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
