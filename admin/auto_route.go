@@ -190,6 +190,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		if err := rows.Scan(&ts, &reqID, &apiKeyID, &taskType, &prof,
 			&confidence, &clientModel, &outbound, &credentialID, &decision,
 			&success, &latency, &workTypeVal); err != nil {
+			warnRowSkip("autoRoute.decisions", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -223,6 +224,9 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 			}
 		}
 		out = append(out, entry)
+	}
+	if writeAggRowsErr(w, "autoRoute.decisions", rows.Err()) {
+		return
 	}
 	writeJSONOk(w, out)
 }
@@ -319,6 +323,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 			&priceIn, &priceOut, &contextWindow, &successRate, &p95,
 			&activeSessions, &concurrencyLimit, &pressureRatio,
 			&scoreSmart, &scoreSpeed, &scoreCost, &updatedAt, &rowBucket); err != nil {
+			warnRowSkip("autoRoute.indexSnapshot", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -370,6 +375,9 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 		}
 		entry["updated_at"] = updatedAt.Format(time.RFC3339)
 		out = append(out, entry)
+	}
+	if writeAggRowsErr(w, "autoRoute.indexSnapshot", rows.Err()) {
+		return
 	}
 	writeJSONOk(w, out)
 }
@@ -582,7 +590,14 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 				var c int
 				if err := rows.Scan(&t, &c); err == nil {
 					taskDist[t] = c
+				} else {
+					warnRowSkip("autoRoute.audit.taskDistributionMV", err)
 				}
+			}
+			// R41: this handler's swallowed rows-err silently emptied
+			// task_distribution while still answering 200. Classify it.
+			if writeAggRowsErr(w, "autoRoute.audit.taskDistributionMV", rows.Err()) {
+				return
 			}
 			rows.Close()
 			out["task_distribution"] = taskDist
@@ -597,7 +612,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 				var c int
 				if err := rows.Scan(&t, &c); err == nil {
 					taskDist[t] = c
+				} else {
+					warnRowSkip("autoRoute.audit.taskDistribution", err)
 				}
+			}
+			if writeAggRowsErr(w, "autoRoute.audit.taskDistribution", rows.Err()) {
+				return
 			}
 			rows.Close()
 			out["task_distribution"] = taskDist
@@ -621,7 +641,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 			var c int
 			if err := rows.Scan(&p, &c); err == nil {
 				profileDist[p] = c
+			} else {
+				warnRowSkip("autoRoute.audit.profileDistribution", err)
 			}
+		}
+		if writeAggRowsErr(w, "autoRoute.audit.profileDistribution", rows.Err()) {
+			return
 		}
 		rows.Close()
 		out["profile_distribution"] = profileDist
@@ -666,7 +691,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 						"model": m,
 						"count": c,
 					})
+				} else {
+					warnRowSkip("autoRoute.audit.topChosenModelsMV", err)
 				}
+			}
+			if writeAggRowsErr(w, "autoRoute.audit.topChosenModelsMV", rows.Err()) {
+				return
 			}
 			rows.Close()
 			out["top_chosen_models"] = topModels
@@ -696,7 +726,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 						"model": m,
 						"count": c,
 					})
+				} else {
+					warnRowSkip("autoRoute.audit.topChosenModels", err)
 				}
+			}
+			if writeAggRowsErr(w, "autoRoute.audit.topChosenModels", rows.Err()) {
+				return
 			}
 			rows.Close()
 			out["top_chosen_models"] = topModels
@@ -818,6 +853,7 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 			&activeConcurrent, &avgPressure,
 			&bestSmart, &bestSpeed, &bestCost,
 			&lastReqAt); err != nil {
+			warnRowSkip("autoRoute.customerCost", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -866,6 +902,9 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 			entry["last_request_at"] = lastReqAt.Format(time.RFC3339)
 		}
 		out = append(out, entry)
+	}
+	if writeAggRowsErr(w, "autoRoute.customerCost", rows.Err()) {
+		return
 	}
 	writeJSONOk(w, out)
 }
@@ -922,6 +961,7 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 		if err := rows.Scan(&canonID, &rawModel, &totalCost, &totalTokens,
 			&avgCost1M, &successRate, &avgLatency,
 			&totalReqs, &uniqueKeys); err != nil {
+			warnRowSkip("autoRoute.modelCost", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -952,6 +992,9 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 			entry["unique_api_keys"] = *uniqueKeys
 		}
 		out = append(out, entry)
+	}
+	if writeAggRowsErr(w, "autoRoute.modelCost", rows.Err()) {
+		return
 	}
 	writeJSONOk(w, out)
 }

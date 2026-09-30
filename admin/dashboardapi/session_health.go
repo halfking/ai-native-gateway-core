@@ -181,6 +181,9 @@ func (h *SessionHealthHandler) queryHealthTrend(ctx context.Context, params Quer
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -227,6 +230,9 @@ func (h *SessionHealthHandler) queryTopIssues(ctx context.Context, params QueryP
 		item.Severity = "warning"
 		item.Description = issueDescription(item.Issue)
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

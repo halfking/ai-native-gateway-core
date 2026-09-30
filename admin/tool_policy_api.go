@@ -155,6 +155,7 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		)
 		err := rows.Scan(&id, &tid, &pattern, &ptype, &reason, &enabled, &createdAt, &updatedAt, &createdBy)
 		if err != nil {
+			warnRowSkip("toolPolicy.HandleList", err)
 			continue
 		}
 		policies = append(policies, map[string]any{
@@ -168,6 +169,11 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 			"updated_at":   updatedAt,
 			"created_by":   createdBy,
 		})
+	}
+	// 工具策略少一截 = 某条禁用/限流规则看不见了 = 静默放行。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate policies", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -345,6 +351,7 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 		)
 		err := rows.Scan(&tid, &ttenantID, &usageDate, &callCount, &successCount, &errCount, &avgLatency, &lastCalled)
 		if err != nil {
+			warnRowSkip("toolPolicy.usageStats", err)
 			continue
 		}
 		entry := map[string]any{
@@ -360,6 +367,10 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 			entry["last_called_at"] = *lastCalled
 		}
 		stats = append(stats, entry)
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate usage stats", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -438,6 +449,7 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 		)
 		err := rows.Scan(&tid, &ttenantID, &calls, &success, &errCount, &avgLatency)
 		if err != nil {
+			warnRowSkip("toolPolicy.handleTopTools", err)
 			continue
 		}
 		tools = append(tools, map[string]any{
@@ -449,6 +461,10 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 			"avg_latency_ms": avgLatency,
 			"success_rate":   fmt.Sprintf("%.2f%%", float64(success)/float64(calls)*100),
 		})
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate top tools", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -1284,9 +1284,13 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item topModel
 		if err := rows.Scan(&item.CanonicalID, &item.CanonicalName, &item.DisplayName, &item.RequestCount); err != nil {
+			warnRowSkip("logs.listTopModels", err)
 			continue
 		}
 		items = append(items, item)
+	}
+	if writeAggRowsErr(w, "logs.listTopModels", rows.Err()) {
+		return
 	}
 	if items == nil {
 		items = []topModel{}

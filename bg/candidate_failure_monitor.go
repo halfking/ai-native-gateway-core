@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // CandidateFailureAlert is the row shape inserted into the in-memory
@@ -293,6 +294,11 @@ func (m *CandidateFailureMonitor) checkAlerts(ctx context.Context) error {
 			m.fireAlert(a)
 		}
 	}
+	// R66: 聚合分组被截断 = 少发若干告警，监控面看不到。
+	if err := rows.Err(); err != nil {
+		slog.Warn("candidate_failure_monitor: alert row iteration aborted; batch truncated",
+			"error", err, "window_sec", int(m.alertWindow.Seconds()))
+	}
 	return nil
 }
 
@@ -352,7 +358,9 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 	for rows.Next() {
 		var credID, attempts, fails, recentFails int
 		if err := rows.Scan(&credID, &attempts, &fails, &recentFails); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.CandidateFailureMonitor.checkAutoCool", err) {
+				continue
+			}
 		}
 		ratio := float64(fails) / float64(attempts)
 		slog.Warn("candidate_failure_monitor: auto-cool trigger",
@@ -366,6 +374,11 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 			slog.Warn("candidate_failure_monitor: applyAutoCool failed",
 				"credential_id", credID, "error", err)
 		}
+	}
+	// R66: 被截断 = 少冷却若干本该冷却的 credential，失败率会继续冲高。
+	if err := rows.Err(); err != nil {
+		slog.Warn("candidate_failure_monitor: auto-cool row iteration aborted; batch truncated",
+			"error", err)
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -155,12 +156,18 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 			&u.OwnerUser, &u.SessionCount, &u.TotalRequests, &u.TotalCost,
 			&avgCost, &u.EndUserCount, &u.FirstSeenAt, &u.LastSeenAt,
 		); err != nil {
+			warnRowSkip("userProfile.list", err)
 			continue
 		}
 		if avgCost.Valid {
 			u.AvgCostPerSession = avgCost.Float64
 		}
 		users = append(users, u)
+	}
+	// 用户画像榜少一截 = 按成本排序的用户名单少了几个人，total 与列表
+	// 对不上（前端翻页会以为到底了）。
+	if writeAggRowsErr(w, "userProfile.list", rows.Err()) {
+		return
 	}
 	if users == nil {
 		users = []UserProfileSummary{}
@@ -345,7 +352,14 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 			if err := costRows.Scan(&date, &point.Cost, &point.Sessions); err == nil {
 				point.Date = date.Format("2006-01-02")
 				resp.DailyCostTrend = append(resp.DailyCostTrend, point)
+			} else {
+				warnRowSkip("userProfile.detail.costTrend", err)
 			}
+		}
+		// 成本趋势是详情页的补充区块（查询失败本身已是 non-fatal），
+		// 迭代中断同样只降级不 500，但必须留痕。
+		if err := costRows.Err(); err != nil {
+			slog.Warn("user profile detail: cost trend rows iteration aborted; section truncated", "owner", ownerUser, "error", err)
 		}
 	}
 	// 反转
@@ -386,7 +400,12 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 					item.AvgHealth = &val
 				}
 				resp.TopTasks = append(resp.TopTasks, item)
+			} else {
+				warnRowSkip("userProfile.detail.topTasks", err)
 			}
+		}
+		if err := taskRows.Err(); err != nil {
+			slog.Warn("user profile detail: top tasks rows iteration aborted; section truncated", "owner", ownerUser, "error", err)
 		}
 	}
 	if resp.TopTasks == nil {
@@ -417,7 +436,12 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 			var item EndUserRankItem
 			if err := euRows.Scan(&item.EndUserID, &item.SessionCount, &item.TotalCost, &item.LastActivity); err == nil {
 				resp.TopEndUsers = append(resp.TopEndUsers, item)
+			} else {
+				warnRowSkip("userProfile.detail.topEndUsers", err)
 			}
+		}
+		if err := euRows.Err(); err != nil {
+			slog.Warn("user profile detail: top end users rows iteration aborted; section truncated", "owner", ownerUser, "error", err)
 		}
 	}
 	if resp.TopEndUsers == nil {
@@ -450,7 +474,12 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 				}
 				item.HealthGrade = healthGrade
 				resp.RecentSessions = append(resp.RecentSessions, item)
+			} else {
+				warnRowSkip("userProfile.detail.recentSessions", err)
 			}
+		}
+		if err := recentRows.Err(); err != nil {
+			slog.Warn("user profile detail: recent sessions rows iteration aborted; section truncated", "owner", ownerUser, "error", err)
 		}
 	}
 	if resp.RecentSessions == nil {

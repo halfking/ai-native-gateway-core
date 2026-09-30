@@ -471,9 +471,18 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var id int
-			if rows.Scan(&id) == nil {
+			if err := rows.Scan(&id); err == nil {
 				credIDs = append(credIDs, id)
+			} else {
+				warnRowSkip("nodeToggle.credentialIDs", err)
 			}
+		}
+		// best-effort：PG 侧的 manual_disabled UPDATE 已经提交成功，缓存失效
+		// 与 URSM 同步是补偿动作，中断只留痕不 500（否则操作员会以为启停失败
+		// 而重试，实际是已经改了 PG 的）。
+		if err := rows.Err(); err != nil {
+			slog.Warn("admin node toggle credential id rows iteration aborted",
+				"op", "nodeToggle.credentialIDs", "provider_id", providerID, "error", err)
 		}
 	}
 	for _, cid := range credIDs {

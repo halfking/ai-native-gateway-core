@@ -3,6 +3,7 @@ package vibecoding
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -97,6 +98,11 @@ func (s *PgxStore) ListProjects(ctx context.Context, tenantID string, status Pro
 		}
 
 		projects = append(projects, project)
+	}
+	// R66: 迭代中断只让 Next() 返回 false；不终检就等于把「读到第 N 个
+	// 项目时连接断了」当成列表读完，调用方拿到残缺列表 + nil。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("vibecoding.PgxStore.ListProjects: iterate rows: %w", err)
 	}
 
 	return projects, total, nil
@@ -242,6 +248,10 @@ func (s *PgxStore) ListSessions(ctx context.Context, projectID *int64, status Se
 
 		sessions = append(sessions, session)
 	}
+	// R66: 会话列表被静默截断 = 项目详情页凭空少若干会话。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("vibecoding.PgxStore.ListSessions: iterate rows: %w", err)
+	}
 
 	return sessions, total, nil
 }
@@ -346,6 +356,10 @@ func (s *PgxStore) ListReviews(ctx context.Context, sessionID *int64, offset, li
 
 		reviews = append(reviews, review)
 	}
+	// R66: 审查列表被静默截断 = 评审结论缺页而无任何报错。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("vibecoding.PgxStore.ListReviews: iterate rows: %w", err)
+	}
 
 	return reviews, total, nil
 }
@@ -380,6 +394,10 @@ func (s *PgxStore) GetReviewsBySession(ctx context.Context, sessionID int64) ([]
 		}
 
 		reviews = append(reviews, review)
+	}
+	// R66: 同会话审查集被静默截断 = 回归比对基线少若干条。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("vibecoding.PgxStore.GetReviewsBySession: iterate rows: %w", err)
 	}
 
 	return reviews, nil

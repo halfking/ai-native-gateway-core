@@ -142,6 +142,9 @@ func (h *SessionTrendHandler) queryTrend(ctx context.Context, params QueryParams
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -179,6 +182,9 @@ func (h *SessionTrendHandler) queryPrevPeriodTrend(ctx context.Context, params Q
 			return nil, err
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }
