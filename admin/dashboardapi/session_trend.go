@@ -5,6 +5,7 @@ package dashboardapi
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -36,6 +37,11 @@ type TrendSummary struct {
 	TotalClosed   int     `json:"total_closed"`
 	AvgDailyNew   float64 `json:"avg_daily_new"`
 	GrowthRatePct float64 `json:"growth_rate_pct"`
+	// GrowthRateKnown 区分「增长率真的是 0」与「上一周期查失败所以算不出」。
+	// R68 修正前两者都是 growth_rate_pct=0，而后者是在 DB 故障时发生的——
+	// 错误被渲染成了一个看起来像实测值的数字。字段是**追加**的：既有客户端
+	// 继续读 growth_rate_pct 不受影响。
+	GrowthRateKnown bool `json:"growth_rate_known"`
 }
 
 // HandleSessionTrend 处理会话趋势请求
@@ -83,13 +89,24 @@ func (h *SessionTrendHandler) HandleSessionTrend(w http.ResponseWriter, r *http.
 	}
 
 	// 计算增长率（与上一周期对比）
-	prevTrend, _ := h.queryPrevPeriodTrend(ctx, params)
-	prevTotal := 0
-	for _, t := range prevTrend {
-		prevTotal += t.NewSessions
-	}
-	if prevTotal > 0 {
-		summary.GrowthRatePct = float64(summary.TotalNew-prevTotal) * 100 / float64(prevTotal)
+	// R68 修正：原先 `prevTrend, _ :=` 丢弃错误，于是上一周期查询失败时
+	// prevTotal=0，判据 `if prevTotal > 0` 不成立，growth_rate_pct 停在 0 ——
+	// **一次 DB 故障被渲染成「本周期增长 0%」**。0% 是一个看起来像实测值的
+	// 结论，比缺字段更有害：运维会据此判断「业务没增长」，而真相是「不知道」。
+	prevTrend, prevErr := h.queryPrevPeriodTrend(ctx, params)
+	if prevErr != nil {
+		slog.Warn("dashboardapi session trend: previous-period query failed; growth rate unavailable",
+			"error", prevErr)
+		summary.GrowthRateKnown = false
+	} else {
+		prevTotal := 0
+		for _, t := range prevTrend {
+			prevTotal += t.NewSessions
+		}
+		summary.GrowthRateKnown = true
+		if prevTotal > 0 {
+			summary.GrowthRatePct = float64(summary.TotalNew-prevTotal) * 100 / float64(prevTotal)
+		}
 	}
 
 	now := time.Now()
