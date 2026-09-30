@@ -821,6 +821,38 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 // PARTITION OF 自动继承。CONCURRENTLY 无法在事务内执行，pinned 连接 +
 // 会话级 10min 预算（471/690 同款）；中断残留的 INVALID 索引先 DROP
 // 再建，否则 IF NOT EXISTS 永远跳过。
+
+// attachDigestNullChildrenSQL attaches each partition's digest-null index
+// only when that partition table has no child of the parent index yet.
+// Checking only the canonical name misses an already-attached alias and
+// then ATTACH fails the whole boot.
+const attachDigestNullChildrenSQL = `
+DO $$
+DECLARE part text;
+BEGIN
+  FOR part IN
+    SELECT c.relname
+    FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid
+    WHERE i.inhparent = 'public.session_turns'::regclass
+  LOOP
+    IF to_regclass(format('public.%I', part || '_digest_null_idx')) IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM pg_inherits ci
+         JOIN pg_class idx ON idx.oid = ci.inhrelid
+         JOIN pg_index ii ON ii.indexrelid = idx.oid
+         JOIN pg_class tbl ON tbl.oid = ii.indrelid
+         WHERE ci.inhparent = 'public.idx_session_turns_digest_null'::regclass
+           AND tbl.relname = part
+       ) THEN
+      EXECUTE format('ALTER INDEX public.idx_session_turns_digest_null ATTACH PARTITION public.%I',
+                     part || '_digest_null_idx');
+    END IF;
+  END LOOP;
+END $$;
+`
+
 func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -923,29 +955,13 @@ func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
 	`); err != nil {
 		return fmt.Errorf("create idx_session_turns_digest_null shell: %w", err)
 	}
-	// ATTACH the pre-built children (idempotent: skip already-attached).
-	if _, err := conn.Exec(ctx, `
-		DO $$
-		DECLARE part text;
-		BEGIN
-		  FOR part IN
-		    SELECT c.relname
-		    FROM pg_inherits i
-		    JOIN pg_class c ON c.oid = i.inhrelid
-		    WHERE i.inhparent = 'public.session_turns'::regclass
-		  LOOP
-		    IF to_regclass(format('public.%I', part || '_digest_null_idx')) IS NOT NULL
-		       AND NOT EXISTS (
-		         SELECT 1 FROM pg_inherits ci
-		         WHERE ci.inhparent = 'public.idx_session_turns_digest_null'::regclass
-		           AND ci.inhrelid = to_regclass(format('public.%I', part || '_digest_null_idx'))
-		       ) THEN
-		      EXECUTE format('ALTER INDEX public.idx_session_turns_digest_null ATTACH PARTITION public.%I',
-		                     part || '_digest_null_idx');
-		    END IF;
-		  END LOOP;
-		END $$;
-	`); err != nil {
+	// ATTACH the pre-built children. A partition may already have an
+	// equivalent child under another name (2026-10-01: session_turns_2026_11
+	// was attached as session_turns_2026_11_ts_id_idx). Attaching a second
+	// index for the same partition fails with SQLSTATE 55000, and that error
+	// used to abort database startup. Skip when any child already covers the
+	// partition table.
+	if _, err := conn.Exec(ctx, attachDigestNullChildrenSQL); err != nil {
 		return fmt.Errorf("attach session_turns digest_null child indexes: %w", err)
 	}
 
@@ -4869,16 +4885,40 @@ func (d *DB) ensureNodeProbeTriggerKindSchema(ctx context.Context) error {
 	}
 	_, err := d.pool.Exec(ctx, `
 		DO $$
+		DECLARE
+			v_def text;
 		BEGIN
 			IF to_regclass('public.node_probe_runs') IS NOT NULL THEN
-				-- 2026-09-23 审计轮守卫：ADD CONSTRAINT CHECK 每次要全表校验
-				-- 且持 ACCESS EXCLUSIVE，node_probe_runs 大表上必超 30s 被
-				-- rolconfig 击杀（245 seq 2201 boot 57014 实锤）——约束已存在
-				-- 则整段跳过，不再每 boot DROP+ADD 重校验。
-				IF NOT EXISTS (
-					SELECT 1 FROM pg_constraint
-					WHERE conname = 'node_probe_runs_trigger_kind_check'
-					  AND conrelid = 'public.node_probe_runs'::regclass
+				SELECT pg_get_constraintdef(c.oid) INTO v_def
+				FROM pg_constraint c
+				WHERE c.conname = 'node_probe_runs_trigger_kind_check'
+				  AND c.conrelid = 'public.node_probe_runs'::regclass;
+
+				-- 2026-09-23 审计轮守卫的修正（round 43）：原守卫只问
+				-- 「是否存在同名约束」。存量部署带着**旧值域**的约束时该判断为
+				-- 真，于是 DROP+ADD 整段被跳过 —— 恰好在需要升级的那批部署上
+				-- 不升级，且静默无日志。DBTestEnsureNodeProbeTriggerKindSchemaUpgradesLegacyChecks
+				-- 正是为此而红：它 seed 旧 CHECK 后断言值域被放宽。
+				--
+				-- 现在改为比较**定义**：定义里已含全部预期字面量才跳过，
+				-- 既保留「已正确则不做 DDL」的性能意图（纯 catalog 读取，不全表
+				-- 校验、不持 ACCESS EXCLUSIVE），又让存量升级路径真正生效。
+				IF v_def IS NULL THEN
+					-- 无约束：全新安装，直接建。
+					ALTER TABLE public.node_probe_runs
+						ADD CONSTRAINT node_probe_runs_trigger_kind_check CHECK (
+							trigger_kind IN (
+								'request_failure', 'manual', 'credential_recovery',
+								'sync_request', 'periodic', 'admin',
+								'integrity_probe_planner', 'selfcheck', 'external_async'
+							)
+						);
+				ELSIF NOT (
+					v_def LIKE '%request_failure%'    AND v_def LIKE '%manual%'
+					AND v_def LIKE '%credential_recovery%' AND v_def LIKE '%sync_request%'
+					AND v_def LIKE '%periodic%'      AND v_def LIKE '%admin%'
+					AND v_def LIKE '%integrity_probe_planner%' AND v_def LIKE '%selfcheck%'
+					AND v_def LIKE '%external_async%'
 				) THEN
 					ALTER TABLE public.node_probe_runs
 						DROP CONSTRAINT IF EXISTS node_probe_runs_trigger_kind_check;
@@ -4893,10 +4933,23 @@ func (d *DB) ensureNodeProbeTriggerKindSchema(ctx context.Context) error {
 				END IF;
 			END IF;
 			IF to_regclass('public.credential_probe_queue') IS NOT NULL THEN
-				IF NOT EXISTS (
-					SELECT 1 FROM pg_constraint
-					WHERE conname = 'credential_probe_queue_source_check'
-					  AND conrelid = 'public.credential_probe_queue'::regclass
+				SELECT pg_get_constraintdef(c.oid) INTO v_def
+				FROM pg_constraint c
+				WHERE c.conname = 'credential_probe_queue_source_check'
+				  AND c.conrelid = 'public.credential_probe_queue'::regclass;
+
+				IF v_def IS NULL THEN
+					ALTER TABLE public.credential_probe_queue
+						ADD CONSTRAINT credential_probe_queue_source_check CHECK (
+							source IN (
+								'request_failure', 'periodic', 'external_async', 'admin',
+								'integrity_probe_planner', 'selfcheck'
+							)
+						);
+				ELSIF NOT (
+					v_def LIKE '%request_failure%'   AND v_def LIKE '%periodic%'
+					AND v_def LIKE '%external_async%' AND v_def LIKE '%admin%'
+					AND v_def LIKE '%integrity_probe_planner%' AND v_def LIKE '%selfcheck%'
 				) THEN
 					ALTER TABLE public.credential_probe_queue
 						DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
