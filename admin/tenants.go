@@ -680,9 +680,18 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Verify tenant exists
+	// Verify tenant exists.
+	//
+	// 2026-09-30 (R36-B4): the error was discarded as `_ =`, so ANY database
+	// failure — deadline, connection loss, 57014 statement_timeout — left
+	// `exists` at its zero value and the handler answered 404 "tenant not
+	// found" for a tenant that exists. A database error is not a missing
+	// tenant; surface it as a failure so the caller does not cache a false 404.
 	var exists bool
-	_ = h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tenants WHERE code = $1)`, code).Scan(&exists)
+	if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tenants WHERE code = $1)`, code).Scan(&exists); err != nil {
+		writeTenantStatsError(w, ctx, code, "tenant existence check", err)
+		return
+	}
 	if !exists {
 		writeError(w, http.StatusNotFound, "tenant not found")
 		return
@@ -736,19 +745,31 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	usageTable := "usage_ledger_with_current_month"
 
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)
-	_ = h.db.QueryRow(ctx, `
+	//
+	// 2026-09-30 (R36-B4): both totals were `_ =`, so a dead context or a
+	// statement_timeout silently published TotalRequests=0 / TotalCredits=0
+	// alongside whatever the later queries managed to return — an internally
+	// inconsistent 200 that reads as "this tenant burned nothing". Fail loudly
+	// instead of fabricating zeros.
+	if err := h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0.0),
 		       COUNT(DISTINCT api_key_id), COUNT(DISTINCT COALESCE(NULLIF(raw_model_name, ''), canonical_id::text)),
 		       COUNT(DISTINCT application_id)
 		FROM `+usageTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, code, days).Scan(&s.TotalRequests, &s.TotalTokens, &s.TotalCost,
-		&s.UniqueKeys, &s.UniqueModels, &s.UniqueApps)
-	_ = h.db.QueryRow(ctx, `
+		&s.UniqueKeys, &s.UniqueModels, &s.UniqueApps); err != nil {
+		writeTenantStatsError(w, ctx, code, "totals aggregate", err)
+		return
+	}
+	if err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint
 		FROM `+logsTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
-	`, code, days).Scan(&s.TotalCredits)
+	`, code, days).Scan(&s.TotalCredits); err != nil {
+		writeTenantStatsError(w, ctx, code, "credits aggregate", err)
+		return
+	}
 
 	// By model (credits + cost from request_logs)
 	modelRows, err := h.db.Query(ctx, `
@@ -763,7 +784,14 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		ORDER BY SUM(COALESCE(credits_charged, 0)) DESC, SUM(COALESCE(cost_usd, 0)) DESC
 		LIMIT 20
 	`, code, days)
-	if err == nil {
+	if err != nil {
+		// R36-B4: `if err == nil { ... }` with no else published an empty
+		// by_model list on failure — the client cannot tell "no traffic" from
+		// "the query died". Report the failure.
+		writeTenantStatsError(w, ctx, code, "by-model aggregate", err)
+		return
+	}
+	{
 		defer modelRows.Close()
 		for modelRows.Next() {
 			var m tenantModelBreakdown
@@ -789,7 +817,11 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		ORDER BY SUM(COALESCE(rl.credits_charged, 0)) DESC, SUM(COALESCE(rl.cost_usd, 0)) DESC
 		LIMIT 20
 	`, code, days)
-	if err == nil {
+	if err != nil {
+		writeTenantStatsError(w, ctx, code, "by-application aggregate", err)
+		return
+	}
+	{
 		defer appRows.Close()
 		for appRows.Next() {
 			var a tenantAppBreakdown
@@ -832,28 +864,59 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		ORDER BY days.d
 	`, code, days)
 	if err != nil {
-		// R36-A2 收口：daily 查询失败不得静默返回空序列（前端拿到全零
-		// 趋势图无从分辨），至少留日志可观测。
-		slog.Warn("tenant stats: daily query failed", "tenant", code, "days", days, "err", err)
-	} else {
-		for dailyRows.Next() {
-			var d tenantDailyStat
-			if scanErr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); scanErr != nil {
-				slog.Warn("tenant stats: daily scan failed", "tenant", code, "err", scanErr)
-				break
-			}
-			s.Daily = append(s.Daily, d)
-		}
-		if rerr := dailyRows.Err(); rerr != nil {
-			slog.Warn("tenant stats: daily rows aborted", "tenant", code, "err", rerr)
-		}
-		dailyRows.Close()
+		// R36-A2 logged this; R36-B4 raises it to an explicit failure. A warn
+		// plus an all-zero trend is still a 200 the client will render as
+		// "this tenant had no traffic", which is a materially wrong answer
+		// rather than a missing one.
+		writeTenantStatsError(w, ctx, code, "daily aggregate", err)
+		return
 	}
+	for dailyRows.Next() {
+		var d tenantDailyStat
+		if scanErr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); scanErr != nil {
+			dailyRows.Close()
+			writeTenantStatsError(w, ctx, code, "daily aggregate scan", scanErr)
+			return
+		}
+		s.Daily = append(s.Daily, d)
+	}
+	if rerr := dailyRows.Err(); rerr != nil {
+		// Truncated series: pgx surfaces mid-iteration failures (connection
+		// drop, statement_timeout) here, after Next() already returned true.
+		dailyRows.Close()
+		writeTenantStatsError(w, ctx, code, "daily aggregate iteration", rerr)
+		return
+	}
+	dailyRows.Close()
 	if s.Daily == nil {
 		s.Daily = []tenantDailyStat{}
 	}
 
 	writeJSON(w, http.StatusOK, s)
+}
+
+// writeTenantStatsError reports a failed stage of the tenant stats pipeline as
+// an explicit HTTP error instead of letting the zero value reach the client.
+//
+// 2026-09-30 (R36-B4): every aggregate in getTenantStats used to swallow its
+// error, so one dead context produced a fully-formed 200 whose totals were
+// zero and whose breakdowns were empty. That is the worst failure shape for a
+// stats endpoint — the caller cannot distinguish "no traffic" from "the query
+// was killed", and both reconcile and billing read these numbers.
+//
+// A context deadline is reported as 504 with a hint to narrow `days`, because
+// the aggregates are sequential on one shared 10s budget and the 30-day window
+// is the one that overruns it. Anything else is a 500.
+func writeTenantStatsError(w http.ResponseWriter, ctx context.Context, code, stage string, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		slog.Warn("tenant stats: stage exceeded context budget",
+			"tenant", code, "stage", stage, "err", err)
+		writeError(w, http.StatusGatewayTimeout,
+			"tenant stats query timed out; retry with a smaller days window")
+		return
+	}
+	slog.Error("tenant stats: stage failed", "tenant", code, "stage", stage, "err", err)
+	writeError(w, http.StatusInternalServerError, "tenant stats query failed")
 }
 
 // getActorFromRequest returns the username from AuthContext, or "unknown".

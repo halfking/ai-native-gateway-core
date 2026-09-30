@@ -352,7 +352,14 @@ func runEmptyStreamGateWithVendor(
 			// itself, so a stream whose terminal arrived while the gate was
 			// still buffering flushed everything except the terminal. Mirror
 			// the hasCombinedDone branch above and carry the line through.
-			buffered = append(buffered, line)
+			// R36-B4: the append of `line` that used to sit here is removed.
+			// `line` is already appended unconditionally at the top of this
+			// iteration, so the extra append emitted the SAME frame twice —
+			// two `data: [DONE]` frames on the wire for any input that
+			// reaches this branch. Compare the hasCombinedDone branch above,
+			// which appends a *synthesized* "data: [DONE]\n" precisely because
+			// that `line` had its [DONE] stripped; here `line` still carries it
+			// and is already buffered. The break alone is correct.
 			break
 		}
 
