@@ -477,7 +477,11 @@ func (h *RouteIncidentsHandler) handleStats(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		// 报 503 而不是回 200 + 全零：这个端点就是用来发现「事件正在被
 		// 丢弃」的，故障时给出「一切正常」是最坏的答案。
-		writeInternalErr(w, "route incident stats", err)
+		// 12h 审计修正：writeInternalErr 写的是 500，与本注释及 38 号
+		// 文档声称的 503 契约不符——按文档契约为准，与本文件
+		// ErrNoDatabase 分支同形（writeError + 503）。
+		slog.Error("admin handler internal error", "op", "route incident stats", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "route incident stats")
 		return
 	}
 	writeJSON(w, http.StatusOK, counts)
@@ -499,16 +503,26 @@ func (h *RouteIncidentsHandler) storeCounters(ctx context.Context) (map[string]a
 	// 而这个端点存在的意义正是「一眼看出事件是否在被丢弃」（见上方注释）。
 	// 在它最需要示警的时刻报出一组全零，是把错误伪装成了最让人安心的结论。
 	// 诚实答案是「我不知道」——故失败即 503，而不是猜一个 0。
-	active, err := h.store.List(ctx, routeincident.ListFilter{State: "active", Limit: 1})
+	//
+	// 12h 审计修正：R68 之后同一 payload 的另一半仍是伪合法数字——
+	// recovered_24h 硬编码 0（全仓无赋值点）、List{Limit:1}+len 把
+	// active/recovering 封顶在 1。计数改走 CountByState（COUNT(*)，
+	// 无 limit 截顶），recovered_24h 按 updated_at 24h 窗实查。
+	active, err := h.store.CountByState(ctx, "", "active", time.Time{})
 	if err != nil {
 		return out, fmt.Errorf("count active incidents: %w", err)
 	}
-	recovering, err := h.store.List(ctx, routeincident.ListFilter{State: "recovering", Limit: 1})
+	recovering, err := h.store.CountByState(ctx, "", "recovering", time.Time{})
 	if err != nil {
 		return out, fmt.Errorf("count recovering incidents: %w", err)
 	}
-	out["active"] = len(active)
-	out["recovering"] = len(recovering)
+	recovered24h, err := h.store.CountByState(ctx, "", "recovered", time.Now().Add(-24*time.Hour))
+	if err != nil {
+		return out, fmt.Errorf("count recovered incidents (24h): %w", err)
+	}
+	out["active"] = active
+	out["recovering"] = recovering
+	out["recovered_24h"] = recovered24h
 	return out, nil
 }
 

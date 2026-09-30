@@ -34,6 +34,31 @@ func TestRetireClosedMainSQLSkipsOpenMinute(t *testing.T) {
 	}
 }
 
+// 12h 审计钉测：迟到冲刷宽限重扫。累加器 flush（30s tick）晚于 rollup
+// （60s tick）时会在 M+1:00~M+1:30 重建刚退役的 M 分钟悬空键；若 retire
+// 下界仍钉在游标 since=M+1:00，该键永不再被扫到。retireScanFloor 必须把
+// 下界拉回 until-grace，保证最近 grace 窗内的已闭分钟每 tick 重扫。
+func TestRetireScanFloorKeepsGraceLookback(t *testing.T) {
+	until := time.Date(2026, 10, 1, 4, 0, 5, 0, time.UTC)
+
+	// 常态：游标已追平当前分钟 —— 下界 = until-grace，覆盖最近两个已闭分钟。
+	since := time.Date(2026, 10, 1, 4, 0, 0, 0, time.UTC)
+	want := until.Add(-retireGraceWindow)
+	got := retireScanFloor(since, until)
+	if !got.Equal(want) {
+		t.Fatalf("cursor caught up: floor = %v, want %v", got, want)
+	}
+	if !got.Before(since) {
+		t.Fatalf("cursor caught up: floor %v must look back before since %v", got, since)
+	}
+
+	// 回填/落后：游标早于 grace 窗 —— 下界取 since，行为与历史一致。
+	oldSince := time.Date(2026, 9, 30, 22, 0, 0, 0, time.UTC)
+	if got := retireScanFloor(oldSince, until); !got.Equal(oldSince) {
+		t.Fatalf("cursor behind: floor = %v, want since %v", got, oldSince)
+	}
+}
+
 // 本地 8782 库上的 2026-09-26 10:37+08 / provider 314。
 // request_logs.canonical_id 仍是 887407，视图因 session_turns.canonical_id
 // 为空而把同一分钟记在 canonical 0。事务内重算并退役闭分钟多余键，然后回滚。

@@ -54,6 +54,24 @@ func TestDecode(t *testing.T) {
 		if Decode("op.mismatch", []byte(`{"name":"a","count":"two"}`), &got) {
 			t.Fatalf("type mismatch must report false, not a partially-populated struct")
 		}
+		// 12h 审计钉测：encoding/json 对 UnmarshalTypeError 是
+		// save-error-then-continue——直接 Unmarshal 进 dst 会留下
+		// Name="a" 的**部分填充**对象（真实受害者：center.Command.Args
+		// 部分参数照常下发执行）。fresh 形态必须保证失败时 dst 一个
+		// 字节都不动，包括「部分字段本可解析」的形态。
+		if got.Name != "" || got.Count != 0 {
+			t.Fatalf("dst must stay untouched on decode failure (no partial fill), got %+v", got)
+		}
+	})
+
+	t.Run("decode failure never partially overwrites a preset dst", func(t *testing.T) {
+		got := payload{Name: "preset", Count: 5}
+		if Decode("op.partial", []byte(`{"name":"evil","count":"bad"}`), &got) {
+			t.Fatalf("type mismatch must report false")
+		}
+		if got.Name != "preset" || got.Count != 5 {
+			t.Fatalf("caller's original value must survive a failed decode, got %+v", got)
+		}
 	})
 }
 
