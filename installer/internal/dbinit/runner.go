@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -432,6 +433,36 @@ func (r *Runner) InitSchema(logger func(string)) error {
 	return nil
 }
 
+// noTransactionMarker 是逐文件事务豁免标记。
+//
+// applySQL 默认对每个文件加 --single-transaction（全文件原子）。但
+// PostgreSQL 有若干语句**不能**在事务块内执行（DDL 之外的一类），
+// 例如 DROP INDEX CONCURRENTLY / CREATE INDEX CONCURRENTLY /
+// REINDEX CONCURRENTLY / VACUUM / CREATE DATABASE。
+//
+// 携带本标记（独立注释行，允许前导空白与额外 --）的迁移改走非事务通道。
+// 标记写进文件本身（而非 Go 侧名单），使它随迁移一起分发到三份副本，
+// 与仓库既有 sqlreadguard:allow 行级标记同一约定。
+//
+// 代价：非事务通道下失败会留下部分已应用的语句。因此豁免必须尽量窄，
+// TestNoTransactionMarkerIsJustified 用「标记文件必须真的含有不可事务化
+// 语句」这条真实不变式防止它扩散。
+const noTransactionMarker = "dbinit:no-transaction"
+
+// requiresNoTransaction 报告 SQL 内容是否声明了逐文件事务豁免。
+func requiresNoTransaction(content []byte) bool {
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "--") {
+			continue
+		}
+		if strings.Contains(line, noTransactionMarker) {
+			return true
+		}
+	}
+	return false
+}
+
 // applySQL 应用单个 SQL 文件（通过 docker exec + stdin）
 func (r *Runner) applySQL(filename string) error {
 	sqlPath := filepath.Join(r.SQLDir, filename)
@@ -443,13 +474,18 @@ func (r *Runner) applySQL(filename string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "docker", "exec", "-i",
+	args := []string{
+		"exec", "-i",
 		r.CitusContainer, "psql",
 		"-U", r.DBUser,
 		"-d", r.DBName,
 		"-v", "ON_ERROR_STOP=1",
-		"--single-transaction",
-	)
+	}
+	// 除非文件显式声明豁免，否则整文件原子。
+	if !requiresNoTransaction(content) {
+		args = append(args, "--single-transaction")
+	}
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdin = bytes.NewReader(content)
 
 	out, err := cmd.CombinedOutput()

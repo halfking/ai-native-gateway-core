@@ -8,7 +8,7 @@
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-[Quick Start](#quick-start) • [Core Values](#-four-core-values) • [Session Governance](#-session-governance) • [Feature Preview](#-product-feature-preview) • [Comparison](#-differentiation--comparison) • [Architecture](docs/architecture.md) • [Roadmap](ROADMAP.md)
+[Quick Start](#quick-start) • [Core Values](#-four-core-values) • [Architecture](#-architecture-at-a-glance) • [Session Governance](#-session-governance) • [Feature Preview](#-product-feature-preview) • [Comparison](#-differentiation--comparison) • [Roadmap](ROADMAP.md)
 
 ---
 
@@ -61,7 +61,66 @@ Built with **Go + PostgreSQL + Redis**, running today in production on k3s (dual
 | **Credentials** | Multi-credential + fingerprint pool + adaptive probing + manual disable |
 | **Deployment** | Dual instances (Docker + k3s NodePort) sharing a single PostgreSQL schema |
 
-See [Architecture Documentation](docs/architecture.md) for details.
+See the [Architecture at a Glance](#-architecture-at-a-glance) section below, or the full [Architecture Diagram Collection](docs/architecture-diagrams.md) for details.
+
+---
+
+## 🏛️ Architecture at a Glance
+
+One Go process (`cmd/gateway`) hosts the **data plane, control plane, and admin UI on a single mux** (h2c: HTTP/1.1 + HTTP/2 on one port). PostgreSQL holds durable facts (RLS-isolated, monthly-partitioned); Redis holds hot state (routing, limits, sticky sessions). The same `storage` interfaces back both **full mode** (PG + Redis) and **lite mode** (SQLite + local files — zero external dependencies, single binary).
+
+```mermaid
+graph TB
+    AGENT["AI Agent / IDE / Apps"] -->|"OpenAI / Anthropic / Gemini/Responses · HTTP + SSE"| GW
+    ADMIN["Admin Browser"] -->|"/admin + /api/admin/*"| GW
+    subgraph GW["cmd/gateway — single Go process"]
+        DP["Data plane<br/>auth → protocol/IR → routing → dispatch → upstream relay"]
+        CP["Control plane<br/>Admin API + embedded Vue SPA"]
+        BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
+    end
+    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
+    DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
+    CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
+
+```
+
+**Request pipeline (v1 production path, sole execution route since 2026-08)**:
+
+```text
+HTTP/SSE → middleware chain → protocol/IR normalization → session assignment
+  → (model=auto: L1 model selection) → resource prep (semantic cache / prompt compression)
+  → Executor (attempt budget) → dispatch queues (global → model → credential)
+  → Router (tier / health / sticky filters + URSM v2 state + P2C scoring)
+  → resource gates (fingerprint slot / concurrency / RPM)
+  → upstream relay (0 internal retries; pre-first-byte failover only adds attempts)
+  → SSE write-back with integrity checks
+  → request_logs + usage ledger (canonical facts)
+  → onPersisted hooks: session V2 shadow write · session_dim upsert · ASM outbox
+```
+
+**Repository layout**
+
+| Path | Role |
+|------|------|
+| `cmd/gateway/` | Composition root — single-binary production entry (data + control plane) |
+| `domains/` | 67 DDD domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, security… |
+| `admin/` + `web/` | Admin REST API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
+| `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
+| `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
+| `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 764) |
+| `installer/` | Standalone cross-platform installer / upgrader module |
+| `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
+
+Scale snapshot (2026-10-01 code scan): **~4,500 Go files · 2,278 test files · 927 migration SQLs · 67 domain packages · 34 binaries** under `cmd/`.
+
+**Deeper reading**
+
+- [Architecture Diagram Collection](docs/architecture-diagrams.md) — full Mermaid set: context, containers, request chain, two-layer routing, storage, deployment, workers
+- [Evidence-graded Architecture](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — internal authority doc (CURRENT / SHADOW / PARALLEL grading, snapshot 2026-10-01)
+- [Session Lifecycle](docs/session-lifecycle.md) — session from first request to archival, fully diagrammed
+- [Runtime Request Flow](docs/03-design/01-architecture/architecture/runtime-request-flow.md) · [Routing & State](docs/03-design/01-architecture/architecture/routing-and-state.md)
 
 ---
 
@@ -75,6 +134,8 @@ Most gateways treat every request as an isolated event. AI Native Gateway treats
 - **Session Metadata Intelligence**: automatic work-type tagging (10 work types), project attribution, and title extraction turn raw traffic into searchable knowledge
 - **Identity Tunneling**: agent traffic is attributed via virtual IP/MAC/ClientID so multi-tenant isolation holds even when many agents share one egress
 - **4-Tier Data Lifecycle**: hot (0–7 d) / warm (7–30 d) / cold (30–90 d) / expired (>90 d) with archive preview — "here is exactly what will move" before you execute
+
+How a session actually flows through the gateway — three-layer model (Redis hot state / `request_logs` canonical facts / Sessions V2 shadow tables), ID assignment, per-turn sequence, sticky binding, compression, and archival — is fully diagrammed in [Session Lifecycle](docs/session-lifecycle.md).
 
 ---
 
@@ -359,13 +420,18 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 | Category | Document |
 |----------|----------|
 | Getting started | [docs/getting-started.md](docs/getting-started.md) — deploy in 10 minutes |
-| Architecture | [docs/architecture.md](docs/architecture.md) — system design and components |
+| Architecture diagrams | [docs/architecture-diagrams.md](docs/architecture-diagrams.md) — full Mermaid collection (context / containers / request chain / routing / storage / deployment) |
+| Session lifecycle | [docs/session-lifecycle.md](docs/session-lifecycle.md) — session processing lifecycle, fully diagrammed |
+| Architecture (evidence-graded) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — internal authority (CURRENT/SHADOW/PARALLEL grading) |
+| Architecture (overview) | [docs/architecture.md](docs/architecture.md) — system design and components |
+| Requirements | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 domains / NFR×13 |
+| Feature catalog | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — feature → code → API → admin-page map |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — data plane and admin API specs |
 | Environment | [docs/environment.md](docs/environment.md) — deployment environments and variables |
 | Quick reference | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) — common commands and troubleshooting |
 | Comparison | [docs/comparison.md](docs/comparison.md) — vs LiteLLM, OmniRoute, Portkey, Kong |
 | Project overview | [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — features and module map |
-| Docs index | [docs/archive/2026-09/INDEX.md](docs/archive/2026-09/INDEX.md) — full documentation navigation |
+| Docs index | [docs/README.md](docs/README.md) · [docs/archive/2026-09/INDEX.md](docs/archive/2026-09/INDEX.md) — full documentation navigation |
 | Dual-repo policy | [docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md) — codeup ⇄ GitHub workflow |
 | Security | [SECURITY.md](SECURITY.md) — vulnerability reporting + scanner usage |
 | Legal | [docs/02-resources/compliance/legal/disguise-compliance.md](docs/02-resources/compliance/legal/disguise-compliance.md) — request disguise compliance whitelist |
