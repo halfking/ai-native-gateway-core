@@ -14,8 +14,9 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-) // writeAggRowsErr 分类聚合 rows 迭代错误（rows.Err() 产物）：
+)
+
+// writeAggRowsErr 分类聚合 rows 迭代错误（rows.Err() 产物）：
 // 42P01 → 503 + analytics_view_missing（缺视图是可修复的环境态，与
 // writeAnalyticsQueryErr 同语义）；其余迭代中断（网络/服务端故障）→
 // writeInternalErr 500。err == nil（正常收敛）返回 false，handler 继续
@@ -34,30 +35,12 @@ func writeAggRowsErr(w http.ResponseWriter, op string, err error) bool {
 	return true
 }
 
-// aggRowsErrClassified 是 writeAggRowsErr 的无副作用变体，供需要自定义
-// 响应形状的调用方先分类再自行写出：返回 (category, handled)。
-// category: "ok" / "view_missing" / "internal"。
-func aggRowsErrClassified(err error) (string, *pgconn.PgError) {
-	if err == nil {
-		return "ok", nil
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
-		return "view_missing", pgErr
-	}
-	return "internal", nil
-}
-
 // warnRowSkip 给聚合循环内 rows.Scan 失败跳行留服务端痕迹（R35-N1）。
 // 「跳行容错」语义保留——单行坏数据不应毒化整页聚合——但必须有日志可查，
 // 否则 schema 演进引发的持续类型失配会让聚合数据静默缩水且无人知晓。
 func warnRowSkip(op string, err error) {
 	slog.Warn("admin aggregate row scan failed; row skipped", "op", op, "error", err)
 }
-
-// rowsIterErr 统一提取迭代终态错误：pgx.Rows 用 Err()。留给只有
-// pgx.Rows 句柄的场景，避免调用方直接依赖 pgx 包细节。
-func rowsIterErr(rows pgx.Rows) error { return rows.Err() }
 
 // writeLookupErr 是单实体查询（QueryRow+Scan）的分类三门（R35-N1）：
 // ErrNoRows → 404 notFoundMsg（真不存在，原语义）；42P01 → 503 +
