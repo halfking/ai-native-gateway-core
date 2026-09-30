@@ -14,9 +14,11 @@
 //  1. ✅ telemetry（request_logs_bodies_hot 三件套）：Client.persistRequestLog
 //     顶部（PG 往返与 degraded 早退之前）经 SetBodyMirror 注入闭包投递，
 //     PG 不可用时镜像仍写入；S4 停写门同键同门。
-//  2. ✅ session bodies 三件套（turn bodies 成功后 + final_full 行）：
+//  2. ✅ session bodies 三件套（turn+bodies 事务**提交成功**后 + final_full 行）：
 //     SessionWriterV2.SetBodyMirror（domains/session/v2），装配闭包由
-//     cmd/gateway storageRuntime.bodyMirrorFn() 注入两个消费方。
+//     cmd/gateway storageRuntime.bodyMirrorFn() 注入两个消费方。镜像在
+//     tx.Commit 之后投递（2026-09-30 审计 F-A：commit 失败回滚时 PG 无行，
+//     先投递即成孤儿镜像）。
 //  3. ✖ admin 查询详情路径**有意不接**镜像兜底读——方案 §3-H3.3 明确读路径
 //     不参与 L3 回源（避免文件缺失导致详情 404 的语义分裂），镜像只服务
 //     灾备人工取数 + 文件命中观察。

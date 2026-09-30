@@ -37,7 +37,7 @@ P5 指标分维度落地并顺带闭合了 hotzone_enabled 恒 false 的预存�
 
 | 项 | 验收要求 | 锚点 | 判定 |
 |---|---|---|---|
-| P4-1 | 接线点1=SessionBodiesWriter 三方法调用方 | WriteBodiesInTx 调用方(session_writer_v2.go:680 `w.mirrorTurnBodies(bodiesRec)`,写成功后)+ WriteFinalFullInTx 调用方(:717 `w.mirrorFinalFull(req)`,成功后);seam=BodyMirrorFunc/SetBodyMirror(:128/:133,与 SetMemoraWriter 同契约);request_id='final_full:<session>' 与 PG 行口径一致 | ✅ |
+| P4-1 | 接线点1=SessionBodiesWriter 三方法调用方 | WriteBodiesInTx/WriteFinalFullInTx 所在事务 **tx.Commit 成功后**投递(session_writer_v2.go:775 `w.mirrorTurnBodies(bodiesRec)` + :776-780 `finalFullWritten` 门控 `w.mirrorFinalFull(req)`;同日修订轮 R-A 从 INSERT 后挪至此,原 :680/:717 位置有孤儿镜像缺陷);seam=BodyMirrorFunc/SetBodyMirror(:128/:133,与 SetMemoraWriter 同契约);request_id='final_full:<session>' 与 PG 行口径一致 | ✅(修订后) |
 | P4-2 | 接线点2=telemetry request_logs_bodies_hot 落库处 | Client.SetBodyMirror(client.go:656,atomic.Value 照 SetRequestLogSink 款式);激发=persistRequestLog 顶部(:1126,**任何 PG 往返与 degraded 早退之前**),论证见 F1;换算与 upsertRequestLogBodies 同源(strPtrToJSON/jsonOrNull) | ✅(位置与方案字面不同,F1) |
 | P4-3 | fire-and-forget、失败仅计数不阻断 | 复用编码层 MirrorAsync+RecordMirrorWrite(request_mirror.go);v2 侧 mirrorTurnBodies/mirrorFinalFull 无错误通道;TestSessionWriterMirror_WriteFailsNoMirror 证明主链路失败零镜像(镜像只在成功后激发) | ✅ |
 | P4-4 | 读路径不参与 L3 回源 | admin 详情路径零改动;request_mirror.go 头注 ✖ 项显式记录「有意不接」(方案 §3-H3.3) | ✅ |
@@ -71,6 +71,18 @@ P5 指标分维度落地并顺带闭合了 hotzone_enabled 恒 false 的预存�
 | F5 | 挂账(第三落库点) | admin HTTP ingest(/api/telemetry,admin/telemetry.go:446-478)也调 upsertRequestLogBodies(仅 req/resp),未接镜像——方案 §3-H3 说「两处」,此为第三处;ingest 入口是否有真实流量需 owner 拍板后再接 | 留账待 owner 决策 |
 | F6 | 观察项 | gofmt:CJK 注释行首全角括号会被 gofmt 归一,首轮提交文件未逐个过 gofmt(P5 提交补正);turn_writer.go/turn_writer_test.go/empty_response_metrics_test.go 等历史文件本就未格式化,未碰 | 本轮触碰文件已全部 gofmt 干净 |
 
+## 三.5、同日修订轮(交付后批判式复审,实勘三点 + 修复两项)
+
+复审方法:对本轮总结中"声明过"的三个关键点逐一实勘,不接受声明本身。
+
+| # | 判定 | 实勘内容 | 结论与处置 |
+|---|---|---|---|
+| R-A | **缺陷,已修** | v2 镜像调用点在 `WriteBodiesInTx`/`WriteFinalFullInTx` INSERT 成功后,但 **tx.Commit(:762)之前**——commit 失败回滚时 PG 无 bodies 行而镜像已落盘 = 孤儿镜像,破坏「镜像与 PG 行共存亡」的对账承诺(F4 口径进一步破缺)。首轮测试只钉了「INSERT 失败零镜像」,恰好没覆盖 commit 失败这一段 | 镜像挪到 `committed = true` 之后(session_writer_v2.go:775-780,finalFullWritten 置位 :714);新增 TestSessionWriterMirror_CommitFailsNoMirror(全编排成功 + ExpectCommit().WillReturnError → 零镜像)钉死;request_mirror.go 头注同步「事务提交成功后」语义。**教训:首轮测试的失败注入只选了 INSERT 一段,"写入成功"与"事务提交成功"是两个语义,验收词句含糊时按更严者实施** |
+| R-B | **验收缺口,已补** | 纪律 4 要求「三件套**路径**断言」,首轮只断言了镜像调用参数(direction/tenant/requestID/payload),磁盘路径完全依赖编码层既有测试——接线层对"路径真的长这样"零覆盖 | 新增 TestSessionWriterMirror_DiskPathEndToEnd:真 RequestMirror 注入(装配闭包同款适配),Write 后 Close() 排空异步队列,断言 `requests/{tenant}/{date}/{requestID}.{req|resp|out}.json.gz` 三文件存在、gunzip 内容与 PG 行同源(含 "hi"/"hello")、目录恰三件(direction 集合闭合) |
+| R-C | **疑点排除** | 头号质疑:「full 模式 L1.5 有没有生产写路径?若只装不写,P3 读链空转」 | 排除:cache_v2.go Get 的 L3 回源回填(:275-287「l1_5 非空时回填」,mode-blind)与 Set(:315-320,mode-blind)均无 lite 守卫——full+fileCache 装配后 L3 miss 回源即回填 L1.5,cache/ 子树有真实写入方;Invalidate 同理 mode-blind |
+
+修订后 P4-1 验收锚点更新:镜像激发点 = tx.Commit 成功后(:775/:776-780),语义从「写入成功后」收紧为「事务提交成功后」。
+
 ## 四、回归证据(HEAD=205864527,干净 worktree /tmp/hotzone-p3p4)
 
 ```
@@ -91,7 +103,7 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
 
 ## 五、遗留风险与挂账
 
-1. **P5 文档子项未做**:docs/storage README「全量模式热区」章节、ADR-0019 Amendment、deployment-guide hotzone 配置矩阵(env/YAML/settings 三通道)——方案 §3-H5.2/3 原文,留待下轮。
+1. ~~P5 文档子项未做~~ **已由并行 R36 轮闭环(e968d73f3),本轮复核属实**:README「全量模式热区」章节(README.md:86-92)、deployment-guide hotzone 配置矩阵(:230-243,含「装配门只认 config 通道」语义,与本文档 D1 一致)、ADR-0019 Amendment(2026-09-30)。
 2. **E2E 部署级验证未做**:本轮验收全部单测级;full 热区首次真实流量前的部署演练(245/154 任一环境 LLM_GATEWAY_HOTZONE_ENABLED 显式开关对照、/metrics/storage 三新键实读、PG 故障演练)仍欠——方案 §6 第 2/3/6 条的部署级半边。
 3. F3 重复镜像写放大、F4 对账口径豁免、F5 admin ingest 第三落库点(见 §三)。
 4. full 热区 bodiesStore 实例已装配但**尚无写入方**(session bodies 镜像走的是 RequestMirror/requests 子树;FileBodiesStore 的消费方属后续波次)——目录生命周期已归 Shutdown/trimmer 管,先行装配。
@@ -99,7 +111,7 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
 
 ## 六、Handoff(下一轮入口)
 
-- P5 文档子项:README 增补 + ADR-0019 Amendment(热区层不改变工厂接口,仅运行时装配差异)+ deployment-guide 配置矩阵;顺带把 §三 F4 对账口径写进运维文档。
-- 部署演练:按 §五.2 清单在 245 执行一轮 full+热区开关对照。
+- 部署演练:按 §五.2 清单在 245 执行一轮 full+热区开关对照(单测已全绿,唯一欠的是部署级)。
 - F5 决策:admin ingest 是否接镜像,owner 拍板。
 - 若做「full 热区 session_bodies 写入方」(§五.4),复用 rt.bodiesStore 实例,勿再建第二实例(AsyncFileWriter 双实例会双倍写 worker)。
+- 对账脚本(若建):按 F4 口径豁免 null/{} 行,并注意 v2 侧镜像以 tx.Commit 为界(修订轮 R-A)、telemetry 侧以 persistRequestLog 入口为界(天然含 PG-down 投递)——两侧孤儿语义不同向,脚本按「镜像可能多于 PG」单向容错。
