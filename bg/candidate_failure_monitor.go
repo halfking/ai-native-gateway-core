@@ -125,7 +125,7 @@ func (m *CandidateFailureMonitor) Start(ctx context.Context) {
 	m.started = true
 	ctx, m.cancel = context.WithCancel(ctx)
 	m.stateMu.Unlock()
-	go m.run(ctx)
+	Go("candidate_failure_monitor.run", func() { m.run(ctx) })
 	slog.Info("candidate_failure_monitor started")
 }
 
@@ -444,7 +444,7 @@ func (m *CandidateFailureMonitor) fireAlert(a CandidateFailureAlert) {
 	if m.webhookURL == "" {
 		return
 	}
-	go m.postWebhook(a)
+	Go("candidate_failure_monitor.postWebhook", func() { m.postWebhook(a) })
 }
 
 func (m *CandidateFailureMonitor) postWebhook(a CandidateFailureAlert) {

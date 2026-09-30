@@ -52,7 +52,7 @@ func (c *CredentialCycler) SetKeyring(kr *secret.Keyring) {
 
 func (c *CredentialCycler) Start(ctx context.Context) {
 	ctx, c.cancel = context.WithCancel(ctx)
-	go c.run(ctx)
+	Go("credential_cycler.run", func() { c.run(ctx) })
 	slog.Info("credential cycler started", "interval", c.interval)
 }
 

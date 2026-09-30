@@ -95,8 +95,8 @@ func (l *AutoRouteRealtimeListener) Start(ctx context.Context) {
 	l.cancel = cancel
 	l.cancelMu.Unlock()
 	l.wg.Add(2)
-	go func() { defer l.wg.Done(); l.run(cctx) }()
-	go func() { defer l.wg.Done(); l.debounceLoop(cctx) }()
+	Go("auto_route_realtime_listener.run", func() { defer l.wg.Done(); l.run(cctx) })
+	Go("auto_route_realtime_listener.debounceLoop", func() { defer l.wg.Done(); l.debounceLoop(cctx) })
 	slog.Info("auto route realtime listener started", "channel", "auto_route_refresh", "debounce", l.debounceWindow.String())
 }
 

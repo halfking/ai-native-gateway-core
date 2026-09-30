@@ -77,7 +77,7 @@ func NewOpslogTrimmer(pool *pgxpool.Pool) *OpslogTrimmer {
 // Performs an initial trim on startup so a fresh deploy drains any
 // pre-existing backlog without waiting 24h.
 func (t *OpslogTrimmer) Start(ctx context.Context) {
-	go t.run(ctx)
+	Go("opslog_trimmer.run", func() { t.run(ctx) })
 	slog.Info("opslog trimmer started",
 		"cfl_retention", t.cflRetention.String(),
 		"cpm_retention", t.cpmRetention.String(),

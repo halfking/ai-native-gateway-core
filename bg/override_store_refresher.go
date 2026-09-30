@@ -54,7 +54,7 @@ func NewOverrideStoreRefresher(pool *pgxpool.Pool, store *autoroute.OverrideStor
 // Performs an initial Reload so a fresh deploy has data
 // immediately.
 func (r *OverrideStoreRefresher) Start(ctx context.Context) {
-	go r.run(ctx)
+	Go("override_store_refresher.run", func() { r.run(ctx) })
 	slog.Info("override store refresher started", "interval", r.tick.String())
 }
 

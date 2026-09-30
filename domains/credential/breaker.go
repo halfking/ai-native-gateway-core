@@ -177,12 +177,19 @@ var freeTierPolicies = map[ErrorKind]CoolingPolicy{
 // Breaker is a single circuit breaker instance, keyed by provider+credential.
 type Breaker struct {
 	key            string
+	providerID     int
+	credentialID   int
 	state          atomic.Int32
 	failCount      atomic.Int32
 	consecutive    atomic.Int32
 	halfOpenProbes atomic.Int32
 	freeTier       atomic.Bool // billing_mode='free': use freeTierPolicies cooling
 	coolingPolicy  CoolingPolicy
+
+	// onChange 是状态迁移观察者（Manager.SetObserver 装配，nil 安全）。
+	// 契约：必须非阻塞（原子计数 + buffered channel send 级别），因为它在
+	// b.mu 持有期间被同步调用。见 notify。
+	onChange func(StateChange)
 
 	mu             sync.Mutex
 	lastFailureAt  time.Time
@@ -206,8 +213,28 @@ func NewWithPolicy(providerID, credentialID int, defaultPolicy CoolingPolicy) *B
 	}
 	return &Breaker{
 		key:           fmt.Sprintf("%d/%d", providerID, credentialID),
+		providerID:    providerID,
+		credentialID:  credentialID,
 		coolingPolicy: defaultPolicy,
 	}
+}
+
+// notify 上报一次状态迁移。在 b.mu 持有期间同步调用，因此 onChange 必须
+// 非阻塞（这是接线的契约，见 StateChange 与 DBStateSync.Observe）。
+// onChange == nil 时为零开销直返——未装配观察者的独立 Breaker（测试、
+// 库消费方）保持原行为。
+func (b *Breaker) notify(from, to State, kind ErrorKind, coolingUntil time.Time) {
+	if b.onChange == nil {
+		return
+	}
+	b.onChange(StateChange{
+		ProviderID:   b.providerID,
+		CredentialID: b.credentialID,
+		From:         from,
+		To:           to,
+		Kind:         kind,
+		CoolingUntil: coolingUntil,
+	})
 }
 
 // Key returns the breaker's identifier.
@@ -339,6 +366,7 @@ func (b *Breaker) tryTransitionToHalfOpen() bool {
 			"cooling_duration_ms", coolingDuration.Milliseconds(),
 			"cooling_cycle", b.coolingCycle,
 		)
+		b.notify(previous, StateHalfOpen, b.lastErrorKind, time.Time{})
 		return true
 	}
 	return false
@@ -536,6 +564,17 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 			"cycle", b.coolingCycle,
 		)
 	}
+
+	// 三十七轮审计 §三#4 (2026-09-30): 迁移观察者上报。除 from≠to 的真实迁移
+	// 外，OPEN/QUARANTINED 的原地重入（已开路再吃满阈值失败会顺延冷却窗口）
+	// 也要上报，否则 DB 侧 cooling_until 会停在第一次开路的过期时间。
+	if final := b.State(); final != previous || final == StateOpen || final == StateQuarantined {
+		cooling := time.Time{}
+		if final == StateOpen {
+			cooling = b.coolingExpires
+		}
+		b.notify(previous, final, kind, cooling)
+	}
 }
 
 func failureConfirmationThreshold(policy CoolingPolicy) int32 {
@@ -588,6 +627,7 @@ func (b *Breaker) RecordSuccess() {
 			"error_kind", b.lastErrorKind,
 			"cooling_duration_ms", int64(0),
 		)
+		b.notify(prev, StateClosed, b.lastErrorKind, time.Time{})
 	}
 }
 
@@ -611,6 +651,9 @@ func (b *Breaker) Reset() {
 		"error_kind", lastErrorKind,
 		"cooling_duration_ms", int64(0),
 	)
+	if previous != StateClosed {
+		b.notify(previous, StateClosed, lastErrorKind, time.Time{})
+	}
 }
 
 // Stats returns diagnostic information about the breaker.
@@ -647,11 +690,26 @@ func (b *Breaker) Stats() map[string]any {
 type Manager struct {
 	mu       sync.RWMutex
 	breakers map[string]*Breaker
+	onChange func(StateChange)
 }
 
 // NewManager creates a new circuit breaker manager.
 func NewManager() *Manager {
 	return &Manager{breakers: make(map[string]*Breaker)}
+}
+
+// SetObserver 装配状态迁移观察者（三十七轮审计 §三#4）：观察者会收到每个
+// breaker 的真实状态迁移（含 OPEN 原地顺延冷却的重入），由它决定推给
+// Prometheus 计数器、DB 列同步等消费面。必须非阻塞（见 Breaker.notify 的
+// 契约）。在启动期、任何请求流量之前调用一次即可；对已存在的 breaker
+// 会回填装配。传 nil 撤销观察。
+func (m *Manager) SetObserver(fn func(StateChange)) {
+	m.mu.Lock()
+	m.onChange = fn
+	for _, b := range m.breakers {
+		b.onChange = fn
+	}
+	m.mu.Unlock()
 }
 
 // GetOrCreate returns the breaker for the given provider/credential.
@@ -672,6 +730,7 @@ func (m *Manager) GetOrCreate(providerID, credentialID int) *Breaker {
 		return b
 	}
 	b = New(providerID, credentialID)
+	b.onChange = m.onChange
 	m.breakers[key] = b
 	return b
 }

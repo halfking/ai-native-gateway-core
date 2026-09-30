@@ -56,7 +56,7 @@ func NewHandoffTrimmer(pool *pgxpool.Pool) *HandoffTrimmer {
 // Performs an initial trim on startup so a fresh deploy drains any
 // pre-existing backlog without waiting 24h.
 func (t *HandoffTrimmer) Start(ctx context.Context) {
-	go t.run(ctx)
+	Go("handoff_trimmer.run", func() { t.run(ctx) })
 	slog.Info("handoff trimmer started",
 		"retention", t.retention.String(),
 		"interval", t.tick.String())

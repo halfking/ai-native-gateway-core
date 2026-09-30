@@ -149,9 +149,9 @@ func (r *ModelProbeRunner) persistResponsesCapability(ctx context.Context, targe
 
 func (r *ModelProbeRunner) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
-	go r.run(ctx)
+	Go("model_probe.run", func() { r.run(ctx) })
 	// Layer 4: featured model deep ping every 30 minutes (v5, 2026-06-20)
-	go r.featuredCycleLoop(ctx)
+	SpawnLoop(ctx, "model_probe.featuredCycleLoop", r.featuredCycleLoop)
 	// Layer 5: manual probe worker (2026-08-14)
 	r.startManualProbeWorker(ctx)
 	slog.Info("model probe runner v2 (consensus+backoff) started",
@@ -181,10 +181,10 @@ func (r *ModelProbeRunner) Start(ctx context.Context) {
 func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 	fctx, cancel := context.WithCancel(ctx)
 	r.featuredCancel.Store(&cancel)
-	go func() {
+	Go("model_probe.featuredCycleOnly", func() {
 		defer r.closeOnce.Do(func() { close(r.done) })
 		r.featuredCycleLoop(fctx)
-	}()
+	})
 	// Audit fix #2: in new mode the consensus cycle is OFF, so the
 	// nonfeatured watchdog multiplier (applyResult) never runs. Add a
 	// lightweight watchdog loop that only EXTENDS next_retry_at for healthy
@@ -530,7 +530,7 @@ func (r *ModelProbeRunner) demoteAgedHealthyBindings(ctx context.Context) {
 
 func (r *ModelProbeRunner) startManualProbeWorker(ctx context.Context) {
 	r.manualProbeWorkerOnce.Do(func() {
-		go r.manualProbeWorker(ctx)
+		SpawnLoop(ctx, "model_probe.manualProbeWorker", r.manualProbeWorker)
 	})
 }
 
@@ -557,7 +557,7 @@ func (r *ModelProbeRunner) manualProbeWorker(ctx context.Context) {
 		select {
 		case task := <-r.manualProbeQueue:
 			r.manualProbeWG.Add(1)
-			go func(t manualProbeTask) {
+			GoArg("model_probe.manualTask", task, func(t manualProbeTask) {
 				defer r.manualProbeWG.Done()
 				probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 				defer cancel()
@@ -567,7 +567,7 @@ func (r *ModelProbeRunner) manualProbeWorker(ctx context.Context) {
 						"model", t.RawModel,
 						"error", err)
 				}
-			}(task)
+			})
 		case <-ctx.Done():
 			slog.Info("manual probe worker shutting down, waiting for in-flight probes")
 			r.manualProbeWG.Wait()

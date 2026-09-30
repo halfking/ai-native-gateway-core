@@ -48,7 +48,7 @@ func (w *ApprovalTimeoutWorker) WithActionResolver(fn func() sessionaudit.Timeou
 // Start 启动后台 goroutine。Stop 之前不能重复 Start。
 func (w *ApprovalTimeoutWorker) Start(ctx context.Context) {
 	ctx, w.cancel = context.WithCancel(ctx)
-	go w.run(ctx)
+	Go("approval_timeout_worker.run", func() { w.run(ctx) })
 	slog.Info("approval timeout worker started", "interval", "60s")
 }
 

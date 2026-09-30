@@ -98,14 +98,17 @@ func TestDeescalateGatewaySideProbeStateWiring(t *testing.T) {
 	if !strings.Contains(reset, "wasTripped := w.decryptFailures.Load() >= decryptTripThreshold") {
 		t.Errorf("resetDecryptFailures must detect a previously-tripped circuit")
 	}
-	if !strings.Contains(reset, "go w.deescalateGatewaySideProbeState(context.Background())") {
+	// 2026-09-30 (三十七轮续 §三#5): 裸 `go` 语句统一迁入 bg.Go panic 收口包装，
+	// spawn 字面量随之从 `go w.deescalate...` 变为 Go(...) 包装形态；钉测守卫力
+	// 不变——两处 sweep 调用任一被删除仍会红。
+	if !strings.Contains(reset, `Go("node_probe.deescalate", func() { w.deescalateGatewaySideProbeState(context.Background()) })`) {
 		t.Errorf("a closed-after-tripped circuit must trigger the de-escalation sweep")
 	}
 
 	start := sourceBetween(t, src,
 		"func (w *NodeProbeWorker) Start(ctx context.Context)",
 		"// resolveProbeAPIKey preserves")
-	if !strings.Contains(start, "go w.deescalateGatewaySideProbeState(ctx)") {
+	if !strings.Contains(start, `Go("node_probe.deescalate", func() { w.deescalateGatewaySideProbeState(ctx) })`) {
 		t.Errorf("Start must run the startup de-escalation sweep")
 	}
 

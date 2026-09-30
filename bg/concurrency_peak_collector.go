@@ -77,7 +77,7 @@ func (c *ConcurrencyPeakCollector) Start(ctx context.Context) {
 	}
 	cctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
-	go c.run(cctx)
+	Go("concurrency_peak_collector.run", func() { c.run(cctx) })
 	slog.Info("concurrency peak collector started",
 		"sample_interval", "30s",
 		"flush_interval", "60s",

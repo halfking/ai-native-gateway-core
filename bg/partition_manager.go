@@ -184,9 +184,9 @@ func (pm *PartitionManager) Start(ctx context.Context) {
 	ctx, pm.cancel = context.WithCancel(ctx)
 	pm.mu.Unlock()
 
-	go pm.run(ctx)
-	go pm.runPromote(ctx)
-	go pm.runCleanup(ctx)
+	Go("partition_manager.run", func() { pm.run(ctx) })
+	Go("partition_manager.runPromote", func() { pm.runPromote(ctx) })
+	Go("partition_manager.runCleanup", func() { pm.runCleanup(ctx) })
 	if pm.errorAggregator != nil {
 		pm.errorAggregator.Start(ctx)
 	}

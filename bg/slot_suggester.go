@@ -28,7 +28,7 @@ func NewSlotSuggester(db *pgxpool.Pool) *SlotSuggester {
 func (s *SlotSuggester) Start(ctx context.Context) {
 	cctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
-	go s.run(cctx)
+	Go("slot_suggester.run", func() { s.run(cctx) })
 	slog.Info("slot suggester started", "schedule", "02:00 UTC daily")
 }
 

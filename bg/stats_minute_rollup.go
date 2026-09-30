@@ -43,7 +43,7 @@ func (w *StatsMinuteRollup) Start(ctx context.Context) {
 	}
 	cctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
-	go w.run(cctx)
+	Go("stats_minute_rollup.run", func() { w.run(cctx) })
 	slog.Info("stats minute rollup started", "interval", statsRollupInterval.String())
 }
 

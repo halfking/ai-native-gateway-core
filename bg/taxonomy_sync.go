@@ -53,7 +53,7 @@ func NewTaxonomySync(db *pgxpool.Pool, yamlPath string) *TaxonomySync {
 
 func (t *TaxonomySync) Start(ctx context.Context) {
 	ctx, t.cancel = context.WithCancel(ctx)
-	go t.run(ctx)
+	Go("taxonomy_sync.run", func() { t.run(ctx) })
 	slog.Info("taxonomy sync started", "interval", t.interval, "path", t.yamlPath)
 }
 

@@ -29,7 +29,7 @@ func NewDefaultProbePicker(db *pgxpool.Pool) *DefaultProbePicker {
 
 func (p *DefaultProbePicker) Start(ctx context.Context) {
 	ctx, p.cancel = context.WithCancel(ctx)
-	go p.run(ctx)
+	Go("default_probe_picker.run", func() { p.run(ctx) })
 	slog.Info("default probe picker started", "interval", p.interval)
 }
 

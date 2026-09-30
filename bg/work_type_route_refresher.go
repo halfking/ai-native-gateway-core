@@ -53,7 +53,7 @@ func (r *WorkTypeRouteStoreRefresher) Start(ctx context.Context) {
 	r.started = true
 	r.lifecycleMu.Unlock()
 
-	go r.run(runCtx)
+	Go("work_type_route_refresher.run", func() { r.run(runCtx) })
 	slog.Info("work type route store refresher started", "interval", r.tick.String())
 }
 

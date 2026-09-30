@@ -81,7 +81,7 @@ func (w *AvailabilityCacheBackfill) Start(ctx context.Context) {
 		return
 	}
 	ctx, w.cancel = context.WithCancel(ctx)
-	go w.run(ctx)
+	Go("model_availability_backfill.run", func() { w.run(ctx) })
 	slog.Info("availability cache backfill started",
 		"interval", w.interval,
 		"batch_size", w.batchSize,

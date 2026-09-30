@@ -75,7 +75,7 @@ func (m *ModelTier) Start(ctx context.Context) {
 	primeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	m.refresh(primeCtx)
 	cancel()
-	go m.loop(ctx)
+	SpawnLoop(ctx, "model_tier.loop", m.loop)
 }
 
 func (m *ModelTier) loop(ctx context.Context) {

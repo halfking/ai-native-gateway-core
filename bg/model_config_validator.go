@@ -33,7 +33,7 @@ func (v *ModelConfigValidator) Start(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	v.cancel = cancel
 
-	go func() {
+	Go("model_config_validator.loop", func() {
 		defer close(v.done)
 
 		// Run immediately on startup
@@ -50,7 +50,7 @@ func (v *ModelConfigValidator) Start(ctx context.Context) {
 				v.runOnce(ctx)
 			}
 		}
-	}()
+	})
 
 	slog.Info("model_config_validator started", "interval", "30m")
 }

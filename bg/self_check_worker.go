@@ -130,7 +130,7 @@ func (w *SelfCheckWorker) Start(parent context.Context) {
 		w.lifecycleMu.Unlock()
 
 		slog.Info("self_check_worker started")
-		go func() {
+		Go("self_check_worker.runOnceLoop", func() {
 			defer w.wg.Done()
 			w.runOnce(ctx)
 
@@ -193,7 +193,7 @@ func (w *SelfCheckWorker) Start(parent context.Context) {
 					w.runOnce(ctx)
 				}
 			}
-		}()
+		})
 	})
 }
 
@@ -338,12 +338,12 @@ func (w *SelfCheckWorker) runModels(ctx context.Context, models []string, maxTok
 	var wg sync.WaitGroup
 	for _, model := range models {
 		wg.Add(1)
-		go func(m string) {
+		GoArg("self_check_worker.runModel", model, func(m string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			w.runModel(ctx, m, maxTokens)
-		}(model)
+		})
 	}
 	wg.Wait()
 }

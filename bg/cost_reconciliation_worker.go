@@ -43,7 +43,7 @@ func NewCostReconciliationWorkerFromReconciler(reconciler *providerprofile.CostR
 func (w *CostReconciliationWorker) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	w.cancel = cancel
-	go w.run(ctx)
+	Go("cost_reconciliation_worker.run", func() { w.run(ctx) })
 	slog.Info("provider cost reconciliation worker started", "interval", w.interval)
 }
 

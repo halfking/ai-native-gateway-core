@@ -265,6 +265,19 @@ var (
 		},
 		[]string{"worker"},
 	)
+
+	// metricGoroutinePanics (三十七轮审计 §三#5, 2026-09-30) — panics contained
+	// by bg.Go/GoArg (one-shot or handshake-bearing goroutines that must not
+	// restart). Label "name" is the compile-time literal spawn name. A rate > 0
+	// means the contained goroutine died and its function is degraded until
+	// process restart — alert, then fix the panic cause.
+	metricGoroutinePanics = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_bg_goroutine_panics_total",
+			Help: "Panics contained by bg.Go/GoArg (no restart; goroutine is dead until process restart).",
+		},
+		[]string{"name"},
+	)
 )
 
 // recordPromoteFailure increments the failure counter for a table.

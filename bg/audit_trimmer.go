@@ -56,7 +56,7 @@ func NewAuditTrimmer(pool *pgxpool.Pool) *AuditTrimmer {
 // Performs an initial trim on startup so a fresh deploy doesn't
 // wait 24h for the first cleanup.
 func (t *AuditTrimmer) Start(ctx context.Context) {
-	go t.run(ctx)
+	Go("audit_trimmer.run", func() { t.run(ctx) })
 	slog.Info("audit trimmer started",
 		"retention", t.retention.String(),
 		"interval", t.tick.String())

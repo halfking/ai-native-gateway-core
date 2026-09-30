@@ -155,7 +155,7 @@ func (r *MaterializedViewRefresher) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 
-	go r.refreshLoop(ctx)
+	Go("materialized_view_refresher.refreshLoop", func() { r.refreshLoop(ctx) })
 	slog.Info("materialized_view_refresher started",
 		"interval", RefreshInterval.String(),
 		"timeout", RefreshTimeout.String())

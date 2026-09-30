@@ -2039,6 +2039,20 @@ func main() {
 			contextLimitUpdateQueue = executors.NewContextLimitUpdateQueue(routingExec.ContextLimitUpdater, 64)
 			routingExec.ContextLimitUpdateQueue = contextLimitUpdateQueue
 		}
+		// 三十七轮审计 §三#4 (2026-09-30): 熔断器迁移接通三个消费面。此前
+		// credentials.circuit_state 只有 RestoreOnSuccess 一个 'closed' 写入方
+		// （生产恒 'closed'）、RecordCircuitStateChange 零调用、routing 健康检
+		// 查的 circuit_open 永假。DB 面经 128 容量异步队列顺序落库（热路径零
+		// 阻塞），metrics 面直连全局 recorder 的 transitions 计数器。
+		if dbConn != nil && dbConn.Enabled() {
+			circuitSync := credential.NewDBStateSync(dbConn.Pool(), 128)
+			bg.Go("circuit_state_sync.run", func() { circuitSync.Run(context.Background()) })
+			cm.SetObserver(func(sc credential.StateChange) {
+				metrics.Global().RecordCircuitStateChange(sc.From.String(), sc.To.String())
+				circuitSync.Observe(sc)
+			})
+			slog.Info("circuit state sync enabled (breaker → credentials.circuit_state + transitions counter)")
+		}
 		routingExec.FpSlots = fpSlots
 
 		// Health tracking (2026-06-22): sliding window recorder + concurrency tuner + continuous failure checker

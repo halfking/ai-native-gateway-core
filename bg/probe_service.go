@@ -668,7 +668,7 @@ func (s *ProbeService) startLeaseHeartbeat(parent context.Context, task ProbeQue
 	if extend == nil {
 		extend = s.queue.ExtendLease
 	}
-	go func() {
+	SpawnLoop(hbCtx, "probe_service.heartbeat", func(context.Context) {
 		ticker := time.NewTicker(ProbeQueueHeartbeatInterval)
 		defer ticker.Stop()
 		for {
@@ -698,7 +698,7 @@ func (s *ProbeService) startLeaseHeartbeat(parent context.Context, task ProbeQue
 				heartbeatExtendedTotal.WithLabelValues("probe_service").Inc()
 			}
 		}
-	}()
+	})
 	return hbCtx, cancel
 }
 

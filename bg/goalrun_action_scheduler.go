@@ -213,14 +213,14 @@ func (s *GoalRunActionScheduler) Start(ctx context.Context) {
 	// 启动 worker pool：每个 worker 处理一个 action；concurrency = cfg.Concurrency
 	for i := 0; i < s.cfg.Concurrency; i++ {
 		s.wg.Add(1)
-		go s.workerLoop(ctx, i)
+		GoArg("goalrun.workerLoop", i, func(i int) { s.workerLoop(ctx, i) })
 	}
 
 	// 启动 scanner + reaper
 	s.wg.Add(1)
-	go s.scannerLoop(ctx)
+	Go("goalrun.scannerLoop", func() { s.scannerLoop(ctx) })
 	s.wg.Add(1)
-	go s.reaperLoop(ctx)
+	Go("goalrun.reaperLoop", func() { s.reaperLoop(ctx) })
 
 	slog.Info("goalrun action scheduler started",
 		"owner", s.owner,
@@ -405,10 +405,10 @@ func (s *GoalRunActionScheduler) processAction(ctx context.Context, a *goalrun.G
 	renewCtx, cancelRenew := context.WithCancel(ctx)
 	renewDone := make(chan struct{})
 	s.wg.Add(1)
-	go func() {
+	Go("goalrun.renewLoop", func() {
 		defer close(renewDone)
 		s.renewLoop(renewCtx, a)
-	}()
+	})
 
 	defer cancelRenew()
 

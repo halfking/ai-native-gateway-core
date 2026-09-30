@@ -161,7 +161,7 @@ func (w *SessionLifecycleWorker) Start(ctx context.Context) {
 		return
 	}
 	ctx, w.cancel = context.WithCancel(ctx)
-	go w.run(ctx)
+	Go("session_lifecycle_worker.run", func() { w.run(ctx) })
 	slog.Info("session lifecycle worker started",
 		"cleanup_interval", w.cleanupInterval,
 		"idle_timeout", w.idleTimeout,
