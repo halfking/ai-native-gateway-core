@@ -255,8 +255,8 @@ func (h *Handler) queryModelBreakdown(ctx context.Context, q queryer, r *http.Re
 
 	query := `
 		WITH model_agg AS (
-			SELECT 
-				rl.outbound_model AS model,
+			SELECT
+				COALESCE(NULLIF(TRIM(rl.outbound_model), ''), '<unknown>') AS model,
 				COUNT(*) AS request_count,
 				COUNT(DISTINCT rl.gw_session_id) AS session_count,
 				COALESCE(SUM(rl.cost_usd), 0) AS total_cost_usd,
@@ -304,8 +304,8 @@ func (h *Handler) queryProviderBreakdown(ctx context.Context, q queryer, r *http
 
 	query := `
 		WITH provider_agg AS (
-			SELECT 
-				rl.provider_id AS provider,
+			SELECT
+				COALESCE(rl.provider_id::text, 'unknown') AS provider,
 				COUNT(*) AS request_count,
 				COUNT(DISTINCT rl.gw_session_id) AS session_count,
 				COALESCE(SUM(rl.cost_usd), 0) AS total_cost_usd,
