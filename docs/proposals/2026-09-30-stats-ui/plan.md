@@ -1,6 +1,6 @@
 # 统计 UI 优化方案 —— 对账结算 / 租户统计 / 用户列表+详情
 
-> 2026-09-30 方案轮 · **待确认后实施** · 本目录（docs/proposals/2026-09-30-stats-ui/）为交付物
+> 2026-09-30 方案轮 · **方案 A（P1）已落地，方案 B/C 未做** · 本目录（docs/proposals/2026-09-30-stats-ui/）为交付物
 >
 > 效果图：[index.html](index.html) 目录 ｜ [A 对账结算](reconciliation.html) ｜ [B 租户统计](tenant-stats.html) ｜ [C 用户+详情](users.html)
 > 本地预览：`cd docs/proposals/2026-09-30-stats-ui && python3 -m http.server 18792` → http://127.0.0.1:18792
@@ -79,6 +79,21 @@
 - 「按 Token/按金额」切换：纯前端切换排序与占比条基准（参考图同款交互）。
 - 下钻：点击供应商行 → 设置工具栏筛选 + 重查（URL query 同步 `provider_id`，支持浏览器回退）。
 - 测试：`ReconciliationReport.test.ts` 扩展（视角切换、指标切换、筛选参数拼装、快照缺失态）；`pnpm element:check`/`color:check` 必过。
+
+### 3.3 2026-09-30 落地记录（审计后）
+
+P1 已写进前端，未改后端。与本节原稿的偏差以代码和测试为准：
+
+- 趋势图走 `ReconciliationCharts.vue` + `useChart`（chart.js），没有扩展 `TrendLineChart.vue`。页面测试把图表组件桩掉；`ReconciliationCharts.seriesdata.test.ts` 挂载组件并断言 chart.js 构造参数里的序列，jsdom 不画 canvas。
+- 占比条分母是区间 `report.totals`（文案「占所选范围总额」）。效果图脚本里的 max 归一化没有采用。
+- 下钻用 `router.push` 写 `view` / `provider_id` / `model` / `tenant_id` / `person`。日期快捷区间不进 URL，浏览器后退不会恢复日期窗口。
+- `snapshot_dates: []` 时趋势不画点。`undefined` 仍保留全部天数（旧 `pickCoveredDays` 语义未改）。
+- 耗时卡的值是 `latency_p50_ms`，文案是 P50；副文案只写 P95。`ReportTotals` 没有均值字段。
+- 导出固定 summary，分组随供应商/租户视角。旧页的 6 维主表、列选择器和 summary/daily 切换不再作为主交互。凭证 / 租户 / 人员 / api_key 仍在「更多筛选」。
+- 非平台运营视角不显示 USD，第三张卡改为缓存命中。页面测试没有登录成平台运营，USD 卡只在 `providerDist(..., showCost: true)` 单测里覆盖。
+- 慢响应用 `fetchGen` 丢弃。按天明细默认不挂载表，展开后才出现。
+- `element:check` 通过。`color:check --strict` 仍被无关页面（AutoTuning / TaskProfile 等）打红，对账文件不在这份违例里，没有改颜色基线。`vue-tsc` 全量仍失败在既有 `useLiveStreamUrl.test.ts` / `useSessionSummaryJump.test.ts`，对账路径无报错。
+- 未做浏览器实测。本地 8782 提供的是已构建旧 UI。P2 / P3 与 8782 部署未做。§8 的 1–3 仍未确认。
 
 ---
 
@@ -178,10 +193,10 @@ type TenantDailyStat struct {
 
 | 期 | 内容 | 预估 |
 |----|------|------|
-| P1 | 对账页改版（纯前端 + 测试 + i18n） | 0.5～1 天 |
-| P2 | 租户统计（后端 daily + 前端两 tab + 测试） | 0.5～1 天 |
-| P3 | 用户统计（后端 2 端点 + 前端列表/抽屉 + 测试） | 1～1.5 天 |
-| 收尾 | 三页联测（明暗双主题截图）→ 8782 部署实测 → 提交推送 | 0.5 天 |
+| P1 | 对账页改版（纯前端 + 测试 + i18n） | 已落地，见 §3.3。未做浏览器 / 8782 部署 |
+| P2 | 租户统计（后端 daily + 前端两 tab + 测试） | 未做 |
+| P3 | 用户统计（后端 2 端点 + 前端列表/抽屉 + 测试） | 未做 |
+| 收尾 | 三页联测（明暗双主题截图）→ 8782 部署实测 | 未做 |
 
 部署链（既有约定）：go-3 提交推送 → 兄弟仓 llm-gateway-go ff 拉取 → `deploy-local.sh`（P2/P3 含后端变更必须走此链，禁直接跑二进制）。
 
@@ -194,6 +209,8 @@ type TenantDailyStat struct {
 5. 视觉模型当日限流，参考图为 OCR 还原——效果图与原图如有出入，确认时指出即改。
 
 ## 8. 待确认决策点
+
+P1 已按「供应商对帐与结算」任务实施，下面 1–3 仍只约束未做的 B/C，没有产品确认记录。
 
 1. 效果图整体方向与密度是否符合预期？（尤其对账页 KPI 从 3 卡扩到 6 卡、按天明细默认折叠）
 2. 用户详情用**抽屉**（当前效果图）还是独立详情页路由（`/users/:id`）？推荐抽屉（浏览快、免新建路由层级），需要分享深链可加 `?user=<id>` query 支持。

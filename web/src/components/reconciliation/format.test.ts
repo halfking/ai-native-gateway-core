@@ -30,7 +30,7 @@ describe('reconciliation format', () => {
 describe('distribution rows', () => {
   const report = {
     view: 'provider',
-    totals: { request_count: 30 },
+    totals: { request_count: 30, total_tokens: 100, estimated_cost_cents: 600, credits_charged: 51 },
     providers: [
       { provider_id: 1, provider_name: 'alpha', quality_score: 80, totals: { request_count: 20, total_tokens: 10, estimated_cost_cents: 500, credits_charged: 1, error_rate: 0.01 } },
       { provider_id: 2, provider_name: 'beta', quality_score: 90, totals: { request_count: 10, total_tokens: 90, estimated_cost_cents: 100, credits_charged: 50, error_rate: 0.2 } },
@@ -41,9 +41,13 @@ describe('distribution rows', () => {
     ],
   } as unknown as RangeReport
 
-  it('sorts providers by the selected metric', () => {
-    expect(providerDist(report, 'token', true, 'unassigned').map((row) => row.name)).toEqual(['beta', 'alpha'])
-    expect(providerDist(report, 'money', true, 'unassigned').map((row) => row.name)).toEqual(['alpha', 'beta'])
+  it('sorts providers by the selected metric and sizes the bar by share of the range total', () => {
+    const byToken = providerDist(report, 'token', true, 'unassigned')
+    const byMoney = providerDist(report, 'money', true, 'unassigned')
+    expect(byToken.map((row) => row.name)).toEqual(['beta', 'alpha'])
+    expect(byMoney.map((row) => row.name)).toEqual(['alpha', 'beta'])
+    expect(byToken.find((row) => row.name === 'beta')?.pct).toBeCloseTo(90)
+    expect(byMoney.find((row) => row.name === 'alpha')?.pct).toBeCloseTo((500 / 600) * 100)
   })
 
   it('drops models that do not carry the selected failure reason', () => {

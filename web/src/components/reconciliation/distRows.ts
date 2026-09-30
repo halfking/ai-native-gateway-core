@@ -26,6 +26,17 @@ function requestShare(count: number, total: number): string {
   return fmtPct(count / total)
 }
 
+/** Bar width is the row's share of the range total, matching the on-page hint. */
+function rangeTotal(report: RangeReport, metric: Metric, moneyCents: boolean): number {
+  if (metric === 'token') return report.totals?.total_tokens ?? 0
+  return moneyCents ? (report.totals?.estimated_cost_cents ?? 0) : (report.totals?.credits_charged ?? 0)
+}
+
+function barPct(value: number, total: number): number {
+  if (!(total > 0)) return 0
+  return (value / total) * 100
+}
+
 function moneyText(totals: ReportTotals, showCost: boolean): string {
   return showCost ? fmtUsd(totals.estimated_cost_cents) : fmtInt(totals.credits_charged)
 }
@@ -43,11 +54,11 @@ export function providerDist(
     return bv - av
   })
   const vals = src.map((row) => metricValue(row.totals, metric, showCost))
-  const max = Math.max(0, ...vals)
+  const total = rangeTotal(report, metric, showCost)
   return src.map((row, index) => ({
     key: String(row.provider_id),
     name: row.provider_id === UNASSIGNED_ID ? unassigned : (row.provider_name || String(row.provider_id)),
-    pct: max > 0 ? (vals[index] / max) * 100 : 0,
+    pct: barPct(vals[index], total),
     tone: TONES[index % TONES.length],
     cells: [
       { text: fmtInt(row.totals.request_count), sub: requestShare(row.totals.request_count, totalReq) },
@@ -66,12 +77,13 @@ export function tenantDist(report: RangeReport, metric: Metric): DistRow[] {
     const bv = metric === 'token' ? b.totals.total_tokens : b.totals.credits_charged
     return (bv ?? 0) - (av ?? 0)
   })
-  const vals = src.map((row) => (metric === 'token' ? row.totals.total_tokens : row.totals.credits_charged) ?? 0)
-  const max = Math.max(0, ...vals)
+  const moneyCents = false
+  const vals = src.map((row) => metricValue(row.totals, metric, moneyCents))
+  const total = rangeTotal(report, metric, moneyCents)
   return src.map((row, index) => ({
     key: row.tenant_id,
     name: row.tenant_id || '—',
-    pct: max > 0 ? (vals[index] / max) * 100 : 0,
+    pct: barPct(vals[index], total),
     tone: TONES[index % TONES.length],
     cells: [
       { text: fmtInt(row.totals.request_count), sub: requestShare(row.totals.request_count, totalReq) },
@@ -89,22 +101,23 @@ export function modelDist(
   showCost: boolean,
   reason: string | null,
 ): DistRow[] {
+  const moneyCents = showCost && report.view !== 'internal'
   let src = [...(report.model_totals ?? report.models ?? [])]
   if (reason) src = src.filter((row) => (row.error_breakdown?.[reason] ?? 0) > 0)
-  src.sort((a, b) => metricValue(b.totals, metric, showCost) - metricValue(a.totals, metric, showCost))
-  const vals = src.map((row) => metricValue(row.totals, metric, showCost))
-  const max = Math.max(0, ...vals)
+  src.sort((a, b) => metricValue(b.totals, metric, moneyCents) - metricValue(a.totals, metric, moneyCents))
+  const vals = src.map((row) => metricValue(row.totals, metric, moneyCents))
+  const total = rangeTotal(report, metric, moneyCents)
   return src.map((row, index) => ({
     key: row.raw_model_name,
     name: row.raw_model_name || '—',
     sub: row.provider_name,
-    pct: max > 0 ? (vals[index] / max) * 100 : 0,
+    pct: barPct(vals[index], total),
     tone: TONES[index % TONES.length],
     reasons: topReasons(row.error_breakdown, 6),
     cells: [
       { text: fmtInt(row.totals.request_count) },
       { text: fmtCompact(row.totals.total_tokens) },
-      { text: showCost && report.view !== 'internal' ? moneyText(row.totals, true) : fmtInt(row.totals.credits_charged) },
+      { text: moneyCents ? moneyText(row.totals, true) : fmtInt(row.totals.credits_charged) },
       { text: fmtDuration(row.totals.latency_p95_ms) },
       { text: fmtPct(row.totals.cache_hit_ratio) },
     ],
@@ -115,12 +128,12 @@ export function personDist(report: RangeReport): DistRow[] {
   const src = [...(report.persons ?? [])].sort(
     (a, b) => (b.totals.request_count ?? 0) - (a.totals.request_count ?? 0),
   )
-  const max = Math.max(0, ...src.map((row) => row.totals.request_count ?? 0))
-  return src.map((row, index) => ({
+  const totalReq = report.totals?.request_count ?? 0
+  return src.map((row) => ({
     key: `${row.tenant_id}\u0000${row.person}`,
     name: row.person || '—',
     sub: row.tenant_id,
-    pct: max > 0 ? ((row.totals.request_count ?? 0) / max) * 100 : 0,
+    pct: barPct(row.totals.request_count ?? 0, totalReq),
     tone: 'success' as const,
     cells: [
       { text: fmtInt(row.totals.request_count) },

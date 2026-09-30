@@ -51,7 +51,7 @@ export default {
   allModels: 'كل النماذج',
   clearFilter: 'مسح الفلاتر',
   kpiTenants: 'المستأجرون المسوّاة',
-  kpiLatency: 'متوسط الاستجابة',
+  kpiLatency: 'P50',
   kpiDaily: 'طلبات يوميًا',
   kpiPersons: 'الأشخاص النشطون',
   kpiPerPersonReq: 'طلبات لكل شخص',

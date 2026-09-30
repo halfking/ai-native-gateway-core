@@ -35,7 +35,11 @@ export function reconTrendSeries(
   covered: string[] | undefined,
   money: 'cost' | 'credits',
 ): TrendSeries {
-  const rows = pickCoveredDays(days, covered)
+  // An empty coverage list means "no snapshot landed", not "coverage unknown".
+  // pickCoveredDays treats [] as unknown and would draw the zero-fill cliff.
+  const rows = covered === undefined
+    ? days
+    : pickCoveredDays(days, covered.length > 0 ? covered : ['__no_snapshot__'])
   return {
     labels: rows.map((row) => row.date),
     success: rows.map((row) => row.totals.success_count ?? 0),
