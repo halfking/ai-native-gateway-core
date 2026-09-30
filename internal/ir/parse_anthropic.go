@@ -3,6 +3,8 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // ParseAnthropic parses an Anthropic Messages API request body into InternalRequest.
@@ -275,6 +277,16 @@ func parseAnthropicMessage(msg map[string]any) (*Message, error) {
 				tc.Function.Arguments = string(block.ToolUse.Input)
 				irMsg.ToolCalls = append(irMsg.ToolCalls, tc)
 			}
+		}
+	default:
+		// R72 §3.4 同族缺陷（同构修法）：content 为 number/object/bool 时，
+		// 旧 switch（只有 string/[]any 两型）静默落空——消息解析「成功」但
+		// 内容为空，随后被 removeEmptyMessages 整条删除，请求带空会话发上游。
+		// 与 parse_openai.go 同款：源头拒为 KindClientBug，不进 fix 层。
+		// （content 缺省/显式 null 走上方 content==nil 容忍分支，不受影响。）
+		return nil, &ParseError{
+			Kind:    errorsx.KindClientBug,
+			Message: fmt.Sprintf("message content must be a string, an array of content blocks, or null; got %s", jsonTypeName(content)),
 		}
 	}
 

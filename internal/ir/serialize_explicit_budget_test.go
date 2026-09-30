@@ -19,7 +19,16 @@ import (
 func TestExplicitTypeKeepsExplicitBudgetAnthropic(t *testing.T) {
 	budget := 5000
 	req := &InternalRequest{
-		Model:     "claude-sonnet-4-5",
+		Model: "claude-sonnet-4-5",
+		// 2026-10-01 审计订正：fixture 补显式 MaxTokens=20000。原 fixture 省略
+		// max_tokens（序列化默认 4096），钉住的 budget=5000 原样发射恰是
+		// `budget_tokens(5000) >= max_tokens(4096)` 的非法 wire 对（上游硬 400，
+		// 本轮一致性钳制的取缔对象）。显式 20000 下 5000 在界内逐字保留：
+		// R23-A 回归（Type-enabled 分支无视显式 budget、走 8192 兜底）会被
+		// 5000 vs 8192 的断言精确捕获，守卫锋利度不降。省略 max_tokens 时的
+		// 钳制行为由 TestSerializeAnthropic_OmittedMaxTokensClampsEffortBudget
+		// 单独钉住。
+		MaxTokens: 20000,
 		Reasoning: &ReasoningConfig{Type: "enabled", BudgetTokens: &budget},
 	}
 	raw, err := SerializeAnthropic(req)
@@ -135,8 +144,8 @@ func TestOpenAIDisabledTypeOutranksEffort(t *testing.T) {
 	req := &InternalRequest{
 		Model: "gpt-5.6",
 		Reasoning: &ReasoningConfig{
-			Type:    disabled,
-			Effort:  "high",
+			Type:   disabled,
+			Effort: "high",
 		},
 	}
 	body, err := SerializeOpenAI(req)

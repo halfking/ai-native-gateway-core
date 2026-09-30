@@ -12,7 +12,10 @@ import (
 // before forwarding and Release after completion.
 //
 // Implementations:
-//   - concurrencyGovernor: in-flight hard cap (a scalar counter).
+//   - concurrencyGovernor: scalar in-flight hard cap (a plain cap/used
+//     counter with CAS increment — there is no per-credential weighting
+//     concept here; weighted load balancing lives in the candidate
+//     selection layer, see executors/router.go, R73 §2).
 //   - rpmGovernor: requests-per-minute token bucket.
 //   - tpmGovernor: tokens-per-minute token bucket (Acquire takes the
 //     request's estimated prompt tokens).
@@ -74,15 +77,7 @@ func newGovernor(ref CredentialRef) Governor {
 	}
 }
 
-// ── concurrency: in-flight hard cap ────────────────────────────────────────
-//
-// 2026-10-01 R73 (comment correction): this section header used to call the
-// type a "weighted semaphore". It is not — it is a single cap/used counter
-// with no weight concept at all. The wording mattered because "weighted"
-// is exactly the capability the load-balancing objective asks about, so a
-// reader could conclude the per-credential in-flight cap was weight-aware
-// when the actual weighting lives further upstream, in the router's
-// weighted first-choice promotion (domains/streaming/executors).
+// ── concurrency: scalar cap/used counter ───────────────────────────────────
 
 type concurrencyGovernor struct {
 	cap  int64

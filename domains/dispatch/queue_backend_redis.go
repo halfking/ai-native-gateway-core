@@ -28,9 +28,16 @@ import (
 // Self-healing (D2): every count entry is paired with a heartbeat field; a
 // dead instance stops refreshing its hb, and within queueStaleWindow (30s)
 // any admit/release touching the family sweeps its counts away — cluster
-// capacity returns without operator action. Live instances refresh their hb
-// on every admit/release and from the heartbeat loop (10s), so they are
-// never swept while holding admissions.
+// capacity returns without operator action. The liveness guarantee for a
+// LIVE instance, however, is only as good as its heartbeat cadence: hb is
+// refreshed by admit/release touches and by an INDEPENDENT 10s ticker
+// (runHeartbeat), with no per-admission lease renewal (Renew exists on the
+// governor side but has zero production callers). Any >30s pause in
+// successful heartbeats while admissions are held — goroutine starvation,
+// process freeze/suspend, or a Redis brownout where every Heartbeat call
+// times out (3s budget) — lets other instances sweep this instance's fields
+// and hand the capacity out while its in-flight requests keep running
+// (R73 §1 #6; fix direction: lease-renewal design, not a comment fix).
 //
 // Fail-open (§2.2, the OPPOSITE of the Governor): on Redis errors the
 // backend degrades — admits locally and lets the in-process primitives be
@@ -44,8 +51,17 @@ const (
 	queueDueKey            = "llmgw:dispatch:queue:v1:due"
 	queueTotalSlot         = "{qbt}"
 	queueLaneSlotPrefix    = "{qbl:"
-	// dueResidueAge bounds how long dead-instance members may linger in the
-	// due ZSET before the heartbeat sweep removes them (D8).
+	// dueResidueAge is the residue horizon for ALREADY-DUE members: the
+	// heartbeat sweep (ZRemRangeByScore -inf .. now-1h) removes a member
+	// once its score (the future dueAt ms, set by ParkDue) is more than
+	// dueResidueAge in the past. A member parked with a FUTURE dueAt is
+	// untouched by the sweep until its due time passes — so a dead
+	// instance's not-yet-due member lingers for (dueAt - now) + 1h, up to
+	// ~25h with the 24h schedule-ahead cap (maxScheduleAhead), not the 1h
+	// "residue" the name suggests. queueDueKey itself carries NO TTL (only
+	// the counts/hb hashes get PEXPIRE), so if every instance stops
+	// heartbeating, the whole ZSET persists indefinitely (R73 §1 #8,
+	// proposal stage: key layout / sentinel-key change).
 	dueResidueAge = time.Hour
 )
 

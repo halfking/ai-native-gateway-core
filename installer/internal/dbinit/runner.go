@@ -484,6 +484,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 判定退化为 167 万行顺序扫描。位置约束：必须晚于 733（建表与
 			// 分区）与 801（同族 promote 改版），故排在序列末尾。
 			"802_session_turn_details_gw_task_id_index.sql",
+			// 803 (2026-10-01, 会话/请求数据存储审计): 删除
+			// request_logs_bodies_hot 上被同列 UNIQUE 索引
+			// idx_request_logs_bodies_hot_request_id 全量影蔽的普通索引
+			// request_logs_bodies_hot_request_id_idx（仅 baseline dump 封存
+			// 产物，迁移链与 Go ensure 链均不创建）。唯一侧是 Go
+			// ON CONFLICT (request_id) 的承重索引，不可动。
+			"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql",
 		},
 	}
 }
