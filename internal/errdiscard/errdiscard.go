@@ -10,12 +10,15 @@
 // 「静默截断整体」，而且对调用方**完全不可见**。R68 用同一形状又找到 3 处
 // 活着的同类（route_incidents / session_trend / usage_enhanced）。
 //
-// 本包把这一形状做成机械可查的门：**同一包内**，若被调用函数在迭代终检
+// 本包把这一形状做成机械可查的门：**同一文件内**，若被调用函数在迭代终检
 // 路径上会 `return ..., err`，而调用点用 `, _ :=` 丢弃该错误，即报出。
 //
 // 能力边界（必须写清楚，否则这个门会被误信）：
-//   - 只看**同一个 Go 包内**的调用。跨包的 `, _ :=` 不在本门覆盖内——
-//     跨包需要完整类型信息，成本与误报率都高得多。
+//   - 只看**同一个 Go 文件内**的调用——throwing 表按文件构建，不含包内
+//     其他文件的同名方法；跨文件同包与跨包的 `, _ :=` 都不在覆盖内。
+//     补全需要 go/packages 的完整类型信息，成本与误报率都高得多（12h
+//     审计 P2-3 登记：旧文档自称「同包」，实为同文件）。
+//   - 只认 `x.f(...)` 的 selector 调用形态；包级函数直呼 `f(...)` 不报。
 //   - 报出的是**候选**，不是缺陷判决。每一条都需要人判断「调用方丢弃之后
 //     结果被怎么用」：若调用方立刻走有文档的回退路径（例：work_types 的
 //     canonical-only 回退），那是有意决策，本门会误报。
@@ -45,7 +48,7 @@ func (f Finding) String() string {
 	return fmt.Sprintf("%s:%d calls %s discarding its error: %s", f.File, f.Line, f.Callee, f.Snippet)
 }
 
-// CheckDir 扫描一个目录下所有包的「同包内 `, _ := f(...)`，且 f 会在
+// CheckDir 扫描一个目录下所有包的「同文件内 `, _ := f(...)`，且 f 会在
 // rows.Err() 路径上 return err」。
 //
 // scanned 返回本次实际解析的非测试 .go 文件数。它存在的唯一目的是让**自检门**
@@ -99,7 +102,8 @@ func CheckDirCounted(root string) ([]Finding, int, error) {
 		rel, _ := filepath.Rel(root, path)
 		lines := strings.Split(string(src), "\n")
 
-		// 1) 本包内哪些函数会在迭代终检上返回 error
+		// 1) 本文件内哪些函数会在迭代终检上返回 error（throwing 表按
+		// 文件构建：包内其他文件的同名方法认不到，见包文档能力边界）
 		throwing := map[string]bool{}
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && fnReturnsOnErrCheck(fn) {

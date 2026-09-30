@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // ── 迁移包 wire format（与 Pocket model.SessionResumeBrief + opencode-plugin MigrationPack 对齐）──
@@ -278,9 +279,7 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 				CompressionStrategy: strategy,
 				CreatedAt:           createdAt.UTC().Format(time.RFC3339),
 			}
-			if len(compMeta) > 0 {
-				_ = json.Unmarshal(compMeta, &msg.CompressionMeta)
-			}
+			jsoncol.Decode("admin.sessionExport.buildExport/compression_meta", compMeta, &msg.CompressionMeta)
 			// content 优先用 response_body（AI 回复），否则 request_body
 			if respBody != nil && *respBody != "" {
 				msg.Content = *respBody

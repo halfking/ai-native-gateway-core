@@ -829,7 +829,13 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
 			errDispatchCircuitOpen, errorsx.KindCircuitOpen, extra)
 
-		return dispatch.ForwardOutcome{Err: errDispatchCircuitOpen}
+		// 2026-10-01 R73: carry ErrorKind on the outcome. It was dropped
+		// here, so the planner could only fall back to classifying the
+		// message string "dispatch: circuit open" — which matches no regex in
+		// errorsx/classify.go and lands on the KindTransient fallback,
+		// i.e. a preflight rejection that made no upstream call was
+		// retried against the same already-open circuit.
+		return dispatch.ForwardOutcome{Err: errDispatchCircuitOpen, ErrorKind: string(errorsx.KindCircuitOpen)}
 	}
 
 	// ── Outer concurrency layers (global/pool/identity/key). The credential

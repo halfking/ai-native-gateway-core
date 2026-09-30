@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/redis/go-redis/v9"
 )
@@ -545,9 +546,8 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 		if detailMode || coreMode {
 			models := make([]CredentialModelStatus, 0)
 
-			if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
-				_ = json.Unmarshal(modelsJSON, &models)
-			}
+			// "null" 与坏 JSON 都不动 dst（空切片保持）；probe 列表完整性同 R67。
+			jsoncol.Decode("admin.credentialMonitor.runMonitorSummary/models", modelsJSON, &models)
 			s.Models = models
 			for i := range models {
 				ms := &models[i]

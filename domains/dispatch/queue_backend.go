@@ -126,10 +126,12 @@ func (b *localQueueBackend) TryAdmitTotal(ctx context.Context, qr *QueuedRequest
 func (b *localQueueBackend) TryReserveLane(ctx context.Context, kind LaneKind, id string, cap int) (Admission, bool) {
 	return Admission{}, true
 }
-func (b *localQueueBackend) Release(a Admission)                                               {}
-func (b *localQueueBackend) ParkDue(ctx context.Context, requestID string, dueAt time.Time) error { return nil }
-func (b *localQueueBackend) ClearDue(ctx context.Context, requestID string) error                { return nil }
-func (b *localQueueBackend) Heartbeat(ctx context.Context) error                                 { return nil }
+func (b *localQueueBackend) Release(a Admission) {}
+func (b *localQueueBackend) ParkDue(ctx context.Context, requestID string, dueAt time.Time) error {
+	return nil
+}
+func (b *localQueueBackend) ClearDue(ctx context.Context, requestID string) error { return nil }
+func (b *localQueueBackend) Heartbeat(ctx context.Context) error                  { return nil }
 func (b *localQueueBackend) Snapshot(ctx context.Context) (QueueBackendStats, error) {
 	return QueueBackendStats{Kind: QueueBackendLocal}, nil
 }

@@ -451,8 +451,12 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 // with the revision the publisher will publish, not the previous one. Backend
 // failure is propagated as an ErrGovernorUnavailable-wrapped error so
 // ApplyPolicy can fail-closed (no swap, no revision advance);
-// newCredForwarder wraps this in a fail-open fallback so a transient Redis
-// outage cannot block the very first dispatch to a fresh forwarder.
+// newCredForwarder wraps this in a fallback so a transient Redis outage
+// cannot block the very first dispatch to a fresh forwarder. 2026-10-01 R73
+// (comment correction): the old wording said "fail-open" for every backend,
+// but buildForwarderGovernor only degrades to the in-process governor for
+// the in-process backends — under BackendRedisEnforce it returns
+// unavailableGovernor{} and stays fail-closed on purpose.
 func (p *Pipeline) governorForCredential(cred CredentialRef, specRevision uint64) (Governor, error) {
 	backend := p.GovernorBackend()
 	mode := cred.ConcurrencyMode
@@ -1217,7 +1221,32 @@ func (p *Pipeline) drainTotalOne(qr *QueuedRequest) {
 			p.drainTotalQueueResidue()
 			return
 		}
-		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+		// 2026-10-01 R73: enqueueModelFromTotal fails for two very
+		// different reasons and they must not be collapsed into
+		// ctxOf(qr).Err(). That expression is nil whenever the caller's
+		// context is still alive, and the dominant failure here is NOT a
+		// context failure: getOrCreateModelQueue returns nil when
+		// MaxModelLanes is at capacity (or when the lane was reclaimed
+		// twice), while the context is perfectly healthy. Completing with
+		// a nil Err made Submit return (nil, nil) — a request that never
+		// reached a single provider reported as success — and terminalActionOf
+		// then wrote NextActionCompleted into the journal, so the bogus
+		// success also landed in the request's execution trace and stage
+		// metrics.
+		//
+		// Resolve the context FIRST: if it really is done, its error is the
+		// truthful cause. Otherwise the lane was unavailable and the request
+		// is an admission rejection, which must surface as the same explicit
+		// OverflowError the other backpressure paths use.
+		if ctxErr := ctxOf(qr).Err(); ctxErr != nil {
+			p.complete(qr, ForwardOutcome{Err: ctxErr})
+			return
+		}
+		p.observeOverflow("model_lane_unavailable")
+		p.complete(qr, ForwardOutcome{Err: &OverflowError{
+			Reason:     "model_lane_unavailable",
+			RetryAfter: DefaultOverflowRetryAfter,
+		}})
 	} else {
 		p.releaseTotal(qr)
 	}
