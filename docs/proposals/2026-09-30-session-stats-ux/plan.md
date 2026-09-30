@@ -34,8 +34,8 @@
 
 已经落地、并且和下面审计一致的行为：
 
-- 目录搜索 `q` 只查 `session_summaries`（会话键、标题、`primary_model`），再和本次 Redis 窗口合并。
-- 已返回行再按 `session_id`、`title`、`current_model`、`tags` 过滤。模型能匹配，是因为用量补齐先把空的 `current_model` 填上，不是因为扫了请求日志。
+- 目录搜索 `q` 只查 `session_summaries`（会话键、标题、`primary_model`，以及 `models_used` 的单个元素），再和本次 Redis 窗口合并。
+- 已返回行再按 `session_id`、`title`、`current_model`、`tags` 过滤。窗口内模型能匹配，是因为用量补齐先把空的 `current_model` 填上。窗口外要靠摘要命中，并把匹配到的模型元素写进空白 `current_model`，否则过滤会把行丢掉。
 - 不扫描 `request_logs` 做前导 `ILIKE`。本地约 232 万行实测约 16 秒，不能挂在列表接口上。
 
 明确不做：
@@ -59,7 +59,7 @@
 
 ### P2（已做，范围比最初写的窄）
 
-- `handleListSessions` 接受 `q`。检索表是 `session_summaries`，不是请求日志。摘要命中会把空白标题/模型写回已在窗口内的行，再过滤，避免标题命中被丢掉。
+- `handleListSessions` 接受 `q`。检索表是 `session_summaries`，不是请求日志。摘要命中会把空白标题写回行；模型优先写匹配到的 `models_used` 元素，没有再写 `primary_model`。已有模型不覆盖。然后再过滤。
 - Redis 轮次、prompt、completion、费用各自为 0 时，用 `request_logs_hot` ∪ `request_logs` 按 `gw_session_id` 补齐。非 0 值不覆盖。查询失败打 `slog.Warn`，列表仍返回 Redis 窗口。
 - 健康等级过滤参数 `health_grade` 本来就有，本轮没有加新的筛选芯片。
 - 统计 KPI 的 Token 卡仍关闭。overview 没有可靠合计。
@@ -92,9 +92,26 @@
 
 没有在本轮改掉、也不能写成已完成的事：
 
-- 模型子串搜索覆盖不到「不在本次 Redis 窗口、且摘要 `primary_model` 为空」的会话。`gw_13543929-a852-440e-a96f-138e7bff99ea` 的摘要 `primary_model` 就是空的，模型来自请求日志补齐。这种会话只有已经出现在列表里才能按模型滤出。
+- 当时模型子串覆盖不到「不在本次 Redis 窗口、且摘要 `primary_model` 为空」的会话。`gw_13543929-a852-440e-a96f-138e7bff99ea` 的 `primary_model` 为空，模型来自请求日志补齐。§6 改为同时匹配 `models_used`；这个例子能命中，但因为有更近的摘要，仍不在前 200 条里。两个模型字段都空的会话，还是只有已经出现在列表里才能按模型滤出。
 - `session_summaries` 可以比请求日志旧。同一会话摘要 prompt 42，日志合计 prompt 99、completion 24、费用 0。目录数字在 Redis 为 0 时跟日志，不跟摘要。
 - 健康等级仍来自 `session_summaries`。健康 D 可以和一次成功轮次同时出现。
 - 摘要 `ILIKE` 仍是顺序扫描，约 317ms。表再变大时 2 秒超时会失败并退回已加载行，不会再打 16 秒的日志扫描。
 - P3 的 owner/project、KPI Token 卡、目录上的 `health_grade` 芯片都还没做。
 - 单测不连数据库。SQL 只做了字符串约束，防止把请求日志扫描加回去。16 秒和 1 毫秒的数字来自本机 `EXPLAIN ANALYZE`，不是单测。
+
+## 6. 2026-09-30 再审计（模型子串）
+
+上一节把「摘要 `primary_model` 为空就按模型搜不到」记成未完成。这条成立，但不能用请求日志前导 `ILIKE` 去补。本机 `llm-gateway-pg` 再测了一遍：
+
+| 查法 | 结果 |
+|------|------|
+| 只比会话键 / 标题 / `primary_model`，模式 `%deepseek-v4-flash%` | 顺序扫描，183ms，2 行 |
+| 同上，再加 `array_to_string(models_used, chr(10)) ILIKE` | 仍是摘要顺序扫描，173ms，按 `last_request_at` 取 200 行 |
+| `EXISTS (unnest(models_used) ILIKE …)` | 515ms，对每行拆数组，不采用 |
+| `models_used @> ARRAY['deepseek-v4-flash']` | 走 GIN，约 141ms 才排序完，但元素是 `deepseek-v4-flash-260425` 时对不上 |
+| `canonical_model = 'gpt-4'` | 约 1ms，有索引。搜索框是子串，不是等值，列表接口不用这条 |
+| 请求日志前导 `ILIKE` | 上一节约 16 秒。没有加回 |
+
+摘要约 33.3 万行，`primary_model` 为空约 33.2 万行；`models_used` 非空约 15.4 万行，其中主模型为空的约 15.2 万行。方案里的 `gw_13543929-a852-440e-a96f-138e7bff99ea` 主模型为空，`models_used` 是 `{deepseek-v4-flash-260425}`。新条件能命中它，但同模式有 366 条更新的摘要，`LIMIT 200` 的结果里没有它。搜完整元素 `deepseek-v4-flash-260425` 仍有 344 条更新，同样不在前 200。
+
+因此这轮只改摘要检索：模型子串匹配 `models_used` 的单个元素，命中的元素写回空白模型，避免过滤丢掉。热门模型仍然只返回最近 200 条。两个模型字段都空的会话，还是只有已经出现在列表里才能按模型滤出。没有做 owner/project，没有扫请求日志。

@@ -134,7 +134,7 @@ export default {
     online: 'Online',
     directory: 'Verzeichnis',
     searchPlaceholder: 'Titel, Sitzungs-ID, Modell oder Tags suchen',
-    searchHint: 'Geladene Zeilen werden sofort nach Sitzungs-ID, Titel, Modell und Tags gefiltert. Der Server sucht zusätzlich in Sitzungszusammenfassungen nach Titel und ID und scannt nicht das gesamte Request-Log. Höchstens 200 Zeilen.',
+    searchHint: 'Geladene Zeilen werden sofort nach Sitzungs-ID, Titel, Modell und Tags gefiltert. Der Server sucht in Sitzungszusammenfassungen nach ID, Titel und Modellliste und scannt nicht das Request-Log. Eine Sitzung ohne Modell in der Zusammenfassung wird per Modell nur gefunden, wenn sie schon geladen ist. Höchstens 200 Zeilen; ein häufiges Modell liefert die neuesten Treffer.',
     loading: 'Wird geladen…',
     refresh: 'Aktualisieren',
     retry: 'Erneut',
