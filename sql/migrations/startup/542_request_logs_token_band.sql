@@ -52,30 +52,15 @@ UPDATE public.request_logs_hot
 -- Partial index: only rows that landed in any band (the cheap filter for
 -- "show me forced compressions last hour" admin queries). Most rows have
 -- NULL and never enter the index.
+-- 2026-10-01 fresh-install e2e 修订（802 形态裁决同款处方）：原文件按
+-- 特定环境当时存在的分区（default/2026_09/2026_10）硬编码 ON ONLY 母表
+-- + 叶索引 + ATTACH——分区由运行期 ensure tick 按月滚动创建，全新安装
+-- 上这些叶索引的目标永远不存在，序列必炸（e2e 实证 42P01）。改为递归
+-- 形态（对齐 525/802 惯例）：对既有分区自动建叶并挂载（原目标环境终态
+-- 相同且 indisvalid=true），对未来分区由 PG 自动继承。
 CREATE INDEX IF NOT EXISTS idx_request_logs_token_band_ts
-    ON ONLY public.request_logs (token_band, ts DESC)
+    ON public.request_logs (token_band, ts DESC)
     WHERE token_band IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_request_logs_token_band_ts_default
-    ON public.request_logs_default (token_band, ts DESC)
-    WHERE token_band IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_request_logs_token_band_ts_2026_09
-    ON public.request_logs_2026_09 (token_band, ts DESC)
-    WHERE token_band IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_request_logs_token_band_ts_2026_10
-    ON public.request_logs_2026_10 (token_band, ts DESC)
-    WHERE token_band IS NOT NULL;
-
-ALTER INDEX idx_request_logs_token_band_ts
-    ATTACH PARTITION idx_request_logs_token_band_ts_default;
-
-ALTER INDEX idx_request_logs_token_band_ts
-    ATTACH PARTITION idx_request_logs_token_band_ts_2026_09;
-
-ALTER INDEX idx_request_logs_token_band_ts
-    ATTACH PARTITION idx_request_logs_token_band_ts_2026_10;
 
 -- CHECK constraint locks the value space so an out-of-band string from a
 -- regression cannot poison GROUP BY aggregates.
