@@ -160,3 +160,42 @@ func TestWorkflowWiresTheGate(t *testing.T) {
 		t.Error("workflow 未设置 PG_CONTAINER；harness 会去找本机默认容器名并 die")
 	}
 }
+
+// TestGateAppliesStartupMigrations pins the starting-schema scope.
+//
+// A gate database built from the baseline alone is not what the installer
+// produces. Measured round 43: baseline = 328 relations; baseline + the
+// registered startup migrations = 421. The difference is not cosmetic —
+// session_aggregate_outbox (migration 630) and usage_facts (537) exist only
+// because of those migrations, so db.ensure*() tests for them failed with
+// "relation does not exist" against a baseline-only database. That reads like
+// a product defect and is not one.
+func TestGateAppliesStartupMigrations(t *testing.T) {
+	act := active(gateSource(t))
+	if !strings.Contains(act, "GATE_APPLY_STARTUP") {
+		t.Error("harness 未提供 GATE_APPLY_STARTUP 开关；起始库口径不可控")
+	}
+	// The default must be ON. A gate database that silently defaults to the
+	// stale baseline reproduces the "relation does not exist" failures this
+	// whole path exists to eliminate, and does so invisibly.
+	if !strings.Contains(act, `GATE_APPLY_STARTUP:-1`) {
+		t.Error("GATE_APPLY_STARTUP 默认值不是 1；门禁库会静默退回陈旧基线（328 relations）")
+	}
+	if !strings.Contains(act, "embeddata/startup") {
+		t.Error("harness 未从 embeddata/startup 应用启动迁移")
+	}
+	// The per-file transaction marker must be honoured, or the loop reports
+	// two failures (DROP INDEX CONCURRENTLY) the installer would not have.
+	if !strings.Contains(act, "dbinit:no-transaction") {
+		t.Error("harness 应用启动迁移时未识别 dbinit:no-transaction 标记；" +
+			"718/719 会因 CONCURRENTLY 落在事务块里而假失败")
+	}
+	// A migration that does not apply is a known fresh-install gap, not a gate
+	// failure. It must be reported without failing the run.
+	if !strings.Contains(act, "sf_failed+=") {
+		t.Error("未收集未应用的启动迁移清单")
+	}
+	if !strings.Contains(act, "known fresh-install gaps") {
+		t.Error("未把「启动迁移未应用」标为已知缺口而非门禁失败")
+	}
+}

@@ -47,6 +47,13 @@ PG_USER="${PG_USER:-llm_gateway}"
 PG_PASSWORD="${PG_PASSWORD-}"
 KEEP_GATE_DB="${KEEP_GATE_DB:-0}"
 ALLOW_VACUOUS="${ALLOW_VACUOUS:-0}"
+# GATE_APPLY_STARTUP=1 also applies the installer's registered startup
+# migrations after the baseline. The baseline alone is missing tables that only
+# migrations create (session_aggregate_outbox via 630, usage_facts via 537), so
+# db.ensure*() tests for those fail with "relation does not exist" — a stale
+# artifact, not a product defect. Measured: baseline alone = 328 relations;
+# baseline + startup = 421, matching the real installer path.
+GATE_APPLY_STARTUP="${GATE_APPLY_STARTUP:-1}"
 
 PKG="${1:-}"
 TEST_NAME="${2:-}"
@@ -126,6 +133,50 @@ if [[ -f "$BASELINE" ]]; then
     die "baseline must apply cleanly; the db.ensure*() family needs schema_migrations"
   fi
   echo "  ✓ baseline applied"
+fi
+
+# Apply the registered startup migrations so the gate database matches what the
+# installer actually produces (421 relations, not the baseline's 328).
+#
+# Some migrations carry `-- dbinit:no-transaction` and must not run inside the
+# per-file transaction (DROP INDEX CONCURRENTLY cannot). The installer honours
+# that marker in applySQL; this loop must honour it too, or it reports two
+# failures the installer would not have.
+if [[ "$GATE_APPLY_STARTUP" == "1" ]]; then
+  echo "  ── applying registered startup migrations ──"
+  SF_DIR="$REPO_ROOT/installer/cmd/llm-gw-installer/embeddata/startup"
+  sf_ok=0; sf_fail=0; sf_missing=0
+  declare -a sf_failed=()
+  while read -r f; do
+    [[ -n "$f" ]] || continue
+    p="$SF_DIR/$f"
+    if [[ ! -f "$p" ]]; then
+      sf_missing=$((sf_missing+1))
+      sf_failed+=("$f (no embeddata file)")
+      continue
+    fi
+    args=(-q -v ON_ERROR_STOP=1)
+    # Same rule as dbinit.requiresNoTransaction: marker in a comment line.
+    if ! grep -qE '^[[:space:]]*--.*dbinit:no-transaction' "$p"; then
+      args+=(--single-transaction)
+    fi
+    if docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" \
+         "${args[@]}" < "$p" >/dev/null 2>/tmp/itgate-sf.err; then
+      sf_ok=$((sf_ok+1))
+    else
+      sf_fail=$((sf_fail+1))
+      reason=$(grep -i '^ERROR' /tmp/itgate-sf.err | head -1 | cut -c1-140)
+      [[ -z "$reason" ]] && reason=$(head -1 /tmp/itgate-sf.err | cut -c1-140)
+      sf_failed+=("$f :: $reason")
+    fi
+  done < <(sed -n '/StartupFiles: \[\]string{/,/^\t}/p' \
+             "$REPO_ROOT/installer/internal/dbinit/runner.go" \
+           | grep -oE '"[0-9a-zA-Z_]+\.sql"' | tr -d '"')
+  echo "  startup: applied=$sf_ok failed=$sf_fail missing=$sf_missing"
+  if (( sf_fail > 0 )); then
+    echo "  startup migrations that did not apply (known fresh-install gaps, not gate failures):"
+    printf '    - %s\n' "${sf_failed[@]}"
+  fi
 fi
 
 # Verify the DSN the tests will actually use. Without this, a wrong DSN
