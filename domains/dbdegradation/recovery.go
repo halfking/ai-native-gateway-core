@@ -122,9 +122,10 @@ func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, dele
 	task.StartedAt = time.Now()
 	task.mu.Unlock()
 
-	// 读取所有记录
+	// 读取所有记录。2026-09-30 O5：改用带打捞统计的读取，文件部分恢复
+	// （坏行跳过/字节丢失）时不得归档/删除原文件。
 	var records []BackupRecord
-	err := r.fileReader.ReadRecords(ctx, task.Filename, func(record BackupRecord) error {
+	salvage, err := r.fileReader.ReadRecordsWithStats(ctx, task.Filename, func(record BackupRecord) error {
 		records = append(records, record)
 		return nil
 	})
@@ -171,6 +172,8 @@ func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, dele
 	// 完成
 	task.mu.Lock()
 	task.CompletedAt = time.Now()
+	// 打捞有损失时保留原文件：文件里仍有不可恢复内容，归档即永久丢失。
+	noSalvageLoss := !salvage.HasLoss()
 	if task.FailureCount == 0 {
 		task.Status = "completed"
 		task.mu.Unlock()
@@ -182,10 +185,16 @@ func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, dele
 		)
 
 		// 删除或归档文件
-		if deleteAfter {
+		if deleteAfter && noSalvageLoss {
 			if err := r.archiveFile(task.Filename); err != nil {
 				slog.Warn("recovery: failed to archive file", "filename", task.Filename, "error", err)
 			}
+		} else if deleteAfter {
+			slog.Warn("recovery: file kept — salvage lost content",
+				"filename", task.Filename,
+				"skipped_lines", salvage.SkippedLines,
+				"lost_bytes", salvage.LostBytes,
+			)
 		}
 	} else {
 		task.Status = "completed_with_errors"

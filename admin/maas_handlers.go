@@ -608,7 +608,7 @@ func (h *Handler) handleMaasOrderByID(w http.ResponseWriter, r *http.Request) {
 	tenantID := GetTenantID(r)
 	order, err := svc.GetOrder(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "order not found")
+		writeLookupErr(w, "order not found", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, order)

@@ -185,6 +185,7 @@ export default {
     endDate: '結束日期',
     openAria: '選擇時間範圍',
     endBeforeStart: '結束需不早於開始',
+    afterLatest: '不能晚於 {date}',
     spanTooLong: '跨度超過 {n} 天',
     pickDate: '選擇日期',
     preset: {

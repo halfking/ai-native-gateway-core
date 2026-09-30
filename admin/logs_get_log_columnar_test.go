@@ -227,8 +227,8 @@ func TestBodyFetchCache_HitUnderOneMillisecond(t *testing.T) {
 	// Stats: 1 miss + 1 hit.
 	size, hits, misses, _ := h.bodyFetchCache.Stats()
 	assert.Equal(t, 1, size, "cache should hold 1 entry")
-	assert.Equal(t, uint64(1), hits, "should record 1 hit")
-	assert.Equal(t, uint64(1), misses, "should record 1 miss")
+	assert.EqualValues(t, 1, hits, "should record 1 hit")
+	assert.EqualValues(t, 1, misses, "should record 1 miss")
 }
 
 // TestBodyFetchCache_TTLExpires exercises the TTL expiry path: a value
@@ -260,8 +260,8 @@ func TestBodyFetchCache_TTLExpires(t *testing.T) {
 	// After TTL expiry, the second call must hit the DB again
 	// (>= 1ms typically). Cache must record 2 misses total.
 	_, hits, misses, _ := h.bodyFetchCache.Stats()
-	assert.Equal(t, uint64(0), hits, "TTL expired → must not count as hit")
-	assert.GreaterOrEqual(t, misses, uint64(2), "TTL expired → both calls should be misses")
+	assert.EqualValues(t, 0, hits, "TTL expired → must not count as hit")
+	assert.GreaterOrEqual(t, misses, 2, "TTL expired → both calls should be misses")
 	t.Logf("post-TTL re-fetch elapsed=%s hits=%d misses=%d", elapsed, hits, misses)
 }
 
@@ -294,8 +294,8 @@ func TestBodyFetchCache_NotFoundIsCached(t *testing.T) {
 		"not-found cache hit should be < 1ms (got %s)", elapsed)
 
 	_, hits, misses, _ := h.bodyFetchCache.Stats()
-	assert.Equal(t, uint64(1), hits, "second not-found call should be a cache hit")
-	assert.Equal(t, uint64(1), misses, "first not-found call should be a cache miss")
+	assert.EqualValues(t, 1, hits, "second not-found call should be a cache hit")
+	assert.EqualValues(t, 1, misses, "first not-found call should be a cache miss")
 }
 
 // TestBodyFetchCache_LRUEvictsOldest verifies that when capacity is

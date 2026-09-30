@@ -18,7 +18,7 @@ import type { BoardPayload, BoardOperationalPayload } from '../../api/board'
 import {
   defaultBoardTimeRange,
   resolveBoardRangeMs,
-  toBoardTimeQuery,
+  usageQueryForBoardRange,
   type BoardTimeRange,
 } from '../../utils/boardTimeRange'
 import type { KxDateRange } from '../ui/kx-date-types'
@@ -45,7 +45,8 @@ const router = useRouter()
 const operational = computed(() => boardState.operational?.value ?? null)
 const board = computed(() => boardState.board.value)
 const timeRange = computed(() => boardState.timeRange?.value ?? defaultBoardTimeRange())
-const timeQuery = computed(() => toBoardTimeQuery(timeRange.value))
+// 用量卡走日历日。看板汇总仍由 useDashboardBoard 用 days 预设，两套不要合成一个数。
+const timeQuery = computed(() => usageQueryForBoardRange(timeRange.value))
 const days = computed(() => boardState.days?.value ?? 1)
 const loading = computed(() => boardState.loading?.value ?? false)
 

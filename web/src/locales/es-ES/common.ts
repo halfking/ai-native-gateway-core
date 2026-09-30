@@ -184,6 +184,7 @@ export default {
     endDate: 'Fecha de fin',
     openAria: 'Seleccionar rango de tiempo',
     endBeforeStart: 'El fin no puede ser anterior al inicio',
+    afterLatest: 'No posterior a {date}',
     spanTooLong: 'El rango supera {n} días',
     pickDate: 'Elegir fecha',
     preset: {

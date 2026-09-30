@@ -745,7 +745,7 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 	var keyPrefix string
 	err = h.db.QueryRow(ctx, `SELECT COALESCE(key_prefix,'') FROM api_keys WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'`, keyID).Scan(&keyPrefix)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "API key not found")
+		writeLookupErr(w, "API key not found", err)
 		return
 	}
 
@@ -843,7 +843,7 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 	var keyExists int
 	err := h.db.QueryRow(ctx, `SELECT 1 FROM api_keys WHERE id = $1`, keyID).Scan(&keyExists)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "API key not found")
+		writeLookupErr(w, "API key not found", err)
 		return
 	}
 
@@ -974,7 +974,7 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 
 	var keyExists int
 	if err := h.db.QueryRow(ctx, `SELECT 1 FROM api_keys WHERE id = $1`, keyID).Scan(&keyExists); err != nil {
-		writeError(w, http.StatusNotFound, "API key not found")
+		writeLookupErr(w, "API key not found", err)
 		return
 	}
 
