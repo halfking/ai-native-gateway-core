@@ -25,13 +25,14 @@ import (
 // 双轨同体；db/view_schema_v2_contract_test.go 校验两者 viewdef 等价）。
 // session_turns 缺表的极简/陈旧库回退 v1 体（legacy 链保持既有形状探测）。
 //
-	// 重建按 577 + 610 + 696 + 700 的包装链分阶段补齐，列契约 = 基础 108 列 UNION
-	// + customer_id (577) + request_class/due_at (610) + system_fingerprint (696)
-	// + raw_model_name (700，仅冻结链需追加；动态推导的基础交集自带)
-	// + credits_rate_multiplier (738/R57 六点闭合：基座缺列时条件 lateral，
-	//   否则自愈重建体缺列 → bg rollup 每分钟 column does not exist，738 事故
-	//   经自愈通道复发形态) + client_ip (740/R57 B7：真源客户端 IP 进链，
-	//   bg rollup client_ip 维度与看板 client_ips 饼图的数据前提)。
+// 重建按 577 + 610 + 696 + 700 的包装链分阶段补齐，列契约 = 基础 108 列 UNION
+//   - customer_id (577) + request_class/due_at (610) + system_fingerprint (696)
+//   - raw_model_name (700，仅冻结链需追加；动态推导的基础交集自带)
+//   - credits_rate_multiplier (738/R57 六点闭合：基座缺列时条件 lateral，
+//     否则自愈重建体缺列 → bg rollup 每分钟 column does not exist，738 事故
+//     经自愈通道复发形态) + client_ip (740/R57 B7：真源客户端 IP 进链，
+//     bg rollup client_ip 维度与看板 client_ips 饼图的数据前提)。
+//
 // 基础列取 hot∩parent 交集（排除后追加列），因此 hot 的 HOT_ONLY 列
 // （caller_id 等）永远不会撑爆 UNION——这正是 341 式 "SELECT * FROM hot
 // UNION ALL SELECT * FROM parent" 重放在 603 之后必失败、进而留下"视图已删
@@ -163,35 +164,35 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 		return fmt.Errorf("probe session_turns presence: %w", err)
 	}
 	if sessionTurnsExist {
-	// 列数契约守卫（与 710 同规）：v1 体制 113 列（pre-738）或 115 列
-	// （738+740 追加倍率/client_ip 后的 v1 体）；其余即冻结基础交集契约
-	// 漂移，强行 UNION 必失败——保留现状，由视图契约修复流程先归位。
-	if canonicalExists {
-		var canonCols int
-		if err := d.pool.QueryRow(ctx, `
+		// 列数契约守卫（与 710 同规）：v1 体制 113 列（pre-738）或 115 列
+		// （738+740 追加倍率/client_ip 后的 v1 体）；其余即冻结基础交集契约
+		// 漂移，强行 UNION 必失败——保留现状，由视图契约修复流程先归位。
+		if canonicalExists {
+			var canonCols int
+			if err := d.pool.QueryRow(ctx, `
 			SELECT count(*) FROM information_schema.columns
 			WHERE table_schema = 'public'
 			  AND table_name = 'request_logs_with_current_month'
 		`).Scan(&canonCols); err != nil {
-			return fmt.Errorf("probe request_logs_with_current_month column count: %w", err)
+				return fmt.Errorf("probe request_logs_with_current_month column count: %w", err)
+			}
+			if canonCols != 113 && canonCols != 115 {
+				slog.Warn("request_logs_with_current_month column count not in {113,115} (frozen contract drift); keeping v1 body",
+					"columns", canonCols)
+				return nil
+			}
+			slog.Info("request_logs_with_current_month carries the v1 body; upgrading to the " +
+				"session-family v2 body (mirror of sql/migrations/startup/710_request_logs_view_session_family_v2.sql)")
 		}
-		if canonCols != 113 && canonCols != 115 {
-			slog.Warn("request_logs_with_current_month column count not in {113,115} (frozen contract drift); keeping v1 body",
-				"columns", canonCols)
-			return nil
+		baseHasFP, baseHasRaw, baseHasCredits, baseHasCIP, err := d.baseWrapperShape(ctx)
+		if err != nil {
+			return err
 		}
-		slog.Info("request_logs_with_current_month carries the v1 body; upgrading to the " +
-			"session-family v2 body (mirror of sql/migrations/startup/710_request_logs_view_session_family_v2.sql)")
-	}
-	baseHasFP, baseHasRaw, baseHasCredits, baseHasCIP, err := d.baseWrapperShape(ctx)
-	if err != nil {
-		return err
-	}
-	middleCols, err := d.middleWrapperCols(ctx)
-	if err != nil {
-		return err
-	}
-	if _, err := d.pool.Exec(ctx, canonicalV2DDL(middleCols, baseHasFP, baseHasRaw, baseHasCredits, baseHasCIP, detailsFamilyExists)); err != nil {
+		middleCols, err := d.middleWrapperCols(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := d.pool.Exec(ctx, canonicalV2DDL(middleCols, baseHasFP, baseHasRaw, baseHasCredits, baseHasCIP, detailsFamilyExists)); err != nil {
 			return fmt.Errorf("rebuild request_logs_with_current_month as session-family v2: %w", err)
 		}
 		if _, err := d.pool.Exec(ctx, `COMMENT ON VIEW public.request_logs_with_current_month IS `+
@@ -748,4 +749,44 @@ func SessionFamilyTurnsSourceSQL() string {
 		" FROM public.session_turns t" +
 		" LEFT JOIN public.session_turn_details d" +
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
+}
+
+// SessionFamilyTurnsForSessionSQL returns the same frozen-column source as
+// SessionFamilyTurnsSourceSQL, but with the session predicate **pushed inside**
+// both legs so it can use idx_session_turns_session (session_id, turn_no DESC).
+//
+// Why this exists (measured, not assumed): in SessionFamilyTurnsSourceSQL the
+// projected `gw_session_id` is the expression
+// `(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)`,
+// so a caller filtering on the projected name cannot use that index. The
+// view-based equivalent pays for the v1 branch's NOT EXISTS anti-join as well.
+// Same session, same 21 rows, local EXPLAIN ANALYZE:
+//
+//	view  (request_logs_with_current_month): Execution 188.5ms, 10204 buffers
+//	native (this helper):                     Execution   0.585ms, ~20 buffers
+//
+// That is why the S3 wave-1 helper must NOT be reused for session-scoped
+// readers: it is tuned for ts-window log queries, not per-session lookups.
+//
+// Contract for callers:
+//   - The session id MUST already be bound at $1; the predicate is emitted as
+//     `t.session_id = $1` on both legs, so no outer gw_session_id filter is
+//     needed (and adding one would re-introduce the expression filter).
+//   - The projected `gw_session_id` keeps its NULL-for-`sys:` shape, so rows
+//     are byte-identical to the view's session branch.
+//   - Callers needing tenant scoping add their own `WHERE rl.tenant_id = $2`
+//     or equivalent after the alias.
+//
+// The returned source carries no alias — callers append one (e.g. `rl`).
+func SessionFamilyTurnsForSessionSQL() string {
+	return "(SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns_hot t" +
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
+		" WHERE t.session_id = $1" +
+		" UNION ALL SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns t" +
+		" LEFT JOIN public.session_turn_details d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
+		" WHERE t.session_id = $1)"
 }

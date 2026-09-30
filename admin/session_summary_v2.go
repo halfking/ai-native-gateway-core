@@ -27,10 +27,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
@@ -239,53 +241,155 @@ func (api *SessionSummaryV2API) summarize(ctx context.Context, r *http.Request, 
 	return fTitle, fSummary, "fallback"
 }
 
+// fallbackTurnKey identifies one fallback turn for body lookup. Bodies are
+// paired by request identity **and** timestamp to avoid attaching a reused
+// request ID to the wrong turn.
+//
+// ts is normalized to Unix microseconds rather than kept as time.Time: Go's
+// time.Time `==` compares the location pointer, so a key built from a scan
+// (which carries the connection's *time.Location) would not match the same
+// instant scanned back from a different session-timezone setting, silently
+// turning every body hit into a miss. PostgreSQL timestamptz has microsecond
+// resolution, which is exactly what UnixMicro preserves.
+type fallbackTurnKey struct {
+	requestID  string
+	tsUnixMicr int64
+}
+
+// newFallbackTurnKey builds the phase-1/phase-2 join key. Both phases call it,
+// which is the only reason the normalization actually holds.
+func newFallbackTurnKey(requestID string, ts time.Time) fallbackTurnKey {
+	return fallbackTurnKey{requestID: requestID, tsUnixMicr: ts.UnixMicro()}
+}
+
+// The per-turn body value now lives in sessionBody (session_bodies_batch.go)
+// rather than a summary-local type, so the summary and compare paths cannot
+// drift on how a "no body stored" turn is represented. A missing map entry and a
+// map entry holding nils mean the same thing here: what the old LEFT JOIN
+// delivered as NULL.
+
 // queryRequestLogsFallback derives turn-shaped conversation text from the
 // V1 request_logs store. request_logs_with_current_month already includes the
 // hot write window, so querying request_logs_hot separately would duplicate
-// every recent request. Bodies are paired by request identity and timestamp to
-// avoid attaching a reused request ID to the wrong turn.
+// every recent request.
+//
+// It runs as **two queries**, not one join (measured on the live database,
+// 2026-10-01). The single-query form was a 115-column nested loop against
+// request_logs_bodies_with_current_month, and migration 765 turned that
+// month's partition into a Citus columnar table:
+//
+//	phase 1 (request_id + ts only)          41 ms, 1,029 buffers
+//	phase 2 (batched body fetch)          7–501 ms, ~120 buffers
+//	old single query (same session)   40,483 ms, 8,513,122 buffers
+//
+// The cost was never the JSONB payloads being sorted — it was the per-row
+// ColumnarScan that the LEFT JOIN drove (each turn re-scanned a 2.2M-row
+// chunked partition). Phase 1 touches only the session turns; phase 2 hands
+// the planner a set it can answer from the (request_id, ts) primary key.
+//
+// Ordering and row set are unchanged: phase 1 owns the ORDER BY and the
+// LIMIT, and phase 2 only supplies bodies. The join is 1:1 — every partition
+// of request_logs_bodies carries a UNIQUE (request_id, ts) primary key and
+// request_logs_bodies_hot is disjoint from the monthly parent (verified: 0
+// overlapping rows) — so limiting before the body fetch drops nothing.
 func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	ctx context.Context,
 	sessionID, tenantID string,
 	upToTurn *int,
 ) ([]turnForSummary, error) {
-	query, args := buildRequestLogsFallbackQuery(sessionID, tenantID, upToTurn)
-	rows, err := api.pool.Query(ctx, query, args...)
+	keys, timestamps, err := api.queryFallbackTurnKeys(ctx, sessionID, tenantID, upToTurn)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	requestIDs := make([]string, len(keys))
+	for i, key := range keys {
+		requestIDs[i] = key.requestID
+	}
+	bodies, err := querySessionBodiesByRequestIDAndTS(ctx, api.pool, requestIDs, timestamps)
+	if err != nil {
+		return nil, err
+	}
+	return mergeFallbackTurns(keys, bodies), nil
+}
 
-	var turns []turnForSummary
-	turn := 0
-	for rows.Next() {
-		turn++
-		var requestID string
-		var ts time.Time
-		var reqRaw, respRaw []byte
-		if err := rows.Scan(&requestID, &ts, &reqRaw, &respRaw); err != nil {
-			return nil, err
-		}
+// mergeFallbackTurns pairs each turn identity with its body, preserving the
+// order phase 1 produced. A turn with no stored body keeps a nil delta, which
+// is byte-for-byte what the old LEFT JOIN emitted as NULL.
+func mergeFallbackTurns(keys []fallbackTurnKey, bodies map[fallbackTurnKey]sessionBody) []turnForSummary {
+	if len(keys) == 0 {
+		return nil
+	}
+	turns := make([]turnForSummary, 0, len(keys))
+	for i, key := range keys {
+		body := bodies[key]
 		turns = append(turns, turnForSummary{
-			TurnNo:        turn,
-			RequestDelta:  decodeStoredJSON("request_body", requestID, reqRaw),
-			ResponseDelta: decodeStoredJSON("response_body", requestID, respRaw),
+			TurnNo:        i + 1,
+			RequestDelta:  decodeStoredJSON("request_body", key.requestID, strPtrBytes(body.requestBody)),
+			ResponseDelta: decodeStoredJSON("response_body", key.requestID, strPtrBytes(body.responseBody)),
 		})
 	}
-	return turns, rows.Err()
+	return turns
+}
+
+// queryFallbackTurnKeys runs phase 1: session turns in chronological order,
+// bounded by upToTurn, with no body columns involved.
+func (api *SessionSummaryV2API) queryFallbackTurnKeys(
+	ctx context.Context,
+	sessionID, tenantID string,
+	upToTurn *int,
+) ([]fallbackTurnKey, []time.Time, error) {
+	query, args := buildRequestLogsFallbackQuery(sessionID, tenantID, upToTurn)
+	rows, err := api.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var keys []fallbackTurnKey
+	var timestamps []time.Time
+	for rows.Next() {
+		var requestID string
+		var ts time.Time
+		if err := rows.Scan(&requestID, &ts); err != nil {
+			return nil, nil, err
+		}
+		keys = append(keys, newFallbackTurnKey(requestID, ts))
+		timestamps = append(timestamps, ts)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return keys, timestamps, nil
 }
 
 func buildRequestLogsFallbackQuery(sessionID, tenantID string, upToTurn *int) (string, []any) {
+	// 会话存储解耦 v3 审计（2026-09-30）：本查询曾迁到 session 族原生源
+	// （实测 14000ms → 5308ms）又因「镜像漏写 20,660 会话」被回退。§5.3.1
+	// 复核证明真正的 genuine_loss（1,459 行）已全量补写，35 天窗口复测为 0，
+	// 该否决理由不再成立，故于同日重新启用。
+	//
+	// 口径差（全量实测）：视图比原生源多 38,229 行 / 2.30% 会话，全部是
+	// hook 按设计不镜像的 internal_loopback（36,693，标题/摘要生成器自己的
+	// LLM 调用）与 non_terminal（1,541，in_progress 占位），unexplained = 0。
+	// 对本端点而言这是**净收益**：总结正文此前会把网关自己生成的标题/摘要
+	// 调用当成用户发言喂进对话文本。
+	//
+	// 2026-10-01：正文腿从本查询里摘出，改由 querySessionBodies 单独取。
+	// 本查询现在只投影 request_id + ts —— 见 queryRequestLogsFallback 的
+	// 计时对比（40,483ms → 41ms）。正文仍取 v1 bodies 视图（rb 腿未换源）：
+	// session_bodies 只有增量、无 final_full 全量，正文存储决策未落地前
+	// 两腿口径必须一致。
+	//
+	// LIMIT 的序号用 strconv 拼，不用 fmt.Sprintf —— 原生源 SQL 里含
+	// LIKE 'sys:%'，把它当格式串会吃掉参数（见 turns_sessions 同族事故）。
 	query := `
 		SELECT rl.request_id,
-		       rl.ts,
-		       rb.request_body,
-		       rb.response_body
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-			ON rb.request_id = rl.request_id
-			AND rb.ts = rl.ts
-		WHERE rl.gw_session_id = $1`
+		       rl.ts
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE 1 = 1`
 	args := []any{sessionID}
 	if tenantID != "" {
 		query += " AND rl.tenant_id = $2"
@@ -293,7 +397,7 @@ func buildRequestLogsFallbackQuery(sessionID, tenantID string, upToTurn *int) (s
 	}
 	query += " ORDER BY rl.ts ASC"
 	if upToTurn != nil {
-		query += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		query += " LIMIT $" + strconv.Itoa(len(args)+1)
 		args = append(args, *upToTurn)
 	}
 	return query, args

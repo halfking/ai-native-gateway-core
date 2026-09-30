@@ -13,6 +13,7 @@ package admin
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -241,5 +242,60 @@ func TestHandleActivityTrend_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405 for POST, got %d", w.Code)
+	}
+}
+
+// TestAppendTimeseriesFiltersEmitsQualifiedContractColumns 钉住过滤片段生成的
+// 三个属性。这段代码此前完全没有测试守护，导致三个真实故障长期无人发现：
+//
+//  1. 三个调用点都传 alias=""，拼出 `AND .tenant_id = $4` 这种无限定名谓词
+//     —— 只要带任何过滤就是语法错误，端点 500。
+//  2. 模型过滤用 upstream_model、provider 过滤用 provider，但 734 视图的
+//     115 列契约里这两列都不存在（真库 information_schema 核验），正确列名是
+//     outbound_model 与 provider_id。
+//  3. 契约列名写错时编译期无感知、运行期 42703。
+func TestAppendTimeseriesFiltersEmitsQualifiedContractColumns(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/admin/session-analytics/activity?date_from=2026-07-01&date_to=2026-07-07&model=gpt-4o&provider=6", nil)
+	filters, err := parseTimeseriesFilters(req)
+	if err != nil {
+		t.Fatalf("parseTimeseriesFilters failed: %v", err)
+	}
+
+	frag, args, next := appendTimeseriesFilters(req, timeseriesAlias, filters, 4)
+	// 3 个绑定参数：租户($4) + model($5) + provider($6)。租户段由
+	// effectiveScopeTenant 产出，与本用例要守护的列名无关，只用于确认编号连续。
+	if len(args) != 3 {
+		t.Fatalf("expected 3 bound args (tenant, model, provider), got %d: %v", len(args), args)
+	}
+	if next != 7 {
+		t.Fatalf("next arg index = %d, want 7", next)
+	}
+
+	// 1. 谓词必须带别名限定，不能出现 `AND .` 这种空前缀。
+	if strings.Contains(frag, "AND .") {
+		t.Fatalf("fragment has unqualified predicate (empty alias): %s", frag)
+	}
+	for _, want := range []string{
+		timeseriesAlias + ".outbound_model = ANY($5)",
+		timeseriesAlias + ".provider_id::text = ANY($6)",
+	} {
+		if !strings.Contains(frag, want) {
+			t.Fatalf("fragment missing %q:\n%s", want, frag)
+		}
+	}
+
+	// 2. 契约外的旧列名不得复活（它们在 734 视图上不存在，会 42703）。
+	for _, forbidden := range []string{"upstream_model", ".provider =", "cache_creation_tokens"} {
+		if strings.Contains(frag, forbidden) {
+			t.Fatalf("fragment references non-contract column %q:\n%s", forbidden, frag)
+		}
+	}
+}
+
+// TestTimeseriesAliasIsNotEmpty 防回归：调用点若再传空串，第一条断言会失去意义。
+func TestTimeseriesAliasIsNotEmpty(t *testing.T) {
+	if strings.TrimSpace(timeseriesAlias) == "" {
+		t.Fatal("timeseriesAlias must be a real SQL alias, not empty")
 	}
 }

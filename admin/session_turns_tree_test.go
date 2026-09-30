@@ -156,7 +156,10 @@ func TestQuerySessionTurnsTree_NotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT t.turn_number").
 		WithArgs("gw_none", "acme", int64(0), int64(0), "", 21).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms", "body_present"}))
-	mock.ExpectQuery("SELECT tenant_id FROM request_logs_with_current_month").
+	// 会话存储解耦 v3（2026-09-30）：该查询已迁到 session 族原生源，
+	// session 谓词下推两条腿（t.session_id = $1）。外层不得再加
+	// gw_session_id 过滤——投影名是 CASE 表达式，加了会打掉下推。
+	mock.ExpectQuery("SELECT t\\.tenant_id FROM \\(SELECT[\\s\\S]*WHERE t\\.session_id = \\$1").
 		WithArgs("gw_none").
 		WillReturnError(pgx.ErrNoRows)
 
@@ -186,7 +189,10 @@ func TestQuerySessionTurnsTree_CrossTenantForbidden(t *testing.T) {
 		WithArgs("gw_other", "acme", int64(0), int64(0), "", 21).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms", "body_present"}))
 	// 不限租户存在性检查：会话归属 other-tenant
-	mock.ExpectQuery("SELECT tenant_id FROM request_logs_with_current_month").
+	// 会话存储解耦 v3（2026-09-30）：该查询已迁到 session 族原生源，
+	// session 谓词下推两条腿（t.session_id = $1）。外层不得再加
+	// gw_session_id 过滤——投影名是 CASE 表达式，加了会打掉下推。
+	mock.ExpectQuery("SELECT t\\.tenant_id FROM \\(SELECT[\\s\\S]*WHERE t\\.session_id = \\$1").
 		WithArgs("gw_other").
 		WillReturnRows(pgxmock.NewRows([]string{"tenant_id"}).AddRow("other-tenant"))
 
