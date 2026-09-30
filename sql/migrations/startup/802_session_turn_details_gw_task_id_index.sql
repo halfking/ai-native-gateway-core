@@ -18,12 +18,23 @@
 --
 --   2026-10-01 R35-N1 批判复审轮注：本文件曾由迁移双轨制死区脱档——真库
 --   已手工 psql 应用（索引/注释在位），文件本体未随序列登记提交，堵住后续
---   部署的 missing-migration 预检。本文件按真库 pg_indexes.indexdef 与
---   obj_description 逐字回填（批判复审轮代补齐，如与 S4 原稿冲突以原稿为准）。
+--   部署的 missing-migration 预检。
+--
+--   2026-10-01 802 形态裁决（main 合并对账轮）：R35-N1 按真库
+--   pg_indexes.indexdef 回填时，把分区父索引的 ON ONLY 渲染伪影当成了
+--   DDL 语义落盘（pg_indexes 将 partitioned index 渲染为 ON ONLY 母表 +
+--   分离子索引分行；真库母表索引当初按 525 惯例递归形态所建，子索引自动
+--   attached）。本机真库事务内实证：ON ONLY 形态无 ATTACH 时母表索引
+--   indisvalid=false（attached=0，规划器不可用，assertTaskInTenant 母表腿
+--   退化为顺序扫描）；递归形态 indisvalid=true 且对既有分区自动创建并
+--   挂载子索引。现网真库索引（2 分区 attached）按递归形态所建、健康，故
+--   本修对已按递归形态应用过的存量环境为 no-op（CREATE INDEX IF NOT
+--   EXISTS 命中既有索引），仅修正新装/灾备重建通道。形态对齐 525
+--   （session_turns 族同为分区父表递归建索引，见其头注）。
 -- ===========================================================================
 
 CREATE INDEX IF NOT EXISTS idx_session_turn_details_tenant_gw_task_id
-    ON ONLY public.session_turn_details USING btree (tenant_id, gw_task_id)
+    ON public.session_turn_details USING btree (tenant_id, gw_task_id)
     WHERE gw_task_id IS NOT NULL;
 
 COMMENT ON INDEX idx_session_turn_details_tenant_gw_task_id IS

@@ -8,6 +8,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"log/slog"
 	"net/http"
 	"time"
@@ -337,16 +338,16 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sessionID, tenantID string) (*SessionDetail, error) {
 	// Get session summary
 	query := `
-		SELECT 
+		SELECT
 			COUNT(*) as request_count,
-			COUNT(*) FILTER (WHERE request_status = 'failure') as error_count,
-			COUNT(*) FILTER (WHERE compression_strategy IS NOT NULL AND compression_strategy != '') > 0 as is_compressed,
-			MAX(compression_strategy) as compression_strategy,
-			MIN(ts) as time_start,
-			MAX(ts) as time_end,
-			MIN(client_model) as model_used
-		FROM request_logs_with_current_month
-		WHERE gw_session_id = $1 AND tenant_id = $2
+			COUNT(*) FILTER (WHERE rl.request_status = 'failure') as error_count,
+			COUNT(*) FILTER (WHERE rl.compression_strategy IS NOT NULL AND rl.compression_strategy != '') > 0 as is_compressed,
+			MAX(rl.compression_strategy) as compression_strategy,
+			MIN(rl.ts) as time_start,
+			MAX(rl.ts) as time_end,
+			MIN(rl.client_model) as model_used
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE 1 = 1 AND rl.tenant_id = $2
 	`
 
 	var (
@@ -401,12 +402,12 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 
 	// Get request logs
 	logQuery := `
-		SELECT request_id, ts, client_model, outbound_model, success,
-		       prompt_tokens, completion_tokens, total_tokens, latency_ms,
-		       compression_strategy
-		FROM request_logs_with_current_month
-		WHERE gw_session_id = $1 AND tenant_id = $2
-		ORDER BY ts ASC
+		SELECT rl.request_id, rl.ts, rl.client_model, rl.outbound_model, rl.success,
+		       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens, rl.latency_ms,
+		       rl.compression_strategy
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE 1 = 1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC
 		LIMIT 500
 	`
 
@@ -427,7 +428,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 		)
 		if err := rows.Scan(&rid, &ts, &cModel, &oModel, &ok,
 			&pTokens, &cTokens, &totalTokens, &lat, &cs); err != nil {
-			warnRowSkip("session detail request logs", err)
+			warnRowSkip("session detail turns", err)
 			continue
 		}
 		csStr := ""
@@ -448,7 +449,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate request logs: %w", err)
+		return nil, fmt.Errorf("iterate session turns: %w", err)
 	}
 
 	return &SessionDetail{

@@ -14,6 +14,7 @@ package admin
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,8 +27,11 @@ var timelineCols = []string{
 	"ts", "parent_request_id", "is_final_success", "error_kind", "failure_stage",
 }
 
-// UT-FS-03：查询必须走 request_logs_with_current_month（hot UNION ALL 分区母表）
-// 且投影 is_final_success；>7d 的 promoted 行照常返回并参与 outcome 标注。
+// UT-FS-03 的**读源**已随会话存储解耦 v3 变更（2026-09-30，见
+// TestQuerySessionTimeline_UsesNativeSourceWithPushedPredicate）：
+// timeline 从 request_logs_with_current_month 视图迁到 session 族原生源，
+// 谓词下推进两条腿。其余断言（>7d 行不被截断、联合结果按 ts 排序、
+// outcome 标注、截断保护）语义不变，仍然有效。
 func TestQuerySessionTimeline_ReadsHotPlusPromotedView(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -54,7 +58,7 @@ func TestQuerySessionTimeline_ReadsHotPlusPromotedView(t *testing.T) {
 		AddRow("req_title_child", "title_gen", "success", "glm-4-air", nil,
 			nineDaysAgo.Add(time.Minute), "req_final", false, "", "")
 
-	mock.ExpectQuery(`FROM request_logs_with_current_month`).
+	mock.ExpectQuery(`FROM public\.session_turns_hot t`).
 		WithArgs("sess-old-7d").
 		WillReturnRows(rows)
 
@@ -114,8 +118,15 @@ func TestQuerySessionTimeline_ReadsHotPlusPromotedView(t *testing.T) {
 	}
 }
 
-// 查询形状钉死：不再从 request_logs_hot 直读（旧实现），投影含
-// is_final_success / error_kind / failure_stage，tenant 过滤为第二参数。
+// 查询形状钉死：投影含 is_final_success / error_kind / failure_stage，
+// 读源是 session 族原生源且 session 谓词**下推**进两条腿，
+// tenant 过滤是外层第二参数。
+//
+// 会话存储解耦 v3（2026-09-30）：读源由 request_logs_with_current_month
+// 迁到 db.SessionFamilyTurnsForSessionSQL()。断言里最要紧的一条是
+// **外层不得出现 gw_session_id** —— 投影名是
+// `(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)`，
+// 按投影名过滤用不上 idx_session_turns_session，会把 13 倍收益打回全表扫。
 func TestQuerySessionTimeline_QueryShape(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -123,7 +134,7 @@ func TestQuerySessionTimeline_QueryShape(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectQuery(`SELECT request_id, COALESCE\(request_type,'main'\)[\s\S]*COALESCE\(is_final_success, FALSE\)[\s\S]*COALESCE\(error_kind, ''\), COALESCE\(failure_stage, ''\)[\s\S]*FROM request_logs_with_current_month[\s\S]*WHERE gw_session_id = \$1 AND tenant_id = \$2[\s\S]*ORDER BY ts ASC LIMIT 201`).
+	mock.ExpectQuery(`SELECT rl\.request_id, COALESCE\(rl\.request_type,'main'\)[\s\S]*COALESCE\(rl\.is_final_success, FALSE\)[\s\S]*COALESCE\(rl\.error_kind, ''\), COALESCE\(rl\.failure_stage, ''\)[\s\S]*FROM \(SELECT[\s\S]*FROM public\.session_turns_hot t[\s\S]*WHERE t\.session_id = \$1[\s\S]*FROM public\.session_turns t[\s\S]*WHERE t\.session_id = \$1[\s\S]*AND rl\.tenant_id = \$2[\s\S]*ORDER BY ts ASC LIMIT 201`).
 		WithArgs("sess-t", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(timelineCols))
 
@@ -132,6 +143,56 @@ func TestQuerySessionTimeline_QueryShape(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestQuerySessionTimeline_UsesNativeSourceWithPushedPredicate 单独钉住
+// 「下推谓词出现两次、外层不加 gw_session_id 过滤」这条性能契约。
+//
+// 为什么用 QueryMatcherFunc 而不是再写一条正则：变异验证显示正则守不住。
+// 把外层 `AND rl.gw_session_id = $1` 加回去（正是这条谓词把 13 倍收益打回
+// 全表扫），下推谓词仍然存在于 SQL 里，所以任何「断言它存在」的正则都照过；
+// 而 QueryShape 里的 `[\s\S]*AND rl\.tenant_id` 也会被 `... gw_session_id = $1
+// AND rl.tenant_id = $2` 顺带满足。**变异后门仍绿 = 守卫没有判别力**，必须
+// 换成能看见实际 SQL 并做否定断言的写法。
+//
+// 判别力已验证：加回外层 gw_session_id 谓词 → 本测试转红；还原 → 转绿。
+func TestQuerySessionTimeline_UsesNativeSourceWithPushedPredicate(t *testing.T) {
+	var actualSQL string
+	matcher := pgxmock.QueryMatcherFunc(func(expectedSQL, realSQL string) error {
+		actualSQL = realSQL
+		return nil
+	})
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(matcher))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("").WithArgs("sess-push", "tenant-a").
+		WillReturnRows(pgxmock.NewRows(timelineCols))
+
+	if _, _, err := querySessionTimeline(context.Background(), mock, "sess-push", "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	if actualSQL == "" {
+		t.Fatal("matcher never saw the generated SQL")
+	}
+
+	// 否定断言：外层一旦出现 gw_session_id 过滤，下推就被抵消。
+	if strings.Contains(actualSQL, "rl.gw_session_id") {
+		t.Errorf("outer gw_session_id predicate defeats the pushdown (projected name is a CASE expression, so the session index is unusable):\n%s", actualSQL)
+	}
+	// 肯定断言：两条腿各一次下推。
+	if n := strings.Count(actualSQL, "WHERE t.session_id = $1"); n != 2 {
+		t.Errorf("session predicate must be pushed into both legs, found %d", n)
+	}
+	// 不得回退到视图。
+	if strings.Contains(actualSQL, "request_logs_with_current_month") {
+		t.Errorf("timeline must read the session family natively, not the frozen v1 view:\n%s", actualSQL)
 	}
 }
 
@@ -151,7 +212,7 @@ func TestQuerySessionTimeline_TruncationFlag(t *testing.T) {
 			"main", "success", "glm-4", nil,
 			base.Add(time.Duration(i)*time.Second), "", false, "", "")
 	}
-	mock.ExpectQuery(`FROM request_logs_with_current_month`).
+	mock.ExpectQuery(`FROM public\.session_turns_hot t`).
 		WithArgs("sess-big").
 		WillReturnRows(rows)
 

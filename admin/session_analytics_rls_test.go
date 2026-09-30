@@ -34,11 +34,16 @@ func TestWithTenantTransaction_RLSIsolation(t *testing.T) {
 	// 且 session_summaries relforcerowsecurity=f）——该前提下两租户都见全量
 	// 行是 PG 语义的必然，不是隔离破洞；修前此景实锤假红。显式 skip 并说明
 	// 前提，把隔离验证留给角色受控的 RLS 门（Makefile test-rls）。
+	// R65 批判复审收紧：前置查询自身失败（异常环境）必须 Fatal 而非借道
+	// skip——skip 只留给"确认 bypass"这一种前提不满足。
 	var roleBypasses bool
 	if err := pool.QueryRow(ctx,
 		`SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user`,
-	).Scan(&roleBypasses); err != nil || roleBypasses {
-		t.Skipf("connected role bypasses RLS (superuser/bypassrls=%v, err=%v); run via the role-aware RLS gate", roleBypasses, err)
+	).Scan(&roleBypasses); err != nil {
+		t.Fatalf("role precheck query failed: %v", err)
+	}
+	if roleBypasses {
+		t.Skip("connected role is superuser/bypassrls; RLS isolation not observable — run via the role-aware RLS gate")
 	}
 
 	probeQuery := func(tenant string) (int, error) {

@@ -361,6 +361,20 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 	}
 }
 
+// requestLogsWriteEnabled 报告 request_logs 宽表家族（request_logs_hot 主行 +
+// request_logs_bodies_hot 正文）当前是否允许写入 —— S4 停写 gate，键
+// storage.request_logs_write_enabled（默认 true = 维持现状双写，HotReload
+// 即时生效）。与 telemetry 包的 requestLogsWriteEnabled()、Lite sink 同一键、
+// 同一默认。
+//
+// 2026-10-01 审计修正：F5 接线时把 S4 门内联成 settings.GetPlatformBool 的
+// 一处字面量，镜像门又需要判同一个键。抽成本 helper 是为了**两处判定与键名
+// 只有一份**——门内联两遍、其中一处日后被单独改动，就是「停写却仍落盘」的
+// 分裂入口。
+func requestLogsWriteEnabled() bool {
+	return settings.GetPlatformBool("storage.request_logs_write_enabled", true)
+}
+
 func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLogInput) {
 	totalTok := calcTotal(e.PromptTokens, e.CompletionTokens)
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
@@ -372,7 +386,14 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// 同一边界语义——入口即投递，PG 停机/degraded 早退都不会让这批正文失去
 	// 灾备副本（E2E 演练 O5 实测的「PG 不可用时镜像仍写入」性质）。投递内容
 	// 与换算口径见 mirrorRequestBodies 的注释。
-	t.mirrorRequestBodies(e)
+	//
+	// S4 停写门必须同键同门（2026-10-01 审计修正，见 requestLogsWriteEnabled
+	// 与 storage/file/request_mirror.go 头注「S4 停写门同键同门」）：镜像写的是
+	// request_logs_bodies_hot 的同一批正文，运维关停该键的目的是止血磁盘，
+	// 若镜像绕过该门就是「停写却仍落盘」，且镜像与 PG 两侧行为分裂。
+	if requestLogsWriteEnabled() {
+		t.mirrorRequestBodies(e)
+	}
 
 	// 2026-07-21: Implement proper two-table separation (Ticket #10, Issue #8)
 	// - request_logs_hot: stores metadata + preview fields (first ~500 chars)
@@ -433,7 +454,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// Lite sink 同门）：关停后本路径只保留上方 usage_ledger 计费行，跳过
 	// request_logs_hot 主行与 request_logs_bodies_hot 正文（session 六表族是
 	// 唯一事实源）；提交逻辑不变。
-	if settings.GetPlatformBool("storage.request_logs_write_enabled", true) {
+	if requestLogsWriteEnabled() {
 		// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
 		// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
 		// 后台 partition_manager 会定期将冷数据（>7 天）迁移到月度分区。
