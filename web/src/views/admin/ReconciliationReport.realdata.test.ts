@@ -21,7 +21,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import { reactive } from 'vue'
 import ReconciliationReport from './ReconciliationReport.vue'
-import type { GroupDim } from '../../api/reportrollup'
+import zhCN from '../../locales/zh-CN'
 
 import realSummary from './__fixtures__/real_internal_summary.json'
 import realDailySummary from './__fixtures__/real_internal_daily_summary.json'
@@ -44,10 +44,14 @@ vi.mock('../../api/reportrollup', async () => {
 })
 vi.mock('vue-router', () => ({
   useRoute: () => reactive({ query: { view: 'internal' } }),
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
 }))
-// jsdom 没有 canvas；图表数据形状由 props 断言单独覆盖。
-vi.mock('echarts', () => ({
-  init: () => ({ setOption: vi.fn(), dispose: vi.fn(), resize: vi.fn(), on: vi.fn() }),
+vi.mock('../../components/reconciliation/ReconciliationCharts.vue', () => ({
+  default: {
+    name: 'ReconciliationCharts',
+    props: ['days', 'coveredDates', 'money'],
+    template: '<div data-testid="charts-stub" />',
+  },
 }))
 
 const i18n = createI18n({
@@ -55,7 +59,7 @@ const i18n = createI18n({
   globalInjection: true,
   locale: 'zh-CN',
   fallbackLocale: 'en',
-  messages: { 'zh-CN': {} },
+  messages: { 'zh-CN': zhCN },
 })
 
 type Report = Record<string, any>
@@ -98,7 +102,7 @@ describe('ReconciliationReport 真实数据渲染', () => {
     // 后者会被表格里的同名数字满足，于是「卡片字段映射改错」这类故障照样
     // 绿灯。fmtInt 对 undefined 兜底成 0（不暴露成 NaN），所以必须直接比对
     // 卡片文本才能抓住。
-    const cardValues = w.findAll('.card-value').map((n) => n.text())
+    const cardValues = w.findAll('.app-stat-card__value').map((n) => n.text())
     expect(cardValues.length, '总计卡片不应为空').toBeGreaterThan(0)
     expect(cardValues).toContain(
       Number(summary.totals.request_count).toLocaleString('en-US'),
@@ -107,20 +111,13 @@ describe('ReconciliationReport 真实数据渲染', () => {
     w.unmount()
   })
 
-  it('真实响应里每个维度分组都渲染出至少一行，且没有整列为空', async () => {
+  it('内部视角渲染租户、人员、模型，且没有整列为空', async () => {
     const w = await mountPage()
-    const vm = w.vm as unknown as { groupDim: GroupDim; tableRows: unknown[] }
-    // 用 GroupDim 类型约束维度名：手写字符串（'api_key' vs 'apikey'）会静默
-    // 落到 computed 的空分支，测试自己先错，测不出东西。
-    const dims: GroupDim[] = ['provider', 'credential', 'apikey', 'tenant', 'person', 'model']
-    for (const dim of dims) {
-      vm.groupDim = dim
-      await flushPromises()
-      const rows = vm.tableRows
-      expect(Array.isArray(rows)).toBe(true)
-      expect(rows.length, `分组维度 ${dim} 应有行`).toBeGreaterThan(0)
-      expectNoNaN(w.html())
-    }
+    const html = w.html()
+    expect(html).toContain(summary.tenants[0].tenant_id)
+    expect(html).toContain(summary.persons[0].person)
+    expect(html).toContain(summary.model_totals[0].raw_model_name)
+    expectNoNaN(html)
     w.unmount()
   })
 
