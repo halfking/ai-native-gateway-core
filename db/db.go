@@ -821,6 +821,38 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 // PARTITION OF 自动继承。CONCURRENTLY 无法在事务内执行，pinned 连接 +
 // 会话级 10min 预算（471/690 同款）；中断残留的 INVALID 索引先 DROP
 // 再建，否则 IF NOT EXISTS 永远跳过。
+
+// attachDigestNullChildrenSQL attaches each partition's digest-null index
+// only when that partition table has no child of the parent index yet.
+// Checking only the canonical name misses an already-attached alias and
+// then ATTACH fails the whole boot.
+const attachDigestNullChildrenSQL = `
+DO $$
+DECLARE part text;
+BEGIN
+  FOR part IN
+    SELECT c.relname
+    FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid
+    WHERE i.inhparent = 'public.session_turns'::regclass
+  LOOP
+    IF to_regclass(format('public.%I', part || '_digest_null_idx')) IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM pg_inherits ci
+         JOIN pg_class idx ON idx.oid = ci.inhrelid
+         JOIN pg_index ii ON ii.indexrelid = idx.oid
+         JOIN pg_class tbl ON tbl.oid = ii.indrelid
+         WHERE ci.inhparent = 'public.idx_session_turns_digest_null'::regclass
+           AND tbl.relname = part
+       ) THEN
+      EXECUTE format('ALTER INDEX public.idx_session_turns_digest_null ATTACH PARTITION public.%I',
+                     part || '_digest_null_idx');
+    END IF;
+  END LOOP;
+END $$;
+`
+
 func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -923,29 +955,13 @@ func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
 	`); err != nil {
 		return fmt.Errorf("create idx_session_turns_digest_null shell: %w", err)
 	}
-	// ATTACH the pre-built children (idempotent: skip already-attached).
-	if _, err := conn.Exec(ctx, `
-		DO $$
-		DECLARE part text;
-		BEGIN
-		  FOR part IN
-		    SELECT c.relname
-		    FROM pg_inherits i
-		    JOIN pg_class c ON c.oid = i.inhrelid
-		    WHERE i.inhparent = 'public.session_turns'::regclass
-		  LOOP
-		    IF to_regclass(format('public.%I', part || '_digest_null_idx')) IS NOT NULL
-		       AND NOT EXISTS (
-		         SELECT 1 FROM pg_inherits ci
-		         WHERE ci.inhparent = 'public.idx_session_turns_digest_null'::regclass
-		           AND ci.inhrelid = to_regclass(format('public.%I', part || '_digest_null_idx'))
-		       ) THEN
-		      EXECUTE format('ALTER INDEX public.idx_session_turns_digest_null ATTACH PARTITION public.%I',
-		                     part || '_digest_null_idx');
-		    END IF;
-		  END LOOP;
-		END $$;
-	`); err != nil {
+	// ATTACH the pre-built children. A partition may already have an
+	// equivalent child under another name (2026-10-01: session_turns_2026_11
+	// was attached as session_turns_2026_11_ts_id_idx). Attaching a second
+	// index for the same partition fails with SQLSTATE 55000, and that error
+	// used to abort database startup. Skip when any child already covers the
+	// partition table.
+	if _, err := conn.Exec(ctx, attachDigestNullChildrenSQL); err != nil {
 		return fmt.Errorf("attach session_turns digest_null child indexes: %w", err)
 	}
 
