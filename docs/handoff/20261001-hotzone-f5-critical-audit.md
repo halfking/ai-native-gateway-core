@@ -14,6 +14,17 @@
    `935be9493` 一并带入并已进 origin/main。
 3. **F5：admin HTTP ingest 接热区镜像**（owner 拍板"接镜像"）。首版实现（`f9947d3a3`）已完成并入 main。
 4. **对 F5 做批判式自审 → 抓到首版一个真实缺陷并修复**（见 §二 F5-R1）。
+5. **拉取整合时撞上 origin/main 编译级破坏 → 顺带修复**（见 §二 P0）。
+
+> **P0（已修，`d2ff2c3b1`）**：`317f28556`（S4 会话族读路径迁移批次）把
+> `loadSessionDetailDataInTx` 的 timeline 读取抽到 `loadSessionTimelineInTx`，删掉局部
+> `rows` 变量却把调用点的 `if err := rows.Err()` 留在原地 →
+> `admin/session_panorama_handler.go:179: undefined: rows`，**origin/main 无法编译**
+> （`b41689139` / `317f28556` 均已在远端）。本轮 `git pull` 后立即撞上，不修则任何内容
+> 都推不上去。修法：删悬空块 + 去掉随之无引用的 `"fmt"`。**未削弱检查**——错误传播由
+> `admin/session_timeline_query.go:77 return timeline, rows.Err()` 承担，调用方原样上抛。
+> **教训**：同 remote 多克隆并发下，`git pull` 后的树必须先 `go build ./...` 再提交；
+> 别人的红会以「我的提交被 non-fast-forward 拒绝」的形式出现，容易被误判成网络问题。
 
 ## 二、结论/根因
 
@@ -83,6 +94,11 @@ cd web && pnpm test                 # ✅ 150 文件 / 1091 用例
    当前唯一生效的止血手段是关停 S4 键。
 5. **同 remote 多克隆并发**（go-2/go-3/go-4/cursor）：本轮开工时我的未提交改动曾被另一会话
    代为提交（`f9947d3a3`）；开工前务必 `git status` + `git log --oneline -3` 核实时态。
+6. **既有测试缺口（本轮未补）**：`loadSessionTimelineInTx` 迁出后，调用方
+   `loadSessionDetailDataInTx` 的 timeline 迭代错误传播**无测试覆盖**。检查本身在
+   （`session_timeline_query.go:77`），但没有门钉住它。
+7. **`/api/telemetry` 是外部 HTTP 入口**（`admin/handler.go:1211`，admin 鉴权），仓内无生产者。
+   任何「它有真实流量」的判断都需环境侧取证，不能从代码推断。
 
 ## 六、下一轮入口
 
