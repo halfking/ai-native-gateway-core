@@ -3,6 +3,14 @@
 // Aggregates candidate failures into tenant-scoped, ten-minute error buckets.
 // A monotonic source watermark makes retries and overlapping scheduler cycles
 // idempotent.
+//
+// R75（2026-10-01）读端现状标注：本聚合器产出 provider_error_details，该表在
+// 生产代码里的**唯一** SELECT 是 admin/provider_credential.go 的
+// getProviderErrorStats（GET /admin/providers/{id}/error-stats），而该端点全仓
+// 零调用方——前端凭据详情页读的是 supplier_errors_unified 口径的
+// /api/vendors/credentials/{id}/error-detail。所以本管线目前是「在写、无面板读」。
+// 下线还是接线属产品裁决（45 号报告 §8），此处只把事实写在最显眼处：不要因为
+// 本文件注释详尽、测试齐全就默认这条链路的产出有人在消费。
 package bg
 
 import (

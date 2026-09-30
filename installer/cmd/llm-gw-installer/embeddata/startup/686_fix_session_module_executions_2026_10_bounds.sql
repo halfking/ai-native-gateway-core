@@ -12,6 +12,13 @@
 --   本库分区与父表均为 0 行,搬移为 no-op;非空库走 INSERT SELECT 兜底。
 --
 -- Idempotent: YES(按实际上界文本守卫)。
+--
+-- 2026-10-01 fresh-install e2e 修订：分区存在性判定由 ::regclass 改为
+-- to_regclass()。::regclass 在分区缺失时直接 42P01 抛错，下方
+-- "absent; nothing to repair" 分支从未可达；全新安装没有预建分区
+-- （分区由运行期 ensure tick 创建），installer dbinit 序列必炸于此。
+-- 存量库重放语义不变：to_regclass 命中既有分区后走原守卫，bounds
+-- 正确即 skip。
 
 DO $$
 DECLARE
@@ -19,7 +26,7 @@ DECLARE
 BEGIN
   SELECT pg_get_expr(c.relpartbound, c.oid) INTO v_bounds
     FROM pg_class c
-   WHERE c.oid = 'public.session_module_executions_2026_10'::regclass;
+   WHERE c.oid = to_regclass('public.session_module_executions_2026_10');
 
   IF v_bounds IS NULL THEN
     RAISE NOTICE '686: partition session_module_executions_2026_10 absent; nothing to repair';

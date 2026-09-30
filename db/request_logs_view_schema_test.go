@@ -70,14 +70,14 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 // conditional laterals on frozen chains) and that a HOT_ONLY hot column never
 // breaks the UNION.
 //
-// Gated on LLM_GATEWAY_TEST_PG_DSN so CI stays offline-green; run locally:
+// Gated on TEST_PG_DSN so CI stays offline-green; run locally:
 //
-//	LLM_GATEWAY_TEST_PG_DSN='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
+//	TEST_PG_DSN='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
 //	  go test ./db/ -run TestRequestLogsCurrentMonthViewEnsureRoundTrip -count=1 -v
 func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
-	dsn := os.Getenv("LLM_GATEWAY_TEST_PG_DSN")
+	dsn := resolveTestDSN()
 	if dsn == "" {
-		t.Skip("LLM_GATEWAY_TEST_PG_DSN not set — offline mode")
+		t.Skip("TEST_PG_DSN (or LLM_GATEWAY_TEST_PG_DSN) not set — offline mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -356,3 +356,5 @@ func TestSessionFamilyTurnsForSessionSQLPushesPredicate(t *testing.T) {
 		t.Fatal("session-native source must not reference the retired request_logs family")
 	}
 }
+
+// resolveTestDSN 见 view_schema_v2_contract_test.go（同包唯一定义）。

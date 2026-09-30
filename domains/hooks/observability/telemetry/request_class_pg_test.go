@@ -11,18 +11,18 @@ import (
 
 // V6-W1.6 R8 / migration 608 local integration test (真实 PG 写入 + 回查).
 //
-// Gated on LLM_GATEWAY_TEST_PG_DSN so CI stays offline-green; run locally:
+// Gated on TEST_PG_DSN so CI stays offline-green; run locally:
 //
-//	LLM_GATEWAY_TEST_PG_DSN='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
+//	TEST_PG_DSN='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
 //	  go test ./domains/hooks/observability/telemetry/ -run TestRequestClassPGRoundTrip -count=1 -v
 //
 // Precondition: migration 608 applied (the test applies it from the repo SQL
 // file when the DSN is set, so a fresh local DB also works).
 
 func TestRequestClassPGRoundTrip(t *testing.T) {
-	dsn := os.Getenv("LLM_GATEWAY_TEST_PG_DSN")
+	dsn := resolveTestDSN()
 	if dsn == "" {
-		t.Skip("LLM_GATEWAY_TEST_PG_DSN not set — offline mode")
+		t.Skip("TEST_PG_DSN (or LLM_GATEWAY_TEST_PG_DSN) not set — offline mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -129,4 +129,19 @@ func TestRequestClassPGRoundTrip(t *testing.T) {
 
 	// Cleanup test rows.
 	_, _ = pool.Exec(ctx, `DELETE FROM request_logs_hot WHERE request_id LIKE '608-%'`)
+}
+
+// 变量名按仓内契约取：scripts/audit/run-integration-gate.sh 只注入
+// TEST_PG_DSN / *_DATABASE_URL / *_DB_URL / *_PG_URL 这几种后缀（注入清单见
+// 该脚本的 dsn_runner 段），而 sql/schema/integration_gate_test.go 的
+// TestGateInjectsEveryDBCredentialName 正是按这些后缀从仓内**推导**该清单的。
+// 用 _PG_DSN 这类不在契约内的名字，harness 永远不会注入 ⇒ 这道门在 CI 上
+// 结构性沉睡，却仍以 "ok" 的形式出现在报告里。第二变量名保留给手工运行，
+// 但**新代码请直接用 TEST_PG_DSN**，否则重蹈「门禁对沉睡文件不作证」。
+
+func resolveTestDSN() string {
+	if v := os.Getenv("TEST_PG_DSN"); v != "" {
+		return v
+	}
+	return os.Getenv("LLM_GATEWAY_TEST_PG_DSN")
 }

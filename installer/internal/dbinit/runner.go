@@ -29,7 +29,58 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		DBName:         dbName,
 		SQLDir:         sqlDir,
 		StartupFiles: []string{
+			// The 01-schema baseline was dumped around 477 but is not a faithful
+			// snapshot of any single lineage: the pre-478 files below are the
+			// canonical creators of objects the baseline either lacks or carries
+			// in an older shape. Without them fresh installs abort somewhere in
+			// 510..802 (42P01/42703) — the 2026-09-30 fresh-install-chain review
+			// red-flagged the first one (622) and the 2026-10-01 e2e round walked
+			// the whole sequence to green.
+			//
+			// hot/parent alignment: 388/484/491/510/532/542/543 + 392/535/617
+			// (candidate_failure_logs) + 471 (session_summaries archival) are
+			// self-guarded historical migrations, registrable as-is; 523/350 are
+			// NOT (their view/function surgery conflicts with the newer baseline)
+			// and became the 804/805 reconciles instead.
+			"388_billing_cancellation_audit.sql",
+			// 392/535/617 predate this list's 478 floor: the 01-schema baseline was
+			// dumped around 477 and carries neither the candidate_failure_logs
+			// hot/monthly-partition split (392), the atomic promote replacement
+			// (535), nor the session_id/per_attempt_latency_ms writer columns (617).
+			// 622 ALTERs and UPDATEs candidate_failure_logs_hot unconditionally, so
+			// fresh installs aborted at 622 with 42P01 (2026-09-30
+			// fresh-install-chain review; wired 2026-10-01).
+			"392_candidate_failure_logs_monthly_partition.sql",
+			// 471 is baseline-gap class like 392/535/617 (wired 2026-10-01): the
+			// archival columns/session_summaries index it adds are consumed by 690.
+			// Self-guarded information_schema checks make it directly registrable.
+			"471_session_summaries_archival.sql",
+			// session_turns_hot_bootstrap (installer-only final-state asset,
+			// 526+636 projection) moved here 2026-10-01: it must precede 706/707
+			// — 707 §2 expands session_turns_hot in lock-step with the parent
+			// and its parity check requires the baseline-era 42-column parent
+			// shape this bootstrap is projected onto. It previously sat after
+			// 731, where 707's hot-side statements crashed 42P01 on fresh
+			// installs (the sequence never reached 707 before the baseline-gap
+			// fixes landed). Still ahead of 733/734 as the R51 ruling requires.
+			"session_turns_hot_bootstrap.sql",
 			"478_auto_route_affinity.sql",
+			// 484/485/487/491/510 are baseline-gap class (wired 2026-10-01): hot-side
+			// status_code, request_logs parent's raw_model_name (hot twin via 603)
+			// and system_fingerprint (hot twin via 603), the t0..t9 queue
+			// timestamps, and request_type — all consumed by 573's rebuilt view
+			// and 696/700.
+			"484_request_logs_hot_add_status_code.sql",
+			"485_request_logs_add_raw_model_name.sql",
+			"487_request_logs_add_system_fingerprint.sql",
+			"491_request_logs_queue_timestamps.sql",
+			"510_request_type.sql",
+			// 532/542/543 are baseline-gap class (wired 2026-10-01): hot+parent
+			// is_final_success / token_band / discard_events; 573's view and the
+			// 695/747 final-success path reference them.
+			"532_request_logs_final_success.sql",
+			"542_request_logs_token_band.sql",
+			"543_request_logs_discard_events.sql",
 			"511_state_transitions_table.sql",
 			"515_state_transitions_seq_unique.sql",
 			// R42 (2026-09-18): 516/520 are the only creators of the durable
@@ -42,6 +93,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"521_repair_state_transitions_tenant.sql",
 			"530_request_journey_contract.sql",
 			"531_request_journey_tenant_uniqueness.sql",
+			"535_candidate_failure_logs_atomic_promote.sql",
 			"536_stats_analytics_foundation.sql",
 			"537_usage_facts.sql",
 			"539_stats_reconciliation_tenant.sql",
@@ -72,12 +124,37 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"570_model_offers_insert_priority_passthrough.sql",
 			"571_candidate_binding_scope_revision_canonical_priority_hash.sql",
 			"572_session_summary_large_token_ratio.sql",
+			// 573 (wired 2026-10-01) must precede 577: it drops the baseline's
+			// body-column-referencing request_logs views and rebuilds them
+			// body-free, unblocking 603's outbound_body DROP; 577 then renames
+			// the rebuilt wrapper. End state matches production (bodies_progress
+			// stays dropped, per 573's own ruling).
+			"573_drop_request_logs_body_columns.sql",
+			// 577/610 rebuild the request_logs view chain by renaming the
+			// current wrapper and re-wrapping (577: customer_id; 610:
+			// request_class/due_at). Both are fully guarded and the baseline
+			// request_logs tables carry customer_id, so they apply cleanly on
+			// fresh installs; 696/700/738/740 later expect the wrappers.
+			"577_request_logs_view_customer_id.sql",
 			"600_outbound_body_to_bodies_hot.sql",
 			"601_request_logs_bodies_drop_metadata.sql",
 			"602_request_logs_promote_atomic.sql",
+			// 603 (wired 2026-10-01) is the canonical creator for the ten
+			// request_logs_hot columns (system_fingerprint/raw_model_name/…)
+			// that only deploy-lineage databases had; 603's defensive view
+			// check needs 577's without_customer_id wrapper, so it sits after it.
+			"603_repair_request_logs_schema_consistency.sql",
 			"606_session_summaries_agent_expert_tags.sql",
+			"610_request_class_due_at.sql",
 			"614_session_bodies_hot.sql",
 			"615_session_bodies_hot_promote_function.sql",
+			"617_candidate_failure_logs_hot_contract.sql",
+			// 803 closes the second canonical-chain gap the fresh-install e2e
+			// found (after 392/535/617): 627's candidate_failure_logs_unified
+			// view references hot columns that only deploy-chain (V359)
+			// databases ever had. Numbered in the 8xx range per the tail
+			// convention but applied here, ahead of its 627 consumer.
+			"803_candidate_failure_logs_hot_column_reconcile.sql",
 			"618_request_journey_snapshot_receipts.sql",
 			"620_provider_error_details_tenant_scope.sql",
 			"621_provider_error_details_cleanup_index.sql",
@@ -96,6 +173,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"637_session_bodies_unified_today_visible.sql",
 			"638_session_bodies_promote_guard.sql",
 			"639_provider_error_details_credential.sql",
+			// 640 is baseline-gap class (wired 2026-10-01): protocol triplet on
+			// session_turns parent+hot + view projection; 713's turns-view
+			// rebuild references client_protocol/upstream_protocol/ir_metadata.
+			"640_session_turns_protocol_fields.sql",
 			"644_tuning_views_selfcheck_and_candidate_failure_cache.sql",
 			"645_session_bodies_hot_request_unique_repair.sql",
 			"646_proxy_management_canonical.sql",
@@ -130,7 +211,21 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"679_local_credential_unique.sql",
 			"680_request_logs_current_month_view_bootstrap.sql",
 			"681_provider_error_details_fingerprint_restore_8part.sql",
+			// 804 (wired 2026-10-01) closes the third canonical-chain gap: 523's
+			// context_window triplet is only half-covered by the baseline, and
+			// 682's model_offers rebuild references cmb.context_window_source/
+			// _updated_at. 523 itself is un-appliable on fresh installs (its
+			// 2026-07 view definition would shrink the baseline's model_offers,
+			// which CREATE OR REPLACE VIEW forbids), so only the columns are
+			// reconciled here.
+			"804_credential_model_context_window_columns.sql",
 			"682_model_offers_context_window_columns.sql",
+			// 805 (wired 2026-10-01): session_dim's canonical creators (350/358)
+			// are un-registrable wholesale — 350 rewrites update_session_summary()
+			// with a 2026-07 body (the 572/563/661 clobber guard) — so the table
+			// itself is reconciled here at its production shape, ahead of 683's
+			// ownership-column ALTER.
+			"805_session_dim_reconcile.sql",
 			"683_session_dim_ownership_columns.sql",
 			"684_drop_stale_provider_error_tenant_fingerprint.sql",
 			"685_task_default_routing_tenant_text.sql",
@@ -153,6 +248,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"703_supplier_errors_promote_timezone_pin.sql",
 			"706_session_family_s1a.sql",
 			"707_session_turns_s1a.sql",
+			// 806 (wired 2026-10-01, mirrors 562): the baseline pre-creates
+			// session_bodies_2026_07/08 as columnar; 708's per-partition UPDATE
+			// and its recursive unique indexes cannot run against columnar.
+			// Empty non-heap partitions are detached and rebuilt as heap with
+			// their original bounds.
+			"806_session_bodies_partitions_heap.sql",
 			"708_session_bodies_s1a.sql",
 			"711_hosted_tasks.sql",
 			"712_session_mirror_outbox.sql",
@@ -205,14 +306,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 逐文件 applySQL 不去重，同一迁移会被重复应用。删除 bootstrap
 			// 前的错位对，保留下方位置合法的一对；TestStartupFilesHaveNoDuplicates
 			// 守门（既有 contains 型测试用 map 记录位置，抓不到列表内重复）。
-			"session_turns_hot_bootstrap.sql",
-			// 733/734 (taskprofile 后续轮, 2026-09-21): 会话存储解耦 v3
-			// 五点同步补齐 —— session v3 落地（035f9382e）只跑了 db.Open
-			// 与 schema 通道，安装器同步移交本轮收口。733 建
-			// session_turn_details（hot + 月分区，50000/批回填），734
-			// 把 canonical 视图 session 分支的 30 个 NULL 占位换成 details
-			// LEFT JOIN。必须 733 在前、734 在后，且均在
-			// session_turns_hot_bootstrap 之后（依赖 hot 表存在）。
+			// 2026-10-01：bootstrap 本体上移至 478 之前的 head 簇（707 依赖
+			// hot 表，见彼处注释），733/734 仍在 bootstrap 之后，约束不变。
 			"733_session_turn_details.sql",
 			"734_request_logs_view_details_join.sql",
 			// 735 (R51, 2026-09-21): models_canonical active 折叠名表达式唯一
@@ -461,6 +556,15 @@ func requiresNoTransaction(content []byte) bool {
 		}
 	}
 	return false
+}
+
+// RequiresNoTransaction 是 requiresNoTransaction 的导出形态：集成测试
+// （cmd/llm-gw-installer 的 fresh-install e2e）自带 apply 通道，必须与本
+// runner 的 applySQL 采用同一标记分流——否则带 dbinit:no-transaction 标记
+// 的迁移（如 718 的 DROP INDEX CONCURRENTLY）会被 --single-transaction 包裹
+// 而在全新安装上失败。
+func RequiresNoTransaction(content []byte) bool {
+	return requiresNoTransaction(content)
 }
 
 // applySQL 应用单个 SQL 文件（通过 docker exec + stdin）

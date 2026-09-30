@@ -345,7 +345,7 @@ func TestConfirmation_PG_DurableRestoreReplaysIdempotently(t *testing.T) {
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(101)))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE session_summaries SET handoff_count=COALESCE(handoff_count,0)+1`)).
-		WithArgs(p.PreviousSessionID, p.TenantID, sqlmock.AnyArg(), p.Record.TokensAtTrigger, p.Record.MessagesAtTrigger, p.Record.TriggerReason).
+		WithArgs(p.PreviousSessionID, p.TenantID, sqlmock.AnyArg(), p.Record.TokensAtTrigger, p.Record.MessagesAtTrigger, p.Record.TriggerReason, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Guarded update — the WHERE clause `status='pending'` ensures only
 	// the first tx wins; any concurrent attempt will see 0 rows updated
