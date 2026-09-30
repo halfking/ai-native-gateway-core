@@ -26519,7 +26519,21 @@ CREATE INDEX request_logs_2026_07_provider_model_ts_idx ON public.request_logs_2
 -- Name: request_logs_2026_07_quality_flags_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_07_quality_flags_idx ON public.request_logs_2026_07 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0);
+-- GIN is unsupported on columnar access-method tables (Citus). Build it
+-- only while the partition is heap so a citus-enabled fresh install
+-- completes; later ALTER ... SET ACCESS METHOD columnar keeps the index.
+DO $gin$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+        WHERE c.oid = 'public.request_logs_2026_07'::regclass AND am.amname <> 'columnar'
+    ) THEN
+        EXECUTE $ddl$CREATE INDEX request_logs_2026_07_quality_flags_idx ON public.request_logs_2026_07 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0)$ddl$;
+    ELSE
+        RAISE NOTICE 'skip gin index request_logs_2026_07_quality_flags_idx: partition request_logs_2026_07 is columnar';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -26582,7 +26596,21 @@ CREATE INDEX request_logs_2026_07_tenant_id_ts_idx1 ON public.request_logs_2026_
 -- Name: request_logs_2026_07_tool_calls_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_07_tool_calls_idx ON public.request_logs_2026_07 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb));
+-- GIN is unsupported on columnar access-method tables (Citus). Build it
+-- only while the partition is heap so a citus-enabled fresh install
+-- completes; later ALTER ... SET ACCESS METHOD columnar keeps the index.
+DO $gin$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+        WHERE c.oid = 'public.request_logs_2026_07'::regclass AND am.amname <> 'columnar'
+    ) THEN
+        EXECUTE $ddl$CREATE INDEX request_logs_2026_07_tool_calls_idx ON public.request_logs_2026_07 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb))$ddl$;
+    ELSE
+        RAISE NOTICE 'skip gin index request_logs_2026_07_tool_calls_idx: partition request_logs_2026_07 is columnar';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -26764,7 +26792,21 @@ CREATE INDEX request_logs_2026_08_provider_model_ts_idx ON public.request_logs_2
 -- Name: request_logs_2026_08_quality_flags_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_08_quality_flags_idx ON public.request_logs_2026_08 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0);
+-- GIN is unsupported on columnar access-method tables (Citus). Build it
+-- only while the partition is heap so a citus-enabled fresh install
+-- completes; later ALTER ... SET ACCESS METHOD columnar keeps the index.
+DO $gin$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+        WHERE c.oid = 'public.request_logs_2026_08'::regclass AND am.amname <> 'columnar'
+    ) THEN
+        EXECUTE $ddl$CREATE INDEX request_logs_2026_08_quality_flags_idx ON public.request_logs_2026_08 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0)$ddl$;
+    ELSE
+        RAISE NOTICE 'skip gin index request_logs_2026_08_quality_flags_idx: partition request_logs_2026_08 is columnar';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -26834,7 +26876,21 @@ CREATE INDEX request_logs_2026_08_tenant_id_ts_idx1 ON public.request_logs_2026_
 -- Name: request_logs_2026_08_tool_calls_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_08_tool_calls_idx ON public.request_logs_2026_08 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb));
+-- GIN is unsupported on columnar access-method tables (Citus). Build it
+-- only while the partition is heap so a citus-enabled fresh install
+-- completes; later ALTER ... SET ACCESS METHOD columnar keeps the index.
+DO $gin$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+        WHERE c.oid = 'public.request_logs_2026_08'::regclass AND am.amname <> 'columnar'
+    ) THEN
+        EXECUTE $ddl$CREATE INDEX request_logs_2026_08_tool_calls_idx ON public.request_logs_2026_08 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb))$ddl$;
+    ELSE
+        RAISE NOTICE 'skip gin index request_logs_2026_08_tool_calls_idx: partition request_logs_2026_08 is columnar';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -27793,7 +27849,15 @@ ALTER INDEX public.idx_request_logs_provider_model ATTACH PARTITION public.reque
 -- Name: request_logs_2026_07_quality_flags_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_07_quality_flags_idx;
+DO $gin$
+BEGIN
+    IF to_regclass('public.request_logs_2026_07_quality_flags_idx') IS NOT NULL THEN
+        EXECUTE $ddl$ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_07_quality_flags_idx$ddl$;
+    ELSE
+        RAISE NOTICE 'skip attach request_logs_2026_07_quality_flags_idx: partition gin index absent (columnar)';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -27856,7 +27920,15 @@ ALTER INDEX public.idx_request_logs_outbound_msg_count ATTACH PARTITION public.r
 -- Name: request_logs_2026_07_tool_calls_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_07_tool_calls_idx;
+DO $gin$
+BEGIN
+    IF to_regclass('public.request_logs_2026_07_tool_calls_idx') IS NOT NULL THEN
+        EXECUTE $ddl$ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_07_tool_calls_idx$ddl$;
+    ELSE
+        RAISE NOTICE 'skip attach request_logs_2026_07_tool_calls_idx: partition gin index absent (columnar)';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -28031,7 +28103,15 @@ ALTER INDEX public.idx_request_logs_provider_model ATTACH PARTITION public.reque
 -- Name: request_logs_2026_08_quality_flags_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_08_quality_flags_idx;
+DO $gin$
+BEGIN
+    IF to_regclass('public.request_logs_2026_08_quality_flags_idx') IS NOT NULL THEN
+        EXECUTE $ddl$ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_08_quality_flags_idx$ddl$;
+    ELSE
+        RAISE NOTICE 'skip attach request_logs_2026_08_quality_flags_idx: partition gin index absent (columnar)';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -28094,7 +28174,15 @@ ALTER INDEX public.idx_request_logs_credits_charged ATTACH PARTITION public.requ
 -- Name: request_logs_2026_08_tool_calls_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_08_tool_calls_idx;
+DO $gin$
+BEGIN
+    IF to_regclass('public.request_logs_2026_08_tool_calls_idx') IS NOT NULL THEN
+        EXECUTE $ddl$ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_08_tool_calls_idx$ddl$;
+    ELSE
+        RAISE NOTICE 'skip attach request_logs_2026_08_tool_calls_idx: partition gin index absent (columnar)';
+    END IF;
+END
+$gin$;
 
 
 --
