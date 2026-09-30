@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
@@ -59,6 +60,14 @@ type CredentialProbeV2 struct {
 	// 新增：状态管理器引用
 	stateManager credentialstate.StateObserver
 
+	// F04 (V3 持久化协议能力, 2026-09-30): fpslot 节点状态管理器引用。
+	// 探针是协议能力结论的权威来源：它观察到 provider 的
+	// "Responses API unsupported" 判定后，除了写 cooldown，还要把该结论
+	// 持久化到 (credential, model) 节点，使后续请求不再重复试打一发注定
+	// 失败的 Responses。nil / 未启用 Redis 时整条能力写路径 no-op —
+	// capabilities 保持缺省，读端继续走实时检测（lite 模式语义）。
+	fpSlots *credentialfpslot.Manager
+
 	// onQuotaRecovered is the dispatcher-facing notification fired from
 	// cycleAll's healthy-ready success branch. The hook is consulted AFTER
 	// writeHealth has flipped the credential back to ready (so the cache
@@ -72,6 +81,49 @@ type CredentialProbeV2 struct {
 
 	probeCtxMu sync.RWMutex
 	probeCtx   context.Context
+
+	// F04 (V3 持久化协议能力, 2026-09-30): durable protocol-capability
+	// verdict observed by the most recent probeCredential call, for the
+	// snapshot being probed.
+	//
+	// Why a receiver field instead of a third return value: probeCredential
+	// has ~30 return statements and is the shared entry for the whole
+	// availability ladder; changing its signature would touch every one of
+	// them for a value that only two call sites consume. Instead the single
+	// detection site (the Responses-unsupported branch) stamps the verdict
+	// and each caller drains it immediately after the call.
+	//
+	// contract: probeCredential ALWAYS sets this field (nil when the probe
+	// saw no capability evidence), so a stale verdict from a previous
+	// credential can never be attributed to the wrong one.
+	capVerdictMu       sync.Mutex
+	capVerdictCredID   int
+	capVerdictModel    string
+	capVerdictObserved *bool
+}
+
+// setCapabilityVerdict stamps the probe-scoped durable capability verdict.
+func (c *CredentialProbeV2) setCapabilityVerdict(credID int, model string, supported *bool) {
+	c.capVerdictMu.Lock()
+	defer c.capVerdictMu.Unlock()
+	c.capVerdictCredID = credID
+	c.capVerdictModel = model
+	c.capVerdictObserved = supported
+}
+
+// takeCapabilityVerdict returns and clears the verdict, but only when it
+// belongs to (credID, model). A mismatch returns nil: attributing another
+// credential's or another model's capability observation to this write would
+// poison the read path's short-circuit for the wrong node.
+func (c *CredentialProbeV2) takeCapabilityVerdict(credID int, model string) *bool {
+	c.capVerdictMu.Lock()
+	defer c.capVerdictMu.Unlock()
+	if c.capVerdictObserved == nil || c.capVerdictCredID != credID || c.capVerdictModel != model {
+		return nil
+	}
+	observed := c.capVerdictObserved
+	c.capVerdictObserved = nil
+	return observed
 }
 
 // NewCredentialProbeV2 builds the background probe-v2 worker. The cycle
@@ -133,6 +185,15 @@ func (c *CredentialProbeV2) SetKeyring(kr *secret.Keyring) {
 
 func (c *CredentialProbeV2) SetAvailabilityCache(cache *ModelAvailabilityCache) {
 	c.cache = cache
+}
+
+// SetFpSlots wires the fpslot node-state manager used to persist F04 durable
+// protocol-capability verdicts (see the fpSlots field doc). Same contract as
+// SetKeyring: call once at boot, before Start. nil is valid and means "no
+// capability persistence" — the probe keeps its cooldown-only behavior and the
+// request path keeps using live Responses detection.
+func (c *CredentialProbeV2) SetFpSlots(mgr *credentialfpslot.Manager) {
+	c.fpSlots = mgr
 }
 
 // SetStateManager 设置状态管理器（新增）
@@ -551,6 +612,9 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		}
 		pr.HealthProbeModel = s.DefaultProbeModel
 		pr.EvidenceAt = rowT0 // #5 (R28): optimistic-concurrency evidence stamp
+		// F04: drain the durable protocol-capability verdict this probe
+		// observed (nil when the probe carried no capability evidence).
+		pr.SupportsResponses = c.takeCapabilityVerdict(s.ID, s.DefaultProbeModel)
 		c.writeHealth(timeoutCtx, s.ID, pr)
 
 		// 2026-08-26 quota-recovery-notify fix: after writeHealth has flipped
@@ -716,6 +780,23 @@ type probeResult struct {
 	// hard-quota OR-bypass: a live 2xx is the freshest evidence there is.
 	// Zero value disables the gate (fail-open) for callers that don't set it.
 	EvidenceAt time.Time
+
+	// F04 (V3 持久化协议能力, 2026-09-30): durable protocol-capability
+	// verdict observed by THIS probe for pr.HealthProbeModel. Tri-state
+	// pointer, not bool:
+	//
+	//   nil  → no capability evidence in this probe (the overwhelming
+	//          majority: chat/availability probes say nothing about
+	//          Responses support). Write nothing.
+	//   &false → provider returned an explicit "Responses API unsupported"
+	//          verdict (providercap.ResponsesUnsupportedError matched) —
+	//          persist the durable negative verdict.
+	//   &true → this probe's Responses attempt SUCCEEDED — persist the
+	//          positive verdict so a prior mislabel self-heals (F04 §3.4).
+	//
+	// Pointer shape mirrors NodeCapabilities.SupportsResponses: absent must
+	// never be conflated with an explicit "unsupported".
+	SupportsResponses *bool
 }
 
 // loadBoundRawModels returns distinct available raw models bound to a
@@ -788,6 +869,11 @@ func uniqueStringSet(values ...[]string) []string {
 // fail fast because retrying them is pointless and risks masking real
 // configuration errors.
 func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (bool, string) {
+	// F04: clear the probe-scoped capability verdict up front. Every exit path
+	// below therefore leaves the field describing THIS probe — a nil here
+	// means "this probe saw no capability evidence", and a caller that never
+	// re-stamps can never read a previous credential's verdict.
+	c.setCapabilityVerdict(s.ID, s.DefaultProbeModel, nil)
 	if s.BaseURL == "" {
 		return false, "empty base URL"
 	}
@@ -883,9 +969,19 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
 			ok, errMsg, respStatus, respBody := c.miniResponses(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL)
 			if ok {
+				// F04 §3.4 reverse recovery: this probe's Responses attempt
+				// succeeded, so any prior "unsupported" verdict for this node
+				// is stale and must be flipped back. Without this a single
+				// mislabel blocks every Responses request for a full TTL.
+				supported := true
+				c.setCapabilityVerdict(s.ID, s.DefaultProbeModel, &supported)
 				return true, ""
 			}
 			if providercap.ResponsesUnsupportedError(respStatus, respBody) {
+				// F04: durable negative verdict. The cooldown this failure
+				// causes expires on its own schedule; the capability does not.
+				unsupported := false
+				c.setCapabilityVerdict(s.ID, s.DefaultProbeModel, &unsupported)
 				chatURL := upstreamurl.Build(strings.TrimRight(s.BaseURL, "/"), upstreamurl.EpChatCompletions)
 				if blocked, reason := providercap.EgressBlocked(chatURL); blocked {
 					providercap.WarnBlocked("probe_v2.chat", chatURL, reason)
@@ -1639,6 +1735,35 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 			})
 		}
 	}
+
+	// F04 (V3 持久化协议能力, 2026-09-30): persist this probe's durable
+	// protocol-capability verdict to the fpslot node state, so subsequent
+	// requests on the same (credential, model) skip an attempt that is known
+	// to fail instead of re-discovering the same verdict on every request.
+	//
+	// Scoped to pr.HealthProbeModel only: the verdict is per (credential,
+	// model) and was observed against that exact model. Fanning out to
+	// writeModels would assert capability for models this probe never
+	// touched.
+	//
+	// Runs after the stateManager fan-out and is best-effort: a Redis hiccup
+	// must not fail a health write that already succeeded. A lost capability
+	// write degrades to today's behavior (re-detect per request), never to a
+	// wrong verdict.
+	if pr.SupportsResponses != nil && pr.HealthProbeModel != "" && c.fpSlots != nil {
+		if err := c.fpSlots.SetSupportsResponses(execCtx, credID, pr.HealthProbeModel, *pr.SupportsResponses); err != nil {
+			slog.Warn("credential probe v2: durable capability write failed",
+				"credential_id", credID,
+				"probe_model", pr.HealthProbeModel,
+				"supports_responses", *pr.SupportsResponses,
+				"error", err)
+		} else {
+			slog.Info("credential probe v2: durable capability recorded",
+				"credential_id", credID,
+				"probe_model", pr.HealthProbeModel,
+				"supports_responses", *pr.SupportsResponses)
+		}
+	}
 }
 
 // restoreAllBindingsOnCredentialSuccess is the 2026-08-26 self-check audit
@@ -1936,6 +2061,8 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 	// #5 (R28): probeStart was taken immediately before probeCredential — it
 	// IS the evidence timestamp for optimistic-concurrency gating.
 	pr.EvidenceAt = probeStart
+	// F04: drain the durable protocol-capability verdict (nil when absent).
+	pr.SupportsResponses = c.takeCapabilityVerdict(credID, s.DefaultProbeModel)
 	c.writeHealth(timeoutCtx, credID, pr)
 	if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
 		c.onQuotaRecovered(credID, "probe_now")

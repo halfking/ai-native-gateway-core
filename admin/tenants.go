@@ -741,7 +741,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
 	                      success, total_tokens, prompt_tokens, completion_tokens,
 	                      credits_charged, cost_usd
-	        FROM request_logs)`
+	        FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）`
 	usageTable := "usage_ledger_with_current_month"
 
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)

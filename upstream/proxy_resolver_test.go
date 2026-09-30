@@ -12,6 +12,13 @@ import (
 // healthy proxy exists, while domestic hosts keep direct access and the
 // default (non-strict) mode keeps the historical fail-open behavior.
 func TestStrictProxyTransportBlocksOverseasWithoutProxy(t *testing.T) {
+	// Precondition: strict mode with NO healthy proxy. NewProxyResolver reads
+	// HTTPS_PROXY/HTTP_PROXY from the environment; on a developer machine with
+	// a live local proxy the resolver would report proxyAvailable()=true and
+	// the strict block would never trigger. Pin the precondition explicitly.
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+
 	strict := NewProxyResolver()
 	strict.strict.Store(true)
 

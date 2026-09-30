@@ -436,6 +436,12 @@ func isTableNotFound(err error, table string) bool {
 
 // getPolicy 获取策略
 func (c *Checker) getPolicy(ctx context.Context, tenantID string) (*Policy, error) {
+	// Builtin (lite/data-plane) checker has no database: fall back to the
+	// conservative default policy so Check stays available without a DB.
+	// Tenant-specific policies require the full NewChecker(db) form.
+	if c.db == nil {
+		return defaultPolicy(tenantID), nil
+	}
 	// R25-E: one SQL load per request, not one per visible text field.
 	// The stream path wraps its check context with WithRequestPolicyCache;
 	// without this read the cache value was written but never consulted.

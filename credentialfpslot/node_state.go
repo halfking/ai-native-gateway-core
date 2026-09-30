@@ -49,6 +49,47 @@ type NodeState struct {
 	// P0 新增字段（2026-07-19）：支持实际流量优先恢复
 	LastDisabledAt int64 `json:"last_disabled_at,omitempty"` // 最后一次被禁用的时间
 	DisableCount   int   `json:"disable_count,omitempty"`    // 累计禁用次数（用于动态调整冷却时间）
+
+	// F04 (V3 持久化协议能力, 2026-09-30): 协议能力位 —— 与上面的 cooldown
+	// 健康状态是**两件事**：cooldown 是临时降级（TTL 内自然过期），协议能力
+	// 是「这个 credential 上的这个模型，永远不支持这个协议」的持久结论。
+	// 没有它，每次新请求都会先打一发注定失败的 Responses 再回退。
+	//
+	// 生命周期与 NodeState 整体绑定（nodeStateTTLSec，3600s）。TTL 过期后
+	// capabilities 随整个 key 消失 → 读端视为「未知」，回到实时检测路径，
+	// 不会因为一次误标而永久阻塞。
+	//
+	// POINTER, not a value: a value struct is never omitted by
+	// `json:",omitempty"`, so every node would always carry `"capabilities":{}`.
+	// Redis Lua (cjson) cannot tell an empty object from an empty array and
+	// re-encodes `{}` as `[]`, which then fails to unmarshal back into a Go
+	// struct — every node-state read would error. A nil pointer is omitted
+	// from the payload entirely, so cjson never sees an empty object here.
+	Capabilities        *NodeCapabilities `json:"capabilities,omitempty"`
+	CapabilityUpdatedAt int64             `json:"capability_updated_at,omitempty"` // unix seconds
+}
+
+// NodeCapabilities holds durable protocol-capability verdicts for one
+// (credential, model) node. Every field is a *bool so that "never probed"
+// (nil) is distinguishable from an explicit observation: a nil
+// SupportsResponses MUST NOT short-circuit the live detection path, or every
+// unprobed credential would be treated as "Responses unsupported".
+type NodeCapabilities struct {
+	// SupportsResponses=false means the provider verdict was "Responses API
+	// unsupported" for this credential+model.
+	SupportsResponses *bool `json:"supports_responses,omitempty"`
+}
+
+// SupportsResponsesKnown reports whether a durable verdict exists. Callers
+// short-circuiting the live Responses attempt must consult this first: a nil
+// pointer means "never observed", never "unsupported".
+func (c *NodeCapabilities) SupportsResponsesKnown() bool {
+	return c != nil && c.SupportsResponses != nil
+}
+
+// ResponsesUnsupported is the durable "do not attempt Responses" verdict.
+func (c *NodeCapabilities) ResponsesUnsupported() bool {
+	return c != nil && c.SupportsResponses != nil && !*c.SupportsResponses
 }
 
 // NodeRecord is one request record in the sliding window.
@@ -219,6 +260,57 @@ func (m *Manager) RecordNodeSuccess(ctx context.Context, credentialID int, model
 	return m.recordNodeOutcome(ctx, credentialID, model, "success", requestID, "")
 }
 
+// SetSupportsResponses records a durable protocol-capability verdict for one
+// (credential, model) node. F04: the probe is the authority, so its verdict
+// must survive past the 1h cooldown that only suppresses routing.
+//
+// It runs its own Lua script rather than read-modify-write in Go, because
+// SetNodeState would overwrite the concurrent health fields written by
+// recordNodeOutcomeScript (sliding window / cooldown / counters). The two
+// writers touch disjoint sub-trees of the same JSON key, so each script only
+// rewrites its own fields and leaves the rest byte-identical.
+//
+// supported=false  → durable "do not attempt Responses" verdict.
+// supported=true   → durable "Responses works" verdict; also the reverse
+//
+// recovery path required by F04 §3.4, so a mislabel self-heals on the first
+// successful native attempt instead of blocking Responses for a full TTL.
+//
+// A nil/disabled Redis (lite mode) is a no-op by contract: capabilities stay
+// absent and the read path keeps using live detection.
+func (m *Manager) SetSupportsResponses(ctx context.Context, credentialID int, model string, supported bool) error {
+	if !m.Enabled() || m.client == nil {
+		return nil
+	}
+	now, err := m.redisNow(ctx)
+	if err != nil {
+		return fmt.Errorf("get redis time for capability write failed (credential_id=%d, model=%s): %w", credentialID, model, err)
+	}
+	if _, err := setNodeCapabilityScript.Run(ctx, m.client,
+		[]string{nodeKey(credentialID, model)},
+		supported,
+		now,
+		nodeStateTTLSec,
+	).Result(); err != nil {
+		return fmt.Errorf("set node capability: %w", err)
+	}
+	return nil
+}
+
+// GetSupportsResponses returns the durable verdict. ok=false means "no
+// verdict on record" (never probed, or the node key expired), which callers
+// must treat as "keep using live detection", not as "unsupported".
+func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, model string) (supported bool, ok bool, err error) {
+	state, err := m.GetNodeState(ctx, credentialID, model)
+	if err != nil {
+		return false, false, err
+	}
+	if state == nil || !state.Capabilities.SupportsResponsesKnown() {
+		return false, false, nil
+	}
+	return *state.Capabilities.SupportsResponses, true, nil
+}
+
 // RecordNodeFailure records a failed request atomically via Lua.
 func (m *Manager) RecordNodeFailure(ctx context.Context, credentialID int, model, requestID, errorKind string) error {
 	return m.recordNodeOutcome(ctx, credentialID, model, "failure", requestID, errorKind)
@@ -313,6 +405,64 @@ const (
 // atomically and re-disables the node after the failure threshold.
 //
 // KEYS[1] = llmgw:cred_fp_node:{credentialID}:{model}
+// F04: durable protocol-capability write. Deliberately a SEPARATE script from
+// recordNodeOutcomeScript so the capability writer never rewrites health
+// fields (sliding window / cooldown / counters) and the outcome writer never
+// drops capabilities: both decode the same JSON key, touch only their own
+// sub-tree, and re-encode. Doing this in Go would be a read-modify-write race
+// against the per-request outcome path.
+//
+// KEYS[1] = node state key
+// ARGV[1] = supported (bool; go-redis sends "1"/"0", the script also accepts
+//           the "true"/"false" spelling)
+// ARGV[2] = now (unix seconds, as string)
+// ARGV[3] = ttl seconds (refreshes the whole node state key, matching the
+//           outcome path so a capability write never shortens a live cooldown)
+var setNodeCapabilityScript = redis.NewScript(`
+	local key = KEYS[1]
+	-- go-redis serializes a Go bool arg as "1"/"0", not "true"/"false".
+	-- Accept both spellings so the script does not silently store a wrong
+	-- verdict if the caller ever switches to a string argument.
+	local raw_supported = ARGV[1]
+	local supported = (raw_supported == 'true' or raw_supported == '1')
+	local now = tonumber(ARGV[2])
+
+	local raw = redis.call('GET', key)
+	local state = {}
+	if raw then
+		-- 损坏 payload 不阻塞能力写：pcall 防御性解码，失败则以全新 state
+		-- 继续，本次 SET 自愈（与 recordNodeOutcomeScript 同一约定）。
+		local ok, decoded = pcall(cjson.decode, raw)
+		if ok and type(decoded) == 'table' then
+			state = decoded
+		end
+	end
+
+	-- 身份字段回填：key 形如 llmgw:cred_fp_node:<credID>:<model>，保证
+	-- GetNodeState 的 identity 校验（credential_id / model 必须与 key 匹配）
+	-- 不会因新建 state 而失败。
+	if type(state.credential_id) ~= 'number' or state.credential_id == 0 then
+		state.credential_id = tonumber(string.match(key, '^llmgw:cred_fp_node:(%d+):')) or 0
+	end
+	if type(state.model) ~= 'string' or state.model == '' then
+		state.model = string.match(key, '^llmgw:cred_fp_node:%d+:(.*)$') or ''
+	end
+	if type(state.slide_window) ~= 'table' then state.slide_window = {} end
+	if type(state.disabled) ~= 'boolean' then state.disabled = false end
+	if type(state.success_count) ~= 'number' then state.success_count = 0 end
+	if type(state.failure_count) ~= 'number' then state.failure_count = 0 end
+
+	-- 只写 capabilities 子树。
+	if type(state.capabilities) ~= 'table' then state.capabilities = {} end
+	state.capabilities.supports_responses = supported
+	state.capability_updated_at = now
+
+	local ok, encoded = pcall(cjson.encode, state)
+	if not ok then return redis.error_reply('encode node state failed') end
+	redis.call('SET', key, encoded, 'EX', ARGV[3])
+	return 1
+`)
+
 // ARGV[1] = kind ("success" | "failure")
 // ARGV[2] = request_id
 // ARGV[3] = error_kind (empty for success)

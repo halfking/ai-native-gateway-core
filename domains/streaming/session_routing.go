@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
@@ -248,6 +247,13 @@ func generateSystemSessionID() string {
 // creating a turn (V3-A02 client-bring-session contract).
 var errClientSessionForbidden = errors.New("client session forbidden")
 
+// errClientSessionUnavailable is returned when the session store itself
+// failed (network / availability), which the handler maps to a 503. This
+// is deliberately distinct from errClientSessionForbidden: an ownership
+// rejection is the client's fault, a store fault is ours — mixing them
+// would 403 legitimate traffic during a Redis outage.
+var errClientSessionUnavailable = errors.New("client session store unavailable")
+
 func normalizeAndRegisterClientSession(
 	r *http.Request,
 	sessionID string,
@@ -261,6 +267,15 @@ func normalizeAndRegisterClientSession(
 		return sessionID, nil, nil
 	}
 	si, getErr := getter.Get(r.Context(), sessionID)
+	if getErr != nil && !errors.Is(getErr, session.ErrSessionNotFound) {
+		// R25-W (V3-A02, 2026-09-30 round 30): a store fault is not a
+		// verdict on ownership. Returning (id, nil, nil) here would let an
+		// unverified client-supplied session id flow into dispatch while
+		// the store is degraded; returning forbidden would blame the
+		// client for our outage. Surface a distinct error so handlers can
+		// stop dispatch (503) instead.
+		return sessionID, nil, errClientSessionUnavailable
+	}
 	if getErr == nil && si != nil {
 		// R24-B (V3-A02, 2026-09-29 round 26): a client-supplied session id
 		// must belong to the authenticated key. The chat path has enforced
@@ -272,6 +287,12 @@ func normalizeAndRegisterClientSession(
 		// bound to the requesting key before it is adopted.
 		if si.APIKeyID != keyInfo.ID {
 			if si.APIKeyID == 0 {
+				// Orphan adoption is tenant-guarded: a legacy row already
+				// stamped with a foreign tenant must not be hijacked by a
+				// different tenant's key merely because its APIKeyID is 0.
+				if si.TenantID != "" && si.TenantID != keyInfo.TenantID {
+					return sessionID, nil, errClientSessionForbidden
+				}
 				if binder, ok := getter.(interface {
 					BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 				}); ok {
@@ -287,33 +308,102 @@ func normalizeAndRegisterClientSession(
 			}
 			return sessionID, nil, errClientSessionForbidden
 		}
+		// Same key but a different tenant row is still a cross-tenant
+		// steal attempt (key ids are only unique within their issuer).
+		if si.TenantID != "" && si.TenantID != keyInfo.TenantID {
+			return sessionID, nil, errClientSessionForbidden
+		}
 		return sessionID, si, nil
 	}
-	if getErr == session.ErrSessionNotFound &&
+	if errors.Is(getErr, session.ErrSessionNotFound) &&
 		strings.HasPrefix(sessionID, "gw_") && !isBranchSessionID(sessionID) {
-		if ensurer, ok := getter.(interface {
-			EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, bool, error)
-		}); ok {
-			regDeviceSeed := r.Header.Get("X-Device-Seed")
-			if regDeviceSeed == "" {
-				regDeviceSeed = r.Header.Get("X-Machine-Id")
-			}
-			regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
-			go func(sid string, key *authentication.KeyInfo, seed, task string) {
-				defer func() {
-					if rec := recover(); rec != nil {
-						slog.Warn("session register (honored id) panicked",
-							"session_id", sid, "panic", rec)
-					}
-				}()
-				regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
-				defer regCancel()
-				if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
-					slog.Warn("session register (honored id) failed",
-						"session_id", sid, "error", err)
-				}
-			}(sessionID, keyInfo, regDeviceSeed, regTaskID)
+		regDeviceSeed := r.Header.Get("X-Device-Seed")
+		if regDeviceSeed == "" {
+			regDeviceSeed = r.Header.Get("X-Machine-Id")
 		}
+		regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+		// R25-W (V3-A02, 2026-09-30 round 30): claim the honored id
+		// SYNCHRONOUSLY and atomically (see ensureClaimedClientSession).
+		claimed, claimErr := ensureClaimedClientSession(r.Context(), getter, sessionID, keyInfo, regDeviceSeed, regTaskID)
+		if claimErr != nil {
+			return sessionID, nil, claimErr
+		}
+		if claimed == nil {
+			// Getter has no atomic ensurer — the client-selected id cannot
+			// be claimed safely, so fall back to a fresh system id rather
+			// than trusting an unowned identity.
+			return generateSystemSessionID(), nil, nil
+		}
+		return sessionID, claimed, nil
 	}
 	return sessionID, nil, nil
+}
+
+// ensureClaimedClientSession atomically claims an unknown gw_ session id for
+// the authenticated key (R25-W, V3-A02 round 30). The previous fire-and-forget
+// registration let two concurrent first requests for the same client-selected
+// id both pass with no owner; the winner was decided by whichever goroutine
+// landed first — an unowned id could be claimed by whichever tenant raced
+// faster. EnsureV2WithID is the atomic insert-if-absent: the first caller
+// wins; later claimants receive the winner's session and are adjudicated
+// here (same key → adopt; orphan → bind; foreign key/tenant → forbidden).
+//
+// Returns (claimed, nil) on success, (nil, errClientSessionForbidden |
+// errClientSessionUnavailable) on rejection/fault, and (nil, nil) when the
+// getter implements no atomic ensurer — callers must then fall back to a
+// freshly generated system id instead of trusting the client-supplied one.
+func ensureClaimedClientSession(
+	ctx context.Context,
+	getter interface {
+		Get(ctx context.Context, id string) (*session.Session, error)
+	},
+	sessionID string,
+	keyInfo *authentication.KeyInfo,
+	deviceSeed, taskID string,
+) (*session.Session, error) {
+	ensurer, ok := getter.(interface {
+		EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, bool, error)
+	})
+	if !ok || ensurer == nil {
+		return nil, nil
+	}
+	claimed, _, ensureErr := ensurer.EnsureV2WithID(ctx, sessionID, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
+	if ensureErr != nil {
+		slog.Warn("session register (honored id) failed",
+			"session_id", sessionID, "error", ensureErr)
+		return nil, errClientSessionUnavailable
+	}
+	if claimed == nil {
+		// No session and no error is a store contract violation — treat it
+		// as a store fault rather than trusting the unverified id.
+		return nil, errClientSessionUnavailable
+	}
+	if claimed.APIKeyID == keyInfo.ID {
+		if claimed.TenantID != "" && claimed.TenantID != keyInfo.TenantID {
+			return nil, errClientSessionForbidden
+		}
+		return claimed, nil
+	}
+	if claimed.APIKeyID == 0 {
+		// Orphan (legacy row / pre-bind race state). Adoption is
+		// tenant-guarded: a foreign-tenant orphan is a steal attempt.
+		if claimed.TenantID != "" && claimed.TenantID != keyInfo.TenantID {
+			return nil, errClientSessionForbidden
+		}
+		if binder, ok := getter.(interface {
+			BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
+		}); ok {
+			if bindErr := binder.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr == nil {
+				claimed.APIKeyID = keyInfo.ID
+				claimed.TenantID = keyInfo.TenantID
+				return claimed, nil
+			} else {
+				slog.Warn("client session bind failed",
+					"session_id", sessionID, "error", bindErr)
+			}
+		}
+		return nil, errClientSessionForbidden
+	}
+	// Claimed by a foreign key — the race already has a winner.
+	return nil, errClientSessionForbidden
 }

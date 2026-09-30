@@ -317,6 +317,11 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 			// idx_session_turn_logs_expires 索引；健康表近空时近零开销，
 			// 积压态下每小时一次索引扫描即为该 gauge 的设计目的。
 			pm.refreshTurnLogsBacklogGauge(ctx)
+			// migration 759 follow-up：session_turn_details_hot 过期残留
+			// 五分类 gauge。759 的 drain 有界无损，真冲突行常驻 hot 等
+			// 人工裁决——这组 gauge 就是让「残留构成」可见（良性重复 vs
+			// 卡死的 drain）。retention 与 promote worker 同源。
+			pm.refreshSessionTurnDetailsExpiredHotGauges(ctx)
 		}
 	}
 }
