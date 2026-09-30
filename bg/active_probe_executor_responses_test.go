@@ -146,6 +146,9 @@ func TestProbeWithRetry_ResponsesWireShape(t *testing.T) {
 	if result.status != "ok" || result.category != probeCategoryOK {
 		t.Fatalf("status = %q category = %q, want ok", result.status, result.category)
 	}
+	if result.supportsResponses == nil || !*result.supportsResponses {
+		t.Fatalf("Responses capability = %v, want positive native verdict", result.supportsResponses)
+	}
 }
 
 // node_probe 直连轮（probeDirect）的同款分发：openai-responses 走
