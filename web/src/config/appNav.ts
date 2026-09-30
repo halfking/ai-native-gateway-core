@@ -180,6 +180,15 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
       { path: '/dispatch/waterfall', label: '队列瀑布图', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
       { path: '/admin/turns', label: '轮次列表', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },
+      // 2026-10-01 R85-C P1：会话聚合观测「可交付未交付」——
+      // cmd/gateway/main.go:6901-6906 的 /api/admin/session-analytics 三端点
+      // 与真库 session_dim（121 万行）均已就绪，但本组原先没有任何入口挂载，
+      // 导致 router.ts:257-258 的 /admin/session-analytics/users 与
+      // /users/:owner 成为硬孤儿路由（只能手敲 URL）。
+      // 挂载列表页即让整族可达：/clients/:id 与 /tasks/:id 是其子路由，
+      // 由 UserProfileListView / UserProfileView 内部跳转。
+      // 权限对齐 router.ts:257 的 meta.requiresAuth（任何已登录用户）。
+      { path: '/admin/session-analytics/users', label: '会话分析中心', labelKey: 'nav.item.sessionAnalytics', icon: '📊' },
       // T9 — 请求注册表 + 连接注册台（mock stage）
       { path: '/admin/request-registry', label: '请求注册表', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
       { path: '/admin/connection-registry', label: '连接注册台', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },
