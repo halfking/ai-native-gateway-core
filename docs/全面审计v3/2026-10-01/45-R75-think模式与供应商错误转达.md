@@ -260,4 +260,7 @@ provider_error_details 的生产 SELECT 仅 1 处：
 - **「Zod 会拒收 `finish_reason:""`」是基于 `handler.go:405-414` 记录的既有研究推断**，未实跑 opencode/zcode SDK。
 - **D2 的严重度依赖「生产未接线」这一前提**：已双重 grep 确认源码侧，但未核对 154/252 实际二进制是否含旧版 ActionBridge 接线。若线上曾接线过，该项应重判 P1。
 - **未追进 `internal/liveactions` 的 Detail 字段**验证「只含 id/标签/计数」的承诺（该链路当前亦为死代码）。
+- **R75-A 子代理未返回**：该子代理长时间零输出后被我停止，**§7 全部结论由我独立查证**，缺一个独立第二意见——这是本轮最实质的证据强度损失，如实登记。
+- **真库门在 CI 上恒跳过**：`deploy/sql/verify` 的门以 `LLM_GATEWAY_SUPPLIER_PG_DSN` 门控，`verify.sh` 只跑 `go test ./... -timeout=300s`、不提供该 DSN ⇒ §7.1 的 P1 语义门在 CI 上不执行，离线只有 §7 的契约门。契约门在文件头已写明它**不是充分条件**。
+- **`admin/` 的 CI 覆盖面**：`verify-ci.yml` 无 paths 过滤、`verify.sh` 跑 `go test ./...`，故本轮新增的离线契约门会被执行；但 `verify.sh` **不跑 gofmt**，而 `gofmt -l admin/` 当前列出一批既有未格式化文件（`acc_projects.go`、`audit_operations.go` 等，非本轮引入）——本轮只保证自己改动的 5 个文件干净，没有顺手格式化整个包（会产生与审计无关的巨大 diff）。
 - **R71–R74 域未触碰**，不评价其结论。
