@@ -197,6 +197,7 @@ func (api *SessionListAPI) loadSessions(
 			model              *string
 		)
 		if err := rows.Scan(&sessionID, &reqCount, &errCount, &compressed, &startTime, &endTime, &model); err != nil {
+			warnRowSkip("session list", err)
 			continue
 		}
 
@@ -228,6 +229,9 @@ func (api *SessionListAPI) loadSessions(
 			TimeEnd:      endTime.Format("2006-01-02 15:04:05"),
 			Duration:     durStr,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sessions: %w", err)
 	}
 
 	pages := (total + size - 1) / size
@@ -423,6 +427,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 		)
 		if err := rows.Scan(&rid, &ts, &cModel, &oModel, &ok,
 			&pTokens, &cTokens, &totalTokens, &lat, &cs); err != nil {
+			warnRowSkip("session detail request logs", err)
 			continue
 		}
 		csStr := ""
@@ -441,6 +446,9 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 			LatencyMs:           lat,
 			CompressionStrategy: csStr,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate request logs: %w", err)
 	}
 
 	return &SessionDetail{
