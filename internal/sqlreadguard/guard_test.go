@@ -40,7 +40,7 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// ---- LEGIT：双腿之母表腿（有意读） ----
 	"admin/analytics.go":               "LEGIT: 决策回放双腿之母表腿（R46 F9，hot 腿同查询内联）",
 	"admin/request_trace.go":           "LEGIT: hot∪母表双腿 UNION ALL（既定正面模板）",
-	"admin/session_tenant.go":          "LEGIT: assertTaskInTenant 双 EXISTS 之母表腿（R47 修复）",
+	"admin/session_tenant.go":          "LEGIT: assertTaskInTenant 跨租户权限门，session 族两腿 + v1 双 EXISTS 母表腿并联（S4 停写后不得只剩 v1）",
 	"admin/session_detail_v2.go":       "LEGIT: resolveSessionID 反向臂 hot∪母表双腿之母表腿（R71，hot 腿同查询内联）",
 	"internal/trace/trace.go":          "LEGIT: hot∪母表双腿",
 	"bg/auto_route_affinity_worker.go": "LEGIT: NOT EXISTS 探测之母表腿（R46 F4 裁决落地形态）",
@@ -66,10 +66,6 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// session_list.go / usage.go / session_online.go 已在 R48 §5 双腿化为
 	// request_logs_with_current_month 视图（view 已在白名单 LEGIT），对应
 	// 白名单条目按 self-cleaning 守卫自动清除（TestSQLReadGuardWhitelistCurrent）。
-	"admin/session_extract.go":                 "DEBT(R47): 裸母表",
-	"admin/session_analytics_timeseries.go":    "DEBT(R47): 裸母表",
-	"admin/session_analytics_handler.go":       "DEBT(R47): 裸母表",
-	"admin/session_panorama_handler.go":        "DEBT(R47): 裸母表",
 	"admin/memora_handlers.go":                 "DEBT(R47): 裸母表",
 	"admin/quality_correlations.go":            "DEBT(R47): 裸母表",
 	"admin/provider_models.go":                 "DEBT(R47): 裸母表",

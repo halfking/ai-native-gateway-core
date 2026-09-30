@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
@@ -172,20 +173,32 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 }
 
 func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, tenantID, sessionID string) (*SessionCompareData, error) {
-	// Query all request_logs for this session, ordered by time
+	// Query all request_logs for this session, ordered by time.
+	//
+	// 会话存储解耦 v3 审计（2026-09-30）：本查询曾迁到 session 族原生源
+	// （实测 3978ms → 8.7ms）又因「镜像链漏写 20,660 会话」被回退。§5.3.1
+	// 复核证明该数字里 98% 是按设计排除的内部回环，真正缺失的 1,459 行
+	// genuine_loss 已由 mirror_outbox_backfill.sql 全量补写，35 天窗口复测
+	// 为 0 —— 否决理由不再成立，故于同日重新启用。
+	//
+	// 口径差（全量实测）：视图比原生源多 38,229 行 / 2.30% 会话，全部是
+	// internal_loopback（36,693）与 non_terminal（1,541），unexplained = 0。
+	// 对本端点是净收益——对比视图此前会把网关自己的标题/摘要调用算作对话轮次。
+	//
+	// 正文仍取 v1 bodies 视图（rb 腿未改），与 session_summary_v2 同口径。
 	query := `
-		SELECT 
+		SELECT
 			rl.request_id,
 			rb.request_body AS request_body,
 			rb.outbound_body, rb.response_body AS response_body,
-			rl.compression_strategy, rl.compression_meta, 
+			rl.compression_strategy, rl.compression_meta,
 			rl.outbound_msg_count, rl.outbound_token_est,
 			rl.client_model, rl.outbound_model,
 			rl.ts, rl.provider_id
-		FROM request_logs_with_current_month rl
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
 		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		WHERE rl.tenant_id = $2
 		ORDER BY rl.ts ASC
 		LIMIT 500
 	`
@@ -795,10 +808,10 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 			SELECT COALESCE(rb.request_body) AS request_body,
 			       COALESCE(rb.response_body) AS response_body,
 			       rl.ts
-			FROM request_logs_with_current_month rl
-			LEFT JOIN request_logs_bodies_with_current_month rb 
+			FROM `+db.SessionFamilyTurnsForSessionSQL()+` rl
+			LEFT JOIN request_logs_bodies_with_current_month rb
 			  ON rb.request_id = rl.request_id
-			WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+			WHERE rl.tenant_id = $2
 			ORDER BY rl.ts DESC
 			LIMIT 3
 		`, sessionID, tenantID)

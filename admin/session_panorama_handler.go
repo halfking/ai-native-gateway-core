@@ -168,36 +168,13 @@ func (h *Handler) loadSessionDetailDataInTx(ctx context.Context, tx pgx.Tx, tena
 	if err != nil {
 		return nil, err
 	}
-	timelineQuery := `
-		SELECT request_id, ts, success, client_model, outbound_model,
-		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0),
-		       COALESCE(cost_usd,0), COALESCE(latency_ms,0),
-		       work_type, compression_strategy, cache_read_tokens,
-		       error_kind, request_preview, response_preview
-		FROM request_logs WHERE gw_session_id = $1`
-	tArgs := []any{gwSessionID}
-	if tenantID != "" {
-		timelineQuery += " AND tenant_id = $2"
-		tArgs = append(tArgs, tenantID)
-	}
-	timelineQuery += " ORDER BY ts ASC LIMIT 100"
-	rows, err := tx.Query(ctx, timelineQuery, tArgs...)
+	timeline, err := loadSessionTimelineInTx(ctx, tx, gwSessionID, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	timeline := []RequestEvent{}
-	for rows.Next() {
-		var e RequestEvent
-		var ts time.Time
-		if err := rows.Scan(&e.RequestID, &ts, &e.Success, &e.ClientModel, &e.UpstreamModel,
-			&e.PromptTokens, &e.CompletionTokens, &e.CostUSD, &e.LatencyMs,
-			&e.WorkType, &e.CompressionStrategy, &e.CacheReadTokens,
-			&e.ErrorMessage, &e.RequestPreview, &e.ResponsePreview); err != nil {
-			return nil, err
-		}
-		e.CreatedAt = ts
-		timeline = append(timeline, e)
+	// 本端点历史上空结果序列化成 [] 而不是 null，保持不变。
+	if timeline == nil {
+		timeline = []RequestEvent{}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate panorama timeline: %w", err)
