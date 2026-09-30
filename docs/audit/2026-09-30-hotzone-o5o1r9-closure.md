@@ -53,7 +53,7 @@ fallback 汇(`MultiBackupWriter` = FileWriter + RingBuffer):
 4. ring buffer 回放是破坏性弹出(失败 requeue);文件恢复成功且无损失才允许归档(本次起加护栏,见 §1.5)。
 5. 进程重启 = ring buffer 内容清零;文件是唯一持久层 → **文件可恢复性是 O5 类场景的生死线**(本次缺陷正在这里)。
 
-如需「恢复即自动回放」,属行为变更(回放风暴/顺序/幂等边界),本文档不做,留 owner 决策;当前手动 runbook:PG 恢复后 → `GET /internal/telemetry/fallback-buffer/stats` 看积压 → `POST .../replay`;文件侧走 admin degradation recovery 端点。
+如需「恢复即自动回放」,属行为变更(回放风暴/顺序/幂等边界),本文档不做,留 owner 决策(2026-10-01 后续轮已出决策材料:docs/audit/2026-10-01-auto-replay-on-recovery-decision.md);当前手动 runbook:PG 恢复后 → `GET /internal/telemetry/fallback-buffer/stats` 看积压 → `POST .../replay`;文件侧走 admin degradation recovery 端点。
 
 ### 1.5 修复(411ff21c7)
 
@@ -69,7 +69,7 @@ fallback 汇(`MultiBackupWriter` = FileWriter + RingBuffer):
 ### 1.6 遗留(如实记)
 
 - O5 那条的**镜像文件缺失**无法补勘(旧容器可写层已销毁);候选归因(镜像 tenant 目录粒度分裂/条目体为空)留待下次演练窗口内对照取证。
-- FileWriter 侧的根治(每进程独立文件名或启动时检测孤儿 header)未做,打捞 reader 已让既有格式可恢复;列后续候选。
+- FileWriter 侧的根治(每进程独立文件名或启动时检测孤儿 header)未做,打捞 reader 已让既有格式可恢复;列后续候选(2026-10-01 后续轮已出决策材料:docs/audit/2026-10-01-filewriter-rootfix-decision.md)。
 - `/tmp/o5-evidence-sessions-2026-09-30.jsonl.gz` 为窗口内取证副本;含探针/请求载荷,**不入库**。
 
 ### 1.7 F4 对账假设验证:「镜像可能多于 PG」成立
@@ -101,14 +101,41 @@ grep '\[candidate_diag\] db_empty' gateway.log | grep '<model>'   # 有=未就�
 - 启动健康前置锚点:`fsstore: PG probe ok` → `CHECKPOINT: ...` → `database status changed ... available`。
 - 首窗 503 的处置:确认 db_empty 的 model 字段——若为预期模型,等数据侧(绑定/目录);**不要调探针超时窗口**(09-23 已有同型教训)。
 
-## 三、R-9:热区跨部署持久化(9bc266f65)
+## 三、R-9:热区跨部署持久化(9bc266f65;2026-10-01 真机实证收口)
 
-- `scripts/deploy-local.sh` gateway_bind_args 增 `data/` 挂载:`-v $ROOT_DIR/data:/app/data`。镜像 WORKDIR=/app,`ApplyHotZoneDefaults` 的相对默认 `./data/hotzone`(演练与方案 §8 形态)随之落到宿主;此前它是唯一未挂载状态目录,每次蓝绿切换清零。
+- `scripts/deploy-local.sh` gateway_bind_args 增 `data/` 挂载。镜像 WORKDIR 相对默认
+  `./data/hotzone` 随之落到宿主;此前它是唯一未挂载状态目录,每次蓝绿切换清零。
 - 试错记录:曾按「相对+绝对双约定」同源双挂载(/app/data 与 /opt/llm-gateway-go/data),Docker Desktop 上 opt 路径写入未落宿主,弃用,单挂载对准实际在用的相对约定。
 - trimmer 预算与挂载无关,不漂移(已实勘 `bg/hot_zone_trimmer.go`:retention/maxBytes 来自 config `HotZone.RetentionHours/MaxSizeGB` 原子热更新,配额按受管子树字节计,无 statfs/文件系统依赖);持久化只改变文件寿命=预期语义。注意:宿主 `data/` 内**白名单外**子树无任何清理机制(trimmer 只管 cache/session_bodies/requests),跨部署累积风险挂账。
 - Docker 语义验证:一次性容器经挂载写 marker → `docker rm -f` → 新容器重挂载读取,marker 存活 ✓。
 - 同步:official-deploy 克隆 `services/llm-gateway-go/scripts/deploy-local.sh` 已同补(部署真入口,不 push 不生效的老坑;该克隆内 VERSION/version.json 等既有未提交改动属并行会话,未动)。
-- **待办:真实蓝绿切换的部署级实证**挂到下一次例行部署(本轮不动 21:47 并行部署的现场)。
+
+### 三·R-9 真机实证(2026-10-01,证据档 /tmp/r9-verify/EVIDENCE-SUMMARY.txt)
+
+原「待办:真实蓝绿切换的部署级实证」已完成,并**抓出并修复首版挂载目标错误**:
+
+1. **勘误(修复,当日)**:首版按「镜像 WORKDIR=/app」挂 `data/:/app/data`——勘的是
+   构建期 `Dockerfile`(WORKDIR /app);实际运行的 runtime 镜像由部署时生成的
+   `run/runtime.Dockerfile` 定义,`WORKDIR=/opt/llm-gateway-go`。部署级实证:env 注入
+   激活键+6/6 流量后热区 **402 文件全部落在容器可写层** `/opt/llm-gateway-go/data/hotzone`
+   (docker cp 取证副本在案),`/app/data` 恒空——首版挂载是死的,R-9 原问题
+   (切换清零)实际未修。已改挂 `/opt/llm-gateway-go/data`(worktree + 克隆双同步)。
+2. **修正后三项验证全绿**(容器级蓝绿重建,同镜像 2363;管线部署当日被并行会话
+   718/719 迁移 WIP 的共享 PG 索引中间态阻断——`attach session_turns digest_null
+   child indexes` SQLSTATE 55000——按零干扰纪律未动其作业区,改走演练 §6 同款
+   容器重建路径,旧代无恙):
+   - 挂载在场:新容器 Mounts 含 `/opt/llm-gateway-go/data` ✓
+   - 跨切换存活:71/71 文件 hash 清单跨 `docker rm -f` 重建后全部存活
+     (diff 仅 model-quality 同路径被新代续写=持久化语义本身)✓
+   - trimmer 正常回收:预埋 `hotzone/cache/r9-trim-marker.json`(58B,mtime-8h,
+     超 7h 保留期)在新代**首 tick 即被回收**(`清理完成 deleted_files=1
+     freed_bytes=58`,trimmer 启动即执行一次 TrimOnce 的既有语义);hotzone 子树
+     容器=宿主 46=46 同源视图 ✓
+3. **激活前置(部署口径)**:例行管线 env 六键全空=D1 语义「空=不激活」(dispatcher
+   default 分支走历史装配),热区激活需 `LLM_GATEWAY_STORAGE_MODE=full`
+   (+可选 `LLM_GATEWAY_HOTZONE_ENABLED=true`)。本轮验证用 env 注入激活;**是否把
+   激活键设为管线默认(.env.local)留 owner**。未激活期间 data/ 已持久但无热区写入;
+   再激活时 trimmer 首 tick 会排空历史过期文件,自洽。
 
 ## 四、证据与窗口纪律
 
@@ -127,4 +154,4 @@ grep '\[candidate_diag\] db_empty' gateway.log | grep '<model>'   # 有=未就�
 5. **表述精度**:① §1.2 时间线——insert 落 fallback 时刻(14:57:59.590)早于演练记录的停机完成时刻(14:58:02),自洽解释为 SIGTERM/连接终止先于 docker stop 完成时刻;update 走 degraded 直写还是报错兜底两分支事后不可区分,已改口径。② §2.1「21:29 本次启动」实为 21:47 被替换的**上一代容器**(gateway.log 13:29Z 起的行属它),结论不变、归属改准。③ URSM gate 表述从「挡住时不是 count=0 形态」(未验证)收敛为「窗口内请求实际到达解析点,该 gate 未参与此现象」(有日志为证)。
 6. **证据升级**:O1 机制从「套件注释」升级为函数体+SQL 视图实证(`node_probe_state` 排除 → `v_routable_credential_models`);R-9「trimmer 预算不漂移」从推断升级为代码实勘(`bg/hot_zone_trimmer.go`)。
 7. **可复现性补强**:真文件验证固化为 `TestSalvage_O5EvidenceFileOptional`(env 守卫,默认 /tmp 取证副本,缺席自动 skip)——首轮该验证是一次性临时测试,跑完即删,不可复现。
-8. **仍未覆盖(如实挂账)**:>256MB 超限回退流式路径无测试(代码为原样搬迁,风险低);宿主 `data/` 白名单外子树无清理机制(见 §三);O5 镜像缺失子问题依旧不可补勘。
+8. ~~仍未覆盖(如实挂账)~~(2026-10-01 后续轮收口)~~:>256MB 超限回退流式路径无测试~~ 已补:FileReader 增 `salvageCapBytes` 测试注入点,三构造用例(超限干净多 member 全量交付+stats 恒零/超限损坏现场整体失败 0 条可恢复并对照同现场不超限可打捞/大小恰等于上限走打捞钉死 <= 语义),79d34fcaa;宿主 `data/` 白名单外子树无清理机制(见 §三)依旧挂账,并因挂载修正后 data/ 真持久而加重(model-quality/keystore 同树累积);O5 镜像缺失子问题依旧不可补勘。
