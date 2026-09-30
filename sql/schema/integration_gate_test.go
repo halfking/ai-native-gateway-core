@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -35,21 +36,145 @@ func gateSource(t *testing.T) string {
 	return string(b)
 }
 
-// TestGateInjectsEveryDBCredentialName pins the multi-name problem. The suite
-// reads the database URL under five distinct names; injecting only one leaves
-// the other 66 files silently skipped. Adding a sixth name without adding it
-// here would reintroduce exactly that.
+// TestGateInjectsEveryDBCredentialName pins the multi-name problem, and — this
+// is the part that matters — it derives the list from the repository instead of
+// keeping a hand-written one.
+//
+// Round 43 shipped a five-name list (TEST_PG_URL, TEST_DATABASE_URL, TEST_DB_URL,
+// LLM_GATEWAY_PG_URL, DATABASE_URL) with a comment claiming the suite reads the
+// URL "under five different names". That claim was false. The repository
+// actually reads ten, and the five missing ones each left files permanently
+// skipped. The concrete casualty:
+//
+//	internal/dbx/vacuum_mutex_test.go has NO build tag at all. It resolves its
+//	DSN from TEST_AUDIT_ISOLATED_DB_URL / TEST_PG_DSN / TEST_DATABASE_URL and
+//	t.Skipf's when it cannot connect. So it ran — and skipped — in every default
+//	`go test ./...` and in CI, and the report said "ok".
+//
+// Once the harness supplied TEST_DATABASE_URL the test finally executed, and
+// it FAILED. A gate that only injects a subset of the names is not a weak gate;
+// it is a gate that certifies nothing about the files it leaves asleep.
+//
+// Redis-shaped names are excluded on purpose: pointing TEST_REDIS_URL at a
+// PostgreSQL DSN would be worse than leaving it unset.
 func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 	act := active(gateSource(t))
-	for _, name := range []string{
-		"TEST_PG_URL", "TEST_DATABASE_URL", "TEST_DB_URL",
-		"LLM_GATEWAY_PG_URL", "DATABASE_URL",
-	} {
-		if !regexp.MustCompile(name + `="\$GATE_URL"`).MatchString(act) {
-			t.Errorf("harness 未注入 %s=$GATE_URL；只注入一部分名字会让其余 integration "+
-				"文件全部 skip 而 CI 仍显示绿", name)
+
+	names, err := dbCredentialNamesInRepo(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The scanner itself must not rot into matching nothing. Same lesson as the
+	// startup-parse guard: a derived set that silently becomes empty turns this
+	// test into a permanent no-op.
+	if len(names) < 5 {
+		t.Fatalf("只从仓内扫到 %d 个 DB URL 变量名（%v），扫描器本身可能已失效；\n"+
+			"  一个恒返回空的守卫等于没有守卫。请检查匹配规则是否还能命中真实的 "+
+			"os.Getenv/getenv 调用。", len(names), names)
+	}
+	t.Logf("仓内 DB URL 变量名 %d 个：%v", len(names), names)
+
+	for _, name := range names {
+		if !regexp.MustCompile(regexp.QuoteMeta(name) + `="\$GATE_URL"`).MatchString(act) {
+			t.Errorf("harness 未注入 %s=$GATE_URL；只注入一部分名字会让读该变量的 "+
+				"integration 文件全部 skip 而门禁仍显示绿", name)
 		}
 	}
+	// And the inverse: the harness must not invent a name nothing reads, since
+	// that is how the list rots in the other direction.
+	for _, m := range regexp.MustCompile(`\n\t([A-Z][A-Z0-9_]*)="\$GATE_URL"`).FindAllStringSubmatch(act, -1) {
+		if !contains(names, m[1]) {
+			t.Errorf("harness 注入了 %s=$GATE_URL，但仓内没有任何文件读它；"+
+				"请从注入列表删掉，或确认它确实是新增的读取点", m[1])
+		}
+	}
+}
+
+// dbCredentialNamesInRepo walks the Go TEST sources and collects every
+// environment variable that names a PostgreSQL DSN. The rule is a suffix
+// match, not a fixed list, so a new `FOO_DATABASE_URL` is picked up without
+// editing this file.
+//
+// Two scoping decisions, both of which were wrong in the first attempt:
+//
+//   - Only `_test.go` files. A repo-wide scan also picks up production mains
+//     (cmd/migrate-ursm-v2 reads LLM_GATEWAY_DATABASE_URL) and test tools
+//     (cmd/test_sql reads LLM_GATEWAY_TEST_PG_URL). The harness's job is to
+//     make tests run, and injecting a DSN into a main's runtime config is
+//     noise, not coverage.
+//   - Two passes, not one. A file may pass the name indirectly —
+//     internal/dbx/vacuum_mutex_test.go does `for _, env := range
+//     []string{"TEST_AUDIT_ISOLATED_DB_URL", "TEST_PG_DSN", ...}` and then
+//     calls getenv(env) — so a scan of call arguments alone misses it. Any
+//     quoted ALL-CAPS literal in a file that contains an env lookup counts.
+func dbCredentialNamesInRepo(t *testing.T) ([]string, error) {
+	t.Helper()
+	root := "../.."
+	seen := map[string]bool{}
+	callRe := regexp.MustCompile(`(?:os\.Getenv|os\.LookupEnv|getenv|getenvImpl)\s*\(`)
+	argRe := regexp.MustCompile(`(?:os\.Getenv|os\.LookupEnv|getenv|getenvImpl)\(\s*"([A-Z][A-Z0-9_]*)"`)
+	litRe := regexp.MustCompile(`"([A-Z][A-Z0-9_]{3,})"`)
+	isDBName := func(n string) bool {
+		for _, s := range []string{"_DATABASE_URL", "_DB_URL", "_PG_URL", "_ISOLATED_DB_URL"} {
+			if strings.HasSuffix(n, s) {
+				return true
+			}
+		}
+		return n == "DATABASE_URL" || n == "TEST_PG_DSN"
+	}
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // unreadable path (permission, race with a build) — skip
+		}
+		if info.IsDir() {
+			switch info.Name() {
+			case ".git", "node_modules", "vendor":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		src := string(b)
+		if !callRe.MatchString(src) {
+			return nil
+		}
+		for _, m := range argRe.FindAllStringSubmatch(src, -1) {
+			if isDBName(m[1]) {
+				seen[m[1]] = true
+			}
+		}
+		// Second pass for names reached through a slice literal.
+		for _, m := range litRe.FindAllStringSubmatch(src, -1) {
+			if isDBName(m[1]) {
+				seen[m[1]] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // TestGateRefusesVacuousRun is the "真的跑了" enforcement. Without it the

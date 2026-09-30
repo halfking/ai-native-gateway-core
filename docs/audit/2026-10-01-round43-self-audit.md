@@ -21,8 +21,80 @@ exit=0 / 660 relations）、applier 事务窄免经真库 A/B、538 守卫经真
 
 ---
 
-## P0 · `integration-gate` CI job 三个原因必败（已移除）
+## P0 · `ErrVacuumFullMutexBusy` 在真实争用路径上不可达（真产品 bug，已修）
 
+这是本轮**最实**的一个发现，而且只有靠「让 integration 门真的跑起来」才暴露。
+
+### 怎么暴露的
+
+`./internal/dbx` 门第一次跑出 1 FAIL：
+`TestVacuumFullMutexStatementTimeoutInsideTxn`。
+
+我一度判断它是并发负载导致的偶发，**这个判断是错的**：
+单独重跑 3 次「通过」其实是因为它 **SKIP 了 3 次**。
+
+```
+$ go test -tags=integration -run TestVacuumFullMutexStatementTimeoutInsideTxn ./internal/dbx -v
+vacuum_mutex_test.go:175: acquire vacuum conn: failed to connect to
+  `user=postgres database=postgres`: 127.0.0.1:5432: failed SASL auth (SQLSTATE 28P01)
+--- SKIP: TestVacuumFullMutexStatementTimeoutInsideTxn (0.01s)
+ok  github.com/kaixuan/llm-gateway-go/internal/dbx  0.888s
+```
+
+### 根因（两层）
+
+**第一层 —— 这个测试从来没运行过。**
+`internal/dbx/vacuum_mutex_test.go` **没有 build tag**，却从
+`TEST_AUDIT_ISOLATED_DB_URL` / `TEST_PG_DSN` / `TEST_DATABASE_URL` 解析 DSN，
+连不上就 `t.Skipf`。所以它在每一次默认 `go test ./...` 和每一次 CI 里都被
+skip，而报告写「ok」。
+
+**第二层 —— 它本来要守的东西是错的。**
+`pg_advisory_xact_lock()` 是**阻塞**版本。争用时它会**等待**，等待被
+`SET LOCAL statement_timeout` 掐断后 PostgreSQL 报的是
+**57014 `query_canceled`**，不是 **55P03 `lock_not_available`** ——
+后者只有 `pg_try_advisory_xact_lock` 才返回。而
+`isLockNotAvailable()` 只认 55P03：
+
+```go
+if isLockNotAvailable(err) {              // 只匹配 55P03
+    return fmt.Errorf("%w: %v", ErrVacuumFullMutexBusy, err)
+}
+return fmt.Errorf("acquire advisory lock: %w", err)   // ← 实际总是走这里
+```
+
+⇒ 任何用 `errors.Is(err, ErrVacuumFullMutexBusy)` 去提示
+「另一副本正在跑」的调用方，**在真实争用下永远看不到这个哨兵**。
+文件里 `// second fails with 55P03` 的注释也是错的。
+
+### 修法
+
+新增 `isLockWaitCanceled()`（只认 57014），在调用点与 `isLockNotAvailable()`
+并列判断，并把两处错误注释改正。之所以不把 57014 直接塞进
+`isLockNotAvailable`，是因为那个谓词还被别处按「锁被拒绝」的窄语义使用，
+放宽会误伤；新谓词的注释里写明它**只在那个调用点无歧义**
+（锁事务里只有 SET LOCAL 和加锁两条语句）。
+
+### 为什么这次真的修住了
+
+补了一个**不需要数据库**的纯函数守卫
+`TestIsLockWaitCanceledRecognizesQueryCanceled`，并变异验证两层：
+
+| 变异 | 期望 | 结果 |
+|---|---|---|
+| 调用点去掉 `\|\| isLockWaitCanceled(err)` | 真库行为门转红 | ✅ exit=1 / FAIL=1 |
+| `isLockWaitCanceled` 恒返回 false | 纯函数门转红 | ✅ |
+| 还原 | 全绿 | ✅ `./internal/dbx` 77 PASS / 0 SKIP / 0 FAIL |
+
+第一层变异里纯函数测试**仍然是绿的**（因为谓词本身没动）——这是对的：
+两个守卫覆盖不同层，行为门守接线，纯函数门守分类。
+
+> 教训：**一个只在真库上被行使的谓词，可以错几个月而无人发现。**
+> 所以分类逻辑必须有纯函数层守卫兜底。
+
+---
+
+## P0 · `integration-gate` CI job 三个原因必败（已移除）
 ### 1. 镜像 tag 不存在
 
 原 job 写死 `registry.internal.example.com/kx-citus-pg17:offline-arm64`。
@@ -72,6 +144,34 @@ $ psql "postgresql://llm_gateway:<pw>@127.0.0.1:5432/postgres" -tAc 'SELECT 1'
 
 **移除 job，不修。** 修它需要一个 amd64 的 Citus 镜像，仓内不存在。
 改为「状态行 + 守卫」双向绑定，见 `2026-10-01-integration-gate-ci-preconditions.md`。
+
+---
+
+## P0 · 注入的 DB 变量名清单只覆盖了 1/3（已修，并牵出上面那个产品 bug）
+
+`TestGateInjectsEveryDBCredentialName` 原本持有一份**手写**的 5 个变量名，
+注释宣称「the suite reads the URL under five different names」。**这句话是假的。**
+
+改成从仓内 `_test.go` 反推（后缀规则 + 两遍扫描），扫出 **15 个**。
+我原清单漏掉的 10 个包括 `TEST_PG_DSN`、`TEST_AUDIT_ISOLATED_DB_URL`、
+`TEST_TENANT_DATABASE_URL`、`OMNIFREE_TEST_DB_URL`、
+`LICENSE_AUTHORITY_DATABASE_URL` 等。
+
+**`TEST_PG_DSN` 正是唤醒 `TestVacuumFullMutexStatementTimeoutInsideTxn` 的那把钥匙** ——
+所以「变量名清单不全」这件事，就是上面那个产品 bug 一直隐形的原因。
+
+扫描器的两个范围决定（第一版都定错了，记录在此）：
+
+- **只扫 `_test.go`。** 全仓扫会把生产 main 捞进来
+  （`cmd/migrate-ursm-v2` 读 `LLM_GATEWAY_DATABASE_URL`）和测试工具
+  （`cmd/test_sql` 读 `LLM_GATEWAY_TEST_PG_URL`）。给 main 的运行时配置注入
+  DSN 是噪音，不是覆盖。
+- **必须扫两遍。** `vacuum_mutex_test.go` 是
+  `for _, env := range []string{"TEST_AUDIT_ISOLATED_DB_URL", ...}` 再
+  `getenv(env)`，只扫调用实参会整个漏掉它。
+
+守卫还带两条自检：扫出的集合 `< 5` 时 `t.Fatalf`（防扫描器本身退化成空），
+以及反向检查——harness 注入的名字若仓内无人读取则报错（防清单反向腐烂）。
 
 ---
 

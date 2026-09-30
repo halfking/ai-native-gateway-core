@@ -82,9 +82,9 @@ func TestJsonbLintParsesObjectTables(t *testing.T) {
 	// sibling object directory is rejected.
 	if m := regexp.MustCompile(`filepath\.Join\([^)]*"sql"[^)]*"objects"[^)]*"tables"`).
 		FindString(src); m == "" {
-		t.Errorf("internal/dbx 未用 filepath.Join(objectsRoot, \"tables\") 确定列映射目录；\n"+
-			"  jsonb 列映射必须由 sql/objects/tables/*.sql 的文件内容解析而来。\n"+
-			"  若这是有意改用别的来源，请同步更新本文件顶部的定位结论并复核检查面是否变窄。\n"+
+		t.Errorf("internal/dbx 未用 filepath.Join(objectsRoot, \"tables\") 确定列映射目录；\n" +
+			"  jsonb 列映射必须由 sql/objects/tables/*.sql 的文件内容解析而来。\n" +
+			"  若这是有意改用别的来源，请同步更新本文件顶部的定位结论并复核检查面是否变窄。\n" +
 			"  （旧版本这里只有一句 t.Log 提示，从不失败。）")
 	}
 }

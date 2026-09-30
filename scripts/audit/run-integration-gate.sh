@@ -306,21 +306,39 @@ fi
 # unit tests, so `NPASS==0` never fires and the run reads as a green gate.
 # That case is now rejected up front, before the database is touched.
 
-# Inject every name the suite reads. A one-name injection silently skips the
-# 22 files that read TEST_DB_URL and the 16 that read TEST_PG_URL.
+# Inject every name the suite reads. A one-name injection silently skips files
+# that read another name.
+#
+# The list below is NOT hand-maintained from memory — sql/schema/integration_gate_test.go
+# re-derives it from the repository on every run (TestGateInjectsEveryDBCredentialName),
+# so adding a sixth name in some test file without adding it here turns that guard
+# red. Round 43 shipped a five-name list that was already incomplete: five more
+# names were in use, and one file (internal/dbx/vacuum_mutex_test.go) additionally
+# has NO build tag and silently t.Skipf's when it cannot connect, so it had never
+# run anywhere until this harness gave it a URL — at which point it failed.
+#
+# Redis names are deliberately absent: pointing TEST_REDIS_URL at a PostgreSQL
+# DSN would be worse than leaving it unset.
 echo ""
 echo "── running ──"
-# Per-package log path. A single fixed name is what made the removed CI job's
-# upload-artifact step useless: its for-loop wrote every package to the same
-# file, so an uploaded artifact could only ever show the last package.
 RUN_LOG="${GATE_LOG:-/tmp/itgate-run-$(echo "$PKG" | tr -c 'a-zA-Z0-9' '-').log}"
 echo "  [log] $RUN_LOG"
 env \
-  TEST_PG_URL="$GATE_URL" \
+  AI_SESSION_MANAGER_DATABASE_URL="$GATE_URL" \
+  D07_S01_PG_URL="$GATE_URL" \
+  DATABASE_URL="$GATE_URL" \
+  LICENSE_AUTHORITY_DATABASE_URL="$GATE_URL" \
+  LLM_GATEWAY_PG_URL="$GATE_URL" \
+  OMNIFREE_TEST_DB_URL="$GATE_URL" \
+  TEST_AUDIT_FRESH_SCHEMA_DB_URL="$GATE_URL" \
+  TEST_AUDIT_ISOLATED_DB_URL="$GATE_URL" \
   TEST_DATABASE_URL="$GATE_URL" \
   TEST_DB_URL="$GATE_URL" \
-  LLM_GATEWAY_PG_URL="$GATE_URL" \
-  DATABASE_URL="$GATE_URL" \
+  TEST_INSTALLER_FRESH_DB_URL="$GATE_URL" \
+  TEST_PG_DSN="$GATE_URL" \
+  TEST_PG_URL="$GATE_URL" \
+  TEST_RESOLVE_INVARIANT_DB_URL="$GATE_URL" \
+  TEST_TENANT_DATABASE_URL="$GATE_URL" \
   go test -tags=integration -count=1 -v -timeout 20m ${TEST_NAME:+-run "$TEST_NAME"} "$PKG" \
   > "$RUN_LOG" 2>&1
 TEST_RC=$?
