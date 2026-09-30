@@ -48,6 +48,23 @@ func TestDiscoveryEngine_Run_TemplateNotFound(t *testing.T) {
 	}
 }
 
+// FIXME(R85-D13-1, 2026-10-01)：本用例钉住的是**当前的自我锁死行为**，不是设计意图。
+//
+// 真库实证（docs/全面审计v3/2026-10-01/59 号 §1.1）：provider_templates 6 行
+// enabled 全为 f，其中 5 行 consecutive_scan_failures=3 且 auto_disabled_at 非空
+// （2026-09-17 四个、09-24 一个，与最后一条 discovery_tasks 日期吻合）。模板禁用后
+// Run() 在 createTask **之前** return ⇒ 连任务行都不再写 ⇒ discovery_tasks 停在 260 行。
+// 模板的复活路径只有一条：TemplateManager.Update 里的**人工**重新启用
+// （template_manager.go:313-318，注释明写 "operator manually enables"），
+// bg/ 下的复活 SQL 全部作用于 credentials 而非 provider_templates
+// ⇒ **无自动复活路径，休眠后不可自愈**。
+//
+// 定级 P1，但是否要改属**产品裁决**（整域休眠是「暂不投入」还是「实现未完成」）。
+// 在裁决前按「红门不进主干」的纪律，把现状钉在这里并标注：
+// 将来无论是修它（让禁用也记任务行 / 加自动复活）还是改坏它，都必须**显式发生**。
+//
+// 若裁决为「修」：本用例应改为断言 disabled 模板**也**产生一条 task 行
+// （或断言存在自动复活入口），并同步更新 59 号报告。
 func TestDiscoveryEngine_Run_TemplateDisabled(t *testing.T) {
 	db, mock := newMockDB(t)
 	engine := NewDiscoveryEngine(db, NewTemplateManager(db, nil))
