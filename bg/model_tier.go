@@ -145,7 +145,13 @@ func (m *ModelTier) refresh(ctx context.Context) {
 			return
 		}
 	} else {
-		slog.Warn("model_tier: load static featured failed", "tenant", staticTenant, "error", err)
+		// 12h 审计修正：Query 本身失败（连接抖动/超时——DB 故障最常见形态）
+		// 原先同样只 warn 后落到 m.cur.Store(fs)，把空 static 集合全量替换
+		// 掉上一份完整集合。与上方 rows.Err 分支同因同果：全量替换形态下
+		// 任一段失败都必须保旧集，等下一个 tick 重试。
+		slog.Warn("model_tier: load static featured failed; keeping previous featured set",
+			"tenant", staticTenant, "error", err)
+		return
 	}
 
 	// Usage Top-N. Audit fix: request_logs_hot has no `model` column; the real
@@ -192,7 +198,11 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				return
 			}
 		} else {
-			slog.Warn("model_tier: load usage top-N failed", "error", err)
+			// 12h 审计修正：同上 static 段——Query 失败同样保旧集，
+			// 不落全量替换。
+			slog.Warn("model_tier: load usage top-N failed; keeping previous featured set",
+				"window_hours", windowHours, "top_n", topN, "error", err)
+			return
 		}
 	}
 

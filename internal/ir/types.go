@@ -7,7 +7,9 @@
 //	┌─────────────────────┐       ┌─────────────────┐       ┌─────────────────────┐
 //	│ OpenAI Parser        │──────▶│                 │──────▶│ OpenAI Serializer   │
 //	│ Anthropic Parser     │──────▶│ InternalRequest │──────▶│ Anthropic Serializer│
-//	│ (future) Gemini     │──────▶│  (ir.IR)        │──────▶│ (future) Gemini     │
+//	│ Responses Parser     │──────▶│  (ir.IR)        │──────▶│ Responses Serializer│
+//	│ Gemini Parser        │──────▶│                 │──────▶│ Gemini Serializer   │
+//	│ Ollama Parser        │──────▶│                 │──────▶│ Ollama Serializer   │
 //	└─────────────────────┘       └─────────────────┘       └─────────────────────┘
 //	       ▲                                                      │
 //	       │                                                      │
@@ -15,6 +17,10 @@
 //
 // Complexity reduced from O(N²) to O(N): adding a new protocol only requires
 // one Parser + one Serializer.
+//
+// R72 更正（2026-10-01）：上面这张图此前把 Gemini 标成 "(future)"，且只画了
+// 2 个 parser / 2 个 serializer。实际已实现 5 个协议，见下方协议常量。
+// 以图为准会低估这块的覆盖面，也会让「Ollama 还没接入」的判断跟着错。
 package ir
 
 import (
@@ -37,8 +43,11 @@ const (
 	// synthesizers can correctly frame responses (no `data: ` prefix, no
 	// `[DONE]` sentinel — termination is signalled by a chunk whose
 	// top-level `done` field is true).
-	// RESERVED(ollama-chat 接入): detect.go 不识别该协议、无 parser 产出
-	// （R52 清点）——Ollama 半落地特性，接入 parser 时须同步补空流门矩阵。
+	// R72 更正（2026-10-01）：上面那条 RESERVED 注释已过期。R52 清点时确实
+	// 「detect 不识别、无 parser 产出」，但 audit-ollama-native（r0924）已补齐：
+	// detect.go 有 Ollama 专属顶层字段分支（options / format / keep_alive 等），
+	// parse_ollama.go 有 ParseOllamaResponse，parse_ollama_stream.go 有
+	// ParseOllamaStreamChunk 产出本常量。**不要**再按「未接入」处理。
 	ProtocolOllamaChat = "ollama-chat"
 )
 

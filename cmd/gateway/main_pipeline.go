@@ -290,7 +290,10 @@ type v2DispatchDeps struct {
 	AnalysisSQLDBs         []*sql.DB
 
 	// SensitiveWordEngine (2026-07-18) 敏感词 AC 自动机引擎。
-	// 由 buildV2DispatchPipeline 创建，main.go 从中提取并注入到 admin handler。
+	// 由 main.go 创建并同时交给 admin handler 与本 Pipeline 的敏感词插件，
+	// 使 POST /api/admin/sensitive-words/reload 真正作用到拦流量的那个实例。
+	// 在此之前这里是一个死接线：main.go 在 v2DispatchMux 返回之后才赋值，
+	// 而插件用的是本函数内的局部引擎，reload 返回 200 但词表纹丝不动。
 	SensitiveWordEngine *sensitive.SensitiveWordEngine
 }
 
@@ -418,14 +421,20 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	secRegistry := security.NewRegistry()
 
 	// ── AC 自动机敏感词引擎（VibeCoding 多模式匹配，O(n) 线性扫描） ──
-	// 加载 configs/sensitive_words.json，构建 AC 自动机。如果文件不存
-	// 在或解析失败，引擎为空（所有检查 pass），不影响服务启动。
-	swEngine := sensitive.NewSensitiveWordEngine()
-	swCfgPath := "configs/sensitive_words.json"
-	if err := swEngine.BuildFromFile(swCfgPath); err != nil {
-		slog.Warn("sensitive word engine init skipped", "path", swCfgPath, "error", err)
+	// 使用 main.go 传入的实例，这样 admin 的热加载与真正拦流量的插件共享
+	// 同一份词表。deps 为 nil（仅测试桩）时退回自建实例，保持可运行。
+	swEngine := deps.SensitiveWordEngine
+	if swEngine == nil {
+		swEngine = sensitive.NewSensitiveWordEngine()
+		swCfgPath := "configs/sensitive_words.json"
+		if err := swEngine.BuildFromFile(swCfgPath); err != nil {
+			slog.Warn("sensitive word engine init skipped", "path", swCfgPath, "error", err)
+		} else {
+			slog.Info("sensitive word engine ready", "words", swEngine.LoadedWordCount())
+		}
 	} else {
-		slog.Info("sensitive word engine ready", "words", swEngine.LoadedWordCount())
+		slog.Info("sensitive word engine shared with admin handler",
+			"words", swEngine.LoadedWordCount())
 	}
 	// 注册输入/输出侧敏感词检测插件，替代占位实现
 	secRegistry.MustRegister(sensitive.NewSensitiveWordInputPlugin(swEngine))
@@ -559,8 +568,10 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
-	// NOTE (2026-07-18): deps.SensitiveWordEngine is now set in main.go
-	// before calling buildV2DispatchPipeline, so no assignment needed here.
+	// NOTE: deps.SensitiveWordEngine is supplied by main.go through
+	// v2DispatchMux, i.e. BEFORE this function runs. Do not re-create the
+	// engine here — that is what silently detached admin reloads from the
+	// engine the plugins actually scan with.
 
 	return p
 }
@@ -575,7 +586,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 // It only references the existing in-memory singletons from main.go's
 // scope. The Pipeline runs in-process; there is no DB/Redis fan-out
 // from here.
-func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.ChatHandler, keyVerifier *authentication.KeyVerifier) *v2DispatchDeps {
+func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.ChatHandler, keyVerifier *authentication.KeyVerifier, swEngine *sensitive.SensitiveWordEngine) *v2DispatchDeps {
 	// Always build deps (even if chatHandler is nil — e.g. test stubs
 	// or dev/smoke). The wrapping handler will pass through to the
 	// nil chatHandler if Pipeline hooks don't short-circuit, which
@@ -641,6 +652,7 @@ func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.Chat
 		KeyVerifier:      keyVerifier,
 		AdminAPIKey:      cfg.AdminAPIKey,
 	}
+	deps.SensitiveWordEngine = swEngine
 	deps.Pipeline = buildV2DispatchPipeline(deps)
 	return deps
 }
@@ -1038,7 +1050,7 @@ func pipelineAPIKey(r *http.Request) string {
 // and avoids a single shared mutable mux. The chatHandler reference is
 // the production streaming.ChatHandler — wrapping the LLM call through it
 // is what makes the integration real (not a parallel demo).
-func v2DispatchMux(chatHandler, messagesHandler, responsesHandler http.Handler) (*http.ServeMux, *v2DispatchDeps, bool) {
+func v2DispatchMux(chatHandler, messagesHandler, responsesHandler http.Handler, swEngine *sensitive.SensitiveWordEngine) (*http.ServeMux, *v2DispatchDeps, bool) {
 	cfg := loadV2DispatchConfig()
 	if !cfg.UsePipeline {
 		return nil, nil, false
@@ -1066,7 +1078,7 @@ func v2DispatchMux(chatHandler, messagesHandler, responsesHandler http.Handler) 
 	if ch != nil {
 		keyVerifier = ch.AuthKeyVerifier()
 	}
-	deps := newV2DispatchDepsFromMain(cfg, ch, keyVerifier)
+	deps := newV2DispatchDepsFromMain(cfg, ch, keyVerifier, swEngine)
 
 	// Wrap the chatHandler in the Pipeline. messagesHandler and
 	// responsesHandler internally call chatHandler.ServeHTTP, so

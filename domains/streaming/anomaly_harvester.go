@@ -277,6 +277,10 @@ func (h *AnomalyHarvester) queryAnomalyAlerts(parent context.Context) []anomalyA
 		var at, sev string
 		var cnt int
 		if err := rows.Scan(&at, &sev, &cnt); err != nil {
+			// 12h 审计修正：裸 continue 零留痕——单行 scan 失败必须留下
+			// 痕迹（R66/R68 同族口径），否则坏行静默变少一条告警。
+			slog.Warn("anomaly harvester: bridge row scan failed; row skipped",
+				"error", err)
 			continue
 		}
 		if sev == "critical" || sev == "high" {
@@ -284,8 +288,12 @@ func (h *AnomalyHarvester) queryAnomalyAlerts(parent context.Context) []anomalyA
 		}
 	}
 	if err := rows.Err(); err != nil {
-		slog.Warn("anomaly harvester: bridge rows failed", "error", err)
-		return nil
+		// 12h 审计修正：原先 warn 后 return nil——迭代中断被渲染成
+		// 「零告警」，恰是这个观察面最不该给的安心答案。已扫出的告警
+		// 是真实子集，如实返回（partial），留痕由 Warn 承担。
+		slog.Warn("anomaly harvester: bridge rows aborted; returning partial alerts",
+			"got", len(alerts), "error", err)
+		return alerts
 	}
 	return alerts
 }
