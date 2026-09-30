@@ -10,8 +10,14 @@ import { makeDateRangePresets, rangeSpanDays } from './kxDatePresets'
 
 // 固定时钟：触发器「近 7 天」匹配依赖当前日期，必须冻结
 const FIXED = Date.UTC(2026, 8, 30, 12, 0, 0)
-beforeEach(() => vi.setSystemTime(FIXED))
-afterEach(() => vi.useRealTimers())
+// 用块体而非表达式体：vi.setSystemTime/useRealTimers 返回 VitestUtils，
+// 箭头表达式体会把该返回值当成 hook 的清理回调返回，触发 TS2322
+beforeEach(() => {
+  vi.setSystemTime(FIXED)
+})
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 const i18n = createI18n({
   legacy: false,
