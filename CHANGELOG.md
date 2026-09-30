@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **会话目录模型子串（2026-09-30）**：`q` 仍只查 `session_summaries`。除会话键、标题、`primary_model` 外，按 `models_used` 单个元素做子串匹配（换行拼接，避免两个模型名粘在一起命中）。匹配元素写回空白模型后再过滤。本地该查询约 173ms。不扫描请求日志。热门模型仍只返回最近 200 条；摘要里没有模型的会话，不在本次结果里就按模型搜不到。详见 `docs/proposals/2026-09-30-session-stats-ux/plan.md` §6。
 - **会话目录检索（2026-09-30）**：统计页目录 `q` 只查 `session_summaries`，不再对请求日志做前导 `ILIKE`（本地约 232 万行实测约 16 秒）。用量按 `gw_session_id` 读 `request_logs_hot` 与 `request_logs`，不走联表视图。摘要标题会写回行后再过滤。只存在于请求日志、摘要里没有的会话仍然搜不到。详见 `docs/proposals/2026-09-30-session-stats-ux/plan.md`。
 - **看板批判审计（2026-09-30）**：模型分布去掉费用列并改为 Top 6；供应商成本卡只按用量成本取前 5，用量失败时不再用 $0 饼图充卡；含今天的自定义范围不再把剩余小时算进 RPM/TPM 分母；请求体峰值标签补了间距。英雄卡费用仍是分钟表口径，和用量成本对不上，没有混用。详见 `docs/design/2026-09-30-board-audit.md`。
 - **fresh install 列存分区 GIN 索引条件化（2026-09-30）**：Citus columnar 分区不支持 GIN 索引，三份 01-schema 中 `request_logs_2026_07/08` 的 `quality_flags`/`tool_calls` GIN（4 处）及其 ATTACH（4 处）在 citus 空库 `--single-transaction` 安装必炸（`unsupported access method for the index on columnar table`）。改为 DO 块条件创建：heap 分区照建（生产行为零变化），columnar 分区 NOTICE 跳过，ATTACH 以 `to_regclass` 判存。实测全链（prereqs+01+02）exit=0。详见 `docs/12小时内修订审计-2026-09-30-1625.md` §四。
