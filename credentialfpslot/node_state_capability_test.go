@@ -137,6 +137,55 @@ func TestF04_ResetNodeHealthPreservesCapabilityVerdict(t *testing.T) {
 	assert.False(t, supported, "the known unsupported verdict must remain unsupported")
 }
 
+func TestF04_CapabilityReadRechecksRedisTimeAfterStateFetch(t *testing.T) {
+	mgr, mr := newCapabilityTestManager(t)
+	ctx := context.Background()
+	const credentialID = 46
+	const model = "gpt-5.6-terra"
+	baseTime := time.Unix(1_800_000_000, 0)
+	mr.SetTime(baseTime)
+
+	require.NoError(t, mgr.SetSupportsResponses(ctx, credentialID, model, false))
+	state, err := mgr.GetNodeState(ctx, credentialID, model)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	state.CapabilityExpiresAt = baseTime.Add(time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
+
+	hook := &advanceTimeAfterGetHook{server: mr, at: baseTime.Add(2 * time.Second)}
+	mgr.client.AddHook(hook)
+	supported, known, err := mgr.GetSupportsResponses(ctx, credentialID, model)
+	require.NoError(t, err)
+	assert.True(t, hook.advanced, "test must advance Redis time after the NodeState GET")
+	assert.False(t, known, "Redis TIME sampled after the GET must detect expiry crossed between commands")
+	assert.False(t, supported)
+}
+
+type advanceTimeAfterGetHook struct {
+	server   *miniredis.Miniredis
+	at       time.Time
+	advanced bool
+}
+
+func (h *advanceTimeAfterGetHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *advanceTimeAfterGetHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if err == nil && cmd.Name() == "get" && !h.advanced {
+			h.server.SetTime(h.at)
+			h.advanced = true
+		}
+		return err
+	}
+}
+
+func (h *advanceTimeAfterGetHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
 func TestF04_LegacyCapabilityWithoutExpiryReadsAsUnknown(t *testing.T) {
 	mgr, _ := newCapabilityTestManager(t)
 	ctx := context.Background()
