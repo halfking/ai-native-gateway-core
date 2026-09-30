@@ -26,7 +26,12 @@ func TestAdminLLMShouldRetryExplicit(t *testing.T) {
 	}{
 		{"no_candidate for model", true},
 		{"no available provider for model", true},
-		{"auto_route_unavailable", true},
+		// R78：原先这里喂的是 "auto_route_unavailable" —— 一个**全仓无产生方**的
+		// 幽灵错误码。函数对假字符串返回 true，测试一直是绿的，恰好盖住了真实缺陷
+		// （生产永不产生该串 ⇒ 该分支恒 false）。改用真实错误码后才有判别力。
+		{"auto_route_decider_failed", true},
+		// 反向：retired 的幽灵码现在必须判 false，防止它被重新引入。
+		{"auto_route_unavailable", false},
 		{"timeout", false},
 	}
 	for _, tc := range cases {

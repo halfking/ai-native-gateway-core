@@ -54,7 +54,19 @@ var knownUnwired = map[string]string{
 	"journeyRecorderWrittenTotal": "request journey recorder 的写入点尚未接计数",
 
 	// ── credential quota：活跃租约 gauge 待接。
-	"metricActive": "credential_client_quota 的活跃租约 gauge 尚未接入采集点",
+	// R78 订正：原理由写的是「未接采集点」，那是**未核实的假设**——实测下来
+	// Service 里其实早就有内存态的租约计数（service.go 的 s.active，Acquire/Release
+	// 各维护一次），只是没喂给 gauge。真正的原因是**整包停放**：
+	// domains/credentialquota 在生产侧零 importer（db/db.go 的注释与
+	// AUDIT_24H_20260817.md B1 明确登记为有意停放，等 dispatch 路径接上再解封）。
+	// 该包还用的是 prometheus.NewXxx 而非 promauto，需要显式 Register 才有���
+	// 挂到 /metrics，而 Register/MustRegister 同样零调用方——所以它的 4 个指标
+	// （含已被记录的那 3 个）目前一个都不在 /metrics 上。这是停放的**症状**，
+	// 不是独立缺陷：全仓只有这一个包用「非 promauto + 显式 Register」模式，
+	// 其余全部用 promauto 自动注册。
+	"metricActive": "整包停放：domains/credentialquota 生产侧零 importer（AUDIT_24H_20260817 " +
+		"B1 登记为有意停放，等 dispatch 路径接上再解封）。解封后该 gauge 需接 Service " +
+		"已有的内存态 s.active（Acquire/Release 已在维护该计数）",
 
 	// ── dispatch stats drop：统计丢弃计数待接。
 	"metricStatsDrop": "dispatch 统计丢弃的计数点尚未接入",
