@@ -4874,6 +4874,15 @@ func main() {
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
 		admin.SetIngesterRedisClient(fpSlotRedis)
+		// 2026-10-01 F5：admin HTTP ingest（/api/telemetry/request-log）是
+		// request_logs_bodies_hot 的第三落库点（方案 §3-H3 只点了 telemetry
+		// client 与 session v2），补接热区请求侧镜像。闭包与前两处同源
+		// （storageRt.bodyMirrorFn()，full 热区装配时才非 nil）；lite 模式 /
+		// 热区关闭 / request_mirror=false 时为 nil，ingester 保持纯落库。
+		if mirrorFn := storageRt.bodyMirrorFn(); mirrorFn != nil {
+			admin.SetIngesterBodyMirror(mirrorFn)
+			slog.Info("storage hotzone: admin ingest request body mirror wired (fire-and-forget, fail-open)")
+		}
 		defer admin.StopIngester()
 
 		slog.Info("CHECKPOINT: after StartIngester")
