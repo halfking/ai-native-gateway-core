@@ -225,7 +225,14 @@ func initFullHotZoneStorageMode(storageCfg *config.StorageConfig) (*storageRunti
 	// 单 defer 出口统一盖章，避免多路径漏记。
 	monitoring.Default().SetStorageMode(monitoring.ModeFull)
 	hotzoneActive := false
-	defer func() { monitoring.Default().SetHotZoneEnabled(hotzoneActive) }()
+	// mirrorActive 与 hotzoneActive 同一 defer 出口盖章：mirror.hotzone_on
+	// 此前是 setter-without-caller 的恒 false 键（2026-09-30 部署演练 O4），
+	// 语义=请求侧镜像是否已装配（RequestMirrorEnabled 门控）。
+	mirrorActive := false
+	defer func() {
+		monitoring.Default().SetHotZoneEnabled(hotzoneActive)
+		monitoring.Default().SetMirrorHotZoneOn(mirrorActive)
+	}()
 
 	// H4：HotZone 段默认值补齐（nil-safe、幂等），full 分支不走 ApplyLiteDefaults。
 	storageCfg.ApplyHotZoneDefaults()
@@ -309,7 +316,8 @@ func initFullHotZoneStorageMode(storageCfg *config.StorageConfig) (*storageRunti
 		"sqlite_factory", false,
 		"redis_env_untouched", true,
 		"lite_workers", false)
-	hotzoneActive = true // 装配走通，defer 出口据此盖章 hotzone_enabled=true
+	hotzoneActive = true                // 装配走通，defer 出口据此盖章 hotzone_enabled=true
+	mirrorActive = requestMirror != nil // mirror.hotzone_on 同出口盖章
 	return rt, nil
 }
 

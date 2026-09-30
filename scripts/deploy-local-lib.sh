@@ -592,6 +592,15 @@ dl_write_env() {
     # 显式值，未设时写空行（gateway 侧视为未设置走默认）。
     dl_emit_env_line LLM_GATEWAY_DB_MAX_CONNS "${LLM_GATEWAY_DB_MAX_CONNS:-}"
     dl_emit_env_line LLM_GATEWAY_STORAGE_MAX_CONNECTIONS "${LLM_GATEWAY_STORAGE_MAX_CONNECTIONS:-}"
+    # 2026-09-30 hotzone 部署演练 D1：双模式与热区旋钮透传。白名单此前缺失
+    # 这组键，走管线部署的 full 环境热区永远不激活（dispatcher 对空 mode 走
+    # 历史装配）；未设时写空行，gateway 侧视为未设置，行为与历史完全一致。
+    dl_emit_env_line LLM_GATEWAY_STORAGE_MODE "${LLM_GATEWAY_STORAGE_MODE:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_ENABLED "${LLM_GATEWAY_HOTZONE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_DIR "${LLM_GATEWAY_HOTZONE_DIR:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_RETENTION_HOURS "${LLM_GATEWAY_HOTZONE_RETENTION_HOURS:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_MAX_SIZE_GB "${LLM_GATEWAY_HOTZONE_MAX_SIZE_GB:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_REQUEST_MIRROR "${LLM_GATEWAY_HOTZONE_REQUEST_MIRROR:-}"
   } > "$file"
   chmod 0600 "$file"
 }
