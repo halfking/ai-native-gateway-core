@@ -1,3 +1,4 @@
+-- dbinit:no-transaction —— 本文件含 DROP INDEX CONCURRENTLY，PostgreSQL 不允许在事务块内执行；installer 的 applySQL 据此对本文件走非事务通道（见 installer/internal/dbinit/runner.go noTransactionMarker）。无该标记时全新安装会失败于 "DROP INDEX CONCURRENTLY cannot run inside a transaction block"。
 -- 719: ensure 约束影蔽索引根治 + request_logs 父索引跨通道所有权归一
 -- + tool_usage_stats_hot ASC/DESC 近重复收敛（R38，2026-09-17）
 --
