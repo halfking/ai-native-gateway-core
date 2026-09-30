@@ -81,15 +81,40 @@ func (s *DBStateSync) Dropped() int64 {
 	return s.dropped.Load()
 }
 
-// Run 阻塞消费迁移事件直到 ctx 取消。每次落库用独立的 5s 超时 context，
-// 不随 ctx 提前中断（停机时把已入队事件尽量写完）。
+// Run 阻塞消费迁移事件直到 ctx 取消，随后进入有界排水把已入队事件尽量
+// 写完。每次落库用独立的 5s 超时 context，不随 ctx 提前中断。
 func (s *DBStateSync) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			s.drain()
 			return
 		case sc := <-s.ch:
 			s.syncOne(sc)
+		}
+	}
+}
+
+// drain 在 Run 退出前有界排水：非阻塞接收直到队列排空。总预算 30s——
+// 满队列 128 条 × 5s/条的最坏停机延迟不可接受，预算内写多少算多少，
+// 与「DB 列是近似信号」的整体取舍一致；预算耗尽时剩余事件计入 dropped
+// 计数（同样是"未落库"语义）。
+func (s *DBStateSync) drain() {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		select {
+		case sc := <-s.ch:
+			s.syncOne(sc)
+			if time.Now().After(deadline) {
+				if remaining := int64(len(s.ch)); remaining > 0 {
+					n := s.dropped.Add(remaining)
+					slog.Warn("circuit state sync drain budget exhausted, abandoning queued events",
+						"abandoned", remaining, "dropped_total", n)
+				}
+				return
+			}
+		default:
+			return
 		}
 	}
 }
