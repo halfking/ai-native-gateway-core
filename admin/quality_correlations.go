@@ -180,7 +180,7 @@ func buildBreakdownQuery(by string) (string, error) {
 		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN COALESCE(rb.request_body, ''::jsonb)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
+				WHEN COALESCE(rb.request_body, '{}'::jsonb)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
 					THEN 'has_image'
 				ELSE 'no_image'
 			END`
@@ -191,7 +191,7 @@ func buildBreakdownQuery(by string) (string, error) {
 		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, ''::jsonb)::text) > 0
+				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, '{}'::jsonb)::text) > 0
 					THEN 'has_code'
 				ELSE 'no_code'
 			END`
@@ -202,12 +202,12 @@ func buildBreakdownQuery(by string) (string, error) {
 		// prompts end up here).
 		bucketExpr = `
 			CASE
-				WHEN request_preview ~ '\x{4E00}-\x{9FFF}' THEN 'zh'
-				WHEN request_preview ~ '\x{3040}-\x{309F}' THEN 'ja'
-				WHEN request_preview ~ '\x{30A0}-\x{30FF}' THEN 'ja'
-				WHEN request_preview ~ '\x{AC00}-\x{D7AF}' THEN 'ko'
-				WHEN request_preview ~ '\x{0400}-\x{04FF}' THEN 'ru'
-				WHEN request_preview ~ '\x{0600}-\x{06FF}' THEN 'ar'
+				WHEN request_preview ~ '[一-鿿]' THEN 'zh'
+				WHEN request_preview ~ '[぀-ゟ]' THEN 'ja'
+				WHEN request_preview ~ '[゠-ヿ]' THEN 'ja'
+				WHEN request_preview ~ '[가-힯]' THEN 'ko'
+				WHEN request_preview ~ '[Ѐ-ӿ]' THEN 'ru'
+				WHEN request_preview ~ '[؀-ۿ]' THEN 'ar'
 				ELSE 'en'
 			END`
 	default:
