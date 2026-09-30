@@ -6,7 +6,8 @@ package bg
 // 与 cache_trimmer.go（仅清 L1.5 cache 目录）的区别：
 //   - 只遍历 HotZone.Dir 下三个受管子树，共享同一配额与保留期；
 //   - 先按 mtime 删除过期文件，再按总盘占超限时最旧先删（与现有 FileCache
-//     「先移除旧的」语义一致）；
+//     「先移除旧的」语义一致）；临时文件只参与过期清扫、豁免配额相
+//     （见 isTempFile——过期 .tmp = 崩溃孤儿，必须回收）；
 //   - 默认周期 30 分钟（Plan §3 H4 "每 30 分钟"），覆盖文件级保留与容量回收。
 //
 // 生命周期：与 cache_trimmer 同款，由调用方 `go trimmer.Start(ctx)` 启动，
@@ -208,7 +209,13 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 		mod  time.Time
 	}
 	var (
-		files       []entry
+		files []entry
+		// temps 是写入中临时文件（isTempFile 命中）：不进 onDiskBytes、不参与
+		// 配额相（在飞写入不被盘压误删）；只参与下方过期清扫——在飞写入存活
+		// 毫秒级，mtime 早于 cutoff 的 .tmp 必然是崩溃孤儿（FileCache 与
+		// AsyncFileWriter 均不回收自己的临时文件，2026-10-01 审计 F1：此前
+		// 全量豁免使孤儿临时文件在热区无界累积）。
+		temps []entry
 		onDiskBytes int64
 		deleted     int
 		freed       int64
@@ -256,8 +263,9 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 			if !info.Mode().IsRegular() {
 				return nil
 			}
-			// 临时文件不参与 trimmer（与 AsyncFileWriter 的 .tmp / .tmp- 写入约定一致）。
+			// 临时文件：不进配额口径与配额相，仅过期清扫（见上方 temps 注记）。
 			if isTempFile(rel) {
+				temps = append(temps, entry{root: child, rel: rel, path: subtree + string(filepath.Separator) + rel, size: info.Size(), mod: info.ModTime()})
 				return nil
 			}
 			files = append(files, entry{root: child, rel: rel, path: subtree + string(filepath.Separator) + rel, size: info.Size(), mod: info.ModTime()})
@@ -291,6 +299,22 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 		kept = files
 	}
 
+	// 阶段 1b：孤儿临时文件清扫（过期口径与阶段 1 相同）。retention 未启用时
+	// 跳过（fail-safe 与主阶段一致）。删除失败只记日志，不影响后续阶段。
+	if retentionEnabled {
+		for _, e := range temps {
+			if !e.mod.Before(cutoff) {
+				continue
+			}
+			if rmErr := e.root.Remove(e.rel); rmErr != nil {
+				slog.Warn("hotzone_trimmer: 删除孤儿临时文件失败", "path", e.path, "error", rmErr)
+				continue
+			}
+			deleted++
+			freed += e.size
+		}
+	}
+
 	// 阶段 2：配额回收（按 mtime 最旧先删）。afterExpiry 是阶段 1 后的剩余文件，
 	// 已按 mtime 升序排列，直接遍历即可。maxBytes<=0 时整相跳过（见上方
 	// quotaEnabled 注记）。
@@ -322,9 +346,12 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 	return nil
 }
 
-// isTempFile 判断文件是否属于异步写入器的临时文件（保留中，不参与 trimmer）。
+// isTempFile 判断文件是否属于异步写入器的临时文件。临时文件豁免配额口径与
+// 配额相（在飞写入不被盘压误删），但参与过期清扫：在飞写入存活毫秒级，mtime
+// 早于 retention cutoff 的 .tmp 必然是崩溃孤儿，不清则无界累积（FileCache
+// 与 AsyncFileWriter 均不回收自己的临时文件，2026-10-01 审计 F1 收口）。
 // AsyncFileWriter 写入约定：`.{base}.tmp-{rand}` 与 `{base}.{rand}.tmp`；
-// 任何含 ".tmp" 段的文件均视为写入中，不被 trimmer 删除。
+// 任何含 ".tmp" 段的文件均按此处理。
 func isTempFile(name string) bool {
 	return strings.Contains(name, ".tmp")
 }

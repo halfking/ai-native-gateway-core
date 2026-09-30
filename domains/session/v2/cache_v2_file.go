@@ -145,10 +145,15 @@ func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache,
 }
 
 // ResizeMax 修改 maxSize 上限（热重载入口，H4 接线：settings 变更 → 本方法）。
-// 仅立即生效扩容；缩容不主动删除，靠后续写入触发 ensureSpaceLocked 的写时
-// 淘汰回落（bg/cache_trimmer.go 只按 TTL 删，没有配额型 trimmer——2026-09-29
-// 二十轮订正：原文"交由下一轮 trimmer 执行"描述了不存在的机制）。低写入
-// 场景下超限占用要等 TTL 到期才回落。零值或负值拒绝（与构造时校验一致）。
+// 仅立即生效扩容；缩容不主动删除，分两种落点：
+//   - cache 子树位于热区目录内（full 热区装配 / lite CacheDir 落入热区）：
+//     缩容由 HotZoneTrimmer 配额相执行（startHotZoneTrimmer 接线，与本注释
+//     互为印证）。2026-09-29 二十轮订正时该机制尚未接线（P3 之前），订正在
+//     当时为真；2026-10-01 审计随 P3 落地补记两段式口径。
+//   - 热区外（lite 独立 cache 目录）：确无配额型 trimmer（bg/cache_trimmer.go
+//     只按 TTL 删），靠后续写入触发 ensureSpaceLocked 的写时淘汰回落，低写入
+//     场景下超限占用要等 TTL 到期才回落。
+// 零值或负值拒绝（与构造时校验一致）。
 // 内部持 fc.mu 写 maxSize：热重载由 settings/admin goroutine 调用，与 Set
 // 锁内的 `sizeUsed+needed <= maxSize` 判定并发，必须同锁互斥（mu 是私有
 // 字段，外部调用方无法按要求持锁，锁必须在方法内部获取）。nil-safe。
@@ -159,6 +164,24 @@ func (fc *FileCache) ResizeMax(newMaxSize int64) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 	fc.maxSize = newMaxSize
+}
+
+// SetTTL 修改缓存 TTL（热重载入口，H4 接线：settings retention 变更 → 本方法，
+// 与 ResizeMax 同理内部自持 fc.mu，外部调用方无法按要求持锁）。nil-safe；
+// d<=0 拒绝（与构造时校验一致）。
+//
+// 存在理由（2026-10-01 审计 F2）：full 热区装配把 TTL 与 hotzone retention
+// 设为同参（读侧 Get 过期判定与删侧 trimmer retention 同界），但 TTL 若只在
+// 构造期钉死，retention 热重载扩容后读侧仍按旧 TTL 自删（Get →
+// removeExpiredLocked），扩容对 L1.5 读路径不生效；缩容则读侧滞后于删侧，
+// 属纯语义无损（miss 回源）。两侧经本方法同步后才真正"同参"。
+func (fc *FileCache) SetTTL(d time.Duration) {
+	if fc == nil || d <= 0 {
+		return
+	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.ttl = d
 }
 
 // buildPath 生成缓存文件路径：
@@ -244,6 +267,10 @@ func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 			return nil, fmt.Errorf("file cache: get %s: expired: %w", path, errCacheMiss)
 		}
 		fc.mu.Lock()
+		// 回填索引刻意不累加 sizeUsed（2026-10-01 审计 F4 补注）：运行期
+		// "磁盘有而索引无"只可能来自锁内 Set（记账已在 Set 完成，此处再加
+		// 即双计）——损坏 JSON 竞态路径摘索引后残留的正是并发 Set 的新文件。
+		// 启动期磁盘实况由 NewFileCache 的 Walk 一次性入账，两边都不经此处。
 		fc.index[key] = &indexEntry{path: path, size: fi.Size(), modTime: fi.ModTime()}
 		fc.mu.Unlock()
 	}
@@ -259,9 +286,9 @@ func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 	var state SessionStateV2
 	if err := json.Unmarshal(data, &state); err != nil {
 		// 读到损坏 JSON（如异常断电留下的半截文件）：按缓存未命中处理并清理。
-		// 索引条目可能与磁盘现状漂移（文件已被外部修改），必须 Stat 一次取磁盘
-		// 实况再走 removeIfUnchanged，否则 fakeFileInfo 与磁盘 modTime 不一致
-		// 会让"复检 mtime/size 一致"误判，导致损坏文件残留。
+		// 索引条目可能与磁盘现状漂移（文件已被并发 Set 替换），必须 Stat 一次取
+		// 磁盘实况传给 removeIfUnchanged，以"文件自读取后 mtime/size 未变"为准
+		// 删除，避免误删并发 Set 刚写入的新文件。
 		fc.mu.Lock()
 		seen, statErr := os.Stat(path)
 		fc.mu.Unlock()
@@ -278,27 +305,6 @@ func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 		return nil, fmt.Errorf("file cache: unmarshal %s: %w", path, errCacheMiss)
 	}
 	return &state, nil
-}
-
-// fakeFileInfo 在索引命中但读路径需要 removeIfUnchanged 时构造的最小
-// os.FileInfo 视图（仅有 path/size/modTime 三字段参与比较，name/dir/isDir
-// 等调用方不消费）。
-type fileInfoShim struct {
-	os.FileInfo
-	size    int64
-	modTime time.Time
-	path    string
-}
-
-func (f *fileInfoShim) Name() string       { return filepath.Base(f.path) }
-func (f *fileInfoShim) Size() int64        { return f.size }
-func (f *fileInfoShim) ModTime() time.Time { return f.modTime }
-func (f *fileInfoShim) IsDir() bool        { return false }
-func (f *fileInfoShim) Mode() os.FileMode  { return fileCacheFilePerm }
-func (f *fileInfoShim) Sys() interface{}   { return nil }
-
-func fakeFileInfo(path string, size int64, modTime time.Time) os.FileInfo {
-	return &fileInfoShim{path: path, size: size, modTime: modTime}
 }
 
 // Set 写入会话状态（覆盖写）。

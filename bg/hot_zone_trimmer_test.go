@@ -6,7 +6,7 @@ package bg
 //   - 过期清理（mtime < cutoff → 删除）；
 //   - 配额回收（总盘占 > maxBytes → 最旧先删）；
 //   - 三子树共享配额（cache + session_bodies + requests 共同计费）；
-//   - 临时文件 (.tmp / .tmp-) 不参与 trimmer；
+//   - 临时文件：新鲜 .tmp 全相豁免（在飞），过期 .tmp 参与过期清扫（孤儿回收）；
 //   - SetRetention / SetMaxBytes 热重载；
 //   - dir 缺失时静默 no-op。
 
@@ -245,9 +245,10 @@ func TestHotZoneTrimmerQuotaEvictionOldestFirst(t *testing.T) {
 func TestHotZoneTrimmerTempFilesIgnored(t *testing.T) {
 	dir := newHotZoneDir(t)
 
-	// .tmp / .tmp- 前缀临时文件：trimmer 应跳过（AsyncFileWriter 写入约定）
-	touchFile(t, filepath.Join(dir, "requests", "abc.json.tmp"), []byte("xxxx"), time.Now().Add(-2*time.Hour))
-	touchFile(t, filepath.Join(dir, "requests", "abc.json.tmp-12345"), []byte("yyyy"), time.Now().Add(-2*time.Hour))
+	// 在飞临时文件（mtime 新鲜）：不参与任何相——配额相豁免 + 未到过期线
+	//（AsyncFileWriter 写入约定，写入中不可动）
+	touchFile(t, filepath.Join(dir, "requests", "abc.json.tmp"), []byte("xxxx"), time.Now())
+	touchFile(t, filepath.Join(dir, "requests", "abc.json.tmp-12345"), []byte("yyyy"), time.Now())
 	touchFile(t, filepath.Join(dir, "requests", "real.json"), []byte("zzzz"), time.Now().Add(-2*time.Hour))
 
 	tr := NewHotZoneTrimmer(dir, time.Hour, 1<<30)
@@ -255,17 +256,45 @@ func TestHotZoneTrimmerTempFilesIgnored(t *testing.T) {
 		t.Fatalf("TrimOnce: %v", err)
 	}
 
-	// .tmp 仍存在（不在 trimmer 范围），real.json 被删（过期）
+	// 新鲜 .tmp 保留（在飞），real.json 被删（过期）
 	for _, kept := range []string{
 		filepath.Join(dir, "requests", "abc.json.tmp"),
 		filepath.Join(dir, "requests", "abc.json.tmp-12345"),
 	} {
 		if _, err := os.Stat(kept); err != nil {
-			t.Errorf(".tmp file should be kept: %v", err)
+			t.Errorf("in-flight .tmp file should be kept: %v", err)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, "requests", "real.json")); !os.IsNotExist(err) {
 		t.Errorf("real.json should be removed (expired)")
+	}
+}
+
+// TestHotZoneTrimmerStaleTempFilesSwept 崩溃孤儿的临时文件参与过期清扫
+//（2026-10-01 审计 F1：在飞写入存活毫秒级，mtime 早于 cutoff 的 .tmp 必然
+// 是孤儿；此前全量豁免导致热区内无界累积且不进配额口径）。
+func TestHotZoneTrimmerStaleTempFilesSwept(t *testing.T) {
+	dir := newHotZoneDir(t)
+
+	touchFile(t, filepath.Join(dir, "cache", "orphan.json.tmp-42"), []byte("xxxx"), time.Now().Add(-2*time.Hour))
+	touchFile(t, filepath.Join(dir, "cache", "fresh.json.tmp-1"), []byte("x"), time.Now())
+	touchFile(t, filepath.Join(dir, "cache", "real.json"), []byte("xxx"), time.Now())
+
+	tr := NewHotZoneTrimmer(dir, time.Hour, 1<<30)
+	if err := tr.TrimOnce(context.Background()); err != nil {
+		t.Fatalf("TrimOnce: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "cache", "orphan.json.tmp-42")); !os.IsNotExist(err) {
+		t.Errorf("stale .tmp orphan should be swept: stat err = %v", err)
+	}
+	for _, kept := range []string{
+		filepath.Join(dir, "cache", "fresh.json.tmp-1"),
+		filepath.Join(dir, "cache", "real.json"),
+	} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Errorf("fresh entry should be kept: %v", err)
+		}
 	}
 }
 

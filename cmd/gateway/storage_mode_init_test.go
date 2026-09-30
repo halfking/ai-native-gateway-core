@@ -502,9 +502,10 @@ func TestInitStorageModeHotZoneDisabledByConfig(t *testing.T) {
 	}
 }
 
-// TestInitStorageModeHotZoneResizeMaxWiring ResizeMax 联动（H4 §改动3）：
-// L1.5 cache 子树位于热区目录内时，首轮 applyReload 把 FileCache.maxSize
-// 收敛到 settings hotzone 预算（构造值 10GB → settings 默认 1GB）。
+// TestInitStorageModeHotZoneResizeMaxWiring ResizeMax/SetTTL 联动（H4 §改动3
+// + 2026-10-01 审计 F2）：L1.5 cache 子树位于热区目录内时，首轮 applyReload
+// 把 FileCache.maxSize 收敛到 settings hotzone 预算（构造值 10GB → settings
+// 默认 1GB），TTL 同步收敛到 settings retention 默认 7h（构造值 2h）。
 func TestInitStorageModeHotZoneResizeMaxWiring(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.StorageConfig{Mode: "lite"}
@@ -534,11 +535,13 @@ func TestInitStorageModeHotZoneResizeMaxWiring(t *testing.T) {
 	// 首轮 applyReload 在 Start goroutine 内异步执行，轮询等待生效
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if got := rt.fileCache.Stats()["max_size_bytes"].(int64); got == int64(1)<<30 {
+		if got := rt.fileCache.Stats()["max_size_bytes"].(int64); got == int64(1)<<30 &&
+			rt.fileCache.TTL() == 7*time.Hour {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	got := rt.fileCache.Stats()["max_size_bytes"].(int64)
-	t.Errorf("FileCache maxSize = %d, want %d (hotzone settings 预算)", got, int64(1)<<30)
+	t.Errorf("FileCache maxSize = %d, want %d (hotzone settings 预算); TTL = %v, want 7h (settings retention 同参)",
+		got, int64(1)<<30, rt.fileCache.TTL())
 }
