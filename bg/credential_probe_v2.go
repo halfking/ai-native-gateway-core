@@ -816,7 +816,8 @@ func uniqueStringSet(values ...[]string) []string {
 	return out
 }
 
-// probeCredential runs the 2-step probe (GET /v1/models + mini chat "hi").
+// probeCredentialWithCapability runs the 2-step probe (GET /v1/models + mini
+// chat "hi") and reports any Responses capability evidence for this call.
 //
 // 2026-06-29 audit: a single failed probe must not declare a credential
 // dead. Each step is wrapped in a short-jitter retry loop (0s/2s/5s, see
