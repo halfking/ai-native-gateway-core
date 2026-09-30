@@ -1,6 +1,8 @@
-# 本目录只允许示例文件与说明入库；复制出的真实 env（含密钥）一律忽略，
+# 本目录只允许示例文件与说明文档入库；复制出的真实 env（含密钥）一律忽略，
 # 防止有人把 gateway.env 这类填了真实值的文件误提交。
 *
 !*.sample
 !README.md
+!CONFIG-REFERENCE.md
+!SPECS-REFERENCE.md
 !.gitignore

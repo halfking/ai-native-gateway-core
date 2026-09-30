@@ -15,6 +15,8 @@
 
 | 文件 | 场景 | 典型用法 |
 | --- | --- | --- |
+| `CONFIG-REFERENCE.md` | **配置完备参考**：优先级链/必填集/fallback 对照/核心变量表/家族索引/测试与工具变量全清单 | 查任意变量先看这里 |
+| `SPECS-REFERENCE.md` | settings 规格全表（104 项，**机器生成勿手改**） | `go run ./scripts/gen-env-ref > envs.samples/SPECS-REFERENCE.md` 再生 |
 | `01-gateway-core.env.sample` | 网关进程运行时核心：监听/DB/Redis/密钥/超时/日志/存储 | 复制合并进部署机 `.env` 或 systemd `EnvironmentFile` |
 | `02-gateway-features.env.sample` | 可选功能开关：存活恢复/Goal/Handoff/托管任务/URSM v2/压缩/配额巡检等 | 按需挑变量加进 `.env`，全部有代码内默认值 |
 | `03-integrations.env.sample` | 第三方集成：Casdoor/Memora/分析模型/ASM outbox/maintain/ACC/License | 按启用的集成挑变量 |
@@ -72,14 +74,19 @@ openssl rand -hex 16 / openssl rand -hex 32
 
 ## 维护（新增变量时同步本目录）
 
-重新审计全仓库环境变量的命令：
+1. **settings 规格族**：改完 specs 代码后再生文档——
+   `go run ./scripts/gen-env-ref > envs.samples/SPECS-REFERENCE.md`
+2. **其他变量**：重新审计全仓库环境变量并对照 `CONFIG-REFERENCE.md` §9：
 
 ```bash
-# Go 代码（排除 vendor 与测试；含 envOrDefault/getEnvBool 等辅助读取函数）
-git grep -hoE '(os\.Getenv|os\.LookupEnv|envOrDefault|envOr|getEnvBool|getEnvInt|getEnvFloat|parseIntEnv|parseEnvDuration)\("[^"]+"' -- '*.go' ':(exclude)vendor/**' ':(exclude)*_test.go' \
+# 稳妥启发式：任意"函数名(全大写字符串)"调用（覆盖 os.Getenv/
+# envOrDefault/getEnvBool/parseDurationEnv/applyPositiveIntEnv 等全部辅助读取）
+git grep -hoE '\b[a-zA-Z][a-zA-Z0-9]*\("[A-Z][A-Z0-9_]+"' -- '*.go' ':(exclude)vendor/**' ':(exclude)*_test.go' \
   | sed -E 's/.*\("//;s/"//' | sort -u
+# 注意剔除 Redis 命令字符串等噪音（GET/POST/INCR/EXPIRE...）
 
-# settings 规格表（goal/handoff 等 specs 的 EnvName 列）
+# 结构体 env 标签 / settings 规格表（goal/handoff 等 specs 的 EnvName 列）
+git grep -hoE 'env:"[A-Za-z0-9_]+"' -- '*.go' ':(exclude)vendor/**' | sed -E 's/env:"//;s/"//'
 git grep -h 'EnvName:' -- 'settings/*_specs.go'
 
 # compose 插值 / 脚本
