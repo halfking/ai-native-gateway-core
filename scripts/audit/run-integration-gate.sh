@@ -39,6 +39,12 @@ set -uo pipefail
 
 PG_CONTAINER="${PG_CONTAINER:-llm-gateway-pg}"
 PG_USER="${PG_USER:-llm_gateway}"
+# Round 43: the first version built the DSN with no password, so every test
+# that actually connected failed with "failed SASL auth" — nine misleading
+# test failures that looked like product bugs. Set PG_PASSWORD whenever the
+# server requires one; the harness now also verifies the DSN works before
+# running any test, so this class fails once, up front, with a clear message.
+PG_PASSWORD="${PG_PASSWORD-}"
 KEEP_GATE_DB="${KEEP_GATE_DB:-0}"
 ALLOW_VACUOUS="${ALLOW_VACUOUS:-0}"
 
@@ -61,8 +67,11 @@ GATE_DB="${GATE_DB:0:30}"
 
 PGPORT=$(docker port "$PG_CONTAINER" 5432/tcp 2>/dev/null | head -1 | sed 's/.*://')
 [[ -n "$PGPORT" ]] || PGPORT=5432
-PASS="$PG_USER"
-GATE_URL="postgresql://${PG_USER}@127.0.0.1:${PGPORT}/${GATE_DB}"
+if [[ -n "$PG_PASSWORD" ]]; then
+  GATE_URL="postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PGPORT}/${GATE_DB}"
+else
+  GATE_URL="postgresql://${PG_USER}@127.0.0.1:${PGPORT}/${GATE_DB}"
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
@@ -100,6 +109,35 @@ if [[ -f "$PREREQ" ]]; then
     echo "  ✗ 00-prereqs.sql failed:"; head -4 /tmp/itgate-prereq.err | sed 's/^/      /'
     die "prereqs must apply cleanly; without extensions the gate proves nothing"
   fi
+fi
+
+# Apply the baseline as well. Round 43 established that schema_migrations is
+# created by NO migration and exists only in the pg_dump baseline — and the
+# db.ensure*() family stamps its migration number into that table. With prereqs
+# alone, nine ./db tests failed at `relation "public.schema_migrations" does not
+# exist`, which reads like a product defect but is a bootstrap hole. Applying
+# 01-schema.sql gives the gate a realistic starting schema.
+BASELINE=sql/schema/01-schema.sql
+if [[ -f "$BASELINE" ]]; then
+  cat "$BASELINE" | docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" \
+    -q -v ON_ERROR_STOP=1 --single-transaction >/dev/null 2>/tmp/itgate-baseline.err
+  if [[ $? -ne 0 ]]; then
+    echo "  ✗ 01-schema.sql failed:"; head -4 /tmp/itgate-baseline.err | sed 's/^/      /'
+    die "baseline must apply cleanly; the db.ensure*() family needs schema_migrations"
+  fi
+  echo "  ✓ baseline applied"
+fi
+
+# Verify the DSN the tests will actually use. Without this, a wrong DSN
+# surfaces as N unrelated per-test failures instead of one clear error.
+if ! docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" -tAc 'SELECT 1' >/dev/null 2>&1; then
+  die "cannot connect to the disposable database over TCP as '$PG_USER'. "\
+"Set PG_PASSWORD if the server requires one (the in-container psql above uses a "\
+"local socket, so it can succeed while TCP auth fails)."
+fi
+# Confirm the URL form the tests will parse actually connects.
+if ! psql "$GATE_URL" -tAc 'SELECT 1' >/dev/null 2>&1; then
+  die "the generated DSN cannot authenticate: $GATE_URL (redacted). Set PG_PASSWORD if required."
 fi
 
 # Population assertion: a test that "ran" against an empty database has not
