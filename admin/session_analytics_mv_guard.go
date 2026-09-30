@@ -8,6 +8,7 @@
 package admin
 
 import (
+	"log/slog"
 	"net/http"
 )
 
@@ -17,13 +18,29 @@ func analyticsViewMigrationHint(relation string) string {
 }
 
 // writeAnalyticsQueryErr 分类 session-analytics 聚合查询错误：
-// 42P01 → 503 + analytics_view_missing（含视图名与迁移指引）；其余保持
-// writeInternalErr 原语义。复用 dashboard_degrade 的判定与日志通道。
+// 42P01 → 503 + analytics_view_missing（含视图名与迁移 357 引导）；其余保持
+// writeInternalErr 原语义。复用 dashboard_degrade 的判定；42P01 走
+// ReportMissingRelation 的服务端日志通道（R35 复审补：此前仅客户端响应，
+// 服务端无痕）。
 func writeAnalyticsQueryErr(w http.ResponseWriter, op string, err error) {
 	if IsMissingRelationError(err) {
+		ReportMissingRelation(slog.Default(), op, err)
 		writeErrorWithCode(w, http.StatusServiceUnavailable, "analytics_view_missing",
 			analyticsViewMigrationHint(ExtractMissingRelationName(err)))
 		return
 	}
 	writeInternalErr(w, op, err)
+}
+
+// writeAnalyticsDetailErr 是 detail 端点的分类双门（R35 复审补）：detail
+// 此前把一切查询错误吞成 404 "not found"——缺 357 视图时运维会被误导为
+// "任务/客户端不存在"。42P01 → 503 引导；其余维持 404 原语义（真不存在）。
+func writeAnalyticsDetailErr(w http.ResponseWriter, notFoundMsg string, err error) {
+	if IsMissingRelationError(err) {
+		ReportMissingRelation(slog.Default(), "analytics detail", err)
+		writeErrorWithCode(w, http.StatusServiceUnavailable, "analytics_view_missing",
+			analyticsViewMigrationHint(ExtractMissingRelationName(err)))
+		return
+	}
+	writeError(w, http.StatusNotFound, notFoundMsg)
 }
