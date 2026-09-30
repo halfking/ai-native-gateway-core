@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -476,7 +477,16 @@ func TestCenterIntegration(t *testing.T) {
 		executed, err := store.GetCommand(ctx, commandID)
 		require.NoError(t, err)
 		assert.True(t, executed.Result.Success)
-		assert.Contains(t, executed.Result.Output, "Successfully")
+		// Round 44: this used to be assert.Contains(..., "Successfully") while the
+		// fixture above writes "Script executed successfully" — lower-case s. The
+		// two halves of the SAME test disagreed, so the assertion could never pass
+		// and the subtest had been red since it was written. It never showed up
+		// because this file skips without a DB URL, so no CI run ever reached it.
+		//
+		// Assert the exact round-trip instead of a prose fragment: it states the
+		// actual intent (Output survives the write/read cycle) and does not depend
+		// on the casing of arbitrary fixture text.
+		assert.Equal(t, result.Output, executed.Result.Output)
 		assert.Equal(t, int64(45000), executed.Result.ExecMs)
 
 		// Verify args preserved
@@ -562,7 +572,14 @@ func TestDashboardStats(t *testing.T) {
 		)
 
 		for _, inst := range instances {
-			if inst.InstanceID[:18] != "test-instance-stats" {
+			// Round 44: this was `if inst.InstanceID[:18] != "test-instance-stats"`.
+			// "test-instance-stats" is 19 characters, so [:18] yields
+			// "test-instance-stat" — the comparison could never be equal, every
+			// instance was skipped, the totals stayed 0, and the assertion below
+			// failed. It was also a latent panic for any instance_id shorter than
+			// 18 characters. Use a prefix test against the full literal instead:
+			// no magic length, no truncation, no panic.
+			if !strings.HasPrefix(inst.InstanceID, "test-instance-stats-") {
 				continue
 			}
 
