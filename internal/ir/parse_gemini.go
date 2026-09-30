@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -139,16 +140,15 @@ func ParseGemini(body []byte) (*InternalRequest, error) {
 // Gemini uses role="model" for assistant turns (mapped to "assistant") and
 // role="function" for tool responses (mapped to "tool").
 func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
+	// R72: parts are kept as raw JSON and decoded per part, so a part type this
+	// struct does not know about (executableCode / codeExecutionResult are live
+	// Gemini code-execution parts) can still reach ContentBlock.RawContent
+	// instead of being dropped on the floor. The previous shape — a closed
+	// anonymous struct with no default branch — silently discarded them: no IR
+	// carrier, and no anomaly either.
 	var contents []struct {
-		Role  string `json:"role"`
-		Parts []struct {
-			Text             string          `json:"text"`
-			InlineData       json.RawMessage `json:"inlineData"`
-			FileData         json.RawMessage `json:"fileData"`
-			FunctionCall     json.RawMessage `json:"functionCall"`
-			FunctionResponse json.RawMessage `json:"functionResponse"`
-			Thought          json.RawMessage `json:"thought"`
-		} `json:"parts"`
+		Role  string            `json:"role"`
+		Parts []json.RawMessage `json:"parts"`
 	}
 	if err := json.Unmarshal(raw, &contents); err != nil {
 		return nil, fmt.Errorf("unmarshal contents: %w", err)
@@ -165,7 +165,18 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 		}
 
 		msg := Message{Role: role}
-		for partIdx, p := range c.Parts {
+		for partIdx, rawPart := range c.Parts {
+			var p geminiPart
+			if err := json.Unmarshal(rawPart, &p); err != nil {
+				// A part that is not even an object: keep it verbatim rather
+				// than dropping it, and say so.
+				msg.Content = append(msg.Content, ContentBlock{
+					Type:       "raw",
+					RawContent: string(rawPart),
+				})
+				ReportParseUnknownField("", ProtocolGeminiGenerate, "contents[].parts", map[string]any{"raw": string(rawPart)})
+				continue
+			}
 			// Gemini thinking part. R34 (2026-09-17 audit): the real wire
 			// marker is a boolean ("thought": true, text rides in "text" —
 			// see docs/archive gemini generate-content reference); a string
@@ -270,6 +281,19 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					Type: "text",
 					Text: p.Text,
 				})
+				continue
+			}
+
+			// Nothing above claimed this part. Preserve it verbatim so the
+			// round-trip does not silently lose it, and report it — an
+			// unrepresented part is exactly the shape of "the gateway quietly
+			// changed what the model sees".
+			if trimmed := bytes.TrimSpace(rawPart); len(trimmed) > 0 && string(trimmed) != "null" && string(trimmed) != "{}" {
+				msg.Content = append(msg.Content, ContentBlock{
+					Type:       "raw",
+					RawContent: string(trimmed),
+				})
+				ReportParseUnknownField("", ProtocolGeminiGenerate, "contents[].parts", map[string]any{"raw": string(trimmed)})
 			}
 		}
 		out = append(out, msg)
@@ -578,4 +602,16 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 	}
 
 	return nil
+}
+
+// geminiPart is the decoded shape of one Gemini `contents[].parts[]` entry.
+// Unknown keys are not an error: R72 keeps the raw bytes alongside this struct
+// so a part type we do not model yet survives into ContentBlock.RawContent.
+type geminiPart struct {
+	Text             string          `json:"text"`
+	InlineData       json.RawMessage `json:"inlineData"`
+	FileData         json.RawMessage `json:"fileData"`
+	FunctionCall     json.RawMessage `json:"functionCall"`
+	FunctionResponse json.RawMessage `json:"functionResponse"`
+	Thought          json.RawMessage `json:"thought"`
 }
