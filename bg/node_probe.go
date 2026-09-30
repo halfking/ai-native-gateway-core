@@ -178,16 +178,20 @@ type nodeProbeAuditDB interface {
 // "unavailable" (real requests through proxy → timeout), producing the
 // "models briefly work then 5xx" pattern.
 type NodeProbeWorker struct {
-	db            *pgxpool.Pool
-	auditDB       nodeProbeAuditDB
-	encKey        []byte
-	keyring       *secret.Keyring
-	apiKey        string
-	baseURL       string
-	client        *http.Client // direct (no proxy), for probeGateway
-	probeClient   *http.Client // proxy-respecting, for probeDirect
-	stateObserver credentialstate.StateObserver
-	stateSink     NodeProbeStateSink
+	db             *pgxpool.Pool
+	auditDB        nodeProbeAuditDB
+	encKey         []byte
+	keyring        *secret.Keyring
+	apiKey         string
+	baseURL        string
+	client         *http.Client // direct (no proxy), for probeGateway
+	probeClient    *http.Client // proxy-respecting, for probeDirect
+	stateObserver  credentialstate.StateObserver
+	stateSink      NodeProbeStateSink
+	capabilitySink ResponsesCapabilitySink
+	// resolveDirectTargetFn is the deterministic test seam for the upstream
+	// target lookup; production leaves it nil and uses the database resolver.
+	resolveDirectTargetFn func(ctx context.Context, credID int, model string) (plain, outboundModel, baseURL, protocol string, providerID int, err error)
 	// tenantResolver looks up the tenant ID for a credential. Production
 	// wires it to credentials.tenant_id via (*pgxpool.Pool).QueryRow; tests
 	// can inject a stub to assert the backfill branch without spinning up
@@ -434,6 +438,14 @@ func (w *NodeProbeWorker) SetStateObserver(observer credentialstate.StateObserve
 func (w *NodeProbeWorker) SetNodeStateSink(sink NodeProbeStateSink) {
 	if w != nil {
 		w.stateSink = sink
+	}
+}
+
+// SetResponsesCapabilitySink wires durable capability feedback for native
+// Responses evidence gathered by this worker's direct upstream probe.
+func (w *NodeProbeWorker) SetResponsesCapabilitySink(sink ResponsesCapabilitySink) {
+	if w != nil {
+		w.capabilitySink = sink
 	}
 }
 
@@ -2720,6 +2732,10 @@ type nodeProbeRoundResult struct {
 	// 降级复探而非原生 responses 成功——该 (credential, model) 经
 	// chat/completions 可用，原生 Responses 未验证。
 	chatFallback bool
+	// supportsResponses is non-nil only when this round directly exercised a
+	// native Responses endpoint and got either a success or explicit
+	// unsupported verdict. A successful Chat fallback does not erase false.
+	supportsResponses *bool
 }
 
 func probeHeadersJSON(headers map[string]string) string {
@@ -2756,6 +2772,12 @@ func probeHeadersJSON(headers map[string]string) string {
 // protocol 6h parking never fired from this path.
 func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) (r nodeProbeRoundResult) {
 	r = nodeProbeRoundResult{errCode: "none"}
+	defer func() {
+		if err := writeResponsesCapability(ctx, w.capabilitySink, credID, model, r.supportsResponses); err != nil {
+			slog.Warn("node_probe_worker: persisting Responses capability failed",
+				"credential_id", credID, "model", model, "error", err)
+		}
+	}()
 	// 失败出口统一收口（2026-09-25）：每个失败 return 前不必各自分类，
 	// defer 兜底一次 root-cause 分类 + err_detail 标注。ok 时不标注。
 	defer func() {
@@ -2764,7 +2786,11 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 			annotateRootCause(&r)
 		}
 	}()
-	plain, outboundModel, baseURL, protocol, providerID, err := w.resolveDirectTarget(ctx, credID, model)
+	resolveTarget := w.resolveDirectTarget
+	if w.resolveDirectTargetFn != nil {
+		resolveTarget = w.resolveDirectTargetFn
+	}
+	plain, outboundModel, baseURL, protocol, providerID, err := resolveTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
 		r.errDetail = fmt.Sprintf("build endpoint failed: %s (cred_id=%d, model=%s)", err.Error(), credID, model)
@@ -2841,6 +2867,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	}
 	defer resp.Body.Close()
 	r.httpStatus = resp.StatusCode
+	responsesProbe := probeDescriptorFor(protocol).ChatProbeEndpoint == upstreamurl.EpResponses
 
 	// 读取响应body（前512字节）
 	respBuf := make([]byte, 512)
@@ -2849,6 +2876,9 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		r.ok = true
+		if responsesProbe {
+			r.supportsResponses = boolEvidence(true)
+		}
 		return r
 	}
 	r.errCode = fmt.Sprintf("http_%d", resp.StatusCode)
@@ -2869,8 +2899,9 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	// chat 绿 → 该 (credential, model) 经 chat 可用，本轮按成功回报
 	// （rootCause 分类在 defer 中只在 !ok 时执行，成功路径不受污染）。
 	// chat 也挂 → 维持原 responses 失败结论，附注 fallback 结果。
-	if probeDescriptorFor(protocol).ChatProbeEndpoint == upstreamurl.EpResponses &&
+	if responsesProbe &&
 		providercap.ResponsesUnsupportedError(resp.StatusCode, r.responseBody) {
+		r.supportsResponses = boolEvidence(false)
 		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, w.probeClient, plain, baseURL, bodyModel)
 		if fbOK {
 			r.ok = true

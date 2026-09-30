@@ -60,6 +60,10 @@ type httpProbeResult struct {
 	latencyMs   int
 	modelListed bool     // model was found in the response body (piggy-back)
 	modelIDs    []string // all model IDs from the response (used to evaluate modelListed)
+	// supportsResponses records only direct native endpoint evidence. It is
+	// kept through Chat fallback so fallback success cannot turn a negative
+	// Responses verdict into a positive one.
+	supportsResponses *bool
 }
 
 var (
@@ -169,7 +173,13 @@ func singleResponsesPing(ctx context.Context, endpoint, apiKey, modelField strin
 	defer resp.Body.Close()
 	latencyMs := int(time.Since(start).Milliseconds())
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return classifyHTTPResponse(resp.StatusCode, string(respBody), latencyMs)
+	result := classifyHTTPResponse(resp.StatusCode, string(respBody), latencyMs)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		result.supportsResponses = boolEvidence(true)
+	} else if providercap.ResponsesUnsupportedError(resp.StatusCode, string(respBody)) {
+		result.supportsResponses = boolEvidence(false)
+	}
+	return result
 }
 
 // classifyHTTPResponse maps an HTTP response (status + body) to probeCategory.
@@ -412,6 +422,7 @@ func probeWithRetry(
 		// consensus 会把 claude/qwen 等经 chat 完全可用的模型推向
 		// broken_confirmed → binding available=FALSE（model_probe_broken）。
 		if mode == ProbeModeResponses && providercap.ResponsesUnsupportedError(result.httpStatus, result.errMsg) {
+			capabilityEvidence := result.supportsResponses
 			modelField := t.OutboundModel
 			if modelField == "" {
 				modelField = t.RawModel
@@ -420,6 +431,7 @@ func probeWithRetry(
 			if fbOK {
 				okResult := classifyHTTPResponse(fbStatus, fbBody, result.latencyMs+fbLatency)
 				okResult.errMsg = responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, true)
+				okResult.supportsResponses = capabilityEvidence
 				result = okResult
 			} else {
 				result.errMsg += "; " + responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, false)

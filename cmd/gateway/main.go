@@ -4142,6 +4142,7 @@ func main() {
 			// manual_disable.
 			slog.Info("CHECKPOINT: before NewModelProbeRunner")
 			modelProbe = bg.NewModelProbeRunner(dbConn.Pool(), fernetKey)
+			modelProbe.SetResponsesCapabilitySink(fpSlots)
 			if keyring != nil {
 				modelProbe.SetKeyring(keyring)
 			}
@@ -4218,16 +4219,17 @@ func main() {
 			// Start, so the spec is HotReload=false by design.
 			epWorkers := settings.ErrorProbeWorkers()
 			activeProbe = bg.NewActiveProbeWorker(bg.ActiveProbeWorkerConfig{
-				DB:                   dbConn.Pool(),
-				Keyring:              keyring,
-				EncKey:               fernetKey,
-				Telemetry:            telemetryClient,
-				StateManager:         stateManager,
-				Enabled:              epEnabled,
-				ConsecutiveThreshold: epThreshold,
-				MaxAttempts:          epMaxAttempts,
-				TimeoutMs:            epTimeoutMs,
-				Workers:              epWorkers,
+				DB:                      dbConn.Pool(),
+				Keyring:                 keyring,
+				EncKey:                  fernetKey,
+				ResponsesCapabilitySink: fpSlots,
+				Telemetry:               telemetryClient,
+				StateManager:            stateManager,
+				Enabled:                 epEnabled,
+				ConsecutiveThreshold:    epThreshold,
+				MaxAttempts:             epMaxAttempts,
+				TimeoutMs:               epTimeoutMs,
+				Workers:                 epWorkers,
 			})
 			slog.Info("CHECKPOINT: before activeProbe.Start")
 			if stateManager != nil {
@@ -4249,6 +4251,7 @@ func main() {
 				slog.Info("durable probe queue DISABLED by env (legacy node_probe path)")
 			} else {
 				queueExecutor = bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
+				queueExecutor.SetResponsesCapabilitySink(fpSlots)
 				probeQueue = bg.NewProbeQueue(dbConn.Pool())
 				if ursmV2Mgr != nil && ursmV2Mgr.StrictCanary() {
 					probeQueue.SetScope(ursmV2Mgr)
@@ -4344,6 +4347,7 @@ func main() {
 				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
 				// backoff, direct + gateway two rounds.
 				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+				nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
 				if ursmV2Mgr != nil && (ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative || ursmV2Mgr.StrictCanary()) {
 					nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 				}
@@ -4542,6 +4546,7 @@ func main() {
 		// worker independently and route its final state through the v2 sink.
 		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+			nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 			nodeProbeWorker.SetEmitter(newProbeEmitter())
 			if probeStreamHub != nil {
