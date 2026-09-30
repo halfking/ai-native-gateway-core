@@ -10,7 +10,7 @@ import type { DimensionOptions, RangeReport } from '../../api/reportrollup'
 
 const getReportSummaryMock = vi.fn()
 const getReportDimensionsMock = vi.fn()
-const replaceMock = vi.fn()
+const pushMock = vi.fn()
 
 vi.mock('../../api/reportrollup', async () => {
   const actual = await vi.importActual<typeof import('../../api/reportrollup')>('../../api/reportrollup')
@@ -26,7 +26,7 @@ vi.mock('../../api/reportrollup', async () => {
 const routeState = reactive<{ query: Record<string, string> }>({ query: {} })
 vi.mock('vue-router', () => ({
   useRoute: () => routeState,
-  useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
+  useRouter: () => ({ push: pushMock, replace: vi.fn() }),
 }))
 
 vi.mock('../../components/reconciliation/ReconciliationCharts.vue', () => ({
@@ -170,9 +170,52 @@ describe('ReconciliationReport', () => {
     await flushPromises()
     const last = getReportSummaryMock.mock.calls.at(-1)?.[0] as { provider_id?: number }
     expect(last.provider_id).toBe(1)
-    expect(replaceMock).toHaveBeenCalledWith(expect.objectContaining({
+    expect(pushMock).toHaveBeenCalledWith(expect.objectContaining({
       query: expect.objectContaining({ provider_id: '1' }),
     }))
+  })
+
+  it('browser back drops provider_id and refetches without that filter', async () => {
+    routeState.query = { view: 'provider', provider_id: '2' }
+    getReportSummaryMock.mockResolvedValue(providerReport())
+    const wrapper = await mountView()
+    const callsBefore = getReportSummaryMock.mock.calls.length
+    routeState.query = { view: 'provider' }
+    await flushPromises()
+    const last = getReportSummaryMock.mock.calls.at(-1)?.[0] as { provider_id?: number }
+    expect(getReportSummaryMock.mock.calls.length).toBeGreaterThan(callsBefore)
+    expect(last.provider_id).toBeUndefined()
+    expect(wrapper.get('[data-testid="primary-dist"]').text()).toContain('prov-alpha')
+  })
+
+  it('ignores a slower response that returns after a newer query', async () => {
+    let releaseStale: (value: RangeReport) => void = () => {}
+    getReportSummaryMock.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseStale = resolve }),
+    )
+    const wrapper = mount(ReconciliationReport, { global: { plugins: [i18n] } })
+    await flushPromises()
+    const fresh = providerReport()
+    getReportSummaryMock.mockResolvedValue(fresh)
+    await wrapper.get('[data-quick="yesterday"]').trigger('click')
+    await flushPromises()
+    releaseStale({
+      ...providerReport(),
+      providers: [{ provider_id: 9, provider_name: 'stale-name', quality_score: 1, totals: totals(1), error_breakdown: {} }],
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('prov-alpha')
+    expect(wrapper.text()).not.toContain('stale-name')
+    wrapper.unmount()
+  })
+
+  it('mounts the day table only after the section is expanded', async () => {
+    getReportSummaryMock.mockResolvedValue(providerReport())
+    const wrapper = await mountView()
+    expect(wrapper.find('[data-testid="day-dist"]').exists()).toBe(false)
+    await wrapper.get('.el-collapse-item__header').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="day-dist"]').text()).toContain('2026-09-21')
   })
 
   it('filters the model table when a failure reason is picked', async () => {

@@ -55,7 +55,11 @@ export function useReconciliationPage() {
   const filters = ref<ReportFilter>({
     provider_id: numQuery(route.query.provider_id),
     model: typeof route.query.model === 'string' ? route.query.model : undefined,
+    tenant_id: typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined,
+    person: typeof route.query.person === 'string' ? route.query.person : undefined,
   })
+  let fetchGen = 0
+  let applyingRoute = false
 
   const showCost = computed(() => isPlatformOpsView())
   const hasData = computed(() => !!report.value && report.value.snapshot_dates.length > 0)
@@ -92,21 +96,25 @@ export function useReconciliationPage() {
   ])
 
   async function refresh() {
+    const gen = ++fetchGen
     loading.value = true
     errorText.value = ''
     try {
-      report.value = await getReportSummary({
+      const next = await getReportSummary({
         start: range.value[0],
         end: range.value[1],
         view: view.value,
         detail: false,
         ...cleanFilters(filters.value),
       })
+      if (gen !== fetchGen) return
+      report.value = next
     } catch (err: unknown) {
+      if (gen !== fetchGen) return
       errorText.value = err instanceof Error ? err.message : String(err)
       report.value = null
     } finally {
-      loading.value = false
+      if (gen === fetchGen) loading.value = false
     }
   }
 
@@ -202,37 +210,71 @@ export function useReconciliationPage() {
     }
   }
 
-  function syncQuery() {
+  function currentQuery(): Record<string, string> {
     const query: Record<string, string> = { view: view.value }
     if (filters.value.provider_id != null) query.provider_id = String(filters.value.provider_id)
     if (filters.value.model) query.model = filters.value.model
-    const current = route.query
-    const same = current.view === query.view
-      && String(current.provider_id ?? '') === (query.provider_id ?? '')
-      && String(current.model ?? '') === (query.model ?? '')
-    if (!same && typeof router.replace === 'function') void router.replace({ query })
+    if (filters.value.tenant_id) query.tenant_id = filters.value.tenant_id
+    if (filters.value.person) query.person = filters.value.person
+    return query
+  }
+
+  function sameQuery(query: Record<string, string>): boolean {
+    const keys = ['view', 'provider_id', 'model', 'tenant_id', 'person'] as const
+    return keys.every((key) => String(route.query[key] ?? '') === (query[key] ?? ''))
+  }
+
+  function syncQuery() {
+    if (applyingRoute) return
+    const query = currentQuery()
+    if (sameQuery(query)) return
+    if (typeof router.push === 'function') void router.push({ query })
+  }
+
+  function applyRouteQuery() {
+    const nextView: ReportView = route.query.view === 'internal' ? 'internal' : 'provider'
+    const nextPid = numQuery(route.query.provider_id)
+    const nextModel = typeof route.query.model === 'string' ? route.query.model : undefined
+    const nextTenant = typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined
+    const nextPerson = typeof route.query.person === 'string' ? route.query.person : undefined
+    const viewChanged = view.value !== nextView
+    const filterChanged = filters.value.provider_id !== nextPid
+      || (filters.value.model ?? undefined) !== nextModel
+      || (filters.value.tenant_id ?? undefined) !== nextTenant
+      || (filters.value.person ?? undefined) !== nextPerson
+    if (!viewChanged && !filterChanged) return
+    applyingRoute = true
+    if (viewChanged) {
+      reasonFilter.value = null
+      view.value = nextView
+    }
+    if (filterChanged) {
+      filters.value = cleanFilters({
+        ...filters.value,
+        provider_id: nextPid,
+        model: nextModel,
+        tenant_id: nextTenant,
+        person: nextPerson,
+      })
+    }
+    applyingRoute = false
+    reload()
   }
 
   watch(view, () => {
+    if (applyingRoute) return
     reasonFilter.value = null
     reload()
     syncQuery()
-  })
+  }, { flush: 'sync' })
   watch(filters, () => {
+    if (applyingRoute) return
     void refresh()
     syncQuery()
-  }, { deep: true })
+  }, { deep: true, flush: 'sync' })
   watch(
-    () => [route.query.view, route.query.provider_id, route.query.model] as const,
-    () => {
-      const nextView: ReportView = route.query.view === 'internal' ? 'internal' : 'provider'
-      const nextPid = numQuery(route.query.provider_id)
-      const nextModel = typeof route.query.model === 'string' ? route.query.model : undefined
-      if (view.value !== nextView) view.value = nextView
-      if (filters.value.provider_id !== nextPid || (filters.value.model ?? undefined) !== nextModel) {
-        filters.value = cleanFilters({ ...filters.value, provider_id: nextPid, model: nextModel })
-      }
-    },
+    () => [route.query.view, route.query.provider_id, route.query.model, route.query.tenant_id, route.query.person] as const,
+    () => applyRouteQuery(),
   )
 
   onMounted(reload)

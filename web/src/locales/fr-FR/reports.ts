@@ -51,7 +51,7 @@ export default {
   allModels: 'Tous les modèles',
   clearFilter: 'Effacer les filtres',
   kpiTenants: 'Locataires réglés',
-  kpiLatency: 'Latence moy.',
+  kpiLatency: 'Latence P50',
   kpiDaily: 'Requêtes/jour',
   kpiPersons: 'Personnes actives',
   kpiPerPersonReq: 'Requêtes par personne',
