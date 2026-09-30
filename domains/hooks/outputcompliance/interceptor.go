@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
@@ -141,70 +142,91 @@ func (it *OutputComplianceInterceptor) InterceptStreamEnd(ctx context.Context, m
 	if err != nil || res == nil {
 		return nil, err
 	}
-	// EndResult 不带 ModifiedBody（stream 已发送），仅用 Metadata 传递脱敏标记。
-	end := &response.EndResult{}
+	// EndResult 不带 ModifiedBody（stream 已发送），仅用 Metadata 传递脱敏
+	//标记。R25-C 语义钉：owner 匹配跳过脱敏时，EndResult 必须不带任何
+	// metadata——processBody 的 observe 分支（issue_count>0 但未改写）只是
+	// 观测信号，不是脱敏事实；把 observe metadata 透传到 stream end 会让
+	// 下游（cache_update_hook 等）把「已检查未脱敏」误读成「发生了脱敏」。
 	if res.Metadata != nil {
-		end.Metadata = res.Metadata
+		if res.Action == "output_compliance_redact" {
+			end := &response.EndResult{}
+			end.Metadata = res.Metadata
+			return end, nil
+		}
 	}
-	return end, nil
+	return &response.EndResult{}, nil
 }
 
 // processBody 是非流式/流结束共用的核心逻辑。
+//
+// F02 (V3): the body is decomposed into client-visible text lanes
+// (transformVisibleJSON / collectVisibleText in protocol_text.go) and each
+// lane is checked and redacted independently. Checking the raw JSON string
+// could both miss escaped text and mistake ids/usage for model output.
 func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *response.InterceptRequest) (*response.InterceptResult, error) {
-	output := string(req.ResponseBody)
-
-	// 1. 检测
-	result, err := it.checker.Check(ctx, req.TenantID, output)
-	if err != nil {
-		// 故障降级为放行（避免误杀），与既有 hook.go 语义一致
-		slog.Warn("output_compliance_interceptor: check failed, degrading to allow",
-			"error", err, "session_id", req.SessionID)
-		return nil, nil
-	}
-
-	mode := redactionMode()
-	callerOwner := req.CallerOwner // V3-A01 authenticated key owner, populated by handler
 	dataOwner := ""
 	if it.ownerFn != nil {
 		dataOwner = it.ownerFn(ctx, req.SessionID, req.TenantID)
 	}
-	shouldRedact := outputcompliance.ShouldRedact(mode, callerOwner, dataOwner)
+	shouldRedact := outputcompliance.ShouldRedact(redactionMode(), req.CallerOwner, dataOwner)
 
-	// 2. 阻断（仅在 enforce + 严重时，由 checker 决定）
-	if result.Blocked {
+	transform := func(original string) (string, int, bool, error) {
+		result, err := it.checker.Check(ctx, req.TenantID, original)
+		if err != nil {
+			// Checker failure fails closed: the whole response is withheld
+			// instead of degrading to an unchecked passthrough.
+			return "", 0, false, err
+		}
+		if result == nil {
+			return "", 0, false, errors.New("output compliance checker returned nil result")
+		}
+		if result.Blocked {
+			return "", 0, true, nil
+		}
+		if !shouldRedact || result.RedactedOutput == "" || result.RedactedOutput == original {
+			return original, len(result.Issues), false, nil
+		}
+		return result.RedactedOutput, len(result.Issues), false, nil
+	}
+
+	redactedBody, issues, blocked, err := transformVisibleJSON(req.ResponseBody, false, transform)
+	if err != nil {
+		// Malformed response JSON or an unavailable checker must never reach
+		// the client unchecked.
+		slog.Warn("output_compliance_interceptor: body transform failed, blocking",
+			"error", err, "session_id", req.SessionID)
+		return &response.InterceptResult{ShouldBlock: true, Action: "output_compliance_block"}, nil
+	}
+	if blocked {
 		return &response.InterceptResult{ShouldBlock: true, Action: "output_compliance_block"}, nil
 	}
 
-	// 3. 脱敏判定
-	redacted := false
-	modified := req.ResponseBody
-	if shouldRedact && result.RedactedOutput != "" && result.RedactedOutput != output {
-		// checker.RedactedOutput 是对"整个 output 字符串"脱敏后的结果。
-		// 但 ResponseBody 是完整 JSON（含 choices/usage），需要把脱敏后的
-		// assistant content 回填进 JSON 结构，而非整体替换。
-		if rebuilt, ok := rewriteAssistantContent(req.ResponseBody, result.RedactedOutput); ok {
-			modified = rebuilt
-			redacted = true
-		} else {
-			// 回填失败时降级为不脱敏（保守：不破坏响应结构）
-			slog.Warn("output_compliance_interceptor: rewriteAssistantContent failed, skipping redaction",
-				"session_id", req.SessionID)
+	if !bytes.Equal(redactedBody, req.ResponseBody) {
+		mode := redactionMode()
+		out := &response.InterceptResult{
+			ModifiedBody: redactedBody,
+			Action:       "output_compliance_redact",
+			Metadata: map[string]interface{}{
+				"output_compliance_redacted": true,
+				"pii_stripped":               true, // 点亮 cache_update_hook 的悬空契约
+				"pii_stripped_turn":          true, // Per-turn 脱敏标记（增强 3, 2026-07-09）
+				"issue_count":                issues,
+				"redaction_mode":             string(mode),
+			},
 		}
+		return out, nil
 	}
-
-	out := &response.InterceptResult{}
-	if redacted {
-		out.ModifiedBody = modified
-		out.Action = "output_compliance_redact"
-		out.Metadata = map[string]interface{}{
-			"output_compliance_redacted": true,
-			"pii_stripped":               true, // 点亮 cache_update_hook 的悬空契约
-			"pii_stripped_turn":          true, // Per-turn 脱敏标记（增强 3, 2026-07-09）
-			"issue_count":                len(result.Issues),
-			"redaction_mode":             string(mode),
-		}
+	if issues > 0 {
+		mode := redactionMode()
+		return &response.InterceptResult{
+			Action: "output_compliance_observe",
+			Metadata: map[string]interface{}{
+				"issue_count":    issues,
+				"redaction_mode": string(mode),
+			},
+		}, nil
 	}
-	return out, nil
+	return &response.InterceptResult{}, nil
 }
 
 // rewriteAssistantContent 把"完整响应 JSON 中 assistant 文本字段"替换为脱敏后的

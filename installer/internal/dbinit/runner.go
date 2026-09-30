@@ -332,6 +332,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// fresh-install path as well as the revision sequence for upgrades.
 			"757_session_turns_origin_actor_projection.sql",
 			"758_routeincident_missing_columns.sql",
+			// 759 (2026-09-30, migration 759 follow-up): session_turn_details
+			// 重复行无损排水。它有界且幂等（真冲突行留在 hot 等人工裁决），
+			// 全新安装必须与升级路径走同一份脚本，否则新库会带着迁移前就
+			// 存在的重复行——而升级库已经排过水，两种起点会长期分叉。
+			// 补登原因：embeddata 副本早已就位，但 StartupFiles 漏登记，
+			// 被 TestStartupFilesAreAllEmbedded / TestCanonical...AreRegistered
+			// 双向抓到（真库 audit，2026-09-30 三十五轮）。
 			// 760 (2026-09-30, R27-HC-1/HC-2): analysis_events /
 			// stats_event_inbox 终态 TTL 清扫支撑索引（部分索引，仅终态行）。
 			"760_analysis_events_inbox_ttl_indexes.sql",
@@ -348,6 +355,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
 			// 本轮移入 startup 并补登记。
 			"800_provider_endpoint_protocols.sql",
+			// 801 (原 759, 2026-09-29): session_turn_details hot 排水的有界无损
+			// 重定义——733 的 parent anti-join 在 backfill 已插入同一 request key 时
+			// 会滞留旧 hot 行，其不可达 ON CONFLICT DO UPDATE 还会把 parent-only
+			// 补字段擦成 hot 的 NULL。
+			//
+			// 编号 801：759 已被 upstream 占用（759_report_snapshots_grain_dims，
+			// docs/12小时内修订审计-20260929-1635.md §R22-A 订的「先提交方占号」规则）。
+			// 位置在 800 之后：本迁移 CREATE OR REPLACE 的目标函数依赖 733 建的
+			// session_turn_details 表与其 hot 表，必须晚于 733 生效；旧位置（758 与
+			// 760 之间）会让 applySQL 顺序执行时在依赖对象存在前就替换函数。
+			"801_session_turn_details_duplicate_drain.sql",
 		},
 	}
 }

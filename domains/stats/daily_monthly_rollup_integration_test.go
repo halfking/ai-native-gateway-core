@@ -32,8 +32,8 @@ func readClosedSkippedCounter(t *testing.T) float64 {
 }
 
 // setupRollupContainer starts a fresh postgres container, applies the
-// 536 foundation schema (which is the only schema rollup requires),
-// and returns a pool + raw conn for seeding.
+// 536 foundation schema plus the 537 usage_facts schema the daily rebuild
+// reads from, and returns a pool + raw conn for seeding.
 func setupRollupContainer(t *testing.T, ctx context.Context) (*pgxpool.Pool, *pgx.Conn) {
 	t.Helper()
 	pgContainer, err := postgres.Run(ctx,
@@ -75,12 +75,20 @@ func setupRollupContainer(t *testing.T, ctx context.Context) (*pgxpool.Pool, *pg
 	}
 	t.Cleanup(func() { _ = conn.Close(ctx) })
 
-	body, err := os.ReadFile("../../sql/migrations/startup/536_stats_analytics_foundation.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conn.Exec(ctx, string(body)); err != nil {
-		t.Fatalf("apply 536: %v", err)
+	// dailyInsertSQL rebuilds the daily buckets from usage_facts, so 537 is
+	// required on top of the 536 foundation; applying 536 alone made Refresh
+	// fail with `relation "usage_facts" does not exist`.
+	for _, name := range []string{
+		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
+		"../../sql/migrations/startup/537_usage_facts.sql",
+	} {
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
 
 	pool, err := pgxpool.New(ctx, connStr)
@@ -89,6 +97,32 @@ func setupRollupContainer(t *testing.T, ctx context.Context) (*pgxpool.Pool, *pg
 	}
 	t.Cleanup(func() { pool.Close() })
 	return pool, conn
+}
+
+// seedRollupFact seeds one canonical usage fact plus its dedup pointer.
+//
+// Refresh DELETEs the whole stats_usage_daily window and rebuilds it from
+// usage_facts, so a directly-seeded daily row is erased before the monthly
+// aggregate ever reads it. The fact table is the rollup's real input, and the
+// dedup pointer is required because dailyInsertSQL joins stats_event_dedup.
+func seedRollupFact(t *testing.T, ctx context.Context, conn *pgx.Conn, eventID string, occurredAt time.Time) {
+	t.Helper()
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO usage_facts
+			(event_id, request_id, occurred_at, tenant_id, traffic_class, status,
+			 provider_id, canonical_id, raw_model_name,
+			 prompt_tokens, completion_tokens, total_tokens, cost_amount, credits_charged)
+		VALUES
+			($1, $2, $3, 't1', 'business', 'success', 1, 10, 'gpt-4',
+			 100, 50, 150, 0.01, 150)
+	`, eventID, eventID+"-req", occurredAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO stats_event_dedup (event_id, occurred_at) VALUES ($1, $2)
+	`, eventID, occurredAt); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestRollup_NoClosedRows asserts that when the target month range has
@@ -113,19 +147,9 @@ func TestRollup_NoClosedRows(t *testing.T) {
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
-	// Insert one stats_usage_daily row for the current month.
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO stats_usage_daily
-			(day_utc, tenant_id, provider_id, canonical_id, raw_model_name,
-			 dimension_type, dimension_key, traffic_class,
-			 request_count, success_count, prompt_tokens, completion_tokens,
-			 total_tokens, cost_usd, credits_charged)
-		VALUES
-			($1, 't1', 1, 10, 'gpt-4', 'provider_model', 'p:1:m:10',
-			 'business', 3, 3, 100, 50, 150, 0.01, 150)
-	`, today); err != nil {
-		t.Fatal(err)
-	}
+	// One usage fact for the current month; Refresh derives the daily and
+	// monthly buckets from it.
+	seedRollupFact(t, ctx, conn, "roll-no-closed", today.Add(12*time.Hour))
 
 	// Run Refresh over the current month.
 	rollup := NewDailyMonthlyRollup(pool, time.Hour)
@@ -188,31 +212,24 @@ func TestRollup_ClosedRowsAreSurfaced(t *testing.T) {
 	// attempt to upsert, so the WHERE status<>'closed' clause will
 	// silently degrade to DO NOTHING — exactly the bug we are
 	// guarding against.
+	//
+	// dimension_key must be what the rebuild actually emits: dailyInsertSQL
+	// derives the provider_model key from raw_model_name, so it is 'gpt-4',
+	// not a hand-written 'p:1:m:10' that would never collide.
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO stats_usage_monthly
 			(month_start, tenant_id, provider_id, credential_id, canonical_id,
 			 raw_model_name, dimension_type, dimension_key, traffic_class,
 			 request_count, success_count, status, closed_at, updated_at)
 		VALUES
-			($1, 't1', 1, 0, 10, 'gpt-4', 'provider_model', 'p:1:m:10',
+			($1, 't1', 1, 0, 10, 'gpt-4', 'provider_model', 'gpt-4',
 			 'business', 99, 99, 'closed', now(), now())
 	`, monthStart); err != nil {
 		t.Fatal(err)
 	}
 
-	// Seed a daily row that will trigger the upsert (same PK tuple).
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO stats_usage_daily
-			(day_utc, tenant_id, provider_id, canonical_id, raw_model_name,
-			 dimension_type, dimension_key, traffic_class,
-			 request_count, success_count, prompt_tokens, completion_tokens,
-			 total_tokens, cost_usd, credits_charged)
-		VALUES
-			($1, 't1', 1, 10, 'gpt-4', 'provider_model', 'p:1:m:10',
-			 'business', 3, 3, 100, 50, 150, 0.01, 150)
-	`, today); err != nil {
-		t.Fatal(err)
-	}
+	// Seed the fact that makes Refresh rebuild the colliding daily row.
+	seedRollupFact(t, ctx, conn, "roll-closed", today.Add(12*time.Hour))
 
 	rollup := NewDailyMonthlyRollup(pool, time.Hour)
 	if err := rollup.Refresh(ctx, today, today.Add(48*time.Hour)); err != nil {

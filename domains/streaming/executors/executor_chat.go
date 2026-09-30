@@ -391,6 +391,40 @@ func (e *Executor) executeOpenAI(
 	nativeStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
 		cand.SupportsNativeResponsesStream && params.IsStream &&
 		len(params.ResponsesBodyBytes) > 0
+
+	// F04 (V3 持久化协议能力, 2026-09-30): the probe already concluded, for
+	// THIS (credential, raw model), that the provider rejects the Responses
+	// API. Without this check every single request re-discovers that verdict
+	// by sending a doomed Responses attempt and then falling back to Chat —
+	// one guaranteed-failing upstream call per request, forever within the
+	// node-state TTL.
+	//
+	// Short-circuit to Chat directly. Deliberately conservative:
+	//   - no verdict (never probed / TTL expired / Redis down) → no-op, keep
+	//     the live-detection path;
+	//   - a positive verdict → no-op;
+	//   - a read error → no-op (fail-open to the old behavior) rather than
+	//     guessing.
+	// The verdict is per (credential, model), which is exactly the node-state
+	// key the probe wrote, so a sibling model on the same credential is
+	// unaffected.
+	if (nativeNonStream || nativeStream) && e.FpSlots != nil && e.FpSlots.Enabled() {
+		if responsesUnsupported, known, err := e.FpSlots.GetSupportsResponses(
+			params.R.Context(), cand.CredentialID, cand.RawModel); err != nil {
+			slog.Debug("durable capability read failed, falling back to live detection",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"error", err)
+		} else if known && !responsesUnsupported {
+			slog.Debug("durable capability says Responses unsupported, using chat completions",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel)
+			nativeNonStream = false
+			nativeStream = false
+		}
+	}
 	// Fix-2026-09-25: only hard-block when the native Responses capability is
 	// explicitly enabled but the required infrastructure is missing. When the
 	// capability is not enabled (credential_model_capabilities absent/false),
@@ -1665,7 +1699,9 @@ func (e *Executor) executeOpenAI(
 					// 之前完成全部改写；此前先按上游 body 定长再改写，
 					// net/http 按旧定长截断，客户端拿到残缺 JSON。
 					respBody = e.redactClientResponse(params, e.restoreClientEcho(params, respBody))
-					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
+					if !params.DeferredOutputGovernance {
+						e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
+					}
 					copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 					params.W.WriteHeader(resp.StatusCode)
 					_, _ = params.W.Write(respBody)
@@ -1831,7 +1867,14 @@ func (e *Executor) executeOpenAI(
 					})
 				}
 				respBody = e.redactClientResponse(params, respBody)
-				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
+				if !params.DeferredOutputGovernance {
+					// R25-V: under DeferredOutputGovernance these bytes only
+					// reached the handler's capture buffer; the handler may
+					// still block or rewrite them, so LogClientResponse (the
+					// "bytes the client actually received" lane) waits for the
+					// governed commit.
+					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
+				}
 				copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 				params.W.WriteHeader(resp.StatusCode)
 				//nolint:errcheck // HTTP write error non-recoverable

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
@@ -19,6 +20,11 @@ import (
 type nativeResponseInterception struct {
 	ctx     context.Context
 	request response.InterceptRequest
+	// failureEmit (optional) is invoked when the interceptor blocks the body,
+	// so the caller can emit an output_policy_blocked failure audit row with
+	// the chosen provider/credential attribution (R25-V). The provider body
+	// itself must never persist in that row.
+	failureEmit func()
 }
 
 func interceptNativeResponseBody(chain ResponseInterceptor, options *nativeResponseInterception, body []byte) ([]byte, bool, error) {
@@ -53,6 +59,69 @@ func interceptNativeResponseBody(chain ResponseInterceptor, options *nativeRespo
 		return nil, false, fmt.Errorf("interceptor returned invalid client protocol body")
 	}
 	return result.ModifiedBody, false, nil
+}
+
+// candidateAttribution returns non-nil pointers for the attempt's
+// provider/credential ids so governance failure audit rows keep their
+// attribution (zero values stay nil — no fabricated ids on rows).
+func candidateAttribution(result *executors.ExecuteResult) (providerID, credentialID *int) {
+	if result == nil {
+		return nil, nil
+	}
+	if v := result.Candidate.ProviderID; v > 0 {
+		providerID = &v
+	}
+	if v := result.Candidate.CredentialID; v > 0 {
+		credentialID = &v
+	}
+	return providerID, credentialID
+}
+
+// validateChatInterceptedBody guards the chat lane's ModifiedBody commit
+// (R25-V). classifyNonStreamUpstreamResponse only checks envelope-key
+// presence, so `{"choices":"invalid"}` (choices is a string) classifies as
+// FormatChat — writing it verbatim would corrupt the client stream. The
+// chat lane additionally requires choices to unmarshal as an array.
+func validateChatInterceptedBody(body []byte, clientProtocol string) bool {
+	if len(body) == 0 || !json.Valid(body) {
+		return false
+	}
+	format, empty := classifyNonStreamUpstreamResponse(body)
+	if empty {
+		return false
+	}
+	switch clientProtocol {
+	case "anthropic-messages":
+		return format == nonStreamResponseAnthropic
+	case "openai-responses":
+		return format == nonStreamResponseResponses
+	default:
+		// openai-chat: envelope key + well-formed choices array.
+		if format != nonStreamResponseChat {
+			return false
+		}
+		var envelope struct {
+			Choices json.RawMessage `json:"choices"`
+		}
+		if json.Unmarshal(body, &envelope) != nil {
+			return false
+		}
+		var choices []json.RawMessage
+		return json.Unmarshal(envelope.Choices, &choices) == nil
+	}
+}
+
+// outputGovernanceMandatory reports whether the configured interceptor
+// declares its non-stream errors MANDATORY (FailClosed). Chains expose it
+// via FailClosedOnNonStreamError; bare interceptors via FailClosed itself.
+func outputGovernanceMandatory(interceptor ResponseInterceptor) bool {
+	if fc, ok := interceptor.(interface{ FailClosedOnNonStreamError() bool }); ok {
+		return fc.FailClosedOnNonStreamError()
+	}
+	if fc, ok := interceptor.(interface{ FailClosed() bool }); ok {
+		return fc.FailClosed()
+	}
+	return false
 }
 
 // copySafeUpstreamHeaders copies response headers to the client-facing

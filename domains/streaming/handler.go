@@ -2733,6 +2733,15 @@ func (h *ChatHandler) serveWithExecutor(
 				gwtrace.SessionLookup(si.SessionID, false, nil))
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
 				if si.APIKeyID == 0 {
+					// Orphan adoption is tenant-guarded (R25-W V3-A02): a
+					// legacy row already stamped with a foreign tenant must
+					// not be hijacked by another tenant's key merely because
+					// its APIKeyID is 0.
+					if si.TenantID != "" && si.TenantID != keyInfo.TenantID {
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+						return
+					}
 					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
 						slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
 						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
@@ -2747,6 +2756,14 @@ func (h *ChatHandler) serveWithExecutor(
 					writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 					return
 				}
+			}
+			// R25-W (V3-A02): same key but a different tenant row is still a
+			// cross-tenant steal attempt (key ids are only unique within
+			// their issuer).
+			if keyInfo != nil && si.APIKeyID == keyInfo.ID && si.TenantID != "" && si.TenantID != keyInfo.TenantID {
+				captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+				writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+				return
 			}
 			go func() {
 				touchCtx, touchCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -2787,34 +2804,41 @@ func (h *ChatHandler) serveWithExecutor(
 				// every follow-up request reusing it hit ErrSessionNotFound
 				// again, so Touch/session state never engaged and turns could
 				// not accumulate coherently. Register the session record
-				// (idempotent) so repeat ids resolve normally. Best-effort +
-				// async: registration failure must never fail the request.
-				if ensurer, ok := h.sessionGetter.(interface {
-					EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, bool, error)
-				}); ok {
-					regDeviceSeed := r.Header.Get("X-Device-Seed")
-					if regDeviceSeed == "" {
-						regDeviceSeed = r.Header.Get("X-Machine-Id")
+				// (idempotent) so repeat ids resolve normally.
+				//
+				// R25-W (V3-A02, 2026-09-30 round 30): the claim is now
+				// SYNCHRONOUS and atomic (ensureClaimedClientSession — shared
+				// with the native handlers). The previous fire-and-forget
+				// goroutine decided ownership by goroutine landing order, so
+				// an unowned client-selected id could be claimed by whichever
+				// tenant raced faster; a store fault also kept dispatching on
+				// an unverified id. Now: foreign winner → 403, store fault →
+				// 503, no atomic ensurer → fresh system id (never trust an
+				// identity we could not claim).
+				regDeviceSeed := r.Header.Get("X-Device-Seed")
+				if regDeviceSeed == "" {
+					regDeviceSeed = r.Header.Get("X-Machine-Id")
+				}
+				regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+				claimed, claimErr := ensureClaimedClientSession(ctx, h.sessionGetter, sessionID, keyInfo, regDeviceSeed, regTaskID)
+				if claimErr != nil {
+					if errors.Is(claimErr, errClientSessionForbidden) {
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+						return
 					}
-					regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
-					go func(sid string, key *authentication.KeyInfo, seed, task string) {
-						// 2026-09-08 audit: a bare goroutine panic would kill the
-						// whole process (http.Server recovery does not cover user
-						// goroutines) — never let best-effort registration crash
-						// the gateway.
-						defer func() {
-							if rec := recover(); rec != nil {
-								slog.Warn("session register (honored id) panicked",
-									"session_id", sid, "panic", rec)
-							}
-						}()
-						regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
-						defer regCancel()
-						if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
-							slog.Warn("session register (honored id) failed",
-								"session_id", sid, "error", err)
-						}
-					}(sessionID, keyInfo, regDeviceSeed, regTaskID)
+					captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
+					writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+					return
+				}
+				if claimed != nil {
+					sessionInfo = claimed
+					logCtx.SetSession(claimed)
+					ctx = session.SessionFromContextWith(ctx, claimed)
+				} else {
+					// No atomic ensurer on this getter — mint a fresh system id
+					// instead of trusting the unclaimed client identity.
+					sessionID = generateSystemSessionID()
 				}
 			} else {
 				deviceSeed := r.Header.Get("X-Device-Seed")
@@ -2862,7 +2886,14 @@ func (h *ChatHandler) serveWithExecutor(
 				}
 			}
 		} else if err != nil && err != session.ErrSessionNotFound {
+			// R25-W (V3-A02): a store fault is not a verdict on ownership.
+			// Continuing to dispatch would trust an unverified client-supplied
+			// session id while the store is degraded; surfacing 503 (not 403)
+			// keeps the blame on our side and tells the client to retry.
 			slog.Warn("session lookup failed", "error", err)
+			captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
+			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+			return
 		}
 	}
 	// Mid-flight sessionID may still be empty if neither body nor header
@@ -4361,6 +4392,10 @@ func (h *ChatHandler) serveWithExecutor(
 			UpstreamAttempts:           upstreamAttempts,
 			AttachmentMetadata:         attachmentsForOutbound(logCtx),
 			FailoverNotices:            executors.NewFailoverNoticeCollector(),
+			// R25-V: non-stream + interceptor → the executor writes into the
+			// deferred capture buffer; cached-replay consumption and
+			// LogClientResponse stay on the handler lane (governed commit).
+			DeferredOutputGovernance:   !isStream && h.responseInterceptor != nil,
 			R:                          r,
 			BodyBytes:                  upstreamBody,
 			IsStream:                   isStream,
@@ -4578,6 +4613,12 @@ func (h *ChatHandler) serveWithExecutor(
 	// interceptor can block or rewrite before the first byte leaves. A fresh
 	// buffer per attempt keeps retried writes from concatenating.
 	var deferredWriter *deferredNonStreamWriter
+	// R25-V: non-empty after the response interceptor reached a governance
+	// terminal (stream pending-flush block). Set inside the attempt loop
+	// (interceptingStreamWriter.finish) and consumed after the interceptor
+	// block — the success telemetry is then skipped and a failure audit row
+	// with provider/credential attribution is emitted instead.
+	outputGovernanceTerminal := ""
 	// in-connection behind a per-attempt buffered commit gate (ExecuteAttempt
 	// suppresses the executor's internal retry ladder). Flag-off requests
 	// never enter this branch — the loop below is byte-for-byte the legacy path.
@@ -4673,6 +4714,15 @@ func (h *ChatHandler) serveWithExecutor(
 		result, execErr = h.executor.Execute(buildExecParams(streamWriter))
 		if interceptedWriter != nil {
 			interceptedWriter.finish()
+			// R25-V: finish() consumes FlushStreamPending. When output
+			// governance blocked the stream it already rendered the single
+			// protocol terminal on the wire and stamped writeErr/blocked.
+			// Record the terminal so the interceptor block below emits the
+			// failure audit with attribution instead of letting the generic
+			// empty-response detector misattribute it later.
+			if interceptedWriter.blocked && outputGovernanceTerminal == "" {
+				outputGovernanceTerminal = "output_policy_blocked"
+			}
 		}
 
 		// Success or non-retriable error - exit retry loop immediately
@@ -5530,12 +5580,27 @@ goalRetryLoopDone:
 	if logCtx != nil && result != nil {
 		logCtx.ApplyQueueTimestampsFromResult(result)
 	}
-	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 
 	// ── Response Interceptor (2026-06-29, auto-control feature) ─────────
 	// Call interceptor after successful execution but before final metrics.
 	// This enables automatic handoff when context limits are reached and
 	// goal-mode continuous execution.
+	//
+	// R25-V (2026-09-30 round 30): the interceptor now runs BEFORE
+	// emitTelemetry. The previous order emitted the success audit row with
+	// the provider's original body first, so a governance rewrite/block
+	// contradicted the already-persisted audit (client got [PHONE], audit
+	// said 13800138000). On a governance terminal (block / mandatory error /
+	// invalid replacement) we emit the failure audit and skip the success
+	// telemetry entirely — the audit trail must describe the bytes the
+	// client actually received.
+	// outputGovernanceTerminal is declared next to deferredWriter near the
+	// attempt loop; by the time the interceptor block below runs, a stream
+	// pending-flush block has already stamped it (interceptingStreamWriter
+	// .finish consumed the chain's FlushStreamPending error → single
+	// protocol terminal frame already on the wire). Non-empty means: skip
+	// success telemetry, emit the output_policy_blocked failure audit row
+	// with provider/credential attribution instead (R25-V).
 	if h.responseInterceptor != nil && result != nil {
 		// Calculate total message count from request body
 		msgCount := extractMessageCount(bodyBytes)
@@ -5628,15 +5693,38 @@ goalRetryLoopDone:
 				}
 			}
 		} else {
-			// For non-streaming, call InterceptNonStream
-			if interceptResult, err := h.responseInterceptor.InterceptNonStream(r.Context(), interceptReq); err != nil {
-				slog.Warn("response_interceptor_failed", "error", err, "session_id", gwSessionID)
+			// For non-streaming, call InterceptNonStream. R25-V (round 30):
+			// governance runs on the captured bytes BEFORE the deferred
+			// commit, so a block/mandatory-error/invalid-replacement terminal
+			// never writes provider bytes to the client and never produces a
+			// success audit row.
+			interceptResult, interceptErr := h.responseInterceptor.InterceptNonStream(r.Context(), interceptReq)
+			if interceptErr != nil {
+				if outputGovernanceMandatory(h.responseInterceptor) {
+					// A FailClosed-marked interceptor failed (e.g. output
+					// compliance checker error). The captured provider body
+					// must NOT pass unchecked — reject with
+					// response_validation_failed and emit the failure audit.
+					outputGovernanceTerminal = "response_validation_failed"
+					p, c := candidateAttribution(result)
+					captureAndEmitFailure("response_validation_failed", "output governance interceptor failed: "+interceptErr.Error(), p, c)
+					writeErrorJSON(w, http.StatusBadGateway, requestID,
+						"Output governance rejected the response", "api_error", "response_validation_failed")
+					return
+				}
+				// Optional hook (goal/audit): historical fail-open — commit
+				// the original captured bytes.
+				slog.Warn("response_interceptor_failed", "error", interceptErr, "session_id", gwSessionID)
 			} else if interceptResult != nil {
 				if interceptResult.ShouldBlock {
 					slog.Info("response_interceptor_blocked", "session_id", gwSessionID, "action", interceptResult.Action)
-					// R25-A: with the deferred capture writer the client has
+					// R25-A/R25-V: with the deferred capture writer the client has
 					// not seen the response yet — reject with an explicit
-					// policy block instead of silently returning nothing.
+					// policy block (and the failure audit row) instead of
+					// silently returning nothing.
+					outputGovernanceTerminal = "output_policy_blocked"
+					p, c := candidateAttribution(result)
+					captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
 					writeErrorJSON(w, http.StatusForbidden, requestID,
 						"Response blocked by output policy", "api_error", "output_policy_blocked")
 					return
@@ -5663,6 +5751,18 @@ goalRetryLoopDone:
 				// rewrite — and a ShouldBlock rejection — now reach the actual
 				// client body, not only telemetry/request-log/session-cache.
 				if len(interceptResult.ModifiedBody) > 0 && result != nil {
+					if !validateChatInterceptedBody(interceptResult.ModifiedBody, clientProtocolLane) {
+						// R25-V: the interceptor returned a body that is not
+						// valid JSON for the client protocol. Writing it would
+						// corrupt the client stream — reject fail-closed with
+						// response_validation_failed and the failure audit.
+						outputGovernanceTerminal = "response_validation_failed"
+						p, c := candidateAttribution(result)
+						captureAndEmitFailure("response_validation_failed", "output governance returned invalid client protocol body", p, c)
+						writeErrorJSON(w, http.StatusBadGateway, requestID,
+							"Output governance returned an invalid response body", "api_error", "response_validation_failed")
+						return
+					}
 					result.ResponseBody = interceptResult.ModifiedBody
 					if interceptResult.Metadata != nil {
 						slog.Info("response_interceptor_modified_body",
@@ -5679,6 +5779,22 @@ goalRetryLoopDone:
 			}
 		}
 	}
+
+	// R25-V (round 30): governance terminal on the STREAM lane (pending-flush
+	// block). finish() already wrote the single protocol terminal frame to
+	// the wire; emit the attributed failure audit and skip success telemetry.
+	if outputGovernanceTerminal == "output_policy_blocked" {
+		p, c := intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+		return
+	}
+
+	// R25-V: emitTelemetry moved AFTER the interceptor block. The success
+	// audit row must describe the bytes the client actually received — a
+	// governance rewrite (ModifiedBody) is applied to result.ResponseBody
+	// above before the row is built, and every governance terminal has
+	// already returned with its failure audit.
+	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 
 	// ── Request WAL: async update on execution success ─────────────
 	if h.requestLogger != nil && result != nil {

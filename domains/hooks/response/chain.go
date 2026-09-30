@@ -30,6 +30,20 @@ func (c *InterceptorChain) ListInterceptors() []ResponseInterceptor {
 	return out
 }
 
+// FailClosedOnNonStreamError reports whether any interceptor in the chain
+// declared its non-stream errors MANDATORY via the optional FailClosed()
+// marker. The streaming handler consults this to choose between a
+// response_validation_failed terminal (mandatory) and the historical
+// fail-open path (optional hooks) when InterceptNonStream returns an error.
+func (c *InterceptorChain) FailClosedOnNonStreamError() bool {
+	for _, interceptor := range c.interceptors {
+		if fc, ok := interceptor.(interface{ FailClosed() bool }); ok && fc.FailClosed() {
+			return true
+		}
+	}
+	return false
+}
+
 // InterceptNonStream executes all interceptors in the chain for non-streaming responses.
 func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *InterceptRequest) (*InterceptResult, error) {
 	if c == nil || len(c.interceptors) == 0 {
@@ -42,6 +56,16 @@ func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *Intercep
 	for i, interceptor := range c.interceptors {
 		result, err := interceptor.InterceptNonStream(ctx, currentReq)
 		if err != nil {
+			// R25-V (2026-09-30 round 30): an interceptor may declare its
+			// errors MANDATORY via the optional FailClosed marker. Output
+			// governance with a failed checker must not degrade to "pass the
+			// unchecked body through" — that is a silent policy bypass. The
+			// default (no marker) keeps the historical fail-open behavior for
+			// optional hooks (goal/audit), whose transient failures must not
+			// kill traffic.
+			if fc, ok := interceptor.(interface{ FailClosed() bool }); ok && fc.FailClosed() {
+				return nil, err
+			}
 			slog.Warn("interceptor_chain: interceptor failed",
 				"index", i,
 				"error", err,
@@ -130,27 +154,39 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 			// A later interceptor is withholding this frame. Earlier
 			// replacements or injections have not passed that
 			// interceptor's release decision and must not escape through
-			// the writer.
+			// the writer — except for the F02 release payload: an
+			// interceptor that HOLDS frames across events
+			// (StreamPendingFlusher) releases every previously withheld,
+			// now-checked frame at the terminal event as
+			// SuppressChunk(raw frame dropped) + ModifiedChunk(checked
+			// wire). Only such a holder may combine the two flags; for
+			// any other interceptor the combination is the R24-C leak
+			// shape and the replacement stays hidden.
 			finalResult.SuppressChunk = true
-			finalResult.ModifiedChunk = nil
 			finalResult.InjectAfter = nil
+			if _, holdsFrames := interceptor.(StreamPendingFlusher); holdsFrames && len(result.ModifiedChunk) > 0 {
+				finalResult.ModifiedChunk = result.ModifiedChunk
+			} else {
+				finalResult.ModifiedChunk = nil
+			}
+			break
 		}
 		// R24-C (2026-09-29 round 26): the historical guard here was
 		// `!finalResult.SuppressChunk || result.SuppressChunk`, which is
 		// always true — a withholding result carrying its own replacement
 		// re-populated the fields the suppress branch had just cleared, and
 		// the withheld frame's content stayed visible to any consumer of
-		// the chain result. Once suppression is set, replacements and
-		// injections must stay empty.
-		if len(result.ModifiedChunk) > 0 && !finalResult.SuppressChunk {
+		// the chain result. The suppress branch above now clears them; this
+		// branch only runs for non-suppressing results.
+		if len(result.ModifiedChunk) > 0 {
 			finalResult.ModifiedChunk = result.ModifiedChunk
 			currentChunk = result.ModifiedChunk
 		}
-		if len(result.InjectAfter) > 0 && !finalResult.SuppressChunk {
+		if len(result.InjectAfter) > 0 {
 			finalResult.InjectAfter = result.InjectAfter
 		}
 
-		if result.ShouldBlock || result.SuppressChunk {
+		if result.ShouldBlock {
 			break
 		}
 	}
