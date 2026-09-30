@@ -125,6 +125,18 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
+	// 目录搜索只查 session_summaries。用量按会话 id 打 request_logs 底表，不走联表视图。
+	searchQ := strings.TrimSpace(r.URL.Query().Get("q"))
+	if searchQ != "" {
+		items = h.mergeCatalogSearch(ctxFn(r), items, tenantID, searchQ, limit)
+	}
+	if h.db != nil && len(items) > 0 {
+		h.enrichCatalogUsage(ctxFn(r), items, tenantID)
+	}
+	if searchQ != "" {
+		items = filterCatalogItems(items, searchQ)
+	}
+
 	// T1.5: 批量查询健康数据（从 session_summaries）
 	if h.db != nil && len(items) > 0 {
 		h.enrichHealthData(ctxFn(r), items)
