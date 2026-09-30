@@ -265,7 +265,16 @@ func TestDurableNonChatEndpointsLeaseLossRendersOneNativeTerminal(t *testing.T) 
 			rec := httptest.NewRecorder()
 			tc.serve(h).ServeHTTP(rec, newDurableNonChatRequest(t, tc.path, tc.body, context.Background()))
 			out := rec.Body.String()
-			if strings.Contains(out, "hi") || strings.Count(out, tc.term) != 1 {
+			// 2026-10-01 R74: the sentinel used to be a bare `Contains(out,
+			// "hi")`. That is too weak: a transport comment frame is
+			// `: thinking: …`, and "thinking" CONTAINS "hi", so the resume_blocked
+			// notice added in this round made the assertion fire on its own
+			// protocol keyword and the test failed even though no answer content
+			// was re-emitted. The intent of the check is "the interrupted
+			// attempt's answer payload must not appear" — assert on the payload
+			// the executor wrote, not on a two-letter fragment that collides
+			// with SSE framing.
+			if strings.Contains(out, tc.frame) || strings.Count(out, tc.term) != 1 {
 				t.Fatalf("lease-loss terminal mismatch: %q", out)
 			}
 		})

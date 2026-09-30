@@ -628,3 +628,79 @@ Redis 明显在争用（URSM 的 HGETALL 管线同样超时），二者指向同
 **因此第 2 项维持未通过，且本轮不把「Redis 争用」写成已证实的根因** ——
 它是一个有证据支撑的**嫌疑方向**，不是已闭环的结论。下一步需要在 154 上
 直接取一次 SSE 首帧的 `nodes` 载荷来判定，这需要登录态 API 取证。
+
+## 2026-10-01 浏览器验收轮：环境故障定性 + 生产数据验收 + 一次结论订正
+
+### 订正：「不推进 154 就无法验收」——这条不成立
+
+上一节把第 2 项的阻断归给「154 落后 main 175 个提交」。本轮实测**推翻**了它：
+
+```
+git diff --stat 2d750fb4 HEAD -- web/src/utils/modelScopeOwnership.ts   → 空
+git log --oneline 2d750fb4..HEAD -- web/src/utils/modelScopeOwnership.ts → 空
+git log --oneline 2d750fb4..HEAD -- web/src/components/QueuePerspectivePanel.vue → 空
+```
+
+被验收的判据由 `modelScopeOwnership.ts`（归属裁决）+ `QueuePerspectivePanel.vue`
+（渲染门）决定，这三个文件在**线上版本与 HEAD 之间逐字节一致**。
+即：**这条验收判据在 154 和在 main 上跑的是同一份代码**，175 个提交的差距
+对它没有影响。推进 154 不是第 2 项的前置条件（其它判据另算）。
+
+### SSE 服务端是健康的（两种身份对照）
+
+在 154 上用 `LLM_GATEWAY_SECRET_KEY` 现铸短命 HS256 JWT
+（`iss=llm-gateway`、`aud=["llm-gateway-api"]`、`tenant_id` 必须是**字符串**，
+铸成数字会被 `admin.JWTClaims` 解析拒绝并返回 401），经 nginx 打
+`https://llmgateway.internal.example.com/api/admin/live-stream`：
+
+| 身份 | 40s 字节 | 帧数 | node_update | initial_data |
+| --- | --- | --- | --- | --- |
+| `super_admin` | 19,578,651 | 33 | 9 | 1 |
+| `tenant_admin`（tenant=default） | 23,965,546 | 17 | 3 | 1 |
+
+nginx 侧 SSE location 配置正确（`proxy_http_version 1.1` + `proxy_buffering off`
++ `proxy_read_timeout 3600s`）。**服务端与代理链路都不是本次的成因。**
+
+### 真实成因：Electron 内置浏览器环境，客户端秒断
+
+- 浏览器那条连接在 nginx access log 里是 `200 0`（0 字节），随后 `499`；
+- 同一秒后端日志：`live stream initial replay failed  err="context canceled"`
+  —— **客户端在 handler 开始 replay 之前就已断开**；
+- `/api/admin/live-stream/stats` 长时间 `active_clients: 0`：浏览器从未成为
+  已注册客户端（我的 curl 同期正常注册）；
+- 页面停滞在「连接中」，最终整个 renderer 白屏；`inspect` / `query(text)` /
+  `query(console)` 反复 275s 超时。
+
+**结论：第 2 项的浏览器人工验收在当前 Electron 内置浏览器环境下不可完成**，
+这是环境故障，不是被验收功能在生产上的表现。不以局部证据冒充通过。
+
+### 生产数据验收（数据层判据已通过，截图仍未取得）
+
+用生产 SSE 实抓的 `node_update`（9 帧、939 个去重 `raw_models`）取 glm 族
+**49 个作用域**，逐个打生产 `/api/routing/resolve`，再喂给线上逐字节相同的
+`resolveModelScopeOwnership`（一次性驱动，跑完即删，不入库）：
+
+```
+aliasOwner[glm-5.3]        = glm-5.3
+aliasOwner[z-ai/glm-5.3]   = glm-5.3
+aliasOwner[glm-5.3-flash]  = glm-5.3-flash
+aliasOwner[glm-5.2]        = glm-5.2
+aliasOwner[z-ai/glm-5.2]   = glm-5.2
+representatives: canonical:2422803 → glm-5.3   canonical:2716170 → glm-5.3-flash
+                   canonical:173264  → glm-5.2
+```
+
+即：`glm-5.3` 与 `z-ai/glm-5.3` 归 `glm-5.3` 分组；`glm-5.3-flash` 是独立
+canonical（2716170）的独立分组；`glm-5.2` 组正常。**这正是第 2 项要看的判据**，
+但它是数据层等价验证，**不等于**面板渲染成功的截图。
+
+### 登记一个未证实的疑点（不要当结论用）
+
+`admin/live_stream_sse.go:2315-2352` 里，连接时唯一携带 `Nodes` 的
+`initial_data` 帧被整个包在 `else if len(items) > 0` 里：**replay 不到任何
+请求条目时，handler 一个字节都不写**，直接阻塞到客户端断开。线上 `2d750fb4`
+同一位置逐行同形。
+
+但本轮**没有复现空 replay**：超管与租户两种身份都拿到了 `initial_data`，
+浏览器侧的 `context canceled` 反而证明是客户端先断。所以这是一条
+**尚未证实的结构性缺口**，登记待查，**不作为本次成因**。
