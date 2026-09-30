@@ -12,6 +12,67 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// forensicsExportMessagesSQL and forensicsExportMessagesSQLAlt are the session
+// message-stream statement for the two call sites (a tenant transaction and a
+// plain store query). Factored out on 2026-10-01 so the integration gate can
+// execute the production text itself instead of a paraphrase.
+//
+// This statement carried two fatal defects for its entire life:
+//
+//  1. `SELECT rl.role` — request_logs_with_current_month has 115 columns and no
+//     `role` (information_schema confirms 0 rows) → 42703 on every call.
+//  2. `COALESCE(rb.request_body, ”::jsonb)` — PostgreSQL evaluates the constant
+//     at parse time and `”` is not a JSON document → 22P02.
+//
+// Neither was ever caught: every existing test in this package drives a mocked
+// store, and a mock matches a query *string* — it never asks PostgreSQL to parse
+// one. The `role` derivation below mirrors admin/session_export.go so the two
+// exporters cannot disagree about message direction.
+//
+// They remain two literals because there are two call sites, and a repair that
+// touches one but not the other is exactly the failure this gate exists to
+// catch; TestForensicsExportSQLVariantsStayInSync enforces they stay identical.
+// Do not inline either one back.
+const forensicsExportMessagesSQL = `
+		SELECT
+			rl.id::text,
+			(CASE
+				WHEN rl.work_type IN ('agent', 'memora') THEN 'assistant'
+				WHEN lower(COALESCE(rl.request_mode, '')) IN ('completion', 'embedding') THEN 'assistant'
+				ELSE 'user'
+			END) AS role,
+			rl.parent_request_id,
+			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
+			rl.attachments, rl.ts,
+			COALESCE(rb.request_body, '{}'::jsonb) AS request_body,
+			COALESCE(rb.response_body, '{}'::jsonb) AS response_body,
+			rl.client_model, rl.outbound_model
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC, rl.id ASC
+	`
+
+const forensicsExportMessagesSQLAlt = `
+		SELECT
+			rl.id::text,
+			(CASE
+				WHEN rl.work_type IN ('agent', 'memora') THEN 'assistant'
+				WHEN lower(COALESCE(rl.request_mode, '')) IN ('completion', 'embedding') THEN 'assistant'
+				ELSE 'user'
+			END) AS role,
+			rl.parent_request_id,
+			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
+			rl.attachments, rl.ts,
+			COALESCE(rb.request_body, '{}'::jsonb) AS request_body,
+			COALESCE(rb.response_body, '{}'::jsonb) AS response_body,
+			rl.client_model, rl.outbound_model
+ 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC, rl.id ASC
+	`
+
 // ErrorDBUnavailable 当 DB 连接不可用时返回。
 var ErrorDBUnavailable = errors.New("sessionforensics: db unavailable")
 
@@ -112,19 +173,7 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 	turn := 0
 	seenAtt := map[string]struct{}{}
 
-	rows, err := tx.Query(ctx, `
-		SELECT
-			rl.id::text, rl.role, rl.parent_request_id,
-			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-			rl.attachments, rl.ts,
-			COALESCE(rb.request_body, ''::jsonb) AS request_body,
-			COALESCE(rb.response_body, ''::jsonb) AS response_body,
-			rl.client_model, rl.outbound_model
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.ts ASC, rl.id ASC
-	`, sessionID, tenantID)
+	rows, err := tx.Query(ctx, forensicsExportMessagesSQL, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
@@ -240,19 +289,7 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 	}
 	turn := 0
 
-	rows, err := e.store.Query(ctx, `
-		SELECT
-			rl.id::text, rl.role, rl.parent_request_id,
-			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-			rl.attachments, rl.ts,
-			COALESCE(rb.request_body, ''::jsonb) AS request_body,
-			COALESCE(rb.response_body, ''::jsonb) AS response_body,
-			rl.client_model, rl.outbound_model
- 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.ts ASC, rl.id ASC
-	`, sessionID, tenantID)
+	rows, err := e.store.Query(ctx, forensicsExportMessagesSQLAlt, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
