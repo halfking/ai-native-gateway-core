@@ -16,7 +16,7 @@
 | 文件 | 场景 | 典型用法 |
 | --- | --- | --- |
 | `CONFIG-REFERENCE.md` | **配置完备参考**：优先级链/必填集/fallback 对照/核心变量表/家族索引/测试与工具变量全清单 | 查任意变量先看这里 |
-| `SPECS-REFERENCE.md` | settings 规格全表（104 项，**机器生成勿手改**） | `go run ./scripts/gen-env-ref > envs.samples/SPECS-REFERENCE.md` 再生 |
+| `SPECS-REFERENCE.md` | settings 规格全表（**机器生成勿手改**，条目数见文件头） | `go run ./scripts/gen-env-ref > envs.samples/SPECS-REFERENCE.md` 再生 |
 | `01-gateway-core.env.sample` | 网关进程运行时核心：监听/DB/Redis/密钥/超时/日志/存储 | 复制合并进部署机 `.env` 或 systemd `EnvironmentFile` |
 | `02-gateway-features.env.sample` | 可选功能开关：存活恢复/Goal/Handoff/托管任务/URSM v2/压缩/配额巡检等 | 按需挑变量加进 `.env`，全部有代码内默认值 |
 | `03-integrations.env.sample` | 第三方集成：Casdoor/Memora/分析模型/ASM outbox/maintain/ACC/License | 按启用的集成挑变量 |

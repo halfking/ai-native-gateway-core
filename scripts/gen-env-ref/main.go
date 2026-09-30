@@ -5,17 +5,35 @@
 //	go run ./scripts/gen-env-ref > envs.samples/SPECS-REFERENCE.md
 //
 // 数据源为 settings.PlatformSpecs()/TenantSpecs() 注册表与模块级
-// Goal/Handoff/AutoControl 规格，与线上热加载通道同源，保证文档零漂移。
+// Goal/Handoff/AutoControl 规格（后三者未并入 TenantSpecs，需单列），
+// 与线上热加载通道同源，保证文档零漂移。
 package main
 
 import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
+
+// fmtNum 用十进制定点格式输出数值，避免 %v/%g 对大整数产生
+// 科学计数法（如 31536000 → 3.1536e+07）损害表格可读性。
+func fmtNum(f float64) string {
+	if f == float64(int64(f)) {
+		return strconv.FormatInt(int64(f), 10)
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+func fmtDefault(def any) string {
+	if f, ok := def.(float64); ok {
+		return fmtNum(f)
+	}
+	return fmt.Sprintf("%v", def)
+}
 
 func main() {
 	type row struct {
@@ -24,7 +42,7 @@ func main() {
 	seen := map[string]bool{}
 	var rows []row
 
-	add := func(env, key, scope string, s *settings.Spec) {
+	add := func(scope string, s *settings.Spec) {
 		if s == nil || s.EnvName == "" || seen[s.EnvName] {
 			return
 		}
@@ -35,10 +53,10 @@ func main() {
 		} else if s.Min != nil || s.Max != nil {
 			lo, hi := "", ""
 			if s.Min != nil {
-				lo = fmt.Sprintf("%g", *s.Min)
+				lo = fmtNum(*s.Min)
 			}
 			if s.Max != nil {
-				hi = fmt.Sprintf("%g", *s.Max)
+				hi = fmtNum(*s.Max)
 			}
 			opts = lo + " ~ " + hi
 		}
@@ -48,25 +66,25 @@ func main() {
 		}
 		rows = append(rows, row{
 			env: s.EnvName, key: s.Key, scope: scope,
-			typ: fmt.Sprintf("%v", s.Type), def: fmt.Sprintf("%v", s.Default),
+			typ: fmt.Sprintf("%v", s.Type), def: fmtDefault(s.Default),
 			opts: opts, desc: desc,
 		})
 	}
 
 	for _, s := range settings.PlatformSpecs() {
-		add(s.EnvName, s.Key, "platform", s)
+		add("platform", s)
 	}
 	for _, s := range settings.TenantSpecs() {
-		add(s.EnvName, s.Key, "tenant", s)
+		add("tenant", s)
 	}
-	for i := range settings.GoalSpecs() {
-		add("", "", "tenant", &settings.GoalSpecs()[i])
-	}
-	for i := range settings.HandoffSpecs() {
-		add("", "", "tenant", &settings.HandoffSpecs()[i])
-	}
-	for i := range settings.AutoControlSpecs() {
-		add("", "", "tenant", &settings.AutoControlSpecs()[i])
+	// Goal/Handoff/AutoControl 未注册进 TenantSpecs，这里单列补全
+	// （seen 去重保证未来并入后不重复）。
+	for _, specs := range [][]settings.Spec{
+		settings.GoalSpecs(), settings.HandoffSpecs(), settings.AutoControlSpecs(),
+	} {
+		for i := range specs {
+			add("tenant", &specs[i])
+		}
 	}
 
 	sort.Slice(rows, func(i, j int) bool { return rows[i].env < rows[j].env })
