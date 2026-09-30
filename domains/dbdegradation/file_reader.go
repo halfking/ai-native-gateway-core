@@ -31,6 +31,10 @@ type FileReader struct {
 	cacheMu  sync.RWMutex
 	cache    map[string]*cachedBackupFile // 每文件独立缓存时间
 	cacheTTL time.Duration
+	// salvageCapBytes 覆盖打捞路径压缩字节上限（0 = 默认
+	// salvageMaxCompressedBytes）。仅供测试注入：真 256MB 压缩文件在测试
+	// 预算内不可构造，缩小阈值即可走同一段超限分支代码。
+	salvageCapBytes int64
 }
 
 // NewFileReader 创建文件读取器

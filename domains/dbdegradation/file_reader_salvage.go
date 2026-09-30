@@ -82,7 +82,11 @@ func (fr *FileReader) ReadRecordsWithStats(ctx context.Context, filename string,
 
 	// 常规文件（≤上限）：整文件载入压缩字节走打捞路径——干净文件等价
 	// 流式读取，损坏文件自动打捞，回调始终单次交付。
-	if info.Size() <= salvageMaxCompressedBytes {
+	salvageCap := int64(salvageMaxCompressedBytes)
+	if fr.salvageCapBytes > 0 {
+		salvageCap = fr.salvageCapBytes
+	}
+	if info.Size() <= salvageCap {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return SalvageStats{}, fmt.Errorf("read file: %w", err)
@@ -93,7 +97,7 @@ func (fr *FileReader) ReadRecordsWithStats(ctx context.Context, filename string,
 	// 超限：纯流式（原行为）。大文件（245 日 WAL 量级）本就按流处理，
 	// 打捞收益不抵内存。
 	slog.Warn("file reader: file exceeds salvage cap; streaming without salvage",
-		"filename", filename, "size", info.Size(), "cap", salvageMaxCompressedBytes)
+		"filename", filename, "size", info.Size(), "cap", salvageCap)
 	file, err := os.Open(path)
 	if err != nil {
 		return SalvageStats{}, fmt.Errorf("open file: %w", err)
