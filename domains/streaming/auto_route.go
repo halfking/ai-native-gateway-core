@@ -10,9 +10,18 @@ package streaming
 //   - client profile preference (smart / speed_first / cost_first)
 //
 // Failure mode: if auto-route fails entirely (decider unset, index
-// stale, LLM fallback down), the gateway falls back to the existing
+// stale, LLM fallback down), the client sees a 502 with
+// `code=auto_route_decider_failed` rather than a wrong model.
+//
+// R78 订正：本段原文是「the gateway falls back to the existing
 // route-by-explicit-model path. The client sees a 502 with
-// `code=auto_route_unavailable` rather than a wrong model.
+// `code=auto_route_unavailable`」——**两处都与实现相反**，且与本文件 612 行
+// 自己的注释直接矛盾（那里明写 "The fallback model rewrite is no longer
+// applied here"，并 return shouldFail=true 让 handler 返 502）：
+//   1. 没有 fallback：decider 失败即 502，不改写成任何模型；
+//   2. 错误码是 auto_route_decider_failed，不是 auto_route_unavailable——
+//      后者全仓没有产生方，只有本注释和 admin/admin_llm_task.go 那个恒假的
+//      重试分支在引用（该分支已于 R78 一并改用真实错误码）。
 
 import (
 	"bytes"
