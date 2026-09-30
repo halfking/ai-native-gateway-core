@@ -72,8 +72,21 @@
 
 | 时点 | 内容 |
 |---|---|
-| 今日 17:30（本机，一次性自动化） | ②正式对账：2026_10 首批行/stripe/月轨迹/drawer 冷读 + lz4 附件列异常取证 |
-| 10-08 10:00（本机，一次性自动化） | 2026_09 TTL DROP 确认：边界函数源已核（`month_end=2026-10-01 ≤ CURRENT_DATE-7` ⇒ 10-08 当日首个 partition_manager tick 执行，10-07 不触发）+ 盘量回落（预期 +53GB）+ drawer 视图退化臂复核 |
+| 今日 17:30（本机，一次性自动化） | ①正式对账：2026_10 首批行/stripe/月轨迹/drawer 冷读 + lz4 附件列异常取证 —— **已建 automation-5c6e92e1-31fd-4b48-b7dc-232760f8e029** |
+| 10-08 10:00（本机，一次性自动化） | 2026_09 TTL DROP 确认：边界函数源已核（`month_end=2026-10-01 ≤ CURRENT_DATE-7` ⇒ 10-08 当日首个 partition_manager tick 执行，10-07 不触发）+ 盘量回落（预期 +53GB）+ drawer 视图退化臂复核 —— **创建被拒（本会话已归属调度任务，单会话一调度限制）**，提示词存档如下，待新会话创建或当日直接指令执行 |
+
+10-08 轮提示词存档（新会话 CronCreate 一次性 `0 10 8 10 *`，或当日直接发给任何会话执行）：
+
+```text
+执行 252 R16 存储轮收尾②"2026_09 bodies 分区 TTL DROP 确认 + 盘量回落"。背景与基线见
+docs/audit/2026-10-01-bodies-columnar-followup.md（根盘基线 93%/15G@10-01、库 119GB、2026_09 分区 53GB；
+边界函数源已核：month_end(2026-10-01)<=CURRENT_DATE-7 ⇒ 10-08 当日首个 partition_manager tick 整分区 DROP，预期释放 ~53GB）。
+纪律：先 git fetch 重算起点；只读生产；SQL 本地文件通道（/tmp/pg252-20261008-ttldrop-p1.sql）经
+ssh -p 25022 root@115.29.212.252 "podman exec -i pg-252-pg17 psql -U postgres -d llm_gateway -X -P pager=off -f -"；
+禁 JOIN pg_class ON tableoid；禁全扫 2026_09（若它还在）。
+采集：1) to_regclass('public.request_logs_bodies_2026_09') 应为空 + 154 journalctl -u llm-gateway-go-canary@8782 --since "2026-10-08 00:00" grep drop_old_request_logs_bodies_partitions 钉时刻（未 DROP 则核 settings_kv lifecycle.request_logs_bodies_ttl_days=7 与 worker ERROR）；2) df -h / 与 pg_database_size（回落不足则查句柄持有）；3) drawer 视图 EXPLAIN（cost-only）确认 2026_09 臂消失，2026_10 分区直查 EXPLAIN ANALYZE 冷读对照 §九；4) 2026_10 月轨迹终值 vs ~2GB + lz4 附件列异常未结案则续查；5) URSM：154/245(/opt/llm-gateway-go/.env)与 252-dev(.env.dev) 是否已加 URSM_SNAPSHOT_RETENTION_DAYS（加过核 /proc/<pid>/environ 生效态，该值构造期读取须重启，只核不代重启）+ ursm_node_snapshot_min min(snapshot_ts) 与 >30d 计数（首个清理点 10-06 23:56 后应归 0）。
+产出：§十 追加同文档；worktree 模式提交推送 main（禁主工作区 commit）；禁止运维动作；简报：结论/关键数字/异常/遗留。
+```
 
 ## 八、自审计
 
