@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // DualReadDiff summarizes the divergence between V1 (public.request_logs)
@@ -178,19 +179,11 @@ type MirrorDriftSummary struct {
 //	    isTerminalFailure (hook.go:991-1002) is true when request_status ∈
 //	    {failure, rate_limited} OR error_kind is non-empty; the row is
 //	    mirrored when Success is true. Negating both yields the arm below.
-const mirrorDriftClassSQL = `
-CASE
-  WHEN COALESCE(rl.is_auto_request, false)
-       AND (   TRIM(COALESCE(rl.request_type, '')) IN ('title_gen', 'summary')
-            OR TRIM(COALESCE(rl.origin_actor, '')) IN ('auto-title-generator',
-                                                        'auto-summary-generator',
-                                                        'session-summary')
-            OR TRIM(COALESCE(rl.task_type, '')) = '')            THEN 'internal_loopback'
-  WHEN NOT COALESCE(rl.success, false)
-       AND TRIM(COALESCE(rl.request_status, '')) NOT IN ('failure', 'rate_limited')
-       AND TRIM(COALESCE(rl.error_kind, '')) = ''                 THEN 'non_terminal'
-  ELSE 'genuine_loss'
-END`
+//
+// SSOT: db.MirrorDriftClassSQL. 定义搬到 db 包是因为 admin 侧也需要同一个
+// 排除谓词（session_summary_v2 的 fallback turns 腿，见审计缺陷 7），
+// 留在 package main 就只能复制一份。
+const mirrorDriftClassSQL = db.MirrorDriftClassSQL
 
 // mirrorDriftScopeSQL yields the drifting V1 rows for the window: rows that
 // have a gw_session_id but no session_turns counterpart. Reads BASE tables
