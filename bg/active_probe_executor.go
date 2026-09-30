@@ -38,10 +38,11 @@ import (
 // ActiveProbeExecutor loads (credential, model) → provider target and
 // fires a minimal chat-completion ping directly to the provider.
 type ActiveProbeExecutor struct {
-	db         *pgxpool.Pool
-	keyring    *secret.Keyring
-	encKey     []byte
-	httpClient *http.Client
+	db             *pgxpool.Pool
+	keyring        *secret.Keyring
+	encKey         []byte
+	httpClient     *http.Client
+	capabilitySink ResponsesCapabilitySink
 
 	// Gateway round (2026-08-13, 需求 6 bullet 5: 自检不串节点). When configured,
 	// RunGateway posts a chat-completion ping through the LOCAL gateway with the
@@ -107,6 +108,10 @@ type ProbeResult struct {
 	StartedAt   time.Time
 	CompletedAt time.Time
 	Target      ProbeTarget
+	// SupportsResponses is populated only when the native Responses request
+	// returned a complete success or the provider explicitly rejected that
+	// protocol. Chat fallback outcome does not change this evidence.
+	SupportsResponses *bool
 
 	// 2026-07-17: diagnostic detail for the probe observability surface.
 	// Previously the emitter only persisted status/err_code/latency/http_status,
@@ -164,6 +169,15 @@ func NewActiveProbeExecutor(db *pgxpool.Pool, keyring *secret.Keyring, encKey []
 func (e *ActiveProbeExecutor) SetHTTPClient(c *http.Client) {
 	if e != nil && c != nil {
 		e.httpClient = c
+	}
+}
+
+// SetResponsesCapabilitySink wires durable capability feedback for direct
+// probe results. RunGateway is intentionally excluded because it is not a
+// native upstream Responses request.
+func (e *ActiveProbeExecutor) SetResponsesCapabilitySink(sink ResponsesCapabilitySink) {
+	if e != nil {
+		e.capabilitySink = sink
 	}
 }
 
@@ -275,6 +289,12 @@ func (e *ActiveProbeExecutor) LoadTarget(ctx context.Context, credID int, model 
 func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeResult {
 	start := time.Now()
 	res := &ProbeResult{Target: *t, StartedAt: start}
+	defer func() {
+		if err := writeResponsesCapability(ctx, e.capabilitySink, t.CredentialID, t.RawModel, res.SupportsResponses); err != nil {
+			slog.Warn("active_probe: persisting Responses capability failed",
+				"credential_id", t.CredentialID, "model", t.RawModel, "error", err)
+		}
+	}()
 
 	// R61 S2-F4 续（2026-09-24）：读面归一——别名协议行走错探针形态的
 	// vapeur 事故类缺口，与 model_probe.probeDescriptorFor 同一入口。
@@ -364,6 +384,9 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		res.Status = ProbeStatusSuccess
+		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
+			res.SupportsResponses = boolEvidence(true)
+		}
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
 		res.Status = ProbeStatusAuth
 		res.ErrCode = http.StatusText(resp.StatusCode)
@@ -385,6 +408,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	// 经 chat 完全可用的节点压红。
 	if desc.ChatProbeEndpoint == upstreamurl.EpResponses &&
 		providercap.ResponsesUnsupportedError(res.HTTPStatus, res.ErrMsg) {
+		res.SupportsResponses = boolEvidence(false)
 		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, e.httpClient, t.APIKey, t.BaseURL, model)
 		if fbOK {
 			// 2026-09-29 (审计二十一轮): 对齐 node_probe（errDetail=注记整体

@@ -34,17 +34,18 @@ import (
 
 // ActiveProbeWorkerConfig holds runtime configuration for the worker.
 type ActiveProbeWorkerConfig struct {
-	DB                   *pgxpool.Pool
-	Keyring              *secret.Keyring
-	EncKey               []byte
-	Telemetry            *telemetry.Client
-	StateManager         credentialstate.StateObserver
-	Enabled              bool
-	ConsecutiveThreshold int // 2 by default; the value from settings
-	MaxAttempts          int // 5 by default
-	TimeoutMs            int // 30000 by default
-	QueueSize            int // 128 by default
-	Workers              int // 1 by default; bounded parallel probe consumers
+	DB                      *pgxpool.Pool
+	Keyring                 *secret.Keyring
+	EncKey                  []byte
+	ResponsesCapabilitySink ResponsesCapabilitySink
+	Telemetry               *telemetry.Client
+	StateManager            credentialstate.StateObserver
+	Enabled                 bool
+	ConsecutiveThreshold    int // 2 by default; the value from settings
+	MaxAttempts             int // 5 by default
+	TimeoutMs               int // 30000 by default
+	QueueSize               int // 128 by default
+	Workers                 int // 1 by default; bounded parallel probe consumers
 }
 
 // ActiveProbeWorker is the singleton orchestrator.
@@ -108,6 +109,7 @@ func NewActiveProbeWorker(cfg ActiveProbeWorkerConfig) *ActiveProbeWorker {
 		running:  make(map[string]*probeState, 64),
 		done:     make(chan struct{}),
 	}
+	w.executor.SetResponsesCapabilitySink(cfg.ResponsesCapabilitySink)
 	return w
 }
 

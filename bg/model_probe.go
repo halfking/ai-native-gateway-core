@@ -90,12 +90,13 @@ var ErrCredentialManuallyDisabled = errors.New("manual probe target is disabled"
 
 // ModelProbeRunner is the v2 (consensus + backoff) implementation.
 type ModelProbeRunner struct {
-	db      *pgxpool.Pool
-	encKey  []byte
-	keyring *secret.Keyring
-	cache   *ModelAvailabilityCache
-	cancel  context.CancelFunc
-	done    chan struct{}
+	db             *pgxpool.Pool
+	encKey         []byte
+	keyring        *secret.Keyring
+	cache          *ModelAvailabilityCache
+	capabilitySink ResponsesCapabilitySink
+	cancel         context.CancelFunc
+	done           chan struct{}
 	// featuredCancel is set by StartFeaturedOnly so Stop can cancel the
 	// standalone 常用模型 deep-ping cycle independently of the consensus loop.
 	// atomic.Pointer so Stop can safely read it during/after Start (audit #9).
@@ -129,6 +130,21 @@ func (r *ModelProbeRunner) SetKeyring(kr *secret.Keyring) { r.keyring = kr }
 
 func (r *ModelProbeRunner) SetAvailabilityCache(cache *ModelAvailabilityCache) {
 	r.cache = cache
+}
+
+// SetResponsesCapabilitySink wires durable capability feedback from native
+// Responses probes. Other probe modes intentionally emit no verdict.
+func (r *ModelProbeRunner) SetResponsesCapabilitySink(sink ResponsesCapabilitySink) {
+	if r != nil {
+		r.capabilitySink = sink
+	}
+}
+
+func (r *ModelProbeRunner) persistResponsesCapability(ctx context.Context, target probeTarget, result httpProbeResult) {
+	if err := writeResponsesCapability(ctx, r.capabilitySink, target.CredentialID, target.RawModel, result.supportsResponses); err != nil {
+		slog.Warn("model_probe: persisting Responses capability failed",
+			"credential_id", target.CredentialID, "model", target.RawModel, "error", err)
+	}
 }
 
 func (r *ModelProbeRunner) Start(ctx context.Context) {
@@ -922,6 +938,7 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			mode = ProbeModeMessages
 		}
 		result := probeWithRetry(timeout, desc, t, mode)
+		r.persistResponsesCapability(timeout, t, result)
 		// Record the probe result as a model_probe_runs row for visibility.
 		var httpStatus *int
 		if result.httpStatus > 0 {
