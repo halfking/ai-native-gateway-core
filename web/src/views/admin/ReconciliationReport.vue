@@ -10,10 +10,10 @@ import { useReconciliationPage } from './useReconciliationPage'
 
 const {
   t, loading, dimsLoading, exporting, rerunning, errorText, metric, reasonFilter, daysOpen,
-  report, dims, view, filters, showCost, hasData, activeQuick, kxRange, coverageText, legacyDays,
+  report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
   reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
   personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
-  applyQuick, applyRange, exportXlsx, rerunEndDay, reload, clearReason, setView, setMetric,
+  applyRange, exportXlsx, rerunEndDay, reload, clearReason, setView, setMetric,
 } = useReconciliationPage()
 </script>
 
@@ -29,10 +29,8 @@ const {
       :exporting="exporting"
       :rerunning="rerunning"
       :coverage="coverageText"
-      :active-quick="activeQuick"
       @update:view="setView"
       @apply-range="applyRange"
-      @quick="applyQuick"
       @patch="patchFilters"
       @refresh="reload"
       @export="exportXlsx"

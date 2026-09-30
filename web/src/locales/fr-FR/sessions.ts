@@ -134,7 +134,7 @@ export default {
     online: 'En ligne',
     directory: 'Répertoire',
     searchPlaceholder: 'Rechercher titre, id de session, modèle ou tags',
-    searchHint: 'Les lignes déjà chargées se filtrent tout de suite par id, titre, modèle et tags. Le serveur cherche aussi le titre et l’id dans les résumés de session, sans parcourir tout le journal de requêtes. 200 lignes maximum.',
+    searchHint: 'Les lignes déjà chargées se filtrent tout de suite par id, titre, modèle et tags. Le serveur cherche l’id, le titre et la liste de modèles dans les résumés, sans parcourir le journal de requêtes. Une session sans modèle dans son résumé n’est trouvée par modèle que si elle est déjà chargée. 200 lignes maximum : un modèle courant ne renvoie que les plus récentes.',
     loading: 'Chargement…',
     refresh: 'Actualiser',
     retry: 'Réessayer',

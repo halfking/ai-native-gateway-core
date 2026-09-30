@@ -10,6 +10,7 @@ export default {
   rerunFailed: '重跑失敗',
   // 涵蓋範圍 / 空狀態
   daysCovered: '天快照',
+  unaggregatedDay: '未彙整',
   noSnapshots: '該區間沒有報表快照（每日彙整任務在凌晨產生前一日資料，或用「重跑結束日」補算）',
   // 彙總卡片
   requests: '請求數',

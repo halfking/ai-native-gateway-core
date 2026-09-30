@@ -8,6 +8,7 @@ export default {
   rerunDone: '重跑完成',
   rerunFailed: '重跑失败',
   daysCovered: '天快照',
+  unaggregatedDay: '未聚合',
   noSnapshots:
     '该区间没有报表快照（每日聚合任务在凌晨生成前一日数据，或用「重跑结束日」补算）',
   requests: '请求数',

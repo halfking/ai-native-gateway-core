@@ -10,6 +10,7 @@ export default {
   rerunFailed: 'Échec du recalcul',
   // Couverture / état vide
   daysCovered: 'jours d’instantanés',
+  unaggregatedDay: 'Non agrégé',
   noSnapshots: 'Aucun instantané de rapport sur cette période (la tâche d’agrégation quotidienne génère les données de la veille tôt le matin, ou utilisez « Recalculer le dernier jour » pour les recalculer)',
   // Cartes de synthèse
   requests: 'Requêtes',

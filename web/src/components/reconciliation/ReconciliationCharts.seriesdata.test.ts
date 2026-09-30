@@ -7,7 +7,7 @@ import { reconTrendSeries, type TrendDay } from './chartSeries'
 import ReconciliationCharts from './ReconciliationCharts.vue'
 import realSummary from '../../views/admin/__fixtures__/real_internal_summary.json'
 
-const drawn: { labels?: string[]; datasets?: { data?: number[] }[] }[] = []
+const drawn: { labels?: string[]; datasets?: { data?: number[]; fill?: unknown }[] }[] = []
 
 vi.mock('chart.js', () => ({
   Chart: class {
@@ -70,6 +70,11 @@ describe('reconTrendSeries', () => {
     const firstSeries = drawn.map((chart) => chart.datasets?.[0]?.data)
     expect(firstSeries).toContainEqual(series.success)
     expect(firstSeries).toContainEqual(series.input)
+    const token = drawn.find((chart) => (chart.datasets?.length ?? 0) >= 5)
+    expect(token?.datasets?.slice(0, 4).map((dataset) => dataset.fill)).toEqual([
+      'stack', 'stack', 'stack', 'stack',
+    ])
+    expect(token?.datasets?.[4]?.fill).toBe(false)
     wrapper.unmount()
   })
 
