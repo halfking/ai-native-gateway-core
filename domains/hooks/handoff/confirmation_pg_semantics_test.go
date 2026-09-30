@@ -20,7 +20,7 @@ package handoff
 //
 // 运行方式（需要已应用 517/527 迁移与配套表的真实 PG）：
 //
-//	LLM_GATEWAY_HANDOFF_PG_DSN='postgres://llm_gateway:pw@127.0.0.1:5432/llm_gateway?sslmode=disable' \
+//	TEST_PG_DSN='postgres://llm_gateway:pw@127.0.0.1:5432/llm_gateway?sslmode=disable' \
 //	  go test ./domains/hooks/handoff/ -run TestPGStoreSavePendingSemantics -v
 //
 // 未设 DSN 即 t.Skip，CI 离线绿。清理：本门用独立 tenant 前缀播种，defer 中
@@ -42,16 +42,16 @@ import (
 
 var handoffSemanticsSeq atomic.Int64
 
-// openHandoffPG 打开真库连接。优先 LLM_GATEWAY_HANDOFF_PG_DSN，其次沿用
-// R75 建的真库门变量 LLM_GATEWAY_SUPPLIER_PG_DSN——本机只需设一个。
 func openHandoffPG(t *testing.T) (*sql.DB, func()) {
 	t.Helper()
-	dsn := os.Getenv("LLM_GATEWAY_HANDOFF_PG_DSN")
+	// 契约名 TEST_PG_DSN：scripts/audit/run-integration-gate.sh 已注入它，
+	// 且 sql/schema/integration_gate_test.go 会从仓内推导并强制该注入。
+	// 本轮最初自造 LLM_GATEWAY_HANDOFF_PG_DSN（_PG_DSN 后缀），而 harness
+	// 的注入清单只认 _DATABASE_URL/_DB_URL/_PG_URL 结尾与 TEST_PG_DSN ⇒
+	// 这道 P0 级门会被结构性排除在 CI 之外。见 resolveHandoffDSN 注释。
+	dsn := resolveHandoffDSN()
 	if dsn == "" {
-		dsn = os.Getenv("LLM_GATEWAY_SUPPLIER_PG_DSN")
-	}
-	if dsn == "" {
-		t.Skip("LLM_GATEWAY_HANDOFF_PG_DSN (or LLM_GATEWAY_SUPPLIER_PG_DSN) not set — offline mode")
+		t.Skip("TEST_PG_DSN not set — offline mode")
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -225,4 +225,21 @@ func TestPGStoreSavePendingSemantics(t *testing.T) {
 			t.Errorf("pending rows after confirm = %d, want 1 (the confirmed row must leave the partial index)", n)
 		}
 	})
+}
+
+// 变量名按仓内契约取：scripts/audit/run-integration-gate.sh 只注入
+// TEST_PG_DSN / *_DATABASE_URL / *_DB_URL / *_PG_URL 这几种后缀，注入清单由
+// sql/schema/integration_gate_test.go 的 TestGateInjectsEveryDBCredentialName
+// 从仓内按这些后缀**推导**（不是手写清单）。用 _PG_DSN 这类不在契约内的名字，
+// harness 永远不会注入 ⇒ 这道门在 CI 上结构性沉睡，却仍以 "ok" 出现在报告里。
+// 旧名保留为回退供手工运行；新代码直接用 TEST_PG_DSN。
+
+func resolveHandoffDSN() string {
+	if v := os.Getenv("TEST_PG_DSN"); v != "" {
+		return v
+	}
+	if v := os.Getenv("LLM_GATEWAY_HANDOFF_PG_DSN"); v != "" {
+		return v
+	}
+	return os.Getenv("LLM_GATEWAY_SUPPLIER_PG_DSN")
 }
