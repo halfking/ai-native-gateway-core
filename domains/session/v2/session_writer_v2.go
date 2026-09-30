@@ -674,11 +674,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
 	}
-	// H3 镜像（fire-and-forget）：turn bodies 写入成功后投递热区镜像；镜像
-	// 与主链路完全解耦（失败仅计数）。final_full 灰度开启时 per-turn outbound
-	// 已被置 nil（:611 停写门），此处自然跳过 "out" 方向，终态由下方
-	// final_full 镜像行承载——与 PG 侧双路径落库口径一致。
-	w.mirrorTurnBodies(bodiesRec)
+	// H3 镜像的投递点在 tx.Commit 成功之后（见 committed=true 处）：镜像必须
+	// 与 PG 行共存亡——commit 失败回滚时 PG 无 bodies 行，镜像若已投递就成了
+	// 对账无法解释的孤儿文件。
 
 	// 733/734 特征层：与 turn+bodies 同事务（任一失败整体回滚）。键由
 	// AppendTurn 返回的 turnNo 补齐；幂等 upsert 支持晚到回填重放。
@@ -703,6 +701,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// request_id='final_full:<session>' + kind='final_full'，经 708 部分唯
 	// 一索引守护每会话每分区至多一行；幂等 upsert 走既有
 	// (tenant_id, request_id, partition_date) 唯一约束。
+	finalFullWritten := false
 	if settings.GetPlatformBool("storage.session_final_full_enabled", false) && len(req.OutboundBody) > 0 {
 		if err := w.bodiesWriter.WriteFinalFullInTx(lockCtx, tx, FinalFullRecord{
 			SessionID:    req.SessionID,
@@ -712,9 +711,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		}); err != nil {
 			return fmt.Errorf("write final_full: %w", err)
 		}
-		// H3 镜像：final_full 行的 request_id 口径与 PG 一致
-		//（'final_full:<session>'，WriteFinalFullInTx 同款）。
-		w.mirrorFinalFull(req)
+		finalFullWritten = true
 	}
 
 	// 706：会话首 turn 持久化时一次写入初始环境/上下文快照（insert-only，
@@ -766,6 +763,21 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		return fmt.Errorf("commit tx: %w", err)
 	}
 	committed = true
+
+	// H3 镜像（fire-and-forget，2026-09-24 方案）：turn+bodies 事务**提交成功**
+	// 后投递热区镜像；镜像与主链路完全解耦（失败仅计数，不影响已提交数据）。
+	// 放在 commit 之后而非 INSERT 成功后：commit 失败回滚时 PG 无 bodies 行，
+	// 先投递的镜像会成为对账无法解释的孤儿文件（2026-09-30 批判式审计 F-A）。
+	// final_full 灰度开启时 per-turn outbound 已被置 nil（停写门），此处自然
+	// 跳过 "out" 方向，终态由下方 final_full 镜像行承载——与 PG 侧双路径落库
+	// 口径一致。mirror outbox 重放经同一 Write 路径再次镜像：同路径覆盖写、
+	// 内容一致，幂等无害。
+	w.mirrorTurnBodies(bodiesRec)
+	if finalFullWritten {
+		// final_full 行的 request_id 口径与 PG 一致
+		//（'final_full:<session>'，WriteFinalFullInTx 同款）。
+		w.mirrorFinalFull(req)
+	}
 
 	// 5. Write turn logs (processing stages) — best-effort, NOT in the tx.
 	//
