@@ -11,11 +11,18 @@ package compression
 // This type is defined here to avoid import cycles. The construction
 // logic (BuildSanitizeStats) lives in security/sanitize package.
 type SanitizeStats struct {
-	PlaceholderCount int   `json:"placeholder_count"`       // total placeholders generated
-	PhoneCount       int   `json:"phone_count,omitempty"`   // phone numbers sanitized
-	EmailCount       int   `json:"email_count,omitempty"`   // emails sanitized
-	IDCardCount      int   `json:"id_card_count,omitempty"` // ID cards sanitized
-	CreditCardCount  int   `json:"cc_count,omitempty"`      // credit cards sanitized
-	SecretCount      int   `json:"secret_count,omitempty"`  // secrets sanitized
-	SanitizedAt      int64 `json:"sanitized_at"`            // unix timestamp
+	PlaceholderCount int `json:"placeholder_count"`       // total placeholders generated
+	PhoneCount       int `json:"phone_count,omitempty"`   // phone numbers sanitized
+	EmailCount       int `json:"email_count,omitempty"`   // emails sanitized
+	IDCardCount      int `json:"id_card_count,omitempty"` // ID cards sanitized
+	CreditCardCount  int `json:"cc_count,omitempty"`      // credit cards sanitized
+	SecretCount      int `json:"secret_count,omitempty"`  // secrets sanitized
+	// OtherCount counts placeholders whose type has no named bucket above
+	// (internal_ip, name, custom, …). Without it the sum of the named buckets
+	// was silently smaller than PlaceholderCount — a self-contradicting
+	// statistic persisted into session state, where internal_ip alone was ~30%
+	// of all sanitized spans. Additive/omitempty, so older readers are
+	// unaffected.
+	OtherCount  int   `json:"other_count,omitempty"`
+	SanitizedAt int64 `json:"sanitized_at"` // unix timestamp
 }
