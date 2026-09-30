@@ -1,7 +1,7 @@
 // kxDatePresets.test.ts — 预设工厂口径测试（2026-09-30 统一日历轮）。
 // 时区口径与旧 BoardPeriodSelector 对齐：UTC 日切。
 import { describe, expect, it, vi } from 'vitest'
-import { makeDateRangePresets, rangeSpanDays, shortRangeLabel } from './kxDatePresets'
+import { makeDateRangePresets, rangeFromSpanDays, rangeSpanDays, shortRangeLabel, spanDaysPreset } from './kxDatePresets'
 
 // 固定到 2026-09-30T12:00:00Z（周三）
 const FIXED = Date.UTC(2026, 8, 30, 12, 0, 0)
@@ -58,6 +58,15 @@ describe('makeDateRangePresets (date 精度, UTC 日切)', () => {
     const presets = makeDateRangePresets('date')
     expect(presets.find((p) => p.id === 'thisMonth')!.resolve()).toEqual({ start: '2026-01-01', end: '2026-01-15' })
     expect(presets.find((p) => p.id === 'lastMonth')!.resolve()).toEqual({ start: '2025-12-01', end: '2025-12-31' })
+    vi.useRealTimers()
+  })
+
+  it('rangeFromSpanDays / spanDaysPreset 与 last7d 同口径', () => {
+    vi.setSystemTime(FIXED)
+    expect(rangeFromSpanDays(1)).toEqual({ start: '2026-09-30', end: '2026-09-30' })
+    expect(rangeFromSpanDays(7)).toEqual({ start: '2026-09-24', end: '2026-09-30' })
+    expect(spanDaysPreset(7, 'dashboard.range.last7d').resolve()).toEqual(rangeFromSpanDays(7))
+    expect(rangeSpanDays(rangeFromSpanDays(90))).toBe(90)
     vi.useRealTimers()
   })
 

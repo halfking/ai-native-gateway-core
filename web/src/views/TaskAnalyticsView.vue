@@ -8,7 +8,10 @@ import type { EChartsOption } from 'echarts'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElAlert, ElButton, ElCard, ElCol, ElLink, ElRadioButton, ElRadioGroup, ElRow, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { ElAlert, ElButton, ElCard, ElCol, ElLink, ElRow, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -18,6 +21,16 @@ const loading = ref(false)
 const data = ref<TaskAnalyticsDetail | null>(null)
 const errorMessage = ref<string | null>(null)
 const days = ref(30)
+const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+  { days: 7, labelKey: 'sessions.stats.last7Days' },
+  { days: 30, labelKey: 'sessions.stats.last30Days' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+
+function onRangeApply(range: KxDateRange) {
+  applyRange(range)
+  void load()
+}
 
 const chartRef = ref<HTMLElement>()
 let chartInstance: echarts.ECharts | null = null
@@ -137,11 +150,12 @@ function goBack() {
       <el-button @click="goBack" :icon="'ArrowLeft'">{{ t('common.back') }}</el-button>
       <h2>{{ t('sessions.taskAnalytics.title') }}: {{ taskId }}</h2>
       <div class="page-actions">
-        <el-radio-group v-model="days" size="small" @change="load">
-          <el-radio-button :label="7">{{ t('sessions.stats.last7Days') }}</el-radio-button>
-          <el-radio-button :label="30">{{ t('sessions.stats.last30Days') }}</el-radio-button>
-          <el-radio-button :label="90">90{{ t('common.days') }}</el-radio-button>
-        </el-radio-group>
+        <KxDateRangePicker
+          :model-value="rangeValue"
+          :presets="dayPresets"
+          :max-span-days="90"
+          @apply="onRangeApply"
+        />
       </div>
     </div>
 

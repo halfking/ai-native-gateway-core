@@ -21,6 +21,9 @@ import {
 } from '../api'
 import { getCurrentTenantId } from '../store'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
@@ -28,13 +31,14 @@ const { t } = useI18n()
 const router = useRouter()
 
 const LEGACY_STORAGE_KEY_DAYS = 'tenant_dashboard_days'
-const VALID_DAYS = [1, 7, 30] as const
+const MAX_SPAN_DAYS = 30
 
 function readStoredDays(): number {
   try {
     const key = dashboardPreferenceStorageKey('tenant-days')
     const raw = localStorage.getItem(key) ?? localStorage.getItem(LEGACY_STORAGE_KEY_DAYS)
-    return VALID_DAYS.includes(Number(raw) as typeof VALID_DAYS[number]) ? Number(raw) : 7
+    const n = Number(raw)
+    return Number.isInteger(n) && n >= 1 && n <= MAX_SPAN_DAYS ? n : 7
   } catch {
     return 7
   }
@@ -42,7 +46,7 @@ function readStoredDays(): number {
 
 function persistDays(value: number) {
   try {
-    if (VALID_DAYS.includes(value as typeof VALID_DAYS[number])) {
+    if (Number.isInteger(value) && value >= 1 && value <= MAX_SPAN_DAYS) {
       localStorage.setItem(dashboardPreferenceStorageKey('tenant-days'), String(value))
     }
   } catch {
@@ -51,6 +55,17 @@ function persistDays(value: number) {
 }
 
 const days = ref(readStoredDays())
+const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+  { days: 1, labelKey: 'tenants.dashboard.range.today' },
+  { days: 7, labelKey: 'tenants.dashboard.range.last7d' },
+  { days: 30, labelKey: 'tenants.dashboard.range.last30d' },
+])
+
+function onRangeApply(range: KxDateRange) {
+  applyRange(range)
+  persistDays(days.value)
+  void load()
+}
 const summary = ref<MaasUsageSummary | null>(null)
 const wallet = ref<MaasWallet | null>(null)
 const loading = ref(false)
@@ -297,11 +312,12 @@ onUnmounted(() => {
       </div>
       <div class="page-header-right">
         <span class="tenant-badge">{{ tenantLabel }}</span>
-          <select v-model.number="days" class="days-select" @change="persistDays(days); load()">
-          <option :value="1">{{ t('tenants.dashboard.range.today') }}</option>
-          <option :value="7">{{ t('tenants.dashboard.range.last7d') }}</option>
-          <option :value="30">{{ t('tenants.dashboard.range.last30d') }}</option>
-        </select>
+          <KxDateRangePicker
+            :model-value="rangeValue"
+            :presets="dayPresets"
+            :max-span-days="30"
+            @apply="onRangeApply"
+          />
         <button class="btn btn-refresh" @click="load" :disabled="loading" :title="t('tenants.dashboard.refresh')">
           <span v-if="loading">⏳</span>
           <span v-else>🔄</span>

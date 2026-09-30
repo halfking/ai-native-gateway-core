@@ -25,6 +25,17 @@ const KX_HOSTS = new Set([
 /** 存量待迁移白名单（ratchet：迁一处删一行，最终清空）。 */
 const PENDING_MIGRATION = new Set<string>([])
 
+/** 设计稿 D 节「select/radio 天数档」页，必须接到 KxDateRangePicker。 */
+const SPAN_DAYS_PAGES = [
+  'views/ClientAnalyticsView.vue',
+  'views/TaskAnalyticsView.vue',
+  'views/UserProfileView.vue',
+  'views/CorrelationsView.vue',
+  'views/QualityCorrelationsView.vue',
+  'views/TenantDashboardView.vue',
+  'views/tenant/MaaSUsageView.vue',
+]
+
 // 静态 type：容忍等号两侧空格；动态 :type 绑定：字符串字面量含日期类型即算。
 // el-date-picker 同时匹配 kebab-case 与 PascalCase（R36 审计 P3-6：防绕过）。
 const NATIVE_INPUT_RE = /<input[^>]+type\s*=\s*["'](date|datetime-local|month)["'][^>]*>/g
@@ -61,6 +72,14 @@ describe('date input unification guard', () => {
     }
     expect(violations, `发现 ${violations.length} 处违规（统一走 KxDateRangePicker/KxDatePicker，或迁毕后从 PENDING_MIGRATION 删除）:\n${violations.join('\n')}`).toEqual([])
     expect(scanned).toBeGreaterThan(0)
+  })
+
+  it('天数窗口页统一走 KxDateRangePicker，不再用 select/radio 选 days', () => {
+    for (const rel of SPAN_DAYS_PAGES) {
+      const src = readFileSync(join(SRC, rel), 'utf8')
+      expect(src, rel).toContain('KxDateRangePicker')
+      expect(src, rel).not.toMatch(/<(select|el-radio-group)[^>]*v-model(?:\.number)?="days"/)
+    }
   })
 
   it('PENDING_MIGRATION 白名单自身保持有序（文件存在且仍含日期输入，防止幽灵条目）', () => {

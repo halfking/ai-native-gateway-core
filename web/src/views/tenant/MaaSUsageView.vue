@@ -16,6 +16,9 @@ import {
 import type { MaasLedgerEntry, MaasUsageSummary } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
+import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../../composables/useSpanDaysRange'
+import type { KxDateRange } from '../../components/ui/kx-date-types'
 import FeeCostCell from '../../components/FeeCostCell.vue'
 
 const { t } = useI18n()
@@ -27,6 +30,15 @@ const pageTitle = computed(() =>
 const backLink = computed(() => maasBackLink('usage'))
 
 const days = ref(7)
+const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+  { days: 7, labelKey: 'tenants.usage.days7' },
+  { days: 30, labelKey: 'tenants.usage.days30' },
+])
+
+function onRangeApply(range: KxDateRange) {
+  applyRange(range)
+  void load()
+}
 const limit = ref(50)
 const summary = ref<MaasUsageSummary | null>(null)
 const ledger = ref<MaasLedgerEntry[]>([])
@@ -126,10 +138,12 @@ onMounted(load)
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge tenant-badge--admin">{{ tenantLabel }}</span>
-        <select v-model.number="days" class="limit-select" @change="load">
-          <option :value="7">{{ t('tenants.usage.days7') }}</option>
-          <option :value="30">{{ t('tenants.usage.days30') }}</option>
-        </select>
+        <KxDateRangePicker
+          :model-value="rangeValue"
+          :presets="dayPresets"
+          :max-span-days="30"
+          @apply="onRangeApply"
+        />
         <select v-model.number="limit" class="limit-select" @change="load">
           <option :value="50">{{ t('tenants.usage.ledgerLimit50') }}</option>
           <option :value="100">{{ t('tenants.usage.ledgerLimit100') }}</option>

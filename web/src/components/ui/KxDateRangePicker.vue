@@ -62,12 +62,13 @@ const matchedPreset = computed<KxDateRangePreset | null>(() => {
   return null
 })
 
-const triggerLabel = computed(() => {
+const triggerPreset = computed(() => {
   const value = props.modelValue
   if (!value) return t('common.dateRange.title')
-  const presetLabel = matchedPreset.value ? t(matchedPreset.value.labelKey) : t('common.dateRange.custom')
-  return `${presetLabel}  ${shortRangeLabel(value)}`
+  return matchedPreset.value ? t(matchedPreset.value.labelKey) : t('common.dateRange.custom')
 })
+
+const triggerRange = computed(() => (props.modelValue ? shortRangeLabel(props.modelValue) : ''))
 
 const draftInvalid = computed(() => {
   if (!draftStart.value || !draftEnd.value) return false
@@ -154,7 +155,10 @@ function applyDraft() {
           <rect x="1.5" y="2.5" width="13" height="12" rx="2.5" stroke="currentColor" stroke-width="1.4" />
           <path d="M4 1v3M12 1v3M1.5 6h13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
         </svg>
-        <span class="kx-dr-trigger__label">{{ triggerLabel }}</span>
+        <span class="kx-dr-trigger__label">
+          <span class="kx-dr-trigger__preset" :class="{ 'kx-dr-trigger__preset--set': !!modelValue }">{{ triggerPreset }}</span>
+          <span v-if="triggerRange" class="kx-dr-trigger__range">{{ triggerRange }}</span>
+        </span>
         <span class="kx-dr-trigger__caret" aria-hidden="true">▾</span>
       </button>
     </template>
@@ -257,6 +261,14 @@ function applyDraft() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.kx-dr-trigger__preset--set {
+  color: var(--accent);
+}
+.kx-dr-trigger__range {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 .kx-dr-trigger__caret {
   flex-shrink: 0;

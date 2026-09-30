@@ -58,7 +58,9 @@ function fmt(n: number | undefined) {
 
 function fmtCost(v: number | undefined) {
   if (v == null) return '—'
-  return '$' + Number(v).toFixed(4)
+  const n = Number(v)
+  // 英雄卡：≥ $1 显示两位（对齐效果图 $137.13），不足 $1 保留四位以免被舍成 0。
+  return '$' + n.toFixed(Math.abs(n) >= 1 ? 2 : 4)
 }
 
 function fmtPct(v: number | undefined) {

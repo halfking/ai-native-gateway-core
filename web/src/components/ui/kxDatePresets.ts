@@ -28,6 +28,22 @@ function resolveSpan(daysBack: number): KxDateRange {
   }
 }
 
+/** 含首尾的滚动窗口：days=1 为今天，days=7 为近 7 天。供「只接受 days 参数」的页面回填触发器。 */
+export function rangeFromSpanDays(days: number): KxDateRange {
+  const n = Math.max(1, Math.round(days))
+  return resolveSpan(n - 1)
+}
+
+/** 天数档位预设。id 稳定为 span{N}d，resolve 与 rangeFromSpanDays 同口径。 */
+export function spanDaysPreset(days: number, labelKey: string): KxDateRangePreset {
+  const n = Math.max(1, Math.round(days))
+  return {
+    id: `span${n}d`,
+    labelKey,
+    resolve: () => rangeFromSpanDays(n),
+  }
+}
+
 /**
  * 构建预设列表。
  * @param precision date 精度下「近24小时」退化为 昨天→今天 两日窗；datetime 精度输出分钟级时刻。

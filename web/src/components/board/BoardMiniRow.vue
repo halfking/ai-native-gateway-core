@@ -51,6 +51,10 @@ function fmtCompact(n: number | undefined) {
     <div v-for="i in 8" :key="i" class="mini-card mini-card--skeleton" />
   </div>
   <div v-else-if="summary" class="mini-row">
+    <div class="mini-card">
+      <div class="mini-card__label">{{ t('dashboard.performance.avgLatency') }}</div>
+      <div class="mini-card__value">{{ formatLatency(summary.avg_latency_ms) || '—' }}</div>
+    </div>
     <div class="mini-card" :title="t('dashboard.board.rpmTitle')">
       <div class="mini-card__label">{{ t('dashboard.board.rpmLabel') }}</div>
       <div class="mini-card__value">{{ fmtCompact(rpm) }}<small> req/min</small></div>
@@ -58,10 +62,6 @@ function fmtCompact(n: number | undefined) {
     <div class="mini-card" :title="t('dashboard.board.tpmTitle')">
       <div class="mini-card__label">{{ t('dashboard.board.tpmLabel') }}</div>
       <div class="mini-card__value">{{ fmtCompact(tpm) }}<small> tok/min</small></div>
-    </div>
-    <div class="mini-card">
-      <div class="mini-card__label">{{ t('dashboard.performance.avgLatency') }}</div>
-      <div class="mini-card__value">{{ formatLatency(summary.avg_latency_ms) || '—' }}</div>
     </div>
     <div class="mini-card">
       <div class="mini-card__label">{{ t('dashboard.v2.quickApiKey') }}</div>
@@ -72,16 +72,22 @@ function fmtCompact(n: number | undefined) {
       <div class="mini-card__value">{{ summary.active_models ?? '—' }}</div>
     </div>
     <div class="mini-card">
-      <div class="mini-card__label">{{ t('dashboard.board.providerCount', { n: summary.providers ?? 0 }) }}</div>
+      <div class="mini-card__label">{{ t('dashboard.providerUsage.colName') }}</div>
       <div class="mini-card__value">{{ summary.providers ?? '—' }}</div>
     </div>
-    <div v-if="bodyStats" class="mini-card">
+    <div class="mini-card">
       <div class="mini-card__label">{{ t('dashboard.stat.avgRequestSize') }}</div>
-      <div class="mini-card__value">{{ formatBytes(bodyStats.avg_request_bytes) || '—' }}<small> {{ t('dashboard.stat.maxLabel') }} {{ formatBytes(bodyStats.max_request_bytes) }}</small></div>
+      <div class="mini-card__value">
+        <template v-if="bodyStats">{{ formatBytes(bodyStats.avg_request_bytes) }}<small> {{ t('dashboard.stat.maxLabel') }} {{ formatBytes(bodyStats.max_request_bytes) }}</small></template>
+        <template v-else>—</template>
+      </div>
     </div>
-    <div v-if="bodyStats" class="mini-card">
+    <div class="mini-card">
       <div class="mini-card__label">{{ t('dashboard.stat.avgResponseSize') }}</div>
-      <div class="mini-card__value">{{ formatBytes(bodyStats.avg_response_bytes) || '—' }}<small> {{ t('dashboard.stat.maxLabel') }} {{ formatBytes(bodyStats.max_response_bytes) }}</small></div>
+      <div class="mini-card__value">
+        <template v-if="bodyStats">{{ formatBytes(bodyStats.avg_response_bytes) }}<small> {{ t('dashboard.stat.maxLabel') }} {{ formatBytes(bodyStats.max_response_bytes) }}</small></template>
+        <template v-else>—</template>
+      </div>
     </div>
   </div>
 </template>

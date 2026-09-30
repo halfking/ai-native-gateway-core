@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 import {
   getQualityCorrelations,
   type QualityCorrelationResponse,
@@ -13,6 +16,17 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const days = ref(7)
 const by = ref<'prompt_length' | 'tools' | 'images' | 'code_block'>('prompt_length')
+const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+  { days: 1, labelKey: 'qualityCorrelations.filter.days.d1' },
+  { days: 7, labelKey: 'qualityCorrelations.filter.days.d7' },
+  { days: 30, labelKey: 'qualityCorrelations.filter.days.d30' },
+  { days: 90, labelKey: 'qualityCorrelations.filter.days.d90' },
+])
+
+function onRangeApply(range: KxDateRange) {
+  applyRange(range)
+  void load()
+}
 
 async function load() {
   loading.value = true
@@ -78,12 +92,12 @@ onMounted(load)
     <section class="card filter-card">
       <div class="filter-bar">
         <label>{{ t('qualityCorrelations.filter.window') }}:
-          <select v-model.number="days" @change="load">
-            <option :value="1">{{ t('qualityCorrelations.filter.days.d1') }}</option>
-            <option :value="7">{{ t('qualityCorrelations.filter.days.d7') }}</option>
-            <option :value="30">{{ t('qualityCorrelations.filter.days.d30') }}</option>
-            <option :value="90">{{ t('qualityCorrelations.filter.days.d90') }}</option>
-          </select>
+          <KxDateRangePicker
+            :model-value="rangeValue"
+            :presets="dayPresets"
+            :max-span-days="90"
+            @apply="onRangeApply"
+          />
         </label>
         <label>{{ t('qualityCorrelations.filter.bucketBy') }}:
           <select v-model="by" @change="load">
