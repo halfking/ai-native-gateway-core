@@ -1312,7 +1312,7 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 | 2 | **`session_list.go:140/167` ⚠️ 半等价类** | **2026-10-01 重测，结论与旧「计数变小 2.5%」相反**：计数几乎不变（共有会话里 `request_count` 仅 6 个会话不同、+35 轮 = 0.07%，`error_count` 逐会话全等，`is_compressed` 两边同为 1,418 行）；真正变的是 **1,428 条会话（9.46%）会从列表整条消失，而它们 100% 是 internal_loopback / non_terminal**（真业务轮次 0）。见 §8.2 | 等决定（性质已变，从「数字缩水」变成「内部会话是否该出现在用户列表」） |
 | 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
 | 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
-| 5 | **`request_logs_bodies_hot` 重复索引** | 已实测可安全删除（事务内 DROP + ROLLBACK，3.940 ms 无回退）；需新开 803 走五点同步，属 765 范围。**但请先看 §8.3**：该索引是 phase 2 命中热表的唯一路径，删它的影响需与 §8.3 一起评估 | 等决定 |
+| 5 | **`request_logs_bodies_hot` 重复索引** | **已由迁移 807 落地（2026-10-01）**：删的是同列**非唯一**索引 `request_logs_bodies_hot_request_id_idx`，**保留** `idx_request_logs_bodies_hot_request_id`（UNIQUE，承重 `ON CONFLICT (request_id)`，也是 phase 2 命中热表的路径）。我此前担心的「删掉 phase 2 依赖的索引」不成立——§8.3 的 17~19 秒是 post-807 状态实测，不受本迁移影响 | 已关闭 |
 | 6 | ~~**工作区 131 文件陈旧暂存区**~~ | **已作废**：`reset --soft origin/main` 的残留已被本轮合并（`317f28556`）清空；当前工作区仅 14 个文件、全部是本轮有意改动 | 已关闭 |
 | 7 | ~~**`session_summary_v2` 的正文配对键**~~ | **已拍板并落地**（`09419da13`）。实测元组键在 v1 源上只命中 0.007%（1/14,546），单键 100%；真库门实测 169 轮里单键救回 168 轮。**同批还修掉一个此前未知的缺陷 7**（fallback turns 腿被 S4 批次改接成同源原生源，见 §5.11） | 已关闭 |
 
