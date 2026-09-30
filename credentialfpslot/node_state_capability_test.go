@@ -98,6 +98,45 @@ func TestF04_CapabilityExpiryIsIndependentFromRefreshingNodeHealth(t *testing.T)
 	assert.False(t, supported)
 }
 
+func TestF04_ResetNodeHealthPreservesCapabilityVerdict(t *testing.T) {
+	mgr, _ := newCapabilityTestManager(t)
+	ctx := context.Background()
+	const credentialID = 45
+	const model = "gpt-5.6-terra"
+
+	require.NoError(t, mgr.SetSupportsResponses(ctx, credentialID, model, false))
+	state, err := mgr.GetNodeState(ctx, credentialID, model)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	expiry := state.CapabilityExpiresAt
+	state.Disabled = true
+	state.DisabledUntil = time.Now().Add(time.Minute).Unix()
+	state.DisabledReason = "rate_limit"
+	state.FailureCount = 3
+	state.SuccessCount = 2
+	state.DisableCount = 1
+	state.SlideWindow = []NodeRecord{{Timestamp: time.Now().Unix(), ErrorKind: "rate_limit"}}
+	require.NoError(t, mgr.SetNodeState(ctx, state))
+
+	require.NoError(t, mgr.ResetNodeHealthState(ctx, credentialID, model))
+	reset, err := mgr.GetNodeState(ctx, credentialID, model)
+	require.NoError(t, err)
+	require.NotNil(t, reset)
+	assert.False(t, reset.Disabled)
+	assert.Zero(t, reset.DisabledUntil)
+	assert.Empty(t, reset.DisabledReason)
+	assert.Zero(t, reset.FailureCount)
+	assert.Zero(t, reset.SuccessCount)
+	assert.Zero(t, reset.DisableCount)
+	assert.Empty(t, reset.SlideWindow)
+	assert.Equal(t, expiry, reset.CapabilityExpiresAt)
+
+	supported, known, err := mgr.GetSupportsResponses(ctx, credentialID, model)
+	require.NoError(t, err)
+	assert.True(t, known, "health reset must preserve independent protocol capability evidence")
+	assert.False(t, supported, "the known unsupported verdict must remain unsupported")
+}
+
 func TestF04_LegacyCapabilityWithoutExpiryReadsAsUnknown(t *testing.T) {
 	mgr, _ := newCapabilityTestManager(t)
 	ctx := context.Background()
