@@ -2,6 +2,7 @@ package file
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -468,5 +469,67 @@ func TestConcurrentCloseRace(t *testing.T) {
 	// 关闭后再写：只能得到 ErrWriterClosed，不得 panic
 	if err := w.Write(filepath.Join(dir, "post.txt"), []byte("x")); !errors.Is(err, ErrWriterClosed) {
 		t.Errorf("关闭后 Write = %v, want ErrWriterClosed", err)
+	}
+}
+
+// TestAsyncFileWriterTryEnqueueDropsWhenFull 钉住 2026-10-01 审计修复：
+// TryEnqueue 队列满时非阻塞丢弃（返回 false + dropped_enqueues 计数），
+// 绝不阻塞调用方——镜像类 fire-and-forget 投递方（telemetry 落库 goroutine）
+// 在磁盘停滞时不得被拖住。手动构造容量 1 的 writer 以获得确定性满队列
+// （不依赖真实磁盘写入速度）。
+func TestAsyncFileWriterTryEnqueueDropsWhenFull(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := &AsyncFileWriter{queue: make(chan *WriteTask, 1), ctx: ctx, cancel: cancel}
+	w.accepting.Store(true)
+
+	done, ok := w.TryEnqueue("a.json", []byte("x"))
+	if !ok || done == nil {
+		t.Fatalf("empty queue must accept, got ok=%v done=%v", ok, done)
+	}
+	start := time.Now()
+	if d, ok := w.TryEnqueue("b.json", []byte("y")); ok || d != nil {
+		t.Fatalf("full queue must drop (non-blocking), got ok=%v", ok)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("TryEnqueue blocked %v on a full queue", elapsed)
+	}
+	if got := w.Stats()["dropped_enqueues"]; got != 1 {
+		t.Fatalf("dropped_enqueues = %d, want 1", got)
+	}
+
+	// 腾出一个槽位后可再次入队（丢弃不影响后续投递）。
+	task := <-w.queue
+	close(task.Done)
+	if _, ok := w.TryEnqueue("c.json", []byte("z")); !ok {
+		t.Fatalf("drained slot must accept again")
+	}
+}
+
+// TestAsyncFileWriterTryEnqueueClosedWriter：已关闭的 writer 必须拒绝入队
+// 且不 panic（与 Write/WriteAsync 的 ErrWriterClosed 快速失败语义对齐，
+// TryEnqueue 以 (nil,false) 表达）。
+func TestAsyncFileWriterTryEnqueueClosedWriter(t *testing.T) {
+	w := NewAsyncFileWriter(1)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := w.TryEnqueue("a.json", []byte("x")); ok || d != nil {
+		t.Fatalf("closed writer must reject, got ok=%v", ok)
+	}
+}
+
+// TestRequestMirrorAsyncDropsInsteadOfBlocking：MirrorAsync 在底层 writer
+// 关闭（拒绝入队）时不 panic、立即返回并计一次失败——钉住镜像投递路径
+// 的 fail-open 语义（丢这条镜像，不拖投递方）。
+func TestRequestMirrorAsyncDropsInsteadOfBlocking(t *testing.T) {
+	m := NewRequestMirror(t.TempDir(), 1)
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	m.MirrorAsync("tenant", "req-1", DirRequest, map[string]string{"k": "v"}, time.Now())
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("MirrorAsync blocked %v on a rejecting writer", elapsed)
 	}
 }

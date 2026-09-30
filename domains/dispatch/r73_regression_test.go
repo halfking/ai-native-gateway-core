@@ -233,6 +233,132 @@ func TestR73_ModelLaneCapRejectsInsteadOfReportingSuccess(t *testing.T) {
 	}
 }
 
+// R73 回归（P2 #9）：Tier-0 溢出拒绝必须经 complete() 收终态。旧实现在
+// Submit 的 total_queue_full 拒绝分支里手搓 registry.MarkCompleted +
+// emitRequestTerminal 并绕过 complete()，而请求在拒绝前已经被
+// dimensionIndex.Track() —— 分维条目永远停在 pending、ExpiresAt 为零值
+// （全环 Sweep 刻意保留零值条目，不会兜底回收这条幽灵）。
+//
+// 判别力：把 complete() 退回手搓两行（MarkCompleted + emitRequestTerminal），
+// 本测试必须红（条目停在 pending、ExpiresAt 零值）。
+func TestR73_TotalQueueOverflowRejectCompletesDimensionEntry(t *testing.T) {
+	cfg := DefaultConfig()
+	// DispatcherWorkers=0：dispatchIn 无人消费 → 模型 drainer 卡死在
+	// dispatchIn hand-off（与 TestPipelineClusterQueueBackendIntegration
+	// 同一阻塞手法，纯进程内、无 Redis）。
+	cfg.DispatcherWorkers = 0
+	cfg.MaxQueueDepth = 1
+	cfg.TotalQueueCapacity = 1
+	hot := &atomic.Value{}
+	hot.Store(&cfg)
+
+	f := &fakeDeps{
+		refsByModel:  map[string][]CredentialRef{"m": {cred(1, ModeConcurrency, 5)}},
+		forwardFn:    func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { return ForwardOutcome{} },
+		forwardCalls: map[int]int{},
+	}
+	p := NewPipeline(Deps{
+		RouteFunc:        f.routeFunc,
+		ModelResolveFunc: f.modelResolveFunc,
+		ForwardFunc:      f.forwardFunc,
+		HotCfg:           hot,
+	})
+	p.Start()
+	defer p.Stop()
+
+	submitAsync := func(id string) context.CancelFunc {
+		ctx, cancel := context.WithCancel(context.Background())
+		qr := NewQueuedRequest(id, "t", "m", ctx, nil)
+		go func() { _, _ = p.Submit(ctx, qr) }()
+		return cancel
+	}
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if cond() {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("状态未到达（%s）", what)
+	}
+	modelLaneDepth := func(name string) int64 {
+		p.modelMu.Lock()
+		mq, ok := p.models[name]
+		p.modelMu.Unlock()
+		if !ok {
+			return -1 // lane 尚未创建
+		}
+		mq.mu.Lock()
+		defer mq.mu.Unlock()
+		return mq.depth.Load()
+	}
+
+	// 铺满链路：q1 卡住模型 drainer（dispatchIn 无消费者），q2 占满唯一
+	// lane 槽位，q3 被 total drainer 弹出后卡进 lane 背压循环（占住
+	// total drainer），q4 停进 Tier-0 FIFO 的唯一槽位。
+	c1 := submitAsync("r73-tqf-q1")
+	defer c1()
+	waitFor("q1 停在卡死的模型 drainer 上", func() bool {
+		return p.totalQueue.depth() == 0 && modelLaneDepth("m") == 0
+	})
+	c2 := submitAsync("r73-tqf-q2")
+	defer c2()
+	waitFor("q2 停在模型 lane", func() bool {
+		return p.totalQueue.depth() == 0 && modelLaneDepth("m") == 1
+	})
+	c3 := submitAsync("r73-tqf-q3")
+	defer c3()
+	waitFor("q3 被 total drainer 吸收", func() bool {
+		return p.totalQueue.depth() == 0
+	})
+	c4 := submitAsync("r73-tqf-q4")
+	defer c4()
+	waitFor("q4 停进 Tier-0 FIFO", func() bool {
+		return p.totalQueue.depth() == 1
+	})
+
+	metricOverflow.DeleteLabelValues("total_queue_full")
+
+	// q5：Tier-0 已满 → Submit 的溢出拒绝路径。
+	q5 := NewQueuedRequest("r73-tqf-q5", "t", "m", context.Background(), nil)
+	res, err := p.Submit(context.Background(), q5)
+	if res != nil || err == nil {
+		t.Fatalf("Tier-0 满时必须显式拒绝, got res=%v err=%v", res, err)
+	}
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) || overflow.Reason != "total_queue_full" {
+		t.Fatalf("期望 OverflowError(total_queue_full), got %T: %v", err, err)
+	}
+	// 溢出计数恰好一次：补调 complete() 不得双计（complete 路径不再触碰
+	// metricOverflow / observeOverflow）。
+	if got := testutil.ToFloat64(metricOverflow.WithLabelValues("total_queue_full")); got != 1 {
+		t.Errorf("metricOverflow{total_queue_full} = %v, 期望恰好 1（拒绝必须单次计数）", got)
+	}
+	// 幽灵断言（缺陷本体）：拒绝请求的分维条目必须已终态且带 TTL 时间戳。
+	entries, ok := p.dimensionIndex.EntriesByRequest(q5.ID)
+	if !ok || len(entries) == 0 {
+		t.Fatalf("被拒请求的分维条目应存在（Track 先于拒绝）, ok=%v", ok)
+	}
+	for _, e := range entries {
+		if e.State != DimensionStateCompleted {
+			t.Errorf("分维条目 state = %q, 期望 completed —— pending 幽灵正是本缺陷本体", e.State)
+		}
+		if e.ExpiresAt.IsZero() {
+			t.Errorf("分维条目 ExpiresAt 为零值 —— 没有 TTL 时间戳，条目永远不会老化")
+		}
+		if e.Outcome != "failure" {
+			t.Errorf("分维条目 outcome = %q, 期望 failure", e.Outcome)
+		}
+	}
+	// journal 必须以终态收尾（complete() 的 CAS 内写入，恰好一次）。
+	snap := q5.JournalSnapshot()
+	if len(snap) == 0 || !isTerminalAction(snap[len(snap)-1].Action) {
+		t.Fatalf("被拒请求的 journal 必须以终态动作收尾, got %+v", snap)
+	}
+}
+
 // R73 回归（P1）：circuit_open / fp_slot_saturated 是网关侧准入信号，
 // errorsx 把它们定为终态，planner 的白名单曾漏项并把它们改写成
 // KindTransient → ActionRetrySameNode（对已熔断的凭据反复重试）。

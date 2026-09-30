@@ -13,9 +13,12 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		return nil, fmt.Errorf("request is nil")
 	}
 
+	// finalMaxTokens 是本次 wire 请求最终生效的 max_tokens（客户端省略时由
+	// 序列化默认值收敛），下方 thinking budget 的最终一致性钳制以它为准。
+	finalMaxTokens := anthropicMaxTokens(req.MaxTokens)
 	out := map[string]any{
 		"model":      req.Model,
-		"max_tokens": anthropicMaxTokens(req.MaxTokens),
+		"max_tokens": finalMaxTokens,
 	}
 
 	// Streaming
@@ -183,6 +186,32 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		if thinkingType == "disabled" && anthropicRejectsDisabledThinking(req.Model) {
 			disableUnsupported = true
 			thinkingType = "" // omit the entire block
+		}
+
+		// 2026-10-01 审计：thinking budget × 最终 max_tokens 的最终一致性钳制
+		// （**仅客户端省略 max_tokens 时生效**，req.MaxTokens<=0 → 最终值是
+		// 序列化默认 4096，客户端从未见过该值）。Reasoning 派生的 budget
+		// （effort 预算表、8192 兜底、跨协议恢复值）此前从不对照最终
+		// max_tokens：effort=xhigh 兜底 budget=8192 vs 默认 max_tokens=4096 →
+		// budget_tokens(8192) >= max_tokens(4096) → Anthropic 硬 400；同请求
+		// 走 legacy 路径会被 reasonnorm.renderAnthropic 钳到 4095 成功发出。
+		// 钳制语义与 renderAnthropic / ClampRestoredReasoningForAnthropic 同款：
+		// cap 到 max-1；cap 后低于 1024 硬下限则整体省略 thinking（可发出的
+		// 请求优先于必 400 的请求）。
+		// 显式 max_tokens 时不钳：原生 thinking（req.Thinking）与 Reasoning 派生
+		// budget 都保持逐字透传——显式 max_tokens + 超界 budget 的组合由 legacy
+		// ChatToAnthropic 同样原样发射（chat_to_anthropic_parity 金标准钉住两路
+		// 对等），此处收口会破坏两路对等并被该金标准捕获；该组合的最终治理属
+		// 序列化边界整体钳制设计，不在本修复范围。
+		// 仅作用于 Reasoning 派生路径的省略 max_tokens 形态；native req.Thinking
+		// 客户端显式选值恒不钳（TestSerializeAnthropic_Thinking 钉住 1024/10000）。
+		if req.MaxTokens <= 0 && thinkingType != "" && thinkingType != "disabled" && hasBudget {
+			if thinkingBudget >= finalMaxTokens {
+				thinkingBudget = finalMaxTokens - 1
+			}
+			if thinkingBudget < anthropicMinBudget {
+				thinkingType = "" // 放不下 thinking：整体省略
+			}
 		}
 
 		if thinkingType != "" {

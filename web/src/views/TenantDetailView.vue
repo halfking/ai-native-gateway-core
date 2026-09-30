@@ -130,10 +130,17 @@ async function loadKeys() {
   }
 }
 
+// 代际号防竞态（样板见 useReconciliationPage.ts 的 fetchGen）：快速切换
+// 统计窗口（7/30/90 天）时旧响应后到不得覆盖新结果。
+let statsFetchGen = 0
 async function loadStats() {
+  const gen = ++statsFetchGen
   try {
-    stats.value = await getTenantStats(tenantCode.value, statsDays.value)
+    const next = await getTenantStats(tenantCode.value, statsDays.value)
+    if (gen !== statsFetchGen) return
+    stats.value = next
   } catch (e: unknown) {
+    if (gen !== statsFetchGen) return
     error.value = e instanceof Error ? e.message : '加载统计失败'
   }
 }
