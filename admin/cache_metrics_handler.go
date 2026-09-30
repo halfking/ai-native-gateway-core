@@ -116,6 +116,7 @@ func (h *CacheMetricsHandler) handleSummary(w http.ResponseWriter, r *http.Reque
 		var layer string
 		var hits, misses, tokensSaved int64
 		if err := rows.Scan(&layer, &hits, &misses, &tokensSaved); err != nil {
+			warnRowSkip("cacheMetrics.handleSummary.byLayer", err)
 			continue
 		}
 		total := hits + misses
@@ -129,6 +130,11 @@ func (h *CacheMetricsHandler) handleSummary(w http.ResponseWriter, r *http.Reque
 			"hit_rate":     hitRate,
 			"tokens_saved": tokensSaved,
 		}
+	}
+	// 分层少一层 = 该层缓存命中率被静默当成 0（"没命中"），与"没数据"
+	// 在页面上无法区分。
+	if writeAggRowsErr(w, "cacheMetrics.handleSummary.byLayer", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -224,6 +230,7 @@ func (h *CacheMetricsHandler) handleTimeline(w http.ResponseWriter, r *http.Requ
 		var ts time.Time
 		var hits, misses, tokensSaved int64
 		if err := rows.Scan(&ts, &hits, &misses, &tokensSaved); err != nil {
+			warnRowSkip("cacheMetrics.handleTimeline", err)
 			continue
 		}
 		buckets = append(buckets, bucket{
@@ -232,6 +239,10 @@ func (h *CacheMetricsHandler) handleTimeline(w http.ResponseWriter, r *http.Requ
 			Misses:      misses,
 			TokensSaved: tokensSaved,
 		})
+	}
+	// 少一个时间桶 = 时间线上出现假性断崖，缓存收益被静默低估。
+	if writeAggRowsErr(w, "cacheMetrics.handleTimeline", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"buckets": buckets})

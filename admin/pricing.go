@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -186,6 +187,7 @@ func (h *Handler) pricingTree(w http.ResponseWriter, r *http.Request) {
 			&o.BalanceUSD, &o.PoolGroup,
 			&o.ProviderID, &o.ProviderName,
 			&o.CatalogCode, &o.CatalogDisplayName); err != nil {
+			warnRowSkip("pricing.families", err)
 			continue
 		}
 
@@ -218,6 +220,12 @@ func (h *Handler) pricingTree(w http.ResponseWriter, r *http.Request) {
 				Offers:        []offerEntry{o},
 			}
 		}
+	}
+
+	// 分组前必须确认迭代完整：漏掉任何一行都会让一个 family 整组消失，
+	// 客户端无法与"该 family 真的没有报价"区分。
+	if writeAggRowsErr(w, "pricing.families", rows.Err()) {
+		return
 	}
 
 	families := make([]familyGroup, 0, len(familyMap))
@@ -384,10 +392,14 @@ func (h *Handler) pricingExport(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var canonName, rawName, prov, cred, currency, billingMode, pricingSource string
 		var priceIn, priceOut, cacheRead, cacheWrite *float64
-		//nolint:errcheck // best-effort
-		rows.Scan(&canonName, &rawName, &prov, &cred,
+		// CSV 流：响应头已随首行写出，不能再改状态码。扫描失败原本整行忽略
+		// 并把空串写进导出文件（脏行）；改为跳行并留痕。
+		if err := rows.Scan(&canonName, &rawName, &prov, &cred,
 			&priceIn, &priceOut, &cacheRead, &cacheWrite,
-			&currency, &billingMode, &pricingSource)
+			&currency, &billingMode, &pricingSource); err != nil {
+			warnRowSkip("pricing.export", err)
+			continue
+		}
 
 		f := func(v *float64) string {
 			if v == nil {
@@ -399,6 +411,10 @@ func (h *Handler) pricingExport(w http.ResponseWriter, r *http.Request) {
 		writer.Write([]string{canonName, rawName, prov, cred,
 			f(priceIn), f(priceOut), f(cacheRead), f(cacheWrite),
 			currency, billingMode, pricingSource})
+	}
+	// 截断的 CSV 比失败的 CSV 更危险（导入方不会报错），至少必须留痕。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("pricing export iteration aborted; CSV may be truncated", "error", rerr)
 	}
 	writer.Flush()
 }
@@ -563,6 +579,7 @@ func (h *Handler) pricingStatsWindow(w http.ResponseWriter, r *http.Request) {
 			&s.Requests, &s.Successes, &s.Failures, &s.SuccessRate,
 			&s.LatencyP50Ms, &s.LatencyP95Ms, &s.LatencyP99Ms,
 			&s.PromptTokens, &s.CompletionTokens, &s.CostUSD); err != nil {
+			warnRowSkip("pricing.windowStats", err)
 			continue
 		}
 		if credFilterInt > 0 && s.CredentialID != credFilterInt {
@@ -571,6 +588,9 @@ func (h *Handler) pricingStatsWindow(w http.ResponseWriter, r *http.Request) {
 		s.SuccessRate = math.Round(s.SuccessRate*10000) / 10000
 		s.CostUSD = math.Round(s.CostUSD*100000000) / 100000000
 		stats = append(stats, s)
+	}
+	if writeAggRowsErr(w, "pricing.windowStats", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"stats": stats, "total": len(stats)})
@@ -714,9 +734,13 @@ func (h *Handler) pricingTable(w http.ResponseWriter, r *http.Request) {
 			&tr.CredentialID, &tr.CredentialLabel, &tr.CredentialStatus,
 			&tr.BalanceUSD, &tr.PoolGroup,
 			&tr.ProviderID, &tr.ProviderName); err != nil {
+			warnRowSkip("pricing.table", err)
 			continue
 		}
 		items = append(items, tr)
+	}
+	if writeAggRowsErr(w, "pricing.table", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -904,9 +928,15 @@ func (h *Handler) pricingAutoInherit(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var p inheritPair
 		if err := rows.Scan(&p.TargetID, &p.SourceID); err != nil {
+			warnRowSkip("pricing.inherit", err)
 			continue
 		}
 		pairs = append(pairs, p)
+	}
+	// 写操作前的完整性门：pairs 截断会让继承只覆盖一部分 offer，dry-run
+	// 报告也会少报——两者都比显式失败更难发现。
+	if writeAggRowsErr(w, "pricing.inherit", rows.Err()) {
+		return
 	}
 
 	if req.DryRun {

@@ -2446,6 +2446,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 			&r.CompletionTokens, &r.TotalTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.CostUSD, &r.ErrorKind,
 			&r.CredentialID, &r.CredentialLabel,
 		); err != nil {
+			warnRowSkip("liveStream.replay", err)
 			continue
 		}
 		r.Ts = ts.UTC().Format(time.RFC3339)
@@ -2474,6 +2475,12 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		}
 
 		out = append(out, r)
+	}
+	// 迭代中断只让 Next() 返回 false，不查 Err() 就把「回放读到一半断了」
+	// 当成「回放读完了」→ 首帧静默少一批请求，泳道图看上去只是「最近很
+	// 闲」。上抛给调用方，由它按既有语义 warn + 跳过首帧。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("live stream replay: iterate rows: %w", err)
 	}
 	return out, nil
 }
@@ -2549,9 +2556,15 @@ func (h *LiveStreamSSEHub) terminalStatusesFromDB(ctx context.Context, requestID
 	for rows.Next() {
 		var id, status string
 		if err := rows.Scan(&id, &status); err != nil {
+			warnRowSkip("liveStream.terminalOverlay", err)
 			continue
 		}
 		out[id] = status
+	}
+	// best-effort overlay：失败不阻塞 SSE，但必须留痕——否则「终态纠正」
+	// 静默半途失效时，in_progress tile 会一直卡住而无人知道纠正器挂了。
+	if err := rows.Err(); err != nil {
+		slog.Warn("live stream terminal overlay rows iteration aborted; overlay partial", "count", len(requestIDs), "err", err.Error())
 	}
 	return out
 }

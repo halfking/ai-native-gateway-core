@@ -501,6 +501,12 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		}
 		count++
 	}
+	// R66: 充值恢复探测批被截断 = 已充值的 credential 继续停在
+	// balance_exhausted 而无人重探，且「submitted N probes」照常打出。
+	if err := rows.Err(); err != nil {
+		slog.Warn("balance_quota_probe: row iteration aborted; probe batch truncated",
+			"error", err, "submitted", count)
+	}
 	if count > 0 {
 		slog.Info("balance_quota_probe: submitted probes for balance/permanently exhausted credentials",
 			"count", count,

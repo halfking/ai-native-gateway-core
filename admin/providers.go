@@ -129,6 +129,11 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 		results = append(results, credResult{CredentialID: credID, Label: label, Status: healthStatus, Error: errMsg}) //nolint:staticcheck // SA4010 false positive: results is read after loop
 		checked++
 	}
+	// 迭代中断（连接断/超时）会让 checked/healthy 少算凭据，客户端无从分辨
+	// "只有这么多凭据" 与 "只探测到一半"。
+	if writeAggRowsErr(w, "providers.checkProvider", rows.Err()) {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accepted": true,
@@ -680,7 +685,7 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			&p.RoutableBindingCount, &p.TotalBindingCount,
 			&p.QualityFixMode,
 		); err != nil {
-			slog.Warn("listProviders scan failed", "error", err)
+			warnRowSkip("providers.list", err)
 			continue
 		}
 		// Mock Probe 通道（2026-09-24）：应用层防御性过滤，与 WHERE 子句
@@ -723,6 +728,9 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		}
 
 		providers = append(providers, p)
+	}
+	if writeAggRowsErr(w, "providers.list", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, providers)
 }
@@ -1126,9 +1134,16 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 			var credIDs []int
 			for rows.Next() {
 				var cid int
-				if rows.Scan(&cid) == nil {
-					credIDs = append(credIDs, cid)
+				if scanErr := rows.Scan(&cid); scanErr != nil {
+					warnRowSkip("providers.update.autoReprobe", scanErr)
+					continue
 				}
+				credIDs = append(credIDs, cid)
+			}
+			// 重探测是 update 的副作用旁路（best-effort）：漏掉的凭据只是
+			// 没被自动探测，不能反过来把已经成功的 update 打成 500。
+			if rerr := rows.Err(); rerr != nil {
+				slog.Warn("providers.update auto-reprobe credential list truncated", "provider_id", id, "error", rerr)
 			}
 			rows.Close()
 			for _, cid := range credIDs {
@@ -1364,9 +1379,15 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 	for rows.Next() {
 		var cp createdProvider
 		if err := rows.Scan(&cp.ID, &cp.Code, &cp.DisplayName); err != nil {
+			warnRowSkip("providers.seedFromCatalog", err)
 			continue
 		}
 		created = append(created, cp)
+	}
+	// INSERT ... RETURNING 的迭代中断会让 "Seeded N new providers" 的 N 与
+	// 实际插入数不一致（写入已提交，报告缺行比失败更难排查）。
+	if writeAggRowsErr(w, "providers.seedFromCatalog", rows.Err()) {
+		return
 	}
 
 	var total int
@@ -1456,6 +1477,7 @@ func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.P
 		var providerID int
 		var displayName string
 		if err := rows.Scan(&providerID, &displayName); err != nil {
+			warnRowSkip("providers.seedLocalCredentials", err)
 			continue
 		}
 
@@ -1484,6 +1506,11 @@ func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.P
 				"provider", displayName,
 			)
 		}
+	}
+	// 显式 best-effort（函数头注）：漏掉几家供应商的占位凭据下次启动会补，
+	// 但必须留痕，否则"部分供应商没有凭据"会长期无人发现。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("seed local credentials: provider list truncated; some placeholders skipped", "error", rerr)
 	}
 }
 

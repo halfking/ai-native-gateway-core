@@ -59,9 +59,14 @@ func (h *Handler) getProviderSettings(w http.ResponseWriter, r *http.Request, pr
 	for rows.Next() {
 		var s settingRow
 		if err := rows.Scan(&s.Key, &s.Value, &s.Enabled, &s.CreatedBy, &s.CreatedAt, &s.UpdatedAt); err != nil {
+			warnRowSkip("providerSettings.list", err)
 			continue
 		}
 		settings = append(settings, s)
+	}
+	// 设置项被截断 → 前端以为某项"没配"（回落默认值），比显式失败危险。
+	if writeAggRowsErr(w, "providerSettings.list", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

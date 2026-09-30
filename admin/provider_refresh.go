@@ -408,9 +408,13 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 			&c.baseURL, &c.protocol, &c.catalogCode,
 			&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON,
 			&c.providerKind, &c.catalogCaps); err != nil {
-			continue
+			// 漏扫的凭据会被静默跳过刷新（模型清单/能力缓存不更新）。
+			return nil, fmt.Errorf("load credential rows: scan row: %w", err)
 		}
 		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load credential rows: iterate rows: %w", err)
 	}
 	return out, nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -125,9 +126,19 @@ func (h *Handler) resolveAdminLLMFallbackModel(ctx context.Context, workTypeKey 
 	var names []string
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err == nil && strings.TrimSpace(name) != "" {
+		if err := rows.Scan(&name); err != nil {
+			warnRowSkip("adminLLMTask.resolveFallbackModel", err)
+			continue
+		}
+		if strings.TrimSpace(name) != "" {
 			names = append(names, strings.TrimSpace(name))
 		}
+	}
+	// 迭代中断会退化成 len(names)==0 → 落回 minimax-m2.7 兜底：表面上
+	// "有兜底所以没事"，实际是路由被静默改到别的模型。必须留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("admin llm task: fallback model candidates truncated; falling back to default",
+			"work_type", workTypeKey, "error", err)
 	}
 	if len(names) == 0 {
 		return "minimax-m2.7"

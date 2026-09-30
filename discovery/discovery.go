@@ -368,6 +368,12 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 		}
 		creds = append(creds, c)
 	}
+	// R66: 迭代被静默截断 = 部分 credential 整轮不做模型发现，其
+	// provider_models 停留在旧快照/空集，表现为「某些 provider 突然
+	// 没有可用模型」且无任何 error。调用方已能正确处理 error，上抛。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("discovery.Service.loadCredentials: iterate rows: %w", err)
+	}
 	return creds, nil
 }
 

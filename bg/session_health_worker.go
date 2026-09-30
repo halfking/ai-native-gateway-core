@@ -157,6 +157,12 @@ func (w *SessionHealthWorker) sweep(ctx context.Context) {
 		}
 		sessions = append(sessions, s)
 	}
+	// R66: 待算批被截断 = 少数会话的 health_score 静默保持 NULL，
+	// 「processing batch」计数随之偏小。
+	if err := rows.Err(); err != nil {
+		slog.Warn("session health worker: row iteration aborted; batch truncated",
+			"error", err, "sessions", len(sessions))
+	}
 
 	if len(sessions) == 0 {
 		return

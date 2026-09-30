@@ -215,6 +215,7 @@ func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
 		var count int
 		var samples []string
 		if err := rows.Scan(&tag, &count, &samples); err != nil {
+			warnRowSkip("misc.listTags", err)
 			continue
 		}
 		ns := "other"
@@ -222,6 +223,10 @@ func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
 			ns = tag[:idx]
 		}
 		grouped[ns] = append(grouped[ns], tagInfo{Tag: tag, Count: count, Samples: samples})
+	}
+	// 标签少一截 = 该 metric 在监控页上"消失"，看起来像没上报。
+	if writeAggRowsErr(w, "misc.listTags", rows.Err()) {
+		return
 	}
 
 	namespaces := make([]namespaceInfo, 0)
