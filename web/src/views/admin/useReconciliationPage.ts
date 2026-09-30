@@ -60,6 +60,7 @@ export function useReconciliationPage() {
     person: typeof route.query.person === 'string' ? route.query.person : undefined,
   })
   let fetchGen = 0
+  let dimsFetchGen = 0
   let applyingRoute = false
 
   const showCost = computed(() => isPlatformOpsView())
@@ -121,13 +122,19 @@ export function useReconciliationPage() {
   }
 
   async function refreshDimensions() {
+    // 与主查询共用 reload() 并发触发，代际号须独立计数（共号会互相作废）；
+    // 快速切 range/view 时旧 dims 响应后到不得覆盖。
+    const gen = ++dimsFetchGen
     dimsLoading.value = true
     try {
-      dims.value = await getReportDimensions({ start: range.value[0], end: range.value[1], view: view.value })
+      const next = await getReportDimensions({ start: range.value[0], end: range.value[1], view: view.value })
+      if (gen !== dimsFetchGen) return
+      dims.value = next
     } catch {
+      if (gen !== dimsFetchGen) return
       dims.value = null
     } finally {
-      dimsLoading.value = false
+      if (gen === dimsFetchGen) dimsLoading.value = false
     }
   }
 

@@ -10,6 +10,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { fmtDateTime24h } from '../i18n/useFormat'
 import { getUserStats, type UserStats } from '../api'
+import { isSuperAdmin } from '../store'
 import StatCard from './ui/StatCard.vue'
 import AppDrawer from './ui/AppDrawer.vue'
 import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
@@ -45,17 +46,22 @@ const stats = ref<UserStats | null>(null)
 const loading = ref(false)
 const errorText = ref('')
 
+let fetchGen = 0
 async function load() {
   if (!props.user) return
+  const gen = ++fetchGen
   loading.value = true
   errorText.value = ''
   stats.value = null
   try {
-    stats.value = await getUserStats(props.user.id, days.value)
+    const next = await getUserStats(props.user.id, days.value)
+    if (gen !== fetchGen) return
+    stats.value = next
   } catch (e: unknown) {
+    if (gen !== fetchGen) return
     errorText.value = e instanceof Error ? e.message : '加载用户统计失败'
   } finally {
-    loading.value = false
+    if (gen === fetchGen) loading.value = false
   }
 }
 
@@ -148,6 +154,10 @@ const keysHref = computed(() => {
   const q = new URLSearchParams({ tab: 'keys', owner: props.user.username })
   return `/tenants/${encodeURIComponent(props.user.tenant_id)}?${q.toString()}`
 })
+// /tenants/:tenantId 挂 requiresSuper 路由门（router.ts），非 super（如
+// tenant_admin）点「API 密钥」下钻会被守卫拦到 /forbidden，故仅 super
+// 展示链接，其余只保留数字展示；logsHref（/request-logs）无门不受影响。
+const canDrillKeys = computed(() => isSuperAdmin())
 </script>
 
 <template>
@@ -284,7 +294,8 @@ const keysHref = computed(() => {
             <span class="k">{{ t('users.table.lastLogin', '最后登录') }}</span><span class="mono">{{ user.last_login_at ? fmtDateTime24h(user.last_login_at) : '—' }}</span>
             <span class="k">{{ t('users.detail.hotKeys', '高频密钥') }}</span><span class="mono">{{ topKeysText }}</span>
             <span class="k">{{ t('users.detail.keyCount', 'API 密钥') }}</span>
-            <span><a class="udd-link" :href="keysHref">{{ stats.key_count ?? 0 }}</a></span>
+            <span v-if="canDrillKeys"><a class="udd-link" :href="keysHref">{{ stats.key_count ?? 0 }}</a></span>
+            <span v-else>{{ stats.key_count ?? 0 }}</span>
           </div>
           <div class="udd-links">
             <a class="udd-link" :href="logsHref">{{ t('users.detail.viewAllLogs', '在日志中查看全部') }}</a>
