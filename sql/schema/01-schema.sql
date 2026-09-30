@@ -1126,82 +1126,6 @@ COMMENT ON FUNCTION public.create_next_month_routing_partitions() IS 'Auto-creat
 
 
 --
--- Name: credential_most_used_model(integer, integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer DEFAULT 24) RETURNS text
-    LANGUAGE plpgsql STABLE
-    AS $$
-DECLARE
-    v_model TEXT;
-BEGIN
-    -- 主路径：request_logs_hot (热表，毫秒级)
-    SELECT rl.model
-      INTO v_model
-      FROM request_logs_hot rl
-     WHERE rl.credential_id = p_credential_id
-       AND rl.success = TRUE
-       AND rl.started_at >= now() - make_interval(hours => p_lookback_hours)
-       AND rl.model IS NOT NULL
-     GROUP BY rl.model
-     ORDER BY COUNT(*) DESC, rl.model
-     LIMIT 1;
-
-    IF v_model IS NOT NULL THEN
-        RETURN v_model;
-    END IF;
-
-    -- Fallback: 冷表 request_logs (90 天后迁过去的)
-    SELECT rl.model
-      INTO v_model
-      FROM request_logs rl
-     WHERE rl.credential_id = p_credential_id
-       AND rl.success = TRUE
-       AND rl.started_at >= now() - make_interval(hours => p_lookback_hours)
-       AND rl.model IS NOT NULL
-     GROUP BY rl.model
-     ORDER BY COUNT(*) DESC, rl.model
-     LIMIT 1;
-
-    RETURN v_model;
-END;
-$$;
-
-
---
--- Name: FUNCTION credential_most_used_model(p_credential_id integer, p_lookback_hours integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer) IS 'Returns the raw_model_name with the most successful requests for a credential in the last N hours. Used by bg/credential_selfcheck.go to pick a fallback probe model.';
-
-
---
--- Name: credential_most_used_model(bigint, integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer DEFAULT 24) RETURNS TABLE(raw_model_name text, call_count bigint)
-    LANGUAGE sql STABLE
-    AS $$
-    SELECT pm.raw_model_name, COUNT(*) AS call_count
-    FROM request_logs_hot rl
-    JOIN provider_models pm ON pm.id = rl.canonical_id
-    WHERE rl.credential_id = p_credential_id
-      AND rl.ts >= now() - make_interval(hours => p_window_hours)
-      AND rl.success = TRUE
-    GROUP BY pm.raw_model_name
-    ORDER BY call_count DESC, pm.raw_model_name ASC
-    LIMIT 1;
-$$;
-
-
---
--- Name: FUNCTION credential_most_used_model(p_credential_id bigint, p_window_hours integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer) IS '341: top-1 model by 24h successful traffic for a credential. Used by credential_selfcheck to pick the daily probe model.';
-
-
---
 -- Name: diagnose_failure_kind(integer, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -2359,55 +2283,6 @@ $$;
 
 
 --
--- Name: get_model_state_summary(text); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.get_model_state_summary(p_raw_model_name text) RETURNS TABLE(state text, priority text, count bigint, avg_success_rate numeric, next_probe_in_seconds integer)
-    LANGUAGE sql STABLE
-    AS $$
-		    SELECT
-		        sub.state::TEXT,
-		        sub.priority::TEXT,
-		        COUNT(*) as count,
-		        ROUND(AVG(CASE WHEN sub.total_attempts > 0
-		                       THEN sub.consecutive_successes::float / sub.total_attempts * 100
-		                       ELSE NULL END)::numeric, 2) as avg_success_rate,
-		        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
-		    FROM (
-		        SELECT
-		            mps.state,
-		            mps.consecutive_successes,
-		            mps.total_attempts,
-		            mps.next_retry_at,
-		            CASE
-		                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-		                WHEN mps.state = 'suspicious' THEN 'suspicious'
-		                WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
-		                ELSE 'watchdog'
-		            END as priority
-		        FROM model_probe_state mps
-		        JOIN credentials c ON c.id = mps.credential_id
-		        WHERE mps.raw_model_name = p_raw_model_name
-		          AND COALESCE(c.status, 'active') = 'active'
-		          AND COALESCE(c.lifecycle_status, 'active') = 'active'
-		          AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		    ) sub
-		    GROUP BY sub.state, sub.priority
-		    ORDER BY
-		        CASE sub.priority
-		            WHEN 'urgent' THEN 1
-		            WHEN 'suspicious' THEN 2
-		            WHEN 'failing' THEN 3
-		            WHEN 'watchdog' THEN 4
-		            ELSE 5
-		        END,
-		        sub.state;
-		$$;
-
-
-SET default_table_access_method = heap;
-
---
 -- Name: prompt_injection_policies; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2892,15 +2767,6 @@ COMMENT ON FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, 
 CREATE FUNCTION public.model_probe_cleanup_stuck_probing() RETURNS integer
     LANGUAGE plpgsql
     AS $$ DECLARE cleaned_count INTEGER; BEGIN WITH cleaned AS (UPDATE model_probe_state SET state = 'suspicious', probing_started_at = NULL, next_retry_at = NOW() + INTERVAL '2 minutes' WHERE state = 'probing' AND probing_started_at IS NOT NULL AND probing_started_at < NOW() - INTERVAL '5 minutes' RETURNING 1) SELECT COUNT(*) INTO cleaned_count FROM cleaned; RETURN cleaned_count; END; $$;
-
-
---
--- Name: model_probe_credential_concurrency(bigint); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint) RETURNS integer
-    LANGUAGE sql STABLE
-    AS $$ SELECT COUNT(*)::INTEGER FROM model_probe_state WHERE credential_id = p_credential_id AND state = 'probing' AND probing_started_at > NOW() - INTERVAL '5 minutes'; $$;
 
 
 --
@@ -4465,13 +4331,6 @@ $$;
 -- `request_logs` directly (LANGUAGE sql) which doesn't exist yet at this point.
 -- It has been moved to the end of this file, after all tables are created.
 -- -----------------------------------------------------------------------------
-
-
---
--- Name: FUNCTION system_health_status(p_window_seconds integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.system_health_status(p_window_seconds integer) IS '341: returns ok (>=80% success), degraded (<80%), or suspect (no traffic) over a sliding window. Consumed by bg/system_health.go and /api/health/system.';
 
 
 --
@@ -9542,7 +9401,8 @@ CREATE TABLE public.model_aliases (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     client_profiles text[],
-    CONSTRAINT model_aliases_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text, 'deprecated'::text, 'hidden'::text])))
+    CONSTRAINT model_aliases_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text, 'deprecated'::text, 'hidden'::text]))),
+    CONSTRAINT uq_model_aliases_canonical_raw UNIQUE (canonical_id, raw_name)
 );
 
 
@@ -10244,6 +10104,64 @@ CREATE TABLE public.model_probe_state (
     CONSTRAINT check_probe_priority CHECK ((probe_priority = ANY (ARRAY['urgent'::text, 'suspicious'::text, 'failing'::text, 'recovering'::text, 'watchdog'::text])))
 );
 
+
+--
+-- Name: model_probe_credential_concurrency(bigint); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint) RETURNS integer
+    LANGUAGE sql STABLE
+    AS $$ SELECT COUNT(*)::INTEGER FROM model_probe_state WHERE credential_id = p_credential_id AND state = 'probing' AND probing_started_at > NOW() - INTERVAL '5 minutes'; $$;
+
+
+--
+-- Name: get_model_state_summary(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_model_state_summary(p_raw_model_name text) RETURNS TABLE(state text, priority text, count bigint, avg_success_rate numeric, next_probe_in_seconds integer)
+    LANGUAGE sql STABLE
+    AS $$
+		    SELECT
+		        sub.state::TEXT,
+		        sub.priority::TEXT,
+		        COUNT(*) as count,
+		        ROUND(AVG(CASE WHEN sub.total_attempts > 0
+		                       THEN sub.consecutive_successes::float / sub.total_attempts * 100
+		                       ELSE NULL END)::numeric, 2) as avg_success_rate,
+		        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
+		    FROM (
+		        SELECT
+		            mps.state,
+		            mps.consecutive_successes,
+		            mps.total_attempts,
+		            mps.next_retry_at,
+		            CASE
+		                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
+		                WHEN mps.state = 'suspicious' THEN 'suspicious'
+		                WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
+		                ELSE 'watchdog'
+		            END as priority
+		        FROM model_probe_state mps
+		        JOIN credentials c ON c.id = mps.credential_id
+		        WHERE mps.raw_model_name = p_raw_model_name
+		          AND COALESCE(c.status, 'active') = 'active'
+		          AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		          AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		    ) sub
+		    GROUP BY sub.state, sub.priority
+		    ORDER BY
+		        CASE sub.priority
+		            WHEN 'urgent' THEN 1
+		            WHEN 'suspicious' THEN 2
+		            WHEN 'failing' THEN 3
+		            WHEN 'watchdog' THEN 4
+		            ELSE 5
+		        END,
+		        sub.state;
+		$$;
+
+
+SET default_table_access_method = heap;
 
 --
 -- Name: TABLE model_probe_state; Type: COMMENT; Schema: public; Owner: -
@@ -13025,6 +12943,17 @@ CREATE TABLE public.request_envelope (
 
 SET default_table_access_method = columnar;
 
+-- The request_logs_2026_* / request_logs_archive blocks below are the *source*
+-- partitions that archive_request_logs(archive_month) migrates out, and the
+-- production 252 schema has them on heap. They must be heap, not columnar: they
+-- carry hash/gin indexes (client_model_idx2, quality_flags_idx, tool_calls_idx)
+-- and Citus columnar rejects any index AM other than btree, so leaving the
+-- preceding `SET ... = columnar` in force aborts the whole apply with
+-- "unsupported access method for the index on columnar table
+-- request_logs_2026_07". The columnar SET above belongs to the
+-- request_logs_bodies* family further down, which is re-armed below.
+SET default_table_access_method = heap;
+
 --
 -- Name: request_logs_2026_07; Type: TABLE; Schema: public; Owner: -
 --
@@ -13424,6 +13353,14 @@ PARTITION BY RANGE (ts);
 COMMENT ON TABLE public.request_logs_archive IS 'Tiered storage: columnar partitions for historical request_logs. Monthly partitions use Citus columnar (compressed, read-only). Data flow: monthly archive_request_logs(archive_month) migrates request_logs_YYYY_MM (heap) into request_logs_archive_YYYY_MM (columnar) and drops the source partition. Use UNION ALL across request_logs + request_logs_archive for time-range queries.';
 
 
+-- Re-arm columnar for the request_logs_bodies* family: the production 252
+-- schema has request_logs_bodies_2026_07..10 on columnar (compressed, read-only)
+-- and request_logs_bodies_hot on heap, which is what the SET heap below restores.
+-- This is the matching close of the heap block opened right after the
+-- request_logs_2026_* tables above.
+SET default_table_access_method = columnar;
+
+
 --
 -- Name: request_logs_bodies; Type: TABLE; Schema: public; Owner: -
 --
@@ -13673,6 +13610,82 @@ CREATE TABLE public.request_logs_hot (
     CONSTRAINT request_logs_strategy_used_check CHECK (((strategy_used IS NULL) OR (strategy_used = ANY (ARRAY['baseline_heuristic'::text, 'pattern_layered'::text, 'llm_fallback'::text]))))
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
+
+
+--
+-- Name: credential_most_used_model(integer, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer DEFAULT 24) RETURNS text
+    LANGUAGE plpgsql STABLE
+    AS $$
+DECLARE
+    v_model TEXT;
+BEGIN
+    -- 主路径：request_logs_hot (热表，毫秒级)
+    SELECT rl.model
+      INTO v_model
+      FROM request_logs_hot rl
+     WHERE rl.credential_id = p_credential_id
+       AND rl.success = TRUE
+       AND rl.started_at >= now() - make_interval(hours => p_lookback_hours)
+       AND rl.model IS NOT NULL
+     GROUP BY rl.model
+     ORDER BY COUNT(*) DESC, rl.model
+     LIMIT 1;
+
+    IF v_model IS NOT NULL THEN
+        RETURN v_model;
+    END IF;
+
+    -- Fallback: 冷表 request_logs (90 天后迁过去的)
+    SELECT rl.model
+      INTO v_model
+      FROM request_logs rl
+     WHERE rl.credential_id = p_credential_id
+       AND rl.success = TRUE
+       AND rl.started_at >= now() - make_interval(hours => p_lookback_hours)
+       AND rl.model IS NOT NULL
+     GROUP BY rl.model
+     ORDER BY COUNT(*) DESC, rl.model
+     LIMIT 1;
+
+    RETURN v_model;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION credential_most_used_model(p_credential_id integer, p_lookback_hours integer); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer) IS 'Returns the raw_model_name with the most successful requests for a credential in the last N hours. Used by bg/credential_selfcheck.go to pick a fallback probe model.';
+
+
+--
+-- Name: credential_most_used_model(bigint, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer DEFAULT 24) RETURNS TABLE(raw_model_name text, call_count bigint)
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT pm.raw_model_name, COUNT(*) AS call_count
+    FROM request_logs_hot rl
+    JOIN provider_models pm ON pm.id = rl.canonical_id
+    WHERE rl.credential_id = p_credential_id
+      AND rl.ts >= now() - make_interval(hours => p_window_hours)
+      AND rl.success = TRUE
+    GROUP BY pm.raw_model_name
+    ORDER BY call_count DESC, pm.raw_model_name ASC
+    LIMIT 1;
+$$;
+
+
+--
+-- Name: FUNCTION credential_most_used_model(p_credential_id bigint, p_window_hours integer); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer) IS '341: top-1 model by 24h successful traffic for a credential. Used by credential_selfcheck to pick the daily probe model.';
 
 
 --
@@ -28814,6 +28827,13 @@ CREATE FUNCTION public.system_health_status(p_window_seconds integer DEFAULT 30)
     FROM win;
 $$;
 CREATE TRIGGER approval_approvers_updated_at BEFORE UPDATE ON public.approval_approvers FOR EACH ROW EXECUTE FUNCTION public.update_approval_updated_at();
+
+
+--
+-- Name: FUNCTION system_health_status(p_window_seconds integer); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.system_health_status(p_window_seconds integer) IS '341: returns ok (>=80% success), degraded (<80%), or suspect (no traffic) over a sliding window. Consumed by bg/system_health.go and /api/health/system.';
 
 
 --
