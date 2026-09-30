@@ -153,8 +153,7 @@ TEST_PG_URL="postgres://llm_gateway:${PW}@127.0.0.1:5432/llm_gateway" \
 
 - **⚠️ `session_summary_v2` 长期用几乎全空的正文做 LLM 总结**（§8 第 7 项）。
   改 `request_id` 口径是一行改动，但会改变总结结果与 token 计费 —— **未擅自改**。
-- **timeline 迭代错误传播无测试覆盖**：`loadSessionTimelineInTx` 迁出后，
-  panorama / analytics 两个调用点的 `rows.Err()` 传播路径无钉测（远端 `d2ff2c3b1` 留言指出）。
+- ~~timeline 迭代错误传播无测试覆盖~~ → **已补**（`3834d12f5`，6 条门 + 7 个变异验证）。
 - `request_logs_bodies_hot` 上两个功能重复的 `(request_id)` 索引未删
   （已实测事务内 DROP+ROLLBACK 3.940 ms 无回退；需新开 803 走五点同步）。
 - 会话内读（class A）已全迁原生源；P1 组仍有 9 个文件走视图，S4 可扛、**S6 时无开关可回切**。
@@ -186,7 +185,7 @@ git fetch origin && git log --oneline HEAD..origin/main
    session_summary_v2 的正文配对键（现状 (request_id, ts) 99.85% 配不上，
    长期用空正文做总结）。改动已就位（两个函数并存），
    只差把 queryRequestLogsFallback 从 …AndTS 切到 …ByRequestID。
-2. 补 timeline 迭代错误传播的钉测（panorama / analytics 两个调用点）。
+2. ~~补 timeline 迭代错误传播的钉测~~ → **已完成**（`3834d12f5`）。
 3. 若获批 S4 真机灰度：开 storage.request_logs_write_enabled=false，
    用 GET /api/admin/sessions/dual-read-drift 盯 s4_ready；
    灰度期必须保留 734 视图的 v1 冻结分支。
