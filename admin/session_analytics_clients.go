@@ -280,7 +280,8 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 		&resp.FirstSeenAt, &resp.LastSeenAt, &modelsUsed, &refreshedAt,
 	)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "client not found")
+		// R35: 42P01（缺 357 视图）此前被吞成 404 误导排查，先分类。
+		writeAnalyticsDetailErr(w, "client not found", err)
 		return
 	}
 
