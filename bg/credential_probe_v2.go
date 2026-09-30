@@ -81,10 +81,6 @@ type CredentialProbeV2 struct {
 
 	probeCtxMu sync.RWMutex
 	probeCtx   context.Context
-
-	// F04 capability verdicts are returned through the invocation-local output
-	// parameter in probeCredentialWithCapability; they are never shared across
-	// concurrent probes on this receiver.
 }
 
 // NewCredentialProbeV2 builds the background probe-v2 worker. The cycle
@@ -828,10 +824,6 @@ func uniqueStringSet(values ...[]string) []string {
 // conditions (network errors, 5xx, 408/425/429). 401/403/404/400/422/402
 // fail fast because retrying them is pointless and risks masking real
 // configuration errors.
-func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (bool, string) {
-	return c.probeCredentialWithCapability(ctx, s, nil)
-}
-
 // probeCredentialWithCapability returns capability evidence through
 // capabilityOut so concurrent probes on the same CredentialProbeV2 cannot
 // overwrite or consume each other's verdicts. A nil output means this probe
