@@ -134,6 +134,8 @@ export default {
     status: '狀態',
     basic: '基本信息',
     hotKeys: '高頻密鑰',
+    keyCount: 'API 密鑰',
+    viewAllLogs: '在日誌中查看全部',
     requests: '請求',
   },
 }

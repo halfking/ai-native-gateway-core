@@ -5310,6 +5310,9 @@ func main() {
 			}
 			retentionCfgProvider := newStorageRetentionConfigProvider()
 			retentionWorker := bg.NewStorageRetentionWorker(attachmentStorage, logDirForWorker, retentionCfgProvider)
+			// §三#2（2026-09-30 三十七轮续）：附件删除前反查 request_attachments
+			// 存活引用；nil 时 worker fail-closed 拒删附件。
+			retentionWorker.RefChecker = bg.NewAttachmentRefChecker(dbConn.Pool())
 			if ttl, _ := readIntSettingPublic("storage.attachment_ttl_days"); ttl > 0 {
 				retentionWorker.AttachmentTTLDays = ttl
 			} else {

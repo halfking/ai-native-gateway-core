@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -392,7 +393,13 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 		if err != nil {
 			slog.Warn("failed to fetch diff for approval", "diff_id", diffID, "error", err)
 			recordFailedAccounting()
-			writeError(w, http.StatusNotFound, "reconciliation diff not found")
+			// R35-N1 分类门：ErrNoRows 才是"diff 不存在"；连接故障/缺表
+			// （42P01）等数据库错误此前一并吞成 404，误导运维排查方向。
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "reconciliation diff not found")
+			} else {
+				writeInternalErr(w, "reconciliation diff lookup failed", err)
+			}
 			return
 		}
 

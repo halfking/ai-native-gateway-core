@@ -134,6 +134,8 @@ export default {
     status: 'الحالة',
     basic: 'معلومات أساسية',
     hotKeys: 'المفاتيح الأكثر استخدامًا',
+    keyCount: 'مفاتيح API',
+    viewAllLogs: 'عرض الكل في السجلات',
     requests: 'الطلبات',
   },
 }

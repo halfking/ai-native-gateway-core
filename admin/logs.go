@@ -507,6 +507,11 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if v := queryIntPtr(r, "api_key_id"); v != nil {
 		addFilter("rl.api_key_id = $%d", *v)
 	}
+	// 用户详情抽屉「在日志中查看全部」只按请求行上的账号列过滤。
+	// 不用 ak.owner_user：super_admin 的 COUNT/聚合故意不 JOIN api_keys。
+	if v := strings.TrimSpace(queryString(r, "owner_user")); v != "" {
+		addFilter("rl.api_key_owner_user = $%d", v)
+	}
 	if v := strings.TrimSpace(queryString(r, "request_id")); v != "" {
 		addFilter("rl.request_id = $%d", v)
 	}

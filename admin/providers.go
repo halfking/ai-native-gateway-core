@@ -64,7 +64,7 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 	var enabled bool
 	err := h.db.QueryRow(ctx, `SELECT code, display_name, enabled FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL`, providerID).Scan(&code, &displayName, &enabled)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "provider not found")
+		writeLookupErr(w, "provider not found", err)
 		return
 	}
 
@@ -177,7 +177,7 @@ func (h *Handler) probeProviderURL(w http.ResponseWriter, r *http.Request, provi
 	var baseURL, protocol string
 	err := h.db.QueryRow(ctx, `SELECT COALESCE(base_url,''), COALESCE(protocol,'openai-completions') FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL`, providerID).Scan(&baseURL, &protocol)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "provider not found")
+		writeLookupErr(w, "provider not found", err)
 		return
 	}
 	if baseURL == "" {

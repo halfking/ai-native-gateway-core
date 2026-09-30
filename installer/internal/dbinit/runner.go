@@ -363,6 +363,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 有 tenant 前导索引，tenant 维度 days>7 聚合对每分区全表扫
 			//（252-dev 实测 3 行租户 6.5s）。父表 CREATE INDEX 级联全部分区。
 			"764_request_logs_tenant_ts_index.sql",
+			// 765 (2026-09-30, R16 存储轮): request_logs_bodies 月分区列存化
+			//（ensure 函数 columnar 分支 + 存量空分区转换，56.6× 压缩实测）+
+			// bodies 两族 lz4 TOAST + request_stage_events 三死索引清理。
+			"765_bodies_columnar_storage.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
@@ -379,6 +383,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// session_turn_details 表与其 hot 表，必须晚于 733 生效；旧位置（758 与
 			// 760 之间）会让 applySQL 顺序执行时在依赖对象存在前就替换函数。
 			"801_session_turn_details_duplicate_drain.sql",
+			// 802 (2026-09-30, 会话存储解耦 v3 S4 前置): session_turn_details
+			// 族补 (tenant_id, gw_task_id) 部分索引。跨租户访问门
+			// assertTaskInTenant 的 session 族母表腿依赖它——缺索引时 EXISTS
+			// 判定退化为 167 万行顺序扫描。位置约束：必须晚于 733（建表与
+			// 分区）与 801（同族 promote 改版），故排在序列末尾。
+			"802_session_turn_details_gw_task_id_index.sql",
 		},
 	}
 }

@@ -45,6 +45,7 @@ const error = ref<string | null>(null)
 const bodyCache = ref<BodyCacheStats | null>(null)
 const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
+const ownerUserFilter = ref('')
 const modelFilter = ref('')
 // 2026-08-09: 时间筛选升级为 preset + 自定义范围，替代旧的固定小时数下拉。
 // 类型覆盖原 [1h/6h/24h/3d/7d] 与新增的 [今天/本周/本月/今年/自定义]。
@@ -835,6 +836,7 @@ async function load() {
       from: range.from,
       to: range.to,
       q: keyword.value.trim() || undefined,
+      owner_user: ownerUserFilter.value.trim() || undefined,
       request_status: successFilter.value === '' ? undefined : successFilter.value,
       error_kind: errorKindFilter.value.trim() || undefined,
       model: modelFilter.value || undefined,
@@ -1050,6 +1052,8 @@ onMounted(async () => {
   // 24h/50 条外。
   const fromQuery = (key: string) =>
     typeof q[key] === 'string' && (q[key] as string).trim() ? (q[key] as string).trim() : ''
+  const ownerFromQuery = fromQuery('owner_user')
+  if (ownerFromQuery) ownerUserFilter.value = ownerFromQuery
   const sessionId = fromQuery('gw_session_id')
   const taskId = fromQuery('gw_task_id')
   if (sessionId || taskId) {

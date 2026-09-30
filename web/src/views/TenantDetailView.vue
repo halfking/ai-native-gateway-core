@@ -53,6 +53,8 @@ const showCost = isPlatformOpsView()
 // 概览 tab KPI sparkline 数据（近 7 天 daily 序列，独立于 stats tab 的窗口）。
 const statsMetric = ref<'token' | 'credits'>('token')
 const overviewDaily = ref<TenantDailyStat[]>([])
+const keyAppFilter = ref('')
+const keyOwnerFilter = ref('')
 
 function fmtTokensCompact(n?: number | null): string {
   const v = n ?? 0
@@ -60,6 +62,12 @@ function fmtTokensCompact(n?: number | null): string {
   if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`
   if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`
   return String(v)
+}
+function fmtLatency(ms?: number | null): string {
+  const v = ms ?? 0
+  if (v <= 0) return '—'
+  if (v >= 1000) return `${(v / 1000).toFixed(v >= 10000 ? 1 : 2)}s`
+  return `${Math.round(v)}ms`
 }
 function fmtAxisCompact(v: number): string {
   if (Math.abs(v) >= 1e9) return `${(v / 1e9).toFixed(1)}B`
@@ -98,6 +106,7 @@ async function loadTenant() {
     if (activeTab.value === 'users') await loadUsers()
     if (activeTab.value === 'keys') await loadKeys()
     if (activeTab.value === 'stats') await loadStats()
+    applyRouteFocus()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -138,6 +147,19 @@ const statsDailyAvg = computed(() => {
   const n = statsDaily.value.length
   return n > 0 ? Math.round((stats.value?.total_requests ?? 0) / n) : null
 })
+const statsDayDelta = computed(() => {
+  const rows = statsDaily.value
+  if (rows.length < 2) return null
+  const prev = rows[rows.length - 2].requests ?? 0
+  const last = rows[rows.length - 1].requests ?? 0
+  if (prev <= 0) return null
+  return ((last - prev) / prev) * 100
+})
+const visibleKeys = computed(() => keys.value.filter((k) => {
+  if (keyAppFilter.value && k.application_code !== keyAppFilter.value) return false
+  if (keyOwnerFilter.value && k.owner_user !== keyOwnerFilter.value) return false
+  return true
+}))
 // 概览 sparkline：近 7 天 daily 序列。
 const spark7d = (key: 'requests' | 'tokens' | 'credits') => overviewDaily.value.map((d) => d[key] ?? 0)
 // 概览副指标同样取自近 7 天序列（与 stats tab 的窗口解耦）。
@@ -315,7 +337,30 @@ function ledgerTypeLabel(t: string) {
   return MAAS_LEDGER_TYPE_LABELS[t] || t
 }
 
-async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'billing' | 'wallet' | 'ledger' | 'orders' | 'model-policies') {
+const tenantTabs = ['overview', 'users', 'keys', 'stats', 'billing', 'wallet', 'ledger', 'orders', 'model-policies'] as const
+type TenantTab = typeof tenantTabs[number]
+
+function applyRouteFocus() {
+  const tab = route.query.tab
+  if (typeof tab === 'string' && (tenantTabs as readonly string[]).includes(tab)) {
+    void switchTab(tab as TenantTab)
+  }
+  if (typeof route.query.app === 'string') keyAppFilter.value = route.query.app
+  if (typeof route.query.owner === 'string') keyOwnerFilter.value = route.query.owner
+}
+
+function formatDayDelta(v: number | null): string {
+  if (v == null) return ''
+  return `${v > 0 ? '+' : ''}${v.toFixed(1)}%`
+}
+
+function openAppKeys(code: string) {
+  keyAppFilter.value = code
+  keyOwnerFilter.value = ''
+  void switchTab('keys')
+}
+
+async function switchTab(t: TenantTab) {
   activeTab.value = t
   if (t === 'users' && users.value.length === 0) await loadUsers()
   if (t === 'keys' && keys.value.length === 0) await loadKeys()
@@ -520,12 +565,17 @@ watch(() => route.params.tenantId, loadTenant)
 
       <!-- Keys Tab -->
       <div v-if="activeTab === 'keys'" class="tab-content">
+        <div v-if="keyAppFilter || keyOwnerFilter" class="stats-asof">
+          <span v-if="keyAppFilter">应用 {{ keyAppFilter }}</span>
+          <span v-if="keyOwnerFilter">账号 {{ keyOwnerFilter }}</span>
+          <button type="button" class="btn btn-ghost btn-sm" @click="keyAppFilter = ''; keyOwnerFilter = ''">清除过滤</button>
+        </div>
         <table class="table" style="width:100%">
           <thead>
             <tr><th>ID</th><th>密钥前缀</th><th>别名</th><th>应用</th><th>状态</th><th>请求数</th><th>费用</th><th>创建</th></tr>
           </thead>
           <tbody>
-            <tr v-for="k in keys" :key="k.id">
+            <tr v-for="k in visibleKeys" :key="k.id">
               <td>{{ k.id }}</td>
               <td><code>{{ k.key_prefix }}</code></td>
               <td>{{ k.key_alias || '-' }}</td>
@@ -538,7 +588,7 @@ watch(() => route.params.tenantId, loadTenant)
               </td>
               <td class="mono">{{ fmtTime(k.created_at) }}</td>
             </tr>
-            <tr v-if="keys.length === 0">
+            <tr v-if="visibleKeys.length === 0">
               <td colspan="8" style="text-align:center; padding:40px; color: var(--muted)">无密钥</td>
             </tr>
           </tbody>
@@ -574,7 +624,7 @@ watch(() => route.params.tenantId, loadTenant)
           </StatCard>
           <StatCard label="总 Token" icon="🔢">
             <template #value>{{ fmtTokensCompact(stats.total_tokens) }}</template>
-            <template #sub>独立模型 {{ stats.unique_models }} · 独立应用 {{ stats.unique_apps }}</template>
+            <template #sub>入 {{ fmtTokensCompact(stats.input_tokens) }} · 出 {{ fmtTokensCompact(stats.output_tokens) }} · 缓存读 {{ fmtTokensCompact(stats.cache_read_tokens) }} · 缓存写 {{ fmtTokensCompact(stats.cache_write_tokens) }}</template>
           </StatCard>
           <StatCard label="总费用" icon="🪙" tone="success">
             <template #value>
@@ -586,7 +636,10 @@ watch(() => route.params.tenantId, loadTenant)
           </StatCard>
           <StatCard label="日均请求" icon="📈">
             <template #value>{{ fmtNum(statsDailyAvg) }}</template>
-            <template #sub>窗口 {{ stats.days }} 天</template>
+            <template #sub>
+              <template v-if="statsDayDelta != null">较前一日 {{ formatDayDelta(statsDayDelta) }}</template>
+              <template v-else>窗口 {{ stats.days }} 天</template>
+            </template>
           </StatCard>
           <StatCard label="独立密钥" icon="🔑">
             <template #value>{{ stats.unique_keys }}</template>
@@ -600,9 +653,9 @@ watch(() => route.params.tenantId, loadTenant)
             <template #value>{{ stats.unique_apps }}</template>
             <template #sub>Top 见下方应用分布</template>
           </StatCard>
-          <StatCard label="总请求数（历史）" icon="📚">
-            <template #value>{{ fmtNum(tenant?.total_requests) }}</template>
-            <template #sub>自 {{ tenant ? fmtTime(tenant.created_at) : '—' }} 起</template>
+          <StatCard label="平均耗时" icon="⏱️">
+            <template #value>{{ fmtLatency(stats.avg_latency_ms) }}</template>
+            <template #sub>窗口内请求均值</template>
           </StatCard>
         </div>
 
@@ -657,7 +710,7 @@ watch(() => route.params.tenantId, loadTenant)
           <table class="table">
             <thead><tr><th>应用</th><th class="text-right">请求</th><th class="text-right">Token</th><th class="text-right">积分</th><th class="text-right">费用</th></tr></thead>
             <tbody>
-              <tr v-for="a in statsAppSorted" :key="a.application_code">
+              <tr v-for="a in statsAppSorted" :key="a.application_code" class="stats-app-row" @click="openAppKeys(a.application_code)">
                 <td>
                   <BarCell :pct="statsAppMax > 0 ? (statsMetricValue(a) / statsAppMax) * 100 : 0" tone="cyan">
                     <template #name><span class="badge badge-blue">{{ a.application_code || '—' }}</span></template>
@@ -1096,6 +1149,7 @@ watch(() => route.params.tenantId, loadTenant)
   font-size: 12px;
   margin-left: auto;
 }
+.stats-app-row { cursor: pointer; }
 .stats-trend-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

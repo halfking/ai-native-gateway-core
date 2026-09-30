@@ -621,7 +621,7 @@ func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *ht
 		ORDER BY ts DESC LIMIT 1`, tenantPred)
 	err := h.db.QueryRow(ctx, query, args...).Scan(&ts, &tenantID, &clientModel, &success, &attText)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "request not found")
+		writeLookupErr(w, "request not found", err)
 		return
 	}
 

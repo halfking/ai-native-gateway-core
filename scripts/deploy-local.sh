@@ -930,6 +930,16 @@ EOF
       mkdir -p "$ROOT_DIR/$state_dir"
       gateway_bind_args+=(-v "$ROOT_DIR/$state_dir:/opt/llm-gateway-go/$state_dir")
     done
+    # R-9 (2026-09-30 热区复审决策:保留热区跨部署):data/ 是热区唯一
+    # 未挂载的落盘点,此前每次部署随容器可写层清零(drill 2026-09-30 实测
+    # 蓝绿切换后 data/hotzone 文件数归零)。挂载目标=进程相对默认
+    # ./data/hotzone 的绝对化:实际运行的 runtime 镜像(runtime.Dockerfile,
+    # 部署时生成)WORKDIR=/opt/llm-gateway-go,即 /opt/llm-gateway-go/data。
+    # 2026-09-30 首版误按构建期 Dockerfile 的「WORKDIR=/app」挂到 /app/data,
+    # 2026-10-01 R-9 部署级实证抓出(热区 402 文件落可写层、/app/data 恒空),
+    # 当日更正。trimmer 配额(env 7h/1GB/30m)与挂载无关,不会因持久化漂移。
+    mkdir -p "$ROOT_DIR/data"
+    gateway_bind_args+=(-v "$ROOT_DIR/data:/opt/llm-gateway-go/data")
     docker run -d --name "$name" --restart unless-stopped "${gateway_net_args[@]}" "${gateway_bind_args[@]}" --env-file "$runtime_env" -e "LLM_GATEWAY_LISTEN=:${port}" -e "LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/version.json" -p "127.0.0.1:${port}:${port}" "kx-llm-gateway-local:${RELEASE_VERSION}" >/dev/null
   else
     local pf; pf=$(pid_file "$port"); mkdir -p "$RUN_DIR" "$LOG_DIR"

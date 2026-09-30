@@ -680,6 +680,9 @@ files=(
   # days>7 聚合对每分区全表扫（252-dev 实测 3 行租户 6.5s / default 21.5s）。
   # 父表 CREATE INDEX IF NOT EXISTS 级联全部分区，重放 no-op 并补台账。
   "$ROOT_DIR/sql/migrations/startup/764_request_logs_tenant_ts_index.sql"
+  # 765 (2026-09-30, R16 存储轮): bodies 月分区列存化 + lz4 TOAST +
+  # request_stage_events 三死索引（pss 19 天 0 扫描）。
+  "$ROOT_DIR/sql/migrations/startup/765_bodies_columnar_storage.sql"
   # 2026-09-30 补登 800/801 升级通道（ec5edcfd7 只落了 installer StartupFiles，
   # 序列通道缺席 → 目录驱动门报「startup migration 801 exists but is missing
   # from the channel files=(...) array」，正是该门注释里点名的 693/699/701/703
@@ -692,6 +695,13 @@ files=(
   # 依赖 733 建的 session_turn_details 表与 hot 表），故排在序列末尾。
   "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
   "$ROOT_DIR/sql/migrations/startup/801_session_turn_details_duplicate_drain.sql"
+  # 2026-09-30 会话存储解耦 v3 S4 前置（802）：session_turn_details 族补
+  # (tenant_id, gw_task_id) 部分索引（母表 + hot）。跨租户访问门
+  # assertTaskInTenant 的 session 族腿依赖它——缺索引时 EXISTS 判定会对
+  # 167 万行母表做顺序扫描。幂等：CREATE INDEX IF NOT EXISTS ×2 + 两条
+  # COMMENT ON（重复执行覆盖注释，无副作用）。位置约束同 StartupFiles：
+  # 必须晚于 733（建表与分区）与 801（同族），故排在序列末尾。
+  "$ROOT_DIR/sql/migrations/startup/802_session_turn_details_gw_task_id_index.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

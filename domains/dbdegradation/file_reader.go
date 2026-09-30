@@ -31,6 +31,10 @@ type FileReader struct {
 	cacheMu  sync.RWMutex
 	cache    map[string]*cachedBackupFile // 每文件独立缓存时间
 	cacheTTL time.Duration
+	// salvageCapBytes 覆盖打捞路径压缩字节上限（0 = 默认
+	// salvageMaxCompressedBytes）。仅供测试注入：真 256MB 压缩文件在测试
+	// 预算内不可构造，缩小阈值即可走同一段超限分支代码。
+	salvageCapBytes int64
 }
 
 // NewFileReader 创建文件读取器
@@ -278,21 +282,22 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 	return summary, nil
 }
 
-// ReadRecords 流式读取记录并回调处理
+// ReadRecords 流式读取记录并回调处理。
+//
+// 2026-09-30 O5 收口：多进程 O_APPEND 追加 + 容器硬杀跳过 gzip.Close 会把
+// 日文件打成「孤儿 header + 完整 member + 截断尾」的混合体，原单遍
+// gzip.NewReader 在首个坏 member 即整体失败 → 整文件 0 条可恢复。现常规
+// 文件走打捞路径（file_reader_salvage.go：逐 member 重同步 + 坏行跳过），
+// 干净文件行为不变；超上限大文件维持纯流式。归档护栏见
+// ReadRecordsWithStats / SalvageStats。
 func (fr *FileReader) ReadRecords(ctx context.Context, filename string, callback func(BackupRecord) error) error {
-	// 验证并获取路径
-	path, err := fr.backupPath(filename)
-	if err != nil {
-		return err
-	}
+	_, err := fr.ReadRecordsWithStats(ctx, filename, callback)
+	return err
+}
 
-	// 打开文件
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open file: %w", err)
-	}
-	defer file.Close()
-
+// readGzipStream 纯流式读取（gzip 默认 Multistream 透传多 member），遇坏
+// member/坏行整体失败。供超打捞上限的大文件沿用既有行为。
+func readGzipStream(ctx context.Context, file *os.File, callback func(BackupRecord) error) error {
 	// 创建 gzip reader
 	gzipReader, err := gzip.NewReader(file)
 	if err != nil {
