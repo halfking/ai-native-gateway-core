@@ -70,15 +70,54 @@ func TestSessionSummaryV2FallbackMatchesLegacyQueryOnRealRows(t *testing.T) {
 				if len(legacy) == 0 {
 					t.Fatalf("probe returned no rows — an empty comparison proves nothing")
 				}
+				// 不变式 1：轮次集合。phase 1 拥有 ORDER BY / LIMIT，phase 2 只
+				// 供正文，所以拆分不得丢轮、不得改序、不得改编号。
 				if len(legacy) != len(split) {
 					t.Fatalf("turn count diverged: legacy=%d split=%d", len(legacy), len(split))
 				}
 				for i := range legacy {
-					if !reflect.DeepEqual(legacy[i], split[i]) {
-						t.Fatalf("turn %d diverged:\n legacy=%s\n split =%s", i, formatTurn(legacy[i]), formatTurn(split[i]))
+					if legacy[i].TurnNo != split[i].TurnNo {
+						t.Fatalf("turn %d numbering diverged: legacy=%d split=%d",
+							i, legacy[i].TurnNo, split[i].TurnNo)
 					}
 				}
-				t.Logf("%d turns compared, %d of them carry a stored body", len(legacy), probe.bodies)
+				// 不变式 2：正文只能变多，不能变错也不能串位。
+				//
+				// 元组键 → 单键是一次**有意**的行为变更，所以逐轮 DeepEqual
+				// 不再成立（那 89% 的轮次 legacy 是 nil、split 有内容）。真正
+				// 需要钉住的是方向性：
+				//   - legacy 配上了的轮次，split 必须配上**同一份**正文
+				//     （request_id 在 bodies 里唯一：2,220,507 行 = 2,220,507
+				//     个不同 request_id，所以单键不可能取到别的行）；
+				//   - legacy 没配上的轮次，split 可以有正文（本次的收益），
+				//     但绝不允许「串到别的轮次」——TurnNo 相等已在上面对齐。
+				legacyBodies, splitBodies := 0, 0
+				for i := range legacy {
+					legacyHas := legacy[i].RequestDelta != nil || legacy[i].ResponseDelta != nil
+					splitHas := split[i].RequestDelta != nil || split[i].ResponseDelta != nil
+					if legacyHas {
+						legacyBodies++
+						if !splitHas {
+							t.Fatalf("turn %d had a body under the tuple key but lost it under "+
+								"request_id pairing — the single key must be a superset:\n legacy=%s\n split =%s",
+								i, formatTurn(legacy[i]), formatTurn(split[i]))
+						}
+						if !reflect.DeepEqual(legacy[i], split[i]) {
+							t.Fatalf("turn %d: the tuple key and the request_id key resolved to "+
+								"DIFFERENT bodies, which means request_id is not unique in the "+
+								"bodies store:\n legacy=%s\n split =%s",
+								i, formatTurn(legacy[i]), formatTurn(split[i]))
+						}
+					}
+					if splitHas {
+						splitBodies++
+					}
+				}
+				if splitBodies < legacyBodies {
+					t.Fatalf("request_id pairing lost bodies: legacy=%d split=%d", legacyBodies, splitBodies)
+				}
+				t.Logf("%d turns compared; bodies legacy(tuple)=%d split(request_id)=%d (+%d)",
+					len(legacy), legacyBodies, splitBodies, splitBodies-legacyBodies)
 			})
 		}
 	}
@@ -120,7 +159,10 @@ func TestSessionSummaryV2FallbackBodiesStaysOnIndexPath(t *testing.T) {
 		timestamps[i] = k.ts
 	}
 
-	rows, err := pool.Query(ctx, "EXPLAIN "+sessionBodiesByRequestIDAndTSSQL, requestIDs, timestamps)
+	// EXPLAIN 的对象必须是生产真正发出的那条 phase 2 —— 2026-10-01 起是
+	// request_id 单键那条（见 queryRequestLogsFallback）。EXPLAIN 一条不再
+	// 执行的 SQL，等于给一个已经下线的形状做性能保证。
+	rows, err := pool.Query(ctx, "EXPLAIN "+sessionBodiesByRequestIDSQL, requestIDs)
 	if err != nil {
 		t.Fatalf("explain phase 2: %v", err)
 	}
@@ -172,55 +214,155 @@ type fallbackProbe struct {
 //   - several short sessions that DO have bodies — the only shape that exercises
 //     the body-hit path, and each costs one legacy iteration;
 //   - one multi-turn session with no bodies at all — the consecutive-miss path;
+//   - several sessions the native source does NOT have — the population the
+//     fallback exists to serve, and where defect 7 lived (see
+//     TestSessionSummaryV2FallbackServesSessionsNativeSourceLacks);
 //   - one sys:-prefixed session — its projected gw_session_id is CASE'd to NULL,
 //     the easiest thing in this query to get wrong.
+//
+// 两个预算纪律，都是实测换来的：
+//
+//  1. **探针一律带时间窗**（probeWindow）。不带走全量 v1 视图的 GROUP BY 在
+//     本机跑了 5 分半未完成（实测 pg_stat_activity 里挂着），加上窗之后 1.5s。
+//     测试**发现**阶段的查询和被测查询一样会烧预算，不能当成免费的。
+//  2. **轮数夹在 2~60**。legacy 单查询逐轮 ColumnarScan，约 0.8 秒/轮，
+//     一个 1,365 轮的无界探针就是 18 分钟。
+//
+// 「有正文」那组不再与 bodies 视图做 JOIN 来挑：2.2M 行的 bodies 视图接上
+// v1 视图就是一次全量哈希连接，成本和它要证明的事情不成比例。改成先按窗口
+// 取候选会话，再用主键逐个点算（countTurnsAndBodies 走 (request_id, ts) 索引）。
 func newFallbackProbePool(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []fallbackProbe {
 	t.Helper()
 	var out []fallbackProbe
 
-	// 1) 有正文的会话：从 bodies 侧反查。全库这种命中只有约 1,175 行，
-	//    带 LIMIT 实测 1.9s；反过来先列 session_turns 再逐个去数正文要 60 × 3s。
-	bodyHits := queryStrings(t, ctx, pool, `
-		SELECT t.session_id || '|' || t.tenant_id
-		  FROM request_logs_bodies_with_current_month b
-		  JOIN session_turns t ON t.request_id = b.request_id AND t.ts = b.ts
-		 LIMIT 8`)
-	for _, raw := range bodyHits {
-		id, tenant, ok := strings.Cut(raw, "|")
-		if !ok {
-			t.Fatalf("unexpected probe row %q", raw)
-		}
-		p := fallbackProbe{sessionID: id, tenantID: tenant, bodies: 1}
-		p.turns = countTurns(t, ctx, pool, id, tenant)
-		p.limits = []*int{nil, fallbackLimitPtr(1)}
-		out = append(out, p)
-	}
+	// 候选会话：v1 视图近窗口内、轮数适中的会话。2026-10-01 重定基线 ——
+	// 探针必须取自 **v1 视图**，因为 turns 腿现在读的是 v1。此前它
+	// `JOIN session_turns ON request_id AND ts`：既只看得到原生源有的会话
+	// （缺陷 7 所服务那批的反面），又只挑得出 ts 恰好相等的那 11.2%。
+	candidates := queryStrings(t, ctx, pool, `
+		SELECT rl.gw_session_id || '|' || rl.tenant_id
+		  FROM request_logs_with_current_month rl
+		 WHERE rl.gw_session_id IS NOT NULL
+		   AND rl.ts >= now() - `+probeWindow+`
+		   AND (`+db.MirrorDriftClassSQL+`) = 'genuine_loss'
+		 GROUP BY rl.gw_session_id, rl.tenant_id
+		HAVING count(*) BETWEEN 2 AND 20
+		 ORDER BY count(*) DESC
+		 LIMIT 40`)
 
-	// 2) 多轮、正文全缺：连续 miss。只从 session_turns 找，不碰 bodies。
-	for _, raw := range queryStrings(t, ctx, pool, `
-		SELECT session_id || '|' || tenant_id
-		  FROM session_turns
-		 WHERE session_id NOT LIKE 'sys:%'
-		 GROUP BY session_id, tenant_id
-		HAVING count(*) BETWEEN 5 AND 60
-		 ORDER BY session_id
-		 LIMIT 8`) {
+	var missProbes, hitProbes, tsMismatchProbes int
+	for _, raw := range candidates {
 		id, tenant, ok := strings.Cut(raw, "|")
 		if !ok {
 			t.Fatalf("unexpected probe row %q", raw)
 		}
 		turns, bodies := countTurnsAndBodies(t, ctx, pool, id, tenant)
-		if bodies != 0 {
-			continue // 这一组不覆盖 miss 路径，换下一个
+		if turns == 0 {
+			continue
 		}
-		out = append(out, fallbackProbe{
-			sessionID: id, tenantID: tenant, turns: turns, bodies: 0,
-			limits: []*int{nil, fallbackLimitPtr(7)},
-		})
-		break
+		p := fallbackProbe{sessionID: id, tenantID: tenant, turns: turns, bodies: bodies}
+		switch {
+		case bodies > 0 && hitProbes < 6:
+			// 有正文：命中路径，legacy 与 split 都可能取到内容。
+			p.limits = []*int{nil, fallbackLimitPtr(1)}
+			hitProbes++
+		case bodies == 0 && missProbes < 3:
+			// 元组键全 miss：这条正是本次行为变更要改善的形状。
+			p.limits = []*int{nil, fallbackLimitPtr(7)}
+			missProbes++
+		default:
+			continue
+		}
+		out = append(out, p)
 	}
 
-	// 3) sys: 前缀：投影 gw_session_id 为 NULL 的那一类。
+	// ts 不等组：**本次行为变更真正要覆盖的形状**。
+	//
+	// 2026-10-01 第一版门虽然绿了，但每一行的日志都是 "+0"——legacy(元组)
+	// 与 split(单键) 取到的正文一样多。也就是说它压根没碰到被改的那个行为。
+	// 原因很直白：探针是从 bodies 视图里挑的，而挑的时候条件就是
+	// `(request_id, ts)` 能对上，于是按定义只挑得到那 11.2%。
+	//
+	// 这一组反着挑：**bodies 存在但 b.ts <> rl.ts** 的会话，正是只有单键才
+	// 拿得到正文的那些轮次。缺了它，"正文只增不减"这条不变式就退化成一个
+	// 恒真断言。
+	for _, raw := range queryStrings(t, ctx, pool, `
+		SELECT rl.gw_session_id || '|' || rl.tenant_id
+		  FROM request_logs_with_current_month rl
+		  JOIN request_logs_bodies_with_current_month b
+		    ON b.request_id = rl.request_id
+		 WHERE rl.gw_session_id IS NOT NULL
+		   AND rl.ts >= now() - `+probeWindow+`
+		   AND b.ts <> rl.ts
+		   AND (`+db.MirrorDriftClassSQL+`) = 'genuine_loss'
+		 GROUP BY rl.gw_session_id, rl.tenant_id
+		HAVING count(*) >= 2
+		 LIMIT 3`) {
+		id, tenant, ok := strings.Cut(raw, "|")
+		if !ok {
+			t.Fatalf("unexpected probe row %q", raw)
+		}
+		turns, bodies := countTurnsAndBodies(t, ctx, pool, id, tenant)
+		if turns == 0 {
+			continue
+		}
+		// 只跑 limit=1：这批会话轮数很大（实测 1365 / 345 / 310），而 legacy
+		// 单查询约 0.8 秒/轮，跑无界分支等于拿 18 分钟换一行日志。
+		out = append(out, fallbackProbe{
+			sessionID: id, tenantID: tenant, turns: turns, bodies: bodies,
+			limits: []*int{fallbackLimitPtr(1)},
+		})
+		tsMismatchProbes++
+	}
+
+	// 空集必须硬失败，不能静默跳过。
+	//
+	// 第一版这一组返回 0 行，门照样全绿 —— 而它正是本次行为变更唯一真正
+	// 覆盖到的形状。「正文只增不减」那条不变式一旦没有 ts 不等的样本，就
+	// 退化成恒真断言：所有探针的日志都是 +0，门在证明一件没发生的事。
+	// 判据要钉住**扫描量**，否则空集合会让门静默通过。
+	if tsMismatchProbes == 0 {
+		t.Fatalf("no session in the %s window has a body whose ts differs from its v1 turn ts "+
+			"(i.e. a body only the request_id key can reach). The fallback body-pairing change "+
+			"is therefore NOT exercised by this run, and the 'bodies never decrease' invariant "+
+			"degenerates into a tautology. Widen probeWindow or the data window before treating "+
+			"a green result as evidence.", probeWindow)
+	}
+
+	// v1-only 人群：v1 视图里有轮次、session 族两张表里一行都没有。
+	// 这正是 generateSummary 唯一会走 fallback 的那一类，也是缺陷 7 的靶心。
+	// 此前这道门的探针**全部**取自 session_turns，于是它系统性地看不见这批
+	// 会话 —— 门全绿与缺陷存在可以同时为真。
+	//
+	// 只跑 limit=7 的有界分支：这批会话轮数很大（实测 1365 / 345 / 310），
+	// 而 legacy 单查询约 0.8 秒/轮，无界分支会单独吃满整门的预算。
+	for _, raw := range queryStrings(t, ctx, pool, `
+		SELECT rl.gw_session_id || '|' || rl.tenant_id
+		  FROM request_logs_with_current_month rl
+		 WHERE rl.gw_session_id IS NOT NULL
+		   AND rl.ts >= now() - `+probeWindow+`
+		   AND (`+db.MirrorDriftClassSQL+`) = 'genuine_loss'
+		   AND NOT EXISTS (SELECT 1 FROM public.session_turns x WHERE x.session_id = rl.gw_session_id)
+		   AND NOT EXISTS (SELECT 1 FROM public.session_turns_hot x WHERE x.session_id = rl.gw_session_id)
+		 GROUP BY rl.gw_session_id, rl.tenant_id
+		HAVING count(*) >= 3
+		 ORDER BY count(*) DESC
+		 LIMIT 3`) {
+		id, tenant, ok := strings.Cut(raw, "|")
+		if !ok {
+			t.Fatalf("unexpected probe row %q", raw)
+		}
+		turns, bodies := countTurnsAndBodies(t, ctx, pool, id, tenant)
+		if turns == 0 {
+			continue
+		}
+		out = append(out, fallbackProbe{
+			sessionID: id, tenantID: tenant, turns: turns, bodies: bodies,
+			limits: []*int{fallbackLimitPtr(7)},
+		})
+	}
+
+	// sys: 前缀：投影 gw_session_id 为 NULL 的那一类。
 	if p, ok := pickSysPrefixed(t, ctx, pool); ok {
 		p.turns = countTurns(t, ctx, pool, p.sessionID, p.tenantID)
 		p.limits = []*int{fallbackLimitPtr(7)}
@@ -228,7 +370,9 @@ func newFallbackProbePool(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	}
 
 	for i := range out {
-		t.Logf("probe %s turns=%d bodies=%d limits=%d", out[i].sessionID, out[i].turns, out[i].bodies, len(out[i].limits))
+		if out[i].turns == 0 {
+			t.Fatalf("probe %s has no turns in the v1 view", out[i].sessionID)
+		}
 	}
 	return out
 }
@@ -266,10 +410,10 @@ func countTurnsAndBodies(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	err := pool.QueryRow(ctx, `
 		SELECT count(*)::int,
 		       count(b.request_id)::int
-		  FROM session_turns t
+		  FROM request_logs_with_current_month rl
 		  LEFT JOIN request_logs_bodies_with_current_month b
-		    ON b.request_id = t.request_id AND b.ts = t.ts
-		 WHERE t.session_id = $1 AND t.tenant_id = $2`, sessionID, tenantID).Scan(&turns, &bodies)
+		    ON b.request_id = rl.request_id AND b.ts = rl.ts
+		 WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2`, sessionID, tenantID).Scan(&turns, &bodies)
 	if err != nil {
 		t.Fatalf("count turns for %s: %v", sessionID, err)
 	}
@@ -280,9 +424,11 @@ func pickSysPrefixed(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (fal
 	t.Helper()
 	var p fallbackProbe
 	err := pool.QueryRow(ctx, `
-		SELECT session_id, tenant_id FROM session_turns
-		 WHERE session_id LIKE 'sys:%'
-		 ORDER BY session_id LIMIT 1`).Scan(&p.sessionID, &p.tenantID)
+		SELECT gw_session_id, tenant_id FROM request_logs_with_current_month
+		 WHERE gw_session_id LIKE 'sys:%'
+		   AND ts >= now() - `+probeWindow+`
+		 GROUP BY gw_session_id, tenant_id
+		 ORDER BY gw_session_id LIMIT 1`).Scan(&p.sessionID, &p.tenantID)
 	if err != nil {
 		return p, false
 	}
@@ -292,19 +438,35 @@ func pickSysPrefixed(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (fal
 
 const fallbackTenant = "default"
 
-// legacyFallbackQuery is the pre-split query, kept verbatim so the equivalence
-// test compares against the real previous behaviour rather than a paraphrase.
+// probeWindow bounds every probe-discovery query. An unbounded GROUP BY over
+// the full v1 view was measured at >5 minutes on this database (found still
+// running in pg_stat_activity after the client had given up); with the window
+// the same shape is 1.5s. Test *discovery* spends the same budget as the code
+// under test, so "discovery is free" is not a safe assumption.
+const probeWindow = "interval '1 day'"
+
+// legacyFallbackQuery is the pre-split SINGLE-QUERY shape: turns and bodies in
+// one statement, bodies attached by the (request_id, ts) tuple key.
+//
+// 2026-10-01 重定基线。此前这个「legacy」在 02c93d04e 里被与生产代码**改成
+// 了同一个原生源**，于是这道门只证明了「两阶段拆分 ≡ 单查询」，两边共享的
+// 换源对它完全不可见 —— 缺陷 7 因此在全绿状态下溜过去。现在 turns 腿改回
+// v1 视图，与生产同源；保留的差异只有一处，且是本次有意为之的：**正文配对键**。
+//
+// 排除谓词与生产一致（db.MirrorDriftClassSQL），否则轮次集合本身就不同，
+// 「轮数相等」这条断言会变成在比较两件不同的事。
 func legacyFallbackQuery(sessionID, tenantID string, upToTurn *int) (string, []any) {
 	query := `
 		SELECT rl.request_id,
 		       rl.ts,
 		       rb.request_body,
 		       rb.response_body
-		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb
 			ON rb.request_id = rl.request_id
 			AND rb.ts = rl.ts
-		WHERE 1 = 1`
+		WHERE rl.gw_session_id = $1
+		  AND (` + db.MirrorDriftClassSQL + `) = 'genuine_loss'`
 	args := []any{sessionID}
 	if tenantID != "" {
 		query += " AND rl.tenant_id = $2"
@@ -388,10 +550,11 @@ type fallbackProbeKey struct {
 func pickFallbackKeys(t *testing.T, ctx context.Context, pool *pgxpool.Pool, n int) []fallbackProbeKey {
 	t.Helper()
 	rows, err := pool.Query(ctx, `
-		SELECT t.request_id, t.ts
-		  FROM session_turns t
-		 WHERE t.session_id NOT LIKE 'sys:%'
-		 ORDER BY t.ts DESC
+		SELECT rl.request_id, rl.ts
+		  FROM request_logs_with_current_month rl
+		 WHERE rl.gw_session_id NOT LIKE 'sys:%'
+		   AND rl.ts >= now() - `+probeWindow+`
+		 ORDER BY rl.ts DESC
 		 LIMIT $1`, n)
 	if err != nil {
 		t.Fatalf("pick keys: %v", err)
