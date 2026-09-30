@@ -24,7 +24,7 @@
 | 打捞结果(修复后 reader 跑真文件) | 55/55 条记录全回收(request_log 35 + request_wal 20),含 O5 两条;跳过坏行 2(交错写残行) |
 | 演练窗网关日志 | 已随 21:47 部署轮转丢失(gateway.log 现存最早 13:29Z);「无镜像文件」一节无法补勘——旧容器可写层已销毁,如实记为不可复核 |
 
-时间线核对:PG stop 14:58:02(CST)→ insert 落 fallback 14:57:59+200ms 批处理 → 终态 update 14:58:27 落 fallback(此刻 degraded 旗标已翻转,走 `SetDegraded` 直写分支;insert 则是旗标翻转前的「PG 报错→fallback 兜底」分支)→ PG 恢复后无任何回放调用。两条 fallback 分支都先于 PG 往返/降级早退**之前**写 H3 镜像(见 §1.5),镜像缺失因此仍属未解(见 §1.6)。
+时间线核对:PG stop 14:58:02(CST,docker stop 完成时刻;SIGTERM 与连接终止先于此)→ insert 落 fallback 14:57:59.590(停机窗口内的 PG 报错,经「报错→fallback 兜底」分支)→ 终态 update 14:58:27.848 落 fallback(时刻与 degraded 旗标 ~30s 潜伏的翻转点接近,degraded 直写与报错兜底两分支的 fallback 落点一致,事后无法区分走哪支)→ PG 恢复后无任何回放调用。两条 fallback 分支都先于 PG 往返/降级早退**之前**写 H3 镜像(见 §1.5),镜像缺失因此仍属未解(见 §1.6)。
 
 ### 1.3 fallback 管线实勘(重试上限/丢弃条件清单)
 
@@ -63,8 +63,8 @@ fallback 汇(`MultiBackupWriter` = FileWriter + RingBuffer):
 - member 边界强制丢弃残行——实测截断 member 的残行会与下一 member 首条记录**粘连成坏行**,吞掉好记录。
 - 坏行跳过计数;`SalvageStats{Members,PartialMembers,SkippedLines,LostBytes}`。
 - **归档护栏**:`GenericRecovery`/`Recovery` 在 `HasLoss()`(SkippedLines>0 或 LostBytes>0)时不得归档/删除原文件。
-- 超过 256MB 的文件退回纯流式(无打捞),内存有界。
-- 测试 10 项全绿(干净/多 member/孤儿 header 前缀/截断+完整/纯截断现场形态/坏行/纯垃圾/归档护栏×2);真文件验证 55/55 含 O5 两条。
+- 超过 256MB 的文件退回纯流式(无打捞),内存有界;打捞路径单行上限 10MB 与旧 scanner 对齐(复审补,防超长垃圾行无界吃内存)。
+- 测试 12 项全绿(干净/多 member/孤儿 header 前缀/截断+完整/纯截断现场形态/坏行/纯垃圾/超长行/Payload 持有完整性/真文件可选回归/归档护栏×2);真文件验证 55/55 含 O5 两条,且已固化为 `TestSalvage_O5EvidenceFileOptional`(env 守卫,文件在即跑,默认指 /tmp 取证副本)。
 
 ### 1.6 遗留(如实记)
 
@@ -84,9 +84,9 @@ fallback 汇(`MultiBackupWriter` = FileWriter + RingBuffer):
 
 **不是网关侧预热窗,是数据侧真空被日志如实反映。**
 
-- 候选解析 = `candidates_resolved` → `resolveCandidatesForRequest` → `provider.Client.getCandidates` → 进程内缓存(非空 30s/空 5s TTL)+ 单飞 → **纯 PG 查询**(`candidateQuerySQL`,model_offers×credentials 视图)。链路上没有任何异步预热门挡解析;URSM v2 ready gate 在另一条路径,挡住时不是 candidates_count=0 形态。
-- 对照实证:2026-09-30 21:29 本次正常启动,进程起来 64s 内真实模型 count=10/6 解析成功,**无窗口**;count=0 全部伴随 1ms 内 `[candidate_diag] db_empty` WARN,且都是 probe 直连杂模型(它们本无 offers)。
-- 演练环境的窗口 = mock 绑定/目录在该时段确实不可路由:测试框架自身注释「mock 恢复 healthy 后仍会被路由排除数分钟」(db_recover_mock_bindings);空结果仅缓存 5s,503 窗口 ≈ 数据真空窗口,数据落位即刻自愈(演练 r4 的 10s 后 count=7 即 7 条可路由绑定出现)。
+- 候选解析 = `candidates_resolved` → `resolveCandidatesForRequest` → `provider.Client.getCandidates` → 进程内缓存(非空 30s/空 5s TTL)+ 单飞 → **纯 PG 查询**(`candidateQuerySQL`,model_offers×`v_routable_credential_models` 视图)。链路上没有任何异步预热门挡解析;URSM v2 ready gate 存在,但演练窗口内请求实际到达了解析点(窗口内有 candidates_resolved 日志为证),故该 gate 未参与此现象。
+- 对照实证:2026-09-30 21:29(CST)启动的那代容器(21:47 被并行部署替换;gateway.log 13:29:33Z 起的行属它),进程起来 64s 内真实模型 count=10/6 解析成功,**无窗口**;count=0 全部伴随 1ms 内 `[candidate_diag] db_empty` WARN,且都是 probe 直连杂模型(它们本无 offers)。
+- 演练环境的窗口 = **`v_routable_credential_models` 视图按 `node_probe_state` 排除绑定**(故障场景触发节点探针,失败置 last_direct_ok=FALSE + next_retry_at 指数退避;候选 SQL 正 join 该视图;恢复函数 db_recover_mock_bindings 的注释与函数体均实证「不清理该表,恢复 healthy 后仍被路由排除数分钟」)。空结果仅缓存 5s,503 窗口 ≈ 数据真空窗口,退避到期+探针成功即自愈(演练 r4 的 10s 后 count=7 = 排除解除)。
 
 ### 2.2 运维等待判据(日志锚点)
 
@@ -105,7 +105,7 @@ grep '\[candidate_diag\] db_empty' gateway.log | grep '<model>'   # 有=未就�
 
 - `scripts/deploy-local.sh` gateway_bind_args 增 `data/` 挂载:`-v $ROOT_DIR/data:/app/data`。镜像 WORKDIR=/app,`ApplyHotZoneDefaults` 的相对默认 `./data/hotzone`(演练与方案 §8 形态)随之落到宿主;此前它是唯一未挂载状态目录,每次蓝绿切换清零。
 - 试错记录:曾按「相对+绝对双约定」同源双挂载(/app/data 与 /opt/llm-gateway-go/data),Docker Desktop 上 opt 路径写入未落宿主,弃用,单挂载对准实际在用的相对约定。
-- trimmer 预算(env 7h/1GB/30m)config 来源,与挂载无关,不漂移;持久化只改变文件寿命=预期语义。
+- trimmer 预算与挂载无关,不漂移(已实勘 `bg/hot_zone_trimmer.go`:retention/maxBytes 来自 config `HotZone.RetentionHours/MaxSizeGB` 原子热更新,配额按受管子树字节计,无 statfs/文件系统依赖);持久化只改变文件寿命=预期语义。注意:宿主 `data/` 内**白名单外**子树无任何清理机制(trimmer 只管 cache/session_bodies/requests),跨部署累积风险挂账。
 - Docker 语义验证:一次性容器经挂载写 marker → `docker rm -f` → 新容器重挂载读取,marker 存活 ✓。
 - 同步:official-deploy 克隆 `services/llm-gateway-go/scripts/deploy-local.sh` 已同补(部署真入口,不 push 不生效的老坑;该克隆内 VERSION/version.json 等既有未提交改动属并行会话,未动)。
 - **待办:真实蓝绿切换的部署级实证**挂到下一次例行部署(本轮不动 21:47 并行部署的现场)。
@@ -115,3 +115,16 @@ grep '\[candidate_diag\] db_empty' gateway.log | grep '<model>'   # 有=未就�
 - fallback 原文件 hash 与打捞输出在 §1.2;取证副本在 /tmp(不入库)。
 - 主树/克隆均有并行会话活动(本地 main 在本次会话内被推进一次;克隆内 21:47 部署轮转了日志)——全程独立 worktree,未触碰共享工作区。
 - 演练窗网关日志已灭失(部署轮转),O5 镜像子问题与 O1 演练侧原始日志不可补勘,均如实挂账。
+
+## 五、批判式复审(2026-09-30 第二轮,自审修正)
+
+对首轮交付逐声明核验,修正如下(诚实账):
+
+1. **真缺陷(已修)**:打捞路径无单行上限——旧 scanner 路径 10MB 报错终止,打捞路径的 pending 会随无换行垃圾字节无界增长。补 `salvageMaxLineBytes=10MB`(跳过计数+丢弃到行尾+discarding 模式)+ `TestSalvage_OverlongLineDropped`。
+2. **文档性错误(勘误)**:首轮代码注释与本文档声称「Payload 是 json.RawMessage 别名内部缓冲、回调必须同步消费」——**错**,`json.RawMessage.UnmarshalJSON` 是拷贝语义,回调可安全持有记录。注释改正并以 `TestSalvage_RetainedRecordPayloadIntact` 钉死(若未来改零拷贝此测试即红)。
+3. **小缺陷(已修)**:`flushTail` 吞回调错误 → 改为返回并上抛。
+4. **数字勘误**:首轮报告称「测试 10 项」,实际首轮 9 项;本轮 12 项(见 §1.5)。
+5. **表述精度**:① §1.2 时间线——insert 落 fallback 时刻(14:57:59.590)早于演练记录的停机完成时刻(14:58:02),自洽解释为 SIGTERM/连接终止先于 docker stop 完成时刻;update 走 degraded 直写还是报错兜底两分支事后不可区分,已改口径。② §2.1「21:29 本次启动」实为 21:47 被替换的**上一代容器**(gateway.log 13:29Z 起的行属它),结论不变、归属改准。③ URSM gate 表述从「挡住时不是 count=0 形态」(未验证)收敛为「窗口内请求实际到达解析点,该 gate 未参与此现象」(有日志为证)。
+6. **证据升级**:O1 机制从「套件注释」升级为函数体+SQL 视图实证(`node_probe_state` 排除 → `v_routable_credential_models`);R-9「trimmer 预算不漂移」从推断升级为代码实勘(`bg/hot_zone_trimmer.go`)。
+7. **可复现性补强**:真文件验证固化为 `TestSalvage_O5EvidenceFileOptional`(env 守卫,默认 /tmp 取证副本,缺席自动 skip)——首轮该验证是一次性临时测试,跑完即删,不可复现。
+8. **仍未覆盖(如实挂账)**:>256MB 超限回退流式路径无测试(代码为原样搬迁,风险低);宿主 `data/` 白名单外子树无清理机制(见 §三);O5 镜像缺失子问题依旧不可补勘。
