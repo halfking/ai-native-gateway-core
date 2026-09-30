@@ -179,3 +179,77 @@ sql/objects/{tables,indexes,constraints,functions,views,policies,triggers,sequen
   A 类 11 个分区，然后才谈替换。
 - 2595 个 REORDERED 属预期（新增文件头 + 774 条 `COMMENT ON` 后置导致整体行号位移），
   且新基线已通过真库 apply 证明顺序合法。
+
+---
+
+## 附：StartupFiles 两处「编号倒挂」专项复核（round 43 结案）
+
+上一轮遗留「`560` 在 `655` 后、`704` 在 `713` 后，待专项复核」。**结论：两处都不是缺陷。**
+
+判据不是编号，而是依赖 + 真库行为。注意 `apply` 顺序跟随依赖而非编号
+（`801` 被刻意置末），因此**不得**用「StartupFiles 按编号升序」当门
+—— 上一轮已因自造这条不成立的不变式报红并删除。
+
+### `655` → `560`：是**创建在前、校验在后**，顺序正确
+
+| 迁移 | 实际动作（剔除注释后） |
+|---|---|
+| `655_session_summaries_schema_reconcile` | **创建** `session_summaries_session_key_uidx`（:152）与 `UNIQUE (tenant_id, session_key)`（:169） |
+| `560_session_summaries_tenant_uniqueness` | **只校验**：查约束是否存在、查跨租户 `session_key` 冲突并 `RAISE WARNING`，**不创建任何对象** |
+
+且 `560` 自己的正文写着
+`RAISE NOTICE 'migration 560: session_summaries is absent; 655 or the base schema must run first'`
+—— 即它**自述要求 655 先跑**。故 `655` 在 `560` 之前是**刻意的**。
+
+若顺序反过来，560 不会失败（它用 `to_regclass(...) IS NULL` 优雅降级），
+只会发出误导性的 NOTICE，校验语义落空。因此这是**软依赖**，不值得设硬门。
+
+### `704` → `713`：两者操作**不同的表**，无任何依赖
+
+- `704_plan_quota_probe_backoff`：`ALTER TABLE public.credentials`
+- `713_session_turns_cost_precision`：`session_turns` / `session_turns_hot` 的列与视图
+
+真库佐证：fresh-install 逐文件 apply 的失败日志里，**`560`、`655`、`704` 均未失败**；
+`713` 确实失败，但原因是 `relation "public.session_turns_hot" does not exist`
+（`526` 低于 511 下限那族），**与 `704` 的位置无关**。
+
+⇒ 两处编号倒挂均无需改动，也**不新增门**。把它们写进本文件，
+是为了让下一轮不必重复排查。
+
+---
+
+## 附：`scripts/audit/fresh-schema-from-migrations.sh` 重写（round 43，目标项 4）
+
+原脚本有三处使它**作为审计工具不可信**的缺陷，全部是**跑出来的**、不是读出来的：
+
+| # | 缺陷 | 后果 |
+|---|---|---|
+| 1 | 容器/用户硬编码 `kx-citus` / `kxuser` | 本机是 `llm-gateway-pg` / `llm_gateway` ⇒ 脚本在本机**根本无法运行** |
+| 2 | **无「库确实被填充」断言** | `CREATE DATABASE` 静默失败 ⇒ `applied=0 failed=0`，仍打印 `complete` |
+| 3 | 文件选择正则要求「数字前缀后紧跟下划线」 | 只匹配到 **464/777**，静默漏掉 `2026-07-13-multimodal-token-fields-hot.sql` 等全部日期前缀迁移 |
+
+另有 2 处是我重写时**自己引入又当场抓到**的：
+
+- `10#$n` 在 `328a` 上是**硬算术错误**，会中途终止循环，而脚本仍报告 `complete`
+  → 改为正则提取纯数字前缀；并加「循环计数必须等于文件总数，否则判为中途夭折」的自检。
+- `apply_file` 写 `2>"$label.err"`（**相对路径**）而调用点读 `/tmp/$label.err`
+  ⇒ 两边永不相等，**每条失败原因都是空的**，且 `mig.err` / `prereqs.err`
+  被生成在**仓库根目录**（已被本轮删除）。→ 统一到单一绝对路径 `ERRFILE`。
+
+重写后全量（465 条 up 迁移）实测，与本轮早先的独立测量**完全一致**：
+
+```
+applied=229 skipped=0 failed=236
+[populated] relations=233 functions=455
+tables=186  partitioned=14  views=33  functions=455  policies=89
+```
+
+> 口径更正：本目录共 **777** 个 `.sql`，其中 **312** 个是 `.down.sql`，
+> 实际 apply 的是 **465** 条 up 迁移。上一版文档写的「全部 777 条迁移」不准确，
+> 结论（236 处失败）不变。
+
+新增守卫 `sql/schema/audit_script_test.go`（4 项，均经变异验证）：无硬编码容器/用户、
+`db_populated` 必须可失败且 `CREATE DATABASE` 失败必须致命、
+选择器不得要求「数字后紧跟下划线」、`.err` 不得落在仓库根。
+其中「`.err` 落仓库根」那条守卫**首次运行是假阳性**——脚本正文注释里记录了这个 bug 本身，
+裸文本搜索命中了注释。已按既有纪律改为**剥注释后匹配活跃行**。
