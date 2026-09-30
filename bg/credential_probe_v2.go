@@ -82,48 +82,9 @@ type CredentialProbeV2 struct {
 	probeCtxMu sync.RWMutex
 	probeCtx   context.Context
 
-	// F04 (V3 持久化协议能力, 2026-09-30): durable protocol-capability
-	// verdict observed by the most recent probeCredential call, for the
-	// snapshot being probed.
-	//
-	// Why a receiver field instead of a third return value: probeCredential
-	// has ~30 return statements and is the shared entry for the whole
-	// availability ladder; changing its signature would touch every one of
-	// them for a value that only two call sites consume. Instead the single
-	// detection site (the Responses-unsupported branch) stamps the verdict
-	// and each caller drains it immediately after the call.
-	//
-	// contract: probeCredential ALWAYS sets this field (nil when the probe
-	// saw no capability evidence), so a stale verdict from a previous
-	// credential can never be attributed to the wrong one.
-	capVerdictMu       sync.Mutex
-	capVerdictCredID   int
-	capVerdictModel    string
-	capVerdictObserved *bool
-}
-
-// setCapabilityVerdict stamps the probe-scoped durable capability verdict.
-func (c *CredentialProbeV2) setCapabilityVerdict(credID int, model string, supported *bool) {
-	c.capVerdictMu.Lock()
-	defer c.capVerdictMu.Unlock()
-	c.capVerdictCredID = credID
-	c.capVerdictModel = model
-	c.capVerdictObserved = supported
-}
-
-// takeCapabilityVerdict returns and clears the verdict, but only when it
-// belongs to (credID, model). A mismatch returns nil: attributing another
-// credential's or another model's capability observation to this write would
-// poison the read path's short-circuit for the wrong node.
-func (c *CredentialProbeV2) takeCapabilityVerdict(credID int, model string) *bool {
-	c.capVerdictMu.Lock()
-	defer c.capVerdictMu.Unlock()
-	if c.capVerdictObserved == nil || c.capVerdictCredID != credID || c.capVerdictModel != model {
-		return nil
-	}
-	observed := c.capVerdictObserved
-	c.capVerdictObserved = nil
-	return observed
+	// F04 capability verdicts are returned through the invocation-local output
+	// parameter in probeCredentialWithCapability; they are never shared across
+	// concurrent probes on this receiver.
 }
 
 // NewCredentialProbeV2 builds the background probe-v2 worker. The cycle
@@ -568,7 +529,8 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		// touched the row's state after this instant.
 		rowT0 := time.Now()
 		// Verify the probe model is still routable
-		ok, errMsg := c.probeCredential(timeoutCtx, s)
+		var supportsResponses *bool
+		ok, errMsg := c.probeCredentialWithCapability(timeoutCtx, s, &supportsResponses)
 		checked++
 
 		var pr probeResult
@@ -612,9 +574,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		}
 		pr.HealthProbeModel = s.DefaultProbeModel
 		pr.EvidenceAt = rowT0 // #5 (R28): optimistic-concurrency evidence stamp
-		// F04: drain the durable protocol-capability verdict this probe
-		// observed (nil when the probe carried no capability evidence).
-		pr.SupportsResponses = c.takeCapabilityVerdict(s.ID, s.DefaultProbeModel)
+		pr.SupportsResponses = supportsResponses
 		c.writeHealth(timeoutCtx, s.ID, pr)
 
 		// 2026-08-26 quota-recovery-notify fix: after writeHealth has flipped
@@ -869,11 +829,24 @@ func uniqueStringSet(values ...[]string) []string {
 // fail fast because retrying them is pointless and risks masking real
 // configuration errors.
 func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (bool, string) {
-	// F04: clear the probe-scoped capability verdict up front. Every exit path
-	// below therefore leaves the field describing THIS probe — a nil here
-	// means "this probe saw no capability evidence", and a caller that never
-	// re-stamps can never read a previous credential's verdict.
-	c.setCapabilityVerdict(s.ID, s.DefaultProbeModel, nil)
+	return c.probeCredentialWithCapability(ctx, s, nil)
+}
+
+// probeCredentialWithCapability returns capability evidence through
+// capabilityOut so concurrent probes on the same CredentialProbeV2 cannot
+// overwrite or consume each other's verdicts. A nil output means this probe
+// observed no Responses capability evidence.
+func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s v2Snapshot, capabilityOut **bool) (bool, string) {
+	if capabilityOut != nil {
+		*capabilityOut = nil
+	}
+	recordCapability := func(supported bool) {
+		if capabilityOut == nil {
+			return
+		}
+		verdict := supported
+		*capabilityOut = &verdict
+	}
 	if s.BaseURL == "" {
 		return false, "empty base URL"
 	}
@@ -973,15 +946,13 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 				// succeeded, so any prior "unsupported" verdict for this node
 				// is stale and must be flipped back. Without this a single
 				// mislabel blocks every Responses request for a full TTL.
-				supported := true
-				c.setCapabilityVerdict(s.ID, s.DefaultProbeModel, &supported)
+				recordCapability(true)
 				return true, ""
 			}
 			if providercap.ResponsesUnsupportedError(respStatus, respBody) {
 				// F04: durable negative verdict. The cooldown this failure
 				// causes expires on its own schedule; the capability does not.
-				unsupported := false
-				c.setCapabilityVerdict(s.ID, s.DefaultProbeModel, &unsupported)
+				recordCapability(false)
 				chatURL := upstreamurl.Build(strings.TrimRight(s.BaseURL, "/"), upstreamurl.EpChatCompletions)
 				if blocked, reason := providercap.EgressBlocked(chatURL); blocked {
 					providercap.WarnBlocked("probe_v2.chat", chatURL, reason)
@@ -2035,7 +2006,8 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		return
 	}
 	probeStart := time.Now()
-	ok, errMsg := c.probeCredential(timeoutCtx, s)
+	var supportsResponses *bool
+	ok, errMsg := c.probeCredentialWithCapability(timeoutCtx, s, &supportsResponses)
 	var pr probeResult
 	if ok {
 		pr = probeResult{
@@ -2070,8 +2042,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 	// #5 (R28): probeStart was taken immediately before probeCredential — it
 	// IS the evidence timestamp for optimistic-concurrency gating.
 	pr.EvidenceAt = probeStart
-	// F04: drain the durable protocol-capability verdict (nil when absent).
-	pr.SupportsResponses = c.takeCapabilityVerdict(credID, s.DefaultProbeModel)
+	pr.SupportsResponses = supportsResponses
 	c.writeHealth(timeoutCtx, credID, pr)
 	if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
 		c.onQuotaRecovered(credID, "probe_now")

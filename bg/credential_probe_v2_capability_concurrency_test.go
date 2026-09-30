@@ -74,10 +74,11 @@ func TestF04_ConcurrentProbeVerdictsStayBoundToInvocation(t *testing.T) {
 
 	results := make(chan concurrentProbeCapabilityResult, 2)
 	go func() {
-		ok, errMsg := probe.probeCredential(ctx, negativeSnapshot)
+		var verdict *bool
+		ok, errMsg := probe.probeCredentialWithCapability(ctx, negativeSnapshot, &verdict)
 		results <- concurrentProbeCapabilityResult{
 			ok:      ok,
-			verdict: probe.takeCapabilityVerdict(negativeSnapshot.ID, negativeSnapshot.DefaultProbeModel),
+			verdict: verdict,
 			err:     errMsg,
 		}
 	}()
@@ -88,10 +89,11 @@ func TestF04_ConcurrentProbeVerdictsStayBoundToInvocation(t *testing.T) {
 	}
 
 	go func() {
-		ok, errMsg := probe.probeCredential(ctx, positiveSnapshot)
+		var verdict *bool
+		ok, errMsg := probe.probeCredentialWithCapability(ctx, positiveSnapshot, &verdict)
 		results <- concurrentProbeCapabilityResult{
 			ok:      ok,
-			verdict: probe.takeCapabilityVerdict(positiveSnapshot.ID, positiveSnapshot.DefaultProbeModel),
+			verdict: verdict,
 			err:     errMsg,
 		}
 	}()
@@ -117,3 +119,17 @@ func TestF04_ConcurrentProbeVerdictsStayBoundToInvocation(t *testing.T) {
 		t.Fatalf("negative probe result = (ok=%t, verdict=%v, err=%q), want (true, false)", negative.ok, negative.verdict, negative.err)
 	}
 }
+
+func TestF04_ProbeCapabilityOutputStartsUnknown(t *testing.T) {
+	probe := &CredentialProbeV2{}
+	verdict := boolPointer(true)
+	ok, errMsg := probe.probeCredentialWithCapability(context.Background(), v2Snapshot{}, &verdict)
+	if ok || errMsg != "empty base URL" {
+		t.Fatalf("probe result = (ok=%t, err=%q), want (false, empty base URL)", ok, errMsg)
+	}
+	if verdict != nil {
+		t.Fatalf("capability verdict = %v, want unknown after a probe without evidence", *verdict)
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
