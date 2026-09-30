@@ -206,6 +206,86 @@ func TestSalvage_PureGarbageErrors(t *testing.T) {
 	require.Error(t, err, "无任何可解码 member 应报错")
 }
 
+func TestSalvage_OverlongLineDropped(t *testing.T) {
+	// 超长行(>10MB,与旧 scanner 上限对齐)只可能来自损坏:跳过计数、
+	// 丢弃到行尾,pending 不得无界增长;行后的正常记录照常交付。
+	tmpDir := t.TempDir()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, err := zw.Write(append(bytes.Repeat([]byte("x"), salvageMaxLineBytes+1<<20), '\n'))
+	require.NoError(t, err)
+	line, err := json.Marshal(requestLogRecord("req-after-overlong"))
+	require.NoError(t, err)
+	_, err = zw.Write(append(line, '\n'))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	writeBackupFile(t, tmpDir, "sessions-2026-09-30.jsonl.gz", buf.Bytes())
+
+	ids, stats, err := collectRequests(t, NewFileReader(tmpDir), "sessions-2026-09-30.jsonl.gz")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"req-after-overlong"}, ids)
+	assert.GreaterOrEqual(t, stats.SkippedLines, 1)
+	assert.True(t, stats.HasLoss())
+}
+
+func TestSalvage_RetainedRecordPayloadIntact(t *testing.T) {
+	// 钉死拷贝语义:回调持有记录直到读取结束后再反序列化,Payload 不得
+	// 被后续行覆盖(2026-09-30 复审勘误:RawMessage.UnmarshalJSON 是拷贝,
+	// 旧注释「别名内部缓冲」错误;若有人改成真正的零拷贝,此测试即红)。
+	tmpDir := t.TempDir()
+	var raw bytes.Buffer
+	raw.Write(gzipMember(t, requestLogRecord("req-first")))
+	raw.Write(gzipMember(t, requestLogRecord("req-second")))
+	writeBackupFile(t, tmpDir, "sessions-2026-09-30.jsonl.gz", raw.Bytes())
+
+	var retained []BackupRecord
+	_, err := NewFileReader(tmpDir).ReadRecordsWithStats(context.Background(),
+		"sessions-2026-09-30.jsonl.gz", func(record BackupRecord) error {
+			if record.Type == "request_log" {
+				retained = append(retained, record)
+			}
+			return nil
+		})
+	require.NoError(t, err)
+	require.Len(t, retained, 2)
+
+	var ids []string
+	for _, rec := range retained {
+		var payload struct {
+			RequestID string `json:"request_id"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Payload, &payload))
+		ids = append(ids, payload.RequestID)
+	}
+	assert.Equal(t, []string{"req-first", "req-second"}, ids)
+}
+
+func TestSalvage_O5EvidenceFileOptional(t *testing.T) {
+	// 环境取证回归(真实文件不入库):O5_FALLBACK_FILE_EVIDENCE 指向
+	// 2026-09-30 O5 演练损坏文件副本(默认 /tmp 取证副本)时,验证打捞
+	// reader 能回收记录;文件缺席则跳过。断言只锁结构不变量。
+	path := os.Getenv("O5_FALLBACK_FILE_EVIDENCE")
+	if path == "" {
+		path = "/tmp/o5-evidence-sessions-2026-09-30.jsonl.gz"
+	}
+	evidence, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("evidence file not present (%v); set O5_FALLBACK_FILE_EVIDENCE to enable", err)
+	}
+	tmpDir := t.TempDir()
+	writeBackupFile(t, tmpDir, "sessions-2026-09-30.jsonl.gz", evidence)
+
+	total := 0
+	stats, err := NewFileReader(tmpDir).ReadRecordsWithStats(context.Background(),
+		"sessions-2026-09-30.jsonl.gz", func(record BackupRecord) error {
+			total++
+			return nil
+		})
+	require.NoError(t, err, "真实损坏文件必须可打捞(2026-09-30 缺陷回归)")
+	assert.GreaterOrEqual(t, stats.Members, 1)
+	assert.Greater(t, total, 0, "应至少回收一条记录")
+}
+
 func TestGenericRecovery_SalvageLossBlocksArchive(t *testing.T) {
 	// 归档护栏：打捞有损失时恢复完成但文件必须保留。
 	tmpDir := t.TempDir()

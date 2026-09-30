@@ -36,6 +36,13 @@ const gzipMinMemberBytes = 20
 // 读取（无打捞，保持既有行为），避免运维路径无界吃内存。
 const salvageMaxCompressedBytes = 256 << 20
 
+// salvageMaxLineBytes 是单行上限，与旧 bufio.Scanner 路径的 10MB 上限对齐
+// （file_reader.go readGzipStream 的 maxScanTokenSize）。超过只可能是损坏
+// 产物（交错写/垃圾字节）：跳过计数并丢弃到行尾。没有这个上限，打捞路径
+// 的 pending 会随无换行的垃圾字节无界增长——旧路径在 10MB 报错终止，打捞
+// 路径必须自己守住内存边界。
+const salvageMaxLineBytes = 10 << 20
+
 // SalvageStats 报告一次备份文件读取的打捞情况。零值表示文件干净走流式或
 // 未启用打捞。SkippedLines 与 LostBytes 任一 >0 都意味着文件内容未完全
 // 恢复，调用方不得归档/删除原文件。
@@ -59,8 +66,10 @@ func (s SalvageStats) HasLoss() bool {
 }
 
 // ReadRecordsWithStats 同 ReadRecords，并返回打捞统计供调用方决定归档。
-// 回调必须同步消费记录：Payload 是 json.RawMessage，别名内部行缓冲
-// （与既有流式路径 scanner.Bytes() 的别名语义一致）。
+// 回调可安全持有记录：BackupRecord 的 Payload 是 json.RawMessage，
+// UnmarshalJSON 为拷贝语义（2026-09-30 复审勘误：此前注释声称「别名内部
+// 缓冲、回调必须同步消费」是错的，旧 scanner 路径同样如此），并有
+// TestSalvage_RetainedRecordPayloadIntact 钉死。
 func (fr *FileReader) ReadRecordsWithStats(ctx context.Context, filename string, callback func(BackupRecord) error) (SalvageStats, error) {
 	path, err := fr.backupPath(filename)
 	if err != nil {
@@ -128,7 +137,9 @@ func salvageGzipMembers(ctx context.Context, raw []byte, callback func(BackupRec
 				return stats, err
 			}
 			pos = end
-			salvager.flushTail()
+			if err := salvager.flushTail(); err != nil {
+				return stats, err
+			}
 			continue
 		}
 		// 截断/尾部损坏 member：宽容解码已刷出的部分（现场实测可回收
@@ -146,17 +157,18 @@ func salvageGzipMembers(ctx context.Context, raw []byte, callback func(BackupRec
 				"offset", pos, "region_bytes", next-pos)
 		}
 		pos = next
-		// member 边界必须丢弃残行：下一个 member 是另一进程的独立流，
-		// 残行与之无关，携带过去会把对方的行粘成坏行（2026-09-30 实测
-		// 截断 member 的残行吞掉下一 member 首条记录）。
-		salvager.flushTail()
+		if err := salvager.flushTail(); err != nil {
+			return stats, err
+		}
 	}
 	stats.LostBytes = int64(len(raw)) - covered
 
 	if stats.Members == 0 {
 		return stats, fmt.Errorf("salvage: no decodable gzip members in %d bytes", len(raw))
 	}
-	salvager.flushTail()
+	if err := salvager.flushTail(); err != nil {
+		return stats, err
+	}
 	return stats, nil
 }
 
@@ -292,11 +304,14 @@ func lenientMemberDecode(ctx context.Context, member []byte, salvager *lineSalva
 }
 
 // lineSalvager 跨 member 携带半行缓冲并按行 JSON 解码。
-// 回调同步消费（Payload 别名内部缓冲，见 ReadRecordsWithStats 注释）。
+// 回调可安全持有记录（RawMessage 拷贝语义，见 ReadRecordsWithStats 勘误）。
 type lineSalvager struct {
 	callback func(BackupRecord) error
 	stats    *SalvageStats
 	pending  []byte
+	// discarding 标记超长行丢弃模式：行已计损、pending 已清，剩余无换行
+	// 字节整体丢弃直到下一个 \n（否则同一逻辑行的残余会被当新行反复累积）。
+	discarding bool
 }
 
 func newLineSalvager(callback func(BackupRecord) error, stats *SalvageStats) *lineSalvager {
@@ -304,31 +319,60 @@ func newLineSalvager(callback func(BackupRecord) error, stats *SalvageStats) *li
 }
 
 func (s *lineSalvager) feed(chunk []byte) error {
-	buf := append(s.pending, chunk...)
-	for {
-		idx := bytes.IndexByte(buf, '\n')
-		if idx < 0 {
-			break
+	for len(chunk) > 0 {
+		if s.discarding {
+			idx := bytes.IndexByte(chunk, '\n')
+			if idx < 0 {
+				return nil
+			}
+			chunk = chunk[idx+1:]
+			s.discarding = false
+			continue
 		}
-		line := buf[:idx]
-		buf = buf[idx+1:]
+		idx := bytes.IndexByte(chunk, '\n')
+		if idx < 0 {
+			s.pending = append(s.pending, chunk...)
+			if len(s.pending) > salvageMaxLineBytes {
+				s.stats.SkippedLines++
+				slog.Warn("file reader: salvage dropped overlong line", "bytes", len(s.pending))
+				s.pending = s.pending[:0]
+				s.discarding = true
+			}
+			return nil
+		}
+		line := append(s.pending, chunk[:idx]...)
+		s.pending = s.pending[:0]
+		chunk = chunk[idx+1:]
+		if len(line) > salvageMaxLineBytes {
+			s.stats.SkippedLines++
+			slog.Warn("file reader: salvage dropped overlong line", "bytes", len(line))
+			continue
+		}
 		if err := s.dispatch(line); err != nil {
 			s.pending = nil
+			s.discarding = false
 			return err
 		}
 	}
-	s.pending = append(s.pending[:0], buf...)
 	return nil
 }
 
-// flushTail 在文件末尾投递最后一行（无换行结尾的残行按坏行计）。
-func (s *lineSalvager) flushTail() {
+// flushTail 在 member/文件边界结算残行并返回结算结果。残行丢弃语义：
+// 下一个 member 是另一进程的独立流，残行与之无关，携带过去会把对方的
+// 行粘成坏行（2026-09-30 实测截断 member 的残行吞掉下一 member 首条
+// 记录）。回调错误必须上抛，不得静默吞。
+func (s *lineSalvager) flushTail() error {
+	if s.discarding {
+		s.discarding = false
+		s.pending = s.pending[:0]
+		return nil
+	}
 	if len(s.pending) == 0 {
-		return
+		return nil
 	}
 	line := s.pending
 	s.pending = nil
-	_ = s.dispatch(line)
+	return s.dispatch(line)
 }
 
 func (s *lineSalvager) dispatch(line []byte) error {
