@@ -95,7 +95,7 @@ export default {
   allModels: 'All models',
   clearFilter: 'Clear filters',
   kpiTenants: 'Settled tenants',
-  kpiLatency: 'Avg latency',
+  kpiLatency: 'P50 latency',
   kpiDaily: 'Daily requests',
   kpiPersons: 'Active persons',
   kpiPerPersonReq: 'Requests per person',

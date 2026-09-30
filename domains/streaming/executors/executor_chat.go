@@ -1470,6 +1470,19 @@ func (e *Executor) executeOpenAI(
 						streamOutcome = e.StreamChat(streamReaderContext(params, resp), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
 					}
 				}
+				// A native Messages/Responses interceptor rejection is reported by
+				// the protocol bridge as a failed client write. Preserve its actual
+				// cause here so dispatch cannot retry the provider or downgrade the
+				// policy block to a generic upstream interruption.
+				if blocker, ok := streamSink.(interface{ OutputPolicyBlocked() bool }); ok && blocker.OutputPolicyBlocked() {
+					streamOutcome = StreamOutcome{
+						Interrupted:      true,
+						Reason:           "output_policy_blocked",
+						Resumable:        false,
+						Kind:             errorsx.KindContentFilter,
+						TerminalRendered: true,
+					}
+				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)
 				}
@@ -1535,6 +1548,7 @@ func (e *Executor) executeOpenAI(
 					if streamOutcome.Reason == "empty_stream_no_content" {
 						streamKind = errorsx.KindEmptyResponse
 					}
+					gatewayPolicyBlocked := streamOutcome.Reason == "output_policy_blocked"
 
 					slog.Warn("executor: stream interrupted",
 						"request_id", params.RequestID,
@@ -1550,7 +1564,11 @@ func (e *Executor) executeOpenAI(
 						"classified_as", streamKind,
 					)
 
-					if isResumable {
+					if gatewayPolicyBlocked {
+						// The provider returned a response; the gateway's output policy
+						// rejected it. Keep this non-resumable, but do not poison the
+						// provider circuit or credential health state.
+					} else if isResumable {
 						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
 						if streamKind == errorsx.KindConcurrent {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,

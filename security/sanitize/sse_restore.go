@@ -7,18 +7,9 @@ import (
 	"io"
 	"strconv"
 	"strings"
-)
 
-// sseDataLine records the source span of one data field. A parsed SSE event
-// joins all data values with LF; rewritten JSON is emitted into the first
-// field and subsequent data fields are removed so a newline cannot be inserted
-// into a JSON string by the SSE client.
-type sseDataLine struct {
-	start      int
-	prefixEnd  int
-	contentEnd int
-	end        int
-}
+	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
+)
 
 func nextSSELine(frame []byte, start int) (contentEnd, end int) {
 	end = start
@@ -53,37 +44,27 @@ func splitSSEEvents(chunk []byte) [][]byte {
 	return events
 }
 
-func parseSSEData(frame []byte) ([]byte, []sseDataLine, bool) {
-	var payload []byte
-	var lines []sseDataLine
-	markerOutsideData := false
+func markerOutsideSSEData(frame []byte) bool {
 	for pos := 0; pos < len(frame); {
 		contentEnd, end := nextSSELine(frame, pos)
 		line := frame[pos:contentEnd]
-		if bytes.HasPrefix(line, []byte("data:")) {
-			prefixEnd := pos + len("data:")
-			if prefixEnd < contentEnd && frame[prefixEnd] == ' ' {
-				prefixEnd++ // SSE strips exactly one optional ASCII space.
-			}
-			if len(lines) > 0 {
-				payload = append(payload, '\n')
-			}
-			payload = append(payload, frame[prefixEnd:contentEnd]...)
-			lines = append(lines, sseDataLine{start: pos, prefixEnd: prefixEnd, contentEnd: contentEnd, end: end})
-		} else if bytes.Contains(line, []byte("{SENSITIVE:")) {
-			markerOutsideData = true
+		if !bytes.HasPrefix(line, []byte("data:")) && looksLikeUnparsedMarker(line) {
+			return true
+		}
+		if end == pos {
+			break
 		}
 		pos = end
 	}
-	return payload, lines, markerOutsideData
+	return false
 }
 
 func (it *SanitizeRestoreInterceptor) restoreSSEEvent(ctx context.Context, event []byte, sm SanitizeMap, state *streamRestoreState) ([]byte, bool, bool) {
-	payload, dataLines, markerOutsideData := parseSSEData(event)
-	if markerOutsideData {
+	if markerOutsideSSEData(event) {
 		return nil, false, true
 	}
-	if len(dataLines) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+	payload, hasData, rewrite := sseparser.ParseDataFrame(event)
+	if !hasData || bytes.Equal(payload, []byte("[DONE]")) {
 		return nil, false, false
 	}
 
@@ -125,7 +106,7 @@ func (it *SanitizeRestoreInterceptor) restoreSSEEvent(ctx context.Context, event
 	if err != nil || bytes.Contains(out, []byte("{SENSITIVE:")) {
 		return nil, false, true
 	}
-	return reframeSSEData(event, dataLines, out), true, false
+	return rewrite(out), true, false
 }
 
 func looksLikeUnparsedMarker(payload []byte) bool {
@@ -170,21 +151,4 @@ func containsReservedJSONToken(payload []byte) bool {
 			return true
 		}
 	}
-}
-
-func reframeSSEData(frame []byte, lines []sseDataLine, payload []byte) []byte {
-	var out bytes.Buffer
-	out.Grow(len(frame) + len(payload))
-	position := 0
-	for i, line := range lines {
-		out.Write(frame[position:line.start])
-		if i == 0 {
-			out.Write(frame[line.start:line.prefixEnd])
-			out.Write(payload)
-			out.Write(frame[line.contentEnd:line.end])
-		}
-		position = line.end
-	}
-	out.Write(frame[position:])
-	return out.Bytes()
 }

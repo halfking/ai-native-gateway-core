@@ -51,7 +51,7 @@ export default {
   allModels: 'Alle Modelle',
   clearFilter: 'Filter löschen',
   kpiTenants: 'Abgerechnete Mandanten',
-  kpiLatency: 'Ø Latenz',
+  kpiLatency: 'P50-Latenz',
   kpiDaily: 'Anfragen/Tag',
   kpiPersons: 'Aktive Personen',
   kpiPerPersonReq: 'Anfragen pro Person',

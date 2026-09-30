@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **供应商成本卡排序（2026-09-30）**：饼图 key 与 `provider_code` 不一致时，成本卡不再被 $0 的 `__other__` 占满，改为按用量接口的窗口成本取前 8，积分按代码或名称回查饼图。
+- **对账结算页方案 A（2026-09-30）**：`/admin/reconciliation` 改为 KPI、双 chart.js 趋势、分布占比条、失败原因过滤和 URL 下钻。占比分母是区间总额；`router.push` 才能用浏览器后退撤掉 `provider_id`；空 `snapshot_dates` 不画趋势；耗时卡标明 P50/P95。方案 B/C、浏览器实测和 8782 部署未做。详见 `docs/proposals/2026-09-30-stats-ui/plan.md` §3.3。
 - **看板审计与日历收口（2026-09-30）**：次要指标按效果图改为延迟 / RPM / TPM / Key / 模型 / 供应商 / 请求体 / 响应体（无 body_stats 仍占位）；供应商迷你卡不再把「N 家」当成标题；英雄费用 ≥ $1 显示两位小数；分布卡「其他」补占比；导出失败可见；余额拉取失败可重试。设计稿 D 节剩余 7 个天数窗口页（客户端/任务分析、用户画像、相关性、质量相关、租户看板、MaaS 用量）改为 `KxDateRangePicker`，触发器预设名与日期区间分色。
 - **Self-check tool continuation false `empty_response`（2026-09-29，自分支
   `backup/fix-self-check-tool-continuation` 合并）**：工具调用对话的提示词从

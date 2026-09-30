@@ -52,40 +52,56 @@ function avatarVar(idx: number) {
   return AVATAR_VARS[idx % AVATAR_VARS.length]
 }
 
+function pieFor(code: string, name: string) {
+  const items = props.board?.pies?.providers ?? []
+  return items.find((p) => p.key === code || p.key === name)
+}
+
 const providerCards = computed<ProviderCard[]>(() => {
-  const items = [...(props.board?.pies?.providers ?? [])]
-  if (!items.length) return []
-  const byCode = new Map(usageRows.value.map((r) => [r.provider_code, r]))
-  return items
+  const pies = props.board?.pies?.providers ?? []
+  // 用量接口才有窗口真实成本；饼图 key 经常是展示名而不是 provider_code，
+  // 只按 pie.cost_usd 排序会把 $0 的「__other__」排在有成本的供应商前面。
+  if (usageRows.value.length) {
+    return [...usageRows.value]
+      .sort((a, b) => (b.total_cost_usd ?? 0) - (a.total_cost_usd ?? 0))
+      .slice(0, 8)
+      .map((r) => {
+        const pie = pieFor(r.provider_code, r.provider_name)
+        return {
+          code: r.provider_code,
+          name: r.provider_name || r.provider_code,
+          id: r.provider_id,
+          requests: r.request_count ?? pie?.requests ?? 0,
+          tokens: pie?.tokens ?? (r.prompt_tokens ?? 0) + (r.completion_tokens ?? 0),
+          credits: pie?.credits ?? 0,
+          costUsd: r.total_cost_usd ?? pie?.cost_usd ?? 0,
+          quality: qualityByName.value.get(r.provider_name),
+          balance: balanceById.value.get(r.provider_id),
+        }
+      })
+  }
+  return [...pies]
     .sort((a, b) => (b.cost_usd ?? 0) - (a.cost_usd ?? 0))
     .slice(0, 8)
-    .map((p) => {
-      const usage = byCode.get(p.key)
-      const id = usage?.provider_id
-      const quality = usage ? qualityByName.value.get(usage.provider_name) : undefined
-      return {
-        code: p.key,
-        name: usage?.provider_name ?? p.key,
-        id,
-        requests: usage?.request_count ?? p.requests ?? 0,
-        tokens: p.tokens ?? 0,
-        credits: p.credits ?? 0,
-        costUsd: usage?.total_cost_usd ?? p.cost_usd ?? 0,
-        quality,
-        balance: id != null ? balanceById.value.get(id) : undefined,
-      }
-    })
+    .map((p) => ({
+      code: p.key,
+      name: p.key,
+      requests: p.requests ?? 0,
+      tokens: p.tokens ?? 0,
+      credits: p.credits ?? 0,
+      costUsd: p.cost_usd ?? 0,
+      balance: undefined,
+    }))
 })
 
 const costMax = computed(() => Math.max(...providerCards.value.map((c) => c.costUsd), 1))
 
 const tableRows = computed(() => {
-  const creditsByCode = new Map((props.board?.pies?.providers ?? []).map((p) => [p.key, p.credits ?? 0]))
   return [...usageRows.value]
     .sort((a, b) => (b.total_cost_usd ?? 0) - (a.total_cost_usd ?? 0))
     .map((r) => ({
       ...r,
-      credits: creditsByCode.get(r.provider_code),
+      credits: pieFor(r.provider_code, r.provider_name)?.credits,
       quality: qualityByName.value.get(r.provider_name),
     }))
 })
@@ -168,7 +184,14 @@ function fmtBalance(b: number | 'plan' | undefined) {
 
 function fmtCost(v: number | undefined) {
   if (v == null) return '—'
-  return '$' + Number(v).toFixed(2)
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  if (n !== 0 && Math.abs(n) < 0.01) {
+    const four = n.toFixed(4)
+    if (Number(four) === 0) return '$' + n.toExponential(1)
+    return '$' + four
+  }
+  return '$' + n.toFixed(2)
 }
 
 function fmtCompact(n: number | undefined) {
