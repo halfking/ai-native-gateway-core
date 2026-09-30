@@ -10,7 +10,7 @@
 //   - 读路径不参与 L3 回源：admin 请求详情查 PG 即可（避免文件缺失导致详情 404 的
 //     语义分裂），镜像只服务灾备人工取数 + G2「文件命中」观察。
 //
-// 接线状态（2026-09-30 P4 落地）：
+// 接线状态（2026-09-30 P4 落地；2026-10-01 F5 补第三落库点）：
 //  1. ✅ telemetry（request_logs_bodies_hot 三件套）：Client.persistRequestLog
 //     顶部（PG 往返与 degraded 早退之前）经 SetBodyMirror 注入闭包投递，
 //     PG 不可用时镜像仍写入；S4 停写门同键同门。
@@ -19,10 +19,14 @@
 //     cmd/gateway storageRuntime.bodyMirrorFn() 注入两个消费方。镜像在
 //     tx.Commit 之后投递（2026-09-30 审计 F-A：commit 失败回滚时 PG 无行，
 //     先投递即成孤儿镜像）。
-//  3. ✖ admin 查询详情路径**有意不接**镜像兜底读——方案 §3-H3.3 明确读路径
+//  3. ✅ admin HTTP ingest（/api/telemetry/request-log，request_logs_bodies_hot
+//     的 req/resp 两件套）：admin.SetIngesterBodyMirror 注入，persistRequestLog
+//     顶部投递——与第 1 点同一边界语义（入口即投递，PG 停机期间仍落镜像），
+//     区别是本路径无 outbound body 字段，故只投 req/resp。
+//  4. ✖ admin 查询详情路径**有意不接**镜像兜底读——方案 §3-H3.3 明确读路径
 //     不参与 L3 回源（避免文件缺失导致详情 404 的语义分裂），镜像只服务
 //     灾备人工取数 + 文件命中观察。
-//  4. ✅ cfg.HotZone.Dir 驱动子树父目录（NewRequestMirror(hz.Dir, 0)）。
+//  5. ✅ cfg.HotZone.Dir 驱动子树父目录（NewRequestMirror(hz.Dir, 0)）。
 //
 // 装配开关：HotZone.RequestMirrorEnabled（默认 true）；lite 模式不装配
 // （沿用既有 session_bodies 写入路径，不重复镜像）。
@@ -154,3 +158,30 @@ func (m *RequestMirror) MirrorAsync(tenantID, requestID string, dir RequestDirec
 
 // MirrorDir 返回 requests 子树根目录（监控 / 测试用）。
 func (m *RequestMirror) MirrorDir() string { return m.baseDir }
+
+// ConvertBodyPayload 是「*string 正文 → 镜像 JSON 字面量」的**单一事实源**
+// （2026-10-01 F5）：nil → "null"；空串或非法 JSON → "{}"；否则原样返回。
+//
+// 换算必须与 request_logs_bodies_hot 的 $N::jsonb 绑定换算逐字一致，否则
+// 「镜像 gunzip 内容 == PG 列内容」的对账承诺在某一侧悄悄失配。三个消费方
+// 共用本函数：telemetry.Client.mirrorRequestBodies（经 strPtrToJSON 转调）、
+// admin ingester（F5 第三落库点）、以及它们共用的落库绑定路径。
+func ConvertBodyPayload(s *string) string {
+	if s == nil {
+		return "null"
+	}
+	if *s == "" || !json.Valid([]byte(*s)) {
+		return "{}"
+	}
+	return *s
+}
+
+// MirrorablePayload 报告换算后的载荷是否值得写镜像（**单一事实源**）：
+// "null"（无数据）与 "{}"（空串/非法 JSON 的收敛值）跳过——无正文内容可对账，
+// 落这两个字面量只是噪声文件。
+//
+// 与 PG 侧不对称：PG 的 NULLIF 只剔除 'null'，"{}" 会照落库。所以对账脚本
+// 必须按 F4 口径豁免 PG 侧的 null/{} 行；镜像侧两类都不写。
+func MirrorablePayload(payload string) bool {
+	return payload != "null" && payload != "{}"
+}
