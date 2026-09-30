@@ -301,3 +301,59 @@ go test ./... -count=1                    # 唯一失败是本轮预期内的红
 - 合并 origin/main 后，合并前的绿结论全部作废，必须重跑全量
 - 报告时区分「integration 全绿」与「integration 真的跑了」
 ```
+
+---
+
+## 附：「补齐 dump 源」步骤实测不成立（round 43 收尾更正）
+
+上文 §四 给出的「正确顺序」是 **apply 434/450 + 3 份 `sql/objects/` 定义」。
+本轮末在**克隆库**上真跑一遍（`pg_dump | psql` 克隆，不动用户本机库），
+**5 步里 2 步失败**，故该步骤需更正：
+
+```
+✓ 450_request_stage_events_tenant
+✓ sql/objects/indexes/idx_stage_events_request_id.sql
+✓ sql/objects/other/route_incident_events_…_fkey.sql
+✗ 434_request_stage_events_table      ERROR: cannot drop columns from view
+✗ sql/objects/constraints/handoff_logs_handoff_logs_pkey.sql
+      ERROR: unique constraint on partitioned table must include all
+             partitioning columns
+```
+
+### 更正一：`handoff_logs_pkey` 的「出处」本身不可用于当前 schema
+
+`sql/objects/constraints/handoff_logs_handoff_logs_pkey.sql` 写的是
+`ADD CONSTRAINT handoff_logs_pkey PRIMARY KEY (id)`。而实测：
+
+```
+handoff_logs | relkind=p | RANGE (created_at)
+```
+
+即 `handoff_logs` **已是按 `created_at` RANGE 分区的表**。PostgreSQL 要求
+分区表上的唯一约束**必须包含全部分区键列**，因此 `PRIMARY KEY (id)`
+在当前 schema 上**根本无法建立**。
+
+⇒ 这修正了本轮早先的说法：该文件是 `handoff_logs_pkey` 的**出处**没错，
+但它是 **`handoff_logs` 还是普通表那个年代的陈旧对象定义**。
+已提交基线里那个 `handoff_logs_pkey` 同样无法在分区形态下存在。
+**「sql/objects 提供权威出处」这个结论要打折扣：它对部分对象给的是
+不可施加的陈旧定义。**
+
+### 更正二：434 对「已灌基线的库」不幂等
+
+434 假定 `request_stage_events` 处于遗留形态并尝试改列；在基线已建好
+`stage_performance_recent` / `upstream_5xx_distribution` 视图的库上直接
+失败于 `cannot drop columns from view`。
+
+⇒ 「把源库补到与基线对等」不是「顺序 apply 几个文件」，而需要先判定
+每个迁移所假定的源形态。**这条不能照抄上文 §四 的步骤。**
+
+### 净结论
+
+- `sql/objects/` 的证据价值进一步下降：它不只是**漂移**，还包含
+  **在当前 schema 上无法施加**的陈旧对象定义。
+  这为下一轮「`sql/objects/` 继续做 SSOT 还是降为归档」的决策补了
+  一条偏向**归档**的实证。
+- dump 源的补齐需要按对象逐个判定，不能批量 apply。
+- 本轮未修改用户本机 `llm_gateway` 库（全部实验在克隆库上做，
+  克隆库已删除）。
