@@ -27,15 +27,15 @@ const OllamaExtensionPrefix = "ollama."
 // request body. The wire shape differs from OpenAI Chat Completions in
 // three material ways (see docs/vendor-formats/ollama.md):
 //
-//   1. Sampling params live under an `options` object (temperature, top_p,
-//      top_k, num_predict ← max_tokens, seed, stop, repeat_penalty).
-//   2. JSON-output mode is a top-level `format` string ("json") or schema
-//      object — OpenAI's `response_format` object is REJECTED by Ollama.
-//   3. Reasoning content lives in `message.thinking` (per-frame delta when
-//      streaming; single complete value when not) — not in
-//      `choices[].delta.reasoning_content`. On the request side this
-//      function does not emit a thinking block; reasoning budget is
-//      configured via `Extensions["ollama.options.num_ctx"]` and friends.
+//  1. Sampling params live under an `options` object (temperature, top_p,
+//     top_k, num_predict ← max_tokens, seed, stop, repeat_penalty).
+//  2. JSON-output mode is a top-level `format` string ("json") or schema
+//     object — OpenAI's `response_format` object is REJECTED by Ollama.
+//  3. Reasoning content lives in `message.thinking` (per-frame delta when
+//     streaming; single complete value when not) — not in
+//     `choices[].delta.reasoning_content`. On the request side this
+//     function does not emit a thinking block; reasoning budget is
+//     configured via `Extensions["ollama.options.num_ctx"]` and friends.
 //
 // Field mapping (cf. §2.2):
 //
@@ -160,6 +160,18 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 		body["tools"] = serializeOllamaTools(req.Tools)
 	}
 
+	// 4. Extensions outside the `ollama.` namespace are dropped — that wire
+	// contract is frozen by TestSerializeOllama_PrivateOptionsDontLeakAsTopLevel
+	// (Ollama keys must be namespaced; an unnamespaced key is client misuse and
+	// is not blindly forwarded upstream).
+	//
+	// R72: the drop itself is correct, but it used to be **silent**. The other
+	// four serializers report every dropped field via ReportProtocolLoss, so
+	// this was the single path where a client's vendor-private params vanished
+	// with no observable trace at all. Report instead of restore: keeps the
+	// frozen wire shape, makes the loss diagnosable.
+	reportUnnamespacedOllamaExtensions(req)
+
 	return json.Marshal(body)
 }
 
@@ -239,4 +251,25 @@ func serializeOllamaTools(tools []ToolDefinition) []map[string]any {
 		})
 	}
 	return out
+}
+
+// reportUnnamespacedOllamaExtensions emits one protocol-loss event per
+// extension key that SerializeOllama is going to drop because it is not under
+// the `ollama.` namespace. It deliberately does NOT restore them: the wire
+// contract is pinned by TestSerializeOllama_PrivateOptionsDontLeakAsTopLevel.
+func reportUnnamespacedOllamaExtensions(req *InternalRequest) {
+	if req == nil || len(req.Extensions) == 0 {
+		return
+	}
+	for key := range req.Extensions {
+		if strings.HasPrefix(key, OllamaExtensionPrefix) {
+			continue
+		}
+		ReportProtocolLoss("", key, req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_unnamespaced_extension",
+			"extension key is not under the ollama. namespace and was dropped instead of forwarded",
+			map[string]any{
+				"required_prefix": OllamaExtensionPrefix,
+			})
+	}
 }

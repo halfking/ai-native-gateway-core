@@ -22,10 +22,19 @@ import (
 // ADJUDICATION (rulings encoded in parityAllowedDiffs; goldens pin behavior):
 //
 // By-design divergences (accepted, no code change):
-//   - max_tokens: handwritten defaults 4096; IR emits as-parsed (0 when the
-//     client omitted it) — defaulting is a converter shim vs pipeline-layer
-//     responsibility. (Anthropic requires the field, so IR-path clients must
-//     send it; ledgered for the IR pipeline owner.)
+//   - (max_tokens ruling REMOVED by R72, 2026-10-01.) It used to accept that
+//     "handwritten defaults 4096; IR emits as-parsed (0 when the client
+//     omitted it)" on the grounds that defaulting is a converter shim and
+//     therefore a pipeline-layer responsibility — with the parenthetical
+//     "IR-path clients must send it". That premise does not hold: the IR path
+//     serves **OpenAI** clients, and OpenAI's max_tokens is optional, so
+//     omitting it is ordinary client behaviour rather than misuse. Emitting 0
+//     is not a stylistic divergence but a guaranteed upstream 400 — Anthropic
+//     requires max_tokens > 0. SerializeAnthropic now applies
+//     ir.DefaultAnthropicMaxTokens (4096, the value already deployed by the
+//     handwritten converter), so both sides converge and the divergence is
+//     gone. Had it stayed, an OpenAI client that omits max_tokens would have
+//     been rejected by Anthropic on every request.
 //   - Unknown top-level fields: IR preserves them losslessly (with an
 //     ir_unknown_field anomaly) for round-trip fidelity; the handwritten
 //     converter drops them.
@@ -269,16 +278,15 @@ func TestChatToAnthropic_IRParityGolden(t *testing.T) {
 func parityAllowedDiffs(caseName string) []string {
 	switch caseName {
 	case "single_user_text":
-		// max_tokens converter-default ruling.
-		return []string{"$.max_tokens"}
+		return nil // R72: max_tokens ruling removed, sides converge
 	case "system_string_multi_turn":
-		// max_tokens default + IR lossless unknown-field preservation
-		// ("system_ignored" probe: kept with ir_unknown_field anomaly).
-		return []string{"$.max_tokens", "$.system_ignored"}
+		// IR lossless unknown-field preservation ("system_ignored" probe:
+		// kept with ir_unknown_field anomaly). R72 removed $.max_tokens.
+		return []string{"$.system_ignored"}
 	case "system_array_joins":
-		// GAP-1 closed (Wave5): system now joins all text blocks; only the
-		// max_tokens converter-default ruling remains.
-		return []string{"$.max_tokens"}
+		// GAP-1 closed (Wave5): system joins all text blocks. R72 removed the
+		// last remaining ruling, so this case is fully converged.
+		return nil
 	case "sampling_and_stop_and_user":
 		// Fully converged: no rulings expected.
 		return nil
@@ -292,15 +300,18 @@ func parityAllowedDiffs(caseName string) []string {
 		// input pins max_tokens so no default ruling needed.
 		return nil
 	case "multimodal_image_data_uri_and_https":
-		return []string{"$.max_tokens"}
+		return nil // R72: max_tokens ruling removed
 	case "ir_thinking_extension":
-		// IR-only reasoning_effort → thinking capability + default ruling.
-		return []string{"$.max_tokens", "$.thinking"}
+		// IR-only reasoning_effort → thinking capability. R72 removed
+		// $.max_tokens from this ruling.
+		return []string{"$.thinking"}
 	case "no_max_tokens_default":
-		// max_tokens converter-default ruling.
-		return []string{"$.max_tokens"}
+		// R72: max_tokens ruling removed — the IR serializer now defaults to
+		// 4096 exactly like the handwritten converter, so the whole point of
+		// this case (that the default applies) is now enforced on both sides.
+		return nil
 	case "nonfunction_tool_passthrough":
-		return []string{"$.max_tokens"}
+		return nil // R72: max_tokens ruling removed
 	default:
 		return nil
 	}
