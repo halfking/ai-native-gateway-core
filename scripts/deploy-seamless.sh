@@ -1015,7 +1015,22 @@ do_deploy() {
   local recorded_service
   recorded_service=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service' 2>/dev/null" 2>/dev/null || true)
   if [[ -z "$active_service" || "$active_service" == "unknown" ]]; then
-    if [[ "$active_port" == "$(target_field "$TARGET" active_port)" ]]; then
+    # 2026-10-01（245 build_seq 2373 部署失败现场订正）：蓝绿契约下**不能**
+    # 回落到 $SERVICE_NAME。契约端口对 {active_port, candidate_port} 由
+    # canary 模板 unit 持有，$SERVICE_NAME 是蓝绿改造前的遗留单 unit
+    #（deploy-245 契约注释明写「弃用遗留 unit，勿使用」）。
+    #
+    # 实测事故：drain/预热窗口内两端口瞬时都无监听 → detect_active_side 走
+    # 「按 fresh 主机处理」分支 → ps 归属解析为空 → 旧代码把 active 端口
+    # 推导成 llmgo-245.service 并真的启动它，回滚后留下错乱拓扑：
+    # 弃用 unit 监听 8781、canary@8781 failed、canary@8782 active 但无监听
+    # （僵尸）、run/active-port 记 8782 与实际 8781 不符。
+    #
+    # 只在「有 canary 模板」时改用 canary@<active_port>；无蓝绿契约的目标
+    # 仍走 $SERVICE_NAME 旧路径，不改变其行为。
+    if [[ -n "$candidate_unit" ]]; then
+      active_service="${candidate_unit%@.service}@${active_port}.service"
+    elif [[ "$active_port" == "$(target_field "$TARGET" active_port)" ]]; then
       active_service="$SERVICE_NAME"
     else
       active_service="${candidate_unit%@.service}@${active_port}.service"

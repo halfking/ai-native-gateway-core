@@ -374,6 +374,16 @@ func (ix *DimensionIndex) dropEntryLocked(entry *DimensionEntry) {
 
 // Sweep removes entries whose ExpiresAt passed. Returns the evicted count.
 // Called opportunistically by Snapshot and safe to call from a ticker.
+//
+// 2026-10-01 R73: this used to stop at the first entry that was not expired
+// ("scan the ring prefix, break on the first live one"). Ring order is
+// insertion order and ExpiresAt is refreshed IN PLACE by Complete/UpdateWait,
+// so the ordering assumption does not hold: a single request that was
+// tracked but never reached a terminal call (dropped, cancelled) keeps a
+// zero ExpiresAt, sits at the head of its ring forever, and permanently
+// pinned TTL reclamation for every entry behind it — the whole dimension's
+// TTL contract went dead. trimRingLocked already scanned the full ring for
+// exactly this reason; Sweep now does the same.
 func (ix *DimensionIndex) Sweep(now time.Time) int {
 	if !ix.enabled() {
 		return 0
@@ -382,15 +392,16 @@ func (ix *DimensionIndex) Sweep(now time.Time) int {
 	defer ix.mu.Unlock()
 	evicted := 0
 	for key, ring := range ix.rings {
-		for len(ring.entries) > 0 {
-			e := ring.entries[0]
+		kept := ring.entries[:0]
+		for _, e := range ring.entries {
 			if e.ExpiresAt.IsZero() || !now.After(e.ExpiresAt) {
-				break
+				kept = append(kept, e)
+				continue
 			}
 			ix.dropEntryLocked(e)
-			ring.entries = ring.entries[1:]
 			evicted++
 		}
+		ring.entries = kept
 		if len(ring.entries) == 0 {
 			delete(ix.rings, key)
 		}
