@@ -70,7 +70,9 @@ func WarnRowSkip(op string, err error) {
 }
 
 // SkipOrFail 收敛「跳行 + 留痕」这一最常见形态：单行 Scan 失败时记
-// WarnRowSkip 并返回 false 表示「跳过」，调用方自行 continue。
+// WarnRowSkip 并返回 true 表示「跳过」，调用方 continue（err==nil 返回
+// false 继续正常路径）。12h 审计订正：原注释把返回值写反了——22 处
+// 调用方全部按 `if SkipOrFail(...) { continue }` 使用，行为一直是对的。
 //
 // 用它取代裸 `if err != nil { continue }` 的收益是：调用点必然留下
 // 痕迹，且痕迹带得上 op 定位串。

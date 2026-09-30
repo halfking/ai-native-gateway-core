@@ -568,6 +568,37 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Incident, error) {
 	return out, rows.Err()
 }
 
+// CountByState counts incidents in the given state, optionally restricted
+// to rows updated at/after since (zero time = no window). tenantID "" counts
+// all tenants. It exists so stats endpoints never have to fetch full rows
+// just to produce a number (12h 审计：stats 用 List+len 会被 limit 封顶，
+// 把真计数悄悄变回伪合法数字).
+func (s *Store) CountByState(ctx context.Context, tenantID, state string, since time.Time) (int, error) {
+	if s == nil || s.pool == nil {
+		return 0, ErrNoDatabase
+	}
+	conds := []any{}
+	where := "WHERE 1=1"
+	if tenantID != "" {
+		conds = append(conds, tenantID)
+		where += fmt.Sprintf(" AND tenant_id = $%d", len(conds))
+	}
+	if state != "" {
+		conds = append(conds, state)
+		where += fmt.Sprintf(" AND state = $%d", len(conds))
+	}
+	if !since.IsZero() {
+		conds = append(conds, since)
+		where += fmt.Sprintf(" AND updated_at >= $%d", len(conds))
+	}
+	sql := "SELECT COUNT(*) FROM route_incidents " + where
+	var n int
+	if err := s.pool.QueryRow(ctx, sql, conds...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count incidents: %w", err)
+	}
+	return n, nil
+}
+
 // Get fetches a single incident by id, scoped to a tenant. Returns
 // (nil, nil) when not found OR cross-tenant (the caller cannot tell
 // the difference — by design).

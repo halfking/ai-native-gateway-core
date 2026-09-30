@@ -220,6 +220,9 @@ func (a *TurnLogsAggregator) AggregateAndFlush(ctx context.Context, tenantID, se
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
+	// 12h 审计加固：panic 路径下 rows 无人关闭（下方显式 Close 只覆盖
+	// return 路径）；defer 与显式 Close 幂等共存。
+	defer rows.Close()
 
 	byTurn := map[int][]StageLog{}
 	var ids []int64
