@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 type PgxStore struct {
@@ -51,9 +52,7 @@ func (s *PgxStore) GetEvent(ctx context.Context, eventID int64) (*Event, error) 
 		}
 		return nil, err
 	}
-	if metadataJSON != nil {
-		_ = json.Unmarshal(metadataJSON, &event.Metadata)
-	}
+	jsoncol.Decode("fault.PgxStore.GetEvent/metadata", metadataJSON, &event.Metadata)
 	return &event, nil
 }
 
@@ -82,9 +81,7 @@ func (s *PgxStore) GetOpenEventsByRule(ctx context.Context, ruleID int64) ([]Eve
 		); err != nil {
 			return nil, err
 		}
-		if metadataJSON != nil {
-			_ = json.Unmarshal(metadataJSON, &event.Metadata)
-		}
+		jsoncol.Decode("fault.PgxStore.GetOpenEventsByRule/metadata", metadataJSON, &event.Metadata)
 		events = append(events, event)
 	}
 	return events, rows.Err()
@@ -145,9 +142,7 @@ func (s *PgxStore) ListEvents(ctx context.Context, status EventStatus, offset, l
 		); err != nil {
 			return nil, 0, err
 		}
-		if metadataJSON != nil {
-			_ = json.Unmarshal(metadataJSON, &event.Metadata)
-		}
+		jsoncol.Decode("fault.PgxStore.ListEvents/metadata", metadataJSON, &event.Metadata)
 		events = append(events, event)
 	}
 
@@ -190,9 +185,7 @@ func (s *PgxStore) GetRule(ctx context.Context, ruleID int64) (*Rule, error) {
 		}
 		return nil, err
 	}
-	if actionConfigJSON != nil {
-		_ = json.Unmarshal(actionConfigJSON, &rule.ActionConfig)
-	}
+	jsoncol.Decode("fault.PgxStore.GetRule/action_config", actionConfigJSON, &rule.ActionConfig)
 	return &rule, nil
 }
 
@@ -272,9 +265,7 @@ func (s *PgxStore) scanRules(rows interface {
 		); err != nil {
 			return nil, err
 		}
-		if actionConfigJSON != nil {
-			_ = json.Unmarshal(actionConfigJSON, &rule.ActionConfig)
-		}
+		jsoncol.Decode("fault.PgxStore.ListActiveRules/action_config", actionConfigJSON, &rule.ActionConfig)
 		rules = append(rules, rule)
 	}
 	return rules, rows.Err()

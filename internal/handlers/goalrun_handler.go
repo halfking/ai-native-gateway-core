@@ -10,6 +10,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/goalrun"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // goalrunKeyVerifier 与 domains/session 的鉴权抽象同形；真实现由 main.go
@@ -203,10 +204,8 @@ func (h *GoalRunHandler) extractGoalRunID(path string) string {
 // buildStatusResponse converts GoalRun to API response format.
 func (h *GoalRunHandler) buildStatusResponse(run *goalrun.GoalRun) GoalRunStatusResponse {
 	var policySnapshot map[string]interface{}
-	if len(run.PolicySnapshot) > 0 {
-		// PolicySnapshot is stored as JSON bytes
-		_ = json.Unmarshal(run.PolicySnapshot, &policySnapshot)
-	}
+	// PolicySnapshot is stored as JSON bytes
+	jsoncol.Decode("goalrun.buildStatusResponse/policy_snapshot", run.PolicySnapshot, &policySnapshot)
 
 	resp := GoalRunStatusResponse{
 		GoalRunID:        run.ID,

@@ -188,3 +188,58 @@ func TestRetireClosedMinuteDropsFlushCanonicalNotInView(t *testing.T) {
 		t.Fatalf("rollback changed incident requests to %d", afterReq)
 	}
 }
+
+// P2-2 钉测：维度/钻取表的闭分钟退役必须与 rollupDims 同口径——上界开
+// 区间保当前分钟、存在性检查走同一视图、error_kind 只认 failure、扫描
+// 下界与主表共用 retireScanFloor（迟到冲刷对维度表同样成立）。
+func TestRetireClosedDimsMatchesRollupDimShape(t *testing.T) {
+	sql := retireClosedDimStatement(`COALESCE(NULLIF(r.client_profile, ''), '__unknown__')`)
+	if !strings.Contains(sql, "m.bucket < date_trunc('minute', $2::timestamptz)") {
+		t.Fatal("dim retire must stop before the open minute")
+	}
+	if strings.Contains(sql, "m.bucket <= date_trunc('minute', $2") {
+		t.Fatal("dim retire includes the open minute")
+	}
+	if !strings.Contains(sql, "request_logs_with_current_month") {
+		t.Fatal("dim retire existence check drifted off the rollup view")
+	}
+	if !strings.Contains(sql, "($3 <> 'error_kind' OR r.request_status = 'failure')") {
+		t.Fatal("dim retire must keep the error_kind failure-only filter in sync with rollupDims")
+	}
+	if !strings.Contains(sql, `= m.dim_key`) {
+		t.Fatal("dim retire must compare the rollup dim_key expression against m.dim_key")
+	}
+	rollupSrc, err := os.ReadFile("stats_minute_rollup.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rollupSrc), "return w.retireClosedDims(ctx, since, until)") {
+		t.Fatal("rollupDims no longer retires dim/drill keys the view stopped emitting")
+	}
+}
+
+func TestRetireClosedErrorDrillMatchesRollupDrillShape(t *testing.T) {
+	sql := retireClosedErrorDrillMinuteSQL
+	if !strings.Contains(sql, "m.bucket < date_trunc('minute', $2::timestamptz)") {
+		t.Fatal("drill retire must stop before the open minute")
+	}
+	if !strings.Contains(sql, "r.request_status = 'failure'") {
+		t.Fatal("drill retire must stay failure-only like rollupDims")
+	}
+	// 哨兵口径必须与 rollupDims 的 drill SELECT 一致：model_name 空串、
+	// error_kind '__unknown__'。口径漂移会让 NOT EXISTS 误删视图仍在
+	// 产出的键（把活数据当悬空键清掉）。
+	if !strings.Contains(sql, "COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '') = m.model_name") {
+		t.Fatal("drill retire model_name sentinel drifted from rollupDims")
+	}
+	if !strings.Contains(sql, "COALESCE(NULLIF(r.error_kind, ''), '__unknown__') = m.error_kind") {
+		t.Fatal("drill retire error_kind sentinel drifted from rollupDims")
+	}
+	retireSrc, err := os.ReadFile("stats_minute_rollup_retire.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(retireSrc), "floor := retireScanFloor(since, until)") {
+		t.Fatal("dim/drill retire must share the late-flush grace rescan floor")
+	}
+}

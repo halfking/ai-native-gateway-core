@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // ── Session Compare API (v4, 2026-06-21) ────────────────────────────────
@@ -353,8 +354,8 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 		// Decode compression_meta once for both the stats block and the
 		// turn-level secured-stage tags below.
 		var compMetaMap map[string]any
-		if compressionMeta != nil && *compressionMeta != "" {
-			_ = json.Unmarshal([]byte(*compressionMeta), &compMetaMap)
+		if compressionMeta != nil {
+			jsoncol.Decode("admin.sessionCompare.loadCompareData/compression_meta", []byte(*compressionMeta), &compMetaMap)
 		}
 
 		// Parse compressed outbound messages

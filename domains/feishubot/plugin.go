@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -194,14 +195,14 @@ func LoadConfig() (Config, error) {
 		if err != nil || raw == nil {
 			return
 		}
-		_ = json.Unmarshal(raw, dst)
+		jsoncol.Decode("feishubot.readConfig/bool", raw, dst)
 	}
 	readString := func(key string, dst *string) {
 		raw, _, err := settings.Global.EffectiveValue(settings.ScopePlatform, key, "")
 		if err != nil || raw == nil {
 			return
 		}
-		_ = json.Unmarshal(raw, dst)
+		jsoncol.Decode("feishubot.readConfig/string", raw, dst)
 	}
 	readInt := func(key string, dst *int) {
 		raw, _, err := settings.Global.EffectiveValue(settings.ScopePlatform, key, "")
@@ -607,9 +608,7 @@ func (p *Plugin) ReloadAllowedUsers() error {
 	// 读 settings_kv 兜底
 	settingsRaw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "feishu_bot.allowed_users", "")
 	var usersRaw string
-	if settingsRaw != nil {
-		_ = json.Unmarshal(settingsRaw, &usersRaw)
-	}
+	jsoncol.Decode("feishubot.ReloadAllowedUsers/allowed_users", settingsRaw, &usersRaw)
 	fromSettings := parseUserList(usersRaw)
 	merged := mergeAllowedUsers(fromDB, fromSettings)
 
