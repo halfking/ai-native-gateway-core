@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 const sessionContextPrefix = "/api/system/session-context/"
@@ -262,7 +263,7 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 		return
 	}
 	var detailObj any
-	_ = json.Unmarshal(detail, &detailObj)
+	jsoncol.Decode("admin.sessionExtract.extractionStatus/detail", detail, &detailObj)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id":           taskID,
 		"extracted":         true,

@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
@@ -514,7 +514,7 @@ func (h *Handler) handleNoTopicSessionExtractionStatus(w http.ResponseWriter, r 
 		return
 	}
 	var detailObj any
-	_ = json.Unmarshal(detail, &detailObj)
+	jsoncol.Decode("admin.noTopicSession.extractionStatus/detail", detail, &detailObj)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id":           virtualTaskID,
 		"extracted":         true,

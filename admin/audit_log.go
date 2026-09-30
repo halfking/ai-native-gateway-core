@@ -2,10 +2,11 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 type auditLogEntry struct {
@@ -116,12 +117,8 @@ func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 			warnRowSkip("auditLog.list", err)
 			continue
 		}
-		if len(beforeJSON) > 0 {
-			_ = json.Unmarshal(beforeJSON, &e.BeforeJSON)
-		}
-		if len(afterJSON) > 0 {
-			_ = json.Unmarshal(afterJSON, &e.AfterJSON)
-		}
+		jsoncol.Decode("admin.auditLog.list/before_json", beforeJSON, &e.BeforeJSON)
+		jsoncol.Decode("admin.auditLog.list/after_json", afterJSON, &e.AfterJSON)
 		entries = append(entries, e)
 	}
 	// 路由审计日志少一截 = 变更证据少了几条（且 total 与列表对不上，
