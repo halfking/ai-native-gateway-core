@@ -81,7 +81,9 @@ var sqlReadGuardAllowFiles = map[string]string{
 	"domains/analysis/request_summary.go":                "DEBT(R47): 裸母表",
 	"domains/analysis/projectattr/store.go":              "DEBT(R47): 裸母表",
 	"domains/sessionforensics/export.go":                 "DEBT(R47): 裸母表",
-	"domains/providerprofile/pg_reconciliation_store.go": "DEBT(R47): 裸母表",
+	// domains/providerprofile/pg_reconciliation_store.go 条目已按 R28-B-1（round 30）
+	// 聚合源切换移除：该文件现已只读计帐侧月分区，无 request_logs 裸读命中，
+	// 由 TestSQLReadGuardWhitelistCurrent 自清洁守卫报出。
 	"domains/hooks/goal/history_store.go":                "DEBT(R47): 裸母表",
 	"domains/hooks/observability/telemetry/client.go":    "DEBT(R47): 裸母表",
 	"autoroute/recommend_v2.go":                          "DEBT(R47): 裸母表",
@@ -269,4 +271,121 @@ func sqlReadGuardRepoRoot(t *testing.T) string {
 
 func itoa(n int) string {
 	return strconv.Itoa(n)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D07 写侧对偶守卫（P0-2，2026-09-30 三十五轮）
+//
+// 既有 TestNoBareRequestLogsMotherReads 只管**读**面（裸 FROM|JOIN 母表）。
+// 但 D07 的纪律是「更新/删除只落 hot」——**写**面同样需要机械门。原状下
+// 「只落 hot」纯靠人工 code review，与域文档 §3#1 把它定为 P1 级纪律的
+// 期望不符：读面有门、写面没有，正是最容易悄悄漂移的不对称。
+//
+// 现实基线：全生产面直写 request_logs 母表的语句只有 1 处，且早已在读守卫
+// 白名单里登记为 LEGIT（SQLite 引擎 DELETE，? 占位，非 PG hot/mother 体系）。
+// 门本身因此很干净——这正是纪律在实践中生效的证据，而非「没什么可查」。
+
+// bareRequestLogsWriteRe 匹配对 request_logs 母表的直写（INSERT/UPDATE/DELETE）。
+var bareRequestLogsWriteRe = regexp.MustCompile(`(?i)\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(public\.)?request_logs\b`)
+
+// sqlWriteGuardAllowFiles 是写面 LEGIT 白名单，理由必须写清楚「为什么不是
+// 直写母表」，便于未来有人误以为它是待还债项。
+var sqlWriteGuardAllowFiles = map[string]string{
+	"bg/lite_retention_worker.go": "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
+}
+
+const sqlWriteGuardInlineMarker = "sqlwriteguard:allow"
+
+func TestNoBareRequestLogsMotherWrites(t *testing.T) {
+	root := sqlReadGuardRepoRoot(t)
+
+	scanDirs := []string{"admin", "autoroute", "bg", "cmd", "db", "discovery", "domains", "internal", "provider", "proxy", "taskprofile"}
+	var violations []string
+	for _, d := range scanDirs {
+		dir := filepath.Join(root, d)
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				if entry.Name() == "vendor" || entry.Name() == "sqlreadguard" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				return nil
+			}
+			relPath, rerr := filepath.Rel(root, path)
+			if rerr != nil {
+				return nil
+			}
+			rel := filepath.ToSlash(relPath)
+			if _, allowed := sqlWriteGuardAllowFiles[rel]; allowed {
+				return nil
+			}
+			for _, line := range bareWriteLines(path) {
+				violations = append(violations, rel+":"+itoa(line)+
+					" 直写 request_logs 母表（应走 hot 分区；或登记 sqlWriteGuardAllowFiles 说明理由）")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", d, err)
+		}
+	}
+
+	if len(violations) > 0 {
+		t.Fatalf("生产写面出现 %d 处直写 request_logs 母表（绕过 hot 分区）：\n%s",
+			len(violations), strings.Join(violations, "\n"))
+	}
+}
+
+// TestSqlWriteGuardAllowlistCurrent mirrors the read-side self-cleaning check: a
+// whitelist entry that no longer contains a direct write must be removed, so
+// exemptions cannot silently accumulate.
+func TestSqlWriteGuardAllowlistCurrent(t *testing.T) {
+	root := sqlReadGuardRepoRoot(t)
+	for path, reason := range sqlWriteGuardAllowFiles {
+		full := filepath.Join(root, filepath.FromSlash(path))
+		if _, err := os.Stat(full); err != nil {
+			t.Errorf("写面白名单条目文件不存在（请移除条目）: %s", path)
+			continue
+		}
+		if len(bareWriteLines(full)) == 0 {
+			t.Errorf("写面白名单条目已无直写命中（请移除条目）: %s —— %s", path, reason)
+		}
+	}
+}
+
+// bareWriteLines returns 1-based line numbers of non-comment direct writes to
+// the request_logs mother table. Mirrors the read-side comment exemptions:
+// Go line comments and SQL line comments inside raw strings are documentation.
+func bareWriteLines(path string) []int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var lines []int
+	for i, line := range strings.Split(string(data), "\n") {
+		loc := bareRequestLogsWriteRe.FindStringIndex(line)
+		if loc == nil {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		if strings.Contains(line[:loc[0]], "//") {
+			continue
+		}
+		if strings.Contains(line, sqlWriteGuardInlineMarker) {
+			continue
+		}
+		lines = append(lines, i+1)
+	}
+	return lines
 }

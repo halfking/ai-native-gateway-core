@@ -4017,6 +4017,16 @@ func main() {
 				credProbeV2.SetKeyring(keyring)
 			}
 			credProbeV2.SetAvailabilityCache(modelAvailabilityCache)
+			// F04 (V3 持久化协议能力, 2026-09-30): wire the fpslot node-state
+			// manager so the probe can persist durable protocol-capability
+			// verdicts (e.g. "this credential+model does not support the
+			// Responses API"). Without this the verdict is rediscovered on
+			// every single request. nil-safe: the setter tolerates a disabled
+			// manager, in which case the capability write is a no-op and the
+			// request path keeps live detection.
+			if fpSlots != nil {
+				credProbeV2.SetFpSlots(fpSlots)
+			}
 			// 2026-06-30: wire state manager so probe results update
 			// the real-time state cache immediately.
 			if stateManager != nil {

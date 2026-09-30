@@ -1456,7 +1456,16 @@ func (e *Executor) executeAnthropicOnce(
 	if err != nil {
 		return nil, err
 	}
-	e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "anthropic-messages"), responseBody)
+	// R25-V (2026-09-30 round 30): LogClientResponse means "the bytes the
+	// client actually received". Under SuppressSuccessWrite (native
+	// handlers defer the write until after output governance) this body
+	// was only captured — the handler may still block it. Logging it here
+	// would persist a blocked provider body as an approved client
+	// response. The chat paths gate identically; the final governed bytes
+	// are logged by the handler lane.
+	if !params.SuppressSuccessWrite && params.W != nil {
+		e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "anthropic-messages"), responseBody)
+	}
 	e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 	return &ExecuteResult{
 		Response:    resp,

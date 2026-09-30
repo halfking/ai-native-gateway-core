@@ -600,6 +600,14 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 }
 
 func (c *Client) SetDB(pool *pgxpool.Pool) {
+	// Typed-nil guard: (*pgxpool.Pool)(nil) stored into the requestLogDB
+	// interface would make requestLogDatabase() report non-nil and the
+	// insert path SIGSEGV on Begin (request_log_database_test contract).
+	if pool == nil {
+		c.dbPool = nil
+		c.requestLogDB = nil
+		return
+	}
 	c.dbPool = pool
 	c.requestLogDB = pool
 }
@@ -631,6 +639,12 @@ func (c *Client) requestLogDatabase() requestLogDB {
 	}
 	if c.requestLogDB != nil {
 		return c.requestLogDB
+	}
+	// Typed-nil guard: returning the *pgxpool.Pool field directly would wrap
+	// a nil pointer into a non-nil interface and defeat every `db == nil`
+	// check downstream (SIGSEGV on Begin — request_log_database_test).
+	if c.dbPool == nil {
+		return nil
 	}
 	return c.dbPool
 }

@@ -23,7 +23,22 @@ type nativeNonStreamInterceptor struct {
 	seenCalls int
 }
 
-func (i *nativeNonStreamInterceptor) InterceptNonStream(_ context.Context, _ *response.InterceptRequest) (*response.InterceptResult, error) {
+func (i *nativeNonStreamInterceptor) InterceptNonStream(_ context.Context, req *response.InterceptRequest) (*response.InterceptResult, error) {
+	if req != nil {
+		// Non-stream lanes never call InterceptStreamChunk; surface the
+		// request identity (CallerOwner / SessionID / …) on .seen so tests
+		// can assert owner propagation on the non-stream path too.
+		i.seenCalls++
+		i.seen = &response.StreamMeta{
+			SessionID:      req.SessionID,
+			RequestID:      req.RequestID,
+			TenantID:       req.TenantID,
+			CallerOwner:    req.CallerOwner,
+			ClientProtocol: req.ClientProtocol,
+			ClientModel:    req.ClientModel,
+			ResponseBody:   req.ResponseBody,
+		}
+	}
 	if i.err != nil {
 		return nil, i.err
 	}

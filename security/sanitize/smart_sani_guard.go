@@ -583,9 +583,20 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 			"error", err, "session_id", req.SessionID)
 		// Fail closed for gateway placeholders even when the map is unavailable:
 		// known values cannot be restored, but raw internal tokens must not leak.
+		//
+		// Native shapes (Messages / Responses) block outright: their restorers
+		// rebuild structured tool arguments and content blocks, and masking
+		// with an empty map would corrupt those payloads (native_restore_test
+		// contract). Legacy chat choices keep the mask-and-pass behavior
+		// (smart_sani_guard_test contract).
+		if root := mustDecodeJSONMap(req.ResponseBody); root != nil &&
+			(isNativeMessagesShape(root) || isNativeResponsesShape(root)) &&
+			bytes.Contains(req.ResponseBody, []byte("{SENSITIVE:")) {
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
 		sm = SanitizeMap{}
 	}
-	if len(sm) == 0 && !bytes.Contains(req.ResponseBody, []byte("{SENSITIVE:")) {
+	if len(sm) == 0 && !hasReservedPlaceholder(req.ResponseBody) {
 		return nil, nil
 	}
 
@@ -604,9 +615,78 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 		metrics.SanitizePlaceholderTamperingTotal.WithLabelValues("llm_generated").Add(float64(len(invalidPlaceholders)))
 	}
 
+	// Native shapes first: Anthropic Messages (type=message) and OpenAI
+	// Responses (object=response) carry content blocks / tool arguments the
+	// legacy choices-only restorer cannot walk. restoreNative* mutates the
+	// decoded map in place and reports (changed, recognized, error); an
+	// unrecognized body falls through to the legacy choices restorer.
+	//
+	// Recognized bodies with a residual marker anywhere (vendor fields,
+	// media data, escaped tokens) block: the restorers only touch known
+	// visible lanes, so what is left over is a marker we cannot restore
+	// and must not emit (chat_restore_test contract).
+	nativeRoot := mustDecodeJSONMap(req.ResponseBody)
+	if nativeRoot != nil {
+		// Run both restorers for effect: messages first, then responses
+		// (a body matches at most one shape; the other reports
+		// recognized=false without touching the tree). Restorers mutate
+		// nativeRoot in place.
+		mChanged, mOK, mErr := it.restoreNativeMessagesBody(ctx, nativeRoot, sm)
+		rChanged, rOK, rErr := it.restoreNativeResponsesBody(ctx, nativeRoot, sm)
+		if (mOK && mErr != nil) || (rOK && rErr != nil) {
+			it.logger.WarnContext(ctx, "sanitize_restore: native restore blocked",
+				"messages_err", mErr, "responses_err", rErr, "session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+		if (mOK && mChanged) || (rOK && rChanged) {
+			if out, merr := json.Marshal(nativeRoot); merr == nil && !bytes.Contains(out, []byte("{SENSITIVE:")) {
+				return &response.InterceptResult{ModifiedBody: out, Action: "sanitize_restore",
+					Metadata: map[string]any{"sanitize_restored": true, "placeholder_count": len(sm)}}, nil
+			}
+		}
+	}
+
+	// Marshal-path marker guard: any body that still carries a reserved
+	// marker after the restore pass must never leave the interceptor
+	// unchecked. Native shapes (Messages / Responses) block outright — their
+	// restorers only touch known visible lanes, so a leftover marker means a
+	// vendor field / media object / escaped token we cannot safely rewrite
+	// (chat_restore_test contract). Legacy chat choices are rewritten too,
+	// so the same residual check applies with the escaped-variant probe;
+	// genuinely malformed JSON with a raw marker also blocks.
+	if hasReservedPlaceholder(req.ResponseBody) {
+		if nativeRoot != nil && (isNativeMessagesShape(nativeRoot) || isNativeResponsesShape(nativeRoot)) {
+			it.logger.WarnContext(ctx, "sanitize_restore: residual marker in recognized native body",
+				"session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+		if nativeRoot == nil {
+			// Truncated / malformed JSON body containing a marker.
+			it.logger.WarnContext(ctx, "sanitize_restore: malformed body carries reserved marker",
+				"session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+	}
+
 	restored, err := it.restoreResponseBody(ctx, req.ResponseBody, sm)
 	if err != nil || restored == nil {
+		// No visible lane changed: either not a chat body at all (passthrough)
+		// or a recognized chat body whose marker sits outside the visible
+		// lanes (vendor field, media object). The latter must never leak.
+		if nativeRoot != nil && isChatChoicesShape(nativeRoot) && hasReservedPlaceholder(req.ResponseBody) {
+			it.logger.WarnContext(ctx, "sanitize_restore: residual marker in chat body outside visible lanes",
+				"session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
 		return nil, nil
+	}
+	if hasReservedPlaceholder(restored) {
+		// The choices restorer changed something yet a marker survived
+		// (unmapped placeholder forged as raw token, vendor field beside
+		// choices). Fail closed instead of emitting a half-restored body.
+		it.logger.WarnContext(ctx, "sanitize_restore: residual marker in chat body after restore",
+			"session_id", req.SessionID)
+		return &response.InterceptResult{ShouldBlock: true}, nil
 	}
 
 	return &response.InterceptResult{
@@ -632,6 +712,15 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 		return nil, nil
 	}
 	if meta == nil || meta.SessionID == "" {
+		// A reserved gateway marker must never reach the client regardless of
+		// session bookkeeping; an ordinary frame without a session is opaque
+		// data and keeps its original framing (sse_restore.go probe rules).
+		if meta == nil && hasReservedPlaceholder(chunk) {
+			return &response.ChunkResult{ShouldBlock: true}, nil
+		}
+		if meta != nil && meta.SessionID == "" && hasReservedPlaceholder(chunk) {
+			return &response.ChunkResult{ShouldBlock: true}, nil
+		}
 		return nil, nil
 	}
 
@@ -659,23 +748,69 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 		return &response.ChunkResult{ShouldBlock: true}, nil
 	}
 
-	modified, changed, block, err := it.restoreStreamChunk(ctx, chunk, sm, meta, state)
-	if err != nil || !changed {
-		// 解析失败 / 无 placeholder → 原样透传（不要因为格式问题阻断流式）
+	var wire []byte
+	changedAny := false
+	for _, event := range splitSSEEvents(chunk) {
+		modified, changed, block := it.restoreSSEEvent(ctx, event, sm, state)
 		if block {
 			state.blocked = true
 			return &response.ChunkResult{ShouldBlock: true}, nil
 		}
+		if changed {
+			wire = append(wire, modified...)
+		} else {
+			// Unchanged events keep their original framing bytes verbatim
+			// (heartbeat comments, opaque payloads, [DONE] markers) so a
+			// mixed chunk is byte-identical outside the rewritten events.
+			wire = append(wire, event...)
+		}
+		changedAny = changedAny || changed
+	}
+	if !changedAny {
 		return nil, nil
 	}
-	if block {
-		state.blocked = true
-		return &response.ChunkResult{ShouldBlock: true}, nil
-	}
-
 	return &response.ChunkResult{
-		ModifiedChunk: modified,
+		ModifiedChunk: wire,
 	}, nil
+}
+
+// mustDecodeJSONMap decodes body, tolerating malformed JSON (returns nil,
+// which callers treat as unrecognized). Numbers decode as json.Number so
+// token counts beyond 2^53 round-trip exactly through restore + re-marshal.
+func mustDecodeJSONMap(body []byte) map[string]any {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var raw map[string]any
+	if err := decoder.Decode(&raw); err != nil {
+		return nil
+	}
+	return raw
+}
+
+func isNativeMessagesShape(root map[string]any) bool {
+	if root == nil {
+		return false
+	}
+	typ, _ := root["type"].(string)
+	return typ == "message"
+}
+
+// isChatChoicesShape 判定 legacy OpenAI chat completions 形态
+// （顶层含 choices 数组）。
+func isChatChoicesShape(root map[string]any) bool {
+	if root == nil {
+		return false
+	}
+	_, ok := root["choices"].([]any)
+	return ok
+}
+
+func isNativeResponsesShape(root map[string]any) bool {
+	if root == nil {
+		return false
+	}
+	object, _ := root["object"].(string)
+	return object == "response"
 }
 
 // InterceptStreamEnd 流结束时 body 已重组为非流式形态，复用非流式还原。
@@ -1180,21 +1315,29 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 		if !ok {
 			continue
 		}
-		// 1) message.content
+		// 1) message visible text lanes: content / refusal / reasoning_content
 		if msg, ok := c["message"].(map[string]any); ok {
-			if content, ok := msg["content"].(string); ok {
-				restored, err := it.sanitizer.RestoreOutputOrMask(ctx, content, sm)
-				if err == nil && restored != content {
-					msg["content"] = restored
+			for _, field := range []string{"content", "refusal", "reasoning_content"} {
+				if restoreLegacyTextField(ctx, it.sanitizer, msg, field, sm) {
 					changed = true
 				}
 			}
-			// 2) message.tool_calls[*].function.arguments
+			// 2) message.function_call.arguments（旧版单函数调用形态）
+			if fn, ok := msg["function_call"].(map[string]any); ok {
+				if restoreLegacyFunctionArgs(ctx, it.sanitizer, fn, sm) {
+					changed = true
+				}
+			}
+			// 3) message.tool_calls[*].function.arguments
 			if restoreToolCallsArgs(ctx, it.sanitizer, msg, "tool_calls", sm) {
 				changed = true
 			}
 		}
-		// 3) 顶层 tool_calls[*].function.arguments（部分 schema 透传）
+		// 4) completion 风格 choices[].text
+		if restoreLegacyTextField(ctx, it.sanitizer, c, "text", sm) {
+			changed = true
+		}
+		// 5) 顶层 tool_calls[*].function.arguments（部分 schema 透传）
 		if restoreToolCallsArgs(ctx, it.sanitizer, c, "tool_calls", sm) {
 			changed = true
 		}
@@ -1207,6 +1350,48 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 		return nil, err
 	}
 	return out, nil
+}
+
+// restoreLegacyTextField 对 obj[field]（字符串）做占位符还原；已映射的还原成
+// 原值，未映射的 mask 成 [REDACTED]。仅当字段被改动时返回 true。
+func restoreLegacyTextField(ctx context.Context, s *Sanitizer, obj map[string]any, field string, sm SanitizeMap) bool {
+	value, ok := obj[field].(string)
+	if !ok || !PlaceholderPattern.MatchString(value) {
+		return false
+	}
+	restored, err := s.RestoreOutputOrMask(ctx, value, sm)
+	if err != nil || restored == value {
+		return false
+	}
+	obj[field] = restored
+	return true
+}
+
+// restoreLegacyFunctionArgs 还原 function.arguments（JSON 字符串）里的占位符；
+// arguments 不是合法 JSON 对象时退化为普通字符串还原。
+func restoreLegacyFunctionArgs(ctx context.Context, s *Sanitizer, fn map[string]any, sm SanitizeMap) bool {
+	argsStr, ok := fn["arguments"].(string)
+	if !ok || !PlaceholderPattern.MatchString(argsStr) {
+		return false
+	}
+	var argsObj map[string]any
+	if err := json.Unmarshal([]byte(argsStr), &argsObj); err != nil {
+		// arguments 不是合法 JSON 对象：当作普通字符串做占位符还原
+		restored, rerr := s.RestoreOutputOrMask(ctx, argsStr, sm)
+		if rerr == nil && restored != argsStr {
+			fn["arguments"] = restored
+			return true
+		}
+		return false
+	}
+	if restoreJSONRecursive(ctx, s, argsObj, sm) {
+		raw, mErr := json.Marshal(argsObj)
+		if mErr == nil {
+			fn["arguments"] = string(raw)
+			return true
+		}
+	}
+	return false
 }
 
 // restoreToolCallsArgs 在 obj[key]（数组）中遍历每个 tool_call，
@@ -1228,29 +1413,8 @@ func restoreToolCallsArgs(ctx context.Context, s *Sanitizer, obj map[string]any,
 		if !ok {
 			continue
 		}
-		argsStr, ok := fn["arguments"].(string)
-		if !ok {
-			continue
-		}
-		if !PlaceholderPattern.MatchString(argsStr) {
-			continue
-		}
-		var argsObj map[string]any
-		if err := json.Unmarshal([]byte(argsStr), &argsObj); err != nil {
-			// arguments 不是合法 JSON 对象：当作普通字符串做占位符还原
-			restored, rerr := s.RestoreOutputOrMask(ctx, argsStr, sm)
-			if rerr == nil && restored != argsStr {
-				fn["arguments"] = restored
-				changed = true
-			}
-			continue
-		}
-		if restoreJSONRecursive(ctx, s, argsObj, sm) {
-			raw, mErr := json.Marshal(argsObj)
-			if mErr == nil {
-				fn["arguments"] = string(raw)
-				changed = true
-			}
+		if restoreLegacyFunctionArgs(ctx, s, fn, sm) {
+			changed = true
 		}
 	}
 	return changed
