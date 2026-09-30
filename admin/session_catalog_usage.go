@@ -23,48 +23,57 @@ type catalogSearchHit struct {
 	Model     string
 }
 
-// 用量走热表 + 分区父表的会话索引。
-// request_logs_with_current_month 会联 session_turns，本地单会话实测约 815ms。
-// 同一聚合直接打底表约 1ms。检索不扫请求日志：前导 ILIKE 在约 232 万行上实测约 16s。
-// 模型子串打在 models_used 的单个元素上。primary_model 约 33.2 万行里只有约 1500 行有值。
-// 换行拼接是为了不让相邻模型名粘成一次命中。本地该形态约 173ms，仍在 2 秒超时内。
+// catalogUsageSQL 从 session 族唯一事实源聚合用量：session_turns_hot（独立堆表）
+// ∪ session_turns（按月分区的母表）。键 session_id 命中
+// idx_session_turns_session (session_id, turn_no DESC)。
+//
+// 为什么不再读 request_logs（会话存储解耦 v3 S4）：
+// 门控 storage.request_logs_write_enabled 关停后，request_logs_hot / request_logs
+// 只剩停写之前的历史行，新会话一条都查不到，聚合恒 0。而 overlayCatalogUsage
+// 只在字段为 0 时补齐 —— Redis 窗口命中的会话继续显示缓存里的旧值，未命中的
+// 显示 0。同一会话显示对还是错取决于 Redis 缓存是否命中，这是最难复现的
+// 不一致形态。session 族没有这个分叉：停写前后都是同一份数据。
+//
+// 为什么不需要保留 v1 回落腿：本函数的入参来自 Redis 会话窗口 ∪
+// session_summaries，两边都是活跃/近期会话，必然落在镜像链双写窗口内。
+// 镜像链启用之前的历史会话根本不会出现在这个列表里，给它加 v1 腿只会把
+// 退役表重新挂回列表接口的热路径。
+//
+// 模型列：session_turns.model 是该轮次实际使用的模型，语义对齐原查询里
+// 「优先取实际发出模型」的意图；原查询的第二兜底 client_model 在 session 族
+// 属于 session_turn_details 特征层，只在需要区分「客户端请求模型 vs 实际路由
+// 模型」时才读，目录列表不区分，故不引入 details 联接。
 const catalogUsageSQL = `
-SELECT gw_session_id,
+SELECT session_id,
        COUNT(*) FILTER (WHERE COALESCE(parent_request_id, '') = '')::bigint,
        COALESCE(SUM(prompt_tokens), 0)::bigint,
        COALESCE(SUM(completion_tokens), 0)::bigint,
        COALESCE(SUM(cost_usd), 0)::float8,
-       COALESCE(MAX(NULLIF(outbound_model, '')), MAX(NULLIF(client_model, '')), '')
+       COALESCE(MAX(NULLIF(model, '')), '')
 FROM (
-    SELECT gw_session_id, parent_request_id, prompt_tokens, completion_tokens,
-           cost_usd, outbound_model, client_model, tenant_id
-    FROM request_logs_hot
-    WHERE gw_session_id = ANY($1)
+    SELECT session_id, parent_request_id, prompt_tokens, completion_tokens,
+           cost_usd, model, tenant_id
+    FROM session_turns_hot
+    WHERE session_id = ANY($1)
     UNION ALL
-    SELECT gw_session_id, parent_request_id, prompt_tokens, completion_tokens,
-           cost_usd, outbound_model, client_model, tenant_id
-    FROM request_logs -- sqlreadguard:allow 会话目录用量聚合的双腿之母表腿（hot 腿见上一分支 UNION ALL；单读母表会漏掉仍在 hot 的近 8h 行）
-    WHERE gw_session_id = ANY($1)
+    SELECT session_id, parent_request_id, prompt_tokens, completion_tokens,
+           cost_usd, model, tenant_id
+    FROM session_turns
+    WHERE session_id = ANY($1)
 ) usage_rows
 WHERE ($2 = '' OR tenant_id = $2)
-GROUP BY gw_session_id`
+GROUP BY session_id`
 
 const catalogSearchSQL = `
 SELECT session_key,
        COALESCE(title, ''),
-       COALESCE(
-         (SELECT m FROM unnest(models_used) AS m
-           WHERE m ILIKE $1 ESCAPE '\'
-           LIMIT 1),
-         NULLIF(btrim(primary_model), ''),
-         '')
+       COALESCE(primary_model, '')
 FROM session_summaries
 WHERE session_key IS NOT NULL
   AND btrim(session_key) <> ''
   AND (session_key ILIKE $1 ESCAPE '\'
     OR COALESCE(title, '') ILIKE $1 ESCAPE '\'
-    OR COALESCE(primary_model, '') ILIKE $1 ESCAPE '\'
-    OR array_to_string(models_used, chr(10)) ILIKE $1 ESCAPE '\')
+    OR COALESCE(primary_model, '') ILIKE $1 ESCAPE '\')
   AND ($2 = '' OR tenant_id = $2)
 ORDER BY last_request_at DESC NULLS LAST
 LIMIT $3`

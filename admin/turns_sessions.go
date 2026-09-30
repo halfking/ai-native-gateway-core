@@ -40,6 +40,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 const (
@@ -435,13 +437,17 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("api_key_id")); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			clauses = append(clauses, fmt.Sprintf(
-				`EXISTS (
+			// ⚠️ 这里必须用字符串拼接而不是 fmt.Sprintf：原生源 SQL 里含
+			// `LIKE 'sys:%'`、`~ '^[0-9]+$'` 等 % 字符，交给 Sprintf 会被当
+			// 成格式动词，产出 `%!'(MISSING)` 并吃掉 argIdx 的参数绑定 ——
+			// 实测生成的 WHERE 里出现了三处 %! 残渣，查询在运行期直接语法错。
+			// 参数序号单独拼，SQL 本体一个字节都不进格式化。
+			clauses = append(clauses, `EXISTS (
 					SELECT 1 FROM public.session_turns_with_current_month ft
-					JOIN public.request_logs_with_current_month rl ON rl.request_id = ft.request_id
+					JOIN `+db.SessionFamilyTurnsSourceSQL()+` rl ON rl.request_id = ft.request_id
 					WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id
-					  AND rl.api_key_id = $%d
-				)`, argIdx))
+					  AND rl.api_key_id = $`+strconv.Itoa(argIdx)+`
+				)`)
 			args = append(args, n)
 			argIdx++
 		}
@@ -644,17 +650,19 @@ func (h *Handler) enrichTurnsSessionMeta(ctx context.Context, sessions []*TurnsS
 		turnArgs = append(turnArgs, tenantID)
 	}
 
-	apiKeyQuery := fmt.Sprintf(`
+	// 同上：原生源 SQL 含 `%` 字符，不能过 fmt.Sprintf，否则 `%!'(MISSING)`
+	// 残渣会污染查询。SQL 用拼接，tenant 片段用 %s 是安全的（它本身无 %）。
+	apiKeyQuery := `
 		SELECT DISTINCT ON (t.session_id)
 			t.session_id,
 			rl.api_key_id,
 			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS api_key_label
 		FROM public.session_turns_with_current_month t
-		JOIN public.request_logs_with_current_month rl ON rl.request_id = t.request_id
+		JOIN ` + db.SessionFamilyTurnsSourceSQL() + ` rl ON rl.request_id = t.request_id
 		LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
 		WHERE t.session_id = ANY($1)
-		  AND rl.api_key_id IS NOT NULL%s
-		ORDER BY t.session_id, t.turn_no DESC`, turnTenant)
+		  AND rl.api_key_id IS NOT NULL` + turnTenant + `
+		ORDER BY t.session_id, t.turn_no DESC`
 
 	rows, err := h.db.Query(ctx, apiKeyQuery, turnArgs...)
 	if err != nil {

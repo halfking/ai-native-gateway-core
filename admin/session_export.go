@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"log/slog"
 	"net/http"
 	"time"
@@ -198,6 +199,36 @@ func (api *SessionExportAPI) handleExport(w http.ResponseWriter, r *http.Request
 }
 
 // buildExport JOIN request_logs + bodies + summaries + attachments，组装迁移包。
+//
+// sessionExportMessagesSQL is factored out so the integration gate can execute
+// this exact text against a real database. Two fatal defects lived in this
+// statement for weeks each — a missing `rl.role` column (42703) and an
+// `”::jsonb` literal (22P02) — and no test caught either, because the SQL only
+// ever existed as an inline literal handed to a live connection. A mock asserts
+// on the string; only PostgreSQL asserts on the SQL.
+//
+// Do not inline it back.
+func sessionExportMessagesSQL() string {
+	return `
+		SELECT
+			rl.id,
+			(CASE
+				WHEN rl.work_type IN ('agent', 'memora') THEN 'assistant'
+				WHEN lower(COALESCE(rl.request_mode, '')) IN ('completion', 'embedding') THEN 'assistant'
+				ELSE 'user'
+			END) AS role,
+			rl.parent_request_id,
+			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
+			rl.attachments, rl.ts,
+			COALESCE(rb.request_body, '{}'::jsonb) AS request_body,
+			COALESCE(rb.response_body, '{}'::jsonb) AS response_body
+		FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		WHERE 1 = 1
+		ORDER BY rl.ts ASC
+	`
+}
+
 func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantID string) (*SessionExport, error) {
 	pack := &SessionExport{
 		SessionMeta: SessionExportMeta{ID: sessionID},
@@ -205,19 +236,20 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 	}
 
 	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
-		// 1. 消息流（含压缩链）：request_logs JOIN request_logs_bodies
-		rows, err := tx.Query(ctx, `
-			SELECT
-				rl.id, rl.role, rl.parent_request_id,
-				rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-				rl.attachments, rl.ts,
-				COALESCE(rb.request_body, ''::jsonb) AS request_body,
-				COALESCE(rb.response_body, ''::jsonb) AS response_body
-			FROM request_logs_with_current_month rl
-			LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
-			WHERE rl.gw_session_id = $1
-			ORDER BY rl.ts ASC
-		`, sessionID)
+		// 1. 消息流（含压缩链）：会话族原生源 JOIN bodies
+		//
+		// role 之前直接 SELECT rl.role，但 request_logs_with_current_month 的
+		// 115 列契约里没有 role（真库 information_schema 查得 0 命中，
+		// canonicalColumnOrderV2 同样没有）—— 这条查询在当前代码状态下就会
+		// 42703 报错，导出接口整条失败。这里改用与 loadSessionPreviewTurns
+		// 相同的判定规则推导方向，保持 ExportMessage.role 的 JSON 契约不变。
+		//
+		// SQL 抽成具名函数（2026-10-01）：这条查询**已经栽过两次**——先是缺列
+		// rl.role，再是 ''::jsonb（PostgreSQL 解析期即报错，整条路径 100% 失败）。
+		// 两次都没有任何测试抓到，因为 SQL 字面量从未真的发给过数据库。
+		// 抽出来是为了让 TestSessionExportMessagesSQL_ExecutesOnRealDatabase
+		// 能执行**这一段本体**，而不是测试里抄一份副本。
+		rows, err := tx.Query(ctx, sessionExportMessagesSQL(), sessionID)
 		if err != nil {
 			return fmt.Errorf("query messages: %w", err)
 		}
