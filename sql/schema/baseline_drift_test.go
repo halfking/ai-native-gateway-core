@@ -145,8 +145,8 @@ func TestDerivedBaselineLagIsSuppliedByMigrations(t *testing.T) {
 // unverified claim into a passing result.
 //
 // The split, stated so the next reader does not have to rediscover it:
-//   * resolvable  — asserted here;
-//   * produces a baseline that applies to an empty database — verified
+//   - resolvable  — asserted here;
+//   - produces a baseline that applies to an empty database — verified
 //     manually on 2026-10-01 (generated baseline applied exit=0, 660
 //     relations, matching the source database), NOT asserted by any test.
 func TestBaselineGeneratorLibraryResolves(t *testing.T) {
