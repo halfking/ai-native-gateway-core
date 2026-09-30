@@ -185,6 +185,7 @@ export default {
     endDate: 'Enddatum',
     openAria: 'Zeitraum auswählen',
     endBeforeStart: 'Ende darf nicht vor dem Start liegen',
+    afterLatest: 'Nicht nach {date}',
     spanTooLong: 'Zeitraum überschreitet {n} Tage',
     pickDate: 'Datum wählen',
     preset: {

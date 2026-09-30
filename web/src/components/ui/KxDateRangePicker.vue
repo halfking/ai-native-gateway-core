@@ -10,7 +10,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElDatePicker, ElPopover } from 'element-plus'
 import type { KxDatePrecision, KxDateRange, KxDateRangePreset } from './kx-date-types'
-import { makeDateRangePresets, rangeSpanDays, shortRangeLabel } from './kxDatePresets'
+import { calendarDayKey, isAfterDay, makeDateRangePresets, rangeSpanDays, shortRangeLabel } from './kxDatePresets'
 import { parseLocalMinute } from '../../utils/datetime'
 
 const props = withDefaults(
@@ -21,6 +21,8 @@ const props = withDefaults(
     precision?: KxDatePrecision
     /** 跨度上限（天），超限禁用应用 */
     maxSpanDays?: number
+    /** 含当天的最晚可选日（YYYY-MM-DD）。晚于该日的草稿不能应用。 */
+    notAfter?: string
     /** 表单场景：无应用按钮，预设/日期变更即时提交 */
     instant?: boolean
     disabled?: boolean
@@ -87,7 +89,18 @@ const draftTooLong = computed(() => {
   )
 })
 
-const canApply = computed(() => !!draftStart.value && !!draftEnd.value && !draftInvalid.value && !draftTooLong.value)
+const draftAfterLatest = computed(() => {
+  if (!props.notAfter) return false
+  return [draftStart.value, draftEnd.value].some((value) => value !== '' && isAfterDay(value, props.notAfter!))
+})
+
+const canApply = computed(
+  () => !!draftStart.value && !!draftEnd.value && !draftInvalid.value && !draftTooLong.value && !draftAfterLatest.value,
+)
+
+function disableAfterLatest(cell: Date): boolean {
+  return !!props.notAfter && isAfterDay(calendarDayKey(cell), props.notAfter)
+}
 
 watch(panelOpen, (open) => {
   if (open) {
@@ -190,6 +203,7 @@ function applyDraft() {
             :value-format="valueFormat"
             :format="displayFormat"
             :clearable="false"
+            :disabled-date="disableAfterLatest"
             :aria-label="t('common.dateRange.startDate')"
             style="width: 100%"
             @change="onDraftChange"
@@ -203,6 +217,7 @@ function applyDraft() {
             :value-format="valueFormat"
             :format="displayFormat"
             :clearable="false"
+            :disabled-date="disableAfterLatest"
             :aria-label="t('common.dateRange.endDate')"
             style="width: 100%"
             @change="onDraftChange"
@@ -212,6 +227,9 @@ function applyDraft() {
       <div v-if="!instant" class="kx-dr-foot">
         <span v-if="draftInvalid === 'endBeforeStart'" class="kx-dr-hint kx-dr-hint--error">
           {{ t('common.dateRange.endBeforeStart') }}
+        </span>
+        <span v-else-if="draftAfterLatest" class="kx-dr-hint kx-dr-hint--error">
+          {{ t('common.dateRange.afterLatest', { date: notAfter }) }}
         </span>
         <span v-else-if="draftTooLong" class="kx-dr-hint kx-dr-hint--error">
           {{ t('common.dateRange.spanTooLong', { n: maxSpanDays }) }}

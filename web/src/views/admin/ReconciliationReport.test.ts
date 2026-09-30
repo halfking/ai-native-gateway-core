@@ -6,7 +6,7 @@ import { createI18n } from 'vue-i18n'
 import zhCN from '../../locales/zh-CN'
 import ReconciliationReport from './ReconciliationReport.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
-import { snapshotDatePresets } from '../../components/reconciliation/snapshotRange'
+import { snapshotDatePresets, snapshotNotAfter } from '../../components/reconciliation/snapshotRange'
 import type { DimensionOptions, RangeReport } from '../../api/reportrollup'
 
 const getReportSummaryMock = vi.fn()
@@ -250,6 +250,7 @@ describe('ReconciliationReport', () => {
     expect(ids).toEqual(['yesterday', 'last7d', 'last30d', 'thisMonth', 'lastMonth'])
     expect(ids).not.toContain('today')
     expect(picker.props('maxSpanDays')).toBe(367)
+    expect(picker.props('notAfter')).toBe(snapshotNotAfter())
     const last7 = presetRange('last7d')
     const today = new Date().toISOString().slice(0, 10)
     expect(last7.end).not.toBe(today)

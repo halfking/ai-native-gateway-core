@@ -183,6 +183,7 @@ export default {
     endDate: 'End date',
     openAria: 'Select time range',
     endBeforeStart: 'End must be on or after start',
+    afterLatest: 'Cannot be after {date}',
     spanTooLong: 'Span exceeds {n} days',
     pickDate: 'Pick a date',
     preset: {
