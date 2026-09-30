@@ -2,8 +2,8 @@
 
 **日期**：2026-09-30
 **工作目录**：`/Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go`
-**分支**：main（已合并 `origin/main`）
-**状态**：本轮改动已提交；**推送前请先 `git fetch` 复核并发会话是否又前进**
+**分支**：main
+**状态**：**已提交并推送到 `origin/main`**（本轮 commit `47c263c9b`；期间为追上并发会话的推送，先后合并 `origin/main` 三次）。并发会话未提交的 WIP **原样保留在工作树，未纳入本次提交**。
 
 ---
 
@@ -21,7 +21,12 @@
 git fetch && git log --oneline origin/main -10 && git status --short
 ```
 
-**本轮处置**：先合并 `origin/main`（120 文件、无冲突）；`VERSION`/`version.json`/`web/public/version.json` 三处与并发会话版本 bump 冲突，按 **build_seq 取高者（2356 > 2353）** 裁决；**并发会话未提交的其余 WIP 一律原样保留、未纳入本次提交**。
+**本轮处置**：为追上并发会话的推送，先后合并 `origin/main` **三次**（120 / 2 / 39 文件），期间撞上两处需要人工裁决的冲突：
+
+- `VERSION` / `version.json` / `web/public/version.json`：与并发会话的版本 bump 冲突，按 **build_seq 取高者（2356 > 2353）** 裁决；
+- `web/src/composables/useLiveStreamUrl.test.ts`：仅注释冲突（vitest 5 Mock 泛型形态说明），取并发会话一侧，**仅注释差异、无功能回退**（已核对 staged diff）。
+
+合并期间为放行 merge，**只对阻塞 merge 的单个文件做过 `git stash push`/`pop`**，并在 `/tmp/r42_insurance/` 留了全量备份；**并发会话未提交的其余 WIP 一律原样保留、未纳入本次提交**。`r42-concurrent-wip-sessionSummaryJump` 那次 stash 经核对与 HEAD **逐字节相同**（实为空变更），未丢失任何内容。
 
 ---
 
