@@ -175,11 +175,6 @@ func (h *Handler) loadSessionDetailDataInTx(ctx context.Context, tx pgx.Tx, tena
 	if timeline == nil {
 		timeline = []RequestEvent{}
 	}
-	// 迭代终检由 loadSessionTimelineInTx 承担（它以 `return timeline, rows.Err()`
-	// 收尾，见 session_timeline_query.go）。此处不得再加 rows.Err()——本函数
-	// 作用域内没有 rows 变量，合并 317f28556 时该检查与它所属的循环被分家，
-	// 留下一个编译不过的孤儿。origin/main 已独立修掉同一处（7627699c3 记录），
-	// 此注释保留以防再次分家。
 	analysis, err := h.buildSessionAnalysisInTx(ctx, tx, tenantID, gwSessionID, timeline)
 	if err != nil {
 		return nil, err
