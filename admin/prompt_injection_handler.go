@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/lib/pq"
 )
 
@@ -977,7 +978,7 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 				writeInternalErrStr(w, "Failed to scan", err)
 				return
 			}
-			_ = json.Unmarshal([]byte(channelsJSON), &s.NotifyChannels)
+			jsoncol.Decode("admin.promptInjection.severityMatrix/notify_channels", []byte(channelsJSON), &s.NotifyChannels)
 			matrix = append(matrix, s)
 		}
 		// 处置矩阵缺行 = 某个 severity 没有动作 = 该级别命中后"不处置"。

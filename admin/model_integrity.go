@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // ModelIntegrityRecord is the JSON shape returned by the events
@@ -189,9 +189,7 @@ func (h *Handler) handleModelIntegrityList(w http.ResponseWriter, r *http.Reques
 			); err != nil {
 				return err
 			}
-			if len(ctxRaw) > 0 {
-				_ = json.Unmarshal(ctxRaw, &item.Context)
-			}
+			jsoncol.Decode("admin.modelIntegrity.list/context", ctxRaw, &item.Context)
 			items = append(items, item)
 		}
 		return rows.Err()
@@ -369,9 +367,7 @@ func (h *Handler) handleModelIntegrityFingerprintDrift(w http.ResponseWriter, r 
 			); err != nil {
 				return err
 			}
-			if len(ctxRaw) > 0 {
-				_ = json.Unmarshal(ctxRaw, &item.Context)
-			}
+			jsoncol.Decode("admin.modelIntegrity.drift/context", ctxRaw, &item.Context)
 			items = append(items, item)
 		}
 		return rows.Err()

@@ -107,6 +107,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/hostedcallback"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
@@ -4671,9 +4672,7 @@ func main() {
 			// Can be disabled by setting model_quality.enabled = false in settings_kv.
 			mqEnabledRaw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.enabled", "")
 			mqEnabled := true // default enabled
-			if len(mqEnabledRaw) > 0 {
-				_ = json.Unmarshal(mqEnabledRaw, &mqEnabled)
-			}
+			jsoncol.Decode("gateway.modelQuality/enabled", mqEnabledRaw, &mqEnabled)
 
 			if mqEnabled {
 				var mqDataDir, mqBaseURL, mqAPIKey string
@@ -4684,7 +4683,7 @@ func main() {
 
 				// 读取data_dir
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.data_dir", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqDataDir)
+					jsoncol.Decode("gateway.modelQuality/data_dir", raw, &mqDataDir)
 				}
 				if mqDataDir == "" {
 					mqDataDir = "./data"
@@ -4692,7 +4691,7 @@ func main() {
 
 				// 读取base_url
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.base_url", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqBaseURL)
+					jsoncol.Decode("gateway.modelQuality/base_url", raw, &mqBaseURL)
 				}
 				if mqBaseURL == "" {
 					mqBaseURL = "http://localhost:8787"
@@ -4700,7 +4699,7 @@ func main() {
 
 				// 读取api_key
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.api_key", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqAPIKey)
+					jsoncol.Decode("gateway.modelQuality/api_key", raw, &mqAPIKey)
 				}
 				useDedicatedKey := mqAPIKey != ""
 				if mqAPIKey == "" {
@@ -4709,7 +4708,7 @@ func main() {
 
 				// 读取interval_hours
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.interval_hours", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqIntervalHours)
+					jsoncol.Decode("gateway.modelQuality/interval_hours", raw, &mqIntervalHours)
 				}
 				if mqIntervalHours < 1 {
 					mqIntervalHours = 24
@@ -4717,12 +4716,12 @@ func main() {
 
 				// 读取use_lite_benchmark
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.use_lite_benchmark", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqUseLite)
+					jsoncol.Decode("gateway.modelQuality/use_lite_benchmark", raw, &mqUseLite)
 				}
 
 				// 读取alert_threshold
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.alert_threshold", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqAlertThreshold)
+					jsoncol.Decode("gateway.modelQuality/alert_threshold", raw, &mqAlertThreshold)
 				}
 				if mqAlertThreshold < 1.0 {
 					mqAlertThreshold = 5.0
@@ -4730,7 +4729,7 @@ func main() {
 
 				// 读取test_timeout_seconds
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.test_timeout_seconds", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqTimeoutSec)
+					jsoncol.Decode("gateway.modelQuality/test_timeout_seconds", raw, &mqTimeoutSec)
 				}
 				if mqTimeoutSec < 10 {
 					mqTimeoutSec = 30
@@ -4753,7 +4752,7 @@ func main() {
 				// 需要 DB pool + fernet/keyring 才能解密凭据并发现节点。
 				var mqEnablePerNode bool
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.enable_per_node", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqEnablePerNode)
+					jsoncol.Decode("gateway.modelQuality/enable_per_node", raw, &mqEnablePerNode)
 				}
 				mqConfig.EnablePerNodeTesting = mqEnablePerNode
 

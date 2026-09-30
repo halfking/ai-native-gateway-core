@@ -62,3 +62,69 @@ func retireScanFloor(since, until time.Time) time.Time {
 	}
 	return floor
 }
+
+// retireClosedDimStatement 生成单个维度的闭分钟退役语句。dim_key 表达式
+// 与 error_kind 的 failure 过滤都来自 rollupDimQueries 的同一拼接口径——
+// 两套口径一旦漂移，NOT EXISTS 会把视图仍在产出的键误判成悬空键删掉。
+func retireClosedDimStatement(dimKeyExpr string) string {
+	return `
+DELETE FROM request_stats_dim_minute AS m
+WHERE m.bucket >= date_trunc('minute', $1::timestamptz)
+  AND m.bucket < date_trunc('minute', $2::timestamptz)
+  AND m.dim_type = $3
+  AND NOT EXISTS (
+    SELECT 1
+    FROM request_logs_with_current_month AS r
+    WHERE r.request_status IN ('success', 'failure', 'rate_limited')
+      AND ($3 <> 'error_kind' OR r.request_status = 'failure')
+      AND r.ts >= $1
+      AND r.ts < date_trunc('minute', $2::timestamptz)
+      AND date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket
+      AND COALESCE(NULLIF(r.tenant_id, ''), 'default') = m.tenant_id
+      AND ` + dimKeyExpr + ` = m.dim_key
+  )
+`
+}
+
+// retireClosedErrorDrillMinuteSQL 同族退役 error 钻取表。model_name 的哨兵
+// 与 rollupDims 对齐用空串（累加器侧 minute_entry 写 '__unknown__'，两者
+// 不同恰好让累加器键落在「视图不产出」侧，由本语句清掉、视图键由整键
+// 替换管住——这正是跨分钟 turn 双计的消除路径）。
+const retireClosedErrorDrillMinuteSQL = `
+DELETE FROM request_stats_error_drill_minute AS m
+WHERE m.bucket >= date_trunc('minute', $1::timestamptz)
+  AND m.bucket < date_trunc('minute', $2::timestamptz)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM request_logs_with_current_month AS r
+    WHERE r.request_status = 'failure'
+      AND r.ts >= $1
+      AND r.ts < date_trunc('minute', $2::timestamptz)
+      AND date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket
+      AND COALESCE(NULLIF(r.tenant_id, ''), 'default') = m.tenant_id
+      AND COALESCE(NULLIF(r.error_kind, ''), '__unknown__') = m.error_kind
+      AND COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '') = m.model_name
+      AND COALESCE(r.provider_id, 0) = m.provider_id
+      AND COALESCE(NULLIF(r.client_profile, ''), '') = m.client_profile
+  )
+`
+
+// retireClosedDims 对维度表与 error 钻取表做与主表同形态的闭分钟退役：
+// 跨分钟边界的 turn，累加器按请求完成时刻落 M 分钟的维度键，视图按 turn
+// 时刻落 M+1——整键替换永远盖不住 M 分钟的累加器键，不退役就双计
+// （12h 审计 P2-2）。迟到冲刷重扫与主表共用 retireScanFloor。
+func (w *StatsMinuteRollup) retireClosedDims(ctx context.Context, since, until time.Time) error {
+	if w == nil || w.db == nil {
+		return nil
+	}
+	floor := retireScanFloor(since, until)
+	for _, dq := range rollupDimQueries {
+		if _, err := w.db.Exec(ctx, retireClosedDimStatement(dq.dimKey), floor, until, dq.dimType); err != nil {
+			return fmt.Errorf("retire closed dim minute keys (%s): %w", dq.dimType, err)
+		}
+	}
+	if _, err := w.db.Exec(ctx, retireClosedErrorDrillMinuteSQL, floor, until); err != nil {
+		return fmt.Errorf("retire closed error-drill minute keys: %w", err)
+	}
+	return nil
+}
