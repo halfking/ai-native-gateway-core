@@ -177,6 +177,16 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
+	// R67-B 修正：本函数原先**没有** `defer rows.Close()`。此前循环总是跑到
+	// 耗尽，而 pgx 在 `Next()` 返回 false 时会自动 Close，所以那个洞是潜伏的。
+	// R66 在循环中加了 `return nil, ...`（取证包必须完整，见下），这条路径
+	// 于是变得可达：rows 会在结果集仍挂载时被丢下，而 tx 是**调用方持有**的
+	// ——调用方随后以半读的结果集去 rollback / 释放事务。
+	//
+	// 注意形式差异：另外两个函数走 `e.store`（database/sql，`Close()` 返回
+	// error，故写作 `defer func(){ _ = rows.Close() }()`）；此处是
+	// `tx.Query`（pgx.Rows，`Close()` 无返回值），只能直接 defer。
+	defer rows.Close()
 
 	for rows.Next() {
 		var (

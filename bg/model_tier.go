@@ -134,11 +134,15 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				}
 			}
 		}
-		// R66: 静默截断会让运营配置的常用模型静默退化为「非常用」，
-		// 深探随之停摆且无痕迹。
+		// R67-B 修正：这里原先只 warn 就继续，随后把**整个**截断集合写进
+		// `m.cur.Store(fs)`，永久替换掉之前那份完整的 featured 集合。本函数
+		// 与 hotconfig.reload 的形状完全相同（整份配置的全量替换），而 R66
+		// 正因如此把 hotconfig 升级成硬失败——两处口径不一致。
+		// 截断的集合会让高频模型静默退出深探范围，且直到下一个 tick 才会自愈。
 		if err := rows.Err(); err != nil {
-			slog.Warn("model_tier: static featured row iteration aborted; set truncated",
+			slog.Warn("model_tier: static featured row iteration aborted; keeping previous featured set",
 				"tenant", staticTenant, "error", err)
+			return
 		}
 	} else {
 		slog.Warn("model_tier: load static featured failed", "tenant", staticTenant, "error", err)
@@ -181,10 +185,11 @@ func (m *ModelTier) refresh(ctx context.Context) {
 					fs.usage[model] = struct{}{}
 				}
 			}
-			// R66: 同上——Top-N 截断会让高频模型退出深探范围。
+			// R67-B 修正：同上。usage 段截断会让高频模型退出深探范围。
 			if err := rows.Err(); err != nil {
-				slog.Warn("model_tier: usage top-N row iteration aborted; set truncated",
+				slog.Warn("model_tier: usage top-N row iteration aborted; keeping previous featured set",
 					"window_hours", windowHours, "top_n", topN, "error", err)
+				return
 			}
 		} else {
 			slog.Warn("model_tier: load usage top-N failed", "error", err)
