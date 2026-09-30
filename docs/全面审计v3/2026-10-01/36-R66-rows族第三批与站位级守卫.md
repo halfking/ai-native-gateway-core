@@ -192,13 +192,29 @@ continue、直接把零值行 append 进结果**——状态端点会报出一�
 | **站位级守卫** | `go test ./internal/rowsguard/ -count=1` | **7 测试全绿，0 违规 / 764 站点** |
 | 共享 helper | `go test ./internal/dbrows/ -count=1` | **ok** |
 | 守卫判别力（变异） | 抽掉多循环文件里唯一的 `rows.Err()` 消费点 | **独立报红**并指出 `file:line (FuncName, recv)`；还原恢复 |
-| **admin 真库全量** | `go test ./admin/ -count=1`（DSN → 33.4 万行真实库） | **ok 80.2s，0 FAIL** |
+| **admin 真库全量** | `go test ./admin/ -count=1`（DSN → 33.4 万行真实库） | 合并前 **ok 80.2s 0 FAIL**；合并上游 11 提交后仅 `TestReportRollup_HTTPContract` 红（`report_snapshots` 0 行，见 §5，合并前在本轮提交上同样红） |
 | **admin race** | `go test -race ./admin/ -count=1` | **ok 93.2s，无 DATA RACE** |
 | 其余改动包 | center/discovery/credentialstate/moduleexec/sessionforensics/hotconfig/collector/handlers/registry/settings/telemetry 等 | 全部 ok |
 | gofmt | 本轮改动文件 | 干净 |
 
 **判定基线纪律**：本轮所有 build/测试判定取 `${PIPESTATUS[0]}`，**不用
 `&&` 链尾**（见 §2.6 教训）。
+
+## 4.1 合并实录（与并发会话的三方交汇）
+
+本轮提交 `8a6142263` 后 push 被拒（并发会话又推了 11 提交），合并时 3 处冲突：
+
+| 文件 | 裁决 |
+|---|---|
+| `admin/session_panorama_handler.go` | **取上游**。上游 `7627699c3` 已独立修掉同一处孤儿 `rows.Err()` 编译事故（与我 §2.6 的 P0 是同一个问题，两条会话各自撞上）；保留本轮解释性注释并补记上游修法出处，防再次分家 |
+| `docs/.../README.md` | 两侧均为追加 → **保留双方**（上游批判复审在前，本轮条目在后） |
+| `docs/.../03-执行方案与进度.md` | 同上 |
+
+**值得记录的一点**：上游在 `7627699c3` 里把这次编译事故记为「P0 编译事故（origin/main 悬空 rows.Err）」——**两条互不知情的会话撞上了同一个缺陷**。这类「合并裁决时把检查与它所属的循环分家」的失效模式，靠人 review 很难稳定拦住；本轮把它写进注释就是为降低复发率。
+
+合并后复验：`go build ./...` exit 0；`go vet ./admin/... ./bg/...` exit 0；`internal/rowsguard` + `internal/dbrows` 全绿，**守卫 0 违规 / 764 站点**（上游同时改了 102 个同域文件，守卫仍然全绿——这正是把判据做成站位级而非文件级的价值）。
+
+**操作教训**：为验证某个红门是否既存而 `git stash push` 时，**若当时正处于 merge 中途，stash 会连带中止合并**，之后 `git checkout -- .` 会把已解决的合并结果一并回退。取证应在**干净提交态**上做，或用 `git worktree` 另开一棵树——本轮因此多做了一次合并。
 
 ## 5. 保持开放（登记不修）
 
@@ -210,6 +226,7 @@ continue、直接把零值行 append 进结果**——状态端点会报出一�
 | `autoupdate.TestPgxStore_RecordUpdateReport` | 生产 `releaseID=0` 回退（注释称「允许主控端先上报」）与 `instance_release_status_release_id_fkey` 冲突 → `23503`，随后测试 nil 解引用 panic | 产品语义裁决：放宽 FK vs. 生产侧拒绝未知版本上报，**两条互斥** |
 | `bg.TestLedgerReconciler_RunOnce_RealDB`、`bg.TestMigration762ProjectBackfillChain_RealDB` | 既存夹具/迁移状态漂移 | 待专项 |
 | `provider.TestGetProbeCandidates` | 夹具写 `providers.name`，该列已不存在 → `42703` | 夹具漂移（同 35 号记录的「601 已删列」族） |
+| `admin.TestReportRollup_HTTPContract` | 测试自报「`report_snapshots` 为空：DSN 已指定却无数据」；真库该表 **0 行**，属需要日聚合结果的库才有数据的测试 | 环境/夹具前提（非本轮引入，合并前在本轮提交上同样红） |
 
 **取证实录**：首轮我曾把 `autoupdate` 判为「HEAD 通过」——那次**忘导出
 DSN，测试根本没跑**。这与 §2.6 的退出码假绿是同一族错误的第三个变体：
