@@ -37,7 +37,7 @@ type AppRouter = ReturnType<typeof makeRouter>
 type RouterPushArgs = Parameters<AppRouter['push']>
 
 function spyOnRouterPush(router: AppRouter) {
-  const spy = vi.fn<RouterPushArgs, ReturnType<AppRouter['push']>>()
+  const spy = vi.fn<(...args: RouterPushArgs) => ReturnType<AppRouter['push']>>()
   const realPush = router.push.bind(router)
   router.push = ((...args: RouterPushArgs) => {
     spy(...args)

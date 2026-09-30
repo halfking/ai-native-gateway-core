@@ -90,7 +90,7 @@ export function tenantDist(report: RangeReport, metric: Metric): DistRow[] {
       { text: fmtCompact(row.totals.total_tokens) },
       { text: fmtInt(row.totals.credits_charged), sub: fmtCny(row.totals.internal_cost_cents) },
       { text: fmtPct(row.totals.error_rate), tone: failTone(row.totals.error_rate) },
-      { text: requestShare(row.totals.request_count, totalReq) },
+      { text: requestShare(vals[index], total) },
     ],
   }))
 }
@@ -144,11 +144,14 @@ export function personDist(report: RangeReport): DistRow[] {
   }))
 }
 
-export function dayDist(report: RangeReport, showCost: boolean): DistRow[] {
+export function dayDist(report: RangeReport, showCost: boolean, uncoveredLabel?: string): DistRow[] {
+  const covered = report.snapshot_dates
+  const coveredSet = Array.isArray(covered) ? new Set(covered) : null
   const useCost = showCost && report.view !== 'internal'
   return (report.days ?? []).map((row) => ({
     key: row.date,
     name: row.date,
+    sub: coveredSet && !coveredSet.has(row.date) && uncoveredLabel ? uncoveredLabel : undefined,
     pct: 0,
     cells: [
       { text: fmtInt(row.totals.request_count) },

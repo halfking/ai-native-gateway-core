@@ -15,8 +15,9 @@ import {
 } from '../../api/reportrollup'
 import { isPlatformOpsView } from '../../store'
 import { dayDist, modelDist, personDist, providerDist, tenantDist, type Metric } from '../../components/reconciliation/distRows'
-import { matchQuick, quickRange, topReasons, type QuickRange } from '../../components/reconciliation/format'
+import { topReasons } from '../../components/reconciliation/format'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
+import { defaultSnapshotRange } from '../../components/reconciliation/snapshotRange'
 
 function numQuery(value: unknown): number | undefined {
   if (typeof value !== 'string' || value === '') return undefined
@@ -51,7 +52,7 @@ export function useReconciliationPage() {
   const report = ref<RangeReport | null>(null)
   const dims = ref<DimensionOptions | null>(null)
   const view = ref<ReportView>(route.query.view === 'internal' ? 'internal' : 'provider')
-  const range = ref<[string, string]>(quickRange('7d'))
+  const range = ref<[string, string]>(defaultSnapshotRange())
   const filters = ref<ReportFilter>({
     provider_id: numQuery(route.query.provider_id),
     model: typeof route.query.model === 'string' ? route.query.model : undefined,
@@ -63,7 +64,6 @@ export function useReconciliationPage() {
 
   const showCost = computed(() => isPlatformOpsView())
   const hasData = computed(() => !!report.value && report.value.snapshot_dates.length > 0)
-  const activeQuick = computed(() => matchQuick(range.value))
   const kxRange = computed(() => ({ start: range.value[0], end: range.value[1] }))
   const coverageText = computed(() => {
     if (!report.value) return ''
@@ -82,7 +82,9 @@ export function useReconciliationPage() {
     report.value ? modelDist(report.value, metric.value, showCost.value, reasonFilter.value) : [],
   )
   const personRows = computed(() => (report.value && view.value === 'internal' ? personDist(report.value) : []))
-  const dayRows = computed(() => (report.value ? dayDist(report.value, showCost.value) : []))
+  const dayRows = computed(() => (
+    report.value ? dayDist(report.value, showCost.value, t('reports.unaggregatedDay')) : []
+  ))
   const moneyHeader = computed(() => (moneyMode.value === 'cost' ? t('reports.legendCost') : t('reports.internalCredits')))
   const primaryHeaders = computed(() =>
     view.value === 'provider'
@@ -165,11 +167,6 @@ export function useReconciliationPage() {
 
   function setMetric(next: Metric) {
     metric.value = next
-  }
-
-  function applyQuick(kind: QuickRange) {
-    range.value = quickRange(kind)
-    reload()
   }
 
   function applyRange(value: KxDateRange) {
@@ -281,9 +278,9 @@ export function useReconciliationPage() {
 
   return {
     t, loading, dimsLoading, exporting, rerunning, errorText, metric, reasonFilter, daysOpen,
-    report, dims, view, filters, showCost, hasData, activeQuick, kxRange, coverageText, legacyDays,
+    report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
     reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
     personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
-    applyQuick, applyRange, exportXlsx, rerunEndDay, reload, clearReason, setView, setMetric,
+    applyRange, exportXlsx, rerunEndDay, reload, clearReason, setView, setMetric,
   }
 }

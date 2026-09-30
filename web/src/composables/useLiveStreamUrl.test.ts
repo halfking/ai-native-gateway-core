@@ -16,12 +16,11 @@ function makeConnection(state: ConnectionState) {
   return ref<ConnectionState>(state)
 }
 
-// vitest 1.x 的 Mock/vi.fn 是双泛型 <TArgs extends any[], R> 元组形态，
-// 不是 vitest 2/3 的 <(args) => R> 单泛型形态
-type TFn = Mock<[key: string, named?: Record<string, unknown>], string>
+// vitest 5 Mock 只接受一个函数类型参数。
+type TFn = Mock<(key: string, named?: Record<string, unknown>) => string>
 
 function makeT(): TFn {
-  return vi.fn<[key: string, named?: Record<string, unknown>], string>((key, named) => {
+  return vi.fn<(key: string, named?: Record<string, unknown>) => string>((key, named) => {
     if (key === 'dashboard.liveStream.sseTestOk') return `OK ${named?.url}`
     if (key === 'dashboard.liveStream.sseTestFail') return `FAIL ${named?.status} ${named?.url}`
     return key
@@ -51,7 +50,7 @@ function mountHarness(
 
 describe('useLiveStreamUrl', () => {
   let connection: ReturnType<typeof makeConnection>
-  let reconnect: Mock<[], void>
+  let reconnect: Mock<() => void>
   let t: ReturnType<typeof makeT>
   let alertSpy: ReturnType<typeof vi.fn>
 
@@ -61,7 +60,7 @@ describe('useLiveStreamUrl', () => {
     localStorage.clear()
     __resetCustomEndpointForTest()
     connection = makeConnection('idle')
-    reconnect = vi.fn<[], void>()
+    reconnect = vi.fn<() => void>()
     t = makeT()
     alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {}) as unknown as ReturnType<typeof vi.fn>
   })

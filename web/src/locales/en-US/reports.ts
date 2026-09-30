@@ -11,6 +11,7 @@ export default {
   rerunFailed: 'Rerun failed',
   // Coverage / empty state
   daysCovered: 'days of snapshots',
+  unaggregatedDay: 'Not aggregated',
   noSnapshots: 'No report snapshots in this range (the daily aggregation job generates the previous day in the early morning, or use "Rerun End Day" to backfill)',
   // Summary cards
   requests: 'Requests',
