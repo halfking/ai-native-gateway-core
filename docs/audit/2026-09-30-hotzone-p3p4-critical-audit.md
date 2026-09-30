@@ -1,9 +1,9 @@
 # hotzone P3+P4+P5(指标)批判式审计(2026-09-30)
 
-- 审计对象: docs/storage/2026-09-24-hotzone-dual-mode-plan.md 的 P3(H2 full 装配)、P4(H3 镜像接线)、P5(H5 指标分维度;文档子项未做,见 §六)
+- 审计对象: docs/storage/2026-09-24-hotzone-dual-mode-plan.md 的 P3(H2 full 装配)、P4(H3 镜像接线)、P5(H5 指标分维度 + 文档子项,均已关闭)
 - 提交谱系: `5250eede0`(P3 装配+门控+测试)→ `4edc7574f`(P4 两接线点)→ `b67fe45b4`(P4 测试)→ `205864527`(P5 指标+接线+gofmt 补正);哈希均为 push 落定后终校值
 - 方法: 逐验收项对照代码锚点 + 子代理并行实勘(telemetry 侧实勘纠正了主代理的锚点假设,见 §三 F1)+ HEAD=205864527 干净 worktree(/tmp/hotzone-p3p4,独立 GOCACHE=/tmp/gocache-hotzone)全量回归
-- 状态: P3/P4 关闭;P5 指标部分关闭、文档子项(README/ADR/deployment-guide)未做
+- 状态: P3/P4 关闭;P5 指标与文档子项(README/ADR/deployment-guide)全部关闭。F5(第三落库点接镜像)2026-10-01 关闭;F3/F4 为留档项(设计决定,非缺口)
 
 ---
 
@@ -55,7 +55,7 @@ P5 指标分维度落地并顺带闭合了 hotzone_enabled 恒 false 的预存�
 | P5-3 | 未接线路径行为兼容 | modeIndexOf 未盖章(0)/未知标签 → -1 不落桶,仅累计无维度计数;TestStorageMetricsUnknownModeNotBucketed | ✅ |
 | P5-4 | hotzone_enabled 恒 false 预存缺口闭合(审计 F2 关联) | SetStorageMode/SetHotZoneEnabled 接线:full 装配(:226/:228 单 defer 出口)、lite(:323/:466/:468);TestStorageMetricsHotZoneEnabledFlag | ✅ |
 | P5-5 | 并发安全 | 固定两槽 [2]atomic 而非 map+锁;TestStorageMetricsModeConcurrent(100×50 -race 精确可加) | ✅ |
-| P5-6 | README 增补/ADR amendment/deployment-guide 配置矩阵 | — | ⬜ 未做(§六挂账) |
+| P5-6 | README 增补/ADR amendment/deployment-guide 配置矩阵 | R36(`e968d73f3`)落地:README「全量模式热区」章节(`docs/storage/README.md:86`)、deployment-guide hotzone 配置矩阵三通道(`docs/storage/deployment-guide.md:230-245`,含「装配门只认 config 通道」语义)、ADR-0019 Amendment(`docs/adr/2026-09-05-dual-mode-storage-package-layout.md`,+12 行) | ✅ |
 
 ## 三、发现表
 
@@ -68,7 +68,7 @@ P5 指标分维度落地并顺带闭合了 hotzone_enabled 恒 false 的预存�
 | D3 | 设计决定(方案留白) | full 热区 FileCache TTL 无独立旋钮,实现取 TTL=HotZone.RetentionHours(读侧过期与删侧 retention 同界);settings 运行期调小 retention 时删侧先行——缓存纯语义无损(miss 回源 PG),lite 侧 resolveCacheTrimRetention 钳制不适用(两者同源即天然对齐) | 注释留档;如需独立 TTL 旋钮属新需求 |
 | F3 | 挂账(不阻断) | 重复镜像写放大:telemetry worker 对失败持久化重试,同一 entry 二次进入 persistRequestLog 会重复投递;同 (tenant,requestID,direction) 路径 gzip 覆盖、内容一致,幂等无害但多一次写。ReplayFallback(:664-674)绕过 persistRequestLog,重放不触发镜像(灾备重放不补镜像,可接受) | 留档;量级可观测(mirror.by_mode 计数) |
 | F4 | 挂账(对账口径) | ① 镜像投递的是换算后、body summary 摘要前的原文——开启 requestBodiesSummaryEnabled 的 tenant 上镜像=全文、PG=摘要信封,「gunzip 与 PG 内容一致」抽查会对不上;② strPtrToJSON 把空串/非法 JSON 收敛 "{}" 且镜像侧跳过 "{}",PG 侧 "{}" 照落库——对账脚本需豁免 null/{} 行 | 留档;对账脚本设计时按此口径 |
-| F5 | 挂账(第三落库点) | admin HTTP ingest(/api/telemetry,admin/telemetry.go:446-478)也调 upsertRequestLogBodies(仅 req/resp),未接镜像——方案 §3-H3 说「两处」,此为第三处;ingest 入口是否有真实流量需 owner 拍板后再接 | 留账待 owner 决策 |
+| F5 | **缺陷,已修(2026-10-01 owner 拍板「接镜像」)** | admin HTTP ingest(/api/telemetry,admin/telemetry.go)也调 upsertRequestLogBodies(仅 req/resp),未接镜像——方案 §3-H3 说「两处」,此为第三处 | `admin.SetIngesterBodyMirror` 注入(atomic.Pointer 承载,main goroutine 写 / ingest worker 读),`persistRequestLog` **入口**投递(与 telemetry client 同边界,PG 停机窗口仍落镜像);tenant 取 `nonEmptyDefault(TenantID)`,与同事务 PG 行 tenant_id 严格同源(本路径无 application code 字段,故不复制 O2 的租户分裂);仅 req/resp 两件套。镜像换算/可镜像判定下沉 `storage/file.ConvertBodyPayload`+`MirrorablePayload` 作单一事实源,telemetry 落库侧 `strPtrToJSON` 与 `mirrorableBody` 同步转调(消除两侧各写一份的失配面)。测试 `admin/telemetry_ingest_body_mirror_test.go`(变异验证:摘掉入口投递即红) |
 | F6 | 观察项 | gofmt:CJK 注释行首全角括号会被 gofmt 归一,首轮提交文件未逐个过 gofmt(P5 提交补正);turn_writer.go/turn_writer_test.go/empty_response_metrics_test.go 等历史文件本就未格式化,未碰 | 本轮触碰文件已全部 gofmt 干净 |
 
 ## 三.5、同日修订轮(交付后批判式复审,实勘三点 + 修复两项)
@@ -105,7 +105,7 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
 
 1. ~~P5 文档子项未做~~ **已由并行 R36 轮闭环(e968d73f3),本轮复核属实**:README「全量模式热区」章节(README.md:86-92)、deployment-guide hotzone 配置矩阵(:230-243,含「装配门只认 config 通道」语义,与本文档 D1 一致)、ADR-0019 Amendment(2026-09-30)。
 2. ~~**E2E 部署级验证未做**~~ **已闭环(2026-09-30 当日,local 全栈)**:full+热区开关对照、/metrics/storage 三新键实读(跨重启 L1.5 hits=3)、PG 硬停演练(镜像 errors=0 持写、恢复无结构性损坏)全部实证;新发现部署缺口 D1(管线 env 白名单缺 STORAGE_MODE/HOTZONE_*)。证据: docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md
-3. F3 重复镜像写放大、F4 对账口径豁免、F5 admin ingest 第三落库点(见 §三)。
+3. F3 重复镜像写放大、F4 对账口径豁免(见 §三)。~~F5 admin ingest 第三落库点~~ **2026-10-01 已接镜像关闭**(owner 拍板,见 §三 F5 行)。
 4. full 热区 bodiesStore 实例已装配但**尚无写入方**(session bodies 镜像走的是 RequestMirror/requests 子树;FileBodiesStore 的消费方属后续波次)——目录生命周期已归 Shutdown/trimmer 管,先行装配。
 5. 主树并行会话 WIP 未跟踪文件仍在,任何全包测试继续走干净 worktree。
 
@@ -113,6 +113,6 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
 
 - ~~部署演练~~ **已完成(2026-09-30 当日)**:见 docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md
   (新遗留:管线 env 白名单 D1、.env.local D2、镜像对账口径 O2/O3、PG 停机遥测丢失 O5)。
-- F5 决策:admin ingest 是否接镜像,owner 拍板。
+- ~~F5 决策:admin ingest 是否接镜像,owner 拍板。~~ **已决策并落地(2026-10-01)**:owner 选「接镜像,补齐第三落库点」,实现与测试见 §三 F5 行。
 - 若做「full 热区 session_bodies 写入方」(§五.4),复用 rt.bodiesStore 实例,勿再建第二实例(AsyncFileWriter 双实例会双倍写 worker)。
 - 对账脚本(若建):按 F4 口径豁免 null/{} 行,并注意 v2 侧镜像以 tx.Commit 为界(修订轮 R-A)、telemetry 侧以 persistRequestLog 入口为界(天然含 PG-down 投递)——两侧孤儿语义不同向,脚本按「镜像可能多于 PG」单向容错。

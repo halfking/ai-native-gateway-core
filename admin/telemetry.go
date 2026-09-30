@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	filestore "github.com/kaixuan/llm-gateway-go/storage/file"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -137,6 +138,87 @@ type telemetryIngester struct {
 	failTransient uint64 // atomic
 	failPermanent uint64 // atomic
 	failRetried   uint64 // atomic
+
+	// 2026-10-01 F5：热区请求侧 body 镜像的投递缝（2026-09-24 方案 H3）。
+	// admin HTTP ingest（/api/telemetry/request-log）是
+	// request_logs_bodies_hot 的**第三落库点**——方案 §3-H3 只点了 telemetry
+	// client 与 session v2 两处，本路径同样调 upsertRequestLogBodies，此前未接
+	// 镜像，灾备取数会漏掉这批正文。
+	//
+	// 与 telemetry client 的 BodyMirrorFunc 同一函数形态（cmd/gateway
+	// storageRuntime.bodyMirrorFn() 一处装配、三处注入），故不另立类型。
+	//
+	// 用 atomic.Pointer 承载而非裸字段：SetIngesterBodyMirror 在 main
+	// goroutine 调用、persistRequestLog 在 ingest worker goroutine 读，
+	// 需 race-free 共享（与上面 redisClient 同一理由）。
+	bodyMirror atomic.Pointer[BodyMirrorFunc]
+}
+
+// BodyMirrorFunc 是热区请求侧 body 镜像的投递回调（2026-09-24 方案 H3）。
+// 与 telemetry.BodyMirrorFunc / session v2.BodyMirrorFunc 同一函数形态：
+// direction 字面量取 storage/file.RequestDirection 同词表（req/resp/out）。
+type BodyMirrorFunc func(tenantID, requestID, direction string, payload json.RawMessage, at time.Time)
+
+// SetIngesterBodyMirror 注入热区请求侧 body 镜像回调（F5）。由
+// cmd/gateway/main.go 在 StartIngester 之后调用，形态与
+// telemetry.Client.SetBodyMirror / SessionWriterV2.SetBodyMirror 一致。
+// 未注入（nil）时 persistRequestLog 纯落库，行为与 F5 之前完全一致。
+func SetIngesterBodyMirror(fn BodyMirrorFunc) {
+	if ingester == nil {
+		return
+	}
+	ingester.bodyMirror.Store(&fn)
+}
+
+// bodyMirrorFn 读回注入的镜像闭包；nil-safe。
+func (t *telemetryIngester) bodyMirrorFn() BodyMirrorFunc {
+	if t == nil {
+		return nil
+	}
+	if p := t.bodyMirror.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// mirrorRequestBodies（F5）把 upsertRequestLogBodies 落库的 req/resp 两件套
+// 投递给热区镜像。换算与落库严格同源（storage/file.ConvertBodyPayload：
+// nil → "null"，空串/非法 JSON → "{}"），可镜像判定同源
+// （MirrorablePayload：null/{} 跳过，无正文可对账）。
+//
+// 与 telemetry client 的三点差异，都是本路径的结构性事实，不是遗漏：
+//  1. **没有 out**：requestLogInput 无 outbound body 字段（admin ingest 的
+//     契约只有 req/resp），故只投两件套。
+//  2. **tenant 口径** = nonEmptyDefault(e.TenantID)，即 PG 行的 tenant_id。
+//     telemetry client 取 ApplicationCode||TenantID（E2E 演练 O2 记录的
+//     租户分裂源于此），而 admin ingest 契约里根本没有 application code，
+//     取 TenantID 才能让「镜像目录 == PG 行租户」成立，不引入第四种口径。
+//     注意 nonEmptyDefault 对空/纯空白返回 "default" 而非空串，故本函数
+//     **恒有**合法 tenant 段，无需空值守卫——"default" 同时是合法目录段与
+//     PG 行的 tenant_id，两侧仍然对齐。
+//  3. **投递边界** = persistRequestLog 入口（与 telemetry client 同），不是
+//     tx.Commit 之后：本路径与 telemetry client 语义对齐，PG 停机窗口完成的
+//     请求镜像仍落盘（E2E 演练 O5 实测该性质），代价是镜像可能多于 PG，
+//     对账按 F4 口径单向容错。与 session v2 的 commit 边界不同向，是
+//     刻意保留的不对称（session v2 要覆盖「先投递后回滚」的孤儿镜像）。
+func (t *telemetryIngester) mirrorRequestBodies(e *requestLogInput) {
+	mirror := t.bodyMirrorFn()
+	if mirror == nil || e == nil || e.RequestID == "" {
+		return
+	}
+	// tenant 与同事务内 request_logs_hot 行的 tenant_id 严格同源（同一个
+	// nonEmptyDefault 归一），镜像目录与 PG 行租户不可能分裂。
+	tenant := nonEmptyDefault(e.TenantID)
+	// request_logs_hot.ts 由 INSERT 侧 now() 生成、bodies_hot 复制该 ts；本
+	// 路径无 EventAt 盖章（requestLogInput 不带时间戳字段），用投递时刻近似，
+	// 日目录粒度下与 PG 侧同属一日。
+	at := time.Now()
+	if req := filestore.ConvertBodyPayload(e.RequestBody); filestore.MirrorablePayload(req) {
+		mirror(tenant, e.RequestID, "req", json.RawMessage(req), at)
+	}
+	if resp := filestore.ConvertBodyPayload(e.ResponseBody); filestore.MirrorablePayload(resp) {
+		mirror(tenant, e.RequestID, "resp", json.RawMessage(resp), at)
+	}
 }
 
 // SetIngesterRedisClient wires the optional Redis client used by
@@ -283,6 +365,14 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	totalTok := calcTotal(e.PromptTokens, e.CompletionTokens)
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
 	search := buildSearchText(e)
+
+	// 2026-10-01 F5：本路径是 request_logs_bodies_hot 的第三落库点
+	// （方案 §3-H3 只点了 telemetry client 与 session v2），此前未接热区镜像。
+	// 投递点选在入口（Begin 之前）：与 telemetry client.persistRequestLog 顶部
+	// 同一边界语义——入口即投递，PG 停机/degraded 早退都不会让这批正文失去
+	// 灾备副本（E2E 演练 O5 实测的「PG 不可用时镜像仍写入」性质）。投递内容
+	// 与换算口径见 mirrorRequestBodies 的注释。
+	t.mirrorRequestBodies(e)
 
 	// 2026-07-21: Implement proper two-table separation (Ticket #10, Issue #8)
 	// - request_logs_hot: stores metadata + preview fields (first ~500 chars)
