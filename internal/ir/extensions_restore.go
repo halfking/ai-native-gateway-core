@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"strings"
@@ -58,10 +59,7 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 			if _, exists := out[key]; exists {
 				continue
 			}
-			var v any
-			if err := json.Unmarshal(val, &v); err == nil {
-				out[key] = v
-			}
+			out[key] = preservedRawValue(val)
 		}
 		return
 	}
@@ -85,10 +83,7 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 			if _, exists := out[outKey]; exists {
 				continue
 			}
-			var v any
-			if err := json.Unmarshal(outVal, &v); err == nil {
-				out[outKey] = v
-			}
+			out[outKey] = preservedRawValue(outVal)
 
 		case paramreg.ActionDrop:
 			reason := "dialect_scoped_field"
@@ -130,4 +125,22 @@ func resolveTargetDialect(req *InternalRequest, targetProtocol string) paramreg.
 		}
 	}
 	return paramreg.DialectForProtocol(targetProtocol)
+}
+
+// preservedRawValue keeps an extension's JSON bytes intact.
+//
+// It used to be `json.Unmarshal(val, &v)` into `any`, which routes every JSON
+// number through float64: an integer one above 2^53 came back rewritten
+// (9007199254740993 → 9007199254740992) and was emitted to the wire that way.
+// The document codec already preserved the same bytes via json.RawMessage, so
+// the loss was introduced purely by this convenience decode.
+//
+// json.RawMessage is itself a []byte alias, so assigning it satisfies the
+// `any` element type and encoding/json emits the original bytes verbatim.
+func preservedRawValue(val json.RawMessage) any {
+	trimmed := bytes.TrimSpace(val)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	return json.RawMessage(trimmed)
 }

@@ -199,11 +199,21 @@ var (
 	// 生命周期只发一次，观测面等于失效）。
 	reporterDed = map[string]time.Time{}
 
-	// anomalyDedupTTL 是 process-wide dedup 的过期窗。1h：同一 (request,
-	// field, reason) 组合在窗口内只报一次；key 含 RequestID，正常流量下同
-	// key 天然不重复，TTL 只对 "unknown" 占位（无请求上下文的调用点）与长
-	// 存活进程做上界。测试可改小（var 而非 const）。
+	// anomalyDedupTTL 是 process-wide dedup 的过期窗，作用于**带请求身份**的
+	// 事件。1h：同一 (request, field, reason) 组合在窗口内只报一次；key 含
+	// RequestID，正常流量下同 key 天然不重复，TTL 主要对长存活进程做上界。
+	//
+	// R72 更正：上面那句「key 含 RequestID」原先掩盖了一个真问题——**四个
+	// parser 的调用点全部硬编码 RequestID="unknown"**（parse_openai.go:108
+	// 等，因为 parser 只拿到 body 字节），所以它们的 key **确实会重复**，1h
+	// 窗口把某个字段的所有出现折叠成每小时一条：100% 客户端都在发的字段与
+	// 0.1% 客户端偶发的字段，在日志面上完全不可区分。见下方短 TTL。
 	anomalyDedupTTL = time.Hour
+
+	// anomalyDedupTTLNoRequestID 作用于无请求身份的事件。解析期异常恰恰是
+	// 「天然会重复」的那一类（字段畸形对所有客户端都畸形），所以仍然需要
+	// 抑制——它是为了防止热循环刷爆日志——但 1h 对可用性来说太粗。
+	anomalyDedupTTLNoRequestID = time.Minute
 
 	// anomalyDedupSweepThreshold 触发惰性清理的 map 大小上界。清理在已持
 	// reporterMu 的插入临界区内进行（map 已超阈值时才扫一遍，均摊 O(1)），
@@ -309,8 +319,12 @@ func ReportAnomaly(ev AnomalyEvent) bool {
 	// 过期清理是惰性的（插入时超阈值才整表扫一遍），全部发生在已持有的
 	// reporterMu 临界区内，无后台 goroutine、无锁争端面变化。
 	now := time.Now()
+	ttl := anomalyDedupTTL
+	if !hasRequestIdentity(ev.RequestID) {
+		ttl = anomalyDedupTTLNoRequestID
+	}
 	reporterMu.Lock()
-	if ts, seen := reporterDed[key]; seen && now.Sub(ts) < anomalyDedupTTL {
+	if ts, seen := reporterDed[key]; seen && now.Sub(ts) < ttl {
 		reporterMu.Unlock()
 		return true
 	}
@@ -616,4 +630,12 @@ func topLevelField(fieldPath string) string {
 		return fieldPath[:i]
 	}
 	return fieldPath
+}
+
+// hasRequestIdentity 报告事件是否带有可用的请求身份。解析期调用点因为只拿到
+// body 字节，一律传字面量 "unknown"，因此它与「没有身份」不可区分，必须走
+// 短 dedup 窗口。
+func hasRequestIdentity(requestID string) bool {
+	trimmed := strings.TrimSpace(requestID)
+	return trimmed != "" && trimmed != "unknown"
 }
