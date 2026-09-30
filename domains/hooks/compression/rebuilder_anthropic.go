@@ -191,22 +191,145 @@ func RebuildAnthropicAfterSummary(body []byte, summary string, ret *Retained, ke
 	return out, true
 }
 
-// TrimAnthropicTail removes tool_result-only user messages from the tail
-// to avoid Anthropic tool_use_id orphan errors after a sliding-window trim.
-// Called as a post-pass after rebuildAnthropicAfterSummary (or by the
-// upstream-side compaction caller when dropping a tool round mid-conversation).
+// TrimAnthropicTail removes messages that would leave a dangling tool_use
+// reference after a sliding-window rebuild. Called as a post-pass after
+// rebuildAnthropicAfterSummary (or by the upstream-side compaction caller
+// when dropping a tool round mid-conversation).
 //
-// Returns (cleaned, droppedCount). cleaned is in original order, preserving
-// non-tool-result user turns and all assistant turns.
+// 2026-10-01 R74 P0 CORRECTION. The previous implementation dropped
+// tool_result-only USER messages, on the stated theory that they "orphan" a
+// tool_use. That is backwards, and it turned a recoverable trim into a
+// guaranteed upstream rejection:
+//
+//	old: drop the tool_result   → assistant.tool_use survives with no result
+//	                            → Anthropic 400s the whole request
+//
+// Anthropic requires every assistant tool_use to be answered by a
+// tool_result, and rejects a tool_result whose tool_use is gone. A sliding
+// rebuild can orphan EITHER half depending on where the cut lands:
+// keepRecentPairs=1 leaves the result behind, keepRecentPairs>=2 leaves the
+// use behind. So both directions are reconciled here — a tool_result with no
+// surviving use is dropped, and an assistant anchor whose every declared
+// tool_use is unanswered is dropped.
+//
+// This is symmetric with the OpenAI rebuild path, which keeps tool rounds
+// atomic by walking the left boundary BACK to the assistant anchor
+// (recentAtomicTail) rather than by cutting results.
+//
+// Returns (cleaned, droppedCount). cleaned is in original order.
 func TrimAnthropicTail(messages []json.RawMessage) (cleaned []json.RawMessage, droppedCount int) {
+	declared := make(map[string]bool)
+	answered := make(map[string]bool)
 	for _, m := range messages {
-		if messageRole(m) == "user" && isToolResultOnly(m) {
-			droppedCount++
-			continue
+		switch messageRole(m) {
+		case "assistant":
+			for _, id := range anthropicToolUseIDs(m) {
+				declared[id] = true
+			}
+		case "user":
+			for _, id := range anthropicToolResultIDs(m) {
+				answered[id] = true
+			}
+		}
+	}
+	for _, m := range messages {
+		switch messageRole(m) {
+		case "user":
+			ids := anthropicToolResultIDs(m)
+			if len(ids) == 0 {
+				// Plain text user turn — never a tool artifact.
+				break
+			}
+			// Mixed text+tool_result messages are left alone: the user turn
+			// carries content the model still needs.
+			if !isToolResultOnly(m) {
+				break
+			}
+			// Drop a tool_result-only turn whose tool_use did not survive
+			// the rebuild.
+			keep := false
+			for _, id := range ids {
+				if declared[id] {
+					keep = true
+					break
+				}
+			}
+			if !keep {
+				droppedCount++
+				continue
+			}
+		case "assistant":
+			// Drop the anchor when EVERY tool_use it declares is
+			// unanswered. A partially answered anchor is also malformed, but
+			// cutting it would additionally discard the results that do
+			// exist, so keep it and let the upstream speak.
+			if ids := anthropicToolUseIDs(m); len(ids) > 0 {
+				allUnanswered := true
+				for _, id := range ids {
+					if answered[id] {
+						allUnanswered = false
+						break
+					}
+				}
+				if allUnanswered {
+					droppedCount++
+					continue
+				}
+			}
 		}
 		cleaned = append(cleaned, m)
 	}
 	return cleaned, droppedCount
+}
+
+// anthropicToolUseIDs returns the tool_use block IDs declared by an
+// assistant message (empty for non-assistant or string-content messages).
+func anthropicToolUseIDs(raw json.RawMessage) []string {
+	return anthropicBlockIDs(raw, "assistant", "tool_use", "")
+}
+
+// anthropicToolResultIDs returns the tool_use_id values a user message
+// answers via tool_result blocks.
+func anthropicToolResultIDs(raw json.RawMessage) []string {
+	return anthropicBlockIDs(raw, "user", "tool_result", "tool_use_id")
+}
+
+func anthropicBlockIDs(raw json.RawMessage, role, blockType, idField string) []string {
+	if messageRole(raw) != role {
+		return nil
+	}
+	var probe struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || len(probe.Content) == 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(probe.Content))
+	if !strings.HasPrefix(trimmed, "[") {
+		return nil
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		TUID string `json:"tool_use_id"`
+	}
+	if err := json.Unmarshal(probe.Content, &blocks); err != nil {
+		return nil
+	}
+	var out []string
+	for _, b := range blocks {
+		if b.Type != blockType {
+			continue
+		}
+		id := b.ID
+		if idField != "" {
+			id = b.TUID
+		}
+		if id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // isToolResultOnly reports whether a user-role message's content is purely
