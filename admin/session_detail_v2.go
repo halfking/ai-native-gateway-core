@@ -548,6 +548,20 @@ func (api *SessionDetailV2API) resolveSessionID(
 		FROM public.sessions s
 		WHERE s.tenant_id = $1
 		  AND s.primary_request_id IN (
+		      -- 会话存储解耦 v3 S3 读端迁移：session 族腿先行，v1 腿保留。
+		      -- session_turns.session_id 就是 gw_session_id 形态，与本函数的
+		      -- 输入同键，因此可直接在 session 族内取 request_id 候选。
+		      -- 不改外层 primary_request_id 匹配，语义与迁移前逐字一致。
+		      --
+		      -- S4 停写（storage.request_logs_write_enabled=false）后下面两条
+		      -- v1 腿对活跃会话恒空，本反向臂会返回 0 候选 → errSessionNotFound
+		      -- （404），把仍以 gw_session_id 形式寻址的旧客户端整体打成不可用。
+		      SELECT request_id FROM session_turns_hot
+		      WHERE tenant_id = $1 AND session_id = $2
+		      UNION ALL
+		      SELECT request_id FROM session_turns
+		      WHERE tenant_id = $1 AND session_id = $2
+		      UNION ALL
 		      -- R71 审计：双腿化（hot∪母表，R47 守卫纪律）。活跃会话的
 		      -- request_logs 行在热表、历史行已被 promote 进母表；单腿母表
 		      -- 只能解析 8h 前的 gw_session_id，热窗内反向臂恒 miss。

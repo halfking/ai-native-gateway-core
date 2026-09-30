@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -317,14 +318,13 @@ func (h *Handler) resolveSessionTitleTaskID(ctx context.Context, sessionID, tena
 	}
 	var taskID string
 	err := h.db.QueryRow(ctx, `
-		SELECT COALESCE(NULLIF(TRIM(gw_task_id), ''), 'auto')
-		FROM request_logs_with_current_month
-		WHERE gw_session_id = $1
-		  AND tenant_id = $2
-		  AND success = TRUE
-		  AND COALESCE(is_auto_request, FALSE) = FALSE
-		  AND COALESCE(origin_actor, '') NOT LIKE 'goal-%'
-		ORDER BY ts DESC, id DESC
+		SELECT COALESCE(NULLIF(TRIM(t.gw_task_id), ''), 'auto')
+		FROM `+dbpkg.SessionFamilyTurnsForSessionSQL()+` t
+		WHERE 1 = 1
+		  AND t.success = TRUE
+		  AND COALESCE(t.is_auto_request, FALSE) = FALSE
+		  AND COALESCE(t.origin_actor, '') NOT LIKE 'goal-%'
+		ORDER BY t.ts DESC, t.id DESC
 		LIMIT 1
 	`, sessionID, tenantID).Scan(&taskID)
 	if err != nil {

@@ -29,6 +29,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"net/http"
 	"strconv"
 	"strings"
@@ -236,8 +237,8 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 			               OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
 			               OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb))
 			       ) AS body_present
-			FROM request_logs_with_current_month rl
-			WHERE rl.gw_session_id = $1
+			FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl
+			WHERE 1 = 1
 			  AND (rl.parent_request_id IS NULL OR rl.parent_request_id = '')`
 	args := []any{p.SessionID}
 	if p.TenantID != "" {
@@ -362,11 +363,17 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 
 // sessionTurnsTreeExists 检查会话是否有任何请求记录（不限租户），
 // 返回归属租户用于跨租户 403 判定。
+//
+// 会话存储解耦 v3（2026-09-30）：读源迁到 session 族原生源。谓词是
+// gw_session_id ⇒ class A 可迁（见审计 §5.5.5 判据）。注意与本文件
+// L324 的 `parent_request_id = ANY($1)` 相反——那一条是 request_id 键
+// 反查，class B，**禁止**迁，已由 session_view_dependency_risk_test.go
+// 钉死。
 func sessionTurnsTreeExists(ctx context.Context, db sessionTurnsTreeDB, sessionID string) (bool, string, error) {
 	var tenantID string
 	err := db.QueryRow(ctx, `
-		SELECT tenant_id FROM request_logs_with_current_month
-		WHERE gw_session_id = $1 LIMIT 1`, sessionID).Scan(&tenantID)
+		SELECT t.tenant_id FROM `+dbpkg.SessionFamilyTurnsForSessionSQL()+` t
+		WHERE 1 = 1 LIMIT 1`, sessionID).Scan(&tenantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, "", nil
 	}
