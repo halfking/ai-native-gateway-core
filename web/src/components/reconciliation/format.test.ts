@@ -1,22 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { matchQuick, quickRange, topReasons, weightedQuality } from './format'
+import { topReasons, weightedQuality } from './format'
 import { modelDist, providerDist } from './distRows'
 import type { RangeReport } from '../../api/reportrollup'
 
 describe('reconciliation format', () => {
-  const now = new Date(2026, 8, 30)
-
-  it('builds T+1 quick ranges ending yesterday', () => {
-    expect(quickRange('yesterday', now)).toEqual(['2026-09-29', '2026-09-29'])
-    expect(quickRange('7d', now)).toEqual(['2026-09-23', '2026-09-29'])
-    expect(quickRange('month', now)[0]).toBe('2026-09-01')
-    expect(matchQuick(quickRange('30d', now), now)).toBe('30d')
-  })
-
-  it('rolls the month chip back when yesterday is still last month', () => {
-    expect(quickRange('month', new Date(2026, 9, 1))).toEqual(['2026-09-01', '2026-09-30'])
-  })
-
   it('weights quality by request count and sorts failure reasons descending', () => {
     const score = weightedQuality([
       { quality_score: 50, totals: { request_count: 1 } },

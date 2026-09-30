@@ -7,7 +7,8 @@ import { ElBadge, ElButton, ElOption, ElRadioButton, ElRadioGroup, ElSelect } fr
 import type { DimensionOptions, ReportFilter, ReportView } from '../../api/reportrollup'
 import KxDateRangePicker from '../ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../ui/kx-date-types'
-import { fmtInt, type QuickRange } from './format'
+import { makeDateRangePresets } from '../ui/kxDatePresets'
+import { fmtInt } from './format'
 
 const props = defineProps<{
   view: ReportView
@@ -19,13 +20,11 @@ const props = defineProps<{
   exporting: boolean
   rerunning: boolean
   coverage: string
-  activeQuick: QuickRange | ''
 }>()
 
 const emit = defineEmits<{
   'update:view': [ReportView]
   applyRange: [KxDateRange]
-  quick: [QuickRange]
   patch: [Partial<ReportFilter>]
   refresh: []
   export: []
@@ -35,6 +34,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const moreOpen = ref(false)
+const presets = computed(() => makeDateRangePresets('date'))
 
 const extraCount = computed(() => {
   const f = props.filters
@@ -49,13 +49,6 @@ function labelOf(key: string, name: string | undefined, requests: number): strin
 function onView(value: string | number | boolean | undefined) {
   if (value === 'provider' || value === 'internal') emit('update:view', value)
 }
-
-const quicks = computed(() => [
-  { id: 'yesterday' as const, label: t('reports.quickYesterday') },
-  { id: '7d' as const, label: t('reports.quick7d') },
-  { id: '30d' as const, label: t('reports.quick30d') },
-  { id: 'month' as const, label: t('reports.quickMonth') },
-])
 </script>
 
 <template>
@@ -64,18 +57,13 @@ const quicks = computed(() => [
       <el-radio-button value="provider">{{ t('reports.providerView') }}</el-radio-button>
       <el-radio-button value="internal">{{ t('reports.internalView') }}</el-radio-button>
     </el-radio-group>
-    <KxDateRangePicker :model-value="range" :presets="[]" @apply="emit('applyRange', $event)" />
-    <div class="chips">
-      <button
-        v-for="chip in quicks"
-        :key="chip.id"
-        type="button"
-        class="chip"
-        :class="{ on: activeQuick === chip.id }"
-        :data-quick="chip.id"
-        @click="emit('quick', chip.id)"
-      >{{ chip.label }}</button>
-    </div>
+    <KxDateRangePicker
+      :model-value="range"
+      :presets="presets"
+      :max-span-days="92"
+      :disabled="loading"
+      @apply="emit('applyRange', $event)"
+    />
     <el-select
       :model-value="filters.provider_id"
       clearable
@@ -191,17 +179,6 @@ const quicks = computed(() => [
 
 <style scoped>
 .toolbar, .more { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip {
-  border: 1px solid var(--border);
-  background: transparent;
-  color: inherit;
-  border-radius: 999px;
-  padding: 2px 10px;
-  cursor: pointer;
-  font: inherit;
-}
-.chip.on { border-color: var(--accent); color: var(--accent); }
 .coverage { color: var(--text-muted, var(--el-text-color-secondary)); font-size: 12px; }
 .filter-badge { margin-left: 6px; }
 .filter-grid {
