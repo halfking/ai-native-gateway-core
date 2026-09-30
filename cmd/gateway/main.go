@@ -420,6 +420,14 @@ func main() {
 			"hint", "set LLM_GATEWAY_ENV=production to enforce fail-closed")
 	}
 
+	// 三十七轮审计 §三#6 (2026-09-30): SK==CEK 冲突在一切 env 都是确定性故障
+	// （09-28 §7.1 全网 503 事故形态），shell 门（deploy-local-lib + load-env
+	// 两变体）只护 operator shell，systemd env 等装载通道此前零防护——这里
+	// 对齐 shell 门语义：硬失败，不随 LLM_GATEWAY_ENV 降级为告警。
+	if violation := cfg.ValidateSecretKeyDistinct(); violation != "" {
+		panic("auth fail-closed: " + violation)
+	}
+
 	// Rule 20 §3: ops token SHOULD carry the ops_ prefix (soft check, non-blocking)
 	if cfg.AdminAPIKey != "" && !strings.HasPrefix(cfg.AdminAPIKey, "ops_") {
 		slog.Warn("auth: ops token should use ops_ prefix per rule 20 §3",

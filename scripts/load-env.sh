@@ -194,7 +194,9 @@ check_key_pairs() {
 # 仅 source 模式（被脚本引用）时守门；独立执行时只打印
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     check_key_pairs || {
-        echo "[load-env] ❌ 中止：请检查 .env 密钥对（SK 与 CEK 需同网关同批）" >&2
+        # 三十七轮审计 §三#6 文案订正：本门实际校验 API_KEY↔API_SECRET 配对
+        # 一致性（check_key_pairs），与 SK/CEK 无关——旧文案误导排障方向。
+        echo "[load-env] ❌ 中止：请检查 .env 密钥对（LLM_GATEWAY_API_KEY 与 LLM_GATEWAY_API_SECRET 需同网关同批）" >&2
         return 1
     }
 fi

@@ -463,6 +463,36 @@ func (cfg *Config) ValidateAuthSecrets() (missing string) {
 	return ""
 }
 
+// ValidateSecretKeyDistinct rejects the SK==CEK collision (三十七轮审计 §三#6,
+// 2026-09-30): using the same explicitly-set value for the JWT signing key
+// (LLM_GATEWAY_SECRET_KEY) and the AES-256 credential encryption key
+// (LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY) makes every stored credential
+// undecryptable — the 2026-09-28 §7.1 sitewide-503 incident (a CEK pasted
+// into the SK slot). The shell gates (deploy-local-lib.sh gate + load-env.sh
+// variants, 999634429/4356b5798) only cover operator shells; systemd env and
+// any loader that bypasses them previously started with zero Go-side
+// protection.
+//
+// Deliberately narrow: only BOTH-EXPLICITLY-SET-and-equal is a collision.
+// CEK unset falls back to SK-derived keyring by design (config.go Load) —
+// flagging that would break every deployment relying on the fallback.
+//
+// Unlike ValidateAuthSecrets (fail-closed only in production), this is a
+// definite bug in every environment — the caller should hard-fail on it
+// regardless of LLM_GATEWAY_ENV. Returns "" when clean.
+func (cfg *Config) ValidateSecretKeyDistinct() (violation string) {
+	sk := strings.TrimSpace(cfg.SecretKey)
+	cek := strings.TrimSpace(cfg.CredentialEncryptionKey)
+	if sk == "" || cek == "" {
+		return ""
+	}
+	if sk == cek {
+		return "LLM_GATEWAY_SECRET_KEY and LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY are identical " +
+			"(incident 2026-09-28 §7.1: SK==CEK makes every credential undecryptable — sitewide 503)"
+	}
+	return ""
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
