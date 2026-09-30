@@ -57,8 +57,11 @@ type StreamChunk struct {
 	// value as `delta.content` so the wire shape stays OpenAI SSE-compatible.
 	// 2026-09-21 audit (P2-1).
 	//
-	// RESERVED(ollama-chat 接入): 注释所称的 diff 合成器尚不存在、全仓
-	// 零生产者/零消费者（R52 清点）——随 ProtocolOllamaChat 一并接入。
+	// R72 更正（2026-10-01）：上面的「diff 合成器尚不存在」结论在 Ollama
+	// 语境下已被推翻——audit-ollama-native（r0924）核实上游 api.md 后确认
+	// Ollama NDJSON 的 message.content 是**逐帧增量**而非累积值，因此本处
+	// 的累积值 diff 合成本就不适用于 Ollama，Ollama 走
+	// ParseOllamaStreamChunk 的 StreamDelta 路径（见下方 NOTE）。
 	//
 	// NOTE (R66 audit round): Ollama's native NDJSON `message.content` is
 	// NOT cumulative — WebFetch of upstream api.md (2026-09-25) confirms it
