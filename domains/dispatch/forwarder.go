@@ -77,6 +77,18 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 // cannot block dispatch when the Redis backend is transiently unavailable —
 // we degrade to the in-process governor and rely on the publisher's retry
 // to install the Redis governor once the cluster recovers.
+//
+// 2026-10-01 R73 (comment correction): the header above said "fail-open"
+// unconditionally, which is only true for the in-process backends. Under
+// BackendRedisEnforce the function returns unavailableGovernor{} — every
+// request on that credential fails with ErrGovernorUnavailable, i.e.
+// deliberately fail-CLOSED. That asymmetry is intentional and matches
+// governor_backend.go (the strict cluster backend refuses to hand out
+// capacity it cannot account for; silently switching to a local counter
+// would let the cluster exceed its cap), but the old comment described the
+// opposite, so a maintainer reading it would assume Redis outages degrade
+// gracefully when in fact they halt that credential. Same correction applied
+// to the caller comment in pipeline.go.
 func buildForwarderGovernor(pipe *Pipeline, cred CredentialRef) Governor {
 	gov, err := pipe.governorForCredential(cred, pipe.ActiveRevision())
 	if err == nil {

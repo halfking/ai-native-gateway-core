@@ -119,19 +119,19 @@ func AdaptiveWorkerCount() int {
 func DefaultConfig() Config {
 	workers := AdaptiveWorkerCount()
 	return Config{
-		TotalQueueCapacity:  1000,
-		MaxQueueDepth:       300,
-		MaxModelLanes:       4096,
+		TotalQueueCapacity:   1000,
+		MaxQueueDepth:        300,
+		MaxModelLanes:        4096,
 		ModelLaneIdleSeconds: 600,
-		MaxQueueWaitMS:      0,
-		StatsBuffer:         256,
-		DispatcherWorkers:   workers,
-		FailoverWorkers:     workers,
-		RetryPerCredential:  MaxNodeFailures - 1,
-		RegistryCapacity:    DefaultRegistryCapacity,
-		CompletedWatermark:  DefaultCompletedWatermark,
-		DimensionTTLSeconds: DefaultDimensionTTLSeconds,
-		DimensionCapacity:   DefaultDimensionCapacity,
+		MaxQueueWaitMS:       0,
+		StatsBuffer:          256,
+		DispatcherWorkers:    workers,
+		FailoverWorkers:      workers,
+		RetryPerCredential:   MaxNodeFailures - 1,
+		RegistryCapacity:     DefaultRegistryCapacity,
+		CompletedWatermark:   DefaultCompletedWatermark,
+		DimensionTTLSeconds:  DefaultDimensionTTLSeconds,
+		DimensionCapacity:    DefaultDimensionCapacity,
 	}
 }
 
@@ -144,19 +144,19 @@ func LoadConfig(hotCfg *hotconfig.Config) Config {
 	}
 	workers := AdaptiveWorkerCount()
 	return Config{
-		TotalQueueCapacity:  clampInt(hotCfg.GetInt("llmgw_dispatch_total_queue_capacity", 1000), 1, 100000),
-		MaxQueueDepth:       clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_depth", 300), 0, 100000),
-		MaxModelLanes:       clampInt(hotCfg.GetInt("llmgw_dispatch_max_model_lanes", 4096), 16, 100000),
+		TotalQueueCapacity:   clampInt(hotCfg.GetInt("llmgw_dispatch_total_queue_capacity", 1000), 1, 100000),
+		MaxQueueDepth:        clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_depth", 300), 0, 100000),
+		MaxModelLanes:        clampInt(hotCfg.GetInt("llmgw_dispatch_max_model_lanes", 4096), 16, 100000),
 		ModelLaneIdleSeconds: clampInt(hotCfg.GetInt("llmgw_dispatch_model_lane_idle_seconds", 600), 0, 86400),
-		MaxQueueWaitMS:      clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_wait_ms", 0), 0, 60000),
-		StatsBuffer:         clampInt(hotCfg.GetInt("llmgw_dispatch_stats_buffer", 256), 0, 4096),
-		DispatcherWorkers:   clampInt(hotCfg.GetInt("llmgw_dispatch_dispatcher_workers", workers), 1, 256),
-		FailoverWorkers:     clampInt(hotCfg.GetInt("llmgw_dispatch_failover_workers", workers), 1, 256),
-		RetryPerCredential:  clampInt(hotCfg.GetInt("llmgw_dispatch_retry_per_credential", MaxNodeFailures-1), 0, MaxNodeFailures-1),
-		RegistryCapacity:    clampInt(hotCfg.GetInt(HotKeyRegistryCapacity, DefaultRegistryCapacity), 1, 100000),
-		CompletedWatermark:  clampInt(hotCfg.GetInt(HotKeyCompletedWatermark, DefaultCompletedWatermark), 0, 100000),
-		DimensionTTLSeconds: clampInt(hotCfg.GetInt("llmgw_dispatch_dimension_ttl_seconds", DefaultDimensionTTLSeconds), 1, 86400),
-		DimensionCapacity:   clampInt(hotCfg.GetInt("llmgw_dispatch_dimension_capacity", DefaultDimensionCapacity), -1, 100000),
+		MaxQueueWaitMS:       clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_wait_ms", 0), 0, 60000),
+		StatsBuffer:          clampInt(hotCfg.GetInt("llmgw_dispatch_stats_buffer", 256), 0, 4096),
+		DispatcherWorkers:    clampInt(hotCfg.GetInt("llmgw_dispatch_dispatcher_workers", workers), 1, 256),
+		FailoverWorkers:      clampInt(hotCfg.GetInt("llmgw_dispatch_failover_workers", workers), 1, 256),
+		RetryPerCredential:   clampInt(hotCfg.GetInt("llmgw_dispatch_retry_per_credential", MaxNodeFailures-1), 0, MaxNodeFailures-1),
+		RegistryCapacity:     clampInt(hotCfg.GetInt(HotKeyRegistryCapacity, DefaultRegistryCapacity), 1, 100000),
+		CompletedWatermark:   clampInt(hotCfg.GetInt(HotKeyCompletedWatermark, DefaultCompletedWatermark), 0, 100000),
+		DimensionTTLSeconds:  clampInt(hotCfg.GetInt("llmgw_dispatch_dimension_ttl_seconds", DefaultDimensionTTLSeconds), 1, 86400),
+		DimensionCapacity:    clampInt(hotCfg.GetInt("llmgw_dispatch_dimension_capacity", DefaultDimensionCapacity), -1, 100000),
 	}
 }
 

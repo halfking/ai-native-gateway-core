@@ -281,5 +281,10 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 		ON CONFLICT (bucket, tenant_id, error_kind, model_name, provider_id, client_profile) DO UPDATE SET
 			requests = EXCLUDED.requests
 	`, since, until)
-	return err
+	if err != nil {
+		return err
+	}
+	// 维度/钻取表与主表同根：整键替换只盖住视图仍产出的键，跨分钟 turn
+	// 的累加器键会悬空在闭分钟里被看板再加一次（12h 审计 P2-2）。
+	return w.retireClosedDims(ctx, since, until)
 }

@@ -160,7 +160,7 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	qr.markTriedCredential(fromCredID)
 	p.invalidateSessionAffinity(qr, fromCredID)
 	qr.CredRetryCount = 0
-	
+
 	// 2026-09-01 P0 fix: plan the switch BEFORE journaling so we can record
 	// complete from/to endpoints in one entry. This preserves the journal
 	// contract that recordDecision updates LastFailover to the tail entry.
@@ -175,7 +175,7 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	for _, id := range scoped {
 		qr.markTriedCredential(id)
 	}
-	
+
 	// v6 G-Ⅴ + W1.6 R9: the credential-exhaustion round is journaled before
 	// hunting for the sibling so the tail always reflects the LAST executed node.
 	// 2026-09-01 P0 fix: populate FromCredentialID/ToCredentialID so the
@@ -198,13 +198,13 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		journalEntry.ToProviderID = next.ProviderID
 	}
 	qr.recordDecision(journalEntry)
-	
+
 	if next == nil {
 		// No sibling credential available under this model → model change.
 		p.tryModelChangeOutcome(qr, out)
 		return
 	}
-	
+
 	for {
 		// Already consumed next from the first plan above
 		if next == nil {
@@ -218,7 +218,7 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		}
 		ref := *next
 		next = nil // consume the planned switch
-		
+
 		// Continuation step: the attempt budget guards it (R12).
 		if AttemptBudgetLeft(qr) <= 0 {
 			p.terminateOnAttemptCap(qr, out)

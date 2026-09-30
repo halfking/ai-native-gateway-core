@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // feishuRouteRule 对应 feishu_bot_routing_rules 单行。
@@ -134,9 +135,7 @@ func (h *Handler) handleFeishuRoutingList(w http.ResponseWriter, r *http.Request
 			writeInternalErr(w, "scan", err)
 			return
 		}
-		if len(riskJSON) > 0 {
-			_ = json.Unmarshal(riskJSON, &r.RiskLevels)
-		}
+		jsoncol.Decode("admin.feishuRouting.list/risk_levels", riskJSON, &r.RiskLevels)
 		if r.RiskLevels == nil {
 			r.RiskLevels = []string{}
 		}
