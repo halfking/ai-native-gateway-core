@@ -74,3 +74,10 @@
 - **源码扫描型守卫的路径必须归一化**：零回显守卫白名单键为斜杠路径，Windows 上 WalkDir 产出反斜杠 → 24 处假泄漏全红（十七轮路径化只在 macOS 验证过）。**凡 filepath.WalkDir + 白名单/断言路径匹配的守卫，回调入口统一 filepath.ToSlash**；跨平台守卫必须在两个 OS 各跑一次才算绿。教训一般化：**恒查门若只在单一 OS 验证，等于半个门**。
 - wire 契约注释必须与实现+测试三面一致：types.go 把 JSON null 写在 available 侧（实现判 unavailable）——JSON null 是写路径"载荷为空"的常态编码（jsonTextOrNull），注释错向会误导下一个读契约的消费者；9 locale "tri-state" 措辞随实际两态键集同步。
 - autoroute fail-open 新增 `autoroute_task_vocabulary_absent_total{task}`（词表缺失静默降级的唯一指标面信号）；apihub.HealthStorage 登记为零消费预留枚举。
+
+### R85 回注（2026-10-01，菜单可达性门已建 + 控件复用实测）
+- **新增永久门 `web/src/config/navCoverage.test.ts`**（6 断言，4/4 变异全红）。本域此前的 `appNav.test.ts` **21/21 全绿却零业务覆盖**（全测可见性，无 labelKey×语种、无菜单↔路由断言）。**新建或改写任何扫描型守卫前必读 `conventions.md` §9**——该门判据改了四版才收敛，且 §9.3 记的「判据自证漏洞」正是它的第一版失败形态。
+- **R56「menu-config 无漏注册」结论漂移**：那只覆盖了已注册项的字段对齐，**漏了反向覆盖率**。实测 7 条硬孤儿路由（`/routing-decisions`、`/routing/overrides/audit`、`/quality-correlations`、`/admin/session-analytics/users`、`/admin/session-analytics/users/:owner`、`/admin/output-compliance`、`/admin/usage`）。`/admin/session-analytics/users` 已于 R85 挂载入口（API `main.go:6901-6906` 与真库 `session_dim` 121 万行早已就绪，而 8 语种 `nav.item.sessionAnalytics` 文案**早已存在却零引用**＝可交付未交付），其余 5 条待产品确认归属，已登记在 navCoverage 白名单。
+- **控件复用实测（分母 71 个顶层视图，objective「尽可能复用同组控件」未落地）**：`PageHeader` 6/71 vs **53 处自写 h1/h2**；`DataTable` 4/71 vs **42 处裸 `<table>`**；`FilterBar` 1/71 vs 22 处自建；`PaginationBar` 3/71 vs 7 处；`StatCard/StatsRow` 6/71 vs 14 处；**`EmptyState` 组件根本不存在而 16 处视图各写空态**；`el-skeleton` 使用 0 处。9 类标准件中 **8 类复用率 <20%**，仅 `KxDateRangePicker`(13/71) 达标。
+- **`i18n/parity.test.ts` 以 zh-CN 为基准 ⇒ 对「加菜单忘配文案」结构性失守**；实测 21 个陈旧 nav 键（含 9 个会话域键，如 `sessionClusters` 引用数 0）。
+- **objective 的三条要求（菜单可达性 / 控件复用率 / 会话聚合入口）在 17 个域 plan 中均无立项条目** —— 这才是 7 条孤儿路由能存活至今的根因：**没有立项就没有门**。
