@@ -30,18 +30,28 @@ import (
 //
 // 返回值：
 //   - true  ：解析成功，或 raw 为空（两种都不是坏数据）
-//   - false ：raw 非空但解析失败，已留下 Warn 级痕迹，dst 是零值
+//   - false ：raw 非空但解析失败，已留下 Warn 级痕迹，dst 保持调用方
+//     传入时的原值（通常是零值）
 //
 // op 必须能唯一定位到消费点（建议 "<包>.<函数>.<列名>"），否则日志无法
-// 反查是哪条数据的哪一列出了问题。
+// 反查是哪条数据的哪一列出了问题。注意 op 是**列级**定位——同一列哪一
+// 行坏了需调用方把行标识（如 command_id）拼进 op 才可追溯。
+//
+// 解码先落 fresh 再整份赋值，而不是直接 Unmarshal 进 dst：encoding/json
+// 对 UnmarshalTypeError 是 save-error-then-continue 语义，坏字段跳过、
+// **其余字段仍写入**——直接解进 dst 会让「部分填充的脏对象」逃逸到调用
+// 方（12h 审计实测：center.Command.Args map 会被部分填充后照常下发执行）。
+// fresh 形态保证失败时 dst 一个字节都不动，契约才真正成立。
 func Decode[T any](op string, raw []byte, dst *T) bool {
 	if len(raw) == 0 {
 		return true
 	}
-	if err := json.Unmarshal(raw, dst); err != nil {
-		slog.Warn("jsonb column decode failed; zero value substituted",
+	var fresh T
+	if err := json.Unmarshal(raw, &fresh); err != nil {
+		slog.Warn("jsonb column decode failed; caller value kept untouched",
 			"op", op, "error", err, "bytes", len(raw))
 		return false
 	}
+	*dst = fresh
 	return true
 }

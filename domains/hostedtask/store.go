@@ -721,6 +721,10 @@ func (s *Store) ClaimExpiredTasks(ctx context.Context, now time.Time, limit int)
 	if err != nil {
 		return 0, err
 	}
+	// 12h 审计加固：原实现 panic 时 FOR UPDATE SKIP LOCKED 事务连同
+	// 行锁一起泄漏（显式 Rollback 只覆盖 return 路径）。defer 在 Commit
+	// 成功后是 ErrTxClosed 空转，无行为变化。
+	defer func() { _ = tx.Rollback(ctx) }()
 	var ids []string
 	rows, err := tx.Query(ctx, `
 		SELECT id FROM hosted_tasks
@@ -731,21 +735,19 @@ func (s *Store) ClaimExpiredTasks(ctx context.Context, now time.Time, limit int)
 		FOR UPDATE SKIP LOCKED
 	`, now, limit)
 	if err != nil {
-		_ = tx.Rollback(ctx)
 		return 0, fmt.Errorf("claim expired scan: %w", err)
 	}
+	// 12h 审计加固：同上，panic 路径 rows 关闭；与下方显式 Close 幂等共存。
+	defer rows.Close()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			_ = tx.Rollback(ctx)
 			return 0, err
 		}
 		ids = append(ids, id)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		_ = tx.Rollback(ctx)
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
