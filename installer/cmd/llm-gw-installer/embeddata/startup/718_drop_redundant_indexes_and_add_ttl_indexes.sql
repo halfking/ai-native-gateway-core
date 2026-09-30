@@ -1,3 +1,4 @@
+-- dbinit:no-transaction —— 本文件含 DROP INDEX CONCURRENTLY，PostgreSQL 不允许在事务块内执行；installer 的 applySQL 据此对本文件走非事务通道（见 installer/internal/dbinit/runner.go noTransactionMarker）。无该标记时全新安装会失败于 "DROP INDEX CONCURRENTLY cannot run inside a transaction block"。
 -- 718: 冗余索引清理 + TTL/claim 缺失索引补齐（R37 SQL 专项审计，2026-09-17）
 --
 -- 背景：R37 六路子代理审计 + 本机 pg_index 逐对亲核发现，迁移历史与表创建 DDL
