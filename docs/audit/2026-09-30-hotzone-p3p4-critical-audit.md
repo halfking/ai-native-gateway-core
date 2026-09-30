@@ -3,7 +3,7 @@
 - 审计对象: docs/storage/2026-09-24-hotzone-dual-mode-plan.md 的 P3(H2 full 装配)、P4(H3 镜像接线)、P5(H5 指标分维度 + 文档子项,均已关闭)
 - 提交谱系: `5250eede0`(P3 装配+门控+测试)→ `4edc7574f`(P4 两接线点)→ `b67fe45b4`(P4 测试)→ `205864527`(P5 指标+接线+gofmt 补正);哈希均为 push 落定后终校值
 - 方法: 逐验收项对照代码锚点 + 子代理并行实勘(telemetry 侧实勘纠正了主代理的锚点假设,见 §三 F1)+ HEAD=205864527 干净 worktree(/tmp/hotzone-p3p4,独立 GOCACHE=/tmp/gocache-hotzone)全量回归
-- 状态: P3/P4 关闭;P5 指标与文档子项(README/ADR/deployment-guide)全部关闭。F5(第三落库点接镜像)2026-10-01 关闭;F3/F4 为留档项(设计决定,非缺口)
+- 状态: P3/P4 关闭;P5 指标与文档子项(README/ADR/deployment-guide)全部关闭。F5(第三落库点接镜像)2026-10-01 关闭,**经同轮批判式审计补修 F5-R1(S4 停写门漏项,首版实现确有缺陷)**;F3/F4/F5-R2/F5-R3 为留档项(设计决定或需 owner 拍板,非本轮缺口)。**F5 验证等级仅单测级,无部署级实证**——勿按「已闭环」对外表述
 
 ---
 
@@ -68,7 +68,10 @@ P5 指标分维度落地并顺带闭合了 hotzone_enabled 恒 false 的预存�
 | D3 | 设计决定(方案留白) | full 热区 FileCache TTL 无独立旋钮,实现取 TTL=HotZone.RetentionHours(读侧过期与删侧 retention 同界);settings 运行期调小 retention 时删侧先行——缓存纯语义无损(miss 回源 PG),lite 侧 resolveCacheTrimRetention 钳制不适用(两者同源即天然对齐) | 注释留档;如需独立 TTL 旋钮属新需求 |
 | F3 | 挂账(不阻断) | 重复镜像写放大:telemetry worker 对失败持久化重试,同一 entry 二次进入 persistRequestLog 会重复投递;同 (tenant,requestID,direction) 路径 gzip 覆盖、内容一致,幂等无害但多一次写。ReplayFallback(:664-674)绕过 persistRequestLog,重放不触发镜像(灾备重放不补镜像,可接受) | 留档;量级可观测(mirror.by_mode 计数) |
 | F4 | 挂账(对账口径) | ① 镜像投递的是换算后、body summary 摘要前的原文——开启 requestBodiesSummaryEnabled 的 tenant 上镜像=全文、PG=摘要信封,「gunzip 与 PG 内容一致」抽查会对不上;② strPtrToJSON 把空串/非法 JSON 收敛 "{}" 且镜像侧跳过 "{}",PG 侧 "{}" 照落库——对账脚本需豁免 null/{} 行 | 留档;对账脚本设计时按此口径 |
-| F5 | **缺陷,已修(2026-10-01 owner 拍板「接镜像」)** | admin HTTP ingest(/api/telemetry,admin/telemetry.go)也调 upsertRequestLogBodies(仅 req/resp),未接镜像——方案 §3-H3 说「两处」,此为第三处 | `admin.SetIngesterBodyMirror` 注入(atomic.Pointer 承载,main goroutine 写 / ingest worker 读),`persistRequestLog` **入口**投递(与 telemetry client 同边界,PG 停机窗口仍落镜像);tenant 取 `nonEmptyDefault(TenantID)`,与同事务 PG 行 tenant_id 严格同源(本路径无 application code 字段,故不复制 O2 的租户分裂);仅 req/resp 两件套。镜像换算/可镜像判定下沉 `storage/file.ConvertBodyPayload`+`MirrorablePayload` 作单一事实源,telemetry 落库侧 `strPtrToJSON` 与 `mirrorableBody` 同步转调(消除两侧各写一份的失配面)。测试 `admin/telemetry_ingest_body_mirror_test.go`(变异验证:摘掉入口投递即红) |
+| F5-R1 | **缺陷,已修(F5 首版漏项)** | F5 首版把镜像投递放在 `persistRequestLog` 入口且**不接** S4 停写门 `storage.request_logs_write_enabled`,而 telemetry client 侧明确 `if requestLogsWriteEnabled() { c.mirrorRequestBodies(entry) }`。镜像写的是 `request_logs_bodies_hot` 的**同一批正文**,运维关停该键是为止血该家族磁盘占用(F3 重复写、4.3GB/24k 行量级),镜像绕门即「停写却仍落盘」且两侧行为分裂 | 已修:抽 `admin.requestLogsWriteEnabled()` helper(键字面量只此一处,原内联门一并收敛),镜像投递纳入同键同门;`TestF5AdminIngestMirrorHonorsStopWriteGate`(判「门关零投递」而非「门开有投递」——后者在缺陷存在时也成立,钉不住)+ `TestRequestLogsWriteEnabledSingleKeyLit` 结构性钉桩;两处均经变异验证转红 |
+| F5-R2 | **观察项(F5 放大,未修)** | `admin.keepAllBodies()`(`admin/telemetry.go:243`)是**死代码**——全仓仅定义、无调用,但其文档声称「bodies 只保留失败行,可省 ~90% 磁盘」。实测 admin ingest 对 `RequestBody/ResponseBody` 无任何丢弃逻辑(仅 `admin/logs.go:1036` 读路径置 nil)。即 admin 侧全量落正文,与文档描述的策略不符 | 留档,**本轮不改**:改动会影响生产数据落库量,需 owner 单独拍板。F5 使其**放大**(同一批正文又多落一份热区镜像),故与 F5-R1 的 S4 门合并看待:关停 S4 是当前唯一生效的止血手段 |
+| F5-R3 | **观察项(对账口径,F4 延伸)** | 同一 `request_id` 若既经 telemetry client 直连 PG、又经 admin HTTP ingest 投递,镜像会**两次落到不同 tenant 目录**(client 用 `ApplicationCode\|\|TenantID`、admin 用 `nonEmptyDefault(TenantID)`);`upsertRequestLogBodies` 侧有 `ON CONFLICT DO NOTHING`,但镜像层无跨写方去重 | 留档:对账脚本按 F4 口径再放宽为「镜像按 (tenant,request_id,direction) 多写方去重后比对」;不引入运行时去重(跨写方去重需要共享状态,代价高于收益) |
+| F5 | **缺陷,已修(2026-10-01 owner 拍板「接镜像」)** | admin HTTP ingest(/api/telemetry,admin/telemetry.go)也调 upsertRequestLogBodies(仅 req/resp),未接镜像——方案 §3-H3 说「两处」,此为第三处 | `admin.SetIngesterBodyMirror` 注入(atomic.Pointer 承载,main goroutine 写 / ingest worker 读),`persistRequestLog` **入口**投递(与 telemetry client 同边界,PG 停机窗口仍落镜像);tenant 取 `nonEmptyDefault(TenantID)`,与同事务 PG 行 tenant_id 严格同源(本路径无 application code 字段,故不复制 O2 的租户分裂);仅 req/resp 两件套。镜像换算/可镜像判定下沉 `storage/file.ConvertBodyPayload`+`MirrorablePayload` 作单一事实源,telemetry 落库侧 `strPtrToJSON` 与 `mirrorableBody` 同步转调(消除两侧各写一份的失配面)。测试 `admin/telemetry_ingest_body_mirror_test.go`(变异验证:摘掉入口投递即红、摘掉 S4 门即红)。**验证等级:仅单测 + 全仓 build/vet/web,无部署级实证**——仓内无 /api/telemetry 生产者(外部 HTTP 入口),真实流量存在与否未取证,「PG 停机仍落镜像」在 admin 侧仍是**未验证的推断**(telemetry 侧由 E2E 演练 O5 实测过,admin 侧未测) |
 | F6 | 观察项 | gofmt:CJK 注释行首全角括号会被 gofmt 归一,首轮提交文件未逐个过 gofmt(P5 提交补正);turn_writer.go/turn_writer_test.go/empty_response_metrics_test.go 等历史文件本就未格式化,未碰 | 本轮触碰文件已全部 gofmt 干净 |
 
 ## 三.5、同日修订轮(交付后批判式复审,实勘三点 + 修复两项)
@@ -114,5 +117,8 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
 - ~~部署演练~~ **已完成(2026-09-30 当日)**:见 docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md
   (新遗留:管线 env 白名单 D1、.env.local D2、镜像对账口径 O2/O3、PG 停机遥测丢失 O5)。
 - ~~F5 决策:admin ingest 是否接镜像,owner 拍板。~~ **已决策并落地(2026-10-01)**:owner 选「接镜像,补齐第三落库点」,实现与测试见 §三 F5 行。
+- **F5 未验证项(勿当已闭环)**:① 无部署级实证(未在任何环境跑通真实 ingest 流量并读镜像文件);② 仓内无 /api/telemetry 生产者,真实流量未取证;③ admin 侧「PG 停机仍落镜像」是推断,只有 telemetry 侧被 E2E 演练 O5 实测过。要收口需按 `docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md` 同样的部署级手法补一轮(需 env-injector 注入 245/154 + owner 授权有副作用操作)。
+- **F5-R2 留档待 owner 拍板**:`admin.keepAllBodies()` 死代码声称「只留失败行」但无人调用,admin ingest 实际全量落正文;改动影响生产落库量,不擅自动。
+- **F5-R1 教训(接线类缺陷的通用形态)**:「同一语义门在两处调用点各自内联键字面量」是分裂入口。三个镜像消费方接入时,凡是**复用同一个 settings 键**的判定一律抽 helper 收口,并加一条「键字面量只出现一次」的结构性钉桩——行为用例钉不住这类缺陷。
 - 若做「full 热区 session_bodies 写入方」(§五.4),复用 rt.bodiesStore 实例,勿再建第二实例(AsyncFileWriter 双实例会双倍写 worker)。
 - 对账脚本(若建):按 F4 口径豁免 null/{} 行,并注意 v2 侧镜像以 tx.Commit 为界(修订轮 R-A)、telemetry 侧以 persistRequestLog 入口为界(天然含 PG-down 投递)——两侧孤儿语义不同向,脚本按「镜像可能多于 PG」单向容错。

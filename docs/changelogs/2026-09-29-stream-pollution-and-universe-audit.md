@@ -211,3 +211,111 @@ candidates = filtered
   "hidden 模型永远不冒名"已成立；扩宇宙不会重新引入冒名风险。
 - 任何扩宇宙动作必须**先修上游污染**再执行；顺序错了会复制本次缺陷的
   更大版本。
+---
+
+## 2026-10-01 批判式审计补记（勘误 + 补门）
+
+本节是对上面「回归口径」一节的**勘误**。原节写「修完之后不变式要能作为门」，
+但 2026-09-29 交付时**仓库里没有任何东西能断言这条不变式** —— 下面是实测。
+
+### 勘误 1：原「回归口径」当时并没有成为门
+
+- 当时 5 个测试（`admin/routing_resolve_filter_test.go`）**全部只测纯函数**
+  `filterResolveCandidatesByCid` 与 `NormalizeRouteKeyAliasesNoStrip`，
+  从不碰数据库。
+- 真正做判定的 `resolveInputCanonicalID` 接收 `*pgxpool.Pool`，**零测试覆盖**。
+- 唯一跑过不变式的是一个 `/tmp` 下的 python 脚本 + 11 个手挑模型：
+  不在仓库、不可重复、模型集合会随 catalog 漂移。
+- 换句话说：**「11/11 通过」是一次性人工观测，不是回归门**。
+
+### 勘误 2：原实现埋了一个比污染更糟的缺陷
+
+原 SQL：
+
+```sql
+SELECT id FROM models_canonical
+WHERE lower(canonical_name) = ANY($1)
+ORDER BY id LIMIT 1
+```
+
+`= ANY()` 是**集合成员判定，不带顺序**。所以 `ORDER BY id` 实际是
+「在所有命中拼写里取 id 最小的那个」，把
+`NormalizeRouteKeyAliasesNoStrip` 的**精确形优先**语义整个丢掉了。
+
+若 dot 与 dash 两种拼写同时入库（`glm-5.3-flash` id=100、
+`glm-5-3-flash` id=50），输入 `glm-5.3-flash` 会解析成 **50**。
+于是 `filterResolveCandidatesByCid` 会**保留错误 canonical 的候选、
+丢掉正确的** —— 这比它要修的污染更糟，而且 fail-open 分支**救不了**
+（因为查库「成功」了，只是答案错了）。
+
+生产实测当前**没有**这种碰撞（`models_canonical` 无重名 canonical_name，
+且无 dot/dash 并存的 canonical 对），所以是**潜伏缺陷**，不是线上故障。
+
+### 本轮修法
+
+1. `resolveInputCanonicalID` 改为「查出全部命中行 → 交给纯函数裁决」，
+   新增 `canonicalIDByVariantPriority(variants, matches)`：
+   取**在变体列表中位置最靠前**的那行（即精确形），同名重复时取最小 id
+   保证确定性。纯函数可单测，碰撞场景成为红-able 用例。
+2. 新增 `admin/routing_resolve_invariant_test.go`：
+   - **纯函数红门** 4 条：精确形压过小 id、dash 输入压过小 id、
+     平局稳定取最小 id、无命中报 not-found。
+   - **真库不变式门** `TestResolveCandidatesInvariant_Live`：
+     遍历 `models_canonical` **全目录**（实测 958 个），
+     复现 resolve 的三段 WHERE + **过滤后**候选集，断言
+     「所有 candidate.canonical_id 都属于 resolve_input(X)」。
+     DB 不可用时显式 `t.Skipf`，并写明「跳过不构成证据」。
+   - `TestResolveRawModelsStillLeak`：把下面勘误 3 的已知缺口钉成用例，
+     避免它被无声遗忘。
+
+### 验证
+
+```
+# 纯函数门
+go test ./admin/ -run 'TestCanonicalIDByVariantPriority|TestFilterResolveCandidatesByCid|TestNormalizeRouteKeyAliasesNoStrip' -count=1
+→ ok（9 条全绿）
+
+# 真库不变式门（958/958）
+TEST_RESOLVE_INVARIANT_DB_URL=postgres://… go test ./admin/ \
+  -run TestResolveCandidatesInvariant_Live -count=1 -v
+→ invariant verified for 958/958 catalog models  PASS 3.54s
+
+# 变异验证（证明门有守卫力）
+① 抹掉变体优先级（= 旧 ORDER BY id 语义）→ 恰 2 条碰撞测试转红
+   （got 50 want 100 / got 7 want 900）
+② 关闭 filterResolveCandidatesByCid → 真库门报 158 个 INVARIANT BROKEN 并转红
+```
+
+**门自身的一个失误（如实记录）**：真库门第一版只查 SQL 候选集、没跑
+`filterResolveCandidatesByCid`，量的是**过滤前**状态，于是报出约 30 个
+假 `INVARIANT BROKEN`（claude-fable-5-thinking 193851、
+deepseek-v4-*-260425 122349/122350 等）。已修正为「查候选集 + 跑过滤器」
+再断言。**量错阶段的红门比没有门更糟** —— 记录在此以免重演。
+
+### 勘误 3：`raw_models` 仍然被污染（本轮**未**修）
+
+`resolveInputCanonicalID` 只约束了 `candidates`，响应的 `raw_models`
+仍返回含包装词剥离结果的完整矩阵。生产实测：
+
+```
+GET /api/routing/resolve?model=glm-5.3-flash
+  candidates   = 16 条，全部 canonical_id=2716170   ✅ 不变式成立
+  raw_models   = ['glm-5.3-flash','glm-5-3-flash','glm-5.3','glm-5-3']  ❌ 仍含 base
+```
+
+即：**不变式只覆盖 candidates，不覆盖 raw_models**。
+dashboard 侧由 `web/src/utils/modelScopeOwnership.ts` 的绑定级 canonical
+证据做了补偿，但**任何其它 `raw_models` 消费方仍暴露**。
+`TestResolveRawModelsStillLeak` 把该状态钉住：若将来上游修好，这条会
+`t.Skip` 并提示「同时关掉 modelScopeOwnership.ts 的补偿」，
+使两处不会单边漂移。
+
+### 遗留
+
+- `raw_models` 污染（上条）—— 独立议题，需动 `removableWrapperTokens`
+  的消费方式或响应组装，本轮刻意未做。
+- `canonicalIDByVariantPriority` 的平局分支（同名重复）生产不可达，
+  属防卫性代码。
+- 2026-09-28 记录的另一并发会话 `admin/session_panorama_handler.go`
+  在本轮审计期间处于半成品状态（重构到 `loadSessionTimelineInTx` 后
+  残留 `rows.Err()`，致 `admin` 包编译失败），与本轮改动无关。
