@@ -13,6 +13,20 @@ DB 错误被报成 404）、**两处声称与代码不符**、**两处推送门�
 
 基线：`origin/main` = `f44d1e045`（开工先 `git pull --ff-only`，本地原落后 1 提交）。
 
+## 0. 提交前合并复核（重要）
+
+本轮收尾时 `origin/main` 又前进了 5 个提交（并入 `8257ff7bb`），其中
+`ec5edcfd7` 做了**迁移 759→801 撞号修正**，与本轮 R1 同域。合并后复核结论：
+
+- `admin/tenants.go` 自动合并成功，上游改动仅为 `logsTable` 字符串上的一条
+  `sqlreadguard:allow` 注释，**与 F1 根修正交**；`writeTenantStatsError` 的 8 处
+  调用点全部存活。
+- 迁移号实测：`sql/migrations/startup/` 中 **≥492 区间零撞号**；
+  759 = `759_report_snapshots_grain_dims.sql`、801 = `801_session_turn_details_duplicate_drain.sql`，
+  各一。**R1 结论不变**：<492 区间仍有 14 处历史撞号（已被守门测试显式豁免）。
+- 合并后重跑 `go build ./...` 与本轮定向回归，全绿（见 §3）。
+
+
 ## 2. 改动文件与关键行为
 
 | 文件 | 关键行为 |
