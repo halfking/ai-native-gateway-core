@@ -359,6 +359,67 @@ func TestCredentialProbeV2_RestoreAllBindings_PreservesManual(t *testing.T) {
 	}
 }
 
+// TestCredentialProbeV2_RestoreAllBindings_PreservesModelSpecificFailures
+// protects model-level 404/410 cooldowns from a successful probe of a sibling
+// model. Credential health proves the account is reachable; it is not evidence
+// that every model binding under that credential has recovered.
+func TestCredentialProbeV2_RestoreAllBindings_PreservesModelSpecificFailures(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read credential_probe_v2.go failed: %v", err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(")
+	if start < 0 {
+		t.Fatalf("restoreAllBindingsOnCredentialSuccess helper missing")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("restoreAllBindingsOnCredentialSuccess body not terminated")
+	}
+	helperBody := body[start : start+end]
+
+	for _, want := range []string{
+		"COALESCE(cmb.unavailable_reason, '') <> 'auto_model_not_found'",
+		"COALESCE(cmb.unavailable_reason, '') <> 'auto_model_deprecated'",
+		"COALESCE(mo.unavailable_reason, '') <> 'auto_model_not_found'",
+		"COALESCE(mo.unavailable_reason, '') <> 'auto_model_deprecated'",
+	} {
+		if !strings.Contains(helperBody, want) {
+			t.Fatalf("credential-level success recovery missing model-specific failure guard %q — sibling probe must not revive a model still known to return 404/410", want)
+		}
+	}
+}
+
+// TestCredentialProbeV2_RestoreBindingOnProbeSuccess_RequiresSameModelEvidence
+// keeps the recovery path for a later successful probe of the exact model,
+// while preventing that evidence from restoring sibling bindings.
+func TestCredentialProbeV2_RestoreBindingOnProbeSuccess_RequiresSameModelEvidence(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read credential_probe_v2.go failed: %v", err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func (c *CredentialProbeV2) restoreBindingOnProbeSuccess(")
+	if start < 0 {
+		t.Fatalf("restoreBindingOnProbeSuccess helper missing")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("restoreBindingOnProbeSuccess body not terminated")
+	}
+	helperBody := body[start : start+end]
+
+	for _, want := range []string{
+		"pm.raw_model_name = $2",
+		"cmb.unavailable_reason IN ('auto_probe_model_binding', 'auto_model_not_found', 'auto_model_deprecated')",
+	} {
+		if !strings.Contains(helperBody, want) {
+			t.Fatalf("same-model successful probe recovery missing %q", want)
+		}
+	}
+}
+
 // TestCredentialProbeV2_RestoreAllBindings_OnlyAvailableFalse pins the
 // "only flip currently-down rows" contract. A binding that is already
 // available=TRUE must not be touched (avoid spurious updated_at churn and

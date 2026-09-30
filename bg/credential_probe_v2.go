@@ -1589,11 +1589,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		c.writeBindingUnavailable(execCtx, credID, pr)
 	} else if pr.AvailabilityState == "ready" {
 		// 2026-08-26 self-check audit (apigpt / gpt-5.6-terra case):
-		// restoreBindingOnProbeSuccess only clears bindings whose
-		// unavailable_reason='auto_probe_model_binding' (the per-model
-		// probe-revert ladder). For a token-billing credential that was
-		// down for balance_exhausted, sibling bindings often had been
-		// marked unavailable via auto_rate_limit / auto_concurrent /
+		// restoreBindingOnProbeSuccess clears only the exact probe model's
+		// probe-binding or model-level 404/410 reason. For a token-billing
+		// credential that was down for balance_exhausted, sibling bindings may
+		// also have been marked unavailable via auto_rate_limit / auto_concurrent /
 		// continuous_failure during the outage — and restoreBindingOnProbeSuccess
 		// would not touch them. Once the credential recovers to 'ready',
 		// v_routable_credential_models still filters them out because
@@ -1770,12 +1769,14 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 // fix for the apigpt / gpt-5.6-terra recharge scenario. Once the
 // credential-level probe comes back healthy (writeHealth sees
 // AvailabilityState='ready'), this helper fans the recovery across every
-// cmb row under the credential whose current unavailable_reason is one of
-// the auto-* / continuous_failure ladders.
+// cmb row under the credential whose current unavailable_reason is an
+// eligible auto-* / continuous_failure ladder. Model-specific 404/410 holds
+// require positive evidence from the same model and are excluded here.
 //
 // Why a separate helper:
-//   - restoreBindingOnProbeSuccess only clears `auto_probe_model_binding`
-//     (the per-model probe-revert ladder). Other reasons
+//   - restoreBindingOnProbeSuccess only clears the exact probe model's
+//     `auto_probe_model_binding`, `auto_model_not_found`, or
+//     `auto_model_deprecated` reason. Other reasons
 //     (auto_rate_limit, auto_concurrent, auto_stream_timeout,
 //     continuous_failure) were left untouched even when the underlying
 //     upstream was healthy again.
@@ -1789,6 +1790,9 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 //   - unavailable_reason NOT LIKE 'manual%' — operator pin.
 //   - unavailable_reason <> 'model_probe_broken' — permanent broken flag
 //     owned by bg/model_probe.go's own recovery ladder.
+//   - unavailable_reason <> 'auto_model_not_found' / 'auto_model_deprecated'
+//     — model-specific 404/410 evidence. A healthy sibling probe establishes
+//     credential reachability, not that every model binding has recovered.
 //   - admin_protected = FALSE — admin pin.
 //   - cmb.available = FALSE — only flip rows that are currently down.
 //
@@ -1810,7 +1814,8 @@ func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(ctx context.Co
 	// 1. Clear cmb rows that an automated ladder had marked unavailable.
 	// The predicate intentionally covers:
 	//   - continuous_failure    (credentialhealth/checker.go:markDegraded)
-	//   - auto_*                (domains/credential/writer.go:writeModelLevelFailureOnly)
+	//   - auto_* except model-specific 404/410 reasons
+	//                           (domains/credential/writer.go:writeModelLevelFailureOnly)
 	//   - auto_probe_model_binding (this file: writeBindingUnavailable)
 	//   - probe_*               (bg/node_probe.go — rare under balance_exhausted,
 	//     but defensive)
@@ -1825,6 +1830,8 @@ func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(ctx context.Co
 		  AND cmb.available = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(cmb.unavailable_reason, '') <> 'model_probe_broken'
+		  AND COALESCE(cmb.unavailable_reason, '') <> 'auto_model_not_found'
+		  AND COALESCE(cmb.unavailable_reason, '') <> 'auto_model_deprecated'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 	`, credID)
 	if err != nil {
@@ -1848,6 +1855,8 @@ func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(ctx context.Co
 		  AND mo.available = FALSE
 		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(mo.unavailable_reason, '') <> 'model_probe_broken'
+		  AND COALESCE(mo.unavailable_reason, '') <> 'auto_model_not_found'
+		  AND COALESCE(mo.unavailable_reason, '') <> 'auto_model_deprecated'
 		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
 	`, credID)
 	if err != nil {
@@ -2162,9 +2171,10 @@ func (c *CredentialProbeV2) writeBindingUnavailable(ctx context.Context, credID 
 }
 
 // restoreBindingOnProbeSuccess closes the binding-only self-check loop. It
-// restores exactly the model this probe called and only when this probe
-// was the actor that disabled it; manual and other automated holds remain
-// untouched.
+// restores exactly the model this probe called when that same-model probe
+// provides positive evidence. This can clear model-specific 404/410 cooldowns
+// without allowing a healthy sibling probe to revive them; manual, admin and
+// unrelated automated holds remain untouched.
 func (c *CredentialProbeV2) restoreBindingOnProbeSuccess(ctx context.Context, credID int, rawModel string) {
 	if rawModel == "" {
 		return
@@ -2181,7 +2191,7 @@ func (c *CredentialProbeV2) restoreBindingOnProbeSuccess(ctx context.Context, cr
 		  AND cmb.credential_id = $1
 		  AND pm.raw_model_name = $2
 		  AND cmb.available = FALSE
-		  AND cmb.unavailable_reason = 'auto_probe_model_binding'
+		  AND cmb.unavailable_reason IN ('auto_probe_model_binding', 'auto_model_not_found', 'auto_model_deprecated')
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 	`, credID, rawModel)
 	if err != nil {
