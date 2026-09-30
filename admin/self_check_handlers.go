@@ -843,6 +843,7 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var ms modelStat
 		if err := rows.Scan(&ms.Model, &ms.Total, &ms.Success, &ms.Partial, &ms.Failed, &ms.AvgLatency); err != nil {
+			warnRowSkip("selfCheck.handleStats.byModel", err)
 			continue
 		}
 		if ms.Total > 0 {
@@ -850,9 +851,15 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 		byModel = append(byModel, ms)
 	}
+	// 少一个模型的成功率 = 自检页看起来"这个模型没问题"。主查询失败即
+	// 500 的同语义，迭代中断不能降级。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "iterate self-check model stats failed", err)
+		return
+	}
 
 	// Error breakdown.
-	errRows, _ := h.db.Query(r.Context(), `
+	errRows, errRowsErr := h.db.Query(r.Context(), `
 		SELECT COALESCE(error_type,'none'), COUNT(*)
 		FROM self_check_runs WHERE started_at >= $1 AND status != 'success'
 		GROUP BY error_type ORDER BY COUNT(*) DESC`, since)
@@ -861,18 +868,27 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		Count     int    `json:"count"`
 	}
 	errBreakdown := make([]errStat, 0)
+	// 错误分类是主统计的补充区块（本就允许缺席），但缺席必须留痕。
+	if errRowsErr != nil {
+		slog.Warn("self-check stats: error breakdown query failed; section absent", "error", errRowsErr)
+	}
 	if errRows != nil {
 		defer errRows.Close()
 		for errRows.Next() {
 			var es errStat
-			if errRows.Scan(&es.ErrorType, &es.Count) == nil {
+			if err := errRows.Scan(&es.ErrorType, &es.Count); err == nil {
 				errBreakdown = append(errBreakdown, es)
+			} else {
+				warnRowSkip("selfCheck.handleStats.errBreakdown", err)
 			}
+		}
+		if err := errRows.Err(); err != nil {
+			slog.Warn("self-check stats: error breakdown rows iteration aborted; section truncated", "error", err)
 		}
 	}
 
 	// Trend (hourly buckets).
-	trendRows, _ := h.db.Query(r.Context(), `
+	trendRows, trendRowsErr := h.db.Query(r.Context(), `
 		SELECT date_trunc('hour', started_at) AS ts,
 		COUNT(*) FILTER (WHERE status='success')::float / NULLIF(COUNT(*),0)::float AS success_rate,
 		COUNT(*) AS total
@@ -885,15 +901,25 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		Total       int     `json:"total"`
 	}
 	trend := make([]trendPoint, 0)
+	if trendRowsErr != nil {
+		slog.Warn("self-check stats: trend query failed; section absent", "error", trendRowsErr)
+	}
 	if trendRows != nil {
 		defer trendRows.Close()
 		for trendRows.Next() {
 			var tp trendPoint
 			var ts time.Time
-			if trendRows.Scan(&ts, &tp.SuccessRate, &tp.Total) == nil {
+			if err := trendRows.Scan(&ts, &tp.SuccessRate, &tp.Total); err == nil {
 				tp.Timestamp = ts.Format(time.RFC3339)
 				trend = append(trend, tp)
+			} else {
+				warnRowSkip("selfCheck.handleStats.trend", err)
 			}
+		}
+		// 趋势少一小时 = 成功率曲线出现假性断点，与 error breakdown 同为
+		// 可降级补充区块，但必须留痕。
+		if err := trendRows.Err(); err != nil {
+			slog.Warn("self-check stats: trend rows iteration aborted; section truncated", "error", err)
 		}
 	}
 

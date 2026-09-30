@@ -151,6 +151,12 @@ func (s *SlotSuggester) suggest(ctx context.Context) {
 			"peak_5min", peak5min, "peak_1m", peak, "p95", p95,
 		)
 	}
+	// R66: 候选批次被截断 = 本轮少提若干扩容建议，且「slot suggester completed」
+	// 会照常打出来，把静默缩水伪装成正常完成。必须留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("slot suggester: row iteration aborted; candidate batch truncated",
+			"error", err, "candidates", suggestCount)
+	}
 	slog.Info("slot suggester completed", "candidates", suggestCount)
 }
 
@@ -250,6 +256,12 @@ func (s *SlotSuggester) ApplyDueSuggestions(ctx context.Context) (int, error) {
 			"credential_id", credID, "model", rawModel,
 			"old_limit", current, "new_limit", suggested,
 		)
+	}
+	// R66: 待应用批被截断 = 本轮少应用若干已过 24h 预览期的调额。
+	// worker 继续跑，只留痕（applied 计数照常返回，不上抛以免中断循环）。
+	if err := rows.Err(); err != nil {
+		slog.Warn("slot suggester: due-suggestion row iteration aborted; batch truncated",
+			"error", err, "applied", applied)
 	}
 	return applied, nil
 }

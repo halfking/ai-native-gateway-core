@@ -246,11 +246,18 @@ func (h *Handler) idLabelMap(ctx context.Context, sqlText string) map[int64]stri
 		var id int64
 		var name *string
 		if err := rows.Scan(&id, &name); err != nil {
+			warnRowSkip("reportRollup.idLabelMap", err)
 			continue
 		}
 		if name != nil && *name != "" {
 			out[id] = *name
 		}
+	}
+	// 与查询失败同语义：降级成裸 id 是允许的，但迭代中断必须留痕 ——
+	// 否则「整列名称恒空」和「只有几行没名称」无法区分。
+	if err := rows.Err(); err != nil {
+		slog.Warn("report rollup: id→name rows iteration aborted; labels partial, raw ids shown",
+			"sql", sqlText, "error", err)
 	}
 	return out
 }
@@ -260,6 +267,7 @@ func (h *Handler) providerNames(ctx context.Context) map[int64]string {
 	names := map[int64]string{}
 	rows, err := h.db.Query(ctx, `SELECT id, display_name FROM providers`)
 	if err != nil {
+		slog.Warn("report rollup: load provider names failed, falling back to raw ids", "error", err)
 		return names
 	}
 	defer rows.Close()
@@ -268,7 +276,13 @@ func (h *Handler) providerNames(ctx context.Context) map[int64]string {
 		var name string
 		if err := rows.Scan(&id, &name); err == nil {
 			names[id] = name
+		} else {
+			warnRowSkip("reportRollup.providerNames", err)
 		}
+	}
+	// 同 idLabelMap：降级可接受，痕迹不可少。
+	if err := rows.Err(); err != nil {
+		slog.Warn("report rollup: provider name rows iteration aborted; names partial", "error", err)
 	}
 	return names
 }

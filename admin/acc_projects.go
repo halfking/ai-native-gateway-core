@@ -438,10 +438,14 @@ func (h *ProjectHandlers) handleList(w http.ResponseWriter, r *http.Request) {
 		var it item
 		var synced *time.Time
 		if err := rows.Scan(&it.Ref, &it.Name, &it.Enabled, &it.FromACC, &synced, &it.UpdatedAt); err != nil {
+			warnRowSkip("accProjects.handleList", err)
 			continue
 		}
 		it.SyncedAt = synced
 		items = append(items, it)
+	}
+	if writeAggRowsErr(w, "accProjects.handleList", rows.Err()) {
+		return
 	}
 	out["projects"] = items
 	writeJSONOk(w, out)

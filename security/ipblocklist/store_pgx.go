@@ -3,11 +3,13 @@ package ipblocklist
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // PgxStore implements Store on PostgreSQL.
@@ -189,14 +191,34 @@ func scanEntry(row rowScanner) (Entry, error) {
 	return e, err
 }
 
+// scanEntries 把 rows 摊平成条目切片。
+//
+// 两类失败分开处理：
+//  1. 单行 Scan 失败 —— fail-open（该 IP 本轮不被拦），保持裸 continue
+//     的容错语义，但必须留痕，否则一条本该命中的封禁条目被悄悄丢掉。
+//  2. 迭代中断 —— scanEntries 的签名没有 error 通道，无法自己上抛；
+//     调用方（List / ListActive）各自紧跟 `rows.Err()` 上抛，所以**数据
+//     不会**被静默返回。但本函数在循环后仍显式查一次并留痕：终端检查是
+//     本仓库的逐循环守卫契约（internal/rowsguard），且这里是封禁读面的
+//     收敛点，截断必须在本函数内可查，不能只依赖调用方自觉。
 func scanEntries(rows pgx.Rows) []Entry {
 	var out []Entry
 	for rows.Next() {
 		e, err := scanEntry(rows)
 		if err != nil {
+			// R66: 封禁名单的单行失败 = 该 IP 本轮不被拦。保持 fail-open
+			//（改成 fail-closed 属语义变更，超出本轮 error-path 范围），
+			// 但必须留痕，否则封禁静默失效无人知晓。
+			dbrows.WarnRowSkip("ipblocklist.scanEntries", err)
 			continue
 		}
 		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		// 迭代中断：截断的封禁名单 = 后续若干 IP 不再被拦。调用方会把本
+		// 错误上抛（List / ListActive 紧跟 rows.Err()），此处只留痕。
+		slog.Warn("ipblocklist: entry rows iteration aborted; blocklist truncated",
+			"op", "ipblocklist.scanEntries", "entries", len(out), "error", err)
 	}
 	if out == nil {
 		out = []Entry{}

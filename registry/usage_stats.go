@@ -129,6 +129,11 @@ func (tr *ToolRegistry) GetUsageStats(ctx context.Context, toolID, tenantID stri
 		}
 		stats = append(stats, s)
 	}
+	// R66: 用量统计被静默截断 = 调用数/成功率/延迟榜凭空少若干天，
+	// 而调用方拿到的是完整 slice + nil，误以为「该工具这几天没流量」。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("registry.ToolRegistry.GetUsageStats: iterate rows: %w", err)
+	}
 
 	return stats, nil
 }
@@ -170,6 +175,10 @@ func (tr *ToolRegistry) GetTopTools(ctx context.Context, tenantID string, limit 
 			return nil, err
 		}
 		stats = append(stats, s)
+	}
+	// R66: Top-N 榜被静默截断 = 头部工具排名缺项，榜单无任何报错。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("registry.ToolRegistry.GetTopTools: iterate rows: %w", err)
 	}
 
 	return stats, nil

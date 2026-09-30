@@ -23,10 +23,12 @@ package bg
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // FeatureStatsWorker 定期计算结构化特征统计。
@@ -262,7 +264,9 @@ func (w *FeatureStatsWorker) detectFeatureConcentration(ctx context.Context, sta
 		var featureName, featureValue string
 		var percentage float64
 		if err := rows.Scan(&featureName, &featureValue, &percentage); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.FeatureStatsWorker.detectFeatureConcentration", err) {
+				continue
+			}
 		}
 
 		slog.Warn("feature concentration detected",
@@ -271,6 +275,11 @@ func (w *FeatureStatsWorker) detectFeatureConcentration(ctx context.Context, sta
 			"percentage", percentage,
 			"stat_date", statDate.Format("2006-01-02"),
 			"alert", "FeatureConcentration")
+	}
+	// R66: 告警批次被截断 = 少报若干集中度异常，且无任何痕迹。
+	if err := rows.Err(); err != nil {
+		slog.Warn("feature concentration detection: row iteration aborted; alert batch truncated",
+			"stat_date", statDate.Format("2006-01-02"), "error", err)
 	}
 }
 
@@ -321,7 +330,9 @@ func (w *FeatureStatsWorker) detectMissingFeatures(ctx context.Context, statDate
 		var featureName string
 		var percentage float64
 		if err := rows.Scan(&featureName, &percentage); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.FeatureStatsWorker.detectMissingFeatures", err) {
+				continue
+			}
 		}
 
 		slog.Warn("high missing rate detected",
@@ -329,6 +340,11 @@ func (w *FeatureStatsWorker) detectMissingFeatures(ctx context.Context, statDate
 			"missing_percentage", percentage,
 			"stat_date", statDate.Format("2006-01-02"),
 			"alert", "MissingFeatures")
+	}
+	// R66: 同上——缺失率告警批次被静默截断会让特征质量退化不可见。
+	if err := rows.Err(); err != nil {
+		slog.Warn("missing features detection: row iteration aborted; alert batch truncated",
+			"stat_date", statDate.Format("2006-01-02"), "error", err)
 	}
 }
 
@@ -372,9 +388,15 @@ func (w *FeatureStatsWorker) GetLatestStats(ctx context.Context) (map[string]int
 		var featureName string
 		var fillRate float64
 		if err := rows.Scan(&featureName, &fillRate); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.FeatureStatsWorker.GetLatestStats", err) {
+				continue
+			}
 		}
 		fillRates[featureName] = fillRate
+	}
+	// R66: fill_rates 被截断会让读到的特征填充率集合不完整且无 error。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("bg.FeatureStatsWorker.GetLatestStats: iterate rows: %w", err)
 	}
 	result["fill_rates"] = fillRates
 

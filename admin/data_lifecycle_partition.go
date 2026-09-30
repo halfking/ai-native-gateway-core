@@ -239,6 +239,11 @@ func (h *Handler) getPartitionTableStatus(ctx context.Context, config partitione
 			status.ArchivableCount++
 		}
 	}
+	// 分区清单是保留/归档读面：少列一个分区就等于让管理员以为该分区不存在
+	// （或不该归档），迭代中断必须上抛。
+	if err := rows.Err(); err != nil {
+		return status, fmt.Errorf("failed to iterate partition rows: %w", err)
+	}
 
 	return status, nil
 }

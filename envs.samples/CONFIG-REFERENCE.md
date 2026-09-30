@@ -138,16 +138,16 @@ V2 调度、项目归属、网关准入、代理、阈值表、节点故障转�
 | 调度 / pending / 幂等 | dispatch 族 | 队列后端与 governor 可换 |
 | 路由评分权重 / 压力感知曲线 | routing w_* / pressure α·β·knee·γ | 多目标打分与压力拐点 |
 | ML 路由（onnx） | settings/routing_ml_flags.go | ROUTING_ML_* 六项 |
-| V2 子系统门禁 | V2_AUTH/CACHE/STREAMING/AUDIT/... | 迁移期灰度开关族 |
+| V2 子系统门禁 | V2_AUTH/CACHE/STREAMING/AUDIT/... | 迁移期灰度开关族；主二进制除 AUTH/ANALYSIS 外默认开（main_pipeline.go:174-182）；SESSION_AUDIT 仅 gateway-v2 二进制读 |
 | 粘性负载 / live-stream 缓存 / 探测队列 / 提交门 | stickyload、probe 族 | 容量与窗口类 |
 | 资源自愈监控 / 启动重试 / 身份限流器 | resource monitor、boot retry | 阈值与窗口 |
 | JEV 分类器（fail-open）/ 提示缓存 / 遥测兜底 | autoroute/classifier_jev.go | 激活值 1/true/on/enabled；凭据走 TYPESAFE_* |
 | 对象存储后端（S3/OSS/Cloudreve） | storage | 三套凭据，附件/备份外置 |
 | 会话分析（SA）引擎 | settings/session_analytics_specs.go | 模型 alias 与聚类调度 |
 | Bleve 日志全文索引 | internal/logging/bleve_fanout.go | 默认关 |
-| 数据生命周期 cron | admin/data_lifecycle_cron_env.go | HOT_CRON_* 六项 |
+| 数据生命周期 cron | admin/data_lifecycle_cron_env.go | HOT_CRON_* 六项；默认 02:00 / 保留 8h / 批 500 / 重试 3 / 退避 30s |
 | 路由优化插件 | settings/routing_opt_feature_flags.go | 默认关，零开销短路 |
-| Autoroute 特性开关 | autoroute/feature_flags.go | AUTO_* 24 项 |
+| Autoroute 特性开关 | autoroute/feature_flags.go | AUTO_* 24 项；另有 8 项 deprecated（legacyflags，仅 URSM_V2_MODE=off 回退路径读取） |
 | 路由/故障/探测阈值 | settings/spec_thresholds.go | Wave2 集中化常量表 |
 | 通知杂项 | 见 04 | 钉钉/飞书/企微/候选失败告警 |
 | 集成 | 见 03 | Casdoor/Memora/ASM/maintain/ACC/Armor/License |
@@ -199,7 +199,8 @@ go run ./scripts/gen-env-ref > envs.samples/SPECS-REFERENCE.md
 
 # 全仓库 env 审计 —— 稳妥启发式：任意"函数名(全大写字符串)"调用，
 # 覆盖 os.Getenv/envOrDefault/getEnvBool/parseDurationEnv/applyPositiveIntEnv
-# 等全部辅助读取函数；需人工剔除 Redis 命令字符串噪音（GET/POST/INCR/EXPIRE…）
+# 等全部辅助读取函数；需人工剔除噪音字符串：Redis 命令（GET/POST/INCR/EXPIRE…）
+# 与日志标签（如 slog.Info("LOAD_SCORE_V2") 不是环境变量）
 git grep -hoE '\b[a-zA-Z][a-zA-Z0-9]*\("[A-Z][A-Z0-9_]+"' -- '*.go' ':(exclude)vendor/**' ':(exclude)*_test.go' \
   | sed -E 's/.*\("//;s/"//' | sort -u
 

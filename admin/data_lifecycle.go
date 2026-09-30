@@ -144,6 +144,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	for segmentRows.Next() {
 		var sr segmentRow
 		if err := segmentRows.Scan(&sr.Segment, &sr.Rows, &sr.SizeBytes, &sr.SizeHuman); err != nil {
+			warnRowSkip("dataLifecycle.stats.segments", err)
 			continue
 		}
 
@@ -174,6 +175,11 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			stats.ExpiredData = seg
 		}
 	}
+	// 段位缺失（hot/warm/cold/expired 任一为空）会让 stats 报出错误的
+	// 总量结构，迭代中断必须按查询侧同语义收口，不能静默 200。
+	if writeAggRowsErr(w, "dataLifecycle.stats.segments", segmentRows.Err()) {
+		return
+	}
 
 	// 3. By tenant (top 10)
 	tenantQuery := `
@@ -197,9 +203,15 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 		for tenantRows.Next() {
 			var ts tenantDataStats
 			if err := tenantRows.Scan(&ts.TenantID, &ts.Rows, &ts.SizeBytes, &ts.SizeHuman); err != nil {
+				warnRowSkip("dataLifecycle.stats.byTenant", err)
 				continue
 			}
 			stats.ByTenant = append(stats.ByTenant, ts)
+		}
+		// 与上面的查询失败同语义：非致命，但必须留痕——否则 ByTenant 少
+		// 租户无人知晓，租户计费/容量归属看板会给出偏小的排名。
+		if err := tenantRows.Err(); err != nil {
+			slog.Warn("data_lifecycle_stats byTenant rows iteration aborted; report truncated", "error", err)
 		}
 	}
 
@@ -257,6 +269,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			var dg dailyGrowth
 			var day time.Time
 			if err := trendRows.Scan(&day, &dg.Requests, &dg.Compressed); err != nil {
+				warnRowSkip("dataLifecycle.stats.growthTrend", err)
 				continue
 			}
 			dg.Date = day.Format("2006-01-02")
@@ -269,6 +282,11 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				}
 			}
 			stats.GrowthTrend = append(stats.GrowthTrend, dg)
+		}
+		// 与查询失败同语义：非致命，但必须留痕——趋势图少一天就是压缩率
+		// 看板给出错误的容量回收结论。
+		if err := trendRows.Err(); err != nil {
+			slog.Warn("data_lifecycle_stats growthTrend rows iteration aborted; report truncated", "error", err)
 		}
 	}
 

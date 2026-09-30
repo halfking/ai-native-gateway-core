@@ -114,6 +114,9 @@ func (h *Handler) handleModelIQNodeLatest(w http.ResponseWriter, r *http.Request
 		}
 		out = append(out, row)
 	}
+	if writeAggRowsErr(w, "modelIQ.latest", rows.Err()) {
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -176,6 +179,9 @@ func (h *Handler) handleModelIQHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out = append(out, p)
+	}
+	if writeAggRowsErr(w, "modelIQ.history", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -241,6 +247,9 @@ func (h *Handler) handleModelIQCatalog(w http.ResponseWriter, r *http.Request) {
 		row.MaxNodeIQ = nodeMax
 		row.MinNodeIQ = nodeMin
 		out = append(out, row)
+	}
+	if writeAggRowsErr(w, "modelIQ.catalog", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }

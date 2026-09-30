@@ -373,7 +373,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.PlanQuotaUsedPercent,
 			&c.PlanQuotaCheckedAt,
 		); err != nil {
-			slog.Warn("listCredentials scan failed", "error", err)
+			warnRowSkip("credentials.list", err)
 			continue
 		}
 
@@ -406,6 +406,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			c.EffectiveFpSlotLimit = credentialfpslot.EffectiveFpSlotLimit(c.FpSlotLimit, h.fpSlotsDefaultLimit())
 		}
 		creds = append(creds, c)
+	}
+	// 凭据列表被截断会被读成"该 provider 只有这几把 key"——直接 500。
+	if writeAggRowsErr(w, "credentials.list", rows.Err()) {
+		return
 	}
 	if creds == nil {
 		creds = []cred{}
@@ -1173,9 +1177,15 @@ func (h *Handler) lookupSessionTitles(ctx context.Context, holders []string) map
 	defer rows.Close()
 	for rows.Next() {
 		var sid, title string
-		if err := rows.Scan(&sid, &title); err == nil {
-			result[sid] = title
+		if err := rows.Scan(&sid, &title); err != nil {
+			warnRowSkip("credentials.lookupSessionTitles", err)
+			continue
 		}
+		result[sid] = title
+	}
+	// 显式 best-effort（函数头注：缺失条目只是不出现）：标题富化降级留痕。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Debug("lookupSessionTitles iteration aborted; titles incomplete", "error", rerr)
 	}
 	return result
 }
