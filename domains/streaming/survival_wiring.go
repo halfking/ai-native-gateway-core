@@ -151,6 +151,9 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		BeforeSemanticCommit: durableBeforeSemanticCommit(durable),
 		Terminal: func(decision TaskDecision, committed bool) {
 			terminalOnWire = true
+			if blocker, ok := w.(interface{ OutputPolicyBlocked() bool }); ok && blocker.OutputPolicyBlocked() {
+				return
+			}
 			renderSurvivalTerminal(sw, protocol, decision, committed)
 		},
 	}

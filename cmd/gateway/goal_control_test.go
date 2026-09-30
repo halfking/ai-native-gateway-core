@@ -4,8 +4,26 @@ import (
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
+	outputcompliancehook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
+
+type restoreOrderTestInterceptor struct{ response.ResponseInterceptor }
+
+func TestSanitizeRestoreRunsBeforeOutputCompliance(t *testing.T) {
+	goalHook := &restoreOrderTestInterceptor{}
+	auditHook := &restoreOrderTestInterceptor{}
+	restoreHook := &restoreOrderTestInterceptor{}
+	complianceHook := outputcompliancehook.NewOutputComplianceInterceptor(nil, nil)
+
+	got := insertSanitizeRestoreBeforeOutputCompliance(
+		[]response.ResponseInterceptor{goalHook, auditHook, complianceHook}, restoreHook,
+	)
+	if len(got) != 4 || got[0] != goalHook || got[1] != auditHook || got[2] != restoreHook || got[3] != complianceHook {
+		t.Fatalf("interceptor order = %#v, want goal → audit → restore → compliance", got)
+	}
+}
 
 // TestSettingsAdapterResolvesCorrectScope ensures settingsAdapter.settingScope
 // returns ScopePlatform for goal.enabled / session_analytics.enabled (so

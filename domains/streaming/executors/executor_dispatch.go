@@ -11,10 +11,10 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
-	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/internal/endpointselect"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
@@ -1160,6 +1160,14 @@ func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candi
 // recordDispatchError classifies the error and retains model-not-found audit
 // and streak tracking. Node-health state and circuit writes are reducer-owned.
 func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candidate, err error) errorsx.ErrorKind {
+	// Stream converters return a typed interruption without wrapping an
+	// *upstream.Error. Preserve that kind (including an output-policy block)
+	// instead of flattening its message into KindTransient and retrying a
+	// response that the gateway has already rejected.
+	var interrupted *streamInterruptedError
+	if errors.As(err, &interrupted) && interrupted != nil && interrupted.kind != "" {
+		return interrupted.kind
+	}
 	kind := classifyExecError(err)
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
