@@ -451,8 +451,12 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 // with the revision the publisher will publish, not the previous one. Backend
 // failure is propagated as an ErrGovernorUnavailable-wrapped error so
 // ApplyPolicy can fail-closed (no swap, no revision advance);
-// newCredForwarder wraps this in a fail-open fallback so a transient Redis
-// outage cannot block the very first dispatch to a fresh forwarder.
+// newCredForwarder wraps this in a fallback so a transient Redis outage
+// cannot block the very first dispatch to a fresh forwarder. 2026-10-01 R73
+// (comment correction): the old wording said "fail-open" for every backend,
+// but buildForwarderGovernor only degrades to the in-process governor for
+// the in-process backends — under BackendRedisEnforce it returns
+// unavailableGovernor{} and stays fail-closed on purpose.
 func (p *Pipeline) governorForCredential(cred CredentialRef, specRevision uint64) (Governor, error) {
 	backend := p.GovernorBackend()
 	mode := cred.ConcurrencyMode
