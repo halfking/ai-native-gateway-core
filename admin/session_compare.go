@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -157,6 +158,20 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 		return txErr
 	})
 	if err != nil {
+		// 正文取数并发已满 → 503「现在忙」，不是 500「坏了」。这两者对调用方
+		// 的重试含义完全不同（503 可退避重试，500 不该重试）。
+		// 见 session_bodies_batch.go 的并发闸注释：正文查询单条 17~19 秒，
+		// 池只有 16 个连接，排队就是雪崩。
+		if errors.Is(err, ErrBodyFetchSaturated) {
+			slog.WarnContext(r.Context(), "session compare rejected: body fetch saturated",
+				"session_id", sessionID, "limit", maxConcurrentBodyFetches)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status":  "error",
+				"message": "Session body data is temporarily unavailable — too many concurrent scans. Retry shortly.",
+				"code":    "session_body_fetch_saturated",
+			})
+			return
+		}
 		writeInternalErrStr(w, "Failed to load session compare data", err)
 		return
 	}
