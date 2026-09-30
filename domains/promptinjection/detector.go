@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/lib/pq"
 )
 
@@ -550,7 +551,7 @@ func (d *Detector) getSeverityAction(ctx context.Context, tenantID, riskLevel st
 		return nil, err
 	}
 
-	_ = json.Unmarshal([]byte(channelsJSON), &sa.NotifyChannels)
+	jsoncol.Decode("promptinjection.getSeverityAction/notify_channels", []byte(channelsJSON), &sa.NotifyChannels)
 	return sa, nil
 }
 
