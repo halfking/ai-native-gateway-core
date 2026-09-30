@@ -53,7 +53,13 @@
 ## 五、④ 根盘复核：93% 持平，满盘赛跑（D19）实质解除
 
 - 现值 93%/15G 与 R15 完全持平（10 月首日夜间低峰）。2026_10 列存后 bodies 日增量预期从 ~1.6GB 降两个数量级（9.53-56.6× 压缩带），10-08 释放 53GB 后余量预计回到 60G+。
-- session_bodies_2026_09（20GB）按自身 TTL 退役，本轮未动、不在 10-08 释放范围。
+- session_bodies_2026_09（20GB）本轮未动、不在 10-08 释放范围。
+  > **R78 事实订正**：原文写「按自身 TTL 退役」不成立。session_bodies 父表
+  > 没有任何 TTL——`stateTableTTLSpecs()` 的 7 项里不含 session_* 族，SQL 侧
+  > `drop_old_state_partitions` 的 target_tables 也不含，settings 无对应项
+  > （`retention_session_bodies_days` 是 lite 文件系统热区配置，与 PG 分区无关）。
+  > session_bodies / session_turns / session_turn_details 三个父表当前均无
+  > 退役路径，历史分区无界增长。本机实测 8361MB / 6380MB / —。这是待裁决项。
 
 ## 六、⑤ URSM v2 cutover 判定：**已完成（154 权威），下调建议升级为容量安全项**
 
