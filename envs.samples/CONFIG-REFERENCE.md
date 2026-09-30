@@ -3,15 +3,15 @@
 本文档是 `envs.samples/` 目录的**总说明**，与两份配套物一起构成完整配置面：
 
 - `01-gateway-core.env.sample` ~ `10-installer.env.sample` —— 按场景的可执行示例配置；
-- `SPECS-REFERENCE.md` —— **机器生成**的 settings 规格全表（104 个变量，
-  由 `go run ./scripts/gen-env-ref > envs.samples/SPECS-REFERENCE.md` 再生，
-  数据源与线上热加载通道同源，勿手改）。
+- `SPECS-REFERENCE.md` —— **机器生成**的 settings 规格全表
+  （由 `go run ./scripts/gen-env-ref > envs.samples/SPECS-REFERENCE.md` 再生，
+  数据源与线上热加载通道同源，勿手改；条目数以生成文件头部为准）。
 
 覆盖口径（2026-10-01 审计）：Go 代码直接读取（`os.Getenv`/`os.LookupEnv`）、
-辅助函数读取（`envOrDefault`/`getEnvBool`/`parseIntEnv` 等）、结构体
-`env:"..."` 标签、settings 规格 `EnvName`、docker-compose 插值、部署与
-运维脚本，共 600+ 变量；全部在本目录中有归属（运行时入示例文件、
-测试与工具型入 §7/§8 清单）。
+辅助函数读取（`envOrDefault`/`getEnvBool`/`parseDurationEnv`/
+`applyPositiveIntEnv` 等）、结构体 `env:"..."` 标签、settings 规格
+`EnvName`、docker-compose 插值、部署与运维脚本；全部变量在本目录中
+有归属（运行时入示例文件、测试与工具型入 §7/§8 清单）。
 
 ## 1. 配置加载与优先级
 
@@ -53,11 +53,18 @@ settings_kv 数据库值（热加载，仅 settings 规格族）
 | `LLM_GATEWAY_SECRET_KEY` | `SECRET_KEY` | quickstart compose 用无前缀名 |
 | `LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY` | `CREDENTIAL_ENCRYPTION_KEY` | 同上 |
 | `LLM_GATEWAY_ENV` | `GO_ENV` → `APP_ENV` | 部署环境标识 |
-| `LLM_GATEWAY_WECHAT_CORP_ID` / `_CORP_SECRET` | `WECHAT_CORP_ID` / `WECHAT_CORP_SECRET` | 企微通知 |
-| `LLM_GATEWAY_ANALYSIS_BASE_URL` / `_API_KEY` | `LLM_ANALYSIS_BASE_URL` / `_API_KEY` | 会话分析模型（旧名） |
+| `LLM_GATEWAY_WECHAT_CORP_ID` / `_CORP_SECRET` | `WECHAT_CORP_ID` / `WECHAT_CORP_SECRET` | 企微通知（main_notification.go 先读前缀版，空则回退） |
+| `LLM_GATEWAY_ANALYSIS_BASE_URL` / `_API_KEY` | `LLM_ANALYSIS_BASE_URL` / `_API_KEY` | 会话分析模型（旧名，main.go 同型回退） |
 | `LLM_GATEWAY_JWT_SECRET` | （回落 `SECRET_KEY`） | 未设时用 SECRET_KEY 签 JWT |
-| `LLM_GATEWAY_MAINTAIN_URL` | `MAINTAIN_SERVICE_URL` | maintain 服务地址 |
-| `LLM_GATEWAY_REDIS_URL` / `REDIS_URL` | — | URL 形式；`URSM_V2_*` 族**天生无前缀**（见 02 注） |
+
+非 fallback 的易混对（**并存的不同配置项**）：
+
+- `MAINTAIN_SERVICE_URL`（/maintain-api/* 反代转发）与
+  `LLM_GATEWAY_MAINTAIN_URL`（/maintain/* 前端挂载端点，未设 503）——二者需分别配置；
+- `LLM_GATEWAY_REDIS_URL` 与 `REDIS_URL`——前者是 storage 的 URL 形式装配，
+  后者是 domains 侧直读的平行通道（lite 模式收口清单见
+  `cmd/gateway/storage_mode_init.go` liteRedisEnvKeys），不是 fallback；
+- `URSM_V2_*` 族**天生无前缀**（domains/ursm/v2/config.go 直读）。
 
 ## 4. 核心运行时变量（对应 01-gateway-core.env.sample）
 
@@ -70,7 +77,7 @@ settings_kv 数据库值（热加载，仅 settings 规格族）
 | `LLM_GATEWAY_DB_MAX_CONNS` | 代码默认 | PG 连接池上限 |
 | `LLM_GATEWAY_STORAGE_MAX_CONNECTIONS` | 代码默认 | 存储层独立池上限 |
 | `LLM_GATEWAY_REDIS_ADDR/_PASSWORD/_DB` | — / — / `2` | session/live-stream/rpm/availability 共用；共享实例 db=2（0/1/9 被占） |
-| `RATE_LIMIT_REDIS_URL` / `RPM_REDIS_URL` | 回落主 Redis | 限流 / RPM 统计专用通道 |
+| `RATE_LIMIT_REDIS_URL` / `RPM_REDIS_URL` | 未设时用主 Redis 装配 | 限流 / RPM 统计专用通道 |
 | `LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET/_ISSUER/_AUDIENCE/_ENABLED` | — | session-manager 服务间 JWT 门禁 |
 | `CURSOR_HMAC_SECRET` | — | Cursor 客户端 HMAC 校验 |
 | `LLM_GATEWAY_IDENTITY_SALT` | — | 客户端指纹盐 |
@@ -97,7 +104,7 @@ settings_kv 数据库值（热加载，仅 settings 规格族）
 | `LLM_GATEWAY_LITE_ALLOW_UNAUTHENTICATED` | `false` | lite 会话体免鉴权，仅本地调试 |
 | `LLM_GATEWAY_STATIC_DIR` / `_PYTHON_ENDPOINT` | 内嵌 / 空 | admin 静态资源 / Python 辅助服务 |
 
-## 5. settings 规格族（104 项，见 SPECS-REFERENCE.md）
+## 5. settings 规格族（见 SPECS-REFERENCE.md）
 
 压缩、伪装、会话、限流、透传、模块、日志、存储、会话审计、探测、自检、
 错误探测、路由状态、生命周期、会话分析、看板、统计影子、Sessions V2、
@@ -134,7 +141,7 @@ V2 调度、项目归属、网关准入、代理、阈值表、节点故障转�
 | V2 子系统门禁 | V2_AUTH/CACHE/STREAMING/AUDIT/... | 迁移期灰度开关族 |
 | 粘性负载 / live-stream 缓存 / 探测队列 / 提交门 | stickyload、probe 族 | 容量与窗口类 |
 | 资源自愈监控 / 启动重试 / 身份限流器 | resource monitor、boot retry | 阈值与窗口 |
-| JEV 分类 / 提示缓存 / 遥测兜底 | 内部 | 观察类 |
+| JEV 分类器（fail-open）/ 提示缓存 / 遥测兜底 | autoroute/classifier_jev.go | 激活值 1/true/on/enabled；凭据走 TYPESAFE_* |
 | 对象存储后端（S3/OSS/Cloudreve） | storage | 三套凭据，附件/备份外置 |
 | 会话分析（SA）引擎 | settings/session_analytics_specs.go | 模型 alias 与聚类调度 |
 | Bleve 日志全文索引 | internal/logging/bleve_fanout.go | 默认关 |

@@ -16,9 +16,9 @@ settings 注册表（PlatformSpecs/TenantSpecs/模块级规格）中带 EnvName 
 | `LLM_GATEWAY_COMPRESSION_SELECTOR_SPEC` | `compression.selector_spec` | platform | string | `` |  | 手动压缩策略列表（csv） |
 | `LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED` | `compression.strategy_runner_enabled` | platform | bool | `false` |  | 启用可选压缩策略执行器 |
 | `LLM_GATEWAY_COMPRESSION_TARGET_RATIO` | `compression.adaptive_target_ratio` | platform | float | `0.8` | 0 ~ 1 | 自适应压缩目标比例 |
-| `LLM_GATEWAY_CREDENTIAL_MODEL_DEPRECATED_COOLDOWN_SECONDS` | `credential.model_deprecated_cooldown_seconds` | platform | int | `2592000` | 86400 ~ 3.1536e+07 | 模型下线（deprecation）冷却（秒） |
+| `LLM_GATEWAY_CREDENTIAL_MODEL_DEPRECATED_COOLDOWN_SECONDS` | `credential.model_deprecated_cooldown_seconds` | platform | int | `2592000` | 86400 ~ 31536000 | 模型下线（deprecation）冷却（秒） |
 | `LLM_GATEWAY_CREDENTIAL_MODEL_NOT_FOUND_INITIAL_COOLDOWN_SECONDS` | `credential.model_not_found_initial_cooldown_seconds` | platform | int | `1800` | 60 ~ 604800 | MNF 首次冷却（秒） |
-| `LLM_GATEWAY_CREDENTIAL_MODEL_NOT_FOUND_SUSTAINED_COOLDOWN_SECONDS` | `credential.model_not_found_sustained_cooldown_seconds` | platform | int | `604800` | 1800 ~ 2.592e+06 | MNF 持续冷却（秒） |
+| `LLM_GATEWAY_CREDENTIAL_MODEL_NOT_FOUND_SUSTAINED_COOLDOWN_SECONDS` | `credential.model_not_found_sustained_cooldown_seconds` | platform | int | `604800` | 1800 ~ 2592000 | MNF 持续冷却（秒） |
 | `LLM_GATEWAY_DISGUISE_FP_SLOT_TTL_SECONDS` | `disguise.fp_slot_ttl_seconds` | platform | int | `1800` | 300 ~ 86400 | 指纹槽自动归还 TTL（秒） |
 | `LLM_GATEWAY_ERROR_PROBE_CONSECUTIVE_THRESHOLD` | `error_probe.consecutive_threshold` | platform | int | `2` | 2 ~ 10 | 触发主动探测的连续失败次数阈值。值越小越敏感（误触发风险增加），值越大越保守（响应延迟增加）。启动时读取，改动重启生效。 |
 | `LLM_GATEWAY_ERROR_PROBE_ENABLED` | `error_probe.enabled` | platform | bool | `true` |  | 是否启用错误触发的主动探测（请求连续失败时立即直连上游探测，不等待周期扫描）。启动时读取，改动重启生效。 |
@@ -46,24 +46,24 @@ settings 注册表（PlatformSpecs/TenantSpecs/模块级规格）中带 EnvName 
 | `LLM_GATEWAY_GOAL_ENABLED` | `goal.enabled` | tenant | bool | `false` |  | 启用Goal模式 |
 | `LLM_GATEWAY_GOAL_FALLBACK_AUDIT_MODEL` | `goal.fallback_audit_model` | tenant | string | `auto` |  | 审计备用模型 |
 | `LLM_GATEWAY_GOAL_FALLBACK_MODELS` | `goal.fallback_models` | tenant | string | `` |  | 备选模型列表 |
-| `LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD` | `goal.handoff_signal_threshold_tokens` | tenant | int | `200000` | 1 ~ 1e+07 | 触发 handoff 信号的上下文 token 阈值（tokens） |
+| `LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD` | `goal.handoff_signal_threshold_tokens` | tenant | int | `200000` | 1 ~ 10000000 | 触发 handoff 信号的上下文 token 阈值（tokens） |
 | `LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE` | `goal.max_auto_continue_count` | tenant | int | `3` | 1 ~ 50 | 最大自动继续次数 |
 | `LLM_GATEWAY_GOAL_MAX_FOLLOW_UPS_PER_SESSION` | `goal.max_follow_ups_per_session` | tenant | int | `50` | 1 ~ 500 | 单会话续跑总次数上限 |
 | `LLM_GATEWAY_GOAL_MAX_FOLLOW_UP_DEPTH` | `goal.max_follow_up_depth` | tenant | int | `15` | 1 ~ 50 | 续跑递归最大深度（层） |
 | `LLM_GATEWAY_GOAL_MAX_MODEL_SWITCH` | `goal.max_model_switch_count` | tenant | int | `3` | 0 ~ 20 | 最大模型切换次数 |
 | `LLM_GATEWAY_GOAL_MAX_RETRY` | `goal.max_retry_count` | tenant | int | `3` | 1 ~ 10 | 最大重试次数 |
 | `LLM_GATEWAY_GOAL_MODEL_SWITCH_ON_LOOP` | `goal.model_switch_on_loop` | tenant | bool | `true` |  | 死循环时切换模型 |
-| `LLM_GATEWAY_GOAL_MONTHLY_TOKEN_LIMIT` | `goal.monthly_token_limit` | tenant | int | `500000` | 0 ~ 1e+08 | 月度token限额（tokens） |
+| `LLM_GATEWAY_GOAL_MONTHLY_TOKEN_LIMIT` | `goal.monthly_token_limit` | tenant | int | `500000` | 0 ~ 100000000 | 月度token限额（tokens） |
 | `LLM_GATEWAY_GOAL_REPEAT_DETECTION` | `goal.repeat_detection_enabled` | tenant | bool | `true` |  | 启用重复响应检测 |
 | `LLM_GATEWAY_GOAL_REPEAT_THRESHOLD` | `goal.repeat_threshold` | tenant | int | `3` | 2 ~ 20 | 重复响应判定阈值（次） |
 | `LLM_GATEWAY_GOAL_RETRIABLE_ERRORS` | `goal.retriable_errors` | tenant | string | `5xx,timeout,no_candidates,rate_limit,overloaded` |  | 可重试的错误类型 |
 | `LLM_GATEWAY_GOAL_RETRY_DELAY_SECONDS` | `goal.retry_delay_seconds` | tenant | int | `20` | 5 ~ 60 | 重试延时（秒） |
 | `LLM_GATEWAY_GOAL_RETRY_ON_ERROR` | `goal.retry_on_error` | tenant | bool | `false` |  | LLM错误时自动重试 |
 | `LLM_GATEWAY_GOAL_RETRY_TOTAL_TIMEOUT` | `goal.retry_total_timeout_seconds` | tenant | int | `50` | 10 ~ 300 | 重试总超时（秒） |
-| `LLM_GATEWAY_GOAL_SESSION_TOKEN_BUDGET` | `goal.session_token_budget` | tenant | int | `30000` | 0 ~ 1e+07 | 单次任务token预算（tokens） |
+| `LLM_GATEWAY_GOAL_SESSION_TOKEN_BUDGET` | `goal.session_token_budget` | tenant | int | `30000` | 0 ~ 10000000 | 单次任务token预算（tokens） |
 | `LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT` | `goal.use_autoroute_for_audit` | tenant | bool | `true` |  | 审计时使用自动路由 |
 | `LLM_GATEWAY_GOAL_USE_AUTOROUTE_INTENT` | `goal.use_autoroute_for_intent` | tenant | bool | `true` |  | 意图检测使用自动路由 |
-| `LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD` | `handoff.absolute_threshold` | tenant | int | `300000` | 10000 ~ 2e+06 | Token 绝对阈值（tokens） |
+| `LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD` | `handoff.absolute_threshold` | tenant | int | `300000` | 10000 ~ 2000000 | Token 绝对阈值（tokens） |
 | `LLM_GATEWAY_HANDOFF_CLIENT_MODE` | `handoff.client_mode` | tenant | enum | `transparent` | transparent / explicit | 客户端交接模式 |
 | `LLM_GATEWAY_HANDOFF_CONTINUE_HINT_TPL` | `handoff.continue_hint_tpl` | tenant | string | `` |  | 新会话引导模板 |
 | `LLM_GATEWAY_HANDOFF_COOLDOWN_SECONDS` | `handoff.cooldown_seconds` | tenant | int | `60` | 0 ~ 3600 | 交接冷却时间（秒） |
@@ -87,10 +87,10 @@ settings 注册表（PlatformSpecs/TenantSpecs/模块级规格）中带 EnvName 
 | `LLM_GATEWAY_LLMGW_CONTINUE_KEYWORDS` | `llmgw_continue_keywords` | platform | string | `["继续", "continue", "go", "come on", "请继续", "接着", "keep going", "继续回答", "接着说", "go on", "続けて", "続けてください", "このまま続けて", "続きを"]` |  | 流式“继续”判定词典（个词） |
 | `LLM_GATEWAY_LLMGW_RETRY_KEYWORDS` | `llmgw_retry_keywords` | platform | string | `["重试", "retry", "请重试", "再试一次", "try again", "重新回答", "再来", "再試行", "もう一度", "やり直してください", "retry please"]` |  | 流式“重试”判定词典（个词） |
 | `LLM_GATEWAY_MAAS_RATE_PERIODS` | `maas.rate_periods` | platform | string | `{"enabled": false, "timezone": "Asia/Shanghai", "periods": [{"name": "peak_am", "start": "08:00", "end": "12:00", "multiplier": 3.0}, {"name": "peak_pm", "start": "17:00", "end": "21:00", "multiplier": 3.0}, {"name": "offpeak_night", "start": "23:00", "end": "07:00", "multiplier": 0.7}]}` |  | 峰谷计费时段表 |
-| `LLM_GATEWAY_MAX_PROMPT_TOKENS` | `gateway.max_prompt_tokens` | platform | int | `2097152` | 0 ~ 2.097152e+06 | 入口 prompt 接收上限（估算 tokens） |
+| `LLM_GATEWAY_MAX_PROMPT_TOKENS` | `gateway.max_prompt_tokens` | platform | int | `2097152` | 0 ~ 2097152 | 入口 prompt 接收上限（估算 tokens） |
 | `LLM_GATEWAY_PROBE_STATE_AGING_HOURS` | `probe.state_aging_hours` | platform | int | `2` | 1 ~ 24 | 健康证据老化窗（小时） |
 | `LLM_GATEWAY_PROVIDER_PROFILE_AGGREGATION_INTERVAL` | `provider_profile.aggregation_interval` | platform | int | `86400` | 3600 ~ 259200 | 每日聚合间隔（秒），默认24小时 |
-| `LLM_GATEWAY_PROVIDER_PROFILE_CLEANUP_INTERVAL` | `provider_profile.cleanup_interval` | platform | int | `604800` | 86400 ~ 2.592e+06 | 历史数据清理间隔（秒），默认7天 |
+| `LLM_GATEWAY_PROVIDER_PROFILE_CLEANUP_INTERVAL` | `provider_profile.cleanup_interval` | platform | int | `604800` | 86400 ~ 2592000 | 历史数据清理间隔（秒），默认7天 |
 | `LLM_GATEWAY_PROVIDER_PROFILE_COLLECTION_INTERVAL` | `provider_profile.collection_interval` | platform | int | `7200` | 300 ~ 86400 | 指标采集间隔（秒），默认2小时 |
 | `LLM_GATEWAY_PROVIDER_PROFILE_ENABLED` | `provider_profile.enabled` | platform | bool | `false` |  | 启用供应商画像系统（7维度供应商质量评分） |
 | `LLM_GATEWAY_PROXY_DEFAULT_BANNED_REGIONS` | `proxy.default_banned_regions` | platform | string | `HK` |  | 代理出口平台级默认禁用地区（逗号分隔地区码）（csv） |
