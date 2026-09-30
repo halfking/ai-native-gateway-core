@@ -1,0 +1,82 @@
+name: audit-guards-ci
+
+# R70 新增。背景见 docs/全面审计v3/2026-10-01/39-R69-守卫执行路径接线.md
+# 与 40-R70-修正与CI守卫独立job.md。
+#
+# 为什么需要一个**独立**的守卫 job，而不是把守卫塞进现有 workflow：
+#
+# 1. 触发面错配：`integration-testcontainers-ci.yml` 的 paths 过滤里**没有
+#    `admin/**`**，而守卫扫描的是**全仓** Go 源码。改 admin 不会唤醒那个
+#    workflow —— 守卫自然也不会跑。
+# 2. 成本/信噪比：守卫只是静态分析（7 个包约 4s、无 DB、无网络），却要等
+#    testcontainers 起 docker、30 分钟超时。守卫的红一旦混在重型 job 的
+#    噪声里，就等于没有信号。
+# 3. 独立性：守卫门红时必须单独红，不能被某个 integration job 的
+#    「本来就在红」淹没。
+#
+# 因此这里的 paths 用 `**/*.go` —— 守卫的输入是整个 Go 树，任何一个 Go 文件
+# 改动都可能让某个守卫退化（它扫的就是全仓），所以触发面必须覆盖全仓。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - "Makefile"
+      - "scripts/checks/**"
+      - ".github/workflows/audit-guards-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - "Makefile"
+      - "scripts/checks/**"
+      - ".github/workflows/audit-guards-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: audit-guards-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.23"
+
+jobs:
+  guards:
+    name: audit guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # 登记门先行：没有新守卫被漏登记，再谈「跑守卫」才有意义。
+      # 顺序不是随意的 —— guards-sync 是「守卫体系本身没腐化」的前提。
+      - name: guards-sync (no unregistered *guard package)
+        run: bash scripts/checks/guards-sync.sh
+
+      - name: go build ./...
+        run: go build ./...
+
+      # 守卫本体。它们是纯静态门：无 TEST_DATABASE_URL 也能跑。
+      # 显式列出 7 个包而不是 `make guards`，是为了让 CI 日志直接显示
+      # 哪个包红；两者跑的是同一组（guards-sync 已校验二者一致）。
+      - name: audit guards
+        run: |
+          go test \
+            ./internal/rowsguard \
+            ./internal/errdiscard \
+            ./internal/dbrows \
+            ./internal/jsoncol \
+            ./internal/paramguard \
+            ./internal/sqlguard \
+            ./internal/sqlreadguard \
+            -count=1 -timeout=180s
