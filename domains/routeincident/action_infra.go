@@ -36,6 +36,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // ErrStaleState is returned when the supplied incident version
@@ -247,9 +248,7 @@ func (s *Store) dispatchAction(ctx context.Context, call ActionContext, exec Act
 			FailureReason: existingFailure,
 			Idempotent:    true,
 		}
-		if len(existingResponse) > 0 {
-			_ = json.Unmarshal(existingResponse, &resp.Response)
-		}
+		jsoncol.Decode("routeincident.dispatchAction/existing_response", existingResponse, &resp.Response)
 		if existingRunID != nil {
 			run, _ := s.loadRunByIDInTx(ctx, tx, *existingRunID, call.TenantID)
 			resp.DiagnosticRun = run
@@ -582,15 +581,15 @@ func (s *Store) AuditLogList(ctx context.Context, tenantID, incidentID string, l
 		a.Action = ActionKind(action)
 		a.Outcome = ActionOutcome(outcome)
 		if len(pre) > 0 {
-			_ = json.Unmarshal(pre, &a.PreSnapshot)
+			jsoncol.Decode("routeincident.AuditLogList/pre_snapshot", pre, &a.PreSnapshot)
 			a.PreSnapshot = SanitizeEvidence(a.PreSnapshot)
 		}
 		if len(post) > 0 {
-			_ = json.Unmarshal(post, &a.PostSnapshot)
+			jsoncol.Decode("routeincident.AuditLogList/post_snapshot", post, &a.PostSnapshot)
 			a.PostSnapshot = SanitizeEvidence(a.PostSnapshot)
 		}
 		if len(resp) > 0 {
-			_ = json.Unmarshal(resp, &a.ResponsePayload)
+			jsoncol.Decode("routeincident.AuditLogList/response_payload", resp, &a.ResponsePayload)
 			a.ResponsePayload = SanitizeEvidence(a.ResponsePayload)
 		}
 		out = append(out, a)
@@ -631,15 +630,15 @@ func (s *Store) AuditLogListByRun(ctx context.Context, tenantID, runID string) (
 	a.Action = ActionKind(action)
 	a.Outcome = ActionOutcome(outcome)
 	if len(pre) > 0 {
-		_ = json.Unmarshal(pre, &a.PreSnapshot)
+		jsoncol.Decode("routeincident.AuditLogListByRun/pre_snapshot", pre, &a.PreSnapshot)
 		a.PreSnapshot = SanitizeEvidence(a.PreSnapshot)
 	}
 	if len(post) > 0 {
-		_ = json.Unmarshal(post, &a.PostSnapshot)
+		jsoncol.Decode("routeincident.AuditLogListByRun/post_snapshot", post, &a.PostSnapshot)
 		a.PostSnapshot = SanitizeEvidence(a.PostSnapshot)
 	}
 	if len(resp) > 0 {
-		_ = json.Unmarshal(resp, &a.ResponsePayload)
+		jsoncol.Decode("routeincident.AuditLogListByRun/response_payload", resp, &a.ResponsePayload)
 		a.ResponsePayload = SanitizeEvidence(a.ResponsePayload)
 	}
 	return []AuditLogEntry{a}, nil
@@ -706,15 +705,13 @@ func scanDiagnosticRun(row diagnosticRunScanner) (*DiagnosticRun, error) {
 	}
 	run.Kind = ActionKind(kind)
 	run.State = DiagnosticRunState(state)
-	if len(routeKeyJSON) > 0 {
-		_ = json.Unmarshal(routeKeyJSON, &run.RouteKey)
-	}
+	jsoncol.Decode("routeincident.scanDiagnosticRun/route_key", routeKeyJSON, &run.RouteKey)
 	if len(paramsJSON) > 0 {
-		_ = json.Unmarshal(paramsJSON, &run.Parameters)
+		jsoncol.Decode("routeincident.scanDiagnosticRun/parameters", paramsJSON, &run.Parameters)
 		run.Parameters = sanitizeParameters(run.Parameters)
 	}
 	if len(resultJSON) > 0 {
-		_ = json.Unmarshal(resultJSON, &run.Result)
+		jsoncol.Decode("routeincident.scanDiagnosticRun/result", resultJSON, &run.Result)
 		run.Result = SanitizeEvidence(run.Result)
 	}
 	return &run, nil

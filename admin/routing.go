@@ -28,6 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability counters
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -3316,13 +3317,9 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		var rawModels any = []string{}
-		if len(resolutionRawModels) > 0 {
-			_ = json.Unmarshal(resolutionRawModels, &rawModels)
-		}
+		jsoncol.Decode("admin.routing.decisions/resolution_raw_models", resolutionRawModels, &rawModels)
 		var trace any = map[string]any{}
-		if len(decisionTrace) > 0 {
-			_ = json.Unmarshal(decisionTrace, &trace)
-		}
+		jsoncol.Decode("admin.routing.decisions/decision_trace", decisionTrace, &trace)
 		decisions = append(decisions, map[string]any{
 			"ts":                    ts,
 			"request_id":            reqID,
@@ -3476,12 +3473,8 @@ func (h *Handler) handleRoutingAudit(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var before, after any
-		if len(beforeJSON) > 0 {
-			_ = json.Unmarshal(beforeJSON, &before)
-		}
-		if len(afterJSON) > 0 {
-			_ = json.Unmarshal(afterJSON, &after)
-		}
+		jsoncol.Decode("admin.routing.audit/before_json", beforeJSON, &before)
+		jsoncol.Decode("admin.routing.audit/after_json", afterJSON, &after)
 		audits = append(audits, map[string]any{
 			"id":          id,
 			"ts":          ts,

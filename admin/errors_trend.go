@@ -17,7 +17,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 type errorsTrendDB interface {
@@ -344,11 +344,7 @@ func scanTrendPoint(rows pgx.Rows) (errorsTrendPoint, error) {
 		&bySupplier, &byErrorType); err != nil {
 		return p, err
 	}
-	if len(bySupplier) > 0 {
-		_ = json.Unmarshal(bySupplier, &p.BySupplier)
-	}
-	if len(byErrorType) > 0 {
-		_ = json.Unmarshal(byErrorType, &p.ByErrorType)
-	}
+	jsoncol.Decode("admin.errorsTrend.scanPoint/by_supplier", bySupplier, &p.BySupplier)
+	jsoncol.Decode("admin.errorsTrend.scanPoint/by_error_type", byErrorType, &p.ByErrorType)
 	return p, nil
 }
