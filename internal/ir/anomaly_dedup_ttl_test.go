@@ -114,7 +114,7 @@ func TestReportAnomaly_DedupSweepBoundsMap(t *testing.T) {
 	// 后续插入时间闸跳过、map 重新增长。
 	for i := 0; i < 64; i++ {
 		ReportAnomaly(AnomalyEvent{
-			RequestID:   string(rune('a' + i%26)) + time.Now().UTC().Format("150405.000000000") + "-" + time.Now().Format(time.RFC3339Nano) + string(rune(i)),
+			RequestID:   string(rune('a'+i%26)) + time.Now().UTC().Format("150405.000000000") + "-" + time.Now().Format(time.RFC3339Nano) + string(rune(i)),
 			AnomalyType: AnomalyUnknownField,
 			FieldPath:   "sweep",
 		})
@@ -122,17 +122,20 @@ func TestReportAnomaly_DedupSweepBoundsMap(t *testing.T) {
 	if lastSweepAt.IsZero() {
 		t.Fatal("first threshold-crossing insert must run the TTL sweep (lastSweepAt must be set)")
 	}
-	sweepAt := lastSweepAt
 
 	// 时间闸内再触发一次清扫：回拨 lastSweepAt 到间隔之前，下一条插入
 	// 必须执行全表扫，把已过期（TTL=1ns）的 key 压回阈值内。
+	//
+	// 与 TestReportAnomaly_DedupSweepTimeGate 同因：断言改为与回拨值比较，
+	// 避免 2ms 睡眠仍小于 Windows ~15.6ms 时钟粒度导致的同 tick 假红。
 	reporterMu.Lock()
-	lastSweepAt = time.Now().Add(-2 * anomalyDedupSweepInterval)
+	rewoundAt := time.Now().Add(-2 * anomalyDedupSweepInterval)
+	lastSweepAt = rewoundAt
 	reporterMu.Unlock()
 	time.Sleep(2 * time.Millisecond) // 让已插入的 key 全部过期
 	ReportAnomaly(AnomalyEvent{RequestID: "sweep-trigger", AnomalyType: AnomalyUnknownField, FieldPath: "sweep"})
-	if !lastSweepAt.After(sweepAt) {
-		t.Fatal("post-interval insert must run the TTL sweep (lastSweepAt must advance)")
+	if !lastSweepAt.After(rewoundAt) {
+		t.Fatal("post-interval insert must run the TTL sweep (lastSweepAt must advance past the rewound gate)")
 	}
 	if len(reporterDed) > anomalyDedupSweepThreshold {
 		t.Fatalf("dedup map size = %d, want <= %d after sweep", len(reporterDed), anomalyDedupSweepThreshold)
@@ -179,12 +182,20 @@ func TestReportAnomaly_DedupSweepTimeGate(t *testing.T) {
 	}
 
 	// 回拨 lastSweepAt 到间隔之前：下一条插入触发第二次清扫。
+	//
+	// 断言「清扫确实发生了」而不是「lastSweepAt 与 firstSweep 不同」：后者的
+	// 分辨率低于平台时钟精度。Windows 默认时钟粒度约 15.6ms，本测试整体耗时
+	// <1ms，两次 time.Now() 落在同一 tick 时 lastSweepAt.Equal(firstSweep)
+	// 成立而清扫其实已跑——表现为随机红（同一提交连跑 3 次：红/红/绿）。
+	// 改为与回拨值比较：闸门打开后写入的 time.Now() 必然晚于 now-2*interval，
+	// 这与时钟粒度无关，稳定可判。
 	reporterMu.Lock()
-	lastSweepAt = time.Now().Add(-2 * anomalyDedupSweepInterval)
+	rewoundAt := time.Now().Add(-2 * anomalyDedupSweepInterval)
+	lastSweepAt = rewoundAt
 	reporterMu.Unlock()
 	ReportAnomaly(unique(16))
-	if lastSweepAt.Equal(firstSweep) {
-		t.Fatal("post-interval insert must run the sweep again (lastSweepAt must advance)")
+	if !lastSweepAt.After(rewoundAt) {
+		t.Fatal("post-interval insert must run the sweep again (lastSweepAt must advance past the rewound gate)")
 	}
 	if len(reporterDed) != 17 {
 		t.Fatalf("dedup map size = %d, want 17 (TTL=1h so the second sweep deletes nothing, all keys kept)", len(reporterDed))
