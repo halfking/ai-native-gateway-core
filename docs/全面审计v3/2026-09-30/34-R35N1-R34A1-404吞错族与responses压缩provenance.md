@@ -23,7 +23,7 @@
 
 19 处真问题分布：`assertCredentialBelongs`（源头不再吞错，err 原样上抛+3 调用方）、keys.go 3 处（assertKeyTenantScope/approve/reject）、usage.go 3 处、users.go 4 处（含 tenant_admin 权限检查路径——DB 故障此前会被误判"用户不存在"）、model_name_mapping 2 处、providers.go 2 处、maas GetOrder、data_lifecycle_attachments、ip_blocklist（PgxStore.Get 透传 pgx err）、stats.go:395（reconciliation diff 审批：ErrNoRows→404/其它→500，保留 slog.Warn+recordFailedAccounting）。
 
-rows 族迁移 10 处核心聚合面：
+rows 族迁移 15 循环核心聚合面：
 - `analytics.go` 4 处（matrix/flow l12/flow l23/model-task-index）——l12/l23 的 `err != nil || val <= 0` 复合条件**拆分**（val<=0 是正常过滤不应告警）；
 - `dashboard_board_queries.go` 2 处（内部函数 `return nil, err` 上抛）；
 - `dashboard_session_stats.go` 4 面板——多面板组合响应，单面板迭代中断正确语义是 **日志留痕+面板降级**（清空该面板）而非整体 500（会丢其它健康面板）；
@@ -86,3 +86,35 @@ rows 族迁移 10 处核心聚合面：
 2. **合并 provenance 的时点必须晚于所有写入方**：responsesProvenance 若在 preTrimMeta 构建处提前合并，4xx recovery 的覆盖就丢了——与 R0926 P0-2「defer 命名返回值断链」同族的时序错误，靠读 attempt 循环全序才发现。
 3. **复合条件拆分再插桩**：`err != nil || val <= 0` 的 continue 加告警会把正常过滤当异常，先拆分支再留痕。
 4. admin users 表密码与 env 漂移（401 ×3）不阻塞验证：HMAC 造 JWT 是合法诊断通道，但密码漂移本身是 env 管理债（.env.local 双密码历史问题再现），登记不展开。
+
+## 5. 批判式复审轮（2026-10-01 00:15–00:50）：5 项声明重验，4 项修正落地
+
+> 方法：对上一节全部"声明完成"项逐条以证据重验，不预设完成。发现 5 项问题（其中 1 项经定性撤回指控），全部修复或定性留档。
+
+### 5.1 复审发现与处置
+
+| # | 发现 | 定性 | 处置 |
+|---|---|---|---|
+| 1 | `aggRowsErrClassified`/`rowsIterErr` 无生产调用方（纯死代码，测试还在给死代码背书） | 真 YAGNI 违例 | **删除**（连同死测试）；顺带修复 gofmt 把 writeAggRowsErr 注释粘进 import 闭合括号的排版伤 |
+| 2 | R33 族（session_analytics_tasks/clients）的 rows 迭代侧是 R35-N1 原文点名的"同族"，上轮只定性未迁移 | 真遗漏 | **本轮补迁 8 循环**：tasks/clients 列表各 1（writeAggRowsErr+warnRowSkip）+ detail 各 3 面板（err==nil 才 append 形态 → != nil warn+continue，面板中断 slog.Warn+清空面板，与 dashboard_session_stats 同语义） |
+| 3 | executor 接线（R34-A1）无变异验证——删掉接线不会有任何测试红 | 守卫缺口 | **补 `executor_responses_provenance_wiring_test.go` 静态守卫**（WithMeta 两调用点+record 调用+恰好 3 处 merge），**变异验证**：临时删一处 merge → 红，还原 → 绿 |
+| 4 | 文档数字错误：rows 族写"10 处"实际 15 循环；端点验证写"7 个 200"实际 6 个 200 + 2 个 404 验证 | 文档失真 | **修正** |
+| 5 | 疑点：`responsesProvenance` 若声明在跨 candidate 循环体会跨候选残留 | **误报（撤回）** | `executeOpenAI` 是 per-candidate 函数（dispatch 每 candidate 各调一次），函数内声明无残留。1553/1652 两处失败路径 result 不带 CompressionMeta 是既有 v7 契约（失败不落 compression_meta），非缺口，定性登记 |
+
+### 5.2 全量测试归因（上轮债：merge origin 后只跑了 build 未重跑测试）
+
+- 本轮补跑（`TEST_DATABASE_URL` 真库）：**我改动相关包全绿**——admin 守卫/集成/compression/transformation/executors（含 -race）。
+- admin 全包在真库下有 **17 个与本次改动无关的既有失败**（干净 HEAD `git stash` 对照：同子集 6/6 同样失败）——logs/breakdown 域陈旧夹具族：42703（`logs_join_test.go:64` 夹具 INSERT 已被迁移 601/604 删除的 `request_logs_bodies_hot.tenant_id`——**共享库 schema 是对的**，夹具没跟上 2026-08-25 的设计变更）、428C9（`duration_seconds` 是 generated column 夹具显式插入）、23503（夹具外键顺序）。**登记为独立专项**（logs 域夹具适配 bodies 表 JOIN 解析租户的口径），本轮不越界修。
+- 顺手修了 1 个真红：`TestBodyFetchCache_*` 3 测试——实现 `Stats()` 返回 `int` 而测试断言 `uint64(1)`（类型不等必挂，提交时未实跑的类型失配），改 `assert.EqualValues` 类型无关断言后 3 测试由挂转绿。
+
+### 5.3 守卫自身的守卫（元教训）
+
+本轮 `git checkout` 恢复一个被我脚本改坏语法的文件时，把先迁好的列表循环一并回滚——**静态接线守卫测试当场抓到我自己的回归**（红），补回后绿。守卫的价值不在防"别人"，在防任何时点的无意识回退（包括作者本人与 git 操作）。
+
+### 5.4 复审后测试清单（全部实跑）
+
+- `go build ./...` + installer `go build/test ./...`（13 包）
+- `go test ./admin/ -run 'TestAggReadGuard|TestWriteLookupErr|TestWriteAggRowsErr' -count=1`（无库）+ 真库集成两条（404 语义/500 分类）
+- `go test ./domains/streaming/executors/ -run 'TestResponsesProvenanceWiring' -count=1`（+变异验证红/绿轮换）
+- `TEST_DATABASE_URL=… go test ./admin/ ./domains/hooks/compression/ ./domains/transformation/ ./domains/streaming/executors/ -count=1`（改动包全绿；admin 既有 17 失败已归因登记）
+- `-race` 四包（上轮已跑，本轮改动包 executors 重跑）
