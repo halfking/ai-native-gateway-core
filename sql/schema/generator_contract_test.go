@@ -201,3 +201,62 @@ func TestGeneratorDoesNotTouchCommittedBaseline(t *testing.T) {
 		t.Errorf("已提交基线副本缺失：%v", missing)
 	}
 }
+
+// TestEveryBaselineObjectHasRepoProvenance records the round-43 lesson that the
+// first reconciliation report got wrong.
+//
+// It reported six objects as "present only in the committed baseline, and no
+// migration can recreate them". That was false: the search covered
+// sql/migrations/ only, and this repository also keeps a per-object registry at
+// sql/objects/ with ~1900 files. Every one of those six had a concrete source
+// there or in a migration.
+//
+// The residual hazard is the inverse of the one the report assumed. The local
+// development database is a PARTIALLY MIGRATED database: migration 434 creates
+// four idx_stage_events_* indexes at once and the live DB has three of them,
+// and handoff_logs on the live DB has no primary key at all while the committed
+// baseline declares one. Dumping that database as the new baseline would
+// silently delete legitimate objects — three of which no migration recreates.
+//
+// This test pins the provenance of the objects that are NOT in the live source
+// but ARE in the committed baseline, so a future reconciliation starts from
+// "where is this defined" instead of "it is unreproducible".
+func TestEveryBaselineObjectHasRepoProvenance(t *testing.T) {
+	// Objects absent from the live source but present in the committed
+	// baseline, with the file that defines each one.
+	cases := []struct {
+		object     string
+		provenance string
+	}{
+		{"idx_stage_events_stage_status", "../../sql/migrations/startup/434_request_stage_events_table.sql"},
+		{"idx_stage_events_tenant_ts", "../../sql/migrations/startup/450_request_stage_events_tenant.sql"},
+		{"idx_stage_events_request_id", "../../sql/objects/indexes/idx_stage_events_request_id.sql"},
+		{"handoff_logs_pkey", "../../sql/objects/constraints/handoff_logs_handoff_logs_pkey.sql"},
+		{"route_incident_events_incident_id_fkey",
+			"../../sql/objects/other/route_incident_events_route_incident_events_incident_id_fkey.sql"},
+	}
+	for _, c := range cases {
+		b, err := os.ReadFile(c.provenance)
+		if err != nil {
+			t.Errorf("%s 的出处 %s 不可读：%v", c.object, c.provenance, err)
+			continue
+		}
+		// Compare on the identifier only: the object file may spell the name
+		// qualified (e.g. "handoff_logs handoff_logs_pkey") while the banner
+		// uses a different shape.
+		if !strings.Contains(string(b), c.object) {
+			t.Errorf("出处 %s 里找不到 %q —— 出处声明与文件内容不符", c.provenance, c.object)
+		}
+	}
+
+	// The object registry itself must exist; a future refactor that drops it
+	// would leave several baseline objects with no definition anywhere.
+	const registry = "../../sql/objects/indexes"
+	entries, err := os.ReadDir(registry)
+	if err != nil {
+		t.Fatalf("sql/objects 索引登记目录不可读：%v", err)
+	}
+	if len(entries) < 100 {
+		t.Errorf("sql/objects/indexes 只有 %d 个文件，疑似被清空", len(entries))
+	}
+}
