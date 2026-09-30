@@ -268,7 +268,8 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		&resp.FirstSeenAt, &resp.LastSeenAt, &modelsUsed, &clientsUsed, &refreshedAt,
 	)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
+		// R35: 42P01（缺 357 视图）此前被吞成 404 误导排查，先分类。
+		writeAnalyticsDetailErr(w, "task not found", err)
 		return
 	}
 
