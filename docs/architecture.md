@@ -220,9 +220,9 @@ The two modes share the same `storage` interfaces; per-store mapping table and c
 ## Technology Stack
 
 **Backend**:
-- Go 1.21+
+- Go 1.27.1
 - PostgreSQL 14+ (with RLS)
-- Redis 7+
+- Redis 7+ (optional in lite storage mode)
 
 **Frontend**:
 - Vue 3 + TypeScript
@@ -258,6 +258,10 @@ The two modes share the same `storage` interfaces; per-store mapping table and c
 
 ## Further Reading
 
+- [Internal Architecture Deep Dive](03-design/01-architecture/architecture/ARCHITECTURE.md) - Evidence-graded, code-verified architecture facts (authoritative, Chinese)
+- [System Requirements](01-requirements/SYSTEM_REQUIREMENTS.md) - Regenerated SRS (2026-10-01 audit)
+- [Feature Catalog](01-requirements/functional/FEATURES_CATALOG.md) - Feature-to-code mapping with parallel-implementation flags
+- [Parallel Implementations Comparison](03-design/01-architecture/parallel-implementations-comparison.md) - Old-vs-new dual implementation audit
 - [Getting Started](getting-started.md) - Deploy in 10 minutes
 - [Environment & Configuration](environment.md) - Environment variables and settings
 - [Routing Analytics](deployment/routing-analytics-mv-deployment-guide.md) - Deep dive into routing logic
