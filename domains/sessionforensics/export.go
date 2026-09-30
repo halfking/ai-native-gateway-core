@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // forensicsExportMessagesSQL and forensicsExportMessagesSQLAlt are the session
@@ -213,9 +214,7 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 			CompressionStrategy: strategy,
 			CreatedAt:           createdAt.UTC().Format(time.RFC3339),
 		}
-		if len(compMeta) > 0 {
-			_ = json.Unmarshal(compMeta, &msg.CompressionMeta)
-		}
+		jsoncol.Decode("sessionforensics.export/compression_meta", compMeta, &msg.CompressionMeta)
 		if respBody != nil && *respBody != "" {
 			msg.Content = *respBody
 		} else if reqBody != nil {
@@ -331,9 +330,7 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 			CompressionStrategy: strategy,
 			CreatedAt:           createdAt.UTC().Format(time.RFC3339),
 		}
-		if len(compMeta) > 0 {
-			_ = json.Unmarshal(compMeta, &msg.CompressionMeta)
-		}
+		jsoncol.Decode("sessionforensics.export/compression_meta", compMeta, &msg.CompressionMeta)
 		if respBody != nil && *respBody != "" {
 			msg.Content = *respBody
 		} else if reqBody != nil {

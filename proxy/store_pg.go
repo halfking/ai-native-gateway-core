@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // PgStore 是基于 pgxpool 的 proxy.Store 实现。
@@ -954,10 +955,8 @@ func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 	if consecutiveFailures != nil {
 		node.ConsecutiveFailures = *consecutiveFailures
 	}
-	if len(config) > 0 {
-		// 容忍不合法的 JSON：保持 nil，不中断查询。
-		_ = json.Unmarshal(config, &node.Config)
-	}
+	// 容忍不合法的 JSON：保持 nil，不中断查询（R67 语义：留痕后继续）。
+	jsoncol.Decode("proxy.PgStore.scanNodeRow/config", config, &node.Config)
 
 	// 密码：数据库列可能加密也可能为历史明文。dec 为 nil 或解密失败时保留原值。
 	// 审计修复 (2026-08-29)：问题 11 - 设置解密失败标志，调用方可据此判断密码是否可用。

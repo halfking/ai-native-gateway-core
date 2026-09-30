@@ -20,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // Store 是 hosted_tasks / hosted_task_events / hosted_task_callbacks 的
@@ -57,15 +58,9 @@ func scanTask(row pgx.Row) (*Task, error) {
 	); err != nil {
 		return nil, err
 	}
-	if len(contextJSON) > 0 {
-		_ = json.Unmarshal(contextJSON, &t.Context)
-	}
-	if len(envJSON) > 0 {
-		_ = json.Unmarshal(envJSON, &t.Environment)
-	}
-	if len(resultJSON) > 0 {
-		_ = json.Unmarshal(resultJSON, &t.Result)
-	}
+	jsoncol.Decode("hostedtask.scanTask/context", contextJSON, &t.Context)
+	jsoncol.Decode("hostedtask.scanTask/environment", envJSON, &t.Environment)
+	jsoncol.Decode("hostedtask.scanTask/result", resultJSON, &t.Result)
 	t.CompletedAt = completedAt
 	return &t, nil
 }
@@ -281,9 +276,7 @@ func (s *Store) ListEvents(ctx context.Context, tenantID, taskID string, limit i
 			return nil, err
 		}
 		e.Type = EventType(evType)
-		if len(payloadJSON) > 0 {
-			_ = json.Unmarshal(payloadJSON, &e.Payload)
-		}
+		jsoncol.Decode("hostedtask.ListEvents/payload", payloadJSON, &e.Payload)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -800,9 +793,7 @@ func (s *Store) GetEvent(ctx context.Context, tenantID, taskID string, seq int64
 		return nil, fmt.Errorf("get hosted_task_event: %w", err)
 	}
 	e.Type = EventType(evType)
-	if len(payloadJSON) > 0 {
-		_ = json.Unmarshal(payloadJSON, &e.Payload)
-	}
+	jsoncol.Decode("hostedtask.GetEvent/payload", payloadJSON, &e.Payload)
 	return &e, nil
 }
 
