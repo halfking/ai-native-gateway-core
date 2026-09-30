@@ -146,6 +146,55 @@ MISSING 应降到只剩 A 类 11 个分区 → ③ 才谈替换，且必须重�
 
 ---
 
+## 五之二、本轮额外收口的两件事
+
+### 既存红门 538：守卫只比名字不比对定义（已修，commit `4514d9247`）
+
+`db/db.go` 的 `ensureNodeProbeTriggerKindSchema` 在 2026-09-23 加过一个性能守卫：
+「`node_probe_runs` 大表上 ADD CONSTRAINT CHECK 要全表校验 + 持 ACCESS EXCLUSIVE，
+必超 30s 被杀（245 seq 2201 boot 57014 实锤），所以约束已存在就整段跳过」。
+写法是 `IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '...')`。
+
+**它只问名字。** 存量部署带的正是**旧值域**的同名约束 ⇒ 判断为真 ⇒
+`DROP`+`ADD` 被跳过 ⇒ **恰好在需要升级的那批部署上不升级，且静默无日志**。
+fresh install 反而正常（无约束 ⇒ 走 `ADD` 分支）。
+
+红门 `TestEnsureNodeProbeTriggerKindSchemaUpgradesLegacyChecks` 正是为此而红，
+且它是**正确的一方**，生产代码是错的。改法保留原性能意图：改为比较
+`pg_get_constraintdef` 的**定义**是否已含全部预期字面量 —— 已正确则零 DDL
+（纯 catalog 读取），不一致才 `DROP`+`ADD`。
+
+真库双分支验证：已正确约束 → 走 skip-no-ddl，约束 OID `9286734` 前后不变；
+旧值域 → 走 upgrade，测试由红转绿；变异（让升级分支不可达）→ 测试重新转红。
+
+### harness 自身的两处缺陷（本轮新写代码，都是跑出来才发现）
+
+- **DSN 不带密码** ⇒ 9 个真连库的 `./db` 用例报 `failed SASL auth`，
+  看起来像产品缺陷。→ 加 `PG_PASSWORD`，并在跑测试前**先用生成的 DSN 连一次**，
+  失败则一次性清楚报错，而不是散成 N 个无关用例失败。
+- **只 apply prereqs、不 apply 基线** ⇒ 9 个 `db.ensure*` 用例报
+  `relation "public.schema_migrations" does not exist`。
+  **这正是本轮早先记录的引导洞**：该元表无任何迁移创建、只存在于 pg_dump 基线，
+  而 `ensure*` 家族要往里盖迁移号。→ harness 改为 apply
+  `00-prereqs.sql` + `01-schema.sql`，起始库 328 relations。
+
+> 这条同时说明：本轮 §二 记录的「schema_migrations 无迁移创建」不只是
+> fresh-install 的问题，**它同样让任何依赖 `ensure*` 的真库门禁无法在
+> 一次性空库上运行**。
+
+**仍存的口径限制（本轮未解，已知非产品缺陷）**：harness 的起始库是
+`prereqs + 01-schema.sql`（328 relations）。但 `01-schema.sql` 相对迁移目录
+**陈旧**——`session_aggregate_outbox`（迁移 630）、`usage_facts`（迁移 537）
+只由 startup 迁移创建，基线里没有。于是：
+
+    db_744_ensure_realdb_test.go:45  relation "public.session_aggregate_outbox" does not exist
+    db_749_ensure_realdb_test.go:52  relation "public.usage_facts" does not exist
+
+这两个用例因此仍红。**这与本轮 §二 记录的基线陈旧是同一件事**，不是新缺陷。
+彻底解需要「基线 + StartupFiles 迁移」的起始库，而全量迁移在空库上有 236 处
+失败（§二），故本轮不做。下一步要么等基线重建，要么给 harness 加
+`GATE_APPLY_STARTUP=1` 并显式接受其中的已知失败清单。
+
 ## 六、测试与验证
 
 ```bash
