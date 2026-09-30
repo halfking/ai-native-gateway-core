@@ -7,6 +7,7 @@
 package bg
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -96,6 +97,9 @@ func TestProbeWithRetry_ResponsesUnsupportedFallsBackToChat(t *testing.T) {
 	if result.httpStatus != 200 {
 		t.Fatalf("httpStatus = %d, want 200 (chat leg)", result.httpStatus)
 	}
+	if result.supportsResponses == nil || *result.supportsResponses {
+		t.Fatalf("Responses capability = %v, want a negative verdict from the native unsupported response", result.supportsResponses)
+	}
 	if !strings.Contains(result.errMsg, "Responses API unsupported for this model") || !strings.Contains(result.errMsg, "chat fallback probe OK") {
 		t.Fatalf("errMsg missing fallback annotation: %q", result.errMsg)
 	}
@@ -131,6 +135,9 @@ func TestProbeWithRetry_ResponsesUnsupportedChatAlsoFails(t *testing.T) {
 	if result.category == probeCategoryOK {
 		t.Fatalf("chat fallback failed (401) but round reported ok")
 	}
+	if result.supportsResponses == nil || *result.supportsResponses {
+		t.Fatalf("Responses capability = %v, want a negative verdict even when chat fallback fails", result.supportsResponses)
+	}
 	if !strings.Contains(result.errMsg, "chat fallback probe failed") {
 		t.Fatalf("errMsg missing failed-fallback annotation: %q", result.errMsg)
 	}
@@ -156,7 +163,9 @@ func TestActiveProbeExecutor_ResponsesUnsupportedFallsBackToChat(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
+	sink := &recordingResponsesCapabilitySink{}
 	e := &ActiveProbeExecutor{httpClient: &http.Client{Timeout: 10 * time.Second}}
+	e.SetResponsesCapabilitySink(sink)
 	res := e.Run(t.Context(), &ProbeTarget{
 		CredentialID: 126,
 		ProviderID:   36,
@@ -172,6 +181,12 @@ func TestActiveProbeExecutor_ResponsesUnsupportedFallsBackToChat(t *testing.T) {
 	if res.Status != ProbeStatusSuccess {
 		t.Fatalf("Status = %q, want success after chat fallback (errMsg=%s)", res.Status, res.ErrMsg)
 	}
+	if res.SupportsResponses == nil || *res.SupportsResponses {
+		t.Fatalf("Responses capability = %v, want false despite chat fallback success", res.SupportsResponses)
+	}
+	if len(sink.records) != 1 || sink.records[0].credentialID != 126 || sink.records[0].model != "claude-sonnet-5" || sink.records[0].supported {
+		t.Fatalf("persisted capability verdicts = %+v, want one false verdict for (126, claude-sonnet-5)", sink.records)
+	}
 	if res.HTTPStatus != 200 {
 		t.Fatalf("HTTPStatus = %d, want 200 (chat leg)", res.HTTPStatus)
 	}
@@ -181,6 +196,51 @@ func TestActiveProbeExecutor_ResponsesUnsupportedFallsBackToChat(t *testing.T) {
 	if !strings.Contains(res.ErrMsg, "chat fallback probe OK") {
 		t.Fatalf("ErrMsg missing fallback annotation: %q", res.ErrMsg)
 	}
+}
+
+func TestActiveProbeExecutor_ResponsesSuccessPersistsPositiveCapability(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("probe path = %q, want /v1/responses", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	sink := &recordingResponsesCapabilitySink{}
+	e := &ActiveProbeExecutor{httpClient: &http.Client{Timeout: 10 * time.Second}}
+	e.SetResponsesCapabilitySink(sink)
+	res := e.Run(t.Context(), &ProbeTarget{
+		CredentialID: 127,
+		RawModel:     "gpt-5.6-terra",
+		BaseURL:      srv.URL,
+		Protocol:     "openai-responses",
+		APIKey:       "sk-test",
+	})
+	if res.Status != ProbeStatusSuccess {
+		t.Fatalf("Status = %q, want success: %q", res.Status, res.ErrMsg)
+	}
+	if res.SupportsResponses == nil || !*res.SupportsResponses {
+		t.Fatalf("Responses capability = %v, want true", res.SupportsResponses)
+	}
+	if len(sink.records) != 1 || sink.records[0].credentialID != 127 || sink.records[0].model != "gpt-5.6-terra" || !sink.records[0].supported {
+		t.Fatalf("persisted capability verdicts = %+v, want one true verdict for (127, gpt-5.6-terra)", sink.records)
+	}
+}
+
+type recordedResponsesCapability struct {
+	credentialID int
+	model        string
+	supported    bool
+}
+
+type recordingResponsesCapabilitySink struct {
+	records []recordedResponsesCapability
+}
+
+func (s *recordingResponsesCapabilitySink) SetSupportsResponses(_ context.Context, credentialID int, model string, supported bool) error {
+	s.records = append(s.records, recordedResponsesCapability{credentialID: credentialID, model: model, supported: supported})
+	return nil
 }
 
 // TestMiniResponses_WireShape：credential_probe_v2 step2 对
