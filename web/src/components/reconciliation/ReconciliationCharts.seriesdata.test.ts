@@ -72,4 +72,28 @@ describe('reconTrendSeries', () => {
     expect(firstSeries).toContainEqual(series.input)
     wrapper.unmount()
   })
+
+  it('removes canvases when coverage becomes empty so a blank chart cannot stay in the card', async () => {
+    const i18n = createI18n({
+      legacy: false,
+      locale: 'zh-CN',
+      messages: { 'zh-CN': { reports: { noData: '暂无数据' } } },
+    })
+    const wrapper = mount(ReconciliationCharts, {
+      props: { days: fixture.days, coveredDates: fixture.snapshot_dates, money: 'credits' },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    expect(wrapper.findAll('canvas').length).toBeGreaterThan(0)
+
+    await wrapper.setProps({ coveredDates: [] })
+    await flushPromises()
+
+    expect(wrapper.findAll('canvas')).toHaveLength(0)
+    const notes = wrapper.findAll('.chart-box .empty')
+    expect(notes).toHaveLength(2)
+    expect(notes.every((node) => node.text() === '暂无数据')).toBe(true)
+    wrapper.unmount()
+  })
 })

@@ -87,6 +87,14 @@ export function resolveBoardRangeMs(range: BoardTimeRange, endMs = Date.now()): 
   return { startMs: utcRollingStartMs(range.days || 1, endMs), endMs }
 }
 
+/** 窗口里已经发生的分钟数，给 RPM/TPM 当分母。
+ * custom 的 endMs 是结束日的次日 00:00，含今天时不能把还没到的小时算进去。 */
+export function boardRangeElapsedMinutes(range: BoardTimeRange, now = Date.now()): number {
+  const { startMs, endMs } = resolveBoardRangeMs(range, now)
+  const cappedEnd = Math.min(endMs, now)
+  return Math.max(1, (cappedEnd - startMs) / 60_000)
+}
+
 export function isWithinBoardRange(ts: string | undefined, range: BoardTimeRange): boolean {
   if (!ts) return false
   const when = Date.parse(ts)

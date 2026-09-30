@@ -70,6 +70,10 @@ func TestProjectTasksSkipsNullTaskID(t *testing.T) {
 		defer dcancel()
 		_, _ = pool.Exec(dctx, `DELETE FROM session_summaries WHERE session_key LIKE 'r34-p1-%'`)
 		_, _ = pool.Exec(dctx, `DELETE FROM session_dim WHERE gw_session_id LIKE 'r34-p1-%'`)
+		// R35 复审补：762 触发器会在 project_dim/attribution 留下夹具行，
+		// 只清 ss/dim 会留下 'app:r34p1' 维度行与孤儿 attribution。
+		_, _ = pool.Exec(dctx, `DELETE FROM session_project_attribution WHERE gw_session_id LIKE 'r34-p1-%'`)
+		_, _ = pool.Exec(dctx, `DELETE FROM project_dim WHERE project_ref='app:r34p1'`)
 	}()
 
 	// 触发器回填是同步的（AFTER INSERT），无需等 worker。

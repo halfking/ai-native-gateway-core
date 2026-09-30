@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // BoardProviderSection.vue — 供应商成本采购区（2026-09-30 看板重构轮，对齐效果图）。
 // 三层：
-//  1) 成本采购卡片：成本/积分取 board pies.providers 现成字段（cost_usd / credits）；
+//  1) 成本采购卡片：窗口成本取 getUsageByProvider.total_cost_usd（饼图 cost 经常是 0）；
+//     积分按 provider_code 或名称回查 pies.providers。没有用量行就不拿饼图充卡。
 //  2) 评分：复用对账报表接口 getReportSummary(view=provider) 的 quality_score；
 //  3) 余额：凭据 balance_usd 汇总（getProviderCredentials，挂载后拉一次缓存，无数据显 —/套餐）。
 // 供应商用量统计列表 = getUsageByProvider（随看板时间范围联动）。
@@ -15,6 +16,7 @@ import { getUsageByProvider, downloadProviderUsageExport, type ProviderUsageRow 
 import { getReportSummary } from '../../api/reportrollup'
 import { getProviderCredentials } from '../../api/providers'
 import { resolveBoardRangeMs, type BoardTimeRange, type BoardTimeQuery } from '../../utils/boardTimeRange'
+import { buildProviderCards, fmtUsd, matchProviderPie } from './providerCards'
 
 const props = defineProps<{
   board: BoardPayload | null | undefined
@@ -30,6 +32,7 @@ const explorerOpen = ref(false)
 const exportError = ref('')
 const usageRows = ref<ProviderUsageRow[]>([])
 const usageLoading = ref(false)
+const usageError = ref('')
 const qualityByName = ref<Map<string, number>>(new Map())
 /** provider_id → 余额合计（undefined = 无数据）。挂载后拉一次，随供应商集合变化补拉。 */
 const balanceById = ref<Map<number, number | 'plan' | undefined>>(new Map())
@@ -53,45 +56,15 @@ function avatarVar(idx: number) {
 }
 
 function pieFor(code: string, name: string) {
-  const items = props.board?.pies?.providers ?? []
-  return items.find((p) => p.key === code || p.key === name)
+  return matchProviderPie(props.board?.pies?.providers ?? [], code, name)
 }
 
 const providerCards = computed<ProviderCard[]>(() => {
-  const pies = props.board?.pies?.providers ?? []
-  // 用量接口才有窗口真实成本；饼图 key 经常是展示名而不是 provider_code，
-  // 只按 pie.cost_usd 排序会把 $0 的「__other__」排在有成本的供应商前面。
-  if (usageRows.value.length) {
-    return [...usageRows.value]
-      .sort((a, b) => (b.total_cost_usd ?? 0) - (a.total_cost_usd ?? 0))
-      .slice(0, 8)
-      .map((r) => {
-        const pie = pieFor(r.provider_code, r.provider_name)
-        return {
-          code: r.provider_code,
-          name: r.provider_name || r.provider_code,
-          id: r.provider_id,
-          requests: r.request_count ?? pie?.requests ?? 0,
-          tokens: pie?.tokens ?? (r.prompt_tokens ?? 0) + (r.completion_tokens ?? 0),
-          credits: pie?.credits ?? 0,
-          costUsd: r.total_cost_usd ?? pie?.cost_usd ?? 0,
-          quality: qualityByName.value.get(r.provider_name),
-          balance: balanceById.value.get(r.provider_id),
-        }
-      })
-  }
-  return [...pies]
-    .sort((a, b) => (b.cost_usd ?? 0) - (a.cost_usd ?? 0))
-    .slice(0, 8)
-    .map((p) => ({
-      code: p.key,
-      name: p.key,
-      requests: p.requests ?? 0,
-      tokens: p.tokens ?? 0,
-      credits: p.credits ?? 0,
-      costUsd: p.cost_usd ?? 0,
-      balance: undefined,
-    }))
+  return buildProviderCards(usageRows.value, props.board?.pies?.providers ?? []).map((card) => ({
+    ...card,
+    quality: qualityByName.value.get(card.name),
+    balance: card.id != null ? balanceById.value.get(card.id) : undefined,
+  }))
 })
 
 const costMax = computed(() => Math.max(...providerCards.value.map((c) => c.costUsd), 1))
@@ -108,10 +81,12 @@ const tableRows = computed(() => {
 
 async function loadUsage() {
   usageLoading.value = true
+  usageError.value = ''
   try {
     usageRows.value = await getUsageByProvider(props.timeQuery, 50)
-  } catch {
+  } catch (e: unknown) {
     usageRows.value = []
+    usageError.value = e instanceof Error && e.message ? e.message : t('dashboard.loadError')
   } finally {
     usageLoading.value = false
   }
@@ -182,18 +157,6 @@ function fmtBalance(b: number | 'plan' | undefined) {
   return '$' + b.toFixed(2)
 }
 
-function fmtCost(v: number | undefined) {
-  if (v == null) return '—'
-  const n = Number(v)
-  if (!Number.isFinite(n)) return '—'
-  if (n !== 0 && Math.abs(n) < 0.01) {
-    const four = n.toFixed(4)
-    if (Number(four) === 0) return '$' + n.toExponential(1)
-    return '$' + four
-  }
-  return '$' + n.toFixed(2)
-}
-
 function fmtCompact(n: number | undefined) {
   if (n == null) return '—'
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -242,7 +205,8 @@ watch(usageRows, () => void loadBalances())
       </button>
     </div>
 
-    <div v-if="loading && !providerCards.length" class="pv-grid">
+    <p v-if="usageError" class="pv-export-error" role="alert">{{ usageError }}</p>
+    <div v-if="usageLoading && !providerCards.length" class="pv-grid">
       <div v-for="i in 5" :key="i" class="pv-card pv-card--skeleton" />
     </div>
     <div v-else-if="providerCards.length" class="pv-grid">
@@ -259,7 +223,7 @@ watch(usageRows, () => void loadBalances())
           <span v-if="card.id != null" class="pv-card__open" aria-hidden="true">{{ t('dashboard.board.providerDetail') }} ↗</span>
         </div>
         <div class="pv-card__cost">
-          {{ fmtCost(card.costUsd) }}
+          {{ fmtUsd(card.costUsd) }}
           <small>{{ t('dashboard.board.providerWindowCost') }}</small>
           <span v-if="card.quality != null" class="pv-score" :class="scoreClass(card.quality)">
             {{ t('dashboard.board.providerScore', { n: card.quality }) }}
@@ -310,7 +274,7 @@ watch(usageRows, () => void loadBalances())
               <td><code class="pv-code">{{ row.provider_code }}</code></td>
               <td class="num">{{ fmtCompact(row.request_count) }}</td>
               <td class="num">{{ fmtCompact((row.prompt_tokens ?? 0) + (row.completion_tokens ?? 0)) }}</td>
-              <td class="num">{{ fmtCost(row.total_cost_usd) }}</td>
+              <td class="num">{{ fmtUsd(row.total_cost_usd) }}</td>
               <td class="num">{{ fmtCompact(row.credits) }}</td>
               <td class="num">
                 <span :style="{ color: row.success_rate != null && row.success_rate >= 0.95 ? 'var(--success)' : 'var(--warning)' }" class="pv-sr">
