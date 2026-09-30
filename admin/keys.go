@@ -695,9 +695,13 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 			&k.TotalRequests, &k.TotalPromptTokens, &k.TotalCompletionTokens,
 			&k.TotalCostUSD, &k.LastRequestAt,
 			&k.TenantID, &k.KeyAlias); err != nil {
+			warnRowSkip("keys.list", err)
 			continue
 		}
 		keys = append(keys, k)
+	}
+	if writeAggRowsErr(w, "keys.list", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, keys)
 }
@@ -1134,9 +1138,13 @@ func (h *Handler) listKeyApplications(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&a.ID, &a.ClientIP, &a.Contact, &a.Purpose,
 			&a.Status, &a.IssuedKeyID, &a.AdminNotes, &a.ReviewedBy,
 			&a.ReviewedAt, &a.CreatedAt, &a.ExpiresAt); err != nil {
+			warnRowSkip("keys.listApplications", err)
 			continue
 		}
 		apps = append(apps, a)
+	}
+	if writeAggRowsErr(w, "keys.listApplications", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, apps)
 }

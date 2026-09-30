@@ -423,6 +423,11 @@ func (h *OutputComplianceHandler) listKeywords(w http.ResponseWriter, r *http.Re
 		}
 		keywords = append(keywords, *k)
 	}
+	// 违禁词清单少一截 = 该词不再被拦截 = 静默放行。审计读面不返回半份。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate keywords", err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"keywords": keywords})
 }
@@ -575,6 +580,11 @@ func (h *OutputComplianceHandler) listReviewQueue(w http.ResponseWriter, r *http
 		}
 		items = append(items, *it)
 	}
+	// 待审队列少一截 = 待人工复核的合规问题被静默从队列里消失。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate review queue", err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items, "status": status, "limit": limit, "offset": offset})
 }
@@ -678,6 +688,11 @@ func (h *OutputComplianceHandler) listFeedback(w http.ResponseWriter, r *http.Re
 			return
 		}
 		items = append(items, *fb)
+	}
+	// 合规反馈少一截 = 复核结论被静默丢弃。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate feedback", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"feedback": items, "limit": limit, "offset": offset})

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,8 +37,12 @@ func loadModelAliasIndex(ctx context.Context, db *pgxpool.Pool) (*modelAliasInde
 	defer rows.Close()
 	for rows.Next() {
 		var canon, raw string
+		// 别名索引被截断会让 analytics 的 canonical 列静默退化成 raw 名
+		// （看起来像"模型换了名字"）。调用方对 err 是降级容忍的
+		// （analytics.go `aliasIdx, _ :=`、expandModelFilter 回退原名），
+		// 所以直接上抛。
 		if err := rows.Scan(&canon, &raw); err != nil {
-			continue
+			return idx, fmt.Errorf("load model alias index: scan row: %w", err)
 		}
 		canon = strings.TrimSpace(canon)
 		raw = strings.TrimSpace(raw)
@@ -52,6 +57,9 @@ func loadModelAliasIndex(ctx context.Context, db *pgxpool.Pool) (*modelAliasInde
 				idx.rawToCanon[norm] = canon
 			}
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return idx, fmt.Errorf("load model alias index: iterate rows: %w", err)
 	}
 	return idx, nil
 }

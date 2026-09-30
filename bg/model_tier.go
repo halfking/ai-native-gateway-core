@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -121,13 +122,23 @@ func (m *ModelTier) refresh(ctx context.Context) {
 		defer rows.Close()
 		for rows.Next() {
 			var arr []string
-			if err := rows.Scan(&arr); err == nil {
+			if err := rows.Scan(&arr); err != nil {
+				if dbrows.SkipOrFail("bg.ModelTier.refresh/staticFeatured", err) {
+					continue
+				}
+			} else {
 				for _, mm := range arr {
 					if mm = normalizeModelKey(mm); mm != "" {
 						fs.static[mm] = struct{}{}
 					}
 				}
 			}
+		}
+		// R66: 静默截断会让运营配置的常用模型静默退化为「非常用」，
+		// 深探随之停摆且无痕迹。
+		if err := rows.Err(); err != nil {
+			slog.Warn("model_tier: static featured row iteration aborted; set truncated",
+				"tenant", staticTenant, "error", err)
 		}
 	} else {
 		slog.Warn("model_tier: load static featured failed", "tenant", staticTenant, "error", err)
@@ -162,11 +173,18 @@ func (m *ModelTier) refresh(ctx context.Context) {
 			defer rows.Close()
 			for rows.Next() {
 				var model string
-				if err := rows.Scan(&model); err == nil {
-					if model = normalizeModelKey(model); model != "" {
-						fs.usage[model] = struct{}{}
+				if err := rows.Scan(&model); err != nil {
+					if dbrows.SkipOrFail("bg.ModelTier.refresh/usageTopN", err) {
+						continue
 					}
+				} else if model = normalizeModelKey(model); model != "" {
+					fs.usage[model] = struct{}{}
 				}
+			}
+			// R66: 同上——Top-N 截断会让高频模型退出深探范围。
+			if err := rows.Err(); err != nil {
+				slog.Warn("model_tier: usage top-N row iteration aborted; set truncated",
+					"window_hours", windowHours, "top_n", topN, "error", err)
 			}
 		} else {
 			slog.Warn("model_tier: load usage top-N failed", "error", err)

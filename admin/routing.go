@@ -410,6 +410,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
 			&isRoutable, &unavailableReason,
 		); err != nil {
+			warnRowSkip("routing.resolve", err)
 			continue
 		}
 		// Keep database eligibility separate from the authoritative runtime
@@ -438,6 +439,14 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		}
 		c.CompositeScore = executors.CalculateCompositeScore(pc, weights)
 		candidates = append(candidates, c)
+	}
+
+	// Without this a mid-iteration connection abort is indistinguishable from
+	// normal completion and the operator gets a 200 with a silently shortened
+	// candidate list — which reads as "these are all the routes", the exact
+	// wrong conclusion this endpoint exists to rule out.
+	if writeAggRowsErr(w, "routing.resolve", rows.Err()) {
+		return
 	}
 
 	// 2026-09-29 (stream 上游污染治理): the wrapper-token alias matrix fed
@@ -1991,7 +2000,17 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 				var m string
 				if err := rows.Scan(&m); err == nil {
 					models = append(models, m)
+				} else {
+					warnRowSkip("emergencyRepair.enumModels", err)
 				}
+			}
+			// A truncated enumeration means URSM / fpslot cleanup below only
+			// covers part of the credential — exactly the silent skip the
+			// comment above calls out. No error channel on this helper, so
+			// warn and continue with what was obtained.
+			if err := rows.Err(); err != nil {
+				slog.Warn("emergency_repair: enumerate binding models rows aborted",
+					"cred", credentialID, "models_enumerated", len(models), "error", err)
 			}
 			rows.Close()
 			if len(models) == 0 {
@@ -2137,6 +2156,7 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 			&circuitState, &coolingUntil, &available, &tier, &weight,
 			&priceIn, &priceOut, &currency, &successRate, &p95, &standardizedName,
 		); err != nil {
+			warnRowSkip("routing.overview", err)
 			continue
 		}
 		runtimeRoutable := available &&
@@ -2184,6 +2204,9 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 			)
 		}
 		outRows = append(outRows, row)
+	}
+	if writeAggRowsErr(w, "routing.overview", rows.Err()) {
+		return
 	}
 	if outRows == nil {
 		outRows = []map[string]any{}
@@ -2317,6 +2340,7 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 			&provID, &provName, &credID, &credLabel, &credStatus, &availState,
 			&available, &tier, &weight, &priceIn, &priceOut, &currency,
 			&successRate, &p95); err != nil {
+			warnRowSkip("routing.modelTree", err)
 			continue
 		}
 
@@ -2402,6 +2426,12 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 			ve = &ge.Variants[len(ge.Variants)-1]
 		}
 		ve.Credentials = append(ve.Credentials, cred)
+	}
+
+	// The tree is the whole response body; a truncated iteration would show
+	// operators a partially-populated model tree with no indication.
+	if writeAggRowsErr(w, "routing.modelTree", rows.Err()) {
+		return
 	}
 
 	seriesList := make([]seriesEntry, 0, len(seriesMap))
@@ -2857,6 +2887,7 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 			var modelKey string
 			var cnt int
 			if err := usageRows.Scan(&modelKey, &cnt); err != nil {
+				warnRowSkip("routing.queryPopularModels.usage", err)
 				continue
 			}
 			c := cnt
@@ -2866,6 +2897,13 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 				Source:        "usage",
 				Count:         &c,
 			})
+		}
+		// Ranking heuristic with no error channel (returns a plain slice): a
+		// truncated usage scan would just quietly re-rank the picker, so log
+		// it instead of failing the caller.
+		if err := usageRows.Err(); err != nil {
+			slog.Warn("routing popular models: usage rows iteration aborted",
+				"op", "routing.queryPopularModels.usage", "tenant_id", tenantID, "error", err)
 		}
 	}
 	return popular
@@ -2964,7 +3002,15 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 			var aliases []string
 			if err := aliasRows.Scan(&canonical, &aliases); err == nil {
 				aliasesByCanonical[canonical] = aliases
+			} else {
+				warnRowSkip("routing.availableModels.aliases", err)
 			}
+		}
+		// Alias display names are an optional enrichment over the base catalog
+		// rows; losing them degrades the UI but must not fail the endpoint.
+		if err := aliasRows.Err(); err != nil {
+			slog.Warn("routing available models: alias rows iteration aborted",
+				"op", "routing.availableModels.aliases", "error", err)
 		}
 	}
 
@@ -2983,6 +3029,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		var provCount int
 		if err := rows.Scan(&rawName, &stdName, &provCount, &canonName, &dispName, &family, &modality,
 			&ctxWin, &paramsB, &familyDisplay, &familyVendor); err != nil {
+			warnRowSkip("routing.availableModels", err)
 			continue
 		}
 		if canonName == nil || strings.TrimSpace(*canonName) == "" {
@@ -3049,6 +3096,9 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		if featuredSet[canonKey] || featuredSet[strings.ToLower(rawName)] {
 			item.Featured = true
 		}
+	}
+	if writeAggRowsErr(w, "routing.availableModels", rows.Err()) {
+		return
 	}
 
 	familyVersions := map[string][]availableVersionEntry{}
@@ -3145,9 +3195,13 @@ func (h *Handler) handleRoutingAvailableModelsRaw(w http.ResponseWriter, r *http
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
+			warnRowSkip("routing.availableModelsRaw", err)
 			continue
 		}
 		names = append(names, name)
+	}
+	if writeAggRowsErr(w, "routing.availableModelsRaw", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, names)
 }
@@ -3258,6 +3312,7 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 			&failureStage, &failureDetailCode, &resolutionPath, &canonicalModel,
 			&resolutionRawModels, &decisionTrace,
 		); err != nil {
+			warnRowSkip("routing.decisions", err)
 			continue
 		}
 		var rawModels any = []string{}
@@ -3303,6 +3358,9 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 			"resolution_raw_models": rawModels,
 			"decision_trace":        trace,
 		})
+	}
+	if writeAggRowsErr(w, "routing.decisions", rows.Err()) {
+		return
 	}
 	if decisions == nil {
 		decisions = []map[string]any{}
@@ -3359,12 +3417,16 @@ func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&c.CredentialID, &c.Label, &c.Status,
 			&c.CircuitState, &c.ConsecutiveFailures, &c.CircuitOpenCountWindow,
 			&c.CoolingUntil, &c.ProviderName, &c.CatalogCode); err != nil {
+			warnRowSkip("routing.health", err)
 			continue
 		}
 		if c.CircuitState == "open" {
 			openCount++
 		}
 		creds = append(creds, c)
+	}
+	if writeAggRowsErr(w, "routing.health", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"credentials": creds,
@@ -3410,6 +3472,7 @@ func (h *Handler) handleRoutingAudit(w http.ResponseWriter, r *http.Request) {
 		var targetID *int64
 		var beforeJSON, afterJSON []byte
 		if err := rows.Scan(&id, &ts, &actor, &action, &targetType, &targetID, &beforeJSON, &afterJSON); err != nil {
+			warnRowSkip("routing.audit", err)
 			continue
 		}
 		var before, after any
@@ -3429,6 +3492,9 @@ func (h *Handler) handleRoutingAudit(w http.ResponseWriter, r *http.Request) {
 			"before_json": before,
 			"after_json":  after,
 		})
+	}
+	if writeAggRowsErr(w, "routing.audit", rows.Err()) {
+		return
 	}
 	if audits == nil {
 		audits = []map[string]any{}
@@ -3768,6 +3834,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 			&d.ActiveSessions, &d.ConsecutiveFailures, &d.ConcurrencyLimit,
 			&d.Currency, &d.BillingMode, &priceIn, &priceOut, &d.BlendedCost,
 		); err != nil {
+			warnRowSkip("routing.scoreDetails", err)
 			continue
 		}
 
@@ -3808,6 +3875,9 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		}, scoringWeights)
 
 		details = append(details, d)
+	}
+	if writeAggRowsErr(w, "routing.scoreDetails", rows.Err()) {
+		return
 	}
 
 	sort.SliceStable(details, func(i, j int) bool {
@@ -4108,6 +4178,9 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 		pool = append(pool, e)
 		byCred[e.CredentialID] = []any{}
 	}
+	if writeAggRowsErr(w, "freePool.status", rows.Err()) {
+		return
+	}
 
 	// Fetch all free-tier model offers (Python lists billing_mode='free' in models array,
 	// but stats counts ALL model_offers joined to free credentials)
@@ -4244,6 +4317,9 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 		}
+		if writeAggRowsErr(w, "freePool.status.models", modelRows.Err()) {
+			return
+		}
 	}
 
 	// Build active_codes from pool entries (matches Python get_pool_overview)
@@ -4262,12 +4338,17 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 		for allModelRows.Next() {
 			var oid int
 			var bm string
-			if err := allModelRows.Scan(&oid, &bm); err == nil {
-				totalModelSet[oid] = struct{}{}
-				if bm == "free" {
-					freeModelSet[oid] = struct{}{}
-				}
+			if err := allModelRows.Scan(&oid, &bm); err != nil {
+				warnRowSkip("freePool.status.allModels", err)
+				continue
 			}
+			totalModelSet[oid] = struct{}{}
+			if bm == "free" {
+				freeModelSet[oid] = struct{}{}
+			}
+		}
+		if writeAggRowsErr(w, "freePool.status.allModels", allModelRows.Err()) {
+			return
 		}
 	}
 
@@ -4644,6 +4725,7 @@ func (h *Handler) handleFreePoolModels(w http.ResponseWriter, r *http.Request) {
 			&m.CatalogCode, &m.ProviderName, &m.Protocol, &m.BaseURL,
 			&m.CredentialID, &m.CredentialLabel, &m.CredentialStatus,
 			&m.AvailabilityState, &m.QuotaState); err != nil {
+			warnRowSkip("freePool.models", err)
 			continue
 		}
 		models = append(models, m)
@@ -4653,6 +4735,9 @@ func (h *Handler) handleFreePoolModels(w http.ResponseWriter, r *http.Request) {
 			m.QuotaState != "exhausted" && m.QuotaState != "balance_exhausted" {
 			routable++
 		}
+	}
+	if writeAggRowsErr(w, "freePool.models", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -4686,11 +4771,19 @@ func (h *Handler) handleFreePoolCatalog(w http.ResponseWriter, r *http.Request) 
 		defer rows.Close()
 		for rows.Next() {
 			var code, model string
-			if err := rows.Scan(&code, &model); err == nil && code != "" {
-				if model != "" {
-					registered[code] = append(registered[code], model)
-				}
+			if err := rows.Scan(&code, &model); err != nil {
+				warnRowSkip("freePool.catalog.registered", err)
+				continue
 			}
+			if code == "" {
+				continue
+			}
+			if model != "" {
+				registered[code] = append(registered[code], model)
+			}
+		}
+		if writeAggRowsErr(w, "freePool.catalog.registered", rows.Err()) {
+			return
 		}
 	}
 
@@ -4806,10 +4899,15 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 		for rows.Next() {
 			var id int
 			var label string
-			//nolint:errcheck // best-effort
-			rows.Scan(&id, &label)
+			if err := rows.Scan(&id, &label); err != nil {
+				warnRowSkip("freePool.bootstrap.cleanup", err)
+				continue
+			}
 			staleIDs = append(staleIDs, id)
 			cleanupResults = append(cleanupResults, map[string]any{"id": id, "label": label})
+		}
+		if writeAggRowsErr(w, "freePool.bootstrap.cleanup", rows.Err()) {
+			return
 		}
 		// 2026-09-17 audit: one UPDATE per row serialized a full table
 		// access per credential; a single ANY($1) sweep does it in one
@@ -4851,12 +4949,17 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 		for statusRows.Next() {
 			var code, name, label, status string
 			var offers int
-			//nolint:errcheck // best-effort
-			statusRows.Scan(&code, &name, &label, &status, &offers)
+			if err := statusRows.Scan(&code, &name, &label, &status, &offers); err != nil {
+				warnRowSkip("freePool.bootstrap.status", err)
+				continue
+			}
 			poolStatus = append(poolStatus, map[string]any{
 				"catalog_code": code, "provider_name": name,
 				"label": label, "status": status, "offers": offers,
 			})
+		}
+		if writeAggRowsErr(w, "freePool.bootstrap.status", statusRows.Err()) {
+			return
 		}
 	}
 

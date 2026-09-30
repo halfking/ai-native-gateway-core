@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -479,7 +480,9 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
 			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
 			&s.ProbeConsecutiveFailures); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.CredentialProbeV2.cycleAll", err) {
+				continue
+			}
 		}
 
 		// 2026-09-13 closeout (audit R5 / P5): a credential with fresh
@@ -649,6 +652,12 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			c.SubmitFastProbe(s.ID)
 		}
 
+	}
+	// R66: 待检批被截断 = 少探若干 credential，而 cycle complete 会带着
+	// 偏小的 checked 数照常打出，把「没探到」伪装成「探过且健康」。
+	if err := dbrows.Err(rows); err != nil {
+		slog.Warn("credential probe v2: row iteration aborted; credential batch truncated",
+			"error", err, "checked", checked)
 	}
 
 	slog.Info("credential probe v2: cycle complete",
@@ -1905,7 +1914,11 @@ func (c *CredentialProbeV2) loadBoundRawModelsAll(ctx context.Context, credID in
 	models := make([]string, 0)
 	for rows.Next() {
 		var model string
-		if err := rows.Scan(&model); err == nil && model != "" {
+		if err := rows.Scan(&model); err != nil {
+			if dbrows.SkipOrFail("bg.CredentialProbeV2.loadBoundRawModelsAll", err) {
+				continue
+			}
+		} else if model != "" {
 			models = append(models, model)
 		}
 	}

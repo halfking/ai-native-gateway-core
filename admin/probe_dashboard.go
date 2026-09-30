@@ -742,6 +742,13 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 		models = append(models, m)
 	}
 
+	// rows.Next() false is indistinguishable from normal completion when the
+	// connection aborts mid-iteration — without this the operator sees a
+	// 200 with a silently shortened model list.
+	if writeAggRowsErr(w, "probe.dashboard", rows.Err()) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"models": models,
@@ -798,6 +805,10 @@ func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		queues = append(queues, q)
+	}
+
+	if writeAggRowsErr(w, "probe.queueSnapshot", rows.Err()) {
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1031,6 +1042,10 @@ func (h *Handler) handleProbeModelNodes(w http.ResponseWriter, r *http.Request) 
 		nodes = append(nodes, n)
 	}
 
+	if writeAggRowsErr(w, "probe.modelNodes", rows.Err()) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"model": modelName,
@@ -1075,6 +1090,12 @@ func (h *Handler) handleProbeModelStateSummary(w http.ResponseWriter, r *http.Re
 			return
 		}
 		breakdown = append(breakdown, b)
+	}
+	// The Redis branch below may replace `breakdown` wholesale, but when the
+	// Redis reader is unavailable this DB loop is the only source — a
+	// truncated iteration would under-report the state distribution as 200.
+	if writeAggRowsErr(w, "probe.modelStateSummary", rows.Err()) {
+		return
 	}
 	if rc, ok := h.redisClient.(*redis.Client); ok {
 		reader := bg.NewModelAvailabilityReader(rc)
@@ -1178,6 +1199,10 @@ func (h *Handler) handleProbeAvailabilityTimeline(w http.ResponseWriter, r *http
 		timeline = append(timeline, p)
 	}
 
+	if writeAggRowsErr(w, "probe.availabilityTimeline", rows.Err()) {
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"timeline": timeline,
@@ -1240,6 +1265,10 @@ func (h *Handler) handleProviderLatency(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		entries = append(entries, e)
+	}
+
+	if writeAggRowsErr(w, "probe.providerLatency", rows.Err()) {
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

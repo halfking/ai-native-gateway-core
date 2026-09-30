@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
@@ -562,7 +563,9 @@ func (e *Executor) BatchCheck(
 		)
 
 		if err := rows.Scan(&moduleName, &execID, &status, &summaryJSON, &detailJSON, &durationMs, &expiresAt); err != nil {
-			continue
+			if dbrows.SkipOrFail("moduleexec.Executor.BatchCheck", err) {
+				continue
+			}
 		}
 
 		result := &ExecuteResult{
@@ -585,6 +588,13 @@ func (e *Executor) BatchCheck(
 		}
 
 		results[moduleName] = result
+	}
+	// R66: 缓存命中读被静默截断 = 部分模块被判为「无缓存」而重复执行
+	// （白烧上游调用），调用方拿到残缺 map + nil，无从察觉。
+	// 直接消费 rows.Err()（非 dbrows.Err 包装）使站位级守卫能逐循环判定；
+	// 单行跳行留痕仍走 dbrows.SkipOrFail。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("moduleexec.Executor.BatchCheck: iterate rows: %w", err)
 	}
 
 	return results, nil

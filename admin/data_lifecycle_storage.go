@@ -443,12 +443,17 @@ func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInf
 			&t.TotalBytes, &t.IndexBytes, &t.ToastBytes,
 			&t.IsPartitioned,
 		); err != nil {
+			warnRowSkip("dataLifecycle.storage.tableSizes", err)
 			continue
 		}
 		t.TotalHuman = humanBytes(t.TotalBytes)
 		t.ToastHuman = humanBytes(t.ToastBytes)
 		totalBytes += t.TotalBytes
 		out = append(out, t)
+	}
+	// 占比对 Top-N 求和，截断会让 Top-N 大表榜 + DB 占用同时偏小。
+	if err := rows.Err(); err != nil {
+		return nil, 0, "", fmt.Errorf("failed to iterate table size rows: %w", err)
 	}
 
 	// 占比（对 Top-N 求和，不严格等于 DB 总数，仅作参考）
