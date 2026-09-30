@@ -286,6 +286,81 @@ func TestSalvage_O5EvidenceFileOptional(t *testing.T) {
 	assert.Greater(t, total, 0, "应至少回收一条记录")
 }
 
+// oversizeReader 返回打了测试上限的 FileReader：文件超过该上限即走纯流式
+// 分支（与生产 >256MB 同一段代码，阈值缩小只是让现场可在测试预算内构造）。
+func oversizeReader(tmpDir string, capBytes int64) *FileReader {
+	fr := NewFileReader(tmpDir)
+	fr.salvageCapBytes = capBytes
+	return fr
+}
+
+func TestOversizeFallback_CleanMultiMemberStreamsFully(t *testing.T) {
+	// 超限干净文件退回纯流式：Multistream 透传多 member，全部记录照常
+	// 交付、无损失、stats 恒零（流式路径不产打捞统计）。
+	tmpDir := t.TempDir()
+	var raw bytes.Buffer
+	raw.Write(gzipMember(t, requestLogRecord("req-big-1")))
+	raw.Write(gzipMember(t, requestLogRecord("req-big-2"), requestLogRecord("req-big-3")))
+	writeBackupFile(t, tmpDir, "sessions-2026-10-01.jsonl.gz", raw.Bytes())
+
+	ids, stats, err := collectRequests(t, oversizeReader(tmpDir, 16), "sessions-2026-10-01.jsonl.gz")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"req-big-1", "req-big-2", "req-big-3"}, ids)
+	assert.Equal(t, SalvageStats{}, stats, "流式路径不产打捞统计")
+}
+
+func TestOversizeFallback_CorruptFileFailsWhole(t *testing.T) {
+	// 超限损坏文件退回纯流式 = O5 前的原行为：首个坏 member 即整体失败、
+	// 0 条可恢复。钉住该代价，防止有人误以为超限文件也有打捞兜底。
+	tmpDir := t.TempDir()
+	orphan := gzipMember(t)[:10]
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	line, err := json.Marshal(requestLogRecord("req-trapped"))
+	require.NoError(t, err)
+	_, err = zw.Write(append(line, '\n'))
+	require.NoError(t, err)
+	require.NoError(t, zw.Flush()) // 不 Close：模拟硬杀，截断尾
+	truncated := buf.Bytes()
+
+	var raw bytes.Buffer
+	raw.Write(orphan)
+	raw.Write(truncated)
+	raw.Write(orphan)
+	require.Greater(t, int64(raw.Len()), int64(16))
+	writeBackupFile(t, tmpDir, "sessions-2026-10-01.jsonl.gz", raw.Bytes())
+
+	ids, stats, err := collectRequests(t, oversizeReader(tmpDir, 16), "sessions-2026-10-01.jsonl.gz")
+	require.Error(t, err, "超限损坏文件走流式应整体失败")
+	assert.Empty(t, ids, "流式路径无打捞,不得回收任何记录")
+	assert.Equal(t, SalvageStats{}, stats)
+
+	// 对照：同一现场不超限时打捞可回收（截断 member 内已刷出的行）。
+	salvageIDs, salvageStats, salvageErr := collectRequests(t, NewFileReader(tmpDir), "sessions-2026-10-01.jsonl.gz")
+	require.NoError(t, salvageErr)
+	assert.Contains(t, salvageIDs, "req-trapped")
+	assert.True(t, salvageStats.HasLoss())
+}
+
+func TestOversizeFallback_BoundaryAtCapSalvages(t *testing.T) {
+	// 边界钉死：文件大小恰好等于上限走打捞（<= 语义），不退流式。
+	tmpDir := t.TempDir()
+	orphan := gzipMember(t)[:10]
+	valid := gzipMember(t, requestLogRecord("req-at-cap"))
+	var raw bytes.Buffer
+	raw.Write(orphan)
+	raw.Write(valid)
+	writeBackupFile(t, tmpDir, "sessions-2026-10-01.jsonl.gz", raw.Bytes())
+
+	fr := NewFileReader(tmpDir)
+	fr.salvageCapBytes = int64(raw.Len())
+	ids, stats, err := collectRequests(t, fr, "sessions-2026-10-01.jsonl.gz")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"req-at-cap"}, ids)
+	assert.Equal(t, int64(len(orphan)), stats.LostBytes, "孤儿 header 计损=走了打捞路径")
+	assert.True(t, stats.HasLoss())
+}
+
 func TestGenericRecovery_SalvageLossBlocksArchive(t *testing.T) {
 	// 归档护栏：打捞有损失时恢复完成但文件必须保留。
 	tmpDir := t.TempDir()
