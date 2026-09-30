@@ -23,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	filestore "github.com/kaixuan/llm-gateway-go/storage/file"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
@@ -1235,8 +1236,11 @@ func (c *Client) mirrorRequestBodies(entry *RequestLogEntry) {
 
 // mirrorableBody 报告换算后的载荷是否值得镜像："null"（无数据）与 "{}"
 // （空串/非法 JSON 的收敛值）跳过。
+//
+// 2026-10-01 F5：判定规则下沉到 storage/file.MirrorablePayload 单一事实源，
+// 与 admin ingest 共用（见 ConvertBodyPayload 的同批说明）。
 func mirrorableBody(payload string) bool {
-	return payload != "null" && payload != "{}"
+	return filestore.MirrorablePayload(payload)
 }
 
 func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
@@ -3012,14 +3016,14 @@ func nullableJSONArg(raw json.RawMessage) any {
 // queryable as JSON and consumers don't receive a SQL NULL that requires a
 // separate NULL-check. A nil pointer (never set) returns "null" since that
 // carries the semantic "no data was provided".
+//
+// 2026-10-01 F5：本函数是**落库绑定**换算，也是镜像换算的同一语义；换算规则
+// 已下沉到 storage/file.ConvertBodyPayload 作单一事实源（admin ingest 作为
+// 第三落库点接镜像后需要共用同一份规则，否则某一侧改动会让对账静默失配）。
+// 本函数保留为包内薄封装——它的调用点还包含 AutoDecision 等非 body 字段的
+// $N::jsonb 绑定，那些字段不参与镜像。
 func strPtrToJSON(s *string) string {
-	if s == nil {
-		return "null"
-	}
-	if *s == "" || !json.Valid([]byte(*s)) {
-		return "{}"
-	}
-	return *s
+	return filestore.ConvertBodyPayload(s)
 }
 
 // streamChunksSentArg returns a value safe to bind to the NOT NULL
