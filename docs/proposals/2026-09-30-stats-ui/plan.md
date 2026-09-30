@@ -1,6 +1,6 @@
 # 统计 UI 优化方案 —— 对账结算 / 租户统计 / 用户列表+详情
 
-> 2026-09-30 方案轮 · **方案 A（P1）已落地，方案 B/C 未做** · 本目录（docs/proposals/2026-09-30-stats-ui/）为交付物
+> 2026-09-30 方案轮 · **方案 A/B/C 已落地** · 本目录（docs/proposals/2026-09-30-stats-ui/）为交付物
 >
 > 效果图：[index.html](index.html) 目录 ｜ [A 对账结算](reconciliation.html) ｜ [B 租户统计](tenant-stats.html) ｜ [C 用户+详情](users.html)
 > 本地预览：`cd docs/proposals/2026-09-30-stats-ui && python3 -m http.server 18792` → http://127.0.0.1:18792
@@ -101,7 +101,7 @@ P1 已写进前端，未改后端。与本节原稿的偏差以代码和测试�
 - 租户表「占比」列原先固定为请求占比。现与占比条同一分母。请求占比仍留在请求数副文案。
 - 按天表对不在 `snapshot_dates` 里的补零日显示「未聚合」。有快照的真零日不标。`snapshot_dates` 为 `undefined` 时不标。
 - Token 构成图的 `fill: true` 在 Chart.js 4 里等于 `origin`。改为 `fill: 'stack'`。命中率折线仍是 `fill: false`。测试只断言传给 Chart 的 `fill`，不看像素。
-- 方案 B/C 未做。§8 的 1–3 仍无产品确认。
+- 方案 B/C 已落地，偏差见 §4.3 / §5.4。这次提交还没进 8782 镜像。
 - 2026-09-30 23:50 复核：本机 8782 `healthz` 为 `2.5.8-f51afc9f-20260930-2361`。已发布的 `assets/ReconciliationReport-CR-skEl7.js` 含 `367` 与预设 id `yesterday` / `last7d` / `last30d` / `thisMonth`，不含 `today` 与 `last14d`。上一轮在 build 2360 上点过「昨天」，请求数从 8462（7 天）变为 1739（1 天）。本轮没有在 2361 上重做这次点击，也没有在 2361 上重新展开按天表去看「未聚合」字样。
 - 预设停在昨天只约束预设按钮。自定义开始/结束仍能选今天和未来，`reportRange` 也不拒绝 `end` 晚于昨天。本轮给对账页的 `KxDateRangePicker` 增加可选 `notAfter`（UTC 昨天）：日历格禁用，草稿晚于该日时「应用」不可用。不传该属性的看板选择器行为不变。8782 上正在跑的 2361 包还没有这个限制，要等这次源码重新部署才生效。
 - UTC 当天是 1 号时，「本月」解析为昨天所在月的 1 日到昨天，按钮文案仍是「本月」。日期契约由 `snapshotRange.test.ts` 锁住，文案没有改。北京时间 0 点到 8 点，「昨天」是 UTC 昨天，比本地昨天再早一天。日期窗口仍不进 URL。预设在组件创建时取一次 `Date.now()`，挂着跨过 UTC 日界不会自己刷新。
@@ -145,6 +145,14 @@ type TenantDailyStat struct {
 概览 tab：6 张 KPI 卡升级为 StatCard 扩展形态（icon + 主值 + 环比/构成副指标 + 7 天 sparkline）。数据源：`tenant.requests_7d` 等既有字段 + 概览加载时顺带请求 `stats?days=7` 取 `daily` 画 sparkline（一次轻查询）。
 
 计费审计 / 钱包 / 账本 tab 本轮不动（已有 KPI 汇总行），仅样式令牌对齐。
+
+### 4.3 落地偏差
+
+- `daily` 已在 `getTenantStats` 返回，并补零。积分查询同时给出入/出/缓存读写和 `avg_latency_ms`。
+- 日均请求的环比是序列里最后一天相对前一天，不是上一等长窗口。租户统计查询已经顶着 10 秒预算，不再加一条上一窗口聚合。
+- Token 趋势是总量面积加积分柱，不是入/出/缓存的堆叠面积。按天序列没有这四列。
+- 应用分布行点击后切到密钥 tab，并按 `application_code` 过滤。
+- 概览 sparkline 用近 7 天 `daily`。副指标是失败数和日均，没有再打一版环比。
 
 ---
 
@@ -198,16 +206,24 @@ type TenantDailyStat struct {
 - go：新端点 handler 测试（三层权限 / 无用量用户 / tenant 隔离 / SQL 用 test-tenant fixture）；
 - 前端：`UsersView.test.ts` 扩展（统计条渲染、用量列、抽屉打开与数据加载、空态）；新 `UserDetailDrawer` 组件测试。
 
+### 5.4 落地偏差
+
+- 读面是 `usage_facts` × `api_keys.owner_user`，不是 `request_logs_with_current_month`。后者全量 GROUP BY 在本地要几十秒。
+- 抽屉「在日志中查看全部」打开 `/request-logs?owner_user=<username>&preset=d7`。日志列表只按 `request_logs.api_key_owner_user` 等值过滤，避免给 super_admin 的计数查询加上 `api_keys` 连接。
+- API 密钥数链接到 `/tenants/:code?tab=keys&owner=<username>`。
+- 最近请求仍返回 10 条。用户列表统计列固定 30 天；抽屉内可切 7/30/90。
+- 抽屉行为由 `UsersView.test.ts` 覆盖，没有单独的 `UserDetailDrawer.test.ts`。
+
 ---
 
 ## 6. 实施顺序与工作量
 
 | 期 | 内容 | 预估 |
 |----|------|------|
-| P1 | 对账页改版（纯前端 + 测试 + i18n） | 已落地，见 §3.3。浏览器只在 Vite 开发服务上复测；8782 镜像未更新 |
-| P2 | 租户统计（后端 daily + 前端两 tab + 测试） | 未做 |
-| P3 | 用户统计（后端 2 端点 + 前端列表/抽屉 + 测试） | 未做 |
-| 收尾 | 三页联测（明暗双主题截图）→ 8782 部署实测 | 未做 |
+| P1 | 对账页改版（纯前端 + 测试 + i18n） | 已落地，见 §3.3 |
+| P2 | 租户统计（后端 daily + 前端两 tab + 测试） | 已落地，见 §4.3 |
+| P3 | 用户统计（后端 2 端点 + 前端列表/抽屉 + 测试） | 已落地，见 §5.4 |
+| 收尾 | 三页联测（明暗双主题截图）→ 8782 部署实测 | 未部署 |
 
 部署链（既有约定）：go-3 提交推送 → 兄弟仓 llm-gateway-go ff 拉取 → `deploy-local.sh`（P2/P3 含后端变更必须走此链，禁直接跑二进制）。
 
@@ -221,7 +237,7 @@ type TenantDailyStat struct {
 
 ## 8. 待确认决策点
 
-P1 已按「供应商对帐与结算」任务实施，下面 1–3 仍只约束未做的 B/C，没有产品确认记录。
+P1–P3 已实施。下面 1–3 按本稿推荐落地：抽屉、统计列默认 30 天、抽屉内 7/30/90。
 
 1. 效果图整体方向与密度是否符合预期？（尤其对账页 KPI 从 3 卡扩到 6 卡、按天明细默认折叠）
 2. 用户详情用**抽屉**（当前效果图）还是独立详情页路由（`/users/:id`）？推荐抽屉（浏览快、免新建路由层级），需要分享深链可加 `?user=<id>` query 支持。

@@ -715,6 +715,11 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		UniqueKeys    int                    `json:"unique_keys"`
 		UniqueModels  int                    `json:"unique_models"`
 		UniqueApps    int                    `json:"unique_apps"`
+		InputTokens   int64                  `json:"input_tokens"`
+		OutputTokens  int64                  `json:"output_tokens"`
+		CacheRead     int64                  `json:"cache_read_tokens"`
+		CacheWrite    int64                  `json:"cache_write_tokens"`
+		AvgLatencyMs  float64                `json:"avg_latency_ms"`
 		ByModel       []tenantModelBreakdown `json:"by_model"`
 		ByApplication []tenantAppBreakdown   `json:"by_application"`
 		Daily         []tenantDailyStat      `json:"daily"`
@@ -730,17 +735,19 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	// ② 富化视图 request_logs_with_current_month（LATERAL request_class + 双
 	// NOT EXISTS 反连接 session_turns）带租户过滤 COUNT 即 30s 超时（252-dev
 	// 实测，users 端点头注同因放弃该视图）→ 聚合读面改走内联 raw union
-	//（migration 330 首发形态）：显式 11 列投影——真库 hot 与父表列数已漂移，
+	//（migration 330 首发形态）：显式列投影——真库 hot 与父表列数已漂移，
 	// SELECT * UNION 报 42601。语义：不排除已进 session_turns 的请求（与
 	// totals/修复前父表读法一致，统计聚合数全量请求）。
 	logsTable := `(SELECT tenant_id, ts, application_id, outbound_model, client_model,
 	                       success, total_tokens, prompt_tokens, completion_tokens,
-	                       credits_charged, cost_usd
+	                       credits_charged, cost_usd, latency_ms,
+	                       cache_read_tokens, cache_write_tokens
 	                FROM request_logs_hot
 	        UNION ALL
 	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
 	                      success, total_tokens, prompt_tokens, completion_tokens,
-	                      credits_charged, cost_usd
+	                      credits_charged, cost_usd, latency_ms,
+	                      cache_read_tokens, cache_write_tokens
 	        FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）`
 	usageTable := "usage_ledger_with_current_month"
 
@@ -763,10 +770,17 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		return
 	}
 	if err := h.db.QueryRow(ctx, `
-		SELECT COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint
+		SELECT COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(completion_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(cache_write_tokens, 0)), 0)::bigint,
+		       COALESCE(AVG(latency_ms), 0)::float8
 		FROM `+logsTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
-	`, code, days).Scan(&s.TotalCredits); err != nil {
+	`, code, days).Scan(
+		&s.TotalCredits, &s.InputTokens, &s.OutputTokens,
+		&s.CacheRead, &s.CacheWrite, &s.AvgLatencyMs); err != nil {
 		writeTenantStatsError(w, ctx, code, "credits aggregate", err)
 		return
 	}

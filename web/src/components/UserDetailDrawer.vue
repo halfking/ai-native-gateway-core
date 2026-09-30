@@ -138,6 +138,16 @@ function statusBadge(status: string): string {
 const topKeysText = computed(() =>
   (stats.value?.top_keys ?? []).map((k) => `${k.name}×${k.requests}`).join(' · ') || '—',
 )
+const logsHref = computed(() => {
+  if (!props.user) return '/request-logs'
+  const q = new URLSearchParams({ owner_user: props.user.username, preset: 'd7' })
+  return `/request-logs?${q.toString()}`
+})
+const keysHref = computed(() => {
+  if (!props.user) return '/tenants'
+  const q = new URLSearchParams({ tab: 'keys', owner: props.user.username })
+  return `/tenants/${encodeURIComponent(props.user.tenant_id)}?${q.toString()}`
+})
 </script>
 
 <template>
@@ -273,6 +283,11 @@ const topKeysText = computed(() =>
             <span class="k">{{ t('users.table.createdAt', '创建时间') }}</span><span class="mono">{{ fmtDateTime24h(user.created_at) }}</span>
             <span class="k">{{ t('users.table.lastLogin', '最后登录') }}</span><span class="mono">{{ user.last_login_at ? fmtDateTime24h(user.last_login_at) : '—' }}</span>
             <span class="k">{{ t('users.detail.hotKeys', '高频密钥') }}</span><span class="mono">{{ topKeysText }}</span>
+            <span class="k">{{ t('users.detail.keyCount', 'API 密钥') }}</span>
+            <span><a class="udd-link" :href="keysHref">{{ stats.key_count ?? 0 }}</a></span>
+          </div>
+          <div class="udd-links">
+            <a class="udd-link" :href="logsHref">{{ t('users.detail.viewAllLogs', '在日志中查看全部') }}</a>
           </div>
         </div>
       </template>
@@ -356,6 +371,8 @@ const topKeysText = computed(() =>
   font-size: 12.5px;
 }
 .udd-kv .k { color: var(--muted); }
+.udd-links { margin-top: 10px; }
+.udd-link { color: var(--accent); font-size: 12.5px; }
 .udd-empty {
   color: var(--muted);
   text-align: center;

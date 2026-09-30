@@ -200,6 +200,7 @@ describe('UsersView 统计 UI 优化轮（2026-09-30）', () => {
       top_models: [{ name: 'claude-opus-5', requests: 5203, tokens: 412000000, credits: 18204, cost_usd: 7.8 }],
       top_apps: [{ name: 'codex-cli', requests: 4102, tokens: 298000000, credits: 15032, cost_usd: 6.1 }],
       top_keys: [{ name: 'k1', requests: 9000, tokens: 700000000, credits: 30000, cost_usd: 12.0 }],
+      key_count: 2,
       recent_requests: [
         { ts: '2026-09-30T02:07:30Z', model: 'claude-opus-5', first_chunk_ms: 15060, total_ms: 33100, credits: 412, status: 'rate_limited' },
       ],
@@ -218,6 +219,12 @@ describe('UsersView 统计 UI 优化轮（2026-09-30）', () => {
     expect(drawerText).toContain('claude-opus-5')
     expect(drawerText).toContain('codex-cli')
     expect(drawerText).toContain('3.2%')
+    expect(drawerText).toContain('在日志中查看全部')
+    const logsLink = document.body.querySelector('a[href*="owner_user=alice"]')
+    expect(logsLink?.getAttribute('href')).toContain('/request-logs?')
+    const keysLink = document.body.querySelector('a[href*="tab=keys"]')
+    expect(keysLink?.getAttribute('href')).toContain('/tenants/tenant-a?')
+    expect(keysLink?.textContent).toContain('2')
   })
 
   it('搜索过滤：无匹配时显示空态行', async () => {

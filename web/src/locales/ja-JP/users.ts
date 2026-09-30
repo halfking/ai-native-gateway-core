@@ -134,6 +134,8 @@ export default {
     status: 'ステータス',
     basic: '基本情報',
     hotKeys: '高頻度キー',
+    keyCount: 'API キー',
+    viewAllLogs: 'ログで全部見る',
     requests: 'リクエスト',
   },
 }

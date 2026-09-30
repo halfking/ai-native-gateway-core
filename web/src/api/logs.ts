@@ -253,6 +253,7 @@ export function getRequestLogs(params: {
   usage_source?: 'llm' | 'estimated'
   gw_session_id?: string
   gw_task_id?: string
+  owner_user?: string
   chrono?: boolean
   page?: number
   page_size?: number
@@ -273,6 +274,7 @@ export function getRequestLogs(params: {
   if (params.usage_source) qs.set('usage_source', params.usage_source)
   if (params.gw_session_id) qs.set('gw_session_id', params.gw_session_id)
   if (params.gw_task_id) qs.set('gw_task_id', params.gw_task_id)
+  if (params.owner_user) qs.set('owner_user', params.owner_user)
   if (params.chrono) qs.set('chrono', '1')
   if (params.page != null) qs.set('page', String(params.page))
   if (params.page_size != null) qs.set('page_size', String(params.page_size))
