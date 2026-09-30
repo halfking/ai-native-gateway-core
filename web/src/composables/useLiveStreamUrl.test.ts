@@ -16,7 +16,8 @@ function makeConnection(state: ConnectionState) {
   return ref<ConnectionState>(state)
 }
 
-// vitest 5 Mock 只接受一个函数类型参数。
+// vitest 5 的 Mock/vi.fn 是单泛型 <T extends Procedure> 函数形态
+// （vitest 1.x 的双泛型 <TArgs, R> 元组形态已不适用）
 type TFn = Mock<(key: string, named?: Record<string, unknown>) => string>
 
 function makeT(): TFn {

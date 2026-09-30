@@ -263,9 +263,13 @@ func (h *Handler) queryDimPie(ctx context.Context, tenantID string, tr boardTime
 	for rows.Next() {
 		var item boardPieItem
 		if err := rows.Scan(&item.Key, &item.Requests, &item.Tokens, &item.Credits, &item.CostUSD); err != nil {
+			warnRowSkip("board pie", err)
 			continue
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }
@@ -330,10 +334,14 @@ func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boar
 		var p boardTrendPoint
 		var bucket time.Time
 		if err := rows.Scan(&bucket, &p.Requests, &p.Tokens, &p.Credits, &p.CostUSD); err != nil {
+			warnRowSkip("board trends", err)
 			continue
 		}
 		p.Bucket = bucket.UTC().Format(time.RFC3339)
 		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return points, nil
 }

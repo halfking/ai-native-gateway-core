@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,13 +20,11 @@ import (
 
 func (h *Handler) assertCredentialBelongs(ctx context.Context, providerID, credentialID int) error {
 	var n int
-	err := h.db.QueryRow(ctx, `
+	// R35-N1：err 原样上抛（含 ErrNoRows），由调用方 writeLookupErr 分类
+	// ——此前这里把连接故障/缺表一并吞成 "credential not found"。
+	return h.db.QueryRow(ctx, `
 		SELECT 1 FROM credentials WHERE id = $1 AND provider_id = $2
 	`, credentialID, providerID).Scan(&n)
-	if err != nil {
-		return fmt.Errorf("credential not found")
-	}
-	return nil
 }
 
 func (h *Handler) handleCredentialModels(w http.ResponseWriter, r *http.Request, providerID, credentialID int) {
@@ -35,7 +32,7 @@ func (h *Handler) handleCredentialModels(w http.ResponseWriter, r *http.Request,
 	defer cancel()
 
 	if err := h.assertCredentialBelongs(ctx, providerID, credentialID); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeLookupErr(w, "credential not found", err)
 		return
 	}
 
@@ -203,7 +200,7 @@ func (h *Handler) createProviderOffer(w http.ResponseWriter, r *http.Request, pr
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if err := h.assertCredentialBelongs(ctx, providerID, *peek.CredentialID); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeLookupErr(w, "credential not found", err)
 		return
 	}
 	h.createCredentialModel(w, r, ctx, *peek.CredentialID)
@@ -218,7 +215,7 @@ func (h *Handler) refreshCredentialModels(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	if err := h.assertCredentialBelongs(ctx, providerID, credentialID); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeLookupErr(w, "credential not found", err)
 		return
 	}
 
