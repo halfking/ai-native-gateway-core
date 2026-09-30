@@ -286,7 +286,7 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 			&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier,
 			&m.StandardIQ,
 		); err != nil {
-			slog.Error("listModels scan failed", "error", err)
+			warnRowSkip("models.list", err)
 			continue
 		}
 		m.Family = family
@@ -304,8 +304,8 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		m.Modality = catalog.EffectiveModality(m.CanonicalName, m.Modality)
 		models = append(models, m)
 	}
-	if err := rows.Err(); err != nil {
-		slog.Error("listModels rows.Err", "error", err)
+	if writeAggRowsErr(w, "models.list", rows.Err()) {
+		return
 	}
 	slog.Info("listModels result", "count", len(models))
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -477,9 +477,15 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 			var a aliasRow
 			if err := aliasRows.Scan(&a.ID, &a.RawName, &a.Quantization, &a.Surface,
 				&a.Status, &a.Notes, &a.UpdatedAt); err != nil {
+				warnRowSkip("models.get.aliases", err)
 				continue
 			}
 			aliases = append(aliases, a)
+		}
+		// 别名面板是 getModel 的降级子查询（查询失败只 warn）：迭代中断
+		// 同口径留痕后按已取到的别名继续，不把整个模型详情打成 500。
+		if rerr := aliasRows.Err(); rerr != nil {
+			slog.Warn("getModel aliases iteration aborted; panel degraded", "id", id, "error", rerr)
 		}
 		aliasRows.Close()
 	}
@@ -546,9 +552,14 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 				&o.RawModelName, &o.StandardizedName, &o.P95LatencyMs, &o.SuccessRate,
 				&o.Available, &o.InputPrice, &o.OutputPrice, &o.CacheReadPrice,
 				&o.CacheWritePrice); err != nil {
+				warnRowSkip("models.get.offers", err)
 				continue
 			}
 			offers = append(offers, o)
+		}
+		// 同 aliases 面板：offers 失败只降级不 500。
+		if rerr := offerRows.Err(); rerr != nil {
+			slog.Warn("getModel offers iteration aborted; panel degraded", "id", id, "error", rerr)
 		}
 		offerRows.Close()
 	}
@@ -779,13 +790,17 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var f family
 		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Vendor, &f.Status, &f.Source, &f.Notes, &f.ModelCount); err != nil {
-			slog.Warn("listModelFamilies scan failed", "error", err)
+			warnRowSkip("models.listFamilies", err)
 			continue
 		}
 		if strings.TrimSpace(f.Vendor) == "" {
 			_, f.Vendor = familyDisplayAndVendor(f.ID)
 		}
 		items[f.ID] = &f
+	}
+	// 主 family 列表被截断会让前端展示"就这些 family"，无法与真实全集区分。
+	if writeAggRowsErr(w, "models.listFamilies", rows.Err()) {
+		return
 	}
 	rows.Close()
 
@@ -805,6 +820,7 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 			var id string
 			var modelCount int
 			if err := derivedRows.Scan(&id, &modelCount); err != nil {
+				warnRowSkip("models.listFamilies.derived", err)
 				continue
 			}
 			display, vendor := familyDisplayAndVendor(id)
@@ -820,6 +836,10 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 				Notes:       nil,
 				ModelCount:  modelCount,
 			}
+		}
+		// 孤儿 family 是附加面板（查询失败只 warn）：迭代中断同口径降级。
+		if rerr := derivedRows.Err(); rerr != nil {
+			slog.Warn("listModelFamilies derived iteration aborted; orphan families incomplete", "error", rerr)
 		}
 		derivedRows.Close()
 	}
@@ -898,6 +918,7 @@ func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
 		var pname string
 		var offers int
 		if err := rows.Scan(&cn, &tagsJSON, &pid, &pname, &offers); err != nil {
+			warnRowSkip("models.tagMatrix", err)
 			continue
 		}
 		if _, ok := matrix[cn]; !ok {
@@ -906,6 +927,11 @@ func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
 		matrix[cn].Providers = append(matrix[cn].Providers, providerInfo{
 			ProviderID: pid, ProviderName: pname, OfferCount: offers,
 		})
+	}
+	// 矩阵按 canonical 聚合：截断会让某个模型的 provider 覆盖面静默变小
+	// （看起来像"就这几个 provider 提供该模型"）。
+	if writeAggRowsErr(w, "models.tagMatrix", rows.Err()) {
+		return
 	}
 
 	items := make([]*matrixEntry, 0, len(matrix))

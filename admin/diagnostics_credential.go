@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -121,14 +122,23 @@ func buildCredentialDiagnostic(ctx context.Context, db *pgxpool.Pool, credID, mi
 		WHERE cmb.credential_id = $1
 		ORDER BY pm.raw_model_name
 	`, credID)
-	if err == nil {
+	// 查询失败/迭代中断都只降级（binding 缺席 → 恢复建议缺依据），但必须
+	// 留痕：静默空 bindings 会让"只有一条 provider 坏了"的结论看起来成立。
+	if err != nil {
+		slog.Warn("credential diagnostic: bindings query failed; section absent", "credential_id", credID, "error", err)
+	} else {
 		defer rows.Close()
 		for rows.Next() {
 			var b diagBinding
 			if err := rows.Scan(&b.RawModelName, &b.ProviderID, &b.ProviderCode,
 				&b.Available, &b.UnavailableReason, &b.UnavailableRecoverAt); err == nil {
 				d.Bindings = append(d.Bindings, b)
+			} else {
+				warnRowSkip("diagnostics.credential.bindings", err)
 			}
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("credential diagnostic: bindings rows iteration aborted; section truncated", "credential_id", credID, "error", err)
 		}
 	}
 
@@ -140,14 +150,22 @@ func buildCredentialDiagnostic(ctx context.Context, db *pgxpool.Pool, credID, mi
 		  AND ts > now() - ($2 || ' minutes')::interval
 		ORDER BY ts DESC LIMIT 20
 	`, credID, fmt.Sprintf("%d", minutes))
-	if err == nil {
+	if err != nil {
+		slog.Warn("credential diagnostic: recent failures query failed; section absent", "credential_id", credID, "error", err)
+	} else {
 		defer frows.Close()
 		for frows.Next() {
 			var f diagFailure
 			if err := frows.Scan(&f.RequestID, &f.ClientModel, &f.Ts,
 				&f.ErrorKind, &f.Status, &f.Provider); err == nil {
 				d.RecentFailures = append(d.RecentFailures, f)
+			} else {
+				warnRowSkip("diagnostics.credential.recentFailures", err)
 			}
+		}
+		// 同上：只降级不失败，但 RecentFailuresCount 会被低估成 0。
+		if err := frows.Err(); err != nil {
+			slog.Warn("credential diagnostic: recent failures rows iteration aborted; section truncated", "credential_id", credID, "error", err)
 		}
 	}
 	d.RecentFailuresCount = len(d.RecentFailures)

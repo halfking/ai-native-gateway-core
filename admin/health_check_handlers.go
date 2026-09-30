@@ -56,6 +56,7 @@ func (h *HealthCheckHandler) List(w http.ResponseWriter, r *http.Request) {
 			&detail, &fixSQL, &itemStatus, &autoFixedAt, &autoFixResult,
 			&dismissedAt, &dismissedBy, &dismissedReason,
 			&createdAt, &updatedAt); err != nil {
+			warnRowSkip("healthCheck.List", err)
 			continue
 		}
 		item := map[string]any{
@@ -72,18 +73,33 @@ func (h *HealthCheckHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, item)
 	}
+	// 体检发现少一截 = 一条 critical 健康问题在页面上消失（运维以为体检
+	// 过了）。主查询失败即 500，迭代中断同语义。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "iterate routing health checks failed", err)
+		return
+	}
 
 	summary := map[string]int{}
-	allRows, _ := h.db.Query(r.Context(), `
+	allRows, allRowsErr := h.db.Query(r.Context(), `
 		SELECT status, count(*) FROM routing_health_checks GROUP BY status`)
+	// summary 是 items 之外的补充计数，缺席可降级，但必须留痕。
+	if allRowsErr != nil {
+		slog.Warn("health check list: summary query failed; section empty", "error", allRowsErr)
+	}
 	if allRows != nil {
 		defer allRows.Close()
 		for allRows.Next() {
 			var s string
 			var c int
-			if allRows.Scan(&s, &c) == nil {
+			if err := allRows.Scan(&s, &c); err == nil {
 				summary[s] = c
+			} else {
+				warnRowSkip("healthCheck.List.summary", err)
 			}
+		}
+		if err := allRows.Err(); err != nil {
+			slog.Warn("health check list: summary rows iteration aborted; counts partial", "error", err)
 		}
 	}
 

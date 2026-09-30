@@ -149,6 +149,10 @@ func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, er
 }
 
 // List returns all platform-scoped keys and their values.
+//
+// R66（category 5）：settings_kv 是配置优先链的最上游（DB > env > default）。
+// 迭代被静默截断 = 若干配置项凭空消失并**静默回落到 default**，无任何
+// 报错——这正是「改了配置不生效」最难查的一类。必须上抛。
 func (s *StoreDB) List(scope Scope) (map[string]jsonRawMessage, error) {
 	if scope == ScopeTenant {
 		return nil, fmt.Errorf("use ListTenant for tenant scope")
@@ -169,10 +173,15 @@ func (s *StoreDB) List(scope Scope) (map[string]jsonRawMessage, error) {
 		}
 		out[k] = v
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("settings.StoreDB.List: iterate rows: %w", err)
+	}
 	return out, nil
 }
 
 // ListTenant returns all settings for a tenant.
+//
+// R66（category 5）：同 List——租户配置被静默截断会整体回落 default。
 func (s *StoreDB) ListTenant(tenantID string) (map[string]jsonRawMessage, error) {
 	rows, err := s.pool.Query(context.Background(), `
 		SELECT key, value::text FROM tenant_settings_kv
@@ -190,6 +199,9 @@ func (s *StoreDB) ListTenant(tenantID string) (map[string]jsonRawMessage, error)
 			return nil, err
 		}
 		out[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("settings.StoreDB.ListTenant: iterate rows: %w", err)
 	}
 	return out, nil
 }

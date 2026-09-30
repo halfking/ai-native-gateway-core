@@ -16,6 +16,7 @@ package dbx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -74,6 +75,51 @@ func TestIsLockNotAvailableRecognizesSQLState(t *testing.T) {
 	}
 	if isLockNotAvailable(nil) {
 		t.Fatalf("nil must NOT match")
+	}
+}
+
+// TestIsLockWaitCanceledRecognizesQueryCanceled pins the classification that
+// makes ErrVacuumFullMutexBusy reachable at all.
+//
+// This is a pure-string test on purpose, and it is the guard that was missing.
+// The behavioural guard (TestVacuumFullMutexStatementTimeoutInsideTxn) needs a
+// live database, has no build tag, and t.Skipf's when it cannot connect — so it
+// reported "ok" in every default `go test ./...` and every CI run while the
+// production path it protects was wrong. A predicate that only ever gets
+// exercised against a real server is a predicate that can be wrong for months
+// without anybody finding out.
+//
+// The fact it pins: pg_advisory_xact_lock is the BLOCKING variant, so a
+// contended lock makes the caller wait; the wait is cut short by SET LOCAL
+// statement_timeout; PostgreSQL then reports 57014 (query_canceled), NOT 55P03
+// (lock_not_available, which only the pg_try_ variant returns). Classifying
+// only 55P03 left ErrVacuumFullMutexBusy unreachable in the real contention
+// path, so callers checking errors.Is(err, ErrVacuumFullMutexBusy) to report
+// "another replica is running" never saw it.
+func TestIsLockWaitCanceledRecognizesQueryCanceled(t *testing.T) {
+	if !isLockWaitCanceled(errors.New(
+		"ERROR:  canceling statement due to statement timeout (SQLSTATE 57014)")) {
+		t.Fatal("57014 must be recognised as a canceled lock wait — that is the " +
+			"only signal the blocking pg_advisory_xact_lock produces under contention")
+	}
+	// It must also see through wrapping, same as isLockNotAvailable.
+	if !isLockWaitCanceled(fmt.Errorf("acquire advisory lock: %w",
+		errors.New("canceling statement due to statement timeout (SQLSTATE 57014)"))) {
+		t.Fatal("57014 must be found through a wrapped error chain")
+	}
+	// Non-cancellation errors must not be misread as busy.
+	for _, msg := range []string{
+		"ERROR:  (SQLSTATE 40P01)", // deadlock_detected
+		"ERROR:  (SQLSTATE 55P03)", // lock_not_available: the other predicate's job
+		"relation \"public.x\" does not exist",
+		"totally unrelated",
+	} {
+		if isLockWaitCanceled(errors.New(msg)) {
+			t.Errorf("%q must NOT be classified as a canceled lock wait", msg)
+		}
+	}
+	if isLockWaitCanceled(nil) {
+		t.Fatal("nil must NOT match")
 	}
 }
 

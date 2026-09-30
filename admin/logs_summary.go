@@ -223,9 +223,16 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 			&item.ClientModel,
 		); err != nil {
 			// Skip unscannable rows (e.g. type mismatch) but don't silently swallow.
+			warnRowSkip("logs.loadSessionLogsForSummary", err)
 			continue
 		}
 		out = append(out, item)
+	}
+	// 摘要是 LLM 总结的输入：截断的输入会生成"看起来正常"的错摘要，
+	// 比失败更难发现。上抛（文件内 sibling loadSessionLogsBySessionID
+	// 已用 return out, rows.Err() 定调）。
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

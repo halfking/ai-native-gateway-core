@@ -3,9 +3,11 @@ package vibecoding
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // PgxStore PostgreSQL实现
@@ -50,9 +52,7 @@ func (s *PgxStore) GetProject(ctx context.Context, id int64) (*Project, error) {
 		return nil, err
 	}
 
-	if len(settingsJSON) > 0 {
-		_ = json.Unmarshal(settingsJSON, &project.Settings)
-	}
+	jsoncol.Decode("vibecoding.PgxStore.GetProject/project.Settings", settingsJSON, &project.Settings)
 
 	return project, nil
 }
@@ -92,11 +92,14 @@ func (s *PgxStore) ListProjects(ctx context.Context, tenantID string, status Pro
 			return nil, 0, err
 		}
 
-		if len(settingsJSON) > 0 {
-			_ = json.Unmarshal(settingsJSON, &project.Settings)
-		}
+		jsoncol.Decode("vibecoding.PgxStore.ListProjects/project.Settings", settingsJSON, &project.Settings)
 
 		projects = append(projects, project)
+	}
+	// R66: 迭代中断只让 Next() 返回 false；不终检就等于把「读到第 N 个
+	// 项目时连接断了」当成列表读完，调用方拿到残缺列表 + nil。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("vibecoding.PgxStore.ListProjects: iterate rows: %w", err)
 	}
 
 	return projects, total, nil
@@ -157,12 +160,8 @@ func (s *PgxStore) GetSession(ctx context.Context, id int64) (*Session, error) {
 		return nil, err
 	}
 
-	if len(messagesJSON) > 0 {
-		_ = json.Unmarshal(messagesJSON, &session.Messages)
-	}
-	if len(metadataJSON) > 0 {
-		_ = json.Unmarshal(metadataJSON, &session.Metadata)
-	}
+	jsoncol.Decode("vibecoding.PgxStore.GetSession/session.Messages", messagesJSON, &session.Messages)
+	jsoncol.Decode("vibecoding.PgxStore.GetSession/session.Metadata", metadataJSON, &session.Metadata)
 
 	return session, nil
 }
@@ -185,12 +184,8 @@ func (s *PgxStore) GetSessionBySessionID(ctx context.Context, sessionID string) 
 		return nil, err
 	}
 
-	if len(messagesJSON) > 0 {
-		_ = json.Unmarshal(messagesJSON, &session.Messages)
-	}
-	if len(metadataJSON) > 0 {
-		_ = json.Unmarshal(metadataJSON, &session.Metadata)
-	}
+	jsoncol.Decode("vibecoding.PgxStore.GetSessionBySessionID/session.Messages", messagesJSON, &session.Messages)
+	jsoncol.Decode("vibecoding.PgxStore.GetSessionBySessionID/session.Metadata", metadataJSON, &session.Metadata)
 
 	return session, nil
 }
@@ -233,14 +228,14 @@ func (s *PgxStore) ListSessions(ctx context.Context, projectID *int64, status Se
 			return nil, 0, err
 		}
 
-		if len(messagesJSON) > 0 {
-			_ = json.Unmarshal(messagesJSON, &session.Messages)
-		}
-		if len(metadataJSON) > 0 {
-			_ = json.Unmarshal(metadataJSON, &session.Metadata)
-		}
+		jsoncol.Decode("vibecoding.PgxStore.ListSessions/session.Messages", messagesJSON, &session.Messages)
+		jsoncol.Decode("vibecoding.PgxStore.ListSessions/session.Metadata", metadataJSON, &session.Metadata)
 
 		sessions = append(sessions, session)
+	}
+	// R66: 会话列表被静默截断 = 项目详情页凭空少若干会话。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("vibecoding.PgxStore.ListSessions: iterate rows: %w", err)
 	}
 
 	return sessions, total, nil
@@ -299,9 +294,7 @@ func (s *PgxStore) GetReview(ctx context.Context, id int64) (*Review, error) {
 		return nil, err
 	}
 
-	if len(reviewResultJSON) > 0 {
-		_ = json.Unmarshal(reviewResultJSON, &review.ReviewResult)
-	}
+	jsoncol.Decode("vibecoding.PgxStore.GetReview/review.ReviewResult", reviewResultJSON, &review.ReviewResult)
 
 	return review, nil
 }
@@ -340,11 +333,13 @@ func (s *PgxStore) ListReviews(ctx context.Context, sessionID *int64, offset, li
 			return nil, 0, err
 		}
 
-		if len(reviewResultJSON) > 0 {
-			_ = json.Unmarshal(reviewResultJSON, &review.ReviewResult)
-		}
+		jsoncol.Decode("vibecoding.PgxStore.ListReviews/review.ReviewResult", reviewResultJSON, &review.ReviewResult)
 
 		reviews = append(reviews, review)
+	}
+	// R66: 审查列表被静默截断 = 评审结论缺页而无任何报错。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("vibecoding.PgxStore.ListReviews: iterate rows: %w", err)
 	}
 
 	return reviews, total, nil
@@ -375,11 +370,13 @@ func (s *PgxStore) GetReviewsBySession(ctx context.Context, sessionID int64) ([]
 			return nil, err
 		}
 
-		if len(reviewResultJSON) > 0 {
-			_ = json.Unmarshal(reviewResultJSON, &review.ReviewResult)
-		}
+		jsoncol.Decode("vibecoding.PgxStore.GetReviewsBySession/review.ReviewResult", reviewResultJSON, &review.ReviewResult)
 
 		reviews = append(reviews, review)
+	}
+	// R66: 同会话审查集被静默截断 = 回归比对基线少若干条。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("vibecoding.PgxStore.GetReviewsBySession: iterate rows: %w", err)
 	}
 
 	return reviews, nil

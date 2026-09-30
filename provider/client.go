@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/endpointselect"
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -2333,7 +2334,9 @@ func (c *Client) fetchExtraKeys(ctx context.Context, credentialID int) []string 
 	for rows.Next() {
 		var ciphertext []byte
 		if err := rows.Scan(&ciphertext); err != nil {
-			continue
+			if dbrows.SkipOrFail("provider.Client.fetchExtraKeys", err) {
+				continue
+			}
 		}
 		if len(ciphertext) == 0 {
 			continue
@@ -2345,6 +2348,14 @@ func (c *Client) fetchExtraKeys(ctx context.Context, credentialID int) []string 
 			continue
 		}
 		keys = append(keys, string(pt))
+	}
+	// R66: 多 key 轮转读被静默截断 = 只用前几把 key 试认证，轮转中途
+	// 的 key 完全没被尝试，表现为「明明配了备用 key 却持续 401」。
+	// 本函数是既定降级通道（query 失败即退化单 key 模式，见上方注释），
+	// 故只留痕、不上抛。
+	if err := rows.Err(); err != nil {
+		slog.Warn("provider.Client.fetchExtraKeys: row iteration aborted; key set truncated",
+			"credential_id", credentialID, "error", err, "keys", len(keys))
 	}
 	return keys
 }

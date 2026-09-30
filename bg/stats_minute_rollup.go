@@ -176,8 +176,8 @@ var rollupDimQueries = []struct {
 	{"error_kind", `COALESCE(NULLIF(r.error_kind, ''), '__unknown__')`},
 }
 
-func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Time, creditsExpr string) error {
-	_, err := w.db.Exec(ctx, `
+func rollupMainStatement(creditsExpr string) string {
+	return `
 		INSERT INTO request_stats_minute (
 			bucket, tenant_id, provider_id, canonical_id,
 			requests, success_count, failure_count,
@@ -195,7 +195,7 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 			COALESCE(SUM(r.prompt_tokens), 0)::bigint,
 			COALESCE(SUM(r.completion_tokens), 0)::bigint,
 			COALESCE(SUM(COALESCE(r.prompt_tokens,0)+COALESCE(r.completion_tokens,0)), 0)::bigint,
-			COALESCE(SUM(`+creditsExpr+`), 0)::bigint,
+			COALESCE(SUM(` + creditsExpr + `), 0)::bigint,
 			COALESCE(SUM(r.cost_usd), 0),
 			COALESCE(SUM(r.latency_ms), 0)::bigint
 		FROM request_logs_with_current_month r
@@ -212,8 +212,18 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 			credits_charged = EXCLUDED.credits_charged,
 			cost_usd = EXCLUDED.cost_usd,
 			latency_ms_sum = EXCLUDED.latency_ms_sum
-	`, since, until)
-	return err
+	`
+}
+
+func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Time, creditsExpr string) error {
+	_, err := w.db.Exec(ctx, rollupMainStatement(creditsExpr), since, until)
+	if err != nil {
+		return err
+	}
+	// 整键替换只盖住视图仍会产出的键。累加器按 request_logs.canonical_id
+	// 写入的键，视图若改走 session_turns 的空 canonical，会留在同一闭分钟里
+	// 被英雄卡再加一次。闭分钟里视图不再产出的键这里删掉。
+	return w.retireClosedMain(ctx, since, until)
 }
 
 func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Time, creditsExpr string) error {

@@ -353,7 +353,13 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	aliasIdx, _ := loadModelAliasIndex(ctx, h.db)
+	// R67-A 修正：别名索引**缺失或被截断**时，canonical 列会静默退化成
+	// raw 名，运维看到的是「模型好像改了名字」而不是一次加载失败。
+	// 端点本身仍照常返回（别名只是展示层的归并），但必须留痕。
+	aliasIdx, aliasErr := loadModelAliasIndex(ctx, h.db)
+	if aliasErr != nil {
+		warnRowSkip("analytics.matrix/loadModelAliasIndex", aliasErr)
+	}
 	canonRowAliases := map[string][]string{}
 	canonRowSet := map[string]struct{}{}
 	rawToCanon := map[string]string{}
@@ -432,7 +438,13 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	aliasIdx, _ := loadModelAliasIndex(ctx, h.db)
+	// R67-A 修正：别名索引**缺失或被截断**时，canonical 列会静默退化成
+	// raw 名，运维看到的是「模型好像改了名字」而不是一次加载失败。
+	// 端点本身仍照常返回（别名只是展示层的归并），但必须留痕。
+	aliasIdx, aliasErr := loadModelAliasIndex(ctx, h.db)
+	if aliasErr != nil {
+		warnRowSkip("analytics.matrix/loadModelAliasIndex", aliasErr)
+	}
 	canonModel := func(raw string) string {
 		canon := raw
 		if aliasIdx != nil {

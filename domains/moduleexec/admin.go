@@ -98,6 +98,11 @@ func (s *AdminService) GetModuleStats(ctx context.Context, hours int) ([]ModuleE
 		}
 		stats = append(stats, stat)
 	}
+	// R66: 迭代被静默截断 = 模块执行统计少若干模块，而调用方拿到残缺
+	// slice + nil，监控面无法区分「该模块没跑过」与「没读到」。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("moduleexec.AdminService.GetModuleStats: iterate rows: %w", err)
+	}
 
 	return stats, nil
 }
@@ -141,6 +146,10 @@ func (s *AdminService) GetCacheHitRate(ctx context.Context, hours int) ([]Module
 			return nil, fmt.Errorf("scan cache hit rate: %w", err)
 		}
 		rates = append(rates, rate)
+	}
+	// R66: 同上——缓存命中率榜缺项无痕。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("moduleexec.AdminService.GetCacheHitRate: iterate rows: %w", err)
 	}
 
 	return rates, nil
@@ -190,6 +199,11 @@ func (s *AdminService) GetSessionSummary(ctx context.Context, sessionID string) 
 			moduleStatusMap[moduleName] = make(map[string]int)
 		}
 		moduleStatusMap[moduleName][status]++
+	}
+	// R66: 汇总读被截断 = 主导状态在残缺分组上算出，会给出会话
+	// 「模块看起来成功」的假象（下方 dominant 取 max count）。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("moduleexec.AdminService.GetSessionSummary: iterate rows: %w", err)
 	}
 
 	// 确定每个模块的主导状态
@@ -298,6 +312,10 @@ func (s *AdminService) GetFailedExecutions(ctx context.Context, limit int) ([]ma
 		}
 
 		failures = append(failures, failure)
+	}
+	// R66: 失败执行清单被静默截断 = 运维排障面板凭空少若干失败记录。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("moduleexec.AdminService.GetFailedExecutions: iterate rows: %w", err)
 	}
 
 	return failures, nil

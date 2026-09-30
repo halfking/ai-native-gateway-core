@@ -90,6 +90,12 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 			}
 			result = append(result, row)
 		}
+		// 本端点的错误形状是 text/plain（writeInternalTextErr），保持同族
+		// 写法：迭代中断同样不能静默截断成功率表。
+		if rerr := rows.Err(); rerr != nil {
+			writeInternalTextErr(w, "internal error (see server logs)", rerr)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(result)
