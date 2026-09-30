@@ -27,7 +27,7 @@
 | 测量 | 结果 |
 |---|---|
 | installer 路径（prereqs + 01-schema + 171 个 StartupFiles） | **20 处失败**，最终库 421 relations / 544 functions |
-| canonical `00-prereqs` + **全部 777** startup 迁移按序 apply | **236 处失败**，最终库 **233 relations / 455 functions** |
+| canonical `00-prereqs` + 全部 **465** 条 up 迁移按序 apply（该目录共 777 个 .sql，其中 312 个是 `.down.sql`） | **236 处失败**，最终库 **233 relations / 455 functions** |
 | 迁移中因 `schema_migrations` 缺失而失败的 | **19 处** |
 | `000_base_tables.sql` 的 CREATE TABLE 数 | **1**（只有 `request_logs`） |
 
