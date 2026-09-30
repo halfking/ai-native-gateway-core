@@ -23,7 +23,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/catalog"
-	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"     //nolint:depguard // emergency-repair state recovery (2026-08-15)
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2007,12 +2006,9 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 	if h.fpSlots != nil {
 		reset := 0
 		for _, m := range models {
-			// A zero NodeState is "usable": Disabled=false, no cooldown, empty
-			// sliding window — router.filterHealthyNodes re-admits the node.
-			if err := h.fpSlots.SetNodeState(ctx, &credentialfpslot.NodeState{
-				CredentialID: credentialID,
-				Model:        m,
-			}); err == nil {
+			// Reset only health/circuit state. Protocol capability is independent
+			// evidence and must survive an operator's force-enable/clear-circuit.
+			if err := h.fpSlots.ResetNodeHealthState(ctx, credentialID, m); err == nil {
 				reset++
 				met.RoutingCredentialResetTotal.WithLabelValues("redis_fpslot", "ok").Inc()
 			} else {

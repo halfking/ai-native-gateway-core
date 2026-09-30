@@ -256,6 +256,25 @@ func (m *Manager) SetNodeState(ctx context.Context, state *NodeState) error {
 	return nil
 }
 
+// ResetNodeHealthState clears routing health/cooldown fields for one node
+// while preserving its independent protocol-capability verdict. The reset is
+// atomic with request outcome writes, so concurrent failures cannot be lost
+// through a Go-side read-modify-write.
+func (m *Manager) ResetNodeHealthState(ctx context.Context, credentialID int, model string) error {
+	if !m.Enabled() || m.client == nil {
+		return nil
+	}
+	if _, err := resetNodeHealthStateScript.Run(ctx, m.client,
+		[]string{nodeKey(credentialID, model)},
+		credentialID,
+		model,
+		nodeStateTTLSec,
+	).Result(); err != nil {
+		return fmt.Errorf("reset node health state: %w", err)
+	}
+	return nil
+}
+
 // RecordNodeSuccess records a successful request atomically via Lua.
 func (m *Manager) RecordNodeSuccess(ctx context.Context, credentialID int, model, requestID string) error {
 	return m.recordNodeOutcome(ctx, credentialID, model, "success", requestID, "")
@@ -469,6 +488,46 @@ var setNodeCapabilityScript = redis.NewScript(`
 	local ok, encoded = pcall(cjson.encode, state)
 	if not ok then return redis.error_reply('encode node state failed') end
 	redis.call('SET', key, encoded, 'EX', ARGV[2])
+	return 1
+`)
+
+// resetNodeHealthStateScript resets health/circuit fields without discarding
+// the independent capability sub-tree. It runs atomically with the outcome
+// and capability scripts because all three mutate the same Redis JSON key.
+var resetNodeHealthStateScript = redis.NewScript(`
+	local key = KEYS[1]
+	local raw = redis.call('GET', key)
+	local state = {}
+	if raw then
+		local ok, decoded = pcall(cjson.decode, raw)
+		if ok and type(decoded) == 'table' then state = decoded end
+	end
+
+	state.credential_id = tonumber(ARGV[1])
+	state.model = ARGV[2]
+	state.success_count = 0
+	state.failure_count = 0
+	state.slide_window = {}
+	state.last_success_at = nil
+	state.last_failure_at = nil
+	state.disabled = false
+	state.disabled_until = nil
+	state.disabled_reason = nil
+	state.last_disabled_at = nil
+	state.disable_count = nil
+
+	if type(state.capabilities) ~= 'table' or type(state.capabilities.supports_responses) ~= 'boolean' then
+		state.capabilities = nil
+		state.capability_updated_at = nil
+		state.capability_expires_at = nil
+	else
+		if type(state.capability_updated_at) ~= 'number' then state.capability_updated_at = nil end
+		if type(state.capability_expires_at) ~= 'number' then state.capability_expires_at = nil end
+	end
+
+	local ok, encoded = pcall(cjson.encode, state)
+	if not ok then return redis.error_reply('encode node state failed') end
+	redis.call('SET', key, encoded, 'EX', ARGV[3])
 	return 1
 `)
 
