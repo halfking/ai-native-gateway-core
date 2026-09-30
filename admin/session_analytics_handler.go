@@ -450,21 +450,6 @@ func (h *Handler) HandleSessionAnalyticsDetail(w http.ResponseWriter, r *http.Re
 		summaryArgs = append(summaryArgs, tenantID)
 	}
 
-	timelineQuery := `
-		SELECT request_id, ts, success, client_model, outbound_model,
-		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0),
-		       COALESCE(cost_usd,0), COALESCE(latency_ms,0),
-		       work_type, compression_strategy, cache_read_tokens,
-		       error_kind, request_preview, response_preview
-		FROM request_logs
-		WHERE gw_session_id = $1`
-	timelineArgs := []any{gwSessionID}
-	if tenantID != "" {
-		timelineQuery += " AND tenant_id = $2"
-		timelineArgs = append(timelineArgs, tenantID)
-	}
-	timelineQuery += " ORDER BY ts ASC LIMIT 100"
-
 	var (
 		summary  AnalyticsSessionSummary
 		timeline []RequestEvent
@@ -497,28 +482,11 @@ func (h *Handler) HandleSessionAnalyticsDetail(w http.ResponseWriter, r *http.Re
 		}
 		summary = s
 
-		rows, err := tx.Query(ctx, timelineQuery, timelineArgs...)
+		events, err := loadSessionTimelineInTx(ctx, tx, gwSessionID, tenantID)
 		if err != nil {
 			return fmt.Errorf("timeline query: %w", err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var e RequestEvent
-			var ts time.Time
-			if err := rows.Scan(
-				&e.RequestID, &ts, &e.Success, &e.ClientModel, &e.UpstreamModel,
-				&e.PromptTokens, &e.CompletionTokens, &e.CostUSD, &e.LatencyMs,
-				&e.WorkType, &e.CompressionStrategy, &e.CacheReadTokens,
-				&e.ErrorMessage, &e.RequestPreview, &e.ResponsePreview,
-			); err != nil {
-				return fmt.Errorf("timeline scan: %w", err)
-			}
-			e.CreatedAt = ts
-			timeline = append(timeline, e)
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("timeline rows: %w", err)
-		}
+		timeline = events
 
 		analysis, err = h.buildSessionAnalysisInTx(ctx, tx, tenantID, gwSessionID, timeline)
 		if err != nil {

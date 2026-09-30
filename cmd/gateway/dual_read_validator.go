@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -91,13 +92,267 @@ func NewDualReadValidator(db *pgxpool.Pool) *DualReadValidator {
 	return &DualReadValidator{db: db}
 }
 
-// RegisterRoutes wires the reconciliation endpoint:
+// RegisterRoutes wires the reconciliation endpoints:
 //
-//	GET /api/admin/sessions/{id}/dual-read?limit=10
+//	GET /api/admin/sessions/{id}/dual-read?limit=10   单会话行级对账
+//	GET /api/admin/sessions/dual-read-drift?hours=168 全量镜像漂移（population）
 //
 // limit caps the per-side missing/drift sample arrays (1..50, default 10).
 func (v *DualReadValidator) RegisterRoutes(mux *http.ServeMux, adminMw func(http.HandlerFunc) http.HandlerFunc) {
 	mux.Handle("/api/admin/sessions/{id}/dual-read", adminMw(v.handleDualRead))
+	mux.Handle("/api/admin/sessions/dual-read-drift", adminMw(v.handleDualReadDrift))
+}
+
+// ── population-level mirror drift (2026-09-30 审计新增) ────────────────
+//
+// Compare/CompareDetail 是**单会话**对账：必须先知道查哪个 session 才会去查。
+// 2026-09-30 的会话请求数据复审正是因此漏掉了镜像漏写——没人知道该查哪个会话。
+// 这次缺口是手写 SQL 才发现的：sessions_v2.enabled=true / shadow_write=true
+// 之下，仍有 20,660 个会话的 38,878 行从未进入 session 族。
+//
+// 更关键的是，「没进 session 族」有两种完全不同的性质，必须分开报：
+//
+//	按设计排除（不是缺陷）
+//	  · work_type ∈ {session_title, session_summary} 的网关内部回环 ——
+//	    hook.go IsInternalAutoEntry 明确排除，标题/摘要不是用户轮次；
+//	  · request_status='in_progress' 且无 error_kind 的非终态占位行 ——
+//	    hook.go 的终态闸门排除，镜像它会永久记成 success=false/status=500
+//	    并吃掉后续成功补写。
+//	真漏写（缺陷）
+//	  · 其余全部：终态失败（rate_limited/failure）与成功请求。
+//	    isTerminalFailure 已覆盖前两者，所以它们本该被镜像。
+//
+// 把这个区分做成端点，是为了让「S4 能不能开」变成一个可查询的判据，
+// 而不是每次靠人临时写 SQL。
+
+// MirrorDriftBucket is one slice of the drift breakdown.
+type MirrorDriftBucket struct {
+	Key   string `json:"key"`
+	Rows  int64  `json:"rows"`
+	Class string `json:"class"` // internal_loopback | non_terminal | genuine_loss
+}
+
+// MirrorDriftSummary is the population-level view over a time window.
+type MirrorDriftSummary struct {
+	WindowHours int       `json:"window_hours"`
+	WindowStart time.Time `json:"window_start"`
+	SampledAt   time.Time `json:"sampled_at"`
+
+	V1Rows               int64 `json:"v1_rows"`
+	V1RowsWithoutTurns   int64 `json:"v1_rows_without_turns"`
+	SessionsWithoutTurns int64 `json:"sessions_without_turns"`
+
+	// 三类互斥且求和 = V1RowsWithoutTurns。
+	InternalLoopbackRows int64 `json:"internal_loopback_rows"`
+	NonTerminalRows      int64 `json:"non_terminal_rows"`
+	GenuineLossRows      int64 `json:"genuine_loss_rows"`
+	GenuineLossSessions  int64 `json:"genuine_loss_sessions"`
+
+	ByWorkType      []MirrorDriftBucket `json:"by_work_type,omitempty"`
+	ByRequestStatus []MirrorDriftBucket `json:"by_request_status,omitempty"`
+
+	// S4Ready 为真 = 窗口内没有真漏写。S4 停写门控的前置判据。
+	S4Ready bool `json:"s4_ready"`
+}
+
+// mirrorDriftClassSQL classifies a drifting V1 row into the three buckets.
+// Kept as one expression so the aggregate and the breakdown cannot disagree.
+//
+// The two exclusion arms are a statement-by-statement transcription of the
+// Go gates in internal/sessionv2mirror/hook.go — NOT an independent guess at
+// "what looks internal". Divergence here is not cosmetic: a row the hook
+// deliberately skipped but this expression calls genuine_loss keeps s4_ready
+// false forever and blocks the cutover that is actually safe.
+//
+//	internal_loopback ← hook.go:102 `!synthetic && IsInternalAutoEntry(entry)`
+//	    IsInternalAutoEntry (telemetry/internal_loopback.go:23-39):
+//	      1. requires is_auto_request IS TRUE (a NULL is NOT internal);
+//	      2. request_type  ∈ {title_gen, summary};
+//	      3. origin_actor  ∈ {auto-title-generator, auto-summary-generator,
+//	                          session-summary};
+//	      4. otherwise task_type IS NULL/'' (taskless auto entry).
+//	    work_type is deliberately NOT an arm: the Go gate never reads it, so
+//	    keying on it would mask real loss (is_auto_request=TRUE + task_type
+//	    set + work_type='session_title' is a business turn the hook mirrors).
+//	non_terminal ← hook.go:71 `!entry.Success && !isTerminalFailure(entry)`
+//	    isTerminalFailure (hook.go:991-1002) is true when request_status ∈
+//	    {failure, rate_limited} OR error_kind is non-empty; the row is
+//	    mirrored when Success is true. Negating both yields the arm below.
+const mirrorDriftClassSQL = `
+CASE
+  WHEN COALESCE(rl.is_auto_request, false)
+       AND (   TRIM(COALESCE(rl.request_type, '')) IN ('title_gen', 'summary')
+            OR TRIM(COALESCE(rl.origin_actor, '')) IN ('auto-title-generator',
+                                                        'auto-summary-generator',
+                                                        'session-summary')
+            OR TRIM(COALESCE(rl.task_type, '')) = '')            THEN 'internal_loopback'
+  WHEN NOT COALESCE(rl.success, false)
+       AND TRIM(COALESCE(rl.request_status, '')) NOT IN ('failure', 'rate_limited')
+       AND TRIM(COALESCE(rl.error_kind, '')) = ''                 THEN 'non_terminal'
+  ELSE 'genuine_loss'
+END`
+
+// mirrorDriftScopeSQL yields the drifting V1 rows for the window: rows that
+// have a gw_session_id but no session_turns counterpart. Reads BASE tables
+// (hot ∪ parent) on both sides for the same reason as CompareDetail — the
+// 710 view already contains turns rows, so view-vs-view would self-compare.
+const mirrorDriftScopeSQL = `
+SELECT rl.request_id, rl.gw_session_id, rl.tenant_id::text AS tenant_id,
+       rl.work_type, rl.request_status, ` + mirrorDriftClassSQL + ` AS drift_class
+FROM (
+    SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
+           is_auto_request, origin_actor, request_type, task_type, success, ts
+    FROM request_logs_hot
+    WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
+    UNION ALL
+    SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
+           is_auto_request, origin_actor, request_type, task_type, success, ts
+    FROM request_logs
+    WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
+) rl
+WHERE ($1 = '' OR rl.tenant_id = $1)
+  AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+  AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)`
+
+// Summarize computes the population-level drift summary over the last
+// windowHours (1..720, default 168 = 7 days). tenant "" = all tenants.
+//
+// Cost note: the two NOT EXISTS probes are index lookups on
+// session_turns(request_id) per V1 row in the window. That is fine for the
+// default 7-day window but grows linearly; the endpoint is a diagnostic and
+// an S4 pre-gate, not a hot-path metric.
+func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, windowHours int) (*MirrorDriftSummary, error) {
+	if v == nil || v.db == nil {
+		return nil, errors.New("dual-read validator not configured")
+	}
+	if windowHours < 1 {
+		windowHours = 1
+	}
+	if windowHours > 720 {
+		windowHours = 720
+	}
+	now := time.Now()
+	start := now.Add(-time.Duration(windowHours) * time.Hour)
+
+	sum := &MirrorDriftSummary{
+		WindowHours: windowHours,
+		WindowStart: start,
+		SampledAt:   now,
+	}
+
+	// V1Rows in window (denominator, before the anti-join). Mirrors the scope
+	// filter of mirrorDriftScopeSQL so the ratio is meaningful.
+	if err := v.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT tenant_id FROM request_logs_hot
+			WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
+			UNION ALL
+			SELECT tenant_id FROM request_logs
+			WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
+		) x
+		WHERE ($1 = '' OR x.tenant_id::text = $1)`,
+		tenant, start,
+	).Scan(&sum.V1Rows); err != nil {
+		return nil, fmt.Errorf("v1 rows: %w", err)
+	}
+
+	// Class breakdown + row total, computed in one pass.
+	rows, err := v.db.Query(ctx, `
+		SELECT drift_class, COUNT(*), COUNT(DISTINCT gw_session_id)
+		FROM (`+mirrorDriftScopeSQL+`) d
+		GROUP BY drift_class`, tenant, start)
+	if err != nil {
+		return nil, fmt.Errorf("drift breakdown: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var class string
+		var n, sess int64
+		if err := rows.Scan(&class, &n, &sess); err != nil {
+			return nil, fmt.Errorf("drift scan: %w", err)
+		}
+		sum.V1RowsWithoutTurns += n
+		switch class {
+		case "internal_loopback":
+			sum.InternalLoopbackRows = n
+		case "non_terminal":
+			sum.NonTerminalRows = n
+		default:
+			sum.GenuineLossRows = n
+			sum.GenuineLossSessions = sess
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("drift rows: %w", err)
+	}
+
+	// Sessions entirely absent from the session family (any class) — this is
+	// what a session-scoped native read would return empty for.
+	if err := v.db.QueryRow(ctx, `
+		SELECT COUNT(DISTINCT gw_session_id) FROM (`+mirrorDriftScopeSQL+`) d`,
+		tenant, start,
+	).Scan(&sum.SessionsWithoutTurns); err != nil {
+		return nil, fmt.Errorf("sessions without turns: %w", err)
+	}
+
+	sum.ByWorkType, err = v.driftBuckets(ctx, "COALESCE(work_type, '<null>')", tenant, start)
+	if err != nil {
+		return nil, err
+	}
+	sum.ByRequestStatus, err = v.driftBuckets(ctx, "COALESCE(request_status, '<null>')", tenant, start)
+	if err != nil {
+		return nil, err
+	}
+
+	sum.S4Ready = sum.GenuineLossRows == 0
+	return sum, nil
+}
+
+// driftBuckets groups the drifting rows by one projected key, tagging each
+// bucket with its dominant class so the breakdown explains itself.
+func (v *DualReadValidator) driftBuckets(ctx context.Context, keyExpr, tenant string, start time.Time) ([]MirrorDriftBucket, error) {
+	rows, err := v.db.Query(ctx, `
+		SELECT `+keyExpr+` AS k, drift_class, COUNT(*) AS n
+		FROM (`+mirrorDriftScopeSQL+`) d
+		GROUP BY 1, 2
+		ORDER BY 3 DESC`, tenant, start)
+	if err != nil {
+		return nil, fmt.Errorf("drift buckets: %w", err)
+	}
+	defer rows.Close()
+	out := make([]MirrorDriftBucket, 0, 8)
+	for rows.Next() {
+		var b MirrorDriftBucket
+		if err := rows.Scan(&b.Key, &b.Class, &b.Rows); err != nil {
+			return nil, fmt.Errorf("drift bucket scan: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (v *DualReadValidator) handleDualReadDrift(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	hours := 168
+	if raw := r.URL.Query().Get("hours"); raw != "" {
+		if _, err := fmt.Sscanf(raw, "%d", &hours); err != nil || hours < 1 {
+			http.Error(w, "invalid hours", http.StatusBadRequest)
+			return
+		}
+	}
+	tenant := r.URL.Query().Get("tenant")
+
+	sum, err := v.Summarize(r.Context(), tenant, hours)
+	if err != nil {
+		slog.Error("dual-read drift summary failed", "hours", hours, "err", err)
+		http.Error(w, "dual-read drift summary failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(sum)
 }
 
 func (v *DualReadValidator) handleDualRead(w http.ResponseWriter, r *http.Request) {

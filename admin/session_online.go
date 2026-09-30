@@ -10,10 +10,16 @@
 // 数据源：
 //   - 在线状态：Redis session:{id} Hash（domains/session Manager）
 //   - 最后请求：session_last_requests（migrations/timeout-optimization/003）
-//   - 多轮次：request_logs_with_current_month（hot + promoted 月度分区
-//     UNION ALL 视图，migration 340/448/459/491/510/532）按 gw_session_id
-//     归属 + parent_request_id 主从关联；v4 T7（2026-08-18）起仅读 hot 的
-//     截断行为已修复，并标注会话级唯一成功（is_final_success）。
+//   - 多轮次：session 族原生源（db.SessionFamilyTurnsForSessionSQL，
+//     谓词下推 t.session_id = $1 走 idx_session_turns_session）按
+//     gw_session_id 归属 + parent_request_id 主从关联，并标注会话级唯一
+//     成功（is_final_success）。v4 T7（2026-08-18）起仅读 hot 的截断行为
+//     已在视图时代修复，迁到原生源后该约束由 session 族自身的分区覆盖满足。
+//     会话存储解耦 v3（2026-09-30）：本端点先因「镜像链漏写 20,660 会话」
+//     回退到视图，同日 §5.3.1 复核证明那批数据 98% 是按设计排除的内部
+//     回环/非终态行，真正的 1,459 行 genuine_loss 已由
+//     scripts/audit/mirror_outbox_backfill.sql 全量补写，35 天窗口复测
+//     genuine_loss = 0，故重新迁到原生源。口径差与守卫见审计 §5.5。
 //
 // 约束：Redis 用 SCAN 游标（禁 KEYS）；租户隔离（ADR-V3-005）。
 package admin
@@ -27,6 +33,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	// 别名而非直接 db：本文件的 querySessionTimeline 有名为 db 的参数
+	// （sessionTimelineDB），直接导入 db 会被参数遮蔽。
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // OnlineSession 是在线会话列表的一项。
@@ -400,28 +410,46 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// querySessionTimeline 读取一个会话的全部请求行（hot + promoted 分区，
-// 经 request_logs_with_current_month 视图），组装主/子树并做 T7 标注。
-// tenantID 非空时附加租户过滤（super admin 传空）。
+// querySessionTimeline 读取一个会话的全部请求行（session 族原生源），
+// 组装主/子树并做 T7 标注。tenantID 非空时附加租户过滤（super admin 传空）。
+//
+// 会话存储解耦 v3：本端点**已于 2026-09-30 迁到 session 族原生源**。
+// 迁移一度被真库核对否决——当时 sessions_v2.enabled=true、shadow_write=true
+// 前提下仍有 20,660 个会话 / 38,878 行只存在于 request_logs。但 §5.3.1 复核
+// 证明那批「漏写」绝大多数是**按设计排除**的内部回环与非终态占位行，
+// 真正的 `genuine_loss`（1,459 行）已由 scripts/audit/mirror_outbox_backfill.sql
+// 全量补写，35 天窗口复测 `genuine_loss = 0`。
+//
+// 切换前后的口径差（实测，全量非 sys 会话）：
+//
+//	视图有、session 族无的行 38,229，涉及 19,511 / 848,414 会话 = 2.30%
+//	  ├ internal_loopback 36,693 —— 标题/摘要生成器自己的 LLM 调用，
+//	  │                            hook.go:102 按设计不镜像
+//	  └ non_terminal      1,541 —— in_progress 占位行，hook.go:71 按设计不镜像
+//	  unexplained              0 —— 未被任何设计判据解释的：零
+//
+// 两类被剔除的行都**不是用户轮次**。其中 in_progress 行此前在时间线上被当作
+// `success=false` 的失败轮次展示（请求其实还在飞），迁到原生源后不再出现，
+// 终态时才补进来——这是修正展示语义，不是丢数据。
+//
+// 谓词下推：db.SessionFamilyTurnsForSessionSQL() 把 session 过滤放进两条腿
+// （t.session_id = $1），走 idx_session_turns_session。**外层不得再加
+// gw_session_id 谓词**——投影名是 CASE 表达式，加了会把下推打回全表扫。
 func querySessionTimeline(ctx context.Context, db sessionTimelineDB, sessionID, tenantID string) ([]*SessionTurn, bool, error) {
 	// 查该会话的所有请求（主请求 + 扩展请求），按时间升序。
-	// 主请求：gw_session_id = sessionID 且 parent_request_id IS NULL
+	// 主请求：session_id = sessionID 且 parent_request_id IS NULL
 	// 扩展请求：parent_request_id 指向主请求（request_type 区分类型）
-	//
-	// v4 T7: FROM request_logs_with_current_month（hot UNION ALL 分区母表）
-	// 而非 request_logs_hot —— >7d 的行已被 promote 搬进月度分区，仅读 hot
-	// 会截断历史会话（UT-FS-03）。is_final_success 由 migration 532 追加到视图。
 	query := `
-		SELECT request_id, COALESCE(request_type,'main'), COALESCE(request_status,''),
-		       COALESCE(outbound_model, client_model, ''), latency_ms, ts,
-		       COALESCE(parent_request_id, ''),
-		       COALESCE(is_final_success, FALSE),
-		       COALESCE(error_kind, ''), COALESCE(failure_stage, '')
-		FROM request_logs_with_current_month
-		WHERE gw_session_id = $1`
+		SELECT rl.request_id, COALESCE(rl.request_type,'main'), COALESCE(rl.request_status,''),
+		       COALESCE(rl.outbound_model, rl.client_model, ''), rl.latency_ms, rl.ts,
+		       COALESCE(rl.parent_request_id, ''),
+		       COALESCE(rl.is_final_success, FALSE),
+		       COALESCE(rl.error_kind, ''), COALESCE(rl.failure_stage, '')
+		FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE 1 = 1`
 	args := []any{sessionID}
 	if tenantID != "" {
-		query += " AND tenant_id = $2"
+		query += " AND rl.tenant_id = $2"
 		args = append(args, tenantID)
 	}
 	const timelineLimit = 200
