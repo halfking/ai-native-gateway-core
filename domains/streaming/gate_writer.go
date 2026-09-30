@@ -124,15 +124,28 @@ func (gw *GateWriter) Finish() error {
 // frame here forever: the bridge records a clean outcome while the client
 // never sees the terminator and hangs. Bridges call this once at attempt end
 // so the last well-formed line reaches the gate (and the wire) like any
-// other frame. Malformed residue (an upstream crash mid-line) keeps the
-// legacy drop behavior — only [DONE] or valid-JSON payloads are forwarded.
+// other frame. Constraints:
+//
+//   - only an ALREADY-COMMITTED attempt (or immediate mode) is drained —
+//     an uncommitted buffered attempt stays fully discardable and its
+//     residue belongs to the survival coordinator's Finish()/FinishAttempt
+//     hold semantics, never to a bridge-side commit;
+//   - malformed residue (an upstream crash mid-line) and blank/comment-only
+//     lines keep the legacy drop behavior — only [DONE] or valid-JSON
+//     payloads are forwarded.
 func (gw *GateWriter) DrainPending() error {
 	if gw == nil || len(gw.pending) == 0 {
 		return nil
 	}
+	gw.gate.mu.Lock()
+	drainable := gw.gate.committed || gw.gate.mode == GateModeImmediate
+	gw.gate.mu.Unlock()
+	if !drainable {
+		return nil
+	}
 	pending := string(gw.pending)
 	gw.pending = nil
-	if !validateSSEDataFrame(pending) {
+	if extractPayload(pending) == "" || !validateSSEDataFrame(pending) {
 		return nil
 	}
 	if !strings.HasSuffix(pending, "\n") {
