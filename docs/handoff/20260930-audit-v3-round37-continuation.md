@@ -3,7 +3,9 @@
 **日期**：2026-09-30
 **检出**：`__DEV_HOME__/workspace/official-deploy/services/llm-gateway-go`（official-deploy 树；注意与 ai-native-tools 检出是两条独立工作线）
 **基线**：重锚 ff 至 `4b00d57f8` → 本续轮 3 提交（b4717d7b1 生产 / 4e73e2e6e hooks / d957669fc docs）→ 合并 codeup 10 入站（ad8153469）→ **已推送三方全等 `ad8153469`**（local=codeup=github，github 从 2585e9df9 追平 16+ 提交）
-**状态**：已推送，三方全等 ad8153469（2026-09-30 22:0x +08:00）
+**状态**：已推送，三方全等 `30f89af4f`（2026-09-30 22:3x +08:00；含续二 §三#6 `4b8eb9691` + 续三冒烟文档 `98db71731` + 四十三轮并行 D1 强化合并）
+
+**续二/续三补账**：§三#6 SK≠CEK Go 侧 fail-fast 已闭（`ValidateSecretKeyDistinct` 窄域双显式判定 + main 无条件 panic + load-env 文案订正）；部署 2357（=4b8eb969）冒烟实测：30s 首字节窗口 38.5s 存活（glm-5.2 非流式，id 2501817）、治理开启流式 wire 非空（38 chunks+DONE）、SK≠CEK 守卫随启动通过；Vec 零子项不出序列的观测口径订正；o1=真 402 配额耗尽非误冷却。本机实例运行 4b8eb969（含本轮全部修复）；四十三轮的 state_sync 停机排水强化（630a40dec）随下个部署窗口。
 
 ---
 
