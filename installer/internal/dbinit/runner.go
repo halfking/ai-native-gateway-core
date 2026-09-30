@@ -45,6 +45,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"537_usage_facts.sql",
 			"539_stats_reconciliation_tenant.sql",
 			"540_stats_event_inbox_consumer.sql",
+			// 541 must precede 568: it creates candidate_binding_scope_revision,
+			// which 568_credential_priority_flag.sql indexes into.
+			"541_candidate_binding_scope_revision.sql",
 			"544_stats_adjustments_alignment.sql",
 			"545_stats_reconciliation_phantom_resolution.sql",
 			"546_stats_reconciliation_diffs_unique.sql",

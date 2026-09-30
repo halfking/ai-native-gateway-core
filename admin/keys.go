@@ -618,7 +618,7 @@ func (h *Handler) assertKeyTenantScope(w http.ResponseWriter, r *http.Request, i
 	var tenantID string
 	err := h.db.QueryRow(ctx, `SELECT tenant_id FROM api_keys WHERE id = $1`, id).Scan(&tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "key not found")
+		writeLookupErr(w, "key not found", err)
 		return false
 	}
 	if tenantID != GetTenantID(r) {
@@ -1180,7 +1180,7 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 	var status, contact string
 	err := h.db.QueryRow(ctx, `SELECT status, COALESCE(contact,'') FROM key_applications WHERE id = $1::uuid`, appID.String()).Scan(&status, &contact)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "application not found")
+		writeLookupErr(w, "application not found", err)
 		return
 	}
 	if status != "pending" {
@@ -1273,7 +1273,7 @@ func (h *Handler) rejectKeyApplication(w http.ResponseWriter, r *http.Request, a
 	var status string
 	err := h.db.QueryRow(ctx, `SELECT status FROM key_applications WHERE id = $1::uuid`, appID.String()).Scan(&status)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "application not found")
+		writeLookupErr(w, "application not found", err)
 		return
 	}
 	if status != "pending" {

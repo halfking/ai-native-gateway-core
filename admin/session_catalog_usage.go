@@ -43,7 +43,7 @@ FROM (
     UNION ALL
     SELECT gw_session_id, parent_request_id, prompt_tokens, completion_tokens,
            cost_usd, outbound_model, client_model, tenant_id
-    FROM request_logs
+    FROM request_logs -- sqlreadguard:allow 会话目录用量聚合的双腿之母表腿（hot 腿见上一分支 UNION ALL；单读母表会漏掉仍在 hot 的近 8h 行）
     WHERE gw_session_id = ANY($1)
 ) usage_rows
 WHERE ($2 = '' OR tenant_id = $2)

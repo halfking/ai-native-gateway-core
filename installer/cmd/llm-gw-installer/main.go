@@ -87,6 +87,14 @@ var statsMigration539 []byte
 //go:embed embeddata/startup/540_stats_event_inbox_consumer.sql
 var statsMigration540 []byte
 
+// 541 creates candidate_binding_scope_revision, which startup migration 568
+// (credential_priority_flag) indexes into. Without it a fresh install aborts
+// at 568 with `relation "public.candidate_binding_scope_revision" does not
+// exist`, because 541 was never registered in the installer.
+//
+//go:embed embeddata/startup/541_candidate_binding_scope_revision.sql
+var statsMigration541 []byte
+
 //go:embed embeddata/startup/544_stats_adjustments_alignment.sql
 var statsMigration544 []byte
 
@@ -612,6 +620,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/537_usage_facts.sql":                                                    statsMigration537,
 	"startup/539_stats_reconciliation_tenant.sql":                                    statsMigration539,
 	"startup/540_stats_event_inbox_consumer.sql":                                     statsMigration540,
+	"startup/541_candidate_binding_scope_revision.sql":                               statsMigration541,
 	"startup/544_stats_adjustments_alignment.sql":                                    statsMigration544,
 	"startup/545_stats_reconciliation_phantom_resolution.sql":                        statsMigration545,
 	"startup/546_stats_reconciliation_diffs_unique.sql":                              statsMigration546,

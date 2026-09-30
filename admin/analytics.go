@@ -14,10 +14,10 @@
 package admin
 
 import (
-	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -343,10 +343,14 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		var rowKey, colKey string
 		var val float64
 		if err := rows.Scan(&rowKey, &colKey, &val); err != nil {
+			warnRowSkip("analytics matrix", err)
 			continue
 		}
 		rawRowSet[rowKey] = struct{}{}
 		cellMap[cellKey{rowKey, colKey}] = val
+	}
+	if writeAggRowsErr(w, "analytics matrix", rows.Err()) {
+		return
 	}
 
 	aliasIdx, _ := loadModelAliasIndex(ctx, h.db)
@@ -496,7 +500,11 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	for l12Rows.Next() {
 		var src, dstRaw string
 		var val float64
-		if err := l12Rows.Scan(&src, &dstRaw, &val); err != nil || val <= 0 {
+		if err := l12Rows.Scan(&src, &dstRaw, &val); err != nil {
+			warnRowSkip("analytics flow l12", err)
+			continue
+		}
+		if val <= 0 {
 			continue
 		}
 		dstCanon := canonModel(dstRaw)
@@ -506,6 +514,9 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		nodeMap[dstID] = node{ID: dstID, Label: dstCanon, Layer: 1}
 		k := linkKey{source: srcID, target: dstID}
 		l12Agg[k] += val
+	}
+	if writeAggRowsErr(w, "analytics flow l12", l12Rows.Err()) {
+		return
 	}
 	l12Rows.Close()
 	for k, val := range l12Agg {
@@ -550,7 +561,11 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	for l23Rows.Next() {
 		var taskType, srcRaw, dst string
 		var val float64
-		if err := l23Rows.Scan(&taskType, &srcRaw, &dst, &val); err != nil || val <= 0 {
+		if err := l23Rows.Scan(&taskType, &srcRaw, &dst, &val); err != nil {
+			warnRowSkip("analytics flow l23", err)
+			continue
+		}
+		if val <= 0 {
 			continue
 		}
 		srcCanon := canonModel(srcRaw)
@@ -560,6 +575,9 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		nodeMap[dstID] = node{ID: dstID, Label: dst, Layer: 2}
 		k := l23Key{source: srcID, target: dstID, taskType: taskType}
 		l23Agg[k] += val
+	}
+	if writeAggRowsErr(w, "analytics flow l23", l23Rows.Err()) {
+		return
 	}
 	l23Rows.Close()
 	for k, val := range l23Agg {
@@ -658,6 +676,7 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 		if err := rows.Scan(&canonID, &canonName, &task, &sampleCount,
 			&successRate, &avgLatency, &p95Latency, &avgCost,
 			&primaryCredID, &updatedAt); err != nil {
+			warnRowSkip("analytics model-task index", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -689,6 +708,9 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 		}
 		entry["updated_at"] = updatedAt.Format(time.RFC3339)
 		items = append(items, entry)
+	}
+	if writeAggRowsErr(w, "analytics model-task index", rows.Err()) {
+		return
 	}
 
 	writeJSONOk(w, map[string]interface{}{
@@ -915,11 +937,11 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
-		scope := EffectiveTenantIDAll(r)
-		if scope == "" {
-			scope = "*"
-		}
-		cacheKey := funnelCacheKey(scope, model, windowLabel)
+	scope := EffectiveTenantIDAll(r)
+	if scope == "" {
+		scope = "*"
+	}
+	cacheKey := funnelCacheKey(scope, model, windowLabel)
 
 	if cached, ok := globalFunnelCache.get(cacheKey); ok {
 		writeJSONOk(w, cached)
@@ -975,7 +997,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		    SELECT 1
 		    FROM routing_analytics_source probe
 		    WHERE probe.request_id = routing_decision_log.request_id::text
-		      AND NOT (`+businessRequestFilter("probe")+`)
+		      AND NOT (` + businessRequestFilter("probe") + `)
 		  )` + rdlTenantWhere + `
 		`
 	_ = h.db.QueryRow(ctx, rdlQuery, rdlArgs...).Scan(
@@ -990,7 +1012,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			approxArgs = append(approxArgs, rdlTenantArgs...)
 		}
-			if err := h.db.QueryRow(ctx, `
+		if err := h.db.QueryRow(ctx, `
 				SELECT
 					COUNT(*)::int,
 					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
@@ -1022,7 +1044,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			mixedArgs = append(mixedArgs, rdlTenantArgs...)
 		}
-			_ = h.db.QueryRow(ctx, `
+		_ = h.db.QueryRow(ctx, `
 				SELECT
 					COUNT(*)::int,
 					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
