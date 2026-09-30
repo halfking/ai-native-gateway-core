@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -899,16 +900,19 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.CompressedMsgs = int(parseInt(fields["cmp_mc"]))
 	st.SanitizeMapRef = fields["san_ref"]
 	if raw := fields["cmp_q"]; raw != "" {
-		_ = json.Unmarshal([]byte(raw), &st.CompressionQuality)
+		// 0458 §1.3 压缩域收口（2026-10-01）：L2 Redis Hash 的序列化字段与
+		// DB jsonb 列同族——坏数据此前被 `_ =` 静默吞成零值/半填充值，继续
+		// 驱动压缩决策。Decode 的 fresh 语义保证失败时字段保原值并留 Warn。
+		jsoncol.Decode("compression.decodeSessionStateFields/cmp_q", []byte(raw), &st.CompressionQuality)
 	}
 	if raw := fields["san_stats"]; raw != "" {
-		_ = json.Unmarshal([]byte(raw), &st.SanitizeStats)
+		jsoncol.Decode("compression.decodeSessionStateFields/san_stats", []byte(raw), &st.SanitizeStats)
 	}
 	if raw := fields["raw_snap"]; raw != "" {
-		_ = json.Unmarshal([]byte(raw), &st.RawSnapshot)
+		jsoncol.Decode("compression.decodeSessionStateFields/raw_snap", []byte(raw), &st.RawSnapshot)
 	}
 	if raw := fields["cmp_snap"]; raw != "" {
-		_ = json.Unmarshal([]byte(raw), &st.CompressedSnapshot)
+		jsoncol.Decode("compression.decodeSessionStateFields/cmp_snap", []byte(raw), &st.CompressedSnapshot)
 	}
 	if raw := fields["san_msg_refs"]; raw != "" {
 		if err := json.Unmarshal([]byte(raw), &st.SanitizeMessageRefs); err != nil {

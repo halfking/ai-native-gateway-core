@@ -118,51 +118,86 @@ func (l *AutoRouteRealtimeListener) Stop() {
 	}
 }
 
+// connOutcome 描述一次连接 episode 结束后外层 run 循环的下一步动作。
+type connOutcome int
+
+const (
+	// connStop：ctx 已取消 / 监听器停机，外层循环退出。
+	connStop connOutcome = iota
+	// connRetryBackoff：先释放连接再退避 5s 重试（Acquire 或 LISTEN 失败）。
+	connRetryBackoff
+	// connReconnect：立即重取连接（通知循环因传输错误 break，非停机）。
+	connReconnect
+)
+
 // run is the main LISTEN loop. It holds one long-lived connection for as
 // long as the subscription is active and reacquires (with a cancellable
 // backoff) after transport errors.
+//
+// 2026-10-01 审计：连接的释放收敛到 serveOne 的 defer——此前 Acquire 成功后
+// Release 只在 LISTEN 失败与通知循环正常 break 两处手动执行，
+// handleNotification 一旦 panic（Go 收口后 goroutine 退出）Release 永不执行，
+// 池化连接永久泄漏（ acquire计数只增不减，最终耗尽连接池）。
 func (l *AutoRouteRealtimeListener) run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-
-		conn, err := l.pool.Acquire(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Warn("auto route listener: acquire failed", "error", err)
+		switch l.serveOne(ctx) {
+		case connStop:
+			return
+		case connRetryBackoff:
 			if !sleepCtx(ctx, 5*time.Second) {
 				return
 			}
-			continue
+		case connReconnect:
+			// 立即重取连接。
 		}
-
-		if _, err := conn.Exec(ctx, "LISTEN auto_route_refresh"); err != nil {
-			conn.Release()
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Warn("auto route listener: LISTEN failed", "error", err)
-			if !sleepCtx(ctx, 5*time.Second) {
-				return
-			}
-			continue
-		}
-
-		for ctx.Err() == nil {
-			notif, err := conn.Conn().WaitForNotification(ctx)
-			if err != nil {
-				if ctx.Err() == nil {
-					slog.Warn("auto route listener: WaitForNotification error", "error", err)
-				}
-				break
-			}
-			l.handleNotification(notif.Payload)
-		}
-		conn.Release()
 	}
+}
+
+// serveOne 执行一个连接 episode：Acquire 一条池化连接、LISTEN、循环消费通知
+// 直到传输错误或 ctx 取消。返回外层循环的下一步动作。
+//
+// Release 走 defer（Acquire 成功后立刻登记）：任何退出路径——LISTEN 失败、
+// 通知循环 break、handleNotification panic——都恰好释放一次。本仓 pgxpool
+// v5.9.2 的 Conn.Release 自身幂等（res==nil 直返），但此处不依赖重复调用：
+// defer 形态保证 Acquire/Release 严格一一配对。释放发生在返回之前，因此
+// connRetryBackoff 的 5s 退避 sleep 期间不占住连接（与修复前手动 Release
+// 的时序一致）。
+func (l *AutoRouteRealtimeListener) serveOne(ctx context.Context) connOutcome {
+	conn, err := l.pool.Acquire(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return connStop
+		}
+		slog.Warn("auto route listener: acquire failed", "error", err)
+		return connRetryBackoff
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "LISTEN auto_route_refresh"); err != nil {
+		if ctx.Err() != nil {
+			return connStop
+		}
+		slog.Warn("auto route listener: LISTEN failed", "error", err)
+		return connRetryBackoff
+	}
+
+	for ctx.Err() == nil {
+		notif, err := conn.Conn().WaitForNotification(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Warn("auto route listener: WaitForNotification error", "error", err)
+			}
+			break
+		}
+		l.handleNotification(notif.Payload)
+	}
+	if ctx.Err() != nil {
+		return connStop
+	}
+	return connReconnect
 }
 
 // debounceLoop owns the single trailing-edge debounce timer. Every

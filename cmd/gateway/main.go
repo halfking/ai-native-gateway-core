@@ -476,6 +476,23 @@ func main() {
 		}
 	}
 
+	// ── FF_OLLAMA_NATIVE 防呆护栏（R72 审计 §3.1，2026-10-01）──
+	// 该开关当前不可开启：IR 模式下 ExecParams.ClientProtocol 由
+	// ir.DetectProtocol 打标，产出的是 IR 词表（"openai-chat"），而 ollama
+	// executor 的门禁（finalizeOllamaUpstreamBody）只认 catalog 词表
+	// （"openai-completions"）——永不相等，开关一开所有 Ollama 出站全量 501。
+	// 显式开启时在此打一条显眼的启动 Warn（GetP4Flags 的默认值是 false，
+	// 值为 true 必然来自显式设置）；501 门禁行为不动，待四步接线
+	// （usage 拆分 → ollama.* 命名空间 → tool_calls 解析 → 开开关）完成后
+	// 本护栏随开关一起退役。
+	if settings.GetP4Flags().OllamaNativeEnabled {
+		slog.Warn("FF_OLLAMA_NATIVE is explicitly enabled but the ollama-native path is NOT wired: "+
+			"IR protocol vocabulary (e.g. openai-chat) never matches the ollama executor gate's catalog vocabulary (openai-completions), "+
+			"so ALL Ollama outbound traffic will fail with 501. Keep the flag false until the four-step wiring lands",
+			"flag", "FF_OLLAMA_NATIVE",
+			"audit_ref", "docs/全面审计v3/2026-10-01/42-R72 §3.1")
+	}
+
 	// ── full_storage.postgres_url ↔ DATABASE_URL 双向对齐（audit 2026-09-14 R28 #17）──
 	// full_storage.postgres_url 此前是"假字段"（main 建池只读 DATABASE_URL）：
 	// 只配 YAML 段会静默落入 no-DB 降级。full 模式下双向补齐——段有 env 无 →
@@ -2055,7 +2072,18 @@ func main() {
 		// 阻塞），metrics 面直连全局 recorder 的 transitions 计数器。
 		if dbConn != nil && dbConn.Enabled() {
 			circuitSync := credential.NewDBStateSync(dbConn.Pool(), 128)
-			bg.Go("circuit_state_sync.run", func() { circuitSync.Run(context.Background()) })
+			// SpawnLoop 而非 Go（2026-10-01 审计）：DBStateSync.Run 是纯 select
+			// 消费循环，无 wg.Done/done channel 外部握手（见
+			// domains/credential/state_sync.go Run）——正是 SpawnLoop 的适用形态。
+			// bg.Go 语义是 recover→日志→goroutine 终止**不重启**：一次 panic
+			// （如 pgx 驱动深层异常）后 circuit_state 永久停止更新，三十七轮
+			// 审计 §三#4 修掉的「熔断状态恒 closed」病灶复发且无人重启。
+			// SpawnLoop（BaseWorker 监督）在 panic 后指数退避于同一 ctx 上重启
+			// 自愈，restart 计数进 llm_gateway_bg_worker_restarts_total。
+			// 同一 P1 的结构性根因（约 40 个 done 握手型循环 worker 无法迁移
+			// SpawnLoop，重启会二次触发握手）属设计变更，见 bg/spawn.go 头注。
+			// 重启语义钉测：bg/circuit_state_sync_supervise_test.go。
+			bg.SpawnLoop(context.Background(), "circuit_state_sync.run", circuitSync.Run)
 			cm.SetObserver(func(sc credential.StateChange) {
 				metrics.Global().RecordCircuitStateChange(sc.From.String(), sc.To.String())
 				circuitSync.Observe(sc)

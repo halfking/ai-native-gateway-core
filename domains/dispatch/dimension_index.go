@@ -63,8 +63,13 @@ type DimensionEntry struct {
 	StartedAt   time.Time
 	CompletedAt time.Time
 	ExpiresAt   time.Time
-	// LastUpdated is the last membership mutation time (drives TTL from the
-	// terminal transition, not admission).
+	// LastUpdated is the last membership mutation time as OBSERVED BY THE
+	// INDEX: insertLocked overwrites it with time.Now() at insert (the
+	// caller-supplied now is discarded there, unlike the other mutators,
+	// which stamp the caller's now), then Complete/UpdateWait refresh it
+	// in place. Note LastUpdated itself drives nothing: ring/TTL eviction
+	// keys off ExpiresAt, which only Complete/UpdateWait set — so a fresh
+	// insert has zero ExpiresAt until a terminal/wait transition stamps it.
 	LastUpdated time.Time
 }
 

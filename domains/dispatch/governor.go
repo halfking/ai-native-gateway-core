@@ -12,7 +12,10 @@ import (
 // before forwarding and Release after completion.
 //
 // Implementations:
-//   - concurrencyGovernor: weighted semaphore (in-flight hard cap).
+//   - concurrencyGovernor: scalar in-flight hard cap (a plain cap/used
+//     counter with CAS increment — there is no per-credential weighting
+//     concept here; weighted load balancing lives in the candidate
+//     selection layer, see executors/router.go, R73 §2).
 //   - rpmGovernor: requests-per-minute token bucket.
 //   - tpmGovernor: tokens-per-minute token bucket (Acquire takes the
 //     request's estimated prompt tokens).
@@ -74,7 +77,7 @@ func newGovernor(ref CredentialRef) Governor {
 	}
 }
 
-// ── concurrency: weighted semaphore ────────────────────────────────────────
+// ── concurrency: scalar cap/used counter ───────────────────────────────────
 
 type concurrencyGovernor struct {
 	cap  int64
