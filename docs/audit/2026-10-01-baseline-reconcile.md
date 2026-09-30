@@ -108,38 +108,64 @@
 
 ---
 
-## 对 17 个 MISSING 的逐条取证（round 43 实测）
+## 对 17 个 MISSING 的逐条取证（round 43，含自我更正）
 
-不能把「17 个 MISSING」整体当作「源库已删除，可以安全丢弃」。逐条查证后分成两类：
+不能把「17 个 MISSING」整体当作「源库已删除，可以安全丢弃」。逐条查证后分三类。
 
-### A. 月度分区与其附属对象（11 个）— 预期消失，不是缺陷
+### ⚠️ 自我更正：上一版把 B 类写成「来源不可复现」，是错的
+
+上一版报告称这 6 个对象「既不在源库，也无法由本仓任何迁移重建」。**该结论错误**——
+当时只 grep 了 `sql/migrations/`，漏掉了 `sql/objects/`。本仓存在一个 **1910 个文件**的
+对象登记目录：
+
+```
+sql/objects/{tables,indexes,constraints,functions,views,policies,triggers,sequences,other}/
+```
+
+这 6 个对象**全部有仓内出处**，见下表。修正后的分类如下。
+
+### A 类：月度分区及其附属对象（11 个）— 预期消失，不是缺陷
 
 `request_logs_bodies_2026_07/_2026_08`（TABLE ×2 / TABLE ATTACH ×2 / CONSTRAINT ×2）
 与 `session_turns_2026_07/_2026_08` 的 INDEX ATTACH ×4。
 
 源库上这些月份分区已被保留策略清掉（实测源库仍有 119 个 `session_turns_2026_*`
 分区，只是没有 07/08）。全新安装**不应**重建过期的月份分区——由分区管理器按需创建。
-⇒ 这 11 个的缺失是**正确**的。
 
-### B. 既不在源库、也无任何迁移能重建（6 个）— 真正的存量疑点
+### B 类：真实存在、出处已查明（5 个）— 上一版「来源不可复现」不成立
 
-| 对象 | 源库 | 仓库内创建者 |
+| 对象 | 出处 | 创建迁移是否在 installer 启动集 |
 |---|---|---|
-| `idx_stage_events_request_id` | 无 | **无**（`grep -rl` 无命中） |
-| `idx_stage_events_stage_status` | 无 | **无** |
-| `idx_stage_events_tenant_ts` | 无 | **无** |
-| `handoff_logs_pkey` | 无 | 无命中 |
-| `route_incident_events_incident_id_fkey` | 无 | 无命中 |
-| `instance_heartbeats_pkey` | 有同名约束 2 个 | — |
+| `idx_stage_events_stage_status` | 迁移 `434_request_stage_events_table.sql:63` | **否**（低于 511 下限） |
+| `idx_stage_events_tenant_ts` | 迁移 `450_request_stage_events_tenant.sql:13` | **否**（低于 511 下限） |
+| `idx_stage_events_request_id` | 仅 `sql/objects/indexes/idx_stage_events_request_id.sql` | 无迁移 |
+| `handoff_logs_pkey` | 仅 `sql/objects/constraints/handoff_logs_handoff_logs_pkey.sql` | 无迁移 |
+| `route_incident_events_incident_id_fkey` | 仅 `sql/objects/other/route_incident_events_…_fkey.sql` | 无迁移 |
 
-这 6 个只存在于**已提交的 pg_dump 基线**里：既不在当前源库，也无法由本仓任何迁移重建。
-它们属于「来源不可复现」的存量——可能是更早的手工变更被 dump 固化后，源库侧已被
-回退/重命名。
+（第 6 个 `instance_heartbeats_pkey` 经查在源库**仍然存在**（同名约束 2 个），
+是比对键的构造差异，不是真丢失，已移出本类。）
 
-**对「用生成基线替换已提交基线」的直接约束**：
-在替换前必须逐个确认这 6 个对象是「已被有意废弃」还是「源库侧发生漂移」，
-否则替换会静默丢失线上仍在使用的索引与外键。当前源库是 local 开发库，
-**不能假定它与生产等价**；因此本轮只出对账报告，不做替换。
+### C 类：真正的新发现 —— **local 开发库是一个「部分迁移」的库，不能当 dump 源**
+
+上一版把风险归到「对象可能是有意废弃」，方向判反了。实测：
+
+- 迁移 434 一次性创建 4 个索引（`idx_stage_events_ts` / `_stage_status` /
+  `_upstream_failure` / `_redis_miss`）。源库上**有 3 个、没有 `_stage_status`**。
+- 源库另有 `idx_stage_events_created_at`（非 434 所建）。
+- 源库 `handoff_logs` **完全没有主键**（`contype='p'` 为空），而已提交基线有。
+
+⇒ 源库既不是「更新版」也不是「干净版」，而是一个**迁移到一半的中间态**。
+用它重新生成基线，会把上面 5 个合法对象**静默删掉**；其中 3 个在
+`sql/migrations/` 里根本无创建者，全仓只有 `sql/objects/` 那份定义。
+
+**修订后的硬约束：本地开发库不可作为基线 dump 源。** 正确顺序是
+
+1. 先把源库补齐到与已提交基线对等：应用迁移 `434` / `450`，并 apply
+   `sql/objects/` 里那 3 份缺失定义（`handoff_logs` 加主键前需先查
+   NULL/重复值，实测源库该表当前无主键，加约束前必须确认数据干净）；
+2. 再重新生成，MISSING 应降到只剩 A 类 11 个分区；
+3. 之后才谈替换基线，并重跑 `TestBaselineDefinitionPrecedesEagerReference`
+   —— 上一轮那 6 处前向引用的人工排序修复是钉在**旧基线**上的。
 
 ## 结论
 
@@ -148,7 +174,8 @@
 - 新基线覆盖 3759 个已提交基线缺失的对象（含本轮实测的
   `candidate_failure_logs_hot`、`session_turns_hot`、`session_dim`、`model_offers`、
   `proxy_subscriptions`），方向上是对的。
-- 但**不能直接替换**：先清掉上面 B 类 6 个对象的来源疑点，并确认 dump 源库
-  （当前为 local 开发库）与生产等价。
+- 但**不能直接替换**：local 开发库经查是「迁移到一半」的中间态（见 C 类），
+  不可作为 dump 源。须先按上述步骤把源库补齐，再重新生成、确认 MISSING 只剩
+  A 类 11 个分区，然后才谈替换。
 - 2595 个 REORDERED 属预期（新增文件头 + 774 条 `COMMENT ON` 后置导致整体行号位移），
   且新基线已通过真库 apply 证明顺序合法。
