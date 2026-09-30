@@ -603,12 +603,15 @@ func (g *redisEnforceGovernor) Release(qr *QueuedRequest) {
 // an error wrapping ErrGovernorUnavailable so the caller can fall back
 // to Acquire's fail-closed path on the next iteration.
 //
-// The default policy is "renew when residual TTL drops below 50%". The
-// caller passes the governor's own ttl — the script unconditionally
-// sets PEXPIRE to that value, so a sub-threshold residual is irrelevant;
-// the operator knob for the 50% threshold is policy that lives in the
-// Stage E forwarder keepalive scheduler, not here. Stage B exposes the
-// primitive; Stage E composes the cadence.
+// CURRENT REALITY (R73 §5 correction): Renew is a composed-over primitive
+// with ZERO production callers — it is not even on the Governor interface,
+// only on *redisEnforceGovernor (tests exercise it directly). The
+// "renew when residual TTL drops below 50%" policy and the "Stage E
+// forwarder keepalive scheduler" that was supposed to own that cadence DO
+// NOT EXIST anywhere in the tree; no keepalive loop renews leases today,
+// so a lease simply expires by TTL while its stream runs past the window.
+// Wiring a renewal cadence is the lease-renewal design registered in
+// R73 §3 #6 — until it lands, this method is dead-in-production surface.
 func (g *redisEnforceGovernor) Renew(ctx context.Context, qr *QueuedRequest) error {
 	g.leasesMu.Lock()
 	token := g.leases[qr]
