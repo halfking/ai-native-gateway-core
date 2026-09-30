@@ -73,3 +73,11 @@
 - BaseWorker 升级为监督循环：panic → recover → 指数退避（1s→60s 封顶，溢出钳制）→ 同 ctx 重启；**正常 return 视为有意退出不重启**。指标 `llm_gateway_bg_worker_restarts_total{worker}` 持续增长 = 反复 panic 需真修。
 - done 语义收敛：close 权收归监督循环退出点（幂等 `closeDone`）；`NotifyStopped` 转兼容 no-op——原契约在 panic 路径会先 close done（Stop 提前返回 + 重启后二次 close panic）。新 runFn 不需要调 NotifyStopped。
 - 约 20+ 嵌入 worker 的 panic 停摆面（R51-F13/R52 确认仍在）本轮收口；bg 剩余约 50 处裸 go 仍登记顺延。
+
+### R85 回注（2026-10-01，附件闭环两跳断裂 + 验收门不含本域文件）
+- **本域验收门对附件域零覆盖**：`plan.md` §38 的门只跑 outbox / orchestration / hostedtask，**`domains/attachments` 的 18 个非测试文件一个都不在门内**，D16 目录亦 0 个 `_test.go`。**补门时按 `conventions.md` §9 走准入清单。**
+- **「版本管理」已满足，勿再上报为缺口**：实际是**内容寻址 + 同 key 多行**（`storage.go:320-329` 命中即跳过写 ⇒ 物理上不可能同 key 异内容；`repository.go:107` 每次新行），本文件 §31 已明文接受「版本号/内容寻址」。**曾据「表里没有 version 列」误判为缺失 —— 那是代理量不是语义量。**
+- **附件明细的真表是 `request_attachments`**：`sql/objects/tables/attachments.sql`（12 列）**全仓无 Go writer**（4 次换范围搜索）。基于该表得出的「无 UNIQUE」观察对事实链路不成立。
+- **闭环断两跳**：① `session_turns` 只有 `attachment_count`/`attachment_total_bytes` 两个**计数**列，`pg_constraint` 实测指向附件表的外键数 = **0**，关联仅靠无约束的 `request_id`；② `admin/data_lifecycle_attachments.go:384-404` 清理**只把 JSONB 置 NULL、从不删 `request_attachments` 行**（函数注释自陈「保留行和元数据」）⇒ 元数据行实际永生 + 归属校验命中已删记录。
+- **镜像写失败无重试无 outbox**：`internal/attachmentmirror/hook.go:59-70`（同仓 `internal/sessionv2mirror` 反而有 `outbox.go`）⇒ 附件镜像静默丢失，与本文件 §2 声称的「mirror_outbox 失败登记+重放」不符。
+- **SSRF 不成立（已撤回）**：`outbound_url_rewriter.go:81,158` 只拼 `baseURL+Path` 交**供应商**拉取、两者都不受请求方控制；`outbound_fetch_fallback.go:116` 走自身存储且包注释明写「不发起外网 HTTP 请求」。真实风险是 `config.go:26` 默认 `AuthModeNone` 下的**数据暴露**。
