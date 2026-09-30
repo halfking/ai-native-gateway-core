@@ -113,117 +113,41 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Round 43. The job above runs `go test -tags=integration ./...` with no
-  # database URL in the environment, so the 27 integration files that gate on
-  # one all SKIP — a green run can contain zero executed database assertions.
-  # This job gives each gate a disposable database and reports the skip count
-  # alongside the pass count, so "green" and "actually ran" stop being the same
-  # claim.
-  integration-gate:
-    name: integration gate (disposable db)
-    runs-on: ubuntu-latest
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-    services:
-      docker:
-        image: docker:24-dind
-        options: >-
-          --privileged
-    env:
-      TESTCONTAINERS_RYUK_DISABLED: "true"
-      TESTCONTAINERS_HOST_OVERRIDE: "host.docker.internal"
-      PG_CONTAINER: ci-gw-pg
-      PG_USER: kxuser
-      # The project's own Citus build. A stock postgres image is NOT a drop-in.
-      # Measured with postgres:17-alpine: applying sql/schema/00-prereqs.sql
-      # fails immediately at `ERROR: extension "citus" is not available`, and
-      # pg_available_extensions has 0 rows for citus_columnar. Everything
-      # downstream — `SET default_table_access_method = columnar` in the
-      # baseline and in the startup migrations — would then fail as if it were
-      # a schema defect rather than an environment one. This image carries
-      # citus, citus_columnar, vector, pg_stat_statements, pgstattuple,
-      # btree_gist, pg_trgm and pgcrypto.
-      PG_IMAGE: registry.kxpms.cn/kx-citus-pg17:offline-arm64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Log in to the project registry
-        # kx-citus-pg17 is a private image. Without this secret the pull below
-        # fails and the job fails loudly rather than silently skipping.
-        if: ${{ secrets.CI_PULL_TOKEN != '' }}
-        uses: docker/login-action@v3
-        with:
-          registry: registry.kxpms.cn
-          username: ${{ secrets.CI_REGISTRY_USER }}
-          password: ${{ secrets.CI_PULL_TOKEN }}
-
-      - name: Start the Citus database container
-        run: |
-          set -euo pipefail
-          docker run -d --name "$PG_CONTAINER" \
-            -e POSTGRES_USER="$PG_USER" \
-            -e POSTGRES_PASSWORD=ci \
-            -e POSTGRES_DB=postgres \
-            -p 5432:5432 "$PG_IMAGE"
-          for i in $(seq 1 60); do
-            if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d postgres >/dev/null 2>&1; then
-              echo "database ready after ${i}s"; exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::database did not become ready in 60s"
-          docker logs "$PG_CONTAINER" || true
-          exit 1
-
-      - name: Verify the database can host the schema's extensions
-        # Fails fast and with a clear reason if a wrong image was pulled, rather
-        # than letting every columnar assertion fail one by one.
-        run: |
-          set -euo pipefail
-          missing=""
-          for ext in citus citus_columnar vector pg_stat_statements pgstattuple; do
-            docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc \
-              "SELECT 1 FROM pg_available_extensions WHERE name='$ext'" | grep -q 1 \
-              || missing="$missing $ext"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::image $PG_IMAGE is missing extensions:$missing"
-            echo "Use the project's kx-citus-pg17 build, not a stock postgres image."
-            exit 1
-          fi
-          echo "all required extensions available"
-
-      - name: Run integration gates against a disposable database
-        run: |
-          set -uo pipefail
-          rc=0
-          for pkg in ./db ./internal/dbx ./internal/trace ./domains/stats ./bg; do
-            echo ""
-            echo "################ $pkg ################"
-            if bash scripts/audit/run-integration-gate.sh "$pkg"; then
-              echo "GATE OK: $pkg"
-            else
-              echo "GATE FAIL: $pkg"
-              rc=1
-            fi
-          done
-          exit $rc
-
-      - name: Upload gate summary on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-gate-logs
-          path: /tmp/itgate-run.log
-          if-no-files-found: ignore
-          retention-days: 7
+  # ─────────────────────────────────────────────────────────────────────────
+  # NOT WIRED: integration-gate job (removed in the round-43 self-audit)
+  # ─────────────────────────────────────────────────────────────────────────
+  #
+  # A previous version of this file contained a third job, `integration-gate`,
+  # that drove scripts/audit/run-integration-gate.sh against a disposable
+  # database. The harness itself is real and works (measured locally: ./db
+  # → 68 PASS / 5 SKIP / 0 FAIL). The job around it was removed because it was
+  # **provably non-functional in three independent ways** — not merely
+  # untested, but guaranteed to fail on its first run:
+  #
+  #   1. Wrong image tag. It pinned `kx-citus-pg17:offline-arm64`. The tag that
+  #      actually exists in this registry is `kx-citus-pg17:13.3.0-vector-arm64`
+  #      (verified with `docker image inspect` on the live local container).
+  #      `offline-arm64` was inferred from a grep, never pulled.
+  #   2. Wrong architecture. That image is linux/arm64. `ubuntu-latest`
+  #      GitHub-hosted runners are x64. `docker run` fails with an exec-format
+  #      error before PostgreSQL ever starts.
+  #   3. Missing password. The container was started with POSTGRES_PASSWORD,
+  #      but PG_PASSWORD was never exported to the harness. The harness then
+  #      builds a passwordless DSN and dies at its own DSN precheck. Measured
+  #      against the local container: a passwordless TCP DSN fails with
+  #      `fe_sendauth: no password supplied`, the passworded one succeeds.
+  #
+  # Two smaller defects in the same block: the `services: docker:24-dind`
+  # service was dead configuration (the steps drive the runner's native docker
+  # CLI; no DOCKER_HOST is ever exported, so the dind daemon is never used),
+  # and the failure artifact pointed at a single `/tmp/itgate-run.log` that the
+  # per-package loop overwrites, so an uploaded artifact would have shown only
+  # the last package's log.
+  #
+  # Re-adding this job is gated: see
+  # docs/audit/2026-10-01-integration-gate-ci-preconditions.md
+  # and sql/schema/integration_gate_test.go
+  # (TestIntegrationGateCIJobStaysUnwiredUntilPreconditionsLand), which turns
+  # red the moment that doc exists — i.e. it tells the next person to re-add
+  # the job deliberately, instead of letting a broken one be re-added quietly.

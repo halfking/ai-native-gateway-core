@@ -31,6 +31,16 @@
 # Env:
 #   PG_CONTAINER  database container (default llm-gateway-pg)
 #   PG_USER       database user     (default llm_gateway)
+#   PG_PASSWORD   password for TCP auth; the in-container psql uses a local
+#                 socket and succeeds without one, so only the Go tests fail
+#                 when it is missing
+#   PG_CLIENT_IMAGE  multi-arch image used for the DSN precheck when the host
+#                 has no psql binary. It only ever runs `SELECT 1`, so a stock
+#                 postgres image is enough — and unlike the project's Citus
+#                 build it is multi-arch, which is why it is not the same tag.
+#   GATE_MIN_RELATIONS  floor for the population assertion (default 400;
+#                 measured: baseline only = 328, baseline + startup = 421)
+#   GATE_LOG       path for this run's go test output
 #   KEEP_GATE_DB=1   keep the database for post-mortem
 #   ALLOW_VACUOUS=1  exit 0 even if every test skipped (for auditing; the
 #                    summary still reports the skip count loudly)
@@ -45,6 +55,11 @@ PG_USER="${PG_USER:-llm_gateway}"
 # server requires one; the harness now also verifies the DSN works before
 # running any test, so this class fails once, up front, with a clear message.
 PG_PASSWORD="${PG_PASSWORD-}"
+# Only used for `SELECT 1`, so a stock multi-arch postgres image is correct
+# here. Do not point this at the project's kx-citus-pg17:*-arm64 tag: that
+# image is arm64-only and this fallback exists precisely for hosts that are
+# not the maintainer's arm64 laptop.
+PG_CLIENT_IMAGE="${PG_CLIENT_IMAGE:-postgres:17-alpine}"
 KEEP_GATE_DB="${KEEP_GATE_DB:-0}"
 ALLOW_VACUOUS="${ALLOW_VACUOUS:-0}"
 # GATE_APPLY_STARTUP=1 also applies the installer's registered startup
@@ -81,7 +96,42 @@ else
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || die "cannot enter repo root: $REPO_ROOT"
+
+# Refuse before touching the database if the target package has no
+# integration-tagged tests at all. A package with none reports PASS from its
+# ordinary unit tests, so the `NPASS==0` vacuity check below never fires and the
+# run reads as a green gate.
+# Measured: internal/trace has 0 files with `//go:build integration`, yet
+# `go test -tags=integration ./internal/trace` yields 31 PASS — every one an
+# ordinary unit test. A gate that said GATE OK for that package would have
+# proven nothing about integration.
+# Derive the answer from `go list` rather than by re-parsing build tags in the
+# shell. `go list -tags=integration` has already evaluated the constraints, so
+# the set difference against the untagged list is exactly "the test files that
+# only exist because the integration tag is on". Two earlier attempts at this
+# were wrong and are recorded here so they are not re-tried:
+#   * grepping the source for `//go:build integration` mis-handles negated
+#     tags — `//go:build !nintegration` also contains the substring;
+#   * go list reports test file names relative to the PACKAGE, so a bare
+#     `-f "$tf"` test from the repo root finds nothing and this guard rejects
+#     every package, including ones that do have integration tests.
+# `.Dir` is prepended to make the paths absolute and directly testable.
+gatelist_files() {
+  go list "$@" -f '{{$d := .Dir}}{{range .TestGoFiles}}{{$d}}/{{.}}
+{{end}}{{range .XTestGoFiles}}{{$d}}/{{.}}
+{{end}}' "$PKG" 2>/dev/null | sort
+}
+GATE_ITEST_COUNT=$(comm -13 \
+  <(gatelist_files) \
+  <(gatelist_files -tags=integration) | grep -c . || true)
+GATE_ITEST_COUNT="${GATE_ITEST_COUNT:-0}"
+if (( GATE_ITEST_COUNT == 0 )); then
+  die "$PKG 下没有任何仅由 integration build tag 引入的测试文件。" \
+"该包只会跑普通单测并报 PASS，看起来像门禁通过，实际零 integration 覆盖。 " \
+"请把它从 CI 包列表里去掉，或给它补上真正的 integration 测试。"
+fi
+echo "  [coverage] integration-only test files=$GATE_ITEST_COUNT"
 
 cleanup() {
   if [[ "$KEEP_GATE_DB" == "1" ]]; then
@@ -173,6 +223,25 @@ if [[ "$GATE_APPLY_STARTUP" == "1" ]]; then
              "$REPO_ROOT/installer/internal/dbinit/runner.go" \
            | grep -oE '"[0-9a-zA-Z_]+\.sql"' | tr -d '"')
   echo "  startup: applied=$sf_ok failed=$sf_fail missing=$sf_missing"
+  # The sed above extracts the file list by matching a Go source literal. If
+  # runner.go is ever reformatted — the declaration moves inside a type block,
+  # the anchor text changes, the map literal is generated — the match returns
+  # ZERO lines and prints no error. The loop then does nothing, the gate
+  # database silently falls back to the stale baseline (328 relations instead
+  # of 421), and db.ensure*() tests start failing with "relation does not
+  # exist" — a self-inflicted artifact that reads like a product defect.
+  # Verified: breaking the anchor alone yields 0 rows with exit status 0.
+  sf_total=$((sf_ok + sf_fail + sf_missing))
+  if (( sf_total == 0 )); then
+    die "从 installer/internal/dbinit/runner.go 的 StartupFiles 里解析出 0 条迁移。 " \
+"Go 源码的声明形态已变，sed 锚点失配。这不是「没有启动迁移」，是解析失败—— " \
+"门禁库会静默退回 328 relations 的陈旧基线。请更新本脚本的 sed 锚点， " \
+"并把 sf_total 的地板值与实测的注册迁移条数一起校准。"
+  fi
+  if (( sf_total < 100 )); then
+    die "只从 StartupFiles 解析出 $sf_total 条迁移，明显少于 installer 实际注册的 " \
+"条数（173）。解析多半是部分失配；继续跑等于拿半个起始库当门禁库。"
+  fi
   if (( sf_fail > 0 )); then
     echo "  startup migrations that did not apply (known fresh-install gaps, not gate failures):"
     printf '    - %s\n' "${sf_failed[@]}"
@@ -181,31 +250,71 @@ fi
 
 # Verify the DSN the tests will actually use. Without this, a wrong DSN
 # surfaces as N unrelated per-test failures instead of one clear error.
-if ! docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" -tAc 'SELECT 1' >/dev/null 2>&1; then
-  die "cannot connect to the disposable database over TCP as '$PG_USER'. "\
-"Set PG_PASSWORD if the server requires one (the in-container psql above uses a "\
-"local socket, so it can succeed while TCP auth fails)."
+#
+# Note the in-container psql above only proves a local socket login. TCP auth
+# is a separate path and is the one the Go tests take, so it gets its own check.
+#
+# The host may have no psql binary at all (a stock CI image is not guaranteed to
+# carry postgresql-client). Do not blame the password for a missing binary:
+# probe the binary first, and fall back to the container, which certainly has
+# one and can reach the published port via --network host.
+if command -v psql >/dev/null 2>&1; then
+  dsn_runner() { psql "$1" -tAc 'SELECT 1' >/dev/null 2>&1; }
+  dsn_where="host psql"
+else
+  dsn_runner() {
+    docker run --rm --network host -e PGPASSWORD="${PG_PASSWORD:-}" \
+      "$PG_CLIENT_IMAGE" psql "$1" -tAc 'SELECT 1' >/dev/null 2>&1
+  }
+  dsn_where="containerised psql (no host psql found; using $PG_CLIENT_IMAGE)"
 fi
-# Confirm the URL form the tests will parse actually connects.
-if ! psql "$GATE_URL" -tAc 'SELECT 1' >/dev/null 2>&1; then
-  die "the generated DSN cannot authenticate: $GATE_URL (redacted). Set PG_PASSWORD if required."
+echo "  [dsn] verifying via $dsn_where"
+if ! dsn_runner "$GATE_URL"; then
+  # Distinguish the two failure causes instead of guessing.
+  if [[ -z "$PG_PASSWORD" ]]; then
+    die "生成的 DSN 认证失败：$dsn_where 连不上 ${GATE_DB}。 " \
+"该 DSN 未带密码，而本机容器要求密码（实测无密码 TCP 连接报  " \
+"fe_sendauth: no password supplied）。请设置 PG_PASSWORD 后重跑。"
+  fi
+  die "生成的 DSN 认证失败：$dsn_where 连不上 ${GATE_DB}（已带密码）。 " \
+"请核对 PG_PASSWORD / PG_USER / 端口 $PGPORT 是否与容器实际配置一致。"
 fi
 
-# Population assertion: a test that "ran" against an empty database has not
-# proven anything. Same reasoning that caught citus_columnar's schema error.
+# Population assertion, in two tiers. "relations > 0" is the weak form: it is
+# satisfied by a database holding a single stray table, and — worse — it is
+# still satisfied when the startup-migration loop above silently parsed zero
+# files. The floor is what actually distinguishes a real installer-shaped
+# database from a nearly-empty one.
+#
+# Measured round 43 on this harness: baseline only = 328 relations;
+# baseline + registered startup migrations = 421.
+GATE_MIN_RELATIONS="${GATE_MIN_RELATIONS:-400}"
 RELS=$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" -tAc \
   "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
    WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m')" 2>/dev/null || echo 0)
-echo "  [populated] relations=${RELS:-0}"
+echo "  [populated] relations=${RELS:-0} (floor=$GATE_MIN_RELATIONS)"
 if ! [[ "${RELS:-0}" =~ ^[0-9]+$ ]] || (( RELS <= 0 )); then
   die "disposable database is EMPTY after prereqs — the run would be vacuous"
 fi
+if [[ "$GATE_APPLY_STARTUP" == "1" ]] && (( RELS < GATE_MIN_RELATIONS )); then
+  die "门禁库只有 $RELS 个 relations，低于地板 ${GATE_MIN_RELATIONS}。 " \
+"基线+启动迁移实测应为 421；低于地板说明起始库没建全，而基线层的 RELS>0 仍会通过 —— 那正是把残缺环境当合格环境的形状。 " \
+"若确实应下调地板，请改 GATE_MIN_RELATIONS 并在提交信息里写明实测依据。"
+fi
+
+# A package with no integration-tagged test files reports PASS from its plain
+# unit tests, so `NPASS==0` never fires and the run reads as a green gate.
+# That case is now rejected up front, before the database is touched.
 
 # Inject every name the suite reads. A one-name injection silently skips the
 # 22 files that read TEST_DB_URL and the 16 that read TEST_PG_URL.
 echo ""
 echo "── running ──"
-RUN_LOG=/tmp/itgate-run.log
+# Per-package log path. A single fixed name is what made the removed CI job's
+# upload-artifact step useless: its for-loop wrote every package to the same
+# file, so an uploaded artifact could only ever show the last package.
+RUN_LOG="${GATE_LOG:-/tmp/itgate-run-$(echo "$PKG" | tr -c 'a-zA-Z0-9' '-').log}"
+echo "  [log] $RUN_LOG"
 env \
   TEST_PG_URL="$GATE_URL" \
   TEST_DATABASE_URL="$GATE_URL" \

@@ -221,8 +221,20 @@ go test ./... -count=1                    # 唯一失败是本轮预期内的红
 | `citus_columnar` 改回 `WITH SCHEMA public` | 红（复现本轮真实踩到的 bug） |
 
 **「integration 全绿」vs「integration 真的跑了」**：本轮真库 apply 全部**真跑了**
-（一次性库 + 填充断言），不是 skip。注意本轮唯一残留的红门
-`TestBaselineDumpScriptIsRunnable` 已通过迁入生成器**转绿**。
+（一次性库 + 填充断言），不是 skip。
+
+**自审更正（2026-10-01，见 `docs/audit/2026-10-01-round43-self-audit.md`）：**
+上一版这里写「本轮唯一残留的红门 `TestBaselineDumpScriptIsRunnable` 已转绿」。
+这句话有两处不实：
+
+1. 该测试**从来不检查「能不能跑」**，只检查被 source 的库文件路径可解析。
+   它叫 `Runnable` 是名不副实。已改名为
+   `TestBaselineGeneratorLibraryResolves`，并在其注释里明确写出
+   **未被任何测试覆盖**的那半边（生成产物 apply 到空库 exit=0 是 2026-10-01
+   手工验证的，不是测试保证的）。
+2. 「唯一残留的红门」这个说法当时是对的，但**同一天我加进去的 CI job 才是
+   本轮最大的未验证项**，而它没有被算进「残留」——因为它一次都没跑过，
+   所以没人知道它必败。见自审报告 P0。
 
 ---
 
@@ -335,9 +347,24 @@ handoff_logs | relkind=p | RANGE (created_at)
 
 ⇒ 这修正了本轮早先的说法：该文件是 `handoff_logs_pkey` 的**出处**没错，
 但它是 **`handoff_logs` 还是普通表那个年代的陈旧对象定义**。
-已提交基线里那个 `handoff_logs_pkey` 同样无法在分区形态下存在。
-**「sql/objects 提供权威出处」这个结论要打折扣：它对部分对象给的是
-不可施加的陈旧定义。**
+
+**再更正（本轮自审，2026-10-01）：** 上面那句「已提交基线里那个
+`handoff_logs_pkey` 同样无法在分区形态下存在」写得有误导性，实测是错的。
+已提交基线 `sql/schema/01-schema.sql:8388` 把 `handoff_logs` 建为**普通表**
+（`CREATE TABLE public.handoff_logs (...)` 后面直接跟 `WITH (autovacuum_*)`，
+**没有 `PARTITION BY`**），所以同一文件 `:21044` 的
+`ADD CONSTRAINT handoff_logs_pkey PRIMARY KEY (id)` 在基线形态下是合法的，
+基线 apply 到空库 exit=0 这一点也印证了它。
+
+分区形态只存在于**本机开发库**（`relkind=p` RANGE `created_at`）——而那个库
+正是上文认定「迁移到一半的中间态」。所以正确的说法是：
+
+- `sql/objects/constraints/handoff_logs_handoff_logs_pkey.sql` 对**本机开发库**
+  不可施加；
+- 对**已提交基线的形态**可施加，两者并不矛盾。
+
+**「sql/objects 提供权威出处」这个结论要打折扣：它对部分对象给的是相对
+某个形态而言的、可能已过时的定义 —— 用之前必须先确认目标 schema 形态。**
 
 ### 更正二：434 对「已灌基线的库」不幂等
 
