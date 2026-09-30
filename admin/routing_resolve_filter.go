@@ -52,6 +52,33 @@ import (
 // (2422803) gets reported as the answer for "glm-5.3-flash". This helper
 // looks up only against the strict variants (no wrapper strip), giving the
 // authoritative answer for "what model did the user type".
+// 2026-10-01 audit: rewritten so the variant-priority decision is a PURE,
+// unit-testable function. The previous single query
+//
+//	SELECT id FROM models_canonical
+//	WHERE lower(canonical_name) = ANY($1) ORDER BY id LIMIT 1
+//
+// had two defects that the 5 existing unit tests could not see, because every
+// one of them exercised filterResolveCandidatesByCid (a pure function) and
+// never this DB path:
+//
+//  1. `= ANY()` is set membership and carries no order, so `ORDER BY id`
+//     answered with the numerically smallest id among ALL matched spellings —
+//     discarding the exact-form-first priority that
+//     NormalizeRouteKeyAliasesNoStrip exists to express. With both
+//     'glm-5.3-flash' (id=100) and 'glm-5-3-flash' (id=50) registered, input
+//     'glm-5.3-flash' resolved to 50. filterResolveCandidatesByCid would then
+//     keep the WRONG canonical's candidates and drop the right ones. That is
+//     strictly worse than the pollution being fixed, and the fail-open branch
+//     does not cover it because the lookup *succeeded*.
+//  2. The function took a *pgxpool.Pool, so it had zero test coverage — the
+//     "invariant" the 2026-09-29 changelog claimed could not actually be
+//     asserted by anything in the repo. It was only ever checked by an ad-hoc
+//     script in /tmp against 11 hand-picked models.
+//
+// Now the query fetches every matched row and canonicalIDByVariantPriority
+// (pure, below) makes the decision, so the collision case is a red-able unit
+// test rather than a latent production surprise.
 func resolveInputCanonicalID(ctx context.Context, db *pgxpool.Pool, model string) (int64, bool) {
 	if db == nil {
 		return 0, false
@@ -60,23 +87,74 @@ func resolveInputCanonicalID(ctx context.Context, db *pgxpool.Pool, model string
 	if len(variants) == 0 {
 		return 0, false
 	}
-	// Build lowercased variant slice for the ANY() match. models_canonical
-	// stores canonical_name lowercased by migration 396; lower() is a safety
-	// net. We deliberately do NOT match against model_aliases — the input
-	// model must resolve to its OWN canonical, not to an alias of a sibling
-	// product (that's exactly the pollution we're trying to fix).
-	row := db.QueryRow(ctx, `
-		SELECT id
+	// models_canonical stores canonical_name lowercased by migration 396;
+	// lower() is a safety net. We deliberately do NOT match model_aliases —
+	// the input model must resolve to its OWN canonical, not to an alias of a
+	// sibling product (that is exactly the pollution being fixed).
+	rows, err := db.Query(ctx, `
+		SELECT id, lower(canonical_name)
 		FROM models_canonical
 		WHERE lower(canonical_name) = ANY($1)
-		ORDER BY id
-		LIMIT 1
 	`, variants)
-	var id int64
-	if err := row.Scan(&id); err != nil {
+	if err != nil {
 		return 0, false
 	}
-	return id, true
+	defer rows.Close()
+	matches := make([]canonicalNameID, 0, 4)
+	for rows.Next() {
+		var r canonicalNameID
+		if err := rows.Scan(&r.id, &r.name); err != nil {
+			return 0, false
+		}
+		matches = append(matches, r)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false
+	}
+	return canonicalIDByVariantPriority(variants, matches)
+}
+
+// canonicalNameID is one (canonical row id, lowercased canonical_name) pair
+// as returned by the models_canonical lookup.
+type canonicalNameID struct {
+	id   int64
+	name string
+}
+
+// canonicalIDByVariantPriority picks the canonical whose name appears
+// EARLIEST in the caller's variant list. variants comes from
+// modelname.NormalizeRouteKeyAliasesNoStrip, whose first element is the exact
+// normalized input form — so "earliest wins" is "exact form wins", which is
+// the contract the whole variant matrix is built around.
+//
+// Ties (two catalog rows sharing one spelling) resolve to the lowest id, which
+// is deterministic. production models_canonical has no duplicate
+// canonical_name, so this branch is defensive only.
+func canonicalIDByVariantPriority(variants []string, matches []canonicalNameID) (int64, bool) {
+	if len(matches) == 0 {
+		return 0, false
+	}
+	rank := make(map[string]int, len(variants))
+	for i, v := range variants {
+		if _, seen := rank[v]; !seen {
+			rank[v] = i
+		}
+	}
+	best := -1
+	bestRank := len(variants) + 1
+	for i, m := range matches {
+		r, ok := rank[m.name]
+		if !ok {
+			continue // defensive: SQL already restricted to the variant set
+		}
+		if r < bestRank || (r == bestRank && (best < 0 || m.id < matches[best].id)) {
+			best, bestRank = i, r
+		}
+	}
+	if best < 0 {
+		return 0, false
+	}
+	return matches[best].id, true
 }
 
 // filterResolveCandidatesByCid drops candidates whose canonical_id is set

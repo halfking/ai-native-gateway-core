@@ -125,18 +125,18 @@ func TestSessionSummaryV2FallbackBodiesSQLUsesIndexedSemiJoin(t *testing.T) {
 		"WHERE (rb.request_id, rb.ts) IN (",
 		"unnest($1::text[], $2::timestamptz[])",
 	} {
-		if !strings.Contains(fallbackBodiesSQL, want) {
-			t.Fatalf("phase 2 SQL missing %q:\n%s", want, fallbackBodiesSQL)
+		if !strings.Contains(sessionBodiesByRequestIDAndTSSQL, want) {
+			t.Fatalf("phase 2 SQL missing %q:\n%s", want, sessionBodiesByRequestIDAndTSSQL)
 		}
 	}
-	if strings.Contains(fallbackBodiesSQL, "LEFT JOIN") {
+	if strings.Contains(sessionBodiesByRequestIDAndTSSQL, "LEFT JOIN") {
 		t.Fatalf("phase 2 must be a semi-join, not a LEFT JOIN — the LEFT JOIN "+
-			"form forces a full columnar scan (10,365ms vs 7ms):\n%s", fallbackBodiesSQL)
+			"form forces a full columnar scan (10,365ms vs 7ms):\n%s", sessionBodiesByRequestIDAndTSSQL)
 	}
 	// 两个数组参数（而非每轮两个占位符）：upToTurn 为 nil 时轮数无上界，
 	// VALUES 形态会在 32767 轮撞上 65535 参数上限。
-	if strings.Contains(fallbackBodiesSQL, "$3") {
-		t.Fatalf("phase 2 must bind exactly two array parameters, got:\n%s", fallbackBodiesSQL)
+	if strings.Contains(sessionBodiesByRequestIDAndTSSQL, "$3") {
+		t.Fatalf("phase 2 must bind exactly two array parameters, got:\n%s", sessionBodiesByRequestIDAndTSSQL)
 	}
 }
 
@@ -196,9 +196,9 @@ func TestMergeFallbackTurnsPreservesOrderAndLeftSemantics(t *testing.T) {
 	k3 := newFallbackTurnKey("req-3", ts.Add(2*time.Second))
 
 	keys := []fallbackTurnKey{k1, k2, k3}
-	bodies := map[fallbackTurnKey]fallbackBody{
-		k1: {requestBody: []byte(`{"a":1}`), responseBody: []byte(`{"b":2}`)},
-		k3: {requestBody: []byte(`{"a":3}`), responseBody: []byte(`{"b":4}`)},
+	bodies := map[fallbackTurnKey]sessionBody{
+		k1: {requestBody: strPtr(`{"a":1}`), responseBody: strPtr(`{"b":2}`)},
+		k3: {requestBody: strPtr(`{"a":3}`), responseBody: strPtr(`{"b":4}`)},
 	}
 
 	turns := mergeFallbackTurns(keys, bodies)
