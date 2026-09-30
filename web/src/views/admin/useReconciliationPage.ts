@@ -17,18 +17,12 @@ import { isPlatformOpsView } from '../../store'
 import { dayDist, modelDist, personDist, providerDist, tenantDist, type Metric } from '../../components/reconciliation/distRows'
 import { topReasons } from '../../components/reconciliation/format'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
-import { makeDateRangePresets } from '../../components/ui/kxDatePresets'
+import { defaultSnapshotRange } from '../../components/reconciliation/snapshotRange'
 
 function numQuery(value: unknown): number | undefined {
   if (typeof value !== 'string' || value === '') return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
-}
-
-function defaultRange(): [string, string] {
-  const preset = makeDateRangePresets('date').find((item) => item.id === 'last7d')
-  const resolved = preset?.resolve()
-  return resolved ? [resolved.start, resolved.end] : ['', '']
 }
 
 function cleanFilters(input: ReportFilter): ReportFilter {
@@ -58,7 +52,7 @@ export function useReconciliationPage() {
   const report = ref<RangeReport | null>(null)
   const dims = ref<DimensionOptions | null>(null)
   const view = ref<ReportView>(route.query.view === 'internal' ? 'internal' : 'provider')
-  const range = ref<[string, string]>(defaultRange())
+  const range = ref<[string, string]>(defaultSnapshotRange())
   const filters = ref<ReportFilter>({
     provider_id: numQuery(route.query.provider_id),
     model: typeof route.query.model === 'string' ? route.query.model : undefined,
@@ -88,7 +82,9 @@ export function useReconciliationPage() {
     report.value ? modelDist(report.value, metric.value, showCost.value, reasonFilter.value) : [],
   )
   const personRows = computed(() => (report.value && view.value === 'internal' ? personDist(report.value) : []))
-  const dayRows = computed(() => (report.value ? dayDist(report.value, showCost.value) : []))
+  const dayRows = computed(() => (
+    report.value ? dayDist(report.value, showCost.value, t('reports.unaggregatedDay')) : []
+  ))
   const moneyHeader = computed(() => (moneyMode.value === 'cost' ? t('reports.legendCost') : t('reports.internalCredits')))
   const primaryHeaders = computed(() =>
     view.value === 'provider'

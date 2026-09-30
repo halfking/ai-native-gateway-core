@@ -48,7 +48,7 @@ function reasonText(row: unknown): string {
               <span v-if="row.sub" class="sub">{{ row.sub }}</span>
             </template>
           </BarCell>
-          <span v-else class="plain-name">{{ row.name }}</span>
+          <span v-else class="plain-name">{{ row.name }}<span v-if="row.sub" class="sub">{{ row.sub }}</span></span>
           <el-tooltip v-if="row.reasons?.length" :content="reasonText(row)" placement="top">
             <span class="reasons">
               <span v-for="item in row.reasons.slice(0, 2)" :key="item.code" class="chip-badge">
