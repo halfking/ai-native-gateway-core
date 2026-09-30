@@ -31,6 +31,29 @@ require '245 has candidate unit' 'llmgo-245-canary@.service' "$ROOT/scripts/depl
 require 'nginx includes dynamic fragment' 'include /opt/llm-gateway-go/run/active-upstream.conf' "$ROOT/deploy/llmgo-245.nginx.conf"
 require 'seamless starts candidate before stop' 'systemctl start.*candidate_service' "$ROOT/scripts/deploy-seamless.sh"
 require 'seamless stops old service after gates' 'systemctl stop.*active_service' "$ROOT/scripts/deploy-seamless.sh"
+# 2026-10-01（245 build_seq 2373 部署失败现场）：当 active unit 解析不出
+# 归属时，旧代码在 active_port==契约 active_port 的分支回落到 $SERVICE_NAME
+# ——那是蓝绿改造前的遗留单 unit（llmgo-245.service / llm-gateway-go.service），
+# 契约注释明写「弃用遗留 unit，勿使用」。drain 窗口内两端口瞬时都无监听即
+# 命中该分支，实测真的启动了弃用 unit 并留下错乱拓扑。
+# 有 canary 模板时必须用 canary@<active_port>；无蓝绿契约的目标保留旧路径。
+require 'blue-green fallback uses canary at active port' 'if \[\[ -n "\$candidate_unit" \]\]; then' "$ROOT/scripts/deploy-seamless.sh"
+require 'blue-green fallback derives canary unit from port' 'active_service="[^"]*candidate_unit[^"]*@[^"]*active_port[^"]*"' "$ROOT/scripts/deploy-seamless.sh"
+# 方向检查：$SERVICE_NAME 只允许出现在「无 canary 模板」的 elif 分支里 ——
+# 即它的紧邻上一行必须是 elif 条件本身，而不能是引用 candidate_unit 的分支。
+# （第一版用 `grep -B2` 判，被**上一个分支**的 canary 赋值命中而假阳性。）
+_block=$(awk '/if \[\[ -z "\$active_service"/,/^  fi$/' "$ROOT/scripts/deploy-seamless.sh")
+_legacy_line=$(printf '%s\n' "$_block" | grep -n 'active_service="\$SERVICE_NAME"' | head -1 | cut -d: -f1)
+if [[ -z "$_legacy_line" ]]; then
+  fail 'legacy SERVICE_NAME fallback must still exist for non-blue-green targets'
+else
+  _prev=$(printf '%s\n' "$_block" | sed -n "$((_legacy_line - 1))p")
+  if [[ "$_prev" == *"elif"* ]]; then
+    pass 'legacy SERVICE_NAME fallback is gated behind the no-canary elif branch'
+  else
+    fail "legacy SERVICE_NAME fallback is NOT behind an elif branch; preceding line: '$_prev'"
+  fi
+fi
 # Candidate pre-warm is isolated from the active release: the deployer stages
 # slots/<port> before start, while the unit pins both binary and version.json
 # to that slot. current is promoted only after the candidate has passed its

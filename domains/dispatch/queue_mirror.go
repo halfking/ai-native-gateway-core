@@ -48,6 +48,17 @@ import (
 // request is alive and will still execute — the union undercounts from
 // below with no staleness marker (R73 §5).
 //
+// 2026-10-01 R73 (comment correction): "the pending set in Redis IS the union"
+// only holds while the keys are alive. Every key carries DefaultQueueMirrorTTL
+// (10 min) with no refresh on read, while a 定时请求 may legitimately park
+// far longer (DueAt has no upper bound enforced at the mirror layer), so
+// after 10 minutes the pending set silently becomes EMPTY while the request
+// is still parked. The union describes the keys' INTENT, not a durable
+// invariant. Two further limits found in the same review and NOT yet fixed:
+// the key layout carries no instance segment (multi-instance deployments
+// overwrite each other's depth counters), and a bounded-channel drop also
+// closes the Flush barrier, so Flush returning does not mean "written".
+//
 // All keys carry a TTL (default 10 min) so a dead instance's mirror fades
 // out instead of lying forever. Writes are ASYNC BYPASS: a bounded channel
 // feeds one worker goroutine; when the channel is full ops are dropped and

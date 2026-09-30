@@ -1234,8 +1234,19 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	// 2026-09-01 (P0-1 24h-audit round2): optional credential attribution
 	// filter. provider_error_details.credential_id was added by migration 639.
 	// Empty / invalid / "all" → aggregate every credential (previous
-	// behaviour). Valid ints narrow the result to that credential only, which
-	// is what the credential-detail panel needs ("this credential's errors").
+	// behaviour). Valid ints narrow the result to that credential only.
+	//
+	// R75（2026-10-01）更正：本注释原文写「which is what the credential-detail
+	// panel needs ("this credential's errors")」——**这句是错的**，读端曾据此
+	// 被认定已闭环。实际前端凭据详情页（web/src/views/provider-detail/
+	// ErrorDetailTab.vue → api/vendor-credential-error.ts）调的是
+	// GET /api/vendors/credentials/{id}/error-detail，SQL 读 supplier_errors_unified
+	// 与 candidate_failure_logs_unified，从不调用本端点。
+	// 全仓检索确认本端点零调用方（非测试代码中 "error-stats" 仅出现在
+	// providers.go 的路由 case 与本注释）。因此 provider_error_details 的
+	// 唯一生产读端就是这里，而它当前没有 UI 消费方——聚合管线本身在跑、
+	// 数据在写、但没有面板读。是否下线聚合器、或把本端点接进凭据详情页，
+	// 属产品裁决（见 45 号报告 §8），此处只把事实钉准，不擅自删接口。
 	credentialFilter := r.URL.Query().Get("credential_id")
 	if credentialFilter != "" && credentialFilter != "all" {
 		if parsed, err := strconv.Atoi(credentialFilter); err != nil || parsed <= 0 {

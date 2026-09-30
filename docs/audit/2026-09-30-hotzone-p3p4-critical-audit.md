@@ -3,7 +3,7 @@
 - 审计对象: docs/storage/2026-09-24-hotzone-dual-mode-plan.md 的 P3(H2 full 装配)、P4(H3 镜像接线)、P5(H5 指标分维度 + 文档子项,均已关闭)
 - 提交谱系: `5250eede0`(P3 装配+门控+测试)→ `4edc7574f`(P4 两接线点)→ `b67fe45b4`(P4 测试)→ `205864527`(P5 指标+接线+gofmt 补正);哈希均为 push 落定后终校值
 - 方法: 逐验收项对照代码锚点 + 子代理并行实勘(telemetry 侧实勘纠正了主代理的锚点假设,见 §三 F1)+ HEAD=205864527 干净 worktree(/tmp/hotzone-p3p4,独立 GOCACHE=/tmp/gocache-hotzone)全量回归
-- 状态: P3/P4 关闭;P5 指标与文档子项(README/ADR/deployment-guide)全部关闭。F5(第三落库点接镜像)2026-10-01 关闭,**经同轮批判式审计补修 F5-R1(S4 停写门漏项,首版实现确有缺陷)**;F3/F4/F5-R2/F5-R3 为留档项(设计决定或需 owner 拍板,非本轮缺口)。**F5 验证等级仅单测级,无部署级实证**——勿按「已闭环」对外表述
+- 状态: P3/P4 关闭;P5 指标与文档子项(README/ADR/deployment-guide)全部关闭。F5(第三落库点接镜像)2026-10-01 关闭,**经同轮批判式审计补修 F5-R1(S4 停写门漏项,首版实现确有缺陷)**;F3/F4/F5-R2/F5-R3 为留档项(设计决定或需 owner 拍板,非本轮缺口)。**F5 验证等级已由「仅单测」升为「部署级实证」**(2026-10-01 245 演练:admin 流量落 req/resp 两件套 + gunzip 内容一致 + F5-R1 关停 S4 镜像同步停;证据见 §六)。注意:245 现网无**自然** admin 调用方,F5 收益需外部 HTTP 调用方才会自然发生。
 
 ---
 
@@ -71,7 +71,7 @@ P5 指标分维度落地并顺带闭合了 hotzone_enabled 恒 false 的预存�
 | F5-R1 | **缺陷,已修(F5 首版漏项)** | F5 首版把镜像投递放在 `persistRequestLog` 入口且**不接** S4 停写门 `storage.request_logs_write_enabled`,而 telemetry client 侧明确 `if requestLogsWriteEnabled() { c.mirrorRequestBodies(entry) }`。镜像写的是 `request_logs_bodies_hot` 的**同一批正文**,运维关停该键是为止血该家族磁盘占用(F3 重复写、4.3GB/24k 行量级),镜像绕门即「停写却仍落盘」且两侧行为分裂 | 已修:抽 `admin.requestLogsWriteEnabled()` helper(键字面量只此一处,原内联门一并收敛),镜像投递纳入同键同门;`TestF5AdminIngestMirrorHonorsStopWriteGate`(判「门关零投递」而非「门开有投递」——后者在缺陷存在时也成立,钉不住)+ `TestRequestLogsWriteEnabledSingleKeyLit` 结构性钉桩;两处均经变异验证转红 |
 | F5-R2 | **已裁决并落地(2026-10-01 owner 拍板「删」)** | `admin.keepAllBodies()`(`admin/telemetry.go:243`)是**死代码**——全仓仅定义、无调用,但其文档声称「bodies 只保留失败行,可省 ~90% 磁盘」。实测 admin ingest 对 `RequestBody/ResponseBody` 无任何丢弃逻辑(仅 `admin/logs.go:1036` 读路径置 nil)。即 admin 侧全量落正文,与文档描述的策略不符 | **owner 裁决:删**。死代码的危害不在于多一个函数,而在于它带着「省 90% 磁盘」的**误导性文档**留在树里、运维照此做磁盘决策。已删函数+随之孤立的 `os` import,并把留存策略文档**移到真实生效点**(`persistRequestLog` 的 `upsertRequestLogBodies` 调用处),说明「成功/失败行一律落全量正文、唯一止血手段是 S4 键」。守护 `TestKeepAllBodiesDeadCodeRemoved` 判**剥注释后**代码不得再出现该 env 旋钮(钉失败特征而非「函数不存在」——后者会被改名/别名绕过);行为面「成功行也落正文」已由既有 `TestTelemetryIngestRequestLogStopWriteGate` 钉住,故不重复。**零生产行为变更** |
 | F5-R3 | **观察项(对账口径,F4 延伸)** | 同一 `request_id` 若既经 telemetry client 直连 PG、又经 admin HTTP ingest 投递,镜像会**两次落到不同 tenant 目录**(client 用 `ApplicationCode\|\|TenantID`、admin 用 `nonEmptyDefault(TenantID)`);`upsertRequestLogBodies` 侧有 `ON CONFLICT DO NOTHING`,但镜像层无跨写方去重 | 留档:对账脚本按 F4 口径再放宽为「镜像按 (tenant,request_id,direction) 多写方去重后比对」;不引入运行时去重(跨写方去重需要共享状态,代价高于收益) |
-| F5 | **缺陷,已修(2026-10-01 owner 拍板「接镜像」)** | admin HTTP ingest(/api/telemetry,admin/telemetry.go)也调 upsertRequestLogBodies(仅 req/resp),未接镜像——方案 §3-H3 说「两处」,此为第三处 | `admin.SetIngesterBodyMirror` 注入(atomic.Pointer 承载,main goroutine 写 / ingest worker 读),`persistRequestLog` **入口**投递(与 telemetry client 同边界,PG 停机窗口仍落镜像);tenant 取 `nonEmptyDefault(TenantID)`,与同事务 PG 行 tenant_id 严格同源(本路径无 application code 字段,故不复制 O2 的租户分裂);仅 req/resp 两件套。镜像换算/可镜像判定下沉 `storage/file.ConvertBodyPayload`+`MirrorablePayload` 作单一事实源,telemetry 落库侧 `strPtrToJSON` 与 `mirrorableBody` 同步转调(消除两侧各写一份的失配面)。测试 `admin/telemetry_ingest_body_mirror_test.go`(变异验证:摘掉入口投递即红、摘掉 S4 门即红)。**验证等级:仅单测 + 全仓 build/vet/web,无部署级实证**——仓内无 /api/telemetry 生产者(外部 HTTP 入口),真实流量存在与否未取证,「PG 停机仍落镜像」在 admin 侧仍是**未验证的推断**(telemetry 侧由 E2E 演练 O5 实测过,admin 侧未测) |
+| F5 | **缺陷,已修(2026-10-01 owner 拍板「接镜像」)** | admin HTTP ingest(/api/telemetry,admin/telemetry.go)也调 upsertRequestLogBodies(仅 req/resp),未接镜像——方案 §3-H3 说「两处」,此为第三处 | `admin.SetIngesterBodyMirror` 注入(atomic.Pointer 承载,main goroutine 写 / ingest worker 读),`persistRequestLog` **入口**投递(与 telemetry client 同边界,PG 停机窗口仍落镜像);tenant 取 `nonEmptyDefault(TenantID)`,与同事务 PG 行 tenant_id 严格同源(本路径无 application code 字段,故不复制 O2 的租户分裂);仅 req/resp 两件套。镜像换算/可镜像判定下沉 `storage/file.ConvertBodyPayload`+`MirrorablePayload` 作单一事实源,telemetry 落库侧 `strPtrToJSON` 与 `mirrorableBody` 同步转调(消除两侧各写一份的失配面)。测试 `admin/telemetry_ingest_body_mirror_test.go`(变异验证:摘掉入口投递即红、摘掉 S4 门即红)。**验证等级:2026-10-01 已升为部署级实证**——245 演练(admin 流量 req/resp 两件套落镜像、gunzip 内容与 PG 一致;F5-R1 关停 S4 键时镜像 0 落盘而计费保留),证据见 §六;但 245 现网无**自然** admin 调用方(无外部 HTTP 生产者),收益需调用方接入才自然发生。 |
 | F6 | 观察项 | gofmt:CJK 注释行首全角括号会被 gofmt 归一,首轮提交文件未逐个过 gofmt(P5 提交补正);turn_writer.go/turn_writer_test.go/empty_response_metrics_test.go 等历史文件本就未格式化,未碰 | 本轮触碰文件已全部 gofmt 干净 |
 
 ## 三.5、同日修订轮(交付后批判式复审,实勘三点 + 修复两项)
@@ -117,7 +117,7 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
 - ~~部署演练~~ **已完成(2026-09-30 当日)**:见 docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md
   (新遗留:管线 env 白名单 D1、.env.local D2、镜像对账口径 O2/O3、PG 停机遥测丢失 O5)。
 - ~~F5 决策:admin ingest 是否接镜像,owner 拍板。~~ **已决策并落地(2026-10-01)**:owner 选「接镜像,补齐第三落库点」,实现与测试见 §三 F5 行。
-- **F5 未验证项(勿当已闭环)**:① 无部署级实证(未在任何环境跑通真实 ingest 流量并读镜像文件);② 仓内无 /api/telemetry 生产者,真实流量未取证;③ admin 侧「PG 停机仍落镜像」是推断,只有 telemetry 侧被 E2E 演练 O5 实测过。
+- ~~**F5 未验证项(勿当已闭环)**~~ **已收口(2026-10-01 部署级实证)**:① 部署级实证 ✅(见上方 245 演练段:admin 流量落镜像 req/resp 两件套、gunzip 内容一致);② 真实流量 ✅(自铸 admin JWT 造流量成功——环境无**自然**调用方,但端点能力已实证);③ F5-R1「关停 S4 镜像同步停」✅(门关:镜像 0 / PG 正文 0 / 计费保留)。**验证等级由「单测」升为「部署级实证」**。注意:245 现网无**自然** admin 调用方,F5 的收益需有外部 HTTP 调用方才会自然发生。
   - **2026-10-01 245 环境侧只读勘查(owner 明确授权后执行)——结论:演练当时无法进行,原因已取证**:
     - 245 实际形态与 handoff 假设**不符**:无 `llm-gateway-go.service`(该 unit 不存在),而是**蓝绿 slot 形态**——`llmgo-245-canary@8781`(active running)与 `llmgo-245-canary@8782`(failed),`llmgo-245.service` 为 inactive dead。「重启服务」需按 slot 语义操作。
     - **部署版本不含 F5-R1**:`/opt/llm-gateway-go/slots/8781` → `releases/2369-bdc13ccc`,VERSION `2.5.8-bdc13ccc-20260930-2369`。`bdc13ccc` commit-date 2026-10-01 02:34,含 F5(`f9947d3a3` 01:32)但**不含 F5-R1**(`5cd64600e` 02:56,晚 22 分钟)。即 F5-R1 的 S4 停写门修复在 245 上**根本没上线**——演练的对照项无从谈起。
@@ -144,7 +144,34 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
       - ② 次轮判「nginx 0 命中」时,差点据此断言「端点无流量」——但 `/api/telemetry`
         实际**在 nginx 路由内且端点存活**。nginx 0 只能说明「未经该 vhost」,
         不能证明「无人调用」;必须叠加直连探测(401 存活)+ 按写入方特征拆 PG + 日志三路。
-    - **综合判定:F5 在 245 上是「接线已部署但无收益也无镜像产物」**——既无 admin 流量可打,也无热区可落。要收口需先①部署含 F5-R1 的新构建 ②显式开启 `STORAGE_MODE=full` + 热区 ③**制造** admin `/api/telemetry` 流量(环境无自然生产者,须外部 HTTP 调用方)。三者均为新决策,非本轮授权范围。- ~~**F5-R2 留档待 owner 拍板**~~ **已裁决并落地(2026-10-01)**:owner 选「删」——清掉 `keepAllBodies()` 死代码、承认 admin 全量留存、把留存策略文档移到真实生效点。零生产行为变更。详见 §二 F5-R2 行。
+    - **综合判定:F5 在 245 上是「接线已部署但无收益也无镜像产物」**——既无 admin 流量可打,也无热区可落。要收口需先①部署含 F5-R1 的新构建 ②显式开启 `STORAGE_MODE=full` + 热区 ③**制造** admin `/api/telemetry` 流量(环境无自然生产者,须外部 HTTP 调用方)。三者均为新决策,非本轮授权范围。
+
+    - **2026-10-01 F5 部署级演练已完成(owner 明确授权后执行;证据如下)**:
+      - **部署**:`scripts/deploy-seamless.sh deploy 245 --seq 2370` → release `2372-d2af305a`(含 F5 + F5-R1,
+        两者均已在二进制内,`strings` 验 `request_logs_write_enabled` 键字面量存在)。蓝绿切流至 8782,健康 200。
+      - **热区开启**:临时 `LLM_GATEWAY_STORAGE_MODE=full`(.env 备份 `.env.bak.f5drill.20261001-045524`)→
+        启动日志实证 `data/hotzone/requests/` 子树出现,且
+        `storage hotzone: admin ingest request body mirror wired` —— **F5 admin 镜像确认装配**。
+      - **admin 流量**:`/api/auth/token` 的 env 密码与 users 表漂移无法登录,改以 `LLM_GATEWAY_SECRET_KEY`
+        现铸 15 分钟 HS256 JWT 携带 `super_admin` 身份(不改任何密码/不改 users 表),
+        POST `/api/telemetry/request-log` 造 3 条 `f5-drill-*` 真实流量(均 200 queued)。
+      - **F5 落盘实证(部署级)**:3 条 drill 的 req/resp **两件套全部落镜像**,gunzip 内容与提交原文一致:
+        `data/hotzone/requests/default/2026-09-30/f5-drill-*.{req,resp}.json.gz`;
+        `gunzip -c` 得 `{"messages":[{"role":"user","content":"f5 drill ...-1 q"}]}` / `{"content":"f5 drill ...-1 a"}`。
+        PG `request_logs_bodies_hot` 同步有对应 req/resp 行 —— **镜像与 PG 语义一致**。
+      - **F5-R1 部署级实证(核心对照)**:把 `storage.request_logs_write_enabled` 置 `false`(settings_kv
+        平台行)并重启后,再打 `f5-drill-ROFF-*` 流量(均 200 queued):
+        - 热区镜像落盘 **0** 个文件(镜像随门同步停)✅
+        - PG `request_logs_bodies_hot` **0** 行(request_logs 族整体跳过)✅
+        - `usage_ledger_hot` **2** 行(计费行保留,门只停 request_logs 族)✅
+        ⇒ **F5-R1「关停 S4 键时 admin 镜像同步停」取得部署级实证**,不再只是单测推断。
+      - **恢复原状**:删除 drill 写入的 settings 行(回「键缺席=默认 true」)、从备份还原 .env
+        (移除 `STORAGE_MODE=full`)、删除 PG 全部 `f5-drill%` 行(bodies/logs/ledger,0/0/0 验证)与
+        磁盘 `f5-drill*` 镜像文件(0 验证);重启后复核:`STORAGE_MODE` 不在进程 environ、热区无新写、
+        镜像装配线已消失、8782 healthz=200。环境回到演练前状态(仅留 `.env.bak.f5drill.*` 审计备份)。
+      - **待办②结论(由「无流量」改写)**:本轮用自铸 admin JWT **制造**了 admin 流量并成功落镜像,
+        证明 F5 在部署级**确实有收益**;此前 245「无 admin 流量」的观察是**环境现状**(无自然调用方),
+        不是「端点坏掉」。真实流量有无仍取决于是否有外部 HTTP 调用方——但**能力已实证可用**。- ~~**F5-R2 留档待 owner 拍板**~~ **已裁决并落地(2026-10-01)**:owner 选「删」——清掉 `keepAllBodies()` 死代码、承认 admin 全量留存、把留存策略文档移到真实生效点。零生产行为变更。详见 §二 F5-R2 行。
 - **F5-R1 教训(接线类缺陷的通用形态)**:「同一语义门在两处调用点各自内联键字面量」是分裂入口。三个镜像消费方接入时,凡是**复用同一个 settings 键**的判定一律抽 helper 收口,并加一条「键字面量只出现一次」的结构性钉桩——行为用例钉不住这类缺陷。
 - 若做「full 热区 session_bodies 写入方」(§五.4),复用 rt.bodiesStore 实例,勿再建第二实例(AsyncFileWriter 双实例会双倍写 worker)。
 - 对账脚本(若建):按 F4 口径豁免 null/{} 行,并注意 v2 侧镜像以 tx.Commit 为界(修订轮 R-A)、telemetry 侧以 persistRequestLog 入口为界(天然含 PG-down 投递)——两侧孤儿语义不同向,脚本按「镜像可能多于 PG」单向容错。

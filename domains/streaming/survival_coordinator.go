@@ -488,8 +488,51 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		// re-runs attempts from the original snapshot without a body-rewrite
 		// hook, and must not open a no-compress retry loop. Committed
 		// failures keep the terminal (commit-block rule untouched).
-		if survivalCtxLenCompressRetryDue(ctxLenCompressRetried, res.Decision, res.FinalAttempt) {
+		// 2026-10-01 R74 P0 CORRECTION. This used to run at :491 and only
+		// rewrite the DECISION to RetryNow, leaving the actual body shrink to
+		// the branch further down (former :746) whose guard is
+		// `!ctxLenCompressRetried`. Setting the latch here consumed the
+		// one-shot budget before the body half could ever run, so the whole
+		// compress-and-retry ladder was dead code: the coordinator announced
+		// "context_length_uncommitted_compress_retry", waited out the full
+		// backoff (30s by default), and then re-sent the byte-identical
+		// oversized body, burning an attempt and a client-visible delay for
+		// nothing.
+		//
+		// The body is now rewritten HERE, where the latch is consumed, so the
+		// two halves can no longer disagree. The body half used to live further
+		// down this same iteration, behind a `!ctxLenCompressRetried` guard
+		// that this rewrite had already cleared; that unreachable branch was
+		// removed rather than left as a trap for the next reader. A shrink that fails or produces
+		// no change renders terminal immediately instead of re-colliding.
+		if !ctxLenCompressRetried && len(params.BodyBytes) > 0 && survivalAttemptHasKind(res.FinalAttempt, errorsx.KindContextLength) &&
+			res.FinalAttempt.CommitState < CommitStateContent && res.Decision.Action == TaskActionFailTerminal {
 			ctxLenCompressRetried = true
+			trimmed, ok := survivalCompressBodyForRetry(params.BodyBytes)
+			if !ok {
+				// Mechanical trim is not possible for this body shape (the
+				// Responses protocol, a body with no messages array, or a
+				// shrink that did not actually shrink). Re-sending it would
+				// only repeat the same window error, so stop here.
+				res.Decision = TaskDecision{Action: TaskActionFailTerminal, Reason: "context_length_compress_retry_failed"}
+				c.renderTerminal(res.Decision, gate, false)
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
+			logAttrs := append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
+				"body_bytes_before", len(params.BodyBytes),
+				"body_bytes_after", len(trimmed),
+			)
+			// The provider/model that rejected the oversized body. Read from
+			// the attempt's own outcomes: at this point in the loop the
+			// lastProviderID/lastRawModel locals have not been computed yet.
+			if res.FinalAttempt != nil && len(res.FinalAttempt.CandidateOutcomes) > 0 {
+				last := res.FinalAttempt.CandidateOutcomes[len(res.FinalAttempt.CandidateOutcomes)-1]
+				logAttrs = append(logAttrs, "provider_id", last.ProviderID)
+			}
+			log.Info("survival_context_length_compress_retry", logAttrs...)
+			params.BodyBytes = trimmed
 			res.Decision = TaskDecision{
 				Action: TaskActionRetryNow,
 				Reason: "context_length_uncommitted_compress_retry",
@@ -734,42 +777,6 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 					DecisionReason: res.Decision.Reason,
 				})
 			}
-			// R36 (2026-09-17 audit): one-shot compress-and-retry for an
-			// uncommitted context-length failure. The decision layer now
-			// returns RetryNow for that shape (attempt_outcome.go
-			// centralActionForTaskWithHistory); this is the body half —
-			// without it the retry would re-send the same oversized body and
-			// burn the remaining attempts on the identical window error.
-			// Mechanical trim only (no LLM summarizer this deep): a modest
-			// shrink resolves marginal overflows; a failed shrink renders
-			// terminal immediately instead of re-colliding.
-			if !ctxLenCompressRetried && len(params.BodyBytes) > 0 && survivalAttemptHasKind(res.FinalAttempt, errorsx.KindContextLength) {
-				ctxLenCompressRetried = true
-				if trimmed, ok := survivalCompressBodyForRetry(params.BodyBytes); ok {
-					log.Info("survival_context_length_compress_retry", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
-						"body_bytes_before", len(params.BodyBytes),
-						"body_bytes_after", len(trimmed),
-						"provider_id", lastProviderID,
-						"raw_model", lastRawModel,
-					)...)
-					params.BodyBytes = trimmed
-				} else {
-					res.Decision = TaskDecision{Action: TaskActionFailTerminal, Reason: "context_length_compress_retry_failed"}
-					c.renderTerminal(res.Decision, gate, false)
-					recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
-					recordSurvivalRequestTerminal(c.Protocol, res.Decision)
-					log.Warn("survival_task_ended",
-						"attempt", res.Attempts,
-						"action", res.Decision.Action.String(),
-						"reason", res.Decision.Reason,
-						"committed", res.FinalAttempt.CommitState >= CommitStateContent,
-						"succeed", false,
-						"provider_id", lastProviderID,
-						"raw_model", lastRawModel,
-					)
-					return res
-				}
-			}
 			if !c.now().Before(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
 				c.renderTerminal(res.Decision, gate, false)
@@ -894,6 +901,35 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				}
 			}
 			_ = finishGateWriter(gw, gate)
+
+			// 2026-10-01 R74: tell the client WHY the stream is ending before
+			// the terminal envelope lands. This branch previously emitted no
+			// transport frame at all, so a committed-then-interrupted request
+			// — arguably the case that most needs explaining, since the
+			// client already holds a partial answer and cannot tell a
+			// deliberate stop from a truncation — gave the client nothing but
+			// a bare error. Every other failure class on this path gets a
+			// think notice (notifyRetry above); this one did not.
+			//
+			// The notice is a comment frame, so it cannot corrupt the answer
+			// bytes the client already received, and it carries no upstream
+			// text — only the decision reason, which is a closed enum here.
+			//
+			// It does NOT reuse notifyRetry: that renders "正在等待可用节点并重试
+			// （…，等待 0s）", which promises a retry that this branch is
+			// explicitly forbidden from making (ADR-Disp-003 bars a transparent
+			// switch once content is committed, to avoid duplicate answers).
+			// Promise-then-stop is worse than silence.
+			if res.Decision.Action == TaskActionResumeBlocked && c.RetryNotice != nil {
+				if err := c.RetryNotice(ctx, res.Attempts, TaskDecision{
+					Action: TaskActionResumeBlocked,
+					Reason: "partial_answer_delivered_stop",
+				}, 0); err != nil {
+					slog.Warn("survival resume-blocked notice failed",
+						"attempt", res.Attempts, "reason", res.Decision.Reason, "error", err)
+				}
+			}
+
 			// An L2 replay that missed leaves the LAST gate uncommitted (the
 			// replay was voided), but the client already saw the interrupted
 			// attempt's bytes — the terminal must render as committed so the

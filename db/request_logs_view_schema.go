@@ -790,3 +790,51 @@ func SessionFamilyTurnsForSessionSQL() string {
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
 		" WHERE t.session_id = $1)"
 }
+
+// MirrorDriftClassSQL classifies a V1 request_logs row into the three buckets
+// the session mirror hook cares about. Kept as one expression so the aggregate
+// and the breakdown cannot disagree — and so every consumer that needs to
+// exclude "the hook would not have mirrored this" agrees on the definition.
+//
+// The two exclusion arms are a statement-by-statement transcription of the
+// Go gates in internal/sessionv2mirror/hook.go — NOT an independent guess at
+// "what looks internal". Divergence is not cosmetic: a row the hook
+// deliberately skipped but this expression calls genuine_loss keeps s4_ready
+// false forever and blocks the cutover that is actually safe.
+//
+//	internal_loopback ← hook.go:102 `!synthetic && IsInternalAutoEntry(entry)`
+//	    IsInternalAutoEntry (telemetry/internal_loopback.go:23-39):
+//	      1. requires is_auto_request IS TRUE (a NULL is NOT internal);
+//	      2. request_type  ∈ {title_gen, summary};
+//	      3. origin_actor  ∈ {auto-title-generator, auto-summary-generator,
+//	                          session-summary};
+//	      4. otherwise task_type IS NULL/'' (taskless auto entry).
+//	    work_type is deliberately NOT an arm: the Go gate never reads it, so
+//	    keying on it would mask real loss (is_auto_request=TRUE + task_type
+//	    set + work_type='session_title' is a business turn the hook mirrors).
+//	non_terminal ← hook.go:71 `!entry.Success && !isTerminalFailure(entry)`
+//	    isTerminalFailure (hook.go:991-1002) is true when request_status ∈
+//	    {failure, rate_limited} OR error_kind is non-empty; the row is
+//	    mirrored when Success is true. Negating both yields the arm below.
+//
+// SSOT: this used to live as an unexported const in package main
+// (cmd/gateway/dual_read_validator.go), which made it unreachable from admin.
+// Duplicating it there would have put a 10-line classification under two
+// definitions with no compiler link between them; the existing parity test
+// (cmd/gateway/dual_read_class_parity_test.go) only guards the main copy.
+//
+// The fragment hardcodes the table alias `rl` — callers must alias their
+// source that way. `... <> 'genuine_loss'` is the exclusion form.
+const MirrorDriftClassSQL = `
+CASE
+  WHEN COALESCE(rl.is_auto_request, false)
+       AND (   TRIM(COALESCE(rl.request_type, '')) IN ('title_gen', 'summary')
+            OR TRIM(COALESCE(rl.origin_actor, '')) IN ('auto-title-generator',
+                                                        'auto-summary-generator',
+                                                        'session-summary')
+            OR TRIM(COALESCE(rl.task_type, '')) = '')            THEN 'internal_loopback'
+  WHEN NOT COALESCE(rl.success, false)
+       AND TRIM(COALESCE(rl.request_status, '')) NOT IN ('failure', 'rate_limited')
+       AND TRIM(COALESCE(rl.error_kind, '')) = ''                 THEN 'non_terminal'
+  ELSE 'genuine_loss'
+END`

@@ -38,6 +38,16 @@ import (
 // tokens that users may have pasted. This masks the summary input only — the
 // outbound body forwarded upstream is untouched and remains byte-faithful.
 func extractConversationText(body []byte, clientProtocol string) (string, error) {
+	return ExtractConversationText(body, clientProtocol)
+}
+
+// ExtractConversationText is the exported entry point for other domains
+// that need the same protocol-aware, secret-masked conversation rendering.
+// 2026-10-01 R74: domains/hooks/handoff had its own extractor that only
+// understood OpenAI chat's string-content shape, so an Anthropic or
+// Responses client produced an EMPTY resume summary with no error. Sharing
+// one implementation keeps the two from drifting again.
+func ExtractConversationText(body []byte, clientProtocol string) (string, error) {
 	var (
 		text string
 		err  error

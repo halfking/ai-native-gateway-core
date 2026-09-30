@@ -5,6 +5,12 @@ import "testing"
 func TestStartupFilesIncludeRequestJourneyOutboxPrerequisites(t *testing.T) {
 	runner := NewRunner("citus", "user", "db", "/tmp/sql")
 	want := []string{
+		// 2026-10-01: session_turns_hot_bootstrap moved to the head cluster —
+		// 707 §2 expands the hot table in lock-step with the parent, so the
+		// bootstrap (the canonical fresh-install hot creator) must precede
+		// 706/707; the pin below keeps the request-journey/durable family in
+		// its dependency order after it.
+		"session_turns_hot_bootstrap.sql",
 		"511_state_transitions_table.sql",
 		"515_state_transitions_seq_unique.sql",
 		"521_repair_state_transitions_tenant.sql",
@@ -18,7 +24,6 @@ func TestStartupFilesIncludeRequestJourneyOutboxPrerequisites(t *testing.T) {
 		"618_request_journey_snapshot_receipts.sql",
 		"656_auto_route_selections_hot.sql",
 		"657_durable_llm_tasks_decision_history.sql",
-		"session_turns_hot_bootstrap.sql",
 	}
 	positions := make(map[string]int, len(runner.StartupFiles))
 	for i, name := range runner.StartupFiles {
