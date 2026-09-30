@@ -120,7 +120,7 @@ func TestSessionSummaryV2FallbackBodiesStaysOnIndexPath(t *testing.T) {
 		timestamps[i] = k.ts
 	}
 
-	rows, err := pool.Query(ctx, "EXPLAIN "+fallbackBodiesSQL, requestIDs, timestamps)
+	rows, err := pool.Query(ctx, "EXPLAIN "+sessionBodiesByRequestIDAndTSSQL, requestIDs, timestamps)
 	if err != nil {
 		t.Fatalf("explain phase 2: %v", err)
 	}

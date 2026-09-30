@@ -262,12 +262,11 @@ func newFallbackTurnKey(requestID string, ts time.Time) fallbackTurnKey {
 	return fallbackTurnKey{requestID: requestID, tsUnixMicr: ts.UnixMicro()}
 }
 
-// fallbackBody is the body pair for one turn. The zero value means "no body
-// row for this turn", which is what the previous LEFT JOIN produced as NULL.
-type fallbackBody struct {
-	requestBody  []byte
-	responseBody []byte
-}
+// The per-turn body value now lives in sessionBody (session_bodies_batch.go)
+// rather than a summary-local type, so the summary and compare paths cannot
+// drift on how a "no body stored" turn is represented. A missing map entry and a
+// map entry holding nils mean the same thing here: what the old LEFT JOIN
+// delivered as NULL.
 
 // queryRequestLogsFallback derives turn-shaped conversation text from the
 // V1 request_logs store. request_logs_with_current_month already includes the
@@ -305,7 +304,11 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	bodies, err := api.queryFallbackBodies(ctx, keys, timestamps)
+	requestIDs := make([]string, len(keys))
+	for i, key := range keys {
+		requestIDs[i] = key.requestID
+	}
+	bodies, err := querySessionBodiesByRequestIDAndTS(ctx, api.pool, requestIDs, timestamps)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +318,7 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 // mergeFallbackTurns pairs each turn identity with its body, preserving the
 // order phase 1 produced. A turn with no stored body keeps a nil delta, which
 // is byte-for-byte what the old LEFT JOIN emitted as NULL.
-func mergeFallbackTurns(keys []fallbackTurnKey, bodies map[fallbackTurnKey]fallbackBody) []turnForSummary {
+func mergeFallbackTurns(keys []fallbackTurnKey, bodies map[fallbackTurnKey]sessionBody) []turnForSummary {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -324,8 +327,8 @@ func mergeFallbackTurns(keys []fallbackTurnKey, bodies map[fallbackTurnKey]fallb
 		body := bodies[key]
 		turns = append(turns, turnForSummary{
 			TurnNo:        i + 1,
-			RequestDelta:  decodeStoredJSON("request_body", key.requestID, body.requestBody),
-			ResponseDelta: decodeStoredJSON("response_body", key.requestID, body.responseBody),
+			RequestDelta:  decodeStoredJSON("request_body", key.requestID, strPtrBytes(body.requestBody)),
+			ResponseDelta: decodeStoredJSON("response_body", key.requestID, strPtrBytes(body.responseBody)),
 		})
 	}
 	return turns
@@ -362,66 +365,6 @@ func (api *SessionSummaryV2API) queryFallbackTurnKeys(
 	return keys, timestamps, nil
 }
 
-// fallbackBodiesSQL is phase 2. The tuple IN (SELECT ... FROM unnest(...))
-// semi-join is deliberate and load-bearing: it is the shape that keeps the
-// planner on the (request_id, ts) primary key.
-//
-//	IN (VALUES ...)  → Index Scan using request_logs_bodies_2026_09_pkey   7 ms
-//	unnest + LEFT JOIN → ColumnarScan over all 2,216,660 rows            10,365 ms
-//
-// A LEFT JOIN against a function scan cannot be reordered the same way, so the
-// planner decides a full columnar scan is cheapest and does it once. Driving
-// the semi-join from the other side gives it a 20-row hash it can probe with
-// index lookups instead. Two arrays (not a VALUES list) keep this one
-// parameter each, so an unbounded upToTurn cannot blow the 65535 parameter
-// ceiling.
-const fallbackBodiesSQL = `
-	SELECT rb.request_id,
-	       rb.ts,
-	       rb.request_body,
-	       rb.response_body
-	FROM request_logs_bodies_with_current_month rb
-	WHERE (rb.request_id, rb.ts) IN (
-		SELECT *
-		FROM unnest($1::text[], $2::timestamptz[]) AS k(request_id, ts)
-	)`
-
-// queryFallbackBodies runs phase 2 and returns the bodies that exist, keyed by
-// turn identity. Turns with no stored body are simply absent from the map.
-func (api *SessionSummaryV2API) queryFallbackBodies(
-	ctx context.Context,
-	keys []fallbackTurnKey,
-	timestamps []time.Time,
-) (map[fallbackTurnKey]fallbackBody, error) {
-	requestIDs := make([]string, len(keys))
-	for i, key := range keys {
-		requestIDs[i] = key.requestID
-	}
-
-	rows, err := api.pool.Query(ctx, fallbackBodiesSQL, requestIDs, timestamps)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	bodies := make(map[fallbackTurnKey]fallbackBody, len(keys))
-	for rows.Next() {
-		var requestID string
-		var ts time.Time
-		var reqRaw, respRaw []byte
-		if err := rows.Scan(&requestID, &ts, &reqRaw, &respRaw); err != nil {
-			return nil, err
-		}
-		// Same normalization as the key built in phase 1 — the two must be
-		// built by the same function or every hit becomes a miss.
-		bodies[newFallbackTurnKey(requestID, ts)] = fallbackBody{
-			requestBody:  reqRaw,
-			responseBody: respRaw,
-		}
-	}
-	return bodies, rows.Err()
-}
-
 func buildRequestLogsFallbackQuery(sessionID, tenantID string, upToTurn *int) (string, []any) {
 	// 会话存储解耦 v3 审计（2026-09-30）：本查询曾迁到 session 族原生源
 	// （实测 14000ms → 5308ms）又因「镜像漏写 20,660 会话」被回退。§5.3.1
@@ -434,7 +377,7 @@ func buildRequestLogsFallbackQuery(sessionID, tenantID string, upToTurn *int) (s
 	// 对本端点而言这是**净收益**：总结正文此前会把网关自己生成的标题/摘要
 	// 调用当成用户发言喂进对话文本。
 	//
-	// 2026-10-01：正文腿从本查询里摘出，改由 queryFallbackBodies 单独取。
+	// 2026-10-01：正文腿从本查询里摘出，改由 querySessionBodies 单独取。
 	// 本查询现在只投影 request_id + ts —— 见 queryRequestLogsFallback 的
 	// 计时对比（40,483ms → 41ms）。正文仍取 v1 bodies 视图（rb 腿未换源）：
 	// session_bodies 只有增量、无 final_full 全量，正文存储决策未落地前
