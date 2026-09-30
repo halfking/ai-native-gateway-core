@@ -95,12 +95,31 @@ func TestMergeCatalogSearchHitsKeepsTitleMatch(t *testing.T) {
 	}
 }
 
+func TestMergeCatalogSearchHitsKeepsModelListMatch(t *testing.T) {
+	hits := []catalogSearchHit{{
+		SessionID: "gw_13543929-a852-440e-a96f-138e7bff99ea",
+		Model:     "deepseek-v4-flash-260425",
+	}}
+	got := filterCatalogItems(mergeCatalogSearchHits(nil, hits, "tenant-a"), "deepseek-v4-flash")
+	if len(got) != 1 || got[0].CurrentModel != "deepseek-v4-flash-260425" || got[0].Status != "" {
+		t.Fatalf("model list hit dropped: %+v", got)
+	}
+}
+
 func TestCatalogSearchSQLDoesNotScanRequestLogs(t *testing.T) {
 	if strings.Contains(catalogSearchSQL, "request_logs") {
 		t.Fatal("search SQL must stay on session_summaries; request_logs ILIKE measured about 16s")
 	}
 	if !strings.Contains(catalogSearchSQL, "session_summaries") || !strings.Contains(catalogSearchSQL, "btrim(session_key)") {
 		t.Fatal("search SQL missing summary source or blank-id guard")
+	}
+	if !strings.Contains(catalogSearchSQL, "array_to_string(models_used, chr(10))") {
+		t.Fatal("search must match each models_used element; space join can hit across names")
+	}
+	element := strings.Index(catalogSearchSQL, "unnest(models_used)")
+	primary := strings.Index(catalogSearchSQL, "NULLIF(btrim(primary_model)")
+	if element < 0 || primary < 0 || element > primary {
+		t.Fatal("matching models_used element must be selected before primary_model")
 	}
 	if strings.Contains(catalogUsageSQL, "request_logs_with_current_month") {
 		t.Fatal("usage SQL must not use the turn-joined view")

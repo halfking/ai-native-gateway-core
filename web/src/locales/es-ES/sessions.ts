@@ -134,7 +134,7 @@ export default {
     online: 'En línea',
     directory: 'Directorio',
     searchPlaceholder: 'Buscar título, id de sesión, modelo o etiquetas',
-    searchHint: 'Las filas cargadas se filtran al momento por id, título, modelo y etiquetas. El servidor también busca título e id en los resúmenes de sesión y no recorre todo el registro de peticiones. Hasta 200 filas.',
+    searchHint: 'Las filas cargadas se filtran al momento por id, título, modelo y etiquetas. El servidor busca id, título y la lista de modelos en los resúmenes, y no recorre el registro de peticiones. Una sesión sin modelo en su resumen solo aparece por modelo si ya está cargada. Hasta 200 filas; un modelo frecuente devuelve las más recientes.',
     loading: 'Cargando…',
     refresh: 'Actualizar',
     retry: 'Reintentar',
