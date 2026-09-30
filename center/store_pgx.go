@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // PgxStore PostgreSQL实现
@@ -267,12 +268,11 @@ func (s *PgxStore) GetCommand(ctx context.Context, commandID string) (*Command, 
 		return nil, err
 	}
 
-	if len(argsJSON) > 0 {
-		_ = json.Unmarshal(argsJSON, &cmd.Args)
-	}
-	if len(resultJSON) > 0 {
-		_ = json.Unmarshal(resultJSON, &cmd.Result)
-	}
+	// R67：jsonb 反序列化失败按零值继续并留痕，不上抛——单行数据坏了不应
+	// 把整个命令查询变成错误。原先 `_ = json.Unmarshal(...)` 零痕迹，运维
+	// 无法区分「这行本来就是空的」与「这行数据坏了」。
+	jsoncol.Decode("center.PgxStore.GetCommand/args", argsJSON, &cmd.Args)
+	jsoncol.Decode("center.PgxStore.GetCommand/result", resultJSON, &cmd.Result)
 
 	return cmd, nil
 }
@@ -301,9 +301,7 @@ func (s *PgxStore) ListPendingCommands(ctx context.Context, instanceID string) (
 		); err != nil {
 			return nil, err
 		}
-		if len(argsJSON) > 0 {
-			_ = json.Unmarshal(argsJSON, &cmd.Args)
-		}
+		jsoncol.Decode("center.PgxStore.ListPendingCommands/args", argsJSON, &cmd.Args)
 		commands = append(commands, cmd)
 	}
 	// R66: 待执行命令被静默截断 = 节点侧永远收不到后半批命令。
@@ -359,12 +357,8 @@ func (s *PgxStore) GetCommandHistory(ctx context.Context, instanceID string, lim
 		); err != nil {
 			return nil, err
 		}
-		if len(argsJSON) > 0 {
-			_ = json.Unmarshal(argsJSON, &cmd.Args)
-		}
-		if len(resultJSON) > 0 {
-			_ = json.Unmarshal(resultJSON, &cmd.Result)
-		}
+		jsoncol.Decode("center.PgxStore.GetCommandHistory/args", argsJSON, &cmd.Args)
+		jsoncol.Decode("center.PgxStore.GetCommandHistory/result", resultJSON, &cmd.Result)
 		commands = append(commands, cmd)
 	}
 	// R66: 命令历史被静默截断 = 运维审计面凭空少若干条下发记录。
