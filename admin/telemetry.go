@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -233,17 +232,6 @@ func SetIngesterRedisClient(rc *redis.Client) {
 }
 
 var ingester *telemetryIngester
-
-// keepAllBodies returns true when the operator has explicitly opted
-// into persisting request/response bodies for ALL requests (including
-// successful ones). Default is false — bodies are only kept for
-// failed rows, which slashes request_logs_bodies disk usage by ~90%.
-// Override at runtime: `export LLM_GATEWAY_KEEP_ALL_BODIES=true` and
-// restart. Used by 2026-07-13 disk-pressure incident on 154.
-func keepAllBodies() bool {
-	v := os.Getenv("LLM_GATEWAY_KEEP_ALL_BODIES")
-	return v == "true" || v == "1"
-}
 
 // StartIngester spins up the in-process telemetry ingest worker.
 // Called from cmd/gateway/main.go once the DB pool is ready.
@@ -526,6 +514,14 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		// This path must tolerate both historical UNIQUE (request_id, ts) and
 		// migration-455 UNIQUE (request_id) deployments, because live hosts can
 		// report schema_migrations=455 while still serving the old unique index.
+		//
+		// 正文留存策略（2026-10-01 owner 拍板 F5-R2）：本路径对成功/失败行
+		// **一律落全量正文**，无 success 过滤。历史上的 keepAllBodies()
+		// 及其「只留失败行、省 ~90% 磁盘」的文档描述是**死代码**（定义即无
+		// 调用），已按裁决删除；文档与实现的偏差即本次清理的目标。
+		// 运维侧当前唯一生效的止血手段是关停 S4 键
+		// storage.request_logs_write_enabled（见 requestLogsWriteEnabled）。
+		// F5 接镜像后同一批正文另落一份热区，故镜像与 PG 共用该键同门。
 		err = upsertRequestLogBodies(ctx, tx, e.RequestID, e.RequestBody, e.ResponseBody)
 
 		if err != nil {

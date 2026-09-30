@@ -189,8 +189,10 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 		if err := rows.Scan(&id, &role, &parentID, &reason, &strategy,
 			&compMeta, &attachments, &createdAt, &reqBody, &respBody,
 			&clientModel, &outboundModel); err != nil {
-			slog.Warn("scan row failed", "session", sessionID, "err", err)
-			continue
+			// R66（category 4）：取证包必须是**完整**的会话转录。跳行会
+			// 让 turn 序号与真实请求错位（turn++ 在其后），产出一份
+			// 看起来自洽、实则缺轮的证据包——比导出失败危险得多。上抛。
+			return nil, fmt.Errorf("scan message row (session %s): %w", sessionID, err)
 		}
 		turn++
 		msg := ExportMessage{
@@ -305,8 +307,10 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 		if err := rows.Scan(&id, &role, &parentID, &reason, &strategy,
 			&compMeta, &attachments, &createdAt, &reqBody, &respBody,
 			&clientModel, &outboundModel); err != nil {
-			slog.Warn("scan row failed", "session", sessionID, "err", err)
-			continue
+			// R66（category 4）：取证包必须是**完整**的会话转录。跳行会
+			// 让 turn 序号与真实请求错位（turn++ 在其后），产出一份
+			// 看起来自洽、实则缺轮的证据包——比导出失败危险得多。上抛。
+			return nil, fmt.Errorf("scan message row (session %s): %w", sessionID, err)
 		}
 		turn++
 		msg := ExportMessage{
@@ -428,7 +432,9 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 		)
 		if err := rows.Scan(&sid, &turns, &hits, &mis, &ptOk,
 			&tpTokens, &trTokens, &tcost, &earliest, &lates, &models); err != nil {
-			continue
+			// R66（category 4）：会话审计清单跳行 = 该会话在审计视图里
+			// 凭空消失（审计面不会显示“少了一条”）。上抛。
+			return nil, fmt.Errorf("scan session audit row (tenant %s): %w", tenantID, err)
 		}
 		if sid == nil || *sid == "" {
 			continue
@@ -453,6 +459,13 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 			a.LatestAt = *lates
 		}
 		out = append(out, a)
+	}
+	// R66（category 4）：清单被静默截断 = 审计视角下最近会话凭空少了
+	// 一段，且 limit 已填满的假象会让人以为“就这些了”。上抛。
+	// 本函数走 e.store 的 RowIterator 接口（Close() error），不是 pgx.Rows，
+	// 故直接调 rows.Err()，不走 internal/dbrows。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sessionforensics.Exporter.ListRecentSessions: iterate rows: %w", err)
 	}
 	return out, nil
 }

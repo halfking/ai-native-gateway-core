@@ -46,6 +46,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
@@ -303,12 +304,19 @@ func (r *ModelProbeRunner) recoveringSweepTick(ctx context.Context) {
 	}
 	for rows.Next() {
 		var row recoveringRow
-		if err := rows.Scan(&row.CredID, &row.RawModel); err != nil {
+		if dbrows.SkipOrFail("bg.recoveringSweepTick", rows.Scan(&row.CredID, &row.RawModel)) {
 			continue
 		}
 		ids = append(ids, row)
 	}
 	rows.Close()
+	// R66: 迭代中断只让 Next() 返回 false，不查 Err() 就等于把「读到第 N
+	// 行时连接断了」当成「候选已读完」——sweeper 会静默少扫一批恢复目标。
+	// 下一轮 tick 会重选，这里只留痕不中断 worker。
+	if err := rows.Err(); err != nil {
+		slog.Warn("recovering sweeper: row iteration aborted; candidate batch truncated",
+			"error", err, "candidates", len(ids))
+	}
 	if len(ids) == 0 {
 		return
 	}
@@ -727,7 +735,9 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 			&ciphertext, &q.t.ManualDisabled,
 			&q.state, &q.succCnt, &q.failCnt,
 		); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelProbeRunner.cycle", err) {
+				continue
+			}
 		}
 		// 2026-07-14 audit fix: dedupe by (credential_id, raw_model) within
 		// a single cycle. The SQL query is not strictly unique because the
@@ -757,6 +767,12 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		}
 		q.t.APIKey = apiKey
 		due = append(due, q)
+	}
+	// R66: 目标批次被截断会让本轮少探若干到期 binding，探针统计随之偏小。
+	// worker 继续跑，只留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("model probe v2: target row iteration aborted; batch truncated",
+			"error", err, "targets", len(due))
 	}
 	if len(due) == 0 {
 		return
@@ -911,7 +927,9 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality,
 			&t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled, &standardized,
 		); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelProbeRunner.featuredCycle", err) {
+				continue
+			}
 		}
 		if t.ManualDisabled {
 			continue
@@ -948,6 +966,12 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			result.latencyMs, "unchanged", false, "scheduler")
 		tested++
 		time.Sleep(2 * time.Second) // rate limit: 2s between probes
+	}
+	// R66: 深探目标批被截断会让本轮「常用模型」自检少跑若干目标，
+	// tested 计数随之偏小。worker 继续跑，只留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("featured cycle (Layer 4): row iteration aborted; batch truncated",
+			"error", err, "tested", tested)
 	}
 	slog.Info("featured cycle (Layer 4) complete",
 		"tested", tested,
@@ -1103,6 +1127,9 @@ func (r *ModelProbeRunner) applyPassiveBoosts(ctx context.Context) {
 		var credID int64
 		var rawModel string
 		if err := rows.Scan(&credID, &rawModel); err != nil {
+			// R66: 裸 continue 会让这条失败日志对应的 boost 静默丢失
+			//（下次重试窗口才可能补上），必须留痕。
+			dbrows.WarnRowSkip("bg.ModelProbeRunner.applyPassiveBoosts", err)
 			continue
 		}
 		if _, err := r.db.Exec(ctx,
@@ -1547,7 +1574,9 @@ func (r *ModelProbeRunner) TriggerAllSync(ctx context.Context, providerID int) (
 			&t.BaseURL, &t.Protocol,
 			&ciphertext, &t.ManualDisabled,
 		); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelProbeRunner.TriggerAllSync", err) {
+				continue
+			}
 		}
 
 		if t.ManualDisabled {
@@ -1745,9 +1774,16 @@ func (r *ModelProbeRunner) ListStates(ctx context.Context, providerID int, state
 			&s.ConsecutiveSuccesses, &s.ConsecutiveFailures, &s.TotalAttempts,
 			&s.LastAttemptAt, &s.NextRetryAt, &s.LastStatus,
 			&s.LastStateChangeAt, &s.LastStateChangeRun); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelProbeRunner.ListStates", err) {
+				continue
+			}
 		}
 		out = append(out, s)
+	}
+	// R66: 调用方（admin probe 面板）拿到的 state 列表若被静默截断，
+	// 会把「没列出」误读成「该 provider 没有这个 binding」。必须上抛。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("bg.ModelProbeRunner.ListStates: iterate rows: %w", err)
 	}
 	return out, nil
 }

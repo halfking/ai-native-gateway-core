@@ -370,9 +370,17 @@ func (h *Handler) handleFreePoolSignupHub(w http.ResponseWriter, r *http.Request
 		defer rows.Close()
 		for rows.Next() {
 			var code string
-			if rows.Scan(&code) == nil {
+			if err := rows.Scan(&code); err == nil {
 				registered[code] = true
+			} else {
+				warnRowSkip("freePool.signupHubRegisteredCodes", err)
 			}
+		}
+		// best-effort：registered 只驱动 pool_registered 这一个展示位，查询
+		// 失败时已有上游的 err==nil 保护，中断同样只留痕不 500。
+		if err := rows.Err(); err != nil {
+			slog.Warn("admin free pool signup hub registered codes iteration aborted",
+				"op", "freePool.signupHubRegisteredCodes", "error", err)
 		}
 	}
 
@@ -1290,6 +1298,9 @@ func (h *Handler) handleFreePoolListKeys(w http.ResponseWriter, r *http.Request)
 			"provider_name":      providerName,
 			"base_url":           baseURL,
 		})
+	}
+	if writeAggRowsErr(w, "freePool.listKeys", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

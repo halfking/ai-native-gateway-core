@@ -86,6 +86,11 @@ func (c *Config) Stop() {
 
 // reload fetches all settings from settings_kv and atomically replaces
 // the in-memory map.
+//
+// R66（category 5）：本读是「全量替换」语义——newValues 会整体顶掉
+// c.values。若迭代中途断掉却继续替换，配置会**静默缩水**：被丢掉的
+// llmgw_* 键一律回落硬编码默认值，没有任何 error。因此必须上抛，
+// 让 reload 失败、保留上一份完整快照。
 func (c *Config) reload(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT key, value
@@ -112,6 +117,10 @@ func (c *Config) reload(ctx context.Context) error {
 			continue
 		}
 		newValues[key] = val
+	}
+	// R66：见函数注释——残缺快照不得顶替完整快照。
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("hotconfig.Config.reload: iterate rows: %w", err)
 	}
 
 	c.mu.Lock()

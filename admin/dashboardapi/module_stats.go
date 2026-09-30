@@ -152,6 +152,14 @@ func (h *ModuleStatsHandler) HandleModuleStats(w http.ResponseWriter, r *http.Re
 		totalCacheRate += item.CacheHitRate
 		totalDuration += item.AvgDurationMs
 	}
+	// 迭代中断（连接断开/服务端错误）只会让 Next() 返回 false。不查
+	// Err() 就继续算 summary，会把「读了一半」当成「读完」→ 静默 200
+	// 返回偏小的 module 统计（total_execs / cache 命中率一起偏）。
+	if err := rows.Err(); err != nil {
+		apiStatus = "error"
+		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to iterate module stats rows", err.Error())
+		return
+	}
 
 	summary := ModuleStatsSummary{
 		TotalModules:    len(modules),

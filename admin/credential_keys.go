@@ -139,6 +139,10 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 		ki.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 		keys = append(keys, ki)
 	}
+	// 迭代中断会让"该凭据有几把轮换 key"少报，且 kid_index 缺口无提示。
+	if writeAggRowsErr(w, "credentialKeys.list", rows.Err()) {
+		return
+	}
 	if keys == nil {
 		keys = []keyInfo{}
 	}

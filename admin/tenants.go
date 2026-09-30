@@ -262,9 +262,13 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 		var t tenantInfo
 		if err := rows.Scan(&t.Code, &t.Name, &t.Status, &t.Description, &t.ContactEmail,
 			&t.CreatedAt, &t.UpdatedAt, &t.UserCount, &t.APIKeyCount, &t.TotalRequests); err != nil {
+			warnRowSkip("tenants.list", err)
 			continue
 		}
 		tenants = append(tenants, t)
+	}
+	if writeAggRowsErr(w, "tenants.list", rows.Err()) {
+		return
 	}
 	if tenants == nil {
 		tenants = []tenantInfo{}
@@ -304,6 +308,7 @@ func (h *Handler) attachTenantUsage7d(ctx context.Context, tenants []tenantInfo)
 		var reqs, tokens, credits int64
 		var cost float64
 		if err := rows.Scan(&code, &reqs, &tokens, &credits, &cost); err != nil {
+			warnRowSkip("tenants.attachUsage7d", err)
 			continue
 		}
 		if i, ok := idx[code]; ok {
@@ -312,6 +317,12 @@ func (h *Handler) attachTenantUsage7d(ctx context.Context, tenants []tenantInfo)
 			tenants[i].Credits7d = credits
 			tenants[i].Cost7d = cost
 		}
+	}
+	// 富化降级通道（无 ResponseWriter）：查询失败时上面已经直接 return，
+	// 迭代中断同样不能静默——留痕后按已取到的租户继续，不把 7 天用量升格成
+	// listTenants 的 500。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("tenants usage 7d enrichment iteration aborted; fields degraded", "error", rerr)
 	}
 }
 
@@ -598,9 +609,13 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 		var u userInfo
 		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email,
 			&u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
+			warnRowSkip("tenants.listUsers", err)
 			continue
 		}
 		users = append(users, u)
+	}
+	if writeAggRowsErr(w, "tenants.listUsers", rows.Err()) {
+		return
 	}
 	if users == nil {
 		users = []userInfo{}
@@ -660,10 +675,14 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 		if err := rows.Scan(&k.ID, &k.TenantID, &k.KeyPrefix, &k.KeyAlias, &k.OwnerUser,
 			&k.Enabled, &k.Status, &k.AppID, &k.AppCode,
 			&k.TotalReqs, &k.TotalCost, &expiresAt, &k.CreatedAt); err != nil {
+			warnRowSkip("tenants.listKeys", err)
 			continue
 		}
 		k.ExpiresAt = expiresAt
 		keys = append(keys, k)
+	}
+	if writeAggRowsErr(w, "tenants.listKeys", rows.Err()) {
+		return
 	}
 	if keys == nil {
 		keys = []tenantKeyInfo{}
@@ -809,8 +828,18 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		defer modelRows.Close()
 		for modelRows.Next() {
 			var m tenantModelBreakdown
-			_ = modelRows.Scan(&m.Model, &m.Requests, &m.Tokens, &m.Credits, &m.Cost)
+			// R78: 扫描失败原本是 `_ =`，坏行会把全零的 model 条目塞进
+			// by_model（客户端看不出是坏数据还是真零流量）。跳行留痕。
+			if scanErr := modelRows.Scan(&m.Model, &m.Requests, &m.Tokens, &m.Credits, &m.Cost); scanErr != nil {
+				warnRowSkip("tenants.stats.byModel", scanErr)
+				continue
+			}
 			s.ByModel = append(s.ByModel, m)
+		}
+		// 迭代中断会静默截断 top-20 列表；同 daily 段口径显式失败。
+		if rerr := modelRows.Err(); rerr != nil {
+			writeTenantStatsError(w, ctx, code, "by-model aggregate iteration", rerr)
+			return
 		}
 	}
 	if s.ByModel == nil {
@@ -845,8 +874,15 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		defer appRows.Close()
 		for appRows.Next() {
 			var a tenantAppBreakdown
-			_ = appRows.Scan(&a.AppCode, &a.Requests, &a.Tokens, &a.Credits, &a.Cost)
+			if scanErr := appRows.Scan(&a.AppCode, &a.Requests, &a.Tokens, &a.Credits, &a.Cost); scanErr != nil {
+				warnRowSkip("tenants.stats.byApplication", scanErr)
+				continue
+			}
 			s.ByApplication = append(s.ByApplication, a)
+		}
+		if rerr := appRows.Err(); rerr != nil {
+			writeTenantStatsError(w, ctx, code, "by-application aggregate iteration", rerr)
+			return
 		}
 	}
 	if s.ByApplication == nil {

@@ -404,11 +404,17 @@ func (h *Handler) handleSystemMonitorRecentRuns(w http.ResponseWriter, r *http.R
 			&r.ErrCode, &r.SkipReason,
 			&r.StartedAt, &r.FinishedAt,
 			&r.RecentReqID); err != nil {
+			warnRowSkip("systemMonitor.recentRuns", err)
 			continue
 		}
 		r.HTTPStatus = httpStatus
 		r.LatencyMs = latencyMs
 		out = append(out, r)
+	}
+	// 探针运行记录少一截 = 失败/跳过的探针被静默抹掉，"系统监控全绿"是
+	// 假象。total 取自 len(out)，静默截断不会体现为数字异常。
+	if writeAggRowsErr(w, "systemMonitor.recentRuns", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"runs":  out,

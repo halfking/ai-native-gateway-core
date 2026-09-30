@@ -457,6 +457,12 @@ func (r *DashboardEventRecorder) GetAccessStats(ctx context.Context, hours int) 
 		}
 		stats.TopAPIs = append(stats.TopAPIs, api)
 	}
+	// R66: Top API 榜被静默截断 = 看板缺若干高频接口。注意上方 overview
+	// 的分母是独立的 COUNT(*)，不随本读截断，缺口在界面上表现为
+	// 「Top-N 加起来对不上总量」而非报错。必须上抛。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("telemetry.DashboardEventRecorder.GetAccessStats: iterate rows: %w", err)
+	}
 
 	return stats, nil
 }

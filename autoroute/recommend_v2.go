@@ -2,12 +2,14 @@ package autoroute
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -558,9 +560,22 @@ func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
 	for rows.Next() {
 		var id int
 		var count int64
-		if err := rows.Scan(&id, &count); err == nil {
-			result = append(result, id)
+		if err := rows.Scan(&id, &count); err != nil {
+			// R66: 裸 err == nil 会把坏行静默丢掉，热门榜因此少一项
+			// 且无痕（挑选的是错模型，不是「挑不到模型」）。
+			dbrows.WarnRowSkip("autoroute.Index.getHotTop3Canonicals", err)
+			continue
 		}
+		result = append(result, id)
+	}
+	// R66（category 5）：hot Top-3 直接决定 48h fallback 挑哪个
+	// canonical 模型。截断 → 挑错模型；更糟的是残缺结果会被写进
+	// 2 分钟 TTL 缓存并持续生效。本函数无 error 返回值（签名不可改），
+	// 故：留痕 + 拒绝缓存残缺结果，下个请求重新查。
+	if err := rows.Err(); err != nil {
+		slog.Warn("autoroute: hot top-3 row iteration aborted; result truncated, cache not updated",
+			"error", err, "collected", len(result))
+		return result
 	}
 
 	// Update cache

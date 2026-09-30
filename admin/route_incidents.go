@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -583,6 +584,7 @@ func (h *RouteIncidentsHandler) findingsFor(ctx context.Context, inc *routeincid
 		var kind, stage *string
 		var reqID string
 		if err := rows.Scan(&kind, &stage, &reqID); err != nil {
+			warnRowSkip("routeIncidents.findingsFor", err)
 			continue
 		}
 		total++
@@ -603,6 +605,13 @@ func (h *RouteIncidentsHandler) findingsFor(ctx context.Context, inc *routeincid
 		if len(b.ids) < 5 {
 			b.ids = append(b.ids, reqID)
 		}
+	}
+	// 迭代中断会让 total（分母）偏小，进而把 finding 的占比放大——属于会误导
+	// 根因判断的静默失真，必须留痕。函数签名无 error 通道且查询失败已按
+	// best-effort 返回空切片，故这里只 warn 不上抛。
+	if err := rows.Err(); err != nil {
+		slog.Warn("admin route incidents findings rows iteration aborted",
+			"op", "routeIncidents.findingsFor", "incident_id", inc.ID, "rows_seen", total, "error", err)
 	}
 	if total == 0 {
 		return out
@@ -747,7 +756,14 @@ func (h *RouteIncidentsHandler) sampleRequestsFor(ctx context.Context, inc *rout
 		var s string
 		if err := rows.Scan(&s); err == nil {
 			out = append(out, s)
+		} else {
+			warnRowSkip("routeIncidents.sampleRequests", err)
 		}
+	}
+	// best-effort 采样样本（非完整性契约，签名无 error 通道）：中断留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("admin route incidents sample requests rows iteration aborted",
+			"op", "routeIncidents.sampleRequests", "incident_id", inc.ID, "error", err)
 	}
 	return out
 }
