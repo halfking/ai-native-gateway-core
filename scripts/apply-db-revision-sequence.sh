@@ -771,6 +771,12 @@ intentional_function_chains=(
   # without this registration — same pre-flight guard abort class as 703
   # (caught 2026-09-14 when S1a files joined the sequence).
   'ensure_request_logs_partition|694_partition_ensure_timezone.sql|705_request_logs_reattach_detached_partitions.sql|'
+  # 765 (R16 bodies columnar round) redefines 694's ensure_request_logs_bodies_partition
+  # so new month partitions are created USING citus_columnar when the extension is
+  # present (heap fallback otherwise); 765 must stay the later entry. 765 landed
+  # without this registration and aborted every later deploy at the pre-flight
+  # guard (caught 2026-10-01 during the R35-N1 critical-review deploy).
+  'ensure_request_logs_bodies_partition|694_partition_ensure_timezone.sql|765_bodies_columnar_storage.sql|'
   # 659 rewrote these seven promote bodies as the single atomic CTE form;
   # 688 later aligned their defaults to the Go scheduler (not in this array,
   # so invisible to the scanner) and 698 re-derives each body from the
