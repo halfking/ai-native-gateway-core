@@ -262,6 +262,15 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 764 (2026-09-30, 三十六轮 R36-B3): request_logs 分区家族 tenant_ts
 		// 索引。parity 第 5 点与 759/763 同理：缺条目时 embed 副本漂移无人发现。
 		"764_request_logs_tenant_ts_index.sql": requestLogsTenantTsIndexMigration764,
+		"765_bodies_columnar_storage.sql": bodiesColumnarStorageMigration765,
+		// 801 (2026-09-30, 三十六轮 R36-B4): 733 promote 函数改版。
+		// 本守卫只遍历本 map、不反向要求全量，801 此前缺席 → embed 副本漂移
+		// 无人发现。补登前已 diff 确认 canonical 与 embeddata 当前逐字节一致。
+		"801_session_turn_details_duplicate_drain.sql": sessionTurnDetailsDuplicateDrainMigration801,
+		// 802 (2026-09-30, 会话存储解耦 v3 S4 前置): session_turn_details 族
+		// (tenant_id, gw_task_id) 部分索引。跨租户访问门 assertTaskInTenant 的
+		// session 族母表腿依赖它，缺索引会让 EXISTS 退化为 167 万行顺序扫描。
+		"802_session_turn_details_gw_task_id_index.sql": sessionTurnDetailsGwTaskIDIndexMigration802,
 	}
 
 	for name, embedded := range expected {
