@@ -29,7 +29,6 @@ import (
 // pass even if the executor sent the doomed request first and then fell back,
 // which is precisely the waste F04 removes.
 
-
 // responsesRejectingUpstream serves a real "Responses API unsupported" verdict
 // on /v1/responses and a working chat completion on /v1/chat/completions,
 // counting hits per endpoint.
@@ -62,20 +61,25 @@ func responsesRejectingUpstream(t *testing.T, responsesHits, chatHits *atomic.In
 
 func f04ExecParams(body string) *ExecParams {
 	return &ExecParams{
-		W:                httptest.NewRecorder(),
-		R:                httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
-		BodyBytes:        []byte(body),
+		W:                  httptest.NewRecorder(),
+		R:                  httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		BodyBytes:          []byte(body),
 		ResponsesBodyBytes: []byte(body),
-		ClientModel:      "gpt-5.6-terra",
-		Model:            "gpt-5.6-terra",
-		RequestID:        "f04-read-side",
-		TenantID:         "default",
-		IsStream:         false,
-		UpstreamAttempts: NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit),
+		ClientModel:        "gpt-5.6-terra",
+		Model:              "gpt-5.6-terra",
+		RequestID:          "f04-read-side",
+		TenantID:           "default",
+		IsStream:           false,
+		UpstreamAttempts:   NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit),
 	}
 }
 
 func newF04ExecutorWithSlots(t *testing.T) (*Executor, *credentialfpslot.Manager) {
+	exec, manager, _ := newF04ExecutorWithSlotsAndRedis(t)
+	return exec, manager
+}
+
+func newF04ExecutorWithSlotsAndRedis(t *testing.T) (*Executor, *credentialfpslot.Manager, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -92,7 +96,7 @@ func newF04ExecutorWithSlots(t *testing.T) (*Executor, *credentialfpslot.Manager
 		FpSlots:         fpMgr,
 		UpstreamTimeout: 5 * time.Second,
 		StreamTimeout:   10 * time.Second,
-	}, fpMgr
+	}, fpMgr, mr
 }
 
 // TestF04_RequestSkipsDoomedResponsesAttempt is the end-to-end read-side
@@ -153,6 +157,98 @@ func TestF04_NoVerdictStillAttemptsResponses(t *testing.T) {
 
 	if responsesHits.Load() == 0 {
 		t.Fatal("an unprobed credential must still attempt native Responses (live detection path)")
+	}
+}
+
+// A real request that receives the provider's precise unsupported verdict is
+// new durable evidence. The current request falls back to Chat; the next one
+// must reuse that verdict and avoid another doomed /responses round trip.
+func TestF04_LiveUnsupportedVerdictPersistsForNextRequest(t *testing.T) {
+	exec, fpMgr := newF04ExecutorWithSlots(t)
+	var responsesHits, chatHits atomic.Int32
+	upstream := responsesRejectingUpstream(t, &responsesHits, &chatHits)
+	candidate := provider.Candidate{
+		ProviderID: 11, CredentialID: 22, BaseURL: upstream.URL,
+		Protocol: "openai-responses", RawModel: "gpt-5.6-terra", APIKey: "test-key",
+		SupportsNativeResponses: true,
+	}
+
+	first := f04ExecParams(`{"model":"gpt-5.6-terra","input":"hello"}`)
+	if _, err := exec.executeOpenAI(first, candidate, 0, time.Now(), nil); err != nil {
+		t.Fatalf("first request fallback failed: %v", err)
+	}
+	if got := responsesHits.Load(); got != 1 {
+		t.Fatalf("first request Responses hits=%d, want one live capability observation", got)
+	}
+	if got := chatHits.Load(); got != 1 {
+		t.Fatalf("first request Chat fallback hits=%d, want one", got)
+	}
+
+	supported, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel)
+	if err != nil {
+		t.Fatalf("read persisted capability: %v", err)
+	}
+	if !known || supported {
+		t.Fatalf("live unsupported evidence = (supported=%t, known=%t), want (false, true)", supported, known)
+	}
+
+	second := f04ExecParams(`{"model":"gpt-5.6-terra","input":"hello again"}`)
+	if _, err := exec.executeOpenAI(second, candidate, 0, time.Now(), nil); err != nil {
+		t.Fatalf("second request using durable capability failed: %v", err)
+	}
+	if got := responsesHits.Load(); got != 1 {
+		t.Fatalf("second request repeated doomed Responses call; hits=%d, want still one", got)
+	}
+	if got := chatHits.Load(); got != 2 {
+		t.Fatalf("Chat calls=%d after two requests, want two", got)
+	}
+	supported, known, err = fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel)
+	if err != nil {
+		t.Fatalf("read capability after Chat fallback: %v", err)
+	}
+	if !known || supported {
+		t.Fatalf("Chat fallback overwrote native Responses evidence = (supported=%t, known=%t), want (false, true)", supported, known)
+	}
+}
+
+// A successful native Responses exchange is equally authoritative positive
+// evidence. After a cached negative verdict expires, a fresh native attempt
+// can prove support again and persist the positive result.
+func TestF04_LiveSuccessfulResponsesPersistsSupportedVerdict(t *testing.T) {
+	exec, fpMgr, redisServer := newF04ExecutorWithSlotsAndRedis(t)
+	var responsesHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		responsesHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_live","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	candidate := provider.Candidate{
+		ProviderID: 11, CredentialID: 22, BaseURL: upstream.URL,
+		Protocol: "openai-responses", RawModel: "gpt-5.6-terra", APIKey: "test-key",
+		SupportsNativeResponses: true,
+	}
+	if err := fpMgr.SetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel, false); err != nil {
+		t.Fatalf("seed stale unsupported capability: %v", err)
+	}
+	// A durable negative verdict must suppress native attempts until its node
+	// state expires. After expiry, this real native success is fresh evidence
+	// that can persist a positive verdict.
+	redisServer.FastForward(2 * time.Hour)
+
+	params := f04ExecParams(`{"model":"gpt-5.6-terra","input":"hello"}`)
+	if _, err := exec.executeOpenAI(params, candidate, 0, time.Now(), nil); err != nil {
+		t.Fatalf("native Responses request failed: %v", err)
+	}
+	if got := responsesHits.Load(); got != 1 {
+		t.Fatalf("Responses hits=%d, want one native success", got)
+	}
+	supported, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel)
+	if err != nil {
+		t.Fatalf("read persisted capability: %v", err)
+	}
+	if !known || !supported {
+		t.Fatalf("live successful evidence = (supported=%t, known=%t), want (true, true)", supported, known)
 	}
 }
 

@@ -392,6 +392,26 @@ func (e *Executor) executeOpenAI(
 		cand.SupportsNativeResponsesStream && params.IsStream &&
 		len(params.ResponsesBodyBytes) > 0
 
+	// A live request is authoritative protocol-capability evidence on both an
+	// exact unsupported response and a completed native Responses exchange.
+	// Persist it best-effort for this credential/model. Detach from client
+	// cancellation because the observation remains useful if the client leaves.
+	recordResponsesCapability := func(supported bool) {
+		if e.FpSlots == nil || !e.FpSlots.Enabled() || cand.CredentialID <= 0 || cand.RawModel == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(params.R.Context()), 2*time.Second)
+		defer cancel()
+		if err := e.FpSlots.SetSupportsResponses(ctx, cand.CredentialID, cand.RawModel, supported); err != nil {
+			slog.Warn("live Responses capability persistence failed",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"supports_responses", supported,
+				"error", err)
+		}
+	}
+
 	// F04 (V3 持久化协议能力, 2026-09-30): the probe already concluded, for
 	// THIS (credential, raw model), that the provider rejects the Responses
 	// API. Without this check every single request re-discovers that verdict
@@ -530,9 +550,13 @@ func (e *Executor) executeOpenAI(
 	// The non-stream Responses handler can convert the Chat result only when it
 	// owns the final write (SuppressSuccessWrite).
 	tryUnsupportedResponsesFallback := func(status int, errorBody []byte, kind errorsx.ErrorKind, headers http.Header) (bool, error) {
-		if !(nativeNonStream || nativeStream) || probe.modeTried || len(clientSourceBody) == 0 ||
-			!(params.IsStream || params.ClientProtocol != providercatalog.ProtocolOpenAIResponses || params.SuppressSuccessWrite) ||
+		if !(nativeNonStream || nativeStream) || probe.modeTried ||
 			!providercap.ResponsesUnsupportedError(status, string(errorBody)) {
+			return false, nil
+		}
+		recordResponsesCapability(false)
+		if len(clientSourceBody) == 0 ||
+			!(params.IsStream || params.ClientProtocol != providercatalog.ProtocolOpenAIResponses || params.SuppressSuccessWrite) {
 			return false, nil
 		}
 		fallbackBody, fbErr := e.finalizeOpenAIUpstreamBody(params, cand, clientSourceBody)
@@ -1394,6 +1418,9 @@ func (e *Executor) executeOpenAI(
 				e.TTFBTracker.Record(cand.CredentialID, upstreamLatency)
 			}
 			recordAttemptSuccess := func(chunkCount int) {
+				if nativeNonStream || nativeStream {
+					recordResponsesCapability(true)
+				}
 				e.reqprobeRecordSuccess(&probe)
 				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 				if e.PostExecutionHook != nil {
