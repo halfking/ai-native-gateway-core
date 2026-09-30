@@ -21,8 +21,44 @@ func TestMigration694SelfHealPinsShanghaiTimezone(t *testing.T) {
 	text := string(source)
 
 	// The self-heal must stay wired in applyMigrationsOnce.
-	if !strings.Contains(text, "ensureCandidateFailureLogsHeapPartitions(migCtx)") {
+	//
+	// 2026-10-01: this used to assert the literal call
+	// `ensureCandidateFailureLogsHeapPartitions(migCtx)`, which pinned the
+	// *variable* rather than the intent. Detaching this one step from the
+	// 3-minute chain-wide migCtx (production evidence: the shared budget was
+	// exhausted upstream and the conversion was killed with `context deadline
+	// exceeded`, aborting the whole ensure chain → postgres disabled →
+	// live-stream hub without DB → dashboard model groups permanently
+	// hidden) necessarily changed the argument to a dedicated budget context.
+	// The wiring is still there — that is what must not drift.
+	//
+	// Assert the intent: the call exists, it is inside the ensure chain, and
+	// it is still error-checked (aborting boot on real failure) rather than
+	// silently swallowed.
+	// Take the whole line (not just from the match point), so the `if err :=`
+	// guard that precedes the call is included in the assertion.
+	callIdx := strings.Index(text, "db.ensureCandidateFailureLogsHeapPartitions(")
+	if callIdx < 0 {
 		t.Fatal("db.go must call ensureCandidateFailureLogsHeapPartitions in applyMigrationsOnce")
+	}
+	lineStart := strings.LastIndexByte(text[:callIdx], '\n') + 1
+	callLine := text[lineStart:]
+	if end := strings.IndexByte(callLine, '\n'); end >= 0 {
+		callLine = callLine[:end]
+	}
+	// Still inside an `if err := ...; err != nil { return err }` guard.
+	if !strings.HasPrefix(strings.TrimSpace(callLine), "if err := db.ensureCandidateFailureLogsHeapPartitions(") {
+		t.Fatalf("ensureCandidateFailureLogsHeapPartitions must stay error-checked and aborting boot; got %q", callLine)
+	}
+	// It must receive a context — but not necessarily the chain-wide migCtx.
+	// Reject an un-timed context, which would let the step hang forever.
+	const callPrefix = "if err := db.ensureCandidateFailureLogsHeapPartitions("
+	arg := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(callLine), callPrefix))
+	if end := strings.Index(arg, ");"); end >= 0 {
+		arg = strings.TrimSpace(arg[:end])
+	}
+	if arg == "" || !strings.HasSuffix(arg, "Ctx") {
+		t.Fatalf("ensureCandidateFailureLogsHeapPartitions must be called with a timeout context variable (…Ctx), got %q", arg)
 	}
 
 	// The mirrored candidate function must converge to 694's final body:
