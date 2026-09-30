@@ -18,7 +18,7 @@ export interface DistRow {
   key: string
   name: string
   sub?: string
-  /** Bar width 0–100, relative to the current metric's max row. */
+  /** Bar width 0–100. Reconciliation rows use share of the range total. */
   pct: number
   tone?: BarTone
   cells: DistCell[]

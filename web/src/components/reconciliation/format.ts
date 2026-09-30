@@ -1,35 +1,5 @@
 // format.ts — reconciliation display helpers (no Vue, unit-tested).
 
-export type QuickRange = 'yesterday' | '7d' | '30d' | 'month'
-
-export function fmtDay(d: Date): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${m}-${day}`
-}
-
-/** T+1 window: end is yesterday. Inclusive day counts match the toolbar chips. */
-export function quickRange(kind: QuickRange, now = new Date()): [string, string] {
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
-  const start = new Date(end)
-  if (kind === '7d') start.setDate(end.getDate() - 6)
-  else if (kind === '30d') start.setDate(end.getDate() - 29)
-  else if (kind === 'month') {
-    start.setDate(1)
-    if (start > end) start.setMonth(start.getMonth() - 1)
-  }
-  return [fmtDay(start), fmtDay(end)]
-}
-
-export function matchQuick(range: [string, string], now = new Date()): QuickRange | '' {
-  const kinds: QuickRange[] = ['yesterday', '7d', '30d', 'month']
-  for (const kind of kinds) {
-    const [start, end] = quickRange(kind, now)
-    if (start === range[0] && end === range[1]) return kind
-  }
-  return ''
-}
-
 export function fmtInt(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return '—'
   return Math.round(n).toLocaleString('en-US')

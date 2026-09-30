@@ -10,6 +10,7 @@ export default {
   rerunFailed: 'Neuausführung fehlgeschlagen',
   // Abdeckung / Leerzustand
   daysCovered: 'Tage mit Snapshots',
+  unaggregatedDay: 'Nicht aggregiert',
   noSnapshots: 'Keine Berichts-Snapshots in diesem Zeitraum (der tägliche Aggregationsjob erzeugt die Vortagesdaten in den frühen Morgenstunden, oder nutzen Sie „Endtag neu ausführen“ zur Nachberechnung)',
   // Zusammenfassungskarten
   requests: 'Anfragen',

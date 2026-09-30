@@ -26,6 +26,8 @@ type catalogSearchHit struct {
 // 用量走热表 + 分区父表的会话索引。
 // request_logs_with_current_month 会联 session_turns，本地单会话实测约 815ms。
 // 同一聚合直接打底表约 1ms。检索不扫请求日志：前导 ILIKE 在约 232 万行上实测约 16s。
+// 模型子串打在 models_used 的单个元素上。primary_model 约 33.2 万行里只有约 1500 行有值。
+// 换行拼接是为了不让相邻模型名粘成一次命中。本地该形态约 173ms，仍在 2 秒超时内。
 const catalogUsageSQL = `
 SELECT gw_session_id,
        COUNT(*) FILTER (WHERE COALESCE(parent_request_id, '') = '')::bigint,
@@ -50,13 +52,19 @@ GROUP BY gw_session_id`
 const catalogSearchSQL = `
 SELECT session_key,
        COALESCE(title, ''),
-       COALESCE(primary_model, '')
+       COALESCE(
+         (SELECT m FROM unnest(models_used) AS m
+           WHERE m ILIKE $1 ESCAPE '\'
+           LIMIT 1),
+         NULLIF(btrim(primary_model), ''),
+         '')
 FROM session_summaries
 WHERE session_key IS NOT NULL
   AND btrim(session_key) <> ''
   AND (session_key ILIKE $1 ESCAPE '\'
     OR COALESCE(title, '') ILIKE $1 ESCAPE '\'
-    OR COALESCE(primary_model, '') ILIKE $1 ESCAPE '\')
+    OR COALESCE(primary_model, '') ILIKE $1 ESCAPE '\'
+    OR array_to_string(models_used, chr(10)) ILIKE $1 ESCAPE '\')
   AND ($2 = '' OR tenant_id = $2)
 ORDER BY last_request_at DESC NULLS LAST
 LIMIT $3`
