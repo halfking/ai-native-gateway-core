@@ -3,9 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **会话目录检索（2026-09-30）**：统计页目录 `q` 只查 `session_summaries`，不再对请求日志做前导 `ILIKE`（本地约 232 万行实测约 16 秒）。用量按 `gw_session_id` 读 `request_logs_hot` 与 `request_logs`，不走联表视图。摘要标题会写回行后再过滤。只存在于请求日志、摘要里没有的会话仍然搜不到。详见 `docs/proposals/2026-09-30-session-stats-ux/plan.md`。
+- **看板批判审计（2026-09-30）**：模型分布去掉费用列并改为 Top 6；供应商成本卡只按用量成本取前 5，用量失败时不再用 $0 饼图充卡；含今天的自定义范围不再把剩余小时算进 RPM/TPM 分母；请求体峰值标签补了间距。英雄卡费用仍是分钟表口径，和用量成本对不上，没有混用。详见 `docs/design/2026-09-30-board-audit.md`。
 - **fresh install 列存分区 GIN 索引条件化（2026-09-30）**：Citus columnar 分区不支持 GIN 索引，三份 01-schema 中 `request_logs_2026_07/08` 的 `quality_flags`/`tool_calls` GIN（4 处）及其 ATTACH（4 处）在 citus 空库 `--single-transaction` 安装必炸（`unsupported access method for the index on columnar table`）。改为 DO 块条件创建：heap 分区照建（生产行为零变化），columnar 分区 NOTICE 跳过，ATTACH 以 `to_regclass` 判存。实测全链（prereqs+01+02）exit=0。详见 `docs/12小时内修订审计-2026-09-30-1625.md` §四。
-- **供应商成本卡排序（2026-09-30）**：饼图 key 与 `provider_code` 不一致时，成本卡不再被 $0 的 `__other__` 占满，改为按用量接口的窗口成本取前 8，积分按代码或名称回查饼图。
-- **对账结算页方案 A（2026-09-30）**：`/admin/reconciliation` 改为 KPI、双 chart.js 趋势、分布占比条、失败原因过滤和 URL 下钻。占比分母是区间总额；`router.push` 才能用浏览器后退撤掉 `provider_id`；空 `snapshot_dates` 不画趋势；耗时卡标明 P50/P95。方案 B/C、浏览器实测和 8782 部署未做。详见 `docs/proposals/2026-09-30-stats-ui/plan.md` §3.3。
+- **供应商成本卡排序（2026-09-30）**：饼图 key 与 `provider_code` 不一致时，不再只按 `pie.cost_usd` 排序。当时仍会在用量为空时回退饼图，并取前 8 张；随后的批判审计收成前 5 张并去掉回退。
+- **对账结算页方案 A（2026-09-30）**：`/admin/reconciliation` 改为 KPI、双 chart.js 趋势、分布占比条、失败原因过滤和 URL 下钻。占比分母是区间总额；`router.push` 才能用浏览器后退撤掉 `provider_id`；耗时卡标明 P50/P95。空 `snapshot_dates` 不再留 260px 空白画布：`chart.destroy()` 会清掉 `v-show` 的 `display: none`，改为 `v-if` 卸掉 canvas，卡片内显示「暂无数据」。Vite 开发服务上复测过下钻后退、按天展开和空区间；8782 镜像内的前端未替换。方案 B/C 未做。详见 `docs/proposals/2026-09-30-stats-ui/plan.md` §3.3。
 - **看板审计与日历收口（2026-09-30）**：次要指标按效果图改为延迟 / RPM / TPM / Key / 模型 / 供应商 / 请求体 / 响应体（无 body_stats 仍占位）；供应商迷你卡不再把「N 家」当成标题；英雄费用 ≥ $1 显示两位小数；分布卡「其他」补占比；导出失败可见；余额拉取失败可重试。设计稿 D 节剩余 7 个天数窗口页（客户端/任务分析、用户画像、相关性、质量相关、租户看板、MaaS 用量）改为 `KxDateRangePicker`，触发器预设名与日期区间分色。
 - **Self-check tool continuation false `empty_response`（2026-09-29，自分支
   `backup/fix-self-check-tool-continuation` 合并）**：工具调用对话的提示词从

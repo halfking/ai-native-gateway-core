@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // BoardModelDist.vue — 模型分布表（2026-09-30 重构轮）。
-// 数据源 = board.pies.models（含 requests/tokens/credits/cost_usd），按当前指标排序取 Top 8，
-// 附占比条（相对 Top1）；保留「请求数 / Token 数」指标切换。
+// 数据源 = board.pies.models。列是模型 / 请求 / Token / 占比（效果图 A 节，不另造费用列）。
+// 按当前指标排序取 Top 6，附占比条（相对 Top1）；保留「请求数 / Token 数」指标切换。
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardPayload, BoardPieItem } from '../../api/board'
@@ -17,7 +17,7 @@ const metric = ref<'requests' | 'tokens'>('requests')
 const rows = computed(() => {
   const items: BoardPieItem[] = [...(props.board?.pies?.models ?? [])]
   items.sort((a, b) => (b[metric.value] ?? 0) - (a[metric.value] ?? 0))
-  return items.slice(0, 8)
+  return items.slice(0, 6)
 })
 
 const maxMetric = computed(() => Math.max(...rows.value.map((r) => r[metric.value] ?? 0), 1))
@@ -31,10 +31,6 @@ function fmtCompact(n: number | undefined) {
   return Number(n).toLocaleString()
 }
 
-function fmtCost(v: number | undefined) {
-  if (v == null) return '—'
-  return '$' + Number(v).toFixed(2)
-}
 </script>
 
 <template>
@@ -42,7 +38,7 @@ function fmtCost(v: number | undefined) {
     <div class="mdist__head">
       <h5 class="mdist__title">
         {{ t('dashboard.board.modelDistTitle') }}
-        <span class="mdist__cs">{{ t('dashboard.board.modelTop', { n: 8 }) }}</span>
+        <span class="mdist__cs">{{ t('dashboard.board.modelTop', { n: 6 }) }}</span>
       </h5>
       <div class="mdist__metric" role="radiogroup" :aria-label="t('dashboard.board.metricToggle')">
         <button
@@ -66,15 +62,13 @@ function fmtCost(v: number | undefined) {
         <span class="mdist__name">{{ t('dashboard.table.colModel') }}</span>
         <span class="mdist__num">{{ t('dashboard.providerUsage.colRequests') }}</span>
         <span class="mdist__num">{{ t('dashboard.v2.totalTokensShort') }}</span>
-        <span class="mdist__num">{{ t('dashboard.board.trendCost') }}</span>
         <span class="mdist__num">{{ t('dashboard.board.colShare') }}</span>
       </div>
       <div v-for="row in rows" :key="row.key" class="mdist__row">
         <span class="mdist__name" :title="row.key">{{ row.key }}</span>
         <span class="mdist__num">{{ fmtCompact(row.requests) }}</span>
         <span class="mdist__num">{{ fmtCompact(row.tokens) }}</span>
-        <span class="mdist__num">{{ fmtCost(row.cost_usd) }}</span>
-        <span class="mdist__num">{{ ((row[metric] / totalMetric) * 100).toFixed(1) }}%</span>
+        <span class="mdist__num">{{ (((row[metric] ?? 0) / totalMetric) * 100).toFixed(1) }}%</span>
         <span class="mdist__bar" aria-hidden="true">
           <i :style="{ width: Math.max(2, ((row[metric] ?? 0) / maxMetric) * 100).toFixed(1) + '%' }"></i>
         </span>
@@ -142,7 +136,7 @@ function fmtCost(v: number | undefined) {
 }
 .mdist__row {
   display: grid;
-  grid-template-columns: minmax(120px, 1.4fr) 64px 72px 72px 56px;
+  grid-template-columns: minmax(150px, 1.5fr) 62px 74px 74px;
   gap: 8px;
   align-items: center;
   padding: 6px 4px;
@@ -206,9 +200,6 @@ function fmtCost(v: number | undefined) {
 @media (max-width: 768px) {
   .mdist__row {
     grid-template-columns: minmax(100px, 1.4fr) 56px 64px 56px;
-  }
-  .mdist__row .mdist__num:nth-child(4) {
-    display: none;
   }
 }
 </style>

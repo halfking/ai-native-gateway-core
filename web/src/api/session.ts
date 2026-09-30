@@ -163,3 +163,43 @@ export async function getSessionList(params: {
   if (params.q) q.set('q', params.q)
   return req<SessionListResponse>('GET', '/api/admin/sessions?' + q.toString())
 }
+
+/** Production GET /api/admin/sessions (session manager), not the deprecated v1 aggregator. */
+export interface CatalogSession {
+  session_id: string
+  tenant_id: string
+  status: string
+  current_model: string
+  total_turns: number
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  total_cost_usd: number
+  title: string
+  tags: string
+  health_score?: number
+  health_grade?: string
+  last_active: string
+  last_request_at: string
+}
+
+export interface CatalogSessionsResponse {
+  sessions: CatalogSession[]
+  total: number
+}
+
+export async function listCatalogSessions(params: {
+  status?: 'active' | 'stopped' | 'all'
+  limit?: number
+  sort?: 'health' | 'cost' | 'tokens' | 'created_at'
+  health_grade?: string
+  q?: string
+} = {}): Promise<CatalogSessionsResponse> {
+  const q = new URLSearchParams()
+  if (params.status) q.set('status', params.status)
+  if (params.limit) q.set('limit', String(params.limit))
+  if (params.sort) q.set('sort', params.sort)
+  if (params.health_grade) q.set('health_grade', params.health_grade)
+  if (params.q) q.set('q', params.q)
+  const qs = q.toString()
+  return req<CatalogSessionsResponse>('GET', `/api/admin/sessions${qs ? `?${qs}` : ''}`)
+}

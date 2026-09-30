@@ -11,6 +11,36 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// TestWriteAnalyticsDetailErr_Classification (R35 复审)：detail 端点此前把
+// 一切查询错误吞成 404——缺 357 视图时误导排查。42P01 必须 503 + 引导；
+// 其余错误维持 404 原文案（真不存在）。
+func TestWriteAnalyticsDetailErr_Classification(t *testing.T) {
+	pgMissing := &pgconn.PgError{
+		Code:      "42P01",
+		Message:   `relation "session_task_stats" does not exist`,
+		TableName: "session_task_stats",
+	}
+
+	rec := httptest.NewRecorder()
+	writeAnalyticsDetailErr(rec, "task not found", pgMissing)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("42P01 should be 503, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "analytics_view_missing") ||
+		!strings.Contains(rec.Body.String(), "session_task_stats") {
+		t.Fatalf("missing guidance payload: %s", rec.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	writeAnalyticsDetailErr(rec2, "task not found", errors.New("no rows in result set"))
+	if rec2.Code != http.StatusNotFound {
+		t.Fatalf("non-42P01 should stay 404, got %d", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), "task not found") {
+		t.Fatalf("404 original message must be preserved: %s", rec2.Body.String())
+	}
+}
+
 // TestWriteAnalyticsQueryErr_MissingViewGuidance (R33 P-2)：42P01 缺视图
 // 必须返回 503 + analytics_view_missing + 引导文案（视图名+迁移 357），
 // 而不是裸 500。
