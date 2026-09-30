@@ -128,26 +128,83 @@ func (api *SessionListAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// buildSessionListCountSQL / buildSessionListRowsSQL 抽成具名 builder，
+// 这样真库门能跑**生产同一条 SQL**（不重抄一遍），静态门也能钉住读源。
+// 两者的读源、租户谓词、时间窗必须完全一致 —— 计数与列表行一旦口径分叉，
+// 分页会出现「总数与末页对不上」这种只在生产暴露的错。
+func buildSessionListCountSQL(tenantID, searchQ string, hours int) (string, []interface{}) {
+	q := `
+		SELECT COUNT(DISTINCT rl.gw_session_id)
+		FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
+		WHERE rl.gw_session_id IS NOT NULL
+		  AND rl.gw_session_id != ''
+		  AND rl.tenant_id = $1
+		  AND rl.ts >= NOW() - ($2 || ' hours')::interval
+	`
+	args := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
+	if searchQ != "" {
+		q += ` AND rl.gw_session_id ILIKE '%' || $3 || '%'`
+		args = append(args, searchQ)
+	}
+	return q, args
+}
+
+func buildSessionListRowsSQL(tenantID, searchQ string, hours int) (string, []interface{}) {
+	q := `
+		SELECT
+			rl.gw_session_id,
+			COUNT(*) as request_count,
+			COUNT(*) FILTER (WHERE rl.request_status = 'failure') as error_count,
+			COUNT(*) FILTER (WHERE rl.compression_strategy IS NOT NULL AND rl.compression_strategy != '') > 0 as is_compressed,
+			MIN(rl.ts) as time_start,
+			MAX(rl.ts) as time_end,
+			MIN(rl.client_model) as model_used
+		FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
+		WHERE rl.gw_session_id IS NOT NULL
+		  AND rl.gw_session_id != ''
+		  AND rl.tenant_id = $1
+		  AND rl.ts >= NOW() - ($2 || ' hours')::interval
+	`
+	args := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
+	if searchQ != "" {
+		q += ` AND rl.gw_session_id ILIKE '%' || $3 || '%'`
+		args = append(args, searchQ)
+	}
+	q += ` GROUP BY rl.gw_session_id ORDER BY MAX(rl.ts) DESC`
+	return q, args
+}
+
 func (api *SessionListAPI) loadSessions(
 	ctx context.Context, q pgx.Tx, tenantID string,
 	page, size int, searchQ, status string, hours int,
 ) (*SessionListResponse, error) {
 	offset := (page - 1) * size
 
-	// Count total distinct sessions
-	countQuery := `
-		SELECT COUNT(DISTINCT gw_session_id)
-		FROM request_logs_with_current_month
-		WHERE gw_session_id IS NOT NULL 
-		  AND gw_session_id != ''
-		  AND tenant_id = $1
-		  AND ts >= NOW() - ($2 || ' hours')::interval
-	`
-	argsCount := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
-	if searchQ != "" {
-		countQuery += ` AND gw_session_id ILIKE '%' || $3 || '%'`
-		argsCount = append(argsCount, searchQ)
-	}
+	// 会话存储解耦 v3 审计（2026-10-01，§8.2 拍板）：读源从
+	// request_logs_with_current_month 迁到 session 族原生源。
+	//
+	// 旧记录写的是「迁过去会让 request_count/error_count/is_compressed
+	// 变小 2.5%」。真库重测（default 租户 / 近 3 天）结论相反：
+	//
+	//	会话数            15,088 → 13,660   （−1,428 / −9.46%）
+	//	request_count 合计 15,710 → 14,156
+	//	只在 v1 出现的会话      1,428      真业务轮次 0
+	//	只在原生源出现的会话        0
+	//
+	// 消失的 1,428 条**全部**是 internal_loopback(1,354) / non_terminal(73)
+	// —— 网关自己生成的标题/摘要 LLM 调用与 in_progress 占位，本来就不该
+	// 出现在用户可见的会话列表里。保留下来的 13,659 条逐项核对：
+	// request_count 仅 6 条不同（合计 +35 轮 = 0.07%）、error_count 逐会话
+	// 全等（9,323 = 9,323）、is_compressed 两边同为 1,418 行。
+	//
+	// error_count 的口径等价性是本轮特意验的：v1 写 `request_status =
+	// 'failure'`，原生源该列是由 success/status_code 派生的
+	// （CASE WHEN success THEN 'success' WHEN status_code = 429 THEN
+	// 'rate_limited' ELSE 'failure' END），两者在共有会话上完全相等。
+	//
+	// 用 SessionFamilyTurnsSourceSQL（无 session 谓词下推的那一支）：列表是
+	// 「按租户 + 时间窗列全部会话」，不是按 session_id 查单会话。
+	countQuery, argsCount := buildSessionListCountSQL(tenantID, searchQ, hours)
 
 	var total int
 	if err := q.QueryRow(ctx, countQuery, argsCount...).Scan(&total); err != nil {
@@ -155,29 +212,7 @@ func (api *SessionListAPI) loadSessions(
 	}
 
 	// Query session summaries using aggregation
-	query := `
-		SELECT 
-			gw_session_id,
-			COUNT(*) as request_count,
-			COUNT(*) FILTER (WHERE request_status = 'failure') as error_count,
-			COUNT(*) FILTER (WHERE compression_strategy IS NOT NULL AND compression_strategy != '') > 0 as is_compressed,
-			MIN(ts) as time_start,
-			MAX(ts) as time_end,
-			MIN(client_model) as model_used
-		FROM request_logs_with_current_month
-		WHERE gw_session_id IS NOT NULL 
-		  AND gw_session_id != ''
-		  AND tenant_id = $1
-		  AND ts >= NOW() - ($2 || ' hours')::interval
-	`
-	args := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
-
-	if searchQ != "" {
-		query += ` AND gw_session_id ILIKE '%' || $3 || '%'`
-		args = append(args, searchQ)
-	}
-
-	query += ` GROUP BY gw_session_id ORDER BY MAX(ts) DESC`
+	query, args := buildSessionListRowsSQL(tenantID, searchQ, hours)
 
 	// Get total before pagination
 	query += fmt.Sprintf(" LIMIT %d OFFSET %d", size, offset)

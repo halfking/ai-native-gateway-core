@@ -1308,8 +1308,8 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 
 | # | 事项 | 性质 | 状态 |
 |---|------|------|------|
-| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支 | 等决定 |
-| 2 | **`session_list.go:140/167` ⚠️ 半等价类** | **2026-10-01 重测，结论与旧「计数变小 2.5%」相反**：计数几乎不变（共有会话里 `request_count` 仅 6 个会话不同、+35 轮 = 0.07%，`error_count` 逐会话全等，`is_compressed` 两边同为 1,418 行）；真正变的是 **1,428 条会话（9.46%）会从列表整条消失，而它们 100% 是 internal_loopback / non_terminal**（真业务轮次 0）。见 §8.2 | 等决定（性质已变，从「数字缩水」变成「内部会话是否该出现在用户列表」） |
+| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支。**本轮再次明确维持待批** | 等决定 |
+| 2 | ~~**`session_list.go:140/167` 半等价类**~~ | **已拍板并落地**：读源迁到 `db.SessionFamilyTurnsSourceSQL()`。门 `TestSessionListNativeSourceDropIsInternalOnly` 跑**生产同一条 SQL** 并钉方向性不变式——原生源少掉的必须是内部调用，出现真业务轮次即报红。实测：原生源会话 13,585、v1 独有 1,381 条、其中含真业务轮次 **0** 条。见 §8.2 | 已关闭 |
 | 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
 | 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
 | 5 | **`request_logs_bodies_hot` 重复索引** | **已由迁移 807 落地（2026-10-01）**：删的是同列**非唯一**索引 `request_logs_bodies_hot_request_id_idx`，**保留** `idx_request_logs_bodies_hot_request_id`（UNIQUE，承重 `ON CONFLICT (request_id)`，也是 phase 2 命中热表的路径）。我此前担心的「删掉 phase 2 依赖的索引」不成立——§8.3 的 17~19 秒是 post-807 状态实测，不受本迁移影响 | 已关闭 |
@@ -1359,6 +1359,42 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 **文档里的旧数字已过期**：`phase 2 7~501 ms`、`compare 4.2s→267ms`（§5.6、handoff §三）
 都是迁移 765 把 2026_09 转列存**之前**的测值。本轮 `TestSessionCompareSplitMatchesLegacyQuery`
 跑 4 组探针耗时 70~143 秒，也与「每组几百毫秒」不相容。
+
+### 8.3.1 更严重的连带发现：`session_compare` 的 10s 预算**已经**超时
+
+两个端点本来就有超时，但预算与实测成本的关系是反的：
+
+| 端点 | ctx 预算 | 实测 | 结果（真库，同一会话 171 个 request_id） |
+|---|---|---|---|
+| `session_compare` | **10 s**（`session_compare.go:150`） | 17~19 s | **10.0 s 即 `context deadline exceeded`，只取到 104/171 行** |
+| `session_summary_v2` | 30 s（`session_summary_v2.go:107`） | 17.3 s | 取满 171 行，无错 |
+
+所以 compare 不是「慢」，是**对任何带正文的会话都在失败**。好消息是它不静默：
+`querySessionBodiesByRequestID` 返回 `rows.Err()`，所以调用方拿到的是错误而不是
+104 行的半份数据。
+
+连接池上限实测 **16**。这才是雪崩的真正机制：单条 19 秒不是问题，**16 个并发
+就把池占满 19 秒**，期间进程内所有其他查询（含完全不碰会话数据的端点）都在等连接。
+
+### 8.3.2 本轮处置（2026-10-01 拍板「先只堵雪崩」）
+
+在 `querySessionBodiesByRequestID` 这一个收敛点加**并发闸**：
+
+- 容量 `maxConcurrentBodyFetches = 4`，刻意小于池上限 16，把大部分连接留给
+  不碰正文的端点；
+- 饱和时**快速失败**返回 `ErrBodyFetchSaturated`，**不排队** —— 排队等于把 17 秒
+  的占用原样放大成雪崩，只是晚点发生；
+- 两个端点把该错误映射成 **503 + `code: session_body_fetch_saturated`**
+  （不是 500：调用方对两者的重试含义不同，503 可退避重试、500 不该重试）。
+
+门 `admin/session_bodies_batch_gate_test.go` 钉的是**行为**不是数值：饱和时
+必须在 250ms 内返回错误（实现成排队就会挂死并被门抓住）、释放后可再获取、
+ctx 已取消时报 `context.Canceled` 而非饱和错误（否则排障会把「客户端已断开」
+读成「服务端忙」）、并发下无数据竞争。
+
+**没有动的**：10s / 30s 这两个预算本身。compare 的 10s 低于实测成本，怎么处理
+属于「修法」的一部分，不在「堵雪崩」范围内 —— 现状是失败（不静默），闸保证的是
+它**不会**在被拖垮的连接池上变成大面积 500。
 
 **为什么不在本轮直接修**：这不是一行改动。候选方向各自有明确代价，需要拍板：
 
