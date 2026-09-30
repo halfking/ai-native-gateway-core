@@ -771,3 +771,9 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 |-----------|------|---------|--------|
 | 763 | `763_provider_events_contract.sql` | `f38fda799b00391fddbeafaffcd208e53a6e79ed0905288c10e014f47bf060b9` | pending deploy（252/本机已手工应用并幂等复跑；154/245 待随下次部署走 sequence 通道。c8c102698 只落了 canonical 文件 + sequence 登记，installer 五点同步前四点全缺，`TestCanonicalStartupMigrationsAtOrAbove704AreRegistered` 自该提交起持续变红——installer 的 `embeddata/01-schema.sql:11759` 把 provider_events 建成裸表（id 可空/无默认/无 PK/无序列），fresh install 每次复现同一漂移。本轮补 embeddata 副本 + go:embed var + embeddedSQLFiles map + StartupFiles + parity 五点，并按 `psql --single-transaction` 纪律（runner.go:416）去掉文件内显式 BEGIN/COMMIT，原子性改由调用方包裹） |
 | 764 | `764_request_logs_tenant_ts_index.sql` | `d09da48c589965d7f1b5c195557eafa108576dceae12eb32d65b2545396fe7de` | pending deploy（三十六轮 R36-B3：341 只给 hot 侧建了 tenant_ts 索引，request_logs 分区父表及各月分区从未有 tenant 前导索引——tenant 维度 days>7 聚合对每分区全表扫，252-dev 实测 3 行租户谓词计数 6.5s / default 21.5s。父表 CREATE INDEX IF NOT EXISTS (tenant_id, ts DESC) 级联全部分区并对齐 hot 侧形态；五点同步一次到位：canonical + embeddata 副本 + go:embed/embeddedSQLFiles + StartupFiles + parity 测试 + sequence 登记。A-2 让号顺延：主仓在制 759_session_turn_details 须改用 765+） |
+
+## 2026-10-01 — migration 765 bodies 存储列存化（R16 存储轮）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 765 | `765_bodies_columnar_storage.sql` | `f9ef5fb9faab5a49e030101edb223922077d04af27b545883b020f71302f226c` | applied（252 生产 + 本机 dev 双真库 2026-10-01 手工预应用并逐项验证：252 空 2026_10 heap→columnar(zstd-3, 500 行真样本 56.6× vs 现行 heap+pglz 2.1×)、ensure 函数 columnar 分支（2026_11 演练 PASS+回滚干净）、bodies 两族 lz4 TOAST 五目标全落位、request_stage_events 三死索引清除（938MB，pss 19 天 0 扫描+非测试代码零读面）；本机 2026_11 heap→columnar 同 PASS。生产读/写/TTL 全形态真库验证 PASS（含回滚包裹的探针行零残留）。154/245/升级通道待随下次部署走 sequence 通道；非空 2026_09 分区（53GB）按 TTL 整分区 DROP 于 10-08 退役，不转换。取证与基准：docs/audit/2026-09-30-bodies-columnar-storage-opt.md） |
