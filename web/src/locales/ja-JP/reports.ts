@@ -51,7 +51,7 @@ export default {
   allModels: 'すべてのモデル',
   clearFilter: 'フィルタをクリア',
   kpiTenants: '精算テナント',
-  kpiLatency: '平均レイテンシ',
+  kpiLatency: 'P50 レイテンシ',
   kpiDaily: '1日あたりリクエスト',
   kpiPersons: 'アクティブ人数',
   kpiPerPersonReq: '1人あたりリクエスト',
