@@ -54,11 +54,25 @@ func TestSessionBodyPairingKeysMatchTheirCallers(t *testing.T) {
 	// of the surrounding code.
 	_ = byID
 
-	// summary 保持其既有的元组口径——不在重构里夹带行为变更。
+	// summary 也改用 request_id 单键（2026-10-01，§5.9 行为变更已拍板）。
+	// 依据是实测命中率，不是推断：
+	//
+	//	turns 腿 = v1 视图  ×  (request_id, ts)  → 11.207%（1839/16409）
+	//	turns 腿 = v1 视图  ×  request_id        → 100.000%（16409/16409）
+	//
+	// 此前这道守卫断言 summary **必须保留**元组键（"不在重构里夹带行为变更"）。
+	// 那条约束在 turns 腿被改接成同源原生源之后反而有害：整条 fallback 路径
+	// 恒返回 0 轮，配对键选哪个都无关紧要（见缺陷 7）。所以它现在钉的是
+	// 拍板后的口径，而不是钉住一个已经失效的历史形状。
 	summarySrc := readAdminSource(t, "session_summary_v2.go")
-	if !strings.Contains(summarySrc, "querySessionBodiesByRequestIDAndTS(") {
-		t.Error("session_summary_v2.go must keep its existing (request_id, ts) pairing " +
-			"until the behaviour change is decided on its own (audit §5.9)")
+	if strings.Contains(summarySrc, "querySessionBodiesByRequestIDAndTS(") {
+		t.Error("session_summary_v2.go must pair bodies by request_id; the (request_id, ts) " +
+			"tuple hits 11.2% of the time even against the v1 source, because " +
+			"request_logs_bodies.ts is the body-write time, not the turn time (audit §5.9)")
+	}
+	if !strings.Contains(summarySrc, "querySessionBodiesByRequestID(ctx, api.pool, requestIDs)") {
+		t.Error("session_summary_v2.go must fetch bodies with the request_id-keyed batch " +
+			"query; without it the summary runs on structurally empty turn text")
 	}
 }
 
