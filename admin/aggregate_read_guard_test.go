@@ -100,7 +100,6 @@ func TestAggReadGuard_MigratedCallersWired(t *testing.T) {
 		"session_list.go":               {"warnRowSkip"},
 		"credential_models.go":          {"writeLookupErr"},
 		"keys.go":                       {"writeLookupErr"},
-		"usage.go":                      {"writeLookupErr"},
 		"users.go":                      {"writeLookupErr"},
 		"model_name_mapping.go":         {"writeLookupErr"},
 		"providers.go":                  {"writeLookupErr"},
@@ -109,6 +108,21 @@ func TestAggReadGuard_MigratedCallersWired(t *testing.T) {
 		"maas_handlers.go":              {"writeLookupErr"},
 		"session_analytics_tasks.go":    {"writeAggRowsErr", "warnRowSkip"},
 		"session_analytics_clients.go":  {"writeAggRowsErr", "warnRowSkip"},
+		// R65：rows 族 backlog 第二批（dashboard/usage/session 域）
+		"usage.go":                    {"writeAggRowsErr", "warnRowSkip", "writeLookupErr"},
+		"usage_enhanced.go":           {"writeAggRowsErr", "warnRowSkip"},
+		"usage_provider_detail.go":    {"writeAggRowsErr", "warnRowSkip"},
+		"dashboard_board_aux.go":      {"warnRowSkip"},
+		"dashboard_board_fallback.go": {"warnRowSkip"},
+		"session_state_handlers.go":   {"warnRowSkip"},
+		"session_title.go":            {"warnRowSkip"},
+		"session_compare.go":          {"warnRowSkip"},
+		"session_export.go":           {"warnRowSkip"},
+		"session_audit.go":            {"warnRowSkip"},
+		"session_clusters_handler.go": {"writeAggRowsErr", "warnRowSkip"},
+		"session_management_api.go":   {"warnRowSkip"},
+		"session_panorama_handler.go": {"warnRowSkip"},
+		"session_crosstalk_check.go":  {"writeAggRowsErr", "warnRowSkip"},
 	}
 	for file, refs := range requireRefs {
 		src, err := os.ReadFile(filepath.Join("admin", file))

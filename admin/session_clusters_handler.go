@@ -122,6 +122,9 @@ func (h *Handler) HandleSessionClustersList(w http.ResponseWriter, r *http.Reque
 		}
 		items = append(items, it)
 	}
+	if writeAggRowsErr(w, "sessionClustersList", rows.Err()) {
+		return
+	}
 
 	var total int
 	countQ := "SELECT COUNT(*) FROM session_clusters" + where
@@ -181,7 +184,12 @@ func (h *Handler) HandleSessionClusterDetail(w http.ResponseWriter, r *http.Requ
 		var m SessionClusterMemberItem
 		if err := rows.Scan(&m.GwSessionID, &m.Score, &m.Title, &m.TotalCost); err == nil {
 			members = append(members, m)
+		} else {
+			warnRowSkip("sessionClusterMembers", err)
 		}
+	}
+	if writeAggRowsErr(w, "sessionClusterMembers", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, SessionClusterDetail{SessionClusterItem: it, Members: members})

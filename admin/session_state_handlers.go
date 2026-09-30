@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -31,9 +32,9 @@ type sessionListItem struct {
 	LastRequestAt         time.Time  `json:"last_request_at"`
 	StoppedAt             *time.Time `json:"stopped_at,omitempty"`
 	// 健康评分字段（T1.5）
-	HealthScore           *int       `json:"health_score,omitempty"`
-	HealthGrade           *string    `json:"health_grade,omitempty"`
-	Outcome               *string    `json:"outcome,omitempty"`
+	HealthScore *int    `json:"health_score,omitempty"`
+	HealthGrade *string `json:"health_grade,omitempty"`
+	Outcome     *string `json:"outcome,omitempty"`
 }
 
 type sessionListResponse struct {
@@ -440,6 +441,7 @@ func (h *Handler) enrichHealthData(ctx context.Context, items []sessionListItem)
 		var grade *string
 		var outcome *string
 		if err := rows.Scan(&sessionKey, &score, &grade, &outcome); err != nil {
+			warnRowSkip("enrichHealthData", err)
 			continue
 		}
 		healthMap[sessionKey] = struct {
@@ -447,6 +449,10 @@ func (h *Handler) enrichHealthData(ctx context.Context, items []sessionListItem)
 			grade   *string
 			outcome *string
 		}{score, grade, outcome}
+	}
+	// 富化是降级通道（函数头注：查询失败不阻塞），迭代中断留痕后按空健康列继续。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("enrichHealthData iteration aborted; health columns degraded", "error", rerr)
 	}
 
 	// 将健康数据填充到 items

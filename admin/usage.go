@@ -403,9 +403,13 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 			&k.TotalCostUSD,
 			&k.LastUsedAt,
 		); err != nil {
+			warnRowSkip("usageHotKeys", err)
 			continue
 		}
 		keys = append(keys, k)
+	}
+	if writeAggRowsErr(w, "usageHotKeys", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, keys)
 }
@@ -507,9 +511,13 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 			&u.RequestCount, &u.PromptTokens, &u.CompletionTokens,
 			&u.TotalCostUSD, &u.SuccessRate,
 		); err != nil {
+			warnRowSkip("usageByProvider", err)
 			continue
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageByProvider", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -610,9 +618,13 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 			&u.TotalCostUSD,
 			&u.AvgLatencyMs,
 		); err != nil {
+			warnRowSkip("usageByModel", err)
 			continue
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageByModel", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -699,9 +711,13 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 			&u.RequestCount, &u.CostUSD,
 			&u.PromptTokens, &u.CompletionTokens,
 		); err != nil {
+			warnRowSkip("usageByKey", err)
 			continue
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageByKey", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -887,6 +903,7 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 		var firstAt, lastAt *time.Time
 		if err := rows.Scan(&u.Model, &u.RequestCount, &u.PromptTokens, &u.CompletionTokens,
 			&u.TotalTokens, &u.CostUSD, &u.AvgLatencyMs, &u.SuccessRate, &firstAt, &lastAt); err != nil {
+			warnRowSkip("usageKeyModels", err)
 			continue
 		}
 		if firstAt != nil {
@@ -898,6 +915,9 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 			u.LastUsedAt = &s
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageKeyModels", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -1039,9 +1059,13 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 	for rows.Next() {
 		var t trendEntry
 		if err := rows.Scan(&t.Period, &t.Requests, &t.PromptTokens, &t.CompletionTokens, &t.TotalTokens, &t.CostUSD); err != nil {
+			warnRowSkip("usageKeyTrend", err)
 			continue
 		}
 		trends = append(trends, t)
+	}
+	if writeAggRowsErr(w, "usageKeyTrend", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, trends)
 }
@@ -1099,12 +1123,17 @@ func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID 
 	for rows.Next() {
 		var b bucket
 		if err := rows.Scan(&b.Bucket, &b.Requests, &b.SuccessCount, &b.FailureCount, &b.GatewayRejected, &b.UpstreamFailed); err != nil {
+			warnRowSkip("usageKeyTraffic", err)
 			continue
 		}
 		if b.Requests > peak {
 			peak = b.Requests
 		}
 		buckets = append(buckets, b)
+	}
+
+	if writeAggRowsErr(w, "usageKeyTraffic", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1168,9 +1197,13 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&u.ApplicationCode, &u.RequestCount, &u.TotalCostUSD,
 			&u.TotalTokens, &u.PromptTokens, &u.CompletionTokens,
 			&u.UniqueKeys, &u.UniqueModels); err != nil {
+			warnRowSkip("usageByApplication", err)
 			continue
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageByApplication", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -1312,9 +1345,13 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var t tenantSummary
 			if err := rows.Scan(&t.TenantID, &t.KeyCount, &t.TotalReqs, &t.TotalTokens, &t.TotalCostUSD); err != nil {
+				warnRowSkip("listTenants.cached", err)
 				continue
 			}
 			tenants = append(tenants, t)
+		}
+		if writeAggRowsErr(w, "listTenants.cached", rows.Err()) {
+			return
 		}
 		writeJSON(w, http.StatusOK, tenants)
 		return
@@ -1351,9 +1388,13 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var t tenantSummary
 		if err := rows.Scan(&t.TenantID, &t.KeyCount, &t.TotalReqs, &t.TotalTokens, &t.TotalCostUSD); err != nil {
+			warnRowSkip("listTenants", err)
 			continue
 		}
 		tenants = append(tenants, t)
+	}
+	if writeAggRowsErr(w, "listTenants", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, tenants)
 }

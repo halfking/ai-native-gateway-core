@@ -124,10 +124,9 @@ func (h *Handler) HandleModelBreakdown(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	var (
-		byModel    []ModelStats
-		byProvider []ProviderStats
-	)
+	// R65: 空结果必须是 [] 而非 null——nil slice 序列化为 JSON null，前端
+	// 遍历即崩（空区间端到端断言 TestHandleModelBreakdown_EmptyResult）。
+	byModel, byProvider := []ModelStats{}, []ProviderStats{}
 	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
 		var err error
 		if byModel, err = h.queryModelBreakdown(ctx, tx, r, filters); err != nil {
@@ -174,10 +173,8 @@ func (h *Handler) HandleSessionShape(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	var (
-		requestBuckets []ShapeBucket
-		durationBuckets []ShapeBucket
-	)
+	// R65: 空结果必须是 [] 而非 null（同 HandleModelBreakdown）。
+	requestBuckets, durationBuckets := []ShapeBucket{}, []ShapeBucket{}
 	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
 		var err error
 		if requestBuckets, err = h.queryRequestCountBuckets(ctx, tx, r, filters); err != nil {
@@ -221,7 +218,9 @@ func (h *Handler) HandleHealthDistribution(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	var response HealthDistributionResponse
+	// R65: LatencyBuckets 空结果必须是 [] 而非 null；三个 map 由查询侧
+	// make(...) 保证非 nil。
+	response := HealthDistributionResponse{LatencyBuckets: []ShapeBucket{}}
 	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
 		var err error
 		if response.GradeDistribution, err = h.queryGradeDistribution(ctx, tx, r, filters); err != nil {
@@ -286,7 +285,8 @@ func (h *Handler) queryModelBreakdown(ctx context.Context, q queryer, r *http.Re
 	}
 	defer rows.Close()
 
-	var result []ModelStats
+	// R65: 空结果返回 [] 而非 nil（nil 经 JSON 序列化成 null，前端遍历崩）。
+	result := []ModelStats{}
 	for rows.Next() {
 		var s ModelStats
 		if err := rows.Scan(&s.Model, &s.RequestCount, &s.SessionCount, &s.TotalCostUSD, &s.TotalTokens, &s.AvgLatencyMs, &s.ErrorRate); err != nil {
@@ -334,7 +334,8 @@ func (h *Handler) queryProviderBreakdown(ctx context.Context, q queryer, r *http
 	}
 	defer rows.Close()
 
-	var result []ProviderStats
+	// R65: 空结果返回 [] 而非 nil（同 queryModelBreakdown）。
+	result := []ProviderStats{}
 	for rows.Next() {
 		var s ProviderStats
 		if err := rows.Scan(&s.Provider, &s.RequestCount, &s.SessionCount, &s.TotalCostUSD, &s.TotalTokens, &s.AvgLatencyMs, &s.ErrorRate); err != nil {
@@ -347,37 +348,49 @@ func (h *Handler) queryProviderBreakdown(ctx context.Context, q queryer, r *http
 }
 
 // queryRequestCountBuckets 按请求数分桶
+//
+// R65: 分桶 SQL 形状约束（PG17 真库逐一实证，三处分布查询共用）——
+// ① 输出别名只许在 GROUP BY 作裸项，进表达式即不可解析（`GROUP BY
+// range, label` 实锤 42803；ORDER BY CASE range… 对普通别名报 42703、
+// 对保留字 range 报误导性 42803）；② 表达式 GROUP BY 之后，ORDER BY
+// 引用任何未分组输入列同样 42803（GROUP BY 1 也逃不掉）。故形状定为：
+// 内层 CTE 以输入列（ss.*）派生 bucket_range/bucket_order，外层按子查
+// 询输出列裸名分组排序——两代 PG 语义下均合法。回归网为本文件
+// EmptyResult/Success/BucketBoundaries 真库端到端断言。
 func (h *Handler) queryRequestCountBuckets(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) ([]ShapeBucket, error) {
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
-		SELECT 
-			CASE 
-				WHEN request_count BETWEEN 1 AND 5 THEN '1-5'
-				WHEN request_count BETWEEN 6 AND 20 THEN '6-20'
-				WHEN request_count BETWEEN 21 AND 50 THEN '21-50'
-				WHEN request_count > 50 THEN '>50'
-				ELSE 'unknown'
-			END AS range,
-			CASE 
-				WHEN request_count BETWEEN 1 AND 5 THEN 'quick'
-				WHEN request_count BETWEEN 6 AND 20 THEN 'standard'
-				WHEN request_count BETWEEN 21 AND 50 THEN 'deep'
-				WHEN request_count > 50 THEN 'marathon'
-				ELSE 'unknown'
-			END AS label,
-			COUNT(*) AS count
-		FROM session_summaries ss
-		` + where + `
-		GROUP BY range, label
-		ORDER BY 
-			CASE range
-				WHEN '1-5' THEN 1
-				WHEN '6-20' THEN 2
-				WHEN '21-50' THEN 3
-				WHEN '>50' THEN 4
-				ELSE 5
-			END
+		WITH buckets AS (
+			SELECT
+				CASE
+					WHEN ss.request_count BETWEEN 1 AND 5 THEN '1-5'
+					WHEN ss.request_count BETWEEN 6 AND 20 THEN '6-20'
+					WHEN ss.request_count BETWEEN 21 AND 50 THEN '21-50'
+					WHEN ss.request_count > 50 THEN '>50'
+					ELSE 'unknown'
+				END AS bucket_range,
+				CASE
+					WHEN ss.request_count BETWEEN 1 AND 5 THEN 'quick'
+					WHEN ss.request_count BETWEEN 6 AND 20 THEN 'standard'
+					WHEN ss.request_count BETWEEN 21 AND 50 THEN 'deep'
+					WHEN ss.request_count > 50 THEN 'marathon'
+					ELSE 'unknown'
+				END AS bucket_label,
+				CASE
+					WHEN ss.request_count BETWEEN 1 AND 5 THEN 1
+					WHEN ss.request_count BETWEEN 6 AND 20 THEN 2
+					WHEN ss.request_count BETWEEN 21 AND 50 THEN 3
+					WHEN ss.request_count > 50 THEN 4
+					ELSE 5
+				END AS bucket_order
+			FROM session_summaries ss
+			` + where + `
+		)
+		SELECT bucket_range, bucket_label, COUNT(*) AS count
+		FROM buckets
+		GROUP BY bucket_range, bucket_label, bucket_order
+		ORDER BY bucket_order
 	`
 
 	rows, err := q.Query(ctx, query, args...)
@@ -386,7 +399,8 @@ func (h *Handler) queryRequestCountBuckets(ctx context.Context, q queryer, r *ht
 	}
 	defer rows.Close()
 
-	var result []ShapeBucket
+	// R65: 空结果返回 [] 而非 nil（同 queryModelBreakdown）。
+	result := []ShapeBucket{}
 	for rows.Next() {
 		var b ShapeBucket
 		if err := rows.Scan(&b.Range, &b.Label, &b.Count); err != nil {
@@ -403,29 +417,31 @@ func (h *Handler) queryDurationBuckets(ctx context.Context, q queryer, r *http.R
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
-		SELECT 
-			CASE 
-				WHEN duration_seconds < 60 THEN '<1min'
-				WHEN duration_seconds BETWEEN 60 AND 300 THEN '1-5min'
-				WHEN duration_seconds BETWEEN 301 AND 1800 THEN '5-30min'
-				WHEN duration_seconds BETWEEN 1801 AND 3600 THEN '30-60min'
-				WHEN duration_seconds > 3600 THEN '>1h'
-				ELSE 'unknown'
-			END AS range,
-			'' AS label,
-			COUNT(*) AS count
-		FROM session_summaries ss
-		` + where + `
-		GROUP BY range
-		ORDER BY 
-			CASE range
-				WHEN '<1min' THEN 1
-				WHEN '1-5min' THEN 2
-				WHEN '5-30min' THEN 3
-				WHEN '30-60min' THEN 4
-				WHEN '>1h' THEN 5
-				ELSE 6
-			END
+		WITH buckets AS (
+			SELECT
+				CASE
+					WHEN ss.duration_seconds < 60 THEN '<1min'
+					WHEN ss.duration_seconds BETWEEN 60 AND 300 THEN '1-5min'
+					WHEN ss.duration_seconds BETWEEN 301 AND 1800 THEN '5-30min'
+					WHEN ss.duration_seconds BETWEEN 1801 AND 3600 THEN '30-60min'
+					WHEN ss.duration_seconds > 3600 THEN '>1h'
+					ELSE 'unknown'
+				END AS bucket_range,
+				CASE
+					WHEN ss.duration_seconds < 60 THEN 1
+					WHEN ss.duration_seconds BETWEEN 60 AND 300 THEN 2
+					WHEN ss.duration_seconds BETWEEN 301 AND 1800 THEN 3
+					WHEN ss.duration_seconds BETWEEN 1801 AND 3600 THEN 4
+					WHEN ss.duration_seconds > 3600 THEN 5
+					ELSE 6
+				END AS bucket_order
+			FROM session_summaries ss
+			` + where + `
+		)
+		SELECT bucket_range, '' AS bucket_label, COUNT(*) AS count
+		FROM buckets
+		GROUP BY bucket_range, bucket_order
+		ORDER BY bucket_order
 	`
 
 	rows, err := q.Query(ctx, query, args...)
@@ -434,7 +450,8 @@ func (h *Handler) queryDurationBuckets(ctx context.Context, q queryer, r *http.R
 	}
 	defer rows.Close()
 
-	var result []ShapeBucket
+	// R65: 空结果返回 [] 而非 nil（同 queryModelBreakdown）。
+	result := []ShapeBucket{}
 	for rows.Next() {
 		var b ShapeBucket
 		if err := rows.Scan(&b.Range, &b.Label, &b.Count); err != nil {
@@ -547,29 +564,31 @@ func (h *Handler) queryLatencyBuckets(ctx context.Context, q queryer, r *http.Re
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
-		SELECT 
-			CASE 
-				WHEN avg_latency_ms < 1000 THEN '<1s'
-				WHEN avg_latency_ms BETWEEN 1000 AND 3000 THEN '1-3s'
-				WHEN avg_latency_ms BETWEEN 3001 AND 5000 THEN '3-5s'
-				WHEN avg_latency_ms BETWEEN 5001 AND 10000 THEN '5-10s'
-				WHEN avg_latency_ms > 10000 THEN '>10s'
-				ELSE 'unknown'
-			END AS range,
-			'' AS label,
-			COUNT(*) AS count
-		FROM session_summaries ss
-		` + where + `
-		GROUP BY range
-		ORDER BY 
-			CASE range
-				WHEN '<1s' THEN 1
-				WHEN '1-3s' THEN 2
-				WHEN '3-5s' THEN 3
-				WHEN '5-10s' THEN 4
-				WHEN '>10s' THEN 5
-				ELSE 6
-			END
+		WITH buckets AS (
+			SELECT
+				CASE
+					WHEN ss.avg_latency_ms < 1000 THEN '<1s'
+					WHEN ss.avg_latency_ms BETWEEN 1000 AND 3000 THEN '1-3s'
+					WHEN ss.avg_latency_ms BETWEEN 3001 AND 5000 THEN '3-5s'
+					WHEN ss.avg_latency_ms BETWEEN 5001 AND 10000 THEN '5-10s'
+					WHEN ss.avg_latency_ms > 10000 THEN '>10s'
+					ELSE 'unknown'
+				END AS bucket_range,
+				CASE
+					WHEN ss.avg_latency_ms < 1000 THEN 1
+					WHEN ss.avg_latency_ms BETWEEN 1000 AND 3000 THEN 2
+					WHEN ss.avg_latency_ms BETWEEN 3001 AND 5000 THEN 3
+					WHEN ss.avg_latency_ms BETWEEN 5001 AND 10000 THEN 4
+					WHEN ss.avg_latency_ms > 10000 THEN 5
+					ELSE 6
+				END AS bucket_order
+			FROM session_summaries ss
+			` + where + `
+		)
+		SELECT bucket_range, '' AS bucket_label, COUNT(*) AS count
+		FROM buckets
+		GROUP BY bucket_range, bucket_order
+		ORDER BY bucket_order
 	`
 
 	rows, err := q.Query(ctx, query, args...)
@@ -578,7 +597,8 @@ func (h *Handler) queryLatencyBuckets(ctx context.Context, q queryer, r *http.Re
 	}
 	defer rows.Close()
 
-	var result []ShapeBucket
+	// R65: 空结果返回 [] 而非 nil（同 queryModelBreakdown）。
+	result := []ShapeBucket{}
 	for rows.Next() {
 		var b ShapeBucket
 		if err := rows.Scan(&b.Range, &b.Label, &b.Count); err != nil {
