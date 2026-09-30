@@ -3,17 +3,28 @@ package streaming
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	outputhook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/pool"
+	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/redis/go-redis/v9"
 )
@@ -205,6 +216,208 @@ func TestRestoredSensitiveFrameIsHeldUntilRealOutputComplianceApproval(t *testin
 			got := rec.Body.String()
 			if writer.writeErr != nil || strings.Contains(got, "13800138000") || strings.Contains(got, "{SENSITIVE:") || !strings.Contains(got, "[PHONE]") {
 				t.Fatalf("restored output was not safely released: err=%v wire=%q", writer.writeErr, got)
+			}
+		})
+	}
+}
+
+type nativeTerminalResolver struct{ candidate provider.Candidate }
+
+func (r nativeTerminalResolver) Enabled() bool                           { return true }
+func (r nativeTerminalResolver) ModelKnown(context.Context, string) bool { return true }
+func (r nativeTerminalResolver) GetCandidates(ctx context.Context, model, profile, tenant string) ([]provider.Candidate, *provider.Policy, error) {
+	return r.GetCandidatesByModality(ctx, model, profile, tenant, "text")
+}
+func (r nativeTerminalResolver) GetCandidatesByModality(context.Context, string, string, string, string) ([]provider.Candidate, *provider.Policy, error) {
+	return []provider.Candidate{r.candidate}, provider.DefaultPolicy(), nil
+}
+
+type nativePolicyBlockAttemptExecutor struct {
+	protocol string
+	calls    int
+}
+
+func (e *nativePolicyBlockAttemptExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	e.calls++
+	frame := nativeComplianceDeltaFrame(e.protocol, "provider-secret")
+	_, writeErr := params.W.Write(frame)
+	if writeErr == nil {
+		writeErr = errors.New("synthetic stream ended after policy frame")
+	}
+	return nil, &executors.ExecuteError{
+		LastKind: errorsx.KindContentFilter,
+		LastErr:  writeErr,
+		Tried:    1,
+	}
+}
+
+func TestNativeSurvivalStreamBlockWritesOneProtocolTerminalAndFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, body, protocol, terminal string
+		serve                                func(*ChatHandler) http.Handler
+	}{
+		{
+			name: "messages", path: "/v1/messages", protocol: "anthropic-messages", terminal: "event: error\n",
+			body:  `{"model":"m","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			serve: func(h *ChatHandler) http.Handler { return NewMessagesHandler(h) },
+		},
+		{
+			name: "responses", path: "/v1/responses", protocol: "openai-responses", terminal: "event: response.failed\n",
+			body:  `{"model":"m","stream":true,"input":"hi"}`,
+			serve: func(h *ChatHandler) http.Handler { return NewResponsesHandler(h) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempt := &nativePolicyBlockAttemptExecutor{protocol: tc.protocol}
+			h := NewChatHandler(nil, nil, nil, nil, nil, nil)
+			h.executor = &executors.Executor{}
+			h.provider = nativeTerminalResolver{candidate: provider.Candidate{
+				ProviderID: 11, CredentialID: 22, Protocol: "openai-completions", CatalogCode: "native-survival-test",
+				RawModel: "m", OfferRawModel: "m", Tier: 1, Weight: 100, Routable: true,
+				LifecycleStatus: "active", AvailabilityState: "ready", QuotaState: "ok", CircuitState: "closed",
+			}}
+			h.setRequestKeyVerifierForTest(durableEndpointVerifier{key: &authentication.KeyInfo{ID: 42, TenantID: "tenant-1", ApplicationID: 7}})
+			h.SetRequestSurvival(func(string) bool { return true }, SurvivalOptions{
+				Deadline: time.Second, RetryBase: time.Millisecond, RetryInterval: time.Millisecond,
+				MaxRetries: 1, NightMaxRetries: 1, KeepaliveInterval: time.Hour,
+			})
+			h.survivalAttemptExec = attempt
+			h.SetResponseInterceptor(response.NewInterceptorChain(&nativeNonStreamInterceptor{blocked: true}))
+			var entries []*telemetry.RequestLogEntry
+			h.SetRequestLogHook(func(entry *telemetry.RequestLogEntry) { entries = append(entries, entry) })
+
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer sk-test")
+			rec := httptest.NewRecorder()
+			tc.serve(h).ServeHTTP(rec, req)
+			wire := strings.TrimPrefix(rec.Body.String(), ": keep-alive\n\n")
+			if attempt.calls != 1 {
+				t.Fatalf("survival attempts=%d, want one policy-rejected upstream attempt", attempt.calls)
+			}
+			if strings.Count(wire, tc.terminal) != 1 || !strings.HasPrefix(wire, tc.terminal) ||
+				strings.Contains(wire, "provider-secret") || strings.Contains(wire, "gateway_survival_") {
+				t.Fatalf("survival block emitted a mixed/duplicate terminal: %q", wire)
+			}
+			failures := 0
+			for _, entry := range entries {
+				if entry.Success {
+					t.Fatalf("blocked survival stream emitted success audit: %+v", entry)
+				}
+				if entry.ErrorKind != nil && *entry.ErrorKind == "output_policy_blocked" {
+					failures++
+				}
+			}
+			if failures != 1 {
+				t.Fatalf("output_policy_blocked audit rows=%d entries=%+v", failures, entries)
+			}
+		})
+	}
+}
+
+func TestNativeNormalStreamBlockWritesOneProtocolTerminalAndFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, body, protocol, terminal string
+		serve                                func(*ChatHandler) http.Handler
+	}{
+		{
+			name: "messages", path: "/v1/messages", protocol: "anthropic-messages", terminal: "event: error\n",
+			body:  `{"model":"m","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			serve: func(h *ChatHandler) http.Handler { return NewMessagesHandler(h) },
+		},
+		{
+			name: "responses", path: "/v1/responses", protocol: "openai-responses", terminal: "event: response.failed\n",
+			body:  `{"model":"m","stream":true,"input":"hi"}`,
+			serve: func(h *ChatHandler) http.Handler { return NewResponsesHandler(h) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamCalls int
+			var upstreamMu sync.Mutex
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamMu.Lock()
+				upstreamCalls++
+				upstreamMu.Unlock()
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"provider-secret\"},\"finish_reason\":null}]}\n\n")
+				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer upstream.Close()
+
+			limiter := credential.NewLimiter()
+			defer limiter.Stop()
+			executor := executors.NewExecutor(
+				executors.NewRouter(executors.NewStickyCache(), limiter),
+				credential.NewManager(), limiter, pool.NewPoolManager(nil), nil, nil, nil, nil,
+			)
+			// NewExecutor deliberately leaves protocol bridges unset; main.go
+			// wires them in production. Exercise the same OpenAI→client bridges
+			// here so the request reaches the intercepting writer with converted
+			// protocol frames instead of an empty stream.
+			executor.OpenAIToAnthropicStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, inputTokensEstimate int, toolsRequested bool) executors.StreamOutcome {
+				return StreamOpenAIToAnthropicSSE(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil)
+			}
+			executor.OpenAIToResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, toolsRequested bool) executors.StreamOutcome {
+				return StreamOpenAIToResponsesSSE(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil)
+			}
+			pipeline := executor.NewDispatchPipeline(nil)
+			pipeline.Start()
+			defer pipeline.Stop()
+			executor.SetDispatchPipeline(pipeline)
+
+			h := NewChatHandler(nil, nil, nil, nil, nil, nil)
+			h.executor = executor
+			h.provider = nativeTerminalResolver{candidate: provider.Candidate{
+				ProviderID: 11, CredentialID: 22, BaseURL: upstream.URL, Protocol: "openai-completions",
+				CatalogCode: "native-terminal-test", RawModel: "m", OfferRawModel: "m", APIKey: "upstream-key",
+				Tier: 1, Weight: 100, BillingMode: "token_plan", Routable: true,
+				LifecycleStatus: "active", AvailabilityState: "ready", QuotaState: "ok", CircuitState: "closed",
+			}}
+			h.setRequestKeyVerifierForTest(durableEndpointVerifier{key: &authentication.KeyInfo{ID: 42, TenantID: "tenant-1", ApplicationID: 7}})
+			blocker := &nativeNonStreamInterceptor{blocked: true}
+			h.SetResponseInterceptor(response.NewInterceptorChain(blocker))
+			var entries []*telemetry.RequestLogEntry
+			h.SetRequestLogHook(func(entry *telemetry.RequestLogEntry) { entries = append(entries, entry) })
+
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer sk-test")
+			rec := httptest.NewRecorder()
+			tc.serve(h).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("stream status=%d body=%q", rec.Code, rec.Body.String())
+			}
+			wire := strings.TrimPrefix(rec.Body.String(), ": keep-alive\n\n")
+			if strings.Count(wire, tc.terminal) != 1 || !strings.HasPrefix(wire, tc.terminal) ||
+				strings.Contains(wire, "provider-secret") || strings.Contains(wire, "Upstream request failed") ||
+				strings.Contains(wire, `"error":{"message"`) {
+				upstreamMu.Lock()
+				calls := upstreamCalls
+				upstreamMu.Unlock()
+				t.Fatalf("blocked native response did not produce one clean protocol terminal: status=%d wire=%q original=%q calls=%d interceptor_calls=%d entries=%+v", rec.Code, wire, rec.Body.String(), calls, blocker.seenCalls, entries)
+			}
+			upstreamMu.Lock()
+			calls := upstreamCalls
+			upstreamMu.Unlock()
+			if calls != 1 {
+				t.Fatalf("upstream calls=%d, want one", calls)
+			}
+			if breaker := executor.Circuit.Get(11, 22); breaker != nil && breaker.ConsecutiveFailures() != 0 {
+				t.Fatalf("gateway output-policy block counted as provider failure: consecutive=%d", breaker.ConsecutiveFailures())
+			}
+			failures := 0
+			for _, entry := range entries {
+				if entry.Success {
+					t.Fatalf("blocked stream emitted success audit: %+v", entry)
+				}
+				if entry.ErrorKind != nil && *entry.ErrorKind == "output_policy_blocked" {
+					failures++
+					if entry.ProviderID == nil || *entry.ProviderID != 11 || entry.CredentialID == nil || *entry.CredentialID != 22 {
+						t.Fatalf("failure lost provider attribution: %+v", entry)
+					}
+				}
+			}
+			if failures != 1 {
+				t.Fatalf("output_policy_blocked audit rows=%d entries=%+v", failures, entries)
 			}
 		})
 	}
