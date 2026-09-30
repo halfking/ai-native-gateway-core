@@ -41,6 +41,30 @@ test: ## 全量单元测试（CI 默认入口）
 test-short: ## 短模式，跳过 -short=false 的测试
 	$(GO) test ./... -count=1 -short -timeout=120s
 
+# ── 审计守卫（R69）────────────────────────────────────────────────────
+#
+# 这些包是**静态审计门**，不是普通单元测试：它们在真实 DB / 供应商都不可用
+# 的情况下也必须能跑（实测四个合计约 6s，无任何外部依赖），因此可以被放进
+# pre-push 这类每次都执行的路径。
+#
+# R69 的发现：它们此前**没有被任何强制路径执行**——pre-push 的 Go 测试是
+# opt-in（RUN_GO_TESTS=1）且只跑 licensing + envinjector，CI 各 workflow
+# 也没有覆盖。于是「守卫」当时只是文档，不是门。
+#
+# 维护纪律：新增审计守卫包时必须同时登记到 GUARD_PACKAGES。`guards-sync`
+# 门会检查有没有漏登记——否则「加了个守卫但没人跑」会再次悄悄发生。
+# 单行定义：scripts/checks/guards-sync.sh 用 sed 取这一行，多行续行会让它
+# 只读到前半段（这正是本脚本第一次跑就误报的��因）。
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard
+
+.PHONY: guards
+guards: ## 运行全部审计守卫（快速、无外部依赖）
+	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+
+.PHONY: guards-sync
+guards-sync: ## 校验：internal/ 下每个 *guard 包都已被登记进 GUARD_PACKAGES
+	@bash scripts/checks/guards-sync.sh
+
 .PHONY: test-race-core
 test-race-core: ## 核心 IR/调度/流式包的 race 检测（不含外部依赖集成测试）
 	$(GO) test -race $(CORE_GO_PACKAGES) -count=1 -timeout=600s

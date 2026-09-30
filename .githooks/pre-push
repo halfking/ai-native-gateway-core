@@ -93,6 +93,42 @@ if [[ $scan_failed -eq 1 ]]; then
   exit 1
 fi
 
+# ── 1b. 审计守卫门（R69）──────────────────────────────────────────────
+#
+# 为什么它**不受 SKIP_TESTS / RUN_GO_TESTS 开关约束**：这些守卫是纯静态分析
+# 门，无 DB、无网络，实测七个包合计约 13s。Go 单元测试之所以默认 opt-in，
+# 原因是成本与外部依赖，而不是守卫的运行代价。
+#
+# R69 的发现：internal/ 下的 7 个审计守卫（rowsguard / errdiscard / sqlguard
+# / sqlreadguard / paramguard + dbrows / jsoncol）此前**没有任何强制路径执行**
+# ——本钩子的 Go 测试是 opt-in 且只跑 licensing + envinjector，CI 各 workflow
+# 也没覆盖。一门没人跑的守卫是文档，不是门。
+#
+# 本段同时做两件事：跑守卫，以及校验「没有新守卫被漏登记」（guards-sync）。
+if command -v go >/dev/null 2>&1; then
+  echo "🛡️  Running audit-guard gate (R69)..."
+  _guard_log="/tmp/guards-$$.log"
+  if ! (cd "$repo_root" && go test \
+        ./internal/rowsguard ./internal/errdiscard \
+        ./internal/dbrows ./internal/jsoncol \
+        ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard \
+        -count=1 -timeout=120s) > "$_guard_log" 2>&1; then
+    echo "❌ 审计守卫失败（守卫已拦住回归）。" >&2
+    tail -30 "$_guard_log" | sed 's/^/    /' >&2
+    rm -f "$_guard_log"
+    exit 1
+  fi
+  rm -f "$_guard_log"
+  if ! (cd "$repo_root" && bash scripts/checks/guards-sync.sh); then
+    echo "" >&2
+    echo "🚫 Push BLOCKED: 有审计守卫包未被登记进执行路径。" >&2
+    echo "   一门没人跑的守卫只是文档。新增守卫请登记到 Makefile 的 GUARD_PACKAGES。" >&2
+    exit 1
+  fi
+else
+  echo "⚠️  go not in PATH — skipping audit-guard gate" >&2
+fi
+
 # ── 2. v2 Phase 3B-3: 11-suite shell test gate ──────────────────────────
 
 if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
