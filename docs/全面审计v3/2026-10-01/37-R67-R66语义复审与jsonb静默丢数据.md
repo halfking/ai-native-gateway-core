@@ -156,10 +156,120 @@ R66 当时的注释还专门论证了「调用方对 err 是降级容忍的，�
 上抛误判成 per-row 返回。第二个尤其值得记——**测试的判据边界错了，会把正确
 代码判成缺陷**。
 
-## 3. R67-B：存储层/后台任务语义复审
+## 3. R67-B：存储层/后台任务语义复审 —— 判 PARTIAL
 
-（待补）
+判 **PARTIAL 而非 PASS**。`bg/` 的纪律守住了：22 个循环站点里 20 个是
+warn-and-continue，代理逐个追到生产调用方，**没有发现 worker 循环被杀、
+调度被跳过、或熔断/健康状态被写坏**。它找到的两处缺陷都不是过度升格。
 
-## 4. 保持开放
+### 3.1 D4（P1）：`ExportFromTx` 在调用方持有的事务里丢弃未关闭的 Rows
 
-（待补）
+`domains/sessionforensics/export.go:176` 的 `tx.Query` **没有**
+`defer rows.Close()`——而同文件另两个函数（`:304` / `:426`）都有。
+
+这个洞本身是**潜伏的**：循环总是跑到耗尽，而 pgx 在 `Next()` 返回 false 时
+会自动 `Close()`，所以「不 Close」从不显形。R66 在循环中加了
+`return nil, ...`（取证包必须完整，见 3.3），这条路径**于是变得可达**：
+rows 在结果集仍挂载时被丢下，而 tx 是**调用方持有**的，调用方随后带着半读的
+结果集去 rollback / 释放事务。
+
+性质要说准：文件里 `:234` 的 `rows.Err()` 早退**早就有同样的形状**，所以这是
+**被扩大的既存洞**，不是全新设计错误——但让 mid-loop 路径变可达的是 R66。
+
+**修法**：补 `defer rows.Close()`。注意形式差异：另两个函数走 `e.store`
+（`database/sql`，`Close()` 返回 error，故写 `defer func(){ _ = rows.Close() }()`）；
+本函数走 `pgx.Tx.Query`（`Close()` **无返回值**），只能直接 defer。
+我第一版照抄了邻近函数的写法，`go build` 立刻报
+`rows.Close() (no value) used as value`——**这正是形式不能混用的实证**。
+
+### 3.2 D5（P2）：`model_tier` 的全量替换集合只 warn，与 `hotconfig` 口径不一致
+
+`bg/model_tier.go` 的 `refresh()` 新建整份 `featuredSet` 并**无条件**
+`m.cur.Store(fs)`。这与 `hotconfig.reload` 的形状**完全相同**（整份配置的
+全量替换），而 R66 正因如此把 `hotconfig` 升级成硬失败——两处口径不一致。
+
+后果：usage Top-N 被截断会让高频模型静默退出「常用模型」层、深探优先级丢失，
+且这份坏集合**永久替换掉**之前那份完整的，要等下一个 10 分钟 tick 才自愈。
+R66 的注释甚至点名了这个后果（「Top-N 截断会让高频模型退出深探范围」），
+然后只 warn。
+
+**修法**：两处（static featured / usage top-N）截断时跳过 `m.cur.Store`，
+保留上一份完整集合。10 分钟自愈不是不能接受，但**分类学不一致**才是问题——
+同样的形状在两个地方得到不同的待遇。
+
+### 3.3 代理核实为「正确、无需改动」的几处
+
+- `ExportSession` / `ListRecentSessions` 的上抛：都有 `defer`，无泄漏；取证
+  包与审计列表**跳行比失败更危险**（`turn++` 在 Scan 之后，跳行会让轮次序号
+  与真实请求错位，产出一份「看起来自洽、实则缺轮」的证据包）。
+- `hotconfig.reload`：硬失败是**承重**的，且 fail-safe——`main.go` 降级到
+  `journeyConfig = requestjourney.DefaultConfig()`，而不是装一份缩水配置。
+  代价是启动期一次 DB 抖动会永久失去热加载，对分型 5 而言这是对的取舍。
+- `bg/shared_pick.go` 两处新硬失败：这是任务书担心的场景，但**成立**——
+  `repickAll` 本来就有 `err != nil → continue` 分支，错误**不逃出**
+  `repickAll`，而 `repickAll` 从 `run()` 调用且无 error 返回，小时级 worker
+  未受影响。
+- `default_probe_picker.go` 只 warn 也**正确**：选择发生在下一层的
+  `PickProbeModelForCredential`（那里硬失败）；这一层丢的是「待重选的候选」，
+  不是「选择本身」，凭据保留原有的 `default_probe_model` 而非被指派错的。
+- `autoroute/recommend_v2.go`：签名不可改，但在写 2 分钟 TTL 缓存**之前**
+  return——**截断结果只影响这一次请求，不会进缓存**，下个请求自愈。合理的缓解。
+- `ipblocklist` 注释里「调用方各自紧跟 `rows.Err()` 上抛」的说法**核实为真**
+  （`:61` / `:158`），内层检查是有意重复。
+- 非错误路径漂移：**干净**。逐行 diff 确认无 SQL 变更（所有 SQL 行都是上下文，
+  不是 `-`/`+` 对）、无导出签名变更（新增的 `+func` 只有 `internal/dbrows`
+  三个符号）、无返回值/顺序/nil-空切片语义变化。
+
+### 3.4 我自己把回归测试写成了假绿（第三次同类错误）
+
+给 D4 写回归测试时，我用了「文本窗口 + `strings.Index` 定位函数」这种
+R66 刚批判过的做法。结果**变异验证时把 `defer rows.Close()` 删掉，测试照样绿**。
+
+两个原因叠加：
+
+1. 我为这件事写的说明注释里出现了 `defer rows.Close()` 这个**字面量**，
+   文本判据**匹配到了自己的注释**；
+2. 窗口按「到下一个 `\nfunc `」截断，把邻近函数的 `Close` 也算了进来。
+
+改法：判据换成 **AST 定位 + 剥注释**。改完再变异，`defer count 2 → 1` 时两个
+测试都正确报红，还原后恢复绿。
+
+另一条测试也犯了**判据层级错误**：写「取了 rows 就必须 Close」，结果把
+`PgxStore.Query`（把 rows 包成 `RowIterator` 交给调用方的**工厂**）报了出来。
+判据收紧为「**迭代**了 rows 才必须 Close」。
+
+**这一轮我在同一个错误上栽了第三次**（R66 是 `RangeStmt` vs `ForStmt`，本轮
+第一次是断言窗口装不下 if 块、第二次是 Scan 边界，第三次是这个）。
+这不是记性问题，是**方法问题**：写静态判据时应当默认「文本窗口不可信」，
+先写 AST 版。
+
+## 4. 本轮总结
+
+| 项 | 结果 |
+|---|---|
+| R66 语义复审 | 4 处真缺陷（D1/D2 admin、D4 sessionforensics、D5 model_tier），全部已修 |
+| 复审判为误报并保留 | 3 处（work_types L1、default_probe_picker、autoroute） |
+| 回归测试 | 6 项（admin 4 + sessionforensics 2），**全部经变异验证红/绿** |
+| 静态守卫 | rowsguard 0 违规 / 764 站点；dbrows、jsoncol 全绿 |
+| 构建/vet | 全仓 exit 0 |
+
+**本轮的方法论增量**：R66 的守卫只判「`rows.Err()` 在不在循环旁边」，
+**结构上无法发现分型错误**——D1/D2/D5 全部顺利通过了守卫。D5 尤其说明：
+同一个缺陷形状（整份配置的全量替换）在 `hotconfig` 被正确升级成硬失败，
+在 `model_tier` 却只留了警告。**静态门能保证「都做了」，不能保证「做得对」。**
+
+## 5. 保持开放
+
+- `autoupdate.TestPgxStore_RecordUpdateReport`（生产 `releaseID=0` 回退与 FK
+  冲突，两条互斥修法属产品裁决）、`bg` 两个 RealDB 夹具、
+  `provider.TestGetProbeCandidates`、`admin.TestReportRollup_HTTPContract`
+  ——四个红门均经 stash + 同一 DSN 对照证实**既存非本轮**。
+- 6 个新上抛函数**无生产调用方**（`feature_stats_worker.GetLatestStats`、
+  `credentialstate.RegisterNodesForCredential`、`moduleexec.BatchCheck`、
+  `registry.GetUsageStats`/`GetTopTools`、`telemetry.GetAccessStats`、
+  `settings.List`/`ListTenant`）——上抛是惰性的。其中 `settings` 的分型 5
+  理由成立却无人调用，值得后续接线时留意。
+- 22 处 `if dbrows.SkipOrFail(op, err) { continue }` 惯用法**依赖 helper 的
+  bool 契约**：写成裸 `if dbrows.SkipOrFail(op, rows.Scan(...))` 时 continue
+  在扫描失败上无条件触发（当前是对的）。R66 提交信息已登记「两处双层守卫
+  形状易被改错」，本轮复核**未见活的反例**。
