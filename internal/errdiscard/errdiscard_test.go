@@ -18,8 +18,8 @@ var knownCandidates = []string{
 	// 复审代理曾把它标为「机制不精确」，复核后判定原修正确。
 	"admin/work_types.go",
 
-	// bg/lite_retention_worker.go:69,80 —— 假阳性。`if _, _, _, err := w.RunOnce(ctx);
-	// err != nil && !errors.Is(...)` 里的 `_` 是三个删除行数，err **有**被检查
+	// bg/lite_retention_worker.go:69,80 —— 假阳性。`if _, _, _, _, err := w.RunOnce(ctx);
+	// err != nil && !errors.Is(...)` 里的 `_` 是四个删除行数，err **有**被检查
 	// 并 warn 记录。本门只认「LHS 上出现 `_`」，分不清「丢的是 err」与
 	// 「丢的是另一个返回值」。
 	"bg/lite_retention_worker.go",
