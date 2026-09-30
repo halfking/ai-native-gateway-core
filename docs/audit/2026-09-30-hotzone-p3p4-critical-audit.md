@@ -104,14 +104,15 @@ GOCACHE=/tmp/gocache-hotzone 隔离后稳定。
 ## 五、遗留风险与挂账
 
 1. ~~P5 文档子项未做~~ **已由并行 R36 轮闭环(e968d73f3),本轮复核属实**:README「全量模式热区」章节(README.md:86-92)、deployment-guide hotzone 配置矩阵(:230-243,含「装配门只认 config 通道」语义,与本文档 D1 一致)、ADR-0019 Amendment(2026-09-30)。
-2. **E2E 部署级验证未做**:本轮验收全部单测级;full 热区首次真实流量前的部署演练(245/154 任一环境 LLM_GATEWAY_HOTZONE_ENABLED 显式开关对照、/metrics/storage 三新键实读、PG 故障演练)仍欠——方案 §6 第 2/3/6 条的部署级半边。
+2. ~~**E2E 部署级验证未做**~~ **已闭环(2026-09-30 当日,local 全栈)**:full+热区开关对照、/metrics/storage 三新键实读(跨重启 L1.5 hits=3)、PG 硬停演练(镜像 errors=0 持写、恢复无结构性损坏)全部实证;新发现部署缺口 D1(管线 env 白名单缺 STORAGE_MODE/HOTZONE_*)。证据: docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md
 3. F3 重复镜像写放大、F4 对账口径豁免、F5 admin ingest 第三落库点(见 §三)。
 4. full 热区 bodiesStore 实例已装配但**尚无写入方**(session bodies 镜像走的是 RequestMirror/requests 子树;FileBodiesStore 的消费方属后续波次)——目录生命周期已归 Shutdown/trimmer 管,先行装配。
 5. 主树并行会话 WIP 未跟踪文件仍在,任何全包测试继续走干净 worktree。
 
 ## 六、Handoff(下一轮入口)
 
-- 部署演练:按 §五.2 清单在 245 执行一轮 full+热区开关对照(单测已全绿,唯一欠的是部署级)。
+- ~~部署演练~~ **已完成(2026-09-30 当日)**:见 docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md
+  (新遗留:管线 env 白名单 D1、.env.local D2、镜像对账口径 O2/O3、PG 停机遥测丢失 O5)。
 - F5 决策:admin ingest 是否接镜像,owner 拍板。
 - 若做「full 热区 session_bodies 写入方」(§五.4),复用 rt.bodiesStore 实例,勿再建第二实例(AsyncFileWriter 双实例会双倍写 worker)。
 - 对账脚本(若建):按 F4 口径豁免 null/{} 行,并注意 v2 侧镜像以 tx.Commit 为界(修订轮 R-A)、telemetry 侧以 persistRequestLog 入口为界(天然含 PG-down 投递)——两侧孤儿语义不同向,脚本按「镜像可能多于 PG」单向容错。

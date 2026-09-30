@@ -163,12 +163,15 @@
 
 ## 6. 验收清单
 
-- [ ] lite 模式 9 项既有套件全绿(回归门禁)
-- [ ] full 模式:`data/hotzone/` 目录结构与 lite 同构,7h/1GB 默认值生效
-- [ ] 读路径顺序实测:内存 → 本地文件 → (Redis) → PG,可通过指标区分命中层
-- [ ] `storage.hotzone_max_size_gb` 热重载生效且 trimmer 先删最旧
-- [ ] 关闭热区开关后 full 模式行为与当前 main 一致
-- [ ] PG 故障演练:热区持续写入,恢复后无数据结构性损坏
+- [x] lite 模式 9 项既有套件全绿(回归门禁)——单测级 P1P2/P3P4 轮闭环
+- [x] full 模式:`data/hotzone/` 目录结构与 lite 同构,7h/1GB 默认值生效——单测级 + 2026-09-30 部署级(local,装配日志+磁盘实测;session_bodies 目录因无写入方未创建,既有挂账如实记)
+- [x] 读路径顺序实测:内存 → 本地文件 → (Redis) → PG,可通过指标区分命中层——单测级 + 2026-09-30 部署级(跨重启 L1.5 hits=3 实测;镜像对账口径补全见当日演练文档 O2/O3)
+- [x] `storage.hotzone_max_size_gb` 热重载生效且 trimmer 先删最旧——单测级(P2 轮钉死);部署级未重放(30m trim 间隔 > 演练时长)
+- [x] 关闭热区开关后 full 模式行为与当前 main 一致——单测级 + 2026-09-30 部署级(kill-switch 重建容器对照)
+- [x] PG 故障演练:热区持续写入,恢复后无数据结构性损坏——单测级 + 2026-09-30 部署级(PG 硬停镜像 errors=0 持写、恢复 639 表完好;chat 请求遥测条目丢失观察项挂账 O5,与热区正交)
+
+部署级证据全文: docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md(含部署缺口 D1:管线
+env 白名单缺 STORAGE_MODE/HOTZONE_*,走 deploy-local 的环境热区不激活,须容器创建时手工注入)。
 
 ---
 
@@ -202,6 +205,7 @@
 | P4(H3 镜像接线) | ✅ 完成 | `4edc7574f`(两接线点:telemetry persistRequestLog 顶部 + SessionWriterV2;装配闭包注入)、`b67fe45b4`(行为钉死:三件套路径断言 + PG 不可用仍写入)、同日修订轮(批判式复审 F-A:镜像从 INSERT 后挪至 **tx.Commit 成功后**根修孤儿镜像,TestSessionWriterMirror_CommitFailsNoMirror 钉死;F-B:三件套磁盘路径 e2e 测试;见审计 §三.5) |
 | P5(H5 指标分维度) | ✅ 完成 | `205864527`(l1_5_by_mode/mirror.by_mode/hotzone.hit_total_by_mode + SetStorageMode/SetHotZoneEnabled 接线,闭合 hotzone_enabled 恒 false 预存缺口) |
 | P5(H5 文档:README 增补/ADR amendment/deployment-guide 配置矩阵) | ✅ 完成 | R36(2026-09-30)落地:README「全量模式热区」章节 + ADR-0019 Amendment(2026-09-30) + deployment-guide hotzone 配置矩阵(env/YAML/settings 三通道)+ F4 对账口径入运维文档 |
+| E2E 部署级演练(§五.2 唯一实质遗留) | ✅ 完成 | 2026-09-30 local 全栈:full+热区开启发真实流量,①三子树+gunzip 对账(F4 豁免复现)②/metrics/storage 三键(跨重启 L1.5 hits=3)③kill-switch 容器对照 ④PG 硬停镜像 errors=0 持写+恢复健康。新发现部署缺口 D1(env 白名单缺 STORAGE_MODE/HOTZONE_*)与 D2(.env.local 命令式 ADMIN_API_KEY 令部署中止);证据: docs/audit/2026-09-30-hotzone-e2e-deploy-drill.md |
 
 批判式审计全文: docs/audit/2026-09-30-hotzone-p1p2-critical-audit.md
 (F1 过期相记账超删已由 21 轮修复 / F2 ced9eb9b1 提交信息 gauge 声明失实留档 /
