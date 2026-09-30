@@ -21,7 +21,7 @@
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 542 | `542_request_logs_token_band.sql` | `318c7f342afed326cf6f44fbe092b11c06d7a24acbc5cf902bd6ab53fb032ab3` | applied+verified |
+| 542 | `542_request_logs_token_band.sql` | `38450fa2f19a8a27e43b464ca3d49399ac68729fc57d64f0250800d13b0aaf48` | applied+verified（2026-10-01 fresh-install e2e 轮（2026-10-01）修订：ON ONLY+硬编码分区叶索引+ATTACH 改递归形态（802 裁决同款处方，分区按月滚动、fresh 装目标永不存在）；存量库重放=母表索引同名 IF NOT EXISTS skip，终态不变） |
 
 ## 2026-08-19T10:11:23Z — deploy 154 build_seq 1629 (b310b700)
 
@@ -388,7 +388,7 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 | 683 | `683_session_dim_ownership_columns.sql` | `3fff8a52ec71e2898a2e65b36eba88acb28cdc88554a3ef90af2883404cddfae` | applied+verified |
 | 684 | `684_drop_stale_provider_error_tenant_fingerprint.sql` | `6ebdd2297001cf36f0a83349b3e1142625be5d02be6fef8cecd3da120710ec4e` | applied+verified |
 | 685 | `685_task_default_routing_tenant_text.sql` | `8a72257381fcfbe434246dad86e6ef9cb0e336168bbb79f3530e10db33e227f9` | applied+verified |
-| 686 | `686_fix_session_module_executions_2026_10_bounds.sql` | `77801ac8174c35f4e91d0904ed9200963503e4c078f8c61ebc876a3fb491a41f` | applied+verified |
+| 686 | `686_fix_session_module_executions_2026_10_bounds.sql` | `375519388946abf73af892e66ea365c15a4b5a26a28f1adbe624999649c69f67` | applied+verified（2026-10-01 fresh-install e2e 轮（2026-10-01）修订：分区存在性 `::regclass`→`to_regclass()`，缺分区分支首次可达；存量库重放=bounds 正确即 skip，语义不变） |
 
 ## 2026-09-07T22:43:46Z — deploy 154 build_seq 2058 (ffb16e1f)
 
@@ -779,4 +779,8 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 762 | `762_session_project_backfill_chain.sql` | `49b9a9778a8e39df6cfb0f44439ed94956f324812ad4b4cb3c13e623ee59db52` | applied+verified |
 | 763 | `763_provider_events_contract.sql` | `f38fda799b00391fddbeafaffcd208e53a6e79ed0905288c10e014f47bf060b9` | applied+verified |
 | 801 | `801_session_turn_details_duplicate_drain.sql` | `c9744d64b67c038f4f27d56a3deb2f88b8a5222a21bb325e021f011255799604` | applied+verified |
+| 803 | `803_candidate_failure_logs_hot_column_reconcile.sql` | `c1a8a88989c722445b368db0c2caa120a74c4f654ec8cc7989618046c510dd34` | applied+verified（2026-10-01 fresh-install e2e 轮新增：canonical 链收编 deploy 链 hot 侧 extracted_upstream_status_code/diagnosed_error_kind（627 unified 视图硬引用）；存量库 ADD COLUMN IF NOT EXISTS no-op） |
+| 804 | `804_credential_model_context_window_columns.sql` | `e74e17957448cdf0e7fc9b58df1d6758b86ea591440a4d8d7d203de80789dbbe` | applied+verified（2026-10-01 fresh-install e2e 轮新增：credential_model_bindings 补 context_window_source/_updated_at（682 重建视图硬引用；523 本体因旧视图定义缩列不可注册）；存量库 no-op） |
+| 805 | `805_session_dim_reconcile.sql` | `67e8aec49b2fb485dc48f6b6aa7bb1d0e7a425816b9c0b6d17335cbf7a7119de` | applied+verified（2026-10-01 fresh-install e2e 轮新增：按生产 17 列形态收编 session_dim（683 前置）；350/358 不可整文件注册（update_session_summary clobber guard 禁区）；存量库 no-op） |
+| 806 | `806_session_bodies_partitions_heap.sql` | `c1706d745218ca762c98bd29c2ef44cda360cca33b82bb61d12304738ec658bf` | applied+verified（2026-10-01 fresh-install e2e 轮新增：baseline 预建的 session_bodies_2026_07/08 columnar 分区转 heap（562 同款处方，仅空分区动手）；存量库分区已全 heap→循环空集 no-op） |
 

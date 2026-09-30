@@ -182,7 +182,7 @@ func TestPGStore_Confirm_FirstConfirmation_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(99)))
 	// 4. UPDATE session_summaries
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE session_summaries SET handoff_count=COALESCE(handoff_count,0)+1`)).
-		WithArgs(p.PreviousSessionID, p.TenantID, sqlmock.AnyArg(), p.Record.TokensAtTrigger, p.Record.MessagesAtTrigger, p.Record.TriggerReason).
+		WithArgs(p.PreviousSessionID, p.TenantID, sqlmock.AnyArg(), p.Record.TokensAtTrigger, p.Record.MessagesAtTrigger, p.Record.TriggerReason, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// 5. UPDATE proposal -> accounting_confirmed. Confirm now unmarshals the
 	// persisted goal_state bytes into p.GoalState before computing
