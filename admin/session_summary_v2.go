@@ -297,7 +297,7 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	sessionID, tenantID string,
 	upToTurn *int,
 ) ([]turnForSummary, error) {
-	keys, timestamps, err := api.queryFallbackTurnKeys(ctx, sessionID, tenantID, upToTurn)
+	keys, err := api.queryFallbackTurnKeys(ctx, sessionID, tenantID, upToTurn)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +308,19 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	for i, key := range keys {
 		requestIDs[i] = key.requestID
 	}
-	bodies, err := querySessionBodiesByRequestIDAndTS(ctx, api.pool, requestIDs, timestamps)
+	// 2026-10-01：配对键从 (request_id, ts) 切到 request_id 单键。
+	// 依据是实测，不是推断：
+	//
+	//	turns 腿 = v1 视图  ×  bodies 配 (request_id, ts)  → 11.207%（1839/16409）
+	//	turns 腿 = v1 视图  ×  bodies 配 request_id         → 100.000%（16409/16409）
+	//	turns 腿 = 原生源    ×  bodies 配 (request_id, ts)  → 0.007%（1/14582）
+	//
+	// 根因见 §5.9：request_logs_bodies.ts 是**正文写入时间**，不是轮次时间
+	// （通常差 8~16 秒）。单键安全性已实测：request_logs_bodies_with_current_month
+	// 2,220,507 行 = 2,220,507 个不同 request_id，无重键，所以 request_id
+	// 单键是**无歧义**的，不需要 ts 来消歧。
+	//
+	bodies, err := querySessionBodiesByRequestID(ctx, api.pool, requestIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -318,13 +330,16 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 // mergeFallbackTurns pairs each turn identity with its body, preserving the
 // order phase 1 produced. A turn with no stored body keeps a nil delta, which
 // is byte-for-byte what the old LEFT JOIN emitted as NULL.
-func mergeFallbackTurns(keys []fallbackTurnKey, bodies map[fallbackTurnKey]sessionBody) []turnForSummary {
+//
+// Bodies are keyed by request_id alone (see queryRequestLogsFallback); a
+// missing map entry and a map entry holding nils mean the same thing here.
+func mergeFallbackTurns(keys []fallbackTurnKey, bodies map[string]sessionBody) []turnForSummary {
 	if len(keys) == 0 {
 		return nil
 	}
 	turns := make([]turnForSummary, 0, len(keys))
 	for i, key := range keys {
-		body := bodies[key]
+		body := bodies[key.requestID]
 		turns = append(turns, turnForSummary{
 			TurnNo:        i + 1,
 			RequestDelta:  decodeStoredJSON("request_body", key.requestID, strPtrBytes(body.requestBody)),
@@ -340,29 +355,30 @@ func (api *SessionSummaryV2API) queryFallbackTurnKeys(
 	ctx context.Context,
 	sessionID, tenantID string,
 	upToTurn *int,
-) ([]fallbackTurnKey, []time.Time, error) {
+) ([]fallbackTurnKey, error) {
 	query, args := buildRequestLogsFallbackQuery(sessionID, tenantID, upToTurn)
 	rows, err := api.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer rows.Close()
 
+	// ts 只进 key、不再单独返回：phase 1 仍按 rl.ts ASC 排序（轮次时间，语义
+	// 正确），但正文按 request_id 单键配对，不再需要把 ts 传给 phase 2
+	// （见 queryRequestLogsFallback 的命中率对比）。
 	var keys []fallbackTurnKey
-	var timestamps []time.Time
 	for rows.Next() {
 		var requestID string
 		var ts time.Time
 		if err := rows.Scan(&requestID, &ts); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		keys = append(keys, newFallbackTurnKey(requestID, ts))
-		timestamps = append(timestamps, ts)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return keys, timestamps, nil
+	return keys, nil
 }
 
 func buildRequestLogsFallbackQuery(sessionID, tenantID string, upToTurn *int) (string, []any) {
@@ -377,19 +393,50 @@ func buildRequestLogsFallbackQuery(sessionID, tenantID string, upToTurn *int) (s
 	// 对本端点而言这是**净收益**：总结正文此前会把网关自己生成的标题/摘要
 	// 调用当成用户发言喂进对话文本。
 	//
+	// 2026-10-01 缺陷 7（审计报告新增，优先级高于 §8 第 7 项配对键）：
+	// 上一版把本查询的 FROM 换成了 db.SessionFamilyTurnsForSessionSQL()。
+	// 那展开是 `session_turns_hot UNION ALL session_turns`，**与主路径
+	// session_turns_with_current_month 同源**（该视图 = hot 去重 ∪ parent）。
+	// 而这条路径存在的唯一理由就是主路径读不到轮次时才被调用 —— 改接之后
+	// 它去读同一批表，必然同样返回 0 行，generateSummary 落到
+	// `no turns found for session %s` → HTTP 500。
+	//
+	// 实测（真库，近 3 天窗口）：触发 fallback 的会话 1,700 个，它们在 v1 里
+	// 本该有 1,802 轮，fallback 自己的 turns 腿返回 **0 行（1700/1700 全 0）**；
+	// 全体 v1 会话中触发比例 10.87%。改接发生在 02c93d04e（S4 读路径迁移批次），
+	// 而同批次把等价性门里的 legacy 查询也一起改了 ⇒ 门对换源完全不可见。
+	//
+	// 现在改回 v1 视图，**并**把内部调用排除掉，因为读 v1 视图会带回
+	// internal_loopback / non_terminal（见上面那段口径差说明：那是净收益，
+	// 不能丢）。排除谓词用 db.MirrorDriftClassSQL，与 dual-read-drift 判定
+	// genuine_loss 的口径同源，不另起一份定义。
+	//
 	// 2026-10-01：正文腿从本查询里摘出，改由 querySessionBodies 单独取。
 	// 本查询现在只投影 request_id + ts —— 见 queryRequestLogsFallback 的
-	// 计时对比（40,483ms → 41ms）。正文仍取 v1 bodies 视图（rb 腿未换源）：
+	// 计时对比（40,483ms → 41ms）。正文取 v1 bodies 视图（rb 腿未换源）：
 	// session_bodies 只有增量、无 final_full 全量，正文存储决策未落地前
 	// 两腿口径必须一致。
+	//
+	// WHERE 用 `rl.gw_session_id = $1` 而不是 `= $1::text`：gw_session_id 是
+	// CASE 投影的表达式，裸 `$1` 推不出类型（42P18 "could not determine data
+	// type of parameter $1"，实测）。删掉这个过滤会同时丢掉参数绑定。
 	//
 	// LIMIT 的序号用 strconv 拼，不用 fmt.Sprintf —— 原生源 SQL 里含
 	// LIKE 'sys:%'，把它当格式串会吃掉参数（见 turns_sessions 同族事故）。
 	query := `
 		SELECT rl.request_id,
 		       rl.ts
-		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
-		WHERE 1 = 1`
+		FROM request_logs_with_current_month rl
+		WHERE rl.gw_session_id = $1
+		  -- 注意方向：这里要**保留** 'genuine_loss'，不是排除它。
+		  -- 这个标签来自 dual-read-drift 的诊断口径，读起来像「坏行」，
+		  -- 实际含义恰好相反 —— 它是「镜像钩子本来会写、却没找到对应
+		  -- session_turns 的 v1 行」，也就是本端点**要服务**的那些业务轮次。
+		  -- 被排除的 internal_loopback / non_terminal 才是钩子按设计不镜像的。
+		  -- 写反的后果不报错、也不空：近 3 天窗口下用「不等于」会留下
+		  -- 1,829 行（= loopback 1,721 + non_terminal 108，恰好等于被丢掉
+		  -- 的那批），把 14,546 行业务轮次全部扔掉。
+		  AND (` + db.MirrorDriftClassSQL + `) = 'genuine_loss'`
 	args := []any{sessionID}
 	if tenantID != "" {
 		query += " AND rl.tenant_id = $2"

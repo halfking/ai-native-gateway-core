@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 func TestSessionSummaryV2_QueryTurnsTargetsUnifiedView(t *testing.T) {
@@ -34,30 +36,40 @@ func renderQueryTurnsForSummarySQL() string {
 		ORDER BY t.turn_no ASC`
 }
 
-// 会话存储解耦 v3 审计（2026-09-30）：本查询曾迁到 session 族原生源
-// db.SessionFamilyTurnsForSessionSQL（实测 14000ms → 5308ms），随后被真库核对
-// 否决并回退 —— 当时 sessions_v2.enabled=true / shadow_write=true 的前提下，
-// 仍有 20,660 个会话 / 38,878 行只存在于 request_logs。
+// 审计缺陷 7（2026-10-01）：这条守卫在 2026-09-30 被**反转**。
 //
-// **该否决理由已于同日被推翻**（见审计报告 §5.3.1 / §5.4）：那 38,878 行里
-// 绝大多数是按设计排除的 internal_loopback 与 non_terminal，真正缺失的
-// `genuine_loss` 只有 1,459 行，已由 mirror_outbox_backfill.sql 全量补写，
-// 35 天窗口复测为 0。故本查询于同日重新迁回原生源。
+// 原守卫要求 fallback 的 turns 腿读 `db.SessionFamilyTurnsForSessionSQL()`，
+// 并显式禁止 `FROM request_logs_with_current_month rl`。它不是随手写的 ——
+// 注释里给出了理由（外层再加 `gw_session_id` 会打掉谓词下推，丢掉 13× 收益）。
 //
-// 切换前后的口径差（全量实测）：视图比原生源多 38,229 行、涉及 2.30% 会话，
-// 全部是 hook 按设计不镜像的两类，unexplained = 0。对本端点是净收益——
-// 总结正文此前会把网关自己生成的标题/摘要调用当成用户发言。
+// 那个理由在**性能**上是对的，在**正确性**上漏了一件事：
+// `generateSummary` 只在主路径返回 0 轮时才走 fallback。让 fallback 去读
+// session 族原生源，就是让它去读主路径刚判定为空的同一批表 —— 它必然返回
+// 0 轮，`no turns found` → HTTP 500。它服务的那批会话，按定义就是原生源
+// **没有**的会话。
 //
-// 关键契约：session 谓词由 helper **下推进两条腿**（t.session_id = $1），
-// 外层**不得**再加 gw_session_id —— 投影名是 CASE 表达式，加了会把下推
-// 打回全表扫，13 倍的收益就没了。
-func TestSessionSummaryV2RequestLogsFallbackUsesNativeSourceWithPushedPredicate(t *testing.T) {
+// 代价已实测并接受（同一会话 gw_63798b79，169 轮）：
+//
+//	v1 视图 + 排除谓词   21.6 ms / 10,013 buffers
+//	原生源               0.55 ms /    280 buffers   （≈40×）
+//
+// 这 40× 落在一条今天服务 0 个会话的路径上（实测：有业务轮次却缺失于原生源的
+// 会话为 0），而加上 v1 源是它能返回任何东西的唯一办法。所以保留 v1，把
+// 性能数字写在这里而不是删掉这条守卫。
+//
+// 判据仍打在**产物**上：钉 FROM 的字面来源、排除谓词、以及 `gw_session_id`
+// 谓词必须落在具体列上（它是 CASE 投影，裸 `$1` 推不出类型 → 42P18）。
+func TestSessionSummaryV2RequestLogsFallbackReadsV1WithExclusion(t *testing.T) {
 	limit := 3
 	sql, args := buildRequestLogsFallbackQuery("session-1", "tenant-a", &limit)
 	for _, want := range []string{
-		"FROM public.session_turns_hot t", // 两条腿
-		"FROM public.session_turns t",
-		"WHERE t.session_id = $1", // 谓词下推（两条腿各一次）
+		"FROM request_logs_with_current_month rl",
+		"WHERE rl.gw_session_id = $1",
+		// 注意：产物里是**展开后**的 CASE，不是 `db.MirrorDriftClassSQL`
+		// 这个标识符。断言标识符会永远红；断言"来自 SSOT"要用
+		// strings.Contains(sql, db.MirrorDriftClassSQL)，那是
+		// TestSessionSummaryV2FallbackTurnsLegReadsV1 的职责。
+		"= 'genuine_loss'", // 方向：保留业务轮次
 		"rl.tenant_id = $2",
 		"ORDER BY rl.ts ASC",
 		"LIMIT $3",
@@ -66,12 +78,9 @@ func TestSessionSummaryV2RequestLogsFallbackUsesNativeSourceWithPushedPredicate(
 			t.Fatalf("fallback SQL missing %q:\n%s", want, sql)
 		}
 	}
-	if n := strings.Count(sql, "WHERE t.session_id = $1"); n != 2 {
-		t.Fatalf("session predicate must be pushed into both legs, found %d", n)
-	}
 	for _, forbidden := range []string{
-		"FROM request_logs_with_current_month rl", // 不得回退到视图
-		"rl.gw_session_id = $1",                   // 会打掉下推
+		"SessionFamilyTurnsForSessionSQL", // 缺陷 7 的形态：读与主腿同源的原生源
+		"<> 'genuine_loss'",               // 方向写反：留下内部调用、丢掉业务轮次
 		"FROM request_logs_hot rl",
 	} {
 		if strings.Contains(sql, forbidden) {
@@ -196,9 +205,11 @@ func TestMergeFallbackTurnsPreservesOrderAndLeftSemantics(t *testing.T) {
 	k3 := newFallbackTurnKey("req-3", ts.Add(2*time.Second))
 
 	keys := []fallbackTurnKey{k1, k2, k3}
-	bodies := map[fallbackTurnKey]sessionBody{
-		k1: {requestBody: strPtr(`{"a":1}`), responseBody: strPtr(`{"b":2}`)},
-		k3: {requestBody: strPtr(`{"a":3}`), responseBody: strPtr(`{"b":4}`)},
+	// 2026-10-01：正文按 request_id 单键配对（见 queryRequestLogsFallback 的
+	// 命中率对比），所以 map 的键类型跟着变；turn 身份仍然是 (request_id, ts)。
+	bodies := map[string]sessionBody{
+		k1.requestID: {requestBody: strPtr(`{"a":1}`), responseBody: strPtr(`{"b":2}`)},
+		k3.requestID: {requestBody: strPtr(`{"a":3}`), responseBody: strPtr(`{"b":4}`)},
 	}
 
 	turns := mergeFallbackTurns(keys, bodies)
@@ -241,10 +252,77 @@ func TestSessionSummaryV2RequestLogsFallbackPermitsSuperAdminScope(t *testing.T)
 		}
 	}
 	// 无租户作用域时，下推的 session 谓词是唯一的收敛条件，必须仍在。
-	if !strings.Contains(sql, "WHERE t.session_id = $1") {
-		t.Fatalf("unscoped fallback must still scope by session:\n%s", sql)
+	// 2026-10-01 缺陷 7：turns 腿改回 v1 视图后，谓词随之从原生源的
+	// `t.session_id` 变成视图的 `rl.gw_session_id`（CASE 投影，裸 $1 会
+	// 报 42P18，所以必须保留这个具体列比较）。
+	if !strings.Contains(sql, "WHERE rl.gw_session_id = $1") {
+		t.Fatalf("unscoped fallback must still scope by session (rl.gw_session_id):\n%s", sql)
 	}
 	if len(args) != 1 || args[0] != "session-1" {
 		t.Fatalf("unexpected fallback args: %#v", args)
+	}
+}
+
+// TestSessionSummaryV2FallbackTurnsLegReadsV1 pins the source of the fallback's
+// turns leg, without needing a database.
+//
+// 缺陷 7（02c93d04e 引入）：turns 腿被换成 db.SessionFamilyTurnsForSessionSQL()，
+// 展开是 `session_turns_hot UNION ALL session_turns` —— 与主路径
+// session_turns_with_current_month 同源。fallback 只在主路径读不到轮次时才被
+// 调用，于是它必然返回 0 行 → `no turns found` → HTTP 500。实测 1,700/1,700。
+//
+// 为什么要有这道**无库**守卫：真库门（TestSessionSummaryV2FallbackServesSessions-
+// NativeSourceLacks）只在 TEST_PG_URL 存在时跑，而本仓库的 CI 默认不设它。
+// 换句话说，缺陷 7 溜过去的那次，恰好是所有静态门全绿的那次。
+func TestSessionSummaryV2FallbackTurnsLegReadsV1(t *testing.T) {
+	sql, _ := buildRequestLogsFallbackQuery("session-1", "tenant-1", nil)
+
+	if !strings.Contains(sql, "FROM request_logs_with_current_month rl") {
+		t.Errorf("the fallback turns leg must read the v1 view; the fallback exists to serve "+
+			"sessions the native source does not have, so reading the native source makes it "+
+			"return 0 rows for exactly the population it exists to serve (audit defect 7):\n%s", sql)
+	}
+	if strings.Contains(sql, "SessionFamilyTurnsForSessionSQL") {
+		t.Errorf("the fallback turns leg must NOT use db.SessionFamilyTurnsForSessionSQL(): it "+
+			"expands to session_turns_hot UNION ALL session_turns, the same store the primary "+
+			"path reads (audit defect 7):\n%s", sql)
+	}
+	// 会话谓词必须落在 gw_session_id 这个具体列上。它是 CASE 投影的表达式，
+	// 裸 `$1` 推不出参数类型（真库实测 42P18），删掉它则整个查询失去收敛条件。
+	if !strings.Contains(sql, "WHERE rl.gw_session_id = $1") {
+		t.Errorf("the fallback must stay scoped by session on the concrete column "+
+			"rl.gw_session_id:\n%s", sql)
+	}
+	// 内部调用排除：读回 v1 视图会把网关自己生成的标题/摘要 LLM 调用带进
+	// 对话文本（internal_loopback 36,693 行）与 in_progress 占位
+	//（non_terminal 1,541 行）。谓词与 dual-read-drift 同源，不另起一份。
+	// 方向判据：必须**保留** 'genuine_loss'，排除 internal_loopback /
+	// non_terminal。写反不报错也不空 —— 近 3 天窗口下 `<> 'genuine_loss'`
+	// 会留下 1,829 行（loopback 1,721 + non_terminal 108，正好是被丢掉的那
+	// 批），把 14,546 行业务轮次全扔掉。所以这里断言等号，不只断言"有谓词"。
+	if !strings.Contains(sql, "= 'genuine_loss'") {
+		t.Errorf("the fallback turns leg must KEEP genuine_loss rows (the ones the mirror hook "+
+			"would have written) and drop internal_loopback / non_terminal, via "+
+			"db.MirrorDriftClassSQL:\n%s", sql)
+	}
+	if strings.Contains(sql, "<> 'genuine_loss'") {
+		t.Errorf("`<> 'genuine_loss'` keeps the loopback/non_terminal rows and discards the "+
+			"business turns — the label reads like 'bad rows' but means 'rows the hook would "+
+			"have mirrored', i.e. exactly the ones this endpoint serves:\n%s", sql)
+	}
+	// SSOT：断言打在**展开后的 SQL 产物**上，不打源码文本。
+	//
+	// 第一版断言是 `strings.Contains(源码, "db.MirrorDriftClassSQL")`，
+	// 变异验证时被一分钟拆穿：把谓词逐字复制到本地常量、再在函数里留一句
+	// 无用的 `_ = db.MirrorDriftClassSQL`，断言照样绿 —— 整文件子串匹配会被
+	// 任何一处**死**引用满足，这是「守卫写整文件子串匹配」的典型弱形态。
+	//
+	// 断言产物的好处：本地复制与 db 版即使逐字相同，判据也只在「真正被
+	// 复制的那份」与 db 版**产生分歧**时才放过。也就是说它保证的是行为
+	// 一致（这才是要紧的），不是「一定没有第二份定义」—— 后者编译器管不了。
+	if !strings.Contains(sql, db.MirrorDriftClassSQL) {
+		t.Errorf("the exclusion must be built from db.MirrorDriftClassSQL verbatim so a local "+
+			"copy cannot drift from the dual-read-drift classification; the expanded query "+
+			"does not contain it:\n%s", sql)
 	}
 }
