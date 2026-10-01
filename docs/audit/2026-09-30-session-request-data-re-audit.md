@@ -1755,6 +1755,44 @@ SELECT (CASE WHEN rl.gw_session_id IS NULL OR rl.gw_session_id='' THEN 'no_sess_
 - 其中 **94.05% 是无会话头流量**，它们在 session 族里**没有任何对应物**，
   迁原生源救不回来，只能在产品口径上决定「要不要这 27.7%」。
 
+### 8.7 S4 指定的观测工具本身：可用，但默认一次要 ~37 秒，其中 ~25 秒是纯冗余
+
+S4 的方案是「用 `GET /api/admin/sessions/dual-read-drift?hours=168` 盯 `s4_ready`」。
+既然整条 S4 路径都押在这个端点上，**它自己跑不跑得动必须先验**，不能等到灰度当天
+才发现。本节只读本机容器（生产 252 当前 load 12.36/4 核，不在它上面做测量——
+R17 纪律 ㊺：共享小机上测量型长查询正是今天饿死生产写链的那一类）。
+
+**成本曲线**（本机 `llm-gateway-pg`，数据规模与生产同量级：7 天带会话头 387,734 行）：
+
+| 窗口 | V1Rows（带会话头） | `driftBuckets` 本体耗时 |
+|---|---|---|
+| 1h | 79 | 0.105 s |
+| 24h | 2,907 | 0.398 s |
+| **7d（S4 默认）** | **387,764** | **11.23 s / 12.54 s** |
+
+**`Summarize` 在默认 168h 窗一共跑 4 条查询**（`cmd/gateway/dual_read_validator.go`）：
+
+| # | 查询 | 7d 实测 |
+|---|---|---|
+| 1 | 分母 `V1Rows` | 0.90 s |
+| 2 | 分类 `GROUP BY drift_class` | 11.23 s |
+| 3 | `driftBuckets(work_type)` | 12.54 s |
+| 4 | `driftBuckets(request_status)` | 同形未单独测 |
+
+**合计 ≈ 37 秒**（第 4 条按同形推算，**推算不等于实测**，已标明）。
+
+**好消息**：网关 `ReadTimeout: 300s`、`WriteTimeout: 0`（`cmd/gateway/main.go:7257-7258`），
+handler 用 `r.Context()` 且**没有自己的超时**。所以 ~37 秒**能活下来，端点不是坏的**。
+
+**但有一个白拿的 2/3 冗余**：第 2/3/4 条查询**内嵌的是同一个
+`mirrorDriftScopeSQL` 常量**——那 7 天、387,764 行、每行两次索引探针的
+anti-join 扫描**被完整跑了三遍**，只有外层 `GROUP BY` 的键不同。
+把它算成一次（CTE / `GROUPING SETS`）再分三组聚合，成本可从 ~37 s 降到 ~12 s。
+
+**为什么现在值得说**：灰度期正是要**反复**调这个端点的时段（盯 `s4_ready`），
+37 s × 反复调用，在 4 核共享小机上就是 R17 今天那类负载。稳态下没人碰它，
+所以这个冗余一直没暴露。
+
 ### 8.2 第 2 项重测：`session_list` 迁原生源的**真实**代价
 
 旧结论「迁过去会让 `request_count`/`error_count`/`is_compressed` 变小 2.5%」是
