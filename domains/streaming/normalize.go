@@ -136,14 +136,23 @@ func (n *Normalizer) normalizeStreamChunk(data []byte) []byte {
 		if !ok {
 			continue
 		}
+		// 2026-10-01 Xcode/glm-5.2: an empty string is NOT a legal OpenAI
+		// `finish_reason`. The spec (and every OpenAI-shaped frame) carries
+		// JSON `null` until the stream terminates. Zhipu/GLM — and every
+		// reseller that forwards its payload verbatim, e.g. SenseNova
+		// (token.sensenova.cn) — emit `"finish_reason":""` on every
+		// non-final chunk instead. Strict decoders (Xcode's Coding Assistant
+		// is one) fail the whole event on it and drop the entire response.
+		// Normalize `""` to `null` before anything else so the rest of this
+		// function only ever sees a real reason or null.
+		if isJSONNullOrEmptyString(frRaw) {
+			choice["finish_reason"] = json.RawMessage("null")
+			choicesArr[i] = choice
+			modified = true
+			continue
+		}
 		var frStr string
 		if err := json.Unmarshal(frRaw, &frStr); err != nil {
-			var frNull *string
-			if err := json.Unmarshal(frRaw, &frNull); err == nil && frNull == nil {
-				continue
-			}
-		}
-		if frStr == "" || frStr == "null" {
 			continue
 		}
 		normalized := n.NormalizeFinishReason(frStr)
@@ -166,4 +175,22 @@ func (n *Normalizer) normalizeStreamChunk(data []byte) []byte {
 	}
 
 	return []byte("data: " + string(out) + "\n")
+}
+
+// isJSONNullOrEmptyString reports whether a raw JSON value is either `null` or
+// the empty string `""`. Both are "no finish reason yet" in a streaming chunk,
+// and neither is a legal literal for a client that decodes finish_reason into a
+// non-optional enum (see normalizeStreamChunk).
+func isJSONNullOrEmptyString(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "null" {
+		return true
+	}
+	if trimmed != `""` {
+		return false
+	}
+	// Only treat it as empty when it really decodes to "" — a non-string
+	// value that happens to print the same way is left untouched.
+	var s string
+	return json.Unmarshal(raw, &s) == nil && s == ""
 }
