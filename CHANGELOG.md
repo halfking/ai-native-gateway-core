@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **responses 车道 provenance 无封顶，与 chat 车道不对称（2026-10-01）**：`recordResponsesInputTrimMeta`（`executor_responses_provenance.go:45`）写 `alignment_map` 时**无任何 cap**，数据经 `executor_chat.go:1684` 汇入同一个 `compression_meta` 再到 V2；而 chat/messages 车道在 V1 就封顶 256 并打 `*_truncated` 标记。后果：input item 数 > 4096 的合法 responses 请求，其整段 `alignment_map` 会在 V2 被**静默丢弃且连 `*_truncated` 标记也一并消失**。P3，未实施——改它会变更落库内容（外部可查 JSONB），登记待裁决第 33 条。详见 `docs/全面审计v3/2026-10-01/81-R88O-V2白名单对齐与all-or-nothing钉桩.md` §8。
 - **V2 provenance 过滤的直接测试（2026-10-01）**：新增 `internal/sessionv2mirror/safe_metadata_test.go` 与 `safe_cutmarker_test.go`，为 `safeAlignmentRecords` / `safeSanitizeRefs` / `safeCutMarkerMeta` 补上此前未被直接覆盖的 fail-closed 路径——任一记录不合法即整段丢弃（而非只丢那一条）。用例把坏记录放在第二位（第一条合法）以区分这两种语义；并验证 `alignment_map` 8 字段、`sanitize_message_refs` 6 字段在 V1 结构与 V2 白名单间完全对齐、可选字段非法不触发整段丢弃。`safeCutMarkerMeta` 另钉两个**跨字段**自洽校验（`cut <= 0`、`system+cut > source`）与一条**反向对照**（`system+cut == source` 必须放行，专防「把 `>` 写成 `>=`」的过度收紧让合法数据被静默丢弃）。5 项变异全红，逐字节还原。**纯测试，未改生产行为。** 详见 `docs/全面审计v3/2026-10-01/81-R88O-V2白名单对齐与all-or-nothing钉桩.md`。
 
 ### Fixed
