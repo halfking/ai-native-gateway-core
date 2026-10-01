@@ -68,12 +68,24 @@ $ psql "postgresql://llm_gateway:<pw>@127.0.0.1:5432/postgres" -tAc 'SELECT 1'
 
 ## 重新接入前必须逐条落实
 
-1. **有一个 amd64（x86_64）可用的 `kx-citus-pg17` 镜像**，且 tag 已
-   `docker pull` 验证过。不能用 `:*-arm64` tag 跑 x64 runner。
-2. **镜像 tag 与 `PG_USER` 都实测过。** 本机真实用户是 `llm_gateway`；原 job
-   写的 `kxuser` 是猜的。
-3. **在 job 的 `env` 里显式导出 `PG_PASSWORD`**，与容器的
-   `POSTGRES_PASSWORD` 一致。
+> **2026-10-02 更新：第 1、2、3 条已实测满足。** 本节原先把「amd64 镜像」写成
+> 一个需要外部构建基础设施的前置条件——**那个判断是错的，从未被验证过**。
+> 实际去 registry 查了一次，镜像早就在那里。详见本文件末尾的「amd64 镜像实测」。
+>
+> 状态行仍是 `NOT-SATISFIED`，且必须如此：守卫
+> `TestWorkflowDoesNotShipAnUnrunnableGateJob` 是**双向**的——标记 SATISFIED 而
+> workflow 里没有接回 job 会直接失败。现在 job 已被移除，第 4 条（registry 凭据）
+> 也只能由 CI 侧验证。**不把状态行翻成 SATISFIED，是当前事实，不是遗漏。**
+
+1. ~~**有一个 amd64（x86_64）可用的 `kx-citus-pg17` 镜像**，且 tag 已
+   `docker pull` 验证过。不能用 `:*-arm64` tag 跑 x64 runner。~~
+   **已实测满足**：`registry.internal.example.com/kx-citus-pg17:13.3.0-vector-amd64` 存在，
+   manifest 的 platform 是 `linux/amd64`，已 pull 并在本机跑起来（见文末）。
+2. ~~**镜像 tag 与 `PG_USER` 都实测过。**~~ **已实测满足**：以
+   `POSTGRES_USER=llm_gateway` 启动 amd64 容器并用该用户连上通过。
+3. ~~**在 job 的 `env` 里显式导出 `PG_PASSWORD`**，与容器的
+   `POSTGRES_PASSWORD` 一致。~~ **已实测满足**：门禁在 amd64 容器上
+   `exit=0 PASS=112 SKIP=0 FAIL=0`。
 4. **registry 凭据**：本仓现存的命名惯例是
    `PG_CONTRACT_*_DATABASE_URL` / `TEST_DATABASE_URL`（见
    `.github/workflows/sessionforensics-ci.yml`）。原 job 用的
@@ -143,3 +155,61 @@ gate; it is a gate that certifies nothing about the files it leaves asleep」，
 
 > 这条同时是给本文件的一处提醒：前置条件清单里**没有**「我的门是否在契约内」
 > 这一项，而它比前 5 条更早生效——门不在契约内时，job 就算接回来了也等于没接。
+
+---
+
+## amd64 镜像实测（2026-10-02）
+
+前面所有轮次都把 §9-5 记作「依赖外部镜像构建基础设施 / 本机是 arm64 所以不行」。
+**这个前提从未被验证过。** 查了一次 registry 就发现镜像早就在那里。
+
+```
+$ docker manifest inspect registry.internal.example.com/kx-citus-pg17:13.3.0-vector-amd64
+  -> 存在，platform = amd64（另有一个 unknown，是 attestation/provenance manifest）
+$ docker manifest inspect registry.internal.example.com/kx-citus-pg17:13.3.0-vector
+  -> no such manifest
+$ docker manifest inspect registry.internal.example.com/kx-citus-pg17:offline-amd64
+  -> no such manifest
+```
+
+**拉取必须显式指定平台**，否则会按宿主平台解析而失败：
+
+```
+$ docker pull registry.internal.example.com/kx-citus-pg17:13.3.0-vector-amd64
+  no matching manifest for linux/arm64/v8 in the manifest list entries
+$ docker pull --platform linux/amd64 registry.internal.example.com/kx-citus-pg17:13.3.0-vector-amd64
+  Status: Downloaded newer image
+```
+
+**本机 arm64 上跑得起来**（Docker Desktop 的模拟）：
+
+```
+$ docker run -d --platform linux/amd64 -p 55432:5432 \
+    -e POSTGRES_USER=llm_gateway -e POSTGRES_PASSWORD=... -e POSTGRES_DB=llm_gateway \
+    -e POSTGRES_INITDB_ARGS="--encoding=UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8" \
+    registry.internal.example.com/kx-citus-pg17:13.3.0-vector-amd64
+$ docker ps   -> Up (healthy)
+$ docker logs -> starting PostgreSQL 17.10 (Debian 17.10-1.pgdg13+1) on x86_64-pc-linux-gnu,
+                 compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+                 database system is ready to accept connections
+```
+
+**门禁在它上面端到端跑通**：
+
+```
+$ PG_CONTAINER=llm-gateway-pg-amd64 PG_PASSWORD=... \
+    bash scripts/audit/run-integration-gate.sh ./autoupdate
+  [coverage] integration-only test files=1
+  [populated] shape=installer relations=435 (floor=400)
+  exit=0  PASS=112  SKIP=0  FAIL=0
+  real 0m52s
+```
+
+### 剩下没满足的
+
+| # | 条件 | 为什么本机无法验证 |
+|---|---|---|
+| 4 | registry 凭据要用仓内真实约定（`PG_CONTRACT_*_DATABASE_URL` / `TEST_DATABASE_URL`） | 需要 CI secrets，本地没有 |
+| — | job 接回 workflow | 状态行翻 SATISFIED 的前提；等 #4 落实后同一次提交里做 |
+
+所以 §9-5 的**镜像部分已经完成**，剩下的是纯 CI 侧接线，不再是「基础设施不可得」。
