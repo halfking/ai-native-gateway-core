@@ -2,6 +2,7 @@ package dbinit
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,20 @@ import (
 	"strings"
 	"testing"
 )
+
+// updateManifest is the flag the guard's own failure message tells you to pass.
+//
+// It has to be a REGISTERED flag, not just a substring looked for in os.Args.
+// The testing package calls flag.Parse before any test body runs, and flag.Parse
+// exits on an undefined flag — so a bare os.Args scan could never see a value
+// that the binary had already refused to start with. Verified before this was
+// added: `go test -run TestStartupManifest -update` and the `-args -update`
+// form both died with "flag provided but not defined: -update", which is the
+// exact command the guard printed on drift. A guard whose recovery command
+// cannot run is worse than no recovery command, because it sends the reader
+// down a path that dead-ends.
+var updateManifest = flag.Bool("update", false,
+	"regenerate the startup manifest from StartupFiles and exit")
 
 // startupManifestPath is the derived, test-readable copy of StartupFiles.
 //
@@ -146,10 +161,5 @@ func TestStartupManifestFilesExist(t *testing.T) {
 }
 
 func regenerateRequested() bool {
-	for _, a := range os.Args {
-		if a == "-update" {
-			return true
-		}
-	}
-	return false
+	return *updateManifest
 }
