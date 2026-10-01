@@ -143,10 +143,28 @@ go test ./domains/dispatch -run TestR73_... -count=10   → ok
      问题失败，存量债务被有意接受（注释里写明「~224+ legacy findings，
      plain `golangci-lint run` is permanently red and gates nothing」）。
    - 188 个文件的重排会淹没本轮的实际改动，且与上游正在推进的工作大面积冲突。
-   - 本轮触碰的 2 个文件已单独确认 gofmt 干净（ratchet 的硬要求）。
+   - 本轮触碰的 go 文件已单独确认 gofmt 干净（ratchet 的硬要求）。
    **建议**：单开一个 PR 做全仓 `gofmt -w`，一次性清零，之后 CI 的 ratchet
    就能真正卡住新增违规。在此之前，`gofmt -l` 的输出**不能**被读成「本轮改坏了」
    ——先用 `git status` 确认该文件是否本轮被改过。
+
+7. **`plugin-runtime/TestExecCommand_StartsRealProcess`：已改，但因果未证实。**
+   推送后的最终全量复跑暴露了一条本轮从未碰过的红：
+   `helper process did not start (no pid file)`，整条耗时 16.76s。
+   该包不在本轮 diff 内，也不是上游那两个提交碰过的。
+
+   **可证实的缺陷**：该用例 `ctx` 超时 10s，却用 `waitForFile` 等 15s。
+   `exec.CommandContext` 在 ctx 到期时**杀掉子进程**，所以等待窗口的最后 5 秒
+   必然是在等一个已经被杀掉的进程写的文件——这条门**结构上**用不满自己的预算。
+   同文件下方的优雅停止用例用的是 `context.Background()`，没有这个错配。
+   已改为 ctx=30s。
+
+   **但因果没有证实**（不要当成已修好的结论）：
+   - 单独跑 5/5 通过；14 CPU hog 压载下 6/6 通过；**改回 10s 也照样 6/6 通过**；
+   - 前四轮全量 `make test` 从未红过，只有这一轮红过一次。
+   ⇒ 无法排除「纯粹的环境抖动（fork/进程数/磁盘）」。改动的价值是**消除一个
+   确定性缺陷**，而不是**已验证的修复**。下一轮若再现此红，应优先怀疑环境与
+   fork 资源，而不是这条 ctx。
 
 > 方法论教训（对应本轮的一次自摆乌龙）：`gofmt -l` 命中文件时**退出码仍是 0**。
 > 本轮一度用 `gofmt -l ... && echo "gofmt clean"` 打印了假的「gofmt clean」。
@@ -190,3 +208,6 @@ go test ./domains/dispatch -run TestR73_... -count=10   → ok
   本轮核对 `tryEnqueue` 后不得不自己下调。
 - 检查类命令（`gofmt -l`、`grep -c`）退出码为 0 **不代表通过**，
   必须读输出。本轮因此打印过假的「gofmt clean」。
+- **改完之后要再问一次「我证实因果了吗」。** 本轮对 `plugin-runtime` 找出一个
+  确定性缺陷（ctx 10s 却等 15s，进程 10s 就被杀）并改掉了，但改前改后都复现不出
+  那次失败。**「找到一个真缺陷」不等于「这就是那次红的成因」**，两者要分开记账。
