@@ -1,4 +1,14 @@
 # 125 号｜R89-AL：决策审计落点闭合 —— 落点存在，但「为什么」记不下来；并真库坐实 `candidates_tried` 回归
+> [!WARNING]
+> **⚠️ 本报告的证据基础已被 [141 号](141-R89BC-推翻自己前序四份报告的证据基础-那9736条成功行100是admin诊断端点写的.md) 推翻（2026-10-01，R89-BC）。**
+> **被推翻的具体是哪一句**：本报告用来「真库坐实 `candidates_tried` 回归」的那 9,736 条 9 月成功行
+> （`decision_trace ? 'planned_candidates'`），**100%（9,736/9,736）是 `resolution_path='resolve_probe'`**
+> —— 由 **`admin/routing_resolve_probe.go`** 这个 admin 诊断端点写入，`request_id` 是 `uuid.New()`
+> 随机 UUID、`probe:true`、`source:"resolve_api"`，**与执行器无关**。
+> **剔除 probe 后，真实成功行的 `candidates_tried` 在 9 月与 10 月都是 100% = 1 ⇒ 不存在回归。**
+> **本报告的「落点在用但不记为什么」这一定性仍然成立**（那部分不依赖上述数字）。
+> **待裁决 48 号已由 P1 降为 P2。** 本报告正文按约定**不回改**。
+
 
 - 日期：2026-10-01
 - 轮次：R89-AL
