@@ -217,3 +217,107 @@ ALTER TABLE public.session_dim
 - bg 已复跑三次确认。`TestMigration762ProjectBackfillChain_RealDB` 从 23503 一路修到通过，
   最终 `exit=1 PASS=1044 SKIP=14 FAIL=10`，修好 1 个、新增 1 个（listener flaky，已单列）。
 - 环境已清干净：`itgate%` 数据库 0、`itgate%` 角色 0（探针库与租户角色均已删）。
+
+---
+
+# 追加：族 1 在 bg 的收口（`public.` 限定名错配）
+
+同一份报告的后半段。族 1 是 §9-4 里最大的一族（16 个），本节收掉 bg 的最后 5 个。
+
+## 8. 一个不查产品代码就会造成假绿的陷阱
+
+bg 剩下的 3 个 autoroute 测试和 `TestPolicyPublisherE2E…` 报的错误**形态和 §9-4 原始基线不同**
+（不再是 42P07），因为第三轮的 per-test schema 隔离已经让它们走到了私有 schema。真实机制：
+
+- 夹具 DDL 是**未限定名** → 落在 per-test schema；
+- 测试自己的 DML 写死 `public.` → 打到**生产表**。
+
+于是 INSERT 撞上生产表的约束：
+`null value in column "tenant_id" of relation "request_logs_hot" violates not-null constraint`（23502），
+而夹具那张表根本没这个约束。
+
+**直接把测试的 DML 去限定名，对其中一部分是对的，对另一部分是假绿。** 判据只能是产品代码自己怎么写：
+
+| 被测代码 | 引用方式 | 去限定名是否安全 |
+|---|---|---|
+| `bg/auto_route_settle_worker.go` | `FROM request_logs_hot`、`JOIN request_logs_hot`、`FROM/UPDATE auto_route_selections_hot`（**全部未限定**） | 安全 |
+| `bg/auto_route_affinity_worker.go` | `FROM request_logs_hot`、`JOIN request_logs_hot` | 安全 |
+| `domains/dispatch/policy_publisher.go:224` | **`FROM public.credentials`**（写死） | **危险** |
+
+对 `policy_publisher_e2e_test.go` 去限定名，会变成：产品读 `public.credentials`（生产），
+测试种进私有 schema —— **一个什么都不证明的绿**。这正是「门测的不是它声称测的那个东西，而且它绿着」。
+
+统计口径也踩过一次：先统计时把 `_test.go` 一起数了，得出「产品两种写法都有（126 未限定 / 6 写死）」，
+差点因此判定整体不可改。**只统计产品代码**之后结论才干净。数字不是装饰，口径错了结论就反。
+
+## 9. 两种修法，按产品代码的写法分流
+
+### 9.1 产品未限定 → 测试 DML 去限定
+
+`auto_route_settle_worker_integration_test.go`、`auto_route_affinity_worker_integration_test.go`：
+把 `INSERT INTO/FROM/UPDATE public.<三张表>` 全部去限定。这**不是**让测试变空跑——产品查询
+经 `search_path` 解析到同一个 per-test schema，夹具就建在那里。
+
+文件里写了反向警告，明确指出 `policy_publisher_e2e_test.go` 不可照抄。
+
+### 9.2 产品写死 `public.` → 夹具必须**就是** `public.`
+
+`DispatchPostgresContainer` 原本只有两态：空 schema → 共享库；非空 schema → per-test schema。
+**两态都服务不了这一类**，于是新增第三态：
+
+```go
+DispatchPostgresContainer(t, ctx, "")          // 真实、已迁移的 public
+DispatchPostgresContainer(t, ctx, "CREATE …")  // 私有 schema（仅当产品未限定时可用）
+DispatchPostgresDatabase(t, ctx, "CREATE …")   // 私有【数据库】，其 public schema 就是夹具
+```
+
+第三态用 `internal/testdb` 派生一个空库、注册 DROP、并断言 DSN 真的落在那个库上。
+`policy_publisher_e2e_test.go` 改调它。独立数据库让 `public.` 这两个名字重合，
+测试于是无论产品怎么写都是诚实的。
+
+## 10. 结果
+
+```
+bg  exit=1  PASS=1048  SKIP=14  FAIL=6     (本轮起点：PASS=1044 FAIL=10)
+修好: TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB
+      TestAutoRouteSettleBaselinesExcludeSyntheticActors
+      TestAutoRouteSettleBatchMrLateralExcludesSyntheticActors
+      TestAutoRouteSettleBatchSkipsSyntheticActorSelections
+      TestPolicyPublisherE2EAppliesRevisionToLiveCredForwarder
+新增: 无（listener 的轮换另计，见 §11）
+itgate% 数据库残留: 0
+```
+
+族 1 在 bg 已清空。剩下 5 个非 flaky 的红分属：
+`TestHotTableOldestRowAge_RealDB`（42P01 `supplier_errors_hot` 缺对象）、
+`TestLedgerReconciler_RunOnce_RealDB`（族 3，要数据）、
+`TestNonfeaturedWatchdogIntegration` 与 `TestStrictCanaryProbeQueueIntegration`（族 4，自起容器）。
+
+## 11. flaky 终于被量化，而不是被解释
+
+`TestAutoRouteRealtimeListener_IntegrationStopReturnsPromptlyAfterRealListen`
+在整包运行的 5 次里轮换出现（有时 1 个红，有时 2 个）。整包数据无法区分
+「我新增的 CREATE/DROP DATABASE 负载影响了时序」和「它本来就抖」。
+
+于是**隔离复跑**：`-run TestAutoRouteRealtimeListener_Integration`，只跑这 4 个，
+我新增的 `DispatchPostgresDatabase` 一次都不会被调用。
+
+```
+第1次 FAIL=1  第2次 FAIL=0  第3次 FAIL=0
+第4次 FAIL=1  第5次 FAIL=0  第6次 FAIL=0
+隔离 6 次：全绿 4 / 有红 2，且红的始终是同一个测试
+```
+
+**结论：约 33% 失败率，且与本轮改动无关**（隔离运行里我的代码路径不参与）。
+错误恒为 `real NOTIFY never reached refresher; calls=0`。
+
+顺带记一次我自己把量具弄坏：`grep -cE '…--- FAIL'` 在零匹配时**退出码为 1**，
+我写的 `|| echo 0` 于是又追加了一个 0，`$f` 变成 `0\n0`，字符串比较失败走进错误分支，
+第一次隔离复跑的结果是假的。改成 `wc -l` 分离计数与退出码后重跑才有上面这组数。
+
+## 12. 本轮没有解决的
+
+- `TestHotTableOldestRowAge_RealDB`：`42P01 relation "supplier_errors_hot" does not exist`。
+  未查（它可能同样是限定名错配，也可能是真缺对象）。
+- 族 3 / 族 4 共 11 个：需用户裁决，见 `2026-10-02-round44-red-triage.md`。
+- `session_dim` 默认值：需新增迁移 + 三处登记，需用户拍板。
