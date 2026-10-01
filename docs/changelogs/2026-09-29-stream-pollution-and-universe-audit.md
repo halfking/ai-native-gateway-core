@@ -559,19 +559,27 @@ statement_timeout 的窗口内执行，失败可安全重试。
 ⚠ active unit 无法从监听进程归属解析，按端口推导为 llmgo-245.service
 ```
 
+> **⚠ 2026-10-01 05:52 订正本节**（下节「245 蓝绿契约只补了一半 vhost」给出实测）：
+> 上面这段把 `llmgo-245.service` 描述成「被误启用的弃用 unit」、把
+> `canary@8782` 描述成「无监听的僵尸 unit」，**两处都与后续实测不符**：
+> `canary@8782` 现已**正常监听 8782**；而 `llmgo-245.service` **不是可随手停掉的
+> 残留进程**——它占的 8781 是 `download.internal.example.com` 的唯一 upstream，
+> 停它会直接下线该域名。脚本侧的归属解析缺陷已由 `3d10c8b15` 修复（不再回落到
+> 弃用 `$SERVICE_NAME`），但**现网 nginx 配置的缺口仍在**，两者不是同一件事。
+> 保留原文是为了记录当时的误判链，**不要照原文行事**。
+
 `llmgo-245.service` 正是 skill 明令「**弃用遗留 unit，勿使用**」的那个。
 回滚后 245 实际状态（实测 `ss -ltnp` + `systemctl show`）：
 
-- 监听 8781 的是 `llmgo-245.service`（**弃用 unit**），`ExecMainStart=05:07:07`
-  —— 正是失败部署期间被误启用的
-- `llmgo-245-canary@8781.service`：`failed`（原 02:42 实例）
-- `llmgo-245-canary@8782.service`：`active/running` 但 **8782 无监听**（僵尸 unit）
-- `run/active-port` 记录 8782，实测服务在 8781 —— **记录与实际不一致**
+- 监听 8781 的是 `llmgo-245.service`（`ExecMainStart=05:07:07`）
+- `llmgo-245-canary@8781.service`：`failed`（`Result: timeout`，04:54:45
+  因 `State 'stop-sigterm' timed out` 被 SIGKILL）
+- `llmgo-245-canary@8782.service`：`active/running`
+- `run/active-port` 记录 8782
 
-即：站点对外仍在正常服务（无对外故障），但 245 的蓝绿 unit 拓扑已被
-这次失败部署搞乱，与 `deploy-seamless` 的契约不符，下次部署会被同样的
-归属解析继续误导。**修复该拓扑需重启 245 上的 unit，属对外可见操作，
-本轮未擅自执行。**
+即：站点对外仍在正常服务（无对外故障），但 245 的蓝绿 unit 拓扑与
+`deploy-seamless` 的契约不符，下次部署会被同样的归属解析继续误导。
+**脚本侧缺陷已在 `3d10c8b15` 修复；现网 nginx 侧缺口见下节，本轮不动。**
 
 ## 2026-10-01 154 生产侧取证：第三条独立故障
 
@@ -704,3 +712,50 @@ canonical（2716170）的独立分组；`glm-5.2` 组正常。**这正是第 2 �
 但本轮**没有复现空 replay**：超管与租户两种身份都拿到了 `initial_data`，
 浏览器侧的 `context canceled` 反而证明是客户端先断。所以这是一条
 **尚未证实的结构性缺口**，登记待查，**不作为本次成因**。
+
+## 2026-10-01 245 蓝绿契约缺口：不是残留进程，是 nginx 只补了一半 vhost
+
+**用户决定：本轮不动 245，仅登记缺口、另行排期。** 本节只记录实测，未执行任何变更。
+
+### 差点造成事故的错误修法（先记下来）
+
+最初打算「停掉弃用的 `llmgo-245.service`，按契约把 `canary@8781` 拉起来」。
+**这个方案会造成下线** —— 查 nginx upstream 时才发现 8781 是在服务的。
+
+### 实测：245 上两个 gateway 进程同时在跑，且都有真实流量
+
+| vhost | upstream | 承载进程 | 二进制 | `build_seq` | 今日请求 |
+| --- | --- | --- | --- | --- | --- |
+| `llmgateway.internal.example.com` | `include run/active-upstream.conf` → **8782** | `llmgo-245-canary@8782.service`（契约内，`active`） | `releases/2374-b0925682` | 2374 | 687 |
+| `download.internal.example.com` | 硬编码 `127.0.0.1:8781` | **`llmgo-245.service`**（遗留 unit，`active`） | `releases/2372-d2af305a` | 2372 | **204**（`/download` `/healthz` `/` 等） |
+| `llmgateway.internal.example.com` | 硬编码 `127.0.0.1:8781` | 同上 | 同上 | 2372 | 0（该域名实际落 154） |
+| `acc.internal.example.com` | 硬编码 `127.0.0.1:8781` | 同上 | 同上 | 2372 | 0 |
+
+`llmgo-245-canary@8781.service` 仍为 `failed`（04:54:45 SIGKILL，见上节订正）。
+`run/active-port` = 8782、`run/active-upstream.conf` = `server 127.0.0.1:8782`，二者自洽。
+
+### 缺口的准确描述
+
+蓝绿契约（`deploy-lib/targets.sh` 的 245 契约 + `deploy-seamless.sh` 的
+`active unit` 推导 + `run/active-upstream.conf` 原子片段）**只接到了
+`llmgateway.internal.example.com` 一个 vhost**；另外三个 vhost 仍是硬编码 `127.0.0.1:8781`。
+
+所以它不是「部署搞乱了拓扑、留了个残留进程」，而是：
+
+- 遗留 unit 实际上**仍在承担 `download.internal.example.com` 的生产流量**，且跑的是
+  比活跃侧**旧一个 release**（2372 vs 2374）的二进制；
+- 契约的「当前只有一侧在服务」在这台机器上**从未成立**；
+- 每次蓝绿切换只影响 `llmgateway.internal.example.com`，`download` / `acc` / `llm`
+  三个域名的行为与 `run/active-port` **脱钩**。
+
+### 与已修脚本缺陷的关系（两者不是同一件事）
+
+`3d10c8b15` 修的是**脚本侧**：`active unit` 推导在 fresh 主机兜底时会回落到
+弃用的 `$SERVICE_NAME`，导致部署日志出现
+`⚠ active unit 无法从监听进程归属解析，按端口推导为 llmgo-245.service`。
+该缺陷已修，并有变异验证。
+
+**但脚本修好不等于现网配置补齐。** 本节记录的是 nginx 侧仍然存在的覆盖面缺口，
+需把 `download` / `acc` / `llm` 三个 vhost 也改走 `active-upstream.conf`、
+排空 8781 之后，该缺口才闭合。这属于改 245 生产流量路由的操作，
+须单独立项、单独排期并准备回滚步骤，**不在本轮范围内**。
