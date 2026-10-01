@@ -125,8 +125,6 @@ func dispatchPostgresContainer(t *testing.T, ctx context.Context, extraSchema st
 
 // e2eSchema mirrors migration 724 plus the minimal auto_route_selections_all
 // projection the correction lookup reads (task_type / confidence / profile).
-// e2eSchema mirrors migration 724 plus the minimal auto_route_selections_all
-// projection the correction lookup reads (task_type / confidence / profile).
 //
 // Round 44 closure: the `public.` qualifiers are GONE on purpose. They pinned
 // every object to the public schema, which is why running this against the

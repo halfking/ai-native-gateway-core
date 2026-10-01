@@ -159,8 +159,14 @@ matching given keys for referenced table "handoff_logs"
 `handoff_logs_hot`，是另一张表。分区表上的唯一约束必须包含分区键，所以 534 之后
 `handoff_logs(id)` 不再唯一，517 的外键失去被引用目标。
 
-**先跑 517 也不行**：534 会把旧堆表 `RENAME` 成 `handoff_logs_legacy_532`，
-外键会指向那张被改名的遗留表——是静默错误，不是响亮失败。
+**先跑 517 也不行（机制订正，2026-10-02 第二十七轮审计）**：原文写「534 会
+RENAME 旧堆表、外键指向被改名的遗留表（静默错误）」——与 534 实际代码不符。
+534 的 DO 块（`534_handoff_logs_hot_columnar.sql:289-307`）会**显式 DROP**
+`handoff_pending_confirmations` 上所有指向 `handoff_logs` /
+`handoff_logs_legacy_532` 的外键：517 先建的外键会在 534 执行时被删掉，链能跑通。
+但这不等于「先跑 517 就安全」——「去掉外键」（下述解法 2）这个设计决定会被
+534 的既有代码**隐式**替 Owner 做掉（存量库路径上 534 已这样处置过一次），
+拍板权仍应留给 Owner，故本轮不注册 517 的结论不变。
 
 两条路都需要改 schema 设计而非改接线：
 

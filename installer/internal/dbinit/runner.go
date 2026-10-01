@@ -138,9 +138,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// unique constraint must contain the partition key, so handoff_logs
 			// is not unique on id afterwards and 517's FK has nothing to bind.
 			//
-			// Running 517 first does not work either: 534 renames the legacy
-			// heap to handoff_logs_legacy_532, so the FK would end up pointing at
-			// the renamed leftover table — silently wrong rather than loud.
+			// Running 517 first does not work either (mechanism corrected in the
+			// round-27 audit, 2026-10-02): 534's DO block (534:289-307) explicitly
+			// DROPs any FK on handoff_pending_confirmations referencing
+			// handoff_logs / handoff_logs_legacy_532, so the FK 517 just created
+			// is silently removed when 534 runs — the chain passes, but the
+			// "drop the FK" design decision is made implicitly by existing 534
+			// code instead of by the Owner. Either way the call belongs to the
+			// Owner, so 517 stays unregistered.
 			//
 			// Resolving this needs a schema decision (add a partition-compatible
 			// unique constraint such as (id, created_at) and widen the FK, or
