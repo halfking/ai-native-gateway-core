@@ -56,6 +56,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -487,6 +488,70 @@ func TestMigration715PendingStateLifecycle(t *testing.T) {
 	execScript715(t, scriptConn, string(up))
 }
 
+// installedStartupManifest / installedStartupDir locate the installer's ordered
+// migration list and the files it names. Both are relative to this package.
+const (
+	installedStartupManifest = "../../schema/installed_startup_migrations.tsv"
+	installedStartupDir      = "../../../installer/cmd/llm-gw-installer/embeddata/startup"
+)
+
+// applyRegisteredStartupMigrations replays the installer's entire registered startup
+// migration set, in the installer's own order — i.e. the middle step of a fresh
+// install, exactly as the installer performs it.
+func applyRegisteredStartupMigrations(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+
+	raw, err := os.ReadFile(installedStartupManifest)
+	if err != nil {
+		t.Fatalf("read %s: %v\n"+
+			"It is generated from installer/internal/dbinit/runner.go and guarded by "+
+			"installer/internal/dbinit/startup_manifest_test.go; regenerate with:\n"+
+			"    cd installer && go test -count=1 ./internal/dbinit/ -run TestStartupManifest -update",
+			installedStartupManifest, err)
+	}
+
+	var order []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		_, name, ok := strings.Cut(line, "\t")
+		if !ok {
+			t.Fatalf("manifest line %q has no tab separator", line)
+		}
+		order = append(order, name)
+	}
+
+	if len(order) == 0 {
+		t.Fatalf("%s contains no migration entries", installedStartupManifest)
+	}
+	// 715 must be IN the set: this test's whole subject is that migration, and a
+	// manifest silently missing it would make every assertion below meaningless.
+	has715 := false
+	for _, name := range order {
+		if strings.HasPrefix(name, "715_") {
+			has715 = true
+			break
+		}
+	}
+	if !has715 {
+		t.Fatalf("no 715_* entry in %s (%d entries) — is migration 715 still registered?",
+			installedStartupManifest, len(order))
+	}
+
+	for i, name := range order {
+		path := filepath.Join(installedStartupDir, name)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read startup migration %d/%d (%s): %v", i+1, len(order), name, err)
+		}
+		if err := execTolerantSnapshot(t, ctx, conn, string(body)); err != nil {
+			t.Fatalf("apply startup migration %d/%d (%s): %v", i+1, len(order), name, err)
+		}
+	}
+	t.Logf("replayed all %d registered startup migrations", len(order))
+}
+
 // TestMigration715FreshChainApplyMigrations 对一次性库跑真实 db.Open：
 // 启动链必须把 389 旧约束就地升级为 715 形态（全新安装路径）。
 func TestMigration715FreshChainApplyMigrations(t *testing.T) {
@@ -542,6 +607,43 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { _ = boot.Close(context.Background()) })
+
+	// The middle step of a real fresh install, which this test used to skip.
+	//
+	// Production order, measured 2026-10-02:
+	//
+	//	00-prereqs + 01-schema snapshot
+	//	  -> the installer's 198 registered startup migrations
+	//	  -> the binary's ensure chain (db.Open)
+	//
+	// Skipping the middle step left db.Open failing 42P01 on
+	// public.session_aggregate_outbox (created by 630).
+	//
+	// The FULL set is applied, not just the prefix before 715. Stopping at 714
+	// was tried and is wrong: the ensure chain in db.Open calls functions that
+	// later migrations create, and it failed 42883
+	// "function public.ensure_usage_facts_daily_partition(date) does not exist"
+	// (that one is 751). The binary therefore assumes the complete migration set
+	// is already applied — which also means that in PRODUCTION, 715 itself is
+	// applied by the installer as a file, not by the ensure chain.
+	//
+	// SCOPE CHANGE, stated plainly: this test used to claim it observed the
+	// 389 -> 715 upgrade happening inside the ensure chain. Having made the
+	// sequence production-accurate, it no longer isolates that — the upgrade is
+	// performed by 715_route_incidents_pending_state.sql. What it now verifies is
+	// the real fresh-install path end to end: the snapshot, the whole registered
+	// chain, and then that the resulting schema carries the pending-aware
+	// constraint and accepts 'pending' writes. Whether the ensure chain is
+	// *wired* to call the pending-state step is a separate question and is not
+	// answered here.
+	//
+	// The set comes from sql/schema/installed_startup_migrations.tsv, not from the
+	// directory: sql/migrations/startup/ holds 458 migration numbers, only 198
+	// are registered, and the registered ORDER is not numeric order (the
+	// session_turns_hot bootstrap sits at index 3 and 704 comes after 713). The
+	// manifest is guarded against drift from dbinit.StartupFiles by
+	// installer/internal/dbinit/startup_manifest_test.go.
+	applyRegisteredStartupMigrations(t, bootCtx, boot)
 
 	// 生产引导在启动链之前创建迁移账本（apply-db-revision-sequence 同款），
 	// ensure 链内的 stamp（701/704/715）依赖它。
