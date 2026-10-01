@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // TurnWriter writes turn metadata to public.session_turns
@@ -272,6 +273,28 @@ func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnReco
 // appendTurnInLockedTx appends a turn after the caller has acquired the
 // tenant/session advisory lock in the same transaction.
 func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec TurnRecord) (turnNo int, err error) {
+	// R77: 接入 sessions_v2_* 观测指标（此前 6 个指标已声明但**全局零记录**，
+	// domains/session/v2/README.md 的「监控指标」一节因此名不副实）。
+	//
+	// 埋在 defer 里而不是主路径末尾，是 R74 RecordOutcome 的教训：那里第一版放在
+	// 函数末尾，测试当场 Skip——错误分支在 emit 之前就 return 了，绿灯只是因为
+	// 路径没走到。本函数有 8 个 return 点，用 defer 才覆盖得到全部。
+	//
+	// **观测口径（刻意写明，避免被当成"已提交的轮次"来读）**：这里量的是
+	// **turn INSERT 自身**的结果。调用方（AppendTurnInTx）自管事务，提交点不在
+	// 本函数内，所以「INSERT 成功但外层 commit 失败」会计入 success 而该行最终
+	// 回滚。之所以不把提交也纳入：多个调用方各自管事务，没有单一的提交点可观测，
+	// 硬凑只会重复计数。写失败一个都不漏（任何 return 非 nil 都计 failed）。
+	started := time.Now()
+	defer func() {
+		metrics.SessionsV2WriteLatency.Observe(time.Since(started).Seconds())
+		if err != nil {
+			metrics.SessionsV2WriteFailed.Inc()
+			return
+		}
+		metrics.SessionsV2WriteSuccess.Inc()
+	}()
+
 	if _, err := tx.Exec(ctx, sessionAdvisoryLockSQL, rec.TenantID, "request:"+rec.RequestID); err != nil {
 		return 0, fmt.Errorf("acquire request advisory lock: %w", err)
 	}

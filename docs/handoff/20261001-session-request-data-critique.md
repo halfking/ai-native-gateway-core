@@ -39,6 +39,106 @@ S4 读端迁移批次 `38d59b2eb` 的 merge-base 是 `c19baebd4`
 | 4 | `LEFT JOIN` 触发逐轮列存扫描 → summary 40.5s / compare 4.2s | 已修 | 性能债 |
 | 5 | compare 静默丢掉 **17.32%** 的轮次（client_model 为 NULL） | 已修 | 既存 bug |
 | 6 | `(request_id, ts)` 配对键**几乎永远配不上**（99.85% 不等） | 已识别，**未改** | 行为变更，待拍板 |
+| 7 | **fallback 自毁**：turns 腿被 S4 批次改接成与主腿同源的原生源 | 已修 + 静态门守住 | 回归，潜在（今天暴露面为 0） |
+
+#### 缺陷 7（2026-10-01 新增，优先级高于缺陷 6）
+
+`02c93d04e`（S4 读路径迁移批次）把 `buildRequestLogsFallbackQuery` 的 turns 腿
+从 `request_logs_with_current_month rl` 改成 `db.SessionFamilyTurnsForSessionSQL() rl`。
+后者展开正是 `session_turns_hot UNION ALL session_turns`，**与主路径
+`session_turns_with_current_month` 同源**（该视图 = hot 去重 ∪ parent）。
+
+这条路径存在的唯一理由就是主路径读不到轮次时才被调用；改接之后它去读同一批表，
+必然同样返回 0 行 → `generateSummary` 落到 `no turns found for session %s` → **HTTP 500**。
+
+实测（近 3 天窗口，本机 PG 17.10）：
+
+| 指标 | 值 |
+|---|---|
+| 触发 fallback 的会话（v1 有行、原生源无行） | 1,700 |
+| 它们在 v1 里的行数 | 1,802 |
+| fallback 自己的 turns 腿返回的行 | **0（1700/1700 全 0）** |
+| 全体 v1 会话中触发比例 | 10.87%（1712/15749） |
+
+#### ⚠️ 上面这张表把 internal_loopback / non_terminal 也算成了「v1 的轮次」，结论需修正
+
+按 `db.MirrorDriftClassSQL` 把同一窗口分类后：
+
+| 口径 | 3 天窗口 |
+|---|---|
+| v1 会话总数 | 15,640 |
+| 其中有**业务轮次**（`genuine_loss`）的会话 | 13,980 |
+| 纯 `internal_loopback` / `non_terminal`（**不该**被总结） | 1,660 |
+| **有业务轮次但原生源完全没有的会话** | **0** |
+
+抽样坐实：`gs_gw_0a0c9d0b…` 的 1,365 轮 **100% 是 `internal_loopback`**
+（网关自己生成的标题/摘要 LLM 调用）。触发 fallback 的那 1,700 个会话
+**全部**属于这一类。
+
+**所以缺陷 7 是潜在缺陷，不是「10.87% 会话 500」**：fallback 确实自毁，
+但今天没有用户可见损失——它触发的全是本来就不该被总结的内部调用。
+仍然要修的理由：它在等一个还不存在的会话，而 2026-08-30 加这条路径的
+原始理由正是那类会话；放着不管等于把一个坏掉的兜底当成可用兜底。
+
+**推论（比修法本身更重要）**：缺陷 7 在当前数据下**不可能被任何依赖数据的门
+发现**。正控实测——把 turns 腿退回原生源形态后，重定基线的真库门**仍然绿**，
+因为没有任何一个有业务轮次的会话缺失于原生源，两个源对每个真实会话都一致。
+**真正守住它的只有静态门** `TestSessionSummaryV2FallbackTurnsLegReadsV1`
+（无需 `TEST_PG_URL`，钉 FROM 来源 + 谓词方向 + 排除谓词来源）。
+
+**既有等价性门抓不到，两道结构性盲区**：
+1. 它的「legacy 查询」在 `02c93d04e` 里与生产代码**被同一提交一起改成**同一个
+   原生源——等价性只证明两阶段拆分 ≡ 单查询，两边共享的换源对它不可见；
+2. 它的探针会话**全部取自 `session_turns`**（「有正文」那组甚至用
+   `JOIN session_turns ON t.request_id=b.request_id AND t.ts=b.ts`），
+   只能看见原生源有的会话——正是缺陷 7 所服务那批会话的反面。
+
+**新门** `admin/session_summary_v2_fallback_source_integration_test.go`
+（`TestSessionSummaryV2FallbackServesSessionsNativeSourceLacks`）双向验证过：
+当前代码 **红**（0/5，会话有 1365/345/310/299/266 轮却返回 0）；
+把 FROM 改回 `request_logs_with_current_month rl WHERE rl.gw_session_id = $1`
+后 **绿**（5/5，2585 轮在范围内）。门当前以红态留在工作树，**未提交**。
+
+**两处修法必须同时做**（只做 turns 腿会把 500 换成「空正文总结」——
+88.8% 的轮次仍无正文，LLM 在空文本上编摘要，比诚实的 500 更坏）：
+
+| 修法 | 命中（实测） |
+|---|---|
+| turns 腿回 v1 视图，配对键仍用 `(request_id, ts)` | 11.207%（1839/16409） |
+| turns 腿回 v1 视图，配对键切 `request_id` 单键 | **100.000%**（16409/16409） |
+
+`request_id` 单键安全性已实测：`request_logs_bodies_with_current_month`
+2,220,507 行 = 2,220,507 个不同 `request_id`，无重键。
+
+**token 账单**（fallback 人群，3 天窗口，raw body 上限，实际 prompt 是抽取后的子集）：
+15 MB / 9,524 B 每轮 ≈ **4.1M tokens / 3 天**（约 1.4M tokens/天）。
+
+#### 排除谓词的方向：`genuine_loss` 是要**保留**的那一类
+
+`db.MirrorDriftClassSQL`（原为 `cmd/gateway/dual_read_validator.go` 的
+`package main` 常量，本轮提到 `db` 包做 SSOT）把 v1 行分三类：
+
+| class | 3 天窗口行数 | 含义 |
+|---|---|---|
+| `genuine_loss` | 14,546 | **镜像钩子本来会写**的行 = 本端点要服务的那批 |
+| `internal_loopback` | 1,721 | 钩子按设计不写（标题/摘要生成器自己的 LLM 调用） |
+| `non_terminal` | 108 | 钩子按设计不写（in_progress 占位） |
+
+谓词必须写 `= 'genuine_loss'`（保留）。本轮第一版写成 `<> 'genuine_loss'`，
+**不报错、不空、端点仍 200**，但留下 1,829 行 —— 恰好 = 1,721 + 108，
+正好是该丢的那批，而 14,546 行业务轮次全被扔掉。
+唯一抓住它的是分类直方图，不是断言。
+
+由此修正命中率口径：先前报的 11.207% 是在**未加排除**的混合总体上测的；
+按类拆开后真相是 `internal_loopback` / `non_terminal` 的 ts **100% 相等**，
+而 `genuine_loss`（即真正要服务的业务轮次）只有 **0.007%（1/14,546）**。
+所以配对键切换确实必要，先前结论成立。
+
+**教训**：复用一个*诊断口径*的分类表达式做*保留/排除*决策前，先确认标签方向；
+方向取反不报错也不空。判方向靠**数**（`GROUP BY cls` 出直方图），不靠标签名。
+两个互相矛盾的实测值同时出现时，先怀疑自己刚改的那一处。
+
+
 
 缺陷 1–3 的共同根因：**mock 不解析 SQL**。pgxmock 匹配查询**字符串**、
 从不把 SQL 交给 PostgreSQL；既有测试只覆盖纯函数（`bucketIndex()`、鉴权、租户），
@@ -151,6 +251,8 @@ TEST_PG_URL="postgres://llm_gateway:${PW}@127.0.0.1:5432/llm_gateway" \
 
 ## 五、遗留风险 / 未做
 
+- **缺陷 7 已修**（本轮）：`session_summary_v2` 的 fallback turns 腿回 v1 视图。
+  修法需与缺陷 6 的配对键切换**同时**落地，否则 500 会变成空正文总结。待拍板。
 - **⚠️ `session_summary_v2` 长期用几乎全空的正文做 LLM 总结**（§8 第 7 项）。
   改 `request_id` 口径是一行改动，但会改变总结结果与 token 计费 —— **未擅自改**。
 - ~~timeline 迭代错误传播无测试覆盖~~ → **已补**（`3834d12f5`，6 条门 + 7 个变异验证）。
@@ -181,16 +283,75 @@ git fetch origin && git log --oneline HEAD..origin/main
 - 会话内读 class A 已全部迁原生源
 
 【下一轮优先】
-1. 等 §8 六项拍板。其中第 7 项影响面最大：
-   session_summary_v2 的正文配对键（现状 (request_id, ts) 99.85% 配不上，
-   长期用空正文做总结）。改动已就位（两个函数并存），
-   只差把 queryRequestLogsFallback 从 …AndTS 切到 …ByRequestID。
+0. ~~缺陷 7 与 §8 第 7 项~~ → **本轮已拍板并落地**（`09419da13`，已入 origin/main）：
+   turns 腿回 v1 视图 + 排除谓词（方向 `= 'genuine_loss'`）+ 配对键切
+   request_id 单键。真库门实测方向性收益：169 轮里元组键只配上 1 轮、
+   单键配上 169 轮。
+1. 等 §8 其余五项拍板。
 2. ~~补 timeline 迭代错误传播的钉测~~ → **已完成**（`3834d12f5`）。
 3. 若获批 S4 真机灰度：开 storage.request_logs_write_enabled=false，
    用 GET /api/admin/sessions/dual-read-drift 盯 s4_ready；
    灰度期必须保留 734 视图的 v1 冻结分支。
+4. **本轮留下的一个开放项**：`session_summary_v2` 的 fallback 现在能服务
+   业务轮次了，但今天这样的会话实测为 0（见 §1.3 的修正表）。也就是说
+   这条路径的**行为变更（正文内容会变、token 账单会涨）尚无真实流量验证**。
+   若要继续观察，最省事的办法是等一个 v1-only 但有业务轮次的会话出现，
+   再看 `GET /api/admin/sessions/{id}/summary` 的 `turns_analyzed` 与正文。
 
-【纪律】
+【本轮（第二轮）已完成】
+- §8 第 7 项 + 缺陷 7：已拍板落地（`09419da13`）。
+- §8 第 2 项：loadSessions 迁原生源（`4baa94dfb`）。消失的 1,428 条全是内部调用。
+- §8 第 5 项：已由迁移 807 落地（保留 phase 2 依赖的唯一索引）。
+- §8.3 雪崩止血：正文取数并发闸（容量 4，饱和快速失败 503）。
+- §8 第 1 项（S4 真机灰度）：**本轮再次维持待批**。
+- §8 第 3 项（analytics/dashboard 口径）、第 4 项（641,452 无会话头 request_id
+  处置）：仍等决定。
+
+【§8.3 未修的 P0，下一轮优先】
+正文取数（`sessionBodiesByRequestIDSQL`）实测 **17~19 秒/会话**，计划落在
+2026_09 列存分区的 ColumnarScan 上。连带发现 **session_compare 的 10s 预算
+已经超时**（10.0s 只取到 104/171 行）。连接池只有 16。
+本轮只加了并发闸（4 并发，饱和 503）；**查询形态本身没动**，4 个候选修法
+（分区/索引、拆查询、超时熔断、正文换源）及其代价在审计报告 §8.3。
+
+【本轮新增纪律】
+- **别拿上一轮的口头性能数字当事实**：`phase 2 7~501ms`、`compare 267ms` 都是
+  迁移 765 把 2026_09 转列存**之前**的测值。用 pgx 绑定参数跑生产 SQL 重测是
+  17~19 秒。**类比：影响面数字同样要按分类口径重测**（`session_list` 的
+  「计数变小 2.5%」实为「1,428 条纯内部会话消失」）。
+- **断言的锚点字符串必须真实出现在产物里**。性能门守着「phase 2 不得列存全扫」，
+  判据找 `"ColumnarScan on request_logs_bodies"`，而真实节点行是
+  `Custom Scan (ColumnarScan) on request_logs_bodies_2026_09` —— 中间有括号。
+  **用那个子串在它自己的计划输出里 grep 命中 0 次**，所以这道门自诞生起恒绿。
+  配套教训：它还跑的是裸 `EXPLAIN`（不执行），于是「这条分支多贵」从没被问过。
+- **闸（限流/信号量）默认语义应当是快速失败，不是排队**。排队 = 把慢放大成雪崩。
+  门要钉「饱和时 N ms 内返回错误」，否则实现改成排队时门会挂死并报红。
+- **迁移类的门要钉方向性不变式，不要钉等价性**。`session_list` 迁移本来就
+  不等价（旧源多 9.46% 的内部会话），钉等价会让门永远红；钉「少掉的必须是
+  内部调用，出现真业务轮次即报红」才对。
+- **`db.MirrorDriftClassSQL` 硬编码别名 `rl`**，调用方 FROM 别名不一致会报
+  42P01。本轮踩了两次（admin 的真库门里）。
+- 测试里「中途释放 + defer 兜底释放」同一个槽位会**双重释放**并永久阻塞在
+  `<-chan`。本轮挂了一次 120s 超时才发现。release 若可能被多次调用，包一层
+  `sync.Once`。
+
+【原有纪律（仍然有效）】
+- **复用一个「诊断口径」的分类表达式做「保留/排除」前，先确认标签方向。**
+  `genuine_loss` 读起来像坏行，实际是「镜像钩子本来会写」= 要保留的那批。
+  写反成 `<>` 不报错、不空、端点仍 200，但把 14,546 行业务轮次全换成
+  1,829 行内部调用。判方向靠数（`GROUP BY cls` 出直方图），不靠标签名。
+- **影响面数字必须按分类口径报。** 本轮先报了「10.87% 会话 500」，
+  按 `genuine_loss` 拆开后是 **0**。两个数字都"实测"过，错的那个口径
+  把 internal_loopback 当成了 v1 的业务轮次。
+- **正控「没红」要当真信号。** 把 turns 腿退回缺陷 7 形态后真库门仍然绿，
+  因为两个源对每个真实会话都一致 ⇒ 该缺陷在当前数据下不可能被依赖数据的
+  门发现。守住它的是静态门 `TestSessionSummaryV2FallbackTurnsLegReadsV1`。
+  这个结论已写进门注释，别让后人以为真库门在守它。
+- **探针的选样条件必须和被测代码的过滤条件同口径**，否则会挑中一个「代码
+  正确地什么都不返回」的人群，让门对正确行为报红（本轮踩过两次）。
+- **测试「发现」阶段也烧预算**：不带时间窗的全量 GROUP BY 实测 5 分半未完成，
+  客户端超时后**服务端查询仍在跑**（要 `pg_cancel_backend`）。夹具查询要自己
+  量成本，并且探针按轮数设上限（legacy 单查询约 0.8 秒/轮）。
 - 改动关联键前先量命中率（一条 join + count FILTER 足够），不要推断。
 - 合并后必须重跑全量门禁再提交；编译全绿不等于合并正确。
 - 守卫改动必须做变异验证；判据打在产物上，不打在被测对象之外的文本上。

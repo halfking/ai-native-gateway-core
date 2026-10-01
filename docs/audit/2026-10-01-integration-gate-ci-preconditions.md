@@ -113,3 +113,33 @@ job 被加回来。这样「前置条件已满足」必须由人显式落成一�
 
 同一个坑在本轮出现两次（另一次是 `TestJsonbLintParsesObjectTables` 的
 `t.Log` no-op），所以现在每次写完守卫都跑一遍「故意改坏 → 必须转红」。
+
+## R76 补记：DB 变量名契约（2026-10-01，21ea84833 之后）
+
+前置条件第 1–4 条讲的是「job 怎么起得来」，但漏了一条**门本身能不能被叫醒**。
+
+`TestGateInjectsEveryDBCredentialName` 的注入清单是从仓内按后缀
+（`_DATABASE_URL` / `_DB_URL` / `_PG_URL` / `_ISOLATED_DB_URL`，外加
+`DATABASE_URL` 与 `TEST_PG_DSN` 两个精确名）**推导**出来的，而它的第二遍扫描
+（"文件里含 env 查找时，任意全大写字面量都算"）同样要过这道后缀过滤。所以
+**任何以 `_PG_DSN` 结尾的变量名都不在契约内**——harness 永远不会注入它。
+
+R76 开工前实测：仓内有 **5 道真库门**处在契约之外，靠一个自己发明的
+`_PG_DSN` 变量名门控，包含
+
+- `deploy/sql/verify/supplier_errors_pg_test.go`（仓库自有的 supplier 错误真库门）
+- `domains/hooks/handoff/confirmation_pg_semantics_test.go`（R76 的 P0 级门）
+- `db/request_logs_view_schema_test.go` / `db/view_schema_v2_contract_test.go`
+- `domains/hooks/observability/telemetry/request_class_pg_test.go`
+
+它们在 CI 上**结构性沉睡**，却照样以 `ok` 的形式出现在报告里——正是本文件
+上一节引用的那句「A gate that only injects a subset of the names is not a weak
+gate; it is a gate that certifies nothing about the files it leaves asleep」，
+只不过这次漏的是**注入侧**而不是**读取侧**。
+
+**已修**：五个文件全部改为优先读 `TEST_PG_DSN`（该名本就在注入清单里、且受
+守卫强制），旧名保留为回退供手工运行。harness 与守卫**无需改动**，
+`TestGateInjectsEveryDBCredentialName` 仍绿（15 个名字不变）。
+
+> 这条同时是给本文件的一处提醒：前置条件清单里**没有**「我的门是否在契约内」
+> 这一项，而它比前 5 条更早生效——门不在契约内时，job 就算接回来了也等于没接。

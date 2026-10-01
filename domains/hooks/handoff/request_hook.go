@@ -3,12 +3,12 @@ package handoff
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 )
 
@@ -252,7 +252,7 @@ func (h *TriggerHook) canPrepareRequest(ctx context.Context, tenantID, sessionID
 }
 
 func (h *TriggerHook) buildRequestSummary(ctx context.Context, req *Request, engine SummaryEngine) string {
-	conversation := extractConversation(req.Body)
+	conversation := extractConversation(req.Body, req.Protocol)
 	if conversation == "" {
 		return h.buildSummary(ctx, &response.InterceptRequest{
 			TenantID: req.TenantID, ClientModel: req.ClientModel, TokensUsed: req.TokenEstimate,
@@ -312,23 +312,115 @@ func hasSkillInvocation(body []byte, skill string) bool {
 	return false
 }
 
-func extractConversation(body []byte) string {
-	var payload struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"messages"`
+// extractConversation renders the outbound body as "role: text" lines for
+// the resume packet / summarizer input.
+//
+// 2026-10-01 R74: this used to unmarshal into a struct whose Content field
+// was a plain string and return "" on any other shape. Anthropic Messages
+// (content is a block array), the Responses protocol (turns live under
+// "input", not "messages") and any OpenAI message with array content
+// therefore produced an EMPTY conversation — the resume packet carried no
+// conversation at all, the new session opened blind, and nothing warned:
+// no error, no metric, just a summary that had silently degraded to a bare
+// token-count sentence. The handler already knows the protocol
+// (Request.Protocol, filled by protocolForHandoff) and the compression
+// domain already has a per-protocol extractor
+// (compression.ExtractConversationText, which also folds tool calls and
+// masks secrets) — this now dispatches on protocol and falls back to a
+// shape-sniffing walk, so an unlabelled request still yields content.
+func extractConversation(body []byte, protocol string) string {
+	if protocol == "anthropic-messages" {
+		if text, err := compression.ExtractConversationText(body, "anthropic-messages"); err == nil && strings.TrimSpace(text) != "" {
+			return redactResumeSensitive(strings.TrimSpace(text))
+		}
 	}
+	if text, err := compression.ExtractConversationText(body, "openai-chat"); err == nil && strings.TrimSpace(text) != "" {
+		return redactResumeSensitive(strings.TrimSpace(text))
+	}
+	// Last resort: walk whatever message-ish array the body carries and
+	// flatten block/array content ourselves. Still better than "".
+	return redactResumeSensitive(strings.TrimSpace(flattenConversationFallback(body)))
+}
+
+// flattenConversationFallback handles shapes the two named extractors do
+// not cover — notably the Responses protocol's top-level "input".
+func flattenConversationFallback(body []byte) string {
+	var payload map[string]json.RawMessage
 	if json.Unmarshal(body, &payload) != nil {
 		return ""
 	}
-	var b strings.Builder
-	for _, message := range payload.Messages {
-		if message.Content != "" {
-			fmt.Fprintf(&b, "%s: %s\n", message.Role, message.Content)
+	var lines []string
+	for _, field := range []string{"messages", "input", "conversation"} {
+		raw, ok := payload[field]
+		if !ok {
+			continue
+		}
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) != nil {
+			continue
+		}
+		for _, item := range items {
+			role, text := messageRoleAndContent(item)
+			if text == "" {
+				continue
+			}
+			lines = append(lines, role+": "+text)
+		}
+		if len(lines) > 0 {
+			break
 		}
 	}
-	return redactResumeSensitive(strings.TrimSpace(b.String()))
+	return strings.Join(lines, "\n")
+}
+
+// messageRoleAndContent flattens a message's content regardless of whether
+// it is a string or an array of typed blocks.
+func messageRoleAndContent(raw json.RawMessage) (string, string) {
+	var probe struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return "", ""
+	}
+	if probe.Content == nil {
+		return "", ""
+	}
+	trimmed := strings.TrimSpace(string(probe.Content))
+	if !strings.HasPrefix(trimmed, "[") {
+		var s string
+		if json.Unmarshal(probe.Content, &s) == nil {
+			return probe.Role, s
+		}
+		return "", ""
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+		// OpenAI tool results carry the payload under these fields.
+		Output json.RawMessage `json:"output"`
+		Name   string          `json:"name"`
+	}
+	if json.Unmarshal(probe.Content, &blocks) != nil {
+		return "", ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		switch {
+		case b.Text != "":
+			parts = append(parts, b.Text)
+		case len(b.Output) > 0:
+			var s string
+			if json.Unmarshal(b.Output, &s) == nil && s != "" {
+				parts = append(parts, s)
+			} else {
+				parts = append(parts, string(b.Output))
+			}
+		case b.Name != "":
+			parts = append(parts, "["+b.Type+" "+b.Name+"]")
+		}
+	}
+	return probe.Role, strings.Join(parts, "\n")
 }
 
 func redactResumeSensitive(text string) string {

@@ -48,6 +48,69 @@ var sqlSchema []byte
 //go:embed embeddata/02-seed.sql
 var sqlSeed []byte
 
+//go:embed embeddata/startup/392_candidate_failure_logs_monthly_partition.sql
+var candidateFailureLogsMonthlyPartitionMigration392 []byte
+
+//go:embed embeddata/startup/535_candidate_failure_logs_atomic_promote.sql
+var candidateFailureLogsAtomicPromoteMigration535 []byte
+
+//go:embed embeddata/startup/617_candidate_failure_logs_hot_contract.sql
+var candidateFailureLogsHotContractMigration617 []byte
+
+//go:embed embeddata/startup/803_candidate_failure_logs_hot_column_reconcile.sql
+var candidateFailureLogsHotColumnReconcileMigration803 []byte
+
+//go:embed embeddata/startup/805_session_dim_reconcile.sql
+var sessionDimReconcileMigration805 []byte
+
+//go:embed embeddata/startup/471_session_summaries_archival.sql
+var sessionSummariesArchivalMigration471 []byte
+
+//go:embed embeddata/startup/573_drop_request_logs_body_columns.sql
+var dropRequestLogsBodyColumnsMigration573 []byte
+
+//go:embed embeddata/startup/577_request_logs_view_customer_id.sql
+var requestLogsViewCustomerIdMigration577 []byte
+
+//go:embed embeddata/startup/610_request_class_due_at.sql
+var requestClassDueAtMigration610 []byte
+
+//go:embed embeddata/startup/487_request_logs_add_system_fingerprint.sql
+var requestLogsAddSystemFingerprintMigration487 []byte
+
+//go:embed embeddata/startup/603_repair_request_logs_schema_consistency.sql
+var repairRequestLogsSchemaConsistencyMigration603 []byte
+
+//go:embed embeddata/startup/388_billing_cancellation_audit.sql
+var billingCancellationAuditMigration388 []byte
+
+//go:embed embeddata/startup/484_request_logs_hot_add_status_code.sql
+var requestLogsHotAddStatusCodeMigration484 []byte
+
+//go:embed embeddata/startup/491_request_logs_queue_timestamps.sql
+var requestLogsQueueTimestampsMigration491 []byte
+
+//go:embed embeddata/startup/510_request_type.sql
+var requestTypeMigration510 []byte
+
+//go:embed embeddata/startup/532_request_logs_final_success.sql
+var requestLogsFinalSuccessMigration532 []byte
+
+//go:embed embeddata/startup/542_request_logs_token_band.sql
+var requestLogsTokenBandMigration542 []byte
+
+//go:embed embeddata/startup/543_request_logs_discard_events.sql
+var requestLogsDiscardEventsMigration543 []byte
+
+//go:embed embeddata/startup/485_request_logs_add_raw_model_name.sql
+var requestLogsAddRawModelNameMigration485 []byte
+
+//go:embed embeddata/startup/806_session_bodies_partitions_heap.sql
+var sessionBodiesPartitionsHeapMigration806 []byte
+
+//go:embed embeddata/startup/640_session_turns_protocol_fields.sql
+var sessionTurnsProtocolFieldsMigration640 []byte
+
 //go:embed embeddata/startup/478_auto_route_affinity.sql
 var autoRouteAffinityMigration478 []byte
 
@@ -338,6 +401,9 @@ var requestLogsCurrentMonthViewBootstrapMigration680 []byte
 //go:embed embeddata/startup/681_provider_error_details_fingerprint_restore_8part.sql
 var providerErrorDetailsFingerprintRestore8partMigration681 []byte
 
+//go:embed embeddata/startup/804_credential_model_context_window_columns.sql
+var credentialModelContextWindowColumnsMigration804 []byte
+
 //go:embed embeddata/startup/682_model_offers_context_window_columns.sql
 var modelOffersContextWindowColumnsMigration682 []byte
 
@@ -606,6 +672,9 @@ var bodiesColumnarStorageMigration765 []byte
 //go:embed embeddata/startup/800_provider_endpoint_protocols.sql
 var providerEndpointProtocolsMigration800 []byte
 
+//go:embed embeddata/startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql
+var requestLogsBodiesHotDropDuplicateRequestIDIndexMigration803 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -614,6 +683,20 @@ var embeddedSQLFiles = map[string][]byte{
 	"00-prereqs.sql":                                                                 sqlPrereqs,
 	"01-schema.sql":                                                                  sqlSchema,
 	"02-seed.sql":                                                                    sqlSeed,
+	"startup/392_candidate_failure_logs_monthly_partition.sql":                       candidateFailureLogsMonthlyPartitionMigration392,
+	"startup/805_session_dim_reconcile.sql":                                          sessionDimReconcileMigration805,
+	"startup/471_session_summaries_archival.sql":                                     sessionSummariesArchivalMigration471,
+	"startup/487_request_logs_add_system_fingerprint.sql":                            requestLogsAddSystemFingerprintMigration487,
+	"startup/388_billing_cancellation_audit.sql":                                     billingCancellationAuditMigration388,
+	"startup/484_request_logs_hot_add_status_code.sql":                               requestLogsHotAddStatusCodeMigration484,
+	"startup/491_request_logs_queue_timestamps.sql":                                  requestLogsQueueTimestampsMigration491,
+	"startup/510_request_type.sql":                                                   requestTypeMigration510,
+	"startup/532_request_logs_final_success.sql":                                     requestLogsFinalSuccessMigration532,
+	"startup/542_request_logs_token_band.sql":                                        requestLogsTokenBandMigration542,
+	"startup/543_request_logs_discard_events.sql":                                    requestLogsDiscardEventsMigration543,
+	"startup/485_request_logs_add_raw_model_name.sql":                                requestLogsAddRawModelNameMigration485,
+	"startup/806_session_bodies_partitions_heap.sql":                                 sessionBodiesPartitionsHeapMigration806,
+	"startup/640_session_turns_protocol_fields.sql":                                  sessionTurnsProtocolFieldsMigration640,
 	"startup/478_auto_route_affinity.sql":                                            autoRouteAffinityMigration478,
 	"startup/511_state_transitions_table.sql":                                        requestJourneyMigration511,
 	"startup/515_state_transitions_seq_unique.sql":                                   requestJourneyMigration515,
@@ -622,6 +705,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/521_repair_state_transitions_tenant.sql":                                requestJourneyMigration521,
 	"startup/530_request_journey_contract.sql":                                       requestJourneyMigration530,
 	"startup/531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,
+	"startup/535_candidate_failure_logs_atomic_promote.sql":                          candidateFailureLogsAtomicPromoteMigration535,
 	"startup/536_stats_analytics_foundation.sql":                                     statsMigration536,
 	"startup/537_usage_facts.sql":                                                    statsMigration537,
 	"startup/539_stats_reconciliation_tenant.sql":                                    statsMigration539,
@@ -648,14 +732,20 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/569_candidate_binding_scope_revision_canonical.sql":                     candidateBindingScopeRevisionCanonicalMigration569,
 	"startup/570_model_offers_insert_priority_passthrough.sql":                       modelOffersInsertPriorityPassthroughMigration570,
 	"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql":       candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
+	"startup/573_drop_request_logs_body_columns.sql":                                 dropRequestLogsBodyColumnsMigration573,
+	"startup/577_request_logs_view_customer_id.sql":                                  requestLogsViewCustomerIdMigration577,
 	"startup/572_session_summary_large_token_ratio.sql":                              sessionSummaryLargeTokenRatioMigration572,
 	"startup/600_outbound_body_to_bodies_hot.sql":                                    outboundBodyToBodiesHotMigration600,
 	"startup/601_request_logs_bodies_drop_metadata.sql":                              requestLogsBodiesDropMetadataMigration601,
 	"startup/602_request_logs_promote_atomic.sql":                                    requestLogsPromoteAtomicMigration602,
+	"startup/603_repair_request_logs_schema_consistency.sql":                         repairRequestLogsSchemaConsistencyMigration603,
 	"startup/606_session_summaries_agent_expert_tags.sql":                            sessionSummariesAgentExpertTagsMigration606,
+	"startup/610_request_class_due_at.sql":                                           requestClassDueAtMigration610,
 	"startup/618_request_journey_snapshot_receipts.sql":                              journalSnapshotReceiptsMigration618,
 	"startup/614_session_bodies_hot.sql":                                             sessionBodiesHotMigration614,
 	"startup/615_session_bodies_hot_promote_function.sql":                            sessionBodiesHotPromoteMigration615,
+	"startup/617_candidate_failure_logs_hot_contract.sql":                            candidateFailureLogsHotContractMigration617,
+	"startup/803_candidate_failure_logs_hot_column_reconcile.sql":                    candidateFailureLogsHotColumnReconcileMigration803,
 	"startup/620_provider_error_details_tenant_scope.sql":                            providerErrorDetailsTenantScopeMigration620,
 	"startup/621_provider_error_details_cleanup_index.sql":                           providerErrorDetailsCleanupIndexMigration621,
 	"startup/622_provider_error_aggregator_state.sql":                                providerErrorAggregatorStateMigration622,
@@ -708,6 +798,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/679_local_credential_unique.sql":                                        localCredentialUniqueMigration679,
 	"startup/680_request_logs_current_month_view_bootstrap.sql":                      requestLogsCurrentMonthViewBootstrapMigration680,
 	"startup/681_provider_error_details_fingerprint_restore_8part.sql":               providerErrorDetailsFingerprintRestore8partMigration681,
+	"startup/804_credential_model_context_window_columns.sql":                        credentialModelContextWindowColumnsMigration804,
 	"startup/682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
 	"startup/683_session_dim_ownership_columns.sql":                                  sessionDimOwnershipColumnsMigration683,
 	"startup/684_drop_stale_provider_error_tenant_fingerprint.sql":                   dropStaleProviderErrorTenantFingerprintMigration684,
@@ -787,6 +878,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/764_request_logs_tenant_ts_index.sql":                                   requestLogsTenantTsIndexMigration764,
 	"startup/765_bodies_columnar_storage.sql":                                       bodiesColumnarStorageMigration765,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
+	"startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql":        requestLogsBodiesHotDropDuplicateRequestIDIndexMigration803,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

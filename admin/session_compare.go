@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -157,6 +158,20 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 		return txErr
 	})
 	if err != nil {
+		// 正文取数并发已满 → 503「现在忙」，不是 500「坏了」。这两者对调用方
+		// 的重试含义完全不同（503 可退避重试，500 不该重试）。
+		// 见 session_bodies_batch.go 的并发闸注释：正文查询单条 17~19 秒，
+		// 池只有 16 个连接，排队就是雪崩。
+		if errors.Is(err, ErrBodyFetchSaturated) {
+			slog.WarnContext(r.Context(), "session compare rejected: body fetch saturated",
+				"session_id", sessionID, "limit", maxConcurrentBodyFetches)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status":  "error",
+				"message": "Session body data is temporarily unavailable — too many concurrent scans. Retry shortly.",
+				"code":    "session_body_fetch_saturated",
+			})
+			return
+		}
 		writeInternalErrStr(w, "Failed to load session compare data", err)
 		return
 	}
@@ -1012,7 +1027,14 @@ func countCompletedTasks(summary string) int {
 // The actual settings are registered via settings/spec_compression.go:
 //
 //	compression.enabled  (bool, default=true)  — master switch
-//	handoff.enabled      (bool, default=true)  — handoff master switch
+//	handoff.enabled      (bool, default=false) — handoff master switch
+//
+// 2026-10-01 R74 (comment correction): this used to say handoff.enabled
+// defaults to true. It does not — settings/handoff_specs.go:45 ships
+// Default: false, and cmd/gateway/goal_control.go's boot-time default agrees.
+// Anyone sizing capacity or reasoning about behaviour off this comment would
+// conclude the handoff path is live by default when it is off by default and
+// additionally inert under the default client_mode=transparent.
 
 // HandoffEnabled checks if handoff feature is available for a tenant.
 // This is a server-side safety check. The UI also checks the settings.

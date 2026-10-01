@@ -16,8 +16,33 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 
 	canonicalDir := filepath.Join("..", "..", "..", "sql", "migrations", "startup")
 	expected := map[string][]byte{
-		"511_state_transitions_table.sql":      requestJourneyMigration511,
-		"515_state_transitions_seq_unique.sql": requestJourneyMigration515,
+		// candidate_failure_logs family below the 478 floor (wired 2026-10-01):
+		// hot/monthly-partition split (392), atomic promote replacement (535),
+		// session_id/per_attempt_latency_ms writer columns (617).
+		"392_candidate_failure_logs_monthly_partition.sql":    candidateFailureLogsMonthlyPartitionMigration392,
+		"535_candidate_failure_logs_atomic_promote.sql":       candidateFailureLogsAtomicPromoteMigration535,
+		"617_candidate_failure_logs_hot_contract.sql":         candidateFailureLogsHotContractMigration617,
+		"803_candidate_failure_logs_hot_column_reconcile.sql": candidateFailureLogsHotColumnReconcileMigration803,
+		"804_credential_model_context_window_columns.sql":     credentialModelContextWindowColumnsMigration804,
+		"805_session_dim_reconcile.sql":                       sessionDimReconcileMigration805,
+		"806_session_bodies_partitions_heap.sql":              sessionBodiesPartitionsHeapMigration806,
+		"640_session_turns_protocol_fields.sql":               sessionTurnsProtocolFieldsMigration640,
+		"471_session_summaries_archival.sql":                  sessionSummariesArchivalMigration471,
+		"577_request_logs_view_customer_id.sql":               requestLogsViewCustomerIdMigration577,
+		"610_request_class_due_at.sql":                        requestClassDueAtMigration610,
+		"487_request_logs_add_system_fingerprint.sql":         requestLogsAddSystemFingerprintMigration487,
+		"573_drop_request_logs_body_columns.sql":              dropRequestLogsBodyColumnsMigration573,
+		"603_repair_request_logs_schema_consistency.sql":      repairRequestLogsSchemaConsistencyMigration603,
+		"388_billing_cancellation_audit.sql":                  billingCancellationAuditMigration388,
+		"484_request_logs_hot_add_status_code.sql":            requestLogsHotAddStatusCodeMigration484,
+		"485_request_logs_add_raw_model_name.sql":             requestLogsAddRawModelNameMigration485,
+		"491_request_logs_queue_timestamps.sql":               requestLogsQueueTimestampsMigration491,
+		"510_request_type.sql":                                requestTypeMigration510,
+		"532_request_logs_final_success.sql":                  requestLogsFinalSuccessMigration532,
+		"542_request_logs_token_band.sql":                     requestLogsTokenBandMigration542,
+		"543_request_logs_discard_events.sql":                 requestLogsDiscardEventsMigration543,
+		"511_state_transitions_table.sql":                     requestJourneyMigration511,
+		"515_state_transitions_seq_unique.sql":                requestJourneyMigration515,
 		// R42 (2026-09-18): durable family base tables — 657/722 ride on
 		// them; a fresh install without 516/520 aborted with 42P01 at 657.
 		"516_durable_llm_tasks.sql":                                              durableLlmTasksMigration516,
@@ -262,7 +287,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 764 (2026-09-30, 三十六轮 R36-B3): request_logs 分区家族 tenant_ts
 		// 索引。parity 第 5 点与 759/763 同理：缺条目时 embed 副本漂移无人发现。
 		"764_request_logs_tenant_ts_index.sql": requestLogsTenantTsIndexMigration764,
-		"765_bodies_columnar_storage.sql": bodiesColumnarStorageMigration765,
+		"765_bodies_columnar_storage.sql":      bodiesColumnarStorageMigration765,
 		// 801 (2026-09-30, 三十六轮 R36-B4): 733 promote 函数改版。
 		// 本守卫只遍历本 map、不反向要求全量，801 此前缺席 → embed 副本漂移
 		// 无人发现。补登前已 diff 确认 canonical 与 embeddata 当前逐字节一致。
@@ -271,6 +296,10 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// (tenant_id, gw_task_id) 部分索引。跨租户访问门 assertTaskInTenant 的
 		// session 族母表腿依赖它，缺索引会让 EXISTS 退化为 167 万行顺序扫描。
 		"802_session_turn_details_gw_task_id_index.sql": sessionTurnDetailsGwTaskIDIndexMigration802,
+		// 803 (2026-10-01, 会话/请求数据存储审计): 删除 request_logs_bodies_hot
+		// 上被同列 UNIQUE 索引影蔽的普通索引 request_logs_bodies_hot_request_id_idx。
+		// parity 第 5 点与 759/763 同理：缺条目时 embed 副本漂移无人发现。
+		"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql": requestLogsBodiesHotDropDuplicateRequestIDIndexMigration803,
 	}
 
 	for name, embedded := range expected {

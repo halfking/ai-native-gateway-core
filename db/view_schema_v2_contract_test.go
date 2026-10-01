@@ -188,18 +188,18 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 	}
 }
 
-// Live round-trip (LLM_GATEWAY_TEST_PG_DSN): on a scratch database holding
+// Live round-trip (TEST_PG_DSN): on a scratch database holding
 // the full 113-column dynamic-contract shape, the Go ensure and the 710
 // migration file must produce byte-identical canonical view definitions, the
 // anti-join must dedup dual-written request_ids, and the D4 'sys:%' NULL
 // gw_session_id semantics must hold.
 //
-//	LLM_GATEWAY_TEST_PG_DSN='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
+//	TEST_PG_DSN='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
 //	  go test ./db/ -run TestRequestLogsViewV2EnsureMatchesMigration -count=1 -v
 func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
-	dsn := os.Getenv("LLM_GATEWAY_TEST_PG_DSN")
+	dsn := resolveTestDSN()
 	if dsn == "" {
-		t.Skip("LLM_GATEWAY_TEST_PG_DSN not set — offline mode")
+		t.Skip("TEST_PG_DSN (or LLM_GATEWAY_TEST_PG_DSN) not set — offline mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -686,4 +686,19 @@ func liveColumns(ctx context.Context, live *pgxpool.Pool, table string) ([]liveC
 		return nil, fmt.Errorf("table public.%s not found in live catalogs", table)
 	}
 	return cols, nil
+}
+
+// 变量名按仓内契约取：scripts/audit/run-integration-gate.sh 只注入
+// TEST_PG_DSN / *_DATABASE_URL / *_DB_URL / *_PG_URL 这几种后缀（注入清单见
+// 该脚本的 dsn_runner 段），而 sql/schema/integration_gate_test.go 的
+// TestGateInjectsEveryDBCredentialName 正是按这些后缀从仓内**推导**该清单的。
+// 用 _PG_DSN 这类不在契约内的名字，harness 永远不会注入 ⇒ 这道门在 CI 上
+// 结构性沉睡，却仍以 "ok" 的形式出现在报告里。第二变量名保留给手工运行，
+// 但**新代码请直接用 TEST_PG_DSN**，否则重蹈「门禁对沉睡文件不作证」。
+
+func resolveTestDSN() string {
+	if v := os.Getenv("TEST_PG_DSN"); v != "" {
+		return v
+	}
+	return os.Getenv("LLM_GATEWAY_TEST_PG_DSN")
 }

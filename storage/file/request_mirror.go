@@ -127,7 +127,9 @@ func (m *RequestMirror) Mirror(ctx context.Context, tenantID, requestID string, 
 }
 
 // MirrorAsync 投递异步写任务，立即返回（不等待落盘）。
-// 用于 fire-and-forget 接线点（流式终态落库后）。
+// 用于 fire-and-forget 接线点（流式终态落库后、telemetry 三件套镜像等）。
+// 底层为非阻塞 TryEnqueue：队列满或写入器关闭时丢弃本条镜像并计数告警，
+// 绝不阻塞投递方（2026-10-01 审计，见实现内注）。
 func (m *RequestMirror) MirrorAsync(tenantID, requestID string, dir RequestDirection, payload any, at time.Time) {
 	if m == nil || !validMirrorID(tenantID) || !validMirrorID(requestID) {
 		monitoring.Default().RecordMirrorWrite(true)
@@ -146,7 +148,17 @@ func (m *RequestMirror) MirrorAsync(tenantID, requestID string, dir RequestDirec
 		return
 	}
 	path := m.buildPath(tenantID, requestID, dir, at)
-	done := m.writer.WriteAsync(path, compressed)
+	// 2026-10-01 审计：改走非阻塞 TryEnqueue——此前 enqueue 队列(1000)满时
+	// 阻塞，磁盘停滞时会把投递方（telemetry persistRequestLog 落库 goroutine
+	// 等 fire-and-forget 消费方）拖住，违背本方法注释承诺的"立即返回"。队列
+	// 满丢弃即丢这条镜像：计数（RecordMirrorWrite 失败面 + writer 的
+	// dropped_enqueues）+ 节流 Warn 在 TryEnqueue 内。其它队列用户
+	// （FileBodiesStore 关键路径）保持阻塞语义不变。
+	done, ok := m.writer.TryEnqueue(path, compressed)
+	if !ok {
+		monitoring.Default().RecordMirrorWrite(true)
+		return
+	}
 	go func() {
 		werr := <-done
 		monitoring.Default().RecordMirrorWrite(werr != nil)

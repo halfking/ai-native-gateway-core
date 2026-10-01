@@ -18,6 +18,16 @@ run:
 linters:
   default: none
   enable:
+    # bodyclose 故意不启用 —— R88-s 实测结论（docs/全面审计v3/2026-10-01/82-*.md）：
+    #   1) 全仓 bodyclose 只报 3 条，逐条读包围函数后 3/3 为误报；
+    #   2) 其中 1 条报在 pkg/httputil.ReadPrefixAndDrain 的调用点上——本仓标准
+    #      drain-and-close helper 对 bodyclose 不可见，且它没有任何 skip 能力
+    #      （v2.13.2 还会静默接受 settings 下的未知键，写了 skip 也不报错、
+    #       也不生效）。启用后凡按本仓标准写法新增的出口都会假报；
+    #   3) bodyclose 不跨函数追踪，而本仓主出口是自定义 upstream.Client.Do，
+    #      处于其结构盲区之外——即"主路径没覆盖、helper 写法却报"。
+    # 若将来确要启用，须先让 bodyclose 认识 ReadPrefixAndDrain，否则
+    # ratchet（--new-from-rev）会持续对本仓标准写法出假新发现。
     - depguard      # 依赖方向强制（架构护栏，v1 已启用）
     - govet         # go vet（默认）
     - errcheck      # 错误检查（默认）

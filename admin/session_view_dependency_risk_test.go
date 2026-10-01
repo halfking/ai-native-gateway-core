@@ -182,7 +182,6 @@ var nativeSessionReaders = []struct {
 	want string
 }{
 	{"session_online.go", "SessionFamilyTurnsForSessionSQL"},
-	{"session_summary_v2.go", "SessionFamilyTurnsForSessionSQL"},
 	{"session_compare.go", "SessionFamilyTurnsForSessionSQL"},
 	{"turns_sessions.go", "SessionFamilyTurnsSourceSQL"},
 	// 2026-09-30 second wave, all verified against the live DB (same session,
@@ -205,6 +204,28 @@ var nativeSessionReaders = []struct {
 // explanatory comment above querySessionTimeline (which names the helper),
 // and swapping the call for a different source kept the test green —
 // a guard that cannot fail. Mutation-verified.
+// nativeSessionReaderExemptions lists the class-A readers that deliberately
+// keep a v1-store read, each with the reason it is not a §5.5.5 violation.
+//
+// 删掉一条 nativeSessionReaders 条目很容易，但「这条为什么例外」比「这条被删了」
+// 重要得多 —— 没有记录，半年后没人敢动它，也没人知道它是不是还能删。
+//
+//	session_summary_v2.go — buildRequestLogsFallbackQuery 的 turns 腿
+//	  读 public.request_logs_with_current_month 而不是原生源。
+//	  原因：这条 fallback 只在**主路径查不到轮次**时才被调用。把它换成
+//	  session 族原生源（02c93d04e 做过）等于让它去读主路径刚判定为空的同一批
+//	  表，必然返回 0 行 → `no turns found` → HTTP 500。审计缺陷 7。
+//	  代价（实测，同一会话 gw_63798b79，169 轮）：
+//	    v1 视图 + 排除谓词   21.6 ms / 10,013 buffers
+//	    原生源               0.55 ms /    280 buffers   （≈40×）
+//	  接受这个代价：该路径今天服务 0 个会话（有业务轮次却缺失于原生源的会话
+//	  实测为 0），而加上 v1 源是它能返回任何东西的唯一办法。
+var nativeSessionReaderExemptions = map[string]string{
+	"session_summary_v2.go": "buildRequestLogsFallbackQuery 的 turns 腿必须读 v1 视图；" +
+		"换成原生源即使 fallback 恒返回 0 轮（审计缺陷 7）。代价 21.6ms vs 0.55ms，" +
+		"落在今天服务 0 个会话的路径上。",
+}
+
 func stripGoComments(src string) string {
 	src = blockCommentRE.ReplaceAllString(src, " ")
 	src = lineCommentRE.ReplaceAllString(src, " ")
@@ -217,6 +238,24 @@ var (
 )
 
 func TestSessionScopedReadersUseNativeSource(t *testing.T) {
+	// 例外必须仍然被**钉住**：被豁免的文件不得悄悄改回 v1 读，也不得
+	// 悄悄开始读一个第三种源。豁免不是空白，是一条独立的断言。
+	for file, reason := range nativeSessionReaderExemptions {
+		t.Run("exemption/"+file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(".", file))
+			if err != nil {
+				t.Fatalf("read %s: %v", file, err)
+			}
+			code := stripGoComments(string(raw))
+			if strings.Contains(code, "SessionFamilyTurnsForSessionSQL") {
+				t.Errorf("%s 的豁免理由已失效或已过期：它又开始读原生源了。%s",
+					file, reason)
+			}
+			if !strings.Contains(code, "request_logs_with_current_month") {
+				t.Errorf("%s 的豁免理由要求它读 v1 视图，实际没有。%s", file, reason)
+			}
+		})
+	}
 	for _, tc := range nativeSessionReaders {
 		t.Run(tc.file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(".", tc.file))

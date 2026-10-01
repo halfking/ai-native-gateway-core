@@ -498,3 +498,209 @@ statement_timeout 的窗口内执行，失败可安全重试。
 + 重启才能加载新二进制，重启后 `postgres` 需在 boot 期成功连上，
 `hasReportedRawModels` 才可能为真、模型分区才会渲染。
 **在此之前，第 2 项（glm-5.3 / glm-5.2 目视验收）仍不得声明通过。**
+
+## 2026-10-01 拓扑定案：验收目标环境从未部署过被验收的修复
+
+本节纠正前面两节连续两个错误归因，并给出可复核的定案结论。
+
+### 三个主机，三个角色（实测）
+
+| 主机 | unit | 入口 | 当时的 build_seq |
+| --- | --- | --- | --- |
+| **154**（生产） | `llm-gateway-go-canary@8782` | **`llmgateway.internal.example.com` 实际落点** | **2356 / `2d750fb4`** |
+| 245（预发布闸门） | `llmgo-245-canary@8781\|8782` | `llmgateway.internal.example.com` 等 | 2372 / `d2af305a` |
+| 252 | `llmgo-252-dev` + PG17 | 仅 dev | —— |
+
+定位手法：`curl -fsS -m 10 https://llmgateway.internal.example.com/healthz` 读回 `build_seq`，
+再在 154 上 `curl 127.0.0.1:8782/healthz` 逐字对上。**连续 8 次采样一致**，
+不是抖动。
+
+### 两个被推翻的错误
+
+1. 「llmgateway.internal.example.com 的后端在 252」——**错**。252 只有 dev 与 PG17；
+   252 的 `stream.d/sni-proxy.conf` 把 `llmgateway.internal.example.com` 转给
+   `itestu_nginx_backend`，而终点是 **154 生产**。
+2. 「252 dev 处于 postgres 降级态、所以模型分组不渲染」——**因果错**。
+   252 dev 确实三次 boot 降级（`ensure candidate_failure_logs` 超时，见上节），
+   但**它不是 `llmgateway.internal.example.com` 的服务对象**，那组日志解释不了线上现象。
+   本节之前把两件事连成一条因果链，是错的。
+
+### 决定性事实
+
+```
+9cb842d3e (canonical 精确形优先 + 不变式真门)  in  2d750fb4 (154 现网)?  NO
+6f629ad8b (689 self-heal 独立预算)             in  2d750fb4?             NO
+317f28556 (悬空 rows.Err 事故源)               in  2d750fb4?             NO
+
+154 现网落后 main：175 个提交
+```
+
+**本文件开头「已交付」那一节的修复，从来没有到过验收所用的那个环境。**
+在 `llmgateway.internal.example.com` 上筛选 glm-5.3 看不到正确的 glm-5.3 分组，是
+**必然结果**，不是回归、也不是环境问题 —— 那个实例上根本不存在被验收的逻辑。
+
+推论：第 2 项目视验收此前全部无效，无论 UI 表现如何都不能作为
+9cb842d3e 的验收证据。要真正验收，必须先把修复推进到 154；
+而按 deploy-245/deploy-154 的闸门约定，顺序是 **245 先 → 验证 → 154**。
+
+### 附带：245 一次失败部署的副作用（如实登记）
+
+向 245 部署 `build_seq 2373` **失败并自动回滚**到 2372。触发点是
+`[9.5/9] 验证目标机自身 nginx→gateway (127.0.0.1:443/healthz)` 30s 超时，
+按 skill 约定立即回滚（回滚本身成功：healthz + running release + PG 均 OK）。
+
+但 nginx 事后复查是 `active` 且 443 返回 200 —— 即该次超时疑为**误报**，
+发生在 handoff 耗时 `351591ms`（约 5.9 分钟）之后的窗口内。
+
+更值得注意的是 adopt 检测的误判链：
+
+```
+⚠ 8781/8782 均无监听 —— 按 fresh 主机处理，active 取契约端口 8781
+⚠ active unit 无法从监听进程归属解析，按端口推导为 llmgo-245.service
+```
+
+`llmgo-245.service` 正是 skill 明令「**弃用遗留 unit，勿使用**」的那个。
+回滚后 245 实际状态（实测 `ss -ltnp` + `systemctl show`）：
+
+- 监听 8781 的是 `llmgo-245.service`（**弃用 unit**），`ExecMainStart=05:07:07`
+  —— 正是失败部署期间被误启用的
+- `llmgo-245-canary@8781.service`：`failed`（原 02:42 实例）
+- `llmgo-245-canary@8782.service`：`active/running` 但 **8782 无监听**（僵尸 unit）
+- `run/active-port` 记录 8782，实测服务在 8781 —— **记录与实际不一致**
+
+即：站点对外仍在正常服务（无对外故障），但 245 的蓝绿 unit 拓扑已被
+这次失败部署搞乱，与 `deploy-seamless` 的契约不符，下次部署会被同样的
+归属解析继续误导。**修复该拓扑需重启 245 上的 unit，属对外可见操作，
+本轮未擅自执行。**
+
+## 2026-10-01 154 生产侧取证：第三条独立故障
+
+在 154（`llmgateway.internal.example.com` 真实后端）上继续取证，发现**第三条、与前两条都不同的**故障。
+
+### 154 的功能与缺陷都在
+
+模型分组功能**存在于 154 现网版本** 2d750fb4：
+
+```
+b2e6e1dd2 (qp-layer--model-groups 引入)  in 2d750fb4?  YES
+e295bdeb3 (hasReportedRawModels 门引入)  in 2d750fb4?  YES
+```
+
+故上一节「验的环境里没有被验的东西」需**精确化**：不是"功能不存在"，
+而是"**功能在、缺陷也在**"——`9cb842d3e`（canonical 精确形优先 +
+不变式真门）不在 154 上，这正是本任务要修的那个 bug。
+
+### 154 的 node status 反复超时
+
+```
+09-30 21:47:20  postgres connected
+09-30 21:47:33  live stream hub: DB-backed replay and node status enabled
+10-01 04:50:51 / 05:02:53 / 05:05:57 / 05:08:15
+  WARN live stream: node status refresh failed  error="timeout: context deadline exceeded"
+10-01 05:14:03  ERROR router: URSM v2 FilterAndScore failed …
+  error="ursm.v2: redis unavailable: … redis HGETALL pipeline failed: context deadline exceeded"
+```
+
+`main_livestream.go:498` 给 provider 的预算是 **1.5 秒**。而
+`decorateFPNodeState` 里的 Redis 批量取节点态吃的就是这个预算。252 的
+Redis 明显在争用（URSM 的 HGETALL 管线同样超时），二者指向同一压力源。
+
+### 已排除的两个猜测（都不是原因）
+
+| 猜测 | 实测 | 判定 |
+| --- | --- | --- |
+| 绑定 JOIN 查询慢，吃掉 1.5s | `credential_model_bindings ⋈ provider_models` 实测 **5.476 ms** | 排除，SQL 不是瓶颈 |
+| `main_livestream.go:591` 的 `len(keys)==0` 早退 | 73 凭据中 **65 个有绑定、1889 行**，`keys` 必非空 | 排除，该早退不是本次原因 |
+
+（该早退本身仍是独立的健壮性缺口，见上文登记，此处仅澄清它**不是**本次成因。）
+
+### 仍未闭合的一环（如实标注，不硬下结论）
+
+告警按 30s 限频，25 分钟内只出现 4 次，说明**多数刷新其实是成功的** ——
+按 `liveNodeStatusCache.refreshWith`（`main_livestream.go:727-745`）的语义，
+成功即写入快照、失败仅保留上次快照，那么 154 的 `nodes` 快照**本应非空**，
+前端 `hasReportedRawModels` 也**本应为真**。
+
+但前端节点矩阵实际报「暂无节点数据」。**这一矛盾本轮未闭合**：
+可能是 SSE 推送路径未把节点快照送到前端，也可能是 1.5s 预算下的
+间歇失败叠加首次快照为空造成长时间空窗。
+
+**因此第 2 项维持未通过，且本轮不把「Redis 争用」写成已证实的根因** ——
+它是一个有证据支撑的**嫌疑方向**，不是已闭环的结论。下一步需要在 154 上
+直接取一次 SSE 首帧的 `nodes` 载荷来判定，这需要登录态 API 取证。
+
+## 2026-10-01 浏览器验收轮：环境故障定性 + 生产数据验收 + 一次结论订正
+
+### 订正：「不推进 154 就无法验收」——这条不成立
+
+上一节把第 2 项的阻断归给「154 落后 main 175 个提交」。本轮实测**推翻**了它：
+
+```
+git diff --stat 2d750fb4 HEAD -- web/src/utils/modelScopeOwnership.ts   → 空
+git log --oneline 2d750fb4..HEAD -- web/src/utils/modelScopeOwnership.ts → 空
+git log --oneline 2d750fb4..HEAD -- web/src/components/QueuePerspectivePanel.vue → 空
+```
+
+被验收的判据由 `modelScopeOwnership.ts`（归属裁决）+ `QueuePerspectivePanel.vue`
+（渲染门）决定，这三个文件在**线上版本与 HEAD 之间逐字节一致**。
+即：**这条验收判据在 154 和在 main 上跑的是同一份代码**，175 个提交的差距
+对它没有影响。推进 154 不是第 2 项的前置条件（其它判据另算）。
+
+### SSE 服务端是健康的（两种身份对照）
+
+在 154 上用 `LLM_GATEWAY_SECRET_KEY` 现铸短命 HS256 JWT
+（`iss=llm-gateway`、`aud=["llm-gateway-api"]`、`tenant_id` 必须是**字符串**，
+铸成数字会被 `admin.JWTClaims` 解析拒绝并返回 401），经 nginx 打
+`https://llmgateway.internal.example.com/api/admin/live-stream`：
+
+| 身份 | 40s 字节 | 帧数 | node_update | initial_data |
+| --- | --- | --- | --- | --- |
+| `super_admin` | 19,578,651 | 33 | 9 | 1 |
+| `tenant_admin`（tenant=default） | 23,965,546 | 17 | 3 | 1 |
+
+nginx 侧 SSE location 配置正确（`proxy_http_version 1.1` + `proxy_buffering off`
++ `proxy_read_timeout 3600s`）。**服务端与代理链路都不是本次的成因。**
+
+### 真实成因：Electron 内置浏览器环境，客户端秒断
+
+- 浏览器那条连接在 nginx access log 里是 `200 0`（0 字节），随后 `499`；
+- 同一秒后端日志：`live stream initial replay failed  err="context canceled"`
+  —— **客户端在 handler 开始 replay 之前就已断开**；
+- `/api/admin/live-stream/stats` 长时间 `active_clients: 0`：浏览器从未成为
+  已注册客户端（我的 curl 同期正常注册）；
+- 页面停滞在「连接中」，最终整个 renderer 白屏；`inspect` / `query(text)` /
+  `query(console)` 反复 275s 超时。
+
+**结论：第 2 项的浏览器人工验收在当前 Electron 内置浏览器环境下不可完成**，
+这是环境故障，不是被验收功能在生产上的表现。不以局部证据冒充通过。
+
+### 生产数据验收（数据层判据已通过，截图仍未取得）
+
+用生产 SSE 实抓的 `node_update`（9 帧、939 个去重 `raw_models`）取 glm 族
+**49 个作用域**，逐个打生产 `/api/routing/resolve`，再喂给线上逐字节相同的
+`resolveModelScopeOwnership`（一次性驱动，跑完即删，不入库）：
+
+```
+aliasOwner[glm-5.3]        = glm-5.3
+aliasOwner[z-ai/glm-5.3]   = glm-5.3
+aliasOwner[glm-5.3-flash]  = glm-5.3-flash
+aliasOwner[glm-5.2]        = glm-5.2
+aliasOwner[z-ai/glm-5.2]   = glm-5.2
+representatives: canonical:2422803 → glm-5.3   canonical:2716170 → glm-5.3-flash
+                   canonical:173264  → glm-5.2
+```
+
+即：`glm-5.3` 与 `z-ai/glm-5.3` 归 `glm-5.3` 分组；`glm-5.3-flash` 是独立
+canonical（2716170）的独立分组；`glm-5.2` 组正常。**这正是第 2 项要看的判据**，
+但它是数据层等价验证，**不等于**面板渲染成功的截图。
+
+### 登记一个未证实的疑点（不要当结论用）
+
+`admin/live_stream_sse.go:2315-2352` 里，连接时唯一携带 `Nodes` 的
+`initial_data` 帧被整个包在 `else if len(items) > 0` 里：**replay 不到任何
+请求条目时，handler 一个字节都不写**，直接阻塞到客户端断开。线上 `2d750fb4`
+同一位置逐行同形。
+
+但本轮**没有复现空 replay**：超管与租户两种身份都拿到了 `initial_data`，
+浏览器侧的 `context canceled` 反而证明是客户端先断。所以这是一条
+**尚未证实的结构性缺口**，登记待查，**不作为本次成因**。

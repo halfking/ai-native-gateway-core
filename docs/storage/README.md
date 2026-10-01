@@ -30,10 +30,13 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
                        │ miss / 过期 / 损坏
                        ▼
    ┌─────────────────────────────────────────────┐
-   │ L3 冷启动回源                                │
-   │   · SQLite：sessions / session_turns /       │
-   │     request_logs 元数据                      │
-   │   · 本地文件：gzip 压缩的轮次 body            │
+   │ L3 冷启动回源：**lite 模式不存在**           │
+   │   SessionTurnsReader 的 db 硬绑 pgx，lite   │
+   │   装配时传 nil ⇒ LoadState 恒 miss，         │
+   │   缓存退化为 L1 + L1.5 两层。               │
+   │   （R78 订正：此处原写「SQLite：sessions /  │
+   │   session_turns / request_logs 元数据」，   │
+   │   但仓内不存在任何 SQLite 版 L3。）          │
    └─────────────────────────────────────────────┘
        命中后逐层回填：L3 → 回填 L1 + L1.5
        写路径：L1 + L1.5 同步更新（fail-open）
@@ -77,8 +80,14 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
   创建 L1.5 FileCache、启动 `bg.CacheTrimmer` / `bg.BodiesTrimmer`；`domains/session/v2`
   侧经 `NewSessionCacheV2WithMode` 以 `*pgxpool.Pool` 构建 L2/L3——full/未设置 mode 时走
   历史 `NewSessionCacheV2`，行为零变化。
-- **lite 模式的 L3 回源**：db 为 nil（lite 跳过 PG）时 `SessionTurnsReader` 防御性返回
-  miss，缓存退化为 L1 + L1.5 两层，不会 panic。
+- **lite 模式的 L3 回源**：不存在。`SessionTurnsReader` 的 db 字段类型是
+  `sessionTurnsDB`（方法签名 `QueryRow(...) pgx.Row`），且查询硬编码
+  `public.session_turns_with_current_month` 与 PG 专有的 JSONB 运算符
+  `compression_meta ? 'cut_marker'`，物理上无法接 SQLite；lite 装配时传 nil，
+  `LoadState` 恒 miss，缓存退化为 L1 + L1.5 两层（`cache_v2_test.go` 的
+  `TestSessionTurnsReader_LoadState_NilDBIsColdMiss` 钉死该行为）。
+  代价是 lite 与 full 在**进程重启后**的会话恢复能力不对等：full 可从 PG 回源，
+  lite 只能靠 L1.5 文件快照（TTL/损坏即失忆）。R78 登记为能力边界，未实现 SQLite L3。
 - 模式归一化规则：`SessionCacheV2` 的 mode 零值与未知值一律视为 full（`effectiveMode`）。
 - `Invalidate` 与模式无关：只要对应层非空就逐层失效（L1、L1.5、L2），避免模式切换后残留脏数据。
 - 缓存层全部 fail-open：下层读/写失败只记日志并回源，不阻断主链路。
@@ -136,7 +145,7 @@ lite 由 cache/bodies 两个 trimmer 各管各的；full 热区由单个 HotZone
 | L1 内存缓存 | `CompressionMetaCache`（包内类型） | 共用 | 共用 | `domains/session/v2/cache_v2.go` |
 | L1.5 文件缓存 | `FileCache`（包内类型） | 仅 lite 读路径使用 | 不使用 | `domains/session/v2/cache_v2_file.go` |
 | L2 Redis 治理缓存 | `RedisGovernanceCache` | 不使用（装配时摘除） | 仅 full | `domains/session/v2/cache_v2_redis.go` |
-| L3 冷启动回源 | `SessionTurnsReader` | SQLite + 本地文件 | PostgreSQL `session_turns` | `domains/session/v2/turn_reader.go` |
+| L3 冷启动回源 | `SessionTurnsReader` | **无**（db=nil 恒 miss，退化为 L1+L1.5） | PostgreSQL `session_turns` | `domains/session/v2/turn_reader.go` |
 | 多层缓存编排 | `SessionCacheV2` | L1 → L1.5 → L3 | L1 → L2 → L3 | `domains/session/v2/cache_v2.go` |
 
 > 注：`storage/factory/stubs.go` 仅保留 full 模式（PostgreSQL / Redis）的桩实现
