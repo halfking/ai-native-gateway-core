@@ -70,6 +70,12 @@ type BaseWorker struct {
 	stopped    bool
 	doneClosed bool
 	restarts   int
+	// onExit 是外部握手所有权（2026-10-01 结构性 P1）：监督循环最终退出时
+	// （含 panic 自愈后的终态退出与正常退出）恰好调用一次，runFn 每次
+	// 运行/panic 都不触碰。这让带 wg.Done / done channel 握手的循环可以从
+	// 「panic 即永久停摆」的 Go/GoArg 迁到带自愈重启的监督语义——重启不会
+	// 二次触发握手（对比 spawn.go 顶部注释里 Go 不重启的原因）。
+	onExit func()
 }
 
 // NewBaseWorker 构造一个命名 worker（name 仅用于日志/指标，便于定位）。
@@ -81,6 +87,34 @@ func NewBaseWorker(name string) *BaseWorker {
 // cancel/done 后释放锁再启动（避免持锁启动）。ctx 为 nil 时退化为
 // context.Background()。
 func (b *BaseWorker) Start(parent context.Context, runFn func(context.Context)) bool {
+	return b.StartWithExit(parent, runFn, nil)
+}
+
+// StartWG 启动带 wg 握手的监督 goroutine：wg.Done 的所有权归 BaseWorker，
+// 在监督循环最终退出时恰好调用一次（panic 自愈重启期间不触发）。调用方
+// 保持既有 `wg.Add(1)` 在启动前完成；Start 被拒（已启动/已停止）时返回
+// false 且**不会**调用 wg.Done——调用方须自行归还计数（见 SpawnLoopWG）。
+func (b *BaseWorker) StartWG(parent context.Context, wg *sync.WaitGroup, runFn func(context.Context)) bool {
+	if wg == nil {
+		return false
+	}
+	return b.StartWithExit(parent, runFn, wg.Done)
+}
+
+// StartDoneChan 启动带 done channel 握手的监督 goroutine：close(done) 的
+// 所有权归 BaseWorker，在监督循环最终退出时恰好调用一次。runFn 原有的
+// `defer close(done)` 必须在迁移时移除，否则二次 close 会 panic。
+func (b *BaseWorker) StartDoneChan(parent context.Context, done chan struct{}, runFn func(context.Context)) bool {
+	if done == nil {
+		return false
+	}
+	return b.StartWithExit(parent, runFn, func() { close(done) })
+}
+
+// StartWithExit 是 Start 的握手泛化形态：onExit 在监督循环最终退出时被
+// 恰好调用一次（早于 done 的 close，保证 Stop 返回时外部握手已完结）。
+// onExit 为 nil 时与 Start 等价。
+func (b *BaseWorker) StartWithExit(parent context.Context, runFn func(context.Context), onExit func()) bool {
 	if b == nil || runFn == nil {
 		return false
 	}
@@ -95,6 +129,7 @@ func (b *BaseWorker) Start(parent context.Context, runFn func(context.Context)) 
 	ctx, cancel := context.WithCancel(parent)
 	b.cancel = cancel
 	b.done = make(chan struct{})
+	b.onExit = onExit
 	b.started = true
 	b.mu.Unlock()
 	go b.supervise(ctx, runFn)
@@ -105,7 +140,10 @@ func (b *BaseWorker) Start(parent context.Context, runFn func(context.Context)) 
 // ctx 上重启；runFn 正常 return 视为有意退出、监督循环随之终止。done 恰在
 // 本循环退出时 close 一次（R51-F13：单次 panic 不得让 worker 静默停摆）。
 func (b *BaseWorker) supervise(ctx context.Context, runFn func(context.Context)) {
-	defer b.closeDone()
+	defer func() {
+		b.runExit()
+		b.closeDone()
+	}()
 	for {
 		if !b.runOnce(ctx, runFn) {
 			return
@@ -171,6 +209,16 @@ func (b *BaseWorker) Stop() {
 // 语义审查；新代码不需要调用它。
 func (b *BaseWorker) NotifyStopped() {
 	_ = b // 兼容 no-op；nil receiver 安全
+}
+
+// runExit 调用外部握手（onExit）恰好一次。监督循环整个生命周期只走一次
+// defer，天然单次；显式收敛在一个方法里便于变异测试钉住「每轮 runOnce
+// 都触发握手」的错误实现。
+func (b *BaseWorker) runExit() {
+	if b == nil || b.onExit == nil {
+		return
+	}
+	b.onExit()
 }
 
 // closeDone 由监督循环 defer 调用，保证 done 恰好 close 一次。

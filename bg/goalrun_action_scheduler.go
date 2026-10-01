@@ -211,16 +211,18 @@ func (s *GoalRunActionScheduler) Start(ctx context.Context) {
 	ctx, s.cancel = context.WithCancel(ctx)
 
 	// 启动 worker pool：每个 worker 处理一个 action；concurrency = cfg.Concurrency
+	// （2026-10-01 结构性 P1：wg 握手所有权下沉 BaseWorker——panic 自愈重启
+	// 不再二次触发 wg.Done；此前 panic 会让该并发槽静默消失直到进程重启。）
 	for i := 0; i < s.cfg.Concurrency; i++ {
 		s.wg.Add(1)
-		GoArg("goalrun.workerLoop", i, func(i int) { s.workerLoop(ctx, i) })
+		SpawnLoopWG(ctx, "goalrun.workerLoop", &s.wg, func(ctx context.Context) { s.workerLoop(ctx, i) })
 	}
 
 	// 启动 scanner + reaper
 	s.wg.Add(1)
-	Go("goalrun.scannerLoop", func() { s.scannerLoop(ctx) })
+	SpawnLoopWG(ctx, "goalrun.scannerLoop", &s.wg, s.scannerLoop)
 	s.wg.Add(1)
-	Go("goalrun.reaperLoop", func() { s.reaperLoop(ctx) })
+	SpawnLoopWG(ctx, "goalrun.reaperLoop", &s.wg, s.reaperLoop)
 
 	slog.Info("goalrun action scheduler started",
 		"owner", s.owner,
@@ -278,7 +280,7 @@ type SchedulerMetricsSnapshot struct {
 // scannerLoop 周期性调用 ClaimRunnableActions 并把 claim 到的 action
 // 投递到 jobCh。jobCh 已满时 block（背压）。
 func (s *GoalRunActionScheduler) scannerLoop(ctx context.Context) {
-	defer s.wg.Done()
+	// wg.Done 所有权已下沉 BaseWorker（SpawnLoopWG）：监督循环最终退出时触发。
 
 	// 启动时立即扫一次，避免冷启积压
 	s.scanAndDispatch(ctx)
@@ -381,7 +383,7 @@ func (s *GoalRunActionScheduler) RenewLeaseOnce(ctx context.Context, a *goalrun.
 
 // workerLoop 处理单 action 直到 ctx 取消或 jobCh 关闭。
 func (s *GoalRunActionScheduler) workerLoop(ctx context.Context, workerID int) {
-	defer s.wg.Done()
+	// wg.Done 所有权已下沉 BaseWorker（SpawnLoopWG）：监督循环最终退出时触发。
 
 	for {
 		select {
@@ -567,7 +569,7 @@ func (s *GoalRunActionScheduler) handleDispatchError(ctx context.Context, a *goa
 
 // reaperLoop 周期性 ExpireLeases（清理租约过期的 running action）。
 func (s *GoalRunActionScheduler) reaperLoop(ctx context.Context) {
-	defer s.wg.Done()
+	// wg.Done 所有权已下沉 BaseWorker（SpawnLoopWG）：监督循环最终退出时触发。
 
 	ticker := time.NewTicker(s.cfg.ReaperInterval)
 	defer ticker.Stop()
