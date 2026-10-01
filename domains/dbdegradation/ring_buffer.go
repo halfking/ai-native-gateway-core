@@ -111,7 +111,7 @@ func (rb *RingBuffer) pushLocked(rec BackupRecord) {
 		atomic.AddUint64(&rb.dropped, 1)
 		// P0-2 (audit §3.6 R-3.4): surface this on Prometheus so the
 		// ringbuffer_dropped_total rule in
-		// deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
+		// deploy/prometheus/alerts/shadow-write-failures.yaml
 		// can fire. CRITICAL: these rows are LOST (not deferred to disk
 		// or replay). Call from outside the mu would also be safe — the
 		// counter is a Prometheus Counter.Add, atomic in prometheus client.

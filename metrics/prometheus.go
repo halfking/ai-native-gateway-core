@@ -684,7 +684,7 @@ func (p *PrometheusRecorder) SetPoolHealthyCredentials(poolID string, count int)
 // write. kind is the hook's tag (e.g. "attachment", "session_v2").
 //
 // Kind values MUST be kept in sync with the alerting rules in
-// deploy/monitoring/grafana-alerts/shadow-write-failures.yaml so the
+// deploy/prometheus/alerts/shadow-write-failures.yaml so the
 // Grafana queries resolve to a non-empty time series.
 func (p *PrometheusRecorder) RecordShadowWriteFailure(kind string) {
 	p.shadowWriteFailed.WithLabelValues(kind).Inc()
