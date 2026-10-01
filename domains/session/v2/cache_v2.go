@@ -171,11 +171,22 @@ type CompressionMeta struct {
 	// Recovery metadata is body-free and schema-tolerant. These fields carry
 	// coordinates and opaque hash/ref records only; summary plaintext is never
 	// persisted in V2.
-	CutMarker              map[string]interface{}
-	PreSanitizeOffsetRange []int
-	AlignmentMap           []map[string]interface{}
-	SanitizeMapRef         string
-	SanitizeMessageRefs    []map[string]interface{}
+	CutMarker                 map[string]interface{}
+	PreSanitizeOffsetRange    []int
+	AlignmentMap              []map[string]interface{}
+	SanitizeMapRef            string
+	SanitizeMapGeneration     string
+	CompressionSourceSnapshot StageSnapshot
+	RawSnapshot               StageSnapshot
+	SanitizedSnapshot         StageSnapshot
+	SanitizeMessageRefs       []map[string]interface{}
+}
+
+// StageSnapshot is privacy-safe provenance, never a stored plaintext body.
+type StageSnapshot struct {
+	Hash          string `json:"hash,omitempty"`
+	MessageCount  int    `json:"message_count,omitempty"`
+	TokenEstimate int    `json:"token_estimate,omitempty"`
 }
 
 // GovernanceMeta stores governance-related metadata
@@ -377,19 +388,23 @@ func (c *SessionCacheV2) CompressionMetadata(ctx context.Context, tenantID, sess
 	}
 	meta := state.CompressionMeta
 	return map[string]any{
-		"last_compressed_at":        meta.LastCompressedAt,
-		"recently_compressed_at":    meta.RecentlyCompressedAt,
-		"summary_marker":            meta.SummaryMarker,
-		"compressed_prefix_hash":    meta.CompressedPrefixHash,
-		"token_estimate":            meta.TokenEstimate,
-		"msg_count":                 meta.MsgCount,
-		"strategy":                  meta.Strategy,
-		"tools_hash":                meta.ToolsHash,
-		"cut_marker":                meta.CutMarker,
-		"pre_sanitize_offset_range": meta.PreSanitizeOffsetRange,
-		"alignment_map":             meta.AlignmentMap,
-		"sanitize_map_ref":          meta.SanitizeMapRef,
-		"sanitize_message_refs":     meta.SanitizeMessageRefs,
+		"last_compressed_at":          meta.LastCompressedAt,
+		"recently_compressed_at":      meta.RecentlyCompressedAt,
+		"summary_marker":              meta.SummaryMarker,
+		"compressed_prefix_hash":      meta.CompressedPrefixHash,
+		"token_estimate":              meta.TokenEstimate,
+		"msg_count":                   meta.MsgCount,
+		"strategy":                    meta.Strategy,
+		"tools_hash":                  meta.ToolsHash,
+		"cut_marker":                  meta.CutMarker,
+		"pre_sanitize_offset_range":   meta.PreSanitizeOffsetRange,
+		"alignment_map":               meta.AlignmentMap,
+		"sanitize_map_ref":            meta.SanitizeMapRef,
+		"sanitize_map_generation":     meta.SanitizeMapGeneration,
+		"compression_source_snapshot": meta.CompressionSourceSnapshot,
+		"raw_snapshot":                meta.RawSnapshot,
+		"sanitized_snapshot":          meta.SanitizedSnapshot,
+		"sanitize_message_refs":       meta.SanitizeMessageRefs,
 	}, nil
 }
 
@@ -761,19 +776,23 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 		return
 	}
 	var meta struct {
-		LastCompressedAt       time.Time                `json:"last_compressed_at"`
-		RecentlyCompressedAt   time.Time                `json:"recently_compressed_at"`
-		SummaryMarker          string                   `json:"summary_marker"`
-		CompressedPrefixHash   string                   `json:"compressed_prefix_hash"`
-		TokenEstimate          int                      `json:"token_estimate"`
-		MsgCount               int                      `json:"msg_count"`
-		Strategy               string                   `json:"strategy"`
-		ToolsHash              string                   `json:"tools_hash"`
-		CutMarker              map[string]interface{}   `json:"cut_marker"`
-		PreSanitizeOffsetRange []int                    `json:"pre_sanitize_offset_range"`
-		AlignmentMap           []map[string]interface{} `json:"alignment_map"`
-		SanitizeMapRef         string                   `json:"sanitize_map_ref"`
-		SanitizeMessageRefs    []map[string]interface{} `json:"sanitize_message_refs"`
+		LastCompressedAt          time.Time                `json:"last_compressed_at"`
+		RecentlyCompressedAt      time.Time                `json:"recently_compressed_at"`
+		SummaryMarker             string                   `json:"summary_marker"`
+		CompressedPrefixHash      string                   `json:"compressed_prefix_hash"`
+		TokenEstimate             int                      `json:"token_estimate"`
+		MsgCount                  int                      `json:"msg_count"`
+		Strategy                  string                   `json:"strategy"`
+		ToolsHash                 string                   `json:"tools_hash"`
+		CutMarker                 map[string]interface{}   `json:"cut_marker"`
+		PreSanitizeOffsetRange    []int                    `json:"pre_sanitize_offset_range"`
+		AlignmentMap              []map[string]interface{} `json:"alignment_map"`
+		SanitizeMapRef            string                   `json:"sanitize_map_ref"`
+		SanitizeMapGeneration     string                   `json:"sanitize_map_generation"`
+		CompressionSourceSnapshot StageSnapshot            `json:"compression_source_snapshot"`
+		RawSnapshot               StageSnapshot            `json:"raw_snapshot"`
+		SanitizedSnapshot         StageSnapshot            `json:"sanitized_snapshot"`
+		SanitizeMessageRefs       []map[string]interface{} `json:"sanitize_message_refs"`
 		// R36: producer-side provenance block (buildOutboundProvenance) —
 		// whitelisted through the sessions_v2 metadata mirror, surfaced here
 		// so in-process readers see the window composition and truncation
@@ -814,6 +833,18 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 	}
 	if len(meta.AlignmentMap) > 0 {
 		dst.AlignmentMap = meta.AlignmentMap
+	}
+	if meta.CompressionSourceSnapshot.Hash != "" {
+		dst.CompressionSourceSnapshot = meta.CompressionSourceSnapshot
+	}
+	if meta.RawSnapshot.Hash != "" {
+		dst.RawSnapshot = meta.RawSnapshot
+	}
+	if meta.SanitizedSnapshot.Hash != "" {
+		dst.SanitizedSnapshot = meta.SanitizedSnapshot
+	}
+	if meta.SanitizeMapGeneration != "" {
+		dst.SanitizeMapGeneration = meta.SanitizeMapGeneration
 	}
 	if meta.SanitizeMapRef != "" {
 		dst.SanitizeMapRef = meta.SanitizeMapRef

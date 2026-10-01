@@ -73,7 +73,7 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 			require.Contains(t, string(forwarded), "{SENSITIVE:")
 			var decoded any
 			require.NoError(t, json.Unmarshal(forwarded, &decoded))
-			// Opaque media bytes and assistant history remain byte-for-byte values.
+			// Opaque media bytes remain intact; replayed assistant text is sanitized.
 			if strings.Contains(tc.body, "data:image/png;base64,13800138000") {
 				require.Contains(t, string(forwarded), "data:image/png;base64,13800138000")
 			}
@@ -81,7 +81,7 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 				require.Contains(t, string(forwarded), `"data":"13800138000"`)
 			}
 			if tc.path == "/v1/chat/completions" {
-				require.Contains(t, string(forwarded), "prior 13800138000")
+				require.Contains(t, string(forwarded), "prior {SENSITIVE:phone:1}")
 			}
 			vals, err := rdb.HGetAll(context.Background(), sanitizeMapKey("tenant-protocols", "session-protocols")).Result()
 			require.NoError(t, err)

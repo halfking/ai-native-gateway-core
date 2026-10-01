@@ -2,7 +2,10 @@ package response
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+
+	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 )
 
 // InterceptorChain chains multiple ResponseInterceptors together.
@@ -132,6 +135,9 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 	for i, interceptor := range c.interceptors {
 		result, err := interceptor.InterceptStreamChunk(ctx, currentChunk, meta)
 		if err != nil {
+			if fc, ok := interceptor.(interface{ FailClosed() bool }); ok && fc.FailClosed() {
+				return &ChunkResult{ShouldBlock: true}, err
+			}
 			slog.Warn("interceptor_chain: stream chunk interceptor failed",
 				"index", i,
 				"error", err,
@@ -185,8 +191,18 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 			// Replace, don't clear, so stale replacements from earlier
 			// interceptors still cannot survive.
 			if _, holdsFrames := interceptor.(StreamPendingFlusher); holdsFrames {
-				finalResult.ModifiedChunk = append([]byte(nil), result.ModifiedChunk...)
-				finalResult.InjectAfter = append([]byte(nil), result.InjectAfter...)
+				// A terminal release is a batch of EARLIER checked events. Each
+				// event must still traverse every later interceptor. Inspecting
+				// currentChunk here would check only the raw terminal and bypass
+				// restoration/policy on the released text.
+				released := append(append([]byte(nil), result.ModifiedChunk...), result.InjectAfter...)
+				wire, blocked, releaseErr := c.checkReleasedFrames(ctx, released, meta, i+1)
+				finalResult.ModifiedChunk, finalResult.InjectAfter = wire, nil
+				if blocked || result.ShouldBlock {
+					finalResult.ShouldBlock = true
+					finalResult.ModifiedChunk = nil
+				}
+				return finalResult, releaseErr
 			} else {
 				finalResult.ModifiedChunk = nil
 				finalResult.InjectAfter = nil
@@ -223,7 +239,7 @@ func (c *InterceptorChain) FlushStreamPending(ctx context.Context, meta *StreamM
 		return nil, nil
 	}
 	var out []byte
-	for _, interceptor := range c.interceptors {
+	for index, interceptor := range c.interceptors {
 		flusher, ok := interceptor.(StreamPendingFlusher)
 		if !ok {
 			continue
@@ -232,9 +248,52 @@ func (c *InterceptorChain) FlushStreamPending(ctx context.Context, meta *StreamM
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, chunk...)
+		wire, blocked, err := c.checkReleasedFrames(ctx, chunk, meta, index+1)
+		if err != nil {
+			return nil, err
+		}
+		if blocked {
+			return nil, fmt.Errorf("stream pending release blocked")
+		}
+		out = append(out, wire...)
 	}
 	return out, nil
+}
+
+// Reuse the ordinary chain for the suffix; downstream holders can suppress
+// individual events and release them later, including on EOF flushing.
+func (c *InterceptorChain) checkReleasedFrames(ctx context.Context, wire []byte, meta *StreamMeta, start int) ([]byte, bool, error) {
+	if start >= len(c.interceptors) {
+		return wire, false, nil
+	}
+	suffix := NewInterceptorChain(c.interceptors[start:]...)
+	var out []byte
+	for len(wire) > 0 {
+		end, ok := sseparser.FrameEndAtEOF(wire)
+		if !ok {
+			end = len(wire)
+		}
+		frame := wire[:end]
+		wire = wire[end:]
+		result, err := suffix.InterceptStreamChunk(ctx, frame, meta)
+		if err != nil {
+			return nil, true, err
+		}
+		if result != nil && result.ShouldBlock {
+			return nil, true, nil
+		}
+		if result == nil {
+			out = append(out, frame...)
+			continue
+		}
+		if len(result.ModifiedChunk) > 0 {
+			out = append(out, result.ModifiedChunk...)
+		} else if !result.SuppressChunk {
+			out = append(out, frame...)
+		}
+		out = append(out, result.InjectAfter...)
+	}
+	return out, false, nil
 }
 
 // StreamPendingFlusher is the optional interface implemented by interceptors

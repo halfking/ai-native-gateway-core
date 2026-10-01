@@ -1,20 +1,15 @@
 // Package sanitize - smart_sani_guard.go
 //
-// SmartSaniGuard 主链路集成组件：
-//   - SanitizeInputMiddleware: 在真实 chatHandler 之前对请求体做可逆脱敏
-//   - SanitizeRestoreInterceptor: 接入 ResponseInterceptor 链，在输出安全检查
-//     之后把占位符还原为真实敏感值，再返回给客户端
+// SmartSaniGuard protects the request and response boundaries:
+//  1. Input: detect visible text and replace values with stable session tokens.
+//  2. Persist the mapping, offsets and generation under a tenant/session lease.
+//  3. Compression sees sanitized history; generated summaries are checked.
+//  4. Output: mask/block newly generated sensitive values, restore known tokens,
+//     then apply the existing owner-aware policy to actual client-visible text.
 //
-// 设计要点（对齐用户需求"先安全检查，再还原"）：
-//  1. 输入侧：检测敏感信息 → 替换为 {SENSITIVE:type:index} 占位符
-//     → 占位符→原始值映射持久化到 Redis（会话级，TTL=30分钟）
-//  2. 上游 LLM 只看到脱敏后的占位符
-//  3. 响应侧：OutputComplianceInterceptor 先对含占位符的文本做安全检查
-//     （敏感信息不暴露给安全检查服务）
-//  4. SanitizeRestoreInterceptor 再还原占位符为真实值返回给用户
-//
-// 跨轮次占位符冲突：占位符索引在会话内连续递增（每类从1开始），
-// 通过 Redis 中保存的每类计数偏移量，保证不同轮次不撞号。
+// Same type/value reuses its oldest token; new values advance the type offset.
+// Redis-free requests keep a private mapping in context. Persistence/logging of
+// original request bodies belongs to the separate raw-body storage boundary.
 package sanitize
 
 import (
@@ -49,19 +44,23 @@ const RestoreInterceptorName = "sanitize_restore"
 const maxSanitizeBodySize = 128 << 20
 const defaultOffsetLeaseTTL = 15 * time.Second
 
+func sanitizeGenerationKey(tenantID, sessionID string) string {
+	return sanitizeMapKey(tenantID, sessionID) + ":generation"
+}
+
 var errSanitizeBodyTooLarge = errors.New("sanitize request body too large")
 
 // SanitizeInputMiddleware 在真实 chatHandler 之前对请求体做可逆脱敏。
 //
 // 作用：把敏感信息（手机号/身份证/邮箱等）替换为占位符，确保：
-//   - 上游 LLM 与日志/审计只看到脱敏文本
+//   - 上游 LLM 只看到脱敏文本；原始正文存储有独立的权限与保留策略
 //   - 占位符→原始值映射存入 Redis（会话级），供响应侧还原
 //
 // 处理流程：
 //  1. 解析 OpenAI chat.completions 请求体
-//  2. 遍历 messages，对每条 user/system 消息做脱敏
+//  2. 按协议扫描历史文本、工具参数和工具结果，保留结构标识和媒体
 //  3. 把脱敏后的请求体重写回 r.Body
-//  4. 把 SanitizeMap 存入 Redis（key: session:sanitize:{sessionID}）
+//  4. 原子提交租户隔离的 map/offset/generation，再交给下游处理
 //
 // 占位符索引使用会话级偏移量（Redis 里记录每类已用最大值），
 // 避免跨轮次撞号。
@@ -109,12 +108,8 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 		ttl:            ttl,
 		offsetLeaseTTL: defaultOffsetLeaseTTL,
 		logger:         slog.Default().With("component", "sanitize_middleware"),
-		// 与 chatHandler（domains/streaming/session_routing.go 的
-		// SessionHeadersPriority）保持一致的 5 个候选 header 顺序。
-		// 不读 body 里的 session_id：中间件先于 chatHandler 解析 session，
-		// body 解析属于 chatHandler 的核心职责，且 body 里 session_id 可能
-		// 出现在 messages content 里（被中间件当作 PII 替换掉），会让中间件
-		// 误读自身内容 — 因此本中间件只接受 header 形式的 sessionID。
+		// Header priority mirrors ChatHandler; a top-level body session_id
+		// overrides it after envelope parsing. Message text is never an ID source.
 		getSessionID: func(r *http.Request) string {
 			for _, header := range sessionIDHeaderPriority {
 				if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
@@ -234,7 +229,7 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 		if m.redis != nil && sessionID != "" {
 			release = m.sessionLocks.lock(sanitizeOffsetKey(tenantID, sessionID))
 		}
-		sanitizedBody, sm, messageRefs, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID, r.URL.Path)
+		sanitizedBody, sm, currentMap, messageRefs, generation, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID, r.URL.Path)
 		release()
 		if err != nil {
 			m.logger.Warn("sanitize_middleware: sanitize failed",
@@ -256,34 +251,68 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			// 全部走 r.ContentLength 字段，不再回写 header）。
 			// 与 armor middleware.withReplayedBody 保持一致。
 			r.ContentLength = int64(len(sanitizedBody))
+		}
+		if generation != "" {
 			*r = *r.WithContext(WithSanitizeMap(r.Context(), sm))
 			// SC-1 (docs/修订0811/19): 同时把脱敏桥接信息放入 ctx，供
 			// session compressor 写入 SessionState v8 的 SanitizeMapRef /
 			// SanitizeStats，使三层缓存的 L3 脱敏字段不再悬空。
-			info := buildSanitizeInfoForSession(tenantID, sessionID, sm)
+			info := buildSanitizeInfoForSession(tenantID, sessionID, currentMap)
+			if len(currentMap) == 0 {
+				info.Stats = compression.SanitizeStats{}
+			}
+			info.RawSnapshot = compression.SnapshotForBody(body)
+			effectiveBody := sanitizedBody
+			if effectiveBody == nil {
+				effectiveBody = body
+			}
+			info.SanitizedSnapshot = compression.SnapshotForBody(effectiveBody)
 			info.MessageRefs = messageRefs
+			info.MapGeneration = generation
+			if m.redis == nil || sessionID == "" {
+				info.MapRef = ""
+			} else {
+				info.MapRef = sanitizeMapKey(tenantID, sessionID)
+			}
 			*r = *r.WithContext(compression.WithSanitizeInfo(r.Context(), info))
 		}
 
+		*r = *r.WithContext(compression.WithGeneratedTextGuard(r.Context(), func(ctx context.Context, text string) (string, error) {
+			checker := &outputSensitiveChecker{sanitizer: m.sanitizer, action: OutputMask}
+			label := ""
+			document := bytes.TrimSpace([]byte(text))
+			if len(document) > 0 && (document[0] == '{' || document[0] == '[') && json.Valid(document) {
+				label = "__tool_json"
+			}
+			result, err := checker.CheckField(ctx, "", label, text)
+			if err != nil {
+				return "", err
+			}
+			if result == nil || result.Blocked {
+				return "", errors.New("generated structured credential rejected")
+			}
+			return result.RedactedOutput, nil
+		}))
 		next.ServeHTTP(w, r)
 	})
 }
 
 // sanitizeRequestBody 按客户端协议脱敏可见文本，并保留非文本多模态字段。
-// 返回 (脱敏后的请求体, SanitizeMap)。无敏感信息时返回 (nil, 空map)。
-func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string, tenantID, path string) ([]byte, SanitizeMap, []compression.SanitizedMessageRef, error) {
+// Dictionary captures all live mappings for restoration; currentMap only counts
+// values sanitized in this request. An unchanged turn retains its generation.
+func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string, tenantID, path string) ([]byte, SanitizeMap, SanitizeMap, []compression.SanitizedMessageRef, string, error) {
 	// 会话级偏移量（记录每类已用最大编号，保证跨轮次不撞号）
 	// The Redis lock spans load, allocation, and an atomic, lease-checked
 	// map+offset commit. A lost lease or Redis failure must stop dispatch:
 	// otherwise a second process can reuse a placeholder for another value.
 	lease, err := m.acquireOffsetsLock(ctx, sessionID, tenantID)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("acquire sanitize offsets: %w", err)
+		return nil, nil, nil, nil, "", fmt.Errorf("acquire sanitize offsets: %w", err)
 	}
 	defer m.releaseOffsetsLock(ctx, lease)
 	offset, err := m.loadOffsets(ctx, sessionID, tenantID)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load sanitize offsets: %w", err)
+		return nil, nil, nil, nil, "", fmt.Errorf("load sanitize offsets: %w", err)
 	}
 	// loadOffsets legitimately returns nil on a cache miss or when Redis is
 	// disabled. Keep a local map so allocating placeholder indexes below is
@@ -291,25 +320,74 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 	if offset == nil {
 		offset = make(map[SensitiveType]int)
 	}
+	existing := make(sanitizeReuseIndex)
+	dictionary := make(SanitizeMap)
+	generation := ""
+	if m.redis != nil && sessionID != "" {
+		values, loadErr := redissafe.SafeHGetAll(ctx, m.redis, sanitizeMapKey(tenantID, sessionID))
+		if loadErr != nil && !errors.Is(loadErr, redissafe.ErrKeyNotFound) {
+			return nil, nil, nil, nil, "", fmt.Errorf("load sanitize reuse map: %w", loadErr)
+		}
+		if len(values) > 0 {
+			generation, loadErr = m.redis.Get(ctx, sanitizeGenerationKey(tenantID, sessionID)).Result()
+			if loadErr != nil && !errors.Is(loadErr, redis.Nil) {
+				return nil, nil, nil, nil, "", fmt.Errorf("load sanitize generation: %w", loadErr)
+			}
+		}
+		for token, value := range values {
+			if p, ok := ParsePlaceholder(token); ok && p.Index > 0 {
+				dictionary[token] = value
+				key := sensitiveValue{p.Type, value}
+				previous, exists := existing[key]
+				old, _ := ParsePlaceholder(previous)
+				if !exists || p.Index < old.Index {
+					existing[key] = token
+				}
+				if p.Index > offset[p.Type] {
+					offset[p.Type] = p.Index
+				}
+			}
+		}
+	}
 	worker := requestInputSanitizer{
 		ctx: ctx, sanitizer: m.sanitizer, offset: offset,
-		mapping: make(SanitizeMap), usedCount: make(map[string]int),
+		mapping: make(SanitizeMap), usedCount: make(map[string]int), existing: existing,
+	}
+	if err := reserveInputPlaceholders(body, offset); err != nil {
+		return nil, nil, nil, nil, "", err
 	}
 	newBody, messageRefs, err := worker.sanitizeEnvelope(body, path)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, "", err
 	}
-	if len(worker.mapping) == 0 {
-		return nil, nil, nil, nil
+	if len(worker.mapping) == 0 && len(dictionary) == 0 {
+		return nil, nil, nil, messageRefs, "", nil
 	}
 
-	// 持久化映射表到 Redis（同时把每类本轮最大编号刷回 offset key）
-	if m.redis != nil && sessionID != "" {
-		if err := m.saveMapAndOffsets(ctx, lease, sessionID, worker.mapping, worker.usedCount, tenantID); err != nil {
-			return nil, nil, nil, fmt.Errorf("persist sanitize mapping: %w", err)
+	if generation == "" {
+		token := make([]byte, 16)
+		if _, err := rand.Read(token); err != nil {
+			return nil, nil, nil, nil, "", err
+		}
+		generation = hex.EncodeToString(token)
+	}
+	// Persist high-water reservations even on an unchanged turn. Capture the
+	// entire dictionary so an upstream request outlives Redis TTL/recreation.
+	for typ, index := range offset {
+		if index > worker.usedCount[string(typ)] {
+			worker.usedCount[string(typ)] = index
 		}
 	}
-	return newBody, worker.mapping, messageRefs, nil
+	// 持久化映射表到 Redis（同时把每类本轮最大编号刷回 offset key）
+	if m.redis != nil && sessionID != "" {
+		if err := m.saveMapAndOffsets(ctx, lease, sessionID, worker.mapping, worker.usedCount, generation, tenantID); err != nil {
+			return nil, nil, nil, nil, "", fmt.Errorf("persist sanitize mapping: %w", err)
+		}
+	}
+	for token, value := range worker.mapping {
+		dictionary[token] = value
+	}
+	return newBody, dictionary, worker.mapping, messageRefs, generation, nil
 }
 
 // releaseOffsetsLockScript deletes the lock only when the value still matches
@@ -484,28 +562,36 @@ if legacy and (not hash_or_absent(KEYS[4]) or not hash_or_absent(KEYS[5])) then
 end
 local map_count = tonumber(ARGV[3])
 local offset_count = tonumber(ARGV[4])
-local pos = 6
+local pos = 7
 for i = 1, map_count do
-  if redis.call('HEXISTS', KEYS[2], ARGV[pos]) == 1 then
-    return redis.error_reply('sanitize placeholder already exists')
+  local current = redis.call('HGET', KEYS[2], ARGV[pos])
+  if current and current ~= ARGV[pos + 1] then
+    return redis.error_reply('sanitize placeholder value conflict')
   end
-  if legacy and redis.call('HEXISTS', KEYS[4], ARGV[pos]) == 1 then
-    return redis.error_reply('legacy sanitize placeholder already exists')
+  local old = legacy and redis.call('HGET', KEYS[4], ARGV[pos])
+  if old and old ~= ARGV[pos + 1] then
+    return redis.error_reply('legacy sanitize placeholder value conflict')
   end
   pos = pos + 2
 end
-pos = 6
+pos = 7
 for i = 1, map_count do
   redis.call('HSET', KEYS[2], ARGV[pos], ARGV[pos + 1])
   if legacy then redis.call('HSET', KEYS[4], ARGV[pos], ARGV[pos + 1]) end
   pos = pos + 2
 end
 for i = 1, offset_count do
-  redis.call('HSET', KEYS[3], ARGV[pos], ARGV[pos + 1])
-  if legacy then redis.call('HSET', KEYS[5], ARGV[pos], ARGV[pos + 1]) end
+  local current = tonumber(redis.call('HGET', KEYS[3], ARGV[pos])) or 0
+  local next_value = math.max(current, tonumber(ARGV[pos + 1]))
+  redis.call('HSET', KEYS[3], ARGV[pos], next_value)
+  if legacy then
+    local old = tonumber(redis.call('HGET', KEYS[5], ARGV[pos])) or 0
+    redis.call('HSET', KEYS[5], ARGV[pos], math.max(old, next_value))
+  end
   pos = pos + 2
 end
 local ttl_ms = tonumber(ARGV[2])
+redis.call('SET', KEYS[6], ARGV[6], 'PX', ttl_ms)
 redis.call('PEXPIRE', KEYS[2], ttl_ms)
 if offset_count > 0 then redis.call('PEXPIRE', KEYS[3], ttl_ms) end
 if legacy then
@@ -516,7 +602,7 @@ return 1
 `)
 
 // saveMapAndOffsets writes placeholder values and each type's high-water mark.
-func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, lease sanitizeOffsetLease, sessionID string, sm SanitizeMap, usedCount map[string]int, tenantIDs ...string) error {
+func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, lease sanitizeOffsetLease, sessionID string, sm SanitizeMap, usedCount map[string]int, generation string, tenantIDs ...string) error {
 	tenantID := firstSanitizeTenant(tenantIDs)
 	if lease.key == "" || lease.token == "" {
 		return errors.New("sanitize offsets lease required")
@@ -531,19 +617,19 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, lease s
 		legacyFlag = "1"
 	}
 	args := make([]any, 0, 5+2*len(sm)+2*len(usedCount))
-	args = append(args, lease.token, ttlMS, len(sm), len(usedCount), legacyFlag)
+	args = append(args, lease.token, ttlMS, len(sm), len(usedCount), legacyFlag, generation)
 	for ph, val := range sm {
 		args = append(args, ph, val)
 	}
 	for kind, idx := range usedCount {
 		args = append(args, kind, idx)
 	}
-	keys := []string{lease.key, mapKey, sanitizeOffsetKey(tenantID, sessionID), SanitizeRedisKey(sessionID), SanitizeOffsetRedisKey(sessionID)}
+	keys := []string{lease.key, mapKey, sanitizeOffsetKey(tenantID, sessionID), SanitizeRedisKey(sessionID), SanitizeOffsetRedisKey(sessionID), sanitizeGenerationKey(tenantID, sessionID)}
 	if err := commitSanitizeMapScript.Run(ctx, m.redis, keys, args...).Err(); err != nil {
 		return err
 	}
 	// DB double-write is audit-only and remains best effort after Redis commit.
-	if m.censorSink != nil {
+	if m.censorSink != nil && len(sm) > 0 {
 		entries := make([]CensorEntry, 0, len(sm))
 		for ph, val := range sm {
 			e := CensorEntry{Placeholder: ph, Original: val}
@@ -557,12 +643,9 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, lease s
 	return nil
 }
 
-// SanitizeRestoreInterceptor 实现 response.ResponseInterceptor。
-// 在输出安全检查（OutputComplianceInterceptor）之后执行，
-// 从 Redis 读取会话级映射表，把占位符还原为真实敏感值。
-//
-// 顺序契约：本拦截器必须在 OutputComplianceInterceptor 之后注册，
-// 确保安全检查先看到占位符，还原后再把真实值返回给用户。
+// SanitizeRestoreInterceptor restores trusted input placeholders after the
+// mandatory sensitive-output gate and before owner-aware output compliance.
+// Reserved markers outside supported visible fields fail closed.
 //
 // 流式响应（2026-08-07 P2 修复）：
 //
@@ -626,7 +709,8 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 	if it == nil || it.sanitizer == nil || req == nil || len(req.ResponseBody) == 0 {
 		return nil, nil
 	}
-	if req.SessionID == "" {
+	localMap, _ := SanitizeMapFromContext(ctx)
+	if req.SessionID == "" && len(localMap) == 0 {
 		// Without a session we cannot load the mapping table, so nothing in
 		// this body can be restored. A reserved marker must still not reach
 		// the client (the stream wing blocks for the same reason); mask it
@@ -783,7 +867,8 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 	if it == nil || it.sanitizer == nil || len(chunk) == 0 {
 		return nil, nil
 	}
-	if meta == nil || meta.SessionID == "" {
+	localMap, _ := SanitizeMapFromContext(ctx)
+	if meta == nil || (meta.SessionID == "" && len(localMap) == 0) {
 		// A reserved gateway marker must never reach the client regardless of
 		// session bookkeeping; an ordinary frame without a session is opaque
 		// data and keeps its original framing (sse_restore.go probe rules).
@@ -849,8 +934,8 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 // maskUnrecognizedBody is the last-resort fail-closed path: the body is valid
 // JSON but matches none of the envelopes the structured restorers understand
 // (or no mapping table is available at all), so no lane-based restorer will
-// ever touch the bytes carrying a marker. Restore what we can from the raw
-// text, redact the rest, and hand the body back — a leaked internal token and
+// ever touch the bytes carrying a marker. Restore decoded string leaves,
+// redact the rest, re-encode valid JSON, and hand the body back — a leaked internal token and
 // a 502 on a routine upstream error envelope are both worse than a redacted
 // field.
 func (it *SanitizeRestoreInterceptor) maskUnrecognizedBody(ctx context.Context, req *response.InterceptRequest, sm SanitizeMap) (*response.InterceptResult, error) {
@@ -860,13 +945,18 @@ func (it *SanitizeRestoreInterceptor) maskUnrecognizedBody(ctx context.Context, 
 	if len(sm) == 0 {
 		sm = SanitizeMap{}
 	}
-	masked, err := it.sanitizer.RestoreOutputOrMask(ctx, string(req.ResponseBody), sm)
+	root := mustDecodeJSONMap(req.ResponseBody)
+	if root == nil {
+		return &response.InterceptResult{ShouldBlock: true}, nil
+	}
+	restored, changed, err := restoreNativeNestedValue(ctx, it.sanitizer, root, sm, 0)
 	if err != nil {
 		it.logger.WarnContext(ctx, "sanitize_restore: mask unrecognized body failed, blocking",
 			"session_id", req.SessionID, "error", err)
 		return &response.InterceptResult{ShouldBlock: true}, nil
 	}
-	if masked == string(req.ResponseBody) || hasReservedPlaceholder([]byte(masked)) {
+	masked, marshalErr := json.Marshal(restored)
+	if marshalErr != nil || !changed || hasReservedPlaceholder(masked) {
 		it.logger.WarnContext(ctx, "sanitize_restore: unrecognized body still carries marker after mask, blocking",
 			"session_id", req.SessionID)
 		return &response.InterceptResult{ShouldBlock: true}, nil
@@ -874,7 +964,7 @@ func (it *SanitizeRestoreInterceptor) maskUnrecognizedBody(ctx context.Context, 
 	it.logger.WarnContext(ctx, "sanitize_restore: unrecognized envelope, masked placeholders",
 		"session_id", req.SessionID, "placeholder_count", len(sm))
 	return &response.InterceptResult{
-		ModifiedBody: []byte(masked),
+		ModifiedBody: masked,
 		Action:       "sanitize_restore_masked",
 		Metadata: map[string]any{
 			"sanitize_restored": true,
@@ -1024,7 +1114,9 @@ func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, ch
 	// 2. JSON 反序列化为通用结构。失败 → 透传（不要因为单 chunk 格式问题
 	//    阻断整条流；典型场景：chunk 携带的是控制字段而非 content 增量）。
 	var raw map[string]any
-	if err := json.Unmarshal(jsonPayload, &raw); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(jsonPayload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
 		if len(state.tails) > 0 {
 			// We withheld a placeholder prefix from a previous event. An opaque
 			// data payload cannot be assigned to a protocol lane, so passing it
@@ -1088,6 +1180,11 @@ func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Conte
 			continue
 		}
 		choiceLane := streamLaneValue(c, "index", choiceIndex)
+		if didChange, blocked := it.restoreStreamStringField(ctx, c, "text", sm, state, "openai.choice."+choiceLane+".text"); blocked {
+			return changed, true
+		} else if didChange {
+			changed = true
+		}
 		delta, ok := c["delta"].(map[string]any)
 		if !ok {
 			continue
@@ -1101,6 +1198,18 @@ func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Conte
 			return changed, true
 		} else if didChange {
 			changed = true
+		}
+		if didChange, blocked := it.restoreStreamStringField(ctx, delta, "reasoning_content", sm, state, "openai.choice."+choiceLane+".reasoning_content"); blocked {
+			return changed, true
+		} else if didChange {
+			changed = true
+		}
+		if audio, ok := delta["audio"].(map[string]any); ok {
+			if didChange, blocked := it.restoreStreamStringField(ctx, audio, "transcript", sm, state, "openai.choice."+choiceLane+".audio.transcript"); blocked {
+				return changed, true
+			} else if didChange {
+				changed = true
+			}
 		}
 		if functionCall, ok := delta["function_call"].(map[string]any); ok {
 			if didChange, blocked := it.restoreStreamStringField(ctx, functionCall, "arguments", sm, state, "openai.choice."+choiceLane+".function_call.arguments"); blocked {
@@ -1181,16 +1290,37 @@ func (it *SanitizeRestoreInterceptor) restoreStreamResponsesDelta(ctx context.Co
 	t, _ := raw["type"].(string)
 	field := ""
 	switch t {
-	case "response.output_text.delta", "response.function_call_arguments.delta", "response.refusal.delta", "response.audio_transcript.delta":
+	case "response.output_text.delta", "response.function_call_arguments.delta", "response.refusal.delta", "response.audio_transcript.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta", "response.custom_tool_call_input.delta":
 		field = "delta"
+	case "response.output_text.done", "response.reasoning_text.done", "response.reasoning_summary_text.done":
+		field = "text"
+	case "response.function_call_arguments.done":
+		field = "arguments"
+	case "response.custom_tool_call_input.done":
+		field = "input"
+	case "response.refusal.done":
+		field = "refusal"
+		if _, ok := raw[field]; !ok {
+			field = "text"
+		}
+	case "response.audio_transcript.done":
+		field = "transcript"
+		if _, ok := raw[field]; !ok {
+			field = "text"
+		}
 	default:
 		return false, false
 	}
-	lane := "responses." + t + "." + streamLaneValue(raw, "output_index", 0) + "." + streamLaneValue(raw, "content_index", 0) + "." + streamLaneID(raw, "item_id")
+	lane := "responses." + t + "." + streamLaneValue(raw, "output_index", 0) + "." + streamLaneValue(raw, "content_index", 0) + "." + streamLaneValue(raw, "summary_index", 0) + "." + streamLaneID(raw, "item_id")
 	return it.restoreStreamStringField(ctx, raw, field, sm, state, lane)
 }
 
 func streamLaneValue(object map[string]any, key string, fallback int) string {
+	if number, ok := object[key].(json.Number); ok {
+		if value, err := number.Int64(); err == nil && value >= 0 && value <= 1<<31-1 {
+			return fmt.Sprint(value)
+		}
+	}
 	if value, ok := object[key].(float64); ok && value >= 0 && value <= 1<<31-1 && value == float64(int64(value)) {
 		return fmt.Sprint(int64(value))
 	}
@@ -1233,7 +1363,20 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 		}
 	}
 
-	restored, err := it.sanitizer.RestoreOutputOrMask(ctx, safe, sm)
+	restoreMap := sm
+	if strings.HasSuffix(lane, ".arguments") || strings.HasSuffix(lane, ".partial_json") || (strings.HasPrefix(lane, "anthropic.") && strings.HasSuffix(lane, ".input")) || strings.Contains(lane, "response.function_call_arguments.") {
+		restoreMap = make(SanitizeMap)
+		for _, token := range PlaceholderPattern.FindAllString(safe, -1) {
+			if original, ok := sm[token]; ok {
+				encoded, err := json.Marshal(original)
+				if err != nil {
+					return false, true
+				}
+				restoreMap[token] = string(encoded[1 : len(encoded)-1])
+			}
+		}
+	}
+	restored, err := it.sanitizer.RestoreOutputOrMask(ctx, safe, restoreMap)
 	if err != nil {
 		return false, false
 	}
@@ -1334,8 +1477,9 @@ func restoreStringField(ctx context.Context, s *Sanitizer, m map[string]any, fie
 
 // loadMap 从 Redis 读取会话级映射表。
 func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID string, tenantIDs ...string) (SanitizeMap, error) {
+	local, _ := SanitizeMapFromContext(ctx)
 	if it.redis == nil {
-		return nil, nil
+		return local, nil
 	}
 	tenant := firstSanitizeTenant(tenantIDs)
 	key := sanitizeMapKey(tenant, sessionID)
@@ -1348,6 +1492,9 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 		if errors.Is(err, redissafe.ErrKeyNotFound) {
 			vals = nil
 		} else {
+			if len(local) > 0 {
+				return local, nil
+			}
 			return nil, err
 		}
 	}
@@ -1363,10 +1510,21 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 		}
 	}
 	if len(vals) == 0 {
-		return nil, nil
+		return local, nil
+	}
+	if info, ok := compression.SanitizeInfoFromContext(ctx); ok && info.MapGeneration != "" {
+		generation, err := it.redis.Get(ctx, sanitizeGenerationKey(tenant, sessionID)).Result()
+		if err != nil || generation != info.MapGeneration {
+			// The map may expire/recreate while the upstream is generating.
+			// Never restore this response with a newer request's dictionary.
+			return local, nil
+		}
 	}
 	sm := make(SanitizeMap, len(vals))
 	for ph, val := range vals {
+		sm[ph] = val
+	}
+	for ph, val := range local {
 		sm[ph] = val
 	}
 	// 每次还原都刷新 TTL（用户继续会话）。刷新主 map 与 offset hash
@@ -1376,6 +1534,7 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 		return nil, err
 	}
 	_ = it.redis.Expire(ctx, sanitizeOffsetKey(tenant, sessionID), it.ttl).Err()
+	_ = it.redis.Expire(ctx, sanitizeGenerationKey(tenant, sessionID), it.ttl).Err()
 	return sm, nil
 }
 
@@ -1439,6 +1598,9 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 					changed = true
 				}
 			}
+			if audio, ok := msg["audio"].(map[string]any); ok && restoreLegacyTextField(ctx, it.sanitizer, audio, "transcript", sm) {
+				changed = true
+			}
 			// 2) message.function_call.arguments（旧版单函数调用形态）
 			if fn, ok := msg["function_call"].(map[string]any); ok {
 				if restoreLegacyFunctionArgs(ctx, it.sanitizer, fn, sm) {
@@ -1491,24 +1653,25 @@ func restoreLegacyFunctionArgs(ctx context.Context, s *Sanitizer, fn map[string]
 	if !ok || !PlaceholderPattern.MatchString(argsStr) {
 		return false
 	}
-	var argsObj map[string]any
-	if err := json.Unmarshal([]byte(argsStr), &argsObj); err != nil {
-		// arguments 不是合法 JSON 对象：当作普通字符串做占位符还原
-		restored, rerr := s.RestoreOutputOrMask(ctx, argsStr, sm)
-		if rerr == nil && restored != argsStr {
-			fn["arguments"] = restored
-			return true
-		}
+	decoder := json.NewDecoder(strings.NewReader(argsStr))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
 		return false
 	}
-	if restoreJSONRecursive(ctx, s, argsObj, sm) {
-		raw, mErr := json.Marshal(argsObj)
-		if mErr == nil {
-			fn["arguments"] = string(raw)
-			return true
-		}
+	if !json.Valid([]byte(argsStr)) {
+		return false
 	}
-	return false
+	restored, changed, err := restoreNativeNestedValue(ctx, s, value, sm, 0)
+	if err != nil || !changed {
+		return false
+	}
+	body, err := json.Marshal(restored)
+	if err != nil {
+		return false
+	}
+	fn["arguments"] = string(body)
+	return true
 }
 
 // restoreToolCallsArgs 在 obj[key]（数组）中遍历每个 tool_call，

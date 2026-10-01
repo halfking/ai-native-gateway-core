@@ -117,20 +117,25 @@ func (m *ResultMemo) enabled() bool {
 // part of the key: a change in any of them changes the compression outcome,
 // so sharing a memo entry across them would serve a wrong result.
 type MemoKeyParts struct {
-	TenantID      string
-	SessionID     string
-	Mode          string
-	Protocol      string
-	ContextWindow int
+	TenantID           string
+	SessionID          string
+	Mode               string
+	Protocol           string
+	ContextWindow      int
+	SanitizeGeneration string
 }
 
 // memoKey builds the Redis key. The body is hashed (sha256) so the key length
 // stays bounded regardless of conversation size.
 //
-// Format: compression:memo:v1:{tenant}:{session}:{mode}:{protocol}:{ctxWindow}:{bodyHash}
+// v2 intentionally retires summaries cached before the mandatory output guard.
+// Format: compression:memo:v2:{tenant}:{session}:{mode}:{protocol}:{ctxWindow}:{bodyHash}
 func memoKey(p MemoKeyParts, bodyIntoCompression []byte) string {
 	sum := sha256.Sum256(bodyIntoCompression)
-	return fmt.Sprintf("compression:memo:v1:%s:%s:%s:%s:%d:%s",
+	if p.SanitizeGeneration != "" {
+		sum = sha256.Sum256(append(append([]byte(p.SanitizeGeneration), 0), bodyIntoCompression...))
+	}
+	return fmt.Sprintf("compression:memo:v2:%s:%s:%s:%s:%d:%s",
 		p.TenantID, p.SessionID, p.Mode, p.Protocol, p.ContextWindow,
 		hex.EncodeToString(sum[:]))
 }
@@ -151,7 +156,7 @@ func (m *ResultMemo) Get(ctx context.Context, p MemoKeyParts, bodyIntoCompressio
 	if err := json.Unmarshal(raw, &val); err != nil {
 		return nil, err
 	}
-	if len(val.CompressedBody) == 0 || val.Strategy == "" {
+	if len(val.CompressedBody) == 0 || val.Strategy == "" || !cachedBodyPassesGuard(ctx, val.CompressedBody) {
 		// Malformed / partially written entry — treat as a miss.
 		return nil, nil
 	}
