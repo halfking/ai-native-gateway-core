@@ -16,11 +16,14 @@
 package schema
 
 import (
+	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -74,18 +77,59 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 	}
 	t.Logf("仓内 DB URL 变量名 %d 个：%v", len(names), names)
 
+	// TEST_TENANT_DATABASE_URL is the one name that must NOT be $GATE_URL.
+	//
+	// Every other name wants the ordinary gate DSN. This one wants a DSN whose
+	// role cannot bypass RLS, because its only consumers are tenant-isolation
+	// probes. Pointing it at $GATE_URL handed those probes a superuser
+	// (rolsuper=t, rolbypassrls=t), and
+	// domains/requestjourney/observation_outbox_integration_test.go duly failed
+	// with "alpha scope saw 1 beta rows, want 0 (RLS leak)" — a fabricated
+	// security finding, since the policies in 552 are correct.
+	//
+	// So the assertion is inverted for this single name, and tightened at the
+	// same time: it must be wired to a genuinely separate variable, and the
+	// harness must verify that variable's role is non-bypass before exporting
+	// it. See the [tenant] block in run-integration-gate.sh.
+	const tenantVar = "TEST_TENANT_DATABASE_URL"
 	for _, name := range names {
+		if name == tenantVar {
+			continue
+		}
 		if !regexp.MustCompile(regexp.QuoteMeta(name) + `="\$GATE_URL"`).MatchString(act) {
 			t.Errorf("harness 未注入 %s=$GATE_URL；只注入一部分名字会让读该变量的 "+
 				"integration 文件全部 skip 而门禁仍显示绿", name)
 		}
 	}
+
+	if !regexp.MustCompile(regexp.QuoteMeta(tenantVar) + `="\$TENANT_DSN"`).MatchString(act) {
+		t.Errorf("harness 未把 %s 接到 $TENANT_DSN（非 bypass 角色）；"+
+			"把它接回 $GATE_URL 会让租户隔离断言测的是超级用户，"+
+			"从而报出一个并不存在的「RLS 泄漏」", tenantVar)
+	}
+	// The role must actually be verified, not merely named. Without the
+	// rolsuper/rolbypassrls probe, a misconfigured cluster would silently
+	// resurrect exactly the false red this wiring exists to remove.
+	for _, want := range []string{"rolbypassrls", "rolsuper"} {
+		if !strings.Contains(act, want) {
+			t.Errorf("harness 没有校验租户角色的 %s 属性；"+
+				"只建角色而不验证它能否绕过 RLS，等于把假红原样放回去", want)
+		}
+	}
+
 	// And the inverse: the harness must not invent a name nothing reads, since
 	// that is how the list rots in the other direction.
 	for _, m := range regexp.MustCompile(`\n\t([A-Z][A-Z0-9_]*)="\$GATE_URL"`).FindAllStringSubmatch(act, -1) {
 		if !contains(names, m[1]) {
 			t.Errorf("harness 注入了 %s=$GATE_URL，但仓内没有任何文件读它；"+
 				"请从注入列表删掉，或确认它确实是新增的读取点", m[1])
+		}
+	}
+	// Same inverse check for the tenant variable, against $TENANT_DSN.
+	for _, m := range regexp.MustCompile(`\n\t([A-Z][A-Z0-9_]*)="\$TENANT_DSN"`).FindAllStringSubmatch(act, -1) {
+		if !contains(names, m[1]) {
+			t.Errorf("harness 注入了 %s=$TENANT_DSN，但仓内没有任何文件读它；"+
+				"请删掉，或确认它确实是新增的读取点", m[1])
 		}
 	}
 }
@@ -459,6 +503,53 @@ func TestGateRatchetsUnlistedStartupGaps(t *testing.T) {
 // that no longer exists or is no longer registered (so the entry is fiction),
 // and the file being emptied or deleted (so every gap becomes "unlisted" and
 // the harness dies with a misleading reason).
+// knownStartupGapCount reads the count the manifest header claims, so the
+// guard compares the list against a declared measurement instead of an integer
+// baked into this test. Baking the integer in is what made the old `>= 19`
+// check rot: when the 19 real gaps were fixed, the check would have kept
+// demanding 19 entries that no longer existed.
+//
+// The header line this reads is deliberately machine-shaped:
+//
+//	#   STATUS AS OF <date> ...: **EMPTY — 0 known gaps.**
+//
+// The parser is strict on purpose — a header that stops matching must fail
+// loudly here rather than silently defaulting to 0 and making the whole
+// comparison vacuous.
+func knownStartupGapCount(t *testing.T) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("startup_known_gaps.tsv"))
+	if err != nil {
+		t.Fatalf("读不到已知缺口清单：%v", err)
+	}
+	re := regexp.MustCompile(`(?m)^#\s*STATUS AS OF .*?:\s*\*\*EMPTY — (\d+) known gaps\.\*\*`)
+	m := re.FindStringSubmatch(string(data))
+	if m == nil {
+		t.Fatalf("startup_known_gaps.tsv 头部找不到形如\n"+
+			"  \"#   STATUS AS OF <date> ...: **EMPTY — N known gaps.**\"\n"+
+			"  的声明行（已匹配 %d 条清单条目时尤须检查）。\n"+
+			"  该行是清单内容与实测值的唯一对账锚；解析失败会让本守卫的计数比较变成空转。",
+			countManifestEntries(string(data)))
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("清单头部声明的条数 %q 不是整数：%v", m[1], err)
+	}
+	return n
+}
+
+func countManifestEntries(s string) int {
+	n := 0
+	for _, raw := range strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 func TestKnownStartupGapsManifestIsAnnotated(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("startup_known_gaps.tsv"))
 	if err != nil {
@@ -490,17 +581,30 @@ func TestKnownStartupGapsManifestIsAnnotated(t *testing.T) {
 		entries = append(entries, entry{f, reason})
 	}
 
-	// The non-empty self-check. A guard over an empty file passes trivially, and
-	// an empty manifest makes every startup failure "unlisted" — the harness
-	// would then die for a reason that has nothing to do with the real cause.
-	// Measured round 44 on the installer's own path: 154 of 173 applied, 19 did not.
-	if len(entries) == 0 {
-		t.Fatal("已知缺口清单为空；实测有 19 条启动迁移在全新安装路径上不落地。" +
-			"空清单会让任何未应用迁移都被当成「新回归」而致命退出，诊断方向会被带偏")
-	}
-	if len(entries) < 19 {
-		t.Errorf("已知缺口只有 %d 条，实测为 19 条；清单被削减过——"+
-			"若确有迁移被修复，请连带更新本注释与清单，而不是让数量无声漂移", len(entries))
+	// The non-empty self-check, and why it was relaxed on 2026-10-01.
+	//
+	// This used to be `len(entries) == 0 => fatal` plus a `>= 19` floor, both
+	// calibrated on Round 44's measurement of applied=154 / failed=19. Those 19
+	// gaps are now fixed: the pre-478 migrations were added to StartupFiles,
+	// and the installer path now measures applied=198 / failed=0. Pinning the
+	// count at 19 would therefore have frozen a number that is no longer true,
+	// and the empty-manifest fatal would have fired on the HEALTHY state.
+	//
+	// What must stay true is the direction of the ratchet, not the number: an
+	// UNREGISTERED failure must still be fatal, and that is enforced by the
+	// harness, not by this file. So the count is now asserted against the
+	// measurement recorded in the manifest header rather than a hardcoded
+	// integer, and a non-empty manifest is still required to be well-formed.
+	//
+	// A manifest that regains entries must not drift silently: every entry is
+	// checked below to name a file that exists AND is registered, and the
+	// harness reports any entry that did not reproduce as stale. Both are what
+	// stop this list from rotting into a blanket exemption.
+	if len(entries) != knownStartupGapCount(t) {
+		t.Errorf("清单条目数 = %d，但文件头声明的实测值 = %d；两者必须一致——"+
+			"请重跑 run-integration-gate.sh 读取 startup: applied=N failed=M 那行，"+
+			"然后同步更新清单内容与本注释，不要让数量无声漂移",
+			len(entries), knownStartupGapCount(t))
 	}
 
 	// Every entry must name a file that is both present and registered. An entry
@@ -632,4 +736,90 @@ func TestGateDoesNotRequireHostPsql(t *testing.T) {
 			"  set -u 下 bash 会把该字符并入变量名并报「未绑定的变量」。"+
 			"请一律写成 ${VAR}。", m)
 	}
+}
+
+// TestIntegrationTaggedTreeCompiles is the guard for a failure mode this
+// repository had no defence against for 59 days.
+//
+// tests/integration/protocol_e2e_test.go called transformation.NewIRTransport
+// three times. That constructor was deliberately deleted in d206ca771
+// ("refactor(transformation): 下线 IR/Legacy 传输层死代码工厂", 审计R3#1), whose
+// cleanup list enumerated nine domains/transformation test files plus
+// tests/integration/ir_default_switch_test.go — and missed this one file. See
+// docs/adr/2026-09-09-ir-transport-layer-retirement.md.
+//
+// Why it survived so long, and why no other guard in this file caught it:
+//
+//   - Every integration test file is behind `//go:build integration`, so a
+//     plain `go build ./...` and a plain `go vet ./...` never compile them.
+//     They are invisible to the default build and to the default test run.
+//   - The one CI job that does compile them
+//     (.github/workflows/integration-testcontainers-ci.yml) has been
+//     permanently red, and a permanently-red gate is observationally
+//     indistinguishable from no gate at all.
+//
+// So the integration-tagged half of the tree could rot for two months and
+// every other signal in the repo stayed green. This test closes that hole from
+// the side that IS always run: it type-checks the tagged tree, including test
+// files, and it carries no build tag itself, so `go test ./...` executes it.
+//
+// `go vet -tags=integration ./...` is used rather than `go test` because vet
+// type-checks _test.go files without executing TestMain, linking a binary per
+// package, or touching a database.
+func TestIntegrationTaggedTreeCompiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles the whole tagged tree; skipped in -short mode")
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skipf("go toolchain not on PATH: %v", err)
+	}
+
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	// Scope floor. A `go vet` that fails to run (bad root, no packages, a
+	// broken toolchain) exits non-zero with an empty error stream, and a guard
+	// that only asserts on the stream would then pass for the wrong reason.
+	// Count the packages first so a silently-empty run cannot go green.
+	listCmd := exec.Command(goBin, "list", "./...")
+	listCmd.Dir = root
+	listOut, listErr := listCmd.Output()
+	if listErr != nil || len(bytes.TrimSpace(listOut)) == 0 {
+		t.Skipf("cannot enumerate packages from %s (err=%v); nothing to verify", root, listErr)
+	}
+	pkgCount := strings.Count(strings.TrimSpace(string(listOut)), "\n") + 1
+	if pkgCount < 50 {
+		t.Fatalf("`go list ./...` found only %d packages; the repo root looks wrong (%s), "+
+			"so this guard would certify almost nothing", pkgCount, root)
+	}
+	t.Logf("type-checking %d packages with -tags=integration", pkgCount)
+
+	cmd := exec.Command(goBin, "vet", "-tags=integration", "./...")
+	cmd.Dir = root
+	var stderr, stdout bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.Stdout = &stdout
+
+	runErr := cmd.Run()
+	combined := stderr.String() + stdout.String()
+	if runErr == nil {
+		return
+	}
+
+	// Surface the actual breakage. `undefined: X` is the shape this guard
+	// exists to catch — a tagged test file referencing something that was
+	// renamed or deleted — so pull those lines out first and put them on top.
+	var undefined []string
+	for _, line := range strings.Split(combined, "\n") {
+		if strings.Contains(line, "undefined:") || strings.Contains(line, "imported and not used") {
+			undefined = append(undefined, strings.TrimSpace(line))
+		}
+	}
+
+	t.Fatalf("integration-tagged tree does not compile (go vet -tags=integration ./...): %v\n\n"+
+		"%d reference error(s) in the tagged tree:\n  %s\n\nfull output:\n%s",
+		runErr, len(undefined), strings.Join(undefined, "\n  "), combined)
 }
