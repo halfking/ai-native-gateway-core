@@ -67,16 +67,12 @@ jobs:
         run: go build ./...
 
       # 守卫本体。它们是纯静态门：无 TEST_DATABASE_URL 也能跑。
-      # 显式列出 7 个包而不是 `make guards`，是为了让 CI 日志直接显示
-      # 哪个包红；两者跑的是同一组（guards-sync 已校验二者一致）。
+      #
+      # R88 改：直接调 `make guards`，让 Makefile 的 GUARD_PACKAGES 保持唯一
+      # 事实源。原先这里硬编码了 7 个包，而 Makefile 早已是 10 个——
+      # metricguard / partguard / routeguard 三者从未在这个专用 job 里执行。
+      # 更糟的是当时那句注释「guards-sync 已校验二者一致」是假的：
+      # guards-sync.sh 只校验「磁盘→Makefile 登记」，从不看任何 CI 文件。
+      # 可视性不受影响：`go test` 仍逐包打印 ok/FAIL，定位到包不成问题。
       - name: audit guards
-        run: |
-          go test \
-            ./internal/rowsguard \
-            ./internal/errdiscard \
-            ./internal/dbrows \
-            ./internal/jsoncol \
-            ./internal/paramguard \
-            ./internal/sqlguard \
-            ./internal/sqlreadguard \
-            -count=1 -timeout=180s
+        run: make guards
