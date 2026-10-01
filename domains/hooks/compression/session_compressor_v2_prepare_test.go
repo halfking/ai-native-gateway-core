@@ -2,6 +2,9 @@ package compression
 
 import (
 	"context"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,6 +54,78 @@ func TestPrepare_V2Path_EngagesDeltaAppend(t *testing.T) {
 	if res.MsgCount != 2 {
 		t.Fatalf("expected MsgCount=2 (delta-append engaged), got %d", res.MsgCount)
 	}
+}
+
+// TestPrepare_DeltaAppendNotCountedAsCompression (2026-10-01 第十八轮审计)
+// pins the metric gate two layers deep:
+//
+//   - semantic: shouldRecordCompression must refuse delta_append / memo-replay
+//     results even when outbound < clientBody. delta_append serves
+//     outbound = 压缩缓存 + 增量, so after a session has been compressed once
+//     EVERY subsequent request satisfies the size predicate — counting on size
+//     alone re-bills one historical compression into triggered/ratio/latency
+//     per request (four series systematically polluted, the exact inverse of
+//     what 77942c750 wired the metric for).
+//   - wiring: every fresh-compressor site in session_compressor.go sets
+//     res.compressionExecuted, and no cache-reuse site does. The stub harness
+//     cannot drive a compressed-prefix session end-to-end (the diff engine
+//     needs real prefix stabilization), so the call sites are pinned by shape.
+func TestPrepare_DeltaAppendNotCountedAsCompression(t *testing.T) {
+	ResetMetrics()
+
+	// delta_append replay: smaller outbound, compression did NOT run → refuse.
+	if shouldRecordCompression(&PrepareResult{
+		OutboundBody:        []byte("short"),
+		CompressionStrategy: "delta_append",
+	}, []byte("a much longer client body")) {
+		t.Fatal("delta_append (cache reuse) must not be counted as a compression event")
+	}
+	// memo-cache replay of a stored sliding_window strategy: still reuse.
+	if shouldRecordCompression(&PrepareResult{
+		OutboundBody:        []byte("short"),
+		CompressionStrategy: "sliding_window_tokens",
+	}, []byte("a much longer client body")) {
+		t.Fatal("memo-replayed strategy (compressionExecuted=false) must not be counted")
+	}
+	// fresh compression: flag set, outbound smaller → count.
+	if !shouldRecordCompression(&PrepareResult{
+		OutboundBody:        []byte("short"),
+		CompressionStrategy: "mechanical_trim",
+		compressionExecuted: true,
+	}, []byte("a much longer client body")) {
+		t.Fatal("fresh mechanical_trim that shrank the body must be counted")
+	}
+	// fresh compression that did NOT shrink: refuse (pre-existing semantics).
+	if shouldRecordCompression(&PrepareResult{
+		OutboundBody:        []byte("not smaller than the client body at all"),
+		CompressionStrategy: "mechanical_trim",
+		compressionExecuted: true,
+	}, []byte("short")) {
+		t.Fatal("non-shrinking outcome must stay uncounted")
+	}
+
+	// Wiring: the three fresh-compressor sites must set the flag. Mutating any
+	// of them off (or pasting a flag onto a delta/memo reuse site) reddens this.
+	src := readCompressorSource(t)
+	fresh := regexp.MustCompile(`CompressionStrategy = "(mechanical_trim|sliding_window_").*`).FindAllString(src, -1)
+	marked := strings.Count(src, "compressionExecuted = true")
+	if len(fresh) != marked {
+		t.Errorf("every fresh-compressor site must set compressionExecuted: "+
+			"%d fresh sites, %d marked sites — an unmarked compressor loses its metrics, "+
+			"a marked reuse site re-pollutes them", len(fresh), marked)
+	}
+	if n := strings.Count(src, "delta_append\""); n > 0 && strings.Contains(src, "delta_append\"\n\t\t\t\tres.compressionExecuted = true") {
+		t.Error("a delta_append site sets compressionExecuted — cache reuse must never count")
+	}
+}
+
+func readCompressorSource(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("session_compressor.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	return string(raw)
 }
 
 func TestPrepare_V2Path_RestoresCompressionMetadata(t *testing.T) {

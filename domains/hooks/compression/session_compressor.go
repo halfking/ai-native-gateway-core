@@ -177,6 +177,12 @@ type PrepareResult struct {
 	// skipV1Cache remains internal: V2 owns its write side, so a final handler
 	// commit must not back-fill the legacy cache for a V2-sourced request.
 	skipV1Cache bool
+
+	// compressionExecuted (2026-10-01 第十八轮审计) marks that THIS call ran a
+	// compressor (mechanical trim / LLM summary / sliding-window rewrite), as
+	// opposed to serving a cached or delta-appended outbound body. Only the
+	// former counts into compression_triggered_total — see the defer in Prepare.
+	compressionExecuted bool
 }
 
 // Lossiness classification values. Kept as string constants (not a typed
@@ -197,6 +203,22 @@ type SessionCompressor struct {
 // NewSessionCompressor builds a SessionCompressor. Call once at startup.
 func NewSessionCompressor(deps SessionCompressorDeps) *SessionCompressor {
 	return &SessionCompressor{deps: deps, breaker: newSummaryBreaker()}
+}
+
+// shouldRecordCompression (2026-10-01 第十八轮审计) is the metric gate for
+// Prepare's outcome defer. A size comparison alone is not enough: delta_append
+// serves outbound = 上次压缩产物 + 增量, so once a session has been compressed
+// EVERY subsequent request satisfies outbound < clientBody, and a size-only
+// gate re-bills the same historical compression into
+// compression_triggered_total / ratio / latency on each request (the memo
+// cache hit replays cached.Strategy the same way). Only calls where a real
+// compressor ran this round — mechanical_trim / LLM summary / sliding-window,
+// marked by res.compressionExecuted — may count.
+func shouldRecordCompression(res *PrepareResult, clientBody []byte) bool {
+	if res == nil || !res.compressionExecuted || len(res.OutboundBody) == 0 {
+		return false
+	}
+	return len(res.OutboundBody) < len(clientBody)
 }
 
 // Prepare is the main entry point. Call it after reading the client body
@@ -250,7 +272,7 @@ func (sc *SessionCompressor) Prepare(
 	// series cardinality to internal trigger naming. The trigger detail is
 	// already in res.CompressionReason and in the structured logs.
 	defer func() {
-		if res == nil || len(res.OutboundBody) == 0 || len(res.OutboundBody) >= len(clientBody) {
+		if !shouldRecordCompression(res, clientBody) {
 			return
 		}
 		RecordOutcome(sc.resolveCompressionMode(), ReasonAutoThreshold, CompressionStrategy(res.CompressionStrategy),
@@ -551,6 +573,7 @@ func (sc *SessionCompressor) Prepare(
 				outboundBody = trimmed
 				res.OutboundBody = outboundBody
 				res.CompressionStrategy = "mechanical_trim"
+				res.compressionExecuted = true
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
@@ -595,6 +618,7 @@ func (sc *SessionCompressor) Prepare(
 				}
 				res.OutboundBody = outboundBody
 				res.CompressionStrategy = "sliding_window_" + strings.TrimPrefix(winResult.Reason, "sliding_window_")
+				res.compressionExecuted = true
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
@@ -609,6 +633,7 @@ func (sc *SessionCompressor) Prepare(
 					outboundBody = trimmed
 					res.OutboundBody = outboundBody
 					res.CompressionStrategy = "mechanical_trim"
+					res.compressionExecuted = true
 					res.MsgCount = countMessages(outboundBody)
 					res.TokenEst = estimateBodyTokens(outboundBody)
 					res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))

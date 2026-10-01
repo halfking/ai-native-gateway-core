@@ -90,6 +90,8 @@ func validGatewaySessionID(value string) bool {
 
 func handoffConfirmationError(err error) (int, string) {
 	switch {
+	case errors.Is(err, handoff.ErrConfirmationInvalid):
+		return http.StatusNotFound, "handoff_confirmation_invalid"
 	case errors.Is(err, handoff.ErrConfirmationExpired):
 		return http.StatusGone, "handoff_confirmation_expired"
 	case errors.Is(err, handoff.ErrConfirmationBudgetExhausted):
@@ -101,6 +103,13 @@ func handoffConfirmationError(err error) (int, string) {
 	case errors.Is(err, handoff.ErrConfirmationReplay):
 		return http.StatusConflict, "handoff_confirmation_replayed"
 	default:
-		return http.StatusNotFound, "handoff_confirmation_invalid"
+		// 2026-10-01 第十八轮审计：default 不再渲染 404 invalid。21ea84833 修掉
+		// 了 $3/$7 类型冲突这个触发源，但任何未来的裸 DB 错误（连接断/死锁/
+		// 超时）依然会落到这里——把基础设施故障报成「提案不存在」，客户端
+		// 幂等重试就毫无意义地失败到 TTL 过期为止。未分类错误一律 503 +
+		// 独立 code，让调用方能区分「提案真的无效」与「现在不能确认」。
+		// 注：ErrGoalRestoreManualRequired 等暂未分类的 goal 哨兵也走本分支
+		//（503 语义偏宽但远好于 404 invalid，登记待 streaming Owner 细分）。
+		return http.StatusServiceUnavailable, "handoff_confirmation_unavailable"
 	}
 }
