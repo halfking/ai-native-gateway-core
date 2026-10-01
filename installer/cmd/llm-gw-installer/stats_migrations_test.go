@@ -302,6 +302,8 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// （2026-10-01 收口轮修复：上一版引用 …Migration803——807 由 803
 		// 改号而来时测试引用没跟上，installer 模块测试自那起编译红。）
 		"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql": requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807,
+		"808_request_logs_default_partition.sql":                          requestLogsDefaultPartitionMigration808,
+		"809_instance_release_status_nullable_release_id.sql":             instanceReleaseStatusNullableReleaseIDMigration809,
 	}
 
 	for name, embedded := range expected {
