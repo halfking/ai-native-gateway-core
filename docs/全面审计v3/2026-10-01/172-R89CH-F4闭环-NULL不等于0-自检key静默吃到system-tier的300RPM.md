@@ -1,5 +1,27 @@
 # 172 号 · R89-CH —— F4 闭环：`rate_limit_rpm` 的 **NULL ≠ 0** 陷阱，自检 key 静默吃到了 system tier 的 300 RPM
 
+
+> ## ✅ 173 号已收掉 F3（2026-10-01，R89-CI）—— 答案比「豁免坏了」更明确：**那个字段从来没有人写**
+>
+> 172 号 F3 写：「**本轮没有定位到 `KeyInfo.IsInternal` 的赋值点 ⇒ 不能断言「豁免机制坏了」**」。
+>
+> **173 号定位到了，两种检索形态独立确认**：
+> - 形态一（赋值形态）`is_internal|IsInternal:|\.IsInternal =` ⇒ **全仓 1 处命中，正是结构体字段声明本身**
+>   （`verifier.go:95`）；**形态二**（`IsInternal` 全出现点 46 处 / 23 文件）剔除测试、vendor 与
+>   三个**同名不同符号**（`telemetry.IsInternalAutoEntry` / `georesolve.IsInternal` / `domain/tenant.go`）
+>   后，**相关生产代码只剩 2 处：声明（verifier.go:95）+ 读取（rate_limit.go:66）**。
+>
+> **⇒ 零写入点 ⇒ Go 零值 ⇒ 生产恒 `false` ⇒ `rate_limit.go:66` 的豁免分支不可达。**
+> **⚠️ 影响面比自检 key 大得多**：**89 个 `is_system=true` 的 key 全部拿不到豁免**，
+> 全部落进 `tierDefaults['system'] = 300 RPM`，其中 **88 个连「无限制」都没配**。
+>
+> **⚠️ 同时修正 172 号的修法方案 2**：根因**不是「映射写错」也不是「漏了一个来源」，而是根本没有映射代码**
+> ⇒ 方案 2 应重写为「**补 `IsInternal` 的生产写入方**，**并同步确认 `verifier.go:104-107` 提到的
+> 快照往返路径**（`IsInternal` 带 `json:"is_internal"` 且无 `omitempty` ⇒ 会进快照）
+> ⇒ **只改读入而漏快照路径，会造出「重启前后行为不一致」的新缺陷」（§55）。」
+>
+> 详见 [173 号](173-R89CI-KeyInfo-IsInternal零写入点-内部key永不限流这条豁免是死代码.md)（playbook §66）。
+
 > **日期**：2026-10-01
 > **轮次**：R89-CH（第 72 轮，审计第 172 号）
 > **类型**：**收掉 171 号的未解项** + 定量可修的缺陷
