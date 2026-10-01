@@ -70,6 +70,28 @@ ALLOW_VACUOUS="${ALLOW_VACUOUS:-0}"
 # baseline + startup = 421, matching the real installer path.
 GATE_APPLY_STARTUP="${GATE_APPLY_STARTUP:-1}"
 
+# GATE_DB_SHAPE — which of the mutually-exclusive fixture families this run
+# serves. Round 44 §7 measured that the 68 integration-only files split into
+# families that cannot share one database, so a single harness shape was the
+# structural reason "integration 全绿" had no single answer.
+#
+#   installer  prereqs + 01-schema baseline + all 198 registered startup
+#              migrations. What the real installer produces. Measured 435
+#              relations on 2026-10-01. Serves tests that assume a migrated
+#              database and read production-shaped data.
+#   baseline   prereqs + 01-schema only, no startup chain. The intermediate
+#              shape the db.ensure*() family exercises.
+#   prereqs    prereqs only — a nearly empty database. Serves tests that build
+#              their own schema; on an installer-shaped database they collide
+#              with it (SQLSTATE 42P07 "relation ... already exists").
+#
+# The shape is READ FROM sql/schema/integration_fixture_shapes.tsv per package
+# (see resolve_shape below) so nobody has to remember it; GATE_DB_SHAPE forces
+# one for experiments and overrides the manifest.
+GATE_DB_SHAPE="${GATE_DB_SHAPE:-}"
+
+
+
 PKG="${1:-}"
 TEST_NAME="${2:-}"
 die() { echo "ERROR: $*" >&2; exit 2; }
@@ -96,6 +118,30 @@ else
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# Resolve the shape from the manifest when the caller did not force one.
+#
+# The manifest is sql/schema/integration_fixture_shapes.tsv: one row per
+# integration package, columns <package>\t<shape>\t<measured fail count>\t<reason>.
+# It is the measured record, NOT a claim that the shape makes the package green
+# — measured 2026-10-01, no package is green on either shape, because the
+# self-building and already-migrated fixtures are interleaved INSIDE packages.
+# Recording the fail count per shape is what stops the next reader from
+# assuming a shape label is a green light.
+#
+# A package with no row keeps the historical behaviour (installer), so adding
+# the manifest cannot change any existing run until someone fills a row in.
+SHAPE_MANIFEST="$REPO_ROOT/sql/schema/integration_fixture_shapes.tsv"
+if [[ -z "$GATE_DB_SHAPE" && -f "$SHAPE_MANIFEST" ]]; then
+  _rel="${PKG#./}"
+  GATE_DB_SHAPE=$(awk -F'\t' -v p="$_rel" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    $1 == p { print $2; exit }' "$SHAPE_MANIFEST")
+  if [[ -n "$GATE_DB_SHAPE" ]]; then
+    echo "  [shape] ${_rel} -> ${GATE_DB_SHAPE}（来自 integration_fixture_shapes.tsv）"
+  fi
+fi
+GATE_DB_SHAPE="${GATE_DB_SHAPE:-installer}"
 cd "$REPO_ROOT" || die "cannot enter repo root: $REPO_ROOT"
 
 # Refuse before touching the database if the target package has no
@@ -181,16 +227,27 @@ fi
 # alone, nine ./db tests failed at `relation "public.schema_migrations" does not
 # exist`, which reads like a product defect but is a bootstrap hole. Applying
 # 01-schema.sql gives the gate a realistic starting schema.
-BASELINE=sql/schema/01-schema.sql
-if [[ -f "$BASELINE" ]]; then
-  cat "$BASELINE" | docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" \
-    -q -v ON_ERROR_STOP=1 --single-transaction >/dev/null 2>/tmp/itgate-baseline.err
-  if [[ $? -ne 0 ]]; then
-    echo "  ✗ 01-schema.sql failed:"; head -4 /tmp/itgate-baseline.err | sed 's/^/      /'
-    die "baseline must apply cleanly; the db.ensure*() family needs schema_migrations"
-  fi
-  echo "  ✓ baseline applied"
-fi
+#
+# Round 44 closure made this conditional on the DB SHAPE, because the two
+# families of integration fixtures are mutually exclusive and one harness can
+# only build one kind of database. See GATE_DB_SHAPE above.
+case "$GATE_DB_SHAPE" in
+  installer|baseline)
+    BASELINE=sql/schema/01-schema.sql
+    if [[ -f "$BASELINE" ]]; then
+      cat "$BASELINE" | docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" \
+        -q -v ON_ERROR_STOP=1 --single-transaction >/dev/null 2>/tmp/itgate-baseline.err
+      if [[ $? -ne 0 ]]; then
+        echo "  ✗ 01-schema.sql failed:"; head -4 /tmp/itgate-baseline.err | sed 's/^/      /'
+        die "baseline must apply cleanly; the db.ensure*() family needs schema_migrations"
+      fi
+      echo "  ✓ baseline applied"
+    fi
+    ;;
+  prereqs)
+    echo "  ── shape=prereqs: 故意不应用基线（自建表族需要近乎空的库）"
+    ;;
+esac
 
 # Apply the registered startup migrations so the gate database matches what the
 # installer actually produces (421 relations, not the baseline's 328).
@@ -199,7 +256,7 @@ fi
 # per-file transaction (DROP INDEX CONCURRENTLY cannot). The installer honours
 # that marker in applySQL; this loop must honour it too, or it reports two
 # failures the installer would not have.
-if [[ "$GATE_APPLY_STARTUP" == "1" ]]; then
+if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
   echo "  ── applying registered startup migrations ──"
   SF_DIR="$REPO_ROOT/installer/cmd/llm-gw-installer/embeddata/startup"
   sf_ok=0; sf_fail=0; sf_missing=0
@@ -431,18 +488,39 @@ else
   TENANT_DSN=""
 fi
 
-GATE_MIN_RELATIONS="${GATE_MIN_RELATIONS:-400}"
+# The population floor is per-shape. Applying the installer floor to a
+# deliberately-nearly-empty prereqs database would make the self-building
+# family ungateable for a reason that has nothing to do with the code under
+# test — the exact "残缺环境被当合格环境 / 合格环境被当残缺" confusion in
+# both directions.
+#
+# Measured 2026-10-01 on the real harness:
+#   installer -> 435 relations   baseline -> 328 (round 43 measurement)
+#   prereqs   -> small; extensions only, and the tests under this shape
+#                build their own tables by design.
+case "$GATE_DB_SHAPE" in
+  installer) GATE_MIN_RELATIONS="${GATE_MIN_RELATIONS:-400}" ;;
+  baseline)  GATE_MIN_RELATIONS="${GATE_MIN_RELATIONS:-300}" ;;
+  prereqs)   GATE_MIN_RELATIONS="${GATE_MIN_RELATIONS:-0}" ;;
+  *) die "未知 GATE_DB_SHAPE='$GATE_DB_SHAPE'（可选 installer|baseline|prereqs）" ;;
+esac
 RELS=$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" -tAc \
   "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
    WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m')" 2>/dev/null || echo 0)
-echo "  [populated] relations=${RELS:-0} (floor=$GATE_MIN_RELATIONS)"
-if ! [[ "${RELS:-0}" =~ ^[0-9]+$ ]] || (( RELS <= 0 )); then
-  die "disposable database is EMPTY after prereqs — the run would be vacuous"
-fi
-if [[ "$GATE_APPLY_STARTUP" == "1" ]] && (( RELS < GATE_MIN_RELATIONS )); then
-  die "门禁库只有 $RELS 个 relations，低于地板 ${GATE_MIN_RELATIONS}。 " \
-"基线+启动迁移实测应为 421；低于地板说明起始库没建全，而基线层的 RELS>0 仍会通过 —— 那正是把残缺环境当合格环境的形状。 " \
+echo "  [populated] shape=$GATE_DB_SHAPE relations=${RELS:-0} (floor=$GATE_MIN_RELATIONS)"
+if [[ "$GATE_DB_SHAPE" != "prereqs" ]]; then
+  # Only the "must be populated" shapes are checked for emptiness. A prereqs
+  # database is SUPPOSED to be nearly empty — that is the point of the shape
+  # for the self-building family.
+  if ! [[ "${RELS:-0}" =~ ^[0-9]+$ ]] || (( RELS <= 0 )); then
+    die "disposable database is EMPTY after prereqs — the run would be vacuous"
+  fi
+  if (( RELS < GATE_MIN_RELATIONS )); then
+    die "门禁库只有 $RELS 个 relations，低于 $GATE_DB_SHAPE 形态的地板 ${GATE_MIN_RELATIONS}。 " \
+"该形态实测应为 435（installer）/ 328（baseline）；低于地板说明起始库没建全， " \
+"而基线层的 RELS>0 仍会通过 —— 那正是把残缺环境当合格环境的形状。 " \
 "若确实应下调地板，请改 GATE_MIN_RELATIONS 并在提交信息里写明实测依据。"
+  fi
 fi
 
 # A package with no integration-tagged test files reports PASS from its plain
@@ -500,6 +578,45 @@ if (( NFAIL > 0 )); then
   # gate that says FAIL without saying why.
   echo "  failing test output (context before each --- FAIL marker):"
   grep -B 14 "^\s*--- FAIL" "$RUN_LOG" | grep -vE "testcontainers-go -|Server Version|API Version|^--$" | tail -40
+fi
+
+# Name the shape mismatch instead of leaving 42P07 to be read as a product bug.
+#
+# "relation X already exists" on a database the harness fully populated means
+# the test builds its own schema and collided with ours. That is a fixture-shape
+# fact, not a defect in the code under test — but reported raw it reads exactly
+# like one, which is how R44 §7's family split stayed invisible for a month.
+#
+# Measured 2026-10-01, this turned out to be rarer and messier than "two clean
+# families": no package is green on either shape (see
+# sql/schema/integration_fixture_shapes.tsv). So this block DIAGNOSES and
+# POINTS, and deliberately does not re-run or claim the other shape would pass —
+# doing that would repeat the exact overclaim this project keeps having to undo.
+N_ALREADY=$(grep -c "already exists" "$RUN_LOG" 2>/dev/null || true)
+N_MISSING=$(grep -cE 'relation "[^"]+" does not exist' "$RUN_LOG" 2>/dev/null || true)
+if (( ${N_ALREADY:-0} > 0 )) && [[ "$GATE_DB_SHAPE" != "prereqs" ]]; then
+  cat >&2 <<DIAG
+
+── 形态不匹配诊断 ──
+  本形态 shape=${GATE_DB_SHAPE} 已被本包自己的 CREATE TABLE 撞了 ${N_ALREADY} 次
+  （SQLSTATE 42P07 relation ... already exists）。这说明该测试自建 schema，
+  而门禁库是满的。它不是产品缺陷。
+  想看该包在空库上的表现：
+      GATE_DB_SHAPE=prereqs bash scripts/audit/run-integration-gate.sh $PKG
+  ⚠ 实测（2026-10-01）没有任何包在两种形态下都全绿，本包内两种夹具是混着的；
+    换形态通常只是把失败挪个位置，不是修复。长期解法是给自建表族做
+    per-test schema 隔离，而不是换一个整库形态。
+DIAG
+fi
+if (( ${N_MISSING:-0} > 0 )) && [[ "$GATE_DB_SHAPE" == "prereqs" ]]; then
+  cat >&2 <<DIAG
+
+── 形态不匹配诊断 ──
+  本形态 shape=prereqs 下有 ${N_MISSING} 处 relation ... does not exist：
+  该测试假定一个已迁移的库，而本形态刻意不应用基线与启动迁移。
+  它不是产品缺陷。改用满库形态：
+      GATE_DB_SHAPE=installer bash scripts/audit/run-integration-gate.sh $PKG
+DIAG
 fi
 
 # The core distinction the repo's discipline demands: "all green" is not the
