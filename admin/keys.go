@@ -968,9 +968,27 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 花费必须从 usage_ledger_with_current_month（= hot ∪ 已 promote 的月分区）
+	// 读取：两条台账写方都直接写 hot、promote 按批调度，读裸 usage_ledger
+	// 父表意味着任何时刻都存在一个滚动的 7 天盲区，恰好覆盖预算闸门最该
+	// 起作用的窗口（R89-133 实证：最近 8h 裸父表 0 行、hot 2,162 行）。
+	// DISTINCT ON 与对账读路径（pg_reconciliation_store）同款：防 promote
+	// 异常形态在 hot 与父表残留同一 request_id 的双份，取 ts 最新的一份。
 	var spent float64
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.QueryRow(ctx, `SELECT COALESCE(SUM(cost_usd), 0) FROM usage_ledger WHERE api_key_id = $1`, req.APIKeyID).Scan(&spent)
+	err = h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(cost_usd), 0) FROM (
+			SELECT DISTINCT ON (request_id) cost_usd
+			FROM usage_ledger_with_current_month
+			WHERE api_key_id = $1
+			ORDER BY request_id, ts DESC
+		) deduped`, req.APIKeyID).Scan(&spent)
+	if err != nil {
+		// 预算闸门必须 fail-closed：查询失败时 spent 保持零值会被下游当成
+		// 「没超预算」放行并回 200——DB 故障的语义是「不知道超没超」，
+		// 不是「没超」（R89-133 缺陷 B）。
+		writeError(w, http.StatusInternalServerError, "usage query failed")
+		return
+	}
 
 	exceeded := budgetUSD != nil && spent >= *budgetUSD
 	var remainingUSD *float64
