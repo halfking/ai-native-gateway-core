@@ -48,7 +48,7 @@
 
 | 命令 | 实际结果 / 记录 |
 |---|---|
-| `env GOFLAGS=-p=2 make test` | exit 0，全仓测试通过；`/tmp/session-reaudit-integrated-all.log` |
+| `env GOFLAGS=-p=2 make test` | exit 0，312 包通过、56 包无测试；`/tmp/session-reaudit-integrated-all.log` |
 | `go test -race -p=2 ./security/sanitize ./domains/hooks/compression ./domains/hooks/outputcompliance ./domains/hooks/response ./domains/session/v2 ./internal/sessionv2mirror ./cmd/gateway ./domains/streaming -count=1` | exit 0，8 包通过，无 race 报告；`/tmp/session-reaudit-integrated-race.log` |
 | `go vet ./...` | exit 0；`/tmp/session-reaudit-integrated-vet.log` |
 | `go build -o /tmp/llm-gateway-critical-audit ./cmd/gateway` | exit 0；`/tmp/session-reaudit-integrated-build.log` |
@@ -69,3 +69,13 @@
 无标签任意口令/业务语义、token-ID prompt、附件 OCR/ASR、媒体 URL 及未知扩展仍未全面覆盖。Redis 可逆字典仍保存明文，日志/数据库原始正文属于独立治理范围。强制 SSE 检查保留到终态，增加首字延迟且有 1 MiB 上限。旧 V1 DB 无 generation 的恢复保守失效。没有真实供应商、生产 Redis/Postgres、多实例灰度或压测证据。非可达依赖漏洞仍需后续治理。
 
 未改动服务部署或数据库 schema。保留既有 `web/public/menu-config.json` 修改，提交明确排除它。KxMemory 工具不可用，未声称完成读写；本地方案、报告和 handoff 承担连续性。
+
+## 实际提交、合并与推送回执
+
+实现提交 `3483152cbfd249dd568dcbea13d2faa48caf8838`；文档提交 `c1e5da68d`；审计分支通过 no-ff 合并到 main（`09ba4c3ed`）。保留同期远端 20 个提交：其中前 15 个在全仓集成验证点中，随后 5 个只改迁移测试隔离/文档，合并后补跑 `go test ./internal/testdb ./sql/migrations/startup -count=1`、`go vet ./...` 与集成脚本语法检查均退出 0。没有将后续 targeted 检查描述成第二次全仓测试。
+
+第一次 push 因远端并发新增提交被拒绝，随后正常 fetch/merge/push，未强推。成功推送的集成提交为 `e5006ff3304a1fa887bc76d0e9eb88f37d5baf7e`，随后 `git ls-remote origin refs/heads/main` 实测相同。最后仅补记文档回执，不改变已验证的会话实现；最终 HEAD 在会话最终响应和自动生成 handoff 中再次实测。工作区仅遗留原有菜单时间戳变更。
+
+全仓测试日志 SHA-256：`7e03a40582f3808c255b774834f8f5ab871b1ca8bf7ec8d3c7e9767370865803`；8 包 race 日志：`cb66364032c6f983f19fea75c0242c629c717df4df1d1a7d259ab0846c7df77a`。
+
+**上游已知风险另列：**同期 [迁移夹具审计](2026-10-02-round44-closure-migration-fixtures.md) §4A/收口记录了带 integration 标签的 `TestMigration715FreshChainApplyMigrations` 及 bg 集成门遗留失败；本次未运行或修复那组需要真实数据库的门。默认 `make test` 通过不能证明它们已修复，本任务也没有把这些失败隐藏成生产验收成功。
