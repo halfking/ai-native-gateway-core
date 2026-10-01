@@ -298,6 +298,12 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 		field = "input"
 	case "", "message":
 		field = "content"
+	case "reasoning":
+		// summary[].text is plaintext the client echoes back next to the
+		// opaque encrypted_content; passing it through unsanitized was a
+		// verified leak (12h 审计第二十七轮 N1, 2026-10-02). encrypted_content
+		// is provider ciphertext and is not inspected.
+		return s.sanitizeReasoningItem(raw, item)
 	default:
 		return raw, false, nil
 	}
@@ -321,6 +327,31 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 	item[field] = updated
 	out, err := json.Marshal(item)
 	return out, true, err
+}
+
+// reasoning item 携带 summary（summary_text 块数组，明文）与可选 content；
+// 两者都走 sanitizeContent 的块机制清洗，encrypted_content 不动。
+func (s *requestInputSanitizer) sanitizeReasoningItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	changed := false
+	for _, field := range []string{"summary", "content"} {
+		value, ok := item[field]
+		if !ok {
+			continue
+		}
+		updated, didChange, err := s.sanitizeContent(value)
+		if err != nil {
+			return nil, false, err
+		}
+		if didChange {
+			item[field] = updated
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	out, err := json.Marshal(item)
+	return out, changed, err
 }
 
 func (s *requestInputSanitizer) sanitizeContent(raw json.RawMessage) (json.RawMessage, bool, error) {
@@ -374,7 +405,7 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 	_ = json.Unmarshal(block["type"], &kind)
 	field := ""
 	switch kind {
-	case "text", "input_text", "output_text", "":
+	case "text", "input_text", "output_text", "reasoning_text", "summary_text", "":
 		field = "text"
 	case "tool_result":
 		field = "content"

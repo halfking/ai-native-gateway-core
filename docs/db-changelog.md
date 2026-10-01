@@ -795,3 +795,9 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 806 | `806_session_bodies_partitions_heap.sql` | `c1706d745218ca762c98bd29c2ef44cda360cca33b82bb61d12304738ec658bf` | applied+verified |
 | 807 | `807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql` | `bd78c5eb8cac90774f0871cb7a068e6ed3d31128760cfbd2ce174e5074fbd568` | applied+verified |
 
+## 2026-10-02 — 12h 审计第二十七轮：730 注释性修订 SHA 追认（7f24fb5af）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 730 | `730_session_role_hierarchy.sql` | `9bf2f00dd5bdb549bef68a1c2cb997580d30c8d16c151a1064b61975e3fbdf99` | applied+verified（2026-10-02 第二十七轮审计追认：R52 7f24fb5af 对 730 仅补口径注释（逐层回退说明），DDL/DML 零改动、canonical↔embeddata 双侧字节一致；但字节级门禁纪律下注释变更同样必须同步登记，原登记行 a1f92257… 保留——已应用库按旧字节核对仍有效，verify-migration-checksums 任一命中即过） |
+

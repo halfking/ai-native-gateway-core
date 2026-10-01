@@ -722,4 +722,15 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 	if !stamped {
 		t.Fatal("fresh chain: migration 715 ledger stamp missing")
 	}
+	// 第二十七轮 F3 钉测：credential_model_capabilities 仅由 612 建，被生产
+	// 代码读，但无 db.Open 契约、无专属测试——链内静默失败时此前没有任何
+	// 门禁会红，这里是唯一守卫。
+	var capTable bool
+	if err := pool.QueryRow(ctx, `
+		SELECT to_regclass('public.credential_model_capabilities') IS NOT NULL`).Scan(&capTable); err != nil {
+		t.Fatal(err)
+	}
+	if !capTable {
+		t.Fatal("fresh chain: credential_model_capabilities (migration 612) missing")
+	}
 }

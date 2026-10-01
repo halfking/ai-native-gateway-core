@@ -37,6 +37,13 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 			wantRefs: 2, wantPlaceholders: 3,
 		},
 		{
+			// 第二十七轮 N1 钉测：reasoning item 的 summary[].text 是客户端
+			// 回传的明文，必须入洗；encrypted_content 是供应商密文，原样透传。
+			name: "responses reasoning summary", path: "/v1/responses",
+			body:     `{"model":"m","input":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"user phone 13812345678"}],"encrypted_content":"enc-13800138000-opaque"}]}`,
+			wantRefs: 1, wantPlaceholders: 1,
+		},
+		{
 			name: "completions prompt array", path: "/v1/completions",
 			body:     `{"model":"m","prompt":["call 13800138000","mail a@b.com"]}`,
 			wantRefs: 2, wantPlaceholders: 2,
@@ -79,6 +86,11 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 			}
 			if strings.Contains(tc.body, `"data":"13800138000"`) {
 				require.Contains(t, string(forwarded), `"data":"13800138000"`)
+			}
+			if strings.Contains(tc.body, "encrypted_content") {
+				// 供应商密文原样透传；summary 明文必须已换成占位符。
+				require.Contains(t, string(forwarded), "enc-13800138000-opaque")
+				require.NotContains(t, string(forwarded), "13812345678")
 			}
 			if tc.path == "/v1/chat/completions" {
 				require.Contains(t, string(forwarded), "prior {SENSITIVE:phone:1}")

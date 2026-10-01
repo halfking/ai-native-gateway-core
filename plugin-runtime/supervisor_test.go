@@ -222,8 +222,9 @@ func main(){
 	if err := c.Stop(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	// wait for marker (within grace window); 8s covers the 5s SIGTERM grace
-	// window plus process scheduling lag under full-repo parallel load.
+	// wait for marker (within grace window); stopGraceBudget covers the SIGTERM
+	// grace window plus scheduling lag under full-repo parallel load (27th-round
+	// audit N6: comment still said "8s" after e5d70de0a widened the budget).
 	if !waitForFile(marker, stopGraceBudget) {
 		t.Fatalf("graceful stop marker never written within %v", stopGraceBudget)
 	}
