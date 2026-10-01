@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ensureFixtureTenant makes sure a tenants row exists for a fixture that
+// inserts into session_summaries, whose tenant_id references
+// public.tenants(code) (fk_session_tenant, 01-schema.sql:29231).
+//
+// The gate database is EMPTY, so seeding the child alone fails 23503
+// "violates foreign key constraint fk_session_tenant" — measured 2026-10-02,
+// and it is the cause of two admin reds (TestProjectTasksSkipsNullTaskID,
+// TestTaskSummaryAggregatesModelsTagsAndWallClockDuration) plus one in bg.
+// The p1 fixture already carried the comment "fk_session_tenant 外键要求已
+// 存在租户" and picked the code "default"; the premise it assumed — that a
+// default tenant exists — does not hold on a disposable database.
+//
+// It reports whether this call created the row, so the caller can delete only
+// what it owns. A pre-existing tenant is production data.
+func ensureFixtureTenant(t *testing.T, pool *pgxpool.Pool, tenant string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var created bool
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO public.tenants (code, name) VALUES ($1, $2)
+		 ON CONFLICT (code) DO NOTHING RETURNING true`,
+		tenant, "fixture-"+tenant).Scan(&created); err != nil {
+		t.Fatalf("seed tenant %q: %v", tenant, err)
+	}
+	return created
+}
+
 // seedSessionRow inserts a session_summaries + session_dim fixture row pair
 // for the given tenant/owner and returns cleanup that removes both rows.
 func seedSessionRow(t *testing.T, pool *pgxpool.Pool, tenant, owner, gwSessionID string) func() {
@@ -30,10 +58,34 @@ func seedSessionRow(t *testing.T, pool *pgxpool.Pool, tenant, owner, gwSessionID
 	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true), set_config('app.bypass_rls', 'true', true)"); err != nil {
 		t.Fatalf("set fixture bypass GUC: %v", err)
 	}
+	// The tenant row must exist before session_summaries: its tenant_id
+	// references public.tenants(code) (fk_session_tenant, 01-schema.sql:29231),
+	// and the gate database is EMPTY, so seeding the child alone fails 23503
+	// "violates foreign key constraint". Measured 2026-10-02: SELECT count(*)
+	// FROM tenants on an installer-shaped gate database returns 0.
+	//
+	// Only the row this call created is removed in the cleanup: a pre-existing
+	// tenant is production data, and deleting it would be exactly the
+	// destructive-fixture class this round removed elsewhere.
+	var createdTenant bool
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO public.tenants (code, name) VALUES ($1, $2)
+		 ON CONFLICT (code) DO NOTHING
+		 RETURNING true`, tenant, "fixture-"+tenant).Scan(&createdTenant); err != nil {
+		t.Fatalf("seed tenant %q: %v", tenant, err)
+	}
+	// session_dim.status is NOT NULL with NO default in the live schema.
+	// Migration 350_session_analytics_fix.sql:37 declares
+	// "status VARCHAR(20) NOT NULL DEFAULT 'active'", but the installed
+	// column_default is <NONE> (verified with information_schema.columns on a
+	// gate database) — the declared default did not survive into the schema.
+	// That is a fidelity gap, not a production break: every product insert
+	// passes the value literally (internal/sessionv2mirror/session_dim.go:80
+	// and :113 both write 'active'). This fixture has to do the same.
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO session_dim (gw_session_id, session_key, tenant_id, owner_user, created_at)
-		 VALUES ($1,$1,$2,$3,NOW())
-		 ON CONFLICT (gw_session_id) DO UPDATE SET session_key=EXCLUDED.session_key, tenant_id=EXCLUDED.tenant_id, owner_user=EXCLUDED.owner_user`,
+		`INSERT INTO session_dim (gw_session_id, session_key, tenant_id, owner_user, status, created_at)
+		 VALUES ($1,$1,$2,$3,'active',NOW())
+		 ON CONFLICT (gw_session_id) DO UPDATE SET session_key=EXCLUDED.session_key, tenant_id=EXCLUDED.tenant_id, owner_user=EXCLUDED.owner_user, status='active'`,
 		gwSessionID, tenant, owner,
 	); err != nil {
 		t.Fatalf("seed session_dim: %v", err)
@@ -67,6 +119,12 @@ func seedSessionRow(t *testing.T, pool *pgxpool.Pool, tenant, owner, gwSessionID
 		}
 		_, _ = tx.Exec(ctx, `DELETE FROM session_summaries WHERE session_key=$1`, gwSessionID)
 		_, _ = tx.Exec(ctx, `DELETE FROM session_dim WHERE gw_session_id=$1`, gwSessionID)
+		// Delete the tenant ONLY if this call inserted it. session_summaries
+		// must already be gone (the FK is ON DELETE CASCADE, but being explicit
+		// keeps the order obvious).
+		if createdTenant {
+			_, _ = tx.Exec(ctx, `DELETE FROM public.tenants WHERE code=$1`, tenant)
+		}
 		_ = tx.Commit(ctx)
 	}
 }
