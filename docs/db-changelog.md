@@ -785,3 +785,13 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 806 | `806_session_bodies_partitions_heap.sql` | `c1706d745218ca762c98bd29c2ef44cda360cca33b82bb61d12304738ec658bf` | applied+verified（2026-10-01 fresh-install e2e 轮新增：baseline 预建的 session_bodies_2026_07/08 columnar 分区转 heap（562 同款处方，仅空分区动手）；存量库分区已全 heap→循环空集 no-op） |
 | 807 | `807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql` | `bd78c5eb8cac90774f0871cb7a068e6ed3d31128760cfbd2ce174e5074fbd568` | applied+verified（2026-10-01 审计十七轮新增：删 request_logs_bodies_hot 被同列 UNIQUE 索引影蔽的冗余 (request_id) 普通索引；no-transaction + DROP INDEX CONCURRENTLY，幂等 IF EXISTS；本机库实测 up→down→up + ON CONFLICT upsert 复验；取号 807 避让并行 803-806 撞号） |
 
+## 2026-10-01T02:55:51Z — deploy 245 build_seq 2376 (4e9eb2c7)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 803 | `803_candidate_failure_logs_hot_column_reconcile.sql` | `c1a8a88989c722445b368db0c2caa120a74c4f654ec8cc7989618046c510dd34` | applied+verified |
+| 804 | `804_credential_model_context_window_columns.sql` | `e74e17957448cdf0e7fc9b58df1d6758b86ea591440a4d8d7d203de80789dbbe` | applied+verified |
+| 805 | `805_session_dim_reconcile.sql` | `67e8aec49b2fb485dc48f6b6aa7bb1d0e7a425816b9c0b6d17335cbf7a7119de` | applied+verified |
+| 806 | `806_session_bodies_partitions_heap.sql` | `c1706d745218ca762c98bd29c2ef44cda360cca33b82bb61d12304738ec658bf` | applied+verified |
+| 807 | `807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql` | `bd78c5eb8cac90774f0871cb7a068e6ed3d31128760cfbd2ce174e5074fbd568` | applied+verified |
+
