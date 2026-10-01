@@ -1,35 +1,50 @@
 # Known fresh-install gaps in the registered startup migration chain.
 #
 # WHAT THIS FILE IS
-#   The installer registers 173 startup migrations in
+#   The installer registers its startup migrations in
 #   installer/internal/dbinit/runner.go (StartupFiles). Applying them, in that
 #   exact order, to a database built by the real installer path
 #   (00-prereqs -> 01-schema -> 02-seed, all three from
-#   installer/cmd/llm-gw-installer/embeddata/) leaves 19 of them failing.
+#   installer/cmd/llm-gw-installer/embeddata/) is expected to leave ZERO of them
+#   failing. This file enumerates any that do not, one per line, with a reason.
 #
-#   Round 44 MEASURED this on the true installer path rather than on the audit
-#   harness's path, precisely to rule out "the harness made it up". The harness
-#   applies a different 01-schema.sql (see the drift note below) and skips
-#   02-seed.sql, so it was a plausible suspect. It is not: the same 19 fail, with
-#   the same messages, when the installer's own embedded files are applied. These
-#   are real gaps in a fresh install, not gate artifacts.
+#   It is a RATCHET, not a disclaimer. scripts/audit/run-integration-gate.sh
+#   reads it and DIEs when a startup migration fails that is not listed here, so
+#   a new gap turns the gate red until someone adds the line with a reason. And
+#   because exemptions are enumerated one by one, deleting this whole file does
+#   not make the gate laxer — it makes every gap fatal.
 #
-#   Baseline for the measurement: relations=421, indexes=1306, applied=154.
+# STATUS AS OF 2026-10-01 (Round 44 closure round): **EMPTY — 0 known gaps.**
 #
-# HOW IT IS ENFORCED
-#   scripts/audit/run-integration-gate.sh reads this file and DIEs when a startup
-#   migration fails that is not listed here. So this list is a ratchet, not a
-#   disclaimer: adding a 20th real gap turns the gate red until someone adds the
-#   line with a reason. Conversely, when a line stops being needed the harness
-#   reports it as stale so the entry can be retired — the list cannot rot into
-#   a permanent blanket exemption, because every unlisted failure is fatal.
+#   Measured on the true installer path, 2026-10-01, after the merge to
+#   origin/main 651b6cac8:
 #
-#   sql/schema/integration_gate_test.go guards the format of this file and the
-#   presence of the ratchet.
+#       startup: applied=198 failed=0 missing=0
+#       [populated] relations=435
 #
-# FORMAT
-#    <filename><TAB><one-line reason>
+#   The 19 entries this file used to carry are retired, not deleted quietly.
+#   They were real fresh-install gaps when Round 44 measured them
+#   (applied=154 failed=19), and they were fixed by a different change: the
+#   pre-478 migrations were added to StartupFiles, because the 01-schema
+#   baseline is a dump from around 477 and is not a faithful snapshot of any
+#   single lineage. That registration is why the count went 154/173 -> 196/198.
+#   See the comment block above StartupFiles in runner.go, which records the
+#   same conclusion from the 2026-09-30 fresh-install-chain review.
+#
+#   Verified before retiring, so this is not a vacuous "0 failures": all 19
+#   files still exist under embeddata/startup/ AND all 19 are still registered
+#   in StartupFiles. They are applied now, not skipped.
+#
+#   Re-verify with:
+#       PG_PASSWORD=... bash scripts/audit/run-integration-gate.sh ./db/dbxmanifest
+#   and read the "startup: applied=N failed=M missing=K" line.
+#
+# HOW TO ADD AN ENTRY
+#   Append one line:  <filename><TAB><one-line reason>
 #   Sorted by filename. No header, no blank lines, no duplicate filenames.
+#   The reason is mandatory and is checked by
+#   TestKnownStartupGapsManifestIsAnnotated — an entry without one is a build
+#   failure, and so is an entry naming a file that is not registered.
 #
 # KNOWN DRIFT, recorded here because it affects anyone comparing the two
 # 01-schema.sql files: sql/schema/01-schema.sql (what the audit harness applies)
@@ -38,25 +53,6 @@
 #   differ by four objects the installer's copy is missing:
 #   bump_credentials_governor_revision(), notify_credentials_governor_revision(),
 #   credentials_governor_revision_seq, credentials_revision_idx. That drift does
-#   not change the 19 below, but it does mean the gate database is not
-#   byte-identical to an installer-built one.
-
-622_provider_error_aggregator_state.sql	aggregator state table for candidate_failure_logs_hot, which 01-schema.sql does not create
-624_candidate_failure_logs_promote_atomic_v2.sql	depends on candidate_failure_logs_hot, absent from 01-schema.sql (same root cause as 622)
-627_candidate_failure_logs_aggregation_id_unified.sql	depends on candidate_failure_logs_hot / candidate_failure_logs, absent from 01-schema.sql
-682_model_offers_context_window_columns.sql	ADD COLUMN on cmb (credential_model_bindings) without IF NOT EXISTS, and the baseline lacks the column
-683_session_dim_ownership_columns.sql	relation session_dim is never created by the baseline or by any earlier registered startup migration
-686_fix_session_module_executions_2026_10_bounds.sql	targets the 2026_10 partition of session_module_executions, which no migration in the chain creates
-690_session_summaries_archived_ttl_index.sql	CREATE INDEX on session_summaries.archived_at, a column the baseline session_summaries lacks
-696_request_logs_view_system_fingerprint.sql	rebuilds request_logs_with_current_month_without_request_class_due_at, which 680/700 never create on a fresh DB
-700_request_logs_view_raw_model_name.sql	same missing view as 696; both depend on a 680 bootstrap that does not converge from empty
-707_session_turns_s1a.sql	relation session_turns_hot is not created by any registered startup migration on a fresh install
-708_session_bodies_s1a.sql	backfill issues UPDATE against a columnar table, which PostgreSQL rejects (SQLSTATE 0A000); needs a heap/staging pass
-713_session_turns_cost_precision.sql	depends on session_turns_hot, absent for the same reason as 707
-733_session_turn_details.sql	CREATE TABLE session_turn_details uses a request_type column its own source-of-truth table does not expose
-734_request_logs_view_details_join.sql	self-declares it requires 733; 733 fails, so this is a pure cascade
-738_view_chain_credits_rate_multiplier.sql	view-chain rebuild asserts 114 columns on request_logs_with_current_month but measures 99 from a fresh install
-740_view_chain_client_ip.sql	view-chain rebuild asserts 110 columns but measures 0; the bottom view is missing entirely
-757_session_turns_origin_actor_projection.sql	references hot.client_protocol on session_turns_hot, which 707 never created
-762_session_project_backfill_chain.sql	backfills session_dim, which 683 also fails to create (shared root cause)
-802_session_turn_details_gw_task_id_index.sql	CREATE INDEX on session_turn_details, the table 733 fails to create (cascade)
+#   not change the count above, but it does mean the gate database is not
+#   byte-identical to an installer-built one. Unifying the two copies is tracked
+#   as an open item in docs/audit/2026-10-01-round44-closure.md §7.
