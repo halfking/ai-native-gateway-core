@@ -28,15 +28,35 @@
 // 注意：FreshChain 会在目标库执行完整启动迁移链（数百对象），并可能需要
 // 预置 schema_migrations 账本表（与生产引导一致）；务必指向可丢弃的库。
 //
-// 已知未通过（2026-10-02）：FreshChain 目前 FAIL，卡在 execTolerantSnapshot
-// 对 01-schema.sql 的分块容错重放上，报 42804。已实测排除「基线快照列漂移」
-// 这一原归因（详见 TestMigration715FreshChainApplyMigrations 内的证据），
-// 真实成因是本文件的重放器，不是 sql/schema/01-schema.sql。
+// FreshChain 的失败史（2026-10-02 定位，已修两层，剩一层）：
+//
+//  1. 原归因「01-schema 快照列漂移」是错的。实测 psql（ON_ERROR_STOP=0）
+//     灌同一份快照零错误，父表有 application_id，分区正常挂载。
+//
+//  2. 它每次运行报**不同**的致命 SQLSTATE（42804 与 55000 各出现过一次），
+//     这本身就说明不是某条 DDL 的确定性问题。真实成因有二：execTolerantSnapshot
+//     在首个「非名单」SQLSTATE 处提前中止（与它注释声称复刻的 psql 语义相反，
+//     已修）；以及本测试把全新安装快照灌在了**已经装满的门禁库**上——
+//     引导报告 1705 条容忍错误、其中 42P07 占 1046 条，改用空库后归零。
+//
+//  3. 仍 FAIL，剩最后一层：本测试声称复刻生产全新安装，实际漏了中间那一步。
+//     生产顺序是 00-prereqs + 01-schema 快照 → 安装器注册的 198 条启动迁移
+//     （session_aggregate_outbox 由 630 建）→ 二进制启动链 db.Open。
+//     本测试只做了 1 和 3，于是 db.Open 报 42P01
+//     relation "public.session_aggregate_outbox" does not exist。
+//
+//     这一层没有在本轮补：注册清单在独立 Go module installer/ 的
+//     dbinit.StartupFiles 里，根 module 的测试无法 import；而 sql/migrations/
+//     startup/ 目录下有 793 个 .sql（含 .down.sql 与未注册的历史文件），
+//     按文件名排序全量灌是错的。从测试里解析 installer 的 Go 源码来取清单
+//     属于脆弱做法，不做。补法见 docs/audit/2026-10-02-round44-closure-migration-fixtures.md。
 package startup
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +64,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testdb"
 
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
@@ -217,11 +239,28 @@ func isDollarTagChar(c byte) bool {
 // execTolerantSnapshot 复刻 init-local-db 的 psql（无 ON_ERROR_STOP）语义：
 // 快照对裸库不是顺序安全的（视图/函数先于所引用的表出现），错误容忍跳过。
 // 分块批量执行控制跨隧道往返；块内出错（隐式事务整体中止）时降级为块内
-// 逐条执行并忽略单条错误，失败语句之前的语句重放命中 already-exists 同样
-// 被忽略。只容忍快照自身的引导噪声；返回首个致命错误（连接失败等）。
-func execTolerantSnapshot(ctx context.Context, conn *pgx.Conn, script string) error {
+// 逐条执行。
+//
+// 关键：降级路径**不因任何服务端 SQL 错误中止**。这是 2026-10-02 的行为修正。
+// 旧实现在遇到第一个「非容忍 SQLSTATE」时直接 return，与它自己注释里声称的
+// psql 语义相反（psql 报错后继续执行后续语句）。后果不只是提前退出：容错地
+// 跳过一条 CREATE 会留下半成品对象，使后面某条语句以一个**不在名单里**的
+// SQLSTATE 失败，于是失败点取决于哪条语句先被跳过——
+//
+//	第 1 次运行：statement #2297 → 55000 cannot attach index ... as a partition of index
+//	第 2 次运行：42804 table "request_logs_2026_07" contains column "application_id"
+//	            not found in parent "request_logs"
+//
+// 同一份输入、两个不同的致命错误，说明这不是某条 DDL 的确定性问题，而是重放
+// 机制在制造损坏的中间态。实测 psql（ON_ERROR_STOP=0）灌同一份 01-schema.sql
+// 零错误，所以正确做法是让服务端错误全部容忍、让后续断言去判成败。
+//
+// 只有**非服务端**错误（连接断开、协议层失败）才中止——那种情况重放无意义。
+// 被容忍的错误按 SQLSTATE 汇总后 t.Logf 出来，不静默。
+func execTolerantSnapshot(t *testing.T, ctx context.Context, conn *pgx.Conn, script string) error {
 	const chunkSize = 64 << 10
 	stmts := splitSQLStatements(script)
+	tolerated := map[string]int{}
 	for start := 0; start < len(stmts); {
 		end := start
 		size := 0
@@ -235,35 +274,44 @@ func execTolerantSnapshot(ctx context.Context, conn *pgx.Conn, script string) er
 			_, _ = conn.Exec(ctx, "ROLLBACK")
 			for _, s := range stmts[start:end] {
 				if _, err := conn.Exec(ctx, s); err != nil {
-					if !isIgnorableSnapshotError(err) {
-						return err
+					if _, ok := pgErrCode715(err); !ok {
+						// Not a server-reported error: the connection or the
+						// protocol is gone, and replaying cannot help.
+						return fmt.Errorf("snapshot execution failed outside statement replay: %w", err)
 					}
+					tolerated[pgErrCodeMust715(err)]++
 					_, _ = conn.Exec(ctx, "ROLLBACK")
 				}
 			}
 		}
 		start = end
 	}
+	if len(tolerated) > 0 {
+		codes := make([]string, 0, len(tolerated))
+		for c := range tolerated {
+			codes = append(codes, c)
+		}
+		sort.Strings(codes)
+		parts := make([]string, 0, len(codes))
+		total := 0
+		for _, c := range codes {
+			parts = append(parts, fmt.Sprintf("%s x%d", c, tolerated[c]))
+			total += tolerated[c]
+		}
+		// Surfaced, not swallowed: a bootstrap that needed this much tolerance
+		// is worth a reader seeing, and the caller still has to satisfy every
+		// assertion below before the test passes.
+		t.Logf("execTolerantSnapshot: tolerated %d statement errors while replaying chunks: %s",
+			total, strings.Join(parts, ", "))
+	}
 	return nil
 }
 
-// isIgnorableSnapshotError：快照引导的预期噪声（依赖序、已存在、权限）。
-func isIgnorableSnapshotError(err error) bool {
-	code, ok := pgErrCode715(err)
-	if !ok {
-		return false
-	}
-	switch code {
-	case "42P07", "42710", "42701", "42P06", "42704", "23505", "42P16", "42723":
-		return true // duplicate table/constraint/column/schema/object/function, unique violation, invalid table definition
-	case "42P01", "42883", "42703":
-		return true // undefined table/function/column（前向引用，依赖其后的语句补齐）
-	case "42501":
-		return true // insufficient privilege（测试角色非超级用户时的可选扩展）
-	case "0A000", "42809":
-		return true // feature not supported / wrong object type（columnar 索引、分区对象等，psql 引导同样跳过）
-	}
-	return false
+// pgErrCodeMust715 is pgErrCode715 for a caller that has already established
+// the error IS a server error.
+func pgErrCodeMust715(err error) string {
+	code, _ := pgErrCode715(err)
+	return code
 }
 
 func TestMigration715PendingStateLifecycle(t *testing.T) {
@@ -446,6 +494,17 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_PG_URL not set; fresh-chain test requires a disposable PostgreSQL")
 	}
+	// A scratch database, NOT the one TEST_PG_URL names. "Fresh install" is the
+	// entire premise of this test: it replays 00-prereqs + 01-schema and then
+	// the whole startup chain, and asserts the 389 -> 715 upgrade happened. Run
+	// against the gate database (installer shape, 435 relations) the snapshot
+	// lands on top of an already-migrated schema instead, and the test measures
+	// the collision rather than the install: measured 2026-10-02, the bootstrap
+	// reported 1705 tolerated errors of which 42P07 "already exists" was 1046,
+	// and db.Open then failed with 42703 on provider_id. The 42804 and 55000
+	// this test used to fail with were the same collision wearing different
+	// SQLSTATEs on different runs.
+	dsn = testdb.Create(t, dsn)
 
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -478,7 +537,7 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read bootstrap %s: %v", snapshot, err)
 		}
-		if err := execTolerantSnapshot(bootCtx, boot, string(snapSQL)); err != nil {
+		if err := execTolerantSnapshot(t, bootCtx, boot, string(snapSQL)); err != nil {
 			t.Fatalf("apply bootstrap %s: %v", snapshot, err)
 		}
 	}
