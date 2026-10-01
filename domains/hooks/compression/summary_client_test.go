@@ -3,6 +3,7 @@ package compression
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -35,6 +36,35 @@ func TestSummaryClientAdapterRequiresModel(t *testing.T) {
 	got, err := client.Complete(context.Background(), "prompt")
 	if err == nil || got != "" {
 		t.Fatalf("missing model should fail, got (%q, %v)", got, err)
+	}
+}
+
+func TestSummaryClientAdapterChecksEachCandidateBeforeReturning(t *testing.T) {
+	oldDoer := defaultHTTPDoer
+	t.Cleanup(func() { defaultHTTPDoer = oldDoer })
+	calls := 0
+	defaultHTTPDoer = func(req *http.Request) (*http.Response, error) {
+		calls++
+		text := "unsafe generated summary"
+		if calls == 2 {
+			text = "safe summary"
+		}
+		body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": text}}}})
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	}
+	provider := &fakeSummaryProvider{candidates: []ProviderCandidate{
+		{RawModel: "raw-a", BaseURL: "https://example.invalid", Protocol: "openai", Available: true},
+		{RawModel: "raw-b", BaseURL: "https://example.invalid", Protocol: "openai", Available: true},
+	}}
+	ctx := WithGeneratedTextGuard(context.Background(), func(ctx context.Context, text string) (string, error) {
+		if strings.Contains(text, "unsafe") {
+			return "", errors.New("sensitive output rejected")
+		}
+		return text, nil
+	})
+	got, err := newSummaryClientAdapter(&Dependencies{Provider: provider}, "", "tenant").Complete(ctx, "prompt", summarymodel.WithModel("summary-model"))
+	if err != nil || got != "safe summary" || calls != 2 {
+		t.Fatalf("unchecked candidate returned: %q, %v, calls=%d", got, err, calls)
 	}
 }
 

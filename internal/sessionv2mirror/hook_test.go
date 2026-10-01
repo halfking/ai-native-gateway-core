@@ -324,6 +324,10 @@ func TestEntryToProcessedRequest_CompressionMetaWhitelist(t *testing.T) {
 			"cut_marker":{"version":1,"created_at":123,"source_msg_count":10,"system_msg_count":1,"cut_index":4,"strategy":"smart_window_llm","summary_marker":"[smm_v1:0123456789abcdef]","pre_sanitize_offset_range":[1,5],"summary_text":"must-not-mirror"},
 			"alignment_map":[{"original_index":2,"compressed_index":1,"is_compressed":true,"compressed_into":1,"hash":"0123456789abcdef0123456789abcdef","raw_content":"must-not-mirror"}],
 			"sanitize_map_ref":%q,
+			"sanitize_map_generation":"0123456789abcdef0123456789abcdef",
+			"compression_source_snapshot":{"hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","message_count":3,"token_estimate":55,"body":"must-not-mirror"},
+			"raw_snapshot":{"hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","message_count":10,"token_estimate":100,"body":"must-not-mirror"},
+			"sanitized_snapshot":{"hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
 			"sanitize_message_refs":[{"raw_index":2,"sanitized_index":2,"raw_hash":"0123456789abcdef0123456789abcdef","sanitized_hash":"fedcba9876543210fedcba9876543210","changed":true,"plaintext":"must-not-mirror"}],
 			"request_body":"must-not-mirror",
 			"pii":"must-not-mirror"
@@ -347,6 +351,15 @@ func TestEntryToProcessedRequest_CompressionMetaWhitelist(t *testing.T) {
 	}
 	if got := req.CompressionMeta["sanitize_map_ref"]; got != ref {
 		t.Fatalf("sanitize ref = %v, want %s", got, ref)
+	}
+	if req.CompressionMeta["sanitize_map_generation"] != "0123456789abcdef0123456789abcdef" {
+		t.Fatal("generation stripped")
+	}
+	for _, key := range []string{"raw_snapshot", "sanitized_snapshot", "compression_source_snapshot"} {
+		snapshot, ok := req.CompressionMeta[key].(map[string]interface{})
+		if !ok || snapshot["hash"] == nil || snapshot["body"] != nil {
+			t.Fatal("snapshot lost or plaintext retained")
+		}
 	}
 	alignment := req.CompressionMeta["alignment_map"].([]map[string]interface{})
 	refs := req.CompressionMeta["sanitize_message_refs"].([]map[string]interface{})

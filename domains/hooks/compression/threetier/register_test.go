@@ -39,7 +39,7 @@ func TestVerifySessionState_AdaptsDetectMisalignment(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 misalignment, got %v", got)
 	}
-	if !strings.Contains(got[0], "compressed tokens exceed raw tokens") {
+	if !strings.Contains(got[0], "compressed tokens exceed source tokens") {
 		t.Fatalf("reason does not surface DetectMisalignment verdict: %q", got[0])
 	}
 }

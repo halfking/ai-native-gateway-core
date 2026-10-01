@@ -58,7 +58,7 @@ type Misalignment struct {
 // 空切片表示三层对齐良好。
 //
 // 不变量：
-//   - Raw.Tokens ≥ Compressed.Tokens（压缩必然减少或保持 token）
+//   - Sanitize.Tokens ≥ Compressed.Tokens（占位符可能比原始值更长）
 //   - Compressed.Messages ≤ Raw.Messages
 //   - Sanitize 引用存在 → Raw 与 Compressed 必须都已设置（否则中间层被跳过）
 func DetectMisalignment(s *compression.SessionState) []Misalignment {
@@ -67,25 +67,36 @@ func DetectMisalignment(s *compression.SessionState) []Misalignment {
 	}
 	var out []Misalignment
 
-	// L1 vs L2
-	if s.RawTokenEstimate > 0 && s.CompressedTokens > 0 {
-		if s.CompressedTokens > s.RawTokenEstimate {
+	// Sanitization can expand text; compression operates on that expanded
+	// representation. Legacy entries without a sanitized snapshot use raw.
+	sourceTokens := s.RawTokenEstimate
+	sourceMessages := s.RawMsgCount
+	if !s.SanitizedSnapshot.IsZero() {
+		sourceTokens = s.SanitizedSnapshot.TokenEstimate
+	}
+	// The assembled source can include cached history absent from this request.
+	if !s.CompressionSourceSnapshot.IsZero() {
+		sourceTokens = s.CompressionSourceSnapshot.TokenEstimate
+		sourceMessages = s.CompressionSourceSnapshot.MessageCount
+	}
+	if sourceTokens > 0 && s.CompressedTokens > 0 {
+		if s.CompressedTokens > sourceTokens {
 			out = append(out, Misalignment{
 				Tier:          TierCompressed,
-				ExpectedStart: s.RawTokenEstimate,
-				ExpectedEnd:   s.RawTokenEstimate,
+				ExpectedStart: sourceTokens,
+				ExpectedEnd:   sourceTokens,
 				ActualStart:   s.CompressedTokens,
 				ActualEnd:     s.CompressedTokens,
-				Reason:        "compressed tokens exceed raw tokens (regression)",
+				Reason:        "compressed tokens exceed source tokens (regression)",
 			})
 		}
 	}
-	if s.RawMsgCount > 0 && s.CompressedMsgs > 0 {
-		if s.CompressedMsgs > s.RawMsgCount {
+	if sourceMessages > 0 && s.CompressedMsgs > 0 {
+		if s.CompressedMsgs > sourceMessages {
 			out = append(out, Misalignment{
 				Tier:          TierCompressed,
-				ExpectedStart: s.RawMsgCount,
-				ExpectedEnd:   s.RawMsgCount,
+				ExpectedStart: sourceMessages,
+				ExpectedEnd:   sourceMessages,
 				ActualStart:   s.CompressedMsgs,
 				ActualEnd:     s.CompressedMsgs,
 				Reason:        "compressed messages exceed raw messages (regression)",

@@ -74,8 +74,12 @@ func (it *OutputComplianceInterceptor) streamState(ctx context.Context, meta *re
 	if meta == nil || meta.State == nil {
 		return nil
 	}
-	state, _ := meta.State.GetOrCreate("output_compliance.pending", func() any {
-		active := enabled()
+	key := it.stateKey
+	if key == "" {
+		key = "output_compliance.pending"
+	}
+	state, _ := meta.State.GetOrCreate(key, func() any {
+		active := it.isEnabled()
 		state := &complianceStreamState{enabled: active, checkCtx: outputcompliance.WithRequestPolicyCache(ctx)}
 		if active {
 			state.redact = it.shouldRedact(ctx, meta.CallerOwner, meta.SessionID, meta.TenantID)
@@ -91,7 +95,7 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 	}
 	state := it.streamState(ctx, meta)
 	if state == nil {
-		if !enabled() {
+		if !it.isEnabled() {
 			return nil, nil
 		}
 		// No request-local state means adjacent deltas cannot be inspected.
@@ -176,7 +180,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 	}
 	defer state.clear()
 	for lane, parts := range state.lanes {
-		if len(parts) < 2 {
+		if len(parts) < 2 && (len(parts) == 0 || parts[0].field.label != "__tool_json") {
 			continue
 		}
 		var joined strings.Builder
@@ -184,7 +188,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			joined.WriteString(part.original)
 		}
 		original := joined.String()
-		result, err := it.checker.Check(ctx, meta.TenantID, original)
+		result, err := it.checkText(ctx, meta.TenantID, parts[0].field.label, original)
 		if err != nil || result == nil {
 			return nil, fmt.Errorf("check stream lane %q: %w", lane, errOrMissingResult(err))
 		}
@@ -195,20 +199,20 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			continue
 		}
 		for _, part := range parts {
-			if part.field.immutable {
-				return nil, errors.New("cannot redact signed thinking stream lane")
+			if part.field.immutable || (it.mandatory && (isToolArgumentLane(lane) || part.field.label != "")) {
+				return nil, errors.New("cannot safely rewrite signed or sensitive tool stream lane")
 			}
 		}
 		// Tool-call argument deltas form one JSON document. Moving a rewrite
 		// to the first delta is valid only when the reconstructed arguments
 		// remain JSON; otherwise fail closed rather than break the client tool.
-		if isToolArgumentLane(lane) && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
+		if parts[0].field.label == "__tool_json" && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
 			return nil, errors.New("redacted tool arguments are invalid JSON")
 		}
-		parts[0].field.parent[parts[0].field.key] = result.RedactedOutput
+		parts[0].field.set(result.RedactedOutput)
 		parts[0].frame.changed = true
 		for _, part := range parts[1:] {
-			part.field.parent[part.field.key] = ""
+			part.field.set("")
 			part.frame.changed = true
 		}
 	}
@@ -223,13 +227,18 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 	return output, nil
 }
 
-func isToolArgumentLane(lane string) bool {
+func isJSONToolArgumentLane(lane string) bool {
 	return (strings.Contains(lane, ".tool.") && strings.HasSuffix(lane, ".arguments")) ||
-		strings.HasSuffix(lane, ".function_call.arguments") ||
-		strings.HasSuffix(lane, ".partial_json") ||
+		strings.HasSuffix(lane, ".function_call.arguments") || strings.HasSuffix(lane, ".partial_json") ||
 		strings.Contains(lane, "response.function_call_arguments.") ||
 		(strings.HasPrefix(lane, "responses.") && (strings.HasSuffix(lane, ".arguments") || strings.HasSuffix(lane, ".arguments.snapshot"))) ||
 		(strings.HasPrefix(lane, "anthropic.block.") && strings.HasSuffix(lane, ".input"))
+}
+
+func isToolArgumentLane(lane string) bool {
+	return isJSONToolArgumentLane(lane) || strings.Contains(lane, ".tool_use.input") ||
+		(strings.HasPrefix(lane, "responses.") && (strings.HasSuffix(lane, ".input") ||
+			strings.HasSuffix(lane, ".custom_input") || strings.HasSuffix(lane, ".custom_input.snapshot")))
 }
 
 func isTrustedSSEHeartbeat(frame []byte) bool {
@@ -309,6 +318,9 @@ func errOrMissingResult(err error) error {
 }
 
 func (it *OutputComplianceInterceptor) shouldRedact(ctx context.Context, callerOwner, sessionID, tenantID string) bool {
+	if it.mandatory {
+		return true
+	}
 	dataOwner := ""
 	if it.ownerFn != nil {
 		dataOwner = it.ownerFn(ctx, sessionID, tenantID)
@@ -394,11 +406,18 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 	checked.root = root
 	incremental := isIncrementalStreamText(root)
 	for _, field := range collectVisibleText(root, true) {
-		original, ok := field.parent[field.key].(string)
+		if field.checkOnly && !it.mandatory {
+			continue
+		}
+		original, ok := field.text()
 		if !ok || original == "" {
 			continue
 		}
-		result, err := it.checker.Check(ctx, meta.TenantID, original)
+		label := field.label
+		if incremental && label == "__tool_json" && !field.checkOnly {
+			label = "__tool_fragment"
+		}
+		result, err := it.checkText(ctx, meta.TenantID, label, original)
 		if err != nil || result == nil {
 			return nil, errOrMissingResult(err)
 		}
@@ -411,13 +430,13 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 			})
 		}
 		if shouldRedact && result.RedactedOutput != "" && result.RedactedOutput != original {
-			if field.immutable {
-				return nil, errors.New("cannot redact signed thinking stream event")
+			if field.immutable || (it.mandatory && (isToolArgumentLane(field.lane) || field.label != "")) {
+				return nil, errors.New("cannot safely rewrite signed or sensitive tool stream event")
 			}
-			if isToolArgumentLane(field.lane) && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
+			if field.label == "__tool_json" && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
 				return nil, errors.New("redacted tool arguments are invalid JSON")
 			}
-			field.parent[field.key] = result.RedactedOutput
+			field.set(result.RedactedOutput)
 			checked.changed = true
 		}
 	}

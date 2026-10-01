@@ -431,6 +431,27 @@ func safeCompressionMeta(raw json.RawMessage, tenantID, sessionID string) map[st
 			if ok && expected != "" && ref == expected {
 				out[key] = ref
 			}
+		case "sanitize_map_generation":
+			if text, ok := boundedHex(value, 32, 32); ok {
+				out[key] = text
+			}
+		case "raw_snapshot", "sanitized_snapshot", "compression_source_snapshot":
+			if snapshot, ok := value.(map[string]interface{}); ok {
+				hash, h := boundedHex(snapshot["hash"], 64, 64)
+				countValue := snapshot["message_count"]
+				if countValue == nil {
+					countValue = float64(0)
+				}
+				count, c := boundedNumber(countValue)
+				tokenValue := snapshot["token_estimate"]
+				if tokenValue == nil {
+					tokenValue = float64(0)
+				}
+				tokens, t := boundedNumber(tokenValue)
+				if h && c && t {
+					out[key] = map[string]interface{}{"hash": hash, "message_count": count, "token_estimate": tokens}
+				}
+			}
 		case "summary_marker", "compressed_prefix_hash":
 			if text, ok := boundedHashLike(value); ok {
 				out[key] = text
