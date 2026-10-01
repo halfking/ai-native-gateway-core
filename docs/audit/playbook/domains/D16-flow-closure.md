@@ -18,13 +18,29 @@
 
 代码入口：
 - `domains/attachments/`、`internal/attachmentmirror/`、`internal/fsstore/`、`internal/requestarchive/`
-- `domains/hostedtask/`、`internal/hostedcallback/`、`internal/outbox/`（mirror_outbox 失败登记+重放）
+- `domains/hostedtask/`、`internal/hostedcallback/`、`internal/outbox/`（**托管回调域**的 mirror_outbox：失败登记+重放，机制完备，见 §2.1 三者辨析）
+- `internal/sessionv2mirror/`（**会话 V2 镜像**：outbox.go + replay.go + backlog.go）
+- `domains/hooks/observability/telemetry/client.go`（消费 `internal/outbox`，属**遥测外发投递**，与下条不同物）
+
+> **⚠ 三处 outbox/无 outbox 的归属必须分清（R87-k 补，2026-10-01）**：
+> 本文件 §2/§3 原先把「mirror_outbox 失败登记+重放」笼统挂在「附件闭环」下，
+> 导致 R85 审计**把 `internal/attachmentmirror` 与 `internal/sessionv2mirror` 当成同一契约来比**，
+> 得出「附件镜像缺 outbox ⇒ 静默丢失」的错误结论。实际是三件不同的事：
+
+| 组件 | 产物 | 有无 outbox | 失败语义 |
+|---|---|---|---|
+| `internal/outbox`（+`dispatcher.go` `SKIP LOCKED`、`replay.go`、DLQ 工具 `cmd/tools/outbox-dlq-replay`） | 遥测**外发投递** | **有，机制完备** | lease + 指数退避 + dead letter + kill switch |
+| `internal/sessionv2mirror` | 会话 V2 **关系化镜像**（用户要读） | **有**（outbox/replay/backlog 三件套） | 重放 |
+| `internal/attachmentmirror` | 附件**关系化镜像**（`request_logs` 的 JSONB 里本就存着同一批） | **无，且是有意的** | **明示 best-effort**：注释原文 "No retry: best-effort contract"；500ms 超时 + 30s flush 预算的硬约束；配 `llm_gateway_shadow_write_failed_total{kind="attachment"}` + 告警 `ShadowWriteAttachmentFailing`（>10/min 持续 5m，runbook 明确） |
 - `internal/orchestration/`
 
 ## 3. 检查清单
 
 1. **三问核对**：窗口内每个新增数据流回答三问——来源（谁写）、去处（哪张表/哪个目录/谁读）、清理（TTL/归档/无界？）；回答不了的 = 发现。
-2. **附件闭环**：上传→解析（多模态抽取）→存储（对象存储/文件）→版本管理（同 key 多版本不覆盖丢史）→请求侧引用（IR 引用可解析）→清理；每环有失败路径与重试；mirror_outbox 失败登记+重放+kill switch 基准不破。
+2. **附件闭环**：上传→解析（多模态抽取）→存储（对象存储/文件）→版本管理（同 key 多版本不覆盖丢史）→请求侧引用（IR 引用可解析）→清理；每环有失败路径；**失败路径的强度按产物重要性分档**（见 §2 代码入口的辨析表）——
+   - 产物是**用户要读的数据**（会话镜像）⇒ 必须有 outbox + 重放；
+   - 产物是**关系化冗余镜像**（附件镜像、telemetry 外发镜像）⇒ 允许 best-effort，**但必须有指标 + 告警**（否则才是「静默丢失」，属缺陷）。
+   **审计要点从「有没有 outbox」改为「失败是否可观测、是否有 runbook」**——这才是本条的真实意图。
 3. **流程闭环**：请求/任务生命周期状态机无不可达终态、无悬挂中间态（超时兜底）；取消传播到全部子操作。
 4. **反馈闭环**：每类反馈（路由反馈、质量反馈、错误反馈、任务回调）有落账点与消费点；只落账无消费 = 登记债。
 5. **hosted task 回调**：任务下发→远端执行→回调/reconciler 对账→状态收敛；网络故障后重推可恢复（已验证基准）；715 迁移的启动链（无镜像时 pending 写入撞 23514 的教训）不复发。
@@ -79,5 +95,6 @@
 - **「版本管理」已满足，勿再上报为缺口**：实际是**内容寻址 + 同 key 多行**（`storage.go:320-329` 命中即跳过写 ⇒ 物理上不可能同 key 异内容；`repository.go:107` 每次新行），本文件 §31 已明文接受「版本号/内容寻址」。**曾据「表里没有 version 列」误判为缺失 —— 那是代理量不是语义量。**
 - **附件明细的真表是 `request_attachments`**：`sql/objects/tables/attachments.sql`（12 列）**全仓无 Go writer**（4 次换范围搜索）。基于该表得出的「无 UNIQUE」观察对事实链路不成立。
 - **闭环断两跳**：① `session_turns` 只有 `attachment_count`/`attachment_total_bytes` 两个**计数**列，`pg_constraint` 实测指向附件表的外键数 = **0**，关联仅靠无约束的 `request_id`；② `admin/data_lifecycle_attachments.go:384-404` 清理**只把 JSONB 置 NULL、从不删 `request_attachments` 行**（函数注释自陈「保留行和元数据」）⇒ 元数据行实际永生 + 归属校验命中已删记录。
-- **镜像写失败无重试无 outbox**：`internal/attachmentmirror/hook.go:59-70`（同仓 `internal/sessionv2mirror` 反而有 `outbox.go`）⇒ 附件镜像静默丢失，与本文件 §2 声称的「mirror_outbox 失败登记+重放」不符。
+- ~~**镜像写失败无重试无 outbox**（`internal/attachmentmirror/hook.go:59-70`，同仓 `internal/sessionv2mirror` 反而有 `outbox.go`）⇒ 附件镜像静默丢失，与本文件 §2 声称的「mirror_outbox 失败登记+重放」不符。~~
+  **【R87-k 订正，见 70 号报告】本条不成立**：(a)「静默丢失」错——有 `slog.Warn` + 指标 + **确实存在且可用的告警** `ShadowWriteAttachmentFailing`（runbook 明确）；(b)「无重试」是**注释明写的 best-effort 契约**；(c) 与 `sessionv2mirror` 的差异**是有意的**（产物重要性不同 + 500ms/30s 硬预算）。**根因是本文件 §2/§3 原文没写清契约边界**，已在上方辨析表与检查清单第 2 条补齐。
 - **SSRF 不成立（已撤回）**：`outbound_url_rewriter.go:81,158` 只拼 `baseURL+Path` 交**供应商**拉取、两者都不受请求方控制；`outbound_fetch_fallback.go:116` 走自身存储且包注释明写「不发起外网 HTTP 请求」。真实风险是 `config.go:26` 默认 `AuthModeNone` 下的**数据暴露**。
