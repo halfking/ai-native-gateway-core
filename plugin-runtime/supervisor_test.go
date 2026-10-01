@@ -88,7 +88,14 @@ func main(){ _=os.WriteFile(os.Getenv("PID_FILE"), []byte("alive"), 0644); time.
 	}
 
 	c := newExecCommand("", helperBin, []string{"PID_FILE=" + pidFile}, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// ctx 的寿命必须覆盖下面 waitForFile 的等待窗口。exec.CommandContext 在
+	// ctx 到期时会**杀掉子进程**：旧写法 ctx=10s 而 waitForFile 等 15s，于是最后
+	// 5 秒是在等一个已经被 ctx 杀掉的进程写的文件，必然等不到。满负载下子进程
+	// 调度慢，10s 还没写完就被杀，这条门就红成「helper process did not start
+	// (no pid file)」——实测单跑 5/5 通过、全量并行下偶发红（整条耗时从 ~1s
+	// 涨到 16.76s，即 15s 全耗在等一个死进程）。同文件下方的优雅停止用例用的
+	// 是 context.Background()，没有这个错配。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := c.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
