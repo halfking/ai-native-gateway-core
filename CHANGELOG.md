@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **附件去重测试注释与代码矛盾（2026-10-01）**：`domains/attachments/storage_test.go` 的 `TestSaveBase64Image_Dedup` 注释原写「不同 request_id，路径含 request_id 所以文件不重叠」，与代码相反（两次都传 `req-1`，路径也不含 request_id），且与紧邻的 `TestSaveBase64Image_HashShardedPathAndLegacyRead` 直接矛盾。注释已订正。测试行为未变。另记：去重只在同一日历月内生效（路径含年月），未做运行期实证。详见 `docs/全面审计v3/2026-10-01/72-R88-审计守卫专用CI门漏登记.md`。
 - **playbook D16 覆盖数字订正（2026-10-01）**：R85 回注里「`domains/attachments` 的 18 个非测试文件」「D16 目录 0 个 `_test.go`」两处均错。实测非测试 23 个（`2a594fea6` 时亦为 23）、测试 13 个（12 个早于 R85 存在）；「D16 目录」指代不明正是误读来源。成立的部分是该域不在 `GUARD_PACKAGES`、无专用审计门。同时把「量化结论必须自己数一遍」写入 `docs/audit/playbook/conventions.md` §10.1。详见 `docs/全面审计v3/2026-10-01/72-R88-审计守卫专用CI门漏登记.md`。
 - **审计守卫的专用 CI 门漏登记 3 个包（2026-10-01）**：`audit-guards-ci.yml` 的守卫步骤硬编码了 7 个包，而 `Makefile` 的 `GUARD_PACKAGES` 已是 10 个——`metricguard`/`partguard`/`routeguard` 从未在该专用 job 里执行；文件里「guards-sync 已校验二者一致」是假的，该脚本从不读任何 CI 文件。CI 改为调用 `make guards`（单一事实源，per-package 日志不受影响）。`guards-sync.sh` 补三跳：登记表条目必须真实存在、CI 不得硬编码守卫包清单、专用门必须仍在；并修正其「全部 7 个已登记」与登记表 10 项不符的自述（`errdiscard`/`dbrows`/`jsoncol` 不以 `guard` 结尾，落在正向检查视野外，现改为告警留痕）。5 项变异全部符合预期含反向对照。详见 `docs/全面审计v3/2026-10-01/72-R88-审计守卫专用CI门漏登记.md`。
 - **live-stream 丢弃计数器的幽灵告警引用（2026-10-01）**：`metrics/interface.go` 与 `metrics/prometheus.go` 两处注释声称与 `deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml` 的告警 label 保持同步，但该文件与其整个目录都不存在，`deploy/` 下也无任何规则消费 `gateway_live_stream_record_dropped_total`。注释改为如实陈述「尚无告警规则」。只改注释，不改行为、不新增告警。详见 `docs/全面审计v3/2026-10-01/71-R87M-live-stream-record-dropped告警核查.md`。

@@ -93,7 +93,16 @@ func TestSaveBase64Image_Dedup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first save: %v", err)
 	}
-	// 相同内容，不同 request_id —— 因为路径含 request_id 所以文件不重叠
+	// 相同内容重复保存 ⇒ 命中去重、返回同一路径。
+	//
+	// R88-e 订正：本行原注释写的是「相同内容，**不同 request_id** —— 因为
+	// **路径含 request_id** 所以文件不重叠」，两处都与事实相反：
+	// (a) 下面两次传的**都是** `req-1`，并非不同 request_id；
+	// (b) 路径**不含** request_id —— 它是 `YYYY/MM/<hash[:2]>/<hash[2:4]>/<hash><ext>`，
+	//     见 `SaveBase64Image` 的 relDir/fileName 构造。
+	// 该错注释会让人以为「跨请求不去重」，而
+	// `TestSaveBase64Image_HashShardedPathAndLegacyRead` 用 req-first/req-second
+	// 恰恰证明了跨请求也返回同一路径。
 	r2, err := s.SaveBase64Image("req-1", uri, 0, 0)
 	if err != nil {
 		t.Fatalf("second save: %v", err)
