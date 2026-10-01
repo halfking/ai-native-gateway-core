@@ -98,9 +98,9 @@ func TestSensenovaFrameIsClientSafe(t *testing.T) {
 	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(out, "data: "), "\n"))
 
 	var chunk struct {
-		RequestID  *string `json:"request_id"`
-		Object     string  `json:"object"`
-		Choices    []struct {
+		RequestID *string `json:"request_id"`
+		Object    string  `json:"object"`
+		Choices   []struct {
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
 	}
@@ -120,6 +120,60 @@ func TestSensenovaFrameIsClientSafe(t *testing.T) {
 	// legal "not finished yet" value.
 	if chunk.Choices[0].FinishReason != nil {
 		t.Fatalf("finish_reason = %q, want JSON null", *chunk.Choices[0].FinishReason)
+	}
+}
+
+// TestSensenovaFrameIsClientSafe_EmptyCatalogCode is the shape of the real
+// 2026-10-01 production path. The request was served by providers row
+// `sensenova-jack` (id 33089), whose catalog_code is EMPTY, so
+// cmd/gateway/main.go's catalog switch never selects a stripFn and the frame
+// relies entirely on top-level field inference. A fix that only registered a
+// "sensenova" case would have looked correct in review and changed nothing in
+// production — this test is the regression guard for that.
+func TestSensenovaFrameIsClientSafe_EmptyCatalogCode(t *testing.T) {
+	line, code, _ := stripChunkFieldsForVendor(sensenovaFirstChunk, "", nil)
+	if code != 0 {
+		t.Fatalf("unexpected vendor error code %d", code)
+	}
+	out := string(NewNormalizer().NormalizeChunk([]byte(line), true))
+	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(out, "data: "), "\n"))
+
+	var chunk struct {
+		RequestID *string `json:"request_id"`
+		Choices   []struct {
+			FinishReason *string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(body), &chunk); err != nil {
+		t.Fatalf("decoded frame is not valid JSON: %v\n%s", err, body)
+	}
+	if chunk.RequestID != nil {
+		t.Fatalf("request_id survived inference-only sanitization: %q", *chunk.RequestID)
+	}
+	if len(chunk.Choices) != 1 || chunk.Choices[0].FinishReason != nil {
+		t.Fatalf("finish_reason is not JSON null: %s", body)
+	}
+}
+
+// TestZhipuResponseBodyStillKeepsRequestID pins the divergence between the two
+// Zhipu surfaces. The response body keeps `request_id` (an existing contract,
+// see strip_realworld_test.go); the streaming chunk drops it. These two field
+// lists look like duplicates and will eventually be "unified" by someone — this
+// test is what makes that unification fail loudly instead of silently regressing
+// either Xcode compatibility or the documented response contract.
+func TestZhipuResponseBodyStillKeepsRequestID(t *testing.T) {
+	body := `{"id":"glm-1","object":"chat.completion","model":"glm-4-plus","request_id":"public-req","zhipu_request_id":"internal","choices":[]}`
+	out := string(StripZhipuFieldsBody([]byte(body)))
+	if !strings.Contains(out, `"request_id":"public-req"`) {
+		t.Fatalf("response body lost its public request_id:\n%s", out)
+	}
+	if strings.Contains(out, "zhipu_request_id") {
+		t.Fatalf("response body kept the internal zhipu_request_id:\n%s", out)
+	}
+
+	chunkOut := string(StripZhipuStreamChunkFieldsBody([]byte(strings.TrimSpace(strings.TrimPrefix(sensenovaFirstChunk, "data: ")))))
+	if strings.Contains(chunkOut, `"request_id"`) {
+		t.Fatalf("stream chunk kept request_id:\n%s", chunkOut)
 	}
 }
 
