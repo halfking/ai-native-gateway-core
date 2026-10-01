@@ -1,5 +1,35 @@
 # 176 号 · R89-CL —— 否定结论：自检 key 与业务 key **不共用限流桶**；09-28 的业务限流另有原因
 
+
+> ## ✅ 177 号已关掉本条（2026-10-01，R89-CM）—— **`Reason` 进了 Prometheus，没进 `request_logs`**
+>
+> 176 号 §三 问：`rate_limit.go` 四个 `Blocked` 分支各带一个 `Reason`，
+> **而 `Reason` 是否被写进 `request_logs` 未核**。**答案：没写。**
+>
+> **① 出口 A（指标）✅ 完整保留**：`rate_limit_metrics.go:8-25` 的
+> `llm_gateway_rate_limit_rejections_total` **带 `reason` 标签**，且 `Reason==""` 时
+> 兜底为 `"unknown"` ⇒ **四种原因 + unknown 全部可分**。
+> **② 出口 B（数据）🔴 只写死一个码**：`handler.go:2286` 的闭包签名是
+> `func(errCode, errMsg string, providerID, credentialID *int)` —— **四个参数，没有 `Reason` 的位置**；
+> 而 `:3229-3234` 里 `recordGatewayRateLimitRejection(rlOutcome)` **带** `rlOutcome`、
+> `captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)` **不带**
+> ⇒ **同一个 `rlOutcome`，两条出口待遇不同**
+> ⇒ **`queue_budget_exceeded` ×2 / `queue_full` / `bucket_timeout` 全部塌缩成
+> `error_kind='rate_limit_exceeded'`。**
+>
+> **③ 🔴 这就是我 171–173 号误判的确切根源**：171 号写「不知道触发的是并发/速率/预算哪种闸门」
+> —— **不是代码没记，是它记在另一个出口**；
+> **176 号「09-28 那 1,274 次是配额还是背压」同样永远查不出**，
+> **必须查 `/metrics` 的 `llm_gateway_rate_limit_rejections_total{reason=...}`**。
+> **⇒ 属「可观测性不对称」缺陷（新增待裁决 71，P3）**，但**代价已经付过** ——
+> **审计方因此连续四轮走错方向（171→176）。**
+>
+> **④ 修法（不擅自动手）**：给闭包加 `reason` 参数并透传进 `errCode`（改 1 个签名 + 2 个调用点）
+> —— ⚠️ **`error_kind` 取值面变大，既有看板若写死 `WHERE error_kind='rate_limit_exceeded'` 会漏值**
+> ⇒ **属对外可见的数据契约，需产品/运维确认**。
+>
+> 详见 [177 号](177-R89CM-指标侧分得清数据侧分不清-Reason只进了Prometheus.md)（playbook §70）。
+
 > **日期**：2026-10-01
 > **轮次**：R89-CL（第 76 轮，审计第 176 号）
 > **类型**：**纯否定结论**（175 号 §五 那个疑问的答案）+ 一条仍未定的观察
