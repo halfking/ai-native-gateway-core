@@ -14,7 +14,7 @@
 | 残留 scratch 数据库 | 10（且泄漏检查误报 0） | **0** |
 | 门禁包参数打错时的诊断 | 「该包没有 integration 测试」（指错方向） | go list 原始错误 + 明确区分 |
 
-唯一剩下的 1 个 FAIL 是 `TestMigration715FreshChainApplyMigrations`。**本轮没有把它变绿**，并且推翻了它原有的归因——见 §4。
+唯一剩下的 1 个 FAIL 是 `TestMigration715FreshChainApplyMigrations`。**本轮没有把它变绿**，推翻了它原有的归因，并修掉了其中两层成因——见 §4 与 §4A。
 
 两项变异验证均按预期转色，且 M1 精确复现了修复前的 6 FAIL（§5）。
 
@@ -170,7 +170,93 @@ ERROR: table "request_logs_2026_07" contains column "application_id"
 
 ---
 
-## 5. 变异验证
+## 4A. 追加：715 FreshChain 的第二层定位（本轮后续，仍未变绿）
+
+§4 停在「成因是重放器」。本轮继续往下挖，机制闭合了，但**测试仍然 FAIL**。
+
+### 4A.1 同一个输入，两次运行报不同的错误
+
+把 `execTolerantSnapshot` 的致命错误改成报出出错语句后，它自报家门：
+
+```
+snapshot statement #2297 (chunk 2274, offset 23) failed:
+ERROR: cannot attach index "credential_model_index_2026_0_bucket_credential_id_raw_mod_idx2"
+       as a partition of index "credential_model_index_bucket_cred_model_key"  (SQLSTATE 55000)
+```
+
+而**上一次运行**报的是 `42804`。同一份 `01-schema.sql`、同一个空库起点，两次给出两个
+完全不同的致命 SQLSTATE。这本身就排除了「某条 DDL 有确定性问题」这个解释。
+
+### 4A.2 executor 没有复刻它声称要复刻的语义
+
+`execTolerantSnapshot` 的注释写着「复刻 init-local-db 的 psql（无 ON_ERROR_STOP）语义」，
+但实现是**遇到第一个不在容忍名单里的 SQLSTATE 就 return**。psql 报错后是继续往下走的。
+
+这不只是提前退出：容错地跳过一条 `CREATE` 会留下半成品对象，使后面某条语句以一个
+**不在名单里**的 SQLSTATE 失败——于是失败点取决于哪条语句先被跳过，也就解释了 4A.1 的不确定性。
+
+**已修**：降级路径不再因任何服务端 SQL 错误中止；只有非服务端错误（连接/协议层）才中止。
+被容忍的错误按 SQLSTATE 汇总 `t.Logf` 出来，不静默。
+`isIgnorableSnapshotError` 整张名单随之删除——它编码的是「提前中止」这个错误前提。
+
+### 4A.3 真正的隔离缺口：它在往装满的库上灌全新安装快照
+
+改完 executor 后，引导跑完了，并报出它的真实状态：
+
+```
+execTolerantSnapshot: tolerated 1705 statement errors while replaying chunks:
+  42P07 x1046, 42P16 x168, 42710 x141, 42723 x103, 42703 x98, 42P01 x60,
+  55000 x59, 42809 x28, 42804 x2
+```
+
+**42P07「relation already exists」占 1046 条**。这不是引导噪声，这是快照被灌在了一个
+**已经装满 435 relations 的门禁库**上。715 FreshChain 与本轮修掉的另外五个是同一个病：
+它也假设自己有一个全新的空库，而门禁递给它的是 installer 形态库。
+
+**已修**：同样接入 `testdb.Create`。改用空库后，引导的容忍统计**整行消失**——零错误通过。
+42804、55000、42P07×1046 全部是这一个原因在不同语句上的表现。
+
+### 4A.4 剩下的最后一层，以及为什么不补
+
+现在它跑到 `db.Open` 才失败，错误干净且具体：
+
+```
+create idx_session_aggregate_outbox_done_completed_at:
+ERROR: relation "public.session_aggregate_outbox" does not exist  (SQLSTATE 42P01)
+```
+
+原因清楚了：生产全新安装是三步，本测试只做了两步。
+
+```
+生产：  00-prereqs + 01-schema 快照
+   →   安装器注册的 198 条启动迁移（session_aggregate_outbox 由 630 建）
+   →   二进制启动链 db.Open（ensure* 链）
+本测试：00-prereqs + 01-schema 快照 → db.Open          ← 少了中间那一步
+```
+
+门禁脚本自己的注释早就记过这件事（GATE_APPLY_STARTUP 段落：「baseline alone is missing
+tables that only migrations create (session_aggregate_outbox via 630 …) 」）。
+
+**本轮不补**，理由具体：注册清单在独立 Go module `installer/` 的 `dbinit.StartupFiles`，
+根 module 的测试无法 import；而 `sql/migrations/startup/` 下有 **793 个** `.sql`
+（含 `.down.sql` 与未注册的历史文件），按文件名排序全量灌是错的。
+从测试里解析 `installer` 的 Go 源码来取清单属于脆弱做法，不做。
+
+可行的补法（留给下一轮择一）：
+1. 把注册清单抽成数据（如生成的 TSV），安装器与测试共用一份——顺带解决 §9-6 的双份问题；
+2. 或者由门禁注入一个「已装到 714 态」的库，测试只验 389→715 这一段升级；
+3. 或者在 installer module 内加这条测试（它能直接 import `dbinit`）。
+
+### 4A.5 当前状态（合并后复跑，稳定可复现）
+
+```
+sql/migrations/startup   exit=1  PASS=172  SKIP=0  FAIL=1
+唯一 FAIL: TestMigration715FreshChainApplyMigrations  (8.48s)
+失败点:  db.Open -> 42P01 public.session_aggregate_outbox does not exist
+itgate% 数据库 0，itgate% 角色 0
+go test ./sql/schema/  ok
+```
+
 
 ### M1：摘掉隔离 → 应回到修复前的 6 FAIL
 
@@ -239,8 +325,10 @@ mustLandInScratch 触发 6 次（"DSN resolves to database …, want the scratch
 
 ## 8. 未完成 / 明确不做
 
-- **`TestMigration715FreshChainApplyMigrations` 仍 FAIL**。成因已定位到 `execTolerantSnapshot`
-  的重放器（§4），未修。修它需要改这个容错执行器的语义，是独立一笔。
+- **`TestMigration715FreshChainApplyMigrations` 仍 FAIL**。已修两层（executor 语义 + 隔离缺口，
+  见 §4A），剩最后一层：它漏了「安装器注册的 198 条启动迁移」这一步，`db.Open` 报
+  42P01 `public.session_aggregate_outbox does not exist`。补法需要跨 Go module 拿注册清单，
+  三个选项列在 §4A.4，本轮刻意未做。
 - **§9-5** amd64 `kx-citus-pg17` 镜像：依赖外部镜像构建基础设施，本机 arm64，CI job 仍常年红（未假装变绿）。
 - **§9-6** 基线双份统一：R43 已对账 2612 vs 6354 对象（ADDED 3759 / MISSING 17），本轮仍刻意延期。
   §4 顺带证明了一件事：`01-schema.sql` **本身能干净应用**，所以「快照列漂移」不在待办里，
