@@ -7,7 +7,9 @@
 --    ERROR: column t.origin_actor does not exist。**这个 down 只用于验证回滚路径，
 --    不要在生产执行**——那等于把 R79 续十六 定位的 P1 原样装回去。
 
-CREATE OR REPLACE VIEW public.session_turns_with_current_month AS
+CREATE OR REPLACE VIEW public.session_turns_with_current_month
+WITH (security_invoker = true)   /* 713 体本就携带；down 撤投影不撤加固 */
+AS
  SELECT hot.id,
     hot.session_id,
     hot.turn_no,

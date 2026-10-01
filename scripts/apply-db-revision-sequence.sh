@@ -702,6 +702,24 @@ files=(
   # COMMENT ON（重复执行覆盖注释，无副作用）。位置约束同 StartupFiles：
   # 必须晚于 733（建表与分区）与 801（同族），故排在序列末尾。
   "$ROOT_DIR/sql/migrations/startup/802_session_turn_details_gw_task_id_index.sql"
+  # 2026-10-01 fresh-install e2e 轮（803-806，canonical 收编四件）：首批登
+  # 记进本清单——本轮实证它们此前只进 installer StartupFiles，存量库的
+  # sequence 通道是断链的（fresh-install e2e 轮 §五.1「跑脚本会顺带应用 803-806」与当时
+  # 的清单不符）。
+  #   803 candidate_failure_logs hot 列对账 / 804 credential_model_bindings
+  #   context_window 列：均 ALTER TABLE IF EXISTS + ADD COLUMN IF NOT
+  #   EXISTS，存量库 no-op。
+  #   805 session_dim 全形：CREATE TABLE IF NOT EXISTS + 索引 IF NOT EXISTS
+  #   + RLS policy DROP IF EXISTS+CREATE（按生产真库 2026-10-01 实测形态
+  #   重建，存量库语义不变）。位置约束（fresh 链内须先于 683）只约束
+  #   installer 通道；本清单的服务对象是存量库，session_dim 皆已存在。
+  #   806 session_bodies columnar 分区转 heap：仅对「非 heap 且为空」分区
+  #   动手；生产/本机 session_bodies 分区全 heap，循环为空集零动作。位置
+  #   约束：晚于 708（其 S1A 结构），已满足。
+  "$ROOT_DIR/sql/migrations/startup/803_candidate_failure_logs_hot_column_reconcile.sql"
+  "$ROOT_DIR/sql/migrations/startup/804_credential_model_context_window_columns.sql"
+  "$ROOT_DIR/sql/migrations/startup/805_session_dim_reconcile.sql"
+  "$ROOT_DIR/sql/migrations/startup/806_session_bodies_partitions_heap.sql"
   # 2026-10-01 审计十七轮（807）：request_logs_bodies_hot 删除被同列 UNIQUE
   # 索引 idx_request_logs_bodies_hot_request_id（455/678 建，承重
   # ON CONFLICT (request_id) upsert）全量影蔽的冗余普通索引。DROP INDEX
