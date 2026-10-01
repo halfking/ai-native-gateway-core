@@ -109,11 +109,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
 | `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
 | `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
-| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 764) |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 809) |
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 
-Scale snapshot (2026-10-01 code scan): **~4,500 Go files · 2,278 test files · 927 migration SQLs · 67 domain packages · 34 binaries** under `cmd/`.
+Scale snapshot (2026-10-01 code scan): **~4,600 Go files · 2,421 test files · 945 migration SQLs · 67 domain packages · 34 binaries** under `cmd/`.
 
 **Deeper reading**
 

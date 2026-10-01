@@ -91,6 +91,11 @@ type CachedIntent struct {
 	// 复用，避免同会话每轮重算；角色变化时 Decide/DecideV2 主动失效。
 	Role AgentRole
 	Kind TaskKind
+	// RoleFallbackLayer（R52, 2026-10-01）role 偏好命中的层（"kind"/
+	// "mainstream"）。必须随缓存一起复用：首轮把轻量层整层缺席兜底到
+	// 主流模型后，后续缓存轮若取不到这个字段，该会话在审计里就表现成
+	// "没走过兜底"——主流层用量被系统性低估。空串 = 未启用/未命中。
+	RoleFallbackLayer string
 }
 
 // SessionIntentCache is a thread-safe in-memory cache of per-session

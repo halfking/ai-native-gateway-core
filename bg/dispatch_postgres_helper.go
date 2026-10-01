@@ -39,6 +39,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testschema"
 )
 
 // DispatchPostgresContainer returns an isolated Postgres pool with the
@@ -94,11 +96,21 @@ func DispatchPostgresContainer(t *testing.T, ctx context.Context, extraSchema st
 	}
 
 	if dsn := os.Getenv("TEST_PG_URL"); dsn != "" {
+		// A caller that hands us a schema is building its own tables, and on
+		// the gate's fully-migrated public schema those collide with
+		// SQLSTATE 42P07. Give it a private schema instead: the objects land
+		// there, shadow production via search_path, and drop on cleanup.
+		//
+		// Callers that pass an EMPTY schema want the real database untouched,
+		// so they keep the plain pool. Isolating them would silently point
+		// their production-shaped reads at an empty schema.
+		if extraSchema != "" {
+			return testschema.NewWithSchema(t, dsn, extraSchema)
+		}
 		pool, err := openPool(dsn)
 		if err != nil {
 			t.Fatalf("connect TEST_PG_URL: %v", err)
 		}
-		execSchema(pool)
 		return pool, func() { pool.Close() }
 	}
 	container, err := postgres.Run(ctx, "postgres:16-alpine",
