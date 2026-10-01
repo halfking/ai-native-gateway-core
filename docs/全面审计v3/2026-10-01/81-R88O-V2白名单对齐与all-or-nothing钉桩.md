@@ -142,3 +142,51 @@ M3 删 `pre_sanitize_offset_range` 越界判断），并按 §9.4 第 1 步确�
 - 未核实 `maxMetadataRecords`（4096）超限时整段丢弃是否也该可观测——
   形态同上，**未验证**。
 
+## 8. 【R88-q 关闭 §7 第 2 项】查实：**两条生产路径的封顶策略不一致**
+
+### 8.1 V2 的 4096 上限在 chat/messages 车道**不可达**（双重保险）
+
+- V1 `buildOutboundProvenance` 在 `request_log_pipeline.go:1517` 就地封顶
+  `maxRecords = 256`，并在截断时打 `alignment_map_truncated` / `sanitize_refs_truncated`；
+- V2 `safeAlignmentRecords` 的上限是 `maxMetadataRecords = 4096`（**16 倍余量**）；
+- ⇒ 正常路径下 `len(items) <= 256 < 4096`，**V2 那条丢弃分支永远走不到**。
+
+### 8.2 但**存在第二个生产者**，它没有任何封顶 ⇒ 分支可达
+
+`domains/streaming/executors/executor_responses_provenance.go:45`
+`recordResponsesInputTrimMeta` 写 `payload["alignment_map"] = alignment`，
+数据来自 `compression.BuildResponsesAlignmentMap(before, after)`
+（`responses_alignment.go:76` → `buildAlignmentMapWithExtractor`）。
+**该函数内部除 nil 输入外无任何 cap/limit。**
+
+产物确实汇入同一个 `compression_meta`：
+`executor_chat.go:1684`
+`CompressionMeta: mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta))`
+⇒ 进 `request_logs.compression_meta` ⇒ 被 `sessionv2mirror` 读到 ⇒ 进 `safeAlignmentRecords`。
+
+### 8.3 后果（比「静默」多一层）
+
+一个 **input item 数 > 4096 的合法 responses 请求**：
+
+1. V1 这条路径**不截断、不打 `*_truncated` 标记**（标记是 chat 车道的逻辑）；
+2. V2 `safeAlignmentRecords` 判 `len(items) > 4096` ⇒ **整段丢弃**；
+3. **连 `*_truncated` 标记也一起没了**——因为整个 key 都没进 V2。
+
+⇒ 运维在 V2 上既看不到映射，也看不到「被丢弃了」这个事实，
+**两个车道对同一份数据的可观测性完全不同**。
+
+### 8.4 定级与建议（本轮不改）
+
+**P3**：fail-closed 方向没错，且落的是**纯观测**数据（不参与路由、不影响客户端观感）。
+但**不对称本身是可修的**：让 responses 车道沿用 chat 车道的 256 封顶 +
+`*_truncated` 标记，即可同时做到 ① V2 的 4096 分支变回不可达
+② 标记能随 key 一起进 V2 ③ 顺带约束 JSONB 体积。
+
+**未实施的理由**：改它会改变 `compression_meta` 的**落库内容**（外部可查的
+JSONB 字段），属读数变更 ⇒ 登记**待裁决第 33 条**，主代理不擅自动手。
+
+**明确未验证**：本轮**未测量**真实的 responses 请求 input item 数分布，
+因此**「>4096 实际发生率」未知**。§8.3 描述的是**可达性**，
+不是**已发生的事实**——按 `conventions.md` §9.2，不得把可达性直接说成影响面。
+
+
