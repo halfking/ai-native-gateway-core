@@ -102,7 +102,12 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 
 	actor := requestActor(r)
 	if err := logAuditExec(ctx, h.db, actor, action, details); err != nil {
-		slog.Debug("routing audit insert failed (best-effort)", "action", action, "error", err.Error())
+		// Warn 而非 Debug：持续性插入失败（DB 故障/权限）在 Debug 级零可见
+		// 痕迹，正是 routing_audit_log "行空"疑案唯一能在代码里成立的机制
+		// （24h 审计第二十八轮复核——reorder 主路径本身 fail-closed 无恙，
+		// 其余 7 处 best-effort 调用点依赖这条日志可观测）。r.Context() 已
+		// 被上方的独立 2s ctx 隔离，业务响应不受影响。
+		slog.Warn("routing audit insert failed (best-effort)", "action", action, "actor", actor, "error", err.Error())
 	}
 }
 

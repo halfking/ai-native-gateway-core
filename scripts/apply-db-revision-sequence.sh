@@ -421,6 +421,15 @@ files=(
   # session_module_executions 实际复发一次 473 类边界漂移（42P17），本迁移
   # 除根。纯 CREATE OR REPLACE FUNCTION + 账本 upsert，幂等收敛；714 编号
   # 已核对本机与 origin/main 双侧空闲。
+  # 2026-10-02 24h 审计第二十八轮（534 canonical 收编）：handoff_logs_hot 列存
+  # 改造此前只进 installer StartupFiles（fresh 链 baseline-gap 簇），存量库的
+  # sequence 通道断链——809 触发「最高编号必须在 files 数组」预提交门红 60 提交
+  # 时才现形（该守卫只盯最高编号，534 静默漏网）。头注明示 legacy heap/已升级
+  # 252/fresh baseline 三形态 safe to replay。位置硬约束（clobber guard 实证）：
+  # 其 ensure_handoff_logs_partition 与 714 同名异体，必须先于 714——714 的
+  # handoff_logs 腿本就是 534 columnar 体的时区钉扎版，倒序会让 534 旧体覆盖
+  # 714 钉扎体（deploy exit 5）。
+  "$ROOT_DIR/sql/migrations/startup/534_handoff_logs_hot_columnar.sql"
   "$ROOT_DIR/sql/migrations/startup/714_partition_timezone_pin_remaining.sql"
   # 2026-09-17 R33 审计（通道登记补齐）：715 route_incidents pending state。
   # bba08b922 引入 StatePending、6f3d03073 接线 Go-ensure（ensure 的 CHECK/
@@ -727,6 +736,20 @@ files=(
   # 走非事务通道；幂等（IF EXISTS + NOTICE skipping）。位置约束：晚于
   # 455/678（保留侧创建者），排在序列末尾。
   "$ROOT_DIR/sql/migrations/startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql"
+  # 2026-10-02 24h 审计第二十八轮（612/808/809，canonical 收编三件）：
+  # 本轮独立复审发现 809 接线时未登记本清单——预提交门「最高编号必须在
+  # files 数组」红了 60 个提交（提交方绕过）；且该守卫只盯最高编号，
+  # 612/808 两条静默漏网（同 803-806 批注的断链形态：只进 installer
+  # StartupFiles，存量库的 sequence 通道拿不到）。三条对存量库均可重放：
+  #   612 native_responses_capability：CREATE TABLE IF NOT EXISTS 幂等。
+  #   808 request_logs DEFAULT 分区兜底：存在性检查 + NOTICE skipping。
+  #   809 instance_release_status nullable release_id：DROP NOT NULL +
+  #     偏索引 IF NOT EXISTS，重放 no-op。
+  # 534 亦同批收编但位次受 clobber guard 约束——其 ensure_handoff_logs_partition
+  # 与 714 同名异体，必须先于 714（见 714 条目上方）；见 710/714 之间。
+  "$ROOT_DIR/sql/migrations/startup/612_native_responses_capability.sql"
+  "$ROOT_DIR/sql/migrations/startup/808_request_logs_default_partition.sql"
+  "$ROOT_DIR/sql/migrations/startup/809_instance_release_status_nullable_release_id.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -761,6 +784,11 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 534 (24h 审计第二十八轮 canonical 收编) 引入 ensure_handoff_logs_partition
+  # 的 columnar 体；714 的 handoff_logs 腿是同一函数的 Asia/Shanghai 时区钉扎版
+  # （DECLARE 初始化器移入函数体）。714 必须保持为后项——与 699/703 的
+  # V371-track 同型：钉扎版必须是活库里的最终体。
+  'ensure_handoff_logs_partition|534_handoff_logs_hot_columnar.sql|714_partition_timezone_pin_remaining.sql|'
   # 563 restores the hot trigger with the corrected unbounded-numeric ratio
   # body; 661 re-asserts the same fixed body AFTER 563 and validates the
   # function source. 572 must stay before 563; 661 must stay last.

@@ -541,7 +541,11 @@ func tryLLMContextCompaction(ctx context.Context, deps *Dependencies, clientProf
 		}
 		summary, sErr = guardGeneratedText(ctx, strings.TrimSpace(summary))
 		if sErr != nil {
-			slog.Warn("compaction: generated summary rejected")
+			// 带 attempt/model 与 error：区分"正确拦截敏感内容"与"guard 配置
+			// 漂移导致全部候选被拒、压缩质量静默降级"（24h 审计第二十八轮）。
+			slog.Warn("compaction: generated summary rejected",
+				"attempt", i+1, "of", len(candidates),
+				"compact_model", cand.RawModel, "error", sErr)
 			continue
 		}
 		if summary == "" {
@@ -626,7 +630,9 @@ func SummarizeConversation(ctx context.Context, deps *Dependencies, protocol str
 		}
 		summary, sErr = guardGeneratedText(ctx, strings.TrimSpace(summary))
 		if sErr != nil {
-			slog.Warn("compaction: generated summary rejected")
+			slog.Warn("summarize_conversation: generated summary rejected",
+				"attempt", i+1, "of", len(candidates),
+				"compact_model", cand.RawModel, "error", sErr)
 			continue
 		}
 		if summary != "" {

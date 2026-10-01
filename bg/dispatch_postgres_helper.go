@@ -164,18 +164,44 @@ func DispatchPostgresContainer(t *testing.T, ctx context.Context, extraSchema st
 // production and the test would seed the private schema.
 //
 // With a private database the two names coincide, so the test is honest either way.
+//
+// 24h 审计第二十八轮（2026-10-02，遗留#1 收口）：补上无 TEST_PG_URL 时的
+// standalone 回落（起一次性容器，其默认库即全新空库），使
+// DispatchPostgresDatabase 不再是"仅 gate 可用"——直跑 `go test -tags
+// integration` 与 gate 派生库走同一形态。四个 listener 测试自此改走本
+// helper：私有库里 public 与夹具重合，DML 的 public. 限定名落夹具自身，
+// 不再打门禁库的生产形态表（fb3d938dc 遗留的"隔离只做了 DDL 一半"）。
 func DispatchPostgresDatabase(t *testing.T, ctx context.Context, schema string) (*pgxpool.Pool, func()) {
 	t.Helper()
 	dsn := os.Getenv("TEST_PG_URL")
-	if dsn == "" {
-		t.Fatalf("DispatchPostgresDatabase requires TEST_PG_URL; this helper is for the " +
-			"shared-gate path only (a standalone run has no base database to derive one from)")
+	if dsn != "" {
+		// testdb.Create derives an empty database, registers its DROP on t,
+		// and verifies the DSN really resolves to it.
+		dsn = testdb.Create(t, dsn)
+	} else {
+		// Standalone run: a one-off container's default database is already
+		// a fresh, empty database — no need to derive another one.
+		var stopContainer func()
+		dsn, stopContainer = startDispatchPostgresContainer(t, ctx)
+		pool, err := openDispatchPool(t, ctx, dsn)
+		if err != nil {
+			stopContainer()
+			t.Fatalf("open standalone container pool: %v", err)
+		}
+		if schema != "" {
+			if _, err := pool.Exec(ctx, schema); err != nil {
+				pool.Close()
+				stopContainer()
+				t.Fatalf("exec schema: %v", err)
+			}
+		}
+		return pool, func() {
+			pool.Close()
+			stopContainer()
+		}
 	}
-	// testdb.Create derives an empty database, registers its DROP on t, and
-	// verifies the DSN really resolves to it.
-	scratch := testdb.Create(t, dsn)
 
-	pool, err := pgxpool.New(ctx, scratch)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect scratch database: %v", err)
 	}
@@ -192,4 +218,66 @@ func DispatchPostgresDatabase(t *testing.T, ctx context.Context, schema string) 
 		}
 	}
 	return pool, func() { pool.Close() }
+}
+
+// startDispatchPostgresContainer boots the one-off postgres container used
+// when TEST_PG_URL is unset, terminating it on startup failure so the next
+// test isn't blocked by a dangling docker resource. Returns the DSN of its
+// default (fresh, empty) database.
+func startDispatchPostgresContainer(t *testing.T, ctx context.Context) (string, func()) {
+	t.Helper()
+	container, err := postgres.Run(ctx, "postgres:16-alpine",
+		postgres.WithDatabase("auto_route_listener"),
+		postgres.WithUsername("auto_route_listener"),
+		postgres.WithPassword("auto_route_listener"),
+	)
+	if err != nil {
+		t.Fatalf("start postgres: %v", err)
+	}
+	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		t.Fatalf("connection string: %v", err)
+	}
+	stop := func() {
+		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer terminateCancel()
+		if err := container.Terminate(terminateCtx); err != nil {
+			t.Errorf("terminate postgres: %v", err)
+		}
+	}
+	return dsn, stop
+}
+
+// openDispatchPool wraps the 30-attempt pgxpool.New+Ping retry used by the
+// container paths (Docker Desktop's mapped TCP socket occasionally resets
+// the first probe while postgres is still firing its "ready" log).
+func openDispatchPool(t *testing.T, ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	t.Helper()
+	var (
+		pool *pgxpool.Pool
+		err  error
+	)
+	for attempt := 0; attempt < 30; attempt++ {
+		pool, err = pgxpool.New(ctx, dsn)
+		if err == nil {
+			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+			pingErr := pool.Ping(pingCtx)
+			pingCancel()
+			if pingErr == nil {
+				return pool, nil
+			}
+			pool.Close()
+			err = pingErr
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return nil, err
 }

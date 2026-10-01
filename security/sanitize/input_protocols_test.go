@@ -20,6 +20,10 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 		name, path, body string
 		wantRefs         int
 		wantPlaceholders int
+		// 每个载体放唯一敏感值并逐值断言：messageRef 对未变更 item 也计数，
+		// refs/占位符计数钳不住"单类型退回 default 直通"的回归（第二十八轮
+		// 变异验证实测），逐值 NotContains 才是承重断言。
+		notWant []string
 	}{
 		{
 			name: "chat content blocks", path: "/v1/chat/completions",
@@ -42,6 +46,28 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 			name: "responses reasoning summary", path: "/v1/responses",
 			body:     `{"model":"m","input":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"user phone 13812345678"}],"encrypted_content":"enc-13800138000-opaque"}]}`,
 			wantRefs: 1, wantPlaceholders: 1,
+		},
+		{
+			// 第二十八轮 A1 钉测：known 输出承载型 item 全族必须入洗——
+			// custom_tool_call_output.output / mcp_call.arguments+output /
+			// web_search_call.action.query / file_search_call.queries+results[].text。
+			// 每个载体唯一敏感值 + 逐值 NotContains（见 notWant 注释）。
+			name: "responses output-bearing item families", path: "/v1/responses",
+			body: `{"model":"m","input":[` +
+				`{"type":"custom_tool_call_output","call_id":"c1","output":"phone 13800138001"},` +
+				`{"type":"mcp_call","id":"mcp_1","status":"completed","arguments":"{\"q\":\"call 13800138002\"}","output":"mail a@b.com"},` +
+				`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"call 13800138003"}},` +
+				`{"type":"file_search_call","id":"fs_1","status":"completed","queries":["call 13800138004"],"results":[{"file_id":"f1","text":"phone 13912345678"}]}]}`,
+			wantRefs:         4,
+			wantPlaceholders: 6,
+			notWant: []string{
+				"13800138001", // custom_tool_call_output.output
+				"13800138002", // mcp_call.arguments
+				"a@b.com",     // mcp_call.output
+				"13800138003", // web_search_call.action.query
+				"13800138004", // file_search_call.queries
+				"13912345678", // file_search_call.results[].text
+			},
 		},
 		{
 			name: "completions prompt array", path: "/v1/completions",
@@ -72,6 +98,9 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 			require.True(t, hasInfo)
 			require.Len(t, info.MessageRefs, tc.wantRefs)
 			require.Equal(t, tc.wantPlaceholders, info.Stats.PlaceholderCount)
+			for _, secret := range tc.notWant {
+				require.NotContains(t, string(forwarded), secret)
+			}
 			require.NotContains(t, string(forwarded), `"text":"call 13800138000"`)
 			if tc.path == "/v1/completions" {
 				require.NotContains(t, string(forwarded), "13800138000")

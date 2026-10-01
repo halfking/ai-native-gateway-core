@@ -98,6 +98,50 @@ func TestNativeResponsesNonStreamRestoresTextAndJSONArguments(t *testing.T) {
 	require.Equal(t, "opaque-value", got.Vendor["opaque"])
 }
 
+// 第二十八轮 A3 钉测：输入侧 reasoning_text（以及回传的 search/mcp item）已入洗，
+// 上游模型学舌占位符时恢复侧必须覆盖同一批类型——否则残留 {SENSITIVE: 会命中
+// 输出守卫整响应 block（可用性损失）。
+func TestNativeResponsesRestoresReasoningContentAndSearchItems(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	const tenant, session = "tenant-responses-28", "responses-session-28"
+	require.NoError(t, rdb.HSet(context.Background(), sanitizeMapKey(tenant, session), map[string]any{
+		"{SENSITIVE:phone:1}": "13800138000",
+	}).Err())
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, time.Minute)
+	require.NoError(t, err)
+	body := []byte(`{"object":"response","id":"resp_28","output":[` +
+		`{"type":"reasoning","summary":[{"type":"summary_text","text":"look at {SENSITIVE:phone:1}"}],"content":[{"type":"reasoning_text","text":"echo {SENSITIVE:phone:1}"}]},` +
+		`{"type":"mcp_call","id":"mcp_1","status":"completed","arguments":"{\"q\":\"{SENSITIVE:phone:1}\"}","output":"found {SENSITIVE:phone:1}"},` +
+		`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"who is {SENSITIVE:phone:1}"}},` +
+		`{"type":"file_search_call","id":"fs_1","status":"completed","queries":["{SENSITIVE:phone:1}"],"results":[{"file_id":"f1","text":"hit {SENSITIVE:phone:1}"}]}]}`)
+	result, err := it.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		TenantID: tenant, SessionID: session, ClientProtocol: "openai-responses", ResponseBody: body,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.ShouldBlock)
+	var got struct {
+		Output []map[string]any `json:"output"`
+	}
+	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
+	reasoning := got.Output[0]
+	require.Equal(t, "look at 13800138000", reasoning["summary"].([]any)[0].(map[string]any)["text"])
+	require.Equal(t, "echo 13800138000", reasoning["content"].([]any)[0].(map[string]any)["text"])
+	mcp := got.Output[1]
+	var mcpArgs map[string]any
+	require.NoError(t, json.Unmarshal([]byte(mcp["arguments"].(string)), &mcpArgs))
+	require.Equal(t, "13800138000", mcpArgs["q"])
+	require.Equal(t, "found 13800138000", mcp["output"])
+	ws := got.Output[2]["action"].(map[string]any)
+	require.Equal(t, "who is 13800138000", ws["query"])
+	fs := got.Output[3]
+	require.Equal(t, "13800138000", fs["queries"].([]any)[0])
+	require.Equal(t, "hit 13800138000", fs["results"].([]any)[0].(map[string]any)["text"])
+	require.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
+}
+
 func TestNativeNonStreamRestoreTenantScopeAndUnsafeBodies(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	const session = "same-session"

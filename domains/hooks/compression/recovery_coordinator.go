@@ -197,6 +197,12 @@ func (rc *RecoveryCoordinator) Recover(
 		s, ok := rc.deps.Summarizer(ctx, body, protocol)
 		if ok {
 			guarded, err := guardGeneratedText(ctx, s)
+			if err != nil {
+				// 此前完全无日志：LLM 摘要被 guard 拒绝后静默回退机械路径，
+				// 压缩质量降级零可见（24h 审计第二十八轮）。
+				slog.Warn("recovery: generated summary rejected, falling back to mechanical",
+					"error", err)
+			}
 			s, ok = guarded, err == nil
 		}
 		if ok && s != "" {

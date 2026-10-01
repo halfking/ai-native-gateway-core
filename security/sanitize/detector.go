@@ -238,17 +238,3 @@ func (d *CompositeDetector) Detect(ctx context.Context, text string) ([]Sensitiv
 	})
 	return all, nil // Preserve overlaps for the sanitizer's union merge.
 }
-
-// deduplicateFragments 去重：按起始位置去重，保留先出现的类型
-func deduplicateFragments(fragments []SensitiveFragment) []SensitiveFragment {
-	if len(fragments) == 0 {
-		return fragments
-	}
-	result := make([]SensitiveFragment, 0, len(fragments))
-	for _, f := range fragments {
-		if len(result) == 0 || f.Start != result[len(result)-1].Start {
-			result = append(result, f)
-		}
-	}
-	return result
-}

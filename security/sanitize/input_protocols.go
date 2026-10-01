@@ -296,6 +296,11 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 		field = "arguments"
 	case "custom_tool_call":
 		field = "input"
+	case "custom_tool_call_output":
+		// Sibling of function_call_output: a custom tool's plaintext return
+		// value the client replays on the next turn (24h 审计第二十八轮 A1,
+		// 2026-10-02).
+		field = "output"
 	case "", "message":
 		field = "content"
 	case "reasoning":
@@ -304,7 +309,20 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 		// verified leak (12h 审计第二十七轮 N1, 2026-10-02). encrypted_content
 		// is provider ciphertext and is not inspected.
 		return s.sanitizeReasoningItem(raw, item)
+	case "mcp_call":
+		// arguments (JSON tool payload) + output (plaintext tool result) both
+		// carry client-echoed text; the rest is provider metadata.
+		return s.sanitizeMcpCallItem(raw, item)
+	case "web_search_call":
+		// action.query is the replayed search text.
+		return s.sanitizeWebSearchCallItem(raw, item)
+	case "file_search_call":
+		// queries[] and results[].text are replayed plaintext.
+		return s.sanitizeFileSearchCallItem(raw, item)
 	default:
+		// Unknown item types still pass through (allowlist design); each new
+		// plaintext-bearing type must be added here. Known output-bearing
+		// families are covered above; item_reference (id-only) is harmless.
 		return raw, false, nil
 	}
 	value, ok := item[field]
@@ -345,6 +363,128 @@ func (s *requestInputSanitizer) sanitizeReasoningItem(raw json.RawMessage, item 
 		if didChange {
 			item[field] = updated
 			changed = true
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	out, err := json.Marshal(item)
+	return out, changed, err
+}
+
+// mcp_call 携带 arguments（JSON 字符串或结构化工具入参）与 output（工具返回
+// 明文），都是客户端回传的正文；approval_request_id / server_label 是元数据不动。
+func (s *requestInputSanitizer) sanitizeMcpCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	changed := false
+	if value, ok := item["arguments"]; ok {
+		updated, didChange, err := s.sanitizeToolValue(value, 0)
+		if err != nil {
+			return nil, false, err
+		}
+		if didChange {
+			item["arguments"], changed = updated, true
+		}
+	}
+	if value, ok := item["output"]; ok {
+		updated, didChange, err := s.sanitizeContent(value)
+		if err != nil {
+			return nil, false, err
+		}
+		if didChange {
+			item["output"], changed = updated, true
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	out, err := json.Marshal(item)
+	return out, changed, err
+}
+
+// web_search_call 的 action.query 是客户端回传的检索明文；action 其余字段与
+// item 级 id/status 是元数据不动。
+func (s *requestInputSanitizer) sanitizeWebSearchCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	actionRaw, ok := item["action"]
+	if !ok {
+		return raw, false, nil
+	}
+	var action map[string]json.RawMessage
+	if err := json.Unmarshal(actionRaw, &action); err != nil || action == nil {
+		return nil, false, fmt.Errorf("%w: web_search_call action object required: %v", errInvalidSanitizeInput, err)
+	}
+	query, ok := action["query"]
+	if !ok {
+		return raw, false, nil
+	}
+	updated, didChange, err := s.sanitizeText(query)
+	if err != nil {
+		return nil, false, err
+	}
+	if !didChange {
+		return raw, false, nil
+	}
+	action["query"] = updated
+	actionOut, err := json.Marshal(action)
+	if err != nil {
+		return nil, false, err
+	}
+	item["action"] = actionOut
+	out, err := json.Marshal(item)
+	return out, true, err
+}
+
+// file_search_call 回传检索参数与命中结果：queries[]（字符串数组）与
+// results[].text（明文）入洗；file_id / attributes / score 等元数据不动。
+func (s *requestInputSanitizer) sanitizeFileSearchCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	changed := false
+	if value, ok := item["queries"]; ok {
+		var queries []json.RawMessage
+		if err := json.Unmarshal(value, &queries); err != nil {
+			return nil, false, fmt.Errorf("%w: file_search_call queries array: %v", errInvalidSanitizeInput, err)
+		}
+		qChanged := false
+		for i, q := range queries {
+			updated, didChange, err := s.sanitizeText(q)
+			if err != nil {
+				return nil, false, err
+			}
+			if didChange {
+				queries[i], qChanged = updated, true
+			}
+		}
+		if qChanged {
+			out, err := json.Marshal(queries)
+			if err != nil {
+				return nil, false, err
+			}
+			item["queries"], changed = out, true
+		}
+	}
+	if value, ok := item["results"]; ok {
+		var results []map[string]json.RawMessage
+		if err := json.Unmarshal(value, &results); err != nil {
+			return nil, false, fmt.Errorf("%w: file_search_call results array: %v", errInvalidSanitizeInput, err)
+		}
+		rChanged := false
+		for _, result := range results {
+			text, ok := result["text"]
+			if !ok {
+				continue
+			}
+			updated, didChange, err := s.sanitizeText(text)
+			if err != nil {
+				return nil, false, err
+			}
+			if didChange {
+				result["text"], rChanged = updated, true
+			}
+		}
+		if rChanged {
+			out, err := json.Marshal(results)
+			if err != nil {
+				return nil, false, err
+			}
+			item["results"], changed = out, true
 		}
 	}
 	if !changed {
@@ -407,6 +547,10 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 	switch kind {
 	case "text", "input_text", "output_text", "reasoning_text", "summary_text", "":
 		field = "text"
+	case "refusal":
+		// Replayed assistant refusal plaintext lives in the refusal field;
+		// restore side mirrors both refusal and text fields.
+		field = "refusal"
 	case "tool_result":
 		field = "content"
 	case "tool_use":

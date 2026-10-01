@@ -154,6 +154,40 @@ func (it *SanitizeRestoreInterceptor) restoreNativeResponsesBody(ctx context.Con
 				}
 				changed = changed || didChange
 			}
+		case "mcp_call":
+			didChange, err := it.restoreNativeArgumentField(ctx, item, "arguments", sm, false)
+			if err != nil {
+				return false, true, err
+			}
+			changed = changed || didChange
+			didChange, err = restoreNativeTextField(ctx, it.sanitizer, item, "output", sm)
+			if err != nil {
+				return false, true, err
+			}
+			changed = changed || didChange
+		case "web_search_call":
+			if action, ok := item["action"].(map[string]any); ok {
+				didChange, err := restoreNativeTextField(ctx, it.sanitizer, action, "query", sm)
+				if err != nil {
+					return false, true, err
+				}
+				changed = changed || didChange
+			}
+		case "file_search_call":
+			for _, field := range []string{"queries", "results"} {
+				value, ok := item[field]
+				if !ok {
+					continue
+				}
+				restored, didChange, err := restoreNativeNestedValue(ctx, it.sanitizer, value, sm, 0)
+				if err != nil {
+					return false, true, err
+				}
+				if didChange {
+					item[field] = restored
+					changed = true
+				}
+			}
 		}
 	}
 	return changed, true, nil
@@ -168,7 +202,7 @@ func (it *SanitizeRestoreInterceptor) restoreNativeContentBlocks(ctx context.Con
 		}
 		typ, _ := block["type"].(string)
 		switch typ {
-		case "text", "input_text", "output_text", "summary_text":
+		case "text", "input_text", "output_text", "reasoning_text", "summary_text":
 			didChange, err := restoreNativeTextField(ctx, it.sanitizer, block, "text", sm)
 			if err != nil {
 				return false, err
