@@ -72,6 +72,28 @@ func TestAutoRouteSettleBaselinesExcludeSyntheticActors(t *testing.T) {
 	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
 	defer cleanup()
 
+	// The three tables below are written UNQUALIFIED on purpose. The fixture
+	// DDL (settleWorkerSchema / affinityWorkerSchema) is unqualified too, so it
+	// lands in this test's per-test schema, and the code under test reads these
+	// tables unqualified as well — measured 2026-10-02:
+	//
+	//	bg/auto_route_settle_worker.go   FROM request_logs_hot, JOIN request_logs_hot,
+	//	                                 FROM auto_route_selections_hot,
+	//	                                 UPDATE auto_route_selections_hot
+	//	bg/auto_route_affinity_worker.go FROM request_logs_hot, JOIN request_logs_hot
+	//
+	// These statements used to say `public.…`, which sent them to the PRODUCTION
+	// table on the gate database instead of the fixture — measured as
+	// "null value in column "tenant_id" of relation "request_logs_hot"
+	// violates not-null constraint" (23502), a constraint the fixture table does
+	// not have. De-qualifying is the fix, and it is NOT a vacuous one: the
+	// product queries resolve through search_path to the same per-test schema
+	// the fixture was created in.
+	//
+	// Do NOT copy this to a test whose code under test hardcodes `public.`.
+	// domains/dispatch/policy_publisher.go:224 is `FROM public.credentials`, so
+	// de-qualifying bg/policy_publisher_e2e_test.go would seed a table the
+	// product never reads — a green that proves nothing.
 	mustExec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, sql, args...); err != nil {
@@ -81,7 +103,7 @@ func TestAutoRouteSettleBaselinesExcludeSyntheticActors(t *testing.T) {
 	// A real row with sane signals next to a synthetic row with extreme
 	// signals: if the origin_actor filter regresses, the p95/p75 cohort
 	// baselines jump to the synthetic values.
-	mustExec(`INSERT INTO public.request_logs_hot
+	mustExec(`INSERT INTO request_logs_hot
 		(request_id, success, latency_ms, cost_usd, task_type, is_auto_request, origin_actor, ts)
 		VALUES
 		('req-real-b', TRUE, 1000, 1.0, 'code', TRUE, 'user-app', NOW()),
@@ -120,16 +142,16 @@ func TestAutoRouteSettleBatchMrLateralExcludesSyntheticActors(t *testing.T) {
 	// One settled selection whose session contains exactly two logged turns:
 	// the real one and a goal-audit shadow round sharing gw_session_id +
 	// canonical_id. The mr LATERAL must count only the real turn.
-	mustExec(`INSERT INTO public.request_logs_hot
+	mustExec(`INSERT INTO request_logs_hot
 		(request_id, success, latency_ms, cost_usd, canonical_id, tenant_id, gw_session_id, task_type, is_auto_request, origin_actor, routing_attempts, ts)
 		VALUES
 		('req-sel', TRUE, 800, 0.5, 7, 't1', 'gs_sess1', 'code', TRUE, 'user-app', '[{"a":1}]', NOW()),
 		('req-goal', TRUE, 900, 0.6, 7, 't1', 'gs_sess1', 'code', TRUE, 'goal-audit', '[{"a":1},{"a":2}]', NOW())`)
 	// Session summary claims BOTH turns: only with the filter does the real
 	// model carry 1/2 = 0.5 < 0.8 (no session attribution).
-	mustExec(`INSERT INTO public.session_summaries (session_key, health_score, error_count, request_count)
+	mustExec(`INSERT INTO session_summaries (session_key, health_score, error_count, request_count)
 		VALUES ('gs_sess1', 100, 0, 2)`)
-	mustExec(`INSERT INTO public.auto_route_selections_hot
+	mustExec(`INSERT INTO auto_route_selections_hot
 		(request_id, task_type, canonical_id, ts, session_id)
 		VALUES ('req-sel', 'code', 7, NOW() - INTERVAL '10 minutes', 'gs_sess1')`)
 
@@ -148,7 +170,7 @@ func TestAutoRouteSettleBatchMrLateralExcludesSyntheticActors(t *testing.T) {
 
 	var reward float64
 	var source string
-	if err := pool.QueryRow(ctx, `SELECT reward, reward_source FROM public.auto_route_selections_hot WHERE request_id='req-sel'`).Scan(&reward, &source); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT reward, reward_source FROM auto_route_selections_hot WHERE request_id='req-sel'`).Scan(&reward, &source); err != nil {
 		t.Fatalf("read settled row: %v", err)
 	}
 	if source != "request" {
@@ -160,7 +182,7 @@ func TestAutoRouteSettleBatchMrLateralExcludesSyntheticActors(t *testing.T) {
 	}
 	// The synthetic turn itself must NOT have produced a settled selection.
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM public.auto_route_selections_hot WHERE request_id='req-goal'`).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM auto_route_selections_hot WHERE request_id='req-goal'`).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 0 {
@@ -188,14 +210,14 @@ func TestAutoRouteSettleBatchSkipsSyntheticActorSelections(t *testing.T) {
 	//
 	// Insert three selections: one real user request, one goal shadow round,
 	// one internal loopback. Each has a logged request_log with success=TRUE.
-	mustExec(`INSERT INTO public.request_logs_hot
+	mustExec(`INSERT INTO request_logs_hot
 		(request_id, success, latency_ms, cost_usd, canonical_id, tenant_id, task_type, is_auto_request, origin_actor, ts)
 		VALUES
 		('req-real', TRUE, 1000, 1.0, 42, 't1', 'chat', TRUE, '', NOW()),
 		('req-goal', TRUE, 1100, 1.1, 43, 't1', 'chat', TRUE, 'goal-model-switch', NOW()),
 		('req-loop', TRUE, 1200, 1.2, 44, 't1', 'chat', TRUE, 'auto-title-generator', NOW())`)
 
-	mustExec(`INSERT INTO public.auto_route_selections_hot
+	mustExec(`INSERT INTO auto_route_selections_hot
 		(request_id, task_type, canonical_id, ts, session_id)
 		VALUES
 		('req-real', 'chat', 42, NOW() - INTERVAL '10 minutes', NULL),
@@ -224,7 +246,7 @@ func TestAutoRouteSettleBatchSkipsSyntheticActorSelections(t *testing.T) {
 
 	// Verify the real request got a reward
 	var realReward *float64
-	if err := pool.QueryRow(ctx, `SELECT reward FROM public.auto_route_selections_hot WHERE request_id='req-real'`).Scan(&realReward); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT reward FROM auto_route_selections_hot WHERE request_id='req-real'`).Scan(&realReward); err != nil {
 		t.Fatalf("read real reward: %v", err)
 	}
 	if realReward == nil {
@@ -237,7 +259,7 @@ func TestAutoRouteSettleBatchSkipsSyntheticActorSelections(t *testing.T) {
 	for _, reqID := range []string{"req-goal", "req-loop"} {
 		var settledAt *time.Time
 		var reward *float64
-		if err := pool.QueryRow(ctx, `SELECT settled_at, reward FROM public.auto_route_selections_hot WHERE request_id=$1`, reqID).Scan(&settledAt, &reward); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT settled_at, reward FROM auto_route_selections_hot WHERE request_id=$1`, reqID).Scan(&settledAt, &reward); err != nil {
 			t.Fatalf("read %s: %v", reqID, err)
 		}
 		if settledAt == nil {

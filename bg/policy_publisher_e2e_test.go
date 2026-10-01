@@ -95,7 +95,12 @@ func TestPolicyPublisherE2EAppliesRevisionToLiveCredForwarder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migration 566: %v", err)
 	}
-	pool, cleanup := DispatchPostgresContainer(t, ctx, policyPublisherE2EPrerequisites+"\n"+string(migration566))
+	// DispatchPostgresDatabase, not DispatchPostgresContainer: the code under test
+	// says `FROM public.credentials` (domains/dispatch/policy_publisher.go:224), so the
+	// fixture must BE public.credentials. A private per-test schema would leave the
+	// product reading production while this test seeded the fixture, and the
+	// resulting green would measure nothing.
+	pool, cleanup := DispatchPostgresDatabase(t, ctx, policyPublisherE2EPrerequisites+"\n"+string(migration566))
 	defer cleanup()
 
 	const (
