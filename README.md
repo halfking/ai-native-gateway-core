@@ -6,9 +6,9 @@
 [![Go](https://img.shields.io/badge/Go-1.27+-00ADD8.svg)](https://golang.org)
 [![Version](https://img.shields.io/badge/version-2.5.x-green.svg)](CHANGELOG.md)
 
-**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+**English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [Français](README.fr.md) | [Español](README.es.md) | [العربية](README.ar.md)
 
-[Quick Start](#quick-start) • [Core Values](#-four-core-values) • [Architecture](#-architecture-at-a-glance) • [Session Governance](#-session-governance) • [Feature Preview](#-product-feature-preview) • [Comparison](#-differentiation--comparison) • [Roadmap](ROADMAP.md)
+[Quick Start](#-quick-start) • [Core Values](#-four-core-values) • [Architecture](#-architecture-at-a-glance) • [Session Governance](#-session-governance) • [Feature Preview](#-product-feature-preview) • [Comparison](#-differentiation--comparison) • [Roadmap](ROADMAP.md)
 
 ---
 
@@ -147,6 +147,16 @@ All modules below are shipped and running in the k3s production deployment. Scre
 
 ![Dashboard Request Stream](docs/assets/screenshots/dashboard-request-stream.png)
 *Live request stream grouped by processing queue, with dispatch-chain stats (in-flight, p50/p95 latency, node availability) and per-model node health*
+
+### Statistics Board — Usage & Cost at a Glance
+
+![Statistics Board](docs/assets/screenshots/dashboard-board.png)
+*Board tab of the dashboard: hero metrics (requests / tokens / cost / credits charged), RPM · TPM · latency, key/model/provider counts, and the provider cost & procurement section — the fee-settlement view embedded in the board (captured 2026-10, v2.5.8)*
+
+### Fee Settlement — Provider Cost & Procurement
+
+![Provider Cost Settlement](docs/assets/screenshots/provider-cost-settlement.png)
+*Provider cost cards (window cost, credits charged, balance/plan) and the per-provider usage table — requests, tokens, cost (USD), credits, success rate — settlement-grade cost accounting inside the statistics board, exportable to Excel*
 
 ### Routing Panorama — Two-Layer Routing, Fully Observable
 

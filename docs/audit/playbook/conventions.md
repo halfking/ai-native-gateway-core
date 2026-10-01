@@ -589,3 +589,134 @@ WHERE NOT EXISTS(…session_turns_hot…) AND NOT EXISTS(…session_turns…)
 
 **同族**：§10（读 SQL WHERE）、§10.1（量化结论自己数一遍，数不可信就不引用）。
 **§10.1 说「自己数一遍」，§19 补上「数出来的那个东西要先确认它是什么」。**
+
+---
+
+## §20 共享 SQL 片段 helper 会让「grep 列名判断隔离」彻底失效
+
+**规则**：判断某个读端点/函数**有没有做租户隔离**时，
+**禁止**用「函数体里是否出现 `tenant_id` / `org_id` / `user_id`」这类字面量筛查。
+先问：**这个项目的隔离是不是由共享 helper 以 SQL 片段形式注入的？**
+如果是，字面量筛查**必然产出假阴性**，且假阴性会伪装成「一批真缺陷」。
+
+**证据（我自己证伪自己的检测手段，2026-10-01 R89-y，112 号）**：
+我枚举 `admin/handler.go:898` 的 `RegisterRoutes`（**105 个 `admin(...)` + 57 个 `superAdmin(...)`**），
+对 154 个 `admin(...)` 端点取 handler 函数体，筛出 36 个直接读
+`request_logs|usage_ledger|session_turns` 的，再按「有无 `tenant_id`」标注
+⇒ **8 个候选「无租户过滤」**，看起来是一份很有说服力的缺陷清单。
+
+**读原文后至少 3 个是假阳性**：
+
+| 候选 | 证伪依据 |
+|---|---|
+| `handleCompressionStats` | `admin/compression_stats.go` **有 3 处** `tenantLogsClause(` / `IsTenantAdmin(` 调用；`admin/compression_sessions.go:3-6` 甚至在文件头写明这条契约 |
+| `handleRoutingRecentModelFailures` | 读 `node_probe_runs` / `passive_probe_state`——**节点级表不是租户级表**，「无 tenant_id」是设计正确 |
+| `handleStats` | 实际在 `*RouteIncidentsHandler` / `*WorkTypeHandlers` 上，不是 `*Handler`；**「按函数名索引」把不同接收者混并了** |
+
+根因（`admin/session_tenant.go:12-16` 自陈）：`tenantLogsClause` 返回的是
+**SQL AND-fragment**（`" AND tenant_id = $N"`），**拼进 WHERE 字符串**，
+所以 handler 函数体里**永远看不到该列名**。
+
+**怎么落地**：
+- 判隔离前，先 `grep -rn "func.*Clause(r \*http.Request" ` 一类**返回 SQL 片段的 helper**，
+  以及 `Is<Scope>Admin` / `Effective<Scope>ID` 这类**返回租户标识的 helper**。
+  它们存在 ⇒ 字面量筛查作废。
+- **按函数名建索引时必须带接收者**（`func (h *T) Name`），
+  否则同名方法跨类型混并（本次就踩了）。
+- **判「表是不是租户级」先看表本身**：节点级/全局级表（`node_probe_runs`）
+  没有 `tenant_id` 是**正确的**，不是缺陷。
+- **这类筛选的输出默认不采信**，除非逐个读原文坐实。
+  本轮唯一坐实的真缺陷（`swim-lane-init`）是**独立读 SQL 原文**发现的，
+  **不是那次筛选的战果**——这个区分必须写清楚，否则会把一次失效的方法
+  包装成一次成功的审计。
+
+**判据**：**筛查工具产出的「一批整齐的候选」越可信，越要先证伪工具本身。**
+整齐来自工具的假设，不是来自代码的事实。
+
+**同族**：§16（grep 引用数有毒）、§17（构造函数不可见）、§19（名字像表的不一定是表）。
+**共同点：全都是「检索计数/字面量匹配」这一类便宜手段的失效形态，
+而失效方向都是「把事实判错」而不是「查不到」。**
+
+---
+
+## §21 「无 guard」≠「没有闸门」：helper 名单本身也必须先枚举全
+
+**规则**：用「函数体里是否出现闸门 helper 名」做隔离筛查时，
+**闸门名单必须先从代码里枚举全**，不能只列自己记得的那几个。
+否则筛出的「无 guard」**只是「我没听说过这个 helper」**。
+
+**证据（2026-10-01 R89-z，113 号，接 §20）**：
+§20 让我否定了「grep `tenant_id`」的筛查。R89-z 改用「函数体是否出现
+`tenantLogsClause|IsTenantAdmin|EffectiveTenantID|requireSessionTaskAccess|assertTaskInTenant`」
+这个**自造名单**重筛，36 个读租户表的 handler 里 9 个「无 guard」。
+**读原文后 8 个是假阳性**：
+
+| 候选 | 真实原因 |
+|---|---|
+| `handleDataLifecycleAttachments` 等 **5 个** | 用的是**第三种命名的闸门** `attachmentTenantScope`（`admin/data_lifecycle_attachments.go:78-83`），实现正确：tenant_admin → `GetTenantID(r)`（取自身份），super_admin + 显式参数 → 收窄，否则不过滤 |
+| `handleRoutingRecentModelFailures` | 读节点级表 `node_probe_runs`/`passive_probe_state` |
+| `handleStats`（`*RouteIncidentsHandler`） | **根本没有 SQL**，只读内存 store 计数器（`active`/`recovering`/`recovered_24h`） |
+| `handleDataLifecycleMetrics` | 纯 `COUNT(*)` + `pg_total_relation_size` 聚合，无租户维度（仅全库行数/体积暴露，低危，登记不判缺陷） |
+
+**⇒ 确认跨租户读的只有 1 个**（`HandleSwimLaneInit`，112 号已坐实）。
+**筛选法连续两轮（§20、§21）都先证伪了自己**，但第二轮把 36 个收敛到了 **1 个真缺陷**——
+**这正是「机械筛只能用来缩小范围，最后一个必须读原文」的证明**：
+若停在「9 个候选」就发报告，会凭空造出 8 个缺陷。
+
+**怎么落地**：
+- 找闸门 helper 的正确顺序：**先 `grep -rn "AND tenant_id = \|AND .*_id = \$" --include=*.go`**
+  （找所有**拼 SQL 片段**的地方），再回溯它们的函数名。
+  **先找形态（返回 SQL 片段的 helper），再取名字**，而不是凭印象列名字。
+- 同一个仓库里闸门**通常不止一个**（本仓至少 3 个命名：`tenantLogsClause` /
+  `attachmentTenantScope` / 各文件自带的 scope builder），**命名不统一是常态**。
+- 筛到「无 guard」后，**先问「这个表是租户级表吗」**（§20 已记），
+  再问「这个函数真的有 SQL 吗」（本轮 `handleStats` 就没有）。
+
+**同族**：§16（grep 引用数有毒）、§17、§19、§20。
+**共同点升级**：前四条是「检索命中数被判错」，§21 是**「连检索词表本身都可能是错的」**——
+**任何自造的名单（helper 名、类型名、列名）在使用前都要先证明它全**。
+
+---
+
+## §22 「零导入」是相对量：基准必须写明，否则同一包有三种身份
+
+**规则**：判定「某包是死代码，因为它零导入」时，
+**必须先声明基准是「仓库内所有 `package main` 的依赖图」**。
+用 `./cmd/gateway`（主二进制）或 `./cmd/...`（按目录猜）都会得出**不同的、且部分错误的**结论。
+
+**证据（连错两次，2026-10-01 R89-AA，114 号）**：
+
+| 基准 | 零导入数 | 错在哪 |
+|---|---|---|
+| `./cmd/gateway` 依赖图 | 59 | **把运维工具包误判为死代码** |
+| `./cmd/...` 全部 main 包 | 55 | 漏掉 `examples/`、`tests/` 下的 main 包 |
+| **`go list -f '{{if eq .Name "main"}}…' ./...`（57 个 main 包）** | **45** | ✅ |
+
+- **第一次错**抓到 `domains/ursm/v2/migration`（**3,778 行，最大的零导入包**）——
+  它实际被 `cmd/k2-migrate-ursm/main.go` 与 `cmd/ursm-k2-preflight/main.go` 消费，
+  是**运维迁移工具包**，按设计不进 server 二进制。
+  **按「零导入 = 死代码」删掉，会删掉一整套 K2 迁移工具。**
+- **第二次错**抓到 `domains/intentconfig`（1,824 行）——
+  手工 grep 得到外部 import 方 2 个但仍在零导入名单里，
+  因为那 2 个在 **`examples/intent_analysis_demo` 与 `tests`** 下：
+  **是 main 包，但不在 `./cmd/` 目录里。**
+
+**正确枚举**（不要按目录猜）：
+```bash
+go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... | grep -v '^$'
+for m in <结果>; do go list -deps "$m"; done | grep '^<module>/' | sort -u
+comm -13 reachable.txt allpkgs.txt        # 真·零导入
+```
+
+**怎么落地**：
+- 引用任何「N 个零导入包」的数字，**必须同时给出基准**；
+  没有基准的数字**不可复现、不可采信**（本仓已有一个：105 号的「31」）。
+- 归类时先问三句：**① 有没有 main 包消费它？② 消费它的是 server 还是运维/示例工具？
+  ③ 它的 README/注释是否明写「等集成者」？** 三句都答完再谈 A/B/C。
+- 排除「非运行时」时也要写明排除项（CI guard / SQL 目录 / deploy 配置），
+  否则数字无法被别人复算。
+
+**同族**：§12（codegraph 死代码判定不可信）、§16（grep 引用数有毒）、
+§17（构造函数不可见）、§20（共享 SQL 片段 helper）、§21（helper 名单本身可能不全）。
+**这一族全是「便宜的死代码判定手段」的失效形态**：
+§22 是其中最贵的一个失效——**它不是判错某一个包，而是让整份清单按错误的身份分类。**
