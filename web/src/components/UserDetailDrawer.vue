@@ -14,6 +14,7 @@ import { isSuperAdmin } from '../store'
 import StatCard from './ui/StatCard.vue'
 import AppDrawer from './ui/AppDrawer.vue'
 import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
+import { useRaceGuard } from '../composables/useRaceGuard'
 
 export interface DrawerUser {
   id: number
@@ -46,22 +47,25 @@ const stats = ref<UserStats | null>(null)
 const loading = ref(false)
 const errorText = ref('')
 
-let fetchGen = 0
+// 代际号防竞态（2026-10-01 第十八轮 ④ 收敛至 useRaceGuard，原内联实现
+// 见 useReconciliationPage.ts 样板）：快速切换 user/days 时旧响应后到不得
+// 覆盖新结果；组件卸载后 in-flight 响应一律作废。
+const race = useRaceGuard()
 async function load() {
   if (!props.user) return
-  const gen = ++fetchGen
+  const gen = race.begin()
   loading.value = true
   errorText.value = ''
   stats.value = null
   try {
     const next = await getUserStats(props.user.id, days.value)
-    if (gen !== fetchGen) return
+    if (race.stale(gen)) return
     stats.value = next
   } catch (e: unknown) {
-    if (gen !== fetchGen) return
+    if (race.stale(gen)) return
     errorText.value = e instanceof Error ? e.message : '加载用户统计失败'
   } finally {
-    if (gen === fetchGen) loading.value = false
+    if (race.current(gen)) loading.value = false
   }
 }
 

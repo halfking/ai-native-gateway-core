@@ -213,6 +213,7 @@ import LogManagement from './data-lifecycle/LogManagement.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import { formatNumberLocale } from '../utils/format'
 
 const { t } = useI18n()
 
@@ -257,7 +258,7 @@ const degradationRef = ref<any>(null)
 let chartInstance: Chart | null = null
 let themeObserver: MutationObserver | null = null
 
-function formatNumber(n: number): string { return n.toLocaleString(localeRef.value) }
+function formatNumber(n: number): string { return formatNumberLocale(n, localeRef.value) }
 function getTenantPercent(rows: number): number {
   if (!stats.value || stats.value.total_rows === 0) return 0
   return (rows / stats.value.total_rows) * 100

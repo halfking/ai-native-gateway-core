@@ -1,5 +1,6 @@
 // useReconciliationPage.ts — query, filters, and derived rows for the reconciliation page.
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRaceGuard } from '../../composables/useRaceGuard'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -59,8 +60,10 @@ export function useReconciliationPage() {
     tenant_id: typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined,
     person: typeof route.query.person === 'string' ? route.query.person : undefined,
   })
-  let fetchGen = 0
-  let dimsFetchGen = 0
+  // 2026-10-01 第十八轮 ④：fetchGen 样板收敛为 useRaceGuard（本文件曾是
+  // 内联样板的源头）。两个守卫独立计数——主查询与 dims 共号会互相作废。
+  const reportRace = useRaceGuard()
+  const dimsRace = useRaceGuard()
   let applyingRoute = false
 
   const showCost = computed(() => isPlatformOpsView())
@@ -99,7 +102,7 @@ export function useReconciliationPage() {
   ])
 
   async function refresh() {
-    const gen = ++fetchGen
+    const gen = reportRace.begin()
     loading.value = true
     errorText.value = ''
     try {
@@ -110,31 +113,31 @@ export function useReconciliationPage() {
         detail: false,
         ...cleanFilters(filters.value),
       })
-      if (gen !== fetchGen) return
+      if (reportRace.stale(gen)) return
       report.value = next
     } catch (err: unknown) {
-      if (gen !== fetchGen) return
+      if (reportRace.stale(gen)) return
       errorText.value = err instanceof Error ? err.message : String(err)
       report.value = null
     } finally {
-      if (gen === fetchGen) loading.value = false
+      if (reportRace.current(gen)) loading.value = false
     }
   }
 
   async function refreshDimensions() {
     // 与主查询共用 reload() 并发触发，代际号须独立计数（共号会互相作废）；
     // 快速切 range/view 时旧 dims 响应后到不得覆盖。
-    const gen = ++dimsFetchGen
+    const gen = dimsRace.begin()
     dimsLoading.value = true
     try {
       const next = await getReportDimensions({ start: range.value[0], end: range.value[1], view: view.value })
-      if (gen !== dimsFetchGen) return
+      if (dimsRace.stale(gen)) return
       dims.value = next
     } catch {
-      if (gen !== dimsFetchGen) return
+      if (dimsRace.stale(gen)) return
       dims.value = null
     } finally {
-      if (gen === dimsFetchGen) dimsLoading.value = false
+      if (dimsRace.current(gen)) dimsLoading.value = false
     }
   }
 
