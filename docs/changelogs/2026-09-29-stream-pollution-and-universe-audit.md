@@ -776,3 +776,214 @@ handler **一个字节都不写**，直接阻塞到客户端断开。线上 `2d7
 需把 `download` / `acc` / `llm` 三个 vhost 也改走 `active-upstream.conf`、
 排空 8781 之后，该缺口才闭合。这属于改 245 生产流量路由的操作，
 须单独立项、单独排期并准备回滚步骤，**不在本轮范围内**。
+
+### 2026-10-01 10:30 补记：服务端/代理侧假设已穷举排除，只剩客户端
+
+对「浏览器那条连接 0 字节」逐条排除，**每条都带独立实测**：
+
+| 假设 | 实测 | 判定 |
+| --- | --- | --- |
+| 空 replay 导致首帧被 gate 掉 | 一次性测试：0 字节成立，但 `nodeTicker` 2 秒补 `node_update` | 真实但自愈，**非成因** |
+| nginx 对 SSE 开了 gzip、响应压进缓冲区 | 154 的 `gzip_types` 不含 `text/event-stream`；带浏览器完整头（含 `Accept-Encoding: gzip, deflate, br, zstd` + `Origin`）实测**无 `Content-Encoding`**，**首字节 0.060s**，25 秒 17,094,239 字节 / 26 帧 | **证伪** |
+| HTTP/2 单域名 6 条并发流被旧标签页占满 | 154 侧 `/live-stream/stats` 的 `active_clients: 0`，浏览器出口 IP 只有 4 条 ESTABLISHED TCP | **证伪** |
+| 服务端对该身份不下发节点 | 超管 19.6 MB / 租户 24.0 MB，均含 `initial_data` + `node_update` | **证伪** |
+
+**结论**：服务端、nginx 配置、HTTP/2 配额、身份/scope 四条路径全部排除后，
+剩下的唯一解释是 **Electron 内置浏览器客户端自己断开了 EventSource** ——
+与后端日志 `live stream initial replay failed err="context canceled"`（客户端在
+replay 开始前就断了）以及 renderer 最终白屏完全一致。
+
+**这是环境故障，不是在被验收功能的生产表现。** 第 2 项的截图验收改由用户在
+普通 Chrome 中完成（判据已用生产数据验过，见上节）。
+
+### 2026-10-01 10:29 补记：candidates 不变式的真实目录门实跑通过（此前一直是 SKIP）
+
+`TestResolveCandidatesInvariant_Live` 此前每轮都输出
+`TEST_RESOLVE_INVARIANT_DB_URL not set — SKIPPING … A skip is NOT evidence`。
+本轮把 DSN 接上，**对着真实目录实跑通过**：
+
+```
+routing_resolve_invariant_test.go:247: invariant verified for 957/957 catalog models
+--- PASS: TestResolveCandidatesInvariant_Live (12.26s)
+```
+
+**扫描量从 958 变成 957** —— 09-29 那次的 958/958 证据在目录规模上已经过期，
+这正是「必须重跑而不是引用旧数字」的又一个例子。门是只读的
+（只 SELECT `models_canonical` 并复现 resolve 查询），耗时 12 秒。
+
+#### 顺带定案的拓扑事实：三台环境共用同一个 PG
+
+| 环境 | 主机 | `LLM_GATEWAY_DATABASE_URL` 指向 |
+| --- | --- | --- |
+| 154 生产 | `47.97.111.154` | `172.16.2.210` |
+| 245 预发布 | `8.136.114.245` | `172.16.2.210` |
+| 252 dev | `115.29.212.252` | `172.16.2.210`（此前记录的 PG17） |
+
+即**生产、预发布、dev 共用同一个 PG 集群**。推论：任何"在预发布验证数据库相关改动"
+的说法都要重新掂量——三者本就在同一个库上。
+
+#### 这条门怎么跑（记下来，下轮别再 SKIP）
+
+本机到 `172.16.2.210:5432` **TCP 可达**（`nc -z` 成功），但 PG 握手直接
+`unexpected EOF`，加 `sslmode=disable` 也一样 ⇒ 内网入口对来源有拦截，**不能从 Mac 直连**。
+
+可行做法（DSN 不经过本机，密码不出内网）：
+
+```bash
+# 1) 本地交叉编译测试二进制
+GOOS=linux GOARCH=amd64 go test -c -o /tmp/admin_inv.test ./admin/
+# 2) 送到 245
+scp -P 25022 /tmp/admin_inv.test root@8.136.114.245:/tmp/
+# 3) 在 245 上用它自己的 env 跑
+ssh -p 25022 root@8.136.114.245 'chmod +x /tmp/admin_inv.test && \
+  TEST_RESOLVE_INVARIANT_DB_URL=$(grep -E "^LLM_GATEWAY_DATABASE_URL=" /etc/llm-gateway-go/env | head -1 | sed -E "s/^[^=]*=//; s/^\"//; s/\"$//") \
+  /tmp/admin_inv.test -test.run "TestResolveCandidatesInvariant_Live" -test.v'
+```
+
+#### 另一条钉住门的复跑（当前树）
+
+- `go build ./...` / `go vet ./admin/` 通过
+- `go test ./admin/` **全包 ok（77.47s）** —— 在合并了并发会话的 R44
+  全仓实跑、autoupdate testschema 护栏等改动之后的当前树上
+- `TestResolveRawModelsStillLeak`：`PASS`，输出
+  `[glm-5.3-flash glm-5-3-flash glm-5.3 glm-5-3]`，与生产实测逐字一致
+- 生产未变：`build_seq 2356` / `git_sha 2d750fb4`
+
+### 2026-10-01 10:35 补记：把「数据层判据」推到「面板标题」的最后一环也补上了
+
+前面的 `aliasOwner` 验证只覆盖到**归属裁决函数**。面板最终渲染的标题要经过
+`QueuePerspectivePanel.vue` 的这条链，中间还有两个硬前提，本轮一并对生产核实：
+
+```
+node.raw_models                                        (SSE node_update)
+  → modelKey(raw)                                      :447
+  → aliasOwner.get(rawKey)  ← 就是 modelScopeAliasIndex :448
+  → modelScopeMeta.get(scopeKey)，缺失则整组丢弃        :457-458
+  → groups.push({ model: scopeKey, displayName })        :497-499
+  → 模板 {{ group.displayName }}                          :1296
+```
+
+#### 环节一：分组键 = aliasOwner（本轮已验）
+
+生产真实数据下 `aliasOwner['glm-5.3'] = 'glm-5.3'`、`aliasOwner['z-ai/glm-5.3'] = 'glm-5.3'`，
+故上报 `glm-5.3` / `z-ai/glm-5.3` 的节点都落进 `glm-5.3` 这一组。
+
+#### 环节二：`modelScopeMeta` 必须含该作用域，否则 `:458` 直接 `continue`
+
+`modelScopeMeta` 由 **featured + top-models(72h, limit=50)** 两个来源构建
+（`loadModelScope` → `getFeatured()` / `getRequestLogTopModels()`）。对生产实测：
+
+`GET /api/routing/featured` —— 共 **28** 条（与 journal `model_tier: featured set refreshed static:28` 吻合），
+含 glm 的为 **`["glm-5.3","glm-5.3-flash"]`** ⇒ **两者都在**。
+
+`GET /api/logs/top-models?from=-72h&limit=50` —— 共 50 条，glm 相关：
+
+| canonical_name | canonical_id | request_count |
+| --- | --- | --- |
+| `glm-5.3` | 2422803 | 224 |
+| `z-ai/glm-5.3-flash` | *(null)* | 72 |
+| `glm-5.3-flash` | 2716170 | 59 |
+| `glm-5.2` | 173264 | 13 |
+
+#### 结论（每个前提都对着生产核过）
+
+- 筛 `glm-5.3` ⇒ 存在作用域 `glm-5.3`（featured + hot 都有）⇒ 归属裁决把它判给自己
+  ⇒ 渲染出标题为 **`glm-5.3`** 的分组，**不会**被 `glm-5.3-flash` 冒名（后者是
+  独立 canonical 2716170，代表作用域也是它自己，合并后仍是两个组）。
+- `glm-5.2` **不在 featured**，但**在 hot**（canonical 173264，13 次）⇒ 同样会出组，
+  标题 **`glm-5.2`**，正常。
+- 附带确认 `z-ai/glm-5.3-flash`（canonical_id 为 null、72 次，是 glm-5.3-flash 的 1.2 倍）
+  会按名字归入 `canonical:2716170` 身份，合并到代表作用域 `glm-5.3-flash`，
+  不会多出一个重名组。
+
+**仍未取得的只有「浏览器里真的渲染出这两个标题」这一条目视证据**，
+仍需用户在普通 Chrome 确认。本节把除目视之外的全部前提都补成了生产实测。
+
+## 2026-10-01 10:45 新发现：model_aliases 是不完整索引，其重建服务从未接线
+
+在核实热门榜数据时撞到一处矛盾，顺藤摸瓜挖出一条**独立于本轮主线的真实归属缺口**。
+
+### 矛盾起点
+
+72h 热门榜里 `z-ai/glm-5.3-flash` 的 `canonical_id` 是 **null**、请求 72 次，
+但 `resolve?model=z-ai/glm-5.3-flash` 明确返回 `canonical_id = 2716170`。
+同一模型，两处口径不一致。
+
+### 机制
+
+`admin/logs.go:1243-1259`（`listTopModels`）的兜底链只有两级：
+
+```sql
+COALESCE(mc.id, mc2.id)                                   -- ① request_logs_hot.canonical_id
+LEFT JOIN models_canonical mc  ON mc.id = rl.canonical_id
+LEFT JOIN LATERAL (SELECT canonical_id FROM model_aliases
+                   WHERE raw_name = lower(rl.client_model) AND status='active') ma ON TRUE
+LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id  -- ② 只查 model_aliases
+-- 都落空 → canonical_id 退化为 NULL，canonical_name 退化为 rl.client_model 原串
+```
+
+而 `resolve` 在进入 `model_aliases` 阶段**之前**还有一个精确形阶段
+（`resolveInputCanonicalID`，按 `provider_models.raw_model_name` 精确优先），
+`z-ai/glm-5.3-flash` 正是被它命中的。**`top-models` 没有这一层兜底。**
+
+### 库里核实（只读，245 侧执行）
+
+```
+model_aliases:  raw_name = 'z-ai/glm-5.3-flash'  →  0 行
+provider_models: raw_model_name = 'z-ai/glm-5.3-flash' → canonical_id 2716170
+
+models_canonical  = 957      provider_models = 1329
+model_aliases     = 2684 行（status='active' 2100）
+provider_models 中带 canonical 的不同 raw 名 = 919
+  其中在 model_aliases(active) 里找不到的   = 543   （59%）
+```
+
+⇒ **`model_aliases` 只覆盖了 `provider_models` 919 个原始名的 41%。**
+
+### 影响面（已量化）
+
+72h 热门榜 50 条、覆盖 4194 次请求：**18 条（36%）`canonical_id` 为 null，
+合计 520 次 = 全部热流量的 12.4%**，全部退化成原始 `client_model` 字符串
+（`meta/muse-glimmer-30b` 76、`z-ai/glm-5.3-flash` 72、
+`google/diffusiongemma-...` 58、`nvidia/*` 若干、`minimaxai/minimax-m3` 20 …）。
+
+除 `top-models` 外，只依赖 `model_aliases` 的消费方同样受影响
+（`provider/client.go` 多处、`internal/reasoncap/pgsource.go:66`、
+`admin/probe_history.go:527`、`admin/models.go`）。
+
+### 根因：重建服务是死代码
+
+`discovery/alias_sync.go` 的 `AliasSyncService` 负责清理孤儿别名 + 重建别名索引，
+但：
+
+```
+grep -rn "AliasSyncService" --include=*.go .
+→ 只有 discovery/alias_sync.go（定义本身）
+  与 discovery/alias_sync_live_test.go:91（测试里 &AliasSyncService{db: txDB{...}}）
+NewAliasSyncService 在非测试代码中零调用；无 .RunOnce() 调用点。
+生产 154 自 2026-09-30 21:47:20 启动至今，journal 里 "alias sync" 命中 0 次。
+```
+
+⇒ **该服务从未被接线**。`model_aliases` 目前只靠 `discovery/discovery.go`
+的增量 upsert 维持，所以相对 `provider_models` 持续漂移。
+
+### 对本条主线的影响（说清边界，不要夸大）
+
+**模型分组面板不受影响**：`resolve` 的精确形阶段 + `resolveModelScopeOwnership`
+的按 canonical 合并，已经把 `z-ai/glm-5.3-flash` 这类别名作用域正确并入
+`glm-5.3-flash`（前一轮实测 `representatives: canonical:2716170 → glm-5.3-flash` 印证）。
+**本条不改变第 2 项的结论。**
+
+受影响的恰恰是那些**只查 `model_aliases`、又没有前置精确形阶段**的路径，
+`top-models` 是可量化的那个。
+
+### 修法方向（未执行，需先决策）
+
+两个方向，影响面差别很大：
+1. **补数据**：把 543 个 `provider_models` raw 名回填进 `model_aliases`，
+   纯数据变更，影响所有消费方；
+2. **修查询**：给 `listTopModels` 之类只有 `model_aliases` 兜底的路径
+   补上 `provider_models` 精确形兜底，与 `resolve` 对齐。
+
+无论哪条都应先在 245 验证，且**写库动作在生产与预发布共用的同一个 PG 上**
+（见上文拓扑一节），必须先排期、不能顺手做。本轮**只登记，不动数据**。

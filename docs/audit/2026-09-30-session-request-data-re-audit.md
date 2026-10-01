@@ -1302,13 +1302,13 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 5. **决策正文存储**：S6 前必须定 `session_bodies` 是否补全量字段。
 6. **S6 DROP**。
 
-## 8. 待你拍板（截至 2026-10-01 06:45，共 5 项待决 + 2 项已关闭）
+## 8. 待你拍板（截至 2026-10-01 10:30，共 3 项待决 + 3 项已关闭）
 
 第 6 项因合并自动关闭；第 7 项同日拍板并落地（连同新挖出的缺陷 7，见 §5.11）。
 
 | # | 事项 | 性质 | 状态 |
 |---|------|------|------|
-| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支。**本轮再次明确维持待批** | 等决定 |
+| 1 | **S4 真机灰度** | 运行态关写、不可逆。**2026-10-01 已批准，但 §8.4/§8.5 查出三处硬阻塞**（退出条件未达成、276 个调用点未评估、validator 会被停写关掉）。**未翻开关** | 阻塞 |
 | 2 | ~~**`session_list.go:140/167` 半等价类**~~ | **已拍板并落地**：读源迁到 `db.SessionFamilyTurnsSourceSQL()`。门 `TestSessionListNativeSourceDropIsInternalOnly` 跑**生产同一条 SQL** 并钉方向性不变式——原生源少掉的必须是内部调用，出现真业务轮次即报红。实测：原生源会话 13,585、v1 独有 1,381 条、其中含真业务轮次 **0** 条。见 §8.2 | 已关闭 |
 | 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
 | 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
@@ -1452,11 +1452,33 @@ ctx 已取消时报 `context.Canceled` 而非饱和错误（否则排障会把�
 所以**减少列数没有用**（实测 A≈B），**加时间窗也没有用**（§8.3 已记），
 **加并发闸只是止血**。真正要动的是那个谓词写法。
 
-**修法**（一行，待拍板）：`session_bodies_batch.go` 的
-`sessionBodiesByRequestIDSQL` 里把 `= ANY($1::text[])` 换成
-`IN (SELECT unnest($1::text[]))`，并给守形门加一条判据钉住 unnest 形态
-（现有的 `TestSessionBodiesBatchSQLIsNotALefiJoin` 只禁 `JOIN`，放过了 `= ANY`）。
-`sessionBodiesByRequestIDAndTSSQL` 同理，两条都改。
+**修法**（2026-10-01 已落地）：`session_bodies_batch.go` 的
+`sessionBodiesByRequestIDSQL` 把 `= ANY($1::text[])` 换成
+`IN (SELECT unnest($1::text[]))`。**真实生产函数复测**（同一会话 200 个
+`request_id`，取满 200 条正文）：
+
+| | 修前 | 修后 |
+|---|---|---|
+| `querySessionBodiesByRequestID` | 17.431 / 15.851 / 15.880 s | **4.166 / 2.907 / 2.235 s** |
+| 真库门 `…BodiesStaysOnIndexPath` 整门耗时 | 17.61 s | **1.46 s** |
+| 同一条的 `Execution Time` | 16,799 ms | **33 ms** |
+| 2026_09 分区计划 | ColumnarScan | `Index Scan using …_2026_09_pkey` |
+
+**`sessionBodiesByRequestIDAndTSSQL` 没有改，实测它本来就不在问题里**：
+它早就是 `IN (... FROM unnest($1,$2) ...)` 形态，同一批 200 个键实测
+`Index Scan using …_2026_09_pkey` / **101.302 ms**。拍板时我说的是「两条都改」，
+动手前先测，发现第二条没有可改之处 —— 为凑数做一次装饰性改动只会让 diff
+看起来比实际变更大。**这是「先量再改」的又一次兑现。**
+
+守形门 `TestSessionBodiesBatchSQLIsNotALefiJoin` 加了三条判据：
+禁 `= ANY(`（**`= ANY` 长得就像半连接，仅禁 `JOIN` 放行了那 15~17 秒**）、
+必须含 `unnest(`、必须读 bodies 视图。变异验证：谓词退回 `= ANY` → 静态门红、
+真库门红（33.13 s，报告 `fell back onto a columnar partition scan`）。
+
+**真库门同时从「显式 Skip 等拍板」翻回红门，并加了一条正向锚点**：
+只判「没看到 ColumnarScan」是**单边判据**——分区哪天变回 heap，它就会静默成立
+并永远绿着，正是它过去的样子。现在同时要求计划里出现
+`Index Scan … request_logs_bodies_2026_09_pkey`，找不到即红（防空转通过）。
 
 ### 8.3.4 这道门本身差点成为 R17 事故的第二起（已修）
 
@@ -1482,6 +1504,151 @@ R17（252 SQL 日志审计第十七轮）记录：一条同族的 19GB 级测量
 3. 把闸挪到 `EXPLAIN` 之后 → 顺序断言红（`protects nothing in that order`）。
 
 端到端复核：指向 `8.136.114.245` 时 0.00s 即 Skip，**连库都没试**。
+
+### 8.4 S4 灰度前置核查（2026-10-01 10:2x 已批准开灰度，但退出条件未达成）
+
+**本节只做只读核查，没有翻开关。** 翻之前先量了开关自己 spec 写的退出条件
+（`settings/spec_storage.go` 的 `storage.request_logs_write_enabled`）：
+
+> 关闭前提：dual_read_validator 对账 **7 天零漂移**（plan §4 S2 退出条件）
+
+实测（252 生产，validator **本体的 scope SQL**，`db.MirrorDriftClassSQL` 同口径）：
+
+| drift_class | 过去 24h 行数 | 会话数 |
+|---|---|---|
+| `internal_loopback` | 2,105 | 599 |
+| **`genuine_loss`** | **341** | **332** |
+| `non_terminal` | 6 | 5 |
+
+**按字面口径，退出条件不成立**：24 小时内就有 341 行「本来该镜像却没有」。
+
+**但这 341 行几乎全部是今天的事故，不是系统性缺口**（按小时分布）：
+
+| 时段 | genuine_loss |
+|---|---|
+| 09-30 20:00 | 2 |
+| 10-01 03:00（列存转换窗 02:42–04:13） | **326** |
+| 04:00 / 05:00 / 06:00 | 11 / 1 / 1 |
+| **07:05 恢复后 → 10:30** | **0** |
+
+恢复后样本量（07:05→10:30，约 3.4 小时）：`request_logs` 2,343 行、
+其中**带会话头 1,278 行**、`session_turns` 666 行，**genuine_loss = 0（0/1278）**。
+
+**所以真正的问题不是「能不能开」，是「7 天零漂移从哪天起算」**：
+- 字面口径 ⇒ 从现在重新起算，最早 2026-10-08 才够 7 天；
+- 剔除已知事故窗（R17 已定性为列存写路径事故，且已如实登记为不可恢复）⇒
+  时钟可从 2026-10-01 07:05 起算，但**目前也只有 3.4 小时干净证据，不是 7 天**。
+
+**另有一条必须一起看的负面结论**（§5.5.3，本轮复核仍然成立）：无会话头流量
+（探针、自检、未终态）**从未进入 session 族**（7 天 770,034 行）。S4 停写后
+session 六表族成为唯一事实源，这批请求将**再无任何记录**。这不是漂移，是覆盖范围
+差异 —— 停写不会让它们「漂移」，只会让它们**彻底消失**。
+
+**当前状态**：开关仍为默认 `true`（持续双写）。已核实 252 上写入确实在进行
+（`request_logs_hot` 最近 1 小时 616 行、最大 ts = 10:30；父表停在 02:16 只是
+promote 未跑），因此停写不是空操作。**待你就「7 天从哪天起算」拍板后再翻。**
+
+### 8.5 S4 停写的真实影响面：276 个调用点、110 个文件，而分类表只覆盖 14 个
+
+§8.4 核的是「漂移够不够干净」。这一节核的是**停写之后谁会读到空**——
+因为 `storage.request_logs_write_enabled=false` 的语义是
+「request_logs(_hot) 与 bodies 双写停止」（spec 原文）。
+
+**口径（可复现，先钉死再报数）**：
+
+```bash
+grep -rniE "from[[:space:]]+request_logs(_[a-z_]+)?\b" --include=*.go . \
+  | grep -v "_test\.go" | grep -v "^\./docs"
+```
+
+| 指标 | 值 |
+|---|---|
+| 上述命令命中行数（含注释） | **277** |
+| 其中**注释行**（`// … from request_logs …`）非调用点 | **40** |
+| **真实生产读调用点** | **237** |
+| 涉及文件 | **104** |
+| §5.5.5/§5.5.8「视图依赖最终分类」覆盖的文件 | **14**（其中 9 个确实读 request_logs） |
+
+真实调用点读到的表（钉住第三个维度，便于复核）：
+
+| 表 | 调用点 |
+|---|---|
+| `request_logs_with_current_month` | 98 |
+| `request_logs_hot` | 66 |
+| `request_logs` | 52 |
+| `request_logs_bodies_hot` / `_bodies_with_current_month` / `_without_request_class_due_at` 等 | 21 |
+
+> ⚠️ **本节初版写的是「276 个调用点、110 个文件」——两个数都不对，已更正。**
+>
+> **更正过程本身值得记：** 我先后用三条命令得到 **119 / 238 / 277** 三个数，
+> 却没把口径写进报告，就先把其中一个发了出去。
+> - `request_logs(_[a-z_]+)?[[:space:]]`（要求表名后有空白）→ **119**：漏掉行尾写法。
+> - 大小写敏感 + 不剔注释 → **238**。
+> - 大小写不敏感 + 不剔注释 → **277**。
+>
+> **差值 39 的真身不是「大小写」，是「注释」**：40 条注释行里 36 条用小写
+> `from`、3 条大写、1 条 `From`；而 237 条真实调用点里 **235 条是大写 `FROM`、
+> 只有 2 条小写**。我第一版把差值归因成「大小写坑」，那是**错的归因**——
+> 照那个归因去写守卫，加个 `-i` 就算解决，而真正要挡的是注释行。
+>
+> **教训**：数字与它的口径必须同生共死。「237 / 104」只在「命中 − 注释」这条
+> 命令下成立，换个正则就不是这个数。
+
+抽查最大的命中源 `admin/data_lifecycle.go`（15 处）确认口径无误：全部是
+`COUNT(*)` / `pg_total_relation_size` / 分段统计这类**真读路径**，不是被
+INSERT/DELETE 语句误捕。
+
+> ⛔ **§5.5.8 标题写的是「分类补全：第一版表**不完整**，逐条补齐」——
+> 这句话不成立。** 补齐后的表仍只覆盖 14 个文件，而实际读 `request_logs*` 的
+> 生产文件有 104 个。**S4 停写会让这 237 处全部读到不再增长的数据，
+> 而其中没有任何一处被逐点评估过。**
+
+**⛔ 自动逐点分类不可信——这一条必须写下来，免得下一个人拿它当结论。**
+我写了个脚本按「语句窗口内是否出现 `gw_session_id` / `request_id =`」自动分 A/B/C/D，
+并拿 §5.5.5 里**已人工核定的 14 个点**做交叉验证，结果**判错了 5 个**：
+
+| 文件 | 自动分类 | 既有判定 |
+|---|---|---|
+| `session_turns_tree.go` | C 全量流量 | **B 禁止迁**（`parent_request_id = ANY`） |
+| `session_turns_unified.go` | C 全量流量 | **B 禁止迁** |
+| `compression_sessions.go` | A 会话内读 | C 按设计排除 |
+| `no_topic_session.go` | B + C | C 禁止迁 + D 正文腿 |
+| `unified_detail.go` | B×5 + **C×1** | B（那个 C 是误判） |
+
+**错因**：判据只认 `request_id =`，不认 `parent_request_id = ANY(...)`，
+窗口又没兜住谓词，于是把「禁止迁」判成了「无原生源等价物」——**恰好是最严重的一档**
+（C 意味着停写后永久落空，B 只是不许迁）。**自动分类的逐点结论一律不采信，
+只有「总数 237 / 104」是硬事实。**
+
+（交叉验证里另有 5 个文件自动扫到「无匹配」：`session_compare.go`、`session_list.go`、
+`session_online.go`、`turns_sessions.go`、`session_export.go`——它们正是审计标注
+**已迁原生源**的那批，迁完就不读 request_logs 了。这是**正向信号**，不是漏扫。）
+
+按谓词分两类（抽样确认）：
+
+**会话内读**（`WHERE gw_session_id = …`）—— 读的数据在 session 族里有对应，
+但**这些代码仍写死 `FROM request_logs`**，S4 后会读到空：
+`analysis/request_summary.go:130`、`analysis/optimizer.go:195-197`、
+`gateway/output_compliance_control.go:84`、`gateway/main_v3_wiring.go:107`、
+`hooks/goal/history_store.go:84`（目标/审计钩子用它重建对话全文）。
+
+**全量流量读**（无会话头谓词）—— **没有原生源等价物**，S4 后必然落空：
+`routeincident/store.go:704`（按分钟桶的 24h 请求/错误看板）、
+`streaming/model_alternatives.go:230`（已改读 `request_logs_hot`，其注释自陈
+「every caller cancelled at the client timeout … the feature never returned」）。
+
+**最要命的一条：S4 会关掉它自己的观测手段。**
+`cmd/gateway/dual_read_validator.go:203/243` 读的正是 `request_logs_hot` 与
+`request_logs`。而 spec 的退出条件恰恰是「dual_read_validator 对账 7 天零漂移」——
+**停写之后 validator 再也测不出漂移，「零漂移」这个前提与「持续验证」在设计上
+自相矛盾**。灰度期必须保留写入（只读不比对意义不大），或者把 validator 换源，
+这是翻开关之前必须先解决的一条，不是事后能补的。
+
+**结论**：S4 不是「漂移干净了就能翻」。它还缺三件事——
+① 110 个文件的依赖分类；② validator 换源或明确「灰度期不验漂移、只验可观测性」；
+③ §8 第 3 项的全量流量口径决定（决定 routeincident / analytics 这类看板是
+保留 v1 冻结分支，还是接受停写后的空）。§8 第 1 项与第 3 项是**同一条链上的
+前后两段**，不能分开拍板。
 
 ### 8.2 第 2 项重测：`session_list` 迁原生源的**真实**代价
 

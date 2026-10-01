@@ -107,4 +107,20 @@ require 'install does not start traffic' 'never starts a candidate' "$ROOT/scrip
 require 'prune removes dangling slot symlinks' 'pruned dangling slot' "$ROOT/scripts/deploy-seamless.sh"
 require 'prune spares active and candidate slots' 'active_slot=...cat ..REMOTE_ROOT/run/active-port' "$ROOT/scripts/deploy-seamless.sh"
 require 'env file permissions converge to 0600' 'chmod 0600' "$ROOT/scripts/deploy-seamless.sh"
+# 2026-10-01（第十八轮审计 P1）：rollback 方向与 deploy 方向（上方
+# 4c0ed1f72 断言组）同权——蓝绿契约目标的 $SERVICE_NAME 是弃用遗留 unit，
+# 回滚分支内不得再 systemctl start 它或把它写回 run/active-service；
+# canary@<canonical_port> 是唯一合法回滚目标形态。canary 已在 canonical
+# 端口上时，收尾也不得停掉刚拉起的 rollback_service、不得删刚重指的 slot。
+_rb_block=$(awk '/^do_rollback\(\)/,/^  UPGRADE_BANNER_ACTIVE=1$/' "$ROOT/scripts/deploy-seamless.sh")
+if printf '%s\n' "$_rb_block" | grep -q "systemctl start '\\\$SERVICE_NAME'"; then
+  fail 'rollback must not systemctl start the deprecated $SERVICE_NAME unit'
+else
+  pass 'rollback starts rollback_service, not the deprecated $SERVICE_NAME unit'
+fi
+require 'rollback derives rollback_service from candidate_unit and canonical port' 'rollback_service="\$\{candidate_unit%@\.service\}@\$\{canonical_port\}\.service"' "$ROOT/scripts/deploy-seamless.sh"
+require 'rollback starts the derived rollback_service' "systemctl start '\\\$rollback_service'" "$ROOT/scripts/deploy-seamless.sh"
+require 'rollback records rollback_service in run/active-service' "printf '%s.n. '\\\$rollback_service' > '\\\$REMOTE_ROOT/run/active-service'" "$ROOT/scripts/deploy-seamless.sh"
+require 'rollback stops prior unit only when it differs from rollback_service' '\[ -n .\$current_active_service. -a .\$current_active_service. != .\$rollback_service. \]' "$ROOT/scripts/deploy-seamless.sh"
+require 'rollback removes prior slot only when port differs from canonical' '\[ .\$current_active_port. != .\$canonical_port. \]' "$ROOT/scripts/deploy-seamless.sh"
 (( fail == 0 ))

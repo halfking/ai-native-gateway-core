@@ -1511,12 +1511,31 @@ do_rollback() {
   current_active_port=$($SSH_CMD "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null || true)
   current_active_service=$($SSH_CMD "cat '$REMOTE_ROOT/run/active-service' 2>/dev/null" 2>/dev/null || true)
   canonical_port=$(target_field "$TARGET" active_port)
+  # 2026-10-01（第十八轮审计 P1）：rollback 方向与 deploy 方向（4c0ed1f72）
+  # 同理——蓝绿契约目标的 $SERVICE_NAME 是弃用遗留 unit，回滚**不能**再
+  # `systemctl start $SERVICE_NAME` 并把它写回 run/active-service。契约对
+  # 两端口都由 canary 模板 unit 持有，回滚目标侧 = canary@<canonical_port>。
+  # 无蓝绿契约（candidate_unit 为空）的目标保持 $SERVICE_NAME 旧路径不变。
+  # 三个连带语义：
+  #   ① canary 已在 canonical 端口上时（service≠SERVICE_NAME 但 port==canonical），
+  #     先停 rollback_service 再重指 slot 再启动 —— 旧代码 start 一个正在
+  #     抢占同端口的弃用 unit 必然端口冲突失败，回滚实际不可用；
+  #   ② 收尾只 stop 与 rollback_service 不同的旧 unit —— current 就是
+  #     rollback_service 时（场景①）不能再把它停掉；
+  #   ③ slots 清理只在 current_active_port ≠ canonical_port 时做 —— 端口相同
+  #     时那个 slot 正是本轮重指过的，删掉等于拆自己的台（旧代码的隐性坑）。
+  local candidate_unit rollback_service
+  candidate_unit=$(target_field "$TARGET" candidate_unit)
+  rollback_service="$SERVICE_NAME"
+  if [[ -n "$candidate_unit" ]]; then
+    rollback_service="${candidate_unit%@.service}@${canonical_port}.service"
+  fi
   if [[ -n "$current_active_port" && ( "$current_active_port" != "$canonical_port" || "$current_active_service" != "$SERVICE_NAME" ) ]]; then
     # A previous blue-green deploy may leave a canary serving through Nginx
     # while the canonical unit is stopped. Roll back on the alternate port,
     # switch upstream, then update the release/state pointers atomically.
-    log "检测到 canary active (${current_active_service:-unknown}:${current_active_port})，使用 canonical ${SERVICE_NAME}:${canonical_port} 回滚"
-    if ! $SSH_CMD "set -e; systemctl stop '$SERVICE_NAME' >/dev/null 2>&1 || true; deadline=\$((\$(date +%s)+45)); while systemctl is-active --quiet '$SERVICE_NAME'; do if [ \"\$(date +%s)\" -ge \"\$deadline\" ]; then systemctl status '$SERVICE_NAME' --no-pager >&2 || true; exit 1; fi; sleep 1; done; ln -sfn '$REMOTE_ROOT/releases/$target_version' '$REMOTE_ROOT/slots/$canonical_port'; systemctl daemon-reload; systemctl start '$SERVICE_NAME'"; then
+    log "检测到 canary active (${current_active_service:-unknown}:${current_active_port})，使用 ${rollback_service}:${canonical_port} 回滚"
+    if ! $SSH_CMD "set -e; systemctl stop '$rollback_service' >/dev/null 2>&1 || true; deadline=\$((\$(date +%s)+45)); while systemctl is-active --quiet '$rollback_service'; do if [ \"\$(date +%s)\" -ge \"\$deadline\" ]; then systemctl status '$rollback_service' --no-pager >&2 || true; exit 1; fi; sleep 1; done; ln -sfn '$REMOTE_ROOT/releases/$target_version' '$REMOTE_ROOT/slots/$canonical_port'; systemctl daemon-reload; systemctl start '$rollback_service'"; then
       err "canonical rollback unit 启动失败，保持现有 canary 流量"
       exit 1
     fi
@@ -1535,7 +1554,7 @@ do_rollback() {
       err "回滚 upstream 切换失败，保持现有 canary 流量"
       exit 1
     fi
-    if ! $SSH_CMD "set -e; ln -sfn '$REMOTE_ROOT/releases/$target_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\n' '$canonical_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\n' '$SERVICE_NAME' > '$REMOTE_ROOT/run/active-service'; systemctl stop '$current_active_service' >/dev/null 2>&1 || true; rm -f '$REMOTE_ROOT/slots/$current_active_port'"; then
+    if ! $SSH_CMD "set -e; ln -sfn '$REMOTE_ROOT/releases/$target_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\n' '$canonical_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\n' '$rollback_service' > '$REMOTE_ROOT/run/active-service'; if [ -n '$current_active_service' -a '$current_active_service' != '$rollback_service' ]; then systemctl stop '$current_active_service' >/dev/null 2>&1 || true; fi; if [ '$current_active_port' != '$canonical_port' ]; then rm -f '$REMOTE_ROOT/slots/$current_active_port'; fi"; then
       err "回滚状态指针更新失败；请检查 Nginx 与 systemd"
       exit 1
     fi

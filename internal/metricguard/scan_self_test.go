@@ -54,6 +54,23 @@ const testOnlyBody = `package p
 func TestBump(t *testing.T) { SomeCounter.Inc() }
 `
 
+// 注释里提到 .Inc() —— 不构成生产覆盖。2026-10-01 第十八轮：旧的正则
+// 守卫对原始源码字节跑匹配，注释（或日志字符串）里一句"SomeCounter.Inc()"
+// 就足以让一个真正沉睡的指标假绿。
+const commentOnlyBody = `package p
+
+// bump used to call SomeCounter.Inc() here; see TICKET-1.
+func bump() {}
+`
+
+// 字符串/日志文案里提到 .Inc() —— 同上，不是记录调用。
+const stringOnlyBody = `package p
+
+func explain() string {
+	return "remember: SomeCounter.Inc() must be called after flush"
+}
+`
+
 func TestScannerDetectsUnrecordedMetric(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -79,6 +96,31 @@ func TestScannerDetectsUnrecordedMetric(t *testing.T) {
 			wantOut: true,
 			why: "测试里的 .Inc() 只让测试通过，不产生数据点；把它当覆盖会让守卫漏报" +
 				"——这正是本守卫最容易被绕过的一种形态",
+		},
+		{
+			name:    "只有注释提到 .Inc() ⇒ 仍须报出",
+			files:   map[string]string{"decl.go": declBody, "comment.go": commentOnlyBody},
+			wantOut: true,
+			why: "旧正则守卫对原始字节跑匹配：注释里一句「SomeCounter.Inc()」就能让沉睡指标" +
+				"假绿（第十八轮审计抓出的形态，令牌级匹配后注释根本不进形态链）",
+		},
+		{
+			name:    "只有字符串文案提到 .Inc() ⇒ 仍须报出",
+			files:   map[string]string{"decl.go": declBody, "msg.go": stringOnlyBody},
+			wantOut: true,
+			why: "日志/错误文案里的「SomeCounter.Inc()」同样不是记录调用；字符串令牌不参与" +
+				"IDENT-.-IDENT 形态匹配",
+		},
+		{
+			name: "真实调用与注释/字符串并存 ⇒ 放行",
+			files: map[string]string{
+				"decl.go":    declBody,
+				"use.go":     recordedBody,
+				"comment.go": commentOnlyBody,
+				"msg.go":     stringOnlyBody,
+			},
+			wantOut: false,
+			why:     "剥离文本噪声不能矫枉过正：真实的 .Inc() 仍必须被认出",
 		},
 	}
 
