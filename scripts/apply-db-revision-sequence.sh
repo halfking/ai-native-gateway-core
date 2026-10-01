@@ -750,6 +750,26 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/612_native_responses_capability.sql"
   "$ROOT_DIR/sql/migrations/startup/808_request_logs_default_partition.sql"
   "$ROOT_DIR/sql/migrations/startup/809_instance_release_status_nullable_release_id.sql"
+
+
+  # 2026-10-02 SQL 日志审计二十轮（810）：治愈「heap 但无 TOAST 表」的空分区
+  # （10-01 列存事故回退/并行轨道往返实验遗留；session_bodies_2026_10 上
+  # promote row-too-big ×59/14h 实证）。仅动空分区（count=0），非空分区
+  # NOTICE 跳过指路 806/562 通道；幂等（治愈后扫描为空集）。
+  "$ROOT_DIR/sql/migrations/startup/810_heap_partitions_toastless_heal.sql"
+
+  # 2026-10-02 SQL 日志审计二十轮（811）：request_logs / routing_decision_log
+  # 分区边界 473 型 UTC 零点污染重建为正典 +08 零点网格（687 姊妹篇；
+  # 252 生产 overlap ×8、ensure 2026_11 永远建不出来、11-01 写入时间炸弹
+  # 实证）。存储引擎跟随原分区（rdl=columnar 单族）；bak 两遍回灌计数
+  # 守恒；幂等（干净边界跳过）。位置约束：晚于 694（时区钉扎正典）。
+  "$ROOT_DIR/sql/migrations/startup/811_partition_bounds_shanghai_midnight_repair.sql"
+
+  # 2026-10-02 SQL 日志审计二十轮（812）：model_probe_runs 空列存分区转
+  # heap——探针状态更新器 CTID ×114 家族真根因（UPDATE 计划含 ColumnarScan
+  # 即被 citus 拒绝，与目标表 AM 无关；R19 归因补全）。三个月分区全 0 行
+  # 空壳（活数据在 model_probe_runs_hot=heap），806 同款仅动空分区；幂等。
+  "$ROOT_DIR/sql/migrations/startup/812_model_probe_runs_partitions_heap.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
