@@ -27,7 +27,7 @@ import (
 )
 
 const settleWorkerSchema = `
-CREATE TABLE public.request_logs_hot (
+CREATE TABLE request_logs_hot (
 	request_id text,
 	success boolean,
 	latency_ms integer,
@@ -41,7 +41,7 @@ CREATE TABLE public.request_logs_hot (
 	routing_attempts jsonb,
 	ts timestamptz NOT NULL DEFAULT NOW()
 );
-CREATE TABLE public.auto_route_selections_hot (
+CREATE TABLE auto_route_selections_hot (
 	id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	partition_date date NOT NULL DEFAULT CURRENT_DATE,
 	request_id text,
@@ -57,7 +57,7 @@ CREATE TABLE public.auto_route_selections_hot (
 	reward_source text,
 	tenant_id text
 );
-CREATE TABLE public.session_summaries (
+CREATE TABLE session_summaries (
 	session_key text PRIMARY KEY,
 	health_score integer,
 	error_count integer,
