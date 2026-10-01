@@ -17,11 +17,11 @@ package metricguard
 import (
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -38,6 +38,15 @@ type Decl struct {
 var recordingMethods = []string{
 	"WithLabelValues", "With", "Inc", "Add", "AddFloat", "Observe", "Set", "Dec", "Sub",
 }
+
+// recordingMethodSet 供令牌级扫描做 O(1) 查表。
+var recordingMethodSet = func() map[string]bool {
+	m := make(map[string]bool, len(recordingMethods))
+	for _, v := range recordingMethods {
+		m[v] = true
+	}
+	return m
+}()
 
 // RepoRoot 由调用方注入（测试里从本包位置往上两级）。
 func repoRootFrom(pkgDir string) string {
@@ -131,14 +140,16 @@ func prometheusName(v ast.Expr) (string, bool) {
 //
 // 性能：最初的实现是「每个声明 × 每个文件跑一次正则」= 295 × ~3000 次，
 // 单测要 40s，两条守卫合计 80s——塞不进 make guards 的 120s 预算，等于
-// 一道没人会跑的门。改为**单遍扫描**：每个文件跑一次正则抓出所有
-// `标识符.记录方法` 形态，收进一个集合，再与声明集合求差。复杂度从
-// O(声明×文件) 降到 O(文件)。
+// 一道没人会跑的门。改为**单遍扫描**：每个文件跑一次，收进一个集合，再与
+// 声明集合求差。复杂度从 O(声明×文件) 降到 O(文件)。
+//
+// 2026-10-01 第十八轮审计：匹配从「原始源码字节上的正则」改为 go/scanner
+// 令牌流。旧正则会把**注释与字符串字面量**里的 `Foo.Inc()` 也算成"已记录"
+// ——注释里一句"记得调用 fooCounter.Inc()"就能让守卫对真正的沉睡指标放行，
+// 这正是本仓"grep 文本守卫"反复吃亏的形态。令牌级匹配下 COMMENT/STRING
+// 根本不进入 IDENT-.-IDENT 形态，天然免疫；扫描器仍只是词法级（无 AST），
+// 单遍成本与正则同量级。
 func NeverRecorded(root string, decls []Decl) ([]Decl, error) {
-	methodAlt := strings.Join(recordingMethods, "|")
-	// 一条正则抓全部形态：IDENT.With / IDENT.Inc …
-	callRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.\s*(?:` + methodAlt + `)\b`)
-
 	recorded := map[string]bool{}
 	err := WalkSources(root, func(rel string, src []byte) error {
 		if strings.HasSuffix(rel, "_test.go") {
@@ -146,9 +157,7 @@ func NeverRecorded(root string, decls []Decl) ([]Decl, error) {
 			// 只让测试通过，不产生数据点。
 			return nil
 		}
-		for _, m := range callRe.FindAllSubmatch(src, -1) {
-			recorded[string(m[1])] = true
-		}
+		recordRecordingCalls(src, rel, recorded)
 		return nil
 	})
 	if err != nil {
@@ -162,6 +171,39 @@ func NeverRecorded(root string, decls []Decl) ([]Decl, error) {
 		}
 	}
 	return out, nil
+}
+
+// recordRecordingCalls 把 src 里所有 `IDENT.<recording method>` 形态记入
+// recorded。只看真实代码令牌：注释（含文档注释）与字符串/字符字面量里的
+// 同形态文本不参与。
+func recordRecordingCalls(src []byte, rel string, recorded map[string]bool) {
+	fset := token.NewFileSet()
+	file := fset.AddFile(rel, fset.Base(), len(src))
+	var s scanner.Scanner
+	s.Init(file, src, func(token.Position, string) {}, 0)
+
+	// 形态：IDENT '.' IDENT(方法)。PERIOD 只有紧跟在 IDENT 之后才算链前缀；
+	// 其它任何令牌（含 COMMENT / STRING / 字符串拼接的加号）都打断链。
+	prevIdent := ""
+	afterPeriod := false
+	for {
+		_, tok, lit := s.Scan()
+		switch tok {
+		case token.EOF:
+			return
+		case token.IDENT:
+			if afterPeriod && prevIdent != "" && recordingMethodSet[lit] {
+				recorded[prevIdent] = true
+			}
+			prevIdent = lit
+			afterPeriod = false
+		case token.PERIOD:
+			afterPeriod = prevIdent != ""
+		default:
+			prevIdent = ""
+			afterPeriod = false
+		}
+	}
 }
 
 // WalkSources 便于测试侧复用同一套目录跳过规则。

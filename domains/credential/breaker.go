@@ -669,6 +669,11 @@ func (b *Breaker) Reset() {
 	b.coolingCycle = 0
 	b.halfOpenProbes.Store(0)
 	b.lastFailureAt = time.Time{}
+	// 2026-10-01 第十八轮审计：Reset 必须同时清掉剩余冷却窗口，否则管理面
+	// 复位后最长 30 分钟内同一事件的判定窗仍在（R87 的 sameIncident 时间窗
+	// 以 coolingExpires 为界），交替故障族的计数不归零、复位后反而更易跳闸
+	// ——「手动恢复」操作把熔断器恢复成比复位前更敏感的形态。
+	b.coolingExpires = time.Time{}
 	lastErrorKind := b.lastErrorKind
 	b.lastErrorKind = ""
 	slog.Info("circuit reset",

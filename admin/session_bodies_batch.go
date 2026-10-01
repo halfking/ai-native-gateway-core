@@ -51,18 +51,33 @@ import (
 // LEFT JOIN 贴着函数扫描时规划器没法重排，判定全表列存扫描最便宜，于是真扫一遍。
 // 半连接把一小撮 id 的哈希交给它，它就会走主键探针。用数组而不是 `VALUES`
 // 列表，是为了让轮数无上界时也不会撞上 65535 参数上限。
+//
+// **2026-10-01 修正**：这里原先写的是 `= ANY($1::text[])`，实测 15.85~17.43 秒。
+// `= ANY(数组)` 与 `IN (SELECT unnest(数组))` 返回完全相同的行，但前者让规划器
+// 放弃主键探针 —— 即使数组只有 1 个元素也一样（N=1..64 实测全部 ColumnarScan），
+// 而 `= '字面量'` 会走 Index Scan。改成 unnest 半连接后同一批 200 个真实 id
+// 从 15.85~17.43 s 降到 1.77~2.20 s，2026_09 分区走
+// `Index Scan using request_logs_bodies_2026_09_pkey`。详见审计报告 §8.3.3。
+//
+// ⚠️ 改这个谓词前先读上面那张对照表：`= ANY` 长得就像半连接，能通过任何
+// 「不许有 JOIN」的文本判据。守形门见 session_bodies_pairing_test.go。
 const sessionBodiesByRequestIDSQL = `
 	SELECT rb.request_id,
 	       rb.request_body,
 	       rb.outbound_body,
 	       rb.response_body
 	FROM request_logs_bodies_with_current_month rb
-	WHERE rb.request_id = ANY($1::text[])
+	WHERE rb.request_id IN (SELECT unnest($1::text[]))
 `
 
 // sessionBodiesByRequestIDAndTSSQL reproduces the tuple pairing the summary
 // path has always used. It is kept verbatim so that refactor stays
 // behaviour-preserving; see the note above on why it mostly returns nothing.
+//
+// 这条**本来就是** unnest 半连接形态，因此**不在** 15~17 秒那批里：2026-10-01
+// 实测同一批 200 个键走 `Index Scan using request_logs_bodies_2026_09_pkey`、
+// 101.302 ms。上一轮曾把它一并列入待改清单，实测后撤销 —— 它没有可改之处，
+// 改它只会让 diff 看起来比实际变更大。
 const sessionBodiesByRequestIDAndTSSQL = `
 	SELECT rb.request_id,
 	       rb.ts,
