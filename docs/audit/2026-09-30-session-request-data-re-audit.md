@@ -1308,7 +1308,7 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 
 | # | 事项 | 性质 | 状态 |
 |---|------|------|------|
-| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支。**2026-10-01 已批准开灰度**（前置条件与回滚另条落账） | 执行中 |
+| 1 | **S4 真机灰度** | 运行态关写、不可逆。**2026-10-01 已批准，但 §8.4/§8.5 查出三处硬阻塞**（退出条件未达成、276 个调用点未评估、validator 会被停写关掉）。**未翻开关** | 阻塞 |
 | 2 | ~~**`session_list.go:140/167` 半等价类**~~ | **已拍板并落地**：读源迁到 `db.SessionFamilyTurnsSourceSQL()`。门 `TestSessionListNativeSourceDropIsInternalOnly` 跑**生产同一条 SQL** 并钉方向性不变式——原生源少掉的必须是内部调用，出现真业务轮次即报红。实测：原生源会话 13,585、v1 独有 1,381 条、其中含真业务轮次 **0** 条。见 §8.2 | 已关闭 |
 | 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
 | 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
@@ -1547,6 +1547,56 @@ session 六表族成为唯一事实源，这批请求将**再无任何记录**�
 **当前状态**：开关仍为默认 `true`（持续双写）。已核实 252 上写入确实在进行
 （`request_logs_hot` 最近 1 小时 616 行、最大 ts = 10:30；父表停在 02:16 只是
 promote 未跑），因此停写不是空操作。**待你就「7 天从哪天起算」拍板后再翻。**
+
+### 8.5 S4 停写的真实影响面：276 个调用点、110 个文件，而分类表只覆盖 14 个
+
+§8.4 核的是「漂移够不够干净」。这一节核的是**停写之后谁会读到空**——
+因为 `storage.request_logs_write_enabled=false` 的语义是
+「request_logs(_hot) 与 bodies 双写停止」（spec 原文）。
+
+**口径与自证**：`grep -rnE "FROM[[:space:]]+request_logs(_[a-z_]+)?\b" --include=*.go .`
+排除 `_test.go` 与 `docs/`，得
+
+| 指标 | 值 |
+|---|---|
+| 生产读调用点 | **276** |
+| 涉及文件 | **110** |
+| §5.5.5/§5.5.8「视图依赖最终分类」覆盖的文件 | **14**（其中 9 个确实读 request_logs） |
+
+抽查最大的命中源 `admin/data_lifecycle.go`（15 处）确认口径无误：全部是
+`COUNT(*)` / `pg_total_relation_size` / 分段统计这类**真读路径**，不是被
+INSERT/DELETE 语句误捕。
+
+> ⛔ **§5.5.8 标题写的是「分类补全：第一版表**不完整**，逐条补齐」——
+> 这句话不成立。** 补齐后的表仍只覆盖 14 个文件，而实际读 `request_logs*` 的
+> 生产文件有 110 个。缺口不是几个，是 100 个上下。**S4 停写会让这 276 处
+> 全部读到不再增长的数据，而其中没有任何一处被评估过。**
+
+按谓词分两类（抽样确认）：
+
+**会话内读**（`WHERE gw_session_id = …`）—— 读的数据在 session 族里有对应，
+但**这些代码仍写死 `FROM request_logs`**，S4 后会读到空：
+`analysis/request_summary.go:130`、`analysis/optimizer.go:195-197`、
+`gateway/output_compliance_control.go:84`、`gateway/main_v3_wiring.go:107`、
+`hooks/goal/history_store.go:84`（目标/审计钩子用它重建对话全文）。
+
+**全量流量读**（无会话头谓词）—— **没有原生源等价物**，S4 后必然落空：
+`routeincident/store.go:704`（按分钟桶的 24h 请求/错误看板）、
+`streaming/model_alternatives.go:230`（已改读 `request_logs_hot`，其注释自陈
+「every caller cancelled at the client timeout … the feature never returned」）。
+
+**最要命的一条：S4 会关掉它自己的观测手段。**
+`cmd/gateway/dual_read_validator.go:203/243` 读的正是 `request_logs_hot` 与
+`request_logs`。而 spec 的退出条件恰恰是「dual_read_validator 对账 7 天零漂移」——
+**停写之后 validator 再也测不出漂移，「零漂移」这个前提与「持续验证」在设计上
+自相矛盾**。灰度期必须保留写入（只读不比对意义不大），或者把 validator 换源，
+这是翻开关之前必须先解决的一条，不是事后能补的。
+
+**结论**：S4 不是「漂移干净了就能翻」。它还缺三件事——
+① 110 个文件的依赖分类；② validator 换源或明确「灰度期不验漂移、只验可观测性」；
+③ §8 第 3 项的全量流量口径决定（决定 routeincident / analytics 这类看板是
+保留 v1 冻结分支，还是接受停写后的空）。§8 第 1 项与第 3 项是**同一条链上的
+前后两段**，不能分开拍板。
 
 ### 8.2 第 2 项重测：`session_list` 迁原生源的**真实**代价
 
