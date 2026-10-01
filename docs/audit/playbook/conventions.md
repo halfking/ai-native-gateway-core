@@ -636,3 +636,42 @@ WHERE NOT EXISTS(…session_turns_hot…) AND NOT EXISTS(…session_turns…)
 **同族**：§16（grep 引用数有毒）、§17（构造函数不可见）、§19（名字像表的不一定是表）。
 **共同点：全都是「检索计数/字面量匹配」这一类便宜手段的失效形态，
 而失效方向都是「把事实判错」而不是「查不到」。**
+
+---
+
+## §21 「无 guard」≠「没有闸门」：helper 名单本身也必须先枚举全
+
+**规则**：用「函数体里是否出现闸门 helper 名」做隔离筛查时，
+**闸门名单必须先从代码里枚举全**，不能只列自己记得的那几个。
+否则筛出的「无 guard」**只是「我没听说过这个 helper」**。
+
+**证据（2026-10-01 R89-z，113 号，接 §20）**：
+§20 让我否定了「grep `tenant_id`」的筛查。R89-z 改用「函数体是否出现
+`tenantLogsClause|IsTenantAdmin|EffectiveTenantID|requireSessionTaskAccess|assertTaskInTenant`」
+这个**自造名单**重筛，36 个读租户表的 handler 里 9 个「无 guard」。
+**读原文后 8 个是假阳性**：
+
+| 候选 | 真实原因 |
+|---|---|
+| `handleDataLifecycleAttachments` 等 **5 个** | 用的是**第三种命名的闸门** `attachmentTenantScope`（`admin/data_lifecycle_attachments.go:78-83`），实现正确：tenant_admin → `GetTenantID(r)`（取自身份），super_admin + 显式参数 → 收窄，否则不过滤 |
+| `handleRoutingRecentModelFailures` | 读节点级表 `node_probe_runs`/`passive_probe_state` |
+| `handleStats`（`*RouteIncidentsHandler`） | **根本没有 SQL**，只读内存 store 计数器（`active`/`recovering`/`recovered_24h`） |
+| `handleDataLifecycleMetrics` | 纯 `COUNT(*)` + `pg_total_relation_size` 聚合，无租户维度（仅全库行数/体积暴露，低危，登记不判缺陷） |
+
+**⇒ 确认跨租户读的只有 1 个**（`HandleSwimLaneInit`，112 号已坐实）。
+**筛选法连续两轮（§20、§21）都先证伪了自己**，但第二轮把 36 个收敛到了 **1 个真缺陷**——
+**这正是「机械筛只能用来缩小范围，最后一个必须读原文」的证明**：
+若停在「9 个候选」就发报告，会凭空造出 8 个缺陷。
+
+**怎么落地**：
+- 找闸门 helper 的正确顺序：**先 `grep -rn "AND tenant_id = \|AND .*_id = \$" --include=*.go`**
+  （找所有**拼 SQL 片段**的地方），再回溯它们的函数名。
+  **先找形态（返回 SQL 片段的 helper），再取名字**，而不是凭印象列名字。
+- 同一个仓库里闸门**通常不止一个**（本仓至少 3 个命名：`tenantLogsClause` /
+  `attachmentTenantScope` / 各文件自带的 scope builder），**命名不统一是常态**。
+- 筛到「无 guard」后，**先问「这个表是租户级表吗」**（§20 已记），
+  再问「这个函数真的有 SQL 吗」（本轮 `handleStats` 就没有）。
+
+**同族**：§16（grep 引用数有毒）、§17、§19、§20。
+**共同点升级**：前四条是「检索命中数被判错」，§21 是**「连检索词表本身都可能是错的」**——
+**任何自造的名单（helper 名、类型名、列名）在使用前都要先证明它全**。
