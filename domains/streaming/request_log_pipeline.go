@@ -1495,8 +1495,11 @@ func mergeCompressionMetaV3(
 // plaintext) and hard-capped so compression_meta stays far below its JSONB
 // comfort zone; on overflow the arrays are truncated and a *_truncated flag
 // kept, on runaway size only the counters survive.
-func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentInfo) []byte {
+func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentInfo, source ...compression.MessageSnapshot) []byte {
 	prov := make(map[string]any, 3)
+	if len(source) > 0 && !source[0].IsZero() {
+		prov["compression_source_snapshot"] = source[0]
+	}
 
 	windowSource := map[string]int{}
 	for _, a := range alignment {
@@ -1531,6 +1534,10 @@ func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentI
 				prov["sanitize_refs_truncated"] = true
 			}
 			prov["sanitize_message_refs"] = refs
+			prov["sanitize_map_ref"] = info.MapRef
+			prov["sanitize_map_generation"] = info.MapGeneration
+			prov["raw_snapshot"] = info.RawSnapshot
+			prov["sanitized_snapshot"] = info.SanitizedSnapshot
 		}
 	}
 

@@ -63,8 +63,11 @@ func TestApplyCompressionMeta_RestoresWindowState(t *testing.T) {
 
 func TestApplyCompressionMeta_RestoresRecoveryMetadata(t *testing.T) {
 	var meta CompressionMeta
-	raw := []byte(`{"summary_marker":"[smm_v1:abc]","cut_marker":{"version":1,"created_at":123,"source_msg_count":10,"system_msg_count":1,"cut_index":4,"strategy":"smart_window_llm","summary_marker":"[smm_v1:abc]"},"pre_sanitize_offset_range":[1,5],"alignment_map":[{"original_index":2,"compressed_index":1,"hash":"abc"}],"sanitize_map_ref":"session:tenant:session:sanitize","sanitize_message_refs":[{"raw_index":2,"sanitized_index":2,"raw_hash":"a","sanitized_hash":"b","changed":true}]}`)
+	raw := []byte(`{"sanitize_map_generation":"0123456789abcdef0123456789abcdef","raw_snapshot":{"hash":"rawhash","message_count":10,"token_estimate":100},"sanitized_snapshot":{"hash":"sanhash","message_count":10,"token_estimate":150},"summary_marker":"[smm_v1:abc]","cut_marker":{"version":1,"created_at":123,"source_msg_count":10,"system_msg_count":1,"cut_index":4,"strategy":"smart_window_llm","summary_marker":"[smm_v1:abc]"},"pre_sanitize_offset_range":[1,5],"alignment_map":[{"original_index":2,"compressed_index":1,"hash":"abc"}],"sanitize_map_ref":"session:tenant:session:sanitize","sanitize_message_refs":[{"raw_index":2,"sanitized_index":2,"raw_hash":"a","sanitized_hash":"b","changed":true}]}`)
 	applyCompressionMeta(&meta, raw)
+	if meta.SanitizeMapGeneration == "" || meta.RawSnapshot.Hash != "rawhash" || meta.SanitizedSnapshot.TokenEstimate != 150 {
+		t.Fatal("stage snapshots or generation lost")
+	}
 	if meta.CutMarker["cut_index"] != float64(4) || len(meta.PreSanitizeOffsetRange) != 2 {
 		t.Fatalf("cut metadata was not restored: %+v", meta)
 	}
@@ -751,4 +754,18 @@ func TestCompressionMetaCache_ConcurrentGetMutate(t *testing.T) {
 		"concurrent mutations of Get results must not alter the L1 entry")
 	assert.Equal(t, 7, final.CompressionMeta.MsgCount,
 		"concurrent mutations of Get results must not alter the L1 MsgCount")
+}
+
+func TestCompressionSourceSnapshotV2MetadataRoundTrip(t *testing.T) {
+	var meta CompressionMeta
+	applyCompressionMeta(&meta, []byte(`{"compression_source_snapshot":{"hash":"source","message_count":3,"token_estimate":55}}`))
+	if meta.CompressionSourceSnapshot.Hash != "source" || meta.CompressionSourceSnapshot.MessageCount != 3 {
+		t.Fatal("source lost during metadata decode")
+	}
+	cache := &SessionCacheV2{l1: NewCompressionMetaCache(10)}
+	cache.l1.Set(&SessionStateV2{TenantID: "tenant", SessionID: "session", CompressionMeta: meta})
+	exported, err := cache.CompressionMetadata(context.Background(), "tenant", "session")
+	if err != nil || exported["compression_source_snapshot"] != meta.CompressionSourceSnapshot {
+		t.Fatalf("source lost during metadata export: %v", err)
+	}
 }

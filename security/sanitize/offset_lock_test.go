@@ -2,6 +2,7 @@ package sanitize
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -64,7 +65,7 @@ func TestSanitizeOffsetsAcrossMiddlewareInstances(t *testing.T) {
 			go func(i int, mw *SanitizeInputMiddleware) {
 				defer wg.Done()
 				<-start
-				status, forwarded, called := callOffsetTestMiddleware(mw, "tenant-two-instances", "session-two-instances")
+				status, forwarded, called := callOffsetTestMiddleware(mw, "tenant-two-instances", "session-two-instances", fmt.Sprintf("138%08d", round*2+i))
 				if !called || strings.Contains(forwarded, "13800138000") {
 					results[i] = -status
 					return

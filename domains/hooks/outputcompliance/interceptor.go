@@ -38,8 +38,27 @@ type OutputComplianceInterceptor struct {
 	checker interface {
 		Check(context.Context, string, string) (*outputcompliance.ComplianceResult, error)
 	}
-	ownerFn OwnerContextFunc // 可空：为 nil 时 caller/data owner 均视为空（保守脱敏）
+	ownerFn   OwnerContextFunc // 可空：为 nil 时 caller/data owner 均视为空（保守脱敏）
+	mandatory bool
+	stateKey  string
 }
+
+// NewMandatoryOutputComplianceInterceptor reuses the protocol walker and
+// bounded stream staging for a required, pre-restoration sensitive-output gate.
+// It has independent stream state and cannot inherit an owner exemption or
+// the optional output_compliance.enabled setting.
+func NewMandatoryOutputComplianceInterceptor(checker interface {
+	Check(context.Context, string, string) (*outputcompliance.ComplianceResult, error)
+}, stateKey string) *OutputComplianceInterceptor {
+	if stateKey == "" {
+		stateKey = "mandatory_output.pending"
+	}
+	return &OutputComplianceInterceptor{checker: checker, mandatory: true, stateKey: stateKey}
+}
+
+func (it *OutputComplianceInterceptor) isEnabled() bool { return it.mandatory || enabled() }
+
+func (it *OutputComplianceInterceptor) FailClosed() bool { return true }
 
 // NewOutputComplianceInterceptor 构造拦截器。checker 必须非 nil；ownerFn 可为 nil。
 func NewOutputComplianceInterceptor(checker interface {
@@ -99,7 +118,7 @@ func (it *OutputComplianceInterceptor) InterceptNonStream(ctx context.Context, r
 	if it == nil || it.checker == nil || req == nil || len(req.ResponseBody) == 0 {
 		return nil, nil
 	}
-	if !enabled() {
+	if !it.isEnabled() {
 		return nil, nil
 	}
 	// R25-E: request-scoped policy cache so a multi-field body loads the
@@ -117,10 +136,10 @@ func (it *OutputComplianceInterceptor) InterceptStreamChunk(ctx context.Context,
 
 // InterceptStreamEnd 流结束：body 已重组为非流式形态，复用非流式逻辑。
 func (it *OutputComplianceInterceptor) InterceptStreamEnd(ctx context.Context, meta *response.StreamMeta) (*response.EndResult, error) {
-	if it == nil || it.checker == nil || meta == nil || len(meta.ResponseBody) == 0 {
+	if it == nil || it.mandatory || it.checker == nil || meta == nil || len(meta.ResponseBody) == 0 {
 		return nil, nil
 	}
-	if !enabled() {
+	if !it.isEnabled() {
 		return nil, nil
 	}
 	req := &response.InterceptRequest{
@@ -168,10 +187,10 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	if it.ownerFn != nil {
 		dataOwner = it.ownerFn(ctx, req.SessionID, req.TenantID)
 	}
-	shouldRedact := outputcompliance.ShouldRedact(redactionMode(), req.CallerOwner, dataOwner)
+	shouldRedact := it.mandatory || outputcompliance.ShouldRedact(redactionMode(), req.CallerOwner, dataOwner)
 
-	transform := func(original string) (string, int, bool, error) {
-		result, err := it.checker.Check(ctx, req.TenantID, original)
+	transform := func(label, original string) (string, int, bool, error) {
+		result, err := it.checkText(ctx, req.TenantID, label, original)
 		if err != nil {
 			// Checker failure fails closed: the whole response is withheld
 			// instead of degrading to an unchecked passthrough.
@@ -189,7 +208,7 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 		return result.RedactedOutput, len(result.Issues), false, nil
 	}
 
-	redactedBody, issues, blocked, err := transformVisibleJSON(req.ResponseBody, false, transform)
+	redactedBody, issues, blocked, err := transformVisibleJSON(req.ResponseBody, false, it.mandatory, transform)
 	if err != nil {
 		// Malformed response JSON or an unavailable checker must never reach
 		// the client unchecked.
@@ -227,6 +246,15 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 		}, nil
 	}
 	return &response.InterceptResult{}, nil
+}
+
+func (it *OutputComplianceInterceptor) checkText(ctx context.Context, tenant, label, text string) (*outputcompliance.ComplianceResult, error) {
+	if checker, ok := it.checker.(interface {
+		CheckField(context.Context, string, string, string) (*outputcompliance.ComplianceResult, error)
+	}); ok {
+		return checker.CheckField(ctx, tenant, label, text)
+	}
+	return it.checker.Check(ctx, tenant, text)
 }
 
 // rewriteAssistantContent 把"完整响应 JSON 中 assistant 文本字段"替换为脱敏后的
