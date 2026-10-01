@@ -42,6 +42,12 @@ func TestProjectTasksSkipsNullTaskID(t *testing.T) {
 	defer cancel()
 	base := time.Now().UTC().Truncate(time.Second)
 
+	// The tenant row must exist before any session_summaries insert: its
+	// tenant_id references public.tenants(code) and the gate database is empty
+	// (measured 2026-10-02: SELECT count(*) FROM tenants = 0). Without this the
+	// test dies 23503 on fk_session_tenant.
+	createdTenant := ensureFixtureTenant(t, pool, tenant)
+
 	seed := func(sess, task, appCode string) {
 		t.Helper()
 		// 先 ss 后 dim：762 触发器在 session_dim 写入时同步 session_summaries，
@@ -55,9 +61,9 @@ func TestProjectTasksSkipsNullTaskID(t *testing.T) {
 			t.Fatalf("seed session_summaries %s: %v", sess, err)
 		}
 		if _, err := pool.Exec(ctx,
-			`INSERT INTO session_dim (gw_session_id, session_key, tenant_id, owner_user, task_id, application_code, created_at)
-			 VALUES ($1,$1,$2,'r34-owner',NULLIF($3,''),$4,$5)
-			 ON CONFLICT (gw_session_id) DO UPDATE SET task_id=NULLIF(EXCLUDED.task_id,''), application_code=EXCLUDED.application_code, tenant_id=EXCLUDED.tenant_id`,
+			`INSERT INTO session_dim (gw_session_id, session_key, tenant_id, owner_user, task_id, status, application_code, created_at)
+			 VALUES ($1,$1,$2,'r34-owner',NULLIF($3,''),'active',$4,$5)
+			 ON CONFLICT (gw_session_id) DO UPDATE SET task_id=NULLIF(EXCLUDED.task_id,''), application_code=EXCLUDED.application_code, tenant_id=EXCLUDED.tenant_id, status='active'`,
 			sess, tenant, task, appCode, base,
 		); err != nil {
 			t.Fatalf("seed session_dim %s: %v", sess, err)
@@ -70,6 +76,9 @@ func TestProjectTasksSkipsNullTaskID(t *testing.T) {
 		defer dcancel()
 		_, _ = pool.Exec(dctx, `DELETE FROM session_summaries WHERE session_key LIKE 'r34-p1-%'`)
 		_, _ = pool.Exec(dctx, `DELETE FROM session_dim WHERE gw_session_id LIKE 'r34-p1-%'`)
+		if createdTenant {
+			_, _ = pool.Exec(dctx, `DELETE FROM public.tenants WHERE code=$1`, tenant)
+		}
 		// R35 复审补：762 触发器会在 project_dim/attribution 留下夹具行，
 		// 只清 ss/dim 会留下 'app:r34p1' 维度行与孤儿 attribution。
 		_, _ = pool.Exec(dctx, `DELETE FROM session_project_attribution WHERE gw_session_id LIKE 'r34-p1-%'`)
