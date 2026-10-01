@@ -404,15 +404,12 @@ func initLiteStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, err
 	cacheTrimmer := bg.NewCacheTrimmer(lite.CacheDir, cacheTrimRetention)
 	rt.cacheTrimmer = cacheTrimmer
 	bodiesTrimmer := bg.NewBodiesTrimmer(lite.BodiesDir, time.Duration(lite.Retention.SessionBodiesDays)*24*time.Hour)
-	rt.trimmerWG.Add(2)
-	go func() {
-		defer rt.trimmerWG.Done()
-		cacheTrimmer.Start(trimmerCtx)
-	}()
-	go func() {
-		defer rt.trimmerWG.Done()
-		bodiesTrimmer.Start(trimmerCtx)
-	}()
+	// 2026-10-01 结构性 P1：trimmer 族迁入 bg.SpawnLoopWG 自愈监督——panic
+	// 重启不再二次触发 wg.Done；此前 panic 会让对应清理面静默停摆直到进程重启。
+	rt.trimmerWG.Add(1)
+	bg.SpawnLoopWG(trimmerCtx, "storage_mode_init.cacheTrimmer", &rt.trimmerWG, cacheTrimmer.Start)
+	rt.trimmerWG.Add(1)
+	bg.SpawnLoopWG(trimmerCtx, "storage_mode_init.bodiesTrimmer", &rt.trimmerWG, bodiesTrimmer.Start)
 
 	// 行级保留期 worker（R46 F6）：此前 RequestLogsDays 是死配置——文件侧
 	// 有两个 Trimmer，SQLite 行侧（request_logs/sessions/session_turns）无
@@ -421,10 +418,7 @@ func initLiteStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, err
 		retention := bg.NewLiteRetentionWorker(sqlDB,
 			time.Duration(lite.Retention.RequestLogsDays)*24*time.Hour)
 		rt.trimmerWG.Add(1)
-		go func() {
-			defer rt.trimmerWG.Done()
-			retention.Start(trimmerCtx)
-		}()
+		bg.SpawnLoopWG(trimmerCtx, "storage_mode_init.liteRetention", &rt.trimmerWG, retention.Start)
 	} else {
 		// 防御分支：lite 分支 factory 打开失败已提前返回，正常不可达。
 		// 注意 ApplyLiteDefaults 把 RequestLogsDays<=0 钳为默认 7——行级
@@ -450,10 +444,7 @@ func initLiteStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, err
 			}
 			rt.consistencyWorker = worker
 			rt.trimmerWG.Add(1)
-			go func() {
-				defer rt.trimmerWG.Done()
-				worker.Start(trimmerCtx)
-			}()
+			bg.SpawnLoopWG(trimmerCtx, "storage_mode_init.consistency", &rt.trimmerWG, worker.Start)
 		} else {
 			consistencyEnabled = false
 			slog.Warn("storage lite: session store 不支持空闲会话枚举，一致性对账 worker 未装配",
