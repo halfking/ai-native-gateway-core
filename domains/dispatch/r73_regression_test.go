@@ -310,14 +310,38 @@ func TestR73_TotalQueueOverflowRejectCompletesDimensionEntry(t *testing.T) {
 	})
 	c3 := submitAsync("r73-tqf-q3")
 	defer c3()
+	// 「被 total drainer 吸收」= drainer 已经把 q3 从 channel 里取走、并且
+	// 因为 lane 满而卡在 enqueueModelFromTotalLane 的背压循环里（还没
+	// releaseTotal）。
+	//
+	// 旧判据是 `depth() == 0`，方向是反的：submitAsync 只是拉起一个
+	// goroutine，q3 尚未入队时 depth 本来就等于 0（q1/q2 已 release），
+	// 于是这个 wait 立刻返回、什么都没验证；一旦 q3 真的跑起来入队，
+	// depth 变成 1 并**永久**停在 1（drainer 卡住 ⇒ 永不 releaseTotal），
+	// 判据反而永远不成立 → 满负载下必挂在 5s 超时。也就是说这条门是
+	// 「q3 没启动时绿、q3 真启动了才红」。
+	//
+	// depth 计的是 queued（入队 +1、releaseTotal 才 -1），channel 长度计的
+	// 是「还在缓冲里没被取走」。drainer 取走但没 release ⇒ len==0 && depth==1；
+	// 这个组合既排除了「还没入队」，也排除了「已 release」，才是真的在断言
+	// 「drainer 接手了 q3 并被它占住」。
 	waitFor("q3 被 total drainer 吸收", func() bool {
-		return p.totalQueue.depth() == 0
+		return len(p.totalQueue.ch) == 0 && p.totalQueue.depth() == 1
 	})
-	c4 := submitAsync("r73-tqf-q4")
-	defer c4()
-	waitFor("q4 停进 Tier-0 FIFO", func() bool {
-		return p.totalQueue.depth() == 1
-	})
+
+	// q4：Tier-0 的唯一槽位（TotalQueueCapacity=1）此刻仍被卡在 drainer
+	// 里的 q3 占着（它没 release），所以 q4 走的是溢出拒绝，而不是「停进
+	// FIFO」。
+	//
+	// 旧写法把 q4 异步提交后等 `depth() == 1` —— 该条件被 q3 顶着一个恒真，
+	// wait 立即返回：既没验证 q4，又让 q4 的溢出计数与紧随其后的
+	// DeleteLabelValues 竞态（q4 先跑⇒计数 1 被清掉、q5 补成 1；q4 后跑⇒
+	// 清完再叠加成 2，下面「恰好一次」就红）。改为同步提交并直接断言拒绝，
+	// 竞态随之消失，且把「q4 也被拒」这个真实行为写进测试。
+	q4 := NewQueuedRequest("r73-tqf-q4", "t", "m", context.Background(), nil)
+	if res4, err4 := p.Submit(context.Background(), q4); res4 != nil || err4 == nil {
+		t.Fatalf("Tier-0 槽位被 q3 占满时 q4 必须显式拒绝, got res=%v err=%v", res4, err4)
+	}
 
 	metricOverflow.DeleteLabelValues("total_queue_full")
 
