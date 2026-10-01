@@ -107,12 +107,26 @@ seamless 管线不重写远端 env 文件（D1 六键透传是 deploy-local 的 
 
 1. ~~R-9~~ 闭环（两布局实证）。docker 布局的管线默认是否设 STORAGE_MODE=full
    仍留 owner（本次 systemd 两环境已显式激活）。
-2. 245 半切换态的根因（09-30 2372→2374 部署中断点在哪、被什么杀）未考古——
-   现象与修复已钉，建议部署工单加"切换后 access-log upstream 仲裁"步骡。
-3. `llmgo-245.service` 已 disable；**建议 mask**（防 systemd 升级/带外操作复活）。
-4. admin 版本端点与 healthz 的 version.json 口径分叉（§三.3）——正常部署自愈，
-   半切换态暴露，低优挂账（admin/misc.go versionJSONCandidates 首位插入 env
-   路径可根治，未动）。
-5. 测试痕迹：245 key#24 未动（既有 key，仅 reveal 观测）；hz-r9-sess-1 会话的
+2. ~~245 半切换态根因~~ **考古闭环（同日补充轮）**：journalctl 实锤 05:07:00
+   一条带外 SSH 会话（公网出口）建立后 7 秒，弃用 unit `llmgo-245.service`
+   于 05:07:07 被手工拉起（systemd 无自启）——部署中断 + 带外干预叠加态。
+   代码防线已补：deploy-seamless 新增 **[9.6/9] nginx 实际路由身份仲裁**
+   （经 nginx 路径读 healthz version，必须含本次 build_seq+sha8；不符先补
+   一次幂等 reload 再验，仍不符自动回滚——9.5 的 200 检查对新旧实例都通过，
+   抓不住「文件说新、流量走旧」，判据三场景手测过）。
+3. ~~llmgo-245.service 建议 mask~~ **两机已 mask（同日补充轮）**：245 与 154
+   的 legacy unit（154 侧 `llm-gateway-go.service`，disabled+inactive 同型
+   风险）均 mv 留档 + symlink /dev/null + daemon-reload，canary 实例不受累。
+4. ~~admin 版本端点口径分叉~~ **已根治（同日补充轮）**：admin/misc.go
+   versionJSONCandidates 首位接入 `LLM_GATEWAY_VERSION_FILE`（与
+   cmd/gateway/version.go 同源语义，env 未设回落原列表行为不变），钉测
+   TestVersionJSONCandidatesPrefersEnvFile/WithoutEnvKeepsLegacyOrder。
+5. **第三次跨部署自然复证（15:05 并行轮 2380/2381，bfa3530e）**：245/154
+   又各经一轮部署后热区自然保持激活（hotzone_enabled=true、245 mirror.total
+   746 持涨）——env 持久 + R-9 保留在无人工干预下第三次成立。被轮换旧实例
+   的 unit 显示 failed（drain 超时 SIGKILL）为已知无害模式。
+6. 测试痕迹：245 key#24 未动（既有 key，仅 reveal 观测）；hz-r9-sess-1 会话的
    3 个请求与镜像文件留档（真实数据，可作为热区内容样例）；远端临时凭据文件
    已删。
+7. **部署入口克隆须 pull**：[9.6/9] 仲裁改在 scripts/deploy-seamless.sh，
+   克隆不 pull 不生效（官方部署纪律）。
