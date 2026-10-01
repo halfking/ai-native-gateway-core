@@ -134,14 +134,36 @@ cd installer && go test ./cmd/llm-gw-installer/ -count=1
 
 ---
 
-## 5. 落地状态
+## 5. 落地状态（已完成）
 
-- 修复分支：`fix/auto-role-routing-mainstream-fallback`（从 `origin/main` 起）
-- 合并方式：merge 到 `main` 后 push
+- 修复提交：`7f24fb5af`
+- 分支：`fix/auto-role-routing-mainstream-fallback`（已推送）
+- 合并：`8bbc1ed5d` merge → `main`（已推送）
 - ⚠️ **本轮开工时工作区分支是 `fix/xcode-sse-finish-reason-sensenova`**
   （含另一会话的 streaming 提交 e84d574d8 / e469c0234）。已确认**文件无重叠**，
   且为不干扰对方会话，改动是在独立 worktree 里从 `origin/main` 重建后合并的，
-  没有把那两个提交带进 `main`。
+  **没有把那两个提交带进 main**。
+- 合并期间 main 又前进到 `6b3d89c3c`（别人：sensitive 门改法），已确认与本修复
+  14 个文件无重叠，合并后重跑三包全绿才推。
+
+### ⚠️ main 上存在一处与本修复无关的既有红
+`installer/cmd/llm-gw-installer` 的 `TestStartupFilesAreAllEmbedded` 在**干净的
+`origin/main` 上就已经红**（非本修复引入，证据：干净 worktree 复跑同一失败集，
+逐行 diff 只差耗时数字）：
+
+```
+StartupFiles entry "808_request_logs_default_partition.sql" is not provided by setupSQLDir
+StartupFiles entry "809_instance_release_status_nullable_release_id.sql" is not provided by setupSQLDir
+```
+
+来源：`ca4c828f4`（2026-10-01，halfking，R44 收口）。`installer/internal/dbinit/runner.go`
+的 apply 列表已列入 808/809，但 `go:embed` 变量与 `main.go` 的 `embeddedSQLFiles`
+映射未补齐。
+
+**本轮刻意未修**：它属于别人当天在做的迁移接线，合并进来会与其在途工作冲突。
+需要单独一轮补（参照 807 的三处接线模式：embeddata 文件 + `go:embed` 变量 +
+`embeddedSQLFiles` 映射）。
+
 
 ---
 
@@ -160,3 +182,7 @@ cd installer && go test ./cmd/llm-gw-installer/ -count=1
 >    注意这会改变 tier 豁免名单长度，进而影响 `withRoleFailoverHead` 的换模链顺序。
 > 4. **门**：若要改 `TestDecideV2_RoleRoute_CreditStaysWithTier` 的池，**不要改成
 >    主流层里的模型**——见 handoff §3，会让 R49 P2 复现条件失效。
+> 5. **（main 既有红，可顺手做）** `TestStartupFilesAreAllEmbedded` 因 808/809
+>    迁移的 embed 接线缺失而红（见 §5）。补法：embeddata 文件 + `go:embed`
+>    变量 + `main.go` 的 `embeddedSQLFiles` 映射，参照 807 的三处模式。
+
