@@ -247,6 +247,65 @@ installer 模块测试自那起编译红。」
 
 ---
 
+## 4.6 续作：per-test 隔离 helper 落地并**证明有效**（第二轮）
+
+上一份报告说「per-test schema 隔离是真正的解法，迁移约 30 个文件，留作独立
+批次」。本轮把它做了出来，并**实测证明它比换整库形态有效**。
+
+### 交付
+
+- `internal/testschema`：给单个测试一个私有 schema。
+  `CREATE SCHEMA` + 通过 `RuntimeParams["search_path"]` 下发
+  `<schema>,public,pg_catalog`，`t.Cleanup` 里 `DROP SCHEMA ... CASCADE`。
+  用 RuntimeParams 而不是 acquire 后 SET，是因为池会把连接再发给别人，
+  只改一条连接等于把私有 schema 漏给别的测试。
+  迁移前提是被测代码用**非限定名**——本仓这几处成立
+  （`JOIN auto_route_selections_all s`），写死 `public.` 的语句则无效。
+- `bg/dispatch_postgres_helper.go`：`DispatchPostgresContainer` 在
+  `TEST_PG_URL` 且**传了 schema** 时改走隔离；传空 schema 的调用方要的是真实
+  库，保持原样（否则会把它们的生产形态读取指向空 schema）。
+- 4 个 bg 夹具 + 1 个 taskprofile 夹具去掉 `public.` 限定，让对象落在私有 schema。
+
+### 实测
+
+| 包 | 前 | 后 |
+|---|---|---|
+| `taskprofile` | 35 PASS / **2 FAIL**（42P07×2） | **37 PASS / 0 FAIL** |
+| `bg` | 1040 PASS / 14 SKIP / **14 FAIL**（42P07×9） | **1044 PASS / 14 SKIP / 10 FAIL**（42P07 = **0**） |
+
+`bg` 不再挂死。
+
+**变异验证**（把 helper 改成不隔离，search_path 只留 public）：
+`taskprofile` 立刻回到 `exit=1 / 2 FAIL / 42P07×2`。这条证明**测试确实依赖
+隔离**，不是碰巧变绿。
+
+### 修掉 42P07 之后暴露出来的三个更深缺陷
+
+这正是「一个浅层失败后面还藏着一个」——**42P07 一直在替它们挡着**：
+
+1. **`credentials` 夹具 NOT NULL 漂移（23502）**：
+   `INSERT INTO credentials DEFAULT VALUES`，而该表已长出三个无默认值的
+   NOT NULL 列（`provider_id` / `label` / `fp_slot_limit`）。补齐。
+   *我第一版把 label 写死，结果撞上 `UNIQUE (provider_id, tenant_id, label)`
+   （某个测试在一次里 seed 两次）——那是**我引入的新失败**，已改成每次唯一。*
+2. **`availability_state='degraded'` 违反 CHECK（23514）**：
+   该列的枚举是 `{ready,cooling,rate_limited,auth_failed,unreachable,suspended}`，
+   `'degraded'` 属于**另一列**（`status` / `trust_level`）的枚举。
+   改成 `rate_limited`。测试意图只是「同一行 N 次 UPDATE 在 debounce 窗内
+   合并成一次刷新」，取值合法且确实改变行即可。
+3. **listener 协程泄漏导致整包挂死**：
+   `IntegrationStopReturnsPromptlyAfterRealListen` 把 `l.Stop()` 放在**成功
+   路径**上（`go func(){ l.Stop(); ... }()`），中间任何 `t.Fatalf` 都会让
+   LISTEN/NOTIFY 协程活下来，反复重连、刷日志，**测试二进制永不退出**——
+   失败不再被汇报，它之后的测试也不再运行。
+   改挂 `t.Cleanup(l.Stop)`。
+   > 与 Round 44 的 autoupdate panic 同形：**一个失败让它自己不再被汇报，
+   > 并吞掉其后所有测试**。那次是 panic，这次是泄漏的 goroutine。
+
+4 个 listener integration 测试现在全绿（其中一个原先 120s 超时）。
+
+---
+
 ## 5. 本轮没有做的事
 
 - **没有建 per-test schema 隔离 helper**（§2）。这是 §9-3 真正剩下的部分，
