@@ -589,3 +589,50 @@ WHERE NOT EXISTS(…session_turns_hot…) AND NOT EXISTS(…session_turns…)
 
 **同族**：§10（读 SQL WHERE）、§10.1（量化结论自己数一遍，数不可信就不引用）。
 **§10.1 说「自己数一遍」，§19 补上「数出来的那个东西要先确认它是什么」。**
+
+---
+
+## §20 共享 SQL 片段 helper 会让「grep 列名判断隔离」彻底失效
+
+**规则**：判断某个读端点/函数**有没有做租户隔离**时，
+**禁止**用「函数体里是否出现 `tenant_id` / `org_id` / `user_id`」这类字面量筛查。
+先问：**这个项目的隔离是不是由共享 helper 以 SQL 片段形式注入的？**
+如果是，字面量筛查**必然产出假阴性**，且假阴性会伪装成「一批真缺陷」。
+
+**证据（我自己证伪自己的检测手段，2026-10-01 R89-y，112 号）**：
+我枚举 `admin/handler.go:898` 的 `RegisterRoutes`（**105 个 `admin(...)` + 57 个 `superAdmin(...)`**），
+对 154 个 `admin(...)` 端点取 handler 函数体，筛出 36 个直接读
+`request_logs|usage_ledger|session_turns` 的，再按「有无 `tenant_id`」标注
+⇒ **8 个候选「无租户过滤」**，看起来是一份很有说服力的缺陷清单。
+
+**读原文后至少 3 个是假阳性**：
+
+| 候选 | 证伪依据 |
+|---|---|
+| `handleCompressionStats` | `admin/compression_stats.go` **有 3 处** `tenantLogsClause(` / `IsTenantAdmin(` 调用；`admin/compression_sessions.go:3-6` 甚至在文件头写明这条契约 |
+| `handleRoutingRecentModelFailures` | 读 `node_probe_runs` / `passive_probe_state`——**节点级表不是租户级表**，「无 tenant_id」是设计正确 |
+| `handleStats` | 实际在 `*RouteIncidentsHandler` / `*WorkTypeHandlers` 上，不是 `*Handler`；**「按函数名索引」把不同接收者混并了** |
+
+根因（`admin/session_tenant.go:12-16` 自陈）：`tenantLogsClause` 返回的是
+**SQL AND-fragment**（`" AND tenant_id = $N"`），**拼进 WHERE 字符串**，
+所以 handler 函数体里**永远看不到该列名**。
+
+**怎么落地**：
+- 判隔离前，先 `grep -rn "func.*Clause(r \*http.Request" ` 一类**返回 SQL 片段的 helper**，
+  以及 `Is<Scope>Admin` / `Effective<Scope>ID` 这类**返回租户标识的 helper**。
+  它们存在 ⇒ 字面量筛查作废。
+- **按函数名建索引时必须带接收者**（`func (h *T) Name`），
+  否则同名方法跨类型混并（本次就踩了）。
+- **判「表是不是租户级」先看表本身**：节点级/全局级表（`node_probe_runs`）
+  没有 `tenant_id` 是**正确的**，不是缺陷。
+- **这类筛选的输出默认不采信**，除非逐个读原文坐实。
+  本轮唯一坐实的真缺陷（`swim-lane-init`）是**独立读 SQL 原文**发现的，
+  **不是那次筛选的战果**——这个区分必须写清楚，否则会把一次失效的方法
+  包装成一次成功的审计。
+
+**判据**：**筛查工具产出的「一批整齐的候选」越可信，越要先证伪工具本身。**
+整齐来自工具的假设，不是来自代码的事实。
+
+**同族**：§16（grep 引用数有毒）、§17（构造函数不可见）、§19（名字像表的不一定是表）。
+**共同点：全都是「检索计数/字面量匹配」这一类便宜手段的失效形态，
+而失效方向都是「把事实判错」而不是「查不到」。**
