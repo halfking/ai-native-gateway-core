@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **V2 provenance 过滤的直接测试（2026-10-01）**：新增 `internal/sessionv2mirror/safe_metadata_test.go`，为 `safeAlignmentRecords` / `safeSanitizeRefs` 补上此前**零直接单测**的 fail-closed 路径——任一记录不合法即整段丢弃（而非只丢那一条）。用例把坏记录放在第二位（第一条合法）以区分这两种语义，并验证 `alignment_map` 8 字段、`sanitize_message_refs` 6 字段在 V1 结构与 V2 白名单间完全对齐、可选字段非法不触发整段丢弃。2 项变异全红（`return nil`→`continue`、丢弃 `occurrence`），逐字节还原。**纯测试，未改生产行为。** 详见 `docs/全面审计v3/2026-10-01/81-R88O-V2白名单对齐与all-or-nothing钉桩.md`。
+
 ### Fixed
 - **核实 SanitizedMessageRefs / AlignmentMap 接入 V2 metadata（2026-10-01）**：objective 点名项，核实结论是**生产链路与 V2 接入都存在、白名单设计正确，未发现缺陷**。V2 侧 `sessionv2mirror/hook.go` 的 `safeCompressionMeta` 用**白名单**逐键搬运（`cut_marker`/`alignment_map`/`sanitize_message_refs`/`sanitize_map_ref`），注释明写理由是整体复制会持久化原始载荷或**未来的 PII 字段**；将来新增字段默认不出 V2，fail-closed 选对了。测试一道用例埋 5 个 `must-not-mirror` 并同时断言「毒值出不来」与「正常数据仍在」。**本轮一度差点误报**——注释里的 `SanitizedMessageRefs` 是概念名，代码真实标识是 `compression.SanitizeInfo.MessageRefs` / 键 `sanitize_message_refs`，据此新增 `conventions.md` §10.2。纯核实。详见 `docs/全面审计v3/2026-10-01/80-R88N-SanitizedMessageRefs与AlignmentMap接入V2核实.md`。
 - **核实 sanitizer 跨进程 offset 原子预占（2026-10-01）**：objective 点名项，核实结论是**实现正确、测试到位，未发现缺陷**。预占用 `SetNX(key, 8字节随机token, 15s)`（单条命令原子，只有一个 winner），续租用后台 goroutine，提交走 Redis Lua 脚本 `commitSanitizeMapScript`——**租约校验与 map+offset 写入在同一次 Lua 执行内**，不存在「先校验后被抢」的 TOCTOU；脚本另挡键类型错误、占位符覆写、map/offset 不一致中间态三类破坏。6 道测试覆盖跨实例不撞号、抢不到租约即停止转发、慢 detector 续租、过期租约不能提交、过期 worker 覆盖不了新 owner、无 Redis 降级。`go test` 与 `-race` 均通过。纯核实。详见 `docs/全面审计v3/2026-10-01/79-R88M-sanitizer跨进程offset原子预占核实.md`。
