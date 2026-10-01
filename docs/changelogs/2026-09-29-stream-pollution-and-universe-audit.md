@@ -702,16 +702,33 @@ representatives: canonical:2422803 → glm-5.3   canonical:2716170 → glm-5.3-f
 canonical（2716170）的独立分组；`glm-5.2` 组正常。**这正是第 2 项要看的判据**，
 但它是数据层等价验证，**不等于**面板渲染成功的截图。
 
-### 登记一个未证实的疑点（不要当结论用）
+### 疑点已判定：gate 真实存在，但**不是**本次成因（2026-10-01 10:22 补记）
 
-`admin/live_stream_sse.go:2315-2352` 里，连接时唯一携带 `Nodes` 的
-`initial_data` 帧被整个包在 `else if len(items) > 0` 里：**replay 不到任何
-请求条目时，handler 一个字节都不写**，直接阻塞到客户端断开。线上 `2d750fb4`
-同一位置逐行同形。
+`admin/live_stream_sse.go:2320` 里，连接时唯一携带 `Nodes` 的 `initial_data`
+帧被整个包在 `else if len(items) > 0` 里：replay 不到任何请求条目时，
+handler **一个字节都不写**，直接阻塞到客户端断开。线上 `2d750fb4` 同一位置逐行同形。
 
-但本轮**没有复现空 replay**：超管与租户两种身份都拿到了 `initial_data`，
-浏览器侧的 `context canceled` 反而证明是客户端先断。所以这是一条
-**尚未证实的结构性缺口**，登记待查，**不作为本次成因**。
+本轮用一次性取证测试把它判定掉了（两问各一份独立证据，跑完即删，不入库）：
+
+| 问题 | 实验 | 结果 |
+| --- | --- | --- |
+| gate 真实存在吗？ | hub 无 DB/无 store（`replay` 返回 `nil, nil`）+ 注入有数据的 node provider，只跑 handler | 状态码 200、**响应 0 字节** ⇒ gate 成立 |
+| 会不会让节点矩阵**永久**饿死？ | **反向对照**：同一份代码，只多跑一个 `hub.Run()` | 2 秒内收到 `node_update`（182 字节）⇒ **不会饿死** |
+
+变异验证（证明第一问的门不是恒真）：把 `len(items) > 0` 改成 `len(items) >= 0`，
+测试转红并打出 746 字节，其中明确含
+`"nodes":[{"credential_id":7,...,"raw_models":["glm-5.3"]}]`。还原后 `go build` / `go vet` /
+`go test ./admin/ -run 'TestLiveNodeStatus|TestLiveStream'` 全绿。
+
+**结论**：该 gate 只会造成**连接建立后 ≤2s 的空窗**，随 `nodeTicker`
+（`live_stream_sse.go:777/901`，2 秒一次 `fanOutNodeUpdate`）自动补齐。
+生产侧独立佐证：40 秒窗口内超管连接收到 **9-10 个 `node_update`**。
+
+⇒ **它无法解释浏览器那条 13 秒以上仍为 0 字节的连接。** 浏览器侧后端日志
+`live stream initial replay failed err="context canceled"` 才是直接证据 ——
+**客户端在 replay 开始前就断开了**。本条从「未证实的疑点」降级为
+「已判定的非成因」，gate 本身作为健壮性小账登记（空 replay 时首个 tick 前
+面板无数据），不再挂在本条主线上。
 
 ## 2026-10-01 245 蓝绿契约缺口：不是残留进程，是 nginx 只补了一半 vhost
 
