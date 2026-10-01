@@ -57,6 +57,9 @@ var candidateFailureLogsAtomicPromoteMigration535 []byte
 //go:embed embeddata/startup/534_handoff_logs_hot_columnar.sql
 var handoffLogsHotColumnarMigration534 []byte
 
+//go:embed embeddata/startup/612_native_responses_capability.sql
+var nativeResponsesCapabilityMigration612 []byte
+
 //go:embed embeddata/startup/617_candidate_failure_logs_hot_contract.sql
 var candidateFailureLogsHotContractMigration617 []byte
 
@@ -722,6 +725,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,
 	"startup/535_candidate_failure_logs_atomic_promote.sql":                          candidateFailureLogsAtomicPromoteMigration535,
 	"startup/534_handoff_logs_hot_columnar.sql":                                      handoffLogsHotColumnarMigration534,
+	"startup/612_native_responses_capability.sql":                                    nativeResponsesCapabilityMigration612,
 	"startup/536_stats_analytics_foundation.sql":                                     statsMigration536,
 	"startup/537_usage_facts.sql":                                                    statsMigration537,
 	"startup/539_stats_reconciliation_tenant.sql":                                    statsMigration539,
