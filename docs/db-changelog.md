@@ -760,7 +760,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 |-----------|------|---------|--------|
 | 755 | `755_drop_dead_cleanup_expired_session_turn_logs.sql` | `45cdeb4c2109166181a60bca82760d6e697842963702c65e38402004d7f29ac1` | applied+verified |
 | 756 | `756_request_logs_id_index.sql` | `b0297ac4f44b9b997dd241f5e1e2c345e75b889f43844e63b50376005485db65` | applied+verified |
-| 757 | `757_session_turns_origin_actor_projection.sql` | `6a71cebc4a08f7ab05d6392898ec1659cec5165b8966b6c62ca4b8b8d164df09` | applied+verified（2026-10-01 2026-10-01 收口轮修订：重建视图补回 526/640/713 一路携带的 `WITH (security_invoker = true)`（上一版丢失，live reloptions 实测为空；fresh-install e2e 轮文档误归因 713，真凶是本文件）+ 尾部 reloptions 守卫（照抄 526 形态）+.down 对称补回；session_turns/_hot 均 relforcerowsecurity=false，owner 读路径行为不变；台账 SHA 已同步，存量库下次脚本运行走内容重放收敛） |
+| 757 | `757_session_turns_origin_actor_projection.sql` | `76740af06e4feb825a4740a14a0d15517e49c9e66008c75913865cc187f550e9` | applied+verified（2026-10-01 收口轮修订：重建视图补回 526/640/713 一路携带的 `WITH (security_invoker = true)`（上一版丢失，live reloptions 实测为空；fresh-install e2e 轮文档误归因 713，真凶是本文件）+ 尾部 reloptions 守卫（照抄 526 形态）+.down 对称补回；session_turns/_hot 均 relforcerowsecurity=false，owner 读路径行为不变；台账 SHA 已同步，存量库下次脚本运行走内容重放收敛） |
 | 758 | `758_routeincident_missing_columns.sql` | `f68ad115a07a97871b61e4ec47e179795156f70846b404a8a0e7e40768cfde3d` | applied+verified |
 | 759 | `759_report_snapshots_grain_dims.sql` | `716bfc85aad899bb126b7a9b564040978541d75e6bdd9a76229a11a3751cb930` | applied+verified（本地真库；生产待部署后回填。索引注释改为 366 天 / 68 万行热缓存 A/B 实测：带索引 vs 不带索引，汇总 22ms vs 43ms、21ms vs 37ms，明细 39ms vs 49ms、52ms vs 60ms） |
 
