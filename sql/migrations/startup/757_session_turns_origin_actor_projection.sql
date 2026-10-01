@@ -58,7 +58,14 @@ END
 $pre$;
 
 -- ── 顶层执行（必须在这里，见文件头踩坑 1）──────────────────────────────────
-CREATE OR REPLACE VIEW public.session_turns_with_current_month AS
+-- 2026-10-01 加固（2026-10-01 收口轮）：本文件上一版重建视图时丢掉了 526/640/713
+-- 一路携带的 WITH (security_invoker = true)——live 实测 reloptions 为空即本处
+-- 所致（fresh-install e2e 轮文档误归因 713，713:43 实带该选项）。session_turns/_hot 均启用
+-- RLS，视图吞 invoker 会让非 owner 读角色绕过 policy；owner 路径 relforcerow
+-- security=false 不受影响。按 627 先例就地 SET 回来（详见文件尾守卫）。
+CREATE OR REPLACE VIEW public.session_turns_with_current_month
+WITH (security_invoker = true)
+AS
  SELECT hot.id,
     hot.session_id,
     hot.turn_no,
@@ -194,6 +201,16 @@ BEGIN
 
     IF old_cols <> 1 THEN
         RAISE EXCEPTION 'origin_actor projected % time(s) after rewrite (expected 1)', old_cols;
+    END IF;
+    -- 2026-10-01 加固：上一版丢 security_invoker 的正是本文件的重建语句，
+    -- 此守卫防同型回归（形态照抄 526 同名守卫）。
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'public.session_turns_with_current_month'::regclass
+          AND 'security_invoker=true' = ANY (reloptions)
+    ) THEN
+        RAISE EXCEPTION 'session_turns_with_current_month must use security_invoker=true';
     END IF;
     RAISE NOTICE 'post-check ok: % columns incl. origin_actor', new_cols;
 END
