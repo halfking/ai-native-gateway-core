@@ -124,6 +124,8 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 						if d.roleRoutingActive() {
 							decision.SessionRole = string(normalizeAgentRole(cached.Role))
 							decision.TaskKind = string(normalizeTaskKind(cached.Kind))
+							// R52: 与 V1 同款，兜底层归属随缓存复用。
+							decision.RoleFallbackLayer = cached.RoleFallbackLayer
 						}
 						d.annotateTreatment(ctx, apiKeyID, decision)
 						d.populateShadow(ctx, sigs, decision)
@@ -230,12 +232,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// 需要全候选窗口（与 work-type/pin 同一处理）。
 	// R49 修订（2026-09-20 审计 P1）：门禁交给 SelectLLM 返回值（DB 行对任意
 	// 角色生效，admin 显式给 main 配行可达；详见 V1 同款注释）。
-	roleKind := TaskKind("")
-	rolePrefs := []string(nil)
-	if d.roleRoutingActive() {
-		roleKind = ClassifyTaskKind(sigs)
-		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
-	}
+	// R52（2026-10-01）：解析收敛到 resolveRolePrefs（与 V1 共用单点），
+	// 主流兜底层在这里并入，避免 V1/V2 逐层回退口径分叉。
+	rolePlan := d.resolveRolePrefs(sigs)
+	roleKind := rolePlan.kind
+	rolePrefs := rolePlan.prefs
 	roleRoutingOn := len(rolePrefs) > 0
 	if roleRoutingOn {
 		keepFullCandidateSet = true
@@ -288,6 +289,9 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// promoteFirstPresent 找不到偏好，role_route 静默让位。
 	// roleKind/rolePrefs 已在候选窗口展开前算出（R49 修订：门禁即 SelectLLM
 	// 返回值），此处直接复用。
+	// R52 副作用（与 V1 同款、同样刻意）：rolePrefs 含主流兜底层，这 5 个
+	// 重量池模型对 role 路由请求同样免疫 tier 硬过滤——否则一条 tier 配置
+	// 就能把兜底层否掉，修复名存实亡。严格排他的部署关掉本层即可。
 	if d.workTypeRouteStore != nil {
 		pins := []string(nil)
 		if d.overrideStore != nil {
@@ -311,9 +315,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		postTierWinner = recommended[0].Candidate.CanonicalName
 	}
 	roleChangedWinner := false
+	roleFallbackLayer := ""
 	if len(rolePrefs) > 0 {
 		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
 			recommended = promoted
+			roleFallbackLayer = layerName(rolePlan.layerOf(hit))
 			roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != postTierWinner
 		}
 	}
@@ -391,6 +397,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		FilterReasons:      filterReasons,
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
+		RoleFallbackLayer:  roleFallbackLayer,
 	}
 	// R48: role 路由审计字段（flag 开启时；无论是否命中提升都记录观察值）。
 	if d.roleRoutingActive() {
@@ -446,6 +453,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		if d.roleRoutingActive() {
 			cachedPut.Role = normalizeAgentRole(sigs.AgentRole)
 			cachedPut.Kind = normalizeTaskKind(roleKind)
+			cachedPut.RoleFallbackLayer = roleFallbackLayer
 		}
 		d.intentCache.Put(sessionID, cachedPut)
 	}
