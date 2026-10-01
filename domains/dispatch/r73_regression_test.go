@@ -322,9 +322,15 @@ func TestR73_TotalQueueOverflowRejectCompletesDimensionEntry(t *testing.T) {
 	// 「q3 没启动时绿、q3 真启动了才红」。
 	//
 	// depth 计的是 queued（入队 +1、releaseTotal 才 -1），channel 长度计的
-	// 是「还在缓冲里没被取走」。drainer 取走但没 release ⇒ len==0 && depth==1；
-	// 这个组合既排除了「还没入队」，也排除了「已 release」，才是真的在断言
-	// 「drainer 接手了 q3 并被它占住」。
+	// 是「还在缓冲里没被取走」。drainer 取走但没 release ⇒ len==0 && depth==1，
+	// 这个组合排除了「已 release」（depth 会归 0），也排除了「q3 压根没启动」
+	// （那种情况 depth 仍是 q1/q2 留下的 0）——正是旧判据恒真的那一种。
+	//
+	// 严格说还有一个纳秒级窗口没被排除：totalExecutionQueue.tryEnqueue 先对
+	// queued 做 CAS +1、再把请求送进 channel，中间存在「已计数、尚未入 channel」
+	// 的瞬间，此时该组合同样成立。不影响结论：两种情况下 queued 都已是 1，
+	// 容量为 1 的 Tier-0 照样拒掉 q4，下面的断言不受影响。此处不引入生产侧
+	// 埋点来消除它——为了一个良性窗口去改被测代码，代价大于收益。
 	waitFor("q3 被 total drainer 吸收", func() bool {
 		return len(p.totalQueue.ch) == 0 && p.totalQueue.depth() == 1
 	})

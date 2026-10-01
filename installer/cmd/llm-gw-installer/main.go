@@ -675,14 +675,26 @@ var providerEndpointProtocolsMigration800 []byte
 //go:embed embeddata/startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql
 var requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807 []byte
 
+// 808/809（2026-10-01 Round 44 收口轮）。新登记一条启动迁移要接三处：
+// embeddata 文件、这里的 go:embed 变量、下面 embeddedSQLFiles 映射。
+// 少接任何一处，installer 模块的 TestStartupFilesAreAllEmbedded 就是红的，
+// 而 fresh-install 路径会静默地漏掉这条迁移 —— 因为 StartupFiles 里已经
+// 登记了它，dbinit 却找不到文件。
+//
+//go:embed embeddata/startup/808_request_logs_default_partition.sql
+var requestLogsDefaultPartitionMigration808 []byte
+
+//go:embed embeddata/startup/809_instance_release_status_nullable_release_id.sql
+var instanceReleaseStatusNullableReleaseIDMigration809 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
 // 同步登记；stats_migrations_test.go 的双向对账会同时守住两个方向。
 var embeddedSQLFiles = map[string][]byte{
-	"00-prereqs.sql":                                                                 sqlPrereqs,
-	"01-schema.sql":                                                                  sqlSchema,
-	"02-seed.sql":                                                                    sqlSeed,
+	"00-prereqs.sql": sqlPrereqs,
+	"01-schema.sql":  sqlSchema,
+	"02-seed.sql":    sqlSeed,
 	"startup/392_candidate_failure_logs_monthly_partition.sql":                       candidateFailureLogsMonthlyPartitionMigration392,
 	"startup/805_session_dim_reconcile.sql":                                          sessionDimReconcileMigration805,
 	"startup/471_session_summaries_archival.sql":                                     sessionSummariesArchivalMigration471,
@@ -876,9 +888,11 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/762_session_project_backfill_chain.sql":                                 sessionProjectBackfillChainMigration762,
 	"startup/763_provider_events_contract.sql":                                       providerEventsContractMigration763,
 	"startup/764_request_logs_tenant_ts_index.sql":                                   requestLogsTenantTsIndexMigration764,
-	"startup/765_bodies_columnar_storage.sql":                                       bodiesColumnarStorageMigration765,
+	"startup/765_bodies_columnar_storage.sql":                                        bodiesColumnarStorageMigration765,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 	"startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql":        requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807,
+	"startup/808_request_logs_default_partition.sql":                                 requestLogsDefaultPartitionMigration808,
+	"startup/809_instance_release_status_nullable_release_id.sql":                    instanceReleaseStatusNullableReleaseIDMigration809,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

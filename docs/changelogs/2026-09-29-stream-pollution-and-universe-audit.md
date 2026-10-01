@@ -987,3 +987,64 @@ NewAliasSyncService 在非测试代码中零调用；无 .RunOnce() 调用点。
 
 无论哪条都应先在 245 验证，且**写库动作在生产与预发布共用的同一个 PG 上**
 （见上文拓扑一节），必须先排期、不能顺手做。本轮**只登记，不动数据**。
+
+## 2026-10-02 遗留 #1 收口决策：`raw_models` **不收口**（取证后推翻"补偿已成冗余"的直觉）
+
+### 问的问题
+
+上游 `candidates` 已干净（不变式覆盖），`raw_models` 仍泄漏。既然 dashboard
+侧已有 `modelScopeOwnership.ts` 补偿，**补偿是否已成冗余、可以连同上游一起退役？**
+
+### 结论：不收口。补偿今天仍然承重，且**与 candidates 修复正交**。
+
+### 证据 1：补偿的作用对象是 `raw_models`，不是 `candidates`
+
+`web/src/utils/modelScopeOwnership.ts:180` 对 `r.rawModels` 逐个 `claim(raw, owner)`，
+其正确性完全由 `raw_models` 的内容决定。`candidates` 只提供 canonical 证据
+（`recordCanonicalId` / `recordSelfCanonicalId`），**不参与"谁声明了这个 raw"**。
+
+⇒ 修 `candidates` 不改变 `raw_models` 一行，故不改变补偿是否需要。
+
+### 证据 2：变异验证（写了一个 naive 裁决当对照，事后删除）
+
+在同一份 post-fix 响应形态上（candidates 已干净、`raw_models` 仍泄漏）跑两种裁决：
+
+| 裁决方式 | `aliasOwner.get('glm-5.3')` | 结论 |
+|---|---|---|
+| naive 先到先得（模块注释里描述的旧实现） | `glm-5.3-flash` ❌ | 复现原缺陷 |
+| `resolveModelScopeOwnership` | `glm-5.3` ✅ | 补偿承重 |
+
+把 `raw_models` 换成"干净形态"（每个 scope 只列属于自己 canonical 的形式）后，
+naive 才变正确。**这正是 `TestResolveRawModelsStillLeak` 那条 `t.Skip` 提示
+"上游修好时关掉补偿"所描述的触发条件** —— 门与补偿是对齐的，不是漂移。
+
+### 一次被推翻的自证（记录以免再犯）
+
+第一版探针把"去掉包装词"写成对**所有** scope 过滤 `glm-5.3`，
+于是 `glm-5.3` 这个**自身名字就是 glm-5.3** 的 scope 也被清空，naive 拿到
+`undefined`，探针红了。真因在 fixture：没有任何上游修法会产出这种形态 ——
+"干净"指每个 scope 只保留属于**自己** canonical 的形式，不是全局剥词。
+**红的是探针的前提，不是被测代码。**
+
+### 其余 `raw_models` 消费方盘点（全仓，非抽样）
+
+| 消费方 | 是否受影响 | 说明 |
+|---|---|---|
+| `QueuePerspectivePanel.vue:330` | 已补偿 | 走 `modelScopeOwnership` |
+| `DecisionsView.vue:214,290` | **不受影响** | 读的是 `resolution_raw_models`（`routing_decision_log` 列，运行时 `resolve` 包产出），与 resolve 端点的 `raw_models` 是**两个不同字段** |
+| `ExamplesView.vue:210` / `ProbeHealthDetailView.vue:484` | 纯展示 | 只 `.join(', ')` 显示，不参与归属裁决；运营诊断面，显示搜索矩阵本身不算错 |
+| `nodeDetailDrawerFetch.ts:119,167` | **不受影响** | 读的是 `LiveNodeStatus.raw_models`（`credential_model_bindings` 投影），非 resolve 端点字段 |
+| `liveStreamStore.ts:584` `getNodesForModel` | 节点级字段 | 同上，SSE 信封的绑定真值 |
+
+⇒ 勘误 3 里"**任何其它 raw_models 消费方仍暴露**"这句话**过宽**：
+实际受影响的是 resolve 端点字段，而该字段的归属类消费方**只有 dashboard 一处**，
+且已补偿；其余是展示面或**同名但不同源**的字段。
+
+### 附带复核（非本轮改动）
+
+- 317f28556 的 `session_panorama_handler.go` 半成品**已不在当前 main**，
+  错误传播由 `loadSessionTimelineInTx` 承担；`go build ./...` 无输出，
+  `go test ./admin/ -count=1` 全包 72.7s 绿。本地 HEAD 670076364。
+- 真库不变式门在当前 main 重跑：**960/960 catalog models** 通过
+  （`TEST_RESOLVE_INVARIANT_DB_URL` 指向本地 `llm-gateway-pg/llm_gateway`）。
+  目录已从 changelog 记录的 958 滚到 960。
