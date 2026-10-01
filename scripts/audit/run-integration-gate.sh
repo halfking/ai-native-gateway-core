@@ -97,6 +97,19 @@ TEST_NAME="${2:-}"
 die() { echo "ERROR: $*" >&2; exit 2; }
 
 [[ -n "$PKG" ]] || die "usage: $0 <package> [test-name]"
+# Normalize the package argument to a form `go list` accepts. Without this,
+# `run-integration-gate.sh sql/migrations/startup` is not a package path at
+# all: go treats a bare relative path as a std import and fails with
+# "package ... is not in std", exit 1. The zero-integration-test guard below
+# used to hide that stderr and then reported "this package has no integration
+# tests, go add some" — a diagnostic pointing at the wrong problem entirely
+# (measured: `sql/migrations/startup` really has 11 integration-only files).
+# Keep fully-qualified module paths untouched; only bare relative paths grow
+# the "./" that distinguishes them from std.
+case "$PKG" in
+  ./*|../*|/*) ;;
+  */*)        PKG="./$PKG" ;;
+esac
 command -v docker >/dev/null 2>&1 || die "docker not found"
 docker ps --format '{{.Names}}' | grep -qx "$PG_CONTAINER" \
   || die "container '$PG_CONTAINER' not running (override with PG_CONTAINER=)"
@@ -163,14 +176,27 @@ cd "$REPO_ROOT" || die "cannot enter repo root: $REPO_ROOT"
 #     `-f "$tf"` test from the repo root finds nothing and this guard rejects
 #     every package, including ones that do have integration tests.
 # `.Dir` is prepended to make the paths absolute and directly testable.
+# go list's stderr is deliberately NOT discarded. A load failure (bad path,
+# a syntax error, a broken import) produces an empty file list, and the
+# comparison below would then read as "0 integration-only test files" — a
+# vacuous-green-shaped message about a package that may well have dozens of
+# them. Verified: `go list` on an unloadable package exits 1 with output on
+# stderr and nothing on stdout.
 gatelist_files() {
   go list "$@" -f '{{$d := .Dir}}{{range .TestGoFiles}}{{$d}}/{{.}}
 {{end}}{{range .XTestGoFiles}}{{$d}}/{{.}}
-{{end}}' "$PKG" 2>/dev/null | sort
+{{end}}' "$PKG" | sort
 }
+if ! gatelist_files >/tmp/itgate-list.$$ 2>/tmp/itgate-list-err.$$; then
+  echo "--- go list stderr ---" >&2; cat /tmp/itgate-list-err.$$ >&2
+  die "go list 无法加载包 '$PKG'（上面是原始错误）。" \
+"这与「该包没有 integration 测试」是两回事：先修加载错误，再谈覆盖率。" \
+"若路径来自 CI 列表，确认它存在且拼写正确（相对路径需以 ./ 开头）。"
+fi
 GATE_ITEST_COUNT=$(comm -13 \
-  <(gatelist_files) \
+  /tmp/itgate-list.$$ \
   <(gatelist_files -tags=integration) | grep -c . || true)
+rm -f /tmp/itgate-list.$$ /tmp/itgate-list-err.$$ >/dev/null 2>&1
 GATE_ITEST_COUNT="${GATE_ITEST_COUNT:-0}"
 if (( GATE_ITEST_COUNT == 0 )); then
   die "$PKG 下没有任何仅由 integration build tag 引入的测试文件。" \
