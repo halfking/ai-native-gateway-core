@@ -95,6 +95,9 @@
   - 「18 个」错，实测 **23 个**非测试 `.go`（无子目录；`git ls-tree 2a594fea6` 亦为 23 ⇒ **与本轮改动无关，是 R85 当时的计数错误**）。
   - 「0 个 `_test.go`」**指代不明**：若指代码目录 `domains/attachments` 则**错**——那里有 **13 个** `_test.go`，其中 **12 个早在 2026-07-01~2026-08-15 存在**，第 13 个 `cleanup_wiring_test.go` 才是 R87-j 本轮新增；若指 playbook 文档目录 `docs/audit/playbook/domains/` 则确为 0。**原句没写清是哪个目录，这正是它会被误读成「本域无测试」的原因**——而那会让人跳过一个其实有 13 个测试文件的域。
   - **真正成立的部分**：`domains/attachments` **不在 `GUARD_PACKAGES`**（实测 0 命中）⇒ 本域**没有专用审计门**，其 13 个测试仅经 `go test ./...`（`make test` / `make test-short`）执行。**补专用门时按 `conventions.md` §9 + §9.6 走准入清单。**
+- **【R88-e 补】本域最核心的不变量已被两道测试钉住，勿再补重复门**：内容寻址 + 去重由 `TestSaveBase64Image_HashShardedPathAndLegacyRead` 覆盖——它断言路径恰为 `YYYY/MM/<hash[:2]>/<hash[2:4]>/<hash><ext>`（分片与文件名都取自 `Metadata.Hash`），且**跨 request_id 返回同一路径 + `Deduped=true`**；`TestSaveBase64Image_Dedup` 覆盖重复调用幂等。**本轮按 §10 先查「是否已有门」，确认已有 ⇒ 不新建 `internal/*guard` 包**（68 号 D13 的同一条纪律：门不是越多越好，多了还要各自正确）。
+- **【R88-e 补】顺带订正一处与代码矛盾的测试注释**：`storage_test.go` 的 `TestSaveBase64Image_Dedup` 原注释写「相同内容，**不同 request_id** —— 因为**路径含 request_id** 所以文件不重叠」，两处皆假：(a) 两次传的都是 `req-1`；(b) 路径根本不含 request_id。该注释会让人以为跨请求不去重，**与紧邻的第二道测试直接矛盾** ⇒ 已订正。**教训：注释也会过期并与被注释的代码分叉，测试注释同样要核。**
+- **【R88-e 补】去重的真实边界**（不是缺陷，但值得知道）：路径含 `年月`（`relDir` 由 `now := time.Now()` 的年/月拼成），而 `exists` 判定的是完整 `relPath` ⇒ **同一内容跨月上传会落成两个路径、存两份**；去重只在**同一日历月内**生效。**证据等级：结构性代码推导，非运行期实证**——`SaveBase64Image` 直接调 `time.Now()`、无时钟注入缝，本轮未造缝实测。判读存储占用时别假定全局去重。
 
 - **「版本管理」已满足，勿再上报为缺口**：实际是**内容寻址 + 同 key 多行**（`storage.go:320-329` 命中即跳过写 ⇒ 物理上不可能同 key 异内容；`repository.go:107` 每次新行），本文件 §31 已明文接受「版本号/内容寻址」。**曾据「表里没有 version 列」误判为缺失 —— 那是代理量不是语义量。**
 - **附件明细的真表是 `request_attachments`**：`sql/objects/tables/attachments.sql`（12 列）**全仓无 Go writer**（4 次换范围搜索）。基于该表得出的「无 UNIQUE」观察对事实链路不成立。
