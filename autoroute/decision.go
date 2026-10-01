@@ -77,6 +77,13 @@ type Decision struct {
 	// decisions serialise byte-identically to the pre-gate wire format.
 	FilterReasons []string
 
+	// RoleFallbackLayer（R52, 2026-10-01）记录 role 路由的偏好是**第几层**
+	// 命中的："kind" = SelectLLM 的 kind 偏好层（多为轻量池低价模型）；
+	// "mainstream" = 整层不可用后落到的重量池兜底层。空串表示 role 路由
+	// 未介入（flag-off / 无偏好 / 让位），omitempty 保证不介入时序列化
+	// 字节级不变。运维用它回答"低价模型是不是在整层掉线"。
+	RoleFallbackLayer string `json:"role_fallback_layer,omitempty"`
+
 	// DecidedAt is the wall-clock time when the decision was made.
 	DecidedAt time.Time
 
@@ -444,8 +451,17 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 					Profile:            cached.Profile,
 					Classifier:         "session_cache",
 					Reason:             "reused session intent (within " + d.IntentCacheTTL.String() + " TTL)",
-					DecidedAt:          time.Now(),
-					RoutingSource:      "session_cache",
+					// R52 审计订正（既有缺陷，非本次引入）：V1 缓存命中从不置
+					// CacheReused，V2 自 0662c2ba9（2026-06-29）起置——两条路径
+					// 在同一个 commit 里分叉，V1 侧至今未补。后果不是"少个字段"：
+					// CacheReused 无 omitempty，经 autoRouteDecision 落进
+					// X-Gw-Auto-Decision 与 request_logs.auto_decision，
+					// **每一次 V1 缓存命中都被记成 cache_reused=false**，运维
+					// 与 cmd/autoroute-e2e-audit 会得出"会话缓存从未命中"的
+					// 相反结论。补齐后 V1/V2 审计口径一致。
+					CacheReused:   true,
+					DecidedAt:     time.Now(),
+					RoutingSource: "session_cache",
 				}
 				// R48: 缓存命中也带角色/任务类型审计字段（flag 开启时）；
 				// 旧缓存（flag-off 期写入）缺 kind 时归一为 unknown，避免
@@ -453,6 +469,9 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 				if d.roleRoutingActive() {
 					decision.SessionRole = string(normalizeAgentRole(cached.Role))
 					decision.TaskKind = string(normalizeTaskKind(cached.Kind))
+					// R52: 兜底层归属必须跟着缓存走，否则首轮落主流模型、
+					// 后续缓存轮审计字段空成""，主流层用量被系统性低估。
+					decision.RoleFallbackLayer = cached.RoleFallbackLayer
 				}
 				d.annotateTreatment(ctx, apiKeyID, decision)
 				d.populateShadow(ctx, sigs, decision)
@@ -546,12 +565,11 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	// roleRoutedRoles（仅 worker/planner/orchestrator）拦门，SelectLLM 内部
 	// "DB 行对任意角色生效（admin 显式给 main 配行可达）"的语义被调用方短路，
 	// main/unknown 的 DB 行成死数据。flag 开启即询 SelectLLM，返回非空才算命中。
-	roleKind := TaskKind("")
-	rolePrefs := []string(nil)
-	if d.roleRoutingActive() {
-		roleKind = ClassifyTaskKind(sigs)
-		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
-	}
+	// R52（2026-10-01）：解析收敛到 resolveRolePrefs（V1/V2 共用单点），
+	// 主流兜底层在这里并入，V1/V2 逐层回退口径不再各写一遍。
+	rolePlan := d.resolveRolePrefs(sigs)
+	roleKind := rolePlan.kind
+	rolePrefs := rolePlan.prefs
 	roleRoutingOn := len(rolePrefs) > 0
 	if d.workTypeRouteStore != nil &&
 		(d.workTypeRouteStore.HasRoutes(task) || requestedWorkType != "") {
@@ -605,6 +623,12 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	// R49 修订（2026-09-20 审计 P2）：V1 tier 豁免并入 pins，与 V2 对齐——
 	// V1 原样传 rolePrefs 时，admin pin 不在 tier 配置内会被硬过滤、后置
 	// PromotePins 空转（V2 自 ebfab01ac 起即为 append(pins, rolePrefs...)）。
+	// R52 副作用（已知且刻意）：rolePrefs 现在含主流兜底层，于是这 5 个
+	// 重量池模型对 role 路由请求**同样免疫 tier 硬过滤**。取舍：若豁免
+	// 不跟随，运维一条 tier 配置就能把兜底层彻底否掉，"低价不可用时选
+	// 主流模型"将名存实亡。代价是 role 路由请求下 tier 计划的排他性被
+	// 削弱一层——但兜底层只在 kind 层整层缺席时才可能胜出，影响有界。
+	// 需要严格 tier 排他的部署：关掉本层（AUTO_ROLE_ROUTING_MAINSTREAM_FALLBACK=false）。
 	pins := []string(nil)
 	if d.overrideStore != nil {
 		pins = d.overrideStore.GetPins(task, prof)
@@ -617,14 +641,17 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	// policy 之后、pin promote 之前插入，admin pin 仍是最强约束。
 	// 仅 AUTO_ROLE_ROUTING_ENABLED 开启 + 子代理角色（worker/planner/
 	// orchestrator）时介入；偏好列表中首个在候选池的模型提升到首位，
-	// 全不在则静默让位。flag-off / main / unknown 路径零改动（字节级不变）。
+	// 整层皆不在则由 R52 兜底层接住（主流池），两层皆无才静默让位。
+	// flag-off / main / unknown 路径零改动（字节级不变）。
 	preRoleWinner := ""
 	if len(recommended) > 0 {
 		preRoleWinner = recommended[0].Candidate.CanonicalName
 	}
+	roleFallbackLayer := ""
 	if len(rolePrefs) > 0 {
 		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
 			recommended = promoted
+			roleFallbackLayer = layerName(rolePlan.layerOf(hit))
 			if hit != preRoleWinner {
 				routingSource = "role_route"
 			}
@@ -663,6 +690,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		CandidatesTopN:     recommended,
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
+		RoleFallbackLayer:  roleFallbackLayer,
 	}
 	// R48: role 路由审计字段（flag 开启时；无论是否命中提升都记录观察值）。
 	if d.roleRoutingActive() {
@@ -689,6 +717,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		if d.roleRoutingActive() {
 			cachedPut.Role = normalizeAgentRole(sigs.AgentRole)
 			cachedPut.Kind = normalizeTaskKind(roleKind)
+			cachedPut.RoleFallbackLayer = roleFallbackLayer
 		}
 		d.intentCache.Put(sessionID, cachedPut)
 	}
@@ -707,6 +736,79 @@ func (d *Decider) roleRoutingActive() bool {
 		return false
 	}
 	return true
+}
+
+// rolePrefPlan 是 R52 引入的 role 偏好解析结果。prefs 是**逐层展开**后的
+// 有序列表：前 kindLayerLen 个是 kind 偏好层，其后是主流兜底层。
+// 记长度而不是记层切片，是为了让 layerOf 用一次索引比较回答"命中第几层"
+// ——layerOf 是纯函数，两条决策路径（V1/V2）共用同一口径，不会分叉。
+type rolePrefPlan struct {
+	kind         TaskKind
+	prefs        []string
+	kindLayerLen int
+}
+
+// layerOf 返回命中模型所在的层：1 = kind 偏好层，2 = 主流兜底层，
+// 0 = 不在计划内（调用方不该拿到这种 hit）。
+func (p rolePrefPlan) layerOf(hit string) int {
+	if hit == "" {
+		return 0
+	}
+	for i, name := range p.prefs {
+		if name != hit {
+			continue
+		}
+		if i < p.kindLayerLen {
+			return 1
+		}
+		return 2
+	}
+	return 0
+}
+
+// layerName 把层号渲染成 Decision.RoleFallbackLayer 的取值。
+func layerName(layer int) string {
+	switch layer {
+	case 1:
+		return "kind"
+	case 2:
+		return "mainstream"
+	default:
+		return ""
+	}
+}
+
+// resolveRolePrefs 是 role 偏好解析的**单一点**：kind 判定 → SelectLLM →
+// （可选）追加主流兜底层。V1/V2 两条决策路径都必须走这里，任何一条自己
+// 拼偏好表都会让"逐层回退"口径分叉。
+//
+// 兜底层默认开启（AutoRoleMainstreamFallback），因此每个 kind 的最终
+// 偏好都至少有一层主流模型可落：轻量层整层不可用时不再静默让位。
+func (d *Decider) resolveRolePrefs(sigs ClassificationSignals) rolePrefPlan {
+	if !d.roleRoutingActive() {
+		return rolePrefPlan{}
+	}
+	kind := ClassifyTaskKind(sigs)
+	prefs := d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), kind)
+	kindLayerLen := len(prefs)
+	if d.roleMainstreamFallbackActive() {
+		prefs = withMainstreamFallback(prefs)
+	}
+	return rolePrefPlan{kind: kind, prefs: prefs, kindLayerLen: kindLayerLen}
+}
+
+// roleMainstreamFallbackActive 报告主流兜底层是否启用。与
+// roleRoutingActive 一样只读全局 flags，不做 nil 之外的额外判断——父开关
+// 由调用顺序保证（resolveRolePrefs 先判 roleRoutingActive）。
+func (d *Decider) roleMainstreamFallbackActive() bool {
+	if d == nil {
+		return false
+	}
+	flags := GetFeatureFlags()
+	if flags == nil {
+		return false
+	}
+	return flags.AutoRoleMainstreamFallback
 }
 
 // normalizeAgentRole 把空值/非法值统一为 RoleUnknown（信号字段零值是 ""，

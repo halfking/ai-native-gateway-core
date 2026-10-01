@@ -823,3 +823,126 @@ func TestIntegrationTaggedTreeCompiles(t *testing.T) {
 		"%d reference error(s) in the tagged tree:\n  %s\n\nfull output:\n%s",
 		runErr, len(undefined), strings.Join(undefined, "\n  "), combined)
 }
+
+// TestGateSupportsPerPackageFixtureShapes pins the Round 44 §7 work.
+//
+// Round 44 found that the integration-only files fall into families that cannot
+// share one database: some build their own schema and collide with a populated
+// one (SQLSTATE 42P07), some assume an already-migrated one and fail on an
+// empty one ("relation ... does not exist"). One harness could build one kind
+// of database, so "integration 全绿" had no single answer.
+//
+// This asserts the mechanism exists and is honest about what it does NOT
+// achieve. The negative result is the important half: measured 2026-10-01 by
+// running all 27 packages on both shapes, NO package is green on either,
+// because the two families are interleaved inside packages. A shape registry
+// that let a reader assume otherwise would be worse than no registry, so the
+// manifest carries a per-shape FAIL count and this guard pins that requirement.
+func TestGateSupportsPerPackageFixtureShapes(t *testing.T) {
+	act := active(gateSource(t))
+
+	// 1. All three shapes are selectable, and the default is installer — so
+	//    adding the registry cannot change an existing run on its own.
+	for _, shape := range []string{"installer", "baseline", "prereqs"} {
+		if !strings.Contains(act, shape) {
+			t.Errorf("harness 不支持 GATE_DB_SHAPE=%s；三种形态缺一不可", shape)
+		}
+	}
+	if !strings.Contains(act, `GATE_DB_SHAPE="${GATE_DB_SHAPE:-installer}"`) {
+		t.Error(`harness 的形态默认值必须是 installer；否则加一张形态登记表就会` +
+			`悄悄改变所有既有包的建库方式`)
+	}
+
+	// 2. The registry is read per package, not hardcoded in the script.
+	//
+	//    Mutation-verified, and the first version of this assertion was a FALSE
+	//    GREEN for the reason Round 44 §2.3 recorded: it tested for the bare
+	//    substring "integration_fixture_shapes.tsv", which also appears in an
+	//    echo message and in comments. Repointing SHAPE_MANIFEST at /dev/null —
+	//    i.e. the registry genuinely no longer read — left the guard green.
+	//    A bare substring cannot tell "bound" from "mentioned". So assert the
+	//    ASSIGNMENT form, and separately that it is actually consumed.
+	if !regexp.MustCompile(`SHAPE_MANIFEST="\$REPO_ROOT/sql/schema/integration_fixture_shapes\.tsv"`).
+		MatchString(act) {
+		t.Error("harness 没有把 SHAPE_MANIFEST 绑到 integration_fixture_shapes.tsv；" +
+			"形态被写死就等于要求每个人靠记忆选形态。" +
+			"（注意：只查裸子串会被 echo 与注释满足——这是假绿，勿退回那种写法）")
+	}
+	if !strings.Contains(act, "SHAPE_MANIFEST\" ]") && !strings.Contains(act, `-f "$SHAPE_MANIFEST"`) {
+		t.Error("SHAPE_MANIFEST 被赋值却从未被读取；绑了不用等于没绑")
+	}
+
+	// 3. A shape mismatch must be NAMED, not left as a raw 42P07 that reads
+	//    like a product defect.
+	for _, want := range []string{"already exists", "does not exist", "形态不匹配诊断"} {
+		if !strings.Contains(act, want) {
+			t.Errorf("harness 的形态不匹配诊断里没有 %q；"+
+				"42P07 / 42P01 原样抛出会被读成产品缺陷，正是 R44 §7 让这个分裂"+
+				"隐身的那个形状", want)
+		}
+	}
+
+	// 4. The population floor must be per-shape. Applying the installer floor
+	//    to a deliberately-nearly-empty prereqs database would make the
+	//    self-building family ungateable for a reason unrelated to the code.
+	//
+	//    This too was a false green first time round. The original check looked
+	//    for `GATE_DB_SHAPE" != "prereqs"`, which survives deleting the FLOOR
+	//    block because the mismatch-diagnostics use the same condition twice.
+	//    So assert the per-shape floor TABLE, which is the actual mechanism and
+	//    has exactly one home.
+	for _, want := range []string{
+		`installer) GATE_MIN_RELATIONS=`,
+		`baseline)  GATE_MIN_RELATIONS=`,
+		`prereqs)   GATE_MIN_RELATIONS=`,
+	} {
+		if !strings.Contains(act, want) {
+			t.Errorf("population floor 未按形态分档，缺少 %q；"+
+				"对 prereqs 形态套用 installer 的地板值，会把「刻意为空」"+
+				"误判成「起始库没建全」", want)
+		}
+	}
+
+	// 5. The registry file exists, is parseable, and every row is well-formed
+	//    AND carries both measured FAIL counts.
+	//
+	//    Scan-volume floor: a manifest with zero rows is legitimate today (it
+	//    ships empty on purpose — see its header). The guard therefore checks
+	//    FORMAT and the parse, not a row count. The thing that must never
+	//    happen is a row that omits the measurement, because that is what turns
+	//    "neither shape works" into a false green light.
+	data, err := os.ReadFile(filepath.Join("integration_fixture_shapes.tsv"))
+	if err != nil {
+		t.Fatalf("读不到形态登记表：%v", err)
+	}
+	rows := 0
+	for i, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rows++
+		parts := strings.Split(raw, "\t")
+		if len(parts) != 5 {
+			t.Errorf("第 %d 行应为 5 段「包<TAB>形态<TAB>installer失败数<TAB>prereqs失败数<TAB>原因」，"+
+				"实得 %d 段：%q", i+1, len(parts), raw)
+			continue
+		}
+		pkg, shape, failInst, failPre, reason := parts[0], parts[1], parts[2], parts[3], parts[4]
+		switch shape {
+		case "installer", "baseline", "prereqs":
+		default:
+			t.Errorf("第 %d 行形态 %q 不在 installer|baseline|prereqs 内：%q", i+1, shape, raw)
+		}
+		for label, v := range map[string]string{"installer 失败数": failInst, "prereqs 失败数": failPre} {
+			if !regexp.MustCompile(`^\d+$`).MatchString(strings.TrimSpace(v)) {
+				t.Errorf("第 %d 行的%s 必须是实测整数（缺了它，这一行就退化成"+
+					"「某形态可以」的无声断言）：%q", i+1, label, raw)
+			}
+		}
+		if strings.TrimSpace(pkg) == "" || strings.TrimSpace(reason) == "" {
+			t.Errorf("第 %d 行有空的包名或原因：%q", i+1, raw)
+		}
+	}
+	t.Logf("形态登记表 %d 行（当前刻意为空，见文件头）", rows)
+}
