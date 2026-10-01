@@ -848,3 +848,53 @@ ssh -p 25022 root@8.136.114.245 'chmod +x /tmp/admin_inv.test && \
 - `TestResolveRawModelsStillLeak`：`PASS`，输出
   `[glm-5.3-flash glm-5-3-flash glm-5.3 glm-5-3]`，与生产实测逐字一致
 - 生产未变：`build_seq 2356` / `git_sha 2d750fb4`
+
+### 2026-10-01 10:35 补记：把「数据层判据」推到「面板标题」的最后一环也补上了
+
+前面的 `aliasOwner` 验证只覆盖到**归属裁决函数**。面板最终渲染的标题要经过
+`QueuePerspectivePanel.vue` 的这条链，中间还有两个硬前提，本轮一并对生产核实：
+
+```
+node.raw_models                                        (SSE node_update)
+  → modelKey(raw)                                      :447
+  → aliasOwner.get(rawKey)  ← 就是 modelScopeAliasIndex :448
+  → modelScopeMeta.get(scopeKey)，缺失则整组丢弃        :457-458
+  → groups.push({ model: scopeKey, displayName })        :497-499
+  → 模板 {{ group.displayName }}                          :1296
+```
+
+#### 环节一：分组键 = aliasOwner（本轮已验）
+
+生产真实数据下 `aliasOwner['glm-5.3'] = 'glm-5.3'`、`aliasOwner['z-ai/glm-5.3'] = 'glm-5.3'`，
+故上报 `glm-5.3` / `z-ai/glm-5.3` 的节点都落进 `glm-5.3` 这一组。
+
+#### 环节二：`modelScopeMeta` 必须含该作用域，否则 `:458` 直接 `continue`
+
+`modelScopeMeta` 由 **featured + top-models(72h, limit=50)** 两个来源构建
+（`loadModelScope` → `getFeatured()` / `getRequestLogTopModels()`）。对生产实测：
+
+`GET /api/routing/featured` —— 共 **28** 条（与 journal `model_tier: featured set refreshed static:28` 吻合），
+含 glm 的为 **`["glm-5.3","glm-5.3-flash"]`** ⇒ **两者都在**。
+
+`GET /api/logs/top-models?from=-72h&limit=50` —— 共 50 条，glm 相关：
+
+| canonical_name | canonical_id | request_count |
+| --- | --- | --- |
+| `glm-5.3` | 2422803 | 224 |
+| `z-ai/glm-5.3-flash` | *(null)* | 72 |
+| `glm-5.3-flash` | 2716170 | 59 |
+| `glm-5.2` | 173264 | 13 |
+
+#### 结论（每个前提都对着生产核过）
+
+- 筛 `glm-5.3` ⇒ 存在作用域 `glm-5.3`（featured + hot 都有）⇒ 归属裁决把它判给自己
+  ⇒ 渲染出标题为 **`glm-5.3`** 的分组，**不会**被 `glm-5.3-flash` 冒名（后者是
+  独立 canonical 2716170，代表作用域也是它自己，合并后仍是两个组）。
+- `glm-5.2` **不在 featured**，但**在 hot**（canonical 173264，13 次）⇒ 同样会出组，
+  标题 **`glm-5.2`**，正常。
+- 附带确认 `z-ai/glm-5.3-flash`（canonical_id 为 null、72 次，是 glm-5.3-flash 的 1.2 倍）
+  会按名字归入 `canonical:2716170` 身份，合并到代表作用域 `glm-5.3-flash`，
+  不会多出一个重名组。
+
+**仍未取得的只有「浏览器里真的渲染出这两个标题」这一条目视证据**，
+仍需用户在普通 Chrome 确认。本节把除目视之外的全部前提都补成了生产实测。
