@@ -48,7 +48,7 @@ func roleSearchSignals(role AgentRole) ClassificationSignals {
 
 func TestDecide_RoleRouting_PromotesLightModel(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	d := newRoleTestDecider(t)
@@ -99,7 +99,7 @@ func TestDecide_RoleRouting_FlagOff_IdenticalToNoRole(t *testing.T) {
 
 func TestDecide_RoleRouting_MainNotPromoted(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	d := newRoleTestDecider(t)
@@ -121,7 +121,7 @@ func TestDecide_RoleRouting_MainNotPromoted(t *testing.T) {
 
 func TestDecide_RoleRouting_RoleChangeInvalidatesCache(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	d := newRoleTestDecider(t)
@@ -160,9 +160,18 @@ func TestDecide_RoleRouting_RoleChangeInvalidatesCache(t *testing.T) {
 
 func TestDecide_RoleRouting_PreferenceFallback(t *testing.T) {
 	// 候选池缺首选（minimax-m3 不在）→ 依次尝试备选 glm-5.3-flash；
-	// 也不在 → 静默让位保持原 winner。
+	// 也不在 → 让位保持原 winner。
+	//
+	// R52（2026-10-01）：本门显式钉在**主流兜底层关闭**的口径上。生产
+	// 默认是 AutoRoleMainstreamFallback=true，此时 search 的轻量层整层
+	// 缺席会落到主流层（见 decision_role_fallback_test.go 的鉴别门）。
+	// 原实现这里靠 FeatureFlags 字面量把新开关留在 false，测的是运维
+	// 基本不会开的配置——现在写明，避免再被误读成"默认让位"。
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{
+		AutoRoleRoutingEnabled:     true,
+		AutoRoleMainstreamFallback: false,
+	})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	cls := &stubClassifier{name: "heuristic", out: &Classification{
@@ -177,7 +186,8 @@ func TestDecide_RoleRouting_PreferenceFallback(t *testing.T) {
 	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
 	d.SetRoleLLMRouter(NewRoleLLMRouter(nil))
 
-	// search 偏好 [minimax-m3, glm-5.3-flash] 全不在场 → 让位，winner 不变。
+	// search 偏好 [minimax-m3, glm-5.3-flash] 全不在场 + 兜底层已关 →
+	// 让位，winner 不变。
 	dec, err := d.Decide(context.Background(), roleSearchSignals(RoleWorker), 0, "", "", "")
 	if err != nil {
 		t.Fatalf("Decide err: %v", err)
@@ -203,8 +213,9 @@ func TestDecide_RoleRouting_PreferenceFallback(t *testing.T) {
 func TestDecideV2_RoleRouting_PromotesLightModel(t *testing.T) {
 	old := GetFeatureFlags()
 	SetGlobalFeatureFlagsForTest(&FeatureFlags{
-		UseChannelQualityRouting: true,
-		AutoRoleRoutingEnabled:   true,
+		UseChannelQualityRouting:   true,
+		AutoRoleRoutingEnabled:     true,
+		AutoRoleMainstreamFallback: true,
 	})
 	defer SetGlobalFeatureFlagsForTest(old)
 
@@ -290,7 +301,7 @@ func tierFilterStore() *WorkTypeRouteStore {
 // 并入 tier 豁免名单（无 pin 提升语义），必须仍命中 role_route。
 func TestDecide_RoleRouting_SurvivesTierFilter(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	// 候选池：glm-5.2 分高在前（tier 命中者），gpt-5.6-sol 分低在尾部。
@@ -323,7 +334,7 @@ func TestDecide_RoleRouting_SurvivesTierFilter(t *testing.T) {
 // 的对应用例：tier 过滤后 gpt-5.6-sol 必须幸存并翻盘。
 func TestDecideV2_RoleRouting_SurvivesTierFilter(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	idx := &Index{
@@ -362,7 +373,7 @@ func TestDecideV2_RoleRouting_SurvivesTierFilter(t *testing.T) {
 // 修订后门禁即 SelectLLM 返回值：main + 显式 DB 行必须可达并提升。
 func TestDecide_RoleRouting_MainDBRowReachable(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	router := NewRoleLLMRouter(nil)
@@ -400,7 +411,7 @@ func TestDecide_RoleRouting_MainDBRowReachable(t *testing.T) {
 // 首轮"总结一下"缓存的轻池模型会固化整个会话 TTL/50hit）。
 func TestDecide_RoleRouting_KindChangeInvalidatesCache(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	d := newRoleTestDecider(t)
@@ -458,14 +469,20 @@ func tierPrefStore() *WorkTypeRouteStore {
 func TestDecideV2_RoleRoute_CreditStaysWithTier(t *testing.T) {
 	old := GetFeatureFlags()
 	SetGlobalFeatureFlagsForTest(&FeatureFlags{
-		UseChannelQualityRouting: true,
-		AutoRoleRoutingEnabled:   true,
+		UseChannelQualityRouting:   true,
+		AutoRoleRoutingEnabled:     true,
+		AutoRoleMainstreamFallback: true,
 	})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	idx := &Index{
 		entries: []Candidate{
-			{CredentialID: 1, CanonicalID: 1, CanonicalName: "glm-5.3", Tags: []string{"chat"}, SuccessRate: 0.95},
+			// 池内自然头名。**刻意不取主流兜底层里的模型**：R52 起主流层
+			// 也并入 tier 豁免名单，若头名是 glm-5.3，它会被 role 豁免复活、
+			// 留在 postTierWinner 首位，promote 就不再是 i==0 空转，本门
+			// 复现的 R49 P2 前提（tier 滤除自然头名）当场消失——门会绿，
+			// 但测的已经不是它声称测的东西。
+			{CredentialID: 1, CanonicalID: 1, CanonicalName: "qwen3-max", Tags: []string{"chat"}, SuccessRate: 0.95},
 			{CredentialID: 2, CanonicalID: 2, CanonicalName: "minimax-m3", Tags: []string{"chat"}, SuccessRate: 0.90},
 			{CredentialID: 3, CanonicalID: 3, CanonicalName: "kimi-k3", Tags: []string{"chat"}, SuccessRate: 0.85},
 		},
@@ -510,7 +527,7 @@ func pinnedOverrideStore() *OverrideStore {
 // （pin 是最强约束，RoutingSource 终态 override_pin）。
 func TestDecide_RoleRouting_PinSurvivesTierFilter(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	cands := []ScoredCandidate{
@@ -580,7 +597,7 @@ func TestDecideV2_RoleRouting_PinSurvivesTierFilter(t *testing.T) {
 // 顺序打头、tier 计划保序去重随后。
 func TestDecideV2_RoleWinner_HeadsTierFailoverChain(t *testing.T) {
 	old := GetFeatureFlags()
-	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, AutoRoleMainstreamFallback: true})
 	defer SetGlobalFeatureFlagsForTest(old)
 
 	// gpt-5.6-sol 与 grok-4.6（worker+solution 内置 prefs 双臂）都不在
@@ -610,7 +627,11 @@ func TestDecideV2_RoleWinner_HeadsTierFailoverChain(t *testing.T) {
 	if dec.ChosenModel != "gpt-5.6-sol" {
 		t.Fatalf("precondition: worker+solution must promote gpt-5.6-sol, got %s", dec.ChosenModel)
 	}
-	want := []string{"gpt-5.6-sol", "grok-4.6", "glm-5.2"}
+	// R52：链上多出 glm-5.3 —— 它经主流兜底层进入 rolePrefs 且靠豁免复活，
+	// 因此和 gpt-5.6-sol/grok-4.6 同属"role 块"，排在 tier 计划之前。
+	// 这与 winner 口径一致（promoteFirstPresent 同样按 prefs 顺序取首个
+	// 在池者：两者皆不可用时 winner 也会是 glm-5.3）。
+	want := []string{"gpt-5.6-sol", "grok-4.6", "glm-5.3", "glm-5.2"}
 	if len(dec.TierFailoverModels) != len(want) {
 		t.Fatalf("TierFailoverModels = %v, want %v", dec.TierFailoverModels, want)
 	}
