@@ -301,6 +301,30 @@ func TestReset(t *testing.T) {
 	if !b.Allow() {
 		t.Fatal("should allow after reset")
 	}
+	// 2026-10-01 第十八轮审计：Reset 还必须清掉剩余冷却窗口——否则管理面
+	// 复位后 R87 的 sameIncident 判定窗仍以旧 coolingExpires 为界（最长
+	// 30 分钟），交替故障族计数不归零、复位后更易跳闸。注意必须用
+	// KindTransient 触发（KindQuota 落 Quarantined，不写 coolingExpires，
+	// 断言会空过——第一版正是这样失去判别力的）。
+	b.RecordFailure(KindTransient)
+	b.RecordFailure(KindTransient)
+	if b.State() != StateOpen {
+		t.Fatalf("expected open after transient failures, got %s", b.State())
+	}
+	b.mu.Lock()
+	coolingSet := !b.coolingExpires.IsZero()
+	b.mu.Unlock()
+	if !coolingSet {
+		t.Fatal("precondition: transient trip must set coolingExpires")
+	}
+	b.Reset()
+	b.mu.Lock()
+	coolingCleared := b.coolingExpires.IsZero()
+	b.mu.Unlock()
+	if !coolingCleared {
+		t.Fatal("Reset left coolingExpires set: the same-incident window survives a " +
+			"manual recovery, making the breaker MORE trip-prone after reset than before")
+	}
 }
 
 func TestConsecutiveFailures(t *testing.T) {
