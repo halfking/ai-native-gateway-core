@@ -2913,3 +2913,42 @@ A 落在表里、B 落在表外 ⇒ **B 在这张表里天然不可见**。
 
 **同族**：§33（双向证据）/ §41（注释三桶）/ §45 / §59 / §61 / §63（先数写方）/
 §71 / §75 / §79 / §80 / §81。
+
+
+### §83 在 Citus / 分区父表上跑 `count(*)` 之前，先逐分区数一遍 —— 父表聚合会把同一个数放大三个数量级
+
+**由来**（R89-DA / 191 号）：`SELECT count(*) FROM request_wal WHERE status='pending'` = **666,046**，
+逐分区数只有 **515（hot）+ 5（月分区各 1）= 520**。**差 1280 倍。**
+**若直接写进报告，就是一条凭空出现的 P1「数据积压」。**
+
+**⇒ 落地三条：**
+1. **分区父表上的 `count(*)` / `sum()` 必须先与逐分区统计对账** ——
+   本仓是 **Citus 13.3 + citus_columnar**，父表聚合会重复计数；
+   ```sql
+   SELECT count(*) FROM <parent> WHERE …;        -- 666,046
+   SELECT count(*) FROM <parent>_hot WHERE …;    -- 515
+   -- 逐分区
+   SELECT c.relname, count(*) FROM pg_inherits i
+     JOIN pg_class c ON c.oid = i.inhrelid
+     JOIN pg_class p ON p.oid = i.inhparent
+     JOIN pg_namespace n ON n.oid = p.relnamespace
+    WHERE n.nspname='public' AND p.relname='request_wal' GROUP BY 1;
+   ```
+   ⚠️ **本会话已因此算错 4 次**（`request_logs` 时间列、分区归属的 `regexp_match`、Citus 父表聚合…）
+   ⇒ **这是本仓的高频陷阱，不是偶发**（§59 的高频形态）；
+2. **⚠️ 「数据没落库」要先问「它卡在哪张表」再问「为什么没往下走」** ——
+   本轮先查 `request_logs`（0 行）就以为「没落库」，
+   **改问「经过了哪些表」才发现它在 WAL 里躺着，且状态是 `pending`**；
+   ⇒ **「查不到」常常是「查错了表」，而那张表正在告诉你它停在哪一步**（§70 的表亲形态）；
+3. **⚠️ 读到「intended behavior」时，把它拆成「设计」与「代价」两栏** ——
+   本轮这条设计是**故意的**，但代价是**该请求永久停在 `pending`**，
+   **且下游两处（`request_logs` 缺行、auto_route 走 abandon）都是它的表现**
+   ⇒ **只写「符合设计」会漏掉代价，只写「有代价」会误报缺陷**（§37 的四维在单条记录上的应用）。
+
+**⇒ 与 §82 的关系**：
+§82 说「先问字段是写入时填的还是事后回填的」；
+**本条说「先问这条记录停在哪张表、哪个状态」——
+两者都是在问「它在流程的哪一步」，只是一个在字段层、一个在记录层。**
+
+**同族**：§33 / §41（注释三桶）/ §45 / §59（尺子错的两种形态）/ §61 / §63 / §70 /
+§71 / §75 / §79 / §80 / §81 / §82。
