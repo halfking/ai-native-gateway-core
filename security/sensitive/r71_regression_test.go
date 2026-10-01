@@ -2,7 +2,6 @@ package sensitive
 
 import (
 	"context"
-	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,56 +17,52 @@ import (
 // （len([]byte(string(runes[:i+1])))，是 O(i) 的完整拷贝），整体退化为
 // O(n²)。检测跑在同步的 governance 路径上，于是「让文本很容易命中敏感词」
 // 本身就成了一种单请求 CPU 耗尽手段。
+//
+// 判据用「分配字节数的比值」而不是墙钟。墙钟版在 32KB/64KB 这种亚毫秒量级上
+// 量的根本是机器负载而不是算法：同一份二进制、单独跑同一个包，墙钟 ratio 在
+// 2.04~4.70 之间跳（旧阈值 2.6），已经越过「二次方≈4.0」；即便改成交替采样 +
+// 多轮取最小值，在 14 个 CPU hog 压满的机器上仍测到 1.28~2.74，而「取最小」
+// 本身会**系统性低估** ratio（两个尺寸各自挑走最走运的一次采样），也就是可能
+// 把真回归一起抹掉。那道墙在这里拆不掉。
+//
+// 分配字节数与负载无关，且精确对应被测性质：命中数与输入长度成正比，旧写法每次
+// 命中拷贝整个前缀 ⇒ 分配**总量** O(n²)；修复后每次命中 O(1) 查表 ⇒ 总量 O(n)。
+// 倍数直接落在 2 / 4 上，不是估的。墙钟那道绝对成本门（TestMatch_LargeBodyStaysCheap，
+// 300ms 预算对 ~10ms 实测）仍然保留，两条门各测各的。
 func TestMatch_ScalingIsLinear(t *testing.T) {
 	eng := buildR71Engine(t, map[string][]string{"w": {"自由"}})
 	const unit = "自由"
 	mk := func(kb int) string { return strings.Repeat(unit, kb*1024/len(unit)) }
 
-	// Warm up first: the first call pays for cold caches, which alone would
-	// look like super-linear scaling.
+	// Warm up first: the first call pays for the rule table's lazy init, and
+	// both sample strings are built outside the measured region.
 	for i := 0; i < 3; i++ {
 		eng.Match(mk(8))
 	}
 
-	bestOf := func(kb int) time.Duration {
-		best := time.Duration(math.MaxInt64)
-		for r := 0; r < 3; r++ {
-			t0 := time.Now()
-			eng.Match(mk(kb))
-			if d := time.Since(t0); d < best {
-				best = d
-			}
-		}
-		return best
+	allocBytes := func(f func()) uint64 {
+		runtime.GC()
+		var m0, m1 runtime.MemStats
+		runtime.ReadMemStats(&m0)
+		f()
+		runtime.ReadMemStats(&m1)
+		return m1.TotalAlloc - m0.TotalAlloc
 	}
 
-	// 为什么不能「32KB 测完再测 64KB，只取各自 best」：两个尺寸落在时间轴的
-	// 两端，一次 GC 或一次调度抢占只会污染其中一边，ratio 就被噪声顶穿。实测
-	// 同一份二进制、单独跑同一个包，ratio 在 2.04~4.70 之间跳（阈值 2.6）——
-	// 已经越过「二次方≈4.0」，说明这条门量的根本不是算法而是当时的机器负载。
-	//
-	// 改成**交替**采样并对多轮取最小 ratio：负载扰动同时命中两个尺寸，best 只
-	// 会被噪声抬高不会被压低，而干扰只会让 ratio 变大，所以多轮的最小值就是
-	// 「最接近真实伸缩」的估计。
-	ratio := math.Inf(1)
-	var d32, d64 time.Duration
-	for round := 0; round < 6; round++ {
-		a, b := bestOf(32), bestOf(64)
-		if r := float64(b) / float64(a); r < ratio {
-			ratio, d32, d64 = r, a, b
-		}
-	}
-	// Match 除了 O(n) 的前缀表，每个命中还要写一次去重 map，最后 sortResults
-	// 是 O(n log n) —— 所以真实伸缩是 n log n，比率落在 2.2 附近而不是 2.0。
-	//
-	// 阈值 3.0 的判别力是实测过的，不是估的：
-	//   - 现状（O(n) 前缀表）：ratio 稳定在 2.25~2.44（8 次独立运行）
-	//   - 变异（把 begin 退回逐命中的 len([]byte(string(runes[:i+1-k])))）：
-	//     32KB=133.7ms 64KB=488.2ms ratio=3.65 → 本门红
-	// 3.0 落在 2.44 与 3.65 之间的空档里，两侧都有余量。
-	t.Logf("32KB=%v 64KB=%v ratio=%.2f (n log n≈2.2, quadratic≈4.0)", d32, d64, ratio)
+	in32, in64 := mk(32), mk(64)
+	b32 := allocBytes(func() { eng.Match(in32) })
+	b64 := allocBytes(func() { eng.Match(in64) })
+	require.NotZero(t, b32, "32KB 基准样本没有分配任何字节，比值失去意义")
+
+	ratio := float64(b64) / float64(b32)
+	// 阈值 3.0 的判别力是实测的：
+	//   - 现状：32KB=994,608B 64KB=1,982,128B ratio=1.9929（三次重复逐字节相同）
+	//   - 变异（begin 退回逐命中的 O(i) 前缀拷贝）：ratio=4.0754
+	//     （32KB=94,695,144B 64KB=385,908,904B，即二次方的 4×）
+	// 3.0 落在 1.99 与 4.08 正中间，两侧余量都很大，且完全不受机器负载影响。
+	t.Logf("32KB=%dB 64KB=%dB allocRatio=%.4f (linear≈2, quadratic≈4)", b32, b64, ratio)
 	require.Less(t, ratio, 3.0,
-		"Match scaled super-linearly: 32KB→64KB ratio %.2f", ratio)
+		"Match 的每命中代价不是 O(1)：32KB→64KB 分配字节比值 %.4f（超过 3 说明前缀被重复拷贝，O(n²) 回来了）", ratio)
 }
 
 func TestMatch_LargeBodyStaysCheap(t *testing.T) {
