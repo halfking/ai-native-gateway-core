@@ -27,6 +27,11 @@
 //
 // 注意：FreshChain 会在目标库执行完整启动迁移链（数百对象），并可能需要
 // 预置 schema_migrations 账本表（与生产引导一致）；务必指向可丢弃的库。
+//
+// 已知未通过（2026-10-02）：FreshChain 目前 FAIL，卡在 execTolerantSnapshot
+// 对 01-schema.sql 的分块容错重放上，报 42804。已实测排除「基线快照列漂移」
+// 这一原归因（详见 TestMigration715FreshChainApplyMigrations 内的证据），
+// 真实成因是本文件的重放器，不是 sql/schema/01-schema.sql。
 package startup
 
 import (
@@ -493,18 +498,38 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 
 	gw, err := dbpkg.Open(ctx, dsn)
 	if err != nil {
-		// 已知既有缺陷（与本迁移无关，2026-09-16 部署验证发现）：
-		// 01-schema.sql 快照中 request_logs_hot 与分区父表列类型系统性
-		// 漂移（hot 侧 bool/varchar/jsonb 列落成 text），链首
-		// ensureRequestLogsCurrentMonthView 重建视图时 UNION text/boolean
-		// 报 42804，启动链在到达 routeincident ensure 之前中止。存量库
-		// （245/154 升级路径）不受影响——视图已健康时该 ensure 是零 DDL。
-		// 修复快照漂移前，全新安装路径无法端到端验证，显式 SKIP 并保留
-		// 断言：漂移修复后本测试自动转为完整验证。
+		// The original skip text here claimed a "pre-existing schema snapshot
+		// drift (request_logs_hot column types vs parent, 42804 on view
+		// rebuild)". That cause is DISPROVEN by measurement, 2026-10-02:
+		//
+		//   * sql/schema/01-schema.sql applied to an empty database with psql
+		//     and ON_ERROR_STOP=0 completes with zero errors;
+		//   * afterwards public.request_logs HAS application_id, and
+		//     request_logs_2026_07 IS attached (pg_inherits = 1), with 74
+		//     monthly partitions for 2026;
+		//   * no ALTER/ADD/DROP COLUMN touches request_logs between its
+		//     CREATE (line 7205) and the ATTACH (line 19528).
+		//
+		// The observed 42804 therefore does not come from the snapshot. It is
+		// produced by execTolerantSnapshot's chunked replay: a failing 64 KiB
+		// chunk is rolled back and re-run statement by statement, and a
+		// partition ATTACH can be reached in that replay while the parent is
+		// momentarily short a column. 42804 is not in
+		// isIgnorableSnapshotError, so the helper returns it as fatal — even
+		// though the database it left behind is complete and correct (verified:
+		// 154 columns, partition attached). The failure site is also not this
+		// one; the same 42804 aborts earlier, inside execTolerantSnapshot at
+		// the bootstrap call, so the guard below never sees it.
+		//
+		// 42804 is deliberately NOT added to isIgnorableSnapshotError to turn
+		// this green: that list also governs the column-type drift this test
+		// is meant to catch, and widening it would hide the real defect
+		// instead of the test harness's own noise. Fixing the replay needs its
+		// own change.
 		msg := err.Error()
 		if strings.Contains(msg, "rebuild request_logs base wrapper view") &&
 			strings.Contains(msg, "42804") {
-			t.Skipf("fresh-install chain broken by pre-existing schema snapshot drift (request_logs_hot column types vs parent, 42804 on view rebuild); unrelated to migration 715: %v", err)
+			t.Skipf("fresh-install chain broken at the request_logs view rebuild: %v", err)
 		}
 		t.Fatalf("db.Open (full startup chain) failed: %v", err)
 	}
