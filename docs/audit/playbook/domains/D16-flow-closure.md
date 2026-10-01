@@ -91,7 +91,11 @@
 - 约 20+ 嵌入 worker 的 panic 停摆面（R51-F13/R52 确认仍在）本轮收口；bg 剩余约 50 处裸 go 仍登记顺延。
 
 ### R85 回注（2026-10-01，附件闭环两跳断裂 + 验收门不含本域文件）
-- **本域验收门对附件域零覆盖**：`plan.md` §38 的门只跑 outbox / orchestration / hostedtask，**`domains/attachments` 的 18 个非测试文件一个都不在门内**，D16 目录亦 0 个 `_test.go`。**补门时按 `conventions.md` §9 走准入清单。**
+- ~~**本域验收门对附件域零覆盖**（原写：「`domains/attachments` 的 **18** 个非测试文件一个都不在门内」，「**D16 目录亦 0 个 `_test.go`**」）~~ —— **R88-d 订正：两处都不准确，且「0 个」是本轮最危险的一条**：
+  - 「18 个」错，实测 **23 个**非测试 `.go`（无子目录；`git ls-tree 2a594fea6` 亦为 23 ⇒ **与本轮改动无关，是 R85 当时的计数错误**）。
+  - 「0 个 `_test.go`」**指代不明**：若指代码目录 `domains/attachments` 则**错**——那里有 **13 个** `_test.go`，其中 **12 个早在 2026-07-01~2026-08-15 存在**，第 13 个 `cleanup_wiring_test.go` 才是 R87-j 本轮新增；若指 playbook 文档目录 `docs/audit/playbook/domains/` 则确为 0。**原句没写清是哪个目录，这正是它会被误读成「本域无测试」的原因**——而那会让人跳过一个其实有 13 个测试文件的域。
+  - **真正成立的部分**：`domains/attachments` **不在 `GUARD_PACKAGES`**（实测 0 命中）⇒ 本域**没有专用审计门**，其 13 个测试仅经 `go test ./...`（`make test` / `make test-short`）执行。**补专用门时按 `conventions.md` §9 + §9.6 走准入清单。**
+
 - **「版本管理」已满足，勿再上报为缺口**：实际是**内容寻址 + 同 key 多行**（`storage.go:320-329` 命中即跳过写 ⇒ 物理上不可能同 key 异内容；`repository.go:107` 每次新行），本文件 §31 已明文接受「版本号/内容寻址」。**曾据「表里没有 version 列」误判为缺失 —— 那是代理量不是语义量。**
 - **附件明细的真表是 `request_attachments`**：`sql/objects/tables/attachments.sql`（12 列）**全仓无 Go writer**（4 次换范围搜索）。基于该表得出的「无 UNIQUE」观察对事实链路不成立。
 - **闭环断两跳**：① `session_turns` 只有 `attachment_count`/`attachment_total_bytes` 两个**计数**列，`pg_constraint` 实测指向附件表的外键数 = **0**，关联仅靠无约束的 `request_id`；② `admin/data_lifecycle_attachments.go:384-404` 清理**只把 JSONB 置 NULL、从不删 `request_attachments` 行**（函数注释自陈「保留行和元数据」）⇒ 元数据行实际永生 + 归属校验命中已删记录。
