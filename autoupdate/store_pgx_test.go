@@ -283,16 +283,65 @@ func TestPgxStore_RecordUpdateReport(t *testing.T) {
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				// require, not assert: a non-fatal assert lets the next line run
+				// with a nil `status` and panic. That panic aborts the whole test
+				// BINARY, so every test scheduled after this one is silently
+				// suppressed — the package then reports a tidy "26 PASS / 4 FAIL"
+				// while 81 of its tests never ran at all. That is exactly what
+				// happened here before the release_id fix, and it is why a red
+				// package's PASS count must never be read as its coverage.
+				require.NoError(t, err)
 
 				// Verify instance_release_status was updated
 				status, err := store.GetInstanceStatus(ctx, tt.report.InstanceID)
-				assert.NoError(t, err)
+				require.NoError(t, err)
+				require.NotNil(t, status, "GetInstanceStatus returned no status row")
 				assert.Equal(t, tt.report.Status, status.Status)
 				assert.Equal(t, tt.report.ToVersion, status.Version)
 			}
 		})
 	}
+}
+
+// TestPgxStore_RecordUpdateReport_UnknownVersion pins the contract that
+// migration 809 restored: a report for a to_version that has no releases row
+// is STORED, with release_id NULL — not dropped, and not turned into a
+// dangling 0 that violates `REFERENCES releases(id)`.
+//
+// The pre-fix behaviour was releaseID = 0, which fails with SQLSTATE 23503 on
+// every database (releases_id_seq starts at 1, so id=0 never exists), the
+// handler turns that into a 500, and the report is lost. This is a real
+// product flow, not a contrived fixture: a rollback reports the version it
+// rolled back TO, which routinely predates any row in releases.
+func TestPgxStore_RecordUpdateReport_UnknownVersion(t *testing.T) {
+	store, ctx, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	baseTime := time.Now().Format("20060102150405")
+	instanceID := "test-instance-unknown-version-" + baseTime
+	seedTestInstance(t, store, instanceID)
+
+	// Deliberately NOT created in releases.
+	const toVersion = "v0.0.0-never-published-" + "unknown"
+
+	report := &UpdateReportData{
+		InstanceID:  instanceID,
+		FromVersion: "v1.4.0",
+		ToVersion:   toVersion,
+		Status:      StatusRollback,
+		DurationMS:  1000,
+		Error:       "health check failed",
+	}
+	require.NoError(t, store.RecordUpdateReport(ctx, report),
+		"a report for an unknown to_version must be stored, not rejected by the FK")
+
+	status, err := store.GetInstanceStatus(ctx, instanceID)
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	assert.Nil(t, status.ReleaseID,
+		"release_id must be NULL when to_version has no releases row (0 is never a legal value here)")
+	assert.Equal(t, StatusRollback, status.Status)
+	assert.Equal(t, toVersion, status.Version)
 }
 
 func TestPgxStore_GetUpgradeHistory(t *testing.T) {

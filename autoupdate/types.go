@@ -55,7 +55,14 @@ type GrayReleaseRuleView struct {
 }
 
 type ReleaseStatus struct {
-	ReleaseID   int64      `json:"release_id"`
+	// ReleaseID 可空：上报的 to_version 未必有对应的 releases 行——回滚上报
+	// 的目标版本是「回滚到的旧版本」，天然可能不存在。迁移 809 解除该列的
+	// NOT NULL（外键保留），RecordUpdateReport 在查不到 release 时写 NULL。
+	//
+	// 这里是 *int64 而不是 int64 + 0 哨兵：ReleaseStatus 同时是读模型和写命令
+	// （UpdateInstanceStatus 收它），若读路径把 NULL 折成 0，一次
+	// get→update 往返就会把 0 写回去并再次撞外键。0 在这张表上永远不是合法值。
+	ReleaseID   *int64     `json:"release_id"`
 	InstanceID  string     `json:"instance_id"`
 	Status      string     `json:"status"`
 	Version     string     `json:"version"`
