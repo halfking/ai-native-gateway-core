@@ -155,3 +155,63 @@ RAISE NOTICE 'Coverage: %%', report.coverage_percentage;
 - 「V 系 17 成功 / 4 失败」是在同一份库上实跑的，4 条错误原文都记在 §3 表格里。
 - 迁移编号统计**重算过一次**：第一次漏了 `up/` 子目录，结论是错的，已在 §1 写明并给出正确值。
 - 探针库已删除，`itgate%` 数据库残留 0、角色 0。
+
+---
+
+# 追加（2026-10-02 晚）：715 FreshChain 从第三个方向独立命中同一个根
+
+上一节把这三套迁移的差异量化出来之后，我继续修 715 FreshChain 剩下的那一层
+（它漏了生产全新安装的中间步骤）。修的过程中，**从完全不同的方向撞见了同一件事**。
+
+## 13. 715 现在的失败点，以及它意味着什么
+
+按生产真实顺序补上中间步骤后（快照 → 198 条注册迁移 → `db.Open`），失败依次推进了三层，
+每一层都比上一层更靠近根：
+
+| 层 | 错误 | 缺的是 |
+|---|---|---|
+| 1 | `42P01 relation "public.session_aggregate_outbox" does not exist` | 630（**已注册**） |
+| 2 | `42883 function public.ensure_usage_facts_daily_partition(date) does not exist` | 751（**已注册**，在 715 之后） |
+| 3 | `P0001 handoff_logs schema contract requires a RANGE partitioned parent; run startup migration 534` | 534（**未注册**） |
+
+第 2 层纠正了我原先的说法：「测试只漏了到 714 为止的那一段」是错的——
+`db.Open` 的 ensure 链**假设全部 198 条都已应用**，所以必须全量重放。
+这也直接推翻了这个测试原本的立意：真实生产里 715 是**由安装器作为文件应用**的，
+不是由 ensure 链应用的。测试注释里「在 ensure 链内从 389 升级到 715」的说法与生产不符，
+已在代码里改成如实描述（含「本测试不再单独证明 ensure 接线」这句）。
+
+## 14. 第 3 层是真正的阻断，而且有第二个独立证据
+
+`db.Open` 硬性要求 `handoff_logs` 是 RANGE 分区表，并指名运行 **534**。
+
+```
+grep -c '534_handoff_logs_hot_columnar' installer/internal/dbinit/runner.go   ->  0   （未注册）
+ls sql/migrations/startup/534_handoff_logs_hot_columnar.sql                   ->  存在（孤儿文件）
+```
+
+再直接查一份 installer 形态门禁库的系统目录：
+
+```
+handoff_logs : relkind='r'  NOT-PARTITIONED
+request_logs : relkind='p'  partstrat='r'      <- 健康的对照
+```
+
+**结论：仅由已注册迁移链建出的数据库，生产启动链 `db.Open` 跑不通。**
+它需要一个未注册迁移才会产生的对象。
+
+两个方向独立互证：715 的 `P0001` 报错，和系统目录的直接查询。
+
+**为什么门禁一直没发现**：除了 715 FreshChain，没有任何测试对「从零建的库」跑 `db.Open`。
+门禁自己建库时用的是 `01-schema` 基线 + 198 条注册迁移，建完就不跑 `db.Open`，
+所以这条阻断路径在门禁里是**没有覆盖**的。
+
+## 15. 这把 §9-6/§9-7 的紧迫度提级了
+
+上一节我说「三套迁移谁是 SSOT 是产品决策」。现在这个决策有了一个**具体的、会阻断生产的失败点**：
+
+- 选「已注册链为准」→ `db.Open` 在全新安装上直接失败（实测 P0001），且 5 张表缺失；
+- 选「把早期链接进来」→ 要决定接哪些（130 条，编号 0..387），顺序如何，以及它们与
+  基线快照、与 deploy V 系的重叠怎么处理；
+- 选「V 系为准」→ 上一节已实测 V 系与安装器链**不可组合**（17 成功 / 4 失败）。
+
+本轮交付到此为止是合适的：再往下走就是替用户做这个决策了。
