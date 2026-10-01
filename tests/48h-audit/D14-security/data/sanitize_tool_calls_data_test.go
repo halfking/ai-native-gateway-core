@@ -82,8 +82,8 @@ func TestData_ToolCallsArgs_NestedJSONRestored(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &resp))
 
 	var args struct {
-		Primary  string `json:"primary"`
-		Owner    struct {
+		Primary string `json:"primary"`
+		Owner   struct {
 			Email    string `json:"email"`
 			Verified bool   `json:"verified"`
 		} `json:"owner"`
@@ -101,10 +101,9 @@ func TestData_ToolCallsArgs_NestedJSONRestored(t *testing.T) {
 	assert.Equal(t, 42, args.Contacts[0].Score, "数组内非字符串字段不变")
 }
 
-// TestData_ToolCallsArgs_InvalidJSONFallbackToStringReplace
-// arguments 不是合法 JSON（罕见但存在：上游把某些 token 序列化为半截 JSON）
-// → 退化为字符串路径占位符替换，不让 raw 占位符泄漏。
-func TestData_ToolCallsArgs_InvalidJSONFallbackToStringReplace(t *testing.T) {
+// Invalid executable JSON cannot be repaired by arbitrary text replacement.
+// Block rather than return corrupted tool arguments or unresolved markers.
+func TestData_ToolCallsArgs_InvalidJSONBlocks(t *testing.T) {
 	rdb := setupRedis(t)
 	sid := "sess-data-invalid"
 	ctx := context.Background()
@@ -135,19 +134,6 @@ func TestData_ToolCallsArgs_InvalidJSONFallbackToStringReplace(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	var resp struct {
-		Choices []struct {
-			Message struct {
-				ToolCalls []struct {
-					Function struct {
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	require.NoError(t, json.Unmarshal(result.ModifiedBody, &resp))
-	arg := resp.Choices[0].Message.ToolCalls[0].Function.Arguments
-	assert.Contains(t, arg, "prefix 13800138000 suffix", "非 JSON 路径退化为字符串占位符替换")
-	assert.NotContains(t, arg, "{SENSITIVE:phone:1}", "raw 占位符文本必须消失")
+	assert.True(t, result.ShouldBlock, "invalid executable arguments must be blocked")
+	assert.Empty(t, result.ModifiedBody, "blocked tool must not expose a rewritten executable body")
 }

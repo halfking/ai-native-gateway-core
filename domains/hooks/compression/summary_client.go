@@ -52,6 +52,9 @@ func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts
 			continue
 		}
 		out, callErr := completeSummaryCandidate(ctx, &cand, prompt, cfg)
+		if callErr == nil {
+			out, callErr = guardGeneratedText(ctx, out)
+		}
 		if callErr != nil {
 			// T12 (audit 2026-08-27 §6.4): 原 slog.Debug 4,588次/日 error swallowed
 			// → 提到 WARN 让日志检索/告警触达；同时记录失败累计便于诊断。

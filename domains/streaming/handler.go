@@ -3932,11 +3932,16 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		// SP-02: state machine — body compression completed successfully.
 		if scResult != nil && len(scResult.OutboundBody) > 0 {
-			// NeverWorse guard: the compressor must never inflate the request
-			// body. If the "compressed" output is >= the raw body length the
-			// transform regressed — discard it and keep the original.
-			if guarded, regressed := compression.NeverWorse(bodyBytes, scResult.OutboundBody, compression.GuardStageCompress); !regressed {
-				bodyBytes = guarded
+			// Compare against assembled, sanitized history. A delta-only client body
+			// has a different scope and cannot be the rollback for cached history.
+			sourceBody := bodyBytes
+			if len(scResult.CompressionSourceBody) > 0 {
+				sourceBody = scResult.CompressionSourceBody
+			}
+			if bytes.Equal(sourceBody, scResult.OutboundBody) {
+				bodyBytes = scResult.OutboundBody
+			} else {
+				bodyBytes, _ = compression.NeverWorse(sourceBody, scResult.OutboundBody, compression.GuardStageCompress)
 			}
 
 			// ── Tools restoration (Phase 1 optimization) ──────────────────
@@ -3996,7 +4001,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// AlignmentMap and sanitizer MessageRefs used to live only in the
 			// V1 Redis session state / result memo — sessions_v2 metadata's
 			// provenance read path consumed keys no writer ever produced.
-			if prov := buildOutboundProvenance(r, scResult.AlignmentMap); len(prov) > 0 {
+			if prov := buildOutboundProvenance(r, scResult.AlignmentMap, scResult.CompressionSourceSnapshot); len(prov) > 0 {
 				logCtx.OutboundProvenance = prov
 			}
 		}

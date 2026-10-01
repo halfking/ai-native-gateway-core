@@ -24,6 +24,8 @@ const (
 	TypeCreditCard SensitiveType = "credit_card"
 	TypeSecret     SensitiveType = "secret"
 	TypeInternalIP SensitiveType = "internal_ip"
+	TypeServerIP   SensitiveType = "server_ip"
+	TypeAccount    SensitiveType = "account"
 	TypeName       SensitiveType = "name"
 	TypeCustom     SensitiveType = "custom"
 )
@@ -51,7 +53,7 @@ type SanitizeMap map[string]string
 // ParsePlaceholder 从字符串解析占位符
 func ParsePlaceholder(s string) (Placeholder, bool) {
 	m := PlaceholderPattern.FindStringSubmatch(s)
-	if len(m) != 3 {
+	if len(m) != 3 || m[0] != s {
 		return Placeholder{}, false
 	}
 	idx, err := strconv.Atoi(m[2])
@@ -65,7 +67,7 @@ func ParsePlaceholder(s string) (Placeholder, bool) {
 func ValidateSensitiveType(t SensitiveType) bool {
 	switch t {
 	case TypePhone, TypeIDCard, TypeEmail, TypeCreditCard,
-		TypeSecret, TypeInternalIP, TypeName, TypeCustom:
+		TypeSecret, TypeInternalIP, TypeServerIP, TypeAccount, TypeName, TypeCustom:
 		return true
 	}
 	return false

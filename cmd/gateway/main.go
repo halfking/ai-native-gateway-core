@@ -5902,6 +5902,12 @@ func main() {
 
 	slog.Info("CHECKPOINT: before healthz registration")
 
+	// Redis/DB-free and lite startup must still protect visible request/output
+	// text. With no Redis, restoration uses the current request's private map.
+	if sanitizePatternDetector == nil && chatHandler != nil {
+		sanitizePatternDetector = installSmartSaniGuard(chatHandler, nil, nil)
+	}
+
 	// ── Sensitive Word Engine (2026-07-18) ───────────────────────────────
 	// AC automaton for multi-pattern sensitive word detection. Lifted out
 	// of buildV2DispatchPipeline so it's always available regardless of

@@ -37,12 +37,12 @@ import (
 )
 
 const affinityWorkerSchema = `
-CREATE TABLE public.request_logs_hot (
+CREATE TABLE request_logs_hot (
 	request_id text PRIMARY KEY,
 	origin_actor text,
 	ts timestamptz NOT NULL DEFAULT NOW()
 );
-CREATE TABLE public.auto_route_selections_hot (
+CREATE TABLE auto_route_selections_hot (
 	id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	partition_date date NOT NULL DEFAULT CURRENT_DATE,
 	request_id text,
@@ -60,7 +60,7 @@ CREATE TABLE public.auto_route_selections_hot (
 	cost_usd double precision,
 	ts timestamptz NOT NULL DEFAULT NOW()
 );
-CREATE OR REPLACE VIEW public.auto_route_selections_all AS
+CREATE OR REPLACE VIEW auto_route_selections_all AS
 SELECT id, request_id, session_id, NULL::bigint AS task_id, tenant_id, ts,
        task_type, profile, NULL::text AS classifier, NULL::double precision AS confidence,
        canonical_id, chosen_model, NULL::int AS candidate_rank,
@@ -70,8 +70,8 @@ SELECT id, request_id, session_id, NULL::bigint AS task_id, tenant_id, ts,
        partition_date, NULL::text AS experiment_id, NULL::text AS treatment,
        NULL::int AS assignment_version, NULL::text AS assignment_key_hash,
        'hot'::text AS storage_tier
-FROM public.auto_route_selections_hot;
-CREATE TABLE public.session_summaries (
+FROM auto_route_selections_hot;
+CREATE TABLE session_summaries (
 	session_key text PRIMARY KEY,
 	health_score integer,
 	error_count integer,
