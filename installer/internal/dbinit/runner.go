@@ -93,6 +93,35 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"521_repair_state_transitions_tenant.sql",
 			"530_request_journey_contract.sql",
 			"531_request_journey_tenant_uniqueness.sql",
+			// 534 is wired 2026-10-02 and is a PRODUCTION BLOCKER fix, not a
+			// coverage nicety. db/handoff_schema.go runs a contract on every
+			// db.Open that raises unless handoff_logs is a RANGE partitioned
+			// parent with a handoff_logs_hot heap twin, the
+			// handoff_logs_with_current_month view, and both partition
+			// functions. 534 is the only migration that produces that shape
+			// and it was never registered, so every fresh install built from
+			// the baseline plus the registered chain produced a database the
+			// gateway refused to open.
+			//
+			// Reproduced, not inferred: with the 198-migration chain applied
+			// cleanly (applied=198 failed=0 missing=0), the 715 fresh-chain
+			// test fails with
+			//   handoff hot+columnar schema contract: ERROR: handoff_logs
+			//   schema contract requires a RANGE partitioned parent; run
+			//   startup migration 534 (SQLSTATE P0001)
+			// and the failure is in db.Open, not in the chain.
+			//
+			// Placement: 534 only needs the baseline's heap handoff_logs, and
+			// it is written to replay onto exactly that legacy heap shape, so
+			// it sits with the 532/535 baseline-gap class. The registered
+			// chain carries no migration below 388 — the baseline snapshot
+			// owns the pre-388 era — so 534 is the one case where a
+			// sub-388 number genuinely belongs in the chain, because no
+			// snapshot bootstrap can carry it.
+			//
+			// Citus columnar is not a new dependency here: 392/532/535/562/627
+			// in this same chain already use it.
+			"534_handoff_logs_hot_columnar.sql",
 			"535_candidate_failure_logs_atomic_promote.sql",
 			"536_stats_analytics_foundation.sql",
 			"537_usage_facts.sql",
