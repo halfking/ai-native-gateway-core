@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 )
@@ -67,7 +68,12 @@ func mergeFragmentSpans(fragments []SensitiveFragment, textLen int) []sensitiveS
 		return nil
 	}
 	ordered := append([]SensitiveFragment(nil), fragments...)
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Start < ordered[j].Start })
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Start == ordered[j].Start {
+			return ordered[i].End > ordered[j].End
+		}
+		return ordered[i].Start < ordered[j].Start
+	})
 
 	spans := make([]sensitiveSpan, 0, len(ordered))
 	for _, f := range ordered {
@@ -88,10 +94,6 @@ func mergeFragmentSpans(fragments []SensitiveFragment, textLen int) []sensitiveS
 				// 与前一个区间重叠：并入，并把区间撑到两者的并集。
 				if end > last.end {
 					last.end = end
-				}
-				if start == last.start && end > start && f.Type != "" {
-					// 同一段文字命中多条规则时保留更具体的类型。
-					last.typ = f.Type
 				}
 				continue
 			}
@@ -123,6 +125,13 @@ func (s *Sanitizer) SanitizeInputWithOffset(ctx context.Context, text string, of
 
 // sanitizeInput 内部实现
 func (s *Sanitizer) sanitizeInput(ctx context.Context, text string, offset map[SensitiveType]int) (*SanitizeResult, error) {
+	return s.sanitizeInputStable(ctx, text, offset, nil)
+}
+
+// existing is request-local and was loaded under the session allocation lease.
+// Reusing the oldest token for the same type/value keeps replay fingerprints
+// stable without exposing a plaintext reverse index to another cache tier.
+func (s *Sanitizer) sanitizeInputStable(ctx context.Context, text string, offset map[SensitiveType]int, existing sanitizeReuseIndex) (*SanitizeResult, error) {
 	if s == nil {
 		return nil, ErrNilSanitizer
 	}
@@ -138,7 +147,17 @@ func (s *Sanitizer) sanitizeInput(ctx context.Context, text string, offset map[S
 		}, nil
 	}
 
-	typeIndex := make(map[SensitiveType]int)
+	nextOffset := make(map[SensitiveType]int, len(offset))
+	for typ, index := range offset {
+		nextOffset[typ] = index
+	}
+	// Literal markers in client text must not collide with newly allocated
+	// tokens, even when there was no prior map.
+	for _, token := range PlaceholderPattern.FindAllString(text, -1) {
+		if p, ok := ParsePlaceholder(token); ok && p.Index > nextOffset[p.Type] {
+			nextOffset[p.Type] = p.Index
+		}
+	}
 	sanitizeMap := make(SanitizeMap, len(fragments))
 
 	// 检测器之间会互相重叠（18 位身份证的前 11 位同时命中手机号正则），
@@ -152,16 +171,10 @@ func (s *Sanitizer) sanitizeInput(ctx context.Context, text string, offset map[S
 	lastEnd := 0
 
 	for _, sp := range spans {
-		typeIndex[sp.typ]++
-		idx := typeIndex[sp.typ]
-		// 叠加会话级偏移量，确保跨轮次不撞号
-		if offset != nil {
-			if base, ok := offset[sp.typ]; ok {
-				idx += base
-			}
+		placeholderStr, allocErr := allocateSensitivePlaceholder(sp.typ, text[sp.start:sp.end], nextOffset, existing)
+		if allocErr != nil {
+			return nil, allocErr
 		}
-		ph := Placeholder{Type: sp.typ, Index: idx}
-		placeholderStr := ph.String()
 
 		sb.WriteString(text[lastEnd:sp.start])
 		sb.WriteString(placeholderStr)
@@ -194,6 +207,28 @@ func (s *Sanitizer) sanitizeInput(ctx context.Context, text string, offset map[S
 	)
 
 	return result, nil
+}
+
+type sensitiveValue struct {
+	typ   SensitiveType
+	value string
+}
+type sanitizeReuseIndex map[sensitiveValue]string
+
+func allocateSensitivePlaceholder(typ SensitiveType, value string, offset map[SensitiveType]int, reuse sanitizeReuseIndex) (string, error) {
+	key := sensitiveValue{typ, value}
+	if token, ok := reuse[key]; ok {
+		return token, nil
+	}
+	if offset[typ] < 0 || offset[typ] == math.MaxInt {
+		return "", errors.New("sanitize: placeholder index exhausted")
+	}
+	offset[typ]++
+	token := (Placeholder{Type: typ, Index: offset[typ]}).String()
+	if reuse != nil {
+		reuse[key] = token
+	}
+	return token, nil
 }
 
 // RestoreOutput 将输出文本中的占位符还原为原始值。

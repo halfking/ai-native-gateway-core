@@ -140,6 +140,13 @@ func (it *SanitizeRestoreInterceptor) restoreNativeResponsesBody(ctx context.Con
 			}
 			changed = changed || didChange
 		case "reasoning":
+			if content, ok := item["content"].([]any); ok {
+				didChange, err := it.restoreNativeContentBlocks(ctx, content, sm)
+				if err != nil {
+					return false, true, err
+				}
+				changed = changed || didChange
+			}
 			if summary, ok := item["summary"].([]any); ok {
 				didChange, err := it.restoreNativeContentBlocks(ctx, summary, sm)
 				if err != nil {

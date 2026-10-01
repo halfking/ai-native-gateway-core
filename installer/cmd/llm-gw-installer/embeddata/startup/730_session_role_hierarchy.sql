@@ -5,6 +5,16 @@
 --
 -- 修订记录:
 --   2026-09-19 初稿（种子模型名为占位猜测，未应用）。
+--   2026-10-01 R52 补充说明（**未改动本迁移的任何 DDL/DML**，仅补口径注释）:
+--             role 路由的模型选择改为**逐层回退**：kind 偏好（本表/内存表）
+--             之后由 Go 侧追加一层主流兜底层 builtinMainstreamFallback
+--             （重量池 glm-5.3/claude-opus-5/gpt-5.6-sol/grok-4.6/
+--             deepseek-v4-pro，与下述重量池同一份名单）。轻量池整层不可用
+--             时落到该层，不再静默让位给评分结果。
+--             该层**刻意不播种进本表**：它是每个 (role,kind) 共用的兜底，
+--             播种会变成 3 角色 × 9 kind × 5 模型 = 135 行冗余，并且让
+--             管理员"删掉某行"这个唯一逃生口失效。开关
+--             AUTO_ROLE_ROUTING_MAINSTREAM_FALLBACK（默认 true）可整体关闭。
 --   2026-09-20 R48 重写: ① 种子映射按用户口径修正为轻量池
 --             minimax-m3/glm-5.3-flash/kimi-k3/deepseek-v4-flash 与
 --             重量池 glm-5.3/claude-opus-5/gpt-5.6-sol/grok-4.6/deepseek-v4-pro

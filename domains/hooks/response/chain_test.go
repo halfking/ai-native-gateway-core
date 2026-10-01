@@ -220,3 +220,25 @@ func TestInterceptorChainSuppressResultCarriesOnlySameResultRelease(t *testing.T
 		}
 	})
 }
+
+func TestHolderReleaseIsCheckedByEveryLaterInterceptor(t *testing.T) {
+	released := []byte("data: one\n\ndata: two\n\n")
+	seen := 0
+	chain := NewInterceptorChain(
+		holdingTestInterceptor{chainTestInterceptor: chainTestInterceptor{chunk: func([]byte) *ChunkResult { return &ChunkResult{SuppressChunk: true, ModifiedChunk: released} }}},
+		chainTestInterceptor{chunk: func(chunk []byte) *ChunkResult {
+			seen++
+			if bytes.Contains(chunk, []byte("raw-terminal")) {
+				t.Error("downstream checked terminal instead of released frames")
+			}
+			if bytes.Count(chunk, []byte("data:")) != 1 {
+				t.Error("downstream received multiple SSE events at once")
+			}
+			return &ChunkResult{ModifiedChunk: bytes.ReplaceAll(chunk, []byte("data:"), []byte("data: checked"))}
+		}},
+	)
+	result, err := chain.InterceptStreamChunk(context.Background(), []byte("raw-terminal"), &StreamMeta{})
+	if err != nil || seen != 2 || result == nil || bytes.Count(result.ModifiedChunk, []byte("checked")) != 2 {
+		t.Fatalf("downstream checks=%d result=%+v err=%v", seen, result, err)
+	}
+}

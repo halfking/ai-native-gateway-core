@@ -15,7 +15,7 @@ import (
 )
 
 const policyPublisherE2EPrerequisites = `
-CREATE TABLE public.credentials (
+CREATE TABLE credentials (
 	id BIGINT PRIMARY KEY,
 	provider_id BIGINT NOT NULL,
 	concurrency_mode TEXT NOT NULL DEFAULT 'concurrency',
@@ -33,7 +33,7 @@ CREATE TABLE public.credentials (
 	manual_disabled BOOLEAN NOT NULL DEFAULT false
 );
 
-CREATE OR REPLACE FUNCTION public.notify_auto_route_refresh()
+CREATE OR REPLACE FUNCTION notify_auto_route_refresh()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM pg_notify('auto_route_refresh', TG_TABLE_NAME || ':' || TG_OP);
