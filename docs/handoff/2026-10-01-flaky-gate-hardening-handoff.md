@@ -134,36 +134,48 @@ go test ./domains/dispatch -run TestR73_... -count=10   → ok
    建议 CI 上对 `security/sensitive` 与 `domains/dispatch` 加 `-count=3` 重跑。
 5. **codeup 上游在本轮工作期间仍在推进。** 推送前必须重新 `git fetch`，
    不要假设本文件记录的 commit 仍是最新。
-6. **全仓 188 个文件 gofmt 不合规（本轮发现，未修，有意为之）。**
-   `gofmt -l` 在 HEAD 上报出 188 个文件（`cmd/`、`domains/`、`admin/` 等），
-   典型形态是结构体字面量字段未对齐。本轮**刻意不修**，理由：
+6. **全仓 289 个 Go 文件 gofmt 不合规（本轮发现，未修，有意为之）。**
+   口径：`gofmt -l $(git ls-files '*.go' | grep -v '^vendor/')` ⇒ **289 / 4643**，
+   典型形态是结构体字面量字段未对齐（测试文件与产品文件都有）。
+   *订正*：本轮中途曾按 6 个子目录（cmd/internal/domains/security/gateway/admin）
+   数过一次、写成 188，那是子集不是全仓，已按上面的口径改正。
+   本轮**刻意不修**，理由：
    - CI 的 lint 是 **ratchet 模式**（`--new-from-rev`，见
      `.github/workflows/sessionforensics-ci.yml:177-182`）：只对**本次推送引入的**
      问题失败，存量债务被有意接受（注释里写明「~224+ legacy findings，
      plain `golangci-lint run` is permanently red and gates nothing」）。
-   - 188 个文件的重排会淹没本轮的实际改动，且与上游正在推进的工作大面积冲突。
+   - 289 个文件的重排会淹没本轮的实际改动，且与上游正在推进的工作大面积冲突。
    - 本轮触碰的 go 文件已单独确认 gofmt 干净（ratchet 的硬要求）。
    **建议**：单开一个 PR 做全仓 `gofmt -w`，一次性清零，之后 CI 的 ratchet
    就能真正卡住新增违规。在此之前，`gofmt -l` 的输出**不能**被读成「本轮改坏了」
    ——先用 `git status` 确认该文件是否本轮被改过。
 
-7. **`plugin-runtime/TestExecCommand_StartsRealProcess`：已改，但因果未证实。**
-   推送后的最终全量复跑暴露了一条本轮从未碰过的红：
-   `helper process did not start (no pid file)`，整条耗时 16.76s。
-   该包不在本轮 diff 内，也不是上游那两个提交碰过的。
+7. **`plugin-runtime` 两个 exec 用例在 `make test` 下偶发红（已放宽预算，但根因未定）。**
+   累计三次现场，两次是**不同**的用例、同一形态（都恰好卡在 15s 预算上）：
 
-   **可证实的缺陷**：该用例 `ctx` 超时 10s，却用 `waitForFile` 等 15s。
-   `exec.CommandContext` 在 ctx 到期时**杀掉子进程**，所以等待窗口的最后 5 秒
-   必然是在等一个已经被杀掉的进程写的文件——这条门**结构上**用不满自己的预算。
-   同文件下方的优雅停止用例用的是 `context.Background()`，没有这个错配。
-   已改为 ctx=30s。
+   | 时间 | 用例 | 报错 | 整条耗时 |
+   |---|---|---|---|
+   | 10-01 23:37 | `TestExecCommand_StartsRealProcess` | `helper process did not start` | 16.76s |
+   | 10-02 00:11 | `TestExecCommand_GracefulStopSIGTERM` | `helper never armed SIGTERM handler` | 15.27s |
 
-   **但因果没有证实**（不要当成已修好的结论）：
-   - 单独跑 5/5 通过；14 CPU hog 压载下 6/6 通过；**改回 10s 也照样 6/6 通过**；
-   - 前四轮全量 `make test` 从未红过，只有这一轮红过一次。
-   ⇒ 无法排除「纯粹的环境抖动（fork/进程数/磁盘）」。改动的价值是**消除一个
-   确定性缺陷**，而不是**已验证的修复**。下一轮若再现此红，应优先怀疑环境与
-   fork 资源，而不是这条 ctx。
+   **两次之间没有任何 Go 代码改动**（中间只落了 README 与本 handoff 的 markdown）。
+
+   **关键包络**：本包单独跑 **1.1s**，在 `make test` 全仓并发下却是
+   **21.9s~48.5s**（20~48 倍差）。这两个用例各自会 `go build` 一个 helper 再
+   exec 起来，而全仓几百个包正在抢占 Go 工具链与 CPU，新起进程要等调度。
+   原 15s 预算在这个包络里贴边。
+
+   **已做两件事（两者机制不同，不要混为一谈）**：
+   1. ctx 10s→30s（第一版）：`exec.CommandContext` 到期会**杀子进程**，而用例
+      等 15s ⇒ 最后 5 秒在等一个死进程。这是**确定性缺陷**，但单独测它复现不出。
+   2. 落盘预算 15s→`spawnBudget=60s`、8s→`stopGraceBudget=20s`（第二版）：
+      覆盖上面实测的 21.9~48.5s 包络。**不改变断言语义**（「helper 有没有落盘」），
+      只放宽等待窗口；实测放宽后 5 轮两条用例仍只花 6.4s，因为 `waitForFile`
+      一看到文件就返回。失败信息也改成打印实际预算，便于下次定位。
+
+   **仍未定**：两次红都无法在全仓并发之外复现（单独 5/5、14 CPU hog 6/6、
+   边 `go build ./...` 边跑 4/4 全过）。**不要**把它记成已修复。
+   若第三次再现，应采集当时的 `make test` 并发度与系统负载再判。
 
 > 方法论教训（对应本轮的一次自摆乌龙）：`gofmt -l` 命中文件时**退出码仍是 0**。
 > 本轮一度用 `gofmt -l ... && echo "gofmt clean"` 打印了假的「gofmt clean」。
@@ -222,7 +234,7 @@ go test ./domains/dispatch -run TestR73_... -count=10   → ok
    ~10× 时再考虑**（本仓其它门都没有）。
 3. **给 CI 加重点包重跑**（遗留风险 4）：`security/sensitive`、`domains/dispatch`
    以 `-count=3` 跑，把偶发门挡在合并前而不是让人事后考古。
-4. **单开 PR 清 188 个文件的 gofmt 债务**（遗留风险 6），清零后 CI 的
+4. **单开 PR 清 289 个文件的 gofmt 债务**（遗留风险 6），清零后 CI 的
    `--new-from-rev` ratchet 才能真正卡住新增违规。**不要**和功能改动混在一起提。
 
 **通用纪律（本轮两次踩到）**：
