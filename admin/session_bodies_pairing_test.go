@@ -78,25 +78,35 @@ func TestSessionBodyPairingKeysMatchTheirCallers(t *testing.T) {
 
 // TestSessionBodiesBatchSQLIsNotALefiJoin pins the shape that carries the
 // performance contract. The three measured forms differ only in how the same
-// view and columns are reached:
+// view and columns are reached (200 real request_ids, audit §8.3.3):
 //
-//	IN (SELECT unnest) → Index Scan using request_logs_bodies_2026_09_pkey     7 ms
-//	unnest + LEFT JOIN → ColumnarScan over all 2,216,660 rows              10,365 ms
+//	IN (SELECT unnest($1)) → Index Scan using _2026_09_pkey          1.77~2.20 s
+//	= ANY($1::text[])      → ColumnarScan, Rows Removed 2,217,398  15.85~17.43 s
+//	unnest + LEFT JOIN      → ColumnarScan over all 2,216,660 rows  10,365 ms
 //
 // The SQL text of the first two is nearly identical, so a text assertion alone
-// cannot tell them apart in general — but "this file must never contain a LEFT
-// JOIN" is a real, falsifiable constraint, and mutating it reddens the guard.
+// cannot tell them apart in general — but two real, falsifiable constraints do:
+//
+//  1. "this file must never contain a LEFT JOIN"（连接会钉死规划器的重排）;
+//  2. "this file must never contain `= ANY(`" —— **`= ANY(数组)` 是这一族里
+//     最贵的一种，而它长得就像半连接**。上一版判据只禁 `JOIN`，于是
+//     `= ANY($1::text[])` 长期通行无阻，带来了 15~17 秒的实测代价。
+//     仅禁 `JOIN` 是不够的，这一行就是被放行的那一行。
 func TestSessionBodiesBatchSQLIsNotALefiJoin(t *testing.T) {
 	for name, sql := range map[string]string{
 		"byRequestID": sessionBodiesByRequestIDSQL,
 		"byIDAndTS":   sessionBodiesByRequestIDAndTSSQL,
 	} {
-		for _, forbidden := range []string{"LEFT JOIN", "JOIN "} {
+		for _, forbidden := range []string{"LEFT JOIN", "JOIN ", "= ANY("} {
 			if strings.Contains(sql, forbidden) {
 				t.Errorf("%s SQL contains %q; the batched fetch must be a semi-join or an "+
 					"IN filter so the planner can use the (request_id, ts) primary key instead "+
-					"of scanning the columnar partition (audit §5.6):\n%s", name, forbidden, sql)
+					"of scanning the columnar partition (audit §5.6/§8.3.3):\n%s", name, forbidden, sql)
 			}
+		}
+		// 正向判据：批量取必须是半连接，不能是标量逐值比较。
+		if !strings.Contains(sql, "unnest(") {
+			t.Errorf("%s SQL must fetch in bulk through unnest(); got:\n%s", name, sql)
 		}
 		if !strings.Contains(sql, "request_logs_bodies_with_current_month") {
 			t.Errorf("%s SQL must read the bodies view, got:\n%s", name, sql)

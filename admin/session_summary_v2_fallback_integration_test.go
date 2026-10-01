@@ -210,7 +210,16 @@ func TestSessionSummaryV2FallbackBodiesStaysOnIndexPath(t *testing.T) {
 	// （用 grep 在它自己的计划输出里找那个子串，命中 0 次。）
 	const columnarNodeMarker = "ColumnarScan) on request_logs_bodies"
 	var columnarLines []string
+	// 索引路径的正向锚点。**必须有它**，否则这道门会退化成单边断言：
+	// 「没看到 ColumnarScan」在分区哪天变回 heap 时会静默成立，于是门永远绿
+	// —— 那正是它过去的样子。判据要钉住「走到了哪条路」，不是「没走哪条路」。
+	const indexPathMarker = "request_logs_bodies_2026_09_pkey"
+	var indexPathLines []string
 	for _, line := range planLines {
+		if strings.Contains(line, indexPathMarker) &&
+			(strings.Contains(line, "Index Scan") || strings.Contains(line, "Bitmap Index Scan")) {
+			indexPathLines = append(indexPathLines, strings.TrimSpace(line))
+		}
 		if !strings.Contains(line, columnarNodeMarker) {
 			continue
 		}
@@ -220,15 +229,10 @@ func TestSessionSummaryV2FallbackBodiesStaysOnIndexPath(t *testing.T) {
 		columnarLines = append(columnarLines, strings.TrimSpace(line))
 	}
 
-	// 已知 P0（2026-10-01 实测，见审计报告 §8.3）：生产形态的 phase 2 会走
-	// 2026_09 列存分区的 ColumnarScan，**真实代码路径实测 17~19 秒/会话**
-	//（171 个 request_id，用 pgx 绑定参数跑生产 SQL 连测三次）。
-	// 文档里「phase 2 7~501 ms」的数字已过期。
-	//
-	// 这里**不能直接 t.Fatalf** —— 那是一条每跑必红的门，等于把 CI 变成
-	// 长期噪声；也不能悄悄放过 —— 那正是这道门过去 20 个月的样子。
-	// 所以：先把实测成本打印出来（每次运行都能看到当前值，回归会被看见），
-	// 再显式挂起并指向跟踪条目。
+	// 2026-10-01：谓词已从 `= ANY($1::text[])` 改成 `IN (SELECT unnest($1::text[]))`
+	// （审计报告 §8.3.3），同一批 200 个真实 id 从 15.85~17.43 s 降到 1.77~2.20 s。
+	// 所以 P0 已闭合，这道门从「显式 Skip 等拍板」翻回**红门**：列存全扫一旦回来
+	// 就是回归，不该再靠人记得去看日志。实测成本仍然每次打印。
 	execMs := ""
 	removed := ""
 	for _, line := range planLines {
@@ -241,12 +245,19 @@ func TestSessionSummaryV2FallbackBodiesStaysOnIndexPath(t *testing.T) {
 	}
 	t.Logf("phase 2 实测成本：%s | %s", execMs, removed)
 	if len(columnarLines) > 0 {
-		t.Skipf("已知 P0：phase 2 落在列存分区扫描上（审计报告 §8.3，待拍板修法）。\n"+
-			"  %s\n  %s\n"+
-			"  这道门已从「恒绿且测不出任何东西」修成「会测会打印」；修法未定前不置红，"+
-			"以免 CI 长期噪声。",
+		t.Fatalf("phase 2 fell back onto a columnar partition scan (audit §8.3.3):\n  %s\n  %s\n"+
+			"  The = ANY($1::text[]) form makes the planner abandon the primary key "+
+			"probe; IN (SELECT unnest($1::text[])) is the form that keeps it. "+
+			"Measured on the same 200 ids: 15.85~17.43 s vs 1.77~2.20 s.",
 			strings.Join(columnarLines, "\n  "), execMs)
 	}
+	if len(indexPathLines) == 0 {
+		t.Fatalf("phase 2 reached no primary-key probe on %s — the bodies partitions were "+
+			"neither index-probed nor columnar-scanned, so this gate's positive anchor "+
+			"found nothing and the run would pass vacuously:\n%s",
+			indexPathMarker, strings.Join(planLines, "\n"))
+	}
+	t.Logf("phase 2 走主键探针：%s", strings.Join(indexPathLines, "\n  "))
 }
 
 func fallbackLimitPtr(i int) *int { return &i }
