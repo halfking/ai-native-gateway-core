@@ -795,3 +795,56 @@ replay 开始前就断了）以及 renderer 最终白屏完全一致。
 
 **这是环境故障，不是在被验收功能的生产表现。** 第 2 项的截图验收改由用户在
 普通 Chrome 中完成（判据已用生产数据验过，见上节）。
+
+### 2026-10-01 10:29 补记：candidates 不变式的真实目录门实跑通过（此前一直是 SKIP）
+
+`TestResolveCandidatesInvariant_Live` 此前每轮都输出
+`TEST_RESOLVE_INVARIANT_DB_URL not set — SKIPPING … A skip is NOT evidence`。
+本轮把 DSN 接上，**对着真实目录实跑通过**：
+
+```
+routing_resolve_invariant_test.go:247: invariant verified for 957/957 catalog models
+--- PASS: TestResolveCandidatesInvariant_Live (12.26s)
+```
+
+**扫描量从 958 变成 957** —— 09-29 那次的 958/958 证据在目录规模上已经过期，
+这正是「必须重跑而不是引用旧数字」的又一个例子。门是只读的
+（只 SELECT `models_canonical` 并复现 resolve 查询），耗时 12 秒。
+
+#### 顺带定案的拓扑事实：三台环境共用同一个 PG
+
+| 环境 | 主机 | `LLM_GATEWAY_DATABASE_URL` 指向 |
+| --- | --- | --- |
+| 154 生产 | `47.97.111.154` | `172.16.2.210` |
+| 245 预发布 | `8.136.114.245` | `172.16.2.210` |
+| 252 dev | `115.29.212.252` | `172.16.2.210`（此前记录的 PG17） |
+
+即**生产、预发布、dev 共用同一个 PG 集群**。推论：任何"在预发布验证数据库相关改动"
+的说法都要重新掂量——三者本就在同一个库上。
+
+#### 这条门怎么跑（记下来，下轮别再 SKIP）
+
+本机到 `172.16.2.210:5432` **TCP 可达**（`nc -z` 成功），但 PG 握手直接
+`unexpected EOF`，加 `sslmode=disable` 也一样 ⇒ 内网入口对来源有拦截，**不能从 Mac 直连**。
+
+可行做法（DSN 不经过本机，密码不出内网）：
+
+```bash
+# 1) 本地交叉编译测试二进制
+GOOS=linux GOARCH=amd64 go test -c -o /tmp/admin_inv.test ./admin/
+# 2) 送到 245
+scp -P 25022 /tmp/admin_inv.test root@8.136.114.245:/tmp/
+# 3) 在 245 上用它自己的 env 跑
+ssh -p 25022 root@8.136.114.245 'chmod +x /tmp/admin_inv.test && \
+  TEST_RESOLVE_INVARIANT_DB_URL=$(grep -E "^LLM_GATEWAY_DATABASE_URL=" /etc/llm-gateway-go/env | head -1 | sed -E "s/^[^=]*=//; s/^\"//; s/\"$//") \
+  /tmp/admin_inv.test -test.run "TestResolveCandidatesInvariant_Live" -test.v'
+```
+
+#### 另一条钉住门的复跑（当前树）
+
+- `go build ./...` / `go vet ./admin/` 通过
+- `go test ./admin/` **全包 ok（77.47s）** —— 在合并了并发会话的 R44
+  全仓实跑、autoupdate testschema 护栏等改动之后的当前树上
+- `TestResolveRawModelsStillLeak`：`PASS`，输出
+  `[glm-5.3-flash glm-5-3-flash glm-5.3 glm-5-3]`，与生产实测逐字一致
+- 生产未变：`build_seq 2356` / `git_sha 2d750fb4`
