@@ -526,11 +526,14 @@ func (r *storageRuntime) startHotZoneTrimmer(ctx context.Context, hzCfg *config.
 		return retention, maxBytes, enabled
 	})
 	r.hotZoneTrimmer = hotZoneTrimmer
+	// 2026-10-01 12h审计第十九轮：补迁 bg.SpawnLoopWG——10:35 结构性 P1 迁移
+	// 了同文件 cacheTrimmer/bodiesTrimmer/liteRetention/consistency 四处，本处
+	// 漏迁且不在登记的不迁清单（仅 renewLoop 与 storage/file AsyncFileWriter）。
+	// 裸 go 无 recover，TrimOnce/applyReload 内意外 panic 将崩整个进程而非
+	// 自愈重启 + BgGoroutinePanicked 告警；Start 仅在 ctx.Done 正常返回，
+	// 与 SpawnLoopWG「正常返回=有意退出」语义兼容。
 	r.trimmerWG.Add(1)
-	go func() {
-		defer r.trimmerWG.Done()
-		hotZoneTrimmer.Start(ctx)
-	}()
+	bg.SpawnLoopWG(ctx, "storage_mode_init.hotZoneTrimmer", &r.trimmerWG, hotZoneTrimmer.Start)
 	slog.Info("storage hotzone trimmer 已装配",
 		"mode", r.mode,
 		"dir", hzCfg.Dir,

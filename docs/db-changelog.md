@@ -573,13 +573,13 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 718 | `718_drop_redundant_indexes_and_add_ttl_indexes.sql` | `7a3807d0560643c6ec29210e3284d988c05e1849059d83ca5258387f792647f9` | applied+verified |
+| 718 | `718_drop_redundant_indexes_and_add_ttl_indexes.sql` | `932a75b597fee00577884d97f6f0e153f422d55bc452444c641282243010565f` | applied+verified（2026-10-01 12h审计第十九轮SHA追认：00:31 65d8821c4 给文件头部加 `-- dbinit:no-transaction` 标记（DROP INDEX CONCURRENTLY 不能进事务块，installer applySQL 据此走非事务通道），内容变更后台账 SHA 未同步致 verify-migration-checksums 门禁红 15.5h；本轮按内容冻结后终值修正，正典 SQL 本体无逻辑变更） |
 
 ## 2026-09-17T20:59:49Z — deploy 245 build_seq 2129 (c66dbd6c)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 719 | `719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql` | `9c7ae3eb253fb95f2ea04e9b898c91c8f26b0e9065ba833602891165739e18bc` | applied+verified |
+| 719 | `719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql` | `9df79696f3d5dbbf36ac0eb262907ad0beef2abc1a7d82fd1dcd4f0a03eda877` | applied+verified（2026-10-01 12h审计第十九轮SHA追认：同 718，00:31 65d8821c4 加 `-- dbinit:no-transaction` 标记头致内容变更，台账 SHA 未同步；本轮修正，SQL 本体无逻辑变更） |
 
 ## 2026-09-17T21:16:36Z — deploy 245 build_seq 2131 (62853d7b)
 
