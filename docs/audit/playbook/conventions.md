@@ -344,6 +344,7 @@
 | 2 | `internal/paramledger/ledger.go:23` | Redis 镜像「供跨进程审计/观测」 | 零消费面（三种检索） |
 | 3 | `bg/active_probe_executor.go:166` | 「2026-07-16 node-probe fix parity」注入 egress 代理 | 零调用点（连测试都没有） |
 | 4 | `executor_chat.go:386-387` | mode-fallback 会用 chat 体填 `ResponsesBodyBytes` | 该函数从未写该字段 |
+| 5 | `domains/credential/decrypt_cache.go:8-10` | 「**P0 优化、降低约 30% QPS 开销**」 | 生产**零调用、无测试**；且真缓存在 `provider/client.go`、该文件**不含负缓存逻辑**（照抄会丢掉 2026-08-17 的负缓存 P0 修复） |
 
 **怎么用**：读到「已接入 / 已镜像 / 已对等 / 已有消费方」这类措辞时，
 先问「**消费方在哪个文件的哪一行**」，找不到就当没接。
