@@ -128,10 +128,15 @@ type Recorder interface {
 	// operator has no signal that the live stream hub is silently losing
 	// tiles while the canonical record still lands in request_logs.
 	//
-	// reason values (kept in sync with the alerting labels in
-	// deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml):
-	//   - "store_unconfigured" : store/Redis client is nil (operator never wired it)
+	// reason values:
+	//   - "store_unconfigured" : store/Redis client is nil (operator never wired it).
+	//     Unreachable in production: Publish() short-circuits a nil RedisClient
+	//     at admin/live_stream_sse.go:2145 before ever calling Record().
 	//   - "redis_unavailable"  : lock acquisition failed (Redis down or contended)
+	//
+	// NOTE (2026-10-01, R87-m): no alert rule consumes this counter. The yaml
+	// previously cited here (deploy/monitoring/grafana-alerts/
+	// live-stream-record-dropped.yaml) never existed. See audit report 71.
 	RecordLiveStreamRecordDropped(reason string)
 }
 

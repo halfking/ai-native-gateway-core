@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **live-stream 丢弃计数器的幽灵告警引用（2026-10-01）**：`metrics/interface.go` 与 `metrics/prometheus.go` 两处注释声称与 `deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml` 的告警 label 保持同步，但该文件与其整个目录都不存在，`deploy/` 下也无任何规则消费 `gateway_live_stream_record_dropped_total`。注释改为如实陈述「尚无告警规则」。只改注释，不改行为、不新增告警。详见 `docs/全面审计v3/2026-10-01/71-R87M-live-stream-record-dropped告警核查.md`。
 - **看板分钟重算复审（2026-10-01）**：主分钟表重算后，与日志键一致的行费用差为 0，但仍多 $0.284508。这多出的费用不是 canonical 改空后的旧键：`2026-09-26 10:37+08` 的成功日志 canonical 仍是 887407，同一笔又被视图按 `session_turns` 的空 canonical 记在 canonical 0。闭分钟重算会删掉视图不再产出的键；当前分钟不删。历史 267 行没有重扫、没有删。维度分钟表当时仍约一半（provider $89.03）；已按 rollup SQL 补写关闭分钟，provider 费用与日志同为 $151.806657，请求数多 119。744 的 ATTACH 在分区已有别名子索引时不再把数据库启动判失败。再核时 8782 进程已是 `bdc13ccc` / 2368，二进制含这份守卫。详见 `docs/design/2026-09-30-board-audit.md`。
 - **会话目录模型子串（2026-09-30）**：`q` 仍只查 `session_summaries`。除会话键、标题、`primary_model` 外，按 `models_used` 单个元素做子串匹配（换行拼接，避免两个模型名粘在一起命中）。匹配元素写回空白模型后再过滤。本地该查询约 173ms。不扫描请求日志。热门模型仍只返回最近 200 条；摘要里没有模型的会话，不在本次结果里就按模型搜不到。详见 `docs/proposals/2026-09-30-session-stats-ux/plan.md` §6。
 - **会话目录检索（2026-09-30）**：统计页目录 `q` 只查 `session_summaries`，不再对请求日志做前导 `ILIKE`（本地约 232 万行实测约 16 秒）。用量按 `gw_session_id` 读 `request_logs_hot` 与 `request_logs`，不走联表视图。摘要标题会写回行后再过滤。只存在于请求日志、摘要里没有的会话仍然搜不到。详见 `docs/proposals/2026-09-30-session-stats-ux/plan.md`。
