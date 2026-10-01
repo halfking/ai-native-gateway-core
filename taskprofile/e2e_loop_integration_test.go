@@ -35,7 +35,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/internal/testschema"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
@@ -79,17 +81,12 @@ func dispatchPostgresContainer(t *testing.T, ctx context.Context, extraSchema st
 	}
 
 	if dsn := os.Getenv("TEST_PG_URL"); dsn != "" {
-		pool, err := openPool(dsn)
-		if err != nil {
-			t.Fatalf("connect TEST_PG_URL: %v", err)
-		}
-		if extraSchema != "" {
-			if _, err := pool.Exec(ctx, extraSchema); err != nil {
-				pool.Close()
-				t.Fatalf("exec schema: %v", err)
-			}
-		}
-		return pool, func() { pool.Close() }
+		// Give this test its own schema instead of running its CREATE TABLE
+		// statements against the gate's fully-migrated public schema. That was
+		// the SQLSTATE 42P07 collision; isolation is the fix that keeps the
+		// other half of this package (which does assume a migrated database)
+		// able to run in the same suite.
+		return testschema.NewWithSchema(t, dsn, extraSchema)
 	}
 
 	container, err := postgres.Run(ctx, "postgres:16-alpine",
@@ -128,8 +125,21 @@ func dispatchPostgresContainer(t *testing.T, ctx context.Context, extraSchema st
 
 // e2eSchema mirrors migration 724 plus the minimal auto_route_selections_all
 // projection the correction lookup reads (task_type / confidence / profile).
+// e2eSchema mirrors migration 724 plus the minimal auto_route_selections_all
+// projection the correction lookup reads (task_type / confidence / profile).
+//
+// Round 44 closure: the `public.` qualifiers are GONE on purpose. They pinned
+// every object to the public schema, which is why running this against the
+// gate's fully-migrated database died with SQLSTATE 42P07
+// `relation "auto_route_selections_hot" already exists` (2 of this package's
+// failures). Unqualified objects resolve through search_path, so under
+// testschema they land in the test's private schema and shadow production
+// instead of colliding with it.
+//
+// The container fallback path is unaffected: a fresh postgres:16-alpine has
+// public as its only user schema, so unqualified resolves there identically.
 const e2eSchema = `
-CREATE TABLE public.auto_route_selections_hot (
+CREATE TABLE auto_route_selections_hot (
 	id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	request_id text,
 	task_type text,
@@ -137,10 +147,10 @@ CREATE TABLE public.auto_route_selections_hot (
 	profile text,
 	ts timestamptz NOT NULL DEFAULT NOW()
 );
-CREATE OR REPLACE VIEW public.auto_route_selections_all AS
+CREATE OR REPLACE VIEW auto_route_selections_all AS
 	SELECT id, request_id, task_type, confidence, profile, ts
-	FROM public.auto_route_selections_hot;
-CREATE TABLE public.task_type_corrections (
+	FROM auto_route_selections_hot;
+CREATE TABLE task_type_corrections (
 	id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	request_id text NOT NULL UNIQUE,
 	auto_task_type text NOT NULL,
@@ -153,8 +163,8 @@ CREATE TABLE public.task_type_corrections (
 	created_at timestamptz NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_task_type_corrections_auto_type
-	ON public.task_type_corrections (auto_task_type, created_at DESC);
-CREATE TABLE public.task_type_tier_config (
+	ON task_type_corrections (auto_task_type, created_at DESC);
+CREATE TABLE task_type_tier_config (
 	id SERIAL PRIMARY KEY,
 	task_type TEXT NOT NULL,
 	preferred_tier TEXT NOT NULL CHECK (preferred_tier IN ('tier-a', 'tier-b', 'tier-c')),
@@ -170,7 +180,7 @@ CREATE TABLE public.task_type_tier_config (
 	updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE UNIQUE INDEX uq_task_type_tier_config
-	ON public.task_type_tier_config (task_type, COALESCE(tenant_id, 0));
+	ON task_type_tier_config (task_type, COALESCE(tenant_id, 0));
 `
 
 // countingRecorder captures FeedbackRecorder verdicts.
