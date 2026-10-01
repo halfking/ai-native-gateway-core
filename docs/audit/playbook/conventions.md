@@ -544,3 +544,48 @@ h.RegisterRoutes(mux)
 
 **与既有条目的关系**：§15.2 讲「异步实验的 0.00s 耗时是实验没跑起来」，
 §18 讲「实验真跑了、结论为负之后该往哪走」——**两者合起来才是一条完整的方法**。
+
+---
+
+## §19 名字长得像表的东西不一定是表：下「写入缺口」结论前先 `pg_get_viewdef`
+
+**规则**：任何「A 表比 B 表多/少 N 行 ⇒ 某条写入路径漏了/重了」的结论，
+**先确认这两个名字解析成什么**。PostgreSQL 里 `xxx_with_current_month` 这类名字
+几乎都是**视图**，且很可能是多表 `UNION ALL` + `LEFT JOIN` 的**统一读视图**，
+行数差来自**口径**而不是**写入**。
+
+**证据（我自己当场推翻的一次结论，2026-10-01 R89-x，111 号）**：
+`request_logs_with_current_month` = 2,324,470 行，
+`usage_ledger_with_current_month` = 2,067,960 行，**差 256,510**，
+且 09-03~09-11 有整天完全不交集（09-07 单日 70,757 行只在宽表侧）。
+我据此写下「**账本漏写 25 万行**」。
+
+`select pg_get_viewdef('request_logs_with_current_month'::regclass, true)` 的结果是：
+
+```
+session_turns_hot  LEFT JOIN session_turn_details_hot
+UNION ALL  session_turns LEFT JOIN session_turn_details
+UNION ALL  request_logs_..._without_request_class_due_at
+              LEFT JOIN LATERAL (request_class FROM request_logs_hot/request_logs)
+WHERE NOT EXISTS(…session_turns_hot…) AND NOT EXISTS(…session_turns…)
+```
+
+**它根本不读 `request_logs_hot` 主体**——它是「request_logs → session_turns 迁移」的
+**统一读视图**（session 族 ∪ legacy 族，带跨族去重）。
+⇒ **那个差值是视图口径差，不是写入缺口。结论作废。**
+
+**怎么落地**：
+- 判定「某表漏写」之前，一条命令：
+  `select pg_get_viewdef('<name>'::regclass, true);`
+  看它 `FROM` 的到底是**物理表**还是**别的表/视图**，有没有 `UNION ALL` / `LEFT JOIN` / `WHERE`。
+- **LEFT JOIN 会吞行**：`d` 侧无匹配的请求在并集里直接消失 ⇒ 行数天然不等，
+  且**与写入是否成功无关**。
+- **统一读视图的命名会误导**：名字里的 `request_logs` 指的是**逻辑实体**，
+  不是物理表。看到 `xxx_with_current_month` 先当视图处理。
+
+**为什么这条特别容易踩**：objective 本身要求「把 `request_logs` 切到 `session_turns`」，
+所以这一族**按设计就是多表并集的视图**。**越是本项目重点改造的表族，
+越要先看视图定义再谈行数。**
+
+**同族**：§10（读 SQL WHERE）、§10.1（量化结论自己数一遍，数不可信就不引用）。
+**§10.1 说「自己数一遍」，§19 补上「数出来的那个东西要先确认它是什么」。**
