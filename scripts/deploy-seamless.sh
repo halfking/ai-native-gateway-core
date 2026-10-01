@@ -1342,6 +1342,31 @@ do_deploy() {
     exit 1
   fi
 
+  # 9.6 2026-10-01 245 半切换态防线: fragment 写入 + reload 信号 ≠ 路由已切换。
+  # 09-30→10-01 现场: active-upstream.conf 已指向候选端口、reload 信号已发,
+  # 但带外干预手工拉起弃用 unit 抢占旧端口后, 流量实际仍由旧版本服务 ~5h —
+  # 9.5 的 healthz 200 检查对新旧实例都通过, 抓不住「文件说新、流量走旧」。
+  # 此处经 nginx 路径读 healthz 的 version 字段, 必须携带本次 build_seq+sha8
+  # (同码重部署靠 seq 区分, 换码重部署靠 sha 区分); 不符 → 先补一次 nginx
+  # reload (幂等修复) 再验, 仍不符 → 与 9.5 同一失败语义自动回滚。
+  local _nginx_hc_url _nginx_seen
+  _nginx_hc_url=$(target_field "$TARGET" internal_https_health_url)
+  if [[ -n "$_nginx_hc_url" ]]; then
+    log "[9.6/9] 仲裁 nginx 实际路由身份 (期望 seq=$seq_val sha=${version#*-})"
+    _nginx_seen=$("$SSH_CMD" "curl -ksS --max-time 5 '$_nginx_hc_url' 2>/dev/null" 2>/dev/null || true)
+    if [[ "$_nginx_seen" != *"$seq_val"* || "$_nginx_seen" != *"${version#*-}"* ]]; then
+      warn "nginx 实际路由版本与本次发布不符 — 疑似半切换态, 补 reload 后重验"
+      "$SSH_CMD" "systemctl reload nginx" >/dev/null 2>&1 || true
+      sleep 2
+      _nginx_seen=$("$SSH_CMD" "curl -ksS --max-time 5 '$_nginx_hc_url' 2>/dev/null" 2>/dev/null || true)
+    fi
+    if [[ "$_nginx_seen" != *"$seq_val"* || "$_nginx_seen" != *"${version#*-}"* ]]; then
+      _seamless_auto_rollback "nginx 实际路由版本与本次发布不符 (文件已切、流量未切 = 半切换态)" "$version" || true
+      exit 1
+    fi
+    ok "nginx 路由身份仲裁通过"
+  fi
+
   # 先确认 DB 已就绪，再同步 admin 密码并验证登录。
   # 否则网关在 postgres disabled (db == nil) 时 handleLogin 返回 503 database not configured，
   # 会误触发自动回滚；与 deploy_verify_gateway_ready 的 503-tolerant 契约保持一致。
