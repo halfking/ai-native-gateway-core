@@ -130,7 +130,28 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 	if err != nil {
 		return nil, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE session_summaries SET handoff_count=COALESCE(handoff_count,0)+1,last_handoff_at=$3,tokens_at_trigger=$4,messages_at_trigger=$5,last_trigger_reason=$6,last_trigger_at=$3 WHERE session_key=$1 AND tenant_id=$2`, p.PreviousSessionID, p.TenantID, now, p.Record.TokensAtTrigger, p.Record.MessagesAtTrigger, p.Record.TriggerReason)
+	// R76 P0（2026-10-01 真库实证）：本语句原先把 $3 同时绑给
+	// last_handoff_at 与 last_trigger_at，而两列类型不同——
+	//   session_summaries.last_handoff_at  timestamp WITHOUT time zone
+	//   session_summaries.last_trigger_at  timestamp WITH    time zone
+	// PostgreSQL 每个参数号只能推导出一种类型，故服务端直接拒绝：
+	//   ERROR: inconsistent types deduced for parameter $3 (SQLSTATE 42P08)
+	//   DETAIL: timestamp without time zone versus timestamp with time zone
+	// 后果：Confirm 的每一次调用都在这一步失败，事务回滚——
+	// 连它前面已经 INSERT 成功的 handoff_logs_hot 一并回滚。
+	// **handoff 确认的记账路径在本 schema 下从未成功执行过一次。**
+	// 为何长期没被发现：本包的 PGStore 测试全部走 sqlmock，只断言
+	// 「发出了这段 SQL 字符串」，**看不见服务端的参数类型推导**；
+	// migration 527 的 testcontainers 门只验 DDL、不跑 Go 语句；
+	// 而 handoff.enabled 默认 false，生产上没人走到这里。
+	//
+	// 修法：给 last_trigger_at 独立参数号，与同库另一个写方
+	// sessionsummary.UpdateHandoffMetrics（summarizer.go:949 起）保持一致
+	// ——那里本来就是 $3 / $7 两个参数，所以那半边是好的。
+	// 刻意**不改表结构**：last_handoff_at 在 33.4 万行里全为 NULL，
+	// 没有需要解释的历史时区数据，而 655/677 两处 schema 声明彼此一致，
+	// 真正错的是这一行 SQL。
+	_, err = tx.ExecContext(ctx, `UPDATE session_summaries SET handoff_count=COALESCE(handoff_count,0)+1,last_handoff_at=$3,tokens_at_trigger=$4,messages_at_trigger=$5,last_trigger_reason=$6,last_trigger_at=$7 WHERE session_key=$1 AND tenant_id=$2`, p.PreviousSessionID, p.TenantID, now, p.Record.TokensAtTrigger, p.Record.MessagesAtTrigger, p.Record.TriggerReason, now)
 	if err != nil {
 		return nil, err
 	}

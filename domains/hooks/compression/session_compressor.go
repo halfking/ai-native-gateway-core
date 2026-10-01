@@ -215,7 +215,47 @@ func (sc *SessionCompressor) Prepare(
 	contextWindow int,
 	streamStarted bool,
 ) *PrepareResult {
+	// 2026-10-01 R74: start the compression-latency clock here so the
+	// RecordOutcome call at the end measures the whole Prepare, not just the
+	// final rewrite. The previous metric path had no clock at all because it
+	// had no caller.
+	compressStart := time.Now()
 	res := &PrepareResult{RawSnapshot: SnapshotForBody(clientBody)}
+
+	// 2026-10-01 R74: compression outcome metrics.
+	//
+	// RecordOutcome is the ONLY writer for compression_triggered_total /
+	// compression_ratio / compression_latency_seconds /
+	// compression_lossiness_total, and it had zero production callers — the
+	// four series never acquired a single data point, so dashboards showed
+	// "no data" and an operator could not tell "compression never fired" from
+	// "the metric is broken".
+	//
+	// Emitted from a defer rather than at one exit on purpose: Prepare has
+	// five return sites (delta-only band, pre-window band, memo-cache hit,
+	// the main path, and the fallback), and an emit placed at the end of the
+	// main path is silently skipped by the other four. That is exactly how the
+	// first attempt at this fix failed its own test — the delta_append path
+	// returned before the emit was ever reached, the test skipped, and it
+	// would have gone in as another "wired" metric that fires on a minority
+	// of compressions.
+	//
+	// Only outcomes that actually shrank the outbound body are counted;
+	// counting a "compression" that rewrote nothing would make the triggered
+	// counter disagree with the bodies the operator can observe.
+	//
+	// The reason label stays inside the closed CompressionReason enum. The
+	// window trigger vocabulary ("sliding_window_token" and friends) is a
+	// different, larger set, and putting it on a Prometheus label would tie
+	// series cardinality to internal trigger naming. The trigger detail is
+	// already in res.CompressionReason and in the structured logs.
+	defer func() {
+		if res == nil || len(res.OutboundBody) == 0 || len(res.OutboundBody) >= len(clientBody) {
+			return
+		}
+		RecordOutcome(sc.resolveCompressionMode(), ReasonAutoThreshold, CompressionStrategy(res.CompressionStrategy),
+			len(clientBody), len(res.OutboundBody), time.Since(compressStart).Seconds())
+	}()
 
 	if sc == nil || sc.deps.Disabled || gwSessionID == "" {
 		return sc.fallbackResult(clientBody, res)

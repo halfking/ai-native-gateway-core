@@ -450,9 +450,10 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 // ApplyPolicy passes pol.Revision so a hot-swapped Redis governor is tagged
 // with the revision the publisher will publish, not the previous one. Backend
 // failure is propagated as an ErrGovernorUnavailable-wrapped error so
-// ApplyPolicy can fail-closed (no swap, no revision advance);
-// newCredForwarder wraps this in a fail-open fallback so a transient Redis
-// outage cannot block the very first dispatch to a fresh forwarder.
+// ApplyPolicy can fail-closed (no swap, no revision advance); newCredForwarder
+// then branches by backend kind: with redis_enforce the cold-start failure
+// stays fail-closed (unavailableGovernor{} — Acquire always errors), and only
+// non-strict backends (local/nil) degrade to the in-process governor.
 func (p *Pipeline) governorForCredential(cred CredentialRef, specRevision uint64) (Governor, error) {
 	backend := p.GovernorBackend()
 	mode := cred.ConcurrencyMode
@@ -1101,12 +1102,22 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	// below returns the token (admit/release symmetry). No backend / local
 	// backend → admitTotal is a free pass-through.
 	if !p.admitTotal(ctx, qr) || !p.totalQueue.tryEnqueue(qr) {
-		p.releaseClusterTotal(qr)
 		metricOverflow.WithLabelValues("total_queue_full").Inc()
 		p.observeOverflow("total_queue_full")
 		overflow := &OverflowError{Reason: "total_queue_full", RetryAfter: DefaultOverflowRetryAfter}
-		p.registry.MarkCompleted(qr.ID, time.Now())
-		p.emitRequestTerminal(qr, ForwardOutcome{Err: overflow})
+		// 2026-10-01 R73 #9: this branch used to hand-roll
+		// registry.MarkCompleted + emitRequestTerminal and skip complete().
+		// The request was already dimensionIndex.Track()ed above, so its
+		// model entry stayed pending with a zero ExpiresAt forever (the
+		// full-ring Sweep deliberately keeps zero-ExpiresAt entries, so no
+		// sweep ever reaped the ghost). complete() is CAS-guarded
+		// (qr.completed) so it runs exactly once even if a raced completion
+		// wins first, and its releaseAllClusterAdmissions subsumes the old
+		// explicit releaseClusterTotal (take-once Swap(nil)). The overflow
+		// counter / QueueOverflow observation above stay OUTSIDE complete()
+		// and nothing on the complete() path re-increments them, so the
+		// rejection stays single-counted.
+		p.complete(qr, ForwardOutcome{Err: overflow})
 		return nil, overflow
 	}
 

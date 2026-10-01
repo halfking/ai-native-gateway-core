@@ -303,20 +303,60 @@ type vendorRecentFailureRow struct {
 	Preview      *string
 }
 
+// VendorRecentFailuresSQL 取该凭据最近 N 条失败事实，并回补上游响应体预览。
+//
+// R75 P1（2026-10-01 真库实证）：(request_id, credential_id, attempt_index)
+// 在 candidate_failure_logs 侧**不是唯一键**。同一次 dispatch 内，先命中的准入
+// 降级（fp_slot_saturated / rate_limit / key_rotation_exhausted）与随后的上游
+// 失败**各写一行**，两行共用这三个列——logDispatchPreflightRejection 不写
+// failureLogged（它是独立函数，拿不到那个闭包变量），且 fp 饱和是
+// degraded_continue：请求继续执行、随后失败，于是同一候选产生两行。
+//
+// 旧写法把该三元组当唯一键用 LEFT JOIN，两个后果同时发生（真库实测）：
+//  1. 行数扇出：2 条失败 → 4 行，外层 LIMIT 10 只能显示 5 条不同失败；
+//  2. 更糟的是**错配**：fp_slot_saturated 那一行是网关侧准入事件、本无上游
+//     body，却被贴上了 network 失败的上游 body 预览——运维按错误类型排查时
+//     看到的是另一条错误的响应体。
+//
+// 修法两处同施：
+//   - 外层先子查询取 10 条**不同**失败再回补，LIMIT 语义回到「10 条失败」；
+//   - 回补改 LATERAL ... LIMIT 1，定位键补 error_kind（preflight 拒绝对应的
+//     c.error_kind 与 u.error_type 来自同一个 buildRow，天然同值），并要求
+//     preview 非空——命中即唯一，且只有真正带上游 body 的行才提供预览。
+//
+// 子查询必须显式列名、禁用 SELECT *：unified 视图跨 citus-columnar 分区，
+// `SELECT *` 直接触发 "cache lookup failed for attribute source of relation"
+// （XX000），与 bg/provider_error_aggregator.go 记载的同一 planner 缺陷——
+// 这一条是本轮真库验证当场否掉的第一版修法，不是预防性提醒。
+// 排序列也不可省：少了 ORDER BY，LIMIT 10 取哪 10 条不确定。
+const VendorRecentFailuresSQL = `
+	SELECT u.occurred_at, u.request_id, u.model, u.attempt_seq, u.error_type, u.error_message,
+	       u.http_status, u.is_retryable, u.stage, u.supplier, u.error_code, u.latency_ms,
+	       c.upstream_response_preview
+	FROM (
+		SELECT occurred_at, request_id, credential_id, model, attempt_seq, error_type, error_message,
+		       http_status, is_retryable, stage, supplier, error_code, latency_ms
+		FROM supplier_errors_unified
+		WHERE credential_id = $1 AND ($2 = '' OR tenant_id = $2) AND occurred_at >= $3
+		ORDER BY occurred_at DESC
+		LIMIT 10
+	) u
+	LEFT JOIN LATERAL (
+		SELECT cf.upstream_response_preview
+		FROM candidate_failure_logs_unified cf
+		WHERE cf.request_id = u.request_id
+		  AND cf.credential_id = u.credential_id
+		  AND cf.attempt_index = u.attempt_seq
+		  AND cf.error_kind = u.error_type
+		  AND cf.upstream_response_preview IS NOT NULL
+		ORDER BY cf.ts DESC
+		LIMIT 1
+	) c ON true
+	ORDER BY u.occurred_at DESC`
+
 func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Context, id int64, tenantID string, since time.Time) ([]vendorRecentFailure, error) {
 	var result []vendorRecentFailure
-	err := h.withVendorRLSBypassReadTx(ctx, `
-		SELECT u.occurred_at, u.request_id, u.model, u.attempt_seq, u.error_type, u.error_message,
-		       u.http_status, u.is_retryable, u.stage, u.supplier, u.error_code, u.latency_ms,
-		       c.upstream_response_preview
-			FROM supplier_errors_unified u
-			LEFT JOIN candidate_failure_logs_unified c
-			       ON c.request_id = u.request_id
-			      AND c.credential_id = u.credential_id
-			      AND c.attempt_index = u.attempt_seq
-			WHERE u.credential_id = $1 AND ($2 = '' OR u.tenant_id = $2) AND u.occurred_at >= $3
-			ORDER BY u.occurred_at DESC LIMIT 10
-		`, []any{id, tenantID, since}, func(rows pgx.Rows) error {
+	err := h.withVendorRLSBypassReadTx(ctx, VendorRecentFailuresSQL, []any{id, tenantID, since}, func(rows pgx.Rows) error {
 		result = make([]vendorRecentFailure, 0, 10)
 		for rows.Next() {
 			var row vendorRecentFailureRow

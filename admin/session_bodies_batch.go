@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -34,8 +35,18 @@ import (
 //
 // # 批量半连接是形态上的关键，不是风格问题
 //
-//	IN (SELECT unnest) → Index Scan using request_logs_bodies_2026_09_pkey     7 ms
-//	unnest + LEFT JOIN → ColumnarScan over all 2,216,660 rows              10,365 ms
+// 三种形态，同一批 200 个真实 request_id、同一列选三列正文，同一分区
+// （2026-10-01 真库实测，见审计报告 §8.3）：
+//
+//	IN (SELECT unnest($1)) → Index Scan using _2026_09_pkey          1.77~2.20 s
+//	= ANY($1::text[])      → ColumnarScan, Rows Removed 2,217,398   15.85~17.43 s
+//	unnest + LEFT JOIN      → ColumnarScan, 逐轮扫                    10,365 ms
+//
+// **注意第二行。** `= ANY(数组)` 长得像半连接，实际上与 `IN (SELECT unnest)`
+// 不是一回事：前者让规划器放弃主键探针，即使数组里只有 1 个元素也一样
+// （实测 N=1/2/4/8/16/32/64 全部 ColumnarScan），而 `= '字面量'` 或
+// `IN (SELECT unnest)` 都会走 Index Scan。两者返回的行完全相同，代价差 8~9 倍。
+// 这不是估算误差：`= ANY` 那条在列存分区上要解压整列正文。
 //
 // LEFT JOIN 贴着函数扫描时规划器没法重排，判定全表列存扫描最便宜，于是真扫一遍。
 // 半连接把一小撮 id 的哈希交给它，它就会走主键探针。用数组而不是 `VALUES`
@@ -81,6 +92,43 @@ type sessionBody struct {
 	responseBody *string
 }
 
+// # 并发闸：正文取数是全仓最贵的单条查询，雪崩从这里来
+//
+// 2026-10-01 实测（真库，生产 SQL 逐字复制 + pgx 绑定参数）：取一个真实会话
+// 的 171 个 request_id 要 **17~19 秒**，而 2026_09 是 2,217,555 行的 Citus
+// 列存分区，查询落在 ColumnarScan 上（审计 §8.3）。
+//
+// 连接池上限 **16**。也就是说：16 个并发请求就能把池占满 17 秒，期间进程内
+// 所有其他查询（含完全不碰会话数据的端点）都在等连接。单条 19 秒的查询不是
+// 「慢」，是**放大器**。
+//
+// 闸的行为刻意是**快速失败**而不是排队：排队等于把 17 秒的占用原样放大成
+// 雪崩，只是晚一点发生。取不到就报 503，让调用方知道「现在忙」，
+// 这比让它挂 17 秒后失败诚实得多。
+const maxConcurrentBodyFetches = 4
+
+// bodyFetchGate 容量刻意小于连接池（4 < 16）：把大部分连接留给不碰正文的
+// 端点，正文查询只在剩下的少数连接上排队。
+var bodyFetchGate = make(chan struct{}, maxConcurrentBodyFetches)
+
+// ErrBodyFetchSaturated 表示正文取数并发已满，调用方应快速失败（503）而不是
+// 继续占用连接。
+var ErrBodyFetchSaturated = errors.New("session body fetch saturated: too many concurrent scans of the columnar bodies partitions")
+
+// acquireBodyFetchSlot 非阻塞地取一个名额。ctx 只用于「取名额前已取消」这一种
+// 情况 —— 它**不**用来排队，因为排队就是我们要避免的行为。
+func acquireBodyFetchSlot(ctx context.Context) (func(), error) {
+	select {
+	case bodyFetchGate <- struct{}{}:
+		return func() { <-bodyFetchGate }, nil
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, ErrBodyFetchSaturated
+}
+
 // querySessionBodiesByRequestID pairs turns to bodies on request_id alone.
 // Unambiguous: no request_id carries more than one body row (measured: 0),
 // because every partition of request_logs_bodies has a UNIQUE (request_id, ts)
@@ -93,6 +141,12 @@ func querySessionBodiesByRequestID(
 	if len(requestIDs) == 0 {
 		return nil, nil
 	}
+	release, err := acquireBodyFetchSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	rows, err := q.Query(ctx, sessionBodiesByRequestIDSQL, requestIDs)
 	if err != nil {
 		return nil, err

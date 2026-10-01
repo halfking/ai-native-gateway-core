@@ -226,7 +226,7 @@ func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.Reque
 			"synthetic", synthetic,
 			"error", err)
 		// P0-2 (audit §3.6 R-3.3): count this lost-row event so the
-		// Grafana rule in deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
+		// Grafana rule in deploy/prometheus/alerts/shadow-write-failures.yaml
 		// can fire. V2 sessions tables are migration 430 (shadow write
 		// during cutover); losing rows during the cutover window is the
 		// exact "data drift" failure mode the audit calls out.

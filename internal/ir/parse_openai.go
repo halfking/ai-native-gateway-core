@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // ParseOpenAI parses an OpenAI Chat Completions request body into InternalRequest.
@@ -322,6 +324,16 @@ func parseOpenAIMessage(msg map[string]any) (*Message, error) {
 		irMsg.Content = blocks
 	case nil:
 		irMsg.Content = []ContentBlock{}
+	default:
+		// R72 §3.4: content 为 number/object/bool 等非法类型时，过去会静默
+		// 落空——消息解析「成功」但内容为空，随后被 validate_and_fix.go 的
+		// removeEmptyMessages 整条删除，请求带空会话发上游返 200，客户端
+		// JSON 缺陷被转成「模型对空输入作答」。在源头拒为客户端错误（仓库
+		// 现成的 *ParseError/KindClientBug 机制），不进 fix 层。
+		return nil, &ParseError{
+			Kind:    errorsx.KindClientBug,
+			Message: fmt.Sprintf("message content must be a string, an array of content blocks, or null; got %s", jsonTypeName(content)),
+		}
 	}
 
 	// Handle tool_calls (assistant messages)

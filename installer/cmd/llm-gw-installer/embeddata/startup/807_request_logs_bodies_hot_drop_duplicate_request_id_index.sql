@@ -1,0 +1,57 @@
+-- dbinit:no-transaction —— 本文件含 DROP INDEX CONCURRENTLY，PostgreSQL 不允许
+-- 在事务块内执行；installer 的 applySQL 据此对本文件走非事务通道（见
+-- installer/internal/dbinit/runner.go noTransactionMarker）。无该标记时全新
+-- 安装会失败于 "DROP INDEX CONCURRENTLY cannot run inside a transaction block"。
+-- ===========================================================================
+-- File:          sql/migrations/startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql
+-- Migration:     807
+-- Database:      llm_gateway
+-- Purpose:       删除 request_logs_bodies_hot 上功能重复的 (request_id) 普通
+--                索引 request_logs_bodies_hot_request_id_idx —— 它被同列
+--                UNIQUE 索引 idx_request_logs_bodies_hot_request_id 全量影蔽
+--
+-- Status:        active
+-- Idempotent:    YES (DROP INDEX CONCURRENTLY IF EXISTS)
+-- Dependencies:  353_request_logs_bodies_hot_independence.sql（建表）
+--                678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql
+--                （重建保留侧 UNIQUE 索引）
+--
+-- Background:
+--   2026-10-01 会话/请求数据存储审计（docs/handoff/20261001-session-request-
+--   data-critique.md §五）。本机 llm_gateway 实测 \d request_logs_bodies_hot
+--   存在两个同列 (request_id) btree：
+--     - idx_request_logs_bodies_hot_request_id        UNIQUE  ← 保留
+--     - request_logs_bodies_hot_request_id_idx        普通    ← 本迁移删除
+--
+--   保留侧判断依据：
+--     1) 唯一侧是 Go 写路径的承重索引：upsertRequestLogBodies 用
+--        `ON CONFLICT (request_id)`（见 678 头注，db/client.go），PG 要求
+--        ON CONFLICT 推断列上存在唯一索引——普通索引不可替代；
+--     2) 唯一侧由迁移链 455/678 亲手创建并修复维护，名字正典（idx_ 前缀
+--        惯例），三份 baseline 01-schema.sql 均含其定义；
+--     3) 同列 UNIQUE btree 可服务普通 btree 的一切读路径（前向扫描），
+--        普通侧属 718 判等口径 b「UNIQUE 影蔽的同列普通索引」，只余写放大
+--        （每次 INSERT 维护两套同构 btree）与 autovacuum 负担。
+--
+--   来源考古：普通侧 request_logs_bodies_hot_request_id_idx 是 pg_dump
+--   命名法产物，仅存在于三份 baseline 01-schema.sql（deploy/sql/schemas/
+--   baseline、installer embeddata、sql/schema）——基线是某参考库的 dump，
+--   把历史上并存的两个索引原样封存；353/455/678 迁移链从未创建过该名，
+--   Go ensure 链亦无（db/*.go 无按名引用，drop 后不会被复活）。新装通道
+--   先经 baseline 建出、再被本迁移摘除，属预期自愈。
+--
+--   锁与回退（实测订正）：handoff 实测「事务内 DROP+ROLLBACK 3.940 ms」
+--   是网关静默时刻的数字；2026-10-01 本机在网关活跃（8782 有在途 bodies
+--   读查询）复测，plain DROP 因 ACCESS EXCLUSIVE 排队等待在途读事务达
+--   29.9 s——热表上 plain DROP 会让后续全部读写排在锁队列里。故按 718
+--   立下的规则（「非分区表一律 CONCURRENTLY」，本表为 353 建的独立 heap），
+--   走 CONCURRENTLY 非事务通道：不阻塞在途读写，代价是失败可能留下
+--   INVALID 索引（复跑本迁移即可清掉，IF EXISTS 对 INVALID 索引同样命中）。
+--   down 为文档化 no-op（对齐 718 惯例）：重建冗余索引只恢复写放大，
+--   无语义收益。
+-- ===========================================================================
+
+DROP INDEX CONCURRENTLY IF EXISTS public.request_logs_bodies_hot_request_id_idx;
+
+COMMENT ON INDEX idx_request_logs_bodies_hot_request_id IS
+    '807 裁决保留侧: request_logs_bodies_hot 上 (request_id) 的唯一承重索引 —— 支撑 Go upsertRequestLogBodies 的 ON CONFLICT (request_id)；同列普通索引 request_logs_bodies_hot_request_id_idx 因被本索引全量影蔽已由 807 删除。';

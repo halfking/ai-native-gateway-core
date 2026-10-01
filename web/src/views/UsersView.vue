@@ -79,8 +79,13 @@ function openDetail(u: User) {
 }
 function onDrawerToggleEnabled(u: DrawerUser) {
   const target = users.value.find((x) => x.id === u.id)
-  if (target) void handleToggle(target)
-  detailUser.value = target ? { ...target, enabled: !target.enabled } : null
+  if (!target) return
+  // 乐观翻转：抽屉徽章立即切换；handleToggle 失败时回调回滚原状态，
+  // 避免抽屉与列表状态分叉。
+  detailUser.value = { ...target, enabled: !target.enabled }
+  void handleToggle(target, () => {
+    if (detailUser.value?.id === target.id) detailUser.value = { ...target }
+  })
 }
 function onDrawerResetPassword(u: DrawerUser) {
   const target = users.value.find((x) => x.id === u.id)
@@ -224,12 +229,13 @@ async function handleCreate() {
   }
 }
 
-async function handleToggle(u: User) {
+async function handleToggle(u: User, onRollback?: () => void) {
   try {
     await updateUser(u.id, { enabled: !u.enabled })
     await load()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('users.error.toggleFailed')
+    onRollback?.()
   }
 }
 

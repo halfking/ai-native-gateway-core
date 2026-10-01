@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // InternalResponse is the unified intermediate representation for upstream
@@ -827,7 +828,13 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 		case "tool_use":
 			var input any
 			if c.Input != nil {
-				_ = json.Unmarshal(c.Input, &input)
+				// 0458 §1.3 压缩域/会话缓存域收口（2026-10-01）：失败时保
+				// 持与旧路径相同的 wire 结果（input=null）并留 Warn——旧
+				// `_ =` 会把半填充对象静默发上 Anthropic 线。Gemini 构建器
+				// （response.go tool_use→functionCall）与 Anthropic 块序列化
+				// （serialize_anthropic.go）对同一 Input 各有显式兜底，本点
+				// 是三处中唯一无痕迹的。
+				jsoncol.Decode("ir.buildAnthropicResponseContent/tool_use.input", c.Input, &input)
 			}
 			content = append(content, map[string]any{
 				"type":  "tool_use",

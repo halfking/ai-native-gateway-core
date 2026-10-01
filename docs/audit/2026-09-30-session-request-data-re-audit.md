@@ -1302,19 +1302,231 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 5. **决策正文存储**：S6 前必须定 `session_bodies` 是否补全量字段。
 6. **S6 DROP**。
 
-## 8. 待你拍板（截至 2026-10-01，共 6 项待决 + 1 项已关闭）
+## 8. 待你拍板（截至 2026-10-01 06:45，共 5 项待决 + 2 项已关闭）
 
-第 6 项因本轮合并而自动关闭，第 7 项是 2026-10-01 新增的。
+第 6 项因合并自动关闭；第 7 项同日拍板并落地（连同新挖出的缺陷 7，见 §5.11）。
 
 | # | 事项 | 性质 | 状态 |
 |---|------|------|------|
-| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支 | 等决定 |
-| 2 | **`session_list.go:140/167` ⚠️ 半等价类** | 迁过去会让 `request_count`/`error_count`/`is_compressed` 变小 2.5% | 等决定 |
+| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支。**本轮再次明确维持待批** | 等决定 |
+| 2 | ~~**`session_list.go:140/167` 半等价类**~~ | **已拍板并落地**：读源迁到 `db.SessionFamilyTurnsSourceSQL()`。门 `TestSessionListNativeSourceDropIsInternalOnly` 跑**生产同一条 SQL** 并钉方向性不变式——原生源少掉的必须是内部调用，出现真业务轮次即报红。实测：原生源会话 13,585、v1 独有 1,381 条、其中含真业务轮次 **0** 条。见 §8.2 | 已关闭 |
 | 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
 | 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
-| 5 | **`request_logs_bodies_hot` 重复索引** | 已实测可安全删除（事务内 DROP + ROLLBACK，3.940 ms 无回退）；需新开 803 走五点同步，属 765 范围 | 等决定 |
+| 5 | **`request_logs_bodies_hot` 重复索引** | **已由迁移 807 落地（2026-10-01）**：删的是同列**非唯一**索引 `request_logs_bodies_hot_request_id_idx`，**保留** `idx_request_logs_bodies_hot_request_id`（UNIQUE，承重 `ON CONFLICT (request_id)`，也是 phase 2 命中热表的路径）。我此前担心的「删掉 phase 2 依赖的索引」不成立——§8.3 的 17~19 秒是 post-807 状态实测，不受本迁移影响 | 已关闭 |
 | 6 | ~~**工作区 131 文件陈旧暂存区**~~ | **已作废**：`reset --soft origin/main` 的残留已被本轮合并（`317f28556`）清空；当前工作区仅 14 个文件、全部是本轮有意改动 | 已关闭 |
-| 7 | **`session_summary_v2` 的正文配对键** | 见下 | 等决定 |
+| 7 | ~~**`session_summary_v2` 的正文配对键**~~ | **已拍板并落地**（`09419da13`）。实测元组键在 v1 源上只命中 0.007%（1/14,546），单键 100%；真库门实测 169 轮里单键救回 168 轮。**同批还修掉一个此前未知的缺陷 7**（fallback turns 腿被 S4 批次改接成同源原生源，见 §5.11） | 已关闭 |
+
+### 8.3 【P0 新发现】`session_compare` / `session_summary_v2` 的 phase 2 实测 17~19 秒
+
+**先说守门机制本身的缺陷**，再说性能问题——顺序不能反，因为前者是后者的成因。
+
+`TestSessionSummaryV2FallbackBodiesStaysOnIndexPath` 守着「phase 2 不得退化成列存
+全扫」这条性能契约。它自诞生起就是**恒绿**：
+
+1. **锚点字符串在计划里根本不存在。** 判据找
+   `strings.Contains(line, "ColumnarScan on request_logs_bodies")`，而 Citus 列存
+   节点的真实行长这样：
+   `Custom Scan (ColumnarScan) on request_logs_bodies_2026_09 request_logs_bodies`。
+   中间有 `(ColumnarScan) ` 的括号与空格。**用那个子串在它自己的计划输出里 grep，
+   命中 0 次。** 一道永远匹配不到任何东西的断言，等于没有断言。
+2. **它跑的是裸 `EXPLAIN`，从不执行。** 输出里只有 `cost=`，没有 `actual rows` /
+   `Buffers` / `Execution Time`。于是「这条分支实际多贵」这个问题从来没被问过；
+   `strings.Contains(line, "never executed")` 那道豁免也就永远不会触发。
+
+**所以契约绿着，而契约已经在事实上失效。** 修正判据（锚点改成真实字面量
+`ColumnarScan) on request_logs_bodies` + 改用 `EXPLAIN (ANALYZE, BUFFERS)`）后，
+这道门**立刻变红**，`Execution Time: 17,568 ms`。
+
+**实测口径**（真库，本机 `llm-gateway-pg` / PG 17.10 / Citus 列存，2026-10-01）：
+
+- 用**生产代码路径**（pgx 绑定参数 `$1::text[]`，跑 `sessionBodiesByRequestIDSQL`
+  逐字复制体）取真实会话 `gw_63798b79` 的 **171 个 `request_id`**：
+  连测三次 **19,654 / 16,271 / 17,326 ms**，取到 171 行。
+- 计划形态：`Bitmap Index Scan on idx_request_logs_bodies_hot_request_id` 命中热表，
+  但 `request_logs_bodies_2026_09`（列存，2,217,555 行）走
+  `ColumnarScan` + `Rows Removed by Filter: 2,217,555`。
+- `request_id` 落在热表还是月度分区都一样扫；5 个 id 也要 17.8~19.0 秒。
+- 加 `ts` 范围谓词**无效**（17.0~17.6 秒）：该会话轮次时间跨 09-10~09-30，
+  窗口放宽到 ±48h 后仍覆盖几乎全部分区，剪不掉 chunk。
+
+**受影响的调用方**（`querySessionBodiesByRequestID` 的使用者）：
+
+| 调用方 | 端点 | 现状 |
+|---|---|---|
+| `admin/session_compare.go:293` | `GET /api/admin/sessions/compare` | 同一条 SQL，同样代价 |
+| `admin/session_summary_v2.go` | `GET /api/admin/sessions/{id}/summary` fallback | 同上（本轮改动新接上） |
+
+**文档里的旧数字已过期**：`phase 2 7~501 ms`、`compare 4.2s→267ms`（§5.6、handoff §三）
+都是迁移 765 把 2026_09 转列存**之前**的测值。本轮 `TestSessionCompareSplitMatchesLegacyQuery`
+跑 4 组探针耗时 70~143 秒，也与「每组几百毫秒」不相容。
+
+### 8.3.1 更严重的连带发现：`session_compare` 的 10s 预算**已经**超时
+
+两个端点本来就有超时，但预算与实测成本的关系是反的：
+
+| 端点 | ctx 预算 | 实测 | 结果（真库，同一会话 171 个 request_id） |
+|---|---|---|---|
+| `session_compare` | **10 s**（`session_compare.go:150`） | 17~19 s | **10.0 s 即 `context deadline exceeded`，只取到 104/171 行** |
+| `session_summary_v2` | 30 s（`session_summary_v2.go:107`） | 17.3 s | 取满 171 行，无错 |
+
+所以 compare 不是「慢」，是**对任何带正文的会话都在失败**。好消息是它不静默：
+`querySessionBodiesByRequestID` 返回 `rows.Err()`，所以调用方拿到的是错误而不是
+104 行的半份数据。
+
+连接池上限实测 **16**。这才是雪崩的真正机制：单条 19 秒不是问题，**16 个并发
+就把池占满 19 秒**，期间进程内所有其他查询（含完全不碰会话数据的端点）都在等连接。
+
+### 8.3.2 本轮处置（2026-10-01 拍板「先只堵雪崩」）
+
+在 `querySessionBodiesByRequestID` 这一个收敛点加**并发闸**：
+
+- 容量 `maxConcurrentBodyFetches = 4`，刻意小于池上限 16，把大部分连接留给
+  不碰正文的端点；
+- 饱和时**快速失败**返回 `ErrBodyFetchSaturated`，**不排队** —— 排队等于把 17 秒
+  的占用原样放大成雪崩，只是晚点发生；
+- 两个端点把该错误映射成 **503 + `code: session_body_fetch_saturated`**
+  （不是 500：调用方对两者的重试含义不同，503 可退避重试、500 不该重试）。
+
+门 `admin/session_bodies_batch_gate_test.go` 钉的是**行为**不是数值：饱和时
+必须在 250ms 内返回错误（实现成排队就会挂死并被门抓住）、释放后可再获取、
+ctx 已取消时报 `context.Canceled` 而非饱和错误（否则排障会把「客户端已断开」
+读成「服务端忙」）、并发下无数据竞争。
+
+**没有动的**：10s / 30s 这两个预算本身。compare 的 10s 低于实测成本，怎么处理
+属于「修法」的一部分，不在「堵雪崩」范围内 —— 现状是失败（不静默），闸保证的是
+它**不会**在被拖垮的连接池上变成大面积 500。
+
+**为什么不在本轮直接修**：这不是一行改动。候选方向各自有明确代价，需要拍板：
+
+> ⛔ **本表已于 §8.3.3 被推翻，保留仅为记录当时的判断。** 四个方向全部建立在一个
+> 未经检验的前提上——「列存分区上按 `request_id` 取数只能全扫」。实测不成立：
+> 该分区有可用的 btree 主键，只是 `= ANY(数组)` 这个写法让规划器不去选它。
+> 四行里没有一行命中真正的成本来源（正文列整列解压），改成 unnest 半连接即 8~9 倍。
+
+| 方向 | 代价 / 风险 |
+|---|---|
+| 按 `request_id` 分区/加 bloom 或 min-max 索引 | 迁移级别改动；列存表加索引的方式与 heap 不同 |
+| 拆查询：先按 `(request_id, ts)` 主键在**非列存**期取，其余回落到列存 | 只对「轮次时间落在非列存分区」的场景有效 |
+| 接受现状并给端点加超时/熔断 | 把 19 秒变成 504，不是修 |
+| 正文改从 `session_bodies_unified` 读 | 与 summary 注释里「两腿口径必须一致」的约束冲突，需重新评估 |
+
+**当前处置**：门已从「恒绿且测不出任何东西」改成「会测、会打印实测成本、
+在 P0 修法拍板前显式 `t.Skip` 并指向本条」。**不置红**是为了不把 CI 变成长期噪声，
+但每次运行都会打印 `phase 2 实测成本：Execution Time: ... ms`，成本回归看得见。
+
+### 8.3.3 根因定案：`= ANY(数组)` 让规划器放弃主键，改一个词就是 8~9 倍
+
+**先排掉三个看起来很像的解释**，因为它们都会把修法引到错的地方：
+
+| 假设 | 实测 | 结论 |
+|---|---|---|
+| 绑定参数导致规划器切到通用计划 | 同一 prepared statement 连跑 7 次，第 7 次 Planning 0.033 ms（确为通用计划），2026_09 分区**每一次**都是 ColumnarScan | ❌ 不是 |
+| `EXPLAIN ANALYZE` 插桩放大了数字 | 真实生产函数 `querySessionBodiesByRequestID` 连测 **15.85 / 15.88 / 17.43 s**（200 个真实 id，取满 200 行），与 EXPLAIN 的 15.7~16.9 s 同量级 | ❌ 不是 |
+| 取样偏差（我犯的） | 首轮取样用 `ORDER BY request_id LIMIT 171`，取到的是字母序最前的一小撮（全是 `0000…`），与真实会话「散布全空间」不符；改按真实会话 `gw_9d8182c6` 取 200 个 id（`baa1b79…`~`513171…`）后结论不变 | ⚠️ 取样确有偏差，但不影响结论 |
+
+**根因**（同一批 200 个真实 `request_id`、同选三个正文列、真库、同分区）：
+
+| 写法 | 2026_09 分区计划 | 实跑墙钟 |
+|---|---|---|
+| `WHERE rb.request_id = ANY($1::text[])` ← **当前生产** | `ColumnarScan`，`Rows Removed by Filter: 2,217,398` | **15.85 / 15.88 / 17.43 s** |
+| `WHERE rb.request_id IN (SELECT unnest($1::text[]))` | **`Index Scan using request_logs_bodies_2026_09_pkey`** | **1.77 / 1.87 / 2.20 s** |
+
+两者返回**完全相同的 200 行**。差别在 `= ANY(数组)` 这个形式本身：它让规划器
+放弃主键探针，**即使数组里只有 1 个元素也一样**——实测 N=1/2/4/8/16/32/64
+全部 ColumnarScan，而 `= '字面量'`（等值）会走 Index Scan。列存分区上
+`request_logs_bodies_2026_09_pkey` 这个 btree 索引**确实存在也确实能用**
+（`pg_index` 查得到，`enable_seqscan=off` 可强制走出 Index Scan），只是
+`= ANY` 形态下规划器不选它。
+
+**这解释了为什么「改查询形态」那一族方向看起来都该有用、却一直没被采纳**：
+§5.6.1 早就测出 `IN (SELECT unnest)` 走索引（当时记作 7 ms），但生产代码用的
+是 `= ANY`；注释里那张对照表**少了生产实际用的这一行**，于是「半连接已经是
+对的形态」这个印象一直成立，而它其实不对。
+
+**一个必须写下来的反面测量**：`SELECT count(*)` 包住同一个子查询只要 **2.0 s**。
+这不是「其实不慢」，而是规划器把三个正文列的投影整个消掉了 —— 它量的不是同一
+件事。我差点拿它把一个正确的 P0 撤回成「插桩开销」。**代理量陷阱的又一次实例。**
+
+**代价归因**：`= ANY` 形态下，过滤本身约 2 s，其余约 14 s 花在把三个正文字段
+在 2,217,398 行上整列解压（`Chunk Groups Removed by Filter: 0`，即无任何剪枝）。
+所以**减少列数没有用**（实测 A≈B），**加时间窗也没有用**（§8.3 已记），
+**加并发闸只是止血**。真正要动的是那个谓词写法。
+
+**修法**（一行，待拍板）：`session_bodies_batch.go` 的
+`sessionBodiesByRequestIDSQL` 里把 `= ANY($1::text[])` 换成
+`IN (SELECT unnest($1::text[]))`，并给守形门加一条判据钉住 unnest 形态
+（现有的 `TestSessionBodiesBatchSQLIsNotALefiJoin` 只禁 `JOIN`，放过了 `= ANY`）。
+`sessionBodiesByRequestIDAndTSSQL` 同理，两条都改。
+
+### 8.3.4 这道门本身差点成为 R17 事故的第二起（已修）
+
+R17（252 SQL 日志审计第十七轮）记录：一条同族的 19GB 级测量扫描在 4 核共享小机上
+**独占 IO 1 小时 32 分**、load 20~25，把生产写入链整体饿死（05:31-07:05 冻结窗的
+根因判定就是「主机饱和下的探测饿死」）。纪律 ㊺：共享小机上测量型长查询受负载
+预算约束。
+
+而 §8.3 这道门**就是那类语句的生产者**：`EXPLAIN (ANALYZE, BUFFERS)` 在列存分区
+上实测 15.7~17.4 秒，而它由 `TEST_PG_URL` 决定打向哪台机器——那正是最容易被
+「顺手指到 252/154」的一个环境变量。本轮实测同文件里那道等价性门更重（legacy
+约 0.8 秒/轮，轮数上界 60）。
+
+**处置**：`heavyMeasurementAllowed(dsn, optIn)`（`admin/db_measurement_host_guard_test.go`）
+默认只放行回环 / 本地 socket，**解析不出主机的一律按非本地处理**（fail closed）；
+远端需显式 `LLM_GATEWAY_ALLOW_HEAVY_DB_MEASUREMENT=1`。判据放在 `EXPLAIN` **之前**。
+
+三项变异验证（均验证红、文件逐字节还原）：
+
+1. 把闸从门上摘掉 → `TestHeavyMeasurementGuardIsActuallyWired` 红（Go 不报未使用的
+   函数，一个没人调用的防护会永远绿着）；
+2. 判定改成恒真放行 → 表驱动红 4 项；
+3. 把闸挪到 `EXPLAIN` 之后 → 顺序断言红（`protects nothing in that order`）。
+
+端到端复核：指向 `8.136.114.245` 时 0.00s 即 Skip，**连库都没试**。
+
+### 8.2 第 2 项重测：`session_list` 迁原生源的**真实**代价
+
+旧结论「迁过去会让 `request_count`/`error_count`/`is_compressed` 变小 2.5%」是
+上一轮的口头数字，本轮按纪律在真库重测（`default` 租户，近 3 天窗口，PG 17.10）。
+`loadSessions`（`admin/session_list.go:132-180`）现在读
+`request_logs_with_current_month`，对照口径 = `session_turns_hot UNION ALL session_turns`。
+
+| 口径 | v1 视图（现状） | 原生源（迁后） | 差 |
+|---|---|---|---|
+| 会话数 | 15,088 | 13,660 | **−1,428（−9.46%）** |
+| `request_count` 合计 | 15,710 | 14,156 | −1,554（−9.89%） |
+| 只在 v1 出现的会话 | 1,428 | — | 会话整条消失 |
+| 只在原生源出现的会话 | — | **0** | 无凭空新增 |
+
+**关键：消失的 1,428 条是什么？**
+
+| class | 会话数 | 轮数 |
+|---|---|---|
+| `internal_loopback` | 1,354 | 1,445 |
+| `non_terminal` | 73 | 73 |
+| **`genuine_loss`（真业务轮次）** | **0** | **0** |
+
+即：**没有任何一条真实用户对话会从列表里消失**，消失的全是网关自己生成的
+标题/摘要 LLM 调用与会话开始时的 `in_progress` 占位。
+
+**共有会话的逐项等价性**（13,659 条）：
+
+| 字段 | 结果 |
+|---|---|
+| `request_count` | 仅 **6** 条会话不同，合计 +35 轮（0.07%） |
+| `error_count` | **逐会话全等**（v1 9,323 = 原生 9,323） |
+| `is_compressed` | 两边同为 **1,418** 行有 `compression_strategy` |
+| `total`（会话去重计数） | `COUNT(DISTINCT gw_session_id)` 与原生源同口径 |
+
+`error_count` 语义差异是本轮特意验的疑点：v1 写 `request_status = 'failure'`，
+原生源只有 `NOT success`。实测 v1 的 `request_status` 分布为
+`failure 9,339 / success 6,262 / in_progress 108`，两式在 13,659 条共有会话上
+**完全相等**（`in_progress` 那 108 行未被任何一边计入 `error_count`，因为镜像
+只写 `success = true`）。
+
+**结论**：这一项的性质已经从「迁过去数字会缩水」变成
+「**1,428 条纯内部会话会从用户可见列表里消失**」。按语义这是**修正**而非退化，
+但它确实是可见的行为变更，故仍需拍板。`is_compressed` / `error_count` /
+`model_used` 三个字段都有可用替身，不是迁移的障碍。
 
 ### 8.1 第 7 项：`session_summary_v2` 的正文几乎全是空
 

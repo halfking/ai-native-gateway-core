@@ -31,6 +31,18 @@ type P4FeatureFlags struct {
 	//
 	// Default: false (ollama-native executor disabled)
 	// Env: FF_OLLAMA_NATIVE=true
+	//
+	// ⛔ 不可开启（R72 审计 §3.1，2026-10-01）：IR 模式下 handler 用
+	// ir.DetectProtocol 给 ExecParams.ClientProtocol 打标，产出的是 **IR 词表**
+	// （"openai-chat" / "ollama-chat"），而 ollama executor 的协议门禁
+	// （finalizeOllamaUpstreamBody）只接受 **catalog 词表**
+	// （"openai-completions"）——两个词表永不相等，开关一开，所有 Ollama
+	// 出站请求在 executor_ollama.go 的门禁处全量 501。
+	// 保持 false 时 dispatch 降级 routeOpenAI（Ollama 的 OpenAI 兼容端点），
+	// 生产不受影响。待四步接线完成（usage 拆分 → ollama.* 命名空间扩展 →
+	// tool_calls 解析 → 最后才开开关）之前，此旋钮必须留在 false。
+	// cmd/gateway 启动时会对显式开启打 Warn；501 门禁行为不动——那是门禁
+	// 在正确地挡半成品路径。
 	OllamaNativeEnabled bool
 }
 

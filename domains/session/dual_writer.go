@@ -145,7 +145,12 @@ type ProcessedRequest struct {
 // Strategy:
 //  1. ALWAYS write to V1 (primary) - failure blocks request
 //  2. IF v2_shadow_write enabled: write to V2 (shadow) - failure is logged
-//  3. IF v2_dual_read enabled: validate consistency
+//  3. ~~IF v2_dual_read enabled: validate consistency~~
+//     R77 订正：第 3 步**从未实现**。`v2_dual_read` 在全仓只出现在本行注释里，
+//     函数体没有一致性校验。metrics.SessionsV2DualReadDiff 之所以零数据点，
+//     根因在此——不是漏接线，是它要度量的功能不存在。故注释改为删除线并在此
+//     说明；待双读比对落地后再接该指标（internal/metricguard 的 knownUnwired
+//     已登记该条目与理由）。
 //
 // Guarantees:
 //   - V1 write failure → request fails (backward compatible)

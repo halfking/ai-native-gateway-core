@@ -1,0 +1,14 @@
+-- 807 down: 文档化 no-op（对齐 718 惯例）。
+--
+-- 807 删除的是被同列 UNIQUE 索引 idx_request_logs_bodies_hot_request_id
+-- 全量影蔽的普通索引，重建它只会恢复热路径写放大，没有任何语义收益。
+-- 如确需回退（例如把唯一索引换回普通索引的迁移试验），请显式：
+--   DROP INDEX IF EXISTS idx_request_logs_bodies_hot_request_id;
+--   CREATE INDEX IF NOT EXISTS request_logs_bodies_hot_request_id_idx
+--     ON public.request_logs_bodies_hot (request_id);
+-- 注意：删唯一索引会让 upsertRequestLogBodies 的 ON CONFLICT (request_id)
+-- 失去推断依据（SQLSTATE 42P10）， telemetry 事务将整体回滚——见 678 头注。
+-- 若要重建，生产低峰走 CREATE INDEX CONCURRENTLY（对齐 807 up 的锁结论）：
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS request_logs_bodies_hot_request_id_idx
+--     ON public.request_logs_bodies_hot (request_id);
+SELECT 1;  -- no-op

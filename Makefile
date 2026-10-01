@@ -55,7 +55,7 @@ test-short: ## 短模式，跳过 -short=false 的测试
 # 门会检查有没有漏登记——否则「加了个守卫但没人跑」会再次悄悄发生。
 # 单行定义：scripts/checks/guards-sync.sh 用 sed 取这一行，多行续行会让它
 # 只读到前半段（这正是本脚本第一次跑就误报的��因）。
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard
 
 .PHONY: guards
 guards: ## 运行全部审计守卫（快速、无外部依赖）

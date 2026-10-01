@@ -11,7 +11,7 @@ package verify
 //
 //	docker run -d --rm --name audit-pg -e POSTGRES_PASSWORD=audit \
 //	  -p 55432:5432 kx-citus-pg17:offline-arm64
-//	LLM_GATEWAY_SUPPLIER_PG_DSN='postgres://postgres:audit@127.0.0.1:55432/postgres?sslmode=disable' \
+//	TEST_PG_DSN='postgres://postgres:audit@127.0.0.1:55432/postgres?sslmode=disable' \
 //	  go test ./deploy/sql/verify/ -run TestSupplierErrors -v
 //
 // 验证矩阵：
@@ -42,11 +42,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const supplierPGDSNEnv = "LLM_GATEWAY_SUPPLIER_PG_DSN"
+const (
+	// 仓内 harness 契约名（见下方注释）
+	supplierPGDSNEnv = "TEST_PG_DSN"
+	// 历史名，仅供手工运行时兼容
+	supplierPGDSNLegacyEnv = "LLM_GATEWAY_SUPPLIER_PG_DSN"
+)
+
+// 变量名按仓内契约取：scripts/audit/run-integration-gate.sh 只注入
+// TEST_PG_DSN / *_DATABASE_URL / *_DB_URL / *_PG_URL 这几种后缀，注入清单由
+// sql/schema/integration_gate_test.go 的 TestGateInjectsEveryDBCredentialName
+// 从仓内按这些后缀**推导**（不是手写清单）。用 _PG_DSN 这类不在契约内的名字，
+// harness 永远不会注入 ⇒ 这道门在 CI 上结构性沉睡，却仍以 "ok" 出现在报告里。
+// 旧名保留为回退供手工运行；新代码直接用 TEST_PG_DSN。
+func resolveSupplierPGDSN() string {
+	if v := os.Getenv(supplierPGDSNEnv); v != "" {
+		return v
+	}
+	return os.Getenv(supplierPGDSNLegacyEnv)
+}
 
 func openSupplierPG(t *testing.T) (*pgx.Conn, func()) {
 	t.Helper()
-	dsn := os.Getenv(supplierPGDSNEnv)
+	dsn := resolveSupplierPGDSN()
 	if dsn == "" {
 		t.Skipf("%s not set — offline mode; run with a citus_columnar-enabled PostgreSQL", supplierPGDSNEnv)
 	}
