@@ -776,3 +776,22 @@ handler **一个字节都不写**，直接阻塞到客户端断开。线上 `2d7
 需把 `download` / `acc` / `llm` 三个 vhost 也改走 `active-upstream.conf`、
 排空 8781 之后，该缺口才闭合。这属于改 245 生产流量路由的操作，
 须单独立项、单独排期并准备回滚步骤，**不在本轮范围内**。
+
+### 2026-10-01 10:30 补记：服务端/代理侧假设已穷举排除，只剩客户端
+
+对「浏览器那条连接 0 字节」逐条排除，**每条都带独立实测**：
+
+| 假设 | 实测 | 判定 |
+| --- | --- | --- |
+| 空 replay 导致首帧被 gate 掉 | 一次性测试：0 字节成立，但 `nodeTicker` 2 秒补 `node_update` | 真实但自愈，**非成因** |
+| nginx 对 SSE 开了 gzip、响应压进缓冲区 | 154 的 `gzip_types` 不含 `text/event-stream`；带浏览器完整头（含 `Accept-Encoding: gzip, deflate, br, zstd` + `Origin`）实测**无 `Content-Encoding`**，**首字节 0.060s**，25 秒 17,094,239 字节 / 26 帧 | **证伪** |
+| HTTP/2 单域名 6 条并发流被旧标签页占满 | 154 侧 `/live-stream/stats` 的 `active_clients: 0`，浏览器出口 IP 只有 4 条 ESTABLISHED TCP | **证伪** |
+| 服务端对该身份不下发节点 | 超管 19.6 MB / 租户 24.0 MB，均含 `initial_data` + `node_update` | **证伪** |
+
+**结论**：服务端、nginx 配置、HTTP/2 配额、身份/scope 四条路径全部排除后，
+剩下的唯一解释是 **Electron 内置浏览器客户端自己断开了 EventSource** ——
+与后端日志 `live stream initial replay failed err="context canceled"`（客户端在
+replay 开始前就断了）以及 renderer 最终白屏完全一致。
+
+**这是环境故障，不是在被验收功能的生产表现。** 第 2 项的截图验收改由用户在
+普通 Chrome 中完成（判据已用生产数据验过，见上节）。
