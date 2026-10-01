@@ -1,11 +1,33 @@
 # integration-gate CI job —— 重新启用的前置条件
 
-ci-gate-preconditions: NOT-SATISFIED
+ci-gate-preconditions: SATISFIED
+
+> **2026-10-02 更新：状态行已翻成 SATISFIED，job 已接回 workflow，同一次提交。**
+> `integration-gate` job 现在存在于
+> `.github/workflows/integration-testcontainers-ci.yml`，由
+> `TestWorkflowDoesNotShipAnUnrunnableGateJob` 双向钉住。
+>
+> **本机未验证的部分，明写在这里**：前置 1/2/3 是拿真实容器实测过的（镜像
+> 存在、tag 与 PG_USER 正确、PG_PASSWORD 导出后门禁 `exit=0 PASS=112`），
+> 但 **前置 4（registry 凭据）本机无法验证**，所以这个 job 本身没有在 CI 上
+> 跑过一次。job 对三个 secret 缺失是**响亮失败**（在 `docker login` 之前就
+> `::error::` 指出缺哪个），不会以难懂的方式失败：
+>
+> | secret | 用途 |
+> |---|---|
+> | `PG_GATE_PASSWORD` | 一次性门禁容器的 postgres 口令 |
+> | `PG_REGISTRY_USERNAME` | 拉 `registry.internal.example.com` 的用户名 |
+> | `PG_REGISTRY_TOKEN` | 拉 `registry.internal.example.com` 的 token |
+>
+> 仓内此前**没有任何** workflow 拉过 `registry.internal.example.com`（实测：全部 workflow
+> 只用到 `GITHUB_TOKEN` 与 4 个 `*_DATABASE_URL`），所以上面 3 个是**新增**
+> secret，没有可复用的既有约定。前置 4 的原始表述是「凭据要用仓内真实约定」，
+> 实测结论是：**那条约定不存在**，因此这里定义新名字而不是沿用虚构的名字。
 
 
 
 日期：2026-10-01
-状态：**未接入 CI**（harness 已实现并本地验证，workflow 里的 job 已移除）
+状态：**已接回 CI**（job 于 2026-10-02 接回；前置 1/2/3 实测满足，前置 4 见上方 secret 表，本机未验证）
 
 ## 结论
 
