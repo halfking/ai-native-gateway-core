@@ -898,3 +898,92 @@ node.raw_models                                        (SSE node_update)
 
 **仍未取得的只有「浏览器里真的渲染出这两个标题」这一条目视证据**，
 仍需用户在普通 Chrome 确认。本节把除目视之外的全部前提都补成了生产实测。
+
+## 2026-10-01 10:45 新发现：model_aliases 是不完整索引，其重建服务从未接线
+
+在核实热门榜数据时撞到一处矛盾，顺藤摸瓜挖出一条**独立于本轮主线的真实归属缺口**。
+
+### 矛盾起点
+
+72h 热门榜里 `z-ai/glm-5.3-flash` 的 `canonical_id` 是 **null**、请求 72 次，
+但 `resolve?model=z-ai/glm-5.3-flash` 明确返回 `canonical_id = 2716170`。
+同一模型，两处口径不一致。
+
+### 机制
+
+`admin/logs.go:1243-1259`（`listTopModels`）的兜底链只有两级：
+
+```sql
+COALESCE(mc.id, mc2.id)                                   -- ① request_logs_hot.canonical_id
+LEFT JOIN models_canonical mc  ON mc.id = rl.canonical_id
+LEFT JOIN LATERAL (SELECT canonical_id FROM model_aliases
+                   WHERE raw_name = lower(rl.client_model) AND status='active') ma ON TRUE
+LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id  -- ② 只查 model_aliases
+-- 都落空 → canonical_id 退化为 NULL，canonical_name 退化为 rl.client_model 原串
+```
+
+而 `resolve` 在进入 `model_aliases` 阶段**之前**还有一个精确形阶段
+（`resolveInputCanonicalID`，按 `provider_models.raw_model_name` 精确优先），
+`z-ai/glm-5.3-flash` 正是被它命中的。**`top-models` 没有这一层兜底。**
+
+### 库里核实（只读，245 侧执行）
+
+```
+model_aliases:  raw_name = 'z-ai/glm-5.3-flash'  →  0 行
+provider_models: raw_model_name = 'z-ai/glm-5.3-flash' → canonical_id 2716170
+
+models_canonical  = 957      provider_models = 1329
+model_aliases     = 2684 行（status='active' 2100）
+provider_models 中带 canonical 的不同 raw 名 = 919
+  其中在 model_aliases(active) 里找不到的   = 543   （59%）
+```
+
+⇒ **`model_aliases` 只覆盖了 `provider_models` 919 个原始名的 41%。**
+
+### 影响面（已量化）
+
+72h 热门榜 50 条、覆盖 4194 次请求：**18 条（36%）`canonical_id` 为 null，
+合计 520 次 = 全部热流量的 12.4%**，全部退化成原始 `client_model` 字符串
+（`meta/muse-glimmer-30b` 76、`z-ai/glm-5.3-flash` 72、
+`google/diffusiongemma-...` 58、`nvidia/*` 若干、`minimaxai/minimax-m3` 20 …）。
+
+除 `top-models` 外，只依赖 `model_aliases` 的消费方同样受影响
+（`provider/client.go` 多处、`internal/reasoncap/pgsource.go:66`、
+`admin/probe_history.go:527`、`admin/models.go`）。
+
+### 根因：重建服务是死代码
+
+`discovery/alias_sync.go` 的 `AliasSyncService` 负责清理孤儿别名 + 重建别名索引，
+但：
+
+```
+grep -rn "AliasSyncService" --include=*.go .
+→ 只有 discovery/alias_sync.go（定义本身）
+  与 discovery/alias_sync_live_test.go:91（测试里 &AliasSyncService{db: txDB{...}}）
+NewAliasSyncService 在非测试代码中零调用；无 .RunOnce() 调用点。
+生产 154 自 2026-09-30 21:47:20 启动至今，journal 里 "alias sync" 命中 0 次。
+```
+
+⇒ **该服务从未被接线**。`model_aliases` 目前只靠 `discovery/discovery.go`
+的增量 upsert 维持，所以相对 `provider_models` 持续漂移。
+
+### 对本条主线的影响（说清边界，不要夸大）
+
+**模型分组面板不受影响**：`resolve` 的精确形阶段 + `resolveModelScopeOwnership`
+的按 canonical 合并，已经把 `z-ai/glm-5.3-flash` 这类别名作用域正确并入
+`glm-5.3-flash`（前一轮实测 `representatives: canonical:2716170 → glm-5.3-flash` 印证）。
+**本条不改变第 2 项的结论。**
+
+受影响的恰恰是那些**只查 `model_aliases`、又没有前置精确形阶段**的路径，
+`top-models` 是可量化的那个。
+
+### 修法方向（未执行，需先决策）
+
+两个方向，影响面差别很大：
+1. **补数据**：把 543 个 `provider_models` raw 名回填进 `model_aliases`，
+   纯数据变更，影响所有消费方；
+2. **修查询**：给 `listTopModels` 之类只有 `model_aliases` 兜底的路径
+   补上 `provider_models` 精确形兜底，与 `resolve` 对齐。
+
+无论哪条都应先在 245 验证，且**写库动作在生产与预发布共用的同一个 PG 上**
+（见上文拓扑一节），必须先排期、不能顺手做。本轮**只登记，不动数据**。
