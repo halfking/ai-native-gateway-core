@@ -129,6 +129,95 @@ relation ... does not exist` 时不必重新调查一遍。
 
 ---
 
+## 5b. 顺着 §9-7 挖出的两个表，暴露了同类问题的完整清单
+
+为回答 §9-7（`sql/objects/` 定位，见第 5c 节）而做全量比对时，方法本身找出了
+另外两张「只有未注册迁移创建、却被生产代码直接读写」的表。与 534 同类：
+
+| 表 | 唯一建表者 | 是否注册 | 生产代码引用 | `db.Open` 自愈？ | 本轮处置 |
+|---|---|---|---|---|---|
+| `credential_model_capabilities` | 612 | 否 | `provider/client.go`、两个 streaming executor | **否** | **已注册** |
+| `handoff_pending_confirmations` | 517 | 否 | `domains/hooks/handoff/confirmation_pg.go`、`bg/handoff_pending_trimmer.go` | **否** | **待决**，见下 |
+| `session_title_states` | 550 | 否 | `db/db.go` 等 5 个 | **是**（`ensureSessionTitleStates` 用 `CREATE TABLE IF NOT EXISTS`） | 刻意不注册 |
+
+`credential_model_capabilities` 已按 534 的同款四点登记接进链，实测
+`applied=200 failed=0`、整包 `PASS=173 FAIL=0`，且全新安装库里
+`to_regclass('public.credential_model_capabilities')` 由 `false` 变 `true`。
+
+### 5b.1 517 为什么不注册：结构性冲突，不是顺序问题
+
+试注册后门禁直接报：
+
+```
+517_handoff_pending_confirmations.sql :: ERROR: there is no unique constraint
+matching given keys for referenced table "handoff_logs"
+```
+
+517 声明 `handoff_log_id INTEGER REFERENCES handoff_logs(id)`，在基线堆表上
+合法（`id` 是主键）。而 534 把 `handoff_logs` 重建为 `PARTITION BY RANGE (created_at)`
+的父表，**且没有给它任何唯一约束**——534 里唯一的 `PRIMARY KEY` 属于
+`handoff_logs_hot`，是另一张表。分区表上的唯一约束必须包含分区键，所以 534 之后
+`handoff_logs(id)` 不再唯一，517 的外键失去被引用目标。
+
+**先跑 517 也不行**：534 会把旧堆表 `RENAME` 成 `handoff_logs_legacy_532`，
+外键会指向那张被改名的遗留表——是静默错误，不是响亮失败。
+
+两条路都需要改 schema 设计而非改接线：
+
+1. 给分区父表加含分区键的唯一约束（如 `(id, created_at)`）并相应加宽 517 的外键；
+2. 去掉 517 的外键。
+
+**没有替用户选。** 门禁的失败信息里明确写着「不要为了让门禁变绿而放宽这里的判据」，
+而 `sql/schema/startup_known_gaps.tsv` 虽然可以登记已知缺口，本轮**刻意没有登记**——
+因为这不是「已知且接受的缺口」，是一个还没做的设计决定。登记它会让下一次有人
+以为这件事已经有人判断过。
+
+现状：`handoff_pending_confirmations` 在全新安装上不存在，handoff 确认流程会
+在运行时 42P01。这是**接上 534 之前就存在**的状态（534 接线前的全新安装同样没有
+这张表），所以本轮没有让任何东西变坏，但也没有把它修好。
+
+---
+
+## 5c. §9-7 结论：`sql/objects/` 的定位
+
+§9-7 原文写「双向漂移 31/618」。**这个数字在两篇审计文档里都是裸数字，找不到任何
+推导出处**，因此本轮重新实测，不继承它。
+
+实测方法：解析 `sql/objects/tables/*.sql` 的建表语句取列集，与一个真实全新安装库
+（基线 + 200 条注册链）的 `information_schema` 逐表比对。
+
+| 量 | 值 |
+|---|---:|
+| `sql/objects/tables/` 声明的表 | 247（另有 30 个文件是月分区，不是独立建表） |
+| 真库 `public` 表 | 439 |
+| 只在 `sql/objects/`、真库没有 | 3 |
+| 只在真库、`sql/objects/` 没有 | 195 |
+| 两边都有但列集不同 | 18 |
+| **列集完全一致** | **226 / 247（91.5%）** |
+
+**漂移是单向的**：`sql/objects/` **落后于**现实，不是自相矛盾。
+195 张表缺失、18 张少列（`request_logs_hot` 文件比真库多 3 列、少 19 列）。
+
+那 3 张「文件有、真库无」的表就是 §5b 的 `credential_model_capabilities` /
+`handoff_pending_confirmations` / `session_title_states`——现已查清归属，见上。
+
+定位结论：
+
+- **不是承重 SSOT。** 没有 `go:embed`，安装器不携带它；它不参与任何 CI workflow。
+- **也还不算纯部署惰性。** `scripts/check-body-storage-schema.sh` 真的
+  `grep` 解析 `sql/objects/tables/*.sql` 派生列清单，再拿去校验活库——
+  对那一个脚本而言它确实是列定义来源。而**这个脚本今天是红的**（rc=1），
+  因为 `sql/objects/tables/request_logs_hot.sql` 仍声明 573 已 DROP 的三个 body 列。
+- `deploy/sql/sync-objects.sh`（`sql/objects/` → `deploy/sql/objects/`）的
+  **目标目录不存在**，该脚本无人调用、不在任何 workflow 里——这条同步链是死的。
+
+**因此 §9-7 的答案**：当前形态是「**陈旧且只被一个开发脚本单向信任**」——
+既不是承重 SSOT，也不是干净的部署惰性。想把它变成部署惰性，只需处理
+`check-body-storage-schema.sh` 一个脚本（改成以真库或注册链为准），
+不必动 247 个文件。这是一个明确、低风险、但**本轮未做**的收口动作。
+
+---
+
 ## 6. 又一个被推翻的判断：`session_dim` 缺默认值
 
 此前记为「`session_dim.status` / `created_at` 在全新安装上 `NOT NULL` 无默认值，
@@ -190,9 +279,12 @@ grep 会命中 `//go:build !nintegration`（实测多出 `internal/collector`，
 
 ## 9. 本记录没有回答的
 
+- **`handoff_pending_confirmations`（517）怎么处理**——见 §5b.1，需要 schema 设计决定，
+  本轮没有替用户选，也没有登记进 `startup_known_gaps.tsv`。
+- `sql/objects/` 怎么收口成真正的部署惰性——见 §5c，缺口很小（一个脚本）但本轮未做。
 - 族 3 / 族 4 何时治、用什么数据——需要业务输入，不在本轮。
-- 5 张表中其余 4 张（`outbox_events` / `supplier_errors` 三件套）纯迁移路径下
-  确实不存在，是否接受这个状态——决策已记录为接受，但**没有验证过生产上它们
-  是否真的缺**（生产库可能由 DBA 脚本另行建过，本轮无证据）。
+- `outbox_events` / `supplier_errors` 三件套在纯迁移路径下确实不存在，
+  是否接受这个状态——决策已记录为接受，但**没有验证过生产上它们是否真的缺**
+  （生产库可能由 DBA 脚本另行建过，本轮无证据）。
 - `deploy/sql/migrations/V*.sql` 那 23 条里除建表外的其他 4 条「与安装器链
   不可组合」的失败，是否有生产仍在用——未查。
