@@ -1771,3 +1771,57 @@ return nil, ErrSaturated   // ← select 块外的代码照样执行
 **`if !Enqueue() { return }` 这类无 select 形态至今未普查**——**否定有边界，边界要写出来。**
 
 **同族**：§47/§48（分类器自己坏掉）/ §45（分母）/ §46（尺子）/ §30（不可达的不是缺陷）/ §31（否定也要量了才说）。
+
+### §50 「返回值被丢弃」要先确认方法**真的有返回值**（本条线第七个检测器缺陷）
+
+157 号找 `if !Enqueue(){return}` 形态时，机械扫出**全仓仅 1 个候选**
+`routingopt/integrator.go:161  i.batch.Enqueue(log)`，
+读实现后发现——
+
+```go
+func (w *FeedbackBatchWriter) Enqueue(log *FeedbackLog) {   // void！没有返回值
+```
+
+⇒ **它根本没有返回值可丢。** 检测器只匹配了「statement 级调用」，
+**没有校验被调方法的签名是否含返回值** ⇒ 假阳性。
+
+⚠️ **前六个检测器缺陷（§47/§48/§49）的同族形态：分类条件少一条。**
+⇒ **每加一条筛选条件，都要问「这条条件漏了会不会产生假阳性/假阴性」——
+而不是只问「它能不能多筛掉一些」。**
+
+### §50 正确实现长什么样（可直接当模板）
+
+`routingopt/feedback_batch.go:122-143` 一次性满足 §49 的四道过滤器，还多两样：
+
+```go
+// Enqueue … when the queue is full the entry is dropped and counted
+// (routing beats data).            ← ① 写明取舍
+select {
+case w.queue <- log:
+	w.enqueued.Add(1)
+default:
+	total := w.dropped.Add(1)       // ② 计数器
+	if total == 1 || total%1000 == 0 {   // ③ 限流日志（首条 + 每千条）
+		slog.WarnContext(ctx, "…queue full, dropping feedback (routing first)",
+			"dropped_total", total, "request_id", log.RequestID)
+	}
+}
+```
+
+**另外两样是 148 号桶④ 的升级：**
+- `:215` 注释**记录了它曾经真的静默丢过、已修复**（真实事故复盘）；
+- `cmd/gateway/routing_optimizer_init.go:92-98` **batch 为 nil 时也接线**，
+  注入零值计数器，注释写明「保证指标始终可被 scrape」。
+
+⇒ **§41 桶④ 的最高形态：不只论证「坏了会怎样」，还论证「坏不了的时候指标长什么样」。**
+
+### §50 连续否定结论**必须分轮列出边界，不得合并外推**
+
+本条线连续三轮零确认缺陷，但覆盖的是**三种不同形态**：
+153 号「日志自称在丢」70 站点 / 154–156「非阻塞 channel 发送被拒」61→0 / 157「`!Enqueue()`」1→0。
+
+⇒ **「三轮都零」不等于「这类问题不存在」**；
+**报告里必须写成三行表格（轮次 / 形态 / 规模），而不是一句概括。**
+（§49 的「否定结果要写出它否定的『是什么形态』」的加强版。）
+
+**同族**：§47/§48/§49（检测器自己坏掉）/ §45（分母）/ §30（不可达的不是缺陷）/ §31（否定也要量了才说）。
