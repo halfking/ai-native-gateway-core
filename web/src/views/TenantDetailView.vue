@@ -19,6 +19,7 @@ import StatCard from '../components/ui/StatCard.vue'
 import BarCell from '../components/ui/BarCell.vue'
 import SparkBars from '../components/ui/SparkBars.vue'
 import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
+import { useRaceGuard } from '../composables/useRaceGuard'
 import { isPlatformOpsView } from '../store'
 
 const route = useRoute()
@@ -130,17 +131,18 @@ async function loadKeys() {
   }
 }
 
-// 代际号防竞态（样板见 useReconciliationPage.ts 的 fetchGen）：快速切换
-// 统计窗口（7/30/90 天）时旧响应后到不得覆盖新结果。
-let statsFetchGen = 0
+// 代际号防竞态（2026-10-01 第十八轮 ④ 收敛至 useRaceGuard，原样板
+// useReconciliationPage.ts 的 fetchGen）：快速切换统计窗口（7/30/90 天）
+// 时旧响应后到不得覆盖新结果；组件卸载后 in-flight 响应一律作废。
+const statsRace = useRaceGuard()
 async function loadStats() {
-  const gen = ++statsFetchGen
+  const gen = statsRace.begin()
   try {
     const next = await getTenantStats(tenantCode.value, statsDays.value)
-    if (gen !== statsFetchGen) return
+    if (statsRace.stale(gen)) return
     stats.value = next
   } catch (e: unknown) {
-    if (gen !== statsFetchGen) return
+    if (statsRace.stale(gen)) return
     error.value = e instanceof Error ? e.message : '加载统计失败'
   }
 }

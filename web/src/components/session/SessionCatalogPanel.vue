@@ -8,6 +8,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listCatalogSessions, type CatalogSession } from '../../api/session'
+import { useRaceGuard } from '../../composables/useRaceGuard'
 import { formatDateTime } from '../../utils/datetime'
 
 const emit = defineEmits<{ (e: 'select', sessionId: string): void }>()
@@ -22,11 +23,12 @@ const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
 
-// 代际号防竞态（样板见 useReconciliationPage.ts 的 fetchGen）：快速切换
-// status chips / 防抖搜索时，旧响应后到不得覆盖新结果。
-let fetchGen = 0
+// 代际号防竞态（2026-10-01 第十八轮 ④ 收敛至 useRaceGuard，原样板
+// useReconciliationPage.ts 的 fetchGen）：快速切换 status chips / 防抖搜索
+// 时旧响应后到不得覆盖新结果；组件卸载后 in-flight 响应一律作废。
+const race = useRaceGuard()
 async function load() {
-  const gen = ++fetchGen
+  const gen = race.begin()
   loading.value = true
   error.value = ''
   const q = query.value.trim()
@@ -36,15 +38,15 @@ async function load() {
       limit: 200,
       q: q || undefined,
     })
-    if (gen !== fetchGen) return
+    if (race.stale(gen)) return
     rows.value = r.sessions ?? []
     loaded.value = true
   } catch (e) {
-    if (gen !== fetchGen) return
+    if (race.stale(gen)) return
     error.value = e instanceof Error ? e.message : String(e)
     rows.value = []
   } finally {
-    if (gen === fetchGen) loading.value = false
+    if (race.current(gen)) loading.value = false
   }
 }
 

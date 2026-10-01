@@ -12,6 +12,7 @@ import {
   type CostTrendGroupBy,
 } from '../../api/usage'
 import KxDatePicker from '../../components/ui/KxDatePicker.vue'
+import { formatNumberLocale } from '../../utils/format'
 
 // 注册 Chart.js 组件
 Chart.register(...registerables)
@@ -66,7 +67,8 @@ const formatPercent = (value: number) => {
 
 // 格式化数字
 const formatNumber = (value: number) => {
-  return value.toLocaleString()
+  // 2026-10-01 ④ format 收敛：实现单点化至 utils/format.ts。
+  return formatNumberLocale(value)
 }
 
 // 趋势类名

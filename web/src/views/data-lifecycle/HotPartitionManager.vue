@@ -388,6 +388,7 @@ import { confirmDialog } from '../../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '@/i18n'
 import { formatDateTime } from '@/utils/datetime'
+import { formatNumberLocale } from '@/utils/format'
 import { req } from '@/api/_core'
 import {
   promoteHotTable, dropPartition, listLifecycleJobs, getLifecycleJob,
@@ -834,7 +835,8 @@ function getMonthClass(month: string): string {
 }
 
 function formatNumber(num: number): string {
-  return (num || 0).toLocaleString(localeRef.value)
+  // 2026-10-01 ④ format 收敛：实现单点化至 utils/format.ts。
+  return formatNumberLocale(num, localeRef.value)
 }
 </script>
 
