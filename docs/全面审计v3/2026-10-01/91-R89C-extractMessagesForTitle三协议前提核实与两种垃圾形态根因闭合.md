@@ -46,6 +46,14 @@ responses 请求体
 
 ⚠️ **本轮未核实**：`MaybeGenerateTitle` 的三个调用点（`domains/streaming/handler.go:1101 / 1623 / 6776`）**是否覆盖 responses 车道**。若不覆盖，本节对现网无影响、但仍是**未来接入 responses 时的坑**。**列为下一轮的验证项**（与 88 号补的 `safeWindowSource` 测试、90 号的触发归因并列为未做项）。
 
+> ✅ **已由 92 号关闭，并订正本节两处**：
+> ① **覆盖**（三条车道都经 `emitTelemetry`；且 1101/1623 根本不是调用点，真实只有 6776 一处）；
+> ② 上方那条「影响链」**方向错了**——`corpus` 回落 preview 后有 320 字节、
+> `len < 10` 不成立 ⇒ **不会落回退**，而是把截断 JSON 喂给标题 LLM
+> ⇒ 后果是**质量降级**，不是把 JSON 灌进 `session_titles`（P1 定级不因此变化）。
+> 真库失效面 **26 行**（`request_mode='responses'` + `egress_protocol='openai-responses'`）。
+> 详见 92 号 §1/§2/§3。
+
 ---
 
 ## 2. 【闭合 90 号 §1】两种垃圾形态来自**两个不同分支**
@@ -68,6 +76,10 @@ for _, line := range lines {
 
 ### 2.1 形态甲：`system: You are ZCode, an interactive coding agent…`（115,615 行）
 
+> ⚠️ **本节根因描述已被 92 号推翻**（原文保留不改写）。真库取样显示 preview 是
+> **`|` 拼接的单行**、**用户段就在里面**，整行以 `system:` 开头被**行级前缀匹配连坐丢弃**
+> ——不是「320 字节只装得下 system 行」。详见 92 号 §4。
+
 - 输入：多行 `role: text` 语料，**整段都在 320 字节预算内只装得下 `system:` 行**；
 - `system: …` 行被 skipPatterns 正确跳过 ⇒ `userPrompt == ""`；
 - 落到 `extractTitleFromPreview` 的 **3c 分支**（`title = preview`）⇒ **把 system 语料原样当标题**。
@@ -81,6 +93,15 @@ for _, line := range lines {
 - 落 **3a 分支**（`idePrefix + " " + userPrompt`）⇒ **标题 = `[ZCode] ` + 一段原始 JSON**。
 
 > **这条最值得记**：形态乙里 `userPrompt != ""`，**所以「换一个更好的源」并不能消除它**——它是**启发式本身对单行 JSON 失效**（fail-open），不是源选错了。
+
+> ⚠️ **上面加粗这句已被 92 号证伪，且与本文 §3 的表格自相矛盾**。
+> 实测：`corpus` = `extractMessagesForTitle(body)` 的产物**本身就是多行 `role: text`**
+> （`auto_title_generator.go:600` 用 `"\n"` join，且 `:582-584` **只保留 user/assistant、
+> system 已被剔除**）⇒ 方案甲**确实能消除形态乙**，§3 表格是对的、本节论断是错的。
+> 另：形态乙的真因本报告也未给出——是 **body > 64KB** 导致 `previewJSON` 的
+> `summarizeJSON` 在截断后解析失败、退回 `compactJSON` 原始 JSON。
+> **本节的形态来源（responses 车道）也已被真库证伪：47,305 行形态乙 100% 是 chat 入口。**
+> 全部见 92 号 §4/§5/§5.1。
 
 ### 2.3 第三种形态：`system: [gateway-handoff-v1] Resume the prior session using…`（39,778 行）
 
