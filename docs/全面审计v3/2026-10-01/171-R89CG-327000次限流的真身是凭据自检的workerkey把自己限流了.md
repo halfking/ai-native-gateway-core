@@ -1,5 +1,33 @@
 # 171 号 · R89-CG —— 327,000 次限流的真身：**凭据自检的 worker key 把自己限流了**
 
+
+> ## ✅ 172 号已收掉 F4（2026-10-01，R89-CH）—— **限流阈值的来源查清了**
+>
+> 171 号 F4 写：「727/736 的 `rate_limit_rpm` 都是 NULL，却触发 40 万次限流
+> ⇒ 阈值不来自该列 ⇒ **来源本轮未查清（不猜）**」。
+>
+> **172 号答案：`EffectiveRPM()`（`domains/authentication/verifier.go:120-137`）的三级回落链。**
+>
+> ```
+> 727/736: is_system=t, key_tier='system', rate_limit_rpm=NULL
+>   └→ EffectiveRPM(): RateLimitRPM==nil ⇒ 跳过 0 / 正数两分支
+>       └→ 回落 tierDefaults["system"][0] = 300 RPM   ← verifier.go:74-79
+>           └→ 自检要逐个探全部凭据 ⇒ 远超 300 RPM ⇒ 撞闸门 326,126 次
+> ```
+>
+> **⚠️ 而这是一个真实的 `NULL ≠ 0` 语义陷阱**：
+> `verifier.go:118` 的注释**只说「per-key value of 0 means unlimited」，一个字没提 NULL**，
+> 而 **NULL 走 tier 默认（system=300）、0 走无限制 —— 语义完全相反**。
+> 强化证据：`api_keys` 里 **89 个 `is_system=true` 的 key 有 88 个 `rate_limit_rpm` 是 NULL，只有 1 个是 0**
+> ⇒ **不是孤例配置，是家族性默认行为。**
+>
+> **⚠️ 另有一层未核（172 号同样不猜）**：`rate_limit.go:66` 存在
+> `keyInfo.IsInternal ⇒ Skipped` 的豁免路径，而 727/736 `is_system=t` 却仍被限流
+> ⇒ **行为上确定没被豁免**，但**本轮未定位到 `IsInternal` 的赋值点**，
+> 所以**不能断言「豁免机制坏了」**。
+>
+> 详见 [172 号](172-R89CH-F4闭环-NULL不等于0-自检key静默吃到system-tier的300RPM.md)（playbook §65）。
+
 > **日期**：2026-10-01
 > **轮次**：R89-CG（第 71 轮，审计第 171 号）
 > **类型**：**闭环一条 P1 相关的真实运行事件** + **拦下一次我自己差点发出的误报**

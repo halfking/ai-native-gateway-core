@@ -2283,3 +2283,38 @@ SELECT r.<col>, count(*) FROM request_logs r LEFT JOIN request_wal w ON …
 **⇒ 报告里允许、并且应该出现「我不知道」这句话。**
 
 **同族**：§16 / §50 / §52 / §61 / §62 / §63。
+
+---
+
+## §65 读「0 = 无限制」这类注释时，必须同时确认 NULL 走哪条路 —— NULL 与 0 在这里语义完全相反
+
+**由来**（R89-CH / 172 号）：`domains/authentication/verifier.go:118` 的注释只说
+「A per-key value of **0** means "unlimited"」，**一个字都没提 NULL**。
+而实际行为是：
+
+| `api_keys.rate_limit_rpm` | `EffectiveRPM()` | 语义 |
+|---|---|---|
+| **`0`** | `0` | **显式无限制**（`rate_limit.go:70-73` 直接 return，不检查） |
+| **`NULL`** | `tierDefaults[keyTier][0]` = **system→300 / production→60 / default→12 / applicant→6** | **按 tier 限额限流** |
+
+**⇒ 语义完全相反。** 运维按注释理解「留空 = 不限」会得到相反结果。
+**强化证据**：89 个 `is_system=true` 的 key 里 **88 个是 NULL、只有 1 个是 0** ——
+**不是孤例配置，是家族性默认行为。**
+
+**⇒ 规则一：凡是有「0 / NULL / 空字符串 / -1」多态取值的配置列，读注释时必须问
+「另外几个取值分别是什么」。**
+本仓已确认的多态列（按此表复核）：`api_keys.rate_limit_rpm`（本条 ✅ 已确认）；
+`rate_limit_tpm` / `rate_limit_concurrent` / `budget_usd` **同类嫌疑，尚未逐列核实**。
+
+**⇒ 规则二：查「某配置是否生效」时，先查 `information_schema` 的 nullable 与 DEFAULT，再读代码。**
+本轮关键一步是发现 `api_keys` 还有 `is_system` 与 `key_tier` 两列 ——
+**若没先查列名、只看到 `rate_limit_rpm` 是 NULL，会得出「没配限流所以不该限流」的错误结论。**
+
+**⇒ 规则三：注释与测试用例都是「作者当时的理解」，不是「契约」。**
+本轮 `verifier_test.go:124-125` 覆盖了 `default` 与 `production` 两个 tier 的 NULL 回落，
+**唯独没覆盖 `system`** —— 而出问题的恰恰是 `system`（自检 key 的 tier）。
+**⇒ 「测试覆盖了 X」不等于「X 的所有取值都被覆盖」。**
+
+**同族**：§64（配了却不触发要看实际流量）/ §63（「没有 X」的两种读法）/ §59（尺子错的两种形态）/
+§61（默认值不能当判别器）/ **§55（切换类配置必须有不变式检查）**。
+**§55 与本条是同一族的两端**：§55 说「配置切换要有守卫」，本条说「**配置本身的多态取值要有文档**」。
