@@ -296,10 +296,12 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// (tenant_id, gw_task_id) 部分索引。跨租户访问门 assertTaskInTenant 的
 		// session 族母表腿依赖它，缺索引会让 EXISTS 退化为 167 万行顺序扫描。
 		"802_session_turn_details_gw_task_id_index.sql": sessionTurnDetailsGwTaskIDIndexMigration802,
-		// 803 (2026-10-01, 会话/请求数据存储审计): 删除 request_logs_bodies_hot
+		// 807 (2026-10-01, 会话/请求数据存储审计): 删除 request_logs_bodies_hot
 		// 上被同列 UNIQUE 索引影蔽的普通索引 request_logs_bodies_hot_request_id_idx。
 		// parity 第 5 点与 759/763 同理：缺条目时 embed 副本漂移无人发现。
-		"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql": requestLogsBodiesHotDropDuplicateRequestIDIndexMigration803,
+		// （2026-10-01 收口轮修复：上一版引用 …Migration803——807 由 803
+		// 改号而来时测试引用没跟上，installer 模块测试自那起编译红。）
+		"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql": requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807,
 	}
 
 	for name, embedded := range expected {
