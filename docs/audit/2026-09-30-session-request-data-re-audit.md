@@ -1311,7 +1311,7 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 | 1 | **S4 真机灰度** | 运行态关写、不可逆。**2026-10-01 已批准，但 §8.4/§8.5 查出三处硬阻塞**（退出条件未达成、276 个调用点未评估、validator 会被停写关掉）。**未翻开关** | 阻塞 |
 | 2 | ~~**`session_list.go:140/167` 半等价类**~~ | **已拍板并落地**：读源迁到 `db.SessionFamilyTurnsSourceSQL()`。门 `TestSessionListNativeSourceDropIsInternalOnly` 跑**生产同一条 SQL** 并钉方向性不变式——原生源少掉的必须是内部调用，出现真业务轮次即报红。实测：原生源会话 13,585、v1 独有 1,381 条、其中含真业务轮次 **0** 条。见 §8.2 | 已关闭 |
 | 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
-| 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
+| 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提。**2026-10-01 已重测（§8.6）：无镜像缺口，94.05% 从来就没有会话头** ⇒ 这是产品口径决策，不是数据质量决策 | 等决定（已备好数字） |
 | 5 | **`request_logs_bodies_hot` 重复索引** | **已由迁移 807 落地（2026-10-01）**：删的是同列**非唯一**索引 `request_logs_bodies_hot_request_id_idx`，**保留** `idx_request_logs_bodies_hot_request_id`（UNIQUE，承重 `ON CONFLICT (request_id)`，也是 phase 2 命中热表的路径）。我此前担心的「删掉 phase 2 依赖的索引」不成立——§8.3 的 17~19 秒是 post-807 状态实测，不受本迁移影响 | 已关闭 |
 | 6 | ~~**工作区 131 文件陈旧暂存区**~~ | **已作废**：`reset --soft origin/main` 的残留已被本轮合并（`317f28556`）清空；当前工作区仅 14 个文件、全部是本轮有意改动 | 已关闭 |
 | 7 | ~~**`session_summary_v2` 的正文配对键**~~ | **已拍板并落地**（`09419da13`）。实测元组键在 v1 源上只命中 0.007%（1/14,546），单键 100%；真库门实测 169 轮里单键救回 168 轮。**同批还修掉一个此前未知的缺陷 7**（fallback turns 腿被 S4 批次改接成同源原生源，见 §5.11） | 已关闭 |
@@ -1683,6 +1683,77 @@ INSERT/DELETE 语句误捕。
 ③ §8 第 3 项的全量流量口径决定（决定 routeincident / analytics 这类看板是
 保留 v1 冻结分支，还是接受停写后的空）。§8 第 1 项与第 3 项是**同一条链上的
 前后两段**，不能分开拍板。
+
+### 8.6 §8 第 4 项重测：641,452 的真实构成 —— **没有镜像缺口，94% 从来就没有会话头**
+
+第 4 项问的是「S6 DROP `request_logs` 前，那 641,452 个在原生源查不到的
+`request_id` 怎么办」。本节按当前基线重测（**不引用旧数**），并把构成拆到
+**可判定的粒度**。
+
+**口径**（本机 `llm-gateway-pg`，视图跨度 2026-09-03 15:28 → 2026-10-01 10:44）：
+
+```sql
+SELECT (CASE WHEN rl.gw_session_id IS NULL OR rl.gw_session_id='' THEN 'no_sess_header'
+             ELSE 'has_sess_header' END), (db.MirrorDriftClassSQL), count(DISTINCT rl.request_id)
+  FROM request_logs_with_current_month rl
+ WHERE rl.request_id IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+   AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
+ GROUP BY 1,2;
+```
+
+| 指标 | 本轮实测 | 审计原记录 | 差 |
+|---|---|---|---|
+| 视图侧 `request_id` 总数（DISTINCT） | **2,324,470** | 2,321,464 | +3,006（+0.13%） |
+| 原生源查不到 | **643,387（27.68%）** | 641,452（27.6%） | +1,935 |
+
+**构成（合计 643,387，逐项闭合）**：
+
+| 会话头 | drift_class | request_ids | 占缺失 |
+|---|---|---|---|
+| **无会话头** | （见下方告警） | **605,140** | **94.05%** |
+| 有会话头 | `internal_loopback` | 36,693 | 5.70% |
+| 有会话头 | `non_terminal` | 1,536 | 0.24% |
+| 无会话头 | `non_terminal` | 18 | 0.003% |
+| **有会话头** | **`genuine_loss`** | **0** | **0%** |
+
+> ⛔ **结论：没有镜像缺口。** 「有会话头、镜像钩子本该写、却没写」这一类在本机是
+> **0 行**。整个 64 万缺口由两部分构成：**94.0% 的行根本没有会话头**（与 §5.5.3
+> 的结论一致：探针/自检/未终态从未进入 session 族），其余 5.9% 是
+> `internal_loopback`（标题/摘要生成器回环）与 `non_terminal`（`in_progress`
+> 占位）——**都是按设计排除**。
+>
+> **所以第 4 项不是数据质量问题，是纯粹的「覆盖范围 / 产品口径」决策**：
+> 产品是否接受「S4 停写后，约 27.7% 的请求级记录、其中 94% 无会话头，将彻底
+> 不再存在」。答案不是技术问题。
+
+### 8.6.1 一个必须写下来的口径陷阱：`genuine_loss` 在无会话头行上是**假标签**
+
+我第一次跑这条查询时**漏了 `gw_session_id IS NOT NULL`**，得到的画面是
+`genuine_loss` 605,130 行（94%）——看起来像一场巨大的镜像丢失，**完全错误**。
+
+原因：`db.MirrorDriftClassSQL` 的 `genuine_loss` 是 **ELSE 兜底分支**。
+`dual_read_validator` 的 scope SQL（`cmd/gateway/dual_read_validator.go:196`）
+自带 `gw_session_id IS NOT NULL AND gw_session_id <> ''` 过滤，所以在那里
+`genuine_loss` 才有「本该被镜像却没被镜像」的语义。**一旦脱离那个过滤，
+所有无会话头的行全部落进 ELSE，被贴上 `genuine_loss` 标签。**
+
+⇒ **引用 `MirrorDriftClassSQL` 的任何查询，都必须自己带上会话头过滤**，
+否则会得到一个数量级正确、语义完全错误的「镜像丢失」结论。
+（本节两个数字相差 605,130 vs 0，就是这条陷阱的全部代价。）
+
+**它同时是 252 的对照**：§8.4 在 252 实测 24h `genuine_loss` = 341 行——那一侧
+**带了**会话头过滤，所以那 341 行是真的（且集中在 R17 事故窗）。两个数字不矛盾，
+口径不同。
+
+### 8.6.2 这给 §8 第 3 项提供了确切数字
+
+§5.5.3 只给了「−37%」，单位是**行数/7 天/带会话头过滤的查询**。本节给的是
+**不同单位**（DISTINCT `request_id` / 全量视图 / 不过滤），两个数不能互换：
+
+- 全量口径：丢弃 `request_logs` = **抹掉 27.68% 的请求级记录**；
+- 其中 **94.05% 是无会话头流量**，它们在 session 族里**没有任何对应物**，
+  迁原生源救不回来，只能在产品口径上决定「要不要这 27.7%」。
 
 ### 8.2 第 2 项重测：`session_list` 迁原生源的**真实**代价
 
