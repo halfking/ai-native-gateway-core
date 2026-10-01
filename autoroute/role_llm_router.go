@@ -11,7 +11,14 @@
 //
 // 偏好顺序语义：SelectLLM 返回有序 canonical_name 列表，Decide 管线把
 // 列表中**首个存在于候选池**的模型提升到第一（promoteFirstPresent）；
-// 全不存在则维持原候选（role 路由静默让位，绝不因偏好模型不可用而失败）。
+// 全不存在则维持原候选。
+//
+// R52（2026-10-01）**逐层回退**：上表的偏好每个 kind 只有 2 个且同池，
+// 于是「轻量池模型全部不可用」时 role 路由只能静默让位，**永远够不到
+// 重量池**——低价可用性成了单点。Decide 侧在本表结果之后追加
+// builtinMainstreamFallback 兜底层（withMainstreamFallback），把"整层
+// 不可用才进下一层"变成 SelectLLM 语义的一部分。SelectLLM 本身契约不变
+// （只返回 kind 偏好），兜底层由 Decider 按开关拼接，两处口径单点。
 //
 // 并发模型：与 WorkTypeRouteStore 同款 atomic.Pointer snapshot ——
 // Reload 整体替换快照，读路径无锁；失败保留上次好快照。
@@ -44,6 +51,28 @@ var builtinRoleLLMPreference = map[TaskKind][]string{
 	KindSolution:  {"gpt-5.6-sol", "grok-4.6"},
 	// 用户口径 #4：无法确定任务类型时默认 glm-5.3-flash / minimax-m3。
 	KindUnknown: {"glm-5.3-flash", "minimax-m3"},
+}
+
+// builtinMainstreamFallback 是 R52 新增的**主流兜底层**（重量池），与
+// 730_session_role_hierarchy.sql 种子里的重量池逐字一致：
+// glm-5.3 / claude-opus-5 / gpt-5.6-sol / grok-4.6 / deepseek-v4-pro。
+//
+// 语义：它是 SelectLLM 偏好之后的**最后一层**，只在整层 kind 偏好都
+// 不在候选池时才可能胜出（withMainstreamFallback 追加到尾部，
+// promoteFirstPresent 顺序扫描）。因此：
+//   - 轻量层（search/summarize/gitops/ops/unknown）有货 → 行为零变化，
+//     仍然只用低价模型；
+//   - 轻量层整体不可用（凭证下线/欠费/tier 滤除） → 落到主流层，
+//     不再静默让位给评分结果。
+//
+// 重量层 kind（analysis/planning/solution）本身就在该池内，追加的是
+// 同池内其余模型，属于同层内的次选，不改变"重量池优先"的意图。
+var builtinMainstreamFallback = []string{
+	"glm-5.3",
+	"claude-opus-5",
+	"gpt-5.6-sol",
+	"grok-4.6",
+	"deepseek-v4-pro",
 }
 
 // roleRoutedRoles 是允许介入 role 路由的角色集合。main 不介入（保持

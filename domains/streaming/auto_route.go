@@ -319,6 +319,11 @@ type autoRouteDecision struct {
 	// flag-off / 无角色头时序列化字节与本特性加入前完全一致。
 	SessionRole string `json:"session_role,omitempty"`
 	TaskKind    string `json:"task_kind,omitempty"`
+	// R52 (2026-10-01) role 偏好命中的层："kind" = kind 偏好层（多为轻量池
+	// 低价模型）；"mainstream" = 整层缺席后兜底到主流模型。omitempty +
+	// 仅非空映射，与 SessionRole/TaskKind 同一约定——flag-off 与兜底层
+	// 未命中的请求，序列化字节与本字段加入前完全一致。
+	RoleFallbackLayer string `json:"role_fallback_layer,omitempty"`
 	// RoutingSource 仅在 role_route 命中时映射到 wire（刻意不全量透出：
 	// 其余来源值 V1/V2 早已落库，全量透出会改变 flag-off 字节流）。
 	RoutingSource  string               `json:"routing_source,omitempty"`
@@ -711,6 +716,13 @@ func buildAutoSelection(r *http.Request, sessionID string, wire *autoRouteDecisi
 		SessionRole:   wire.SessionRole,
 		TaskKind:      wire.TaskKind,
 		RoutingSource: wire.RoutingSource,
+		// R52: 兜底层归属只进 wire JSON（X-Gw-Auto-Decision 头 +
+		// request_logs.auto_decision JSONB，查询用
+		// auto_decision->>'role_fallback_layer'）。**刻意不进**
+		// telemetry.AutoSelection：那是 migration 731 建的选型学习分析表，
+		// 加列要新迁移 + 回填 + nullability 决策，而本字段是"这次选了
+		// 第几层偏好"的诊断信息，不是 (task_type, profile) 奖励单元的
+		// 输入——不进它不污染学习样本，缺它只是少一个分析维度。
 	}
 }
 
@@ -766,6 +778,8 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		// R48: 仅非空时透出，flag-off wire 字节不变。
 		SessionRole: d.SessionRole,
 		TaskKind:    d.TaskKind,
+		// R52: 同约定，仅非空时透出。
+		RoleFallbackLayer: d.RoleFallbackLayer,
 	}
 	// R48: routing_source 仅 role_route 命中时出现在 wire（见字段注释）。
 	if d.RoutingSource == "role_route" {
