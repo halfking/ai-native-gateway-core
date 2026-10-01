@@ -1,0 +1,77 @@
+# Integration fixture shapes, per package — MEASURED, not assumed.
+#
+# WHAT THIS FILE IS
+#   Round 44 §7 found that the integration-only test files fall into families
+#   that cannot share one database: some build their own schema (and collide
+#   with a populated one), some assume an already-migrated one (and fail on an
+#   empty one). One harness could only build one kind of database, so it could
+#   only ever serve half of them.
+#
+#   This file records, per package, which shape the harness should build.
+#   run-integration-gate.sh reads it; GATE_DB_SHAPE=... overrides it.
+#
+# ⚠ THE MOST IMPORTANT THING IN THIS FILE
+#   **A shape label is NOT a green light.** Measured 2026-10-01 by running the
+#   same package on both shapes, no package is green on either. The two fixture
+#   families are interleaved INSIDE packages, not separated by them.
+#
+#   That is a correction to R44 §7, which described the split as if it were
+#   clean. It is not.
+#
+#   ⚠ SCOPE OF THE MEASUREMENT, stated exactly so nobody reads it as broader
+#   than it is. A full 27-package sweep on the prereqs shape was started and
+#   **stopped at 6/27** because `db` HUNG on that shape (log frozen, process at
+#   0% CPU, killed by hand) — itself a stronger negative signal than a failure.
+#   So:
+#     * 3 packages measured on BOTH shapes this session:
+#         taskprofile              installer 2 FAIL  ->  prereqs 1 FAIL
+#         bg                       installer 14 FAIL ->  prereqs VACUOUS (0 PASS)
+#         sql/migrations/startup   installer 6 FAIL  ->  prereqs 5 FAIL
+#     * 5 more measured on prereqs, compared against the earlier full sweep:
+#         admin        11 FAIL -> 66 FAIL
+#         autoupdate    0 FAIL -> 16 FAIL
+#         center        0 FAIL -> 10 FAIL
+#         cmd-gateway   0 FAIL ->  0 FAIL   (only package unaffected)
+#         db            0 FAIL ->  HUNG
+#   NOT measured on prereqs: the other 19 packages. Do not assume their numbers.
+#   Re-run to extend; the sweep is a plain loop, see HOW TO REGENERATE.
+#
+#   Reading: prereqs removes a 42P07 or two per package but ADDS failures
+#   elsewhere in the same package, because the other half of those tests
+#   assumes a migrated database. **Switching shape moves failures around; it
+#   does not remove them.** The per-shape FAIL columns below are what stop the
+#   next reader from reading "taskprofile -> prereqs" as "switching fixed it".
+#   It did not.
+#
+# WHY A WHOLE-DATABASE SHAPE IS THE WRONG AXIS (and what replaces it)
+#   The harness's unit is a package, but the fixture families are finer than a
+#   package. The fix that actually separates them is per-test isolation: give
+#   each self-building test its own schema (`CREATE SCHEMA ... ; SET
+#   search_path`) inside the populated database, so it neither collides with
+#   the baseline nor needs a second database.
+#
+#   There is no shared helper for that in this repo yet — three files hand-roll
+#   `CREATE SCHEMA` (tools/benchreport/main.go,
+#   domains/reportrollup/grainreport_e2e_test.go,
+#   sql/migrations/startup/migration_536_540_integration_test.go). Building
+#   `testschema.New(t, pool)` and migrating the self-building files onto it is
+#   the real work, and it is deliberately NOT done here: it touches ~30 files
+#   and is a separate batch. Tracked in
+#   docs/audit/2026-10-01-round44-closure-fixtures.md.
+#
+# HOW TO REGENERATE
+#   GATE_DB_SHAPE=prereqs  bash scripts/audit/run-integration-gate.sh <pkg>
+#   (unset for installer; the [populated] line prints shape= and relations=)
+#   Then update the shape and the two FAIL counts from the two runs.
+#   A package with no row here defaults to `installer` — i.e. adding this file
+#   changed nothing until someone filled a row in.
+#
+# FORMAT
+#   <package-relative-path><TAB><shape><TAB><fail installer><TAB><fail prereqs><TAB><reason>
+#   Sorted by package. No header, no blank lines. Both shape columns measured.
+#
+#   This file intentionally ships EMPTY. It is a shape registry with the
+#   measurement harness around it; the rows are filled once the per-test
+#   isolation helper exists, because until then every row would have to say
+#   "neither shape works", which is true of all 27 packages and therefore
+#   carries no routing information.
