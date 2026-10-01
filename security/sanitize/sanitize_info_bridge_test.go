@@ -52,7 +52,7 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	if !infoOK {
 		t.Fatal("SanitizeInfo missing from context after sanitization")
 	}
-	wantMapRef := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "sess-sc1")
+	wantMapRef := "" // Redis-free mode publishes no fictitious persistent ref.
 	if gotInfo.MapRef != wantMapRef {
 		t.Fatalf("MapRef = %q, want %q", gotInfo.MapRef, wantMapRef)
 	}
@@ -81,7 +81,7 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 }
 
 func TestMiddlewareUsesBodySessionIDForSanitizeOwnership(t *testing.T) {
-	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), setupSaniGuardRedis(t), 0)
 	if err != nil {
 		t.Fatalf("middleware: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestMiddlewareUsesBodySessionIDForSanitizeOwnership(t *testing.T) {
 }
 
 func TestMiddlewareBodySessionIDOverridesConflictingHeader(t *testing.T) {
-	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), setupSaniGuardRedis(t), 0)
 	if err != nil {
 		t.Fatalf("middleware: %v", err)
 	}

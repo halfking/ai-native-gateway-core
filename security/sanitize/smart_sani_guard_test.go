@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -77,64 +76,29 @@ func TestSanitizeInputMiddleware_BasicSanitize(t *testing.T) {
 	assert.Equal(t, "13800138000", vals["{SENSITIVE:phone:1}"])
 }
 
-// TestSanitizeInputMiddleware_MultiRoundNoCollision 验证多轮会话占位符编号不冲突
+// Replaying the same value retains one identity; a distinct value allocates
+// the next token without overwriting the old mapping.
 func TestSanitizeInputMiddleware_MultiRoundNoCollision(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
-	s, err := NewSanitizer(NewPatternDetector())
-	require.NoError(t, err)
-	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
-	require.NoError(t, err)
-
-	capturedBodies := sync.Map{}
+	s, _ := NewSanitizer(NewPatternDetector())
+	mw, _ := NewSanitizeInputMiddleware(s, rdb, time.Minute)
+	var bodies []string
 	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		capturedBodies.Store(r.Header.Get("X-Gw-Session-Id"), body)
-		w.WriteHeader(http.StatusOK)
+		bodies = append(bodies, string(body))
 	}))
-
-	// 同一会话两次请求，每次都说"我的手机号是13800138000"
-	for i := 1; i <= 2; i++ {
-		req := httptest.NewRequest("POST", "/v1/chat/completions",
-			bytes.NewReader([]byte(`{
-				"model":"gpt-4",
-				"messages":[{"role":"user","content":"我的手机号是13800138000"}]
-			}`)))
-		req.Header.Set("Content-Type", "application/json")
+	for _, phone := range []string{"13800138000", "13800138000", "13900139000"} {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"`+phone+`"}]}`))
 		req.Header.Set("X-Gw-Session-Id", "session-multi")
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
+		require.Equal(t, 200, rec.Code)
 	}
-
-	// Redis 中应有两个不同编号的占位符
-	vals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey("session-multi")).Result()
+	require.Equal(t, bodies[0], bodies[1])
+	require.Contains(t, bodies[2], "{SENSITIVE:phone:2}")
+	values, err := rdb.HGetAll(context.Background(), SanitizeRedisKey("session-multi")).Result()
 	require.NoError(t, err)
-	assert.Contains(t, vals, "{SENSITIVE:phone:1}", "第1轮占位符")
-	assert.Contains(t, vals, "{SENSITIVE:phone:2}", "第2轮占位符（与第1轮不撞号）")
-	assert.Equal(t, "13800138000", vals["{SENSITIVE:phone:1}"])
-	assert.Equal(t, "13800138000", vals["{SENSITIVE:phone:2}"])
-
-	// 两轮请求应分别使用不同占位符
-	raw1, _ := capturedBodies.Load("session-multi")
-	body1 := raw1.([]byte)
-	assert.Contains(t, string(body1), "{SENSITIVE:phone:", "应有占位符")
-
-	// 再次抓一次第2轮请求
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		bytes.NewReader([]byte(`{
-			"model":"gpt-4",
-			"messages":[{"role":"user","content":"我的手机号是13800138000"}]
-		}`)))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Gw-Session-Id", "session-multi")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	raw2, _ := capturedBodies.Load("session-multi")
-	body2 := raw2.([]byte)
-	// 两次入站请求体应使用不同占位符编号
-	if bytes.Contains(body1, []byte("{SENSITIVE:phone:1}")) {
-		assert.Contains(t, string(body2), "{SENSITIVE:phone:2}",
-			"第2轮应使用 phone:2（避免占位符轮次冲突）")
-	}
+	require.Equal(t, map[string]string{"{SENSITIVE:phone:1}": "13800138000", "{SENSITIVE:phone:2}": "13900139000"}, values)
 }
 
 // TestSanitizeRestoreInterceptor_RestoresPlaceholders 验证响应侧还原
@@ -466,9 +430,9 @@ func TestSanitizeInputMiddleware_Sanitized_ContentLengthSynced(t *testing.T) {
 
 // ── 2026-08-07 回归：role 过滤 + 未知占位符 mask（Bug#2）───────────
 
-// TestSanitizeInputMiddleware_NonUserNonSystemRolesSkipped
-// assistant / tool / function 角色的消息不应被脱敏（属于上游生成）。
-func TestSanitizeInputMiddleware_NonUserNonSystemRolesSkipped(t *testing.T) {
+// TestSanitizeInputMiddleware_ReplayedAssistantAndToolRolesSanitized
+// 已还原的 assistant/tool 历史必须在重放时重新脱敏。
+func TestSanitizeInputMiddleware_ReplayedAssistantAndToolRolesSanitized(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	s, err := NewSanitizer(NewPatternDetector())
 	require.NoError(t, err)
@@ -492,11 +456,10 @@ func TestSanitizeInputMiddleware_NonUserNonSystemRolesSkipped(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	gotStr := string(got)
-	assert.Contains(t, gotStr, `"role":"assistant","content":"我的手机号是13800138000"`,
-		"assistant 消息不应被改动")
-	assert.Contains(t, gotStr, `"role":"tool","content":"call result, my email is foo@bar.com"`,
-		"tool 消息不应被改动")
-	assert.NotContains(t, gotStr, "{SENSITIVE:", "不应产出占位符")
+	assert.NotContains(t, gotStr, "13800138000")
+	assert.NotContains(t, gotStr, "foo@bar.com")
+	assert.Contains(t, gotStr, "{SENSITIVE:phone:1}")
+	assert.Contains(t, gotStr, "{SENSITIVE:email:1}")
 }
 
 // TestRestoreResponseBody_NonAssistantRole_UnknownPlaceholderMasked

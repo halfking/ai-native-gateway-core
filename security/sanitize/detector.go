@@ -3,6 +3,7 @@ package sanitize
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"sort"
 	"sync"
@@ -26,6 +27,7 @@ type Detector interface {
 type patternEntry struct {
 	sType SensitiveType
 	regex *regexp.Regexp
+	group int // Optional submatch containing only the value, preserving labels.
 }
 
 // PatternDetector 基于正则模式匹配的检测器
@@ -53,22 +55,40 @@ func (d *PatternDetector) Detect(_ context.Context, text string) ([]SensitiveFra
 	d.mu.RUnlock()
 	var fragments []SensitiveFragment
 	seen := make(map[string]bool)
+	reserved := PlaceholderPattern.FindAllStringIndex(text, -1)
 
 	for _, p := range patterns {
-		matches := p.regex.FindAllStringIndex(text, -1)
+		matches := p.regex.FindAllStringSubmatchIndex(text, -1)
 		for _, m := range matches {
-			value := text[m[0]:m[1]]
-			key := fmt.Sprintf("%s:%d:%d", p.sType, m[0], m[1])
-			if seen[key] {
+			start, end := m[2*p.group], m[2*p.group+1]
+			if p.group > 0 && end-start >= 2 && ((text[start] == '"' && text[end-1] == '"') || (text[start] == '\'' && text[end-1] == '\'')) {
+				start++
+				end--
+			}
+			if start < 0 || start >= end {
 				continue
 			}
-			seen[key] = true
-			fragments = append(fragments, SensitiveFragment{
-				Type:  p.sType,
-				Value: value,
-				Start: m[0],
-				End:   m[1],
-			})
+
+			value := text[start:end]
+			typ := p.sType
+			if typ == TypeServerIP || typ == TypeInternalIP {
+				address, err := netip.ParseAddr(value)
+				if err != nil {
+					continue
+				}
+				if address.IsPrivate() {
+					typ = TypeInternalIP
+				}
+			}
+			// Exempt only marker bytes, never the surrounding secret/private key.
+			for _, span := range outsideReservedSpans(start, end, reserved) {
+				key := fmt.Sprintf("%s:%d:%d", typ, span[0], span[1])
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				fragments = append(fragments, SensitiveFragment{Type: typ, Value: text[span[0]:span[1]], Start: span[0], End: span[1]})
+			}
 		}
 	}
 
@@ -78,15 +98,39 @@ func (d *PatternDetector) Detect(_ context.Context, text string) ([]SensitiveFra
 	return fragments, nil
 }
 
-func defaultPatternEntries() []patternEntry {
-	return []patternEntry{
-		{TypePhone, regexp.MustCompile(`1[3-9]\d{9}`)},
-		{TypeIDCard, regexp.MustCompile(`\d{17}[\dXx]`)},
-		{TypeEmail, regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)},
-		{TypeCreditCard, regexp.MustCompile(`\b(?:4\d{12,15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b`)},
-		{TypeSecret, regexp.MustCompile(`(sk|ak)-[a-zA-Z0-9]{16,}`)},
-		{TypeInternalIP, regexp.MustCompile(`(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})`)},
+func outsideReservedSpans(start, end int, reserved [][]int) [][2]int {
+	var spans [][2]int
+	for _, marker := range reserved {
+		if marker[1] <= start {
+			continue
+		}
+		if marker[0] >= end {
+			break
+		}
+		if marker[0] > start {
+			spans = append(spans, [2]int{start, marker[0]})
+		}
+		if marker[1] > start {
+			start = marker[1]
+		}
+		if start >= end {
+			return spans
+		}
 	}
+	if start < end {
+		spans = append(spans, [2]int{start, end})
+	}
+	return spans
+}
+
+func defaultPatternEntries() []patternEntry {
+	return append([]patternEntry{
+		{sType: TypePhone, regex: regexp.MustCompile(`1[3-9]\d{9}`)},
+		{sType: TypeIDCard, regex: regexp.MustCompile(`\d{17}[\dXx]`)},
+		{sType: TypeEmail, regex: regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)},
+		{sType: TypeCreditCard, regex: regexp.MustCompile(`\b(?:4\d{12,15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b`)},
+		{sType: TypeSecret, regex: regexp.MustCompile(`(sk|ak)-[a-zA-Z0-9]{16,}`)},
+	}, operationalPatternEntries()...)
 }
 
 // CustomDetector 用户自定义检测器
@@ -156,6 +200,7 @@ func (d *CompositeDetector) Detect(ctx context.Context, text string) ([]Sensitiv
 	}
 
 	type result struct {
+		index     int
 		fragments []SensitiveFragment
 		err       error
 	}
@@ -163,31 +208,35 @@ func (d *CompositeDetector) Detect(ctx context.Context, text string) ([]Sensitiv
 	ch := make(chan result, len(d.detectors))
 	var wg sync.WaitGroup
 
-	for _, det := range d.detectors {
+	for index, det := range d.detectors {
 		wg.Add(1)
 		det := det
 		go func() {
 			defer wg.Done()
 			fragments, err := det.Detect(ctx, text)
-			ch <- result{fragments: fragments, err: err}
+			ch <- result{index: index, fragments: fragments, err: err}
 		}()
 	}
 
 	wg.Wait()
 	close(ch)
 
-	var all []SensitiveFragment
+	results := make([][]SensitiveFragment, len(d.detectors))
 	for r := range ch {
 		if r.err != nil {
 			return nil, r.err
 		}
-		all = append(all, r.fragments...)
+		results[r.index] = r.fragments
+	}
+	var all []SensitiveFragment
+	for _, fragments := range results {
+		all = append(all, fragments...)
 	}
 
-	sort.Slice(all, func(i, j int) bool {
+	sort.SliceStable(all, func(i, j int) bool {
 		return all[i].Start < all[j].Start
 	})
-	return deduplicateFragments(all), nil
+	return all, nil // Preserve overlaps for the sanitizer's union merge.
 }
 
 // deduplicateFragments 去重：按起始位置去重，保留先出现的类型

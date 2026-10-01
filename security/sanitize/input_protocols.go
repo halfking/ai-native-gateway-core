@@ -29,11 +29,13 @@ func authenticatedTenant(ctx context.Context) string {
 // requestInputSanitizer changes only protocol text fields. RawMessage keeps
 // opaque image, audio, document, tool schema and extension payloads intact.
 type requestInputSanitizer struct {
-	ctx       context.Context
-	sanitizer *Sanitizer
-	offset    map[SensitiveType]int
-	mapping   SanitizeMap
-	usedCount map[string]int
+	ctx          context.Context
+	sanitizer    *Sanitizer
+	offset       map[SensitiveType]int
+	mapping      SanitizeMap
+	usedCount    map[string]int
+	existing     sanitizeReuseIndex
+	replacements int
 }
 
 func (s *requestInputSanitizer) sanitizeEnvelope(body []byte, path string) ([]byte, []compression.SanitizedMessageRef, error) {
@@ -98,7 +100,7 @@ func (s *requestInputSanitizer) sanitizeEnvelope(body []byte, path string) ([]by
 		}
 	}
 	if !changed {
-		return nil, nil, nil
+		return nil, refs, nil
 	}
 	updated, err := json.Marshal(envelope)
 	return updated, refs, err
@@ -110,9 +112,9 @@ func (s *requestInputSanitizer) sanitizeCompletionPrompt(raw json.RawMessage) (j
 		return raw, nil, false, nil
 	}
 	if trimmed[0] == '"' {
-		before := len(s.mapping)
+		before := s.replacements
 		updated, changed, err := s.sanitizeText(raw)
-		return updated, []compression.SanitizedMessageRef{messageRef(0, raw, updated, changed, len(s.mapping)-before)}, changed, err
+		return updated, []compression.SanitizedMessageRef{messageRef(0, raw, updated, changed, s.replacements-before)}, changed, err
 	}
 	if trimmed[0] != '[' {
 		return raw, nil, false, nil // Token-ID prompt, if supported by the upstream.
@@ -124,7 +126,7 @@ func (s *requestInputSanitizer) sanitizeCompletionPrompt(raw json.RawMessage) (j
 	refs := make([]compression.SanitizedMessageRef, 0, len(prompts))
 	changed := false
 	for i, prompt := range prompts {
-		before := len(s.mapping)
+		before := s.replacements
 		updated := prompt
 		didChange := false
 		if item := bytes.TrimSpace(prompt); len(item) > 0 && item[0] == '"' {
@@ -134,7 +136,7 @@ func (s *requestInputSanitizer) sanitizeCompletionPrompt(raw json.RawMessage) (j
 				return nil, nil, false, err
 			}
 		}
-		refs = append(refs, messageRef(i, prompt, updated, didChange, len(s.mapping)-before))
+		refs = append(refs, messageRef(i, prompt, updated, didChange, s.replacements-before))
 		if didChange {
 			prompts[i], changed = updated, true
 		}
@@ -157,12 +159,12 @@ func (s *requestInputSanitizer) sanitizeMessageList(envelope map[string]json.Raw
 	}
 	refs := make([]compression.SanitizedMessageRef, 0, len(messages))
 	for i, original := range messages {
-		before := len(s.mapping)
+		before := s.replacements
 		updated, didChange, err := s.sanitizeMessage(original)
 		if err != nil {
 			return nil, false, err
 		}
-		ref := messageRef(i, original, updated, didChange, len(s.mapping)-before)
+		ref := messageRef(i, original, updated, didChange, s.replacements-before)
 		refs = append(refs, ref)
 		if didChange {
 			messages[i], changed = updated, true
@@ -205,21 +207,35 @@ func (s *requestInputSanitizer) sanitizeMessage(raw json.RawMessage) (json.RawMe
 	}
 	var role string
 	_ = json.Unmarshal(message["role"], &role)
-	// Preserve historical chat semantics for assistant/tool turns. Anthropic
-	// tool_result blocks inside a user turn and Responses function_call_output
-	// items are handled by their protocol-specific paths.
-	if role != "user" && role != "system" && role != "developer" {
+	if role != "user" && role != "system" && role != "developer" && role != "assistant" && role != "tool" && role != "function" {
 		return raw, false, nil
 	}
-	content, ok := message["content"]
-	if !ok {
+	changed := false
+	for _, field := range []string{"content", "reasoning_content"} {
+		if content, ok := message[field]; ok {
+			updated, didChange, err := s.sanitizeContent(content)
+			if err != nil {
+				return nil, false, err
+			}
+			if didChange {
+				message[field], changed = updated, true
+			}
+		}
+	}
+	for _, field := range []string{"tool_calls", "function_call"} {
+		if value, ok := message[field]; ok {
+			updated, didChange, err := s.sanitizeToolCalls(value)
+			if err != nil {
+				return nil, false, err
+			}
+			if didChange {
+				message[field], changed = updated, true
+			}
+		}
+	}
+	if !changed {
 		return raw, false, nil
 	}
-	updated, changed, err := s.sanitizeContent(content)
-	if err != nil || !changed {
-		return raw, false, err
-	}
-	message["content"] = updated
 	out, err := json.Marshal(message)
 	return out, true, err
 }
@@ -230,14 +246,14 @@ func (s *requestInputSanitizer) sanitizeResponsesInput(raw json.RawMessage) (jso
 		return raw, nil, false, nil
 	}
 	if trimmed[0] == '"' {
-		before := len(s.mapping)
+		before := s.replacements
 		updated, changed, err := s.sanitizeText(raw)
-		return updated, []compression.SanitizedMessageRef{messageRef(0, raw, updated, changed, len(s.mapping)-before)}, changed, err
+		return updated, []compression.SanitizedMessageRef{messageRef(0, raw, updated, changed, s.replacements-before)}, changed, err
 	}
 	if trimmed[0] == '{' {
-		before := len(s.mapping)
+		before := s.replacements
 		updated, changed, err := s.sanitizeResponsesItem(raw)
-		return updated, []compression.SanitizedMessageRef{messageRef(0, raw, updated, changed, len(s.mapping)-before)}, changed, err
+		return updated, []compression.SanitizedMessageRef{messageRef(0, raw, updated, changed, s.replacements-before)}, changed, err
 	}
 	var items []json.RawMessage
 	if err := json.Unmarshal(raw, &items); err != nil {
@@ -246,12 +262,12 @@ func (s *requestInputSanitizer) sanitizeResponsesInput(raw json.RawMessage) (jso
 	refs := make([]compression.SanitizedMessageRef, 0, len(items))
 	changed := false
 	for i, item := range items {
-		before := len(s.mapping)
+		before := s.replacements
 		updated, didChange, err := s.sanitizeResponsesItem(item)
 		if err != nil {
 			return nil, nil, false, err
 		}
-		refs = append(refs, messageRef(i, item, updated, didChange, len(s.mapping)-before))
+		refs = append(refs, messageRef(i, item, updated, didChange, s.replacements-before))
 		if didChange {
 			items[i], changed = updated, true
 		}
@@ -268,19 +284,19 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 	if err := json.Unmarshal(raw, &item); err != nil || item == nil {
 		return nil, false, fmt.Errorf("%w: input item object required: %v", errInvalidSanitizeInput, err)
 	}
-	var kind, role string
+	var kind string
 	_ = json.Unmarshal(item["type"], &kind)
-	_ = json.Unmarshal(item["role"], &role)
 	field := ""
 	switch kind {
 	case "function_call_output":
 		field = "output"
 	case "input_text", "text":
 		field = "text"
+	case "function_call":
+		field = "arguments"
+	case "custom_tool_call":
+		field = "input"
 	case "", "message":
-		if role == "assistant" {
-			return raw, false, nil
-		}
 		field = "content"
 	default:
 		return raw, false, nil
@@ -294,6 +310,8 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 	var err error
 	if field == "text" {
 		updated, changed, err = s.sanitizeText(value)
+	} else if field == "arguments" || field == "input" {
+		return s.sanitizeToolBlock(raw, item, field, value)
 	} else {
 		updated, changed, err = s.sanitizeContent(value)
 	}
@@ -360,6 +378,10 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 		field = "text"
 	case "tool_result":
 		field = "content"
+	case "tool_use":
+		field = "input"
+	case "thinking":
+		field = "thinking"
 	default:
 		// In particular, do not inspect image/audio/document source.data.
 		return raw, false, nil
@@ -374,10 +396,20 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 	if field == "text" {
 		updated, changed, err = s.sanitizeText(value)
 	} else {
+		if field == "input" {
+			return s.sanitizeToolBlock(raw, block, field, value)
+		}
 		updated, changed, err = s.sanitizeContent(value)
 	}
 	if err != nil || !changed {
 		return raw, false, err
+	}
+	if kind == "thinking" {
+		var signature string
+		_ = json.Unmarshal(block["signature"], &signature)
+		if signature != "" {
+			return nil, false, fmt.Errorf("%w: sensitive signed thinking", errInvalidSanitizeInput)
+		}
 	}
 	block[field] = updated
 	out, err := json.Marshal(block)
@@ -389,13 +421,14 @@ func (s *requestInputSanitizer) sanitizeText(raw json.RawMessage) (json.RawMessa
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, false, fmt.Errorf("%w: text field must be a string: %v", errInvalidSanitizeInput, err)
 	}
-	result, err := s.sanitizer.sanitizeInput(s.ctx, value, s.offset)
+	result, err := s.sanitizer.sanitizeInputStable(s.ctx, value, s.offset, s.existing)
 	if err != nil {
 		return nil, false, err
 	}
 	if len(result.SanitizeMap) == 0 {
 		return raw, false, nil
 	}
+	s.replacements += len(result.Fragments)
 	for placeholder, original := range result.SanitizeMap {
 		s.mapping[placeholder] = original
 		if p, ok := ParsePlaceholder(placeholder); ok {

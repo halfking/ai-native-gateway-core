@@ -221,16 +221,19 @@ type SessionState struct {
 	RawMsgCount      int             `json:"raw_mc,omitempty"` // message count before compression
 
 	// L2 fields (compressed session, placeholders):
-	CompressedSnapshot   MessageSnapshot         `json:"compressed_snapshot,omitempty"`
-	CompressedTokens     int                     `json:"cmp_te,omitempty"`      // token count after compression
-	CompressedMsgs       int                     `json:"cmp_mc,omitempty"`      // message count after compression
-	CompressedPrefixHash string                  `json:"cmp_ph,omitempty"`      // stable compressed prefix fingerprint
-	CompressionQuality   CompressionQualityScore `json:"cmp_quality,omitempty"` // quality metrics
+	CompressionSourceSnapshot MessageSnapshot         `json:"compression_source_snapshot,omitempty"`
+	CompressedSnapshot        MessageSnapshot         `json:"compressed_snapshot,omitempty"`
+	CompressedTokens          int                     `json:"cmp_te,omitempty"`      // token count after compression
+	CompressedMsgs            int                     `json:"cmp_mc,omitempty"`      // message count after compression
+	CompressedPrefixHash      string                  `json:"cmp_ph,omitempty"`      // stable compressed prefix fingerprint
+	CompressionQuality        CompressionQualityScore `json:"cmp_quality,omitempty"` // quality metrics
 
 	// L3 fields (audited session, sanitize map):
-	SanitizeMapRef      string                `json:"sanitize_ref,omitempty"` // Redis key: session:{id}:sanitize
-	SanitizeStats       SanitizeStats         `json:"sanitize_stats,omitempty"`
-	SanitizeMessageRefs []SanitizedMessageRef `json:"sanitize_message_refs,omitempty"`
+	SanitizeMapRef        string                `json:"sanitize_ref,omitempty"` // Redis key: session:{id}:sanitize
+	SanitizeStats         SanitizeStats         `json:"sanitize_stats,omitempty"`
+	SanitizeMessageRefs   []SanitizedMessageRef `json:"sanitize_message_refs,omitempty"`
+	SanitizedSnapshot     MessageSnapshot       `json:"sanitized_snapshot,omitempty"`
+	SanitizeMapGeneration string                `json:"sanitize_map_generation,omitempty"`
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
@@ -523,6 +526,7 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 		tenantHash := hashTenantForSanitizeKey(tenantID)
 		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID))
 		_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(tenantHash, gwSessionID))
+		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID)+":generation")
 	}
 }
 
@@ -727,40 +731,18 @@ func encodeSessionStateFields(st *SessionState) []any {
 	if st.MessagesAfterStrip > 0 {
 		fields = append(fields, "mas", fmt.Sprintf("%d", st.MessagesAfterStrip))
 	}
-	// v5: Smart compression cut marker
+	// Reset recovery coordinates explicitly: stale HSET fields must never be
+	// rebound to a newly written dictionary generation.
+	hasCut := "0"
 	if st.HasCutMarker {
-		fields = append(fields, "hcm", "1")
-		if st.CutCreatedAt > 0 {
-			fields = append(fields, "cm_ts", fmt.Sprintf("%d", st.CutCreatedAt))
-		}
-		if st.CutSourceMsgs > 0 {
-			fields = append(fields, "cm_src", fmt.Sprintf("%d", st.CutSourceMsgs))
-		}
-		if st.CutSystemMsgs > 0 {
-			fields = append(fields, "cm_sys", fmt.Sprintf("%d", st.CutSystemMsgs))
-		}
-		if st.CutIndex >= 0 {
-			fields = append(fields, "cm_ci", fmt.Sprintf("%d", st.CutIndex))
-		}
-		if st.CutStrategy != "" {
-			fields = append(fields, "cm_strat", st.CutStrategy)
-		}
-		if st.CutBytesBefore > 0 {
-			fields = append(fields, "cm_bb", fmt.Sprintf("%d", st.CutBytesBefore))
-		}
-		if st.CutBytesAfter > 0 {
-			fields = append(fields, "cm_ba", fmt.Sprintf("%d", st.CutBytesAfter))
-		}
-		// v9 (2026-09-01, audit §五)：三层 offset 串接。CutPreSanitize* 仅有意义
-		// 在 HasCutMarker=true 时写入；omitempty 语义由"任一 > 0"判定。
-		if st.CutPreSanitizeStart > 0 || st.CutPreSanitizeEnd > 0 {
-			fields = append(fields, "cm_psor0", fmt.Sprintf("%d", st.CutPreSanitizeStart))
-			fields = append(fields, "cm_psor1", fmt.Sprintf("%d", st.CutPreSanitizeEnd))
-		}
+		hasCut = "1"
 	}
-	if st.CompressedPrefixHash != "" {
-		fields = append(fields, "cmp_ph", st.CompressedPrefixHash)
-	}
+	fields = append(fields, "hcm", hasCut,
+		"cm_ts", fmt.Sprint(st.CutCreatedAt), "cm_src", fmt.Sprint(st.CutSourceMsgs),
+		"cm_sys", fmt.Sprint(st.CutSystemMsgs), "cm_ci", fmt.Sprint(st.CutIndex),
+		"cm_strat", st.CutStrategy, "cm_bb", fmt.Sprint(st.CutBytesBefore),
+		"cm_ba", fmt.Sprint(st.CutBytesAfter), "cm_psor0", fmt.Sprint(st.CutPreSanitizeStart),
+		"cm_psor1", fmt.Sprint(st.CutPreSanitizeEnd), "cmp_ph", st.CompressedPrefixHash)
 
 	// and to remain backward compatible with older readers that only know
 	// the v5 field set.
@@ -788,52 +770,22 @@ func encodeSessionStateFields(st *SessionState) []any {
 	if st.OptimizationApplied != "" {
 		fields = append(fields, "opt_app", st.OptimizationApplied)
 	}
-	// v7 (O-2): AlignmentMap — serialized as a JSON array under "algn".
-	if len(st.AlignmentMap) > 0 {
-		if b, err := json.Marshal(st.AlignmentMap); err == nil {
-			fields = append(fields, "algn", string(b))
-		}
-	}
-	// v8: persist the raw/compressed/audit semantic counters so Redis
-	// rehydration remains equivalent to an in-process L1 cache hit.
-	if st.RawTokenEstimate != 0 {
-		fields = append(fields, "raw_te", fmt.Sprintf("%d", st.RawTokenEstimate))
-	}
-	if st.RawMsgCount != 0 {
-		fields = append(fields, "raw_mc", fmt.Sprintf("%d", st.RawMsgCount))
-	}
-	if st.CompressedTokens != 0 {
-		fields = append(fields, "cmp_te", fmt.Sprintf("%d", st.CompressedTokens))
-	}
-	if st.CompressedMsgs != 0 {
-		fields = append(fields, "cmp_mc", fmt.Sprintf("%d", st.CompressedMsgs))
-	}
-	if st.CompressionQuality != (CompressionQualityScore{}) {
-		if b, err := json.Marshal(st.CompressionQuality); err == nil {
-			fields = append(fields, "cmp_q", string(b))
-		}
-	}
-	if st.SanitizeMapRef != "" {
-		fields = append(fields, "san_ref", st.SanitizeMapRef)
-	}
-	if st.SanitizeStats != (SanitizeStats{}) {
-		if b, err := json.Marshal(st.SanitizeStats); err == nil {
-			fields = append(fields, "san_stats", string(b))
-		}
-	}
-	if !st.RawSnapshot.IsZero() {
-		if b, err := json.Marshal(st.RawSnapshot); err == nil {
-			fields = append(fields, "raw_snap", string(b))
-		}
-	}
-	if !st.CompressedSnapshot.IsZero() {
-		if b, err := json.Marshal(st.CompressedSnapshot); err == nil {
-			fields = append(fields, "cmp_snap", string(b))
-		}
-	}
-	if len(st.SanitizeMessageRefs) > 0 {
-		if b, err := json.Marshal(st.SanitizeMessageRefs); err == nil {
-			fields = append(fields, "san_msg_refs", string(b))
+	fields = append(fields, "raw_te", fmt.Sprint(st.RawTokenEstimate), "raw_mc", fmt.Sprint(st.RawMsgCount),
+		"cmp_te", fmt.Sprint(st.CompressedTokens), "cmp_mc", fmt.Sprint(st.CompressedMsgs))
+	// HSET is a patch, so omitted zero values would resurrect previous metadata
+	// on an L2 cold read. Write every stage/safety field, including resets.
+	fields = append(fields, "san_ref", st.SanitizeMapRef, "san_gen", st.SanitizeMapGeneration)
+	for _, field := range []struct {
+		key   string
+		value any
+	}{
+		{"algn", st.AlignmentMap}, {"cmp_q", st.CompressionQuality},
+		{"san_stats", st.SanitizeStats}, {"cmp_src", st.CompressionSourceSnapshot},
+		{"raw_snap", st.RawSnapshot}, {"cmp_snap", st.CompressedSnapshot},
+		{"san_snap", st.SanitizedSnapshot}, {"san_msg_refs", st.SanitizeMessageRefs},
+	} {
+		if b, err := json.Marshal(field.value); err == nil {
+			fields = append(fields, field.key, string(b))
 		}
 	}
 	return fields
@@ -899,6 +851,7 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.CompressedTokens = int(parseInt(fields["cmp_te"]))
 	st.CompressedMsgs = int(parseInt(fields["cmp_mc"]))
 	st.SanitizeMapRef = fields["san_ref"]
+	st.SanitizeMapGeneration = fields["san_gen"]
 	if raw := fields["cmp_q"]; raw != "" {
 		// 0458 §1.3 压缩域收口（2026-10-01）：L2 Redis Hash 的序列化字段与
 		// DB jsonb 列同族——坏数据此前被 `_ =` 静默吞成零值/半填充值，继续
@@ -908,11 +861,17 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	if raw := fields["san_stats"]; raw != "" {
 		jsoncol.Decode("compression.decodeSessionStateFields/san_stats", []byte(raw), &st.SanitizeStats)
 	}
+	if raw := fields["cmp_src"]; raw != "" {
+		jsoncol.Decode("compression.decodeSessionStateFields/cmp_src", []byte(raw), &st.CompressionSourceSnapshot)
+	}
 	if raw := fields["raw_snap"]; raw != "" {
 		jsoncol.Decode("compression.decodeSessionStateFields/raw_snap", []byte(raw), &st.RawSnapshot)
 	}
 	if raw := fields["cmp_snap"]; raw != "" {
 		jsoncol.Decode("compression.decodeSessionStateFields/cmp_snap", []byte(raw), &st.CompressedSnapshot)
+	}
+	if raw := fields["san_snap"]; raw != "" {
+		jsoncol.Decode("compression.decodeSessionStateFields/san_snap", []byte(raw), &st.SanitizedSnapshot)
 	}
 	if raw := fields["san_msg_refs"]; raw != "" {
 		if err := json.Unmarshal([]byte(raw), &st.SanitizeMessageRefs); err != nil {

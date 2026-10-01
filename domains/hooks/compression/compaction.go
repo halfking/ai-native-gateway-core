@@ -539,7 +539,11 @@ func tryLLMContextCompaction(ctx context.Context, deps *Dependencies, clientProf
 			)
 			continue
 		}
-		summary = strings.TrimSpace(summary)
+		summary, sErr = guardGeneratedText(ctx, strings.TrimSpace(summary))
+		if sErr != nil {
+			slog.Warn("compaction: generated summary rejected")
+			continue
+		}
 		if summary == "" {
 			slog.Warn("compaction: empty summary returned, trying next",
 				"attempt", i+1, "of", len(candidates),
@@ -620,7 +624,11 @@ func SummarizeConversation(ctx context.Context, deps *Dependencies, protocol str
 				"compact_model", cand.RawModel, "error", sErr)
 			continue
 		}
-		summary = strings.TrimSpace(summary)
+		summary, sErr = guardGeneratedText(ctx, strings.TrimSpace(summary))
+		if sErr != nil {
+			slog.Warn("compaction: generated summary rejected")
+			continue
+		}
 		if summary != "" {
 			return summary, true
 		}

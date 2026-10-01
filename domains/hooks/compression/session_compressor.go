@@ -106,7 +106,10 @@ type PrepareResult struct {
 
 	// RawSnapshot captures the client message snapshot before compression.
 	// It contains only a hash/counts and never the request body.
-	RawSnapshot MessageSnapshot
+	RawSnapshot               MessageSnapshot
+	CompressionSourceSnapshot MessageSnapshot
+	// In-memory sanitized source used by the final dispatch guard, never cached or logged.
+	CompressionSourceBody []byte `json:"-"`
 
 	// MsgHashes is the per-message fingerprint array to persist in
 	// request_logs.outbound_msg_hashes.
@@ -243,6 +246,9 @@ func (sc *SessionCompressor) Prepare(
 	// had no caller.
 	compressStart := time.Now()
 	res := &PrepareResult{RawSnapshot: SnapshotForBody(clientBody)}
+	if info, ok := SanitizeInfoFromContext(ctx); ok && !info.RawSnapshot.IsZero() {
+		res.RawSnapshot = info.RawSnapshot
+	}
 
 	// 2026-10-01 R74: compression outcome metrics.
 	//
@@ -352,6 +358,18 @@ func (sc *SessionCompressor) Prepare(
 	}
 
 	// ── Phase 2: Delta-append (find new turns) ────────────────────────────
+	if !cachedBodyPassesGuard(ctx, lastOutboundBody) {
+		state, lastOutboundBody = nil, nil
+	}
+	cachedGeneration := ""
+	if state != nil {
+		cachedGeneration = state.SanitizeMapGeneration
+	}
+	if !sanitizeGenerationMatches(ctx, cachedGeneration) {
+		// An expired/recreated map can reuse phone:1 for a different value.
+		// Fingerprint equality alone therefore cannot establish lineage.
+		state, lastOutboundBody = nil, nil
+	}
 	diffResult, err := BuildOutboundMessages(clientBody, state, lastOutboundBody, protocol)
 	if err != nil {
 		slog.Warn("session_compressor: diff failed, forwarding client body",
@@ -360,6 +378,8 @@ func (sc *SessionCompressor) Prepare(
 	}
 
 	outboundBody := diffResult.Body
+	res.CompressionSourceSnapshot = SnapshotForBody(outboundBody)
+	res.CompressionSourceBody = outboundBody
 	res.MsgCount = diffResult.MsgCount
 	res.TokenEst = diffResult.TokenEst
 	res.MsgHashes = marshalHashes(diffResult.MsgHashes)
@@ -507,11 +527,12 @@ func (sc *SessionCompressor) Prepare(
 		// plus tenant+session+mode+protocol+contextWindow, so a retry of the
 		// same turn replays the previous result instead of paying again.
 		memoParts := MemoKeyParts{
-			TenantID:      tenantID,
-			SessionID:     gwSessionID,
-			Mode:          mode.String(),
-			Protocol:      protocol,
-			ContextWindow: contextWindow,
+			TenantID:           tenantID,
+			SessionID:          gwSessionID,
+			Mode:               mode.String(),
+			Protocol:           protocol,
+			ContextWindow:      contextWindow,
+			SanitizeGeneration: sanitizeGeneration(ctx),
 		}
 		memoInputForStore = outboundBody
 		if sc.deps.ResultMemo.enabled() {
@@ -675,11 +696,12 @@ func (sc *SessionCompressor) Prepare(
 	if sc.deps.ResultMemo.enabled() && len(memoInputForStore) > 0 &&
 		memoStorable(res.CompressionStrategy) && len(res.OutboundBody) > 0 {
 		err := sc.deps.ResultMemo.Set(ctx, MemoKeyParts{
-			TenantID:      tenantID,
-			SessionID:     gwSessionID,
-			Mode:          mode.String(),
-			Protocol:      protocol,
-			ContextWindow: contextWindow,
+			TenantID:           tenantID,
+			SessionID:          gwSessionID,
+			Mode:               mode.String(),
+			Protocol:           protocol,
+			ContextWindow:      contextWindow,
+			SanitizeGeneration: sanitizeGeneration(ctx),
 		}, memoInputForStore, &MemoValue{
 			CompressedBody:       res.OutboundBody,
 			Strategy:             res.CompressionStrategy,
@@ -936,12 +958,14 @@ func hydrateSanitizeInfo(ctx context.Context, state *SessionState) {
 	if !ok {
 		return
 	}
+	if !info.SanitizedSnapshot.IsZero() {
+		state.SanitizedSnapshot = info.SanitizedSnapshot
+	}
+	state.SanitizeMapGeneration = info.MapGeneration
 	if info.MapRef != "" {
 		state.SanitizeMapRef = info.MapRef
 	}
-	if info.Stats.PlaceholderCount > 0 || info.Stats.SanitizedAt > 0 {
-		state.SanitizeStats = info.Stats
-	}
+	state.SanitizeStats = info.Stats
 	if len(info.MessageRefs) > 0 {
 		state.SanitizeMessageRefs = append([]SanitizedMessageRef(nil), info.MessageRefs...)
 	}
@@ -1004,6 +1028,7 @@ func buildSessionState(prevState *SessionState, outboundBody []byte, res *Prepar
 		state.RawMsgCount = res.RawSnapshot.MessageCount
 		state.RawTokenEstimate = res.RawSnapshot.TokenEstimate
 	}
+	state.CompressionSourceSnapshot = res.CompressionSourceSnapshot
 	state.CompressedSnapshot = SnapshotForBody(outboundBody)
 	state.CompressedMsgs = res.MsgCount
 	state.CompressedTokens = res.TokenEst
@@ -1425,6 +1450,10 @@ func (sc *SessionCompressor) loadV2CompressionState(ctx context.Context, tenantI
 	if ref, ok := meta["sanitize_map_ref"].(string); ok {
 		state.SanitizeMapRef = ref
 	}
+	state.SanitizeMapGeneration, _ = meta["sanitize_map_generation"].(string)
+	decodeMetaRecords(meta["compression_source_snapshot"], &state.CompressionSourceSnapshot)
+	decodeMetaRecords(meta["raw_snapshot"], &state.RawSnapshot)
+	decodeMetaRecords(meta["sanitized_snapshot"], &state.SanitizedSnapshot)
 	decodeMetaRecords(meta["alignment_map"], &state.AlignmentMap)
 	decodeMetaRecords(meta["sanitize_message_refs"], &state.SanitizeMessageRefs)
 	return state
@@ -1475,7 +1504,7 @@ func intPairMeta(v any) []int {
 	return nil
 }
 
-func decodeMetaRecords[T any](value any, dst *[]T) {
+func decodeMetaRecords[T any](value any, dst *T) {
 	if dst == nil || value == nil {
 		return
 	}
