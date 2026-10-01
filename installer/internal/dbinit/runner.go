@@ -122,6 +122,31 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// Citus columnar is not a new dependency here: 392/532/535/562/627
 			// in this same chain already use it.
 			"534_handoff_logs_hot_columnar.sql",
+			// 517 is NOT registered, and that is a deliberate pending decision,
+			// not an oversight. Registering it fails on a fresh install:
+			//
+			//   517_handoff_pending_confirmations.sql :: ERROR: there is no
+			//   unique constraint matching given keys for referenced table
+			//   "handoff_logs"
+			//
+			// The conflict is structural, not an ordering mistake. 517 declares
+			//   handoff_log_id INTEGER REFERENCES handoff_logs(id)
+			// which is valid on the baseline heap table (id is its primary key).
+			// 534 rebuilds handoff_logs as a RANGE-partitioned parent and adds
+			// NO unique constraint to it — the only PRIMARY KEY in 534 belongs
+			// to handoff_logs_hot, a different table. On a partitioned table a
+			// unique constraint must contain the partition key, so handoff_logs
+			// is not unique on id afterwards and 517's FK has nothing to bind.
+			//
+			// Running 517 first does not work either: 534 renames the legacy
+			// heap to handoff_logs_legacy_532, so the FK would end up pointing at
+			// the renamed leftover table — silently wrong rather than loud.
+			//
+			// Resolving this needs a schema decision (add a partition-compatible
+			// unique constraint such as (id, created_at) and widen the FK, or
+			// drop the FK), which is not a wiring change. Left unregistered and
+			// documented. See
+			// docs/audit/2026-10-02-round44-ssot-decision.md.
 			"535_candidate_failure_logs_atomic_promote.sql",
 			"536_stats_analytics_foundation.sql",
 			"537_usage_facts.sql",
@@ -188,6 +213,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"620_provider_error_details_tenant_scope.sql",
 			"621_provider_error_details_cleanup_index.sql",
 			"622_provider_error_aggregator_state.sql",
+			// 612 is wired 2026-10-02 with 517; see the 534 note above for
+			// why. Placed with the other provider/credential migrations because
+			// it adds a binding-scoped capability row keyed on
+			// credential_model_bindings, whose primary key 612 installs itself
+			// (the baseline ships that table with no PK — verified).
+			"612_native_responses_capability.sql",
 			"623_journal_snapshot_receipts_projection_base.sql",
 			"624_candidate_failure_logs_promote_atomic_v2.sql",
 			"625_session_bodies_unified_explicit.sql",
