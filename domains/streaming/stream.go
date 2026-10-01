@@ -1838,6 +1838,12 @@ func resolveStreamVendor(payload, vendorCode string, stripFn func([]byte) []byte
 		return "deepseek", StripDeepSeekFieldsBody
 	case fields["doubao_request_id"] != nil || fields["seeddance_request_id"] != nil:
 		return "doubao", StripDoubaoFieldsBody
+	case fields["request_id"] != nil:
+		// Bare `request_id` is the Zhipu-family completion tag (Zhipu itself
+		// uses `zhipu_request_id`; resellers such as SenseNova relay the
+		// Zhipu payload verbatim and so use the bare form). Checked last so a
+		// Doubao payload keeps its own policy.
+		return "zhipu", StripZhipuFieldsBody
 	default:
 		return "", stripFn
 	}

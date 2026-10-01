@@ -17,6 +17,11 @@ const (
 	VendorDeepSeek = "deepseek"
 	VendorDoubao   = "doubao"
 	VendorErnie    = "ernie"
+	// VendorSensenova is SenseNova (token.sensenova.cn), an OpenAI-compatible
+	// reseller whose glm-* models are Zhipu-backed. It forwards Zhipu's chunk
+	// payload verbatim, so it needs Zhipu's private-field policy PLUS the bare
+	// `request_id` tag that Zhipu emits (and that the Zhipu list does not own).
+	VendorSensenova = "sensenova"
 )
 
 // Signal is a vendor error encoded in an otherwise successful HTTP response.
@@ -44,12 +49,13 @@ type Registry struct {
 func NewRegistry() *Registry {
 	passthrough := NewPassthroughStripper()
 	return &Registry{strippers: map[string]Stripper{
-		VendorMiniMax:  NewMinimaxStripper(),
-		VendorZhipu:    NewZhipuStripper(),
-		VendorDeepSeek: NewDeepSeekStripper(),
-		VendorDoubao:   NewDoubaoStripper(),
-		VendorErnie:    passthrough,
-		"baidu":        passthrough,
+		VendorMiniMax:   NewMinimaxStripper(),
+		VendorZhipu:     NewZhipuStripper(),
+		VendorDeepSeek:  NewDeepSeekStripper(),
+		VendorDoubao:    NewDoubaoStripper(),
+		VendorSensenova: NewSensenovaStripper(),
+		VendorErnie:     passthrough,
+		"baidu":         passthrough,
 	}}
 }
 
@@ -74,6 +80,13 @@ func NewDeepSeekStripper() Stripper {
 // NewDoubaoStripper returns the Doubao field policy.
 func NewDoubaoStripper() Stripper {
 	return fieldsStripper{fields: doubaoPrivateFields, logName: "strip_doubao"}
+}
+
+// NewSensenovaStripper returns the SenseNova field policy: Zhipu's private
+// fields plus the bare `request_id` tag, because SenseNova proxies Zhipu
+// payloads without re-encoding them.
+func NewSensenovaStripper() Stripper {
+	return fieldsStripper{fields: sensenovaPrivateFields, logName: "strip_sensenova"}
 }
 
 // NewPassthroughStripper returns a policy that preserves body bytes unchanged.
@@ -142,6 +155,11 @@ func (r *Registry) Resolve(body []byte, vendor string) (string, Stripper) {
 		return VendorDeepSeek, r.strippers[VendorDeepSeek]
 	case fields["doubao_request_id"] != nil || fields["seeddance_request_id"] != nil:
 		return VendorDoubao, r.strippers[VendorDoubao]
+	case fields["request_id"] != nil:
+		// A bare `request_id` on an OpenAI chat chunk is the Zhipu-family
+		// completion tag. It is checked last so a Doubao/DeepSeek payload
+		// (which carries its own *vendor*_request_id) keeps its own policy.
+		return VendorZhipu, r.strippers[VendorZhipu]
 	default:
 		return "", nil
 	}
@@ -285,3 +303,12 @@ var doubaoPrivateFields = []string{
 	"internal_model_version",
 	"sensitive_check",
 }
+
+// sensenovaPrivateFields is Zhipu's list plus the bare `request_id`. Zhipu's
+// own list does not own `request_id` because the direct Zhipu endpoint tags it
+// as `zhipu_request_id`; SenseNova relays the Zhipu payload as-is, so the bare
+// form is what actually shows up on the wire there.
+var sensenovaPrivateFields = append(
+	append([]string{}, zhipuPrivateFields...),
+	"request_id",
+)
