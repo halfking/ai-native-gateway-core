@@ -1302,13 +1302,13 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 5. **决策正文存储**：S6 前必须定 `session_bodies` 是否补全量字段。
 6. **S6 DROP**。
 
-## 8. 待你拍板（截至 2026-10-01 06:45，共 5 项待决 + 2 项已关闭）
+## 8. 待你拍板（截至 2026-10-01 10:30，共 3 项待决 + 3 项已关闭）
 
 第 6 项因合并自动关闭；第 7 项同日拍板并落地（连同新挖出的缺陷 7，见 §5.11）。
 
 | # | 事项 | 性质 | 状态 |
 |---|------|------|------|
-| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支。**本轮再次明确维持待批** | 等决定 |
+| 1 | **S4 真机灰度** | 运行态关写、不可逆；灰度期须保留 734 视图 v1 冻结分支。**2026-10-01 已批准开灰度**（前置条件与回滚另条落账） | 执行中 |
 | 2 | ~~**`session_list.go:140/167` 半等价类**~~ | **已拍板并落地**：读源迁到 `db.SessionFamilyTurnsSourceSQL()`。门 `TestSessionListNativeSourceDropIsInternalOnly` 跑**生产同一条 SQL** 并钉方向性不变式——原生源少掉的必须是内部调用，出现真业务轮次即报红。实测：原生源会话 13,585、v1 独有 1,381 条、其中含真业务轮次 **0** 条。见 §8.2 | 已关闭 |
 | 3 | **全量流量聚合口径** | analytics/dashboard 是否只统计会话流量（产品口径） | 等决定 |
 | 4 | **641,452 个无会话头 request_id 的处置** | S6 DROP `request_logs` 的前提 | 等决定 |
@@ -1452,11 +1452,33 @@ ctx 已取消时报 `context.Canceled` 而非饱和错误（否则排障会把�
 所以**减少列数没有用**（实测 A≈B），**加时间窗也没有用**（§8.3 已记），
 **加并发闸只是止血**。真正要动的是那个谓词写法。
 
-**修法**（一行，待拍板）：`session_bodies_batch.go` 的
-`sessionBodiesByRequestIDSQL` 里把 `= ANY($1::text[])` 换成
-`IN (SELECT unnest($1::text[]))`，并给守形门加一条判据钉住 unnest 形态
-（现有的 `TestSessionBodiesBatchSQLIsNotALefiJoin` 只禁 `JOIN`，放过了 `= ANY`）。
-`sessionBodiesByRequestIDAndTSSQL` 同理，两条都改。
+**修法**（2026-10-01 已落地）：`session_bodies_batch.go` 的
+`sessionBodiesByRequestIDSQL` 把 `= ANY($1::text[])` 换成
+`IN (SELECT unnest($1::text[]))`。**真实生产函数复测**（同一会话 200 个
+`request_id`，取满 200 条正文）：
+
+| | 修前 | 修后 |
+|---|---|---|
+| `querySessionBodiesByRequestID` | 17.431 / 15.851 / 15.880 s | **4.166 / 2.907 / 2.235 s** |
+| 真库门 `…BodiesStaysOnIndexPath` 整门耗时 | 17.61 s | **1.46 s** |
+| 同一条的 `Execution Time` | 16,799 ms | **33 ms** |
+| 2026_09 分区计划 | ColumnarScan | `Index Scan using …_2026_09_pkey` |
+
+**`sessionBodiesByRequestIDAndTSSQL` 没有改，实测它本来就不在问题里**：
+它早就是 `IN (... FROM unnest($1,$2) ...)` 形态，同一批 200 个键实测
+`Index Scan using …_2026_09_pkey` / **101.302 ms**。拍板时我说的是「两条都改」，
+动手前先测，发现第二条没有可改之处 —— 为凑数做一次装饰性改动只会让 diff
+看起来比实际变更大。**这是「先量再改」的又一次兑现。**
+
+守形门 `TestSessionBodiesBatchSQLIsNotALefiJoin` 加了三条判据：
+禁 `= ANY(`（**`= ANY` 长得就像半连接，仅禁 `JOIN` 放行了那 15~17 秒**）、
+必须含 `unnest(`、必须读 bodies 视图。变异验证：谓词退回 `= ANY` → 静态门红、
+真库门红（33.13 s，报告 `fell back onto a columnar partition scan`）。
+
+**真库门同时从「显式 Skip 等拍板」翻回红门，并加了一条正向锚点**：
+只判「没看到 ColumnarScan」是**单边判据**——分区哪天变回 heap，它就会静默成立
+并永远绿着，正是它过去的样子。现在同时要求计划里出现
+`Index Scan … request_logs_bodies_2026_09_pkey`，找不到即红（防空转通过）。
 
 ### 8.3.4 这道门本身差点成为 R17 事故的第二起（已修）
 
