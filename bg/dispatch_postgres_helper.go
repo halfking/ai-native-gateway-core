@@ -40,6 +40,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/kaixuan/llm-gateway-go/internal/testdb"
 	"github.com/kaixuan/llm-gateway-go/internal/testschema"
 )
 
@@ -141,4 +142,54 @@ func DispatchPostgresContainer(t *testing.T, ctx context.Context, extraSchema st
 		}
 	}
 	return pool, cleanup
+}
+
+// DispatchPostgresDatabase is for the third case, which neither branch above
+// serves: the code under test hardcodes `public.`, so the fixture HAS to be in
+// `public` for the test to measure anything.
+//
+//	DispatchPostgresContainer(t, ctx, "")          -> the real, fully-migrated public schema
+//	DispatchPostgresContainer(t, ctx, "CREATE …")  -> a private schema; only works when
+//	                                                 the code under test is UNQUALIFIED
+//	DispatchPostgresDatabase(t, ctx, "CREATE …")   -> a private DATABASE whose public
+//	                                                 schema is the fixture
+//
+// The middle branch is the trap this exists to avoid. bg/policy_publisher_e2e_test.go
+// passed a schema, so its fixture `credentials` table was created in a private
+// schema — while domains/dispatch/policy_publisher.go:224 says
+// `FROM public.credentials`. The test then seeded `public.credentials`, i.e. the
+// PRODUCTION table, and died 23502 on `credentials.label` NOT NULL, a constraint
+// the fixture table does not have. De-qualifying the test's INSERT would have
+// "fixed" it into a green that measures nothing: the product would read
+// production and the test would seed the private schema.
+//
+// With a private database the two names coincide, so the test is honest either way.
+func DispatchPostgresDatabase(t *testing.T, ctx context.Context, schema string) (*pgxpool.Pool, func()) {
+	t.Helper()
+	dsn := os.Getenv("TEST_PG_URL")
+	if dsn == "" {
+		t.Fatalf("DispatchPostgresDatabase requires TEST_PG_URL; this helper is for the " +
+			"shared-gate path only (a standalone run has no base database to derive one from)")
+	}
+	// testdb.Create derives an empty database, registers its DROP on t, and
+	// verifies the DSN really resolves to it.
+	scratch := testdb.Create(t, dsn)
+
+	pool, err := pgxpool.New(ctx, scratch)
+	if err != nil {
+		t.Fatalf("connect scratch database: %v", err)
+	}
+	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pingCancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		t.Fatalf("ping scratch database: %v", err)
+	}
+	if schema != "" {
+		if _, err := pool.Exec(ctx, schema); err != nil {
+			pool.Close()
+			t.Fatalf("exec schema: %v", err)
+		}
+	}
+	return pool, func() { pool.Close() }
 }
