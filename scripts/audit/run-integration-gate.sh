@@ -330,7 +330,7 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
   fi
   if (( sf_total < 100 )); then
     die "只从 StartupFiles 解析出 $sf_total 条迁移，明显少于 installer 实际注册的 " \
-"条数（173）。解析多半是部分失配；继续跑等于拿半个起始库当门禁库。"
+"条数（200）。解析多半是部分失配；继续跑等于拿半个起始库当门禁库。"
   fi
   # Known fresh-install gaps are a RATCHET, not a disclaimer.
   #
@@ -339,7 +339,7 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
   # list could grow silently and nobody would learn about it from a red build.
   #
   # Round 44 measures the same 19 failures on the installer's own path
-  # (embeddata 00-prereqs -> 01-schema -> 02-seed + all 173 registered startup
+  # (embeddata 00-prereqs -> 01-schema -> 02-seed + all 200 registered startup
   # files), so they are real fresh-install gaps rather than an artifact of this
   # harness. They are now enumerated in sql/schema/startup_known_gaps.tsv with a
   # reason each, and:

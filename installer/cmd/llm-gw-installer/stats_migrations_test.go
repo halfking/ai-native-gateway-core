@@ -11,313 +11,89 @@ import (
 	"github.com/kaixuan/llm-gateway-go/installer/internal/dbinit"
 )
 
+// TestStatsStartupMigrationsMatchCanonicalSources 自 24h 审计第二十八轮
+// （2026-10-02，遗留#2 收口）起反转为 embeddedSQLFiles 全清单驱动：旧版手工
+// map 覆盖 174/200，25 条注册迁移（含生产阻断修复 534/612）无持续 cmp 守卫，
+// embed 副本漂移无人发现。新守卫遍历 embeddedSQLFiles 的 startup/*.sql
+// （.down.sql 除外——installer 从不回滚，down 镜像由下方的 DownMigrations
+// 守卫管），逐字节对照 canonical。豁免两条且各有专属守卫：
+//   - 600_outbound_body_to_bodies_hot.sql：canonical 位于 up/ 子目录（deploy 线收编）；
+//   - session_turns_hot_bootstrap.sql：installer-only 终态资产，无 canonical 副本，
+//     由 TestSessionTurnsHotBootstrapIsFinalStateAsset 的 marker 守卫。
 func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 	t.Helper()
 
 	canonicalDir := filepath.Join("..", "..", "..", "sql", "migrations", "startup")
-	expected := map[string][]byte{
-		// candidate_failure_logs family below the 478 floor (wired 2026-10-01):
-		// hot/monthly-partition split (392), atomic promote replacement (535),
-		// session_id/per_attempt_latency_ms writer columns (617).
-		"392_candidate_failure_logs_monthly_partition.sql":    candidateFailureLogsMonthlyPartitionMigration392,
-		"535_candidate_failure_logs_atomic_promote.sql":       candidateFailureLogsAtomicPromoteMigration535,
-		"617_candidate_failure_logs_hot_contract.sql":         candidateFailureLogsHotContractMigration617,
-		"803_candidate_failure_logs_hot_column_reconcile.sql": candidateFailureLogsHotColumnReconcileMigration803,
-		"804_credential_model_context_window_columns.sql":     credentialModelContextWindowColumnsMigration804,
-		"805_session_dim_reconcile.sql":                       sessionDimReconcileMigration805,
-		"806_session_bodies_partitions_heap.sql":              sessionBodiesPartitionsHeapMigration806,
-		"640_session_turns_protocol_fields.sql":               sessionTurnsProtocolFieldsMigration640,
-		"471_session_summaries_archival.sql":                  sessionSummariesArchivalMigration471,
-		"577_request_logs_view_customer_id.sql":               requestLogsViewCustomerIdMigration577,
-		"610_request_class_due_at.sql":                        requestClassDueAtMigration610,
-		"487_request_logs_add_system_fingerprint.sql":         requestLogsAddSystemFingerprintMigration487,
-		"573_drop_request_logs_body_columns.sql":              dropRequestLogsBodyColumnsMigration573,
-		"603_repair_request_logs_schema_consistency.sql":      repairRequestLogsSchemaConsistencyMigration603,
-		"388_billing_cancellation_audit.sql":                  billingCancellationAuditMigration388,
-		"484_request_logs_hot_add_status_code.sql":            requestLogsHotAddStatusCodeMigration484,
-		"485_request_logs_add_raw_model_name.sql":             requestLogsAddRawModelNameMigration485,
-		"491_request_logs_queue_timestamps.sql":               requestLogsQueueTimestampsMigration491,
-		"510_request_type.sql":                                requestTypeMigration510,
-		"532_request_logs_final_success.sql":                  requestLogsFinalSuccessMigration532,
-		"542_request_logs_token_band.sql":                     requestLogsTokenBandMigration542,
-		"543_request_logs_discard_events.sql":                 requestLogsDiscardEventsMigration543,
-		"511_state_transitions_table.sql":                     requestJourneyMigration511,
-		"515_state_transitions_seq_unique.sql":                requestJourneyMigration515,
-		// R42 (2026-09-18): durable family base tables — 657/722 ride on
-		// them; a fresh install without 516/520 aborted with 42P01 at 657.
-		"516_durable_llm_tasks.sql":                                              durableLlmTasksMigration516,
-		"520_durable_task_settlement_intents.sql":                                durableTaskSettlementIntentsMigration520,
-		"521_repair_state_transitions_tenant.sql":                                requestJourneyMigration521,
-		"530_request_journey_contract.sql":                                       requestJourneyMigration530,
-		"531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,
-		"536_stats_analytics_foundation.sql":                                     statsMigration536,
-		"537_usage_facts.sql":                                                    statsMigration537,
-		"539_stats_reconciliation_tenant.sql":                                    statsMigration539,
-		"540_stats_event_inbox_consumer.sql":                                     statsMigration540,
-		"544_stats_adjustments_alignment.sql":                                    statsMigration544,
-		"545_stats_reconciliation_phantom_resolution.sql":                        statsMigration545,
-		"546_stats_reconciliation_diffs_unique.sql":                              statsMigration546,
-		"547_session_project_attribution.sql":                                    statsMigration547,
-		"548_stats_reconciliation_diffs_identity.sql":                            statsMigration548,
-		"552_request_journey_durable_outbox.sql":                                 requestJourneyMigration552,
-		"553_approval_resume_claim.sql":                                          approvalResumeMigration553,
-		"554_goal_runs.sql":                                                      goalRunsMigration554,
-		"555_goal_run_actions_lease_fencing.sql":                                 goalRunActionsLeaseFencingMigration555,
-		"560_session_summaries_tenant_uniqueness.sql":                            sessionSummariesTenantUniquenessMigration560,
-		"561_request_logs_view_origin_actor.sql":                                 requestLogsViewOriginActorMigration561,
-		"562_fix_request_logs_bodies_partitions_heap.sql":                        fixRequestLogsBodiesPartitionsHeapMigration562,
-		"563_session_summary_trigger_on_hot.sql":                                 sessionSummaryTriggerOnHotMigration563,
-		"564_session_summary_backfill_safe.sql":                                  sessionSummaryBackfillSafeMigration564,
-		"565_cost_usd_pricing_backfill.sql":                                      costUsdPricingBackfillMigration565,
-		"566_credentials_governor_revision.sql":                                  credentialsGovernorRevisionMigration566,
-		"567_session_analysis_metadata.sql":                                      sessionAnalysisMetadataMigration567,
-		"568_credential_priority_flag.sql":                                       credentialPriorityFlagMigration568,
-		"569_candidate_binding_scope_revision_canonical.sql":                     candidateBindingScopeRevisionCanonicalMigration569,
-		"570_model_offers_insert_priority_passthrough.sql":                       modelOffersInsertPriorityPassthroughMigration570,
-		"571_candidate_binding_scope_revision_canonical_priority_hash.sql":       candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
-		"600_outbound_body_to_bodies_hot.sql":                                    outboundBodyToBodiesHotMigration600,
-		"601_request_logs_bodies_drop_metadata.sql":                              requestLogsBodiesDropMetadataMigration601,
-		"602_request_logs_promote_atomic.sql":                                    requestLogsPromoteAtomicMigration602,
-		"618_request_journey_snapshot_receipts.sql":                              journalSnapshotReceiptsMigration618,
-		"614_session_bodies_hot.sql":                                             sessionBodiesHotMigration614,
-		"615_session_bodies_hot_promote_function.sql":                            sessionBodiesHotPromoteMigration615,
-		"620_provider_error_details_tenant_scope.sql":                            providerErrorDetailsTenantScopeMigration620,
-		"621_provider_error_details_cleanup_index.sql":                           providerErrorDetailsCleanupIndexMigration621,
-		"622_provider_error_aggregator_state.sql":                                providerErrorAggregatorStateMigration622,
-		"623_journal_snapshot_receipts_projection_base.sql":                      journalSnapshotProjectionBaseMigration623,
-		"624_candidate_failure_logs_promote_atomic_v2.sql":                       candidateFailureLogsPromoteAtomicV2Migration624,
-		"625_session_bodies_unified_explicit.sql":                                sessionBodiesUnifiedExplicitMigration625,
-		"626_session_bodies_hot_promote_reconcile.sql":                           sessionBodiesHotPromoteReconcileMigration626,
-		"627_candidate_failure_logs_aggregation_id_unified.sql":                  candidateFailureLogsAggregationIdUnifiedMigration627,
-		"628_candidate_failure_logs_promote_atomic_v3.sql":                       candidateFailureLogsPromoteAtomicV3Migration628,
-		"629_audit_attachments_cleanup.sql":                                      auditAttachmentsCleanupMigration629,
-		"630_session_aggregate_outbox.sql":                                       sessionAggregateOutboxMigration630,
-		"631_provider_credential_soft_delete.sql":                                providerCredentialSoftDeleteMigration631,
-		"632_audit_attachments_filesystem_cleanup.sql":                           auditAttachmentsFilesystemCleanupMigration632,
-		"655_session_summaries_schema_reconcile.sql":                             sessionSummariesSchemaReconcileMigration655,
-		"635_drop_session_turns_unified.sql":                                     dropSessionTurnsUnifiedMigration635,
-		"647_goal_client_signal.sql":                                             goalClientSignalMigration647,
-		"649_routing_analytics_probe_filter.sql":                                 routingAnalyticsProbeFilterMigration649,
-		"650_auto_route_selection_treatment_attribution.sql":                     autoRouteSelectionTreatmentAttributionMigration650,
-		"656_auto_route_selections_hot.sql":                                      autoRouteSelectionsHotMigration656,
-		"657_durable_llm_tasks_decision_history.sql":                             durableTasksDecisionHistoryMigration657,
-		"658_auto_route_structured_features.sql":                                 autoRouteStructuredFeaturesMigration658,
-		"659_legacy_promote_atomic_cte.sql":                                      legacyPromoteAtomicCTEMigration659,
-		"660_credential_model_weekly_peak_unique.sql":                            credentialModelWeeklyPeakUniqueMigration660,
-		"662_feature_distribution_stats.sql":                                     featureDistributionStatsMigration662,
-		"663_training_export.sql":                                                trainingExportMigration663,
-		"664_provider_error_details_agg_key_dedup.sql":                           providerErrorDetailsAggKeyDedupMigration664,
-		"666_orchestration_and_stats_tables.sql":                                 orchestrationAndStatsTablesMigration666,
-		"667_llm_hourly_stats_timestamp_fix.sql":                                 llmHourlyStatsTimestampFixMigration667,
-		"668_llm_hourly_stats_final_fix.sql":                                     llmHourlyStatsFinalFixMigration668,
-		"669_training_human_annotations.sql":                                     trainingHumanAnnotationsMigration669,
-		"670_routing_optimization.sql":                                           routingOptimizationMigration670,
-		"671_local_provider_catalog.sql":                                         localProviderCatalogMigration671,
-		"672_local_first_title_summary_routing.sql":                              localFirstTitleSummaryRoutingMigration672,
-		"673_annotation_stats_empty_table_fix.sql":                               annotationStatsEmptyTableFixMigration673,
-		"674_annotation_request_id_unique.sql":                                   annotationRequestIdUniqueMigration674,
-		"675_qwen38_family_vendor.sql":                                           qwen38FamilyVendorMigration675,
-		"676_routing_opt_active_fix.sql":                                         routingOptActiveFixMigration676,
-		"677_session_summaries_canonical_bootstrap.sql":                          sessionSummariesCanonicalBootstrapMigration677,
-		"678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql": requestLogsBodiesHotUniqueRepairMigration678,
-		"679_local_credential_unique.sql":                                        localCredentialUniqueMigration679,
-		"680_request_logs_current_month_view_bootstrap.sql":                      requestLogsCurrentMonthViewBootstrapMigration680,
-		"681_provider_error_details_fingerprint_restore_8part.sql":               providerErrorDetailsFingerprintRestore8partMigration681,
-		"682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
-		"683_session_dim_ownership_columns.sql":                                  sessionDimOwnershipColumnsMigration683,
-		"684_drop_stale_provider_error_tenant_fingerprint.sql":                   dropStaleProviderErrorTenantFingerprintMigration684,
-		"685_task_default_routing_tenant_text.sql":                               taskDefaultRoutingTenantTextMigration685,
-		"686_fix_session_module_executions_2026_10_bounds.sql":                   fixSessionModuleExecutions2026_10BoundsMigration686,
-		"687_fix_473_partition_0800_bounds.sql":                                  fix473Partition0800BoundsMigration687,
-		"688_promote_default_retention_align_go_scheduler.sql":                   promoteDefaultRetentionAlignGoSchedulerMigration688,
-		"689_candidate_failure_logs_partitions_heap.sql":                         candidateFailureLogsPartitionsHeapMigration689,
-		"690_session_summaries_archived_ttl_index.sql":                           sessionSummariesArchivedTTLIndexMigration690,
-		// 691-695: extend byte-equality coverage; the map previously stopped
-		// at 690, leaving later embed copies unverified against canonical
-		// (2026-09-12 audit finding).
-		"691_proxy_region_policy.sql":                          proxyRegionPolicyMigration691,
-		"692_session_summaries_user_intent_widen.sql":          sessionSummariesUserIntentWidenMigration692,
-		"693_provider_models_canonical_cleared_at.sql":         providerModelsCanonicalClearedAtMigration693,
-		"694_partition_ensure_timezone.sql":                    partitionEnsureTimezoneMigration694,
-		"695_request_logs_promote_final_success_self_heal.sql": requestLogsPromoteFinalSuccessSelfHealMigration695,
-		"696_request_logs_view_system_fingerprint.sql":         requestLogsViewSystemFingerprintMigration696,
-		"697_request_logs_promote_system_fingerprint.sql":      requestLogsPromoteSystemFingerprintMigration697,
-		"698_promote_hot_partition_timezone_pin.sql":           promoteHotPartitionTimezonePinMigration698,
-		"699_supplier_errors_ensure_timezone_pin.sql":          supplierErrorsEnsureTimezonePinMigration699,
-		"700_request_logs_view_raw_model_name.sql":             requestLogsViewRawModelNameMigration700,
-		"701_credential_balance_floor.sql":                     credentialBalanceFloorMigration701,
-		"703_supplier_errors_promote_timezone_pin.sql":         supplierErrorsPromoteTimezonePinMigration703,
-		// 706-713: extend byte-equality coverage to the storage-v2 session
-		// family and hosted-task/outbox channel (R29 audit 2026-09-15: the
-		// map previously stopped at 703 while StartupFiles grew past it).
-		"706_session_family_s1a.sql":           sessionFamilyS1aMigration706,
-		"707_session_turns_s1a.sql":            sessionTurnsS1aMigration707,
-		"708_session_bodies_s1a.sql":           sessionBodiesS1aMigration708,
-		"711_hosted_tasks.sql":                 hostedTasksMigration711,
-		"712_session_mirror_outbox.sql":        sessionMirrorOutboxMigration712,
-		"713_session_turns_cost_precision.sql": sessionTurnsCostPrecisionMigration713,
-		// R34 (2026-09-17 audit): byte-equality coverage for the five-point
-		// sync backfill (704/705/709/710/714/715) — see the go:embed block in
-		// main.go.
-		"704_plan_quota_probe_backoff.sql":                   planQuotaProbeBackoffMigration704,
-		"705_request_logs_reattach_detached_partitions.sql":  requestLogsReattachDetachedPartitionsMigration705,
-		"709_work_type_route_coverage.sql":                   workTypeRouteCoverageMigration709,
-		"710_request_logs_view_session_family_v2.sql":        requestLogsViewSessionFamilyV2Migration710,
-		"714_partition_timezone_pin_remaining.sql":           partitionTimezonePinRemainingMigration714,
-		"715_route_incidents_pending_state.sql":              routeIncidentsPendingStateMigration715,
-		"716_unify_probe_health_views.sql":                   unifyProbeHealthViewsMigration716,
-		"717_request_logs_hot_column_alignment.sql":          requestLogsHotColumnAlignmentMigration717,
-		"718_drop_redundant_indexes_and_add_ttl_indexes.sql": dropRedundantIndexesMigration718,
-		// R38 (2026-09-17 audit): ensure-shadowed index root fix + request_logs
-		// parent-index ownership unification.
-		"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql": unifyEnsureShadowedIndexesMigration719,
-		// R40 (2026-09-18): RLS policy vocabulary unification (design §五
-		// Phase 1 item 1) — landed in embeddata only (f5328e13c), five-point
-		// sync completed in this round.
-		"720_rls_policy_vocabulary_unification.sql": rlsPolicyVocabularyUnificationMigration720,
-		// 721 (507d78cff, parallel session) landed with file copies only;
-		// parity coverage added by R40 five-point completion.
-		"721_credential_balance_source_and_error.sql": credentialBalanceSourceAndErrorMigration721,
-		// R40 (2026-09-18): durable family schema convergence — repairs
-		// pre-final-516 databases missing events/pending tables and
-		// checkpoint_payload (evidence: local llm_gateway DB).
-		"722_durable_family_schema_convergence.sql": durableFamilySchemaConvergenceMigration722,
-		// R40 (2026-09-18): RLS enable for attachments/cfl_columnar_old
-		// (design §五 Phase 1 item 3; renumbered 721→723 after the balance
-		// metadata migration took 721 mid-round).
-		"723_rls_enable_attachments_and_cfl_old.sql": rlsEnableAttachmentsAndCflOldMigration723,
-		// 724 (7106e1c5b, parallel session) landed with four of five sync
-		// points; parity coverage added by R40-followup (2026-09-18).
-		"724_task_type_corrections.sql": taskTypeCorrectionsMigration724,
-		// 725 (parallel R41 session) landed with canonical copies only —
-		// five-point gap caught by the pre-commit canonical-delivery gate
-		// on the R42 merge commit; registered here (R42, 2026-09-18).
-		"725_r41_request_logs_and_tmp_super_admin_bypass.sql": r41RequestLogsSuperAdminBypassMigration725,
-		// 726 (58384b0d8) landed with the embeddata copy only; runner/main/
-		// sequence registration completed by R43 (2026-09-18) — same
-		// five-point gap as 720/721/725.
-		"726_restore_credential_model_index_hot_unique.sql": restoreCredentialModelIndexHotUniqueMigration726,
-		// 730 (R48, 2026-09-20): session role hierarchy — five-point sync
-		// completed in the same round as the canonical copy landed.
-		"730_session_role_hierarchy.sql": sessionRoleHierarchyMigration730,
-		// 731 (R50, 2026-09-21): auto_route_selections role attribution —
-		// five-point sync completed in the same round as the canonical copy.
-		"731_auto_route_selection_role_attribution.sql": autoRouteSelectionRoleAttributionMigration731,
-		// 733/734 (R50, 2026-09-21 catch-up): session storage decoupling v3.
-		// Delivered by the v3 session line (as 731/732, renumbered on
-		// collision) without the installer five points — the shared gate
-		// stayed red until this round synced them. Transaction-safe.
-		"733_session_turn_details.sql":           sessionTurnDetailsMigration733,
-		"734_request_logs_view_details_join.sql": requestLogsViewDetailsJoinMigration734,
-		// 735 (R51, 2026-09-21): models_canonical active folded-name unique
-		// index — five-point sync completed in the same round as the
-		// canonical copy landed. Transaction-safe (guard + IF NOT EXISTS).
-		"735_models_canonical_active_folded_unique.sql": canonicalFoldedUniqueMigration735,
-		// 736 (Wave 3 B1, 2026-09-22): peak/off-peak rate multiplier
-		// columns + shared SQL resolver — five-point sync in the same
-		// round as the migration landed. Idempotent.
-		"736_maas_rate_multiplier.sql": maasRateMultiplierMigration736,
-		// 737 (Wave 3 B8, 2026-09-22): internal reconciliation findings
-		// table — five-point sync in the same round as the migration
-		// landed. Idempotent (CREATE TABLE IF NOT EXISTS).
-		"737_maas_reconciliation_findings.sql": maasReconciliationFindingsMigration737,
-		// 738 (Wave 3 B1 follow-up, 2026-09-22): view chain gains
-		// credits_rate_multiplier — five-point sync landed with R56
-		// audit (runner.go had it; embed+map+reconciliation were
-		// missing at 764d2514b). Idempotent (CREATE OR REPLACE VIEW
-		// with per-view guards).
-		"738_view_chain_credits_rate_multiplier.sql": viewChainCreditsRateMultiplierMigration738,
-		// 739 (R56, 2026-09-23): promote functions carry
-		// rate_multiplier/credits_rate_multiplier — five-point sync in the
-		// same round as the migration landed. Idempotent (CREATE OR
-		// REPLACE FUNCTION).
-		"739_promote_functions_rate_multiplier.sql": promoteFunctionsRateMultiplierMigration739,
-		// 740 (R57, 2026-09-23): view chain projects the real client_ip —
-		// five-point sync in the same round as the migration landed.
-		// Idempotent (regexp append + full top-view rebuild with guards).
-		"740_view_chain_client_ip.sql": viewChainClientIPMigration740,
-		// 745 (R63, 2026-09-24): report_snapshots 快照表（设计预埋，worker
-		// 未实现）—— 曾死放 migrations/ 顶层无投递通道，本轮补五点同步并
-		// 入 parity 守卫。
-		"745_report_snapshots.sql": reportSnapshotsMigration745,
-		// 746 (2026-09-25, 对账报表落地轮): report_snapshots 内部对帐维度
-		// 补齐（tenant_id→text + credits/latency 列 + scope 扩员注记）——
-		// 与消费方（bg worker / admin 读面）同轮落地，五点同步 + parity
-		// 守卫。可重入（ALTER TYPE USING text::text + IF NOT EXISTS）。
-		"746_report_snapshots_internal_dims.sql": reportSnapshotsInternalDimsMigration746,
-		// 748 (2026-09-25, probe-cost-optimization P0-1): 自检系统密钥
-		// key_tier 'default'(12 RPM)→'system'(300 RPM) 存量修复 —— 六点
-		// 同步与迁移同轮落地；幂等（WHERE 全限定，二次执行 0 行）。
-		"748_selfcheck_system_key_tier.sql": selfcheckSystemKeyTierMigration748,
-		// 800 (2026-09-24, r0924 supplier-protocol-optimization §3.2):
-		// provider_endpoint_protocols 每 provider 多端点表 + 回填 —— 原
-		// deploy/sql/migrations/V800 文件从未进任何存量库通道，本轮移入
-		// startup 目录（并行代理执行移动）并补五点同步。幂等（IF NOT
-		// EXISTS + ON CONFLICT DO NOTHING）。注意：800 无 Go boot ensure
-		// （文件头注记 P4 wiring 待接线），升级库靠本 sequence 通道。
-		"800_provider_endpoint_protocols.sql": providerEndpointProtocolsMigration800,
-		// 753 (2026-09-27, R67 session-storage 审计子任务 2):
-		// session_turn_logs TTL 清理函数（仅 OR REPLACE FUNCTION，无表
-		// DDL/无 CONCURRENTLY，installer 通道安全）——R71 审计补五点同步
-		// （5b558deab 只登记了 sequence 通道，本守卫对 753 必红）。
-		"753_session_turn_logs_ttl.sql": sessionTurnLogsTTLMigration753,
-		// 754 (2026-09-27, R67 session-storage 审计子任务 7): request_logs
-		// 主表归档函数——R72 审计轮补五点同步（子任务只登记了 sequence
-		// 通道，canonical 登记守卫对本号必红，R71 F1 同款静默红模式）。
-		"754_archive_request_logs_default.sql": archiveRequestLogsDefaultMigration754,
-		// 756 (2026-09-29, D07 S-01 真库 EXPLAIN): request_logs(id) 索引——
-		// 754 的「主键游标」在无 id 索引的表上退化为每批次全分区扫描。
-		"756_request_logs_id_index.sql":                 requestLogsIDIndexMigration756,
-		"757_session_turns_origin_actor_projection.sql": sessionTurnsOriginActorProjectionMigration757,
-		"758_routeincident_missing_columns.sql":         routeincidentMissingColumnsMigration758,
-		// 759 (2026-09-29, 对帐报表多维筛选轮): report_snapshots 增
-		// credential_id / api_key_id / person 三列 + daily_grain /
-		// internal_grain 两个最细粒度 scope + 4 个 partial 索引。
-		// 五点同步第 5 点（parity）：缺这一条时本守卫**不会**变红——
-		// 它只遍历本 map，不反向要求所有 canonical 文件都在 map 里，
-		// 于是 759 的 embed 副本若与源漂移将无人发现。补上。
-		"759_report_snapshots_grain_dims.sql": reportSnapshotsGrainDimsMigration759,
-		// 763 (2026-09-30, R14 批判式复审 D16): provider_events 契约对齐。
-		// 上游 c8c102698 只落了 canonical 文件 + sequence 通道登记
-		// （scripts/apply-db-revision-sequence.sh:677），五点同步的前四点全
-		// 缺——TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 因此
-		// 自 c8c102698 起持续变红，本轮补齐。补 parity 第 5 点的理由同 759：
-		// 本守卫只遍历本 map，不反向要求全量，缺条目时 embed 副本漂移无人发现。
-		"763_provider_events_contract.sql": providerEventsContractMigration763,
-		// 764 (2026-09-30, 三十六轮 R36-B3): request_logs 分区家族 tenant_ts
-		// 索引。parity 第 5 点与 759/763 同理：缺条目时 embed 副本漂移无人发现。
-		"764_request_logs_tenant_ts_index.sql": requestLogsTenantTsIndexMigration764,
-		"765_bodies_columnar_storage.sql":      bodiesColumnarStorageMigration765,
-		// 801 (2026-09-30, 三十六轮 R36-B4): 733 promote 函数改版。
-		// 本守卫只遍历本 map、不反向要求全量，801 此前缺席 → embed 副本漂移
-		// 无人发现。补登前已 diff 确认 canonical 与 embeddata 当前逐字节一致。
-		"801_session_turn_details_duplicate_drain.sql": sessionTurnDetailsDuplicateDrainMigration801,
-		// 802 (2026-09-30, 会话存储解耦 v3 S4 前置): session_turn_details 族
-		// (tenant_id, gw_task_id) 部分索引。跨租户访问门 assertTaskInTenant 的
-		// session 族母表腿依赖它，缺索引会让 EXISTS 退化为 167 万行顺序扫描。
-		"802_session_turn_details_gw_task_id_index.sql": sessionTurnDetailsGwTaskIDIndexMigration802,
-		// 807 (2026-10-01, 会话/请求数据存储审计): 删除 request_logs_bodies_hot
-		// 上被同列 UNIQUE 索引影蔽的普通索引 request_logs_bodies_hot_request_id_idx。
-		// parity 第 5 点与 759/763 同理：缺条目时 embed 副本漂移无人发现。
-		// （2026-10-01 收口轮修复：上一版引用 …Migration803——807 由 803
-		// 改号而来时测试引用没跟上，installer 模块测试自那起编译红。）
-		"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql": requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807,
-		"808_request_logs_default_partition.sql":                          requestLogsDefaultPartitionMigration808,
-		"809_instance_release_status_nullable_release_id.sql":             instanceReleaseStatusNullableReleaseIDMigration809,
-	}
-
-	for name, embedded := range expected {
-		canonicalPath := filepath.Join(canonicalDir, name)
-		if name == "600_outbound_body_to_bodies_hot.sql" {
-			canonicalPath = filepath.Join(canonicalDir, "up", name)
+	checked := 0
+	for key, embedded := range embeddedSQLFiles {
+		if !strings.HasPrefix(key, "startup/") {
+			// 00-prereqs / 01-schema / 02-seed 的 canonical 在 sql/schema/，
+			// 由 verify-stats-schema-mirror.sh 守护，不在本测试范围。
+			continue
 		}
-		canonical, err := os.ReadFile(canonicalPath)
+		name := strings.TrimPrefix(key, "startup/")
+		if strings.HasSuffix(name, ".down.sql") || name == "session_turns_hot_bootstrap.sql" {
+			continue
+		}
+		rel := name
+		if name == "600_outbound_body_to_bodies_hot.sql" {
+			rel = filepath.Join("up", name)
+		}
+		canonical, err := os.ReadFile(filepath.Join(canonicalDir, rel))
 		if err != nil {
 			t.Fatalf("read canonical migration %s: %v", name, err)
 		}
 		if !bytes.Equal(embedded, canonical) {
 			t.Fatalf("embedded migration %s differs from canonical source", name)
 		}
+		checked++
+	}
+	// TSV 注册 200 条 = 199 条 canonical 镜像 + 1 条 installer-only bootstrap
+	// （session_turns_hot_bootstrap.sql，上面已豁免）。
+	if checked < 199 {
+		t.Fatalf("parity sweep covered only %d startup migrations; embeddedSQLFiles lost entries", checked)
+	}
+}
+
+// TestDownMigrationsMirrorCanonicalSources：.down.sql 不入 StartupFiles/TSV
+// （installer 从不应用回滚，embeddata 的 down 是操作员参考件），曾因此漏镜像
+// 且无人发现——612 的 down 只有 canonical 一侧、文件头错号写成 611（24h
+// 审计第二十八轮修复）；649 的 down 曾在 canonical 侧补 DROP VIEW 而副本
+// 未跟（同轮守卫首跑即抓到）。守卫范围如实：
+//   - embeddata 已有的每个 down 必须与 canonical 字节一致（漂移即红）；
+//   - 数量只增不减（≥74 棘轮）。
+//
+// canonical 侧另有 245 个 down 按历史选择性约定未镜像（含 802-804/807），
+// 不在本守卫强制范围；新迁移的 down 应循 808/809/730/612 先例双侧镜像。
+func TestDownMigrationsMirrorCanonicalSources(t *testing.T) {
+	t.Helper()
+
+	canonicalDir := filepath.Join("..", "..", "..", "sql", "migrations", "startup")
+	entries, err := os.ReadDir(filepath.Join("embeddata", "startup"))
+	if err != nil {
+		t.Fatalf("read embeddata/startup: %v", err)
+	}
+	mirrored := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".down.sql") {
+			continue
+		}
+		embedded, err := os.ReadFile(filepath.Join("embeddata", "startup", name))
+		if err != nil {
+			t.Fatalf("read embedded down migration %s: %v", name, err)
+		}
+		canonical, err := os.ReadFile(filepath.Join(canonicalDir, name))
+		if err != nil {
+			t.Fatalf("embedded down migration %s has no canonical source: %v", name, err)
+		}
+		if !bytes.Equal(embedded, canonical) {
+			t.Fatalf("embedded down migration %s differs from canonical source", name)
+		}
+		mirrored++
+	}
+	if mirrored < 74 {
+		t.Fatalf("only %d down migrations mirrored in embeddata; the mirror set must not shrink", mirrored)
 	}
 }
 

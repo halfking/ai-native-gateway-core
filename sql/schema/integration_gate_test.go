@@ -654,7 +654,7 @@ func TestGateRejectsSilentZeroStartupParse(t *testing.T) {
 		t.Error("解析出 0 条启动迁移时未致命退出；这会让门禁库静默退回陈旧基线")
 	}
 	// A partial parse is just as bad as a total one, so there is a floor, not
-	// only a zero check. Measured: 173 registered startup migrations.
+	// only a zero check. Measured: 200 registered startup migrations.
 	if !regexp.MustCompile(`sf_total\s*<\s*100`).MatchString(act) {
 		t.Error("缺少启动迁移条数地板；只判 0 的话，Go 源码部分重排会解析出十几条" +
 			"并被当成正常，门禁库变成半个")

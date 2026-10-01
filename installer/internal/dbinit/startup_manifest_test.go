@@ -30,7 +30,7 @@ var updateManifest = flag.Bool("update", false,
 // It is checked in (not generated on the fly) so that a test in ANOTHER Go module
 // can replay "the state just before migration N" without being able to change what
 // the installer runs. sql/migrations/startup/ holds 458 migration numbers but only
-// 198 are registered, and the registered order is not numeric order — the
+// 200 are registered, and the registered order is not numeric order — the
 // session_turns_hot bootstrap sits at index 3, 715 at index 149, and 704 comes after
 // 713 — so "apply everything numbered below N" is not a correct reconstruction.
 const startupManifestPath = "../../../sql/schema/installed_startup_migrations.tsv"
@@ -60,7 +60,7 @@ const manifestHeader = `# installed_startup_migrations.tsv — the installer's O
 # this file against StartupFiles entry by entry and fails on any difference, so a
 # hand edit here is a test failure, not a silent divergence.
 #
-# Why it exists: sql/migrations/startup/ holds 458 migration numbers but only 198
+# Why it exists: sql/migrations/startup/ holds 458 migration numbers but only 200
 # are registered, and the registered ORDER is not numeric order (bootstrap sits at
 # index 3, 715 at index 149, 704 after 713). A test that needs to replay "the state
 # just before migration N" cannot work that out from filenames.

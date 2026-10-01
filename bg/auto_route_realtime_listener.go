@@ -56,6 +56,13 @@ type AutoRouteRealtimeListener struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 
+	// ready 在 LISTEN 首次注册成功后关闭。Start 返回只代表 goroutine 已派生，
+	// 注册是异步的——注册之前发出的 NOTIFY 会静默丢失（生产里是收流早于
+	// 武装的小窗口丢刷新事件，由周期性全量对账兜底；测试里是 33% flaky 的
+	// 根因，24h 审计第二十八轮实测收口）。
+	readyOnce sync.Once
+	ready     chan struct{}
+
 	// notifyCh feeds the single debounce goroutine. It is buffered; a full
 	// channel means a debounce cycle is already scheduled and the event
 	// coalesces into it.
@@ -74,8 +81,22 @@ func NewAutoRouteRealtimeListener(pool *pgxpool.Pool, refresher indexRefresher) 
 		pool:           pool,
 		refresher:      refresher,
 		debounceWindow: 5 * time.Second,
+		ready:          make(chan struct{}),
 		notifyCh:       make(chan string, 64),
 	}
+}
+
+// Ready returns a channel that is closed once LISTEN has been registered on
+// the live connection for the first time. Start returns as soon as the
+// goroutines are spawned; a change committed before that registration lands
+// is silently lost (no listener => pg_notify goes nowhere). Callers that
+// need change-observation guarantees (integration tests, post-deploy
+// reconciliation triggers) should wait on Ready.
+func (l *AutoRouteRealtimeListener) Ready() <-chan struct{} {
+	if l == nil {
+		return nil
+	}
+	return l.ready
 }
 
 // Start spawns the LISTEN and debounce goroutines. Cancelling ctx stops
@@ -183,6 +204,7 @@ func (l *AutoRouteRealtimeListener) serveOne(ctx context.Context) connOutcome {
 		slog.Warn("auto route listener: LISTEN failed", "error", err)
 		return connRetryBackoff
 	}
+	l.readyOnce.Do(func() { close(l.ready) })
 
 	for ctx.Err() == nil {
 		notif, err := conn.Conn().WaitForNotification(ctx)
