@@ -47,12 +47,24 @@ func TestTaskSummaryAggregatesModelsTagsAndWallClockDuration(t *testing.T) {
 	// 任务 wall-clock = T-2h → T = 7200s；任一单会话时长都 < 7200s，
 	// 旧实现 MAX(duration_seconds) 会返回 5400 而非 7200。
 	base := time.Now().UTC().Truncate(time.Second)
+	// The tenant row must exist before any session_summaries insert: its
+	// tenant_id references public.tenants(code) and the gate database is empty
+	// (measured 2026-10-02: SELECT count(*) FROM tenants = 0). Without this the
+	// test dies 23503 on fk_session_tenant.
+	createdTenant := ensureFixtureTenant(t, pool, tenant)
+
 	seed := func(sess string, models, tags []string, first, last time.Time) {
 		t.Helper()
+		// status is written literally because session_dim.status is NOT NULL
+		// with NO default in the installed schema: migration 350 declares
+		// DEFAULT 'active' but 350 is not in the installer's StartupFiles, and
+		// 805_session_dim_reconcile — which IS registered — creates the column
+		// without a default. Product code does the same
+		// (internal/sessionv2mirror/session_dim.go:80 and :113).
 		if _, err := pool.Exec(ctx,
-			`INSERT INTO session_dim (gw_session_id, session_key, tenant_id, owner_user, task_id, created_at)
-			 VALUES ($1,$1,$2,'r33-owner',$3,$4)
-			 ON CONFLICT (gw_session_id) DO UPDATE SET task_id=EXCLUDED.task_id, tenant_id=EXCLUDED.tenant_id`,
+			`INSERT INTO session_dim (gw_session_id, session_key, tenant_id, owner_user, task_id, status, created_at)
+			 VALUES ($1,$1,$2,'r33-owner',$3,'active',$4)
+			 ON CONFLICT (gw_session_id) DO UPDATE SET task_id=EXCLUDED.task_id, tenant_id=EXCLUDED.tenant_id, status='active'`,
 			sess, tenant, taskID, base,
 		); err != nil {
 			t.Fatalf("seed session_dim %s: %v", sess, err)
@@ -74,6 +86,9 @@ func TestTaskSummaryAggregatesModelsTagsAndWallClockDuration(t *testing.T) {
 		defer dcancel()
 		_, _ = pool.Exec(dctx, `DELETE FROM session_summaries WHERE session_key LIKE 'r33-p5-%'`)
 		_, _ = pool.Exec(dctx, `DELETE FROM session_dim WHERE gw_session_id LIKE 'r33-p5-%'`)
+		if createdTenant {
+			_, _ = pool.Exec(dctx, `DELETE FROM public.tenants WHERE code=$1`, tenant)
+		}
 	}()
 
 	h := &Handler{db: pool}

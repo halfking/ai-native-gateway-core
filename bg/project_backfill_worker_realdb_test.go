@@ -77,6 +77,18 @@ func TestMigration762ProjectBackfillChain_RealDB(t *testing.T) {
 	}
 
 	const fixtureTenant = "r33test-tenant"
+	// session_summaries.tenant_id references public.tenants(code)
+	// (fk_session_tenant) and the gate database is empty, so the child rows
+	// below cannot be inserted before the parent exists — measured 2026-10-02
+	// as 23503 "violates foreign key constraint fk_session_tenant".
+	//
+	// The tenant is seeded AFTER the initial cleanup() call on purpose. cleanup
+	// is invoked immediately after it is defined (to clear anything a previous
+	// run left behind) and it reads createdTenant through the closure. Seeding
+	// first would make that immediate call delete the row that was just
+	// inserted, and the test would still fail 23503 — which is exactly what the
+	// first version of this fix did.
+	var createdTenant bool
 	cleanup := func() {
 		//nolint:errcheck // best-effort fixture cleanup
 		conn.Exec(ctx, `DELETE FROM session_summaries WHERE session_key LIKE 'r33test_%'`)
@@ -86,9 +98,22 @@ func TestMigration762ProjectBackfillChain_RealDB(t *testing.T) {
 		conn.Exec(ctx, `DELETE FROM session_project_attribution WHERE gw_session_id LIKE 'r33test_%'`)
 		//nolint:errcheck
 		conn.Exec(ctx, `DELETE FROM project_dim WHERE project_ref LIKE 'app:r33app%'`)
+		if createdTenant {
+			// Children are already gone above, so this cannot cascade into
+			// anything the test did not create.
+			//nolint:errcheck
+			conn.Exec(ctx, `DELETE FROM public.tenants WHERE code=$1`, fixtureTenant)
+		}
 	}
 	cleanup()
 	defer cleanup()
+
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO public.tenants (code, name) VALUES ($1, $2)
+		 ON CONFLICT (code) DO NOTHING RETURNING true`,
+		fixtureTenant, "fixture-"+fixtureTenant).Scan(&createdTenant); err != nil {
+		t.Fatalf("seed tenant %q: %v", fixtureTenant, err)
+	}
 
 	// 存量夹具：两条 NULL 项目会话（app 口径）+ 一条无信号会话（保持 NULL）。
 	// s4 预留给写链验证：生产序是 request_logs_hot 触发器先建 ss 行、
@@ -102,10 +127,16 @@ VALUES ('r33test_s1', $1, NOW(), NOW(), 1),
 	if _, err := conn.Exec(ctx, seed, fixtureTenant); err != nil {
 		t.Fatalf("seed session_summaries: %v", err)
 	}
+	// status and created_at are written literally because both are NOT NULL with
+	// NO default in the installed schema: migration 350 declares
+	// DEFAULT 'active' but 350 is not in the installer's StartupFiles, and
+	// 805_session_dim_reconcile — which IS registered — creates the columns
+	// without defaults. Measured with information_schema.columns on a gate
+	// database, 2026-10-02.
 	dim := `
-INSERT INTO session_dim (gw_session_id, session_key, tenant_id, status, first_request_at, last_active_at, application_code)
-VALUES ('r33test_s1', 'r33test_s1', $1, 'active', NOW(), NOW(), 'r33app'),
-       ('r33test_s2', 'r33test_s2', $1, 'active', NOW(), NOW(), NULL)`
+INSERT INTO session_dim (gw_session_id, session_key, tenant_id, status, created_at, first_request_at, last_active_at, application_code)
+VALUES ('r33test_s1', 'r33test_s1', $1, 'active', NOW(), NOW(), NOW(), 'r33app'),
+       ('r33test_s2', 'r33test_s2', $1, 'active', NOW(), NOW(), NOW(), NULL)`
 	if _, err := conn.Exec(ctx, dim, fixtureTenant); err != nil {
 		t.Fatalf("seed session_dim: %v", err)
 	}
@@ -177,8 +208,8 @@ VALUES ('r33test_s1', 'r33test_s1', $1, 'active', NOW(), NOW(), 'r33app'),
 
 	// 4. 写链：新会话 UPSERT session_dim（模拟 sessionv2mirror）自动回填。
 	if _, err := conn.Exec(ctx, `
-INSERT INTO session_dim (gw_session_id, session_key, tenant_id, status, first_request_at, last_active_at, application_code)
-VALUES ('r33test_s4', 'r33test_s4', $1, 'active', NOW(), NOW(), 'r33app')
+INSERT INTO session_dim (gw_session_id, session_key, tenant_id, status, created_at, first_request_at, last_active_at, application_code)
+VALUES ('r33test_s4', 'r33test_s4', $1, 'active', NOW(), NOW(), NOW(), 'r33app')
 ON CONFLICT (gw_session_id) DO UPDATE SET last_active_at = NOW()`,
 		fixtureTenant); err != nil {
 		t.Fatalf("upsert session_dim s4: %v", err)
