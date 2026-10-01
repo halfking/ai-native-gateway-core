@@ -78,6 +78,47 @@
 ### R85 回注（2026-10-01，菜单可达性门已建 + 控件复用实测）
 - **新增永久门 `web/src/config/navCoverage.test.ts`**（6 断言，4/4 变异全红）。本域此前的 `appNav.test.ts` **21/21 全绿却零业务覆盖**（全测可见性，无 labelKey×语种、无菜单↔路由断言）。**新建或改写任何扫描型守卫前必读 `conventions.md` §9**——该门判据改了四版才收敛，且 §9.3 记的「判据自证漏洞」正是它的第一版失败形态。
 - **R56「menu-config 无漏注册」结论漂移**：那只覆盖了已注册项的字段对齐，**漏了反向覆盖率**。实测 7 条硬孤儿路由（`/routing-decisions`、`/routing/overrides/audit`、`/quality-correlations`、`/admin/session-analytics/users`、`/admin/session-analytics/users/:owner`、`/admin/output-compliance`、`/admin/usage`）。`/admin/session-analytics/users` 已于 R85 挂载入口（API `main.go:6901-6906` 与真库 `session_dim` 121 万行早已就绪，而 8 语种 `nav.item.sessionAnalytics` 文案**早已存在却零引用**＝可交付未交付），其余 5 条待产品确认归属，已登记在 navCoverage 白名单。
-- **控件复用实测（分母 71 个顶层视图，objective「尽可能复用同组控件」未落地）**：`PageHeader` 6/71 vs **53 处自写 h1/h2**；`DataTable` 4/71 vs **42 处裸 `<table>`**；`FilterBar` 1/71 vs 22 处自建；`PaginationBar` 3/71 vs 7 处；`StatCard/StatsRow` 6/71 vs 14 处；**`EmptyState` 组件根本不存在而 16 处视图各写空态**；`el-skeleton` 使用 0 处。9 类标准件中 **8 类复用率 <20%**，仅 `KxDateRangePicker`(13/71) 达标。
+- **控件复用实测（分母 71 个顶层视图，objective「尽可能复用同组控件」未落地）**：`PageHeader` 6/71 vs **53 处自写 h1/h2**；`DataTable` 4/71 vs **42 处裸 `<table>`**；`FilterBar` 1/71 vs 22 处自建；`PaginationBar` 3/71 vs 7 处；`StatCard/StatsRow` 6/71 vs 14 处；~~**`EmptyState` 组件根本不存在而 16 处视图各写空态**~~（**R88-f 订正，见本节末 R88-f 回注：组件存在，两个数字都不对**）；`el-skeleton` 使用 0 处。9 类标准件中 **8 类复用率 <20%**，仅 `KxDateRangePicker`(13/71) 达标。
 - **`i18n/parity.test.ts` 以 zh-CN 为基准 ⇒ 对「加菜单忘配文案」结构性失守**；实测 21 个陈旧 nav 键（含 9 个会话域键，如 `sessionClusters` 引用数 0）。
 - **objective 的三条要求（菜单可达性 / 控件复用率 / 会话聚合入口）在 17 个域 plan 中均无立项条目** —— 这才是 7 条孤儿路由能存活至今的根因：**没有立项就没有门**。
+
+### R88-f 回注（2026-10-01，EmptyState 精确清单 + 机械统一不可行的理由）
+
+**背景**：本节 R85 写「`EmptyState` 组件根本不存在而 16 处视图各写空态」，
+62 号已在审计报告里更正为「组件存在」，**但未回灌到本 playbook** ⇒ 文档一致性缺陷。
+62 号当时标注「**精确数字仍未定**」，本轮把它定死。
+
+**实测（`web/`，263 个 `.vue`）**：
+
+| 量 | 数值 | 数法 |
+|---|---|---|
+| 引用 `EmptyState` 的文件 | 8（**含组件自身 ⇒ 7 个消费者**） | `grep -rl EmptyState src --include=*.vue` |
+| 自建 `.empty-state` 容器 | **13 处 / 8 个文件** | 逐行读模板确认，排除 `EmptyState.vue` 自身与 `-icon`/`-title`/`-desc` 子元素 |
+| 全站 `.vue` 总数 | 263 | `find src -name '*.vue'` |
+
+**13 处逐条归类**（这是**可复现的分类**，不是「16 处视图各写空态」那种印象式计数）：
+
+| 类别 | 位置 | 为什么**不能**机械替换 |
+|---|---|---|
+| **B·loading 态**（3） | `UsageCost:371/440/488`、`ProbeHealthPanel:487` | 渲染的是 `...loading` 文案，**语义不是空态**；且两处带 `card empty-state` 复合类。**换过去会改变客户端观感** |
+| **C·表格单元格**（2） | `ProxyView:644`(`colspan=8`)、`:737`(`colspan=11`) | 组件渲染 `<div>`，**放不进 `<td>`**；结构上无法承载 |
+| **D·`!important` 覆盖**（1） | `ProxyView:491`（`padding: 2rem !important`） | 覆盖优先级会与组件的行内 `padding` 打架 |
+| **A·真空态·div**（7） | `ProbeHealthPanel:488`、`CredentialHeatmapView:677`、`RoutingLogView:264`、`RoutingDashboardView:1006`、`ModulesView:1103`、`ClientConfigDialog:314`、`ProxyView:491` | 见下 |
+
+**A 类里也只有部分能低成本统一**——组件的**能力缺口是实锤**：
+
+- `ProbeHealthPanel.vue:487-488` 的本地样式是 `padding:40px; text-align:center; color:var(--muted)`，**与组件默认逐项相同** ⇒ 这一处是**纯重复**，统一零成本；
+- `ClientConfigDialog.vue:314-317` 需要 **icon + title + desc 三层**，`ModulesView.vue:1103` 配有 **`.empty-icon`（40px）**，而 `EmptyState.vue` **只有一个默认 slot** ⇒ **结构上无法承载**；
+- ⇒ **62 号提的「缺 `action` 能力」方向正确但不够**：真正卡住的是**连 icon/title/desc 都没有**，不止 action（OmniRoute 的 `actionLabel`/`onAction` 是第四项）。
+
+**⇒ 结论：本轮不做统一重构。** 理由不是「工作量大」，而是三条硬约束：
+① 13 处里 6 处**语义或结构上就不该换**（B/C/D 类）；
+② A 类中需要富结构的那些**组件当前承载不了** ⇒ 要么先扩组件（`icon`/`title`/`desc`/`action` 四槽），要么逐处重排；
+③ 任何替换都要逐处比对 padding/color token，否则违反 objective「**不要影响客户端的观感**」。
+
+**已登记为待裁决第 29 条**（是否给 `EmptyState` 补 icon/title/desc/action 四槽并逐类收敛），
+本轮**未改任何渲染行为**、未改组件 props。
+
+**教训**：本轮分类时我先用「行内是否含 `loading` 子串」打标签，被
+`v-else-if="!loading && !filteredCredentials.length"` 骗了——那是**真空态**。
+**子串命中是代理量**（与 `conventions.md` §9.2 同源），最终按**逐行读渲染内容**归类。
