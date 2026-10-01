@@ -109,11 +109,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | 后台 worker —— 探测、生命周期清理、统计聚合、分区维护 |
 | `storage/` | 双模式存储工厂（`full`：PG+Redis / `lite`：SQLite+文件+进程内 KV） |
 | `internal/` | 横切基础设施 —— IR、vendor 字段剥离、会话镜像、outbox、遥测… |
-| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 764） |
+| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 809） |
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 
-规模快照（2026-10-01 代码扫描）：`cmd/` 下共 **~4,500 Go files · 2,278 test files · 927 migration SQLs · 67 domain packages · 34 binaries**。
+规模快照（2026-10-01 代码扫描）：`cmd/` 下共 **~4,600 Go files · 2,421 test files · 945 migration SQLs · 67 domain packages · 34 binaries**。
 
 **延伸阅读**
 
