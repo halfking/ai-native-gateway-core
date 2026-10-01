@@ -336,8 +336,14 @@ func newReorderTestFixture(t *testing.T, pool *pgxpool.Pool, creds int) *reorder
 	defer tx.Rollback(ctx)
 
 	var providerID int64
+	// base_url is NOT NULL on public.providers. This fixture omitted it, so every
+	// test sharing this helper died at `insert provider` with SQLSTATE 23502
+	// (null value in column "base_url") — seven tests across two files, all one
+	// root cause. The sibling fixtures in provider_access_test.go and
+	// provider_credential_balance_integration_test.go already supply it.
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO providers (code, display_name, protocol, enabled) VALUES ($1, $1, 'openai-completions', true) RETURNING id`,
+		`INSERT INTO providers (code, display_name, protocol, base_url, enabled)
+		 VALUES ($1, $1, 'openai-completions', 'https://example.invalid/v1', true) RETURNING id`,
 		"test-reorder-prov-"+reorderItoxa(uniq),
 	).Scan(&providerID); err != nil {
 		t.Fatalf("insert provider: %v", err)

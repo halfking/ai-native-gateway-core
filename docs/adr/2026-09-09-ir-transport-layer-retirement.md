@@ -44,6 +44,27 @@ IR 转换,`main.go:1537`)+ `domains/transformation/anthropic` 桥承担,不经�
 - 测试:factory_test、factory_switch_test、stream_test、integration_test、cross_protocol_stream_test、ir_transport_test、legacy_transport_test、legacy_transport_stream_test、roundtrip_test、fixture_test、ir_stream_anthropic_fields_test、response_format_adapter_test、`tests/integration/ir_default_switch_test.go`
 - 配置:`docker-compose.yml` 与 `tests/lib/fake-remote-host.sh` 中的 `TRANSPORT_LAYER_IR_ENABLED`;`domain/README.md` 死文档
 
+> **2026-10-01 补记(Round 44 收口轮)**:上面这份删除清单**当时漏了一个文件**。
+> `tests/integration/protocol_e2e_test.go` 有 3 处 `transformation.NewIRTransport()`
+> 调用(353/485/517 行),而该构造器在本 ADR 对应的提交里已被删除,于是
+> `go vet -tags=integration ./tests/integration/` 一直报
+> `undefined: transformation.NewIRTransport`,整包断编译 **59 天**
+> (该文件最后一次改动 `193189c75`,2026-08-03)。
+>
+> 之所以没人发现,是两个条件叠加:
+>   1. 所有 integration 测试文件都带 `//go:build integration`,无 tag 的
+>      `go build ./...` / `go vet ./...` 根本不编译它们;
+>   2. 唯一会看见它们的那条 CI job
+>      (`.github/workflows/integration-testcontainers-ci.yml`) 常年红,
+>      **常年红的门和没有门在观察上不可区分**。
+>
+> 该文件自包含(包内其余文件不引用它的任何符号),只测已下线的死工厂,
+> 故按本 ADR 的既有决策删除,而非改写回某个"等价 API"。
+> 防复发的守卫见 `sql/schema/integration_gate_test.go` 的
+> `TestIntegrationTaggedTreeCompiles`:它无 build tag,会在默认
+> `go test ./...` 里 type-check 整棵 integration tag 树(含 _test.go),
+> 变异验证过它会红(删文件前实测报出上面那行 undefined)。
+
 **保留**(grep 确认的活跃消费者,一律未动):
 
 - `internal/ir` 全包:InternalRequest/InternalResponse/StreamChunk 与全部 parser/serializer。

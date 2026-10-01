@@ -138,7 +138,7 @@ func TestAutoUpdateIntegration(t *testing.T) {
 
 		for _, status := range statuses {
 			releaseStatus := &ReleaseStatus{
-				ReleaseID:  release.ID,
+				ReleaseID:  &release.ID,
 				InstanceID: instanceID,
 				Status:     status,
 				Version:    version,
@@ -265,7 +265,7 @@ func TestAutoUpdateIntegration(t *testing.T) {
 
 		// Mark instance as rolled back
 		rollbackStatus := &ReleaseStatus{
-			ReleaseID:  release.ID,
+			ReleaseID:  &release.ID,
 			InstanceID: instanceID,
 			Status:     StatusRollback,
 			Version:    "v1.0.0", // Rolled back to previous version
@@ -457,6 +457,26 @@ func TestUpgradeRetry(t *testing.T) {
 		version := "v0.0.0-test-retry-" + time.Now().Format("20060102-150405")
 		instanceID := "retry-instance-" + time.Now().Format("150405")
 
+		// The retry paths below write instance_release_status, whose
+		// release_id carries `REFERENCES releases(id)`. The original fixture
+		// used a literal `ReleaseID: 1` labelled "Dummy release ID" — a
+		// dangling reference that violates the FK on any database where
+		// releases has no row with id=1 (every fresh installer-shaped
+		// database, and any database whose sequence has moved past its
+		// first row). It is not a product defect and not a dead branch: the
+		// honest fixture creates a real release and points at it, the same
+		// way the sibling store_pgx_test.go fixtures do.
+		retryRelease := &Release{
+			Version:   "v0.0.0-test-retry-rel-" + time.Now().Format("20060102-150405"),
+			BuildSeq:  9900,
+			Channel:   ChannelStable,
+			Title:     "Test Release (retry fixture)",
+			ImageTag:  "v0.0.0-test-retry",
+			CreatedBy: "test",
+		}
+		require.NoError(t, store.CreateRelease(ctx, retryRelease),
+			"retry fixture needs a real releases row for the FK to hold")
+
 		// Create upgrade log with retries
 		logID, err := store.CreateUpgradeLog(ctx, instanceID, "v1.0.0", version)
 		require.NoError(t, err)
@@ -465,7 +485,7 @@ func TestUpgradeRetry(t *testing.T) {
 		maxRetries := 3
 		for retry := 1; retry <= maxRetries; retry++ {
 			status := &ReleaseStatus{
-				ReleaseID:  1, // Dummy release ID
+				ReleaseID:  &retryRelease.ID,
 				InstanceID: instanceID,
 				Status:     StatusFailed,
 				Version:    version,
@@ -481,7 +501,7 @@ func TestUpgradeRetry(t *testing.T) {
 
 		// Final successful attempt
 		successStatus := &ReleaseStatus{
-			ReleaseID:  1,
+			ReleaseID:  &retryRelease.ID,
 			InstanceID: instanceID,
 			Status:     StatusSuccess,
 			Version:    version,

@@ -137,6 +137,13 @@ cleanup() {
   if [[ "$KEEP_GATE_DB" == "1" ]]; then
     echo "  keeping $GATE_DB"
   else
+    # Drop the tenant role's grants before the role, or DROP ROLE fails.
+    if [[ -n "${TENANT_ROLE:-}" ]]; then
+      docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" -q \
+        -c "DROP OWNED BY $TENANT_ROLE" >/dev/null 2>&1 || true
+    fi
+    docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+      -c "DROP ROLE IF EXISTS ${TENANT_ROLE:-itgate_tenant}" >/dev/null 2>&1 || true
     docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
       -c "DROP DATABASE IF EXISTS $GATE_DB" >/dev/null 2>&1 || true
   fi
@@ -271,10 +278,6 @@ if [[ "$GATE_APPLY_STARTUP" == "1" ]]; then
     fi
     mapfile -t gap_known < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
                               -e 's/[[:space:]].*$//' "$GAP_MANIFEST" | sort -u)
-    if (( ${#gap_known[@]} == 0 )); then
-      die "已知缺口清单 ${GAP_MANIFEST} 解析出 0 条。清单本身坏了，" \
-"此时任何未应用迁移都会被当成未登记缺口而致命退出——但那不是可接受的失败原因，请先修清单。"
-    fi
     declare -a gap_unlisted=()
     declare -a gap_hit=()
     for entry in "${sf_failed[@]}"; do
@@ -290,6 +293,20 @@ if [[ "$GATE_APPLY_STARTUP" == "1" ]]; then
     if (( ${#gap_unlisted[@]} > 0 )); then
       echo "  ✗ 新增未登记的启动迁移失败（${#gap_unlisted[@]} 条），这不在已知缺口清单里："
       printf '    - %s\n' "${gap_unlisted[@]}"
+      # An EMPTY manifest is the normal, healthy state as of 2026-10-01 (all 19
+      # historical gaps were fixed and retired), so it must NOT be treated as a
+      # corrupt file. The first version of this block died on a zero-entry
+      # manifest BEFORE reporting which migrations failed, so a genuinely new
+      # gap surfaced as "the manifest is broken" — pointing the reader at the
+      # paperwork instead of at the actual breakage. Report the names first;
+      # the empty-manifest case is just "every failure here is unlisted", and
+      # the same fatal exit and the same remediation apply.
+      if (( ${#gap_known[@]} == 0 )); then
+        die "有 ${#gap_unlisted[@]} 条启动迁移在全新安装路径上失败，且已知缺口清单当前为空" \
+"（这是 2026-10-01 之后的正常状态：历史 19 条缺口已全部修复并退场）。" \
+"上面点名的这些失败全部是未登记缺口。确认是真实缺口后，把文件与原因补进 " \
+"sql/schema/startup_known_gaps.tsv 再重跑；不要为了让门禁变绿而放宽这里的判据。"
+      fi
       die "有 ${#gap_unlisted[@]} 条启动迁移在全新安装路径上失败且未登记为已知缺口。" \
 "这意味着又出现了一批真实的新鲜安装缺口，或某条已修迁移回归了。" \
 "确认是真实缺口后，把文件与原因补进 sql/schema/startup_known_gaps.tsv 再重跑；" \
@@ -309,6 +326,29 @@ if [[ "$GATE_APPLY_STARTUP" == "1" ]]; then
   fi
 fi
 
+# Create a genuinely non-bypass role for TEST_TENANT_DATABASE_URL.
+#
+# Why this exists. domains/requestjourney/observation_outbox_integration_test.go
+# asserts tenant isolation by connecting through a "non-bypass pool", and its own
+# comment states the requirement: "The validator superuser pool above bypasses
+# RLS even with FORCE; the non-bypass pool is required to assert RLS isolation."
+#
+# The harness used to hand it TEST_TENANT_DATABASE_URL pointing at the very same
+# URL — same database, same role. That role is `llm_gateway`, which this cluster
+# reports as rolsuper=t AND rolbypassrls=t, so the probe read the other tenant's
+# row and the test failed with:
+#
+#     alpha scope saw 1 beta rows, want 0 (RLS leak)
+#
+# That message points at a tenant-isolation vulnerability. It is not one: the
+# policies in 552 are correct and the startup chain applies them cleanly. The
+# test was measuring a superuser. A false red on a security assertion is worse
+# than no assertion, because it trains readers to dismiss RLS failures.
+#
+# A separate, non-superuser, non-BYPASSRLS role makes the assertion real.
+TENANT_ROLE="${TENANT_ROLE:-itgate_tenant}"
+TENANT_PASSWORD="${TENANT_PASSWORD:-itgate-tenant-pw}"
+TENANT_DSN=""
 # Verify the DSN the tests will actually use. Without this, a wrong DSN
 # surfaces as N unrelated per-test failures instead of one clear error.
 #
@@ -349,6 +389,48 @@ fi
 #
 # Measured round 43 on this harness: baseline only = 328 relations;
 # baseline + registered startup migrations = 421.
+# Materialise the non-bypass role now that the gate database is fully populated
+# (grants are issued over whatever exists, so this must run AFTER the baseline
+# and the startup chain, not before).
+#
+# The role is deliberately NOT superuser and NOT BYPASSRLS — that is the entire
+# point. If role creation or grant fails, TENANT_DSN stays empty and the harness
+# exports an empty TEST_TENANT_DATABASE_URL, which makes RLS tests skip loudly
+# instead of silently measuring a superuser.
+if docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" -q -v ON_ERROR_STOP=1 >/dev/null 2>/tmp/itgate-tenant.err <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$TENANT_ROLE') THEN
+    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', '$TENANT_ROLE', '$TENANT_PASSWORD');
+  END IF;
+END
+\$\$;
+GRANT CONNECT ON DATABASE $GATE_DB TO $TENANT_ROLE;
+GRANT USAGE ON SCHEMA public TO $TENANT_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO $TENANT_ROLE;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO $TENANT_ROLE;
+SQL
+then
+  TENANT_DSN="postgresql://${TENANT_ROLE}:${TENANT_PASSWORD}@127.0.0.1:${PGPORT}/${GATE_DB}"
+  # Prove the role really is non-bypass before exporting it. Asserting the
+  # premise is the difference between a real isolation test and a false red:
+  # if this ever reports true, the DSN is handed out with a clear warning
+  # rather than producing an "RLS leak" that means nothing.
+  BYPASS_STATE=$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" -tAc \
+    "SELECT bool_or(rolsuper OR rolbypassrls) FROM pg_roles WHERE rolname = '$TENANT_ROLE'" \
+    2>/dev/null || echo "")
+  if [[ "$BYPASS_STATE" == "t" ]]; then
+    echo "  ✗ 租户角色 $TENANT_ROLE 具备 superuser/BYPASSRLS，RLS 隔离断言将失真" >&2
+    TENANT_DSN=""
+  else
+    echo "  [tenant] non-bypass role $TENANT_ROLE ready (rolsuper=off, bypassrls=off)"
+  fi
+else
+  echo "  ⚠ 建租户角色失败，TEST_TENANT_DATABASE_URL 置空（RLS 断言将被跳过而非误报）:" >&2
+  head -3 /tmp/itgate-tenant.err | sed 's/^/      /' >&2
+  TENANT_DSN=""
+fi
+
 GATE_MIN_RELATIONS="${GATE_MIN_RELATIONS:-400}"
 RELS=$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" -tAc \
   "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -399,7 +481,7 @@ env \
   TEST_PG_DSN="$GATE_URL" \
   TEST_PG_URL="$GATE_URL" \
   TEST_RESOLVE_INVARIANT_DB_URL="$GATE_URL" \
-  TEST_TENANT_DATABASE_URL="$GATE_URL" \
+  TEST_TENANT_DATABASE_URL="$TENANT_DSN" \
   go test -tags=integration -count=1 -v -timeout 20m ${TEST_NAME:+-run "$TEST_NAME"} "$PKG" \
   > "$RUN_LOG" 2>&1
 TEST_RC=$?

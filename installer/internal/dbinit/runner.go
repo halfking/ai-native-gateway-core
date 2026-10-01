@@ -491,6 +491,29 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 产物，迁移链与 Go ensure 链均不创建）。唯一侧是 Go
 			// ON CONFLICT (request_id) 的承重索引，不可动。
 			"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql",
+			// 808 (2026-10-01, Round 44 收口): 补建 request_logs 的 DEFAULT
+			// 分区。全新安装上母表只有 2026_07/2026_08 两个月分区、没有任何
+			// DEFAULT，于是 ts 落在 2026-08 之外的写入一律 23514
+			// "no partition of relation request_logs found for row"——母表从
+			// 2026-09 起就写不进任何一行。baseline 是 2026-08-04 的 dump，
+			// dump 里只有函数体引用 request_logs_default 而没有对应的
+			// CREATE TABLE ... PARTITION OF ... DEFAULT；267 个启动迁移里也
+			// 没有一条创建它。它同时是 705 的 repair 骨架与
+			// ensure_request_logs_partition / promote_request_logs_default_batch /
+			// archive_request_logs_default 四个函数共同依赖的承重对象。
+			"808_request_logs_default_partition.sql",
+			// 809 (2026-10-01, Round 44 收口): 解除
+			// instance_release_status.release_id 的 NOT NULL。376 建表时把它
+			// 设成 NOT NULL + REFERENCES releases(id)，而 RecordUpdateReport
+			// 在查不到 release 时兜底成 0 —— releases_id_seq 恒从 1 开始，
+			// id=0 永远不存在，于是该兜底每次必撞 23503、handler 回 500、
+			// 上报丢失。379 当年想把它改成可空（并建了只在可空时才需要的
+			// idx_irs_release 偏索引），但 379 的 CREATE TABLE IF NOT EXISTS
+			// 对已存在的表是空操作，且它从未注册进 StartupFiles（下限 388），
+			// 因此那个意图三处印证都未落地。回滚上报的 ToVersion 是「回滚到
+			// 的旧版本」，天然可能没有对应 releases 行 —— 这是真实业务流，
+			// 不是夹具。外键保留（外键允许 NULL，非空时引用完整性照旧）。
+			"809_instance_release_status_nullable_release_id.sql",
 		},
 	}
 }
