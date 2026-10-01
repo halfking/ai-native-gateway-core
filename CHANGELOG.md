@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- **V2 provenance 过滤的直接测试（2026-10-01）**：新增 `internal/sessionv2mirror/safe_metadata_test.go`，为 `safeAlignmentRecords` / `safeSanitizeRefs` 补上此前**零直接单测**的 fail-closed 路径——任一记录不合法即整段丢弃（而非只丢那一条）。用例把坏记录放在第二位（第一条合法）以区分这两种语义，并验证 `alignment_map` 8 字段、`sanitize_message_refs` 6 字段在 V1 结构与 V2 白名单间完全对齐、可选字段非法不触发整段丢弃。2 项变异全红（`return nil`→`continue`、丢弃 `occurrence`），逐字节还原。**纯测试，未改生产行为。** 详见 `docs/全面审计v3/2026-10-01/81-R88O-V2白名单对齐与all-or-nothing钉桩.md`。
+- **V2 provenance 过滤的直接测试（2026-10-01）**：新增 `internal/sessionv2mirror/safe_metadata_test.go` 与 `safe_cutmarker_test.go`，为 `safeAlignmentRecords` / `safeSanitizeRefs` / `safeCutMarkerMeta` 补上此前未被直接覆盖的 fail-closed 路径——任一记录不合法即整段丢弃（而非只丢那一条）。用例把坏记录放在第二位（第一条合法）以区分这两种语义；并验证 `alignment_map` 8 字段、`sanitize_message_refs` 6 字段在 V1 结构与 V2 白名单间完全对齐、可选字段非法不触发整段丢弃。`safeCutMarkerMeta` 另钉两个**跨字段**自洽校验（`cut <= 0`、`system+cut > source`）与一条**反向对照**（`system+cut == source` 必须放行，专防「把 `>` 写成 `>=`」的过度收紧让合法数据被静默丢弃）。5 项变异全红，逐字节还原。**纯测试，未改生产行为。** 详见 `docs/全面审计v3/2026-10-01/81-R88O-V2白名单对齐与all-or-nothing钉桩.md`。
 
 ### Fixed
 - **核实 SanitizedMessageRefs / AlignmentMap 接入 V2 metadata（2026-10-01）**：objective 点名项，核实结论是**生产链路与 V2 接入都存在、白名单设计正确，未发现缺陷**。V2 侧 `sessionv2mirror/hook.go` 的 `safeCompressionMeta` 用**白名单**逐键搬运（`cut_marker`/`alignment_map`/`sanitize_message_refs`/`sanitize_map_ref`），注释明写理由是整体复制会持久化原始载荷或**未来的 PII 字段**；将来新增字段默认不出 V2，fail-closed 选对了。测试一道用例埋 5 个 `must-not-mirror` 并同时断言「毒值出不来」与「正常数据仍在」。**本轮一度差点误报**——注释里的 `SanitizedMessageRefs` 是概念名，代码真实标识是 `compression.SanitizeInfo.MessageRefs` / 键 `sanitize_message_refs`，据此新增 `conventions.md` §10.2。纯核实。详见 `docs/全面审计v3/2026-10-01/80-R88N-SanitizedMessageRefs与AlignmentMap接入V2核实.md`。
