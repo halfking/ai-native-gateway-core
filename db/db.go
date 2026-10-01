@@ -437,6 +437,17 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionBodiesPromoteDrain(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-01 (R17 列存事故防复发，ensureProbeStateFunctionFixes 同族):
+	// columnar_insert_only_parents() 的库内名单曾被手改成 21 族大名单——
+	// enforce_columnar_trigger 据此把 21 族 heap 分区批量转列存，打断全部
+	// ON CONFLICT/UPDATE 写路径（252 生产 03:0x-06:44 事故）。仓库正典是
+	// 单族 routing_decision_log（唯一真 insert-only）；启动 ensure 把库内
+	// 实态收敛回正典，拔掉「库函数漂移 → DDL 事件放大」的复发源。
+	// 名单变更必须走 sql/objects/functions/columnar_insert_only_parents.sql
+	// 正典文件 + 本处的同步修改（契约测试双侧钉住）。
+	if err := db.ensureColumnarInsertOnlyParentsCanonical(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureNodeProbeTriggerKindSchema(migCtx); err != nil {
 		return err
 	}
