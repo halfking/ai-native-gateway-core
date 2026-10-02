@@ -1,4 +1,4 @@
-# handoff：会话存储解耦 v3 —— §9.27 视图契约 815 + §9.28 补位列逐列裁决
+# handoff：会话存储解耦 v3 —— §9.27 视图契约 815 + §9.29 补位列逐列裁决
 
 > **提交落点（须知）**：本轮 17 个文件的内容落在 commit `7a6356ef0`，而该 commit
 > 的标题是并行会话的 `docs(audit): ursm_node_snapshot_min 容量审计`。原因是提交
@@ -13,6 +13,11 @@
 > 审计正文见 [`2026-10-02-view-contract-815-and-padded-column-verdicts.md`](2026-10-02-view-contract-815-and-padded-column-verdicts.md)
 > （主文档 `2026-09-30-session-request-data-re-audit.md` 本轮正被并行会话编辑，
 > 故本轮章节单独成文，章节号从 §9.27 起顺延。）
+>
+> **章节号对照（同日修订）**：本轮初稿用过 §9.28–§9.31，与并行会话提交 `5b6e3ea03`
+> （主文档 §9.28「会话族是两个存储面」）撞号，已整体顺延为 **§9.29 / §9.30 /
+> §9.31 / §9.32**。本文件占用 §9.27 与 §9.29–§9.32；主文档侧的 §9.22–§9.26 与
+> §9.28 属并行会话。**本文件里出现的 §9.2x 一律指审计正文那份文件。**
 
 ## 结论
 
@@ -73,12 +78,39 @@
 
 ```
 go build ./...                                   # OK
-go test ./... -count=1                           # 全绿（见交付报告）
-cd sql/migrations/startup && go test ./ -run TestMigration815 -v   # 4/4 PASS
+go test ./db/ -count=1                            # ok（0.24s）
+go test ./admin/ -count=1                         # ok（69.1s）
+cd sql/migrations/startup && go test ./ -run TestMigration815 -count=1 -v   # 5/5 PASS
 TEST_PG_DSN=... go test ./db/ -run TestRequestLogsViewV2EnsureMatchesMigration  # PASS
 TEST_PG_URL=... go test ./admin/ -tags integration \
   -run 'TestPhysicalOnlyColumnsListMatchesRealDatabase|TestCredentialHeatmapSQL_ExecutesOnRealDatabase'  # PASS
 ```
+
+> **一次「admin 整包 FAIL」不要直接当结论。** 本轮曾出现一次 `FAIL
+> github.com/kaixuan/llm-gateway-go/admin 68.9s`，重跑却是 `ok 69.1s`、零 FAIL 行。
+> 判别证据：失败那次运行期间并行会话往 `admin/` 新增了两个**未跟踪**测试文件
+> （`session_family_two_surface_test.go` / `zz_tmp_crosstab_test.go`），
+> 正好落在编译窗口内。⇒ 在共享工作区里，「跑出来红」与「代码是红的」是两件事；
+> 报告红灯前先重跑一次并同时看 `git status --porcelain -- <该包>`。
+
+本轮补的两道「门非空转」断言（各自已变异验证，详见审计正文 §9.27.8b）：
+
+- `db.TestPaddedVerdictGatesAreNotVacuous` — PASS，运行时自证结构：
+  `补位 6 列 [id test_col test_tab_indent provider_model credits_rate_multiplier client_ip]、
+  裁决 6 条、否决投影 1 条、同名不同物 2 条`。它拦的是「输入被清空/截断 ⇒ 否定式门
+  平凡通过」，与「改坏会红」是两件事——前者不能由变异报告替代。
+- `sql/migrations/startup.TestMigration815GatesAreNotVacuous` — PASS。断言 `$proj$`
+  非空、`names` 恰 118 列、迁移 ≥2000 字节（防截断让所有 `Contains` 判据失效）、
+  `id` 仍为 `NULL::bigint`、down ≥1000 字节且带半剥离拒绝、两个 installer 副本都在。
+
+真库往返（本轮最强的一条证据，审计正文 §9.27.9 展开）：
+
+1. `TestRequestLogsViewV2EnsureMatchesMigration` 在 scratch 库上重放
+   `710 → 734 → 738 → 740 → 815`，要求 Go 自愈体与迁移产物 **viewdef 逐字节相同**，
+   并验证 down 链（815 → 740 → 738 → 734）逐级还原。
+2. 815 本身在真库实跑三段：**up → 118 列 / down → 115 列 / up → 118 列**（幂等）。
+3. 810 + 815 同时在库时，canonical 视图列数 = 118，且 `id` 仍是
+   `NULL::bigint AS id,`（全库唯一 1 处命中）、`trace_events` 不在。
 
 真库集成门的两条关键输出：
 - 热图在 118 列视图上执行成功，返回 21（默认排除自检）/ 45（含自检）条凭据序列；
@@ -124,14 +156,14 @@ TEST_PG_URL=... go test ./admin/ -tags integration \
 继续 llm-gateway-go 会话存储解耦 v3（/Users/xutaohuang/workspace/ai-native-tools/
 syncfield/llm-gateway-go-4，分支 main）。
 
-基线：§9.27/§9.28 已落地（migration 815 三列投影 + 补位列逐列裁决 6 列 +
+基线：§9.27/§9.29 已落地（migration 815 三列投影 + 补位列逐列裁决 6 列 +
 S4 读面 39→14 重分类），审计正文在
 docs/audit/2026-10-02-view-contract-815-and-padded-column-verdicts.md（主文档
 2026-09-30-session-request-data-re-audit.md 被并行会话占用 §9.26，合并前不要追加）。
 
 四条可执行工作项，按依赖排序：
 
-1) `cmd/compression-bench/main.go` 的 `id` 读法改造（审计 §9.28.4 的唯一一条）。
+1) `cmd/compression-bench/main.go` 的 `id` 读法改造（审计 §9.29.4 的唯一一条）。
    `id` 已证明不可投影（0/1,515,984 配对命中 0），所以只能去掉对 id 的依赖或改用
    request_id 回查。注意：改指视图的当天才是危险日（今天读物理 v1 一切正常）。
 2) `trace_events` 让镜像写入（internal/sessionv2mirror 侧）+ 覆盖率验证，
@@ -144,10 +176,10 @@ docs/audit/2026-10-02-view-contract-815-and-padded-column-verdicts.md（主文�
 
 纪律沿用：结构性事实读真库，名字不是定义；扫描器输出是嫌疑清单不是结论，每条手验
 （读方还是写方？绑到哪张表？是不是同一个东西？）；模糊匹配不作数；守卫必须变异验证
-且确认变异是断言命中而非崩溃；「门可以持续有效地校验一个错误的前提」（§9.28.2），
+且确认变异是断言命中而非崩溃；「门可以持续有效地校验一个错误的前提」（§9.29.2），
 所以每道门都要问「权威源钉在哪个形态上」；**「列名出现过」不等于「列被这一张表读」
-——判归属要看限定符，能力早就在 API 里，别浪费**（§9.28.6）；跨多轮的审计文档里
-每个分母都要能现场复算（§9.28.1 的恒等式表）；并行检出下工作区出现的东西 ≠ 我改的
+——判归属要看限定符，能力早就在 API 里，别浪费**（§9.29.6）；跨多轮的审计文档里
+每个分母都要能现场复算（§9.29.1 的恒等式表）；并行检出下工作区出现的东西 ≠ 我改的
 东西，提交逐文件点名，且**提交前确认索引里没有别人的文件**。
 
 交付仍按：结论/根因、改动文件与关键行为、测试命令与结果、遗留风险、handoff、
