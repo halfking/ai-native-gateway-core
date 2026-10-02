@@ -10,11 +10,14 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/domain"              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2721,14 +2724,62 @@ const detachedStreamMaxLifetime = 2 * time.Hour
 // attached. A detached durable stream also receives a wall-clock cap so an
 // upstream that keeps emitting infrequent data cannot retain a pool slot
 // indefinitely after the client has disconnected.
+//
+// R32 (P2-A): WithoutCancel strips the whole cancellation chain — that is what
+// buys client-cancel immunity, but it also stripped the dispatch lease
+// renewer's fail-closed abort, so a durable stream kept running on an expired
+// lease until natural completion. The forwarder now pins a lease-abort-only
+// cancel source into the forward context (domains/dispatch/detached_abort.go);
+// WithoutCancel preserves values, so we re-attach it here: client disconnect
+// stays immune, lease abort terminates the upstream call.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if params.IsStream && params.StreamSurvivesClientCancel {
-		return context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
+		upCtx, cancel := context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
+		if abort := dispatch.DetachedStreamAbort(params.R.Context()); abort != nil {
+			return newAbortAwareContext(upCtx, abort), cancel
+		}
+		return upCtx, cancel
 	}
 	if params.IsStream {
 		return context.WithCancel(params.R.Context())
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
+}
+
+// abortAwareContext exposes base's values/deadline but additionally completes
+// when abort fires, reporting abort's error. The watcher goroutine lives no
+// longer than the base context (the caller cancels it at attempt end via the
+// upstreamContext CancelFunc), the same lifetime class as the WithTimeout
+// timer it wraps.
+type abortAwareContext struct {
+	context.Context
+	done    chan struct{}
+	errOnce sync.Once
+	err     atomic.Value // error
+	once    sync.Once
+}
+
+func newAbortAwareContext(base, abort context.Context) *abortAwareContext {
+	c := &abortAwareContext{Context: base, done: make(chan struct{})}
+	go func() {
+		select {
+		case <-abort.Done():
+			c.errOnce.Do(func() { c.err.Store(abort.Err()) })
+			c.once.Do(func() { close(c.done) })
+		case <-base.Done():
+			c.once.Do(func() { close(c.done) })
+		}
+	}()
+	return c
+}
+
+func (c *abortAwareContext) Done() <-chan struct{} { return c.done }
+
+func (c *abortAwareContext) Err() error {
+	if err, ok := c.err.Load().(error); ok {
+		return err
+	}
+	return c.Context.Err()
 }
 
 // streamReaderContext uses the context attached to the actual upstream
