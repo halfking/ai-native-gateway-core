@@ -182,6 +182,88 @@ StartupFiles entry "809_instance_release_status_nullable_release_id.sql" is not 
 >    注意这会改变 tier 豁免名单长度，进而影响 `withRoleFailoverHead` 的换模链顺序。
 > 4. **门**：若要改 `TestDecideV2_RoleRoute_CreditStaysWithTier` 的池，**不要改成
 >    主流层里的模型**——见 handoff §3，会让 R49 P2 复现条件失效。
+
+---
+
+## 7. R53 轮（2026-10-02）已落地
+
+本节记录本轮实际完成的两件事，§6 的四条状态见 §7.3。
+
+### 7.1 优先级 1：接监控（R53）
+
+诉求「低价不可用退主流」在发生时是静默的——轻量池整层掉线时请求照常成功，
+只是静默升档到重量模型。本轮把它变成可被告警的事件。
+
+**关键前提（先于实现核实）**：`role_fallback_layer` 在父开关关闭时**恒为 NULL**。
+`Decision.RoleFallbackLayer` 带 `omitempty`，flag-off 时 `rolePrefs` 为空、
+字段根本不进序列化。所以一条纯 SQL 比例告警在 flag-off 部署上返回 NULL，
+与「开关开着但从没回退过」在面板上**完全一样**。这是 handoff §6 第 1 条
+没写出来的前提，也是本轮设计的出发点。
+
+**因此没有只做 SQL 告警**，而是加了 Go 侧 counter：
+
+| 指标 | 作用 |
+|---|---|
+| `llmgw_autoroute_role_fallback_layer_total{layer="kind"\|"mainstream"}` | 两个 label 值在构造时 `Add(0)` **预置** |
+| `llmgw_autoroute_role_routing_active` | 0/1，区分「没回退」与「没开」 |
+
+预置是关键：`CounterVec` 只有被 `WithLabelValues` 过才出现在 `/metrics`。
+不预置则 flag-off 部署上 `increase(...[15m])` 返回**空向量**，告警拿到
+`no data` 而非 `0`——而「no data」不会触发任何通知，会静默吞掉一次真实的
+整层掉线。预置后读数为 0，告警语义正确。
+
+**埋点 4 处**（V1/V2 × fresh/cache），全部在 `roleRoutingActive()` 门内，
+所以「flag-off」与「介入但未命中」天然可分。缓存轮刻意埋点：缓存轮确实在用
+重量模型服务该请求，排除它会低报真实成本；SQL 侧同一字段同一路径，不漏不多。
+
+**告警 3 条**（`deploy/prometheus/rules/role-fallback-mainstream.yml`）：
+| 告警 | severity | 回答的问题 |
+|---|---|---|
+| `AutoRouteRoleFallbackMainstreamSpike` | warning | 轻量池是不是整层掉线了 |
+| `AutoRouteRoleRoutingDisabled` | info | 兜底机制到底装载了没有（灰度决策依据） |
+| `AutoRouteRoleFallbackNeverExercised` | info | 兜底路径有没有被真实流量验证过 |
+
+**⚠️ 未验证项（务必接手时先做）**：本轮环境**无 promtool**（未安装、无 docker
+镜像、vendor 里也没有 promql parser），PromQL 语义**未经真正的解析器验证**。
+已改用 `and on()` 规避一个**纯静默**失效：PromQL 的 `and` 默认按「除 metric
+name 外全部标签」匹配，gauge 带 scrape 注入的 `job`/`instance` 而 `sum()` 无标签，
+标签集不相等 → `and` 产出空向量 → 告警永不触发且 Prometheus 不报错。
+**落地前必须 `promtool check rules` 复核，并在灰度环境确认告警能从 firing
+被真实触发一次。**
+
+### 7.2 优先级 2：修 main 既有红（808/809 embed 接线）
+
+`ca4c828f4`（R44 收口）把 808/809 加进 `StartupFiles`，但 `main.go` 三处都没接线
+（`//go:embed` 缺指令、`var` 缺声明、`embeddedSQLFiles` map 缺条目），
+`TestStartupFilesAreAllEmbedded` 在 main 上一直红。已按 807 三处模式补齐，
+分支 `fix/installer-808-809-embed-wiring`（**未推**）。
+在途核查：halfking 在 `ca4c828f4` 后无相关提交，确认不在途。
+
+### 7.3 剩余项状态
+
+| 项 | 状态 |
+|---|---|
+| 灰度决策（父开关开不开） | **未做，产品决定**。监控侧已就位：`AutoRouteRoleRoutingDisabled` 提供了决策依据 |
+| 名单动态解析（standard_iq） | **未做**。建议放在 252 部署实证轮之后——名单漂移会改 tier 豁免长度，进而影响 `withRoleFailoverHead` 换模链顺序 |
+| `CreditStaysWithTier` 池头 | **未碰**（本轮只动 installer/autoroute 埋点与告警，与该门无关） |
+
+### 7.4 门与反控
+
+新增门 8 条（Go 5 + 规则 3），5 次变异全部按预期红、control 全绿、零残留：
+
+| 变异 | 预期红 |
+|---|---|
+| 删 `Add(0)` 预置 | 预置门（flag-off 可见性） |
+| `and on()` 退化成裸 `and` | set operator 门 |
+| 删样本量下界 `>= 5` | 假阳性门 |
+| `layerName` 与常量分叉 | 审计/指标同源门 |
+| 不注册 gauge | 指标名对齐门 |
+
+**过程中被变异抓住的一次自身缺陷**：`and on()` 门最初写成 `Contains(expr,"and on()")`，
+而该表达式有**两个** set operator——只退化其中一个时门仍然绿（实测 M2 变异存活）。
+已改为「剥离全部 `and on()` 后不得再有裸 `and`」的口径。这条与
+「逐个承重的门不能用 Contains」是同一条纪律。
+
 > 5. **（main 既有红，可顺手做）** `TestStartupFilesAreAllEmbedded` 因 808/809
 >    迁移的 embed 接线缺失而红（见 §5）。补法：embeddata 文件 + `go:embed`
 >    变量 + `main.go` 的 `embeddedSQLFiles` 映射，参照 807 的三处模式。
