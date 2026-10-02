@@ -51,3 +51,31 @@ describe('sortByName', () => {
     expect(sortByNameStable([...rows].reverse()).map((r) => r.id)).toEqual([4, 9])
   })
 })
+
+describe('sortByName 的 keys 参数（排序键须与首列显示的主键一致）', () => {
+  // 真实形态取自 UsersView：首列 username，副标题才是中文 display_name
+  const rows = [
+    { username: 'mavis_local', display_name: '本地验证账号' },
+    { username: 'caiyc', display_name: '蔡寅崇' },
+    { username: 'audit_test1', display_name: '审计测试1' },
+  ]
+
+  it('默认顺序按 display_name 排（会落到拼音序，不是用户名序）', () => {
+    // 本(bei) 蔡(cai) 审(shen) —— 这正是「按隐藏中文名排」的坏形态
+    expect(sortByName(rows).map((r) => r.username)).toEqual(['mavis_local', 'caiyc', 'audit_test1'])
+  })
+
+  it('显式传 [username] 后按用户名排 —— 查找性与首列一致', () => {
+    expect(sortByName(rows, undefined, ['username']).map((r) => r.username)).toEqual([
+      'audit_test1',
+      'caiyc',
+      'mavis_local',
+    ])
+  })
+
+  it('两个顺序确实不同（否则这条断言没有鉴别力）', () => {
+    const byDisplay = sortByName(rows).map((r) => r.username)
+    const byUsername = sortByName(rows, undefined, ['username']).map((r) => r.username)
+    expect(byDisplay).not.toEqual(byUsername)
+  })
+})
