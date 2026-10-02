@@ -45,14 +45,14 @@ func TestHeatmapProbeExclusionUsesSharedViewPredicate(t *testing.T) {
 	// fires on the explanation of the fix gets deleted instead of obeyed.
 	code := stripGoComments(string(src))
 
-	// 1) 越列：origin_stage 不在视图契约内。禁的是「视图别名 + 该列」这个组合，
-	//    不是全文件禁这个词——注释里解释它为什么不能用是有价值的。
-	if i := strings.Index(code, "rl.origin_stage"); i >= 0 {
-		t.Errorf("credential_monitor_heatmap.go 重新出现 rl.origin_stage（偏移 %d）：\n\t%s\n"+
-			"该列不在 request_logs_with_current_month 的 113 列契约内 → 必 42703。",
-			i, excerptAround(code, i))
-	}
-
+	// 1) 越列禁令已**上移**到 TestNoPhysicalPredicateOnViewSource（全仓、判据
+	//    是「物理谓词 × 视图源」而不是某一个列名）。这里原来禁 `rl.origin_stage`
+	//    的理由是「该列不在 113 列契约内 → 必 42703」——815 之后这条理由**不成立**
+	//    （origin_stage 已进契约），但禁令本身仍然必要，只是理由换了：谓词能在
+	//    视图上跑不等于跑得对，它的 quality_flags 臂在 session 分臂恒 NULL ⇒
+	//    探测流量不再被排除。保留一个理由已失实的断言，等于让后来人按错误理由
+	//    去「优化」它。
+	//
 	// 2) 无 COALESCE 的 quality_flags 臂：`NOT ('probe' = ANY(NULL))` 求值为 NULL 而
 	//    不是 TRUE，会把整个 session 分臂静默丢掉（实测 40,225/40,275 行）。
 	if strings.Contains(code, "NOT ('probe' = ANY(") {
@@ -72,19 +72,15 @@ func TestHeatmapProbeExclusionUsesSharedViewPredicate(t *testing.T) {
 //
 // bg/probe_policy.go 原注释写「pass it twice」，而常量有三个 %s。少传一个不会编译
 // 失败，只会渲染出 %!s(MISSING) 混进 SQL，然后在离真正错误很远的地方报语法错。
+//
+// 谓词的**内容**形状（origin_actor 臂在、origin_stage 臂不在）由
+// TestViewPredicateHasNoPhysicalArm 守，理由写在那边——815 之后
+// 「origin_stage 不在契约内」这个理由已经不成立，留在本文件会误导后来人。
 func TestViewPredicateFormatArity(t *testing.T) {
 	const p = bg.ProbeTrafficExclusionPredicateView
 	if got := strings.Count(p, "%s"); got != 3 {
 		t.Fatalf("view predicate has %d format verbs, want 3 — a caller passing fewer gets "+
 			"%%!s(MISSING) baked into the SQL instead of a compile error", got)
-	}
-	if got := strings.Count(p, "origin_actor"); got != 1 {
-		t.Errorf("view predicate must keep exactly one origin_actor arm (the frozen contract has "+
-			"origin_actor but not origin_stage), got %d", got)
-	}
-	if strings.Contains(p, "origin_stage") {
-		t.Errorf("view predicate references origin_stage, which is NOT in the 113-column view " +
-			"contract — this is the exact 42703 that took the heatmap down")
 	}
 }
 

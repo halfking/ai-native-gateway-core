@@ -77,15 +77,18 @@ import (
 // request_logs_stop_write_classification_test.go 的 bodiesUnaffectedJustification
 // 同一范式。键是 `<相对仓库根的路径>:<行号>`，值为必须非空的理由；理由会随豁免
 // 一起出现在失败输出里，所以它不能是一句空话。
-var viewSourcePhysicalOnlyColumnExemptions = map[string]string{
-	"admin/compression_stats.go:212": "已确认的真缺陷，未修（2026-10-02）：token_band 只存在于物理 " +
-		"request_logs，不在视图的 113 列冻结契约内（真库 information_schema 实测 0 列），" +
-		"该查询必 42703，且错误被 slog.Warn 吞掉 → 仪表盘 token 分带聚合长期静默返回空。" +
-		"同函数的兄弟查询都读视图，所以正解是把 token_band 随迁进 session_turns + 710 投影，" +
-		"而不是把这一段改回物理表——后者会丢掉 session 分臂，与 S4 方向相反。" +
-		"属「物理表独有列未随迁」缺口类，与 raw_model_name 同族，修法待产品语义裁决" +
-		"（见 docs/audit/2026-09-30-session-request-data-re-audit.md §9.18）。",
-}
+// 815（2026-10-02）之后这张表是**空的**，而且这是本轮的正确终态，不是待办：
+//   - admin/compression_stats.go:212 的 token_band 读端不再是越列（815 把
+//     token_band 投影进视图契约）⇒ 那条具名豁免的前提消失，按本表自身的
+//     规则（豁免失效必须删）必须删掉，否则它变成一个永不消失的洞。
+//   - 「表为空」本身由 TestViewSourceExemptionsTableIsEmptyOrJustified 之外的
+//     既有逻辑保证：checkLiteralsInFile 命中的位置若不在表里就报错，所以
+//     真有新的越列出现时这道门照样会红。
+//
+// 留这张表（而不是删掉机制）是因为「具名豁免 + 理由必填 + 失效自检」这套
+// 范式本身是对的：下一次真的出现一条确认过的越列时，写下为什么的成本远低于
+// 重新发明一遍「门宽了怎么办」的讨论。
+var viewSourcePhysicalOnlyColumnExemptions = map[string]string{}
 
 func TestNoPhysicalOnlyColumnsInViewSourcedSQL(t *testing.T) {
 	files, err := goFilesUnder("..")
