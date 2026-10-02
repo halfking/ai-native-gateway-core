@@ -287,16 +287,18 @@ func buildHeatmapSQL(p heatmapQueryParams) (string, []any) {
 	if p.ExcludeSelfTest {
 		// Probe/self-test exclusion — the read face here is
 		// request_logs_with_current_month (see the FROM below), i.e. the
-		// canonical frozen-113-column view, NOT the physical request_logs
-		// tables. That distinction is load-bearing in both directions:
+		// canonical view, NOT the physical request_logs tables. That
+		// distinction is load-bearing in both directions:
 		//
-		//  1. origin_stage is NOT in the view's 113-column contract
-		//     (migration 710 rebuilt the body as a session-family assembly;
-		//     real-DB information_schema: 0 columns named origin_stage on
-		//     request_logs_with_current_month, 1 on request_logs / _hot /
-		//     session_turns). R50 inlined the *physical-table* predicate here,
-		//     which 42703s on every call — and ExcludeSelfTest defaults to
-		//     true, so every default heatmap call 500'd.
+		//  1. The predicate must be spelled in the VIEW's column vocabulary.
+		//     R50 inlined the *physical-table* predicate here, which 42703'd
+		//     on every call — and ExcludeSelfTest defaults to true, so every
+		//     default heatmap call 500'd. The concrete column that broke it
+		//     at the time was origin_stage, which was outside the view
+		//     contract back then; **that is no longer true** (see the
+		//     2026-10-02 correction below), but the *rule* survives: a
+		//     column that is in request_logs / _hot is not thereby in the
+		//     view. Verify against the live view before inlining anything.
 		//  2. The old hand-rolled second arm `NOT ('probe' = ANY(quality_flags))`
 		//     has no COALESCE: for the NULL flags the session arm is
 		//     NULL-padded with, `'probe' = ANY(NULL)` is NULL and
@@ -304,6 +306,17 @@ func buildHeatmapSQL(p heatmapQueryParams) (string, []any) {
 		//     measured 40,225 of 40,275 session-branch rows in 7d. Fixing
 		//     only the column reference would have made the heatmap return
 		//     200 while blind to the entire migrated dataset.
+		//
+		// 2026-10-02 修正（§9.27）：本段曾断言「origin_stage 不在视图契约内，
+		// 真库 information_schema 0 列、视图是冻结 113 列」。两条**都已被推翻**：
+		// 真库该视图现为 **118 列**（冻结 113 + 738 credits_rate_multiplier +
+		// 740 client_ip + 813 origin_stage/token_band/client_forwarded_for），
+		// 且 origin_stage 有值 1,591,290 / 2,333,495 行；trace_events 才是**刻意
+		// 未投影**的那一列（镜像从不写，投影即净数据损失）。
+		// 留着旧断言比没有注释更坏：它会让人以为这列仍然越列，而实际上
+		// **代码用的是共享谓词、始终正确**——错的只是这段描述。
+		// 教训：注释里「真库实测」的数字是**有时间戳的断言**，迁移一动就过期；
+		// 读注释的人不会去看它是否还成立。
 		//
 		// So this must use the shared frozen-view spelling owned by bg, not a
 		// local copy — R49 already established that invariant and R50's

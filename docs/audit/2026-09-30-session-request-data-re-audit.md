@@ -3653,3 +3653,121 @@ M7 是**对照实验**：如果它绿，就证明门仍在被注释喂饱。它�
    改变」都会清理它。门的错误信息里已写明它的终局作用，**不要因为「看起来没用」删掉**。
 3. `recentUsageModels` 臂的范围陈旧问题**依旧存在**（本节明确判定为「不该门控」，
    处置是接受陈旧，不是修复）。
+
+---
+
+## §9.27 读端静默退化量化，并**推翻我此前给用户的两个口径**
+
+本节起因是一个未被处置的缺口：读端存在大量「静默」退化。动手量化后，
+**先推翻的是我自己在前几轮给出的两个数字和一条待拍板事项**。
+
+### §9.27.1 effect × sourceFamily 交叉表（首次计算）
+
+先前只报过总数，没做过交叉。登记 74 个读点（此前我口头说的「105」是另一口径，
+本表的分母是 74）。列族取 `sourceFamilyOf`：
+
+| effect | 总数 | base_tables_only | bodies_plus_other | 710_view_only | bodies_family | view_with_null_padded_predicate |
+|---|---|---|---|---|---|---|
+| `errors_out`（响） | 8 | 5 | 3 | 0 | 0 | 0 |
+| `silently_empty`（静默） | **15** | **11** | 4 | **0** | 0 | 0 |
+| `silently_frozen`（静默） | 17 | 13 | 1 | 1 | 0 | 2 |
+| `silently_degraded_content`（静默） | 18 | 0 | 6 | 4 | 1 | 7 |
+| `unaffected_by_stop_write` | 15 | 6 | 2 | 3 | 0 | 4 |
+| `validator_dual_read` | 1 | 1 | 0 | 0 | 0 | 0 |
+
+**静默合计 50/74；会响的只有 8 个。**
+
+**最有决策价值的一行是 `silently_empty`**：15 个里 **0 个走 710 视图**，
+11 个是纯基表直读、4 个混读 bodies。而 `silently_degraded_content` 那一行
+**0 个纯基表**——两者的处置路径天然不同：
+
+- `silently_empty`（11+4）：主因是**绕过视图直读 v1** ⇒ 解法是**改指视图**
+  （真库实测该视图 24h 内 36.55% 的行来自 `session_turns`，行不会空）；
+- `silently_degraded_content`（18）：行照常出，**某一列内容变空** ⇒ 改指视图
+  **解决不了**，典型是 bodies 腿没有 session 兜底（§9.18/§9.26 已记）。
+  这 18 个里 7 个正是 `reads_view_with_null_padded_predicate` 族——
+  **视图读方也可能是静默退化源**，这一点此前被「改指视图」的口号盖住了。
+
+### §9.27.2 推翻口径一：补位集不是 30 列，是 **6 列**
+
+我此前一直说「710 对 session 臂补了 30 列 NULL，39 个读方读了这些列因而
+不可直接改指视图」。**这个口径是错的**，错在**只数了 710 的占位，
+没数 734 的 details 层已经顶掉了它们**。
+
+生效投影 = `buildSessionProjectionExprs(order, withDetails=true)`，实测：
+
+- **恒 NULL 的只有 6 列**：`id` / `test_col` / `test_tab_indent` /
+  `provider_model` / `credits_rate_multiplier` / `client_ip`
+- 另有 **30 列**由 migration 734 的 `session_turn_details` 特征层顶掉，
+  在 session 分臂**行级有值**（`client_model` 视图内 2,166,306 非空、
+  `provider_id` 1,576,453、`attachments` 956,160）
+
+直接后果：待拍板清单里的「30 列补位集其余 28 列逐列裁决」**基本作废**。
+真库逐列裁决这 6 列（`request_logs` 母表 2,163,062 行）：
+
+| 列 | v1 非空 | 判读 |
+|---|---|---|
+| `id` | 2,163,062（100%） | **不可投影**：v1 是请求行 id、session 侧是 turn id（1,515,984 组配对命中 0），只能改读法 |
+| `test_col` | 2,163,062（100%） | 视图 session 臂丢空。**但真库未填充的是 `test_tab_indent`**，`test_col` 本身是满的——这列需要单独拍板 |
+| `test_tab_indent` | **0** | 死列：v1 也没人填 ⇒ 无可投影 |
+| `provider_model` | **0** | 死列（同上）。注意 `domains/stats` 的 `dimension_type='provider_model'` 是**另一个东西**，别撞名 |
+| `credits_rate_multiplier` | **0** | 死列（v1 也没人填）。但 `maas/credits_sql.go` 读它并 `COALESCE(...,1.0)` ⇒ 恒按 1x 计费口径，**计费侧影响真实存在** |
+| `client_ip` | 403,601（18.7%） | **不是类型问题，是语义问题**（我第一版写的是「类型不一致下的刻意取舍」，**不完整**）。真库按 `request_id` 配对 202,014 行实测：session 侧 `client_ip` 与本表 `client_forwarded_for` 相同 **202,014/202,014**、不同 0；与 v1 `request_logs.client_ip` 相同 **0**；与 v1 `client_forwarded_for` 相同 **202,014/202,014** ⇒ 它是**写在 `client_ip` 名下的转发头副本**，不是对端 IP。直映它等于把 `X-Forwarded-For` 当客户端 IP。视图该列由 740 从 v1 侧 lateral 供真源 inet，**取舍正确** |
+
+⇒ **待拍板从「28 列」收缩到「0 列」**。这 6 列在
+`db/request_logs_view_padded_columns.go` 里**早已各有具名裁决**（且
+`TestEveryPaddedSessionColumnHasAVerdict` 强制对齐），我上面逐列复核后**全部认同**：
+
+| 列 | 已有裁决 | 我的复核结论 |
+|---|---|---|
+| `id` | `verdictDifferentThing` | 认同：请求行 id ≠ turn id，只能改读法 |
+| `test_col` | `verdictRetireWithV1` | 认同：**全仓无任何 SQL 读它**（命中只在视图列清单与注释里） |
+| `test_tab_indent` | `verdictRetireWithV1` | 认同：v1 非空 0，调试遗留列 |
+| `provider_model` | `verdictRetireWithV1` | 认同：两侧都没有写方；注意与 `provider_models` 表**撞名** |
+| `credits_rate_multiplier` | `verdictNoSessionSource` | 认同：**整个会话族没有「这一行按什么倍率计价」这个事实**，补不出有源投影 |
+| `client_ip` | `verdictDifferentThing` | 认同，且我第一版把理由写窄了（见上表） |
+
+⇒ **这一项不需要你拍板**：没有任何一列需要「补投影」的决策。
+`credits_rate_multiplier` 剩下的不是投影问题，而是**计费口径问题**
+（`maas/credits_sql.go` 恒按 `COALESCE(...,1.0)` 计 1x），
+它属于「会话族要不要记录计价倍率」这个更大的问题，见 §8 决策 1。
+
+### §9.27.3 推翻口径二：「710 补 4 个投影」**早已完成**
+
+我上一轮给你的待拍板①（`origin_stage`/`token_band`/`client_forwarded_for`/`trace_events`）
+**已经过时**。真库实测：
+
+- 视图现为 **118 列** = 冻结 113 + 738 `credits_rate_multiplier` + 740 `client_ip`
+  + **813 `origin_stage`/`token_band`/`client_forwarded_for`**；
+- 三列均已投影且有值：`origin_stage` 1,591,290 / `token_band` 158,277 /
+  `client_forwarded_for` 227,195（总行 2,333,495）；
+- `trace_events` **不在视图里是刻意的**（镜像从不写、近窗非空率 0，
+  投影即净数据损失），它仍留在 `admin/view_source_columns_contract.go` 的
+  越列清单里，与实况一致。
+
+⇒ 我此前基于 §9.18/§9.20 的「视图缺这 3 列」判断，是**读了当时的结论而没有回真库复核**。
+**决策面因此从 3 件缩到 1 件**（见 handoff 末节）。
+
+### §9.27.4 连带修正：一段已经变成假的注释
+
+`admin/credential_monitor_heatmap.go` 里那段「origin_stage 不在视图 113 列契约内、
+真库 0 列」的注释，在 813 落地后**两项断言都成了假**。代码本身一直是对的
+（用的是共享谓词 `bg.ProbeTrafficExclusionPredicateView`），**错的只是这段描述**。
+
+已改写：保留「谓词必须用视图词汇表」这条**仍然成立**的规则，把已失效的
+具体断言标注为已推翻并附真库新数字（118 列 / 1,591,290 有值 /
+`trace_events` 才是刻意未投影的那列）。
+
+**这一类风险的通用形态**：注释里的「真库实测」是**带时间戳的断言**，
+迁移一动就过期，而读注释的人不会去核它是否还成立。
+**它不能靠门来防**——为「注释里的数字」写机械门必然带假阳性；
+能做的是**把断言和它的失效条件写在一起**（本次即如此）。
+
+### §9.27.5 本节没有做的
+
+- **没有**给「静默退化」加可见性信号（如响应里带 `stop_write` 陈旧标记）。
+  那要改 50 个读点的响应契约，属需拍板的范围变更。
+- **没有**动那 15 个 `silently_empty` 读方。§9.21 的登记表门已经在守
+  「直读 v1 且命中补位列」的读方集合，但那是**读法**门，不是**退化可见性**门。
+- `silently_degraded_content` 的 18 个（尤其 7 个 `view_with_null_padded_predicate`）
+  **一行代码没动**——它们是下一块最值得做的地。
