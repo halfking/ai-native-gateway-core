@@ -93,9 +93,18 @@ const effectUnclassified = "unclassified"
 var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	// ── 本轮亲自打开确认的（证据为文件中逐字存在的片段）──────────────────
 	"admin/data_lifecycle.go": {
-		Effect:   effectUnaffected,
-		Evidence: "SELECT COUNT(*) AS total_count FROM request_logs_with_current_month",
-		Note:     "生命周期/保留期/体量面：统计与清理存量行。停写后「待清理行数」不再增长，语义仍成立。",
+		Effect:   effectSilentlyFrozen,
+		Evidence: "SELECT DATE(ts) AS day, COUNT(DISTINCT request_id) AS compressed",
+		// 2026-10-02 自我更正：本条初判 effectUnaffected（理由「生命周期/保留期/
+		// 体量面只读存量」），被族门判红——判对了。逐行核实后：该文件除体量与
+		// 保留期外，:226-241 的 7 天**增长趋势**里有一条 bodies 腿
+		// （COUNT(DISTINCT request_id) ... outbound_body IS NOT NULL），读
+		// request_logs_bodies_with_current_month，而 bodies 没有 session 臂。
+		// ⇒ 停写后 requests 趋势（走 710 视图，session 臂继续供数）继续增长，
+		// 而 compressed 趋势冻结，**两条线分叉**，且无任何错误信号。
+		// 比「整个端点冻结」更隐蔽：页面照常 200，只有一条线停住。
+		Note: "体量/保留期部分不受影响，但 7 天增长趋势的 bodies 腿会冻结，" +
+			"与仍在增长的 requests 线分叉且无错误信号。",
 	},
 	"admin/credential_monitor.go": {
 		Effect:   effectSilentlyFrozen,
@@ -303,12 +312,16 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 //	               ⇒ 停写后硬失败，无退路。
 //	familyView   —— 710 视图有 session 臂 ⇒ 静默少计。
 //	familyBase   —— request_logs / request_logs_hot 为 v1 专有 ⇒ 完全停止增长。
-//	familyMixed  —— 一并读 ⇒ 部分退化。
+//	familyBodiesMixed —— 一并读，但**其中 bodies 腿没有任何 session 兜底**。
+//	               「一并读」不等于「部分退化」：主轮次腿可能照常工作，
+//	               而正文腿彻底失效，表现为「拿得到轮次、拿不到正文」。
+//	familyViewBase —— 视图腿（session 臂仍供数）+ 基表腿（停写即冻结）⇒ 部分退化。
 const (
-	familyBodies = "reads_bodies_family"
-	familyView   = "reads_710_view_only"
-	familyBase   = "reads_base_tables_only"
-	familyMixed  = "reads_view_and_base"
+	familyBodies      = "reads_bodies_family"
+	familyView        = "reads_710_view_only"
+	familyBase        = "reads_base_tables_only"
+	familyBodiesMixed = "reads_bodies_plus_other"
+	familyViewBase    = "reads_view_and_base"
 )
 
 var (
@@ -365,11 +378,11 @@ func sourceFamilyOf(code string) string {
 	ba := familyBaseRE.MatchString(code) || v1OnlyView
 	switch {
 	case bo && (vi || ba):
-		return familyMixed
+		return familyBodiesMixed
 	case bo:
 		return familyBodies
 	case vi && ba:
-		return familyMixed
+		return familyViewBase
 	case vi:
 		return familyView
 	case ba:
@@ -406,15 +419,20 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 			undetermined)
 	}
 	total := 0
-	for _, k := range []string{familyBodies, familyView, familyBase, familyMixed} {
+	for _, k := range []string{familyBodies, familyBodiesMixed, familyView, familyBase, familyViewBase} {
 		total += counts[k]
 	}
 	if total != len(requestLogsReadInventory) {
 		t.Errorf("四族合计 %d ≠ 读点清单 %d —— 有文件被重复计数或漏计", total, len(requestLogsReadInventory))
 	}
-	t.Logf("S4 停写影响面（按读表族，机械判定）：bodies=%d（无兜底，硬失败） "+
-		"view=%d（session 臂仍供数，静默少计） base=%d（完全停止增长） mixed=%d",
-		counts[familyBodies], counts[familyView], counts[familyBase], counts[familyMixed])
+	t.Logf("S4 停写影响面（按读表族，机械判定）：\n"+
+		"  bodies_only=%d        正文无兜底 ⇒ 硬失败\n"+
+		"  bodies_plus_other=%d  正文腿硬失败（轮次腿可能照常）\n"+
+		"  view_only=%d          session 臂仍供数 ⇒ 静默少计\n"+
+		"  base_only=%d          完全停止增长\n"+
+		"  view_and_base=%d      部分退化",
+		counts[familyBodies], counts[familyBodiesMixed], counts[familyView],
+		counts[familyBase], counts[familyViewBase])
 }
 
 // TestStopWriteEffectAgreesWithSourceFamily 拦住本项目已经犯过一次的错：
@@ -448,7 +466,8 @@ func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 			}
 		}
 		// bodies 族无 session 侧等价物，判「不受影响」几乎一定是错的。
-		if fam == familyBodies && c.Effect == effectUnaffected {
+		// 带 bodies 腿的 mixed 族同理——它们的正文腿没有任何退路。
+		if (fam == familyBodies || fam == familyBodiesMixed) && c.Effect == effectUnaffected {
 			t.Errorf("%s 读 bodies 族却判为「停写不受影响」：bodies 没有 session 侧等价物"+
 				"（session_bodies 只有增量、无 final_full 全量，见审计 §6），该档位需重新论证", file)
 		}
