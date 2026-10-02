@@ -310,7 +310,7 @@ func buildHeatmapSQL(p heatmapQueryParams) (string, []any) {
 		// 2026-10-02 修正（§9.27）：本段曾断言「origin_stage 不在视图契约内，
 		// 真库 information_schema 0 列、视图是冻结 113 列」。两条**都已被推翻**：
 		// 真库该视图现为 **118 列**（冻结 113 + 738 credits_rate_multiplier +
-		// 740 client_ip + 813 origin_stage/token_band/client_forwarded_for），
+		// 740 client_ip + 815 origin_stage/token_band/client_forwarded_for），
 		// 且 origin_stage 有值 1,591,290 / 2,333,495 行；trace_events 才是**刻意
 		// 未投影**的那一列（镜像从不写，投影即净数据损失）。
 		// 留着旧断言比没有注释更坏：它会让人以为这列仍然越列，而实际上
