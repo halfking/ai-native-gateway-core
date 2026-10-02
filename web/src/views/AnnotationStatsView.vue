@@ -1,47 +1,23 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+// AnnotationStatsView.vue — 标注统计面板（2026-10-02 整合轮收编）。
+//
+// AutoRoutingOpsView 的「标注统计」面板：供应商准确率 / 标注人统计 /
+// 原因分布三张明细表。总标注数·准确率·标注人数等头部指标已上收宿主
+// KPI 行（原五张大卡去重）；原内嵌的 taskprofile 修正区块（导出/导入/
+// 应用建议 + 修正率表）与任务档案面板重复，已从本页移除——闭环操作统一
+// 收口到「任务档案」页签。
+import { ref, onMounted } from 'vue'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
+import { localeRef } from '../i18n'
 import { getAnnotationStats, type StatsResponse } from '../api/annotations'
-import {
-  getTaskTypeCorrectionStats,
-  exportCorrections,
-  importCorrections,
-  applyTierConfig,
-  type CorrectionStatsResponse,
-  type TaskProfileSuggestion,
-} from '../api/taskProfile'
+import DataTable from '../components/ui/DataTable.vue'
 
 const { t } = useI18n()
 
 const stats = ref<StatsResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
-
-const mlAccuracy = computed(() => {
-  if (!stats.value || !stats.value.overall) return 0
-  return stats.value.overall.accuracy_percent || 0
-})
-
-const correctPredictions = computed(() => {
-  if (!stats.value || !stats.value.overall) return 0
-  return stats.value.overall.correct_count || 0
-})
-
-const incorrectPredictions = computed(() => {
-  if (!stats.value || !stats.value.overall) return 0
-  return stats.value.overall.incorrect_count || 0
-})
-
-const totalAnnotations = computed(() => {
-  if (!stats.value || !stats.value.overall) return 0
-  return stats.value.overall.total_annotations || 0
-})
-
-const numAnnotators = computed(() => {
-  if (!stats.value || !stats.value.overall) return 0
-  return stats.value.overall.num_annotators || 0
-})
 
 async function load() {
   loading.value = true
@@ -62,177 +38,30 @@ function accuracyColor(accuracy: number): string {
   return 'var(--danger)'
 }
 
-// ── taskprofile 任务类型修正统计（2026-09-19 审计轮接入）────────────────
-const tpStats = ref<CorrectionStatsResponse | null>(null)
-const tpLoading = ref(false)
-const tpError = ref('')
-const tpNotice = ref('')
-const exporting = ref(false)
-const importing = ref(false)
-const applying = ref(false)
-const fileInput = ref<HTMLInputElement | null>(null)
-
-const tpRows = computed(() => {
-  if (!tpStats.value) return []
-  return Object.values(tpStats.value.stats).map((s) => ({
-    ...s,
-    suggestion: tpStats.value?.suggestions?.[s.task_type] as TaskProfileSuggestion | undefined,
-  })).sort((a, b) => b.correction_rate - a.correction_rate)
-})
-
-async function loadTpStats() {
-  tpLoading.value = true
-  tpError.value = ''
-  try {
-    tpStats.value = await getTaskTypeCorrectionStats(30)
-  } catch (e: unknown) {
-    tpError.value = e instanceof Error ? e.message : t('annotation.stats.loadFailed')
-    tpStats.value = null
-  } finally {
-    tpLoading.value = false
-  }
+function fmtTime(s: string | undefined | null) {
+  if (!s) return '-'
+  return formatDateTime(s, { locale: localeRef.value, options: { hour12: false } })
 }
 
-async function exportCsv() {
-  exporting.value = true
-  tpError.value = ''
-  try {
-    const { filename, content } = await exportCorrections(30)
-    const blob = new Blob([content], { type: 'text/csv; charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
-  } catch (e: unknown) {
-    tpError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    exporting.value = false
-  }
-}
-
-function pickImportFile() {
-  fileInput.value?.click()
-}
-
-async function onImportFile(ev: Event) {
-  const input = ev.target as HTMLInputElement
-  const f = input.files?.[0]
-  if (!f) return
-  importing.value = true
-  tpError.value = ''
-  tpNotice.value = ''
-  try {
-    const csvText = await f.text()
-    const summary = await importCorrections(csvText)
-    tpNotice.value = t('annotation.stats.importDone', {
-      imported: summary.imported,
-      skipped: summary.skipped,
-      errors: summary.row_errors?.length ?? 0,
-    })
-    await loadTpStats()
-  } catch (e: unknown) {
-    tpError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    importing.value = false
-    input.value = ''
-  }
-}
-
-async function applySuggestions() {
-  if (!window.confirm(t('annotation.stats.applyConfirm'))) return
-  applying.value = true
-  tpError.value = ''
-  tpNotice.value = ''
-  try {
-    const r = await applyTierConfig([])
-    tpNotice.value = r.applied.length === 0
-      ? t('annotation.stats.applyNone')
-      : t('annotation.stats.applyDone', {
-          types: r.applied.map((a) => `${a.task_type}→${a.preferred_tier}`).join(', '),
-        })
-    await loadTpStats()
-  } catch (e: unknown) {
-    tpError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    applying.value = false
-  }
-}
-
-onMounted(() => {
-  load()
-  loadTpStats()
-})
+onMounted(load)
 </script>
 
 <template>
-  <div class="stats-page">
-    <div class="page-header">
-      <h2>{{ t('annotation.stats.title') }}</h2>
-      <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">
+  <div class="panel">
+    <div class="panel-toolbar">
+      <span class="panel-title">{{ t('annotation.stats.detailTitle') }}</span>
+      <button class="btn btn-sm" :disabled="loading" @click="load">
         {{ loading ? t('annotation.stats.refreshing') : t('annotation.stats.refresh') }}
       </button>
     </div>
 
-    <p class="page-desc">{{ t('annotation.stats.desc') }}</p>
-
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
 
-    <div v-if="loading" class="loading-container">
-      <p>{{ t('annotation.stats.loading') }}</p>
-    </div>
-
-    <div v-else-if="stats" class="stats-container">
-      <!-- Overall Stats Cards -->
-      <div class="stats-cards">
-        <div class="stat-card">
-          <div class="stat-icon stat-icon-primary">📊</div>
-          <div class="stat-content">
-            <div class="stat-label">{{ t('annotation.stats.totalAnnotations') }}</div>
-            <div class="stat-value">{{ totalAnnotations }}</div>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-icon stat-icon-success">✅</div>
-          <div class="stat-content">
-            <div class="stat-label">{{ t('annotation.stats.mlAccuracy') }}</div>
-            <div class="stat-value" :style="{ color: accuracyColor(mlAccuracy) }">
-              {{ mlAccuracy.toFixed(1) }}%
-            </div>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-icon stat-icon-green">✓</div>
-          <div class="stat-content">
-            <div class="stat-label">{{ t('annotation.stats.correctPredictions') }}</div>
-            <div class="stat-value">{{ correctPredictions }}</div>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-icon stat-icon-red">✗</div>
-          <div class="stat-content">
-            <div class="stat-label">{{ t('annotation.stats.incorrectPredictions') }}</div>
-            <div class="stat-value">{{ incorrectPredictions }}</div>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-icon stat-icon-info">👥</div>
-          <div class="stat-content">
-            <div class="stat-label">{{ t('annotation.stats.numAnnotators') }}</div>
-            <div class="stat-value">{{ numAnnotators }}</div>
-          </div>
-        </div>
-      </div>
-
+    <div class="stats-container">
       <!-- Provider Accuracy Table -->
-      <div class="stats-section">
+      <section class="stats-section">
         <h3>{{ t('annotation.stats.providerAccuracy') }}</h3>
-        <div class="table-container">
+        <DataTable :loading="loading" :empty="!stats || !stats.by_provider || stats.by_provider.length === 0" :empty-text="t('annotation.stats.noData')" min-width="720px">
           <table class="data-table">
             <thead>
               <tr>
@@ -245,19 +74,13 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!stats.by_provider || stats.by_provider.length === 0">
-                <td colspan="6" class="empty-row">{{ t('annotation.stats.noData') }}</td>
-              </tr>
-              <tr v-for="p in stats.by_provider" :key="p.provider">
+              <tr v-for="p in stats?.by_provider ?? []" :key="p.provider">
                 <td><span class="badge badge-blue">{{ p.provider }}</span></td>
                 <td class="col-number">{{ p.total_predictions }}</td>
                 <td class="col-number text-success">{{ p.correct_predictions }}</td>
                 <td class="col-number text-danger">{{ p.incorrect_predictions }}</td>
                 <td class="col-number">
-                  <span
-                    class="accuracy-badge"
-                    :style="{ color: accuracyColor(p.accuracy_percent) }"
-                  >
+                  <span class="accuracy-badge" :style="{ color: accuracyColor(p.accuracy_percent) }">
                     {{ p.accuracy_percent.toFixed(1) }}%
                   </span>
                 </td>
@@ -265,13 +88,13 @@ onMounted(() => {
               </tr>
             </tbody>
           </table>
-        </div>
-      </div>
+        </DataTable>
+      </section>
 
       <!-- Annotator Stats Table -->
-      <div class="stats-section">
+      <section class="stats-section">
         <h3>{{ t('annotation.stats.annotatorStats') }}</h3>
-        <div class="table-container">
+        <DataTable :loading="loading" :empty="!stats || !stats.by_annotator || stats.by_annotator.length === 0" :empty-text="t('annotation.stats.noData')" min-width="720px">
           <table class="data-table">
             <thead>
               <tr>
@@ -284,33 +107,27 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!stats.by_annotator || stats.by_annotator.length === 0">
-                <td colspan="6" class="empty-row">{{ t('annotation.stats.noData') }}</td>
-              </tr>
-              <tr v-for="a in stats.by_annotator" :key="a.annotator">
+              <tr v-for="a in stats?.by_annotator ?? []" :key="a.annotator">
                 <td><strong>{{ a.annotator }}</strong></td>
                 <td class="col-number">{{ a.total_annotations }}</td>
                 <td class="col-number text-success">{{ a.correct_count }}</td>
                 <td class="col-number text-danger">{{ a.incorrect_count }}</td>
                 <td class="col-number">
-                  <span
-                    class="accuracy-badge"
-                    :style="{ color: accuracyColor(a.accuracy_percent) }"
-                  >
+                  <span class="accuracy-badge" :style="{ color: accuracyColor(a.accuracy_percent) }">
                     {{ a.accuracy_percent.toFixed(1) }}%
                   </span>
                 </td>
-                <td>{{ formatDateTime(a.last_annotation_at) }}</td>
+                <td>{{ fmtTime(a.last_annotation_at) }}</td>
               </tr>
             </tbody>
           </table>
-        </div>
-      </div>
+        </DataTable>
+      </section>
 
       <!-- Reason Distribution Table -->
-      <div class="stats-section">
+      <section class="stats-section">
         <h3>{{ t('annotation.stats.reasonDistribution') }}</h3>
-        <div class="table-container">
+        <DataTable :loading="loading" :empty="!stats || !stats.by_reason || stats.by_reason.length === 0" :empty-text="t('annotation.stats.noData')" min-width="720px">
           <table class="data-table">
             <thead>
               <tr>
@@ -321,10 +138,7 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!stats.by_reason || stats.by_reason.length === 0">
-                <td colspan="4" class="empty-row">{{ t('annotation.stats.noData') }}</td>
-              </tr>
-              <tr v-for="r in stats.by_reason" :key="r.reason">
+              <tr v-for="r in stats?.by_reason ?? []" :key="r.reason">
                 <td>
                   <span class="badge badge-gray">{{ t(`annotation.reasons.${r.reason}`) }}</span>
                 </td>
@@ -338,228 +152,38 @@ onMounted(() => {
               </tr>
             </tbody>
           </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- taskprofile 任务类型修正统计（独立加载态，不依赖 P2.1 统计） -->
-    <div class="stats-section tp-section">
-      <div class="tp-header">
-        <h3>{{ t('annotation.stats.taskCorrections') }}</h3>
-        <div class="tp-actions">
-          <button class="btn btn-sm" :disabled="exporting" @click="exportCsv">
-            {{ exporting ? t('annotation.stats.exporting') : t('annotation.stats.exportCsv') }}
-          </button>
-          <button class="btn btn-sm" :disabled="importing" @click="pickImportFile">
-            {{ importing ? t('annotation.stats.importing') : t('annotation.stats.importCsv') }}
-          </button>
-          <button class="btn btn-sm btn-primary" :disabled="applying" @click="applySuggestions">
-            {{ applying ? t('annotation.stats.applying') : t('annotation.stats.applySuggestions') }}
-          </button>
-          <input
-            ref="fileInput"
-            type="file"
-            accept=".csv,text/csv"
-            style="display: none"
-            @change="onImportFile"
-          />
-        </div>
-      </div>
-
-      <div v-if="tpNotice" class="alert alert-success" role="status">{{ tpNotice }}</div>
-      <div v-if="tpError" class="alert alert-danger" role="alert">{{ tpError }}</div>
-
-      <div v-if="tpLoading" class="loading-container">
-        <p>{{ t('annotation.stats.loading') }}</p>
-      </div>
-
-      <div v-else-if="tpRows.length" class="table-container">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>{{ t('annotation.stats.tpTaskType') }}</th>
-              <th class="col-number">{{ t('annotation.stats.tpTotal') }}</th>
-              <th class="col-number">{{ t('annotation.stats.tpAgrees') }}</th>
-              <th class="col-number">{{ t('annotation.stats.tpCorrected') }}</th>
-              <th class="col-number">{{ t('annotation.stats.tpRate') }}</th>
-              <th>{{ t('annotation.stats.tpSuggested') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in tpRows" :key="row.task_type">
-              <td><span class="badge badge-blue">{{ row.task_type }}</span></td>
-              <td class="col-number">{{ row.total }}</td>
-              <td class="col-number text-success">{{ row.agrees }}</td>
-              <td class="col-number text-danger">{{ row.corrected }}</td>
-              <td class="col-number">{{ (row.correction_rate * 100).toFixed(1) }}%</td>
-              <td>
-                <span v-if="row.suggestion" class="badge badge-gray">
-                  {{ row.suggestion.tier }} · {{ row.suggestion.tier_source }}
-                </span>
-                <span v-else class="tp-muted">—</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <p v-else class="tp-muted">{{ t('annotation.stats.noData') }}</p>
+        </DataTable>
+      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
-.tp-section {
-  margin-top: 1.5rem;
-}
-
-.tp-header {
+/* 嵌入面板：宿主 AutoRoutingOpsView 提供外层 padding 与纵向间距 */
+.panel-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-}
-
-.tp-header h3 {
-  margin: 0;
-  font-size: 1.125rem;
-  font-weight: 600;
-}
-
-.tp-actions {
-  display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
 
-.tp-muted {
-  color: var(--text-muted);
-}
-
-.stats-page {
-  padding: 1.5rem;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
-}
-
-.page-header h2 {
-  margin: 0;
-  font-size: 1.5rem;
+.panel-title {
+  font-size: 0.9375rem;
   font-weight: 600;
-}
-
-.page-desc {
-  color: var(--text-muted);
-  margin-bottom: 1.5rem;
-}
-
-.loading-container {
-  text-align: center;
-  padding: 3rem;
-  color: var(--text-muted);
 }
 
 .stats-container {
   display: flex;
   flex-direction: column;
-  gap: 2rem;
-}
-
-/* Stats Cards */
-.stats-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
-}
-
-.stat-card {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 1.25rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  transition: box-shadow 0.2s;
-}
-
-.stat-card:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-.stat-icon {
-  width: 48px;
-  height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.5rem;
-  border-radius: 8px;
-  flex-shrink: 0;
-}
-
-.stat-icon-primary {
-  background: var(--info-bg);
-}
-
-.stat-icon-success {
-  background: var(--success-bg);
-}
-
-.stat-icon-green {
-  background: var(--success-bg);
-}
-
-.stat-icon-red {
-  background: var(--danger-bg);
-}
-
-.stat-icon-info {
-  background: color-mix(in srgb, var(--purple) 14%, transparent);
-}
-
-.stat-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.stat-label {
-  font-size: 0.875rem;
-  color: var(--text-muted);
-  margin-bottom: 0.25rem;
-}
-
-.stat-value {
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: var(--text);
-}
-
-/* Stats Section */
-.stats-section {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1.5rem;
+  gap: 1.25rem;
+  margin-top: 0.75rem;
 }
 
 .stats-section h3 {
-  margin: 0 0 1rem 0;
-  font-size: 1.125rem;
+  margin: 0 0 0.5rem 0;
+  font-size: 1rem;
   font-weight: 600;
-}
-
-/* Table */
-.table-container {
-  overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .data-table {
@@ -569,15 +193,15 @@ onMounted(() => {
 
 .data-table th {
   text-align: left;
-  padding: 0.75rem 1rem;
+  padding: 0.6rem 0.8rem;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
 .data-table td {
-  padding: 0.75rem 1rem;
+  padding: 0.6rem 0.8rem;
   border-bottom: 1px solid var(--border);
   font-size: 0.875rem;
 }
@@ -593,12 +217,6 @@ onMounted(() => {
 
 .col-bar {
   width: 200px;
-}
-
-.empty-row {
-  text-align: center;
-  padding: 2rem !important;
-  color: var(--text-muted);
 }
 
 .text-success {
@@ -631,7 +249,6 @@ onMounted(() => {
   color: var(--text);
 }
 
-/* Bar Chart */
 .bar-container {
   width: 100%;
   height: 20px;

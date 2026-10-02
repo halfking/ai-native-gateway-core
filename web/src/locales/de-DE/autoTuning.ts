@@ -1,11 +1,9 @@
 // autoTuning.ts — 路由调参页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: 'Routing-Tuning',
-    desc: 'Classifier-Tuning-Vorschläge (automatisch erzeugt → Backtest → human genehmigt, hot angewendet) sowie Qualitätsbericht der Klassifikation',
     refresh: 'Aktualisieren',
     refreshing: 'Aktualisieren…',
-    loading: 'Laden…',
     loadFailed: 'Laden fehlgeschlagen',
+    panelTitle: 'Tuning-Vorschläge (Freigabe = hotwirksam innerhalb 5 Min.)',
     noProposals: 'Noch keine Vorschläge (feedback_analyzer erzeugt sie pro Zeitfenster)',
   filter: {
     statusAll: 'Alle',
