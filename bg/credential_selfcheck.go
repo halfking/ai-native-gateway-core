@@ -292,11 +292,24 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		--   改为补这条臂把「止错」的部分保住。
 		--
 		-- 纯增量：两条臂同时生效，命中集合是原集合的超集，不改变今天的挑选结果
-		-- （24h 内 v1 已覆盖全部业务失败——实测 15 个两侧都有的凭据已包含在 41 里）。
+		-- （24h 内 v1 已覆盖全部业务失败——§9.28 修正：两侧都有的凭据是 **19** 个而非 15，
+		-- 原先只读父表少计了 4 个；仅 v1 有的 22 个仍全部是 node_probe）。
 		-- credential_id 类型不同（v1 是 bigint、session_turns 是 text），故显式 CAST。
+		--
+		-- ⚠️ 必须同时读 **hot 与父表**两个面（§9.28）。会话族的写方只写
+		-- session_turns_hot，冷行由 promote_session_turns_hot_to_partition
+		-- 搬到分区父表，**两者的边界随 promote 节奏移动**（本机实测边界在
+		-- 2026-10-02 06:06:31 / 06:07:14，父表落后 hot 约 8.7 小时）。
+		-- 只读父表 ⇒ **对最新轮次盲**，而最新轮次恰恰是刚失败、最该被抓的那些。
+		-- 710 视图用的是 session_turns_hot UNION ALL session_turns（同款惯例），
+		-- 直读方必须照做。
 		LEFT JOIN LATERAL (
 			SELECT MAX(st.ts) AS last_error_at
-			FROM session_turns st
+			FROM (
+				SELECT ts, success, status_code, credential_id FROM session_turns
+				UNION ALL
+				SELECT ts, success, status_code, credential_id FROM session_turns_hot
+			) st
 			WHERE st.credential_id = c.id::text
 			  AND st.ts >= now() - interval '24 hours'
 			  AND (st.success = FALSE OR COALESCE(st.status_code, 0) >= 400)

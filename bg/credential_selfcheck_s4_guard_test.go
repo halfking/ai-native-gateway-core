@@ -69,9 +69,25 @@ func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 			"node_probe（探针流量按设计不走 session 写路径，无法端口）。\n" +
 			"补这条臂是为了保住业务失败检测。")
 	}
-	if !strings.Contains(seArm, "FROM session_turns st") {
+	if !strings.Contains(seArm, "FROM session_turns st") && !strings.Contains(seArm, "FROM session_turns") {
 		t.Error("session 臂的证据源不是 session_turns —— session_turns 不受 S4 停写门管，\n" +
 			"换别的表会重新引入跨门边界。当前臂内容见测试输出")
+	}
+	// §9.28：必须同时读**两个存储面**。写方只写 session_turns_hot，冷行由
+	// promote 搬到分区父表，边界随 promote 节奏移动（实测父表落后约 8.7 小时）。
+	// 只读父表 ⇒ 对最新轮次盲 —— 而真库实测在父表覆盖不到的那段窗口里，
+	// 旧形状看到 0 个失败轮次、两面合并看到 761 个：**这条臂存在的意义正是抓
+	// 最新失败，单面读法让它对自己的目标完全失明。**
+	for _, want := range []string{
+		"SELECT ts, success, status_code, credential_id FROM session_turns",
+		"SELECT ts, success, status_code, credential_id FROM session_turns_hot",
+		"UNION ALL",
+	} {
+		if !strings.Contains(seArm, want) {
+			t.Errorf("session 臂没有同时读会话族的两个存储面，缺：%s\n"+
+				"只读父表会漏掉 session_turns_hot 里的最新失败轮次（实测该窗口 761 个），\n"+
+				"而这条臂存在的意义恰恰是抓最新失败。710 视图同款 UNION ALL 惯例。", want)
+		}
 	}
 	if !strings.Contains(seArm, "st.credential_id = c.id::text") {
 		t.Error("session 臂没有把 credential_id 显式转成 text —— v1 侧是 bigint、\n" +
