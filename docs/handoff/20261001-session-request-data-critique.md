@@ -481,3 +481,65 @@ git fetch origin && git log --oneline HEAD..origin/main
 - 读端 74/105 静默退化未处置 ⇒ S4 灰度方案必须自带对账，不能「看接口是否报错」。
 - `admin/session_tenant.go` 判 unaffected 依赖的假设（三条 session 腿对新 task 是否都及时
   落行）仍未实测。
+
+---
+
+## 2026-10-02 追加（第二轮）：§9.19 两条待办收口
+
+### 修了一个真的结构性误报机：S4 停写 → 对账器报假账
+
+`usageCreditSQL()` 用 `FULL OUTER JOIN` 比对 **门内**的 `request_logs_hot.credits_charged`
+与 **族外、且永不停写**的 `credit_ledger_hot`，而 `bg/ledger_reconciliation.go` **完全不咨询
+S4 门**。停写一生效：usage 臂冻结、credit 臂继续增长 ⇒ 切换点之后每个请求都落进
+「只有 credit」分支（charged=0 / debited>0），被写进 `maas_reconciliation_findings`。
+**那些不是账务缺陷，就是停写本身**，且无上界。
+
+同文件的 `balanceChainSQL()` 只读 `credit_ledger_hot`、不跨族 ⇒ **只挡一项**，
+把它一起挡掉就是拿假报机换静默洞。
+
+修法沿用本审计已建的 `staleExpiryMayRun` 先例：纯函数
+`usageCreditComparability(logsWriteEnabled) (bool, string)` + 稳定原因键
+`s4_stop_write`，在**发查询之前**短路；新增 `SkippedChecks()` 把「跳过」与
+「扫了没发现」分开（两者返回的 0 在计数上无法区分）。
+
+### 这一轮最该记住的：我自己的守卫失败了三次
+
+1. **判据打在错误的 `return` 上** —— 用「函数体内第一个 `return 0`」判短路；删掉 skip 分支的
+   return 后，它匹配到了后面查询错误处理里的那个 ⇒ 门照样绿。**变异验证救了这条命**：
+   门是绿的，但变异是红的，这才暴露出判据钉在了错误的节点上。
+2. **只看 `IfStmt.Cond`** —— 实际写法是 `if ok, reason := f(...); !ok {`，调用在 **Init**，
+   于是门在**正确代码上**报「门不存在」。
+3. **测试执行了它声称要验证的那一步** —— 跳过列表的重置测试**手工**执行了 `r.skipped = nil`，
+   所以把 `RunOnce` 里的重置删掉仍然全绿。抽成具名方法 + AST 钉住调用位置与先后。
+4. **崩溃被当成断言命中** —— `ast.Inspect(nil, …)` panic（`IfStmt.Init` 可为 nil），
+   变异 A 的「红」其实是崩溃。差点把一次无效的变异验证当成有效证据。
+
+五道变异（抽掉门 / skip 不 return / 门恒 true / 删重置 / 重置挪位）全部被正确抓住。
+
+### 修正了我自己的一处判断（42 列按可修性二分）
+
+§9.18 说 `token_band` 要「随迁进 `session_turns`」—— **错了**。真库差集：
+
+- **A 类 5 列**（`origin_stage`、`token_band`、`client_forwarded_for`、`trace_events`、
+  `upstream_protocol`）：**`session_turns` 里已经有，只是 710 视图没投影**
+  ⇒ 纯 `CREATE OR REPLACE VIEW` 投影即可，无回填、不动写路径。
+- **B 类 37 列**：其中 23 列已在 `session_turn_details`（733 特征层，61 列、在写）
+  ⇒ 真正缺列的只剩 **19 列**。
+
+顺带一个结构事实：**`session_turns` 根本没有 `gw_task_id`**，任务关联只存在于特征层。
+⇒ 若要补 A 类那 5 列，**特征层才是对的任务关联源**，这是改 710 投影时必须先定的语义。
+
+仍不擅自改 710：那是共享契约变更（pin 要同步），且 A 类含 `origin_stage` ——
+**投影它等于把本轮刚修掉的那条越列路重新打开**，必须同时把所有视图读方切到视图变体。
+
+### `assertTaskInTenant`：我原来问错了
+
+遗留问的是「三条 session 腿是否都及时落行」，但那是 OR-of-EXISTS，任一命中即放行，
+「三条都落」从来不是不变量。真正的问题是「**有没有 task 五条腿一条都没落**」。
+
+实测：30 天内 `request_logs_hot` 7 个 distinct task，6 个 session 族未覆盖，
+**五条腿全未覆盖 = 0**，门当前不会误拒。
+
+**但面向终局有真约束**：门依赖 `request_logs_hot` + `request_logs` 两条 v1 腿，
+而终局目标正是删掉这两张表 ⇒ v1 退役后「只在 v1 留痕」的历史任务会对**所有人** 404
+（权限门翻转成阻断所有人）。**S4 退出判据必须包含「v1-only 历史已回填进 session 族」。**

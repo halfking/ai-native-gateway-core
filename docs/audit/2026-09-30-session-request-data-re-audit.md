@@ -2933,3 +2933,123 @@ WHERE ... GROUP BY token_band
    覆盖，要么上真正的 SQL 解析器（成本另算）。
 3. **`admin/session_tenant.go` 判 unaffected 的未实测假设**（§9.17.4 遗留 2）仍未测。
 4. **`credential_recovery` 写授权缺陷未修**，仍阻塞 S4 灰度。
+
+---
+
+## §9.19 两条待办收口：S4 门控影响半径 + session_tenant 权限门假设（2026-10-02）
+
+§9.18 之后剩的两条**不被产品决策阻塞**的待办，本轮做完。结论一条是「我原来的问法问错了」，
+一条是「修了一个真的结构性误报机」。
+
+### §9.19.1 S4 门控影响半径：范围声明与实际跨界的对账（已修）
+
+`settings.KeyRequestLogsWriteEnabled` 声明的范围是 **request_logs 宽族**
+（`request_logs_hot` 主行 + `request_logs_bodies_hot` 正文）。逐个调用点核实：
+
+| 门调用点 | 同文件/同事务内触及的关系 | 是否越界 |
+|---|---|---|
+| `admin/telemetry.go:391,454` | `request_logs_hot` / `request_logs_bodies_hot` / 镜像 | 否，范围正确；注释明确「关停后只保留 usage_ledger 计费行」 |
+| `domains/hooks/observability/telemetry/client.go:1140,1284,2014,2067` | 同上 + `usage_ledger_hot` | 否，`usage_ledger` 是**有意不归该门管**（计费不受停写影响） |
+| `internal/trace/trace.go:473` | `request_logs` / `request_logs_hot` | 否 |
+| `discovery/discovery.go:1110` | `request_logs` | 否 |
+| **`bg/ledger_reconciliation.go`（不咨询该门）** | `request_logs_hot` × **`credit_ledger_hot`** | **越界** |
+
+真缺陷形态：`usageCreditSQL()` 用 `FULL OUTER JOIN` 比对
+**门内**的 `request_logs_hot.credits_charged` 与**族外、且永远不会停写**的
+`credit_ledger_hot`（`entry_type='consume'`），而对账器**完全不咨询 S4 门**。
+
+停写一旦生效：
+
+- usage 臂 → 在切换点**冻结**（不再有新 `credits_charged` 行）
+- credit 臂 → **继续增长**（计费不归该门管）
+
+⇒ 切换点之后的每个请求都落进 `FULL OUTER JOIN` 的「只有 credit」分支
+（`charged=0 / debited>0`），被当成差异写进 `maas_reconciliation_findings`。
+**那些不是账务缺陷，就是停写本身**，且数量无上界、不是瞬态。
+
+同一文件的 `balanceChainSQL()` 不受影响 —— 它整段只读 `credit_ledger_hot`
+（按 `(created_at, id)` 回放 `balance_after` 链，自洽），不跨族。**所以只挡一项**。
+
+**修法**（沿用本审计已建的 `staleExpiryMayRun` 先例）：
+
+- 新增纯函数 `usageCreditComparability(logsWriteEnabled bool) (bool, string)` +
+  稳定原因键 `usageCreditSkipS4StopWrite = "s4_stop_write"`；
+- `checkUsageCredit` 在**发查询之前**短路，记录原因、返回 0；
+- 新增 `SkippedChecks()`：跳过的检查返回的 0 与「扫了没发现」的 0 在计数上无法区分，
+  必须有一条独立通道把它们分开 —— **「扫到 0 个问题」和「扫了 0 个」不是同一句话**。
+  `resetSkipped()` 在每轮 `RunOnce` 开头清空，否则会为**真跑过且确实没发现**的一轮
+  继续报「已跳过」，那比没有这个功能更坏。
+
+### §9.19.2 我自己的守卫失败了三次（都记在这，因为都是真错）
+
+1. **判据打在错误的 `return` 上。** 结构门最初用「函数体内第一个 `return 0`」判短路。
+   变异（删掉 skip 分支的 `return`）后它匹配到了后面查询错误处理里的 `return 0` ⇒
+   **门照样绿**。改为用 AST 锁定「调用该谓词的那个 `IfStmt` 的 Body 内是否有 `ReturnStmt`」。
+2. **只看 `IfStmt.Cond` 漏掉了实际写法。** 门写成
+   `if ok, reason := usageCreditComparability(...); !ok {`，调用在 **Init** 而非 Cond
+   ⇒ 门在**正确代码上**报「门不存在」。已同时检查 Init。
+3. **测试执行了它声称要验证的那一步。** 跳过列表的重置测试**手工**执行了
+   `r.skipped = nil`，所以把 `RunOnce` 里的重置删掉仍然全绿。抽成具名 `resetSkipped()`
+   并用 AST 钉住 `RunOnce` 在两个检查**之前**调用它。
+4. （附带）`ast.Inspect(nil, …)` 会 panic（`IfStmt.Init` 可为 nil）。修之前，
+   变异 A 的「红」其实是**崩溃**而不是断言命中 —— 差点把一次无效的变异验证当成有效证据。
+
+**五道变异全部被正确抓住**：抽掉门 / skip 分支不 return / 门恒返回 true /
+删掉 `RunOnce` 的重置 / 把重置挪到检查之后。
+
+### §9.19.3 42 个「物理表独有列」按可修性二分（修正 §9.18 的一处判断）
+
+§9.18 把 `compression_stats` 的 `token_band` 归为「需随迁进 `session_turns`」。**这个判断错了**，
+真库差集显示 42 列分成两类：
+
+| 类别 | 数量 | 列 | 修法 |
+|---|---:|---|---|
+| **A：`session_turns` 已有，只差 710 视图投影** | 5 | `origin_stage`、`token_band`、`client_forwarded_for`、`trace_events`、`upstream_protocol` | **给视图补投影即可，无需回填、无需动写路径** |
+| **B：`session_turns` 也没有** | 37 | 见下 | 需迁移 + 历史回填 |
+
+B 类里又有 **23 列已在 `session_turn_details`（733 特征层）**里 —— 该表 61 列、在写
+（1,682,905 行，与 `session_turns` 的 1,682,911 同步；`_hot` 1,286 行、同为当前），
+且 **`session_turns` 根本没有 `gw_task_id`，任务关联只存在于特征层**。
+⇒ 真正缺列的只剩 **19 列**：
+`billed_despite_cancellation`、`compression_end_index`、`compression_ratio`、
+`compression_start_index`、`continuation_keywords`、`discard_events`、`ir_extensions`、
+`is_terminal`、`outbound_body`、`request_depth`、`sanitizer_mutations`、
+`session_summary`、`session_title`、`vendor_metadata`，以及 A 类那 5 列
+（它们在特征层也没有，但**在 `session_turns` 里有**，仍属纯投影问题）。
+
+**这条结论改变了修法的成本估算**：`token_band` 从「动写路径 + 回填」降级为
+「一条 CREATE OR REPLACE VIEW 加 5 个投影」。但**本轮仍不擅自改**：
+改 710 视图是共享契约变更（`TestRequestLogsViewSessionArmPinIsCurrent` 等
+pin 需要同步），且 A 类里 `origin_stage` 正是本轮刚修掉的越列来源，语义要逐列确认。
+
+### §9.19.4 `assertTaskInTenant`：我原来问错了问题
+
+§9.17.4 遗留 3 问的是「三条 session 腿对新 task 是否都及时落行」。**这个问题本身没有
+决策价值** —— 那是个 OR-of-EXISTS，任一腿命中即放行，「三条腿都落」从来不是不变量。
+真正该问的是：**有没有 task 五条腿一条都没落**。
+
+30 天窗口实测（`request_logs_hot` 侧，因为 session 侧的任务集就是 `session_turn_details`
+本身、按构造自覆盖）：
+
+| 量 | 值 |
+|---|---:|
+| `request_logs_hot` 的 distinct task | 7 |
+| 其中 session 族（details / details_hot / summaries）全未覆盖 | 6 |
+| 五条腿全未覆盖 ⇒ 会 404 | **0** |
+
+那 6 个仍被 v1 腿命中，所以门当前不会误拒。**但面向终局有一个真约束**：
+
+`assertTaskInTenant` 的五条腿里有两条是 `request_logs_hot` + `request_logs` ——
+**而本项目的终局目标正是删掉这两张表**。v1 退役后，那些「只在 v1 留痕、未回填进
+session 族」的历史任务会对**所有人** 404（权限门翻转成阻断所有人）。
+⇒ **S4 退出判据必须包含「v1-only 历史已回填进 session 族」这一条**，
+否则门会在 v1 真正消失的那一刻静默翻转。
+
+### §9.19.5 遗留（本节新增）
+
+1. **42 列的 A 类（5 列）值得单独做**：纯视图投影，无回填。但改 710 是共享契约变更，
+   需同步 pin，且要逐列确认语义（`origin_stage` 刚被本轮修成越列来源，投影它等于
+   把那条路重新打开 —— **必须同时把所有视图读方的谓词切到视图变体**）。
+2. **19 列 session 族真的没有**，需要迁移 + 回填，或明确裁决「这些列随 v1 一起退役」。
+3. `assertTaskInTenant` 依赖两张将被删除的表 ⇒ 写入 S4 退出判据。
+4. `credential_recovery` 写授权缺陷未修（阻塞灰度）。
