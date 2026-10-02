@@ -161,9 +161,66 @@ Responses SSE 帧，不是 `chat.completion.chunk`。后果：responses handler
 
 修复前同窗口 RESP:200 计数为 **0**。
 
-最终矩阵结果见 §八（含复审后修正的判据）。
+44 例矩阵的最终结果见 §八（用复审后修正的 `gw_verdict` 判据重跑，含 §6.2 修复）。
 
-## 八、遗留与如实说明
+## 八、最终矩阵结果（修复后，含 §6.2 修复）
+
+构建 `2.5.8.2392`（`git_sha=05cc1c71`），`VERIFY_PASS=1`，凭据解密冒烟
+`providers=587 creds=7 failed=0`。11 模型 × {chat, responses} × {流式, 非流式}
+= **44 例**。
+
+| 维度 | 结果 |
+|---|---|
+| HTTP 200 | **44 / 44** |
+| 流式 22 例（`gw_verdict` 判真实内容帧） | **22 / 22 CONTENT_OK** |
+| 非流式 22 例（解析 body 取 output_text / content） | **22 / 22 有真实答案** |
+
+非流式 22 例在 `max_tokens=16 / max_output_tokens=32` 下 glm-5.2 两例判 FAIL，
+经查是 **`finish_reason:"length"`——推理过程吃光了 token 上限**，网关与协议
+适配均无问题；把上限提到 256/512 后两例分别返回
+`finish_reason=stop, content="Hi there! 👋 How can I help you today?"` 与
+`status=completed, output_text=["Hi there! 👋 How can I help you today?"]`。
+**这是测试参数问题，不是产品缺陷，如实记录以免下次被当成回归。**
+
+### 8.1 判据本身也修了一处（量具缺陷）
+
+首轮重跑出现 5 例 `NO_CONTENT`（claude-sonnet-5/opus-5/fable-5-1、grok-4.7、
+glm-5.2 的 chat 流式）。核查发现是**量具坏了，不是被测物坏了**：`one()` 用
+`head -c 200` 截断 body，而 SSE 开头的若干 `: keep-alive` 注释行会吃满 200
+字节预算，使判别 token（`"object":"chat.completion.chunk"` /
+`output_text.delta`）落在截断点之后。
+
+已构造对照样本证明：同一 body（387 字节，判别 token 在第 363 字节），
+**旧判据（截断 200）报 `NO_CONTENT`（假阳性），新判据（读完整 body）报
+`CONTENT_OK`**。判据改为消费完整 body、仅显示列仍取 200 字节预览后，5 例假
+阳性消失。这与 §6.1 是同一类错误的两个方向：**判据既不能漏判失败，也不能
+误判成功。**
+
+### 8.2 与网关自身日志交叉核对
+
+矩阵结果不采信自述，用 `request_logs_hot` 独立复核（`credential_id=126`，
+`14:07` 之后，即修复后窗口）：
+
+| 客户端协议 | 上游协议 | protocol_conversion | ok | fail |
+|---|---|---|---|---|
+| openai-completions | **openai-responses** | true | **30** | 0 |
+| openai-responses | openai-responses | false | 30 | 0 |
+| openai-completions | openai-completions | false | 3 | 0 |
+
+按模型展开（`outbound_model`）：
+
+- `gpt-5.3-codex`：chat 客户端 **5 条走上游 openai-responses，5 ok / 0 fail**。
+  修复前该组合必 400（`code 4006`），这是桥接生效的直接证据。
+- `gpt-5.6-terra / gpt-6-sol / gpt-6-astra / gpt-6-luna / glm-5.3-glb`：
+  chat 客户端请求同样走上游 responses，各 4-5 条全成功。
+- 走 `openai-completions` 上游的 3 条是 Claude 系（`deepseek-v4-pro` 等回落
+  供应商），负向能力位被正确尊重，未被强行送上不支持 responses 的上游。
+
+**修复后窗口失败数 = 0**（`success=false AND t0_arrived_at > '14:07'` → 0）。
+日志中最后一条失败在 `13:56:15`，属部署 2392 之前的旧窗口（13:54-13:56 共
+11 条），与本次修复后验证无关——已按时间边界确认，不计入。
+
+## 九、遗留与如实说明
 
 1. **能力位需要「证据」才会开。** 闸门能开了，但仍需针对该 (credential, model)
    的探针跑过一次。本轮为验收用探针同款写入路径（`SetSupportsResponses`）
@@ -190,3 +247,9 @@ Responses SSE 帧，不是 `chat.completion.chunk`。后果：responses handler
    所有结论均已按 `credential_id` 过滤，未被污染（**未改**，属语义决策）。
 6. 未新建任何业务 API key；测试用系统 self-check key，仓库内无任何密钥材料
    （已 grep 确认新增文件与本审计文档不含密钥）。
+7. **矩阵的 token 上限对推理型模型偏小。** `max_tokens=16 / max_output_tokens=32`
+   会被 glm-5.2 这类先出 `reasoning_content` 的模型吃光，表现为
+   `finish_reason:"length"` + 空 `content`。这不是网关缺陷，但会让后续任何用小
+   token 上限的探测/回归产生假失败。**建议**（**未做**）：探针与自检脚本对
+   reasoning 型模型用 ≥256 的上限，或把 `finish_reason=length` 且 content 为空
+   单独归类而不是记 FAIL。
