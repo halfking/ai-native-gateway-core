@@ -218,8 +218,15 @@ func TestAudit_DispatchRefRoundTripKeepsSnapshot(t *testing.T) {
 // 队列等待无上界），而 TTL 之内结论可能已被改写。超过 prefetchMaxAgeSec
 // 的快照必须被丢弃并重新读取。
 //
-// 这条判据的判红方式是：把快照的 CapabilityUpdatedAt 拨到很久以前，
+// 这条判据的判红方式是：把快照的读取时刻拨到很久以前，
 // 同时把 Redis 上的真实结论改写成相反的值。若护栏不存在，会读到旧结论。
+//
+// ⚠️ 2026-10-03 复审改写：原版用 `mr.SetTime(base+60s)` 制造陈旧。那只在
+// 护栏拿 Redis 时钟去比 CapabilityUpdatedAt 时才成立——而那正是错的做法
+// （verdict 写入时刻 vs 快照读取时刻，见 TestProbe_AgeGuardComparesTheWrongClock）。
+// 现在年龄是**本地时长**，推进 miniredis 时钟不再让它变陈旧；必须拨的是
+// 快照自己的读取时刻。⚠️ 判据的「制造场景」手段必须跟着被测语义一起改，
+// 否则会出现「用例还在跑，但已经不测它声称测的东西」。
 func TestAudit_StaleSnapshotIsRejectedAndReread(t *testing.T) {
 	_, fpMgr, mr, _ := newF04ExecutorWithRedisClient(t)
 	const credID, model = 22, "gpt-5.6-terra"
@@ -243,17 +250,19 @@ func TestAudit_StaleSnapshotIsRejectedAndReread(t *testing.T) {
 	if err := fpMgr.SetSupportsResponses(ctx, credID, model, true); err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}
+	// 让这份快照「已经握在手里 60s」——年龄是本地时长，所以拨的是它自己。
+	snapshot.SnapshotReadAt = snapshot.SnapshotReadAt.Add(-60 * time.Second)
 
 	viaSnapshot, knownSnapshot, err := fpMgr.GetSupportsResponses(ctx, credID, model, snapshot)
 	if err != nil {
 		t.Fatalf("read via stale snapshot: %v", err)
 	}
-	// 快照 60s 前写的，超过 5s 上限 ⇒ 必须被丢弃重读 ⇒ 读到新值 true。
+	// 快照 60s 前读的，超过 5s 上限 ⇒ 必须被丢弃重读 ⇒ 读到新值 true。
 	if !knownSnapshot {
 		t.Fatalf("known=%v: a rewrote verdict must still be readable", knownSnapshot)
 	}
 	if !viaSnapshot {
-		t.Fatalf("supported=false, want true: a snapshot written %ds ago must be rejected "+
+		t.Fatalf("supported=false, want true: a snapshot read %ds ago must be rejected "+
 			"and re-read (the request sat in the dispatch queue while the verdict was rewritten)",
 			60)
 	}
@@ -291,8 +300,9 @@ func TestAudit_FreshSnapshotIsStillUsed(t *testing.T) {
 	}
 }
 
-// TestAudit_SnapshotWithoutUpdatedAtIsReread 覆盖 pre-migration payload：
-// 没有 CapabilityUpdatedAt 的旧 payload，年龄不可知 ⇒ 不得当作新鲜。
+// TestAudit_SnapshotWithoutUpdatedAtIsReread 覆盖 age 不可知的快照：
+// 没有读取时刻的副本（不是从本进程的读路径来的，例如手工构造或经由
+// SetNodeState 往返过一次）⇒ 不得当作新鲜。
 func TestAudit_SnapshotWithoutUpdatedAtIsReread(t *testing.T) {
 	_, fpMgr, mr, _ := newF04ExecutorWithRedisClient(t)
 	const credID, model = 22, "gpt-5.6-terra"
@@ -307,8 +317,8 @@ func TestAudit_SnapshotWithoutUpdatedAtIsReread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	// 抹掉时间戳，模拟 pre-migration payload 形状。
-	state.CapabilityUpdatedAt = 0
+	// 抹掉读取时刻，模拟「不是一次实时读」的副本形状。
+	state.SnapshotReadAt = time.Time{}
 	// 同时让 Redis 上的真实结论相反。
 	if err := fpMgr.SetSupportsResponses(ctx, credID, model, true); err != nil {
 		t.Fatalf("rewrite: %v", err)
@@ -352,14 +362,19 @@ func TestAudit_AgeGuardMustNotDisableTheOptimisation(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	// 让快照「明确新鲜但非同一瞬间」：比护栏上限新，却至少 1 秒旧。
-	// 这一步是必需的，不是装饰 —— 护栏写死 0 时判据是 now-updatedAt > 0，
-	// 若快照与 now 落在同一秒，0 > 0 为假、快照照样被采信，判据就会假绿。
-	// 真实队列等待必然跨秒，所以这才是「新鲜」的真实形状。
+	// 这一步是必需的，不是装饰 —— 护栏写死 0 时判据是 age > 0，
+	// 若快照与 now 落在同一瞬间，0 > 0 为假、快照照样被采信，判据就会假绿。
+	// 真实队列等待必然非零，所以这才是「新鲜」的真实形状。
+	//
+	// ⚠️ 2026-10-03 复审：原来这里推进的是 miniredis 时钟。年龄改成**本地
+	// 时长**之后那一步不再影响 age，本例会退化成「年龄≈0」的形状——也就是
+	// 恰好是 M6（护栏=0）杀不掉的形状，判据会假绿。**判据造场景的手段必须
+	// 跟着被测语义一起改**，否则它还在跑，却已经不测它声称测的东西。
 	age := time.Duration(prefetchMaxAgeSecForTest-1) * time.Second
 	if age < time.Second {
 		age = time.Second
 	}
-	mr.SetTime(base.Add(age))
+	snapshot.SnapshotReadAt = snapshot.SnapshotReadAt.Add(-age)
 	t.Logf("快照年龄 = %v（护栏上限 = %ds）", age, prefetchMaxAgeSecForTest)
 	if age >= time.Duration(prefetchMaxAgeSecForTest)*time.Second {
 		t.Fatalf("premise broken: the snapshot is already older than the guard (%v)", age)
@@ -511,7 +526,7 @@ func TestAudit_NoPrefetchStaysWithinRoundTripBudget(t *testing.T) {
 
 // TestAudit_RejectedSnapshotCostsOneExtraReadAndNothingElse records what the
 // rejection path actually costs, so the trade is visible rather than assumed:
-// prefetch TIME (budget check) + fallback GET + fallback TIME.
+// the snapshot's verdict is discarded, then one fallback GET + its TIME.
 func TestAudit_RejectedSnapshotCostsOneExtraReadAndNothingElse(t *testing.T) {
 	_, fpMgr, mr, client := newF04ExecutorWithRedisClient(t)
 	const credID, model = 22, "gpt-5.6-terra"
@@ -526,8 +541,11 @@ func TestAudit_RejectedSnapshotCostsOneExtraReadAndNothingElse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	// Push the snapshot past the age guard.
-	mr.SetTime(base.Add(60 * time.Second))
+	// Push the snapshot past the age guard. Age is a LOCAL duration, so the
+	// knob is the snapshot's own read stamp (2026-10-03: this used to advance
+	// the miniredis clock, which stopped working once age stopped being a
+	// Redis-clock comparison — see the note on the other two Audit cases).
+	snapshot.SnapshotReadAt = snapshot.SnapshotReadAt.Add(-time.Duration(prefetchMaxAgeSecForTest+55) * time.Second)
 
 	counter := &redisCmdCounter{}
 	client.AddHook(counter)
