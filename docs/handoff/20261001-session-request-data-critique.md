@@ -3254,3 +3254,58 @@ cohort 谓词 = `request_logs.is_auto_request IS TRUE` + `SQLExcludeSyntheticAct
 在我上一轮报告时仍在被写）。**不 stash、不 restore、不代为提交别人的在途工作。**
 ⚠️ 远端 `a0da9066d` 同时动了 6 个我的文件，且它也做了「指纹 §9.52 两载体同步」，
 合并时**不能盲目选 ours/theirs**，必须逐处看。
+
+---
+
+## 第三十七轮（§9.56）：查 auto-route 停止产出 —— 定位到当前状态，**归因未成立**
+
+### 能验的
+
+**机制 (ii)「写入侧丢弃」被排除。** 252 的 `/metrics`（`127.0.0.1:8780`）返回
+`llm_gateway_auto_selections_dropped_total 0`，而 `llm_gateway_auto_selections_total`
+**完全不出现**——它是带标签的 CounterVec，首次 Inc() 前不导出任何样本，缺席即
+「一次都没写过」。进程启动于 **2026-10-01 05:19:09**，已跑 1 天 17 小时。
+
+⇒ **当前是机制 (i)：决策器根本没产出 selection**，不是被丢弃。
+
+### 不能验的（本节不给 09-09 的归因）
+
+| 想要的证据 | 可得性 |
+|---|---|
+| 09-08/09-09 应用日志 | ❌ journal **最早只到 2026-10-02 16:22**（7 小时）。「batch insert failed 计数 0」覆盖不到出事那天，**不构成证据** |
+| `auto_selections_total` 历史值 | ❌ 252 **没有 Prometheus/Grafana**，无 TSDB |
+| 文件日志 | ❌ 只有 `resource_monitor.log` / `shutdown.log`，无覆盖 09-09 的应用日志 |
+
+**要定因需要**：覆盖 09-08/09-09 的应用日志，或 Prometheus 侧
+`llm_gateway_auto_selections_total` 的历史序列。在此之前任何「部署/开关/探针」
+的说法都是编的。
+
+### ★让这件事两周半没被发现的缺口
+
+**`llm_gateway_auto_selections_total` 没有任何告警。** §9.44 建的告警全管**读侧**，
+**产出侧「写入量归零」一直没有门**。这与 §9.37「没有告警读的指标是装饰」是
+**镜像形态**：这个指标**有生产者、有指标、无消费者**，于是它在监控上根本不存在。
+
+**本轮不落这个告警**：`deploy/prometheus/rules/` 正被并行会话 `a0da9066d` 改动，
+我的合并尚未解封 ⇒ 记账为下一轮第一件事。
+
+### 下一轮提示词（接第三十七轮）
+
+> ⚠️ **先解封合并**：`6841c90a8`(§9.54) / `0e2ea9e2f`(§9.55) / 本节 共 3 个
+> 我的提交 + 3 个并行会话提交仍未推送。阻塞在 `sql/schema/01-schema.sql`、
+> `sql/schema/installed_startup_migrations.tsv`、
+> `deploy/sql/schemas/baseline/01-schema.sql` 的**未提交**改动。
+> **不 stash、不 restore、不代为提交别人的在途工作。**
+> 解封后合并要逐处看，不能盲目 ours/theirs：远端 `a0da9066d` 也做了
+> 「指纹 §9.52 两载体同步」，和我的 §9.52 改同一批文件。
+>
+> ① **解封后立刻做**：给 `llm_gateway_auto_selections_total` 加
+>    「写入量归零」告警（带活动守卫，避免 worker 未启动时误报）。
+>    判据要求：必须能区分「selection 写入量为 0」与「指标未注册」——
+>    后者是 CounterVec 首次 Inc() 前不导出，**直接用 increase() 会得到 no-data 而非 0**。
+>    这是本条告警最容易踩的坑。
+> ② **§9.56 的 09-09 归因仍未成立**。若能拿到覆盖 09-08/09-09 的日志或
+>    Prometheus 历史序列，这是**最优先**的取证；在拿到之前不要写归因。
+> ③ 需要拍板的三项仍未变：§9.44 cohort（**注意：§9.54/§9.55 已表明 (a)/(b) 都不是
+>    杠杆，真正的前置是「cohort 总体 ≠ 被结算总体」**）、§9.49.8 是否扩档、
+>    §9.48 `silently_frozen` 21 条口径。
