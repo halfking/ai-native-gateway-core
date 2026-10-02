@@ -92,6 +92,7 @@ func init() {
 	registerRoutingMetrics()
 	registerLiveFilterMetrics()
 	registerRefreshMetrics()
+	registerRoleFallbackMetrics()
 }
 
 // DecisionPoolLabel 与 DecisionReasonLabel 是 recordRoutingDecision
@@ -303,4 +304,130 @@ func recordCacheMiss() {
 	if cacheMissTotal != nil {
 		cacheMissTotal.Inc()
 	}
+}
+
+// R53 (2026-10-02) role 偏好层可观测性。
+//
+// 诉求"低价不可用要退主流"（R52 修复）本身是**静默的**：轻量池整层掉线时
+// 请求照常成功，只是静默升档到重量模型。审计字段 Decision.RoleFallbackLayer
+// 已经落进 request_logs.auto_decision（JSONB），但那是"事后翻库"的观测面，
+// 没有任何主动告警。本指标把同一个值送进 Prometheus，让"轻量池整层掉线"
+// 成为可被告警的事件。
+//
+// 为什么需要这个指标，而不能直接对 SQL 写告警：
+//
+//	request_logs.auto_decision->>'role_fallback_layer' 在父开关
+//	AUTO_ROLE_ROUTING_ENABLED 关闭时**恒为 NULL**——Decision.RoleFallbackLayer
+//	带 omitempty，flag-off 时 rolePrefs 为空、字段根本不进序列化。所以一条
+//	"比例 = N/N" 的 SQL 告警在 flag-off 部署上返回 NULL，与"开关开着但从
+//	没回退过"在监控面板上长得一模一样：都是"没数据"。运维据此无法区分
+//	"轻量池健康"和"这套机制压根没开"。
+//
+// 本指标用两个 label 值把这两件事分开：
+//
+//	layer="kind"        role 路由介入且命中第 1 层（轻量池）
+//	layer="mainstream"  role 路由介入且整层缺席后落第 2 层（重量池）← 要告警的
+//
+// 两个值在 init 时以 Add(0) 预置，因此 flag-off 部署上 series 依然存在（读数
+// 0），运维能确认"机制已装载但一次都没进过 role 路由"——这是与 SQL 侧 NULL
+// 最重要的区别。分母用两个值之和（role 路由实际介入的请求数），而不是
+// 全量 auto 请求数：后者会把 main 会话等无关流量算进分母，让比例失去意义。
+//
+// 刻意不进 telemetry.AutoSelection（同 R52 的取舍）：本指标是诊断量，
+// 不是 (task_type, profile) 奖励单元的输入，进选型学习表会污染学习样本。
+var (
+	// roleFallbackLayerTotal 只在 role 路由**介入**时递增（父开关开 +
+	// roleLLMRouter 已装配）。空串/false 分支不埋点，因此两个 label 之和
+	// 恰好是"role 路由实际改过 winner 的请求数"。
+	roleFallbackLayerTotal *prometheus.CounterVec
+	// roleRoutingActiveGauge 恒定反映 AutoRoleRoutingEnabled 开关态，
+	// 供告警表达式区分"没回退"与"没开"。0/1 两值，不会引入基数问题。
+	roleRoutingActiveGauge prometheus.Gauge
+)
+
+// newRoleFallbackMetrics 构造本指标族并注册进给定的 registry。
+//
+// 拆出独立构造函数（而不是全部写在 register 里）的唯一理由是**可测性**：
+// 预置行为（两个 label 值在零事件时就出现在 /metrics 上）只能在干净
+// registry 上证明——包内其他 R52 测试会调用决策路径给 DefaultRegisterer
+// 里的同名 series 加值，直接查默认 registry 时"series 存在"这件事会被
+// 污染证伪不了（series 早就被别的测试建出来了），门就变成恒绿。
+//
+// roleRoutingActive 显式作参数而不是函数内读全局 flag：包内
+// SetGlobalFeatureFlagsForTest 会改全局 flag，从 flag 读会让本函数的
+// 返回值依赖测试执行顺序。init() 传入的是启动期加载的 flag 值——
+// 生产里 feature flag 只在启动时读一次，gauge 不随运行期变更而更新。
+func newRoleFallbackMetrics(reg prometheus.Registerer, roleRoutingActive bool) (*prometheus.CounterVec, prometheus.Gauge) {
+	layers := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: routingMetricPrefix + "role_fallback_layer_total",
+			Help: "Role-routing preference layer hits, by layer. Counts ONLY requests where role routing " +
+				"was active (AUTO_ROLE_ROUTING_ENABLED on and role router assembled). layer=kind is the " +
+				"lightweight SelectLLM preference layer; layer=mainstream is the heavyweight fallback used " +
+				"when the kind layer is absent. Both label values are pre-initialized to 0 so a deployment " +
+				"with the feature disabled still exposes the series.",
+		},
+		[]string{"layer"},
+	)
+	// 预置两个 label 值：CounterVec 只有在被 WithLabelValues 过之后才出现在
+	// /metrics 上。flag-off 部署若不预置，PromQL 求和得到空向量，告警规则
+	// 拿到 no data 而非 0——"no data"和"真的是 0"在告警语义上完全不同，
+	// 前者会静默吞掉一次真实的整层掉线。
+	layers.WithLabelValues(RoleLayerKind).Add(0)
+	layers.WithLabelValues(RoleLayerMainstream).Add(0)
+
+	active := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: routingMetricPrefix + "role_routing_active",
+		Help: "1 when AUTO_ROLE_ROUTING_ENABLED is on and the role LLM router is assembled, else 0. " +
+			"Use it to tell \"no mainstream fallback happened\" (1, counter 0) apart from " +
+			"\"the feature is off\" (0) — the SQL side cannot: role_fallback_layer is omitempty " +
+			"and lands as NULL when the flag is off.",
+	})
+	if roleRoutingActive {
+		active.Set(1)
+	}
+
+	reg.MustRegister(layers, active)
+	return layers, active
+}
+
+func registerRoleFallbackMetrics() {
+	// 启动期读一次全局 flag：生产里 feature flag 只在启动时加载一次，
+	// gauge 反映的是本次启动的配置，不随后台改 flag 漂移。
+	active := false
+	if flags := GetFeatureFlags(); flags != nil {
+		active = flags.AutoRoleRoutingEnabled
+	}
+	roleFallbackLayerTotal, roleRoutingActiveGauge = newRoleFallbackMetrics(prometheus.DefaultRegisterer, active)
+}
+
+// RoleLayerKind / RoleLayerMainstream 是 Decision.RoleFallbackLayer 的取值
+// 常量（见 layerName）。在此导出以便告警规则与测试引用同一字面量。
+const (
+	RoleLayerKind       = "kind"
+	RoleLayerMainstream = "mainstream"
+)
+
+// recordRoleFallbackLayer 在 role 路由介入且命中某一层时埋点。
+//
+// 调用契约（三条，缺一条指标就会失真）：
+//  1. 只在 d.roleRoutingActive() 为真时调用——flag-off 不埋点，否则分母
+//     会被从未进过 role 路由的请求污染，"主流层占比"失去意义。
+//  2. 只在真正命中（hit != ""，即 winner 被偏好模型改写）时调用。
+//     两层皆缺席的静默让位**不**计入：那种情况 roleFallbackLayer 为空串，
+//     计入会让"让位"看起来像"命中了某一层"。
+//  3. layer 必须来自 layerName(rolePlan.layerOf(hit))，不要自己拼字符串。
+//
+// nil-safe：注册前调用直接跳过，不 panic。
+func recordRoleFallbackLayer(layer string) {
+	if roleFallbackLayerTotal == nil {
+		return
+	}
+	// 未知取值一律归入 kind 层：layerName 只产出上面两个值，这里的兜底
+	// 是防御性的——若将来新增第三层，忘记改这里的后果应该是"计数落在
+	// 轻量层"（让主流层告警保持保守、不误报），而不是静默丢弃埋点。
+	if layer != RoleLayerMainstream {
+		layer = RoleLayerKind
+	}
+	roleFallbackLayerTotal.WithLabelValues(layer).Inc()
 }
