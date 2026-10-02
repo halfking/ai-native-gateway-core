@@ -252,13 +252,18 @@ var registeredProjectionAppends = []string{
 	"NULL::double precision AS credits_rate_multiplier", // 738
 	// 816：740 落地时是 NULL 补位（理由「session 侧未回填」），该理由已被 252
 	// 生产库复测证伪——session 侧 85% 有值、且与 v1 配对 826/826 同义
-	// （审计 §9.60.6.1）。改为有源投影。守卫 CASE 与本投影既有的
-	// application_id / api_key_id / credential_id 转换同款：text→inet 没有类型
-	// 约束，一个畸形值会让整条 canonical 视图的每个读方报错。
-	"(CASE WHEN t.client_ip ~ '^[0-9a-fA-F:.]+$' THEN t.client_ip::inet END) AS client_ip", // 816
-	"t.origin_stage AS origin_stage",                    // 815
-	"t.token_band AS token_band",                        // 815
-	"t.client_forwarded_for AS client_forwarded_for",    // 815
+	// （审计 §9.60.6.1）。改为有源投影。
+	//
+	// 守卫在 817 从**字符类**换成**语义**（审计 §9.64）。原来那版
+	// `t.client_ip ~ '^[0-9a-fA-F:.]+$'` 只挡得住非字符集的垃圾：
+	// `192.168.1` / `deadbeef` / `1.2.3.4.5.6` / `:::` 全部通过它，
+	// 然后死在 `::inet` 上，真库实测打挂整条 canonical 视图的每一个读方。
+	// text→inet 没有类型约束这件事本身不变（守卫仍然必需），变的是**判据**：
+	// 从「像不像 IP」换成「是不是一个能被 ::inet 接受的字面量」。
+	"(CASE WHEN pg_input_is_valid(t.client_ip, 'inet') THEN t.client_ip::inet END) AS client_ip", // 817（投影来自 816，守卫来自 817）
+	"t.origin_stage AS origin_stage",                 // 815
+	"t.token_band AS token_band",                     // 815
+	"t.client_forwarded_for AS client_forwarded_for", // 815
 }
 
 var registeredColumnAppends = []string{
@@ -411,17 +416,30 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if !strings.Contains(ensureViewdef, "client_ip") {
 		t.Fatal("ensure must compose the 740 client_ip column into the rebuilt body")
 	}
-	// 816 起 client_ip 必须是**有源**投影且**带守卫**（审计 §9.61）：
-	// `t.client_ip::inet` 无守卫时，一个畸形 text 值会打挂整条视图链的每个读方。
+	// 816 起 client_ip 必须是**有源**投影且**带守卫**；817 起守卫的**判据**必须是
+	// 语义级的（审计 §9.61 / §9.64）。无守卫时，一个畸形 text 值会打挂整条视图链
+	// 的每个读方；而**字符类**守卫（`t.client_ip ~ '^[0-9a-fA-F:.]+$'`）同样不够——
+	// `192.168.1` / `deadbeef` / `1.2.3.4.5.6` / `:::` 全部通过它，死在 `::inet` 上。
 	// pg_get_viewdef 会把 `CASE WHEN c THEN x END` 重排成 `WHEN c THEN x` + `END`
 	//（外层 CASE 字样消失），所以判据用渲染后仍存在的片段。
 	if !strings.Contains(ensureViewdef, "t.client_ip::inet") {
 		t.Error("ensure must project t.client_ip on the session branch (816); " +
 			"falling back to NULL padding re-creates the __unknown__ client_ip dimension")
 	}
-	if !strings.Contains(ensureViewdef, "WHEN t.client_ip ~ ") {
-		t.Error("ensure's client_ip projection lost its CASE guard (816); " +
-			"an unguarded text->inet cast breaks every reader of the canonical view")
+	if !strings.Contains(ensureViewdef, "pg_input_is_valid") {
+		t.Error("ensure's client_ip projection lost the semantic guard (817); " +
+			"an unguarded text->inet cast breaks every reader of the canonical view, and the " +
+			"character-class guard it replaced is not sufficient either — `192.168.1` passes " +
+			"`^[0-9a-fA-F:.]+$` and then throws on ::inet (audit §9.64)")
+	}
+	// 弱守卫必须**消失**，不能只是「再加一道语义守卫」：两者并存说明表达式里还
+	// 留着 816 的形态——那正是 817 要修的东西。
+	//
+	// 判据排除 ensure 自己的**修复/自愈代码**里对弱形态的引用（那是字符串常量，
+	// 不在 viewdef 里），所以直接查 viewdef 是安全的。
+	if strings.Contains(ensureViewdef, "client_ip ~ ") {
+		t.Error("ensure's viewdef still carries the 816 character-class guard; " +
+			"817 replaced it rather than layering a second guard on top (audit §9.64)")
 	}
 	if !strings.Contains(ensureViewdef, "credits_rate_multiplier") {
 		t.Fatal("ensure must compose the 738 credits_rate_multiplier column into the rebuilt body")
@@ -491,9 +509,13 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	// 这正是它存在的意义：Go 镜像体（生产启动走的那条）与迁移链必须同体，
 	// 漏掉一个迁移就会在这里现形，而不是等到某台机器启动时把视图重建歪。
 	applyMigration("816_request_logs_view_client_ip_projection.sql")
+	// 817（审计 §9.64）：把 816 的**字符类**守卫换成**语义**守卫
+	// pg_input_is_valid(v,'inet')。投影本身来自 816，守卫来自 817，所以
+	// 重放链必须**两个都跑**才等于 Go ensure 的形态——漏掉 817 会在这里现形。
+	applyMigration("817_request_logs_view_client_ip_semantic_guard.sql")
 	migrationViewdef := viewDefinition(t, ctx, pool)
 	if migrationViewdef != ensureViewdef {
-		t.Fatalf("ensure and migrations 710+734+738+740+815+816 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
+		t.Fatalf("ensure and migrations 710+734+738+740+815+816+817 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
 			ensureViewdef, migrationViewdef)
 	}
 
@@ -723,6 +745,17 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 			t.Fatalf("apply %s: %v", name, err)
 		}
 	}
+	// 817 在 816 之上，所以**必须先 down 817**：它的 proj 是完整的 118 列契约，
+	// 816 down 单独执行会把视图重建成 816 形态（字符类守卫）——那是 817 明确
+	// 要修掉的弱形态。顺序反了，回滚链的终点就取决于「有没有 down 到位」。
+	applyDown("817_request_logs_view_client_ip_semantic_guard.down.sql")
+	postDown817 := viewDefinition(t, ctx, pool)
+	if strings.Contains(postDown817, "pg_input_is_valid") {
+		t.Fatalf("817 down must remove the semantic guard from the canonical view; got:\n%s", postDown817)
+	}
+	if !strings.Contains(postDown817, "client_ip") {
+		t.Fatalf("817 down must KEEP the client_ip column (it only swaps the guard); got:\n%s", postDown817)
+	}
 	// 816（审计 §9.61）在 815 之上，所以**必须先 down 816**：它的 proj 是
 	// 完整的 118 列契约（含 815 那三列），815 down 单独执行会把 816 建的
 	// 视图直接拆成 115 列而不报错——「能跑完但结果不是你以为的形态」这一类
@@ -771,12 +804,18 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("clear 816 bookkeeping row: %v", err)
 	}
 	applyMigration("816_request_logs_view_client_ip_projection.sql")
+	// 817 必须跟着一起 re-up：Go ensure 是 817 形态，只 up 到 816 就比不过去。
+	// 顺序同理——816 建的是 816 形态，817 在它之上换守卫。
+	if _, err := pool.Exec(ctx, `DELETE FROM public.schema_migrations WHERE version = '817'`); err != nil {
+		t.Fatalf("clear 817 bookkeeping row: %v", err)
+	}
+	applyMigration("817_request_logs_view_client_ip_semantic_guard.sql")
 	reUp815 := viewDefinition(t, ctx, pool)
 	if reUp815 != ensureViewdef {
-		t.Fatalf("815+816 down 之后再 up，必须逐字节回到同一份 viewdef。\n"+
+		t.Fatalf("815+816+817 down 之后再 up，必须逐字节回到同一份 viewdef。\n"+
 			"不一致说明迁移依赖了它自己没有建立的前置状态——线上表现是"+
 			"「回滚后再前滚，视图少列、多列或表达式被悄悄换掉」，而每次都会被当成偶发。\n"+
-			"post-816 viewdef:\n%s\n\nre-up viewdef:\n%s", ensureViewdef, reUp815)
+			"post-817 viewdef:\n%s\n\nre-up viewdef:\n%s", ensureViewdef, reUp815)
 	}
 	// 幂等的第二面：三列必须**真的有值**，而不是「列名回来了」。上面 607-624 行把
 	// session 分臂夹具改成了 node_probe/band-live，重建后仍要读到它们。列回来了而
@@ -800,10 +839,16 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	// 于是这条断言在比两个**不同起点**的产物，测的是一个我没打算测的量：
 	// 815 的 down 对「816 产出的 viewdef」和对「815 产出的 viewdef」做正则
 	// 手术，结果本就可能不同。修正后的结构把两件事分开：
-	//   ① postDown815 == postDown815From816 —— 816 的存在不扰动 815 的 down 结果；
+	//   ① postDown815 == postDown815From816 —— 816/817 的存在不扰动 815 的 down 结果；
 	//   ② 连做两次同样的 down 序列，产物逐字节相同 —— 真正的确定性。
 	downChain := func(what string) string {
 		t.Helper()
+		// 817 在最上层：先 down 它，再 down 816，再 down 815。少任何一步，
+		// down 链的起点就不是「Go ensure 那个形态」，比对的就不是同一个量。
+		if _, err := pool.Exec(ctx, `DELETE FROM public.schema_migrations WHERE version = '817'`); err != nil {
+			t.Fatalf("clear 817 bookkeeping row (%s): %v", what, err)
+		}
+		applyDown("817_request_logs_view_client_ip_semantic_guard.down.sql")
 		if _, err := pool.Exec(ctx, `DELETE FROM public.schema_migrations WHERE version = '816'`); err != nil {
 			t.Fatalf("clear 816 bookkeeping row (%s): %v", what, err)
 		}
@@ -814,9 +859,10 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	}
 	postDown815From816 := downChain("run 1")
 	if postDown815From816 != postDown815 {
-		t.Fatalf("816 的存在扰动了 815 down 的结果：816-down+815-down 走出来的形态 "+
-			"必须与纯 815-down 逐字节相同，否则回滚链的结果取决于「816 有没有跑过」。\n"+
-			"pure-815:\n%s\n\nvia-816:\n%s", postDown815, postDown815From816)
+		t.Fatalf("816/817 的存在扰动了 815 down 的结果：817-down+816-down+815-down 走出来的"+
+			"形态必须与纯 815-down 逐字节相同，否则回滚链的结果取决于"+
+			"「816/817 有没有跑过」。\n"+
+			"pure-815:\n%s\n\nvia-816+817:\n%s", postDown815, postDown815From816)
 	}
 	if secondDown := downChain("run 2"); secondDown != postDown815From816 {
 		t.Fatalf("815 down 必须确定性：第二次 down 的 viewdef 与第一次不同。\n"+
