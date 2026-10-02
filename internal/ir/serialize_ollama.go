@@ -172,7 +172,56 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 	// frozen wire shape, makes the loss diagnosable.
 	reportUnnamespacedOllamaExtensions(req)
 
+	// Same diagnosability contract for reasoning intents: nothing below
+	// consumes req.Thinking/req.Reasoning, so a chat client's reasoning_effort
+	// (or an Anthropic thinking config) would vanish silently here.
+	reportOllamaReasoningLoss(req)
+
 	return json.Marshal(body)
+}
+
+// reportOllamaReasoningLoss emits one protocol-loss event per reasoning field
+// SerializeOllama drops. Ollama configures reasoning at serve time, not per
+// request, so the IR carries no expressible equivalent — report rather than
+// render. Budgets/enums only: no free text, nothing credential-shaped.
+func reportOllamaReasoningLoss(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	if req.Thinking != nil {
+		ReportProtocolLoss("", "thinking", req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_reasoning_drop",
+			"thinking config has no Ollama request-side equivalent and was dropped",
+			map[string]any{"thinking_type": req.Thinking.Type})
+	}
+	r := req.Reasoning
+	if r == nil {
+		return
+	}
+	if r.Type != "" {
+		ReportProtocolLoss("", "reasoning.type", req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_reasoning_drop",
+			"reasoning toggle has no Ollama request-side equivalent and was dropped",
+			map[string]any{"reasoning_type": r.Type})
+	}
+	if r.Effort != "" {
+		ReportProtocolLoss("", "reasoning.effort", req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_reasoning_drop",
+			"reasoning effort has no Ollama request-side equivalent and was dropped",
+			map[string]any{"reasoning_effort": r.Effort})
+	}
+	if r.BudgetTokens != nil {
+		ReportProtocolLoss("", "reasoning.budget_tokens", req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_reasoning_drop",
+			"reasoning token budget has no Ollama request-side equivalent and was dropped",
+			map[string]any{"budget_tokens": *r.BudgetTokens})
+	}
+	if r.MaxReasoningTokens != nil {
+		ReportProtocolLoss("", "reasoning.max_reasoning_tokens", req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_reasoning_drop",
+			"max reasoning token cap has no Ollama request-side equivalent and was dropped",
+			map[string]any{"max_reasoning_tokens": *r.MaxReasoningTokens})
+	}
 }
 
 // serializeOllamaMessages flattens IR messages into Ollama's wire shape.

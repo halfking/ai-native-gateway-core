@@ -68,6 +68,17 @@ type chatChunk struct {
 	Created int64        `json:"created"`
 	Model   string       `json:"model"`
 	Choices []chatChoice `json:"choices"`
+	// R32 (P2-B): terminal-frame usage. Upstream Responses streams deliver
+	// usage unconditionally in response.completed; dropping it made every
+	// bridged stream bill zero tokens. StreamChat accumulates usage from the
+	// chunk.Usage field on the existing chat path.
+	Usage *chatUsage `json:"usage,omitempty"`
+}
+
+type chatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type chatChoice struct {
@@ -95,10 +106,15 @@ type chatToolFn struct {
 }
 
 func (t *responsesToChatTranslator) frame(delta chatDelta, finish *string) []byte {
+	return t.frameUsage(delta, finish, nil)
+}
+
+func (t *responsesToChatTranslator) frameUsage(delta chatDelta, finish *string, usage *chatUsage) []byte {
 	c := chatChunk{
 		ID: t.chatID, Object: "chat.completion.chunk",
 		Created: t.created, Model: t.model,
 		Choices: []chatChoice{{Index: 0, Delta: delta, FinishReason: finish}},
+		Usage: usage,
 	}
 	b, err := json.Marshal(c)
 	if err != nil {
@@ -216,12 +232,21 @@ func (t *responsesToChatTranslator) handle(eventType string, payload []byte) []b
 				} `json:"usage"`
 			} `json:"response"`
 		}
+		// R32 (P2-B): usage used to be parsed and discarded (`_ =`), so every
+		// bridged stream recorded zero tokens. Re-emit it in chat shape on the
+		// terminal frame; a malformed payload degrades to a zero-valued usage
+		// rather than killing the stream.
 		_ = json.Unmarshal(payload, &env)
+		usage := &chatUsage{
+			PromptTokens:     env.Response.Usage.InputTokens,
+			CompletionTokens: env.Response.Usage.OutputTokens,
+			TotalTokens:      env.Response.Usage.TotalTokens,
+		}
 		reason := "stop"
 		if t.toolCallSeen {
 			reason = "tool_calls"
 		}
-		out := t.frame(chatDelta{}, strPtr(reason))
+		out := t.frameUsage(chatDelta{}, strPtr(reason), usage)
 		t.done = true
 		return append(out, []byte("data: [DONE]\n\n")...)
 

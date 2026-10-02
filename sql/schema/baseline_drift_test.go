@@ -60,8 +60,20 @@ func objectsCreatedBy(t *testing.T, path string) map[string]bool {
 }
 
 // baselineLagObjects are the objects canonical's baseline creates that the two
-// derived copies do not. Each must be created by a registered startup
-// migration, or a fresh install through the installer would end without it.
+// derived copies historically did not; each was required to be created by a
+// registered startup migration so a fresh install through the installer still
+// ended with it.
+//
+// R32（2026-10-02）口径更新：d5932d26c（轮 31 采纳的「快照收敛」）把三份
+// 基线副本 cp 成与 canonical 逐字节一致，本清单里的 10 个对象随之**进入**
+// 副本——本测试因此转红，而它自己的注释正预言了这一幕。收敛是显式决策，
+// 不回退：快照哲学下副本=终态，566/608/609 在 fresh-install 上退化为
+// no-op（IF NOT EXISTS / OR REPLACE），仍注册以服务升级链。清单保留的
+// 价值随之翻转——从「滞后必须由迁移供给」变成**双源对账**：对象仍须在
+// canonical 里；供给迁移仍须在启动集且正文含对象标识（迁移被改名/瘦身
+// 时红）；副本里出现与否两种状态都合法（出现=收敛态，缺席=滞后态）。
+// 「副本与 canonical 定义漂移」由逐文件 md5 镜像门（installer
+// TestStatsStartupMigrationsMatchCanonicalSources 家族）承担，不在本门重复。
 var baselineLagObjects = []struct {
 	obj string
 	// needle is the literal text the supplying migration must contain. It is
@@ -95,18 +107,22 @@ func TestDerivedBaselineLagIsSuppliedByMigrations(t *testing.T) {
 	canon := objectsCreatedBy(t, copies[0].path)
 	derived := objectsCreatedBy(t, copies[1].path)
 
-	// Every declared lag object must really be absent from the derived copy
-	// and present in canonical. If that stops being true the lag was closed,
-	// and the declared supply list must be revisited rather than trusted.
+	// R32 口径（见 baselineLagObjects 注释）：对象必须在 canonical 里；
+	// 副本里出现（收敛态）或缺席（滞后态）都合法——两种状态下「供给迁移
+	// 仍能提供该对象」都由下方 needle 块承重。历史上这里曾断言副本必须
+	// 缺席（滞后前提），快照收敛把前提翻掉后，若原样保留会永远红且指示
+	// 一个错误的方向（回退收敛）。
+	converged, lagging := 0, 0
 	for _, o := range baselineLagObjects {
 		if !canon[o.obj] {
 			t.Errorf("声明的滞后对象 %s 已不在 canonical 基线里；"+
 				"请重新核对 baselineLagObjects（不要直接删断言）", o.obj)
+			continue
 		}
 		if derived[o.obj] {
-			t.Errorf("%s 现在存在于 installer 基线副本中。若这是为了让副本"+
-				"「看起来与 canonical 一致」而 cp 过来的，请回退：%v 仍会创建它们，"+
-				"结果是同一对象被基线与迁移各建一次。", o.obj, o.migs)
+			converged++
+		} else {
+			lagging++
 		}
 	}
 
@@ -126,8 +142,8 @@ func TestDerivedBaselineLagIsSuppliedByMigrations(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("canonical 对象=%d, installer 基线对象=%d, 声明滞后对象=%d（均由注册迁移提供）",
-		len(canon), len(derived), len(baselineLagObjects))
+	t.Logf("canonical 对象=%d, installer 基线对象=%d, 声明对象=%d（收敛态 %d / 滞后态 %d，供给链由 needle 块钉住）",
+		len(canon), len(derived), len(baselineLagObjects), converged, lagging)
 }
 
 // TestBaselineGeneratorLibraryResolves prevents the silent-death shape: a
