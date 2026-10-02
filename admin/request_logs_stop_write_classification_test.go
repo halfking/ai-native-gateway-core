@@ -366,10 +366,38 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Evidence: "FROM request_logs_hot rl",
 		Note:     "读点 :103 `FROM request_logs_hot rl`（LEFT JOIN models_canonical/model_families/credentials/providers，非本族）。窗口 `since = time.Now().Add(-hours)`，hours 默认 **1**、上限 24（:54-58）⇒ 最短窗口，停写后 requests 为 nil、stats 的三个计数器为 0、三个 map 为 `{}`，而响应是 `json.NewEncoder(w).Encode(resp)` **未设状态码 ⇒ 恒 200**，字段齐全。错误通道未被吞（Query err → return → writeInternalTextErr :113-116/:63-66）；Scan 失败 continue（:143-145）会静默丢行但不影响本档判定。窗口仅 1~24h ⇒ **empty 不是 frozen**。",
 	},
-	"bg/auto_route_settle_worker.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "LEFT JOIN request_logs_hot rl",
-		Note:     "三个读点：:298 loadTaskBaselines（cohort p95/p75，24h 窗口 + is_auto_request）、:392 settleBatch 的 `LEFT JOIN request_logs_hot rl ON rl.request_id = s.request_id`、:399 同语句的 LATERAL（按 gw_session_id+canonical_id 求 retry_count）。**本轮独立验证了「停写后新 selection 仍会产生」这个前提**（它是全部推理的支点）：`INSERT INTO auto_route_selections_hot` 在 domains/hooks/observability/telemetry/selection_writer.go:321，其调用链 run():160 → flush():221 → insertBatch():236 **全程没有任何 RequestLogsWriteEnabled 判断**（该文件里 0 处引用）⇒ 停写后决策侧继续写 selection 行。⇒ 停写后：① :392 腿对**每一条新 selection 恒不命中** ⇒ `p.success == nil` ⇒ 过 settleAbandonAfter(4h) 即 abandon()，盖上 settled_at、reward 留 NULL，**rewarded 产出永久归零**；② :298 的基线冻结后变空 map，computeSelectionReward(:491-492) 取零值，但 :377/:382 的 `if in.P95BaselineMs > 0 && …` 有中性回落（0.5），**不产生错分，只是不再区分快慢模型**；③ LATERAL 腿 model_reqs=0 ⇒ 重试率与会话健康归因一并失效。**最毒之处**：abandon 的产物（settled_at 有值 + reward NULL）与「正常放弃」逐字段同形，且 worker 还 `autoRouteSettledTotal{abandoned}.Inc()` ⇒ 计数器在涨、看起来像健康指标。错误通道未被吞（:406-408/:422-429 上抛，外层 slog.Warn），但零行不是错误。§9.35 已给三个响应加 `outcome_source` 陈旧基线标记让它**可见**——那只是标记，worker 本身仍会全量 abandon。**⚠ §9.40 实测更正**：此前这里写的「正确修法是改读会话族」**过于简单，已被实测否定为等���替换**——(a) 换读 710 视图 `request_logs_with_current_month` 不可行：真库 EXPLAIN 实测该视图的 v1 臂（citus 父表 request_logs）在 settleBatch 的计划里展开成 **7 个叶子分区 Seq Scan**，每 30 秒一次的 100 行 LEFT JOIN 扛不住；(b) 换读会话族也不行：2026-09 分区实测 1747 条 selection 中 99.3% 能在会话臂配到、success/latency_ms 100% 有值、cost_usd 会话臂反而更好（100% vs v1 3.6%）、session 身份可平移，**但 `canonical_id` v1 32.3% vs 会话臂 1.9% 且会话族根本没有这列**（LATERAL retry_count 腿因此无法平移，架构缺口非工程问题），**且 `is_auto_request` 99.9% vs 83.0%**（基线 cohort 缩水 17%）。顺带更正：`origin_actor` **两侧都是 0**，`SQLExcludeSyntheticActors` 对这批行早就空转——不是移植的障碍，但「排除合成流量」这个假设在本 worker 上已不成立，应单独记账。完整评估见 bg/auto_route_settle_worker.go 文件注释与审计 §9.40。**结论：先决定 canonical_id 缺口怎么办（会改动 reward 语义），在此之前不动这三个读点。**",
+	"bg/auto_route_settle_sql.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "LEFT JOIN ` + src.TurnsTable + ` rl",
+		Note: "**§9.49 改判**：本条原先登记在 `bg/auto_route_settle_worker.go` 且判 " +
+			"`silently_empty`，两处都已过期——(a) §9.43 把关系名改成 src.TurnsTable，" +
+			"§9.44 把两条查询搬进本文件，Evidence 不再逐字存在于 worker 里；" +
+			"(b) Effect 也不再是 empty。**这条登记拖了三轮才被发现**：§9.49 查明，" +
+			"三道独立的门（读点清单 / 本表的族分类器 / 补位列扫描）全是绿的，" +
+			"因为它们都靠「文件里能找到 v1 表名字面量」，而 §9.43 把它变成了 Go 表达式。" +
+			"⇒ 已新增 `indirectRequestLogsReaders`（admin/request_logs_indirect_readers_test.go）" +
+			"让这三道门认识间接读点；**不是**加注释让扫描器看见（那是伪造测量）。\n\n" +
+			"**当前读法**：settleBaselinesSQL(:32，基线 cohort) 与 settlePendingSQL(:57，" +
+			"outcome join :73 + LATERAL :80) 两条，关系名都是 src.TurnsTable；src 由 " +
+			"`settleSourceFor(logsWriteEnabled)` 决定：写门开 ⇒ request_logs_hot，闸 ⇒ " +
+			"session_turns_hot。调用点 loadTaskBaselines(:369) / settleBatch(:535) 仍在 " +
+			"bg/auto_route_settle_worker.go。\n\n" +
+			"**停写后（闸关）的实测后果，§9.44**：outcome join 仍命中（会话臂对 selection " +
+			"request_id 覆盖 99.3%），**不再 silently_empty**；剩下的是三项降级：\n" +
+			"  ① 基线 cohort 的总体换成了会话族的 `is_auto_request` 行。两族都健康的窗口" +
+			"（2026-09-19..26）实测 v1 820332 行 vs 会话族 659252 行 = **80.4%**；" +
+			"p95 偏移本地实测 +15.2%（⚠ 取自探针流量，不代表生产）。\n" +
+			"  ② **本机近 24h 会话族 `is_auto_request=TRUE` 为 0 行**（v1 侧 2178 行）⇒ " +
+			"cohort 变空 map ⇒ 每条 reward 的延迟项与成本项静默塌成中性 0.5。" +
+			"空 map **不是 error**，原先的 `err != nil` 分支永不触发；已加 " +
+			"`llmgw_autoroute_settle_baseline_cohort_rows` / `..._baseline_neutral_total` " +
+			"与 `AutoRouteSettleBaselineCohortEmpty` / `...NeutralDominant` 告警让它变响。\n" +
+			"  ③ 0.7% 的 selection 失去 outcome ⇒ 走 abandon 路径。\n\n" +
+			"**⚠ 本条把 `silently_degraded_content` 装进了它原本没有的东西**：该档的既有语义" +
+			"是「行还在，但某一**列**内容静默变空」（bodies 正文腿、provider 归属），" +
+			"而这里是「行与 reward 都在，但 reward 的**分项**退化」。本文件自己的约定是" +
+			"「应扩档而不是把它塞回去」——本轮**没有**扩档（扩档会改动 106 条登记的口径，" +
+			"需要单独裁决），先如实记录。",
 	},
 	"bg/ledger_reconciliation.go": {
 		Effect:   effectUnaffected,
@@ -866,15 +894,22 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 // 未分类集合恒为空、门恒绿——**它守的正是「没登记」这件事，却因为分母取错而
 // 看不见没登记**。凡是「未完成项」类判据，分母必须取自**应当被完成的那份清单**。
 func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
+	// §9.49：判据的口径是「已知读点全集」= 直接表 ∪ 间接表。只用直接表时，
+	// 间接读点（本条自己所在的 bg/auto_route_settle_sql.go）会被判成
+	// 「已不在读点清单中」——而它明明在读。
+	known := map[string]bool{}
+	for _, f := range allKnownRequestLogsReaderFiles() {
+		known[f] = true
+	}
 	for file := range requestLogsStopWriteClassification {
-		if _, ok := requestLogsReadInventory[file]; !ok {
-			t.Errorf("分级表里的 %s 已不在读点清单中 —— 该文件要么不再读 request_logs，"+
-				"要么清单陈旧；两种情况都让「104 个已评估」这句话失真", file)
+		if !known[file] {
+			t.Errorf("分级表里的 %s 不在已知读点全集（直接表 ∪ 间接表）里 —— "+
+				"该文件要么不再读 request_logs，要么清单陈旧；两种情况都让「N 个已评估」这句话失真", file)
 		}
 	}
 
 	var todo []string
-	for file := range requestLogsReadInventory {
+	for _, file := range allKnownRequestLogsReaderFiles() {
 		c, ok := requestLogsStopWriteClassification[file]
 		switch {
 		case !ok, c.Effect == effectUnclassified:
@@ -882,9 +917,9 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 		}
 	}
 	sort.Strings(todo)
+	total := len(allKnownRequestLogsReaderFiles())
 	t.Logf("S4 停写逐点评估进度：%d/%d 已评估，未评估 %d 个 —— %s",
-		len(requestLogsReadInventory)-len(todo), len(requestLogsReadInventory),
-		len(todo), progressVerdict(len(todo)))
+		total-len(todo), total, len(todo), progressVerdict(len(todo)))
 	if len(todo) > 0 {
 		t.Logf("未评估清单：\n  %s", strings.Join(todo, "\n  "))
 	}
@@ -1384,12 +1419,23 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 	root := repoRootFromCaller(t)
 	counts := map[string]int{}
 	var undetermined []string
-	for file := range requestLogsReadInventory {
+	// §9.49：遍历「直接表 ∪ 间接表」。只遍历直接表时，间接读点（表名是
+	// Go 表达式，见 indirectRequestLogsReaders）**从未进入过这个分类器**，
+	// 于是它报「未归入任何一族」——而它其实一直在读 v1。
+	for _, file := range allKnownRequestLogsReaderFiles() {
 		raw, err := os.ReadFile(filepath.Join(root, file))
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
 		fam := sourceFamilyOf(string(raw))
+		if ind, isIndirect := indirectRequestLogsReaders[file]; isIndirect {
+			// 器眼看不见它，族由登记给定；登记里没有合法族时才算 undetermined。
+			if ind.Family == "" {
+				undetermined = append(undetermined, file+"(间接登记未给族)")
+				continue
+			}
+			fam = ind.Family
+		}
 		if fam == "undetermined" {
 			undetermined = append(undetermined, file)
 			continue
@@ -1406,8 +1452,12 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 		familyViewBase, familyViewNullPadded} {
 		total += counts[k]
 	}
-	if total != len(requestLogsReadInventory) {
-		t.Errorf("六族合计 %d ≠ 读点清单 %d —— 有文件被重复计数或漏计", total, len(requestLogsReadInventory))
+	// §9.49：分母用「直接表 ∪ 间接表」。用 len(requestLogsReadInventory) 会让
+	// 每一个间接读点都算成一次「漏计」——而它既没漏也没重，是分母本身少算了一个。
+	if total != len(allKnownRequestLogsReaderFiles()) {
+		t.Errorf("六族合计 %d ≠ 读点清单 %d（直接表 %d + 间接表 %d）—— 有文件被重复计数或漏计",
+			total, len(allKnownRequestLogsReaderFiles()),
+			len(requestLogsReadInventory), len(indirectRequestLogsReaders))
 	}
 	t.Logf("S4 停写影响面（按读表族，机械判定）：\n"+
 		"  bodies_only=%d                正文无兜底 ⇒ 硬失败\n"+
