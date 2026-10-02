@@ -82,6 +82,18 @@ var ErrScheduleTooFar = errors.New("dispatch: scheduled execution time too far i
 // classification stays machine-readable.
 var ErrGovernorUnavailable = errors.New("dispatch: governor backend unavailable")
 
+// ErrLeaseLost marks the DEFINITIVE loss of a TTL-bounded admission lease:
+// the shared store no longer holds the token, so the cluster-wide slot is
+// gone and the cluster limit no longer accounts for this request. Renewal
+// failures that wrap ErrLeaseLost (still also wrapping ErrGovernorUnavailable
+// so existing fail-closed classification keeps matching) must abort the
+// in-flight stream — keeping it running would exceed the credential limit.
+// Transient renewal faults (store unreachable) wrap only
+// ErrGovernorUnavailable and are tolerated until one full lease TTL passes
+// without a successful renewal (the lease has then necessarily expired
+// server-side and the same fail-closed applies).
+var ErrLeaseLost = errors.New("dispatch: governor lease lost")
+
 // IsPaceTimeout reports whether err is the governor pacing-timeout sentinel.
 func IsPaceTimeout(err error) bool { return errors.Is(err, errPaceTimeout) }
 

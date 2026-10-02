@@ -61,9 +61,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 // 审计第二十八轮修复）；649 的 down 曾在 canonical 侧补 DROP VIEW 而副本
 // 未跟（同轮守卫首跑即抓到）。守卫范围如实：
 //   - embeddata 已有的每个 down 必须与 canonical 字节一致（漂移即红）；
-//   - 数量只增不减（≥74 棘轮）。
+//   - 数量只增不减（≥77 棘轮；810/811/812 三件随第二十九轮入组）。
 //
-// canonical 侧另有 248 个 down 按历史选择性约定未镜像（含 802-804/807），
+// canonical 侧另有 245 个 down 按历史选择性约定未镜像（322−77，含 802-804/807），
 // 不在本守卫强制范围；新迁移的 down 应循 808/809/730/612 先例双侧镜像。
 func TestDownMigrationsMirrorCanonicalSources(t *testing.T) {
 	t.Helper()
@@ -92,7 +92,7 @@ func TestDownMigrationsMirrorCanonicalSources(t *testing.T) {
 		}
 		mirrored++
 	}
-	if mirrored < 74 {
+	if mirrored < 77 {
 		t.Fatalf("only %d down migrations mirrored in embeddata; the mirror set must not shrink", mirrored)
 	}
 }
@@ -304,16 +304,25 @@ var operatorGatedCleanup = map[string]string{
 
 // 810/811/812 (2026-10-02, R20 252 SQL-log audit round) are one-shot repairs
 // for upgraded databases: toastless-heap empty partitions (810), UTC-midnight
-// bound pollution (811), columnar probe-run partitions (812). A fresh install
-// never creates those states — the 687+ baseline already builds heap+toast
-// partitions with +08 bounds — so like 755 there is nothing for the installer
-// to do. Each file also wraps itself in an explicit BEGIN/COMMIT and cannot
-// ride the installer's psql --single-transaction; they ship via the
-// revision-sequence channel only (files array, registered 2026-10-02).
+// bound pollution (811), columnar probe-run partitions (812). They ship via
+// the revision-sequence channel only (files array, registered 2026-10-02).
+//
+// 豁免的真实理由（第三十轮订正——原注释两处失实）：
+//   1. 它们是存量缺陷的一次性修复 + 755 同型的操作员门性质，installer 的
+//      fresh-install 链没有"升级库存量"可修，注册进 StartupFiles 只会
+//      让全新装空跑一遍 DETACH/重建（810/812）或边界重写（811）。
+//   2. "显式 BEGIN/COMMIT 不能进 --single-transaction" 不是机制障碍——
+//      psql 对内层 BEGIN/COMMIT 仅产生 WARNING 且 rc=0（全链 129 个
+//      embedded 文件带显式事务、一直这么骑）。真正的问题是嵌套事务下
+//      DETACH/ATTACH 回退与 SET LOCAL 的语义不再成立。
+//      （另注：fresh 基线并非完全无遗产——sql/schema/01-schema.sql 仍烤有
+//      473 型 08:00 边界与列存 probe-run 分区，见第三十轮登记项；这些
+//      遗产全部在过去时间窗内、有 808 default 分区兜底、且 810-812 在
+//      序列通道首跑即自愈。）
 var sequenceChannelRepairs = map[string]string{
-	"810_heap_partitions_toastless_heal.sql":            "explicit BEGIN/COMMIT; legacy toastless-heap repair, fresh installs unaffected (687+ baseline)",
-	"811_partition_bounds_shanghai_midnight_repair.sql": "explicit BEGIN/COMMIT; legacy bound-pollution repair, fresh installs unaffected (687+ baseline)",
-	"812_model_probe_runs_partitions_heap.sql":          "explicit BEGIN/COMMIT; legacy columnar-partition repair, fresh installs unaffected (687+ baseline)",
+	"810_heap_partitions_toastless_heal.sql":            "one-shot legacy repair (DETACH/ATTACH rollback needs its own transaction); fresh installs have no toastless-heap legacy",
+	"811_partition_bounds_shanghai_midnight_repair.sql": "one-shot legacy repair (SET LOCAL TIME ZONE + bound rebuild); fresh installs self-heal via sequence channel",
+	"812_model_probe_runs_partitions_heap.sql":          "one-shot legacy repair (to_regclass guard + DETACH/ATTACH); fresh installs self-heal via sequence channel",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
