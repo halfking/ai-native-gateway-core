@@ -474,13 +474,13 @@ var projectionExprsV2 = []string{
 	"t.raw_model_name",
 	// 738 追加尾列：session 分支无源补位（NULL::double precision）。
 	"NULL::double precision",
-	// 740 追加的 client_ip：**816 起改为 session 侧有源投影**（审计 §9.45.6.1）。
+	// 740 追加的 client_ip：**816 起改为 session 侧有源投影**（审计 §9.60.6.1）。
 	//
 	// 原注释写「session_turns.client_ip 为 text 且未回填，不能直映」——两半都要改：
 	// 「未回填」是**错的**（本机 7 天 172,305/202,774 = 85.0% 有值；252 7 天 17,586 行
 	// 有值），而「text 不能直映」只说明它**需要一次显式转换**，不是不能映。
 	//
-	// 与 v1 同义的依据（252 生产库，审计 §9.45.6.1）：同 request_id 配对 826 行
+	// 与 v1 同义的依据（252 生产库，审计 §9.60.6.1）：同 request_id 配对 826 行
 	// session_turns.client_ip == host(request_logs.client_ip) **826/826、差异 0**。
 	// 本机那条「两列 100% 相同 ⇒ 它是转发头副本」的旧裁决已被证伪——本机全库
 	// client_forwarded_for 只有 6 个 distinct 取值、多跳链路 0 条，零分辨力。

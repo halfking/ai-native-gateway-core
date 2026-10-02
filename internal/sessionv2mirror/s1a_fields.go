@@ -78,7 +78,7 @@ func applyStorageS1AFields(req *v2.ProcessedRequest, entry *telemetry.RequestLog
 		req.CanonicalID = int64(*entry.CanonicalID)
 	}
 	req.CanonicalModel = strVal(entry.CanonicalModel)
-	// raw_model_name = 绑定解析出的**上游原始模型名**（2026-10-02 接线，审计 §9.45.8）。
+	// raw_model_name = 绑定解析出的**上游原始模型名**（2026-10-02 接线，审计 §9.60.8）。
 	//
 	// 取值口径与 §9.30.2 的比对口径逐字一致：COALESCE(outbound_model, client_model)。
 	// 这**不是**一个新字段——telemetry.RequestLogEntry 本来就同时带 OutboundModel
