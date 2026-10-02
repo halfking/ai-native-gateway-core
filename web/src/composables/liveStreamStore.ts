@@ -1500,6 +1500,75 @@ export const __testing = {
   clearRequestCredentialIndex,
   resetStream,
   refCount: () => refCount,
+  // Test-only: force the module back to its initial state between cases.
+  // resetStream() deliberately leaves refCount alone (production never needs
+  // that), so a case that fails mid-way would leak a ref into the next one and
+  // make every later assertion meaningless — a cascade that hides the real
+  // failure behind a pile of confusing ones.
+  resetForTest: () => {
+    removeVisibilityListener()
+    refCount = 0
+    visibilityState.isVisible = typeof document !== 'undefined' ? !document.hidden : true
+    visibilityState.lastVisibleAt = Date.now()
+    visibilityState.missedWhileHidden = false
+    needsFullRefresh = false
+    liveStreamState.connection = 'closed'
+  },
+  // ---------------------------------------------------------------------------
+  // Test-only hooks. Each one exists because the corresponding behaviour is
+  // otherwise unobservable from a unit test, and a test that cannot observe it
+  // would pass for every implementation — including a broken one.
+  // ---------------------------------------------------------------------------
+
+  // Lets a test assert on the *decision* the visibility handler makes. The
+  // recovery branch calls closeConnection()/openConnection(), which are inert
+  // without an EventSource, so without this a test could not tell "recovered"
+  // from "declined to recover" — the exact ambiguity that hid the
+  // missedWhileHidden bug for as long as it existed.
+  missedWhileHidden: () => visibilityState.missedWhileHidden,
+
+  // Models a frame arriving while the page is hidden — the onmessage early
+  // return. `hidden` is explicit rather than read from current state because
+  // the handler re-reads document.hidden on every transition and jsdom pins it
+  // to false, so the reactive flag has already been overwritten by the time a
+  // test could inspect it. Passing false still throws: it would drop nothing.
+  dropFrameWhileHidden: (hidden = true) => {
+    if (!hidden) {
+      throw new Error(
+        'dropFrameWhileHidden(hidden=false) models a frame that would NOT be ' +
+          'dropped, so it asserts nothing.',
+      )
+    }
+    visibilityState.missedWhileHidden = true
+  },
+
+  // Drives the visibilitychange handler with a forced visibility state.
+  //
+  // The override is installed as an OWN property of `document` and removed
+  // afterwards. An earlier version saved/restored the descriptor on the
+  // prototype while defining it on the instance: the restore then wrote a
+  // getter-less descriptor to the prototype and the leaked own property kept
+  // returning the old value on every later call, so the second transition was
+  // seen as hidden and the recovery branch never ran — making the assertion
+  // pass for the broken implementation too.
+  fireVisibilityChange: (hidden: boolean) => {
+    const hadOwn = Object.prototype.hasOwnProperty.call(document, 'hidden')
+    const previousOwn = Object.getOwnPropertyDescriptor(document, 'hidden')
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
+    try {
+      visibilityChangeHandler?.()
+    } finally {
+      if (hadOwn && previousOwn) Object.defineProperty(document, 'hidden', previousOwn)
+      else delete (document as unknown as Record<string, unknown>).hidden
+    }
+  },
+
+  // Undo an override left behind by a test that threw mid-call.
+  restoreDocumentHidden: () => {
+    delete (document as unknown as Record<string, unknown>).hidden
+  },
+
+
   // Test-only: same as acquireLiveStream() but stubs out the network
   // handshake so unit tests can exercise the refCount ↔ visibility
   // listener wiring without spinning up EventSource.
@@ -1510,6 +1579,11 @@ export const __testing = {
       // refCount-relative bookkeeping independent of the network state,
       // which is exactly the property we want to assert here.
       liveStreamState.connection = 'closed'
+      // The visibility listener is installed by openConnection() in
+      // production. Without it here, the handler is never attached and any
+      // assertion about its recovery decision would pass for every
+      // implementation — including the broken one — because nothing would run.
+      installVisibilityListener()
     }
     return () => {
       refCount -= 1
