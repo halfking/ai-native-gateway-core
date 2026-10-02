@@ -40,25 +40,28 @@ if [[ ! -f "$MANIFEST" ]]; then
 fi
 
 # ── 1/2. 逐字节一致 + 文件齐全 ───────────────────────────────────────────
-# This Git Bash sha256sum writes "<hash> *<path>" (binary marker), while GNU
-# coreutils writes "<hash>  <path>". Strip whichever separator is present so
-# the parse below does not treat "*scripts/user/x.sh" as a filename.
-MANIFEST_FILES="$(sed -e 's/^[0-9a-f]* [ *]//' "$MANIFEST" | sed '/^$/d' | sort)"
+# Hash over LF-normalized bytes, because .gitattributes is `* text=auto eol=lf`:
+# git stores LF, a Windows checkout has CRLF. Using sha256sum -c on the raw
+# file would make this gate pass only on the machine that generated the
+# manifest. That bug was in the first version of this gate and is exactly the
+# "green only on my laptop" failure mode being eliminated.
+norm_sha() { sed -e 's/\r$//' "$1" | sha256sum | cut -d' ' -f1; }
 
-if sha256sum -c "$MANIFEST" >"$ROOT/.user-sync-check.$$" 2>&1; then
-  ok "全部 $(printf '%s\n' "$MANIFEST_FILES" | wc -l | tr -d ' ') 个文件与清单 sha256 一致"
-else
-  bad "以下文件与 SSOT 清单不一致（本地被改过，或从 maintain 漏复制）："
-  grep -v ': OK$' ".user-sync-check.$$" >&2 || true
-fi
-rm -f ".user-sync-check.$$"
+MANIFEST_FILES="$(sed -e 's/^[0-9a-f]*  *//' "$MANIFEST" | sed '/^$/d' | sort)"
 
-MISSING=0
+DRIFT=0
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
-  if [[ ! -f "$f" ]]; then bad "清单里的文件缺失：$f"; MISSING=1; fi
+  want="$(awk -v p="$f" '$2 == p { print $1 }' "$MANIFEST")"
+  if [[ ! -f "$f" ]]; then
+    bad "清单里的文件缺失：$f"; DRIFT=1; continue
+  fi
+  if [[ "$(norm_sha "$f")" != "$want" ]]; then
+    bad "与 SSOT 清单不一致（本地被改过，或从 maintain 漏复制）：$f"
+    DRIFT=1
+  fi
 done <<<"$MANIFEST_FILES"
-[[ "$MISSING" -eq 0 ]] && ok "清单里的文件一个都不少"
+[[ "$DRIFT" -eq 0 ]] && ok "全部 $(printf '%s\n' "$MANIFEST_FILES" | wc -l | tr -d ' ') 个文件与清单 sha256 一致（LF 归一）"
 
 # 反向：scripts/user 下不允许出现清单外的文件（旧实现就是这样悄悄回来的）。
 # find 产出的已经是相对仓库根的 scripts/user/...，与清单同口径，直接比。
