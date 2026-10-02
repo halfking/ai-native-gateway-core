@@ -5925,6 +5925,42 @@ WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacu
 
 COMMENT ON COLUMN public.candidate_failure_logs.per_attempt_latency_ms IS 'Latency of the single upstream call.';
 
+--
+-- Name: candidate_failure_logs_hot; Type: TABLE; Schema: public; Owner: -
+--
+
+-- 手工内联（2026-10-02 第三十一轮 A2 根修）：migration 814 把
+-- v_adaptive_probe_targets 改读 candidate_failure_logs_hot（392 建），该视图
+-- 在本 schema 事务内前向引用 hot 表会让 fresh install 必败
+--（relation "public.candidate_failure_logs_hot" does not exist）。此处内联
+-- 终态 DDL，DDL 与 392 逐字一致且 392 全 IF NOT EXISTS（既有库重跑无冲突）。
+-- 必须显式回落 heap：上游 SET default_table_access_method=columnar 的作用域
+-- 还开着，622 会对本表跑 UPDATE（ColumnarScan 不支持 UPDATE）。
+SET default_table_access_method = heap;
+CREATE TABLE public.candidate_failure_logs_hot (
+    id                          bigint,
+    request_id                  text NOT NULL,
+    ts                          timestamp with time zone DEFAULT now() NOT NULL,
+    tenant_id                   text DEFAULT 'default' NOT NULL,
+    credential_id               integer NOT NULL,
+    provider_id                 integer NOT NULL,
+    raw_model_name              text NOT NULL,
+    attempt_index               integer DEFAULT 0 NOT NULL,
+    error_kind                  text NOT NULL,
+    error_message               text,
+    upstream_status_code        integer,
+    upstream_response_body      text,
+    upstream_response_preview   text,
+    latency_ms                  integer,
+    retryable                   boolean,
+    context                     jsonb
+) WITH (fillfactor=90);
+
+CREATE INDEX idx_cfl_hot_cred_ts ON candidate_failure_logs_hot (credential_id, ts DESC);
+CREATE INDEX idx_cfl_hot_provider_ts ON candidate_failure_logs_hot (provider_id, ts DESC);
+CREATE INDEX idx_cfl_hot_model_ts ON candidate_failure_logs_hot (raw_model_name, ts DESC);
+CREATE INDEX idx_cfl_hot_request_id ON candidate_failure_logs_hot (request_id);
+
 
 SET default_table_access_method = heap;
 
