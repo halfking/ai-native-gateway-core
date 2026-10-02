@@ -479,9 +479,9 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		-- request_class/due_at/fp/raw 全是 NULL，而**没有任何断言碰过这条腿**
 		-- （client_ip 走 v.client_ip 绕过了 lateral），所以这个缺陷一直藏着。
 		-- 815 的第一批断言是第一个读 lateral 的断言，当场把它挖了出来。
-		INSERT INTO public.request_logs_hot (request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags, client_ip, origin_stage, token_band, client_forwarded_for)
-		VALUES ('req-v1-only', 'sess-legacy', now(), 10, 5, 1, 'immediate', 'm-alpha', 'cli-alpha', '{}', '203.0.113.7', 'business', 'band-mid', '203.0.113.9')
-		     , ('req-dual', 'sess-dual', now(), 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}', NULL, 'business', 'band-dual-v1', '198.51.100.1');
+		INSERT INTO public.request_logs_hot (id, request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags, client_ip, origin_stage, token_band, client_forwarded_for)
+		VALUES (900001, 'req-v1-only', 'sess-legacy', now(), 10, 5, 1, 'immediate', 'm-alpha', 'cli-alpha', '{}', '203.0.113.7', 'business', 'band-mid', '203.0.113.9')
+		     , (901001, 'req-dual', 'sess-dual', now(), 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}', NULL, 'business', 'band-dual-v1', '198.51.100.1');
 		INSERT INTO public.request_logs (request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
 		VALUES ('req-parent-only', NULL, now(), 1, 2, 3, 'immediate', 'm-gamma');
 		INSERT INTO public.session_turns_hot (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
@@ -623,30 +623,62 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("815 session-branch token_band = %v, want \"band-live\"", band)
 	}
 
-	// ── `id` 必须**值层**为 NULL（§9.27.3 的决策；DDL 文本层已由 815 静态门覆盖）──
+	// ── `id` 的值层契约（§9.27.3）：会话两臂补 NULL，v1 臂透传真值 ─────────────
 	//
-	// 为什么值层要单独一条：现有门读的是迁移文件与 canonicalV2DDL 里的字面量，
-	// 而读方消费的是查询结果。文本层说「不投影」而值层给出真 id，是一个**读方拿不到
-	// 任何报警**的退化形态——`id` 一旦有值，按它排序/去重的读方会正常地算出一个错的数
-	// （v1 的 request_logs.id 是请求行 id、session 侧是 turn id，1,515,984 组同
-	// request_id 配对里两者相等 0 次）。
+	// 活库 viewdef 的三条臂（2026-10-02 按 pg_get_viewdef 行号实测）：
+	//   L1   SELECT NULL::bigint AS id  ← 臂 FROM session_turns_hot t（会话 hot）
+	//   L146 SELECT NULL::bigint AS id  ← 臂 FROM session_turns t     （会话 cold）
+	//   L291 SELECT rl.id,              ← v1 臂（rl = request_logs_hot）
 	//
-	// 两条 UNION ALL 分臂都要查：只有会话臂返回真 id 的话，v1 臂读方仍全盲；反之亦然。
+	// 所以「`id` 永不投影」只对**会话侧**成立。会话侧不能给 id，因为 v1 的
+	// request_logs.id 是请求行 id、session 侧的 id 是 turn id，1,515,984 组同
+	// request_id 配对里两者相等 0 次。而 v1-only 的行**必须**带着它真实的
+	// request_logs.id 出去，否则只存在于 v1 的历史行会在视图里彻底失去主键。
+	// （我曾把这写成「两条臂都补 NULL、决策在两条臂上一致落地」——那是把 v1 臂
+	//   当成了会话臂；实测 L291 是真值透传。）
+	//
+	// 为什么必须值层断言：现有门读的是 DDL 文本层，而读方消费的是查询结果。
+	// 文本层说「不投影」而值层给出真 turn id，读方拿不到任何报警——id 一旦有值，
+	// 按它排序/去重的读方会正常算出一个错的数。
+	//
+	// 两条会话臂都要查：req-dual 命中 hot 臂、req-turn-parent 命中 cold 臂。
+	// 而 req-dual 的 v1 孪生行带着真 id（901001）却**不能**出现在视图里
+	// （反连接去重只留会话臂那一行）——这才是会话臂必须 NULL 的真正含义。
 	for _, tc := range []struct {
 		requestID string
 		arm       string
-	}{{"req-dual", "会话臂（反连接后由 session_turns 供给）"}, {"req-v1-only", "v1 臂"}} {
+		wantNil   bool
+	}{
+		{"req-dual", "会话 hot 臂（反连接后由 session_turns_hot 供给；其 v1 孪生 id=901001 不应外泄）", true},
+		{"req-turn-parent", "会话 cold 臂（由 session_turns 供给）", true},
+		{"req-v1-only", "v1 臂（必须透传真实 request_logs.id=900001）", false},
+	} {
 		var id *int64
 		if err := pool.QueryRow(ctx,
 			`SELECT id FROM public.request_logs_with_current_month WHERE request_id = $1`,
 			tc.requestID).Scan(&id); err != nil {
-			t.Fatalf("id NULL probe failed for %s: %v", tc.requestID, err)
+			t.Fatalf("id 值层探针失败 %s: %v", tc.requestID, err)
 		}
-		if id != nil {
-			t.Fatalf("%s（%s）的视图 id = %d，必须是 NULL。\n"+
-				"`id` 永不投影（§9.27.3）：v1 侧是请求行 id、session 侧是 turn id，"+
-				"1,515,984 组同 request_id 配对里两者相等 0 次。给一个有值的 id 比给 NULL "+
-				"更坏——读方不会报错，只会算出一个错的数。",
+		if tc.wantNil {
+			if id != nil {
+				t.Fatalf("%s（%s）的视图 id = %d，必须是 NULL。\n"+
+					"会话侧的 id 是 turn id，与 v1 的 request_logs.id 不是同一个东西"+
+					"（1,515,984 组同 request_id 配对里相等 0 次）。给一个有值的 id 比给 NULL "+
+					"更坏——读方不会报错，只会算出一个错的数。",
+					tc.requestID, tc.arm, *id)
+			}
+			continue
+		}
+		// v1 臂：不只是「非空」，而是必须**等于源表里那个真值**。只断言非空
+		// 太弱——turn id 也是非空的，而那正是本条要防的回归。
+		if id == nil {
+			t.Fatalf("%s（%s）的视图 id 是 NULL，但它必须透传源表的真值 900001。\n"+
+				"v1-only 的行只存在于 request_logs，视图若在这里也补 NULL，"+
+				"这批历史行会在视图里彻底失去主键。", tc.requestID, tc.arm)
+		}
+		if *id != 900001 {
+			t.Fatalf("%s（%s）的视图 id = %d，必须是源表的真值 900001。\n"+
+				"非空但不是源表值 ⇒ 某条臂在拿 turn id 冒充 v1 的请求行 id。",
 				tc.requestID, tc.arm, *id)
 		}
 	}
