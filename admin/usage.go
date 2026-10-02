@@ -60,6 +60,11 @@ func (h *Handler) HandleUsageAdmin(w http.ResponseWriter, r *http.Request) {
 		h.usagePeriodCompare(w, r)
 	case "cache-economics":
 		h.usageCacheEconomics(w, r)
+	case "trend-series":
+		// 2026-10-02 看板轮：按模型拆分的用量趋势序列（看板卡 + 全页视图共用）。
+		h.usageTrendSeries(w, r)
+	case "trend-models":
+		h.usageTrendModels(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "endpoint not found")
 	}

@@ -32,6 +32,7 @@ export default {
     providers: "Anbieter",
     reconciliation: "Anbieterabrechnung",
     settlementReport: "Abrechnungsbericht",
+    usageTrends: "Nutzungstrends",
     pricing: "Kostenpreise",
     modelPricing: "Preisverwaltung",
     freePool: "Kostenloser Pool",
