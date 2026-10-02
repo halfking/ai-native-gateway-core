@@ -203,26 +203,38 @@ build_backend() {
   mv -f "$out" "$INSTALL_ROOT/bin/gateway$([[ $IS_WINDOWS == 1 ]] && printf '.exe' || true)"
 }
 
-ensure_pnpm() {
+# 前端包管理器：pnpm 官方 / npm 并行支持，单点决策见 scripts/lib/node-pm.sh。
+ensure_pm() {
   need_cmd node
-  if ! command -v pnpm >/dev/null 2>&1; then
-    need_cmd corepack
+  if command -v pnpm >/dev/null 2>&1; then
+    return 0
+  fi
+  # 没有 pnpm 但有 corepack 时，优先把官方包管理器拉起来而不是直接退 npm。
+  if command -v corepack >/dev/null 2>&1; then
     log "启用 corepack pnpm（web/package.json 指定 pnpm@10.29.2）..."
     (cd "$PROJECT_ROOT/web" && corepack enable >/dev/null 2>&1 || true)
     (cd "$PROJECT_ROOT/web" && corepack prepare pnpm@10.29.2 --activate >/dev/null 2>&1 || true)
-    command -v pnpm >/dev/null 2>&1 || need_cmd npm
+    command -v pnpm >/dev/null 2>&1 && return 0
   fi
+  need_cmd npm
 }
 
 build_frontend() {
   (( SKIP_FRONTEND )) && { log "跳过前端构建（--no-frontend）"; return 0; }
   [[ -f "$PROJECT_ROOT/web/package.json" ]] || die "web/package.json 不存在"
-  ensure_pnpm
-  log "构建前端（pnpm install + build）..."
-  (cd "$PROJECT_ROOT/web" && { pnpm install --frozen-lockfile || npm install; } >"$LOG_DIR/web-install.log" 2>&1) \
-    || die "前端依赖安装失败；见 $LOG_DIR/web-install.log"
-  (cd "$PROJECT_ROOT/web" && { pnpm run build || npm run build; } >"$LOG_DIR/web-build.log" 2>&1) \
-    || die "前端构建失败；见 $LOG_DIR/web-build.log"
+  ensure_pm
+  # 关键改动：过去是 `pnpm install --frozen-lockfile || npm install`。pnpm 因为
+  # lockfile 与 package.json 不同步而**真实失败**时，会被 `||` 吞掉并静默降级
+  # 成不带 --frozen-lockfile 的 npm install —— "该重新生成 lockfile"这个真错误
+  # 被伪装成一次成功安装。现在只选一个包管理器，跑它，原样透传退出码。
+  # shellcheck source=scripts/lib/node-pm.sh
+  source "$PROJECT_ROOT/scripts/lib/node-pm.sh"
+  PM="$(pm_resolve)"
+  log "构建前端（$PM install + build）..."
+  pm_install web >"$LOG_DIR/web-install.log" 2>&1 \
+    || die "前端依赖安装失败（$PM）；见 $LOG_DIR/web-install.log"
+  pm_run build web >"$LOG_DIR/web-build.log" 2>&1 \
+    || die "前端构建失败（$PM）；见 $LOG_DIR/web-build.log"
   [[ -f "$PROJECT_ROOT/web/dist/index.html" ]] || die "web/dist/index.html 未生成"
   log "  前端构建完成 → web/dist"
 }

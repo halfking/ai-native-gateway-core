@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   verify:
-    name: ./verify.sh
+    name: ./verify.sh (pnpm, official)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -48,3 +48,47 @@ jobs:
 
       - name: Run unified verification gate
         run: ./verify.sh --web
+
+  # npm 并行支持路径。pnpm 仍是官方/CI 主路径，但 deploy-kaixuan1.sh 与
+  # deploy-seamless.sh 会在没有 pnpm 的生产机上走 npm —— 没有这条作业，
+  # 两个 lockfile 的漂移就只能等生产 `npm ci` 失败才被发现。
+  verify-npm:
+    name: ./verify.sh (npm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Frontend lockfile sync gate
+        run: ./scripts/check-frontend-lockfiles.sh
+
+      # WEB_PM 强制走 npm；verify.sh 内部只调用 scripts/lib/node-pm.sh。
+      # 这里不跑 govulncheck 的完整门（与 pnpm 作业重复），只验证前端链路。
+      - name: Frontend install, typecheck, tests, build via npm
+        env:
+          WEB_PM: npm
+        run: |
+          source scripts/lib/node-pm.sh
+          pm_install web
+          pm_run typecheck web
+          pm_run test web
+          pm_run build web

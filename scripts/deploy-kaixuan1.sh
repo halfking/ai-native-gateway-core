@@ -118,11 +118,16 @@ ok "  seq=$NEW_SEQ  version=$NEW_VERSION  bin=$BIN_NAME"
 
 # ── Step 2: 前端构建 ─────────────────────────────────────────────
 if ! $SKIP_FRONTEND; then
-  phase "[2/8] 前端构建 (npm ci && npm run build)"
+  # 包管理器由 scripts/lib/node-pm.sh 单点决策（pnpm 官方 / npm 并行支持，
+  # WEB_PM=npm 可强制走 npm）。过去这里硬编码 npm ci，而官方路径是 pnpm，
+  # 两套并存且没有任何机制保证两个 lockfile 同步 —— 漂移只会在生产机上炸。
+  # shellcheck source=scripts/lib/node-pm.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/lib/node-pm.sh"
+  phase "[2/8] 前端构建 (${PM:-$(pm_resolve)} install && build)"
   if [[ ! -d web/node_modules ]]; then
-    (cd web && npm ci)
+    pm_install web
   fi
-  (cd web && npm run build)
+  pm_run build web
   ok "  web/dist 已生成"
 fi
 

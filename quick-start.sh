@@ -4,6 +4,11 @@
 
 set -e
 
+# 包管理器单一真源：pnpm 官方 / npm 并行支持。步骤 4 用它安装，步骤 5 用它打印
+# 与实际选择一致的命令提示（过去无论用哪个装完都提示 pnpm）。
+# shellcheck source=scripts/lib/node-pm.sh
+source "$(dirname "${BASH_SOURCE[0]}")/scripts/lib/node-pm.sh"
+
 echo "=========================================="
 echo "凭据监控热力图 - 快速启动指南"
 echo "=========================================="
@@ -107,24 +112,17 @@ echo "-------------------"
 read -p "是否现在安装前端依赖? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-  cd web
-  
-  if command -v pnpm &> /dev/null; then
-    echo "使用 pnpm 安装依赖..."
-    pnpm install
-  else
-    echo "使用 npm 安装依赖..."
-    npm install
-  fi
-  
-  if [ $? -eq 0 ]; then
+  # 过去这里内联判断 pnpm / npm，而且装的是**不带 --frozen-lockfile** 的
+  # pnpm install。改走 scripts/lib/node-pm.sh：包管理器只选一次，安装用各自
+  # lockfile 的正确方式，失败原样透传。
+  PM="$(pm_resolve)"
+  echo "使用 $PM 安装依赖..."
+  if pm_install web; then
     echo -e "${GREEN}✓ 前端依赖安装成功${NC}"
   else
     echo -e "${RED}✗ 前端依赖安装失败${NC}"
     exit 1
   fi
-  
-  cd ..
 else
   echo -e "${YELLOW}⚠ 跳过前端依赖安装${NC}"
 fi
@@ -139,10 +137,10 @@ echo "后端服务:"
 echo "  ./llm-gateway-go"
 echo ""
 echo "前端服务 (开发模式):"
-echo "  cd web && pnpm dev"
+pm_hint dev
 echo ""
 echo "前端服务 (生产构建):"
-echo "  cd web && pnpm build"
+pm_hint build
 echo ""
 echo "测试 API:"
 echo "  ./test-heatmap-api.sh"
@@ -156,7 +154,7 @@ echo "==========================================${NC}"
 echo ""
 echo "接下来的步骤:"
 echo "1. 启动后端服务: ./llm-gateway-go"
-echo "2. 在新终端启动前端: cd web && pnpm dev"
+echo "2. 在新终端启动前端: $(pm_hint dev | sed 's/^[[:space:]]*//')"
 echo "3. 打开浏览器访问: http://localhost:5173/routing-v2/credentials"
 echo "4. 点击 '热力图' Tab 查看新功能"
 echo ""

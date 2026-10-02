@@ -59,19 +59,25 @@ else
 fi
 
 if [[ "$RUN_WEB" == true ]]; then
+  # pnpm 是官方路径（CI/发布），npm 并行受支持；选哪个由 scripts/lib/node-pm.sh
+  # 单点决定，不在这里各写一份。WEB_PM=pnpm|npm 可强制。
+  # shellcheck source=scripts/lib/node-pm.sh
+  source "$REPO_ROOT/scripts/lib/node-pm.sh"
+  echo "[verify] frontend lockfile sync gate"
+  ./scripts/check-frontend-lockfiles.sh
   echo "[verify] frontend install"
-  (cd web && pnpm install --frozen-lockfile)
+  pm_install web
   echo "[verify] frontend typecheck"
-  (cd web && pnpm run typecheck)
+  pm_run typecheck web
   echo "[verify] frontend tests"
-  (cd web && pnpm run test)
+  pm_run test web
   echo "[verify] frontend static gates (responsive breakpoints + el-* imports)"
-  (cd web && pnpm run responsive:check)
-  (cd web && pnpm run element:check)
+  pm_run responsive:check web
+  pm_run element:check web
   echo "[verify] frontend color token gate (rule 12 P0 + baseline)"
-  (cd web && pnpm run color:check)
+  pm_run color:check web
   echo "[verify] frontend build"
-  (cd web && pnpm run build)
+  pm_run build web
 fi
 
 if rg -n '^(<<<<<<<|>>>>>>>)' --glob '!vendor/**' --glob '!web/node_modules/**' .; then
