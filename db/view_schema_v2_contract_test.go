@@ -623,6 +623,34 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("815 session-branch token_band = %v, want \"band-live\"", band)
 	}
 
+	// ── `id` 必须**值层**为 NULL（§9.27.3 的决策；DDL 文本层已由 815 静态门覆盖）──
+	//
+	// 为什么值层要单独一条：现有门读的是迁移文件与 canonicalV2DDL 里的字面量，
+	// 而读方消费的是查询结果。文本层说「不投影」而值层给出真 id，是一个**读方拿不到
+	// 任何报警**的退化形态——`id` 一旦有值，按它排序/去重的读方会正常地算出一个错的数
+	// （v1 的 request_logs.id 是请求行 id、session 侧是 turn id，1,515,984 组同
+	// request_id 配对里两者相等 0 次）。
+	//
+	// 两条 UNION ALL 分臂都要查：只有会话臂返回真 id 的话，v1 臂读方仍全盲；反之亦然。
+	for _, tc := range []struct {
+		requestID string
+		arm       string
+	}{{"req-dual", "会话臂（反连接后由 session_turns 供给）"}, {"req-v1-only", "v1 臂"}} {
+		var id *int64
+		if err := pool.QueryRow(ctx,
+			`SELECT id FROM public.request_logs_with_current_month WHERE request_id = $1`,
+			tc.requestID).Scan(&id); err != nil {
+			t.Fatalf("id NULL probe failed for %s: %v", tc.requestID, err)
+		}
+		if id != nil {
+			t.Fatalf("%s（%s）的视图 id = %d，必须是 NULL。\n"+
+				"`id` 永不投影（§9.27.3）：v1 侧是请求行 id、session 侧是 turn id，"+
+				"1,515,984 组同 request_id 配对里两者相等 0 次。给一个有值的 id 比给 NULL "+
+				"更坏——读方不会报错，只会算出一个错的数。",
+				tc.requestID, tc.arm, *id)
+		}
+	}
+
 	// Down chain in reverse numeric order (740 down → 738 down → 734 down →
 	// 733 down → 710 down). 734 down must rebuild the 710 body — its
 	// "already v2" probe must NOT mistake the 734 details-joined body for the
