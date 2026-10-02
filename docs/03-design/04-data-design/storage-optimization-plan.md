@@ -76,6 +76,8 @@ session_summaries / session_titles / session_title_states / session_tags / sessi
 - 差集提取链（TurnReader.LoadLatestOutbound ← outbound_builder ← cache_v2 L3 回源 ← writer 下一轮差集）改为读 final_full；未命中回退旧 outbound_body（历史行）。
 - **v1 P1a 修正**：尾部快照落点从 `sessions.last_full_*`（与"sessions 不含请求内容"冲突）改为本表；456 三死列在 708 DROP。
 - 收效：−1.8GB/月（outbound_body 停写）+ 逐轮 delta 行与 final_full 不再双份。
+  **⚠️ 该收效已被 2026-10-02 生产实测证伪，见 §4 偏差 11：真实流量 98~99.9% 为单轮会话，
+  final_full 停写对存储近似零收益（payload 不变、每会话反增 1 行），开关保持默认关闭。**
 
 **D3｜sessions 补列不含内容。** 补 project_id、api_key_id、application_id、end_user_id、owner_user、client_ip、agent_name（首值优先）、duration_ms（关闭时计算）、client_type 修复；DROP last_full_* 三死列（708）。会话行诞生时机维持"首 turn 聚合 upsert"（≈会话开始；若需严格开始时间，后续可在请求注册时预插 status='pending' 行，列为增强项非阻塞）。
 
@@ -134,6 +136,32 @@ session_summaries / session_titles / session_title_states / session_tags / sessi
    - **停写复测（父表 + hot 双侧，2026-09-15 00:49）**：PUT 之后 turn_delta 带 outbound_body 违规 = **0**（session_bodies 与 session_bodies_hot 各查一遍；promote 为 8 小时热窗 + 小时 tick，父表 max ts 恒为热窗截断点、近期行在 hot 属正常，对账勿只查父表）；final_full 在流（hot 2367 行）。§6 的 1.8GB/月收益**自 2026-09-14 16:32:24 起可计入**。
    - **度量口径教训**：§8-A 的 `sessions.created_at > now()-1d` 在本机失真——内部回环（title/summary/memora 生成，client_type='go-client'）单轮会话整夜 ~350/h 持续产生，且分区父表查询不含 hot 表；对账一律用 ts 窗口 + 父表 ∪ hot 双侧。
 11. **S2 过程中的测试驱动修复（迁移/自愈双轨）**：①fast-path 体形探测不能对 '...'::regclass 直接取 viewdef（视图缺失 42P01），改 pg_views 行内求值；②迁移列数守卫对视图缺失（count=0）必须直通；③会话分支 113 表达式全部显式 `AS 列名`（裸 NULL::T 会以类型名 int8/text 命名列 → 42701 重复列名）；④v1 分支内层列序在冻结/动态两形态下不同（fp/raw 位置漂移），外层按 113 列名归一化投影后与会话分支按位置对齐；⑤基交集派生加 atttypid 一致过滤（本机 hot/parent 有 9 个同名不同型列，其中 5 个类型类别冲突——动态自愈的既有地雷）。
+12. **S1b final_full 存储收益证伪 + 开关回切（2026-10-02 生产实测）**：
+    - **流量形态**：真实流量 98~99.9% 为**单轮会话**，而非 §6 收益模型假设的多轮形态。
+
+      | 窗口 | 1 轮会话 | 多轮会话 | 单轮占比 |
+      |---|---|---|---|
+      | session_bodies_hot 24h | 1638 | 1（3 轮） | 99.94% |
+      | request_logs_hot 24h | 1888 | 18 | 99.1% |
+      | request_logs_2026_09 | 852 | 15 | **98.3%** |
+
+      9 月与 10 月同构 → 既往"4.9 轮/会话"的估算属**采样错误**，非流量形态变化。
+    - **收益归零**：单轮会话下 legacy 写 1 行含完整 outbound_body；final_full 写 1 行
+      9 字节占位（`outbound_body = 'null'::jsonb`）+ 1 行等体积 final_full。
+      **payload 完全相同，每会话反增 1 行 + 索引项 + 1 次冷启动 `final_full` 索引探测。**
+      D2 收效与 §6 的 −1.8GB/月 均不成立。
+    - **审计回退**：开关开启后中间轮 outbound_body 永久丢失（仅存最后一轮快照）。
+      对带 outputcompliance 钩子的网关属合规/取证能力退化，构成独立于存储的回切理由。
+    - **处置**：生产 `settings_kv.storage.session_final_full_enabled` 已置回 `false`（14:27:31），
+      验证回切后 turn_delta 100% 恢复真实载荷、无新增 final_full 行、读端回退路径正常。
+      代码面（migration 707/708 + writer/reader）**保留不拆**，开关语义与回切路径已双向验证；
+      若未来流量转向多轮形态（例如客户端侧引入真实会话续接），可据本条实测基线重新评估。
+    - **度量口径教训（与 §4-10 互补）**：`count(outbound_body)` 会把 jsonb 字面量 `'null'`
+      计为非 NULL，判定"停写是否生效"必须用 `outbound_body <> 'null'::jsonb'`。
+      本次即因该口径误判开关"未生效"，并进一步误判写入方"未升级"。
+    - **真正的存储靶点**（24h payload 构成，1,670 行）：request_delta 6,218 kB（52.4%）
+      / outbound_body 5,134 kB（40.0%）/ response_delta 464 kB（3.6%）/ attachments 23 kB（0.2%）。
+      后续优化应针对前两列的**内容**（跨行去重、截断、摘要化），而非 final_full 这类行级搬运。
 
 ---
 
