@@ -5415,3 +5415,78 @@ llmgw_autoroute_settle_retry_state_total{state="measured|unmeasured|unavailable"
   「测到 0」与「没测到」，而不是靠匹配不上来隐式表达。
 - **未经线上端到端验证**：本地 `auto_route_selections_hot` 为空，只能在真库上
   验证表达式本身，worker 的端到端结算行为未跑过。
+
+---
+
+## §9.43 settleBatch 的数据源：按 S4 写门在 v1 / 会话族之间切换
+
+§9.40 说「停写后本 worker 会全量 abandon，正确修法是改读会话族」，但被 `canonical_id`
+挡住了。§9.41/§9.42 把那个阻塞拆掉之后，本节做移植。
+
+### §9.43.1 先验技术可行性（三项都通过）
+
+| 检查 | 结果 |
+|---|---|
+| 会话族是否有 citus / 列存问题 | **否**。`citus_tables` 里 `request_logs*` 与 `session_turn*` 都不在；`session_turns_hot` 是 heap |
+| 移植版 outcome join 的计划 | **干净**：`Nested Loop Left Join` + `Index Scan using idx_session_turns_hot_request`，与现状同形，**没有** §9.40 那个 7 分区展开 |
+| LATERAL 需要的列是否齐 | **全齐**：`request_id / session_id / routing_attempts / success / latency_ms / cost_usd / origin_actor / canonical_id / tenant_id / ts` 全部存在；`routing_attempts` 形态与 v1 **一致**（同为 `{"attempts":[...]}`）⇒ §9.41 的 `-> 'attempts'` 修法原样可用 |
+
+LATERAL 唯一需要改的是会话键列名：v1 `gw_session_id` → 会话族 `session_id`。
+
+### §9.43.2 为什么是「按门切换」而不是「直接换」
+
+直接换会让**停写之前**的行为也变：
+
+- 会话臂对同一批 `request_id` 的覆盖率是 **99.3%**（§9.40）⇒ 另外 0.7% 当场失去 outcome；
+- `loadTaskBaselines` 的 `is_auto_request` 覆盖率只有 **83.0%** ⇒ 基线 cohort 缩水约 17%。
+
+目标要求「确保数据在更改前后一致」。所以按 `settings.RequestLogsWriteEnabled` 切换：
+**写门开着时读 v1（与今天逐字相同），关掉后读会话族。**
+
+这与 §9.35 的「不门控 worker」不矛盾：那条说的是**不要门控 worker 的执行**
+（门控只会让数字不再变化）；这里门控的是**读哪个族**，目的是让切换发生前行为不变。
+
+### §9.43.3 三条腿必须同源
+
+outcome join、LATERAL、`loadTaskBaselines` 若各读各的族，p95/p75 基线与被它归一化的
+latency 就不在同一批行上算——**那比缺数据更隐蔽，因为数字都有值**。
+所以三者由同一个 `settleSourceSpec` 驱动，门专门钉这一点。
+
+### §9.43.4 默认方向
+
+`settleSourceFor` 刻意**默认 v1**：只有明确读到写门关闭才切。
+`settings.GetPlatformBool` 在存储未初始化时返回 true（写门=开着），
+若代码默认走会话族，就会在**任何**配置下悄悄改源。
+
+### §9.43.5 可观测性
+
+新增 `llmgw_autoroute_settle_source_total{family="v1|session"}`，`init()` 预置两条序列。
+没有它，切换的唯一信号是「settle 变慢了」或「reward 分布变了」——都太晚也太含糊；
+而且它让「源已切但三条腿没同步切」这种半吊子状态暴露成一条只有两个取值的曲线。
+
+### §9.43.6 门：4 道，变异 2/2
+
+| 变异 | 红在 |
+|---|---|
+| M1 LATERAL 腿退回硬编码 `FROM request_logs_hot r2`（制造三腿不同源） | `auto_route_settle_source_test.go:74` + `:81`（两条断言） |
+| M2 把 `settleSourceFor` 的默认方向反转 | 同文件 `:30` / `:33` / `:36`（三条断言） |
+
+*门自己抓到一个真问题*：`TestSettleLegsAllUseTheSameSource` 首次跑就红，
+报 `src.TurnsTable 只出现 2 次`——`loadTaskBaselines` 当时写的是
+`currentSettleSource().TurnsTable` 而非命名变量。**三条腿都用了规格，但形态不一致**，
+已统一为 `src`。这是「门写得比我想的更有用」的一个例子：它抓的不是缺功能，
+是**一致性能腐化**。
+
+另注：M1 第一版把 baseline 腿也硬编码，导致 `src` 未使用 ⇒ **编译红**。
+编译红不是断言红，改成只动 LATERAL 腿（`src` 仍被 baseline 用到）后才算数。
+
+### §9.43.7 残余风险
+
+- **停写后的运行时行为未验证**。本地 `auto_route_selections_hot` 为空，
+  会话族分支从未在真实 selection 上跑过。真库只验了**计划**与**列齐备性**。
+- `is_auto_request` 在会话族 83% ⇒ 停写后基线 cohort 比 v1 期小 17%，
+  p95/p75 会与历史不可比。这是**数据事实**（会话侧该标记覆盖更少），不是实现缺陷，
+  但运维应知情。
+- 三条腿的切换是原子的（同一 SQL 内），但 baseline 与 settle 是两次查询——
+  若切换恰好发生在两次之间，一轮的 baseline 来自新族、结果来自旧族。
+  影响窗口 < 1 轮，且下一轮即自愈；已记录未处理。

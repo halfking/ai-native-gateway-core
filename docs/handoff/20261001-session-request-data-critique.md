@@ -2201,3 +2201,81 @@ Q2 三态退回旧语义 → `affinity_test.go:308`/`:318`；Q3 指标不接线 
 > 顺带：`retryCountPerRowSQL` 里的 `'array'` 分支是真库 34 万行从未走到的
 > 防御分支，若你确认写方不会改回数组，可以考虑删掉它并把门相应放宽——
 > 但删之前先确认 `RoutingAttemptsTracker.ToJSONBytes` 没有别的调用方在产出数组。
+
+---
+
+## 第二十六轮（2026-10-02）：settleBatch 数据源按 S4 写门切换 —— §9.43
+
+§9.40/§9.41/§9.42 把 `canonical_id` 那个阻塞拆掉之后，移植做完了。
+
+### 先验技术可行性（三项全过）
+
+- **无 citus / 列存问题**：`citus_tables` 里 `request_logs*` 与 `session_turn*` 都不在；
+  `session_turns_hot` 是 heap。
+- **计划干净**：`Nested Loop Left Join` + `Index Scan using idx_session_turns_hot_request`，
+  与现状同形，**没有** §9.40 那个 7 分区展开。
+- **列全齐**：`request_id / session_id / routing_attempts / success / latency_ms /
+  cost_usd / origin_actor / canonical_id / tenant_id / ts` 全部存在，
+  且 `routing_attempts` 形态与 v1 **一致** ⇒ §9.41 的 `-> 'attempts'` 原样可用。
+  LATERAL 只需把 `gw_session_id` 换成 `session_id`。
+
+### 为什么按门切换而不是直接换
+
+直接换会让**停写前**也变：会话臂覆盖率 99.3%（0.7% 当场失去 outcome）、
+`is_auto_request` 只有 83%（基线 cohort 缩水 17%）。目标要求「数据在更改前后一致」
+⇒ 写门开着读 v1（**与今天逐字相同**），关掉后读会话族。
+
+与 §9.35「不门控 worker」不矛盾：那条说的是**不要门控 worker 的执行**；
+这里门控的是**读哪个族**，目的是让切换前行为不变。
+
+### 三条腿必须同源
+
+outcome join / LATERAL / `loadTaskBaselines` 由同一个 `settleSourceSpec` 驱动。
+若各读各的族，p95/p75 与被它归一化的 latency 不在同一批行上算——**比缺数据更隐蔽，
+因为数字都有值**。
+
+### 默认方向 + 可观测
+
+`settleSourceFor` **默认 v1**（`GetPlatformBool` 未初始化时返回 true = 写门开着；
+若默认会话族就会在任何配置下悄悄改源）。新增
+`llmgw_autoroute_settle_source_total{family}`，`init()` 预置两条序列。
+
+### 门 4 道，变异 2/2
+
+M1 LATERAL 腿退回硬编码表名 → `auto_route_settle_source_test.go:74` + `:81`；
+M2 默认方向反转 → `:30`/`:33`/`:36`。
+
+**门自己抓到一个真问题**：首次跑就报 `src.TurnsTable 只出现 2 次`——
+`loadTaskBaselines` 写的是 `currentSettleSource().TurnsTable` 而非命名变量。
+三条腿都用了规格但**形态不一致**，已统一。门抓的不是缺功能，是一致性能腐化。
+
+*M1 第一版把 baseline 腿也硬编码 ⇒ `src` 未使用 ⇒ **编译红**；编译红不是断言红，
+改成只动 LATERAL 腿后才算数。*
+
+### ⚠ 残余风险
+
+- **停写后的运行时行为未验证**：本地 `auto_route_selections_hot` 为空，
+  会话族分支从未在真实 selection 上跑过；真库只验了计划与列齐备性。
+- `is_auto_request` 在会话族 83% ⇒ 停写后基线 cohort 比 v1 期小 17%，
+  p95/p75 与历史不可比（数据事实，非实现缺陷，运维应知情）。
+- baseline 与 settle 是两次查询 ⇒ 若切换恰在两次之间，一轮的 baseline 来自新族、
+  结果来自旧族。窗口 < 1 轮、下一轮自愈；已记录未处理。
+
+### 下一轮提示词
+
+> `auto_route_settle_worker` 已不再**必然**全量 abandon，但**从未在真实 selection 上
+> 验证过会话族分支**。最该做的是补一个能真正跑起来的验证：
+>
+> ① 本地 `auto_route_selections_hot` 是空的、CI 库也没这类流量 ⇒ 集成测试证明不了
+>    任何事（§9.34）。要么在 `cmd/tools/` 下加一个**本机核对工具**（像
+>    `validate_sessions_v2` 那样，不进 CI），用真库造几行 selection + session turn
+>    然后跑一遍 settleBatch，比对 v1 源与 session 源两条路径的 reward；
+>    要么接一个 testcontainers 的一次性库。**别做成 CI 门禁**——空库上它只会
+>    SKIP 并给出「绿而无证据」。
+> ② 切换的那一刻要能看出来：现在只有 `llmgw_autoroute_settle_source_total` 的
+>    曲线变化。考虑给 `s4_scan_skip.yml` 那种告警补一条
+>    `changes(llmgw_autoroute_settle_source_total[10m]) > 0`，
+>    让「源族已切换」成为一个**事件**而不是需要人去盯的曲线拐点。
+> ③ 仍未做：§9.39 遗留的 `vi` 维度 SQL 注释处理（`model_alternatives.go`）；
+>    §9.38 告警 `for:` 阈值未在真机 Prometheus 验证；§9.36 的 19 条静默档；
+>    响应侧 7 个读点仍不可端口。
