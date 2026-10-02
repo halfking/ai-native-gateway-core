@@ -43,6 +43,9 @@ func (g *fakeLeaseGovernor) Renew(_ context.Context, _ *QueuedRequest) error {
 	g.mu.Lock()
 	g.renewals++
 	call := g.renewals
+	// renewErr 的读必须在锁内：T2/T3 钉测会在循环运行途中换注入（R33 域D
+	// P1-1，-race 实锤——旧代码锁外裸读 vs 测试 goroutine 裸写是数据竞争）。
+	renewErr := g.renewErr
 	g.mu.Unlock()
 	if g.renewedCh != nil {
 		select {
@@ -50,10 +53,18 @@ func (g *fakeLeaseGovernor) Renew(_ context.Context, _ *QueuedRequest) error {
 		default:
 		}
 	}
-	if g.renewErr == nil {
+	if renewErr == nil {
 		return nil
 	}
-	return g.renewErr(call)
+	return renewErr(call)
+}
+
+// setRenewErr 并发安全地换错误注入（配套 Renew 锁内读；测试 goroutine 与
+// renew 循环 goroutine 并发，裸赋值 = 数据竞争）。
+func (g *fakeLeaseGovernor) setRenewErr(f func(int) error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.renewErr = f
 }
 
 func (g *fakeLeaseGovernor) count() (int, int) {

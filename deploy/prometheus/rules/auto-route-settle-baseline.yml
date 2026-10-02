@@ -160,30 +160,42 @@ groups:
         # 设置门读失败静默回 v1 而该腿无数据、行龄超过 4h abandon 窗口等，
         # 全部落进这一个条件。
         #
-        # 判据用 `unless on(job, instance)` 而不是 `increase(...) == 0`：
+        # 判据用 `unless on(job)` 而不是 `increase(...) == 0`：
         # settled_total 是 CounterVec，进程启动后到第一次成功结算前**序列不
         # 存在**，而 absent 序列对 `== 0` 判空剔除——「从启动起就没结算过」
         # 恰是最需要响的形态，`==0` 形态下它永远静默。unless 对 absent 的
         # rhs 判「无匹配即保留」，两种形态（存在但为 0 / 根本不存在）都响。
         #
+        # 为什么聚合在 **job 级**而不是 job,instance（R33 域B P2-1，独立复审
+        # 抓出）：结算由 distlock 单写者执行——每轮只有一个实例赢得 SetNX 去
+        # settle，其余实例 skip。蓝绿双实例下相位靠后的实例 settled 序列永不
+        # 增长而产侧照常产出，按 instance 评估会让该实例**常驻 critical 误报**
+        # （当前本地单 target 掩盖了这一面）。结算管线是否与生产脱钩是部署级
+        # 属性，不是实例级属性；实例归因交给 AutoRouteSettleSweepFailing（它
+        # 没有 top-k 误报面：非 leader 从不跑 settleBatch，序列缺席=静默）。
+        #
         # 已知误报面（如实登记）：goal-*/loopback 合成 selection 在写入时即被
         # 盖 settled（reward=NULL）且刻意不计入 settled_total——若窗口内产侧
         # 全是合成流量，本条会响。处置先核对 origin_actor 合成占比
         # （SQLExcludeSyntheticActors 同族过滤），再查结算侧。
+        # 已知可见性边界（如实登记，R33 域B P3-②）：对「静默回 v1/停写」形态，
+        # 本条只在 stop-write 后 ~4h 内可见——此后积压行到 abandon 窗口被批量
+        # 盖 settled{outcome=abandoned}，rhs 复活、告警自清；「持续全-abandon」
+        # 态本身（每轮都 abandon 无 rewarded）无独立门，依赖 reward 分布观测。
         expr: |
-          sum by (job, instance) (increase(llm_gateway_auto_selections_total[45m])) > 0
-            unless on(job, instance)
-          sum by (job, instance) (increase(llmgw_autoroute_settled_total[45m])) > 0
+          sum by (job) (increase(llm_gateway_auto_selections_total[45m])) > 0
+            unless on(job)
+          sum by (job) (increase(llmgw_autoroute_settled_total[45m])) > 0
         for: 15m
         labels:
           severity: critical
           component: bg
         annotations:
-          summary: "auto-route selection 在持续产出但结算已 45+ 分钟零产出（{{ $labels.instance }}）"
+          summary: "auto-route selection 在持续产出但结算管线已 45+ 分钟零产出（{{ $labels.job }}）"
           description: |
-            产侧 llm_gateway_auto_selections_total 在 45 分钟窗口内有增长，
-            但同实例的 llmgw_autoroute_settled_total 零产出（或序列不存在）。
-            这不是「没流量」——是**结算管线与生产脱钩**了。
+            部署级（job 聚合）产侧 llm_gateway_auto_selections_total 在 45
+            分钟窗口内有增长，但 llmgw_autoroute_settled_total 零产出（或
+            序列不存在）。这不是「没流量」——是**结算管线与生产脱钩**了。
 
             **正在发生的后果**：pending selection 行持续积累；行龄超过
             settleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出

@@ -146,7 +146,7 @@ func TestLastArmed_SuccessResetsDeadline(t *testing.T) {
 		mc.Advance(4 * time.Millisecond) // 成功拍逐个落在 4/8/12/16/20ms
 	}
 
-	g.renewErr = func(int) error { return errTransientRenew }
+	g.setRenewErr(func(int) error { return errTransientRenew })
 	waitForCall(t, renewed, 6)
 	assertNotAborted(t, aborted, "T2: within TTL of last successful renewal (M1/M3 isolation)")
 
@@ -171,7 +171,7 @@ func TestLastArmed_AnchorIsLastSuccessNotFirstFailure(t *testing.T) {
 	}
 	mc.Advance(8 * time.Millisecond)
 
-	g.renewErr = func(int) error { return errTransientRenew }
+	g.setRenewErr(func(int) error { return errTransientRenew })
 	waitForCall(t, renewed, 4)
 	assertNotAborted(t, aborted, "T3: first failure within TTL of last success (M1/M3 isolation)")
 
