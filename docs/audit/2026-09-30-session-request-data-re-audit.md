@@ -7180,3 +7180,88 @@ M14 是专门为验证环 3 构造的。前三条无论环 3 写得多糟都会�
 ⇒ 处理方式仍是**转述**而非引用。这条纪律的真正内容不是「怎么绕过判据」，
 而是：**一份「禁用某字面串」的判据，天然无法区分「非法的断言」与「合法的订正记录」**，
 所以文案里不该逐字复述被撤回的句子。
+
+---
+
+## §9.53 为 §9.44 的 cohort 决策取证：**本地库答不了这个问题**
+
+本轮原计划是为 §9.44「基线 cohort 跨切换」的两个选项（(a) 显式重新基线化 /
+(b) 引入独立稳定 cohort）收集真库证据。量完之后结论是：**这个量具在本地开发库上
+不成立**，必须上 252。下面是量到了什么、以及我中途差点得出的两个错误结论。
+
+### §9.53.1 量到的（本地库，2026-10-02，24h 窗口）
+
+`settleBaselinesSQL` 的 cohort 谓词是 `is_auto_request = TRUE AND latency_ms IS NOT NULL`，
+`GROUP BY task_type`，并叠加 `SQLExcludeSyntheticActors`（排除 `goal-%` 与三个
+`*generator` actor）。两侧同谓词对照：
+
+| | v1 | 会话族 |
+|---|---|---|
+| `is_auto_request = TRUE` | 1,932 | **0** |
+| `is_auto_request IS NULL` | 1,326 | 0 |
+| `is_auto_request = FALSE` | 0 | 1,299 |
+| `task_type` 非空 | 1,920 / 1,932（**仅 auto 行**；非 auto 行 0/1,326） | **0** |
+| 列是否存在 | — | 3/3 都存在（`is_auto_request` / `task_type` / `canonical_id`） |
+
+跨族按 `request_id` 联（只按 request_id，hot ∪ parent）：
+
+| | v1 行数 | 同 request_id 在会话族 |
+|---|---|---|
+| auto 行 | 1,938 | **0** |
+| 全部行 | 3,266 | 1,301（39.8%） |
+
+### §9.53.2 为什么本地库答不了
+
+v1 那 1,938 条 auto 行的 `origin_actor` 分布：
+
+| origin_actor | 行数 | 有 task_type | 有 `gw_session_id` |
+|---|---|---|---|
+| `node-probe-worker` | 1,930 | 是 | **0** |
+| `auto-title-generator` | 14 | 否 | 14 |
+| `active-probe-worker` | 2 | 是 | **0** |
+
+会话族那 1,301 行的 `origin_actor`：`probe-service` 691 / `<null>` 565 /
+`node-probe-worker` 36 / `credential-selfcheck-worker` 14
+——**全部是系统流量，零业务 auto-route**。
+
+⇒ 本地开发库的「auto 流量」是**探针 worker 发的合成流量**，它们**不带会话键**，
+因此按设计不会进 `session_turns`。**这里根本没有业务 auto-route 流量可供建 cohort。**
+
+⇒ 所以 §9.53.1 里那个「cohort 为 0」**不是缺陷信号，是量具失效信号**。
+本库的 cohort 无论怎么算都是探针的形态。
+
+### §9.53.3 我中途得出的两个**错误**结论（都由这次测量推翻）
+
+**错误 1：「会话镜像丢了整个路由组，settle cohort 因写方没接线而为空。」**
+依据是 `grep entry.IsAutoRequest internal/sessionv2mirror/hook.go` 在某段行区间内
+返回 0。**错**：映射在 `s1a_fields.go:64-99`（`applyStorageS1AFields`），
+`IsAutoRequest` / `AutoDecision` / `AutoConfidence` / `TaskTypeChosen` /
+`RoutingAttempts` / `RoutingSummary` / `CanonicalID` / `CanonicalModel` /
+`RawModelName` **一个不缺**。错因：**把行区间限定在了错误的文件上**，
+于是「查不到」被读成了「没接线」。
+
+**错误 2：「业务 auto 请求从未被镜像进会话族（1938 条 0 重叠），这是停写前必须
+修的阻塞项。」** 错：那 1,930 条 `node-probe-worker` 行 `gw_session_id` **全为 NULL**，
+没有会话键就不可能也不应该出现在 `session_turns` 里。**重叠为 0 是设计，不是缺陷。**
+
+⇒ 两次都是**「没查到」被当成了「不存在」**。第二次尤其危险：如果照着它下结论，
+就会把一个不存在的阻塞项写进停写前置条件清单。
+
+### §9.53.4 必须在 252 上量的（本地无法替代）
+
+按 §9.53.1 同一组查询在生产库跑，取**近 7 天**（本地只有 1 天有效流量，
+且形态是探针）：
+
+1. `SELECT is_auto_request, count(*) FROM request_logs GROUP BY 1` —— 生产上
+   auto 行到底有多少、其中多少带 `task_type`。
+2. 同谓词在 `session_turns` 上的计数 —— **这是判据 (a)/(b) 的分水岭**：
+   若生产会话族里 auto 行**充足**，则 (a) 显式重新基线化即可；
+   若为 0 或极少，则 (b)「引入独立稳定 cohort」也**无从建起**（没有数据），
+   必须先解决「业务 auto 流量是否被镜像」。
+3. 跨族按 `request_id`（hot ∪ parent，不带 ts）测 auto 行的重叠率 ——
+   决定停写后 cohort 是否还成立。
+4. `origin_actor` 分布：确认生产上是否存在**非探针**的 auto actor，
+   以及它们是否落在 `SQLExcludeSyntheticActors` 的排除名单里。
+
+⇒ **在拿到 ①–④ 之前，(a)/(b) 的选择不应被拍板。** 本地证据既不支持 (b)，
+也不足以支持 (a)。

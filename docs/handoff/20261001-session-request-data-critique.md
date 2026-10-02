@@ -3024,3 +3024,71 @@ go test ./bg/ ./deploy/prometheus/rules/ ./domains/hooks/observability/telemetry
 > ⑤ §9.44–§9.52 没有一条改变读源语义；真正切源的收口仍待 ③ 第一项。
 > ⑥ 其余遗留未变：§9.38 告警 `for:` 阈值未在真机 Prometheus 验证；响应侧 7 个读点
 >    仍不可端口。
+
+---
+
+## 第三十四轮（§9.53）：为 §9.44 cohort 决策取证 —— 量具在本地不成立
+
+### 结论
+
+去量「会话族能不能建出与 v1 可比的 cohort」。量完的结论是：**本地开发库答不了这个
+问题**，证据必须上 252。**没有拍板 (a)/(b)**——本地证据既不支持 (b)，也不足以支持 (a)。
+
+### 量到了什么（本地 24h）
+
+- v1 `is_auto_request=TRUE` 1,932 行；会话族 **0** 行。
+- 会话族 1,299 行 `is_auto_request` **全 false**；`task_type` **全空**。
+  （列 3/3 都存在，不是缺列。）
+- 跨族按 `request_id`（hot ∪ parent，不带 ts）：v1 auto 行 1,938 条，
+  在会话族里 **0** 条；v1 全部 3,266 条里有 1,301 条在会话族。
+- **根因**：那批 auto 行的 `origin_actor` 是 `node-probe-worker`(1930) /
+  `active-probe-worker`(2) / `auto-title-generator`(14)，而前两者
+  **`gw_session_id` 全为 NULL**。会话族那 1,301 行也全是系统流量
+  （probe-service 691 / null 565 / node-probe-worker 36 / selfcheck 14）。
+
+⇒ **本地库的「auto 流量」是探针合成流量，不带会话键，按设计不会进 session_turns。
+这里根本没有业务 auto-route 流量可供建 cohort。**「cohort 为 0」是量具失效信号，
+不是缺陷信号。
+
+### ★我中途得出的两个错误结论（都被这次测量推翻）
+
+1. **「会话镜像丢了整个路由组」** —— 错。映射在
+   `internal/sessionv2mirror/s1a_fields.go:64-99`（`applyStorageS1AFields`），
+   9 个字段一个不缺。错因：**把行区间限定在错误的文件上**（只 grep 了
+   `hook.go` 的一段），「查不到」被读成了「没接线」。
+2. **「业务 auto 请求从未被镜像，是停写前的阻塞项」** —— 错。那 1,930 条探针行
+   没有会话键，本来就不可能出现在 `session_turns`。**重叠为 0 是设计。**
+
+⇒ 两次都是**「没查到」被当成「不存在」**。第二次尤其危险：照它下结论就会把一个
+**不存在的阻塞项**写进停写前置条件清单。
+
+### 测试
+
+本轮**无代码改动**（取证轮），故无测试。
+
+### 下一轮提示词
+
+> §9.53 为 §9.44 的 cohort 决策取证，结论是**本地开发库答不了这个问题**：
+> 本地的 auto 流量全是 `node-probe-worker` 探针（1930/1938），它们
+> `gw_session_id` 全为 NULL，按设计不进 `session_turns`；会话族里也只有系统流量。
+> **「cohort 为 0」是量具失效信号，不是缺陷信号。** 因此 (a)/(b) **未拍板**。
+>
+> ① **必须在 252 上跑这四条**（本地 24h 无代表性，且形态是探针）：
+>    1. `SELECT is_auto_request, count(*) FROM request_logs GROUP BY 1`（近 7 天）
+>    2. 同谓词在 `session_turns` 上的计数 —— **(a)/(b) 的分水岭**：
+>       会话族 auto 行充足 ⇒ (a) 显式重新基线化即可；为 0 ⇒ (b) 也无从建起，
+>       必须先解决「业务 auto 流量是否被镜像」。
+>    3. 跨族按 `request_id`（hot ∪ parent，**不带 ts**）测 auto 行重叠率
+>    4. `origin_actor` 分布：生产上是否存在非探针 auto actor，
+>       以及它们是否落在 `SQLExcludeSyntheticActors` 排除名单里
+> ② **本轮最该带走的一条**：「grep 不到」**不等于**「没接线」。我两次把行区间
+>    限定在错误的文件/区间上，得出了两个假结论（路由组其实在 `s1a_fields.go`；
+>    auto 行其实因无会话键而本就不该被镜像）。**查「某字段有没有接线」时，
+>    必须先确认搜索范围覆盖了它的写方，而不是先假定它在某个文件里。**
+>    库能裁决的，用库裁决——两次都是库推翻了我的静态阅读。
+> ③ **仍未做且需要拍板**（三项）：§9.44 cohort（等 ① 的数据）、§9.49.8
+>    `silently_degraded_content` 是否扩档、§9.48 `silently_frozen` 21 条口径。
+> ④ **可做**：把 arm 从 `domains/hooks/observability/telemetry` 移到
+>    `domains/streaming` 的响应头读取点（§9.52 已说明这是「正确停靠点，非最优」）。
+>    需跨包导出；`executor_chat.go` 曾被并行会话大改，**先确认冲突窗口结束**。
+> ⑤ §9.44–§9.53 没有一条改变读源语义；真正切源的收口仍待 ③ 第一项。
