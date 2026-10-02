@@ -2,13 +2,16 @@
 // UsageTrendExplorer.vue — 全屏用量趋势分析（2026-10-02 看板轮）。
 // 看板「用量趋势」卡的「更多」入口（BoardFilterBar 时间范围右侧按钮）落到本页；
 // 菜单「模型与路由」组亦挂入口。过滤维度：时间范围 / 供应商 / 租户（超管）/
-// API Key / 模型（标准 ModelPicker）/ 指标（请求数、Token、积分、成本）。
-// 全部过滤条件同步 URL query（深链/分享），图表按模型分线（top 10 + 长尾折叠），
-// 下表为模型汇总。路由 meta.fillViewport 让本页铺满主区。
-import { computed, onMounted, ref, watch } from 'vue'
+// API Key / 模型（标准 ModelPicker 多选，与 stream 页同款 compact 展示）/ 指标
+// （请求数、Token、积分、成本）。全部过滤条件同步 URL query（深链/分享），
+// 「清除全部」一键复位；自动刷新（30s/1m/5m）定时重拉序列，同样入深链。
+// 图表按模型分线（top 10 + 长尾折叠，模型多选已定时服务端不折叠），下表为
+// 模型汇总。路由 meta.fillViewport 让本页铺满主区。
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
+  ElButton,
   ElOption,
   ElRadioButton,
   ElRadioGroup,
@@ -50,8 +53,16 @@ const range = ref<KxDateRange | null>(readRangeFromQuery())
 const providerId = ref<number | null>(readNumFromQuery('provider'))
 const tenantId = ref<string | null>(typeof route.query.tenant === 'string' && route.query.tenant ? route.query.tenant : null)
 const apiKeyId = ref<number | null>(readNumFromQuery('apikey'))
-const model = ref(typeof route.query.model === 'string' ? route.query.model : '')
+const models = ref<string[]>(readModelsFromQuery())
 const metric = ref<UsageTrendMetric>(readMetricFromQuery())
+
+function readModelsFromQuery(): string[] {
+  // 深链 model 既支持单值（model=a）也支持多值（model=a&model=b，与请求层
+  // usageTrendQs 的序列化对称）；数组元素再做一遍字符串防护。
+  const raw = route.query.model
+  const list = Array.isArray(raw) ? raw : (typeof raw === 'string' && raw ? [raw] : [])
+  return list.filter((m): m is string => typeof m === 'string' && !!m)
+}
 
 function readRangeFromQuery(): KxDateRange | null {
   const start = typeof route.query.start === 'string' ? route.query.start : ''
@@ -136,7 +147,7 @@ async function loadSeries() {
       tenant_id: tenantId.value || undefined,
       provider_id: providerId.value || undefined,
       api_key_id: apiKeyId.value || undefined,
-      model: model.value || undefined,
+      model: models.value.length ? models.value : undefined,
       top: PAGE_TOP_MODELS,
     })
     if (token !== seriesToken) return
@@ -153,7 +164,7 @@ async function loadSeries() {
 }
 
 watch(
-  [effectiveRange, providerId, tenantId, apiKeyId, model],
+  [effectiveRange, providerId, tenantId, apiKeyId, models],
   () => {
     void loadSeries()
     syncQuery()
@@ -161,7 +172,7 @@ watch(
 )
 
 function syncQuery() {
-  const next: Record<string, string> = {
+  const next: Record<string, string | string[]> = {
     start: effectiveRange.value.start,
     end: effectiveRange.value.end,
     metric: metric.value,
@@ -171,10 +182,70 @@ function syncQuery() {
   if (providerId.value) next.provider = String(providerId.value)
   if (showTenantFilter && tenantId.value) next.tenant = tenantId.value
   if (apiKeyId.value) next.apikey = String(apiKeyId.value)
-  if (model.value) next.model = model.value
+  // 单选传 string、多选传数组（序列化为重复 model 参数）；与后端多选解析对称。
+  if (models.value.length === 1) next.model = models.value[0]
+  else if (models.value.length > 1) next.model = models.value
+  if (autoRefreshSec.value > 0) next.auto = String(autoRefreshSec.value)
   // 全量重建 query：清空的过滤器必须从深链里消失，不能沿用旧值。
   router.replace({ query: next }).catch(() => undefined)
 }
+
+// ── 模型多选回填 / 清除全部条件 ──
+
+// 与 stream 页 onModelFilterPicked 同款防护：非数组（single 形态）按单值包裹，
+// 空串剔除；空数组 = 清空模型过滤。
+function onModelsPicked(value: string | string[]) {
+  models.value = Array.isArray(value) ? value.filter((v) => !!v) : [value].filter((v) => !!v)
+}
+
+// 「有条件」= 任一过滤偏离初始态。判式与 syncQuery 的写入条件（truthy）对称：
+// el-select 清空在部分 EP 版本产出 ''，null 判断会把「已清空」误判为「有条件」。
+const hasActiveFilters = computed(() =>
+  range.value != null
+  || !!providerId.value
+  || (showTenantFilter && !!tenantId.value)
+  || !!apiKeyId.value
+  || models.value.length > 0
+  || metric.value !== 'requests',
+)
+
+function clearAllFilters() {
+  range.value = null
+  providerId.value = null
+  tenantId.value = null
+  apiKeyId.value = null
+  models.value = []
+  metric.value = 'requests'
+}
+
+// ── 自动刷新 ──
+
+const AUTO_REFRESH_CHOICES = [0, 30, 60, 300] as const
+
+function readAutoRefreshFromQuery(): number {
+  const raw = typeof route.query.auto === 'string' ? Number(route.query.auto) : NaN
+  return (AUTO_REFRESH_CHOICES as readonly number[]).includes(raw) ? raw : 0
+}
+
+const autoRefreshSec = ref<number>(readAutoRefreshFromQuery())
+
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+
+function applyRefreshTimer() {
+  if (refreshTimer != null) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+  if (autoRefreshSec.value > 0) {
+    // 只重拉数据，不改时间范围（窗口固定，窗口内新桶自然出现）。
+    refreshTimer = setInterval(() => { void loadSeries() }, autoRefreshSec.value * 1000)
+  }
+}
+
+watch(autoRefreshSec, () => {
+  applyRefreshTimer()
+  syncQuery()
+})
 
 // ── 汇总表 ──
 
@@ -230,6 +301,11 @@ const sourceLabel = computed(() => {
 onMounted(() => {
   void loadFilterOptions()
   void loadSeries()
+  applyRefreshTimer()
+})
+
+onBeforeUnmount(() => {
+  if (refreshTimer != null) clearInterval(refreshTimer)
 })
 </script>
 
@@ -297,12 +373,17 @@ onMounted(() => {
           <el-option v-for="k in keys" :key="k.id" :value="k.id" :label="keyLabel(k)" />
         </el-select>
       </div>
-      <div class="ute__filter ute__filter--model">
+      <div class="ute__filter ute__filter--model" :class="{ 'ute__filter--model-active': models.length > 0 }">
         <label class="ute__label">{{ t('usageTrend.filterModel') }}</label>
+        <!-- 与 dashboard stream 页筛选行同款：ModelPicker multi compact，
+             已选态触发器亮 accent，「已选 N 个模型」+ 计数徽标。 -->
         <ModelPicker
-          v-model="model"
+          mode="multi"
+          compact
+          :model-value="models"
           :placeholder="t('usageTrend.filterAll')"
           :title="t('usageTrend.filterModel')"
+          @update:model-value="onModelsPicked"
         />
       </div>
       <div class="ute__filter">
@@ -312,6 +393,20 @@ onMounted(() => {
             {{ t(usageTrendMetricLabelKey(m)) }}
           </el-radio-button>
         </el-radio-group>
+      </div>
+      <div class="ute__filter">
+        <label class="ute__label">{{ t('usageTrend.autoRefresh') }}</label>
+        <el-select v-model="autoRefreshSec" class="ute__select ute__select--auto">
+          <el-option :value="0" :label="t('usageTrend.autoRefreshOff')" />
+          <el-option :value="30" :label="t('usageTrend.autoRefresh30s')" />
+          <el-option :value="60" :label="t('usageTrend.autoRefresh1m')" />
+          <el-option :value="300" :label="t('usageTrend.autoRefresh5m')" />
+        </el-select>
+      </div>
+      <div class="ute__filter ute__filter--reset">
+        <el-button :disabled="!hasActiveFilters" @click="clearAllFilters">
+          {{ t('usageTrend.clearAll') }}
+        </el-button>
       </div>
     </div>
 
@@ -441,6 +536,17 @@ export default { name: 'UsageTrendExplorer' }
 .ute__filter--model :deep(.model-picker),
 .ute__filter--model :deep(.mp-trigger) {
   width: 100%;
+}
+/* 已选模型时触发器亮 accent（与 stream 页 filter-model-picker--active 同式） */
+.ute__filter--model-active :deep(.mp-trigger) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.ute__select--auto {
+  width: 118px;
+}
+.ute__filter--reset :deep(.el-button) {
+  min-height: 32px;
 }
 .ute__chart,
 .ute__table {
