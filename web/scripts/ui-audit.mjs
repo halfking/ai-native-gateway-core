@@ -24,6 +24,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const WEB = resolve(HERE, '..')
 const SRC = resolve(WEB, 'src')
 const VIEWS = resolve(SRC, 'views')
+const COMPONENTS = resolve(SRC, 'components')
 
 // ─────────────────────────────────────────────────────────────
 // 解析工具
@@ -158,16 +159,23 @@ const OVERLAY_EXEMPT = [
   { file: 'views/ops/VibeCodingView.vue', reason: '全屏控制台终端视图，无弹层容器' },
 ]
 
+/** 待人工确认项：判据只能提示、不能定罪的问题。--strict 不据此 exit 1。 */
+const REVIEW_ITEMS = []
+
 function checkOverlays(file, src) {
   const problems = []
   const rel = relative(SRC, file)
 
-  // 1) 自研 CSS 弹层：.modal__panel / .drawer__panel 等，逐一检查是否声明宽度
-  const modalPanelRe = /\b(modal|drawer)__(?:panel|body|content|content-body)\b/g
-  for (const m of src.matchAll(modalPanelRe)) {
-    const kind = m[1]
-    const problems2 = checkOverlayBlock(file, src, m[0], kind)
-    problems.push(...problems2)
+  // 1) 自研 CSS 弹层：容器级判定（宽度看容器，限高看所有相关规则）
+  // 触发的类名形如 xxx-drawer / modal__panel。字符类必须含 `_`，
+  // 否则 `modal__panel` 会在 `\b` 处失配（`_` 是 word char），整条判据静默失效
+  // —— 自检里那条「限高无滚动必须判红」就是靠它兜住的。
+  const seenKinds = new Set()
+  for (const m of src.matchAll(/\b([a-z0-9_-]*(?:drawer|modal)[a-z0-9_-]*)\b/gi)) {
+    const kind = /drawer/i.test(m[1]) ? 'drawer' : 'modal'
+    if (seenKinds.has(kind)) continue
+    seenKinds.add(kind)
+    problems.push(...checkOverlayBlock(file, src, kind, REVIEW_ITEMS))
   }
 
   // 2) Element Plus：<el-dialog> / <el-drawer> 标签必须声明 width / size
@@ -214,26 +222,147 @@ function checkOverlays(file, src) {
 }
 
 /**
- * 自研弹层块级检查：解析与该类名相邻的规则，
- * 断言①声明宽度 ②限高时必须配 overflow-y:auto/scroll。
+ * 自研弹层检查（组件级，不是逐类名级）。
+ *
+ * ★ 2026-10-03 修正过一次判据：原先要求每个 `.drawer__body` / `.modal__content`
+ * 各自声明宽度，结果把 ChatParamsDrawer 判红 —— 但那里 `.drawer` 已经有
+ * `width: min(360px,100vw)`，而 `.drawer__body` 是 flex 列的子项（`flex:1`），
+ * 宽度本就由父容器决定。判据测的不是「弹层宽度不可控」这个真性质，
+ * 而是「body 自己有没有写 width」。这是判据与被测性质不在同一处。
+ *
+ * 现在改成：只看**容器级**选择器（弹层根/面板），要求其中至少一个声明宽度；
+ * 子部件（body/header/footer/content…）不参与宽度判定。子部件仍要满足
+ * 「限高必须配滚动」——那条是内容完整性的真要求，与容器归属无关。
  */
-function checkOverlayBlock(file, src, clsName, kind) {
+// ★ 子部件后缀要同时认 `__` 与 `-` 两种分隔符。仓库里两种写法并存：
+//   .drawer__body（UnifiedRequestSessionDrawer 那种）与
+//   .drawer-body / .drawer-body-scroll（ChatParamsDrawer / ClientConfigDialog）。
+// `panel` 故意不在列表里：__panel / -panel 是容器本身。
+const OVERLAY_SUBPART_RE = /(?:__|-)(body|header|footer|content|hint|actions|title|meta|list|section|head|label|close|overlay|backdrop|toolbar|tabs|row|item|cell|text|icon|spacer|empty|error|loading)\b/
+
+/**
+ * 只有「以弹层本身命名」的类才算容器：`.drawer` / `.modal` /
+ * `.app-drawer` / `.app-modal` / `.drawer__panel` / `.modal-panel`。
+ *
+ * 其余（`.drawer__body` 子部件、`.modal-danger` / `.drawer-sub` 修饰变体）
+ * 都不算：修饰变体通常与一个已定宽的基类成对出现，单独判它「没定宽」是误报。
+ * 这条判据宁可漏报也不误报 —— 误报会让人去改本来正确的代码。
+ */
+function isBaseOverlayContainer(cls, word) {
+  const segs = cls.split(/(?:__|-)/).filter(Boolean)
+  const wi = segs.findIndex((s) => s === word)
+  if (wi < 0) return false
+  const rest = segs.slice(wi + 1)
+  if (rest.length === 0) return true // .drawer / .app-drawer
+  return rest.length === 1 && (rest[0] === 'panel' || rest[0] === 'dialog')
+}
+
+function checkOverlayBlock(file, src, kind, review) {
   const problems = []
-  const re = new RegExp(`\\.${clsName}\\b[^{]*\\{([^}]*)\\}`, 'g')
+  const rel = relative(SRC, file)
+  if (OVERLAY_EXEMPT.some((e) => rel === e.file)) return problems
+
+  // ★ 只在 <style> 块内解析 CSS。早期版本扫全文，把 JavaScript 的
+  // `if (!o) return ... {` 之类代码块当成 CSS 规则，于是
+  // ModelOfferDetailDrawer 报出「弹窗容器（if (!o) return …）」这种垃圾。
+  // 同时剥掉 CSS 注释，否则 AnnotationView 报出
+  // 「容器（/* Modal internals */ .modal-sample-summary）」。
+  const css = styleBlocks(src).join('\n').replace(/\/\*[\s\S]*?\*\//g, '')
+  if (!css.trim()) return problems
+
+  const word = kind === 'drawer' ? 'drawer' : 'modal'
+  const classRe = new RegExp(`\\.([a-z0-9_-]*${word}[a-z0-9_-]*)`, 'gi')
+  // 收集本组件里所有与该弹层相关的规则
+  const rules = []
+  const ruleRe = /([^{}]+)\{([^{}]*)\}/g
   let m
-  while ((m = re.exec(src))) {
-    const body = m[1]
-    const line = src.slice(0, m.index).split('\n').length
-    const hasWidth = /(?:^|;)\s*(?:width|min-width|max-width)\s*:/.test(body)
-    const hasMinWidth = /min-width\s*:/.test(body)
-    if (!hasWidth && !hasMinWidth) {
-      problems.push({ file, line, msg: `.${clsName}（${kind === 'drawer' ? '抽屉' : '弹窗'}）未声明宽度，内容宽度不可控` })
+  while ((m = ruleRe.exec(css))) {
+    const selector = m[1].trim()
+    if (selector.startsWith('@')) continue
+    const classes = [...selector.matchAll(classRe)].map((c) => c[1].toLowerCase())
+    if (!classes.length) continue
+    rules.push({ selector, body: m[2], line: css.slice(0, m.index).split('\n').length, classes })
+  }
+  if (!rules.length) return problems
+
+  // 容器 = 以弹层本身命名、且不是子部件后缀的类
+  //
+  // ★ 误报家族③（2026-10-03 实测，AppNavDrawer.vue）：`.app-nav-drawer` 只是
+  //   内层 `<nav>` 的类，模板根是 `<AppDrawer width="min(80vw,320px)">`（壳在
+  //   另一个组件里，宽度是有声明的）。「名字里带 drawer」不等于「就是抽屉壳」。
+  //   判别：容器类要么挂在模板根元素上，要么是 __panel/-panel 变体。
+  //   偏保守 —— 可能漏报，但不会诱导人去改本来正确的代码。
+  const rootClasses = new Set(templateRootClasses(src).map((c) => c.toLowerCase()))
+  const containers = rules.filter((r) =>
+    r.classes.some(
+      (c) =>
+        !OVERLAY_SUBPART_RE.test(c) &&
+        isBaseOverlayContainer(c, word) &&
+        (rootClasses.has(c) || /(?:__|-)(panel|dialog)$/i.test(c)),
+    ),
+  )
+  if (containers.length) {
+    const anyWidth = containers.some(
+      (r) => /(?:^|;)\s*(?:width|min-width)\s*:/.test(r.body) || /(?:^|;)\s*max-width\s*:/.test(r.body),
+    )
+    if (!anyWidth) {
+      const c = containers[0]
+      problems.push({
+        file,
+        line: c.line,
+        msg: `${word === 'drawer' ? '抽屉' : '弹窗'}容器（${c.selector}）未声明宽度，内容宽度不可控`,
+      })
     }
-    const maxH = /(?:^|;)\s*max-height\s*:/.test(body)
-    const scrollable = /overflow-y\s*:\s*(auto|scroll)/.test(body)
-    if (maxH && !scrollable) {
-      problems.push({ file, line, msg: `.${clsName} 有 max-height 但没有 overflow-y:auto/scroll —— 内容会被裁切` })
-    }
+  }
+
+  // 限高必须可滚，但**不要求滚动写在同一条规则里**。
+  //
+  // 误报家族①（2026-10-03 实测）：弹窗壳限高 + 子项滚动，是最常见的写法 ——
+  //   .modal-content { max-height: 90vh; display:flex; flex-direction:column }
+  //   .modal-body    { flex: 1; overflow-y: auto }
+  // （EmergencyDiagnosticModal.vue 真实形态）。原判据要求同规则内 overflow，
+  //  把这种正确写法判成「内容会被裁切」—— 会诱导人去改本来没问题的代码。
+  //
+  // 误报家族②：子部件与壳同名族（.drawer__body vs .drawer）但壳在别的文件。
+  //  AppNavDrawer.vue 的 .app-nav-drawer 只是内层 <nav>，壳是 AppDrawer 组件。
+  //
+  // 所以这里只保留「同规则滚动」与「同族 flex:1 子项滚动」两种豁免。
+  // ── 内容可滚性：**降级为待人工确认项，不进硬门** ──
+  //
+  // 为什么降级（2026-10-03，三轮实证）：这条规则连续误报三次，每次都得回去读源码。
+  //   ① 滚动写在同规则 → 判得对，但只覆盖一部分写法
+  //   ② 滚动写在「同前缀兄弟」（.modal-content / .modal-body）→ 判得对
+  //   ③ 滚动写在**任意命名的 flex:1 子项**（AttachmentManager.vue 的 .json-block
+  //      { flex:1; overflow:auto }）→ 名字对不上，只能读源码才知道
+  // 第③类在本仓是普遍写法（json-block / att-table-wrap / …），静态启发式要覆盖它
+  // 就得把「同族」放宽成「同组件」，而那等于不再判别 —— 直接变成恒绿装饰。
+  //
+  // 判据只能证伪、不能证成时，留着它当门就是训练人忽略门。所以：
+  //   硬门（--strict 会 exit 1）：能机械判定的那些
+  //   待确认（只进报告）：限高但看不出滚动来源的，人点开看一眼即可
+  const scrollableSelf = (r) => /overflow-y\s*:\s*(auto|scroll)|overflow\s*:\s*(auto|scroll)/.test(r.body)
+  const flexScrollChildren = rules.filter(
+    (r) =>
+      /(?:^|;)\s*flex\s*:\s*1\b/.test(r.body) &&
+      /(?:^|;)\s*overflow(-y)?\s*:\s*(auto|scroll)/.test(r.body),
+  )
+  // 壳与可滚子项是**同前缀兄弟**，不是后代：
+  //   .modal-content / .modal-body
+  //   .app-drawer__panel / .app-drawer__body
+  // 所以按「去掉最后一段分隔符后的前缀」判同族，不能用 startsWith 前缀匹配
+  // （那会把 modal-body 判成 modal-content 的子代，永远匹配不上）。
+  const familyOf = (cls) => cls.replace(/(?:__|-)[a-z0-9_]+$/i, '')
+  for (const r of rules) {
+    const maxH = /(?:^|;)\s*max-height\s*:/.test(r.body)
+    if (!maxH || scrollableSelf(r)) continue
+    const fams = new Set(r.classes.map(familyOf))
+    const sameFamily = flexScrollChildren.some((c) => c.classes.some((cc) => fams.has(familyOf(cc))))
+    if (sameFamily) continue
+    review.push({
+      file,
+      line: r.line,
+      msg: `${r.selector} 限高但看不出滚动来源 —— 可能是子项滚动（命名对不上，需点开确认），也可能真会裁切`,
+    })
   }
   return problems
 }
@@ -302,15 +431,74 @@ table { table-layout: fixed; width: 100%; }
 table td, table th { word-break: break-word; }
 </style>`
 
+  // ★ 判据回归护栏（2026-10-03）：这条判红过两次，都是判据错不是代码错。
+  // ① 早期要求每个 `.drawer__body` 自己声明宽度 —— 真实形态取自
+  //    components/chat/ChatParamsDrawer.vue：容器有宽度、body 是 flex:1 的子项
+  //    （宽度由父级给），要求 body 写 width 测的不是真性质。
+  // ② 早期不在 <style> 块内解析，把 JavaScript 的 `if (...) {` 当成 CSS 规则。
+  const bodyInheritsWidth = `<template><div class="drawer"><div class="drawer__body"></div></div></template>
+<style scoped>
+.drawer { width: min(360px, 100vw); height: 100%; display: flex; flex-direction: column; }
+.drawer__body { flex: 1; overflow-y: auto; padding: 12px 16px; }
+</style>`
+  // 连字符写法（.drawer-body-scroll）同样只继承容器宽度，不该被判红
+  const hyphenBody = `<template><div class="drawer"><div class="drawer-body-scroll"></div></div></template>
+<style scoped>
+.drawer { width: min(720px, 92vw); height: 100%; display: flex; flex-direction: column; }
+.drawer-body-scroll { flex: 1; overflow-y: auto; }
+</style>`
+  // script 里的 JavaScript 代码块不得被当成 CSS 规则/容器
+  const jsBlockNotCss = `<template><div class="drawer"></div></template>
+<script setup>
+function open(o) {
+  if (!o) return
+  void refresh()
+}
+</script>
+<style scoped>
+.drawer { width: min(600px, 94vw); height: 100%; }
+</style>`
+  // 对照：容器真的没定宽 —— 这条必须仍判红，否则修复把鉴别力一起修掉了
+  const containerUnsized = `<template><div class="drawer"><div class="drawer__body"></div></div></template>
+<style scoped>
+.drawer { height: 100%; }
+.drawer__body { flex: 1; overflow-y: auto; }
+</style>`
+  // 限高在壳、滚动在 flex:1 子项 —— 真实形态取自 EmergencyDiagnosticModal.vue。
+  // 原判据要求同规则内 overflow，把这种正确写法判红，属误报家族①。
+  const shellLimitsBodyScrolls = `<template><div class="modal-content"><div class="modal-body"></div></div></template>
+<style scoped>
+.modal-content { display: flex; flex-direction: column; max-height: 90vh; }
+.modal-body { flex: 1; overflow-y: auto; }
+</style>`
+  // 对照：限高且全族都没有任何滚动来源 —— 必须仍判红，否则豁免把牙齿一起修掉了
+  const shellLimitsNoScrollAtAll = `<template><div class="modal-content"><div class="modal-body"></div></div></template>
+<style scoped>
+.modal-content { display: flex; flex-direction: column; max-height: 90vh; }
+.modal-body { padding: 20px; }
+</style>`
+
   // checkFullWidth / checkOverlays 的签名都是 (filePath, src)
   const f = (name, s, fn) => fn(join(VIEWS, name), s)
   const r = []
   r.push(['全屏：违规样本必须判红', f('bad.vue', badFull, checkFullWidth).length > 0])
   r.push(['全屏：合规样本必须判绿', f('good.vue', goodFull, checkFullWidth).length === 0])
-  r.push(['弹层：限高无滚动必须判红', f('bad2.vue', badOverlay, checkOverlays).length > 0])
+  r.push(["弹层：限高无滚动（单规则形态）→ 必须判红", f("bad2.vue", badOverlay, checkOverlays).length > 0])
   r.push(['弹层：定宽+滚动必须判绿', f('good2.vue', goodOverlay, checkOverlays).length === 0])
   r.push(['折行：单元格 max-width:0 必须判红', f('bad3.vue', badZeroWidth, checkOverlays).length > 0])
   r.push(['折行：去掉 max-width:0 必须判绿', f('good3.vue', goodZeroWidth, checkOverlays).length === 0])
+  r.push(['弹层：容器定宽、body 靠 flex 继承 → 判绿（判据回归护栏）', f('g5.vue', bodyInheritsWidth, checkOverlays).length === 0])
+  r.push(['弹层：容器真的没定宽 → 仍判红（修复未把鉴别力一起修掉）', f('b5.vue', containerUnsized, checkOverlays).length > 0])
+  r.push(['弹层：连字符写法 .drawer-body-scroll 继承容器宽度 → 判绿', f('g6.vue', hyphenBody, checkOverlays).length === 0])
+  r.push(['弹层：<script> 里的 JS 代码块不得被当成 CSS 容器', f('g7.vue', jsBlockNotCss, checkOverlays).length === 0])
+  r.push(['弹层：限高在壳、滚动在 flex:1 子项 → 判绿（误报家族①）', f('g8.vue', shellLimitsBodyScrolls, checkOverlays).length === 0])
+  r.push(['弹层：限高且全族无滚动来源 → 进「待确认」桶（不再冒充硬门定罪）', (() => {
+    REVIEW_ITEMS.length = 0
+    f('b8.vue', shellLimitsNoScrollAtAll, checkOverlays)
+    const flagged = REVIEW_ITEMS.length > 0
+    REVIEW_ITEMS.length = 0
+    return flagged
+  })()])
 
   console.log('── 判据自检 ──')
   let ok = true
@@ -337,6 +525,19 @@ for (const f of files) {
   fullWidth.push(...checkFullWidth(f, src))
   overlays.push(...checkOverlays(f, src))
 }
+
+// 2026-10-03：弹层大多住在 components/，不在 views/ —— 只扫 views 的话
+// 契约 B 近乎空转（真身 RequestLogDrawer → UnifiedRequestSessionDrawer 都在
+// components/detail/ 下）。组件层只跑契约 B：组件不是页面，不该有「根容器居中」
+// 这条要求，那条只对 views 成立。
+const componentFiles = walk(COMPONENTS).sort()
+const componentOverlays = []
+for (const f of componentFiles) {
+  const src = readFileSync(f, 'utf8')
+  componentOverlays.push(...checkOverlays(f, src))
+}
+overlays.push(...componentOverlays)
+
 const inventory = buildListInventory(files)
 
 const byFile = new Map()
@@ -345,17 +546,26 @@ for (const p of [...fullWidth.map((p) => ({ ...p, kind: 'A-全屏' })), ...overl
   byFile.get(p.file).push(p)
 }
 
-console.log(`扫描视图：${files.length} 个`)
+console.log(`扫描视图：${files.length} 个 · 组件：${componentFiles.length} 个`)
 console.log(`契约 A 全屏违规：${fullWidth.length}`)
-console.log(`契约 B 弹层违规：${overlays.length}`)
+console.log(`契约 B 弹层违规：${overlays.length}（视图 ${overlays.length - componentOverlays.length} + 组件 ${componentOverlays.length}）`)
+console.log(`待人工确认（不阻断构建）：${REVIEW_ITEMS.length}`)
 
 if (byFile.size) {
-  console.log('\n── 违规明细 ──')
+  console.log('\n── 违规明细（硬门，--strict 会 exit 1）──')
   const sorted = [...byFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))
   for (const [file, ps] of sorted) {
     console.log(`\n${relative(SRC, file)}`)
     for (const p of ps) console.log(`  [${p.kind}] L${p.line}  ${p.msg}`)
   }
+}
+
+if (REVIEW_ITEMS.length) {
+  console.log('\n── 待人工确认（不阻断构建；判据只能提示、不能定罪）──')
+  for (const r of REVIEW_ITEMS) {
+    console.log(`  ${relative(SRC, r.file)} L${r.line}\n    ${r.msg}`)
+  }
+  console.log('  ↑ 这些要么是「子项滚动但命名对不上」，要么是真裁切。静态判据分不出来，点开看一眼。')
 }
 
 console.log(`\n── 契约 C 列表清单（共 ${inventory.length} 个列表）──`)

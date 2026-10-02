@@ -22,14 +22,16 @@ export interface NameLike {
 }
 
 /** 取一行的可读名称，逐个回退；全空则返回空串（排序时沉底）。 */
-export function nameOf(row: NameLike): string {
-  const candidates = [row.name, row.display_name, row.username, row.title, row.code, row.owner_user, row.key_prefix]
-  for (const c of candidates) {
-    const v = c?.trim()
+export function nameOf(row: NameLike, keys: (keyof NameLike)[] = DEFAULT_KEYS): string {
+  for (const k of keys) {
+    const v = (row[k] as string | null | undefined)?.trim()
     if (v) return v
   }
   return ''
 }
+
+/** 默认候选顺序：先「显式的名字」，再退到各类标识。 */
+const DEFAULT_KEYS: (keyof NameLike)[] = ['name', 'display_name', 'username', 'title', 'code', 'owner_user', 'key_prefix']
 
 /**
  * 按名称字典序排序（不修改入参）。
@@ -39,11 +41,20 @@ export function nameOf(row: NameLike): string {
  * - sensitivity: 'base'：大小写不敏感，"api" 与 "API" 视为同名
  * - 空名称沉底：一行没有名字不该占住列表最前面
  * - tieBreak：同名时按稳定键（通常是 id）兜底，否则每次刷新行序会跳
+ * - keys：**排序键必须与列表首列显示的主键一致**。用户页首列显示 username
+ *   而 display_name 是副标题，若按默认顺序先取 display_name，就会按隐藏的
+ *   中文名排（mavis_local 落到「本」= b），想找用户名反而找不到 ——
+ *   与租户页那个「按 code 排、首列显示 name」是同一类毛病。
+ *   所以用户页显式传 ['username']。
  */
-export function sortByName<T extends NameLike>(rows: T[], tieBreak?: (a: T, b: T) => number): T[] {
+export function sortByName<T extends NameLike>(
+  rows: T[],
+  tieBreak?: (a: T, b: T) => number,
+  keys: (keyof NameLike)[] = DEFAULT_KEYS,
+): T[] {
   return [...rows].sort((a, b) => {
-    const an = nameOf(a)
-    const bn = nameOf(b)
+    const an = nameOf(a, keys)
+    const bn = nameOf(b, keys)
     if (!an && bn) return 1
     if (an && !bn) return -1
     const byName = an.localeCompare(bn, undefined, { numeric: true, sensitivity: 'base' })
