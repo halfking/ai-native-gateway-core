@@ -22,6 +22,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/cache/prefix"
 )
 
 // RecoveryDeps holds the external dependencies for the recovery coordinator.
@@ -242,11 +244,26 @@ func (rc *RecoveryCoordinator) Recover(
 	if plan.CutIndex <= 0 || plan.SystemCount < 0 || preSanitizeRange[1] > len(messages) {
 		preSanitizeRange = [2]int{}
 	}
+	// The recovered body must carry the same [smm_v1:] summary-marker line as
+	// the proactive rebuilder: findDeltaAnchor only treats a body as compressed
+	// lineage when its summary message starts with CompactionMarkerPrefix, so
+	// an unmarked summary makes every subsequent Prepare fail open to a full
+	// resend even with a consistent SessionState. Only the LLM branch is
+	// stamped — the mechanical fallback text is unstable, and a content-derived
+	// marker on it would resurrect the per-session marker-churn bug pinned by
+	// TestRecoveryCoordinator_MechanicalFallback_NoSmmMarker.
+	var summaryMarker string
+	if strategy == "smart_window_llm" {
+		if injectedMarker, markedBody := injectSummaryMarker(rebuilt, protocol); markedBody != nil {
+			rebuilt = markedBody
+			summaryMarker = injectedMarker
+		}
+	}
 	marker := NewCutMarkerWithPreSanitize(
 		plan,
 		len(messages),
 		strategy,
-		BuildSummaryMarker(markerSummaryText),
+		summaryMarker,
 		markerSummaryText,
 		len(body),
 		len(rebuilt),
@@ -254,14 +271,22 @@ func (rc *RecoveryCoordinator) Recover(
 	)
 
 	if rc.deps.Cache != nil && gwSessionID != "" {
-		state, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
-		if state == nil || !sanitizeGenerationMatches(ctx, state.SanitizeMapGeneration) {
-			state = &SessionState{SchemaVersion: schemaVersion}
+		prev, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
+		if prev == nil || !sanitizeGenerationMatches(ctx, prev.SanitizeMapGeneration) {
+			prev = &SessionState{SchemaVersion: schemaVersion}
 		}
+		persistRes := &PrepareResult{
+			MsgCount:                  countMessages(rebuilt),
+			TokenEst:                  estimateBodyTokens(rebuilt),
+			CompressionSourceSnapshot: SnapshotForBody(body),
+			SummaryMarker:             marker.SummaryMarker,
+		}
+		if _, report, err := prefix.Stabilize(rebuilt, prefix.Options{TailTurns: 1}); err == nil && report != nil {
+			persistRes.CompressedPrefixHash = report.PrefixHash
+		}
+		state := buildSessionState(prev, rebuilt, persistRes, true, time.Now().Unix())
 		hydrateSanitizeInfo(ctx, state)
 		state.SetCutMarker(marker)
-		state.LastCompressedAt = time.Now().Unix()
-		state.RecentlyCompressedAt = time.Now().Unix()
 		_ = rc.deps.Cache.Set(ctx, tenantID, gwSessionID, state, rebuilt)
 	}
 
@@ -622,15 +647,18 @@ func extractSummaryFromCachedBody(body []byte) string {
 					Text string `json:"text"`
 				}
 				if json.Unmarshal(part, &p) == nil && p.Type == "text" {
-					if startsWithPrefix(p.Text, smartWindowSummaryPrefix) {
-						return trimPrefix(p.Text, smartWindowSummaryPrefix)
+					// cachedSummaryText also strips an optional [smm_v1:]
+					// marker line — the LLM recovery branch stamps its summary
+					// message with one before persisting.
+					if text, ok := cachedSummaryText(p.Text); ok {
+						return text
 					}
 				}
 			}
 			continue
 		}
-		if startsWithPrefix(probe.Content, smartWindowSummaryPrefix) {
-			return trimPrefix(probe.Content, smartWindowSummaryPrefix)
+		if text, ok := cachedSummaryText(probe.Content); ok {
+			return text
 		}
 	}
 	return ""

@@ -769,3 +769,39 @@ func TestCompressionSourceSnapshotV2MetadataRoundTrip(t *testing.T) {
 		t.Fatalf("source lost during metadata export: %v", err)
 	}
 }
+
+// TestCompressionMetadata_TypedNilPSOROmitted is the D01 regression pin: a
+// state that never had a sanitize range must not export
+// "pre_sanitize_offset_range" as an interface-wrapped nil []int. The
+// compression-side provenance validator treats "key exists" as "value must be
+// a valid 2-int pair", so the typed-nil used to fail the whole validation and
+// abandon V2 cold-start incremental recovery.
+func TestCompressionMetadata_TypedNilPSOROmitted(t *testing.T) {
+	cache := &SessionCacheV2{l1: NewCompressionMetaCache(10)}
+	cache.l1.Set(&SessionStateV2{
+		TenantID: "tenant", SessionID: "session",
+		CompressionMeta: CompressionMeta{TokenEstimate: 42, MsgCount: 7},
+	})
+	exported, err := cache.CompressionMetadata(context.Background(), "tenant", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, present := exported["pre_sanitize_offset_range"]; present {
+		t.Fatalf("unset PSOR must be omitted, got key with %T value %#v", raw, raw)
+	}
+
+	// The set case keeps exporting the pair.
+	set := &SessionStateV2{
+		TenantID: "tenant", SessionID: "session2",
+		CompressionMeta: CompressionMeta{PreSanitizeOffsetRange: []int{1, 3}},
+	}
+	cache.l1.Set(set)
+	exported, err = cache.CompressionMetadata(context.Background(), "tenant", "session2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, ok := exported["pre_sanitize_offset_range"].([]int)
+	if !ok || len(pair) != 2 || pair[0] != 1 || pair[1] != 3 {
+		t.Fatalf("set PSOR lost during export: %#v", exported["pre_sanitize_offset_range"])
+	}
+}
