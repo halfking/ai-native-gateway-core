@@ -182,8 +182,18 @@ func main() {
 // Data loading
 // ──────────────────────────────────────────────────────────────────────────────
 
+// requestLogRow 不再持有 v1 的 request_logs.id（2026-10-02 移除）。
+//
+// 为什么删而不是留：id 在本工具里只当「结果行 ↔ 源行」的关联标签用
+// （→ benchResult.RowID → 结果表 row_id），**不参与任何压缩比判定**，
+// 而 request_id 本来就已经在手上、且两族都有同名列。
+//
+// 为什么必须删（不是「更干净」，是 S4 的硬前置）：id 已实测**不可投影**——
+// 真库 1,515,984 组同 request_id 配对里 v1 的 r.id = session 的 t.id 命中 0
+// （v1 是请求行 id、session 侧是 turn id）。视图的 session 臂对 id 是恒 NULL
+// 补位，所以本工具是 §9.29.4 收口后**唯一**一个真补位读方；留着 id 就等于
+// 永远改不成视图读法。审计 §9.29.5 读面判据第 2 条。
 type requestLogRow struct {
-	ID             int64
 	RequestID      string
 	TenantID       string
 	GwSessionID    string
@@ -200,21 +210,34 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 		limitClause = fmt.Sprintf("LIMIT %d", maxSamples)
 	}
 
+	// 正文来自 request_logs_bodies 腿，不是 request_logs（2026-10-02 修正）。
+	//
+	// 原来的写法是 `COALESCE(outbound_body::text, request_body::text, '{}')`
+	// 直读 request_logs，而真库上 **request_logs 没有 request_body 这一列**
+	// （真库实测：`column "request_body" does not exist`）⇒ 这条查询**在任何
+	// 情况下都会硬报错**，工具今天跑不起来。同名的两列都在 bodies 腿上。
+	//
+	// 为什么连 request_body 兜底一起去掉、而不是改指它：那是**另一种正文**
+	// （入站完整载荷），而本工具量的是**出站压缩比**（BytesBefore 直接取
+	// OutboundBody 的长度）。拿入站正文顶替出站正文，会让每个比值都是拿
+	// 两种东西的字节数相除——数字照样出得来，结论却是假的。宁可少一批样本。
+	//
+	// 联键用 (request_id, ts)：bodies 腿主键就是 (request_id, ts)，逐轮精确。
 	q := fmt.Sprintf(`
 		SELECT
-			id,
-			request_id,
-			tenant_id,
-			COALESCE(gw_session_id, '') AS gw_session_id,
-			COALESCE(outbound_body::text, request_body::text, '{}') AS body,
-			COALESCE(outbound_token_est, 0) AS outbound_tokens,
-			COALESCE(outbound_msg_count, 0) AS msg_count,
-			COALESCE(compression_strategy, '') AS compression_strategy,
-			ts
-		FROM request_logs
-		WHERE ts >= NOW() - INTERVAL '1 day' * $1
-		  AND (outbound_body IS NOT NULL OR request_body IS NOT NULL)
-		ORDER BY ts DESC
+			rl.request_id,
+			rl.tenant_id,
+			COALESCE(rl.gw_session_id, '') AS gw_session_id,
+			COALESCE(b.outbound_body::text, '{}') AS body,
+			COALESCE(rl.outbound_token_est, 0) AS outbound_tokens,
+			COALESCE(rl.outbound_msg_count, 0) AS msg_count,
+			COALESCE(rl.compression_strategy, '') AS compression_strategy,
+			rl.ts
+		FROM request_logs rl
+		JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts
+		WHERE rl.ts >= NOW() - INTERVAL '1 day' * $1
+		  AND b.outbound_body IS NOT NULL
+		ORDER BY rl.ts DESC
 		%s
 	`, limitClause)
 
@@ -228,7 +251,7 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 	for rows.Next() {
 		var r requestLogRow
 		if err := rows.Scan(
-			&r.ID, &r.RequestID, &r.TenantID, &r.GwSessionID,
+			&r.RequestID, &r.TenantID, &r.GwSessionID,
 			&r.OutboundBody, &r.OutboundTokens, &r.MsgCount,
 			&r.CompressionStr, &r.Ts,
 		); err != nil {
@@ -254,7 +277,8 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 // ──────────────────────────────────────────────────────────────────────────────
 
 type benchResult struct {
-	RowID       int64     `json:"row_id"`
+	// 行身份是 request_id。原来的 RowID（= v1 request_logs.id）已删：
+	// 它是唯一挡住本工具改视图读法的补位列，且不参与任何判定。见 requestLogRow。
 	RequestID   string    `json:"request_id"`
 	TenantID    string    `json:"tenant_id"`
 	GwSessionID string    `json:"gw_session_id"`
@@ -286,7 +310,6 @@ type benchResult struct {
 
 func processRow(ctx context.Context, sc *compression.SessionCompressor, row requestLogRow, protocol string, contextWindow int, testMode string) benchResult {
 	res := benchResult{
-		RowID:          row.ID,
 		RequestID:      row.RequestID,
 		TenantID:       row.TenantID,
 		GwSessionID:    row.GwSessionID,
@@ -378,7 +401,6 @@ func createTempTable(ctx context.Context, pool *pgxpool.Pool, tableName string) 
 	q := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id              BIGSERIAL PRIMARY KEY,
-			row_id          BIGINT,
 			request_id      TEXT,
 			tenant_id       TEXT,
 			gw_session_id   TEXT,
@@ -435,7 +457,7 @@ func (b *pgxbatch) flush(ctx context.Context) error {
 	b.results = nil
 
 	cols := []string{
-		"row_id", "request_id", "tenant_id", "gw_session_id", "ts",
+		"request_id", "tenant_id", "gw_session_id", "ts",
 		"bytes_before", "tokens_before", "msgs_before",
 		"bytes_after", "tokens_after", "msgs_after",
 		"bytes_ratio", "tokens_ratio", "msgs_ratio",
@@ -468,7 +490,7 @@ func (r *benchResultCopyFrom) Next() bool {
 func (r *benchResultCopyFrom) Values() ([]any, error) {
 	row := r.results[r.idx-1]
 	return []any{
-		row.RowID, row.RequestID, row.TenantID, row.GwSessionID, row.Ts,
+		row.RequestID, row.TenantID, row.GwSessionID, row.Ts,
 		row.BytesBefore, row.TokensBefore, row.MsgsBefore,
 		row.BytesAfter, row.TokensAfter, row.MsgsAfter,
 		row.BytesRatio, row.TokensRatio, row.MsgsRatio,
