@@ -101,13 +101,30 @@
 0. ~~**给 `prefetchMaxAgeSec` 加埋点**~~ **已做**（2026-10-03 第三轮，见上）。
    ⚠️ 埋点过程中发现护栏本身比错了时钟，已一并根修——**埋点的价值正在于此**。
 
-2. **`TIME` 搭车（#3 的续）。** 已实测可行：miniredis 支持一个 Lua 脚本同时返回
-   `TIME` + states（本机单节点 `redis.NewClient`，无 cluster 跨槽问题）。做完可把
-   热路径的最后一次往返也省掉（2 → 0）。改动面：`GetNodeStatesBatch` 返回契约、
-   `cmd/gateway/main_livestream.go:594`、router interface（`router.go:135`）+ 4 处
-   stub。**须单独一轮。**
-   ⚠️ 上一轮已实测：把它提前到 state 之前会撞坏「TIME 在 state 之后采样」的承重性质。
-   搭车方案必须**同时**满足两条，不能靠推理。
+2. ~~**`TIME` 搭车（#3 的续）。**~~ **已用判据否掉（2026-10-03 第三轮）**，
+   **本轮不做**。上一轮只记了「把它提前到 state 之前会撞坏承重性质」，
+   这一轮把判据写出来并跑了变异，答案是**结构性冲突**，不是实现难度问题：
+
+   `credentialfpslot/node_state_time_piggyback_test.go` + 变异 P1
+   （把 TIME 采样提到 state 之前 = 搭车的语义）：
+
+   | 判据 | P1 下 |
+   |---|---|
+   | `TestF04_CapabilityReadRechecksRedisTimeAfterStateFetch`（既有） | **红** |
+   | `TestPiggyback_OrderingPropertyMustSurviveAnyTimeSamplingStrategy`（新） | **红** |
+   | `TestPiggyback_FutureDeadlineIsStillHonoured`（对照） | 绿 ✓ |
+   | `TestPiggyback_RoundTripInventory`（只记成本） | 绿 ✓ |
+
+   **根因是结构性的**：`capability_expires_at` 是写在 Redis 时钟上的**绝对
+   时间戳**，判定要拿它与「读到手之后」的时刻比。搭车让 TIME 与 state 来自
+   **同一个原子快照** ⇒ 两者之间没有缝隙 ⇒ 「读到之后、判定之前」跨过的
+   到期**结构性地看不见**。而请求在路由 MGET 之后还要在 dispatch 队列里等
+   （实测 P99 ≈ 17.9s），那段等待正是要防的东西。
+
+   ⇒ 热路径停在 **2 次往返**（MGET + TIME），不再往下压。
+   留下的判据把该性质钉在两层，将来谁再动采样顺序会**立刻判红**。
+   ⚠️ 若将来仍要做，先回答：「判定所用的时刻从哪来，且是否 ≥ state 读到的
+   时刻？」答不上来就不能做。
 
 3. **遗留 #2：流式能力位仍无人写。** 探针不发 SSE，零证据。需要先有流式探针。
 
@@ -172,6 +189,13 @@
 - **一次写预算用例时踩了 attempt 退避的坑**：三轮复用同一批 BindingID，
   第二轮起全部 `backedOff`，计数卡在 2不动。看起来像「预算没生效」，
   实际是退避在生效。**每轮换新绑定**才测得到预算的跨轮累加。
+- **判据的时钟形状：要在「两条命令之间」推进，不是在调用前预设。**
+  写 TIME 搭车判据时第一版把时钟在调用**之前**拨好，结果「TIME 提前到
+  state 之前」这个变异也判绿——两种实现看到的都是同一个已推进的时钟。
+  改成用 hook 卡在 GET 之后推进，变异立刻判红。
+  ⚠️ **「我写了一条看起来相关的判据」不等于「它能区分要防的那个变异」**；
+  必须真的把变异跑一遍看它红不红。
+
 - **「互不覆盖」这类判据要问：被测函数收不收那个维度？**
   多 capability 用例第一版是**假绿**的，而且是被它自己的日志抓到的
   （打「现有 1 行」而两个 upsert 都报成功）。根因：`persistRow` 把
