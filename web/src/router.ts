@@ -270,7 +270,7 @@ export const router = createRouter({
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
-    { path: '/admin/usage-trends', component: UsageTrendExplorerView, meta: { requiresAuth: true } }, // 全页用量趋势分析（2026-10-02：按模型分线 + 供应商/租户/apikey/模型/指标过滤；服务端按角色收租户范围）
+    { path: '/admin/usage-trends', component: UsageTrendExplorerView, meta: { requiresAuth: true, fillViewport: true } }, // 全屏用量趋势（2026-10-02：铺满主区；模型用 ModelPicker）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
