@@ -29,6 +29,9 @@ package admin
 // 门**现在就红**：截至登记时点仍有未分类项，这是事实，不是门坏了。
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1191,8 +1194,134 @@ func nullPaddedColWordRE(col string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(col) + `\b`)
 }
 
+// nullPaddedPredicateHit 报告：这个文件里是否存在某个**函数**（顶层函数或闭包），
+// 它既引用了会话臂视图、又提到了某个 NULL 补位列。
+//
+// 为什么要「函数」而不是「字符串字面量」——这是本轮实测逼出来的：
+// 逐字面量归属会被**拼接出来的 SQL** 击穿。bg/shared_pick.go 的 Priority 1 读点里
+//
+//	`SELECT client_model ... FROM request_logs_with_current_month rl
+//	 WHERE ... AND client_model IS NOT NULL GROUP BY client_model`
+//
+// 夹着一个 `<ProbeTrafficExclusionPredicateView>` 占位，整条 SQL 由多个字面量拼成：
+// 含 `client_model` 的那个字面量不出现视图名，含视图名的那个字面量不含
+// `client_model`。逐字面量归属会把这条**真谓词**（该读点的唯一产出就是按
+// client_model 分组取最常用模型，而它是补位列 ⇒ 恒 0 行）误判成误触发。
+//
+// 为什么不是「整文件」——那是本轮修掉的旧形状：`id` 命中常常来自**别的表**
+// （`ak.id` on api_keys、`WHERE id = 1` on rollup cursor、`RETURNING id` on
+// incidents 自身）或者根本不是 SQL（`r.PathValue("id")`、`parts[0]`、
+// 一条 Go 正则字面量里的 `correlation_id`）。整文件口径下 19 个文件里有 8 个
+// 是这样被带进本族的。
+//
+// 函数作用域是**两者之间**的粒度，也是两者的超集保护：函数体 ⊇ 单个字面量，
+// 所以凡是被逐字面量口径判定为触发的，本口径一定也判定为触发（实测
+// strictOnly = 0，无新增漏判），同时把「同文件但不同表」的命中挡在外面。
+//
+// 解析失败时**退回整文件口径**（保守方向：宁可留在本族并要求具名论证，
+// 也不要把一个真触发悄悄放出族外）。
+func nullPaddedPredicateHit(raw string) (hit bool, via string) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "src.go", raw, 0)
+	if err != nil {
+		for col := range sessionArmNullPaddedColumns {
+			if nullPaddedColWordRE(col).MatchString(raw) {
+				return true, col + "（解析失败，退回整文件口径）"
+			}
+		}
+		return false, ""
+	}
+	// 先看这个文件到底有没有出现补位列——绝大多数文件在这一步就出局。
+	present := map[string]bool{}
+	for col := range sessionArmNullPaddedColumns {
+		if nullPaddedColWordRE(col).MatchString(raw) {
+			present[col] = true
+		}
+	}
+	if len(present) == 0 {
+		return false, ""
+	}
+
+	// 收集作用域：所有函数体（顶层 FuncDecl 与闭包 FuncLit）**加上**那些
+	// 不在任何函数内的字符串字面量。
+	//
+	// 只取函数体是不够的，而且是实测抓到的：包级 `const xxxSQL = \`...\`` 形式的
+	// 读点整段都在函数之外——
+	//   domains/sessionforensics/export.go:37/:57  const forensicsExportMessagesSQL(Alt)
+	//   domains/streaming/model_alternatives.go:180 const alternativesSQL
+	// 它们是**真的**读视图 + 真的用补位列，漏掉它们等于放走真触发。
+	// 这条不是推演出来的假设，是 TestNullPaddedAttributionNeverLosesALiteralLevelHit
+	// 报红后逐个打开文件确认的。
+	type span struct{ lo, hi int }
+	base := fset.File(file.Pos()).Base()
+	off := func(p token.Pos) int { return int(p) - base }
+	var spans []span
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch n.(type) {
+		case *ast.FuncDecl, *ast.FuncLit:
+			spans = append(spans, span{off(n.Pos()), off(n.End())})
+		}
+		return true
+	})
+	inAnySpan := func(lo, hi int) bool {
+		for _, sp := range spans {
+			if lo >= sp.lo && hi <= sp.hi {
+				return true
+			}
+		}
+		return false
+	}
+	// 包级字面量（函数之外的）各自构成一个作用域。
+	ast.Inspect(file, func(n ast.Node) bool {
+		bl, ok := n.(*ast.BasicLit)
+		if !ok || bl.Kind != token.STRING {
+			return true
+		}
+		lo, hi := off(bl.Pos()), off(bl.End())
+		if inAnySpan(lo, hi) {
+			return true
+		}
+		spans = append(spans, span{lo, hi})
+		return true
+	})
+	for _, sp := range spans {
+		if sp.lo < 0 || sp.hi > len(raw) || sp.lo >= sp.hi {
+			continue
+		}
+		body := raw[sp.lo:sp.hi]
+		low := strings.ToLower(body)
+		readsView := false
+		for name := range requestLogsViewsWithSessionArm {
+			if strings.Contains(low, name) {
+				readsView = true
+				break
+			}
+		}
+		if !readsView {
+			continue
+		}
+		cols := make([]string, 0, len(present))
+		for col := range present {
+			cols = append(cols, col)
+		}
+		sort.Strings(cols)
+		for _, col := range cols {
+			if nullPaddedColWordRE(col).MatchString(body) {
+				return true, col
+			}
+		}
+	}
+	return false, ""
+}
+
 // sourceFamilyOf 从文件源码机械判定它读哪一族。
 func sourceFamilyOf(code string) string {
+	// raw 保留未剥离的原文，供 nullPaddedPredicateHit 做 AST 解析。顺序很重要：
+	// 剥注释会吃掉字符串字面量里的 "//"（URL、SQL `--` 注释），把 Go 源码弄成
+	// 无法解析，于是 nullPaddedPredicateHit 会静默退回整文件口径。
+	// 第一版把原始值丢了（只留被覆盖后的 code），结果 admin/logs_summary.go
+	// 靠这条 fallback 留在本族——一个**注释在说用原文、代码在用剥过的**的错。
+	raw := code
 	code = gateStopWriteLineCommentRE.ReplaceAllString(code, " ")
 	code = gateStopWriteBlockCommentRE.ReplaceAllString(code, " ")
 	bo := familyBodiesRE.MatchString(code)
@@ -1210,18 +1339,16 @@ func sourceFamilyOf(code string) string {
 	// 实质上的基表读者——这是「只看 from request_logs 就会漏掉」的一类。
 	ba := familyBaseRE.MatchString(code) || v1OnlyView
 	// 视图族的第二维：谓词级 NULL 补位（2026-10-02）。
-	// 只在「确实读会话臂视图」且「代码里出现 NULL 补位列名」时成立——
-	// 后者是个偏保守的近似（SELECT 出来与 WHERE 过滤同形），但方向安全：
-	// 它只会**放开** silently_empty、**禁止** unaffected，不会把正确判定判错。
-	np := false
-	if vi {
-		for col := range sessionArmNullPaddedColumns {
-			if nullPaddedColWordRE(col).MatchString(code) {
-				np = true
-				break
-			}
-		}
-	}
+	//
+	// 判据是**函数作用域归属**（见 nullPaddedPredicateHit）：补位列必须出现在
+	// 一个既读会话臂视图、又提到该列的函数体里。整文件口径会把 `ak.id`、
+	// `WHERE id = 1`、`r.PathValue("id")` 这些**别的表 / 非 SQL** 的命中带进来
+	// —— 实测 19 个本族文件里 8 个是这样来的。
+	//
+	// 注意 np 用的是**原始 raw**（未剥注释）：AST 解析需要能读的源码，而函数体
+	// 取的是原文，注释在不在都不影响「这个函数读没读那个视图」。
+	np, _ := nullPaddedPredicateHit(raw)
+	np = np && vi
 	switch {
 	case vi && np && !ba:
 		return familyViewNullPadded
@@ -1403,23 +1530,6 @@ var nullPaddedUnaffectedJustification = map[string]string{
 		"S4 写门的 turn_writer.go 持续供给，1 小时窗口恒有新行 ⇒ 判 unaffected 成立。⚠ 本条同时记录一次" +
 		"**族误触发**：本文件被分到本族是因为补位集里含 `id`，而它的 id 命中（:262/:273-274/:288-290）" +
 		"全在 credentials/providers 上，对 710 的两个读点一个补位列都没用到。",
-	"bg/candidate_failure_monitor.go": "两个 request_logs 读点（:206 staleness 的 lastRequest、:333 auto-cool 的 " +
-		"win CTE）的行级谓词只有 `ts >= now() - interval '5 minutes'` 与 `credential_id IS NOT NULL`；" +
-		"credential_id 在 710 是第 204 行的**直映**列不是补位列，ts 更是基础列。族标记命中的 provider_id" +
-		"（:256/:267）**全部落在 candidate_failure_logs_with_current_month 腿**——那是另一个表族，不是 " +
-		"request_logs 读点，且只在投影与 GROUP BY 里。5 分钟窗口虽短，但 empty 的前提（没有新行）不成立：" +
-		"session 臂由未挂 S4 写门的 turn_writer.go 持续供数，窗口内恒有新行，而这正是这两个读点的用途" +
-		"（判活 + 判失败率）。错误通道两处 `if err != nil { return err }` 上抛，无吞错转静默 ⇒ 判 unaffected " +
-		"成立。⚠ 同 live_stream_sse：族把本文件分到本族是因为 `id`（:397 `WHERE id = $2`），那不是 710 视图的列。",
-	"admin/session_turns_tree.go": "命中列只出现在**投影**里，且已被同表达式的非补位列兜住：" +
-		"`COALESCE(outbound_model, client_model, '')`（:228）里 outbound_model 在 session 臂是真值，" +
-		"所以 client_model 为 NULL 不改变结果；`COALESCE(request_type, 'main')`（:321/:333）同理有默认。" +
-		"本文件不用任何补位列做 WHERE / GROUP BY / JOIN ⇒ 判 unaffected 成立。",
-	"admin/session_timeline_query.go": "唯一的补位列命中是 :32 的投影 " +
-		"`SELECT request_id, ts, success, client_model, outbound_model, …`。client_model " +
-		"在 session 臂为 NULL，但**同一投影里并列了 outbound_model**（session 臂有真值），" +
-		"消费方取模型名时有非补位列可选；本文件不用任何补位列做 WHERE / GROUP BY / JOIN " +
-		"⇒ 判 unaffected 成立。",
 	"admin/credential_monitor_heatmap.go": "两处命中都在**以 outbound_model 打头的 COALESCE 里**：" +
 		":311 `lower(COALESCE(rl.outbound_model, rl.client_model))`（whereClause）、" +
 		":322 同一表达式做投影别名。outbound_model 在 session 臂是真值且排第一位，" +
@@ -1427,16 +1537,7 @@ var nullPaddedUnaffectedJustification = map[string]string{
 	"db/probe_views_unified.go": "同形：:96 与 :104 都是 " +
 		"`lower(COALESCE(rl.outbound_model, rl.client_model))`，outbound_model 排第一且为真值列；" +
 		"其余命中（:148/:149 的 id / provider_id）属于 credentials 与 providers 两张表，列同名但表不同。",
-	"admin/session_turns_unified.go": "命中列全是**投影且自带默认值**：" +
-		":157 `COALESCE(request_type,'main') AS request_type`、:162 同一表达式。" +
-		"其余命中（:302/:323 的 id）是 Go 侧的 r.PathValue(\"id\")，不是 SQL 列。",
 	"admin/route_incidents.go": "31 处命中全部是 `id`，且逐行核实**没有一处是 SQL 列**：:132 parts[0]、:135/:147/:153 " +
 		"是 handleDetail/handleEvents/handleTimeline 的入参解析等 Go 代码。" +
 		"本文件对 710 视图的读点用 ts / request_status / credential_id，都不是补位列。",
-	"internal/collector/gateway_adapters.go": "两处命中都在**以 outbound_model 打头的 COALESCE 里**：\n" +
-		"  :61 SELECT COALESCE(NULLIF(outbound_model,''), client_model) AS model_name\n" +
-		"  :64 AND   COALESCE(NULLIF(outbound_model,''), client_model, '') <> ''\n" +
-		"outbound_model 在 session 臂是真值（不在补位表里），且排在**第一位**；" +
-		"client_model 只在 outbound_model 为空时才被读到。⇒ :64 的谓词对有真实 outbound_model " +
-		"的行照样通过，Top-20 模型榜与 p50/p99 统计不因 client_model 为 NULL 而变化。",
 }

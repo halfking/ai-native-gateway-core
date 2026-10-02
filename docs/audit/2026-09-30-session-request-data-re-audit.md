@@ -4970,3 +4970,113 @@ M-F 也先做了一版「删掉整条规则」，报在 `Len(..., 3)` 这个结�
   同理也适用于新端点：没有第二个消费方就不开这个面。
 - **响应侧 7 个读点仍不可端口**、**族分类器 `id` 误触发未修**、
   **`auto_route_settle_worker` 的正确修法（改读会话族）未做**——见 §9.36.3 清单。
+
+---
+
+## §9.39 族分类器的 `id` 误触发：给补位匹配加**表归属**
+
+§9.36.4 记的第 2 条相邻缺陷。根因一句话：`np`（谓词级 NULL 补位）只判断
+「补位列名在**这个文件里出现过**」，而「出现过」与「用在这个视图上」是两件事。
+
+### §9.39.1 误触发长什么样：列同名，表不同
+
+补位集现在只有 6 列（`id` / `test_col` / `test_tab_indent` / `provider_model` /
+`credits_rate_multiplier` / `client_ip`），而 `id` 是最容易被撞上的一个。
+逐个打开本轮离开本族的文件，命中全部来自**别的表**或**根本不是 SQL**：
+
+| 文件 | `id` 命中实际属于 | 行号 |
+|---|---|---|
+| `admin/auto_title_generator.go` | `api_keys` 表（`ak.id`） | :1174-1182 |
+| `admin/logs_summary.go` | `api_keys` 表 + 一条 Go 正则字面量里的 `correlation_id` | :303-308, :28 |
+| `admin/session_title.go` | `t.id`，而 `t` 是 session_turns 别名（视图别名是 `rl`） | :328 |
+| `bg/stats_minute_rollup.go` | `request_stats_rollup_cursor` 表（`WHERE id = 1`） | :94/:115/:131 |
+| `domains/routeincident/store.go` | route_incidents 表自身（`SELECT/RETURNING/WHERE id`） | :227/:310/:387 |
+| `bg/candidate_failure_monitor.go` | `candidate_failure_logs` 腿 | :397 |
+| `admin/session_turns_tree.go` | 只在投影，且被同表达式非补位列 COALESCE 兜住 | :228/:321 |
+
+**这 7 条的档位一条都不需要改**——它们的 `Effect` 登记本来就正确。
+被误伤的只是**族**：多了一条「必须具名论证」的负担，
+以及一份让人以为「这 11 条都真的碰了补位列」的清单。
+
+### §9.39.2 归属粒度选错两次，两个方向都踩过
+
+这不是「想清楚再写」的事，是**量出来**的：
+
+1. **整文件口径**（原实现）：19 个本族文件里 **8 个**是这么带进来的。
+2. **字符串字面量口径**（我第一版）：看起来更精确，实测 `strictOnly = 0`
+   看着很美——直到手验 `bg/shared_pick.go` 发现它是**拼接 SQL**：
+   `SELECT client_model … FROM request_logs_with_current_model rl WHERE … AND
+   client_model IS NOT NULL` 中间夹着 `<ProbeTrafficExclusionPredicateView>` 占位，
+   含 `client_model` 的字面量不出现视图名、含视图名的字面量不含 `client_model`。
+   逐字面量口径会把这个**真谓词**（该读点唯一产出就是按 client_model 分组取最常用
+   模型，而它是补位列 ⇒ 恒 0 行）判成误触发。
+   **一个更「精确」的判据反而更危险，因为它悄悄放走了真触发。**
+3. **函数作用域 + 包级字面量**（最终）：函数体 ⊇ 单个字面量，所以口径 2 能命中的
+   它一定命中；口径 1 的「同文件不同表」被挡住。
+   代价是**包级 `const xxxSQL` 形式的读点整段在函数之外**，必须单独作为作用域——
+   这一条也是被门抓出来的，不是想到的（见 §9.39.4）。
+
+### §9.39.3 结果：族从 19 收到 12，档位一条没动
+
+| 族 | 改前 | 改后 |
+|---|---|---|
+| `view_with_null_padded` | 19 | **12** |
+| `view_only` | 12 | 16 |
+| `bodies_plus_other` | 21 | 24 |
+| 其余三族 | 54 | 54 |
+| 合计 | 106 | 106 |
+
+留在本族的 12 个里，`bg/shared_pick.go`（拼接 SQL 的真谓词）与
+`admin/top_problems.go`（`silently_empty`）都在——**档位与族的组合没有被这次
+改动推翻任何一个**。
+
+### §9.39.4 我自己写的那道「方向性」门当场抓到了我的实现缺陷
+
+`TestNullPaddedAttributionNeverLosesALiteralLevelHit` 断言
+「函数体 ⊇ 字面量 ⇒ 逐字面量能命中的，函数口径必须也命中」。
+它第一次跑就报红两个文件：`domains/sessionforensics/export.go` 与
+`domains/streaming/model_alternatives.go`。打开一看：两者的 SQL 都是
+**包级 `const`**（`forensicsExportMessagesSQL` :37/:57、`alternativesSQL` :180），
+整段在函数之外，函数口径根本看不到。
+
+**没有这道门，这个缺陷会一直绿着**——因为它只表现为「少认了几个文件」，
+而少认的方向恰好是本轮要修的方向，看起来像正常的进展。
+
+### §9.39.5 顺带暴露并修掉：一条注释在说用原文、代码在用剥过的
+
+第一版 `sourceFamilyOf` 里我写了注释「np 用的是原始 code（未剥注释）」，
+但函数开头已经把 `code` 覆盖成剥过注释的版本了。后果：`admin/logs_summary.go`
+靠 `nullPaddedPredicateHit` 的「解析失败退回整文件」fallback 留在本族——
+**一个已经离族的误触发被一条 fallback 悄悄请了回来**。
+
+判别它的不是读代码，是**列出每个文件的 `via` 列**：`logs_summary.go` 的 `via` 是空串，
+而它在族里——两个判据对不上。`sourceFamilyOf` 现在显式保留 `raw`。
+门里也加了「归属命中与族归属必须一致」的一致性断言（bodies 族除外，因为
+switch 里 bodies 优先）。
+
+### §9.39.6 失效豁免：删掉 5 条，并承认这是**降低**了门槛
+
+改动让 5 条 `nullPaddedUnaffectedJustification` 失去对象
+（`session_timeline_query` / `session_turns_tree` / `session_turns_unified` /
+`candidate_failure_monitor` / `gateway_adapters`）。按 §9.37 的纪律
+（失效的豁免比没有更坏）已删除，并补上 `TestNullPaddedJustificationIsNotStale`
+常驻检查。
+
+**但要如实说：这对这 5 个文件是降低了门槛。** 它们从「`familyViewNullPadded`
++ `unaffected` ⇒ 必须有具名论证」变成了「`familyView` + `unaffected` ⇒ 无要求」。
+它们的 unaffected 判断现在只靠族层面的事实（真库实测 24h 内 36.55% 的视图行来自
+session_turns ⇒ 纯视图读者停写后仍供数），不再有逐文件的书面论证。
+
+被删的论证里有价值的部分（`candidate_failure_monitor` 的「5 分钟窗口仍由
+turn_writer 持续供数所以不是 empty」、`gateway_adapters` 的 COALESCE 顺序分析）
+**已抄录进本节**，但它们不再被任何门强制更新——这是本轮引入的**已知弱化**，
+列在下方残余风险里。
+
+### §9.39.7 仍未处理的已知不精确
+
+`domains/streaming/model_alternatives.go` 的视图名只出现在**字符串字面量里的
+SQL 注释**中（`-- request_logs_with_current_month is a UNION of …`，:230）。
+本轮没有改 `vi`（视图族判定）那一维的注释处理——那是另一个维度的语义，
+动它会把该文件整个换族，属超出本轮范围。当前它因此留在本族（保守方向，安全）。
+本仓已有 `stripSQLLineComments` 可用，但**用它会同时改变 `vi`**，
+必须单独评估，不能顺手带进来。
