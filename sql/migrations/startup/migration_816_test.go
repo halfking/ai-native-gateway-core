@@ -9,7 +9,7 @@ import (
 
 // 816 契约：canonical 视图的 client_ip 从 NULL 补位改为 session 侧有源投影。
 //
-// 背景（审计 §9.45.6.1）：740 把它补成 NULL::inet，理由写在 Go 镜像体上的是
+// 背景（审计 §9.60.6.1）：740 把它补成 NULL::inet，理由写在 Go 镜像体上的是
 // 「session_turns.client_ip 为 text 且**未回填**，不能直映」。后半句已被 252
 // 生产库复测证伪——本机近 7 天 session 侧非空 85.0%，252 近 7 天有值 17,586 行；
 // 且两族同义（同 request_id 配对 826 行，session_turns.client_ip ==

@@ -580,7 +580,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		// 2026-10-02（§9.28.2）**该理由的三列全部作废**（734 details 层供值，99.9996%）。
 		// 但同一文件里**另一条**理由仍然成立：credits_rate_multiplier 与 client_ip 确实
 		// 还在恒 NULL 补位集里，逐列裁决见 db/request_logs_view_padded_columns.go。
-		// 其中 client_ip 的「是错名副本」这个理由已于同日（§9.42.6）在 252 生产库证伪，
+		// 其中 client_ip 的「是错名副本」这个理由已于同日（§9.60.6）在 252 生产库证伪，
 		// 但**「session 臂恒 NULL ⇒ 维度塌成 __unknown__」这个后果仍然成立**——
 		// 它依赖的是「没投影」，不依赖「为什么没投影」。
 		Effect:   effectSilentlyDegradedContent,

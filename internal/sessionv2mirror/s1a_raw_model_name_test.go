@@ -7,7 +7,7 @@ import (
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
 )
 
-// raw_model_name 的接线契约（2026-10-02，审计 §9.45.8）。
+// raw_model_name 的接线契约（2026-10-02，审计 §9.60.8）。
 //
 // 这道门存在的理由是**一次真实事故的形状**：本文件此前写着
 // 「req.RawModelName：RequestLogEntry 无此字段，保持零值」——

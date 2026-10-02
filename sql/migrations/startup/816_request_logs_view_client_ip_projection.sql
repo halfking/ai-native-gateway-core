@@ -3,7 +3,7 @@
 -- Migration:     816
 -- Database:      llm_gateway
 -- Purpose:       canonical 视图的 client_ip 从 NULL 补位改为 session 侧有源投影
---                （审计 §9.45.6.1 裁决更正的落地）。
+--                （审计 §9.60.6.1 裁决更正的落地）。
 --
 -- 动机：740 当年把它补成 NULL::inet，理由写在
 -- db/request_logs_view_schema.go 上是「session_turns.client_ip 为 text 且
@@ -343,7 +343,7 @@ END $$;
 
 -- Ledger self-registration（710/734/738/740/815 惯例）
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('816', 'storage plan v2: canonical view client_ip NULL-padded -> sourced session projection (118 -> 118 columns); the "not backfilled" rationale was falsified on 252 production (audit §9.45.6.1)')
+VALUES ('816', 'storage plan v2: canonical view client_ip NULL-padded -> sourced session projection (118 -> 118 columns); the "not backfilled" rationale was falsified on 252 production (audit §9.60.6.1)')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

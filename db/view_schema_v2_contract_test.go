@@ -252,7 +252,7 @@ var registeredProjectionAppends = []string{
 	"NULL::double precision AS credits_rate_multiplier", // 738
 	// 816：740 落地时是 NULL 补位（理由「session 侧未回填」），该理由已被 252
 	// 生产库复测证伪——session 侧 85% 有值、且与 v1 配对 826/826 同义
-	// （审计 §9.45.6.1）。改为有源投影。守卫 CASE 与本投影既有的
+	// （审计 §9.60.6.1）。改为有源投影。守卫 CASE 与本投影既有的
 	// application_id / api_key_id / credential_id 转换同款：text→inet 没有类型
 	// 约束，一个畸形值会让整条 canonical 视图的每个读方报错。
 	"(CASE WHEN t.client_ip ~ '^[0-9a-fA-F:.]+$' THEN t.client_ip::inet END) AS client_ip", // 816
@@ -411,7 +411,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if !strings.Contains(ensureViewdef, "client_ip") {
 		t.Fatal("ensure must compose the 740 client_ip column into the rebuilt body")
 	}
-	// 816 起 client_ip 必须是**有源**投影且**带守卫**（审计 §9.46）：
+	// 816 起 client_ip 必须是**有源**投影且**带守卫**（审计 §9.61）：
 	// `t.client_ip::inet` 无守卫时，一个畸形 text 值会打挂整条视图链的每个读方。
 	// pg_get_viewdef 会把 `CASE WHEN c THEN x END` 重排成 `WHEN c THEN x` + `END`
 	//（外层 CASE 字样消失），所以判据用渲染后仍存在的片段。
@@ -485,7 +485,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	applyMigration("738_view_chain_credits_rate_multiplier.sql")
 	applyMigration("740_view_chain_client_ip.sql")
 	applyMigration("815_request_logs_view_stage_band_cff.sql")
-	// 816（审计 §9.46）：client_ip 由 NULL 补位改为 session 侧有源投影。
+	// 816（审计 §9.61）：client_ip 由 NULL 补位改为 session 侧有源投影。
 	// **这道门第一次跑就红了**，报「ensure 和 710+734+738+740+815 产出不同
 	// viewdef」——因为重放链里没有 816，而 Go ensure 已经是 816 的形态。
 	// 这正是它存在的意义：Go 镜像体（生产启动走的那条）与迁移链必须同体，
@@ -723,7 +723,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 			t.Fatalf("apply %s: %v", name, err)
 		}
 	}
-	// 816（审计 §9.46）在 815 之上，所以**必须先 down 816**：它的 proj 是
+	// 816（审计 §9.61）在 815 之上，所以**必须先 down 816**：它的 proj 是
 	// 完整的 118 列契约（含 815 那三列），815 down 单独执行会把 816 建的
 	// 视图直接拆成 115 列而不报错——「能跑完但结果不是你以为的形态」这一类
 	// 半吊子状态，正是本门存在的理由。
