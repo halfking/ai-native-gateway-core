@@ -838,12 +838,12 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.ApprovalStatus = fields["app_st"]
 	st.ApprovalID = fields["app_id"]
 	st.OptimizationApplied = fields["opt_app"]
-	// v7 (O-2): AlignmentMap — best-effort parse; a corrupt entry degrades
-	// to nil rather than failing the whole state decode.
-	if raw, ok := fields["algn"]; ok && raw != "" {
-		if err := json.Unmarshal([]byte(raw), &st.AlignmentMap); err != nil {
-			st.AlignmentMap = nil
-		}
+	// v7 (O-2): AlignmentMap — 0458 §1.3 同族收口（2026-10-03）：坏数据此前
+	// 被裸 Unmarshal+静默 nil 吞掉零痕迹，与下方 cmp_q 等六字段口径割裂。
+	// jsoncol.Decode 失败留 Warn 可反查，fresh 语义同时封住
+	// UnmarshalTypeError 的半填充逃逸。
+	if raw := fields["algn"]; raw != "" {
+		jsoncol.Decode("compression.decodeSessionStateFields/algn", []byte(raw), &st.AlignmentMap)
 	}
 	st.TokensAfterStrip = int(parseInt(fields["tas"]))
 	st.RawTokenEstimate = int(parseInt(fields["raw_te"]))
@@ -874,9 +874,8 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 		jsoncol.Decode("compression.decodeSessionStateFields/san_snap", []byte(raw), &st.SanitizedSnapshot)
 	}
 	if raw := fields["san_msg_refs"]; raw != "" {
-		if err := json.Unmarshal([]byte(raw), &st.SanitizeMessageRefs); err != nil {
-			st.SanitizeMessageRefs = nil
-		}
+		// 0458 §1.3 同族收口（2026-10-03）：与 algn 同批，坏数据留 Warn 不再静默。
+		jsoncol.Decode("compression.decodeSessionStateFields/san_msg_refs", []byte(raw), &st.SanitizeMessageRefs)
 	}
 	return nil
 }
