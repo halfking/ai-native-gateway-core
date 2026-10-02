@@ -102,6 +102,11 @@ func (w *IntegrityFingerprintDrift) Start(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
 	Go("integrity_fingerprint_drift.run", func() { w.run(runCtx) })
+	// §9.50：探针每进程只跑一次，所以「启动后一直没扫描过」是一个真实且危险的
+	// 状态（停写后重启即是）。把 last_scan 置为启动时刻，告警才有办法区分
+	// 「刚启动」与「启动后一直不扫」——初始化成 0 会让每个新进程立刻误报，
+	// 不初始化则序列不存在、告警永不响。
+	recordFingerprintDriftStart(time.Now())
 	slog.Info("integrity_fingerprint_drift started",
 		"interval", w.interval,
 		"days", w.days,
@@ -168,6 +173,7 @@ func (w *IntegrityFingerprintDrift) tick(ctx context.Context) {
 	switch fingerprintScanDecision(inProcSeen, w.probeDone, w.probeEmpty) {
 	case fingerprintScanSkip:
 		w.skippedTicks.Add(1)
+		recordFingerprintDriftSkip()
 		return
 	case fingerprintScanProbe:
 		probeCtx, probeCancel := context.WithTimeout(ctx, 60*time.Second)
@@ -179,8 +185,17 @@ func (w *IntegrityFingerprintDrift) tick(ctx context.Context) {
 			slog.Warn("integrity_fingerprint_drift: fingerprint probe failed, running full scan", "error", err)
 		} else if !hasFP {
 			w.skippedTicks.Add(1)
-			slog.Info("integrity_fingerprint_drift: no fingerprint traffic in current window, skipping full scan (re-arms when telemetry observes a fingerprint)",
-				"current_days", w.days/2)
+			recordFingerprintDriftSkip()
+			// §9.50：原措辞是 "re-arms when telemetry observes a fingerprint"，
+			// 那是个**未兑现的承诺**——inProcSeen 逃生口的唯一写入方
+			// markSystemFingerprintObserved() 在 persistSystemFingerprint() 内，
+			// 而后者被同一个 storage.request_logs_write_enabled 门控住
+			// （client.go:1816 / :2468 都在 if logsWrite 块内）。停写后两条腿
+			// 一起断，重启即永久关闭。门见
+			// domains/hooks/observability/telemetry/fingerprint_escape_hatch_gate_test.go。
+			slog.Info("integrity_fingerprint_drift: no fingerprint traffic in current window, skipping full scan",
+				"current_days", w.days/2,
+				"rearm", "only via telemetry.SystemFingerprintObservedSince, which is itself behind the request_logs stop-write gate since audit §9.50.4 — after stop-write this detector is permanently off")
 			return
 		}
 	case fingerprintScanRun:
@@ -191,6 +206,7 @@ func (w *IntegrityFingerprintDrift) tick(ctx context.Context) {
 	stepCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	w.scannedCycles.Add(1)
+	recordFingerprintDriftScan(time.Now())
 	if err := w.scanDrift(stepCtx); err != nil {
 		slog.Warn("integrity_fingerprint_drift: scan failed", "error", err)
 	}
