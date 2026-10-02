@@ -122,7 +122,15 @@
    「重启次数 × 预算」。这是保守方向（只会多花，不会把超支算成安全），
    跨重启封顶需要持久化，是另一轮的事。
 
-5. **多实例并发 upsert 未实测**（ON CONFLICT 最后写者胜，结论不撕裂，但没测）。
+5. ~~**多实例并发 upsert 未实测。**~~ **已做**（2026-10-03 第三轮）。
+   `bg/capability_backfill_concurrency_test.go`，需 `TEST_DATABASE_URL`
+   （未设置则 skip，与 bg 包既有约定一致）。实测结论：
+   8 goroutine 并发 upsert 同一行 ⇒ **无 unique violation、只落 1 行、
+   结论是 true/false 之一**（最后写者胜，与预期一致）。`-race` 干净，
+   连跑 3 次稳定。迁移 612/613 的 `UNIQUE (binding_id, capability)`
+   是承重的——把它去掉两条判据立刻判红。
+   ⚠️ 顺带钉住 `RowsAffected()==0` 守卫：`DO UPDATE` 改成 `DO NOTHING`
+   在并发下会**静默丢弃**后写者的结论，`persistRow` 靠这一条抓住。
 
 ## 2026-10-03 复审新增的坑
 
@@ -164,6 +172,15 @@
 - **一次写预算用例时踩了 attempt 退避的坑**：三轮复用同一批 BindingID，
   第二轮起全部 `backedOff`，计数卡在 2不动。看起来像「预算没生效」，
   实际是退避在生效。**每轮换新绑定**才测得到预算的跨轮累加。
+- **「互不覆盖」这类判据要问：被测函数收不收那个维度？**
+  多 capability 用例第一版是**假绿**的，而且是被它自己的日志抓到的
+  （打「现有 1 行」而两个 upsert 都报成功）。根因：`persistRow` 把
+  capability **写死**成 nonstream（这是它的生产行为），我传的 `cap`
+  根本没进 SQL ⇒ 两个 goroutine 写的是**同一行**。
+  ⇒ 用例必须在**更低的层**（真实 SQL）上造场景，而不是调两次同一个函数
+  再数行数。附带一条：并发收集错误要用**按 index 索引的 slice**，
+  用 `append` 会让报错张冠李戴。
+
 - **两个台账不能合并**：`attempts`（BindingID→时刻，退避用）与
   `probes`（窗口内出网次数，预算用）问的是不同问题。合并会把
   「同一条探 4 次」算成 1 次（少算 ⇒ 闸门失效）。已由
