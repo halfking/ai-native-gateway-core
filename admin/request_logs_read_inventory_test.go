@@ -45,6 +45,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/attachments_routes.go":           1,
 	"admin/attempt_quality_api.go":          1,
 	"admin/auto_route.go":                   1,
+	"admin/auto_route_outcome_freshness.go": 1,
 	"admin/auto_route_correlations.go":      5,
 	"admin/auto_title_generator.go":         2,
 	"admin/body_resolver.go":                2,

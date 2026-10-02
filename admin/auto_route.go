@@ -738,6 +738,13 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// S4 §9.35: this response's success/reward/routing figures are settled
+	// later by bg.AutoRouteSettleWorker against the v1 hot table, not measured
+	// by the requests being counted here. Stamp the evidence source's freshness
+	// so a reader can tell "the numbers are low" from "the numbers stopped being
+	// produced". Additive key: existing consumers ignore it.
+	out["outcome_source"] = queryOutcomeFreshness(ctx, h.db, time.Now())
+
 	writeJSONOk(w, out)
 }
 
@@ -1161,10 +1168,11 @@ func (h *AutoRouteHandlers) HandleAffinityRanking(w http.ResponseWriter, r *http
 	}
 
 	writeJSONOk(w, map[string]any{
-		"task_type": taskType,
-		"profile":   profile,
-		"tenant_id": tenantID,
-		"rows":      out,
+		"task_type":      taskType,
+		"profile":        profile,
+		"tenant_id":      tenantID,
+		"rows":           out,
+		"outcome_source": queryOutcomeFreshness(ctx, h.db, time.Now()),
 	})
 }
 
@@ -1257,7 +1265,8 @@ func (h *AutoRouteHandlers) handleAffinitySelections(w http.ResponseWriter, r *h
 	}
 
 	writeJSONOk(w, map[string]any{
-		"session_id": sessionID,
-		"rows":       out,
+		"session_id":     sessionID,
+		"rows":           out,
+		"outcome_source": queryOutcomeFreshness(ctx, h.db, time.Now()),
 	})
 }
