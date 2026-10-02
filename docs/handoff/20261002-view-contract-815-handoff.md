@@ -27,7 +27,7 @@
 |---|---|---|
 | 1) 4 个投影 | **补 3 个**：`origin_stage` / `token_band` / `client_forwarded_for`。`trace_events` 不补（镜像从不写它，投影即净数据损失）。**`id` 不补 —— 你的判断经实测确认，且更硬：1,515,984 组同 request_id 配对里 `r.id = t.id` 命中 0 次** | migration 815 + Go 镜像体；活库终态 118 列，**幂等性由 scratch 库内 `up→down→up` 门证明（可重跑，不动活库）** |
 | 2) 28 列逐列裁决 | **前提被推翻**：需要裁决的是 **6 列**，不是 32 列。§9.21 的 30/28 是从 **710 形态**数的，现网是 **734 形态**，其中 27 列已由 `session_turn_details` 供值（覆盖 99.9996%） | 逐列裁决落成 `db/request_logs_view_padded_columns.go` + 4 道门；S4 读面 **39 → 14 → 1**（第二次纠错见下） |
-| 3) `raw_model_name` + 恢复 SQL 端口 | **(c) 已由并行线 §9.23 落地**（`9b8424fd8`），核对确认覆盖。(a)/(b) 的**前提被真库推翻**：`raw_model_name` 在 `request_logs` / `session_turns` / `session_turns_hot` **三张表里非空行数都是 0** —— v1 侧也没有这个字段，端口的真正前置是「新增一个有正确来源的字段」 | 门控无需再做；端口重定义为 S4 灰度前的独立工作项 |
+| 3) `raw_model_name` + 恢复 SQL 端口 | **(c) 已由并行线 §9.23 落地**（`9b8424fd8`），核对确认覆盖。(a)/(b) 的**前提被真库推翻**：`raw_model_name` 在 `request_logs` / `request_logs_hot` / `session_turns` / `session_turns_hot` **四张表（全部持有该列）非空行数都是 0** —— v1 侧也没有取值，端口的真正前置是「新增一个有正确来源的字段」 | 门控无需再做；端口重定义为 S4 灰度前的独立工作项 |
 
 两个附带的、你没问但会改变判断的发现：
 
