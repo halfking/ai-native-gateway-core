@@ -484,7 +484,43 @@ func safeCompressionMeta(raw json.RawMessage, tenantID, sessionID string) map[st
 			}
 		}
 	}
+	// D03 P2 (2026-10-03): a whitelisted key that is present in the source,
+	// non-null, and still absent from `out` was dropped by its validation
+	// filter. Record it — without this marker a mirrored metadata map cannot
+	// distinguish "producer never wrote the key" from "mirror dropped the key
+	// as invalid". The marker key has no case in the switch above, so a
+	// hostile payload can neither forge nor suppress it. The two *_truncated
+	// booleans are excluded from the check on purpose: false is deliberately
+	// not mirrored, so their absence carries no integrity meaning.
+	var filteredKeys []string
+	for _, key := range compressionMetaWhitelist {
+		if v, present := input[key]; present && v != nil {
+			if _, copied := out[key]; !copied {
+				filteredKeys = append(filteredKeys, key)
+			}
+		}
+	}
+	if len(filteredKeys) > 0 {
+		out["mirror_filtered_keys"] = filteredKeys
+	}
 	return out
+}
+
+// compressionMetaWhitelist mirrors the switch cases in safeCompressionMeta;
+// keep it in lockstep when adding a case. "alignment_map_truncated" and
+// "sanitize_refs_truncated" are intentionally absent (see the post-pass
+// comment in safeCompressionMeta).
+var compressionMetaWhitelist = []string{
+	"cut_marker", "alignment_map", "sanitize_message_refs",
+	"sanitize_map_ref", "sanitize_map_generation",
+	"raw_snapshot", "sanitized_snapshot", "compression_source_snapshot",
+	"summary_marker", "compressed_prefix_hash",
+	"strategy", "compression_strategy", "reason", "compression_reason",
+	"window_triggered", "lossiness",
+	"tokens_before", "tokens_after", "bytes_before", "bytes_after",
+	"context_window_used", "msg_count", "token_est", "raw_token_est",
+	"compressed_tokens", "compressed_msgs",
+	"pre_sanitize_offset_range", "window_source",
 }
 
 // safeWindowSource filters the producer-side window_source composition
