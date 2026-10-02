@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/kaixuan/llm-gateway-go/internal/probemode"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // credentialRecoveryDB is the minimal database contract CredentialRecovery
@@ -142,10 +143,18 @@ type CredentialRecovery struct {
 	probeDispatchSem        chan struct{}
 	// lookbackDone signals the 36h lookback scan loop exited (Stop waits on
 	// both). Constructed together with done.
-	lookbackDone     chan struct{}
-	lifecycleMu      sync.Mutex
-	started          bool
-	stopped          bool
+	lookbackDone chan struct{}
+	lifecycleMu  sync.Mutex
+	started      bool
+	stopped      bool
+	// skipped records, per run, which sub-scans did NOT execute and why.
+	// Same reasoning as LedgerReconciler.SkippedChecks: a skipped scan yields
+	// zero candidates, which is indistinguishable from "scanned and found
+	// nothing" unless it has its own channel. For this scan the two readings
+	// differ operationally — one means "no degraded binding needs lookback
+	// evidence", the other means "we stopped being able to tell".
+	skippedMu        sync.Mutex
+	skipped          []string
 	tickMu           sync.Mutex
 	tickInterval     time.Duration
 	lookbackInterval time.Duration
@@ -1753,6 +1762,73 @@ func lookbackCandidateSQL() string {
 	`
 }
 
+// lookbackSkipS4StopWrite is the machine-readable reason key recorded when the
+// 36h lookback scan is skipped because S4 stop-write is active.
+const lookbackSkipS4StopWrite = "s4_stop_write"
+
+// lookbackComparability reports whether the 36h lookback question — "did this
+// binding demonstrably serve a success recently?" — is currently *decidable*.
+//
+// lookbackCandidateSQL answers it from request_logs_hot ∪ request_logs. Both are
+// INSIDE the request_logs wide family, i.e. exactly what
+// settings.KeyRequestLogsWriteEnabled gates. The scan did not consult the gate,
+// and the two other recovery sub-scans in this same file do not need to:
+// expiredCmbRecoverySQL and recoverFreshDegradedSQL both key off
+// credential_model_bindings / node_probe_state, which are not gated (their
+// NOT EXISTS reads node_probe_state, not request_logs).
+//
+// So under S4 stop-write the failure is the mirror image of the ledger
+// reconciler's, and just as structural:
+//
+//	evidence source freezes → after the window elapses with no new rows,
+//	the EXISTS(...) predicate goes permanently empty → NO binding ever
+//	qualifies as a lookback candidate again → degraded/offline bindings are
+//	never handed to NodeProbeWorker by this route.
+//
+// The scan is SELECT-only (it never writes cmb.available itself), but its output
+// drives claimLookbackCandidate, which leases the row and submits a probe — so
+// "no candidates" silently means "no recovery on this path", not "nothing to do".
+// The bindings it stops covering are exactly those whose unavailable_reason is
+// NOT continuous_failure / probe!_% / auto!_%, because those are the ones the
+// two ungated sub-scans cannot pick up.
+//
+// The premise ("there is evidence in the last window") disappears when the gate
+// flips, so the correct action is to stop and say so — not to keep querying and
+// report an empty result as a finding. Deliberately a pure function so the
+// decision is testable without a database.
+func lookbackComparability(logsWriteEnabled bool) (comparable bool, reason string) {
+	if !logsWriteEnabled {
+		return false, lookbackSkipS4StopWrite
+	}
+	return true, ""
+}
+
+// SkippedChecks returns the machine-readable reason keys of sub-scans skipped in
+// the most recent run, in execution order. Empty means everything ran.
+func (r *CredentialRecovery) SkippedChecks() []string {
+	if r == nil {
+		return nil
+	}
+	r.skippedMu.Lock()
+	defer r.skippedMu.Unlock()
+	return append([]string(nil), r.skipped...)
+}
+
+func (r *CredentialRecovery) markSkipped(reason string) {
+	r.skippedMu.Lock()
+	defer r.skippedMu.Unlock()
+	r.skipped = append(r.skipped, reason)
+}
+
+// resetSkipped clears the per-run skip list. Named (not inlined) so a test can
+// pin that the scan actually calls it — see the sibling bug this shape was
+// extracted to prevent in ledger_reconciliation.go.
+func (r *CredentialRecovery) resetSkipped() {
+	r.skippedMu.Lock()
+	defer r.skippedMu.Unlock()
+	r.skipped = nil
+}
+
 // claimLookbackCandidate leases the (cred, model) row cross-instance,
 // mirroring node_probe.go pickDueAtomically (BEGIN → SELECT ... FOR UPDATE
 // SKIP LOCKED → UPDATE in_flight_until → COMMIT). Differences from the
@@ -1840,6 +1916,22 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 	}
 	scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+
+	// S4 停写门控（2026-10-02 审计）：本扫描的证据源 request_logs_hot ∪
+	// request_logs 整体在门内。停写生效后证据源冻结，"窗口内是否有成功"这个问题
+	// 从「可判定」变成「不可判定」——继续查只会得到一个恒空的候选集，把
+	// "不再具备判定能力" 读成 "没有需要恢复的绑定"。与 ledger_reconciliation 的
+	// usage_credit_mismatch 是同一个结构的两种方向（那边是假报机，这边是静默洞）。
+	r.resetSkipped()
+	if ok, reason := lookbackComparability(settings.RequestLogsWriteEnabled()); !ok {
+		r.markSkipped(reason)
+		recoveryLookbackTriggers.WithLabelValues("skipped_" + reason).Inc()
+		slog.Info("credential_recovery: 36h lookback 扫描已跳过（本轮未执行，非「无候选」）",
+			"reason", reason,
+			"detail", "证据源 request_logs_hot/request_logs 已停写，窗口内不会有新行；"+
+				"继续扫描会让降级绑定在这条路径上永久失去恢复机会而不留痕迹")
+		return
+	}
 
 	windowHours := r.lookbackWindowHoursLocked()
 	recoveryLookbackScans.Inc()
