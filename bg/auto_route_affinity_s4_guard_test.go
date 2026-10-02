@@ -42,13 +42,29 @@ const syntheticActorGuard = "'auto-title-generator','auto-summary-generator','se
 func TestAffinitySynthesisExclusionCoversSessionFamily(t *testing.T) {
 	src := mustReadSource(t, "auto_route_affinity_worker.go")
 
-	if !strings.Contains(src, "FROM session_turns st") {
-		t.Fatal("亲和度聚合的合成流量排除臂不再覆盖 session 族。\n" +
-			"真库实测：131 条合成请求在 request_logs_hot 里覆盖 0 条、在 request_logs 母表覆盖 131 条。\n" +
-			"所以今天唯一兜住过滤的是母表——而那正是本项目要删掉的表。停写后新合成流量不再有 v1 记录，\n" +
-			"v1 退役后该臂彻底消失 ⇒ 合成流量（goal-* / 标题、摘要生成器）会直接进入亲和度聚合，\n" +
-			"污染模型且无任何信号。\n" +
-			"注意：这条臂在今天的数据上对聚合结果零影响，看起来像冗余——它不是，它是终局的承重臂。")
+	// §9.28：这条断言原来钉的是「臂里出现 FROM session_turns st」——那是
+	// **单面**读法，本身就是缺陷。改写为按**语义**钉：必须同时读两个存储面。
+	//
+	// 会话族的写方只写 session_turns_hot，冷行由 promote_session_turns_hot_to_partition
+	// 搬到分区父表，**边界随 promote 节奏移动**（本机实测父表停在
+	// 2026-10-02 06:06:31、hot 从 06:07:14 接上，父表落后约 8.7 小时）。
+	// 只读父表 ⇒ 漏掉**最新**的合成流量，而最新那批正是最可能污染基线的。
+	for _, want := range []string{
+		"SELECT request_id, origin_actor FROM session_turns",
+		"SELECT request_id, origin_actor FROM session_turns_hot",
+		"UNION ALL",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("亲和度排除臂没有同时读会话族的**两个存储面**，缺：%s\n"+
+				"session_turns（父表）与 session_turns_hot 是两个面，写方只写 hot、\n"+
+				"冷行由 promote 搬到父表，边界随 promote 节奏移动。只读一个必然漏掉另一面：\n"+
+				"只读父表会漏掉**最新**的合成流量（父表落后 hot 数小时），\n"+
+				"而最新那批正是最可能污染亲和度基线的。\n"+
+				"710 视图用的是 session_turns_hot UNION ALL session_turns，直读方必须照做。", want)
+		}
+	}
+	if strings.Contains(src, "FROM session_turns st") {
+		t.Error("排除臂退回单面读法 FROM session_turns st —— 这会漏掉 session_turns_hot 里的最新合成流量")
 	}
 	// 三条臂的 actor 集合必须一致，否则新臂的判别口径与旧臂漂移。
 	for _, want := range []string{

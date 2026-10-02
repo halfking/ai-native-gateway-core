@@ -319,7 +319,16 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		  -- 纯增量：保留前两条臂（今天双写期行为完全不变——同一 request_id 必然
 		  -- 同时命中 v1 臂），新臂在双写期是 no-op，停写后才成为承重臂。
 		  AND NOT EXISTS (
-		      SELECT 1 FROM session_turns st
+		      -- ⚠️ 同 §9.28：会话族是**两个存储面**，写方只写 session_turns_hot，
+		      -- 冷行由 promote 搬到分区父表，边界随 promote 节奏移动。只读父表 ⇒
+		      -- **漏掉最新的合成流量**，而最新那批正是最可能污染亲和度基线的。
+		      -- 本机实测今天合成流量为 0（父表 131 / hot 0），故此处今天仍是 no-op；
+		      -- 一旦合成流量恢复，漏的恰好是当天的。710 视图同款 UNION ALL 惯例。
+		      SELECT 1 FROM (
+		          SELECT request_id, origin_actor FROM session_turns
+		          UNION ALL
+		          SELECT request_id, origin_actor FROM session_turns_hot
+		      ) st
 		      WHERE st.request_id = s.request_id
 		        AND (COALESCE(st.origin_actor, '') LIKE 'goal-%'
 		          OR COALESCE(st.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
