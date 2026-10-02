@@ -2098,3 +2098,56 @@ bg 17），但**其中所有视图族判定需按 §9.1 重判**——这正是�
 
 ⛔ **S4 仍不可开**：§8.5 三处硬阻塞的 ①（逐点依赖评估）刚开工，且本节把
 「停写会少记 63% 近期行」这一新事实摆到了台面上——它需要你先就 §8 第 3 项表态。
+
+### 9.7 第二次自我推翻：视图族不能靠**视图名**判，要靠**视图真实构成**
+
+§9.1 说「710 视图有 session 臂 ⇒ 视图族停写后仍供数」。这条**被我用名字模式
+实现成了 `request_logs_with_[a-z_]+`**，然后它就错了。
+
+真库逐个视图查 `pg_get_viewdef`：
+
+| 视图 | 真实构成 |
+|---|---|
+| `request_logs_with_current_month` | **HAS_SESSION_ARM** |
+| `request_logs_with_current_month_without_customer_id` | **V1_ONLY** ← 我判成视图族了 |
+| `request_logs_with_current_month_without_request_class_due_at` | **V1_ONLY** ← 我判成视图族了 |
+| `request_logs_bodies_with_current_month` | V1_ONLY（bodies 族，本就无 session 臂） |
+
+后两个是 577/734 迁移**故意**建成的 v1-only 中间层 —— `admin/auto_route.go` 的注释
+写得很清楚：顶层视图的 session 分支 `provider_id` 投影为 NULL，按 provider 过滤会
+静默丢行，所以刻意绕开顶层去读中间层。**这是一个正确的设计取舍，不是迁移遗漏**；
+而我的名字匹配把它当成了视图族。
+
+**影响面**：7 个生产文件引用这两个视图（`admin/auto_route.go`、
+`admin/auto_route_correlations.go`、`admin/attempt_quality_api.go`、
+`admin/analytics_materialized.go`、`admin/board_time_range.go`、
+`admin/usage_trend_series.go`、`bg/mv_consistency.go`），它们的停写后果从
+「仍供数」变成「**完全停止增长**」。
+
+**修正后的四分表**（白名单化，104→**105** 文件 / 237→**239** 调用点，
+增量为并行会话新增的读者，已被 `TestRequestLogsReadInventoryIsComplete` 正常跟踪）：
+
+| 族 | 修正前 | **修正后** |
+|---|---:|---:|
+| bodies 族（无兜底，硬失败） | 1 | **1** |
+| 有 session 臂的视图 | 30 | **27** |
+| 基表 + v1-only 视图（完全停止增长） | 44 | **47** |
+| 视图+基表都读 | 29 | **30** |
+
+**改法**：族判定不再匹配视图名，而是查一张**白名单**
+`requestLogsViewsWithSessionArm`；白名单默认是空的 —— 新增 v1-only 视图会**自动
+落进 base 族**（保守、正确的方向），要改成视图族得显式加进来并说明理由。
+
+**白名单由真库门钉住**（`cmd/gateway/request_logs_view_session_arm_pin_test.go`，
+`TestRequestLogsViewSessionArmPinIsCurrent`）：从 `pg_get_viewdef` 重算，与白名单
+**双向**比对。手工名单会过期、视图定义会被后续迁移改写，两个方向都要抓：
+
+- 视图新增/变为含 session 臂 → 报「未登记」
+- 视图变为不含 session 臂 / 被删 → 报「清单陈旧」
+
+变异验证：白名单塞入不存在的视图 → 红（报陈旧）；把有臂视图从白名单删掉 → 红
+（报未登记）；还原后绿。真库实测输出：`含 session 臂 1 个，纯 v1 3 个`。
+
+**这一节是 §9.1 的续集，两次都是同一类错**：把「一个名字对应一个语义」当成事实，
+而实际语义住在数据库里。**名字是索引，不是定义。** 凡是用正则/名字模式去判定
+「读的东西在停写后还在不在长」，都必须由真库定义来裁定。

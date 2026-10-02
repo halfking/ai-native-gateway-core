@@ -317,17 +317,52 @@ var (
 	// 注释先剥是硬要求：本仓 40 条 grep 命中里 36 条是注释，不剥的话
 	// 「读 710 视图」会被历史注释里的提及带偏。
 	familyBodiesRE = regexp.MustCompile(`(?i)request_logs_bodies`)
-	familyViewRE   = regexp.MustCompile(`(?i)request_logs_with_[a-z_]+|request_logs_prev`)
 	familyBaseRE   = regexp.MustCompile(`(?i)\bfrom\s+request_logs(_hot)?\b`)
+	// 视图族**不能**靠名字模式判定：名字带 request_logs_with_ 的中间层视图
+	// 可能仍是纯 v1。下面的 requestLogsViewsWithSessionArm 才是判据，
+	// 且它由真库门 TestRequestLogsViewSessionArmPinIsCurrent 钉住。
+	familyAnyViewRE = regexp.MustCompile(`(?i)\brequest_logs_(with_[a-z_]+|prev)\b`)
 )
+
+// requestLogsViewsWithSessionArm 是「停写后仍由 session 臂供数」的视图白名单。
+//
+// ⛔ 这份名单是**真库实测**得出的，不是从名字或迁移文件推的（2026-10-02）。
+// 我最初用 `request_logs_with_[a-z_]+` 判定视图族，结果把两个中间层视图
+// 一起算进了「停写后仍供数」——真库 pg_get_viewdef 显示它们是**纯 v1**：
+//
+//	request_logs_with_current_month                        HAS_SESSION_ARM
+//	request_logs_with_current_month_without_customer_id    V1_ONLY   ← 我判错了
+//	request_logs_with_current_month_without_request_class_due_at  V1_ONLY  ← 我判错了
+//	request_logs_bodies_with_current_month                 V1_ONLY（bodies 族，本就无 session 臂）
+//
+// 名字带 `request_logs_with_` 的两个 `_without_*` 视图是 577/734 迁移为了
+// 规避投影缺失而**故意**建成 v1-only 的中间层（见 audit §9.7）。把它们当视图族
+// 会让 7 个生产文件的停写后果被系统性低估。
+//
+// 白名单必须是**白**名单而不是「凡 view 皆算」：新增一个 v1-only 视图时，
+// 它默认落进 base 族（保守、正确方向），要改成视图族得显式加进来并说明理由。
+var requestLogsViewsWithSessionArm = map[string]struct{}{
+	"request_logs_with_current_month": {},
+}
 
 // sourceFamilyOf 从文件源码机械判定它读哪一族。
 func sourceFamilyOf(code string) string {
 	code = gateStopWriteLineCommentRE.ReplaceAllString(code, " ")
 	code = gateStopWriteBlockCommentRE.ReplaceAllString(code, " ")
 	bo := familyBodiesRE.MatchString(code)
-	vi := familyViewRE.MatchString(code)
-	ba := familyBaseRE.MatchString(code)
+	vi, v1OnlyView := false, false
+	for _, m := range familyAnyViewRE.FindAllString(code, -1) {
+		if _, ok := requestLogsViewsWithSessionArm[strings.ToLower(m)]; ok {
+			vi = true
+		} else {
+			// 引用了一个 v1-only 视图（如 ..._without_customer_id）：
+			// 它没有 session 臂，停写后与读基表同命运 ⇒ 归 base 族。
+			v1OnlyView = true
+		}
+	}
+	// 读了 v1-only 视图的，即使 SQL 文本里没有裸 FROM request_logs，也是
+	// 实质上的基表读者——这是「只看 from request_logs 就会漏掉」的一类。
+	ba := familyBaseRE.MatchString(code) || v1OnlyView
 	switch {
 	case bo && (vi || ba):
 		return familyMixed
