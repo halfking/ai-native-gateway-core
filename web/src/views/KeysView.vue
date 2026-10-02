@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { fmtDateTimeShort } from '../i18n/useFormat'
+import { sortByNameStable } from '../utils/sortByName'
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
@@ -261,7 +262,8 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    keys.value = await getKeys()
+    // 2026-10-03：按名称排序（老板要求的查找性排序）
+    keys.value = sortByNameStable(await getKeys())
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('keys.loadFailed')
   } finally {

@@ -6,6 +6,7 @@
 // 与对账快照同源）；无用量账号显示 —，列表加载不被用量失败阻塞。
 import { useI18n } from 'vue-i18n'
 import { fmtDateTime24h } from '../i18n/useFormat'
+import { sortByName } from '../utils/sortByName'
 import { ref, computed, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin, getUserUsageSummary } from '../api'
 import type { Tenant, UserUsageSummaryItem } from '../api'
@@ -191,7 +192,8 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    users.value = await getUsers()
+    // 2026-10-03：按名称排序（老板要求的查找性排序）
+    users.value = sortByName(await getUsers())
     // 用量统计独立拉取：失败不阻塞列表（列显示 —）。
     try {
       const summary = await getUserUsageSummary(usageDays)

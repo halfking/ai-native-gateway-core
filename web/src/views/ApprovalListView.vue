@@ -465,8 +465,6 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 <style scoped>
 .approval-list-view {
   padding: 20px;
-  max-width: 1600px;
-  margin: 0 auto;
   color: var(--text-primary);
 }
 

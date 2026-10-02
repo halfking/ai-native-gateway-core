@@ -222,8 +222,6 @@ onMounted(() => {
 <style scoped>
 .approval-config-view {
   padding: 20px;
-  max-width: 1400px;
-  margin: 0 auto;
   color: var(--text-primary);
 }
 

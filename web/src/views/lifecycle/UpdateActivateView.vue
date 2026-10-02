@@ -422,7 +422,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.ua-page { padding: 24px clamp(16px, 3vw, 32px) 40px; max-width: 1100px; }
+.ua-page { padding: 24px clamp(16px, 3vw, 32px) 40px; }
 .ua-page__header {
   display: flex;
   justify-content: space-between;

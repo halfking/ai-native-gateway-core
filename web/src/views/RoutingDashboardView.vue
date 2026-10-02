@@ -1648,7 +1648,7 @@ onUnmounted(() => stopPoll())
 </template>
 
 <style scoped>
-.routing-dashboard { max-width: 1200px; }
+.routing-dashboard { max-width: none; }
 
 /* Unified top bar */
 .top-bar {

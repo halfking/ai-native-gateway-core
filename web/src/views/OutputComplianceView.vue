@@ -568,8 +568,6 @@ onMounted(() => {
 <style scoped>
 .output-compliance-view {
   padding: 1.5rem;
-  max-width: 1600px;
-  margin: 0 auto;
 }
 
 .view-header h2 {

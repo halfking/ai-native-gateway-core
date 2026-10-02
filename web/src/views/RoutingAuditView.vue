@@ -216,8 +216,6 @@ onMounted(load)
 <style scoped>
 .audit-view {
   padding: 24px;
-  max-width: 1400px;
-  margin: 0 auto;
   color: var(--text);
 }
 h1 { margin: 0 0 8px; font-size: 24px; }

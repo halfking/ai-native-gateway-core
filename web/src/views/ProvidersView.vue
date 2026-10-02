@@ -49,9 +49,15 @@ const {
   enrichProviders,
   sortProvidersByQuality,
 } = useProviderQualitySummary()
-const qualitySortKey = ref<QualitySortKey>('usage')
+// 2026-10-03：默认从 'usage' 改为 'name'。老板要求「供应商这类有名称的列表
+// 按名称排序，便于查找」——默认就该是查找序，而不是用量序；用量/质量/可用性
+// 仍然留在下拉里按需切换。
+const qualitySortKey = ref<QualitySortKey>('name')
 const qualitySortOptions = computed(() => [
   { value: 'default' as const, label: pm('filter.sortDefault') },
+  // 2026-10-03：老板点名「供应商这类有名称的列表要按名称排序，便于查找」。
+  // 放在第一个可选项，紧邻「默认」，让查找型使用不必先想「质量」是什么。
+  { value: 'name' as const, label: pm('filter.sortName') },
   { value: 'usage' as const, label: pm('filter.sortUsage') },
   { value: 'quality_score' as const, label: pm('filter.sortQuality') },
   { value: 'availability_score' as const, label: pm('filter.sortAvailability') },
@@ -1020,9 +1026,14 @@ onUnmounted(() => {
               </span>
             </td>
             <td><code style="font-size:12px">{{ p.catalog_code }}</code></td>
-            <td><code style="font-size:11px">{{ p.header_profile_code || '—' }}</code></td>
+            <td><code style="font-size:11px" class="nowrap-cell">{{ p.header_profile_code || '—' }}</code></td>
             <td>
-              <div style="font-size:12px;color:var(--muted);word-break:break-all;white-space:normal">
+              <!--
+                2026-10-03：Base URL 原来 word-break:break-all，一行 URL 被断成
+                3~4 行，整表行高被撑开（老板要的「紧凑」）。表已有横向滚动，
+                引用型数据改成单行 + 省略号，完整值走 title 悬停。
+              -->
+              <div class="url-cell" :title="p.base_url || ''">
                 {{ p.base_url || '—' }}
               </div>
             </td>
@@ -1586,11 +1597,47 @@ table td, table th {
   word-break: break-word;
   white-space: normal;
   overflow-wrap: break-word;
-  max-width: 0;
 }
 table code {
   white-space: normal;
   word-break: break-all;
+}
+
+/*
+ * 2026-10-03：主供应商表 17 列，在窄视口下整张表塌了 —— 表头被压成逐字竖排
+ * （"H/E/A/D/E/R P/R/O/F/I/L/E"），Base URL 一列则逐字断成 "h t t p s : /"。
+ * 根因是原规则里的 `max-width: 0`：table-layout:fixed 下它把每列的可用宽度
+ * 归零，浏览器只能按字符断行。列多时每列只剩 100%/17 ≈ 5.9%，而 .card 的
+ * overflow-x:auto 因为「表已被压到 100% 宽」而没有任何东西可滚。
+ *
+ * 修法分两步，缺一不可：
+ *   1) 去掉 `max-width: 0`（不再把列宽归零）；
+ *   2) 给主表一个真实下限 min-width，让 .card 的横向滚动真正生效。
+ * 只作用于主表（无 class 的那张）；.credential-table / .data-table 列数少，
+ * 不该被无谓地撑出滚动条。
+ */
+table:not([class]) {
+  min-width: 1800px;
+}
+/* 表头是字段名，逐字折行没有任何可读性 —— 表头恒定单行。 */
+table th {
+  white-space: nowrap;
+}
+/*
+ * 紧凑化（2026-10-03）：catalog_code / header_profile / base_url 都是
+ * 「无断点的引用型数据」，原来 break-all / break-word 会把它们逐字符切断，
+ * 把行高撑到 3~4 行。表本身已有横向滚动，所以单行 + 省略号即可，
+ * 完整值用 title 悬停查看。
+ */
+.nowrap-cell {
+  white-space: nowrap;
+}
+.url-cell {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Filter Bar ─────────────────────────────────────────────────────────── */

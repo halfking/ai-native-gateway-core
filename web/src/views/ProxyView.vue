@@ -806,8 +806,6 @@ const AFFINITY_POLICIES = ['any', 'prefer_same', 'require_same']
 <style scoped>
 .proxy-view {
   padding: 2rem;
-  max-width: 1400px;
-  margin: 0 auto;
 }
 
 h1 {
