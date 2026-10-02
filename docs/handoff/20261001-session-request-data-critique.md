@@ -1531,3 +1531,87 @@ abandon 视界。v1 被退役后 `42P01` 映射成 `reason:"absent"` 而不是 5
 2. 响应侧 7 个读点 + 4 类结构性缺口：退役 v1 后要么改写入器，要么接受降级。
 3. `auto_route_settle_worker` 的**标记**已上线，但**它的正确修法**（改读会话族）
    仍未做 ⇒ 停写后它仍会全量 abandon，只是现在**看得见了**。
+
+---
+
+## 第十九轮（§9.36）：S4 停写分级门**收绿** 31/106 → 0/106
+
+上一轮定的下一步。四个子代理并行评估 31 个文件，我逐条手验。
+**八道门全绿，`go test -tags s4audit ./admin/` ok 69.6s 零 FAIL。**
+
+### 档位分布（这是灰度清单，不是「门红了」）
+
+| 档位 | 条数 |
+|---|---|
+| `silently_empty` | 11 |
+| `unaffected_by_stop_write` | 8 |
+| `silently_degraded_content` | 4 |
+| `silently_frozen` | 4 |
+| `errors_out` | 3（响亮失败，可接受） |
+| `validator_dual_read` | 1（§9.35 新鲜度探针） |
+
+**⇒ 灰度前必须先处理的是 19 条**（前三个静默档）。门绿了，但风险已登记。
+
+### 变异 3/3，各命中不同的门，都是断言命中
+
+- M1 删一条登记（实际跨 6 条）→ 覆盖门报「**6**/106」，精确数出我删的条数
+- M2 改 Evidence → 逐字门 `:939`
+- M3 抽掉 null-padded 具名论证 → 族一致门 `:1328`
+
+*M3 第一版截断字符串导致编译失败——**崩溃不是证据**，那版无效；
+改成按 map 条目边界删、`go vet` 确认语法完好才重跑。*
+
+### 三处「我原本会判错」——这一节是本轮最值钱的部分
+
+**① 判「视图读点停写后还供不供数」必须量**近期**填充率，不能用全历史均值。**
+`admin/session_extract.go` 谓词用 `gw_task_id`（视图里取自 details 的 LEFT JOIN）。
+全历史口径：session 臂 94.1% 为 NULL ⇒ 看起来恒 0 行 ⇒ 判 `silently_empty`。
+按天口径：09-29 的 4.77% → 09-30 的 37.88% → 10-01 的 97.72% → **今天 98.51%**，
+`api_key_prefix` 自 09-26 起 100% ⇒ details 写入链已修好 ⇒ 正确档位是 `unaffected`。
+**停写后果是前瞻问题，量具必须能回答「现在和以后」。**
+
+**② 同一个量在另一个文件里方向相反：`provider_id` 在恶化。**
+`session_analytics_breakdown.go` 按 `provider_id` 分组，真库缺失率
+09-27 的 22.15% → 10-01 的 **68.03%**；同期 `outbound_model`/`cost_usd` 均 0.00%。
+⇒ 停写后约一半新流量不再计入真实 provider ⇒ 判 `silently_degraded_content`。
+**这也是一条新的运营事实**：会话族 provider 归属只有约一半填得上、且在恶化，
+它是退役决策的独立输入。
+
+**③ 我自己犯的测法错误：按 `request_id` 跨存储面猜行来源。**
+我曾判 `..._without_customer_id`「70% 行来自 session」并差点据此改判。
+`pg_get_viewdef` 的真库定义是纯 `request_logs_hot UNION ALL request_logs`，
+**没有 session 臂**。错因：该包装视图**没有顶层 710 的 `NOT EXISTS session_*` 反连接**，
+所以 v1 行的 request_id 本就与 session 行重合。
+⇒ **判断视图有没有 session 臂，量具是 `pg_get_viewdef` 逐字读，不是按 id 猜来源。**
+（与「列名撞车」「关系名相同不代表同一存储面」同族。）
+
+### 顺带定案的两个子代理 UNRESOLVED（真库直接查）
+
+- `request_logs_with_current_month_without_customer_id` 有无 session 臂 → **无**（上面 ③）。
+- 线上 `recent_success_rate()` 读哪张表 → 查 `pg_proc.prosrc`：
+  **直读 `request_logs_hot`、3h 窗口** ⇒ `credential_success_rate.go` 判
+  `silently_empty` 成立（子代理正确）。
+
+### 未修的相邻缺陷（记账）
+
+1. **`discovery/discovery.go` 的控制面登记表已过期**：仍登记 `Gated: false`，
+   而护栏是 `e52687954`（§9.12）后加的。**没有任何门把 `Gated` 与代码里的实际护栏对照。**
+2. **`nullPaddedUnaffectedJustification` 已有 4 条是同一误触发的产物**：
+   族分类器按词边界匹配补位集里的 `id`，而命中常来自**别的表**的 `WHERE id = $1`。
+   本批的 `live_stream_sse.go` / `candidate_failure_monitor.go` 同形态。
+   **根修是给补位匹配加表归属**，不是继续逐条写论证。
+
+### 状态
+
+**无待拍板项**。§9.35 之后所有拍板已关闭。
+
+### 下一轮的正确顺序
+
+1. 处理 §9.36.3 的 19 条静默档（按 `silently_empty` → `silently_frozen` → degraded 排序），
+   至少先让 3 条**控制面**的有可见出口（`auto_route_settle_worker` 已做、
+   `today_success_probe` 与 `diagnostics_credential` 未做）。
+2. 修族分类器的 `id` 误触发（加表归属），可一次性消掉 4+2 条假论证。
+3. 修 `discovery/discovery.go` 的控制面登记表过期，并**给该门加一条
+   「`Gated` 必须与代码里的实际 S4 护栏对照」的断言**。
+4. `auto_route_settle_worker` 的**正确修法**（改读会话族）仍未做——
+   §9.35 只让它**可见**，没让它**正确**。
