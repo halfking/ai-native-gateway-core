@@ -796,7 +796,11 @@ files=(
 
   # 2026-10-02 s4-audit §9.46（816）：canonical 视图 client_ip 从 NULL
   # 补位改为 session 侧有源投影（§9.60.6.1 裁决更正落地；252 生产复测
-  # 826/826 同值）。CASE 守卫 ::inet 转换防畸形值打挂全读方；幂等。
+  # 826/826 同值）。【注释订正 R33 域A P3-1：本条原写「CASE 守卫 ::inet 转换
+  # 防畸形值打挂全读方」——已被同日 817（§9.64）证伪：字符类
+  # ^[0-9a-fA-F:.]+$ 放行 192.168.1/deadbeef 等合法字符集、非法语义值，
+  # ::inet 22P02 照打挂全读方；真守卫是 817 的 pg_input_is_valid，816 在
+  # 视图链上只是中间形态】幂等。
   # 三基线+installer 五点同步（816 又漏登本通道=探门红，本轮补齐）。
   "$ROOT_DIR/sql/migrations/startup/816_request_logs_view_client_ip_projection.sql"
 
