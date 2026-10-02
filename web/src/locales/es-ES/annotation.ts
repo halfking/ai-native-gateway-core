@@ -12,6 +12,8 @@ export default {
     endDate: 'Fecha de fin',
     taskType: 'Tipo de tarea original',
     model: 'Modelo',
+    modelPlaceholder: 'Todos los modelos',
+    modelTitle: 'Seleccionar modelo',
     humanTaskType: 'Tipo de tarea manual',
     minConfidence: 'Confianza mín.',
     maxConfidence: 'Confianza máx.',

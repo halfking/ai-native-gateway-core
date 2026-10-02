@@ -10,6 +10,9 @@
 // 2026-10-02 整合轮：本页成为 AutoRoutingOpsView 的「标注工作台」面板
 // （无页头 h2/页级 padding，工具栏紧凑化）；独立路由已 redirect 到
 // /routing-v2/auto-ops?tab=annotate。
+// 2026-10-03：模型筛选从原生 <select> 下拉换为站内标准控件 ModelPicker
+// （厂商分组选卡，与 DecisionsView/FormatAnomaliesView 同款）；模型候选
+// 由 ModelPicker 自取 available-models，本页不再单独拉 raw 列表。
 import { ref, computed, onMounted } from 'vue'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
@@ -24,13 +27,13 @@ import {
   type CorrectionImportSummary,
 } from '../api/taskProfile'
 import { L1_TASK_TYPES, listL1TaskTypes, type L1TaskTypeMeta } from '../api-work-types'
-import { getAvailableModelsRaw } from '../api/models'
 import { getUnifiedRequestDetail, type UnifiedRequestDetail } from '../api/requestDetail'
 import DataTable from '../components/ui/DataTable.vue'
 import PaginationBar from '../components/ui/PaginationBar.vue'
 import AppModal from '../components/ui/AppModal.vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import ModelPicker from '../components/ModelPicker.vue'
 import AnnotationForm from '../components/AnnotationForm.vue'
 
 const { t } = useI18n()
@@ -76,7 +79,6 @@ function onFilterDateRangeApply(range: KxDateRange) {
 
 // Option sources
 const taskTypeOptions = ref<{ key: string; label: string }[]>(L1_TASK_TYPES.map(x => ({ key: x.key, label: x.label })))
-const modelOptions = ref<string[]>([])
 
 async function loadOptions() {
   // Best-effort: keep the seed/static lists on failure.
@@ -86,9 +88,6 @@ async function loadOptions() {
       taskTypeOptions.value = r.items.map((x: L1TaskTypeMeta) => ({ key: x.key, label: `${x.icon ? x.icon + ' ' : ''}${x.label || x.key}` }))
     }
   } catch { /* seed list fallback */ }
-  try {
-    modelOptions.value = await getAvailableModelsRaw()
-  } catch { /* empty fallback */ }
 }
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size.value)))
@@ -364,11 +363,11 @@ onMounted(() => {
         </div>
         <div class="cf-field">
           <span class="cf-label">{{ t('annotation.filter.model') }}</span>
-          <select v-model="filterModel" class="cf-input">
-            <option value="">{{ t('annotation.filter.all') }}</option>
-            <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
-            <option v-if="filterModel && !modelOptions.includes(filterModel)" :value="filterModel">{{ filterModel }}</option>
-          </select>
+          <ModelPicker
+            v-model="filterModel"
+            :title="t('annotation.filter.modelTitle')"
+            :placeholder="t('annotation.filter.modelPlaceholder')"
+          />
         </div>
         <div class="cf-field">
           <span class="cf-label">{{ t('annotation.filter.humanTaskType') }}</span>
@@ -585,7 +584,6 @@ onMounted(() => {
         :sample="currentSample"
         :default-annotator="defaultAnnotator"
         :task-types="taskTypeOptions"
-        :models="modelOptions"
         @submit="handleAnnotationSubmit"
         @cancel="closeModal"
       />
