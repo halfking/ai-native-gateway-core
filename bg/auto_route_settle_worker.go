@@ -323,8 +323,8 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 // **(a) 不能改成读 710 视图 `request_logs_with_current_month`。**
 // 它不是 drop-in。真库 EXPLAIN 实测：settleBatch 这条 LEFT JOIN 的计划里，
 // 该视图的 v1 臂（citus 父表 request_logs）被展开成 **7 个叶子分区 Seq Scan**
-// （request_logs_2026_07 … request_logs_default）。本 worker 每 30 秒跑一次、
-// 每次 100 行，扛不住。
+// （request_logs_2026_07 … request_logs_default）。本 worker 每 5 分钟跑一次、
+// 每次 500 行（settleInterval/settleBatchSize），扛不住。
 // 注意：上面那段注释描述的 `invalid perminfoindex` 报错在这条查询上**没有复现**
 // —— 实测到的不是报错，而是**更坏的东西：计划**。一个「没报错但计划烂掉」的
 // 替代方案比报错那个更危险，因为它更容易被接受。
