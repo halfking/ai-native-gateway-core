@@ -3092,3 +3092,346 @@ go test ./bg/ ./deploy/prometheus/rules/ ./domains/hooks/observability/telemetry
 >    `domains/streaming` 的响应头读取点（§9.52 已说明这是「正确停靠点，非最优」）。
 >    需跨包导出；`executor_chat.go` 曾被并行会话大改，**先确认冲突窗口结束**。
 > ⑤ §9.44–§9.53 没有一条改变读源语义；真正切源的收口仍待 ③ 第一项。
+## 第三十五轮（§9.54）：252 生产库实测 —— **(a)/(b) 两个选项都被推翻**
+
+用户授权后经 `env-injector inject aliyun-edge-252` + SSH 只读查询 `pg-252-pg17`
+（全程只读 SELECT）。
+
+### 结论
+
+**§9.44 提的问题本身是错的。** 不是「cohort 换源族后不可比」，而是
+**cohort 在 v1 里就算错了总体**。
+
+### ★线上正在发生的缺陷（与切换无关）
+
+cohort 与已结算 selection 的 task_type 几乎不相交（**无 join，纯分组对比**）：
+
+| task_type | cohort 行数 | 30 天已结算 selection | |
+|---|---:|---:|---|
+| chat | **3** | 12,864 | p95 over 3 行不是分位数 |
+| creative | **0** | 4,985 | **NO_BASELINE** |
+| code | **10** | 3,501 | p95 over 10 行不是分位数 |
+| reasoning | **0** | 1,269 | **NO_BASELINE** |
+| planning | **0** | 4 | **NO_BASELINE** |
+| probe_triggered | **19,252** | **0** | cohort 的 99.95% 服务 0 条 |
+
+- **6,258 条已结算（29.3%）完全无基线** → latency/cost 走中性 0.5
+  （`auto_route_settle_worker.go:615/618`）。
+- **chat + code 共 16,365 条（76.6%）对着 n=3 / n=10 的「分位数」打分。**
+- `probe_triggered` 几乎撑满 cohort，却服务 0 条 selection，还把 §9.44 新加的
+  `llmgw_autoroute_settle_baseline_cohort_rows` 撑成一个**看起来健康**的数字。
+
+### 根因
+
+cohort 谓词 = `request_logs.is_auto_request IS TRUE` + `SQLExcludeSyntheticActors`；
+被结算总体 = `auto_route_selections` 里 `task_type` 非空的行。**两者词表几乎不重叠。**
+且 `SQLExcludeSyntheticActors`（`autoroute/shadow_actors.go:63-64`）**没有排除
+`node-probe-worker` / `probe-service`**，而 `middleware/origin_mw.go:404` 明确把
+`node-probe-worker` 映射到 `origin_stage = node_probe`
+——**合成探针流量被算进了奖励基线**。
+
+### (a)/(b) 的判定
+
+- **(a) 显式重新基线化**：不可行——会话族 7 天只有 **18** 条 auto 行。
+- **(b) 引入独立稳定 cohort**：不可行**且方向错**——它修「换源族不可比」，
+  而实测显示 cohort 在 v1 里就已经是错的总体。换源族修不好一个定义错的总体。
+
+⇒ **前置条件是一个此前从未出现在任何文档里的问题：cohort 的总体定义与被结算总体
+不对应。** 这是下一轮该做的第一件事。
+
+### ★我差点得出的第三个错误结论（取样假象）
+
+查「30 天已结算 selection 有多少能在 v1 找到同 `request_id`」得到 **21,367 : 15
+= 0.07%**，像灾难级丢失。**是假象**：252 上 `request_logs` **总共 32,987 行、
+全在 7 天内**（`ts > now()-30d` 的 count 等于全表 ⇒ 无分区历史）。
+两侧都取 7 天重做：21 条已结算、15 命中（71%），**仍有 6 条（29%）缺失**
+——这个 29% 需独立复核，本轮**未做完，不给结论**。
+
+⇒ 「99.93% 丢失」不能写进任何结论。这是「**没查到 = 不存在**」的第三次变体，
+只是这次发生在**时间窗口**而非文件范围上。
+
+### 附带实测（可能对别的审计有用）
+
+- v1 auto 22,406 行 / 7 天；`origin_stage`：`node_probe` 19,252 / `business` 3,154。
+- 跨族按 `request_id`（hot ∪ parent）：v1 auto 行只有 **15** 条在会话族，且全是 business。
+  ⇒ **99.5% 的业务 auto 流量根本没进会话族。**
+- 业务 auto 行的 `task_type`：**3,139 / 3,154 是 NULL**，只有 `code` 10 / `chat` 3 /
+  `long_context` 2。⇒ 它们在 cohort 里全落进 `<null>` 桶，而不是 `chat`/`code`。
+- 近 7 天未结算 selection：**0 条**（settle worker 当前无事可做）。
+- 指纹：`system_fingerprint` 在 252 上同样需要复核（§9.51 的结论来自本地库，
+  **不能外推到 252**）——这是下一轮该补的。
+
+### 测试
+
+本轮**无代码改动**（取证轮），故无测试。
+
+### 下一轮提示词
+
+> §9.54 上 252 实测，**推翻了 §9.44 的 (a)/(b) 两个选项**：不是「cohort 换源族不可比」，
+> 而是 **cohort 在 v1 里就算错了总体**。线上正在发生：
+> `creative`(4,985) / `reasoning`(1,269) / `planning`(4) 共 **29.3% 的已结算 selection
+> 完全无基线**（走中性 0.5）；`chat`(12,864) / `code`(3,501) 共 **76.6% 拿着 n=3 / n=10
+> 的「分位数」打分**；而 `probe_triggered` 贡献 cohort 的 **99.95% 行数却服务 0 条结算**。
+>
+> ① **下一轮该做的第一件事**（此前从未出现在任何文档里）：
+>    **让 cohort 的总体与被结算总体对应**。候选做法（需要你拍板）：
+>    (i) cohort 改从 `auto_route_selections` 的历史导出（与结算同源，最贴切）；
+>    (ii) 保留 `request_logs` 但把 `SQLExcludeSyntheticActors` 换成
+>         `origin_stage = 'business'`（消除 `node-probe-worker` 污染）——
+>         注意这是**行为变更**，会改线上奖励数值；
+>    (iii) 两者都做。**在此之前不要碰 (a)/(b)。**
+> ② **必须补的量具缺口**：`llmgw_autoroute_settle_baseline_cohort_rows` 是**全局**计数，
+>    在本次这个形态下（cohort 非空 19,252、但 29.3% 结算无基线）它**不会响**。
+>    需要**按 task_type 的覆盖率**指标 + 告警（无基线的结算数 / 结算总数）。
+>    这就是 §9.44 那条「cohort 归零」告警的盲区——它只测全局，不测分布。
+> ③ **待复核**（本轮没做完，不许当结论用）：7 天匹配窗口内 6/21 = **29%** 的已结算
+>    selection 在 v1 里找不到对应行。需确认是保留期问题还是真丢失。
+> ④ **需复核**：§9.51「上游从不发 `X-System-Fingerprint`」是**本地库**结论，
+>    **不能外推到 252**。252 上必须重测，否则那条告警的诊断在生产上是错的。
+> ⑤ 其余遗留未变：§9.49.8 `silently_degraded_content` 是否扩档；§9.48
+>    `silently_frozen` 21 条口径；§9.52 遗留的「arm 移到 domains/streaming」。
+
+---
+
+## 第三十六轮（§9.55）：252 补测 —— 订正 §9.54.2，并确认 §9.51 在生产成立
+
+用户授权的 252 只读测量，本轮补完我自己在 §9.54 里标为「未做完、不给结论」的两项。
+
+### ① §9.51 在 252 成立（此前是本地库结论，不能外推）
+
+| 面 | 行数 | 指纹非空 | 覆盖 |
+|---|---:|---:|---|
+| `request_logs`（v1） | 32,987 | **0** | 全表仅 7 天 |
+| `session_turns` | **804,096** | **0** | **全时段** |
+| integrity JSONB | 3,829 | **0** | 09-07 → 10-02 |
+
+⇒ 告警文案「上游从不发指纹」的诊断**在生产上是对的**。
+
+### ② §9.54.1 ②③ 成立，但方向和我写的相反
+
+- v1 `business` auto 行 3,154 → 会话族 **15**（0.48%）⇒ 「业务 auto 流量没进会话族」**站得住**。
+- 但近 7 天已结算 selection 21 条 → 会话族 **18（86%）**、v1 **15（71%）**。
+  逐条：15 条两族都有；3 条（09-29/09-30）**只在会话族**；3 条（09-25/09-26）
+  两族都没有、卡在 7 天窗口边缘。
+⇒ **会话族对结算行的覆盖比 v1 更好。** §9.54.4 的「29% 缺失」是
+「窗口边缘」+「拿 v1 当基准」两个 artifact 叠加，不是丢失。
+
+### ★③ 订正 §9.54.2：那些「已结算 selection」是**三周前的历史**
+
+`auto_route_selections` 日量：09-07 = 10,933、09-08 = 11,411，09-09…09-14 = **0**，
+09-15 起 0–120/天，**近两周半稳定在 0–14/天**。
+
+**已排除「分区被删」**：`2026_08/09/10/11/default` 分区**全部存在**，
+真实 `count(*) = 22,625`（最早 09-07、最晚 10-02）。⇒ **是没产出，不是被删。**
+
+⇒ **§9.54.2 那张「29.3% 已结算无基线」的表是跨期对照**，把当周 cohort 与
+三周前两天的 settlement 放在一起比——**不是当下正在发生的缺陷**。
+「cohort 词表与 settlement 词表几乎不重叠」这个静态事实仍成立，
+但含义变了：现在 auto 流量几乎全是探针，因为**真正的 auto 路由已两周半没产出 selection**。
+
+### 下一轮第一件事（本轮没查，也不猜）
+
+**为什么 auto-route 从 2026-09-15 起不再产出 selection。** 证据不足，
+任何归因都是编的。**这很可能才是 §9.44 整串问题的上游成因**：
+没有 selection ⇒ 没有需要基线的结算 ⇒ cohort 退化成一个纯探针统计量。
+
+### 方法论（本节最该带走的）
+
+**发现一次取样假象之后，必须把它当成一类错误去搜，而不是当成孤立事故修掉。**
+§9.54.4 我发现了「v1 只有 7 天保留期」这个假象，**却只怀疑了 v1 一侧**，
+没回头质疑「30 天 settlement vs 7 天 cohort」这个**时间轴错配**——
+它和前一个是同一类错误。三处 artifact（v1 保留期 / 窗口边缘行 / epoch 错配）
+必须一起找。
+
+### 推送状态
+
+`6841c90a8`（§9.54）+ 本节仍未推送：合并被并行会话在
+`installer/cmd/llm-gw-installer/main.go`、`installer/internal/dbinit/runner.go`、
+`sql/schema/installed_startup_migrations.tsv` 的**未提交**改动挡住（mtime 22:52:33，
+在我上一轮报告时仍在被写）。**不 stash、不 restore、不代为提交别人的在途工作。**
+⚠️ 远端 `a0da9066d` 同时动了 6 个我的文件，且它也做了「指纹 §9.52 两载体同步」，
+合并时**不能盲目选 ours/theirs**，必须逐处看。
+
+---
+
+## 第三十七轮（§9.56）：查 auto-route 停止产出 —— 定位到当前状态，**归因未成立**
+
+### 能验的
+
+**机制 (ii)「写入侧丢弃」被排除。** 252 的 `/metrics`（`127.0.0.1:8780`）返回
+`llm_gateway_auto_selections_dropped_total 0`，而 `llm_gateway_auto_selections_total`
+**完全不出现**——它是带标签的 CounterVec，首次 Inc() 前不导出任何样本，缺席即
+「一次都没写过」。进程启动于 **2026-10-01 05:19:09**，已跑 1 天 17 小时。
+
+⇒ **当前是机制 (i)：决策器根本没产出 selection**，不是被丢弃。
+
+### 不能验的（本节不给 09-09 的归因）
+
+| 想要的证据 | 可得性 |
+|---|---|
+| 09-08/09-09 应用日志 | ❌ journal **最早只到 2026-10-02 16:22**（7 小时）。「batch insert failed 计数 0」覆盖不到出事那天，**不构成证据** |
+| `auto_selections_total` 历史值 | ❌ 252 **没有 Prometheus/Grafana**，无 TSDB |
+| 文件日志 | ❌ 只有 `resource_monitor.log` / `shutdown.log`，无覆盖 09-09 的应用日志 |
+
+**要定因需要**：覆盖 09-08/09-09 的应用日志，或 Prometheus 侧
+`llm_gateway_auto_selections_total` 的历史序列。在此之前任何「部署/开关/探针」
+的说法都是编的。
+
+### ★让这件事两周半没被发现的缺口
+
+**`llm_gateway_auto_selections_total` 没有任何告警。** §9.44 建的告警全管**读侧**，
+**产出侧「写入量归零」一直没有门**。这与 §9.37「没有告警读的指标是装饰」是
+**镜像形态**：这个指标**有生产者、有指标、无消费者**，于是它在监控上根本不存在。
+
+**本轮不落这个告警**：`deploy/prometheus/rules/` 正被并行会话 `a0da9066d` 改动，
+我的合并尚未解封 ⇒ 记账为下一轮第一件事。
+
+### 下一轮提示词（接第三十七轮）
+
+> ⚠️ **先解封合并**：`6841c90a8`(§9.54) / `0e2ea9e2f`(§9.55) / 本节 共 3 个
+> 我的提交 + 3 个并行会话提交仍未推送。阻塞在 `sql/schema/01-schema.sql`、
+> `sql/schema/installed_startup_migrations.tsv`、
+> `deploy/sql/schemas/baseline/01-schema.sql` 的**未提交**改动。
+> **不 stash、不 restore、不代为提交别人的在途工作。**
+> 解封后合并要逐处看，不能盲目 ours/theirs：远端 `a0da9066d` 也做了
+> 「指纹 §9.52 两载体同步」，和我的 §9.52 改同一批文件。
+>
+> ① **解封后立刻做**：给 `llm_gateway_auto_selections_total` 加
+>    「写入量归零」告警（带活动守卫，避免 worker 未启动时误报）。
+>    判据要求：必须能区分「selection 写入量为 0」与「指标未注册」——
+>    后者是 CounterVec 首次 Inc() 前不导出，**直接用 increase() 会得到 no-data 而非 0**。
+>    这是本条告警最容易踩的坑。
+> ② **§9.56 的 09-09 归因仍未成立**。若能拿到覆盖 09-08/09-09 的日志或
+>    Prometheus 历史序列，这是**最优先**的取证；在拿到之前不要写归因。
+> ③ 需要拍板的三项仍未变：§9.44 cohort（**注意：§9.54/§9.55 已表明 (a)/(b) 都不是
+>    杠杆，真正的前置是「cohort 总体 ≠ 被结算总体」**）、§9.49.8 是否扩档、
+>    §9.48 `silently_frozen` 21 条口径。
+
+## 第三十九轮（§9.57）：补上 auto-route **产出侧**的洞
+
+### 做了什么
+
+`llm_gateway_auto_selections_total` 此前**有生产者、有值、零消费者**——
+到 §9.56 为止所有告警都建在**读侧**。本轮补两条产出侧告警 + 3 道 Go 门 +
+6 个 promtool 场景。`selection_metrics.go` 注释里那句
+「dropped worth alerting on rather than merely graphing」此前**没有门兑现**。
+
+### ★核心：CounterVec 陷阱
+
+带标签的 CounterVec 在**首次 `Inc()` 之前不导出任何序列** ⇒
+`sum(increase(...)) == 0` 在「从未产出」时得到**空向量**，`empty == 0` 仍是
+空向量 ⇒ **告警永远不响**，而那正是它唯一要抓的场景。
+
+**这条断言不是靠注释声明的，是被 promtool 场景 A 证明的**：在真的没有该指标
+任何序列的输入下要求规则触发；要得到 1，表达式里必须有「把空转成 0」的那一项。
+
+### ★场景测试抓出规则本身的两个真缺陷（`check rules` 全无感）
+
+1. `and on()` 返回**左侧**标签集，左侧无标签 ⇒ 告警**丢 instance 归属**。
+2. 修成 `by (instance)` 后**仍丢 job** ⇒ 最终是 `by (job, instance)` +
+   `and on(job, instance)`。
+
+### ★我自己的 Go 门在修复面前误报了两次
+
+第一版门用 `Contains(expr, "or vector(0)")`。第二轮把表达式改成
+`or (0 * max by (job, instance) (up))`（**同一个作用**，还多保住了标签）后门红了。
+
+⇒ **门若钉死字面串，就会在一次修复面前误报。** 改成断言**机制**（正则）。
+
+**与 §9.52「门被反转」是同一模式的反面**：那次门在缺陷修好后红（**正确**），
+这次门在缺陷修好后仍红（**不正确**）。区别在于判据锚的是**字面串**还是**机制**。
+
+### 已知局限（已写进 yml，且有门守着「必须写下来」）
+
+1. 假设该部署在用 auto-route；完全不用 auto 路由的部署会**永久**报红。
+2. **252 上没有 Prometheus ⇒ 这组告警在 252 不生效**（适用 154 / 本地）。
+
+### 验证
+
+```
+promtool check rules  → SUCCESS: 2 rules found
+promtool test rules   → SUCCESS（6 场景）
+go test ./deploy/prometheus/rules/ -count=1 → ok
+变异 P1/P2/P3（promtool）+ N1/N2/N3（Go 门）全红，全部还原
+```
+
+### 下一轮提示词
+
+> ⚠️ **仍未推送**：本节 + §9.57 三个新文件，以及 §9.54/55/56 已上远端但
+> 本地 main 仍留着三个等价提交（见第三十八轮记录）。合并时需人工裁决，
+> **不要用 rebase**。
+>
+> ① §9.57 已补上 auto-route 产出侧的洞。**剩下的真实问题不是告警，是
+>    auto-route 为什么从 2026-09-15 起不产出 selection**（§9.56）——
+>    证据（覆盖 09-08/09-09 的日志 / Prometheus 历史序列）本轮不具备，
+>    **拿到之前不要写归因**。
+> ② 需要拍板的三项仍未变：§9.49.8 `silently_degraded_content` 是否扩档、
+>    §9.48 `silently_frozen` 21 条口径、以及 cohort 总体修正方案
+>    （(i) 从 `auto_route_selections` 历史导出 / (ii) `origin_stage='business'`
+>    取代手工 actor 名单（**会改线上奖励数值**）/ (iii) 两者都做）。
+> ③ §9.57.6 的两个局限里，「本部署是否启用 auto 路由」缺少配置位，
+>    导致不用 auto 路由的部署会永久报红。若要消除需新增部署级开关。
+
+## 第四十轮（§9.58）：★撤回 §9.54.3 的「停写前阻塞项」
+
+### 结论
+
+§9.54.3 写「99.5% 的业务 auto 流量根本没进会话族」，并列为停写前阻塞项。
+**前提是错的，撤回。**
+
+我当时用 `origin_stage = 'business'` 当「真实业务流量」的代理。252 实测：
+
+| origin_actor | origin_stage | 行数 |
+|---|---|---:|
+| `auto-summary-generator` | `business` | 1,924 |
+| `auto-title-generator` | `business` | 1,242 |
+| `<null>` | `business` | **15** |
+
+按 `task_type` 是否为空切分：**空 3,166 条 → 进会话族 0 条；
+非空 15 条 → 进会话族 15 条（100%）。**
+
+⇒ **真正的业务 auto 流量是 15 条，且 15 条全部进了会话族。**
+那 3,166 条是 auto 标题/摘要生成器，**被排除是正确的**（不是用户轮次）。
+
+⇒ **镜像行为完全正确，是我把内部生成器误认成业务流量。**
+
+### 根因：两份「内部 actor」名单互不相认
+
+`IsInternalAutoEntry`（telemetry 包）认 `auto-title-generator` /
+`auto-summary-generator`；而 `middleware/origin_mw.go` 的
+`trustedOriginOwners` / `systemOwnerFallbackStage` /
+`globalAuthStageActorPairs` **三个名单里这两串一次都没出现**
+⇒ origin 中间件把它们盖成 `stage=business`。
+
+⇒ **同一件事有两份真相源，其中一份漏了两个成员。**
+（同族：§9.45 的「三个真相源让门测不出差别」、
+`KeyRequestLogsWriteEnabled` 因「同一键被五处各写字面量」才被提成常量。）
+
+### 后果
+
+`origin_stage` 在 auto 总体上**不是**可靠的「是否内部」判据。任何用
+`origin_stage='business'` 筛选的查询（含 §9.54.2 的 cohort 分析）
+都会混进 3,166 条内部生成器。
+
+### 修法（需拍板，本轮不实施）
+
+(a) 把两个 actor 补进 origin 的系统 actor 名单 —— **会改历史行判定口径**；
+(b) 新增「是否内部」的单一判定函数，所有筛选方改用它 —— 不碰历史值；
+(c) 先只加门钉出差异 —— **会常红挂 CI**，应先裁决再落。
+
+### 下一轮提示词
+
+> ⚠️ **§9.54.3 的「99.5% 业务 auto 流量没进会话族 = 停写前阻塞项」已撤回**（§9.58）：
+> 那 3,154 条里 99.5% 是 `auto-title-generator`/`auto-summary-generator`，
+> 被排除出 `session_turns` 是**正确的**；真正业务 auto 只有 15 条，15 条全在会话族。
+> **会话族的镜像行为没有问题。**
+>
+> ① 需要拍板：三份 origin actor 名单与 `IsInternalAutoEntry` 的名单不一致
+>    （`auto-title-generator` / `auto-summary-generator` 缺失），选 (a)(b)(c) 哪条。
+>    在裁决前，**不要**再用 `origin_stage='business'` 当「真实业务」的判据。
+> ② 仍未查明：auto-route 自 2026-09-15 起不产出 selection 的原因（需覆盖
+>    09-08/09-09 的日志或 Prometheus 历史序列，现有环境不具备）。**不写归因。**
+> ③ 仍未拍板：cohort 总体修正方案 / §9.49.8 是否扩档 / §9.48
+>    `silently_frozen` 21 条口径。注意 §9.54.2 的 cohort 分析也受本节影响。
+> ④ 推送状态：§9.57 已上 origin/main（2e68487a8）；本地 main 仍有 3 个
+>    等价文档提交 + 并行会话 4 个提交，合并需人工裁决，**不要用 rebase**。

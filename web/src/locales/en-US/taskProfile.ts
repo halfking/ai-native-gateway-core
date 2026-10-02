@@ -1,16 +1,14 @@
 // taskProfile.ts — 任务档案页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: 'Task Profiles',
-    desc: 'AUTO task-type profiles: tier defaults, human-correction stats and tier suggestions (taskprofile plugin; apply writes tier config)',
     refresh: 'Refresh',
     refreshing: 'Refreshing…',
-    loading: 'Loading…',
     loadFailed: 'Failed to load',
+    noData: 'No profile data',
   registry: {
     version: 'Registry version',
-    schema: 'Schema version',
     types: 'Task types',
-    corrections: 'Corrected types',
+    correctedTotal: 'Corrections in window',
+    pendingSuggestions: 'Tier changes pending',
   },
   table: {
     taskType: 'Task type',

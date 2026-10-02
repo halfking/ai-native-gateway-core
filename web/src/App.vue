@@ -219,7 +219,7 @@ async function handleChangePasswordSuccess() {
       <div v-if="passwordSuccessMessage" class="main-banner">
         <div class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
       </div>
-      <section class="main-body">
+      <section class="main-body" :class="{ 'main-body--fill': route.meta.fillViewport }">
         <RouterView />
       </section>
     </main>
@@ -476,5 +476,13 @@ async function handleChangePasswordSuccess() {
     margin: 4px 0 0;
     gap: 8px 12px;
   }
+}
+
+/* fillViewport 路由（用量趋势等）铺满主区，不再套 24px 内边距。 */
+.main-body.main-body--fill {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 </style>

@@ -7267,3 +7267,593 @@ v1 那 1,938 条 auto 行的 `origin_actor` 分布：
 
 ⇒ **在拿到 ①–④ 之前，(a)/(b) 的选择不应被拍板。** 本地证据既不支持 (b)，
 也不足以支持 (a)。
+## §9.54 252 生产库实测：**§9.44 的 (a)/(b) 两个选项都不是正确的杠杆**
+
+经 `env-injector inject aliyun-edge-252` + SSH 只读查询 `pg-252-pg17`
+（用户授权；全程只读 SELECT）。**本节推翻 §9.44 提出的问题本身。**
+
+### §9.54.1 回答 §9.53.4 的四条
+
+**① v1 `is_auto_request` 分布（近 7 天，`request_logs` 全表）**
+
+| 值 | 行数 |
+|---|---:|
+| `TRUE` | 22,406 |
+| `NULL` | 10,581 |
+
+按 `origin_stage` 拆：`node_probe` **19,252** / `business` **3,154**。
+
+**② 会话族同谓词（近 7 天）**：`FALSE` 51,521 / **`TRUE` 18**。
+
+⇒ **(b)「引入独立稳定 cohort」判死**：会话族 7 天只有 18 条 auto 行，
+无法对任何 task_type 求 p95/p75。
+
+**③ 跨族重叠**（`request_id`，hot ∪ parent）：v1 的 22,406 条 auto 行里
+**15 条**在会话族；且这 15 条 `origin_stage = business`。
+⇒ 99.5% 的**业务** auto 流量根本没有进入会话族。
+
+**④ `origin_actor` 分布**：v1 auto 行为 `node-probe-worker` 19,221 /
+`auto-summary-generator` 1,924 / `auto-title-generator` 1,215 /
+`active-probe-worker` 31 / NULL 15。
+
+### §9.54.2 ★真正的缺陷：cohort 与 settlements 的 task_type 几乎**不相交**
+
+这一条**不需要 join**（纯 task_type 分组对比），因此没有取样假象风险：
+
+| task_type | cohort 行数 | 30 天已结算 selection | 判定 |
+|---|---:|---:|---|
+| `chat` | **3** | 12,864 | p95 over 3 行不是分位数 |
+| `creative` | **0** | 4,985 | **NO_BASELINE** |
+| `code` | **10** | 3,501 | p95 over 10 行不是分位数 |
+| `reasoning` | **0** | 1,269 | **NO_BASELINE** |
+| `planning` | **0** | 4 | **NO_BASELINE** |
+| `long_context` | 2 | 2 | |
+| `probe_triggered` | **19,252** | **0** | cohort 的 99.95% 服务 0 条 selection |
+
+⇒ **6,258 条已结算 selection（29.3%）完全没有基线**，其 latency/cost 两项按
+`auto_route_settle_worker.go:615/618` 走**中性 0.5**。
+⇒ `chat` / `code` 共 16,365 条（76.6%）被拿去和一个 n=3 / n=10 的「分位数」比较。
+⇒ `probe_triggered` 贡献了 cohort 的几乎全部行数、却服务 0 条 selection，
+同时把 §9.44 新加的 `llmgw_autoroute_settle_baseline_cohort_rows` 撑成一个
+**看起来健康**的数字。
+
+**这是线上正在发生的缺陷，与 v1→会话族的切换无关。**
+
+### §9.54.3 根因：cohort 的总体定义 ≠ 实际被结算的总体
+
+- cohort 谓词：`request_logs.is_auto_request IS TRUE` + `latency_ms IS NOT NULL`
+  + `SQLExcludeSyntheticActors`（排除 `goal-%` 与三个 `*generator`/`summary` actor）。
+- 被结算的总体：`auto_route_selections` 里 `task_type` 非空的行。
+
+这两者的 task_type 词表几乎不重叠。**`SQLExcludeSyntheticActors` 的排除名单里
+没有 `node-probe-worker` / `probe-service`**（`autoroute/shadow_actors.go:63-64`
+只列了 `goal-%` 与 `auto-title-generator` / `auto-summary-generator` /
+`session-summary`），而 `middleware/origin_mw.go:404` 明确把 `node-probe-worker`
+映射到 `origin_stage = node_probe`。⇒ **合成的探针流量被算进了奖励基线。**
+
+⇒ 正确顺序是：**先修 cohort 的总体定义**（改成从真正被结算的总体导出，
+或用 `origin_stage = 'business'` 取代手工 actor 名单），**然后**才谈它存在哪个存储族。
+换源族修不好一个定义错的总体。
+
+### §9.54.4 我在 252 上差点得出的第三个错误结论（记下来）
+
+按「30 天已结算 selection 有多少能在 v1 找到同 `request_id`」这条查，得到的数是
+**21,367 里只有 15 条命中（0.07%）**——看起来像个灾难级的丢失。
+
+**它是取样假象**：252 上 `request_logs` **总共只有 32,987 行，且全部落在 7 天内**
+（`count(*) where ts > now()-30d` 与全表相等 ⇒ 无分区历史）。30 天窗口里的绝大多数
+selection 本来就落在 v1 的覆盖范围之外。换成两侧都取 7 天窗口重做：
+21 条已结算、15 条命中（71%），**仍有 6 条（29%）在 v1 里找不到**。
+
+⇒ 「99.93% 丢失」**不能写进任何结论**。真实数字是「7 天匹配窗口内 6/21 = 29% 缺失」，
+而且这个 29% 还需要独立复核（本轮未做完，不在这里给结论）。
+
+⇒ 与 §9.53 同一个错误的第三次变体：**「没查到」被当成「不存在」**，
+只是这次发生在**时间窗口**而不是文件范围上。
+**取样方向必须先问清楚，再看数字。**
+
+### §9.54.5 结论：§9.44 的问题被推翻
+
+| 选项 | 判定 |
+|---|---|
+| (a) 显式重新基线化 | **不可行**——会话族 7 天只有 18 条 auto 行 |
+| (b) 引入独立稳定 cohort | **不可行且方向错**——它修的是「cohort 换源族不可比」，而实测显示 cohort 在 **v1 里就已经是错的总体**（29.3% 的结算无基线、76.6% 对着 n=3/n=10 比、99.95% 的行服务 0 条结算） |
+
+⇒ **两者都不是杠杆。** 前置条件是一个本轮之前从未出现在任何文档里的问题：
+**cohort 的总体定义与被结算总体不对应。**
+
+---
+
+## §9.55 补测 252：订正 §9.54.2，并确认 §9.51 在生产上成立
+
+本节做两件事：① 复核我自己在 §9.54 里标为「未做完、不给结论」的那两项；
+② 核实 §9.51（本地库结论）能否外推到 252。**其中 ① 推翻了我自己刚写的 §9.54.2。**
+
+### §9.55.1 §9.51 在 252 上**成立**（三条独立路）
+
+| 面 | 行数 | `system_fingerprint` 非空 | 覆盖时段 |
+|---|---:|---:|---|
+| `request_logs`（v1） | 32,987 | **0** | 全表仅 7 天 |
+| `session_turns`（会话族） | **804,096** | **0** | **全时段** |
+| `model_integrity_events.context` JSONB | 3,829 | **0** | 2026-09-07 → 10-02 |
+
+⇒ 告警文案里「上游从不返回 `X-System-Fingerprint`」这个诊断在**生产上是对的**。
+会话族那 80.4 万行是唯一有完整历史的那张表，它同样全空。
+
+### §9.55.2 §9.54.1 的 ② ③ **经复核成立**（这次用干净口径）
+
+| 量（近 7 天） | 行数 | 在会话族 |
+|---|---:|---:|
+| v1 `origin_stage='business'` 的 auto 行 | 3,154 | **15**（0.48%） |
+| v1 `origin_stage='node_probe'` 的 auto 行 | 19,252 | **0**（探针本就没有会话键，符合预期） |
+| 近 7 天已结算 selection | 21 | **18**（86%） |
+
+⇒ 「业务 auto 流量 99.5% 没进会话族」**不是取样假象**，§9.54.1 ③ 站得住。
+
+**但同时出现一个反向事实**：结算侧会话族覆盖（86%）**高于** v1（71%）。
+逐条看那 21 条：15 条两族都有；3 条（09-29/09-30）**只在会话族**、不在 v1；
+3 条（09-25/09-26）在两族都没有——它们正好卡在 7 天窗口的边缘。
+
+⇒ §9.54.4 说的「29% 缺失」既不是丢失也不是缺陷，**是窗口边缘 + 拿 v1 当基准**两个
+artifact 叠加。真实陈述是：**会话族对结算行的覆盖比 v1 更好。**
+
+### §9.55.3 ★订正 §9.54.2：那些「已结算 selection」是**三周前的历史**
+
+`auto_route_selections` 近 30 天逐日量：
+
+| 日期 | 量 | | 日期 | 量 |
+|---|---:|---|---|---:|
+| 2026-09-07 | 10,933 | | 2026-09-20 | 8 |
+| 2026-09-08 | 11,411 | | 2026-09-25 | 1 |
+| 09-09 … 09-14 | **0** | | 2026-09-26 | 2 |
+| 2026-09-15 | 9 | | 2026-09-29 | 1 |
+| 2026-09-16 | 120 | | 2026-09-30 | 2 |
+| 2026-09-17 | 120 | | 2026-10-01 | 14 |
+| 2026-09-18 | 3 | | 2026-10-02 | 1 |
+| 2026-09-19 | **0** | | | |
+
+⇒ **auto-route 的 selection 产出在 2026-09-15 前后塌掉了**：
+从约 11,000/天降到 0–14/天，已稳定近零 **两周半**。
+
+**排除「分区被删」这个解释**：`auto_route_selections` 的分区
+`2026_08` / `2026_09` / `2026_10` / `2026_11` / `default` **全部存在**；
+真实 `count(*) = 22,625`，最早 09-07、最晚 10-02。
+⇒ 是**没产出**，不是**被删掉**。
+
+**这推翻 §9.54.2 的框架**：那张「29.3% 的已结算 selection 无基线」的表，
+把**当周**的 cohort 与**三周前两天**的 settlement 放在一起比。
+两批东西不在同一个时间轴上，因此它**不是一个当下正在发生的缺陷**，
+而是一张**跨期的静态对照**。（task_type 层面的「cohort 词表与 settlement 词表
+几乎不重叠」这个事实本身仍然成立，但它的现实含义变了：
+现在的 auto 流量几乎全是探针，因为**真正的 auto 路由已经两周半没产出 selection**。）
+
+### §9.55.4 我没有查、也不猜的一件事
+
+**为什么 auto-route 从 09-15 起不再产出 selection**，本轮**没有查**。
+可能是探针/部署/开关/决策器异常，证据不足，任何归因都是编的。
+**这应当是下一轮的第一件事**，而且它很可能才是 §9.44 整串问题的上游成因：
+没有 selection ⇒ 没有需要基线的结算 ⇒ cohort 退化成一个纯探针的统计量。
+
+### §9.55.5 这一节的方法论：一次自我订正的完整链条
+
+1. §9.54.2 用「30 天 settlements vs 7 天 cohort」下了「线上正在发生」的结论；
+2. §9.54.4 我自己发现了同类的取样假象，**却只怀疑了 v1 一侧**，
+   没有回头质疑「30 天 vs 7 天」这个时间轴错配；
+3. §9.55.3 逐日量一出来，错配直接可见（两个 epoch 差三周）。
+
+⇒ **发现一次取样假象之后，必须把它当成一类错误去搜，而不是当成一个孤立事故修掉。**
+本节三处（v1 的 7 天保留期、窗口边缘行、30d-vs-7d epoch 错配）都出自同一类。
+
+---
+
+## §9.64 我自己的 816 守卫是个**假守卫**：字符类合法 ≠ 能被 `::inet` 接受
+
+本节是一次**对自己上一轮结论的推翻**。被推翻的是 §9.61.1 那张「守卫行为表」，
+以及它蕴含的「816 的守卫已覆盖畸形值」这个判断。
+
+### §9.64.1 缺陷：真库复现，不是推断
+
+816 给 `client_ip` 投影装的守卫是：
+
+```sql
+(CASE WHEN t.client_ip ~ '^[0-9a-fA-F:.]+$' THEN t.client_ip::inet END)
+```
+
+它**只挡得住非字符集的垃圾**。下面这批值**全部由合法字符集组成**，因此全部通过
+这个正则，然后全部死在 `::inet` 上：
+
+| 值 | 为什么字符类合法 | 为什么语义非法 |
+|---|---|---|
+| `192.168.1` | 只有数字和点 | IPv4 要 4 段 |
+| `deadbeef` | 只有 hex 字符 | 不是点分四段 |
+| `1.2.3.4.5.6` | 只有数字和点 | 6 段 |
+| `:::` | 只有冒号 | 无任何地址 |
+| `...` | 只有点 | 纯点 |
+| `999.1.1.1` | 只有数字和点 | 段值 > 255 |
+
+本机 `llm_gateway`（PG 17.10）实跑复现：往 `session_turns` 插一行
+`client_ip='192.168.1'`，再读 `public.request_logs_with_current_month`：
+
+```
+ERROR:  invalid input syntax for type inet: "192.168.1"
+```
+
+**整条查询中止**，不是那一行落 NULL。`request_logs_with_current_month` 的每一个
+读方都会挂——而 816 的注释恰恰写着「守卫把畸形值落 NULL 而不是报错」。
+
+> 这不是「理论上的防御不足」，是**一行数据就能让整条 canonical 视图不可读**。
+> 攻击面是现成的：`client_ip` 来自 `X-Real-IP` 之类的**客户端可自由填写的头**。
+
+### §9.64.2 我上一轮为什么没看出来
+
+§9.61.1 的那张表列了三个「坏值」：`garbage`、`1.2.3.4, 5.6.7.8`（多跳 XFF）、
+`''`。它们**全部字符类非法**——`garbage` 含 `g/r/b`、多跳链含逗号、空串长度不足。
+
+⇒ 那张表准确地回答了「非字符集垃圾会被挡住吗」，而我把它读成了「畸形值会被挡住吗」。
+**样本是我挑的，挑选标准恰好是「我能过的那一类」。**
+
+这不是偶然失误，是一类可复发的错误：**行为表的分母是它列过的那几行，不是它
+该覆盖的那一类。** 写行为表时必须先问「这一类里最难的那个是什么」，并**显式
+把最难的放进表里**。如果表里最难的输入是我随手编的、且我确认它能过，那这张表
+对更难的输入没有任何证明力。
+
+**附带一个更该记住的点**：`pg_input_is_valid` 这类**完整语义判据**本来就存在，
+手写正则近似它是一个可避免的选择。我当时写「守卫 CASE 与既有的
+`application_id ~ '^[0-9]+$'` 转换同款」——而那几列的数字列转 bigint，
+**字符类与语义恰好等价**（一串数字必然能转），所以那个写法在那里是对的，
+我把这个模式**平移**到了一个**两者不等价**的类型上。
+
+> **模式可以照抄，判据不能照抄。** 抄之前问一句：这个近似在目标类型上还成立吗？
+
+### §9.64.3 修法：换判据，不换结构
+
+- 守卫换成 `pg_input_is_valid(t.client_ip, 'inet')`（PG 16+；本仓一致跑 PG 17
+  ——`docker/`、`deploy/`、`scripts/` 里 40 处 pg17、13 处 `postgres:17-alpine`）。
+- **列序/列数仍是 118 → 118**：`client_ip` 换的是表达式，不是列。
+- **不修改已应用的 816**：816 已在本机应用并登记进 `schema_migrations`，改它会让
+  「已跑过」与「文件内容」分叉。新迁移是唯一诚实的做法 ⇒ **817**。
+
+真库实测同一批值（7 个语义非法 + 4 个语义合法，共 11 行）：
+
+| 形态 | 结果 |
+|---|---|
+| **816**（字符类） | `ERROR: invalid input syntax for type inet: "192.168.1"`，**整条查询中止** |
+| **817**（语义） | **11 行全部返回**；7 个非法值 → NULL，4 个合法值原值透传 |
+
+> **「修复了」不等于「数据没变盲」**：817 的表里刻意同时放了 4 个**合法**值。
+> 一道只测非法值的门，照样能被「守卫退化成一律落 NULL」骗过——那是 §9.18
+> 「修好了但变全盲」的同一形状。
+
+### §9.64.4 写方那道门不能替代读方这道门
+
+并行会话同日给 `middleware/origin_mw.go` 的 `resolveClientIP` 补了 `net.ParseIP`。
+两者**互补，不冲突**——但它**只保护新写入的行**：库里已有的值、以及任何别的
+写入方仍会流到读侧。**读侧的语义判据不能省。**
+
+这也是为什么「写方已加固」不能作为「读方可以不加固」的理由：两道门防的是
+**不同时点、不同来源**的同一类事故。
+
+### §9.64.5 我在写 817 时自己引入的回归（已修）
+
+第一版 817 把 816 的 view 链完整性守卫**窄化成了只查顶层视图**：
+
+```sql
+-- 816（正确）：三个视图都在
+IF to_regclass('..._without_customer_id') IS NULL
+   OR to_regclass('..._without_request_class_due_at') IS NULL
+   OR to_regclass('...request_logs_with_current_month') IS NULL THEN
+-- 817 第一版（错）：只剩顶层
+IF to_regclass('...request_logs_with_current_month') IS NULL THEN
+```
+
+而 817 的第二个 DO 块**仍然**直接 `regclass` 那两个 wrapper 视图并从其中一个取
+列清单 ⇒ 链不全时它崩在 `relation does not exist`。**那不是 no-op，是崩溃**
+（680 事故形态）。我为了「让代码更简洁」而收窄的守卫，恰好是防住这次崩溃的那道。
+
+同一轮还改掉三处：两处 `RAISE EXCEPTION 'migration 816: …'` 的复制粘贴、
+以及 `COMMENT ON VIEW` 仍描述 816 形态（回滚后视图里留着弱守卫，而注释说
+「带 CASE 守卫的 text→inet」——**注释与实际形态分叉**）。
+
+down 侧另有一个更隐蔽的：第一个 DO 块在链不全时 `NOTICE + RETURN`（**没回滚任何
+东西**），而 `DELETE FROM schema_migrations WHERE version='817'` 是**无条件**的
+⇒ 会删掉 ledger 行，声称「817 没跑过」，而视图里还装着 817 的守卫。已改成
+**只在真的回滚了时才删**。
+
+### §9.64.6 门：静态 3 道 + 行为 1 道，变异 4/4
+
+| 门 | 守什么 |
+|---|---|
+| `TestMigration817UsesSemanticClientIPGuard` | 守卫是 `pg_input_is_valid`；**字符类守卫必须消失**；列序/118 列不变 |
+| `TestMigration817KeepsViewChainGuard` | 三个视图都在链守卫里（**守住 §9.64.5 的回归**），up 与 down 都要 |
+| `TestMigration817DownRevertsWithWeaknessWarning` | down 退回弱形态**且带着「这是已知弱形态」的警告**；ledger 只在真回滚时删 |
+| `TestMigration817HostileClientIPValuesDoNotBreakCanonicalView` | 敌意值真插真读，**带反向证据** |
+
+**变异 4/4，全部为断言命中（非崩溃、非编译失败）**：
+
+| 变异 | 命中 |
+|---|---|
+| M1 迁移 proj 退回字符类守卫 | `migration_817_test.go:84 / :101 / :121`（三条，红因互不相同） |
+| M2 链守卫窄化为只查顶层 | `TestMigration817KeepsViewChainGuard`（缺两个 wrapper 视图） |
+| M3 Go 镜像体退回字符类守卫 | `view_schema_v2_contract_test.go:430 / :441 / :518` |
+| M4 **只改迁移文件**、不碰 Go | `TestRequestLogsViewV2EnsureMatchesMigration:518` |
+
+M4 值得单独说：它验证了闭环的**方向性**。`registeredProjectionAppends` 那道门
+只比「Go 投影 ↔ 手写登记表」，**不读迁移文件**——我若同改两处就会一直绿。
+真正抓住 M4 的是真库那道：它**在 scratch 库上重放真实迁移文件**，与 Go `ensure`
+的产物逐字节比对。
+
+> **两道门各管一段，缺一段就有个方向是盲的**：登记表那道管「Go ↔ 表」，
+> 真库那道管「Go ↔ 迁移文件」。只有它们同时在，锁步漂移才逃不掉。
+
+### §9.64.7 行为门的反向证据
+
+敌意值行为门若只有正向（817 形态下读到 11 行），它可能是个**恒过的空门**——
+一个恒过的门比没有门更坏，因为它让人以为这个洞被守着。
+
+⇒ 门内在**同一事务里**跑 817 down 换回弱形态，断言**同一批输入必须报错**，
+然后整体 `ROLLBACK`：
+
+- 剥掉 down 文件最外层 `BEGIN;/COMMIT;` 再执行（内层 `COMMIT` 会提交掉外层
+  事务 ⇒ 「回滚」根本不发生，测试把真库留在弱形态而报告是绿的）；
+- **对剥离结果断言**（必须恰好一层 BEGIN/COMMIT，否则 `t.Fatalf`）——结构变了
+  就宁可测试红，也不要让事务保护悄悄消失。
+
+实测：反向证据成立，报的正是 `invalid input syntax for type inet`。测试跑完后
+复核真库视图仍是 817 形态、敌意行残留 0。
+
+### §9.64.8 这一节没有做的
+
+- **没有回滚 816**：它已应用，改它会造成「已跑过」与「文件内容」分叉。
+- **没有动写方**：`net.ParseIP` 由并行会话落地（§9.64.4 说明它不能替代读侧）。
+- **没有给 817 加幂等的「跳过重建」**：up 的第一个 DO 块在已是 817 形态时
+  `NOTICE + RETURN`，但**第二个重建块仍会执行**（`CREATE OR REPLACE VIEW` 是
+  幂等的、结果逐字节相同，代价是一次取锁）。这是**沿用 816 的既有形态**，
+  不是本次引入的回归；改它属于重构，未做。
+
+---
+
+## §9.56 查「auto-route 为什么从 09-15 起不再产出 selection」：定位到当前状态，**归因未成立**
+
+§9.55.4 明确「不猜」。本节把能验的验了，并把验不出来的部分连同**为什么验不出来**一起记账。
+
+### §9.56.1 写入链（代码侧）
+
+`domains/streaming/auto_route.go:666` `recordAutoSelectionFromWire` →
+`telemetry.WriteAutoSelection`（`selection_writer.go:140`，异步入队，**队列满即丢弃**）
+→ 批量 `INSERT INTO auto_route_selections_hot`（`:321`，38 列）。
+失败时 `:221-225` 整批计入 `dropped` 并打 `WARN auto_route_selections batch insert failed`。
+
+⇒ 存在**两条**能造成「产出归零」的机制：
+ (i) 决策器不再产生 selection（上游没有 auto 流量/开关关了）；
+ (ii) 产生了但在写入侧被丢弃（队列满 / 批量 INSERT 失败）。
+
+### §9.56.2 机制 (ii) 被**排除**（当前进程内证据）
+
+252 上 `llm-gateway-go` 监听 `127.0.0.1:8780`（systemd `llmgo-252-dev.service`）。
+该 `/metrics` 端点当前返回：
+
+```
+llm_gateway_auto_selections_dropped_total 0
+```
+
+且 **`llm_gateway_auto_selections_total` 完全不出现**。它是带标签的 CounterVec
+（`task_type` / `affinity_applied` / `explore`），Prometheus 约定下**首次 Inc() 之前
+不会导出任何样本**——它缺席即意味着**一次都没有被写过**。
+
+进程启动于 **2026-10-01 05:19:09**（`ps -o lstart=`），已连续运行 1 天 17 小时。
+⇒ **当前：一条 selection 都没写出，且丢弃数为 0。**
+⇒ 机制 (ii) 不成立；**是机制 (i)：决策器根本没有产出 selection。**
+
+### §9.56.3 但 09-09 那一刻的归因**验不出来**，原因是证据不存在
+
+| 想要的证据 | 实际可得性 |
+|---|---|
+| 09-08/09-09 的应用日志 | ❌ journal **最早只到 2026-10-02 16:22**（约 7 小时）。`batch insert failed` 计数为 0 ——**但它覆盖不到出事那天，所以不构成任何证据** |
+| `auto_selections_total` 的历史值 | ❌ 252 上**没有 Prometheus / Grafana 容器**，无 TSDB 保留 |
+| 文件日志 | ❌ `/opt/llm-gateway-go/logs/` 只有 `resource_monitor.log` 与 `shutdown.log`，无覆盖 09-09 的应用日志 |
+
+⇒ **本节不给 09-09 的归因。** §9.55.3 确立的事实（09-07/08 各约 1.1 万，
+09-09 起归零）**仍然只有现象、没有原因**。
+
+**要定因需要**（本轮不具备）：覆盖 09-08/09-09 的应用日志，或 Prometheus 侧的
+`llm_gateway_auto_selections_total` 历史序列。在此之前，任何「因为部署/开关/探针」
+的说法都是编的。
+
+### §9.56.4 ★一个让这件事两周半没被发现的缺口
+
+`llm_gateway_auto_selections_total` **没有任何告警**。§9.44 建的
+`BgFingerprintDrift*`、`AutoRouteSettle*` 全都只管**读侧**；
+**产出侧「selection 写入量归零」一直没有门**。
+
+⇒ 一个 2.5 周的产出中断，只有在有人去数 `auto_route_selections` 的日分布时
+才被发现——而那个数只有专门去查才会看。
+
+⇒ 这与 §9.37「没有告警读的指标是装饰」是**镜像形态**：
+这里的 `llm_gateway_auto_selections_total` **有生产者、有指标、无消费者**，
+于是它在监控上**根本不存在**。
+
+**本轮不落这个告警**：`deploy/prometheus/rules/` 正被并行会话的
+`a0da9066d` 改动（它新增了 `auto-route-settle-baseline_test.yml` 的 promtool
+6 场景），而我的合并尚未解封。此时再动同一批文件只会把冲突面扩大。
+⇒ 记账为下一轮的**第一件事**，并在此处写明判据要求（见 handoff）。
+
+## §9.57 补上产出侧的洞：auto-route selection 写入量归零告警
+
+§9.56.4 记账的「下一轮第一件事」。本轮做完了。
+
+### §9.57.1 补的是一个**产出侧**的洞
+
+到 §9.56 为止，全部告警都建在**读侧**（结算、基线、漂移）。产出侧
+「selection 写入量归零」一直没有门——而 `llm_gateway_auto_selections_total`
+**有生产者、有值、零消费者**。这与 §9.37「没有告警读的指标是装饰」是
+**镜像形态**：不是指标没有用，是它在监控上根本不存在。
+
+`selection_metrics.go:14-16` 的注释写着 dropped 计数
+「**worth alerting on rather than merely graphing**」——**注释里声称的保护，
+如果没有门兑现它，那条注释就是装饰**。两个指标此前都无告警消费。
+
+### §9.57.2 ★核心：`or vector(0)` 不是可选的
+
+`llm_gateway_auto_selections_total` 是 **CounterVec**。Prometheus 约定下，
+带标签的 CounterVec 在**首次 `Inc()` 之前不导出任何时间序列**。
+
+于是最自然的写法会**静默失效**：
+
+```promql
+sum(increase(llm_gateway_auto_selections_total[2h])) == 0
+```
+
+永不产生 selection 时，左边求和得到的是**空向量**（不是 0）；空向量 `== 0`
+仍是空向量；空向量不满足任何 alert 的触发条件 ⇒ **告警永远不响**，
+而那恰恰是它唯一要抓的场景（§9.56 在 252 观测到的正是「一条序列都没有」）。
+
+⇒ 这条断言**没有靠注释声明，而是被 promtool 场景测试证明**：
+场景 A 在「真的没有该指标任何序列」的输入下要求这条规则**触发**。
+要在一个空向量上得到 1，表达式里必须存在把空转成 0 的项。
+
+### §9.57.3 场景测试抓出了规则本身的**两个真缺陷**（`check rules` 全都无感）
+
+1. **告警丢掉实例归属。** 表达式原为
+   `sum(...) or vector(0) == 0 and on() (up == 1)`。`and on()` 返回**左侧**的
+   标签集，而左侧无标签 ⇒ 告警不带 `instance`，多实例部署里无法定位是哪台网关。
+   `promtool check rules` **不报错**（语法完全合法）。
+2. **修完第 1 条后仍丢 `job`。** 改用 `sum by (instance)` + `0 * max by (instance)`
+   保住了 instance，却因为聚合维度里没有 `job` 而把它消掉。
+   最终形态是 `by (job, instance)` + `and on(job, instance)`。
+
+⇒ 只有场景测试的 `exp_labels` 比对能发现这类缺陷。这与 §9.44 那次
+「注释里承诺的原则而代码没兑现」是同一类：**语法合法 ≠ 语义正确**。
+
+### §9.57.4 我自己的 Go 门在**修复面前误报了两次**
+
+`TestAutoRouteSelectionNotProducedHandlesTheCounterVecTrap` 第一版断言
+`strings.Contains(expr, "or vector(0)")`。第二轮把表达式改成
+`or (0 * max by (job, instance) (up{...}))` 之后门红了——但那一项起的是
+**同一个作用**（无序列的实例得到 0），而且额外保住了标签。
+
+⇒ **门若钉死字面串，就会在一次修复面前误报。** 改成断言**机制**
+（正则匹配「把空变成 0 的那一项」与 `sum by (job, instance)`）。
+`up == 1` 那条同理：从字面串改成正则。
+
+**这与 §9.52 的「门被反转过一次」是同一个模式的反面**：那次是门在
+**缺陷被修好后**才红（正确），这次是门在**缺陷被修好后**仍然红（不正确）。
+区别在于判据锚的是**字面串**还是**机制**。
+
+### §9.57.5 交付物
+
+| 文件 | 内容 |
+|---|---|
+| `deploy/prometheus/rules/auto-route-selection-output.yml`（新） | 2 条告警 + `runbook` + 已知局限 |
+| `deploy/prometheus/rules/auto_route_selection_output_test.go`（新） | 3 道 Go 门 |
+| `deploy/prometheus/rule_tests/auto-route-selection-output_test.yml`（新） | 6 个 promtool 场景 |
+
+告警：
+- `AutoRouteSelectionsNotProduced`（warning, `for: 1h`）——2h 零增量且实例在线。
+  描述里要求值班的人**先分清两种含义**（该部署本就不用 auto 路由 vs 真断流）。
+- `AutoRouteSelectionsDropped`（warning, `for: 5m`）——30m 内 dropped 有增长。
+  队列满**不打日志**，只能由它发现。
+
+### §9.57.6 已知局限（如实登记，且有门守着「必须写下来」）
+
+1. **本告警假设该部署在用 auto-route。** 完全不用 `model="auto"` 的部署会
+   **永久**报红。仓库里没有「本部署是否启用 auto 路由」的配置位可依赖 ⇒
+   用 warning + `for: 1h`，并在描述第一条就要求排除这个假阳性。
+   要彻底消除需要新增部署级开关，**本轮不做**。
+2. **252 上没有 Prometheus**（§9.56 实测：无 prometheus/grafana 容器）
+   ⇒ 这组告警在 252 **不会生效**，适用环境是有 TSDB 的部署（154 / 本地）。
+
+### §9.57.7 变异验证
+
+| 变异 | 结果 |
+|---|---|
+| P1 删掉「空转 0」那一项 | 红（场景 A）——**这句注释因此被证明** |
+| P2 去掉进程存活守卫 | 红（场景 E） |
+| P3 聚合维度退回 `by (instance)` | 红（标签比对）——第二轮修的缺陷 |
+| N1 删掉「空转 0」那一项 | 红（Go 门） |
+| N2 删掉进程存活守卫 | 红（Go 门） |
+| N3 删掉「已知局限」段 | 红（Go 门） |
+
+`promtool check rules` SUCCESS；`promtool test rules` 6 场景 SUCCESS。
+
+## §9.58 ★订正 §9.54.3：我把「内部生成器流量」当成了「业务 auto 流量」
+
+§9.54.3 写的是「99.5% 的业务 auto 流量根本没进会话族」，并把它列为停写前的
+阻塞项。本节用 252 实测证明**这个前提是错的**。
+
+### §9.58.1 我当时用的筛选条件
+
+§9.54/§9.55 用 `origin_stage = 'business'` 作为「真实业务流量」的代理，量出
+3,154 条 auto 行里只有 15 条在会话族。
+
+### §9.58.2 252 实测：这 3,154 条里 99.5% 是**内部生成器**
+
+| origin_actor | origin_stage | request_type | 行数 |
+|---|---|---|---:|
+| `auto-summary-generator` | `business` | `main` | 1,924 |
+| `auto-title-generator` | `business` | `main` | 1,242 |
+| `<null>` | `business` | `main` | **15** |
+
+按「`task_type` 是否为空」切分并各自看是否进会话族：
+
+| task_type 为空 | 行数 | 在会话族 |
+|---|---:|---:|
+| 是 | 3,166 | **0** |
+| 否 | **15** | **15（100%）** |
+
+auto 全量按 `origin_stage` × actor 是否属内部名单交叉：
+
+| origin_stage | actor 属内部名单 | 行数 |
+|---|---|---:|
+| `node_probe` | 否 | 19,408 |
+| `business` | **是** | 3,166 |
+| `business` | 否 | **15** |
+
+⇒ **真正的业务 auto 流量是 15 条，而且 15 条全部进了会话族。**
+那 3,166 条是 auto 标题/摘要生成器，**它们被排除出 `session_turns` 是正确的**
+（不是用户轮次）。
+
+⇒ **§9.54.3 的结论反了**：不是「业务 auto 流量没被镜像」，而是
+「镜像行为完全正确，是我把内部生成器误认成业务流量」。
+「99.5% 没进会话族」这个数字描述的是内部生成器，**它本就不该进去**。
+
+⇒ 顺带这也让 §9.54.2 的 cohort 故事更弱：v1 的 auto 总体是
+19,408 探针 + 3,166 内部生成器 + **15 真实业务**——**几乎全是合成流量**。
+
+### §9.58.3 根因：**两份「内部 actor」名单，互不相认**
+
+| 名单 | 位置 | 认不认 `auto-title-generator` / `auto-summary-generator` |
+|---|---|---|
+| `IsInternalAutoEntry` | `domains/hooks/observability/telemetry/internal_loopback.go:33-38` | **认**（按 actor 名 + `request_type`） |
+| `trustedOriginOwners` | `middleware/origin_mw.go:121-131` | **不认**（两串一次都没出现） |
+| `systemOwnerFallbackStage` | `middleware/origin_mw.go:401-406` | **不认** |
+| `globalAuthStageActorPairs` | `middleware/origin_mw.go:151-166` | **不认** |
+
+⇒ 这两个 actor 未登记为系统 actor ⇒ origin 中间件走普通路径，
+把它们的 `origin_stage` 盖成 **`business`**；
+而 `IsInternalAutoEntry` 按名字认出它们是内部 loopback，于是排除出 `session_turns`。
+
+⇒ **同一件事（「这个 actor 是不是内部生成器」）有两份真相源，其中一份漏了两个成员。**
+
+⚠️ 这不是新形态：§9.45 的 `sql_source_indirection_audit` 就撞过
+「三个真相源让门测不出差别」；`settings` 的 `KeyRequestLogsWriteEnabled`
+也是因为「同一个键被五处各写一遍字面量」才被提成常量。
+
+### §9.58.4 后果与修法（需要拍板，本轮不实施）
+
+**后果**：`origin_stage` 在 auto 总体上**不是**可靠的「是否内部」判据。
+任何用 `origin_stage = 'business'` 做筛选的查询（包括 §9.54.2 的
+cohort 分析、可能还有别的审计脚本）都会把 3,166 条内部生成器混进「业务」。
+
+**修法候选**：
+- (a) 把这两个 actor 补进 `trustedOriginOwners` / `globalAuthStageActorPairs`
+  ——改的是**既有行的判定口径**，会让 3,166 条历史行的 `origin_stage`
+  在重放时变成不同值（若有回填）。**属行为变更。**
+- (b) 不动 origin，新增一个「是否内部」的**单一判定函数**
+  （把 `IsInternalAutoEntry` 的 actor 名单与 origin 侧合并），
+  并让所有筛选方改用它。改动面更大但不碰历史值。
+- (c) 只加一道**门**把两份名单的差异钉出来并打印（默认红），
+  迫使后续裁决。**本轮不做**：一道常红的门会立刻挂 CI，
+  应当先有裁决再落门。
+
+⇒ 我**不代为裁决**。但 §9.54.3 那条「停写前阻塞项」必须**撤回**：
+它建立在一个已被证伪的前提上。

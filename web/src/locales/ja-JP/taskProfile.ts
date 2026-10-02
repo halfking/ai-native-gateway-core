@@ -1,16 +1,14 @@
 // taskProfile.ts — 任务档案页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: 'タスクプロファイル',
-    desc: 'AUTO タスクタイプのプロファイル：ティア既定値、人手修正統計とティア提案（taskprofile プラグイン、apply で tier 設定に書き込み）',
     refresh: '更新',
     refreshing: '更新中…',
-    loading: '読み込み中…',
     loadFailed: '読み込みに失敗しました',
+    noData: 'プロファイルデータなし',
   registry: {
     version: 'レジストリ版',
-    schema: 'スキーマ版',
     types: 'タスクタイプ数',
-    corrections: '修正されたタイプ数',
+    correctedTotal: '期間内の修正合計',
+    pendingSuggestions: '裁決待ち階層変更',
   },
   table: {
     taskType: 'タスクタイプ',

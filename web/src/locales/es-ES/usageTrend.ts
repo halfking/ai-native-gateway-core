@@ -12,4 +12,11 @@ export default {
   filterAll: 'Todos',
   shareByMetric: 'Cuota (métrica)',
   sourceDetail: 'Detalle de solicitudes',
+  // 2026-10-02 multiselección / borrar todo / actualización automática
+  clearAll: 'Borrar todo',
+  autoRefresh: 'Actualización auto',
+  autoRefreshOff: 'Desactivado',
+  autoRefresh30s: '30 s',
+  autoRefresh1m: '1 min',
+  autoRefresh5m: '5 min',
 }
