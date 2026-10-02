@@ -1048,3 +1048,100 @@ naive 才变正确。**这正是 `TestResolveRawModelsStillLeak` 那条 `t.Skip`
 - 真库不变式门在当前 main 重跑：**960/960 catalog models** 通过
   （`TEST_RESOLVE_INVARIANT_DB_URL` 指向本地 `llm-gateway-pg/llm_gateway`）。
   目录已从 changelog 记录的 958 滚到 960。
+
+## 2026-10-02 批判式审计第二轮：「门测的不是它声称测的那个东西，而且它绿着」
+
+上一节（遗留 #1 收口决策）靠**临时探针**取证，探针用完即删。本轮把结论
+固化成常驻门，过程中发现**三条更严重的问题**——全部由变异验证得出，不是推测。
+
+### 缺陷 A（严重）：真库门不覆盖 handler 接线，整条治理被摘掉时门全绿
+
+`TestResolveCandidatesInvariant_Live` 直接调用纯函数
+`filterResolveCandidatesByCid`，喂给它**门自己手写的一份 SQL**，从不经过
+`handleRoutingResolve`。它度量的是「纯函数 + 门手写 SQL」这条自洽闭环，
+**不是**「线上 handler 会过滤」。
+
+**变异验证**（删 handler 里的 `candidates = filterResolveCandidatesByCid(...)`，
+保留 `resolveInputCanonicalID` 调用与 `expectedCid` 赋值以便编译通过）：
+
+| 变异 | `go build ./...` | `go test ./admin/` 全包 |
+|---|---|---|
+| 删 filter 接线 | ✅ 通过 | **✅ 76.5s 全绿** |
+
+即：**2026-09-29 的整个污染治理被摘掉，仓库里没有任何东西会红。**
+上一轮报给你的「960/960 catalog models 通过」在这一点上是**空的**——
+它证明的是纯函数在门手写 SQL 上自洽，不是生产路径被修复。
+
+### 缺陷 B（严重）：门手写 SQL 与真 SQL 会漂移，且漂移不可见
+
+门内复刻了 handler 的三条 WHERE 匹配分支
+（`raw_model_name` / `standardized_name` / `canonical_name`）。
+**变异验证**：把**真 handler** 里的 `OR lower(mc.canonical_name) = ANY($1)`
+删掉（真 SQL 少一个匹配面，resolve 召回静默下降）——
+
+| 变异 | 门反应 |
+|---|---|
+| 删真 SQL 的 `canonical_name` 分支 | **✅ 依旧全绿** |
+
+两份 SQL 文本相同这件事**没有任何东西在守**。
+
+### 缺陷 C（中）：`routing_resolve_filter.go` 头注释描述了不存在的契约
+
+文件头写「`persistResolveProbe`：把 expected canonical_id 透传过去，过滤
+`decision_trace.planned_candidates`」。实测 `persistResolveProbe` 的签名是
+`(ctx, model, candidates)`，**根本不接收** `expectedCid`；过滤发生在
+**调用方**（`routing.go:549-554`）遍历 `candidates` 时。
+
+行为是对的（注释描述的**结果**确实发生），但**契约写在了错误的层**。
+照注释去改 `persistResolveProbe` 会以为过滤在它内部。已订正注释并写明
+过滤的真实位置。
+
+### 修复：新增 `admin/routing_resolve_wiring_test.go`（2 条 AST 门）
+
+| 门 | 覆盖 | 对应缺陷 |
+|---|---|---|
+| `TestHandleRoutingResolveWiresCanonicalFilter` | handler 仍调 `resolveInputCanonicalID`；`candidates` 仍由 `filterResolveCandidatesByCid` 重新赋值 | A |
+| `TestHandleRoutingResolveSQLMatchBranchesMatchTheLiveGate` | 真 SQL 三条匹配分支仍在（按 SQL 字面量文本判定，不做全文件正则） | B |
+
+判据用 **AST 节点身份**（哪个 CallExpr / 哪个 AssignStmt），不钉
+「函数体内第一个 X」——后者会在被测代码重构后静默改判。
+
+### 一个被自己推翻的门（记录以免复发）
+
+接线门第一版把判据写成「filter 调用必须在 `resolveInputCanonicalID` 的
+if-guard **内部**」。变异 4（把调用**提到 guard 之外**）时它转红了 ——
+但那个变异是**行为等价**的：`filterResolveCandidatesByCid` 在
+`expectedCid <= 0` 时本就 no-op，提出来毫无可观测差别。
+
+**假阳性打在了正确代码上**。判据因此放宽为「函数体内存在该重新赋值」，
+两种写法都绿，而删调用仍红。判别依据：门是否可观测地承重，
+而不是形态是否与写它时一致。
+
+### 变异矩阵（最终门，全部实测）
+
+| # | 变异 | 期望 | 实测 |
+|---|---|---|---|
+| 1 | 删 handler 的 filter 接线 | 红 | ✅ 红 |
+| 2 | `filterResolveCandidatesByCid` 改成恒等 | 红 | ✅ 红（原有真库门，1 模型即触发） |
+| 3 | 删真 SQL 的 `canonical_name` 分支 | 红 | ✅ 红（新增漂移门） |
+| 4 | filter 调用提到 guard 外（行为等价） | **绿** | ✅ 绿（第一版误红，已修） |
+| 5 | 连 `resolveInputCanonicalID` 一起删 | 红 | ✅ 红 |
+
+### 新门的已知边界（写明它**看不到**什么）
+
+- 只判「调用存在且形态正确」，**不判运行时 SQL 的结果**；结果仍由
+  `TestResolveCandidatesInvariant_Live` 负责，而那一条在 DSN 缺失时 skip。
+  **两道门互不替代**：这道门证明接线存在，那道门证明数据干净。
+- 看不见运行时 `strings.Join` / fmt 拼出来的 SQL 形状。
+- 缺陷 B 的门按 SQL 字面量文本判定；若将来 SQL 改用参数化拼装而非字面量，
+  它会报「找不到含 ANY($1) 的字面量」——这是**刻意让它转红**，
+  提示重新推导真库门那份副本，而不是默默失效。
+
+### 遗留（本轮未做）
+
+- 缺陷 A/B 的根因是**真库门与生产 SQL 各有一份**，靠文本比对只能防漂移、
+  不能防「真 SQL 加了门不知道的新污染源」。根治需要真库门直接跑
+  `handleRoutingResolve` 的真实查询（本轮未做：它要 DB + HTTP 夹具，
+  且会改变该门「不开 DSN 也能跑纯函数部分」的性质）。
+- `raw_models` 污染本身仍不收口（见上一节，结论不变）。
+- 浏览器人工验收仍未做（等 Browser session）。

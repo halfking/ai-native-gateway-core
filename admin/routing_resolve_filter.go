@@ -22,13 +22,24 @@ package admin
 //     拿"用户输入"对应的 canonical_id（不污染）。
 //   - filterResolveCandidatesByCid：candidates.canonical_id 必须等于输入
 //     canonical_id 或为 NULL（legacy 绑定未挂 canonical）。
-//   - persistResolveProbe：把 expected canonical_id 透传过去，过滤
-//     decision_trace.planned_candidates 不再写入污染凭据。
+//   - probe 路径的同款过滤在**调用方**（routing.go 的 persist_probe 分支）
+//     就地完成，不在本文件、也不在 persistResolveProbe 内部。
+//     2026-10-02 审计订正：本文件此前写的是「persistResolveProbe：把 expected
+//     canonical_id 透传过去，过滤 decision_trace.planned_candidates」。
+//     实测 persistResolveProbe 的签名是 (ctx, model, candidates)，**根本不接收**
+//     expectedCid，过滤发生在调用方遍历 candidates 时。行为是对的（注释描述的
+//     结果确实发生），但契约写在了错误的层 —— 照注释去改 persistResolveProbe
+//     会以为过滤在它里面。这是「注释里的理由也要核」的同型。
 //
 // 回归口径（见 docs/changelogs/2026-09-29-stream-pollution-and-universe-audit.md
 // "回归口径" 节）：修后 resolve("X") 的 candidates 集合中
 // 所有 candidate.canonical_id 都等于 resolve_input("X") 的 canonical_id
 // （或 NULL legacy）。
+//
+// 该不变式由 admin/routing_resolve_invariant_test.go（真库）+ 本文件下方的
+// 纯函数门覆盖；**接线本身**（handler 是否真的调用了过滤器、SQL 三条匹配分支
+// 是否还在）由 admin/routing_resolve_wiring_test.go 单独钉住。2026-10-02 审计
+// 证明：接线被整行删掉时，真库门与全包测试**全绿**。
 
 import (
 	"context"
