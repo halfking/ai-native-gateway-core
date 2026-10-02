@@ -394,6 +394,61 @@ type pendingSelection struct {
 	retryCount     *int
 }
 
+// retryCountPerRowSQL 返回「这一行贡献了多少次重试」的 SQL 表达式（≥0）。
+//
+// # 这里曾经有一个活的运行时错误（2026-10-02 审计 §9.41）
+//
+// 旧表达式是：
+//
+//	GREATEST(COALESCE(jsonb_array_length(r2.routing_attempts), 1) - 1, 0)
+//
+// 它假设 `routing_attempts` 是 JSON **数组**。它不是。写方
+// executors.RoutingAttemptsTracker.ToJSONBytes 产出的是
+//
+//	{"attempts": [ ... ]}
+//
+// —— 一个**对象**，数组包在 `attempts` 键下。于是
+// `jsonb_array_length` 对每一行非空值都抛
+// `ERROR: cannot get array length of a non-array`（PG 17.10 真库实测）。
+//
+// **失败范围不是一行，是整条查询**：LATERAL 在 settleBatch 的主查询里，
+// 一行抛错就中止整条语句 ⇒ 那一批最多 settleBatchSize(500) 条 selection
+// 全部不结算。调用方只 slog.Warn 后 return，而下一轮重查的是**同一批**
+// （ORDER BY ts LIMIT N WHERE settled_at IS NULL）⇒ 反复卡在同一处。
+//
+// 真库实测影响面（2026-09 分区，1747 条 selection）：564 条有 canonical_id
+// 的**全部**能匹配到行，其中 **460 条（81.6%）** 的匹配行带 routing_attempts
+// ⇒ 约 26% 的 selection 会毒化它所在的整个批次。
+//
+// 注意 executors/routing_tracker.go 的注释里也写着
+// `retry_count = jsonb_array_length(routing_attempts) - 1`——**那份注释与
+// 写方自己的输出矛盾**，是同一个错误的第二处化身，已一并订正。
+//
+// # 为什么同时保留 'array' 分支
+//
+// `array` 形态在真库 340,917 行里**从未出现过**（最早 2026-09-03 即为 object），
+// 所以这一支是防御性的、当前走不到。留着它是因为删掉它会让「万一历史数据或
+// 未来写方改回数组」的假想情形直接退化成 0 重试（静默错值），而多一个
+// CASE 分支的代价是零。
+//
+// 外层 `WHERE jsonb_typeof(...) = 'array'` 是必需的：`- > 'attempts'` 在
+// `{"attempts": "x"}` 这种畸形值上会返回非数组，再调 jsonb_array_length 依旧抛错。
+// 有了它，最坏情况退化成「这行算 0 次重试」而不是「整条查询中止」。
+func retryCountPerRowSQL(alias string) string {
+	col := "routing_attempts"
+	if alias != "" {
+		col = alias + ".routing_attempts"
+	}
+	return `GREATEST(COALESCE((
+	    SELECT jsonb_array_length(v.a) FROM (VALUES (
+	        CASE jsonb_typeof(` + col + `)
+	            WHEN 'array'  THEN ` + col + `
+	            WHEN 'object' THEN ` + col + ` -> 'attempts'
+	        END)) AS v(a)
+	    WHERE jsonb_typeof(v.a) = 'array'
+	), 1) - 1, 0)`
+}
+
 func (w *AutoRouteSettleWorker) settleBatch(
 	ctx context.Context,
 	baselines map[string]taskBaseline,
@@ -433,7 +488,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 			       ON ss.session_key = s.session_id
 			LEFT JOIN LATERAL (
 			       SELECT COUNT(*)::int AS model_reqs,
-			              SUM(GREATEST(COALESCE(jsonb_array_length(r2.routing_attempts), 1) - 1, 0))::int AS retry_count
+			              SUM(`+retryCountPerRowSQL("r2")+`)::int AS retry_count
 			       FROM request_logs_hot r2
 			       WHERE s.session_id IS NOT NULL
 			         AND r2.gw_session_id = s.session_id

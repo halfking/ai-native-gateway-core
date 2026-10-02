@@ -5186,3 +5186,134 @@ Index Scan on request_logs_2026_09_ts_idx2 / _10 / _11 …
 
 已落地的是可证的约束：两道门 + 把完整实测评估写进文件注释 + 更正登记表里
 那条已被证伪的 Note。**下一步需要一个明确决定，不是一道门能单方面定下来的事。**
+
+---
+
+## §9.41 `retry_count` 的推导对**真实数据**从未成立过 —— 一个活的运行时错误
+
+§9.40 结尾说「下一件需要一个决定」。在去要那个决定之前，先把决定所需的数字量出来——
+结果在量 `canonical_id` 可回填性的时候，撞上一个**与停写完全无关**的现存缺陷。
+
+### §9.41.1 缺陷
+
+`settleBatch` 的 LATERAL 腿（修复前）：
+
+```sql
+SUM(GREATEST(COALESCE(jsonb_array_length(r2.routing_attempts), 1) - 1, 0))::int AS retry_count
+```
+
+它假设 `routing_attempts` 是 JSON **数组**。它不是。写方
+`executors.RoutingAttemptsTracker.ToJSONBytes` 产出的是
+
+```go
+data := map[string]interface{}{"attempts": attempts}   // ← object，不是 array
+```
+
+真库实测（PG 17.10）：
+
+```
+SELECT jsonb_array_length(routing_attempts) FROM request_logs_hot
+  WHERE routing_attempts IS NOT NULL LIMIT 1;
+ERROR:  cannot get array length of a non-array
+```
+
+真实样例：`{"attempts": [{"seq": 1, "result": "error", "raw_model": "deepseek-chat", ...}]}`。
+
+**且 `array` 形态在 `request_logs` 里从未存在过**：
+340,917 行非空值、最早 2026-09-03，全部是 `object`。
+⇒ 这个表达式**从来没有对过真实数据**。
+
+### §9.41.2 失败范围不是一行，是整条查询
+
+LATERAL 在 `settleBatch` 的主查询里。一行抛错 ⇒ **整条语句中止**
+⇒ 那一批最多 `settleBatchSize` = **500** 条 selection 全部不结算。
+调用方只 `slog.Warn("auto-route settle sweep failed")` 后 `return`，
+而下一轮重查的是**同一批**（`WHERE settled_at IS NULL ORDER BY ts LIMIT 500`）
+⇒ **反复卡在同一处**，不是一次性丢一批。
+
+**实测影响面**（2026-09 分区，1747 条 selection）：
+
+| 总体 | 条数 | 占比 |
+|---|---|---|
+| `canonical_id IS NULL` ⇒ LATERAL 的 WHERE 恒假 ⇒ 无匹配、**不报错** | 1183 | 67.7% |
+| 有 `canonical_id` 且匹配行**全部** `routing_attempts IS NULL` ⇒ 不报错 | 104 | 6.0% |
+| 有 `canonical_id` 且匹配行**带** `routing_attempts` ⇒ **整批中止** | **460** | **26.3%** |
+
+即约 **26% 的 selection 会毒化它所在的整个批次**。
+
+### §9.41.3 顺带量化了一个**方向相反**的偏差（停写关闭的今天就在发生）
+
+`computeSelectionReward` 里：
+
+```go
+if p.modelReqsInSes != nil && p.retryCount != nil && *p.modelReqsInSes > 0 {
+    in.RetryRatio = float64(*p.retryCount) / float64(*p.modelReqsInSes)
+}
+```
+
+`canonical_id IS NULL` 的那 **67.7%** ⇒ LATERAL 无匹配 ⇒ `model_reqs = 0`
+⇒ 守卫不成立 ⇒ `RetryRatio` 保持 **0** ⇒ `retryScore = 1.0 - 0 = 1.0`（**满分**）。
+
+`retryScore` 权重 **0.10**。所以：
+
+> **三分之二的已结算 selection 在白拿 retry 项的满分**，而「没测到」被当成了
+> 「测到完美」。
+
+`ComputeRoutingReward` 的文档注释写着「Unknown inputs resolve to neutral 0.5 rather
+than 0, so 'not measured' is never mistaken for 'measured as bad'」——
+**这条不变量在 `RetryRatio` 上不成立**：未测得解析成 0，经 `1.0 - ratio` 变成**最好**，
+而不是中性。这与本审计反复记录的「把缺失报成在场」是同一族，且**方向是抬高而非压低**。
+
+**这一条不需要等停写**——它是现在线上 reward 分布的一部分。
+
+### §9.41.4 错误的第二处化身：写方注释把 bug 写成了契约
+
+`executors/routing_tracker.go` 的注释原文：
+
+```
+// request_logs.routing_attempts is consumed
+// arithmetically. bg/auto_route_settle_worker.go derives
+//	retry_count = jsonb_array_length(routing_attempts) - 1
+```
+
+**那正是消费者的 bug**。把它写进写方注释，等于给下一个「照着注释改」的人发了一份
+错误契约。已一并订正为 `len(routing_attempts -> 'attempts') - 1`，
+并立门禁止它回来（`TestRoutingAttemptsWriterShapeIsDocumented`）。
+
+### §9.41.5 修法
+
+抽成具名函数 `retryCountPerRowSQL(alias)`（可静态测），按 `jsonb_typeof` 分派：
+
+- `'array'`  ⇒ 整列（防御性；真库 34 万行从未出现该形态，但删掉它会让未来的假想
+  情形**静默退化成 0 重试**，而多一个 CASE 分支代价为零）；
+- `'object'` ⇒ `-> 'attempts'`（**写方实际产出**，这是修复的主体）；
+- 其它 / NULL ⇒ 走外层 `WHERE jsonb_typeof(v.a) = 'array'` 守卫，最坏退化为
+  「这行算 0 次重试」而**不是**整条查询中止。
+
+真库验证（同一批数据，旧表达式报错 vs 新表达式）：
+
+```
+旧: ERROR:  cannot get array length of a non-array
+新: 1002 行 → retry 总数 1669（无报错）
+```
+
+### §9.41.6 门：3 道，变异 3/3
+
+| 变异 | 红在 |
+|---|---|
+| P1 删掉 `-> 'attempts'` 分支 | `auto_route_retry_count_test.go:50` |
+| P2 整段退回旧的裸 `jsonb_array_length(整列)` | 同文件 `:50`（4 条缺失断言）+ `:58`（「裸调用」专用判据） |
+| P3 把错误契约放回写方注释 | 同文件 `:101` |
+
+**为什么是形状门而不是集成测试**：`auto_route_selections_hot` 当前是空的、
+本地 CI 库没有这类流量 ⇒ 一条需要真实行的集成测试在这里**证明不了任何事**
+（§9.34：空库上的真库门是绿而无证据）。所以断言**可静态证明**的那一侧，
+真实数据形态与实测数字记在本节。
+
+### §9.41.7 仍未修：retry 项「未测得 ⇒ 满分」
+
+§9.41.3 那个方向性偏差**没有**在本轮修。理由：修它等于改 reward 语义
+（是让未测得落回中性 0.5，还是干脆把该权重按可用性开关），这与 §9.40 结尾
+那个「需要一个明确决定」是**同一个决定**，应一起做，不宜夹带。
+
+已记账为本轮**新发现的现存缺陷**（与停写无关），列在残余风险里。

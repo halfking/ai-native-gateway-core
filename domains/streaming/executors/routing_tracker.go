@@ -42,7 +42,14 @@ const ResultPending = "pending"
 // Why this matters beyond tidiness: request_logs.routing_attempts is consumed
 // arithmetically. bg/auto_route_settle_worker.go derives
 //
-//	retry_count = jsonb_array_length(routing_attempts) - 1
+//	retry_count = len(routing_attempts -> 'attempts') - 1
+//
+// ⚠️ 注意是 `-> 'attempts'`：本 tracker 序列化出的是 **object**
+// `{"attempts":[...]}`，不是裸数组。对整列调 jsonb_array_length 会抛
+// `cannot get array length of a non-array`——2026-10-02 审计 §9.41 记录了
+// 这个错误在 settleBatch 里造成的实际故障（一行抛错中止整条查询 ⇒ 整批
+// 最多 500 条 selection 不结算）。本注释此前写成 `jsonb_array_length(
+// routing_attempts) - 1`，是那个 bug 的第二处化身：把消费者的错误写成了契约。
 //
 // so every surviving placeholder inflates the retry count of a request that
 // had ZERO failovers — a first-try success with a 10-candidate pool would
