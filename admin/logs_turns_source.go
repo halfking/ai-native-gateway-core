@@ -25,10 +25,35 @@ import (
 //   - 正文仍走 request_logs_bodies（fetchRequestBodies/fetchRequestOutboundBody）；
 //     S4 停写后须改读 session_turns.request_delta/response_delta 与
 //     session_bodies final_full（新行），旧行回退 bodies 表。
-//   - 原生模式只输出 session 家族已有行；request_logs 中尚未入 turns 的
-//     历史行（镜像链启用前窗口）在该模式下不可见——本机镜像链 2026-09 起
-//     全量双写，观察期（storage-observation-ledger.md）零漂移后此边界随 S4
-//     停写自然消解。
+//   - 原生模式只输出 session 家族已有行。
+//
+// ⚠️ 2026-09-30 真库核对**两次**修正了这段开关的可用前提。
+//
+// 第一版（已作废，勿再引用）：曾写「sessions_v2.enabled=true、
+// shadow_write=true 前提下仍有 20,660 个会话 / 38,878 行只存在于
+// request_logs，且漏写持续发生（09-24 单日 8197 行）」。
+// 该结论经复核**是错的**：38,229 行里绝大多数是 hook 按设计不镜像的
+// 内部回环与非终态占位行（unexplained = 0），而「持续发生」是 35 天
+// 滚动窗口的采数假象——按天重算后当前进程为零漏写。真正的
+// genuine_loss 只有 1,459 行，已由 scripts/audit/mirror_outbox_backfill.sql
+// 全量补写，复测归零。
+//
+// 订正后的结论（本段是当前有效的版本）：
+//
+//  1. 本开关保持默认 false —— 但理由**不是**「镜像不完整」，而是
+//     **原生源不是全量日志视图的等价替代**。真库实测：视图里
+//     2,321,464 个 request_id 有 641,452 个（27.6%）在原生源查不到
+//     （无会话头流量：探针/自检按设计排除、in_progress 占位、标题/摘要
+//     生成器回环）。日志列表/详情是通用流量读路径，不带会话谓词，
+//     切过去会静默少 27.6% 的行。
+//  2. 任何「改读 session 族原生源」的迁移，判据是**谓词形态**而非
+//     「镜像是否补齐」：带 gw_session_id 的会话内读可以迁（已迁，见
+//     审计 §5.5）；按 request_id / client_request_id / parent_request_id
+//     反查或全量时间窗聚合的**禁止**迁。该分类已固化为守卫
+//     admin/session_view_dependency_risk_test.go。
+//  3. S4 停写（storage.request_logs_write_enabled=false）的活跃漏写
+//     阻断已解除，但灰度期间仍须保留 734 视图的 v1 冻结分支——它是
+//     当前月热数据与在线列表 last_request_id 的唯一读路径。
 const nativeTurnsReadSetting = "storage.admin_logs_native_turns_read"
 
 // logsSourceFromSQL returns the aliased FROM-source for the logs list/detail

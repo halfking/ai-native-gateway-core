@@ -130,7 +130,7 @@ services:
       - LLM_GATEWAY_LISTEN=:8781
       - LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY:?set LLM_GATEWAY_ADMIN_API_KEY in .env so prometheus can scrape /metrics}
       - LLM_GATEWAY_ENV=dev
-      - LLM_GATEWAY_DATABASE_URL=postgres://llm_gateway:llm_gateway@pg-252-pg17:5432/llm_gateway?sslmode=disable
+      - LLM_GATEWAY_DATABASE_URL=postgres://${PG_USER}:${PG_PASSWORD}@${PG_HOST:-pg-252-pg17}:${PG_PORT:-5432}/${PG_DB:-llm_gateway}?sslmode=${PG_SSLMODE:-disable}
     networks:
       - monitoring
     depends_on: []

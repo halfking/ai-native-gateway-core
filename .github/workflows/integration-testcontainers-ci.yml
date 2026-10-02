@@ -16,6 +16,9 @@ on:
       - "licensing/**"
       - "vibecoding/**"
       - "sql/migrations/**"
+      - "sql/schema/**"
+      - "installer/**"
+      - "scripts/audit/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/integration-testcontainers-ci.yml"
@@ -34,6 +37,9 @@ on:
       - "licensing/**"
       - "vibecoding/**"
       - "sql/migrations/**"
+      - "sql/schema/**"
+      - "installer/**"
+      - "scripts/audit/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/integration-testcontainers-ci.yml"
@@ -111,4 +117,143 @@ jobs:
             **/test-output.log
             **/*.test.log
           if-no-files-found: ignore
+          retention-days: 7
+
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # integration-gate: drives scripts/audit/run-integration-gate.sh in CI.
+  #
+  # Re-wired 2026-10-02. The round-43 version of this job was removed because it
+  # was guaranteed to fail on its first run, for three independent reasons. All
+  # three are addressed below, and each one names what it was, so a future edit
+  # that reintroduces one of them is visible rather than silent:
+  #
+  #   1. Wrong image tag. It pinned kx-citus-pg17:offline-arm64, a tag that does
+  #      not exist. The real tags are 13.3.0-vector-{arm64,amd64}. Measured with
+  #      `docker manifest inspect` and pulled; the amd64 one runs.
+  #   2. Wrong architecture. It used the arm64 image on ubuntu-latest (x64), so
+  #      `docker run` died with an exec-format error before postgres started.
+  #      This job now uses the **amd64** image, which runs natively on the x64
+  #      runner — no emulation, and no --platform flag needed.
+  #   3. Missing password. The container got POSTGRES_PASSWORD but the harness
+  #      got no PG_PASSWORD, so it built a passwordless DSN and died at its own
+  #      DSN precheck (measured: fe_sendauth: no password supplied). The
+  #      harness refuses an empty PG_PASSWORD, so this cannot drift silently.
+  #
+  # Two smaller defects in the old block are also gone: the dead
+  # `services: docker:24-dind` (the steps use the runner's native docker CLI and
+  # never export DOCKER_HOST, so the dind daemon was never used) and the
+  # single-/tmp/itgate-run.log artifact, which the per-package loop overwrites
+  # so an upload would have shown only the last package. Logs are now written
+  # and uploaded per package.
+  #
+  # NOT VERIFIED LOCALLY. The registry credential is the one precondition that
+  # cannot be checked from a workstation — see
+  # docs/audit/2026-10-01-integration-gate-ci-preconditions.md. Preconditions
+  # 1/2/3 (image exists, tag+PG_USER measured, PG_PASSWORD exported) were all
+  # measured against a real container before this job was written; precondition
+  # 4 (registry credentials) was not, and the job fails loudly if the secrets
+  # are absent rather than letting `docker login` fail obscurely.
+  integration-gate:
+    name: integration gate
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Named so the harness's `docker port` lookup finds it. The harness reads
+      # PG_CONTAINER / PG_USER / PG_PASSWORD and refuses to run without a
+      # password, so the three are set here rather than left to defaults.
+      - name: Start the amd64 Citus container
+        env:
+          PG_CONTAINER: itgate-pg
+          PG_USER: llm_gateway
+          PG_PASSWORD: ${{ secrets.PG_GATE_PASSWORD }}
+          REGISTRY_USER: ${{ secrets.PG_REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.PG_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PG_PASSWORD" ] || [ -z "$REGISTRY_USER" ] || [ -z "$REGISTRY_TOKEN" ]; then
+            echo "::error::missing required secret(s). This job needs"
+            echo "::error::  PG_GATE_PASSWORD    - the disposable gate container's postgres password"
+            echo "::error::  PG_REGISTRY_USERNAME - registry.internal.example.com pull credential"
+            echo "::error::  PG_REGISTRY_TOKEN    - registry.internal.example.com pull credential"
+            echo "::error::See docs/audit/2026-10-01-integration-gate-ci-preconditions.md"
+            exit 1
+          fi
+          echo "$REGISTRY_TOKEN" \
+            | docker login registry.internal.example.com -u "$REGISTRY_USER" --password-stdin
+          # amd64 image on an x64 runner: native, not emulated.
+          docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER="$PG_USER" \
+            -e POSTGRES_PASSWORD="$PG_PASSWORD" \
+            -e POSTGRES_DB=postgres \
+            -p 5432:5432 \
+            registry.internal.example.com/kx-citus-pg17:13.3.0-vector-amd64
+          for i in $(seq 1 60); do
+            if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" >/dev/null 2>&1; then
+              echo "postgres ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::postgres did not become ready in 60s"
+          docker logs "$PG_CONTAINER" || true
+          exit 1
+
+      # The package list is derived, never hand-written: precondition 5. A
+      # hand-written list drifts, and a package with no integration-tagged test
+      # files reports PASS from its plain unit tests, which would make this job
+      # green while proving nothing. scripts/audit is the one deliberate
+      # exclusion — every file in it is integration-tagged, so the untagged
+      # `go list` the harness uses for its set difference cannot load the
+      # package, and its 6 tests self-skip on an env var the gate never sets.
+      # That is a real coverage blind spot, not a passing package; see
+      # docs/audit/2026-10-02-round44-closure-final.md section 4.
+      - name: Derive the integration package list
+        id: packages
+        run: |
+          set -euo pipefail
+          ./scripts/audit/derive-gate-packages.sh > /tmp/all-packages.txt
+          grep -vx './scripts/audit' /tmp/all-packages.txt > /tmp/packages.txt
+          echo "derived $(wc -l < /tmp/all-packages.txt), running $(wc -l < /tmp/packages.txt)"
+          echo "excluded: ./scripts/audit (all files are integration-tagged; the"
+          echo "          harness's untagged go list cannot load it — known blind spot)"
+          cat /tmp/packages.txt
+
+      - name: Run the gate per package
+        env:
+          PG_CONTAINER: itgate-pg
+          PG_USER: llm_gateway
+          PG_PASSWORD: ${{ secrets.PG_GATE_PASSWORD }}
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/itgate-logs
+          failed=""
+          while read -r pkg; do
+            [ -n "$pkg" ] || continue
+            safe=$(echo "$pkg" | sed 's#^./##; s#/#-#g')
+            echo "::group::gate $pkg"
+            GATE_LOG="/tmp/itgate-logs/$safe.log" \
+              bash scripts/audit/run-integration-gate.sh "$pkg" || failed="$failed $pkg"
+            echo "::endgroup::"
+          done < /tmp/packages.txt
+          if [ -n "$failed" ]; then
+            echo "::error::gate failed for:$failed"
+            exit 1
+          fi
+
+      - name: Upload per-package gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-gate-logs
+          path: /tmp/itgate-logs/*.log
+          if-no-files-found: warn
           retention-days: 7

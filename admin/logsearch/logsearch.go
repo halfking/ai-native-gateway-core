@@ -13,6 +13,7 @@
 package logsearch
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -89,7 +90,7 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Response{
 			Enabled: false,
 			Stats: map[string]interface{}{
-				"reason":  "fan-out disabled (set LLM_GATEWAY_LOG_BLEVE_ENABLED=true)",
+				"reason": "fan-out disabled (set LLM_GATEWAY_LOG_BLEVE_ENABLED=true)",
 			},
 		})
 		return
@@ -97,7 +98,8 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 	env, err := idx.Search(spec)
 	if err != nil {
-		http.Error(w, "bleve search error: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("logsearch: bleve search failed", "err", err)
+		http.Error(w, "bleve search error", http.StatusInternalServerError)
 		return
 	}
 

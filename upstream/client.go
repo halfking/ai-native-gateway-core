@@ -106,6 +106,9 @@ type Client struct {
 	maxRetries int
 	baseDelay  time.Duration
 	proxy      *ProxyResolver
+	// egress routes providers with egress_profile='proxy' through their
+	// subscription node pool (R28-P-1); nil = default transport only.
+	egress EgressTransportProvider
 }
 
 // New creates a new upstream client with sensible defaults. The proxy
@@ -132,26 +135,44 @@ func NewWithRetries(maxRetries int) *Client {
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
+	var transport http.RoundTripper = &http.Transport{
+		Proxy:                 proxy.ProxyFunc(),
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout(),
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   connectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:        128,
+		MaxIdleConnsPerHost: 32,
+	}
+	if proxy.StrictMode() {
+		transport = &strictProxyTransport{base: transport, resolver: proxy}
+	}
 	return &Client{
-		hc: &http.Client{
-			Transport: &http.Transport{
-				Proxy:                 proxy.ProxyFunc(),
-				IdleConnTimeout:       90 * time.Second,
-				ResponseHeaderTimeout: responseHeaderTimeout(),
-				TLSHandshakeTimeout:   10 * time.Second,
-				ExpectContinueTimeout: time.Second,
-				DialContext: (&net.Dialer{
-					Timeout:   connectTimeout,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				MaxIdleConns:        128,
-				MaxIdleConnsPerHost: 32,
-			},
-		},
+		hc:         &http.Client{Transport: transport},
 		maxRetries: maxRetries,
 		baseDelay:  retryBaseDelay,
 		proxy:      proxy,
 	}
+}
+
+// strictProxyTransport enforces R28-P-2: in strict egress mode a request to
+// a non-domestic host fails loudly when no healthy proxy exists, instead of
+// the historical silent direct-dial fallback that violated the must-proxy
+// contract for overseas providers. Domestic hosts always pass through.
+type strictProxyTransport struct {
+	base     http.RoundTripper
+	resolver *ProxyResolver
+}
+
+func (t *strictProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.resolver.StrictBlocked(req.URL.Hostname()) {
+		return nil, fmt.Errorf("upstream %s requires an egress proxy but none is available (strict egress mode)", req.URL.Hostname())
+	}
+	return t.base.RoundTrip(req)
 }
 
 func responseHeaderTimeout() time.Duration {
@@ -167,6 +188,15 @@ func responseHeaderTimeout() time.Duration {
 	}
 	return defaultHeaderTimeout
 }
+
+// ResponseHeaderTimeout exposes the direct-connection first-byte budget to
+// sibling transports (egress subscription pools). The stream executor owns
+// the first-byte product policy; a proxy-routed reasoning request must not
+// be cut at a shorter transport ceiling (proxy factory hardcoded 30s) while
+// the direct path honors this value — that mismatch produced "only
+// pool-routed credentials look broken" failure portraits (2026-09-30
+// round-37 audit).
+func ResponseHeaderTimeout() time.Duration { return responseHeaderTimeout() }
 
 // ProxyStatus returns a snapshot of the proxy resolver state.
 func (c *Client) ProxyStatus() map[string]any {
@@ -197,7 +227,32 @@ func (c *Client) Stop() {
 // It does NOT close the response body on success — caller must do that.
 // On retryable errors after exhausting retries, the response body IS closed.
 func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
+	// R28-P-1: providers marked egress_profile='proxy' ride their
+	// subscription node pool instead of the default transport.
+	if c.egress != nil {
+		if meta, ok := EgressMetaFrom(req.Context()); ok && meta.ProviderID > 0 {
+			rt, err := c.egress.TransportFor(req.Context(), meta.ProviderID)
+			if err != nil {
+				return nil, &Error{Kind: KindUpstreamDown, Message: "provider requires egress proxy but none is available", Err: err}
+			}
+			if rt != nil {
+				return c.doWithRoundTripper(req, rt)
+			}
+		}
+	}
 	return c.doWithClient(req, c.hc)
+}
+
+// SetEgressProvider installs the per-request egress dispatcher (R28-P-1).
+// nil disables egress routing (all traffic via the default transport).
+func (c *Client) SetEgressProvider(p EgressTransportProvider) {
+	c.egress = p
+}
+
+// doWithRoundTripper mirrors doWithClient's retry/error policy but dials
+// through the supplied transport (subscription node pool).
+func (c *Client) doWithRoundTripper(req *http.Request, rt http.RoundTripper) (*http.Response, *Error) {
+	return c.doWithClient(req, &http.Client{Transport: rt, Timeout: c.hc.Timeout})
 }
 
 // DoWithHTTPClient sends the request through the supplied client while keeping
@@ -207,6 +262,21 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 func (c *Client) DoWithHTTPClient(req *http.Request, client *http.Client) (*http.Response, *Error) {
 	if client == nil {
 		return nil, &Error{Kind: KindTransient, Message: "nil upstream HTTP client"}
+	}
+	// R28-P-1: egress routing wins over identity pooling — a provider marked
+	// egress_profile='proxy' must leave through its subscription node pool
+	// even when the call site carries a pool-owned client (the must-proxy
+	// contract outranks per-credential connection reuse).
+	if c.egress != nil {
+		if meta, ok := EgressMetaFrom(req.Context()); ok && meta.ProviderID > 0 {
+			rt, err := c.egress.TransportFor(req.Context(), meta.ProviderID)
+			if err != nil {
+				return nil, &Error{Kind: KindUpstreamDown, Message: "provider requires egress proxy but none is available", Err: err}
+			}
+			if rt != nil {
+				return c.doWithRoundTripper(req, rt)
+			}
+		}
 	}
 	return c.doWithClient(req, client)
 }

@@ -16,6 +16,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,9 +24,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -111,6 +115,40 @@ func TestExtractModels_WholeCredReturnsEmpty(t *testing.T) {
 
 	got = extractModels("minimax-m3")
 	assert.Equal(t, []string{"minimax-m3"}, got)
+}
+
+func TestResetInMemoryNodeStatePreservesResponsesCapability(t *testing.T) {
+	ctx := context.Background()
+	redisServer := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = redisClient.Close() })
+	fpSlots := credentialfpslot.New(credentialfpslot.Config{Enabled: true, DefaultLimit: 5}, redisClient)
+	const credentialID = 78
+	const model = "gpt-5.6-terra"
+
+	require.NoError(t, fpSlots.SetSupportsResponses(ctx, credentialID, model, false))
+	state, err := fpSlots.GetNodeState(ctx, credentialID, model)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	state.Disabled = true
+	state.DisabledUntil = time.Now().Add(time.Minute).Unix()
+	state.FailureCount = 3
+	require.NoError(t, fpSlots.SetNodeState(ctx, state))
+
+	h := &Handler{fpSlots: fpSlots}
+	models, outcome := h.resetInMemoryNodeState(ctx, credentialID, 0, model, false)
+	assert.Equal(t, []string{model}, models)
+	assert.Equal(t, 1, outcome["fp_node_state_models_reset"])
+
+	reset, err := fpSlots.GetNodeState(ctx, credentialID, model)
+	require.NoError(t, err)
+	require.NotNil(t, reset)
+	assert.False(t, reset.Disabled)
+	assert.Zero(t, reset.FailureCount)
+	supported, known, err := fpSlots.GetSupportsResponses(ctx, credentialID, model)
+	require.NoError(t, err)
+	assert.True(t, known, "health reset must preserve independent protocol capability evidence")
+	assert.False(t, supported)
 }
 
 // TestResetCredentialState_AuditActionTag guards the contract that

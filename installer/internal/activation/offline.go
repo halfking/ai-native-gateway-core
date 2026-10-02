@@ -37,22 +37,32 @@ func GenerateOfflineRequest(licenseKey, hardwareHash, instanceID, deviceName str
 	return reqPath, nil
 }
 
-// ImportOfflineLicense 导入离线 license.dat 到 /var/lib/kx-gateway/
-func ImportOfflineLicense(licensePath string) error {
-	// 读取 license.dat
+// ImportOfflineLicense copies license.dat from licensePath into <installDir>/license.dat.
+//
+// The target directory is parameterized so that the wizard (which writes into the
+// installer's $PWD) and a containerized launcher (which reads from /var/lib/kx-gateway
+// or whatever LLM_GATEWAY_INSTALL_DIR/INSTALL_DIR resolves to) both end up writing
+// to the right place. Callers MUST resolve installDir first (see resolveInstallDir
+// in cmd/llm-gw-installer/activate.go); passing an empty string is a programming
+// error and returns immediately — better to fail loud than to silently drop the
+// license into a hard-coded /var/lib/kx-gateway that may not exist on a fresh box.
+//
+// File mode is 0600 — the license contains a long-lived signing key, never 0644.
+func ImportOfflineLicense(licensePath, installDir string) error {
+	if installDir == "" {
+		return fmt.Errorf("installDir is required (use --install-dir or set INSTALL_DIR/LLM_GATEWAY_INSTALL_DIR)")
+	}
+
 	data, err := os.ReadFile(licensePath)
 	if err != nil {
 		return fmt.Errorf("read license file: %w", err)
 	}
 
-	// 确保目标目录存在
-	targetDir := "/var/lib/kx-gateway"
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return fmt.Errorf("create target dir: %w", err)
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		return fmt.Errorf("create install dir %s: %w", installDir, err)
 	}
 
-	// 写入目标位置
-	targetPath := filepath.Join(targetDir, "license.dat")
+	targetPath := filepath.Join(installDir, "license.dat")
 	if err := os.WriteFile(targetPath, data, 0600); err != nil {
 		return fmt.Errorf("write license to %s: %w", targetPath, err)
 	}

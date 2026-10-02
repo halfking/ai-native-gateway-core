@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -79,9 +80,13 @@ func (h *Handler) usageProviderModels(w http.ResponseWriter, r *http.Request, pr
 		var u providerModelUsage
 		if err := rows.Scan(&u.Model, &u.RequestCount, &u.PromptTokens, &u.CompletionTokens,
 			&u.TotalTokens, &u.CostUSD, &u.AvgLatencyMs, &u.SuccessRate); err != nil {
+			warnRowSkip("usage provider models", err)
 			continue
 		}
 		out = append(out, u)
+	}
+	if writeAggRowsErr(w, "usage provider models", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -125,9 +130,13 @@ func (h *Handler) usageProviderDailyModels(w http.ResponseWriter, r *http.Reques
 	for rows.Next() {
 		var u providerDailyModelUsage
 		if err := rows.Scan(&u.Date, &u.Model, &u.RequestCount, &u.TotalTokens, &u.CostUSD); err != nil {
+			warnRowSkip("usage provider daily models", err)
 			continue
 		}
 		out = append(out, u)
+	}
+	if writeAggRowsErr(w, "usage provider daily models", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -198,6 +207,7 @@ func (h *Handler) usageProviderDetailExport(w http.ResponseWriter, r *http.Reque
 		var reqs, tokens int64
 		var cost float64
 		if err := rows.Scan(&date, &model, &reqs, &tokens, &cost); err != nil {
+			warnRowSkip("usage provider export csv", err)
 			continue
 		}
 		_ = cw.Write([]string{
@@ -207,6 +217,11 @@ func (h *Handler) usageProviderDetailExport(w http.ResponseWriter, r *http.Reque
 			strconv.FormatInt(tokens, 10),
 			fmt.Sprintf("%.6f", cost),
 		})
+	}
+	// CSV 响应头已 200 无法收回：迭代中断只能留服务端痕迹（对账用 CSV
+	// 静默截断比对账结论是致命的，运维须能从日志发现）。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("usage provider export csv aborted; output truncated", "provider_id", providerID, "error", rerr)
 	}
 	cw.Flush()
 }

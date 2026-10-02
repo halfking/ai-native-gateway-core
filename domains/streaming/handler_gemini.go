@@ -153,6 +153,15 @@ func (w *geminiStreamWriter) writeChunk(line []byte) error {
 		_, err := w.ResponseWriter.Write(append(append([]byte{}, line...), '\n', '\n'))
 		return err
 	}
+	// R26-U1 (2026-09-29): an OpenAI chat error payload ({"error":...})
+	// mid-stream — most notably the output-policy block terminal emitted by
+	// the interceptor chain — is a shape a Gemini client cannot parse (and
+	// it round-trips ParseOpenAIStreamChunk without error, so the check
+	// must come before chunk parsing). Re-emit it as a Gemini-native
+	// terminal error frame instead of forwarding an alien protocol line.
+	if w.reemitChatErrorFrameAsGemini(line) {
+		return nil
+	}
 	chunk, err := ir.ParseOpenAIStreamChunk(string(line))
 	if err != nil {
 		// ChatHandler can emit a non-SSE error after stream setup. Preserve it
@@ -167,6 +176,32 @@ func (w *geminiStreamWriter) writeChunk(line []byte) error {
 		_, err = w.ResponseWriter.Write([]byte(output))
 	}
 	return err
+}
+
+// reemitChatErrorFrameAsGemini converts an OpenAI chat SSE error line
+// (data: {"error":{"message":...}} with no choices) into a Gemini-native
+// terminal frame via failClosed. It reports whether the line was consumed.
+func (w *geminiStreamWriter) reemitChatErrorFrameAsGemini(line []byte) bool {
+	const dataPrefix = "data: "
+	if !bytes.HasPrefix(line, []byte(dataPrefix)) {
+		return false
+	}
+	var payload struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Choices []json.RawMessage `json:"choices"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(line[len(dataPrefix):]), &payload) != nil ||
+		payload.Error == nil || len(payload.Choices) > 0 {
+		return false
+	}
+	message := payload.Error.Message
+	if message == "" {
+		message = "upstream stream error"
+	}
+	w.failClosed(message)
+	return true
 }
 
 func (w *geminiStreamWriter) Flush() {
@@ -363,6 +398,23 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if respStatus >= 400 || len(respBody) == 0 {
+		// R26-U1: the recorder body here is the chat handler's OpenAI-shaped
+		// error (e.g. the R25-A output-policy 403) — re-emit it in
+		// Gemini-native error shape instead of leaking an alien protocol
+		// body to a native Gemini client.
+		var openAIError struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if respStatus >= 400 && json.Unmarshal(respBody, &openAIError) == nil && openAIError.Error != nil {
+			message := openAIError.Error.Message
+			if message == "" {
+				message = fmt.Sprintf("upstream error (HTTP %d)", respStatus)
+			}
+			writeGeminiError(w, respStatus, message)
+			return
+		}
 		w.WriteHeader(respStatus)
 		_, _ = w.Write(respBody)
 		return

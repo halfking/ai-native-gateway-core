@@ -143,7 +143,7 @@ func (m *Manager) acquireRedisWithQuota(
 		},
 		limit,
 		holder,
-		slotTTLSeconds,
+		slotTTLSeconds(),
 		sessionPinTTLSeconds,
 		m.cfg.resolveActiveGateSeconds(),
 		credentialID,

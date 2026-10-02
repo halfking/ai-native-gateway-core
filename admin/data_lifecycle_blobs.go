@@ -112,7 +112,7 @@ func (h *Handler) handleDataLifecycleBlobTop(w http.ResponseWriter, r *http.Requ
 		LIMIT `+strconv.Itoa(limit), args...)
 	if err != nil {
 		slog.Warn("blobs top query failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "查询失败: "+err.Error())
+		writeInternalErr(w, "查询失败", err)
 		return
 	}
 	defer rows.Close()
@@ -126,6 +126,7 @@ func (h *Handler) handleDataLifecycleBlobTop(w http.ResponseWriter, r *http.Requ
 			&b.RequestID, &b.SessionKey, &b.TenantID, &ts,
 			&b.RequestBodyBytes, &b.OutboundBodyBytes, &b.Model,
 		); err != nil {
+			warnRowSkip("dataLifecycle.blobs.top", err)
 			continue
 		}
 		b.OccurredAt = ts.UTC().Format(time.RFC3339)
@@ -133,6 +134,10 @@ func (h *Handler) handleDataLifecycleBlobTop(w http.ResponseWriter, r *http.Requ
 		b.TotalHuman = humanBytes(b.TotalBytes)
 		totalBytes += b.TotalBytes
 		out = append(out, b)
+	}
+	// Top-N blob 清单的截断会让运维漏掉最大的存储占用行。
+	if writeAggRowsErr(w, "dataLifecycle.blobs.top", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, blobTopResponse{
@@ -222,7 +227,7 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 		`+where, args...).Scan(&reqAffected, &outAffected, &freedBytes)
 	if err != nil {
 		slog.Warn("blob cleanup preview failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "预览失败: "+err.Error())
+		writeInternalErr(w, "预览失败", err)
 		return
 	}
 	resp.RequestBodyAffected = reqAffected
@@ -251,7 +256,7 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 
 		if err != nil {
 			slog.Error("blob cleanup execute failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "执行失败: "+err.Error())
+			writeInternalErr(w, "执行失败", err)
 			return
 		}
 		// VACUUM 释放 request body 热表空间。

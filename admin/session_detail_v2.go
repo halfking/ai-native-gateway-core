@@ -11,14 +11,18 @@
 //     "total_turns": 5
 //   }
 //
-// 仅 super 用户可用。
+// 鉴权与租户：经 wrapAdmin 挂载（cmd/gateway/main.go）；handler 内
+// GetAuthContext 双保险，非 super 角色被 tenantFromQueryOrContext 钉在本
+// 租户，仅 super/admin-key 可 ?tenant= 跨租户（R69 注释更正：非"仅 super"）。
 
 package admin
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,6 +30,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // sessionDetailV2DB 是 SessionDetailV2API 实际需要的数据库方法子集。
@@ -59,9 +65,20 @@ func newSessionDetailV2APIWithDB(pool sessionDetailV2DB) *SessionDetailV2API {
 	return &SessionDetailV2API{pool: pool}
 }
 
+// NewSessionDetailV2APIWithDB 是 newSessionDetailV2APIWithDB 的导出别名，
+// 供跨包单测（tests/session_identity_contract/...）注入 pgxmock。
+// 与 NewSessionDetailV2API 的 *pgxpool.Pool 接受范围等价，仅多了一步
+// 接口收缩，便于 pgxmock / 自实现 Store 接入。
+func NewSessionDetailV2APIWithDB(pool sessionDetailV2DB) *SessionDetailV2API {
+	return newSessionDetailV2APIWithDB(pool)
+}
+
 // SessionV2 表示 public.sessions 表的记录
 type SessionV2 struct {
-	ID                  int64      `json:"id"`
+	// ID 是 sessions.id 数值主键（SessionPK，contract_freeze §1.5 对客户端
+	// 不可见）。Scan 仍需要该字段，但 JSON 序列化必须跳过 —— 12h 审计 F-2：
+	// 旧 tag "id" 把 SessionPK 带进每个详情响应，与 §1.5 相悖。
+	ID                  int64      `json:"-"`
 	SessionID           string     `json:"session_id"`
 	TenantID            string     `json:"tenant_id"`
 	CreatedAt           time.Time  `json:"created_at"`
@@ -91,7 +108,11 @@ type SessionV2 struct {
 
 // SessionTurnV2 表示 session_turns + session_bodies 的 JOIN 结果
 type SessionTurnV2 struct {
-	ID                     int64     `json:"id"`
+	// ID 是 session_turns.id 数值主键（turn PK）。与 SessionPK（§1.5）
+	// 同理不对客户端可见——轮次对外恒以 turn_no 定位（web TS 类型
+	// TurnDetail/TurnListItem 与脚本消费面均不读该字段，2026-09-26 R69
+	// 12h 审计 N-1 复核）。Scan 仍需要该列，JSON 序列化剔除。
+	ID                     int64     `json:"-"`
 	SessionID              string    `json:"session_id"`
 	TurnNo                 int       `json:"turn_no"`
 	TenantID               string    `json:"tenant_id"`
@@ -125,6 +146,14 @@ type SessionTurnV2 struct {
 	OutboundBody        any `json:"outbound_body,omitempty"`
 	RequestAttachments  any `json:"request_attachments,omitempty"`
 	ResponseAttachments any `json:"response_attachments,omitempty"`
+
+	// BodyStatus is derived from the three body columns above — see
+	// admin/body_status.go for the full contract, including why this is a
+	// two-state field and not the three-state available|dropped|unavailable
+	// originally sketched in the handoff §5. Always emitted (no omitempty):
+	// consumers must be able to tell "explicitly unavailable" apart from
+	// "field predates this column".
+	BodyStatus string `json:"body_status"`
 }
 
 // SessionDetailV2Response 是 API 返回的完整响应
@@ -132,11 +161,18 @@ type SessionDetailV2Response struct {
 	Session    *SessionV2      `json:"session"`
 	Turns      []SessionTurnV2 `json:"turns"`
 	TotalTurns int             `json:"total_turns"`
+
+	// IDKind 显式标注本响应对应的身份契约类别（contract_freeze §1）。
+	// V2 会话详情以 session_id（sessions.session_id）为主键 —— request_id /
+	// attempt_id / gw_session_id / SessionPK 各自有独立用途，互不替代。
+	IDKind     string `json:"id_kind"`
+	PrimaryKey string `json:"primary_key"`
 }
 
 func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if api.pool == nil {
-		writeExportJSONError(w, http.StatusServiceUnavailable, "session detail v2 API requires database")
+		// Subtask 4（§6）：统一 503 + storage_status。
+		WriteStorageDegraded(w, observability.StorageComponentDetail, ErrNilDatabasePool)
 		return
 	}
 	if r.URL.Path != "/api/admin/sessions/detail" {
@@ -149,6 +185,11 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		// 兼容旧客户端：部分调用方仍按 V1 习惯传 gw_session_id（request_logs.gw_session_id）。
+		// 通过 resolveSessionID 反向解析到 sessions.session_id；两侧都为空则按 bad request 处理。
+		sessionID = r.URL.Query().Get("gw_session_id")
+	}
 	if sessionID == "" {
 		writeExportJSONError(w, http.StatusBadRequest, "session_id is required")
 		return
@@ -193,9 +234,44 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	detail, err := api.querySessionDetail(ctx, sessionID, tenantID, limit, offset)
+	// 把客户端传入的标识（session_id 或 gw_session_id）解析为 V2 服务端
+	// session_id；解析失败按 404 处理，不暴露内部错误细节。
+	resolvedSessionID, err := api.resolveSessionID(ctx, sessionID, tenantID)
 	if err != nil {
-		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
+		// R69：errors.Is 保持包装错误（超时/事务包装）下的 404 语义。
+		if errors.Is(err, errSessionNotFound) {
+			writeExportJSONError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		// 歧义不是服务端故障：409 让调用方知道「换个更精确的标识」即可，
+		// 且不回显含 tenant_id 的内部错误串（handoff §3 审计 Minor-2）。
+		if errors.Is(err, errSessionAmbiguous) {
+			writeExportJSONError(w, http.StatusConflict, "ambiguous session identifier")
+			return
+		}
+		// R73 审计 A-7：resolve 的存储不可达臂（与 nil-pool 臂同口径）。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentDetail, err)
+			return
+		}
+		slog.Error("resolveSessionID failed", "err", err)
+		writeExportJSONError(w, http.StatusInternalServerError, "resolve session id failed")
+		return
+	}
+
+	detail, err := api.querySessionDetail(ctx, resolvedSessionID, tenantID, limit, offset)
+	if err != nil {
+		// R71 审计：0aa86d8bd 只收口了 resolve 臂；query 臂此前把 pgx 原始
+		// 错误（含 SQL 片段/约束名/租户参数）原样回显给客户端，且无服务端
+		// 日志锚点。与 resolve 分款同构：固定文案 + slog 落服务端。
+		// R73 审计 A-7：query 臂同样补存储不可达 503（此前只有 nil-pool
+		// 臂降级，同一端点两种 DB 故障两种状态码，不一致）。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentDetail, err)
+			return
+		}
+		slog.Error("querySessionDetail failed", "err", err, "session_id", resolvedSessionID)
+		writeExportJSONError(w, http.StatusInternalServerError, "query session detail failed")
 		return
 	}
 
@@ -204,6 +280,10 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// contract_freeze §1.6：V2 详情的主键恒为 session_id，绝不暴露 SessionPK。
+	detail.IDKind = "session_id"
+	detail.PrimaryKey = resolvedSessionID
+
 	response := map[string]any{
 		"session":       detail.Session,
 		"turns":         detail.Turns,
@@ -211,6 +291,8 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		"focus_turn_no": focusTurnNo,
 		"limit":         limit,
 		"offset":        offset,
+		"id_kind":       detail.IDKind,
+		"primary_key":   detail.PrimaryKey,
 	}
 
 	writeExportJSON(w, http.StatusOK, response)
@@ -288,7 +370,9 @@ func (api *SessionDetailV2API) querySession(
 		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw,
 	)
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		// R69：errors.Is 替换字符串比较——错误被包装（超时/事务层）时
+		// 字符串匹配会把 miss 误判成 500，errors.Is 语义等价且更稳。
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -389,8 +473,146 @@ func (api *SessionDetailV2API) queryTurns(
 		t.RequestAttachments = decodeStoredJSON("request_attachments", t.RequestID, requestAttachmentsRaw)
 		t.ResponseAttachments = decodeStoredJSON("response_attachments", t.RequestID, responseAttachmentsRaw)
 
+		// Derived from the raw columns, not the decoded values: decodeStoredJSON
+		// returns nil for BOTH "column absent" and "column undecodable", so
+		// classifying off the decoded form would report a decode failure as
+		// "no body stored". Reading the raw bytes keeps a corrupt-body turn
+		// classified as available (it does have a payload) while the decode
+		// warning above tells the operator the payload is broken.
+		t.BodyStatus = classifyBodyStatus(requestDeltaRaw, responseDeltaRaw, outboundBodyRaw)
+
 		turns = append(turns, t)
 	}
 
+	// R69：零轮次（空会话/offset 越界）序列化为 [] 而非 null——严格解析
+	// 的消费方对 null turns[] 会崩。
+	if turns == nil {
+		turns = []SessionTurnV2{}
+	}
 	return turns, rows.Err()
 }
+
+// resolveSessionID 把客户端传入的标识解析为 V2 服务端 session_id。
+//
+// 5 类 ID 互不替代（contract_freeze §1.6）：session_id 是 sessions 表的
+// 文本 surrogate，gw_session_id 是客户端逻辑文本标识 —— 两者字面值可能重合
+// 也可能不同。本 helper 必须**仅**返回 session_id，绝不暴露 SessionPK（数值
+// 主键对客户端不可见）。策略：
+//
+//  1. 若 input 已等于某行 sessions.session_id（同租户） → 直接返回。
+//  2. 否则尝试经 request_logs.gw_session_id → sessions.primary_request_id
+//     的反向映射；只允许唯一解析（命中多行返回 error，禁止把 gw_session_id
+//     隐式覆盖多个会话）。
+//  3. 两步都查不到 → 返回 errSessionNotFound，让上游按 404 处理。
+//
+// RLS：所有查询都带 tenant_id 谓词；不绕过 sessions / request_logs 的现有
+// RLS 策略。sessionDetailV2DB 接口未暴露 Exec/QueryRow with bypass_rls，
+// 因此本 helper 无法也无法绕过租户隔离。
+func (api *SessionDetailV2API) resolveSessionID(
+	ctx context.Context,
+	input, tenantID string,
+) (string, error) {
+	if input == "" {
+		return "", fmt.Errorf("empty session identifier")
+	}
+	if tenantID == "" {
+		return "", fmt.Errorf("empty tenant_id")
+	}
+
+	// 1. 直接命中 sessions.session_id（最常见路径：V2 writer 直接写入
+	//    sessions.session_id := gw_session_id）。
+	var directHit string
+	err := api.pool.QueryRow(ctx, `
+		SELECT session_id FROM public.sessions
+		WHERE session_id = $1 AND tenant_id = $2
+		LIMIT 1
+	`, input, tenantID).Scan(&directHit)
+	if err == nil {
+		return directHit, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("resolveSessionID direct: %w", err)
+	}
+
+	// 2. 反向映射：request_logs.gw_session_id → sessions.primary_request_id →
+	//    session_id。仅在 direct miss 时执行。取全部 DISTINCT session_id：
+	//    恰好 1 个才返回；0 个按未找到处理；>1 个说明该 gw_session_id 跨
+	//    多个会话 —— 显式拒绝。12h 审计 F-1：初版注释承诺"多命中返回
+	//    error"但实现是 ORDER BY ts LIMIT 1 静默取最早请求的会话，既违背
+	//    承诺，也可能在 primary_request_id 恰非最早请求时漏配。
+	//    R69：LIMIT 2 —— 歧义判定只需"是否 >1"，2 行即短路，避免同租户
+	//    调用方用同一 gw_session_id 铺海量候选行放大扫描（错误信息里的
+	//    计数自此为下界）。
+	rows, err := api.pool.Query(ctx, `
+		SELECT DISTINCT s.session_id
+		FROM public.sessions s
+		WHERE s.tenant_id = $1
+		  AND s.primary_request_id IN (
+		      -- 会话存储解耦 v3 S3 读端迁移：session 族腿先行，v1 腿保留。
+		      -- session_turns.session_id 就是 gw_session_id 形态，与本函数的
+		      -- 输入同键，因此可直接在 session 族内取 request_id 候选。
+		      -- 不改外层 primary_request_id 匹配，语义与迁移前逐字一致。
+		      --
+		      -- S4 停写（storage.request_logs_write_enabled=false）后下面两条
+		      -- v1 腿对活跃会话恒空，本反向臂会返回 0 候选 → errSessionNotFound
+		      -- （404），把仍以 gw_session_id 形式寻址的旧客户端整体打成不可用。
+		      SELECT request_id FROM session_turns_hot
+		      WHERE tenant_id = $1 AND session_id = $2
+		      UNION ALL
+		      SELECT request_id FROM session_turns
+		      WHERE tenant_id = $1 AND session_id = $2
+		      UNION ALL
+		      -- R71 审计：双腿化（hot∪母表，R47 守卫纪律）。活跃会话的
+		      -- request_logs 行在热表、历史行已被 promote 进母表；单腿母表
+		      -- 只能解析 8h 前的 gw_session_id，热窗内反向臂恒 miss。
+		      SELECT request_id FROM request_logs_hot
+		      WHERE tenant_id = $1 AND gw_session_id = $2
+		      UNION ALL
+		      SELECT request_id FROM request_logs
+		      WHERE tenant_id = $1 AND gw_session_id = $2
+		  )
+		LIMIT 2
+	`, tenantID, input)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", errSessionNotFound
+		}
+		return "", fmt.Errorf("resolveSessionID reverse: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]string, 0, 1)
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid); err != nil {
+			return "", fmt.Errorf("resolveSessionID reverse scan: %w", err)
+		}
+		candidates = append(candidates, sid)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("resolveSessionID reverse rows: %w", err)
+	}
+	switch len(candidates) {
+	case 1:
+		return candidates[0], nil
+	case 0:
+		return "", errSessionNotFound
+	default:
+		// R69：歧义拒绝是数据完整性信号（同 gw_session_id 跨多会话），
+		// 只回客户端错误串运维不可见；落一条 Warn 作告警锚点。
+		slog.Warn("ambiguous session resolution: gw_session_id maps to multiple sessions",
+			"tenant_id", tenantID, "gw_session_id", input, "candidates", len(candidates))
+		// 细节（含 tenant_id / gw_session_id / 候选数）只进上面的 Warn 日志，
+		// 客户端只拿到 errSessionAmbiguous 哨兵 —— 与 handoff §3 审计 Minor-2
+		// 「500 响应体不得回显原始错误文本」同一处收口。
+		return "", errSessionAmbiguous
+	}
+}
+
+// errSessionNotFound 由 resolveSessionID 返回，调用方按 404 处理。
+var errSessionNotFound = errors.New("session not found")
+
+// errSessionAmbiguous 由 resolveSessionID 返回：客户端标识反向映射命中多个
+// session_id。调用方按 409 处理 —— 语义是「标识有歧义，请改用更精确的
+// session_id」，而不是服务端故障。此前该路径落到 500 兜底分支，客户端既
+// 收到错误的语义，也拿到含 tenant_id 的错误串。
+var errSessionAmbiguous = errors.New("ambiguous session identifier")

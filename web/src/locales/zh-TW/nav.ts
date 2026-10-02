@@ -25,9 +25,13 @@ export default {
     credentialMonitor: "憑證監控",
     annotations: '人工標註',
     annotationStats: '標註統計',
+    taskProfile: '任務檔案',
+    autoTuning: '路由調參',
     probeHealth: "探測健康度",
     systemMonitor: "系統監測",
     providers: "供應商",
+    reconciliation: "供應商對帳",
+    settlementReport: "結算報表",
     pricing: "成本價格",
     modelPricing: "定價管理",
     freePool: "免費資源",
@@ -104,4 +108,9 @@ export default {
   publicSupport: '技術支援',
 
   skip: '跳到主要内容',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: '未解決的請求側異常',
+  },
 }

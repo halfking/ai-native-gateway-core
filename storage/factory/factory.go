@@ -342,6 +342,14 @@ func (f *StorageFactory) GetRedisClient() *redis.Client {
 	return f.redisDB
 }
 
+// SQLiteDB 返回 lite 模式下的底层 SQLite 句柄（full 模式返回 nil）。
+// 构造期赋值、此后只读，无需加锁。当前唯一消费方是 lite 行级保留期
+// worker（bg.LiteRetentionWorker，R46 F6）——在此之前 request_logs/
+// sessions/session_turns 行没有任何 TTL 清理。
+func (f *StorageFactory) SQLiteDB() *sql.DB {
+	return f.sqlDB
+}
+
 // Close 关闭底层连接资源。可安全地重复调用（幂等）。
 //
 // 关闭顺序：先关闭 lite 模式两个惰性单例（FileBodiesStore 会排空 AsyncFileWriter

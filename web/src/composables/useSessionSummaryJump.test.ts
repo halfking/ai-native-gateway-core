@@ -33,10 +33,11 @@ function mountComposable(opts?: Parameters<typeof useSessionSummaryJump>[0]) {
   }
 }
 
-type RouterPushArgs = Parameters<ReturnType<typeof makeRouter>['push']>
+type AppRouter = ReturnType<typeof makeRouter>
+type RouterPushArgs = Parameters<AppRouter['push']>
 
-function spyOnRouterPush(router: ReturnType<typeof makeRouter>) {
-  const spy = vi.fn<RouterPushArgs>()
+function spyOnRouterPush(router: AppRouter) {
+  const spy = vi.fn<(...args: RouterPushArgs) => ReturnType<AppRouter['push']>>()
   const realPush = router.push.bind(router)
   router.push = ((...args: RouterPushArgs) => {
     spy(...args)

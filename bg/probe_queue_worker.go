@@ -112,7 +112,7 @@ func (w *ProbeQueueWorker) Start(ctx context.Context) {
 	ctx, w.cancel = context.WithCancel(ctx)
 	w.wg.Add(w.cfg.Workers)
 	for i := 0; i < w.cfg.Workers; i++ {
-		go w.run(ctx)
+		Go("probe_queue_worker.run", func() { w.run(ctx) })
 	}
 }
 

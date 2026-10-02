@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
-import { formatDateTime, formatTimeOnly } from '../utils/datetime'
+import { formatDateTime, formatTimeOnly, parseLocalMinute } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
 import { useRoute, useRouter } from 'vue-router'
@@ -32,7 +32,8 @@ import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElDatePicker } from 'element-plus'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 const { isSpanning } = useViewportSegments()
 
 const rows = ref<RequestLogRow[]>([])
@@ -44,6 +45,7 @@ const error = ref<string | null>(null)
 const bodyCache = ref<BodyCacheStats | null>(null)
 const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
+const ownerUserFilter = ref('')
 const modelFilter = ref('')
 // 2026-08-09: 时间筛选升级为 preset + 自定义范围，替代旧的固定小时数下拉。
 // 类型覆盖原 [1h/6h/24h/3d/7d] 与新增的 [今天/本周/本月/今年/自定义]。
@@ -338,6 +340,30 @@ function onProviderFilterChange() {
 function onCustomRangeChange() {
   normalizeTimePresetForTenant()
   resetPageAndLoad()
+}
+
+// 2026-09-30 统一日历轮：custom 分支换 KxDateRangePicker（datetime 精度）。
+// ISO ↔ 'YYYY-MM-DD HH:mm'（本地时区）双向转换；chips 预设行保持原交互与租户钳制。
+function isoToLocalMinute(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+const customRangeValue = computed<KxDateRange | null>(() => {
+  if (!customDateRange.value) return null
+  const [s, e] = customDateRange.value
+  return { start: isoToLocalMinute(s), end: isoToLocalMinute(e) }
+})
+
+function onKxRangeApply(range: KxDateRange) {
+  // isoToLocalMinute 的对偶方向：'YYYY-MM-DD HH:mm' 无秒非规范格式，走补秒解析（P3-3）
+  const s = parseLocalMinute(range.start)
+  const e = parseLocalMinute(range.end)
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e <= s) return
+  customDateRange.value = [s.toISOString(), e.toISOString()]
+  onCustomRangeChange()
 }
 
 // 一键回到默认 24h
@@ -810,6 +836,7 @@ async function load() {
       from: range.from,
       to: range.to,
       q: keyword.value.trim() || undefined,
+      owner_user: ownerUserFilter.value.trim() || undefined,
       request_status: successFilter.value === '' ? undefined : successFilter.value,
       error_kind: errorKindFilter.value.trim() || undefined,
       model: modelFilter.value || undefined,
@@ -1025,6 +1052,8 @@ onMounted(async () => {
   // 24h/50 条外。
   const fromQuery = (key: string) =>
     typeof q[key] === 'string' && (q[key] as string).trim() ? (q[key] as string).trim() : ''
+  const ownerFromQuery = fromQuery('owner_user')
+  if (ownerFromQuery) ownerUserFilter.value = ownerFromQuery
   const sessionId = fromQuery('gw_session_id')
   const taskId = fromQuery('gw_task_id')
   if (sessionId || taskId) {
@@ -1313,17 +1342,13 @@ onMounted(async () => {
               {{ opt.label }}
             </button>
           </template>
-          <el-date-picker
+          <KxDateRangePicker
             v-if="timePreset === 'custom'"
-            v-model="customDateRange"
-            type="datetimerange"
-            :placeholder="t('requests.list.dateRangePlaceholder')"
-            range-separator="→"
-            format="YYYY-MM-DD HH:mm"
-            value-format="YYYY-MM-DDTHH:mm:ssZ"
-            :clearable="false"
-            style="height: 32px; width: 360px"
-            @change="onCustomRangeChange"
+            :model-value="customRangeValue"
+            :presets="[]"
+            precision="datetime"
+            :max-span-days="isDefaultTenant() ? 0 : 3"
+            @apply="onKxRangeApply"
           />
           <button v-if="timePreset !== 'h24'" class="btn btn-sm" style="cursor:pointer;white-space:nowrap" title="重置为24小时" @click="resetTimeFilter">
             ⟲ 重置

@@ -776,14 +776,18 @@ func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
 		return nil
 	}
 	var spent float64
-	// Query from view (hot + partitions) to include recent 7-day data.
-	// Note: usage_ledger_with_current_month is an optional aggregation
-	// view that may not be migrated yet. In that case fall back to
-	// spending=0 — budget enforcement is disabled until the view is
-	// created, since the alternative would be failing every budgeted
-	// request during a migration window. The primary access control
-	// is API key validation, not the budget check, so this is safe.
-	viewErr := kv.dbPool.QueryRow(ctx, "SELECT COALESCE(SUM(cost_usd), 0)::float8 FROM usage_ledger_with_current_month WHERE api_key_id = $1", keyID).Scan(&spent)
+	// DISTINCT ON 与观测面（admin/keys.go budgetCheck）及对账读路径同款：
+	// promote 异常形态会在 hot 与父表残留同一 request_id 双份，裸 SUM 双计
+	// 花费 → 提前 402（fail-closed 方向的误伤，且两门读数分叉让对账困惑；
+	// 24h 审计第二十八轮 F4 对齐）。request_id 为空的行 DISTINCT ON 会折叠
+	// 成 1 行——写入方 telemetry 均带 request_id，形态与观测面一致。
+	viewErr := kv.dbPool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(cost_usd), 0)::float8 FROM (
+			SELECT DISTINCT ON (request_id) cost_usd
+			FROM usage_ledger_with_current_month
+			WHERE api_key_id = $1
+			ORDER BY request_id, ts DESC
+		) deduped`, keyID).Scan(&spent)
 	if viewErr != nil {
 		if isMissingUsageLedgerView(viewErr) {
 			spent = 0

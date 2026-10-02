@@ -114,11 +114,92 @@ case "$TARGET" in
         ;;
 esac
 
+# ------ 密钥互异校验门（N20-6，2026-09-29）------
+# 事故模式（docs/audit/2026-09-28-vapeur-protocol-adaptation.md §七）：
+# .env.local 曾出现 SK 与 CEK 同值，容器解密全挂 → 全部候选标记不可用
+# → dispatch ErrNoRoute → 5/5 全 503。该文件不入版本控制（.gitignore），
+# 同值漂移可无痕复发，故在统一加载出口设门。
+# 语义：两者同时非空且相等 → 硬失败（source 场景 return 1 终止加载，
+# 调用方 set -e 下部署即中止；直接执行场景 exit 1）。CEK 留空合法
+# （运行时从 SK 派生 keyring，见 config.go HostedTasksConfig 注释）；
+# 长度偏离已知形态仅告警不阻塞——base64 两种 padding 形态均合法，
+# 未来换钥匙形态不应被门卡死。
+check_secret_key_distinct() {
+    local sk="${LLM_GATEWAY_SECRET_KEY:-${SECRET_KEY:-}}"
+    local cek="${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-${CREDENTIAL_ENCRYPTION_KEY:-}}"
+    if [ -z "$sk" ] || [ -z "$cek" ]; then
+        return 0
+    fi
+    if [ "$sk" = "$cek" ]; then
+        echo "[load-env] ❌ 密钥校验失败（N20-6）: SECRET_KEY 与 CREDENTIAL_ENCRYPTION_KEY 同值" >&2
+        echo "[load-env]    该组合即 2026-09-28 全 503 事故模式（解密全挂）。请修正 .env.local：" >&2
+        echo "[load-env]    SK 64 位、CEK 43/44 位且互异；或将 CEK 留空由 SK 派生" >&2
+        return 1
+    fi
+    if [ "${#sk}" -ne 64 ]; then
+        echo "[load-env] ⚠️  LLM_GATEWAY_SECRET_KEY 长度 ${#sk}（已知形态 64 位），请人工确认" >&2
+    fi
+    if [ "${#cek}" -ne 44 ] && [ "${#cek}" -ne 43 ]; then
+        echo "[load-env] ⚠️  LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY 长度 ${#cek}（已知形态 43/44 位），请人工确认" >&2
+    fi
+    return 0
+}
+
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+    check_secret_key_distinct || return 1
+else
+    check_secret_key_distinct || exit 1
+fi
+
 # 导出关键变量（标准化命名）
 export LLM_GATEWAY_252_HOST="${LLM_GATEWAY_252_HOST:-${HOST_252_INTERNAL_IP:-172.16.2.210}}"
 export LLM_GATEWAY_154_HOST="${LLM_GATEWAY_154_HOST:-${HOST_154_INTERNAL_IP:-172.16.2.209}}"
 export LLM_GATEWAY_KAIXUAN_1_HOST="${LLM_GATEWAY_KAIXUAN_1_HOST:-${KAIXUAN_1_IP:-192.168.31.28}}"
 export LLM_GATEWAY_252_SSH_PORT="${LLM_GATEWAY_252_SSH_PORT:-25022}"
+
+# ------ SK/CEK 一致性守门（防一个 .env 只换一半密钥） ------
+# 检测逻辑：两个密钥都设且都以 "sk-" 开头时，比较前缀（网关侧前缀 vs 密钥本体）。
+# 任意一个未设置或非 sk- 格式（如 LDAP/机器码）时静默跳过，不阻塞加载。
+check_key_pair() {
+    local key_var="$1" sec_var="$2" label="$3"
+    local key="${!key_var:-}" sec="${!sec_var:-}"
+    [ -n "$key" ] && [ -n "$sec" ] || return 0
+    case "$key" in sk-*) ;; *) return 0 ;; esac
+    case "$sec" in sk-*) ;; *) return 0 ;; esac
+    local key_prefix="${key%%-*}"  # sk
+    local sec_part="${sec#sk-}"
+    local sec_prefix="${sec_part%%-*}"  # 网关前缀，如 3425/3421
+    if [ "$key" = "$sec" ]; then
+        return 0  # 完全相同（本地开发同值），不告警
+    fi
+    if [ "$key_prefix" = "sk" ] && [ "${#sec_prefix}" -ge 4 ] && [ "${#sec_prefix}" -le 12 ] && \
+       [[ "$sec_prefix" =~ ^[0-9]+$ ]] && \
+       [ "${key#sk-${sec_prefix}-}" != "$key" ]; then
+        return 0  # key 形如 sk-<sec_prefix>-...，与 secret 同网关
+    fi
+    echo "[load-env] ⚠️  ${label}: ${key_var} 与 ${sec_var} 前缀不一致（${key_var}=${key:0:12}... ${sec_var}=${sec:0:12}...），疑似半换密钥" >&2
+    return 1
+}
+
+check_key_pairs() {
+    local fail=0
+    check_key_pair LLM_GATEWAY_API_KEY LLM_GATEWAY_API_SECRET "LLM_GATEWAY API" || fail=1
+    if [ "$fail" -ne 0 ]; then
+        echo "[load-env] ❌ 密钥对一致性校验失败，中止加载（export 为空则不阻塞）" >&2
+        return 1
+    fi
+    return 0
+}
+
+# 仅 source 模式（被脚本引用）时守门；独立执行时只打印
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+    check_key_pairs || {
+        # 三十七轮审计 §三#6 文案订正：本门实际校验 API_KEY↔API_SECRET 配对
+        # 一致性（check_key_pairs），与 SK/CEK 无关——旧文案误导排障方向。
+        echo "[load-env] ❌ 中止：请检查 .env 密钥对（LLM_GATEWAY_API_KEY 与 LLM_GATEWAY_API_SECRET 需同网关同批）" >&2
+        return 1
+    }
+fi
 
 
 # ------ 打印已加载的变量（仅 source 模式） ------

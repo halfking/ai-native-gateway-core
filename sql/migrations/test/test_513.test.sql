@@ -61,11 +61,7 @@ SELECT '513: idx_session_turns_t0_arrived' AS check_name,
    AND tablename = 'session_turns'
    AND indexname = 'idx_session_turns_t0_arrived';
 
--- ── 5. cleanup_expired_session_turn_logs() 在 public schema 还能跑 ─────────
-SELECT '513: cleanup_expired_session_turn_logs() callable' AS check_name,
-       public.cleanup_expired_session_turn_logs() IS NULL AS pass;
-
--- ── 6. ensure_sessions_v2_partitions() 还能跑（用下月日期，无副作用）────
+-- ── 5. ensure_sessions_v2_partitions() 还能跑（用下月日期，无副作用）────
 SELECT '513: ensure_sessions_v2_partitions() callable' AS check_name,
        public.ensure_sessions_v2_partitions((CURRENT_DATE + INTERVAL '1 month')::date) IS NULL AS pass;
 

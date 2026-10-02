@@ -25,9 +25,13 @@ export default {
     credentialMonitor: "Anmeldedaten-Überwachung",
     annotations: 'Manuelle Annotation',
     annotationStats: 'Annotation-Statistiken',
+    taskProfile: 'Aufgabenprofile',
+    autoTuning: 'Routing-Tuning',
     probeHealth: "Sondengesundheit",
     systemMonitor: "Systemüberwachung",
     providers: "Anbieter",
+    reconciliation: "Anbieterabrechnung",
+    settlementReport: "Abrechnungsbericht",
     pricing: "Kostenpreise",
     modelPricing: "Preisverwaltung",
     freePool: "Kostenloser Pool",
@@ -104,4 +108,9 @@ export default {
   publicSupport: 'Support',
 
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'Ungelöste anfrageseitige Anomalien',
+  },
 }

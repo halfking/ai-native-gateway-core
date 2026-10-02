@@ -46,8 +46,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -89,12 +91,13 @@ var ErrCredentialManuallyDisabled = errors.New("manual probe target is disabled"
 
 // ModelProbeRunner is the v2 (consensus + backoff) implementation.
 type ModelProbeRunner struct {
-	db      *pgxpool.Pool
-	encKey  []byte
-	keyring *secret.Keyring
-	cache   *ModelAvailabilityCache
-	cancel  context.CancelFunc
-	done    chan struct{}
+	db             *pgxpool.Pool
+	encKey         []byte
+	keyring        *secret.Keyring
+	cache          *ModelAvailabilityCache
+	capabilitySink ResponsesCapabilitySink
+	cancel         context.CancelFunc
+	done           chan struct{}
 	// featuredCancel is set by StartFeaturedOnly so Stop can cancel the
 	// standalone 常用模型 deep-ping cycle independently of the consensus loop.
 	// atomic.Pointer so Stop can safely read it during/after Start (audit #9).
@@ -130,11 +133,26 @@ func (r *ModelProbeRunner) SetAvailabilityCache(cache *ModelAvailabilityCache) {
 	r.cache = cache
 }
 
+// SetResponsesCapabilitySink wires durable capability feedback from native
+// Responses probes. Other probe modes intentionally emit no verdict.
+func (r *ModelProbeRunner) SetResponsesCapabilitySink(sink ResponsesCapabilitySink) {
+	if r != nil {
+		r.capabilitySink = sink
+	}
+}
+
+func (r *ModelProbeRunner) persistResponsesCapability(ctx context.Context, target probeTarget, result httpProbeResult) {
+	if err := writeResponsesCapability(ctx, r.capabilitySink, target.CredentialID, target.RawModel, result.supportsResponses); err != nil {
+		slog.Warn("model_probe: persisting Responses capability failed",
+			"credential_id", target.CredentialID, "model", target.RawModel, "error", err)
+	}
+}
+
 func (r *ModelProbeRunner) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
-	go r.run(ctx)
+	Go("model_probe.run", func() { r.run(ctx) })
 	// Layer 4: featured model deep ping every 30 minutes (v5, 2026-06-20)
-	go r.featuredCycleLoop(ctx)
+	SpawnLoop(ctx, "model_probe.featuredCycleLoop", r.featuredCycleLoop)
 	// Layer 5: manual probe worker (2026-08-14)
 	r.startManualProbeWorker(ctx)
 	slog.Info("model probe runner v2 (consensus+backoff) started",
@@ -164,10 +182,10 @@ func (r *ModelProbeRunner) Start(ctx context.Context) {
 func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 	fctx, cancel := context.WithCancel(ctx)
 	r.featuredCancel.Store(&cancel)
-	go func() {
+	Go("model_probe.featuredCycleOnly", func() {
 		defer r.closeOnce.Do(func() { close(r.done) })
 		r.featuredCycleLoop(fctx)
-	}()
+	})
 	// Audit fix #2: in new mode the consensus cycle is OFF, so the
 	// nonfeatured watchdog multiplier (applyResult) never runs. Add a
 	// lightweight watchdog loop that only EXTENDS next_retry_at for healthy
@@ -286,12 +304,19 @@ func (r *ModelProbeRunner) recoveringSweepTick(ctx context.Context) {
 	}
 	for rows.Next() {
 		var row recoveringRow
-		if err := rows.Scan(&row.CredID, &row.RawModel); err != nil {
+		if dbrows.SkipOrFail("bg.recoveringSweepTick", rows.Scan(&row.CredID, &row.RawModel)) {
 			continue
 		}
 		ids = append(ids, row)
 	}
 	rows.Close()
+	// R66: 迭代中断只让 Next() 返回 false，不查 Err() 就等于把「读到第 N
+	// 行时连接断了」当成「候选已读完」——sweeper 会静默少扫一批恢复目标。
+	// 下一轮 tick 会重选，这里只留痕不中断 worker。
+	if err := rows.Err(); err != nil {
+		slog.Warn("recovering sweeper: row iteration aborted; candidate batch truncated",
+			"error", err, "candidates", len(ids))
+	}
 	if len(ids) == 0 {
 		return
 	}
@@ -363,7 +388,7 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 	if mult <= 1 {
 		return
 	}
-	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
+	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 72)
 	topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20)
 	if topN <= 0 {
 		topN = 0 // only static featured applies when kill-switch is on
@@ -400,6 +425,9 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 			        FROM request_logs_hot rl
 			        WHERE rl.success
 			          AND rl.ts > now() - make_interval(hours => $2)
+			          -- R50: dual-arm probe exclusion — watchdog backoff is a
+			          -- usage scan (INV-3); probe-only models must back off too.
+			          AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
 			          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
 			        GROUP BY raw_model
 			    ) t
@@ -432,11 +460,85 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 		slog.Info("nonfeatured watchdog extended next_retry_at",
 			"rows", n, "mult", mult, "target_hours", targetSecs/3600)
 	}
+	r.demoteAgedHealthyBindings(ctx)
+}
+
+// demoteAgedHealthyBindings implements the Wave 3 B2① state-aging arm of the
+// healthy_confirmed watchdog (design §6.3 "2h 无证据→可疑→后台 ping"):
+// a healthy_confirmed binding with NO successful request AND NO ok probe run
+// inside the aging window (probe.state_aging_hours, default 2h) has stale
+// evidence — the watchdog no longer extends it (the extend above only sees
+// rows it extends; both statements share the state='healthy_confirmed' +
+// liveness filters and are disjoint on the evidence condition), but flips it
+// back to 'recovering' with a due next_retry_at so the consensus machinery
+// re-verifies it through real probes: the recoveringSweeperLoop (new mode)
+// or the consensus cycle (legacy) drains it, 3 ok re-earn healthy_confirmed,
+// failures walk the normal backoff ladder. The design's "suspect" label maps
+// onto recovering+verification here because model_probe_state's consumers
+// (diagnostics/views) already enumerate recovering; introducing a third
+// spelling would strand aged rows outside every existing view.
+//
+// Load bound: every demoted row becomes one consensus verify probe, drained
+// at recoveringSweepBatch (10) per 30min — bounded fleet-wide even in a
+// mass-aging event (e.g. after a quiet weekend).
+func (r *ModelProbeRunner) demoteAgedHealthyBindings(ctx context.Context) {
+	agingHours := settings.ProbeStateAgingHours()
+	tenant := settings.GetPlatformString("probe.featured_tenant", "default")
+	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	tag, err := r.db.Exec(dctx, `
+			WITH static AS (
+			    SELECT lower(unnest(COALESCE(
+			        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
+			        ARRAY[]::TEXT[]
+			    ))) AS model
+			)
+			UPDATE model_probe_state mps
+			SET state = 'recovering',
+			    consecutive_successes = 0,
+			    consecutive_failures = 0,
+			    next_retry_at = now(),
+			    last_state_change_at = now()
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			JOIN credentials c ON c.id = cmb.credential_id
+			JOIN providers p ON p.id = c.provider_id
+			WHERE mps.credential_id = cmb.credential_id
+			  AND mps.raw_model_name = pm.raw_model_name
+			  AND mps.state = 'healthy_confirmed'
+			  AND COALESCE(c.status, 'active') = 'active'
+			  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+			  AND COALESCE(p.enabled, FALSE) = TRUE
+			  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
+			  AND NOT EXISTS (
+			      SELECT 1 FROM request_logs_hot rl
+			      WHERE rl.credential_id = mps.credential_id
+			        AND COALESCE(rl.outbound_model, rl.client_model) = mps.raw_model_name
+			        AND rl.success
+			        AND rl.ts > now() - make_interval(hours => $2))
+			  AND NOT EXISTS (
+			      SELECT 1 FROM model_probe_runs mpr
+			      WHERE mpr.credential_id = mps.credential_id
+			        AND mpr.raw_model_name = mps.raw_model_name
+			        AND mpr.status = 'ok'
+			        AND mpr.created_at > now() - make_interval(hours => $2))
+		`, tenant, agingHours)
+	if err != nil {
+		slog.Warn("healthy-state aging demote failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("healthy-state aging demoted stale healthy_confirmed bindings to recovering",
+			"rows", n, "aging_hours", agingHours)
+	}
 }
 
 func (r *ModelProbeRunner) startManualProbeWorker(ctx context.Context) {
 	r.manualProbeWorkerOnce.Do(func() {
-		go r.manualProbeWorker(ctx)
+		SpawnLoop(ctx, "model_probe.manualProbeWorker", r.manualProbeWorker)
 	})
 }
 
@@ -463,7 +565,7 @@ func (r *ModelProbeRunner) manualProbeWorker(ctx context.Context) {
 		select {
 		case task := <-r.manualProbeQueue:
 			r.manualProbeWG.Add(1)
-			go func(t manualProbeTask) {
+			GoArg("model_probe.manualTask", task, func(t manualProbeTask) {
 				defer r.manualProbeWG.Done()
 				probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 				defer cancel()
@@ -473,7 +575,7 @@ func (r *ModelProbeRunner) manualProbeWorker(ctx context.Context) {
 						"model", t.RawModel,
 						"error", err)
 				}
-			}(task)
+			})
 		case <-ctx.Done():
 			slog.Info("manual probe worker shutting down, waiting for in-flight probes")
 			r.manualProbeWG.Wait()
@@ -633,7 +735,9 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 			&ciphertext, &q.t.ManualDisabled,
 			&q.state, &q.succCnt, &q.failCnt,
 		); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelProbeRunner.cycle", err) {
+				continue
+			}
 		}
 		// 2026-07-14 audit fix: dedupe by (credential_id, raw_model) within
 		// a single cycle. The SQL query is not strictly unique because the
@@ -663,6 +767,12 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		}
 		q.t.APIKey = apiKey
 		due = append(due, q)
+	}
+	// R66: 目标批次被截断会让本轮少探若干到期 binding，探针统计随之偏小。
+	// worker 继续跑，只留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("model probe v2: target row iteration aborted; batch truncated",
+			"error", err, "targets", len(due))
 	}
 	if len(due) == 0 {
 		return
@@ -746,6 +856,16 @@ func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
 // It does NOT update model_probe_state — the result is recorded as a
 // model_probe_runs row for visibility and the probe outcome goes through
 // the same consensus state machine on the next L1+L2 cycle.
+//
+// 2026-09-20 probe-volume policy (docs/probe/2026-09-20-probe-volume-optimization.md):
+// the cycle is now error-gated. 常用模型强化自检 stays, but only for credentials
+// that actually need verification — deep-pinging every credential's featured
+// list every 15 minutes was normal-state continuous probing. Three gates:
+//   - INV-3: the model carried real (non-probe) traffic on THIS credential in
+//     the last 3 days;
+//   - INV-5: the credential has failure evidence in the last 24h;
+//   - INV-4: the credential has NOT already been re-verified by two distinct
+//     models whose latest probe run succeeded within 24h.
 func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 	timeout, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -774,6 +894,22 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  -- the model sits in routing_policy.featured_models, the relay 404s
 		  -- it, and every 30-min cycle re-recorded the guaranteed failure.
 		  AND COALESCE(cmb.available, TRUE) = TRUE
+		  -- 2026-09-20 INV-5: only credentials with failure evidence get the
+		  -- deep ping; healthy credentials' business traffic is the evidence.
+		  AND `+credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL)+`
+		  -- 2026-09-20 INV-4: two recently probe-verified models stop the pass.
+		  AND NOT `+credentialTwoProbeSuccessGateSQL("c.id")+`
+		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
+		  -- THIS credential within the 3-day probe scope window.
+		  AND EXISTS (
+			SELECT 1 FROM request_logs_hot rl
+			WHERE rl.credential_id = cmb.credential_id
+			  AND rl.ts >= now() - `+probeUsageWindowInterval+`
+			  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
+			  AND (pm.raw_model_name = rl.client_model
+			       OR pm.raw_model_name = rl.outbound_model
+			       OR pm.outbound_model_name = rl.outbound_model)
+		  )
 		LIMIT $1
 	`, MaxBatchPerCycle*4 /* bound scan; Go-side globalIsFeaturedModel further filters */)
 	if err != nil {
@@ -791,7 +927,9 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality,
 			&t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled, &standardized,
 		); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelProbeRunner.featuredCycle", err) {
+				continue
+			}
 		}
 		if t.ManualDisabled {
 			continue
@@ -807,12 +945,18 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			continue
 		}
 		t.APIKey = apiKey
-		desc := providercap.Resolve(t.Protocol, "")
+		desc := probeDescriptorFor(t.Protocol)
 		mode := ProbeModeChatPing
-		if desc.Protocol == "anthropic-messages" {
+		// 2026-09-25：按归一后协议选择探针形态——openai-responses 中转
+		// （vapeur）对 chat max_tokens=1 直接 400，Layer 4 必须走原生
+		// /v1/responses；anthropic-messages 走 /v1/messages。
+		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
+			mode = ProbeModeResponses
+		} else if desc.Protocol == "anthropic-messages" {
 			mode = ProbeModeMessages
 		}
 		result := probeWithRetry(timeout, desc, t, mode)
+		r.persistResponsesCapability(timeout, t, result)
 		// Record the probe result as a model_probe_runs row for visibility.
 		var httpStatus *int
 		if result.httpStatus > 0 {
@@ -822,6 +966,12 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			result.latencyMs, "unchanged", false, "scheduler")
 		tested++
 		time.Sleep(2 * time.Second) // rate limit: 2s between probes
+	}
+	// R66: 深探目标批被截断会让本轮「常用模型」自检少跑若干目标，
+	// tested 计数随之偏小。worker 继续跑，只留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("featured cycle (Layer 4): row iteration aborted; batch truncated",
+			"error", err, "tested", tested)
 	}
 	slog.Info("featured cycle (Layer 4) complete",
 		"tested", tested,
@@ -977,6 +1127,9 @@ func (r *ModelProbeRunner) applyPassiveBoosts(ctx context.Context) {
 		var credID int64
 		var rawModel string
 		if err := rows.Scan(&credID, &rawModel); err != nil {
+			// R66: 裸 continue 会让这条失败日志对应的 boost 静默丢失
+			//（下次重试窗口才可能补上），必须留痕。
+			dbrows.WarnRowSkip("bg.ModelProbeRunner.applyPassiveBoosts", err)
 			continue
 		}
 		if _, err := r.db.Exec(ctx,
@@ -1226,7 +1379,7 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	if t.BaseURL == "" {
 		return "skipped", probeCategorySkipped, 0, "endpoint_unresolved", "empty base_url", int(time.Since(start).Milliseconds())
 	}
-	desc := providercap.Resolve(t.Protocol, "")
+	desc := probeDescriptorFor(t.Protocol)
 	mode := ProbeModeModelsList
 	if desc.Protocol == "anthropic-messages" {
 		// Anthropic prefers its own /v1/messages endpoint for chat probes;
@@ -1421,7 +1574,9 @@ func (r *ModelProbeRunner) TriggerAllSync(ctx context.Context, providerID int) (
 			&t.BaseURL, &t.Protocol,
 			&ciphertext, &t.ManualDisabled,
 		); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelProbeRunner.TriggerAllSync", err) {
+				continue
+			}
 		}
 
 		if t.ManualDisabled {
@@ -1494,6 +1649,22 @@ func (r *ModelProbeRunner) TriggerAllSync(ctx context.Context, providerID int) (
 	return results, nil
 }
 
+// probeDescriptorFor is the single protocol-resolution entry for every probe
+// dispatch site. providers.protocol has no CHECK constraint (db providers.sql),
+// so legacy rows can carry alias spellings ("anthropic", "openai-response",
+// "claude", ...) that providercap.Resolve would silently treat as the
+// Bearer-only chat default — the exact shape of the 2026-09-23 vapeur
+// misreport (anthropic credentials health-probed with the wrong auth style).
+// Normalize to the catalog enum first; unknown values keep the raw input so
+// behavior for genuinely unrecognized protocols is unchanged (chat default).
+// Read-face only: the normalized value is never written back to storage.
+func probeDescriptorFor(protocol string) providercap.Descriptor {
+	if normed, normErr := providercatalog.NormalizeProviderProtocol(protocol); normErr == nil {
+		protocol = normed
+	}
+	return providercap.Resolve(protocol, "")
+}
+
 // probeTarget is the (credential, model, base_url, protocol, api_key)
 // tuple we test.
 type probeTarget struct {
@@ -1519,7 +1690,7 @@ func (r *ModelProbeRunner) verifyTargetModality(ctx context.Context, t probeTarg
 	if model == "" {
 		model = t.RawModel
 	}
-	desc := providercap.Resolve(t.Protocol, "")
+	desc := probeDescriptorFor(t.Protocol)
 	endpoint := upstreamurl.Build(t.BaseURL, desc.ChatProbeEndpoint)
 	result := ProbeModality(ctx, endpoint, t.APIKey, model, t.Modality, desc.Protocol == "anthropic-messages")
 	if result.ErrCode == "" && result.Supported {
@@ -1603,9 +1774,16 @@ func (r *ModelProbeRunner) ListStates(ctx context.Context, providerID int, state
 			&s.ConsecutiveSuccesses, &s.ConsecutiveFailures, &s.TotalAttempts,
 			&s.LastAttemptAt, &s.NextRetryAt, &s.LastStatus,
 			&s.LastStateChangeAt, &s.LastStateChangeRun); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelProbeRunner.ListStates", err) {
+				continue
+			}
 		}
 		out = append(out, s)
+	}
+	// R66: 调用方（admin probe 面板）拿到的 state 列表若被静默截断，
+	// 会把「没列出」误读成「该 provider 没有这个 binding」。必须上抛。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("bg.ModelProbeRunner.ListStates: iterate rows: %w", err)
 	}
 	return out, nil
 }

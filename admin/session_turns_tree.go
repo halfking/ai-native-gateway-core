@@ -29,12 +29,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // SessionTurnTreeItem 是一轮（主请求 + 内联子请求树）。
@@ -46,6 +49,12 @@ type SessionTurnTreeItem struct {
 	LatencyMs     *int                   `json:"latency"` // 毫秒；NULL 未知
 	ChildRequests []*SessionChildRequest `json:"child_requests"`
 	V2Shadow      *SessionTurnV2Shadow   `json:"v2_shadow,omitempty"`
+	// Subtask 3 / R73 — body_status 两态契约（'available' | 'unavailable'，
+	// admin/body_status.go）。元数据级 EXISTS 探针（session_bodies_unified），
+	// 绝不携带正文字节（文件头硬约束）。恒发以与 unified / session detail v2
+	// 家族口径一致；schema 无法区分「从未采集」与「按保留期清理」，历史轮次
+	// 恒报 'unavailable'（time线横幅按已加载轮次计数，语义见前端注释）。
+	BodyStatus string `json:"body_status"`
 }
 
 // SessionTurnV2Shadow is the per-turn, metadata-only dual-read comparison.
@@ -56,11 +65,18 @@ type SessionTurnV2Shadow struct {
 }
 
 // SessionChildRequest 是挂在主请求下的扩展请求（仅元数据）。
+//
+// contract_freeze §1.6：child request 的身份仍由 request_id 标识，但归属
+// 会话恒为 session_id（与 V1 gw_session_id / SessionPK 互不替代）。V2
+// unified turns 端点（session_turns_unified.go）在装配时填充 IDKind 与
+// PrimaryKey；V1 tree 端点不填充，omitempty 保证 JSON 零变更。
 type SessionChildRequest struct {
 	RequestID   string `json:"request_id"`
 	RequestType string `json:"request_type"` // title | summary | sensitive_word | compression | other
 	Status      string `json:"status"`
 	LatencyMs   *int   `json:"latency"` // 毫秒；NULL 未知
+	IDKind      string `json:"id_kind,omitempty"`
+	PrimaryKey  string `json:"primary_key,omitempty"`
 }
 
 // sessionTurnsTreeDB 是 querySessionTurnsTree 依赖的最小查询接口
@@ -138,7 +154,10 @@ func (h *Handler) handleSessionTurnsTree(w http.ResponseWriter, r *http.Request)
 	}
 
 	if h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		// 十七轮审计（M-2 同族收尾）：tree 是 turns 列表的默认路由，此前
+		// nil-pool 裸 writeError(503)、查询错误一律 500，与 v2 家族的
+		// WriteStorageDegraded 口径不一致——同一 DB 故障 tree=500 / v2=503。
+		WriteStorageDegraded(w, observability.StorageComponentTurns, ErrNilDatabasePool)
 		return
 	}
 
@@ -152,7 +171,11 @@ func (h *Handler) handleSessionTurnsTree(w http.ResponseWriter, r *http.Request)
 		Cursor:    cursor,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+			return
+		}
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	if result.NotFound {
@@ -197,19 +220,29 @@ func parseTurnsTreeLimit(r *http.Request) int {
 func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p sessionTurnsTreeParams) (*sessionTurnsTreeResult, error) {
 	// 1) 主请求页（ROW_NUMBER 派生 turn_number，(turn_number, request_id) 游标）
 	mainSQL := `
-		SELECT t.turn_number, t.request_id, t.status, t.model, t.latency_ms
+		SELECT t.turn_number, t.request_id, t.status, t.model, t.latency_ms, t.body_present
 		FROM (
 			SELECT ROW_NUMBER() OVER (ORDER BY ts ASC, request_id ASC) AS turn_number,
 			       request_id,
 			       COALESCE(request_status, '') AS status,
 			       COALESCE(outbound_model, client_model, '') AS model,
-			       latency_ms
-			FROM request_logs_with_current_month
-			WHERE gw_session_id = $1
-			  AND (parent_request_id IS NULL OR parent_request_id = '')`
+			       latency_ms,
+			       EXISTS (
+			           SELECT 1
+			           FROM public.session_bodies_unified b
+			           WHERE b.tenant_id = rl.tenant_id
+			             AND b.session_id = rl.gw_session_id
+			             AND b.request_id = rl.request_id
+			             AND ((b.request_delta IS NOT NULL AND b.request_delta <> 'null'::jsonb)
+			               OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
+			               OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb))
+			       ) AS body_present
+			FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl
+			WHERE 1 = 1
+			  AND (rl.parent_request_id IS NULL OR rl.parent_request_id = '')`
 	args := []any{p.SessionID}
 	if p.TenantID != "" {
-		mainSQL += fmt.Sprintf("\n\t\t\t  AND tenant_id = $%d", len(args)+1)
+		mainSQL += fmt.Sprintf("\n\t\t\t  AND rl.tenant_id = $%d", len(args)+1)
 		args = append(args, p.TenantID)
 	}
 	mainSQL += fmt.Sprintf(`
@@ -234,10 +267,12 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 	for rows.Next() {
 		var tn int64
 		t := &SessionTurnTreeItem{}
-		if err := rows.Scan(&tn, &t.RequestID, &t.Status, &t.Model, &t.LatencyMs); err != nil {
+		var bodyPresent bool
+		if err := rows.Scan(&tn, &t.RequestID, &t.Status, &t.Model, &t.LatencyMs, &bodyPresent); err != nil {
 			return nil, fmt.Errorf("read session turns failed: %w", err)
 		}
 		t.TurnNumber = int(tn)
+		t.BodyStatus = bodyStatusFromPresent(bodyPresent)
 		t.ChildRequests = []*SessionChildRequest{}
 		turns = append(turns, t)
 		lastKey = sessionTurnsTreeCursor{TurnNumber: tn, RequestID: t.RequestID}
@@ -328,11 +363,17 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 
 // sessionTurnsTreeExists 检查会话是否有任何请求记录（不限租户），
 // 返回归属租户用于跨租户 403 判定。
+//
+// 会话存储解耦 v3（2026-09-30）：读源迁到 session 族原生源。谓词是
+// gw_session_id ⇒ class A 可迁（见审计 §5.5.5 判据）。注意与本文件
+// L324 的 `parent_request_id = ANY($1)` 相反——那一条是 request_id 键
+// 反查，class B，**禁止**迁，已由 session_view_dependency_risk_test.go
+// 钉死。
 func sessionTurnsTreeExists(ctx context.Context, db sessionTurnsTreeDB, sessionID string) (bool, string, error) {
 	var tenantID string
 	err := db.QueryRow(ctx, `
-		SELECT tenant_id FROM request_logs_with_current_month
-		WHERE gw_session_id = $1 LIMIT 1`, sessionID).Scan(&tenantID)
+		SELECT t.tenant_id FROM `+dbpkg.SessionFamilyTurnsForSessionSQL()+` t
+		WHERE 1 = 1 LIMIT 1`, sessionID).Scan(&tenantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, "", nil
 	}

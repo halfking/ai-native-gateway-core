@@ -38,7 +38,8 @@ func TestApprovalManagerCreator_BuildsSessionauditRequest(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SET", 0))
 	mock.ExpectExec(`INSERT INTO approval_queue`).
 		WithArgs(

@@ -37,7 +37,7 @@ func (h *CenterHandler) Activate(c echo.Context) error {
 
 	resp, err := h.activator.Activate(c.Request().Context(), &req)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "activation failed", err)
 	}
 
 	return c.JSON(http.StatusOK, resp)
@@ -50,7 +50,7 @@ func (h *CenterHandler) Deactivate(c echo.Context) error {
 	}
 
 	if err := h.activator.Deactivate(c.Request().Context(), &req); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "deactivation failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "deactivated"})
@@ -66,7 +66,7 @@ func (h *CenterHandler) Heartbeat(c echo.Context) error {
 	}
 
 	if err := h.activator.Heartbeat(c.Request().Context(), req.LicenseKey, req.HardwareHash); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "heartbeat failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
@@ -100,7 +100,7 @@ func (h *CenterHandler) CreateOfflineRequest(c echo.Context) error {
 
 	requestData, err := h.offlineManager.CreateOfflineRequest(c.Request().Context(), &req)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "create offline request failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{

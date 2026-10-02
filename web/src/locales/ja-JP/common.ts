@@ -135,6 +135,8 @@ export default {
   duration: '期間',
   edit: '編集',
   enabled: '有効',
+  endDate: '終了日',
+  exportFailed: 'エクスポートに失敗しました',
   lastOccurred: '最終発生',
   loading: '読み込み中…',
   never: '未実行',
@@ -143,6 +145,7 @@ export default {
   refresh: '更新',
   send: '送信',
   session: 'セッション',
+  startDate: '開始日',
   time: '時間',
   warning: '警告',
   yes: 'はい',
@@ -173,4 +176,27 @@ export default {
   copied: '已复制',
 
   add: '添加',
+
+  // 2026-09-30 统一日历组件族（KxDateRangePicker / KxDatePicker）共用词条
+  dateRange: {
+    title: '期間',
+    custom: 'カスタム',
+    startDate: '開始日',
+    endDate: '終了日',
+    openAria: '期間を選択',
+    endBeforeStart: '終了日は開始日以降にしてください',
+    afterLatest: '{date} より後は選べません',
+    spanTooLong: '範囲が {n} 日を超えています',
+    pickDate: '日付を選択',
+    preset: {
+      today: '今日',
+      yesterday: '昨日',
+      last24h: '過去24時間',
+      last7d: '過去7日間',
+      last14d: '過去14日間',
+      last30d: '過去30日間',
+      thisMonth: '今月',
+      lastMonth: '先月',
+    },
+  },
 }

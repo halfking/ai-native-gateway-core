@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 const (
@@ -108,6 +110,12 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 
 	logs, err := h.loadTaskLogsForTitle(ctx, taskID, sc, r)
 	if err != nil {
+		// 2026-09-29 (审计二十一轮): 存储不可用走 503 降级契约，不再把
+		// 存储抖动当 500 代码缺陷。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentSummary, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -136,7 +144,8 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 
 	llmRes, err := h.callAdminLLMChat(ctx, r, apiKey, adminLLMTaskSessionTitle, taskID, userContent)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "标题生成失败: "+err.Error())
+		slog.Error("session title: generation failed", "task_id", taskID, "err", err)
+		writeError(w, http.StatusBadGateway, "标题生成失败，请稍后重试")
 		return
 	}
 	title := llmRes.Content
@@ -199,6 +208,7 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 		if err := rows.Scan(&row.Ts, &row.RequestPreview, &row.ResponsePreview,
 			&row.RequestBody, &row.ResponseBody,
 			&row.RequestStatus, &errKind, &clientModel); err != nil {
+			warnRowSkip("loadSessionLogsForSummary", err)
 			continue
 		}
 		row.ErrorKind = errKind
@@ -309,14 +319,13 @@ func (h *Handler) resolveSessionTitleTaskID(ctx context.Context, sessionID, tena
 	}
 	var taskID string
 	err := h.db.QueryRow(ctx, `
-		SELECT COALESCE(NULLIF(TRIM(gw_task_id), ''), 'auto')
-		FROM request_logs_with_current_month
-		WHERE gw_session_id = $1
-		  AND tenant_id = $2
-		  AND success = TRUE
-		  AND COALESCE(is_auto_request, FALSE) = FALSE
-		  AND COALESCE(origin_actor, '') NOT LIKE 'goal-%'
-		ORDER BY ts DESC, id DESC
+		SELECT COALESCE(NULLIF(TRIM(t.gw_task_id), ''), 'auto')
+		FROM `+dbpkg.SessionFamilyTurnsForSessionSQL()+` t
+		WHERE 1 = 1
+		  AND t.success = TRUE
+		  AND COALESCE(t.is_auto_request, FALSE) = FALSE
+		  AND COALESCE(t.origin_actor, '') NOT LIKE 'goal-%'
+		ORDER BY t.ts DESC, t.id DESC
 		LIMIT 1
 	`, sessionID, tenantID).Scan(&taskID)
 	if err != nil {
@@ -357,9 +366,14 @@ func (h *Handler) loadSessionTitlesBatch(ctx context.Context, keys [][2]string) 
 	for rows.Next() {
 		var taskID, scopedID, title string
 		if err := rows.Scan(&taskID, &scopedID, &title); err != nil {
+			warnRowSkip("loadSessionTitlesBatch", err)
 			continue
 		}
 		out[sessionTitleMapKey(taskID, scopedID)] = title
+	}
+	// 批量标题富化属降级通道，迭代中断留痕后按已取到的映射继续。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("loadSessionTitlesBatch iteration aborted; titles degraded", "error", rerr)
 	}
 	return out
 }
@@ -476,7 +490,7 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 			model = EXCLUDED.model
 	`, taskID, scopedKey, cleaned)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
+		writeInternalErr(w, "save title", err)
 		return
 	}
 
@@ -566,7 +580,7 @@ func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Reques
 		WHERE task_id = $1 AND scoped_session_id = $2
 	`, taskID, scopedKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete title: "+err.Error())
+		writeInternalErr(w, "delete title", err)
 		return
 	}
 	rows := tag.RowsAffected()

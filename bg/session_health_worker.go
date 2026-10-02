@@ -81,7 +81,7 @@ func (w *SessionHealthWorker) SetExecutor(exec *moduleexec.Executor) {
 // Start 启动后台 goroutine。Stop 之前不能重复 Start。
 func (w *SessionHealthWorker) Start(ctx context.Context) {
 	ctx, w.cancel = context.WithCancel(ctx)
-	go w.run(ctx)
+	Go("session_health_worker.run", func() { w.run(ctx) })
 	slog.Info("session health worker started", "interval", "60m")
 }
 
@@ -156,6 +156,12 @@ func (w *SessionHealthWorker) sweep(ctx context.Context) {
 			continue
 		}
 		sessions = append(sessions, s)
+	}
+	// R66: 待算批被截断 = 少数会话的 health_score 静默保持 NULL，
+	// 「processing batch」计数随之偏小。
+	if err := rows.Err(); err != nil {
+		slog.Warn("session health worker: row iteration aborted; batch truncated",
+			"error", err, "sessions", len(sessions))
 	}
 
 	if len(sessions) == 0 {

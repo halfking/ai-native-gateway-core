@@ -72,6 +72,8 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
 CLEANUP_DOWNLOADS=0
 DEPLOY_BUILD_LOCK_HELD=0
+# 本次部署已拉起、尚未晋升的候选实例端口（cleanup_deploy 兜底清理用）
+DEPLOY_CANDIDATE_PORT=
 LOCK_LOCAL_BUILD_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-build.lock"
 LOCK_BUILD_TARGET=local
 
@@ -170,6 +172,14 @@ release_build_lock() {
 cleanup_deploy() {
   local status=$?
   trap - EXIT INT TERM
+  # 2026-09-20：部署中途夭折（Ctrl-C / 未捕获 die）不能把已验证的候选实例
+  # 留在另一端口上裸奔——它会以 --restart unless-stopped 活过 Docker 重启，
+  # 占着 DB/Redis 连接，还是下一次部署端口误判的温床。候选未被晋升就清掉。
+  if [[ -n "${DEPLOY_CANDIDATE_PORT:-}" ]]; then
+    printf '[deploy-local] warning: deploy aborted with an unpromoted candidate on :%s — cleaning it up\n' "$DEPLOY_CANDIDATE_PORT" >&2
+    stop_instance "$DEPLOY_CANDIDATE_PORT" || true
+    DEPLOY_CANDIDATE_PORT=
+  fi
   release_build_lock
   exit "$status"
 }
@@ -296,14 +306,25 @@ detect_existing_containers() {
 migrate_existing_pg_to_shared() {
   [[ "$DL_DB_MODE" == docker && "$DL_PG_CONTAINER" == llm-gateway-pg ]] || return 0
   [[ -n "$DL_PG_SOURCE" && "$DL_PG_SOURCE" == /* ]] || return 0
+  [[ -n "${SHARED_PG_DIR:-}" ]] || {
+    warn "SHARED_PG_DIR is empty; skipping migration (treat as already-shared)"
+    DL_PG_SOURCE="$SHARED_PG_DIR"
+    return 0
+  }
   local shared="$SHARED_PG_DIR" project_copy="$ROOT_DIR/postgres" old_name pg_backup
   old_name="llm-gateway-pg.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"
   dl_prepare_shared_service_dirs
-  [[ "$DL_PG_SOURCE" != "$shared" ]] || {
-    log "llm-gateway-pg already bound to shared $shared; no copy required"
+  # 2026-09-23 修复：容错归一化路径（Docker 有时报告带尾部 / 或双斜杠的路径），
+  # 否则 `DL_PG_SOURCE != shared` 误报为真、触发无用迁移并最终 docker run
+  # 解析异常（"invalid mode: /var/lib/postgresql/data"）。
+  local dl_pg_source_norm shared_norm
+  dl_pg_source_norm=$(printf '%s' "$DL_PG_SOURCE" | tr -s '/' | sed 's:/*$::')
+  shared_norm=$(printf '%s' "$shared" | tr -s '/' | sed 's:/*$::')
+  [[ -n "$dl_pg_source_norm" && "$dl_pg_source_norm" != "$shared_norm" ]] || {
+    log "llm-gateway-pg already bound to shared $shared (no copy required; source=$DL_PG_SOURCE)"
     return 0
   }
-  log "migrating llm-gateway-pg data to $shared (source retained)"
+  log "migrating llm-gateway-pg data to $shared (source retained at $DL_PG_SOURCE)"
   docker stop "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
   mkdir -p "$SHARED_PG_BACKUP_DIR"
   pg_backup="$SHARED_PG_BACKUP_DIR/llm-gateway-pg-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
@@ -314,18 +335,44 @@ migrate_existing_pg_to_shared() {
   fi
   local env_file="$SHARED_PG_RUN_DIR/llm-gateway-pg.env"
   docker rename "$DL_PG_CONTAINER" "$old_name" || die "failed to rename $DL_PG_CONTAINER to $old_name"
-  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$old_name" > "$env_file"
+  # 2026-09-23 修复：去重 env_file 中的键（Docker 29.x 对重复键解析更严，曾触发
+  # `--env-file` 路径下 docker run 报 "invalid mode" 误导性错误）。awk 保留首次
+  # 出现顺序、末次出现胜出，与 Docker CLI docs "the last value will be used" 一致。
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$old_name" \
+    | awk -F= '
+        NF<2 || /^[[:space:]]*#/ {print; next}
+        { seen[$1]=$0; if (!($1 in order_idx)) order_idx[$1]=++n }
+        END { for (i=1; i<=n; i++) for (k in order_idx) if (order_idx[k]==i) print seen[k] }
+      ' > "$env_file"
   chmod 0600 "$env_file"
   local image network pg_user pg_db pg_pass
   image=$(docker inspect -f '{{.Config.Image}}' "$old_name")
   network=$(docker inspect -f '{{range $n, $cfg := .NetworkSettings.Networks}}{{println $n}}{{end}}' "$old_name" | head -n1)
+  # 2026-09-23 修复：network 取值要剥尾部空白/换行，避免 docker run 把它当多参数解析
+  network="${network//[$' \t\r\n']/}"
+  [[ "$network" =~ ^[A-Za-z0-9_.-]+$ ]] || network=
   pg_user=$(dl_container_env "$old_name" POSTGRES_USER); pg_user=${pg_user:-llm_gateway}
   pg_db=$(dl_container_env "$old_name" POSTGRES_DB); pg_db=${pg_db:-llm_gateway}
   pg_pass=$(dl_container_env "$old_name" POSTGRES_PASSWORD)
-  local -a run_args=(--name "$DL_PG_CONTAINER" --restart unless-stopped --env-file "$env_file" -v "$shared:/var/lib/postgresql/data" -p "127.0.0.1:5432:5432")
+  # 2026-09-23 修复：改用 `--mount type=bind,...` 显式语法，避免 `-v src:dst` 在路径含
+  # 特定字符或 daemon 严格模式下被误解析为 mode 段（曾导致 "invalid mode"）。同时把
+  # env-file 的位置单独列在 `--env-file` 之前以便排错时一眼看出是文件来源。
+  local -a run_args=(
+    --name "$DL_PG_CONTAINER"
+    --restart unless-stopped
+    --env-file "$env_file"
+    --mount "type=bind,source=${shared},target=/var/lib/postgresql/data"
+    -p "127.0.0.1:5432:5432"
+  )
   [[ -n "$network" ]] && run_args+=(--network "$network")
-  if ! docker run -d "${run_args[@]}" "$image" >/dev/null; then
-    warn "new llm-gateway-pg failed to start; restoring original container"
+  log "creating new llm-gateway-pg with shared storage at $shared"
+  # 2026-09-23 修复：保留 docker run 真实 stderr/stdout（去掉 "> /dev/null"），
+  # 避免日后 "invalid mode: /var/lib/postgresql/data" 等误导性错误被再次吞掉。
+  local docker_run_err rc=0
+  if ! docker_run_err=$(docker run -d "${run_args[@]}" "$image" 2>&1); then
+    rc=$?
+    printf '%s\n' "$docker_run_err" | sed 's/^/[deploy-local] docker-run: /' >&2 || true
+    warn "new llm-gateway-pg failed to start (rc=$rc); restoring original container"
     docker rm -f "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
     docker rename "$old_name" "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
     docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
@@ -567,7 +614,12 @@ build_backend() {
   # 先删除旧产物：go build 失败时绝不能把陈旧 gateway.build 留给后续
   # step_release 打包（2026-09-05 事故：编译失败被赋值语境的 set -e 怪癖
   # 静默吞掉，两个新版本号打包了同一个 4 小时前的旧二进制）。
-  rm -f "$out"
+  # 重定向到 /dev/null：本地 rm 是 mavis-trash shim，它 echo "moved to
+  # trash: '...'" 走 stdout；build_backend 的 stdout 由 binary=$(...)
+  # 捕获作为产物路径返回，mavis-trash 消息混入会让 [[ -s "$binary" ]]
+  # 守卫永远失败（2026-09-23 实测）。进一步用 /bin/rm 直调避免 osascript
+  # Finder 删大二进制时挂死（实测 1m+ 卡在 osascript 上）。
+  /bin/rm -f "$out" >/dev/null 2>&1
   if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$out" ./cmd/gateway) 2>"$RUN_DIR/build-host.log"; then
     # 2026-09-07: 上游 0e3fa12f6 线引入了 CGO-only 依赖（mattn/go-sqlite3、
     # yalue/onnxruntime_go，见 Dockerfile 2026-09-05 的 CGO_ENABLED=1 注），
@@ -659,7 +711,7 @@ build_backend() {
       printf '    [cgo-build host log follows]\n' >&2
       sed 's/^/    /' "$cgo_log" >&2 || true
       ls -la "$PROJECT_ROOT/.build-local/" >&2 || true
-      rm -f "$cgo_out"  # cleanup stale $$ file
+      /bin/rm -f "$cgo_out" >/dev/null 2>&1  # cleanup stale $$ file
       die "backend CGO build produced no output at $cgo_out (docker run returned 0 but the file is missing or empty); inspect $cgo_log"
     fi
     # 用 install 而非 mv：原子替换 + 显式 mtime，便于后续检查。
@@ -670,10 +722,10 @@ build_backend() {
     if ! install -m 0755 "$cgo_out" "$out" 2>"$RUN_DIR/build-cgo-mv.log"; then
       printf '    [cgo-install stderr follows]\n' >&2
       sed 's/^/    /' "$RUN_DIR/build-cgo-mv.log" >&2 || true
-      rm -f "$cgo_out"
+      /bin/rm -f "$cgo_out" >/dev/null 2>&1
       die "failed to install $cgo_out -> $out (see $RUN_DIR/build-cgo-mv.log)"
     fi
-    rm -f "$cgo_out"
+    /bin/rm -f "$cgo_out" >/dev/null 2>&1
   fi
   [[ -s "$out" ]] || die "backend build produced no output at $out"
   printf '%s\n' "$out"
@@ -683,7 +735,22 @@ build_frontend() {
   (( SKIP_FRONTEND )) && return 0
   need_cmd node
   if [[ -f "$PROJECT_ROOT/web/package.json" ]]; then
-    if [[ -x "$PROJECT_ROOT/web/node_modules/.bin/vite" ]]; then (cd "$PROJECT_ROOT/web" && npm run build) >/dev/null; else warn 'web/node_modules is missing; retaining existing web/dist'; fi
+    if [[ -x "$PROJECT_ROOT/web/node_modules/.bin/vite" ]]; then
+      # 2026-09-28 R79：前端构建失败曾以 `(cd … && npm run build) >/dev/null`
+      # 配 set -e 的组合让部署**静默夭折**——vue-tsc 的每一条诊断都被 /dev/null
+      # 吞掉，非零退出直接 unwind 到 EXIT trap，日志最后一行还停在 build 之前
+      # 的 dl_cleanup_legacy_downloads 上，操作者无从判断死在哪一步。实测连续
+      # 3 次部署各烧掉一个 build_seq（2298→2299→2300）却一个 release 都没产出，
+      # 只能手工重跑 npm run build 才定位到是 vue-tsc 报 test 文件类型错。
+      # 改为：全量输出落 $RUN_DIR/build-frontend.log；失败时回显末 40 行并 die，
+      # 让部署失败「响亮」且自带可打开的证据文件。
+      local web_log="$RUN_DIR/build-frontend.log"
+      if ! (cd "$PROJECT_ROOT/web" && npm run build) >"$web_log" 2>&1; then
+        printf '    [frontend] build failed; last 40 lines of %s:\n' "$web_log" >&2
+        tail -40 "$web_log" >&2 || true
+        die "frontend build failed (see $web_log) — refusing to deploy a release whose web/dist is stale"
+      fi
+    else warn 'web/node_modules is missing; retaining existing web/dist'; fi
   fi
 }
 
@@ -794,7 +861,19 @@ start_instance() {
   dl_wait_pg_isready || true
   if (( DL_DOCKER )); then
     local image="${LLM_GATEWAY_RUNTIME_IMAGE:-alpine:3.22}" image_file="$RUN_DIR/runtime.Dockerfile"
-    docker image inspect "$image" >/dev/null 2>&1 || die "Docker runtime image $image is not available (set LLM_GATEWAY_RUNTIME_IMAGE)"
+    # 2026-09-28：首次部署 / docker image prune 后本地无 alpine:3.22 时
+    # 单纯 inspect 失败 → die 会让操作员误以为环境被破坏。补一层
+    # docker pull 自动修复：仅当 inspect 失败且 pull 成功才继续；
+    # pull 失败仍保留原始 die（明确告诉操作员网络/DNS/镜像不可达）。
+    # 已镜像同步过的机器仍走 inspect fast-path（pull 只在缺镜像时触发）。
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      printf '[deploy-local] runtime image %s not cached locally; attempting docker pull...\n' "$image" >&2
+      if docker pull "$image" >/dev/null 2>&1; then
+        printf '[deploy-local] runtime image %s pulled successfully.\n' "$image" >&2
+      else
+        die "Docker runtime image $image is not available (set LLM_GATEWAY_RUNTIME_IMAGE or check network/registry access)"
+      fi
+    fi
     cat > "$image_file" <<'EOF'
 ARG BASE_IMAGE=alpine:3.22
 FROM ${BASE_IMAGE}
@@ -807,10 +886,15 @@ EOF
     # 2026-09-19 加速：--cache-from 复用上一版本镜像的层 —— 即使
     # Dockerfile 改了应用代码，只要 BASE_IMAGE/go.mod/go.sum 这几层哈希一致
     # 就能跳过重编，缩短增量构建 30-70%。失败不致命（无旧镜像也能继续）。
+    # R51 审计 P3：cache-from 不能引用正在创建的同版本 tag（对新版本永远
+    # miss），改用固定的 cache-latest tag —— build 成功后 docker tag 打上，
+    # 下一版本即可命中旧层。
+    local cache_tag="kx-llm-gateway-local:cache-latest"
     docker build -q --build-arg "BASE_IMAGE=$image" \
-      --cache-from "kx-llm-gateway-local:${RELEASE_VERSION}" \
+      --cache-from "$cache_tag" \
       -f "$image_file" -t "kx-llm-gateway-local:${RELEASE_VERSION}" "$bundle" >/dev/null \
       || dl_die "docker build for runtime image failed (tag=kx-llm-gateway-local:${RELEASE_VERSION})"
+    docker tag "kx-llm-gateway-local:${RELEASE_VERSION}" "$cache_tag" >/dev/null 2>&1 || true
     local runtime_env="$RUN_DIR/${name}.env"
     cp "$bundle/env" "$runtime_env"; chmod 0600 "$runtime_env"
     sed -i.bak -E \
@@ -846,6 +930,16 @@ EOF
       mkdir -p "$ROOT_DIR/$state_dir"
       gateway_bind_args+=(-v "$ROOT_DIR/$state_dir:/opt/llm-gateway-go/$state_dir")
     done
+    # R-9 (2026-09-30 热区复审决策:保留热区跨部署):data/ 是热区唯一
+    # 未挂载的落盘点,此前每次部署随容器可写层清零(drill 2026-09-30 实测
+    # 蓝绿切换后 data/hotzone 文件数归零)。挂载目标=进程相对默认
+    # ./data/hotzone 的绝对化:实际运行的 runtime 镜像(runtime.Dockerfile,
+    # 部署时生成)WORKDIR=/opt/llm-gateway-go,即 /opt/llm-gateway-go/data。
+    # 2026-09-30 首版误按构建期 Dockerfile 的「WORKDIR=/app」挂到 /app/data,
+    # 2026-10-01 R-9 部署级实证抓出(热区 402 文件落可写层、/app/data 恒空),
+    # 当日更正。trimmer 配额(env 7h/1GB/30m)与挂载无关,不会因持久化漂移。
+    mkdir -p "$ROOT_DIR/data"
+    gateway_bind_args+=(-v "$ROOT_DIR/data:/opt/llm-gateway-go/data")
     docker run -d --name "$name" --restart unless-stopped "${gateway_net_args[@]}" "${gateway_bind_args[@]}" --env-file "$runtime_env" -e "LLM_GATEWAY_LISTEN=:${port}" -e "LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/version.json" -p "127.0.0.1:${port}:${port}" "kx-llm-gateway-local:${RELEASE_VERSION}" >/dev/null
   else
     local pf; pf=$(pid_file "$port"); mkdir -p "$RUN_DIR" "$LOG_DIR"
@@ -1025,6 +1119,15 @@ deploy() {
   # ("token generation failed") and rejects every previously issued token.
   # Fail before the build instead of discovering it after cutover.
   [[ -n "${LLM_GATEWAY_SECRET_KEY:-}" ]] || die 'LLM_GATEWAY_SECRET_KEY is empty — refusing to deploy a gateway that cannot sign admin sessions (check .env.local or the calling environment)'
+  # 2026-09-26（12h 审计轮，handoff §6.1 预防建议落地）：admin 用户名已设
+  # 而密码为空 = 冒烟必败形态，同 SECRET_KEY 一样 build 前快速失败（详见
+  # deploy-local-lib.sh dl_admin_password_preflight 注释）。
+  dl_admin_password_preflight
+  # 2026-09-29 R79 follow-up (audit 2026-09-28 §7.1): .env.local SK/CEK 同值
+  # 漂移曾在 2300 部署复烧 80 分钟全站 503——文件被 .gitignore 忽略，仓库
+  # 零留痕；dl_key_drift_preflight 在 bump_local_version 之前把"两键同值 /
+  # 任一过短"做成 fatal（详见 deploy-local-lib.sh dl_key_drift_preflight 注释）。
+  dl_key_drift_preflight
   bump_local_version
   ensure_release_available
   ensure_resources
@@ -1040,23 +1143,48 @@ deploy() {
   gate_credential_encryption_key
   bundle=$(stage_release "$binary")
   release_build_lock
-  active_port=$(dl_active_port); candidate_port=$(dl_candidate_port)
+  # 2026-09-20（端口漂移修复）：active 端口以文件/env 链为准（dl_resolve_active_port
+  # 只用实测做诊断告警，不再改写结果）——本地无代理拓扑里 active 端口就是客户端
+  # 直连的对外契约端口，绝不因"另一侧有残留监听"而漂移。候选 = 8781/8782 契约对
+  # 的另一侧，避免撞端口。
+  active_port=$(dl_resolve_active_port)
+  if [[ "$active_port" == 8781 ]]; then
+    candidate_port=8782
+  elif [[ "$active_port" == 8782 ]]; then
+    candidate_port=8781
+  else
+    candidate_port=$(dl_candidate_port)
+  fi
   active_bundle="$BIN_DIR/current"
+  DEPLOY_CANDIDATE_PORT="$candidate_port"
   start_instance "$bundle" "$candidate_port"
   if ! verify_instance "$candidate_port" "$bundle"; then
-    stop_instance "$candidate_port"; die "candidate failed health/readiness/version gates; active release was preserved"
+    DEPLOY_CANDIDATE_PORT=; stop_instance "$candidate_port"; die "candidate failed health/readiness/version gates; active release was preserved"
   fi
   if [[ "${DEPLOY_SYNC_ADMIN_PASSWORD:-true}" == "true" ]]; then
-    sync_admin_password_from_env "$bundle/env" "$candidate_port"
+    # sync 失败此前是未守卫的 set -e 退出：候选被留在另一端口上（trap 修复前）
+    # ——现在显式收尾，保证 active 侧原样保留、候选不残留。
+    if ! sync_admin_password_from_env "$bundle/env" "$candidate_port"; then
+      DEPLOY_CANDIDATE_PORT=; stop_instance "$candidate_port"; die "admin password sync failed; active release was preserved"
+    fi
   fi
   if ! smoke_credential_decrypt "$candidate_port" "$bundle/env"; then
-    stop_instance "$candidate_port"; die "candidate failed credential decrypt smoke; active release was preserved"
+    DEPLOY_CANDIDATE_PORT=; stop_instance "$candidate_port"; die "candidate failed credential decrypt smoke; active release was preserved"
   fi
   if [[ -n "${LLM_GATEWAY_UPSTREAM_FILE:-}" && -f "$LLM_GATEWAY_UPSTREAM_FILE" ]]; then
+    # 代理分支：候选保持运行（nginx 上游切到它），trap 不许碰它。
+    DEPLOY_CANDIDATE_PORT=
     printf 'server 127.0.0.1:%s;\n' "$candidate_port" > "$LLM_GATEWAY_UPSTREAM_FILE"
     cp "$LLM_GATEWAY_UPSTREAM_FILE" "$RUN_DIR/active-upstream.conf"
   else
     warn 'no local proxy configured; using controlled restart (not zero-downtime)'
+    # 2026-09-20：候选的使命（验证 bundle + 密码同步 + 解密冒烟）到此完成，
+    # 在触碰 active 之前先停掉它——两个网关并跑会争启动 ensure 链的锁，把
+    # active 端口新实例的 readyz 从 ~2s 拖到 20s+（2026-09-20 实测 00:29
+    # 候选 2s 就绪、8782 侧 22s），对外停服窗口被无谓放大。停掉候选后
+    # active 端口的重启不再有并发争锁。
+    DEPLOY_CANDIDATE_PORT=
+    stop_instance "$candidate_port"
     # 2026-09-14：2102 cutover 首启在候选端口 verify 全绿、同一 bundle 在
     # active 端口 /readyz 60s 不 ready 一次（瞬态首启窗口，非 release 问
     # 题），单次失败即回滚把可恢复抖动变成部署失败。给一次完整的重启重
@@ -1083,7 +1211,6 @@ deploy() {
       [[ -e "$active_bundle" ]] && start_instance "$active_bundle" "$active_port"
       die 'credential decrypt smoke failed after cutover; previous release was restarted'
     fi
-    stop_instance "$candidate_port"
     candidate_port="$active_port"
   fi
   dl_atomic_switch "$RELEASE_VERSION"

@@ -11,7 +11,7 @@
 # 本测试锁定修复后的语义：
 #   - 调用方非空值保持权威（CI/生产包装器可注入自己的 DSN）
 #   - 调用方未设置或为空的键从 .env.local 补齐（空值视为未设置）
-#   - 多行引号值（PEM 块）原样保留
+#   - 多行引号值（PEM 块）被响亮拒绝（R55-D2/R56 裁决 b）
 #   - deploy-local.sh 保留空 secret 的 fail-fast 守卫
 
 set -euo pipefail
@@ -102,20 +102,20 @@ else
 fi
 
 echo ""
-echo "✅ 测试 4: 多行引号值（PEM 块）原样保留"
-out="$(
-    env -i HOME="$HOME" PATH="$PATH" /bin/bash -c '
+echo "✅ 测试 4: 多行引号值（PEM 块）被响亮拒绝（R55-D2/R56 裁决 b）"
+# 行导向解析器无法表达行间换行，docker --env-file 也投递不了多行值；
+# R55-F1b 之前这里是静默截断（首行+残留引号）。现在解析器 stderr 报错并
+# 拒绝加载该键——期待该变量未被设置（空输出）。约定：单行 + 字面 \n。
+out="$(env -i HOME="$HOME" PATH="$PATH" /bin/bash -c '
         set -euo pipefail
         source "$1"
-        dl_load_project_env "$2"
-        printf %s "$LLM_GATEWAY_LICENSE_PUBLIC_KEY"
-    ' _ "$LIB" "$TMPDIR_TEST/env.local"
-)"
-expected=$'-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA\nmulti-line-value-must-survive\n-----END PUBLIC KEY-----'
-if [[ "$out" == "$expected" ]]; then
-    report "多行 PEM 值完整无损" 0
+        dl_load_project_env "$2" 2>/dev/null
+        printf %s "${LLM_GATEWAY_LICENSE_PUBLIC_KEY-}"
+    ' _ "$LIB" "$TMPDIR_TEST/env.local" 2>/dev/null)"
+if [[ -z "$out" ]]; then
+    report "多行 PEM 键被拒绝加载（不静默截断）" 0
 else
-    report "多行 PEM 值完整无损 —— got: $out" 1
+    report "多行 PEM 键应被拒绝加载 —— got: $out" 1
 fi
 
 echo ""

@@ -13,12 +13,14 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -74,7 +76,7 @@ func (m *ModelTier) Start(ctx context.Context) {
 	primeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	m.refresh(primeCtx)
 	cancel()
-	go m.loop(ctx)
+	SpawnLoop(ctx, "model_tier.loop", m.loop)
 }
 
 func (m *ModelTier) loop(ctx context.Context) {
@@ -120,7 +122,11 @@ func (m *ModelTier) refresh(ctx context.Context) {
 		defer rows.Close()
 		for rows.Next() {
 			var arr []string
-			if err := rows.Scan(&arr); err == nil {
+			if err := rows.Scan(&arr); err != nil {
+				if dbrows.SkipOrFail("bg.ModelTier.refresh/staticFeatured", err) {
+					continue
+				}
+			} else {
 				for _, mm := range arr {
 					if mm = normalizeModelKey(mm); mm != "" {
 						fs.static[mm] = struct{}{}
@@ -128,17 +134,37 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				}
 			}
 		}
+		// R67-B 修正：这里原先只 warn 就继续，随后把**整个**截断集合写进
+		// `m.cur.Store(fs)`，永久替换掉之前那份完整的 featured 集合。本函数
+		// 与 hotconfig.reload 的形状完全相同（整份配置的全量替换），而 R66
+		// 正因如此把 hotconfig 升级成硬失败——两处口径不一致。
+		// 截断的集合会让高频模型静默退出深探范围，且直到下一个 tick 才会自愈。
+		if err := rows.Err(); err != nil {
+			slog.Warn("model_tier: static featured row iteration aborted; keeping previous featured set",
+				"tenant", staticTenant, "error", err)
+			return
+		}
 	} else {
-		slog.Warn("model_tier: load static featured failed", "tenant", staticTenant, "error", err)
+		// 12h 审计修正：Query 本身失败（连接抖动/超时——DB 故障最常见形态）
+		// 原先同样只 warn 后落到 m.cur.Store(fs)，把空 static 集合全量替换
+		// 掉上一份完整集合。与上方 rows.Err 分支同因同果：全量替换形态下
+		// 任一段失败都必须保旧集，等下一个 tick 重试。
+		slog.Warn("model_tier: load static featured failed; keeping previous featured set",
+			"tenant", staticTenant, "error", err)
+		return
 	}
 
 	// Usage Top-N. Audit fix: request_logs_hot has no `model` column; the real
 	// model-name is COALESCE(outbound_model, client_model). GROUP BY raw_model
 	// dedupes across alias variants (audit issue #11).
 	if topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20); topN > 0 {
-		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
+		// 2026-09-20 probe-volume policy: default window 72h (3 days) — the
+		// probe scoping window. Also exclude probe traffic: without the flag
+		// probes themselves fed the Top-N, keeping probed-but-unused models
+		// "featured" and deep-pinged forever (self-sustaining loop).
+		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 72)
 		if windowHours <= 0 {
-			windowHours = 168
+			windowHours = 72
 		}
 		if rows, err := m.db.Query(ctx, `
 			SELECT raw_model FROM (
@@ -147,6 +173,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				FROM request_logs_hot rl
 				WHERE rl.success
 				  AND rl.ts > now() - make_interval(hours => $1)
+				  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
 				  AND COALESCE(rl.outbound_model, rl.client_model) IS NOT NULL
 				  AND COALESCE(rl.outbound_model, rl.client_model) <> ''
 				GROUP BY COALESCE(rl.outbound_model, rl.client_model)
@@ -156,14 +183,26 @@ func (m *ModelTier) refresh(ctx context.Context) {
 			defer rows.Close()
 			for rows.Next() {
 				var model string
-				if err := rows.Scan(&model); err == nil {
-					if model = normalizeModelKey(model); model != "" {
-						fs.usage[model] = struct{}{}
+				if err := rows.Scan(&model); err != nil {
+					if dbrows.SkipOrFail("bg.ModelTier.refresh/usageTopN", err) {
+						continue
 					}
+				} else if model = normalizeModelKey(model); model != "" {
+					fs.usage[model] = struct{}{}
 				}
 			}
+			// R67-B 修正：同上。usage 段截断会让高频模型退出深探范围。
+			if err := rows.Err(); err != nil {
+				slog.Warn("model_tier: usage top-N row iteration aborted; keeping previous featured set",
+					"window_hours", windowHours, "top_n", topN, "error", err)
+				return
+			}
 		} else {
-			slog.Warn("model_tier: load usage top-N failed", "error", err)
+			// 12h 审计修正：同上 static 段——Query 失败同样保旧集，
+			// 不落全量替换。
+			slog.Warn("model_tier: load usage top-N failed; keeping previous featured set",
+				"window_hours", windowHours, "top_n", topN, "error", err)
+			return
 		}
 	}
 

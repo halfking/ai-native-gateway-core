@@ -49,6 +49,11 @@ func anyArgs(n int) []interface{} {
 // 集成测试覆盖 promoted guard 拼接: TestClaimSessionFinalSuccess_HeapPartitionsGuard。
 const claimSQLPattern = `UPDATE request_logs_hot\s+SET is_final_success = TRUE\s+WHERE request_id = \$1\s+AND success = TRUE\s+AND request_status = 'success'\s+AND COALESCE\(gw_session_id, ''\) <> ''\s+AND NOT EXISTS[\s\S]*FROM request_logs_hot other[\s\S]*other\.request_id <> request_logs_hot\.request_id`
 
+func claimTestEntry(requestID, sessionID string) *RequestLogEntry {
+	sid := sessionID
+	return &RequestLogEntry{RequestID: requestID, GwSessionID: &sid, Success: true}
+}
+
 func TestClaimSessionFinalSuccess_GrantPathRunsInSameTxWithSavepoint(t *testing.T) {
 	mock, tx := newClaimMock(t)
 
@@ -59,8 +64,39 @@ func TestClaimSessionFinalSuccess_GrantPathRunsInSameTxWithSavepoint(t *testing.
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
+	// 2026-09-25 审计第八轮 (D12): granted claim registers a source='claim'
+	// compensation row in session_mirror_outbox, same transaction.
+	mock.ExpectExec(`SAVEPOINT gw_claim_mirror_outbox`).
+		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\), set_config\('app\.bypass_rls', 'true', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec(`INSERT INTO public.session_mirror_outbox`).
+		WithArgs("default", "req-claim-1", "sess-1", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', '', true\), set_config\('app\.bypass_rls', 'false', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec(`RELEASE SAVEPOINT gw_claim_mirror_outbox`).
+		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
 
-	claimSessionFinalSuccess(context.Background(), nil, tx, "req-claim-1")
+	claimSessionFinalSuccess(context.Background(), nil, tx, claimTestEntry("req-claim-1", "sess-1"))
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// UT-FS-D12：claim 未置位（RowsAffected=0，会话已有更早的 final-success）时
+// 不得登记补偿行——只有 granted claim 才有镜像兜底价值。
+func TestClaimSessionFinalSuccess_NoGrantNoOutboxRegistration(t *testing.T) {
+	mock, tx := newClaimMock(t)
+
+	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
+		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
+	mock.ExpectExec(claimSQLPattern).
+		WithArgs("req-claim-superseded").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
+		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
+
+	claimSessionFinalSuccess(context.Background(), nil, tx, claimTestEntry("req-claim-superseded", "sess-2"))
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -82,7 +118,7 @@ func TestClaimSessionFinalSuccess_UniqueViolationDegradesToNormalSuccess(t *test
 	mock.ExpectExec(`ROLLBACK TO SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("ROLLBACK", 0))
 
-	claimSessionFinalSuccess(context.Background(), nil, tx, "req-claim-loser")
+	claimSessionFinalSuccess(context.Background(), nil, tx, claimTestEntry("req-claim-loser", "sess-loser"))
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -103,15 +139,15 @@ func TestClaimSessionFinalSuccess_OtherErrorsDegrade(t *testing.T) {
 	mock.ExpectExec(`ROLLBACK TO SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("ROLLBACK", 0))
 
-	claimSessionFinalSuccess(context.Background(), nil, tx, "req-claim-42703")
+	claimSessionFinalSuccess(context.Background(), nil, tx, claimTestEntry("req-claim-42703", "sess-42703"))
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestClaimSessionFinalSuccess_Guards(t *testing.T) {
-	// 空 requestID / nil tx / nil Client：不产生任何语句。
-	claimSessionFinalSuccess(context.Background(), nil, nil, "req-x")
-	claimSessionFinalSuccess(context.Background(), nil, nil, "")
+	// nil entry / nil tx / nil Client：不产生任何语句。
+	claimSessionFinalSuccess(context.Background(), nil, nil, claimTestEntry("req-x", "sess-x"))
+	claimSessionFinalSuccess(context.Background(), nil, nil, nil)
 }
 
 // UT-FS-02（单元侧）：只有「成功终态 + 非空 gw_session_id」才尝试 claim。
@@ -200,7 +236,7 @@ func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// request_logs_hot 终态 UPDATE（RETURNING ts，99 个绑定参数；含 t0..t9 与 608 的 request_class/due_at）
 	mock.ExpectExec(`UPDATE request_logs_hot`).
-		WithArgs(anyArgs(99)...).
+		WithArgs(anyArgs(100)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// bodies 侧表 upsert
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
@@ -249,7 +285,7 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`UPDATE request_logs_hot`).
-		WithArgs(anyArgs(99)...).
+		WithArgs(anyArgs(100)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 		WithArgs(anyArgs(4)...).
@@ -284,14 +320,39 @@ func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
 
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	// 期望 claim SQL 包含 UNION ALL heap 分区名 (白名单过滤) + 接受 1 个参数 (req id)
-	expectedGuard := `UNION ALL[\s\S]*request_logs_2026_08[\s\S]*request_logs_2026_09[\s\S]*promoted\.gw_session_id`
+	// 期望 claim SQL 包含 UNION ALL heap 分区名 (白名单过滤) + 接受 1 个参数 (req id)。
+	// 2026-09-26 审计第十轮 (D13): 钉死臂形状 —— 臂内必须带
+	// `gw_session_id IS NOT NULL AND gw_session_id <> ''` 谓词 (与 partial 唯一
+	// 索引 uq_<partition>_final_success_session 的谓词对齐, planner 才能证明
+	// 蕴含走 Index Only Scan; 252 实证 EXPLAIN 从 1.27M 行 Seq Scan 翻转),
+	// 且投影不得含 is_final_success (列不在索引里会强制回表破掉 index-only)。
+	// 2026-09-27 审计 R69: 热表臂同款补齐两谓词 (uq_request_logs_hot_final_
+	// success_session 谓词形状相同), 一并钉住。
+	expectedGuard := `UPDATE request_logs_hot[\s\S]*other\.gw_session_id IS NOT NULL AND other\.gw_session_id <> ''` +
+		`[\s\S]*` +
+		`SELECT gw_session_id FROM ONLY .request_logs_2026_08. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
+		`[\s\S]*` +
+		`SELECT gw_session_id FROM ONLY .request_logs_2026_09. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
+		`[\s\S]*promoted\.gw_session_id`
 	mock.ExpectExec(expectedGuard).
 		WithArgs("req-claim-guard").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
+	// granted claim → D12 补偿登记（entry 无会话头时静默跳过亦可；
+	// 这里给会话头，登记走完整 savepoint 序列）。
+	mock.ExpectExec(`SAVEPOINT gw_claim_mirror_outbox`).
+		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\), set_config\('app\.bypass_rls', 'true', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec(`INSERT INTO public.session_mirror_outbox`).
+		WithArgs("default", "req-claim-guard", "sess-guard", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', '', true\), set_config\('app\.bypass_rls', 'false', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec(`RELEASE SAVEPOINT gw_claim_mirror_outbox`).
+		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
 
-	claimSessionFinalSuccess(context.Background(), c, tx, "req-claim-guard")
+	claimSessionFinalSuccess(context.Background(), c, tx, claimTestEntry("req-claim-guard", "sess-guard"))
 	require.NoError(t, mock.ExpectationsWereMet())
 }

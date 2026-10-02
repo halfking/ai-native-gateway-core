@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -146,7 +147,8 @@ func (h *Handler) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
 
 	summary, keyPoints, resolvedModel, err := h.callSessionSummaryLLM(ctx, r, apiKey, req.GwSessionID, corpus)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "总结生成失败: "+err.Error())
+		slog.Error("session summary: generation failed", "gw_session_id", req.GwSessionID, "err", err)
+		writeError(w, http.StatusBadGateway, "总结生成失败，请稍后重试")
 		return
 	}
 	if resolvedModel != "" {
@@ -221,9 +223,16 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 			&item.ClientModel,
 		); err != nil {
 			// Skip unscannable rows (e.g. type mismatch) but don't silently swallow.
+			warnRowSkip("logs.loadSessionLogsForSummary", err)
 			continue
 		}
 		out = append(out, item)
+	}
+	// 摘要是 LLM 总结的输入：截断的输入会生成"看起来正常"的错摘要，
+	// 比失败更难发现。上抛（文件内 sibling loadSessionLogsBySessionID
+	// 已用 return out, rows.Err() 定调）。
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -317,8 +326,16 @@ func buildSummaryCorpus(logs []sessionLogForSummary) string {
 		b.WriteString(buildTurnCorpusLine(ts, d, row.RequestStatus, row.ErrorKind))
 	}
 	corpus := strings.TrimSpace(b.String())
-	if len(corpus) > sessionSummaryMaxCorpusLen {
-		corpus = corpus[:sessionSummaryMaxCorpusLen]
+	// 2026-09-29 (审计二十一轮): 按 rune 截断——corpus 常含 CJK，
+	// 字节切会截出非法 UTF-8 前缀进 LLM 语料（与 generateFallbackSummary
+	// 同款修正）。
+	// 2026-09-29 (审计二十二轮): 守卫必须同为 rune 口径——原实现守卫按字节
+	// （len(corpus)）而截断按 rune，CJK 语料落在 12001~36000 字节且 rune 数
+	// <12000 的带宽（如 5000 个 CJK 字符=15000B）时 runes[:12000] 直接
+	// slice bounds out of range panic，logs-summary 端点被打挂。PoC 复现于
+	// TestBuildSummaryCorpusRuneGuardCJKBand。
+	if runes := []rune(corpus); len(runes) > sessionSummaryMaxCorpusLen {
+		corpus = string(runes[:sessionSummaryMaxCorpusLen])
 	}
 	return corpus
 }
@@ -510,7 +527,8 @@ func (h *Handler) handleSessionSummaryToMemora(w http.ResponseWriter, r *http.Re
 		var resolvedModel string
 		summary, keyPoints, resolvedModel, err = h.callSessionSummaryLLM(ctx, r, apiKey, req.GwSessionID, corpus)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "总结生成失败: "+err.Error())
+			slog.Error("session summary: generation failed", "gw_session_id", req.GwSessionID, "err", err)
+			writeError(w, http.StatusBadGateway, "总结生成失败，请稍后重试")
 			return
 		}
 		if resolvedModel != "" {

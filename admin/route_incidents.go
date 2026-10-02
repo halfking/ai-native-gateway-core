@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -472,24 +473,57 @@ func (h *RouteIncidentsHandler) handleStats(w http.ResponseWriter, r *http.Reque
 	// operator cares about in phase 1.
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	counts := h.storeCounters(ctx)
+	counts, err := h.storeCounters(ctx)
+	if err != nil {
+		// 报 503 而不是回 200 + 全零：这个端点就是用来发现「事件正在被
+		// 丢弃」的，故障时给出「一切正常」是最坏的答案。
+		// 12h 审计修正：writeInternalErr 写的是 500，与本注释及 38 号
+		// 文档声称的 503 契约不符——按文档契约为准，与本文件
+		// ErrNoDatabase 分支同形（writeError + 503）。
+		slog.Error("admin handler internal error", "op", "route incident stats", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "route incident stats")
+		return
+	}
 	writeJSON(w, http.StatusOK, counts)
 }
 
-func (h *RouteIncidentsHandler) storeCounters(ctx context.Context) map[string]any {
+func (h *RouteIncidentsHandler) storeCounters(ctx context.Context) (map[string]any, error) {
 	out := map[string]any{
 		"active":        0,
 		"recovering":    0,
 		"recovered_24h": 0,
 	}
 	if h.store == nil {
-		return out
+		return out, nil
 	}
-	active, _ := h.store.List(ctx, routeincident.ListFilter{State: "active", Limit: 1})
-	recovering, _ := h.store.List(ctx, routeincident.ListFilter{State: "recovering", Limit: 1})
-	out["active"] = len(active)
-	out["recovering"] = len(recovering)
-	return out
+	// R68 修正：原先是 `active, _ := h.store.List(...)`，错误被丢弃，于是
+	// **DB 故障会渲染成 {"active":0,"recovering":0,"recovered_24h":0}**——
+	// 与「一切正常、没有任何事件被丢弃」逐字节相同。
+	//
+	// 而这个端点存在的意义正是「一眼看出事件是否在被丢弃」（见上方注释）。
+	// 在它最需要示警的时刻报出一组全零，是把错误伪装成了最让人安心的结论。
+	// 诚实答案是「我不知道」——故失败即 503，而不是猜一个 0。
+	//
+	// 12h 审计修正：R68 之后同一 payload 的另一半仍是伪合法数字——
+	// recovered_24h 硬编码 0（全仓无赋值点）、List{Limit:1}+len 把
+	// active/recovering 封顶在 1。计数改走 CountByState（COUNT(*)，
+	// 无 limit 截顶），recovered_24h 按 updated_at 24h 窗实查。
+	active, err := h.store.CountByState(ctx, "", "active", time.Time{})
+	if err != nil {
+		return out, fmt.Errorf("count active incidents: %w", err)
+	}
+	recovering, err := h.store.CountByState(ctx, "", "recovering", time.Time{})
+	if err != nil {
+		return out, fmt.Errorf("count recovering incidents: %w", err)
+	}
+	recovered24h, err := h.store.CountByState(ctx, "", "recovered", time.Now().Add(-24*time.Hour))
+	if err != nil {
+		return out, fmt.Errorf("count recovered incidents (24h): %w", err)
+	}
+	out["active"] = active
+	out["recovering"] = recovering
+	out["recovered_24h"] = recovered24h
+	return out, nil
 }
 
 // buildDetail assembles the rich detail payload for the drawer.
@@ -583,6 +617,7 @@ func (h *RouteIncidentsHandler) findingsFor(ctx context.Context, inc *routeincid
 		var kind, stage *string
 		var reqID string
 		if err := rows.Scan(&kind, &stage, &reqID); err != nil {
+			warnRowSkip("routeIncidents.findingsFor", err)
 			continue
 		}
 		total++
@@ -603,6 +638,13 @@ func (h *RouteIncidentsHandler) findingsFor(ctx context.Context, inc *routeincid
 		if len(b.ids) < 5 {
 			b.ids = append(b.ids, reqID)
 		}
+	}
+	// 迭代中断会让 total（分母）偏小，进而把 finding 的占比放大——属于会误导
+	// 根因判断的静默失真，必须留痕。函数签名无 error 通道且查询失败已按
+	// best-effort 返回空切片，故这里只 warn 不上抛。
+	if err := rows.Err(); err != nil {
+		slog.Warn("admin route incidents findings rows iteration aborted",
+			"op", "routeIncidents.findingsFor", "incident_id", inc.ID, "rows_seen", total, "error", err)
 	}
 	if total == 0 {
 		return out
@@ -747,7 +789,14 @@ func (h *RouteIncidentsHandler) sampleRequestsFor(ctx context.Context, inc *rout
 		var s string
 		if err := rows.Scan(&s); err == nil {
 			out = append(out, s)
+		} else {
+			warnRowSkip("routeIncidents.sampleRequests", err)
 		}
+	}
+	// best-effort 采样样本（非完整性契约，签名无 error 通道）：中断留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("admin route incidents sample requests rows iteration aborted",
+			"op", "routeIncidents.sampleRequests", "incident_id", inc.ID, "error", err)
 	}
 	return out
 }

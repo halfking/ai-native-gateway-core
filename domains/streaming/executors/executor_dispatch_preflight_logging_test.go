@@ -101,7 +101,7 @@ func TestForwardForDispatch_LogsCircuitOpen(t *testing.T) {
 		initialModel: "glm-5.2", retryPerCred: 0, tTotal: time.Now(),
 	}
 
-	out := exec.forwardForDispatch(dctx, candidate, "circuit-open-attempt", func() {})
+	out := exec.forwardForDispatch(dctx, candidate, "circuit-open-attempt", func() {}, nil)
 	if out.Err == nil {
 		t.Fatal("expected circuit-open error, got nil")
 	}
@@ -158,7 +158,7 @@ func TestForwardForDispatch_LogsRateLimitRejection(t *testing.T) {
 		initialModel: "glm-5.2", retryPerCred: 0, tTotal: time.Now(),
 	}
 
-	out := exec.forwardForDispatch(dctx, candidate, "rl-attempt", func() {})
+	out := exec.forwardForDispatch(dctx, candidate, "rl-attempt", func() {}, nil)
 	if out.Err == nil {
 		t.Fatal("expected limiter-rejection error, got nil")
 	}
@@ -219,7 +219,7 @@ func TestForwardForDispatch_LogsFpSlotSaturation(t *testing.T) {
 		holder: "this-session",
 	}
 
-	out := exec.forwardForDispatch(dctx, candidate, "fpslot-attempt", func() {})
+	out := exec.forwardForDispatch(dctx, candidate, "fpslot-attempt", func() {}, nil)
 	// FpSlot saturation is a *degradation*, not a hard reject — the request
 	// must still proceed to the upstream call (which fails on the bogus URL).
 	// The contract we lock here is the audit-trail side effect: one insert
@@ -284,7 +284,7 @@ func TestForwardForDispatch_LogsKeyRotationExhausted(t *testing.T) {
 		initialModel: "glm-5.2", retryPerCred: 0, tTotal: time.Now(),
 	}
 
-	out := exec.forwardForDispatch(dctx, candidate, "keys-attempt", func() {})
+	out := exec.forwardForDispatch(dctx, candidate, "keys-attempt", func() {}, nil)
 	if out.Err == nil {
 		t.Fatal("expected keys-exhausted error, got nil")
 	}

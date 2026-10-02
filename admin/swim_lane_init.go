@@ -61,7 +61,7 @@ func (h *Handler) HandleSwimLaneInit(w http.ResponseWriter, r *http.Request) {
 	// 查询数据
 	requests, stats, err := h.fetchSwimLaneData(ctx, hours)
 	if err != nil {
-		http.Error(w, "Failed to fetch swim lane data: "+err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "Failed to fetch swim lane data", err)
 		return
 	}
 

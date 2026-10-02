@@ -34,6 +34,19 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# ── 0. Worktree sanity guard (三十七轮审计 §三#14, 2026-09-30) ──────────
+# 共享检出两次被发现被未知工具写入 core.bare=true（module gitdir 的非法
+# 状态）——它让一切 git 操作 exit 128、go build VCS stamping 全仓瘫痪，
+# 下面的门禁会全部因错误原因失败。先自愈再跑门禁（与 .githooks/pre-push §0
+# 同款；该守卫 2026-09-30 起已移到其 github-only 早退之前，推 codeup 也触发）。
+# 注意：core.worktree=../../../../services/llm-gateway-go 是本检出
+# （submodule 型 gitdir）的合法承重配置，不得随自愈清除——毒化仅是 bare=true。
+if [[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]] \
+  && [[ "$(git config core.bare 2>/dev/null)" == "true" ]]; then
+  git config core.bare false
+  echo "⚠️  healed core.bare=true + core.worktree conflict before pre-commit gate" >&2
+fi
+
 PASS=0
 FAIL=0
 SKIP=0

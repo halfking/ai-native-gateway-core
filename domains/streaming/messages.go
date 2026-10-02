@@ -1,12 +1,14 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +27,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
 
@@ -70,6 +73,20 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	if h.chatHandler.sanitizeInputMiddleware != nil {
+		var authorized bool
+		r, authorized = h.chatHandler.prepareSanitizeRequest(r)
+		if !authorized {
+			h.serveHTTPInner(w, r)
+			return
+		}
+		h.chatHandler.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
+		return
+	}
+	h.serveHTTPInner(w, r)
+}
+
+func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
 
@@ -195,7 +212,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "Missing API key")
 			return
 		}
-		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
+		ki, verifyErr := verifyRequestKey(r, h.chatHandler.keyVerifier, rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				attemptErrCode = "invalid_key"
@@ -241,6 +258,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
+	}
+	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
+		logCtx.OutboundProvenance = prov
 	}
 	if h.chatHandler.attachmentExtractor != nil {
 		extractResult := h.chatHandler.attachmentExtractor.ExtractFromAnthropicBody(requestID, bodyBytes)
@@ -318,7 +338,16 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestedModel := reqBody.Model
 
 	// model=auto: classify + rewrite before CanonicalizeClientModel.
-	if reqBody.Model == autoRequestMagic {
+	//
+	// 2026-09-29 X-Gw-Test-Mode (see auto_route.go) overrides the auto path
+	// for authorised callers. mock / auto-only short-circuit with a
+	// synthetic Anthropic-format message after the auto decision lands;
+	// other-only skips the auto call entirely.
+	testMode, testModeSet := ParseTestMode(r, testModeAllowed(r))
+	if testModeSet {
+		logCtx.SetTestMode(testMode.String())
+	}
+	if reqBody.Model == autoRequestMagic && !testMode.SkipsAutoRoute() {
 		var apiKeyID int
 		if keyInfo != nil {
 			apiKeyID = keyInfo.ID
@@ -347,6 +376,24 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			autoWire = wire
 		} else {
 			logCtx.IsAutoRequest = true
+		}
+
+		// 2026-09-29 X-Gw-Test-Mode mock short-circuit: same behaviour as
+		// the chat path — write a synthetic Anthropic-format message and
+		// stop. reqBody.Model at this point is the chosen post-decider
+		// model; that's what we surface back to the caller so the test
+		// runner can verify "the gateway did resolve model=auto and chose
+		// this canonical name" without paying for an upstream call.
+		//
+		// recordMockRequestLog (not a bare *attemptLogged = true) so the
+		// request still produces its one request_logs row; see the chat
+		// path for the full rationale.
+		if testMode.IsMockMode() {
+			chosen := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
+			h.chatHandler.recordMockRequestLog(logCtx, testMode, chosen, keyInfo)
+			*attemptLogged = true
+			writeMockMessagesResponse(w, testMode, requestID, chosen, reqBody.Stream)
+			return
 		}
 	}
 
@@ -395,6 +442,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
 			logCtx.EmitRateLimited(attemptErrCode, attemptErrMsg, nil, nil)
 			*attemptLogged = true
+			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
 			return
 		}
@@ -442,7 +490,32 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// verbatim honor left bare-UUID client identities in a heterogeneous
 		// namespace (turn aggregation stuck at 1) and never registered the
 		// session, so every follow-up request re-hit ErrSessionNotFound.
-		sessionID, sessionInfo = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		var sessErr error
+		sessionID, sessionInfo, sessErr = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		if errors.Is(sessErr, errClientSessionForbidden) {
+			// R24-B (V3-A02): a client-supplied session owned by another
+			// key/tenant is rejected before any turn is created (chat-path
+			// parity; previously the foreign sessionInfo flowed unchecked).
+			attemptErrCode = "session_forbidden"
+			attemptErrMsg = "session not owned by this api key"
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusForbidden, "permission_error", "session not owned by this api key")
+			return
+		}
+		if errors.Is(sessErr, errClientSessionUnavailable) {
+			// R25-W (V3-A02): the session store faulted — ownership could not
+			// be verified. Dispatching anyway would trust an unverified
+			// client-supplied id; 503 tells the client to retry.
+			attemptErrCode = "session_unavailable"
+			attemptErrMsg = "session store unavailable"
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "session store unavailable")
+			return
+		}
 	}
 	if sessionID == "" {
 		// Last-resort fallback: use the provisional id so downstream
@@ -732,19 +805,26 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R25-C: authenticated key owner for the interceptor's owner compare;
+	// empty means "owner unknown" → conservative redaction on every field.
+	_, callerOwner, _ := keyMetaFromKeyInfo(keyInfo)
 	usedSurvival := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
 	var result *executors.ExecuteResult
 	var execErr error
+	var nativeStreamWriter *interceptingStreamWriter
 	if usedSurvival {
 		base := w
 		if h.chatHandler.responseInterceptor != nil {
-			base = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+			nativeStreamWriter = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
 			})
-			defer base.(*interceptingStreamWriter).finish()
+			base = nativeStreamWriter
+			defer nativeStreamWriter.finish()
 		}
 		// SP-02: state machine — survival branch dispatches upstream.
 		rt.Emit(state.EventDispatching)
@@ -759,7 +839,59 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// SP-02: state machine — executor has accepted the request.
 		rt.Emit(state.EventDispatching)
-		result, execErr = h.chatHandler.executor.Execute(buildExecParams(w))
+		// R25-G: the non-survival stream must flow through the same
+		// intercepting writer as the survival lane; a bare writer left the
+		// whole compliance chain bypassed for ordinary streams.
+		execWriter := http.ResponseWriter(w)
+		if isStream && h.chatHandler.responseInterceptor != nil {
+			nativeStreamWriter = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
+			})
+			defer nativeStreamWriter.finish()
+			execWriter = nativeStreamWriter
+		}
+		result, execErr = h.chatHandler.executor.Execute(buildExecParams(execWriter))
+	}
+	if nativeStreamWriter != nil {
+		// Finalize buffered output before the generic execErr branch. A policy
+		// rejection already writes its one protocol terminal from finish(); the
+		// request must be logged as a policy failure without adding an upstream
+		// error terminal or success audit.
+		nativeStreamWriter.finish()
+		if nativeStreamWriter.OutputPolicyBlocked() {
+			const blockCode = "output_policy_blocked"
+			const blockMessage = "Response blocked by output policy"
+			attemptErrCode, attemptErrMsg = blockCode, blockMessage
+			auditBuilder.Success(false)
+			rt.Emit(state.EventFailed)
+			providerID, credentialID := attemptProviderID, attemptCredentialID
+			if result != nil {
+				if result.Candidate.ProviderID != 0 {
+					id := result.Candidate.ProviderID
+					providerID = &id
+				}
+				if result.Candidate.CredentialID != 0 {
+					id := result.Candidate.CredentialID
+					credentialID = &id
+				}
+			}
+			if logCtx != nil {
+				logCtx.SetRoute(providerID, credentialID)
+				logCtx.SetError(blockCode, blockMessage)
+				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID)
+			} else {
+				latency := int(time.Since(startTime).Milliseconds())
+				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+					providerID, credentialID, blockCode, blockMessage, latency, upstreamBody, keyInfo, r)
+			}
+			*attemptLogged = true
+			return
+		}
 	}
 
 	if execErr != nil {
@@ -771,7 +903,16 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		errCode := "provider_error"
 		errMsg := execErr.Error()
-		if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
+		// R59 audit (S7-1): survival terminal decisions must keep their
+		// structured failure_detail_code on every protocol face, not just
+		// chat (handler.go). Without this, /v1/messages logs
+		// gateway_survival_<action> as a bland provider_error.
+		if ste, ok := execErr.(*survivalTerminalError); ok {
+			errCode = ste.detailCode()
+			if ste.kinds != "" {
+				w.Header().Set("X-Gateway-Last-Kind", ste.kinds)
+			}
+		} else if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
 			errCode = "model_not_found"
 			errMsg = "all providers unavailable"
 		}
@@ -821,8 +962,39 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 
 	var responseBody []byte
+	outputBlocked := false
 	if !isStream {
-		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
+		// R25-B: carry full request identity into the non-stream
+		// interception — the zero-value default previously left
+		// TenantID/SessionID empty, disabling tenant policy and owner
+		// resolution for native non-stream responses.
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID, executors.EstimateAnthropicInputTokens(bodyBytes), nativeResponseInterception{
+			ctx: r.Context(),
+			request: response.InterceptRequest{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "anthropic-messages",
+				ClientModel:    clientModel,
+			},
+			failureEmit: func() {
+				outputBlocked = true
+				if logCtx != nil {
+					providerID, credentialID := result.Candidate.ProviderID, result.Candidate.CredentialID
+					logCtx.EmitFailure("output_policy_blocked", "Response blocked by output policy", &providerID, &credentialID)
+				}
+			},
+		})
+	}
+	if outputBlocked {
+		// R25-V (2026-09-30 round 30): the failure row emitted inside
+		// failureEmit is the terminal audit record for this request. A
+		// follow-up success telemetry row would contradict it — the audit
+		// trail must show exactly one output_policy_blocked failure, never
+		// a success row for a response the client never received.
+		*attemptLogged = true
+		return
 	}
 
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
@@ -1281,10 +1453,24 @@ func convertAnthropicToolChoice(raw json.RawMessage) any {
 	return v
 }
 
-func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
+func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string, inputEstimate int, opts ...nativeResponseInterception) []byte {
 	if len(body) == 0 {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "Failed to read upstream response")
 		return nil
+	}
+
+	// 2026-09-21 usage-zero 专项观测(env 门控, 默认关闭): 上游 body 进 handler
+	// 时的形态与 usage 有无, 用于定位"上游有 usage、客户端收 0"的丢失点。
+	if os.Getenv("LLM_GATEWAY_DEBUG_MESSAGES_BODY") == "true" {
+		head := body
+		if len(head) > 240 {
+			head = head[:240]
+		}
+		slog.Info("debug: messages non-stream upstream body at handler",
+			"request_id", requestID,
+			"bytes", len(body),
+			"has_usage", bytes.Contains(body, []byte(`"usage"`)),
+			"head", string(head))
 	}
 
 	format, empty := classifyNonStreamUpstreamResponse(body)
@@ -1298,12 +1484,100 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 		anthropicBody = convertChatResponseToAnthropic(body, clientModel, requestID)
 	}
 
+	// 2026-09-21: usage-zero 兜底。流式路径自审计 R3 #2 起用请求体估算填充
+	// message_start.usage.input_tokens;非流式路径此前没有等价兜底,一旦上游
+	// usage 在管线中丢失,Claude Code 拿到恒 0 的 input_tokens 会系统性低估
+	// 上下文,压缩过晚直至溢出。这里与流式同源同值(executors 估算器),
+	// 仅在 input_tokens 缺失/为 0 且估算非 0 时补(R51 放宽: 不再要求
+	// output_tokens 也为 0; usage 键整体缺失时构造对象), 真实上报永不覆盖。
+	if inputEstimate > 0 {
+		anthropicBody = patchAnthropicUsageInput(anthropicBody, inputEstimate)
+	}
+
+	// 2026-09-29: wire 收紧 / 真实合规 hook 由 chain 走（非流式 + 流式共用）。
+	// TestNativeHandlersApplyRealOutputComplianceBeforeNonStreamWrite
+	// 验证 chain 不绕过（原生 Handler 拥有最终写入权）。
+	if h.chatHandler != nil && h.chatHandler.responseInterceptor != nil {
+		var opt nativeResponseInterception
+		if len(opts) > 0 {
+			opt = opts[0]
+		}
+		if opt.ctx == nil {
+			opt.ctx = context.Background()
+		}
+		if opt.request.ClientProtocol == "" {
+			opt.request.ClientProtocol = "anthropic-messages"
+		}
+		if opt.request.ResponseBody == nil {
+			opt.request.ResponseBody = anthropicBody
+		}
+		// R25-U3 (2026-09-30 round 27, ruling): on interceptor ERROR the
+		// original body passes through (fail-open). This mirrors the chat
+		// path and processBody's documented rationale — a transient infra
+		// failure (policy DB down) must not kill all traffic. The stream
+		// path stays fail-closed because mid-stream bytes already left and
+		// cannot be recalled; the asymmetry is deliberate.
+		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, anthropicBody); err == nil && !blocked && modified != nil {
+			anthropicBody = modified
+		} else if blocked {
+			// R25-V (2026-09-30 round 30): the blocked provider body must be
+			// reflected in the audit trail — a success row (or no row) hides
+			// that output governance rejected this response. Emit a failure
+			// row attributed to the chosen provider/credential before the
+			// terminal error write; the provider body itself never persists.
+			if opt.failureEmit != nil {
+				opt.failureEmit()
+			}
+			writeAnthropicError(w, http.StatusForbidden, "output_policy_blocked", "Response blocked by output policy")
+			return nil
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", requestID)
 	w.WriteHeader(http.StatusOK)
 	//nolint:errcheck // HTTP write error non-recoverable
 	w.Write(anthropicBody)
 	return anthropicBody
+}
+
+// patchAnthropicUsageInput 把缺失或为 0 的 usage.input_tokens 替换为请求体
+// 估算值。body 非 Anthropic 消息形状、usage 无法解析时原样返回; input_tokens
+// 已非 0(上游真实上报, 计费路径)时绝不覆盖——无论 output_tokens 是否为 0,
+// 只看 input; 上游响应完全没有 usage 键(或为 null)时构造一个仅含估算
+// input 的 usage 对象。重marshal 失败也原样返回(兜底路径永不劣化主路径)。
+func patchAnthropicUsageInput(body []byte, inputEstimate int) []byte {
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return body
+	}
+	usage := map[string]any{}
+	if usageRaw, ok := resp["usage"]; ok {
+		if err := json.Unmarshal(usageRaw, &usage); err != nil {
+			return body
+		}
+		if usage == nil { // "usage": null — treat as absent
+			usage = map[string]any{}
+		}
+	}
+	if in, _ := usage["input_tokens"].(float64); in != 0 {
+		return body
+	}
+	usage["input_tokens"] = inputEstimate
+	if _, ok := usage["output_tokens"]; !ok {
+		// Constructed-from-scratch usage keeps the Anthropic shape.
+		usage["output_tokens"] = 0
+	}
+	patched, err := json.Marshal(usage)
+	if err != nil {
+		return body
+	}
+	resp["usage"] = patched
+	out2, err := json.Marshal(resp)
+	if err != nil {
+		return body
+	}
+	return out2
 }
 
 func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) []byte {

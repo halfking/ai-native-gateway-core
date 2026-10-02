@@ -32,7 +32,6 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
-	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -172,7 +171,7 @@ func (h *Handler) startCheckCredentialHealth(w http.ResponseWriter, r *http.Requ
 
 	taskID, err := insertBackgroundTask(ctx, h.db, "health_check", &providerID, &credID, map[string]any{"provider_id": providerID, "credential_id": credID, "model": model})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create task: "+err.Error())
+		writeInternalErr(w, "failed to create task", err)
 		return
 	}
 
@@ -324,7 +323,17 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 
 		if model != "" {
 			start = time.Now()
-			chatResult, chatErr := doChatProbe(ctx, upstreamurl.ChatCompletionsURL(cred.baseURL), apiKey, model)
+			// 2026-09-23 vapeur incident: phase-2 used to probe
+			// /chat/completions unconditionally, which misreports healthy
+			// credentials on responses-only relays. Pick the probe endpoint
+			// (and body shape) from the provider's egress protocol. R60
+			// S3-F4/F5: the protocol is normalized before the branch
+			// (providers.protocol has no CHECK; legacy "openai-response" /
+			// "anthropic" rows picked the wrong probe) and anthropic-messages
+			// credentials get their own x-api-key /v1/messages probe instead
+			// of the Bearer-only chat probe that always 401'd into warning.
+			probeURL, probeFn := credentialProbeDispatch(cred.protocol, cred.baseURL)
+			chatResult, chatErr := probeFn(ctx, probeURL, apiKey, model)
 			probeLatencyMs = int(time.Since(start).Milliseconds())
 			if chatErr != nil {
 				probeError = chatErr.Error()
@@ -383,13 +392,19 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 	}, nil
 }
 
-func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) { //nolint:unused
+func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	result, err := h.doHealthCheck(ctx, providerID, credID, strings.TrimSpace(r.URL.Query().Get("model")))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "credential not found")
+		// R65 错误通道重构（R35-N1 登记遗留）：旧形态「一切 err 都 404
+		// credential not found」把 DB 故障/连接超时伪装成"凭据不存在"，
+		// 把运维引向错误方向。三门分类：ErrNoRows→404 原文案（真不存在）；
+		// 42P01→503 analytics_view_missing（缺表是可修复环境态）；其余→500
+		// 且不外泄 err 细节。注：解密失败/探测失败不走本通道——doHealthCheck
+		// 以带内 health_status/result 表达（ unreachable + health_error）。
+		writeLookupErr(w, "credential not found", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

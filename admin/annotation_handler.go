@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,11 @@ type AnnotationSample struct {
 type SamplesResponse struct {
 	Samples []AnnotationSample `json:"samples"`
 	Total   int                `json:"total"`
+	// Strategy echoes the active sampling strategy v2 (P0⑤, 2026-09-24):
+	// "" (recent) for the default recency feed, "disagreement" for
+	// classifier-disagreement-first ordering, "stratified" for the
+	// task_type × confidence-bucket quota sample.
+	Strategy string `json:"strategy,omitempty"`
 }
 
 // CreateAnnotationRequest is the request body for creating an annotation
@@ -173,11 +179,38 @@ func (h *Handler) handleAnnotationSamples(w http.ResponseWriter, r *http.Request
 
 	annotatorFilter := query.Get("annotator")
 
+	// 采样策略 v2（P0⑤，2026-09-24，v2 规划 §4.5）：
+	//   recent（默认，向后兼容） — ts 倒序分页，现状行为不变；
+	//   disagreement             — 分歧采样：LLM 兜底接管过的行（classifier
+	//                             命中 llm 白名单，见 llmDisagreementOrderKey）
+	//                             优先入队。启发式自身的结论未落库，classifier
+	//                             列的 llm 值即"兜底改判"的可判定证据（规划
+	//                             口径：分歧可判）；
+	//   stratified               — 分层抽样：task_type × 置信度桶配额，
+	//                             per_strata（默认 5，≤20），避免高频类垄断，
+	//                             外层 LIMIT 收口到 size 上限。
+	strategy, perStrata, err := parseSamplingParams(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Build the query
 	offset := (page - 1) * size
-	samples, total, err := querySamples(ctx, pool, startDate, endDate, minConfidence, maxConfidence, annotatedFilter, annotatorFilter, size, offset)
+	samples, total, err := querySamples(ctx, pool, samplesQueryOpts{
+		startDate:       startDate,
+		endDate:         endDate,
+		minConfidence:   minConfidence,
+		maxConfidence:   maxConfidence,
+		annotatedFilter: annotatedFilter,
+		annotatorFilter: annotatorFilter,
+		strategy:        strategy,
+		perStrata:       perStrata,
+		limit:           size,
+		offset:          offset,
+	})
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to query samples: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query samples", err)
 		return
 	}
 
@@ -185,69 +218,197 @@ func (h *Handler) handleAnnotationSamples(w http.ResponseWriter, r *http.Request
 		Samples: samples,
 		Total:   total,
 	}
+	if strategy != "recent" {
+		resp.Strategy = strategy
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
-// querySamples fetches samples with optional annotation data
-func querySamples(
-	ctx context.Context,
-	pool *pgxpool.Pool,
-	startDate, endDate string,
-	minConfidence, maxConfidence float64,
-	annotatedFilter *bool,
-	annotatorFilter string,
-	limit, offset int,
-) ([]AnnotationSample, int, error) {
-	// Build WHERE clauses
+// parseSamplingParams parses the sampling strategy v2 query parameters
+// (P0⑤): strategy (recent|disagreement|stratified, default recent) and
+// per_strata (stratified quota, default 5, capped at 20).
+func parseSamplingParams(query url.Values) (strategy string, perStrata int, err error) {
+	strategy = query.Get("strategy")
+	if strategy == "" {
+		strategy = "recent"
+	}
+	if strategy != "recent" && strategy != "disagreement" && strategy != "stratified" {
+		return "", 0, fmt.Errorf("invalid strategy %q (want recent|disagreement|stratified)", strategy)
+	}
+	perStrata, _ = strconv.Atoi(query.Get("per_strata"))
+	if perStrata < 1 {
+		perStrata = 5
+	}
+	if perStrata > 20 {
+		perStrata = 20
+	}
+	return strategy, perStrata, nil
+}
+
+// samplesQueryOpts is the fully-parsed input of querySamples.
+type samplesQueryOpts struct {
+	startDate, endDate           string
+	minConfidence, maxConfidence float64
+	annotatedFilter              *bool
+	annotatorFilter              string
+	// strategy: recent (default) | disagreement | stratified — see
+	// handleAnnotationSamples for semantics.
+	strategy string
+	// perStrata is the per task_type × confidence-bucket quota for the
+	// stratified strategy (ignored otherwise).
+	perStrata     int
+	limit, offset int
+}
+
+// buildSamplesWhere renders the shared WHERE clause. Returns the clause
+// (without the leading WHERE keyword), the positional args, and the next
+// free placeholder index.
+func buildSamplesWhere(o samplesQueryOpts) (string, []any, int) {
 	var conditions []string
-	var args []interface{}
+	var args []any
 	argIdx := 1
 
-	if startDate != "" {
+	if o.startDate != "" {
 		conditions = append(conditions, fmt.Sprintf("ars.ts >= $%d", argIdx))
-		args = append(args, startDate)
+		args = append(args, o.startDate)
 		argIdx++
 	}
-	if endDate != "" {
+	if o.endDate != "" {
 		conditions = append(conditions, fmt.Sprintf("ars.ts <= $%d", argIdx))
-		args = append(args, endDate)
+		args = append(args, o.endDate)
 		argIdx++
 	}
 
 	conditions = append(conditions, fmt.Sprintf("ars.confidence >= $%d AND ars.confidence <= $%d", argIdx, argIdx+1))
-	args = append(args, minConfidence, maxConfidence)
+	args = append(args, o.minConfidence, o.maxConfidence)
 	argIdx += 2
 
-	if annotatedFilter != nil {
-		if *annotatedFilter {
+	if o.annotatedFilter != nil {
+		if *o.annotatedFilter {
 			conditions = append(conditions, "tha.request_id IS NOT NULL")
 		} else {
 			conditions = append(conditions, "tha.request_id IS NULL")
 		}
 	}
 
-	if annotatorFilter != "" {
+	if o.annotatorFilter != "" {
 		conditions = append(conditions, fmt.Sprintf("tha.annotator = $%d", argIdx))
-		args = append(args, annotatorFilter)
+		args = append(args, o.annotatorFilter)
 		argIdx++
 	}
 
-	whereClause := "WHERE " + strings.Join(conditions, " AND ")
+	return strings.Join(conditions, " AND "), args, argIdx
+}
 
-	// Count query
-	countSQL := fmt.Sprintf(`
-		SELECT COUNT(*)
-		FROM auto_route_selections_all ars
-		LEFT JOIN training_human_annotations tha ON tha.request_id = ars.request_id
-		%s
-	`, whereClause)
+// sampleColumns is the shared projection of every sampling strategy.
+const sampleColumns = `
+	ars.request_id,
+	ars.chosen_model,
+	ars.task_type,
+	ars.profile,
+	ars.chosen_model,
+	ars.confidence,
+	tha.human_label,
+	tha.is_correct,
+	tha.annotation_reason AS reason,
+	tha.annotator,
+	tha.annotated_at`
 
-	var total int
-	err := pool.QueryRow(ctx, countSQL, args...).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("count query failed: %w", err)
+const samplesFromJoin = `
+	FROM auto_route_selections_all ars
+	LEFT JOIN training_human_annotations tha ON tha.request_id = ars.request_id`
+
+// llmDisagreementOrderKey 是 disagreement / stratified 两个策略共用的分歧
+// 排序键：LLM 兜底接管过的行排最前（R64 P2 修复）。旧键
+// `(ars.classifier <> 'heuristic') DESC` 会把 session_cache、jev、
+// v3_heuristic、embedding 等非 LLM 行也顶到最前，语义失真。
+//
+// 白名单 = autoroute 包里 LLM 兜底链路真正写入
+// auto_route_selections.classifier 的值（经 Decision.Classifier 由
+// domains/hooks/observability/telemetry/selection_writer.go:321 落库）：
+//   - 'llm'    — LLMFallbackClassifier（autoroute/classifier_llm.go:110，
+//     经 decision.go:916 的兜底返回链落库）；
+//   - 'llm_v2' — V2 决策路径对 classifier 统一追加 "_v2" 后缀
+//     （autoroute/decision_v2.go:385），其 cls 同样出自含 LLM 兜底的
+//     d.classify 链（decision_v2.go:181）。
+//
+// 显式排除的非白名单值及原因：
+//   - heuristic（autoroute/classifier.go:674）— 启发式规则自身结论，非兜底
+//     改判证据（采样目标恰是启发式没把握的行）；
+//   - v3_heuristic（autoroute/classifier_v3.go:389）— V3 规则分类，非 LLM；
+//   - jev（autoroute/classifier_jev.go:313）— 外部 Jev 分类器，审计口径
+//     不算 LLM 兜底链路；
+//   - embedding（autoroute/embedding_classifier.go:55）— 影子评估流量，
+//     不参与真实决策；
+//   - session_cache / session_cache_v2（autoroute/decision.go:446 /
+//     decision_v2.go:115）— 会话缓存命中，复用首轮结论，当轮未分类；
+//   - default（autoroute/decision.go:513 / decision_v2.go:185）— 客户端
+//     hint / 网关默认兜底，同样未分类。
+const llmDisagreementOrderKey = "(ars.classifier IN ('llm', 'llm_v2')) DESC, ars.ts DESC"
+
+// buildSamplesDataSQL renders the data query for the given strategy. Pure
+// function (unit-tested shape); whereSQL comes from buildSamplesWhere and
+// argIdx is the next free placeholder index.
+func buildSamplesDataSQL(o samplesQueryOpts, whereSQL string, argIdx int) string {
+	sql, _ := buildSamplesDataSQLAndArgs(o, whereSQL, argIdx, nil)
+	return sql
+}
+
+// buildSamplesDataSQLAndArgs is buildSamplesDataSQL plus the trailing args
+// (stratified: quota; recent/disagreement: limit+offset).
+func buildSamplesDataSQLAndArgs(o samplesQueryOpts, whereSQL string, argIdx int, args []any) (string, []any) {
+	if o.strategy == "stratified" {
+		// 分层抽样：每 (task_type, 桶) 取最近 perStrata 行，桶内同样让
+		// 分歧行（LLM 兜底，见 llmDisagreementOrderKey）排在前面，标注
+		// 边际价值最大化。外层显式列投影（不含 sample_rn），Scan 列序与
+		// 其它策略完全一致。
+		//
+		// R64（P3）：最外层再包 `SELECT * FROM (...) t LIMIT $N`（N=已校验
+		// 的 size 上限）。per_strata ≤ 20 但 task_type × 4 个置信度桶最多
+		// 44 层，旧 SQL 无外层 LIMIT 时单页最多返回 880 行，突破
+		// handleAnnotationSamples 的 size ≤ 200 契约。
+		dataSQL := fmt.Sprintf(`
+			SELECT * FROM (
+				SELECT ranked.request_id, ranked.model_name, ranked.task_type, ranked.profile,
+					ranked.auto_provider, ranked.confidence, ranked.human_label, ranked.is_correct,
+					ranked.reason, ranked.annotator, ranked.annotated_at
+				FROM (
+					SELECT
+						ars.request_id,
+						ars.chosen_model AS model_name,
+						ars.task_type,
+						ars.profile,
+						ars.chosen_model AS auto_provider,
+						ars.confidence,
+						tha.human_label,
+						tha.is_correct,
+						tha.annotation_reason AS reason,
+						tha.annotator,
+						tha.annotated_at,
+						row_number() OVER (
+							PARTITION BY ars.task_type,
+								CASE WHEN ars.confidence >= 0.85 THEN 4
+							     WHEN ars.confidence >= 0.70 THEN 3
+							     WHEN ars.confidence >= 0.50 THEN 2
+							     ELSE 1 END
+							ORDER BY %s
+						) AS sample_rn
+						%s
+						%s
+					) ranked
+					WHERE sample_rn <= $%d
+					ORDER BY ranked.task_type, ranked.sample_rn
+			) t
+			LIMIT $%d
+			`, llmDisagreementOrderKey, samplesFromJoin, whereSQL, argIdx, argIdx+1)
+		return dataSQL, append(args, o.perStrata, o.limit)
+	}
+
+	orderBy := "ars.ts DESC"
+	if o.strategy == "disagreement" {
+		orderBy = llmDisagreementOrderKey
 	}
 
 	// Data query — columns per the real auto_route_selections schema
@@ -255,26 +416,50 @@ func querySamples(
 	// and the auto label the annotator confirms or corrects; ts orders and
 	// date-filters.
 	dataSQL := fmt.Sprintf(`
-		SELECT
-			ars.request_id,
-			ars.chosen_model,
-			ars.task_type,
-			ars.profile,
-			ars.chosen_model,
-			ars.confidence,
-			tha.human_label,
-			tha.is_correct,
-			tha.annotation_reason AS reason,
-			tha.annotator,
-			tha.annotated_at
-		FROM auto_route_selections_all ars
-		LEFT JOIN training_human_annotations tha ON tha.request_id = ars.request_id
+		SELECT%s
 		%s
-		ORDER BY ars.ts DESC
+		%s
+		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, whereClause, argIdx, argIdx+1)
+	`, sampleColumns, samplesFromJoin, whereSQL, orderBy, argIdx, argIdx+1)
+	return dataSQL, append(args, o.limit, o.offset)
+}
 
-	args = append(args, limit, offset)
+// querySamples fetches samples with optional annotation data.
+//
+// Strategy dispatch (P0⑤ sampling v2):
+//   - recent:       ORDER BY ts DESC + LIMIT/OFFSET paging (legacy shape).
+//   - disagreement: same filter/paging, but rows whose classifier value is in
+//     the LLM fallback whitelist (see llmDisagreementOrderKey) sort first —
+//     those are the requests where the LLM took over from the heuristic,
+//     i.e. the highest-value annotation targets.
+//   - stratified:   window-function quota sample, task_type × confidence
+//     bucket (bands 0.85+/0.70+/0.50+/rest aligned to the LLM fallback
+//     threshold 0.70 and the strong-confidence band). Paging offsets don't
+//     apply (one deterministic shot) but the outer LIMIT still caps the
+//     page at the validated size (R64: ≤200); total reports the selected
+//     row count.
+func querySamples(ctx context.Context, pool *pgxpool.Pool, o samplesQueryOpts) ([]AnnotationSample, int, error) {
+	whereClause, args, argIdx := buildSamplesWhere(o)
+	whereSQL := ""
+	if whereClause != "" {
+		whereSQL = "WHERE " + whereClause
+	}
+
+	var total int
+	if o.strategy != "stratified" {
+		countSQL := fmt.Sprintf(`
+			SELECT COUNT(*)
+			FROM auto_route_selections_all ars
+			LEFT JOIN training_human_annotations tha ON tha.request_id = ars.request_id
+			%s
+		`, whereSQL)
+		if err := pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("count query failed: %w", err)
+		}
+	}
+
+	dataSQL, args := buildSamplesDataSQLAndArgs(o, whereSQL, argIdx, args)
 
 	rows, err := pool.Query(ctx, dataSQL, args...)
 	if err != nil {
@@ -318,6 +503,10 @@ func querySamples(
 
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("rows iteration failed: %w", err)
+	}
+
+	if o.strategy == "stratified" {
+		total = len(samples)
 	}
 
 	return samples, total, nil
@@ -424,7 +613,7 @@ func (h *Handler) handleAnnotationFirstTurnSamples(w http.ResponseWriter, r *htt
 		qerr = withAllTenantReadOnlyTx(ctx, pool, run)
 	}
 	if qerr != nil {
-		http.Error(w, fmt.Sprintf("Failed to query first-turn samples: %v", qerr), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query first-turn samples", qerr)
 		return
 	}
 
@@ -773,7 +962,7 @@ func (h *Handler) handleCreateAnnotation(w http.ResponseWriter, r *http.Request)
 
 	result, err := pool.Exec(ctx, sql, req.RequestID, autoLabel, autoConfidence, req.HumanProvider, req.IsCorrect, req.Reason, req.Annotator, metadataArg)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create annotation: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to create annotation", err)
 		return
 	}
 
@@ -892,7 +1081,7 @@ func (h *Handler) handleDeleteAnnotation(w http.ResponseWriter, r *http.Request)
 	sql := `DELETE FROM training_human_annotations WHERE request_id = $1`
 	result, err := pool.Exec(ctx, sql, requestID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to delete annotation: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to delete annotation", err)
 		return
 	}
 
@@ -925,25 +1114,25 @@ func (h *Handler) handleAnnotationStats(w http.ResponseWriter, r *http.Request) 
 
 	overall, err := querier.GetOverallStats(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get overall stats: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to get overall stats", err)
 		return
 	}
 
 	byProvider, err := querier.GetProviderAccuracy(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get provider accuracy: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to get provider accuracy", err)
 		return
 	}
 
 	byAnnotator, err := querier.GetAnnotatorStats(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get annotator stats: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to get annotator stats", err)
 		return
 	}
 
 	byReason, err := querier.GetReasonDistribution(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get reason distribution: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to get reason distribution", err)
 		return
 	}
 

@@ -84,6 +84,11 @@ var intentClassificationKeywords = []string{
 	"classify intent", "classify the intent", "detect intent",
 	"classify this", "text classification",
 	"sentiment analysis", "sentiment classification", "positive or negative",
+	// 2026-09-28 现场实测补充：动词+对象分离写法（"classify sentiment" /
+	// "classify tone" / "classify the review as positive/negative"），与
+	// 紧邻短语并集共同覆盖英文情感/类别二分类请求。原有中文"情感分类"
+	// 与此同型（"sentiment classification" 已是紧邻短语）。
+	"classify sentiment", "classify tone", "classify polarity",
 }
 
 // intentClassifyVerbs / intentClassifyTargets 用于组合判断：当动词与目标
@@ -216,6 +221,83 @@ func hasPlanDesignSignal(contentLower string) bool {
 	return false
 }
 
+// planArtifactTargets / planArtifactQualifiers implement the artifact rule for
+// planning detection (R76).
+//
+// planningVerbs deliberately excludes 写/做 as generic verbs (2026-09-14:
+// "制定方案" must be planning but "写一个方案" alone is too weak to risk on
+// creative text). That left a measured gap: prompts that name a planning
+// *deliverable* without a canonical planning verb fell to chat 0.10 —
+// "帮我写一个 NextJS 项目的技术选型文档", "写一个 Django 项目的迁移计划",
+// "帮我出一个 Redis 缓存的容量计划" (all verified 0.10 before the fix).
+//
+// The rule is artifact-based rather than verb-based: a planning deliverable
+// (计划/方案/规划/路线图/排期/里程碑/选型) sitting next to a domain qualifier
+// (技术/架构/数据/…) is what makes the request planning. The qualifier is what
+// keeps "写一个周报" or "写一个会议纪要" out — those name a document, not a
+// planning artifact. Callers still gate this behind !strongCodingSignal, so
+// "先制定计划然后实现" stays TaskCode.
+var planArtifactTargets = []string{"方案", "计划", "规划", "路线图", "排期", "里程碑", "选型"}
+var planArtifactQualifiers = []string{
+	"技术", "架构", "系统", "数据", "接口", "性能", "成本", "安全",
+	"数据库", "服务", "项目", "迁移", "升级", "重构", "容量", "稳定性", "模型",
+}
+
+// planRetroactiveMarkers are the words that turn a planning artifact into
+// something that already exists rather than something to be produced:
+// completed, deleted, inspected, reviewed, summarised.
+//
+// Measured false positives before this guard: "把这个项目的计划删掉",
+// "帮我看一下技术方案", "回顾一下这个项目的路线图" — all statements about an
+// artifact, none of them a request to produce one.
+var planRetroactiveMarkers = []string{
+	"已经", "已完成", "完成了", "做完", "删掉", "删除", "移除", "撤销",
+	"查看", "看一下", "看看", "展示", "回顾", "复盘", "总结一下", "汇总",
+}
+
+// hasPlanArtifactSignal reports a planning deliverable qualified by a domain
+// word, with no verb requirement.
+func hasPlanArtifactSignal(contentLower string) bool {
+	hasTarget := false
+	for _, t := range planArtifactTargets {
+		if strings.Contains(contentLower, t) {
+			hasTarget = true
+			break
+		}
+	}
+	if !hasTarget {
+		return false
+	}
+	for _, q := range planArtifactQualifiers {
+		if strings.Contains(contentLower, q) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRetroactivePlanTalk reports that the text refers to an existing planning
+// artifact (completed / deleted / inspected / reviewed) rather than asking for
+// one.
+//
+// The "no canonical planning verb" conjunction is what makes this safe: it is
+// evaluated in IsPlanningRequest and vetoes every planning path (the artifact
+// rule, the canonical phrase list and the verb+target rule). A prompt that
+// really does ask for a plan carries a planning verb even when a retrospective
+// marker is also present — "已经完成调研，请制定技术选型方案" keeps its planning
+// verdict.
+func isRetroactivePlanTalk(contentLower string) bool {
+	if hasPlanDesignSignal(contentLower) {
+		return false
+	}
+	for _, m := range planRetroactiveMarkers {
+		if strings.Contains(contentLower, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // looksLikePlanningReference 检测规划词是否仅作为引用/讨论对象而非执行指令。
 // N2-1 引用语境守卫：长文中的"材料里提到要制定方案"是引用，不是指令。
 // 特征：引用动词 + 规划词，或者间接引述标记 + 规划词。
@@ -266,10 +348,17 @@ func IsPlanningRequest(signals ClassificationSignals) bool {
 	if signals.EstimatedTokens > 50000 && looksLikePlanningReference(contentLower) {
 		return false
 	}
+	// R76: retrospective talk guard. A completed / deleted / inspected plan
+	// artifact is not a request to produce one. Requires the absence of a
+	// canonical planning verb so a real ask that merely mentions prior work
+	// ("已经完成调研，请制定技术选型方案") keeps its planning verdict.
+	if isRetroactivePlanTalk(contentLower) {
+		return false
+	}
 	for _, kw := range planningKeywords {
 		if strings.Contains(contentLower, kw) {
 			return true
 		}
 	}
-	return hasPlanDesignSignal(contentLower)
+	return hasPlanDesignSignal(contentLower) || hasPlanArtifactSignal(contentLower)
 }

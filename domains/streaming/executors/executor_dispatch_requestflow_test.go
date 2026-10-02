@@ -154,7 +154,7 @@ func TestLogDispatchStreamInterruptedRequestFlow(t *testing.T) {
 
 	lines := captureRequestFlow(t, func() {
 		logDispatchStreamInterrupted(params, cand, errorsx.KindStreamTimeout,
-			&streamInterruptedError{reason: "upstream_timeout", credentialID: 44, resumable: true})
+			&streamInterruptedError{reason: "upstream_timeout", credentialID: 44, resumable: true}, false)
 	})
 	if len(lines) != 1 {
 		t.Fatalf("request_flow lines = %d, want 1: %q", len(lines), lines)
@@ -167,7 +167,39 @@ func TestLogDispatchStreamInterruptedRequestFlow(t *testing.T) {
 		"action":     "stream_interrupted",
 		"reason":     "upstream_timeout",
 		"retryable":  "true",
+		"committed":  "false",
 		"attempt":    "3",
+	} {
+		if got := attrValue(line, key); got != want {
+			t.Fatalf("stream_interrupted line %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// 2026-09-23 (live evidence df60575b): a first-hand sie.kind (upstream_down
+// for eof_without_done) must win over the message-based cooling kind
+// (stream_timeout), and committed must reflect actual client-visible output.
+func TestLogDispatchStreamInterruptedPrefersSieKindAndCommitted(t *testing.T) {
+	params := &ExecParams{
+		R:         httptest.NewRequest("POST", "/v1/chat/completions", nil),
+		RequestID: "req-eof",
+		AttemptNo: 1,
+	}
+	cand := provider.Candidate{CredentialID: 21, ProviderID: 14, RawModel: "MiniMax-M3"}
+
+	lines := captureRequestFlow(t, func() {
+		logDispatchStreamInterrupted(params, cand, errorsx.KindStreamTimeout,
+			&streamInterruptedError{reason: "eof_without_done", credentialID: 21, resumable: false, kind: errorsx.KindUpstreamDown}, true)
+	})
+	if len(lines) != 1 {
+		t.Fatalf("request_flow lines = %d, want 1: %q", len(lines), lines)
+	}
+	line := lines[0]
+	for key, want := range map[string]string{
+		"kind":      "upstream_down",
+		"reason":    "eof_without_done",
+		"retryable": "false",
+		"committed": "true",
 	} {
 		if got := attrValue(line, key); got != want {
 			t.Fatalf("stream_interrupted line %s = %q, want %q", key, got, want)

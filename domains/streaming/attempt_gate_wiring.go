@@ -65,9 +65,31 @@ func setAttemptGateForTest(enabled bool, mode GateMode) (restore func()) {
 // existing gate — commit ownership stays with the coordinator.
 // P1-2 fix (2026-08-28): Added ctx parameter to propagate context to gate.
 func wrapAttemptWriter(ctx context.Context, w http.ResponseWriter, protocol ClientProtocol) (http.ResponseWriter, *AttemptCommitGate) {
-	if gw, ok := w.(*GateWriter); ok {
-		return w, gw.UnderlyingAttemptGate()
+	orig := w
+	// A survival-prewrapped GateWriter may arrive behind transport decoration
+	// (e.g. StreamChat…WithVendor wraps the writer in a connection-monitor
+	// wrapper BEFORE calling this). Skipping the unwrap builds a SECOND gate,
+	// and the §11.6/stream-timeout TerminalRendered latch then lands on that
+	// throwaway gate while SurvivalCoordinator.renderTerminal consults its
+	// own — the guard never fires and the wire gets two terminal frames plus
+	// two [DONE] (observed on 154 build 2234, 2026-09-23, 20/20 committed
+	// breaks). Unwrap standard-convention layers and keep the outer writer so
+	// monitoring stays in the write path.
+	for hops := 0; ; hops++ {
+		if gw, ok := w.(*GateWriter); ok {
+			return orig, gw.UnderlyingAttemptGate()
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok || hops >= 8 {
+			break
+		}
+		w = u.Unwrap()
 	}
+	// Not found: the decoration chain (connection monitor et al.) must keep
+	// wrapping the new gate — b0c77269d initially let the loop leave `w`
+	// pointing at the innermost writer, silently bypassing the monitor for
+	// every non-survival chat stream. Restore before building the gate.
+	w = orig
 	var firstSemanticByte func()
 	if source, ok := w.(interface{ FirstSemanticByteCallback() func() }); ok {
 		firstSemanticByte = source.FirstSemanticByteCallback()

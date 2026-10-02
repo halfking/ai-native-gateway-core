@@ -11,7 +11,7 @@ import (
 func emptyBoardPies() map[string]any {
 	return map[string]any{
 		"clients":         []boardPieItem{},
-		"virtual_ips":     []boardPieItem{},
+		"client_ips":      []boardPieItem{},
 		"identity_hashes": []boardPieItem{},
 		"models":          []boardPieItem{},
 		"errors":          []boardPieItem{},
@@ -89,10 +89,14 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr b
 		var p boardTrendPoint
 		var bucket time.Time
 		if err := rows.Scan(&bucket, &p.Requests, &p.Tokens, &p.Credits, &p.CostUSD); err != nil {
+			warnRowSkip("fallback board trends", err)
 			continue
 		}
 		p.Bucket = bucket.UTC().Format(time.RFC3339)
 		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return points, nil
 }
@@ -100,7 +104,7 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr b
 func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
 	types := map[string]string{
 		"clients":         "agent_name",
-		"virtual_ips":     "virtual_ip",
+		"client_ips":      "client_ip",
 		"identity_hashes": "identity_hash",
 		"models":          "model",
 		"errors":          "error_kind",
@@ -116,6 +120,9 @@ func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boa
 		}
 		if dimType == "provider" {
 			items = h.resolveProviderPieLabels(ctx, items)
+		}
+		if dimType == "client_ip" {
+			items = classifyClientIPPie(items)
 		}
 		out[key] = items
 	}
@@ -155,9 +162,13 @@ func (h *Handler) fallbackDimPie(ctx context.Context, tenantID string, tr boardT
 	for rows.Next() {
 		var item boardPieItem
 		if err := rows.Scan(&item.Key, &item.Requests, &item.Tokens, &item.Credits, &item.CostUSD); err != nil {
+			warnRowSkip("fallback dim pie", err)
 			continue
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }
@@ -175,8 +186,10 @@ func fallbackDimGroupExpr(alias, dimType string) (expr string, onlyFailures bool
 		// old vs new tagging. Once enough history accumulates under
 		// agent_name the live 'clients' path drops this case.
 		return fmt.Sprintf("COALESCE(NULLIF(%s.client_profile, ''), %s)", alias, unknown), false
-	case "virtual_ip":
-		return fmt.Sprintf("COALESCE(NULLIF(%s.virtual_ip, ''), %s)", alias, unknown), false
+	case "client_ip":
+		// R57 B7: real resolved client IP (740 view chain projection);
+		// replaces the legacy virtual_ip pseudo dim on the board.
+		return fmt.Sprintf("COALESCE(NULLIF(HOST(%s.client_ip), ''), %s)", alias, unknown), false
 	case "identity_hash":
 		return fmt.Sprintf("COALESCE(NULLIF(%s.identity_hash, ''), %s)", alias, unknown), false
 	case "model":
@@ -238,12 +251,16 @@ func (h *Handler) fallbackErrorDrill(
 	for rows.Next() {
 		var item boardPieItem
 		if err := rows.Scan(&item.Key, &item.Requests, &item.Tokens, &item.Credits, &item.CostUSD); err != nil {
+			warnRowSkip("fallback error drill", err)
 			continue
 		}
 		items = append(items, item)
 	}
 	if dimension == "provider" {
 		items = h.resolveProviderPieLabels(ctx, items)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

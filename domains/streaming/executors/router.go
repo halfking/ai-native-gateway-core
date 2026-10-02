@@ -134,23 +134,6 @@ type Router struct {
 		GetNodeState(ctx context.Context, credentialID int, model string) (*credentialfpslot.NodeState, error)
 		GetNodeStatesBatch(ctx context.Context, keys []credentialfpslot.NodeStateKey) ([]*credentialfpslot.NodeState, error)
 	}
-	// UNUSED (audit 2026-09-14 R28 #20): never wired — cmd/gateway/main.go's
-	// Bandit block is commented out, so Router.Bandit is always nil and
-	// planByTier always takes the P2C branch. Kept for the dormant bandit
-	// tests (router_bandit_test.go) and a future re-enable.
-	//
-	// Bandit is the Thompson Sampling bandit scorer for intelligent credential
-	// selection. When set, planByTier uses bandit scoring instead of P2C within
-	// each tier. Falls back to P2C if Bandit is nil.
-	Bandit *credential.BanditScorer
-	// UNUSED (audit 2026-09-14 R28 #20): same dormant status as Bandit —
-	// nothing constructs a BanditFlusher in production wiring.
-	//
-	// BanditFlusher is the async batch writer for Bandit state. When set,
-	// the executor calls MarkDirty after recording success/failure events.
-	BanditFlusher interface {
-		MarkDirty(credentialID string)
-	}
 	// weightCounters isolates deterministic weighted selection by candidate set.
 	// Soft-cap rotation (audit 2026-09-14 R28 #22b): each nextWeightCounter call
 	// bumps weightCountersTotal; past weightCounterSoftCap the whole map is
@@ -183,6 +166,16 @@ type Router struct {
 	// 新增：路由评分权重配置（Phase 1）
 	LoadScoreWeights LoadScoreWeights
 
+	// EnvWeights (R48 §3 A2)：6 个维度权重（sticky/recency/balance/
+	// planQuota/headroom/capacity）在 NewRouter 时一次性从 env 解析并 clamp
+	// 后缓存。calculateLoadScore 热路径直接读 struct 字段，省去每个候选
+	// 每次 planByTier 的 envFloat+clampEnvWeight 调用（n=10 场景下省
+	// 60 次 hash lookup + ParseFloat + 临时字符串分配）。
+	// 与 LoadScoreWeights 字段不同：后者承载 cost/IQ/等 "业务参数"（可
+	// 经 admin/routing/scoring-weights 注入）；EnvWeights 只承载 "环境
+	// 启动常量"，两者职责分离。
+	EnvWeights *LoadScoreEnvWeights
+
 	// TimeoutConfig (Phase 2, 2026-07-23): Dynamic timeout calculation
 	// based on context size, historical latency, and network conditions.
 	// Hot-reloads config from system_settings table every 30 seconds.
@@ -193,8 +186,15 @@ type Router struct {
 	// 默认 false，通过环境变量 PRESSURE_AWARE_ROUTING 控制
 	PressureAwareEnabled bool
 
+	// StickyLoad (2026-09-19 sticky-session load balancing): 每凭据
+	// 5 分钟 sticky 会话滑窗 + 最近请求时间信号，供 calculateLoadScore
+	// 的 sticky/recency 惩罚项消费。nil = 未接线（惩罚恒 0，评分与
+	// 历史公式逐字节一致）。planCandidates 每请求触发一次 Refresh
+	//（内部按 refresh TTL 节流 + 单飞）。
+	StickyLoad StickyLoadView
+
 	// ShadowStrategy (GW-03, omni-ref2): 可选的路由策略，仅用于 shadow 评分
-	// 对比，不改变实际选中候选。nil = 现状（P2C/bandit 行为零变化）。
+	// 对比，不改变实际选中候选。nil = 现状（P2C 行为零变化）。
 	// 非 nil 时，planByTier 在每个 tier bucket 用 ShadowStrategy 独立评分，
 	// 记录 agreed/disagreed metric（llmgw_routing_shadow_strategy_outcomes_total）。
 	// 通过环境变量 LLM_GATEWAY_ROUTING_SHADOW_STRATEGY 选择策略构造。
@@ -207,10 +207,12 @@ type Router struct {
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
+	ew := DefaultLoadScoreEnvWeights() // R48 §3 A2：6 维度 env 启动期预解析
 	return &Router{
 		Sticky:                 sticky,
 		Limiter:                lim,
 		LoadScoreWeights:       DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+		EnvWeights:             &ew,                       // R48 §3 A2：缓存到 Router
 		PriorityRoutingEnabled: true,
 	}
 }
@@ -401,6 +403,26 @@ func (r *Router) planCandidates(
 				}
 				candidates = filteredByViews(views)
 				if len(candidates) == 0 {
+					// 2026-09-28 vapeur 轮：authoritative 视图全拒且此处原为静默
+					// return nil，executor 只剩 "availability_check_failed:N" 的
+					// 推断值（UnavailableReason 为空时该字符串是兜底推断），
+					// vapeur 探红事故从请求日志完全无法归因。补一条带视图样本
+					// 的 WARN：下一轮 no-candidates 突发可从单行日志区分
+					// "FilterAndScore 没回视图（无覆盖）"还是"视图显式红"。
+					var viewSample []string
+					for i, v := range views {
+						if i >= 5 {
+							break
+						}
+						viewSample = append(viewSample, fmt.Sprintf("prov=%d cred=%d model=%s avail=%v", v.ProviderID, v.CredentialID, v.RawModel, v.Available))
+					}
+					slog.Warn("router: URSM v2 authoritative view filtered out every candidate",
+						"request_id", requestID,
+						"model", canonical,
+						"input_candidates", len(seeds),
+						"views_returned", len(views),
+						"view_sample", viewSample,
+					)
 					return nil
 				}
 			}
@@ -575,6 +597,27 @@ func (r *Router) planCandidates(
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
 	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
 	round1, round2 := splitByBillingRound(available)
+	// 2026-09-19: 触发 sticky 会话滑窗的跨实例快照刷新（TTL 节流 + 单飞，
+	// 纯内存模式 no-op）。放在可用性过滤之后，只刷新真正会参与评分的凭据。
+	if r.StickyLoad != nil && len(available) > 0 {
+		ids := make([]int, 0, len(available))
+		for _, c := range available {
+			ids = append(ids, c.CredentialID)
+		}
+		r.StickyLoad.Refresh(ids)
+	}
+	// R48 §4 B 方案：取一次 Snapshot(ids) 整批快照，calculateLoadScore
+	// 直接读 stratIn.StickySnapshot 替代每候选 Info()×2 的写锁争用。
+	// 空 available 时 skip；老 StickyLoad 实现缺 Snapshot 方法时也 skip
+	// （type assertion 失败自动 nil，calculateLoadScore 回退 Info()）。
+	var stickySnapshot map[int]StickyLoadInfo
+	if r.StickyLoad != nil && len(available) > 0 {
+		ids := make([]int, 0, len(available))
+		for _, c := range available {
+			ids = append(ids, c.CredentialID)
+		}
+		stickySnapshot = r.StickyLoad.Snapshot(ids)
+	}
 	stratIn := StrategyInput{
 		Policy:           policy,
 		EgressPreference: egressPreference,
@@ -582,6 +625,7 @@ func (r *Router) planCandidates(
 		Canonical:        canonical,
 		RequestID:        requestID,
 		LoadScoreWeights: r.LoadScoreWeights,
+		StickySnapshot:   stickySnapshot,
 	}
 	ordered := r.planByTier(requestCtx, round1, policy, stratIn)
 	if len(round2) > 0 {
@@ -1042,24 +1086,22 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 			continue
 		}
 
-		// Hybrid mode: use Bandit if available, fall back to P2C
-		var sorted []provider.Candidate
-		if r.Bandit != nil {
-			// Thompson Sampling Bandit ordering (with pressure factor)
-			sorted = r.banditOrder(ctx, bucket)
-		} else {
-			// Legacy P2C ordering (load-aware)
-			sorted = p2cOrder(bucket, r)
-		}
+		// Load-aware P2C ordering. (The Thompson-Sampling Bandit branch was
+		// removed 2026-09-19: Router.Bandit was never wired in production —
+		// always nil since main.go disabled the block — so the dead branch
+		// and its dedicated test file were deleted together.)
+		sorted := p2cOrder(bucket, r)
 
-		// Priority routing: when enabled, stable-partition the bandit/P2C
-		// order so priority candidates with ok quota_state sort before
-		// standard ones, preserving the relative order within each group.
-		// This mirrors the SQL ORDER BY bucket
-		// (CASE WHEN priority AND quota_state='ok' THEN 0 ELSE 1 END)
-		// so the Go-side re-sort inside planByTier doesn't erase it.
+		// Two-layer priority routing (2026-09-19): partition the P2C order
+		// into 优先层（flag + ok quota + headroom）→ 常规层（标准节点）→
+		// 兜底层（已满的优先节点）。Within-layer P2C order is preserved, so
+		// priority nodes balance among themselves; the standard layer serves
+		// traffic only when the priority layer is fully saturated; saturated
+		// priority nodes stay available as the last failover resort.
+		// lottoLen bounds the first-hop lottery to the serving segment.
+		lottoLen := len(sorted)
 		if r.PriorityRoutingEnabled {
-			sorted = stablePartitionPriority(sorted)
+			sorted, lottoLen = partitionBySelectionLayer(sorted, r)
 		}
 
 		// GW-03: shadow strategy diff（仅观测，不改顺序）。
@@ -1072,24 +1114,24 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		// health-aware order produced above for failover.
 		if len(sorted) > 1 {
 			counter := r.nextWeightCounter(sorted)
-			// Priority gate: the weighted lottery must stay inside the
-			// leading priority bucket, otherwise a high-weight standard
-			// candidate gets promoted to index 0 and receives the first
-			// attempt over priority-eligible ones. The partition above
-			// guarantees eligible candidates form a prefix; when the bucket
-			// is all-priority or all-standard the promotion is unchanged.
-			if r.PriorityRoutingEnabled {
-				if head := priorityPrefixLen(sorted); head > 0 && head < len(sorted) {
-					promoted := promoteWeightedCandidate(sorted[:head], counter)
-					merged := make([]provider.Candidate, 0, len(sorted))
-					merged = append(merged, promoted...)
-					merged = append(merged, sorted[head:]...)
-					sorted = merged
-				} else {
-					sorted = promoteWeightedCandidate(sorted, counter)
-				}
+			// 2026-09-19 sticky-session load balancing: 首跳抽签份额按三新
+			// 惩罚折算——sticky 会话多/刚被请求/余额低的节点份额缩小
+			//（floor 0.1，绝不归零，硬隔离仍由冷却过滤负责）。未接线
+			// tracker 或无变化时返回 nil，走纯 Weight 原路径。2026-09-19
+			// 成本感知轮把计划额度惩罚折入同一公式。
+			lottery := firstHopLotteryWeights(sorted, r)
+			// Layer gate: the weighted lottery must stay inside the serving
+			// segment (priority layer when it has headroom, else the standard
+			// layer), otherwise a high-weight lower-priority candidate gets
+			// promoted to index 0 and receives the first attempt early.
+			if r.PriorityRoutingEnabled && lottoLen > 0 && lottoLen < len(sorted) {
+				promoted := promoteWeightedCandidateWithWeights(sorted[:lottoLen], counter, headSliceOrNil(lottery, lottoLen))
+				merged := make([]provider.Candidate, 0, len(sorted))
+				merged = append(merged, promoted...)
+				merged = append(merged, sorted[lottoLen:]...)
+				sorted = merged
 			} else {
-				sorted = promoteWeightedCandidate(sorted, counter)
+				sorted = promoteWeightedCandidateWithWeights(sorted, counter, lottery)
 			}
 		}
 
@@ -1139,25 +1181,55 @@ func (r *Router) nextWeightCounter(cands []provider.Candidate) uint64 {
 }
 
 func promoteWeightedCandidate(cands []provider.Candidate, counter uint64) []provider.Candidate {
+	return promoteWeightedCandidateWithWeights(cands, counter, nil)
+}
+
+func headSliceOrNil(weights []int, head int) []int {
+	if weights == nil {
+		return nil
+	}
+	return weights[:head]
+}
+
+// promoteWeightedCandidateWithWeights 与 promoteWeightedCandidate 逻辑一致，
+// 但允许调用方传入与 cands 下标对齐的有效权重（effWeights）。effWeights
+// 为 nil 或某元素 ≤0 时该候选回退自身 Weight——nil 路径与原实现逐行为一致。
+// 2026-09-19: planByTier 用它把 sticky 会话/最近请求/余额惩罚折算进首跳
+// 加权轮询的份额，权重排序键（provider:cred:model）保持不变。
+func promoteWeightedCandidateWithWeights(cands []provider.Candidate, counter uint64, effWeights []int) []provider.Candidate {
 	if len(cands) <= 1 {
 		return cands
 	}
 
-	stable := append([]provider.Candidate(nil), cands...)
+	weightOf := func(i int, c provider.Candidate) int {
+		if effWeights != nil && i < len(effWeights) && effWeights[i] > 0 {
+			return effWeights[i]
+		}
+		return c.Weight
+	}
+
+	type weightedCandidate struct {
+		cand provider.Candidate
+		w    int
+	}
+	stable := make([]weightedCandidate, len(cands))
+	for i, c := range cands {
+		stable[i] = weightedCandidate{cand: c, w: weightOf(i, c)}
+	}
 	sort.SliceStable(stable, func(i, j int) bool {
-		if stable[i].ProviderID != stable[j].ProviderID {
-			return stable[i].ProviderID < stable[j].ProviderID
+		if stable[i].cand.ProviderID != stable[j].cand.ProviderID {
+			return stable[i].cand.ProviderID < stable[j].cand.ProviderID
 		}
-		if stable[i].CredentialID != stable[j].CredentialID {
-			return stable[i].CredentialID < stable[j].CredentialID
+		if stable[i].cand.CredentialID != stable[j].cand.CredentialID {
+			return stable[i].cand.CredentialID < stable[j].cand.CredentialID
 		}
-		return stable[i].RawModel < stable[j].RawModel
+		return stable[i].cand.RawModel < stable[j].cand.RawModel
 	})
 
 	totalWeight := 0
 	for _, c := range stable {
-		if c.Weight > 0 {
-			totalWeight += c.Weight
+		if c.w > 0 {
+			totalWeight += c.w
 		}
 	}
 	if totalWeight == 0 {
@@ -1168,19 +1240,19 @@ func promoteWeightedCandidate(cands []provider.Candidate, counter uint64) []prov
 	position = position * weightStride(totalWeight) % totalWeight
 	winner := stable[0]
 	for _, c := range stable {
-		if c.Weight <= 0 {
+		if c.w <= 0 {
 			continue
 		}
-		if position < c.Weight {
+		if position < c.w {
 			winner = c
 			break
 		}
-		position -= c.Weight
+		position -= c.w
 	}
 
 	winnerIndex := 0
 	for i, c := range cands {
-		if c.ProviderID == winner.ProviderID && c.CredentialID == winner.CredentialID && c.RawModel == winner.RawModel {
+		if c.ProviderID == winner.cand.ProviderID && c.CredentialID == winner.cand.CredentialID && c.RawModel == winner.cand.RawModel {
 			winnerIndex = i
 			break
 		}
@@ -1191,7 +1263,7 @@ func promoteWeightedCandidate(cands []provider.Candidate, counter uint64) []prov
 
 	out := append([]provider.Candidate(nil), cands...)
 	copy(out[1:winnerIndex+1], out[:winnerIndex])
-	out[0] = winner
+	out[0] = winner.cand
 	return out
 }
 
@@ -1213,42 +1285,6 @@ func greatestCommonDivisor(a, b int) int {
 func filterAvailable(cands []provider.Candidate) []provider.Candidate {
 	var out []provider.Candidate
 	for _, c := range cands {
-		if c.IsAvailable() {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-// DEPRECATED: filterAvailableWithStateManager 将被 StateBackend 接口替代。
-// 2026-07-24 Phase 1: 此方法已通过 LegacyStateBackend 封装，不应直接调用。
-// 保留用于向后兼容，未来版本将移除。
-//
-// filterAvailableWithStateManager 使用状态管理器优先判断可用性
-func (r *Router) filterAvailableWithStateManager(ctx context.Context, cands []provider.Candidate) []provider.Candidate {
-	// 2026-07-21, URSM v2 plan T21: in mode=authoritative, the v2 Manager
-	// already filtered the candidate set upstream (PlanCandidates step 1);
-	// skip the legacy StateManager/IsAvailable read entirely to avoid a
-	// second source-of-truth on top of v2. URSMv2 == nil keeps the legacy
-	// path live (main.go default URSM_V2_MODE=off leaves v2 un-wired).
-	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
-		return cands
-	}
-	var out []provider.Candidate
-	for _, c := range cands {
-		// 优先查询状态管理器
-		if r.StateManager != nil && r.StateManager.Enabled() {
-			available, reason := r.StateManager.IsAvailable(ctx, c.CredentialID, c.RawModel)
-			if !available {
-				slog.Debug("router: filtered by state manager",
-					"credential_id", c.CredentialID,
-					"model", c.RawModel,
-					"reason", reason)
-				continue
-			}
-		}
-
-		// 回退到原有逻辑
 		if c.IsAvailable() {
 			out = append(out, c)
 		}
@@ -1432,7 +1468,7 @@ func cheapestCost(pool []provider.Candidate) float64 {
 
 func loadScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
 	// Phase 1 改进：使用新的评分方法
-	return calculateLoadScore(c, r, ctx, r.LoadScoreWeights)
+	return calculateLoadScore(c, r, ctx, r.LoadScoreWeights, StrategyInput{})
 }
 
 func randomPair(pool []provider.Candidate) (provider.Candidate, provider.Candidate) {
@@ -1617,9 +1653,9 @@ func isPriorityBucketEligible(c provider.Candidate) bool {
 
 // stablePartitionPriority reorders candidates so that priority-bucket
 // candidates come before standard ones, preserving the relative order
-// within each group. This keeps the bandit/P2C ordering intact inside
-// each sub-group while lifting priority candidates to the front — the
-// same semantics as the SQL ORDER BY priority bucket.
+// within each group. This keeps the P2C ordering intact inside each
+// sub-group while lifting priority candidates to the front — the same
+// semantics as the SQL ORDER BY priority bucket.
 func stablePartitionPriority(cands []provider.Candidate) []provider.Candidate {
 	if len(cands) <= 1 {
 		return cands
@@ -1636,19 +1672,79 @@ func stablePartitionPriority(cands []provider.Candidate) []provider.Candidate {
 	return append(prio, rest...)
 }
 
-// priorityPrefixLen returns the length of the leading run of
-// priority-eligible candidates. Callers feed it a stable-partitioned
-// slice (see stablePartitionPriority), so eligibility is contiguous
-// from index 0.
-func priorityPrefixLen(cands []provider.Candidate) int {
-	n := 0
-	for _, c := range cands {
-		if !isPriorityBucketEligible(c) {
-			break
-		}
-		n++
+// isPriorityLayerEligible extends the SQL priority-bucket predicate with the
+// two-layer saturation rule (2026-09-19): a priority candidate belongs to the
+// priority LAYER only while it still has concurrency headroom. A saturated
+// priority node is not dropped — it becomes the last-resort segment, after
+// every healthy standard node, so the standard layer is used exactly when
+// every priority node is full or gated.
+func isPriorityLayerEligible(c provider.Candidate, r *Router) bool {
+	return isPriorityBucketEligible(c) && !priorityNodeSaturated(c, r)
+}
+
+// priorityNodeSaturated reports whether a priority node has consumed its full
+// concurrency capacity at planning time. Capacity-unknown candidates fail
+// open (never saturated): without a limit there is no headroom to measure and
+// the governor still enforces whatever upstream limit exists. The signal
+// sources mirror calculateConcurrencyScore (LiveLoad first, Limiter fallback).
+func priorityNodeSaturated(c provider.Candidate, r *Router) bool {
+	if r == nil {
+		return false
 	}
-	return n
+	capacity := concurrencyCapacity(c, r)
+	if capacity <= 0 {
+		return false
+	}
+	used := liveInFlight(c, r)
+	if used <= 0 && r.Limiter != nil {
+		used = int64(r.Limiter.Credential(c.ProviderID, c.CredentialID).Used())
+	}
+	return used >= int64(capacity)
+}
+
+// partitionBySelectionLayer reorders candidates into the two-layer priority
+// structure (2026-09-19, docs/design/2026-09-19-two-layer-priority-and-cost-
+// routing.md §1) with a last-resort tail:
+//
+//	L1  优先层  — priority flag AND ok quota_state AND concurrency headroom
+//	L2  常规层  — standard nodes (no flag / gated quota)
+//	L3  兜底层  — saturated priority nodes, still routable as failover
+//
+// Relative order is preserved within each layer, so P2C load balancing keeps
+// working inside the layer that serves traffic. lottoLen is the length of the
+// leading segment the first-hop weighted lottery may draw from: L1 when any
+// priority node has headroom, else L2 when a standard node exists, else the
+// whole list. This is the routing-time counterpart of dispatch's
+// ApplySoftPenalty, which re-checks governor saturation at dispatch time —
+// two independent readings of the same saturation contract.
+func partitionBySelectionLayer(cands []provider.Candidate, r *Router) (ordered []provider.Candidate, lottoLen int) {
+	if len(cands) <= 1 || r == nil {
+		return stablePartitionPriority(cands), len(cands)
+	}
+	l1 := make([]provider.Candidate, 0, len(cands))
+	l2 := make([]provider.Candidate, 0, len(cands))
+	l3 := make([]provider.Candidate, 0, len(cands))
+	for _, c := range cands {
+		switch {
+		case isPriorityLayerEligible(c, r):
+			l1 = append(l1, c)
+		case isPriorityBucketEligible(c):
+			// Priority-flagged with ok quota but saturated → last resort.
+			l3 = append(l3, c)
+		default:
+			l2 = append(l2, c)
+		}
+	}
+	ordered = append(append(append(make([]provider.Candidate, 0, len(cands)), l1...), l2...), l3...)
+	switch {
+	case len(l1) > 0:
+		lottoLen = len(l1)
+	case len(l2) > 0:
+		lottoLen = len(l1) + len(l2)
+	default:
+		lottoLen = len(ordered)
+	}
+	return ordered, lottoLen
 }
 
 // CompareCandidatePriority returns true when a should sort before b.
@@ -1688,77 +1784,6 @@ func SortByCompositeScore(candidates []provider.Candidate, weights ScoringWeight
 	return candidates
 }
 
-// banditOrder orders candidates using Thompson Sampling bandit algorithm.
-// This provides intelligent credential selection based on historical performance.
-// Falls back to P2C if any step fails.
-//
-// UNUSED (audit 2026-09-14 R28 #20): dead in production — Router.Bandit is
-// always nil (main.go wiring disabled), so planByTier never reaches this
-// path; only router_bandit_test.go exercises it directly.
-func (r *Router) banditOrder(ctx context.Context, cands []provider.Candidate) []provider.Candidate {
-	if len(cands) <= 1 || r.Bandit == nil {
-		return cands
-	}
-
-	// Score each candidate using Bandit + pressure factor
-	type scoredCandidate struct {
-		cand  provider.Candidate
-		score float64
-	}
-	scored := make([]scoredCandidate, 0, len(cands))
-
-	for _, c := range cands {
-		// Get bandit score (0-1, higher is better)
-		credID := fmt.Sprintf("%d", c.CredentialID)
-		banditScore := r.Bandit.Sample(credID)
-
-		// Apply pressure factor to avoid overloading high-performing credentials.
-		// 2026-09-10 (audit R9 candidate 6): read the same LiveLoad signal as
-		// calculateConcurrencyScore. The Limiter's credential semaphore is
-		// bypassed by dispatch_v2 (AcquireAllNoCredLayer), so Used() was always
-		// 0 in production and this factor sat pinned at 1.0 — wiring the Bandit
-		// would then have funnelled traffic onto the best-scoring credential
-		// until saturation (the 245 m3 93/7 skew). The capacity>0 guard keeps
-		// the old "unknown capacity → no damping" semantics for candidates
-		// without a ConcurrencyLimit.
-		pressureFactor := 1.0
-		if concurrencyCapacity(c, r) > 0 {
-			pressureFactor = 1.0 - calculateConcurrencyScore(c, r, ctx)
-		}
-
-		// Final score: bandit × pressure
-		// If credential is saturated (pressureFactor=0), score becomes 0
-		finalScore := banditScore * pressureFactor
-
-		scored = append(scored, scoredCandidate{
-			cand:  c,
-			score: finalScore,
-		})
-	}
-
-	// Sort by score descending (higher is better)
-	sort.Slice(scored, func(i, j int) bool {
-		if scored[i].score != scored[j].score {
-			return scored[i].score > scored[j].score
-		}
-		// Tie-breaker: capacity weight (Candidate.Weight, the credential's
-		// concurrency capacity) descending so failover ordering stays
-		// capacity-proportional; CredentialID is the final stable tiebreak.
-		if scored[i].cand.Weight != scored[j].cand.Weight {
-			return scored[i].cand.Weight > scored[j].cand.Weight
-		}
-		return scored[i].cand.CredentialID < scored[j].cand.CredentialID
-	})
-
-	// Extract sorted candidates
-	result := make([]provider.Candidate, len(scored))
-	for i, sc := range scored {
-		result[i] = sc.cand
-	}
-
-	return result
-}
-
 // tryDegradedMode 尝试在单候选者场景下启用降级模式。
 // 当唯一的候选者因为瞬态原因（cooling, rate_limited, suspicious）被过滤时，
 // 降级使用该候选者而不是返回 model_not_found，避免完全失败。
@@ -1769,8 +1794,8 @@ func (r *Router) banditOrder(ctx context.Context, cands []provider.Candidate) []
 //
 // 2026-07-04: 单候选者降级逻辑
 //
-// 2026-07-14: 增加 StateManager 感知。filterAvailableWithStateManager 过滤候选时
-// 不修改候选结构体，被内存态（state:timeout / state:rate_limit 等）过滤掉的候选
+// 2026-07-14: 增加 StateManager 感知。可用性过滤不修改候选结构体，被内存态
+// （state:timeout / state:rate_limit 等）过滤掉的候选
 // UnavailableReason() 仍是空串。若不在此处补查 StateManager，单点候选被瞬态内存态
 // 拒绝时降级永远不触发，直接 0 节点 503（生产事故 ba9fc64f 即此路径）。
 // 查询的 reason 与 PlanCandidates 统计分支（router.go reasonCounts）同源：

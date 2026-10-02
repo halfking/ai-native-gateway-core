@@ -39,6 +39,20 @@ function toDate(value: DateTimeInput): Date | null {
   return Number.isNaN(d.getTime()) ? null : d
 }
 
+/**
+ * 解析 Kx 日期组件族的本地分钟串（'YYYY-MM-DD HH:mm'，或 datetime-local 的
+ * 'YYYY-MM-DDTHH:mm'）为本地时区 Date（2026-09-30 审计 P3-3）。
+ *
+ * 无秒的日期时间串不是 ES 规范格式（Date Time String Format 只定义到
+ * 'YYYY-MM-DDTHH:mm:ss'），`new Date('2026-09-30 12:00')` 与
+ * `new Date('2026-09-30T12:00')` 均属实现定义行为——统一空格→'T'、
+ * 补 ':00' 秒后再解析；date（10 字符）与已带秒（19 字符）的串原样通过。
+ */
+export function parseLocalMinute(value: string): Date {
+  const iso = value.replace(' ', 'T')
+  return new Date(iso.length === 16 ? `${iso}:00` : iso)
+}
+
 function formatWith(
   d: Date,
   method: 'toLocaleString' | 'toLocaleTimeString',

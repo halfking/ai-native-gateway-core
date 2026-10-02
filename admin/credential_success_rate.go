@@ -61,7 +61,7 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 		ORDER BY c.id, mo.raw_model_name
 	`, tenantID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalTextErr(w, "internal error (see server logs)", err)
 			return
 		}
 		defer rows.Close()
@@ -81,7 +81,7 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 				&oldestTime,
 			)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalTextErr(w, "internal error (see server logs)", err)
 				return
 			}
 			if oldestTime != nil {
@@ -89,6 +89,12 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 				row.OldestRequestTime = &ts
 			}
 			result = append(result, row)
+		}
+		// 本端点的错误形状是 text/plain（writeInternalTextErr），保持同族
+		// 写法：迭代中断同样不能静默截断成功率表。
+		if rerr := rows.Err(); rerr != nil {
+			writeInternalTextErr(w, "internal error (see server logs)", rerr)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -167,7 +173,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		// against future wrapper regressions.
 		deleted, err := resetCredentialSuccessRateRows(r.Context(), db, req.CredentialID, req.RawModel)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalTextErr(w, "internal error (see server logs)", err)
 			return
 		}
 
@@ -178,7 +184,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		SELECT * FROM recent_success_rate($1, $2, 50, 3)
 	`, req.CredentialID, req.RawModel).Scan(&newRate, &newSamples)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalTextErr(w, "internal error (see server logs)", err)
 			return
 		}
 

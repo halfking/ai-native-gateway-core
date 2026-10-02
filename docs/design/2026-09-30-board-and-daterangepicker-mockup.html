@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>看板重构 + 统一日历组件 · 效果图方案（2026-09-30）</title>
+<style>
+:root, html[data-theme='light'] {
+  --kx-bg: #f4f6f9; --kx-surface: #ffffff; --kx-sidebar: #eef2f8;
+  --kx-text: #152033; --kx-muted: #5b6b80; --kx-border: #dce3ee;
+  --kx-primary: #1e4fd6; --kx-primary-hover: #1841b3; --kx-primary-soft: #eaf0ff;
+  --kx-success: #16845b; --kx-warning: #b7791f; --kx-danger: #c2413b;
+  --kx-shadow-sm: 0 2px 10px rgba(21,32,51,.06);
+  --kx-shadow-md: 0 8px 28px rgba(21,32,51,.10);
+  --hero-grad: linear-gradient(135deg, color-mix(in srgb, var(--kx-primary) 10%, var(--kx-surface)), var(--kx-surface) 65%);
+}
+html[data-theme='dark'] {
+  --kx-bg: #0f141c; --kx-surface: #1a222d; --kx-sidebar: #121820;
+  --kx-text: #e8eef7; --kx-muted: #8b9bb0; --kx-border: #2a3544;
+  --kx-primary: #5b8cff; --kx-primary-hover: #7aa3ff; --kx-primary-soft: rgba(91,140,255,.16);
+  --kx-success: #3ecf8e; --kx-warning: #e0a53a; --kx-danger: #f07167;
+  --kx-shadow-sm: 0 8px 24px rgba(0,0,0,.28);
+  --kx-shadow-md: 0 16px 40px rgba(0,0,0,.4);
+  --hero-grad: linear-gradient(135deg, color-mix(in srgb, var(--kx-primary) 14%, var(--kx-surface)), var(--kx-surface) 65%);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--kx-bg); color: var(--kx-text);
+  font-size: 14px; line-height: 1.5; padding: 0 0 80px;
+  transition: background .25s, color .25s;
+}
+.wrap { max-width: 1480px; margin: 0 auto; padding: 0 28px; }
+
+/* ===== 方案文档头 ===== */
+.doc-head { padding: 34px 0 10px; display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.doc-head h1 { font-size: 22px; font-weight: 700; }
+.doc-head .sub { color: var(--kx-muted); font-size: 12.5px; margin-top: 4px; }
+.theme-switch { display: inline-flex; border: 1px solid var(--kx-border); border-radius: 10px; overflow: hidden; }
+.theme-switch button { border: 0; padding: 7px 16px; font-size: 12.5px; cursor: pointer; background: var(--kx-surface); color: var(--kx-muted); font-weight: 600; }
+.theme-switch button.active { background: var(--kx-primary); color: #fff; }
+.sec-title { margin: 38px 0 6px; display: flex; align-items: baseline; gap: 10px; }
+.sec-title .no { font-size: 12px; font-weight: 700; color: #fff; background: var(--kx-primary); border-radius: 6px; padding: 2px 8px; }
+.sec-title h2 { font-size: 17px; font-weight: 700; }
+.sec-desc { color: var(--kx-muted); font-size: 12.5px; margin-bottom: 14px; }
+.note { font-size: 11.5px; color: var(--kx-muted); margin-top: 8px; }
+.badge { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1.5px 8px; border-radius: 999px; vertical-align: 1px; }
+.badge.keep { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 13%, transparent); }
+.badge.new { color: var(--kx-primary); background: var(--kx-primary-soft); }
+.badge.up { color: var(--kx-success); } .badge.down { color: var(--kx-danger); }
+
+/* ===== 看板画布 ===== */
+.board-frame { border: 1px solid var(--kx-border); border-radius: 16px; background: var(--kx-bg); padding: 22px 22px 26px; box-shadow: var(--kx-shadow-sm); }
+.board-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.board-top h3 { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.ops-chips { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.ops-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kx-muted); background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 999px; padding: 4px 11px; cursor: pointer; }
+.ops-chip b { color: var(--kx-text); font-weight: 600; }
+.dot { width: 7px; height: 7px; border-radius: 50%; }
+.dot.ok { background: var(--kx-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kx-success) 22%, transparent); }
+
+/* 英雄区 4 卡 */
+.hero-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.hero-card { background: var(--hero-grad); border: 1px solid var(--kx-border); border-radius: 14px; padding: 16px 18px 14px; position: relative; overflow: hidden; }
+.hero-card.hl { border-color: color-mix(in srgb, var(--kx-primary) 55%, var(--kx-border)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--kx-primary) 30%, transparent) inset; }
+.hero-card .label { font-size: 11.5px; color: var(--kx-muted); font-weight: 600; letter-spacing: .02em; }
+.hero-card .value { font-size: 27px; font-weight: 750; margin-top: 5px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.hero-card .value small { font-size: 14px; font-weight: 600; color: var(--kx-muted); margin-left: 2px; }
+.hero-card .sub { margin-top: 7px; font-size: 11.5px; color: var(--kx-muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.hero-card .sub .io { display: inline-flex; gap: 8px; }
+.hero-card .spark { position: absolute; right: 12px; top: 14px; opacity: .9; }
+
+/* 次要指标条 */
+.mini-row { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; margin-top: 12px; }
+.mini-card { background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 10px; padding: 9px 12px; }
+.mini-card .label { font-size: 10.5px; color: var(--kx-muted); }
+.mini-card .value { font-size: 16px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.mini-card .value small { font-size: 10.5px; color: var(--kx-muted); font-weight: 500; }
+
+/* 平台拆分 */
+.provider-sec { margin-top: 22px; }
+.sec-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.sec-bar h4 { font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.sec-bar .more { font-size: 12px; color: var(--kx-primary); cursor: pointer; font-weight: 600; }
+.count-pill { font-size: 10.5px; color: var(--kx-muted); background: color-mix(in srgb, var(--kx-muted) 12%, transparent); border-radius: 999px; padding: 1px 8px; font-weight: 600; }
+.provider-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.pv-card { background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 12px; padding: 11px 13px; }
+.pv-card .name { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; }
+.pv-logo { width: 20px; height: 20px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: #fff; }
+.pv-card { cursor: pointer; transition: border-color .15s, box-shadow .15s; position: relative; }
+.pv-card:hover { border-color: color-mix(in srgb, var(--kx-primary) 55%, var(--kx-border)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--kx-primary) 25%, transparent); }
+.pv-card .open { margin-left: auto; font-size: 11px; color: var(--kx-muted); font-weight: 600; }
+.pv-card .cost { font-size: 17px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.pv-card .cost small { font-size: 10.5px; color: var(--kx-muted); font-weight: 500; }
+.pv-nums { display: flex; gap: 12px; margin-top: 5px; font-size: 11px; color: var(--kx-muted); flex-wrap: wrap; }
+.pv-nums b { color: var(--kx-text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.pv-card .score { position: absolute; right: 12px; top: 34px; font-size: 10.5px; font-weight: 700; padding: 1.5px 7px; border-radius: 999px; }
+.score.good { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 13%, transparent); }
+.score.mid { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 14%, transparent); }
+.pv-bar { height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--kx-muted) 18%, transparent); margin-top: 9px; overflow: hidden; }
+.pv-bar i { display: block; height: 100%; border-radius: 999px; }
+
+/* 供应商用量统计列表（保留） */
+.pv-table-card { background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 14px; padding: 15px 17px; margin-top: 12px; }
+table.pv-list { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.pv-list th { text-align: left; font-size: 11px; color: var(--kx-muted); font-weight: 700; padding: 7px 10px; border-bottom: 1px solid var(--kx-border); white-space: nowrap; }
+table.pv-list th.num, table.pv-list td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.pv-list td { padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--kx-border) 55%, transparent); }
+table.pv-list tr:last-child td { border-bottom: 0; }
+table.pv-list tbody tr { cursor: pointer; }
+table.pv-list tbody tr:hover td { background: color-mix(in srgb, var(--kx-primary) 5%, transparent); }
+.pv-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--kx-muted); }
+.sr-pill { font-size: 11px; font-weight: 700; }
+.sr-pill.good { color: var(--kx-success); } .sr-pill.mid { color: var(--kx-warning); }
+
+/* 交互链路示意 */
+.flow-strip { display: flex; align-items: stretch; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.flow-node { flex: 1 1 200px; border: 1px dashed color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border)); border-radius: 12px; padding: 10px 13px; font-size: 11.5px; color: var(--kx-muted); background: color-mix(in srgb, var(--kx-primary) 4%, transparent); }
+.flow-node b { display: block; color: var(--kx-text); font-size: 12px; margin-bottom: 3px; }
+.flow-arrow { align-self: center; color: var(--kx-muted); font-size: 16px; font-weight: 700; }
+
+/* 筛选条 */
+.filter-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 22px; padding: 9px 14px; background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 12px; }
+.filter-item { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--kx-muted); }
+.src-badge { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--kx-muted); border: 1px dashed var(--kx-border); border-radius: 8px; padding: 3px 9px; }
+
+/* 统一日历触发器（新组件） */
+.kx-dr-trigger { display: inline-flex; align-items: center; gap: 8px; background: var(--kx-bg); border: 1px solid var(--kx-border); border-radius: 9px; padding: 6px 12px; font-size: 12.5px; color: var(--kx-text); cursor: pointer; font-weight: 600; }
+.kx-dr-trigger:hover { border-color: color-mix(in srgb, var(--kx-primary) 55%, var(--kx-border)); }
+.kx-dr-trigger .rng { color: var(--kx-primary); }
+.kx-dr-trigger .caret { color: var(--kx-muted); font-size: 10px; }
+.kx-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--kx-border); background: var(--kx-bg); color: var(--kx-muted); font-size: 12px; font-weight: 600; border-radius: 9px; padding: 6px 12px; cursor: pointer; }
+.kx-btn:hover { color: var(--kx-text); border-color: color-mix(in srgb, var(--kx-primary) 45%, var(--kx-border)); }
+.kx-btn.primary { background: var(--kx-primary); border-color: var(--kx-primary); color: #fff; }
+.kx-btn.primary:hover { background: var(--kx-primary-hover); }
+.gran-pills { display: inline-flex; border: 1px solid var(--kx-border); border-radius: 9px; overflow: hidden; }
+.gran-pills span { font-size: 11.5px; padding: 4.5px 11px; color: var(--kx-muted); cursor: pointer; font-weight: 600; background: var(--kx-bg); }
+.gran-pills span.active { background: color-mix(in srgb, var(--kx-primary) 16%, var(--kx-surface)); color: var(--kx-primary); }
+
+/* 图表区 */
+.chart-grid { display: grid; grid-template-columns: 1fr 1.35fr; gap: 14px; margin-top: 14px; }
+.chart-card { background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 14px; padding: 15px 17px; }
+.chart-card h5 { font-size: 13.5px; font-weight: 700; margin-bottom: 3px; display: flex; justify-content: space-between; align-items: baseline; }
+.chart-card .cs { font-size: 11px; color: var(--kx-muted); font-weight: 500; }
+.legend { display: flex; gap: 13px; flex-wrap: wrap; margin: 8px 0 4px; font-size: 11px; color: var(--kx-muted); }
+.legend i { width: 9px; height: 9px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+.model-table { margin-top: 6px; }
+.model-row { display: grid; grid-template-columns: minmax(150px, 1.5fr) 62px 74px 74px; gap: 8px; align-items: center; padding: 7px 4px; border-bottom: 1px solid color-mix(in srgb, var(--kx-border) 60%, transparent); font-size: 12px; }
+.model-row:last-child { border-bottom: 0; }
+.model-row .mname { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-row .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--kx-text); }
+.model-row .num small { color: var(--kx-muted); }
+.model-row .barcell { grid-column: 1 / -1; height: 3.5px; border-radius: 999px; background: color-mix(in srgb, var(--kx-muted) 15%, transparent); overflow: hidden; margin-top: -2px; }
+.model-row .barcell i { display: block; height: 100%; border-radius: 999px; }
+.th { color: var(--kx-muted); font-size: 10.5px; font-weight: 600; }
+.err-link { color: var(--kx-primary); cursor: pointer; font-weight: 600; }
+
+/* 分布分析区 */
+.dist-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 22px; }
+.dist-card { background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 12px; padding: 12px 14px; }
+.dist-card h6 { font-size: 12.5px; font-weight: 700; display: flex; justify-content: space-between; }
+.dist-card h6 .cs { color: var(--kx-muted); font-weight: 500; font-size: 10.5px; }
+.rank { margin-top: 8px; }
+.rank-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; font-size: 11.5px; }
+.rank-row .rname { flex: 0 0 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--kx-text); }
+.rank-row .rbar { flex: 1; height: 5px; border-radius: 999px; background: color-mix(in srgb, var(--kx-muted) 16%, transparent); overflow: hidden; }
+.rank-row .rbar i { display: block; height: 100%; border-radius: 999px; background: var(--kx-primary); }
+.rank-row .rval { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--kx-muted); font-size: 11px; }
+.rank-row.danger .rbar i { background: var(--kx-danger); }
+
+/* ===== 对比区 ===== */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.compare .col { border: 1px dashed var(--kx-border); border-radius: 12px; padding: 13px 15px; }
+.compare h6 { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+.compare ul { list-style: none; font-size: 12px; color: var(--kx-muted); }
+.compare li { padding: 3px 0 3px 18px; position: relative; }
+.compare li::before { content: ''; position: absolute; left: 2px; top: 9px; width: 6px; height: 6px; border-radius: 2px; }
+.compare .old li::before { background: var(--kx-muted); }
+.compare .new li::before { background: var(--kx-success); }
+.compare b { color: var(--kx-text); }
+
+/* ===== 日历组件专区 ===== */
+.dp-stage { display: grid; grid-template-columns: 320px 1fr; gap: 26px; align-items: start; }
+.dp-demo { display: flex; flex-direction: column; gap: 18px; }
+.dp-panel-wrap { position: relative; }
+.kx-dr-panel { width: 308px; background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: 14px; box-shadow: var(--kx-shadow-md); padding: 14px; }
+.kx-dr-panel .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.kx-dr-panel .panel-head .tt { font-size: 12.5px; font-weight: 700; color: var(--kx-muted); }
+.preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.preset-grid button { border: 1px solid transparent; background: color-mix(in srgb, var(--kx-muted) 9%, transparent); color: var(--kx-text); font-size: 12px; font-weight: 600; padding: 7px 0; border-radius: 8px; cursor: pointer; }
+.preset-grid button:hover { border-color: color-mix(in srgb, var(--kx-primary) 40%, transparent); }
+.preset-grid button.active { background: var(--kx-primary-soft); color: var(--kx-primary); border-color: color-mix(in srgb, var(--kx-primary) 45%, transparent); }
+.kx-dr-divider { height: 1px; background: var(--kx-border); margin: 12px 0; }
+.range-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ri-label { font-size: 11px; color: var(--kx-muted); margin-bottom: 4px; font-weight: 600; }
+.ri-input { display: flex; align-items: center; gap: 7px; border: 1px solid var(--kx-border); border-radius: 8px; background: var(--kx-bg); padding: 7px 10px; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--kx-text); cursor: pointer; }
+.ri-input:hover { border-color: color-mix(in srgb, var(--kx-primary) 50%, var(--kx-border)); }
+.panel-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 13px; }
+.panel-foot .hint { font-size: 10.5px; color: var(--kx-muted); }
+
+/* 规格表 */
+table.spec { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+table.spec th { text-align: left; font-size: 11px; color: var(--kx-muted); font-weight: 700; padding: 7px 10px; border-bottom: 1px solid var(--kx-border); white-space: nowrap; }
+table.spec td { padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--kx-border) 55%, transparent); vertical-align: top; }
+table.spec tr:last-child td { border-bottom: 0; }
+table.spec code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; background: color-mix(in srgb, var(--kx-muted) 10%, transparent); border-radius: 5px; padding: 1px 6px; }
+.tag { display: inline-block; font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 1px 7px; }
+.tag.p0 { color: var(--kx-danger); background: color-mix(in srgb, var(--kx-danger) 12%, transparent); }
+.tag.p1 { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 14%, transparent); }
+.tag.p2 { color: var(--kx-muted); background: color-mix(in srgb, var(--kx-muted) 13%, transparent); }
+.path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--kx-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="doc-head">
+    <div>
+      <h1>看板重构 + 全站统一日历组件 · 效果图方案</h1>
+      <div class="sub">llm-gateway web · 2026-09-30 · 学习参考图信息架构，保留全部网关特有统计 · 右上可切换明/暗主题 · 图中数值均为示意数据</div>
+    </div>
+    <div class="theme-switch">
+      <button onclick="setTheme('dark')" class="active">🌙 暗色</button>
+      <button onclick="setTheme('light')">☀️ 亮色</button>
+    </div>
+  </div>
+
+  <!-- ============ 第一节：看板新布局 ============ -->
+  <div class="sec-title"><span class="no">A</span><h2>看板新布局（tab=board 重构效果图）</h2></div>
+  <div class="sec-desc">学习参考图的三层信息架构：<b>核心指标大卡（带拆分明细）→ 供应商成本采购（成本/积分/评分/余额 + 用量统计列表）→ 模型分布 + 趋势双图</b>；网关特有统计全部保留并融入对应层级（<span class="badge keep">保留</span> = 特有项，<span class="badge new">新增</span> = 学习参考图新增）。</div>
+
+  <div class="board-frame">
+    <!-- 顶部：标题 + 运维状态（特有，保留） -->
+    <div class="board-top">
+      <h3>数据看板 <span class="count-pill">默认租户 · 整站数据</span></h3>
+      <div class="ops-chips">
+        <span class="ops-chip"><span class="dot ok"></span>后台任务 <b>发现 运行中</b> · 近10分钟探测 <b>214</b></span>
+        <span class="ops-chip"><span class="dot ok"></span>系统自检 <b>24h 99.2%</b> ↗</span>
+      </div>
+    </div>
+
+    <!-- 英雄区：4 大卡（参考图第 1 行） -->
+    <div class="hero-row">
+      <div class="hero-card">
+        <div class="label">总请求 <span class="badge keep">含错误下钻</span></div>
+        <div class="value">128,437</div>
+        <div class="sub"><span>成功率 <b style="color:var(--kx-success)">98.6%</b></span><span>错误 <b style="color:var(--kx-danger)">1,798</b> <span class="err-link">下钻 →</span></span></div>
+        <svg class="spark" width="72" height="26" viewBox="0 0 72 26"><polyline points="0,20 10,17 20,18 30,12 40,14 50,8 60,9 72,3" fill="none" stroke="var(--kx-primary)" stroke-width="2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="hero-card">
+        <div class="label">总 Token</div>
+        <div class="value">47.2<small>M</small></div>
+        <div class="sub"><span class="io">输入 46.9M · 输出 359.4K</span></div>
+      </div>
+      <div class="hero-card">
+        <div class="label">总费用（USD）</div>
+        <div class="value">$137.13</div>
+        <div class="sub"><span>折合积分 <b>9,421</b></span></div>
+      </div>
+      <div class="hero-card hl">
+        <div class="label">总积分消耗 <span class="badge keep">特有计费口径</span></div>
+        <div class="value">9,421<small>分</small></div>
+        <div class="sub">按定价 × Token 计费 · 与费用卡联动</div>
+      </div>
+    </div>
+
+    <!-- 次要指标条（参考图第 2 行，紧凑化） -->
+    <div class="mini-row">
+      <div class="mini-card"><div class="label">平均延迟</div><div class="value">1.84<small> s</small></div></div>
+      <div class="mini-card"><div class="label">RPM</div><div class="value">30<small> req/min</small></div></div>
+      <div class="mini-card"><div class="label">TPM</div><div class="value">32.5<small> K/min</small></div></div>
+      <div class="mini-card"><div class="label">API Key <span class="badge keep">特有</span></div><div class="value">15</div></div>
+      <div class="mini-card"><div class="label">模型数</div><div class="value">36</div></div>
+      <div class="mini-card"><div class="label">供应商 <span class="badge keep">特有</span></div><div class="value">5</div></div>
+      <div class="mini-card"><div class="label">平均请求体</div><div class="value">18.4<small> KB · 峰值 2.1M</small></div></div>
+      <div class="mini-card"><div class="label">平均响应体</div><div class="value">6.7<small> KB · 峰值 1.4M</small></div></div>
+    </div>
+    <div class="note">RPM / TPM 为窗口内均值，由趋势数据前端现算，无需后端改动；请求体/响应体峰值副行保留原 body_stats。</div>
+
+    <!-- 供应商成本采购（新增块：成本/积分/评分/余额 + 保留用量统计列表） -->
+    <div class="provider-sec">
+      <div class="sec-bar">
+        <h4>供应商成本采购 <span class="count-pill">5 家 · 点击卡片 → 供应商详情</span></h4>
+        <span class="more">更多 → 供应商用量列表（抽屉）</span>
+      </div>
+      <div class="provider-grid">
+        <div class="pv-card" title="点击打开供应商详情页">
+          <div class="name"><span class="pv-logo" style="background:#d97757">A</span>Anthropic<span class="open">详情 ↗</span></div>
+          <div class="cost">$71,079 <small>窗口成本</small><span class="score good">评分 92</span></div>
+          <div class="pv-nums"><span>积分 <b>5,821</b></span><span>余额 <b>$412.6</b></span></div>
+          <div class="pv-bar"><i style="width:88%; background:#d97757"></i></div>
+        </div>
+        <div class="pv-card">
+          <div class="name"><span class="pv-logo" style="background:#10a37f">O</span>OpenAI<span class="open">详情 ↗</span></div>
+          <div class="cost">$5,666<span class="score good">评分 88</span></div>
+          <div class="pv-nums"><span>积分 <b>463</b></span><span>余额 <b>$1,205</b></span></div>
+          <div class="pv-bar"><i style="width:42%; background:#10a37f"></i></div>
+        </div>
+        <div class="pv-card">
+          <div class="name"><span class="pv-logo" style="background:#4285f4">G</span>Gemini<span class="open">详情 ↗</span></div>
+          <div class="cost">$3,921<span class="score good">评分 85</span></div>
+          <div class="pv-nums"><span>积分 <b>320</b></span><span>余额 <b>$88.2</b></span></div>
+          <div class="pv-bar"><i style="width:30%; background:#4285f4"></i></div>
+        </div>
+        <div class="pv-card">
+          <div class="name"><span class="pv-logo" style="background:#7c5cff">Z</span>智谱<span class="open">详情 ↗</span></div>
+          <div class="cost">$1,286<span class="score mid">评分 74</span></div>
+          <div class="pv-nums"><span>积分 <b>105</b></span><span>余额 <b>$266.4</b></span></div>
+          <div class="pv-bar"><i style="width:18%; background:#7c5cff"></i></div>
+        </div>
+        <div class="pv-card">
+          <div class="name"><span class="pv-logo" style="background:#6b7280">K</span>月之暗面<span class="open">详情 ↗</span></div>
+          <div class="cost">$48.7<span class="score mid">评分 68</span></div>
+          <div class="pv-nums"><span>积分 <b>4</b></span><span>余额 <b>套餐</b></span></div>
+          <div class="pv-bar"><i style="width:8%; background:#6b7280"></i></div>
+        </div>
+      </div>
+      <div class="note">卡片数据源：成本/积分 = board pies.providers 现成字段（cost_usd / credits，其中 credits 此前从未渲染）；评分 = 对账报表接口 quality_score（0-100，成功率×时效因子）；余额 = 凭据 balance_usd 汇总（首期仅展示已知数据，无则「—」）。均为示意数值。</div>
+
+      <!-- 供应商用量统计列表（保留原统计信息，升为表格） -->
+      <div class="pv-table-card">
+        <div class="sec-bar" style="margin-bottom:6px">
+          <h4>供应商用量统计 <span class="count-pill">随上方时间范围联动 · 行点击 → 供应商详情</span></h4>
+          <button class="kx-btn">⬇ 导出 Excel</button>
+        </div>
+        <table class="pv-list">
+          <thead><tr>
+            <th>供应商</th><th>代码</th><th class="num">请求数</th><th class="num">Token</th><th class="num">成本 (USD)</th><th class="num">积分</th><th class="num">成功率</th>
+          </tr></thead>
+          <tbody>
+            <tr><td><b>Anthropic</b></td><td class="pv-code">anthropic</td><td class="num">82,411</td><td class="num">29,931M</td><td class="num">$71,079.36</td><td class="num">5,821</td><td class="num"><span class="sr-pill good">99.1%</span></td></tr>
+            <tr><td><b>OpenAI</b></td><td class="pv-code">openai</td><td class="num">27,598</td><td class="num">246.6K</td><td class="num">$5,666.87</td><td class="num">463</td><td class="num"><span class="sr-pill good">99.4%</span></td></tr>
+            <tr><td><b>Gemini</b></td><td class="pv-code">gemini</td><td class="num">11,206</td><td class="num">22,363.9M</td><td class="num">$3,921.40</td><td class="num">320</td><td class="num"><span class="sr-pill good">98.8%</span></td></tr>
+            <tr><td><b>智谱</b></td><td class="pv-code">zhipu</td><td class="num">3,956</td><td class="num">97.6M</td><td class="num">$1,286.50</td><td class="num">105</td><td class="num"><span class="sr-pill mid">96.2%</span></td></tr>
+            <tr><td><b>月之暗面</b></td><td class="pv-code">moonshot</td><td class="num">827</td><td class="num">242.0K</td><td class="num">$48.68</td><td class="num">4</td><td class="num"><span class="sr-pill mid">94.7%</span></td></tr>
+          </tbody>
+        </table>
+        <div class="note">数据源 = 现有 <b>getUsageByProvider</b>（provider_name/code、request_count、total_tokens、total_cost_usd、success_rate）+ board pies.providers 的 <b>credits</b> 字段（已在 payload 中、此前从未渲染），后端零改动。「导出 Excel」沿用现有供应商用量导出通道（当前后端产出 CSV 流，实施时可对齐对账报表的真 xlsx 通道）。</div>
+      </div>
+
+      <!-- 交互链路 -->
+      <div class="flow-strip">
+        <div class="flow-node"><b>① 供应商卡片 / 统计行</b>看板内一眼看成本·积分·评分·余额；点击卡片或表格行</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node"><b>② 供应商详情页（/providers/:id）</b>复用现有 8 个 tab：凭据（含余额/配额）、模型、品质、请求日志、错误、诊断、自动测试、设置</div>
+        <div class="flow-arrow">｜</div>
+        <div class="flow-node"><b>②' 更多 → 用量抽屉</b>ProviderUsageExplorer（保留）：供应商列表 → 单家趋势/模型聚合/每日明细，附导出全部/明细 Excel</div>
+      </div>
+    </div>
+
+    <!-- 全局筛选条（参考图「时间范围/粒度/刷新」→ 新统一日历组件） -->
+    <div class="filter-bar">
+      <div class="filter-item">时间范围：
+        <span class="kx-dr-trigger" onclick="togglePanel(event)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="12" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M4 1v3M12 1v3M1.5 6h13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <span class="rng">近 7 天</span><span style="color:var(--kx-muted)">09/24 – 09/30</span>
+          <span class="caret">▾</span>
+        </span>
+      </div>
+      <div class="filter-item">粒度：
+        <span class="gran-pills"><span class="active">自动</span><span>5m</span><span>15m</span><span>1h</span><span>按天</span></span>
+      </div>
+      <button class="kx-btn">⟳ 刷新</button>
+      <span class="src-badge">数据源：PG 基线 + SSE 实时 <span class="dot ok" style="display:inline-block"></span> <span class="badge keep">特有</span></span>
+    </div>
+    <div class="note">「自动」沿用现有桶宽对齐（今日=5m / 7d=15m / 30d=1h），手动档覆盖为增强项，首期可只读展示。时间范围控件即下方 B 节统一组件。</div>
+
+    <!-- 双图区（参考图「模型分布 + Token 使用趋势」） -->
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h5>模型分布 <span class="cs">按请求数 · 窗口内 Top 6</span></h5>
+        <div class="model-table">
+          <div class="model-row th"><span>模型</span><span class="num">请求</span><span class="num">Token</span><span class="num">占比</span></div>
+          <div class="model-row"><span class="mname">claude-opus-4.8</span><span class="num">45,027</span><span class="num">595.8<small>K</small></span><span class="num">35.1%</span><span class="barcell"><i style="width:100%; background:var(--kx-primary)"></i></span></div>
+          <div class="model-row"><span class="mname">claude-sonnet-5</span><span class="num">4,502</span><span class="num">311.5<small>K</small></span><span class="num">3.5%</span><span class="barcell"><i style="width:10%; background:var(--kx-primary)"></i></span></div>
+          <div class="model-row"><span class="mname">claude-haiku-4.5</span><span class="num">357</span><span class="num">69.0<small>K</small></span><span class="num">0.3%</span><span class="barcell"><i style="width:3%; background:var(--kx-primary)"></i></span></div>
+          <div class="model-row"><span class="mname">gemini-3.1-flash</span><span class="num">304</span><span class="num">560.3<small>K</small></span><span class="num">0.2%</span><span class="barcell"><i style="width:2.5%; background:var(--kx-primary)"></i></span></div>
+          <div class="model-row"><span class="mname">kimi-k3-thinking</span><span class="num">112</span><span class="num">88.2<small>K</small></span><span class="num">0.1%</span><span class="barcell"><i style="width:2%; background:var(--kx-primary)"></i></span></div>
+        </div>
+        <div class="note">数据源 = 现有 board.pies.models，无后端改动；不改成饼图，保留指标切换（请求数/Token）。</div>
+      </div>
+      <div class="chart-card">
+        <h5>用量趋势 <span class="cs">2026-09-24 → 09-30 · 15m 桶</span></h5>
+        <div class="legend">
+          <span><i style="background:#5b8cff"></i>请求数</span>
+          <span><i style="background:#3ecf8e"></i>Token</span>
+          <span><i style="background:#e0a53a"></i>积分</span>
+          <span><i style="background:#f07167"></i>成本 USD</span>
+          <span style="margin-left:auto">双 Y 轴 · 图例可点选隐藏（增强）</span>
+        </div>
+        <svg width="100%" height="196" viewBox="0 0 640 196" preserveAspectRatio="none">
+          <g stroke="color-mix(in srgb, currentColor 12%, transparent)" stroke-width="1">
+            <line x1="0" y1="30" x2="640" y2="30"/><line x1="0" y1="70" x2="640" y2="70"/>
+            <line x1="0" y1="110" x2="640" y2="110"/><line x1="0" y1="150" x2="640" y2="150"/>
+          </g>
+          <defs>
+            <linearGradient id="greq" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#5b8cff" stop-opacity=".35"/><stop offset="1" stop-color="#5b8cff" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <path d="M0,150 L107,138 L214,120 L320,128 L427,96 L534,84 L640,44 L640,196 L0,196 Z" fill="url(#greq)"/>
+          <polyline points="0,150 107,138 214,120 320,128 427,96 534,84 640,44" fill="none" stroke="#5b8cff" stroke-width="2.4" stroke-linecap="round"/>
+          <polyline points="0,158 107,150 214,136 320,140 427,116 534,106 640,70" fill="none" stroke="#3ecf8e" stroke-width="2" stroke-linecap="round" stroke-dasharray="1 0"/>
+          <polyline points="0,166 107,162 214,152 320,158 427,140 534,132 640,102" fill="none" stroke="#e0a53a" stroke-width="1.8" stroke-linecap="round"/>
+          <polyline points="0,172 107,168 214,160 320,164 427,150 534,144 640,118" fill="none" stroke="#f07167" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 分布分析（原 7 饼图 → 排行卡，全部特有项保留） -->
+    <div class="sec-bar" style="margin-top:22px"><h4>分布分析 <span class="count-pill">由 7 个环形图升级为排行卡，信息不变、密度更高</span></h4></div>
+    <div class="dist-grid">
+      <div class="dist-card">
+        <h6>客户端类型 <span class="cs">TOP 4</span></h6>
+        <div class="rank">
+          <div class="rank-row"><span class="rname">claude-code</span><span class="rbar"><i style="width:92%"></i></span><span class="rval">64.2%</span></div>
+          <div class="rank-row"><span class="rname">codex-cli</span><span class="rbar"><i style="width:38%"></i></span><span class="rval">18.7%</span></div>
+          <div class="rank-row"><span class="rname">web-ui</span><span class="rbar"><i style="width:22%"></i></span><span class="rval">9.1%</span></div>
+          <div class="rank-row"><span class="rname">其他 6 项…</span><span class="rbar"><i style="width:14%"></i></span><span class="rval">8.0%</span></div>
+        </div>
+      </div>
+      <div class="dist-card">
+        <h6>错误类型 <span class="cs badge keep">特有 · 可下钻</span></h6>
+        <div class="rank">
+          <div class="rank-row danger"><span class="rname">429 rate_limited</span><span class="rbar"><i style="width:88%"></i></span><span class="rval">1,204</span></div>
+          <div class="rank-row danger"><span class="rname">529 overloaded</span><span class="rbar"><i style="width:36%"></i></span><span class="rval">401</span></div>
+          <div class="rank-row danger"><span class="rname">timeout</span><span class="rbar"><i style="width:18%"></i></span><span class="rval">152</span></div>
+          <div class="rank-row"><span class="rname err-link">点击扇区 → 按模型/供应商/客户端下钻</span></span></div>
+        </div>
+      </div>
+      <div class="dist-card">
+        <h6>身份指纹 <span class="cs badge keep">特有</span></h6>
+        <div class="rank">
+          <div class="rank-row"><span class="rname">fp_3f9a…c21e</span><span class="rbar"><i style="width:76%"></i></span><span class="rval">42.1%</span></div>
+          <div class="rank-row"><span class="rname">fp_8b04…97d2</span><span class="rbar"><i style="width:44%"></i></span><span class="rval">21.3%</span></div>
+          <div class="rank-row"><span class="rname">fp_a116…5f0b</span><span class="rbar"><i style="width:28%"></i></span><span class="rval">11.9%</span></div>
+          <div class="rank-row"><span class="rname">其他 12 个…</span><span class="rbar"><i style="width:20%"></i></span><span class="rval">9.4%</span></div>
+        </div>
+      </div>
+      <div class="dist-card">
+        <h6>租户用量 <span class="cs badge keep">特有</span></h6>
+        <div class="rank">
+          <div class="rank-row"><span class="rname">default</span><span class="rbar"><i style="width:90%"></i></span><span class="rval">58.4%</span></div>
+          <div class="rank-row"><span class="rname">kaixuan</span><span class="rbar"><i style="width:52%"></i></span><span class="rval">28.9%</span></div>
+          <div class="rank-row"><span class="rname">nbjl</span><span class="rbar"><i style="width:18%"></i></span><span class="rval">8.6%</span></div>
+          <div class="rank-row"><span class="rname">其他 2 租户</span><span class="rbar"><i style="width:7%"></i></span><span class="rval">4.1%</span></div>
+        </div>
+      </div>
+      <div class="dist-card">
+        <h6>来源 IP <span class="cs">TOP 4</span></h6>
+        <div class="rank">
+          <div class="rank-row"><span class="rname">10.0.0.12</span><span class="rbar"><i style="width:81%"></i></span><span class="rval">38.2%</span></div>
+          <div class="rank-row"><span class="rname">192.168.3.44</span><span class="rbar"><i style="width:49%"></i></span><span class="rval">21.0%</span></div>
+          <div class="rank-row"><span class="rname">172.16.8.5</span><span class="rbar"><i style="width:31%"></i></span><span class="rval">12.4%</span></div>
+          <div class="rank-row"><span class="rname">其他 89 个…</span><span class="rbar"><i style="width:24%"></i></span><span class="rval">10.8%</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="note">「供应商用量」环形图升级为上方「供应商成本采购」卡片 + 用量统计列表（请求/Token 等统计信息全部保留）；「模型用量」环形图升级为模型分布表 —— 原有信息与点击行为全部保留。</div>
+  </div>
+
+  <!-- ============ 第二节：新旧对照 ============ -->
+  <div class="sec-title"><span class="no">B</span><h2>新旧对照</h2></div>
+  <div class="compare">
+    <div class="col old">
+      <h6>现状（11 张等权迷你卡 + 7 个环形图平铺）</h6>
+      <ul>
+        <li>11 张迷你卡视觉等权，核心指标（请求/Token/费用/积分）与计数类（Key 数/模型数/供应商数）混排</li>
+        <li>7 个环形图两行平铺，每个占 1/6 宽，扇区小、图例挤，PC 端大屏利用率低</li>
+        <li>时间选择器藏在「用量趋势」卡头（pills + 原生 date input），与全站其余 6 种写法不一致</li>
+        <li>运维状态卡（后台任务/自检）占顶部一整行高度</li>
+        <li>趋势图卡头重复展示 5 个周期指标，与上方迷你卡重复</li>
+      </ul>
+    </div>
+    <div class="col new">
+      <h6>新布局（分层：核心 → 平台 → 双图 → 分布）</h6>
+      <ul>
+        <li><b>4 张英雄卡</b>承载核心指标，带拆分明细（输入/输出 Token、成功率/错误数入口）与迷你趋势线</li>
+        <li><b>8 张紧凑次要卡</b>：延迟 / RPM / TPM（现算）+ Key、模型、供应商计数 + 请求体/响应体（含峰值）</li>
+        <li><b>运维状态压缩为顶部状态 chip</b>，仍可点击跳转系统自检页</li>
+        <li><b>供应商从饼图升级为成本采购卡片区</b>（成本/积分/评分/余额 + 占比条），下方保留<b>供应商用量统计列表</b>（含导出 Excel）；卡片/行点击进供应商详情，「更多」仍开用量抽屉 <span class="badge new">新增成本采购</span></li>
+        <li><b>模型分布表 + 用量趋势图</b>并排；下方 5 张分布排行卡承载其余维度</li>
+        <li><b>全局筛选条</b>：统一日历组件 + 粒度 + 刷新 + 数据源徽标</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ 第三节：统一日历组件 ============ -->
+  <div class="sec-title"><span class="no">C</span><h2>全站统一时间范围组件 · KxDateRangePicker</h2></div>
+  <div class="sec-desc">按参考图 2 的面板形态：<b>预设网格（2 列 8 项）+ 开始/结束日期输入 + 应用按钮</b>。基于 Element Plus el-popover + el-date-picker 组装，明暗主题走现有 --kx-* 令牌，无新依赖。左侧为收起态触发器与展开态面板（可点击交互），右侧为组件 API 规格。</div>
+
+  <div class="dp-stage">
+    <div class="dp-demo">
+      <div>
+        <div class="ri-label" style="margin-bottom:8px">收起态（触发器，随当前范围自适应文案）</div>
+        <span class="kx-dr-trigger" onclick="togglePanel(event)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="12" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M4 1v3M12 1v3M1.5 6h13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <span class="rng">近 7 天</span><span style="color:var(--kx-muted)">09/24 – 09/30</span>
+          <span class="caret">▾</span>
+        </span>
+      </div>
+      <div class="dp-panel-wrap">
+        <div class="ri-label" style="margin-bottom:8px">展开态（面板）</div>
+        <div class="kx-dr-panel" id="drPanel">
+          <div class="panel-head">
+            <span class="tt">时间范围</span>
+            <span class="hint">2026/09/24 – 09/30</span>
+          </div>
+          <div class="preset-grid">
+            <button class="active">今天</button><button>昨天</button>
+            <button>近 24 小时</button><button class="active" style="position:relative">近 7 天</button>
+            <button>近 14 天</button><button>近 30 天</button>
+            <button>本月</button><button>上月</button>
+          </div>
+          <div class="kx-dr-divider"></div>
+          <div class="range-inputs">
+            <div>
+              <div class="ri-label">开始日期</div>
+              <div class="ri-input">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style="color:var(--kx-muted)"><rect x="1.5" y="2.5" width="13" height="12" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M4 1v3M12 1v3M1.5 6h13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                2026/09/24
+              </div>
+            </div>
+            <div>
+              <div class="ri-label">结束日期</div>
+              <div class="ri-input">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style="color:var(--kx-muted)"><rect x="1.5" y="2.5" width="13" height="12" rx="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M4 1v3M12 1v3M1.5 6h13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                2026/09/30
+              </div>
+            </div>
+          </div>
+          <div class="panel-foot">
+            <span class="hint">结束 ≥ 开始 · 面板外点击关闭</span>
+            <button class="kx-btn primary">应用</button>
+          </div>
+        </div>
+        <div class="note">开始/结束输入点击后弹出 el-date-picker 日历（单月视图，含快捷清除）；时间精度场景（请求日志等）两输入切换为 datetime 并附时间步进。</div>
+      </div>
+    </div>
+
+    <div>
+      <table class="spec">
+        <tr><th style="width:130px">项</th><th>规格</th></tr>
+        <tr><td>组件</td><td><code>web/src/components/ui/KxDateRangePicker.vue</code>（单日期场景配套 <code>KxDatePicker.vue</code>，type=date/month/daterange/datetimerange）</td></tr>
+        <tr><td>v-model</td><td><code>{ start: string, end: string }</code>（YYYY-MM-DD；datetime 场景 YYYY-MM-DD HH:mm），仅点击「应用」才提交，避免半选状态触发请求</td></tr>
+        <tr><td>props</td><td><code>presets?</code>（默认 8 项，支持页面裁剪/扩展，如看板去掉"昨天"、热力图加"近 1 小时"）、<code>precision?: 'date'|'datetime'</code>、<code>maxSpanDays?</code>（超限禁用应用并提示，看板默认 92 天）</td></tr>
+        <tr><td>events</td><td><code>apply(range)</code> / <code>update:modelValue</code>；预设点击 = 立即计算区间并回填输入框，仍需「应用」生效（与参考图一致）</td></tr>
+        <tr><td>主题</td><td>全 CSS 变量 <code>--kx-*</code>，经 element-dark.css 桥自动适配明暗两皮肤；无硬编码色值</td></tr>
+        <tr><td>i18n</td><td>预设/按钮文案入 <code>locales/*/dashboard.ts</code>（或 common），8 语言补齐，i18n-audit 门禁通过</td></tr>
+        <tr><td>守卫</td><td>新增 <code>date-picker-unification.test.ts</code>：扫描 src/ 禁止再出现裸 <code>type="date"</code>/<code>type="datetime-local"</code>/<code>type="month"</code>（FilterBar/组件内部白名单），纳入 pnpm build 硬门禁</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ 第四节：迁移清单 ============ -->
+  <div class="sec-title"><span class="no">D</span><h2>全站日历迁移清单（7 种写法 → 1 个标准组件族）</h2></div>
+  <table class="spec">
+    <tr><th>批次</th><th>现状写法</th><th>位置（文件 · 用途）</th><th>迁移目标</th></tr>
+    <tr>
+      <td><span class="tag p0">P0 组件+看板</span></td>
+      <td>新建标准组件族</td>
+      <td class="path">components/ui/KxDateRangePicker.vue · KxDatePicker.vue + BoardPanel 全局筛选条接入</td>
+      <td>参考图 2 形态；看板 BoardPeriodSelector 退役（逻辑并入 presetToDays/BoardTimeRange，localStorage 偏好保留）</td>
+    </tr>
+    <tr>
+      <td rowspan="4"><span class="tag p1">P1 高频页</span></td>
+      <td>el-date-picker datetimerange</td>
+      <td class="path">views/RequestLogsView.vue:1316 · 请求日志</td>
+      <td>KxDateRangePicker precision=datetime；保留 h1/h6/h24/d3/d7/today/thisWeek/thisMonth/thisYear 预设 chips → 并入面板预设网格（超出 8 项滚动）</td>
+    </tr>
+    <tr>
+      <td>el-date-picker datetimerange</td>
+      <td class="path">components/turns/TurnsFilterBar.vue:129 · 会话轮次</td>
+      <td>同上；select 预设并入面板；Date 数组值改统一字符串契约</td>
+    </tr>
+    <tr>
+      <td>原生 date ×2 + 预设按钮组</td>
+      <td class="path">views/KeyDetailView.vue:733 · Key 趋势</td>
+      <td>KxDateRangePicker（预设 1h/24h/7d/30d/custom → 近1小时/今天/近7天/近30天 + 自定义）</td>
+    </tr>
+    <tr>
+      <td>原生 datetime-local ×2 + select 预设</td>
+      <td class="path">views/CredentialHeatmapView.vue:592 · 凭据热力图</td>
+      <td>KxDateRangePicker precision=datetime（预设含近1小时，粒度 select 保留在旁）</td>
+    </tr>
+    <tr>
+      <td rowspan="6"><span class="tag p2">P2 长尾页</span></td>
+      <td>el-date-picker daterange</td>
+      <td class="path">views/admin/ReconciliationReport.vue:154 · 对账报告</td>
+      <td>KxDateRangePicker（本月/上月/上月1号至今预设）</td>
+    </tr>
+    <tr>
+      <td>FilterBar daterange（datetime-local ×2）</td>
+      <td class="path">components/ui/FilterBar.vue:113（AuditLogView 等 4 页使用）</td>
+      <td>FilterBar 内部 type=daterange 改渲染 KxDateRangePicker —— 一处改，4 页受益，外部 API 不变</td>
+    </tr>
+    <tr>
+      <td>原生 date / datetime-local</td>
+      <td class="path">AnnotationView:332 · FormatAnomaliesView:551 · RoutingLogView:220 · CompressionView:274 · DataLifecycleView:128 · AttachmentManager:123 · RoutingOverrideView:275（过期时间）· ProvidersView:1369 · CredsTab:1258（行内编辑）</td>
+      <td>筛选类 → KxDateRangePicker；表单行内编辑/过期时间 → KxDatePicker（单值场景）；表单场景保留"立即生效"行为（无应用按钮变体 <code>instant</code>）</td>
+    </tr>
+    <tr>
+      <td>原生 month ×2</td>
+      <td class="path">views/admin/UsageCost.vue:330 · 同比环比月选择</td>
+      <td>KxDatePicker type=month</td>
+    </tr>
+    <tr>
+      <td>select days / el-radio-group days</td>
+      <td class="path">TenantDashboardView:300 · CorrelationsView:114 · QualityCorrelationsView:81 · MaaSUsageView:129 · TaskAnalytics:140 · ClientAnalytics:140 · UserProfile:102</td>
+      <td>KxDateRangePicker 触发器（预设=原天数档位）；保留 URL/localStorage 兼容读旧值</td>
+    </tr>
+    <tr>
+      <td>看板 pills + date input</td>
+      <td class="path">components/board/BoardPeriodSelector.vue:96</td>
+      <td>P0 已并入；组件文件删除</td>
+    </tr>
+  </table>
+  <div class="note">共 21 个文件、7 种写法收敛为 1 个组件族；P0+P1 一次提交，P2 可拆 2-3 个提交。每批跑 element:check / i18n-audit / color-token-audit / 新增 date-picker 守卫 + vitest 回归。</div>
+
+  <div class="sec-title"><span class="no">E</span><h2>实施边界（确认点）</h2></div>
+  <div class="compare">
+    <div class="col new">
+      <h6>本次做</h6>
+      <ul>
+        <li>看板 tab=board 按 A 节重构（纯前端，board API 契约不变；RPM/TPM 前端现算）</li>
+        <li>供应商成本采购块：成本/积分取 board pies.providers 现成字段（<b>零后端改动</b>）；评分复用对账报表接口 quality_score；统计列表用现有 getUsageByProvider；卡片/行点击跳 /providers/:id，「更多」保留 ProviderUsageExplorer 抽屉</li>
+        <li>KxDateRangePicker / KxDatePicker 组件族 + 看板/高频页接入（P0+P1）</li>
+        <li>长尾页迁移 P2、裸日期输入守卫测试、8 语言词条</li>
+      </ul>
+    </div>
+    <div class="col old">
+      <h6>不做（避免范围膨胀）</h6>
+      <ul>
+        <li>不改后端 board/usage API 与数据口径；不新增 per-model 费用字段（模型分布表不虚构费用列）</li>
+        <li>卡片上的<b>余额</b>：凭据余额接口为逐家调用，首期仅对已有余额数据的供应商展示（无则显示"—"）；聚合上板需后端聚合接口，列为二期</li>
+        <li>Excel 导出沿用现有供应商用量导出通道（现状为 CSV 流下载），是否升级真 xlsx 与对账报表对齐，实施时按工作量单独确认</li>
+        <li>粒度选择首期为"自动"只读展示，手动覆盖档位待二期</li>
+        <li>趋势图表库仍用 chart.js（不迁移 echarts）；全局顶栏不动（筛选条在看板内容区顶部）</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+<script>
+function setTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  document.querySelectorAll('.theme-switch button').forEach(function (b) {
+    b.classList.toggle('active', b.textContent.indexOf(t === 'dark' ? '暗色' : '亮色') >= 0);
+  });
+}
+function togglePanel(e) {
+  e.stopPropagation();
+  var p = document.getElementById('drPanel');
+  p.style.outline = p.style.outline === '2px solid var(--kx-primary)' ? '' : '2px solid var(--kx-primary)';
+}
+document.querySelectorAll('.preset-grid button').forEach(function (b) {
+  b.addEventListener('click', function () {
+    document.querySelectorAll('.preset-grid button').forEach(function (x) { x.classList.remove('active'); });
+    b.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

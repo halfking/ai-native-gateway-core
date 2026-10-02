@@ -99,7 +99,7 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 		ORDER BY ck.kid_index
 	`, credID, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -121,7 +121,7 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 		var createdAt time.Time
 		if err := rows.Scan(&ki.KidIndex, &ki.Label, &ki.Status, &ciphertext,
 			&lastUsed, &lastFailed, &createdAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+			writeInternalErr(w, "scan failed", err)
 			return
 		}
 		// decrypt for masking only — never return plaintext
@@ -138,6 +138,10 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 		}
 		ki.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 		keys = append(keys, ki)
+	}
+	// 迭代中断会让"该凭据有几把轮换 key"少报，且 kid_index 缺口无提示。
+	if writeAggRowsErr(w, "credentialKeys.list", rows.Err()) {
+		return
 	}
 	if keys == nil {
 		keys = []keyInfo{}

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func strp(v string) *string { return &v }
@@ -36,6 +37,48 @@ func TestBuildSummaryCorpus_RequiresUsefulContent(t *testing.T) {
 	}
 	if !strings.Contains(corpus, "用户希望比较两个方案并给出建议") {
 		t.Fatalf("expected preserved semantic text, got=%q", corpus)
+	}
+}
+
+// TestBuildSummaryCorpusRuneGuardCJKBand 钉死 2026-09-29 二十二轮修复：
+// 守卫与截断必须同为 rune 口径。原实现守卫按字节（len(corpus)>12000）而
+// 截断按 rune（runes[:12000]）——CJK 语料落在 12001~36000 字节且 rune 数
+// <12000 的带宽（本用例 100 轮×30 CJK ≈ 12300B / ≈6300 runes）时直接
+// slice bounds out of range panic，logs-summary 端点被打挂。
+func TestBuildSummaryCorpusRuneGuardCJKBand(t *testing.T) {
+	now := time.Date(2026, 9, 29, 1, 0, 0, 0, time.UTC)
+	logs := make([]sessionLogForSummary, 100)
+	for i := range logs {
+		logs[i].Ts = now
+		logs[i].RequestPreview = strp(strings.Repeat("会话总结测试内容详尽记录", 3)) // 30 CJK
+		logs[i].RequestStatus = "success"
+	}
+	corpus := buildSummaryCorpus(logs) // 修复前此行 panic
+	if runes := []rune(corpus); len(runes) >= sessionSummaryMaxCorpusLen {
+		t.Fatalf("band corpus should stay below the rune cap, runes=%d", len(runes))
+	}
+	if !utf8.ValidString(corpus) {
+		t.Fatalf("corpus is not valid UTF-8")
+	}
+}
+
+// TestBuildSummaryCorpusRuneGuardTruncatesAtRuneCap 验证真截断带：rune 数
+// 超过上限时截到恰好 sessionSummaryMaxCorpusLen 个 rune 且不产生非法
+// UTF-8 前缀（原字节切行为）。
+func TestBuildSummaryCorpusRuneGuardTruncatesAtRuneCap(t *testing.T) {
+	now := time.Date(2026, 9, 29, 1, 0, 0, 0, time.UTC)
+	logs := make([]sessionLogForSummary, 200)
+	for i := range logs {
+		logs[i].Ts = now
+		logs[i].RequestPreview = strp(strings.Repeat("会话总结测试内容详尽记录", 10)) // 100 CJK
+		logs[i].RequestStatus = "success"
+	}
+	corpus := buildSummaryCorpus(logs)
+	if runes := []rune(corpus); len(runes) != sessionSummaryMaxCorpusLen {
+		t.Fatalf("corpus runes=%d, want exactly %d", len(runes), sessionSummaryMaxCorpusLen)
+	}
+	if !utf8.ValidString(corpus) {
+		t.Fatalf("truncated corpus is not valid UTF-8")
 	}
 }
 

@@ -7,12 +7,12 @@ import (
 
 // Session 会话元数据。
 type Session struct {
-	ID        string
-	TenantID  string
-	UserID    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Metadata  map[string]interface{}
+	ID        string                 `json:"id"`
+	TenantID  string                 `json:"tenant_id"`
+	UserID    string                 `json:"user_id,omitempty"`
+	CreatedAt time.Time              `json:"created_at"`
+	UpdatedAt time.Time              `json:"updated_at"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // SessionBody 会话内容（大对象），按轮次存储请求/响应原文。
@@ -35,6 +35,29 @@ type TurnMeta struct {
 	CompressionStrategy string
 	PromptTokens        int
 	CompletionTokens    int
+}
+
+// TurnDetails 会话轮次特征层（Lite 链路 v3 对等：PG17 session_turn_details
+// 的 SQLite 瘦身投影）。零值字段落 NULL；数组/JSON 字段以序列化文本落库。
+type TurnDetails struct {
+	TenantID     string
+	SessionID    string
+	TurnNo       int
+	RequestID    string
+	Timestamp    time.Time
+	Model        string
+	Provider     string
+	CredentialID string
+	Success      *bool
+	StatusCode   int
+	ErrorKind    string
+	LatencyMs    int
+	CostUSD      float64
+	ClientModel  string
+	RequestType  string
+	RequestClass string
+	QualityFlags []string
+	Attachments  json.RawMessage
 }
 
 // RequestLog 请求日志。

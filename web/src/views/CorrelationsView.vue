@@ -14,6 +14,9 @@ import { useI18n } from 'vue-i18n'
 //   5. verdict        — top-3 models per task type, ranked
 
 import { ref, computed, onMounted } from 'vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 import {
   getAutoRouteCorrelations,
   type AutoRouteCorrelationsResponse,
@@ -30,6 +33,17 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const days = ref(7)
 const minSamples = ref(20)
+const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+
+function onRangeApply(range: KxDateRange) {
+  applyRange(range)
+  void load()
+}
 
 async function load() {
   loading.value = true
@@ -111,12 +125,12 @@ onMounted(load)
     <section class="card filter-card">
       <div class="filter-bar">
         <label>Window:
-          <select v-model.number="days" @change="load">
-            <option :value="1">1 day</option>
-            <option :value="7">7 days</option>
-            <option :value="30">30 days</option>
-            <option :value="90">90 days</option>
-          </select>
+          <KxDateRangePicker
+            :model-value="rangeValue"
+            :presets="dayPresets"
+            :max-span-days="90"
+            @apply="onRangeApply"
+          />
         </label>
         <label>Min samples:
           <select v-model.number="minSamples" @change="load">

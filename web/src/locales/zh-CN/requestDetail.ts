@@ -192,4 +192,17 @@ export default {
     emDash: '—',
     colon: '：',
   },
+  // — Subtask 3 (handoff §5): body_status 两态横幅 —
+  // 数据源是 /api/admin/sessions/detail 的 turns[].body_status，不是 /snapshot
+  // （后者不带 turns），也不是 /turns 列表（metadata-only，无法判定）。
+  bodyStatus: {
+    // 后端只发 available | unavailable 两态，不发 dropped（当前没有
+    // session_bodies 保留期开关，也没有任何任务会删它的行）。见
+    // admin/body_status.go 顶部 CONTRACT。
+    unavailableTitle: '部分轮次没有请求/响应正文',
+    unavailableBody: '这些轮次没有采集到正文（该功能未开启、或该轮本就没有内容）。摘要、指标与 token 用量不受影响。',
+    affectedTurns: '涉及轮次：{list}',
+    dismiss: '知道了',
+
+  },
 }

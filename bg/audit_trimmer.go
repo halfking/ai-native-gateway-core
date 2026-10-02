@@ -56,7 +56,7 @@ func NewAuditTrimmer(pool *pgxpool.Pool) *AuditTrimmer {
 // Performs an initial trim on startup so a fresh deploy doesn't
 // wait 24h for the first cleanup.
 func (t *AuditTrimmer) Start(ctx context.Context) {
-	go t.run(ctx)
+	Go("audit_trimmer.run", func() { t.run(ctx) })
 	slog.Info("audit trimmer started",
 		"retention", t.retention.String(),
 		"interval", t.tick.String())
@@ -124,19 +124,57 @@ func (t *AuditTrimmer) TrimOnce(ctx context.Context) (overridesDeleted, auditDel
 
 	// armor_judgments (v2.3 security observe-only audit). Uses
 	// created_at (not ts) per the table schema in migration.
-	res3, err := t.pool.Exec(ctx, `
-		DELETE FROM armor_judgments
-		WHERE id IN (
-			SELECT id FROM armor_judgments
-			WHERE created_at < NOW() - $1::interval
-			ORDER BY created_at
-			LIMIT 5000
-		)
-	`, t.retention.String())
-	if err != nil {
-		slog.Warn("audit_trimmer: armor_judgments delete failed", "error", err)
-	} else {
-		armorDeleted = res3.RowsAffected()
+	//
+	// 2026-09-29 (12h 审计二十轮 P1): DELETE 形态从 `id IN (SELECT id ...)`
+	// 改为 `ctid IN (SELECT ctid ...)` 并去掉 ORDER BY，且按批循环到取空。
+	// 旧形态迫使 DELETE 主体全表 Hash Join（80 万行生产实测 870.7ms/批），
+	// ctid 形态走 Tid Scan（7.0ms/批，124 倍，实测记录见
+	// tests/48h-audit/D07-hot-columnar/data/retention_trim_index_test.go 的
+	// knownRetentionDefects 注记）。真缺陷是删除吞吐倒挂：写入 6,318/天 >
+	// 单批 5,000/天的硬上限，净积压 ~1,300 行/天。形态改后单批成本可忽略，
+	// 循环批次把日删除能力提到 20×5000，同时保留小批锁面。每批是独立
+	// 语句独立快照，ctid 只在语句内使用，不存在跨语句漂移。
+	//
+	// 2026-09-29 (续十九) 更正上面两个数字，并补一条量出来的现状：
+	//
+	//  - 「870.7ms → 7.0ms（124 倍）」是**冷缓存**下的单次读数。同一张表用
+	//    TEMP 复刻（804,569 行 + 同 4 条索引）、7 天截止、3 轮取稳定值：
+	//    id IN + ORDER BY 203.4ms / id IN 去 ORDER BY 77.3ms /
+	//    ctid IN 5.0ms。方向不变（ctid 确实更快，量级 40 倍），但 124 倍
+	//    不可复现，别拿它当收益基线。**比值才是结论，绝对值随缓存状态变。**
+	//  - 单批提到 50,000 同样可行（实测 0.24s，吞吐 8.3 倍）；本轮保持
+	//    5,000×20 的小批锁面不变——100,000/天 已远超 6,318/天 的写入，
+	//    两者都够，而小批的锁面更友好。
+	//  - 现状：真库 armor_judgments 最早行 created_at = 2026-07-04，
+	//    90 天保留下**当前 0 行过期**（2026-10-02 起才开始积压）。所以现在
+	//    每轮第一个批量就 n < armorBatchSize 直接 break——但那一次 Seq Scan
+	//    仍要全跑 80 万行，这正是形态改造要消掉的成本。
+	//
+	// armor_judgments 是**单表**（非分区父表），所以裸 ctid 在这里是对的；
+	// 分区父表用裸 ctid 会跨分区误删，见
+	// tests/48h-audit/D07-hot-columnar/data/partitioned_parent_ctid_form_test.go。
+	const armorBatchSize = 5000
+	const armorMaxBatchesPerTick = 20
+	for batch := 0; batch < armorMaxBatchesPerTick; batch++ {
+		res3, berr := t.pool.Exec(ctx, `
+			DELETE FROM armor_judgments
+			WHERE ctid IN (
+				SELECT ctid FROM armor_judgments
+				WHERE created_at < NOW() - $1::interval
+				LIMIT 5000
+			)
+		`, t.retention.String())
+		if berr != nil {
+			err = berr
+			slog.Warn("audit_trimmer: armor_judgments delete failed",
+				"error", berr, "batch", batch, "deleted_so_far", armorDeleted)
+			break
+		}
+		n := res3.RowsAffected()
+		armorDeleted += n
+		if n < armorBatchSize {
+			break // 本批未取满 = 过期行已清空
+		}
 	}
 
 	slog.Info("audit_trimmer: trim complete",

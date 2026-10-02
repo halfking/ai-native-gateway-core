@@ -96,4 +96,7 @@ lite_storage:
   retention:
     session_bodies_days: 30
     request_logs_days: 7
+    # 缓存清理保留期（小时）。生效值恒 >= cache_ttl_hours：配小了会被收敛到
+    # cache_ttl_hours 并在启动日志告警（否则会删掉读侧仍视为有效的缓存条目）。
+    # 想缩短缓存寿命请改上面的 cache_ttl_hours。
     cache_hours: 24

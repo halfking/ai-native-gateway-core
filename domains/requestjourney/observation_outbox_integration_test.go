@@ -115,6 +115,36 @@ func TestObservationOutbox_TenantRLSIsolation(t *testing.T) {
 	}
 	defer tenantPool.Close()
 
+	// Assert the premise before asserting the conclusion.
+	//
+	// A superuser or BYPASSRLS role reads every tenant's rows no matter how
+	// correct the policies are, and `FORCE ROW LEVEL SECURITY` does not change
+	// that. When the harness handed this test the same superuser URL as the
+	// seeding pool, the probe below reported "alpha scope saw 1 beta rows,
+	// want 0 (RLS leak)" — a claim of a tenant-isolation vulnerability that was
+	// purely an artifact of who was doing the reading.
+	//
+	// Checking the role first turns that false red into an honest, self-
+	// describing skip. A security assertion that can report a leak it did not
+	// observe is worse than no assertion: it teaches readers to wave away RLS
+	// failures.
+	var tenantIsSuper, tenantBypasses bool
+	if err := tenantPool.QueryRow(ctx,
+		`SELECT r.rolsuper, r.rolbypassrls
+		   FROM pg_roles r
+		   WHERE r.rolname = current_user`).Scan(&tenantIsSuper, &tenantBypasses); err != nil {
+		t.Skipf("cannot determine RLS-relevant role attributes for current_user (%v); "+
+			"skipping rather than asserting isolation with an unknown role", err)
+	}
+	if tenantIsSuper || tenantBypasses {
+		t.Skipf("TEST_TENANT_DATABASE_URL connects as a role with rolsuper=%v rolbypassrls=%v; "+
+			"such a role bypasses RLS even under FORCE, so this probe would report a "+
+			"false 'RLS leak'. Point TEST_TENANT_DATABASE_URL at a non-superuser, "+
+			"non-BYPASSRLS role (scripts/audit/run-integration-gate.sh creates one named "+
+			"itgate_tenant for exactly this purpose).",
+			tenantIsSuper, tenantBypasses)
+	}
+
 	tx, err := tenantPool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin rls-probe: %v", err)

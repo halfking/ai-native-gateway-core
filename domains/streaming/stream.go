@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/sse"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
@@ -70,65 +71,16 @@ func qualityFixModeFromContext(ctx context.Context) string {
 	return ""
 }
 
-// chunkHasContent returns true when an OpenAI SSE chunk carries real
-// user-facing content. Used by the empty-stream content-gate to decide
-// whether to flush the buffer (real content seen) or fail over (zero
-// content seen before [DONE]).
-//
-// "Real content" = delta.content != "" OR delta.reasoning_content != ""
-// OR delta.tool_calls non-empty. Usage-only and role-only chunks
-// (Type="usage" / first-chunk assistant role announcement) do NOT count.
-//
-// Returns false (no content) on parse errors — a malformed chunk is treated
-// like an empty one so the gate keeps buffering and either hits the chunk/
-// byte cap or [DONE] arrives with zero content → Resumable failover.
+// Wave4-D2 (2026-09-22): chunkHasContent and isEmptySemanticDelta moved to
+// internal/emptyoutcome (ChatChunkHasOutput / ChatSemanticDelta) — the single
+// empty-outcome semantic table shared with the executors copy and the
+// responses bridge. Package-local aliases keep the gate call sites readable.
 func chunkHasContent(payload string) bool {
-	if payload == "" || payload == "[DONE]" {
-		return false
-	}
-	chunk, err := ir.ParseOpenAIStreamChunk("data: " + payload + "\n\n")
-	if err != nil || chunk == nil {
-		return false
-	}
-	if chunk.Type == ir.ChunkTypeDone || chunk.Type == ir.ChunkTypeError {
-		return false
-	}
-	if chunk.Delta == nil {
-		return false
-	}
-	if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
-		return true
-	}
-	if len(chunk.Delta.ToolCalls) > 0 {
-		return true
-	}
-	if chunk.Delta.AudioDelta != nil &&
-		(chunk.Delta.AudioDelta.Data != "" || chunk.Delta.AudioDelta.Transcript != "") {
-		return true
-	}
-	return false
+	return emptyoutcome.ChatChunkHasOutput(payload)
 }
 
-// isEmptySemanticDelta reports whether payload is a valid OpenAI delta frame
-// with at least one choice but no semantic output. It deliberately excludes
-// usage, keepalive, malformed payloads, and empty/missing choices so those
-// protocol-control frames cannot trigger early-empty failover.
 func isEmptySemanticDelta(payload string) bool {
-	if payload == "" || payload == "[DONE]" {
-		return false
-	}
-	var envelope struct {
-		Choices json.RawMessage `json:"choices"`
-	}
-	if err := json.Unmarshal([]byte(payload), &envelope); err != nil || len(envelope.Choices) == 0 {
-		return false
-	}
-	var choices []json.RawMessage
-	if err := json.Unmarshal(envelope.Choices, &choices); err != nil || len(choices) == 0 {
-		return false
-	}
-	chunk, err := ir.ParseOpenAIStreamChunk("data: " + payload + "\n\n")
-	return err == nil && chunk != nil && chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil && !chunkHasContent(payload)
+	return emptyoutcome.ChatSemanticDelta(payload)
 }
 
 func earlyEmptyOutcome(capture *audit.StreamCapture) *StreamOutcome {
@@ -396,6 +348,18 @@ func runEmptyStreamGateWithVendor(
 
 		// [DONE] while buffering: classify and decide.
 		if transformedPayload == "[DONE]" {
+			// R-vapeur3 (2026-09-30): the break used to drop the [DONE] line
+			// itself, so a stream whose terminal arrived while the gate was
+			// still buffering flushed everything except the terminal. Mirror
+			// the hasCombinedDone branch above and carry the line through.
+			// R36-B4: the append of `line` that used to sit here is removed.
+			// `line` is already appended unconditionally at the top of this
+			// iteration, so the extra append emitted the SAME frame twice —
+			// two `data: [DONE]` frames on the wire for any input that
+			// reaches this branch. Compare the hasCombinedDone branch above,
+			// which appends a *synthesized* "data: [DONE]\n" precisely because
+			// that `line` had its [DONE] stripped; here `line` still carries it
+			// and is already buffered. The break alone is correct.
 			break
 		}
 
@@ -504,6 +468,17 @@ type StreamOutcome struct {
 	Reason      string
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
+	// TerminalRendered (2026-09-23 critique round) latches that THIS bridge
+	// already wrote a protocol terminal envelope (§11.6 eof_without_done
+	// frame, stream-timeout frame, anthropic interruption events) for a
+	// committed-output interruption — or synthesized the [DONE] on the
+	// benign success path (finish_reason-then-EOF, R59 audit S1-F6 note:
+	// inert there since Interrupted=false produces no error chain, kept for
+	// wire-truth symmetry). The executor wraps the returned error
+	// with errorsx.ErrProtocolTerminalRendered so the handler's blackhole
+	// guard prevents a second terminal after the first. Keep field-identical
+	// with the executors.StreamOutcome alias.
+	TerminalRendered bool
 
 	// Kind (2026-07-28 §5.6) is the structured errorsx.ErrorKind
 	// the executor assigns to the interruption. When non-empty,
@@ -730,6 +705,17 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// Disabled (default) this is the identity function — legacy wire bytes.
 	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
 	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIChat)
+	// R-vapeur3 (2026-09-30): an upstream that closes without the SSE
+	// blank-line terminator (vapeur relay ends streams with `data: [DONE]\n`
+	// + close, raw-log proven) strands the terminal frame in the GateWriter
+	// assembly buffer — attempt end is the last chance to put it on the wire.
+	// No-op whenever the stream ended with complete frames (pending empty);
+	// a discarded attempt's gate refuses the frame, which is ignored here.
+	defer func() {
+		if gw, ok := w.(*GateWriter); ok {
+			_ = gw.DrainPending()
+		}
+	}()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -876,6 +862,27 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// flip it true if its buffered output included [DONE].
 	upstreamDoneReceived := false
 
+	// finalFinishReason tracks the last finish_reason seen on an upstream
+	// chunk. 2026-09-23 (benign-EOF parity with the responses/anthropic
+	// bridges): minimax-style relays close the stream right after the
+	// finish_reason chunk instead of emitting [DONE]. A received
+	// finish_reason means the stream COMPLETED semantically — the EOF
+	// branch below must treat the missing [DONE] as benign upstream
+	// non-compliance, not as an eof_without_done failure.
+	finalFinishReason := ""
+
+	// sawSemanticOutput tracks whether any chunk WRITTEN TO THE CLIENT
+	// carried real assistant semantics (content / reasoning / tool_calls /
+	// audio), judged by the shared emptyoutcome table (chunkHasContent).
+	// r0924b (2026-09-24): finish_reason alone is NOT semantic output — a
+	// stream of pure usage/keepalive/role frames diluted past the
+	// empty-stream gate cap plus a trailing finish_reason must NOT be
+	// promoted to a benign completion (usage-only = EMPTY per the
+	// emptyoutcome semantic table, with or without finish_reason). It only
+	// feeds the benign-EOF branch below; the eof_without_done structured
+	// error paths are unchanged.
+	sawSemanticOutput := false
+
 	if firstLine != "" {
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(firstLine))
 		firstRawPayload := extractPayload(firstLine)
@@ -883,8 +890,17 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			diagnosticCollector.observeRaw([]byte(firstRawPayload))
 			if chunk, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr == nil {
 				diagnosticCollector.observeChunk(chunk)
+				if chunk.FinishReason != "" {
+					finalFinishReason = chunk.FinishReason
+				}
 			} else {
 				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(firstRawPayload), parseErr, nil)
+			}
+			// r0924b: gate-disabled write-through path writes this line
+			// verbatim below — record its semantic-ness here (the gate
+			// flush-loop site covers the gate-enabled path).
+			if !sawSemanticOutput && chunkHasContent(firstRawPayload) {
+				sawSemanticOutput = true
 			}
 		}
 		// 2026-06-20 audit fix: when the upstream returns a
@@ -1085,6 +1101,30 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					upstreamDoneReceived = true
 				}
 				diagnosticCollector.observeEmittedLine(l)
+				// r0924 repair (2026-09-24): the gate's onRawLine callback
+				// (1032-1044) parses chunks but does NOT propagate
+				// finish_reason upward. Without this re-parse here, a
+				// MiniMax-style stream whose finish_reason chunk
+				// arrives during gating enters the main loop with
+				// finalFinishReason = "" and falls through to the
+				// §11.6-pseudo-success "eof_without_done" branch even
+				// when the upstream DID complete semantically.
+				// Mirrors the same finish_reason promotion in the
+				// main-loop path at line ~1407.
+				if p != "" && p != "[DONE]" {
+					if chunk, parseErr := ir.ParseOpenAIStreamChunk(l); parseErr == nil {
+						if chunk.FinishReason != "" {
+							finalFinishReason = chunk.FinishReason
+						}
+					}
+					// r0924b: the flushed line IS the wire line (post
+					// coercion/normalize), so judge semantic-ness on it —
+					// a MiniMax finish_reason chunk that carries the
+					// tool_calls payload counts; usage/role frames do not.
+					if !sawSemanticOutput && chunkHasContent(p) {
+						sawSemanticOutput = true
+					}
+				}
 				if writeClientLine(l) {
 					lastSend = time.Now()
 					chunkCount++
@@ -1148,58 +1188,153 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			switch readResult.state {
 			case streamReadEOF:
 				if !upstreamDoneReceived {
-					terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
-					if terminalVisible {
-						// 2026-09-01 (P0 MiniMax-fix): MiniMax upstream
-						// (api.minimaxi.com) closes the HTTP body after
-						// sending 200 + valid SSE chunks but WITHOUT the
-						// final `data: [DONE]` line. The client already
-						// saw the complete response and we synthesize
-						// `data: [DONE]\n\n` for them, so this is
-						// protocol-level non-compliance, not a real
-						// business failure. Treat as completed so audit
-						// success=true, the circuit-breaker stays quiet,
-						// and credential health is unaffected. A distinct
-						// reason literal preserves operator visibility
-						// (SQL-filter by reason) without re-triggering
-						// the audit isInterruptionCode failure path
-						// (audit.go:90) which lists "eof_without_done".
-						slog.Info("upstream EOF without [DONE] but semantic output already committed; treating as completed (benign upstream non-compliance)",
+					// 2026-09-23 (benign-EOF parity with the responses and
+					// anthropic bridges, both since 2026-09-13): a finish_reason
+					// chunk already received means the stream COMPLETED
+					// semantically — minimax-style relays close the connection
+					// right after it instead of emitting [DONE]. Synthesize the
+					// terminator, record a clean completion, and do NOT fail
+					// the turn (a tool_calls turn that already carried its full
+					// arguments must reach the client's tool executor, not die
+					// here as eof_without_done/retryable=false).
+					//
+					// r0924b (2026-09-24): the benign promotion additionally
+					// requires sawSemanticOutput — real assistant output
+					// (content/reasoning/tool_calls, emptyoutcome table) must
+					// have reached the client. A zero-semantic stream (pure
+					// usage/keepalive/role frames + finish_reason, diluted past
+					// the empty-stream gate cap) has no tool executor waiting
+					// on it; promoting it to success would be exactly the
+					// §11.6 pseudo-success (usage-only = EMPTY regardless of
+					// finish_reason). Those streams fall through to the
+					// existing eof_without_done structured-error paths below.
+					if finalFinishReason != "" && chunkCount > 0 && sawSemanticOutput {
+						slog.Info("upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
 							"client_model", clientModel,
 							"chunk_count", chunkCount,
+							"finish_reason", finalFinishReason,
 						)
+						safeWriteSSE(w, "data: [DONE]\n\n")
+						safeFlush(flusher)
+						metrics.Global().RecordStreamSynthesizedDone()
 						if capture != nil {
 							capture.ObserveChunk(&ir.StreamChunk{
 								Type:           ir.ChunkTypeDone,
 								SourceProtocol: ir.ProtocolOpenAIChat,
 							})
 						}
+						outcome.Interrupted = false
+						outcome.Reason = ""
+						outcome.Kind = ""
+						outcome.Resumable = true
+						outcome.TerminalRendered = true
+						outcome.ChunkCount = chunkCount
+					} else if terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount); terminalVisible {
+						// 2026-09-22 (§11.6 production fix):
+						//
+						// Pre-fix (commit 05c79fbe9, 2026-09-01) treated
+						// "HTTP 200 + committed SSE chunks + EOF without
+						// [DONE]" as benign upstream non-compliance: the
+						// gateway synthesized `data: [DONE]\n\n` for the
+						// client and recorded success=true. §11.6 of
+						// comprehensive-test-plan.md requires the opposite
+						// — "HTTP 200 空响应或 SSE 无 [DONE] | 不向客户端
+						// 返回伪成功，切换或返回结构化错误". A truncated
+						// stream that the gateway papers over with a fake
+						// [DONE] is exactly the pseudo-success §11.6
+						// forbids.
+						//
+						// The committed-but-truncated stream cannot be
+						// transparently failed over (the client owns the
+						// partial response — a second candidate would
+						// duplicate committed bytes, which is why
+						// Resumable=false). Instead we:
+						//   1. Emit a structured SSE error envelope so the
+						//      SDK observes the failure, not a silent 200.
+						//   2. Synthesize the trailing `data: [DONE]\n\n`
+						//      so OpenAI-compatible parsers finalize.
+						//   3. Mark outcome.Interrupted=true so the audit
+						//      pipeline records success=false,
+						//      failure_detail_code="eof_without_done",
+						//      streamErrorKindForDetailCode="eof_without_done".
+						//      The circuit breaker and credential-health
+						//      state then receive the failure attribution
+						//      they need.
+						//   4. Keep the RecordStreamSynthesizedDone
+						//      metric firing for downstream observability —
+						//      the synthesized terminator IS still injected
+						//      on the wire.
+						//
+						// Operators can distinguish committed-but-truncated
+						// from uncommitted EOF failures via SQL filter on
+						// `chunk_count > 0 AND failure_detail_code =
+						// 'eof_without_done'`.
+						slog.Warn("upstream EOF without [DONE] after committed semantic output (§11.6 pseudo-success guard)",
+							"client_model", clientModel,
+							"chunk_count", chunkCount,
+							"resumable", false,
+							"reason", "eof_without_done",
+						)
+						if capture != nil {
+							capture.MarkInterruptedWithReason("eof_without_done")
+						}
+						// Structured error SSE chunk — same wire shape used
+						// by the stream_timeout branch below and the
+						// json_error_in_stream branch above. The client SDK
+						// can pattern-match it as an OpenAI error envelope.
+						//
+						// 2026-09-23 (strategy fix): retryable=true. This
+						// branch only runs for KindUpstreamDown (upstream
+						// dropped the connection) after committed output — a
+						// transient class by construction. The pre-fix
+						// envelope had no retryable field, so agent clients
+						// defaulted to retryable=false and hard-failed the
+						// turn (user report #17); their own discard-and-
+						// regenerate machinery recovers it. The gateway-side
+						// constraint (cannot transparently resume committed
+						// bytes) is unchanged.
+						//
+						// 2026-09-23 (shape parity): code/reason/retryable are
+						// duplicated at the TOP LEVEL as well. Live evidence
+						// (request df60575b, build 2235): the client read
+						// error.code but reported reason=unknown/retryable=false
+						// — it reads those two from the frame root, not from
+						// inside the error object. Extra root fields are
+						// ignored by strict OpenAI parsers, so both reader
+						// shapes now get the full signal.
+						errChunk := "data: {\"error\":{\"type\":\"upstream_incomplete\",\"message\":\"upstream closed the stream without sending [DONE]\",\"code\":\"eof_without_done\",\"reason\":\"eof_without_done\",\"retryable\":true},\"code\":\"eof_without_done\",\"reason\":\"eof_without_done\",\"retryable\":true}\n\n"
+						safeWriteSSE(w, errChunk)
+						outcome.TerminalRendered = true
+						// Synthesized [DONE] so the SDK still finalizes its
+						// stream parser (otherwise some clients block
+						// forever waiting for it). The metric keeps firing
+						// because the wire actually contains the synthesized
+						// terminator.
 						safeWriteSSE(w, "data: [DONE]\n\n")
 						safeFlush(flusher)
+						// This errChunk+[DONE] pair IS the protocol terminal
+						// for the attempt — latch it so the survival
+						// coordinator's renderTerminal does not emit a second
+						// terminal (completed(incomplete) + response.failed)
+						// on buffered-gate breach paths (R56 audit).
+						gate.MarkTerminalRendered()
 						metrics.Global().RecordStreamSynthesizedDone()
-						outcome.Interrupted = false
-						outcome.Reason = "eof_without_done_after_commit"
-						// 2026-09-01 (P0-2 24h-audit round2): benign EOF must
-						// carry an explicit non-failure Kind. A blank Kind
-						// leaking into classifyExecError / ClassifyError falls
-						// through to the default transient bucket, which would
-						// mis-report this completed request as a retryable
-						// failure. KindEmptyResponse is the closest existing
-						// non-failure semantics: HTTP 200, well-formed stream,
-						// upstream protocol non-compliance the gateway already
-						// papered over (synthesized [DONE]). It is NOT in
-						// IsRetryable (no retry: output is committed) and NOT
-						// credential-fatal. Downstream guards that read Kind
-						// only act when Interrupted=true, so this is
-						// observability-only attribution.
-						outcome.Kind = errorsx.KindEmptyResponse
+						outcome.Interrupted = true
+						outcome.Reason = "eof_without_done"
+						outcome.Kind = errorsx.KindUpstreamDown
+						// Committed semantic output → cannot transparently
+						// retry (would duplicate bytes). §11.6 path is
+						// "return structured error" — that's what we did
+						// above via errChunk.
 						outcome.Resumable = false
 						outcome.ChunkCount = chunkCount
 					} else {
 						// No semantic output committed: this IS a real
-						// upstream failure. Preserve the pre-fix
-						// behavior so genuine failures still surface
-						// in error-rate metrics and trip the breaker.
+						// upstream failure. The execution can transparently
+						// fail over to the next credential (Resumable=true
+						// + ChunkCount=0 < StreamRetryThreshold) so the
+						// candidate-loop continue branch (executor.go:1814)
+						// tries the next node.
 						slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
 						if capture != nil {
 							capture.MarkInterruptedWithReason("eof_without_done")
@@ -1242,8 +1377,24 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					"hint", "if timeout occurs frequently with chunks received, consider increasing llmgw_node_timeout_seconds (current default 120s, hotconfigurable via admin/settings)",
 				)
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
-					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
+					// 2026-09-23: retryable=true — transient class after
+					// committed output; see the §11.6 eof_without_done note.
+					// R59 audit (S1-F3): shape parity with the eof_without_done
+					// envelope — code/reason/retryable duplicated at the root
+					// (clients read them from the frame root), and a
+					// synthesized [DONE] so the SDK finalizes its parser.
+					// TerminalRendered latches the blackhole, so without the
+					// synthesized [DONE] no later write can ever emit it and
+					// strict clients would hang waiting for the terminator.
+					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\",\"reason\":\"stream_timeout\",\"retryable\":true},\"code\":\"stream_timeout\",\"reason\":\"stream_timeout\",\"retryable\":true}\n\n")
+					safeWriteSSE(w, "data: [DONE]\n\n")
 					safeFlush(flusher)
+					metrics.Global().RecordStreamSynthesizedDone()
+					outcome.TerminalRendered = true
+					// Same latch rationale as the §11.6 eof_without_done
+					// branch above: the timeout envelope is a protocol
+					// terminal render (R56 audit).
+					gate.MarkTerminalRendered()
 				}
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
@@ -1329,8 +1480,20 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			diagnosticCollector.observeRaw([]byte(rawPayload))
 			if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
 				diagnosticCollector.observeChunk(chunk)
+				if chunk.FinishReason != "" {
+					finalFinishReason = chunk.FinishReason
+				}
 			} else {
 				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(rawPayload), parseErr, nil)
+			}
+			// r0924b: semantic-ness of the pre-transform payload equals the
+			// written one — the transforms below (quality fix / XML coerce /
+			// model rewrite / normalize) never create semantics from a
+			// content-less chunk nor strip content from a semantic one
+			// (the XML coercer only rewrites content that already carried
+			// the <tool_call> text).
+			if !sawSemanticOutput && chunkHasContent(rawPayload) {
+				sawSemanticOutput = true
 			}
 		}
 

@@ -105,7 +105,7 @@ func (h *Handler) handleSystemMonitorSubmit(w http.ResponseWriter, r *http.Reque
 	task := buildSystemMonitorTask(&req)
 	id, err := h.systemMonitor.Submit(r.Context(), task)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "submit failed: "+err.Error())
+		writeInternalErr(w, "submit failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -158,7 +158,7 @@ func (h *Handler) handleSystemMonitorStartAll(w http.ResponseWriter, r *http.Req
 	}
 	bindings, err := h.expandAllActiveBindings(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "expand failed: "+err.Error())
+		writeInternalErr(w, "expand failed", err)
 		return
 	}
 	if len(bindings) > 200 {
@@ -192,7 +192,7 @@ func (h *Handler) handleSystemMonitorStopAll(w http.ResponseWriter, r *http.Requ
 	}
 	stats, err := h.systemMonitor.QueueStats(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "stats: "+err.Error())
+		writeInternalErr(w, "stats", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -220,7 +220,7 @@ func (h *Handler) handleSystemMonitorByCredential(w http.ResponseWriter, r *http
 	}
 	bindings, err := h.expandCredentialBindings(r.Context(), credID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "expand: "+err.Error())
+		writeInternalErr(w, "expand", err)
 		return
 	}
 	results := batchSubmit(r.Context(), h.systemMonitor, bindings, "button_by_credential", "mandatory")
@@ -251,7 +251,7 @@ func (h *Handler) handleSystemMonitorByProvider(w http.ResponseWriter, r *http.R
 	}
 	bindings, err := h.expandProviderBindings(r.Context(), providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "expand: "+err.Error())
+		writeInternalErr(w, "expand", err)
 		return
 	}
 
@@ -288,7 +288,7 @@ func (h *Handler) handleSystemMonitorByModel(w http.ResponseWriter, r *http.Requ
 	}
 	bindings, err := h.expandModelBindings(r.Context(), modelName)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "expand: "+err.Error())
+		writeInternalErr(w, "expand", err)
 		return
 	}
 	results := batchSubmit(r.Context(), h.systemMonitor, bindings, "button_by_model", "mandatory")
@@ -311,7 +311,7 @@ func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Reques
 	if h.systemMonitor != nil {
 		stats, err := h.systemMonitor.QueueStats(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "stats: "+err.Error())
+			writeInternalErr(w, "stats", err)
 			return
 		}
 		queueSize = stats.QueueSize
@@ -390,7 +390,7 @@ func (h *Handler) handleSystemMonitorRecentRuns(w http.ResponseWriter, r *http.R
 		LIMIT $1
 	`, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query: "+err.Error())
+		writeInternalErr(w, "query", err)
 		return
 	}
 	defer rows.Close()
@@ -404,11 +404,17 @@ func (h *Handler) handleSystemMonitorRecentRuns(w http.ResponseWriter, r *http.R
 			&r.ErrCode, &r.SkipReason,
 			&r.StartedAt, &r.FinishedAt,
 			&r.RecentReqID); err != nil {
+			warnRowSkip("systemMonitor.recentRuns", err)
 			continue
 		}
 		r.HTTPStatus = httpStatus
 		r.LatencyMs = latencyMs
 		out = append(out, r)
+	}
+	// 探针运行记录少一截 = 失败/跳过的探针被静默抹掉，"系统监控全绿"是
+	// 假象。total 取自 len(out)，静默截断不会体现为数字异常。
+	if writeAggRowsErr(w, "systemMonitor.recentRuns", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"runs":  out,
@@ -443,7 +449,7 @@ func (h *Handler) handleSystemMonitorConcurrency(w http.ResponseWriter, r *http.
 		`INSERT INTO self_check_settings (id, monitor_concurrency) VALUES (1, $1)
 		 ON CONFLICT (id) DO UPDATE SET monitor_concurrency = $1`,
 		body.MonitorConcurrency); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -674,14 +680,14 @@ func (h *Handler) handleSystemMonitorMigrationMetrics(w http.ResponseWriter, r *
 
 	metrics, err := collector.CollectCoverage(ctx, windowDays)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to collect metrics: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to collect metrics", err)
 		return
 	}
 
 	// Check if ready for migration
 	ready, msg, err := collector.IsReadyForMigration(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to check migration readiness: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to check migration readiness", err)
 		return
 	}
 

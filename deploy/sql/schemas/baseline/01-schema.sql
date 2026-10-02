@@ -796,37 +796,6 @@ COMMENT ON FUNCTION public.cleanup_expired_session_requests() IS '清理过期�
 
 
 --
--- Name: cleanup_expired_session_turn_logs(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.cleanup_expired_session_turn_logs() RETURNS void
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    deleted_count INT;
-BEGIN
-    DELETE FROM public.session_turn_logs
-    WHERE expires_at < NOW();
-    
-    GET DIAGNOSTICS deleted_count = ROW_COUNT;
-    
-    IF deleted_count > 0 THEN
-        RAISE NOTICE 'Cleaned up % expired session turn logs', deleted_count;
-    END IF;
-END;
-$$;
-
-
---
--- Name: FUNCTION cleanup_expired_session_turn_logs(); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.cleanup_expired_session_turn_logs() IS 'Cleanup expired session turn logs (older than 24 hours).
-     Should be called by bg worker or cron job every hour.
-     Created: 2026-07-17, Migration 430';
-
-
---
 -- Name: cleanup_old_credential_model_index(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -929,6 +898,65 @@ $$;
 
 
 --
+-- Name: columnar_insert_only_parents(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.columnar_insert_only_parents() RETURNS text[]
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT ARRAY['routing_decision_log'];
+$$;
+
+
+--
+-- Name: columnar_healthcheck(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, partition_name text, storage text, expected text, compliant boolean, total_size_bytes bigint, n_live_tup bigint)
+    LANGUAGE sql STABLE
+    AS $$
+    WITH config AS (
+        SELECT
+            columnar_insert_only_parents() AS should_be_columnar,
+            ARRAY['request_logs','request_wal','usage_ledger',
+                  'request_logs_archive','request_wal_archive',
+                  'usage_ledger_archive']::text[] AS should_be_heap
+    ), partitions AS (
+        SELECT
+            p.relname AS parent_name,
+            c.relname AS partition_name,
+            CASE WHEN c.relam=(SELECT oid FROM pg_am WHERE amname='columnar') THEN 'columnar'
+                 WHEN c.relam=(SELECT oid FROM pg_am WHERE amname='heap') THEN 'heap'
+                 ELSE 'other' END AS storage,
+            pg_total_relation_size(c.oid) AS total_size_bytes,
+            (SELECT n_live_tup FROM pg_stat_user_tables WHERE relid=c.oid) AS n_live_tup
+        FROM pg_inherits i
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_namespace n ON n.oid = p.relnamespace
+        WHERE n.nspname = 'public'
+    )
+    SELECT
+        par.parent_name,
+        par.partition_name,
+        par.storage,
+        CASE
+            WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
+            WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
+            ELSE 'unknown'
+        END::text AS expected,
+        (par.storage = CASE
+            WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
+            WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
+            ELSE NULL END) AS compliant,
+        par.total_size_bytes,
+        COALESCE(par.n_live_tup, 0)
+    FROM partitions par, config cfg
+    ORDER BY par.parent_name, par.partition_name;
+$$;
+
+
+--
 -- Name: columnar_drift_report(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -997,65 +1025,6 @@ BEGIN
         END;
     END LOOP;
 END;
-$$;
-
-
---
--- Name: columnar_healthcheck(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, partition_name text, storage text, expected text, compliant boolean, total_size_bytes bigint, n_live_tup bigint)
-    LANGUAGE sql STABLE
-    AS $$
-    WITH config AS (
-        SELECT
-            columnar_insert_only_parents() AS should_be_columnar,
-            ARRAY['request_logs','request_wal','usage_ledger',
-                  'request_logs_archive','request_wal_archive',
-                  'usage_ledger_archive']::text[] AS should_be_heap
-    ), partitions AS (
-        SELECT
-            p.relname AS parent_name,
-            c.relname AS partition_name,
-            CASE WHEN c.relam=(SELECT oid FROM pg_am WHERE amname='columnar') THEN 'columnar'
-                 WHEN c.relam=(SELECT oid FROM pg_am WHERE amname='heap') THEN 'heap'
-                 ELSE 'other' END AS storage,
-            pg_total_relation_size(c.oid) AS total_size_bytes,
-            (SELECT n_live_tup FROM pg_stat_user_tables WHERE relid=c.oid) AS n_live_tup
-        FROM pg_inherits i
-        JOIN pg_class p ON p.oid = i.inhparent
-        JOIN pg_class c ON c.oid = i.inhrelid
-        JOIN pg_namespace n ON n.oid = p.relnamespace
-        WHERE n.nspname = 'public'
-    )
-    SELECT
-        par.parent_name,
-        par.partition_name,
-        par.storage,
-        CASE
-            WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
-            WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
-            ELSE 'unknown'
-        END::text AS expected,
-        (par.storage = CASE
-            WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
-            WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
-            ELSE NULL END) AS compliant,
-        par.total_size_bytes,
-        COALESCE(par.n_live_tup, 0)
-    FROM partitions par, config cfg
-    ORDER BY par.parent_name, par.partition_name;
-$$;
-
-
---
--- Name: columnar_insert_only_parents(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.columnar_insert_only_parents() RETURNS text[]
-    LANGUAGE sql STABLE
-    AS $$
-    SELECT ARRAY['routing_decision_log'];
 $$;
 
 
@@ -1157,82 +1126,6 @@ CREATE FUNCTION public.create_next_month_routing_partitions() RETURNS void
 --
 
 COMMENT ON FUNCTION public.create_next_month_routing_partitions() IS 'Auto-create next month partitions for both routing_decision_log (heap) and routing_decision_log_archive (columnar). Run this on the last day of each month.';
-
-
---
--- Name: credential_most_used_model(integer, integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer DEFAULT 24) RETURNS text
-    LANGUAGE plpgsql STABLE
-    AS $$
-DECLARE
-    v_model TEXT;
-BEGIN
-    -- 主路径：request_logs_hot (热表，毫秒级)
-    SELECT rl.model
-      INTO v_model
-      FROM request_logs_hot rl
-     WHERE rl.credential_id = p_credential_id
-       AND rl.success = TRUE
-       AND rl.started_at >= now() - make_interval(hours => p_lookback_hours)
-       AND rl.model IS NOT NULL
-     GROUP BY rl.model
-     ORDER BY COUNT(*) DESC, rl.model
-     LIMIT 1;
-
-    IF v_model IS NOT NULL THEN
-        RETURN v_model;
-    END IF;
-
-    -- Fallback: 冷表 request_logs (90 天后迁过去的)
-    SELECT rl.model
-      INTO v_model
-      FROM request_logs rl
-     WHERE rl.credential_id = p_credential_id
-       AND rl.success = TRUE
-       AND rl.started_at >= now() - make_interval(hours => p_lookback_hours)
-       AND rl.model IS NOT NULL
-     GROUP BY rl.model
-     ORDER BY COUNT(*) DESC, rl.model
-     LIMIT 1;
-
-    RETURN v_model;
-END;
-$$;
-
-
---
--- Name: FUNCTION credential_most_used_model(p_credential_id integer, p_lookback_hours integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer) IS 'Returns the raw_model_name with the most successful requests for a credential in the last N hours. Used by bg/credential_selfcheck.go to pick a fallback probe model.';
-
-
---
--- Name: credential_most_used_model(bigint, integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer DEFAULT 24) RETURNS TABLE(raw_model_name text, call_count bigint)
-    LANGUAGE sql STABLE
-    AS $$
-    SELECT pm.raw_model_name, COUNT(*) AS call_count
-    FROM request_logs_hot rl
-    JOIN provider_models pm ON pm.id = rl.canonical_id
-    WHERE rl.credential_id = p_credential_id
-      AND rl.ts >= now() - make_interval(hours => p_window_hours)
-      AND rl.success = TRUE
-    GROUP BY pm.raw_model_name
-    ORDER BY call_count DESC, pm.raw_model_name ASC
-    LIMIT 1;
-$$;
-
-
---
--- Name: FUNCTION credential_most_used_model(p_credential_id bigint, p_window_hours integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer) IS '341: top-1 model by 24h successful traffic for a credential. Used by credential_selfcheck to pick the daily probe model.';
 
 
 --
@@ -2393,55 +2286,6 @@ $$;
 
 
 --
--- Name: get_model_state_summary(text); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.get_model_state_summary(p_raw_model_name text) RETURNS TABLE(state text, priority text, count bigint, avg_success_rate numeric, next_probe_in_seconds integer)
-    LANGUAGE sql STABLE
-    AS $$
-		    SELECT
-		        sub.state::TEXT,
-		        sub.priority::TEXT,
-		        COUNT(*) as count,
-		        ROUND(AVG(CASE WHEN sub.total_attempts > 0
-		                       THEN sub.consecutive_successes::float / sub.total_attempts * 100
-		                       ELSE NULL END)::numeric, 2) as avg_success_rate,
-		        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
-		    FROM (
-		        SELECT
-		            mps.state,
-		            mps.consecutive_successes,
-		            mps.total_attempts,
-		            mps.next_retry_at,
-		            CASE
-		                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-		                WHEN mps.state = 'suspicious' THEN 'suspicious'
-		                WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
-		                ELSE 'watchdog'
-		            END as priority
-		        FROM model_probe_state mps
-		        JOIN credentials c ON c.id = mps.credential_id
-		        WHERE mps.raw_model_name = p_raw_model_name
-		          AND COALESCE(c.status, 'active') = 'active'
-		          AND COALESCE(c.lifecycle_status, 'active') = 'active'
-		          AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		    ) sub
-		    GROUP BY sub.state, sub.priority
-		    ORDER BY
-		        CASE sub.priority
-		            WHEN 'urgent' THEN 1
-		            WHEN 'suspicious' THEN 2
-		            WHEN 'failing' THEN 3
-		            WHEN 'watchdog' THEN 4
-		            ELSE 5
-		        END,
-		        sub.state;
-		$$;
-
-
-SET default_table_access_method = heap;
-
---
 -- Name: prompt_injection_policies; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2926,15 +2770,6 @@ COMMENT ON FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, 
 CREATE FUNCTION public.model_probe_cleanup_stuck_probing() RETURNS integer
     LANGUAGE plpgsql
     AS $$ DECLARE cleaned_count INTEGER; BEGIN WITH cleaned AS (UPDATE model_probe_state SET state = 'suspicious', probing_started_at = NULL, next_retry_at = NOW() + INTERVAL '2 minutes' WHERE state = 'probing' AND probing_started_at IS NOT NULL AND probing_started_at < NOW() - INTERVAL '5 minutes' RETURNING 1) SELECT COUNT(*) INTO cleaned_count FROM cleaned; RETURN cleaned_count; END; $$;
-
-
---
--- Name: model_probe_credential_concurrency(bigint); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint) RETURNS integer
-    LANGUAGE sql STABLE
-    AS $$ SELECT COUNT(*)::INTEGER FROM model_probe_state WHERE credential_id = p_credential_id AND state = 'probing' AND probing_started_at > NOW() - INTERVAL '5 minutes'; $$;
 
 
 --
@@ -4468,13 +4303,6 @@ $$;
 -- `request_logs` directly (LANGUAGE sql) which doesn't exist yet at this point.
 -- It has been moved to the end of this file, after all tables are created.
 -- -----------------------------------------------------------------------------
-
-
---
--- Name: FUNCTION system_health_status(p_window_seconds integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.system_health_status(p_window_seconds integer) IS '341: returns ok (>=80% success), degraded (<80%), or suspect (no traffic) over a sliding window. Consumed by bg/system_health.go and /api/health/system.';
 
 
 --
@@ -6886,7 +6714,11 @@ CREATE TABLE public.credentials (
     default_probe_model_source text,
     default_probe_model_picked_at timestamp with time zone,
     concurrency_limit_auto integer,
+    concurrency_mode text,
     fp_slot_limit integer NOT NULL,
+    max_queue_depth integer,
+    max_queue_wait_ms integer,
+    tpm_limit integer,
     probe_enabled boolean DEFAULT true,
     probe_interval_sec integer DEFAULT 300,
     last_probe_at timestamp with time zone,
@@ -9419,7 +9251,8 @@ CREATE TABLE public.model_aliases (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     client_profiles text[],
-    CONSTRAINT model_aliases_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text, 'deprecated'::text, 'hidden'::text])))
+    CONSTRAINT model_aliases_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text, 'deprecated'::text, 'hidden'::text]))),
+    CONSTRAINT uq_model_aliases_canonical_raw UNIQUE (canonical_id, raw_name)
 );
 
 
@@ -10121,6 +9954,64 @@ CREATE TABLE public.model_probe_state (
     CONSTRAINT check_probe_priority CHECK ((probe_priority = ANY (ARRAY['urgent'::text, 'suspicious'::text, 'failing'::text, 'recovering'::text, 'watchdog'::text])))
 );
 
+
+--
+-- Name: model_probe_credential_concurrency(bigint); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint) RETURNS integer
+    LANGUAGE sql STABLE
+    AS $$ SELECT COUNT(*)::INTEGER FROM model_probe_state WHERE credential_id = p_credential_id AND state = 'probing' AND probing_started_at > NOW() - INTERVAL '5 minutes'; $$;
+
+
+--
+-- Name: get_model_state_summary(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_model_state_summary(p_raw_model_name text) RETURNS TABLE(state text, priority text, count bigint, avg_success_rate numeric, next_probe_in_seconds integer)
+    LANGUAGE sql STABLE
+    AS $$
+		    SELECT
+		        sub.state::TEXT,
+		        sub.priority::TEXT,
+		        COUNT(*) as count,
+		        ROUND(AVG(CASE WHEN sub.total_attempts > 0
+		                       THEN sub.consecutive_successes::float / sub.total_attempts * 100
+		                       ELSE NULL END)::numeric, 2) as avg_success_rate,
+		        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
+		    FROM (
+		        SELECT
+		            mps.state,
+		            mps.consecutive_successes,
+		            mps.total_attempts,
+		            mps.next_retry_at,
+		            CASE
+		                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
+		                WHEN mps.state = 'suspicious' THEN 'suspicious'
+		                WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
+		                ELSE 'watchdog'
+		            END as priority
+		        FROM model_probe_state mps
+		        JOIN credentials c ON c.id = mps.credential_id
+		        WHERE mps.raw_model_name = p_raw_model_name
+		          AND COALESCE(c.status, 'active') = 'active'
+		          AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		          AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		    ) sub
+		    GROUP BY sub.state, sub.priority
+		    ORDER BY
+		        CASE sub.priority
+		            WHEN 'urgent' THEN 1
+		            WHEN 'suspicious' THEN 2
+		            WHEN 'failing' THEN 3
+		            WHEN 'watchdog' THEN 4
+		            ELSE 5
+		        END,
+		        sub.state;
+		$$;
+
+
+SET default_table_access_method = heap;
 
 --
 -- Name: TABLE model_probe_state; Type: COMMENT; Schema: public; Owner: -
@@ -12902,6 +12793,17 @@ CREATE TABLE public.request_envelope (
 
 SET default_table_access_method = columnar;
 
+-- The request_logs_2026_* / request_logs_archive blocks below are the *source*
+-- partitions that archive_request_logs(archive_month) migrates out, and the
+-- production 252 schema has them on heap. They must be heap, not columnar: they
+-- carry hash/gin indexes (client_model_idx2, quality_flags_idx, tool_calls_idx)
+-- and Citus columnar rejects any index AM other than btree, so leaving the
+-- preceding `SET ... = columnar` in force aborts the whole apply with
+-- "unsupported access method for the index on columnar table
+-- request_logs_2026_07". The columnar SET above belongs to the
+-- request_logs_bodies* family further down, which is re-armed below.
+SET default_table_access_method = heap;
+
 --
 -- Name: request_logs_2026_07; Type: TABLE; Schema: public; Owner: -
 --
@@ -13301,6 +13203,12 @@ PARTITION BY RANGE (ts);
 COMMENT ON TABLE public.request_logs_archive IS 'Tiered storage: columnar partitions for historical request_logs. Monthly partitions use Citus columnar (compressed, read-only). Data flow: monthly archive_request_logs(archive_month) migrates request_logs_YYYY_MM (heap) into request_logs_archive_YYYY_MM (columnar) and drops the source partition. Use UNION ALL across request_logs + request_logs_archive for time-range queries.';
 
 
+-- Re-arm columnar for the request_logs_bodies* family: the production 252
+-- schema has request_logs_bodies_2026_07..10 on columnar (compressed, read-only)
+-- and request_logs_bodies_hot on heap, which is what the next SET heap restores.
+-- This is the matching close of the heap block opened before request_logs_2026_*.
+SET default_table_access_method = columnar;
+
 --
 -- Name: request_logs_bodies; Type: TABLE; Schema: public; Owner: -
 --
@@ -13550,6 +13458,82 @@ CREATE TABLE public.request_logs_hot (
     CONSTRAINT request_logs_strategy_used_check CHECK (((strategy_used IS NULL) OR (strategy_used = ANY (ARRAY['baseline_heuristic'::text, 'pattern_layered'::text, 'llm_fallback'::text]))))
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
+
+
+--
+-- Name: credential_most_used_model(integer, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer DEFAULT 24) RETURNS text
+    LANGUAGE plpgsql STABLE
+    AS $$
+DECLARE
+    v_model TEXT;
+BEGIN
+    -- 主路径：request_logs_hot (热表，毫秒级)
+    SELECT rl.model
+      INTO v_model
+      FROM request_logs_hot rl
+     WHERE rl.credential_id = p_credential_id
+       AND rl.success = TRUE
+       AND rl.started_at >= now() - make_interval(hours => p_lookback_hours)
+       AND rl.model IS NOT NULL
+     GROUP BY rl.model
+     ORDER BY COUNT(*) DESC, rl.model
+     LIMIT 1;
+
+    IF v_model IS NOT NULL THEN
+        RETURN v_model;
+    END IF;
+
+    -- Fallback: 冷表 request_logs (90 天后迁过去的)
+    SELECT rl.model
+      INTO v_model
+      FROM request_logs rl
+     WHERE rl.credential_id = p_credential_id
+       AND rl.success = TRUE
+       AND rl.started_at >= now() - make_interval(hours => p_lookback_hours)
+       AND rl.model IS NOT NULL
+     GROUP BY rl.model
+     ORDER BY COUNT(*) DESC, rl.model
+     LIMIT 1;
+
+    RETURN v_model;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION credential_most_used_model(p_credential_id integer, p_lookback_hours integer); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer) IS 'Returns the raw_model_name with the most successful requests for a credential in the last N hours. Used by bg/credential_selfcheck.go to pick a fallback probe model.';
+
+
+--
+-- Name: credential_most_used_model(bigint, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer DEFAULT 24) RETURNS TABLE(raw_model_name text, call_count bigint)
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT pm.raw_model_name, COUNT(*) AS call_count
+    FROM request_logs_hot rl
+    JOIN provider_models pm ON pm.id = rl.canonical_id
+    WHERE rl.credential_id = p_credential_id
+      AND rl.ts >= now() - make_interval(hours => p_window_hours)
+      AND rl.success = TRUE
+    GROUP BY pm.raw_model_name
+    ORDER BY call_count DESC, pm.raw_model_name ASC
+    LIMIT 1;
+$$;
+
+
+--
+-- Name: FUNCTION credential_most_used_model(p_credential_id bigint, p_window_hours integer); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer) IS '341: top-1 model by 24h successful traffic for a credential. Used by credential_selfcheck to pick the daily probe model.';
 
 
 --
@@ -15309,7 +15293,7 @@ CREATE TABLE public.self_check_runs (
     selection_strategy text DEFAULT 'most_used'::text,
     attempted_models jsonb DEFAULT '[]'::jsonb,
     CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type ~~ 'http_%'::text) OR (error_type = ANY (ARRAY['none'::text, 'timeout'::text, 'network'::text, 'transient'::text, 'rate_limit'::text, 'auth'::text, 'auth_revoked'::text, 'quota'::text, 'quota_periodic'::text, 'quota_balance'::text, 'quota_permanent'::text, 'upstream_down'::text, 'upstream_overloaded'::text, 'concurrent'::text, 'stream_timeout'::text, 'model_not_found'::text, 'model_deprecated'::text, 'unsupported_feature'::text, 'context_length_exceeded'::text, 'content_filter'::text, 'tool_call_id_mismatch'::text, 'empty_response'::text, 'conversion_error'::text, 'upstream_context_loss'::text, 'no_available_channel'::text, 'canceled'::text, 'client_bug'::text, 'parse_error'::text, 'internal'::text, 'unattributed'::text, 'upstream_fail'::text])))),
-    CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = ANY (ARRAY['most_used'::text, 'random'::text, 'featured'::text, 'recent'::text, 'common_7d'::text, 'failed_model'::text, 'no_eligible_model'::text))))),
+    CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = ANY (ARRAY['most_used'::text, 'random'::text, 'featured'::text, 'recent'::text, 'common_7d'::text, 'failed_model'::text, 'no_eligible_model'::text])))),
     CONSTRAINT self_check_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'success'::text, 'partial'::text, 'failed'::text, 'retrying'::text])))
 );
 
@@ -26361,7 +26345,21 @@ CREATE INDEX request_logs_2026_07_provider_model_ts_idx ON public.request_logs_2
 -- Name: request_logs_2026_07_quality_flags_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_07_quality_flags_idx ON public.request_logs_2026_07 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0);
+-- GIN is unsupported on columnar access-method tables (Citus). Build it
+-- only while the partition is heap so a citus-enabled fresh install
+-- completes; later ALTER ... SET ACCESS METHOD columnar keeps the index.
+DO $gin$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+        WHERE c.oid = 'public.request_logs_2026_07'::regclass AND am.amname <> 'columnar'
+    ) THEN
+        EXECUTE $ddl$CREATE INDEX request_logs_2026_07_quality_flags_idx ON public.request_logs_2026_07 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0)$ddl$;
+    ELSE
+        RAISE NOTICE 'skip gin index request_logs_2026_07_quality_flags_idx: partition request_logs_2026_07 is columnar';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -26424,7 +26422,21 @@ CREATE INDEX request_logs_2026_07_tenant_id_ts_idx1 ON public.request_logs_2026_
 -- Name: request_logs_2026_07_tool_calls_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_07_tool_calls_idx ON public.request_logs_2026_07 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb));
+-- GIN is unsupported on columnar access-method tables (Citus). Build it
+-- only while the partition is heap so a citus-enabled fresh install
+-- completes; later ALTER ... SET ACCESS METHOD columnar keeps the index.
+DO $gin$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+        WHERE c.oid = 'public.request_logs_2026_07'::regclass AND am.amname <> 'columnar'
+    ) THEN
+        EXECUTE $ddl$CREATE INDEX request_logs_2026_07_tool_calls_idx ON public.request_logs_2026_07 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb))$ddl$;
+    ELSE
+        RAISE NOTICE 'skip gin index request_logs_2026_07_tool_calls_idx: partition request_logs_2026_07 is columnar';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -26606,7 +26618,21 @@ CREATE INDEX request_logs_2026_08_provider_model_ts_idx ON public.request_logs_2
 -- Name: request_logs_2026_08_quality_flags_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_08_quality_flags_idx ON public.request_logs_2026_08 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0);
+-- GIN is unsupported on columnar access-method tables (Citus). Build it
+-- only while the partition is heap so a citus-enabled fresh install
+-- completes; later ALTER ... SET ACCESS METHOD columnar keeps the index.
+DO $gin$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+        WHERE c.oid = 'public.request_logs_2026_08'::regclass AND am.amname <> 'columnar'
+    ) THEN
+        EXECUTE $ddl$CREATE INDEX request_logs_2026_08_quality_flags_idx ON public.request_logs_2026_08 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0)$ddl$;
+    ELSE
+        RAISE NOTICE 'skip gin index request_logs_2026_08_quality_flags_idx: partition request_logs_2026_08 is columnar';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -26676,7 +26702,21 @@ CREATE INDEX request_logs_2026_08_tenant_id_ts_idx1 ON public.request_logs_2026_
 -- Name: request_logs_2026_08_tool_calls_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_08_tool_calls_idx ON public.request_logs_2026_08 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb));
+-- GIN is unsupported on columnar access-method tables (Citus). Build it
+-- only while the partition is heap so a citus-enabled fresh install
+-- completes; later ALTER ... SET ACCESS METHOD columnar keeps the index.
+DO $gin$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+        WHERE c.oid = 'public.request_logs_2026_08'::regclass AND am.amname <> 'columnar'
+    ) THEN
+        EXECUTE $ddl$CREATE INDEX request_logs_2026_08_tool_calls_idx ON public.request_logs_2026_08 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb))$ddl$;
+    ELSE
+        RAISE NOTICE 'skip gin index request_logs_2026_08_tool_calls_idx: partition request_logs_2026_08 is columnar';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -27635,7 +27675,15 @@ ALTER INDEX public.idx_request_logs_provider_model ATTACH PARTITION public.reque
 -- Name: request_logs_2026_07_quality_flags_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_07_quality_flags_idx;
+DO $gin$
+BEGIN
+    IF to_regclass('public.request_logs_2026_07_quality_flags_idx') IS NOT NULL THEN
+        EXECUTE $ddl$ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_07_quality_flags_idx$ddl$;
+    ELSE
+        RAISE NOTICE 'skip attach request_logs_2026_07_quality_flags_idx: partition gin index absent (columnar)';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -27698,7 +27746,15 @@ ALTER INDEX public.idx_request_logs_outbound_msg_count ATTACH PARTITION public.r
 -- Name: request_logs_2026_07_tool_calls_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_07_tool_calls_idx;
+DO $gin$
+BEGIN
+    IF to_regclass('public.request_logs_2026_07_tool_calls_idx') IS NOT NULL THEN
+        EXECUTE $ddl$ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_07_tool_calls_idx$ddl$;
+    ELSE
+        RAISE NOTICE 'skip attach request_logs_2026_07_tool_calls_idx: partition gin index absent (columnar)';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -27873,7 +27929,15 @@ ALTER INDEX public.idx_request_logs_provider_model ATTACH PARTITION public.reque
 -- Name: request_logs_2026_08_quality_flags_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_08_quality_flags_idx;
+DO $gin$
+BEGIN
+    IF to_regclass('public.request_logs_2026_08_quality_flags_idx') IS NOT NULL THEN
+        EXECUTE $ddl$ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_08_quality_flags_idx$ddl$;
+    ELSE
+        RAISE NOTICE 'skip attach request_logs_2026_08_quality_flags_idx: partition gin index absent (columnar)';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -27936,7 +28000,15 @@ ALTER INDEX public.idx_request_logs_credits_charged ATTACH PARTITION public.requ
 -- Name: request_logs_2026_08_tool_calls_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_08_tool_calls_idx;
+DO $gin$
+BEGIN
+    IF to_regclass('public.request_logs_2026_08_tool_calls_idx') IS NOT NULL THEN
+        EXECUTE $ddl$ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_08_tool_calls_idx$ddl$;
+    ELSE
+        RAISE NOTICE 'skip attach request_logs_2026_08_tool_calls_idx: partition gin index absent (columnar)';
+    END IF;
+END
+$gin$;
 
 
 --
@@ -28672,6 +28744,13 @@ CREATE TRIGGER approval_approvers_updated_at BEFORE UPDATE ON public.approval_ap
 
 
 --
+-- Name: FUNCTION system_health_status(p_window_seconds integer); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.system_health_status(p_window_seconds integer) IS '341: returns ok (>=80% success), degraded (<80%), or suspect (no traffic) over a sliding window. Consumed by bg/system_health.go and /api/health/system.';
+
+
+--
 -- Name: approval_configs approval_configs_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -28794,7 +28873,7 @@ CREATE TRIGGER trg_notify_auto_route_cmb_insert_delete AFTER INSERT OR DELETE ON
 -- Name: credential_model_bindings trg_notify_auto_route_cmb_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures) OR (old.context_window_override IS DISTINCT FROM new.context_window_override) OR (old.priority IS DISTINCT FROM new.priority)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures) OR (old.context_window_override IS DISTINCT FROM new.context_window_override) OR (old.priority IS DISTINCT FROM new.priority))) EXECUTE FUNCTION public.notify_auto_route_refresh();
 
 
 --

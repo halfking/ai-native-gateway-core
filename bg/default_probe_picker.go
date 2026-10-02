@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // DefaultProbePicker re-evaluates the default_probe_model for every active
@@ -29,7 +30,7 @@ func NewDefaultProbePicker(db *pgxpool.Pool) *DefaultProbePicker {
 
 func (p *DefaultProbePicker) Start(ctx context.Context) {
 	ctx, p.cancel = context.WithCancel(ctx)
-	go p.run(ctx)
+	Go("default_probe_picker.run", func() { p.run(ctx) })
 	slog.Info("default probe picker started", "interval", p.interval)
 }
 
@@ -89,9 +90,21 @@ func (p *DefaultProbePicker) repickAll(ctx context.Context) {
 	var ids []int
 	for rows.Next() {
 		var id int
-		if err := rows.Scan(&id); err == nil {
+		if err := rows.Scan(&id); err != nil {
+			if dbrows.SkipOrFail("bg.DefaultProbePicker.repickAll", err) {
+				continue
+			}
+		} else {
 			ids = append(ids, id)
 		}
+	}
+	// R66: 路由面相关——待重选批被截断 = 若干 credential 的
+	// default_probe_model 静默停留在旧值（探针形态/模型可能已失效），
+	// 而 cycle complete 的 total 会偏小且无痕。本函数无 error 返回值
+	// （签名不可改），只能留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("default probe picker: row iteration aborted; credential batch truncated",
+			"error", err, "candidates", len(ids))
 	}
 
 	picked := 0

@@ -30,10 +30,13 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
                        │ miss / 过期 / 损坏
                        ▼
    ┌─────────────────────────────────────────────┐
-   │ L3 冷启动回源                                │
-   │   · SQLite：sessions / session_turns /       │
-   │     request_logs 元数据                      │
-   │   · 本地文件：gzip 压缩的轮次 body            │
+   │ L3 冷启动回源：**lite 模式不存在**           │
+   │   SessionTurnsReader 的 db 硬绑 pgx，lite   │
+   │   装配时传 nil ⇒ LoadState 恒 miss，         │
+   │   缓存退化为 L1 + L1.5 两层。               │
+   │   （R78 订正：此处原写「SQLite：sessions /  │
+   │   session_turns / request_logs 元数据」，   │
+   │   但仓内不存在任何 SQLite 版 L3。）          │
    └─────────────────────────────────────────────┘
        命中后逐层回填：L3 → 回填 L1 + L1.5
        写路径：L1 + L1.5 同步更新（fail-open）
@@ -77,11 +80,55 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
   创建 L1.5 FileCache、启动 `bg.CacheTrimmer` / `bg.BodiesTrimmer`；`domains/session/v2`
   侧经 `NewSessionCacheV2WithMode` 以 `*pgxpool.Pool` 构建 L2/L3——full/未设置 mode 时走
   历史 `NewSessionCacheV2`，行为零变化。
-- **lite 模式的 L3 回源**：db 为 nil（lite 跳过 PG）时 `SessionTurnsReader` 防御性返回
-  miss，缓存退化为 L1 + L1.5 两层，不会 panic。
+- **lite 模式的 L3 回源**：不存在。`SessionTurnsReader` 的 db 字段类型是
+  `sessionTurnsDB`（方法签名 `QueryRow(...) pgx.Row`），且查询硬编码
+  `public.session_turns_with_current_month` 与 PG 专有的 JSONB 运算符
+  `compression_meta ? 'cut_marker'`，物理上无法接 SQLite；lite 装配时传 nil，
+  `LoadState` 恒 miss，缓存退化为 L1 + L1.5 两层（`cache_v2_test.go` 的
+  `TestSessionTurnsReader_LoadState_NilDBIsColdMiss` 钉死该行为）。
+  代价是 lite 与 full 在**进程重启后**的会话恢复能力不对等：full 可从 PG 回源，
+  lite 只能靠 L1.5 文件快照（TTL/损坏即失忆）。R78 登记为能力边界，未实现 SQLite L3。
 - 模式归一化规则：`SessionCacheV2` 的 mode 零值与未知值一律视为 full（`effectiveMode`）。
 - `Invalidate` 与模式无关：只要对应层非空就逐层失效（L1、L1.5、L2），避免模式切换后残留脏数据。
 - 缓存层全部 fail-open：下层读/写失败只记日志并回源，不阻断主链路。
+
+## 全量模式热区（Hot Zone，2026-09-24 方案 H1–H5）
+
+full 模式可选叠加**热区层**：在 PG/Redis 之外引入本地磁盘缓存，把热会话的 L1.5
+快照、轮次 body 与请求侧镜像落到 `data/hotzone/`，降低冷启动回源对 PG 的压力。
+方案全文见 [2026-09-24-hotzone-dual-mode-plan.md](2026-09-24-hotzone-dual-mode-plan.md)，
+批判式审计见 `docs/audit/2026-09-30-hotzone-p1p2-critical-audit.md`（P1/P2）与
+`docs/audit/2026-09-30-hotzone-p3p4-critical-audit.md`（P3/P4/P5）。
+
+### 装配与目录布局
+
+装配入口 `cmd/gateway/storage_mode_init.go` 的 `initFullHotZoneStorageMode`（H2/P3）：
+
+- **装配门只认 config 通道**（YAML `hotzone.enabled` / env `LLM_GATEWAY_HOTZONE_ENABLED`）。
+  settings_kv 后端挂在 PG 之上，装配点（PG 初始化之前）读不到——`storage.hotzone_enabled`
+  的 settings 运行期 false **不卸载**已装配热区，仅让 HotZoneTrimmer 跳过清理轮；
+  「停新装配」须改 config 通道并在下一次进程启动生效。
+- 装配内容：L1.5 FileCache（`hotzone/cache`）+ FileBodiesStore（`hotzone/session_bodies`）
+  + HotZoneTrimmer（`bg/hot_zone_trimmer.go`，30 分钟周期）。三子树
+  （`cache` / `session_bodies` / `requests`）**共享同一磁盘预算**（默认 1GB），
+  超限按 mtime 从旧到新淘汰；过期判定即 `retention_hours`（默认 7h，与 L1.5 TTL 同参数）。
+- 热区自身装配失败 fail-fast（进程退出）；`hotzone.dir` 已存在但为 symlink 或非目录时
+  告警并降级为历史装配（升级路径上已有目录形态的部署不被拒绝启动）。
+- 请求侧镜像（H3/P4）：`storage/file/request_mirror.go`，两个接线点——telemetry
+  持久化三件套（`persistRequestLog` 顶部）与 session bodies 三件套；fire-and-forget、
+  fail-open，失败只计指标不阻断主链路。`request_mirror` 可独立关闭。
+
+### 指标（H5/P5，`/metrics/storage`）
+
+`monitoring/storage_metrics.go` 按 mode 分维度暴露：`mirror.by_mode`（镜像写成功/失败）、
+`l1_5_by_mode`（含命中率）、`hotzone.hit_total_by_mode`（与 l1_5 同源别名，避免双计数）、
+`hotzone_enabled`（以装配是否真正走通为准，关闭/降级/失败均 false）。
+
+### 与 lite L1.5 的关系
+
+热区复用 lite 的 `FileCache` / `FileBodiesStore` 实现，仅目录与生命周期治理不同：
+lite 由 cache/bodies 两个 trimmer 各管各的；full 热区由单个 HotZoneTrimmer 统一治理
+三子树。热区纯缓存语义，删除目录即回滚。
 
 ## 存储组件清单
 
@@ -98,7 +145,7 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
 | L1 内存缓存 | `CompressionMetaCache`（包内类型） | 共用 | 共用 | `domains/session/v2/cache_v2.go` |
 | L1.5 文件缓存 | `FileCache`（包内类型） | 仅 lite 读路径使用 | 不使用 | `domains/session/v2/cache_v2_file.go` |
 | L2 Redis 治理缓存 | `RedisGovernanceCache` | 不使用（装配时摘除） | 仅 full | `domains/session/v2/cache_v2_redis.go` |
-| L3 冷启动回源 | `SessionTurnsReader` | SQLite + 本地文件 | PostgreSQL `session_turns` | `domains/session/v2/turn_reader.go` |
+| L3 冷启动回源 | `SessionTurnsReader` | **无**（db=nil 恒 miss，退化为 L1+L1.5） | PostgreSQL `session_turns` | `domains/session/v2/turn_reader.go` |
 | 多层缓存编排 | `SessionCacheV2` | L1 → L1.5 → L3 | L1 → L2 → L3 | `domains/session/v2/cache_v2.go` |
 
 > 注：`storage/factory/stubs.go` 仅保留 full 模式（PostgreSQL / Redis）的桩实现
@@ -153,7 +200,9 @@ go run ./cmd/gateway
 `storage_mode: "lite"` 段，或纯环境变量（`config.LoadStorageConfigFromEnv`，无 YAML 即可）。
 
 lite 模式由 `cmd/gateway/storage_mode_init.go` 装配：旁路 PG 初始化、创建 L1.5 FileCache、
-启动 cache/bodies 两个后台清理任务；SIGTERM 优雅关闭（先停 trimmers 再排空异步写队列）。
+启动 cache/bodies/行级 retention 三个后台清理任务（R46 F6 起 SQLite request_logs/sessions/
+session_turns 按 `retention.request_logs_days` 自动清理）；SIGTERM 优雅关闭（先停 trimmers
+再排空异步写队列）。
 已通过无 PG/Redis 的真机 smoke 验证：完整启动、`/healthz` 200、SQLite+WAL 落盘、
 优雅关闭 exit 0。
 

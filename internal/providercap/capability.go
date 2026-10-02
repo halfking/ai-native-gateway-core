@@ -28,6 +28,78 @@ type Descriptor struct {
 	BalanceJSONPath string
 }
 
+// ResponsesProbeMaxOutputTokens is the max_output_tokens carried by
+// Responses-API probes (admin session-ping, provider health check, bg chat
+// ping). The Responses API enforces a floor of 16 — vapeur answered
+// "Invalid 'max_output_tokens': integer below minimum value. Expected >= 16"
+// to a 5-token probe (measured 2026-09-25) — and a reasoning model can burn
+// the entire budget invisibly, so 32 keeps the ping cheap while leaving a
+// compliant provider room to actually emit a minimal message.
+const ResponsesProbeMaxOutputTokens = 32
+
+// responsesUnsupportedStatuses are the HTTP statuses under which a
+// /v1/responses rejection can carry the relay's "this model/vendor does not
+// support the Responses API" verdict. Observed in the wild (2026-09-28
+// vapeur round): 400 (claude family, "该供应商不支持 Responses API" +
+// code=unsupported_operation) and 502 (QWEN/DOUBAO vendor errors relayed by
+// the aggregator, "X provider does not support the Responses API
+// (/responses). Please use /v1/chat/completions instead."). The remaining
+// statuses are the nearby contract-mismatch shapes (wrong path/method/media
+// type/not implemented) that carry the same verdict on other relays.
+var responsesUnsupportedStatuses = map[int]bool{
+	400: true, 404: true, 405: true, 415: true, 422: true, 501: true, 502: true,
+}
+
+// ResponsesUnsupportedError reports whether a failed /v1/responses response
+// is the upstream's "Responses API not supported here" verdict — a per-model
+// protocol capability gap on multi-vendor relays (vapeur), NOT node death and
+// NOT model death. text is the response body (or any extracted message text);
+// matching is a case-insensitive substring pass:
+//
+//   - the text must mention the Responses API itself, AND
+//   - carry a negation ("does not support" / "unsupported" / CJK 不支持), OR
+//   - explicitly redirect to /v1/chat/completions.
+//
+// A compliant Responses API rejecting parameters ("Invalid
+// 'max_output_tokens'", "Unsupported parameter: 'messages'") mentions the API
+// name but carries no negation of the API itself, so it is NOT matched —
+// those are probe-shape bugs, not capability gaps. Callers use this to fall
+// back to a chat-completions probe instead of poisoning availability.
+func ResponsesUnsupportedError(httpStatus int, text string) bool {
+	if !responsesUnsupportedStatuses[httpStatus] {
+		return false
+	}
+	b := strings.ToLower(strings.TrimSpace(text))
+	if b == "" {
+		return false
+	}
+	if !strings.Contains(b, "responses api") {
+		return false
+	}
+	// Parameter-shaped rejections ("Unsupported parameter: 'messages'", "The
+	// Responses API does not support the 'messages' parameter", CJK "不支持该
+	// 参数") are probe-shape bugs, not capability gaps — a green fallback chat
+	// ping would silently mask the shape bug. The guard applies to the
+	// "not support"/"不支持" branch too (2026-09-28 十九轮审计收口：此前只拦
+	// 裸 "unsupported"，"does not support the 'messages' parameter" 会被误判
+	// 为能力缺口，多打一发 chat 探针并写下误导性注记)。The chat-completions
+	// redirect below stays as the final override: genuine relay verdicts
+	// overwhelmingly carry it, with or without the word "parameter".
+	paramShaped := strings.Contains(b, "parameter") || strings.Contains(b, "参数") ||
+		strings.Contains(b, "argument") ||
+		strings.Contains(b, "unsupported value") ||
+		strings.Contains(b, "unsupported field") ||
+		strings.Contains(b, "unsupported request")
+	if !paramShaped &&
+		(strings.Contains(b, "not support") || strings.Contains(b, "不支持")) {
+		return true
+	}
+	if strings.Contains(b, "unsupported") && !paramShaped {
+		return true
+	}
+	return strings.Contains(b, "/v1/chat/completions") || strings.Contains(b, "chat/completions")
+}
+
 func Resolve(protocol, catalogCode string) Descriptor {
 	protocol = strings.ToLower(strings.TrimSpace(protocol))
 	catalogCode = strings.ToLower(strings.TrimSpace(catalogCode))
@@ -50,6 +122,14 @@ func Resolve(protocol, catalogCode string) Descriptor {
 		d.ModelListSource = "api"
 		d.ChatProbeEndpoint = upstreamurl.EpMessages
 		d.AuthStyle = "anthropic"
+	case "openai-responses":
+		// 2026-09-25 vapeur/hxt-local gpt-5.6-terra 事故：openai-responses
+		// 供应商的探针必须走其原生 /v1/responses——这类中转往往对 chat
+		// max_tokens=1 直接 400（"Could not finish the message because
+		// max_tokens or model output limit was reached"），且 responses 本来
+		// 就是该协议供应商的默认出站形态（协议归一见
+		// providercatalog.NormalizeProviderProtocol）。
+		d.ChatProbeEndpoint = upstreamurl.EpResponses
 	}
 
 	// P3 (2026-06-19): per-vendor balance probe configuration.

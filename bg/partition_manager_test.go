@@ -45,7 +45,13 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		// 删数据的复发面（473 同族）。
 		"ensure_candidate_failure_logs_partition": false, // Migration 689/694
 		// 706（存储优化方案 v2 S1a）：三新表族一次调用覆盖
-		"ensure_session_family_partitions":        false, // Migration 706
+		"ensure_session_family_partitions": false, // Migration 706
+		// R68 (2026-09-26) migration 750: usage_facts 按日分区。DEFAULT 分区
+		// 保留作历史 catch-all，新一日数据走日分区，partition pruning 对
+		// WHERE 范围查询仅扫命中分区。partitionUnit="day" 让
+		// ensureNextMonthPartitions 走 AddDate(0, 0, offset) 派生当日/次日，
+		// 与月分区同源 Asia/Shanghai 日历钉扎。
+		"ensure_usage_facts_daily_partition": false, // Migration 750
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -86,9 +92,11 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_auto_route_selections_hot_to_partition":     false, // Migration 656
 		"promote_supplier_errors_hot_to_partition":           false, // Migration V371 (2026-09-05, D-2#1)
 		// 706（存储优化方案 v2 S1a）：三新表族
-		"promote_session_memora_hot_to_partition":            false, // Migration 706
-		"promote_session_censors_hot_to_partition":           false, // Migration 706
-		"promote_session_tools_hot_to_partition":             false, // Migration 706
+		"promote_session_memora_hot_to_partition":  false, // Migration 706
+		"promote_session_censors_hot_to_partition": false, // Migration 706
+		"promote_session_tools_hot_to_partition":   false, // Migration 706
+		// 733（会话存储解耦 v3）：turn 特征层
+		"promote_session_turn_details_hot_to_partition": false, // Migration 733
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -348,4 +356,61 @@ func TestPartitionManagerPromoteIntervalNonPositiveDoesNotPanic(t *testing.T) {
 	pm.promoteDefaultToPartitions(context.Background())
 	pm.SetPromoteInterval(-time.Second)
 	pm.promoteDefaultToPartitions(context.Background())
+}
+
+// TestHotTableTSColumn 钉 R48 §五#3 oldest-row-age gauge 的 ts 列映射。
+// 当 schema 演化新增 hot 表时必须同步更新 hotTableTSColumn switch。
+// 2026-09-23 审计轮重写：R48 初版的期望值本身有 10 张表与真库不符（测试
+// 钉死了错误映射，252 快照 74min 10 表 × 每周期 42703 实证）——现期望值
+// 逐表对照 252 真库 information_schema 核定；跨环境一致性由
+// hot_ts_column_realdb_test.go（TEST_DATABASE_URL 门控）兜底。
+func TestHotTableTSColumn(t *testing.T) {
+	cases := []struct {
+		label string
+		want  string
+	}{
+		// 默认 ts
+		{"request_logs_hot", "ts"},
+		{"usage_ledger_hot", "ts"},
+		{"routing_decision_log_hot", "ts"},
+		{"request_logs_bodies", "ts"}, // 表名 request_logs_bodies_hot
+		{"session_turns_hot", "ts"},
+		{"session_turn_details_hot", "ts"},
+		{"session_bodies_hot", "ts"},
+		{"candidate_failure_logs_hot", "ts"},
+		{"auto_route_selections_hot", "ts"},
+		// created_at（252 真库核定）
+		{"request_wal_hot", "created_at"},
+		{"credit_ledger", "created_at"},    // credit_ledger_hot
+		{"tool_usage_stats", "created_at"}, // tool_usage_stats_hot
+		{"handoff_logs_hot", "created_at"}, // handoff_logs_hot
+		{"session_memora_hot", "created_at"},
+		{"session_censors_hot", "created_at"},
+		{"session_tools_hot", "created_at"},
+		{"session_module_executions_hot", "created_at"},
+		{"dashboard_access_events_hot", "created_at"},
+		{"session_last_requests", "created_at"},
+		// 特列
+		{"credential_model_index_hot", "bucket"},
+		{"supplier_errors_hot", "occurred_at"},
+		// 未声明但兜底默认 ts（防止 map miss 时出错）
+		{"unknown_future_hot", "ts"},
+	}
+	for _, tc := range cases {
+		got := hotTableTSColumn(tc.label)
+		if got != tc.want {
+			t.Errorf("hotTableTSColumn(%q) = %q, want %q", tc.label, got, tc.want)
+		}
+	}
+}
+
+// TestHotTableTSColumn_TSQLInjectionGuard 钉 R48 §五#3 防 SQL 注入：
+// 即使将来 hotTableTSColumn switch 被扩展，ts 列名必须保持白名单。
+func TestHotTableTSColumn_TSQLInjectionGuard(t *testing.T) {
+	// 直接调函数：返回值是 switch 产物，本身受 map 控制；模拟异常输入
+	// （label 含特殊字符）走 default 分支返回 "ts"，不会产生非法列名。
+	got := hotTableTSColumn("evil'; DROP TABLE x; --")
+	if got != "ts" && got != "created_at" && got != "bucket" && got != "occurred_at" {
+		t.Errorf("untrusted label must not produce arbitrary column name, got %q", got)
+	}
 }

@@ -105,7 +105,7 @@ func (p *IntegrityProbePlanner) Start(ctx context.Context) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
-	go p.run(runCtx)
+	Go("integrity_probe_planner.run", func() { p.run(runCtx) })
 	slog.Info("integrity_probe_planner started",
 		"interval", p.cfg.Interval,
 		"dedup_window", p.cfg.DedupWindow,

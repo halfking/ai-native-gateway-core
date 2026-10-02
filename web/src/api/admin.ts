@@ -422,6 +422,16 @@ export function getTenantKeys(code: string) {
   return req<TenantKey[]>('GET', `/api/admin/tenants/${code}/keys`)
 }
 
+export interface TenantDailyStat {
+  date: string // YYYY-MM-DD
+  requests: number
+  success: number
+  errors: number
+  tokens: number
+  credits: number
+  cost_usd: number
+}
+
 export interface TenantStats {
   days: number
   total_requests: number
@@ -431,13 +441,84 @@ export interface TenantStats {
   unique_keys: number
   unique_models: number
   unique_apps: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  avg_latency_ms: number
   by_model: Array<{ model: string; requests: number; tokens: number; credits: number; cost_usd: number }>
   by_application: Array<{ application_code: string; requests: number; tokens: number; credits: number; cost_usd: number }>
+  // 2026-09-30 统计 UI 优化轮：按天时序（无流量日已由后端 generate_series 补零）。
+  daily: TenantDailyStat[]
 }
 
 export function getTenantStats(code: string, days?: number) {
   const qs = days ? '?days=' + days : ''
   return req<TenantStats>('GET', `/api/admin/tenants/${code}/stats` + qs)
+}
+
+// ── 2026-09-30 统计 UI 优化轮：/users 用户级用量统计 ────────────────
+// 读面 usage_facts × api_keys.owner_user（与对账快照同源），详见
+// admin/user_usage_stats.go 头注。
+
+export interface UserUsageSummaryItem {
+  username: string
+  requests: number
+  tokens: number
+  credits: number
+  last_active_at: string | null
+}
+
+export interface UserUsageSummary {
+  days: number
+  items: UserUsageSummaryItem[]
+}
+
+export function getUserUsageSummary(days = 30) {
+  return req<UserUsageSummary>('GET', `/api/admin/users/usage-summary?days=${days}`)
+}
+
+export interface UserStatsKpi {
+  requests: number
+  tokens: number
+  credits: number
+  errors: number
+  error_rate: number
+  latency_p95_ms: number | null
+}
+
+export interface UserStatsBucket {
+  name: string
+  requests: number
+  tokens: number
+  credits: number
+  cost_usd: number
+}
+
+export interface UserStatsRecentRequest {
+  ts: string
+  model: string
+  first_chunk_ms: number | null
+  total_ms: number | null
+  credits: number
+  status: string
+}
+
+export interface UserStats {
+  user_id: number
+  username: string
+  days: number
+  kpi: UserStatsKpi
+  daily: TenantDailyStat[]
+  top_models: UserStatsBucket[]
+  top_apps: UserStatsBucket[]
+  top_keys: UserStatsBucket[]
+  key_count: number
+  recent_requests: UserStatsRecentRequest[]
+}
+
+export function getUserStats(userId: number, days = 30) {
+  return req<UserStats>('GET', `/api/admin/users/${userId}/stats?days=${days}`)
 }
 
 export const TENANT_STATUSES = ['active', 'trial', 'suspended', 'expired', 'disabled'] as const

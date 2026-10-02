@@ -14,11 +14,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/hotconfig"
+	"github.com/kaixuan/llm-gateway-go/internal/endpointselect"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -47,6 +50,12 @@ type dispatchCtx struct {
 	retryPerCred   int
 	tTotal         time.Time
 	stickyCredID   *int // session-affinity pin (honored on first attempt; excluded once tried)
+	// stickyFailed / stickyFailKind (2026-09-19 会话保持): 本请求内 sticky
+	// 钉住的凭据是否被尝试过且失败，及其最终错误类型。由 dispatchForward
+	// 失败分支记录（pipeline 对同一请求的 attempt 串行，无需加锁），
+	// recordDispatchSuccess 据此决定会话"保持原绑定"还是"迁移到新节点"。
+	stickyFailed   bool
+	stickyFailKind errorsx.ErrorKind
 }
 
 // SetDispatchPipeline wires the V2 dispatch pipeline. The pipeline is the
@@ -63,14 +72,27 @@ func (e *Executor) SetDispatchModelRecommender(d DispatchModelRecommender) {
 // NewDispatchPipeline builds the shared, long-lived dispatch.Pipeline with
 // adapters that read per-request context from QueuedRequest.Payload. Call once
 // at startup (cmd/gateway), then SetDispatchPipeline + pipeline.Start().
-func (e *Executor) NewDispatchPipeline() *dispatch.Pipeline {
-	return dispatch.NewPipeline(dispatch.Deps{
+//
+// R28-Q-1 (2026-09-30 round 29): hotCfg seeds the pipeline from the
+// llmgw_dispatch_* hotconfig keys. It was previously accepted by
+// dispatch.Deps but never passed, so every knob (total queue capacity,
+// queue depth, worker counts, retry budgets) was permanently stuck at
+// DefaultConfig in production. Pass nil to keep the defaults (tests).
+func (e *Executor) NewDispatchPipeline(hotCfg *hotconfig.Config) *dispatch.Pipeline {
+	deps := dispatch.Deps{
 		RouteFunc:            e.dispatchRoute,
 		ModelResolveFunc:     e.dispatchResolveModel,
 		ModelRecommendFunc:   e.dispatchRecommendModels,
 		ForwardFunc:          e.dispatchForward,
 		AllowModelChangeFunc: dispatch.IsModelChangeEnabled,
-	})
+	}
+	if hotCfg != nil {
+		cfg := dispatch.LoadConfig(hotCfg)
+		hot := &atomic.Value{}
+		hot.Store(&cfg)
+		deps.HotCfg = hot
+	}
+	return dispatch.NewPipeline(deps)
 }
 
 // dispatchRoute is the executor-supplied RouteFunc: it re-ranks the request's
@@ -202,7 +224,133 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 	// ActionUpstreamRequest is emitted by beginUpstreamAttempt immediately
 	// before the real HTTP call. Dispatch preparation can still fail in the
 	// circuit, limiter, or key rotator and must not look like provider traffic.
-	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback(), ctx)
+	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback(), qr.OnExtraUpstreamCall, ctx)
+}
+
+// selectDispatchEndpoint resolves a candidate only when the selector flag is
+// enabled. An unavailable native executor must never receive selector traffic.
+func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flags *settings.P4FeatureFlags) provider.Candidate {
+	if flags == nil || !flags.EndpointSelectorEnabled {
+		// r0926 P4 审计遗留（十六轮 E6c）：flag-off 的主端点回退此前完全
+		// 不可观测——灰度判读分不清「没开选择器」与「选择器决策回退」。
+		// Debug 级 + Enabled 前置（十八轮 M-5）：避免 flag-off 热路径上
+		// 每请求无条件装箱 4 个 slog 参数。
+		if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+			slog.Debug("endpoint_selector_decision: flag off, primary endpoint fallback",
+				"model", cand.RawModel, "base_url", cand.BaseURL,
+				"client_protocol", clientProtocol,
+				"match_rule", "flag_off_fallback")
+		}
+		return cand
+	}
+	endpoints := make([]endpointselect.EndpointLite, 0, len(cand.NativeEndpoints))
+	for _, ep := range cand.NativeEndpoints {
+		if ep.Protocol == providercatalog.ProtocolOllamaNative && !flags.OllamaNativeEnabled {
+			continue
+		}
+		endpoints = append(endpoints, ep)
+	}
+	if clientProtocol == "" {
+		clientProtocol = providercatalog.ProtocolOpenAICompletions
+	}
+	decision := endpointselect.Select(endpointselect.CandidateLite{
+		BaseURL: cand.BaseURL, Protocol: cand.Protocol, NativeEndpoints: endpoints,
+	}, endpointselect.Protocol(clientProtocol), "")
+	if decision.Protocol == endpointselect.ProtocolOllamaNative && !flags.OllamaNativeEnabled {
+		return cand
+	}
+	// r0926 audit finding #2: the decision's MatchRule / EndpointID /
+	// VendorNative / Passthrough were computed and then dropped on the floor.
+	// docs §6.4 / AC8 require them as trace attributes, and without them the
+	// gray release is unobservable — you cannot tell stage1c from stage4, nor
+	// prove the canary only moved traffic you intended. Emitted ONLY when the
+	// selector is on, so the flag-off path keeps its zero-overhead claim.
+	//
+	// Known gap (recorded, not fixed here): Decision.Passthrough is reported
+	// but never consumed — P5 owns the byte-level passthrough executor. Every
+	// stage1a hit still goes through the IR-bridged Ollama executor.
+	slog.Info("endpoint_selector_decision",
+		"match_rule", decision.MatchRule,
+		"client_protocol", clientProtocol,
+		"endpoint_protocol", string(decision.Protocol),
+		"endpoint_id", decision.EndpointID,
+		"vendor_native", decision.VendorNative,
+		"passthrough", decision.Passthrough,
+		"primary_protocol", cand.Protocol,
+		"primary_base_url", cand.BaseURL,
+		"decision_base_url", decision.BaseURL,
+		"native_endpoint_count", len(endpoints),
+	)
+	cand.BaseURL, cand.Protocol = decision.BaseURL, string(decision.Protocol)
+	return cand
+}
+
+// dispatchRoute names which executor the protocol switch should hand the
+// attempt to. It is a pure function of (protocol, flags) so the FF contract
+// is unit-testable without standing up an upstream.
+type dispatchRoute int
+
+const (
+	routeOpenAI            dispatchRoute = iota // default: /v1/chat/completions
+	routeAnthropic                              // /v1/messages
+	routeOllamaNative                           // Ollama /api/chat (NDJSON)
+	routeUnsupportedGemini                      // no executor; explicit 501-style skip
+)
+
+// classifyDispatchRoute maps a candidate protocol onto its executor.
+//
+// r0926 audit finding #1 (critical, flag-gate regression): before P4 the
+// dispatch switch had no ollama-native case, so a candidate whose
+// providers.protocol was "ollama-native" fell through to `default` and was
+// served by executeOpenAI against Ollama's OpenAI-compatible endpoint
+// (POST /v1/chat/completions — documented in docs/vendor-formats/ollama.md
+// "兼容模式"). The P4 wiring replaced that fallthrough with a hard
+// KindUnsupportedFeature while FF_OLLAMA_NATIVE=false.
+//
+// That is a live outage, not a conservative default:
+//
+//   - "ollama" is an accepted alias that NormalizeProviderProtocol maps to
+//     "ollama-native" (provider/catalog/protocol_normalize.go), and the V800
+//     backfill copies providers.protocol verbatim into the endpoint table, so
+//     ollama-native primaries exist in real catalogs.
+//   - The hard fail was reachable with BOTH flags off, i.e. it was not
+//     gated by any rollout lever, and setting FF_OLLAMA_NATIVE=false did not
+//     restore the old path — so the one documented rollback (docs §5.3)
+//     could not undo it.
+//
+// Contract: FF_OLLAMA_NATIVE=false must be byte-equivalent to pre-P4
+// dispatch. So a disabled ollama-native candidate degrades to routeOpenAI
+// (the legacy compat path), NOT to an error. Enabling the flag is what
+// switches the request onto /api/chat. Note this cannot mis-route traffic
+// the selector chose: selectDispatchEndpoint already filters ollama-native
+// endpoints out of the selector input while the flag is off, so the only way
+// to land here is the provider's own primary protocol — exactly the
+// pre-P4 situation.
+func classifyDispatchRoute(protocol string, flags *settings.P4FeatureFlags) dispatchRoute {
+	ollamaNative := flags != nil && flags.OllamaNativeEnabled
+	switch protocol {
+	case providercatalog.ProtocolAnthropicMessages:
+		return routeAnthropic
+	case providercatalog.ProtocolOllamaNative:
+		if ollamaNative {
+			return routeOllamaNative
+		}
+		return routeOpenAI
+	case providercatalog.ProtocolGeminiGenerate:
+		return routeUnsupportedGemini
+	default:
+		return routeOpenAI
+	}
+}
+
+// meterExtraUpstreamCall charges the admitting credential governor for an
+// extra upstream call issued inside the protocol retry loop (reqprobe
+// param-strip / mode-fallback retries, context-length recovery, R51-F15).
+// Nil-safe: legacy (non-dispatch) executions carry no meter.
+func meterExtraUpstreamCall(params *ExecParams) {
+	if params != nil && params.ExtraUpstreamCall != nil {
+		params.ExtraUpstreamCall()
+	}
 }
 
 // candidateToRef maps a routing candidate into dispatch's decoupled view.
@@ -540,13 +688,14 @@ func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider
 // loop (fp slot → circuit → Limiter.AcquireAllNoCredLayer → key rotator →
 // executeOpenAI/executeAnthropic → success/error side effects) but returns
 // control to the dispatch mover on pre-firstbyte failure.
-func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate, attemptID string, firstSemanticByte func(), dispatchContexts ...context.Context) (out dispatch.ForwardOutcome) {
+func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate, attemptID string, firstSemanticByte func(), extraUpstreamCall func(), dispatchContexts ...context.Context) (out dispatch.ForwardOutcome) {
 	paramsCopy := *dctx.params
 	if len(dispatchContexts) > 0 && dispatchContexts[0] != nil {
 		paramsCopy.R = paramsCopy.R.WithContext(dispatchContexts[0])
 	}
 	paramsCopy.DispatchAttempt = true
 	paramsCopy.DispatchAttemptID = attemptID
+	paramsCopy.ExtraUpstreamCall = extraUpstreamCall
 	visibility := &atomic.Bool{}
 	paramsCopy.ClientSemanticBytesVisible = visibility
 	paramsCopy.FirstSemanticByteCallback = func() {
@@ -643,6 +792,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			)
 		} else {
 			fpLease = lease
+			// Wave 3 B14: hard cap on how long one dispatch may hold a
+			// slot. Previously only the stream timeout bounded the hold;
+			// a wedged upstream that dodged every timeout pinned the slot
+			// until the Redis TTL self-expired (≤30 min), draining the
+			// credential's concurrency budget. The watchdog force-releases
+			// at fpSlotLeaseHardCap and counts the breach; Release is
+			// idempotent and the Released() check keeps a queued normal
+			// release from being miscounted.
+			armFpSlotLeaseDeadline(e.FpSlots, lease)
 		}
 	}
 
@@ -671,7 +829,13 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
 			errDispatchCircuitOpen, errorsx.KindCircuitOpen, extra)
 
-		return dispatch.ForwardOutcome{Err: errDispatchCircuitOpen}
+		// 2026-10-01 R73: carry ErrorKind on the outcome. It was dropped
+		// here, so the planner could only fall back to classifying the
+		// message string "dispatch: circuit open" — which matches no regex in
+		// errorsx/classify.go and lands on the KindTransient fallback,
+		// i.e. a preflight rejection that made no upstream call was
+		// retried against the same already-open circuit.
+		return dispatch.ForwardOutcome{Err: errDispatchCircuitOpen, ErrorKind: string(errorsx.KindCircuitOpen)}
 	}
 
 	// ── Outer concurrency layers (global/pool/identity/key). The credential
@@ -742,11 +906,25 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			}
 		}
 
+		// ── P4.2: r0924 supplier-protocol-optimization endpoint selector ───
+		// When FF_ENDPOINT_SELECTOR is enabled, consult endpointselect.Select()
+		// to resolve the actual (BaseURL, Protocol) this attempt should use.
+		// The decision may override the candidate's primary endpoint when a
+		// native protocol endpoint exists (Stage 1A passthrough), or keep the
+		// primary unchanged (Stage 4 fallback). The local cand copy is modified
+		// so all downstream URL construction and protocol dispatch paths see the
+		// resolved values without per-site patching.
+		//
+		// When the flag is off, cand.BaseURL and cand.Protocol remain at their
+		// SQL-loaded primary values (legacy routing behavior, zero overhead).
+		p4flags := settings.GetP4Flags()
+		cand = selectDispatchEndpoint(cand, params.ClientProtocol, p4flags)
+
 		// ── MM-1/MM-2 outbound attachment transforms ─────────────────
 		// Native Responses candidates must transform their own preserved
 		// Responses envelope; legacy candidates continue using the Chat body.
 		attachmentBody := params.BodyBytes
-		nativeBody := cand.Protocol == "openai-responses" && (cand.SupportsNativeResponses || cand.SupportsNativeResponsesStream) && len(params.ResponsesBodyBytes) > 0
+		nativeBody := cand.Protocol == providercatalog.ProtocolOpenAIResponses && (cand.SupportsNativeResponses || cand.SupportsNativeResponsesStream) && len(params.ResponsesBodyBytes) > 0
 		if nativeBody {
 			attachmentBody = params.ResponsesBodyBytes
 		}
@@ -762,7 +940,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		if e.AttachmentURLRewriter != nil && len(params.AttachmentMetadata) > 0 {
 			var newBody []byte
 			var n int
-			if params.ClientProtocol == "anthropic-messages" {
+			if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
 				// E-P2-3 (doc 20): Anthropic-protocol clients bridged to a
 				// URL-mode OpenAI provider — rewrite the Anthropic base64
 				// source blocks to url sources before the bridge conversion
@@ -803,16 +981,31 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		// executeOpenAI gate (executor_chat.go:374-382) accepts both forms,
 		// so the dispatch gate has to mirror that contract or stream-only
 		// candidates are silently dropped before the gate even fires.
-		if cand.Protocol == "openai-responses" &&
+		//
+		// Fix-2026-09-25: when the native Responses capability is not
+		// verified (credential_model_capabilities row absent/supported=false),
+		// fall back to Chat Completions instead of hard-blocking. The
+		// capability table is opt-in and currently empty by default, so a
+		// hard gate would make every openai-responses provider unusable
+		// until an external probe populates it. executeOpenAI already
+		// selects ChatCompletionsURL when both capability flags are false.
+		if cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
 			!cand.SupportsNativeResponses &&
 			!cand.SupportsNativeResponsesStream {
-			execErr = fmt.Errorf("native Responses upstream capability is not enabled")
-			return
+			if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+				slog.Debug("native responses capability not enabled, falling back to chat completions",
+					"credential_id", cand.CredentialID,
+					"model", cand.RawModel,
+					"protocol", cand.Protocol,
+				)
+			}
 		}
-		switch cand.Protocol {
-		case "anthropic-messages":
+		switch classifyDispatchRoute(cand.Protocol, p4flags) {
+		case routeAnthropic:
 			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
-		case "gemini-generate":
+		case routeOllamaNative:
+			result, execErr = e.executeOllama(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
+		case routeUnsupportedGemini:
 			// 2026-09-09 audit round 3: the catalog advertises
 			// gemini-generate as an outbound protocol, but no executor
 			// branch exists — falling into executeOpenAI built OpenAI chat
@@ -825,12 +1018,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				Message: "gemini-generate dispatch not implemented; candidate skipped",
 			}
 		default:
+			// Includes the ollama-native candidate while
+			// FF_OLLAMA_NATIVE=false — see classifyDispatchRoute for why
+			// that must degrade to the OpenAI-compat path rather than fail.
 			result, execErr = e.executeOpenAI(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
 		}
 	}()
 
 	if execErr == nil {
-		e.recordDispatchSuccess(params, cand, result)
+		e.recordDispatchSuccess(params, cand, result, dctx)
 		return dispatch.ForwardOutcome{Result: result}
 	}
 
@@ -842,6 +1038,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
 
+	// 2026-09-19 会话保持：sticky 钉住的凭据被尝试且失败时记录错误类型，
+	// 供成功路径判定"瞬时失败保持会话 / 严重失败迁移会话"。
+	// pipeline 对同一请求的 attempt 严格串行（failover mover 单owner），
+	// 这里无需加锁。
+	if dctx.stickyCredID != nil && cand.CredentialID == *dctx.stickyCredID {
+		dctx.stickyFailed = true
+		dctx.stickyFailKind = kind
+	}
+
 	// Audit 2026-09-08 #3: request_flow coverage for dispatch V2 stream
 	// interruptions. forwardForDispatch is the funnel every protocol
 	// executor's mid-stream failure passes through; the reason/resumable
@@ -850,7 +1055,18 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	// line with reason client_cancel/client_disconnected and KindCanceled.
 	var sie *streamInterruptedError
 	if errors.As(execErr, &sie) && sie != nil {
-		logDispatchStreamInterrupted(params, cand, kind, sie)
+		if sie.terminalRendered {
+			// 2026-09-23 critique round: the bridge already put a protocol
+			// terminal on the wire (§11.6 eof_without_done / timeout /
+			// anthropic interruption frames). Mark the error so the shared
+			// post-loop handlers blackhole further wire writes instead of
+			// stacking a second terminal (observed live: eof_without_done
+			// frame followed by a misleading "No available provider…"
+			// exhausted envelope). %w keeps the streamInterruptedError
+			// errors.As chain intact for this block below.
+			execErr = fmt.Errorf("%w (%w)", execErr, errorsx.ErrProtocolTerminalRendered)
+		}
+		logDispatchStreamInterrupted(params, cand, kind, sie, bytesSent)
 		// Audit R9 candidate 17: bytesSent=true is by construction the
 		// terminal decision point (dispatcher completes without failover,
 		// see dispatch/forwarder.go ADR-Disp-003 guard) — emit the
@@ -925,10 +1141,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 // recordDispatchSuccess applies non-authoritative routing side effects
 // (sticky, route recorder, health tracker, and mnf reset). Focused subset of
 // the legacy loop's success block (executor.go:2566-2696).
-func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candidate, result *ExecuteResult) {
+//
+// 2026-09-19 会话保持：dctx 携带 sticky 钉扎凭据的本请求失败史——
+// 瞬时错误 failover 成功后不重写 sticky（会话留在原节点，保住 prompt-cache
+// 亲和）；严重错误（IsCredentialFatal）或 sticky 节点本请求未被尝试
+// （被可用性过滤=冷却/熔断）时正常重写到实际服务节点（会话迁移）。
+func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candidate, result *ExecuteResult, dctx *dispatchCtx) {
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
-	e.recordStickySuccess(params, cand.CredentialID)
+	e.recordStickySuccess(params, cand.CredentialID, dctx)
 	if e.Recorder != nil && e.legacyWritersEnabled() {
 		e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
 	}
@@ -945,6 +1166,14 @@ func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candi
 // recordDispatchError classifies the error and retains model-not-found audit
 // and streak tracking. Node-health state and circuit writes are reducer-owned.
 func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candidate, err error) errorsx.ErrorKind {
+	// Stream converters return a typed interruption without wrapping an
+	// *upstream.Error. Preserve that kind (including an output-policy block)
+	// instead of flattening its message into KindTransient and retrying a
+	// response that the gateway has already rejected.
+	var interrupted *streamInterruptedError
+	if errors.As(err, &interrupted) && interrupted != nil && interrupted.kind != "" {
+		return interrupted.kind
+	}
 	kind := classifyExecError(err)
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
@@ -1046,6 +1275,67 @@ var (
 	errDispatchKeysExhausted    = newDispatchErr("dispatch: all keys exhausted")
 )
 
+// fpSlotLeaseHardCap (Wave 3 B14, design §3): the ceiling on how long one
+// dispatch may hold an FP-slot lease. Previously the stream timeout was the
+// only bound; a wedged upstream that dodged every timeout pinned the slot
+// until the Redis TTL self-expired (≤30 min), draining the credential's
+// concurrency budget. After the cap the watchdog force-releases the slot —
+// the request itself keeps running, but it no longer occupies a concurrency
+// slot (the design's adjudicated trade: a bounded accounting violation
+// instead of an unbounded hold).
+//
+// R56 audit: the watchdog now goes through Manager.ReleaseHard, which
+// deletes the slot key. The ordinary Release's keepalive refresh (EXPIRE,
+// "DO NOT delete" identity semantics) left the slot counted as occupied and
+// re-armed a fresh full TTL — the forced release did not free anything.
+const fpSlotLeaseHardCap = 300 * time.Second
+
+// armFpSlotLeaseDeadline arms the B14 watchdog for one dispatch lease.
+// time.AfterFunc allocates a single one-shot timer; the handle is stored on
+// the lease so a normal release stops it instead of leaving up to hardCap of
+// pending timers per request behind (R56 audit: timer pileup at high QPS).
+func armFpSlotLeaseDeadline(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
+	armFpSlotLeaseDeadlineFor(m, lease, fpSlotLeaseHardCap)
+}
+
+func armFpSlotLeaseDeadlineFor(m *credentialfpslot.Manager, lease *credentialfpslot.Lease, hardCap time.Duration) {
+	if m == nil || lease == nil || !m.Enabled() || lease.Unlimited || hardCap <= 0 {
+		return
+	}
+	lease.SetWatchdogTimer(time.AfterFunc(hardCap, func() {
+		enforceFpSlotLeaseDeadline(m, lease)
+	}))
+}
+
+func enforceFpSlotLeaseDeadline(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
+	if lease.Released() {
+		return
+	}
+	// ReleaseHard performs the actual slot-key deletion synchronously (this
+	// already runs on the timer goroutine). Its result is the breach
+	// attribution: when the ordinary release won the race between our
+	// Released() check and the Redis call, performed=false and this is NOT a
+	// hard-cap breach (R56 audit: the old pre-increment counted queued
+	// normal releases as breaches whenever the release queue was backed up).
+	performed := false
+	if m != nil && m.Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		performed = m.ReleaseHard(ctx, lease)
+	}
+	if !performed {
+		return
+	}
+	fpSlotLeaseForcedReleaseTotal.Inc()
+	slog.Warn("fp slot lease exceeded hard cap, forcing release",
+		"credential_id", lease.CredentialID,
+		"slot_index", lease.SlotIndex,
+		"holder", lease.Holder,
+		"tenant_id", lease.TenantID,
+		"cap", fpSlotLeaseHardCap,
+	)
+}
+
 // logDispatchPreflightRejection is the shared writer for pre-upstream
 // admission rejections (fp-slot saturation, circuit-open, limiter rejection,
 // key-rotation exhaustion). Consolidates the boilerplate that was previously
@@ -1124,22 +1414,37 @@ func logDispatchPreflightRejection(
 // logDispatchStreamInterrupted emits the request_flow stream_interrupted line
 // for one dispatch V2 forward outcome (audit 2026-09-08 #3). Pure observation,
 // zero blocking: requestflow.Log is a fire-and-forget slog write.
+//
+// 2026-09-23 (live evidence df60575b): report sie.kind — the executor's
+// first-hand interruption classification (e.g. upstream_down for
+// eof_without_done) — when present, instead of the message-based
+// reclassification used for credential cooling (eofWithoutDoneRe maps the
+// same text to stream_timeout for short-cooling). The two legitimately
+// disagree and the flow channel is the operator's source of truth.
+// committed reflects whether any client-visible chunk actually went out
+// (previously hardcoded false even for committed streams).
 func logDispatchStreamInterrupted(
 	params *ExecParams,
 	cand provider.Candidate,
 	kind errorsx.ErrorKind,
 	sie *streamInterruptedError,
+	committed bool,
 ) {
+	reportedKind := kind
+	if sie != nil && sie.kind != "" {
+		reportedKind = sie.kind
+	}
 	requestflow.Log(requestflow.Event{
 		Stage:        "dispatch",
 		RequestID:    params.RequestID,
 		Model:        cand.RawModel,
 		ProviderID:   cand.ProviderID,
 		CredentialID: cand.CredentialID,
-		Kind:         string(kind),
+		Kind:         string(reportedKind),
 		Action:       "stream_interrupted",
 		Reason:       sie.reason,
 		Retryable:    sie.resumable,
+		Committed:    committed,
 		Attempt:      params.AttemptNo,
 	})
 }

@@ -171,6 +171,11 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 		ctx = context.Background()
 	}
 	w, gate := wrapAttemptWriter(ctx, w, ProtocolOpenAIResponses)
+	// vapeur3 同款尾部兜底（与 anthropic_stream.go 同步补线，三十七轮审计）：
+	// 非 survival 路径的 pending 滞留帧在 EOF 处排水，空 pending 为 no-op。
+	if gw, ok := w.(*GateWriter); ok {
+		defer gw.DrainPending()
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return StreamOutcome{Interrupted: true, Reason: "no_flusher", Kind: errorsx.KindUpstreamDown, Resumable: true}
@@ -192,11 +197,33 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 	for {
 		event, err := reader.ReadEvent(ctx, currentStreamRuntimeConfig().streamChunkTimeout, resp.Body)
 		if err != nil {
-			if errors.Is(err, io.EOF) && terminal {
+			// After a canonical terminal event (response.completed /
+			// response.incomplete / response.failed) the stream is logically
+			// complete. Some upstream servers close the connection with a
+			// TCP RST rather than a clean FIN after the terminal event,
+			// which surfaces as a non-EOF read error. Treat any error after
+			// terminal as a clean end-of-stream so the client receives the
+			// full response instead of a spurious upstream_down failure.
+			if terminal {
 				if capture != nil {
 					capture.MarkDone()
 				}
 				return StreamOutcome{ChunkCount: chunkCount}
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_cancel")
+				}
+				return StreamOutcome{Interrupted: true, Reason: "client_cancel", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
+			}
+			if errors.Is(err, io.EOF) {
+				resumable := !attemptHasClientSemanticOutput(gate, chunkCount)
+				reason := "native_responses_read_error"
+				kind := errorsx.KindUpstreamDown
+				if capture != nil {
+					capture.MarkInterruptedWithReason(reason)
+				}
+				return StreamOutcome{Interrupted: true, Reason: reason, Kind: kind, Resumable: resumable, ChunkCount: chunkCount}
 			}
 			resumable := !attemptHasClientSemanticOutput(gate, chunkCount)
 			reason := "native_responses_read_error"
@@ -214,6 +241,12 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 		}
 		if event.Name == "" && len(event.Data) == 0 {
 			continue
+		}
+		// paramledger (2026-09-22): 生命周期帧（response.created/
+		// in_progress/completed 等 AttemptMetadata/Terminal 类）回显
+		// reasoning.effort——出站被降级/归一时还原为客户端原始值再写回。
+		if event.Class == FrameClassAttemptMetadata || event.Class == FrameClassTerminal {
+			event.Raw = restoreEchoFrame(event.Raw, requestID)
 		}
 		if _, err := w.Write(event.Raw); err != nil {
 			if capture != nil {

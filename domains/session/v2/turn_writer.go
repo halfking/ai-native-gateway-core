@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // TurnWriter writes turn metadata to public.session_turns
@@ -34,10 +35,20 @@ type TurnWriter struct {
 	db turnDB
 }
 
+// sessionAdvisoryLockSQL 也把本事务的 max_parallel_workers_per_gather 压到 0
+// （set_config 第三参 true = SET LOCAL 语义，commit/rollback 自动还原）。
+// 2026-09-24 252 SQL 日志审计轮实测：MAX(turn_no) 走
+// session_turns_with_current_month（hot 反连接臂 + 全分区 Append），planner
+// 每次 Gather 孵化 2 个并行 worker —— EXPLAIN ANALYZE 并行 242-284ms vs
+// 关并行 90ms（2.7×），且每次写轮次的 DSM 段分配/释放在 /dev/shm=64MB 的
+// pg-252-pg17 上是 "could not map dynamic shared memory segment" ×338 +
+// parallel worker FATAL ×654/45min 的主源。按 (tenant, session) 取锁后的
+// 点读点写从不受益于并行，整个持锁事务统一退出并行。
 const sessionAdvisoryLockSQL = `
-	SELECT pg_advisory_xact_lock(
-		public.session_turns_advisory_lock_key($1, $2)
-	)
+	SELECT set_config('max_parallel_workers_per_gather', '0', true),
+	       pg_advisory_xact_lock(
+		       public.session_turns_advisory_lock_key($1, $2)
+	       )
 `
 
 // NewTurnWriter creates a new TurnWriter instance
@@ -262,6 +273,28 @@ func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnReco
 // appendTurnInLockedTx appends a turn after the caller has acquired the
 // tenant/session advisory lock in the same transaction.
 func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec TurnRecord) (turnNo int, err error) {
+	// R77: 接入 sessions_v2_* 观测指标（此前 6 个指标已声明但**全局零记录**，
+	// domains/session/v2/README.md 的「监控指标」一节因此名不副实）。
+	//
+	// 埋在 defer 里而不是主路径末尾，是 R74 RecordOutcome 的教训：那里第一版放在
+	// 函数末尾，测试当场 Skip——错误分支在 emit 之前就 return 了，绿灯只是因为
+	// 路径没走到。本函数有 8 个 return 点，用 defer 才覆盖得到全部。
+	//
+	// **观测口径（刻意写明，避免被当成"已提交的轮次"来读）**：这里量的是
+	// **turn INSERT 自身**的结果。调用方（AppendTurnInTx）自管事务，提交点不在
+	// 本函数内，所以「INSERT 成功但外层 commit 失败」会计入 success 而该行最终
+	// 回滚。之所以不把提交也纳入：多个调用方各自管事务，没有单一的提交点可观测，
+	// 硬凑只会重复计数。写失败一个都不漏（任何 return 非 nil 都计 failed）。
+	started := time.Now()
+	defer func() {
+		metrics.SessionsV2WriteLatency.Observe(time.Since(started).Seconds())
+		if err != nil {
+			metrics.SessionsV2WriteFailed.Inc()
+			return
+		}
+		metrics.SessionsV2WriteSuccess.Inc()
+	}()
+
 	if _, err := tx.Exec(ctx, sessionAdvisoryLockSQL, rec.TenantID, "request:"+rec.RequestID); err != nil {
 		return 0, fmt.Errorf("acquire request advisory lock: %w", err)
 	}

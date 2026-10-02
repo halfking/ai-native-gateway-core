@@ -161,7 +161,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "cost-trend query failed: "+err.Error())
+		writeInternalErr(w, "cost-trend query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -185,6 +185,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 			&entry.ErrorRate,
 			&entry.Percentage,
 		); err != nil {
+			warnRowSkip("usageCostTrend", err)
 			continue
 		}
 
@@ -197,6 +198,9 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 		} else {
 			entries = append(entries, entry)
 		}
+	}
+	if writeAggRowsErr(w, "usageCostTrend", rows.Err()) {
+		return
 	}
 
 	entries = append([]CostTrendEntry{}, entries...) // never serialize nil
@@ -292,7 +296,7 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "current period query failed: "+err.Error())
+		writeInternalErr(w, "current period query failed", err)
 		return
 	}
 
@@ -308,7 +312,7 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "previous period query failed: "+err.Error())
+		writeInternalErr(w, "previous period query failed", err)
 		return
 	}
 
@@ -332,8 +336,15 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 按模型维度细分（可选，简化实现只返回模型维度）
+	// R68 修正：原先丢弃错误，于是查询失败时 byDimension 静默少一个 key，
+	// 响应里看不出「没查」与「查了但无变化」的差别。省略本身在契约内
+	// （本来就可能只有模型维度），但必须留痕，否则「维度总是缺」会一直无人查。
 	byDimension := make(map[string][]DimChange)
-	modelChanges, _ := h.queryDimensionChanges(ctx, tid, currentStart, currentEnd, previousStart, previousEnd, "model")
+	modelChanges, dimErr := h.queryDimensionChanges(ctx, tid, currentStart, currentEnd, previousStart, previousEnd, "model")
+	if dimErr != nil {
+		slog.Warn("usage period compare: model-dimension query failed; dimension omitted",
+			"tenant", tid, "error", dimErr)
+	}
 	if len(modelChanges) > 0 {
 		byDimension["model"] = modelChanges
 	}
@@ -461,9 +472,13 @@ func (h *Handler) queryDimensionChanges(ctx context.Context, tenantID string,
 	for rows.Next() {
 		var change DimChange
 		if err := rows.Scan(&change.DimensionValue, &change.CurrentCost, &change.PreviousCost, &change.ChangePct); err != nil {
+			warnRowSkip("queryDimensionChanges", err)
 			continue
 		}
 		changes = append(changes, change)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dimension changes: %w", err)
 	}
 
 	return changes, nil
@@ -552,7 +567,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "cache-economics query failed: "+err.Error())
+		writeInternalErr(w, "cache-economics query failed", err)
 		return
 	}
 

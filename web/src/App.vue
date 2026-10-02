@@ -88,13 +88,11 @@ async function loadVersion() {
   try {
     const resp = await fetch('/api/system/version', {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'same-origin',
     })
-    if (resp.status === 401) {
-      clearAll()
-      router.push('/')
-      openLogin()
-      return
-    }
+    // /api/system/version is a public display endpoint. A 401 here must not
+    // wipe the session or bounce a request-detail deep link to the overview.
+    if (resp.status === 401) return
     if (resp.ok) {
       versionInfo.value = await resp.json()
     }
@@ -186,10 +184,15 @@ function openChangePassword() {
   showChangePassword.value = true
 }
 
-function handleChangePasswordSuccess() {
+async function handleChangePasswordSuccess() {
   clearMustChangePasswordFlag()
   showChangePassword.value = false
-  passwordSuccessMessage.value = t('login.passwordChangeSuccess')
+  // B4 (2026-09-22): the backend revokes every token issued before the
+  // password change, so the current session is dead anyway — log out and
+  // route to the login page instead of pretending to stay signed in.
+  // (The success banner only renders in the logged-in shell, so it is
+  // intentionally skipped here.)
+  await logout()
 }
 </script>
 

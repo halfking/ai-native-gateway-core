@@ -17,6 +17,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"net/http"
 	"time"
@@ -104,6 +105,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 		if err := rows.Scan(&cd.CredentialID, &cd.Label, &cd.Status,
 			&cd.CircuitState, &cd.AvailabilityState, &cd.HealthStatus,
 			&cd.ConsecutiveFailures, &ciphertext); err != nil {
+			warnRowSkip("providers.diagnose.credentials", err)
 			continue
 		}
 
@@ -204,6 +206,10 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			}
 		}
 	}
+	// 诊断报告是完整性产物：凭据少诊断几个会被读成"这些就是全部凭据"。
+	if writeAggRowsErr(w, "providers.diagnose.credentials", rows.Err()) {
+		return
+	}
 
 	var availableCount, totalOffers int
 	//nolint:errcheck // scan error non-critical
@@ -245,7 +251,8 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 		for ecRows.Next() {
 			var kind string
 			var cnt int
-			if ecRows.Scan(&kind, &cnt) != nil {
+			if err := ecRows.Scan(&kind, &cnt); err != nil {
+				warnRowSkip("providers.diagnose.errorClassification", err)
 				continue
 			}
 			// 2026-09-01 (P0-3 24h-audit round2): shared exact-match
@@ -264,6 +271,10 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			default:
 				ec.OtherErrors += cnt
 			}
+		}
+		// 24h 错误分类被截断 = 报出偏低的错误计数（读起来像"上游很健康"）。
+		if writeAggRowsErr(w, "providers.diagnose.errorClassification", ecRows.Err()) {
+			return
 		}
 		ecRows.Close()
 	}
@@ -321,7 +332,7 @@ func (h *Handler) startDiagnose(w http.ResponseWriter, r *http.Request, provider
 
 	taskID, err := insertBackgroundTask(ctx, h.db, "diagnose", &providerID, nil, map[string]any{"provider_id": providerID})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create task: "+err.Error())
+		writeInternalErr(w, "failed to create task", err)
 		return
 	}
 
@@ -410,8 +421,9 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			// secret_ciphertext is bytea — must scan into []byte, not string
 			// (see the matching note in diagnoseProvider above).
 			var ciphertext []byte
-			if rows.Scan(&cd.CredentialID, &cd.Label, &cd.Status, &cd.CircuitState,
-				&cd.AvailabilityState, &cd.HealthStatus, &cd.ConsecutiveFailures, &ciphertext) != nil {
+			if err := rows.Scan(&cd.CredentialID, &cd.Label, &cd.Status, &cd.CircuitState,
+				&cd.AvailabilityState, &cd.HealthStatus, &cd.ConsecutiveFailures, &ciphertext); err != nil {
+				warnRowSkip("providers.diagnoseBg.credentials", err)
 				continue
 			}
 
@@ -481,6 +493,12 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			}
 		}
 	}
+	// doDiagnose 无 ResponseWriter（结果落 background_tasks 供轮询）：不能改
+	// 状态码，改为 Error 级留痕——存下来的诊断快照缺凭据必须可查。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Error("providers diagnose (background) credential iteration aborted; report incomplete",
+			"provider_id", providerID, "error", rerr)
+	}
 
 	var availableCount, totalOffers int
 	//nolint:errcheck // scan error non-critical
@@ -513,7 +531,8 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 		for ecRows.Next() {
 			var kind string
 			var cnt int
-			if ecRows.Scan(&kind, &cnt) != nil {
+			if err := ecRows.Scan(&kind, &cnt); err != nil {
+				warnRowSkip("providers.diagnoseBg.errorClassification", err)
 				continue
 			}
 			// 2026-09-01 (P0-3 24h-audit round2): same shared exact-match
@@ -532,6 +551,11 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			default:
 				ec.OtherErrors += cnt
 			}
+		}
+		// 同 doDiagnose 凭据段：后台快照截断只能留痕。
+		if rerr := ecRows.Err(); rerr != nil {
+			slog.Error("providers diagnose (background) error classification truncated",
+				"provider_id", providerID, "error", rerr)
 		}
 		ecRows.Close()
 	}

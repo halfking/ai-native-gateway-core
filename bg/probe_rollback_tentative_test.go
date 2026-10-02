@@ -43,6 +43,14 @@ func TestProbeTentativeRevertAfter(t *testing.T) {
 // String-level contract test in the style of probe_rollback_contract_test.go
 // (SQL behavior is covered by migration 351 + the rollback worker's one-shot
 // WHERE guard).
+//
+// 2026-09-29 (R-vapeur2) additionally pins the recovery-race invariants:
+// the URSM v2 view write must precede the DB bookkeeping (it is the
+// authoritative router's only recovery signal and must not queue behind
+// slow DB writes), and the winner delivery (results <- res) must precede
+// the gateway round (diagnostics must not hold the recovered request
+// hostage — gpt-6-astra 2026-09-29: probes succeeded but the result
+// landed past the hold deadline, so the request still 503'd).
 func TestProbeSyncMarksTentativeRestore(t *testing.T) {
 	source, err := os.ReadFile("node_probe.go")
 	if err != nil {
@@ -62,11 +70,11 @@ func TestProbeSyncMarksTentativeRestore(t *testing.T) {
 	if markIdx < 0 {
 		t.Fatal("ProbeSync success branch must call MarkTentativeRestore (smart-fallback marking entry)")
 	}
-	availIdx := strings.Index(body, "updateBindingAvailability(ctx, j.credID, j.model, true, \"\", 0, \"\")")
+	availIdx := strings.Index(body, "updateBindingAvailability(bookCtx, j.credID, j.model, true, \"\", 0, \"\")")
 	if availIdx < 0 {
 		t.Fatal("ProbeSync success branch must restore availability")
 	}
-	gwIdx := strings.Index(body, "res.gateway = w.probeGateway(ctx")
+	gwIdx := strings.Index(body, "gwRound = w.probeGateway(bookCtx")
 	if gwIdx < 0 {
 		t.Fatal("ProbeSync success branch must run the gateway round")
 	}
@@ -75,5 +83,19 @@ func TestProbeSyncMarksTentativeRestore(t *testing.T) {
 	}
 	if !strings.Contains(body, "probeTentativeRevertAfter()") {
 		t.Fatal("marking must be guarded by the revert-window env (0/off disables)")
+	}
+	ursmIdx := strings.Index(body, "w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)")
+	if ursmIdx < 0 {
+		t.Fatal("ProbeSync must drive the URSM v2 authoritative view")
+	}
+	if ursmIdx > availIdx {
+		t.Fatalf("URSM view write (%d) must precede the DB availability restore (%d) — it is the authoritative router's recovery signal and must not queue behind slow DB bookkeeping", ursmIdx, availIdx)
+	}
+	deliverIdx := strings.Index(body, "results <- res")
+	if deliverIdx < 0 {
+		t.Fatal("ProbeSync must deliver the winner on the results channel")
+	}
+	if deliverIdx > gwIdx {
+		t.Fatalf("winner delivery (%d) must precede the gateway round (%d) — diagnostics must not hold a recovered request past the hold deadline", deliverIdx, gwIdx)
 	}
 }

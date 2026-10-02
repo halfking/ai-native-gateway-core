@@ -9,7 +9,7 @@
 //   - 给运维一个"还剩多少、谁在涨"的总览面板
 //
 // 实现要点：
-//   - 不引入新依赖；用 syscall.Statfs（stdlib）拿磁盘容量
+//   - 不引入新依赖；跨平台拿磁盘容量（diskusage_unix/windows.go）
 //   - 复用 h.db 查询 pg_database_size（标准 PG / Citus 均可用）
 //   - 2026-07-03: 移除 pg_total_database_size — Citus 不提供该函数
 //     改为 SUM(pg_total_relation_size) 近似估算
@@ -28,7 +28,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -217,7 +216,7 @@ func (h *Handler) handleDataLifecycleTableSizes(w http.ResponseWriter, r *http.R
 	tables, totalBytes, totalHuman, err := queryTableSizes(ctx, h, limit)
 	if err != nil {
 		slog.Warn("storage: table sizes query failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "查询表大小失败: "+err.Error())
+		writeInternalErr(w, "查询表大小失败", err)
 		return
 	}
 
@@ -348,19 +347,19 @@ func queryColumnarStorage(ctx context.Context, h *Handler) columnarStorageInfo {
 	return out
 }
 
-// queryFilesystem syscall.Statfs 探测 path 所在 filesystem 容量
+// queryFilesystem 探测 path 所在 filesystem 容量（跨平台，见 diskusage_*.go）
 func queryFilesystem(path string) (*filesystemInfo, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(abs, &stat); err != nil {
-		return nil, err
+	totalU, availU, freeU := statfsBytes(abs)
+	if totalU == 0 {
+		return nil, fmt.Errorf("statfs %s: 不可用", abs)
 	}
-	total := int64(stat.Blocks) * int64(stat.Bsize)
-	free := int64(stat.Bavail) * int64(stat.Bsize)
-	used := total - int64(stat.Bfree)*int64(stat.Bsize)
+	total := int64(totalU)
+	free := int64(availU)
+	used := total - int64(freeU)
 	pct := 0
 	if total > 0 {
 		pct = int(used * 100 / total)
@@ -444,12 +443,17 @@ func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInf
 			&t.TotalBytes, &t.IndexBytes, &t.ToastBytes,
 			&t.IsPartitioned,
 		); err != nil {
+			warnRowSkip("dataLifecycle.storage.tableSizes", err)
 			continue
 		}
 		t.TotalHuman = humanBytes(t.TotalBytes)
 		t.ToastHuman = humanBytes(t.ToastBytes)
 		totalBytes += t.TotalBytes
 		out = append(out, t)
+	}
+	// 占比对 Top-N 求和，截断会让 Top-N 大表榜 + DB 占用同时偏小。
+	if err := rows.Err(); err != nil {
+		return nil, 0, "", fmt.Errorf("failed to iterate table size rows: %w", err)
 	}
 
 	// 占比（对 Top-N 求和，不严格等于 DB 总数，仅作参考）

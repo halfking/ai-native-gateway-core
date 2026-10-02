@@ -103,9 +103,9 @@ git push    # 默认走 codeup，无附加检查
 # 直接 push，pre-push hook 自动扫描
 git push github
 #   ↓
-# 🔍 GitHub push detected — running sensitive-info scan (strict mode)
+# 🔍 GitHub push detected — running sensitive-info scan (normal mode)
 # ... scan output ...
-# ❌ 命中 → exit 1 → 推送被阻断
+# ❌ BLOCK 级命中 → exit 1 → 推送被阻断（WARN 级告警放行；STRICT_SCANNER=1 开严格全阻断）
 # ✅ 通过 → push 成功
 ```
 

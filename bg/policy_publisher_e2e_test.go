@@ -15,7 +15,7 @@ import (
 )
 
 const policyPublisherE2EPrerequisites = `
-CREATE TABLE public.credentials (
+CREATE TABLE credentials (
 	id BIGINT PRIMARY KEY,
 	provider_id BIGINT NOT NULL,
 	concurrency_mode TEXT NOT NULL DEFAULT 'concurrency',
@@ -33,7 +33,7 @@ CREATE TABLE public.credentials (
 	manual_disabled BOOLEAN NOT NULL DEFAULT false
 );
 
-CREATE OR REPLACE FUNCTION public.notify_auto_route_refresh()
+CREATE OR REPLACE FUNCTION notify_auto_route_refresh()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM pg_notify('auto_route_refresh', TG_TABLE_NAME || ':' || TG_OP);
@@ -95,7 +95,12 @@ func TestPolicyPublisherE2EAppliesRevisionToLiveCredForwarder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migration 566: %v", err)
 	}
-	pool, cleanup := DispatchPostgresContainer(t, ctx, policyPublisherE2EPrerequisites+"\n"+string(migration566))
+	// DispatchPostgresDatabase, not DispatchPostgresContainer: the code under test
+	// says `FROM public.credentials` (domains/dispatch/policy_publisher.go:224), so the
+	// fixture must BE public.credentials. A private per-test schema would leave the
+	// product reading production while this test seeded the fixture, and the
+	// resulting green would measure nothing.
+	pool, cleanup := DispatchPostgresDatabase(t, ctx, policyPublisherE2EPrerequisites+"\n"+string(migration566))
 	defer cleanup()
 
 	const (

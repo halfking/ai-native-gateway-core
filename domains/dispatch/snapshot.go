@@ -12,6 +12,10 @@ type modelQueue struct {
 	ch    chan *QueuedRequest
 	mu    sync.Mutex
 	depth atomic.Int64
+	// closed 由 drainer 空闲回收时置位（R28-Q-2，mu 保护）：enqueue 在
+	// mq.mu 段内复查，拿到回收前引用的迟到发送者被拒绝并重走新 lane，
+	// 绝不把 qr 送进无 drainer 的信道。
+	closed bool
 }
 
 // QueueSnapshot is a point-in-time view of one queue, for the admin endpoint.

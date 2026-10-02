@@ -22,7 +22,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -173,7 +172,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -191,6 +190,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		if err := rows.Scan(&ts, &reqID, &apiKeyID, &taskType, &prof,
 			&confidence, &clientModel, &outbound, &credentialID, &decision,
 			&success, &latency, &workTypeVal); err != nil {
+			warnRowSkip("autoRoute.decisions", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -224,6 +224,9 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 			}
 		}
 		out = append(out, entry)
+	}
+	if writeAggRowsErr(w, "autoRoute.decisions", rows.Err()) {
+		return
 	}
 	writeJSONOk(w, out)
 }
@@ -259,7 +262,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 	// (credential_id, raw_model) pair.
 	var anyRows bool
 	if err := h.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM credential_model_index_with_current_month)`).Scan(&anyRows); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if !anyRows {
@@ -302,7 +305,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -320,6 +323,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 			&priceIn, &priceOut, &contextWindow, &successRate, &p95,
 			&activeSessions, &concurrencyLimit, &pressureRatio,
 			&scoreSmart, &scoreSpeed, &scoreCost, &updatedAt, &rowBucket); err != nil {
+			warnRowSkip("autoRoute.indexSnapshot", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -371,6 +375,9 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 		}
 		entry["updated_at"] = updatedAt.Format(time.RFC3339)
 		out = append(out, entry)
+	}
+	if writeAggRowsErr(w, "autoRoute.indexSnapshot", rows.Err()) {
+		return
 	}
 	writeJSONOk(w, out)
 }
@@ -426,7 +433,7 @@ func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Requ
 		    updated_at = NOW()
 	`, apiKeyID, profile)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSONOk(w, map[string]interface{}{
@@ -532,7 +539,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 			  )`+auditBusinessFrag+auditTenantFrag+`
 		`, auditTenantArgs...).Scan(&totalInt, &successesInt, &autoInt, &specifiedInt)
 		if err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		total, successes, totalAuto, totalSpecified = int64(totalInt), int64(successesInt), int64(autoInt), int64(specifiedInt)
@@ -583,7 +590,14 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 				var c int
 				if err := rows.Scan(&t, &c); err == nil {
 					taskDist[t] = c
+				} else {
+					warnRowSkip("autoRoute.audit.taskDistributionMV", err)
 				}
+			}
+			// R41: this handler's swallowed rows-err silently emptied
+			// task_distribution while still answering 200. Classify it.
+			if writeAggRowsErr(w, "autoRoute.audit.taskDistributionMV", rows.Err()) {
+				return
 			}
 			rows.Close()
 			out["task_distribution"] = taskDist
@@ -598,7 +612,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 				var c int
 				if err := rows.Scan(&t, &c); err == nil {
 					taskDist[t] = c
+				} else {
+					warnRowSkip("autoRoute.audit.taskDistribution", err)
 				}
+			}
+			if writeAggRowsErr(w, "autoRoute.audit.taskDistribution", rows.Err()) {
+				return
 			}
 			rows.Close()
 			out["task_distribution"] = taskDist
@@ -622,7 +641,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 			var c int
 			if err := rows.Scan(&p, &c); err == nil {
 				profileDist[p] = c
+			} else {
+				warnRowSkip("autoRoute.audit.profileDistribution", err)
 			}
+		}
+		if writeAggRowsErr(w, "autoRoute.audit.profileDistribution", rows.Err()) {
+			return
 		}
 		rows.Close()
 		out["profile_distribution"] = profileDist
@@ -667,7 +691,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 						"model": m,
 						"count": c,
 					})
+				} else {
+					warnRowSkip("autoRoute.audit.topChosenModelsMV", err)
 				}
+			}
+			if writeAggRowsErr(w, "autoRoute.audit.topChosenModelsMV", rows.Err()) {
+				return
 			}
 			rows.Close()
 			out["top_chosen_models"] = topModels
@@ -697,7 +726,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 						"model": m,
 						"count": c,
 					})
+				} else {
+					warnRowSkip("autoRoute.audit.topChosenModels", err)
 				}
+			}
+			if writeAggRowsErr(w, "autoRoute.audit.topChosenModels", rows.Err()) {
+				return
 			}
 			rows.Close()
 			out["top_chosen_models"] = topModels
@@ -751,7 +785,7 @@ func (h *AutoRouteHandlers) handleRefresh(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := h.indexRefresher.RefreshOnce(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSONOk(w, map[string]interface{}{
@@ -799,7 +833,7 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -819,6 +853,7 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 			&activeConcurrent, &avgPressure,
 			&bestSmart, &bestSpeed, &bestCost,
 			&lastReqAt); err != nil {
+			warnRowSkip("autoRoute.customerCost", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -868,6 +903,9 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 		}
 		out = append(out, entry)
 	}
+	if writeAggRowsErr(w, "autoRoute.customerCost", rows.Err()) {
+		return
+	}
 	writeJSONOk(w, out)
 }
 
@@ -907,7 +945,7 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -923,6 +961,7 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 		if err := rows.Scan(&canonID, &rawModel, &totalCost, &totalTokens,
 			&avgCost1M, &successRate, &avgLatency,
 			&totalReqs, &uniqueKeys); err != nil {
+			warnRowSkip("autoRoute.modelCost", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -953,6 +992,9 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 			entry["unique_api_keys"] = *uniqueKeys
 		}
 		out = append(out, entry)
+	}
+	if writeAggRowsErr(w, "autoRoute.modelCost", rows.Err()) {
+		return
 	}
 	writeJSONOk(w, out)
 }
@@ -1000,12 +1042,12 @@ func writeJSONErrCtx(w http.ResponseWriter, r *http.Request, status int, message
 	})
 }
 
-// writeInternalErr logs the full error and writes a sanitised message
-// to the client. Use for any 5xx path that would otherwise echo
-// err.Error() directly.
-func writeInternalErr(w http.ResponseWriter, err error) {
-	slog.Error("admin auto-route internal error", "error", err.Error())
-	writeJSONErr(w, http.StatusInternalServerError, "internal error (see server logs)")
+// writeAutoRouteInternalErr is the auto-route family's thin wrapper over the
+// package-wide writeInternalErr (internal_error.go, R72 audit round L4) —
+// same fixed client copy and server-side slog, one log site for the package.
+// Use for any 5xx path that would otherwise echo err.Error() directly.
+func writeAutoRouteInternalErr(w http.ResponseWriter, err error) {
+	writeInternalErr(w, "internal error (see server logs)", err)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1090,7 +1132,7 @@ func (h *AutoRouteHandlers) HandleAffinityRanking(w http.ResponseWriter, r *http
 			LIMIT $4
 		`, taskType, profile, tenantID, limit)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -1108,13 +1150,13 @@ func (h *AutoRouteHandlers) HandleAffinityRanking(w http.ResponseWriter, r *http
 			&r.AvgHealth, &r.CurrentlyRoutable,
 			&r.LastSampledAt, &r.UpdatedAt,
 		); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -1166,7 +1208,7 @@ func (h *AutoRouteHandlers) handleAffinitySelections(w http.ResponseWriter, r *h
 			LIMIT $2
 		`, sessionID, limit)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -1204,13 +1246,13 @@ func (h *AutoRouteHandlers) handleAffinitySelections(w http.ResponseWriter, r *h
 			&x.Success, &x.LatencyMs, &x.CostUSD, &x.Reward, &x.RewardSource,
 			&x.TS, &x.SettledAt,
 		); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		out = append(out, x)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 

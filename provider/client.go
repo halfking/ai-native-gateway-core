@@ -14,8 +14,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
+	"github.com/kaixuan/llm-gateway-go/internal/endpointselect"
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	"github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
@@ -131,11 +134,19 @@ type Candidate struct {
 	// concurrency: 用 ConcurrencyLimit 做 in-flight 上限; rpm: 用 RPMLimit 做令牌桶;
 	// tpm: 用 TPMLimit 做令牌桶(发送前预估 token); disabled: 不限流。
 	// 由 domains/dispatch 的凭据队列调速器消费。
-	ConcurrencyMode      string   `json:"concurrency_mode,omitempty"`
-	TPMLimit             *int     `json:"tpm_limit,omitempty"`
-	MaxQueueDepth        *int     `json:"max_queue_depth,omitempty"`
-	MaxQueueWaitMS       *int     `json:"max_queue_wait_ms,omitempty"`
-	BalanceUSD           *float64 `json:"balance_usd"`
+	ConcurrencyMode string   `json:"concurrency_mode,omitempty"`
+	TPMLimit        *int     `json:"tpm_limit,omitempty"`
+	MaxQueueDepth   *int     `json:"max_queue_depth,omitempty"`
+	MaxQueueWaitMS  *int     `json:"max_queue_wait_ms,omitempty"`
+	BalanceUSD      *float64 `json:"balance_usd"`
+	// PlanQuotaUsedPercent mirrors credentials.plan_quota_used_percent — the
+	// periodic-plan window utilization (5h / 7d, 0..100) written by the
+	// balance-floor / quota probes (zhipu, minimax) and 429-based passive
+	// inference. nil = no probe data. Consumed by the router's plan-quota
+	// penalty (2026-09-19 cost-aware routing): prefer plan credentials with
+	// more remaining window quota so sunk plan cost is used up, without
+	// burning any single 5h/weekly window to exhaustion.
+	PlanQuotaUsedPercent *float64 `json:"plan_quota_used_percent,omitempty"`
 	CircuitState         string   `json:"circuit_state"`
 	AvailabilityState    string   `json:"availability_state"`
 	QuotaState           string   `json:"quota_state"`
@@ -194,6 +205,24 @@ type Candidate struct {
 	// hits the hard-exclude threshold. Added 2026-06-22 (defect ③ soft layer).
 	RecentSuccessRate *float64 `json:"recent_success_rate,omitempty"`
 	RecentSamples     int      `json:"recent_samples,omitempty"`
+	// NativeEndpoints is the supplier's full set of protocol endpoints
+	// (provider_endpoint_protocols rows for this candidate's provider).
+	// It feeds the endpointselect.Select() decision that drives the
+	// r0924 supplier-protocol-optimization roadmap (§3.5): Stage 1A
+	// (protocol+family match → passthrough) requires the per-endpoint
+	// (protocol, base_url, vendor_native) quadruple; Stage 2 needs the
+	// full vendor_native family group; Stage 4 falls back to the
+	// primary (BaseURL, Protocol) above.
+	//
+	// Pre-r0924 callers that ignore this field see no behavior change
+	// because endpointselect is only consulted when the FF_ENDPOINT_SELECTOR
+	// flag is on (default off). Legacy dispatcher paths continue using
+	// the primary BaseURL/Protocol pair as before.
+	//
+	// Nil/empty slice = legacy single-endpoint supplier (no
+	// provider_endpoint_protocols rows). Select() handles this as the
+	// Stage 4 fallback.
+	NativeEndpoints []endpointselect.EndpointLite `json:"native_endpoints,omitempty"`
 }
 
 func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens, cacheWriteTokens *int) float64 {
@@ -1101,6 +1130,10 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 		if _, ok := seen[key]; ok {
 			continue
 		}
+		// 同上：候选加载出口统一归一协议脏值（providers.protocol 无 CHECK）。
+		if normalized, normErr := catalog.NormalizeProviderProtocol(candidate.Protocol); normErr == nil {
+			candidate.Protocol = normalized
+		}
 		seen[key] = struct{}{}
 		candidates = append(candidates, candidate)
 	}
@@ -1342,11 +1375,35 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	}
 	stdName := modelname.NormalizeRouteKey(model)
 	if stdName != "" {
-		_, _ = c.dbPool.Exec(ctx, `
-			INSERT INTO models_canonical (canonical_name, family, source, status)
-			VALUES ($1, 'unknown', 'auto_discovered', 'active')
-			ON CONFLICT (canonical_name) DO NOTHING
-		`, stdName)
+		// Junk-seed guard (2026-09-20): NormalizeRouteKey strips the vendor
+		// prefix, so a client model like "claude/opus-5" used to blind-INSERT
+		// a truncated canonical row "opus-5" even when claude-opus-5 already
+		// existed. Only seed when no active canonical matches stdName under
+		// separator/case folding AND stdName is not a bare suffix of an
+		// existing longer canonical (the classic truncation shape).
+		//
+		// R50 fix (2026-09-21, live-DB verified): stdName is dash-form
+		// (NormalizeRouteKey output) while the left side folds to
+		// underscores — as written, `= $1` never matched and the suffix arm
+		// used '%-' which can never match an underscore-folded left side,
+		// so BOTH arms were dead and the guard suppressed nothing. Fold
+		// stdName to underscores too and match the suffix on '%_'.
+		var blocker string
+		// R50：守卫谓词收敛为 modelname.JunkSeedGuardSQL 单一实现
+		// （dash 形 stdName 对下划线折叠左侧的两臂全死缺陷同修）。
+		err := c.dbPool.QueryRow(ctx, modelname.JunkSeedGuardSQL, stdName).Scan(&blocker)
+		if err == nil {
+			slog.Debug("auto_discovered seed suppressed: existing canonical",
+				"client_model", model, "std_name", stdName, "existing", blocker)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("auto_discovered seed guard query failed", "error", err)
+		} else {
+			_, _ = c.dbPool.Exec(ctx, `
+				INSERT INTO models_canonical (canonical_name, family, source, status)
+				VALUES ($1, 'unknown', 'auto_discovered', 'active')
+				ON CONFLICT (canonical_name) DO NOTHING
+			`, stdName)
+		}
 	}
 	return &resolveResponse{ClientModel: model, CanonicalID: nil, CanonicalName: "", ResolutionPath: "direct", RawModels: []string{stdName}}, nil
 }
@@ -1434,30 +1491,91 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 	return c.loadCandidatesByModalityDB(ctx, clientModel, tenantID, "")
 }
 
-func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, tenantID, modality string) ([]Candidate, error) {
-	if c.dbPool == nil {
+// candidateQuerySQL returns the exact candidate-build SQL text (binding
+// params $1=lowercased client model, $2=tenant_id, $3=modality).
+//
+// 2026-09-25 audit round 8 (D10, 252 real-db EXPLAIN first — 纪律⑳):
+// model_offers and v_routable_credential_models are BOTH views over the
+// same credential_model_bindings × provider_models base, so the old shape
+// joined the full 1,831-row binding set against itself before the $1 match
+// predicate pruned it (252 EXPLAIN: view-side join 243ms of a 220-390ms
+// query, rows estimate 46 vs 1,830 actual — a 10x misestimate). The rewrite
+// materializes the model-match half FIRST (WITH matched AS MATERIALIZED,
+// ~20 rows for a hot model) and only then joins credentials/providers,
+// the routable view, pricing and recent_success_rate. 252 measured: exec
+// 220-390ms → 61ms, planning 195-260ms → 85ms. Result equivalence verified
+// on 252 across 8 (model, modality) combos incl. empty-set and vision paths.
+// decodeNativeEndpoints converts the JSONB array projected by the
+// pep_lateral LEFT JOIN LATERAL in candidateQuerySQL() into the typed
+// endpoint slice consumed by endpointselect.Select().
+//
+// r0926 audit finding #4 (coverage gap): the SQL shape test
+// (candidate_query_sql_shape_test.go) only asserts that certain FRAGMENTS
+// appear in the query TEXT. Nothing verified the other half of the contract —
+// that the jsonb_build_object KEYS match the JSON tags on
+// endpointselect.EndpointLite. selector.go states that invariant explicitly
+// ("Changing them breaks the SQL projection; if you add a column, update both
+// sides"), but a rename of a single struct tag would have kept the shape test
+// green while silently producing zero-valued endpoints at runtime, which then
+// fall through Stage 1 and quietly degrade every request to Stage 4. That is
+// the exact "looks wired, isn't" failure this audit is about.
+//
+// Extracted as a pure function (not inline in the 60-column scan) purely so
+// the correspondence is directly testable without standing up pgx.
+func decodeNativeEndpoints(raw []byte, credentialID int) ([]endpointselect.EndpointLite, error) {
+	if len(raw) == 0 {
 		return nil, nil
 	}
-	// 2026-07-14: provider_models.canonical_raw_name, model_aliases.raw_name,
-	// and standardized_name are all persisted lowercase. The matching
-	// columns below are equality-only lookups against this canonical key,
-	// so we lowercase the client request once at the boundary instead of
-	// wrapping each column in lower(col).
-	clientModelLower := modelname.CanonicalizeClientModel(clientModel)
-
-	// 2026-07-03: Bug #7 fix - support tenantID parameter
-	// If tenantID is empty, use 'default' as fallback (backward compatibility)
-	if tenantID == "" {
-		tenantID = "default"
+	var eps []endpointselect.EndpointLite
+	if err := json.Unmarshal(raw, &eps); err != nil {
+		return nil, fmt.Errorf("scan native endpoints for credential %d: %w", credentialID, err)
 	}
+	return eps, nil
+}
 
-	var rows pgx.Rows
-	var err error
-	const maxAttempts = 3
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		rows, err = c.dbPool.Query(ctx, `
-		SELECT
+func candidateQuerySQL() string {
+	return `
+		WITH matched AS MATERIALIZED (
+		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw
+		FROM model_offers mo
+		LEFT JOIN model_name_mapping mnm
+		       ON mnm.raw_model_name = mo.canonical_raw_name
+			LEFT JOIN model_aliases ma
+		       ON ma.raw_name = mo.canonical_raw_name
+		      AND COALESCE(ma.status, 'active') = 'active'
+		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		WHERE (
+		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
+		      mo.canonical_raw_name = $1
+		      -- (2) standardized-name match: the offer's standardized_name column
+		      -- holds the prefix-stripped lowercase form (set at upsert time).
+		      OR mo.standardized_name = $1
+		      -- (3) model_name_mapping lookup: centralized raw->standardized mapping
+		      OR mnm.standardized_name = $1
+				-- (4) alias match: client_model points to a canonical that this offer belongs to
+				OR EXISTS (
+				    SELECT 1 FROM model_aliases ma2
+				    WHERE ma2.raw_name = $1
+				      AND COALESCE(ma2.status, 'active') = 'active'
+				      AND (
+				          (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
+				          OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
+				      )
+				)
+				-- (5) canonical-id match: legacy offers may retain a provider-prefixed
+				-- canonical_raw_name while their canonical_id already points at the
+				-- client-facing catalog name. Keep this in sync with admin resolve.
+				OR lower(mc.canonical_name) = $1
+			)
+		  AND COALESCE(mc.status, 'active') != 'disabled'
+		  			  AND (
+			      $3 = ''
+			      OR $3 = 'text'
+			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
+			      OR COALESCE(mc.modality, 'text') = $3
+			  )
+		)
+SELECT
 			c.id::int AS credential_id,
 			p.id::int AS provider_id,
 			p.base_url,
@@ -1484,7 +1602,11 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		c.tpm_limit,
 		c.max_queue_depth,
 		c.max_queue_wait_ms,
-			c.balance_usd::float8,
+				c.balance_usd::float8,
+				-- 2026-09-19 成本感知选路：周期性计划窗口用量（5h/7d 探测，
+				-- balance_floor_guard / periodic_quota_probe 写入）进入候选，
+				-- 供 router 的 plan-quota 惩罚消费。NULL=无探测数据。
+				c.plan_quota_used_percent::float8,
 			COALESCE(c.circuit_state, 'closed') AS circuit_state,
 			COALESCE(c.availability_state, 'ready') AS availability_state,
 			COALESCE(c.quota_state, 'ok') AS quota_state,
@@ -1511,8 +1633,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
 			mo.raw_model_name,
-			-- 522: 优先级 凭据×模型级覆盖 > 标准模型级覆盖 > 标准目录默认值。
-			COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
+			COALESCE(mo.context_window_override, mo._mc_cw_override, mo._mc_cw) AS context_window,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			-- Read from providers so the routing executor can pass the
 			-- per-provider mode through to the relay stream reader and
@@ -1527,8 +1648,13 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			-- used both for the hard-exclude filter below and (via the
 			-- RecentSuccessRate field) for soft de-prioritization in the router.
 			rsr.rate   AS recent_success_rate,
-			rsr.samples AS recent_samples
-		FROM model_offers mo
+			rsr.samples AS recent_samples,
+			-- r0924 supplier-protocol-optimization §3.4: per-candidate
+			-- JSONB projection of the provider_endpoint_protocols rows
+			-- (see pep_lateral LATERAL below). Empty array preserves the
+			-- legacy single-endpoint fallback.
+			pep_lateral.endpoints AS native_endpoints
+		FROM matched mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN v_routable_credential_models v
@@ -1541,25 +1667,71 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			LEFT JOIN credential_model_capabilities cmstream
 			       ON cmstream.credential_model_binding_id = mo.id
 			      AND cmstream.capability = 'native_responses_stream'
-			LEFT JOIN model_aliases ma
-		       ON ma.raw_name = mo.canonical_raw_name
-		      AND COALESCE(ma.status, 'active') = 'active'
-		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+			LEFT JOIN LATERAL (
+				SELECT
+					NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
+					NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
+				FROM pricing_plans pp
+				WHERE pp.model_canonical_id = mo._mc_id
+				  AND pp.effective_to IS NULL
+				  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
+				  -- R46 F2: 作用域守卫——排除"其他供应商"的 provider 级行。
+				  -- admit 条件放行 credential_id IS NULL 的所有行，其中
+				  -- scope='provider' 且 provider_id 属于别的供应商的行此前会
+				  -- 落入 ELSE 2 档与全局行（provider_id IS NULL）仅按
+				  -- effective_from 决胜负，他供应商较新价格可冒充全局默认价。
+				  -- tenant 级行（scope='tenant'）是有意保留的 ELSE 2 档语义。
+				  -- 注意（R47 注释精确化）：tier-1 判据 provider_id = p.id 不
+				  -- 校验 scope，scope='tenant' 且带 provider_id=p.id 的混合行
+				  -- 会落供应商档而非 ELSE 2——CHECK 不禁止该畸形形态，现网
+				  -- tenant 行 provider_id 均为 NULL 不触发；数据卫生问题。
+				  AND NOT (pp.scope = 'provider' AND pp.provider_id IS NOT NULL AND pp.provider_id <> p.id)
+				-- 2026-09-19 成本自动填充优先级：凭据级 > 供应商级 > 全局。
+				-- 供应商维护的价格表（scope='provider', provider_id=p.id）
+				-- 从此真正参与候选取价，不再与全局行混级靠 effective_from
+				-- 决胜负。
+				ORDER BY CASE
+				           WHEN pp.credential_id = c.id THEN 0
+				           WHEN pp.provider_id = p.id THEN 1
+				           ELSE 2
+				         END,
+				         pp.effective_from DESC
+				LIMIT 1
+			) pp_fb ON TRUE
+		-- r0924 supplier-protocol-optimization §3.4: pull the supplier's full
+		-- provider_endpoint_protocols set into each candidate row as a JSONB
+		-- array. Empty array when the supplier has no endpoint subtable rows
+		-- (legacy single-endpoint supplier; selector falls through to Stage 4).
+		-- Anchored on p.id (provider) — the join key is the provider, not the
+		-- credential, because one credential inherits its provider's entire
+		-- endpoint set. Filtered by pep.enabled = TRUE so disabled endpoints
+		-- never enter the decision path. Sorted primary-first, then weight
+		-- DESC, then id ASC so the JSONB array order matches
+		-- endpointselect's endpointPriorityLess comparator.
+		--
+		-- r0926 audit: the order here is PRESENTATION ONLY. Both selector
+		-- entry points (pickBest and pickFamilyHit) re-sort with
+		-- sortEndpointsByPriority before choosing, so the wire order cannot
+		-- change the pick. It was previously weight ASC while the selector
+		-- ranks weight DESC (higher weight = higher priority, the provider
+		-- traffic-share semantics) — harmless but actively misleading, since
+		-- the old comment claimed the wire order "avoids any post-scan
+		-- shuffle", implying the selector trusts it. Aligned to DESC so the
+		-- two can no longer drift apart.
 		LEFT JOIN LATERAL (
-			SELECT
-				NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
-				NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
-			FROM pricing_plans pp
-			WHERE pp.model_canonical_id = mc.id
-			  AND pp.effective_to IS NULL
-			  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
-			ORDER BY CASE WHEN pp.credential_id = c.id THEN 0 ELSE 1 END,
-			         pp.effective_from DESC
-			LIMIT 1
-		) pp_fb ON TRUE
-		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
-		LEFT JOIN model_name_mapping mnm
-		       ON mnm.raw_model_name = mo.canonical_raw_name
+			SELECT COALESCE(jsonb_agg(jsonb_build_object(
+				'id',            pep.id,
+				'protocol',      pep.protocol,
+				'base_url',      pep.base_url,
+				'is_primary',    pep.is_primary,
+				'vendor_native', COALESCE(pep.vendor_native, ''),
+				'enabled',       pep.enabled,
+				'weight',        pep.weight,
+				'health_status', pep.health_status
+			) ORDER BY pep.is_primary DESC, pep.weight DESC, pep.id ASC), '[]'::jsonb) AS endpoints
+			FROM provider_endpoint_protocols pep
+			WHERE pep.provider_id = p.id AND pep.enabled = TRUE
+		) pep_lateral ON TRUE
 		-- Last-N success rate over request_logs. LATERAL so each candidate
 		-- row carries its own recent (rate, samples). STABLE function, hits
 		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the
@@ -1567,13 +1739,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 			WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
-			  AND (
-			      $3 = ''
-			      OR $3 = 'text'
-			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
-			      OR COALESCE(mc.modality, 'text') = $3
-			  )
-			  AND COALESCE(mc.status, 'active') != 'disabled'
+
+
+		  -- 2026-09-25 audit round 8 (D10): the sibling-EXISTS hard gate that was
+		  -- disabled here since 2026-08-27 ('AND FALSE' const-folded to TRUE by the
+		  -- planner — never executed) was removed from the text; see git history
+		  -- (MERGE-AUDIT 2026-08-27) if the lone-candidate fail-open gate is needed.
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
@@ -1584,99 +1755,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  -- failures; without this filter the pair stays routable as long as
 		  -- the credential-level availability_state is 'ready', so the router
 		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
-		  AND `+brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name")+`
-		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
-		  -- success rate is below 0.5 once we have at least 20 samples. The
-		  -- min-sample threshold avoids cold-start false positives (a brand-new
-		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
-		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
-		  -- 2026-07-15: restored to 0.5. The 2026-06-23 temporary 0.3 was
-		  -- lowered to absorb the 54% failure spike from a resource leak;
-		  -- the leak is fixed and the rolling 50-request window has long
-		  -- since rotated past it.
-			  AND NOT (
-			      -- Free/token-plan credentials intentionally stay routable after
-			      -- transient failures; the executor and state manager soft-demote
-			      -- them instead of hard-excluding the only route.
-			      COALESCE(mo.billing_mode, 'per_token') <> 'free'
-			      -- MERGE-AUDIT 2026-08-27: preserve the prior hard-gate terms
-			      -- below for review, but disable exclusion so a degraded sibling
-			      -- remains routable and can be soft-demoted by ORDER BY.
-			      AND FALSE
-			      AND COALESCE(rsr.rate, 1.0) < 0.5
-			      -- A single-candidate model needs a recovery chance. Circuit,
-			      -- model-probe and permanent-state guards still apply; the
-			      -- rolling-rate gate is a failover preference only when a
-			      -- sibling offer can actually take traffic.
-			      AND EXISTS (
-			          SELECT 1
-			          FROM model_offers mo_sibling
-			                  JOIN credentials c_sibling ON c_sibling.id = mo_sibling.credential_id
-			                  JOIN providers p_sibling ON p_sibling.id = c_sibling.provider_id
-			                  LEFT JOIN v_routable_credential_models v_sibling
-			                         ON v_sibling.credential_id = mo_sibling.credential_id
-			                        AND (v_sibling.raw_model_name = mo_sibling.raw_model_name
-			                             OR v_sibling.raw_model_name = mo_sibling.standardized_name)
-			          WHERE mo_sibling.credential_id <> mo.credential_id
-			            AND mo_sibling.available = TRUE
-			            AND COALESCE(v_sibling.is_routable, FALSE) = TRUE
-			            AND COALESCE(c_sibling.status, 'active') = 'active'
-			            AND COALESCE(c_sibling.lifecycle_status, 'active') = 'active'
-			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
-			            /* 2026-08-08 audit note: this c_sibling.quota_state predicate
-			               deliberately does NOT exclude periodic_exhausted, while
-			               GetProbeCandidates (line ~578) DOES exclude it. Intentional:
-			               this subquery asks "does ANY sibling binding exist that COULD
-			               take traffic" (the sibling EXISTS gate for the lone-candidate
-			               fail-open path), not "which sibling should we route to". A
-			               periodic-exhausted sibling is still a potential failover
-			               target because its window resets in minutes/hours;
-			               routing-time selection is filtered separately above. */
-			            AND COALESCE(c_sibling.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
-			            AND COALESCE(p_sibling.enabled, FALSE) = TRUE
-			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND (
-			                mo_sibling.standardized_name = mo.standardized_name
-			                OR mo_sibling.canonical_raw_name = mo.canonical_raw_name
-			            )
-			            /* 2026-08-08 P0 Fix: a sibling that admin has explicitly
-			               disabled via the binding-level unavailable_reason='manual'
-			               (or via credentials.manual_disabled / providers.manual_disabled)
-			               must NOT count as a live failover. Without this guard, the
-			               sibling EXISTS subquery returns TRUE while no real sibling
-			               can take traffic — the lone routable candidate gets hard-
-			               excluded by the recent_success_rate gate below, producing
-			               candidates_count=0 and 503 for every Claude/GPT request. */
-			            AND COALESCE(mo_sibling.unavailable_reason, '') NOT LIKE 'manual%'
-			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
-			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND `+brokenPairExcludeSQL("mps_sibling", "mo_sibling.credential_id", "mo_sibling.raw_model_name")+`
-			      )
-			  )
+		  AND ` + brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name") + `
 
-		  AND (
-		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
-		      mo.canonical_raw_name = $1
-		      -- (2) standardized-name match: the offer's standardized_name column
-		      -- holds the prefix-stripped lowercase form (set at upsert time).
-		      OR mo.standardized_name = $1
-		      -- (3) model_name_mapping lookup: centralized raw->standardized mapping
-		      OR mnm.standardized_name = $1
-				-- (4) alias match: client_model points to a canonical that this offer belongs to
-				OR EXISTS (
-				    SELECT 1 FROM model_aliases ma2
-				    WHERE ma2.raw_name = $1
-				      AND COALESCE(ma2.status, 'active') = 'active'
-				      AND (
-				          (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
-				          OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
-				      )
-				)
-				-- (5) canonical-id match: legacy offers may retain a provider-prefixed
-				-- canonical_raw_name while their canonical_id already points at the
-				-- client-facing catalog name. Keep this in sync with admin resolve.
-				OR lower(mc.canonical_name) = $1
-			)
 
 		ORDER BY
 			-- 2026-09-07 (678): mo.priority 不在视图里;manual_priority>0 等价于"被手动置顶"。
@@ -1696,7 +1776,33 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			-- (often default 0.9) column. This makes healthy credentials sort
 			-- above soft-degraded ones even when the static column is equal.
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
-		`, clientModelLower, tenantID, modality)
+	` // closing backtick shares the line (lone trailing backtick confuses the sql_comment_syntax_test scanner)
+}
+
+func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, tenantID, modality string) ([]Candidate, error) {
+	if c.dbPool == nil {
+		return nil, nil
+	}
+	// 2026-07-14: provider_models.canonical_raw_name, model_aliases.raw_name,
+	// and standardized_name are all persisted lowercase. The matching
+	// columns below are equality-only lookups against this canonical key,
+	// so we lowercase the client request once at the boundary instead of
+	// wrapping each column in lower(col).
+	clientModelLower := modelname.CanonicalizeClientModel(clientModel)
+
+	// 2026-07-03: Bug #7 fix - support tenantID parameter
+	// If tenantID is empty, use 'default' as fallback (backward compatibility)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	var rows pgx.Rows
+	var err error
+	const maxAttempts = 3
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		rows, err = c.dbPool.Query(ctx, candidateQuerySQL(),
+			clientModelLower, tenantID, modality)
 
 		if err == nil {
 			break
@@ -1740,6 +1846,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		// credentialhealth/tuner.go); used below to derive a capacity-weighted
 		// Weight when the operator has not set an explicit manual weight.
 		var concurrencyLimitAuto *int
+		// nativeEndpointsJSON is the aggregated JSONB array. The LATERAL
+		// projection returns [] for providers without endpoint rows.
+		var nativeEndpointsJSON []byte
 		if err := rows.Scan(
 			&cand.CredentialID,
 			&cand.ProviderID,
@@ -1761,6 +1870,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.MaxQueueDepth,
 			&cand.MaxQueueWaitMS,
 			&cand.BalanceUSD,
+			&cand.PlanQuotaUsedPercent,
 			&cand.CircuitState,
 			&cand.AvailabilityState,
 			&cand.QuotaState,
@@ -1786,10 +1896,27 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.QualityFixMode,
 			&cand.RecentSuccessRate,
 			&cand.RecentSamples,
+			&nativeEndpointsJSON,
 		); err != nil {
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
+		// A missing endpoint mapping is represented by [] and leaves the
+		// candidate on its protocol fallback path. NULL is not expected from
+		// the SQL projection, but a nil scan also safely means no mapping.
+		eps, epErr := decodeNativeEndpoints(nativeEndpointsJSON, cand.CredentialID)
+		if epErr != nil {
+			return nil, epErr
+		}
+		cand.NativeEndpoints = eps
+		// 2026-09-23 协议命名审计：providers.protocol 无 CHECK 约束，历史
+		// 行里存在 "openai" 等旧枚举/脏值。候选加载是所有出站分发的唯一
+		// 入口，在这里统一归一到 catalog 枚举（"openai"→openai-completions、
+		// "openai-response"→openai-responses 等）；无法识别的值保持原样，
+		// 由执行器 default 分支按 chat 兼容处理。
+		if normalized, normErr := catalog.NormalizeProviderProtocol(cand.Protocol); normErr == nil {
+			cand.Protocol = normalized
+		}
 		applyCapacityWeightedLB(&cand, concurrencyLimitAuto)
 		c.maybeExitSuspicious(cand.CredentialID, offerRawModel)
 		out = append(out, cand)
@@ -2207,7 +2334,9 @@ func (c *Client) fetchExtraKeys(ctx context.Context, credentialID int) []string 
 	for rows.Next() {
 		var ciphertext []byte
 		if err := rows.Scan(&ciphertext); err != nil {
-			continue
+			if dbrows.SkipOrFail("provider.Client.fetchExtraKeys", err) {
+				continue
+			}
 		}
 		if len(ciphertext) == 0 {
 			continue
@@ -2219,6 +2348,14 @@ func (c *Client) fetchExtraKeys(ctx context.Context, credentialID int) []string 
 			continue
 		}
 		keys = append(keys, string(pt))
+	}
+	// R66: 多 key 轮转读被静默截断 = 只用前几把 key 试认证，轮转中途
+	// 的 key 完全没被尝试，表现为「明明配了备用 key 却持续 401」。
+	// 本函数是既定降级通道（query 失败即退化单 key 模式，见上方注释），
+	// 故只留痕、不上抛。
+	if err := rows.Err(); err != nil {
+		slog.Warn("provider.Client.fetchExtraKeys: row iteration aborted; key set truncated",
+			"credential_id", credentialID, "error", err, "keys", len(keys))
 	}
 	return keys
 }

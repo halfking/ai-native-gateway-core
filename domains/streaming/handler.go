@@ -50,6 +50,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -66,6 +67,12 @@ import (
 )
 
 const maxBodySize = 128 << 20 // 128MB - increased for large context models like claude-opus-4-8 (1M context)
+
+// A response interceptor currently needs a complete SSE event to inspect its
+// JSON payload. Bound per-stream buffering so a malformed provider response
+// without an event delimiter cannot retain unbounded memory. Large media
+// events above this limit fail closed rather than bypassing the interceptor.
+const maxInterceptingSSEFrameBytes = 16 << 20
 
 type preStreamKeepalive struct {
 	session *StreamSession
@@ -91,19 +98,26 @@ func (w *retryCommitWriter) Flush() {
 
 // interceptingStreamWriter applies the response interceptor chain to complete
 // SSE events before they reach the client. Upstream bridges may split an SSE
-// event across multiple Write calls, so the writer buffers until the event
-// delimiter (\n\n) is present.
+// event across multiple Write calls, so the writer buffers until an event
+// delimiter is present. Per-event buffering is bounded to avoid unbounded
+// memory use on malformed or hostile upstream streams.
 type interceptingStreamWriter struct {
-	w        http.ResponseWriter
-	flusher  http.Flusher
-	chain    ResponseInterceptor
-	ctx      context.Context
-	meta     response.StreamMeta
-	pending  []byte
-	writeErr error
+	w                http.ResponseWriter
+	flusher          http.Flusher
+	chain            ResponseInterceptor
+	ctx              context.Context
+	meta             response.StreamMeta
+	pending          []byte
+	writeErr         error
+	blocked          bool
+	terminalRendered bool
+	finished         bool
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
+	if meta.State == nil {
+		meta.State = response.NewStreamState()
+	}
 	writer := &interceptingStreamWriter{w: w, chain: chain, ctx: ctx, meta: meta}
 	if f, ok := w.(http.Flusher); ok {
 		writer.flusher = f
@@ -114,16 +128,86 @@ func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseIntercepto
 func (w *interceptingStreamWriter) Header() http.Header        { return w.w.Header() }
 func (w *interceptingStreamWriter) WriteHeader(statusCode int) { w.w.WriteHeader(statusCode) }
 
+// Unwrap exposes the underlying http.ResponseWriter so stream bridges can
+// recover a coordinator-owned AttemptCommitGate through the writer chain.
+//
+// 2026-09-24 (this commit): StreamResponsesSSE on the /v1/responses path
+// wraps its writer in interceptingStreamWriter BEFORE calling
+// wrapAttemptWriter. Without Unwrap the bridge builds a SECOND gate
+// instead of reusing the SurvivalCoordinator's, and the §11.6 /
+// stream-timeout TerminalRendered latch then lands on that throwaway gate
+// while SurvivalCoordinator.renderTerminal consults its own — the guard
+// never fires and the wire gets BOTH response.completed(incomplete) AND
+// response.failed for one eof_without_done interruption (observed live on
+// the local 8782 instance with the minimax-m3 path: every committed stream
+// break produced the duplicated terminal pair, surfacing as
+// "provider_unavailable" to the Responses SDK client).
+//
+// Without Unwrap the unwrap loop in wrapAttemptWriter (attempt_gate_wiring.go
+// line 67) breaks out of the hop chain on the interceptor and creates a new
+// gate (attempt_gate_wiring.go line 115). With Unwrap the loop reaches the
+// *GateWriter that wraps the coordinator gate and returns its
+// UnderlyingAttemptGate(), restoring the single-gate invariant that
+// TestWrapAttemptWriterReusesPreGatedWriter was created to enforce.
+//
+// Mirrors monitoredResponseWriter.Unwrap (connection_monitor.go:165).
+func (w *interceptingStreamWriter) Unwrap() http.ResponseWriter { return w.w }
+
+// OutputPolicyBlocked reports whether a response interceptor rejected any
+// part of this stream. Native handlers inspect it after finish() so they can
+// record a policy failure before handling a wrapped executor write error.
+func (w *interceptingStreamWriter) OutputPolicyBlocked() bool { return w != nil && w.blocked }
+
 func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
 	if w.writeErr != nil {
 		return 0, w.writeErr
 	}
-	w.pending = append(w.pending, p...)
-	w.drain()
-	if w.writeErr != nil {
-		return 0, w.writeErr
+	consumed := 0
+	for len(p) > 0 {
+		// Check delimiters crossing the Write boundary before searching p by
+		// itself. The pending suffix may already contain a prefix of the blank
+		// line separator, including a CRLF that spans writes.
+		if delimiterBytes, ok := sseparser.DelimiterPrefixAtBoundary(w.pending, p); ok {
+			if len(w.pending)+len(delimiterBytes) > maxInterceptingSSEFrameBytes {
+				return consumed, w.rejectOversizedFrame(len(w.pending) + len(delimiterBytes))
+			}
+			w.pending = append(w.pending, delimiterBytes...)
+			p = p[len(delimiterBytes):]
+			consumed += len(delimiterBytes)
+			frame := w.pending
+			w.pending = nil
+			w.writeFrame(frame)
+			if w.writeErr != nil {
+				return consumed, w.writeErr
+			}
+			continue
+		}
+
+		if end, ok := sseparser.FrameEnd(p); ok {
+			framePart := p[:end]
+			if len(w.pending)+len(framePart) > maxInterceptingSSEFrameBytes {
+				return consumed, w.rejectOversizedFrame(len(w.pending) + len(framePart))
+			}
+			w.pending = append(w.pending, framePart...)
+			p = p[end:]
+			consumed += end
+			frame := w.pending
+			w.pending = nil
+			w.writeFrame(frame)
+			if w.writeErr != nil {
+				return consumed, w.writeErr
+			}
+			continue
+		}
+
+		if len(w.pending)+len(p) > maxInterceptingSSEFrameBytes {
+			return consumed, w.rejectOversizedFrame(len(w.pending) + len(p))
+		}
+		w.pending = append(w.pending, p...)
+		consumed += len(p)
+		break
 	}
-	return len(p), nil
+	return consumed, nil
 }
 
 func (w *interceptingStreamWriter) Flush() {
@@ -131,7 +215,9 @@ func (w *interceptingStreamWriter) Flush() {
 }
 
 func (w *interceptingStreamWriter) FlushError() error {
-	w.drain()
+	if w.writeErr != nil {
+		return w.writeErr
+	}
 	if w.flusher == nil {
 		return nil
 	}
@@ -143,24 +229,110 @@ func (w *interceptingStreamWriter) FlushError() error {
 }
 
 func (w *interceptingStreamWriter) finish() {
-	w.drain()
-	if len(w.pending) > 0 && w.writeErr == nil {
-		_, w.writeErr = w.w.Write(w.pending)
+	if w.finished {
+		return
+	}
+	w.finished = true
+	// A trailing CR is ambiguous until EOF or the next write. At EOF it is a
+	// valid lone-CR line ending, so inspect any complete frame it closes.
+	for len(w.pending) > 0 {
+		end, ok := sseparser.FrameEndAtEOF(w.pending)
+		if !ok {
+			break
+		}
+		frame := append([]byte(nil), w.pending[:end]...)
+		w.pending = append([]byte(nil), w.pending[end:]...)
+		w.writeFrame(frame)
+		if w.writeErr != nil {
+			break
+		}
+	}
+	// Flush any held compliance state through the chain's StreamPending
+	// hook. If the joined-lane check fails, the interceptor returns
+	// ShouldBlock=true and we emit a single protocol-shaped failure
+	// envelope so the client sees a recognisable terminal instead of
+	// a truncated connection (TestRealComplianceStreamCap
+	// AndFlushFailureRenderOneProtocolTerminal contract).
+	if w.chain != nil && w.writeErr == nil {
+		if flusher, ok := w.chain.(response.StreamPendingFlusher); ok {
+			pending, err := flusher.FlushStreamPending(w.ctx, &w.meta)
+			if err != nil {
+				if w.writeErr == nil {
+					w.writeErr = err
+				}
+				w.blocked = true
+			}
+			if w.blocked {
+				_ = pending
+			} else if len(pending) > 0 {
+				if _, werr := w.w.Write(pending); werr != nil && w.writeErr == nil {
+					w.writeErr = werr
+				}
+			}
+		}
+	}
+	if w.writeErr != nil {
 		w.pending = nil
+	}
+	if len(w.pending) > 0 {
+		// Never write an unterminated event directly to the client: doing so
+		// would bypass sanitization and every other response interceptor.
+		slog.Warn("sse_interceptor_dropped_incomplete_frame",
+			"request_id", w.meta.RequestID,
+			"session_id", w.meta.SessionID,
+			"buffered_bytes", len(w.pending))
+		w.pending = nil
+	}
+	// When output governance already blocked the stream, emit exactly one
+	// protocol-shaped failure envelope so the client sees a recognisable
+	// terminal instead of a truncated connection.
+	if w.blocked && !w.terminalRendered {
+		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol))
 	}
 }
 
-func (w *interceptingStreamWriter) drain() {
-	for w.writeErr == nil {
-		idx := bytes.Index(w.pending, []byte("\n\n"))
-		if idx < 0 {
-			return
-		}
-		frameEnd := idx + 2
-		frame := append([]byte(nil), w.pending[:frameEnd]...)
-		w.pending = w.pending[frameEnd:]
-		w.writeFrame(frame)
+// nativeStreamPolicyFailureFrame returns the SSE-shaped terminal that the
+// client uses to recognise "the stream ended because output governance
+// blocked it" rather than "the upstream connection dropped".
+func nativeStreamPolicyFailureFrame(protocol string) []byte {
+	switch protocol {
+	case "anthropic-messages":
+		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Response blocked by output policy\"}}\n\n")
+	case "openai-responses":
+		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}}\n\n")
+	default:
+		return []byte("data: {\"error\":{\"type\":\"api_error\",\"message\":\"Response blocked by output policy\"}}\n\ndata: [DONE]\n\n")
 	}
+}
+
+// writeTrustedTerminal bypasses output interception only for a gateway-owned
+// failure frame. Sets terminalRendered so finish() does not emit twice.
+func (w *interceptingStreamWriter) writeTrustedTerminal(frame []byte) {
+	if w.terminalRendered || len(frame) == 0 {
+		return
+	}
+	w.w.Header().Set("Content-Type", "text/event-stream")
+	if _, err := w.w.Write(frame); err != nil {
+		if w.writeErr == nil {
+			w.writeErr = err
+		}
+		return
+	}
+	w.terminalRendered = true
+	if w.flusher != nil {
+		_ = safeFlush(w.flusher)
+	}
+}
+
+func (w *interceptingStreamWriter) rejectOversizedFrame(size int) error {
+	w.pending = nil
+	w.writeErr = fmt.Errorf("intercepting SSE frame exceeds %d byte limit", maxInterceptingSSEFrameBytes)
+	slog.Warn("sse_interceptor_frame_too_large",
+		"request_id", w.meta.RequestID,
+		"session_id", w.meta.SessionID,
+		"observed_bytes", size,
+		"limit_bytes", maxInterceptingSSEFrameBytes)
+	return w.writeErr
 }
 
 func (w *interceptingStreamWriter) writeFrame(frame []byte) {
@@ -169,7 +341,21 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 		result, err := w.chain.InterceptStreamChunk(w.ctx, frame, &w.meta)
 		if err == nil && result != nil {
 			if result.ShouldBlock {
+				w.blocked = true
+				// R25-F: wrap the protocol-terminal sentinel so the handler's
+				// execErr fallback recognizes the policy terminal frame we
+				// already rendered and does not emit a second terminal.
+				w.writeErr = fmt.Errorf("output stream blocked by response interceptor: %w", errorsx.ErrProtocolTerminalRendered)
 				return
+			}
+			// Suppression withholds the current frame from the wire. A
+			// same-result ModifiedChunk may carry an earlier frame
+			// explicitly released by the last interceptor; the chain
+			// discards stale replacements from interceptors that ran
+			// before a suppressing hook. Final stays at the original
+			// frame, which we will not emit.
+			if result.SuppressChunk {
+				final = nil
 			}
 			if len(result.ModifiedChunk) > 0 {
 				final = result.ModifiedChunk
@@ -178,6 +364,9 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 				final = append(append([]byte(nil), final...), result.InjectAfter...)
 			}
 		}
+	}
+	if len(final) == 0 {
+		return
 	}
 	if _, err := w.w.Write(final); err != nil {
 		w.writeErr = err
@@ -272,22 +461,65 @@ func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code str
 // that did not have a code-vs-kind mismatch before the fix continue to
 // write kind="", so nobody sees a new field they did not expect.
 func writePrewarmedStreamErrorWithKind(w http.ResponseWriter, message, errType, code, kind string) {
+	writePrewarmedStreamErrorFull(w, message, errType, code, kind, nil)
+}
+
+// writePrewarmedStreamErrorFull is the 2026-09-23 strategy extension of the
+// prewarmed stream-error envelope: it can carry `retryable` (and extras) so
+// agent clients that parse the in-stream error decide to re-send the request
+// instead of hard-failing the turn. Used by the Exhausted branches whose
+// underlying kind is transient (network / upstream_down / overloaded /
+// concurrent / no candidates): the gateway has already retried every
+// candidate in-connection, and a client-side retry after a backoff is the
+// designed recovery. Non-transient kinds keep the historical field set —
+// pass retryable=nil to omit the field entirely (byte-identical envelope).
+func writePrewarmedStreamErrorFull(w http.ResponseWriter, message, errType, code, kind string, extras map[string]any) {
 	if errType == "" {
 		errType = "server_error"
 	}
 	if code == "" {
 		code = "provider_error"
 	}
-	body := fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q", message, errType, code)
-	if kind != "" {
-		body += fmt.Sprintf(",\"kind\":%q", kind)
+	errObj := map[string]any{
+		"message": message,
+		"type":    errType,
+		"code":    code,
 	}
-	body += "}}\n\n"
-	safeWriteSSE(w, body)
+	if kind != "" {
+		errObj["kind"] = kind
+	}
+	for k, v := range extras {
+		errObj[k] = v
+	}
+	payload, err := marshalSSEPayloadNoEscape(map[string]any{"error": errObj})
+	if err != nil {
+		// Marshal of plain string/bool values cannot fail in practice; fall
+		// back to the historical three-field shape rather than dropping the
+		// error frame entirely.
+		body := fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", message, errType, code)
+		safeWriteSSE(w, body)
+		if flusher, ok := w.(http.Flusher); ok {
+			safeFlush(flusher)
+		}
+		return
+	}
+	safeWriteSSE(w, "data: "+string(payload)+"\n\n")
 	if flusher, ok := w.(http.Flusher); ok {
 		safeFlush(flusher)
 	}
 }
+
+// blackholeResponseWriter accepts writes without touching the wire. The
+// shared post-execute error path keeps its bookkeeping (request_logs,
+// decision logs, metrics) while its wire writes become no-ops — used when
+// the survival coordinator already rendered a protocol terminal
+// (errSurvivalTerminalRendered) and any further frame would stack a second
+// terminal after [DONE] (R58 fault injection, 245).
+type blackholeResponseWriter struct{}
+
+func (blackholeResponseWriter) Header() http.Header         { return http.Header{} }
+func (blackholeResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (blackholeResponseWriter) WriteHeader(int)             {}
 
 // RequestIdentity contains immutable correlation fields derived at the HTTP boundary.
 type RequestIdentity struct {
@@ -1665,6 +1897,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
 	if h.sanitizeInputMiddleware != nil {
+		var authorized bool
+		r, authorized = h.prepareSanitizeRequest(r)
+		if !authorized {
+			h.serveHTTPInner(w, r)
+			return
+		}
 		h.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
 		return
 	}
@@ -1895,10 +2133,16 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 
 			// FlushToPG 可能早于 telemetry worker 写入 request_logs；有限退避重试
 			// 覆盖该竞态，且只有 UPDATE 命中行时 recorder 才会删除 Redis key。
+			// 2026-09-23: 首试延迟 1.2s。生产两轮实证（本地 2235→2238）：delay=0
+			// 首试几乎必然撞竞态（attempt1 失败 7601 条 vs attempt2 144 条）；
+			// 250ms 仍不够——rate_limited 探针的 INSERT 事务里 api_keys 行锁
+			// 串行化使提交晚于 now() 时钟数百毫秒到秒级（attempt1 仍失败
+			// 66 条/5min，但 attempt2 全部兜住、trace 无损）。1.2s 覆盖常态
+			// 提交延迟，5s/15s 重试链保持兜底。
 			if h.telemetryClient != nil {
 				if pool := h.telemetryClient.DBPool(); pool != nil {
 					go func(rid string) {
-						for attempt, delay := range []time.Duration{0, 5 * time.Second, 5 * time.Second, 5 * time.Second} {
+						for attempt, delay := range []time.Duration{1200 * time.Millisecond, 5 * time.Second, 5 * time.Second, 5 * time.Second} {
 							if delay > 0 {
 								time.Sleep(delay)
 							}
@@ -2074,7 +2318,7 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgMissingKey, nil)
 			return
 		}
-		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
+		ki, verifyErr := verifyRequestKey(r, h.keyVerifier, rawKey)
 		// ── 2026-07-17: trace.Authenticate ──────────────────────────────────
 		// 无论成功/失败都记录, 让运维在 trace 视图里看到完整鉴权链路。
 		if ki != nil {
@@ -2130,6 +2374,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
 	if keyInfo != nil && keyInfo.Status == "throttled" {
 		captureAndEmitRateLimited("key_throttled", "api key throttled due to anomalous usage", nil, nil)
+		ratelimit.MarkGatewaySharedKeyRateLimit(w)
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID,
 			"Your API key has been throttled due to anomalous usage. Contact admin.",
 			"rate_limit_error", "key_throttled")
@@ -2466,6 +2711,15 @@ func (h *ChatHandler) serveWithExecutor(
 				gwtrace.SessionLookup(si.SessionID, false, nil))
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
 				if si.APIKeyID == 0 {
+					// Orphan adoption is tenant-guarded (R25-W V3-A02): a
+					// legacy row already stamped with a foreign tenant must
+					// not be hijacked by another tenant's key merely because
+					// its APIKeyID is 0.
+					if si.TenantID != "" && si.TenantID != keyInfo.TenantID {
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+						return
+					}
 					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
 						slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
 						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
@@ -2480,6 +2734,14 @@ func (h *ChatHandler) serveWithExecutor(
 					writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 					return
 				}
+			}
+			// R25-W (V3-A02): same key but a different tenant row is still a
+			// cross-tenant steal attempt (key ids are only unique within
+			// their issuer).
+			if keyInfo != nil && si.APIKeyID == keyInfo.ID && si.TenantID != "" && si.TenantID != keyInfo.TenantID {
+				captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+				writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+				return
 			}
 			go func() {
 				touchCtx, touchCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -2520,34 +2782,41 @@ func (h *ChatHandler) serveWithExecutor(
 				// every follow-up request reusing it hit ErrSessionNotFound
 				// again, so Touch/session state never engaged and turns could
 				// not accumulate coherently. Register the session record
-				// (idempotent) so repeat ids resolve normally. Best-effort +
-				// async: registration failure must never fail the request.
-				if ensurer, ok := h.sessionGetter.(interface {
-					EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, bool, error)
-				}); ok {
-					regDeviceSeed := r.Header.Get("X-Device-Seed")
-					if regDeviceSeed == "" {
-						regDeviceSeed = r.Header.Get("X-Machine-Id")
+				// (idempotent) so repeat ids resolve normally.
+				//
+				// R25-W (V3-A02, 2026-09-30 round 30): the claim is now
+				// SYNCHRONOUS and atomic (ensureClaimedClientSession — shared
+				// with the native handlers). The previous fire-and-forget
+				// goroutine decided ownership by goroutine landing order, so
+				// an unowned client-selected id could be claimed by whichever
+				// tenant raced faster; a store fault also kept dispatching on
+				// an unverified id. Now: foreign winner → 403, store fault →
+				// 503, no atomic ensurer → fresh system id (never trust an
+				// identity we could not claim).
+				regDeviceSeed := r.Header.Get("X-Device-Seed")
+				if regDeviceSeed == "" {
+					regDeviceSeed = r.Header.Get("X-Machine-Id")
+				}
+				regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+				claimed, claimErr := ensureClaimedClientSession(ctx, h.sessionGetter, sessionID, keyInfo, regDeviceSeed, regTaskID)
+				if claimErr != nil {
+					if errors.Is(claimErr, errClientSessionForbidden) {
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+						return
 					}
-					regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
-					go func(sid string, key *authentication.KeyInfo, seed, task string) {
-						// 2026-09-08 audit: a bare goroutine panic would kill the
-						// whole process (http.Server recovery does not cover user
-						// goroutines) — never let best-effort registration crash
-						// the gateway.
-						defer func() {
-							if rec := recover(); rec != nil {
-								slog.Warn("session register (honored id) panicked",
-									"session_id", sid, "panic", rec)
-							}
-						}()
-						regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
-						defer regCancel()
-						if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
-							slog.Warn("session register (honored id) failed",
-								"session_id", sid, "error", err)
-						}
-					}(sessionID, keyInfo, regDeviceSeed, regTaskID)
+					captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
+					writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+					return
+				}
+				if claimed != nil {
+					sessionInfo = claimed
+					logCtx.SetSession(claimed)
+					ctx = session.SessionFromContextWith(ctx, claimed)
+				} else {
+					// No atomic ensurer on this getter — mint a fresh system id
+					// instead of trusting the unclaimed client identity.
+					sessionID = generateSystemSessionID()
 				}
 			} else {
 				deviceSeed := r.Header.Get("X-Device-Seed")
@@ -2595,7 +2864,14 @@ func (h *ChatHandler) serveWithExecutor(
 				}
 			}
 		} else if err != nil && err != session.ErrSessionNotFound {
+			// R25-W (V3-A02): a store fault is not a verdict on ownership.
+			// Continuing to dispatch would trust an unverified client-supplied
+			// session id while the store is degraded; surfacing 503 (not 403)
+			// keeps the blame on our side and tells the client to retry.
 			slog.Warn("session lookup failed", "error", err)
+			captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
+			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+			return
 		}
 	}
 	// Mid-flight sessionID may still be empty if neither body nor header
@@ -2635,6 +2911,13 @@ func (h *ChatHandler) serveWithExecutor(
 				}
 				if lsEntry.DeviceSeed == "" {
 					lsEntry.DeviceSeed = r.Header.Get("X-Machine-Id")
+				}
+				// Third arm matches the create-path and auto-title writers
+				// below (:2553/:2651): the reader-side DeviceSeed gate
+				// (session_assignment.go) treats "" as never-matching, so an
+				// empty seed entry is dead weight for headless clients.
+				if lsEntry.DeviceSeed == "" {
+					lsEntry.DeviceSeed = "default"
 				}
 				if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
 					slog.Warn("LastSystemSessionIndex update failed", "error", setErr, "api_key_id", keyInfo.ID)
@@ -2780,8 +3063,24 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── v2.0 auto-route ────────────────────────────────────────────────
 	// If the client requested model="auto", classify the task and pick
 	// the best credential. Rewrites body model + sets X-Gw-Auto-Decision.
+	//
+	// 2026-09-29: X-Gw-Test-Mode header (see auto_route.go) overrides the
+	// auto-routing flow, but only for callers that prove authorisation with
+	// the X-Gw-Test-Mode-Token shared secret (testModeAllowed):
+	//   - mock / auto-only: run maybeResolveAuto for the decision wire, then
+	//     short-circuit with a synthetic OpenAI-format response. No
+	//     upstream call is made. The auto decision is still observable via
+	//     X-Gw-Auto-Decision and the response body.
+	//   - other-only: skip maybeResolveAuto entirely. The explicit body
+	//     model (NOT "auto" — caller must supply one) is honoured; the
+	//     rest of the pipeline runs, including a real upstream call.
+	//   - live / full / absent: legacy behaviour, unchanged.
+	testMode, testModeSet := ParseTestMode(r, testModeAllowed(r))
+	if testModeSet {
+		logCtx.SetTestMode(testMode.String())
+	}
 	preAutoModel := clientModel
-	if clientModel == autoRequestMagic {
+	if clientModel == autoRequestMagic && !testMode.SkipsAutoRoute() {
 		apiKeyID := 0
 		if keyInfo != nil {
 			apiKeyID = keyInfo.ID
@@ -2816,6 +3115,37 @@ func (h *ChatHandler) serveWithExecutor(
 		// 2026-07-14: keep the client-facing model name lowercase.
 		clientModel = modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 		logCtx.SetClientModel(clientModel)
+	}
+
+	// ── 2026-09-29 X-Gw-Test-Mode mock short-circuit ───────────────────
+	// For mock / auto-only modes, the auto decision above is the entire
+	// observable behaviour we want to verify. Skip dispatch, candidate
+	// resolution, and the upstream call; emit a synthetic OpenAI-format
+	// chat completion that echoes the chosen model back so a test runner
+	// can assert "the gateway did resolve model=auto and produced this
+	// decision" without burning upstream tokens. The synthetic body is
+	// byte-for-byte valid OpenAI shape (chat.completion) so consumers
+	// that parse the body keep working.
+	//
+	// Two invariants this branch must preserve:
+	//
+	//  1. The handler's safety net requires exactly one request_logs row
+	//     per request. Returning via markLogged() alone would mark the row
+	//     written while writing NOTHING, so mock traffic would be invisible
+	//     in the dashboard AND in the audit trail. recordMockRequestLog
+	//     writes a real terminal row (status=success, error_kind='<mode>_mock')
+	//     before the response goes out.
+	//  2. A streaming client must receive SSE framing; see
+	//     writeMockChatResponse's stream branch (covered by
+	//     TestWriteMockChatResponse_Stream_EmitsSSEWithDoneSentinel).
+	if testMode.IsMockMode() && preAutoModel == autoRequestMagic {
+		h.emitAction(r.Context(), requestID, liveactions.ActionRouteResolved, map[string]string{
+			"test_mode": testMode.String(),
+			"mock":      "true",
+		})
+		h.recordMockRequestLog(logCtx, testMode, clientModel, keyInfo)
+		writeMockChatResponse(w, testMode, requestID, clientModel, reqBody.Stream)
+		return
 	}
 
 	// ── Tenant model policy — post-auto check (Round 48) ─────────────
@@ -2899,6 +3229,7 @@ func (h *ChatHandler) serveWithExecutor(
 		if rlOutcome.Blocked {
 			recordGatewayRateLimitRejection(rlOutcome)
 			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
+			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
 		}
@@ -3601,11 +3932,16 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		// SP-02: state machine — body compression completed successfully.
 		if scResult != nil && len(scResult.OutboundBody) > 0 {
-			// NeverWorse guard: the compressor must never inflate the request
-			// body. If the "compressed" output is >= the raw body length the
-			// transform regressed — discard it and keep the original.
-			if guarded, regressed := compression.NeverWorse(bodyBytes, scResult.OutboundBody, compression.GuardStageCompress); !regressed {
-				bodyBytes = guarded
+			// Compare against assembled, sanitized history. A delta-only client body
+			// has a different scope and cannot be the rollback for cached history.
+			sourceBody := bodyBytes
+			if len(scResult.CompressionSourceBody) > 0 {
+				sourceBody = scResult.CompressionSourceBody
+			}
+			if bytes.Equal(sourceBody, scResult.OutboundBody) {
+				bodyBytes = scResult.OutboundBody
+			} else {
+				bodyBytes, _ = compression.NeverWorse(sourceBody, scResult.OutboundBody, compression.GuardStageCompress)
 			}
 
 			// ── Tools restoration (Phase 1 optimization) ──────────────────
@@ -3665,7 +4001,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// AlignmentMap and sanitizer MessageRefs used to live only in the
 			// V1 Redis session state / result memo — sessions_v2 metadata's
 			// provenance read path consumed keys no writer ever produced.
-			if prov := buildOutboundProvenance(r, scResult.AlignmentMap); len(prov) > 0 {
+			if prov := buildOutboundProvenance(r, scResult.AlignmentMap, scResult.CompressionSourceSnapshot); len(prov) > 0 {
 				logCtx.OutboundProvenance = prov
 			}
 		}
@@ -4035,10 +4371,14 @@ func (h *ChatHandler) serveWithExecutor(
 	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
-			W:                          streamWriter,
-			UpstreamAttempts:           upstreamAttempts,
-			AttachmentMetadata:         attachmentsForOutbound(logCtx),
-			FailoverNotices:            executors.NewFailoverNoticeCollector(),
+			W:                  streamWriter,
+			UpstreamAttempts:   upstreamAttempts,
+			AttachmentMetadata: attachmentsForOutbound(logCtx),
+			FailoverNotices:    executors.NewFailoverNoticeCollector(),
+			// R25-V: non-stream + interceptor → the executor writes into the
+			// deferred capture buffer; cached-replay consumption and
+			// LogClientResponse stay on the handler lane (governed commit).
+			DeferredOutputGovernance:   !isStream && h.responseInterceptor != nil,
 			R:                          r,
 			BodyBytes:                  upstreamBody,
 			IsStream:                   isStream,
@@ -4245,6 +4585,23 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── SR-W2 request survival (doc 18 §5.1) ──────────────────────────────
 	// Streaming requests with survival enabled for this tenant skip the
 	// goal-retry loop entirely: the SurvivalCoordinator owns every retry
+	// R25-C/R25-D: the authenticated key owner and the client protocol lane
+	// must reach the interceptor chain; empty CallerOwner makes the owner
+	// compare always fail (over-redaction) and empty ClientProtocol degrades
+	// protocol-shaped terminal frames to the OpenAI default.
+	_, callerOwner, _ := keyMetaFromKeyInfo(keyInfo)
+	clientProtocolLane := "openai-chat"
+	// R25-A: with output compliance active on a non-streaming request, the
+	// executor writes into a capture buffer instead of the client, so the
+	// interceptor can block or rewrite before the first byte leaves. A fresh
+	// buffer per attempt keeps retried writes from concatenating.
+	var deferredWriter *deferredNonStreamWriter
+	// R25-V: non-empty after the response interceptor reached a governance
+	// terminal (stream pending-flush block). Set inside the attempt loop
+	// (interceptingStreamWriter.finish) and consumed after the interceptor
+	// block — the success telemetry is then skipped and a failure audit row
+	// with provider/credential attribution is emitted instead.
+	outputGovernanceTerminal := ""
 	// in-connection behind a per-attempt buffered commit gate (ExecuteAttempt
 	// suppresses the executor's internal retry ladder). Flag-off requests
 	// never enter this branch — the loop below is byte-for-byte the legacy path.
@@ -4256,10 +4613,12 @@ func (h *ChatHandler) serveWithExecutor(
 		base := w
 		if h.responseInterceptor != nil {
 			base = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: clientProtocolLane,
+				ClientModel:    clientModel,
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
@@ -4319,12 +4678,18 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if isStream && h.responseInterceptor != nil {
 			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: clientProtocolLane,
+				ClientModel:    clientModel,
 			})
 			streamWriter = interceptedWriter
+		}
+		if !isStream && h.responseInterceptor != nil {
+			deferredWriter = newDeferredNonStreamWriter()
+			streamWriter = deferredWriter
 		}
 		// SP-02: state machine — executor has accepted the request and is now
 		// sending it upstream (no first byte yet).
@@ -4332,6 +4697,15 @@ func (h *ChatHandler) serveWithExecutor(
 		result, execErr = h.executor.Execute(buildExecParams(streamWriter))
 		if interceptedWriter != nil {
 			interceptedWriter.finish()
+			// R25-V: finish() consumes FlushStreamPending. When output
+			// governance blocked the stream it already rendered the single
+			// protocol terminal on the wire and stamped writeErr/blocked.
+			// Record the terminal so the interceptor block below emits the
+			// failure audit with attribution instead of letting the generic
+			// empty-response detector misattribute it later.
+			if interceptedWriter.blocked && outputGovernanceTerminal == "" {
+				outputGovernanceTerminal = "output_policy_blocked"
+			}
 		}
 
 		// Success or non-retriable error - exit retry loop immediately
@@ -4492,6 +4866,11 @@ goalRetryLoopDone:
 			h.unregisterStreamConnection(requestID, "cached_replay")
 			preStream.stop()
 			preStream = nil
+		}
+		// The replayed body went into the capture buffer (params.W); release
+		// it to the client before returning (R25-A).
+		if deferredWriter != nil {
+			deferredWriter.commit(w, nil)
 		}
 		return
 	}
@@ -4658,6 +5037,16 @@ goalRetryLoopDone:
 			preStream.stop()
 			preStream = nil
 		}
+		if execTerminalRendered(execErr) {
+			// A protocol terminal is already on the wire for this connection
+			// — the survival coordinator's envelope (R58 §11.6 fault
+			// injection) or a stream bridge's §11.6/timeout/interruption
+			// frame (2026-09-23 critique round: live-observed double
+			// terminal). Keep the failure bookkeeping below, but route every
+			// late wire write into a blackhole so no second terminal can
+			// stack after the first.
+			w = blackholeResponseWriter{}
+		}
 		// V3.1: capture dispatch queue timestamps from ExecuteError before
 		// any failAndMark / EmitFailure so failure request_logs keep T0–T9.
 		if logCtx != nil {
@@ -4704,6 +5093,47 @@ goalRetryLoopDone:
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			tried = execErrTyped.Tried
 			failTrace = execErrTyped.Trace
+		}
+		// 2026-09-23 (forensics + double-render guard): a survival-owned
+		// request that reached a terminal decision already rendered its
+		// protocol-specific SSE envelope (gateway_survival_resume_blocked
+		// etc.) on the serialized writer. The generic fallthroughs below
+		// would (a) log it as a bland provider_error / model_not_found with
+		// no survival detail code — the exact observability gap design
+		// resume-blocked-long-stream-recovery §四.2 flagged — and (b) put a
+		// SECOND error frame ("No available provider…" / "upstream request
+		// failed") on the wire after the survival envelope. Record the
+		// decision verbatim and stop: one terminal per request.
+		if ste, ok := execErr.(*survivalTerminalError); ok {
+			var wrappedExec *executors.ExecuteError
+			if ste.cause != nil {
+				wrappedExec, _ = ste.cause.(*executors.ExecuteError)
+			}
+			if wrappedExec != nil {
+				tried = wrappedExec.Tried
+				failTrace = wrappedExec.Trace
+			}
+			errCode := ste.detailCode()
+			logCtx.SetOutboundModel(explicitOutbound)
+			logCtx.failAndMark(errCode, ste.Error(), providerID, credentialID)
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
+			markLogged()
+			if ste.kinds != "" {
+				w.Header().Set("X-Gateway-Last-Kind", ste.kinds)
+			}
+			slog.Warn("survival terminal reached; envelope already rendered",
+				"request_id", requestID,
+				"decision", ste.action.String(),
+				"reason", ste.reason,
+				"kinds", ste.kinds,
+				"tried", tried,
+			)
+			if preStream != nil {
+				h.unregisterStreamConnection(requestID, "stream_done")
+				preStream.stop()
+				preStream = nil
+			}
+			return
 		}
 
 		errCode := "provider_error"
@@ -4918,7 +5348,10 @@ goalRetryLoopDone:
 						exhaustedCredentialID,
 						clientModel,
 					)
-					writePrewarmedStreamErrorWithKind(w, msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind))
+					// 2026-09-23: carry retryable + retry_after on the wire,
+					// matching the non-prewarmed JSON branch.
+					writePrewarmedStreamErrorFull(w, msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind),
+						map[string]any{"retryable": true, "retry_after": retryAfter})
 					return
 				}
 				writeErrorJSONWithKindProto(proto, w, http.StatusTooManyRequests, requestID,
@@ -4996,9 +5429,23 @@ goalRetryLoopDone:
 					exhaustedCredentialID,
 					clientModel,
 				)
-				writePrewarmedStreamErrorWithKind(w,
+				// 2026-09-23 (strategy fix, user report #7): transient
+				// exhaustion (all candidates network/down/overloaded/
+				// concurrent, or no candidates left at all) previously went
+				// out without a retryable field, so agent clients defaulted
+				// to retryable=false and hard-failed the turn. Mirror the
+				// non-prewarmed JSON branch (errorsx.EffectiveRetryable) so
+				// the client retries with backoff instead. Tried==0 with no
+				// LastKind is pure no-candidates routing exhaustion — nodes
+				// are cooling and recover on their own, so also retryable.
+				exhaustedRetryable := errorsx.EffectiveRetryable(execErrTyped.LastKind)
+				if execErrTyped.LastKind == "" && execErrTyped.Tried == 0 {
+					exhaustedRetryable = true
+				}
+				writePrewarmedStreamErrorFull(w,
 					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-					"server_error", "model_not_found", string(execErrTyped.LastKind))
+					"server_error", "model_not_found", string(execErrTyped.LastKind),
+					map[string]any{"retryable": exhaustedRetryable})
 				return
 			}
 			writeErrorJSONWithKindProto(proto, w, http.StatusServiceUnavailable, requestID,
@@ -5048,18 +5495,39 @@ goalRetryLoopDone:
 		logCtx.failAndMark("provider_error", enrichedErrMsg, providerID, credentialID)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
+		// 2026-09-23 critique round: the generic fallthrough also carries
+		// committed-output stream interruptions (streamInterruptedError from
+		// the bridges — eof_without_done / read_error / stream_timeout after
+		// the client already saw content, on non-survival tenants). Those are
+		// transient classes; derive the kind so both the debug payload and
+		// the prewarmed envelope tell agent clients the turn is re-sendable
+		// instead of the hardcoded retryable=false.
+		fallbackKind := ""
+		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
+			fallbackKind = string(execErrTyped.LastKind)
+		} else {
+			fallbackKind = string(errorsx.ClassifyError(execErr, nil))
+		}
+		fallbackRetryable := errorsx.EffectiveRetryable(errorsx.ErrorKind(fallbackKind))
+		if isClientInterruptError(execErr) {
+			// The client is gone (its own abort) — a "retryable" verdict
+			// here would double-bill a request the user cancelled.
+			// ClassifyError maps client_cancel to transient because the
+			// textual reason alone does not carry the cancel semantics.
+			fallbackRetryable = false
+		}
 		debugInfo := map[string]any{
 			"stage":     "execution",
 			"tried":     tried,
-			"retryable": false,
+			"kind":      fallbackKind,
+			"retryable": fallbackRetryable,
 		}
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
-			debugInfo["kind"] = string(execErrTyped.LastKind)
 			debugInfo["attempts"] = execErrTyped.Attempts
-			debugInfo["retryable"] = errorsx.EffectiveRetryable(execErrTyped.LastKind)
 		}
 		if preStreamPrepared {
-			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
+			writePrewarmedStreamErrorFull(w, "upstream request failed", "server_error", "provider_error", fallbackKind,
+				map[string]any{"retryable": fallbackRetryable})
 			return
 		}
 		writeErrorJSONWithDebugProto(proto, w, http.StatusBadGateway, requestID, i18n.T(r.Context(), i18n.MsgProviderError), "server_error", "provider_error", debugInfo)
@@ -5095,12 +5563,27 @@ goalRetryLoopDone:
 	if logCtx != nil && result != nil {
 		logCtx.ApplyQueueTimestampsFromResult(result)
 	}
-	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 
 	// ── Response Interceptor (2026-06-29, auto-control feature) ─────────
 	// Call interceptor after successful execution but before final metrics.
 	// This enables automatic handoff when context limits are reached and
 	// goal-mode continuous execution.
+	//
+	// R25-V (2026-09-30 round 30): the interceptor now runs BEFORE
+	// emitTelemetry. The previous order emitted the success audit row with
+	// the provider's original body first, so a governance rewrite/block
+	// contradicted the already-persisted audit (client got [PHONE], audit
+	// said 13800138000). On a governance terminal (block / mandatory error /
+	// invalid replacement) we emit the failure audit and skip the success
+	// telemetry entirely — the audit trail must describe the bytes the
+	// client actually received.
+	// outputGovernanceTerminal is declared next to deferredWriter near the
+	// attempt loop; by the time the interceptor block below runs, a stream
+	// pending-flush block has already stamped it (interceptingStreamWriter
+	// .finish consumed the chain's FlushStreamPending error → single
+	// protocol terminal frame already on the wire). Non-empty means: skip
+	// success telemetry, emit the output_policy_blocked failure audit row
+	// with provider/credential attribution instead (R25-V).
 	if h.responseInterceptor != nil && result != nil {
 		// Calculate total message count from request body
 		msgCount := extractMessageCount(bodyBytes)
@@ -5116,12 +5599,14 @@ goalRetryLoopDone:
 		}
 
 		interceptReq := &ResponseInterceptRequest{
-			SessionID:    gwSessionID,
-			RequestID:    requestID,
-			TenantID:     tenantID,
-			ClientModel:  clientModel,
-			ResponseBody: result.ResponseBody,
-			TokensUsed:   extractTotalTokens(result.ResponseBody, streamCapture),
+			SessionID:      gwSessionID,
+			RequestID:      requestID,
+			TenantID:       tenantID,
+			CallerOwner:    callerOwner,
+			ClientProtocol: clientProtocolLane,
+			ClientModel:    clientModel,
+			ResponseBody:   result.ResponseBody,
+			TokensUsed:     extractTotalTokens(result.ResponseBody, streamCapture),
 			ContextWindow: func() int {
 				if len(candidates) > 0 && candidates[0].ContextWindow != nil {
 					return *candidates[0].ContextWindow
@@ -5132,6 +5617,7 @@ goalRetryLoopDone:
 			FinishReason:         extractFinishReason(result.ResponseBody),
 			IsStreaming:          isStream,
 			FollowUpAction:       strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
+			GoalModeHeader:       strings.TrimSpace(r.Header.Get("X-Gw-Goal-Mode")),
 			ClientSignalAllowed:  ClientSignalRequested(r),
 			HandoffSignalAllowed: HandoffSignalRequested(r),
 			SubAgentsTotal:       subAgents.Total,
@@ -5190,13 +5676,40 @@ goalRetryLoopDone:
 				}
 			}
 		} else {
-			// For non-streaming, call InterceptNonStream
-			if interceptResult, err := h.responseInterceptor.InterceptNonStream(r.Context(), interceptReq); err != nil {
-				slog.Warn("response_interceptor_failed", "error", err, "session_id", gwSessionID)
+			// For non-streaming, call InterceptNonStream. R25-V (round 30):
+			// governance runs on the captured bytes BEFORE the deferred
+			// commit, so a block/mandatory-error/invalid-replacement terminal
+			// never writes provider bytes to the client and never produces a
+			// success audit row.
+			interceptResult, interceptErr := h.responseInterceptor.InterceptNonStream(r.Context(), interceptReq)
+			if interceptErr != nil {
+				if outputGovernanceMandatory(h.responseInterceptor) {
+					// A FailClosed-marked interceptor failed (e.g. output
+					// compliance checker error). The captured provider body
+					// must NOT pass unchecked — reject with
+					// response_validation_failed and emit the failure audit.
+					outputGovernanceTerminal = "response_validation_failed"
+					p, c := candidateAttribution(result)
+					captureAndEmitFailure("response_validation_failed", "output governance interceptor failed: "+interceptErr.Error(), p, c)
+					writeErrorJSON(w, http.StatusBadGateway, requestID,
+						"Output governance rejected the response", "api_error", "response_validation_failed")
+					return
+				}
+				// Optional hook (goal/audit): historical fail-open — commit
+				// the original captured bytes.
+				slog.Warn("response_interceptor_failed", "error", interceptErr, "session_id", gwSessionID)
 			} else if interceptResult != nil {
 				if interceptResult.ShouldBlock {
 					slog.Info("response_interceptor_blocked", "session_id", gwSessionID, "action", interceptResult.Action)
-					// Response was blocked, don't continue
+					// R25-A/R25-V: with the deferred capture writer the client has
+					// not seen the response yet — reject with an explicit
+					// policy block (and the failure audit row) instead of
+					// silently returning nothing.
+					outputGovernanceTerminal = "output_policy_blocked"
+					p, c := candidateAttribution(result)
+					captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+					writeErrorJSON(w, http.StatusForbidden, requestID,
+						"Response blocked by output policy", "api_error", "output_policy_blocked")
 					return
 				}
 				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
@@ -5216,15 +5729,23 @@ goalRetryLoopDone:
 				}
 				// Apply ModifiedBody (e.g. output-compliance redaction).
 				//
-				// NOTE (2026-07-09): for the historical non-stream path the bytes
-				// are already written to the client inside executor.Execute, so
-				// this rewrite takes effect for downstream telemetry, the request
-				// log, the session-cache, and any buffered/pending-store path —
-				// NOT a retroactive client rewrite. Stream-end redaction is
-				// applied at write-time via the transform pipeline; this metadata
-				// path ensures the persisted/observed body matches what policy
-				// intended (so pii_stripped tagging + session_tags stay accurate).
+				// R25-A (2026-09-29): with the interceptor active the
+				// executor's bytes sit in the deferred capture buffer, so this
+				// rewrite — and a ShouldBlock rejection — now reach the actual
+				// client body, not only telemetry/request-log/session-cache.
 				if len(interceptResult.ModifiedBody) > 0 && result != nil {
+					if !validateChatInterceptedBody(interceptResult.ModifiedBody, clientProtocolLane) {
+						// R25-V: the interceptor returned a body that is not
+						// valid JSON for the client protocol. Writing it would
+						// corrupt the client stream — reject fail-closed with
+						// response_validation_failed and the failure audit.
+						outputGovernanceTerminal = "response_validation_failed"
+						p, c := candidateAttribution(result)
+						captureAndEmitFailure("response_validation_failed", "output governance returned invalid client protocol body", p, c)
+						writeErrorJSON(w, http.StatusBadGateway, requestID,
+							"Output governance returned an invalid response body", "api_error", "response_validation_failed")
+						return
+					}
 					result.ResponseBody = interceptResult.ModifiedBody
 					if interceptResult.Metadata != nil {
 						slog.Info("response_interceptor_modified_body",
@@ -5232,8 +5753,31 @@ goalRetryLoopDone:
 					}
 				}
 			}
+			// R25-A: release the captured executor write to the client now
+			// that policy approved it (ModifiedBody, if any, already
+			// replaced result.ResponseBody above). Interceptor failure keeps
+			// the legacy fail-open behavior and commits the original bytes.
+			if deferredWriter != nil {
+				deferredWriter.commit(w, result.ResponseBody)
+			}
 		}
 	}
+
+	// R25-V (round 30): governance terminal on the STREAM lane (pending-flush
+	// block). finish() already wrote the single protocol terminal frame to
+	// the wire; emit the attributed failure audit and skip success telemetry.
+	if outputGovernanceTerminal == "output_policy_blocked" {
+		p, c := intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+		return
+	}
+
+	// R25-V: emitTelemetry moved AFTER the interceptor block. The success
+	// audit row must describe the bytes the client actually received — a
+	// governance rewrite (ModifiedBody) is applied to result.ResponseBody
+	// above before the row is built, and every governance terminal has
+	// already returned with its failure audit.
+	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 
 	// ── Request WAL: async update on execution success ─────────────
 	if h.requestLogger != nil && result != nil {
@@ -6096,10 +6640,22 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				canonical = evt.ClientModel
 			}
 			chargeCtx, chargeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			charged, err := h.maasSvc.ChargeRequest(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, pt, ct, crt, cwt)
+			// Wave 3 B1: resolve the peak/off-peak multiplier once from the
+			// request start time (eventAt, falling back to now), charge with
+			// it, and stamp the SAME value into the telemetry rows so the
+			// charge and the audit trail cannot disagree.
+			chargeStart := eventAt
+			multiplier := h.maasSvc.ResolveCurrentMultiplier(chargeCtx, chargeStart)
+			charged, stampedMultiplier, err := h.maasSvc.ChargeRequestMultimodalWithMultiplier(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, maas.TokenUsage{
+				PromptTokens:     pt,
+				CompletionTokens: ct,
+				CacheReadTokens:  crt,
+				CacheWriteTokens: cwt,
+			}, multiplier)
 			chargeCancel()
 			if err == nil && charged > 0 {
 				reqLog.CreditsCharged = &charged
+				reqLog.RateMultiplier = &stampedMultiplier
 			} else if err != nil {
 				slog.Warn("maas charge failed", "request_id", evt.RequestID, "tenant_id", keyInfo.TenantID, "error", err)
 			}
@@ -7034,7 +7590,12 @@ func (h *ChatHandler) recordInitialRequestLog(
 	enrichRequestLogFromMeta(reqLog, keyInfo, &autoCtx.meta)
 	// 2026-07-17: bridge OriginMiddleware context into the entry so
 	// node_probe / self_check requests are marked with origin_stage.
-	reqLog.ApplyOriginFromContext(ctx)
+	// 2026-09-25: extended with the DB-system-key fallback — auth passes
+	// sk-* keys through without resolving the owner, so probe workers on
+	// DB keys (e.g. sk-selfcheck-*) were stripped by OriginMiddleware and
+	// their rows stamped "business"; applyOriginMetadata re-runs the trust
+	// decision with the now-resolved owner.
+	applyOriginMetadata(reqLog, keyInfo, ctx)
 	// 2026-07-25: bridge origin_stage from main entry to RequestLogContext
 	// so the side table request_context_attrs also carries origin_stage
 	// and is_probe (derived from it in fillFromRequestLogContext).
@@ -7588,6 +8149,76 @@ func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
 	h.telemetryClient.EmitRequestLogInsert(minimal)
 }
 
+// recordMockRequestLog writes the terminal request_logs row for a request
+// that was short-circuited by X-Gw-Test-Mode mock / auto-only
+// (2026-09-29 audit).
+//
+// Why this exists: the mock branch returns from serveWithExecutor long
+// before recordInitialRequestLog runs, so the handler's safety net — which
+// only backfills a row when ErrCode is set — would leave the request with
+// NO row at all. The first cut of the mock branch called markLogged()
+// instead, which is strictly worse: it declares the row written while
+// writing nothing, so mock traffic disappeared from the dashboard and from
+// every audit that joins on request_id.
+//
+// The row is a SUCCESS with zero token usage, tagged through ErrorKind
+// with the test mode ("mock_mock" / "auto-only_mock") so operators can
+// filter internal test traffic out of production dashboards with
+// `WHERE error_kind LIKE '%_mock'` without needing a schema migration.
+// Writing a real row — not skipping one — is what keeps "exactly one
+// request_logs row per request" true across every exit path.
+func (h *ChatHandler) recordMockRequestLog(
+	logCtx *RequestLogContext,
+	mode TestMode,
+	chosenModel string,
+	keyInfo *authentication.KeyInfo,
+) {
+	if logCtx == nil {
+		return
+	}
+	logCtx.SetClientModel(chosenModel)
+	// ErrorKind carries the mode; message stays empty so the row is not
+	// mistaken for a failure by dashboards that key off a non-empty error.
+	mockKind := string(mode) + "_mock"
+	logCtx.SetError(mockKind, "")
+	logCtx.MarkLogged()
+
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	entry := &telemetry.RequestLogEntry{
+		RequestID:     logCtx.RequestID,
+		TenantID:      "default",
+		ClientModel:   strPtr(chosenModel),
+		RequestStatus: strPtr(telemetry.RequestStatusSuccess),
+		Success:       true,
+		ErrorKind:     strPtr(mockKind),
+		// Zero token usage: no upstream was called. Consumers that treat a
+		// non-nil 0 as "upstream reported zero" must be checked before
+		// trusting cost rollups to exclude mock rows.
+		PromptTokens:     intPtr(0),
+		CompletionTokens: intPtr(0),
+	}
+	if sessionID, _ := logCtx.SessionTask(); sessionID != "" {
+		entry.GwSessionID = strPtr(sessionID)
+	}
+	if len(logCtx.AutoDecision) > 0 {
+		v := string(logCtx.AutoDecision)
+		entry.AutoDecision = &v
+		entry.IsAutoRequest = boolPtr(true)
+	}
+	if keyInfo != nil {
+		entry.TenantID = keyInfo.TenantID
+		kid := keyInfo.ID
+		entry.APIKeyID = &kid
+		if aid := appID(keyInfo); aid != nil {
+			a := *aid
+			entry.ApplicationID = &a
+		}
+	}
+	h.telemetryClient.EmitRequestLog(entry)
+}
+
 // resolveEndUser picks the best end-user identifier available for this
 // request. Resolution order (highest priority first):
 //
@@ -7765,73 +8396,48 @@ func isTopLevelJSONContext(b []byte, pos int) bool {
 	}
 }
 
+// Wave4-D4 (2026-09-22): field-name variants resolve through the shared
+// usage variant table in usage.go (lookupUsageInt) — same precedence as the
+// streaming extractor, so a new vendor field name lands in exactly one list.
+// The non-stream-specific fallbacks are preserved verbatim: MiniMax-style
+// top-level usage when no "usage" object exists, and the two-directional
+// total_tokens inference.
 func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens, cacheRead, cacheWrite int) {
 	if len(body) == 0 {
 		return 0, 0, 0, 0
 	}
-	var data map[string]any
+	var data map[string]json.RawMessage
 	if err := json.Unmarshal(body, &data); err != nil {
 		return 0, 0, 0, 0
 	}
 	usageRaw, ok := data["usage"]
 	if !ok {
 		// Fallback: some providers (e.g. minimax) may return usage at top level
-		usageRaw = data
+		usageRaw = json.RawMessage(body)
 	}
-	usage, ok := usageRaw.(map[string]any)
-	if !ok {
+	var usage map[string]json.RawMessage
+	if err := json.Unmarshal(usageRaw, &usage); err != nil {
 		return 0, 0, 0, 0
 	}
-	// prompt_tokens / input_tokens (Anthropic native)
-	if v, ok := usage["prompt_tokens"].(float64); ok {
-		promptTokens = int(v)
-	} else if v, ok := usage["input_tokens"].(float64); ok {
-		promptTokens = int(v)
+	if v, ok := lookupUsageInt(usage, usagePromptPaths); ok {
+		promptTokens = v
 	}
-	// completion_tokens / output_tokens (Anthropic native)
-	if v, ok := usage["completion_tokens"].(float64); ok {
-		completionTokens = int(v)
-	} else if v, ok := usage["output_tokens"].(float64); ok {
-		completionTokens = int(v)
+	if v, ok := lookupUsageInt(usage, usageCompletionPaths); ok {
+		completionTokens = v
 	}
-	// cache_read: try 4 variants
-	if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-		cacheRead = int(v)
-	} else if v, ok := usage["cache_read_tokens"].(float64); ok {
-		cacheRead = int(v)
-	} else if pt := usage["prompt_tokens_details"]; pt != nil {
-		if details, ok := pt.(map[string]any); ok {
-			if v, ok := details["cached_tokens"].(float64); ok && cacheRead == 0 {
-				cacheRead = int(v)
-			}
-		}
-	} else if pt := usage["input_token_details"]; pt != nil {
-		if details, ok := pt.(map[string]any); ok {
-			if v, ok := details["cache_read"].(float64); ok && cacheRead == 0 {
-				cacheRead = int(v)
-			}
-		}
+	if v, ok := lookupUsageInt(usage, usageCacheReadPaths); ok {
+		cacheRead = v
 	}
-	// cache_write: try 3 variants
-	if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
-		cacheWrite = int(v)
-	} else if v, ok := usage["cache_write_tokens"].(float64); ok {
-		cacheWrite = int(v)
-	} else if pt := usage["input_token_details"]; pt != nil {
-		if details, ok := pt.(map[string]any); ok {
-			if v, ok := details["cache_creation"].(float64); ok && cacheWrite == 0 {
-				cacheWrite = int(v)
-			}
-		}
+	if v, ok := lookupUsageInt(usage, usageCacheWritePaths); ok {
+		cacheWrite = v
 	}
 	// total_tokens fallback: if we have total but missing prompt/completion, infer them
 	if promptTokens == 0 || completionTokens == 0 {
-		if total, ok := usage["total_tokens"].(float64); ok && int(total) > 0 {
-			totalInt := int(total)
-			if promptTokens == 0 && completionTokens > 0 && totalInt > completionTokens {
-				promptTokens = totalInt - completionTokens
-			} else if completionTokens == 0 && promptTokens > 0 && totalInt > promptTokens {
-				completionTokens = totalInt - promptTokens
+		if total, ok := intValue(usage, "total_tokens"); ok == nil && total > 0 {
+			if promptTokens == 0 && completionTokens > 0 && total > completionTokens {
+				promptTokens = total - completionTokens
+			} else if completionTokens == 0 && promptTokens > 0 && total > promptTokens {
+				completionTokens = total - promptTokens
 			}
 		}
 	}
@@ -7946,6 +8552,11 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 		case errorsx.KindConcurrent, errorsx.KindRateLimit:
 			return "concurrent_overload"
 		case errorsx.KindEmptyResponse:
+			// 2026-09-29 (12h 审计二十轮 P2): 执行器已分类 Kind 的空响应
+			// 此前绕过指标计数（提前 return 不经过下方 detailCode switch）。
+			// anthropic/responses 桥的空响应都带 KindEmptyResponse，指标
+			// 在此一并接线；两条路径互斥，不会重复计数。
+			metrics.RecordEmptyResponseAttempt(detailCode)
 			return "empty_response"
 		case errorsx.KindCanceled, errorsx.KindClientBug:
 			return "client_cancel"
@@ -7972,7 +8583,16 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 		return "client_cancel"
 	case "concurrent_overload", "concurrent":
 		return "concurrent_overload"
-	case "empty_stream_no_content", "early_empty_detection":
+	case "empty_stream_no_content", "early_empty_detection", "anthropic_empty_response", "openai_empty_response":
+		// 2026-09-29: 接线 metrics/empty_response_metrics.go 的
+		// RecordEmptyResponseAttempt。该指标自 R45 落地以来在仓内
+		// 零调用点（见 docs/audit/2026-09-28-reasoning-effort-clamp-audit.md §5），
+		// 接线位置选归一处而不是源头（stream.go / responses_bridge.go 的
+		// MarkInterruptedWithReason 入口），最小化修改面。Reason 字段
+		// 透传给 metrics 层做归一化（done_no_content / early_empty / other）。
+		// 2026-09-29 (二十轮): anthropic_empty_response 补入——anthropic/
+		// responses 桥的空响应 Reason 串此前落兜底 stream_error 且不计数。
+		metrics.RecordEmptyResponseAttempt(detailCode)
 		return "empty_response"
 	case "eof_without_done":
 		return "eof_without_done"
@@ -8454,7 +9074,26 @@ func overloadRetryAfterSeconds(err error) int {
 // of a wrapped *upstreampkg.Error (looking for error.message,
 // error.error.message, or message), then falls back to the raw error
 // string. The result is capped at 200 characters.
+//
+// 2026-09-30 三十七轮：出口统一过 SanitizeErrorText——上游错误体可能回显
+// 网关凭据（candidate_failure_logger.go 自认该威胁："credentials echoed by
+// the vendor"），此 reason 会进入客户端可见的 debug/reason 字段，脱敏标准
+// 此前与 DB 写路径（supplier_errors 落库前脱敏）不一致。
 func extractUpstreamReason(err error) string {
+	return sanitizeUpstreamReasonPreview(extractUpstreamReasonRaw(err))
+}
+
+func sanitizeUpstreamReasonPreview(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	return string(errorsx.SanitizeErrorText([]byte(reason), 200))
+}
+
+func extractUpstreamReasonRaw(err error) string {
 	if ue, ok := extractUpstreamError(err); ok && len(ue.Body) > 0 {
 		var parsed struct {
 			Error *struct {
@@ -8464,32 +9103,16 @@ func extractUpstreamReason(err error) string {
 		}
 		if json.Unmarshal(ue.Body, &parsed) == nil {
 			if parsed.Error != nil && parsed.Error.Message != "" {
-				msg := parsed.Error.Message
-				if len(msg) > 200 {
-					msg = msg[:200]
-				}
-				return msg
+				return parsed.Error.Message
 			}
 			if parsed.Message != "" {
-				msg := parsed.Message
-				if len(msg) > 200 {
-					msg = msg[:200]
-				}
-				return msg
+				return parsed.Message
 			}
 		}
 		// JSON parse failed — return raw body preview.
-		raw := string(ue.Body)
-		if len(raw) > 200 {
-			raw = raw[:200]
-		}
-		return raw
+		return string(ue.Body)
 	}
-	msg := err.Error()
-	if len(msg) > 200 {
-		msg = msg[:200]
-	}
-	return msg
+	return err.Error()
 }
 
 // captureAttemptBody reads the request body (capped at 1MB) into bodyOut
@@ -9018,4 +9641,39 @@ func (c *RequestLogContext) sessionTenantID() string {
 func (c *RequestLogContext) sessionID() string {
 	sid, _ := c.SessionTask()
 	return sid
+}
+
+// execTerminalRendered reports whether the execution error chain carries the
+// protocol-terminal-on-the-wire sentinel — either the survival wrapper
+// (errSurvivalTerminalRendered wraps errorsx.ErrProtocolTerminalRendered) or
+// the dispatch-path wrap (executor_dispatch.go). The explicit ExecuteError
+// branch is defense-in-depth: errors.Is already traverses its
+// Unwrap → LastErr, so this only guards against future Unwrap changes
+// (R59 audit S1-F5 comment correction).
+func execTerminalRendered(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errorsx.ErrProtocolTerminalRendered) {
+		return true
+	}
+	if ee, ok := err.(*executors.ExecuteError); ok {
+		return errors.Is(ee.LastErr, errorsx.ErrProtocolTerminalRendered)
+	}
+	return false
+}
+
+// isClientInterruptError reports whether err is a stream interruption caused
+// by the CLIENT going away (disconnect / abort), as opposed to an upstream
+// failure. The executor's unexported streamInterruptedError surfaces here
+// only through its message ("stream_interrupted: <reason>"), so match the
+// canonical cancel reasons on that prefix — never a raw body preview.
+func isClientInterruptError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.HasPrefix(msg, "stream_interrupted: client_cancel") ||
+		strings.HasPrefix(msg, "stream_interrupted: client_disconnected") ||
+		strings.HasPrefix(msg, "stream_interrupted: client_write_failed")
 }

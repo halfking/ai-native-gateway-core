@@ -106,7 +106,10 @@ type PrepareResult struct {
 
 	// RawSnapshot captures the client message snapshot before compression.
 	// It contains only a hash/counts and never the request body.
-	RawSnapshot MessageSnapshot
+	RawSnapshot               MessageSnapshot
+	CompressionSourceSnapshot MessageSnapshot
+	// In-memory sanitized source used by the final dispatch guard, never cached or logged.
+	CompressionSourceBody []byte `json:"-"`
 
 	// MsgHashes is the per-message fingerprint array to persist in
 	// request_logs.outbound_msg_hashes.
@@ -177,6 +180,12 @@ type PrepareResult struct {
 	// skipV1Cache remains internal: V2 owns its write side, so a final handler
 	// commit must not back-fill the legacy cache for a V2-sourced request.
 	skipV1Cache bool
+
+	// compressionExecuted (2026-10-01 第十八轮审计) marks that THIS call ran a
+	// compressor (mechanical trim / LLM summary / sliding-window rewrite), as
+	// opposed to serving a cached or delta-appended outbound body. Only the
+	// former counts into compression_triggered_total — see the defer in Prepare.
+	compressionExecuted bool
 }
 
 // Lossiness classification values. Kept as string constants (not a typed
@@ -199,6 +208,22 @@ func NewSessionCompressor(deps SessionCompressorDeps) *SessionCompressor {
 	return &SessionCompressor{deps: deps, breaker: newSummaryBreaker()}
 }
 
+// shouldRecordCompression (2026-10-01 第十八轮审计) is the metric gate for
+// Prepare's outcome defer. A size comparison alone is not enough: delta_append
+// serves outbound = 上次压缩产物 + 增量, so once a session has been compressed
+// EVERY subsequent request satisfies outbound < clientBody, and a size-only
+// gate re-bills the same historical compression into
+// compression_triggered_total / ratio / latency on each request (the memo
+// cache hit replays cached.Strategy the same way). Only calls where a real
+// compressor ran this round — mechanical_trim / LLM summary / sliding-window,
+// marked by res.compressionExecuted — may count.
+func shouldRecordCompression(res *PrepareResult, clientBody []byte) bool {
+	if res == nil || !res.compressionExecuted || len(res.OutboundBody) == 0 {
+		return false
+	}
+	return len(res.OutboundBody) < len(clientBody)
+}
+
 // Prepare is the main entry point. Call it after reading the client body
 // but before routing/forwarding.
 //
@@ -215,7 +240,50 @@ func (sc *SessionCompressor) Prepare(
 	contextWindow int,
 	streamStarted bool,
 ) *PrepareResult {
+	// 2026-10-01 R74: start the compression-latency clock here so the
+	// RecordOutcome call at the end measures the whole Prepare, not just the
+	// final rewrite. The previous metric path had no clock at all because it
+	// had no caller.
+	compressStart := time.Now()
 	res := &PrepareResult{RawSnapshot: SnapshotForBody(clientBody)}
+	if info, ok := SanitizeInfoFromContext(ctx); ok && !info.RawSnapshot.IsZero() {
+		res.RawSnapshot = info.RawSnapshot
+	}
+
+	// 2026-10-01 R74: compression outcome metrics.
+	//
+	// RecordOutcome is the ONLY writer for compression_triggered_total /
+	// compression_ratio / compression_latency_seconds /
+	// compression_lossiness_total, and it had zero production callers — the
+	// four series never acquired a single data point, so dashboards showed
+	// "no data" and an operator could not tell "compression never fired" from
+	// "the metric is broken".
+	//
+	// Emitted from a defer rather than at one exit on purpose: Prepare has
+	// five return sites (delta-only band, pre-window band, memo-cache hit,
+	// the main path, and the fallback), and an emit placed at the end of the
+	// main path is silently skipped by the other four. That is exactly how the
+	// first attempt at this fix failed its own test — the delta_append path
+	// returned before the emit was ever reached, the test skipped, and it
+	// would have gone in as another "wired" metric that fires on a minority
+	// of compressions.
+	//
+	// Only outcomes that actually shrank the outbound body are counted;
+	// counting a "compression" that rewrote nothing would make the triggered
+	// counter disagree with the bodies the operator can observe.
+	//
+	// The reason label stays inside the closed CompressionReason enum. The
+	// window trigger vocabulary ("sliding_window_token" and friends) is a
+	// different, larger set, and putting it on a Prometheus label would tie
+	// series cardinality to internal trigger naming. The trigger detail is
+	// already in res.CompressionReason and in the structured logs.
+	defer func() {
+		if !shouldRecordCompression(res, clientBody) {
+			return
+		}
+		RecordOutcome(sc.resolveCompressionMode(), ReasonAutoThreshold, CompressionStrategy(res.CompressionStrategy),
+			len(clientBody), len(res.OutboundBody), time.Since(compressStart).Seconds())
+	}()
 
 	if sc == nil || sc.deps.Disabled || gwSessionID == "" {
 		return sc.fallbackResult(clientBody, res)
@@ -290,6 +358,18 @@ func (sc *SessionCompressor) Prepare(
 	}
 
 	// ── Phase 2: Delta-append (find new turns) ────────────────────────────
+	if !cachedBodyPassesGuard(ctx, lastOutboundBody) {
+		state, lastOutboundBody = nil, nil
+	}
+	cachedGeneration := ""
+	if state != nil {
+		cachedGeneration = state.SanitizeMapGeneration
+	}
+	if !sanitizeGenerationMatches(ctx, cachedGeneration) {
+		// An expired/recreated map can reuse phone:1 for a different value.
+		// Fingerprint equality alone therefore cannot establish lineage.
+		state, lastOutboundBody = nil, nil
+	}
 	diffResult, err := BuildOutboundMessages(clientBody, state, lastOutboundBody, protocol)
 	if err != nil {
 		slog.Warn("session_compressor: diff failed, forwarding client body",
@@ -298,6 +378,8 @@ func (sc *SessionCompressor) Prepare(
 	}
 
 	outboundBody := diffResult.Body
+	res.CompressionSourceSnapshot = SnapshotForBody(outboundBody)
+	res.CompressionSourceBody = outboundBody
 	res.MsgCount = diffResult.MsgCount
 	res.TokenEst = diffResult.TokenEst
 	res.MsgHashes = marshalHashes(diffResult.MsgHashes)
@@ -445,11 +527,12 @@ func (sc *SessionCompressor) Prepare(
 		// plus tenant+session+mode+protocol+contextWindow, so a retry of the
 		// same turn replays the previous result instead of paying again.
 		memoParts := MemoKeyParts{
-			TenantID:      tenantID,
-			SessionID:     gwSessionID,
-			Mode:          mode.String(),
-			Protocol:      protocol,
-			ContextWindow: contextWindow,
+			TenantID:           tenantID,
+			SessionID:          gwSessionID,
+			Mode:               mode.String(),
+			Protocol:           protocol,
+			ContextWindow:      contextWindow,
+			SanitizeGeneration: sanitizeGeneration(ctx),
 		}
 		memoInputForStore = outboundBody
 		if sc.deps.ResultMemo.enabled() {
@@ -511,6 +594,7 @@ func (sc *SessionCompressor) Prepare(
 				outboundBody = trimmed
 				res.OutboundBody = outboundBody
 				res.CompressionStrategy = "mechanical_trim"
+				res.compressionExecuted = true
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
@@ -555,6 +639,7 @@ func (sc *SessionCompressor) Prepare(
 				}
 				res.OutboundBody = outboundBody
 				res.CompressionStrategy = "sliding_window_" + strings.TrimPrefix(winResult.Reason, "sliding_window_")
+				res.compressionExecuted = true
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
@@ -569,6 +654,7 @@ func (sc *SessionCompressor) Prepare(
 					outboundBody = trimmed
 					res.OutboundBody = outboundBody
 					res.CompressionStrategy = "mechanical_trim"
+					res.compressionExecuted = true
 					res.MsgCount = countMessages(outboundBody)
 					res.TokenEst = estimateBodyTokens(outboundBody)
 					res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
@@ -610,11 +696,12 @@ func (sc *SessionCompressor) Prepare(
 	if sc.deps.ResultMemo.enabled() && len(memoInputForStore) > 0 &&
 		memoStorable(res.CompressionStrategy) && len(res.OutboundBody) > 0 {
 		err := sc.deps.ResultMemo.Set(ctx, MemoKeyParts{
-			TenantID:      tenantID,
-			SessionID:     gwSessionID,
-			Mode:          mode.String(),
-			Protocol:      protocol,
-			ContextWindow: contextWindow,
+			TenantID:           tenantID,
+			SessionID:          gwSessionID,
+			Mode:               mode.String(),
+			Protocol:           protocol,
+			ContextWindow:      contextWindow,
+			SanitizeGeneration: sanitizeGeneration(ctx),
 		}, memoInputForStore, &MemoValue{
 			CompressedBody:       res.OutboundBody,
 			Strategy:             res.CompressionStrategy,
@@ -725,6 +812,20 @@ func (sc *SessionCompressor) resolveCompressionMode() Mode {
 	return LoadMode()
 }
 
+// extractTargetModelHint pulls the "model" field out of a chat-completions
+// style request body for the B9 same-vendor-first chain reordering. Best
+// effort: any parse failure yields "" and the chain order stays as
+// configured.
+func extractTargetModelHint(body []byte) string {
+	var probe struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(probe.Model)
+}
+
 func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, tenantID, protocol, taskType string) ([]byte, bool) {
 	if sc.deps.CompactionDeps == nil {
 		return nil, false
@@ -748,7 +849,11 @@ func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, ten
 	conversation = trimTextToTokenBudget(conversation, 900_000)
 
 	dim := summarymodel.DimensionForTaskType(taskType)
-	summarizer := summarymodel.NewSummarizer(newSummaryClientAdapter(sc.deps.CompactionDeps, "", tenantID))
+	summarizer := summarymodel.NewSummarizer(newSummaryClientAdapter(sc.deps.CompactionDeps, "", tenantID)).
+		// Wave 3 B9: prefer same-vendor models first when the compressed
+		// request names its target model — the vendor's own models are the
+		// most likely to succeed for this conversation's language/shape.
+		WithTargetModelHint(extractTargetModelHint(body))
 	summaryText, sumErr := summarizer.Summarize(ctx, dim, conversation)
 	if sumErr == nil && strings.TrimSpace(summaryText) != "" {
 		if rebuilt, ok := rebuildBodyAfterSummary(body, strings.TrimSpace(summaryText), protocol); ok {
@@ -853,12 +958,14 @@ func hydrateSanitizeInfo(ctx context.Context, state *SessionState) {
 	if !ok {
 		return
 	}
+	if !info.SanitizedSnapshot.IsZero() {
+		state.SanitizedSnapshot = info.SanitizedSnapshot
+	}
+	state.SanitizeMapGeneration = info.MapGeneration
 	if info.MapRef != "" {
 		state.SanitizeMapRef = info.MapRef
 	}
-	if info.Stats.PlaceholderCount > 0 || info.Stats.SanitizedAt > 0 {
-		state.SanitizeStats = info.Stats
-	}
+	state.SanitizeStats = info.Stats
 	if len(info.MessageRefs) > 0 {
 		state.SanitizeMessageRefs = append([]SanitizedMessageRef(nil), info.MessageRefs...)
 	}
@@ -921,6 +1028,7 @@ func buildSessionState(prevState *SessionState, outboundBody []byte, res *Prepar
 		state.RawMsgCount = res.RawSnapshot.MessageCount
 		state.RawTokenEstimate = res.RawSnapshot.TokenEstimate
 	}
+	state.CompressionSourceSnapshot = res.CompressionSourceSnapshot
 	state.CompressedSnapshot = SnapshotForBody(outboundBody)
 	state.CompressedMsgs = res.MsgCount
 	state.CompressedTokens = res.TokenEst
@@ -1342,6 +1450,10 @@ func (sc *SessionCompressor) loadV2CompressionState(ctx context.Context, tenantI
 	if ref, ok := meta["sanitize_map_ref"].(string); ok {
 		state.SanitizeMapRef = ref
 	}
+	state.SanitizeMapGeneration, _ = meta["sanitize_map_generation"].(string)
+	decodeMetaRecords(meta["compression_source_snapshot"], &state.CompressionSourceSnapshot)
+	decodeMetaRecords(meta["raw_snapshot"], &state.RawSnapshot)
+	decodeMetaRecords(meta["sanitized_snapshot"], &state.SanitizedSnapshot)
 	decodeMetaRecords(meta["alignment_map"], &state.AlignmentMap)
 	decodeMetaRecords(meta["sanitize_message_refs"], &state.SanitizeMessageRefs)
 	return state
@@ -1392,7 +1504,7 @@ func intPairMeta(v any) []int {
 	return nil
 }
 
-func decodeMetaRecords[T any](value any, dst *[]T) {
+func decodeMetaRecords[T any](value any, dst *T) {
 	if dst == nil || value == nil {
 		return
 	}

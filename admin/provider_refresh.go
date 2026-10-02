@@ -234,7 +234,32 @@ func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Requ
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer bgCancel()
 
-		creds, _ := h.fetchActiveCredentialsForProvider(bgCtx, providerID)
+		// R67-A 修正：`creds, _ :=` 丢弃错误会让「凭据一行都没读到」变成
+		// 「刷新成功但什么都没刷」。fetchActiveCredentialsForProvider 在迭代
+		// 中断/扫描失败时返回 (nil, err)，于是下面的 for 循环不执行、
+		// totalFailed 保持 0，而 `totalFailed > 0 && totalUpserted == 0`
+		// 这条失败判据不成立 —— 运行被记成 providerRefreshSucceed，文案是
+		// 「新增/更新 0 个模型（凭据 0 个，失败 0 个）」。运维看到的是一次
+		// 绿色刷新，既没有错误可追，也没有任何迹象表明它其实没做功。
+		//
+		// 失败必须被记账，而不是被吞掉。凭据的终态判定沿用
+		// fetchActiveCredentialsForProvider 自己的错误通道。
+		creds, credErr := h.fetchActiveCredentialsForProvider(bgCtx, providerID)
+		if credErr != nil {
+			finished := time.Now()
+			h.recordProviderRefresh(providerID, &providerRefreshRun{
+				RunID:      runID,
+				ProviderID: providerID,
+				StartedAt:  finished,
+				FinishedAt: &finished,
+				Status:     providerRefreshFailed,
+				Message:    "刷新失败：读取凭据列表出错：" + credErr.Error(),
+				Errors:     []string{credErr.Error()},
+			})
+			slog.Error("provider refresh failed to load credentials",
+				"run_id", runID, "provider_id", providerID, "error", credErr)
+			return
+		}
 
 		var (
 			totalUpserted int
@@ -408,9 +433,13 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 			&c.baseURL, &c.protocol, &c.catalogCode,
 			&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON,
 			&c.providerKind, &c.catalogCaps); err != nil {
-			continue
+			// 漏扫的凭据会被静默跳过刷新（模型清单/能力缓存不更新）。
+			return nil, fmt.Errorf("load credential rows: scan row: %w", err)
 		}
 		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load credential rows: iterate rows: %w", err)
 	}
 	return out, nil
 }

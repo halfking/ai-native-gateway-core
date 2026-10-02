@@ -13,9 +13,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 func extractID(path string) (int, bool) { //nolint:unused
@@ -61,7 +64,7 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 	var enabled bool
 	err := h.db.QueryRow(ctx, `SELECT code, display_name, enabled FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL`, providerID).Scan(&code, &displayName, &enabled)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "provider not found")
+		writeLookupErr(w, "provider not found", err)
 		return
 	}
 
@@ -126,6 +129,11 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 		results = append(results, credResult{CredentialID: credID, Label: label, Status: healthStatus, Error: errMsg}) //nolint:staticcheck // SA4010 false positive: results is read after loop
 		checked++
 	}
+	// 迭代中断（连接断/超时）会让 checked/healthy 少算凭据，客户端无从分辨
+	// "只有这么多凭据" 与 "只探测到一半"。
+	if writeAggRowsErr(w, "providers.checkProvider", rows.Err()) {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accepted": true,
@@ -174,7 +182,7 @@ func (h *Handler) probeProviderURL(w http.ResponseWriter, r *http.Request, provi
 	var baseURL, protocol string
 	err := h.db.QueryRow(ctx, `SELECT COALESCE(base_url,''), COALESCE(protocol,'openai-completions') FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL`, providerID).Scan(&baseURL, &protocol)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "provider not found")
+		writeLookupErr(w, "provider not found", err)
 		return
 	}
 	if baseURL == "" {
@@ -532,6 +540,30 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// mockProbeHiddenCodes 是 Mock Probe 通道自带的进程内供应商精确集合
+//（internal/providers/mock 的 CodeFast / CodeSlow）。隐藏策略只作用于
+// 这两个 code：历史种子（mock-openai / mock-anthropic 等）与运维自建的
+// mock-x 供应商不受影响，保持可见（audit P3：原 NOT LIKE 'mock-%' 前缀
+// 过滤爆炸半径过大，已收敛为精确集合）。
+var mockProbeHiddenCodes = map[string]struct{}{
+	mock.CodeFast: {},
+	mock.CodeSlow: {},
+}
+
+// mockProbeFilterClause 返回 listProviders 使用的 mock 隐藏 SQL 谓词
+//（与 mockProbeHiddenCodes 同一精确集合，两处须保持一致）。
+func mockProbeFilterClause() string {
+	return fmt.Sprintf("p.code NOT IN ('%s', '%s')", mock.CodeFast, mock.CodeSlow)
+}
+
+// mockProviderHidden 判断供应商行是否因 Mock Probe 隐藏策略被过滤
+//（MockProbeHideInAdmin=true 且 code 属于探测通道自带供应商；listProviders
+// 的应用层双保险分支）。每请求读 env，测试可用 t.Setenv 切换。
+func mockProviderHidden(code string) bool {
+	_, hit := mockProbeHiddenCodes[code]
+	return config.MockProbeHideInAdmin() && hit
+}
+
 func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -540,6 +572,14 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	// 2026-08-31: 软删除的供应商（deleted_at 非空）不出现在任何列表里
 	// —— 终态语义，与"停用（enabled=false）"区分（停用仍可恢复）。
 	whereClauses := []string{"p.tenant_id = 'default'", "p.deleted_at IS NULL"}
+	// Mock Probe 通道（2026-09-24，docs/design/2026-09-23-mock-probe-channel
+	// §四 Step 7）：探测通道自带的 mock-fast / mock-slow 默认从 Admin 列表
+	// 隐藏；显式 LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN=false 放行（调试用）。
+	// 精确集合过滤（audit P3）：不用 mock- 前缀 NOT LIKE——历史种子与运维
+	// 自建的 mock-x 供应商必须保持可见。每请求读取，测试可用 t.Setenv 切换。
+	if config.MockProbeHideInAdmin() {
+		whereClauses = append(whereClauses, mockProbeFilterClause())
+	}
 	args := []any{}
 	argIdx := 1
 
@@ -645,7 +685,12 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			&p.RoutableBindingCount, &p.TotalBindingCount,
 			&p.QualityFixMode,
 		); err != nil {
-			slog.Warn("listProviders scan failed", "error", err)
+			warnRowSkip("providers.list", err)
+			continue
+		}
+		// Mock Probe 通道（2026-09-24）：应用层防御性过滤，与 WHERE 子句
+		// 双保险（数据被手工插入 providers 表等边缘场景仍不泄漏到 UI）。
+		if mockProviderHidden(p.Code) {
 			continue
 		}
 		// Compute health_status from counts (same as Python).
@@ -683,6 +728,9 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		}
 
 		providers = append(providers, p)
+	}
+	if writeAggRowsErr(w, "providers.list", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, providers)
 }
@@ -811,9 +859,26 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 		if req.BaseURL != nil {
 			baseURL = *req.BaseURL
 		}
-		protocol := "openai-completions"
+		// 协议决策（2026-09-23 协议命名审计）：
+		//   1. 显式指定 → 归一化校验（"openai-response" 这类错误拼写被
+		//      纠正为 canonical 枚举，未知值 400 拒绝）；
+		//   2. 未指定 → 按官方 baseURL 域名推断推荐协议（anthropic.com →
+		//      anthropic-messages 等，见 provider/catalog 推荐基线），
+		//      第三方域名回退 OpenAI 兼容。
+		protocol := ""
 		if req.Protocol != nil && *req.Protocol != "" {
-			protocol = *req.Protocol
+			normalized, normErr := providercatalog.NormalizeProviderProtocol(*req.Protocol)
+			if normErr != nil {
+				writeError(w, http.StatusBadRequest, normErr.Error())
+				return
+			}
+			protocol = normalized
+		} else {
+			if recommended, _ := providercatalog.RecommendedProtocolForBaseURL(baseURL); recommended != "" {
+				protocol = recommended
+			} else {
+				protocol = providercatalog.ProtocolOpenAICompletions
+			}
 		}
 
 		var id int
@@ -840,7 +905,7 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, "provider already exists: "+code)
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+			writeInternalErr(w, "create failed", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": id, "message": "ok"})
@@ -932,7 +997,7 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "provider already exists: "+code)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		writeInternalErr(w, "create failed", err)
 		return
 	}
 
@@ -1016,8 +1081,17 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 		needsReprobe = true
 	}
 	if req.Protocol != nil {
+		// R59 audit (S3-F1): the PATCH path was a normalization bypass —
+		// vapeur-style legacy spellings (e.g. "openai-response") could re-enter
+		// the table through it after createProvider was fixed. Same contract
+		// as create: normalize or 400.
+		normalized, normErr := providercatalog.NormalizeProviderProtocol(*req.Protocol)
+		if normErr != nil {
+			writeError(w, http.StatusBadRequest, normErr.Error())
+			return
+		}
 		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE providers SET protocol = $1, updated_at = now() WHERE id = $2`, *req.Protocol, id)
+		h.db.Exec(ctx, `UPDATE providers SET protocol = $1, updated_at = now() WHERE id = $2`, normalized, id)
 		needsReprobe = true
 	}
 	if req.Kind != nil {
@@ -1060,9 +1134,16 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 			var credIDs []int
 			for rows.Next() {
 				var cid int
-				if rows.Scan(&cid) == nil {
-					credIDs = append(credIDs, cid)
+				if scanErr := rows.Scan(&cid); scanErr != nil {
+					warnRowSkip("providers.update.autoReprobe", scanErr)
+					continue
 				}
+				credIDs = append(credIDs, cid)
+			}
+			// 重探测是 update 的副作用旁路（best-effort）：漏掉的凭据只是
+			// 没被自动探测，不能反过来把已经成功的 update 打成 500。
+			if rerr := rows.Err(); rerr != nil {
+				slog.Warn("providers.update auto-reprobe credential list truncated", "provider_id", id, "error", rerr)
 			}
 			rows.Close()
 			for _, cid := range credIDs {
@@ -1123,7 +1204,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "begin delete provider failed: "+err.Error())
+		writeInternalErr(w, "begin delete provider failed", err)
 		return
 	}
 	defer func() {
@@ -1144,7 +1225,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "provider not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "load provider failed: "+err.Error())
+			writeInternalErr(w, "load provider failed", err)
 		}
 		return
 	}
@@ -1169,7 +1250,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 		    updated_at = $1
 		WHERE id = $2 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, now, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "delete provider failed: "+err.Error())
+		writeInternalErr(w, "delete provider failed", err)
 		return
 	}
 
@@ -1189,7 +1270,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 		RETURNING id
 	`, id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cascade delete credentials failed: "+err.Error())
+		writeInternalErr(w, "cascade delete credentials failed", err)
 		return
 	}
 	var cascadedCredIDs []int
@@ -1197,19 +1278,19 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 		var cid int
 		if err := cascadedRows.Scan(&cid); err != nil {
 			cascadedRows.Close()
-			writeError(w, http.StatusInternalServerError, "cascade delete scan failed: "+err.Error())
+			writeInternalErr(w, "cascade delete scan failed", err)
 			return
 		}
 		cascadedCredIDs = append(cascadedCredIDs, cid)
 	}
 	cascadedRows.Close()
 	if err := cascadedRows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "cascade delete iterate failed: "+err.Error())
+		writeInternalErr(w, "cascade delete iterate failed", err)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit delete provider failed: "+err.Error())
+		writeInternalErr(w, "commit delete provider failed", err)
 		return
 	}
 
@@ -1290,7 +1371,7 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 		RETURNING id, code, display_name
 	`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "seed failed: "+err.Error())
+		writeInternalErr(w, "seed failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1298,9 +1379,15 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 	for rows.Next() {
 		var cp createdProvider
 		if err := rows.Scan(&cp.ID, &cp.Code, &cp.DisplayName); err != nil {
+			warnRowSkip("providers.seedFromCatalog", err)
 			continue
 		}
 		created = append(created, cp)
+	}
+	// INSERT ... RETURNING 的迭代中断会让 "Seeded N new providers" 的 N 与
+	// 实际插入数不一致（写入已提交，报告缺行比失败更难排查）。
+	if writeAggRowsErr(w, "providers.seedFromCatalog", rows.Err()) {
+		return
 	}
 
 	var total int
@@ -1390,6 +1477,7 @@ func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.P
 		var providerID int
 		var displayName string
 		if err := rows.Scan(&providerID, &displayName); err != nil {
+			warnRowSkip("providers.seedLocalCredentials", err)
 			continue
 		}
 
@@ -1418,6 +1506,11 @@ func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.P
 				"provider", displayName,
 			)
 		}
+	}
+	// 显式 best-effort（函数头注）：漏掉几家供应商的占位凭据下次启动会补，
+	// 但必须留痕，否则"部分供应商没有凭据"会长期无人发现。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("seed local credentials: provider list truncated; some placeholders skipped", "error", rerr)
 	}
 }
 
@@ -1483,6 +1576,11 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 	case "check", "check-health":
 		if r.Method == http.MethodPost {
 			h.startCheckCredentialHealth(w, r, providerID, credID)
+		} else if r.Method == http.MethodGet {
+			// R65：同步健康检查——文件头注（provider_cred_lifecycle.go）自
+			// 声明的 GET 面此前从未接线（handler 挂 //nolint:unused 死代码），
+			// 本次接线使其成为真实 API。
+			h.checkCredentialHealth(w, r, providerID, credID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}

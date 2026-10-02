@@ -473,7 +473,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
 	end := parseQueryTime(r, "to", now)
-	start, end = clampQueryWindow(start, end)
+	start, end = clampQueryWindowForTenant(start, end, GetTenantID(r))
 
 	page := queryInt(r, "page", 1)
 	if page < 1 {
@@ -506,6 +506,11 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	if v := queryIntPtr(r, "api_key_id"); v != nil {
 		addFilter("rl.api_key_id = $%d", *v)
+	}
+	// 用户详情抽屉「在日志中查看全部」只按请求行上的账号列过滤。
+	// 不用 ak.owner_user：super_admin 的 COUNT/聚合故意不 JOIN api_keys。
+	if v := strings.TrimSpace(queryString(r, "owner_user")); v != "" {
+		addFilter("rl.api_key_owner_user = $%d", v)
 	}
 	if v := strings.TrimSpace(queryString(r, "request_id")); v != "" {
 		addFilter("rl.request_id = $%d", v)
@@ -629,13 +634,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if IsTenantAdmin(r) {
 		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
 			slog.Error("admin listLogs count query failed", "scope", "tenant", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			writeInternalErr(w, "query failed", err)
 			return
 		}
 	} else {
 		if err := h.db.QueryRow(ctx, superCountSQL, args...).Scan(&count); err != nil {
 			slog.Error("admin listLogs count query failed", "scope", "super_admin", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			writeInternalErr(w, "query failed", err)
 			return
 		}
 	}
@@ -1226,7 +1231,7 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
 	end := parseQueryTime(r, "to", now)
-	start, end = clampQueryWindow(start, end)
+	start, end = clampQueryWindowForTenant(start, end, GetTenantID(r))
 	limit := queryInt(r, "limit", 20)
 	if limit < 1 {
 		limit = 1
@@ -1279,9 +1284,13 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item topModel
 		if err := rows.Scan(&item.CanonicalID, &item.CanonicalName, &item.DisplayName, &item.RequestCount); err != nil {
+			warnRowSkip("logs.listTopModels", err)
 			continue
 		}
 		items = append(items, item)
+	}
+	if writeAggRowsErr(w, "logs.listTopModels", rows.Err()) {
+		return
 	}
 	if items == nil {
 		items = []topModel{}
@@ -1307,6 +1316,11 @@ func parseQueryTime(r *http.Request, key string, def time.Time) time.Time {
 // full partitioned-table scans (R37). 366 days matches the usage-surface cap.
 const maxLogQueryWindow = 366 * 24 * time.Hour
 
+// tenantLogQueryWindow (Wave 1 A3, 2026-09-22): 非 default 租户的日志查询窗
+// 上限。此前只有前端 RequestLogsView 降档约束，直连 API 可拉满 366 天，
+// 越过商务约束的数据边界（行级过滤仍在）。服务端为准。
+const tenantLogQueryWindow = 72 * time.Hour
+
 // clampQueryWindow enforces the cap, keeping `end` anchored and pulling
 // `start` forward when the span exceeds it.
 func clampQueryWindow(start, end time.Time) (time.Time, time.Time) {
@@ -1314,6 +1328,16 @@ func clampQueryWindow(start, end time.Time) (time.Time, time.Time) {
 		return end.Add(-maxLogQueryWindow), end
 	}
 	return start, end
+}
+
+// clampQueryWindowForTenant enforces the 366d cap plus the 72h cap for
+// non-default tenants (mirror of the frontend RequestLogsView downshift;
+// direct API calls can no longer bypass it).
+func clampQueryWindowForTenant(start, end time.Time, tenantID string) (time.Time, time.Time) {
+	if tenantID != "" && tenantID != "default" && end.Sub(start) > tenantLogQueryWindow {
+		return end.Add(-tenantLogQueryWindow), end
+	}
+	return clampQueryWindow(start, end)
 }
 
 // parseQueryTimeStrict parses the same timestamp forms accepted by

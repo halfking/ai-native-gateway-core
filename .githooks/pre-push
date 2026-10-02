@@ -22,12 +22,30 @@ if [[ -z "$remote_name" || -z "$remote_url" ]]; then
   exit 0
 fi
 
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
+
+# ── 0. Worktree sanity guard ────────────────────────────────────────────
+# Shared checkouts have twice (2026-09-30 05:09 / 05:24) been found with
+# core.bare=true + core.worktree in the module config — an invalid state
+# written by unknown tooling. It makes `git status`/`git check-ignore`
+# exit 128 ("must be run in a work tree") and breaks `go build` VCS
+# stamping tree-wide. Heal before scanning/testing so the gate fails on
+# real findings, not on a poisoned host config.
+# 三十七轮 §三#14 (2026-09-30): 这段守卫原先排在 github-only 早退之后，
+# 推 codeup（主远端）时永远走不到；现移到早退之前，所有远端的推送都
+# 触发自愈。pre-commit 侧同款守卫见 scripts/pre-commit-check.sh §0。
+if [[ "$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]]; then
+  if [[ "$(git -C "$repo_root" config core.bare 2>/dev/null)" == "true" ]]; then
+    git -C "$repo_root" config core.bare false
+    echo "⚠️  healed core.bare=true + core.worktree conflict (was breaking git ops + go build VCS stamping)" >&2
+  fi
+fi
+
 # 仅对 github 远端做严格检查
 if [[ "$remote_url" != *"github.com"* ]]; then
   exit 0
 fi
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
 scanner="$repo_root/scripts/scan-secrets.sh"
 
 # ── 1. Sensitive-info scan (BLOCK-level findings) ────────────────────────
@@ -53,11 +71,15 @@ if [[ -x "$scanner" ]]; then
   baseline="$repo_root/scripts/scan-secrets.baseline"
   baseline_arg=""
   [[ -f "$baseline" ]] && baseline_arg="--baseline=$baseline"
-  if ! "$scanner" --mode="$scan_mode" --paths=. --tracked-only $baseline_arg --format=text >/tmp/scan-output.txt 2>&1; then
+  # mktemp 而非固定 /tmp/scan-output.txt（三十七轮审计）：并发推送互踩 +
+  # 扫描摘录 0644 对同机其他用户可读。
+  scan_out="$(mktemp "${TMPDIR:-/tmp}/scan-output.XXXXXX")"
+  if ! "$scanner" --mode="$scan_mode" --paths=. --tracked-only $baseline_arg --format=text >"$scan_out" 2>&1; then
     echo "❌ Sensitive findings detected:" >&2
-    head -50 /tmp/scan-output.txt
+    head -50 "$scan_out" >&2
     scan_failed=1
   fi
+  rm -f "$scan_out"
 fi
 
 if [[ $scan_failed -eq 1 ]]; then
@@ -71,12 +93,58 @@ if [[ $scan_failed -eq 1 ]]; then
   exit 1
 fi
 
+# ── 1b. 审计守卫门（R69）──────────────────────────────────────────────
+#
+# 为什么它**不受 SKIP_TESTS / RUN_GO_TESTS 开关约束**：这些守卫是纯静态分析
+# 门，无 DB、无网络，实测七个包合计约 13s。Go 单元测试之所以默认 opt-in，
+# 原因是成本与外部依赖，而不是守卫的运行代价。
+#
+# R69 的发现：internal/ 下的 7 个审计守卫（rowsguard / errdiscard / sqlguard
+# / sqlreadguard / paramguard + dbrows / jsoncol）此前**没有任何强制路径执行**
+# ——本钩子的 Go 测试是 opt-in 且只跑 licensing + envinjector，CI 各 workflow
+# 也没覆盖。一门没人跑的守卫是文档，不是门。
+#
+# 本段同时做两件事：跑守卫，以及校验「没有新守卫被漏登记」（guards-sync）。
+if command -v go >/dev/null 2>&1; then
+  echo "🛡️  Running audit-guard gate (R69)..."
+  _guard_log="/tmp/guards-$$.log"
+  if ! (cd "$repo_root" && go test \
+        ./internal/rowsguard ./internal/errdiscard \
+        ./internal/dbrows ./internal/jsoncol \
+        ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard \
+        -count=1 -timeout=120s) > "$_guard_log" 2>&1; then
+    echo "❌ 审计守卫失败（守卫已拦住回归）。" >&2
+    tail -30 "$_guard_log" | sed 's/^/    /' >&2
+    rm -f "$_guard_log"
+    exit 1
+  fi
+  rm -f "$_guard_log"
+  if ! (cd "$repo_root" && bash scripts/checks/guards-sync.sh); then
+    echo "" >&2
+    echo "🚫 Push BLOCKED: 有审计守卫包未被登记进执行路径。" >&2
+    echo "   一门没人跑的守卫只是文档。新增守卫请登记到 Makefile 的 GUARD_PACKAGES。" >&2
+    exit 1
+  fi
+else
+  echo "⚠️  go not in PATH — skipping audit-guard gate" >&2
+fi
+
 # ── 2. v2 Phase 3B-3: 11-suite shell test gate ──────────────────────────
 
 if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
   echo "⏩ SKIP_TESTS=1 — skipping test gate (use only with extreme caution)"
 else
   echo "🧪 Running 11-suite shell test gate (v2 Phase 3B-3)..."
+
+  # ── Git env 消毒（三十七轮续五根修，2026-10-01）────────────────────
+  # 真实 push 时 git 向本钩子导出 GIT_DIR（指向 module gitdir）。套件若为
+  # 自建 fixture 跑 `git init`（bump_version_collision_test.sh:34，三秒
+  # 复现），会在毒化态下 reinit 本仓 gitdir 并写入 core.bare=true——
+  # 数周"未知工具毒化"与多轮 github 门集体假红的同一根源。套件必须
+  # 在中性 git 环境里执行；钩子自身的 git 调用都在此之前已用绝对路径
+  # 完成，不受影响。
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_QUARANTINE_PATH
 
   test_failures=0
   while IFS= read -r t; do
@@ -86,12 +154,16 @@ else
     # the existing shells).
     test_name=$(basename "$t")
     echo -n "  $test_name: "
-    if timeout 60 bash "$t" > /tmp/test-$$.log 2>&1; then
-      summary=$(grep -E "summary:" /tmp/test-$$.log | tail -1)
+    # 每套独立日志（三十七轮续五）：此前共写 /tmp/test-$$.log，多套同败时
+    # 互相覆盖只剩最后一套；失败日志保留供排障，通过即清。
+    log_file="/tmp/test-${test_name}-$$.log"
+    if timeout 60 bash "$t" > "$log_file" 2>&1; then
+      summary=$(grep -E "summary:" "$log_file" | tail -1)
       [[ -n "$summary" ]] && summary="  $summary"
       echo "PASS${summary}"
+      rm -f "$log_file"
     else
-      echo "FAIL (see /tmp/test-$$.log)"
+      echo "FAIL (see $log_file)"
       test_failures=$((test_failures + 1))
     fi
   done < <(find "$repo_root/tests" -maxdepth 1 -name '*.sh' -print | sort)
@@ -104,10 +176,8 @@ else
     echo "     SKIP_TESTS=1 git push …   (CI/quick-push only)" >&2
     echo "     git push --no-verify …    (last resort)" >&2
     echo "" >&2
-    rm -f /tmp/test-$$.log
     exit 1
   fi
-  rm -f /tmp/test-$$.log
 fi
 
 # ── 3. v2 Phase 3B-3: Go unit tests (opt-in via RUN_GO_TESTS=1) ────────────

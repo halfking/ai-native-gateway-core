@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -66,7 +67,7 @@ func (h *Handler) handleOpsOverview(w http.ResponseWriter, r *http.Request) {
 
 	payload, err := h.buildOpsOverviewPayload(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	cache.set(payload)
@@ -195,6 +196,9 @@ func (h *Handler) queryOpsRegionStats(ctx context.Context) (any, error) {
 		}
 		byRegion[region] = item
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ops region stats: iterate rows: %w", err)
+	}
 
 	expected := []string{"local", "245", "154"}
 	items := make([]map[string]any, 0, len(expected))
@@ -255,6 +259,9 @@ func (h *Handler) queryOpsDeploymentNodes(ctx context.Context) (any, error) {
 			"started_at":     startedAt,
 			"last_heartbeat": lastHeartbeat,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ops deployment nodes: iterate rows: %w", err)
 	}
 	if items == nil {
 		items = []map[string]any{}
@@ -330,6 +337,9 @@ func (h *Handler) queryOpsOfflineRequests(ctx context.Context) (any, error) {
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ops offline requests: iterate rows: %w", err)
+	}
 	if items == nil {
 		items = []map[string]any{}
 	}
@@ -375,6 +385,9 @@ func (h *Handler) queryOpsRecentFaults(ctx context.Context) (any, error) {
 			"description": description, "source": source, "detected_at": detectedAt,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ops recent faults: iterate rows: %w", err)
+	}
 	if events == nil {
 		events = []map[string]any{}
 	}
@@ -414,6 +427,9 @@ func (h *Handler) queryOpsRecentUpgrades(ctx context.Context) (any, error) {
 			item["completed_at"] = *completedAt
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ops recent upgrades: iterate rows: %w", err)
 	}
 	if items == nil {
 		items = []map[string]any{}

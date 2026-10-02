@@ -20,12 +20,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
-	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -167,6 +169,9 @@ func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, i
 	if err != nil {
 		return nil, err
 	}
+	// R28-P-1: stamp the provider so the shared upstream client can route
+	// egress_profile='proxy' providers through their subscription node pool.
+	req = upstreampkg.WithEgressMeta(req, cand.ProviderID)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", cand.APIKey)
 	req.Header.Set("anthropic-version", anthropicVersion)
@@ -194,7 +199,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	// shape differs (output[] with message / function_call / reasoning
 	// items, not chat.completion.choices[]), so dispatch to
 	// IR.SerializeResponsesResponse when ClientProtocol == "openai-responses".
-	if a.ClientProtocol != "anthropic-messages" {
+	if a.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		if a.IR != nil {
 			var irScoped IRConverter
 			if scoped, ok := a.IR.(ProviderScoped); ok {
@@ -237,7 +242,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 				converted []byte
 				serErr    error
 			)
-			if a.ClientProtocol == "openai-responses" {
+			if a.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
 				converted, serErr = irScoped.SerializeResponsesResponse(irResp, clientModel)
 			} else {
 				converted, serErr = irScoped.SerializeOpenAIResponse(irResp, clientModel)
@@ -252,7 +257,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 			}
 			body = converted
 		} else if a.ChatResponseConverter != nil {
-			if a.ClientProtocol == "openai-responses" {
+			if a.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
 				return nil, &upstreampkg.Error{
 					Kind:       errorsx.KindConversion,
 					Message:    "Responses API response conversion requires IR converter",
@@ -400,11 +405,11 @@ func (a *AnthropicExecutor) StreamResponse(ctx context.Context, w http.ResponseW
 	//   1. ResponsesTranslator (Responses client target)
 	//   2. OpenAITranslator (Chat Completions client target)
 	//   3. PassthroughStream (defensive fallback)
-	if a.ClientProtocol == "openai-responses" {
+	if a.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
 		if a.ResponsesTranslator != nil {
 			return a.ResponsesTranslator(ctx, w, resp, "", "", "", nil)
 		}
-	} else if a.ClientProtocol != "anthropic-messages" {
+	} else if a.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		if a.OpenAITranslator != nil {
 			return a.OpenAITranslator(ctx, w, resp, "", "", "", nil)
 		}
@@ -475,9 +480,9 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 	// FIX (2026-06-23): Only convert when BOTH client and upstream use different protocols.
 	// Before: converted whenever client != anthropic, even if upstream was also openai.
 	// After: only convert when client=openai AND upstream=anthropic.
-	needsConversion := params.ClientProtocol != "anthropic-messages" &&
+	needsConversion := params.ClientProtocol != providercatalog.ProtocolAnthropicMessages &&
 		params.ClientProtocol != "" &&
-		cand.Protocol == "anthropic-messages"
+		cand.Protocol == providercatalog.ProtocolAnthropicMessages
 
 	if needsConversion && e.IR != nil {
 		// Check format_conversion.enabled (provider-level override)
@@ -566,6 +571,13 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// 钳不到位会 400；钳后仍 < 1024（max_tokens 太小放不下）则整体
 		// 丢弃 thinking（保持请求可发）。
 		irReq = ir.ClampRestoredReasoningForAnthropic(irReq)
+		// S2-F3/R60: stamp the gateway request id into the IR metadata carrier
+		// so ir-layer format anomalies ({\"raw\":...} tool_use.input wrap 等)
+		// 上报时带真实 request_id（serialize_anthropic 经 irRequestID 读取）。
+		// 与 request_logs.request_id 同源，异常可与请求日志/泳道对账。
+		// R61: 与 openai 面共用 stampIRRequestID 助手；序列化器只透出
+		// user_id，本 stamp 不进上游请求体。
+		irReq = stampIRRequestID(irReq, params.RequestID)
 		bodyBytes, err := irScoped.SerializeAnthropic(irReq)
 		if err != nil {
 			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseOpenAI.
@@ -629,9 +641,9 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
 	// FIX (2026-06-23): Only convert when upstream protocol is anthropic-messages.
 	// This prevents converting OpenAI→Anthropic when talking to OpenAI-compatible upstreams like MiniMax.
-	needsConversion := params.ClientProtocol != "anthropic-messages" &&
+	needsConversion := params.ClientProtocol != providercatalog.ProtocolAnthropicMessages &&
 		params.ClientProtocol != "" &&
-		cand.Protocol == "anthropic-messages"
+		cand.Protocol == providercatalog.ProtocolAnthropicMessages
 	if needsConversion {
 		// Phase 3.2: Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
@@ -655,7 +667,7 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 
 	// FIX (2026-06-23): Only apply Anthropic-specific transforms when upstream is anthropic-messages.
 	// MiniMax and other openai-completions upstreams should receive OpenAI format unchanged.
-	if cand.Protocol == "anthropic-messages" {
+	if cand.Protocol == providercatalog.ProtocolAnthropicMessages {
 		// MiniMax anthropic-messages rejects tools carrying OpenAI/custom type
 		// wrappers (error 2013: invalid tool type). Always emit name/input_schema.
 		if e.SanitizeAnthropicTools != nil {
@@ -703,7 +715,7 @@ func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provide
 	} else if params != nil && len(runnerMeta) > 0 {
 		params.CompressionRunnerMeta = runnerMeta
 	}
-	return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic)
+	return e.applyParamguardLedger(params, bodyBytes, paramreg.DialectAnthropic)
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of
@@ -772,7 +784,6 @@ func (e *Executor) executeAnthropic(
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
-		capturedCtx := params.R.Context()
 		// Track C C5 (2026-06-21): the capturer is built by the main.go
 		// wrapper that owns the AnthropicPassthroughStream closure (it
 		// has access to pendingStore + the upstream resp to check the
@@ -783,44 +794,41 @@ func (e *Executor) executeAnthropic(
 		// we currently pass nil here; the real wiring is in main.go.
 		// P1-2 fix (2026-08-28): lambda accepts ctx parameter.
 		ae.PassthroughStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return e.AnthropicPassthroughStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+			return e.AnthropicPassthroughStream(ctx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
-	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != "anthropic-messages" {
+	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
-		capturedCtx := params.R.Context()
 		ae.OpenAITranslator = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
-			return e.AnthropicToOpenAIStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+			return e.AnthropicToOpenAIStream(ctx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	// Phase E (2026-07-01): wire ResponsesTranslator when the client
 	// uses the Responses API. This is the streaming counterpart of the
 	// IR-based non-stream response path that runs through
 	// SerializeResponsesResponse (see executor_anthropic.go:WriteNonStreamResponse).
-	if e.AnthropicToResponsesStream != nil && params.ClientProtocol == "openai-responses" {
+	if e.AnthropicToResponsesStream != nil && params.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
-		capturedCtx := params.R.Context()
 		ae.ResponsesTranslator = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
-			return e.AnthropicToResponsesStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+			return e.AnthropicToResponsesStream(ctx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
-	if e.AnthropicToChatResponse != nil && params.ClientProtocol != "anthropic-messages" {
+	if e.AnthropicToChatResponse != nil && params.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		ae.ChatResponseConverter = e.AnthropicToChatResponse
 	}
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
-		capturedCtx := params.R.Context()
 		// Second assignment is defensive (the if-block at line 411
 		// already assigned this); the capturer plumbing is identical.
 		// P1-2 fix (2026-08-28): lambda accepts ctx parameter.
 		ae.PassthroughStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return e.AnthropicPassthroughStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+			return e.AnthropicPassthroughStream(ctx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 
@@ -882,6 +890,9 @@ func (e *Executor) executeAnthropic(
 				// maxRetries==0 the compressed payload is never sent and the
 				// loop falls through to the generic "exhausted 0 retries".
 				ctxLenRecoveryRetry = true
+				// R51-F15: 压缩后的重发是准入内的额外上游调用，补记到准入
+				// Governor（与 executeOpenAI 的 ctxLen 恢复同型）。
+				meterExtraUpstreamCall(params)
 				continue
 			case ctxLenGiveUp:
 				// Return a typed error so the outer Execute loop knows
@@ -1218,6 +1229,32 @@ func (e *Executor) executeAnthropicOnce(
 					headers: resp.Header.Clone(),
 				}
 			}
+			// reqprobe (2026-09-21): anthropic-messages 出站的请求侧异常
+			// 仅记录（模式回退是候选级协议变更、Q4 直传体的中途改写会
+			// 破坏字节契约，均不在本执行器自动尝试），供管理页人工分类。
+			if e.RequestProbe != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				if diag, ok := reqprobe.Diagnose(reqprobe.Input{
+					HTTPStatus:   resp.StatusCode,
+					ErrorBody:    body,
+					OutboundBody: bodyBytes,
+					ErrorKind:    string(errKind),
+					Protocol:     cand.Protocol,
+				}); ok {
+					e.RequestProbe.RecordTerminal(reqprobe.Input{
+						HTTPStatus:   resp.StatusCode,
+						ErrorBody:    body,
+						OutboundBody: bodyBytes,
+						ErrorKind:    string(errKind),
+						Protocol:     cand.Protocol,
+					}, diag, reqprobe.TerminalMeta{
+						RequestID:     params.RequestID,
+						ProviderID:    cand.ProviderID,
+						ProviderCode:  cand.CatalogCode,
+						ClientModel:   params.ClientModel,
+						OutboundModel: cand.RawModel,
+					}, false)
+				}
+			}
 			// 2026-07-03 (Bug #N, same as executor_chat.go): preserve
 			// the precise errKind via a typed *upstreampkg.Error so the
 			// outer Execute() loop and CandidateFailureLogger can read
@@ -1248,7 +1285,7 @@ func (e *Executor) executeAnthropicOnce(
 				// the body exceeded the cap).
 				params.W.Header().Set("Content-Length", strconv.Itoa(len(fullBody)))
 				for k, vs := range resp.Header {
-					if k == "Content-Length" || k == "Content-Encoding" {
+					if k == "Content-Length" || k == "Content-Encoding" || ratelimit.IsGatewayRateLimitScopeHeader(k) {
 						continue // we set Content-Length; skip the (possibly gzipped) encoding header
 					}
 					for _, v := range vs {
@@ -1298,20 +1335,20 @@ func (e *Executor) executeAnthropicOnce(
 		// 并发修复 2026-07-27：见 responseSink 注释 —— 异步重试路径 W 为
 		// nil，改写到丢弃 writer，upstream stream 仍被完整消费。
 		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
-		outcome := ae.StreamResponse(params.R.Context(), responseSink(params), resp)
+		outcome := ae.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
 		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
 			return &ExecuteResult{
-					Response:    resp,
-					Candidate:   cand,
-					LatencyMs:   latencyMs,
-					RequestBody: append([]byte(nil), bodyBytes...),
-					InboundBody: sourceBody,
-				}, &streamInterruptedError{
-					reason:       outcome.Reason,
-					credentialID: cand.CredentialID,
-					resumable:    false,
-					kind:         errorsx.KindCanceled,
-				}
+				Response:    resp,
+				Candidate:   cand,
+				LatencyMs:   latencyMs,
+				RequestBody: append([]byte(nil), bodyBytes...),
+				InboundBody: sourceBody,
+			}, &streamInterruptedError{
+				reason:       outcome.Reason,
+				credentialID: cand.CredentialID,
+				resumable:    false,
+				kind:         errorsx.KindCanceled,
+			}
 		}
 		if outcome.Interrupted {
 			streamKind := outcome.Kind
@@ -1347,7 +1384,12 @@ func (e *Executor) executeAnthropicOnce(
 				RequestBody: append([]byte(nil), bodyBytes...),
 				// Phase D (2026-06-22): inbound body for audit logging
 				InboundBody: sourceBody,
-			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
+				// R59 audit (S1-F1): TerminalRendered must reach the dispatch
+				// funnel on the anthropic executor face too — without it the
+				// ErrProtocolTerminalRendered wrap never fires and the shared
+				// post-loop handlers can stack a second terminal after the
+				// bridge's interruption frame. Mirrors executor_chat.go:1482.
+			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind, terminalRendered: outcome.TerminalRendered}
 		}
 		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 		return &ExecuteResult{
@@ -1414,7 +1456,16 @@ func (e *Executor) executeAnthropicOnce(
 	if err != nil {
 		return nil, err
 	}
-	e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "anthropic-messages"), responseBody)
+	// R25-V (2026-09-30 round 30): LogClientResponse means "the bytes the
+	// client actually received". Under SuppressSuccessWrite (native
+	// handlers defer the write until after output governance) this body
+	// was only captured — the handler may still block it. Logging it here
+	// would persist a blocked provider body as an approved client
+	// response. The chat paths gate identically; the final governed bytes
+	// are logged by the handler lane.
+	if !params.SuppressSuccessWrite && params.W != nil {
+		e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "anthropic-messages"), responseBody)
+	}
 	e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 	return &ExecuteResult{
 		Response:    resp,

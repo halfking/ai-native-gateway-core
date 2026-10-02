@@ -150,31 +150,6 @@ func TestCompositeDetector_NilReceiver(t *testing.T) {
 	}
 }
 
-func TestDeduplicateFragments(t *testing.T) {
-	input := []SensitiveFragment{
-		{Type: TypePhone, Start: 0, End: 11},
-		{Type: TypeEmail, Start: 0, End: 11},
-		{Type: TypePhone, Start: 12, End: 20},
-	}
-	got := deduplicateFragments(input)
-	if len(got) != 2 {
-		t.Fatalf("deduplicateFragments() = %d, want 2", len(got))
-	}
-	if got[0].Type != TypePhone {
-		t.Errorf("first fragment type = %v, want phone", got[0].Type)
-	}
-	if got[1].Start != 12 {
-		t.Errorf("second fragment start = %d, want 12", got[1].Start)
-	}
-}
-
-func TestDeduplicateFragments_Empty(t *testing.T) {
-	got := deduplicateFragments(nil)
-	if len(got) != 0 {
-		t.Errorf("deduplicateFragments(nil) = %v, want empty", got)
-	}
-}
-
 func TestDetectorInterfaceCompileTime(t *testing.T) {
 	var _ Detector = (*PatternDetector)(nil)
 	var _ Detector = (*CustomDetector)(nil)

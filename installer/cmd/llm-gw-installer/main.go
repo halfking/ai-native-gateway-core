@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kaixuan/llm-gateway-go/installer/internal/activation"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/dbinit"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/envdetect"
@@ -34,9 +36,6 @@ const installerVersion = "1.0.0"
 //go:embed embeddata/compose.yml
 var composeYAML []byte
 
-//go:embed embeddata/env.template
-var envTemplate []byte
-
 //go:embed embeddata/install-report.md.tmpl
 var reportTemplate []byte
 
@@ -48,6 +47,75 @@ var sqlSchema []byte
 
 //go:embed embeddata/02-seed.sql
 var sqlSeed []byte
+
+//go:embed embeddata/startup/392_candidate_failure_logs_monthly_partition.sql
+var candidateFailureLogsMonthlyPartitionMigration392 []byte
+
+//go:embed embeddata/startup/535_candidate_failure_logs_atomic_promote.sql
+var candidateFailureLogsAtomicPromoteMigration535 []byte
+
+//go:embed embeddata/startup/534_handoff_logs_hot_columnar.sql
+var handoffLogsHotColumnarMigration534 []byte
+
+//go:embed embeddata/startup/612_native_responses_capability.sql
+var nativeResponsesCapabilityMigration612 []byte
+
+//go:embed embeddata/startup/617_candidate_failure_logs_hot_contract.sql
+var candidateFailureLogsHotContractMigration617 []byte
+
+//go:embed embeddata/startup/803_candidate_failure_logs_hot_column_reconcile.sql
+var candidateFailureLogsHotColumnReconcileMigration803 []byte
+
+//go:embed embeddata/startup/805_session_dim_reconcile.sql
+var sessionDimReconcileMigration805 []byte
+
+//go:embed embeddata/startup/471_session_summaries_archival.sql
+var sessionSummariesArchivalMigration471 []byte
+
+//go:embed embeddata/startup/573_drop_request_logs_body_columns.sql
+var dropRequestLogsBodyColumnsMigration573 []byte
+
+//go:embed embeddata/startup/577_request_logs_view_customer_id.sql
+var requestLogsViewCustomerIdMigration577 []byte
+
+//go:embed embeddata/startup/610_request_class_due_at.sql
+var requestClassDueAtMigration610 []byte
+
+//go:embed embeddata/startup/487_request_logs_add_system_fingerprint.sql
+var requestLogsAddSystemFingerprintMigration487 []byte
+
+//go:embed embeddata/startup/603_repair_request_logs_schema_consistency.sql
+var repairRequestLogsSchemaConsistencyMigration603 []byte
+
+//go:embed embeddata/startup/388_billing_cancellation_audit.sql
+var billingCancellationAuditMigration388 []byte
+
+//go:embed embeddata/startup/484_request_logs_hot_add_status_code.sql
+var requestLogsHotAddStatusCodeMigration484 []byte
+
+//go:embed embeddata/startup/491_request_logs_queue_timestamps.sql
+var requestLogsQueueTimestampsMigration491 []byte
+
+//go:embed embeddata/startup/510_request_type.sql
+var requestTypeMigration510 []byte
+
+//go:embed embeddata/startup/532_request_logs_final_success.sql
+var requestLogsFinalSuccessMigration532 []byte
+
+//go:embed embeddata/startup/542_request_logs_token_band.sql
+var requestLogsTokenBandMigration542 []byte
+
+//go:embed embeddata/startup/543_request_logs_discard_events.sql
+var requestLogsDiscardEventsMigration543 []byte
+
+//go:embed embeddata/startup/485_request_logs_add_raw_model_name.sql
+var requestLogsAddRawModelNameMigration485 []byte
+
+//go:embed embeddata/startup/806_session_bodies_partitions_heap.sql
+var sessionBodiesPartitionsHeapMigration806 []byte
+
+//go:embed embeddata/startup/640_session_turns_protocol_fields.sql
+var sessionTurnsProtocolFieldsMigration640 []byte
 
 //go:embed embeddata/startup/478_auto_route_affinity.sql
 var autoRouteAffinityMigration478 []byte
@@ -87,6 +155,14 @@ var statsMigration539 []byte
 
 //go:embed embeddata/startup/540_stats_event_inbox_consumer.sql
 var statsMigration540 []byte
+
+// 541 creates candidate_binding_scope_revision, which startup migration 568
+// (credential_priority_flag) indexes into. Without it a fresh install aborts
+// at 568 with `relation "public.candidate_binding_scope_revision" does not
+// exist`, because 541 was never registered in the installer.
+//
+//go:embed embeddata/startup/541_candidate_binding_scope_revision.sql
+var statsMigration541 []byte
 
 //go:embed embeddata/startup/544_stats_adjustments_alignment.sql
 var statsMigration544 []byte
@@ -331,6 +407,9 @@ var requestLogsCurrentMonthViewBootstrapMigration680 []byte
 //go:embed embeddata/startup/681_provider_error_details_fingerprint_restore_8part.sql
 var providerErrorDetailsFingerprintRestore8partMigration681 []byte
 
+//go:embed embeddata/startup/804_credential_model_context_window_columns.sql
+var credentialModelContextWindowColumnsMigration804 []byte
+
 //go:embed embeddata/startup/682_model_offers_context_window_columns.sql
 var modelOffersContextWindowColumnsMigration682 []byte
 
@@ -475,17 +554,167 @@ var r41RequestLogsSuperAdminBypassMigration725 []byte
 //go:embed embeddata/startup/726_restore_credential_model_index_hot_unique.sql
 var restoreCredentialModelIndexHotUniqueMigration726 []byte
 
+// R48 (2026-09-20): 730 session role hierarchy — sessions 角色三列 +
+// role_task_llm_mapping 二维路由表（role × task_kind → LLM 偏好）+
+// 轻量池 tier 修正。五点同步已随本次一并完成。
+//
+//go:embed embeddata/startup/730_session_role_hierarchy.sql
+var sessionRoleHierarchyMigration730 []byte
+
+// R50 (2026-09-21): 731 auto_route_selections 角色路由归因三列
+// （agent_role/task_kind/routing_source，父表+hot 双表）——亲和学习
+// 剔除 role 强制选型行的数据基础。五点同步随本轮一并完成。
+//
+//go:embed embeddata/startup/731_auto_route_selection_role_attribution.sql
+var autoRouteSelectionRoleAttributionMigration731 []byte
+
+// R50 (2026-09-21): 733/734 会话存储解耦 v3（session_turn_details 特征层 +
+// canonical 视图 details JOIN）。本体由 v3 会话线交付（731/732 撞号重编
+// 733/734），漏做 installer 五点同步致契约门禁红，本处补齐（事务兼容，
+// 走常规 single-transaction 通道）。
+//
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
+
+// taskprofile 后续轮 (2026-09-21): 733/734 会话存储解耦 v3 五点同步补齐
+// ——session v3 落地（035f9382e / 8e86ddcbc）只跑了 db.Open 与 schema 通道，
+// 五点同步移交本轮收口（733 特征层表族 + 734 canonical 视图 LEFT JOIN
+// 替换 30 个 NULL 占位）。需在 session_turns_hot_bootstrap 之后执行以
+// 保证 session_turn_details_hot 拿到 hot 表存在性。
+//
+//go:embed embeddata/startup/733_session_turn_details.sql
+var sessionTurnDetailsMigration733 []byte
+
+//go:embed embeddata/startup/734_request_logs_view_details_join.sql
+var requestLogsViewDetailsJoinMigration734 []byte
+
+//go:embed embeddata/startup/735_models_canonical_active_folded_unique.sql
+var canonicalFoldedUniqueMigration735 []byte
+
+//go:embed embeddata/startup/736_maas_rate_multiplier.sql
+var maasRateMultiplierMigration736 []byte
+
+//go:embed embeddata/startup/737_maas_reconciliation_findings.sql
+var maasReconciliationFindingsMigration737 []byte
+
+//go:embed embeddata/startup/738_view_chain_credits_rate_multiplier.sql
+var viewChainCreditsRateMultiplierMigration738 []byte
+
+//go:embed embeddata/startup/739_promote_functions_rate_multiplier.sql
+var promoteFunctionsRateMultiplierMigration739 []byte
+
+//go:embed embeddata/startup/740_view_chain_client_ip.sql
+var viewChainClientIPMigration740 []byte
+
+//go:embed embeddata/startup/742_hosted_task_recalled_event.sql
+var hostedTaskRecalledEventMigration742 []byte
+
+//go:embed embeddata/startup/743_normalize_provider_protocol.sql
+var normalizeProviderProtocolMigration743 []byte
+
+//go:embed embeddata/startup/745_report_snapshots.sql
+var reportSnapshotsMigration745 []byte
+
+//go:embed embeddata/startup/746_report_snapshots_internal_dims.sql
+var reportSnapshotsInternalDimsMigration746 []byte
+
+//go:embed embeddata/startup/747_session_mirror_outbox_source_claim.sql
+var sessionMirrorOutboxSourceClaimMigration747 []byte
+
+//go:embed embeddata/startup/748_selfcheck_system_key_tier.sql
+var selfcheckSystemKeyTierMigration748 []byte
+
+//go:embed embeddata/startup/750_usage_facts_daily_partition.sql
+var usageFactsDailyPartitionMigration750 []byte
+
+//go:embed embeddata/startup/751_usage_facts_partition_tz_pin.sql
+var usageFactsPartitionTzPinMigration751 []byte
+
+//go:embed embeddata/startup/752_mock_probe_history.sql
+var mockProbeHistoryMigration752 []byte
+
+//go:embed embeddata/startup/753_session_turn_logs_ttl.sql
+var sessionTurnLogsTTLMigration753 []byte
+
+//go:embed embeddata/startup/754_archive_request_logs_default.sql
+var archiveRequestLogsDefaultMigration754 []byte
+
+//go:embed embeddata/startup/756_request_logs_id_index.sql
+var requestLogsIDIndexMigration756 []byte
+
+//go:embed embeddata/startup/757_session_turns_origin_actor_projection.sql
+var sessionTurnsOriginActorProjectionMigration757 []byte
+
+//go:embed embeddata/startup/758_routeincident_missing_columns.sql
+var routeincidentMissingColumnsMigration758 []byte
+
+//go:embed embeddata/startup/759_report_snapshots_grain_dims.sql
+var reportSnapshotsGrainDimsMigration759 []byte
+
+//go:embed embeddata/startup/801_session_turn_details_duplicate_drain.sql
+var sessionTurnDetailsDuplicateDrainMigration801 []byte
+
+//go:embed embeddata/startup/802_session_turn_details_gw_task_id_index.sql
+var sessionTurnDetailsGwTaskIDIndexMigration802 []byte
+
+//go:embed embeddata/startup/760_analysis_events_inbox_ttl_indexes.sql
+var analysisEventsInboxTTLIndexesMigration760 []byte
+
+//go:embed embeddata/startup/761_stats_inbox_sync_status_backfill.sql
+var statsInboxSyncStatusBackfillMigration761 []byte
+
+//go:embed embeddata/startup/762_session_project_backfill_chain.sql
+var sessionProjectBackfillChainMigration762 []byte
+
+//go:embed embeddata/startup/763_provider_events_contract.sql
+var providerEventsContractMigration763 []byte
+
+//go:embed embeddata/startup/764_request_logs_tenant_ts_index.sql
+var requestLogsTenantTsIndexMigration764 []byte
+
+//go:embed embeddata/startup/765_bodies_columnar_storage.sql
+var bodiesColumnarStorageMigration765 []byte
+
+//go:embed embeddata/startup/800_provider_endpoint_protocols.sql
+var providerEndpointProtocolsMigration800 []byte
+
+//go:embed embeddata/startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql
+var requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807 []byte
+
+// 808/809（2026-10-01 Round 44 收口轮）。新登记一条启动迁移要接三处：
+// embeddata 文件、这里的 go:embed 变量、下面 embeddedSQLFiles 映射。
+// 少接任何一处，installer 模块的 TestStartupFilesAreAllEmbedded 就是红的，
+// 而 fresh-install 路径会静默地漏掉这条迁移 —— 因为 StartupFiles 里已经
+// 登记了它，dbinit 却找不到文件。
+//
+//go:embed embeddata/startup/808_request_logs_default_partition.sql
+var requestLogsDefaultPartitionMigration808 []byte
+
+//go:embed embeddata/startup/809_instance_release_status_nullable_release_id.sql
+var instanceReleaseStatusNullableReleaseIDMigration809 []byte
 
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
 // 同步登记；stats_migrations_test.go 的双向对账会同时守住两个方向。
 var embeddedSQLFiles = map[string][]byte{
-	"00-prereqs.sql":                                                                 sqlPrereqs,
-	"01-schema.sql":                                                                  sqlSchema,
-	"02-seed.sql":                                                                    sqlSeed,
+	"00-prereqs.sql": sqlPrereqs,
+	"01-schema.sql":  sqlSchema,
+	"02-seed.sql":    sqlSeed,
+	"startup/392_candidate_failure_logs_monthly_partition.sql":                       candidateFailureLogsMonthlyPartitionMigration392,
+	"startup/805_session_dim_reconcile.sql":                                          sessionDimReconcileMigration805,
+	"startup/471_session_summaries_archival.sql":                                     sessionSummariesArchivalMigration471,
+	"startup/487_request_logs_add_system_fingerprint.sql":                            requestLogsAddSystemFingerprintMigration487,
+	"startup/388_billing_cancellation_audit.sql":                                     billingCancellationAuditMigration388,
+	"startup/484_request_logs_hot_add_status_code.sql":                               requestLogsHotAddStatusCodeMigration484,
+	"startup/491_request_logs_queue_timestamps.sql":                                  requestLogsQueueTimestampsMigration491,
+	"startup/510_request_type.sql":                                                   requestTypeMigration510,
+	"startup/532_request_logs_final_success.sql":                                     requestLogsFinalSuccessMigration532,
+	"startup/542_request_logs_token_band.sql":                                        requestLogsTokenBandMigration542,
+	"startup/543_request_logs_discard_events.sql":                                    requestLogsDiscardEventsMigration543,
+	"startup/485_request_logs_add_raw_model_name.sql":                                requestLogsAddRawModelNameMigration485,
+	"startup/806_session_bodies_partitions_heap.sql":                                 sessionBodiesPartitionsHeapMigration806,
+	"startup/640_session_turns_protocol_fields.sql":                                  sessionTurnsProtocolFieldsMigration640,
 	"startup/478_auto_route_affinity.sql":                                            autoRouteAffinityMigration478,
 	"startup/511_state_transitions_table.sql":                                        requestJourneyMigration511,
 	"startup/515_state_transitions_seq_unique.sql":                                   requestJourneyMigration515,
@@ -494,10 +723,14 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/521_repair_state_transitions_tenant.sql":                                requestJourneyMigration521,
 	"startup/530_request_journey_contract.sql":                                       requestJourneyMigration530,
 	"startup/531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,
+	"startup/535_candidate_failure_logs_atomic_promote.sql":                          candidateFailureLogsAtomicPromoteMigration535,
+	"startup/534_handoff_logs_hot_columnar.sql":                                      handoffLogsHotColumnarMigration534,
+	"startup/612_native_responses_capability.sql":                                    nativeResponsesCapabilityMigration612,
 	"startup/536_stats_analytics_foundation.sql":                                     statsMigration536,
 	"startup/537_usage_facts.sql":                                                    statsMigration537,
 	"startup/539_stats_reconciliation_tenant.sql":                                    statsMigration539,
 	"startup/540_stats_event_inbox_consumer.sql":                                     statsMigration540,
+	"startup/541_candidate_binding_scope_revision.sql":                               statsMigration541,
 	"startup/544_stats_adjustments_alignment.sql":                                    statsMigration544,
 	"startup/545_stats_reconciliation_phantom_resolution.sql":                        statsMigration545,
 	"startup/546_stats_reconciliation_diffs_unique.sql":                              statsMigration546,
@@ -519,14 +752,20 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/569_candidate_binding_scope_revision_canonical.sql":                     candidateBindingScopeRevisionCanonicalMigration569,
 	"startup/570_model_offers_insert_priority_passthrough.sql":                       modelOffersInsertPriorityPassthroughMigration570,
 	"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql":       candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
+	"startup/573_drop_request_logs_body_columns.sql":                                 dropRequestLogsBodyColumnsMigration573,
+	"startup/577_request_logs_view_customer_id.sql":                                  requestLogsViewCustomerIdMigration577,
 	"startup/572_session_summary_large_token_ratio.sql":                              sessionSummaryLargeTokenRatioMigration572,
 	"startup/600_outbound_body_to_bodies_hot.sql":                                    outboundBodyToBodiesHotMigration600,
 	"startup/601_request_logs_bodies_drop_metadata.sql":                              requestLogsBodiesDropMetadataMigration601,
 	"startup/602_request_logs_promote_atomic.sql":                                    requestLogsPromoteAtomicMigration602,
+	"startup/603_repair_request_logs_schema_consistency.sql":                         repairRequestLogsSchemaConsistencyMigration603,
 	"startup/606_session_summaries_agent_expert_tags.sql":                            sessionSummariesAgentExpertTagsMigration606,
+	"startup/610_request_class_due_at.sql":                                           requestClassDueAtMigration610,
 	"startup/618_request_journey_snapshot_receipts.sql":                              journalSnapshotReceiptsMigration618,
 	"startup/614_session_bodies_hot.sql":                                             sessionBodiesHotMigration614,
 	"startup/615_session_bodies_hot_promote_function.sql":                            sessionBodiesHotPromoteMigration615,
+	"startup/617_candidate_failure_logs_hot_contract.sql":                            candidateFailureLogsHotContractMigration617,
+	"startup/803_candidate_failure_logs_hot_column_reconcile.sql":                    candidateFailureLogsHotColumnReconcileMigration803,
 	"startup/620_provider_error_details_tenant_scope.sql":                            providerErrorDetailsTenantScopeMigration620,
 	"startup/621_provider_error_details_cleanup_index.sql":                           providerErrorDetailsCleanupIndexMigration621,
 	"startup/622_provider_error_aggregator_state.sql":                                providerErrorAggregatorStateMigration622,
@@ -579,6 +818,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/679_local_credential_unique.sql":                                        localCredentialUniqueMigration679,
 	"startup/680_request_logs_current_month_view_bootstrap.sql":                      requestLogsCurrentMonthViewBootstrapMigration680,
 	"startup/681_provider_error_details_fingerprint_restore_8part.sql":               providerErrorDetailsFingerprintRestore8partMigration681,
+	"startup/804_credential_model_context_window_columns.sql":                        credentialModelContextWindowColumnsMigration804,
 	"startup/682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
 	"startup/683_session_dim_ownership_columns.sql":                                  sessionDimOwnershipColumnsMigration683,
 	"startup/684_drop_stale_provider_error_tenant_fingerprint.sql":                   dropStaleProviderErrorTenantFingerprintMigration684,
@@ -623,7 +863,44 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/724_task_type_corrections.sql":                                          taskTypeCorrectionsMigration724,
 	"startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql":                    r41RequestLogsSuperAdminBypassMigration725,
 	"startup/726_restore_credential_model_index_hot_unique.sql":                      restoreCredentialModelIndexHotUniqueMigration726,
+	"startup/730_session_role_hierarchy.sql":                                         sessionRoleHierarchyMigration730,
+	"startup/731_auto_route_selection_role_attribution.sql":                          autoRouteSelectionRoleAttributionMigration731,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
+	"startup/733_session_turn_details.sql":                                           sessionTurnDetailsMigration733,
+	"startup/734_request_logs_view_details_join.sql":                                 requestLogsViewDetailsJoinMigration734,
+	"startup/735_models_canonical_active_folded_unique.sql":                          canonicalFoldedUniqueMigration735,
+	"startup/736_maas_rate_multiplier.sql":                                           maasRateMultiplierMigration736,
+	"startup/737_maas_reconciliation_findings.sql":                                   maasReconciliationFindingsMigration737,
+	"startup/738_view_chain_credits_rate_multiplier.sql":                             viewChainCreditsRateMultiplierMigration738,
+	"startup/739_promote_functions_rate_multiplier.sql":                              promoteFunctionsRateMultiplierMigration739,
+	"startup/740_view_chain_client_ip.sql":                                           viewChainClientIPMigration740,
+	"startup/742_hosted_task_recalled_event.sql":                                     hostedTaskRecalledEventMigration742,
+	"startup/743_normalize_provider_protocol.sql":                                    normalizeProviderProtocolMigration743,
+	"startup/745_report_snapshots.sql":                                               reportSnapshotsMigration745,
+	"startup/746_report_snapshots_internal_dims.sql":                                 reportSnapshotsInternalDimsMigration746,
+	"startup/747_session_mirror_outbox_source_claim.sql":                             sessionMirrorOutboxSourceClaimMigration747,
+	"startup/748_selfcheck_system_key_tier.sql":                                      selfcheckSystemKeyTierMigration748,
+	"startup/750_usage_facts_daily_partition.sql":                                    usageFactsDailyPartitionMigration750,
+	"startup/751_usage_facts_partition_tz_pin.sql":                                   usageFactsPartitionTzPinMigration751,
+	"startup/752_mock_probe_history.sql":                                             mockProbeHistoryMigration752,
+	"startup/753_session_turn_logs_ttl.sql":                                          sessionTurnLogsTTLMigration753,
+	"startup/754_archive_request_logs_default.sql":                                   archiveRequestLogsDefaultMigration754,
+	"startup/756_request_logs_id_index.sql":                                          requestLogsIDIndexMigration756,
+	"startup/757_session_turns_origin_actor_projection.sql":                          sessionTurnsOriginActorProjectionMigration757,
+	"startup/758_routeincident_missing_columns.sql":                                  routeincidentMissingColumnsMigration758,
+	"startup/759_report_snapshots_grain_dims.sql":                                    reportSnapshotsGrainDimsMigration759,
+	"startup/801_session_turn_details_duplicate_drain.sql":                           sessionTurnDetailsDuplicateDrainMigration801,
+	"startup/802_session_turn_details_gw_task_id_index.sql":                          sessionTurnDetailsGwTaskIDIndexMigration802,
+	"startup/760_analysis_events_inbox_ttl_indexes.sql":                              analysisEventsInboxTTLIndexesMigration760,
+	"startup/761_stats_inbox_sync_status_backfill.sql":                               statsInboxSyncStatusBackfillMigration761,
+	"startup/762_session_project_backfill_chain.sql":                                 sessionProjectBackfillChainMigration762,
+	"startup/763_provider_events_contract.sql":                                       providerEventsContractMigration763,
+	"startup/764_request_logs_tenant_ts_index.sql":                                   requestLogsTenantTsIndexMigration764,
+	"startup/765_bodies_columnar_storage.sql":                                        bodiesColumnarStorageMigration765,
+	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
+	"startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql":        requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807,
+	"startup/808_request_logs_default_partition.sql":                                 requestLogsDefaultPartitionMigration808,
+	"startup/809_instance_release_status_nullable_release_id.sql":                    instanceReleaseStatusNullableReleaseIDMigration809,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）
@@ -741,10 +1018,13 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 func installCmd() *cobra.Command {
 	var (
-		skipDoctor bool
-		skipPrompt bool
-		installDir string
-		configFile string
+		skipDoctor     bool
+		skipPrompt     bool
+		installDir     string
+		configFile     string
+		modeFlag       string
+		masterURLFlag  string
+		skipActivation bool
 	)
 
 	cmd := &cobra.Command{
@@ -752,10 +1032,13 @@ func installCmd() *cobra.Command {
 		Short: "一键安装并部署 llm-gateway-go",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInstall(installOpts{
-				SkipDoctor: skipDoctor,
-				SkipPrompt: skipPrompt,
-				InstallDir: installDir,
-				ConfigFile: configFile,
+				SkipDoctor:     skipDoctor,
+				SkipPrompt:     skipPrompt,
+				InstallDir:     installDir,
+				ConfigFile:     configFile,
+				Mode:           modeFlag,
+				MasterURL:      masterURLFlag,
+				SkipActivation: skipActivation,
 			})
 		},
 	}
@@ -764,15 +1047,21 @@ func installCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&skipPrompt, "skip-prompt", false, "跳过交互（需提供 --config）")
 	cmd.Flags().StringVar(&installDir, "dir", "", "安装目录（默认当前目录）")
 	cmd.Flags().StringVar(&configFile, "config", "", "配置文件路径（跳过交互）")
+	cmd.Flags().StringVar(&modeFlag, "mode", "", "存储模式: full | lite（空 = 走交互或默认 full）")
+	cmd.Flags().StringVar(&masterURLFlag, "master-url", "https://llmgateway.internal.example.com", "主控端 URL（license 激活/心跳）")
+	cmd.Flags().BoolVar(&skipActivation, "skip-activation", false, "跳过 install 末尾的自动激活调用（激活逻辑由后续子代理 B 接管）")
 
 	return cmd
 }
 
 type installOpts struct {
-	SkipDoctor bool
-	SkipPrompt bool
-	InstallDir string
-	ConfigFile string
+	SkipDoctor     bool
+	SkipPrompt     bool
+	InstallDir     string
+	ConfigFile     string
+	Mode           string // "" / "full" / "lite"（空 = 由 wizard 或 config 决定）
+	MasterURL      string // 默认 https://llmgateway.internal.example.com
+	SkipActivation bool
 }
 
 func runInstall(opts installOpts) error {
@@ -871,7 +1160,29 @@ prereqCheck:
 	}
 	cfg.InstallPath = installDir
 
-	// 5. 加载/拉取镜像（4 层 fallback）
+	// 2a. CLI flag 覆盖（--mode / --master-url / --skip-activation 优先级最高）
+	if opts.Mode != "" {
+		cfg.StorageMode = prompt.NormalizeStorageMode(opts.Mode)
+		logInfo(fmt.Sprintf("  ▶ --mode 覆盖存储模式: %s", cfg.StorageMode))
+	}
+	if opts.MasterURL != "" && opts.MasterURL != "https://llmgateway.internal.example.com" {
+		cfg.MasterURL = opts.MasterURL
+		logInfo(fmt.Sprintf("  ▶ --master-url 覆盖: %s", cfg.MasterURL))
+	}
+	if opts.SkipActivation {
+		cfg.SkipActivation = true
+		logInfo("  ▶ --skip-activation 启用：install 末尾将跳过自动激活调用")
+	}
+	cfg.StorageMode = prompt.NormalizeStorageMode(cfg.StorageMode)
+	if cfg.MasterURL == "" {
+		cfg.MasterURL = "https://llmgateway.internal.example.com"
+	}
+
+	// 2b. 输出 storage mode / master URL 主日志（订阅者据此处对齐 B/C 行为）
+	fmt.Printf("  ▶ 存储模式: %s\n", cfg.StorageMode)
+	fmt.Printf("  ▶ 主控端 URL: %s\n", cfg.MasterURL)
+
+	// 4. 加载/拉取镜像（4 层 fallback）
 	// citus/redis 用上游原始名拉取（公网才有），成功后自动 retag 成 compose.yml 引用的 kx-* 名
 	logStep("3/9", "加载/拉取 Docker 镜像")
 	strategy := imgsrc.NewDefaultStrategy(installDir, imgsrc.LoadRegistryFromEnv(), imgsrc.LoadRegistryAuthFromEnv())
@@ -884,8 +1195,14 @@ prereqCheck:
 	}
 	items := []pullItem{
 		{spec: imgsrc.ImageSpec{Name: "kx-llm-gateway-go", Tag: cfg.AppImageTag}, alias: "kx-llm-gateway-go:latest"},
-		{spec: imgsrc.ImageSpec{Name: "citusdata/citus", Tag: "11.3.0"}, alias: "kx-citus:v11.3.0"},
-		{spec: imgsrc.ImageSpec{Name: "redis", Tag: "7-alpine"}, alias: "kx-redis:v7-alpine"},
+	}
+	if !cfg.IsLite() {
+		items = append(items,
+			pullItem{spec: imgsrc.ImageSpec{Name: "citusdata/citus", Tag: "11.3.0"}, alias: "kx-citus:v11.3.0"},
+			pullItem{spec: imgsrc.ImageSpec{Name: "redis", Tag: "7-alpine"}, alias: "kx-redis:v7-alpine"},
+		)
+	} else {
+		logInfo("  ▶ lite 模式：跳过 citusdata/citus + redis 镜像拉取（使用 SQLite + 本地）")
 	}
 	for _, it := range items {
 		if err := strategy.PullWithAlias(it.spec, it.alias, logInfo); err != nil {
@@ -893,7 +1210,7 @@ prereqCheck:
 		}
 	}
 
-	// 6. 写入 .env
+	// 5. 写入 .env
 	logStep("4/9", "生成 .env")
 	env := secrets.NewEnvFile(filepath.Join(installDir, ".env"))
 	if err := env.Write(envEntries(cfg)); err != nil {
@@ -901,22 +1218,27 @@ prereqCheck:
 	}
 	logInfo("  ✅ .env (chmod 600, LF no BOM)")
 
-	// 7. 创建容器外目录结构
+	// 6. 创建容器外目录结构
 	logStep("5/9", "创建持久化目录结构")
 	if err := createDirectoryLayout(installDir); err != nil {
 		return fmt.Errorf("创建目录失败: %w", err)
 	}
 	logInfo("  ✅ 9 个子目录创建完成")
 
-	// 8. 写入 compose.yml + VERSION + 复制 installer 副本
+	// 7. 写入 compose.yml + VERSION + 复制 installer 副本
 	logStep("6/9", "写入配置文件")
 	composePath := filepath.Join(installDir, "compose.yml")
-	if err := os.WriteFile(composePath, composeYAML, 0644); err != nil {
+	composeContent := composeYAML
+	if cfg.IsLite() {
+		composeContent = buildLiteComposeYAML(composeYAML)
+		logInfo("  ▶ lite 模式：compose.yml 已剥离 kx-citus / kx-redis 服务（gateway 容器不依赖 PG/Redis）")
+	}
+	if err := os.WriteFile(composePath, composeContent, 0644); err != nil {
 		return fmt.Errorf("写入 compose.yml 失败: %w", err)
 	}
 	logInfo("  ✅ compose.yml")
 
-	// 8a. 写入 app/VERSION
+	// 7a. 写入 app/VERSION
 	versionPath := filepath.Join(installDir, "app", "VERSION")
 	if err := os.WriteFile(versionPath, []byte(cfg.AppImageTag+"\n"), 0644); err != nil {
 		logInfo("  ⚠️  写入 VERSION 失败: " + err.Error())
@@ -924,7 +1246,7 @@ prereqCheck:
 		logInfo("  ✅ app/VERSION")
 	}
 
-	// 8b. 复制当前 installer 到 bin/
+	// 7b. 复制当前 installer 到 bin/
 	binDir := filepath.Join(installDir, "bin")
 	if err := copyInstallerSelf(binDir); err != nil {
 		logInfo("  ⚠️  复制 installer 副本失败: " + err.Error())
@@ -932,40 +1254,45 @@ prereqCheck:
 		logInfo("  ✅ bin/llm-gw-installer")
 	}
 
-	// 8c. 复制 SQL 备份到 db/init/
+	// 7c. 复制 SQL 备份到 db/init/
 	if err := copySQLBackup(installDir); err != nil {
 		logInfo("  ⚠️  复制 SQL 备份失败: " + err.Error())
 	} else {
 		logInfo("  ✅ db/init/*.sql")
 	}
 
-	// 8d. 复制 MANIFEST.json 到 config/
+	// 7d. 复制 MANIFEST.json 到 config/
 	if err := copyManifest(installDir); err != nil {
 		logInfo("  ⚠️  复制 MANIFEST 失败: " + err.Error())
 	} else {
 		logInfo("  ✅ config/MANIFEST.json")
 	}
 
-	// 9. 启动容器
+	// 8. 启动容器
 	logStep("7/9", "启动 Docker 容器")
 	compose := dockerutil.NewCompose(composePath, "llm-gateway-go", installDir)
 	if err := compose.Up(logInfo); err != nil {
 		return fmt.Errorf("启动失败: %w", err)
 	}
 
-	// 10. 初始化数据库
+	// 9. 初始化数据库（lite 模式跳过：使用 SQLite，不需要 PG schema）
 	logStep("8/9", "初始化数据库")
-	sqlDir, sqlCleanup, err := setupSQLDir()
-	if err != nil {
-		return fmt.Errorf("准备 SQL 文件失败: %w", err)
-	}
-	defer sqlCleanup()
-	dbRunner := dbinit.NewRunner("kx-citus", "kxuser", "llm_gateway", sqlDir)
-	if err := dbRunner.WaitForPG(60); err != nil {
-		return fmt.Errorf("等待 PG: %w", err)
-	}
-	if err := dbRunner.InitSchema(logInfo); err != nil {
-		return fmt.Errorf("初始化 DB 失败: %w", err)
+	if cfg.IsLite() {
+		logInfo("  ▶ lite 模式：跳过 PG schema 初始化（使用 SQLite + 本地）")
+		logInfo("  ✅ 数据库初始化（lite / 跳过）")
+	} else {
+		sqlDir, sqlCleanup, err := setupSQLDir()
+		if err != nil {
+			return fmt.Errorf("准备 SQL 文件失败: %w", err)
+		}
+		defer sqlCleanup()
+		dbRunner := dbinit.NewRunner("kx-citus", "kxuser", "llm_gateway", sqlDir)
+		if err := dbRunner.WaitForPG(60); err != nil {
+			return fmt.Errorf("等待 PG: %w", err)
+		}
+		if err := dbRunner.InitSchema(logInfo); err != nil {
+			return fmt.Errorf("初始化 DB 失败: %w", err)
+		}
 	}
 
 	// 11. 健康检查
@@ -973,7 +1300,22 @@ prereqCheck:
 	hc := dockerutil.NewHealthChecker(cfg.AppPort, "kx-citus", "kx-redis", cfg.RedisPassword, "kxuser", "llm_gateway")
 	health, _ := hc.RunAll(logInfo)
 
-	// 12. 写入报告
+	if cfg.IsLite() {
+		// lite 模式：仅校验 gateway 容器 + /healthz，PG/Redis/Schema 不适用
+		logInfo("  ▶ lite 模式：PG/Redis/Schema 检查不适用，按 ✅ 通过")
+		health.ContainersOK = true
+		health.PGReadyOK = true
+		health.RedisOK = true
+		health.SchemaOK = true
+	}
+
+	// 12. 自动注册激活（失败不阻塞）
+	logStep("10/10", "自动注册激活")
+	if err := runAutoActivate(installDir, cfg); err != nil {
+		logWarn(fmt.Sprintf("自动注册激活失败: %v（不影响安装）", err))
+	}
+
+	// 13. 写入报告
 	reportPath := filepath.Join(installDir, "install-report.md")
 	reportData := &report.InstallReportData{
 		InstallerVersion: installerVersion,
@@ -997,6 +1339,70 @@ prereqCheck:
 
 	if !health.AllOK() {
 		return fmt.Errorf("健康检查未全部通过，请查看 install-report.md")
+	}
+	return nil
+}
+
+// runAutoActivate 包装 activation.RunAutoActivate：从环境变量 + InstallConfig 构造参数，
+// 任何失败都不阻塞主流程（仅 logWarn）。调用方（runInstall）也是 fail-open 处理。
+func runAutoActivate(installDir string, cfg *prompt.InstallConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("nil InstallConfig")
+	}
+
+	masterURL := os.Getenv("LLM_GATEWAY_MASTER_URL")
+	if masterURL == "" {
+		masterURL = cfg.MasterURL
+	}
+	if masterURL == "" {
+		masterURL = "https://llmgateway.internal.example.com"
+	}
+
+	// INSTALL_SKIP_ACTIVATION 优先于 cfg.SkipActivation
+	skip := cfg.SkipActivation
+	if os.Getenv("INSTALL_SKIP_ACTIVATION") == "1" {
+		skip = true
+	}
+
+	licenseKey := os.Getenv("INSTALL_LICENSE_KEY")
+	trialEmail := os.Getenv("INSTALL_TRIAL_EMAIL")
+	agreeTerms := strings.EqualFold(os.Getenv("INSTALL_AGREE_TERMS"), "true")
+
+	if skip {
+		logInfo("  ⏭  跳过（INSTALL_SKIP_ACTIVATION=1）")
+	}
+
+	logInfo("  ▶ 主控端: " + masterURL)
+	if licenseKey != "" {
+		logInfo("  ▶ 模式: 在线激活（INSTALL_LICENSE_KEY）")
+	} else if trialEmail != "" && agreeTerms {
+		logInfo("  ▶ 模式: 试用申请（INSTALL_TRIAL_EMAIL）")
+	} else {
+		logInfo("  ▶ 模式: 注册 + skipped（未提供 license key / trial email）")
+	}
+
+	err := activation.RunAutoActivate(context.Background(), activation.AutoActivateOptions{
+		InstallDir:   installDir,
+		MasterURL:    masterURL,
+		LicenseKey:   licenseKey,
+		TrialEmail:   trialEmail,
+		AgreeTerms:   agreeTerms,
+		StorageMode:  cfg.StorageMode,
+		InstallerVer: installerVersion,
+		Skip:         skip,
+	})
+	if err != nil {
+		logWarn(fmt.Sprintf("  自动注册激活失败: %v", err))
+		return err
+	}
+
+	// 读回 activation.json 用于结果展示
+	statePath := filepath.Join(installDir, "state", "activation.json")
+	if data, err := os.ReadFile(statePath); err == nil {
+		logInfo("  ✅ state/activation.json 已写入")
+		_ = data // activation status printed via logInfo above
+	} else {
+		logInfo("  ⚠️  未找到 state/activation.json")
 	}
 	return nil
 }
@@ -1332,6 +1738,18 @@ func copyManifest(root string) error {
 
 // envEntries 构造 .env 条目
 func envEntries(cfg *prompt.InstallConfig) map[string]string {
+	skipActivation := "0"
+	if cfg.SkipActivation {
+		skipActivation = "1"
+	}
+	storageMode := cfg.StorageMode
+	if storageMode == "" {
+		storageMode = "full"
+	}
+	masterURL := cfg.MasterURL
+	if masterURL == "" {
+		masterURL = "https://llmgateway.internal.example.com"
+	}
 	return map[string]string{
 		"APP_IMAGE_TAG":                         cfg.AppImageTag,
 		"PG_PORT":                               strconvItoa(cfg.PGPort),
@@ -1343,11 +1761,100 @@ func envEntries(cfg *prompt.InstallConfig) map[string]string {
 		"LLM_GATEWAY_ADMIN_API_KEY":             cfg.AdminAPIKey,
 		"LLM_GATEWAY_JWT_SECRET":                cfg.JWTSecret,
 		"LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY": cfg.CredEncryptKey,
+		// 新增：lite / full 存储模式切换（运行时由 cmd/gateway 的 storage_mode_init 读取）
+		"LLM_GATEWAY_STORAGE_MODE": storageMode,
+		// 新增：主控端 URL（license 激活 / 心跳）
+		"LLM_GATEWAY_MASTER_URL": masterURL,
+		// 新增：install 末尾是否跳过自动激活（由子代理 B 接管实际调用）
+		"INSTALL_SKIP_ACTIVATION": skipActivation,
 	}
 }
 
 func strconvItoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// buildLiteComposeYAML 在 lite 模式下从完整 compose.yml 中剥离 kx-citus / kx-redis
+// 两个 top-level service，并清理 llm-gateway-go 的 depends_on / DATABASE_URL / Redis 环境。
+// 不修改 embeddata 原文件（只读），运行时基于原 yaml 生成精简版。
+//
+// 剥离规则（保留容器外注释与目录结构，但服务定义剔除）：
+//   - 跳过 service 名 = "citus" 的整段（直到下一个顶级键或 services: 结束）
+//   - 跳过 service 名 = "redis" 的整段
+//   - llm-gateway-go 的 depends_on 整块（4 空格头 + 子项）也一并移除
+//   - llm-gateway-go 内部指向 PG/Redis 的 env 行（DATABASE_URL / REDIS_ADDR / REDIS_PASSWORD）也移除
+//
+// 由于不引入 yaml 依赖，剥离按文本块（缩进级别）进行；按行首空格数判定归属。
+func buildLiteComposeYAML(full []byte) []byte {
+	lines := strings.Split(string(full), "\n")
+	out := make([]string, 0, len(lines))
+	skipService := ""    // 当前正在剥离的 service 名（citus/redis）
+	inDependsOn := false // 是否在 llm-gateway-go.depends_on 块内
+	headerDone := false  // 头注释块结束（出现首个非注释非空行）
+
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		indent := len(line) - len(trimmed)
+
+		// lite 模式修正头注释：移除 PG/Redis 相关描述，避免误导 lite 用户
+		if !headerDone {
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				switch {
+				case strings.Contains(trimmed, "全栈 docker-compose"):
+					out = append(out, "# llm-gateway-go docker-compose（lite 模式：SQLite + 本地，无 PG/Redis）")
+				case strings.Contains(trimmed, "PostgreSQL 数据"):
+					out = append(out, "#   ├── (lite 模式：无 PG —— 数据落 SQLite 本地文件)")
+				case strings.Contains(trimmed, "redis/data"):
+					continue // 该行整行丢弃
+				default:
+					out = append(out, line)
+				}
+				continue
+			}
+			headerDone = true
+			out = append(out, line)
+			continue
+		}
+
+		// 顶级 service 定义：以 2 空格缩进的 "  name:" 形式
+		if indent == 2 && strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "&") {
+			name := strings.TrimSuffix(trimmed, ":")
+			if name == "citus" || name == "redis" {
+				skipService = name
+				inDependsOn = false
+				continue
+			}
+			skipService = "" // 其他顶级键（含 llm-gateway-go）保留
+		}
+
+		if skipService != "" {
+			continue
+		}
+
+		// llm-gateway-go 服务内部：剥离 depends_on 整块（4 空格头 + 6 空格子项）
+		if strings.HasPrefix(line, "    depends_on:") {
+			inDependsOn = true
+			continue
+		}
+		if inDependsOn {
+			// 仍在 depends_on 块内直到缩进回到 ≤2 空格（顶级）或 ≤4 空格回到服务主键层级
+			if indent <= 4 {
+				inDependsOn = false
+			} else {
+				continue
+			}
+		}
+
+		// 剥离指向 PG/Redis 的 env 行（保留无害但移除更清晰）
+		if strings.HasPrefix(line, "      DATABASE_URL:") ||
+			strings.HasPrefix(line, "      LLM_GATEWAY_REDIS_ADDR:") ||
+			strings.HasPrefix(line, "      LLM_GATEWAY_REDIS_PASSWORD:") {
+			continue
+		}
+
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
 }
 
 // setupSQLDir 把 embed 的 SQL 写到临时目录，返回目录路径和清理函数。

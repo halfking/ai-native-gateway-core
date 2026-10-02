@@ -17,6 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -326,7 +328,7 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -341,13 +343,23 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		var rowKey, colKey string
 		var val float64
 		if err := rows.Scan(&rowKey, &colKey, &val); err != nil {
+			warnRowSkip("analytics matrix", err)
 			continue
 		}
 		rawRowSet[rowKey] = struct{}{}
 		cellMap[cellKey{rowKey, colKey}] = val
 	}
+	if writeAggRowsErr(w, "analytics matrix", rows.Err()) {
+		return
+	}
 
-	aliasIdx, _ := loadModelAliasIndex(ctx, h.db)
+	// R67-A 修正：别名索引**缺失或被截断**时，canonical 列会静默退化成
+	// raw 名，运维看到的是「模型好像改了名字」而不是一次加载失败。
+	// 端点本身仍照常返回（别名只是展示层的归并），但必须留痕。
+	aliasIdx, aliasErr := loadModelAliasIndex(ctx, h.db)
+	if aliasErr != nil {
+		warnRowSkip("analytics.matrix/loadModelAliasIndex", aliasErr)
+	}
 	canonRowAliases := map[string][]string{}
 	canonRowSet := map[string]struct{}{}
 	rawToCanon := map[string]string{}
@@ -426,7 +438,13 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	aliasIdx, _ := loadModelAliasIndex(ctx, h.db)
+	// R67-A 修正：别名索引**缺失或被截断**时，canonical 列会静默退化成
+	// raw 名，运维看到的是「模型好像改了名字」而不是一次加载失败。
+	// 端点本身仍照常返回（别名只是展示层的归并），但必须留痕。
+	aliasIdx, aliasErr := loadModelAliasIndex(ctx, h.db)
+	if aliasErr != nil {
+		warnRowSkip("analytics.matrix/loadModelAliasIndex", aliasErr)
+	}
 	canonModel := func(raw string) string {
 		canon := raw
 		if aliasIdx != nil {
@@ -467,7 +485,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 
 	l12Rows, err := h.db.Query(ctx, l12Query, l12Args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	type link struct {
@@ -494,7 +512,11 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	for l12Rows.Next() {
 		var src, dstRaw string
 		var val float64
-		if err := l12Rows.Scan(&src, &dstRaw, &val); err != nil || val <= 0 {
+		if err := l12Rows.Scan(&src, &dstRaw, &val); err != nil {
+			warnRowSkip("analytics flow l12", err)
+			continue
+		}
+		if val <= 0 {
 			continue
 		}
 		dstCanon := canonModel(dstRaw)
@@ -504,6 +526,9 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		nodeMap[dstID] = node{ID: dstID, Label: dstCanon, Layer: 1}
 		k := linkKey{source: srcID, target: dstID}
 		l12Agg[k] += val
+	}
+	if writeAggRowsErr(w, "analytics flow l12", l12Rows.Err()) {
+		return
 	}
 	l12Rows.Close()
 	for k, val := range l12Agg {
@@ -541,14 +566,18 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 
 	l23Rows, err := h.db.Query(ctx, l23Query, l23Args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	l23Agg := map[l23Key]float64{}
 	for l23Rows.Next() {
 		var taskType, srcRaw, dst string
 		var val float64
-		if err := l23Rows.Scan(&taskType, &srcRaw, &dst, &val); err != nil || val <= 0 {
+		if err := l23Rows.Scan(&taskType, &srcRaw, &dst, &val); err != nil {
+			warnRowSkip("analytics flow l23", err)
+			continue
+		}
+		if val <= 0 {
 			continue
 		}
 		srcCanon := canonModel(srcRaw)
@@ -558,6 +587,9 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		nodeMap[dstID] = node{ID: dstID, Label: dst, Layer: 2}
 		k := l23Key{source: srcID, target: dstID, taskType: taskType}
 		l23Agg[k] += val
+	}
+	if writeAggRowsErr(w, "analytics flow l23", l23Rows.Err()) {
+		return
 	}
 	l23Rows.Close()
 	for k, val := range l23Agg {
@@ -603,7 +635,7 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 
 	var latestBucket sql.NullTime
 	if err := h.db.QueryRow(ctx, `SELECT MAX(bucket) FROM model_task_index`).Scan(&latestBucket); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if !latestBucket.Valid {
@@ -641,7 +673,7 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -656,6 +688,7 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 		if err := rows.Scan(&canonID, &canonName, &task, &sampleCount,
 			&successRate, &avgLatency, &p95Latency, &avgCost,
 			&primaryCredID, &updatedAt); err != nil {
+			warnRowSkip("analytics model-task index", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -688,6 +721,9 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 		entry["updated_at"] = updatedAt.Format(time.RFC3339)
 		items = append(items, entry)
 	}
+	if writeAggRowsErr(w, "analytics model-task index", rows.Err()) {
+		return
+	}
 
 	writeJSONOk(w, map[string]interface{}{
 		"bucket": bucket.Format(time.RFC3339),
@@ -714,7 +750,9 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	defer cancel()
 
 	var ts time.Time
-	var taskType, prof, clientModel, outbound string
+	// R46 F9: 四个文本字段在真库可空（探测行 task_type NULL、turns 段
+	// client_model NULL）——裸 string 目标遇到 NULL 行直接 scan 崩 500。
+	var taskType, prof, clientModel, outbound sql.NullString
 	var apiKeyID, credentialID *int
 	var confidence *float64
 	var autoDecision *string
@@ -722,28 +760,55 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	var latency *int
 
 	replayTenantFrag, replayTenantArgs, _ := tenantLogsClause(r, 2)
-	replayArgs := []any{reqID}
+	replayArgs := []any{uuidVariants(reqID)}
 	if replayTenantFrag != "" {
 		replayArgs = append(replayArgs, replayTenantArgs...)
 	}
+	// R46 F3/F9: 读面 hot∪母表（决策回放的主场景就是"刚出的坏决策"，裸母表
+	// 对最近 8h 仍在 hot 侧的请求 404）。不用 turns 优先的
+	// request_logs_with_current_month——它的 turns 段把 auto_profile 投影
+	// 为 NULL，决策回放要读的字段都在 request_logs 侧。
+	// request_id 匹配必须按腿进行：视图把 hot(TEXT)/母表(TEXT) 归并为
+	// text，但 ANY 的参数类型会被两支推成 uuid[]（数组字面量对探测 id 直接
+	// 22P02）——改为内联双腿：hot 腿 text 精确匹配（走 request_id 索引，
+	// 覆盖 hex32/dashed/探测 id 三形态）；母表腿 ::text 比较（request_id
+	// 同为 text 列，双形态匹配纯防御性），加 30d 界防跨全部分区扫描。
+	// （R47 实测注释更正：真库 request_logs(_hot).request_id 均为 text 且
+	// 母表存原始 hex32；真正 uuid 型的是 routing_decision_log.request_id，
+	// L2 腿的 dashed 形态候选对位的是那张表。）
 	err := h.db.QueryRow(ctx, `
 		SELECT ts, task_type, auto_profile, auto_confidence,
 		       client_model, outbound_model, api_key_id, credential_id,
 		       auto_decision, success, latency_ms
-		FROM request_logs
-		WHERE request_id = $1::uuid`+replayTenantFrag+`
+		FROM (
+		    SELECT ts, task_type, auto_profile, auto_confidence,
+		           client_model, outbound_model, api_key_id, credential_id,
+		           auto_decision, success, latency_ms
+		    FROM request_logs_hot
+		    WHERE request_id = ANY($1::text[])
+		    UNION ALL
+		    SELECT ts, task_type, auto_profile, auto_confidence,
+		           client_model, outbound_model, api_key_id, credential_id,
+		           auto_decision, success, latency_ms
+		    FROM request_logs
+		    WHERE ts >= NOW() - INTERVAL '30 days'
+		      AND request_id::text = ANY($1::text[])
+		) rl
+		WHERE true`+replayTenantFrag+`
 		LIMIT 1
 	`, replayArgs...).Scan(
 		&ts, &taskType, &prof, &confidence,
 		&clientModel, &outbound, &apiKeyID, &credentialID,
 		&autoDecision, &success, &latency,
 	)
-	if err == sql.ErrNoRows {
+	// R46 F9: pgx v5 的 ErrNoRows 与 sql.ErrNoRows 不是同一值——裸 `==`
+	// 永不命中，所有 miss 一律 500（预存缺陷，部署冒烟实锤）。改 errors.Is。
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
 		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_request_not_found")
 		return
 	}
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -751,8 +816,8 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		"request_id":     reqID,
 		"ts":             ts.Format(time.RFC3339),
 		"success":        success,
-		"client_model":   clientModel,
-		"outbound_model": outbound,
+		"client_model":   nullStringOrEmpty(clientModel),
+		"outbound_model": nullStringOrEmpty(outbound),
 	}
 	if apiKeyID != nil {
 		out["api_key_id"] = *apiKeyID
@@ -765,8 +830,8 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	}
 
 	l1 := map[string]interface{}{
-		"task_type": taskType,
-		"profile":   prof,
+		"task_type": nullStringOrEmpty(taskType),
+		"profile":   nullStringOrEmpty(prof),
 	}
 	if confidence != nil {
 		l1["confidence"] = *confidence
@@ -787,19 +852,36 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	var resolutionPath, canonicalModel *string
 	var decisionTrace *string
 
-	rdlErr := h.db.QueryRow(ctx, `
-		SELECT ts, chosen_credential_id, chosen_provider_id, tier,
-		       candidates_tried, success, resolution_path, canonical_model,
-		       decision_trace::text
-		FROM routing_decision_log
-		WHERE request_id = $1::uuid`+replayTenantFrag+`
-		ORDER BY ts DESC
-		LIMIT 1
-	`, replayArgs...).Scan(
-		&rdlTS, &chosenCredID, &chosenProvID, &tier,
-		&candidatesTried, &rdlSuccess, &resolutionPath, &canonicalModel,
-		&decisionTrace,
-	)
+	// R46 F9: L2 查询与 L1 参数解耦——replayArgs[0] 现在是 uuidVariants
+	// 数组（L1 双腿匹配用），routing_decision_log.request_id 是 uuid 标量
+	// 列，传数组会把数组字面量当单个 uuid 解析（22P02）。L2 只服务 uuid
+	// 形态的请求 id（探测等非 uuid id 不产生决策日志，跳过查询等价
+	// ErrNoRows）。
+	rdlArgs := []any{""}
+	l2Lookup := false
+	if v := uuidVariants(reqID); len(v) == 2 {
+		l2Lookup = true
+		rdlArgs = []any{v[1]}
+	}
+	if replayTenantFrag != "" {
+		rdlArgs = append(rdlArgs, replayTenantArgs...)
+	}
+	rdlErr := pgx.ErrNoRows
+	if l2Lookup {
+		rdlErr = h.db.QueryRow(ctx, `
+			SELECT ts, chosen_credential_id, chosen_provider_id, tier,
+			       candidates_tried, success, resolution_path, canonical_model,
+			       decision_trace::text
+			FROM routing_decision_log
+			WHERE request_id = $1::uuid`+replayTenantFrag+`
+			ORDER BY ts DESC
+			LIMIT 1
+		`, rdlArgs...).Scan(
+			&rdlTS, &chosenCredID, &chosenProvID, &tier,
+			&candidatesTried, &rdlSuccess, &resolutionPath, &canonicalModel,
+			&decisionTrace,
+		)
+	}
 	if rdlErr == nil {
 		l2 := map[string]interface{}{
 			"ts":      rdlTS.Format(time.RFC3339),
@@ -830,8 +912,8 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 			}
 		}
 		out["l2"] = l2
-	} else if rdlErr != sql.ErrNoRows {
-		writeInternalErr(w, rdlErr)
+	} else if !errors.Is(rdlErr, pgx.ErrNoRows) && !errors.Is(rdlErr, sql.ErrNoRows) {
+		writeAutoRouteInternalErr(w, rdlErr)
 		return
 	}
 
@@ -867,11 +949,11 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
-		scope := EffectiveTenantIDAll(r)
-		if scope == "" {
-			scope = "*"
-		}
-		cacheKey := funnelCacheKey(scope, model, windowLabel)
+	scope := EffectiveTenantIDAll(r)
+	if scope == "" {
+		scope = "*"
+	}
+	cacheKey := funnelCacheKey(scope, model, windowLabel)
 
 	if cached, ok := globalFunnelCache.get(cacheKey); ok {
 		writeJSONOk(w, cached)
@@ -927,7 +1009,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		    SELECT 1
 		    FROM routing_analytics_source probe
 		    WHERE probe.request_id = routing_decision_log.request_id::text
-		      AND NOT (`+businessRequestFilter("probe")+`)
+		      AND NOT (` + businessRequestFilter("probe") + `)
 		  )` + rdlTenantWhere + `
 		`
 	_ = h.db.QueryRow(ctx, rdlQuery, rdlArgs...).Scan(
@@ -942,7 +1024,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			approxArgs = append(approxArgs, rdlTenantArgs...)
 		}
-			if err := h.db.QueryRow(ctx, `
+		if err := h.db.QueryRow(ctx, `
 				SELECT
 					COUNT(*)::int,
 					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
@@ -953,7 +1035,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
 				  AND `+businessRequestFilter("")+rdlTenantWhere+`
 			`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		fr.requests = autoReq
@@ -974,7 +1056,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			mixedArgs = append(mixedArgs, rdlTenantArgs...)
 		}
-			_ = h.db.QueryRow(ctx, `
+		_ = h.db.QueryRow(ctx, `
 				SELECT
 					COUNT(*)::int,
 					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
@@ -1055,4 +1137,39 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	}
 	globalFunnelCache.set(cacheKey, out)
 	writeJSONOk(w, out)
+}
+
+// uuidVariants 返回同一请求 id 在两条腿上的可能形态，供 = ANY 匹配
+// （R46 F9）。真库两腿 request_id 均为 text（母表存原始 hex32，R47 实测
+// 更正了此前"母表 UUID 列归一 dashed"的注释）；dashed 形态候选对位的
+// 是 routing_decision_log.request_id（uuid 列，L2 腿）。
+// 非 uuid 形态的 id（探测字符串等）原样返回单元素。
+func uuidVariants(id string) []string {
+	stripped := strings.ToLower(strings.ReplaceAll(id, "-", ""))
+	if len(stripped) != 32 {
+		return []string{id}
+	}
+	for i := 0; i < len(stripped); i++ {
+		c := stripped[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return []string{id}
+		}
+	}
+	dashed := stripped[:8] + "-" + stripped[8:12] + "-" + stripped[12:16] + "-" + stripped[16:20] + "-" + stripped[20:]
+	if strings.EqualFold(id, stripped) {
+		return []string{id, dashed}
+	}
+	if strings.EqualFold(id, dashed) {
+		return []string{id, stripped}
+	}
+	return []string{id}
+}
+
+// nullStringOrEmpty 把可空列展开为响应字符串（R46 F9：探测/turns 行的
+// task_type、client_model 等可为 NULL）。
+func nullStringOrEmpty(ns sql.NullString) string {
+	if ns.Valid {
+		return ns.String
+	}
+	return ""
 }

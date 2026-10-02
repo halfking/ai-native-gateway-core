@@ -191,6 +191,10 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 			items = append(items, item)
 		}
 	}
+	// 压缩会话页少一截 → count 与 items 对不上，分页到底判断失真。
+	if writeAggRowsErr(w, "compression.sessions", rows.Err()) {
+		return
+	}
 
 	if items == nil {
 		items = make([]compressionSessionItem, 0)

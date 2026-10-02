@@ -25,6 +25,7 @@ package dashboardapi
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -192,11 +193,20 @@ func writeSuccessJSON(w http.ResponseWriter, data interface{}, metadata *Metadat
 }
 
 // writeErrorJSON 写入错误 JSON 响应
+//
+// R72 审计轮（L4 同根收口）：5xx 的 details 实参几乎全部是 err.Error()，
+// pgx/驱动内部错误串不允许到达客户端 —— status >= 500 时 details 一律
+// 不下发，真实错误文本落服务端 slog。4xx 的 details 保持原样（校验类
+// 文案是给用户看的）。
 func writeErrorJSON(w http.ResponseWriter, status int, code, message, details string) {
+	if status >= http.StatusInternalServerError && details != "" {
+		slog.Error("dashboardapi handler internal error", "code", code, "message", message, "details", details)
+		details = ""
+	}
 	resp := Response{
-		Success: false,
-		Code:    code,
-		Message: message,
+		Success:   false,
+		Code:      code,
+		Message:   message,
 		Error: &ErrorInfo{
 			Code:    code,
 			Message: message,

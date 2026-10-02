@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,8 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/kaixuan/llm-gateway-go/catalog"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
 // Alias create/bulk-import statements. 2026-09-12: both used to arbitrate on
@@ -281,7 +286,7 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 			&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier,
 			&m.StandardIQ,
 		); err != nil {
-			slog.Error("listModels scan failed", "error", err)
+			warnRowSkip("models.list", err)
 			continue
 		}
 		m.Family = family
@@ -299,8 +304,8 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		m.Modality = catalog.EffectiveModality(m.CanonicalName, m.Modality)
 		models = append(models, m)
 	}
-	if err := rows.Err(); err != nil {
-		slog.Error("listModels rows.Err", "error", err)
+	if writeAggRowsErr(w, "models.list", rows.Err()) {
+		return
 	}
 	slog.Info("listModels result", "count", len(models))
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -324,7 +329,13 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	displayName := req.CanonicalName
+	canonicalName := strings.TrimSpace(req.CanonicalName)
+	if canonicalName == "" {
+		writeError(w, http.StatusBadRequest, "canonical_name is required")
+		return
+	}
+
+	displayName := canonicalName
 	if req.DisplayName != nil && *req.DisplayName != "" {
 		displayName = *req.DisplayName
 	}
@@ -341,15 +352,53 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 		outputPrice = *req.OutputPriceCNY
 	}
 
+	// Dedup gate: the only DB-level uniqueness is exact-string
+	// (canonical_name), so variants that differ only by case or ./_/-/space//
+	// separators would silently coexist as two "standard" models and leak
+	// both spellings to clients. Reject them up front with the winner named.
+	// R50 fix (2026-09-21): collapse runs of separators on both sides —
+	// without it `claude--opus-5` folded to `claude__opus_5` which never
+	// equaled `claude-opus-5` → `claude_opus_5`, so a single request could
+	// mint a duplicate spelling (live hole, not just a race; the same
+	// run-collapse is NormalizeRouteKey's dupDashPattern semantics).
+	// R50 F19 收敛：谓词迁入 modelname.DedupCanonicalNameSQL 单一实现
+	// （fold 链与两处回种守卫同源），本文件不再手写 SQL 谓词。
+	var existing string
+	err := h.db.QueryRow(ctx, modelname.DedupCanonicalNameSQL, canonicalName).Scan(&existing)
+	if err == nil {
+		writeError(w, http.StatusConflict,
+			"duplicate canonical model: "+canonicalName+" already exists as "+existing)
+		return
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		writeInternalErr(w, "dedup check failed", err)
+		return
+	}
+
 	var id int
-	err := h.db.QueryRow(ctx, `
+	err = h.db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, display_name, modality, status, input_price_cny, output_price_cny)
 		VALUES ($1, $2, $3, 'active', $4, $5)
 		ON CONFLICT (canonical_name) DO NOTHING
 		RETURNING id
-	`, req.CanonicalName, displayName, modality, inputPrice, outputPrice).Scan(&id)
+	`, canonicalName, displayName, modality, inputPrice, outputPrice).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// DB 兜底（F19）：SELECT-then-INSERT 并发窗口的胜者仲裁交给
+			// 唯一约束。当前生效的是 exact-name 唯一（23505 同码）；
+			// 折叠表达式唯一索引（uq_models_canonical_active_folded_name）
+			// 待真库 6 组重复对数据对账后建（R51），届时本分支同样兜住
+			// 折叠拼写竞态。
+			writeError(w, http.StatusConflict, "duplicate canonical model: "+canonicalName)
+			return
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Exact-name race lost between the gate above and the insert.
+			writeError(w, http.StatusConflict, "duplicate canonical model: "+canonicalName)
+			return
+		}
+		writeInternalErr(w, "create failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "message": "ok"})
@@ -428,9 +477,15 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 			var a aliasRow
 			if err := aliasRows.Scan(&a.ID, &a.RawName, &a.Quantization, &a.Surface,
 				&a.Status, &a.Notes, &a.UpdatedAt); err != nil {
+				warnRowSkip("models.get.aliases", err)
 				continue
 			}
 			aliases = append(aliases, a)
+		}
+		// 别名面板是 getModel 的降级子查询（查询失败只 warn）：迭代中断
+		// 同口径留痕后按已取到的别名继续，不把整个模型详情打成 500。
+		if rerr := aliasRows.Err(); rerr != nil {
+			slog.Warn("getModel aliases iteration aborted; panel degraded", "id", id, "error", rerr)
 		}
 		aliasRows.Close()
 	}
@@ -497,9 +552,14 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 				&o.RawModelName, &o.StandardizedName, &o.P95LatencyMs, &o.SuccessRate,
 				&o.Available, &o.InputPrice, &o.OutputPrice, &o.CacheReadPrice,
 				&o.CacheWritePrice); err != nil {
+				warnRowSkip("models.get.offers", err)
 				continue
 			}
 			offers = append(offers, o)
+		}
+		// 同 aliases 面板：offers 失败只降级不 500。
+		if rerr := offerRows.Err(); rerr != nil {
+			slog.Warn("getModel offers iteration aborted; panel degraded", "id", id, "error", rerr)
 		}
 		offerRows.Close()
 	}
@@ -558,29 +618,56 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// R52：exec 失败必须浮出——此前整链 //nolint:errcheck 裸吞，735 的
+	// uq_models_canonical_active_folded_name 上线后，把 disabled 行改回
+	// active 撞折叠重名唯一索引返回 23505，HTTP 仍 200 但行未启用
+	// （空壳成功响应）。
+	exec := func(query string, args ...any) error {
+		_, err := h.db.Exec(ctx, query, args...)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return errFoldedConflict
+			}
+		}
+		return err
+	}
+
 	if req.DisplayName != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET display_name = $1 WHERE id = $2`, *req.DisplayName, id)
+		if err := exec(`UPDATE models_canonical SET display_name = $1 WHERE id = $2`, *req.DisplayName, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.Status != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET status = $1 WHERE id = $2`, *req.Status, id)
+		if err := exec(`UPDATE models_canonical SET status = $1 WHERE id = $2`, *req.Status, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.ReleasedAt != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET released_at = $1 WHERE id = $2`, *req.ReleasedAt, id)
+		if err := exec(`UPDATE models_canonical SET released_at = $1 WHERE id = $2`, *req.ReleasedAt, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.Strengths != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET strengths = $1 WHERE id = $2`, *req.Strengths, id)
+		if err := exec(`UPDATE models_canonical SET strengths = $1 WHERE id = $2`, *req.Strengths, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.VersionRank != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET version_rank = $1 WHERE id = $2`, *req.VersionRank, id)
+		if err := exec(`UPDATE models_canonical SET version_rank = $1 WHERE id = $2`, *req.VersionRank, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.CostTier != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET cost_tier = $1 WHERE id = $2`, *req.CostTier, id)
+		if err := exec(`UPDATE models_canonical SET cost_tier = $1 WHERE id = $2`, *req.CostTier, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	// 2026-08-11: reasoning_caps 热更新（reasoncap tier-1）。
 	// 接受与 internal/reasoncap.Caps 相同的 JSONB 结构（不含 Source 字段）。
@@ -589,14 +676,32 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	if len(req.ReasoningCaps) > 0 {
 		raw := req.ReasoningCaps
 		if string(raw) == "null" {
-			//nolint:errcheck
-			h.db.Exec(ctx, `UPDATE models_canonical SET reasoning_caps = NULL WHERE id = $1`, id)
+			if err := exec(`UPDATE models_canonical SET reasoning_caps = NULL WHERE id = $1`, id); err != nil {
+				h.writeUpdateModelError(w, err)
+				return
+			}
 		} else {
-			//nolint:errcheck
-			h.db.Exec(ctx, `UPDATE models_canonical SET reasoning_caps = $1 WHERE id = $2`, raw, id)
+			if err := exec(`UPDATE models_canonical SET reasoning_caps = $1 WHERE id = $2`, raw, id); err != nil {
+				h.writeUpdateModelError(w, err)
+				return
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
+}
+
+// errFoldedConflict marks a 23505 on models_canonical — with 735 active this
+// is the folded-name unique index rejecting a re-enable/rename that collides
+// with an already-active canonical twin.
+var errFoldedConflict = errors.New("folded canonical name conflict")
+
+func (h *Handler) writeUpdateModelError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errFoldedConflict) {
+		writeError(w, http.StatusConflict, "duplicate canonical model: active folded-name conflict (see uq_models_canonical_active_folded_name)")
+		return
+	}
+	slog.Error("admin updateModel exec failed", "error", err)
+	writeError(w, http.StatusInternalServerError, "update failed")
 }
 
 func parseModelTags(raw string) []string { //nolint:unused
@@ -685,13 +790,17 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var f family
 		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Vendor, &f.Status, &f.Source, &f.Notes, &f.ModelCount); err != nil {
-			slog.Warn("listModelFamilies scan failed", "error", err)
+			warnRowSkip("models.listFamilies", err)
 			continue
 		}
 		if strings.TrimSpace(f.Vendor) == "" {
 			_, f.Vendor = familyDisplayAndVendor(f.ID)
 		}
 		items[f.ID] = &f
+	}
+	// 主 family 列表被截断会让前端展示"就这些 family"，无法与真实全集区分。
+	if writeAggRowsErr(w, "models.listFamilies", rows.Err()) {
+		return
 	}
 	rows.Close()
 
@@ -711,6 +820,7 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 			var id string
 			var modelCount int
 			if err := derivedRows.Scan(&id, &modelCount); err != nil {
+				warnRowSkip("models.listFamilies.derived", err)
 				continue
 			}
 			display, vendor := familyDisplayAndVendor(id)
@@ -726,6 +836,10 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 				Notes:       nil,
 				ModelCount:  modelCount,
 			}
+		}
+		// 孤儿 family 是附加面板（查询失败只 warn）：迭代中断同口径降级。
+		if rerr := derivedRows.Err(); rerr != nil {
+			slog.Warn("listModelFamilies derived iteration aborted; orphan families incomplete", "error", rerr)
 		}
 		derivedRows.Close()
 	}
@@ -804,6 +918,7 @@ func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
 		var pname string
 		var offers int
 		if err := rows.Scan(&cn, &tagsJSON, &pid, &pname, &offers); err != nil {
+			warnRowSkip("models.tagMatrix", err)
 			continue
 		}
 		if _, ok := matrix[cn]; !ok {
@@ -812,6 +927,11 @@ func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
 		matrix[cn].Providers = append(matrix[cn].Providers, providerInfo{
 			ProviderID: pid, ProviderName: pname, OfferCount: offers,
 		})
+	}
+	// 矩阵按 canonical 聚合：截断会让某个模型的 provider 覆盖面静默变小
+	// （看起来像"就这几个 provider 提供该模型"）。
+	if writeAggRowsErr(w, "models.tagMatrix", rows.Err()) {
+		return
 	}
 
 	items := make([]*matrixEntry, 0, len(matrix))
@@ -886,11 +1006,11 @@ func (h *Handler) handleModelAliases(w http.ResponseWriter, r *http.Request, mod
 	var aliasID int
 	err := h.db.QueryRow(ctx, aliasUpsertSQL, modelID, req.RawName, quantization, surface, notes, nil).Scan(&aliasID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create alias failed: "+err.Error())
+		writeInternalErr(w, "create alias failed", err)
 		return
 	}
 	if _, err := h.db.Exec(ctx, aliasDemoteCompetitorsSQL, req.RawName, modelID); err != nil {
-		writeError(w, http.StatusInternalServerError, "demote competing aliases failed: "+err.Error())
+		writeInternalErr(w, "demote competing aliases failed", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{

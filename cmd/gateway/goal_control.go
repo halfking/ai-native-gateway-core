@@ -31,6 +31,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
+	outputcompliancehook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
@@ -204,10 +205,12 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		MaxAutoContinueCount: getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", preset.MaxContinueCount),
 		CompletionConfidence: getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", preset.CompletionConfidence),
 
-		// Client-driven control signals remain opt-in on both sides: the
-		// tenant setting / env default enables production behavior, while
-		// X-Gw-Capabilities authorizes it per request.
-		ClientSignalEnabled:          getEnvBool("LLM_GATEWAY_GOAL_CLIENT_DRIVEN", false),
+		// Client-driven control signals. Wave 1 A5 (2026-09-22): gw-continue
+		// 零上下文方案转默认开启——client 侧自驱续跑是设计的首选路径（影子
+		// 指令不回灌客户端会话）；X-Gw-Capabilities 仍按请求授权，legacy
+		// 客户端（未声明 capability）拿不到信号，行为不变。租户键
+		// goal.client_signal_enabled 可显式关闭；env 默认值由 false 翻转。
+		ClientSignalEnabled:          getEnvBool("LLM_GATEWAY_GOAL_CLIENT_DRIVEN", true),
 		ClientSignalMode:             getEnv("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_MODE", "auto"),
 		HandoffSignalThresholdTokens: getEnvInt("LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD", 200000),
 		ClientSignalOnToolCalls:      getEnvBool("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_ON_TOOL_CALLS", false),
@@ -317,7 +320,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	handoffCfg := handoff.TriggerConfig{
 		Enabled:             getEnvBool("LLM_GATEWAY_HANDOFF_ENABLED", false),
 		TriggerMode:         handoff.TriggerMode(getEnv("LLM_GATEWAY_HANDOFF_TRIGGER_MODE", "auto")),
-		AbsoluteThreshold:   getEnvInt("LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD", 180000),
+		AbsoluteThreshold:   getEnvInt("LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD", 300000), // Wave2: 与 handoff_specs 种子同步 300K
 		PercentageThreshold: getEnvFloat("LLM_GATEWAY_HANDOFF_PERCENTAGE_THRESHOLD", 0.8),
 		MessageThreshold:    getEnvInt("LLM_GATEWAY_HANDOFF_MESSAGE_THRESHOLD", 0),
 		IdleMinutes:         getEnvInt("LLM_GATEWAY_HANDOFF_IDLE_MINUTES", 0),
@@ -484,11 +487,8 @@ func parseModelList(s string) []string {
 }
 
 // buildSanitizeRestoreInterceptor 构造 SmartSaniGuard 占位符还原拦截器。
-// 返回 nil 时表示该能力未启用（Redis 不可用或 sanitizer 失败）。
+// Redis 为 nil 时使用本轮 Context 映射；初始化失败时返回 error。
 func buildSanitizeRestoreInterceptor(redisClient *redis.Client, detector *sanitize.PatternDetector) (response.ResponseInterceptor, error) {
-	if redisClient == nil {
-		return nil, nil
-	}
 	s, err := sanitize.NewSanitizer(detector)
 	if err != nil {
 		return nil, err
@@ -500,9 +500,6 @@ func buildSanitizeRestoreInterceptor(redisClient *redis.Client, detector *saniti
 // 返回的函数可直接传给 chatHandler.SetSanitizeInputMiddleware。
 // db 非 nil 时挂 706 的 session_censors DB 双写 sink（best-effort）。
 func buildSanitizeInputMiddleware(redisClient *redis.Client, detector *sanitize.PatternDetector, db *sql.DB) (func(http.Handler) http.Handler, error) {
-	if redisClient == nil {
-		return nil, nil
-	}
 	s, err := sanitize.NewSanitizer(detector)
 	if err != nil {
 		return nil, err
@@ -532,18 +529,18 @@ func newSanitizePatternDetector() *sanitize.PatternDetector {
 // 中间件（输入脱敏）与响应侧占位符还原拦截器。
 //
 // 设计要点：
-//   - 仅依赖 Redis，与 DB / goal / audit / output_compliance 完全解耦
+//   - 持久化依赖 Redis，请求级处理与 DB / goal / audit 完全解耦
 //   - 因此可以在 bgDataPlaneOnly=true（纯数据面模式）下也启用，
 //     不被 initGoalControl 的 db!=nil gate 限制
-//   - 当 redisClient 为 nil 时为 no-op（不挂任何东西）
+//   - Redis 为 nil 时仍启用请求级脱敏/还原与输出防护，缺少跨请求映射持久化
 //   - 输入中间件 + 还原拦截器同时挂上，二者缺一不可（中间件负责
-//     写 Redis map，还原拦截器负责读 Redis map + 还原响应）
+//     写 Context / Redis map，还原拦截器负责读取映射并还原响应）
 //
 // 入口：main.go 在调用 initGoalControl 之外单独调用本函数，
 //
 //	bgDataPlaneOnly 与 !bgDataPlaneOnly 两个分支都会执行。
 func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client, db *sql.DB) *sanitize.PatternDetector {
-	if chatHandler == nil || redisClient == nil {
+	if chatHandler == nil {
 		return nil
 	}
 	detector := newSanitizePatternDetector()
@@ -558,8 +555,8 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 		slog.Info("smart_sani_guard: input middleware wired")
 	}
 
-	// 2. 响应侧还原拦截器：把链挂到 chatHandler 已有的 response chain
-	//    之后（保证 output_compliance 先于 sanitize_restore 执行）。
+	// 2. 响应侧还原拦截器：先恢复输出中的原文，再让 output_compliance
+	//    检查真实客户端可见内容。此前反向排序会让合规检查只看到占位符。
 	restoreHook, restoreErr := buildSanitizeRestoreInterceptor(redisClient, detector)
 	if restoreErr != nil || restoreHook == nil {
 		slog.Warn("smart_sani_guard: restore interceptor init failed, skip response-side",
@@ -571,17 +568,46 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 	// chain.go.NewInterceptorChain 内部只是把切片存起来，不做其他副作用，
 	// 因此可以安全重建。
 	existing := chatHandler.ResponseInterceptorForWire()
-	if existing == nil {
-		// 无现有 chain（例如 data-plane 模式未注册 goal/audit），
-		// 单独创建一个只含 sanitize_restore 的 chain。
-		chatHandler.SetResponseInterceptor(response.NewInterceptorChain(restoreHook))
-	} else {
-		// 追加到现有 chain 末尾（在 output_compliance 之后）。
-		chatHandler.SetResponseInterceptor(response.NewInterceptorChain(append(existing.ListInterceptors(), restoreHook)...))
+	ordered := insertSanitizeRestoreBeforeOutputCompliance(existing.ListInterceptors(), restoreHook)
+	s, _ := sanitize.NewSanitizer(detector)
+	action := sanitize.OutputMask
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("LLM_GATEWAY_SANITIZE_OUTPUT_ACTION")), "block") {
+		action = sanitize.OutputBlock
 	}
+	guard := sanitize.NewOutputSensitiveInterceptor(s, action)
+	for index, interceptor := range ordered {
+		if interceptor == restoreHook {
+			ordered = append(ordered, nil)
+			copy(ordered[index+1:], ordered[index:])
+			ordered[index] = guard
+			break
+		}
+	}
+	chatHandler.SetResponseInterceptor(response.NewInterceptorChain(ordered...))
 	slog.Info("smart_sani_guard: restore interceptor wired",
-		"chain_length", len(existing.ListInterceptors())+1)
+		"chain_length", len(ordered), "output_sensitive_action", action)
 	return detector
+}
+
+// insertSanitizeRestoreBeforeOutputCompliance preserves the existing response
+// chain order while placing restoration before the checker that evaluates
+// client-visible output. If output compliance is absent, restoration remains
+// the final interceptor.
+func insertSanitizeRestoreBeforeOutputCompliance(
+	existing []response.ResponseInterceptor,
+	restore response.ResponseInterceptor,
+) []response.ResponseInterceptor {
+	ordered := append([]response.ResponseInterceptor(nil), existing...)
+	for index, interceptor := range ordered {
+		if _, ok := interceptor.(*outputcompliancehook.OutputComplianceInterceptor); !ok {
+			continue
+		}
+		ordered = append(ordered, nil)
+		copy(ordered[index+1:], ordered[index:])
+		ordered[index] = restore
+		return ordered
+	}
+	return append(ordered, restore)
 }
 
 // buildGoalLLMCaller builds the LLMCaller used by completion detection + audit.

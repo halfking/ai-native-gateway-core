@@ -11,6 +11,7 @@ import (
 )
 
 func TestMultiFormatParserFetchRedactsHTTPErrorBody(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_PROXY_SUBSCRIPTION_ALLOW_PRIVATE", "true")
 	secret := "subscription-password-123"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("User-Agent"); got != defaultParserUserAgent {
@@ -71,6 +72,32 @@ func TestParseSubscriptionBodyFormatsAndDialability(t *testing.T) {
 				t.Fatalf("trojan location = %q, want HK", nodes[1].Location)
 			}
 		})
+	}
+}
+
+// TestGuessLocationHKNames 覆盖 HK 规避的常见命名形态（R51：此前
+// "Hong Kong 01" 分词成 HONG/KONG 后不命中整词，规避可被节点命名绕过）。
+func TestGuessLocationHKNames(t *testing.T) {
+	for _, name := range []string{
+		"香港 01",
+		"香港01",
+		"HK-Home",
+		"hk_home",
+		"hongkong",
+		"HongKong-02",
+		"Hong Kong 01",
+		"Hong.Kong",
+		"hong_kong_03",
+		"HONG  KONG", // 多空格分隔
+		"香港 HK 中转",
+	} {
+		if got := guessLocation(name); got != "HK" {
+			t.Fatalf("guessLocation(%q) = %q, want HK", name, got)
+		}
+	}
+	// 词组匹配不得误伤非相邻词："HONG X KONG" 不是 HONG KONG 短语。
+	if got := guessLocation("Hong via Kong relay"); got != "" {
+		t.Fatalf("guessLocation(non-adjacent) = %q, want empty", got)
 	}
 }
 

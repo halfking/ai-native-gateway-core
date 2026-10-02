@@ -10,14 +10,29 @@
  *
  * 设计约束：颜色只用 var(--kx-*)。
  */
-import { ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import OnlineSessionsPanel from './OnlineSessionsPanel.vue'
+import SessionCatalogPanel from './SessionCatalogPanel.vue'
 import SessionTurnsTimeline from './SessionTurnsTimeline.vue'
 import TurnDigestDrawer from './TurnDigestDrawer.vue'
 import { useTurnTitleSummary } from '../../composables/useTurnTitleSummary'
 import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
-const selectedSessionId = ref<string | null>(null)
+const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
+
+type ListMode = 'online' | 'catalog'
+
+function queryString(key: string): string {
+  const raw = route.query[key]
+  return typeof raw === 'string' ? raw : ''
+}
+
+const listMode = ref<ListMode>(queryString('slist') === 'catalog' ? 'catalog' : 'online')
+const selectedSessionId = ref<string | null>(queryString('session') || null)
 const digestOpen = ref(false)
 const digestTurnNo = ref<number | null>(null)
 // 2026-09-05 audit F2-#9: pass per-turn title/summary (turns list, cached per
@@ -33,15 +48,50 @@ function clearDigestState() {
   digestSummary.value = ''
 }
 
+function writeQuery(next: { session?: string | null; slist?: ListMode | null }) {
+  const query: Record<string, string | string[]> = {}
+  for (const [key, value] of Object.entries(route.query)) {
+    if (value == null) continue
+    query[key] = value as string | string[]
+  }
+  if (next.slist) query.slist = next.slist
+  else delete query.slist
+  if (next.session) query.session = next.session
+  else delete query.session
+  void router.replace({ query })
+}
+
 function openSession(sessionId: string) {
   clearDigestState()
   selectedSessionId.value = sessionId
+  writeQuery({ session: sessionId, slist: listMode.value === 'catalog' ? 'catalog' : null })
 }
 
 function backToList() {
   clearDigestState()
   selectedSessionId.value = null
+  writeQuery({ session: null, slist: listMode.value === 'catalog' ? 'catalog' : null })
 }
+
+function setListMode(mode: ListMode) {
+  listMode.value = mode
+  writeQuery({ session: selectedSessionId.value, slist: mode === 'catalog' ? 'catalog' : null })
+}
+
+onMounted(() => {
+  const session = queryString('session')
+  if (session) selectedSessionId.value = session
+})
+
+watch(
+  () => route.query.session,
+  (raw) => {
+    const next = typeof raw === 'string' && raw ? raw : null
+    if (next === selectedSessionId.value) return
+    clearDigestState()
+    selectedSessionId.value = next
+  },
+)
 
 function openRequest(payload: { requestId: string }) {
   openRequestDetailPage(payload.requestId, { mode: 'session-turns' })
@@ -71,13 +121,34 @@ function closeDigest() {
 <template>
   <div class="sdp" data-testid="session-drilldown-panel">
     <template v-if="!selectedSessionId">
-      <OnlineSessionsPanel @select="openSession" />
+      <div class="sdp-mode" role="tablist">
+        <button
+          type="button"
+          class="sdp-mode-btn"
+          :class="{ 'sdp-mode-btn--active': listMode === 'online' }"
+          data-testid="slist-online"
+          @click="setListMode('online')"
+        >
+          {{ t('sessions.catalog.online') }}
+        </button>
+        <button
+          type="button"
+          class="sdp-mode-btn"
+          :class="{ 'sdp-mode-btn--active': listMode === 'catalog' }"
+          data-testid="slist-catalog"
+          @click="setListMode('catalog')"
+        >
+          {{ t('sessions.catalog.directory') }}
+        </button>
+      </div>
+      <OnlineSessionsPanel v-if="listMode === 'online'" @select="openSession" />
+      <SessionCatalogPanel v-else @select="openSession" />
     </template>
     <template v-else>
       <div class="sdp-detail">
         <div class="sdp-back-row">
           <button type="button" class="sdp-back" @click="backToList">
-            &larr; 返回在线会话列表
+            &larr; {{ t('sessions.catalog.backToList') }}
           </button>
         </div>
         <SessionTurnsTimeline
@@ -103,6 +174,25 @@ function closeDigest() {
 <style scoped>
 .sdp {
   margin-bottom: 20px;
+}
+.sdp-mode {
+  display: inline-flex;
+  margin-bottom: 10px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.sdp-mode-btn {
+  border: 0;
+  background: var(--kx-surface);
+  color: var(--kx-text);
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sdp-mode-btn--active {
+  background: var(--kx-primary);
+  color: var(--on-primary);
 }
 .sdp-back-row {
   display: flex;

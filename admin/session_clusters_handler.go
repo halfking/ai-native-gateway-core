@@ -107,7 +107,7 @@ func (h *Handler) HandleSessionClustersList(w http.ResponseWriter, r *http.Reque
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -117,10 +117,13 @@ func (h *Handler) HandleSessionClustersList(w http.ResponseWriter, r *http.Reque
 		var it SessionClusterItem
 		if err := rows.Scan(&it.ClusterID, &it.TenantID, &it.CoarseKey, &it.Label,
 			&it.TopicPath, &it.MemberCount, &it.AvgCostUSD, &it.AvgQualityScore, &it.UpdatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+			writeInternalErr(w, "scan failed", err)
 			return
 		}
 		items = append(items, it)
+	}
+	if writeAggRowsErr(w, "sessionClustersList", rows.Err()) {
+		return
 	}
 
 	var total int
@@ -172,7 +175,7 @@ func (h *Handler) HandleSessionClusterDetail(w http.ResponseWriter, r *http.Requ
 		LEFT JOIN session_summaries ss ON ss.session_key = m.gw_session_id
 		WHERE m.cluster_id=$1 ORDER BY m.score DESC LIMIT 100`, clusterID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "members query failed: "+err.Error())
+		writeInternalErr(w, "members query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -181,7 +184,12 @@ func (h *Handler) HandleSessionClusterDetail(w http.ResponseWriter, r *http.Requ
 		var m SessionClusterMemberItem
 		if err := rows.Scan(&m.GwSessionID, &m.Score, &m.Title, &m.TotalCost); err == nil {
 			members = append(members, m)
+		} else {
+			warnRowSkip("sessionClusterMembers", err)
 		}
+	}
+	if writeAggRowsErr(w, "sessionClusterMembers", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, SessionClusterDetail{SessionClusterItem: it, Members: members})
@@ -211,7 +219,7 @@ func (h *Handler) HandleSessionClusterRun(w http.ResponseWriter, r *http.Request
 	}
 	count, err := clusterRunnerHolder.ClusterTenant(ctx, tid, lookback)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cluster run failed: "+err.Error())
+		writeInternalErr(w, "cluster run failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

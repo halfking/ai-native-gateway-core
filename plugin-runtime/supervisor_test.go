@@ -58,6 +58,26 @@ func (f *fakeProc) Wait() error { return nil }
 func (f *fakeProc) Stop() error { f.stopped = true; return nil }
 func (f *fakeProc) Pid() int    { return 0 }
 
+// 资源竞争下的落盘预算。helper 在正常路径下是**数十毫秒**内落盘
+// （本机实测：两个用例单独跑 5/5 通过，1.1s 内跑完），所以放宽预算**不会**让
+// 通过变慢——waitForFile 一看到文件就返回，预算只在失败/卡顿时才被耗尽。
+//
+// 为什么需要这么宽：本包在 make test 的全仓并发下实测耗时 21.9s~48.5s，
+// 而单独跑只要 1.1s（20~48 倍差）。这两个用例各自会 `go build` 一个 helper
+// 再 exec 起来，此时 Go 工具链正被全仓几百个包的编译抢占，新起的进程要等
+// 到调度。原预算 15s 在这个包络里是**贴边**的：
+//   - 2026-10-01 23:37 TestExecCommand_StartsRealProcess 红（整条 16.76s）
+//   - 2026-10-02 00:11 TestExecCommand_GracefulStopSIGTERM 红（整条 15.27s）
+//
+// 两次都恰好卡在 15s 预算上，且两次之间**没有任何 Go 代码改动**。
+// 注意这与 ctx 杀进程（另一处已修的缺陷）是**两个独立机制**——后者已单独立证。
+const (
+	// spawnBudget：等 helper 启动并落盘。
+	spawnBudget = 60 * time.Second
+	// stopGraceBudget：等 Stop() 走完 5s SIGTERM 优雅退出窗口并写出标记。
+	stopGraceBudget = 20 * time.Second
+)
+
 // waitForFile 轮询等待 path 出现，直到 timeout。返回是否存在。
 // 正常路径下 helper 在数十毫秒内落盘，此处只在冷缓存 / 全仓并发
 // 等资源竞争时等待更久，避免硬编码短截止导致的 flaky。
@@ -88,15 +108,22 @@ func main(){ _=os.WriteFile(os.Getenv("PID_FILE"), []byte("alive"), 0644); time.
 	}
 
 	c := newExecCommand("", helperBin, []string{"PID_FILE=" + pidFile}, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// ctx 的寿命必须覆盖下面 waitForFile 的等待窗口。exec.CommandContext 在
+	// ctx 到期时会**杀掉子进程**：旧写法 ctx=10s 而 waitForFile 等 15s，于是最后
+	// 5 秒是在等一个已经被 ctx 杀掉的进程写的文件，必然等不到。满负载下子进程
+	// 调度慢，10s 还没写完就被杀，这条门就红成「helper process did not start
+	// (no pid file)」——实测单跑 5/5 通过、全量并行下偶发红（整条耗时从 ~1s
+	// 涨到 16.76s，即 15s 全耗在等一个死进程）。同文件下方的优雅停止用例用的
+	// 是 context.Background()，没有这个错配。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := c.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer c.Stop()
 
-	if !waitForFile(pidFile, 15*time.Second) {
-		t.Fatal("helper process did not start (no pid file)")
+	if !waitForFile(pidFile, spawnBudget) {
+		t.Fatalf("helper process did not start within %v (no pid file)", spawnBudget)
 	}
 	if c.Pid() == 0 {
 		t.Fatal("Pid should be set after Start")
@@ -189,16 +216,17 @@ func main(){
 	// Wait until the helper has armed its SIGTERM handler, so we don't race the
 	// signal against signal.Notify (which would terminate the helper before it
 	// could write the graceful marker).
-	if !waitForFile(marker+".armed", 15*time.Second) {
-		t.Fatal("helper never armed SIGTERM handler within 15s")
+	if !waitForFile(marker+".armed", spawnBudget) {
+		t.Fatalf("helper never armed SIGTERM handler within %v", spawnBudget)
 	}
 	if err := c.Stop(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	// wait for marker (within grace window); 8s covers the 5s SIGTERM grace
-	// window plus process scheduling lag under full-repo parallel load.
-	if !waitForFile(marker, 8*time.Second) {
-		t.Fatal("graceful stop marker never written")
+	// wait for marker (within grace window); stopGraceBudget covers the SIGTERM
+	// grace window plus scheduling lag under full-repo parallel load (27th-round
+	// audit N6: comment still said "8s" after e5d70de0a widened the budget).
+	if !waitForFile(marker, stopGraceBudget) {
+		t.Fatalf("graceful stop marker never written within %v", stopGraceBudget)
 	}
 	got, _ := os.ReadFile(marker)
 	if string(got) != "graceful" {

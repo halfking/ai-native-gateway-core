@@ -23,9 +23,13 @@ export default {
     credentialMonitor: "認証情報モニター",
     annotations: 'ヒューマンアノテーション',
     annotationStats: 'アノテーション統計',
+    taskProfile: 'タスクプロファイル',
+    autoTuning: 'ルートチューニング',
     probeHealth: "プローブヘルス",
     systemMonitor: "システム監視",
     providers: "プロバイダー",
+    reconciliation: "プロバイダー照合",
+    settlementReport: "決算レポート",
     pricing: "コスト価格",
     modelPricing: "価格管理",
     freePool: "無料リソース",
@@ -104,4 +108,9 @@ export default {
   publicSupport: 'サポート',
 
   skip: '跳到主要内容',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: '未解決のリクエスト側異常',
+  },
 }

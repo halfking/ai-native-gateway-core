@@ -1,13 +1,22 @@
+// Deprecated（R73 审计 E-7 登记的清理候选，暂不删除）：
+// v1 SessionListAPI（NewSessionListAPI）全仓已无生产构造点，路由由
+// NewSessionListV2API 接管（cmd/gateway/main.go）。文件保留仅为测试
+// fixture（loadSessions/loadSessionDetail 仍被 *_test 引用）与下一清理
+// 轮的对照。删除前跑全量 build+test 确认；同族多轨现状见轮文档 D17 节。
 package admin
 
 import (
 	"context"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/db"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // ── Session List & Summary API (v4, 2026-06-21) ───────────────────────
@@ -15,7 +24,11 @@ import (
 // Returns aggregated sessions from request_logs grouped by gw_session_id.
 
 type SessionSummary struct {
-	SessionID    string `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// IDKind 显式标注本条摘要对应的身份契约类别（与 contract_freeze §1 五类 ID 互不重叠）。
+	// V1 (sessions_list) 主键为 gw_session_id；V2 端点改用 session_id。
+	IDKind       string `json:"id_kind"`
+	PrimaryKey   string `json:"primary_key"`
 	TenantID     string `json:"tenant_id"`
 	MsgCount     int    `json:"msg_count"`
 	RequestCount int    `json:"request_count"`
@@ -44,10 +57,19 @@ type SessionListResponse struct {
 }
 
 // SessionListAPI handles session list endpoints.
+//
+// R69 清理候选标注（勿新增消费方）：本类型全家族（HandleList/HandleDetail/
+// loadSessions/loadSessionDetail）在生产零构造点——唯一调用方是本包测试；
+// 生产路由 /api/admin/sessions 与 /api/admin/sessions/ 子树走的是
+// Handler.handleListSessions / handleSessionSubrouter（session_state_handlers.go），
+// V2 形态见 session_list_v2.go。删除性重构单独立项，动手前先迁移
+// parseIntParam（credential_monitor_heatmap.go 等仍在用的共享活函数）。
 type SessionListAPI struct {
 	db *pgxpool.Pool
 }
 
+// Deprecated: 生产零构造点（R69 核验），仅测试可达；新代码用 session_list_v2.go
+// 的 SessionListV2API 或 Handler.handleListSessions。
 func NewSessionListAPI(db *pgxpool.Pool) *SessionListAPI {
 	return &SessionListAPI{db: db}
 }
@@ -86,15 +108,70 @@ func (api *SessionListAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		return txErr
 	})
 	if err != nil {
+		// Subtask 4（§6）：存储不可达是依赖降级，不是 500。响应体不再回显
+		// err.Error()——连接错误串里带主机名/端口/DSN 片段。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
+		// 十六轮审计 E6b：去回显后错误一度既不给客户端也不进日志
+		// （本文件原本无任何日志调用）——排障时 500 无迹可查。
+		slog.Error("session_list: load sessions failed",
+			"tenant_id", tenantID, "page", page, "size", size, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "error",
 			"message": "Failed to load sessions",
-			"error":   err.Error(),
 		})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// buildSessionListCountSQL / buildSessionListRowsSQL 抽成具名 builder，
+// 这样真库门能跑**生产同一条 SQL**（不重抄一遍），静态门也能钉住读源。
+// 两者的读源、租户谓词、时间窗必须完全一致 —— 计数与列表行一旦口径分叉，
+// 分页会出现「总数与末页对不上」这种只在生产暴露的错。
+func buildSessionListCountSQL(tenantID, searchQ string, hours int) (string, []interface{}) {
+	q := `
+		SELECT COUNT(DISTINCT rl.gw_session_id)
+		FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
+		WHERE rl.gw_session_id IS NOT NULL
+		  AND rl.gw_session_id != ''
+		  AND rl.tenant_id = $1
+		  AND rl.ts >= NOW() - ($2 || ' hours')::interval
+	`
+	args := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
+	if searchQ != "" {
+		q += ` AND rl.gw_session_id ILIKE '%' || $3 || '%'`
+		args = append(args, searchQ)
+	}
+	return q, args
+}
+
+func buildSessionListRowsSQL(tenantID, searchQ string, hours int) (string, []interface{}) {
+	q := `
+		SELECT
+			rl.gw_session_id,
+			COUNT(*) as request_count,
+			COUNT(*) FILTER (WHERE rl.request_status = 'failure') as error_count,
+			COUNT(*) FILTER (WHERE rl.compression_strategy IS NOT NULL AND rl.compression_strategy != '') > 0 as is_compressed,
+			MIN(rl.ts) as time_start,
+			MAX(rl.ts) as time_end,
+			MIN(rl.client_model) as model_used
+		FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
+		WHERE rl.gw_session_id IS NOT NULL
+		  AND rl.gw_session_id != ''
+		  AND rl.tenant_id = $1
+		  AND rl.ts >= NOW() - ($2 || ' hours')::interval
+	`
+	args := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
+	if searchQ != "" {
+		q += ` AND rl.gw_session_id ILIKE '%' || $3 || '%'`
+		args = append(args, searchQ)
+	}
+	q += ` GROUP BY rl.gw_session_id ORDER BY MAX(rl.ts) DESC`
+	return q, args
 }
 
 func (api *SessionListAPI) loadSessions(
@@ -103,20 +180,31 @@ func (api *SessionListAPI) loadSessions(
 ) (*SessionListResponse, error) {
 	offset := (page - 1) * size
 
-	// Count total distinct sessions
-	countQuery := `
-		SELECT COUNT(DISTINCT gw_session_id)
-		FROM request_logs
-		WHERE gw_session_id IS NOT NULL 
-		  AND gw_session_id != ''
-		  AND tenant_id = $1
-		  AND ts >= NOW() - ($2 || ' hours')::interval
-	`
-	argsCount := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
-	if searchQ != "" {
-		countQuery += ` AND gw_session_id ILIKE '%' || $3 || '%'`
-		argsCount = append(argsCount, searchQ)
-	}
+	// 会话存储解耦 v3 审计（2026-10-01，§8.2 拍板）：读源从
+	// request_logs_with_current_month 迁到 session 族原生源。
+	//
+	// 旧记录写的是「迁过去会让 request_count/error_count/is_compressed
+	// 变小 2.5%」。真库重测（default 租户 / 近 3 天）结论相反：
+	//
+	//	会话数            15,088 → 13,660   （−1,428 / −9.46%）
+	//	request_count 合计 15,710 → 14,156
+	//	只在 v1 出现的会话      1,428      真业务轮次 0
+	//	只在原生源出现的会话        0
+	//
+	// 消失的 1,428 条**全部**是 internal_loopback(1,354) / non_terminal(73)
+	// —— 网关自己生成的标题/摘要 LLM 调用与 in_progress 占位，本来就不该
+	// 出现在用户可见的会话列表里。保留下来的 13,659 条逐项核对：
+	// request_count 仅 6 条不同（合计 +35 轮 = 0.07%）、error_count 逐会话
+	// 全等（9,323 = 9,323）、is_compressed 两边同为 1,418 行。
+	//
+	// error_count 的口径等价性是本轮特意验的：v1 写 `request_status =
+	// 'failure'`，原生源该列是由 success/status_code 派生的
+	// （CASE WHEN success THEN 'success' WHEN status_code = 429 THEN
+	// 'rate_limited' ELSE 'failure' END），两者在共有会话上完全相等。
+	//
+	// 用 SessionFamilyTurnsSourceSQL（无 session 谓词下推的那一支）：列表是
+	// 「按租户 + 时间窗列全部会话」，不是按 session_id 查单会话。
+	countQuery, argsCount := buildSessionListCountSQL(tenantID, searchQ, hours)
 
 	var total int
 	if err := q.QueryRow(ctx, countQuery, argsCount...).Scan(&total); err != nil {
@@ -124,29 +212,7 @@ func (api *SessionListAPI) loadSessions(
 	}
 
 	// Query session summaries using aggregation
-	query := `
-		SELECT 
-			gw_session_id,
-			COUNT(*) as request_count,
-			COUNT(*) FILTER (WHERE request_status = 'failure') as error_count,
-			COUNT(*) FILTER (WHERE compression_strategy IS NOT NULL AND compression_strategy != '') > 0 as is_compressed,
-			MIN(ts) as time_start,
-			MAX(ts) as time_end,
-			MIN(client_model) as model_used
-		FROM request_logs
-		WHERE gw_session_id IS NOT NULL 
-		  AND gw_session_id != ''
-		  AND tenant_id = $1
-		  AND ts >= NOW() - ($2 || ' hours')::interval
-	`
-	args := []interface{}{tenantID, fmt.Sprintf("%d", hours)}
-
-	if searchQ != "" {
-		query += ` AND gw_session_id ILIKE '%' || $3 || '%'`
-		args = append(args, searchQ)
-	}
-
-	query += ` GROUP BY gw_session_id ORDER BY MAX(ts) DESC`
+	query, args := buildSessionListRowsSQL(tenantID, searchQ, hours)
 
 	// Get total before pagination
 	query += fmt.Sprintf(" LIMIT %d OFFSET %d", size, offset)
@@ -167,6 +233,7 @@ func (api *SessionListAPI) loadSessions(
 			model              *string
 		)
 		if err := rows.Scan(&sessionID, &reqCount, &errCount, &compressed, &startTime, &endTime, &model); err != nil {
+			warnRowSkip("session list", err)
 			continue
 		}
 
@@ -186,6 +253,8 @@ func (api *SessionListAPI) loadSessions(
 
 		sessions = append(sessions, SessionSummary{
 			SessionID:    sessionID,
+			IDKind:       "gw_session_id",
+			PrimaryKey:   sessionID,
 			TenantID:     tenantID,
 			RequestCount: reqCount,
 			ErrorCount:   errCount,
@@ -196,6 +265,9 @@ func (api *SessionListAPI) loadSessions(
 			TimeEnd:      endTime.Format("2006-01-02 15:04:05"),
 			Duration:     durStr,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sessions: %w", err)
 	}
 
 	pages := (total + size - 1) / size
@@ -273,10 +345,16 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 		return txErr
 	})
 	if err != nil {
+		// Subtask 4（§6）：同 HandleList，存储不可达走 503 降级路径。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentDetail, err)
+			return
+		}
+		slog.Error("session_list: load session detail failed",
+			"tenant_id", tenantID, "session_id", sessionID, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "error",
 			"message": "Failed to load session detail",
-			"error":   err.Error(),
 		})
 		return
 	}
@@ -295,16 +373,16 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sessionID, tenantID string) (*SessionDetail, error) {
 	// Get session summary
 	query := `
-		SELECT 
+		SELECT
 			COUNT(*) as request_count,
-			COUNT(*) FILTER (WHERE request_status = 'failure') as error_count,
-			COUNT(*) FILTER (WHERE compression_strategy IS NOT NULL AND compression_strategy != '') > 0 as is_compressed,
-			MAX(compression_strategy) as compression_strategy,
-			MIN(ts) as time_start,
-			MAX(ts) as time_end,
-			MIN(client_model) as model_used
-		FROM request_logs
-		WHERE gw_session_id = $1 AND tenant_id = $2
+			COUNT(*) FILTER (WHERE rl.request_status = 'failure') as error_count,
+			COUNT(*) FILTER (WHERE rl.compression_strategy IS NOT NULL AND rl.compression_strategy != '') > 0 as is_compressed,
+			MAX(rl.compression_strategy) as compression_strategy,
+			MIN(rl.ts) as time_start,
+			MAX(rl.ts) as time_end,
+			MIN(rl.client_model) as model_used
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE 1 = 1 AND rl.tenant_id = $2
 	`
 
 	var (
@@ -343,6 +421,8 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 
 	summary := SessionSummary{
 		SessionID:           sessionID,
+		IDKind:              "gw_session_id",
+		PrimaryKey:          sessionID,
 		TenantID:            tenantID,
 		RequestCount:        reqCount,
 		ErrorCount:          errCount,
@@ -357,12 +437,12 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 
 	// Get request logs
 	logQuery := `
-		SELECT request_id, ts, client_model, outbound_model, success,
-		       prompt_tokens, completion_tokens, total_tokens, latency_ms,
-		       compression_strategy
-		FROM request_logs
-		WHERE gw_session_id = $1 AND tenant_id = $2
-		ORDER BY ts ASC
+		SELECT rl.request_id, rl.ts, rl.client_model, rl.outbound_model, rl.success,
+		       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens, rl.latency_ms,
+		       rl.compression_strategy
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE 1 = 1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC
 		LIMIT 500
 	`
 
@@ -383,6 +463,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 		)
 		if err := rows.Scan(&rid, &ts, &cModel, &oModel, &ok,
 			&pTokens, &cTokens, &totalTokens, &lat, &cs); err != nil {
+			warnRowSkip("session detail turns", err)
 			continue
 		}
 		csStr := ""
@@ -401,6 +482,9 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 			LatencyMs:           lat,
 			CompressionStrategy: csStr,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session turns: %w", err)
 	}
 
 	return &SessionDetail{

@@ -313,7 +313,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	query += ` ORDER BY id`
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -321,9 +321,14 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u userInfo
 		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
+			warnRowSkip("users.list", err)
 			continue
 		}
 		users = append(users, u)
+	}
+	// 账号清单少一截 = 管理员看不见某个租户的用户（且前端以为就是全部）。
+	if writeAggRowsErr(w, "users.list", rows.Err()) {
+		return
 	}
 	if users == nil {
 		users = []userInfo{}
@@ -403,7 +408,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "username already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create user failed: "+err.Error())
+		writeInternalErr(w, "create user failed", err)
 		return
 	}
 	h.writeAuditLog(r, "user.create", "user", u.ID, fmt.Sprintf("username=%s role=%s tenant=%s", u.Username, u.Role, u.TenantID))
@@ -423,7 +428,7 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 		err := h.db.QueryRow(ctx, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
 		cancel()
 		if err != nil {
-			writeError(w, http.StatusNotFound, "user not found")
+			writeLookupErr(w, "user not found", err)
 			return
 		}
 		if userTenant != GetTenantID(r) {
@@ -526,7 +531,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 		err := h.db.QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
 		cancelCheck()
 		if err != nil {
-			writeError(w, http.StatusNotFound, "user not found")
+			writeLookupErr(w, "user not found", err)
 			return
 		}
 		if userTenant != GetTenantID(r) {
@@ -538,7 +543,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 	tag, err := h.db.Exec(ctx, "DELETE FROM users WHERE id = $1", id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeInternalErr(w, "delete failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -557,7 +562,7 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 		err := h.db.QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
 		cancelCheck()
 		if err != nil {
-			writeError(w, http.StatusNotFound, "user not found")
+			writeLookupErr(w, "user not found", err)
 			return
 		}
 		if userTenant != GetTenantID(r) {
@@ -589,12 +594,23 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 	defer cancel()
 	tag, err := h.db.Exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = now() WHERE id = $2`, string(hash), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
+	}
+	// R56 audit: an admin-forced reset (e.g. credential-leak response) must
+	// revoke the target user's existing tokens exactly like the B4
+	// self-service change does — otherwise the old JWT stays valid until its
+	// remaining TTL. A failed write must not fail the reset itself (same
+	// trade as the B4 self-change path).
+	if revokeErr := revokeUserTokensForPasswordChange(ctx, h.db, id); revokeErr != nil {
+		slog.Warn("admin password reset succeeded but token revocation failed",
+			"user_id", id,
+			"error", revokeErr,
+		)
 	}
 	h.writeAuditLog(r, "user.reset_password", "user", id, fmt.Sprintf("user_id=%d password_reset_by_admin", id))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_reset"})
@@ -673,7 +689,7 @@ func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var currentHash string
 	err := h.db.QueryRow(ctx, "SELECT password_hash FROM users WHERE id = $1", auth.UserID).Scan(&currentHash)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		writeLookupErr(w, "user not found", err)
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(req.OldPassword)); err != nil {
@@ -689,6 +705,17 @@ func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return
+	}
+	// B4 (2026-09-22): revoke every token issued before now — old JWTs stay
+	// cryptographically valid until expiry, so the epoch record is what
+	// makes the auth middlewares reject them (401) immediately. A failed
+	// write must not fail the password change itself; the exposure window
+	// is then bounded by the remaining token TTL as before.
+	if revokeErr := revokeUserTokensForPasswordChange(ctx, h.db, auth.UserID); revokeErr != nil {
+		slog.Warn("password change succeeded but token revocation failed",
+			"user_id", auth.UserID,
+			"error", revokeErr,
+		)
 	}
 	h.writeAuditLog(r, "user.change_password", "user", auth.UserID, "self")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_changed"})

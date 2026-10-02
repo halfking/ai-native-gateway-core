@@ -287,14 +287,23 @@ func TestProviderErrorAggregatorSQLNeverReferencesUnifiedViewSourceColumn(t *tes
 		t.Errorf("staging CTAS must keep the `NULL::text AS source` placeholder so provider_error_agg_src keeps the unified view's column shape")
 	}
 
-	// The unified view must be read only by the two plain staging CTAS
-	// statements (new rows above the watermark, then the complete affected
-	// buckets — audit F-4). Any further reference — in particular a read from
-	// the window/DISTINCT ON pipeline — re-opens the columnar XX000 crash
-	// surface.
-	const maxViewReads = 2
+	// Pass one (watermark staging) must read ONLY the hot table (2026-09-21
+	// 252 部署验证轮)：水位增量行只可能出现在 hot；从 unified 视图暂存会让
+	// planner 对全部 columnar 月分区做无剪枝全扫（252 pss 10 天 2,706 次/
+	// 累计 4.26h + 17 次 30s 击杀）。行逃逸由 stall 守卫告警兜底，不靠
+	// 分区扫描兜底。
+	if !strings.Contains(code, "FROM candidate_failure_logs_hot c") {
+		t.Errorf("stageSourceRowsSQL must stage watermark increments from candidate_failure_logs_hot only, not the unified view")
+	}
+
+	// The unified view must be read only by pass two — the complete affected
+	// bucket re-read (audit F-4), whose ts range predicates let the planner
+	// prune historical partitions. Any further reference — in particular a
+	// read from the window/DISTINCT ON pipeline — re-opens the columnar
+	// XX000 crash surface.
+	const maxViewReads = 1
 	if n := strings.Count(code, "candidate_failure_logs_unified"); n != maxViewReads {
-		t.Errorf("candidate_failure_logs_unified must be referenced only by the %d staging CTAS statements (NULL placeholder precedes each), found %d references", maxViewReads, n)
+		t.Errorf("candidate_failure_logs_unified must be referenced only by the %d staging CTAS statement (complete affected buckets; NULL placeholder precedes it), found %d references", maxViewReads, n)
 	}
 	rest := code
 	for i := 0; i < maxViewReads; i++ {

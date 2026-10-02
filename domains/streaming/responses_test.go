@@ -171,6 +171,24 @@ func TestConvertChatResponseToResponses(t *testing.T) {
 	assert.Equal(t, float64(10), usage["input_tokens"])
 }
 
+// A native Responses rejection may recover through Chat. The handler owns
+// the successful non-stream write after the executor suppresses its own write.
+func TestResponsesHandlerWritesChatFallbackAsResponses(t *testing.T) {
+	h := NewResponsesHandler(NewChatHandler(credential.NewManager(), credential.NewLimiter(), nil, nil, nil, nil))
+	chatBody := []byte(`{"id":"chat-1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`)
+	w := httptest.NewRecorder()
+	written := h.writeNonStreamResponse(w, chatBody, "client-model", "req-chat-fallback")
+	if w.Code != http.StatusOK || !json.Valid(written) || w.Body.String() != string(written) {
+		t.Fatalf("invalid Responses handler write: status=%d, body=%s", w.Code, w.Body.String())
+	}
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(written, &payload))
+	assert.Equal(t, "response", payload["object"])
+	assert.Equal(t, "client-model", payload["model"])
+	assert.Equal(t, "req-chat-fallback", w.Header().Get("X-Request-Id"))
+	assert.NotContains(t, w.Body.String(), `"chat.completion"`)
+}
+
 // TestResponsesStreamSSE_OtherSideClosedIsNetworkError pins the gate-aware
 // resumability on the chat→responses default branch
 // (responses_stream.go default case).

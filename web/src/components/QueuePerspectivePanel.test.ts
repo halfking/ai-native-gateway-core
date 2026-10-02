@@ -11,6 +11,7 @@ import { clearCredentialLabels, loadCredentialLabels } from '../composables/useC
 // 测试需把该单例固定在 zh-CN（组件挂载用的是下面的局部 i18n 实例）。
 import { i18n as appI18n } from '../i18n'
 import { getCredentialMonitorSummary } from '../api/credential-monitor'
+import { getRequestLogTopModels } from '../api/logs'
 
 const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, isAuthenticatedMock, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
@@ -393,6 +394,158 @@ describe('QueuePerspectivePanel', () => {
   })
 
   // ── OBS-UI：按模型分组的可用节点（2026-08-17） ────────────────────────────
+
+  // 2026-09-29 线上复现（llmgateway.internal.example.com/dashboard?tab=stream）：筛选 glm-5.3 且确有
+  // glm-5.3 请求，但「按模型分组的可用节点」里没有 glm-5.3 分组，却冒出一个未
+  // 选中的其它模型分组。根因是 resolve 的 raw_models 含词法变体
+  // （'glm-5.3-flash' 剥掉包装词 flash 得到 'glm-5.3'），而旧实现按并发 resolve
+  // 的完成顺序就地认领别名（冲突就删），真模型作用域被冒名者吞掉。
+  // 下面的 resolve 载荷逐字段照抄当时的真实响应。
+  function stubGlm53ResolveFamily() {
+    getFeatured.mockResolvedValue({ featured_models: ['glm-5.3', 'glm-5.3-flash'] })
+    resolveRouting.mockImplementation(async (model: string) => {
+      if (model === 'glm-5.3') {
+        return {
+          canonical_id: 2422803,
+          canonical_name: 'glm-5.3',
+          raw_models: ['glm-5.3', 'glm-5-3', 'z-ai/glm-5.3'],
+          candidates: [
+            { credential_id: 22, model_name: 'glm-5.3', canonical_id: 2422803, manual_priority: 1, routing_tier: 1, priority: false },
+            { credential_id: 61, model_name: 'glm/5.3', canonical_id: 2422803, manual_priority: 2, routing_tier: 1, priority: false },
+            { credential_id: 7, model_name: 'z-ai/glm-5.3', canonical_id: 2422803, manual_priority: 3, routing_tier: 1, priority: false },
+          ],
+        }
+      }
+      if (model === 'glm-5.3-flash') {
+        return {
+          canonical_id: null,
+          canonical_name: 'glm-5.3-flash',
+          // 'glm-5.3' / 'glm-5-3' 是包装词剥离的词法变体，不是同一模型。
+          raw_models: ['glm-5.3-flash', 'glm-5-3-flash', 'glm-5.3', 'glm-5-3'],
+          candidates: [
+            { credential_id: 8, model_name: 'glm-5.3-flash', canonical_id: null, manual_priority: 1, routing_tier: 1, priority: false },
+            { credential_id: 46, model_name: 'GLM-5.3-Flash', canonical_id: null, manual_priority: 2, routing_tier: 1, priority: false },
+            { credential_id: 22, model_name: 'glm-5.3', canonical_id: 2422803, manual_priority: 3, routing_tier: 1, priority: false },
+          ],
+        }
+      }
+      return { canonical_id: null, canonical_name: null, raw_models: [], candidates: [] }
+    })
+  }
+
+  function stubGlm53Nodes() {
+    const healthy = {
+      manual_disabled: false,
+      circuit_state: 'closed',
+      availability_state: 'ready',
+      quota_state: 'ok',
+      health_status: 'healthy',
+    }
+    liveStreamState.nodes = [
+      { credential_id: 22, provider_id: 1, provider_code: 'zhipu', ...healthy, raw_models: ['glm-5.3', 'glm-5.3-flash'] },
+      { credential_id: 57, provider_id: 2, provider_code: 'apicloude', ...healthy, raw_models: ['glm-5.3'] },
+      { credential_id: 46, provider_id: 3, provider_code: 'xianyu', ...healthy, raw_models: ['GLM-5.3', 'GLM-5.3-Flash'] },
+    ]
+  }
+
+  it('keeps a base-model group even when a wrapper-token scope claims it lexically', async () => {
+    stubGlm53ResolveFamily()
+    stubGlm53Nodes()
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const names = wrapper.findAll('.qp-model-group-name').map(n => n.text())
+    expect(names).toContain('glm-5.3')
+    expect(names).toContain('glm-5.3-flash')
+    // 凭据 #22 / #46 的 raw_models 里同时有 glm-5.3 与 glm-5.3-flash，它们确实
+    // 同时候两个模型的节点，两个分组都包含它们；关键是 glm-5.3 分组不再为空，
+    // 且只服务基础模型的 #57 没有混进 flash 分组。
+    const glm53Group = wrapper.findAll('.qp-model-group')
+      .find(g => g.get('.qp-model-group-name').text() === 'glm-5.3')
+    expect(glm53Group?.get('.qp-pill').text()).toBe('3 节点')
+    const flashGroup = wrapper.findAll('.qp-model-group')
+      .find(g => g.get('.qp-model-group-name').text() === 'glm-5.3-flash')
+    expect(flashGroup?.get('.qp-pill').text()).toBe('2 节点')
+  })
+
+  it('shows the selected model under the model filter instead of an impersonating group', async () => {
+    stubGlm53ResolveFamily()
+    stubGlm53Nodes()
+    const wrapper = mount(QueuePerspectivePanel, {
+      props: { modelFilter: new Set(['glm-5.3']) },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+
+    const groups = wrapper.findAll('.qp-model-group')
+    expect(groups).toHaveLength(1)
+    expect(groups[0].get('.qp-model-group-name').text()).toBe('glm-5.3')
+    expect(wrapper.text()).not.toContain('glm-5.3-flash')
+  })
+
+  it('shows nothing for a filtered model that is outside the featured/hot universe instead of borrowing another model group', async () => {
+    // 2026-09-29 二轮审计发现的同型残留：集合里只有 glm-4.7-flash，节点却上报
+    // raw 'glm-4.7'（canonical 51）。旧实现会把它挂到 glm-4.7-flash 名下，于是
+    // 筛选 glm-4.7 看到的是标题为 glm-4.7-flash 的组。正确行为是：该模型不在
+    // 特色/热门范围内 ⇒ 不显示，而不是冒名。
+    getFeatured.mockResolvedValue({ featured_models: ['glm-4.7-flash'] })
+    resolveRouting.mockImplementation(async (model: string) => {
+      if (model === 'glm-4.7-flash') {
+        return {
+          canonical_id: 52,
+          canonical_name: 'glm-4.7-flash',
+          raw_models: ['glm-4.7-flash', 'glm-4.7'],
+          candidates: [
+            { credential_id: 8, model_name: 'glm-4.7-flash', canonical_id: 52, manual_priority: 1, routing_tier: 1, priority: false },
+            { credential_id: 7, model_name: 'glm-4.7', canonical_id: 51, manual_priority: 2, routing_tier: 1, priority: false },
+          ],
+        }
+      }
+      return { canonical_id: null, canonical_name: null, raw_models: [], candidates: [] }
+    })
+    liveStreamState.nodes = [
+      { credential_id: 8, provider_id: 1, provider_code: 'nvidia', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-4.7-flash', 'glm-4.7'] },
+    ]
+
+    const wrapper = mount(QueuePerspectivePanel, {
+      props: { modelFilter: new Set(['glm-4.7']) },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+    expect(wrapper.findAll('.qp-model-group')).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('glm-4.7-flash')
+
+    // 不筛选时：glm-4.7 的节点不得混进 glm-4.7-flash 分组
+    const unfiltered = mountPanel()
+    await flushPromises()
+    const names = unfiltered.findAll('.qp-model-group-name').map(n => n.text())
+    expect(names).toEqual(['glm-4.7-flash'])
+    expect(unfiltered.find('.qp-model-group').get('.qp-pill').text()).toBe('1 节点')
+  })
+
+  it('still shows its own group when its resolve call fails (exact-name fallback), never under a wrapper model', async () => {
+    getFeatured.mockResolvedValue({ featured_models: ['glm-5.3', 'glm-5.3-flash'] })
+    resolveRouting.mockImplementation(async (model: string) => {
+      if (model === 'glm-5.3') throw new Error('resolve 503')
+      return {
+        canonical_id: null,
+        canonical_name: 'glm-5.3-flash',
+        raw_models: ['glm-5.3-flash', 'glm-5.3'],
+        candidates: [
+          { credential_id: 8, model_name: 'glm-5.3-flash', canonical_id: 2716170, manual_priority: 1, routing_tier: 1, priority: false },
+          { credential_id: 22, model_name: 'glm-5.3', canonical_id: 2422803, manual_priority: 2, routing_tier: 1, priority: false },
+        ],
+      }
+    })
+    liveStreamState.nodes = [
+      { credential_id: 22, provider_id: 1, provider_code: 'zhipu', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-5.3'] },
+    ]
+    const wrapper = mountPanel()
+    await flushPromises()
+    // 精确名 fallback：raw 'glm-5.3' 仍归到同名作用域，而不是被 flash 吞掉
+    const names = wrapper.findAll('.qp-model-group-name').map(n => n.text())
+    expect(names).toEqual(['glm-5.3'])
+  })
 
   it('hides the model-grouped section entirely when no node reports raw_models', () => {
     liveStreamState.nodes = [
@@ -1085,5 +1238,62 @@ describe('QueuePerspectivePanel', () => {
 
     expect(wrapper.get('.qp-node-card-title').text()).toBe('p/hzx-prod')
     expect(wrapper.text()).not.toContain('p/#5')
+  })
+
+  // ── 2026-09-22 总览页首开修复 ─────────────────────────────────────────────
+
+  it('renders model groups and the processing trail even when the queue layer is not wired', async () => {
+    // 245 实况：dispatch 未启用时 queue envelope 缺失（hasData=false）。
+    // 修复前整个面板被空态吞掉，「按处理队列」首屏只剩一行提示。
+    liveStreamState.queue = null
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+    liveStreamState.requests = [
+      { ts: '2026-09-22T08:00:00Z', request_id: 'r-q-1', model: 'm-1', provider_code: 'p', status: 'in_progress' },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    // 队列层空态仍然可见（口径诚实，不冒充畅通）
+    expect(wrapper.text()).toContain('队列数据未接入')
+    // 但模型分组与请求轨迹分区不再被 hasData 门控
+    expect(wrapper.find('.qp-layer--model-groups').exists()).toBe(true)
+    expect(wrapper.text()).toContain('按模型分组的可用节点')
+    expect(wrapper.text()).toContain('最近请求处理轨迹')
+  })
+
+  it('retries the model-scope load once when the first attempt landed empty (first-open fix)', async () => {
+    // 首开竞态：挂载早于登录态就绪，featured/top-models 首轮整体失败 →
+    // scope 为空。修复前面板只能靠"切走再切回（重挂载）"恢复；现在 3s 后
+    // 自动补一次加载。
+    vi.useFakeTimers()
+    try {
+      getFeatured.mockReset().mockRejectedValueOnce(new Error('auth not ready'))
+      vi.mocked(getRequestLogTopModels).mockReset()
+        .mockRejectedValueOnce(new Error('auth not ready'))
+        .mockResolvedValue({ items: [] })
+      resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
+      liveStreamState.nodes = [
+        { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      ]
+
+      const wrapper = mountPanel()
+      await flushPromises()
+      expect(getFeatured).toHaveBeenCalledTimes(1)
+      // 双双失败 → 面板给出错误态而不是空白
+      expect(wrapper.text()).toContain('模型范围暂不可用')
+
+      // 登录态就绪后重试成功
+      getFeatured.mockResolvedValue({ featured_models: ['m-1'] })
+      await vi.advanceTimersByTimeAsync(3000)
+      await flushPromises()
+      expect(getFeatured).toHaveBeenCalledTimes(2)
+      expect(wrapper.text()).toContain('m-1')
+      expect(wrapper.text()).not.toContain('模型范围暂不可用')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

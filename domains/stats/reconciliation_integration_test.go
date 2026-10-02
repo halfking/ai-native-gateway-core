@@ -99,7 +99,22 @@ func TestReconciliation_PostgreSQL(t *testing.T) {
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
-	// Insert usage_facts (source of truth)
+	// Insert usage_facts (source of truth).
+	//
+	// The superseded revision of evt1 MUST carry an earlier occurred_at than
+	// its replacement. The reconciliation dedup join keys on
+	// (d.event_id = f.event_id AND d.occurred_at = f.occurred_at): the
+	// stats_event_dedup row is a pointer that EventWriter.persist keeps
+	// "pointed at the newest terminal update" (ON CONFLICT (event_id) DO
+	// UPDATE SET occurred_at = EXCLUDED.occurred_at), so only the fact row
+	// whose occurred_at equals that pointer survives the join.
+	//
+	// Giving both revisions one shared occurred_at is a shape production
+	// cannot produce: insertUsageFactTx is the only writer of usage_facts and
+	// pins revision=1, so UNIQUE (event_id, revision, occurred_at) admits at
+	// most one fact row per (event_id, occurred_at). With a shared timestamp
+	// the pointer cannot discriminate the two rows, both survive, and the
+	// event is double-counted rather than superseded.
 	_, err = conn.Exec(ctx, `
 			INSERT INTO usage_facts
 				(event_id, request_id, revision, occurred_at, tenant_id, traffic_class, status,
@@ -107,17 +122,17 @@ func TestReconciliation_PostgreSQL(t *testing.T) {
 				 prompt_tokens, completion_tokens, total_tokens, cost_amount, credits_charged)
 			VALUES
 				('evt1', 'req1', 1, $1, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 90, 40, 130, 0.009, 130),
-				('evt1', 'req1', 2, $1, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 110, 60, 170, 0.011, 170),
+				('evt1', 'req1', 2, $2, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 110, 60, 170, 0.011, 170),
 				('evt2', 'req2', 1, $1, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 200, 100, 300, 0.02, 300),
 				('evt3', 'req3', 1, $1, 'tenant1', 'business', 'error', 1, 10, 'gpt-4', 50, 0, 50, 0.005, 50)
-		`, today.Add(12*time.Hour))
+		`, today.Add(12*time.Hour), today.Add(12*time.Hour+time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = conn.Exec(ctx, `
 			INSERT INTO stats_event_dedup (event_id, occurred_at)
-			VALUES ('evt1', $1), ('evt2', $1), ('evt3', $1)
-		`, today.Add(12*time.Hour))
+			VALUES ('evt1', $2), ('evt2', $1), ('evt3', $1)
+		`, today.Add(12*time.Hour), today.Add(12*time.Hour+time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +140,11 @@ func TestReconciliation_PostgreSQL(t *testing.T) {
 	// Facts (latest dedup revision): 3 requests, 2 success, 1 failure,
 	// 360 prompt, 160 completion, 520 total, 0.036 cost, 520 credits.
 	// The stale revision for evt1 must not contribute to reconciliation.
+	//
+	// The projection is deliberately off by ~1% from that ground truth, with
+	// every token/cost metric inside canAutoRepair's 2% relative threshold and
+	// under its 1000 absolute bound, so reconciliation records diffs and then
+	// auto-repairs them.
 	_, err = conn.Exec(ctx, `
 		INSERT INTO stats_usage_daily
 			(day_utc, tenant_id, provider_id, canonical_id, raw_model_name, traffic_class,
@@ -134,7 +154,7 @@ func TestReconciliation_PostgreSQL(t *testing.T) {
 		VALUES 
 			($1, 'tenant1', 1, 10, 'gpt-4', 'business', 'provider_model', 'provider:1:model:10',
 			 3, 2, 1,
-			 345, 148, 493, 0.0345, 495)
+			 356, 158, 514, 0.0356, 514)
 	`, today)
 	if err != nil {
 		t.Fatal(err)
@@ -467,6 +487,15 @@ func TestReconciliation_Metrics_CompletedAndAutoRepaired(t *testing.T) {
 		VALUES
 			('metric-evt-1', 'metric-req-1', $1, 'metric-tenant', 'business', 'success',
 			 7, 70, 'metric-model', 100, 50, 150, 0.01, 150)
+	`, today.Add(12*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// The fact-side aggregation joins stats_event_dedup, so without this
+	// pointer the ground truth is empty, no diff is ever recorded, and the
+	// auto_repair_pending -> auto_repaired path asserted below is unreachable.
+	if _, err = conn.Exec(ctx, `
+		INSERT INTO stats_event_dedup (event_id, occurred_at)
+		VALUES ('metric-evt-1', $1)
 	`, today.Add(12*time.Hour)); err != nil {
 		t.Fatal(err)
 	}

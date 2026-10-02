@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +65,20 @@ func TestRequestDocumentPreservesProtocolParserOutput(t *testing.T) {
 			}
 			if len(parsed.Extensions) > 0 && len(restored.Extensions) == 0 {
 				t.Error("extensions were lost across request document codec")
+			}
+			// R72: the assertions above stopped at "some extensions survived",
+			// so this test — which deliberately feeds 9007199254740993, one
+			// above 2^53 — passed while the end-to-end path silently returned
+			// ...992. Assert the VALUE, not just its presence.
+			raw, ok := restored.Extensions["x_future"]
+			if !ok {
+				t.Fatalf("x_future extension lost across codec: %v", restored.Extensions)
+			}
+			if !strings.Contains(string(raw), "9007199254740993") {
+				t.Errorf("large integer lost precision across codec/serialize: got %s", raw)
+			}
+			if !strings.Contains(string(serialized), "9007199254740993") {
+				t.Errorf("large integer did not survive to the wire: %s", serialized)
 			}
 		})
 	}

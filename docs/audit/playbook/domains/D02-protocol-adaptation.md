@@ -50,7 +50,20 @@
 输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
 
+### R52 回注（2026-09-22，国内客户端识别链批）
+- **识别链时序 = 判定语义**：body-marker 层写在 EnsureCaptured 时，若先于 SetKey 的 header 链执行，`AgentName==""` 恒真使 body 结论无条件压过 UA——分层识别的每一层必须在其前序层真正跑完之后才允许覆盖（R52：body-marker 移入 refreshMeta 的 fillAttemptMeta 之后，仅覆盖弱名 + 结果 memo）。
+- **模型选择 ≠ 客户端身份**：model 前缀（deepseek-*）与通用编码工具名（read_file 等）单独都不足判定客户端，须共现或叠加独立强信号（metadata.deepseek_session_id）；conversion-audit.md:86 的自警在实现中被无视即事故。
+- **系统提示词裸词教训三犯**：09-03 zcode/opencode 教训后，新增模式又引入裸 `deepseek-coder`——新 pattern 一律锚定自述形态（"you are X"/"X cli"）。
+- **提交信息↔diff 对账**：5dc4e9f3b 提交信息与实际 diff 完全不符（声称 reasoning_content，实际 MiniMax 参数提升）——审计窗口按 commit message 检索会扑空，push 前自查。
+
 ### R43 回注（2026-09-18，Gemini budget intent 丢失上报批）
 - **生产序列化点 = 丢失观测点**：handler_gemini step-6 的 SerializeOpenAI 发生在路由前（TargetProvider 必空），budget 形 Reasoning（thinkingConfig）在此丢失且不可恢复——"executor 会带 candidate 重跑出向序列化"的论证只对 Extensions 可还原字段成立，对无 OpenAI 原生表达的 intent 不成立。新增 `reasoning.budget_tokens` loss 上报分支钉住该形态（完整 TargetProvider 前送修复登记 R43 §五#1 专项）。
 - **新旧注释必须当场对照实现**：translate.go 覆盖范围注曾把"applyThinkingToOpenAIChat"写成未来工作，45 分钟后同日落地即漂移（R43 已纠偏）——写"不在本修复内"前先 grep 是否已有同名实现。
 - 钉桩：`TestSerializeOpenAI_P5_GeminiBudgetLossReportedByTargetProvider`（空目标报丢失/minimax 目标渲染不报，双向）。
+### R69 回注（2026-09-27，非流式原生 stop_reason 对偶批）
+- **流式修复要问一句"非流式面呢"**：A#2/R68 修了流式同协议 StopReason 透传，非流式（Parse/Serialize*Response）同款折叠（pause_turn→end_turn、RECITATION→SAFETY）一直裸奔到 R69 才补——IR 补 StopReason 原生槽 + parse 在有损映射前填槽 + serialize 仅同协议透传（跨协议守卫防 end_turn/RECITATION 泄漏）。钉桩 internal/ir/response_stopreason_test.go 6 案。
+- **同类残留**：mapResponsesStatus 把 status:"failed" 折叠为 "stop"（response_protocols.go）——需先证实 responses 上游 failed 是否恒走 HTTP 错误通道再定处置（R69 §四 登记）。
+
+### R71 回注（2026-09-27，序列化守卫补齐两案）
+- buildAnthropicMessageDelta 补 SourceProtocol 守卫（R68 gemini chunk 守卫同型缺口：跨协议原生 StopReason 不得上异构 wire）；SerializeGeminiResponse 跨协议空 FinishReason 不再合成 "STOP"（else 兜底臂 mapFinishReasonToGemini("") 的 default 值是伪造终态）——守卫三案钉桩（跨协议不泄漏/同协议无损/空不合成）。
+- 摘要去格式（D02 侧消费面）：剥噪为空且原文非空时回退原文——围栏独占/未闭合围栏响应此前摘要变空串（O-2 新证据已修，TrimLeft 误伤维持挂账）。

@@ -29,11 +29,16 @@ func rt2Candidates() []provider.Candidate {
 }
 
 // TestCalculateLoadScore_CostIQWeights_OffIsByteIdentical pins the RT-2
-// completion gate: with CostWeight/IQWeight off (the default), the effective
+// completion gate: with CostWeight/IQWeight explicitly off, the effective
 // P2C load score is byte-identical to the pre-RT-2 composite — cost and IQ
 // inputs must not leak into the score (doc 19 §3 ROUTE 权重变更门禁).
+// 2026-09-19: CostWeight now defaults to 0.15 (cost-aware routing, docs/
+// design/2026-09-19-two-layer-priority-and-cost-routing.md §2), so "off" is
+// established by zeroing the weights here rather than by the default.
 func TestCalculateLoadScore_CostIQWeights_OffIsByteIdentical(t *testing.T) {
 	r := NewRouter(nil, nil)
+	r.LoadScoreWeights.CostWeight = 0
+	r.LoadScoreWeights.IQWeight = 0
 	strat := NewP2CStrategy(r)
 	in := StrategyInput{LoadScoreWeights: r.LoadScoreWeights}
 	ctx := context.Background()
@@ -139,6 +144,7 @@ func TestCalculateLoadScore_IQWeightOn_PrefersHighIQ(t *testing.T) {
 	r := NewRouter(nil, nil)
 	strat := NewP2CStrategy(r)
 	base := DefaultLoadScoreWeights()
+	base.CostWeight = 0 // IQ-focused test: isolate the IQ dimension
 	base.IQWeight = 0.1 // RT-2 knob on; everything else identical
 	in := StrategyInput{LoadScoreWeights: base}
 	ctx := context.Background()
@@ -179,22 +185,24 @@ func TestCalculateLoadScore_IQWeightOn_PrefersHighIQ(t *testing.T) {
 	}
 }
 
-// TestDefaultLoadScoreWeights_CostIQDefaultOffAndEnvWiring pins the RT-2
-// deployment contract: the new weights default to zero (current behavior,
-// effective score unchanged), and are wired via the router-scoring env
-// convention (LLM_GATEWAY_ROUTING_W_*, like W_HEADROOM/W_CAPACITY).
-func TestDefaultLoadScoreWeights_CostIQDefaultOffAndEnvWiring(t *testing.T) {
-	// Default: both new weights off — NewRouter picks them up unchanged.
+// TestDefaultLoadScoreWeights_CostIQDefaultsAndEnvWiring pins the
+// 2026-09-19 deployment contract (docs/design/2026-09-19-two-layer-priority-
+// and-cost-routing.md §2): the billing-aware marginal-cost dimension is ON by
+// default (0.15) while IQ stays off; both follow the router-scoring env
+// convention (LLM_GATEWAY_ROUTING_W_*, like W_HEADROOM/W_CAPACITY) and can be
+// zeroed for an emergency rollback.
+func TestDefaultLoadScoreWeights_CostIQDefaultsAndEnvWiring(t *testing.T) {
+	// Default: cost ON (0.15), IQ OFF — NewRouter picks them up unchanged.
 	w := DefaultLoadScoreWeights()
-	if w.CostWeight != 0 {
-		t.Errorf("default CostWeight = %v, want 0 (RT-2 off by default)", w.CostWeight)
+	if w.CostWeight != 0.15 {
+		t.Errorf("default CostWeight = %v, want 0.15 (cost-aware routing on)", w.CostWeight)
 	}
 	if w.IQWeight != 0 {
-		t.Errorf("default IQWeight = %v, want 0 (RT-2 off by default)", w.IQWeight)
+		t.Errorf("default IQWeight = %v, want 0", w.IQWeight)
 	}
 	r := NewRouter(nil, nil)
-	if r.LoadScoreWeights.CostWeight != 0 || r.LoadScoreWeights.IQWeight != 0 {
-		t.Errorf("NewRouter must default RT-2 weights to 0, got cost=%v iq=%v",
+	if r.LoadScoreWeights.CostWeight != 0.15 || r.LoadScoreWeights.IQWeight != 0 {
+		t.Errorf("NewRouter must pick up defaults cost=0.15 iq=0, got cost=%v iq=%v",
 			r.LoadScoreWeights.CostWeight, r.LoadScoreWeights.IQWeight)
 	}
 
@@ -208,11 +216,18 @@ func TestDefaultLoadScoreWeights_CostIQDefaultOffAndEnvWiring(t *testing.T) {
 	if w.IQWeight != 0.1 {
 		t.Errorf("env IQWeight = %v, want 0.1", w.IQWeight)
 	}
-	// Invalid values fall back to 0 (off), never panic.
+	// Emergency rollback: env 0 disables the cost dimension entirely.
+	t.Setenv("LLM_GATEWAY_ROUTING_W_COST", "0")
+	w = DefaultLoadScoreWeights()
+	if w.CostWeight != 0 {
+		t.Errorf("env CostWeight 0 must disable the dimension, got %v", w.CostWeight)
+	}
+	// Invalid values fall back to the defaults, never panic.
 	t.Setenv("LLM_GATEWAY_ROUTING_W_COST", "not-a-number")
 	t.Setenv("LLM_GATEWAY_ROUTING_W_IQ", "")
 	w = DefaultLoadScoreWeights()
-	if w.CostWeight != 0 || w.IQWeight != 0 {
-		t.Errorf("invalid env must fall back to 0, got cost=%v iq=%v", w.CostWeight, w.IQWeight)
+	if w.CostWeight != 0.15 || w.IQWeight != 0 {
+		t.Errorf("invalid env must fall back to defaults, got cost=%v iq=%v",
+			w.CostWeight, w.IQWeight)
 	}
 }

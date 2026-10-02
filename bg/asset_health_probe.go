@@ -60,7 +60,7 @@ func (p *AssetHealthProbe) WithTick(d time.Duration) *AssetHealthProbe {
 }
 
 func (p *AssetHealthProbe) Start(ctx context.Context) {
-	go p.run(ctx)
+	Go("asset_health_probe.run", func() { p.run(ctx) })
 	slog.Info("asset health probe started",
 		"stale_threshold", p.staleThreshold.String(),
 		"tick", p.tick.String())

@@ -1,0 +1,31 @@
+# 后台 worker 健康告警（2026-10-01 结构性 P1：panics 指标接告警）
+#
+# 指标来源：
+#   llm_gateway_bg_goroutine_panics_total  — bg.Go/GoArg 收口的 goroutine 死亡
+#     （不重启，功能降级直到进程重启；metric Help 自述 "alert, then fix"）。
+#   llm_gateway_bg_worker_restarts_total   — BaseWorker/SpawnLoop 家族自愈重启
+#     （单次重启是设计内自愈；持续增长 = 同一循环反复 panic 的 crash loop）。
+# 两个指标的 name/worker 标签都是编译期字面量（有界集合），无基数风险。
+
+groups:
+  - name: bg_worker_health
+    interval: 30s
+    rules:
+      - alert: BgGoroutinePanicked
+        expr: increase(llm_gateway_bg_goroutine_panics_total[10m]) > 0
+        labels:
+          severity: warning
+          component: bg
+        annotations:
+          summary: "后台一次性 goroutine panic 死亡（{{ $labels.name }}）"
+          description: "spawn 点 {{ $labels.name }} 的 goroutine 被 bg.Go 收口后死亡且不重启，对应功能降级直到进程重启。请按 name 定位代码并修复 panic 根因。"
+
+      - alert: BgWorkerCrashLoop
+        expr: increase(llm_gateway_bg_worker_restarts_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          component: bg
+        annotations:
+          summary: "后台 worker 疑似 crash loop（{{ $labels.worker }}）"
+          description: "worker {{ $labels.worker }} 在过去 15 分钟自愈重启超过 3 次：自愈机制在工作，但同一循环反复 panic，需查日志定位根因。"

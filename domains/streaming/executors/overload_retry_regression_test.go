@@ -45,7 +45,7 @@ func newOverloadTestExecutor() *Executor {
 		},
 		nil,
 	)
-	pipeline := e.NewDispatchPipeline()
+	pipeline := e.NewDispatchPipeline(nil)
 	pipeline.Start()
 	e.SetDispatchPipeline(pipeline)
 	return e

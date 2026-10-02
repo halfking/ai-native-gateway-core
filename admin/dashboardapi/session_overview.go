@@ -555,6 +555,11 @@ func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params Que
 		}
 		items = append(items, item)
 	}
+	// 迭代中断（连接断开/服务端错误）只会让 Next() 返回 false，不查
+	// Err() 就把「读到一半断了」当成「读完」→ 静默 200 截断 Top-N 榜。
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return items, nil
 }
@@ -616,6 +621,9 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -664,6 +672,9 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -706,6 +717,9 @@ func (h *SessionOverviewHandler) queryCostTrend(ctx context.Context, params Quer
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -747,6 +761,9 @@ func (h *SessionOverviewHandler) querySessionTrend(ctx context.Context, params Q
 			return nil, err
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

@@ -1,0 +1,58 @@
+# Known fresh-install gaps in the registered startup migration chain.
+#
+# WHAT THIS FILE IS
+#   The installer registers its startup migrations in
+#   installer/internal/dbinit/runner.go (StartupFiles). Applying them, in that
+#   exact order, to a database built by the real installer path
+#   (00-prereqs -> 01-schema -> 02-seed, all three from
+#   installer/cmd/llm-gw-installer/embeddata/) is expected to leave ZERO of them
+#   failing. This file enumerates any that do not, one per line, with a reason.
+#
+#   It is a RATCHET, not a disclaimer. scripts/audit/run-integration-gate.sh
+#   reads it and DIEs when a startup migration fails that is not listed here, so
+#   a new gap turns the gate red until someone adds the line with a reason. And
+#   because exemptions are enumerated one by one, deleting this whole file does
+#   not make the gate laxer — it makes every gap fatal.
+#
+# STATUS AS OF 2026-10-01 (Round 44 closure round): **EMPTY — 0 known gaps.**
+#
+#   Measured on the true installer path, 2026-10-01, after the merge to
+#   origin/main 651b6cac8:
+#
+#       startup: applied=198 failed=0 missing=0
+#       [populated] relations=435
+#
+#   The 19 entries this file used to carry are retired, not deleted quietly.
+#   They were real fresh-install gaps when Round 44 measured them
+#   (applied=154 failed=19), and they were fixed by a different change: the
+#   pre-478 migrations were added to StartupFiles, because the 01-schema
+#   baseline is a dump from around 477 and is not a faithful snapshot of any
+#   single lineage. That registration is why the count went 154/173 -> 196/198.
+#   See the comment block above StartupFiles in runner.go, which records the
+#   same conclusion from the 2026-09-30 fresh-install-chain review.
+#
+#   Verified before retiring, so this is not a vacuous "0 failures": all 19
+#   files still exist under embeddata/startup/ AND all 19 are still registered
+#   in StartupFiles. They are applied now, not skipped.
+#
+#   Re-verify with:
+#       PG_PASSWORD=... bash scripts/audit/run-integration-gate.sh ./db/dbxmanifest
+#   and read the "startup: applied=N failed=M missing=K" line.
+#
+# HOW TO ADD AN ENTRY
+#   Append one line:  <filename><TAB><one-line reason>
+#   Sorted by filename. No header, no blank lines, no duplicate filenames.
+#   The reason is mandatory and is checked by
+#   TestKnownStartupGapsManifestIsAnnotated — an entry without one is a build
+#   failure, and so is an entry naming a file that is not registered.
+#
+# KNOWN DRIFT, recorded here because it affects anyone comparing the two
+# 01-schema.sql files: sql/schema/01-schema.sql (what the audit harness applies)
+#   and installer/cmd/llm-gw-installer/embeddata/01-schema.sql (what the
+#   installer actually applies) are NOT the same file. Beyond whitespace they
+#   differ by four objects the installer's copy is missing:
+#   bump_credentials_governor_revision(), notify_credentials_governor_revision(),
+#   credentials_governor_revision_seq, credentials_revision_idx. That drift does
+#   not change the count above, but it does mean the gate database is not
+#   byte-identical to an installer-built one. Unifying the two copies is tracked
+#   as an open item in docs/audit/2026-10-01-round44-closure.md §7.

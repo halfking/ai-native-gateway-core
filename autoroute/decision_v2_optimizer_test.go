@@ -212,6 +212,64 @@ func TestDecideV2_RecommendModelHook_ReordersWinner(t *testing.T) {
 	}
 }
 
+// TestDecideV2_TiedCandidatesPickSameWinnerEveryRun pins the determinism that
+// TestDecideV2_RecommendModelHook_ReordersWinner only sampled (audit M-7).
+//
+// Root cause it guards: when fewer than three hot canonicals are known, the
+// candidate pool is backfilled by ranging over the byCanonical map. Go
+// randomises map iteration, and two candidates with identical scores tie, so
+// the stable sort on Composite kept the incoming order and the winner came
+// out of map iteration order — the same request could route to a different
+// model each call, and the hook test above failed roughly one run in eight.
+// With the backfill sorted by canonical id the pool order is fixed, so the
+// tie-break is reproducible.
+//
+// This loop is the pin: on the pre-fix code it fails with probability
+// 1 - (1/2)^iterations, i.e. essentially every run.
+func TestDecideV2_TiedCandidatesPickSameWinnerEveryRun(t *testing.T) {
+	cls := &stubClassifier{
+		name: "heuristic",
+		out: &Classification{
+			Primary:    TaskCode,
+			Confidence: 0.9,
+			Classifier: "heuristic",
+		},
+	}
+
+	idx := NewIndex()
+	// Identical tags and prices, so only the pool order can separate them.
+	for _, e := range []Candidate{
+		{CanonicalName: "model-a", CredentialID: 1, CanonicalID: 1, RawModel: "model-a", Tags: []string{"code"}},
+		{CanonicalName: "model-b", CredentialID: 2, CanonicalID: 2, RawModel: "model-b", Tags: []string{"code"}},
+		{CanonicalName: "model-c", CredentialID: 3, CanonicalID: 3, RawModel: "model-c", Tags: []string{"code"}},
+	} {
+		idx.entries = append(idx.entries, e)
+	}
+
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetOptimizer(&rankingOptimizer{})
+
+	oldFlags := GetFeatureFlags()
+	defer SetGlobalFeatureFlagsForTest(oldFlags)
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseChannelQualityRouting: true})
+
+	first := ""
+	for i := 0; i < 24; i++ {
+		dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 42, "", "", "")
+		if err != nil {
+			t.Fatalf("DecideV2 failed on iteration %d: %v", i, err)
+		}
+		if i == 0 {
+			first = dec.ChosenModel
+			continue
+		}
+		if dec.ChosenModel != first {
+			t.Fatalf("tied candidates produced a different winner on iteration %d: %s, first run picked %s — "+
+				"candidate pool order is not deterministic", i, dec.ChosenModel, first)
+		}
+	}
+}
+
 // TestDecideV2_RecordFeedbackHook_CarriesRequestIdentity proves the feedback
 // hook fires on fresh V2 decisions with proper identity metadata.
 func TestDecideV2_RecordFeedbackHook_CarriesRequestIdentity(t *testing.T) {

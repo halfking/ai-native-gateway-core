@@ -15,6 +15,8 @@ package streaming
 
 import (
 	"log/slog"
+
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 // registryProtocolLabel 把 ir.DetectProtocol 的协议字符串
@@ -25,11 +27,11 @@ import (
 // 该标签只用于语义思考帧的方言选择；注释兜底路径不消费它。
 func registryProtocolLabel(clientProtocol string) string {
 	switch clientProtocol {
-	case "anthropic-messages", "anthropic":
+	case providercatalog.ProtocolAnthropicMessages, "anthropic":
 		return "anthropic"
-	case "openai-responses", "openai_responses", "responses":
+	case providercatalog.ProtocolOpenAIResponses, "openai_responses", "responses":
 		return "openai_responses"
-	case "openai-chat", "openai-completions", "openai_chat":
+	case "openai-chat", providercatalog.ProtocolOpenAICompletions, "openai_chat":
 		return "openai_chat"
 	default:
 		return "unknown"

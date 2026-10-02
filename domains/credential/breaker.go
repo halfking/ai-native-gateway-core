@@ -109,9 +109,9 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	KindTransient: {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	KindTimeout:   {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	KindNetwork:   {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	// 2026-07-24: RateLimit 从 15分钟 改为 2分钟
-	// 15分钟对多轮对话场景太长，2分钟足够让上游限流恢复
-	KindRateLimit: {InitialCooling: 120 * time.Second, MaxCooling: 120 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+	// Wave 1 A4 (2026-09-22): KindRateLimit 策略项已删除——429 不再进入断路
+	// 失败计数（RecordFailure 早退），限流降权由 writer.go 绑定级冷却承担。
+	// 2026-07-24 历史注：RateLimit 曾为 15min，后改 2min，再后整体剔除。
 	// 2026-07-22 fix (BUG #1): KindAuth used to be RecoveryPermanent
 	// (quarantine, manual recovery only). That combined with BUG #2
 	// (writer.go writing availability_recover_at=NULL) meant a single
@@ -167,7 +167,7 @@ var freeTierPolicies = map[ErrorKind]CoolingPolicy{
 	errorsx.KindConcurrent:         {InitialCooling: 5 * time.Second, MaxCooling: 5 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	errorsx.KindUpstreamDown:       {InitialCooling: 15 * time.Second, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	errorsx.KindUpstreamOverloaded: {InitialCooling: 15 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
-	errorsx.KindRateLimit:          {InitialCooling: 30 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+	// KindRateLimit 已剔除（Wave 1 A4，同 defaultPolicies 注）。
 }
 
 // ---------------------------------------------------------------------------
@@ -177,12 +177,19 @@ var freeTierPolicies = map[ErrorKind]CoolingPolicy{
 // Breaker is a single circuit breaker instance, keyed by provider+credential.
 type Breaker struct {
 	key            string
+	providerID     int
+	credentialID   int
 	state          atomic.Int32
 	failCount      atomic.Int32
 	consecutive    atomic.Int32
 	halfOpenProbes atomic.Int32
 	freeTier       atomic.Bool // billing_mode='free': use freeTierPolicies cooling
 	coolingPolicy  CoolingPolicy
+
+	// onChange 是状态迁移观察者（Manager.SetObserver 装配，nil 安全）。
+	// 契约：必须非阻塞（原子计数 + buffered channel send 级别），因为它在
+	// b.mu 持有期间被同步调用。见 notify。
+	onChange func(StateChange)
 
 	mu             sync.Mutex
 	lastFailureAt  time.Time
@@ -206,8 +213,28 @@ func NewWithPolicy(providerID, credentialID int, defaultPolicy CoolingPolicy) *B
 	}
 	return &Breaker{
 		key:           fmt.Sprintf("%d/%d", providerID, credentialID),
+		providerID:    providerID,
+		credentialID:  credentialID,
 		coolingPolicy: defaultPolicy,
 	}
+}
+
+// notify 上报一次状态迁移。在 b.mu 持有期间同步调用，因此 onChange 必须
+// 非阻塞（这是接线的契约，见 StateChange 与 DBStateSync.Observe）。
+// onChange == nil 时为零开销直返——未装配观察者的独立 Breaker（测试、
+// 库消费方）保持原行为。
+func (b *Breaker) notify(from, to State, kind ErrorKind, coolingUntil time.Time) {
+	if b.onChange == nil {
+		return
+	}
+	b.onChange(StateChange{
+		ProviderID:   b.providerID,
+		CredentialID: b.credentialID,
+		From:         from,
+		To:           to,
+		Kind:         kind,
+		CoolingUntil: coolingUntil,
+	})
 }
 
 // Key returns the breaker's identifier.
@@ -339,6 +366,7 @@ func (b *Breaker) tryTransitionToHalfOpen() bool {
 			"cooling_duration_ms", coolingDuration.Milliseconds(),
 			"cooling_cycle", b.coolingCycle,
 		)
+		b.notify(previous, StateHalfOpen, b.lastErrorKind, time.Time{})
 		return true
 	}
 	return false
@@ -371,6 +399,22 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		return
 	}
 
+	// Wave 1 A4 (2026-09-22 设计红线裁决，设计 §5.6"429 只回传客户端，不计
+	// 供应商错误、不动节点状态" 与"限流即降权"演进的折中定版)：429/限流是
+	// 上游容量信号，不是节点健康故障——断路器只由真实故障驱动，KindRateLimit
+	// 不计入失败/连续失败，不触发 OPEN/QUARANTINE。短期限流惩罚仍由
+	// writer.go 的绑定级冷却（coolingDuration，Retry-After 优先、默认 3min）
+	// 承担：它只影响 v_routable 排序降权，节点对 resolve 依然可见可用。
+	// HALF_OPEN 期间探针撞上 429：限流不构成"被探针验证的失败证据"，
+	// 归还探针槽并保持 HALF_OPEN，避免断路器卡在探针被占的半开态
+	// （对齐 client-bug 早退路径的 ReleaseProbe 语义，见 claimProbe 注释）。
+	if kind == KindRateLimit {
+		if b.State() == StateHalfOpen {
+			b.ReleaseProbe()
+		}
+		return
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -391,10 +435,37 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		}
 	}
 	// 2026-07-09: 同族错误不重置连续失败计数
+	//
+	// R87（2026-10-01）修正：原判据只看**错误族名**，覆盖面不足。
+	// transientFamily 只有 4 种（Transient/Timeout/Network/StreamTimeout），
+	// 而 KindUpstreamDown 走 RecoveryExponential（Initial 30s / Max 30min）
+	// 却**不在**其中 ⇒ Timeout ↔ UpstreamDown 交替时每次都判为「族变化」
+	// ⇒ consecutive 被清零 ⇒ 永远够不到 failureConfirmationThreshold
+	// ⇒ **熔断永不跳闸**。这与本段上方 2026-07-09 注释写的初衷正好相反：
+	// 那次修复只想解决「错误类型切换就重置计数导致永远达不到降级阈值」，
+	// 但只覆盖了瞬时族**内部**交替，漏了最常见的「瞬时族 ↔ UpstreamDown」。
+	//
+	// 改为：**同一次事件**的判定加一层**时间窗**（参照 OmniRoute
+	// accountFallback.ts:640 的 resetAfter+lastCooldown 窗口判据）。
+	// 冷却期内到达的失败属同一次事件；已关闭态用该策略的 InitialCooling
+	// 作「是否延续」窗口（本仓 CoolingPolicy 无 ResetAfter 字段，
+	// InitialCooling 是语义最接近的既有量）。
+	//
+	// 注意：coolingCycle 仍按 R34 意图在族变化时归零 —— 同事件内不继承
+	// 陈旧升级档，避免下次升级直接从 2³× 起步。代价是交替族下冷却停在
+	// 第 1 档不指数爬升（比「永不跳闸」好得多，但不是完美解）；
+	// 要两者都保留需推翻 R34 的记录决策，须先取得产品认可。
 	lastIsTransient := transientFamily[b.lastErrorKind]
 	nowIsTransient := transientFamily[kind]
+	incidentWindow := policy.InitialCooling
+	if remaining := time.Until(b.coolingExpires); remaining > incidentWindow {
+		incidentWindow = remaining
+	}
+	sameIncident := !b.lastFailureAt.IsZero() && now.Sub(b.lastFailureAt) <= incidentWindow
 	if b.lastErrorKind != "" && b.lastErrorKind != kind && !(lastIsTransient && nowIsTransient) {
-		b.consecutive.Store(0)
+		if !sameIncident {
+			b.consecutive.Store(0)
+		}
 		// R34 (2026-09-17 audit): reset the cooling cycle on any error-family
 		// change. Previously only a successor whose own policy was exponential
 		// reset it, so upstream_down(cycle 3) → timeout kept the stale cycle
@@ -520,6 +591,17 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 			"cycle", b.coolingCycle,
 		)
 	}
+
+	// 三十七轮审计 §三#4 (2026-09-30): 迁移观察者上报。除 from≠to 的真实迁移
+	// 外，OPEN/QUARANTINED 的原地重入（已开路再吃满阈值失败会顺延冷却窗口）
+	// 也要上报，否则 DB 侧 cooling_until 会停在第一次开路的过期时间。
+	if final := b.State(); final != previous || final == StateOpen || final == StateQuarantined {
+		cooling := time.Time{}
+		if final == StateOpen {
+			cooling = b.coolingExpires
+		}
+		b.notify(previous, final, kind, cooling)
+	}
 }
 
 func failureConfirmationThreshold(policy CoolingPolicy) int32 {
@@ -572,6 +654,7 @@ func (b *Breaker) RecordSuccess() {
 			"error_kind", b.lastErrorKind,
 			"cooling_duration_ms", int64(0),
 		)
+		b.notify(prev, StateClosed, b.lastErrorKind, time.Time{})
 	}
 }
 
@@ -586,6 +669,11 @@ func (b *Breaker) Reset() {
 	b.coolingCycle = 0
 	b.halfOpenProbes.Store(0)
 	b.lastFailureAt = time.Time{}
+	// 2026-10-01 第十八轮审计：Reset 必须同时清掉剩余冷却窗口，否则管理面
+	// 复位后最长 30 分钟内同一事件的判定窗仍在（R87 的 sameIncident 时间窗
+	// 以 coolingExpires 为界），交替故障族的计数不归零、复位后反而更易跳闸
+	// ——「手动恢复」操作把熔断器恢复成比复位前更敏感的形态。
+	b.coolingExpires = time.Time{}
 	lastErrorKind := b.lastErrorKind
 	b.lastErrorKind = ""
 	slog.Info("circuit reset",
@@ -595,6 +683,9 @@ func (b *Breaker) Reset() {
 		"error_kind", lastErrorKind,
 		"cooling_duration_ms", int64(0),
 	)
+	if previous != StateClosed {
+		b.notify(previous, StateClosed, lastErrorKind, time.Time{})
+	}
 }
 
 // Stats returns diagnostic information about the breaker.
@@ -631,11 +722,26 @@ func (b *Breaker) Stats() map[string]any {
 type Manager struct {
 	mu       sync.RWMutex
 	breakers map[string]*Breaker
+	onChange func(StateChange)
 }
 
 // NewManager creates a new circuit breaker manager.
 func NewManager() *Manager {
 	return &Manager{breakers: make(map[string]*Breaker)}
+}
+
+// SetObserver 装配状态迁移观察者（三十七轮审计 §三#4）：观察者会收到每个
+// breaker 的真实状态迁移（含 OPEN 原地顺延冷却的重入），由它决定推给
+// Prometheus 计数器、DB 列同步等消费面。必须非阻塞（见 Breaker.notify 的
+// 契约）。在启动期、任何请求流量之前调用一次即可；对已存在的 breaker
+// 会回填装配。传 nil 撤销观察。
+func (m *Manager) SetObserver(fn func(StateChange)) {
+	m.mu.Lock()
+	m.onChange = fn
+	for _, b := range m.breakers {
+		b.onChange = fn
+	}
+	m.mu.Unlock()
 }
 
 // GetOrCreate returns the breaker for the given provider/credential.
@@ -656,6 +762,7 @@ func (m *Manager) GetOrCreate(providerID, credentialID int) *Breaker {
 		return b
 	}
 	b = New(providerID, credentialID)
+	b.onChange = m.onChange
 	m.breakers[key] = b
 	return b
 }

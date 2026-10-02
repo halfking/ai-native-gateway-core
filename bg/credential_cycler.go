@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -52,7 +53,7 @@ func (c *CredentialCycler) SetKeyring(kr *secret.Keyring) {
 
 func (c *CredentialCycler) Start(ctx context.Context) {
 	ctx, c.cancel = context.WithCancel(ctx)
-	go c.run(ctx)
+	Go("credential_cycler.run", func() { c.run(ctx) })
 	slog.Info("credential cycler started", "interval", c.interval)
 }
 
@@ -121,7 +122,9 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 		var healthStatus, availState, quotaState *string
 
 		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol, &healthStatus, &availState, &quotaState); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.CredentialCycler.cycleAll", err) {
+				continue
+			}
 		}
 
 		decrypted, decErr := decryptCredWithKeyring(string(ciphertext), c.keyring, c.encKey)
@@ -156,6 +159,12 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 			}
 			c.updateHealth(ctx, credID, status, errMsg)
 		}
+	}
+	// R66: 待检批被截断 = 少检若干 credential，而 cycle complete 会带着
+	// 偏小的 checked 数照常打出，把「没检到」伪装成「检过且健康」。
+	if err := rows.Err(); err != nil {
+		slog.Warn("credential cycler: row iteration aborted; credential batch truncated",
+			"error", err, "checked", checked)
 	}
 
 	slog.Info("credential cycler: cycle complete",

@@ -99,7 +99,7 @@ func (r *ProbeRollback) Start(ctx context.Context) {
 		return
 	}
 	ctx, r.cancel = context.WithCancel(ctx)
-	go r.run(ctx)
+	Go("probe_rollback.run", func() { r.run(ctx) })
 }
 
 // Stop cancels the loop and waits for it to exit.

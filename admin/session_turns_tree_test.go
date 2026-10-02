@@ -77,10 +77,10 @@ func TestQuerySessionTurnsTree_Normal(t *testing.T) {
 	// 游标比较用 (turn_number, request_id) 两段, turn_number 出现在 ">" 与 "="
 	// 两个分支, 故 TurnNumber 在实参中传两次 →
 	// 实参 = [SessionID, TenantID, TurnNumber, TurnNumber, RequestID, Limit+1] = 6 个。
-	mainRows := pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}).
-		AddRow(int64(1), "req_main_1", "success", "glm-4", &l80).
-		AddRow(int64(2), "req_main_2", "success", "glm-4.5", &latency).
-		AddRow(int64(3), "req_main_3", "pending", "glm-4", nil)
+	mainRows := pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms", "body_present"}).
+		AddRow(int64(1), "req_main_1", "success", "glm-4", &l80, true).
+		AddRow(int64(2), "req_main_2", "success", "glm-4.5", &latency, false).
+		AddRow(int64(3), "req_main_3", "pending", "glm-4", nil, false)
 	mock.ExpectQuery("SELECT t.turn_number").
 		WithArgs("gw_s1", "acme", int64(0), int64(0), "", 3).
 		WillReturnRows(mainRows)
@@ -107,6 +107,14 @@ func TestQuerySessionTurnsTree_Normal(t *testing.T) {
 	}
 	if len(res.Turns) != 2 {
 		t.Fatalf("expected 2 turns, got %d", len(res.Turns))
+	}
+	// R73 F5 — body_present → body_status 两态映射在默认 tree 路由上生效；
+	// 此前该字段只有 unified/v2 发，时间线横幅在默认路由下是死 UI。
+	if res.Turns[0].BodyStatus != BodyStatusAvailable {
+		t.Errorf("Turns[0].BodyStatus = %q, want %q", res.Turns[0].BodyStatus, BodyStatusAvailable)
+	}
+	if res.Turns[1].BodyStatus != BodyStatusUnavailable {
+		t.Errorf("Turns[1].BodyStatus = %q, want %q", res.Turns[1].BodyStatus, BodyStatusUnavailable)
 	}
 	first := res.Turns[0]
 	if first.TurnNumber != 1 || first.RequestID != "req_main_1" || first.Status != "success" || first.Model != "glm-4" {
@@ -147,8 +155,11 @@ func TestQuerySessionTurnsTree_NotFound(t *testing.T) {
 
 	mock.ExpectQuery("SELECT t.turn_number").
 		WithArgs("gw_none", "acme", int64(0), int64(0), "", 21).
-		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}))
-	mock.ExpectQuery("SELECT tenant_id FROM request_logs_with_current_month").
+		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms", "body_present"}))
+	// 会话存储解耦 v3（2026-09-30）：该查询已迁到 session 族原生源，
+	// session 谓词下推两条腿（t.session_id = $1）。外层不得再加
+	// gw_session_id 过滤——投影名是 CASE 表达式，加了会打掉下推。
+	mock.ExpectQuery("SELECT t\\.tenant_id FROM \\(SELECT[\\s\\S]*WHERE t\\.session_id = \\$1").
 		WithArgs("gw_none").
 		WillReturnError(pgx.ErrNoRows)
 
@@ -176,9 +187,12 @@ func TestQuerySessionTurnsTree_CrossTenantForbidden(t *testing.T) {
 	// tenant 过滤下主请求为空
 	mock.ExpectQuery("SELECT t.turn_number").
 		WithArgs("gw_other", "acme", int64(0), int64(0), "", 21).
-		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}))
+		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms", "body_present"}))
 	// 不限租户存在性检查：会话归属 other-tenant
-	mock.ExpectQuery("SELECT tenant_id FROM request_logs_with_current_month").
+	// 会话存储解耦 v3（2026-09-30）：该查询已迁到 session 族原生源，
+	// session 谓词下推两条腿（t.session_id = $1）。外层不得再加
+	// gw_session_id 过滤——投影名是 CASE 表达式，加了会打掉下推。
+	mock.ExpectQuery("SELECT t\\.tenant_id FROM \\(SELECT[\\s\\S]*WHERE t\\.session_id = \\$1").
 		WithArgs("gw_other").
 		WillReturnRows(pgxmock.NewRows([]string{"tenant_id"}).AddRow("other-tenant"))
 

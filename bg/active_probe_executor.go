@@ -38,10 +38,11 @@ import (
 // ActiveProbeExecutor loads (credential, model) → provider target and
 // fires a minimal chat-completion ping directly to the provider.
 type ActiveProbeExecutor struct {
-	db         *pgxpool.Pool
-	keyring    *secret.Keyring
-	encKey     []byte
-	httpClient *http.Client
+	db             *pgxpool.Pool
+	keyring        *secret.Keyring
+	encKey         []byte
+	httpClient     *http.Client
+	capabilitySink ResponsesCapabilitySink
 
 	// Gateway round (2026-08-13, 需求 6 bullet 5: 自检不串节点). When configured,
 	// RunGateway posts a chat-completion ping through the LOCAL gateway with the
@@ -107,6 +108,10 @@ type ProbeResult struct {
 	StartedAt   time.Time
 	CompletedAt time.Time
 	Target      ProbeTarget
+	// SupportsResponses is populated only when the native Responses request
+	// returned a complete success or the provider explicitly rejected that
+	// protocol. Chat fallback outcome does not change this evidence.
+	SupportsResponses *bool
 
 	// 2026-07-17: diagnostic detail for the probe observability surface.
 	// Previously the emitter only persisted status/err_code/latency/http_status,
@@ -125,6 +130,14 @@ type ProbeResult struct {
 	// between probe and real-traffic egress paths was the root cause of the
 	// "probe OK, requests fail" oscillation fixed on 2026-07-16.
 	ViaProxy bool
+
+	// RootCause (2026-09-25) is the failed round's root cause verdict —
+	// "node" / "protocol" / "gateway" (see probe_root_cause.go). Empty on
+	// success and on paths that have not adopted the classifier yet (the
+	// legacy ActiveProbeExecutor round). classifyProbeErrorKind turns a
+	// protocol verdict into the distinct probe_direct_protocol_mismatch
+	// error_kind so dashboards answer "协议还是节点" without re-deriving it.
+	RootCause string
 
 	// OriginStage and OriginActor identify the worker that produced the
 	// synthetic request-log row. They are set explicitly because a direct
@@ -156,6 +169,15 @@ func NewActiveProbeExecutor(db *pgxpool.Pool, keyring *secret.Keyring, encKey []
 func (e *ActiveProbeExecutor) SetHTTPClient(c *http.Client) {
 	if e != nil && c != nil {
 		e.httpClient = c
+	}
+}
+
+// SetResponsesCapabilitySink wires durable capability feedback for direct
+// probe results. RunGateway is intentionally excluded because it is not a
+// native upstream Responses request.
+func (e *ActiveProbeExecutor) SetResponsesCapabilitySink(sink ResponsesCapabilitySink) {
+	if e != nil {
+		e.capabilitySink = sink
 	}
 }
 
@@ -267,8 +289,16 @@ func (e *ActiveProbeExecutor) LoadTarget(ctx context.Context, credID int, model 
 func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeResult {
 	start := time.Now()
 	res := &ProbeResult{Target: *t, StartedAt: start}
+	defer func() {
+		if err := writeResponsesCapability(ctx, e.capabilitySink, t.CredentialID, t.RawModel, res.SupportsResponses); err != nil {
+			slog.Warn("active_probe: persisting Responses capability failed",
+				"credential_id", t.CredentialID, "model", t.RawModel, "error", err)
+		}
+	}()
 
-	desc := providercap.Resolve(t.Protocol, "")
+	// R61 S2-F4 续（2026-09-24）：读面归一——别名协议行走错探针形态的
+	// vapeur 事故类缺口，与 model_probe.probeDescriptorFor 同一入口。
+	desc := probeDescriptorFor(t.Protocol)
 	endpoint, err := e.buildEndpoint(t, desc)
 	if err != nil {
 		res.Status = ProbeStatusFailed
@@ -286,7 +316,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 		model = t.RawModel
 	}
 
-	body, err := buildProbePingBody(model, t.Protocol)
+	body, err := buildProbePingBody(model, desc)
 	if err != nil {
 		res.Status = ProbeStatusFailed
 		res.ErrCode = "body_build"
@@ -354,6 +384,9 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		res.Status = ProbeStatusSuccess
+		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
+			res.SupportsResponses = boolEvidence(true)
+		}
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
 		res.Status = ProbeStatusAuth
 		res.ErrCode = http.StatusText(resp.StatusCode)
@@ -368,6 +401,31 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 		res.ErrCode = http.StatusText(resp.StatusCode)
 	}
 	res.ErrMsg = truncatePreview(string(bodyBytes), 500)
+
+	// 2026-09-28 vapeur 轮：responses 探针命中「不支持 Responses API」裁决
+	// → chat 降级复探（见 probe_responses_fallback.go）。ActiveProbeWorker
+	// 会把本结果回灌 CredentialStateManager.UpdateFromProbe，不降级会把
+	// 经 chat 完全可用的节点压红。
+	if desc.ChatProbeEndpoint == upstreamurl.EpResponses &&
+		providercap.ResponsesUnsupportedError(res.HTTPStatus, res.ErrMsg) {
+		res.SupportsResponses = boolEvidence(false)
+		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, e.httpClient, t.APIKey, t.BaseURL, model)
+		if fbOK {
+			// 2026-09-29 (审计二十一轮): 对齐 node_probe（errDetail=注记整体
+			// 覆盖）/probe_http（okResult.errMsg=注记覆盖）——降级成功后
+			// ErrMsg 用降级注记整体替换，不残留原 responses 失败文本。
+			res.Status = ProbeStatusSuccess
+			res.ErrCode = ""
+			res.ErrMsg = responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, true)
+			res.HTTPStatus = fbStatus
+			res.TotalTokens = responseTokenCount([]byte(fbBody))
+			res.LatencyMs += fbLatency
+			res.RespPreview = truncatePreview(fbBody, 500)
+			res.ResponseBody = res.RespPreview
+		} else {
+			res.ErrMsg += "; " + responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, false)
+		}
+	}
 	return res
 }
 
@@ -502,7 +560,7 @@ func derefTarget(t *ProbeTarget) ProbeTarget {
 
 func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTarget) *ProbeResult {
 	start := time.Now()
-	desc := providercap.Resolve(target.Protocol, "")
+	desc := probeDescriptorFor(target.Protocol)
 	endpoint := upstreamurl.ModelsURL(target.BaseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -538,36 +596,52 @@ func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTa
 	}
 }
 
-// buildEndpoint returns the chat-completions URL for the protocol.
-// Anthropic uses /v1/messages; everything else (OpenAI-compatible) uses
-// /v1/chat/completions.
+// buildEndpoint returns the probe URL for the credential's outbound protocol.
+// 2026-09-25: dispatch keyed off desc.ChatProbeEndpoint (resolved through
+// probeDescriptorFor's normalized protocol) instead of an anthropic string
+// prefix, so openai-responses relays (vapeur/hxt-local gpt-5.6-terra,
+// 2026-09-25 user report) are probed at /v1/responses — their chat endpoint
+// rejects max_tokens=1 with 400 "Could not finish the message ..." and the
+// node was misreported failed.
 func (e *ActiveProbeExecutor) buildEndpoint(t *ProbeTarget, desc providercap.Descriptor) (string, error) {
 	if t.BaseURL == "" {
 		return "", fmt.Errorf("empty base_url")
 	}
-	if strings.HasPrefix(t.Protocol, "anthropic") {
-		return upstreamurl.MessagesURL(t.BaseURL), nil
-	}
-	return upstreamurl.ChatCompletionsURL(t.BaseURL), nil
+	return upstreamurl.Build(t.BaseURL, desc.ChatProbeEndpoint), nil
 }
 
-// buildProbePingBody constructs the minimal chat-completion request body.
-// max_tokens=1 keeps the probe cheap (< 10 output tokens). Temperature=0
-// makes the response deterministic (where supported) so we can do simple
-// "non-empty content" success checks downstream if needed.
-func buildProbePingBody(model, protocol string) (string, error) {
+// buildProbePingBody constructs the minimal ping request body for the
+// credential's protocol. max_tokens=1 keeps the probe cheap (< 10 output
+// tokens). Temperature=0 makes the response deterministic (where supported)
+// so we can do simple "non-empty content" success checks downstream if needed.
+// 2026-09-25: OpenAI Responses providers get {"input","max_output_tokens"}
+// (floor 16 — see providercap.ResponsesProbeMaxOutputTokens) instead of a
+// chat body their upstream rejects.
+func buildProbePingBody(model string, desc providercap.Descriptor) (string, error) {
 	if model == "" {
 		return "", fmt.Errorf("empty model name")
 	}
-	payload := map[string]any{
-		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
-	}
-	if strings.HasPrefix(protocol, "anthropic") {
-		payload["max_tokens"] = 1
-	} else {
-		payload["temperature"] = 0
+	var payload map[string]any
+	switch desc.ChatProbeEndpoint {
+	case upstreamurl.EpMessages:
+		payload = map[string]any{
+			"model":      model,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens": 1,
+		}
+	case upstreamurl.EpResponses:
+		payload = map[string]any{
+			"model":             model,
+			"input":             "ping",
+			"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
+		}
+	default:
+		payload = map[string]any{
+			"model":       model,
+			"messages":    []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens":  1,
+			"temperature": 0,
+		}
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -624,6 +698,13 @@ func classifyProbeErrorKind(r *ProbeResult) string {
 		}
 		return "probe_direct_http_5xx"
 	case ProbeStatusHTTP4xx:
+		// 2026-09-25: a protocol-shaped 4xx gets its own error_kind so the
+		// dashboard separates "our probe contract doesn't match this
+		// provider" from upstream weather. Only rounds classified by the
+		// new stack carry RootCause; empty keeps the status mapping.
+		if r.RootCause == string(ProbeRootCauseProtocol) {
+			return "probe_direct_protocol_mismatch"
+		}
 		if r.HTTPStatus > 0 {
 			return fmt.Sprintf("probe_direct_http_%d", r.HTTPStatus)
 		}

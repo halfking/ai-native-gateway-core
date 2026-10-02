@@ -35,7 +35,7 @@ func NewHandoffPendingTrimmer(pool *pgxpool.Pool) *HandoffPendingTrimmer {
 
 func (t *HandoffPendingTrimmer) Start(ctx context.Context) {
 	if t != nil {
-		go t.run(ctx)
+		Go("handoff_pending_trimmer.run", func() { t.run(ctx) })
 	}
 }
 

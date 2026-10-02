@@ -44,7 +44,7 @@ func (f *BanditFlusher) Start(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	f.cancel = cancel
 
-	go f.flushLoop(ctx)
+	SpawnLoop(ctx, "bandit_flusher.flushLoop", f.flushLoop)
 	slog.Info("bandit flusher started",
 		"flush_interval", f.FlushInterval,
 	)

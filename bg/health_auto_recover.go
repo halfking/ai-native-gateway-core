@@ -27,8 +27,8 @@ type HealthAutoRecover struct {
 	// (LLM_GATEWAY_AUTO_RECOVER_INTERVAL_SECONDS) at any point in the worker
 	// lifecycle. tickIntervalEverSet distinguishes "no override yet, use the
 	// boot-time default" from "operator just disabled us with SetTickInterval(0)".
-	tickMu             sync.RWMutex
-	tickInterval       time.Duration
+	tickMu              sync.RWMutex
+	tickInterval        time.Duration
 	tickIntervalEverSet bool
 }
 
@@ -50,10 +50,10 @@ func NewHealthAutoRecover(
 	}
 
 	return &HealthAutoRecover{
-		db:          db,
-		interval:    interval,
+		db:           db,
+		interval:     interval,
 		tickInterval: interval,
-		stopCh:      make(chan struct{}),
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -98,7 +98,7 @@ func (w *HealthAutoRecover) currentInterval() time.Duration {
 func (w *HealthAutoRecover) Start(ctx context.Context) {
 	slog.Info("health_auto_recover started", "interval", w.currentInterval().String())
 
-	go func() {
+	SpawnLoop(ctx, "health_auto_recover.loop", func(context.Context) {
 		// resolveInterval maps the configured value to the ticker period we
 		// actually use. 0 (disabled) → disabledProbeInterval so the loop can
 		// still notice a subsequent SetTickInterval(<positive>). Any other
@@ -138,7 +138,7 @@ func (w *HealthAutoRecover) Start(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 // Stop gracefully stops the worker. Idempotent; safe on a

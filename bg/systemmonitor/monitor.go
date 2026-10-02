@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/redis/go-redis/v9"
@@ -541,21 +542,24 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 		"fallback", sm.fallback,
 		"audit_enabled", sm.audit != nil && sm.audit.Enabled(),
 	)
+	// 2026-10-01 结构性 P1：wg 握手所有权下沉 BaseWorker（SpawnLoopWG）——
+	// panic 自愈重启不再二次触发 wg.Done；此前 panic 会让该 worker/循环
+	// 静默停摆（并发槽缩水、健康检查与租约回收停跳）直到进程重启。
 	for i := 0; i < sm.workerCount; i++ {
 		sm.wg.Add(1)
-		go sm.workerLoop(ctx, i)
+		bg.SpawnLoopWG(ctx, "systemmonitor.workerLoop", &sm.wg, func(ctx context.Context) { sm.workerLoop(ctx, i) })
 	}
 	sm.wg.Add(1)
-	go sm.healthCheckLoop(ctx)
+	bg.SpawnLoopWG(ctx, "systemmonitor.healthCheckLoop", &sm.wg, sm.healthCheckLoop)
 	sm.wg.Add(1)
-	go sm.reclaimLoop(ctx)
+	bg.SpawnLoopWG(ctx, "systemmonitor.reclaimLoop", &sm.wg, sm.reclaimLoop)
 }
 
 // reclaimLoop periodically restores tasks whose owning worker crashed or
 // stalled past the lease. Only the Redis path needs reclaim (the in-memory
 // fallback lane is drained synchronously by workers). See lua/reclaim.lua.
 func (sm *SystemMonitor) reclaimLoop(ctx context.Context) {
-	defer sm.wg.Done()
+	// wg.Done 所有权已下沉 BaseWorker（bg.SpawnLoopWG）：监督循环最终退出时触发。
 	log := slog.With("worker_id", sm.workerID, "loop", "reclaim")
 	// Stagger the first sweep so a freshly started instance does not race
 	// the worker ticker before scripts/keys are settled.
@@ -600,7 +604,7 @@ func (sm *SystemMonitor) Stop() {
 // Polls Redis via claim.lua; when in fallback mode drains the in-memory
 // channel instead. Includes the 5-minute auto-skip rule (design §4.3).
 func (sm *SystemMonitor) workerLoop(ctx context.Context, idx int) {
-	defer sm.wg.Done()
+	// wg.Done 所有权已下沉 BaseWorker（bg.SpawnLoopWG）：监督循环最终退出时触发。
 	workerLog := slog.With("worker_id", sm.workerID, "worker_idx", idx)
 	workerLog.Info("system_monitor: worker started")
 
@@ -792,20 +796,24 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 			}
 		} else {
 			// Fallback: push to in-memory queue with delayed dispatch.
-			go func(t *Task, at time.Time) {
-				timer := time.NewTimer(time.Until(at))
-				defer timer.Stop()
-				select {
-				case <-timer.C:
+			bg.Go("systemmonitor.fallbackRequeue", func() {
+				// 实参在 spawn 时刻求值，保留原 `go func(t, at){...}(task, nextRun)`
+				// 的捕获语义（t/at 是循环外变量，这里显式绑定而非闭包捕获）。
+				func(t *Task, at time.Time) {
+					timer := time.NewTimer(time.Until(at))
+					defer timer.Stop()
 					select {
-					case sm.fallbackCh <- t:
-					default:
-						workerLog.Warn("system_monitor: fallback requeue dropped", "task_id", t.ID)
+					case <-timer.C:
+						select {
+						case sm.fallbackCh <- t:
+						default:
+							workerLog.Warn("system_monitor: fallback requeue dropped", "task_id", t.ID)
+						}
+					case <-sm.stopCh:
+						return
 					}
-				case <-sm.stopCh:
-					return
-				}
-			}(task, nextRun)
+				}(task, nextRun)
+			})
 		}
 	}
 }
@@ -862,7 +870,7 @@ func (sm *SystemMonitor) classifyResult(task *Task, result *ExecutorResult, exec
 // authoritative gate cluster-wide — see
 // docs/architecture/2026-07-28-routing-state-anomaly-audit.md §4.1.
 func (sm *SystemMonitor) healthCheckLoop(ctx context.Context) {
-	defer sm.wg.Done()
+	// wg.Done 所有权已下沉 BaseWorker（bg.SpawnLoopWG）：监督循环最终退出时触发。
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {

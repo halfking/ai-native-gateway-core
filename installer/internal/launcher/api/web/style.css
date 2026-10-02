@@ -20,6 +20,14 @@ main { max-width: 760px; margin: 24px auto; padding: 0 16px; }
 .dot.healthy { background: #34c759; }
 .dot.unhealthy { background: #ff3b30; }
 .dot.unknown { background: #8e8e93; }
+/* Activation status pill — colors match the install-mode card convention.
+   data-meta is set by app.js from s.activation_status so the styling is
+   purely declarative (no JS-driven class manipulation). */
+#meta-activation-status[data-meta="activated"] { color: #34c759; }
+#meta-activation-status[data-meta="trial"]     { color: #007aff; }
+#meta-activation-status[data-meta="failed"]    { color: #ff3b30; }
+#meta-activation-status[data-meta="skipped"]   { color: #8e8e93; }
+#meta-activation-status[data-meta="unknown"]   { color: #8e8e93; }
 .muted { color: #86868b; font-size: 12px; }
 .progress { display: flex; gap: 4px; margin: 10px 0; flex-wrap: wrap; }
 .progress span {

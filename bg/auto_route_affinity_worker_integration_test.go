@@ -37,12 +37,12 @@ import (
 )
 
 const affinityWorkerSchema = `
-CREATE TABLE public.request_logs_hot (
+CREATE TABLE request_logs_hot (
 	request_id text PRIMARY KEY,
 	origin_actor text,
 	ts timestamptz NOT NULL DEFAULT NOW()
 );
-CREATE TABLE public.auto_route_selections_hot (
+CREATE TABLE auto_route_selections_hot (
 	id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	partition_date date NOT NULL DEFAULT CURRENT_DATE,
 	request_id text,
@@ -60,7 +60,7 @@ CREATE TABLE public.auto_route_selections_hot (
 	cost_usd double precision,
 	ts timestamptz NOT NULL DEFAULT NOW()
 );
-CREATE OR REPLACE VIEW public.auto_route_selections_all AS
+CREATE OR REPLACE VIEW auto_route_selections_all AS
 SELECT id, request_id, session_id, NULL::bigint AS task_id, tenant_id, ts,
        task_type, profile, NULL::text AS classifier, NULL::double precision AS confidence,
        canonical_id, chosen_model, NULL::int AS candidate_rank,
@@ -70,8 +70,8 @@ SELECT id, request_id, session_id, NULL::bigint AS task_id, tenant_id, ts,
        partition_date, NULL::text AS experiment_id, NULL::text AS treatment,
        NULL::int AS assignment_version, NULL::text AS assignment_key_hash,
        'hot'::text AS storage_tier
-FROM public.auto_route_selections_hot;
-CREATE TABLE public.session_summaries (
+FROM auto_route_selections_hot;
+CREATE TABLE session_summaries (
 	session_key text PRIMARY KEY,
 	health_score integer,
 	error_count integer,
@@ -90,6 +90,28 @@ func TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB(t *testing.T)
 	pool, cleanup := DispatchPostgresContainer(t, ctx, affinityWorkerSchema)
 	defer cleanup()
 
+	// The three tables below are written UNQUALIFIED on purpose. The fixture
+	// DDL (settleWorkerSchema / affinityWorkerSchema) is unqualified too, so it
+	// lands in this test's per-test schema, and the code under test reads these
+	// tables unqualified as well — measured 2026-10-02:
+	//
+	//	bg/auto_route_settle_worker.go   FROM request_logs_hot, JOIN request_logs_hot,
+	//	                                 FROM auto_route_selections_hot,
+	//	                                 UPDATE auto_route_selections_hot
+	//	bg/auto_route_affinity_worker.go FROM request_logs_hot, JOIN request_logs_hot
+	//
+	// These statements used to say `public.…`, which sent them to the PRODUCTION
+	// table on the gate database instead of the fixture — measured as
+	// "null value in column "tenant_id" of relation "request_logs_hot"
+	// violates not-null constraint" (23502), a constraint the fixture table does
+	// not have. De-qualifying is the fix, and it is NOT a vacuous one: the
+	// product queries resolve through search_path to the same per-test schema
+	// the fixture was created in.
+	//
+	// Do NOT copy this to a test whose code under test hardcodes `public.`.
+	// domains/dispatch/policy_publisher.go:224 is `FROM public.credentials`, so
+	// de-qualifying bg/policy_publisher_e2e_test.go would seed a table the
+	// product never reads — a green that proves nothing.
 	mustExec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, sql, args...); err != nil {
@@ -100,7 +122,7 @@ func TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB(t *testing.T)
 	// Seed request_logs_hot with origin_actor for each synthetic / real row.
 	// All rows settled within the affinity window so the WHERE clause's
 	// s.settled_at >= NOW() - interval doesn't drop them.
-	mustExec(`INSERT INTO public.request_logs_hot (request_id, origin_actor) VALUES
+	mustExec(`INSERT INTO request_logs_hot (request_id, origin_actor) VALUES
 		('req-real', ''),
 		('req-goal', 'goal-audit'),
 		('req-loop', 'auto-title-generator'),
@@ -110,7 +132,7 @@ func TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB(t *testing.T)
 	// canonical, model, tenant) bucket shared with the real row so the
 	// synthetic rows, if the predicate regressed, would inflate sampleCount
 	// and pollute the bucket. All settled within the window.
-	mustExec(`INSERT INTO public.auto_route_selections_hot
+	mustExec(`INSERT INTO auto_route_selections_hot
 		(request_id, task_type, profile, canonical_id, chosen_model, tenant_id,
 		 reward, reward_source, settled_at, ts)
 		VALUES
@@ -121,7 +143,7 @@ func TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB(t *testing.T)
 
 	// session_summaries: real session only; synthetic rows would needlessly
 	// fan out the LEFT JOIN.
-	mustExec(`INSERT INTO public.session_summaries (session_key, health_score, error_count, request_count)
+	mustExec(`INSERT INTO session_summaries (session_key, health_score, error_count, request_count)
 		VALUES ('sess-real', 80, 1, 1)`)
 
 	w := NewAutoRouteAffinityWorker(pool)

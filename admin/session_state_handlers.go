@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -31,9 +32,9 @@ type sessionListItem struct {
 	LastRequestAt         time.Time  `json:"last_request_at"`
 	StoppedAt             *time.Time `json:"stopped_at,omitempty"`
 	// 健康评分字段（T1.5）
-	HealthScore           *int       `json:"health_score,omitempty"`
-	HealthGrade           *string    `json:"health_grade,omitempty"`
-	Outcome               *string    `json:"outcome,omitempty"`
+	HealthScore *int    `json:"health_score,omitempty"`
+	HealthGrade *string `json:"health_grade,omitempty"`
+	Outcome     *string `json:"outcome,omitempty"`
 }
 
 type sessionListResponse struct {
@@ -123,6 +124,18 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		items = append(items, item)
+	}
+
+	// 目录搜索只查 session_summaries。用量按会话 id 打 request_logs 底表，不走联表视图。
+	searchQ := strings.TrimSpace(r.URL.Query().Get("q"))
+	if searchQ != "" {
+		items = h.mergeCatalogSearch(ctxFn(r), items, tenantID, searchQ, limit)
+	}
+	if h.db != nil && len(items) > 0 {
+		h.enrichCatalogUsage(ctxFn(r), items, tenantID)
+	}
+	if searchQ != "" {
+		items = filterCatalogItems(items, searchQ)
 	}
 
 	// T1.5: 批量查询健康数据（从 session_summaries）
@@ -250,7 +263,7 @@ func (h *Handler) serveCredRotations(w http.ResponseWriter, r *http.Request, ses
 	limit := queryInt(r, "limit", 100)
 	rotations, err := h.sessionManager.GetCredRotations(ctxFn(r), sessionID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "rotations": rotations, "total": len(rotations)})
@@ -274,7 +287,7 @@ func (h *Handler) serveStopSession(w http.ResponseWriter, r *http.Request, sessi
 		reason = "admin_stop"
 	}
 	if err := h.sessionManager.StopSession(ctxFn(r), sessionID, reason); err != nil {
-		writeError(w, http.StatusInternalServerError, "stop failed: "+err.Error())
+		writeInternalErr(w, "stop failed", err)
 		return
 	}
 	if h.sessionDBWriter != nil {
@@ -300,7 +313,7 @@ func (h *Handler) serveRecoverSession(w http.ResponseWriter, r *http.Request, se
 		return
 	}
 	if err := h.sessionManager.RecoverSession(ctxFn(r), sessionID); err != nil {
-		writeError(w, http.StatusInternalServerError, "recover failed: "+err.Error())
+		writeInternalErr(w, "recover failed", err)
 		return
 	}
 	if auth := GetAuthContext(r); auth != nil {
@@ -319,7 +332,7 @@ func (h *Handler) serveUpdateAnnotation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err := h.sessionManager.SetAnnotation(ctxFn(r), sessionID, r.URL.Query().Get("annotation")); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -340,7 +353,7 @@ func (h *Handler) serveUpdateTags(w http.ResponseWriter, r *http.Request, sessio
 		tags = strings.Split(tagStr, ",")
 	}
 	if err := h.sessionManager.SetTags(ctxFn(r), sessionID, tags); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -366,6 +379,8 @@ func (h *Handler) listActiveSessions(ctx context.Context, tenantID string, limit
 	for iter.Next(ctx) {
 		members, err := rc.Client().SRandMemberN(ctx, iter.Val(), int64(limit)).Result()
 		if err != nil {
+			slog.Warn("admin listActiveSessions: SRandMemberN failed; key skipped",
+				"op", "admin.listActiveSessions", "key", iter.Val(), "error", err)
 			continue
 		}
 		for _, id := range members {
@@ -380,6 +395,16 @@ func (h *Handler) listActiveSessions(ctx context.Context, tenantID string, limit
 				return ids
 			}
 		}
+	}
+	// Redis SCAN 迭代中断只会让 Next() 返回 false，不带错误；不查 Err()
+	// 就把「扫到一半连接断了」和「扫完了」当成同一件事。这里的选择是
+	// **降级不失败**：签名为 []string 且无 error 通道，改签名会波及
+	// 列表端点（本函数的调用方已忽略其他错误并按已取到的 ID 继续渲染），
+	// 而少列几条 session 不会选错任何凭据/模型——故返回已取到的部分并
+	// 留痕，而不是把整页打成 500。
+	if err := iter.Err(); err != nil {
+		slog.Warn("admin listActiveSessions: scan iteration aborted; active session list truncated",
+			"op", "admin.listActiveSessions", "collected", len(ids), "error", err)
 	}
 	return ids
 }
@@ -428,6 +453,7 @@ func (h *Handler) enrichHealthData(ctx context.Context, items []sessionListItem)
 		var grade *string
 		var outcome *string
 		if err := rows.Scan(&sessionKey, &score, &grade, &outcome); err != nil {
+			warnRowSkip("enrichHealthData", err)
 			continue
 		}
 		healthMap[sessionKey] = struct {
@@ -435,6 +461,10 @@ func (h *Handler) enrichHealthData(ctx context.Context, items []sessionListItem)
 			grade   *string
 			outcome *string
 		}{score, grade, outcome}
+	}
+	// 富化是降级通道（函数头注：查询失败不阻塞），迭代中断留痕后按空健康列继续。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("enrichHealthData iteration aborted; health columns degraded", "error", rerr)
 	}
 
 	// 将健康数据填充到 items

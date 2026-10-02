@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,6 +20,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 const noTopicSessionPrefix = "/api/system/no-topic-session/"
@@ -149,7 +150,12 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 		LIMIT `+limitArg+`
 	`, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// 2026-09-29 (审计二十一轮): 存储不可用走 503 降级契约（下同）。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -189,7 +195,11 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 		seq++
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	if messages == nil {
@@ -235,7 +245,7 @@ func (h *Handler) handleNoTopicSessionSummarizeTitle(w http.ResponseWriter, r *h
 
 	logs, err := h.loadNoTopicTaskLogsForTitle(ctx, prefix, hours, hourStart, r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	if len(logs) < 1 {
@@ -263,7 +273,10 @@ func (h *Handler) handleNoTopicSessionSummarizeTitle(w http.ResponseWriter, r *h
 
 	llmRes, err := h.callAdminLLMChat(ctx, r, apiKey, adminLLMTaskSessionTitle, virtualTaskID, userContent)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "标题生成失败: "+err.Error())
+		// 十七轮审计：502 回显上游 LLM 错误串（可能含端点细节），与 500
+		// 收口政策对齐——真实错误进 slog，客户端给固定文案。
+		slog.Error("no_topic session: title generation failed", "virtual_task_id", virtualTaskID, "err", err)
+		writeError(w, http.StatusBadGateway, "标题生成失败，请稍后重试")
 		return
 	}
 	title := normalizeSessionTitle(llmRes.Content)
@@ -384,7 +397,11 @@ func (h *Handler) handleNoTopicSessionExtractToMemora(w http.ResponseWriter, r *
 
 	turns, err := h.loadNoTopicPreviewTurns(ctx, prefix, hours, hourStart, r, 500)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -497,7 +514,7 @@ func (h *Handler) handleNoTopicSessionExtractionStatus(w http.ResponseWriter, r 
 		return
 	}
 	var detailObj any
-	_ = json.Unmarshal(detail, &detailObj)
+	jsoncol.Decode("admin.noTopicSession.extractionStatus/detail", detail, &detailObj)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id":           virtualTaskID,
 		"extracted":         true,

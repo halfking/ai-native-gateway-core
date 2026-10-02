@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -40,9 +41,9 @@ type TaskAnalyticsSummary struct {
 // TaskAnalyticsDetailResponse 任务详情响应
 type TaskAnalyticsDetailResponse struct {
 	TaskAnalyticsSummary
-	RelatedClients []RelatedClientItem   `json:"related_clients"`
-	DailyCostTrend []DailyCostPoint      `json:"daily_cost_trend"`
-	RecentSessions []RecentSessionItem   `json:"recent_sessions"`
+	RelatedClients []RelatedClientItem `json:"related_clients"`
+	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
+	RecentSessions []RecentSessionItem `json:"recent_sessions"`
 }
 
 // RelatedClientItem 关联客户端项
@@ -116,7 +117,7 @@ func (h *Handler) handleTaskAnalyticsList(w http.ResponseWriter, r *http.Request
 	var total int
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM session_task_stats %s", whereClause)
 	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("count failed: %v", err))
+		writeAnalyticsQueryErr(w, "count failed", err)
 		return
 	}
 
@@ -138,7 +139,7 @@ func (h *Handler) handleTaskAnalyticsList(w http.ResponseWriter, r *http.Request
 
 	rows, err := h.db.Query(ctx, listSQL, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
+		writeAnalyticsQueryErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -160,6 +161,7 @@ func (h *Handler) handleTaskAnalyticsList(w http.ResponseWriter, r *http.Request
 			&t.FirstSeenAt, &t.LastSeenAt, &modelsUsed, &clientsUsed, &refreshedAt,
 		)
 		if err != nil {
+			warnRowSkip("session analytics tasks", err)
 			continue
 		}
 
@@ -181,6 +183,9 @@ func (h *Handler) handleTaskAnalyticsList(w http.ResponseWriter, r *http.Request
 		}
 
 		tasks = append(tasks, t)
+	}
+	if writeAggRowsErr(w, "session analytics tasks", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, &TaskAnalyticsListResponse{
@@ -268,7 +273,8 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		&resp.FirstSeenAt, &resp.LastSeenAt, &modelsUsed, &clientsUsed, &refreshedAt,
 	)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
+		// R35: 42P01（缺 357 视图）此前被吞成 404 误导排查，先分类。
+		writeAnalyticsDetailErr(w, "task not found", err)
 		return
 	}
 
@@ -307,13 +313,19 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		for clientRows.Next() {
 			var item RelatedClientItem
 			var avgHealth sql.NullInt64
-			if err := clientRows.Scan(&item.ClientID, &item.SessionCount, &item.TotalCost, &avgHealth, &item.LastActivity); err == nil {
-				if avgHealth.Valid {
-					val := int(avgHealth.Int64)
-					item.AvgHealth = &val
-				}
-				resp.RelatedClients = append(resp.RelatedClients, item)
+			if err := clientRows.Scan(&item.ClientID, &item.SessionCount, &item.TotalCost, &avgHealth, &item.LastActivity); err != nil {
+				warnRowSkip("session analytics task detail related-clients", err)
+				continue
 			}
+			if avgHealth.Valid {
+				val := int(avgHealth.Int64)
+				item.AvgHealth = &val
+			}
+			resp.RelatedClients = append(resp.RelatedClients, item)
+		}
+		if rerr := clientRows.Err(); rerr != nil {
+			slog.Warn("analytics detail panel iteration aborted; panel degraded", "panel", "related_clients", "error", rerr)
+			resp.RelatedClients = []RelatedClientItem{}
 		}
 	}
 	if resp.RelatedClients == nil {
@@ -345,10 +357,16 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		for trendRows.Next() {
 			var point DailyCostPoint
 			var date time.Time
-			if err := trendRows.Scan(&date, &point.Cost, &point.Sessions); err == nil {
-				point.Date = date.Format("2006-01-02")
-				resp.DailyCostTrend = append(resp.DailyCostTrend, point)
+			if err := trendRows.Scan(&date, &point.Cost, &point.Sessions); err != nil {
+				warnRowSkip("session analytics task detail daily-cost-trend", err)
+				continue
 			}
+			point.Date = date.Format("2006-01-02")
+			resp.DailyCostTrend = append(resp.DailyCostTrend, point)
+		}
+		if rerr := trendRows.Err(); rerr != nil {
+			slog.Warn("analytics detail panel iteration aborted; panel degraded", "panel", "daily_cost_trend", "error", rerr)
+			resp.DailyCostTrend = []DailyCostPoint{}
 		}
 	}
 	if resp.DailyCostTrend == nil {
@@ -377,16 +395,22 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 			var item RecentSessionItem
 			var healthScore sql.NullInt64
 			var healthGrade sql.NullString
-			if err := recentRows.Scan(&item.SessionID, &item.RequestCount, &item.Cost, &healthScore, &healthGrade, &item.CreatedAt); err == nil {
-				if healthScore.Valid {
-					val := int(healthScore.Int64)
-					item.HealthScore = &val
-				}
-				if healthGrade.Valid {
-					item.HealthGrade = &healthGrade.String
-				}
-				resp.RecentSessions = append(resp.RecentSessions, item)
+			if err := recentRows.Scan(&item.SessionID, &item.RequestCount, &item.Cost, &healthScore, &healthGrade, &item.CreatedAt); err != nil {
+				warnRowSkip("session analytics task detail recent-sessions", err)
+				continue
 			}
+			if healthScore.Valid {
+				val := int(healthScore.Int64)
+				item.HealthScore = &val
+			}
+			if healthGrade.Valid {
+				item.HealthGrade = &healthGrade.String
+			}
+			resp.RecentSessions = append(resp.RecentSessions, item)
+		}
+		if rerr := recentRows.Err(); rerr != nil {
+			slog.Warn("analytics detail panel iteration aborted; panel degraded", "panel", "recent_sessions", "error", rerr)
+			resp.RecentSessions = []RecentSessionItem{}
 		}
 	}
 	if resp.RecentSessions == nil {

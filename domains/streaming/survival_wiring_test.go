@@ -2,10 +2,14 @@ package streaming
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
 )
 
@@ -145,5 +149,87 @@ func TestRunSurvivalFreezesOwner(t *testing.T) {
 	fr := r.WithContext(frozen)
 	if retryowner.OwnerFrom(fr.Context()) != retryowner.Survival {
 		t.Fatal("WithContext must preserve the frozen owner")
+	}
+}
+
+// 2026-09-23 (strategy fix): resume_blocked only ever fires for retryable
+// failure kinds with committed output (errorsx.DecideNextAction). The
+// in-connection transparent retry stays blocked, but the envelope must tell
+// agent clients the failure class itself is retryable so their
+// discard-and-regenerate turn machinery engages instead of hard-failing.
+func TestRenderSurvivalTerminalResumeBlockedIsClientRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		protocol ClientProtocol
+		marker   string
+	}{
+		{"chat", ProtocolOpenAIChat, `"code":"gateway_survival_resume_blocked"`},
+		{"anthropic", ProtocolAnthropic, `"code":"gateway_survival_resume_blocked"`},
+		{"responses", ProtocolOpenAIResponses, `"code":"gateway_survival_resume_blocked"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &trackingFlusher{}
+			sw := NewSerializedStreamWriter(f)
+			renderSurvivalTerminal(sw, tc.protocol,
+				TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}, true)
+			out := f.buf.String()
+			if !strings.Contains(out, tc.marker) {
+				t.Fatalf("resume_blocked envelope missing %q: %q", tc.marker, out)
+			}
+			if !strings.Contains(out, `"reason":"committed_output"`) {
+				t.Fatalf("envelope missing committed_output reason: %q", out)
+			}
+			if !strings.Contains(out, `"retryable":true`) {
+				t.Fatalf("resume_blocked envelope must be client-retryable: %q", out)
+			}
+		})
+	}
+}
+
+// fail_terminal keeps retryable=false — those kinds are genuinely terminal
+// (model_not_found, content_filter, ...) and a client retry would fail the
+// same way.
+func TestRenderSurvivalTerminalFailTerminalStaysNonRetryable(t *testing.T) {
+	f := &trackingFlusher{}
+	sw := NewSerializedStreamWriter(f)
+	renderSurvivalTerminal(sw, ProtocolOpenAIChat,
+		TaskDecision{Action: TaskActionFailTerminal, Reason: "model_not_found"}, true)
+	out := f.buf.String()
+	if !strings.Contains(out, `"retryable":false`) {
+		t.Fatalf("fail_terminal envelope must stay non-retryable: %q", out)
+	}
+}
+
+// 2026-09-23 critique round: both the survival envelope path and the
+// dispatch-path §11.6 wrap must funnel into the handler's single
+// blackhole guard via errorsx.ErrProtocolTerminalRendered (the survival
+// sentinel wraps it; ExecuteError.LastErr is inspected explicitly because
+// ExecuteError has no Unwrap).
+
+// 2026-09-23 critique round: both the survival envelope path and the
+// dispatch-path §11.6 wrap must funnel into the handler's single blackhole
+// guard via errorsx.ErrProtocolTerminalRendered (the survival sentinel wraps
+// it; ExecuteError.LastErr is inspected explicitly because ExecuteError has
+// no Unwrap).
+func TestExecTerminalRenderedMatchesBothWrapStyles(t *testing.T) {
+	dispatchWrap := fmt.Errorf("%w (%w)", errors.New("stream_interrupted: eof_without_done"), errorsx.ErrProtocolTerminalRendered)
+	if !execTerminalRendered(dispatchWrap) {
+		t.Fatal("dispatch-style wrap must match")
+	}
+	ee := &executors.ExecuteError{Exhausted: true, LastErr: dispatchWrap}
+	if !execTerminalRendered(ee) {
+		t.Fatal("ExecuteError.LastErr wrap must match")
+	}
+	if !execTerminalRendered(errSurvivalTerminalRendered) {
+		t.Fatal("survival sentinel must match (it wraps the errorsx sentinel)")
+	}
+	if execTerminalRendered(errors.New("ordinary failure")) {
+		t.Fatal("ordinary errors must not match")
+	}
+	if execTerminalRendered(&executors.ExecuteError{LastErr: errors.New("x")}) {
+		t.Fatal("ExecuteError without the sentinel must not match")
+	}
+	if execTerminalRendered(nil) {
+		t.Fatal("nil must not match")
 	}
 }

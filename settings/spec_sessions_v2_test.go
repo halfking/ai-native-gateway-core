@@ -25,6 +25,11 @@ func TestSessionsV2FeatureFlags(t *testing.T) {
 		// getPlatformBool 对 Spec==nil 直接返回 fallback，运维 PUT 无效。
 		"sessions_v2.mirror_outbox",
 		"sessions_v2.mirror_outbox_replay",
+		// Subtask 5 收口（审计 §23 F-15）：replay.go 的 currentMaxAtts 读这个
+		// key，但此前**从未登记** —— getPlatformInt 对 Spec==nil 恒返回
+		// fallback，于是 commit 宣称的「热重载 dead-letter 预算」完全无效。
+		// 这条进列表同时防「消费点加了、登记忘了」复发。
+		"sessions_v2.mirror_outbox_max_attempts",
 	}
 
 	if len(specs) != len(expectedKeys) {

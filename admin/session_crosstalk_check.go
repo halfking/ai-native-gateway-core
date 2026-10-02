@@ -52,7 +52,7 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 		LIMIT 100
 	`, hours)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -62,11 +62,15 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 		var c conflict
 		var firstSeen, lastSeen time.Time
 		if err := rows.Scan(&c.SessionID, &c.TenantIDs, &firstSeen, &lastSeen, &c.RequestCount); err != nil {
+			warnRowSkip("sessionCrosstalkCheck", err)
 			continue
 		}
 		c.FirstSeenAt = firstSeen.Format(time.RFC3339)
 		c.LastSeenAt = lastSeen.Format(time.RFC3339)
 		conflicts = append(conflicts, c)
+	}
+	if writeAggRowsErr(w, "sessionCrosstalkCheck", rows.Err()) {
+		return
 	}
 
 	if conflicts == nil {

@@ -684,7 +684,7 @@ func (p *PrometheusRecorder) SetPoolHealthyCredentials(poolID string, count int)
 // write. kind is the hook's tag (e.g. "attachment", "session_v2").
 //
 // Kind values MUST be kept in sync with the alerting rules in
-// deploy/monitoring/grafana-alerts/shadow-write-failures.yaml so the
+// deploy/prometheus/alerts/shadow-write-failures.yaml so the
 // Grafana queries resolve to a non-empty time series.
 func (p *PrometheusRecorder) RecordShadowWriteFailure(kind string) {
 	p.shadowWriteFailed.WithLabelValues(kind).Inc()
@@ -849,8 +849,12 @@ func (p *PrometheusRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason 
 //   - "redis_unavailable"  — per-request_id lock acquisition failed
 //
 // Unknown reasons will create new Prometheus time series, so keep this list
-// stable and aligned with the alerting rules in
-// deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml.
+// stable. NOTE (2026-10-01, R87-m): there is currently NO alert rule
+// consuming this counter — the yaml this comment used to cite
+// (deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml) never
+// existed, and neither does its directory. Only "redis_unavailable" is
+// reachable in production; "store_unconfigured" is short-circuited at
+// admin/live_stream_sse.go:2145. See audit report 71.
 func (p *PrometheusRecorder) RecordLiveStreamRecordDropped(reason string) {
 	p.liveStreamRecordDroppedTotal.WithLabelValues(reason).Inc()
 }

@@ -135,7 +135,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType,
 		concurrencyMode, req.RPMLimit, req.TPMLimit, req.MaxQueueDepth, req.MaxQueueWaitMS).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		writeInternalErr(w, "create failed", err)
 		return
 	}
 
@@ -373,7 +373,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.PlanQuotaUsedPercent,
 			&c.PlanQuotaCheckedAt,
 		); err != nil {
-			slog.Warn("listCredentials scan failed", "error", err)
+			warnRowSkip("credentials.list", err)
 			continue
 		}
 
@@ -406,6 +406,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			c.EffectiveFpSlotLimit = credentialfpslot.EffectiveFpSlotLimit(c.FpSlotLimit, h.fpSlotsDefaultLimit())
 		}
 		creds = append(creds, c)
+	}
+	// 凭据列表被截断会被读成"该 provider 只有这几把 key"——直接 500。
+	if writeAggRowsErr(w, "credentials.list", rows.Err()) {
+		return
 	}
 	if creds == nil {
 		creds = []cred{}
@@ -519,7 +523,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	defer cancel()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "begin update failed: "+err.Error())
+		writeInternalErr(w, "begin update failed", err)
 		return
 	}
 	defer func() {
@@ -541,7 +545,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "credential not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "load credential failed: "+err.Error())
+			writeInternalErr(w, "load credential failed", err)
 		}
 		return
 	}
@@ -679,7 +683,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if len(sets) == 0 {
 		if err := tx.Commit(ctx); err != nil {
-			writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
+			writeInternalErr(w, "commit", err)
 			return
 		}
 		provider.InvalidateAllCandidateCache()
@@ -691,7 +695,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	query := "UPDATE credentials SET " + strings.Join(sets, ", ") + fmt.Sprintf(" WHERE id = $%d AND provider_id = $%d RETURNING revision", len(args)-1, len(args))
 	var revision int64
 	if err := tx.QueryRow(ctx, query, args...).Scan(&revision); err != nil {
-		writeError(w, http.StatusInternalServerError, "update credential failed: "+err.Error())
+		writeInternalErr(w, "update credential failed", err)
 		return
 	}
 	if req.PlanType != nil && (!previousPlan.Valid || previousPlan.String != *req.PlanType) {
@@ -700,7 +704,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 			SET billing_mode = CASE WHEN $1 = 'token' THEN 'per_token' ELSE $1 END,
 			    plan_type_origin = 'auto', updated_at = NOW()
 			WHERE cmb.credential_id = $2 AND cmb.plan_type_origin = 'auto'`, *req.PlanType, credID); err != nil {
-			writeError(w, http.StatusInternalServerError, "cascade credential model bindings failed: "+err.Error())
+			writeInternalErr(w, "cascade credential model bindings failed", err)
 			return
 		}
 	}
@@ -742,7 +746,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
+		writeInternalErr(w, "commit", err)
 		return
 	}
 	if fpSlotAudit != nil {
@@ -940,7 +944,7 @@ func (h *Handler) deleteCredential(w http.ResponseWriter, r *http.Request, provi
 		  AND status <> 'deleted'
 	`, credID, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeInternalErr(w, "delete failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -1011,7 +1015,7 @@ func (h *Handler) resetCredentialFpSlots(w http.ResponseWriter, r *http.Request,
 	deletedSlots, deletedPins, err := h.fpSlots.ResetSlotsForTenant(ctx, credID, fpSlotLimit, tenantID)
 	if err != nil {
 		slog.Error("reset fp slots failed", "credential_id", credID, "error", err)
-		writeError(w, http.StatusInternalServerError, "reset failed: "+err.Error())
+		writeInternalErr(w, "reset failed", err)
 		return
 	}
 
@@ -1062,7 +1066,7 @@ func (h *Handler) releaseCredentialFpSlot(w http.ResponseWriter, r *http.Request
 	released, err := h.fpSlots.ReleaseSlotForTenant(ctx, credID, body.SlotIndex, tenantID)
 	if err != nil {
 		slog.Error("release fp slot failed", "credential_id", credID, "slot_index", body.SlotIndex, "error", err)
-		writeError(w, http.StatusInternalServerError, "release failed: "+err.Error())
+		writeInternalErr(w, "release failed", err)
 		return
 	}
 
@@ -1173,9 +1177,15 @@ func (h *Handler) lookupSessionTitles(ctx context.Context, holders []string) map
 	defer rows.Close()
 	for rows.Next() {
 		var sid, title string
-		if err := rows.Scan(&sid, &title); err == nil {
-			result[sid] = title
+		if err := rows.Scan(&sid, &title); err != nil {
+			warnRowSkip("credentials.lookupSessionTitles", err)
+			continue
 		}
+		result[sid] = title
+	}
+	// 显式 best-effort（函数头注：缺失条目只是不出现）：标题富化降级留痕。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Debug("lookupSessionTitles iteration aborted; titles incomplete", "error", rerr)
 	}
 	return result
 }
@@ -1224,8 +1234,19 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	// 2026-09-01 (P0-1 24h-audit round2): optional credential attribution
 	// filter. provider_error_details.credential_id was added by migration 639.
 	// Empty / invalid / "all" → aggregate every credential (previous
-	// behaviour). Valid ints narrow the result to that credential only, which
-	// is what the credential-detail panel needs ("this credential's errors").
+	// behaviour). Valid ints narrow the result to that credential only.
+	//
+	// R75（2026-10-01）更正：本注释原文写「which is what the credential-detail
+	// panel needs ("this credential's errors")」——**这句是错的**，读端曾据此
+	// 被认定已闭环。实际前端凭据详情页（web/src/views/provider-detail/
+	// ErrorDetailTab.vue → api/vendor-credential-error.ts）调的是
+	// GET /api/vendors/credentials/{id}/error-detail，SQL 读 supplier_errors_unified
+	// 与 candidate_failure_logs_unified，从不调用本端点。
+	// 全仓检索确认本端点零调用方（非测试代码中 "error-stats" 仅出现在
+	// providers.go 的路由 case 与本注释）。因此 provider_error_details 的
+	// 唯一生产读端就是这里，而它当前没有 UI 消费方——聚合管线本身在跑、
+	// 数据在写、但没有面板读。是否下线聚合器、或把本端点接进凭据详情页，
+	// 属产品裁决（见 45 号报告 §8），此处只把事实钉准，不擅自删接口。
 	credentialFilter := r.URL.Query().Get("credential_id")
 	if credentialFilter != "" && credentialFilter != "all" {
 		if parsed, err := strconv.Atoi(credentialFilter); err != nil || parsed <= 0 {

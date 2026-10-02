@@ -27,6 +27,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	anthropictransform "github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -433,9 +434,11 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// never fails over.
 	//
 	// Empty = no content_block_* events reached the client. Usage tokens alone
-	// do NOT count as content — matching the documented contract on
-	// anthropic.IsAnthropicStreamEmpty (stream_support.go) and the non-stream
-	// semantics in isEmptyAnthropicMessagesResponse (content array length).
+	// do NOT count as content — matching the non-stream semantics in
+	// isEmptyAnthropicMessagesResponse (content array length). (The former
+	// anthropic.IsAnthropicStreamEmpty helper was retired in the D2/D3
+	// empty-outcome consolidation; internal/emptyoutcome owns the predicate
+	// set now.)
 	// Some Anthropic-compat relays (notably minimax via the Anthropic bridge)
 	// emit `usage` in `message_start` with zero output content; counting those
 	// as non-empty would suppress fail-over and silently 200 an empty
@@ -491,7 +494,16 @@ func finalizePassthroughInterruption(
 	if !attemptHasClientSemanticOutput(gate, chunkCount) {
 		return
 	}
-	writePassthroughErrorEvent(cw, "upstream_error", message)
+	// 2026-09-23 critique round (user report #14/#15 on the /v1/messages
+	// path with anthropic-protocol upstreams): the passthrough envelope was
+	// the one committed-output interruption frame still lacking code +
+	// retryable, so agent clients defaulted to retryable=false and
+	// hard-failed the turn. The interruption kinds reaching here are
+	// transient by construction (network / stream timeout / upstream_down —
+	// KindCanceled returned above), so retryable follows the kind taxonomy.
+	writePassthroughErrorEventFull(cw, "upstream_error", message, "stream_interrupted",
+		errorsx.EffectiveRetryable(oc.Kind))
+	oc.TerminalRendered = true
 	// A client-visible terminal error makes the attempt non-transparently
 	// retryable even when no capture is attached (capture==nil otherwise
 	// bypasses the snapshot check in mayRetryInterruptedStream).
@@ -505,12 +517,24 @@ func finalizePassthroughInterruption(
 // the gateway's own envelope, replacing the raw upstream error frame so
 // relay-internal diagnostic blobs never reach the client verbatim.
 func writePassthroughErrorEvent(cw *clientStreamWriter, errType, message string) {
+	writePassthroughErrorEventFull(cw, errType, message, "", false)
+}
+
+// writePassthroughErrorEventFull is the passthrough envelope with optional
+// code + retryable fields (2026-09-23). Empty code keeps the historical
+// two-field error object byte-identical for the non-interruption callers.
+func writePassthroughErrorEventFull(cw *clientStreamWriter, errType, message, code string, retryable bool) {
 	if cw == nil {
 		return
 	}
+	errObj := map[string]any{"type": errType, "message": message}
+	if code != "" {
+		errObj["code"] = code
+		errObj["retryable"] = retryable
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"type":  "error",
-		"error": map[string]any{"type": errType, "message": message},
+		"error": errObj,
 	})
 	cw.write(fmt.Sprintf("event: error\ndata: %s\n\n", payload))
 }
@@ -747,8 +771,17 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	// P1-2 fix (2026-08-28): Pass ctx to wrapAttemptWriter for context propagation.
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
 	w, gate := wrapAttemptWriter(ctx, w, ProtocolOpenAIChat)
+	// R-vapeur3 (2026-09-30): drain the frame-assembly residue at attempt end
+	// — an upstream that closes without the SSE blank-line terminator strands
+	// the final frame while the request is recorded as a clean outcome.
+	// See GateWriter.DrainPending.
+	defer func() {
+		if gw, ok := w.(*GateWriter); ok {
+			_ = gw.DrainPending()
+		}
+	}()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -922,7 +955,11 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_panic",
-					fmt.Sprintf("internal error: %v", r), flusher)
+					fmt.Sprintf("internal error: %v", r), flusher, false)
+				// R59 audit (S1-F4): the emitted chunk already carries
+				// [DONE] — latch the terminal so survival renderTerminal and
+				// the post-loop handlers never stack a second one.
+				outcome.TerminalRendered = true
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
@@ -945,7 +982,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_chunk_timeout",
-					fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher)
+					fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher, true)
+				outcome.TerminalRendered = true
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "chunk_timeout"
@@ -1103,7 +1141,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				capture.MarkInterruptedWithReason(failure.Reason)
 			}
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
-				emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher)
+				emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher, true)
+				outcome.TerminalRendered = true
 			}
 			return outcome
 		}
@@ -1362,7 +1401,9 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								capture.AddQualityFlag("malformed_tool_args_blocked")
 							}
 							if attemptHasClientSemanticOutput(gate, chunkCount) {
-								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher, false)
+								// R59 audit (S1-F4): latch — see stream_panic note.
+								outcome.TerminalRendered = true
 							}
 							outcome.Interrupted = true
 							outcome.Reason = "malformed_tool_args"
@@ -1415,7 +1456,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			// (executor_anthropic.go) already returns KindEmptyResponse for
 			// the parallel case; the live Q3 translator now mirrors it.
 			//
-			// Per the documented contract on anthropic.IsAnthropicStreamEmpty,
+			// Per the documented contract on emptyoutcome.IsEmptyOutcome,
 			// an upstream that reports usage in message_start but no content
 			// IS empty (not just absence of usage). The r3 transformation
 			// path's stricter `inputTokens==0 && outputTokens==0` requirement
@@ -1431,7 +1472,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			// TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer) was
 			// wrongly marked as empty_response and the [DONE] chunk was
 			// never written to the capturer.
-			if anthropictransform.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
+			if emptyoutcome.IsEmptyOutcome(emittedContent, clientWriter.clientDisconnected) {
 				if capture != nil {
 					capture.MarkInterruptedWithReason("anthropic_empty_response")
 				}
@@ -1523,7 +1564,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 						code = "api_error"
 					}
 				}
-				emitAnthropicBridgeErrorChunk(w, code, "upstream stream error: "+code, flusher)
+				emitAnthropicBridgeErrorChunk(w, code, "upstream stream error: "+code, flusher, false)
+				// R59 audit (S1-F4): latch — see stream_panic note. Mirrors
+				// the stream_chunk_timeout / stream_read_error branches.
+				outcome.TerminalRendered = true
 			}
 			slog.Warn("anthropic_to_openai: upstream terminal error event",
 				"request_id", requestID,
@@ -1602,11 +1646,12 @@ func firstLineOfLogSafe(s string) string {
 	return s
 }
 
-func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, flusher http.Flusher) {
+func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, flusher http.Flusher, retryable bool) {
 	errBody := map[string]any{
 		"error": map[string]any{
-			"code":    code,
-			"message": message,
+			"code":      code,
+			"message":   message,
+			"retryable": retryable,
 		},
 	}
 	body, _ := json.Marshal(errBody)

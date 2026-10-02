@@ -22,6 +22,9 @@
 /.kiro/
 /.security-audit/
 
+# 2026-09-25: TRAE IDE tool cache (commit-msg drafts, session scratch)
+/.trae/
+
 # Note: .agents/ is intentionally NOT tracked in this repo.
 # It is a local skill/task workspace (project skills db-sync-252-local,
 # llm-gateway-deploy live here on each machine), not shared code.
@@ -48,6 +51,8 @@ coverage/
 /llm-gateway-*
 /gateway-*
 /build_seq
+# 2026-09-22: 子目录构建产物（installer/cmd/.../go build 输出）不计入仓库
+/installer/cmd/llm-gw-installer/llm-gw-installer
 Dockerfile.local
 # ─────────────────────────────────────────────────────────────
 # 自动补充的标准忽略规则 (2026-06-11 .gitignore 审计)
@@ -125,8 +130,17 @@ logs/
 # Vendored kx-design (use services/shared/kx-design instead)
 kx-design/
 web/public/version.json
-web-vue/tsconfig.tsbuildinfo
+web/tsconfig.tsbuildinfo
 traffic-replay-bin
+# `go build ./cmd/<name>/` drops the binary in the repo root; keep the compiled
+# cmd tools out of the tree (same rule as traffic-replay-bin above). 2026-09-28:
+# auto-testbench — its harness fix is what makes the selection layer measurable.
+# 十六轮审计 E4：必须根锚定（/ 前缀）——未锚定模式会递归匹配
+# cmd/auto-testbench/ 等源码目录，`git add .` 时静默跳过新源文件；
+# autoclass-bench 的未锚定重复行删除，:302 的 /autoclass-bench 已覆盖。
+/auto-testbench
+/autoroute-e2e-audit
+/tuning-backtest
 
 # Python linter cache
 .ruff_cache/
@@ -318,6 +332,14 @@ scripts/capacity-baseline/reports/
 # NAS 同步残片文件
 .!*
 data/
+# 但 tests/48h-audit/DXX-*/data/ 是分类测试目录，必须纳入版本控制
+!tests/48h-audit/*/data/
+!tests/48h-audit/*/data/**
+# reports/ 顶层也忽略；tests/48h-audit/*/reports/ 属于分类报告目录，必须纳入
+!tests/48h-audit/*/reports/
+!tests/48h-audit/*/reports/**
+!tests/48h-audit/reports/
+!tests/48h-audit/reports/**
 
 # ── 2026-09-16: 跨平台 OS / 编辑器产物兜底（Windows + macOS + Linux + 通用编辑器）
 # 补齐已有的 .DS_Store / Thumbs.db / desktop.ini / .idea/ / .vscode/ 之外的
@@ -360,3 +382,34 @@ nbproject/
 
 # 2026-09-17: ssh-mgmt root password (never commit; local only)
 deploy/ssh-mgmt/pw.txt
+
+# Accidental nested workspace copies (do not commit)
+/Users/
+
+# Stress harness runtime (pids/logs); keep results/report.json tracked
+tests/stress/logs/
+tests/stress/**/.DS_Store
+# Pre-audit GOMAXPROCS / OOM-interrupted samples — not production capacity
+tests/stress/results/capacity/
+tests/stress/results/mem-*.json
+tests/stress/results/mem-*.jsonl
+tests/stress/results/memory.jsonl
+tests/stress/results/memory-*.json
+tests/stress/results/memory-*.jsonl
+tests/stress/handoff_b_s8s13_test.go
+
+# ── 2026-09-21: 本地部署/运行时产物不入库 ─────────────────────────
+# deploy-local.sh --root 指向 worktree 时在根写 run/（active-port、
+# active-version、admin-password-hash 备份）；RawDataLogger 写 raw-logs/。
+# 均为机器本地运行态，换机无意义且可能含敏感数据。
+/run/
+/raw-logs/
+
+# ── 2026-09-22: 审计周期内一次性抓取的大体积原始日志不入库 ──────────
+# 252 PG SQL 日志审计/R46 离线静态扫描等场景下，会在 docs/audit/<date>-*/
+# 下就地保存 PG csv pg_text 日志（~15MB）和容器 ctr_snapshot 日志（~50MB）。
+# 这些是审计轮的中间原始抓取，已分析后留在原位；分析输出已落到对应
+# docs/audit/<date>-*.md 报告，不需要把 GB 级文本入仓。
+docs/audit/**/pg_*pg17_logs.txt
+docs/audit/**/ctr_snapshot_*.log
+.trae/

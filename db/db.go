@@ -22,6 +22,13 @@ import (
 type DB struct {
 	pool *pgxpool.Pool
 
+	// migrationsPinned（2026-09-23 252 SQL 日志审计轮）：true 时 BeforeAcquire
+	// 给每条取出的连接 SET statement_timeout='5min'，抬开角色级 30s 对 boot
+	// 迁移链 DDL 锁等待的击杀；ApplyMigrations 结束后清零并 pool.Reset()
+	// 丢弃被抬过的连接——serving 池不残留任何超时修改（D1 禁止的全池
+	// RuntimeParams 方案的 scoped 替代）。
+	migrationsPinned *atomic.Bool
+
 	// lifecycleMu serializes the lazy stdlib bridge creation with shutdown so
 	// callers never receive a bridge after its owning DB has been closed.
 	lifecycleMu sync.Mutex
@@ -64,6 +71,23 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	// See docs/changelogs/2026-07-15-provider-model-bindings-fix.md for details.
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
+	// 2026-09-23 252 SQL 日志审计轮：迁移期 statement_timeout 钉住（D1 残余
+	// 根修）。ApplyMigrations 期间置位 migrationsPinned，BeforeAcquire 给每条
+	// 取出的连接抬 statement_timeout 到 5min——boot 链对 credentials /
+	// request_logs 等热表的 ALTER ... ADD COLUMN IF NOT EXISTS 即使全部列已
+	// 在位也要 ACCESS EXCLUSIVE（逐列 no-op），共享库持续写流下锁等待稳定
+	// 超角色级 30s 被 57014 击杀且烧点不推进（245 seq 2193-2202 十连败实证，
+	// 07:23-08:16）。迁移结束 pool.Reset() 丢弃被抬连接，serving 期每条连接
+	// 回到角色默认 30s（catalog 守卫族 + 本钉双保险，守卫管"能不能不跑"，
+	// 钉管"跑的时候别被杀"）。
+	var migrationsPinned atomic.Bool
+	cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
+		if migrationsPinned.Load() {
+			_, _ = conn.Exec(ctx, "SET statement_timeout = '5min'")
+		}
+		return true
+	}
+
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -83,7 +107,7 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		return nil, err
 	}
 	slog.Info("postgres connected", "max_conns", cfg.MaxConns, "min_conns", cfg.MinConns)
-	db := &DB{pool: pool}
+	db := &DB{pool: pool, migrationsPinned: &migrationsPinned}
 	if err := db.ApplyMigrations(ctx); err != nil {
 		return nil, err
 	}
@@ -123,6 +147,17 @@ func poolMaxConnsFromEnv(def int32) int32 {
 // resolve instead of killing the boot.
 func (db *DB) ApplyMigrations(ctx context.Context) error {
 	const maxAttempts = 2
+	// 2026-09-23 审计轮：置位迁移期超时钉（BeforeAcquire 抬 5min），结束/失败
+	// 均清零并 Reset 池——被抬的连接不回流 serving，角色默认 30s 即时恢复。
+	if db.migrationsPinned != nil {
+		db.migrationsPinned.Store(true)
+		defer func() {
+			db.migrationsPinned.Store(false)
+			if db.pool != nil {
+				db.pool.Reset()
+			}
+		}()
+	}
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
@@ -140,6 +175,36 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 		}
 	}
 	return lastErr
+}
+
+// columnsAllPresent —— 2026-09-23 252 SQL 日志审计轮（D1 残余根修通用件）：
+// credentials/request_logs 等热表上的 ALTER ... ADD COLUMN IF NOT EXISTS，
+// 即使全部列已存在也要取 ACCESS EXCLUSIVE 锁才能逐列 no-op；共享库持续写
+// 流下锁等待超过角色级 statement_timeout=30s 即被 57014 击杀，boot 重试撞
+// 同一堵墙（烧点不可推进）直至 retry_budget 烧穿 → postgres disabled →
+// 部署安全网回滚（245 07:23/07:26/07:35 三连败实证，PG 日志逐字归因）。
+// 守卫语义：全部列在位 → true（调用方跳过 DDL，幂等 stamp 类语句照常执行）；
+// 表不存在 / 任一列缺失 / 探测出错 → false（走原 ensure 路径，自含幂等）。
+func (db *DB) columnsAllPresent(ctx context.Context, table string, cols []string) bool {
+	if db == nil || db.pool == nil || len(cols) == 0 {
+		return false
+	}
+	quoted := make([]string, len(cols))
+	for i, c := range cols {
+		quoted[i] = "'" + c + "'"
+	}
+	q := fmt.Sprintf(
+		`SELECT count(*) FROM unnest(ARRAY[%s]) AS want(name)
+		 WHERE to_regclass('public.%s') IS NOT NULL
+		   AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+		     WHERE table_schema='public' AND table_name='%s'
+		       AND column_name = want.name)`,
+		strings.Join(quoted, ","), table, table)
+	var missing int
+	if err := db.pool.QueryRow(ctx, q).Scan(&missing); err != nil {
+		return false
+	}
+	return missing == 0
 }
 
 func (db *DB) applyMigrationsOnce(ctx context.Context) error {
@@ -214,6 +279,40 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// session_summaries without archived_at — the TTL trimmer then dies with
 	// 42703 on every boot and rows can never be archived.
 	if err := db.ensureSessionSummariesArchivalSchema(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-24 migration 744: outbox done 清理与 digest 回填的部分索引。
+	// 两个后台 job 在缺索引时分别对 645MB outbox / 全分区 session_turns
+	// 做每 10s-10min 一次的 30s 级全扫（252 实锤击杀循环），必须先于
+	// worker 启动补齐。
+	if err := db.ensureSqlAuditPartialIndexes(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-24 migration 745: report_snapshots 日报快照表（对账报表设计
+	// 切片，设计预埋——消费方 worker 尚未实现）。原文件死放 migrations/
+	// 顶层无投递通道，存量库上表缺失；先于业务读面建表，幂等短路。
+	if err := db.ensureReportSnapshots(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-25 migration 747 (原 746 与对账报表轮撞号重编, 纪律㉒): session_mirror_outbox source CHECK 扩展
+	// 'claim'——final-success claim 补偿登记（D12）需要新枚举值，先于
+	// 任意 claim 写入生效，幂等短路。
+	if err := db.ensureSessionMirrorOutboxSourceClaim(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-26 migration 749 (R67 24h 审计轮): usage_facts occurred_at
+	// 前导索引——每日 rollup 五查询与 stats 对账全是纯 occurred_at 范围
+	// 条件，此前无任何前导索引只能全表顺序扫，线性退化至被共享 PG 30s
+	// statement_timeout 成批击杀。先于 rollup/对账 worker 启动生效，
+	// 幂等短路。
+	if err := db.ensureUsageFactsOccurredAtIndex(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-26 migration 750 (R68 24h 审计轮): usage_facts 按日分区函数
+	// + 当日/次日预建。749 只解决索引，partition pruning 仍不可用（无具
+	// 体分区则 PG 只能扫 DEFAULT 全表）。DEFAULT 分区保留作历史 catch-all，
+	// 新一日数据走日分区。先于 rollup/对账 worker 启动生效，幂等短路。
+	if err := db.ensureUsageFactsDailyPartition(migCtx); err != nil {
 		return err
 	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
@@ -338,6 +437,17 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionBodiesPromoteDrain(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-01 (R17 列存事故防复发，ensureProbeStateFunctionFixes 同族):
+	// columnar_insert_only_parents() 的库内名单曾被手改成 21 族大名单——
+	// enforce_columnar_trigger 据此把 21 族 heap 分区批量转列存，打断全部
+	// ON CONFLICT/UPDATE 写路径（252 生产 03:0x-06:44 事故）。仓库正典是
+	// 单族 routing_decision_log（唯一真 insert-only）；启动 ensure 把库内
+	// 实态收敛回正典，拔掉「库函数漂移 → DDL 事件放大」的复发源。
+	// 名单变更必须走 sql/objects/functions/columnar_insert_only_parents.sql
+	// 正典文件 + 本处的同步修改（契约测试双侧钉住）。
+	if err := db.ensureColumnarInsertOnlyParentsCanonical(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureNodeProbeTriggerKindSchema(migCtx); err != nil {
 		return err
 	}
@@ -422,6 +532,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureTaskTypeCorrections(migCtx); err != nil {
 		return err
 	}
+	// R50 审计 F17 收口: 730 的 role_task_llm_mapping（role_llm_router
+	// refresher 每分钟轮询、SelectLLM DB 覆盖源）主通道 ensure——缺表环境
+	// 此前每分钟 42P01 Warn 且 DB 覆盖静默失效。
+	if err := db.ensureRoleTaskLLMMapping(migCtx); err != nil {
+		return err
+	}
 	// R43 (2026-09-18): task_type_tier_config（ApplySuggestions 落盘目标）——
 	// 原迁移 202609_02 表级表达式 UNIQUE 在 PG 上不可执行，表从未被建出。
 	if err := db.ensureTaskTypeTierConfig(migCtx); err != nil {
@@ -477,15 +593,53 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// 2026-09-10 (handoff-20260910): 689 (columnar→heap monthly partitions +
 	// per-table TTL drop functions) never reached ensure-chain environments,
 	// so the opslog trimmer's row-level DELETE kept dying on ColumnarScan.
-	if err := db.ensureCandidateFailureLogsHeapPartitions(migCtx); err != nil {
+	//
+	// 2026-10-01: 这一步原本直接吃 migCtx 的 3 分钟总预算，而它排在 78 条
+	// ensure 链的倒数第二位。生产（252 / llmgo-252-dev）实证：前面任一
+	// ensure 因 ACCESS EXCLUSIVE 锁等待吃掉预算后，轮到本步时剩余时间不够，
+	// 报 `ensure candidate_failure_logs heap partitions: timeout: context
+	// deadline exceeded`（04:26:10 / 04:34:19 / 04:38:14 三次 boot 均复现），
+	// 冒泡令整条 ensure 链失败 → `postgres disabled` → telemetry 关闭 →
+	// live stream hub 无 DB（node status disabled）→ dashboard 模型分组因
+	// hasReportedRawModels 恒 false 而整块隐藏。
+	//
+	// 注意 SQL 内的 `SET LOCAL statement_timeout='10min'` 救不了：context
+	// 到期由客户端直接掐断连接，服务端超时设置根本没机会生效。外层 context
+	// 才是真正的杀手。
+	//
+	// 修法只给本步独立预算，不动 78 条链共用的 3 分钟约定（改全局影响面
+	// 过大，且 3 分钟对绝大多数幂等 no-op ensure 是合适的）。本步 SQL 自身
+	// 幂等（注释与函数体均声明 all-partitions-heap 后为 no-op），且仍在
+	// migrationsPinned 抬升 statement_timeout 的窗口内执行，失败可安全重试。
+	cflCtx, cflCancel := context.WithTimeout(context.WithoutCancel(migCtx), candidateFailureLogsHeapPartitionsBudget)
+	defer cflCancel()
+	if err := db.ensureCandidateFailureLogsHeapPartitions(cflCtx); err != nil {
 		return err
 	}
 	db.ensureProbeHealthDashboardViews(migCtx)
 	return nil
 }
 
-// sessionSummariesArchival backfill bounds: 2000-row chunks keep per-statement
-// row-lock windows in the milliseconds range (far below the shared PG's 30s
+// candidateFailureLogsHeapPartitionsBudget is the independent wall-clock
+// budget for ensureCandidateFailureLogsHeapPartitions, deliberately detached
+// from the 3-minute migCtx shared by the 78-call ensure chain.
+//
+// 2026-10-01 (252 llmgo-252-dev production evidence): the shared budget was
+// being exhausted by upstream ACCESS EXCLUSIVE lock waits before this step
+// (last-but-one in the chain) ever ran, so the conversion was killed with
+// `context deadline exceeded` and the error aborted the whole ensure chain —
+// `postgres disabled` → telemetry off → live-stream hub without DB → the
+// dashboard model-group panel hidden behind a permanently-false
+// hasReportedRawModels gate. The SQL's own `SET LOCAL statement_timeout`
+// could not help: client-side context expiry aborts the connection outright,
+// so the server-side timeout never gets a chance to fire.
+//
+// 5 minutes matches the SQL's own statement_timeout ceiling, so the two are
+// consistent: whichever trips first produces the same error shape, and the
+// caller's 10-minute boot retry budget still bounds the whole thing.
+const candidateFailureLogsHeapPartitionsBudget = 5 * time.Minute
+
+// sessionSummariesArchival backfill bounds: 2000-row chunks keep per-statement// row-lock windows in the milliseconds range (far below the shared PG's 30s
 // statement_timeout), and the per-boot wall-clock slice means a leftover
 // backfill simply resumes on the next boot — NULL last_accessed_at is
 // archival-safe (predicates treat it as "not accessed recently"), so boot
@@ -576,6 +730,16 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 	backfillDeadline := time.Now().Add(sessionSummariesBackfillSlice)
 	watermark := ""
 	backfilled := 0
+	// 2026-09-22 252 SQL 日志审计轮：backfill 段先收紧 statement_timeout。
+	// 252 生产 llm_gateway 角色级 rolconfig=30s：chunk 在锁竞争下烧满 30s 才被
+	// 57014 击杀，每次 boot（ApplyMigrations ×2 attempts）各烧 30s，烧穿
+	// LLM_GATEWAY_DB_BOOT_RETRY_SECONDS 预算 → "postgres disabled" DB-less →
+	// 蓝绿部署 readyz 永不过（245 部署 blocker 实锤，600s 探针两轮不复收敛）。
+	// chunk 的设计语义本就是"竞争即快失败、下个 boot 续跑"——5s 快失败把
+	// miss 代价从 30s 降到 5s，静默 boot 上 chunk 照常完成推进水位。
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '5s'`); err != nil {
+		return err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -623,7 +787,8 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 
 	// 3) Archival indexes, built CONCURRENTLY so hot-path DML never blocks.
 	// The pinned conn raises statement_timeout for the build (shared PG
-	// default is 30s) and restores it before release.
+	// default is 30s) and restores it before release. The backfill phase
+	// above deliberately ran at 5s fast-fail; see the comment there.
 	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
 		return err
 	}
@@ -685,6 +850,589 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 		return fmt.Errorf("ensure session_summaries archival schema: %w", err)
 	}
 	slog.Info("session_summaries archival schema ensured", "backfilled_rows", backfilled)
+	return nil
+}
+
+// ensureSqlAuditPartialIndexes mirrors sql/migrations/startup/
+// 744_sql_audit_partial_indexes.sql（2026-09-24 252 SQL 日志审计第六轮）。
+//
+// 两个 30s 击杀循环的索引补课（证据：pg-252-pg17 45min 快照 + 真库
+// EXPLAIN ANALYZE，docs/audit/2026-09-24-252-sql-log-audit.md）：
+//   - session_aggregate_outbox done 行 TTL 清理（reaper trimDoneRows）对
+//     645MB 真库全表扫，45min ×255 次 med 4.2s、3 次击杀——(completed_at)
+//     WHERE status='done' 部分索引把子查询变成 completed_at 边界扫；
+//   - session_turns digest 回填空扫（digest IS NULL 无索引，视图实际
+//     hot + 全分区父表），backlog=0 仍要扫 68 万行证明空、45min ×6 击杀
+//     —— (ts, id) WHERE digest IS NULL 部分索引让空证明 O(1)。
+//
+// 分区父表走 727/728/729 同款三段式（PG17 分区父表不支持 CONCURRENTLY，
+// 42809）：逐分区 CONCURRENTLY → ONLY 壳 → ATTACH；未来月分区经
+// PARTITION OF 自动继承。CONCURRENTLY 无法在事务内执行，pinned 连接 +
+// 会话级 10min 预算（471/690 同款）；中断残留的 INVALID 索引先 DROP
+// 再建，否则 IF NOT EXISTS 永远跳过。
+
+// attachDigestNullChildrenSQL attaches each partition's digest-null index
+// only when that partition table has no child of the parent index yet.
+// Checking only the canonical name misses an already-attached alias and
+// then ATTACH fails the whole boot.
+const attachDigestNullChildrenSQL = `
+DO $$
+DECLARE part text;
+BEGIN
+  FOR part IN
+    SELECT c.relname
+    FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid
+    WHERE i.inhparent = 'public.session_turns'::regclass
+  LOOP
+    IF to_regclass(format('public.%I', part || '_digest_null_idx')) IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM pg_inherits ci
+         JOIN pg_class idx ON idx.oid = ci.inhrelid
+         JOIN pg_index ii ON ii.indexrelid = idx.oid
+         JOIN pg_class tbl ON tbl.oid = ii.indrelid
+         WHERE ci.inhparent = 'public.idx_session_turns_digest_null'::regclass
+           AND tbl.relname = part
+       ) THEN
+      EXECUTE format('ALTER INDEX public.idx_session_turns_digest_null ATTACH PARTITION public.%I',
+                     part || '_digest_null_idx');
+    END IF;
+  END LOOP;
+END $$;
+`
+
+func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
+	}()
+
+	// buildConcurrently checks indisvalid first: a cancelled CONCURRENTLY
+	// build leaves an INVALID index behind and plain IF NOT EXISTS would
+	// skip the rebuild forever.
+	buildConcurrently := func(index, table, ddl string) error {
+		var valid bool
+		err := conn.QueryRow(ctx, `
+			SELECT i.indisvalid
+			FROM pg_index i
+			JOIN pg_class c ON c.oid = i.indexrelid
+			JOIN pg_class t ON t.oid = i.indrelid
+			WHERE c.relname = $1 AND t.relname = $2
+			  AND t.relnamespace = 'public'::regnamespace
+		`, index, table).Scan(&valid)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// index absent: build it below
+		case err != nil:
+			return fmt.Errorf("inspect %s: %w", index, err)
+		case valid:
+			return nil
+		default:
+			slog.Warn("dropping INVALID index left by an interrupted build", "index", index)
+			if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS public.`+index); err != nil {
+				return fmt.Errorf("drop invalid %s: %w", index, err)
+			}
+		}
+		if _, err := conn.Exec(ctx, ddl); err != nil {
+			return fmt.Errorf("create %s: %w", index, err)
+		}
+		return nil
+	}
+
+	// A: outbox done-row TTL trim (reaper trimDoneRows 30s tick, 3 replicas).
+	if err := buildConcurrently("idx_session_aggregate_outbox_done_completed_at", "session_aggregate_outbox",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_aggregate_outbox_done_completed_at
+			ON public.session_aggregate_outbox (completed_at)
+			WHERE status = 'done'`); err != nil {
+		return err
+	}
+	// B hot side: digest backfill scan arm on session_turns_hot.
+	if err := buildConcurrently("idx_session_turns_hot_digest_null", "session_turns_hot",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_turns_hot_digest_null
+			ON public.session_turns_hot (ts, id)
+			WHERE digest IS NULL`); err != nil {
+		return err
+	}
+
+	// B partitioned side: per-partition CONCURRENTLY builds. Partitions are
+	// enumerated live (430's ensure_sessions_v2_partitions adds them over
+	// time); an empty partition builds instantly, 2026_09 (68 万行) is the
+	// only one that does real work on first run.
+	pRows, err := conn.Query(ctx, `
+		SELECT c.relname
+		FROM pg_inherits i
+		JOIN pg_class c ON c.oid = i.inhrelid
+		WHERE i.inhparent = 'public.session_turns'::regclass
+		ORDER BY c.relname
+	`)
+	if err != nil {
+		return fmt.Errorf("list session_turns partitions: %w", err)
+	}
+	partitions, err := pgx.CollectRows(pRows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("scan session_turns partitions: %w", err)
+	}
+	for _, part := range partitions {
+		idx := part + "_digest_null_idx"
+		// part/idx come from our own pg_class catalog (identifier-safe
+		// [a-z0-9_] names, same trust level as execDigestUpdate's table
+		// names), so %s interpolation matches the execDigestUpdate precedent.
+		if err := buildConcurrently(idx, part, fmt.Sprintf(
+			`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON public.%s (ts, id) WHERE digest IS NULL`,
+			idx, part)); err != nil {
+			return err
+		}
+	}
+
+	// Parent shell: ON ONLY = metadata only, no partition scans, no DML
+	// block beyond the momentary catalog lock. Future PARTITION OF tables
+	// inherit child indexes from this shell automatically.
+	if _, err := conn.Exec(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_session_turns_digest_null
+		  ON ONLY public.session_turns (ts, id) WHERE digest IS NULL
+	`); err != nil {
+		return fmt.Errorf("create idx_session_turns_digest_null shell: %w", err)
+	}
+	// ATTACH the pre-built children. A partition may already have an
+	// equivalent child under another name (2026-10-01: session_turns_2026_11
+	// was attached as session_turns_2026_11_ts_id_idx). Attaching a second
+	// index for the same partition fails with SQLSTATE 55000, and that error
+	// used to abort database startup. Skip when any child already covers the
+	// partition table.
+	if _, err := conn.Exec(ctx, attachDigestNullChildrenSQL); err != nil {
+		return fmt.Errorf("attach session_turns digest_null child indexes: %w", err)
+	}
+
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('744', 'sql audit partial indexes: outbox done trim + session_turns digest backfill')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 744: %w", err)
+	}
+	slog.Info("sql audit partial indexes ensured (744)",
+		"partitions", len(partitions))
+	return nil
+}
+
+// ensureReportSnapshots mirrors sql/migrations/startup/
+// 745_report_snapshots.sql + 746_report_snapshots_internal_dims.sql
+// （2026-09-24 对账报表设计切片；2026-09-25 内部对帐维度补齐，SSOT 见
+// sql/objects/tables/report_snapshots.sql）。
+//
+// report_snapshots 是日报快照表（scope×model×day 粒度，UNIQUE 四键支撑
+// ON CONFLICT 幂等回填）。消费方（bg/report_rollup_worker 写面、
+// admin/report_rollup 读面）已于 2026-09-25 落地；746 补 tenant_id
+// bigint→text（对齐 usage_facts 文本租户键）与 credits_charged /
+// latency_p50_ms / latency_p95_ms 三列。
+//
+// 幂等：information_schema 存在性短路（表在位零 DDL——CREATE TABLE 即使
+// no-op 也取表级锁，共享库持续写流下锁等待会撞 statement_timeout，见
+// columnsAllPresent 注释同因）；缺席才执行与迁移一致的 CREATE TABLE/INDEX
+// （新装直接建 746 后最终形状）。存量库升级走 columnsAllPresent 守卫——
+// 三列齐全则跳过 746 的 ALTER（ALTER TYPE 即使 no-op 也取 ACCESS
+// EXCLUSIVE 锁）；746 的 ALTER COLUMN ... USING tenant_id::text 本身可重
+// 入，零行表上锁窗口可忽略。账本戳照常执行（ON CONFLICT DO NOTHING 幂
+// 等），与 744 stamp 同款。
+func (d *DB) ensureReportSnapshots(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	var present bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'report_snapshots'
+		)
+	`).Scan(&present); err != nil {
+		return fmt.Errorf("inspect report_snapshots: %w", err)
+	}
+	if !present {
+		if _, err := d.pool.Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS report_snapshots (
+			    id                  BIGSERIAL PRIMARY KEY,
+			    scope               TEXT NOT NULL,
+			    scope_key           TEXT NOT NULL,
+			    report_date         DATE NOT NULL,
+			    raw_model_name      TEXT NOT NULL DEFAULT '',
+			    granularity         TEXT NOT NULL DEFAULT 'day',
+			    request_count       BIGINT NOT NULL DEFAULT 0,
+			    success_count       BIGINT NOT NULL DEFAULT 0,
+			    error_count         BIGINT NOT NULL DEFAULT 0,
+			    input_tokens        BIGINT NOT NULL DEFAULT 0,
+			    output_tokens       BIGINT NOT NULL DEFAULT 0,
+			    cache_read_tokens   BIGINT NOT NULL DEFAULT 0,
+			    cache_write_tokens  BIGINT NOT NULL DEFAULT 0,
+			    error_kind_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
+			    cache_hit_ratio     NUMERIC(6,4)
+			        CHECK (cache_hit_ratio IS NULL OR (cache_hit_ratio >= 0 AND cache_hit_ratio <= 1)),
+			    estimated_cost_cents BIGINT NOT NULL DEFAULT 0,
+			    currency            TEXT NOT NULL DEFAULT 'USD',
+			    price_snapshot      JSONB NOT NULL DEFAULT '{}'::jsonb,
+			    provider_id         BIGINT,
+			    canonical_id        BIGINT,
+			    tenant_id           TEXT,
+			    credential_id       BIGINT,
+			    api_key_id          BIGINT,
+			    person              TEXT,
+			    credits_charged     BIGINT NOT NULL DEFAULT 0,
+			    latency_p50_ms      BIGINT NOT NULL DEFAULT 0,
+			    latency_p95_ms      BIGINT NOT NULL DEFAULT 0,
+			    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+			    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+			    CONSTRAINT report_snapshots_scope_key_date_raw_model_key
+			        UNIQUE (scope, scope_key, report_date, raw_model_name)
+			);
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_scope_date
+			    ON report_snapshots (scope, report_date DESC);
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_grain_date
+			    ON report_snapshots (report_date) WHERE scope = 'daily_grain';
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_internal_grain_date
+			    ON report_snapshots (report_date) WHERE scope = 'internal_grain';
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_credential_date
+			    ON report_snapshots (credential_id, report_date DESC)
+			    WHERE scope IN ('daily_grain', 'internal_grain');
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_api_key_date
+			    ON report_snapshots (api_key_id, report_date DESC)
+			    WHERE scope IN ('daily_grain', 'internal_grain');
+		`); err != nil {
+			return fmt.Errorf("ensure report_snapshots: %w", err)
+		}
+	} else if !d.columnsAllPresent(ctx, "report_snapshots",
+		[]string{"credits_charged", "latency_p50_ms", "latency_p95_ms", "credential_id", "api_key_id", "person"}) {
+		// 存量库：tenant_id bigint→text + 746 三列 + 759 grain 三列补齐，
+		// 与 746/759 迁移体逐字等价（ALTER TYPE USING text::text 可重入）。
+		// 一条语句覆盖两轮：缺 746 列的库补六列，已补齐的库 ADD COLUMN IF
+		// NOT EXISTS 全部 no-op。
+		if _, err := d.pool.Exec(ctx, `
+			ALTER TABLE report_snapshots ALTER COLUMN tenant_id TYPE text USING tenant_id::text;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS credits_charged BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS latency_p50_ms BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS latency_p95_ms BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS credential_id BIGINT;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS api_key_id BIGINT;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS person TEXT;
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_grain_date
+			    ON report_snapshots (report_date) WHERE scope = 'daily_grain';
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_internal_grain_date
+			    ON report_snapshots (report_date) WHERE scope = 'internal_grain';
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_credential_date
+			    ON report_snapshots (credential_id, report_date DESC)
+			    WHERE scope IN ('daily_grain', 'internal_grain');
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_api_key_date
+			    ON report_snapshots (api_key_id, report_date DESC)
+			    WHERE scope IN ('daily_grain', 'internal_grain');
+		`); err != nil {
+			return fmt.Errorf("upgrade report_snapshots to 759: %w", err)
+		}
+	}
+	// R65：boot ensure 不执行迁移体尾部的 COMMENT——无论新建/升级/既有
+	// 健康库，幂等补齐列注释，使 col_description 与迁移直跑库一致。
+	if _, err := d.pool.Exec(ctx, `
+		COMMENT ON COLUMN report_snapshots.scope IS
+		    'daily_total | daily_by_provider | daily_by_model | internal_tenant | internal_person | internal_model | daily_grain | internal_grain; provider-facing scopes include all traffic classes, internal scopes are business traffic only. *_grain scopes carry the finest dimension tuple (provider/credential/api_key/tenant/person x outbound model) so the read face can fold any dimension combination';
+		COMMENT ON COLUMN report_snapshots.tenant_id IS
+		    'text tenant id (usage_facts.tenant_id); set for internal_tenant / internal_person / internal_model';
+		COMMENT ON COLUMN report_snapshots.credits_charged IS
+		    'internal billing credits summed from usage_facts.credits_charged (internal pricing caliber); money = credits * price_snapshot.cents_per_credit';
+		COMMENT ON COLUMN report_snapshots.credential_id IS
+		    'grain scopes only: usage_facts.credential_id (outbound provider credential)';
+		COMMENT ON COLUMN report_snapshots.api_key_id IS
+		    'grain scopes only: usage_facts.api_key_id (inbound gateway API key)';
+		COMMENT ON COLUMN report_snapshots.person IS
+		    'grain/internal_person scopes: usage_facts.end_user_id, falling back to ''person:''||person_hash then ''unknown''';
+	`); err != nil {
+		return fmt.Errorf("comment report_snapshots columns: %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('745', 'report snapshots: daily rollup snapshot table (design pre-placement)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 745: %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('746', 'report snapshots: internal reconciliation dims (tenant text + credits/latency)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 747: %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('759', 'report snapshots: grain dims (credential_id/api_key_id/person + daily_grain/internal_grain scopes)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 759: %w", err)
+	}
+	slog.Info("report_snapshots ensured (745+746)", "table_present_before", present)
+	return nil
+}
+
+// ensureSessionMirrorOutboxSourceClaim mirrors sql/migrations/startup/
+// 747_session_mirror_outbox_source_claim.sql（2026-09-25 252 SQL 日志审计
+// 第八轮，D12）。final-success claim 置位成功后在同一事务登记
+// source='claim' 的补偿行（telemetry registerFinalSuccessClaimOutbox），
+// CHECK 约束必须先于该写入包含 'claim'。幂等：约束定义已含 'claim' 时
+// 零 DDL（ALTER TABLE 取锁，持续写流下重复执行会撞 statement_timeout）。
+func (d *DB) ensureSessionMirrorOutboxSourceClaim(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	var def string
+	if err := d.pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid)
+		  FROM pg_constraint
+		 WHERE conrelid = 'public.session_mirror_outbox'::regclass
+		   AND conname = 'session_mirror_outbox_source_check'
+	`).Scan(&def); err == nil && strings.Contains(def, "'claim'") {
+		return nil
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("inspect session_mirror_outbox source check: %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.session_mirror_outbox
+		    DROP CONSTRAINT IF EXISTS session_mirror_outbox_source_check;
+		ALTER TABLE public.session_mirror_outbox
+		    ADD CONSTRAINT session_mirror_outbox_source_check
+		    CHECK (source IN ('hook', 'backfill', 'claim'));
+	`); err != nil {
+		return fmt.Errorf("apply 746 source check: %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('747', 'session_mirror_outbox source claim compensation (D12; renumbered from 746 after collision)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 747: %w", err)
+	}
+	slog.Info("session_mirror_outbox source claim ensured (746)")
+	return nil
+}
+
+// ensureUsageFactsOccurredAtIndex mirrors sql/migrations/startup/
+// 749_usage_facts_occurred_at_index.sql（2026-09-26 R67 24h 审计轮）。
+// usage_facts 每日 rollup 五查询 + stats 对账全是纯 occurred_at 范围条件，
+// 而 537 的 4 个二级索引全部非 occurred_at 前导——无索引可用即全表顺序
+// 扫，线性退化至被共享 PG 30s statement_timeout 成批击杀（rollup 缺口 +
+// 对账永久 failed）。分区父表不支持 CREATE INDEX CONCURRENTLY（PG17
+// 42809），走 744 同款三段式：逐分区 CONCURRENTLY → ONLY 壳 → ATTACH；
+// 未来接入按日分区后，新分区经 PARTITION OF 自动继承父索引。CONCURRENTLY
+// 无法在事务内执行，pinned 连接 + 会话级 10min 预算（744 同款）；中断
+// 残留的 INVALID 索引先 DROP 再建，否则 IF NOT EXISTS 永远跳过。本迁移
+// 不经 installer（psql --single-transaction 无法承载 CONCURRENTLY），
+// 本函数即存量库的收敛通道，先于 rollup/对账 worker 启动生效。
+func (d *DB) ensureUsageFactsOccurredAtIndex(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
+	}()
+
+	const parentIdx = "idx_usage_facts_occurred_at"
+	var valid bool
+	err = conn.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_class t ON t.oid = i.indrelid
+		WHERE c.relname = $1 AND t.relname = 'usage_facts'
+		  AND t.relnamespace = 'public'::regnamespace
+	`, parentIdx).Scan(&valid)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// 父索引不存在：走下方三段式。
+	case err != nil:
+		return fmt.Errorf("inspect %s: %w", parentIdx, err)
+	case valid:
+		return d.stampUsageFactsOccurredAtIndex(ctx)
+	default:
+		slog.Warn("dropping INVALID index left by an interrupted build", "index", parentIdx)
+		if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS public.`+parentIdx); err != nil {
+			return fmt.Errorf("drop invalid %s: %w", parentIdx, err)
+		}
+	}
+
+	// ① 逐分区 CONCURRENTLY 建（含现存 DEFAULT 分区，通用枚举不硬编码）。
+	rows, err := conn.Query(ctx, `
+		SELECT c.relname
+		FROM pg_class c
+		WHERE c.oid IN (
+			SELECT inhrelid FROM pg_inherits WHERE inhparent = 'public.usage_facts'::regclass
+		)
+		ORDER BY c.relname
+	`)
+	if err != nil {
+		return fmt.Errorf("enumerate usage_facts partitions: %w", err)
+	}
+	var parts []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan usage_facts partition name: %w", err)
+		}
+		parts = append(parts, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate usage_facts partitions: %w", err)
+	}
+	for _, p := range parts {
+		if err := buildUsageFactsPartitionIndex(ctx, conn, p+"_occurred_at_idx", p); err != nil {
+			return err
+		}
+	}
+
+	// ② 父表 ONLY 壳（元数据级瞬时锁，无数据扫描）。
+	if _, err := conn.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_usage_facts_occurred_at ON ONLY public.usage_facts (occurred_at DESC)`); err != nil {
+		return fmt.Errorf("create %s shell: %w", parentIdx, err)
+	}
+	// ③ 逐分区 ATTACH（已挂接的重复 ATTACH 报 42710，容错跳过）。
+	for _, p := range parts {
+		child := p + "_occurred_at_idx"
+		if _, err := conn.Exec(ctx, `ALTER INDEX public.`+parentIdx+` ATTACH PARTITION public.`+child); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "42710" {
+				continue
+			}
+			return fmt.Errorf("attach %s: %w", child, err)
+		}
+	}
+	return d.stampUsageFactsOccurredAtIndex(ctx)
+}
+
+// buildUsageFactsPartitionIndex 单分区 CONCURRENTLY 建 + INVALID 残留清理
+// （744 buildConcurrently 同款；抽取为包级函数以便 749 主循环复用）。
+func buildUsageFactsPartitionIndex(ctx context.Context, conn *pgxpool.Conn, index, table string) error {
+	var valid bool
+	err := conn.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_class t ON t.oid = i.indrelid
+		WHERE c.relname = $1 AND t.relname = $2
+		  AND t.relnamespace = 'public'::regnamespace
+	`, index, table).Scan(&valid)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// 索引不存在：下方重建。
+	case err != nil:
+		return fmt.Errorf("inspect %s: %w", index, err)
+	case valid:
+		return nil
+	default:
+		slog.Warn("dropping INVALID index left by an interrupted build", "index", index)
+		if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS public.`+index); err != nil {
+			return fmt.Errorf("drop invalid %s: %w", index, err)
+		}
+	}
+	if _, err := conn.Exec(ctx, `CREATE INDEX CONCURRENTLY IF NOT EXISTS `+index+` ON public.`+table+` (occurred_at DESC)`); err != nil {
+		return fmt.Errorf("create %s: %w", index, err)
+	}
+	return nil
+}
+
+func (d *DB) stampUsageFactsOccurredAtIndex(ctx context.Context) error {
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('749', 'usage_facts occurred_at leading index (R67 24h audit round; rollup/reconciliation full-scan fix)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 749: %w", err)
+	}
+	slog.Info("usage_facts occurred_at index ensured (749)")
+	return nil
+}
+
+// ensureUsageFactsDailyPartition mirrors sql/migrations/startup/
+// 750_usage_facts_daily_partition.sql（2026-09-26 R68 24h 审计轮）。
+// usage_facts 是 PARTITION BY RANGE (occurred_at) 的分区父表（537），
+// 此前仅 DEFAULT 单分区，partition pruning 不可用，rollup/reconciliation
+// 五查询（即使 749 索引就位）仍退化为 DEFAULT 全表扫。750 安装
+// ensure_usage_facts_daily_partition(p_date DATE) 函数并预建当日+次日
+// 具体 RANGE 分区，DEFAULT 保留作历史 catch-all。PartitionManager
+// 24h tick 后续按 ensureSpecs 接管当日/次日预建，本函数仅首启兜底
+// （与 749 ensureUsageFactsOccurredAtIndex 同款；psql --single-transaction
+// 同样不能承载 CREATE TABLE PARTITION OF 因为 schema_migrations 在
+// transaction 内看不到 autocommit DDL）。
+//
+// 安全：DEFAULT 与具体 RANGE 分区共存合法（PG 17 已验证 scratch 真库）；
+// 函数体为搬移后挂接（move-then-attach，2026-09-26 当日修订审计 P1）：
+// advisory xact 锁串行化并发 ensure，LIKE INCLUDING INDEXES 建独立承接表，
+// AE 锁 DEFAULT 后把界内行 DELETE…RETURNING 搬入新表再 ATTACH——存量
+// 库当日行先落 DEFAULT 的场景不再触发 PG 的 default-partition 约束拒绝
+// （该拒绝会经本函数把 boot 打进 no-DB 模式）。全步骤同事务，失败整体
+// 回滚；同一日历日连调两次经 pg_inherits 短路幂等。
+func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	// 1. 751（R69 12h 审计轮）：函数级时区钉扎，覆盖 750 函数 DECLARE
+	//    初始化器里 p_date::timestamptz 的会话时区依赖（UTC 会话会产出
+	//    与 Shanghai 日边界错位 8h 的分区窗口）。proconfig 在函数入口
+	//    生效、先于 DECLARE 初始器——694 先例的对偶（body 内 SET LOCAL
+	//    不覆盖初始器，函数级 SET 覆盖）。幂等 ALTER，boot 每次收敛；
+	//    本 ensure 是存量库的收敛通道（installer/upgrade 通道由 751
+	//    迁移文件承担，双通道同语句）。
+	if _, err := d.pool.Exec(ctx, `
+		ALTER FUNCTION public.ensure_usage_facts_daily_partition(DATE)
+		    SET timezone = 'Asia/Shanghai';
+	`); err != nil {
+		// 函数未安装：让 750 升级通道先走（pgx 端函数不存在会 42883）。
+		// 不预创建函数本身以避免与 startup migration 文件发散——migration
+		// 是 canonical 真相源，本函数仅调用现有对象。
+		return fmt.Errorf("pin ensure_usage_facts_daily_partition timezone (751): %w", err)
+	}
+	// 2. 创建当日 + 次日分区（autocommit；partition_manager 24h tick 已
+	//    接管后续预建，bg/partition_manager.go ensureSpecs）。日期派生从
+	//    current_date（随会话时区）改为显式 Shanghai 日历，与 tick 的
+	//    partitionTZ 同源——否则 UTC 会话 boot 时会为"UTC 的今天"建分区。
+	if _, err := d.pool.Exec(ctx,
+		`SELECT ensure_usage_facts_daily_partition((now() AT TIME ZONE 'Asia/Shanghai')::date)`); err != nil {
+		return fmt.Errorf("ensure_usage_facts_daily_partition(shanghai today): %w", err)
+	}
+	if _, err := d.pool.Exec(ctx,
+		`SELECT ensure_usage_facts_daily_partition(((now() AT TIME ZONE 'Asia/Shanghai')::date) + 1)`); err != nil {
+		return fmt.Errorf("ensure_usage_facts_daily_partition(shanghai tomorrow): %w", err)
+	}
+	// 3. 盖 750 章（stamp 与 canonical migration 内容对齐）。
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('750', 'usage_facts daily partition function + today/tomorrow prebuild (R68 24h audit round; partition pruning enabled for rollup/reconciliation)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 750: %w", err)
+	}
+	// 4. 盖 751 章（时区钉扎已随步骤 1 生效）。
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('751', 'usage_facts daily partition timezone pin (R69 12h audit round; boundary casts pinned to Asia/Shanghai at function entry)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 751: %w", err)
+	}
+	slog.Info("usage_facts daily partition ensured (750+751)")
 	return nil
 }
 
@@ -1111,22 +1859,36 @@ func (d *DB) ensureRequestJourneyObservationSchema(ctx context.Context) error {
 			WHERE status = 'processing'`,
 		`CREATE INDEX IF NOT EXISTS idx_request_journey_observation_outbox_tenant
 			ON request_journey_observation_outbox (tenant_id, created_at)`,
-		`ALTER TABLE request_journey_observation_outbox ENABLE ROW LEVEL SECURITY`,
-		`ALTER TABLE request_journey_observation_outbox FORCE ROW LEVEL SECURITY`,
-		`DROP POLICY IF EXISTS request_journey_observation_outbox_tenant_isolation
-			ON request_journey_observation_outbox`,
-		`CREATE POLICY request_journey_observation_outbox_tenant_isolation
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：outbox 是共享库热表，下面 6 条
+	// ENABLE/FORCE RLS + DROP/CREATE POLICY 每-boot 都要排 ACCESS EXCLUSIVE
+	// 锁队列（烧点家族同病）。仅当 RLS(含 FORCE)已启用 且 两条策略的存储
+	// 定义（pg_policies.qual/with_check）与期望 SQL 体规范化后完全等价时才
+	// 整段跳过；任何定义漂移回落原路径（策略演进照常落库）。
+	outboxPolicyDDLs := []string{`
+		CREATE POLICY request_journey_observation_outbox_tenant_isolation
 			ON request_journey_observation_outbox
 			USING (tenant_id = current_setting('app.current_tenant', true)::TEXT)
-			WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::TEXT)`,
-		`DROP POLICY IF EXISTS request_journey_observation_outbox_super_admin_bypass
-			ON request_journey_observation_outbox`,
-		`CREATE POLICY request_journey_observation_outbox_super_admin_bypass
+			WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::TEXT)`, `
+		CREATE POLICY request_journey_observation_outbox_super_admin_bypass
 			ON request_journey_observation_outbox
 			USING (current_setting('app.current_role', true) = 'super_admin'
 				OR current_setting('app.bypass_rls', true) = 'true')
 			WITH CHECK (current_setting('app.current_role', true) = 'super_admin'
 				OR current_setting('app.bypass_rls', true) = 'true')`,
+	}
+	if d.rlsPoliciesCurrent(ctx, "request_journey_observation_outbox", true, outboxPolicyDDLs) {
+		slog.Info("request journey observation outbox RLS ensured (policy definition short-circuit)")
+	} else {
+		statements = append(statements,
+			`ALTER TABLE request_journey_observation_outbox ENABLE ROW LEVEL SECURITY`,
+			`ALTER TABLE request_journey_observation_outbox FORCE ROW LEVEL SECURITY`,
+			`DROP POLICY IF EXISTS request_journey_observation_outbox_tenant_isolation
+			ON request_journey_observation_outbox`,
+			outboxPolicyDDLs[0],
+			`DROP POLICY IF EXISTS request_journey_observation_outbox_super_admin_bypass
+			ON request_journey_observation_outbox`,
+			outboxPolicyDDLs[1])
 	}
 	for _, statement := range statements {
 		if _, err := d.pool.Exec(ctx, statement); err != nil {
@@ -1197,20 +1959,31 @@ func (d *DB) ensureJournalSnapshotReceiptSchema(ctx context.Context) error {
 			WHERE status = 'processing'`,
 		`CREATE INDEX IF NOT EXISTS idx_journal_snapshot_receipts_tenant
 			ON public.journal_snapshot_receipts (tenant_id, updated_at DESC)`,
-		`ALTER TABLE public.journal_snapshot_receipts ENABLE ROW LEVEL SECURITY`,
-		`ALTER TABLE public.journal_snapshot_receipts FORCE ROW LEVEL SECURITY`,
-		`DROP POLICY IF EXISTS journal_snapshot_receipts_tenant_isolation ON public.journal_snapshot_receipts`,
-		`CREATE POLICY journal_snapshot_receipts_tenant_isolation
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：同 outbox——receipts 走共享库热路径，
+	// RLS(含 FORCE)+策略 6 条在定义等价时整段跳过，漂移回落原路径。
+	receiptPolicyDDLs := []string{`
+		CREATE POLICY journal_snapshot_receipts_tenant_isolation
 			ON public.journal_snapshot_receipts
 			USING (tenant_id = current_setting('app.current_tenant', true)::TEXT)
-			WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::TEXT)`,
-		`DROP POLICY IF EXISTS journal_snapshot_receipts_super_admin_bypass ON public.journal_snapshot_receipts`,
-		`CREATE POLICY journal_snapshot_receipts_super_admin_bypass
+			WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::TEXT)`, `
+		CREATE POLICY journal_snapshot_receipts_super_admin_bypass
 			ON public.journal_snapshot_receipts
 			USING (current_setting('app.current_role', true) = 'super_admin'
 				OR current_setting('app.bypass_rls', true) = 'true')
 			WITH CHECK (current_setting('app.current_role', true) = 'super_admin'
 				OR current_setting('app.bypass_rls', true) = 'true')`,
+	}
+	if d.rlsPoliciesCurrent(ctx, "journal_snapshot_receipts", true, receiptPolicyDDLs) {
+		slog.Info("journal snapshot receipts RLS ensured (policy definition short-circuit)")
+	} else {
+		statements = append(statements,
+			`ALTER TABLE public.journal_snapshot_receipts ENABLE ROW LEVEL SECURITY`,
+			`ALTER TABLE public.journal_snapshot_receipts FORCE ROW LEVEL SECURITY`,
+			`DROP POLICY IF EXISTS journal_snapshot_receipts_tenant_isolation ON public.journal_snapshot_receipts`,
+			receiptPolicyDDLs[0],
+			`DROP POLICY IF EXISTS journal_snapshot_receipts_super_admin_bypass ON public.journal_snapshot_receipts`,
+			receiptPolicyDDLs[1])
 	}
 	for _, statement := range statements {
 		if _, err := d.pool.Exec(ctx, statement); err != nil {
@@ -1223,6 +1996,67 @@ func (d *DB) ensureJournalSnapshotReceiptSchema(ctx context.Context) error {
 func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
+	}
+	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
+	// 实证）：下方 ADD COLUMN IF NOT EXISTS 即使全部列已存在，也要对
+	// request_logs 父表 + 全部月分区取 ACCESS EXCLUSIVE 锁才能逐列 no-op。
+	// 晨间负载下锁等待超角色级 statement_timeout=30s 被 57014 击杀，boot 重试
+	// 撞同一堵墙（烧点不可推进）→ retry_budget 烧穿 → postgres disabled →
+	// readyz 永不过 → 部署安全网回滚。information_schema/pg_indexes 短路：
+	// 期望列与索引全部在位 = 零 DDL 零锁。清单必须与下方 ensure 体逐项同步
+	// （新增列/索引时两处一起改）；任一缺失走原路径，新环境语义不变。
+	const catalogShortCircuitSQL = `
+		SELECT
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'gw_session_id','gw_task_id','request_status','api_key_prefix',
+		     'api_key_owner_user','application_code','parent_request_id',
+		     'compression_reason','compression_strategy','compression_meta',
+		     'outbound_body','outbound_msg_count','outbound_token_est',
+		     'outbound_msg_hashes','quality_flags','quality_fix_actions',
+		     'quality_score','client_request_id','upstream_finish_reason',
+		     'tool_calls','t0_arrived_at','t1_total_enqueued_at',
+		     't2_total_dequeued_at','t3_model_enqueued_at','t4_model_dequeued_at',
+		     't5_cred_enqueued_at','t6_cred_dequeued_at','t7_forward_start_at',
+		     't8_response_start_at','t9_response_end_at','is_final_success'
+		   ]) AS want(name)
+		   WHERE to_regclass('public.request_logs') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		       WHERE table_schema='public' AND table_name='request_logs'
+		         AND column_name = want.name))
+		+
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     't0_arrived_at','t1_total_enqueued_at','t2_total_dequeued_at',
+		     't3_model_enqueued_at','t4_model_dequeued_at','t5_cred_enqueued_at',
+		     't6_cred_dequeued_at','t7_forward_start_at','t8_response_start_at',
+		     't9_response_end_at','is_final_success'
+		   ]) AS want(name)
+		   WHERE to_regclass('public.request_logs_hot') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		       WHERE table_schema='public' AND table_name='request_logs_hot'
+		         AND column_name = want.name))
+		+
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'idx_request_logs_gw_session_ts','idx_request_logs_gw_task_ts',
+		     'idx_request_logs_status_ts','idx_request_logs_parent_ts',
+		     'idx_request_logs_client_request_id','idx_request_logs_session_outbound',
+		     'idx_request_logs_outbound_msg_count','idx_request_logs_quality_flags',
+		     'idx_request_logs_provider_quality','idx_request_logs_upstream_finish_reason',
+		     'idx_request_logs_tool_calls','idx_request_logs_provider_tool_calls',
+		     'uq_request_logs_hot_final_success_session'
+		   ]) AS want(name)
+		   WHERE NOT EXISTS (
+		     SELECT 1 FROM pg_indexes
+		     WHERE schemaname='public' AND indexname = want.name))
+		`
+	var missing int
+	if err := d.pool.QueryRow(ctx, catalogShortCircuitSQL).Scan(&missing); err == nil && missing == 0 {
+		slog.Info("request_logs schema ensured (catalog short-circuit: all columns and indexes present, zero DDL)")
+		return nil
+	} else if err != nil {
+		// 探测失败不阻断：回落原 ensure 路径（其自含幂等）。
+		slog.Warn("request_logs ensure catalog probe failed; falling back to full ensure", "error", err)
 	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE request_logs
@@ -1514,6 +2348,23 @@ func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余：8 列全部在位时跳过 credentials ALTER（ACCESS EXCLUSIVE 锁
+	// 等待是 boot 烧点，见 columnsAllPresent 注）；701 stamp 幂等照常执行。
+	if d.columnsAllPresent(ctx, "credentials", []string{
+		"balance_floor_usd", "quota_floor_tokens", "quota_floor_percent",
+		"plan_quota_kind", "plan_quota_windows", "plan_quota_remaining_tokens",
+		"plan_quota_used_percent", "plan_quota_checked_at",
+	}) {
+		if _, err := d.pool.Exec(ctx, `
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('701', 'credential balance-floor + plan quota sensing columns')
+			ON CONFLICT (version) DO NOTHING;
+		`); err != nil {
+			return err
+		}
+		slog.Info("credential balance-floor schema ensured (migration 701, catalog short-circuit)")
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE credentials
 		    ADD COLUMN IF NOT EXISTS balance_floor_usd numeric(14,6);
@@ -1560,6 +2411,18 @@ func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 // 更），末尾按 701/703 定式补记 schema_migrations 账本 stamp（已 stamp 时为 no-op）。
 func (d *DB) ensureCredentialPlanQuotaProbeBackoff(ctx context.Context) error {
 	if d == nil || d.pool == nil {
+		return nil
+	}
+	// D1 残余：同 701——列在位时跳过 credentials ALTER，704 stamp 照常。
+	if d.columnsAllPresent(ctx, "credentials", []string{"plan_quota_probe_failed_at"}) {
+		if _, err := d.pool.Exec(ctx, `
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('704', 'plan quota probe failure backoff stamp (credentials.plan_quota_probe_failed_at)')
+			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+		`); err != nil {
+			return err
+		}
+		slog.Info("credential plan-quota probe backoff schema ensured (migration 704, catalog short-circuit)")
 		return nil
 	}
 	_, err := d.pool.Exec(ctx, `
@@ -1628,6 +2491,55 @@ func (d *DB) ensureTaskTypeCorrections(ctx context.Context) error {
 // 在 PG 上不可执行（从未在任何库生效）；ApplySuggestions 原 ON CONFLICT
 // 按 202609_02 的 COALESCE(tenant_id,”) 推断，在 V370 真表上 42P10——
 // apply 端点在有表库上报 500、无表库上报 503，两头都死。本 ensure 与
+// ensureRoleTaskLLMMapping mirrors sql/migrations/startup/
+// 730_session_role_hierarchy.sql §2 —— R48 会话角色×任务类型 LLM 路由配置表。
+// R50 审计（F17 收口）：bg/role_llm_router_refresher 每分钟轮询该表，但
+// ApplyMigrations 主通道此前零 ensure——缺表环境（如只跑过旧快照的库）每分钟
+// 42P01 Warn 且 DB 覆盖静默失效（SelectLLM 回退 builtin 表）。对齐 724
+// ensureTaskTypeCorrections 先例补"二进制启动即生效"的自愈。
+// 注意：刻意**不**写 schema_migrations('730')——本 ensure 只覆盖迁移的
+// 第 2 节（映射表），sessions 三列/种子/provider_models 修正仍属 730 通道
+// 职责；标记整迁移已应用会让通道跳过 730 文件造成缺列。
+// 幂等：CREATE TABLE / INDEX IF NOT EXISTS，已应用库上为 no-op（种子不在此
+// 重复——730 的 ON CONFLICT DO NOTHING 种子由通道负责）。
+func (d *DB) ensureRoleTaskLLMMapping(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS public.role_task_llm_mapping (
+			    id                 BIGSERIAL PRIMARY KEY,
+			    tenant_id          VARCHAR(255),
+			    agent_role         TEXT NOT NULL,
+			    task_kind          TEXT NOT NULL,
+			    llm_canonical_name TEXT NOT NULL,
+			    priority           INT  NOT NULL DEFAULT 100,
+			    enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+			    note               TEXT,
+			    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			    CONSTRAINT role_task_llm_mapping_role_check
+			        CHECK (agent_role IN ('main', 'orchestrator', 'planner', 'worker', 'unknown')),
+			    CONSTRAINT role_task_llm_mapping_kind_check
+			        CHECK (task_kind IN ('search', 'summarize', 'git_ops', 'ops', 'analysis', 'planning', 'solution', 'unknown')),
+			    CONSTRAINT role_task_llm_mapping_unique
+			        UNIQUE NULLS NOT DISTINCT (tenant_id, agent_role, task_kind, priority)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_role_task_llm_mapping_lookup
+			    ON public.role_task_llm_mapping (tenant_id, agent_role, task_kind, enabled, priority)
+			    WHERE enabled = TRUE;
+
+			COMMENT ON TABLE public.role_task_llm_mapping IS
+			    '730/R48: 按 agent_role × task_kind 的二维 LLM 路由配置（priority 升序为偏好顺序，SelectLLM 依次尝试首个在候选池中的模型）。';
+		`)
+	if err != nil {
+		return err
+	}
+	slog.Info("role_task_llm_mapping schema ensured (migration 730 §2)")
+	return nil
+}
+
 // ensureTaskTypeCorrections 同"二进制启动即生效"模式补齐 V370 形态。
 // 幂等：CREATE ... IF NOT EXISTS / DO NOTHING，已有行与运维改动不被覆盖。
 func (d *DB) ensureTaskTypeTierConfig(ctx context.Context) error {
@@ -2178,6 +3090,13 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：request_logs / request_logs_hot 上的
+	// ADD COLUMN IF NOT EXISTS，列全在位时跳过（245 seq 2199 boot 在此 57014
+	// 实锤；同 columnsAllPresent 注）。
+	if d.columnsAllPresent(ctx, "request_logs_hot", []string{"task_type", "origin_stage", "origin_actor"}) &&
+		d.columnsAllPresent(ctx, "request_logs", []string{"task_type", "origin_stage", "origin_actor"}) {
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE IF EXISTS request_logs_hot
 		    ADD COLUMN IF NOT EXISTS task_type TEXT,
@@ -2494,16 +3413,26 @@ func (d *DB) ensureOrchestrationRuntimeInstancesSchema(ctx context.Context) erro
 		  RETURN NEW;
 		END;
 		$$ LANGUAGE plpgsql;
-
-		DROP TRIGGER IF EXISTS trg_orchestration_runtime_instances_updated_at
-		  ON orchestration_runtime_instances;
-
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure orchestration_runtime_instances schema: %w", err)
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：updated_at 触发器存储定义
+	// （pg_get_triggerdef）与期望等价时跳过 DROP+CREATE；漂移回落原路径。
+	orchTriggerDDL := `
 		CREATE TRIGGER trg_orchestration_runtime_instances_updated_at
 		  BEFORE UPDATE ON orchestration_runtime_instances
 		  FOR EACH ROW
-		  EXECUTE FUNCTION update_orchestration_runtime_instances_updated_at();
-	`)
-	if err != nil {
+		  EXECUTE FUNCTION update_orchestration_runtime_instances_updated_at()`
+	if d.triggersCurrent(ctx, "orchestration_runtime_instances", []string{orchTriggerDDL}) {
+		slog.Info("orchestration_runtime_instances schema ensured (migration 664, trigger definition short-circuit)")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, `
+		DROP TRIGGER IF EXISTS trg_orchestration_runtime_instances_updated_at
+		  ON orchestration_runtime_instances;
+		`+orchTriggerDDL+`;
+	`); err != nil {
 		return fmt.Errorf("ensure orchestration_runtime_instances schema: %w", err)
 	}
 	slog.Info("orchestration_runtime_instances schema ensured (migration 664)")
@@ -2611,11 +3540,34 @@ func (d *DB) EnsureUsersTable(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// R60 S6-1（2026-09-23）定义感知守卫：users 在认证热路径上，
+	// tenant_isolation_users 的 DROP+CREATE 每-boot 排 ACCESS EXCLUSIVE。
+	// RLS 已启用且存储定义与 usersPolicyDDL 规范化等价时跳过（存在性守卫
+	// 不够——策略演进必须能落库，故比较 pg_policies.qual 规范形）。
+	// R61（2026-09-24）：ENABLE RLS 一并移入 miss 分支——rlsPoliciesCurrent
+	// 已含 relrowsecurity 位检查，命中即 RLS+policy 双双到位；ALTER TABLE
+	// 即使 no-op 也排 ACCESS EXCLUSIVE，不再每-boot 无条件执行。
+	if d.rlsPoliciesCurrent(ctx, "users", false, []string{usersPolicyDDL}) {
+		slog.Info("users schema ensured (policy definition short-circuit)")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, `ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;`); err != nil {
+		return err
+	}
+	if _, err := d.pool.Exec(ctx, `DROP POLICY IF EXISTS tenant_isolation_users ON public.users;`); err != nil {
+		return err
+	}
+	if _, err := d.pool.Exec(ctx, usersPolicyDDL); err != nil {
+		return err
+	}
 	slog.Info("users schema ensured")
 	return nil
 }
 
 // usersSchemaSQL mirrors db/migrations/001_users_table.sql for startup apply.
+// R60 S6-1：tenant_isolation_users 策略拆出为 usersPolicyDDL（守卫与执行
+// 单一来源）。R61：ENABLE RLS 同步移入守卫 miss 分支（ALTER TABLE 排
+// ACCESS EXCLUSIVE，不留在无条件段）。
 const usersSchemaSQL = `
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -2634,11 +3586,11 @@ CREATE TABLE IF NOT EXISTS users (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation_users ON public.users;
-CREATE POLICY tenant_isolation_users ON public.users
-  USING ((tenant_id)::text = (public.get_current_tenant())::text);
 `
+
+// usersPolicyDDL —— tenant_isolation_users 期望定义（守卫与执行的单一来源）。
+const usersPolicyDDL = `CREATE POLICY tenant_isolation_users ON public.users
+  USING ((tenant_id)::text = (public.get_current_tenant())::text)`
 
 // workTypeSchemaSQL mirrors db/migrations/002_work_types.sql for startup apply.
 const workTypeSchemaSQL = `
@@ -3118,6 +4070,24 @@ func (d *DB) ensureTuningSignalsViews(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：CREATE MATERIALIZED VIEW IF NOT EXISTS
+	// 对既有 matview 也要取检查锁，admin 面频繁读 5m/daily 时锁等待不小
+	// （245 seq 2207 boot 实测本步 27s）。两个 matview + 4 索引全在位时跳过。
+	var tuningMissing int
+	if err := d.pool.QueryRow(ctx, `
+		SELECT count(*) FROM (SELECT 1) AS one
+		WHERE to_regclass('public.tuning_signals_5m') IS NULL
+		   OR to_regclass('public.tuning_signals_daily') IS NULL
+		   OR (SELECT count(*) FROM unnest(ARRAY[
+		         'idx_tuning_signals_5m_pk','idx_tuning_signals_5m_task_ts',
+		         'idx_tuning_signals_daily_pk','idx_tuning_signals_daily_task_ts'
+		       ]) AS want(name)
+		       WHERE NOT EXISTS (SELECT 1 FROM pg_indexes
+		         WHERE schemaname='public' AND indexname = want.name)) > 0
+	`).Scan(&tuningMissing); err == nil && tuningMissing == 0 {
+		slog.Info("tuning_signals views ensured (catalog short-circuit)")
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		-- 5-minute bucket materialised view.
 		--   bucket = date_trunc('hour', ts) + (minute/5) * '5 minutes'
@@ -3293,13 +4263,24 @@ func (d *DB) ensureRoutingOverridesAudit(ctx context.Context) error {
 		    RETURN NULL;
 		END;
 		$$ LANGUAGE plpgsql;
-
-		DROP TRIGGER IF EXISTS routing_overrides_audit_trg ON routing_overrides;
-		CREATE TRIGGER routing_overrides_audit_trg
-			AFTER INSERT OR UPDATE OR DELETE ON routing_overrides
-			FOR EACH ROW EXECUTE FUNCTION routing_overrides_audit_fn();
 	`)
 	if err != nil {
+		return err
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：审计触发器存储定义
+	// （pg_get_triggerdef）与期望等价时跳过 DROP+CREATE；漂移回落原路径。
+	roTriggerDDL := `
+		CREATE TRIGGER routing_overrides_audit_trg
+			AFTER INSERT OR UPDATE OR DELETE ON routing_overrides
+			FOR EACH ROW EXECUTE FUNCTION routing_overrides_audit_fn()`
+	if d.triggersCurrent(ctx, "routing_overrides", []string{roTriggerDDL}) {
+		slog.Info("routing_overrides_audit ensured (table + 3 indexes + trigger, trigger definition short-circuit)")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, `
+		DROP TRIGGER IF EXISTS routing_overrides_audit_trg ON routing_overrides;
+		`+roTriggerDDL+`;
+	`); err != nil {
 		return err
 	}
 	slog.Info("routing_overrides_audit ensured (table + 3 indexes + trigger)")
@@ -3357,15 +4338,33 @@ func (d *DB) ensureResponseFormatAnomaliesSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_unresolved
 			ON response_format_anomalies(detected_at DESC)
 			WHERE NOT resolved;
-		ALTER TABLE response_format_anomalies ENABLE ROW LEVEL SECURITY;
-		DROP POLICY IF EXISTS response_format_anomalies_tenant_isolation ON public.response_format_anomalies;
+	`)
+	if err != nil {
+		return err
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：RLS 已启用且两条策略存储定义与
+	// 期望等价时跳过 ENABLE+DROP+CREATE 块；漂移回落原路径。
+	rfaPolicyDDLs := []string{`
 			CREATE POLICY response_format_anomalies_tenant_isolation ON public.response_format_anomalies
 				USING (tenant_id = public.get_current_tenant())
-				WITH CHECK (tenant_id = public.get_current_tenant());
+				WITH CHECK (tenant_id = public.get_current_tenant())`, `
+			CREATE POLICY response_format_anomalies_super_admin ON public.response_format_anomalies
+				USING (current_setting('app.bypass_rls', true) = 'true')
+				WITH CHECK (current_setting('app.bypass_rls', true) = 'true')`,
+	}
+	policyBlock := ""
+	if d.rlsPoliciesCurrent(ctx, "response_format_anomalies", false, rfaPolicyDDLs) {
+		slog.Info("response_format_anomalies RLS ensured (policy definition short-circuit)")
+	} else {
+		policyBlock = `
+		ALTER TABLE response_format_anomalies ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS response_format_anomalies_tenant_isolation ON public.response_format_anomalies;
+		` + rfaPolicyDDLs[0] + `;
 		DROP POLICY IF EXISTS response_format_anomalies_super_admin ON public.response_format_anomalies;
-		CREATE POLICY response_format_anomalies_super_admin ON public.response_format_anomalies
-			USING (current_setting('app.bypass_rls', true) = 'true')
-			WITH CHECK (current_setting('app.bypass_rls', true) = 'true');
+		` + rfaPolicyDDLs[1] + `;
+		`
+	}
+	if _, err := d.pool.Exec(ctx, policyBlock+`
 		CREATE OR REPLACE VIEW v_format_anomaly_summary AS
 		SELECT
 			DATE_TRUNC('hour', detected_at) AS hour,
@@ -3382,8 +4381,7 @@ func (d *DB) ensureResponseFormatAnomaliesSchema(ctx context.Context) error {
 		FROM response_format_anomalies
 		WHERE detected_at > NOW() - INTERVAL '7 days'
 		GROUP BY 1, 2, 3, 4, 5;
-	`)
-	if err != nil {
+	`); err != nil {
 		return err
 	}
 	slog.Info("response_format_anomalies schema ensured")
@@ -3442,8 +4440,14 @@ func (d *DB) ensureModelIntegrityEventsSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_model_integrity_events_bridge
 			ON model_integrity_events(resolved, ts, anomaly_type, severity)
 			WHERE NOT resolved;
-		ALTER TABLE model_integrity_events ENABLE ROW LEVEL SECURITY;
-		DROP POLICY IF EXISTS model_integrity_events_tenant_isolation ON public.model_integrity_events;
+	`)
+	if err != nil {
+		return err
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：RLS 已启用且策略存储定义与期望
+	// 等价时跳过 ENABLE+DROP+CREATE（ENABLE 本身也要排 ACCESS EXCLUSIVE）；
+	// 漂移回落原路径（策略演进照常落库）。
+	miePolicyDDLs := []string{`
 		CREATE POLICY model_integrity_events_tenant_isolation ON public.model_integrity_events
 			USING (
 				tenant_id IS NULL
@@ -3452,14 +4456,27 @@ func (d *DB) ensureModelIntegrityEventsSchema(ctx context.Context) error {
 			WITH CHECK (
 				tenant_id IS NULL
 				OR tenant_id = public.get_current_tenant()
-			);
-		DROP POLICY IF EXISTS model_integrity_events_super_admin ON public.model_integrity_events;
+			)`, `
 		CREATE POLICY model_integrity_events_super_admin ON public.model_integrity_events
 			USING (current_setting('app.bypass_rls', true) = 'true')
-			WITH CHECK (current_setting('app.bypass_rls', true) = 'true');
-	`)
-	if err != nil {
-		return err
+			WITH CHECK (current_setting('app.bypass_rls', true) = 'true')`,
+	}
+	policyBlock := ""
+	if d.rlsPoliciesCurrent(ctx, "model_integrity_events", false, miePolicyDDLs) {
+		slog.Info("model_integrity_events RLS ensured (policy definition short-circuit)")
+	} else {
+		policyBlock = `
+		ALTER TABLE model_integrity_events ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS model_integrity_events_tenant_isolation ON public.model_integrity_events;
+		` + miePolicyDDLs[0] + `;
+		DROP POLICY IF EXISTS model_integrity_events_super_admin ON public.model_integrity_events;
+		` + miePolicyDDLs[1] + `;
+		`
+	}
+	if policyBlock != "" {
+		if _, err := d.pool.Exec(ctx, policyBlock); err != nil {
+			return err
+		}
 	}
 	slog.Info("model_integrity_events schema ensured")
 	return nil
@@ -3917,29 +4934,82 @@ func (d *DB) ensureNodeProbeTriggerKindSchema(ctx context.Context) error {
 	}
 	_, err := d.pool.Exec(ctx, `
 		DO $$
+		DECLARE
+			v_def text;
 		BEGIN
 			IF to_regclass('public.node_probe_runs') IS NOT NULL THEN
-				ALTER TABLE public.node_probe_runs
-					DROP CONSTRAINT IF EXISTS node_probe_runs_trigger_kind_check;
-				ALTER TABLE public.node_probe_runs
-					ADD CONSTRAINT node_probe_runs_trigger_kind_check CHECK (
-						trigger_kind IN (
-							'request_failure', 'manual', 'credential_recovery',
-							'sync_request', 'periodic', 'admin',
-							'integrity_probe_planner', 'selfcheck', 'external_async'
-						)
-					);
+				SELECT pg_get_constraintdef(c.oid) INTO v_def
+				FROM pg_constraint c
+				WHERE c.conname = 'node_probe_runs_trigger_kind_check'
+				  AND c.conrelid = 'public.node_probe_runs'::regclass;
+
+				-- 2026-09-23 审计轮守卫的修正（round 43）：原守卫只问
+				-- 「是否存在同名约束」。存量部署带着**旧值域**的约束时该判断为
+				-- 真，于是 DROP+ADD 整段被跳过 —— 恰好在需要升级的那批部署上
+				-- 不升级，且静默无日志。DBTestEnsureNodeProbeTriggerKindSchemaUpgradesLegacyChecks
+				-- 正是为此而红：它 seed 旧 CHECK 后断言值域被放宽。
+				--
+				-- 现在改为比较**定义**：定义里已含全部预期字面量才跳过，
+				-- 既保留「已正确则不做 DDL」的性能意图（纯 catalog 读取，不全表
+				-- 校验、不持 ACCESS EXCLUSIVE），又让存量升级路径真正生效。
+				IF v_def IS NULL THEN
+					-- 无约束：全新安装，直接建。
+					ALTER TABLE public.node_probe_runs
+						ADD CONSTRAINT node_probe_runs_trigger_kind_check CHECK (
+							trigger_kind IN (
+								'request_failure', 'manual', 'credential_recovery',
+								'sync_request', 'periodic', 'admin',
+								'integrity_probe_planner', 'selfcheck', 'external_async'
+							)
+						);
+				ELSIF NOT (
+					v_def LIKE '%request_failure%'    AND v_def LIKE '%manual%'
+					AND v_def LIKE '%credential_recovery%' AND v_def LIKE '%sync_request%'
+					AND v_def LIKE '%periodic%'      AND v_def LIKE '%admin%'
+					AND v_def LIKE '%integrity_probe_planner%' AND v_def LIKE '%selfcheck%'
+					AND v_def LIKE '%external_async%'
+				) THEN
+					ALTER TABLE public.node_probe_runs
+						DROP CONSTRAINT IF EXISTS node_probe_runs_trigger_kind_check;
+					ALTER TABLE public.node_probe_runs
+						ADD CONSTRAINT node_probe_runs_trigger_kind_check CHECK (
+							trigger_kind IN (
+								'request_failure', 'manual', 'credential_recovery',
+								'sync_request', 'periodic', 'admin',
+								'integrity_probe_planner', 'selfcheck', 'external_async'
+							)
+						);
+				END IF;
 			END IF;
 			IF to_regclass('public.credential_probe_queue') IS NOT NULL THEN
-				ALTER TABLE public.credential_probe_queue
-					DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
-				ALTER TABLE public.credential_probe_queue
-					ADD CONSTRAINT credential_probe_queue_source_check CHECK (
-						source IN (
-							'request_failure', 'periodic', 'external_async', 'admin',
-							'integrity_probe_planner', 'selfcheck'
-						)
-					);
+				SELECT pg_get_constraintdef(c.oid) INTO v_def
+				FROM pg_constraint c
+				WHERE c.conname = 'credential_probe_queue_source_check'
+				  AND c.conrelid = 'public.credential_probe_queue'::regclass;
+
+				IF v_def IS NULL THEN
+					ALTER TABLE public.credential_probe_queue
+						ADD CONSTRAINT credential_probe_queue_source_check CHECK (
+							source IN (
+								'request_failure', 'periodic', 'external_async', 'admin',
+								'integrity_probe_planner', 'selfcheck'
+							)
+						);
+				ELSIF NOT (
+					v_def LIKE '%request_failure%'   AND v_def LIKE '%periodic%'
+					AND v_def LIKE '%external_async%' AND v_def LIKE '%admin%'
+					AND v_def LIKE '%integrity_probe_planner%' AND v_def LIKE '%selfcheck%'
+				) THEN
+					ALTER TABLE public.credential_probe_queue
+						DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
+					ALTER TABLE public.credential_probe_queue
+						ADD CONSTRAINT credential_probe_queue_source_check CHECK (
+							source IN (
+								'request_failure', 'periodic', 'external_async', 'admin',
+								'integrity_probe_planner', 'selfcheck'
+							)
+						);
+				END IF;
 			END IF;
 		END
 		$$;
@@ -3964,7 +5034,21 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
+	// R60 S6-1（2026-09-23）定义感知守卫：两张表的 RLS 策略与审计触发器
+	// 拆为三段守卫块，存储定义（pg_policies.qual / pg_get_triggerdef）与
+	// 期望等价时跳过；漂移回落原 DROP+CREATE 路径。
+	tmpPolicyDDL := `
+		CREATE POLICY tenant_isolation_tmp ON public.tenant_model_policies
+		    USING ((tenant_id)::text = (public.get_current_tenant())::text)`
+	tmpAuditPolicyDDL := `
+		CREATE POLICY tenant_isolation_tmp_audit ON public.tenant_model_policies_audit
+		    USING ((tenant_id)::text = (public.get_current_tenant())::text
+		           OR (tenant_id) IS NULL)`
+	tmpAuditTriggerDDL := `
+		CREATE TRIGGER tenant_model_policies_audit_trg
+		    AFTER INSERT OR UPDATE OR DELETE ON tenant_model_policies
+		    FOR EACH ROW EXECUTE FUNCTION tenant_model_policies_audit_fn()`
+	sql := `
 		CREATE TABLE IF NOT EXISTS tenant_model_policies (
 		    id              BIGSERIAL PRIMARY KEY,
 		    tenant_id       VARCHAR(64) NOT NULL REFERENCES tenants(code) ON DELETE CASCADE,
@@ -3982,12 +5066,17 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 		    ON tenant_model_policies (tenant_id) WHERE deleted_at IS NULL;
 		CREATE INDEX IF NOT EXISTS idx_tmp_canonical
 		    ON tenant_model_policies (canonical_name);
-
+`
+	if d.rlsPoliciesCurrent(ctx, "tenant_model_policies", false, []string{tmpPolicyDDL}) {
+		slog.Info("tenant_model_policies RLS ensured (policy definition short-circuit)")
+	} else {
+		sql += `
 		ALTER TABLE tenant_model_policies ENABLE ROW LEVEL SECURITY;
 		DROP POLICY IF EXISTS tenant_isolation_tmp ON public.tenant_model_policies;
-		CREATE POLICY tenant_isolation_tmp ON public.tenant_model_policies
-		    USING ((tenant_id)::text = (public.get_current_tenant())::text);
-
+		` + tmpPolicyDDL + `;
+`
+	}
+	sql += `
 		CREATE OR REPLACE VIEW tenant_model_policies_active AS
 		    SELECT id, tenant_id, canonical_name, reason, created_by,
 		           created_at, updated_at
@@ -4006,12 +5095,17 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_tmp_audit_ts ON tenant_model_policies_audit (ts DESC);
 		CREATE INDEX IF NOT EXISTS idx_tmp_audit_tenant_ts ON tenant_model_policies_audit (tenant_id, ts DESC);
+`
+	if d.rlsPoliciesCurrent(ctx, "tenant_model_policies_audit", false, []string{tmpAuditPolicyDDL}) {
+		slog.Info("tenant_model_policies_audit RLS ensured (policy definition short-circuit)")
+	} else {
+		sql += `
 		ALTER TABLE tenant_model_policies_audit ENABLE ROW LEVEL SECURITY;
 		DROP POLICY IF EXISTS tenant_isolation_tmp_audit ON public.tenant_model_policies_audit;
-		CREATE POLICY tenant_isolation_tmp_audit ON public.tenant_model_policies_audit
-		    USING ((tenant_id)::text = (public.get_current_tenant())::text
-		           OR (tenant_id) IS NULL);
-
+		` + tmpAuditPolicyDDL + `;
+`
+	}
+	sql += `
 		CREATE OR REPLACE FUNCTION tenant_model_policies_audit_fn()
 		RETURNS TRIGGER AS $$
 		DECLARE
@@ -4037,7 +5131,7 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 		                INSERT INTO tenant_model_policies_audit
 		                    (action, policy_id, tenant_id, canonical_name, reason, actor)
 		                VALUES
-		                    ('delete', NEW.id, NEW.tenant_id, NEW.canonical_name, OLD.reason, v_actor);
+		                    ('delete', NEW.id, NEW.tenant_id, NEW.canonical_name, NEW.reason, v_actor);
 		            END IF;
 		        ELSIF NEW.reason IS DISTINCT FROM OLD.reason
 		              OR NEW.canonical_name IS DISTINCT FROM OLD.canonical_name
@@ -4058,12 +5152,16 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 		    RETURN NULL;
 		END;
 		$$ LANGUAGE plpgsql;
-
+`
+	if d.triggersCurrent(ctx, "tenant_model_policies", []string{tmpAuditTriggerDDL}) {
+		slog.Info("tenant_model_policies audit trigger ensured (trigger definition short-circuit)")
+	} else {
+		sql += `
 		DROP TRIGGER IF EXISTS tenant_model_policies_audit_trg ON tenant_model_policies;
-		CREATE TRIGGER tenant_model_policies_audit_trg
-		    AFTER INSERT OR UPDATE OR DELETE ON tenant_model_policies
-		    FOR EACH ROW EXECUTE FUNCTION tenant_model_policies_audit_fn();
-	`)
+		` + tmpAuditTriggerDDL + `;
+`
+	}
+	_, err := d.pool.Exec(ctx, sql)
 	if err != nil {
 		return err
 	}
@@ -4079,54 +5177,68 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 // five pre-existing tenant-scoped tables and the cross-tenant
 // defense-in-depth guarantee is missing in production.
 //
-// Idempotent (DROP POLICY IF EXISTS guard).  We do NOT modify the
-// original migrations; this function applies the same CREATE
-// POLICY statements that 026_supplemental_rls.sql contains so the
-// linter and the live DB stay in sync even if the .sql file
-// never gets re-applied.
+// Idempotent (definition-guarded since R60 S6-1, 2026-09-23): per-table
+// ENABLE RLS + DROP/CREATE POLICY blocks are skipped when the stored policy
+// definition (pg_policies.qual) is canonically equal to the expected one —
+// existence checks alone would strand policy evolution on existing installs.
+// Any drift replays the original block; final state is identical either way.
 func (d *DB) ensureSupplementalRLS(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
-			ALTER TABLE tenant_settings_kv ENABLE ROW LEVEL SECURITY;
-			DROP POLICY IF EXISTS tenant_isolation_tenant_settings_kv ON public.tenant_settings_kv;
+	specs := []struct {
+		table string
+		ddl   string
+	}{
+		{"tenant_settings_kv", `
 			CREATE POLICY tenant_isolation_tenant_settings_kv ON public.tenant_settings_kv
-			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
-
-			ALTER TABLE settings_audit ENABLE ROW LEVEL SECURITY;
-			DROP POLICY IF EXISTS tenant_isolation_settings_audit ON public.settings_audit;
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text)`},
+		{"settings_audit", `
 			CREATE POLICY tenant_isolation_settings_audit ON public.settings_audit
 			    USING ((tenant_id)::text = (public.get_current_tenant())::text
-			           OR (tenant_id) IS NULL);
-
-			ALTER TABLE tenant_tool_policies ENABLE ROW LEVEL SECURITY;
-			DROP POLICY IF EXISTS tenant_isolation_tenant_tool_policies ON public.tenant_tool_policies;
+			           OR (tenant_id) IS NULL)`},
+		{"tenant_tool_policies", `
 			CREATE POLICY tenant_isolation_tenant_tool_policies ON public.tenant_tool_policies
-			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
-
-			ALTER TABLE tool_call_events ENABLE ROW LEVEL SECURITY;
-			DROP POLICY IF EXISTS tenant_isolation_tool_call_events ON public.tool_call_events;
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text)`},
+		{"tool_call_events", `
 			CREATE POLICY tenant_isolation_tool_call_events ON public.tool_call_events
-			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
-
-			ALTER TABLE tool_usage_stats ENABLE ROW LEVEL SECURITY;
-			DROP POLICY IF EXISTS tenant_isolation_tool_usage_stats ON public.tool_usage_stats;
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text)`},
+		{"tool_usage_stats", `
 			CREATE POLICY tenant_isolation_tool_usage_stats ON public.tool_usage_stats
-			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
-
-			-- 2026-06-21 audit: tool_registry also has tenant_id column
-			-- (added in 028_tool_registry_extensions.sql) but no RLS policy.
-			-- Without RLS, any tenant can SELECT/INSERT/UPDATE another tenant's
-			-- tool_registry rows. Idempotent: drop-if-exists + recreate.
-			ALTER TABLE tool_registry ENABLE ROW LEVEL SECURITY;
-			DROP POLICY IF EXISTS tenant_isolation_tool_registry ON public.tool_registry;
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text)`},
+		// 2026-06-21 audit: tool_registry also has tenant_id column
+		// (added in 028_tool_registry_extensions.sql) but no RLS policy.
+		// Without RLS, any tenant can SELECT/INSERT/UPDATE another tenant's
+		// tool_registry rows.
+		{"tool_registry", `
 			CREATE POLICY tenant_isolation_tool_registry ON public.tool_registry
 			    USING ((tenant_id)::text = (public.get_current_tenant())::text
-			           OR (tenant_id) IS NULL OR (tenant_id) = 'default');
-		`)
-	if err != nil {
-		return err
+			           OR (tenant_id) IS NULL OR (tenant_id) = 'default')`},
+	}
+	sql := ""
+	skipped := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		if d.rlsPoliciesCurrent(ctx, spec.table, false, []string{spec.ddl}) {
+			skipped = append(skipped, spec.table)
+			continue
+		}
+		def, err := parsePolicyDDL(spec.ddl)
+		if err != nil {
+			// 解析失败不可能发生（单测覆盖全部 6 条）；退回命名约定，
+			// 保证 fail-open 路径仍有可执行的 DROP。
+			slog.Warn("supplemental RLS: policy DDL parse failed; falling back to naming convention", "table", spec.table, "error", err)
+			def = policyDef{Name: "tenant_isolation_" + spec.table, Schema: "public", Table: spec.table}
+		}
+		drop := fmt.Sprintf("DROP POLICY IF EXISTS %s ON public.%s", def.Name, def.Table)
+		sql += fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY;\n%s;\n%s;\n", spec.table, drop, spec.ddl)
+	}
+	if sql != "" {
+		if _, err := d.pool.Exec(ctx, sql); err != nil {
+			return err
+		}
+	}
+	if len(skipped) > 0 {
+		slog.Info("supplemental RLS ensured (policy definition short-circuit)", "skipped_tables", strings.Join(skipped, ","))
 	}
 	slog.Info("supplemental RLS ensured (tenant_settings_kv, settings_audit, tenant_tool_policies, tool_call_events, tool_usage_stats, tool_registry)")
 	return nil
@@ -4163,6 +5275,21 @@ func (d *DB) ensureAnalysisEventsRLS(ctx context.Context) error {
 			slog.Warn("analysis_events RLS: table does not exist (skipping)", "table", tbl)
 			continue
 		}
+		// R60 S6-1（2026-09-23）定义感知守卫：RLS 已启用且两条策略存储定义
+		// 与期望等价时整段跳过（ENABLE RLS 也要排 ACCESS EXCLUSIVE）；漂移
+		// 回落原路径。
+		shortName := strings.Replace(tbl[7:], ".", "_", 1)
+		aeTenantDDL := fmt.Sprintf(`CREATE POLICY tenant_isolation_%s ON %s
+		    USING ((tenant_id)::text = (public.get_current_tenant())::text)`, shortName, tbl)
+		aeSuperDDL := fmt.Sprintf(`CREATE POLICY %s_super_admin_bypass ON %s
+		    USING (
+		        current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    )`, shortName, tbl)
+		if d.rlsPoliciesCurrent(ctx, shortName, false, []string{aeTenantDDL, aeSuperDDL}) {
+			slog.Info("analysis_events RLS ensured (policy definition short-circuit)", "table", tbl)
+			continue
+		}
 		if _, err := d.pool.Exec(ctx, fmt.Sprintf(`
 			ALTER TABLE %s ENABLE ROW LEVEL SECURITY;
 			DROP POLICY IF EXISTS tenant_isolation_%s ON %s;
@@ -4174,7 +5301,7 @@ func (d *DB) ensureAnalysisEventsRLS(ctx context.Context) error {
 			        current_setting('app.current_role', true) = 'super_admin'
 			        OR current_setting('app.bypass_rls', true) = 'true'
 			    );
-		`, tbl, strings.Replace(tbl[7:], ".", "_", 1), tbl, strings.Replace(tbl[7:], ".", "_", 1), tbl, strings.Replace(tbl[7:], ".", "_", 1), tbl, strings.Replace(tbl[7:], ".", "_", 1), tbl)); err != nil {
+		`, tbl, shortName, tbl, shortName, tbl, shortName, tbl, shortName, tbl)); err != nil {
 			slog.Warn("analysis_events RLS: apply failed", "table", tbl, "error", err)
 		} else {
 			slog.Info("analysis_events RLS ensured", "table", tbl)
@@ -4264,6 +5391,22 @@ func (d *DB) ensureCredentialColumns(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：credentials 热表 ALTER/UPDATE 家族守卫——
+	// 245 seq 2200 boot 实测本步 15s 锁等待（预算 75s 吃掉 1/5）。列、表、
+	// 索引全在位时跳过（backfill UPDATE 的 IS NULL 谓词在成熟库为空集）。
+	if d.columnsAllPresent(ctx, "credentials", []string{"concurrency_limit_auto"}) {
+		var have int
+		if err := d.pool.QueryRow(ctx, `
+			SELECT count(*) FROM (
+			  SELECT 1 WHERE to_regclass('public.credential_model_call_history') IS NULL
+			  UNION ALL
+			  SELECT 1 FROM unnest(ARRAY['idx_call_history_cred_time','idx_call_history_model_time']) AS want(name)
+			  WHERE NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname=want.name)
+			) t`).Scan(&have); err == nil && have == 0 {
+			slog.Info("credential columns ensured (catalog short-circuit)")
+			return nil
+		}
+	}
 	_, err := d.pool.Exec(ctx, `
 		-- 034: credentials.concurrency_limit_auto
 		ALTER TABLE credentials
@@ -4341,6 +5484,18 @@ func (d *DB) ensureCredentialColumns(ctx context.Context) error {
 func (d *DB) ensureFpSlotLimit(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
+	}
+	// D1 残余：credentials.fp_slot_limit + system_identity_pool 全在位时跳过
+	// （245 seq 2200 boot 实测本步 10s 锁等待；同 columnsAllPresent 守卫族）。
+	if d.columnsAllPresent(ctx, "credentials", []string{"fp_slot_limit"}) {
+		var missingTable int
+		if err := d.pool.QueryRow(ctx,
+			`SELECT count(*) FROM (SELECT 1) AS one
+			 WHERE to_regclass('public.system_identity_pool') IS NULL`,
+		).Scan(&missingTable); err == nil && missingTable == 0 {
+			slog.Info("fp_slot_limit schema ensured (catalog short-circuit)")
+			return nil
+		}
 	}
 	_, err := d.pool.Exec(ctx, `
 		-- 036: credentials.fp_slot_limit (fingerprint slot pool size,
@@ -4420,6 +5575,14 @@ func (d *DB) ensureConcurrencyMode(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余：4 列全在位时跳过（245 seq 2200 boot 实测本步 10s 锁等待；
+	// backfill UPDATE 的 IS NULL 谓词在成熟库为空集，同守卫族）。
+	if d.columnsAllPresent(ctx, "credentials", []string{
+		"concurrency_mode", "tpm_limit", "max_queue_depth", "max_queue_wait_ms",
+	}) {
+		slog.Info("concurrency_mode schema ensured (catalog short-circuit)")
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE credentials ADD COLUMN IF NOT EXISTS concurrency_mode TEXT;
 		ALTER TABLE credentials ADD COLUMN IF NOT EXISTS tpm_limit INT;
@@ -4474,6 +5637,66 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：本 ensure 含 credentials 的 ALTER + 4 个
+	// DROP/CREATE TRIGGER，每条都要排 credentials 的 ACCESS EXCLUSIVE 锁队列
+	// （154 seq 2204/2205 boot 实测本步 1m22s）。序列、函数、触发器、revision
+	// 列全部在位时整体跳过——清单与下方 DDL 同步。
+	// R60 S6-1（2026-09-23）：原触发器守卫只查 tgname 存在（存在性守卫），
+	// 定义漂移（WHEN/UPDATE OF 列清单/函数变更）会永远落不到存量安装——现补
+	// pg_get_triggerdef 定义比对，4 条全等价才短路，任一漂移回落全量 ensure。
+	const governorBumpTriggerDDL = `
+		CREATE TRIGGER trg_bump_credentials_governor_revision
+		BEFORE INSERT OR UPDATE OF concurrency_limit, concurrency_mode, rpm_limit,
+			tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms
+		ON public.credentials FOR EACH ROW
+		EXECUTE FUNCTION public.bump_credentials_governor_revision()`
+	const governorNotifyInsertTriggerDDL = `
+		CREATE TRIGGER trg_notify_credentials_governor_revision_insert
+		AFTER INSERT ON public.credentials FOR EACH ROW
+		EXECUTE FUNCTION public.notify_credentials_governor_revision()`
+	const governorNotifyUpdateTriggerDDL = `
+		CREATE TRIGGER trg_notify_credentials_governor_revision_update
+		AFTER UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit,
+			fp_slot_limit, max_queue_depth, max_queue_wait_ms
+		ON public.credentials FOR EACH ROW
+		WHEN (OLD.revision IS DISTINCT FROM NEW.revision)
+		EXECUTE FUNCTION public.notify_credentials_governor_revision()`
+	const governorAutoRouteTriggerDDL = `
+		CREATE TRIGGER trg_notify_auto_route_creds
+		AFTER UPDATE OF status, availability_state, quota_state, circuit_state,
+			concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit,
+			max_queue_depth, max_queue_wait_ms, lifecycle_status, manual_disabled
+		ON public.credentials FOR EACH ROW
+		WHEN (OLD.* IS DISTINCT FROM NEW.*)
+		EXECUTE FUNCTION public.notify_auto_route_refresh()`
+	governorTriggerDDLs := []string{
+		governorBumpTriggerDDL, governorNotifyInsertTriggerDDL,
+		governorNotifyUpdateTriggerDDL, governorAutoRouteTriggerDDL,
+	}
+	const governorGuardSQL = `
+		SELECT count(*) FROM (SELECT 1) AS one
+		WHERE to_regclass('public.credentials') IS NULL
+		   OR NOT EXISTS (SELECT 1 FROM information_schema.columns
+		     WHERE table_schema='public' AND table_name='credentials'
+		       AND column_name='revision')
+		   OR to_regclass('public.credentials_governor_revision_seq') IS NULL
+		   OR to_regprocedure('public.bump_credentials_governor_revision()') IS NULL
+		   OR to_regprocedure('public.notify_credentials_governor_revision()') IS NULL
+		   OR (SELECT count(*) FROM pg_trigger
+		     WHERE tgrelid = 'public.credentials'::regclass AND NOT tgisinternal
+		       AND tgname IN ('trg_bump_credentials_governor_revision',
+		         'trg_notify_credentials_governor_revision_insert',
+		         'trg_notify_credentials_governor_revision_update',
+		         'trg_notify_auto_route_creds')) < 4
+		`
+	var governorMissing int
+	if err := d.pool.QueryRow(ctx, governorGuardSQL).Scan(&governorMissing); err == nil && governorMissing == 0 &&
+		d.triggersCurrent(ctx, "credentials", governorTriggerDDLs) {
+		slog.Info("credential governor revision schema ensured (catalog short-circuit)")
+		return nil
+	} else if err != nil {
+		slog.Warn("credential governor revision catalog probe failed; falling back to full ensure", "error", err)
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE public.credentials
 			ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
@@ -4522,33 +5745,16 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 		$$;
 
 		DROP TRIGGER IF EXISTS trg_bump_credentials_governor_revision ON public.credentials;
-		CREATE TRIGGER trg_bump_credentials_governor_revision
-		BEFORE INSERT OR UPDATE OF concurrency_limit, concurrency_mode, rpm_limit,
-			tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms
-		ON public.credentials FOR EACH ROW
-		EXECUTE FUNCTION public.bump_credentials_governor_revision();
+		`+governorBumpTriggerDDL+`;
 
 		DROP TRIGGER IF EXISTS trg_notify_credentials_governor_revision_insert ON public.credentials;
-		CREATE TRIGGER trg_notify_credentials_governor_revision_insert
-		AFTER INSERT ON public.credentials FOR EACH ROW
-		EXECUTE FUNCTION public.notify_credentials_governor_revision();
+		`+governorNotifyInsertTriggerDDL+`;
 
 		DROP TRIGGER IF EXISTS trg_notify_credentials_governor_revision_update ON public.credentials;
-		CREATE TRIGGER trg_notify_credentials_governor_revision_update
-		AFTER UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit,
-			fp_slot_limit, max_queue_depth, max_queue_wait_ms
-		ON public.credentials FOR EACH ROW
-		WHEN (OLD.revision IS DISTINCT FROM NEW.revision)
-		EXECUTE FUNCTION public.notify_credentials_governor_revision();
+		`+governorNotifyUpdateTriggerDDL+`;
 
 		DROP TRIGGER IF EXISTS trg_notify_auto_route_creds ON public.credentials;
-		CREATE TRIGGER trg_notify_auto_route_creds
-		AFTER UPDATE OF status, availability_state, quota_state, circuit_state,
-			concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit,
-			max_queue_depth, max_queue_wait_ms, lifecycle_status, manual_disabled
-		ON public.credentials FOR EACH ROW
-		WHEN (OLD.* IS DISTINCT FROM NEW.*)
-		EXECUTE FUNCTION public.notify_auto_route_refresh();
+		`+governorAutoRouteTriggerDDL+`;
 	`)
 	if err != nil {
 		return err
@@ -4574,15 +5780,50 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 //
 // Runs at startup via ensureSchema so every gateway instance converges on the
 // same function definition without a separate migration runner.
+// recentSuccessRateExistsSQL 探测 recent_success_rate(bigint,text,int,int)
+// 的精确 4 参签名。R69：提为包级常量供 TestRecentSuccessRateExistsSQLShape
+// 钉形状——pronargtypes 拼写错误（09-23 引入、09-27 修复）之所以存活，
+// 正因为没有任何测试断言这条 SQL，错误分支静默走"每 boot DROP+CREATE"。
+// proargtypes 的 oidvector 20 25 23 23 = (int8, text, int4, int4)；
+// pronargtypes 在 pg_proc 中不存在（只有计数列 pronargs）。
+const recentSuccessRateExistsSQL = `
+		SELECT count(*) FROM (SELECT 1) AS one
+		WHERE NOT EXISTS (SELECT 1 FROM pg_proc p
+		  JOIN pg_namespace n ON n.oid = p.pronamespace
+		  WHERE n.nspname = 'public'
+		    AND p.proname = 'recent_success_rate'
+		    AND p.proargtypes = '20 25 23 23'::oidvector)
+	`
+
 func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE IF EXISTS request_logs_hot
-		    ADD COLUMN IF NOT EXISTS task_type TEXT,
-		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32);
-
+	// D1 残余（2026-09-23 审计轮）：request_logs_hot 是最热大表，列全在位时
+	// no-op ALTER ... ADD COLUMN IF NOT EXISTS 仍要取 ACCESS EXCLUSIVE 锁才能
+	// 逐列确认；共享 252 PG 持续写流下锁等待烧穿 applyMigrationsOnce 的 3min
+	// 预算（245 seq 2221 boot 实证：attempt1 15:02:36 governor revision 后
+	// 挂 156s → 15:05:12 context deadline exceeded；attempt2 同点位被探针
+	// 击杀）。列在位 → 跳过 ALTER；4 参签名在位 → 跳过 DROP（CREATE OR
+	// REPLACE 始终执行，保持函数体与代码同步，锁窗口毫秒级）；backfill
+	// UPDATE 保留——成熟库空集毫秒级通过，有真实 broken_confirmed 行时是
+	// 必须执行的数据回填，不可短路。
+	if !d.columnsAllPresent(ctx, "request_logs_hot", []string{"task_type", "origin_stage"}) {
+		if _, err := d.pool.Exec(ctx, `
+			ALTER TABLE IF EXISTS request_logs_hot
+			    ADD COLUMN IF NOT EXISTS task_type TEXT,
+			    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32);
+		`); err != nil {
+			return err
+		}
+	} else {
+		slog.Info("request_logs_hot task_type/origin_stage columns ensured (catalog short-circuit)")
+	}
+	var fnMissing int
+	if err := d.pool.QueryRow(ctx, recentSuccessRateExistsSQL).Scan(&fnMissing); err != nil {
+		fnMissing = 1 // 探测出错走保守路径（含 DROP），自含幂等
+	}
+	if _, err := d.pool.Exec(ctx, `
 		-- (1) Backfill broken_confirmed → binding available=FALSE.
 		UPDATE credential_model_bindings cmb
 		SET available          = FALSE,
@@ -4599,15 +5840,25 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		        AND mps.raw_model_name = pm.raw_model_name
 		        AND mps.state = 'broken_confirmed'
 		  );
-
-		-- (2) recent_success_rate helper. DROP+CREATE keeps the body in sync
-		--     with the live hot-table source even if a prior deploy left an
-		--     older body. request_logs only receives promoted rows, so using it
-		--     for the default 3-hour window yields samples=0 by design.
-		--     2026-06-23: Add p_window_hours parameter for time-based windowing.
-		DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int);
-		DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int, int);
-		CREATE FUNCTION recent_success_rate(p_credential_id BIGINT,
+	`); err != nil {
+		return err
+	}
+	// (2) recent_success_rate helper. Body is re-synced on every boot via
+	//     CREATE OR REPLACE; the legacy 3-arg signature is dropped only while
+	//     the 4-arg one is absent (signature migration window). request_logs
+	//     only receives promoted rows, so using it for the default 3-hour
+	//     window yields samples=0 by design.
+	//     2026-06-23: Add p_window_hours parameter for time-based windowing.
+	if fnMissing > 0 {
+		if _, err := d.pool.Exec(ctx, `
+			DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int);
+			DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int, int);
+		`); err != nil {
+			return err
+		}
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION recent_success_rate(p_credential_id BIGINT,
 		                                    p_raw_model     TEXT,
 		                                    p_sample_n      INT DEFAULT 50,
 		                                    p_window_hours  INT DEFAULT 3)
@@ -4647,6 +5898,20 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 func (d *DB) ensureUnavailableRecoverAtSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
+	}
+	// D1 残余（2026-09-23 审计轮）：credential_model_bindings 是高频 UPDATE
+	// 热表，245 seq 2207 boot 实测本步 27.6s 锁等待——列 + 索引全在位时跳过
+	// （backfill UPDATE 的 IS NULL 谓词在成熟库为空集）。
+	if d.columnsAllPresent(ctx, "credential_model_bindings", []string{"unavailable_recover_at"}) {
+		var missingIdx int
+		if err := d.pool.QueryRow(ctx, `
+			SELECT count(*) FROM (SELECT 1) AS one
+			WHERE NOT EXISTS (SELECT 1 FROM pg_indexes
+			  WHERE schemaname='public' AND indexname='idx_cmb_unavailable_recover_at')
+		`).Scan(&missingIdx); err == nil && missingIdx == 0 {
+			slog.Info("unavailable_recover_at schema ensured (catalog short-circuit)")
+			return nil
+		}
 	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE credential_model_bindings ADD COLUMN IF NOT EXISTS unavailable_recover_at TIMESTAMPTZ;
@@ -4910,7 +6175,12 @@ func (d *DB) ensureVibeCodingSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
+	// R60 S6-1（2026-09-23）定义感知守卫：每表 RLS 块（ENABLE + DROP/CREATE
+	// POLICY）在存储定义与期望等价时跳过；漂移回落原路径。
+	vibeTables := []struct {
+		table, short, base, ddl string
+	}{
+		{"vibe_coding_projects", "vcp", `
 		CREATE TABLE IF NOT EXISTS vibe_coding_projects (
 			id              BIGSERIAL PRIMARY KEY,
 			tenant_id       TEXT NOT NULL DEFAULT 'default',
@@ -4927,11 +6197,10 @@ func (d *DB) ensureVibeCodingSchema(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS vcp_tenant ON vibe_coding_projects (tenant_id);
 		CREATE INDEX IF NOT EXISTS vcp_status ON vibe_coding_projects (status);
-		ALTER TABLE vibe_coding_projects ENABLE ROW LEVEL SECURITY;
-		DROP POLICY IF EXISTS tenant_isolation_vcp ON public.vibe_coding_projects;
+		`, `
 		CREATE POLICY tenant_isolation_vcp ON public.vibe_coding_projects
-			USING ((tenant_id)::text = (public.get_current_tenant())::text);
-
+			USING ((tenant_id)::text = (public.get_current_tenant())::text)`},
+		{"vibe_coding_sessions", "vcs", `
 		CREATE TABLE IF NOT EXISTS vibe_coding_sessions (
 			id              BIGSERIAL PRIMARY KEY,
 			project_id      BIGINT REFERENCES vibe_coding_projects(id) ON DELETE SET NULL,
@@ -4948,11 +6217,10 @@ func (d *DB) ensureVibeCodingSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS vcs_project ON vibe_coding_sessions (project_id);
 		CREATE INDEX IF NOT EXISTS vcs_session ON vibe_coding_sessions (session_id);
 		CREATE INDEX IF NOT EXISTS vcs_tenant ON vibe_coding_sessions (tenant_id, created_at DESC);
-		ALTER TABLE vibe_coding_sessions ENABLE ROW LEVEL SECURITY;
-		DROP POLICY IF EXISTS tenant_isolation_vcs ON public.vibe_coding_sessions;
+		`, `
 		CREATE POLICY tenant_isolation_vcs ON public.vibe_coding_sessions
-			USING ((tenant_id)::text = (public.get_current_tenant())::text);
-
+			USING ((tenant_id)::text = (public.get_current_tenant())::text)`},
+		{"vibe_code_reviews", "vcr", `
 		CREATE TABLE IF NOT EXISTS vibe_code_reviews (
 			id              BIGSERIAL PRIMARY KEY,
 			session_id      BIGINT REFERENCES vibe_coding_sessions(id) ON DELETE SET NULL,
@@ -4966,13 +6234,27 @@ func (d *DB) ensureVibeCodingSchema(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS vcr_session ON vibe_code_reviews (session_id);
 		CREATE INDEX IF NOT EXISTS vcr_tenant ON vibe_code_reviews (tenant_id, created_at DESC);
-		ALTER TABLE vibe_code_reviews ENABLE ROW LEVEL SECURITY;
-		DROP POLICY IF EXISTS tenant_isolation_vcr ON public.vibe_code_reviews;
+		`, `
 		CREATE POLICY tenant_isolation_vcr ON public.vibe_code_reviews
-			USING ((tenant_id)::text = (public.get_current_tenant())::text);
-	`)
-	if err != nil {
+			USING ((tenant_id)::text = (public.get_current_tenant())::text)`},
+	}
+	sql := ""
+	skipped := make([]string, 0, len(vibeTables))
+	for _, spec := range vibeTables {
+		sql += spec.base
+		if d.rlsPoliciesCurrent(ctx, spec.table, false, []string{spec.ddl}) {
+			skipped = append(skipped, spec.table)
+			continue
+		}
+		sql += "ALTER TABLE " + spec.table + " ENABLE ROW LEVEL SECURITY;\n" +
+			fmt.Sprintf("DROP POLICY IF EXISTS tenant_isolation_%s ON public.%s;\n", spec.short, spec.table) +
+			spec.ddl + ";\n"
+	}
+	if _, err := d.pool.Exec(ctx, sql); err != nil {
 		return err
+	}
+	if len(skipped) > 0 {
+		slog.Info("vibe_coding RLS ensured (policy definition short-circuit)", "skipped_tables", strings.Join(skipped, ","))
 	}
 	slog.Info("vibe_coding schema ensured (3 tables + RLS)")
 	return nil
@@ -5394,11 +6676,26 @@ func (d *DB) ensureRouteIncidentSchema(ctx context.Context) error {
 			RETURN NEW;
 		END;
 		$$;
-		DROP TRIGGER IF EXISTS route_incidents_touch ON route_incidents;
+	`)
+	if err != nil {
+		return err
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：触发器存储定义（pg_get_triggerdef）
+	// 与期望等价时跳过 DROP+CREATE；漂移回落原路径。
+	riTriggerDDL := `
 		CREATE TRIGGER route_incidents_touch
 			BEFORE UPDATE ON route_incidents
-			FOR EACH ROW EXECUTE FUNCTION touch_route_incidents_updated_at();
-
+			FOR EACH ROW EXECUTE FUNCTION touch_route_incidents_updated_at()`
+	riTriggerSQL := ""
+	if d.triggersCurrent(ctx, "route_incidents", []string{riTriggerDDL}) {
+		slog.Info("route_incidents touch trigger ensured (trigger definition short-circuit)")
+	} else {
+		riTriggerSQL = `
+		DROP TRIGGER IF EXISTS route_incidents_touch ON route_incidents;
+		` + riTriggerDDL + `;
+`
+	}
+	_, err = d.pool.Exec(ctx, riTriggerSQL+`
 		CREATE TABLE IF NOT EXISTS route_incident_events (
 			id                  BIGSERIAL PRIMARY KEY,
 			incident_id         UUID NOT NULL REFERENCES route_incidents(id) ON DELETE CASCADE,
@@ -5700,28 +6997,23 @@ func (d *DB) ensureCredentialKeysSchema(ctx context.Context) error {
 		    RETURN NEW;
 		END;
 		$fn$ LANGUAGE plpgsql;
-
-		DROP TRIGGER IF EXISTS trg_credential_keys_enforce_parent_tenant ON public.credential_keys;
+	`)
+	if err != nil {
+		return err
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：credential_keys 在凭据热路径，
+	// 两个 DROP/CREATE TRIGGER + RLS 策略每-boot 排 ACCESS EXCLUSIVE。存储
+	// 定义（pg_get_triggerdef / pg_policies.qual）与期望等价时整段跳过；
+	// 漂移回落原路径。
+	credKeysTriggerDDLs := []string{`
 		CREATE TRIGGER trg_credential_keys_enforce_parent_tenant
 		    BEFORE INSERT OR UPDATE OF credential_id, tenant_id ON public.credential_keys
-		    FOR EACH ROW EXECUTE FUNCTION public.credential_keys_enforce_parent_tenant();
-
-		CREATE OR REPLACE FUNCTION public.credential_keys_touch_updated_at()
-		RETURNS TRIGGER AS $fn$
-		BEGIN
-		    NEW.updated_at = now();
-		    RETURN NEW;
-		END;
-		$fn$ LANGUAGE plpgsql;
-
-		DROP TRIGGER IF EXISTS trg_credential_keys_touch_updated_at ON public.credential_keys;
+		    FOR EACH ROW EXECUTE FUNCTION public.credential_keys_enforce_parent_tenant()`, `
 		CREATE TRIGGER trg_credential_keys_touch_updated_at
 		    BEFORE UPDATE ON public.credential_keys
-		    FOR EACH ROW EXECUTE FUNCTION public.credential_keys_touch_updated_at();
-
-		ALTER TABLE public.credential_keys ENABLE ROW LEVEL SECURITY;
-
-		DROP POLICY IF EXISTS tenant_isolation_credential_keys ON public.credential_keys;
+		    FOR EACH ROW EXECUTE FUNCTION public.credential_keys_touch_updated_at()`,
+	}
+	credKeysPolicyDDL := `
 		CREATE POLICY tenant_isolation_credential_keys ON public.credential_keys
 		    USING (
 		        tenant_id = public.get_current_tenant()
@@ -5732,9 +7024,43 @@ func (d *DB) ensureCredentialKeysSchema(ctx context.Context) error {
 		        tenant_id = public.get_current_tenant()
 		        OR current_setting('app.current_role', true) = 'super_admin'
 		        OR current_setting('app.bypass_rls', true) = 'true'
-		    );
-	`)
-	if err != nil {
+		    )`
+	// R61：函数体 CREATE OR REPLACE 保持在守卫之外无条件执行——CREATE OR
+	// REPLACE FUNCTION 不取表级 ACCESS EXCLUSIVE，若随 trigger 守卫命中被
+	// 跳过，手改函数体的漂移将永不自愈（R60 曾移入 else，本轮纠回）。
+	if _, err := d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION public.credential_keys_touch_updated_at()
+		RETURNS TRIGGER AS $fn$
+		BEGIN
+		    NEW.updated_at = now();
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+	`); err != nil {
+		return err
+	}
+	if d.triggersCurrent(ctx, "credential_keys", credKeysTriggerDDLs) {
+		slog.Info("credential_keys triggers ensured (trigger definition short-circuit)")
+	} else {
+		if _, err := d.pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_credential_keys_enforce_parent_tenant ON public.credential_keys;
+			`+credKeysTriggerDDLs[0]+`;
+			DROP TRIGGER IF EXISTS trg_credential_keys_touch_updated_at ON public.credential_keys;
+			`+credKeysTriggerDDLs[1]+`;
+		`); err != nil {
+			return err
+		}
+	}
+	if d.rlsPoliciesCurrent(ctx, "credential_keys", false, []string{credKeysPolicyDDL}) {
+		slog.Info("credential_keys RLS ensured (policy definition short-circuit)")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.credential_keys ENABLE ROW LEVEL SECURITY;
+
+		DROP POLICY IF EXISTS tenant_isolation_credential_keys ON public.credential_keys;
+		`+credKeysPolicyDDL+`;
+	`); err != nil {
 		return err
 	}
 	slog.Info("credential_keys schema ensured")
@@ -5777,15 +7103,27 @@ func (d *DB) ensureWebCookieSessionsSchema(ctx context.Context) error {
 		    RETURN NEW;
 		END;
 		$fn$ LANGUAGE plpgsql;
-
-		DROP TRIGGER IF EXISTS trg_webcookie_sessions_touch_updated_at ON public.webcookie_sessions;
+	`)
+	if err != nil {
+		return err
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：trigger / RLS 策略存储定义与期望
+	// 等价时分别跳过；漂移回落原 DROP+CREATE 路径。
+	wcTriggerDDL := `
 		CREATE TRIGGER trg_webcookie_sessions_touch_updated_at
 		    BEFORE UPDATE ON public.webcookie_sessions
-		    FOR EACH ROW EXECUTE FUNCTION public.webcookie_sessions_touch_updated_at();
-
-		ALTER TABLE public.webcookie_sessions ENABLE ROW LEVEL SECURITY;
-
-		DROP POLICY IF EXISTS tenant_isolation_webcookie_sessions ON public.webcookie_sessions;
+		    FOR EACH ROW EXECUTE FUNCTION public.webcookie_sessions_touch_updated_at()`
+	if d.triggersCurrent(ctx, "webcookie_sessions", []string{wcTriggerDDL}) {
+		slog.Info("webcookie_sessions trigger ensured (trigger definition short-circuit)")
+	} else {
+		if _, err := d.pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_webcookie_sessions_touch_updated_at ON public.webcookie_sessions;
+			`+wcTriggerDDL+`;
+		`); err != nil {
+			return err
+		}
+	}
+	wcPolicyDDL := `
 		CREATE POLICY tenant_isolation_webcookie_sessions ON public.webcookie_sessions
 		    USING (
 		        tenant_id = public.get_current_tenant()
@@ -5796,9 +7134,17 @@ func (d *DB) ensureWebCookieSessionsSchema(ctx context.Context) error {
 		        tenant_id = public.get_current_tenant()
 		        OR current_setting('app.current_role', true) = 'super_admin'
 		        OR current_setting('app.bypass_rls', true) = 'true'
-		    );
-	`)
-	if err != nil {
+		    )`
+	if d.rlsPoliciesCurrent(ctx, "webcookie_sessions", false, []string{wcPolicyDDL}) {
+		slog.Info("webcookie_sessions RLS ensured (policy definition short-circuit)")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.webcookie_sessions ENABLE ROW LEVEL SECURITY;
+
+		DROP POLICY IF EXISTS tenant_isolation_webcookie_sessions ON public.webcookie_sessions;
+		`+wcPolicyDDL+`;
+	`); err != nil {
 		return err
 	}
 	slog.Info("webcookie_sessions schema ensured")
@@ -5967,13 +7313,6 @@ func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
 		    RETURN NEW;
 		END;
 		$fn$ LANGUAGE plpgsql;
-		DROP TRIGGER IF EXISTS trg_credential_client_quota_set_owner_tenant
-		    ON public.credential_client_quota;
-		CREATE TRIGGER trg_credential_client_quota_set_owner_tenant
-		    BEFORE INSERT OR UPDATE OF credential_id, owner_tenant_id
-		    ON public.credential_client_quota
-		    FOR EACH ROW
-		    EXECUTE FUNCTION public.credential_client_quota_set_owner_tenant();
 
 		CREATE OR REPLACE FUNCTION public.credential_client_quota_touch_updated_at()
 		RETURNS TRIGGER AS $fn$
@@ -5982,18 +7321,38 @@ func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
 		    RETURN NEW;
 		END;
 		$fn$ LANGUAGE plpgsql;
-		DROP TRIGGER IF EXISTS trg_credential_client_quota_touch_updated_at
-		    ON public.credential_client_quota;
+	`)
+	if err != nil {
+		return err
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：trigger / RLS(含 FORCE)+策略存储
+	// 定义与期望等价时分别跳过；漂移回落原 DROP+CREATE 路径。
+	ccqTriggerDDLs := []string{`
+		CREATE TRIGGER trg_credential_client_quota_set_owner_tenant
+		    BEFORE INSERT OR UPDATE OF credential_id, owner_tenant_id
+		    ON public.credential_client_quota
+		    FOR EACH ROW
+		    EXECUTE FUNCTION public.credential_client_quota_set_owner_tenant()`, `
 		CREATE TRIGGER trg_credential_client_quota_touch_updated_at
 		    BEFORE UPDATE ON public.credential_client_quota
 		    FOR EACH ROW
-		    EXECUTE FUNCTION public.credential_client_quota_touch_updated_at();
-
-		ALTER TABLE public.credential_client_quota ENABLE ROW LEVEL SECURITY;
-		ALTER TABLE public.credential_client_quota FORCE ROW LEVEL SECURITY;
-
-		DROP POLICY IF EXISTS tenant_isolation_credential_client_quota
-		    ON public.credential_client_quota;
+		    EXECUTE FUNCTION public.credential_client_quota_touch_updated_at()`,
+	}
+	if d.triggersCurrent(ctx, "credential_client_quota", ccqTriggerDDLs) {
+		slog.Info("credential_client_quota triggers ensured (trigger definition short-circuit)")
+	} else {
+		if _, err := d.pool.Exec(ctx, `
+			DROP TRIGGER IF EXISTS trg_credential_client_quota_set_owner_tenant
+			    ON public.credential_client_quota;
+			`+ccqTriggerDDLs[0]+`;
+			DROP TRIGGER IF EXISTS trg_credential_client_quota_touch_updated_at
+			    ON public.credential_client_quota;
+			`+ccqTriggerDDLs[1]+`;
+		`); err != nil {
+			return err
+		}
+	}
+	ccqPolicyDDL := `
 		CREATE POLICY tenant_isolation_credential_client_quota
 		    ON public.credential_client_quota
 		    USING (
@@ -6005,9 +7364,19 @@ func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
 		        owner_tenant_id = public.get_current_tenant()
 		        OR current_setting('app.current_role', true) = 'super_admin'
 		        OR current_setting('app.bypass_rls', true) = 'true'
-		    );
-	`)
-	if err != nil {
+		    )`
+	if d.rlsPoliciesCurrent(ctx, "credential_client_quota", true, []string{ccqPolicyDDL}) {
+		slog.Info("credential_client_quota RLS ensured (policy definition short-circuit)")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.credential_client_quota ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE public.credential_client_quota FORCE ROW LEVEL SECURITY;
+
+		DROP POLICY IF EXISTS tenant_isolation_credential_client_quota
+		    ON public.credential_client_quota;
+		`+ccqPolicyDDL+`;
+	`); err != nil {
 		return err
 	}
 	slog.Info("credential_client_quota schema ensured")
@@ -6502,6 +7871,58 @@ func (d *DB) ensureAutoRouteSelectionsHotSchema(ctx context.Context) error {
 		slog.Warn("auto_route_selections parent table missing; skipping auto_route_selections_hot ensure " +
 			"(run sql/migrations/startup/656_auto_route_selections_hot.sql to install)")
 		return nil
+	}
+	// D1 残余（2026-09-23 审计轮）：ensure 体含 CREATE TABLE IF NOT EXISTS /
+	// 8 条 ALTER SET DEFAULT / 约束 DO 块 / DROP VIEW+CREATE VIEW——表与视图
+	// 已就位时这些仍要取锁（DROP VIEW 要视图的 ACCESS EXCLUSIVE，CREATE 表
+	// 要既有表的检查锁），auto_route_selections_hot 是每请求 INSERT 的热表，
+	// 晨间负载下锁等待超 30s 被 rolconfig 击杀（154 seq 2197 boot 两次尝试
+	// 在此 57014，PG 日志逐字实锤）。全量清单守卫：44 列 + 4 索引 + 3 约束
+	// + 视图全部在位 = 零 DDL。清单与 autoRouteSelectionsHotEnsureSQL 同步。
+	const arsGuardSQL = `
+		SELECT
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'id','request_id','session_id','task_id','tenant_id','ts','task_type',
+		     'profile','classifier','confidence','canonical_id','chosen_model',
+		     'candidate_rank','composite_score','affinity_score','affinity_applied',
+		     'explore','fallback_used','success','latency_ms','cost_usd','reward',
+		     'reward_source','settled_at','partition_date','experiment_id','treatment',
+		     'assignment_version','assignment_key_hash','detected_language',
+		     'prompt_length_bucket','context_length_bucket','turn_count_bucket',
+		     'has_code_indicator','has_math_indicator','has_table_indicator',
+		     'has_multimedia_indicator','intent_category','domain_hint',
+		     'complexity_bucket','latency_sensitive','cost_sensitive',
+		     'feature_version','content_hash'
+		   ]) AS want(name)
+		   WHERE to_regclass('public.auto_route_selections_hot') IS NULL
+		      OR NOT EXISTS (SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='auto_route_selections_hot'
+		          AND column_name = want.name))
+		+
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'uq_ars_hot_request','idx_ars_hot_task_profile_ts',
+		     'idx_ars_hot_session','idx_ars_hot_unsettled'
+		   ]) AS want(name)
+		   WHERE NOT EXISTS (SELECT 1 FROM pg_indexes
+		     WHERE schemaname='public' AND indexname = want.name))
+		+
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'ars_hot_profile_check','ars_hot_reward_range','ars_hot_reward_source_check'
+		   ]) AS want(name)
+		   WHERE NOT EXISTS (SELECT 1 FROM pg_constraint
+		     WHERE conrelid = 'public.auto_route_selections_hot'::regclass
+		       AND conname = want.name))
+		+
+		  (SELECT count(*) FROM (SELECT 1) AS one
+		   WHERE NOT EXISTS (SELECT 1 FROM pg_views
+		     WHERE schemaname='public' AND viewname='auto_route_selections_all'))
+		`
+	var arsMissing int
+	if err := d.pool.QueryRow(ctx, arsGuardSQL).Scan(&arsMissing); err == nil && arsMissing == 0 {
+		slog.Info("auto_route_selections_hot schema ensured (catalog short-circuit: table, indexes, constraints and view present, zero DDL)")
+		return nil
+	} else if err != nil {
+		slog.Warn("auto_route_selections_hot ensure catalog probe failed; falling back to full ensure", "error", err)
 	}
 	if _, err := d.pool.Exec(ctx, autoRouteSelectionsHotEnsureSQL); err != nil {
 		return fmt.Errorf("ensure auto_route_selections_hot schema: %w", err)

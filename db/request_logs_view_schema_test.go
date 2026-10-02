@@ -70,14 +70,14 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 // conditional laterals on frozen chains) and that a HOT_ONLY hot column never
 // breaks the UNION.
 //
-// Gated on LLM_GATEWAY_TEST_PG_DSN so CI stays offline-green; run locally:
+// Gated on TEST_PG_DSN so CI stays offline-green; run locally:
 //
-//	LLM_GATEWAY_TEST_PG_DSN='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
+//	TEST_PG_DSN='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
 //	  go test ./db/ -run TestRequestLogsCurrentMonthViewEnsureRoundTrip -count=1 -v
 func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
-	dsn := os.Getenv("LLM_GATEWAY_TEST_PG_DSN")
+	dsn := resolveTestDSN()
 	if dsn == "" {
-		t.Skip("LLM_GATEWAY_TEST_PG_DSN not set — offline mode")
+		t.Skip("TEST_PG_DSN (or LLM_GATEWAY_TEST_PG_DSN) not set — offline mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -326,3 +326,35 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 		t.Errorf("scanner-shape SELECT = (%q, %q), want (model-alpha, fp-hot-a)", scanRaw, scanFP)
 	}
 }
+
+// TestSessionFamilyTurnsForSessionSQLPushesPredicate 钉住「会话谓词下推」这一
+// 性能不变量。
+//
+// 视图与本 helper 投影同一份列契约，但 gw_session_id 在两边都是
+// (CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END) 表达式：
+// 按投影名过滤就用不上 idx_session_turns_session。下推成 `t.session_id = $1`
+// 后走原始列，本机同一会话 EXPLAIN ANALYZE 实测 188.5ms → 1.9ms。
+//
+// 一旦有人把 WHERE 挪回外层、或只加到一条腿上，这里必须变红——否则退化是
+// 静默的（SQL 仍然正确，只是慢 100 倍，没有任何测试会失败）。
+func TestSessionFamilyTurnsForSessionSQLPushesPredicate(t *testing.T) {
+	sql := SessionFamilyTurnsForSessionSQL()
+
+	if n := strings.Count(sql, "WHERE t.session_id = $1"); n != 2 {
+		t.Fatalf("session predicate must be pushed into BOTH legs (hot + parent), found %d: %s", n, sql)
+	}
+	// 外层调用方若再加 gw_session_id 谓词会退回表达式过滤；这里确认投影名
+	// 本身仍是表达式（契约未被动过）。
+	if !strings.Contains(sql, "AS gw_session_id") {
+		t.Fatal("frozen column contract must still project gw_session_id")
+	}
+	// 与波1 的免下推版本并存：那个是给 ts 窗口日志查询用的，不能被顺手改掉。
+	if strings.Contains(SessionFamilyTurnsSourceSQL(), "WHERE t.session_id = $1") {
+		t.Fatal("SessionFamilyTurnsSourceSQL is the ts-window variant; it must stay predicate-free")
+	}
+	if strings.Contains(sql, "request_logs") {
+		t.Fatal("session-native source must not reference the retired request_logs family")
+	}
+}
+
+// resolveTestDSN 见 view_schema_v2_contract_test.go（同包唯一定义）。

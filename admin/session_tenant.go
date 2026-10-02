@@ -42,8 +42,25 @@ func requireSessionTaskAccess(w http.ResponseWriter, r *http.Request, ctx contex
 	return false
 }
 
-// assertTaskInTenant verifies that taskID has at least one request_log row
+// assertTaskInTenant verifies that taskID has at least one request row
 // belonging to tenantID. Used to block cross-tenant session detail access.
+//
+// 这是跨租户访问的**权限门**，不是数据查询：任何一个来源在 S4 停写后查不到行，
+// 结果就会从「阻断越权」翻转成「阻断所有人」——全体租户管理员的会话详情整体
+// 404，而运维会误判为租户/权限配置问题。因此这里必须让 session 族与 v1 族并联，
+// 停写前后都至少有一条腿供数。
+//
+// 四条腿的分工（session 族侧）：
+//   - session_summaries：带部分索引 idx_session_summaries_task
+//     (tenant_id, gw_task_id) WHERE gw_task_id IS NOT NULL，EXISTS 走索引。
+//   - session_turn_details_hot：gw_task_id 的权威来源（733 特征层），
+//     未 promote 的近期行都在这里，表小，顺序扫描代价可忽略。
+//   - session_turn_details 月分区母表：同一权威来源的已 promote 行。802 补了
+//     (tenant_id, gw_task_id) 部分索引并级联到全部分区，真库 EXPLAIN 实测走
+//     Index Only Scan（Buffers: shared hit=4）；无索引时这是 167 万行顺序扫描。
+//   - v1 request_logs_hot ∪ request_logs：镜像链启用之前的历史窗口。
+//
+// OR-of-EXISTS 会短路：任一腿先命中即返回，因此四条腿的代价不会叠加。
 func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID string) bool {
 	if db == nil || taskID == "" || tenantID == "" {
 		return false
@@ -51,9 +68,20 @@ func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID 
 	var exists bool
 	err := db.QueryRow(ctx, `
 		SELECT EXISTS(
+			SELECT 1 FROM session_summaries
+			WHERE gw_task_id = $1 AND tenant_id = $2
+		) OR EXISTS(
+			SELECT 1 FROM session_turn_details_hot
+			WHERE gw_task_id = $1 AND tenant_id = $2
+		) OR EXISTS(
+			SELECT 1 FROM session_turn_details
+			WHERE gw_task_id = $1 AND tenant_id = $2
+		) OR EXISTS(
+			SELECT 1 FROM request_logs_hot
+			WHERE gw_task_id = $1 AND tenant_id = $2
+		) OR EXISTS(
 			SELECT 1 FROM request_logs
 			WHERE gw_task_id = $1 AND tenant_id = $2
-			LIMIT 1
 		)
 	`, taskID, tenantID).Scan(&exists)
 	return err == nil && exists

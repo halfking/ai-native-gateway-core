@@ -27,8 +27,9 @@
 // ───────────
 //   - Entity writes use copy-on-write + atomic rename so concurrent
 //     writers never see a half-written JSON file.
-//   - Cross-process writers serialize on a syscall.Flock held on the
-//     final destination path (POSIX; Windows ignores).
+//   - Cross-process writers serialize on an exclusive lock held over
+//     the write+rename window (POSIX flock on the final path /
+//     Win32 LockFileEx on a per-directory sidecar; see flock_*.go).
 //   - Request bodies live under bodies/YYYY/MM/DD/<request_id>/ as
 //     gzip-compressed JSON-lines; the parent metadata file under
 //     requests/ points to them so a search hit can stream the body
@@ -55,11 +56,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/mapping"
+	"github.com/kaixuan/llm-gateway-go/internal/atomicrename"
 )
 
 // Config configures a Store. Zero value is not usable; call New
@@ -212,7 +213,8 @@ func (s *Store) PutEntity(e Entity) error {
 	defer s.keyLock(rel).Unlock()
 
 	// Cross-process lock on the FINAL path so two gateway instances
-	// writing the same entity do not race. POSIX only.
+	// writing the same entity do not race (flock on POSIX, per-dir
+	// LockFileEx sidecar on Windows — see flock_*.go).
 	if err := flockFile(final, tmp, body); err != nil {
 		return err
 	}
@@ -593,35 +595,16 @@ func requestDateDir(date string) (string, error) {
 	return "", fmt.Errorf("fsstore: invalid request date %q", date)
 }
 
-// flockFile holds an exclusive flock on `final` while writing
-// `body` to `tmp` then atomically renaming tmp → final. POSIX only
-// (Windows ignores LockFileEx fallback at this layer — the
-// cross-process guarantee is best-effort on Win32).
+// flockFile is platform-specific (flock_unix.go / flock_windows.go).
+// The tmp → final rename happens inside lockAndWrite so it stays
+// within the cross-process lock window; renaming after the lock is
+// released would let a slower writer overwrite a newer rename.
 func flockFile(final, tmp string, body []byte) error {
 	dir := filepath.Dir(final)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("fsstore: mkdir %s: %w", dir, err)
 	}
-
-	// Open the final file first (creating if absent) so we can
-	// flock on a stable path. The flock is released by close.
-	lock, err := os.OpenFile(final, os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		return fmt.Errorf("fsstore: open lock file: %w", err)
-	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("fsstore: flock: %w", err)
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
-		return fmt.Errorf("fsstore: write tmp: %w", err)
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		return fmt.Errorf("fsstore: rename: %w", err)
-	}
-	return nil
+	return lockAndWrite(final, tmp, body)
 }
 
 func (s *Store) keyLock(rel string) *sync.Mutex {
@@ -702,7 +685,9 @@ func appendGzippedLine(path string, line []byte) error {
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	// atomicrename：Windows 并发读者打开 final 时裸 rename 会瞬态失败
+	// （无 FILE_SHARE_DELETE），三十七轮审计接线。
+	return atomicrename.Replace(tmp, path)
 }
 
 func readGzippedLines(path string) ([][]byte, error) {

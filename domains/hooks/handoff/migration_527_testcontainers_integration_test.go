@@ -124,7 +124,13 @@ func TestMigration527_DurableGoalStateLifecycleIntegration(t *testing.T) {
 		t.Errorf("partial index predicate missing accounting_confirmed/manual_required: %s", indexDef)
 	}
 
-	exec(`INSERT INTO handoff_logs (tenant_id) VALUES ('tenant-a') RETURNING id`)
+	// handoff_logs has four NOT NULL columns (id, session_id, tenant_id,
+	// trigger_reason, tokens_at_handoff — verified with
+	// information_schema.columns on an installer-shaped gate database, 2026-10-02).
+	// This insert supplied only tenant_id and failed 23502 on session_id, the
+	// first missing one; the other two would have failed next.
+	exec(`INSERT INTO handoff_logs (session_id, tenant_id, trigger_reason, tokens_at_handoff)
+	      VALUES ('r527-session-a', 'tenant-a', 'manual', 10) RETURNING id`)
 	var logID int
 	if err := conn.QueryRow(ctx, `SELECT id FROM handoff_logs WHERE tenant_id='tenant-a' ORDER BY id DESC LIMIT 1`).Scan(&logID); err != nil {
 		t.Fatalf("lookup handoff_logs id: %v", err)

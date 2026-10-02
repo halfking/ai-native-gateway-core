@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // InternalResponse is the unified intermediate representation for upstream
@@ -44,6 +45,16 @@ type InternalResponse struct {
 	// Anthropic: "end_turn" | "stop_sequence" | "max_tokens" | "tool_use"
 	// We store the OpenAI form; Anthropic values are mapped via mapFinishReason.
 	FinishReason string `json:"finish_reason"`
+
+	// StopReason preserves the upstream-native terminal reason for
+	// same-protocol pass-through (R69, non-streaming counterpart of the R68
+	// streaming fix on parse_gemini_stream.go). mapAnthropicFinishReason /
+	// mapGeminiFinishReason collapse lossy values (Anthropic pause_turn →
+	// stop, Gemini RECITATION → content_filter), so an Anthropic→Anthropic
+	// or Gemini→Gemini round-trip through the IR would otherwise hand the
+	// client a generic "end_turn"/"SAFETY". Serializers use it only when
+	// SourceProtocol matches the client protocol — never leaked cross-protocol.
+	StopReason string `json:"stop_reason,omitempty"`
 
 	// Usage statistics (both protocols have compatible usage fields)
 	Usage ResponseUsage `json:"usage"`
@@ -191,7 +202,14 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			Data      string          `json:"data"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
-		Usage      struct {
+		// R51 审计 P3：Claude 4.5+ 的 container（code execution 容器）对象
+		// 原样保留 —— 响应侧没有结构化 Container 解析，只有请求侧
+		// （parse_anthropic.go）；此前它既不在 IR 结构里、又被
+		// transformation 的响应标准字段集认作"标准字段"，两端都不认，
+		// 被静默丢弃且无扩展兜底。现捕获原文放进 Extensions，由
+		// transport 层 restoreExtensions 往返还原。
+		Container json.RawMessage `json:"container,omitempty"`
+		Usage     struct {
 			InputTokens              int `json:"input_tokens"`
 			OutputTokens             int `json:"output_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // audit-ir-multimodal (2026-07-13)
@@ -208,6 +226,9 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 		Role:           src.Role,
 		SourceProtocol: ProtocolAnthropicMessages,
 		FinishReason:   mapAnthropicFinishReason(src.StopReason),
+		// R69: keep the native value for same-protocol serialization (the
+		// mapping above is lossy: pause_turn/model_context_window_exceeded → stop).
+		StopReason: src.StopReason,
 		Usage: ResponseUsage{
 			PromptTokens:     src.Usage.InputTokens,
 			CompletionTokens: src.Usage.OutputTokens,
@@ -225,6 +246,14 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 	if src.Usage.CacheReadInputTokens > 0 {
 		v := src.Usage.CacheReadInputTokens
 		ir.Usage.CacheReadTokens = &v
+	}
+
+	// container 原文进 Extensions，走标准扩展往返（见上方字段注释）。
+	if len(src.Container) > 0 && string(bytes.TrimSpace(src.Container)) != "null" {
+		if ir.Extensions == nil {
+			ir.Extensions = make(map[string]json.RawMessage, 1)
+		}
+		ir.Extensions["container"] = append(json.RawMessage(nil), src.Container...)
 	}
 
 	for _, c := range src.Content {
@@ -407,21 +436,22 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 		// Streaming path already detects these (ae1ecaedf); add detection
 		// to non-stream path so HTTP 200 responses with these finish_reason
 		// values are classified as errors rather than silently succeeding.
-		switch choice.FinishReason {
-		case "network_error":
-			return nil, &ParseError{
-				Kind:    errorsx.KindNetwork,
-				Message: "GLM network_error",
+		// Wave4-D3 (2026-09-22): detection moved to the single errorsx
+		// vendor-channel table (misspelling tolerance included); the
+		// canonical GLM values keep their historical diagnostic messages.
+		if kind, ok := errorsx.FinishReasonVendorFailureKind(choice.FinishReason); ok {
+			msg := "GLM finish_reason error channel: " + choice.FinishReason
+			switch choice.FinishReason {
+			case "network_error":
+				msg = "GLM network_error"
+			case "sensitive":
+				msg = "GLM content filter: sensitive"
+			case "model_context_window_exceeded":
+				msg = "GLM context window exceeded"
 			}
-		case "sensitive":
 			return nil, &ParseError{
-				Kind:    errorsx.KindContentFilter,
-				Message: "GLM content filter: sensitive",
-			}
-		case "model_context_window_exceeded":
-			return nil, &ParseError{
-				Kind:    errorsx.KindContextLength,
-				Message: "GLM context window exceeded",
+				Kind:    kind,
+				Message: msg,
 			}
 		}
 
@@ -721,8 +751,16 @@ func SerializeAnthropicResponse(ir *InternalResponse, clientModel string) ([]byt
 	// Build content blocks
 	content := buildAnthropicResponseContent(ir)
 
-	// Build stop_reason (Anthropic form)
+	// Build stop_reason (Anthropic form). R69: same-protocol native
+	// passthrough first — the FinishReason mapping is lossy (pause_turn →
+	// stop → end_turn), so an Anthropic→Anthropic round-trip must hand back
+	// the upstream's own stop_reason. Cross-protocol (SourceProtocol !=
+	// anthropic) the native value is never leaked: Anthropic clients reject
+	// foreign vocabularies, same guard as SerializeGemini's R68 fix.
 	stopReason := mapFinishReasonToAnthropic(ir.FinishReason)
+	if ir.SourceProtocol == ProtocolAnthropicMessages && ir.StopReason != "" {
+		stopReason = ir.StopReason
+	}
 	// audit #11: mirror of the OpenAI serializer guard. buildAnthropicResponseContent
 	// drops nameless tool calls (unified empty-name rejection); when that drop
 	// empties an otherwise tool_calls turn, stop_reason=tool_use would make
@@ -790,7 +828,13 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 		case "tool_use":
 			var input any
 			if c.Input != nil {
-				_ = json.Unmarshal(c.Input, &input)
+				// 0458 §1.3 压缩域/会话缓存域收口（2026-10-01）：失败时保
+				// 持与旧路径相同的 wire 结果（input=null）并留 Warn——旧
+				// `_ =` 会把半填充对象静默发上 Anthropic 线。Gemini 构建器
+				// （response.go tool_use→functionCall）与 Anthropic 块序列化
+				// （serialize_anthropic.go）对同一 Input 各有显式兜底，本点
+				// 是三处中唯一无痕迹的。
+				jsoncol.Decode("ir.buildAnthropicResponseContent/tool_use.input", c.Input, &input)
 			}
 			content = append(content, map[string]any{
 				"type":  "tool_use",
@@ -1223,6 +1267,26 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 		}
 	}
 
+	// R52：OpenAI 系上游（DeepSeek-R1 / GLM 等）的 message.reasoning_content
+	// 只存进 ir.ReasoningContent（ParseOpenAIResponse），不产生 thinking
+	// Content 块——Gemini 客户端非流式侧此前静默丢失推理内容，而流式路径
+	// 有 thought part 发射（流式/非流式不对称；R30 refusal 同型
+	// "parse 保留、serialize 丢弃"）。仅当 Content 中无 thinking 块时补发：
+	// anthropic 上游的 thinking 已作为 Content 块被上方循环发射、且同样
+	// 聚合进了 ReasoningContent，再发一次会双写。
+	if irResp.ReasoningContent != "" {
+		hasThinkingBlock := false
+		for _, c := range irResp.Content {
+			if c.Type == "thinking" && c.Thinking != "" {
+				hasThinkingBlock = true
+				break
+			}
+		}
+		if !hasThinkingBlock {
+			parts = append([]map[string]any{{"text": irResp.ReasoningContent, "thought": true}}, parts...)
+		}
+	}
+
 	emittedToolIDs := make(map[string]bool)
 	for _, c := range irResp.Content {
 		if c.Type == "tool_use" {
@@ -1258,7 +1322,20 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 		}
 	}
 
-	if irResp.FinishReason != "" {
+	if irResp.SourceProtocol == ProtocolGeminiGenerate && irResp.StopReason != "" {
+		// R69: same-protocol native passthrough (Gemini→Gemini), the
+		// non-streaming counterpart of SerializeGemini's R68 streaming fix.
+		// RECITATION/MALFORMED_FUNCTION_CALL etc. survive the IR round-trip
+		// instead of collapsing to SAFETY/STOP; cross-protocol sources
+		// (SourceProtocol != gemini) keep the mapped form so foreign native
+		// values (end_turn, pause_turn) never leak onto the Gemini wire.
+		candidate["finishReason"] = irResp.StopReason
+	} else if irResp.FinishReason != "" {
+		// R71: cross-protocol with empty FinishReason emits nothing — the
+		// old catch-all mapped mapFinishReasonToGemini("") to a synthetic
+		// "STOP". Parse paths guarantee FinishReason non-empty when
+		// StopReason is set, so this is a defensive-only gap, but emitting a
+		// fabricated terminal reason is worse than omitting the field.
 		candidate["finishReason"] = mapFinishReasonToGemini(irResp.FinishReason)
 	}
 

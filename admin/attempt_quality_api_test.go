@@ -128,7 +128,9 @@ func TestLoadFinalRequestMetricsScopesTenantAndFilters(t *testing.T) {
 	if err != nil || got.SuccessRate != 0.75 || got.TotalTokens != 99 {
 		t.Fatalf("loadFinalRequestMetrics() = (%+v, %v)", got, err)
 	}
-	for _, required := range []string{"FROM request_logs_hot", "tenant_id = $1", "provider_id = $4", "credential_id = $5", "COALESCE(outbound_model, client_model) = $6"} {
+	// R46 F3: 读面必须是 request_logs 侧 hot∪母表视图（裸 hot 表对 8h 前
+	// 静默少报；turns 优先视图丢 provider 归属）。
+	for _, required := range []string{"FROM request_logs_with_current_month_without_request_class_due_at", "tenant_id = $1", "provider_id = $4", "credential_id = $5", "COALESCE(outbound_model, client_model) = $6"} {
 		if !strings.Contains(query, required) {
 			t.Fatalf("final metrics query missing %q: %s", required, query)
 		}

@@ -22,6 +22,11 @@
 # The SOPS binary is NOT installed in CI; AC-9 is exercised through
 # metadata detection (the ENC[…], sops:, encrypted_regex triplet)
 # rather than decryption. Decryption is env-injector's job.
+#
+# 2026-09-30 policy revision (53971b270): *.enc artifacts are no longer
+# tracked at all (operator-local / separate encrypted config repo).
+# Tests here pin the NEW policy — absent files + gitignore coverage —
+# instead of asserting the artifacts are tracked.
 # =====================================================================
 
 set -uo pipefail
@@ -42,6 +47,13 @@ FAILED_NAMES=()
 
 log_pass()  { printf '  \033[0;32mPASS\033[0m %s\n' "$1"; TESTS_PASSED=$((TESTS_PASSED+1)); }
 log_fail()  { printf '  \033[0;31mFAIL\033[0m %s\n' "$1"; TESTS_FAILED=$((TESTS_FAILED+1)); FAILED_NAMES+=("$1"); }
+# 2026-09-30 R36-B4: this file already called log_skip (test_scan_secrets_skips_enc)
+# but never defined it, so the skip branch printed "command not found" and fell
+# through with no counter update. The script runs under `set -uo pipefail`
+# without -e, which is why the broken call stayed invisible. Same shape as the
+# helpers in deploy_cli_test.sh:55 / env_injector_test.sh:55.
+TESTS_SKIPPED=0
+log_skip()  { printf '  \033[0;33mSKIP\033[0m %s\n' "$1"; TESTS_SKIPPED=$((TESTS_SKIPPED+1)); }
 
 assert_contains() { [[ "$2" == *"$3"* ]] && log_pass "$1" || log_fail "$1: needle [$3] missing"; }
 assert_file_exists() { [[ -f "$2" ]] && log_pass "$1" || log_fail "$1: $2 missing"; }
@@ -75,18 +87,56 @@ test_gitignore_plaintext() {
 
   assert_contains "plaintext .env.252 is ignored"       "$body" '.env.252'
   assert_contains "plaintext .env.kaixuan-1 is ignored"  "$body" '.env.kaixuan-1'
-  assert_contains ".env.252.enc is tracked"             "$body" '.env.252.enc'
-  assert_contains ".env.kaixuan-1.enc is tracked"        "$body" '.env.kaixuan-1.enc'
   assert_contains "plaintext .env.71 is ignored"         "$body" '.env.71'
   assert_contains "plaintext .env.184 is ignored"        "$body" '.env.184'
+
+  # 53971b270 起策略反转：*.enc 一律不再跟踪（含 .env.<target>.enc），
+  # 密文改为操作者本地产物 / 独立加密配置仓库。此处钉住新策略的
+  # 两个不变量：通配规则存在 + 两个具体文件名确实被 check-ignore 命中。
+  assert_contains "blanket *.enc ignore rule present"   "$body" '*.enc'
+  for enc in .env.252.enc .env.kaixuan-1.enc; do
+    if git -C "$REPO_ROOT" check-ignore -q -- "$enc"; then
+      log_pass "$enc is gitignored (untracked-by-policy)"
+    else
+      log_fail "$enc is NOT gitignored — encrypted artifact would leak into the public mirror"
+    fi
+  done
 }
 
 # AC-9: encrypted fixtures have valid SOPS preamble so scan-secrets
 # recognizes them and skips the rule scan
 test_sops_envelope_detection() {
   echo "── sops_envelope_detection ──"
-  assert_file_exists ".env.252.enc tracks"          "$ENV_252"
-  assert_file_exists ".env.kaixuan-1.enc tracks"    "$ENV_KAIXUAN_1"
+  # 53971b270 后 .enc 是操作者本地产物，仓库不再携带。文件缺席时
+  # 钉住「不在仓库」这一策略本身；在位时才校验 SOPS 信封结构。
+  if [[ ! -f "$ENV_252" && ! -f "$ENV_KAIXUAN_1" ]]; then
+    if ! git -C "$REPO_ROOT" ls-files -- '.env.*.enc' | grep -q .; then
+      log_pass "no .env.*.enc tracked in repo (post-53971b270 policy)"
+    else
+      log_fail "repo still tracks .env.*.enc — encrypted artifacts must not enter the public mirror"
+    fi
+    log_skip "local enc artifacts absent — envelope structure check skipped"
+    return
+  fi
+  # 2026-09-30 R36-B4: the skip above required BOTH files to be absent, so an
+  # operator who legitimately held exactly one .enc fell through to the two
+  # assert_file_exists calls below and FAILED — blocking every GitHub push for
+  # a policy-consistent local state. Post-53971b270 these are per-operator
+  # artifacts, so presence is a per-file question, not an all-or-nothing one.
+  if [[ -f "$ENV_252" ]]; then
+    log_pass ".env.252.enc present (operator-local)"
+  else
+    log_skip ".env.252.enc absent (operator-local artifact, untracked by policy)"
+  fi
+  if [[ -f "$ENV_KAIXUAN_1" ]]; then
+    log_pass ".env.kaixuan-1.enc present (operator-local)"
+  else
+    log_skip ".env.kaixuan-1.enc absent (operator-local artifact, untracked by policy)"
+  fi
+  if [[ ! -f "$ENV_252" ]]; then
+    log_skip ".env.252.enc absent — envelope structure check skipped"
+    return
+  fi
 
   # SOPS envelopes carry the JSON-shaped preamble with optional
   # leading whitespace (real sops output indents with tabs). Each
@@ -125,6 +175,13 @@ test_scan_secrets_skips_enc() {
   echo "── scan_secrets_skips_enc ──"
   if ! command -v bash >/dev/null; then
     log_skip "bash not on PATH"
+    return
+  fi
+  # 2026-09-30 R36-B4: scanning two absent paths returns rc=0 trivially, which
+  # reads as "the scanner recognises SOPS envelopes" while proving nothing.
+  # Report it as the skip it is.
+  if [[ ! -f "$ENV_252" && ! -f "$ENV_KAIXUAN_1" ]]; then
+    log_skip "no local .enc artifacts to scan — envelope-bypass check not exercised"
     return
   fi
 

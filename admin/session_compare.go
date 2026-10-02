@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // ── Session Compare API (v4, 2026-06-21) ────────────────────────────────
@@ -155,11 +158,21 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 		return txErr
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to load session compare data",
-			"error":   err.Error(),
-		})
+		// 正文取数并发已满 → 503「现在忙」，不是 500「坏了」。这两者对调用方
+		// 的重试含义完全不同（503 可退避重试，500 不该重试）。
+		// 见 session_bodies_batch.go 的并发闸注释：正文查询单条 17~19 秒，
+		// 池只有 16 个连接，排队就是雪崩。
+		if errors.Is(err, ErrBodyFetchSaturated) {
+			slog.WarnContext(r.Context(), "session compare rejected: body fetch saturated",
+				"session_id", sessionID, "limit", maxConcurrentBodyFetches)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status":  "error",
+				"message": "Session body data is temporarily unavailable — too many concurrent scans. Retry shortly.",
+				"code":    "session_body_fetch_saturated",
+			})
+			return
+		}
+		writeInternalErrStr(w, "Failed to load session compare data", err)
 		return
 	}
 
@@ -175,30 +188,128 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, data)
 }
 
-func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, tenantID, sessionID string) (*SessionCompareData, error) {
-	// Query all request_logs for this session, ordered by time
-	query := `
-		SELECT 
+// compareTurnsSQL is phase 1 of the compare path: the session's turns and their
+// metadata, with no body columns.
+//
+// Factored out so the integration gate can execute this exact text. The
+// pre-split query joined three JSONB body columns onto a session-sized outer
+// side, which cost 5,773 ms after migration 765 turned the bodies partition
+// into a Citus columnar table. See session_bodies_batch.go for why the batched
+// fetch has to be a (request_id, ts) semi-join rather than a LEFT JOIN.
+//
+// outbound_msg_count / outbound_token_est / provider_id are deliberately absent:
+// the original query selected and scanned them into variables that no branch
+// ever read.
+//
+// Do not inline it back.
+// derefOrEmpty normalizes a nullable model name to the empty string the
+// downstream `if model != ""` checks expect.
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func compareTurnsSQL() string {
+	return `
+		SELECT
 			rl.request_id,
-			rb.request_body AS request_body,
-			rb.outbound_body, rb.response_body AS response_body,
-			rl.compression_strategy, rl.compression_meta, 
-			rl.outbound_msg_count, rl.outbound_token_est,
-			rl.client_model, rl.outbound_model,
-			rl.ts, rl.provider_id
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+			rl.ts,
+			rl.compression_strategy, rl.compression_meta,
+			rl.client_model, rl.outbound_model
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE rl.tenant_id = $2
 		ORDER BY rl.ts ASC
 		LIMIT 500
 	`
+}
 
-	rows, err := q.Query(ctx, query, sessionID, tenantID)
+func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, tenantID, sessionID string) (*SessionCompareData, error) {
+	// Query all request_logs for this session, ordered by time.
+	//
+	// 会话存储解耦 v3 审计（2026-09-30）：本查询曾迁到 session 族原生源
+	// （实测 3978ms → 8.7ms）又因「镜像链漏写 20,660 会话」被回退。§5.3.1
+	// 复核证明该数字里 98% 是按设计排除的内部回环，真正缺失的 1,459 行
+	// genuine_loss 已由 mirror_outbox_backfill.sql 全量补写，35 天窗口复测
+	// 为 0 —— 否决理由不再成立，故于同日重新启用。
+	//
+	// 口径差（全量实测）：视图比原生源多 38,229 行 / 2.30% 会话，全部是
+	// internal_loopback（36,693）与 non_terminal（1,541），unexplained = 0。
+	// 对本端点是净收益——对比视图此前会把网关自己的标题/摘要调用算作对话轮次。
+	//
+	// 正文仍取 v1 bodies 视图（rb 腿未改），与 session_summary_v2 同口径。
+	//
+	// 2026-10-01：正文腿从本查询里摘出，改为「phase 1 取轮次元数据 + phase 2
+	// 批量取正文」。原写法是 12 列 LEFT JOIN，实测 **5,773 ms**（500 轮上限），
+	// 而拆开后 phase 1 约 40 ms、phase 2 走 (request_id, ts) 主键探针。
+	// 根因与 session_summary_v2 完全同形：LEFT JOIN 让规划器对列存分区逐轮
+	// ColumnarScan，详见 docs/audit/2026-09-30-session-request-data-re-audit.md §5.6。
+	//
+	// 等价性：bodies 视图里没有任何 request_id 对应多个 ts（真库实测 0 行），
+	// 且 (request_id, ts) 唯一，所以把关联键从 request_id 收紧到
+	// (request_id, ts) 不会增删任何行；LIMIT 500 在 join 前生效也与在 join 后
+	// 生效等价。
+	rows, err := q.Query(ctx, compareTurnsSQL(), sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query request_logs: %w", err)
 	}
 	defer rows.Close()
+
+	// Phase 2: fetch the three body columns for exactly the turns phase 1
+	// selected, keyed by turn identity.
+	// outbound_msg_count / outbound_token_est / provider_id were selected by
+	// the original single query and scanned into variables no branch ever read.
+	// They are dropped rather than carried through phase 1.
+	//
+	// client_model / outbound_model are scanned as *string on purpose. They used
+	// to be scanned into bare strings, and the `if err != nil { continue }` that
+	// followed silently **dropped every turn whose client_model was NULL** —
+	// 167,133 of 964,990 turns (17.32%, measured 2026-10-01) simply never
+	// reached the compare view. See §5.9 of the audit doc.
+	type compareTurn struct {
+		requestID        string
+		ts               time.Time
+		compressionStrat *string
+		compressionMeta  *string
+		clientModel      *string
+		outboundModel    *string
+	}
+	var turnsMeta []compareTurn
+	requestIDs := make([]string, 0, 500)
+	for rows.Next() {
+		var t compareTurn
+		var ts time.Time
+		if err := rows.Scan(
+			&t.requestID, &ts,
+			&t.compressionStrat, &t.compressionMeta,
+			&t.clientModel, &t.outboundModel,
+		); err != nil {
+			// 跳行容错保留（R35-N1），但必须留痕。2026-10-01：这一处曾被
+			// 两段式重构连带删掉 warnRowSkip，被 TestAggReadGuard_MigratedCallersWired
+			// 抓出——本文件的 S4 原生源改造（38d59b2eb）同样漏掉了它。两次都是
+			// 「重构顺手清理」把可观测性一起清掉，故在此显式标注勿删。
+			warnRowSkip("loadCompareData", err)
+			continue
+		}
+		t.ts = ts
+		turnsMeta = append(turnsMeta, t)
+		requestIDs = append(requestIDs, t.requestID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query request_logs: %w", err)
+	}
+	// Pair on request_id alone, which is what this path has always done
+	// (`ON rb.request_id = rl.request_id`) and what the rest of the codebase
+	// does. `request_logs_bodies.ts` is the body-write timestamp, not the turn
+	// timestamp — the two disagree for 99.85% of turns — so tightening this to a
+	// (request_id, ts) tuple would silently drop every body. See
+	// session_bodies_batch.go and audit §5.9.
+	bodies, err := querySessionBodiesByRequestID(ctx, q, requestIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query request bodies: %w", err)
+	}
 
 	var (
 		allOriginal   []MessageView
@@ -222,27 +333,18 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 	turnCounter := 0
 	compressedSpanStart := 0 // 0 = no summary has been written yet
 
-	for rows.Next() {
-		var (
-			requestID, clientModel, outboundModel   string
-			requestBody, outboundBody, responseBody *string
-			compressionStrategy                     *string
-			compressionMeta                         *string
-			outboundMsgCount                        *int
-			outboundTokenEst                        *int
-			createdAt                               time.Time
-			providerID                              *int
-		)
-
-		err := rows.Scan(
-			&requestID, &requestBody, &outboundBody, &responseBody,
-			&compressionStrategy, &compressionMeta,
-			&outboundMsgCount, &outboundTokenEst,
-			&clientModel, &outboundModel,
-			&createdAt, &providerID,
-		)
-		if err != nil {
-			continue
+	for _, meta := range turnsMeta {
+		requestID := meta.requestID
+		clientModel, outboundModel := derefOrEmpty(meta.clientModel), derefOrEmpty(meta.outboundModel)
+		compressionStrategy := meta.compressionStrat
+		compressionMeta := meta.compressionMeta
+		createdAt := meta.ts
+		// Bodies come from phase 2. A turn with no stored body yields all-nil
+		// pointers, which is exactly what the old LEFT JOIN produced as NULL.
+		body := bodies[requestID]
+		var requestBody, outboundBody, responseBody *string
+		if body.requestBody != nil || body.outboundBody != nil || body.responseBody != nil {
+			requestBody, outboundBody, responseBody = body.requestBody, body.outboundBody, body.responseBody
 		}
 
 		if clientModel != "" && modelUsed == "" {
@@ -267,8 +369,8 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 		// Decode compression_meta once for both the stats block and the
 		// turn-level secured-stage tags below.
 		var compMetaMap map[string]any
-		if compressionMeta != nil && *compressionMeta != "" {
-			_ = json.Unmarshal([]byte(*compressionMeta), &compMetaMap)
+		if compressionMeta != nil {
+			jsoncol.Decode("admin.sessionCompare.loadCompareData/compression_meta", []byte(*compressionMeta), &compMetaMap)
 		}
 
 		// Parse compressed outbound messages
@@ -440,9 +542,15 @@ func loadSessionTagsForCompare(ctx context.Context, q pgx.Tx, sessionID, tenantI
 	for rows.Next() {
 		var t SessionTagView
 		if err := rows.Scan(&t.TagKey, &t.TagValue, &t.TagSource, &t.Confidence); err != nil {
+			warnRowSkip("loadSessionTagsForCompare", err)
 			continue
 		}
 		out = append(out, t)
+	}
+	if rerr := rows.Err(); rerr != nil {
+		// 标签是 best-effort 富化：中断留痕后按已取到的标签继续，升格成端点错误
+		// 会让一个可选字段拖垮整个 compare 响应。
+		slog.Warn("loadSessionTagsForCompare iteration aborted; tags degraded", "error", rerr)
 	}
 	return out
 }
@@ -737,11 +845,7 @@ func (api *HandoffAPI) HandleHandoff(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := api.executeHandoff(ctx, req)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Handoff failed",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Handoff failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -795,10 +899,10 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 			SELECT COALESCE(rb.request_body) AS request_body,
 			       COALESCE(rb.response_body) AS response_body,
 			       rl.ts
-			FROM request_logs_with_current_month rl
-			LEFT JOIN request_logs_bodies_with_current_month rb 
+			FROM `+db.SessionFamilyTurnsForSessionSQL()+` rl
+			LEFT JOIN request_logs_bodies_with_current_month rb
 			  ON rb.request_id = rl.request_id
-			WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+			WHERE rl.tenant_id = $2
 			ORDER BY rl.ts DESC
 			LIMIT 3
 		`, sessionID, tenantID)
@@ -811,6 +915,7 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 			var reqBody, respBody *string
 			var createdAt time.Time
 			if err := rows.Scan(&reqBody, &respBody, &createdAt); err != nil {
+				warnRowSkip("generateHandoffSummary", err)
 				continue
 			}
 			s := fmt.Sprintf("[%s] ", createdAt.Format("15:04:05"))
@@ -821,6 +926,11 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 				s += " → " + extractResponseSummary(*respBody)
 			}
 			summaries = append(summaries, s)
+		}
+		// 摘要富化降级通道：中断留痕后按已取到的摘要继续（闭包返回 err 会把富化
+		// 失败升格成端点 500，与 best-effort 语义不符）。
+		if rerr := rows.Err(); rerr != nil {
+			slog.Warn("generateHandoffSummary iteration aborted; summary degraded", "error", rerr)
 		}
 		return nil
 	})
@@ -917,7 +1027,14 @@ func countCompletedTasks(summary string) int {
 // The actual settings are registered via settings/spec_compression.go:
 //
 //	compression.enabled  (bool, default=true)  — master switch
-//	handoff.enabled      (bool, default=true)  — handoff master switch
+//	handoff.enabled      (bool, default=false) — handoff master switch
+//
+// 2026-10-01 R74 (comment correction): this used to say handoff.enabled
+// defaults to true. It does not — settings/handoff_specs.go:45 ships
+// Default: false, and cmd/gateway/goal_control.go's boot-time default agrees.
+// Anyone sizing capacity or reasoning about behaviour off this comment would
+// conclude the handoff path is live by default when it is off by default and
+// additionally inert under the default client_mode=transparent.
 
 // HandoffEnabled checks if handoff feature is available for a tenant.
 // This is a server-side safety check. The UI also checks the settings.

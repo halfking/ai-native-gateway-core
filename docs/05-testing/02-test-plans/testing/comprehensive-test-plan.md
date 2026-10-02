@@ -1,7 +1,7 @@
 # LLM Gateway 全方位测试方案
 
-**版本**: v1.0
-**日期**: 2026-07-22
+**版本**: v1.2
+**日期**: 2026-09-22
 **目标**: 确保系统在供应商不稳定情况下的高可用性
 **核心诉求**: 快速检测、智能路由、自适应负载均衡
 
@@ -732,7 +732,47 @@ curl http://127.0.0.1:6060/debug/pprof/goroutine?debug=1
 | systemd stop/restart | 退出完成时间小于 `TimeoutStopSec`，不得被 SIGKILL |
 | Redis/PG 不可用 | 进入明确降级状态，不得后台无限重试或泄漏 goroutine |
 
-### 11.7 测试报告要求
+**§11.6 第三行展开（HTTP 200 空响应或 SSE 无 `[DONE]`）**：
+
+- 空响应 / `chunk_count == 0` / 未写任何语义帧：
+  - 网关 Resumable=true（透明 failover），失败降级到下一个候选；
+  - 全部候选都空响应时，由调用方返回 502 / 结构化错误，不写伪成功。
+- 已 committed 截断流（HTTP 200 + 已发 ≥1 语义帧，但未收到 `data: [DONE]`，上游直接 EOF）：
+  - 不可透明重试（会复制已 committed 的字节），所以走「结构化错误」路径；
+  - 网关在已发内容末尾追加 `data: {"error":{"type":"upstream_incomplete","message":"upstream closed the stream without sending [DONE]","code":"eof_without_done"}}`，
+    再合成一个 `data: [DONE]\n\n`（让 OpenAI SDK 收尾）；
+  - `outcome.Interrupted = true`，`Reason = "eof_without_done"`，
+    `Kind = KindUpstreamDown`，`Resumable = false`；
+  - `capture.MarkInterruptedWithReason("eof_without_done")` 让
+    `request_logs.success = false`、`failure_detail_code = "eof_without_done"`、
+    `error_kind = "eof_without_done"`；电路熔断 / 凭据健康度正确计入失败；
+  - `metrics.RecordStreamSynthesizedDone` 仍递增（合成终止符确实落到线上），
+    让运维能 SQL 筛到「哪些供应商省略 [DONE]」。
+  - **严禁**在 committed 截断时仍按 `Interrupted=false / Reason="eof_without_done_after_commit"` 标 success（那是 §11.6 禁止的伪成功）。
+- 操作员 SQL 过滤：「committed 但截断」用
+  `chunk_count > 0 AND failure_detail_code = 'eof_without_done'` 区分「未 committed 截断」。
+- 154/245 上的验收：实时脚本注入「上游不发 [DONE] + EOF」场景，断言请求日志 success=false +
+  流式响应体内含 `upstream_incomplete` 错误帧 + 苏宁错误帧位于合成 [DONE] 之前。本地 mock
+  16/16 不替代此验收（mock 不模拟此协议违例）。
+
+### 11.7 本地 mock 压测（不能代替本节门禁）
+
+`tests/stress/` 是 **mock 上游 + 内嵌测试网关**（`tests/stress/gateway`，不是
+`cmd/gateway`）的回归 harness。本地 16/16 PASS 只证明测试网关 + mock，且：
+
+- 供应商必须是 `mock-*` / `mock-stress-*`，禁止真实供应商；
+- `mock-stress-fast` 只绑 alpha/beta/gamma；`mock-stress-large` 只绑 delta；
+  `mock-stress-pool` 绑四家（s14）；网关 HTTP `Proxy: nil`；
+- stream 成功必须含 `data: [DONE]`；测试网关对 mock SSE **先缓冲再写客户端**，
+  缺 `[DONE]` 不 committed、可 failover（这不是生产 `cmd/gateway` 行为）；
+- timeout 场景 wall clock ≥ 20s；s7 恢复必须重新出现 `mock-alpha`；
+- 长 prompt ≥ 20k 字符；s9 是 200@c25 短突发，不是 30 分钟 soak。
+
+**明确不覆盖**：154/245、真实模型、30 分钟 RSS、生产 `credentialhealth`、
+cgroup 内存上限、TPM。§11.3 顺序与 §11.4 发布门禁仍然以真实供应商为准。
+报告口径见 `tests/stress/REPORT.md`。
+
+### 11.8 测试报告要求
 
 每次 154/245 测试必须保存以下脱敏证据：
 
@@ -774,6 +814,6 @@ integration/
 
 ---
 
-**文档版本**: v1.1
-**最后更新**: 2026-08-20 16:30 UTC+8
-**下次审查**: 实现Phase 1后更新
+**文档版本**: v1.2
+**最后更新**: 2026-09-22 02:10 UTC+8
+**下次审查**: 154/245 §11 真实供应商门禁执行后更新。v1.2 仅澄清：本地 `tests/stress/` mock 16/16 不能代替 §11。

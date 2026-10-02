@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -24,7 +25,8 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		return
 	}
 	if db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		// Subtask 4（§6）：池子为空即存储降级，走统一的 503 + storage_status。
+		WriteStorageDegraded(w, observability.StorageComponentTurns, ErrNilDatabasePool)
 		return
 	}
 	tenantID := tenantFromQueryOrContext(r)
@@ -53,11 +55,28 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
                COALESCE(t.attachment_count,0), t.request_id,
 			   COALESCE(t.cache_read_tokens,0), t.latency_ms, COALESCE(t.success,FALSE),
                t.error_kind, t.compression_applied, t.compression_tokens_saved, t.digest,
-               NULL::jsonb, NULL::jsonb
+               NULL::jsonb, NULL::jsonb,
+               EXISTS (
+                   SELECT 1
+                   FROM public.session_bodies_unified b
+                   WHERE b.tenant_id = t.tenant_id
+                     AND b.session_id = t.session_id
+                     AND b.turn_no = t.turn_no
+                     AND b.request_id = t.request_id
+	                     AND ((b.request_delta IS NOT NULL AND b.request_delta <> 'null'::jsonb)
+	                       OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
+	                       OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb))
+	               )
         FROM public.session_turns_with_current_month t
         WHERE t.tenant_id=$1 AND t.session_id=$2 AND t.turn_no < $3
         ORDER BY t.turn_no DESC LIMIT $4`, tenantID, sessionID, before, limit+1)
 	if err != nil {
+		// Subtask 4（§6）：区分「存储不可达」（503 降级）与「查询本身出错」
+		// （500）。此前的固定 500 会让一次数据库抖动被当成代码缺陷。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "query turns failed")
 		return
 	}
@@ -72,10 +91,15 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		var success, compression bool
 		var saved *int
 		var digestRaw, requestRaw, responseRaw []byte
+		var bodyPresent bool
 		if err := rows.Scan(&it.TurnNo, &it.Ts, &it.Title, &it.Summary, &it.RequestTokens, &it.ResponseTokens,
 			&it.CostUSD, &it.Model, &it.Provider, &it.StatusCode, &it.SubmitMode, &it.InjectionVerdict,
 			&it.OutputVerdict, &it.AttachmentCount, &requestID, &cacheRead, &latency, &success, &errorKind,
-			&compression, &saved, &digestRaw, &requestRaw, &responseRaw); err != nil {
+			&compression, &saved, &digestRaw, &requestRaw, &responseRaw, &bodyPresent); err != nil {
+			if IsStorageUnavailable(err) {
+				WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
 		}
@@ -87,16 +111,31 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		it.LatencyMs = latency
 		it.Digest = persistedDigestOrFallback(digestRaw, reqBody, respBody, meta, gov)
 		it.ChildRequests = []*SessionChildRequest{}
+		// contract_freeze §1.6：本 turn 的归属会话恒为 session_id（V2
+		// 文本 surrogate），与 request_id / attempt_id / gw_session_id /
+		// SessionPK 互不替代。PrimaryKey 沿用查询入参 sessionID。
+		it.IDKind = "session_id"
+		it.PrimaryKey = sessionID
+		it.BodyStatus = bodyStatusFromPresent(bodyPresent)
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "iterate turns failed")
 		return
 	}
 	// V2 shadow writes may not exist for older sessions. Read-time fallback keeps
 	// the unified route useful without exposing the legacy tree cursor contract.
 	if len(items) == 0 && r.URL.Query().Get("cursor") == "" {
-		if fallback, ok := unifiedTurnsTreeFallback(r.Context(), db, sessionID, tenantID, limit); ok {
+		fallback, ok, unavail := unifiedTurnsTreeFallback(r.Context(), db, sessionID, tenantID, limit)
+		if unavail != nil {
+			WriteStorageDegraded(w, observability.StorageComponentTurns, unavail)
+			return
+		}
+		if ok {
 			writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "turns": fallback, "count": len(fallback), "has_more": false, "next_cursor": "", "source": "tree_fallback"})
 			return
 		}
@@ -126,6 +165,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 			ORDER BY parent_request_id ASC, request_id ASC
 			LIMIT `+strconv.Itoa(maxChildRequestsPerPage+1), tenantID, ids)
 		if err != nil {
+			if IsStorageUnavailable(err) {
+				WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "query child requests failed")
 			return
 		}
@@ -135,10 +178,18 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 			var c SessionChildRequest
 			var typ, actor string
 			if err := crows.Scan(&parent, &c.RequestID, &c.Status, &c.LatencyMs, &typ, &actor); err != nil {
+				if IsStorageUnavailable(err) {
+					WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+					return
+				}
 				writeError(w, http.StatusInternalServerError, "scan child request failed")
 				return
 			}
 			c.RequestType = normalizeChildRequestType(typ, actor)
+			// contract_freeze §1.6：child request 自身由 request_id 标识，
+			// 但归属会话恒为 session_id —— 与 gw_session_id 显式区分。
+			c.IDKind = "session_id"
+			c.PrimaryKey = sessionID
 			if parentItem := index[parent]; parentItem != nil && len(parentItem.ChildRequests) < maxChildRequestsPerParent {
 				if totalChildRequests(items) >= maxChildRequestsPerPage {
 					break
@@ -147,6 +198,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 			}
 		}
 		if err := crows.Err(); err != nil {
+			if IsStorageUnavailable(err) {
+				WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "iterate child requests failed")
 			return
 		}
@@ -182,14 +237,24 @@ func statusCodeForTreeStatus(status string) int {
 	}
 }
 
-func unifiedTurnsTreeFallback(ctx context.Context, db sessionTurnsDB, sessionID, tenantID string, limit int) ([]TurnListItem, bool) {
+// 第三个返回值非 nil 表示 fallback 查询失败且判定为存储不可用（十七轮审计：
+// 此前所有错误一律吞成 ok=false，V2 表空 + tree 读故障时客户端拿到 200 空列表，
+// 真实故障被静默掩盖）。非存储类错误仍按原语义吞掉——老会话 fallback 失败
+// 不应把本可成功的 v2 响应变成 5xx。
+func unifiedTurnsTreeFallback(ctx context.Context, db sessionTurnsDB, sessionID, tenantID string, limit int) ([]TurnListItem, bool, error) {
 	result, err := querySessionTurnsTree(ctx, db, sessionTurnsTreeParams{
 		SessionID: sessionID,
 		TenantID:  tenantID,
 		Limit:     limit,
 	})
-	if err != nil || result.NotFound || result.Forbidden {
-		return nil, false
+	if err != nil {
+		if IsStorageUnavailable(err) {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	if result.NotFound || result.Forbidden {
+		return nil, false, nil
 	}
 	items := make([]TurnListItem, 0, len(result.Turns))
 	for _, turn := range result.Turns {
@@ -203,9 +268,13 @@ func unifiedTurnsTreeFallback(ctx context.Context, db sessionTurnsDB, sessionID,
 			StatusCode:    statusCodeForTreeStatus(turn.Status),
 			LatencyMs:     latencyValue(turn.LatencyMs),
 			ChildRequests: turn.ChildRequests,
+			// R69：tree_fallback 分支此前不填身份标注，契约"显式标注"
+			// 在老会话（无 V2 shadow）路径落空；入参已有 sessionID，补齐。
+			IDKind:     "session_id",
+			PrimaryKey: sessionID,
 		})
 	}
-	return items, true
+	return items, true, nil
 }
 func sessionTurnsListRouting() string {
 	if settings.Global == nil {

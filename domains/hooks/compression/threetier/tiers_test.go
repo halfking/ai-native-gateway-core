@@ -155,3 +155,17 @@ func TestShortHash_Stable(t *testing.T) {
 		t.Error("different inputs must produce different hashes")
 	}
 }
+
+func TestDetectMisalignmentUsesRebuiltSourceScope(t *testing.T) {
+	state := &compression.SessionState{RawTokenEstimate: 30, RawMsgCount: 2,
+		CompressionSourceSnapshot: compression.MessageSnapshot{Hash: "rebuilt", TokenEstimate: 100, MessageCount: 5},
+		CompressedTokens:          90, CompressedMsgs: 4}
+	if got := DetectMisalignment(state); len(got) > 0 {
+		t.Fatalf("compared rebuilt history to delta: %+v", got)
+	}
+	state.CompressedTokens = 110
+	state.CompressedMsgs = 6
+	if got := DetectMisalignment(state); len(got) != 2 {
+		t.Fatalf("real source regression missed: %+v", got)
+	}
+}

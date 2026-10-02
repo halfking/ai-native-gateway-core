@@ -9,11 +9,11 @@
 package bg
 
 import (
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"io"
 	"net/http"
 	"regexp"
@@ -37,6 +37,12 @@ const (
 	ProbeModeChatPing
 	// ProbeModeMessages: POST /v1/messages (Anthropic-specific)
 	ProbeModeMessages
+	// ProbeModeResponses: POST /v1/responses with max_output_tokens
+	// (OpenAI Responses API, 2026-09-25). openai-responses relays reject
+	// chat max_tokens=1 pings with 400 "Could not finish the message ..."
+	// (vapeur/hxt-local gpt-5.6-terra user report), so Layer 4 must ping
+	// them in their native protocol.
+	ProbeModeResponses
 )
 
 // probeBackoff is the retry schedule for Layer 1 (model list) probe.
@@ -54,6 +60,10 @@ type httpProbeResult struct {
 	latencyMs   int
 	modelListed bool     // model was found in the response body (piggy-back)
 	modelIDs    []string // all model IDs from the response (used to evaluate modelListed)
+	// supportsResponses records only direct native endpoint evidence. It is
+	// kept through Chat fallback so fallback success cannot turn a negative
+	// Responses verdict into a positive one.
+	supportsResponses *bool
 }
 
 var (
@@ -127,6 +137,49 @@ func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, de
 	latencyMs := int(time.Since(start).Milliseconds())
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return classifyHTTPResponse(resp.StatusCode, string(respBody), latencyMs)
+}
+
+// singleResponsesPing does ONE POST /v1/responses ping (2026-09-25).
+// Body is the Responses-native {"input","max_output_tokens"} shape — sending
+// a chat body here would 400 on compliant relays (vapeur: chat max_tokens=1
+// → "Could not finish the message...", responses floor max_output_tokens=16).
+func singleResponsesPing(ctx context.Context, endpoint, apiKey, modelField string, desc providercap.Descriptor, credID int, rawModel string) httpProbeResult {
+	start := time.Now()
+	body, _ := json.Marshal(map[string]any{
+		"model":             modelField,
+		"input":             "ping",
+		"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return httpProbeResult{
+			status: "network", category: probeCategoryProviderError,
+			errCode: "request_build", errMsg: fmt.Sprintf("build request failed: %s (url=%s)", err.Error(), endpoint),
+			latencyMs: int(time.Since(start).Milliseconds()),
+		}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	providercap.ApplyAuthHeaders(req, desc, apiKey)
+
+	resp, err := probeChatClient.Do(req)
+	if err != nil {
+		return httpProbeResult{
+			status: "network", category: probeCategoryProviderError,
+			errCode: "request_error", errMsg: fmt.Sprintf("upstream call failed: %s (cred_id=%d, url=%s, model=%s)", err.Error(), credID, endpoint, rawModel),
+			latencyMs: int(time.Since(start).Milliseconds()),
+		}
+	}
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
+	latencyMs := int(time.Since(start).Milliseconds())
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	result := classifyHTTPResponse(resp.StatusCode, string(respBody), latencyMs)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		result.supportsResponses = boolEvidence(true)
+	} else if providercap.ResponsesUnsupportedError(resp.StatusCode, string(respBody)) {
+		result.supportsResponses = boolEvidence(false)
+	}
+	return result
 }
 
 // classifyHTTPResponse maps an HTTP response (status + body) to probeCategory.
@@ -340,6 +393,8 @@ func probeWithRetry(
 		switch mode {
 		case ProbeModeChatPing:
 			result = singleChatPing(ctx, endpoint, t.APIKey, t.RawModel, desc, t.CredentialID, t.RawModel)
+		case ProbeModeResponses:
+			result = singleResponsesPing(ctx, endpoint, t.APIKey, t.RawModel, desc, t.CredentialID, t.RawModel)
 		case ProbeModeMessages:
 			// Same as chat ping for now (uses POST /v1/messages); uses outbound model.
 			modelField := t.OutboundModel
@@ -360,6 +415,26 @@ func probeWithRetry(
 				result.category = probeCategoryModelUnavailable
 				result.errCode = "model_not_listed"
 				result.errMsg = fmt.Sprintf("model %q not in /v1/models response (%d models found)", t.RawModel, len(result.modelIDs))
+			}
+		}
+		// 2026-09-28 vapeur 轮：responses 探针命中「不支持 Responses API」
+		// 裁决 → chat 降级复探（见 probe_responses_fallback.go）。否则
+		// consensus 会把 claude/qwen 等经 chat 完全可用的模型推向
+		// broken_confirmed → binding available=FALSE（model_probe_broken）。
+		if mode == ProbeModeResponses && providercap.ResponsesUnsupportedError(result.httpStatus, result.errMsg) {
+			capabilityEvidence := result.supportsResponses
+			modelField := t.OutboundModel
+			if modelField == "" {
+				modelField = t.RawModel
+			}
+			fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, probeChatClient, t.APIKey, t.BaseURL, modelField)
+			if fbOK {
+				okResult := classifyHTTPResponse(fbStatus, fbBody, result.latencyMs+fbLatency)
+				okResult.errMsg = responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, true)
+				okResult.supportsResponses = capabilityEvidence
+				result = okResult
+			} else {
+				result.errMsg += "; " + responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, false)
 			}
 		}
 		// Non-retryable conditions: success or auth/404 (definitive errors).
@@ -394,6 +469,8 @@ func resolveProbeEndpoint(t probeTarget, desc providercap.Descriptor, mode Probe
 		return candidates[0]
 	case ProbeModeChatPing:
 		return upstreamurl.Build(t.BaseURL, desc.ChatProbeEndpoint)
+	case ProbeModeResponses:
+		return upstreamurl.Build(t.BaseURL, upstreamurl.EpResponses)
 	case ProbeModeMessages:
 		return upstreamurl.Build(t.BaseURL, upstreamurl.EpMessages)
 	}

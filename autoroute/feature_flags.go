@@ -59,19 +59,25 @@ type FeatureFlags struct {
 	// Default off; independent of the other AutoOn* flags.
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
-	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	// Deprecated: 属遗留 flag（autoroute/internal/legacyflags），唯一来源是
+	// env AUTO_ON_MESSAGES。2026-09-29 (审计二十一轮) 勘误：URSM_V2_MODE
+	// 管的是 URSM v2 路由状态管理器（domains/ursm/v2/config.go），与本 flag
+	// 无任何代码路径关联——不存在「用 URSM_V2_MODE 替代」的开关；协议面
+	// auto 现状只能用 AUTO_ON_* 控制（消费点 auto_route_nonchat.go）。
 	AutoOnMessages bool
 	// AutoOnResponses gates model=auto on non-chat endpoints (22 章 §22.2).
 	// Default off; independent of the other AutoOn* flags.
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
-	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	// Deprecated: 同 AutoOnMessages（env AUTO_ON_RESPONSES；URSM_V2_MODE
+	// 与本 flag 无关，见上方勘误）。
 	AutoOnResponses bool
 	// AutoOnEmbeddings gates model=auto on non-chat endpoints (22 章 §22.2).
 	// Default off; independent of the other AutoOn* flags.
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
-	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	// Deprecated: 同 AutoOnMessages（env AUTO_ON_EMBEDDINGS；URSM_V2_MODE
+	// 与本 flag 无关，见上方勘误）。
 	AutoOnEmbeddings bool
 	// AutoEmbeddingRoute enables the M3 embedding shadow path. Default off.
 	//
@@ -112,6 +118,27 @@ type FeatureFlags struct {
 	AutoOptimizationV3Version      string
 	AutoOptimizationV3Scope        TreatmentScope
 	AutoOptimizationV3AutoRollback bool
+
+	// AutoRoleRoutingEnabled（R48, 2026-09-20）开启会话角色 × 任务类型
+	// (TaskKind) 的 LLM 路由：worker/planner/orchestrator 子代理的请求按
+	// role_llm_router 偏好提升候选。默认 false——关闭时 Decide/DecideV2
+	// 的决策结果与序列化字节和本特性加入之前完全一致（role 路由代码块
+	// 整体跳过，审计字段保持零值/omitempty）。
+	// 环境变量：AUTO_ROLE_ROUTING_ENABLED。
+	AutoRoleRoutingEnabled bool
+
+	// AutoRoleMainstreamFallback（R52, 2026-10-01）控制 role 路由的
+	// **主流兜底层**：SelectLLM 的 kind 偏好（多为轻量池低价模型）整层
+	// 都不在候选池时，是否继续追加 builtinMainstreamFallback（重量池：
+	// glm-5.3 / claude-opus-5 / gpt-5.6-sol / grok-4.6 / deepseek-v4-pro）
+	// 作为最后一层。
+	//
+	// 默认 **true**——「低价模型不可用就静默让位给评分结果」是 R52 要修的
+	// 缺陷本身，兜底是默认行为而不是可选项。父开关
+	// AutoRoleRoutingEnabled 仍默认 false，因此对既有部署零影响。
+	// 需要退回旧口径（整层不可用即让位）的部署显式设 false。
+	// 环境变量：AUTO_ROLE_ROUTING_MAINSTREAM_FALLBACK。
+	AutoRoleMainstreamFallback bool
 }
 
 // DefaultFeatureFlags returns the default flags.
@@ -152,6 +179,11 @@ func DefaultFeatureFlags() *FeatureFlags {
 		AutoOptimizationV3VariantPct:   0,
 		AutoOptimizationV3Scope:        TreatmentScopeTenant,
 		AutoOptimizationV3AutoRollback: false,
+		// R48 role 路由：默认关闭（flag-off 决策字节级不变）。
+		AutoRoleRoutingEnabled: false,
+		// R52 主流兜底层：默认开启（父开关关闭时不生效）。
+		// Opt-out：AUTO_ROLE_ROUTING_MAINSTREAM_FALLBACK=false。
+		AutoRoleMainstreamFallback: true,
 	}
 }
 
@@ -193,6 +225,10 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		AutoOptimizationV3Version:      os.Getenv("AUTO_OPTIMIZATION_V3_VERSION"),
 		AutoOptimizationV3Scope:        parseTreatmentScope(os.Getenv("AUTO_OPTIMIZATION_V3_SCOPE")),
 		AutoOptimizationV3AutoRollback: getEnvBool("AUTO_OPTIMIZATION_V3_AUTO_ROLLBACK", false),
+		// R48 role 路由灰度开关（默认 false）。
+		AutoRoleRoutingEnabled: getEnvBool("AUTO_ROLE_ROUTING_ENABLED", false),
+		// R52 主流兜底层（默认 true；父开关关闭时不生效）。
+		AutoRoleMainstreamFallback: getEnvBool("AUTO_ROLE_ROUTING_MAINSTREAM_FALLBACK", true),
 	}
 
 	if flags.EnableV2Logic {
@@ -311,6 +347,9 @@ func activeFeatureNames(flags *FeatureFlags) []string {
 	}
 	if flags.UseStandardIQGate && flags.MinStandardIQ > 0 {
 		features = append(features, "standard_iq_gate")
+	}
+	if flags.AutoRoleRoutingEnabled {
+		features = append(features, "role_routing")
 	}
 	return features
 }

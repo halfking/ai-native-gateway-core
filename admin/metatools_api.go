@@ -23,7 +23,7 @@ func (h *MetaToolsHandler) ListCategories(w http.ResponseWriter, r *http.Request
 
 	categories, err := h.handler.ListCategories(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -49,7 +49,7 @@ func (h *MetaToolsHandler) LoadTools(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.handler.LoadTools(ctx, req.Categories)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 

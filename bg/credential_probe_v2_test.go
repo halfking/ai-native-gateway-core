@@ -290,7 +290,7 @@ func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.
 		"Available:     modelAvailable",
 		"UPDATE credential_model_bindings cmb",
 		"pm.raw_model_name = $2",
-		"cmb.unavailable_reason = 'auto_probe_model_binding'",
+		"cmb.unavailable_reason IN ('auto_probe_model_binding', 'auto_model_not_found', 'auto_model_deprecated')",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("binding failure closure is missing %q", want)

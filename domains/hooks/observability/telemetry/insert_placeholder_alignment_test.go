@@ -299,6 +299,7 @@ func expectedArgIdent(col string) string {
 		"protocol_conversion": "ProtocolConversion", "virtual_client_id": "VirtualClientID",
 		"discard_events": "DiscardEvents", "customer_id": "CustomerID",
 		"request_class": "RequestClass", "due_at": "DueAt",
+		"credits_rate_multiplier": "RateMultiplier", // Wave 3 B1 (migration 736)
 	}
 	if v, ok := aliases[col]; ok {
 		return v

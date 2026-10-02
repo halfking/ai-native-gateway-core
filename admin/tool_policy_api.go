@@ -95,11 +95,7 @@ func (api *PolicyAPI) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		req.TenantID, req.ToolPattern, req.PolicyType, req.Reason, req.CreatedBy,
 	).Scan(&id, &createdAt, &updatedAt)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to create policy",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to create policy", err)
 		return
 	}
 
@@ -143,11 +139,7 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := api.db.Query(ctx, query, tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to list policies",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to list policies", err)
 		return
 	}
 	defer rows.Close()
@@ -163,6 +155,7 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		)
 		err := rows.Scan(&id, &tid, &pattern, &ptype, &reason, &enabled, &createdAt, &updatedAt, &createdBy)
 		if err != nil {
+			warnRowSkip("toolPolicy.HandleList", err)
 			continue
 		}
 		policies = append(policies, map[string]any{
@@ -176,6 +169,11 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 			"updated_at":   updatedAt,
 			"created_by":   createdBy,
 		})
+	}
+	// 工具策略少一截 = 某条禁用/限流规则看不见了 = 静默放行。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate policies", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -220,11 +218,7 @@ func (api *PolicyAPI) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	tag, err := api.db.Exec(ctx, "DELETE FROM tenant_tool_policies WHERE id = $1", id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to delete policy",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to delete policy", err)
 		return
 	}
 
@@ -341,11 +335,7 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := api.db.Query(ctx, query, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to query stats",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to query stats", err)
 		return
 	}
 	defer rows.Close()
@@ -361,6 +351,7 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 		)
 		err := rows.Scan(&tid, &ttenantID, &usageDate, &callCount, &successCount, &errCount, &avgLatency, &lastCalled)
 		if err != nil {
+			warnRowSkip("toolPolicy.usageStats", err)
 			continue
 		}
 		entry := map[string]any{
@@ -376,6 +367,10 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 			entry["last_called_at"] = *lastCalled
 		}
 		stats = append(stats, entry)
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate usage stats", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -440,11 +435,7 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 
 	rows, err := api.db.Query(ctx, query, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to query top tools",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to query top tools", err)
 		return
 	}
 	defer rows.Close()
@@ -458,6 +449,7 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 		)
 		err := rows.Scan(&tid, &ttenantID, &calls, &success, &errCount, &avgLatency)
 		if err != nil {
+			warnRowSkip("toolPolicy.handleTopTools", err)
 			continue
 		}
 		tools = append(tools, map[string]any{
@@ -469,6 +461,10 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 			"avg_latency_ms": avgLatency,
 			"success_rate":   fmt.Sprintf("%.2f%%", float64(success)/float64(calls)*100),
 		})
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate top tools", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

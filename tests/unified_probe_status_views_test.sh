@@ -22,10 +22,22 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -z "${PGDATABASE:-}" && -f "$ROOT_DIR/.env.local" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT_DIR/.env.local"
+  # .env.local 现行形态是整串 DSN(LLM_GATEWAY_DATABASE_URL),不再保证
+  # 拆分变量 LLM_GATEWAY_DB_PASSWORD;有 DSN 时从 URL 解析,避免 set -u 未绑定。
+  local_password=""
+  if [[ -n "${LLM_GATEWAY_DB_PASSWORD:-}" ]]; then
+    local_password="$LLM_GATEWAY_DB_PASSWORD"
+  elif [[ -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
+    local_password="$(printf '%s' "$LLM_GATEWAY_DATABASE_URL" | sed -n 's|^[a-z+]*://[^:/@]*:\([^@]*\)@.*|\1|p')"
+  fi
+  if [[ -z "$local_password" ]]; then
+    echo "!! .env.local 既无 LLM_GATEWAY_DB_PASSWORD 也无可解析的 LLM_GATEWAY_DATABASE_URL — 跳过(需真实 PG)" >&2
+    exit 0
+  fi
   export PGHOST="${LOCAL_PG_HOST:-127.0.0.1}"
   export PGPORT="${LOCAL_PG_PORT:-5432}"
   export PGUSER="${LLM_GATEWAY_DB_USER:-llm_gateway}"
-  export PGPASSWORD="$LLM_GATEWAY_DB_PASSWORD"
+  export PGPASSWORD="$local_password"
   export PGDATABASE="${LOCAL_PG_LLM_GATEWAY_DATABASE:-llm_gateway}"
 fi
 

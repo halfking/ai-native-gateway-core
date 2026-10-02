@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -161,7 +162,7 @@ func (w *SessionLifecycleWorker) Start(ctx context.Context) {
 		return
 	}
 	ctx, w.cancel = context.WithCancel(ctx)
-	go w.run(ctx)
+	Go("session_lifecycle_worker.run", func() { w.run(ctx) })
 	slog.Info("session lifecycle worker started",
 		"cleanup_interval", w.cleanupInterval,
 		"idle_timeout", w.idleTimeout,
@@ -270,7 +271,9 @@ func (w *SessionLifecycleWorker) recycleIdle(ctx context.Context) (int, error) {
 		var c candidate
 		var lastActive *time.Time
 		if err := rows.Scan(&c.id, &c.tenantID, &lastActive); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.SessionLifecycleWorker.recycleIdle", err) {
+				continue
+			}
 		}
 		if lastActive != nil {
 			c.lastActiveAt = *lastActive
@@ -324,7 +327,9 @@ func (w *SessionLifecycleWorker) recycleAbsolute(ctx context.Context) (int, erro
 		var c candidate
 		var first *time.Time
 		if err := rows.Scan(&c.id, &c.tenantID, &first); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.SessionLifecycleWorker.recycleAbsolute", err) {
+				continue
+			}
 		}
 		if first != nil {
 			c.created = *first
@@ -373,9 +378,19 @@ func (w *SessionLifecycleWorker) evictExcess(ctx context.Context) (int, error) {
 	for rows.Next() {
 		var t string
 		var cnt int
-		if err := rows.Scan(&t, &cnt); err == nil {
+		if err := rows.Scan(&t, &cnt); err != nil {
+			if dbrows.SkipOrFail("bg.SessionLifecycleWorker.evictExcess/findTenants", err) {
+				continue
+			}
+		} else {
 			tenants = append(tenants, t)
 		}
+	}
+	// R66: 超限租户批被截断 = 少驱逐若干租户的会话，租户配额上限被静默
+	// 突破。worker 继续跑，只留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("session_lifecycle: over-quota tenant row iteration aborted; batch truncated",
+			"error", err, "tenants", len(tenants), "max_per_tenant", w.maxPerTenant)
 	}
 
 	count := 0
@@ -436,9 +451,19 @@ func (w *SessionLifecycleWorker) evictOneTenant(ctx context.Context, tenantID st
 	var candidates []cand
 	for rows.Next() {
 		var c cand
-		if err := rows.Scan(&c.id, &c.lastActive, &c.firstActive); err == nil {
+		if err := rows.Scan(&c.id, &c.lastActive, &c.firstActive); err != nil {
+			if dbrows.SkipOrFail("bg.SessionLifecycleWorker.evictOneTenant", err) {
+				continue
+			}
+		} else {
 			candidates = append(candidates, c)
 		}
+	}
+	// R66: 驱逐候选批被截断 = 该租户只驱逐了部分超限会话，evicted 计数
+	// 随之偏小而配额仍超限。worker 继续跑，只留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("session_lifecycle: eviction candidate row iteration aborted; batch truncated",
+			"tenant_id", tenantID, "error", err, "candidates", len(candidates), "overflow", overflow)
 	}
 
 	count := 0

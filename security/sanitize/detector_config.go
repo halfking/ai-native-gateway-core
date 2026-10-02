@@ -22,6 +22,7 @@ type patternCategory struct {
 
 type patternDefinition struct {
 	Regex string `yaml:"regex"`
+	Group int    `yaml:"group"`
 }
 
 // NewPatternDetectorFromFile loads the shared sensitive-pattern configuration.
@@ -96,7 +97,10 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 			if err != nil {
 				return nil, fmt.Errorf("compile pattern failed: %w (name=%s)", err, name)
 			}
-			entries = append(entries, patternEntry{sType: sensitiveTypeForPattern(category.name, name), regex: re})
+			if pattern.Group < 0 || pattern.Group > re.NumSubexp() {
+				return nil, fmt.Errorf("invalid capture group (name=%s)", name)
+			}
+			entries = append(entries, patternEntry{sType: sensitiveTypeForPattern(category.name, name), regex: re, group: pattern.Group})
 		}
 	}
 	if len(entries) == 0 {
@@ -115,6 +119,12 @@ func sensitiveTypeForPattern(category, name string) SensitiveType {
 		return TypeEmail
 	case "bank_card":
 		return TypeCreditCard
+	case "account":
+		return TypeAccount
+	case "server_ip", "server_ipv6":
+		return TypeServerIP
+	case "internal_ip":
+		return TypeInternalIP
 	}
 	if category == "secret" {
 		return TypeSecret

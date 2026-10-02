@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -13,15 +14,39 @@ import (
 const (
 	dailyProbeLookback = 72 * time.Hour
 	dailyProbeInterval = 24 * time.Hour
+	// dailyProbeAuditBatch caps one audit run. The pre-2026-09-20 query had
+	// NO bound: a busy fleet's 3-day used∪failed pair set was submitted in
+	// full every 24h. 100 pairs/day fleet-wide keeps the daily nudge cheap;
+	// error pairs beyond it are still owned by their own failure ladders.
+	dailyProbeAuditBatch = 100
+	// dailyProbeUsagePerCredentialCap bounds the usage branch (INV-4 budget):
+	// per error-evidence credential, verify at most the 2 most recently used
+	// models per audit pass. Combined with the credential two-success gate a
+	// recovering credential stops consuming audit slots after two probe
+	// successes.
+	dailyProbeUsagePerCredentialCap = 2
 )
 
 type dailyProbeAuditorDB interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// DailyProbeAudit submits every credential/model pair used or degraded in the
-// last three days to NodeProbeWorker. NodeProbeWorker performs in-memory and
-// database-level deduplication/backoff; Submit itself is not a durable queue.
+// DailyProbeAudit submits credential/model pairs that need a daily nudge to
+// NodeProbeWorker. 2026-09-20 probe-volume policy
+// (docs/probe/2026-09-20-probe-volume-optimization.md) re-scoped it from
+// "everything used or failed in 3 days" to an error-gated verification scan:
+//
+//   - usage branch: only credentials with failure evidence in the window
+//     (candidate_failure_logs), only models with real (non-probe) traffic on
+//     that credential in 3 days, at most 2 per credential;
+//   - failure branch: pairs that actually failed in 3 days (the tracking
+//     set), deduped against the usage branch;
+//   - credentials that already have ≥2 distinct models whose latest probe
+//     run succeeded within 24h are skipped entirely (两连成功早停);
+//   - the whole run is bounded by dailyProbeAuditBatch.
+//
+// Healthy no-error credentials produce zero submissions — business success is
+// the health evidence; continuous probing is the failure ladders' job.
 type DailyProbeAudit struct {
 	db     dailyProbeAuditorDB
 	worker *NodeProbeWorker
@@ -47,7 +72,9 @@ func (a *DailyProbeAudit) Start(ctx context.Context) {
 	}
 	a.startOnce.Do(func() {
 		go func() {
-			a.run(ctx)
+			// R50 审计 P3：裸 go 无 recover，单次 panic 即整进程崩溃——
+			// 每轮 run 单独守护，panic 后循环继续（带 recover 的 runRecovered）。
+			a.runRecovered(ctx)
 			ticker := time.NewTicker(dailyProbeInterval)
 			defer ticker.Stop()
 			for {
@@ -57,11 +84,15 @@ func (a *DailyProbeAudit) Start(ctx context.Context) {
 				case <-a.stopCh:
 					return
 				case <-ticker.C:
-					a.run(ctx)
+					a.runRecovered(ctx)
 				}
 			}
 		}()
-		slog.Info("daily probe audit started", "lookback", dailyProbeLookback, "interval", dailyProbeInterval)
+		slog.Info("daily probe audit started (error-gated verification scan)",
+			"lookback", dailyProbeLookback,
+			"interval", dailyProbeInterval,
+			"batch", dailyProbeAuditBatch,
+			"usage_per_credential_cap", dailyProbeUsagePerCredentialCap)
 	})
 }
 
@@ -74,54 +105,83 @@ func (a *DailyProbeAudit) Stop() {
 }
 
 // dailyProbeAuditSQL is extracted for guard tests (same pattern as
-// pumpDueStatesSQL). The UNION's request_logs branch is binding-anchored by
-// its own cmb/pm JOINs, but the candidate_failure_logs branch is a raw
-// (credential_id, raw_model_name) projection — historical pairs keep being
-// submitted for the whole 72h lookback window even after their binding chain
-// is broken, and every such submission is a doomed run (queue claim →
-// in-flight tile → endpoint-build "no rows" → missing-binding drop +
-// fake-success audit row). The outer binding-chain EXISTS (same predicate
-// shape as pumpDueStatesSQL's — existence only, both columns correlated, pm
-// JOINed so a dangling cmb.provider_model_id is filtered) covers the UNION:
-// redundant-but-true for branch 1, filtering for branch 2.
+// pumpDueStatesSQL). The UNION's usage branch is binding-anchored by its own
+// cmb/pm JOINs and now excludes probe traffic ('probe' quality flag) so
+// probes can no longer count as usage and keep the audit self-sustaining
+// (INV-3). The failure branch is a raw (credential_id, raw_model_name)
+// projection; the outer binding-chain EXISTS (existence only, both columns
+// correlated, pm JOINed so a dangling cmb.provider_model_id is filtered)
+// covers the UNION: redundant-but-true for branch 1, filtering for branch 2.
+// The two-success gate applies to BOTH branches: a credential already
+// re-verified by two probe successes leaves no scheduled work (INV-4).
 func dailyProbeAuditSQL() string {
 	return `
-		SELECT DISTINCT credential_id, raw_model_name
-		FROM (
-			SELECT rl.credential_id, pm.raw_model_name
+		WITH used AS (
+			SELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) AS last_used_at
 			FROM request_logs_with_current_month rl
 			JOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			WHERE rl.ts >= now() - interval '3 days'
+			WHERE rl.ts >= now() - ` + probeUsageWindowInterval + `
 			  AND rl.credential_id IS NOT NULL
 			  AND pm.raw_model_name <> ''
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl") + `
 			  AND (pm.raw_model_name = rl.client_model
 			       OR pm.raw_model_name = rl.outbound_model
 			       OR pm.outbound_model_name = rl.outbound_model)
-			UNION ALL
-			SELECT credential_id, raw_model_name
-			-- 2026-09-12: current-month surface — the 3-day lookback on the
-			-- bare parent misses every row still sitting in the hot table.
-			FROM candidate_failure_logs_with_current_month
-			WHERE ts >= now() - interval '3 days'
-			  AND credential_id IS NOT NULL
-			  AND raw_model_name <> ''
-		) recent
-		WHERE credential_id > 0 AND raw_model_name <> ''
+			GROUP BY rl.credential_id, pm.raw_model_name
+		), usage_ranked AS (
+			SELECT u.id, u.raw_model_name, u.last_used_at,
+			       row_number() OVER (
+			           PARTITION BY u.id
+			           ORDER BY u.last_used_at DESC, u.raw_model_name
+			       ) AS rn
+			FROM used u
+			JOIN credentials c ON c.id = u.id
+			WHERE ` + credentialFailureEvidenceSQL("c.id", probeUsageWindowInterval) + `
+			  AND NOT ` + credentialTwoProbeSuccessGateSQL("u.id") + `
+		), failing AS (
+			SELECT f.credential_id AS id, f.raw_model_name, MAX(f.ts) AS last_used_at
+			FROM candidate_failure_logs_with_current_month f
+			WHERE f.ts >= now() - ` + probeUsageWindowInterval + `
+			  AND f.credential_id IS NOT NULL
+			  AND f.raw_model_name <> ''
+			GROUP BY f.credential_id, f.raw_model_name
+		), recent AS (
+			SELECT id, raw_model_name FROM usage_ranked
+			WHERE rn <= ` + fmt.Sprintf("%d", dailyProbeUsagePerCredentialCap) + `
+			UNION
+			SELECT f.id, f.raw_model_name
+			FROM failing f
+			WHERE NOT ` + credentialTwoProbeSuccessGateSQL("f.id") + `
+		)
+		SELECT DISTINCT recent.id, recent.raw_model_name
+		FROM recent
+		WHERE recent.id > 0 AND recent.raw_model_name <> ''
 		  AND EXISTS (
 			SELECT 1
 			FROM credential_model_bindings cmb
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			WHERE cmb.credential_id = recent.credential_id
+			WHERE cmb.credential_id = recent.id
 			  AND pm.raw_model_name = recent.raw_model_name
 		  )
-		ORDER BY credential_id, raw_model_name`
+		ORDER BY recent.id, recent.raw_model_name
+		LIMIT $1`
+}
+
+// runRecovered 守护单轮 run：panic 记日志后由 Start 的 tick 循环继续下一轮。
+func (a *DailyProbeAudit) runRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("daily_probe_audit: run panic recovered", "recover", rec)
+		}
+	}()
+	a.run(ctx)
 }
 
 func (a *DailyProbeAudit) run(ctx context.Context) {
 	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	rows, err := a.db.Query(queryCtx, dailyProbeAuditSQL())
+	rows, err := a.db.Query(queryCtx, dailyProbeAuditSQL(), dailyProbeAuditBatch)
 	if err != nil {
 		slog.Warn("daily probe audit query failed", "error", err)
 		return
@@ -136,7 +196,10 @@ func (a *DailyProbeAudit) run(ctx context.Context) {
 			slog.Warn("daily probe audit scan failed", "error", err)
 			continue
 		}
-		a.worker.Submit(credID, model, "default", "daily-probe-audit")
+		// source=selfcheck：这是计划性核查扫描，不是业务失败反应；走 Submit
+		// 会把审计行静默归因为 request_failure（2026-09-08 审计：主动扫描器
+		// 归因失真），看板与自检流 origin 徽章全部失真。
+		a.worker.SubmitWithSource(credID, model, "default", "daily-probe-audit", "selfcheck")
 		submitted++
 	}
 	if err := rows.Err(); err != nil {

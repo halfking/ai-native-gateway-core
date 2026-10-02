@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 type PgxStore struct {
@@ -49,9 +52,7 @@ func (s *PgxStore) GetEvent(ctx context.Context, eventID int64) (*Event, error) 
 		}
 		return nil, err
 	}
-	if metadataJSON != nil {
-		_ = json.Unmarshal(metadataJSON, &event.Metadata)
-	}
+	jsoncol.Decode("fault.PgxStore.GetEvent/metadata", metadataJSON, &event.Metadata)
 	return &event, nil
 }
 
@@ -80,9 +81,7 @@ func (s *PgxStore) GetOpenEventsByRule(ctx context.Context, ruleID int64) ([]Eve
 		); err != nil {
 			return nil, err
 		}
-		if metadataJSON != nil {
-			_ = json.Unmarshal(metadataJSON, &event.Metadata)
-		}
+		jsoncol.Decode("fault.PgxStore.GetOpenEventsByRule/metadata", metadataJSON, &event.Metadata)
 		events = append(events, event)
 	}
 	return events, rows.Err()
@@ -143,9 +142,7 @@ func (s *PgxStore) ListEvents(ctx context.Context, status EventStatus, offset, l
 		); err != nil {
 			return nil, 0, err
 		}
-		if metadataJSON != nil {
-			_ = json.Unmarshal(metadataJSON, &event.Metadata)
-		}
+		jsoncol.Decode("fault.PgxStore.ListEvents/metadata", metadataJSON, &event.Metadata)
 		events = append(events, event)
 	}
 
@@ -188,9 +185,7 @@ func (s *PgxStore) GetRule(ctx context.Context, ruleID int64) (*Rule, error) {
 		}
 		return nil, err
 	}
-	if actionConfigJSON != nil {
-		_ = json.Unmarshal(actionConfigJSON, &rule.ActionConfig)
-	}
+	jsoncol.Decode("fault.PgxStore.GetRule/action_config", actionConfigJSON, &rule.ActionConfig)
 	return &rule, nil
 }
 
@@ -270,9 +265,7 @@ func (s *PgxStore) scanRules(rows interface {
 		); err != nil {
 			return nil, err
 		}
-		if actionConfigJSON != nil {
-			_ = json.Unmarshal(actionConfigJSON, &rule.ActionConfig)
-		}
+		jsoncol.Decode("fault.PgxStore.ListActiveRules/action_config", actionConfigJSON, &rule.ActionConfig)
 		rules = append(rules, rule)
 	}
 	return rules, rows.Err()
@@ -347,9 +340,18 @@ func (s *PgxStore) GetDashboardStats(ctx context.Context) (*DashboardStats, erro
 		var sev string
 		var count int
 		if err := rows.Scan(&sev, &count); err != nil {
-			continue
+			if dbrows.SkipOrFail("fault.PgxStore.GetDashboardStats/bySeverity", err) {
+				continue
+			}
 		}
 		stats.BySeverity[Severity(sev)] = count
+	}
+	// R66: severity 分组被截断 = 仪表盘严重度分布静默失真（分母
+	// TotalEvents 用的是 COUNT(*)，不随本读截断，缺口无痕）。上抛。
+	// 直接消费 rows.Err()（非 dbrows.Err 包装），使站位级守卫能逐循环
+	// 判定；单行跳行留痕仍走 dbrows.SkipOrFail。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fault.PgxStore.GetDashboardStats: iterate rows: %w", err)
 	}
 
 	return stats, nil

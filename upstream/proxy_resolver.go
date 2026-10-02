@@ -61,9 +61,40 @@ type ProxyResolver struct {
 	probeInterval time.Duration
 	probeStop     chan struct{}
 
+	// R28-P-2 (2026-09-30 round 28): strict egress mode. When enabled, a
+	// non-domestic host with no healthy proxy fails the request instead of
+	// silently dialing direct ("direct-connect fallback for overseas
+	// providers" violates the must-proxy contract). Gated by env
+	// LLM_GATEWAY_UPSTREAM_PROXY_STRICT=1 so existing fail-open
+	// deployments keep their behavior until they opt in.
+	strict atomic.Bool
+
 	// P0-1 (2026-07-19): failure tracking for gradual degradation
 	failureCount     atomic.Int32
 	failureThreshold int32
+}
+
+// StrictMode reports whether strict egress enforcement is on.
+func (r *ProxyResolver) StrictMode() bool {
+	return r != nil && r.strict.Load()
+}
+
+// proxyAvailable reports whether a configured proxy is currently healthy.
+func (r *ProxyResolver) proxyAvailable() bool {
+	return r != nil && r.proxyURL != nil && r.proxyEnabled.Load()
+}
+
+// StrictBlocked reports whether strict mode forbids this host from going
+// direct (i.e. it is non-domestic and no healthy proxy exists). The strict
+// transport uses this to fail the request before dialing.
+func (r *ProxyResolver) StrictBlocked(host string) bool {
+	if r == nil || !r.strict.Load() {
+		return false
+	}
+	if r.isDomestic(strings.ToLower(host)) {
+		return false
+	}
+	return !r.proxyAvailable()
 }
 
 // NewProxyResolver reads HTTP_PROXY/HTTPS_PROXY from the environment and
@@ -81,6 +112,10 @@ func NewProxyResolver(extraDomesticHosts ...string) *ProxyResolver {
 		probeInterval:    5 * time.Second, // P0-1: reduced from 30s to 5s (2026-07-19 perf optimization)
 		failureThreshold: 3,               // P0-1: require 3 consecutive failures before disabling proxy
 		probeStop:        make(chan struct{}),
+	}
+	if os.Getenv("LLM_GATEWAY_UPSTREAM_PROXY_STRICT") == "1" {
+		r.strict.Store(true)
+		slog.Info("proxy resolver: strict egress mode enabled — non-domestic hosts without a healthy proxy will be rejected instead of dialing direct")
 	}
 	for _, h := range defaultDomesticDomains {
 		r.domesticHosts[strings.ToLower(h)] = true
@@ -218,6 +253,26 @@ func (r *ProxyResolver) Resolve(reqURL *url.URL) *url.URL {
 // IsDomestic reports whether a host matches the domestic allow-list.
 func (r *ProxyResolver) IsDomestic(host string) bool {
 	return r.isDomestic(strings.ToLower(host))
+}
+
+// AddDomesticHosts extends the never-proxy allow-list at runtime (R28-P-3):
+// hosts of providers explicitly marked egress_profile='direct' are injected
+// at startup so policy, not a hardcoded list, decides who may bypass the
+// env proxy.
+func (r *ProxyResolver) AddDomesticHosts(hosts ...string) {
+	if r == nil || len(hosts) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.domesticHosts == nil {
+		r.domesticHosts = make(map[string]bool)
+	}
+	for _, h := range hosts {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			r.domesticHosts[h] = true
+		}
+	}
 }
 
 func (r *ProxyResolver) isDomestic(host string) bool {

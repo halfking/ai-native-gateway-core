@@ -93,7 +93,7 @@ func (h *Handler) updateModelModality(w http.ResponseWriter, r *http.Request, id
 			"model_id", id,
 			"requested_modality", req.Modality,
 			"error", err)
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 

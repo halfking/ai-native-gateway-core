@@ -88,7 +88,7 @@ func TestAcquire_EmitsPreemptMetricOnLRUPreempt(t *testing.T) {
 
 	before := preemptValue(t)
 
-	// h1 takes the single slot (TTL = slotTTLSeconds = 1800).
+	// h1 takes the single slot (TTL = slotTTLSeconds() default 1800).
 	acquireSuccess(t, m, ctx, 1, &limit, "h1", "default")
 	// Advance miniredis' clock so the slot is idle past the 1s gate:
 	// idle = slotTTL - remaining = 1800 - (1800-2) = 2 >= gate(1) → preemptable.

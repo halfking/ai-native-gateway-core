@@ -24,10 +24,15 @@ func TestEncodeDecodeSessionUpdate_RoundTrip(t *testing.T) {
 		LastResponseSummary: "hello",
 		LastModel:           "gpt-4o",
 		LastProvider:        "openai",
-		TurnIncrement:       1,
-		TokensIncrement:     123,
-		CostIncrement:       0.0017,
-		UpdatedAt:           time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC),
+		// 730 会话角色归因三列（R50 F15）：必须随 outbox 持久化，
+		// reaper 重放才不丢会话归因。
+		AgentRole:       "worker",
+		ParentSessionID: "gw_parent_abc",
+		ParentTaskID:    "task-9",
+		TurnIncrement:   1,
+		TokensIncrement: 123,
+		CostIncrement:   0.0017,
+		UpdatedAt:       time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC),
 	}
 	raw, err := EncodeSessionUpdateForOutbox(in)
 	if err != nil {
@@ -45,6 +50,9 @@ func TestEncodeDecodeSessionUpdate_RoundTrip(t *testing.T) {
 		out.LastResponseSummary != in.LastResponseSummary ||
 		out.LastModel != in.LastModel ||
 		out.LastProvider != in.LastProvider ||
+		out.AgentRole != in.AgentRole ||
+		out.ParentSessionID != in.ParentSessionID ||
+		out.ParentTaskID != in.ParentTaskID ||
 		out.TurnIncrement != in.TurnIncrement ||
 		out.TokensIncrement != in.TokensIncrement ||
 		out.CostIncrement != in.CostIncrement ||

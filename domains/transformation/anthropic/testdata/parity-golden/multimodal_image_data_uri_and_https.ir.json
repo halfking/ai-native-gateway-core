@@ -1,0 +1,1 @@
+{"max_tokens":10,"messages":[{"content":[{"text":"see","type":"text"},{"source":{"data":"aGVsbG8=","media_type":"image/png","type":"base64"},"type":"image"},{"source":{"type":"url","url":"https://example.com/cat.png"},"type":"image"}],"role":"user"}],"model":"gpt-x"}

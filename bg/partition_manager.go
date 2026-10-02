@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,13 +35,19 @@ var partitionTZ = time.FixedZone("Asia/Shanghai", 8*60*60)
 // DefaultRetentionWindow is the *_default "hot data" keep-window. Rows
 // in *_default whose ts_col is older than (now - DefaultRetentionWindow)
 // are eligible to be migrated to the matching monthly partition by the
-// promote_*_default_batch functions installed in migration 336.
+// promote_*_default_batch functions. R78 订正：原文写「installed in
+// migration 336」，但 336 的三个文件在本机均为 .skip（.sql.skip / .bak.skip /
+// .down.sql.skip），该迁移从未在本环境执行；实际安装的是
+// promote_*_hot_to_partition 模式（见本文件 promoteSpecs 注释）。
 //
 // 2026-07 hot-table architecture:
 //   - most *_hot tables keep an 8-hour hot window by default, then promote
 //     into monthly partitions on the promote scheduler;
 //   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
-//     promotes and is cleaned by direct TTL DELETE.
+//     promotes and is cleaned by direct TTL DELETE (14 天, 非 8h)。
+//     R78 订正：原文让人以为分区结构已废弃，实际父表 model_probe_runs 仍
+//     保留 4 个月度分区（3 个 columnar），只是无任何写入方、count(*)=0——
+//     空壳结构，占 152 kB。全仓无 model_probe_runs 的非 hot 写入。
 const DefaultRetentionWindow = 8 * time.Hour
 
 // promoteCycleTimeout bounds one promote scheduler cycle so a large backlog
@@ -131,6 +138,13 @@ type archiveSpec struct {
 	// SELECTing tuple columns from it fails with 42703 "column status does
 	// not exist" (pg log 2026-09-03/04 audit, EXPLAIN-verified).
 	scalarResult bool
+
+	// partitionUnit controls how ensureNextMonthPartitions derives the
+	// argument date for this spec: "" / "month" → AddDate(0, offset, 0)
+	// (the historical convention, monthly partitions); "day" → AddDate(0,
+	// 0, offset) (daily partitions, R68 迁移 750 usage_facts 按日分区接入）。
+	// pgx still receives time.Time; argExpr controls the cast to ::date.
+	partitionUnit string
 }
 
 func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {
@@ -176,9 +190,9 @@ func (pm *PartitionManager) Start(ctx context.Context) {
 	ctx, pm.cancel = context.WithCancel(ctx)
 	pm.mu.Unlock()
 
-	go pm.run(ctx)
-	go pm.runPromote(ctx)
-	go pm.runCleanup(ctx)
+	Go("partition_manager.run", func() { pm.run(ctx) })
+	Go("partition_manager.runPromote", func() { pm.runPromote(ctx) })
+	Go("partition_manager.runCleanup", func() { pm.runCleanup(ctx) })
 	if pm.errorAggregator != nil {
 		pm.errorAggregator.Start(ctx)
 	}
@@ -296,13 +310,32 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 			pm.cleanupOldSupplierErrorStats(ctx)
 			pm.cleanupOldRoutingFeedbackLog(ctx)
 			pm.cleanupOldRoutingOptimizationMetrics(ctx)
+			// request_logs 主表归档（迁移 754）。2026-09-28 十六轮审计
+			// 根修：此前挂在 pm.run 的 24h 定相 ticker 上再过滤 hour==3，
+			// 而 24h ticker 的相位 = 进程启动时刻——除非网关恰好在
+			// 03:00–03:59 之间启动，归档永远不会执行（754 流水线静默
+			// 失效）。1h ticker 每个自然日内必然恰好有一次 tick 落在
+			// [03:00,04:00) 本地窗口，shouldRunRequestLogsArchive 的
+			// hour 门在这里才真正等价于「每日 03 点一次」。
+			pm.archiveOldRequestLogs(ctx)
+			// R73 审计 N2 收口：turn-logs 聚合积压三件套 gauge（rows /
+			// pending_sessions / oldest_age），随 1h tick 刷新。查询走
+			// idx_session_turn_logs_expires 索引；健康表近空时近零开销，
+			// 积压态下每小时一次索引扫描即为该 gauge 的设计目的。
+			pm.refreshTurnLogsBacklogGauge(ctx)
+			// migration 759 follow-up：session_turn_details_hot 过期残留
+			// 五分类 gauge。759 的 drain 有界无损，真冲突行常驻 hot 等
+			// 人工裁决——这组 gauge 就是让「残留构成」可见（良性重复 vs
+			// 卡死的 drain）。retention 与 promote worker 同源。
+			pm.refreshSessionTurnDetailsExpiredHotGauges(ctx)
 		}
 	}
 }
 
-// ensureNextMonthPartitions creates partitions for current and next month
-// for every table we manage. Idempotent: each underlying
-// ensure_<table>_partition() function checks for existence first.
+// ensureNextMonthPartitions creates partitions for current and next
+// boundary (month by default; day for daily-partition specs) for every
+// table we manage. Idempotent: each underlying ensure_<table>_partition()
+// function checks for existence first.
 //
 // 2026-09-12 (694/699 follow-up): partition bounds are Asia/Shanghai
 // calendar months (687/694 convention), so "current/next month" is derived
@@ -311,18 +344,37 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 // timestamptz→date cast reads the session TimeZone, so a UTC session inside
 // the [00:00, 08:00) +08 window of day 1 would derive the previous
 // Shanghai month and pre-create the wrong partition.
+//
+// 2026-09-26 (R68, migration 750): archiveSpec.partitionUnit="day" 让本
+// 循环按日驱动（usage_facts 按日分区）；同一 Asia/Shanghai 日历钉扎逻辑
+// 自然适用，UTC 会话在 +08 0-8h 同样不会把次日误建为今日。
 func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 	specs := ensureSpecs()
 	for offset := 0; offset <= 1; offset++ {
-		targetMonth := time.Now().In(partitionTZ).AddDate(0, offset, 0)
 		for _, s := range specs {
+			unit := s.partitionUnit
+			if unit == "" {
+				unit = "month"
+			}
+			var targetBoundary time.Time
+			var dateLabel string
+			if unit == "day" {
+				// R68 (2026-09-26): usage_facts 按日分区接入。offset=0 当日，
+				// offset=1 次日；partitionTZ 保证 UTC 会话在 +08 0-8h 不把次
+				// 日误建为今日（与月分区的 687/694 钉扎同源）。
+				targetBoundary = time.Now().In(partitionTZ).AddDate(0, 0, offset)
+				dateLabel = targetBoundary.Format("2006-01-02")
+			} else {
+				targetBoundary = time.Now().In(partitionTZ).AddDate(0, offset, 0)
+				dateLabel = targetBoundary.Format("2006-01")
+			}
 			argExpr := s.argExpr
 			if argExpr == "" {
 				argExpr = "$1"
 			}
-			var arg any = targetMonth
+			var arg any = targetBoundary
 			if argExpr == "$1::date" {
-				arg = targetMonth.Format("2006-01-02")
+				arg = targetBoundary.Format("2006-01-02")
 			}
 			timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			_, err := pm.db.Exec(timeoutCtx,
@@ -331,13 +383,13 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 			if err != nil {
 				slog.Error("partition_manager: ensure partition failed",
 					"fn", s.fnName, "label", s.label,
-					"month", targetMonth.Format("2006-01"),
+					"unit", unit, "date", dateLabel,
 					"error", err)
 				continue
 			}
 			slog.Info("partition_manager: ensured partition",
 				"fn", s.fnName, "label", s.label,
-				"month", targetMonth.Format("2006-01"))
+				"unit", unit, "date", dateLabel)
 		}
 	}
 }
@@ -429,6 +481,320 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// Append-only alert events, no partition strategy. Default 30d via
 	// lifecycle.runtime_alert_events_ttl_days.
 	pm.cleanupOldRuntimeAlertEvents(ctx)
+
+	// 11. 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4):
+	// session_turn_logs 保留时长改为可配。此前 430 schema 写死
+	// expires_at = NOW() + 24h，且 430 定义的清理函数全仓无调用方——
+	// 该表在生产从未被清理过（无界增长）。默认 24h 只在「写入侧烘焙
+	// expires_at」这一点上与旧行为一致；清扫本身是首次接上，不是
+	// 参数化既有行为（批判式审计证伪了初稿的说法）。跑在本函数
+	// （pm.interval，main.go 传 24h）而非 1h 的 runCleanup。
+	pm.cleanupSessionTurnLogsByTTL(ctx)
+
+	// 12. 2026-09-30 (R27-HC-1/HC-2): analysis_events / stats_event_inbox
+	// 终态行 TTL 清理。两表此前只做状态流转、全仓零 DELETE——本地真库
+	// 实测 analysis_events 102 万行/864MB（全部已处理）、inbox default 分区
+	// 138 万行（其中 processed 23 万）。分批 ctid 删除（R72「首扫无界
+	// DELETE」教训），每 tick 每表有界。
+	pm.cleanupOldAnalysisEvents(ctx)
+	pm.cleanupOldStatsEventInboxTerminal(ctx)
+}
+
+// clampRequestLogsArchiveDays keeps the retention the SQL guard would accept.
+//
+// archive_request_logs_default RAISEs outside [7,365]; clamping here means the
+// value we log is the value the function saw, and a bad settings value degrades
+// to a safe default instead of aborting the whole call every tick. The SQL-side
+// guard is still the authority — this is a courtesy, not a security boundary.
+func clampRequestLogsArchiveDays(raw int) int {
+	if raw < 7 {
+		return 7
+	}
+	if raw > 365 {
+		return 365
+	}
+	return raw
+}
+
+// requestLogsArchiveHourOfDay is the single hour (local) in which the
+// request_logs archive sweep is allowed to run. See archiveOldRequestLogs for
+// why the sweep cannot simply run on every cleanup tick.
+const requestLogsArchiveHourOfDay = 3
+
+// shouldRunRequestLogsArchive gates the archive sweep to once per calendar day.
+//
+// Pure function so the cadence is unit-testable without a clock or a database.
+func shouldRunRequestLogsArchive(now time.Time) bool {
+	return now.Hour() == requestLogsArchiveHourOfDay
+}
+
+// archiveOldRequestLogs archives request_logs monthly partitions older than the
+// configured retention into request_logs_archive_YYYY_MM.
+//
+// 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9). 2026-09-28
+// (十六轮修订审计 P1 根修): the call originally lived on the 24h phase-locked
+// pm.run ticker with an hour==3 gate — a phase-locked 24h ticker only ever
+// fires at the process start hour, so unless the gateway happened to (re)start
+// between 03:00 and 03:59 the sweep never ran at all. It now rides the 1h
+// runCleanup tick (see runCleanup), where the hour gate selects exactly one
+// tick per calendar day regardless of process start phase. Read fresh from
+// settings every tick (lifecycle.request_logs_ttl_days, default 30), so an
+// operator change applies without a gateway restart.
+//
+// ## Why this is daily and not on every tick
+//
+// The SQL has no "already archived" marker. It enumerates every request_logs
+// month whose month_end is past the cutoff and, for each, pages the WHOLE
+// source partition through INSERT ... ON CONFLICT DO NOTHING. Rows archived on
+// a previous run simply conflict — but they are still read, joined, and
+// re-checked. So the per-run cost is O(all rows older than the retention
+// window), and it never shrinks.
+//
+// Running it on every hourly cleanup tick (providerErrorCleanupInterval = 1h)
+// would mean a growing full re-scan of historical request_logs, forever, for
+// work that is already done. The hour==3 gate keeps it to once a day (~24x
+// less) without touching the migration.
+//
+// 2026-09-29 (R80, D07 plan §8.1): the earlier note here said an archive ledger
+// was deliberately skipped because "that SQL has never been executed against a
+// real PostgreSQL". **That premise expired** — D07 S-01 ran it for real (25.96s
+// / 2,125,857 rows) and migration 756 added the (id) index the batch cursor
+// needs, so the "wait until it has run" argument no longer holds. The question
+// was therefore re-answered with a fresh measurement instead of inherited:
+//
+//	hot re-run,  6 expired partitions / 1.8M rows : 5.78-7.87s, rows_archived=0
+//	hot re-run, 12 expired partitions / 3.6M rows : 10.44s,  rows_archived=0
+//
+// Doubling the expired data roughly doubled the time — the re-scan is LINEAR
+// (Index Scan per batch, 230 buffers / 1.294ms per S-01), not the O(rows^2)
+// livelock shape. Extrapolating the measured 2.1M rows/month ingest rate: ~98s
+// at 1 year of history, ~493s at 5 years — all far inside the 30min budget
+// below, and paid once a day. Reaching 30min would take ~15 years.
+//
+// On the 1h ticker the gate passes exactly once per calendar day (any start
+// phase has exactly one tick inside [03:00,04:00)); a failed 03:xx run waits
+// for the next day, same trade-off as the pre-fix wiring.
+//
+// **Decision: no ledger migration.** A ledger buys a few seconds of daily CPU
+// at the cost of a new table, an upsert per archived partition, cross-instance
+// consistency reasoning, and a new fail-closed gate — and it opens a fresh
+// inconsistency surface (ledger says archived, source partition gets rewritten).
+// Revisit if ANY of: (a) ingest exceeds 10x the measured 2.1M rows/month,
+// (b) the cadence moves from daily to hourly, (c) a hot re-run is ever measured
+// approaching the 30min budget. Until then this daily gate is the mitigation.
+//
+// The function returns one row per archived partition, so this uses Query and
+// sums rows_archived — a QueryRow against a set-returning function would read
+// only the first partition and under-report the work done.
+//
+// R73 审计残留收口（2026-09-28）：调用包在显式事务里并先 SET LOCAL
+// statement_timeout='30min'（与 30min Go 预算对齐）。集合返回函数是单条
+// 驱动层语句，函数内的批游标不稀释 statement_timeout；252 角色级 30s 会
+// 击杀大积压首跑并整批回滚（活锁，同 R72 F2 对 753 的诊断）。
+func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
+	if pm.db == nil {
+		return
+	}
+	if !shouldRunRequestLogsArchive(time.Now()) {
+		return
+	}
+	retentionDays := clampRequestLogsArchiveDays(
+		settings.GetPlatformInt("lifecycle.request_logs_ttl_days", 30))
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
+	// R73 审计残留收口：整个集合返回函数是一次驱动层语句——函数内部的
+	// 1000 行批游标并不能把 statement_timeout 切成小段。252 生产角色级
+	// statement_timeout=30s（llm_gateway rolconfig）会在首批积压 >30s 时
+	// 击杀整个调用并连批带回滚，次日重试同一批形成活锁（与 R72 F2 对 753
+	// 首扫的诊断同型）。事务内 SET LOCAL 抬到与 Go 侧 30min 预算一致，
+	// 事务结束自动还原，pooled 连接不保留（与 promote 60s / analyze 10min
+	// 同型，252 SQL 日志审计轮先例）。
+	tx, err := pm.db.Begin(timeoutCtx)
+	if err != nil {
+		slog.Error("partition_manager: request_logs archive begin failed",
+			"ttl_days", retentionDays, "error", err)
+		return
+	}
+	if _, err := tx.Exec(timeoutCtx,
+		"SET LOCAL statement_timeout = '30min'"); err != nil {
+		tx.Rollback(timeoutCtx)
+		slog.Error("partition_manager: request_logs archive timeout setup failed",
+			"ttl_days", retentionDays, "error", err)
+		return
+	}
+	rows, err := tx.Query(timeoutCtx,
+		"SELECT archived_partition, rows_archived FROM archive_request_logs_default($1)",
+		retentionDays)
+	if err != nil {
+		tx.Rollback(timeoutCtx)
+		slog.Error("partition_manager: request_logs archive failed",
+			"ttl_days", retentionDays, "error", err)
+		return
+	}
+
+	var partitions int
+	var totalRows int64
+	var scanFailed bool
+	for rows.Next() {
+		var name string
+		var archived int64
+		if err := rows.Scan(&name, &archived); err != nil {
+			// pgx 里 rows 未关闭前连接不能复用：先记住失败、跳出循环、
+			// Close 之后再统一 Rollback，绝不在 rows 存活时触碰 tx。
+			slog.Error("partition_manager: request_logs archive scan failed", "error", err)
+			scanFailed = true
+			break
+		}
+		partitions++
+		totalRows += archived
+	}
+	rows.Close() // pgx v5 Close 无返回值；先归还连接再触碰 tx
+	rowsErr := rows.Err()
+	if scanFailed || rowsErr != nil {
+		tx.Rollback(timeoutCtx)
+		if rowsErr != nil {
+			slog.Error("partition_manager: request_logs archive rows failed",
+				"rows_error", rowsErr)
+		}
+		return
+	}
+	if err := tx.Commit(timeoutCtx); err != nil {
+		slog.Error("partition_manager: request_logs archive commit failed", "error", err)
+		return
+	}
+
+	if partitions > 0 {
+		slog.Info("partition_manager: request_logs archived",
+			"ttl_days", retentionDays, "partitions", partitions, "rows", totalRows)
+	}
+}
+
+// refreshTurnLogsBacklogGauge publishes the turn-logs aggregation backlog
+// 水位（R73 审计 N2 收口，R72 §三遗留）：pending 行数、涉及会话数、最老
+// pending 行龄。pending = expires_at > NOW()——聚合器只消费未过期行，
+// 过期未聚合即永久丢失，这组 gauge 就是丢失风险的前瞻信号（对照 R47/R48
+// hot 表 backlog_rows + oldest_row_age 配对惯例）。
+//
+// 挂在 runCleanup 的 1h tick：健康表近空时走 idx_session_turn_logs_expires
+// 近零开销；积压态下每小时一次索引扫描正是观测目的。查询自身失败（含被
+// 角色级 statement_timeout 击杀）只 Warn 并保留上次数值，下个 tick 重试
+// ——观测失败不得反过来干扰清扫与归档主流程。
+func (pm *PartitionManager) refreshTurnLogsBacklogGauge(ctx context.Context) {
+	if pm.db == nil {
+		return
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var rows, sessions int64
+	var oldestAge float64
+	err := pm.db.QueryRow(timeoutCtx, `
+		SELECT count(*),
+		       count(DISTINCT (tenant_id, session_id)),
+		       COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(started_at))), 0)
+		  FROM public.session_turn_logs
+		 WHERE expires_at > NOW()
+	`).Scan(&rows, &sessions, &oldestAge)
+	if err != nil {
+		slog.Warn("partition_manager: turn-logs backlog gauge refresh failed", "error", err)
+		return
+	}
+	sessionTurnLogsBacklogRows.Set(float64(rows))
+	sessionTurnLogsBacklogPendingSessions.Set(float64(sessions))
+	sessionTurnLogsBacklogOldestAgeSeconds.Set(oldestAge)
+}
+
+// clampSessionTurnLogsTTLHours forces the configured retention into the
+// [1, 168] window that migration 753's spec entry advertises.
+//
+// The lower bound is a data-safety floor, not a style preference: a
+// misconfigured 0 (or a negative value from a bad hand-edit) would
+// otherwise be handed straight to the SQL interlock as a raise-condition.
+// Clamping here means the value we log is the value the function saw.
+//
+// Note the setting does NOT widen or narrow this sweep. Retention is baked
+// into session_turn_logs.expires_at at write time by
+// domains/session/v2/turn_logs_writer.go; this function just deletes rows
+// whose baked expiry has passed.
+func clampSessionTurnLogsTTLHours(raw int) int {
+	if raw < 1 {
+		return 1
+	}
+	if raw > 168 {
+		return 168
+	}
+	return raw
+}
+
+// cleanupSessionTurnLogsByTTL deletes session_turn_logs rows whose baked
+// expires_at has passed.
+//
+// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4; semantics
+// corrected by critical audit). The audit found the task's premise was
+// wrong in a way worth writing down: migration 430 defines
+// cleanup_expired_session_turn_logs(), but nothing ever calls it — no Go
+// reference, no pg_cron registration, no shell invocation. session_turn_logs
+// therefore grew unbounded in production. This is the first sweep that
+// actually runs, not a parameterisation of an existing one.
+//
+// Retention itself is decided at write time: turn_logs_writer.go bakes
+// expires_at from lifecycle.session_turn_logs_ttl_hours. The setting is
+// re-read every tick, so an operator change applies to newly written rows
+// without a gateway restart; rows already written keep their original
+// expiry and are swept when they reach it.
+//
+// The predicate is `expires_at < NOW()`, which is index-backed by
+// idx_session_turn_logs_expires (migration 430:275).
+// sessionTurnLogsTTLCleanupBatchSize bounds each cleanup call: the SQL
+// function deletes at most this many rows per invocation, so a backlog of
+// millions of rows is drained as a series of short statements instead of one
+// unbounded DELETE holding row locks and emitting a WAL spike for its whole
+// duration (R72 audit round; the migration header documents the revision).
+const sessionTurnLogsTTLCleanupBatchSize = 10000
+
+// sessionTurnLogsTTLCleanupMaxBatches is a runaway guard on the drain loop;
+// with the 5-minute statement budget below it is not expected to bind.
+const sessionTurnLogsTTLCleanupMaxBatches = 600
+
+func (pm *PartitionManager) cleanupSessionTurnLogsByTTL(ctx context.Context) {
+	ttlHours := clampSessionTurnLogsTTLHours(settings.GetPlatformInt("lifecycle.session_turn_logs_ttl_hours", 24))
+
+	// Match AuditTrimmer.TrimOnce: a nil pool is a no-op rather than a panic,
+	// so the manager stays constructible in tests and in degraded boot order.
+	if pm.db == nil {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	// Drain in bounded batches. Each call commits its own progress: if the
+	// 5-minute budget expires mid-drain, at most the current batch is lost —
+	// the next 24h tick resumes from what was already deleted.
+	var deleted int64
+	for batch := 0; batch < sessionTurnLogsTTLCleanupMaxBatches; batch++ {
+		var n int64
+		err := pm.db.QueryRow(timeoutCtx,
+			"SELECT cleanup_session_turn_logs_by_ttl($1, $2)",
+			ttlHours, int64(sessionTurnLogsTTLCleanupBatchSize),
+		).Scan(&n)
+		if err != nil {
+			slog.Error("partition_manager: session_turn_logs TTL cleanup failed",
+				"ttl_hours", ttlHours, "batch", batch, "deleted_so_far", deleted, "error", err)
+			return
+		}
+		deleted += n
+		if n < int64(sessionTurnLogsTTLCleanupBatchSize) {
+			break // last (partial) batch — the backlog is drained
+		}
+	}
+
+	if deleted > 0 {
+		slog.Info("partition_manager: session_turn_logs TTL cleanup",
+			"ttl_hours", ttlHours, "deleted", deleted)
+	}
 }
 
 // stateTableTTLSpec describes one parent table dropped via the SQL helper
@@ -463,6 +829,11 @@ func stateTableTTLSpecs() []stateTableTTLSpec {
 		// 诊断/质量评估类数据的保留预期；settings_kv 行在管理员首次
 		// 显式设置时落库，此前按 fallback 生效。
 		{parent: "supplier_errors", setting: "lifecycle.supplier_errors_ttl_days", fallback: 90},
+		// R47（存储演进批，R46 §五#8）：cache_metrics 月分区此前只建不删。
+		// 分区名 cache_metrics_YYYY_MM（475）与 689 helper 的
+		// ^<parent>_\d{4}_\d{2}$ 枚举正则匹配，直接复用调度。诊断写侧
+		// 数据（cachemetrics recorder），fallback 90 天对齐诊断类保留。
+		{parent: "cache_metrics", setting: "lifecycle.cache_metrics_ttl_days", fallback: 90},
 	}
 }
 
@@ -921,6 +1292,14 @@ func ensureSpecs() []archiveSpec {
 		//   routing_decision_log_archive —— 仅 archive job（每月 1-3 日）写入，
 		//     archive_routing_decision_log() 自建目标分区。
 		// （candidate_failure_logs 已于 2026-09-12 接入，见上方 689/694 注。）
+
+		// R68 (2026-09-26) migration 750：usage_facts 按日分区。DEFAULT 分区
+		// 保留作历史 catch-all，新一日数据走日分区，partition pruning 对
+		// WHERE 范围查询仅扫命中分区。partitionUnit="day" 让
+		// ensureNextMonthPartitions 走 AddDate(0, 0, offset) 派生当日/次日，
+		// 与月分区同源 Asia/Shanghai 日历钉扎（防 UTC 会话在 +08 0-8h 把
+		// 次日误建为今日）。date 签名，与 sessions_v2_partitions 同款。
+		{fnName: "ensure_usage_facts_daily_partition", label: "usage_facts (daily)", argExpr: "$1::date", partitionUnit: "day"},
 	}
 }
 
@@ -975,6 +1354,7 @@ func promoteSpecs() []archiveSpec {
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"},       // Migration 392
 		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                         // Migration 526
+		{fnName: "promote_session_turn_details_hot_to_partition", label: "session_turn_details_hot"},           // Migration 733
 		{fnName: "promote_session_bodies_hot_to_partition", label: "session_bodies_hot"},                       // Migration 614
 		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                           // Migration 532
 		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
@@ -986,7 +1366,7 @@ func promoteSpecs() []archiveSpec {
 		// 且错误明细无界增长。resolvePromoteConfig 走 default 8h 分支。
 		{fnName: "promote_supplier_errors_hot_to_partition", label: "supplier_errors_hot"}, // Migration V371 (2026-09-05)
 		// 706（存储优化方案 v2 S1a）：三新表族 hot → 月分区排水。
-		{fnName: "promote_session_memora_hot_to_partition", label: "session_memora_hot"},  // Migration 706
+		{fnName: "promote_session_memora_hot_to_partition", label: "session_memora_hot"},   // Migration 706
 		{fnName: "promote_session_censors_hot_to_partition", label: "session_censors_hot"}, // Migration 706
 		{fnName: "promote_session_tools_hot_to_partition", label: "session_tools_hot"},     // Migration 706
 	}
@@ -1005,6 +1385,11 @@ func promoteSpecs() []archiveSpec {
 // `promoteBatchSize` rows (caller loops) or 0 rows (caller breaks
 // out). On error we log and move to the next table so one broken
 // function does not starve the others.
+//
+// R51 (2026-09-21): the promoteCycleMaxBatches budget is shared across all
+// tables, but each table is guaranteed at least one batch per cycle even
+// after the budget is exhausted — otherwise late-ordered specs (e.g.
+// session_turn_details_hot) starve behind large backlogged tables.
 // promoteLockKey returns a stable advisory-lock key for a hot-table label.
 // Both gateway instances (e.g. 245 + 154) share the same PostgreSQL, so two
 // concurrent hourly promote cycles can race the same *_hot table and one
@@ -1031,14 +1416,17 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	}
 	cycleCtx, cycleCancel := context.WithTimeout(ctx, promoteCycleTimeout)
 	defer cycleCancel()
+	// R51 (2026-09-21)：batches 是全周期共享预算，排位靠后的表（如
+	// session_turn_details_hot，promoteSpecs 第 11 位）在前序大表积压耗尽
+	// 预算后整个周期颗粒无收。改为每表保底至少 1 批：预算耗尽后，尚未跑过
+	// 批的表仍允许再跑一批才让位；外层循环因此遍历全部 spec，不再提前 break。
 	batches := 0
-	budgetExhausted := false
 	for _, s := range promoteSpecs() {
 		retention, batchSize := resolvePromoteConfig(s.label)
 		lockKey := promoteLockKey(s.label)
+		tableRanBatch := false
 		for {
-			if cycleCtx.Err() != nil || batches >= promoteCycleMaxBatches {
-				budgetExhausted = true
+			if cycleCtx.Err() != nil || (batches >= promoteCycleMaxBatches && tableRanBatch) {
 				break
 			}
 			batchStart := time.Now() // 2026-08-29 P2: track duration
@@ -1098,6 +1486,23 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				recordPromoteFailure(s.label)
 				break
 			}
+			// 2026-09-22 252 SQL 日志审计轮：角色级 statement_timeout=30s
+			// （252 生产 llm_gateway rolconfig）会击杀超过 30s 的单批
+			// promote——而本函数的 Go 侧批次预算是 60s。大批次（5000 行跨
+			// 分区搬移实测 26.5s 贴线、>30s 即被 PG 杀整批回滚，下个 tick
+			// 重试同一批形成活锁，252 日志 21 分钟窗口 1 次实锤）。
+			// SET LOCAL 抬到与 Go 预算一致，事务结束自动还原，pooled
+			// 连接不保留。
+			if _, err := tx.Exec(timeoutCtx,
+				"SET LOCAL statement_timeout = '60s'"); err != nil {
+				tx.Rollback(timeoutCtx)
+				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
+				slog.Error("partition_manager: promote timeout setup failed",
+					"label", s.label, "error", err)
+				recordPromoteFailure(s.label)
+				break
+			}
 			var n int64
 			err = tx.QueryRow(timeoutCtx,
 				"SELECT "+s.fnName+"($1::interval, $2::int)",
@@ -1131,16 +1536,84 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				break
 			}
 			batches++
+			tableRanBatch = true
 			// 2026-08-29 P2: record successful batch
 			recordPromoteBatch(s.label, n)
 			slog.Info("partition_manager: promote batch",
 				"label", s.label, "rows", n)
 		}
-		if budgetExhausted {
-			break
+		// R47（存储演进批，R46 §五#8）：排水结束后记录 hot 剩余行数水位。
+		// 持续高于「批量×周期」= promote 吞吐跟不上写入；查错只 Warn 不阻断。
+		recordHotTableBacklog(s.label, pm.hotTableBacklogRows(ctx, s.label))
+		// R48 §五#3：oldest-row-age 与 backlog 互补——观测 sessions 族 TTL 裁决
+		// 前置门禁。失败时 -1 保持 last gauge value，不发噪。
+		if age := pm.hotTableOldestRowAge(ctx, s.label); age >= 0 {
+			recordHotTableOldestRowAge(s.label, age)
 		}
 	}
 	pm.analyzePartitionStats(ctx)
+}
+
+// hotTableBacklogRows counts remaining rows in a spec's hot table. The
+// physical hot table is <label> (already suffixed) or <label>_hot for the
+// three labels that name the partition family instead (credit_ledger,
+// request_logs_bodies, tool_usage_stats). Query errors return -1 (gauge
+// keeps last value; caller Warns) — never blocks the promote cycle.
+func (pm *PartitionManager) hotTableBacklogRows(ctx context.Context, label string) int64 {
+	table := label
+	if !strings.HasSuffix(table, "_hot") {
+		table += "_hot"
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var n int64
+	if err := pm.db.QueryRow(timeoutCtx,
+		"SELECT COUNT(*) FROM "+table,
+	).Scan(&n); err != nil {
+		slog.Warn("partition_manager: hot backlog count failed",
+			"label", label, "table", table, "error", err)
+		return -1
+	}
+	return n
+}
+
+// hotTableOldestRowAge (R48 §五#3)：查询指定 hot 表最旧一行的 age（秒）。
+// 表名解析逻辑与 hotTableBacklogRows 一致（自动追加 _hot 后缀）；
+// 时间戳列名通过 hotTableTSColumn(label) 决定（默认 ts，部分表为 created_at）。
+//
+// 返回：
+//
+//	0   = 表为空（MIN 返回 NULL → caller 写 0 进 gauge，符合 "空表=0" 语义）
+//	> 0 = 最旧行距今的秒数
+//	-1  = 查询失败（slog.Warn + 保持 last gauge value）
+func (pm *PartitionManager) hotTableOldestRowAge(ctx context.Context, label string) float64 {
+	table := label
+	if !strings.HasSuffix(table, "_hot") {
+		table += "_hot"
+	}
+	tsCol := hotTableTSColumn(label)
+	// label/tsCol 均来自固定 switch + promoteSpecs，无用户输入；白名单校验
+	// 防止有人修改 switch 后误注入 SQL。（2026-09-23 审计轮：补 bucket /
+	// occurred_at——credential_model_index_hot 与 supplier_errors_hot 的
+	// 时间列不走 ts/created_at。）
+	allowed := map[string]bool{"ts": true, "created_at": true, "bucket": true, "occurred_at": true}
+	if !allowed[tsCol] {
+		slog.Error("partition_manager: hot ts column rejected", "label", label, "ts_col", tsCol)
+		return -1
+	}
+	query := "SELECT EXTRACT(EPOCH FROM (now() - MIN(" + tsCol + ")))::bigint FROM " + table
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var ageSec *float64
+	if err := pm.db.QueryRow(timeoutCtx, query).Scan(&ageSec); err != nil {
+		slog.Warn("partition_manager: hot oldest age query failed",
+			"label", label, "table", table, "ts_col", tsCol, "error", err)
+		return -1
+	}
+	if ageSec == nil {
+		return 0
+	}
+	return *ageSec
 }
 
 // analyzePartitionStats refreshes planner stats on hot heap tables and recent
@@ -1158,10 +1631,30 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
+	// 2026-09-23 252 SQL 日志审计轮：analyze 全实例逐表 ANALYZE 实测 >30s，
+	// 被角色级 statement_timeout=30s（252 llm_gateway rolconfig）击杀
+	// （252 快照 74min ×4），GUC 注释里的 5min cooldown 形同虚设——analyze
+	// 每次都半途而废。Go 侧预算 10min，事务内 SET LOCAL 抬到同值对齐，
+	// 事务结束自动还原，pooled 连接不保留（与 promote 的 60s 同型）。
+	tx, err := pm.db.Begin(timeoutCtx)
+	if err != nil {
+		slog.Warn("partition_manager: analyze stats begin failed", "error", err)
+		return
+	}
+	if _, err := tx.Exec(timeoutCtx,
+		"SET LOCAL statement_timeout = '10min'"); err != nil {
+		tx.Rollback(timeoutCtx)
+		slog.Warn("partition_manager: analyze timeout setup failed", "error", err)
+		return
+	}
 	var n int64
-	err := pm.db.QueryRow(timeoutCtx,
+	err = tx.QueryRow(timeoutCtx,
 		"SELECT analyze_llm_gateway_table_stats($1)", 2,
 	).Scan(&n)
+	if cerr := tx.Commit(timeoutCtx); cerr != nil {
+		slog.Warn("partition_manager: analyze commit failed", "error", cerr)
+		return
+	}
 	if err != nil {
 		slog.Warn("partition_manager: analyze stats failed", "error", err)
 		return
@@ -1481,4 +1974,86 @@ func (pm *PartitionManager) runWithBypass(ctx context.Context, fn func(pgx.Tx) (
 		return zero, fmt.Errorf("commit: %w", err)
 	}
 	return tag, nil
+}
+
+// deleteTerminalRowsBatched deletes at most limit rows matching predicate in
+// bounded ctid batches (single statement, atomic visibility — the same shape
+// the turn-logs fix landed in the 15th 12h audit round). Returns rows
+// deleted. R72 lesson: an unbounded first-sweep DELETE on a million-row
+// table stalls replication and bloats the WAL in one shot.
+func (pm *PartitionManager) deleteTerminalRowsBatched(ctx context.Context, table, predicate string, retentionDays, limit int) int64 {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	tag, err := pm.db.Exec(timeoutCtx,
+		// (tableoid, ctid) 复合键：table 可能是分区父表（stats_event_inbox），
+		// 裸 ctid 只在分区内唯一，多分区时跨分区同位行会被误删——与 e92eaebab
+		// 修掉的 candidate_failure_logs P1 同型（三十七轮审计闭合）。
+		"DELETE FROM "+table+" WHERE (tableoid, ctid) IN (SELECT tableoid, ctid FROM "+table+" WHERE "+predicate+" LIMIT $2)",
+		retentionDays, limit)
+	if err != nil {
+		slog.Error("partition_manager: terminal-row TTL batch delete failed",
+			"table", table, "retention_days", retentionDays, "error", err)
+		return 0
+	}
+	return tag.RowsAffected()
+}
+
+// cleanupOldAnalysisEvents deletes PROCESSED analysis_events rows older than
+// the TTL (R27-HC-1, 2026-09-30): the table previously had zero DELETE
+// paths and grew to 1.02M rows / 864MB on the local shard, all already
+// consumed (processed_at set). Unprocessed rows are never touched — they are
+// pending work for pg_poll. Retention:
+// lifecycle.analysis_events_ttl_days (default 7, hot-reloadable). Backed by
+// idx_analysis_events_processed_old (migration 760).
+func (pm *PartitionManager) cleanupOldAnalysisEvents(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.analysis_events_ttl_days", 7)
+	if retentionDays < 1 {
+		retentionDays = 7
+	}
+	const batchLimit = 20000
+	total := int64(0)
+	for round := 0; round < 10; round++ {
+		n := pm.deleteTerminalRowsBatched(ctx, "analysis_events",
+			"processed_at IS NOT NULL AND occurred_at < now() - ($1 || ' days')::interval",
+			retentionDays, batchLimit)
+		total += n
+		if n < batchLimit {
+			break
+		}
+	}
+	if total > 0 {
+		slog.Info("partition_manager: cleaned analysis_events processed rows",
+			"deleted_rows", total, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldStatsEventInboxTerminal deletes TERMINAL inbox rows (processing
+// status processed / dead_letter) older than the TTL (R27-HC-2, 2026-09-30):
+// the inbox previously only transitioned state — the local shard's default
+// partition reached 1.38M rows. Active rows (pending / retryable /
+// processing) are never touched, including the currently-stuck pending
+// backlog (R27-HC-10, owner decision required). Retention:
+// lifecycle.stats_event_inbox_ttl_days (default 7, hot-reloadable). Backed
+// by idx_stats_event_inbox_terminal_old (migration 760). stats_event_inbox
+// is a partitioned parent; DELETE routes to partitions automatically.
+func (pm *PartitionManager) cleanupOldStatsEventInboxTerminal(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.stats_event_inbox_ttl_days", 7)
+	if retentionDays < 1 {
+		retentionDays = 7
+	}
+	const batchLimit = 20000
+	total := int64(0)
+	for round := 0; round < 10; round++ {
+		n := pm.deleteTerminalRowsBatched(ctx, "stats_event_inbox",
+			"processing_status IN ('processed','dead_letter') AND occurred_at < now() - ($1 || ' days')::interval",
+			retentionDays, batchLimit)
+		total += n
+		if n < batchLimit {
+			break
+		}
+	}
+	if total > 0 {
+		slog.Info("partition_manager: cleaned stats_event_inbox terminal rows",
+			"deleted_rows", total, "retention_days", retentionDays)
+	}
 }

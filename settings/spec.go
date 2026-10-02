@@ -68,6 +68,11 @@ const (
 	// 2026-08-20: 项目归属（LLM 推断层）的归类。属于辅助分析类，不是
 	// 计费/路由类，不参与 hot path 控制。
 	CategoryAttribution Category = "attribution"
+	// 2026-09-22: Wave 3 B5③ "网关重试与超时"聚合组 —— 只聚合展示，
+	// 不迁移存储：goal.retry_*（tenant）/ stream_retry_threshold（platform）
+	// / error_probe.timeout_ms（platform）分散三域，统一归入本组便于
+	// 运维一处调参。存储键名与 scope 均不变。
+	CategoryRetry Category = "retry"
 )
 
 // DangerLevel gates the required role for PUT operations.
@@ -322,9 +327,15 @@ var Global = NewRegistry()
 const EnvBackendScope Scope = "__env__"
 
 // Init wires the DB and env backends into Global. Idempotent.
+//
+// dbStore 为 nil 时仅注册 env backend（R52：lite 存储形态无 PG，但
+// storage.* 开关仍需 env→default 解析链才能生效，见
+// cmd/gateway/storage_mode_init.go 的注册点）。
 func Init(dbStore Backend) {
-	Global.RegisterBackend(ScopePlatform, dbStore)
-	Global.RegisterBackend(ScopeTenant, dbStore)
+	if dbStore != nil {
+		Global.RegisterBackend(ScopePlatform, dbStore)
+		Global.RegisterBackend(ScopeTenant, dbStore)
+	}
 	Global.RegisterBackend(EnvBackendScope, NewStoreEnv())
 	slog.Info("settings: registry initialised",
 		"platform_specs", len(Global.AllSpecs()))

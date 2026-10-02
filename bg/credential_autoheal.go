@@ -240,17 +240,28 @@ func (w *CredentialAutoHealWorker) loop(ctx context.Context) {
 		case <-w.stopCh:
 			return
 		case <-ticker.C:
-			n := w.runCycle(ctx, dueAutoHealSQL(), []any{
-				w.batchSize,
-				w.minDisabledDur.String(),
-				w.maxDisabledDur.String(),
-				w.maxDisabledDur.String(),
-			})
-			if n > 0 {
-				slog.Info("credential_autoheal_worker: submitted self-heal probes",
-					"count", n)
-			}
+			w.cycleRecovered(ctx)
 		}
+	}
+}
+
+// cycleRecovered 守护单轮 heal cycle（R51 审计 P2：loop goroutine 原先无任何
+// recover，单次 panic 即整进程崩溃）——panic 记日志后 tick 循环继续。
+func (w *CredentialAutoHealWorker) cycleRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("credential_autoheal_worker: cycle panic recovered", "recover", rec)
+		}
+	}()
+	n := w.runCycle(ctx, dueAutoHealSQL(), []any{
+		w.batchSize,
+		w.minDisabledDur.String(),
+		w.maxDisabledDur.String(),
+		w.maxDisabledDur.String(),
+	})
+	if n > 0 {
+		slog.Info("credential_autoheal_worker: submitted self-heal probes",
+			"count", n)
 	}
 }
 

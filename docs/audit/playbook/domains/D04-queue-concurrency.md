@@ -52,3 +52,23 @@
 - 合成轮口径边界留档：settle 的 session_summaries join（request_count/error_count/health_score）不滤合成轮，方向保守（少归因）；收敛须连写侧一起改并同步两个集成测试期望（F2，接受）。
 - writeReward/abandon 不查 RowsAffected：Redis-off 双实例 sweep 指标可虚高（DB 状态不重复，声明接受）。
 - Go 侧 IsSyntheticActor trim / SQL 谓词不 trim 的前置条件=写入口 origin_mw TrimSpace；新写者必须同样 trim，禁止单侧"修复"（shadow_actors.go 已注释钉死）。
+
+### R53 回注（2026-09-22，R51-F15 免费重试计量收口）
+- reqprobe 参数剔除/模式回退 + ctxLen 恢复的免费重试（一次准入最多 4 次上游调用）已改为**按次补记 Governor**而非消耗 retry budget：`ExtraCallRecorder` 可选能力（rpm/tpm 债务式扣减钳 `-limit`，concurrency 槽位全程持有刻意豁免）→ forwarder.acquire 装配 `qr.OnExtraUpstreamCall` → `ExecParams.ExtraUpstreamCall` → 四触发点 `meterExtraUpstreamCall`。指标 `dispatch_extra_upstream_calls_total{mode}`。
+- 裁决留档：免费重试消耗 retry budget 会让 maxRetries=0 的 dispatch 流量直接 failover、reqprobe 学习闭环永不触发——计量归计量、准入归准入。
+- Redis enforce backend governor 未实现该能力（需计费 Lua），opt-in 场景计量缺口维持现状（R53-D2）。
+
+### R72 回注（2026-09-27，turn-logs flush 跨批丢 stage）
+- **jsonb `||` 浅合并只能用于"键集随批次单调新增"的场景**：turn_logs_summary 的 `turn_N` 键承载整轮 stages 数组，键会在多批之间重复出现（写侧 stage 循环中段落 tick / 双实例读集错位），浅合并=整键替换=丢前半 stage——8a34eab76 的"worst case written twice with equivalent value"收敛声明仅在读集相同时成立。修法（R72-F1）：flush 事务化 + sessions 行 `FOR UPDATE`（串行化同 session 的 read-modify-write，防整列写回互相覆盖）+ Go 侧 per-turn stages 数组 union+去重（身份=UTC 格式化时间戳，防 JSON 往返后 time.Time == 失效）+ 整列写回。钉桩=mergeSummaries 行为级六案（跨批 union/陈旧子集不回退/去重幂等/JSON 往返/降级/保序）+ SQL 形状三案（FOR UPDATE/整列写回禁 `||`/id 删行）。
+- 观察项挂账：双实例无 leader 选举（DB 幂等收敛成立，吞吐不扩展）；积压零观测（无 gauge，过载静默 shedding）；GetStageLogs 不过滤 expires_at（过期未聚合行可读 ~24h）。
+
+### R73 回注（2026-09-28，mirror reaper 生命周期三缺口 M-6）
+- **drain-until-empty 语义放大停机阻塞**：Stop() 只关 stopCh，drainWorker 只查 ctx.Err()——ctx 是 Background 时优雅停机被"排空整表"拖住（大积压+后台 ctx 无界）。修法：drainWorker 循环头加 stopCh select（已 claim 行由 lease 孤儿回收兜底）。
+- **worker goroutine 必须 defer recover**：Go 任意 goroutine 未恢复 panic 击穿整个进程；630 reaper 同缺（本轮未修，登记）。recover 后行保持 claimed 由孤儿回收回 pending，语义无损。
+- NewTicker 首 tick 在 interval 后非立即——"First tick fires immediately" 类注释属拍脑袋，写生命周期注释前对照 time 包语义。
+- 钉桩：go test -race ./internal/sessionv2mirror/ 纳入每轮验证清单。
+
+### R75 回注（2026-09-28，N2 积压 gauge 落地 + 休眠 API 过滤）
+- **N2 收口**：`llm_gateway_session_turn_logs_backlog_{rows,pending_sessions,oldest_age_seconds}` 三件套（R47/R48 配对惯例）挂 runCleanup 1h tick；查询走 idx_session_turn_logs_expires，失败仅 Warn 保旧值。覆盖索引 (expires_at,tenant_id,session_id,started_at) 视 gauge 观察到的积压规模再走 sequence 通道裁决。
+- **休眠 API 默认安全化**：GetStageLogs/GetAllSessionLogs（全仓零生产调用方）补 `expires_at > NOW()`——聚合器只消费未过期行，读路径与其对齐，防未来接线读出"过期未聚合、即将被清扫"的行。
+- WriteStages 批量化后 turn 级 all-or-nothing（单坏 payload 拖垮同批 stage 日志）接受留档；tick() 级 4-worker 并发无行为级测试（scriptedDB+-race）挂账。

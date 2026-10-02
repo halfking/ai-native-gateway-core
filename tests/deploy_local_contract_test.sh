@@ -98,19 +98,19 @@ redis_discover_tries() {
   case "$kind" in
     named)
       printf 'nbjl-redis\nredis:7-alpine\n0.0.0.0:6379->6379/tcp\n' > "$dir/docker_ps"
-      DOCKER_PING_NAME='nbjl-redis' redis_discover "$dir"
+      export DOCKER_PING_NAME='nbjl-redis'; redis_discover "$dir"
       ;;
     scan)
       printf 'app-cache\tpython:3.12\nbusybox\tbusybox\nvalid-redis-cache\tredis:7-alpine\t0.0.0.0:16379->6379/tcp\n' > "$dir/docker_ps"
-      DOCKER_PING_NAME='valid-redis-cache' redis_discover "$dir"
+      export DOCKER_PING_NAME='valid-redis-cache'; redis_discover "$dir"
       ;;
     scan_no_rediscli)
       printf 'redis-custom\tcustom:1.0\t0.0.0.0:6379->6379/tcp\n' > "$dir/docker_ps"
-      DOCKER_PING_NAME='redis-custom' redis_discover "$dir"
+      export DOCKER_PING_NAME='redis-custom'; redis_discover "$dir"
       ;;
     system)
       printf 'LISTEN 0 128 127.0.0.1:16379 0.0.0.0:*\nLISTEN 0 128 127.0.0.1:5432 0.0.0.0:*\n' > "$dir/ss_listen"
-      DOCKER_PING_NAME='valid-redis-cache' redis_discover "$dir"
+      export DOCKER_PING_NAME='valid-redis-cache'; redis_discover "$dir"
       ;;
   esac
 }
@@ -156,9 +156,13 @@ cp "$ROOT/scripts/deploy-local.sh" "$version_project/scripts/deploy-local.sh"
 cp "$ROOT/scripts/deploy-local-lib.sh" "$version_project/scripts/deploy-local-lib.sh"
 # P1.1: deploy-local.sh sources scripts/_shared-lib.sh, which resolves the
 # shared deploy-library SSOT from AIAN_DEPLOY_LIB (the sandbox redirects HOME,
-# so the $HOME-workspace default would not resolve there).
+# so the $HOME-workspace default would not resolve there). Resolve the SSOT
+# through the repo's own scripts/deploy-lib symlink so the fixture points at
+# the same target deploy-local.sh consumes in production; the SSOT lives
+# sibling to the workspace checkout, not inside the parent of $ROOT, so the
+# path must never be derived from checkout depth.
 cp "$ROOT/scripts/_shared-lib.sh" "$version_project/scripts/_shared-lib.sh"
-AIAN_DEPLOY_LIB_FIXTURE="$(cd "$ROOT/../.." && pwd)/deploy-lib"
+AIAN_DEPLOY_LIB_FIXTURE="$(cd "$ROOT/scripts/deploy-lib" && pwd -P)"
 cp "$ROOT/scripts/bump-version.sh" "$version_project/scripts/bump-version.sh"
 # dadf1e66f 起 deploy-local.sh 顶层校验 PROJECT_ROOT/sql/migrations 存在
 # （否则 exit 64）；fixture 必须带上最小骨架，否则碰撞分支根本跑不到。
@@ -598,3 +602,21 @@ log_defn=$(grep -E '^log\(\)' "$ROOT/scripts/deploy-local.sh")
 grep -Fq 'binary=$(build_backend)' "$ROOT/scripts/deploy-local.sh" \
   || fail 'deploy() must capture build_backend output via $()'
 pass 'log() stderr contract locked: $binary=$() capture must not absorb log output as path'
+
+# R59 审计（S8-F1）：552770c96 的 dl_shared_root/dl_shared_pg_dir 绝对路径
+# 白名单守门被 81e4ab932（T2 轮取远端消冲突）整体回滚且零红灯。守门函数
+# 行为契约 + lib 源码含守门实现双重锁定，防止再被"取远端"静默冲掉。
+saved_root="${KAIXUAN_ROOT-}"
+recursive_root='${KAIXUAN_ROOT:-__DEV_HOME__/kaixuan}'
+out=$(KAIXUAN_ROOT="$recursive_root" dl_shared_pg_dir 2>&1)
+[[ "$out" == *'/postgres' ]] || fail "recursive KAIXUAN_ROOT must fall back to an absolute /postgres path; got: $out"
+[[ "$out" == *'looks recursive or non-absolute'* ]] || fail "recursive KAIXUAN_ROOT must emit a warn; got: $out"
+[[ "$out" != *'${KAIXUAN_ROOT' ]] || fail "recursive literal must never leak into dl_shared_pg_dir output"
+unset KAIXUAN_ROOT
+[[ "$(dl_shared_root)" == "$(dl_default_shared_root)" ]] || fail 'unset KAIXUAN_ROOT must return the default shared root'
+out=$(KAIXUAN_ROOT=/opt/foo dl_shared_pg_dir 2>/dev/null)
+[[ "$out" == '/opt/foo/postgres' ]] || fail "absolute KAIXUAN_ROOT must pass through verbatim; got: $out"
+[[ -n "${saved_root+set}" ]] && export KAIXUAN_ROOT="$saved_root" || unset KAIXUAN_ROOT
+grep -Fq 'looks recursive or non-absolute' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_shared_root guard implementation missing from deploy-local-lib.sh (S8-F1 rollback watch)'
+pass 'dl_shared_root recursive/non-absolute guard contract locked (S8-F1)'

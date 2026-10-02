@@ -54,6 +54,28 @@ func (f *fakeStore) GetTask(_ context.Context, tenantID, id string) (*Task, erro
 	return t, nil
 }
 
+func (f *fakeStore) RecallTask(_ context.Context, tenantID, id string) (*RecallOutcome, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok || t.TenantID != tenantID {
+		return nil, ErrNotFound
+	}
+	status := RecallAlreadyTerminal
+	if !t.Status.Terminal() {
+		now := time.Now()
+		t.Status = StatusCancelled
+		t.CompletedAt = &now
+		status = RecallCancelled
+	}
+	return &RecallOutcome{
+		Task:         t,
+		EventSeq:     99,
+		RecallStatus: status,
+		Packet:       buildHandoffPacket(t),
+	}, nil
+}
+
 func (f *fakeStore) ListEvents(_ context.Context, tenantID, taskID string, _ int) ([]Event, error) {
 	if _, err := f.GetTask(context.Background(), tenantID, taskID); err != nil {
 		return nil, err
@@ -165,7 +187,7 @@ func TestHandlerNotFoundUnifiesCrossTenant(t *testing.T) {
 	}
 }
 
-func TestHandlerMethodNotAllowedAndRecall501(t *testing.T) {
+func TestHandlerMethodNotAllowed(t *testing.T) {
 	h := newTestHandler(t, newFakeStore())
 	if c := doReq(h, http.MethodGet, "/v1/hosted-tasks", "", "").Code; c != http.StatusMethodNotAllowed {
 		t.Errorf("GET collection = %d, want 405", c)
@@ -173,9 +195,55 @@ func TestHandlerMethodNotAllowedAndRecall501(t *testing.T) {
 	if c := doReq(h, http.MethodDelete, "/v1/hosted-tasks/ht_x", "", "").Code; c != http.StatusMethodNotAllowed {
 		t.Errorf("DELETE task = %d, want 405", c)
 	}
-	// §4.1：recall P0 显式 501。
-	if c := doReq(h, http.MethodPost, "/v1/hosted-tasks/ht_x/recall", "", "").Code; c != http.StatusNotImplemented {
-		t.Errorf("recall = %d, want 501", c)
+	// recall 只接受 POST（§3.3）。
+	if c := doReq(h, http.MethodGet, "/v1/hosted-tasks/ht_x/recall", "", "").Code; c != http.StatusMethodNotAllowed {
+		t.Errorf("GET recall = %d, want 405", c)
+	}
+}
+
+func TestHandlerRecallHandoffPacket(t *testing.T) {
+	store := newFakeStore()
+	h := newTestHandler(t, store)
+	doReq(h, http.MethodPost, "/v1/hosted-tasks", "0123456789abcdef", validBody)
+	taskID := "ht_0123456789abcdef"
+
+	// 非终态召回：cancelled 抢占 + 包（§3.3 ④）。
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/hosted-tasks/"+taskID+"/recall", nil)
+	req = req.WithContext(withTenant(req.Context(), ""))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recall running task = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`"recall_status":"cancelled"`,
+		`"handoff_packet"`,
+		`"next_owner":"recall_caller"`,
+		`"goal"`,
+		`"event_seq":99`,
+		`"status":"cancelled"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("recall body missing %s: %s", want, body)
+		}
+	}
+
+	// 已终态再召回：already_terminal，只快照 + 补事件。
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/hosted-tasks/"+taskID+"/recall", nil)
+	req = req.WithContext(withTenant(req.Context(), ""))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recall terminal task = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"recall_status":"already_terminal"`) {
+		t.Errorf("second recall should be already_terminal: %s", rec.Body.String())
+	}
+
+	// missing/跨租户 → 404。
+	if c := doReq(h, http.MethodPost, "/v1/hosted-tasks/ht_nope/recall", "", "").Code; c != http.StatusNotFound {
+		t.Errorf("recall missing = %d, want 404", c)
 	}
 }
 

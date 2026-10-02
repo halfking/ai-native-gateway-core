@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 const sessionContextPrefix = "/api/system/session-context/"
@@ -138,7 +139,7 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 
 	turns, err := h.loadSessionPreviewTurns(ctx, taskID, sc, r, 500)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -262,7 +263,7 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 		return
 	}
 	var detailObj any
-	_ = json.Unmarshal(detail, &detailObj)
+	jsoncol.Decode("admin.sessionExtract.extractionStatus/detail", detail, &detailObj)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id":           taskID,
 		"extracted":         true,
@@ -278,8 +279,11 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc sessionScope, r *http.Request) (int, error) {
 	where, args := sessionLogsWhere(taskID, sc, r)
 	var apiKeyID *int64
+	// 走 734 视图而非直读 request_logs：视图体 = session 族（hot ∪ 月分区）
+	// ∪ v1 冻结分支反连接。S4 停写（storage.request_logs_write_enabled=false）
+	// 后直读物理表对新会话恒空，这里会静默返回 0 且无告警。
 	err := h.db.QueryRow(ctx, `
-		SELECT api_key_id FROM request_logs
+		SELECT api_key_id FROM request_logs_with_current_month
 		`+where+` AND api_key_id IS NOT NULL
 		ORDER BY ts DESC LIMIT 1
 	`, args...).Scan(&apiKeyID)
@@ -289,19 +293,22 @@ func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc session
 	return int(*apiKeyID), nil
 }
 
-// sessionTenantID fetches the tenant_id associated with the request_logs
-// rows for a task. Returns "" if unavailable (caller should pass that to
+// sessionTenantID fetches the tenant_id associated with the session rows for
+// a task. Returns "" if unavailable (caller should pass that to
 // memory.UserID which then falls back to the legacy single-tenant layout).
 //
 // Round 47 compression v7 T13: required so the Memora user_id we use to
 // search Memora for compression-side-facts is tenant-namespaced. Without
 // this we'd risk cross-tenant fact leakage per docs/multi-tenant-standards.md
 // §3.2 Pattern A.
+//
+// S4 停写安全：读 734 视图（session 分支已拼装），不直读 request_logs 物理表 ——
+// 直读在停写后对新会话恒空，会让这里回落成 legacy 单租户布局。
 func (h *Handler) sessionTenantID(ctx context.Context, taskID string, sc sessionScope, r *http.Request) string {
 	where, args := sessionLogsWhere(taskID, sc, r)
 	var tenantID *string
 	err := h.db.QueryRow(ctx, `
-		SELECT tenant_id FROM request_logs
+		SELECT tenant_id FROM request_logs_with_current_month
 		`+where+`
 		ORDER BY ts DESC LIMIT 1
 	`, args...).Scan(&tenantID)
@@ -321,7 +328,7 @@ func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc
 			response_preview,
 			work_type,
 			request_mode
-		FROM request_logs
+		FROM request_logs_with_current_month
 		`+where+`
 		ORDER BY ts ASC
 		LIMIT `+limitArg+`

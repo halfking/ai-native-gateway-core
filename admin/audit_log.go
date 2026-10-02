@@ -2,10 +2,11 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 type auditLogEntry struct {
@@ -89,7 +90,7 @@ func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 	// Total count for pagination
 	var total int
 	if err := h.db.QueryRow(ctx, "SELECT COUNT(*) FROM routing_audit_log WHERE "+where, args...).Scan(&total); err != nil {
-		writeError(w, http.StatusInternalServerError, "count failed: "+err.Error())
+		writeInternalErr(w, "count failed", err)
 		return
 	}
 
@@ -103,7 +104,7 @@ func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 		LIMIT $`+strconv.Itoa(idx)+` OFFSET $`+strconv.Itoa(idx+1),
 		append(args, size, offset)...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -113,15 +114,17 @@ func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 		var e auditLogEntry
 		var beforeJSON, afterJSON []byte
 		if err := rows.Scan(&e.ID, &e.TS, &e.Actor, &e.Action, &e.TargetType, &e.TargetID, &beforeJSON, &afterJSON); err != nil {
+			warnRowSkip("auditLog.list", err)
 			continue
 		}
-		if len(beforeJSON) > 0 {
-			_ = json.Unmarshal(beforeJSON, &e.BeforeJSON)
-		}
-		if len(afterJSON) > 0 {
-			_ = json.Unmarshal(afterJSON, &e.AfterJSON)
-		}
+		jsoncol.Decode("admin.auditLog.list/before_json", beforeJSON, &e.BeforeJSON)
+		jsoncol.Decode("admin.auditLog.list/after_json", afterJSON, &e.AfterJSON)
 		entries = append(entries, e)
+	}
+	// 路由审计日志少一截 = 变更证据少了几条（且 total 与列表对不上，
+	// 前端会以为翻到底了）。审计面不返回半份。
+	if writeAggRowsErr(w, "auditLog.list", rows.Err()) {
+		return
 	}
 	if entries == nil {
 		entries = []auditLogEntry{}

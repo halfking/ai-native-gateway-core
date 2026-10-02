@@ -52,7 +52,7 @@ func (h *Handler) handleMaasSettings(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		st, err := svc.GetSettings(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, st)
@@ -71,7 +71,7 @@ func (h *Handler) handleMaasSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := svc.UpdateSettings(r.Context(), body); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -90,7 +90,7 @@ func (h *Handler) handleMaasModelRates(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		resp, err := svc.ListAdminModelRates(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -146,7 +146,7 @@ func (h *Handler) handleMaasModelRateByID(w http.ResponseWriter, r *http.Request
 				writeError(w, http.StatusNotFound, "no custom rate for model")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -178,7 +178,7 @@ func (h *Handler) handleMaasModelRateBatch(w http.ResponseWriter, r *http.Reques
 	}
 	updated, err := svc.BatchUpsertModelRates(r.Context(), req.Updates)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
@@ -209,7 +209,7 @@ func (h *Handler) handleMaasModelRateBatchReset(w http.ResponseWriter, r *http.R
 	}
 	updated, err := svc.BatchResetModelRates(r.Context(), req.Items)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
@@ -241,7 +241,7 @@ func (h *Handler) handleMaasModelRateBatchFillGlobal(w http.ResponseWriter, r *h
 	}
 	written, err := svc.BatchFillGlobalModelRates(r.Context(), req.Items)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"updated": written})
@@ -259,7 +259,7 @@ func (h *Handler) handleMaasPlans(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := svc.ListPlans(r.Context(), false)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -277,7 +277,7 @@ func (h *Handler) handleMaasTopupPackages(w http.ResponseWriter, r *http.Request
 	}
 	items, err := svc.ListTopupPackages(r.Context(), false)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -305,7 +305,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 		}
 		wallet, err := svc.GetWallet(r.Context(), tenantCode)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, wallet)
@@ -316,7 +316,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 		}
 		account, err := svc.GetAccount(r.Context(), tenantCode)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, account)
@@ -345,7 +345,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 		case "summary":
 			summary, err := svc.QueryUsageSummaryWithCost(r.Context(), tenantCode, days, limit)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalErr(w, "internal error (see server logs)", err)
 				return
 			}
 			writeJSON(w, http.StatusOK, summary)
@@ -353,7 +353,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 			ownerUser := r.URL.Query().Get("owner_user")
 			detail, err := svc.QueryConsumptionDetail(r.Context(), tenantCode, ownerUser, days)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalErr(w, "internal error (see server logs)", err)
 				return
 			}
 			writeJSON(w, http.StatusOK, detail)
@@ -373,7 +373,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 		}
 		items, err := svc.ListLedger(r.Context(), tenantCode, limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -391,7 +391,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err := svc.AdjustCredits(r.Context(), tenantCode, body.Amount, body.Note); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -409,7 +409,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err := svc.GrantCredits(r.Context(), tenantCode, body.GrantedCredits, body.Note); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -426,7 +426,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 		}
 		items, err := svc.ListOrders(r.Context(), tenantCode, limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -447,7 +447,7 @@ func (h *Handler) handleMaasPublicSettings(w http.ResponseWriter, r *http.Reques
 	}
 	st, err := svc.GetSettings(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	// Tenants see conversion knobs only, not internal cost data.
@@ -470,7 +470,7 @@ func (h *Handler) handleMaasPublicModels(w http.ResponseWriter, r *http.Request)
 	}
 	items, err := svc.ListPublicModels(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -488,7 +488,7 @@ func (h *Handler) handleMaasPublicPlans(w http.ResponseWriter, r *http.Request) 
 	}
 	items, err := svc.ListPlans(r.Context(), true)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -506,7 +506,7 @@ func (h *Handler) handleMaasPublicTopup(w http.ResponseWriter, r *http.Request) 
 	}
 	items, err := svc.ListTopupPackages(r.Context(), true)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -525,7 +525,7 @@ func (h *Handler) handleMaasWallet(w http.ResponseWriter, r *http.Request) {
 	tenantID := GetTenantID(r)
 	wallet, err := svc.GetWallet(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, wallet)
@@ -544,7 +544,7 @@ func (h *Handler) handleMaasAccount(w http.ResponseWriter, r *http.Request) {
 	tenantID := GetTenantID(r)
 	account, err := svc.GetAccount(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, account)
@@ -567,7 +567,7 @@ func (h *Handler) handleMaasOrders(w http.ResponseWriter, r *http.Request) {
 		tenantID := GetTenantID(r)
 		items, err := svc.ListOrders(r.Context(), tenantID, limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -608,7 +608,7 @@ func (h *Handler) handleMaasOrderByID(w http.ResponseWriter, r *http.Request) {
 	tenantID := GetTenantID(r)
 	order, err := svc.GetOrder(r.Context(), id, tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "order not found")
+		writeLookupErr(w, "order not found", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, order)
@@ -632,7 +632,7 @@ func (h *Handler) handleAdminMaasOrders(w http.ResponseWriter, r *http.Request) 
 	}
 	items, err := svc.ListOrders(r.Context(), "", limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -708,7 +708,7 @@ func (h *Handler) handleMaasUsageSummary(w http.ResponseWriter, r *http.Request)
 	tenantID := GetTenantID(r)
 	summary, err := svc.QueryUsageSummary(r.Context(), tenantID, days, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -733,7 +733,7 @@ func (h *Handler) handleMaasLedger(w http.ResponseWriter, r *http.Request) {
 	tenantID := GetTenantID(r)
 	items, err := svc.ListLedger(r.Context(), tenantID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})

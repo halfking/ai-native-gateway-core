@@ -37,6 +37,14 @@ func TestParseOpenAIResponse_GLMFinishReasonErrors(t *testing.T) {
 			wantKind:     errorsx.KindContextLength,
 			wantMsg:      "GLM context window exceeded",
 		},
+		{
+			// Wave4-D3: the single errorsx table adds misspelling tolerance —
+			// upstream "exceeded"-family typos fail closed instead of parsing.
+			name:         "misspelled model_context_window_exeated",
+			finishReason: "model_context_window_exeated",
+			wantKind:     errorsx.KindContextLength,
+			wantMsg:      "GLM finish_reason error channel: model_context_window_exeated",
+		},
 	}
 
 	for _, tc := range cases {

@@ -1,6 +1,9 @@
 package autoroute
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Candidate is the per-credential × per-model snapshot consumed by Score().
 //
@@ -151,6 +154,12 @@ type CostContext struct {
 }
 
 // Score computes the 8-dimension composite score for a candidate.
+//
+// R69 三代并存标注（清理候选盘点，勿删）：本函数是 v1 评分，消费方
+// index.go:244/295 与 recommend_v2.go:239；v2 主链在 scoring_v2.go
+// （ScoreWithChannelQuality），兼容臂在 scoring_simplified.go
+// （ScoreSimplified，UseSimplifiedScoring 默认 false）。三代退役条件：
+// v1 在 recommend_v2 全量切 v2 后退役；simplified 在 flag 移除后退役。
 //
 // All per-dimension scores are 0-100 (higher = better):
 //
@@ -380,7 +389,7 @@ func scoreContextFit(c Candidate, estTokens int) float64 {
 func TaskMatchScore(task TaskType, candidateTags []string) float64 {
 	required := requiredTagsForTask(task)
 	if len(required) == 0 {
-		return 0.5 // chat or unknown → middle (don't gate)
+		return TaskMatchScoreUnknown // chat or unknown → middle (don't gate)
 	}
 	hits := 0
 	for _, r := range required {
@@ -393,6 +402,96 @@ func TaskMatchScore(task TaskType, candidateTags []string) float64 {
 		}
 	}
 	return float64(hits) / float64(len(required))
+}
+
+// TaskMatchScoreUnknown is the "tag dimension carries no information" score:
+// the task requires no tags (chat/unknown), or — see
+// TaskVocabularyRepresented — the model library has no vocabulary for this
+// task at all. It deliberately does NOT return 0: "no tag matched" and "no tag
+// could ever match" are different facts, and conflating them makes an absent
+// taxonomy look like a capability verdict.
+const TaskMatchScoreUnknown = 0.5
+
+// TaskVocabularyRepresented reports whether at least one of the required
+// capability tags for task is actually carried by some candidate in the pool.
+//
+// requiredTagsForTask is written against a capability vocabulary (code,
+// programming, creative, writing, classification, review, security, planning,
+// analysis, math, logic) that the live models_canonical.tags taxonomy does not
+// provide — the library publishes cap:long-context, cap:tool-use,
+// cap:function-call, cap:reasoning, cap:vision, modality:* and family:* /
+// version:*, but no code/coding/creative/writing capability tag at all
+// (2026-09-28 live audit: 950 canonical models, strengths column 0/950
+// populated). For those tasks every candidate scores TaskMatchScore == 0, so
+// the tag dimension is measuring nothing.
+//
+// Callers use this to fail open: an unrepresented vocabulary means "unknown",
+// not "unsuitable", and must not be allowed to masquerade as a match failure.
+//
+// R77 审计 D11-L5 修订：判定必须锚在**能力命名空间**上，不能只看子串。
+// requiredTagsForTask 写的是能力词表，所以只有 cap:* （或无命名空间的裸标签，
+// 见 Candidate.Tags 的历史写法）才算「这套分类法里有这个词」的证据；
+// family:* / version:* / modality:* 是**分类标签**，与能力分类法无关。
+// 修订前的真实故障：线上只有 family:codegemma / family:codex /
+// family:starcoder2 / version:codestral-latest / version:gpt-4o-audio-preview
+// 含 "code" 子串，于是 code 与 code_audit 双双被判「词表在场」——中性化被
+// 跳过（recommend_v2.go:144），打分留在真实值；而 top 候选不带任何 code 标签
+// → MatchScore 0 < 30 → recommend_v2.go:339 的热度坍缩守卫命中。线上 249 例
+// E2E 实测坍缩 13/249 且**全部**是 code_audit（13/13），候选多样性 3→1，
+// 复现的正是「坍缩放大限流」。模型族名叫 codex 不能证明库里有 code 能力分类法。
+func TaskVocabularyRepresented(task TaskType, cands []Candidate) bool {
+	required := requiredTagsForTask(task)
+	if len(required) == 0 {
+		// chat/unknown requires nothing, so its vocabulary is trivially
+		// "present" — the neutral score is already what TaskMatchScore returns.
+		return true
+	}
+	normalized := make([]string, len(required))
+	for i, r := range required {
+		normalized[i] = normalizeTagSeparators(r)
+	}
+	for _, c := range cands {
+		for _, tag := range c.Tags {
+			if !isCapabilityTag(tag) {
+				continue
+			}
+			nt := normalizeTagSeparators(tag)
+			for _, rn := range normalized {
+				if containsFold(nt, rn) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isCapabilityTag reports whether tag lives in the capability namespace, i.e.
+// whether it is evidence that the library publishes a *capability* taxonomy.
+//
+// Capability evidence is either the explicit "cap:<name>" namespace or a bare
+// tag with no namespace at all — Candidate.Tags has always been documented as
+// e.g. ["reasoning", "code", "agent"], so bare tags stay supported. Every other
+// namespace (family:*, version:*, modality:*, …) is classification metadata
+// about *which model* it is, not *what it can do*, and must not be able to
+// impersonate a capability the library never published. R77 D11-L5: substring
+// matching alone let a model family literally named "codex" assert that the
+// code/review/security vocabulary is present.
+//
+// Deliberately not applied to TaskMatchScore: that function ranks rather than
+// decides presence, and its substring looseness ("code" matching
+// "code_completion") is documented, load-bearing behaviour for ranking. This
+// helper only gates the presence question.
+func isCapabilityTag(tag string) bool {
+	t := strings.TrimSpace(tag)
+	if t == "" {
+		return false
+	}
+	ns, _, ok := strings.Cut(t, ":")
+	if !ok {
+		return true // bare tag, no namespace
+	}
+	return strings.EqualFold(ns, "cap")
 }
 
 // normalizeTagSeparators canonicalizes capability-tag word separators so the

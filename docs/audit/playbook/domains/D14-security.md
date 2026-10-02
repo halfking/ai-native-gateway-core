@@ -66,7 +66,28 @@
 - 并行会话交付迁移只落 embeddata 单点（TestStartupFilesAreAllEmbedded 在 main 上红）：**五点同步是发布纪律不是建议**——canonical 副本 / embeddata / runner.go / main.go embed+map / revision-sequence 登记，缺一即红。
 - 共享状态守卫的粒度缺口（R39 §三#3 收口）：endpoint_build 混流"实例错 key"与"单凭据密文永久损坏"，后者被 guard 一并压制后在绑定面永无不可用信号——细分识别器（decrypt 形 detail + 熔断计数未达阈值）豁免写出真实信号，pre-trip 污染窗口由既有 deescalate sweep 自愈。
 
+### R52 回注（2026-09-22，ingest NOT NULL + 安全开关权限档批）
+- **NOT NULL 列绑 nil-able 指针 = 23502 连累同事务**：INSERT 列清单与占位符数量对齐守卫测不出"位置对、语义错"（COALESCE 套错槽）——对齐守卫须加两条不变量：位置对齐（slot k ↔ $k）+ NOT NULL 列必须 COALESCE（R52-F2，admin/telemetry_ingest_placeholder_alignment_test.go）。telemetry 包 streamChunksSentArg 是既有收口范式，新写点镜像。
+- **CachedPlatform* 读者的失效接线**：改用缓存变体（去热路径锁内 DB 读）必须同轮接通 settingsPut → InvalidatePlatformValue，否则 admin 改键有 ≤5s 盲窗且热更新钉桩测试会红（R52-F3）。
+- **安全开关 DangerLevel 对齐**：地理围栏总闸（proxy.default_banned_regions）曾是 Warning——CategorySecurity 开关至少 Dangerous，普通管理员不得整体关闭。
+- **客户端可控自由串进维度列**：X-Agent-Name 未截断时超 255 字节 22001 使整行 INSERT 失败、任意值撑大 rollup 维度基数——入维度列前 TrimSpace+剥控制字符+截断（normalizeAgentName 范式）。
+
 ### R42 回注（2026-09-18，723 守卫 + 审计面确认）
 - 723 裸 ALTER 42P01（fresh-install/canonical 链）已按 720 模式修复——与 720 同款事故两犯，定式见 D16 R42 回注。
 - census 静态两驾不扫 01-schema/sql/objects/policies（后者旧词汇属预期需豁免策略）、ensure 扫描按文件名钉死——扩面登记 R42 §五#2。
 - refresh-balance 出网探测面核为健康：super_admin-only 触发、egress 守卫、响应体不落 balance_error（固定文案+截断）；QueryRow 错误已区分 ErrNoRows(404)与基建错误(500+日志)。
+
+### R71 回注（2026-09-27，sqlreadguard 守卫进验证清单）
+- sqlreadguard TestNoBareRequestLogsMotherReads 恒红两轮未跑出（resolveSessionID 反向臂裸母表读）→ 反向臂双腿化（hot∪母表 UNION ALL）+ LEGIT 白名单；**守卫测试 ./internal/sqlreadguard/ 与 installer 包必须进每轮验证清单**——守卫红本身不是发现，守卫红被无视才是。
+- 500 回显面：0aa86d8bd 只收口 resolve 臂；R71 补收 detail querySessionDetail 臂 + list_v2（固定文案+slog），admin 通用面 85 处/22 文件登记债（L4）待批量收口。
+
+### R72 回注（2026-09-27，自清洁守卫盲区 + 754 五点静默缺四点再证恒查价值）
+- **白名单自清洁守卫的失配判定必须按文件类型单注释遍历**：旧写法 `//遍历==0 && --遍历==0` 双腿与——Go 文件纯 `//` 注释命中在 `--` 遍历恒计数 ≥1，"只剩注释命中"的滞留条目永不报（守卫绿可能部分依赖盲区）。修法=Go 文件走 `//`、SQL 走 `--`；据此移除 3 条滞留条目（session_export 已双腿化视图等）。
+- **五点同步恒查再证价值**：merge 带入的 754（并行子任务产物）只登记 sequence 通道，embeddata/var/map/StartupFiles/parity 四点全缺——TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 当场红并给出完整修法提示；R72 补齐（f65d34dd8）。守卫族三件套必须进每轮验证清单（TestStartupFilesAreAllEmbedded 单独跑不抓"整号缺席"形态）。
+- installer Windows 失败白名单更正：全模块 ×20（cmd 包 instance-token×6 + activation×9 + enrollment×5），干净 worktree 对 HEAD 复跑坐实为基线环境失败——此前各轮"×6"漏计后两包，白名单必须按全模块逐包 diff。
+
+### R74 回注（2026-09-28，500 回显收口铺开到 echo 包）
+- **500 回显收口模式已从 admin 包铺开到独立 echo 包**（fault/licensing 各建 internal_error.go：writeInternalErr = 固定 op 文案 + slogCaller 锚点，pgx/DSN 细节不达客户端）。新包写 admin API 时直接带该 helper，勿裸 `c.JSON(500, {"error": err.Error()})`。
+- **收口范围裁决**：500 一律收；**401 业务原因与 400 验证错误回显是客户端契约保留**（凭据排障/表单纠错需要）；409 业务流程字段（如 bootstrap 席位 need_deactivate 的 errMsg）保留。
+- **无认证端点回显 = 高优先收口对象**：licensing bootstrap（/api/system/bootstrap/*）经 customerEcho 挂主 mux 全网可达 + noAuthCustomerMiddleware——err.Error() 回显给任意网络可达者（R30 L-1 指纹绑定同族暴露面）。判定"是否 loopback-only"必须查路由挂载链而非文件名。
+- CLI 子命令 stdout JSON（gateway migrate → launcher 管道）不是 HTTP 回显面，err.Error() 排障必需豁免。

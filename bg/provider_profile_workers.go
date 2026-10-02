@@ -69,7 +69,7 @@ func (c *ProfileCollector) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 
-	go c.run(ctx)
+	Go("provider_profile.collectorRun", func() { c.run(ctx) })
 	slog.Info("provider profile collector started", "interval", c.interval)
 }
 
@@ -149,7 +149,7 @@ func (a *ProfileAggregator) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 
-	go a.run(ctx)
+	Go("provider_profile.aggregatorRun", func() { a.run(ctx) })
 	slog.Info("provider profile aggregator started", "interval", a.interval)
 }
 
@@ -224,7 +224,7 @@ func (c *ProfileCleaner) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 
-	go c.run(ctx)
+	Go("provider_profile.cleanerRun", func() { c.run(ctx) })
 	slog.Info("provider profile cleaner started", "interval", c.interval)
 }
 
@@ -303,7 +303,7 @@ func NewProfileAlertWorker(db *pgxpool.Pool, interval time.Duration) *ProfileAle
 func (w *ProfileAlertWorker) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	w.cancel = cancel
-	go w.run(ctx)
+	Go("provider_profile_workers.alertRun", func() { w.run(ctx) })
 	slog.Info("provider profile alert worker started", "interval", w.interval)
 }
 

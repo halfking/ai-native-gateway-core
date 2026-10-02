@@ -312,6 +312,12 @@ func mergeMeta(base, overlay Meta) Meta {
 	if overlay.TurnNumber != nil {
 		out.TurnNumber = overlay.TurnNumber
 	}
+	// R73 audit M-3: BodyStatus was the only Meta field computed from real
+	// body bytes yet dropped by both merge call sites — without this copy
+	// the wire meta.body_status could only ever be absent or "unavailable".
+	if overlay.BodyStatus != "" {
+		out.BodyStatus = overlay.BodyStatus
+	}
 	return out
 }
 

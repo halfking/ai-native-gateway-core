@@ -131,6 +131,15 @@ func Decide(key string, src, dst Dialect) (RestoreAction, *FieldSpec) {
 		//
 		// KindIRHandled 因此退化为纯元数据用途：文档、审计、以及
 		// IRHandledFields() 驱动的 isStandardField 判定。
+		//
+		// R52：声明了非空 Dialects 的 IRHandled 字段保留方言守卫。这类
+		// 字段（mask_sensitive_info / bot_setting，厂商专有）在 parser
+		// 消费它的路径上已移出 Extensions，本函数看不到；但非 openai 入向
+		// 时它们仍落在 Extensions 里走到这里——若因 Kind 升级丢失
+		// knownBy 判定，就会把厂商专有字段无条件还原进任意目标 body。
+		if len(spec.Dialects) > 0 && !spec.knownBy(dst) {
+			return ActionDrop, spec
+		}
 		return ActionRestore, spec
 
 	case KindPortable:
@@ -208,6 +217,11 @@ func KnownFieldsForDialect(d Dialect) map[string]bool {
 		}
 		switch spec.Kind {
 		case KindIRHandled, KindPortable, KindTranslatable:
+			// R52：声明了 Dialects 的 IRHandled 字段按方言收窄白名单，
+			// 厂商专有字段不得进入未声明方言的严格白名单模式。
+			if spec.Kind == KindIRHandled && len(spec.Dialects) > 0 && !spec.knownBy(d) {
+				continue
+			}
 			out[key] = true
 		case KindDialectOnly:
 			if spec.knownBy(d) {
@@ -216,6 +230,23 @@ func KnownFieldsForDialect(d Dialect) map[string]bool {
 		}
 	}
 	return out
+}
+
+// IRFieldAllowedForDialect 报告 IR 序列化器直接发射的字段是否允许到达
+// 目标方言 dst 的 wire body。
+//
+// 背景（R52）：字段一旦从 Extensions 提升为 IR 一等字段，extensions_restore
+// 的方言守卫（Decide/Apply 只遍历 req.Extensions）就再也看不到它——发射侧
+// 必须自查。规则与 Decide 的 KindIRHandled 臂一致：声明了非空 Dialects 的
+// 字段仅对认识的方言发射；未声明 Dialects 的（通用字段）恒允许；
+// DialectUnknown fail-open（与 knownBy 一致，避免路由前序列化点静默丢参数）。
+func IRFieldAllowedForDialect(name string, dst Dialect) bool {
+	indexOnce.Do(buildIndex)
+	spec, ok := byName[normalizeKey(name)]
+	if !ok || spec.Kind != KindIRHandled || len(spec.Dialects) == 0 {
+		return true
+	}
+	return spec.knownBy(dst)
 }
 
 // RegisteredNames 返回全部已登记的一等字段名（不含别名），已排序。

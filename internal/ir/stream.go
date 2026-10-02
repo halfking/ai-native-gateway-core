@@ -50,6 +50,25 @@ type StreamChunk struct {
 	// has no equivalent.
 	StopSequence string `json:"stop_sequence,omitempty"`
 
+	// CumulativeContent is the cumulative assistant content as emitted by
+	// upstream providers that do not split text into per-frame deltas
+	// (some vLLM deployments, certain local completions servers). Downstream
+	// synthesizers emit the diff against the previously-seen cumulative
+	// value as `delta.content` so the wire shape stays OpenAI SSE-compatible.
+	// 2026-09-21 audit (P2-1).
+	//
+	// R72 更正（2026-10-01）：上面的「diff 合成器尚不存在」结论在 Ollama
+	// 语境下已被推翻——audit-ollama-native（r0924）核实上游 api.md 后确认
+	// Ollama NDJSON 的 message.content 是**逐帧增量**而非累积值，因此本处
+	// 的累积值 diff 合成本就不适用于 Ollama，Ollama 走
+	// ParseOllamaStreamChunk 的 StreamDelta 路径（见下方 NOTE）。
+	//
+	// NOTE (R66 audit round): Ollama's native NDJSON `message.content` is
+	// NOT cumulative — WebFetch of upstream api.md (2026-09-25) confirms it
+	// carries per-frame delta bytes only. Ollama's parser therefore surfaces
+	// content via StreamDelta (see ParseOllamaStreamChunk), not here.
+	CumulativeContent string `json:"-"`
+
 	// Source protocol tracking (used by Serializer to determine output format)
 	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages"
 
@@ -1016,12 +1035,17 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 // output_tokens. Returns ok=false when the chunk has nothing this frame
 // should carry (plain content deltas, keep-alives).
 //
-// stop_reason resolution prefers the native chunk.StopReason (lossless
+// stop_reason resolution prefers the native chunk.StopReason for
+// same-protocol (anthropic-messages sourced) chunks (lossless
 // Anthropic→Anthropic passthrough) and falls back to re-mapping the
-// OpenAI-normalized FinishReason (OpenAI→Anthropic conversion).
+// OpenAI-normalized FinishReason (OpenAI→Anthropic conversion). R71: the
+// SourceProtocol guard mirrors the R68 Gemini chunk guard below — without
+// it, a cross-protocol chunk carrying a foreign native StopReason (gemini
+// RECITATION etc.) would leak onto the Anthropic wire once this path is
+// wired beyond passthrough.
 func buildAnthropicMessageDelta(c *StreamChunk) (map[string]any, bool) {
 	stopReason := ""
-	if c.StopReason != "" {
+	if c.SourceProtocol == ProtocolAnthropicMessages && c.StopReason != "" {
 		stopReason = c.StopReason
 	} else if c.FinishReason != "" {
 		stopReason = mapOpenAIFinishReasonToAnthropic(c.FinishReason)
@@ -1356,8 +1380,22 @@ func (c *StreamChunk) SerializeGemini() string {
 				}
 			}
 
-			if c.FinishReason != "" {
-				candidate["finishReason"] = mapOpenAIFinishReasonToGemini(c.FinishReason)
+			if c.FinishReason != "" || (c.SourceProtocol == ProtocolGeminiGenerate && c.StopReason != "") {
+				// R68 (2026-09-26): audit-r2 A#2 同款 — Gemini→Gemini 直通时
+				// 优先使用 parse 阶段填入的原生 StopReason（RECITATION /
+				// MALFORMED_FUNCTION_CALL 等不被 mapOpenAIFinishReasonToGemini
+				// 折叠成 SAFETY / TOOL_CALLS）。SourceProtocol 守卫保证
+				// Anthropic→Gemini 等跨协议路径不会把 anthropic 原生值（end_turn
+				// 等）泄漏给 Gemini 客户端（Gemini 不识别 end_turn）。
+				finishReason := ""
+				if c.SourceProtocol == ProtocolGeminiGenerate && c.StopReason != "" {
+					finishReason = c.StopReason
+				} else if c.FinishReason != "" {
+					finishReason = mapOpenAIFinishReasonToGemini(c.FinishReason)
+				}
+				if finishReason != "" {
+					candidate["finishReason"] = finishReason
+				}
 			}
 
 			body["candidates"] = []map[string]any{candidate}

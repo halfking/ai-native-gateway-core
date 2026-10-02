@@ -54,7 +54,10 @@ const OverlayEnvVar = "TASKPROFILE_OVERLAY"
 //
 // 语义约定：
 //   - 只有"真实变更尝试"才发事件——校验拒绝（400）与 nil-pool 503 不发
-//     （没有变更意图落库，不属于审计面）；
+//     （没有变更意图落库，不属于审计面）。例外（R47 契约精确化）：
+//     corrections-import 的 body 级失败（CSV 格式/表头错、32MB 超限）也投
+//     failure——导入的载荷本身即变更内容，body 解析失败属"真实尝试被拒"，
+//     与 create/apply 的 JSON 字段校验拒绝不同层；
 //   - success 与 failure 都发（失败的操作同样需要留痕：谁在何时试了什么）；
 //   - hook panic 隔离（审计绝不能打断端点），nil hook 零开销。
 type AuditEvent struct {
@@ -67,6 +70,8 @@ type AuditEvent struct {
 	Detail map[string]any
 	// Request 是触发端点的原始请求；sink 从中提取 actor/tenant。变更端点
 	// 的 handler 路径上恒非 nil。
+	// R46 F8⑨ 契约约束：sink 禁止记录原始请求的 headers/body（Authorization
+	// 头会带出会话凭据）——只允许提取鉴权上下文字段。
 	Request *http.Request
 }
 
@@ -142,7 +147,8 @@ func (h *Handlers) handleProfile(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.store.Stats(ctx, time.Now().Add(-30*24*time.Hour))
 	if err != nil {
-		http.Error(w, "query correction stats: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: query correction stats failed", "err", err)
+		http.Error(w, "query correction stats failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -266,12 +272,14 @@ func (h *Handlers) handleCorrectionStats(w http.ResponseWriter, r *http.Request)
 
 	stats, err := h.store.Stats(r.Context(), since)
 	if err != nil {
-		http.Error(w, "query stats: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: query stats failed", "err", err)
+		http.Error(w, "query stats failed", http.StatusInternalServerError)
 		return
 	}
 	recent, err := h.store.Recent(r.Context(), limit)
 	if err != nil {
-		http.Error(w, "query recent: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: query recent failed", "err", err)
+		http.Error(w, "query recent failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -319,7 +327,8 @@ func (h *Handlers) handleExportCorrections(w http.ResponseWriter, r *http.Reques
 		`attachment; filename="task-type-corrections-`+time.Now().UTC().Format("20060102")+".csv\"")
 	if _, err := h.store.ExportCorrectionsCSV(r.Context(), w, since, limit); err != nil {
 		// Headers may already be written; the truncated body signals failure.
-		http.Error(w, "export: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: export corrections failed", "err", err)
+		http.Error(w, "export failed", http.StatusInternalServerError)
 	}
 }
 
@@ -394,7 +403,8 @@ func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request)
 		}
 		h.emitAudit(AuditActionApplyTierConfig, "failure",
 			map[string]any{"error": err.Error(), "task_types": req.TaskTypes}, r)
-		http.Error(w, "apply tier config: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: apply tier config failed", "err", err)
+		http.Error(w, "apply tier config failed", http.StatusInternalServerError)
 		return
 	}
 	h.emitAudit(AuditActionApplyTierConfig, "success",
@@ -406,11 +416,15 @@ func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request)
 // TASKPROFILE_OVERLAY is unset). This is the module's independent-upgrade
 // operation: profile data changes without a redeploy.
 func (h *Handlers) handleReload(w http.ResponseWriter, r *http.Request) {
-	version, err := ReloadOverlay(os.Getenv(OverlayEnvVar))
+	overlayPath := os.Getenv(OverlayEnvVar)
+	version, err := ReloadOverlay(overlayPath)
 	if err != nil {
+		// R46 F8⑧: detail 记实际 overlay 路径（仅路径，无敏感风险），
+		// 恒为 env 名时取证不知道坏的是哪个文件。
 		h.emitAudit(AuditActionReload, "failure",
-			map[string]any{"error": err.Error(), "overlay_env": OverlayEnvVar}, r)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+			map[string]any{"error": err.Error(), "overlay_env": OverlayEnvVar, "overlay_path": overlayPath}, r)
+		slog.Error("taskprofile: overlay reload failed", "err", err)
+		http.Error(w, "overlay reload failed", http.StatusInternalServerError)
 		return
 	}
 	h.emitAudit(AuditActionReload, "success",

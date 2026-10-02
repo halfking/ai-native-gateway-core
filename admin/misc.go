@@ -122,10 +122,17 @@ func normalizeVersionField(m map[string]any) {
 }
 
 // versionJSONCandidates 按优先级返回可能的 version.json 路径。
+// 2026-10-01：首位插入 LLM_GATEWAY_VERSION_FILE（与 cmd/gateway/version.go
+// 同源语义）。seamless slots 布局把该 env 指到 slots/<port>/version.json——
+// admin 端点此前只认硬编码根路径，半切换态（根 version.json 为滞留真文件）
+// 下 /api/system/version 恒报陈旧版本（2026-10-01 245 实测），与 healthz
+// 口径分叉。
 func versionJSONCandidates() []string {
-	candidates := []string{
-		"/opt/llm-gateway-go/" + llmGatewayVersionJSON,
+	candidates := make([]string, 0, 4)
+	if path := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION_FILE")); path != "" {
+		candidates = append(candidates, path)
 	}
+	candidates = append(candidates, "/opt/llm-gateway-go/"+llmGatewayVersionJSON)
 	if wd, err := os.Getwd(); err == nil && wd != "" {
 		candidates = append(candidates,
 			wd+"/"+llmGatewayVersionJSON,
@@ -215,6 +222,7 @@ func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
 		var count int
 		var samples []string
 		if err := rows.Scan(&tag, &count, &samples); err != nil {
+			warnRowSkip("misc.listTags", err)
 			continue
 		}
 		ns := "other"
@@ -222,6 +230,10 @@ func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
 			ns = tag[:idx]
 		}
 		grouped[ns] = append(grouped[ns], tagInfo{Tag: tag, Count: count, Samples: samples})
+	}
+	// 标签少一截 = 该 metric 在监控页上"消失"，看起来像没上报。
+	if writeAggRowsErr(w, "misc.listTags", rows.Err()) {
+		return
 	}
 
 	namespaces := make([]namespaceInfo, 0)

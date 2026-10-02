@@ -77,7 +77,7 @@ func (h *AttachmentHandler) signURL(w http.ResponseWriter, r *http.Request, sess
 	p := signedPayload{TenantID: tenant, SessionID: sessionID, TurnNo: turnNo, AttID: attID, ObjectKey: "tenant/" + tenant + "/" + sessionID + "/turn_" + turnNoText + "/" + attID, ExpiresAt: time.Now().Add(signedURLTTL).UnixNano()}
 	signed, err := h.signPayload(p)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		writeInternalTextErr(w, "sign session turn attachment failed", err)
 		return
 	}
 	h.auditLog("sign", tenant, sessionID, turnNo, attID, r.RemoteAddr)
@@ -91,7 +91,7 @@ func (h *AttachmentHandler) revoke(w http.ResponseWriter, r *http.Request, sessi
 	}
 	if h.revokeStore != nil {
 		if err := h.revokeStore.Revoke(r.Context(), attID, tenant); err != nil {
-			http.Error(w, "revoke: "+err.Error(), 500)
+			writeInternalTextErr(w, "revoke session turn attachment failed", err)
 			return
 		}
 	}

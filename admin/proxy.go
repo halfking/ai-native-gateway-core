@@ -336,7 +336,7 @@ func (h *Handler) listProxySubscriptions(w http.ResponseWriter, r *http.Request)
 	_, store := h.proxyRuntime()
 	subs, err := store.ListSubscriptions(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list subscriptions: "+err.Error())
+		writeInternalErr(w, "list subscriptions", err)
 		return
 	}
 	items := toProxySubscriptionViews(subs)
@@ -374,6 +374,12 @@ func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "status must be one of active/disabled/error")
 		return
 	}
+	// R47：Priority 与 manual_priority 同口径（[0,99]，小值优先）——此前
+	// 直通入库，负值会成为"最高优先级"越过所有未设置（0）订阅。
+	if req.Priority < 0 || req.Priority > 99 {
+		writeError(w, http.StatusBadRequest, "priority must be in [0,99]")
+		return
+	}
 
 	_, store := h.proxyRuntime()
 	banned := normalizeRegionList(req.BannedRegions)
@@ -393,7 +399,7 @@ func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request
 		BannedRegions: banned,
 	}
 	if err := store.CreateSubscription(r.Context(), sub); err != nil {
-		writeError(w, http.StatusInternalServerError, "create subscription: "+err.Error())
+		writeInternalErr(w, "create subscription", err)
 		return
 	}
 	// 同步订阅层禁用地区到 manager 缓存。
@@ -459,6 +465,11 @@ func (h *Handler) updateProxySubscription(w http.ResponseWriter, r *http.Request
 		sub.Status = st
 	}
 	if req.Priority != nil {
+		// R47：与 create/manual_priority 同口径（[0,99]）。
+		if *req.Priority < 0 || *req.Priority > 99 {
+			writeError(w, http.StatusBadRequest, "priority must be in [0,99]")
+			return
+		}
 		sub.Priority = *req.Priority
 	}
 	if req.Notes != nil {
@@ -469,13 +480,13 @@ func (h *Handler) updateProxySubscription(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := store.UpdateSubscription(r.Context(), sub); err != nil {
-		writeError(w, http.StatusInternalServerError, "update subscription: "+err.Error())
+		writeInternalErr(w, "update subscription", err)
 		return
 	}
 	// 刷新缓存，让 selectNode 立即看到新的禁用地区。
 	if mgr != nil {
 		if err := mgr.ReloadCache(); err != nil {
-			writeError(w, http.StatusInternalServerError, "reload cache: "+err.Error())
+			writeInternalErr(w, "reload cache", err)
 			return
 		}
 	}
@@ -529,7 +540,7 @@ func (h *Handler) refreshProxySubscription(w http.ResponseWriter, r *http.Reques
 
 	nodes, err := store.ListNodes(ctx, &id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list nodes: "+err.Error())
+		writeInternalErr(w, "list nodes", err)
 		return
 	}
 	byProtocol := map[string]int{}
@@ -541,7 +552,7 @@ func (h *Handler) refreshProxySubscription(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if err := mgr.ReloadCache(); err != nil {
-		writeError(w, http.StatusInternalServerError, "reload cache: "+err.Error())
+		writeInternalErr(w, "reload cache", err)
 		return
 	}
 
@@ -575,7 +586,7 @@ func (h *Handler) listProxyNodes(w http.ResponseWriter, r *http.Request) {
 
 	nodes, err := store.ListNodes(r.Context(), subFilter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list nodes: "+err.Error())
+		writeInternalErr(w, "list nodes", err)
 		return
 	}
 
@@ -693,11 +704,11 @@ func (h *Handler) createProxyNode(w http.ResponseWriter, r *http.Request) {
 		Status:         status,
 	}
 	if err := store.CreateNode(r.Context(), node); err != nil {
-		writeError(w, http.StatusInternalServerError, "create node: "+err.Error())
+		writeInternalErr(w, "create node", err)
 		return
 	}
 	if err := mgr.ReloadCache(); err != nil {
-		writeError(w, http.StatusInternalServerError, "reload cache: "+err.Error())
+		writeInternalErr(w, "reload cache", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toProxyNodeView(node))
@@ -733,7 +744,7 @@ func (h *Handler) deleteProxyNode(w http.ResponseWriter, r *http.Request, id int
 		return
 	}
 	if err := mgr.ReloadCache(); err != nil {
-		writeError(w, http.StatusInternalServerError, "reload cache: "+proxy.SanitizeSecrets(err.Error()))
+		writeInternalErr(w, "reload cache", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
@@ -769,7 +780,7 @@ func (h *Handler) healthCheckProxyNode(w http.ResponseWriter, r *http.Request, i
 	checkErr := mgr.HealthCheckNode(ctx, id)
 	updated, err := store.GetNode(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "reload node: "+err.Error())
+		writeInternalErr(w, "reload node", err)
 		return
 	}
 	_ = mgr.ReloadCache()
@@ -804,7 +815,7 @@ func (h *Handler) healthCheckProxySubscription(w http.ResponseWriter, r *http.Re
 	defer cancel()
 	summary, err := mgr.HealthCheckSubscriptionNow(ctx, id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "health check subscription: "+err.Error())
+		writeInternalErr(w, "health check subscription", err)
 		return
 	}
 	_ = mgr.ReloadCache()
@@ -974,7 +985,7 @@ func (h *Handler) handleProxySetPolicy(w http.ResponseWriter, r *http.Request) {
 	// 持久化到 DB。
 	if store != nil {
 		if err := store.UpsertSelectionPolicy(r.Context(), policy); err != nil {
-			writeError(w, http.StatusInternalServerError, "persist policy: "+err.Error())
+			writeInternalErr(w, "persist policy", err)
 			return
 		}
 	}
@@ -995,7 +1006,7 @@ func (h *Handler) handleProxyRegions(w http.ResponseWriter, r *http.Request) {
 	}
 	regions, err := mgr.RegionStatsReport(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "region stats: "+err.Error())
+		writeInternalErr(w, "region stats", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": regions, "total": len(regions)})
@@ -1026,11 +1037,11 @@ func (h *Handler) handleProxyNodeRegionBan(w http.ResponseWriter, r *http.Reques
 	}
 	node.BannedRegions = normalizeRegionList(req.BannedRegions)
 	if err := store.UpdateNode(r.Context(), node); err != nil {
-		writeError(w, http.StatusInternalServerError, "update node: "+err.Error())
+		writeInternalErr(w, "update node", err)
 		return
 	}
 	if err := mgr.ReloadCache(); err != nil {
-		writeError(w, http.StatusInternalServerError, "reload cache: "+err.Error())
+		writeInternalErr(w, "reload cache", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1061,12 +1072,12 @@ func (h *Handler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
 
 	subs, err := store.ListSubscriptions(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list subscriptions: "+err.Error())
+		writeInternalErr(w, "list subscriptions", err)
 		return
 	}
 	nodes, err := store.ListNodes(ctx, nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list nodes: "+err.Error())
+		writeInternalErr(w, "list nodes", err)
 		return
 	}
 
@@ -1221,4 +1232,15 @@ func writeProxyLookupError(w http.ResponseWriter, err error, kind string) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, kind+" lookup failed: "+msg)
+}
+
+// EgressProxyManager exposes the subscription node-pool manager for the
+// data-plane egress router (R28-P-1). It lazily creates the runtime and
+// starts it (Manager.Start is idempotent); returns nil without a DB.
+func (h *Handler) EgressProxyManager() *proxy.Manager {
+	mgr, _ := h.proxyRuntime()
+	if mgr != nil {
+		mgr.Start()
+	}
+	return mgr
 }

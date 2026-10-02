@@ -296,6 +296,15 @@ ORDER BY profile_date DESC, total_score DESC
 		m.Scores = scores
 		models = append(models, m)
 	}
+	// R66: 迭代中断只让 Next() 返回 false；不终检就会把「读到第 N 个
+	// 模型时连接断了」当成列表读完，向客户端返回 200 + 残缺画像
+	// （后面紧跟的 len(models)==0 → 404 分支也拿不到正确语义）。
+	// 本文件用 database/sql，直接调 rows.Err()。
+	if err := rows.Err(); err != nil {
+		slog.Error("quality: profiles rows iteration aborted", "error", err, "provider_id", providerID, "model_name", modelName)
+		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
+		return
+	}
 
 	if len(models) == 0 {
 		h.writeError(w, http.StatusNotFound, 40402, "暂无质量数据")
@@ -425,6 +434,12 @@ ORDER BY d.provider_id, d.profile_date DESC, d.total_score DESC
 		}
 		summary = append(summary, item)
 	}
+	// R66: 同上——摘要被静默截断 = 供应商质量榜缺项却回 200。
+	if err := rows.Err(); err != nil {
+		slog.Error("quality: summary rows iteration aborted", "error", err)
+		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
+		return
+	}
 
 	h.writeJSON(w, http.StatusOK, Response{
 		Code:    0,
@@ -539,6 +554,13 @@ LIMIT $2
 		item.Rank = rank
 		ranking = append(ranking, item)
 		rank++
+	}
+	// R66: 排行榜被静默截断 = 名次与 total 一起缩水，且已发出的名次
+	// 无法让客户端察觉（没有断点标记）。
+	if err := rows.Err(); err != nil {
+		slog.Error("quality: ranking rows iteration aborted", "error", err, "model_name", modelName, "min_score", minScore, "limit", limit)
+		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
+		return
 	}
 
 	h.writeJSON(w, http.StatusOK, Response{

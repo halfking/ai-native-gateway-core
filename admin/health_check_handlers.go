@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -37,7 +38,7 @@ func (h *HealthCheckHandler) List(w http.ResponseWriter, r *http.Request) {
 			created_at DESC
 		LIMIT $2`, status, limit)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "query routing health checks failed", err)
 		return
 	}
 	defer rows.Close()
@@ -55,6 +56,7 @@ func (h *HealthCheckHandler) List(w http.ResponseWriter, r *http.Request) {
 			&detail, &fixSQL, &itemStatus, &autoFixedAt, &autoFixResult,
 			&dismissedAt, &dismissedBy, &dismissedReason,
 			&createdAt, &updatedAt); err != nil {
+			warnRowSkip("healthCheck.List", err)
 			continue
 		}
 		item := map[string]any{
@@ -71,18 +73,33 @@ func (h *HealthCheckHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, item)
 	}
+	// 体检发现少一截 = 一条 critical 健康问题在页面上消失（运维以为体检
+	// 过了）。主查询失败即 500，迭代中断同语义。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "iterate routing health checks failed", err)
+		return
+	}
 
 	summary := map[string]int{}
-	allRows, _ := h.db.Query(r.Context(), `
+	allRows, allRowsErr := h.db.Query(r.Context(), `
 		SELECT status, count(*) FROM routing_health_checks GROUP BY status`)
+	// summary 是 items 之外的补充计数，缺席可降级，但必须留痕。
+	if allRowsErr != nil {
+		slog.Warn("health check list: summary query failed; section empty", "error", allRowsErr)
+	}
 	if allRows != nil {
 		defer allRows.Close()
 		for allRows.Next() {
 			var s string
 			var c int
-			if allRows.Scan(&s, &c) == nil {
+			if err := allRows.Scan(&s, &c); err == nil {
 				summary[s] = c
+			} else {
+				warnRowSkip("healthCheck.List.summary", err)
 			}
+		}
+		if err := allRows.Err(); err != nil {
+			slog.Warn("health check list: summary rows iteration aborted; counts partial", "error", err)
 		}
 	}
 
@@ -109,7 +126,7 @@ func (h *HealthCheckHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 		SET status = 'dismissed', dismissed_at = now(), dismissed_by = $1, dismissed_reason = $2, updated_at = now()
 		WHERE id = $3 AND status = 'open'`, body.By, body.Reason, body.ID)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "dismiss routing health check failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -177,7 +194,8 @@ func runHealthCheckFix(ctx context.Context, db pgxExecRower, id int64) (int, map
 	}
 	tag, execErr := db.Exec(ctx, stmt, entityID)
 	if execErr != nil {
-		return 500, map[string]any{"error": execErr.Error()}
+		slog.Error("health-check: auto-fix exec failed", "id", id, "entity_type", entityType, "error", execErr)
+		return 500, map[string]any{"error": "auto-fix execution failed"}
 	}
 	db.Exec(ctx, `
 		UPDATE routing_health_checks SET status = 'manual_fixed', auto_fixed_at = now(), auto_fix_result = 'applied', updated_at = now() WHERE id = $1`, id)

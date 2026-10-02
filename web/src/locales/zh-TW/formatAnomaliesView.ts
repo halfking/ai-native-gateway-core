@@ -109,4 +109,57 @@ export default {
     markFailed: '標記失敗',
     needSuperAdmin: '需要超級管理員權限',
   },
+
+  // 2026-09-21: 请求错误 tab（reqprobe）
+  tabs: {
+      format: '回應格式異常',
+      request: '請求錯誤',
+  },
+  requestTab: {
+      stats: {
+          unresolved: '未解決（本頁）',
+          autoRecovered: '自動恢復成功',
+          total: '總數',
+      },
+      filter: {
+          day: '日期',
+          trigger: '類型',
+          triggerPlaceholder: '選擇類型…',
+      },
+      trigger: {
+          all: '全部類型',
+          param_rejected: '參數被拒',
+          mode_mismatch: '請求形態不匹配',
+          upstream_error: '上游錯誤',
+      },
+      triggerDesc: {
+          param_rejected: '上游拒絕了請求參數（如 reasoning_effort），閘道已自動剔除並重試',
+          mode_mismatch: '請求的 API 形態（responses / chat）與供應商不符',
+          upstream_error: '無法歸類的請求側 4xx，待人工分類',
+      },
+      batch: {
+          selected: '已選 {n} 項',
+          resolveSelected: '解決已選',
+          resolveFiltered: '一鍵解決全部未解決',
+      },
+      table: {
+          day: '日期',
+          trigger: '類型',
+          param: '參數 / 建議',
+          status: '狀態碼',
+          occurrences: '次數',
+          recoveredCount: '自愈 {n} 次',
+      },
+      detail: {
+          title: '請求錯誤詳情',
+          clientModel: '客戶端模型',
+          protocol: '出站協議',
+          suggestMode: '建議形態',
+          firstSeen: '首次出現',
+          lastSeen: '最近出現',
+          errorSample: '上游錯誤樣例',
+          occurrences: '出現統計',
+          recoveredHint: '其中 {n} 次通過剔除參數 / 切換形態自動恢復',
+      },
+  },
 }

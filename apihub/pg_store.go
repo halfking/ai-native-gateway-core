@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -402,8 +403,12 @@ func (s *pgStore) withTenantTx(ctx context.Context, tenantID string, fn func(pgx
 		return fmt.Errorf("apihub: begin tx: %w", err)
 	}
 	defer func() {
-		// Clean up session-level GUC before returning conn to pool
-		_, _ = tx.Exec(ctx, "RESET app.current_tenant")
+		// Clean up session-level GUC before returning conn to pool.
+		// RESET 失败时 rollback 兜底（GUC 随事务回滚失效），这里留痕
+		// 不上抛——defer 里无法安全改变已定的返回值（12h 审计 P3）。
+		if _, err := tx.Exec(ctx, "RESET app.current_tenant"); err != nil {
+			slog.Warn("apihub: reset tenant GUC failed; rollback will discard it", "error", err)
+		}
 		_ = tx.Rollback(ctx) // rollback is idempotent after commit
 	}()
 
@@ -434,7 +439,9 @@ func (s *pgStore) withTenantReadOnlyTx(ctx context.Context, tenantID string, fn 
 		return fmt.Errorf("apihub: begin read tx: %w", err)
 	}
 	defer func() {
-		_, _ = tx.Exec(ctx, "RESET app.current_tenant")
+		if _, err := tx.Exec(ctx, "RESET app.current_tenant"); err != nil {
+			slog.Warn("apihub: reset tenant GUC failed; rollback will discard it", "error", err)
+		}
 		_ = tx.Rollback(ctx)
 	}()
 

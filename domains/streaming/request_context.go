@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // trusted tenant identity
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney" //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -247,6 +248,31 @@ func gwSessionTaskFromRequest(r *http.Request, session *session.Session) (sessio
 		}
 	}
 	return sessionID, taskID
+}
+
+// gwAgentAttributionFromRequest resolves the 730 sessions 归因三列的前两列
+// （第三列 parent_task_id 复用 gwSessionTaskFromRequest 的 taskID）：
+//   - agentRole: X-Gw-Agent-Role 声明 > X-Gw-Source-Actor 推断
+//     （autoroute.ResolveAgentRoleFromHeaders 同款，与 auto 路由判定一致）。
+//     未声明/非法返回 ""——SQL 侧 COALESCE(NULLIF(…),'main') 落列默认值，
+//     'unknown' 仅保留给显式声明的非法值以外的未来用途。
+//   - parentSessionID: X-Gw-Parent-Session-Id（730 列注释点名的来源头；
+//     声明式提示，与 AgentRoleHeader 同信任级——不进剥离清单，伪造只影响
+//     伪造者自己的会话归因行）。
+//
+// R50 F15：此前三列零 Go 写入方（真库实测 289k 行全为默认/NULL）。
+func gwAgentAttributionFromRequest(r *http.Request) (agentRole, parentSessionID string) {
+	if r == nil {
+		return "", ""
+	}
+	if role := autoroute.ResolveAgentRoleFromHeaders(
+		r.Header.Get(autoroute.AgentRoleHeader),
+		r.Header.Get("X-Gw-Source-Actor"),
+	); role != autoroute.RoleUnknown {
+		agentRole = string(role)
+	}
+	parentSessionID = sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Parent-Session-Id"))
+	return agentRole, parentSessionID
 }
 
 const maxRequestCorrelationIDLen = 128

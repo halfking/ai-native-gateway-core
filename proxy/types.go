@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // 直接可用协议：Go 的 net/http 只能通过 http/https/socks5 代理拨号。
@@ -31,6 +33,9 @@ type Subscription struct {
 	LastFetchStatus string    `json:"last_fetch_status"` // success/failed
 	LastError       string    `json:"last_error"`
 	NodeCount       int       `json:"node_count"`
+	// Priority 是订阅的选路优先级（R46 F7 接线到 selectNodeExcluding 排序）：
+	// 数值越小优先级越高（沿用网关 manual_priority 惯例），0=未设置。
+	// 在节点健康等级（ConsecutiveFailures）相同的情况下生效。
 	Priority        int       `json:"priority"`
 	// BannedRegions 是订阅层禁用的地区码集合（如 {US,JP}）。其下节点的 Location
 	// 若落入该集合，则在出口选择阶段被过滤掉，用于把"地区规避"作为订阅级策略。
@@ -207,23 +212,47 @@ func normalizeRegion(s string) string {
 	return strings.ToUpper(strings.TrimSpace(s))
 }
 
-// IsRegionBanned 判断给定的 region（节点 Location）是否被订阅层+节点层禁用。
-// 任一层包含即视为禁用（集合并集）。输入在函数边界统一 trim + 大写，避免
-// 非 PgStore 实现或手工录入因大小写/空白差异绕过地区规避规则。
-func IsRegionBanned(region string, subscriptionBans, nodeBans []string) bool {
+// IsRegionBanned 判断给定的 region（节点 Location）是否被任一禁用列表命中
+// （订阅层 + 节点层 + 平台级 overlay，多列表取并集）。输入在函数边界统一
+// trim + 大写，避免非 PgStore 实现或手工录入因大小写/空白差异绕过地区规避
+// 规则。region 为空（未知地区）不误杀，一律放行。
+func IsRegionBanned(region string, banLists ...[]string) bool {
 	region = normalizeRegion(region)
 	if region == "" {
 		return false
 	}
-	for _, r := range subscriptionBans {
-		if normalizeRegion(r) == region {
-			return true
-		}
-	}
-	for _, r := range nodeBans {
-		if normalizeRegion(r) == region {
-			return true
+	for _, bans := range banLists {
+		for _, r := range bans {
+			if normalizeRegion(r) == region {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// defaultBannedRegionsKey 平台级默认禁用地区的 settings 键（R51），与
+// settings/spec_proxy.go 的 Spec 保持一致。海外模型厂商普遍屏蔽香港（R35
+// 决策），Spec.Default 为 "HK"；选择路径把该列表与订阅层/节点层禁用取并集，
+// 存量订阅未回填 banned_regions 也被覆盖。此处 fallback 留空：默认值挂
+// Spec.Default，仅在注册了 PlatformSpecs 的进程（生产启动）生效，避免
+// 未注册 settings 的环境（如单测）隐式启用 overlay。
+const defaultBannedRegionsKey = "proxy.default_banned_regions"
+
+// defaultBannedRegionsOverlay 读取平台级默认禁用地区列表（逗号分隔地区码，
+// 已归一化）。走 CachedPlatformString（≤5s TTL，失败不缓存）：本函数被
+// selectNodeExcluding 在出口选择路径调用，R52 前为无缓存 settings DB 读，
+// DB 抖动时每次选择最长阻塞 5s。
+func defaultBannedRegionsOverlay() []string {
+	raw := settings.CachedPlatformString(defaultBannedRegionsKey, "")
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if r := normalizeRegion(part); r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
 }

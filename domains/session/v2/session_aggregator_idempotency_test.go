@@ -53,10 +53,14 @@ func expectAggregateUpsert(mock pgxmock.PgxPoolIface, update SessionUpdate, part
 			update.LastTurnNo, update.LastRequestSummary, update.LastResponseSummary,
 			update.LastModel, update.LastProvider,
 			update.ClientType,
-			// 706 访问维度/项目（$13..$19），partition_date 随后（$20）
+			// 706 访问维度/项目（$13..$19）
 			update.ProjectID, update.APIKeyID, update.ApplicationID, update.EndUserID,
 			update.OwnerUser, update.ClientIP, update.AgentName,
+			// 730 会话角色归因三列（$20..$22，R50 F15），partition_date 随后（$23），
+			// R69 补 primary_request_id（$24，首值优先固化首个请求 id）
+			update.AgentRole, update.ParentSessionID, update.ParentTaskID,
 			partitionDate,
+			update.RequestID,
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 }
@@ -150,10 +154,14 @@ func TestSessionAggregator_UpdateSessionClaimRollsBackOnFailure(t *testing.T) {
 			update.LastTurnNo, update.LastRequestSummary, update.LastResponseSummary,
 			update.LastModel, update.LastProvider,
 			update.ClientType,
-			// 706 访问维度/项目（$13..$19），partition_date 随后（$20）
+			// 706 访问维度/项目（$13..$19）
 			update.ProjectID, update.APIKeyID, update.ApplicationID, update.EndUserID,
 			update.OwnerUser, update.ClientIP, update.AgentName,
+			// 730 归因三列（$20..$22，R50 F15），partition_date 随后（$23），
+			// primary_request_id 收尾（$24，R69）
+			update.AgentRole, update.ParentSessionID, update.ParentTaskID,
 			partitionDate,
+			update.RequestID,
 		).
 		WillReturnError(errors.New("snapshot write failed"))
 	mock.ExpectRollback()

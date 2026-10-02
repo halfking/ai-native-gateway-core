@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
@@ -11,10 +11,15 @@ import {
   MAAS_LEDGER_TYPE_LABELS, MAAS_POOL_LABELS, MAAS_ORDER_STATUS_LABELS,
   TENANT_STATUS_LABELS, TENANT_STATUS_COLORS,
 } from '../api'
-import type { Tenant, TenantUser, TenantKey, TenantStats, MaasWallet, MaasLedgerEntry, MaasBillingOrder, MaasConsumptionDetail } from '../api'
+import type { Tenant, TenantUser, TenantKey, TenantStats, TenantDailyStat, MaasWallet, MaasLedgerEntry, MaasBillingOrder, MaasConsumptionDetail } from '../api'
 import TenantEditDialog from './TenantEditDialog.vue'
 import FeeCostCell from '../components/FeeCostCell.vue'
 import TenantModelPolicyPanel from '../components/TenantModelPolicyPanel.vue'
+import StatCard from '../components/ui/StatCard.vue'
+import BarCell from '../components/ui/BarCell.vue'
+import SparkBars from '../components/ui/SparkBars.vue'
+import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
+import { useRaceGuard } from '../composables/useRaceGuard'
 import { isPlatformOpsView } from '../store'
 
 const route = useRoute()
@@ -45,6 +50,41 @@ const adjustSaving = ref(false)
 const grantSaving = ref(false)
 const confirmSaving = ref<number | null>(null)
 const showCost = isPlatformOpsView()
+// 2026-09-30 统计 UI 优化轮：统计 tab 分布表指标切换（按 Token / 按积分），
+// 概览 tab KPI sparkline 数据（近 7 天 daily 序列，独立于 stats tab 的窗口）。
+const statsMetric = ref<'token' | 'credits'>('token')
+const overviewDaily = ref<TenantDailyStat[]>([])
+const keyAppFilter = ref('')
+const keyOwnerFilter = ref('')
+
+function fmtTokensCompact(n?: number | null): string {
+  const v = n ?? 0
+  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`
+  if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`
+  return String(v)
+}
+function fmtLatency(ms?: number | null): string {
+  const v = ms ?? 0
+  if (v <= 0) return '—'
+  if (v >= 1000) return `${(v / 1000).toFixed(v >= 10000 ? 1 : 2)}s`
+  return `${Math.round(v)}ms`
+}
+function fmtAxisCompact(v: number): string {
+  if (Math.abs(v) >= 1e9) return `${(v / 1e9).toFixed(1)}B`
+  if (Math.abs(v) >= 1e6) return `${(v / 1e6).toFixed(1)}M`
+  if (Math.abs(v) >= 1e3) return `${(v / 1e3).toFixed(0)}K`
+  return String(Math.round(v))
+}
+
+async function loadOverviewDaily() {
+  try {
+    const s = await getTenantStats(tenantCode.value, 7)
+    overviewDaily.value = s.daily ?? []
+  } catch {
+    overviewDaily.value = [] // 概览 sparkline 失败静默降级，不阻塞页面
+  }
+}
 
 function resetTenantScopedState() {
   users.value = []
@@ -62,9 +102,12 @@ async function loadTenant() {
   resetTenantScopedState()
   try {
     tenant.value = await getTenant(tenantCode.value)
+    // 概览 KPI sparkline 用近 7 天 daily（轻查询，独立窗口，失败静默）。
+    void loadOverviewDaily()
     if (activeTab.value === 'users') await loadUsers()
     if (activeTab.value === 'keys') await loadKeys()
     if (activeTab.value === 'stats') await loadStats()
+    applyRouteFocus()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -88,13 +131,108 @@ async function loadKeys() {
   }
 }
 
+// 代际号防竞态（2026-10-01 第十八轮 ④ 收敛至 useRaceGuard，原样板
+// useReconciliationPage.ts 的 fetchGen）：快速切换统计窗口（7/30/90 天）
+// 时旧响应后到不得覆盖新结果；组件卸载后 in-flight 响应一律作废。
+const statsRace = useRaceGuard()
 async function loadStats() {
+  const gen = statsRace.begin()
   try {
-    stats.value = await getTenantStats(tenantCode.value, statsDays.value)
+    const next = await getTenantStats(tenantCode.value, statsDays.value)
+    if (statsRace.stale(gen)) return
+    stats.value = next
   } catch (e: unknown) {
+    if (statsRace.stale(gen)) return
     error.value = e instanceof Error ? e.message : '加载统计失败'
   }
 }
+
+// ── 统计 tab（2026-09-30 统计 UI 优化轮重做）──────────────────────
+const statsDaily = computed<TenantDailyStat[]>(() => stats.value?.daily ?? [])
+const statsDayLabels = computed(() => statsDaily.value.map((d) => d.date.slice(5)))
+const statsHasDays = computed(() => statsDaily.value.length > 0)
+const statsFailTotal = computed(() => statsDaily.value.reduce((a, d) => a + (d.errors ?? 0), 0))
+const statsDailyAvg = computed(() => {
+  const n = statsDaily.value.length
+  return n > 0 ? Math.round((stats.value?.total_requests ?? 0) / n) : null
+})
+const statsDayDelta = computed(() => {
+  const rows = statsDaily.value
+  if (rows.length < 2) return null
+  const prev = rows[rows.length - 2].requests ?? 0
+  const last = rows[rows.length - 1].requests ?? 0
+  if (prev <= 0) return null
+  return ((last - prev) / prev) * 100
+})
+const visibleKeys = computed(() => keys.value.filter((k) => {
+  if (keyAppFilter.value && k.application_code !== keyAppFilter.value) return false
+  if (keyOwnerFilter.value && k.owner_user !== keyOwnerFilter.value) return false
+  return true
+}))
+// 概览 sparkline：近 7 天 daily 序列。
+const spark7d = (key: 'requests' | 'tokens' | 'credits') => overviewDaily.value.map((d) => d[key] ?? 0)
+// 概览副指标同样取自近 7 天序列（与 stats tab 的窗口解耦）。
+const overviewFail7d = computed(() => overviewDaily.value.reduce((a, d) => a + (d.errors ?? 0), 0))
+const overviewDailyAvg = computed(() => {
+  const n = overviewDaily.value.length
+  return n > 0 ? Math.round(overviewDaily.value.reduce((a, d) => a + (d.requests ?? 0), 0) / n) : null
+})
+
+const statsReqChartConfig = computed(() =>
+  createComboChartConfig('bar', statsDayLabels.value, [
+    { label: '成功', data: statsDaily.value.map((d) => d.success), backgroundColor: chartColors.blue + 'cc', borderColor: chartColors.blue, stack: 'req' },
+    { label: '失败', data: statsDaily.value.map((d) => d.errors), backgroundColor: chartColors.red + 'cc', borderColor: chartColors.red, stack: 'req' },
+  ], { scales: { y: { stacked: true, beginAtZero: true } } }),
+)
+
+const statsTokChartConfig = computed(() =>
+  createComboChartConfig('line', statsDayLabels.value, [
+    { label: 'Token', data: statsDaily.value.map((d) => d.tokens), borderColor: chartColors.blue, backgroundColor: 'rgba(64, 158, 255, 0.16)', fill: true },
+    { label: '积分', data: statsDaily.value.map((d) => d.credits), type: 'bar', backgroundColor: chartColors.orange + '99', yAxisID: 'y1' },
+  ], {
+    scales: {
+      y: { beginAtZero: true, ticks: { callback: (v: string | number) => fmtAxisCompact(Number(v)) } },
+      y1: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { callback: (v: string | number) => fmtAxisCompact(Number(v)) } },
+    },
+  }),
+)
+
+const statsReqCanvas = ref<HTMLCanvasElement | null>(null)
+const statsTokCanvas = ref<HTMLCanvasElement | null>(null)
+const { initChart: initStatsReqChart, destroyChart: destroyStatsReqChart, isDisposed: statsReqDisposed } = useChart(statsReqCanvas, statsReqChartConfig)
+const { initChart: initStatsTokChart, destroyChart: destroyStatsTokChart, isDisposed: statsTokDisposed } = useChart(statsTokCanvas, statsTokChartConfig)
+
+let statsChartsAlive = true
+async function refreshStatsCharts() {
+  if (!statsChartsAlive) return
+  if (!statsHasDays.value) {
+    destroyStatsReqChart()
+    destroyStatsTokChart()
+    return
+  }
+  await nextTick()
+  if (!statsChartsAlive) return
+  if (!statsReqDisposed()) initStatsReqChart()
+  if (!statsTokDisposed()) initStatsTokChart()
+}
+watch([statsReqChartConfig, statsTokChartConfig], () => void refreshStatsCharts(), { deep: true })
+onBeforeUnmount(() => {
+  statsChartsAlive = false
+})
+
+// 分布表指标切换：按 Token / 按积分（排序与占比条基准）。
+function statsMetricValue(row: { tokens: number; credits: number }): number {
+  return statsMetric.value === 'token' ? row.tokens : row.credits
+}
+const statsModelSorted = computed(() =>
+  [...(stats.value?.by_model ?? [])].sort((a, b) => statsMetricValue(b) - statsMetricValue(a)),
+)
+const statsModelMax = computed(() => statsModelSorted.value.reduce((m, r) => Math.max(m, statsMetricValue(r)), 0))
+const statsAppSorted = computed(() =>
+  [...(stats.value?.by_application ?? [])].sort((a, b) => statsMetricValue(b) - statsMetricValue(a)),
+)
+const statsAppMax = computed(() => statsAppSorted.value.reduce((m, r) => Math.max(m, statsMetricValue(r)), 0))
+const statsModelTotalReq = computed(() => (stats.value?.by_model ?? []).reduce((a, r) => a + r.requests, 0))
 
 async function loadWallet() {
   try {
@@ -208,7 +346,30 @@ function ledgerTypeLabel(t: string) {
   return MAAS_LEDGER_TYPE_LABELS[t] || t
 }
 
-async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'billing' | 'wallet' | 'ledger' | 'orders' | 'model-policies') {
+const tenantTabs = ['overview', 'users', 'keys', 'stats', 'billing', 'wallet', 'ledger', 'orders', 'model-policies'] as const
+type TenantTab = typeof tenantTabs[number]
+
+function applyRouteFocus() {
+  const tab = route.query.tab
+  if (typeof tab === 'string' && (tenantTabs as readonly string[]).includes(tab)) {
+    void switchTab(tab as TenantTab)
+  }
+  if (typeof route.query.app === 'string') keyAppFilter.value = route.query.app
+  if (typeof route.query.owner === 'string') keyOwnerFilter.value = route.query.owner
+}
+
+function formatDayDelta(v: number | null): string {
+  if (v == null) return ''
+  return `${v > 0 ? '+' : ''}${v.toFixed(1)}%`
+}
+
+function openAppKeys(code: string) {
+  keyAppFilter.value = code
+  keyOwnerFilter.value = ''
+  void switchTab('keys')
+}
+
+async function switchTab(t: TenantTab) {
   activeTab.value = t
   if (t === 'users' && users.value.length === 0) await loadUsers()
   if (t === 'keys' && keys.value.length === 0) await loadKeys()
@@ -249,7 +410,7 @@ function fmtTime(s: string) {
   return formatDateTime(s, { locale: localeRef.value })
 }
 
-function fmtNum(n?: number) {
+function fmtNum(n?: number | null) {
   if (n == null) return '-'
   return n.toLocaleString()
 }
@@ -310,40 +471,45 @@ watch(() => route.params.tenantId, loadTenant)
         <button :class="{ active: activeTab === 'ledger' }" @click="switchTab('ledger')">账本</button>
       </div>
 
-      <!-- Overview Tab -->
+      <!-- Overview Tab（2026-09-30 统计 UI 优化轮：KPI 升级为 主值+副指标+sparkline） -->
       <div v-if="activeTab === 'overview'" class="tab-content">
-        <div class="stat-cards">
-          <div class="stat-card">
-            <div class="stat-label">用户数</div>
-            <div class="stat-value">{{ tenant.user_count }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">密钥数</div>
-            <div class="stat-value">{{ tenant.api_key_count }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">7天请求数</div>
-            <div class="stat-value">{{ fmtNum(tenant.requests_7d) }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">7天 Token</div>
-            <div class="stat-value">{{ fmtNum(tenant.tokens_7d) }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">7天费用</div>
-            <div class="stat-value stat-value--fee">
-              <FeeCostCell
-                inline
-                :credits="tenant.credits_7d"
-                :cost-usd="tenant.cost_7d_usd"
-                :show-cost="showCost"
-              />
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">总请求数</div>
-            <div class="stat-value">{{ fmtNum(tenant.total_requests) }}</div>
-          </div>
+        <div class="stat-cards stat-cards--kpi">
+          <StatCard label="用户数" icon="👥">
+            <template #value>{{ tenant.user_count }}</template>
+            <template #sub>密钥 {{ tenant.api_key_count }} 把</template>
+          </StatCard>
+          <StatCard label="密钥数" icon="🔑">
+            <template #value>{{ tenant.api_key_count }}</template>
+            <template #sub>独立模型 {{ stats?.unique_models ?? '—' }}</template>
+          </StatCard>
+          <StatCard label="7天请求" icon="📥">
+            <template #value>{{ fmtNum(tenant.requests_7d) }}</template>
+            <template #sub>失败 {{ fmtNum(overviewFail7d) }}（{{ (tenant.requests_7d ?? 0) > 0 ? ((overviewFail7d / (tenant.requests_7d ?? 0)) * 100).toFixed(1) : '0.0' }}%）</template>
+            <template #spark><SparkBars :data="spark7d('requests')" color-token="--accent" /></template>
+          </StatCard>
+          <StatCard label="7天 Token" icon="🔢">
+            <template #value>{{ fmtTokensCompact(tenant.tokens_7d) }}</template>
+            <template #sub>日均请求 {{ fmtNum(overviewDailyAvg) }}</template>
+            <template #spark><SparkBars :data="spark7d('tokens')" color-token="--probe-cyan" /></template>
+          </StatCard>
+          <StatCard label="7天费用" icon="🪙" tone="success">
+            <template #value>
+              <span class="stat-value stat-value--fee">
+                <FeeCostCell
+                  inline
+                  :credits="tenant.credits_7d"
+                  :cost-usd="tenant.cost_7d_usd"
+                  :show-cost="showCost"
+                />
+              </span>
+            </template>
+            <template #sub>积分 {{ fmtNum(tenant.credits_7d) }}</template>
+            <template #spark><SparkBars :data="spark7d('credits')" color-token="--success" /></template>
+          </StatCard>
+          <StatCard label="总请求数（历史）" icon="📚">
+            <template #value>{{ fmtNum(tenant.total_requests) }}</template>
+            <template #sub>自 {{ fmtTime(tenant.created_at) }} 起</template>
+          </StatCard>
         </div>
 
         <div class="maas-shortcuts">
@@ -408,12 +574,17 @@ watch(() => route.params.tenantId, loadTenant)
 
       <!-- Keys Tab -->
       <div v-if="activeTab === 'keys'" class="tab-content">
+        <div v-if="keyAppFilter || keyOwnerFilter" class="stats-asof">
+          <span v-if="keyAppFilter">应用 {{ keyAppFilter }}</span>
+          <span v-if="keyOwnerFilter">账号 {{ keyOwnerFilter }}</span>
+          <button type="button" class="btn btn-ghost btn-sm" @click="keyAppFilter = ''; keyOwnerFilter = ''">清除过滤</button>
+        </div>
         <table class="table" style="width:100%">
           <thead>
             <tr><th>ID</th><th>密钥前缀</th><th>别名</th><th>应用</th><th>状态</th><th>请求数</th><th>费用</th><th>创建</th></tr>
           </thead>
           <tbody>
-            <tr v-for="k in keys" :key="k.id">
+            <tr v-for="k in visibleKeys" :key="k.id">
               <td>{{ k.id }}</td>
               <td><code>{{ k.key_prefix }}</code></td>
               <td>{{ k.key_alias || '-' }}</td>
@@ -426,7 +597,7 @@ watch(() => route.params.tenantId, loadTenant)
               </td>
               <td class="mono">{{ fmtTime(k.created_at) }}</td>
             </tr>
-            <tr v-if="keys.length === 0">
+            <tr v-if="visibleKeys.length === 0">
               <td colspan="8" style="text-align:center; padding:40px; color: var(--muted)">无密钥</td>
             </tr>
           </tbody>
@@ -438,88 +609,130 @@ watch(() => route.params.tenantId, loadTenant)
         <TenantModelPolicyPanel :tenant-code="tenant.code" />
       </div>
 
-      <!-- Stats Tab -->
+      <!-- Stats Tab（2026-09-30 统计 UI 优化轮重做：KPI 8 卡 + 双趋势图 + 占比条分布） -->
       <div v-if="activeTab === 'stats'" class="tab-content">
         <div class="stats-toolbar">
           <label>时间窗口:</label>
-          <select v-model.number="statsDays" @change="loadStats">
-            <option :value="7">近 7 天</option>
-            <option :value="30">近 30 天</option>
-            <option :value="90">近 90 天</option>
-            <option :value="365">近 365 天</option>
-          </select>
+          <div class="window-chips">
+            <button
+              v-for="d in [7, 30, 90, 365]"
+              :key="d"
+              class="chip"
+              :class="{ active: statsDays === d }"
+              type="button"
+              @click="statsDays = d; loadStats()"
+            >近 {{ d }} 天</button>
+          </div>
+          <span class="text-muted stats-asof">数据截至 {{ fmtTime(new Date().toISOString()) }}</span>
         </div>
 
-        <div v-if="stats" class="stat-cards">
-          <div class="stat-card">
-            <div class="stat-label">总请求</div>
-            <div class="stat-value">{{ fmtNum(stats.total_requests) }}</div>
+        <div v-if="stats" class="stat-cards stat-cards--kpi">
+          <StatCard label="总请求" icon="📥">
+            <template #value>{{ fmtNum(stats.total_requests) }}</template>
+            <template #sub>失败 <span style="color:var(--danger)">{{ fmtNum(statsFailTotal) }}</span>（{{ stats.total_requests > 0 ? ((statsFailTotal / stats.total_requests) * 100).toFixed(1) : '0.0' }}%）</template>
+          </StatCard>
+          <StatCard label="总 Token" icon="🔢">
+            <template #value>{{ fmtTokensCompact(stats.total_tokens) }}</template>
+            <template #sub>入 {{ fmtTokensCompact(stats.input_tokens) }} · 出 {{ fmtTokensCompact(stats.output_tokens) }} · 缓存读 {{ fmtTokensCompact(stats.cache_read_tokens) }} · 缓存写 {{ fmtTokensCompact(stats.cache_write_tokens) }}</template>
+          </StatCard>
+          <StatCard label="总费用" icon="🪙" tone="success">
+            <template #value>
+              <span class="stat-value stat-value--fee">
+                <FeeCostCell inline :credits="stats.total_credits" :cost-usd="stats.total_cost_usd" :show-cost="showCost" />
+              </span>
+            </template>
+            <template #sub>积分 {{ fmtNum(stats.total_credits) }}<template v-if="showCost"> · 成本 {{ fmtCost(stats.total_cost_usd) }}</template></template>
+          </StatCard>
+          <StatCard label="日均请求" icon="📈">
+            <template #value>{{ fmtNum(statsDailyAvg) }}</template>
+            <template #sub>
+              <template v-if="statsDayDelta != null">较前一日 {{ formatDayDelta(statsDayDelta) }}</template>
+              <template v-else>窗口 {{ stats.days }} 天</template>
+            </template>
+          </StatCard>
+          <StatCard label="独立密钥" icon="🔑">
+            <template #value>{{ stats.unique_keys }}</template>
+            <template #sub>按密钥用量见密钥 tab</template>
+          </StatCard>
+          <StatCard label="独立模型" icon="🤖">
+            <template #value>{{ stats.unique_models }}</template>
+            <template #sub>Top 见下方模型分布</template>
+          </StatCard>
+          <StatCard label="独立应用" icon="🧩">
+            <template #value>{{ stats.unique_apps }}</template>
+            <template #sub>Top 见下方应用分布</template>
+          </StatCard>
+          <StatCard label="平均耗时" icon="⏱️">
+            <template #value>{{ fmtLatency(stats.avg_latency_ms) }}</template>
+            <template #sub>窗口内请求均值</template>
+          </StatCard>
+        </div>
+
+        <div v-if="stats && statsHasDays" class="stats-trend-grid">
+          <div class="stats-trend-card">
+            <div class="stats-trend-title">请求与失败趋势</div>
+            <div class="stats-trend-body"><canvas ref="statsReqCanvas" /></div>
           </div>
-          <div class="stat-card">
-            <div class="stat-label">总 Token</div>
-            <div class="stat-value">{{ fmtNum(stats.total_tokens) }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">总费用</div>
-            <div class="stat-value stat-value--fee">
-              <FeeCostCell
-                inline
-                :credits="stats.total_credits"
-                :cost-usd="stats.total_cost_usd"
-                :show-cost="showCost"
-              />
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">独立密钥</div>
-            <div class="stat-value">{{ stats.unique_keys }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">独立模型</div>
-            <div class="stat-value">{{ stats.unique_models }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">独立应用</div>
-            <div class="stat-value">{{ stats.unique_apps }}</div>
+          <div class="stats-trend-card">
+            <div class="stats-trend-title">Token 与积分趋势</div>
+            <div class="stats-trend-body"><canvas ref="statsTokCanvas" /></div>
           </div>
         </div>
 
         <div v-if="stats" class="stats-tables">
-          <h3>按模型分桶 (Top 20)</h3>
+          <div class="stats-tables-header">
+            <h3>模型分布 · Top 20</h3>
+            <span class="spacer"></span>
+            <div class="window-chips">
+              <button class="chip" :class="{ active: statsMetric === 'token' }" type="button" @click="statsMetric = 'token'">按 Token</button>
+              <button class="chip" :class="{ active: statsMetric === 'credits' }" type="button" @click="statsMetric = 'credits'">按积分</button>
+            </div>
+          </div>
           <table class="table">
-            <thead><tr><th>模型</th><th>请求</th><th>Token</th><th>费用</th></tr></thead>
+            <thead><tr><th>模型</th><th class="text-right">请求</th><th class="text-right">Token</th><th class="text-right">积分</th><th class="text-right">费用</th></tr></thead>
             <tbody>
-              <tr v-for="m in stats.by_model" :key="m.model">
-                <td><code>{{ m.model }}</code></td>
-                <td>{{ fmtNum(m.requests) }}</td>
-                <td>{{ fmtNum(m.tokens) }}</td>
+              <tr v-for="m in statsModelSorted" :key="m.model">
                 <td>
-                  <FeeCostCell
-                    :credits="m.credits"
-                    :cost-usd="m.cost_usd"
-                    :show-cost="showCost"
-                  />
+                  <BarCell :pct="statsModelMax > 0 ? (statsMetricValue(m) / statsModelMax) * 100 : 0">
+                    <template #name>
+                      <code>{{ m.model }}</code>
+                      <span v-if="statsModelTotalReq > 0" class="cell-sub">{{ ((m.requests / statsModelTotalReq) * 100).toFixed(1) }}%</span>
+                    </template>
+                  </BarCell>
+                </td>
+                <td class="text-right">{{ fmtNum(m.requests) }}</td>
+                <td class="text-right">{{ fmtTokensCompact(m.tokens) }}</td>
+                <td class="text-right">{{ fmtNum(m.credits) }}</td>
+                <td>
+                  <FeeCostCell :credits="m.credits" :cost-usd="m.cost_usd" :show-cost="showCost" />
                 </td>
               </tr>
+              <tr v-if="statsModelSorted.length === 0"><td colspan="5" class="table-empty">窗口内无请求</td></tr>
             </tbody>
           </table>
 
-          <h3>按应用分桶 (Top 20)</h3>
+          <div class="stats-tables-header">
+            <h3>应用分布 · Top 20</h3>
+            <span class="spacer"></span>
+            <span class="text-muted" style="font-size:12px">点击行跳转密钥列表（带应用过滤）</span>
+          </div>
           <table class="table">
-            <thead><tr><th>应用</th><th>请求</th><th>Token</th><th>费用</th></tr></thead>
+            <thead><tr><th>应用</th><th class="text-right">请求</th><th class="text-right">Token</th><th class="text-right">积分</th><th class="text-right">费用</th></tr></thead>
             <tbody>
-              <tr v-for="a in stats.by_application" :key="a.application_code">
-                <td><span class="badge badge-blue">{{ a.application_code }}</span></td>
-                <td>{{ fmtNum(a.requests) }}</td>
-                <td>{{ fmtNum(a.tokens) }}</td>
+              <tr v-for="a in statsAppSorted" :key="a.application_code" class="stats-app-row" @click="openAppKeys(a.application_code)">
                 <td>
-                  <FeeCostCell
-                    :credits="a.credits"
-                    :cost-usd="a.cost_usd"
-                    :show-cost="showCost"
-                  />
+                  <BarCell :pct="statsAppMax > 0 ? (statsMetricValue(a) / statsAppMax) * 100 : 0" tone="cyan">
+                    <template #name><span class="badge badge-blue">{{ a.application_code || '—' }}</span></template>
+                  </BarCell>
+                </td>
+                <td class="text-right">{{ fmtNum(a.requests) }}</td>
+                <td class="text-right">{{ fmtTokensCompact(a.tokens) }}</td>
+                <td class="text-right">{{ fmtNum(a.credits) }}</td>
+                <td>
+                  <FeeCostCell :credits="a.credits" :cost-usd="a.cost_usd" :show-cost="showCost" />
                 </td>
               </tr>
+              <tr v-if="statsAppSorted.length === 0"><td colspan="5" class="table-empty">窗口内无请求</td></tr>
             </tbody>
           </table>
         </div>
@@ -910,5 +1123,80 @@ watch(() => route.params.tenantId, loadTenant)
   .billing-toolbar { align-items: stretch; }
   .billing-user-input { min-width: 0; flex: 1 1 100%; }
   .billing-toolbar .btn { width: 100%; }
+}
+
+/* ── 2026-09-30 统计 UI 优化轮：KPI 网格 / 时间窗 chips / 趋势图卡 ── */
+.stat-cards--kpi {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.window-chips {
+  display: inline-flex;
+  gap: 6px;
+}
+.chip {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.chip:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.chip.active {
+  background: var(--bg-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.stats-asof {
+  font-size: 12px;
+  margin-left: auto;
+}
+.stats-app-row { cursor: pointer; }
+.stats-trend-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 14px 0 4px;
+}
+@media (max-width: 1080px) {
+  .stats-trend-grid { grid-template-columns: 1fr; }
+}
+.stats-trend-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.stats-trend-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.stats-trend-body {
+  height: 240px;
+  position: relative;
+}
+.stats-trend-body canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+.stats-tables-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 8px;
+  flex-wrap: wrap;
+}
+.stats-tables-header .spacer { flex: 1; }
+.cell-sub {
+  font-size: 11.5px;
+  color: var(--muted);
 }
 </style>
