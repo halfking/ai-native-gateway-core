@@ -7774,3 +7774,86 @@ sum(increase(llm_gateway_auto_selections_total[2h])) == 0
 | N3 删掉「已知局限」段 | 红（Go 门） |
 
 `promtool check rules` SUCCESS；`promtool test rules` 6 场景 SUCCESS。
+
+## §9.58 ★订正 §9.54.3：我把「内部生成器流量」当成了「业务 auto 流量」
+
+§9.54.3 写的是「99.5% 的业务 auto 流量根本没进会话族」，并把它列为停写前的
+阻塞项。本节用 252 实测证明**这个前提是错的**。
+
+### §9.58.1 我当时用的筛选条件
+
+§9.54/§9.55 用 `origin_stage = 'business'` 作为「真实业务流量」的代理，量出
+3,154 条 auto 行里只有 15 条在会话族。
+
+### §9.58.2 252 实测：这 3,154 条里 99.5% 是**内部生成器**
+
+| origin_actor | origin_stage | request_type | 行数 |
+|---|---|---|---:|
+| `auto-summary-generator` | `business` | `main` | 1,924 |
+| `auto-title-generator` | `business` | `main` | 1,242 |
+| `<null>` | `business` | `main` | **15** |
+
+按「`task_type` 是否为空」切分并各自看是否进会话族：
+
+| task_type 为空 | 行数 | 在会话族 |
+|---|---:|---:|
+| 是 | 3,166 | **0** |
+| 否 | **15** | **15（100%）** |
+
+auto 全量按 `origin_stage` × actor 是否属内部名单交叉：
+
+| origin_stage | actor 属内部名单 | 行数 |
+|---|---|---:|
+| `node_probe` | 否 | 19,408 |
+| `business` | **是** | 3,166 |
+| `business` | 否 | **15** |
+
+⇒ **真正的业务 auto 流量是 15 条，而且 15 条全部进了会话族。**
+那 3,166 条是 auto 标题/摘要生成器，**它们被排除出 `session_turns` 是正确的**
+（不是用户轮次）。
+
+⇒ **§9.54.3 的结论反了**：不是「业务 auto 流量没被镜像」，而是
+「镜像行为完全正确，是我把内部生成器误认成业务流量」。
+「99.5% 没进会话族」这个数字描述的是内部生成器，**它本就不该进去**。
+
+⇒ 顺带这也让 §9.54.2 的 cohort 故事更弱：v1 的 auto 总体是
+19,408 探针 + 3,166 内部生成器 + **15 真实业务**——**几乎全是合成流量**。
+
+### §9.58.3 根因：**两份「内部 actor」名单，互不相认**
+
+| 名单 | 位置 | 认不认 `auto-title-generator` / `auto-summary-generator` |
+|---|---|---|
+| `IsInternalAutoEntry` | `domains/hooks/observability/telemetry/internal_loopback.go:33-38` | **认**（按 actor 名 + `request_type`） |
+| `trustedOriginOwners` | `middleware/origin_mw.go:121-131` | **不认**（两串一次都没出现） |
+| `systemOwnerFallbackStage` | `middleware/origin_mw.go:401-406` | **不认** |
+| `globalAuthStageActorPairs` | `middleware/origin_mw.go:151-166` | **不认** |
+
+⇒ 这两个 actor 未登记为系统 actor ⇒ origin 中间件走普通路径，
+把它们的 `origin_stage` 盖成 **`business`**；
+而 `IsInternalAutoEntry` 按名字认出它们是内部 loopback，于是排除出 `session_turns`。
+
+⇒ **同一件事（「这个 actor 是不是内部生成器」）有两份真相源，其中一份漏了两个成员。**
+
+⚠️ 这不是新形态：§9.45 的 `sql_source_indirection_audit` 就撞过
+「三个真相源让门测不出差别」；`settings` 的 `KeyRequestLogsWriteEnabled`
+也是因为「同一个键被五处各写一遍字面量」才被提成常量。
+
+### §9.58.4 后果与修法（需要拍板，本轮不实施）
+
+**后果**：`origin_stage` 在 auto 总体上**不是**可靠的「是否内部」判据。
+任何用 `origin_stage = 'business'` 做筛选的查询（包括 §9.54.2 的
+cohort 分析、可能还有别的审计脚本）都会把 3,166 条内部生成器混进「业务」。
+
+**修法候选**：
+- (a) 把这两个 actor 补进 `trustedOriginOwners` / `globalAuthStageActorPairs`
+  ——改的是**既有行的判定口径**，会让 3,166 条历史行的 `origin_stage`
+  在重放时变成不同值（若有回填）。**属行为变更。**
+- (b) 不动 origin，新增一个「是否内部」的**单一判定函数**
+  （把 `IsInternalAutoEntry` 的 actor 名单与 origin 侧合并），
+  并让所有筛选方改用它。改动面更大但不碰历史值。
+- (c) 只加一道**门**把两份名单的差异钉出来并打印（默认红），
+  迫使后续裁决。**本轮不做**：一道常红的门会立刻挂 CI，
+  应当先有裁决再落门。
+
+⇒ 我**不代为裁决**。但 §9.54.3 那条「停写前阻塞项」必须**撤回**：
+它建立在一个已被证伪的前提上。
