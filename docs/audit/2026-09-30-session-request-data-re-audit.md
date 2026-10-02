@@ -5725,3 +5725,192 @@ NULL 补位，正是按「两者不是同一个东西」设计的。
   `TestMigration815ExcludesTraceEventsAndID` 已经在守「不投影」，
   而「什么时候可以投影」的前置条件是**写方有值**，那只能由真库门守，
   空库上是绿而无证据（§9.34）。
+
+---
+
+## §9.44 会话族分支第一次被执行，以及一个此前无人测量的失效形态
+
+> 本节的两个标题都不是修辞：
+> - 「第一次被执行」是事实——`auto_route_settle_worker` 的 `settleBatch` 会话族
+>   分支在 §9.43 交付时**从未被任何进程执行过一次**。
+> - 「此前无人测量」也是事实——基线 cohort 为空这件事在 §9.35 / §9.40 / §9.43
+>   三节里都被当作「降级，不是失败」写在注释里，从未被测量过。
+
+### §9.44.1 起因：一个查起来很顺的怀疑，结果是错的
+
+§9.40 记着一句话：「`canonical_id` 会话族根本没有这列」。§9.43 据此把
+`settlePendingSQL` 接到 `src.TurnsTable` 上，其中 outcome join 读 `rl.canonical_id`。
+本节开工前的第一个怀疑是：**这个分支一跑就报列不存在**。
+
+真库核对（`pg_attribute`）：
+
+| 列 | `request_logs_hot` | `session_turns_hot` |
+|---|---|---|
+| `canonical_id` | bigint | **bigint（存在）** |
+| 其余 10 个被读列 | 全部存在 | 全部存在 |
+
+⇒ §9.40 那句话指的是 **710 视图的会话臂不投影 canonical_id**，不是这张表本身。
+会话族有这一列。**这是一个差点写进新一节审计的假警报**，靠读定义而不是读转述躲掉了。
+
+顺带核到一个也差点误报的东西：`auto_route_selections_hot` 本地 0 行。
+`pg_class.relkind = 'r'`（普通表）、`relispartition = false`，而
+`auto_route_selections` 是分区父表，hot 内容由 `bg/partition_manager.go` 的
+`promote_auto_route_selections_hot_to_partition` 定期搬走 ⇒ hot 为空是**正常的**，
+不是「worker 从来没结算过」的证据。若只看行数不看 relkind，这会是一条很难看的
+假发现。
+
+### §9.44.2 真正的问题：基线 cohort 会静默塌成中性
+
+`ComputeRoutingRewardWithWeights`：
+
+```go
+latencyScore := 0.5
+if in.P95BaselineMs > 0 && in.LatencyMs > 0 { … }
+costScore := 0.5
+if in.P75BaselineCost > 0 && in.CostUSD > 0 { … }
+```
+
+两个 `0.5` 是**中性回落**。设计意图正确（没测量就别假装知道），但它与
+「测了、结果恰好中性」在输出上逐字相同。而 `sweep` 里唯一的相关分支是：
+
+```go
+baselines, err := w.loadTaskBaselines(sweepCtx)
+if err != nil { … baselines = map[string]taskBaseline{} }
+```
+
+**空 map 不是 error**，所以这条分支永远不会为它触发。`baselines[p.taskType]`
+取不到时拿到零值 `{0, 0}` ⇒ 整条 selection 的延迟项与成本项同时塌成 0.5。
+
+§9.43 把基线 cohort 的来源表接到了 `src.TurnsTable` 上。真库实测
+（`baselineWindow = 24h`，`is_auto_request = TRUE AND latency_ms IS NOT NULL`）：
+
+| 族 | 24h cohort 行数 |
+|---|---|
+| v1（`request_logs_hot`） | **2178** |
+| 会话族（`session_turns_hot`） | **0** |
+
+⇒ 在当前这份数据上切换会**立刻**得到空 map。没有报错、计数器照常增长、
+reward 仍在 [0,1] 内，而 cohort 基线存在的唯一理由（区分快慢 / 贵贱模型）
+就此失效。
+
+### §9.44.3 两族都健康时的覆盖率：80.4%，不是 99.3%
+
+上一节的 0 是**本地流量塌陷**造成的（本地 09-27 起总流量掉了约 20 倍，
+且 auto 流量在会话族里几乎归零），不能当作生产结论。取两族都健康的窗口重测：
+
+| 口径（2026-09-19 … 09-26） | v1 | 会话族 | 覆盖 |
+|---|---|---|---|
+| `is_auto_request=TRUE AND latency_ms IS NOT NULL` 行数 | 820332 | 659252 | **80.4%** |
+| 不同的 `task_type` 数 | 1 | 1 | 一致 |
+
+⇒ §9.40 记的 83.0% 大致成立，但**那是对 selection request_id 的口径**；
+基线查询读的是「窗口内全部 auto 行」，两个总体不同。**引用覆盖率时必须写清
+量的是哪个面**（本审计第三次栽在这一类，见 §9.44.6）。
+
+同窗口的 p95/p75：
+
+| task_type | v1 p95 | 会话族 p95 | 偏移 |
+|---|---|---|---|
+| `probe_triggered` | 3301 | 3803 | **+15.2%** |
+
+⚠ **这个 15.2% 不代表生产**：本地 auto 流量全部是 `probe_triggered`
+（`task_type` 只有这一个取值），是合成探针流量而非真实用户流量。生产偏移未知，
+只能确定它**不为零**。p75 两侧都是 NULL（探针没有 `cost_usd`）⇒ COALESCE 成 0，
+这正是「延迟项与成本项独立塌陷」的实例。
+
+### §9.44.4 「确保数据在更改前后一致」这句话能被证明的部分与不能的部分
+
+**能证明的**：对**同一批数据**，两条源给出**逐位相同**的 reward。
+
+为此先把两条 SQL 抽成纯函数（`bg/auto_route_settle_sql.go`）。抽出来的直接原因
+是可测性：`settings.RequestLogsWriteEnabled()` 只有读取器（`GetPlatformBool` 覆盖
+settings store），**没有能在测试里翻转的注入口**，所以只要源由全局门决定，
+集成测试就只能跑 v1 分支——也就是今天线上已经在跑的那条。
+
+`TestAutoRouteSettleSessionSourceMatchesV1OnIdenticalRows`（testcontainers，
+`//go:build integration`）把同一批请求种进两族，只让承载会话身份的列改名
+（`gw_session_id` → `session_id`，这正是 `settleSourceSpec` 的全部意义），然后
+要求：基线三元组相等、每条 pending 逐字段相等、`computeSelectionReward` 输出相等。
+
+变异验证（把会话键列改成 `tenant_id`）证明这道门承重，报出的差异是实质的：
+
+```
+req-b2: model_reqs differs: v1=2 session=0
+req-b2: retry_count differs: v1=0 session=NULL
+req-b2: REWARD differs: v1=0.7650191571 (session) session=0.7200191571 (request)
+req-b2: reward_source differs: v1="session" session="request"
+```
+
+注意最后一行：`reward_source` 翻转会改变 affinity rollup 的归因，不只是数值偏移。
+
+**不能证明的**：跨切换的 reward 相等。cohort 的**总体定义就是被退役的那张表**，
+换源必然换总体 ⇒ p95/p75 必然变（本地实测 +15.2%，生产未知）。
+要让跨切换可比，只能引入一个与被退役表无关的稳定 cohort（例如独立的长期统计表），
+**本轮没有实现**。这是 §9.44 留下的未决项，需要单独排期，不该由一道门或一次
+文档改写单方面「解决」。
+
+### §9.44.5 门与告警
+
+新增（`bg/auto_route_settle_baseline_metrics.go`，闭集标签 `family ∈ {v1,session}`、
+`term ∈ {latency,cost}`，**刻意不带 task_type**——它来自请求内容，基数无上界）：
+
+| 指标 | 含义 | 消费它的告警 |
+|---|---|---|
+| `llmgw_autoroute_settle_baseline_cohort_rows{family}` | 本轮 cohort 行数（gauge） | `AutoRouteSettleBaselineCohortEmpty` |
+| `llmgw_autoroute_settle_baseline_neutral_total{term,family}` | 走了中性回落的 selection 数 | `AutoRouteSettleBaselineNeutralDominant` |
+| `llmgw_autoroute_settle_source_total{family}` | §9.43 已有 | `AutoRouteSettleSourceSwitched`（**本轮新增的消费者**） |
+
+`loadTaskBaselines` 的签名从 `(map, error)` 变成 `(map, int, error)`，第二个返回值
+与 `count(*)` **同在一次查询里**取回（不为一个数字多付一次每 30 秒的 RTT）。
+§9.37 的纪律直接适用：门
+`TestSettleBaselineCohortCountIsConsumed` 要求那个返回值真的被 `Set` 进指标，
+否则它在事实层面就是装饰。
+
+**告警的 gauge 陈旧性陷阱**：`cohort_rows` 只在**本轮实际使用**的那个族上 `Set`。
+源族切换后另一个族的序列会停更并冻结在旧值上——对一个「已停更」的序列断言
+`== 0`，读到的是「没在测」，不是「测出来是 0」。所以每条 cohort 规则都同时要求
+该族近期确有结算（`increase(source_total{family=...}[15m]) > 0`），
+**把「正在被使用」写进条件本身**。变异验证：删掉这个守卫后门变红。
+
+`AutoRouteSettleSourceSwitched` 用 `changes(...[10m]) > 0` 且**不带 `for:`**——
+切换一生只发生一次，被抑制就等于没有（这是上一轮 handoff 遗留的第 ② 项）。
+
+### §9.44.6 搬动 SQL 顺手制造了一道假绿（必须记下来）
+
+把两条查询从 `auto_route_settle_worker.go` 搬进 `auto_route_settle_sql.go` 之后，
+两道既有门**都只扫 worker 这一个文件**，于是行为分叉：
+
+| 门 | 搬动后的行为 | 是否暴露了搬动 |
+|---|---|---|
+| `TestSettleLegsAllUseTheSameSource`（数 `src.TurnsTable` ≥ 3） | **红** | 是 |
+| `TestAutoRouteSettleWorkerDoesNotUseThe710View`（扫 SQL 字面量找 710 视图） | **绿** | **否** |
+
+第二道门从此对着一个不再含 SQL 的文件断言「没有 710 视图」——
+**一道删掉它所守之物之后仍然通过的判据，就是装饰**。只有红的那一道救了场。
+
+修法不是逐个改调用点，而是引入 `settleSQLFiles` 清单，所有扫 SQL 的门共用，
+并加 `TestSettleSQLFilesStillCarrySQL` 挡住「清单与实际位置脱节」这种退化
+（它要求 SQL 文件里真的还有 `LEFT JOIN` 与 `auto_route_selections_hot`，
+而不是只检查文件存在）。**漏登记的后果是判据静默失效，不是报错。**
+
+同一轮的第二个假阳性面：`TestSettleBaselineCohortCountIsConsumed` 的第一版先写了
+一条 `strings.Contains(raw, "autoRouteSettleBaselineCohortRows")`。变异验证时它
+判为通过——命中的是 `loadTaskBaselines` **文档注释**里的那句
+「see autoRouteSettleBaselineCohortRows」，不是任何代码。已删掉该弱判据，只留
+要求完整调用形状（标识符 + `WithLabelValues` + `Set(float64(cohortRows))`）的正则。
+**子串门被注释喂饱，是本审计最常见的假阳性面。**
+
+### §9.44.7 本节没有做的
+
+- **没有**让基线 cohort 跨切换保持不变。做不到而不引入新表：cohort 的总体定义
+  就是被退役的表。见 §9.44.4 的未决项。
+- **没有**改会话族的写入侧，让它补上 `is_auto_request`。本地近 24h 会话族
+  `is_auto_request=TRUE` 为 0 行，但**本地 auto 流量本身已塌**（09-27 起总量掉
+  约 20 倍），分不清是「写方停写」还是「本地没有 auto 流量」。真要判定，需要在
+  一台仍在跑 auto 路由的实例上对比两侧同日 auto 行数——本轮没有这样的实例，
+  **不做推测**。
+- **没有**把 §9.43 的三个读点再往前推。§9.44 只增加可观测性与一条可执行的一致性
+  证明，没有改变任何计算路径。
+- **没有**把这两道新集成测试接进 CI。它们是 `//go:build integration` 的
+  testcontainers 测试，接进 CI 会在一次性空库上退化（§9.34：绿而无证据）。
+  `go test -tags=integration ./bg/` 是它们的正确运行方式。

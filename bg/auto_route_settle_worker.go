@@ -252,12 +252,25 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 		}
 	}
 
-	baselines, err := w.loadTaskBaselines(sweepCtx)
+	src := currentSettleSource()
+	baselines, cohortRows, err := w.loadTaskBaselines(sweepCtx)
+	autoRouteSettleBaselineCohortRows.WithLabelValues(src.Family).Set(float64(cohortRows))
 	if err != nil {
 		// Without baselines latency/cost fall back to neutral rather than being
 		// scored wrongly, so this is a degradation, not a failure.
 		slog.Warn("auto-route settle: cohort baselines unavailable, using neutral", "error", err)
 		baselines = map[string]taskBaseline{}
+	}
+	// §9.44: an empty map is NOT an error, so the branch above never fires for
+	// the state that actually matters. Under stop-write the session family can
+	// carry zero is_auto_request rows in the baseline window (measured: 2178
+	// rows on the v1 side, 0 on the session side over the same 24h) — and then
+	// every reward silently scores latency and cost as neutral 0.5, i.e. the
+	// cohort stops distinguishing fast from slow models with no error anywhere.
+	// Say it out loud once per sweep instead.
+	if len(baselines) == 0 {
+		slog.Warn("auto-route settle: cohort baselines EMPTY (every reward scores latency+cost as neutral 0.5)",
+			"family", src.Family, "turns_table", src.TurnsTable, "cohort_rows", cohortRows)
 	}
 
 	settled, abandoned, err := w.settleBatch(sweepCtx, baselines)
@@ -345,46 +358,52 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 // cohort (rather than each model's own history) is what lets the reward
 // distinguish a fast model from a slow one — a per-model baseline would score
 // every model ~neutral against its own history.
-func (w *AutoRouteSettleWorker) loadTaskBaselines(ctx context.Context) (map[string]taskBaseline, error) {
+//
+// The second return value is the number of rows that actually formed the
+// cohort. §9.44: an **empty** baseline map is not an error, so the caller
+// cannot tell "no traffic" from "query failed" — and an empty map makes every
+// reward fall back to neutral 0.5 for latency AND cost (see
+// ComputeRoutingRewardWithWeights), which silently stops distinguishing fast
+// from slow models. The count is what makes that state measurable; see
+// autoRouteSettleBaselineCohortRows.
+func (w *AutoRouteSettleWorker) loadTaskBaselines(ctx context.Context) (map[string]taskBaseline, int, error) {
 	// GROUP BY task_type yields a NULL group for rows with NULL task_type
 	// (request_logs_hot.task_type is nullable). pgx v5 cannot scan NULL into
 	// string and a scan failure is iteration-fatal, so the whole baseline
 	// map would be lost; COALESCE keeps the group scannable and the
 	// taskType != "" skip below drops it (245 2026-09-16 audit).
+	//
+	// count(*) rides along in the same query rather than in a second round
+	// trip: the sweep runs every settleInterval and a second query would be a
+	// per-sweep extra RTT purely to produce a number.
 	src := currentSettleSource()
-	rows, err := w.db.Query(ctx, `
-		SELECT COALESCE(task_type, '') AS task_type,
-		       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p95_latency_ms,
-		       COALESCE(percentile_cont(0.75) WITHIN GROUP (ORDER BY cost_usd), 0)        AS p75_cost_usd
-		FROM `+src.TurnsTable+` rl
-		WHERE rl.ts >= NOW() - $1::interval
-		  AND rl.is_auto_request = TRUE
-		  AND rl.latency_ms IS NOT NULL`+autoroute.SQLExcludeSyntheticActors("rl")+`
-		GROUP BY task_type
-	`, baselineWindow.String())
+	rows, err := w.db.Query(ctx, settleBaselinesSQL(src), baselineWindow.String())
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
 	out := make(map[string]taskBaseline)
+	cohortRows := 0
 	for rows.Next() {
 		var (
 			taskType string
 			b        taskBaseline
+			n        int
 		)
 		// Scan failures in pgx v5 are FATAL to iteration (rows.fatal sets the
 		// error and stops yielding rows). A `continue` here would silently drop
 		// every remaining row. Treat any scan error as the sweep-fatal condition
 		// it actually is and let rows.Err() report it.
-		if err := rows.Scan(&taskType, &b.P95LatencyMs, &b.P75CostUSD); err != nil {
-			return nil, err
+		if err := rows.Scan(&taskType, &b.P95LatencyMs, &b.P75CostUSD, &n); err != nil {
+			return nil, 0, err
 		}
+		cohortRows += n
 		if taskType != "" {
 			out[taskType] = b
 		}
 	}
-	return out, rows.Err()
+	return out, cohortRows, rows.Err()
 }
 
 // pendingSelection is one row awaiting settlement, joined with its outcome.
@@ -532,33 +551,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 	// sequential calls is N requests, not N-1 retries. Earlier code made that
 	// mistake and penalised healthy conversation flows.
 	src := currentSettleSource()
-	rows, qErr := w.db.Query(ctx, `
-			SELECT s.id, s.partition_date, s.request_id, s.task_type, s.canonical_id, s.ts,
-			       rl.success, rl.latency_ms, rl.cost_usd,
-			       rl.origin_actor,
-			       rl.canonical_id        AS rl_canonical_id,
-			       LEFT(rl.tenant_id, 64) AS rl_tenant_id,
-			       ss.health_score, ss.error_count, ss.request_count,
-			       mr.model_reqs, mr.retry_count
-			FROM (
-				SELECT id, partition_date, request_id, task_type, canonical_id, ts, session_id
-				FROM auto_route_selections_hot
-				WHERE settled_at IS NULL AND ts < NOW() - $1::interval
-				ORDER BY ts
-				LIMIT $2
-			) s
-			LEFT JOIN `+src.TurnsTable+` rl
-			       ON rl.request_id = s.request_id
-			LEFT JOIN session_summaries ss
-			       ON ss.session_key = s.session_id
-			LEFT JOIN LATERAL (
-			       SELECT COUNT(*)::int AS model_reqs,
-			              SUM(`+retryCountPerRowSQL("r2")+`)::int AS retry_count
-			       FROM `+src.TurnsTable+` r2
-			       WHERE s.session_id IS NOT NULL
-			         AND r2.`+src.SessionKeyCol+` = s.session_id`+autoroute.SQLExcludeSyntheticActors("r2")+`
-			) mr ON TRUE
-	`, settleDelay.String(), settleBatchSize)
+	rows, qErr := w.db.Query(ctx, settlePendingSQL(src), settleDelay.String(), settleBatchSize)
 	if qErr != nil {
 		return 0, 0, qErr
 	}
@@ -612,7 +605,20 @@ func (w *AutoRouteSettleWorker) settleBatch(
 			continue
 		}
 
-		reward, source, retryState := computeSelectionReward(p, baselines[p.taskType])
+		// §9.44: a miss here is not an error — it silently scores the latency and
+		// cost terms as neutral 0.5, which is indistinguishable downstream from
+		// "measured, and it came out neutral". Count it so the cohort's failure
+		// to discriminate fast from slow models is visible as a rate.
+		base, hasBase := baselines[p.taskType]
+		family := currentSettleSource().Family
+		if !hasBase || base.P95LatencyMs <= 0 {
+			autoRouteSettleBaselineNeutral.WithLabelValues(baselineTermLatency, family).Inc()
+		}
+		if !hasBase || base.P75CostUSD <= 0 {
+			autoRouteSettleBaselineNeutral.WithLabelValues(baselineTermCost, family).Inc()
+		}
+
+		reward, source, retryState := computeSelectionReward(p, base)
 		if uErr := w.writeReward(ctx, p, reward, source); uErr != nil {
 			slog.Debug("auto-route settle write failed", "request_id", p.requestID, "error", uErr)
 			continue
@@ -622,7 +628,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 		autoRouteSettleLagSeconds.Observe(now.Sub(p.ts).Seconds())
 		autoRouteRewardScore.WithLabelValues(p.taskType).Observe(reward)
 		autoRouteSettleRetryState.WithLabelValues(retryState).Inc()
-		autoRouteSettleSource.WithLabelValues(currentSettleSource().Family).Inc()
+		autoRouteSettleSource.WithLabelValues(family).Inc()
 	}
 
 	return settled, abandoned, nil

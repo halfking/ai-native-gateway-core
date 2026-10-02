@@ -75,13 +75,73 @@ func sqlLiteralsOfSettleFile(t *testing.T, path string) []string {
 // 这两条可证。**不断言**「应该换成会话族」：那要先决定 canonical_id 缺口怎么办，
 // 而那会改动 reward 语义，不该由一道门单方面定下来。
 
+// settleSQLFiles 列出**承载 settleBatch / loadTaskBaselines SQL 的源文件**。
+//
+// §9.44 把这两条查询从 auto_route_settle_worker.go 搬进了
+// auto_route_settle_sql.go（抽成 settleBaselinesSQL / settlePendingSQL 纯函数，
+// 好让集成测试能指定源族而不必翻转没有 setter 的全局 S4 写门）。
+//
+// 搬动本身立刻制造了一个**新的假绿**：两道既有门
+// （TestAutoRouteSettleWorkerDoesNotUseThe710View 与
+// TestSettleLegsAllUseTheSameSource）都只扫这一个文件，于是开始对着一个不再含
+// SQL 的文件做断言——「一道删掉它所守之物之后仍然通过的判据，就是装饰」。
+// 其中一道当时确实是绿的（没有字符串里出现 710 视图），另一道是红的（数不到
+// src.TurnsTable）。**只有红的那一道暴露了搬动，绿的那一道会一直绿下去。**
+//
+// 所以这个清单必须被所有扫 SQL 的门共用；新增搬动 SQL 的文件时必须同步登记——
+// 漏登记的后果是判据静默失效，不是报错。
+var settleSQLFiles = []string{
+	"auto_route_settle_sql.go",
+	"auto_route_settle_worker.go",
+}
+
+// settleSQLLiteralText 汇总 settleSQLFiles 里所有字符串字面量的文本。
+func settleSQLLiteralText(t *testing.T) string {
+	t.Helper()
+	var b strings.Builder
+	for _, path := range settleSQLFiles {
+		for _, l := range sqlLiteralsOfSettleFile(t, path) {
+			b.WriteString(l)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// settleSQLSourceText 汇总 settleSQLFiles 的原始源码（给需要匹配 Go 标识符的判据用）。
+func settleSQLSourceText(t *testing.T) string {
+	t.Helper()
+	var b strings.Builder
+	for _, path := range settleSQLFiles {
+		b.WriteString(readFileForSettleGate(t, path))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// TestSettleSQLFilesStillCarrySQL 挡住上面说的「扫空文件」退化。
+//
+// 判据钉在**真的会出现在 SQL 里的形状**上（`LEFT JOIN ` 与 selection 表名），
+// 而不是「文件里有没有 SELECT」——后者对着一份只剩注释的文件也能通过。
+func TestSettleSQLFilesStillCarrySQL(t *testing.T) {
+	joined := strings.Join(sqlLiteralsOfSettleFile(t, "auto_route_settle_sql.go"), "\n")
+	if !strings.Contains(joined, "LEFT JOIN ") {
+		t.Fatalf("auto_route_settle_sql.go 的字面量里没有 LEFT JOIN —— SQL 搬走后又搬回来了？\n" +
+			"  settleSQLFiles 清单必须跟着实际位置更新，否则所有扫 SQL 的门都在对着\n" +
+			"  空文件断言，判据会静默失效（§9.44）。")
+	}
+	if !strings.Contains(joined, "auto_route_selections_hot") {
+		t.Errorf("auto_route_settle_sql.go 的 SQL 里没有 auto_route_selections_hot —— " +
+			"settleSQLFiles 的登记与实际内容不符")
+	}
+}
+
 func TestAutoRouteSettleWorkerDoesNotUseThe710View(t *testing.T) {
 	// 判据只跑在**字符串字面量**（即真正的 SQL）上，不跑整份源码。
 	// 第一版对整份源码跑 `(?i)JOIN\s+request_logs\s`，结果命中第 15 行**注释里的
 	// 散文** `//  3. Join request_logs for success / latency / cost.` —— 假阳性。
 	// 「把在场代码报成不在场」比没有门更坏：它训练读者忽略自己。
-	lits := sqlLiteralsOfSettleFile(t, "auto_route_settle_worker.go")
-	all := strings.ToLower(strings.Join(lits, "\n"))
+	all := strings.ToLower(settleSQLLiteralText(t))
 
 	if strings.Contains(all, "request_logs_with_current_month") {
 		t.Error("auto_route_settle_worker.go 的 SQL 里引用了 request_logs_with_current_month。\n" +
