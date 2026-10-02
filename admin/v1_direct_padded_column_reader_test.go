@@ -61,6 +61,10 @@ import (
 // 臂恒 NULL 的补位列」，而那句话在 §9.21 里**对 27 列是错的**（它们由 734 的
 // details 层供值，非空率 99.9996%）。把错误复述 39 遍，等于给错误结论盖了 39 个
 // 戳。共用一条之后，理由只有一份，改对一处就够。
+//
+// **本表当前为空（§9.42）**。最后一条（`cmd/compression-bench/main.go` 读 `id`）
+// 已改完：去掉对 id 的依赖，行身份改用 request_id。所以这条理由现在只作为
+// 「将来新增登记项时该写什么」的模板保留，**不是**任何一条现存登记的依据。
 const s4PaddedReaderWhy = `S4 退出工作项（§9.26 重分类后的**真补位**阻塞项）：绕过 canonical 视图直读 v1 宽族，且读到了 session 臂**恒为 NULL**的补位列。恒 NULL 集现网只有 6 列（db.RequestLogsViewPaddedSessionColumns()），本条命中的正是其中的 ` + "`" + `id` + "`" + ` —— 它**证明不可投影**（真库 1,515,984 组同 request_id 配对里 r.id = t.id 命中 0 次：v1 是请求行 id、session 侧是 turn id），所以只能改读法：去掉对 id 的依赖，或改用 request_id 回查。v1 退役前必须完成。`
 
 // v1DirectPaddedColumnReader 是登记表的条目：cols 是该读方今天读到的补位列集合。
@@ -69,9 +73,41 @@ type v1DirectPaddedColumnReader struct {
 	why  string
 }
 
-var v1DirectPaddedColumnReaders = map[string]v1DirectPaddedColumnReader{
-	// 唯一一条**经限定符归属判定后仍成立**的读方（§9.28.6）。
-	"cmd/compression-bench/main.go": {cols: []string{"id"}, why: s4PaddedReaderWhy},
+// v1DirectPaddedColumnReaders 现在是**空表**（§9.42，2026-10-02）。
+//
+// 「空」在这里是一个**被验证过的结论**，不是「没人看过」。三条支撑：
+//
+//  1. 历史轨迹 39 → 14 → **1** → 0。1 那一条（cmd/compression-bench 读 `id`）
+//     已改完并由 TestNoVPaddedColumnReaderRemains 把这个终态钉住。
+//  2. 口径钉在**生效投影**（withDetails=true 的 `NULL::` 形态）而不是 710 的 $proj$，
+//     权威源是 db.RequestLogsViewPaddedSessionColumns()（§9.29.1）。早先的
+//     「30 列」口径是钉在 710 上算出来的，本表曾据此报出 14 个假读方——
+//     门拿错误源与错误派生式互相校验，所以它一直绿着。
+//  3. 判定按**限定符归属**（列绑到哪张表），不按「这个词在字面量里出现过」
+//     （§9.29.4）。列名撞车会让登记表凭空膨胀。
+//
+// 为什么登记表要能是空的：本门的形状是「默认未登记 = 需要有人拍板」。
+// 若把已改完的读方留着，门会因「登记项失效」报红（这正是它 2026-10-02 的行为，
+// 是对的）；而若为了让它绿而把失效项改成豁免，表就退化成永不更新的占位。
+var v1DirectPaddedColumnReaders = map[string]v1DirectPaddedColumnReader{}
+
+// TestNoVPaddedColumnReaderRemains 把「读面已收口」这个终态钉成一道门。
+//
+// 为什么要单独一道：§9.32.3 记着，本项目里最贵的两个决定都是**不做**
+// （不补 `id` 投影、不补 `trace_events` 投影），而「不做」没有任何编译期或
+// 运行时信号——半年后有人「顺手把洞补齐」，两个洞同时打开且无人察觉。
+// 空表本身不会被任何人看见，只有「它必须保持空」这件事需要有人守。
+//
+// 断言的是**计数为零**而不是「某些具体文件不在表里」：本门要守的是
+// 「全仓没有任何读方直读 v1 且读到补位列」这个不变量。逐个点名文件会在有人
+// 新增第 2 个读方时给出误导性的通过。
+func TestNoVPaddedColumnReaderRemains(t *testing.T) {
+	if len(v1DirectPaddedColumnReaders) != 0 {
+		t.Errorf("v1DirectPaddedColumnReaders 有 %d 条登记，但 S4 读面判据第 2 条已收口（应为 0 条）。\n"+
+			"若确有新的真补位读方，那它说明 S4 读面**重新**被阻塞了，请先在审计文档里记一条再登记；\n"+
+			"若只是想让它变绿而登记一条已改完的读方，请删掉该条——本门的设计是「失效即报红」。",
+			len(v1DirectPaddedColumnReaders))
+	}
 }
 
 // v1DirectTables 是「绕过视图直读」判定里的 v1 宽族关系名。
