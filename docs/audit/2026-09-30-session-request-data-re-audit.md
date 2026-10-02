@@ -7676,3 +7676,101 @@ llm_gateway_auto_selections_dropped_total 0
 `a0da9066d` 改动（它新增了 `auto-route-settle-baseline_test.yml` 的 promtool
 6 场景），而我的合并尚未解封。此时再动同一批文件只会把冲突面扩大。
 ⇒ 记账为下一轮的**第一件事**，并在此处写明判据要求（见 handoff）。
+
+## §9.57 补上产出侧的洞：auto-route selection 写入量归零告警
+
+§9.56.4 记账的「下一轮第一件事」。本轮做完了。
+
+### §9.57.1 补的是一个**产出侧**的洞
+
+到 §9.56 为止，全部告警都建在**读侧**（结算、基线、漂移）。产出侧
+「selection 写入量归零」一直没有门——而 `llm_gateway_auto_selections_total`
+**有生产者、有值、零消费者**。这与 §9.37「没有告警读的指标是装饰」是
+**镜像形态**：不是指标没有用，是它在监控上根本不存在。
+
+`selection_metrics.go:14-16` 的注释写着 dropped 计数
+「**worth alerting on rather than merely graphing**」——**注释里声称的保护，
+如果没有门兑现它，那条注释就是装饰**。两个指标此前都无告警消费。
+
+### §9.57.2 ★核心：`or vector(0)` 不是可选的
+
+`llm_gateway_auto_selections_total` 是 **CounterVec**。Prometheus 约定下，
+带标签的 CounterVec 在**首次 `Inc()` 之前不导出任何时间序列**。
+
+于是最自然的写法会**静默失效**：
+
+```promql
+sum(increase(llm_gateway_auto_selections_total[2h])) == 0
+```
+
+永不产生 selection 时，左边求和得到的是**空向量**（不是 0）；空向量 `== 0`
+仍是空向量；空向量不满足任何 alert 的触发条件 ⇒ **告警永远不响**，
+而那恰恰是它唯一要抓的场景（§9.56 在 252 观测到的正是「一条序列都没有」）。
+
+⇒ 这条断言**没有靠注释声明，而是被 promtool 场景测试证明**：
+场景 A 在「真的没有该指标任何序列」的输入下要求这条规则**触发**。
+要在一个空向量上得到 1，表达式里必须存在把空转成 0 的项。
+
+### §9.57.3 场景测试抓出了规则本身的**两个真缺陷**（`check rules` 全都无感）
+
+1. **告警丢掉实例归属。** 表达式原为
+   `sum(...) or vector(0) == 0 and on() (up == 1)`。`and on()` 返回**左侧**的
+   标签集，而左侧无标签 ⇒ 告警不带 `instance`，多实例部署里无法定位是哪台网关。
+   `promtool check rules` **不报错**（语法完全合法）。
+2. **修完第 1 条后仍丢 `job`。** 改用 `sum by (instance)` + `0 * max by (instance)`
+   保住了 instance，却因为聚合维度里没有 `job` 而把它消掉。
+   最终形态是 `by (job, instance)` + `and on(job, instance)`。
+
+⇒ 只有场景测试的 `exp_labels` 比对能发现这类缺陷。这与 §9.44 那次
+「注释里承诺的原则而代码没兑现」是同一类：**语法合法 ≠ 语义正确**。
+
+### §9.57.4 我自己的 Go 门在**修复面前误报了两次**
+
+`TestAutoRouteSelectionNotProducedHandlesTheCounterVecTrap` 第一版断言
+`strings.Contains(expr, "or vector(0)")`。第二轮把表达式改成
+`or (0 * max by (job, instance) (up{...}))` 之后门红了——但那一项起的是
+**同一个作用**（无序列的实例得到 0），而且额外保住了标签。
+
+⇒ **门若钉死字面串，就会在一次修复面前误报。** 改成断言**机制**
+（正则匹配「把空变成 0 的那一项」与 `sum by (job, instance)`）。
+`up == 1` 那条同理：从字面串改成正则。
+
+**这与 §9.52 的「门被反转过一次」是同一个模式的反面**：那次是门在
+**缺陷被修好后**才红（正确），这次是门在**缺陷被修好后**仍然红（不正确）。
+区别在于判据锚的是**字面串**还是**机制**。
+
+### §9.57.5 交付物
+
+| 文件 | 内容 |
+|---|---|
+| `deploy/prometheus/rules/auto-route-selection-output.yml`（新） | 2 条告警 + `runbook` + 已知局限 |
+| `deploy/prometheus/rules/auto_route_selection_output_test.go`（新） | 3 道 Go 门 |
+| `deploy/prometheus/rule_tests/auto-route-selection-output_test.yml`（新） | 6 个 promtool 场景 |
+
+告警：
+- `AutoRouteSelectionsNotProduced`（warning, `for: 1h`）——2h 零增量且实例在线。
+  描述里要求值班的人**先分清两种含义**（该部署本就不用 auto 路由 vs 真断流）。
+- `AutoRouteSelectionsDropped`（warning, `for: 5m`）——30m 内 dropped 有增长。
+  队列满**不打日志**，只能由它发现。
+
+### §9.57.6 已知局限（如实登记，且有门守着「必须写下来」）
+
+1. **本告警假设该部署在用 auto-route。** 完全不用 `model="auto"` 的部署会
+   **永久**报红。仓库里没有「本部署是否启用 auto 路由」的配置位可依赖 ⇒
+   用 warning + `for: 1h`，并在描述第一条就要求排除这个假阳性。
+   要彻底消除需要新增部署级开关，**本轮不做**。
+2. **252 上没有 Prometheus**（§9.56 实测：无 prometheus/grafana 容器）
+   ⇒ 这组告警在 252 **不会生效**，适用环境是有 TSDB 的部署（154 / 本地）。
+
+### §9.57.7 变异验证
+
+| 变异 | 结果 |
+|---|---|
+| P1 删掉「空转 0」那一项 | 红（场景 A）——**这句注释因此被证明** |
+| P2 去掉进程存活守卫 | 红（场景 E） |
+| P3 聚合维度退回 `by (instance)` | 红（标签比对）——第二轮修的缺陷 |
+| N1 删掉「空转 0」那一项 | 红（Go 门） |
+| N2 删掉进程存活守卫 | 红（Go 门） |
+| N3 删掉「已知局限」段 | 红（Go 门） |
+
+`promtool check rules` SUCCESS；`promtool test rules` 6 场景 SUCCESS。

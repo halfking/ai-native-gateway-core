@@ -3306,3 +3306,68 @@ cohort 谓词 = `request_logs.is_auto_request IS TRUE` + `SQLExcludeSyntheticAct
 > ③ 需要拍板的三项仍未变：§9.44 cohort（**注意：§9.54/§9.55 已表明 (a)/(b) 都不是
 >    杠杆，真正的前置是「cohort 总体 ≠ 被结算总体」**）、§9.49.8 是否扩档、
 >    §9.48 `silently_frozen` 21 条口径。
+
+## 第三十九轮（§9.57）：补上 auto-route **产出侧**的洞
+
+### 做了什么
+
+`llm_gateway_auto_selections_total` 此前**有生产者、有值、零消费者**——
+到 §9.56 为止所有告警都建在**读侧**。本轮补两条产出侧告警 + 3 道 Go 门 +
+6 个 promtool 场景。`selection_metrics.go` 注释里那句
+「dropped worth alerting on rather than merely graphing」此前**没有门兑现**。
+
+### ★核心：CounterVec 陷阱
+
+带标签的 CounterVec 在**首次 `Inc()` 之前不导出任何序列** ⇒
+`sum(increase(...)) == 0` 在「从未产出」时得到**空向量**，`empty == 0` 仍是
+空向量 ⇒ **告警永远不响**，而那正是它唯一要抓的场景。
+
+**这条断言不是靠注释声明的，是被 promtool 场景 A 证明的**：在真的没有该指标
+任何序列的输入下要求规则触发；要得到 1，表达式里必须有「把空转成 0」的那一项。
+
+### ★场景测试抓出规则本身的两个真缺陷（`check rules` 全无感）
+
+1. `and on()` 返回**左侧**标签集，左侧无标签 ⇒ 告警**丢 instance 归属**。
+2. 修成 `by (instance)` 后**仍丢 job** ⇒ 最终是 `by (job, instance)` +
+   `and on(job, instance)`。
+
+### ★我自己的 Go 门在修复面前误报了两次
+
+第一版门用 `Contains(expr, "or vector(0)")`。第二轮把表达式改成
+`or (0 * max by (job, instance) (up))`（**同一个作用**，还多保住了标签）后门红了。
+
+⇒ **门若钉死字面串，就会在一次修复面前误报。** 改成断言**机制**（正则）。
+
+**与 §9.52「门被反转」是同一模式的反面**：那次门在缺陷修好后红（**正确**），
+这次门在缺陷修好后仍红（**不正确**）。区别在于判据锚的是**字面串**还是**机制**。
+
+### 已知局限（已写进 yml，且有门守着「必须写下来」）
+
+1. 假设该部署在用 auto-route；完全不用 auto 路由的部署会**永久**报红。
+2. **252 上没有 Prometheus ⇒ 这组告警在 252 不生效**（适用 154 / 本地）。
+
+### 验证
+
+```
+promtool check rules  → SUCCESS: 2 rules found
+promtool test rules   → SUCCESS（6 场景）
+go test ./deploy/prometheus/rules/ -count=1 → ok
+变异 P1/P2/P3（promtool）+ N1/N2/N3（Go 门）全红，全部还原
+```
+
+### 下一轮提示词
+
+> ⚠️ **仍未推送**：本节 + §9.57 三个新文件，以及 §9.54/55/56 已上远端但
+> 本地 main 仍留着三个等价提交（见第三十八轮记录）。合并时需人工裁决，
+> **不要用 rebase**。
+>
+> ① §9.57 已补上 auto-route 产出侧的洞。**剩下的真实问题不是告警，是
+>    auto-route 为什么从 2026-09-15 起不产出 selection**（§9.56）——
+>    证据（覆盖 09-08/09-09 的日志 / Prometheus 历史序列）本轮不具备，
+>    **拿到之前不要写归因**。
+> ② 需要拍板的三项仍未变：§9.49.8 `silently_degraded_content` 是否扩档、
+>    §9.48 `silently_frozen` 21 条口径、以及 cohort 总体修正方案
+>    （(i) 从 `auto_route_selections` 历史导出 / (ii) `origin_stage='business'`
+>    取代手工 actor 名单（**会改线上奖励数值**）/ (iii) 两者都做）。
+> ③ §9.57.6 的两个局限里，「本部署是否启用 auto 路由」缺少配置位，
+>    导致不用 auto 路由的部署会永久报红。若要消除需新增部署级开关。
