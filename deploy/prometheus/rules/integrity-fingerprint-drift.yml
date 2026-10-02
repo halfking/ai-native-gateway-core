@@ -8,16 +8,21 @@
 # # 为什么这组告警不是「常规巡检」
 #
 # IntegrityFingerprintDrift 是**安全相关检测器**（凭据/模型指纹漂移）。它每轮先问
-# 一个一次性探针「当前半窗口有没有带 system_fingerprint 的流量」，而那个探针读的是
-# **v1**（`system_fingerprint IS NOT NULL` 打在 request_logs_hot / request_logs 上）。
+# 一个一次性探针「当前半窗口有没有带 system_fingerprint 的流量」，而该列的唯一来源
+# 是上游的 `X-System-Fingerprint` 响应头。**上游不发 ⇒ 探针恒空 ⇒
+# `fingerprintScanDecision` 返回 `fingerprintScanSkip` ⇒ 每轮在第一行 return。**
 #
-# S4 停写之后：v1 不再产生新行 ⇒ 探针恒空 ⇒ `fingerprintScanDecision` 返回
-# `fingerprintScanSkip` ⇒ **每轮在第一行 return，全量扫描不再执行**。
+# 实测（本地库，2026-10-02，审计 §9.51）：v1 全表 2,164,650 行、会话族全表
+# 1,683,739 行、integrity 事件 JSONB 7,081 条，`system_fingerprint` **非空均为 0**。
+# ⇒ **停写之前探针就已经是空的**；这个检测器自 2026-09-25（D11 短路上线）起
+# 一直关着，与 S4 无关。
 #
-# 更糟的是第二条腿也在同一个开关下：`inProcSeen` 逃生口的唯一写入方
-# `markSystemFingerprintObserved()` 只在 `persistSystemFingerprint()` 内调用，
+# S4 停写的影响是**前瞻性**的：短路的第二条腿（`inProcSeen` 的进程内 arm）的唯一
+# 写入方 `markSystemFingerprintObserved()` 只在 `persistSystemFingerprint()` 内调用，
 # 而后者位于 `insertRequestLog` / `updateRequestLog` 的 `if logsWrite` 块内
-# （client.go:1816 / :2468）⇒ 停写后它一次都不执行。**停写 + 重启 = 永久关闭。**
+# （client.go:1816 / :2468）⇒ 停写后它一次都不执行。
+# ⇒ **即便上游将来开始发指纹，停写 + 重启之后检测器也永远不会恢复。**
+# 这才是本组告警要守的东西。
 #
 # 这与「某个读点变空」是不同性质的事：不是显示层少了一块，是**检测器自己关掉了**。
 # 而在此之前完全不可见——`skippedTicks` 全仓只有 `Add(1)`、没有任何地方读它，
@@ -51,38 +56,66 @@ groups:
             默认扫描间隔是 1 小时（`LLM_GATEWAY_INTEGRITY_FP_DRIFT_INTERVAL`），
             所以 2 小时 + 10 分钟的持续窗口意味着它**确定**没在扫。
 
-            **最可能的原因就是 S4 停写**：扫描前的一次性存在性探针读 v1
-            （`system_fingerprint IS NOT NULL`），停写后 v1 不再产生新行 ⇒ 探针恒空
-            ⇒ `fingerprintScanDecision` 走 `fingerprintScanSkip` ⇒ 每轮直接 return。
-            审计 §9.50 记录了这个形态：**检测器不是坏了，是自己判定「没流量可扫」，
-            而那个判定所依据的表正在被退役。**
+            **当前的实际原因：上游从不返回 `X-System-Fingerprint`，不是 S4 停写。**
+            扫描前的一次性存在性探针问的是「最近半窗口有没有带
+            `system_fingerprint` 的流量」，而这一列的唯一来源是上游的
+            `X-System-Fingerprint` 响应头（`executor_chat.go:1926` /
+            `handler.go:6730`）。上游不发 ⇒ 探针恒空 ⇒
+            `fingerprintScanDecision` 走 `fingerprintScanSkip` ⇒ 每轮直接 return。
 
-            **逃生口也是关着的**（不要指望它自愈）。`fingerprintScanDecision`
-            还有一条 `inProcSeen` 分支：进程内遥测观测到带指纹的请求就会重新 arm 全量扫描。
-            但那条链的唯一写入方 `markSystemFingerprintObserved()` 只在
+            审计 §9.51 在真库实测（本地，2026-10-02）：
+
+            | 面 | 行数 | `system_fingerprint` 非空 |
+            |---|---|---|
+            | `request_logs`（v1 全表） | 2,164,650 | **0** |
+            | `session_turns`（会话族全表） | 1,683,739 | **0** |
+            | `model_integrity_events.context` JSONB | 7,081（2026-09-05 起） | **0** |
+
+            JSONB 那一行是独立证据：它不走专用列、同样直取那个响应头。
+            ⇒ **停写之前探针就已经是空的**。这个检测器自 2026-09-25（D11 短路
+            上线）起就一直关着，与 S4 无关。
+
+            **S4 停写的影响是前瞻性的，而且比看上去更糟**。短路有两条腿：
+            腿 1 是上面那个探针（今天已经断了）；腿 2 是 `inProcSeen` 的
+            进程内 arm —— **逃生口也是关着的**，不要指望它自愈。
+            它的唯一写入方 `markSystemFingerprintObserved()` 只在
             `persistSystemFingerprint()` 内被调用，而后者**被同一个
             `storage.request_logs_write_enabled` 门控住**（`insertRequestLog` /
             `updateRequestLog` 的 `if logsWrite` 块内，client.go:1816 / :2468）。
             停写之后它一次都不会执行 ⇒ `SystemFingerprintObservedSince()` 永远返回
-            `(0, false)` ⇒ `inProcSeen` 恒 false。
+            `(0, false)`。
 
-            ⇒ **两条腿断在同一个开关上**：探针读 v1 恒空（`probeEmpty`），
-            进程内 arm 也恒不触发。停写 + **任意一次重启**之后，检测器**永久关闭**，
-            没有任何其他信号。（不停写时它是健壮的：只对本实例没见过的流量才跳。）
+            ⇒ 即便上游将来开始发指纹，**停写 + 任意一次重启之后检测器也永远不会
+            恢复**。这才是这条告警要守的东西：不是「现在扫不到」，而是
+            **「将来有了数据也扫不到」**。（不停写时它是健壮的：只对本实例没见过、
+            且一次性探针也没见过的流量才跳。）
 
-            ⚠ 本条曾经被写错成「逃生口不读 v1，所以能自愈」，并按那条错误前提发了
-            规则。审计 §9.50.4 已订正：`client.go` 的两个调用点都在 `if logsWrite`
-            块内，停写即失效。
+            ⚠ 本条经过两次订正，都记在审计里：
+            §9.50.4 撤回了「逃生口那条链与宽表无关、会自行恢复」的说法——
+            真代码里它被同一个停写键挡住了；
+            §9.51 撤回了「停写是当前不扫描的主因」的说法——真库实测显示上游
+            从不返回该响应头，这一条与停写无关。
 
             **排查步骤**：
             1. 看 `llm_gateway_bg_fingerprint_drift_skipped_total` 是否在涨
                （涨 = 被短路；不涨 = worker 本身没在跑，是另一个问题）
-            2. 确认 `storage.request_logs_write_enabled` 的当前值与切换时刻
-            3. 若确为停写导致：**这是探针的数据源退役，不是漂移本身消失**，
-               且**不要等它自愈**（逃生口在同一个门里）。
-               正确修法是让探针改读会话族（`session_turns` 的 system_fingerprint
-               覆盖需要先实测），并把 `inProcSeen` 的 arm 移到门控之外，
-               而不是调大间隔或关掉告警
+            2. 查上游是否开始返回 `X-System-Fingerprint`（这才是主因）：
+
+                   SELECT count(*), count(system_fingerprint) FROM request_logs_hot
+                    WHERE ts > NOW() - INTERVAL '1 hour';
+
+               `0 / N` ⇒ 与停写无关，就是没有指纹流量（**当前的常态**）。
+            3. 确认 `storage.request_logs_write_enabled` 的当前值与切换时刻。
+               停写**不是**当前不扫的原因，但它决定了**将来**能不能恢复。
+            4. 修法（按这个顺序，不要做第 2 件事）：
+               a. 把 `inProcSeen` 的 arm 移出 `if logsWrite` —— 这是唯一的代码
+                  修复，且**不依赖上游**；
+               b. **不要**为了让探针「有数据」而去改读会话族：实测会话族的
+                  `system_fingerprint` 同样是全空（同一上游原因，168 万行 0 非空），
+                  改过去只是把「因为缺数据而空」伪装成「已修好」；
+               c. 真正的长期问题需要产品决策：这个检测器在没有任何指纹数据时
+                  本来就无对象可检。要么让上游发指纹，要么承认这项检测能力当前
+                  是空的并如实记录 —— 而不是靠调大间隔把告警压下去。
 
       - alert: BgFingerprintDriftSkippedNoScan
         expr: |

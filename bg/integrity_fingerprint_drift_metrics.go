@@ -20,10 +20,28 @@ import (
 //	case fingerprintScanProbe: … w.probeEmpty = err == nil && !hasFP
 //	}
 //
-// 而那个探针（`probeFingerprintTraffic`）读的是 **v1**（`system_fingerprint IS NOT
-// NULL` 打在 request_logs_hot / request_logs 上）。S4 停写之后 v1 不再产生新行 ⇒
-// 探针恒空 ⇒ `probeDone && probeEmpty` ⇒ **每一轮都在第一行 return，全量扫描
-// 从此不执行**。
+// 而那个探针（`probeFingerprintTraffic`）读的是 v1 的 `system_fingerprint`。
+//
+// # ★实测订正（审计 §9.51，2026-10-02，本地真库）
+//
+// 这个文件的第一版把原因写成「S4 停写之后 v1 不再产生新行 ⇒ 探针恒空」。
+// **真库实测否定了它**：
+//
+//	面                                    行数      system_fingerprint 非空
+//	request_logs（v1 全表）             2,164,650   0
+//	session_turns（会话族全表）         1,683,739   0
+//	model_integrity_events.context JSONB  7,081      0   （2026-09-05 起）
+//
+// JSONB 那一路是独立证据：它不走专用列，同样直取上游的
+// `X-System-Fingerprint` 响应头（`executor_chat.go:1926` / `handler.go:6730`）。
+// ⇒ **上游从不发这个头**，探针在停写**之前**就已经是空的。检测器自 2026-09-25
+// （D11 短路上线）起一直关着，与 S4 无关。
+//
+// S4 停写的真实影响是**前瞻性**的：腿 2（`inProcSeen` 的进程内 arm）的唯一写入方
+// `markSystemFingerprintObserved()` 在 `persistSystemFingerprint()` 内调用，而后者
+// 位于 `if logsWrite {}` 块内（client.go:1816 / :2468）⇒ 停写后它一次都不执行。
+// ⇒ **即便上游将来开始发指纹，停写 + 重启后检测器也永远不会恢复。**
+// 门见 domains/hooks/observability/telemetry/fingerprint_escape_hatch_gate_test.go。
 //
 // 这不是「读点变空」那种显示层降级，而是**一个安全检测器自己把自己关掉了**。
 // 而在此之前它**完全不可见**：

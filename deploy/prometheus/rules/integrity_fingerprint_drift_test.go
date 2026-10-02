@@ -142,3 +142,36 @@ func TestIntegrityFingerprintDriftAlertDoesNotPromiseSelfHealing(t *testing.T) {
 				"storage.request_logs_write_enabled exactly like the write it depends on", banned)
 	}
 }
+
+// TestIntegrityFingerprintDriftAlertNamesTheRealCause 钉住 §9.51 的实测订正。
+//
+// §9.50 的第二版文案把「最可能的原因」写成 S4 停写。真库实测否定了它：
+// v1 全表 216 万行、会话族 168 万行、integrity 事件 JSONB 7081 条，
+// `system_fingerprint` **非空均为 0** ⇒ 上游从不发 `X-System-Fingerprint`
+// ⇒ 探针在停写**之前**就已经是空的。告警若继续把停写说成主因，运维会去查
+// 切换时刻与 S4 读写门，而那正是本条排除掉的假设。
+//
+// 判据同时要求文案带上**可复现的实测查询**：一个只给结论不给量具的诊断，
+// 下一个读它的人仍然只能猜。
+func TestIntegrityFingerprintDriftAlertNamesTheRealCause(t *testing.T) {
+	data, err := os.ReadFile("integrity-fingerprint-drift.yml")
+	require.NoError(t, err)
+	text := string(data)
+
+	require.True(t, strings.Contains(text, "X-System-Fingerprint"),
+		"the alert must name where the column actually comes from — the upstream response header — "+
+			"otherwise the reader is left with \"the probe reads v1\" and no way to tell "+
+			"\"v1 is retired\" from \"upstream never sends it\"")
+	require.True(t, strings.Contains(text, "停写之前探针就已经是空的"),
+		"the alert must state the measured fact that the probe was ALREADY empty before stop-write; "+
+			"§9.51 retracted the \"stop-write is the likely cause\" version")
+	require.True(t, strings.Contains(text, "FROM request_logs_hot"),
+		"the alert must ship the query that reproduces the diagnosis — a conclusion with no "+
+			"measuring stick leaves the next reader guessing")
+
+	for _, banned := range []string{"最可能的原因就是 S4 停写", "若确为停写导致"} {
+		require.True(t, !strings.Contains(text, banned),
+			"%q is the §9.51 retracted claim: the real cause is that upstream never returns the "+
+				"header, which is independent of stop-write", banned)
+	}
+}
