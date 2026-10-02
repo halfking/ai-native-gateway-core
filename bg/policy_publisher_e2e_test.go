@@ -26,10 +26,13 @@ CREATE TABLE credentials (
 	max_queue_depth INT NOT NULL DEFAULT 0,
 	max_queue_wait_ms INT NOT NULL DEFAULT 0,
 	status TEXT NOT NULL DEFAULT 'active',
-	availability_state TEXT NOT NULL DEFAULT 'available',
+	-- 枚举值/默认值对齐生产（sql/schema/01-schema.sql credentials_*_check）：
+	-- 'available'/'live' 是按产品语义反推的幻影值，回放到生产形态 schema
+	-- 会被 CHECK 直接拒绝（第三十轮夹具漂移收口）。
+	availability_state TEXT NOT NULL DEFAULT 'ready',
 	quota_state TEXT NOT NULL DEFAULT 'ok',
 	circuit_state TEXT NOT NULL DEFAULT 'closed',
-	lifecycle_status TEXT NOT NULL DEFAULT 'live',
+	lifecycle_status TEXT NOT NULL DEFAULT 'active',
 	manual_disabled BOOLEAN NOT NULL DEFAULT false
 );
 

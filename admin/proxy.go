@@ -916,11 +916,20 @@ func (h *Handler) handleProxyGetPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"policy":     mgr.GetSelectionPolicy(),
-		"swap_state": mgr.CurrentSelection(),
+		"ok":                 true,
+		"policy":             mgr.GetSelectionPolicy(),
+		"swap_state":         mgr.CurrentSelection(),
+		"selection_advisory": proxySelectionAdvisory,
 	})
 }
+
+// proxySelectionAdvisory（R30 域A P1-①，round 31 落地为产品裁决的「标注」
+// 选项）：load_balance_strategy / location_affinity 当前仅持久化与展示，
+// 出站数据面恒走 SelectBestNode（proxy/manager.go SelectBestNode 的
+// bestOnly 恒为 true，SelectNodeWithStrategy 全仓零生产调用方）。策略
+// 真正生效需要把出站选择切换到 SelectNodeWithStrategy（未排期）。生效前
+// GET/PUT 都必须回带本字段，防止「配置了即生效」的误读。
+const proxySelectionAdvisory = "load_balance_strategy/location_affinity 目前仅持久化，出站路径恒按 best-only 选节点；策略生效尚未接线"
 
 // handleProxySetPolicy PUT /api/proxy/policy  更新策略并持久化到 DB。
 func (h *Handler) handleProxySetPolicy(w http.ResponseWriter, r *http.Request) {
@@ -990,7 +999,11 @@ func (h *Handler) handleProxySetPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mgr.SetSelectionPolicy(policy)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                 true,
+		"policy":             policy,
+		"selection_advisory": proxySelectionAdvisory,
+	})
 }
 
 // handleProxyRegions GET /api/proxy/regions  返回按地区聚合的统计。

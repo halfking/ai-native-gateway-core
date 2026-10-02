@@ -362,6 +362,22 @@ func (cf *credForwarder) acquireGiveUp(qr *QueuedRequest, gov Governor) time.Tim
 	return time.Now()
 }
 
+// acquireMetricResult maps an Acquire outcome onto the closed-enum result
+// labels of dispatch_governor_acquire_total (governor_metrics.go): success
+// → ready, pacing timeout → saturated, everything else (governor
+// unavailable, ctx canceled) → unknown. The mapping only feeds metrics;
+// control flow uses the sentinel checks inline.
+func acquireMetricResult(err error) string {
+	switch {
+	case err == nil:
+		return "ready"
+	case IsPaceTimeout(err):
+		return "saturated"
+	default:
+		return "unknown"
+	}
+}
+
 func (cf *credForwarder) acquire(qr *QueuedRequest) (Governor, bool) {
 	// Keep this Governor for the entire admission/attempt lifetime. ApplyPolicy
 	// may swap cf.gov after admission, but only this instance owns the acquired
@@ -379,7 +395,10 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) (Governor, bool) {
 		}
 	}()
 
+	acquireStart := time.Now()
 	if err := gov.Acquire(ctx, qr, giveUp); err != nil {
+		RecordAcquisitionResult(cf.pipe.governorBackendKind(), gov.Mode(),
+			acquireMetricResult(err), time.Since(acquireStart).Seconds())
 		qr.abandonReservedAttempt(attempt.AttemptID)
 		depth := cf.depth.Add(-1)
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
@@ -404,6 +423,8 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) (Governor, bool) {
 	}
 
 	// V3.1: Record T6 timestamp (credential queue dequeue, governor acquired)
+	RecordAcquisitionResult(cf.pipe.governorBackendKind(), gov.Mode(),
+		acquireMetricResult(nil), time.Since(acquireStart).Seconds())
 	qr.SetT6_CredDequeued()
 	attempt, committed := qr.commitReservedAttempt(attempt.AttemptID)
 	if !committed {
@@ -493,9 +514,27 @@ func (cf *credForwarder) attempt(qr *QueuedRequest, gov Governor) {
 	inFlight := cf.pipe.inFlight.Add(1)
 	metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
 	cf.pipe.observeQueue(QueueObservation{Kind: QueueInFlight, InFlight: inFlight, Delta: 1})
+	// R73 §3 #6 (round 31): derive a per-attempt context so the lease
+	// renewer can fail closed — on definitive lease loss the stream is
+	// aborted instead of running on a slot the cluster no longer accounts
+	// for. The derived context keeps the parent's client-disconnect
+	// semantics; only the renewer's abort cancels it early.
+	fwdCtx, cancelFwd := context.WithCancel(ctxOf(qr))
+	defer cancelFwd()
+	var stopLeaseRenewer func()
+	if _, isRenewer := gov.(LeaseRenewer); isRenewer {
+		stopLeaseRenewer = cf.startLeaseRenewer(fwdCtx, cancelFwd, gov, qr)
+	}
 	var releaseOnce sync.Once
 	releaseResources := func() {
 		releaseOnce.Do(func() {
+			// Stop renewing BEFORE freeing the slot: a renewal racing the
+			// release could read a just-removed token and report a
+			// spurious lease loss.
+			if stopLeaseRenewer != nil {
+				stopLeaseRenewer()
+			}
+			RecordRelease(cf.pipe.governorBackendKind(), gov.Mode(), "ready")
 			gov.Release(qr)
 			inFlight := cf.pipe.inFlight.Add(-1)
 			metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Dec()
@@ -504,7 +543,7 @@ func (cf *credForwarder) attempt(qr *QueuedRequest, gov Governor) {
 	}
 	defer releaseResources()
 
-	out := cf.pipe.forwardFunc(ctxOf(qr), qr, cf.cred)
+	out := cf.pipe.forwardFunc(fwdCtx, qr, cf.cred)
 
 	// P1 fix: Release capacity based on first-byte boundary
 	// - Pre-first-byte failure → release immediately (allow fast retry)

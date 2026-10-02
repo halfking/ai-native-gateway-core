@@ -130,6 +130,6 @@ onMounted(() => void loadSeries(false))
 }
 .trend-sec__err {
   font-size: 11px;
-  color: var(--danger, #f56c6c);
+  color: var(--danger);
 }
 </style>

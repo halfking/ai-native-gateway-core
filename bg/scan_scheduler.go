@@ -455,6 +455,12 @@ func (s *ScanScheduler) recordScanSuccess(ctx context.Context, tenantID string, 
 
 // recordScanFailure increments the consecutive failure counter and disables a
 // template at the threshold. The WHERE clause keeps tenant ownership explicit.
+//
+// R30 域A P1-②（round 31 产品裁决「标注」落地）：这是单向门——3 连败自动置
+// enabled=FALSE 后全仓没有任何自动复活路径（调度只取 enabled=TRUE，Run
+// pre-flight 也拒绝 disabled 模板），扫描池只缩不涨；聚合三实现同样零生产
+// 调用方。免费 token 池整体处于「暂不投入」停驻态（接入凭据体系 vs 彻底
+// 下线的裁决未拍板）。手工复活 = admin 侧手动置回 enabled。
 func (s *ScanScheduler) recordScanFailure(ctx context.Context, tenantID string, templateID int64) {
 	if s == nil || s.db == nil {
 		return

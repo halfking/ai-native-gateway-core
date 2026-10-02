@@ -235,6 +235,19 @@ var (
 		Name: "dispatch_governor_unknown_label_drops_total",
 		Help: "Emit attempts dropped because a label value was outside the closed-enum allowlist.",
 	})
+
+	// metricGovernorLeaseLost counts admission leases lost while a stream
+	// was in flight (R73 §3 #6 renewal wiring, round 31): either the
+	// renewal returned definitive loss (expired/evicted on the Redis
+	// side) or a full lease TTL elapsed without a successful renewal.
+	// Every increment corresponds to a stream aborted fail-closed to
+	// restore the cluster-wide limit invariant. Sustained non-zero rates
+	// mean Redis availability problems or TTLs set below realistic
+	// stream durations.
+	metricGovernorLeaseLost = promautoMustNewCounter(prometheus.CounterOpts{
+		Name: "dispatch_governor_lease_lost_total",
+		Help: "Admission leases lost while a stream was in flight; the stream was aborted fail-closed (R73 §3 #6).",
+	})
 )
 
 // RecordAcquisitionResult emits a governor acquisition outcome. backend

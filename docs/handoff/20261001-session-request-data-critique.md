@@ -384,3 +384,28 @@ git fetch origin && git log --oneline HEAD..origin/main
   **判据**：`git status --porcelain` 里出现你**没打算改**的文件，就是批量命令
   的范围写宽了——这与「批量还原事故」同源，一个方向误伤源文件，一个方向误伤格式。
 ```
+- **门控只覆盖系统的一部分时，去找跨越边界的交互**（§9.9）。S4 的门在**写侧**，
+  于是「读 v1 去决定写什么」的读点天然在门外——读端五档（200/500、空不空、
+  冻不冻）**全绿也不代表停写安全**。`bg/credential_recovery.go` 填成
+  `silently_empty` 甚至不算错，但它丢掉的是凭据恢复写入的授权来源。
+  推论：**新增一道门时先问它守的是哪个坐标系，以及门外还有什么坐标系。**
+  只补条目不补坐标，缺口会在下一轮换个名字重新出现。
+- **判「活的控制面依赖」之前，必须先查消费方是否真的被调用**（§9.9.3 自我更正）。
+  `credentialstate/popularity_tracker.go` 结构上完全符合 live（停写后每个 tick
+  把 `popularModels` 抹成空 map，探针间隔从 10s 退到 5min = 30 倍衰减），
+  核实后是 **dormant**：`LLM_GATEWAY_ENABLE_POPULARITY_TRACKING` 默认 false，
+  且唯一输出 `GetRecommendedProbeInterval` 全仓无生产调用方。
+  **假的风险会稀释真的风险**——而 `credential_recovery` 就是真的那条。
+  反向同样成立：`consumer` 存在不等于它在门内，`ursmRecoverSink` 存在且活着，
+  也正因为如此才危险。
+- **子代理的判定要复核，但复核的产物是「更窄的真结论」，不是「接受/否定」**。
+  batch4 报「每个请求静默新开 gw_session_id」——方向对、量级错：DB finder 是
+  兜底不是主路径（Redis `LastSystemSessionIndex` TTL 5min 才是主路径且不受门控），
+  准确的失效条件只有两条（无 Redis 部署 / Redis 索引 miss）。
+  直接接受会造出一个不存在的风险，直接否定会丢掉一个真的洞。
+- **推 `main` 时不要 rebase 主工作区**。并行检出下主工作区可能有别的会话正在
+  写的脏文件，rebase 会拒绝或覆盖它的编辑。安全做法：
+  `git worktree add -b <tmp> /tmp/<dir> main` → 在临时 worktree 里 rebase →
+  `git push origin HEAD:main` → `git update-ref refs/heads/main <new> <old>` →
+  `git reset -q`（**mixed reset 不写工作区**，只同步 index）。
+  逐文件核对 blob（`git rev-parse <sha>:<file>`）确认 rebase 没改变你的内容。

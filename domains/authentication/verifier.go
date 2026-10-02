@@ -20,6 +20,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // usageLedgerViewRe extracts the relation name from a 42P01 error when
@@ -758,9 +760,21 @@ func (kv *KeyVerifier) CheckBudget(ctx context.Context, keyID int) error {
 		// A snapshot-only verifier has no spend ledger to consult. Keep the
 		// availability path alive; callers already treat budget errors as
 		// best-effort and the key itself was validated by the snapshot.
+		metrics.BudgetChecksTotal.WithLabelValues(metrics.BudgetOutcomeSkippedSnapshot).Inc()
 		return nil
 	}
-	return kv.checkBudgetDB(ctx, keyID)
+	err := kv.checkBudgetDB(ctx, keyID)
+	switch {
+	case err == nil:
+		metrics.BudgetChecksTotal.WithLabelValues(metrics.BudgetOutcomeOK).Inc()
+	case isBudgetExceeded(err):
+		metrics.BudgetChecksTotal.WithLabelValues(metrics.BudgetOutcomeExceeded).Inc()
+	default:
+		// DB 故障放行（fail-open 既有语义）——执行面此前零观测信号，
+		// 本计数是该面唯一的可见痕迹（第三十轮）。
+		metrics.BudgetChecksTotal.WithLabelValues(metrics.BudgetOutcomeError).Inc()
+	}
+	return err
 }
 
 func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
@@ -791,6 +805,7 @@ func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
 	if viewErr != nil {
 		if isMissingUsageLedgerView(viewErr) {
 			spent = 0
+			metrics.BudgetChecksTotal.WithLabelValues(metrics.BudgetOutcomeDegradedNoLedger).Inc()
 			slog.Warn("key verifier: usage_ledger_with_current_month view missing; budget enforcement disabled until migration is applied",
 				"key_id", keyID,
 				"hint", "apply migration 344 (sql/migrations/startup/344_usage_ledger_hot_independence.sql)",

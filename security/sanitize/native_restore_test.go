@@ -206,3 +206,62 @@ func TestNativeNonStreamRestoreBlocksWhenMappingUnavailable(t *testing.T) {
 	require.True(t, result.ShouldBlock)
 	require.Empty(t, result.ModifiedBody)
 }
+
+// 第三十轮钉测（D14-F5 承债）：第二十九轮六载体 + 第三十轮 call 侧三族的
+// restore 镜像此前零测试承重——摘掉任一 restore case 只会表现为线上整响应
+// block（占位符残留命中输出守卫），测试全绿。本测试逐载体唯一敏感值 +
+// 逐值 Equal，任一 case 退回"不认识该 item"即红。
+func TestNativeResponsesRestoresCodexToolFamily(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	const tenant, session = "tenant-responses-30", "responses-session-30"
+	require.NoError(t, rdb.HSet(context.Background(), sanitizeMapKey(tenant, session), map[string]any{
+		"{SENSITIVE:phone:1}": "13800138031",
+		"{SENSITIVE:phone:2}": "13800138032",
+		"{SENSITIVE:phone:3}": "13800138033",
+		"{SENSITIVE:phone:4}": "13800138034",
+		"{SENSITIVE:phone:5}": "13800138035",
+		"{SENSITIVE:phone:6}": "13800138036",
+		"{SENSITIVE:phone:7}": "13800138037",
+		"{SENSITIVE:phone:8}": "13800138038",
+		"{SENSITIVE:phone:9}": "13800138039",
+	}).Err())
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, time.Minute)
+	require.NoError(t, err)
+	body := []byte(`{"object":"response","id":"resp_30","output":[` +
+		`{"type":"local_shell_call_output","call_id":"c1","output":"stdout phone {SENSITIVE:phone:1}"},` +
+		`{"type":"apply_patch_call_output","call_id":"c2","output":"patched ok call {SENSITIVE:phone:2}"},` +
+		`{"type":"shell_call_output","call_id":"c3","outputs":[{"text":"call {SENSITIVE:phone:3}"}]},` +
+		`{"type":"code_interpreter_call","call_id":"c4","code":"print(\"call {SENSITIVE:phone:4}\")","outputs":[{"type":"logs","logs":"phone {SENSITIVE:phone:5}"},{"type":"image","image_url":"data:image/png;base64,opaque"}]},` +
+		`{"type":"apply_patch_call","call_id":"c5","action":{"type":"create","path":"a.txt","content":"call {SENSITIVE:phone:6}"}},` +
+		`{"type":"shell_call","call_id":"c6","status":"completed","action":{"type":"exec","command":["echo {SENSITIVE:phone:7}"]}},` +
+		`{"type":"local_shell_call","call_id":"c7","status":"completed","action":{"type":"exec","command":["cat {SENSITIVE:phone:8}"],"env":{"TOKEN":"phone {SENSITIVE:phone:9}"}}},` +
+		`{"type":"computer_call","call_id":"c8","status":"completed","action":{"type":"type","text":"call {SENSITIVE:phone:1}"}}]}`)
+	result, err := it.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		TenantID: tenant, SessionID: session, ClientProtocol: "openai-responses", ResponseBody: body,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.ShouldBlock)
+	var got struct {
+		Output []map[string]any `json:"output"`
+	}
+	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
+	require.Len(t, got.Output, 8)
+	require.Equal(t, "stdout phone 13800138031", got.Output[0]["output"])
+	require.Equal(t, "patched ok call 13800138032", got.Output[1]["output"])
+	require.Equal(t, "call 13800138033", got.Output[2]["outputs"].([]any)[0].(map[string]any)["text"])
+	ci := got.Output[3]
+	require.Equal(t, "print(\"call 13800138034\")", ci["code"])
+	require.Equal(t, "phone 13800138035", ci["outputs"].([]any)[0].(map[string]any)["logs"])
+	require.Equal(t, "call 13800138036", got.Output[4]["action"].(map[string]any)["content"])
+	sc := got.Output[5]["action"].(map[string]any)
+	require.Equal(t, "echo 13800138037", sc["command"].([]any)[0])
+	ls := got.Output[6]["action"].(map[string]any)
+	require.Equal(t, "cat 13800138038", ls["command"].([]any)[0])
+	require.Equal(t, "phone 13800138039", ls["env"].(map[string]any)["TOKEN"])
+	cc := got.Output[7]["action"].(map[string]any)
+	require.Equal(t, "call 13800138031", cc["text"])
+	require.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
+}

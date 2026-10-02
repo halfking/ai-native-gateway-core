@@ -2088,18 +2088,16 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
-        -- 裸 USING columnar（对齐 V359 模板）：citus_columnar 11.2+ 的
-        -- 压缩/stripe/chunk 参数走 columnar.* GUC（全局默认 zstd/
-        -- 150000/10000），不再接受 WITH(...) reloption。
+        -- 813: heap（was columnar）。supplier_errors 在 R18 正典单族
+        -- {routing_decision_log} 之外；列存对本族只有 UPDATE/DELETE/
+        -- tableoid 读毒面而无收益（TTL 是整分区 DROP）。存量环境的
+        -- 分区转换由迁移 813 承担；本基线保证新环境从源头建 heap。
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF supplier_errors
-             FOR VALUES FROM (%L) TO (%L) USING columnar',
+             FOR VALUES FROM (%L) TO (%L)',
             partition_name, month_start, month_end
         );
-        RAISE NOTICE 'ensure_supplier_errors_partition: created % as columnar', partition_name;
-    ELSE
-        -- 幂等：确保既有分区保持 columnar（历史分区不可变语义）
-        PERFORM enforce_columnar_partition(partition_name, 'supplier_errors');
+        RAISE NOTICE 'ensure_supplier_errors_partition: created % as heap', partition_name;
     END IF;
     RETURN partition_name;
 END;
@@ -15444,8 +15442,8 @@ CREATE TABLE public.self_check_runs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     selection_strategy text DEFAULT 'most_used'::text,
     attempted_models jsonb DEFAULT '[]'::jsonb,
-    CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type = ANY (ARRAY['http_000'::text, 'http_502'::text, 'http_503'::text, 'http_504'::text, 'timeout'::text, 'upstream_fail'::text, 'none'::text])))),
-    CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'most_used'::text) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = 'random'::text))),
+    CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type ~~ 'http_%'::text) OR (error_type = ANY (ARRAY['none'::text, 'timeout'::text, 'network'::text, 'transient'::text, 'rate_limit'::text, 'auth'::text, 'auth_revoked'::text, 'quota'::text, 'quota_periodic'::text, 'quota_balance'::text, 'quota_permanent'::text, 'upstream_down'::text, 'upstream_overloaded'::text, 'concurrent'::text, 'stream_timeout'::text, 'model_not_found'::text, 'model_deprecated'::text, 'unsupported_feature'::text, 'context_length_exceeded'::text, 'content_filter'::text, 'tool_call_id_mismatch'::text, 'empty_response'::text, 'conversion_error'::text, 'upstream_context_loss'::text, 'no_available_channel'::text, 'canceled'::text, 'client_bug'::text, 'parse_error'::text, 'internal'::text, 'unattributed'::text, 'upstream_fail'::text])))),
+    CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = ANY (ARRAY['most_used'::text, 'random'::text, 'featured'::text, 'recent'::text, 'common_7d'::text, 'failed_model'::text, 'no_eligible_model'::text])))),
     CONSTRAINT self_check_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'success'::text, 'partial'::text, 'failed'::text, 'retrying'::text])))
 );
 
@@ -15454,7 +15452,7 @@ CREATE TABLE public.self_check_runs (
 -- Name: COLUMN self_check_runs.selection_strategy; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.self_check_runs.selection_strategy IS '341: most_used | fallback_<n> | random — which model the credential_selfcheck worker tested';
+COMMENT ON COLUMN public.self_check_runs.selection_strategy IS 'Primary selection: recent/common_7d/featured plus fallback_<n> failed-model follow-ups.';
 
 
 --
@@ -18509,7 +18507,7 @@ CREATE VIEW public.v_adaptive_probe_targets AS
     mps.next_retry_at,
     EXTRACT(epoch FROM (now() - COALESCE(mps.last_attempt_at, (now() - '01:00:00'::interval)))) AS age_secs,
     ( SELECT count(*) AS count
-           FROM public.candidate_failure_logs cfl
+           FROM public.candidate_failure_logs_hot cfl
           WHERE ((cfl.credential_id = cmb.credential_id) AND (cfl.raw_model_name = pm.raw_model_name) AND (cfl.ts > (now() - '00:05:00'::interval)))) AS recent_passive_failures
    FROM ((((public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)))

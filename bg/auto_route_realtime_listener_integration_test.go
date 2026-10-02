@@ -59,14 +59,17 @@ import (
 // 必须同步此处——首轮实跑即抓到镜像已落后生产六列（隔离前 DML 打的是生产
 // 表，漂移不可见）。
 const autoRouteListenerSchema = `
+-- 枚举值/默认值/列集对齐生产 credentials（sql/schema/01-schema.sql:6779 起，
+-- credentials_availability_state_check / credentials_lifecycle_status_check）：
+-- 'available'/'live'/'t0'/raw_model 是按产品语义反推的漂移（第三十轮收口），
+-- 回放到生产形态 schema 会被 CHECK 拒绝或形成幻影列。
 CREATE TABLE credentials (
 	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-	tenant_id TEXT NOT NULL DEFAULT 't0',
+	tenant_id TEXT NOT NULL DEFAULT 'default',
 	provider_id BIGINT NOT NULL DEFAULT 1,
 	label TEXT NOT NULL DEFAULT 'e2e-listener',
-	raw_model TEXT NOT NULL DEFAULT 'm0',
 	status TEXT NOT NULL DEFAULT 'active',
-	availability_state TEXT NOT NULL DEFAULT 'available',
+	availability_state TEXT NOT NULL DEFAULT 'ready',
 	quota_state TEXT NOT NULL DEFAULT 'ok',
 	circuit_state TEXT NOT NULL DEFAULT 'closed',
 	concurrency_limit INT NOT NULL DEFAULT 8,
@@ -76,7 +79,7 @@ CREATE TABLE credentials (
 	fp_slot_limit INT NOT NULL DEFAULT 8,
 	max_queue_depth INT,
 	max_queue_wait_ms INT,
-	lifecycle_status TEXT NOT NULL DEFAULT 'live',
+	lifecycle_status TEXT NOT NULL DEFAULT 'active',
 	manual_disabled BOOLEAN NOT NULL DEFAULT false,
 	CONSTRAINT credentials_unique_provider_label UNIQUE (provider_id, tenant_id, label)
 );

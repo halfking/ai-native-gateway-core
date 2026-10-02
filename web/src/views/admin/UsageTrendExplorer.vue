@@ -456,7 +456,7 @@ export default { name: 'UsageTrendExplorer' }
 }
 .ute__err {
   font-size: 12px;
-  color: var(--danger, #f56c6c);
+  color: var(--danger);
   padding-top: 6px;
 }
 .ute__others {

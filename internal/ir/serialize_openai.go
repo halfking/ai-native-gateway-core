@@ -730,6 +730,20 @@ func serializeOpenAIToolChoice(tc *ToolChoice) any {
 				"name": tc.Name,
 			},
 		}
+	case "function":
+		// GAP-2 镜像（round 31, 2026-10-02）："function" 是 ParseOpenAI 存下
+		// 的命名 tool_choice 对象形方言（parse_openai.go 只解出
+		// {type:"function", function:{name}}）。旧实现无本分支，落到末尾
+		// return tc.Type 输出裸字符串 "function"——OpenAI 上游必 400。chat
+		// 主路径每次转发都 Parse→Serialize 重放请求体，缺口是每个带命名
+		// tool_choice 的 chat 请求都会踩。与 serialize_anthropic.go 的
+		// "tool","function" 镜像分支（Wave5 补的 Anthropic 侧）同源对称。
+		return map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": tc.Name,
+			},
+		}
 	}
 
 	return tc.Type
