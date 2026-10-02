@@ -110,8 +110,31 @@ id、session 侧的 `id` 是 turn id。判据「session 侧的列与 v1 侧的�
 引入的，它**源自 710** —— Go 侧 `db/request_logs_view_schema.go:362` 的
 `projectionExprsV2` 第 1 列就是 `"NULL::bigint"`，别名由 `canonicalColumnOrderV2`
 的首列名 `id` 拼成 `NULL::bigint AS id`。815 原样继承，未改动它。
-活库顶层 viewdef 里这个字面量出现 **2 次**：L1 顶层投影、L146 `UNION ALL` 的 v1
-分臂 ⇒ **会话臂与 v1 臂都补 NULL**，决策在两条分支上一致落地。
+活库顶层 viewdef 是 `UNION ALL` 三条臂，`id` 在**三条臂上各有一种写法**
+（2026-10-02 按 `pg_get_viewdef` 行号实测，不是推测）：
+
+| 行 | 臂的 FROM | `id` 的写法 |
+|---|---|---|
+| L1 | `session_turns_hot t`（会话 hot） | `SELECT NULL::bigint AS id` |
+| L146 | `session_turns t`（会话 cold） | `SELECT NULL::bigint AS id` |
+| L291 | `request_logs_hot`（v1，别名 `rl`） | `SELECT rl.id,` — **透传真值** |
+
+⇒ **`id` 永不投影只对会话侧成立。** 会话侧不能给 id（turn id 与请求行 id 语义不同，
+1,515,984 组配对相等 0 次）；而 **v1-only 的行必须带着它真实的 `request_logs.id`
+出去**，否则只存在于 v1 的历史行会在视图里彻底失去主键。
+
+**我曾把这写成「2 处 ⇒ 会话臂与 v1 臂都补 NULL，决策在两条臂上一致落地」——
+那是把 v1 臂当成了会话臂。** 错误来源：只数了 `NULL::bigint AS id` 这个字面量的
+出现次数（2），没有去看第 2 处属于哪条臂、也没有检查第 3 条臂里 `id` 是什么写法。
+**计数本身没错，归属错了。** 教训：「N 处命中」不仅要写清量的面，还要写清**每一处
+属于谁**。
+
+对应地，`db/view_schema_v2_contract_test.go` 的值层门也据此重写为三条臂各自正确的
+期望：会话 hot 臂（`req-dual`）与会话 cold 臂（`req-turn-parent`）必须为 **NULL**；
+v1 臂（`req-v1-only`）必须**等于源表真值 900001**——只断言「非空」太弱，turn id 也是
+非空的，而那正是要防的回归。夹具同步改了：原夹具不给 `id`，而
+`cloneTablesFrozenDDL` 只发「列名 + 类型」、不带 NOT NULL 也不带 DEFAULT（生产形态是
+`NOT NULL` + `nextval`）⇒ v1 行在 scratch 里恒为 NULL ⇒ **旧版门在 v1 臂上恒真**。
 
 > 订正：本审计早一版把这件事写成「全库唯一 1 处命中」。那个 1 数的是 **815 迁移文件**
 > 里的命中数（`grep -c` 正好 1），却被当成了活库终态。**同一个字面量在文件里 1 处、

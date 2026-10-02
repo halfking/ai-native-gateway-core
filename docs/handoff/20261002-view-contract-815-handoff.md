@@ -121,12 +121,29 @@ TEST_PG_URL=... go test ./admin/ -tags integration \
    各做过一次变异验证，红都落在 `view_schema_v2_contract_test.go:671` / `:695`，
    均为 `t.Fatalf` 断言命中、零 panic。
 3. 活库终态（`TEST_PG_DSN` 下复核）：canonical 视图列数 = 118、`trace_events` 不在、
-   `schema_migrations` 里 815 登记 1 行。`id` 的 NULL 补位在顶层 viewdef 里是
-   **2 处**（L1 顶层投影 + L146 `UNION ALL` 的 v1 分臂）⇒ **两条臂都补 NULL**，
-   与「`id` 永不投影」的决策一致。
-   该补位**源自 710**（Go 侧 `db/request_logs_view_schema.go:362`
-   `projectionExprsV2` 第 1 列 = `"NULL::bigint"`，别名由 `canonicalColumnOrderV2`
-   的首列名 `id` 拼出），815 原样继承、未改动它。
+   `schema_migrations` 里 815 登记 1 行。`id` 在顶层 viewdef 的**三条 UNION ALL 臂**
+   上各有一种写法（按 `pg_get_viewdef` 行号实测）：
+
+   | 行 | 臂 | `id` |
+   |---|---|---|
+   | L1 | `session_turns_hot`（会话 hot） | `NULL::bigint`（补位） |
+   | L146 | `session_turns`（会话 cold） | `NULL::bigint`（补位） |
+   | L291 | `request_logs_hot`（v1，别名 `rl`） | `rl.id` — **透传真值** |
+
+   ⇒ **`id` 永不投影只对会话侧成立**；v1-only 的行必须带着真实 `request_logs.id`
+   出去，否则那批历史行会在视图里失去主键。补位**源自 710**（Go 侧
+   `db/request_logs_view_schema.go:362` `projectionExprsV2` 第 1 列 = `"NULL::bigint"`，
+   别名由 `canonicalColumnOrderV2` 首列名 `id` 拼出），815 原样继承、未改动。
+
+   值层门按这个契约重写为三条臂各自正确的期望：会话 hot 臂（`req-dual`）与会话 cold
+   臂（`req-turn-parent`）必须 NULL；v1 臂（`req-v1-only`）必须**等于源表真值
+   900001**（只断言非空太弱——turn id 也非空）。夹具同步补上显式 `id`，因为
+   `cloneTablesFrozenDDL` 只发「列名 + 类型」，不带 NOT NULL 也不带 DEFAULT
+   （生产形态是 `NOT NULL` + `nextval`）⇒ 旧夹具下 v1 行恒为 NULL，**旧门在 v1 臂上
+   恒真**。变异验证：把期望改成 900002 ⇒ 命中 `:680`，消息里带出实际值 900001、
+   零 panic ⇒ 门读到的是真值且可红。
+
+
 
 > **订正一条我自己写错的数字**：本文件上一版把上面这件事写成「`id` 仍是
 > `NULL::bigint AS id,`（**全库唯一 1 处命中**）」。那个 1 数的是 **815 迁移文件里的
