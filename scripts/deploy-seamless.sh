@@ -833,11 +833,15 @@ do_deploy() {
     warn "使用带外预编译二进制（LLM_GATEWAY_PREBUILT_BINARY），跳过本机构建；身份校验照常执行"
   fi
   if [[ "$SKIP_FRONTEND" == "false" ]]; then
+    # 包管理器由 scripts/lib/node-pm.sh 单点决策（pnpm 官方 / npm 并行支持）。
+    # 过去硬编码 npm ci，与官方 pnpm 路径并存且两个 lockfile 无同步门。
+    # shellcheck source=scripts/lib/node-pm.sh
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/node-pm.sh"
     if [[ ! -d web/node_modules ]]; then
-      log "web/node_modules 缺失，按 package-lock.json 安装依赖"
-      (cd web && npm ci)
+      log "web/node_modules 缺失，按 lockfile 安装依赖"
+      pm_install web
     fi
-    (cd web && npm run build 2>&1 | tail -5)
+    pm_run build web 2>&1 | tail -5
     ok "web/dist 已生成"
   else
     warn "跳过前端构建 (--no-frontend)：web 不取检出的 web/dist，上传后用线上 current 发布原样顶替"
