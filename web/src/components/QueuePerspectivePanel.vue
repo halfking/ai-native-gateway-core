@@ -859,6 +859,39 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
 const hasModelGroups = computed(() => modelGroups.value.length > 0)
 const hasReportedRawModels = computed(() => nodes.value.some(node => Array.isArray(node.raw_models)))
 
+// 2026-10-03：解释「筛选有节点的模型，却得到一个空区块」。
+//
+// modelGroups 对 scope 外的 raw_models 走 `if (!scopeKey) continue`（见下方
+// modelGroups computed）。那个行为是 2026-09-29 审计有意保留的——范围外的模型
+// 不显示，而不是挂到别的模型名下冒名（QueuePerspectivePanel.test.ts 有专测）。
+// 问题不在行为，在可发现性：筛 glm-5.2 得到零分组且零提示，运维会读成
+// 「这个模型没有节点 / 已下线」，而真实原因只是它不在「特色 ∪ 近 3 天热门」
+// 范围内（top-models 接口 limit 上限 50，按请求数降序，见 admin/logs.go）。
+//
+// 这里只补一条解释性提示，**不改变过滤行为**；且只在「筛选的模型确实有节点」
+// 时出现，避免把「压根没有节点」也归到范围问题上去。
+const outOfScopeFilterModels = computed<string[]>(() => {
+  if (props.modelFilter.size === 0) return []
+  const withNodes = new Set<string>()
+  for (const node of nodes.value) {
+    if (!Array.isArray(node.raw_models)) continue
+    for (const raw of node.raw_models) {
+      const key = modelKey(raw)
+      if (key) withNodes.add(key)
+    }
+  }
+  const misses: string[] = []
+  for (const selected of props.modelFilter) {
+    const key = modelKey(selected)
+    // 没有节点的模型不归这里管——那是另一种空，提示会误导。
+    if (!key || !withNodes.has(key)) continue
+    if (modelScopeAliasIndex.value.get(key)) continue
+    if (modelScopeMeta.value.has(key)) continue
+    misses.push(selected.trim())
+  }
+  return misses
+})
+
 function nodeStatusSummary(n: LiveNodeStatus): string {
   const parts: string[] = []
   if (n.manual_disabled) parts.push('手工禁用')
@@ -1251,14 +1284,21 @@ function requestTitleTooltip(request: LiveRequest): string {
 
       </template>
 
-      <!-- Dashboard 只保留特色模型和近 3 天有实际流量的热门模型；实时 SSE
-           不提供 raw_models 时保持整个分区隐藏，避免把未知误报为无绑定。 -->
-      <div v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScopeError)" class="qp-layer qp-layer--model-groups">
+      <!-- Dashboard 只保留特色模型和近 3 天有实际流量的热门模型（top-models 接口
+           limit 上限 50，见 admin/logs.go listTopModels）；实时 SSE 不提供
+           raw_models 时保持整个分区隐藏，避免把未知误报为无绑定。范围外的模型
+           走 modelGroups 里的 continue 被排除（有意为之：不冒名），因此下面额外
+           用 outOfScopeFilterModels 把「筛了但被范围挡掉」这件事讲清楚。 -->
+      <div v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScopeError || outOfScopeFilterModels.length)" class="qp-layer qp-layer--model-groups">
         <div class="qp-layer-header">
           <span class="qp-layer-name">按模型分组的可用节点</span>
           <span v-if="hasModelGroups" class="qp-layer-count">{{ filteredModelGroups.length }} 个模型<template v-if="modelGroups.length !== filteredModelGroups.length"> / {{ modelGroups.length }}</template></span>
           <button type="button" class="qp-retry" :disabled="modelScopeLoading || dragSaving" @click="loadModelScope">{{ dragSaving ? '正在保存…' : (modelScopeLoading ? t('requestJourneys.modelScopeLoading') : `↻ ${t('requestJourneys.refreshScope')}`) }}</button>
         </div>
+
+        <p v-if="outOfScopeFilterModels.length" class="qp-scope-miss">
+          {{ outOfScopeFilterModels.join('、') }} 有节点，但不在「特色 / 近 3 天热门」范围内（本面板只展示范围内模型），故未列出分组。
+        </p>
 
         <!-- 状态过滤多选框：在用 / 降级 / 人工禁用 / 配额耗尽 -->
         <div v-if="hasModelGroups" class="qp-status-filters" role="group" :aria-label="'状态过滤'">
@@ -1609,6 +1649,14 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-model-group {
   border-top: 1px solid var(--kx-border);
   padding: 6px 0;
+}
+/* 2026-10-03：筛选的模型有节点但被「特色/近 3 天热门」范围挡掉时的解释行。
+   用弱提示而非报错——这不是故障，是显示范围，如实说明即可。 */
+.qp-scope-miss {
+  margin: 4px 0 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--kx-text-muted, var(--kx-text-subtle, currentColor));
 }
 .qp-model-group:first-child {
   border-top: none;
