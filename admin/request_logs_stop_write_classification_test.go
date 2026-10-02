@@ -111,6 +111,11 @@ var bodiesUnaffectedJustification = map[string]string{
 	"admin/telemetry.go": "读点在写门内：upsertRequestLogBodies 的 ts 回填与 bodies 镜像" +
 		"全部包在 `if requestLogsWriteEnabled() {}` 内（:391、:454）。停写后这段不执行，" +
 		"读点根本不发生 ⇒ 无「返回内容变空」可言。这与「读 bodies 拿到空正文」是两种形状。",
+	"db/db.go": "两处 bodies 引用都不是读内容：:7197 与 :7231 里的 " +
+		"`'request_logs_bodies'` 是 **pg_class.relname 的字符串名单**（ALTER TABLE SET storage " +
+		"参数 / ANALYZE 分区巡检），表名出现在一个正则/数组里，不是 FROM/JOIN 任何一张表。" +
+		"bodies 族按正则识别，把「名字出现在巡检名单里」也算成「读 bodies」。" +
+		"本文件全部 request_logs 命中都是结构面（见分级表的 Note）。",
 	"admin/data_lifecycle_blobs.go": "读的是体量不是内容：唯一的 bodies 引用是 " +
 		"`COALESCE(pg_column_size(rb.request_body), 0)`，即「存量正文占多少字节、" +
 		"清理能省多少」。停写不改变存量字节数，也不改变待清理行数。" +
@@ -299,6 +304,135 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Effect:   effectSilentlyFrozen,
 		Evidence: "SELECT canonical_model, COUNT(*) AS cnt\n    FROM request_logs_hot\n    WHERE ts > now() - interval '7 days'",
 		Note:     "失败兜底推荐的 usage_7d CTE 读 hot 7 天窗（注释 229-242 明说为绕开视图改读 hot）。停写后该集合冻结为停写前 7 天的 popular 分层，COALESCE(u.cnt,0)>0 不再反映真实近期热度，无错误。",
+	},
+	// ── batch3：2026-10-02 逐点评估（23 条）────────────────────────────────
+	//
+	// 本批的核心价值不是 23 条判定，而是它逼出了 §9.14 的族分类器新维度：
+	// migration 710 在 session 臂补了 30 列 NULL，视图「行级可用」≠「谓词级可用」。
+	// 本批有 5 个文件因此被分到 familyViewNullPadded，其中 3 个的 unaffected
+	// 判定在 §9.14.4 被改成 silently_empty / silently_degraded_content。
+	"admin/auto_route.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "FROM request_logs_with_current_month_without_customer_id",
+		Note:     "handleDecisions(:140) 刻意读 v1-only 中间层视图（7 天窗口），停写后继续吐停写前的旧决策。handleAudit(:534) 走 routing_analytics_source，而 bg/materialized_view_refresher.go:290,306 仍在每轮 REFRESH 这两个 MV ⇒ 不是「MV 停用导致冻结减轻」，而是**持续重算同一份冻结数据**，数值会随窗口排空而衰减（不是恒定常数）。",
+	},
+	"admin/diagnostics_credential.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "AND ts > now() - ($2 || ' minutes')::interval",
+		Note:     "凭据诊断「最近失败」段查 request_logs_hot 的分钟级窗口，零行时 for 循环不执行，d.RecentFailuresCount = len(...) 变 0（:171），analyzeDiag 照常产出分析与恢复建议，接口 200、字段齐全。:166 注释已自认「RecentFailuresCount 会被低估成 0」。",
+	},
+	"admin/request_trace.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "SELECT request_status, trace_events, ts FROM request_logs_hot WHERE request_id = $1",
+		Note:     "按 request_id 点查，新请求在两张 v1 表都无行 ⇒ pgx.ErrNoRows ⇒ traceStateMissing ⇒ handleTrace(:133) 返 404 not_found，失败可见。次要腿 fetchRequestSummary(:311) 零行返回半填充结构不报错，但上游已先 404。",
+	},
+	"admin/swim_lane_init.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs_hot rl",
+		Note:     "泳道初始化读最近 N 小时，零行时循环不执行，返回 nil 切片 + 全零 stats + rows.Err()==nil，HandleSwimLaneInit(:74) 照样 json.Encode 200 ⇒ 前端拿到「一条请求都没有」的泳道。",
+	},
+	"bg/auto_route_settle_worker.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "LEFT JOIN request_logs_hot rl",
+		Note:     "结算 outcome 腿(:392) 与 cohort 基线(:298)全读 request_logs_hot。停写后 p.success == nil ⇒ 每条待结算选择超过 settleAbandonAfter 就被计为 abandoned 而非 settled，而 loadTaskBaselines 返回空 map 且 err==nil，奖励函数继续用空/陈旧基线打分——整条链路无任何错误信号。",
+	},
+	"bg/ledger_reconciliation.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "FROM request_logs_hot",
+		// 2026-10-02 口径保留：真实行为比「冻结」更坏，方向写在 Note 里。
+		Note: "usageCreditSQL(:261) 是 request_logs_hot 与 credit_ledger_hot 的 FULL OUTER JOIN，" +
+			"而 S4 开关**只门控 request_logs 族、不门控 credit_ledger**。停写后 usage 腿归零、ledger 腿继续增长 " +
+			"⇒ 每笔新 consume 都变成 charged=0 vs debited>0 的**假 mismatch**，每轮最多 200 条灌进 " +
+			"maas_reconciliation_findings，不报错。归档为 silently_frozen 是按「无错误信号的持续判定」；" +
+			"语义上它不是冻结而是**误报洪水**，方向已写明以免后来者误读。",
+	},
+	"bg/today_success_probe.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs_hot rl",
+		Note:     "used CTE(:147) 取 24h 内成功流量，窗口排空后返回 0 行 ⇒ 不再产出任何 (credential, model) 对 ⇒ 自愈探针永久停摆，而调用侧(:133)照打 slog.Info(\"today success probe queued\", \"pairs\", 0)，日志看起来一切正常。",
+	},
+	"cmd/gateway/output_compliance_control.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs\n\t\t\tWHERE gw_session_id = sd.gw_session_id",
+		Note:     "lookupOwners(:74) 用 LATERAL 从 request_logs 取 api_key_owner_user 作 callerOwner（该列是 session 臂补位 NULL 的 30 列之一）。停写后该腿恒无行 ⇒ callerOwner 恒为 \"\"，dataOwner 仍来自 session_dim 有值 ⇒ owner 规则判定「caller≠data」⇒ **所有合规输出被静默全量脱敏**。方向保守不泄漏，但功能整体失效且无错误。",
+	},
+	"discovery/discovery.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "SELECT 1 FROM request_logs rl",
+		Note: "读端后果是那条 NOT EXISTS 守卫「查不到就判过期」。**该写入缺陷已于 §9.12 修复**" +
+			"（staleExpiryMayRun：证据源停写时不下架），本条记录的是修复前/未开 ENABLE_CMB_EXPIRE 时的形状。" +
+			"停写后守卫恒不命中 ⇒ 仍在被成功调用的 model 也被 UPDATE model_offers SET available = FALSE。" +
+			"注意它是**破坏性写**且 RowsAffected>0 反而打 Info「expired stale models」。",
+	},
+	"domains/providerprofile/adapters.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs_hot",
+		Note:     "供应商画像 4 个查询全部 clamp 到 8h hot 保留期(:122)。停写后 COUNT(*) 归零而 err==nil ⇒ total_requests=0、error_count=0、AVG 为 NULL，BucketSuccessRates(:241) 返回空切片——「0 请求 0 错误」会被健康度/推荐逻辑读成「无异常」。（控制面轴另判 live：驱动凭据自动禁用。）",
+	},
+	"internal/trace/trace.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "SELECT trace_events FROM (",
+		Note:     "写路径整段已在门控内：FlushToPG(:473) 在 !settings.RequestLogsWriteEnabled() 时丢弃 trace 并 DEL Redis key 后 return nil，其下的 UPDATE request_logs_hot(:496) 停写期间根本不执行。唯一未门控的是读腿 LoadFromPG(:601)，停写后新 request_id 返 nil,nil ⇒ 上游 404，失败可见。",
+	},
+	"admin/live_stream_sse.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "行级完全可用：replay(:2423) 的 WHERE 只用 ts/tenant，session 臂照常供行，request_status 的 CASE 与 credential_id 都有真值，终态 overlay(:2546) 照常纠正。但 client_model 是补位 NULL ⇒ 泳道模型名静默变空并掉进 InferVendorFromModel 兜底。属第 6 档。",
+	},
+	"admin/session_analytics_breakdown.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "queryModelBreakdown(:266) 照常工作（outbound_model/cost/latency 在 session 臂有真值）；但 provider_id 是补位 NULL ⇒ queryProviderBreakdown(:308) 的 COALESCE(rl.provider_id::text,'unknown') 把全部新流量塌进单个 unknown 桶，且 buildWhereClause(:710) 的 AND rl.provider_id = $n 过滤器静默返 0 行、端点仍 200 + []。",
+	},
+	"admin/session_summary_v2.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "正文腿 queryTurnsForSummary 读 session 族不受影响；只有主路径 0 轮时才走的 fallback(:208) 读 v1 视图且带 MirrorDriftClassSQL = 'genuine_loss'，停写后返 0 行 ⇒ :212 return nil, fmt.Errorf(\"no turns found\") ⇒ HTTP 500。影响面是 V2 shadow-write 关闭的那部分会话（注释记近 3 天触发比例 10.87%），500 是可见失败，可接受。",
+	},
+	"admin/top_problems.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "AND rl.client_model IS NOT NULL AND rl.client_model != ''",
+		Note:     "credential 榜(:194) 照常工作（credential_id 在 session 臂有真值）；但模型榜(:238) 靠 client_model 过滤，而该列是 session 臂补位 NULL 之一 ⇒ 新流量一条都进不来 ⇒ items := make([]topProblemsItem, 0, limit)(:209) 返回 200 + 空数组，「问题模型 Top N」永久空白且无任何提示。",
+	},
+	"bg/shared_pick.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "Priority 1「最常用 client_model」(:84) 带 AND client_model IS NOT NULL，session 臂该列恒 NULL ⇒ Scan 报 no rows ⇒ 代码 if err == nil && topModel != \"\" 不成立，**静默**降级到 Priority 2 featured、再降 random_fallback/empty。探针目标模型的选择依据从「真实最常用」悄悄变成「随便挑」，日志与返回值都不含任何降级标记。",
+	},
+	"domains/attachments/handler.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "SELECT attachments::text FROM request_logs_with_current_month WHERE request_id = $1",
+		Note:     "710 视图对 session 臂投影 NULL::jsonb AS attachments（session_turns 只有 request_attachments、无 attachments）⇒ 新请求视图**照样返回行**，但 Scan(&raw []byte) 遇 NULL 报错 ⇒ :171 把 err 当成「无附件」⇒ 返 200 + attachments: []。附件数据其实还在 request_attachments 表里（domains/attachments/repository.go:183 已有读法），丢的只是这条 JSONB 读腿——属可修的读迁移，不需要数据抢救。",
+	},
+	"admin/compression_sessions.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "AND rb2.outbound_body IS NOT NULL",
+		Note:     "列表行仍返回（compression_strategy 在 session 臂有真值），但 LATERAL 的 rb2.outbound_body IS NOT NULL(:147) 停写后恒假 ⇒ estimated_original_msgs 对每行都是 COALESCE(NULL,0)=0，且 outbound_msg_count / outbound_token_est 是补位 NULL ⇒ 200 OK、字段齐全、全零，**压缩效果的度量整体失去意义**。",
+	},
+	"admin/logs_summary.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "COALESCE(rb.request_body::text, '') AS request_body",
+		Note:     "bodies LEFT JOIN 停写后恒空，request_body/response_body 恒为 ''，而 request_preview/response_preview 在 session 臂**有**真值 ⇒ 送给 LLM 的会话摘要是「有预览、没正文」的截断输入。本文件 :231-233 注释自己写明「截断的输入会生成『看起来正常』的错摘要，比失败更难发现」，而这里既不报错也不留痕。",
+	},
+	"admin/session_sanitize_matches.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "SELECT COALESCE(rb.outbound_body, rb.request_body)",
+		Note:     "loadOutboundBodySnippet(:224) 用 `_ =` 丢弃 err、body 为 nil 就返 \"\"，脱敏匹配视图里对应值经 maskSensitiveValue(:246) 显示为「—」⇒ 运维看到的是「该字段无敏感内容」而非「正文取不到了」。次要影响：lookupSessionTenant 的 v1 回落腿(:210)退化到 \"\" 时非超管拿到 403。",
+	},
+	"bg/passive_probe_listener.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "主腿照常工作——session 臂有 success/error_kind/outbound_model/request_status 真值，且它排除的探针流量本来就不在 session 臂里。硬失败的是 bodies 腿：MAX(COALESCE(rb.response_body::text,''))(:180) 停写后恒为 ''，passive_probe_state.last_response_body_preview 被静默清空，**故障诊断失去最后一段现场证据**。",
+	},
+	"db/db.go": {
+		Effect:   effectUnaffected,
+		Evidence: "WHERE to_regclass('public.request_logs') IS NOT NULL",
+		Note:     "已核实无流量读：全部命中是结构面——ensureRequestLogSchema 的 information_schema/pg_indexes catalog 短路(:2008+)、ensureRequestLogsCurrentMonthView 的视图幂等重建(:227)、:7197/:7231 的 pg_class relname 名单（ALTER TABLE SET storage / ANALYZE 分区）。停写改变行数但不改变表结构与生命周期语义。（控制面轴同样判 unaffected：产出的是 DDL，不是决策。）",
+	},
+	"domains/sessionsummary/system_prompt_prefix.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "JOIN request_logs_bodies_with_current_month rb",
+		Note:     "pgRequestLogsSource 是**默认** MessageSource（summarizer.go:127 NewSummarizer 直接 &pgRequestLogsSource{}），bodies 无 session 兜底 ⇒ 停写后 JOIN 恒 0 行 ⇒ err 被 systemPromptPrefix(:52) 吞掉返回 \"\" ⇒ 会话总结照常生成、200、summary 字段齐全，只是永远缺系统提示词前缀。仅当 SetMessageSource 换成 v2SessionBodiesSource（读 session_bodies_unified）时才免疫。",
 	},
 	"admin/data_lifecycle.go": {
 		Effect:   effectSilentlyFrozen,
