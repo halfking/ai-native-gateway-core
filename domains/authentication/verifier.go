@@ -777,12 +777,21 @@ func (kv *KeyVerifier) CheckBudget(ctx context.Context, keyID int) error {
 	return err
 }
 
+// budgetCheckQueryTimeout bounds the two ledger queries inside
+// checkBudgetDB. The streaming/embeddings handlers pass r.Context(), which
+// carries no deadline (WriteTimeout=0), so an unbounded query turned a slow
+// DB into a hung request rather than a fast error outcome (round-31 §四#8;
+// same 5s shape as the admin-side budgetCheck in admin/keys.go).
+const budgetCheckQueryTimeout = 5 * time.Second
+
 func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
 	if kv.dbPool == nil {
 		return fmt.Errorf("database unavailable")
 	}
+	qctx, cancel := context.WithTimeout(ctx, budgetCheckQueryTimeout)
+	defer cancel()
 	var budget *float64
-	err := kv.dbPool.QueryRow(ctx, "SELECT budget_usd::float8 FROM api_keys WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'", keyID).Scan(&budget)
+	err := kv.dbPool.QueryRow(qctx, "SELECT budget_usd::float8 FROM api_keys WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'", keyID).Scan(&budget)
 	if err != nil {
 		return err
 	}
@@ -795,7 +804,7 @@ func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
 	// 花费 → 提前 402（fail-closed 方向的误伤，且两门读数分叉让对账困惑；
 	// 24h 审计第二十八轮 F4 对齐）。request_id 为空的行 DISTINCT ON 会折叠
 	// 成 1 行——写入方 telemetry 均带 request_id，形态与观测面一致。
-	viewErr := kv.dbPool.QueryRow(ctx, `
+	viewErr := kv.dbPool.QueryRow(qctx, `
 		SELECT COALESCE(SUM(cost_usd), 0)::float8 FROM (
 			SELECT DISTINCT ON (request_id) cost_usd
 			FROM usage_ledger_with_current_month
