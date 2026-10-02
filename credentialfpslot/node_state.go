@@ -23,6 +23,20 @@ import (
 const (
 	nodeStateTTLSec      = 3600
 	nodeCapabilityTTLSec = 3600
+
+	// prefetchMaxAgeSec bounds how stale a router-supplied snapshot may be
+	// before GetSupportsResponses stops trusting it and re-reads the key.
+	//
+	// NOT an expiry knob: expiry is judged against capability_expires_at
+	// (3600s, on the Redis clock) and is enforced independently. This is the
+	// separate question of "how old may a routing-time snapshot be before the
+	// request insists on a fresh read", which exists because a request can sit
+	// in the dispatch queue for an unbounded time between the router's MGET and
+	// this gate. See GetSupportsResponses for the full argument.
+	//
+	// 5s: the router→gate gap is ~6ms on the common path, so this never
+	// triggers in steady state; it exists to cap the tail.
+	prefetchMaxAgeSec = 5
 )
 
 // NodeState tracks health state for (credentialID, model) dimension.
@@ -397,6 +411,62 @@ func (m *Manager) SetSupportsResponses(ctx context.Context, credentialID int, mo
 // the remaining TIME means folding TIME into the router's existing batched
 // read (a Lua script returning TIME + the states in one shot), which changes
 // GetNodeStatesBatch's contract and is deliberately NOT done here.
+//
+// ⚠️ SNAPSHOT AGE (2026-10-03 审计补充) — `prefetched` can be arbitrarily old.
+// Measured, not assumed: the router's MGET and this gate are normally ~6ms
+// apart, but the request then goes through dispatchPipeline.Submit, which
+// BLOCKS on qr.ResultCh while the request waits in the totalQueue behind other
+// in-flight traffic. That wait has no upper bound in code — it is whatever the
+// queue depth and upstream latency make it. Measured staleness is therefore
+// unbounded even though the common case is milliseconds.
+//
+// What is still safe without an age guard: EXPIRY. The deadline check below
+// samples Redis TIME, so a prefetched verdict whose 3600s TTL elapsed is still
+// correctly read as unknown — the snapshot never revives an expired verdict.
+//
+// What is NOT safe: a verdict REWRITTEN inside its TTL. SetSupportsResponses is
+// called from three places (executor_chat recordResponsesCapability,
+// bg/credential_probe_v2, bg/responses_capability) and a positive re-probe can
+// flip false→true while a request sits in the queue. Such a request would keep
+// routing to Chat on a stale negative — conservative, self-healing on the next
+// request, but it means the optimisation is not behaviour-identical to a fresh
+// read, and that difference must be bounded rather than assumed away.
+//
+// Hence prefetchMaxAge: a snapshot older than this is ignored and the key is
+// re-read. The bound is deliberately far below the 3600s TTL — it is not about
+// expiry, it is about "how stale may a routing decision be before we insist on
+// re-reading". 5s keeps the optimisation for the overwhelmingly common
+// fast path (queue waits are the exception, not the rule) while capping the
+// divergence from a fresh read to a window no operator would call a lie.
+//
+// The age is measured with Redis TIME — the same clock as the deadline — NOT
+// local time. Comparing a prefetched-at marker across clocks would reintroduce
+// exactly the skew problem the TIME decision above exists to avoid.
+//
+// ⚠️ ORDERING IS LOAD-BEARING — Redis TIME MUST be sampled AFTER the state is
+// in hand, not before. Sampling it first (to share one round trip between the
+// age check and the deadline check) looks like a free saving and is not:
+// TestF04_CapabilityReadRechecksRedisTimeAfterStateFetch advances the Redis
+// clock between the GET and the TIME call and requires the crossing deadline to
+// be detected. Sampling TIME first means a verdict that expires while the
+// state is being fetched is still judged against the pre-fetch instant and is
+// wrongly honoured. An earlier revision of this function did exactly that and
+// the test caught it. One extra round trip is the correct price; do not
+// "optimise" the order.
+//
+// ⚠️ THE AGE CHECK MUST NOT SAMPLE ITS OWN CLOCK (2026-10-03 复审).
+// A revision checked snapshot freshness by taking a TIME sample *before*
+// deciding whether to trust the snapshot, then took a second one for the
+// deadline. That is two TIME round trips on the hot path, and the accounting
+// came out at: router MGET + 2×TIME = 3, versus 3 before the optimisation
+// (MGET + GET + TIME). **Net zero saving, and worse when the snapshot is
+// rejected** (MGET + TIME + GET + TIME = 4). The whole point of the change was
+// to remove a round trip; that revision quietly gave it back and then some.
+//
+// Both checks need only the scalar `now`, so one sample serves both — as long
+// as it is taken in the right place, i.e. AFTER the state is in hand. The age
+// check therefore runs *after* the freshness decision has been made possible,
+// reusing that same sample.
 func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, model string, prefetched *NodeState) (supported bool, ok bool, err error) {
 	state := prefetched
 	if state == nil {
@@ -414,12 +484,26 @@ func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, mo
 		// traffic-driven NodeState TTL refreshes cannot keep legacy verdicts alive.
 		return false, false, nil
 	}
-	// Sampled AFTER the state read on purpose: a verdict whose deadline elapses
-	// between the GET and this check must be seen as expired, not honoured.
+	// ONE clock sample, taken after the state is in hand, serving both the
+	// snapshot-age check and the deadline check below.
 	now, err := m.redisNow(ctx)
 	if err != nil {
 		return false, false, fmt.Errorf("get redis time for capability read failed (credential_id=%d, model=%s): %w", credentialID, model, err)
 	}
+	// A prefetched snapshot may be arbitrarily old (the request can sit in the
+	// dispatch queue for an unbounded time — see the prefetchMaxAgeSec note),
+	// so a verdict rewritten inside its TTL would be missed. Re-read instead.
+	//
+	// Only meaningful for the prefetched case; a state we just read is current
+	// by construction, and CapabilityUpdatedAt is absent on pre-migration
+	// payloads whose age is unknowable.
+	if prefetched != nil &&
+		(state.CapabilityUpdatedAt <= 0 || now-state.CapabilityUpdatedAt > prefetchMaxAgeSec) {
+		return m.GetSupportsResponses(ctx, credentialID, model, nil)
+	}
+	// Sampled AFTER the state is in hand on purpose: a verdict whose deadline
+	// elapses between the GET and this check must be seen as expired, not
+	// honoured. See the ordering note above.
 	if state.CapabilityExpiresAt <= now {
 		return false, false, nil
 	}

@@ -393,3 +393,129 @@ return 是 `state == nil || !SupportsResponsesKnown()`，任何「state 形状�
    **本轮未修**：#3 判定为值得做，故不触发替代项。该红灯来源仍是并行会话
    §9.42/§9.43 改了 `bg/auto_route_settle_worker.go` 但豁免登记表未同步，
    修的时候必须同步更新登记表。
+
+---
+
+## 十、遗留 #3 的批判式复审（2026-10-03）
+
+上一轮（§九）判定 #3 完成并提交。本轮按「别吹牛、仔细核查」的要求做**对抗性复审**，
+不假设上一轮是对的。复审发现 **2 个真实问题**，均已修。
+
+### 10.1 根因：复用快照 = 引入一个无界的陈旧窗口（已修）
+
+**上一轮没讲清的事**：透传让判定基于**更早**的快照。上一轮只测了「快照过期仍读成
+unknown」（那本来就由 Redis TIME 保证，是安全的），**没有测「TTL 之内结论被改写」**
+——而那才是复用快照真正引入的新行为面。
+
+实测（`TestAudit_SnapshotStalenessWindow_MeasuresTheGap`）：路由 MGET 与闸门之间
+常见间隔 **~6ms**。但这只是常见情况，**不是上界**：
+
+```
+Execute → PlanCandidatesPinned（filterHealthyNodes 在此 MGET 并挂快照）
+       → executeViaDispatch → dispatchPipeline.Submit
+```
+
+`Submit`（`domains/dispatch/pipeline.go:1078`）**同步阻塞在 `<-qr.ResultCh`**，
+请求在 `totalQueue` 里排队等待 worker 空闲。**该等待在代码里没有上界** ——
+取决于队列深度与上游延迟。所以快照的实际陈旧度是**无界的**。
+
+**为什么过期仍然安全、但改写不安全**：
+- **过期安全**：`capability_expires_at` 由 Redis TIME 判定，快照不会让过期结论复活。
+- **改写不安全**：`SetSupportsResponses` 有三个写入方
+  （`executor_chat` 实时证据 / `bg/credential_probe_v2` / `bg/responses_capability`），
+  正向重探可把 `false → true`。队列里等完的请求会**继续按陈旧的负向结论走 Chat**。
+  方向是保守的（不会打出注定失败的请求），但它意味着**这个优化不是行为等价的**，
+  而上一轮把它当成等价优化来描述。
+
+**修法**：加 `prefetchMaxAgeSec = 5`（`credentialfpslot/node_state.go`）。
+超过该年龄的快照被丢弃并重新读取；`CapabilityUpdatedAt <= 0`（pre-migration
+payload，年龄不可知）同样重读。年龄用 **Redis TIME** 判定，与期限同一时钟源。
+
+**5s 的依据**：常见路径 ~6ms，远小于 5s ⇒ 稳态下护栏**从不触发**，优化照常生效；
+它只针对「请求在队列里等了几秒」这个尾部。**它不是期限旋钮**（期限是 3600s，
+独立判定）。
+
+### 10.2 复审发现的第三个问题：年龄护栏把往返数又加了回去（已修）
+
+上面 10.1 的修法第一版有个更隐蔽的问题，**第一轮没发现，做往返核算时才发现**：
+年龄检查为了「决定是否信任快照」而**自己先采一次 Redis TIME**，期限检查再采一次。
+
+实测往返数：
+
+| 场景 | 往返数 |
+|---|---|
+| 改动前 | MGET + GET + TIME = **3** |
+| 该版·透传命中 | MGET + TIME + TIME = **3**（没省） |
+| 该版·快照被拒 | MGET + TIME + GET + TIME = **4**（更差） |
+
+⇒ **§九 宣称的「2→1」在加了护栏后已不成立，净收益是 0。**
+而且**所有既有判据仍然全绿**——「GET 没了」成立、「TIME 仍被调用」也成立。
+这个改动把省下的往返又还了回去，没有一条用例发现。
+
+**根因是判据形态**：「昂贵的命令是否消失」这种问法，**抓不住新增一条便宜命令**。
+只有**预算**能抓。
+
+**修法**：年龄检查与期限检查都只需要标量 `now`，且都必须在 state 之后采样，
+所以**合并成同一次采样**（不是提前采样——那会撞上 10.3 的顺序问题）。
+修正后实测：透传命中 `GET=0 TIME=1`，无透传 `GET=1 TIME=1`，快照被拒 `GET=1 TIME=2`。
+
+**新增预算判据**（`TestAudit_PrefetchHitStaysWithinRoundTripBudget` 等 3 条），
+变异 M7（把多出来的 TIME 加回去）判红 2 条。
+
+### 10.3 我一度引入的退化：TIME 采样顺序（已修，且被既有门抓住）
+
+第一版修法把 Redis TIME 提到函数最前面，想让「年龄检查」与「期限检查」共用一次
+往返。**这破坏了既有门守护的性质**：`TestF04_CapabilityReadRechecksRedisTimeAfterStateFetch`
+当场变红——它要求 TIME 必须在 state 读**之后**采样，才能发现「GET 与 TIME 之间
+跨过的到期」。
+
+**这是一次真实的自证**：上一轮我把这个用例当作「钉住 Redis TIME 决策」的证据，
+本轮它又反过来抓住了我在同一决策上的一个错误实现。**顺序是承重的，不是风格问题。**
+已回滚为「先读 state，后采样 TIME」，并把理由写进函数注释（含「不要优化这个顺序」的警告）。
+
+### 10.4 审计的判据自身也有一个洞（M6 逼出来的）
+
+新护栏写完后做双向变异自检：
+
+| 变异 | 期望 | 实际 |
+|---|---|---|
+| M5 删掉年龄护栏（永远信任快照） | 红 | ✅ 红 2 条 |
+| M6 护栏收紧到 0（永远重读＝优化整个关闭） | 红 | ❌ **全绿** |
+
+M6 漏网暴露的是**判据形态问题**：只钉「该拒的拒了」的门，在「全都拒了」时照样绿。
+补 `TestAudit_AgeGuardMustNotDisableTheOptimisation` 后**仍绿**——第二次排查发现
+根因更细：护栏写成 `now - updatedAt > 0`，而我的测试里 `now == updatedAt`（同一秒），
+`0 > 0` 为假 ⇒ 快照仍被采信。必须让快照**明确 1 秒以上但仍在上限内**才能区分
+「采信」与「全拒」。**判据的场景形状没对上被测表达式的边界。**
+
+修正后 M5/M6 双向均判红。⇒ 这条补出来的门与 M5 那批**互补**，缺一不可。
+
+### 10.5 审计确认没有问题的部分（如实记账，避免下轮重复怀疑）
+
+- **优化在生产主路径上确实生效**：`dispatchForward` 先把 candidate 压成
+  `CredentialRef`（该结构只带标量，**会丢掉快照**），随后**按 CredentialID 从
+  `d.candidates` 取回完整 candidate**（`executor_dispatch.go:210-217`），
+  快照随之回来。`TestAudit_DispatchRefRoundTripKeepsSnapshot` 钉住这一环。
+  ⇒ 若将来有人把那次「按 ID 取回」改成只用 ref，**本轮优化会静默失效且功能仍正确**。
+- **闸门在重试循环外**：`executor_chat.go` 闸门在 448 行，重试循环在 690 行，
+  一次请求只判定一次。⇒ 快照窗口不含退避重试时长。
+- **零值 state 不是 nil**：`GetNodeStatesBatch` 对不存在的键返回**零值 NodeState**。
+  零值快照与 nil 回退读出结果一致（都是 unknown），`TestAudit_ZeroValuedSnapshotIsNotNil` 钉住。
+- **无结论的快照仍是 unknown**：`capabilities` 为空的快照不得被当成「有结论取默认值」。
+- **过期结论不得被快照续命**：`TestAudit_ExpiredVerdictInSnapshotIsNotHonoured`。
+
+### 10.6 本轮未做 / 仍未验
+
+- **仍未部署**，无任何生产侧结论；`request_logs_hot` 交叉核对 N/A。
+- `prefetchMaxAgeSec=5` 是**工程判断，不是实测分布**。上线后若 dispatch 排队
+  P99 超过 5s，这个优化会在尾部失效（退化为每次重读，功能正确、收益减少）。
+  **建议观测**：统计「快照被年龄护栏丢弃」的比例，目前**没有埋点**（见 §十一）。
+- 其余遗留见 §9.5（TIME 搭车 / 每日探测预算 / 流式能力位 / 多实例并发）。
+
+## 十一、下一轮建议（本轮新增）
+
+1. **给年龄护栏加埋点**：`node_state_prefetch_dropped_total{reason=stale|unstamped}`。
+   没有它就无从判断 5s 这个数字是否合适——而 5s 是本轮唯一**未经实测校准**的参数。
+2. **TIME 搭车**（§9.5 第 1 条）：Lua 脚本一次返回 `TIME` + states。
+   ⚠️ 但要先想清楚：它会与 §10.3 的「TIME 必须在 state 之后采样」冲突吗？
+   同脚本同快照时**不冲突**（无跨命令窗口），但这需要一条判据证明，而不是推理。
