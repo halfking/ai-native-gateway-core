@@ -86,21 +86,28 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 	"bg/credential_recovery.go": {
 		Feeds: "凭据恢复授权：lookbackCandidateSQL 选出「36h 内有成功流量」的降级/离线绑定",
 		Live:  true,
-		Gated: false,
+		Gated: true,
 		Evidence: "SELECT 1 FROM request_logs_hot rl\n" +
 			"\t\t          WHERE rl.credential_id = cmb.credential_id\n" +
 			"\t\t            AND COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name\n" +
 			"\t\t            AND rl.success = TRUE",
-		BlastRadius: "ursmRecoverSink(..., success=true, 0) —— URSM v2 的 Recover(30) 写入，" +
-			"外加 dispatchProbe 与候选缓存失效。代码注释原文：「success=true is justified by " +
-			"the SQL predicate」。",
+		BlastRadius: "",
 		Note: "**本表最重的一条。** 两段后果，第二段比第一段危险：\n" +
 			"  ① 停写 36h 后候选集恒空 → `if len(candidates) == 0 { return }` 静默返回，" +
 			"无日志无告警，降级凭据只能等自身探针恢复；\n" +
 			"  ② **停写后 36h 内仍在用停写前的陈旧成功记录授权恢复写入**——失效方向是" +
 			"**继续放行**，不是停止。\n" +
 			"与 2026-10-02 修掉的 s4_ready 真空为绿同族：门控的前提消失后仍给出许可，" +
-			"而这次许可的对象是凭据可用性。",
+			"而这次许可的对象是凭据可用性。\n\n" +
+			"**2026-10-02 §9.37 订正：上面两条后果都已经不存在了，本条此前登记为 Gated:false，是过期的。** " +
+			"护栏 `lookbackComparability`(:1799-1804) 由 `9b8424fd8`（14:00，§9.23「36h lookback 恢复扫描的静默洞」）" +
+			"引入，晚于本登记条目最后一次改写（`b585c036e`，11:55）**2 小时 5 分**，同样是" +
+			"「护栏加对了、登记表没跟上」。本轮独立核对：护栏在 `scanLookbackRecoveries` 的 :1926，" +
+			"`return` 在 :1933，而 SQL 在 **:1939** 才发出、中间无别的入口 ⇒ 停写时这条授权**根本不会被计算**。\n\n" +
+			"BlastRadius 已清空：停写期间 `ursmRecoverSink` 不会被这条路径调用。\n\n" +
+			"**但清空不等于无事**——护栏的 `slog.Info` 说明「本轮未执行，非『无候选』」，" +
+			"而 `SkippedChecks()` 的生产消费者**只有测试** ⇒ 停写期间这个扫描在空跑这件事" +
+			"仍然只有日志、**没有指标与告警**。护栏把危险动作停了，把「为什么没动作」留在了日志里。",
 	},
 	"domains/hooks/observability/telemetry/client.go": {
 		Feeds: "会话身份与轮次序号：FindRecentGatewaySession 决定无 id 请求复用哪个会话；lookupTurnNumber 决定 outbox 事件里的 turn_no",
@@ -241,10 +248,24 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 	"bg/ledger_reconciliation.go": {
 		Feeds:       "request_logs_hot 对账证据 → maas_reconciliation_findings（INSERT）",
 		Live:        true,
-		Gated:       false,
+		Gated:       true,
 		Evidence:    "FROM request_logs_hot",
-		BlastRadius: "`INSERT INTO maas_reconciliation_findings`（:336）——对账发现，驱动告警/处置。",
-		Note:        "写入的是**观察记录**而非直接改凭据，但 findings 会驱动下游处置，故判 live。",
+		BlastRadius: "",
+		Note: "写入的是**观察记录**而非直接改凭据，但 findings 会驱动下游处置，故判 live。\n\n" +
+			"**2026-10-02 §9.37 订正：本条此前登记为 Gated:false，是过期的。** " +
+			"护栏由 `dfd4da2f1`（13:35，§9.19 对账器跨 S4 门影响半径）引入，" +
+			"晚于本登记条目最后一次改写（`b585c036e`，11:55）约 1 小时 40 分，" +
+			"而**没有任何一道门把 Gated 与代码里的实际护栏对照** ⇒ 护栏加对了，登记表对外仍在说「门管不到」。\n\n" +
+			"订正后的依据（本轮独立核对）：`usageCreditComparability`(:327-332) 在 !logsWriteEnabled 时返回 " +
+			"`(false, usageCreditSkipS4StopWrite)`；`checkUsageCredit` 的**首行**就是 " +
+			"`if ok, reason := usageCreditComparability(settings.RequestLogsWriteEnabled()); !ok { " +
+			"r.markSkipped(reason); slog.Info(...); return 0 }`（:377-384），" +
+			"而 SQL 在 :386 才发出 ⇒ **查询一次都不发**。BlastRadius 已清空：该字段的定义是「它授权/改变的具体写入」，" +
+			"停写期间这次 INSERT 根本不会发生。\n\n" +
+			"**遗留缺口（不在本档范围）**：`SkippedChecks()`(:94-101) 是机器可读的「本轮未执行」通道，" +
+			"但全仓 grep 到的消费者**只有测试**（bg/ledger_reconciliation_s4_gate_test.go、" +
+			"bg/credential_recovery_s4_gate_test.go）⇒ 返回值 0 在计数上仍与「扫了没发现差异」不可区分，" +
+			"停写期间只看 findings 计数会显示「账务无差异」。**护栏把查询停了，但停没停没人看得见。**",
 	},
 	"bg/model_tier.go": {
 		Feeds:    "request_logs_hot 流量 → IsFeaturedModel() 的分层结果 → 路由",
@@ -295,17 +316,28 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 	},
 	// ── 第二批：2026-10-02 逐个核实 ───────────────────────────────────────
 	"discovery/discovery.go": {
-		Feeds:    "request_logs 的「近期无成功」→ UPDATE model_offers SET available=FALSE（禁用写入）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "SELECT 1 FROM request_logs rl",
-		BlastRadius: "`UPDATE model_offers SET available = FALSE, " +
-			"unavailable_reason = 'auto_discovery_expired'`（:1112）——把凭据上的模型下架。",
-		Note: "**本表方向最危险的一条。** 它与 credential_recovery 同形但方向相反，" +
-			"而且是**否定式守卫**：`NOT EXISTS (… rl.success = TRUE AND rl.ts > now() - interval 'N hours')`。" +
-			"停写后 NOT EXISTS **恒真** ⇒ 无论模型是否真的在用，都会被判为 auto_discovery_expired " +
-			"而下架。这不是「恢复变慢」，是**主动禁用仍在工作的凭据模型**。" +
-			"失效方向与 s4_ready 真空为绿同族，但后果更重：写的是可用性，且无异常、无告警。",
+		Feeds:       "request_logs 的「近期无成功」→ UPDATE model_offers SET available=FALSE（禁用写入）",
+		Live:        true,
+		Gated:       true,
+		Evidence:    "SELECT 1 FROM request_logs rl",
+		BlastRadius: "",
+		Note: "**2026-10-02 §9.37 订正：本条此前登记为 Gated:false，是过期的。** 过期原因有迹可循：登记表由 " +
+			"`af4ef4b32`（12:14）写入，护栏由**更晚**的 `e52687954`（12:25，§9.12「修 discovery 误下架 —— " +
+			"否定式守卫在证据消失时必须不动」）加上，而**没有任何一道门把 Gated 字段与代码里的实际护栏对照** ⇒ " +
+			"护栏加了就绿，登记表不动。现已改为 Gated:true。\n\n" +
+			"订正后的依据：`expireStaleModels` 在 :1110 有显式短路 " +
+			"`if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire { " +
+			"slog.Info(...); return }`，而 `staleExpiryMayRun`(:1091-1096) 在 !requestLogsWritable 时返回 " +
+			"`(false, staleExpiryBlockedS4Reason)` ⇒ 整段 stale 下架（含伴生的 credential_model_bindings 写）" +
+			"**在发查询之前就短路了**，:1160 的读点根本不会执行。护栏由 discovery/stale_expiry_gate_test.go 钉住，" +
+			"停写时 slog 留有 reason + would_expire 三字段，灰度可见。\n\n" +
+			"**为什么 BlastRadius 被清空**：该字段的定义是「Live && !Gated 时必填 —— 它授权/改变的具体写入是什么」。" +
+			"Gated 变 true 之后，这次写入在停写期间**根本不会发生**，留着旧的 BlastRadius 等于对外声明一件" +
+			"已经不存在的事。\n\n" +
+			"**保留原失效形态的记录，因为它仍是最锋利的那个**：若护栏被误删或改坏，退化路径就是 " +
+			"`NOT EXISTS (… rl.success = TRUE AND rl.ts > now() - interval 'N hours')` 在证据消失后**恒真** ⇒ " +
+			"无论模型是否真的在用都被判 auto_discovery_expired 而下架。不是「恢复变慢」，是**主动禁用仍在工作的" +
+			"凭据模型**，无异常、无告警。与 s4_ready 真空为绿同族，但后果更重。",
 	},
 	"cmd/gateway/output_compliance_control.go": {
 		Feeds:       "request_logs 的 api_key_owner_user → 输出脱敏的 owner 判定",

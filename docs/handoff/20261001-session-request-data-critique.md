@@ -1615,3 +1615,78 @@ abandon 视界。v1 被退役后 `42P01` 映射成 `reason:"absent"` 而不是 5
    「`Gated` 必须与代码里的实际 S4 护栏对照」的断言**。
 4. `auto_route_settle_worker` 的**正确修法**（改读会话族）仍未做——
    §9.35 只让它**可见**，没让它**正确**。
+
+---
+
+## 第二十轮（§9.37）：`Gated` 字段**从来不被验证** —— 补门 + 三条过期记录
+
+§9.36.4 记的第 1 条相邻缺陷，查到底发现**不是孤例**。
+
+### 洞：`Gated` 是个装饰字段
+
+`requestLogsControlPlaneReaders` 每条有 `Gated bool`（该消费方是否被 S4 写门覆盖）。
+本轮核对确认：**此前没有任何一道门验证过它**。既有门只核三件事——Evidence 非空、
+Evidence 逐字存在、`Live && !Gated` 时 BlastRadius 非空。**`Gated` 自己从不被读。**
+
+### 后果已发生三次，形状完全一样
+
+| 条目 | 护栏引入 | 登记表最后改写 | 差 |
+|---|---|---|---|
+| `discovery/discovery.go` | `e52687954` 12:25 | `af4ef4b32` **12:14** | 晚 11 分 |
+| `bg/credential_recovery.go` | `9b8424fd8` 14:00 | `b585c036e` **11:55** | 晚 2h05m |
+| `bg/ledger_reconciliation.go` | `dfd4da2f1` 13:35 | `b585c036e` **11:55** | 晚 1h40m |
+
+先写登记（`Gated:false` + 描述失效形态的 Note）→ 后加护栏 → **门全绿、登记表不动**。
+`discovery` 的 Note 至今写着「**本表方向最危险的一条**…主动禁用仍在工作的凭据模型」，
+**而那件事已被修掉**。这张表当时在对外说假话，没有任何门会发现。
+
+**为什么没人发现**：三条都符合既有门的所有判据（Evidence 仍在、BlastRadius 仍非空），
+**只有 `Gated` 这一个字段是凭记忆写的，而它是唯一不被检查的那个。**
+
+### 补的门
+
+`TestControlPlaneGatedFlagAgreesWithCode` —— 默认拒绝 + 具名豁免：
+文件（**剥 Go 注释与 SQL 注释后**）出现 S4 门控标识符 ⇒ 必须 `Gated:true` 或具名登记。
+配套 `TestGatedFlagExemptionIsNotStale` 查反方向（失效的豁免比没有豁免更坏）。
+
+**不一刀切禁止**：「文件里有护栏」**不能**推出「登记的读点被门控」——
+护栏可能在别的读点上、可能在调用方。**把「在」报成「不在」比没有门更坏。**
+
+### 写门时我自己踩的假阳性面
+
+第一版只剥 Go 注释，在 `bg/auto_route_affinity_worker.go` 上误报——
+**那层注释藏在 raw string 里的 SQL 注释**（`-- settings.KeyRequestLogsWriteEnabled …`），
+而那个文件**根本没有 Go 层护栏**。⇒ 第一版会**逼人写假豁免**。
+已改三段剥离，SQL 段**复用包内已有的 `stripSQLLineComments`**（不另起同名正则，避免编译冲突）。
+
+### 逐条裁定：3 条要豁免，3 条要订正
+
+- **豁免**（`Gated:false` 本来就对）：`internal/trace/trace.go`（护栏在 `FlushToPG` 护写点，
+  读点在独立函数 `LoadFromPG`）、`telemetry/client.go`（护栏**全在写路径**，两个登记读点都不在其中）、
+  `auto_route_affinity_worker.go`（只有 SQL 注释，修好剥离后自动退出）。
+- **订正为 `Gated:true`**：`ledger_reconciliation`（护栏在 `checkUsageCredit` 首行，SQL 在其后发出）、
+  `credential_recovery`（`return` 在 :1933，SQL 在 :1939）、`discovery`（`staleExpiryMayRun` 消费于 :1110）。
+  三条都**清空了 `BlastRadius`**——停写期间那些写入根本不会发生，留着等于声明一件不存在的事。
+  并把「若护栏被回退，退化路径是什么」写进各自 Note：**护栏可被回退，Note 是那份路径的唯一记录。**
+
+### 变异 4/4，各命中不同门
+
+M1（复现 `af4ef4b32` 时的历史状态）红在 `:139`；M2 抽豁免红在 `:131`
+（**行号上移是因豁免被删了 8 行——两次行号不同恰恰说明两次变异都生效了**）；
+M3 红在 `:139`；M4 加失效豁免红在过期自检门 `:179`。
+
+*M1 第一版**没注入成功**（gofmt 改了对齐空格数，锚点没匹配，测试照常 ok）——
+**没生效的变异不是证据**，重做后才算数。*
+
+### 遗留的真缺口（本轮发现，下一件该做）
+
+`SkippedChecks()` 是机器可读的「本轮未执行」通道，`ledger_reconciliation` 与
+`credential_recovery` 都调用了它，而**全仓消费者只有测试**（两个 `*_s4_gate_test.go`）
+——没有 metric、admin 端点或告警。
+⇒ **护栏把危险动作停了，但「为什么没动作」只留在 `slog` 里**；返回值 0 在计数上仍与
+「扫了没发现差异」不可区分。这是 §9.36.3 的 19 条里 control-plane 三条中的第三条。
+
+### 仍未做
+
+`auto_route_settle_worker` 的**正确修法**（改读会话族）——§9.35 只让它可见，没让它正确。
+族分类器的 `id` 误触发（需加表归属，可一次性消掉 6 条假论证）也仍未做。
