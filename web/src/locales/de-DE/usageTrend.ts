@@ -3,6 +3,7 @@ export default {
   pageTitle: 'Nutzungstrend-Analyse',
   pageSub: 'Nutzung je Modell über die Zeit; Filter nach Anbieter / Mandant / API-Key / Modell / Metrik',
   loadFailed: 'Laden fehlgeschlagen',
+  detailTimeoutHint: 'Beim Filtern nach API-Key werden Anfrageprotokolle gescannt, was bei großen Zeiträumen zu einem Timeout führen kann; bitte einen kürzeren Zeitraum (z. B. innerhalb von 7 Tagen) wählen',
   filterProvider: 'Anbieter',
   filterTenant: 'Mandant',
   filterApiKey: 'API-Key',
