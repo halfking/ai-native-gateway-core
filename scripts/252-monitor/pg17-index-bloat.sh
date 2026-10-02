@@ -27,7 +27,17 @@
 #     计入空页后 → 76.7MB。两种形态混用单一公式都会漏报。
 #
 #   可回收量 = deleted_pages + leaf_pages*(1-density/100)，单位页 × 8KB。
-#   该式是保守下界：样本 A 估 1.76MB，实测回收 2.49MB（偏低，安全方向）。
+#
+#   ★ 这个数是「上界」不是「期望值」（2026-10-03 生产实测校准）：
+#     retention 批量删除型（request_state_transitions_pkey）
+#       估 76MB → 实收 77MB，比值 0.99x。预估模型与实际机制同构，很准。
+#     零散 churn 型的大表（ursm_node_snapshot_min_pkey, 1987 万行）
+#       估 132MB → 实收 46MB，比值 2.87x。
+#       该表 89.14% 密度，未用空间分散在 15.6 万个叶页里；REINDEX 只能合并
+#       相邻键范围的页，不能重排行序，所以回收远小于「密度×体积」的直算。
+#   ⇒ leaf_pages 分散在大表上时，本式严重高估。
+#     但它仍可用于**排序**（相对大小有意义），不要拿来当收益承诺。
+#     日志里的 headroom 措辞用「≈」也是为此。
 #
 # === 报告型判据必须能区分「没有」与「没测到」===
 #   逐索引超时/报错单独计入 unmeasured 并在汇总里显式出现；
@@ -208,6 +218,11 @@ fi
 # 抢不到锁就记 FAILED 跳过，不排队阻塞后续索引。
 if [ "$MODE" = "fix" ] && [ "$flagged" -gt 0 ]; then
   done_count=0; reclaimed_mb=0
+  # 按 headroom 降序，不按索引体积降序（候选集是按体积排的）。
+  # 二者会选出不同的前 N：体积第 4 大的候选是 idx_route_incident_events_type_created
+  # (111MB/54MB)，而 headroom 第 4 大是 idx_state_transitions_created (93MB/75MB)。
+  # MAX_FIX_PER_RUN 的意义是「先做最值钱的几个」，所以必须按 headroom 排。
+  flag_list=$(printf '%s' "$flag_list" | grep . | sort -t'|' -k2,2nr)
   while IFS='|' read -r idx headroom_mb reason; do
     [ -z "$idx" ] && continue
     if [ "$done_count" -ge "$MAX_FIX_PER_RUN" ]; then

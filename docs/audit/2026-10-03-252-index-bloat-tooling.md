@@ -236,6 +236,57 @@ V1/V2 用的是同一份数据造出的两个索引，只让「是否 REINDEX �
 `00:34:01` 为旧判据，`00:38:52` 为新判据。上表已按此分离后统计。
 **本节数字若不分離直接汇总，会得到一个不存在的 21 个命中 / 1,091 MB。**
 
+## 6b. 首批 `--fix` 实执行（4 个索引，用户选定批次）
+
+`MAX_FIX_PER_RUN=4 ... pg17-index-bloat.sh --fix`，逐索引 before/after 记录在日志中。
+
+| 索引 | 重建前 | 重建后 | 实收 | 预估 headroom | 预估/实收 |
+|---|---|---|---|---|---|
+| `ursm_node_snapshot_min_pkey` | 1,230 MB | 1,184 MB | 46 MB | 132 MB | **2.87×** |
+| `uq_route_incident_events_idem` | 222 MB | 142 MB | 80 MB | 91 MB | 1.14× |
+| `request_state_transitions_pkey` | 94 MB | 17 MB | 77 MB | 76 MB | 0.99× |
+| `idx_state_transitions_created` | 93 MB | 17 MB | 76 MB | 75 MB | 0.99× |
+| **合计** | | | **277 MB** | 374 MB | |
+
+库 22.75 GB → 22.49 GB；磁盘 83G/197G = 44%，可用 107 GB。
+
+### headroom 预估的适用边界（本次新增的校准）
+
+`deleted_pages + leaf_pages×(1-density/100)` **在 retention 批量删除型索引上极准**（0.99×），
+因为预估模型与实际机制同构：全空页 REINDEX 直接丢弃。
+
+但在**零散 churn 型大表上严重高估**：`ursm_node_snapshot_min_pkey` 估 132 MB、实收 46 MB（2.87×）。
+该表 1,987 万行、89.14% 密度，未用空间分散在 15.6 万个叶页里；
+REINDEX 只能合并相邻键范围的页，**不能重排行序**，所以回收远小于「密度×体积」的直算。
+
+⇒ **结论：headroom 是上界，不是期望值。它可用于排序（相对大小有意义），不能当收益承诺。**
+脚本注释与日志措辞（`≈`）已按此收紧。
+
+### 验证
+
+- 4/4 `indisvalid=t`、`indisready=t`
+- 锁等待 0
+- 重建后复测 `request_state_transitions_pkey`：`deleted_pages` 9,571 → **0**，密度 90.08
+- 写入面全程持续推进（REINDEX 期间及之后）：
+  `request_logs_hot` / `request_state_transitions` 最新写入 01:44:55，
+  `ursm_node_snapshot_min` 01:42:58
+
+### 两处过程中的误判（如实记录）
+
+1. **`request_logs` 近 10 分钟 0 条，一度以为写入面停了。** 实为查错了：该表时间列是 `ts`
+   不是 `created_at`，且 `request_logs`（父表/历史分区）与 `request_logs_hot` 是两套。
+   真正活跃的是 `_hot`，其最新写入就在查询当时。
+   *判「写入面是否活着」必须逐表确认时间列名，不能凭表名猜。*
+2. **252 本机 `llmgo-252-dev.service`(:8780) readyz 返回 503 `{"redis":null}`。**
+   与本轮无关：该服务 10-01 05:19 启动至今 `NRestarts=0`，`.env.dev` 中 redis 配置项数为 0
+   （dev 实例本就未接 redis），503 是其常态。
+
+### 未验证项
+
+**`.209` / `.241` 两台生产 canary 的 readyz 本轮未能复核** —— 从 252 跳板 SSH 被拒
+（`kex_exchange_identification: Connection closed by remote host`）。
+本轮动作只重建索引、不动服务，风险低，但该状态仍需另行确认。
+
 ## 7. 部署状态与待决事项
 
 - 服务器已放 `/opt/scripts/pg17-index-bloat.sh`（755），**只跑过 `--report`**。
