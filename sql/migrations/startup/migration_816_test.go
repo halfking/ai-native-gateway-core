@@ -48,12 +48,20 @@ func TestMigration816ProjectsClientIPWithGuard(t *testing.T) {
 	}
 
 	// ② 守卫：必须有，且必须包住那次转换。
+	//
+	// ⚠️ **本门守的是 816 的形态，不是「守卫已足够」**。816 的字符类正则只挡得住
+	// 非字符集的垃圾；`192.168.1` / `deadbeef` / `1.2.3.4.5.6` / `:::` 全部通过它，
+	// 然后死在 `::inet` 上并打挂整条 canonical 视图的每一个读方（真库实测）。
+	// 由 **817** 换成 `pg_input_is_valid(v,'inet')`（审计 §9.64）。本门仍然有用：
+	// 它守的是「816 这个历史形态不许被偷改」，而 817 有自己那道门守新形态。
 	guard := regexp.MustCompile(`CASE\s+WHEN\s+t\.client_ip\s*~\s*'\^\[0-9a-fA-F:\.\]\+\$'\s+THEN\s+t\.client_ip::inet\s+END`)
 	if !guard.MatchString(proj) {
 		t.Errorf("816 的 client_ip 投影丢了 CASE 守卫（或守卫的正则被改动）。\n" +
 			"session_turns.client_ip 是 **text**、无类型约束，无守卫的 `::inet` 遇到一个畸形值" +
-			"会抛错并打挂整条 canonical 视图的每一个读方。真库实测守卫把 `garbage`、" +
-			"`1.2.3.4, 5.6.7.8`（多跳 XFF 链）、`''` 全部落成 NULL 而不是报错。\n实际片段：%s",
+			"会抛错并打挂整条 canonical 视图的每一个读方。\n" +
+			"**注意别把这条门读成「守卫已足够」**：816 的字符类守卫本身不够，" +
+			"字符类合法但语义非法的值（192.168.1 / deadbeef / :::）它一个都挡不住 —— " +
+			"真正的语义判据在 817（审计 §9.64）。\n实际片段：%s",
 			clientIPLine(proj))
 	}
 

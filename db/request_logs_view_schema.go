@@ -485,12 +485,24 @@ var projectionExprsV2 = []string{
 	// 本机那条「两列 100% 相同 ⇒ 它是转发头副本」的旧裁决已被证伪——本机全库
 	// client_forwarded_for 只有 6 个 distinct 取值、多跳链路 0 条，零分辨力。
 	//
-	// 为什么带 CASE 守卫而不是直转：session_turns.client_ip 是 **text**，没有类型
+	// 为什么带守卫而不是直转：session_turns.client_ip 是 **text**，没有类型
 	// 约束，一个畸形值会让 `::inet` 抛错并**打挂整条 canonical 视图的每一个读方**。
-	// 守卫与本投影已有的 application_id / api_key_id / credential_id 转换同款，
 	// 代价是「畸形 → NULL」而不是「整条查询报错」。
-	// 实测支撑：252 近 30 天 18,870 行全部匹配该正则且 client_ip::inet 全部可转。
-	"(CASE WHEN t.client_ip ~ '^[0-9a-fA-F:.]+$' THEN t.client_ip::inet END)",
+	//
+	// **守卫判据在 817 换成 pg_input_is_valid**（审计 §9.64）。816 用的是字符类
+	// 正则 `^[0-9a-fA-F:.]+$`，它**只挡住非字符集的垃圾**：
+	// `192.168.1` / `deadbeef` / `1.2.3.4.5.6` / `:::` / `...` / `999.1.1.1`
+	// **全部通过那个正则**，然后在 `::inet` 上抛错——真库实测已复现。
+	// 我在 §9.61 报过一张守卫行为表（garbage / 多跳链 / 空串 全落 NULL），
+	// **那张表只测了字符类不合法的值，于是给了「守卫已覆盖」一个过宽的结论**。
+	// `pg_input_is_valid(v,'inet')`（PG 16+，本仓一致跑 PG 17）是**完整的语义
+	// 判据**：同一批坏值 192.168.1→f、deadbeef→f、':::'→f，而 '1.2.3.4' 与
+	// '2a06:98c0:3600::103'→t。
+	//
+	// 写方侧也补了一道 net.ParseIP（并行会话，origin_mw.resolveClientIP）——
+	// 但那**只保护新写入的行**：库里已有的值、以及任何别的写入方仍会进到这里，
+	// 所以读侧的语义判据不能省。
+	"(CASE WHEN pg_input_is_valid(t.client_ip, 'inet') THEN t.client_ip::inet END)",
 	// 813 追加尾列（§9.22）：三列的 session 侧源在 session_turns 上，且与 v1
 	// 逐值一致（真库 1,515,960 行同 request_id 配对实测 both_differ=0），
 	// 缺的只是「近窗覆盖率」——近 7 天 origin_stage/client_forwarded_for 已达

@@ -109,7 +109,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
 | `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
 | `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
-| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 809) |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 816) |
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 

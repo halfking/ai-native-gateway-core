@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/endpointselect"
@@ -192,8 +193,26 @@ type Candidate struct {
 	// and "no row" is a different answer from "row says false".
 	SupportsNativeResponsesKnown bool `json:"supports_native_responses_known,omitempty"`
 	// SupportsNativeResponsesStream is an independently verified native Responses SSE capability.
-	SupportsNativeResponsesStream bool   `json:"supports_native_responses_stream,omitempty"`
-	APIKey                        string `json:"-"`
+	SupportsNativeResponsesStream bool `json:"supports_native_responses_stream,omitempty"`
+	// RoutedNodeState (2026-10-02, vapeur 遗留 #3) is the node-state the ROUTER
+	// already read for this candidate, handed to the executor so the durable
+	// Responses gate does not re-read the same key.
+	//
+	// Why a pointer to a *routing-time snapshot* and not a fresh read: the
+	// router's filterHealthyNodes already issued one batched MGET covering every
+	// candidate (router.go filterHealthyNodes). The executor's capability gate
+	// then issued a second GET of the very same key, then a separate TIME.
+	// Passing the already-fetched state removes that second GET.
+	//
+	// nil means "the router did not run a health filter for this candidate"
+	// (authoritative URSM v2 path, FpSlots disabled, or the batch read failed
+	// open). Callers MUST fall back to their own read when it is nil — nil is
+	// "no snapshot", never "no verdict".
+	//
+	// json:"-" because this is a per-request routing artifact, not part of the
+	// candidate's persisted/SQL-projected shape.
+	RoutedNodeState *credentialfpslot.NodeState `json:"-"`
+	APIKey          string                     `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
 	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
