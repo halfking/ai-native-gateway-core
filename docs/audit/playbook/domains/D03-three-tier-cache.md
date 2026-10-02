@@ -35,6 +35,8 @@
 
 - [R36] provenance 写端三键（window_source/alignment_map_truncated/sanitize_refs_truncated）未进镜像白名单被静默丢弃（commit 声称"白名单已知"不成立）→ 白名单补键+safeWindowSource 有界过滤+读侧字段；sanitizer 锁降级必须 Warn 级（Debug 在生产不可见，竞态窗口重开无观测）
 
+- [R33 2026-10-03] diff 引擎 Anthropic 车道结构性 fail-open（WP-2 审计登记，升级自「OpenAI 带前导 system」单点声明）：① 摘要驻顶层 system 字段而 hasGatewaySummary 只扫 messages[] 的 content ⇒ Anthropic 恒走「无摘要→严格前缀匹配」分支，压缩后下一轮锚点必失配、每轮 fail-open 全量重发+重压缩（成本问题，无数据丢失；本轮修复的 delta 增益在 Anthropic 车道结构性拿不到）；② system 为非空 string 形态时 injectSummaryMarker 静默 no-op（rebuilder_anthropic 把摘要追加在原文之后，markerizeAnthropicSystem 要求整串以前缀开头）。证据 diff.go:195-227/367-391、session_compressor.go:1234-1239、rebuilder_anthropic.go:104-108。待 diff 引擎专项收口（与 OpenAI 前导 system 边界同一专项）
+
 ## 5. 子代理派发提示词
 
 ```text

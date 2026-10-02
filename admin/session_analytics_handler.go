@@ -327,8 +327,10 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 	countQuery := "SELECT COUNT(*) FROM session_summaries ss" +
 		" LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key" + where
 
+	// make 非 nil：api-yaml 声明 type: array，空窗返回 [] 而非 null
+	// （60b372bd7 同族，R33 审计补齐本端点）。
 	var (
-		sessions []AnalyticsSessionSummary
+		sessions = make([]AnalyticsSessionSummary, 0)
 		total    int
 	)
 	err = h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {

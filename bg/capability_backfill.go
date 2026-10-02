@@ -27,6 +27,10 @@
 //  3. **只作用于非流式。** 探测器发的是一次非流式 /v1/responses
 //     单请求，能力键只有 native_responses_nonstream 一个。流式腿无证据，
 //     永不外推 —— 迁移 613 为此专门把 stream 拆成独立键，本任务不碰它。
+//
+// 运行经济性（R33 审计 2026-10-03 补）：蓝绿单跑选举（SetDistLock）、
+// 无证据绑定的进程内 attempt 退避 + 扫描窗口放大（反饥饿）、出网 body 用
+// outbound 名（node_probe 同款口径）。
 package bg
 
 import (
@@ -36,10 +40,12 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
@@ -59,11 +65,30 @@ const (
 	// 的 Redis 侧寿命是 3600s（nodeCapabilityTTLSec），SQL 侧没有 TTL，
 	// 过期与否由本字段显式承担。
 	capabilityBackfillStaleAfter = 6 * time.Hour
-	// capabilityBackfillBatchLimit 限制单轮扫描行数，避免一次全表回填把上游
-	// 打爆。绑定数远大于它时，靠排序 + staleAfter 自然分批。
+	// capabilityBackfillBatchLimit 限制单轮**探测**行数（SQL 扫描窗口是它的
+	// scanLimit 倍），避免一次全表回填把上游打爆。绑定数远大于它时，靠排序
+	// + staleAfter + attempt 退避自然分批。
 	capabilityBackfillBatchLimit = 50
 	// capabilityBackfillProbeTimeout 限制单次探测的墙钟时间。
 	capabilityBackfillProbeTimeout = 20 * time.Second
+	// capabilityBackfillScanFactor：单轮扫描窗口 = 探测预算 × 该倍数。
+	// 「无证据不写」（约束 2）意味着无证据行在 SQL 侧永远处于 due 态且按
+	// NULLS FIRST 排在最前——窗口等于预算时，一批永远不产证据的绑定会把
+	// 每轮预算吃满，把已过期健康行的刷新永久饿死（R33 审计 #2 后果②）。
+	// 窗口放大后由内存侧 attempt 台账（见 capabilityBackfillAttemptBackoff）
+	// 把近期试过的行让位给同批后面的行。
+	capabilityBackfillScanFactor = 4
+	// capabilityBackfillAttemptBackoff 是内存台账里对一条绑定两次探测之间的
+	// 最小间隔。没有这层退避，「无证据」绑定每 30min 都被探一次（48 探/天）
+	// 而健康行只有 4 探/天——探测成本反转到失败侧（R33 审计 #2 后果①）。
+	// 台账是进程内的：重启即清空，最坏情况是重启后多探一轮，可接受。
+	capabilityBackfillAttemptBackoff = time.Hour
+	// capabilityBackfillAttemptLedgerMax 是台账的容量上限（防 map 无界增长；
+	// 绑定数远小于它，触顶说明台账里堆满了过期项，触发一次清扫）。
+	capabilityBackfillAttemptLedgerMax = 16384
+	// capabilityBackfillDistLockTTL 是蓝绿单跑选举的持锁时长：周期 30min、
+	// 最坏一轮 ~50 探 × 20s ≈ 17min，25min 保证正常一轮内不换主。
+	capabilityBackfillDistLockTTL = 25 * time.Minute
 )
 
 // CapabilityBackfillEnvKillSwitch 置为 0/false/off/no 即关闭本任务。
@@ -88,6 +113,13 @@ type CapabilityBackfill struct {
 	interval   time.Duration
 	staleAfter time.Duration
 	batchLimit int
+	distLock   distlock.Manager
+
+	// attemptsMu/attempts 是进程内「已试过」台账：BindingID → 最近一次真实
+	// 出网探测时刻。只有真正出过网才记账（admission 拒绝的不记——它们没有
+	// 出网成本，复活后应立刻可探）。
+	attemptsMu sync.Mutex
+	attempts   map[int64]time.Time
 
 	// probe 缺省走 singleResponsesPing。测试可以换掉它，但换掉之后测的就不再
 	// 是「真实上游帧 → 真实判定」这条链。
@@ -118,12 +150,30 @@ func NewCapabilityBackfill(
 				return httpProbeResult{status: "skipped", category: probeCategorySkipped,
 					errCode: "endpoint_unresolved", errMsg: "empty base_url"}
 			}
-			return singleResponsesPing(ctx, endpoint, target.APIKey, target.RawModel,
+			// 出网 body 用 outbound 名，raw 名只用于日志——node_probe.probeDirect
+			// 的同款约定（"Use the outbound name for the upstream body; fall back
+			// to the raw name"）。对 outbound≠raw 的映射型中转（vapeur 类），用
+			// raw 名探测会 404 model_not_found，而 404 不含 "responses api" 字样
+			// → 判不出 ResponsesUnsupportedError → 永远产不出证据（R33 审计 #3）。
+			modelField := target.OutboundModel
+			if modelField == "" {
+				modelField = target.RawModel
+			}
+			return singleResponsesPing(ctx, endpoint, target.APIKey, modelField,
 				desc, target.CredentialID, target.RawModel)
 		},
 		scan:    nil, // 构造后由 Run/BackfillOnce 绑到 b.dueBindings
 		persist: nil,
 	}
+}
+
+// SetDistLock 接线蓝绿单跑选举（与 CallHistoryAggregator.SetDistLock 同契约：
+// Start/Run 前调用；字段被 sweep goroutine 无同步读）。nil / 未启用 / Redis
+// 故障时 acquireSweepDistLock 返回 nil，行为与本接线之前完全一致（双实例各
+// 跑各的）——这是既有 sweep 族的统一降级路径。没有它，回填是本任务特有的
+// 出网成本项，双实例双跑意味着上游调用翻倍（R33 审计 #1）。
+func (b *CapabilityBackfill) SetDistLock(mgr distlock.Manager) {
+	b.distLock = mgr
 }
 
 // Run 是周期循环。停机由 ctx 取消驱动，与其它 bg worker 一致。
@@ -255,6 +305,13 @@ func (b *CapabilityBackfill) BackfillOnce(ctx context.Context) (int, error) {
 	if b == nil {
 		return 0, nil
 	}
+	if h := acquireSweepDistLock(ctx, b.distLock, "capability_backfill", capabilityBackfillDistLockTTL, "capability_backfill"); h != nil {
+		defer h.Release(context.WithoutCancel(ctx))
+		if !h.IsLeader() {
+			slog.Debug("capability_backfill: follower instance skips cycle")
+			return 0, nil
+		}
+	}
 	scan := b.scan
 	if scan == nil {
 		if b.db == nil {
@@ -267,8 +324,20 @@ func (b *CapabilityBackfill) BackfillOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	written := 0
+	probed := 0
+	backedOff := 0
 	for _, row := range rows {
-		ok, err := b.probeAndPersist(ctx, row)
+		if probed >= b.batchLimit {
+			break
+		}
+		if b.attemptedRecently(row.BindingID) {
+			// 台账退避：这行近期真的出过网（多半没拿到证据）。不消耗本轮
+			// 预算，让同批后面的行顶上——这正是扫描窗口取 batchLimit×4 的
+			// 意义（反饥饿）。
+			backedOff++
+			continue
+		}
+		ok, didProbe, err := b.probeAndPersist(ctx, row)
 		if err != nil {
 			slog.Warn("capability_backfill: binding skipped",
 				"binding_id", row.BindingID,
@@ -277,12 +346,59 @@ func (b *CapabilityBackfill) BackfillOnce(ctx context.Context) (int, error) {
 				"error", err)
 			continue
 		}
+		// admission 拒绝的行既不出网也不耗预算；预算只数真实探测。
+		if didProbe {
+			probed++
+		}
 		if ok {
 			written++
 		}
 	}
-	slog.Info("capability_backfill: cycle done", "scanned", len(rows), "written", written)
+	slog.Info("capability_backfill: cycle done",
+		"scanned", len(rows), "probed", probed, "written", written,
+		"backed_off", backedOff, "budget", b.batchLimit)
 	return written, nil
+}
+
+// attemptedRecently 报告这条绑定是否处于出网退避期内。
+func (b *CapabilityBackfill) attemptedRecently(id int64) bool {
+	b.attemptsMu.Lock()
+	defer b.attemptsMu.Unlock()
+	t, ok := b.attempts[id]
+	return ok && time.Since(t) < capabilityBackfillAttemptBackoff
+}
+
+// recordAttempt 记一次真实出网探测。
+func (b *CapabilityBackfill) recordAttempt(id int64) {
+	b.attemptsMu.Lock()
+	defer b.attemptsMu.Unlock()
+	if b.attempts == nil {
+		b.attempts = make(map[int64]time.Time)
+	}
+	if len(b.attempts) >= capabilityBackfillAttemptLedgerMax {
+		for bid, t := range b.attempts {
+			if time.Since(t) >= capabilityBackfillAttemptBackoff {
+				delete(b.attempts, bid)
+			}
+		}
+		if len(b.attempts) >= capabilityBackfillAttemptLedgerMax {
+			// 仍然触顶（绑定数异常庞大）：整体重置。最坏代价是退避态丢失、
+			// 多探一轮，绝不让它变成内存泄漏面。
+			b.attempts = make(map[int64]time.Time)
+		}
+	}
+	b.attempts[id] = time.Now()
+}
+
+// scanLimit 是单轮 SQL 扫描窗口：探测预算 × capabilityBackfillScanFactor。
+// 预算在 BackfillOnce 的探测循环里花，窗口放大是为了让 attempt 退避跳过的
+// 行后面还有行可取（反饥饿）。溢出防御：batchLimit 异常大时退回原值。
+func (b *CapabilityBackfill) scanLimit() int {
+	n := b.batchLimit * capabilityBackfillScanFactor
+	if n <= b.batchLimit || n < 0 {
+		return b.batchLimit
+	}
+	return n
 }
 
 // dueBindings 扫出到期绑定。
@@ -333,7 +449,7 @@ func (b *CapabilityBackfill) dueBindings(ctx context.Context) ([]dueBinding, err
 		       OR cap.last_tested_at < now() - make_interval(secs => $2))
 		ORDER BY cap.last_tested_at ASC NULLS FIRST, cmb.id
 		LIMIT $3
-	`, CapabilityNonstream, int(b.staleAfter.Seconds()), b.batchLimit)
+	`, CapabilityNonstream, int(b.staleAfter.Seconds()), b.scanLimit())
 	if err != nil {
 		return nil, fmt.Errorf("capability_backfill scan: %w", err)
 	}
@@ -356,8 +472,9 @@ func (b *CapabilityBackfill) dueBindings(ctx context.Context) ([]dueBinding, err
 	return out, nil
 }
 
-// probeAndPersist 探测单条绑定并写回结论。返回是否写了一行。
-func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding) (bool, error) {
+// probeAndPersist 探测单条绑定并写回结论。返回 (是否写了一行, 是否真实出网
+// 探测过, 错误)：admission 拒绝/端点未解析都是零出网路径，didProbe=false。
+func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding) (bool, bool, error) {
 	// 闸门先走，且必须在解密与出网之前：一条软删除的凭据不该被解密，更不该
 	// 被发请求。
 	if admit, why := capabilityBackfillAdmit(row); !admit {
@@ -366,19 +483,19 @@ func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding
 			"credential_id", row.CredentialID,
 			"raw_model", row.RawModel,
 			"reason", why)
-		return false, nil
+		return false, false, nil
 	}
 	if b.probe == nil {
-		return false, fmt.Errorf("capability_backfill: probe seam is not wired")
+		return false, false, fmt.Errorf("capability_backfill: probe seam is not wired")
 	}
 	apiKey, err := b.decrypt(row)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	// 闸门已归一过协议，这里直接复用其结果。
 	normed, err := catalog.NormalizeProviderProtocol(row.Protocol)
 	if err != nil {
-		return false, fmt.Errorf("protocol %q: %w", row.Protocol, err)
+		return false, false, fmt.Errorf("protocol %q: %w", row.Protocol, err)
 	}
 	desc := providercap.Resolve(normed, row.CatalogCode)
 	target := probeTarget{
@@ -390,7 +507,7 @@ func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding
 		APIKey:        apiKey,
 	}
 	if resolveProbeEndpoint(target, desc, ProbeModeResponses) == "" {
-		return false, nil
+		return false, false, nil
 	}
 
 	pCtx, cancel := context.WithTimeout(ctx, capabilityBackfillProbeTimeout)
@@ -399,6 +516,10 @@ func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding
 	// 只服务于「这一发失败要不要再试」的故障判定，而本任务要的判定只有
 	// 「拿到能力位证据没有」—— 网络错/5xx/429 都不产生证据，重试它们只是
 	// 把整轮拖慢；下一轮自然会重来。
+	//
+	// 记账在出网之前：从这一发起，这条绑定进入 attempt 退避（无论本轮拿到
+	// 证据与否），防止无证据绑定每 30min 都被探一遍（R33 审计 #2）。
+	b.recordAttempt(row.BindingID)
 	result := b.probe(pCtx, target, desc)
 
 	if result.supportsResponses == nil {
@@ -411,25 +532,25 @@ func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding
 			"probe_status", result.status,
 			"http_status", result.httpStatus,
 			"err_code", result.errCode)
-		return false, nil
+		return false, true, nil
 	}
 
 	persist := b.persist
 	if persist == nil {
 		if b.db == nil {
-			return false, nil
+			return false, true, nil
 		}
 		persist = b.persistRow
 	}
 	evidence := buildCapabilityEvidence(resolveProbeEndpoint(target, desc, ProbeModeResponses), result)
 	if err := persist(ctx, row, *result.supportsResponses, evidence); err != nil {
-		return false, err
+		return false, true, err
 	}
 	// 同一结论镜像进 Redis：请求期 durable 闸门读的是 node-state 能力键，
 	// 而它的 TTL 独立于本任务。两边不互写的话，SQL 侧修好了、请求期仍要等
 	// 一次探针才开闸。
 	_ = writeResponsesCapability(ctx, b.sink, row.CredentialID, row.RawModel, result.supportsResponses)
-	return true, nil
+	return true, true, nil
 }
 
 // buildCapabilityEvidence 把**真实上游帧**装进 evidence_json。

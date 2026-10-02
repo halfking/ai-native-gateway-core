@@ -29,12 +29,17 @@
 // acceptable only if some registered startup migration creates it. That is
 // what TestDerivedBaselineLagIsSuppliedByMigrations pins, for the objects
 // that actually differ.
+//
+// ── R32 口径更新（2026-10-02，7d55159b4）────────────────────────────────
+// d5932d26c 的快照收敛把 566/609 的对象 cp 进了副本，上面的「滞后态」前提
+// 被翻掉：副本**出现**这些对象（收敛态）现在同样是合法形态，测试只计数不
+// 打红。供给链 needle 块（每个对象必须有在册迁移且正文含对象标识）在两种
+// 形态下都继续承重——这是本文件现在的牙齿，不是滞后断言。
 package schema
 
 import (
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -99,10 +104,11 @@ var baselineLagObjects = []struct {
 // form of the drift rule: the derived copies may lag canonical, but only for
 // objects a registered startup migration recreates.
 //
-// It also guards against the tempting wrong fix. If someone "closes the drift"
-// by copying canonical over a derived copy, these objects move into the
-// baseline while 566 still creates them — and this test goes red, naming the
-// duplication, instead of the change landing silently.
+// R32 口径（7d55159b4）：副本**收敛**（cp 过来）不再打红——那是合法形态，
+// 测试按 converged/lagging 计数留痕。仍然打红的是供给链断裂：声明的对象
+// 不在 canonical、或声称供给它的迁移不在启动集/正文不含对象标识。历史版本
+// 曾断言「cp 收敛 = 重复供给 = 假修复」，该前提被快照收敛推翻后由 R32 轮
+// 翻转（见文件头 R32 口径更新）。
 func TestDerivedBaselineLagIsSuppliedByMigrations(t *testing.T) {
 	canon := objectsCreatedBy(t, copies[0].path)
 	derived := objectsCreatedBy(t, copies[1].path)
@@ -244,13 +250,4 @@ func cleanJoin(base, rel string) string {
 		}
 	}
 	return strings.Join(out, "/")
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

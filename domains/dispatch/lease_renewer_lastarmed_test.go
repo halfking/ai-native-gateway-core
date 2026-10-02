@@ -24,10 +24,12 @@ import (
 	"time"
 )
 
-// manualClock 是续约循环的手动时钟。
+// manualClock 是续约循环的手动时钟。reads 计数 Now() 调用次数，供锚读
+// 握手使用（见 waitForAnchorRead）。
 type manualClock struct {
-	mu sync.Mutex
-	t  time.Time
+	mu    sync.Mutex
+	t     time.Time
+	reads int
 }
 
 func newManualClock() *manualClock {
@@ -36,14 +38,22 @@ func newManualClock() *manualClock {
 
 func (c *manualClock) Now() time.Time {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
+	c.reads++
+	t := c.t
+	c.mu.Unlock()
+	return t
 }
 
 func (c *manualClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	c.t = c.t.Add(d)
 	c.mu.Unlock()
+}
+
+func (c *manualClock) readsSoFar() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reads
 }
 
 // runRenewLoopWithClock 与 runRenewLoop 同形，但注入手动时钟并返回缓冲的
@@ -60,12 +70,14 @@ func runRenewLoopWithClock(t *testing.T, g *fakeLeaseGovernor, mc *manualClock) 
 	go func() {
 		defer close(stopped)
 		cf.leaseRenewLoop(ctx, stopCh, g, &QueuedRequest{}, 5*time.Millisecond, func() {
+			// cancel 先于信号：消除「观察到 aborted 关闭但 fwdCtx.Err() 尚未
+			// 生效」的 TOCTOU 窗（R33 实跑复现 T1 偶发假红）。
+			cancel()
 			select {
 			case <-aborted:
 			default:
 				close(aborted)
 			}
-			cancel()
 		})
 	}()
 	stop = func() {
@@ -91,6 +103,25 @@ func waitForCall(t *testing.T, renewed <-chan int, n int) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out waiting for renewal call %d", n)
 		}
+	}
+}
+
+// waitForAnchorRead 等到续约循环完成第 n 次 Now() 读。替身 Renew 在返回
+// *之前* 就发信号，而 loop 的锚读（成功臂 lastArmed=nowClock()）在 Renew
+// 返回*之后*——waitForCall 返回时锚读未必发生，此时 Advance 会被锚吞掉，
+// 成功拍锚点整体右移、隔离窗失真（分析性时序窗，R33 收口）。成功拍 i 的
+// 锚读序号 = 1（入口）+ i。
+func waitForAnchorRead(t *testing.T, mc *manualClock, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if mc.readsSoFar() >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for anchor read %d", n)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -126,9 +157,9 @@ func TestLastArmed_EntryArmThenTTLDeadline(t *testing.T) {
 	mc.Advance(16 * time.Millisecond) // interval=5ms ⇒ TTL=15ms
 	waitForCall(t, renewed, 3)
 	assertAborted(t, aborted, "T1: TTL elapsed since entry Acquire")
-	if err := fwdCtx.Err(); err == nil {
-		t.Fatal("abort must cancel the forward context")
-	}
+	waitForWithin(t, "abort to cancel the forward context", time.Second, func() bool {
+		return fwdCtx.Err() != nil
+	})
 }
 
 // T2：成功重置锚（隔离 M1 冻结）。拍 1-5 成功、每拍之间 +4ms（入口起算
@@ -143,6 +174,7 @@ func TestLastArmed_SuccessResetsDeadline(t *testing.T) {
 
 	for i := 1; i <= 5; i++ {
 		waitForCall(t, renewed, i)
+		waitForAnchorRead(t, mc, 1+i)
 		mc.Advance(4 * time.Millisecond) // 成功拍逐个落在 4/8/12/16/20ms
 	}
 
@@ -167,6 +199,7 @@ func TestLastArmed_AnchorIsLastSuccessNotFirstFailure(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		waitForCall(t, renewed, i)
+		waitForAnchorRead(t, mc, 1+i)
 		mc.Advance(4 * time.Millisecond) // 成功拍逐个落在 4/8/12ms
 	}
 	mc.Advance(8 * time.Millisecond)
