@@ -59,9 +59,9 @@
 | 族 | 现状（10-02 实测） | 处置决策 |
 |---|---|---|
 | supplier_errors ×4 | 09=124,846/10=4,479 行（含并发），余 0 | **813 已归一 heap ✓** |
-| credential_model_index 09/10/11 | 09=301,255 / 10=9,034 / 11=0 行；promote 追加写、cleanup 设计性跳过列存（真库函数体核验） | 689 helper TTL 7d 自退役（~10-07/11-07/12-07）→ 无动作 |
-| cache_metrics 08/09 + default | 全 0 行 | 689 helper TTL 90d 自退役（~11-29/12-29）；default 滞留=手工 DROP 候选（移交） |
-| handoff_logs 09/10/11 + default | 全 0 行 | TTL 30d 自退役（~10-31/11-30/12-30）；default=手工 DROP 候选（移交） |
+| credential_model_index 09/10/11 | 09=301,255 / 10=9,034 / 11=0 行；promote 追加写、cleanup 设计性跳过列存（真库函数体核验） | 689 helper TTL 7d；**DROP 仅在 day-2 tick 触发（archiveOldPartitionsIfNeeded: now.Day()<=3 ∧ spec.day==today）⇒ 实际退役日 11-02 / 12-02 / 01-02**（TTL 条件日 10-08/11-08/12-08 后的首个 2 号）→ 无动作 |
+| cache_metrics 08/09 + default | 全 0 行 | 689 helper TTL 90d 自退役（条件日 11-29/12-29 → **实际 12-02 / 01-02**）；default 滞留=手工 DROP 候选（移交） |
+| handoff_logs 09/10/11 + default | 全 0 行 | TTL 30d 自退役（条件日 10-31/11-30/12-31 → **实际 11-02 / 12-02 / 01-02**）；default=手工 DROP 候选（移交） |
 | tool_usage_stats 08/09/10 | 全 0 行；写方只进 _default(heap) | **冻结残留**：无 stateTableTTLSpecs 条目且 `lifecycle.tool_usage_stats_ttl_days` 有键无消费方 → 永不自动 DROP → 手工 DROP（移交存储轨道） |
 | credit_ledger 08/09/10 | 08=260 行余 0 | 同上冻结残留（TTL 键有键无消费方）→ 手工 DROP（移交） |
 | dashboard_access_events 07-10 + default | 全 0 行 | 冻结残留 → 手工 DROP（移交） |
@@ -79,7 +79,7 @@
 | 家族（头锚定） | 窗内计数 | 最后一条时间戳 | 判定 |
 |---|---|---|---|
 | UPDATE and CTID（更新器毒源） | ×20（快照窗；续查至 11:48 另见 2 条会话自噪音，见下行自噪音账） | 07:06:27（812 应用前） | **812 后生产零复发 ✓**（R20 实证 07:20:51 更新器复写；本轮复核 model_probe_state=467 healthy/436 recovering/65 broken/31 suspicious 健康四态流转；07:14 后仅有的 2 条 CTID 均为本轮侦察探针，逐 pid+STATEMENT 归因见下） |
-| row is too big（promote 毒源） | ×9（同 R20 毒行 size 36112 的逐 tick 重试尾巴） | 06:51（810 应用前后过渡） | **07:06 后零复发 ✓** |
+| row is too big（promote 毒源） | ×9（同 R20 毒行 size 36112 的逐 tick 重试尾巴） | 06:51（< 810/811 applied_at **07:07:57**，schema_migrations 实取） | **applied_at 后零复发 ✓** |
 | would overlap（ensure 毒源） | ×1 | 05:20:37（811 应用前） | **811 后零复发 ✓** |
 | promote 节拍 | session_bodies 07:11/08:53/09:54 = 1.2-3.8s/批；supplier_errors 手动 tick 32 行 | — | 每小时 tick 健康 ✓ |
 | ensure ticks | 无慢无错（仅 ensure_usage_facts_daily_partition 25.2s 一条贴线未杀） | — | ✓ |
@@ -111,7 +111,7 @@
 
 ## §九、下一轮提示词（建议）
 
-> 以本文 + round20 §八为起点。优先级：① §十 24h 收口判定采纳（automation-09e1ae20 产出；若 CTID/row-too-big/overlap 复发按 ㊿ 引用面排查新毒源）；② 存储轨道对签落地跟进：tool_usage_stats/credit_ledger/dashboard_access_events/session_module_executions/auto_route_selections/test_columnar_new 六个冻结空壳族的手工 DROP 清单 + provider_events 等单表 heap 化（§四矩阵）；③ 巨 payload 日志爆发对账（2.2MB/s 是否持续、logrotate 窗口压缩）；④ probe cycle 目标查询 ×7 贴 30s rolconfig 线的家族治理（v_routable_credential_models 双视图 join 老病，R8 遗留）；⑤ E6 催办复核。纪律沿用 ⑪-㊼ + ㊽-54。
+> 以本文 + round20 §八为起点。优先级：① §十二 24h 收口判定采纳（automation-09e1ae20 产出；若 CTID/row-too-big/overlap 复发按 ㊿ 引用面排查新毒源）；② 存储轨道对签落地跟进：tool_usage_stats/credit_ledger/dashboard_access_events/session_module_executions/auto_route_selections/test_columnar_new 六个冻结空壳族的手工 DROP 清单 + provider_events 等单表 heap 化（§四矩阵）；③ **11-02 day-2 tick live-fire 验证**（§十一.3：credential_model_index_2026_09 与 handoff_logs_2026_09 首次真实到期 DROP，journal "state table drop ran" 证据）；④ 巨 payload 日志爆发对账（2.2MB/s 是否持续、logrotate 窗口压缩）；④ probe cycle 目标查询 ×7 贴 30s rolconfig 线的家族治理（v_routable_credential_models 双视图 join 老病，R8 遗留）；⑤ E6 催办复核。纪律沿用 ⑪-㊼ + ㊽-54。
 
 ## §十、产物与物证
 
@@ -120,3 +120,29 @@
 - 日志物证：252:/tmp/pg252-r21/（ctr-snapshot-r21.log 622MB 全量快照 [03:51→10:49]、errors_head_anchored.txt、slow1s_v2.txt、durations_stmt.txt）+ recon.sql/recon2/recon3/recon4.sql + log-extract/detail/detail2.sh 分析脚本。
 - 收口自动化：automation-09e1ae20-31ea（10-03 07:30 一次性，PASS 判据内嵌）。
 - 本报告：docs/audit/2026-10-02-252-sql-log-audit-round21.md。
+
+## §十一、批判式复审修正轮（2026-10-02，同日自审计）
+
+对 §一-§九 全部声明逐条对抗性核验（repo 代码 × 252/本机真库 × 日志三方交叉），结果：**4 项修正 + 7 项声明获得加固证据，0 项被推翻**。
+
+### 修正项
+1. **§四 退役日期算错（day-2 gate 漏算）**：初版把 credential_model_index/cache_metrics/handoff_logs 的退役日写成 TTL 条件日（~10-07/11-29/10-31 等）。复核 bg/partition_manager.go `archiveOldPartitionsIfNeeded`：`now.Day() <= 3` ∧ `spec.day == today` ⇒ **整分区 DROP 只在每月 2 号触发**。实际退役日 = TTL 条件日后的首个 2 号：credential_model_index 09/10/11 → **11-02/12-02/01-02**；handoff_logs 09/10/11 → 11-02/12-02/01-02；cache_metrics 08/09 → 12-02/01-02。supplier_errors_2026_08 → 12-02 初版即正确（当时做了 day-2 换算）。已改表。
+2. **814 .down 注释失实**：原注释称"恢复 038 原始定义"，但实读 038 体与 814 前形态不同（投影/类型标注在后续轮次演进过：consecutive_successes、::text casts、!~~ 等）。.down 恢复体本身正确（=814 前一刻 pg_get_viewdef 同形），仅注释改为"恢复 814 应用前形态（038 演进后版本）"。.down 文件不入 checksums 台账（只登记 .up），修改无台账影响。
+3. **day-2 机制残余风险补登记**：spec 每月仅 2 号单日窗口，三网关若全停当日则顺延一月；且 D6 重建（09-29）以来无 live-fire DROP（期间无到期分区，"state table drop ran" 仅在 dropped>0 时打日志=252-dev journal 空命中是预期非异常）。**首个可现场验证的 live-fire = 2026-11-02**（credential_model_index_2026_09 + handoff_logs_2026_09 到期）——列入 §九 下轮观察项。
+4. **§五 零复发边界含糊措辞精确化**：从 schema_migrations 实取 applied_at——252：810/811=**07:07:57**、812=**07:16:01**、813/814=**11:33:01**（本机：810-812=07:29:35、813/814=11:29:28）。row-too-big 末条 06:51 < 07:07:57、CTID ×20 末条 07:06:27 < 07:16:01——零复发窗边界由"应用前后过渡"改为精确夹逼。
+
+### 加固证据（原声明 → 新证据）
+- 「supplier_errors 无 row-level DELETE 路径」：repo grep 之外补 **DB 侧函数体漂移扫描**（pg_proc prosrc 全扫，252 真库）——唯一命中是 813 函数自己的注释文本，无真实 DELETE 面。repo ≠ DB 的函数漂移通道已闭合。
+- 「813/814 幂等」：252 真库重放（0 NOTICE）+ 本机重放，均通过。
+- 「814 精确源」：定位 promote 调用链——promoteDefaultToPartitions 传 **DefaultRetentionWindow=8h 硬编码常量**（bg/partition_manager.go:51）⇒ hot 恒持 0-8h 行，5min 视图窗 ⊂ 8h 前提由调用方坐实。
+- 「视图零消费方」：全仓全文件类型 grep（不限 *.go）——仅 baselines/objects 定义、docs、model_probe.go:627 注释残留，无任何运行时消费方。
+- 「三基线同步」：三文件 813 注释锚点 md5 逐字一致 + 814 hot 子查询四处各 1 命中。
+- 「apply 脚本登记无害」：bash -n 语法通过。
+- 「台账口径一致性」：252 的 gateway_db_revision_sequences 无 810-814 条目（R20 亦未登记 810-812）——813/814 只登记 schema_migrations+checksums 与先例一致；下次 apply 脚本运行将幂等 no-op 后自登记 sequences 账本。
+- 「813 后生产健康」：观察窗延至 ~12:50（1.3h），supplier_errors 相关日志条目逐条核验全为会话/迁移自身（侦察探针 ×2 + 813 DO 块慢语句自录），无生产错误。
+
+### 复审方法登记
+- 边界时刻一律取 schema_migrations.applied_at 实值，不用会话记忆推算。
+- 「机制存在」与「机制运行过」分开举证：day-2 gate 本次仅代码级证实 + 数学推演，live-fire 留待 11-02 验证（如实标注，不冒充已验证）。
+- repo grep 结论必须补 DB 侧函数体扫描才算闭环（函数级 drift 首例的教训成文化）。
+- **未提交工作态被并行会话清空的再发事故**：本节内容首次落盘后、提交前，被并行会话的 merge/checkout 操作清空（工作树回退到 d598bdea3），本节为重建后的第二次落盘。教训升级：多会话共享工作区时，编辑→提交→推送必须单序列完成（memory 既有条目的强化实例）。

@@ -116,6 +116,12 @@ var bodiesUnaffectedJustification = map[string]string{
 		"参数 / ANALYZE 分区巡检），表名出现在一个正则/数组里，不是 FROM/JOIN 任何一张表。" +
 		"bodies 族按正则识别，把「名字出现在巡检名单里」也算成「读 bodies」。" +
 		"本文件全部 request_logs 命中都是结构面（见分级表的 Note）。",
+	"cmd/tools/validate_sessions_v2/loader.go": "离线校验工具，**读 v1 就是它的工作本身**：" +
+		"LoadV1Turns(:119/:122) 两步查 v1 母表 + bodies（hot ∪ parent），目的是与 LoadV2Turns " +
+		"逐轮对拍以判定镜像是否漂移。停写后它不报错、仍能对**存量**会话跑校验，只是覆盖不到新会话" +
+		"（LoadV1Turns 缺 body 时 pgx.ErrNoRows 被 continue 吞掉、保留空默认，校验会报" +
+		"「v2 多出轮次」而不是崩）。它由人工触发、不在在线读写路径上，" +
+		"所以「不读正文内容」的退化不构成服务面影响。",
 	"admin/data_lifecycle_blobs.go": "读的是体量不是内容：唯一的 bodies 引用是 " +
 		"`COALESCE(pg_column_size(rb.request_body), 0)`，即「存量正文占多少字节、" +
 		"清理能省多少」。停写不改变存量字节数，也不改变待清理行数。" +
@@ -439,6 +445,289 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Effect:   effectSilentlyEmpty,
 		Evidence: "JOIN request_logs_bodies_with_current_month rb",
 		Note:     "pgRequestLogsSource 是**默认** MessageSource（summarizer.go:127 NewSummarizer 直接 &pgRequestLogsSource{}），bodies 无 session 兜底 ⇒ 停写后 JOIN 恒 0 行 ⇒ err 被 systemPromptPrefix(:52) 吞掉返回 \"\" ⇒ 会话总结照常生成、200、summary 字段齐全，只是永远缺系统提示词前缀。仅当 SetMessageSource 换成 v2SessionBodiesSource（读 session_bodies_unified）时才免疫。",
+	},
+	// ── batch4：2026-10-02 逐点评估（22 条）────────────────────────────────
+	"admin/auto_route_correlations.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "FROM request_logs_with_current_month_without_request_class_due_at",
+		Note:     "5 张相关表（by_model/by_strategy/by_task_type/by_model_task/verdict）全部只读 v1-only 中间层视图（无 session 臂）。错误路径全走 writeAutoRouteInternalErr 500，但空结果不报错 ⇒ 停写后这 7 天窗口持续吐停写前的陈旧成功率/延迟/成本，7 天窗口滚过停写点后 5 张表变空数组 + 200，自动路由相关性与黑名单决策会静默基于陈旧样本。",
+	},
+	"admin/probe_history.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs",
+		Note:     "request_log_failures CTE（6h 窗口、request_status='failure'）是 /routing/recent-model-failures 三个 UNION 臂之一，err 路径 500 但 0 行不报错 ⇒ 停写 6h 后该臂归零，接口仍 200 且 sources.request_logs 字段齐全为 0，看板只剩 active/passive 探针数，真实流量失败从「模型发现」失败徽标里静默消失（单臂空，不是整体空）。",
+	},
+	"admin/routing.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "FROM request_logs_hot rl",
+		Note:     "popularModelsHotSQL（rl.ts >= $1 = now-7d）是「凭据路由模型」picker 的 usage 源，计数喂 addHot(..., Source:\"usage\", Count)。SQL 错误只 slog.Warn、rows 迭代中止也只 Warn，无错误通道 ⇒ 停写后 7 天内计数冻结为停写前常数，7 天后该源静默退榜。",
+	},
+	"admin/work_types.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "SELECT COALESCE(work_type, 'unknown'), COUNT(*)",
+		Note:     "4 个 24h 窗口读点（:289/:336/:376/:439，全部 FROM request_logs_hot）喂 by_work_type / by_l1_task / total_auto / total_specified。三个聚合读用 if err == nil 包住（查不到不算错），总数读是 `_ = h.db.QueryRow(...).Scan(...)` 吞错 ⇒ 停写 24h 后 by_work_type/by_l1_task 静默空 map、两个 total 静默 0，接口仍 200 且字段齐全。",
+	},
+	"bg/credential_recovery.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "SELECT 1 FROM request_logs_hot rl",
+		Note:     "lookbackCandidateSQL 的双 EXISTS（request_logs_hot ∪ request_logs，36h 成功窗口）是「36h 成功回看恢复」的唯一证据源，scanLookbackRecoveries 里 `if len(candidates) == 0 { return }` 无日志无指标 ⇒ 停写 36h 后候选集静默为空，降级凭据不再被「有成功流量」证据自动拉回 available，只能等探针自身恢复，监控上看不出扫描在空跑。**该文件同时是 §9.10 的写授权缺陷**（陈旧证据持续放行恢复写入），控制面轴判 live 且更严重。",
+	},
+	"bg/lite_retention_worker.go": {
+		Effect:   effectUnaffected,
+		Evidence: "SELECT rowid FROM request_logs WHERE ts < ? LIMIT ?",
+		Note:     "全文件没有对 v1 的流量读点——唯一触到 request_logs 的语句是 SQLite 行级保留期的 DELETE FROM request_logs WHERE rowid IN (...)，且是 lite 模式本地库、与 PG 侧 S4 门控无关；它读的是生命周期（待清理行），停写既不让它报错也不改变它的行为。",
+	},
+	"cmd/compression-bench/main.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "FROM request_logs",
+		Note:     "离线 bench CLI 从 FROM request_logs（ts >= NOW() - INTERVAL '1 day' * $1，默认 7 天）取历史行跑 SessionCompressor 基准，样本为空也不 Fatal 只 log.Printf ⇒ 停写后样本集静默冻结为停写前那批流量、基准结论悄悄变成「S4 之前」的口径，窗口完全滚过后打成 0 行仍照常输出空聚合。",
+	},
+	"cmd/gateway/waterfall_by_request.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "FROM request_logs_hot",
+		Note:     "单请求 waterfall 落库回查按 request_id = $1 命中 request_logs_hot，pgx.ErrNoRows 被翻译成 (_, false, nil)，调用方 handleDispatchWaterfallByRequest 直接 http.Error(404, ...) ⇒ 内存环之外的请求立刻 404，灰度即可见（可接受失败模式）。",
+	},
+	"domains/analysis/optimizer.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "SUM(COALESCE(cache_read_tokens,0)) FROM request_logs WHERE gw_session_id = ss.session_key",
+		Note:     "三个相关子查询（cache_read_tokens 求和、compression_strategy 非空计数、outbound_token_est 求和）全部直读裸 request_logs 按 session_key 聚合，外面套 COALESCE(..., 0)，会话统计其余字段来自仍在长的 session_summaries ⇒ 新会话的优化建议里这三项静默为 0，而 request_count/成本照常有值，detect() 规则（如「存在压缩空间」）静默失活、save() 照常写库。",
+	},
+	"domains/streaming/anomaly_harvester.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs_hot r",
+		Note:     "backfillActualTokensSweep 用 UPDATE response_format_anomalies ... FROM request_logs_hot r 回填 actual_tokens，`n := ct.RowsAffected(); if n > 0` 才打日志 ⇒ 停写后 join 恒 0 行、无错无日志，新异常行的 actual_tokens 永远停在 NULL，response_format 异常的真实 token 口径静默退化为 estimated。",
+	},
+	"storage/sqlite/request_log_store.go": {
+		Effect:   effectUnaffected,
+		Evidence: "FROM request_logs`",
+		Note:     "这是 lite 模式自己的 SQLite request_logs（9 列轻量形态，body 只落 has_body 标记），NewRequestLogStore 在 StorageModeLite 下才被 factory 选中（full 模式走 newPgRequestLogStore），与 PG 侧 S4 门控不是同一条链；读点是 GetRequest/ListRequests，空结果走 storage.ErrNotFound 或非 nil 空切片且错误正常上抛，形态不因停写而变。",
+	},
+	"admin/model_routing_diagnostic.go": {
+		// 2026-10-02 **自我更正**：batch4 判 unaffected，被 null-padded 族门判红。核实 :95-99
+		// WHERE 确实作用在 request_logs_with_current_month 上，且是三分支 OR：
+		//   lower(COALESCE(NULLIF(outbound_model,''),''))   = lower($1)   ← session 臂有真值
+		//   lower(COALESCE(NULLIF(client_model,''),''))     = lower($1)   ← 补位 NULL，此臂恒不命中
+		//   lower(COALESCE(NULLIF(canonical_model,''),''))  = lower($1)
+		// ⇒ 不是全空（另两臂仍在），但**按客户端名查模型**这条路在停写后对未映射模型失效。
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs_with_current_month",
+		Note:     "request_stats CTE 按 24h 窗口统计 requests_24h/success_rate/p95/timeout/quota，外层 LEFT JOIN request_stats 且 COALESCE(...,0)。⚠️ 但 provider_id 是 session 臂补位 NULL 之一（§9.14），该 CTE 若按 provider_id 分组会塌进 unknown 桶——本条判 unaffected 的前提是它不按补位列分组，读端族门会复核这一点。",
+	},
+	"admin/session_analytics_timeseries.go": {
+		// 2026-10-02 **自我更正**：batch4 判 unaffected，被 null-padded 族门判红。核实 :62
+		// `AND %s.provider_id::text = ANY($%d)` 的 alias 就是 710 视图别名。
+		// provider_id 在 session 臂恒 NULL ⇒ `NULL::text = ANY(...)` 求值为 NULL（非 true）
+		// ⇒ 停写后**按 provider 过滤的时间线恒返回空**，而不过滤的路径照常有数据，
+		// 同一个面板里两种过滤给出矛盾的空/非空，无任何错误。
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "activity/cost/latency 三个读点（:193/:269/:340）全部读 710 视图，聚合列 request_status、cost_usd、prompt/completion tokens、cache_read/write_tokens、latency_ms、stream_first_chunk_ms 在 session 臂都由 t.* 真实投影（request_status 由 success/status_code 表达式算出）⇒ 停写后时间线/成本/延迟序列照常增长，错误路径仅在真 SQL 错误时 500。",
+	},
+	"admin/session_timeline_query.go": {
+		Effect:   effectUnaffected,
+		Evidence: "WHERE gw_session_id = $1`",
+		Note:     "已按注释(:23-30)刻意改读 710 视图而非物理表，视图体 = session_turns_hot ∪ session_turns ∪（v1 冻结分支反连接）⇒ 停写后新会话轮次由 session 分支继续供数，镜像链启用之前的历史窗口仍由 v1 分支兜住；无行时返回 nil 由调用方各自还原成 null/[]，两种形态都不是新增的静默空。",
+	},
+	"admin/usage.go": {
+		// 2026-10-02 **自我更正**：batch4 判 unaffected，被 null-padded 族门判红。判对了，但
+		// **只对一半**：本文件是「真触发 + 假触发混在一起」的样本，正好说明文件级
+		// 机械判定为何只能保守近似。
+		//   真：:806-810 `OR (NOT success AND COALESCE(failure_stage,'') = '' AND
+		//       provider_id IS NOT NULL …)` 位于 `FROM request_logs_with_current_month rl2`
+		//       的子查询内 ⇒ 停写后新失败的 provider_id 恒 NULL，该分支对新增流量永不命中，
+		//       失败分桶计数静默漏计。
+		//   假：:334-366 的 ak.owner_user / app.code AS application_code、:456-583 的
+		//       providers.provider_id、:767/:865/:1001 的 api_keys.id —— 这些列**同名但属于
+		//       别的表**（api_keys / applications / providers / usage_ledger），那些表没有补位。
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "COUNT(*) FILTER (WHERE success) AS success_count,",
+		Note:     "三处 710 读点（:810/:817 的 key 详情、:1107 的 usageKeyTraffic 5 分钟分桶）靠 session 臂继续变化。但吞错形态确实存在：`_ = h.db.QueryRow(...).Scan(&gatewayRejected, ...)` 把 810 那条整体吞掉，失败时三个字段静默 0，而同一响应里 total_requests/cost/success_rate 走的是另一个仍在长的 usage_ledger_with_current_month ⇒ 这是「静默矛盾」的高危形状（分账本不同源），只是 S4 本身不触发它。",
+	},
+	"bg/stats_minute_rollup.go": {
+		// 2026-10-02 **自我更正**：batch4 判 unaffected，被 null-padded 族门判红——判对了。
+		// 核实 :205/:281 `ON CONFLICT (bucket, tenant_id, provider_id, canonical_id)`：
+		// provider_id / client_profile / client_model 都在**冲突键或分组维度**里，且取值来自
+		// `COALESCE(r.provider_id, 0)`、`COALESCE(NULLIF(r.client_profile,''), '__unknown__')`。
+		// 这三列在 session 臂恒 NULL ⇒ 停写后新流量全部落进 provider_id=0 / __unknown__ 桶，
+		// 维度表与事实表**双双**归到假桶。行照常写入、Exec 正常返回，所以没有任何错误信号。
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "COUNT(*) FILTER (WHERE r.request_status = 'success')::bigint,",
+		Note:     "rollupMain/rollupDims 三处读 710，窗口由 request_stats_rollup_cursor.last_ts 游标推进，session 臂持续产新 ts 行 ⇒ 分钟汇总照常滚动；Exec 错误会 return err 上抛。⚠️ 但 session 臂有两列恒 NULL（credits_rate_multiplier、client_ip）⇒ client_ip 维度会塌成 __unknown__、credits 估算按倍率 1.0 计——这是**值劣化**，见 Note 与 §9.15 的五种方向。",
+	},
+	"internal/collector/gateway_adapters.go": {
+		Effect:   effectUnaffected,
+		Evidence: "COALESCE(COUNT(*), 0)::float8 / 300.0 AS tps,",
+		Note:     "PgTrafficReader.Snapshot 三处读 710（5 分钟 TPS/p50/p99/success、Top-20 模型、30 秒 in-flight），session 臂继续供数；吞错形态是 `if err != nil { return TrafficSnapshot{}, nil }` 与 `_ = r.Pool.QueryRow(...).Scan(&inFlight)`（失败即整份空快照 / 并发数 0，无错误），停写本身不触发这条路径。",
+	},
+	"admin/compression_stats.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id",
+		Note:     "4 个读点里 3 个把 bodies 腿挂在 LEFT JOIN request_logs_bodies_with_current_month 上（bodies 无 session 兜底）⇒ 停写后 710 的 rl 行照常增长，但 with_outbound / compressed / estimated_original_tokens / summary_mode_rows 全部静默归 0，压缩率与省 token 数变成 0%、而 total 与 strategy 分布仍有数，接口 200。只有纯 token_band 那个读点（无 bodies）不退化。",
+	},
+	"admin/memora_handlers.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs `+where+`",
+		Note:     "两条后果不同的腿：handleSessionMessages(:795-796) 读 710 + LEFT JOIN request_logs_bodies_with_current_month，bodies 腿硬失败 ⇒ 新会话 messages 仍返回（session 臂供行）但 request_body/response_body 是 COALESCE(...::text,'') 的空串、message_count 与 token/cost 汇总照常有值，200；handleMemoraContext(:615-616) 直读裸 request_logs + sessionLogsWhere，新 task 的 requestCount == 0 ⇒ 404 task not found（那条是 errors_out）。按「同一文件取更危险档」取 degraded_content，两条方向都写明。",
+	},
+	"admin/session_title.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "COALESCE(rb.request_body::text, '') AS request_body,",
+		Note:     "已核实 sessionLogsWhere(admin/session_scope.go:39) 主谓词是 gw_task_id = $1 AND ts > …，不是会话头；gw_task_id 由 session 臂的 details 层(d.gw_task_id)提供，故 loadTaskLogsForTitle 的行不会消失——但 bodies 腿硬失败使 request_body/response_body 变空串，buildSummaryCorpus 只能靠 request_preview/response_preview 兜底 ⇒ 标题照常 200 生成但语料从全文降级为预览片段；只有语料短到 40 rune 以下才显式 400。",
+	},
+	"cmd/scenario_driver/main.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "SELECT count(*) FROM request_logs_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'",
+		Note:     "它自己造流量（POST {gateway}/v1/chat/completions 跑 60/20/80 轮）再量 v1 增量，所以停写后必然测不到：bodies 增量与 request_logs_hot success=false 增量双双为 0，Passed=false + Message: \"delta_bodies=0, expected >= 50\"，属立刻暴露的硬失败（离线工具，不影响在线面）。",
+	},
+	"domains/hooks/observability/telemetry/client.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "AND gw_session_id LIKE 'gw\\_%'",
+		// 2026-10-02：读端与控制面分开记。读端后果是会话身份退化为「每请求新建」；
+		// 控制面后果（写授权/身份）更严重，见 request_logs_control_plane_dependency_test.go。
+		Note: "FindRecentGatewaySession(:593-625) 读 request_logs_hot **无门控**，no rows 被吞成 (\"\", nil)。" +
+			"⚠️ 量级更正：主路径是 Redis 的 LastSystemSessionIndex（TTL 5 分钟，不受门控），DB finder 只是兜底——" +
+			"子代理初判「每个请求静默新开 gw_session_id」过重。准确失效条件两条：" +
+			"① 无 Redis 部署时 main.go:968 的装配不执行，lastSystemSession 为 nil，DB finder 成唯一路径；" +
+			"② Redis 索引 miss（TTL 到期/重启/device seed 不匹配）。" +
+			"turn_no（lookupTurnNumber :3767）经 outbox request-completed 事件在门控外提交，同样冻结。",
+	},
+	// ── batch2：2026-10-02 逐点评估（25 条，读端轴收口）──────────────────────
+	"admin/attempt_quality_api.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "FROM request_logs_with_current_month_without_request_class_due_at",
+		Note:     "loadFinalRequestMetrics 刻意读 v1-only 中间层视图（注释明示这是为规避 710 turns 段 provider_id 投影 NULL 的设计取舍），窗口 ts >= $2 AND ts < $3（默认 24h、上限 168h），停写后不再有新行 ⇒ TotalRequests/SuccessRate 恒为旧值；**同一响应的 Aggregates 走 requestjourney（request_state_transitions，未受 S4 门控）继续增长**，两半口径从此永久背离而接口仍 200。",
+	},
+	"admin/data_lifecycle_metrics.go": {
+		Effect:   effectUnaffected,
+		Evidence: "pg_total_relation_size('request_logs') AS total_size",
+		Note:     "唯一读点是 pg_total_relation_size + COUNT 分龄（7/30/90 天桶），读的是表体量与生命周期分布而非流量；停写后存量仍在、行数只因保留期清理下降，不产生查空或报错。已核实无流量类读点混入。",
+	},
+	"admin/providers.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "COALESCE(SUM(CASE WHEN lower(COALESCE(request_status, '')) IN ('failure', '') AND NOT success THEN 1 ELSE 0 END)::float8",
+		Note:     "供应商详情页 error_rate_24h 走 LEFT JOIN (... FROM request_logs_hot WHERE ts >= now() - interval '24 hours' ...)，停写 24h 后该子查询恒零行 ⇒ LEFT JOIN 补 NULL ⇒ COALESCE(er.rate, 0) 把 error_rate_24h **静默改成 0**，接口仍 200、凭据数与健康数全部照常，运营会读成「该供应商零故障」。本次最隐蔽的一处。",
+	},
+	"admin/session_tenant.go": {
+		Effect:   effectUnaffected,
+		Evidence: "SELECT 1 FROM request_logs_hot",
+		Note:     "assertTaskInTenant 是 OR-of-EXISTS 权限门，五条腿逐支核实：session_summaries / session_turn_details_hot / session_turn_details 三条 session 腿不受停写影响且先短路，v1 两条腿只是镜像链启用前的历史窗口。⚠️ 前提未实测：三条 session 腿对新 task 是否都及时落行，只能从代码确认「设计上供数」。若灰度发现某类 task 只在 v1 留痕，该门仍可能翻转成 404。",
+	},
+	"bg/auto_route_affinity_worker.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "SELECT 1 FROM request_logs_hot rl",
+		Note:     "两条 NOT EXISTS 腿只作 synthetic 轮次排除闸、不供数；主聚合源 auto_route_selections_all（selection_writer 未受 S4 门控）继续增长。停写后 14 天滚动窗口内旧选择仍命中 v1 行做排除，新选择因 v1 无行而一律通过闸门 ⇒ **样本集逐渐失去 synthetic 排除，聚合值继续变化但口径悄然漂移**。既非冻结为常数也非对账，取最接近档并写明该语义。",
+	},
+	"bg/integrity_fingerprint_probe.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "AND system_fingerprint IS NOT NULL",
+		Note:     "一次性存在性探针（ts > NOW() - days/2，hot 臂先查 miss 才查母表）。停写后当前半窗口内不再有带 system_fingerprint 的 v1 新行 ⇒ hasFP=false ⇒ probeEmpty=true 被 memoize，drift worker 走 fingerprintScanSkip **永久跳过全量扫描**（除非 in-process telemetry 观测到指纹重新 re-arm）。而真正的 drift 扫描读 710 视图、session 臂仍在增长 ⇒ 扫描被静默关闭。",
+	},
+	"bg/model_tier.go": {
+		Effect:   effectSilentlyFrozen,
+		Evidence: "FROM request_logs_hot rl",
+		Note:     "Usage Top-N 段读 request_logs_hot 近 probe.featured_usage_window_hours（默认 72h）窗口。停写 72h 后查询返零行但不报错（err==nil 分支照常执行、rows 空迭代），fs.usage 被整表替换为空集并 m.cur.Store(fs) 落盘。**与 static 段刻意「失败保旧集」的防御相反**：这里空结果会静默清空 usage 精选模型集，深探范围无声收缩。",
+	},
+	"cmd/gateway/main_v3_wiring.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "AND gw_session_id = $2 AND outbound_body IS NOT NULL",
+		Note:     "LastOutboundForSession 是 L3 冷启动兜底（ORDER BY ts DESC LIMIT 1）。停写后新会话在 v1 里一行都没有 ⇒ pgx.ErrNoRows ⇒ loadFromLegacyDB 返回 err（compression/session_cache.go:670-673），调用方按缓存未命中降级；好在前面有 turnReader（session 原生源）与 Redis 两级先兜，属可接受的显式失败。",
+	},
+	"cmd/traffic-replay/main.go": {
+		Effect:   effectUnaffected,
+		Evidence: "WHERE is_auto_request = TRUE",
+		Note:     "离线工具（人工触发、不在在线写路径上）；读的是回看窗口内的存量行，停写后仍能回放历史。仅默认 -days=7 窗口在停写 7 天后才空，届时 log.Fatal(\"no historical rows match the filter\") 显式退出。",
+	},
+	"domains/credentialstate/popularity_tracker.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "WHERE created_at > NOW() - INTERVAL '1 hour'",
+		Note:     "后台 tracker 每 tick 用 1 小时窗口聚 client_model 热度。停写 1 小时后查询零行且 rows.Err() 为 nil ⇒ newPopularity 空 map 在写锁下**整体替换**旧 map（t.popularModels = newPopularity，无空集保护）⇒ GetPopularModels 返回空列表、所有模型 GetProbeInterval 一律回落 5 分钟默认值，全程无错误信号。（注：该消费方无生产调用方，见控制面轴的 dormant 判定；此处记的是数据面形态。）",
+	},
+	"internal/summarystore/store.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "SELECT COUNT(*)::int FROM request_logs_hot",
+		Note:     "CountNewTurns / CountTotalTurns 是自动摘要的滚动闸与 5 轮下限闸（调用方 admin/auto_summary_generator.go:389,407）。COUNT 聚合恒返一行 0 而非 ErrNoRows ⇒ 停写后新会话 totalTurns 恒 0 ⇒ shouldTriggerSummary 静默返回 session_too_short_0_turns，**摘要永不触发**（有 reason 字符串但无告警）。",
+	},
+	"tests/test_popularity_tracker.go": {
+		Effect:   effectUnaffected,
+		Evidence: "WHERE table_name = 'request_logs'",
+		Note:     "离线手工测试脚本（人工触发）；前半是 information_schema/pg_indexes 结构检查（与流量无关），后半 1 小时窗口统计停写后只会打印 0，不报错不改变退出语义。",
+	},
+	"admin/credential_monitor_heatmap.go": {
+		Effect:   effectUnaffected,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "只读 710 视图的 CTE 聚合，session 臂（session_turns hot∪parent）继续增长，热力图不会查空。⚠️ 顺带发现（**与停写无关的既存疑点**）：该文件 295 行的 ExcludeSelfTest 分支硬引用 rl.origin_stage，而 710/734 的 canonical 列契约（db/request_logs_view_schema.go:575-615）名单里没有这一列——若真库视图确无此列，exclude_self_test=1 的查询会直接 SQL 报错。需真库确认，见审计 §9.17。",
+	},
+	"admin/route_incidents.go": {
+		Effect:   effectUnaffected,
+		Evidence: "AND rl.request_status = 'failure'",
+		Note:     "findingsFor 的证据抽样读 710 视图（ts >= $2 从 inc.FirstFailureAt 起算），session 臂继续供数；total == 0 时返回空 findings 而非报错，是设计好的「证据不足」语义（InsufficientData），停写不改变这一行为。",
+	},
+	"admin/session_management_api.go": {
+		// 2026-10-02 **自我更正**：batch2 判 unaffected，被 null-padded 族门判红。核实 :298
+		// `SELECT rl.request_id, rl.ts, rl.client_model, rl.request_preview …` 是**裸投影**，
+		// 没有 COALESCE 到非补位列 ⇒ client_model 在 session 臂恒 NULL ⇒ 会话详情的
+		// Requests 列表里**模型名一列对停写后的新请求恒为空**（行仍在、时间戳仍在）。
+		// ⇒ 不是全空，是该列静默降级，取第 6 档。
+		// 另 :230/:309 的 owner_user 命中在 session_dim 上（另一张表，未补位），属假触发。
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "WHERE rl.gw_session_id = $1",
+		Note:     "会话详情 Requests 列表读 710 视图（本文件 292-296 行注释明示这就是为「S4 停写后新会话查不到」而做的切换），停写后 session 臂继续供数。仍需注意 err != nil 分支只把 Requests 置空、接口照返 200（既存降级设计）。",
+	},
+	"admin/session_turns_unified.go": {
+		Effect:   effectUnaffected,
+		Evidence: "FROM request_logs_with_current_month",
+		Note:     "子请求补齐腿（parent_request_id = ANY($2)）读 710 视图的 request_status/latency_ms/origin_actor，session 臂三项均直映，停写后继续供数；主 turns 腿走 session 原生源，另有 tree_fallback 兜底。",
+	},
+	"bg/daily_probe_audit.go": {
+		// 2026-10-02 **自我更正**：batch2 判 unaffected，被 null-padded 族门判红。核实 :128-130
+		// 是**三分支 OR**：
+		//   pm.raw_model_name    = rl.client_model    ← 补位 NULL，此臂对新增流量恒不命中
+		//   pm.raw_model_name    = rl.outbound_model  ← session 臂有真值，仍有效
+		//   pm.outbound_model_name = rl.outbound_model ← 同上，仍有效
+		// ⇒ 不是全空（另两臂仍在），但 used CTE 的匹配面少了一条 ⇒ 取 degraded_content。
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "探测范围裁剪的 used CTE 读 710 视图 3 天窗口（probeUsageWindowInterval），session 臂继续增长故仍有真实流量可裁。⚠️ 已核实该 CTE 的 pm.raw_model_name = rl.client_model 一支在 session 臂上 client_model 为 NULL（710 投影 NULL 补位，734 才由 details 补真值）——属既存口径问题，与停写判级无关，但与 §9.14 的补位事实同源。",
+	},
+	"db/probe_views_unified.go": {
+		Effect:   effectUnaffected,
+		Evidence: "FROM request_logs_with_current_month rl",
+		Note:     "本文件是视图 DDL（probeHealthDashboardViewsSQL，DROP+CREATE 那五个 dashboard 视图），real24 CTE 的 24h 真实请求反馈读 710 视图、session 臂继续供数；DDL 本身不随停写变化。",
+	},
+	"admin/body_resolver.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "LEFT JOIN request_logs_bodies_hot rb",
+		Note:     "lookupControlledBody 两段查（hot → 710 视图 LEFT JOIN bodies）：bodies 无 session 兜底但元数据腿有 ⇒ 停写后新 request_id 的 710 视图腿能查到元数据、bodies 腿返 NULL ⇒ COALESCE(...,' ') 给出空串正文，受控正文端点返回 200 但 prompt/response 为空串；只有元数据与 bodies 双双查不到时才走 err ⇒ 调用方统一 404（ErrNotFound），失败可见。",
+	},
+	"admin/logs.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs_bodies_hot",
+		Note:     "getLog 元数据走 logsSourceFromSQL()（默认 710 视图，session 臂继续供数），但 fetchRequestBodies / fetchRequestOutboundBody 的 bodies 两段停写后对新请求恒 sql.ErrNoRows，而调用方显式吞掉：detail.RequestBody = nil; detail.ResponseBody = nil 后照常 writeJSON(w, 200, detail) ⇒ **请求详情页对停写后的新请求永远 200 且正文字段静默为 null**，无任何错误信号。",
+	},
+	"admin/quality_correlations.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs rl",
+		Note:     "五个相关性分桶全部直读 v1 母表 request_logs LEFT JOIN request_logs_bodies、窗口 ts >= NOW() - INTERVAL '1 day' * $1；停写后每桶零行 ⇒ len(xs) < 2 静默 continue ⇒ results 空 ⇒ 洞察列表返回空数组、接口 200，无错误信号（session 族不参与这五个分桶）。",
+	},
+	"admin/unified_detail.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "FROM request_logs_bodies_hot",
+		Note:     "元数据腿是 hot → 710 视图（session 臂兜底，停写后仍能定位新请求），正文腿 loadOutboundBody 只读 bodies_hot → bodies 视图；bodies 查不到时返回 requestdetail.ErrNotFound（:290-292）而上抛，转成 404/错误而非静默空 body ⇒ 失败可见，属可接受。",
+	},
+	"cmd/tools/validate_sessions_v2/loader.go": {
+		Effect:   effectUnaffected,
+		Evidence: "FROM request_logs_bodies_hot",
+		Note:     "离线校验工具（人工触发、不在在线写路径上）；LoadV1Turns 两步查 v1 母表 + bodies（hot ∪ parent，缺 body 时 pgx.ErrNoRows 被 continue 吞掉、保留空默认），停写后仍能对存量会话跑校验，只是覆盖不到新会话。",
+	},
+	"domains/sessionsummary/summarizer.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb",
+		Note:     "pgRequestLogsSource.getSessionMessagesQuery / GetMessagesSince 的轮次腿读 710 视图（session 臂继续供数、停写后仍返回行），但 bodies 腿无 session 兜底 ⇒ 停写后新会话每行 COALESCE(rb.request_body->>'role','user') 退化成 role='user'、content='' ，**消息数非零故不触发 no messages found 报错** ⇒ GenerateSummary 拿着 20 条空正文去调 LLM 生成空摘要并落库。（控制面轴判 live：它 UPDATE session_summaries。）",
+	},
+	"admin/session_bodies_batch.go": {
+		Effect:   effectSilentlyDegradedContent,
+		Evidence: "FROM request_logs_bodies_with_current_month rb",
+		Note:     "纯点查助手，后果取决于上游 id 列表：上游 admin/session_summary_v2.go:336（ids 读 710 视图 + MirrorDriftClassSQL='genuine_loss'）与 admin/session_compare.go:309（ids 走 session 原生源）都继续产生新 id，但这些 id 在 bodies 里恒无行 ⇒ map 查不到即 body.requestBody == nil，mergeFallbackTurns 静默产出结构空正文轮次。**首现场在上游**：bodies 写入随 S4 门控停写，本文件是连带结果。另注 querySessionBodiesByRequestIDAndTS 这条 (request_id, ts) 形态本就一直几乎返回空（文件头实测 99.85% ts 不等），与停写无关。",
 	},
 	"admin/data_lifecycle.go": {
 		Effect:   effectSilentlyFrozen,
@@ -1018,4 +1307,28 @@ var nullPaddedUnaffectedJustification = map[string]string{
 		"且其写入方 candidate_failure_logger 不受 S4 门控 ⇒ 停写后照常带真值流入。本文件对 710 " +
 		"视图的读点只有 :206 活性探针 max(ts) 与 :336 按 credential_id 计数，两列都不是补位列。" +
 		"回答门的问题：停写之后，这个读点过滤/分组用的列不会变 ⇒ 判 unaffected 成立（第三十一轮 D2）。",
+	"admin/session_timeline_query.go": "唯一的补位列命中是 :32 的投影 " +
+		"`SELECT request_id, ts, success, client_model, outbound_model, …`。client_model " +
+		"在 session 臂为 NULL，但**同一投影里并列了 outbound_model**（session 臂有真值），" +
+		"消费方取模型名时有非补位列可选；本文件不用任何补位列做 WHERE / GROUP BY / JOIN " +
+		"⇒ 判 unaffected 成立。",
+	"admin/credential_monitor_heatmap.go": "两处命中都在**以 outbound_model 打头的 COALESCE 里**：" +
+		":311 `lower(COALESCE(rl.outbound_model, rl.client_model))`（whereClause）、" +
+		":322 同一表达式做投影别名。outbound_model 在 session 臂是真值且排第一位，" +
+		"client_model 只在 outbound_model 为空时才被读到 ⇒ 对有真实 outbound_model 的行不改变结果。",
+	"db/probe_views_unified.go": "同形：:96 与 :104 都是 " +
+		"`lower(COALESCE(rl.outbound_model, rl.client_model))`，outbound_model 排第一且为真值列；" +
+		"其余命中（:148/:149 的 id / provider_id）属于 credentials 与 providers 两张表，列同名但表不同。",
+	"admin/session_turns_unified.go": "命中列全是**投影且自带默认值**：" +
+		":157 `COALESCE(request_type,'main') AS request_type`、:162 同一表达式。" +
+		"其余命中（:302/:323 的 id）是 Go 侧的 r.PathValue(\"id\")，不是 SQL 列。",
+	"admin/route_incidents.go": "31 处命中全部是 `id`，且逐行核实**没有一处是 SQL 列**：:132 parts[0]、:135/:147/:153 " +
+		"是 handleDetail/handleEvents/handleTimeline 的入参解析等 Go 代码。" +
+		"本文件对 710 视图的读点用 ts / request_status / credential_id，都不是补位列。",
+	"internal/collector/gateway_adapters.go": "两处命中都在**以 outbound_model 打头的 COALESCE 里**：\n" +
+		"  :61 SELECT COALESCE(NULLIF(outbound_model,''), client_model) AS model_name\n" +
+		"  :64 AND   COALESCE(NULLIF(outbound_model,''), client_model, '') <> ''\n" +
+		"outbound_model 在 session 臂是真值（不在补位表里），且排在**第一位**；" +
+		"client_model 只在 outbound_model 为空时才被读到。⇒ :64 的谓词对有真实 outbound_model " +
+		"的行照样通过，Top-20 模型榜与 p50/p99 统计不因 client_model 为 NULL 而变化。",
 }

@@ -323,10 +323,9 @@ var sequenceChannelRepairs = map[string]string{
 	"810_heap_partitions_toastless_heal.sql":            "one-shot legacy repair (DETACH/ATTACH rollback needs its own transaction); fresh installs have no toastless-heap legacy",
 	"811_partition_bounds_shanghai_midnight_repair.sql": "one-shot legacy repair (SET LOCAL TIME ZONE + bound rebuild); fresh installs self-heal via sequence channel",
 	"812_model_probe_runs_partitions_heap.sql":          "one-shot legacy repair (to_regclass guard + DETACH/ATTACH); fresh installs self-heal via sequence channel",
-	// 第三十一轮收口（2026-10-02）：199c65747 落 813/814 时未做五点同步，注册守卫红。
-	// 两者终态均已烤进 SSOT，fresh install 直接生在终态上，重放一发修复无意义：
-	"813_supplier_errors_partitions_heap.sql": "one-shot legacy repair (heap 函数换体 + 四列存分区转 heap, DETACH/ATTACH); SSOT 的 ensure_supplier_errors_partition 已是 813 heap 版、fresh 分区从建就 heap —— fresh 无列存残留可修",
-	"814_adaptive_probe_targets_hot_subquery.sql": "one-shot view rewrite (v_adaptive_probe_targets 死列子查询改读 candidate_failure_logs_hot); SSOT 视图体已是 814 形态且 hot 表已内联进 schema（第三十一轮 A2 根修）—— fresh 无旧视图体可改",
+	// 813/814 曾在本表短暂豁免（第三十一轮）：并行会话 d5932d26c 随后按五点同步
+	// 正式注册进安装链（基线视图回读父表 candidate_failure_logs，814 在 392
+	// 建 hot 后升级视图），豁免会让注册检查被遮蔽，故撤销（2026-10-02 合并收敛）。
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
