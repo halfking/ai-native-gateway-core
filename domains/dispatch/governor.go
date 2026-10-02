@@ -43,6 +43,28 @@ type ExtraCallRecorder interface {
 	RecordExtraCall(qr *QueuedRequest)
 }
 
+// LeaseRenewer is the optional Governor capability for backends whose
+// admission slot is a TTL-bounded lease (redis_enforce). The forwarder
+// starts a renewal loop for the duration of one forward attempt so a
+// stream longer than the lease TTL does not silently lose its cluster
+// slot (R73 §3 #6, wired 2026-10-02 round 31). Renewal failure fails
+// closed: the forwarder aborts the attempt rather than keep running on
+// a slot the cluster no longer accounts for. Governors with in-process
+// accounting (local concurrency / rpm / tpm) deliberately do not
+// implement this capability.
+type LeaseRenewer interface {
+	// RenewInterval is the cadence at which the forwarder should call
+	// Renew. Implementations must return a value comfortably below the
+	// lease TTL (redis_enforce: TTL/3) so a single failed renewal never
+	// spills past expiry.
+	RenewInterval() time.Duration
+	// Renew extends the lease previously acquired for qr. Must return
+	// an error wrapping ErrLeaseLost when the lease has definitively
+	// expired or been evicted on the shared store, and an error wrapping
+	// ErrGovernorUnavailable for transient faults (store unreachable).
+	Renew(ctx context.Context, qr *QueuedRequest) error
+}
+
 // extraCallMeterFor adapts the optional ExtraCallRecorder capability into the
 // per-request meter callback carried on the QueuedRequest. Governors without
 // the capability leave the meter nil and the executor skips charging.

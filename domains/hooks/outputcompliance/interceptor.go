@@ -24,6 +24,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -214,13 +215,17 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 		// the client unchecked.
 		slog.Warn("output_compliance_interceptor: body transform failed, blocking",
 			"error", err, "session_id", req.SessionID)
+		metrics.OutputGateFailClosedErrorsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateSourceTransformError).Inc()
+		metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathBody).Inc()
 		return &response.InterceptResult{ShouldBlock: true, Action: "output_compliance_block"}, nil
 	}
 	if blocked {
+		metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathBody).Inc()
 		return &response.InterceptResult{ShouldBlock: true, Action: "output_compliance_block"}, nil
 	}
 
 	if !bytes.Equal(redactedBody, req.ResponseBody) {
+		metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionRedact, metrics.OutputGatePathBody).Inc()
 		mode := redactionMode()
 		out := &response.InterceptResult{
 			ModifiedBody: redactedBody,
@@ -236,6 +241,7 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 		return out, nil
 	}
 	if issues > 0 {
+		metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionObserve, metrics.OutputGatePathBody).Inc()
 		mode := redactionMode()
 		return &response.InterceptResult{
 			Action: "output_compliance_observe",
@@ -245,6 +251,7 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 			},
 		}, nil
 	}
+	metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionAllow, metrics.OutputGatePathBody).Inc()
 	return &response.InterceptResult{}, nil
 }
 

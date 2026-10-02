@@ -97,6 +97,26 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 				"13800138016", // apply_patch_call.action.content
 			},
 		},
+		{
+			// 第三十轮钉测：call 侧配对项（*_output 必有对应 call，回放成对）——
+			// shell_call / local_shell_call / computer_call 的 action 子树
+			// （command[]/env 值/type 动作 text）逐叶子入洗；apply_patch_call
+			// 显式 null action 与缺失同义直通（与 web_search_call 同口径）。
+			name: "responses codex call-side action families", path: "/v1/responses",
+			body: `{"model":"m","input":[` +
+				`{"type":"shell_call","call_id":"s1","status":"completed","action":{"type":"exec","command":["echo 13800138021"]}},` +
+				`{"type":"local_shell_call","call_id":"s2","status":"completed","action":{"type":"exec","command":["cat 13800138022"],"env":{"TOKEN":"phone 13800138023"},"working_directory":"/tmp"}},` +
+				`{"type":"computer_call","call_id":"s3","status":"completed","action":{"type":"type","text":"call 13800138024"}},` +
+				`{"type":"apply_patch_call","call_id":"s4","status":"completed","action":null}]}`,
+			wantRefs:         4,
+			wantPlaceholders: 4,
+			notWant: []string{
+				"13800138021", // shell_call.action.command[]
+				"13800138022", // local_shell_call.action.command[]
+				"13800138023", // local_shell_call.action.env.TOKEN
+				"13800138024", // computer_call.action.text
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -220,4 +240,71 @@ func TestInputSanitizerOversizedBodyStopsDispatch(t *testing.T) {
 	body, err := readBodyLimit(within, 8)
 	require.NoError(t, err)
 	require.Equal(t, "12345678", string(body))
+}
+
+// 第三十轮：action 形态语义口径统一——显式 null 与缺失同义直通，
+// 非对象形态才拒单（web_search_call R29 先例，apply_patch_call/shell 族对齐）。
+func TestInputSanitizerActionShapeSemantics(t *testing.T) {
+	cases := []struct {
+		name, item string
+		wantStatus int
+	}{
+		{
+			name:       "shell_call non-object action rejected",
+			item:       `{"type":"shell_call","call_id":"s1","action":"junk"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "shell_call missing action passes",
+			item:       `{"type":"shell_call","call_id":"s2","status":"completed"}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "shell_call null action passes",
+			item:       `{"type":"shell_call","call_id":"s3","action":null}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "local_shell_call null action passes",
+			item:       `{"type":"local_shell_call","call_id":"s4","action":null}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "computer_call null action passes",
+			item:       `{"type":"computer_call","call_id":"s5","action":null}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "apply_patch_call null action passes",
+			item:       `{"type":"apply_patch_call","call_id":"s6","action":null}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "apply_patch_call non-object action rejected",
+			item:       `{"type":"apply_patch_call","call_id":"s7","action":42}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "web_search_call null action passes (R29 pin)",
+			item:       `{"type":"web_search_call","call_id":"s8","action":null}`,
+			wantStatus: http.StatusOK,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rdb := setupSaniGuardRedis(t)
+			s, err := NewSanitizer(NewPatternDetector())
+			require.NoError(t, err)
+			mw, err := NewSanitizeInputMiddleware(s, rdb, time.Minute)
+			require.NoError(t, err)
+			handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.Copy(io.Discard, r.Body) }))
+			body := `{"model":"m","input":[` + tc.item + `]}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+			req.Header.Set("X-Gw-Session-Id", "session-action-shape")
+			req = req.WithContext(WithAuthenticatedTenant(req.Context(), "tenant-action-shape"))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.Equal(t, tc.wantStatus, rec.Code, rec.Body.String())
+		})
+	}
 }

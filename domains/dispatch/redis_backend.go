@@ -598,26 +598,26 @@ func (g *redisEnforceGovernor) Release(qr *QueuedRequest) {
 // exists so long-running streams can keep their slot beyond the initial
 // lease window without re-running the capacity check. The Lua script
 // returns 1 when the token still exists in the ZSET (renewed) and 0
-// when it has expired or was never there. Renew is best-effort: if
-// Redis is unreachable or the lease already expired, the call returns
-// an error wrapping ErrGovernorUnavailable so the caller can fall back
-// to Acquire's fail-closed path on the next iteration.
+// when it has expired or was never there. Renewal failure is reported
+// to the caller so it can fail closed:
+//   - lease expired/evicted (definitive loss) → error wrapping BOTH
+//     ErrLeaseLost and ErrGovernorUnavailable;
+//   - Redis unreachable / script fault (transient) → error wrapping
+//     ErrGovernorUnavailable only.
 //
-// CURRENT REALITY (R73 §5 correction): Renew is a composed-over primitive
-// with ZERO production callers — it is not even on the Governor interface,
-// only on *redisEnforceGovernor (tests exercise it directly). The
-// "renew when residual TTL drops below 50%" policy and the "Stage E
-// forwarder keepalive scheduler" that was supposed to own that cadence DO
-// NOT EXIST anywhere in the tree; no keepalive loop renews leases today,
-// so a lease simply expires by TTL while its stream runs past the window.
-// Wiring a renewal cadence is the lease-renewal design registered in
-// R73 §3 #6 — until it lands, this method is dead-in-production surface.
+// R73 §3 #6 (wired 2026-10-02 round 31): the renewal cadence is owned by
+// the forwarder's per-attempt keepalive loop (lease_renewer.go), which
+// drives Renew via the LeaseRenewer capability every RenewInterval() and
+// aborts the stream fail-closed on definitive loss or when a full lease
+// TTL elapses without a successful renewal. Until that wiring existed
+// this method was dead-in-production surface (R73 §5 correction).
 func (g *redisEnforceGovernor) Renew(ctx context.Context, qr *QueuedRequest) error {
 	g.leasesMu.Lock()
 	token := g.leases[qr]
 	g.leasesMu.Unlock()
 	if token == "" {
-		return fmt.Errorf("%w: no lease registered for request", ErrGovernorUnavailable)
+		return fmt.Errorf("%w: %w: no lease registered for request",
+			ErrLeaseLost, ErrGovernorUnavailable)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -633,10 +633,16 @@ func (g *redisEnforceGovernor) Renew(ctx context.Context, qr *QueuedRequest) err
 		return fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
 	}
 	if n != 1 {
-		return fmt.Errorf("%w: lease already expired or evicted", ErrGovernorUnavailable)
+		return fmt.Errorf("%w: %w: lease already expired or evicted",
+			ErrLeaseLost, ErrGovernorUnavailable)
 	}
 	return nil
 }
+
+// RenewInterval spaces renewals at TTL/3 so a single failed renewal (or a
+// few transient ones) never spills past expiry; the forwarder's renewal
+// loop fails closed once a full TTL has passed without a success.
+func (g *redisEnforceGovernor) RenewInterval() time.Duration { return g.ttl / 3 }
 
 // nextToken returns a per-call unique token. Format is opaque to callers
 // and carries no secret material.

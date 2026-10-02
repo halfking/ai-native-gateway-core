@@ -36,7 +36,7 @@ var errNoTelemetryDB = errors.New("telemetry database not configured")
 // （sessionv2mirror）成为唯一事实源，日志读端走 session 家族投影。与 Lite
 // sink（cmd/gateway/lite_telemetry_sink.go）同一键、同一默认。
 func requestLogsWriteEnabled() bool {
-	return settings.GetPlatformBool("storage.request_logs_write_enabled", true)
+	return settings.RequestLogsWriteEnabled()
 }
 
 // pgErrorDiagnostics extracts the server-side error fields that err.Error()
@@ -1247,6 +1247,15 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	db := c.requestLogDatabase()
 	if db == nil {
 		return errNoTelemetryDB
+	}
+	// 纵深守卫（第三十轮）：request_id 是 DISTINCT ON 去重键（预算执行面
+	// checkBudgetDB 与观测面同款），空串行会被折叠成 1 行 → SUM 少算 →
+	// 提前放行（fail-open 方向）。上游 EmitRequestLogInsert/Update 双守卫
+	// 已拦截空值，RequestID 恒为服务端 UUID（migration 054 + requestid_mw），
+	// 本断言零误伤——能到这里还带空 request_id 的行本就不该存在。
+	if entry.RequestID == "" {
+		incSanitizeEvent("discarded", "request_id", "string_field", "required_field_guard")
+		return fmt.Errorf("telemetry: request_log row without request_id")
 	}
 	// Keep request class/due time inside the database domain before the
 	// asynchronous writer begins its transaction. This prevents a malformed

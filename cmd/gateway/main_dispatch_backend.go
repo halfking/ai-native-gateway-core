@@ -21,7 +21,8 @@ package main
 // accounting is implemented. RedisShadow remains a non-gating observation mode.
 //
 // Stage C.2: LLM_GATEWAY_DISPATCH_GOVERNOR_OBSERVER ∈ {"off", "observe"}
-// (default "off") controls whether the Pipeline's 100ms-tick snapshot
+// (default "observe" since round 31; "off" is the explicit opt-out)
+// controls whether the Pipeline's 100ms-tick snapshot
 // observer is wired. observe requires a non-nil Pipeline; the env flag
 // itself only affects composition, not the runtime cost.
 
@@ -141,15 +142,21 @@ func resolveGovernorBackend(mode string, redisClient *redis.Client, instanceID s
 
 // resolveGovernorObserver returns (tick, enabled) when the observer
 // flag is observed; (0, false) otherwise. Tick is the configured
-// sampling interval (defaults to 100ms when unset). Pure function — env
-// reads happen via envGovernorObserver + envGovernorObserverTickMS,
-// both package-level helpers that can be redirected in tests.
+// sampling interval (defaults to 100ms when unset).
+//
+// Round 31 (2026-10-02): the DEFAULT flips from off to observe. The R73
+// snapshot-state gauge fix (per-tick counts instead of last-write-wins)
+// was invisible to every deployment that never set the env flag — the
+// operator-facing point of the metric family. "off" remains the explicit
+// opt-out. Pure function — env reads happen via envGovernorObserver +
+// envGovernorObserverTickMS, both package-level helpers that can be
+// redirected in tests.
 func resolveGovernorObserver() (time.Duration, bool) {
 	mode := envGovernorObserver()
 	switch mode {
-	case "", "off":
+	case "off":
 		return 0, false
-	case "observe":
+	case "", "observe":
 		tick, _ := envGovernorObserverTickMS()
 		if tick <= 0 {
 			tick = 100 * time.Millisecond

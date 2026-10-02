@@ -314,6 +314,14 @@ git fetch origin && git log --oneline HEAD..origin/main
 本轮只加了并发闸（4 并发，饱和 503）；**查询形态本身没动**，4 个候选修法
 （分区/索引、拆查询、超时熔断、正文换源）及其代价在审计报告 §8.3。
 
+> 🕘 **2026-10-02 订正：上面这段已经过时。** §8.3 的 P0 由 `7d6cfcbd8`（10-01 10:26）
+> 闭合——`= ANY(数组)` 换成 `IN (SELECT unnest)`，根因是前者让规划器放弃主键
+> （N=1/2/4/…/64 全部 ColumnarScan），修后 15.9~17.4s → 2.2~4.2s。
+> 本 handoff 定稿于 10-01 07:27，早于该提交，故保留了「未修」的旧陈述。
+> **教训**：同一份文档里「未修」与「已修」只能有一个是对的；跨会话推进时，
+> 引用上一轮的开放项前必须重新核提交历史，不能照抄（这与 §三「登记不修」里的
+> 断言也要现勘是同一条）。
+
 【本轮新增纪律】
 - **别拿上一轮的口头性能数字当事实**：`phase 2 7~501ms`、`compare 267ms` 都是
   迁移 765 把 2026_09 转列存**之前**的测值。用 pgx 绑定参数跑生产 SQL 重测是
@@ -356,4 +364,214 @@ git fetch origin && git log --oneline HEAD..origin/main
 - 合并后必须重跑全量门禁再提交；编译全绿不等于合并正确。
 - 守卫改动必须做变异验证；判据打在产物上，不打在被测对象之外的文本上。
 - 性能数字与数据前提分别验证，不接受「实测如此」的口头结论。
+- **照抄上一轮的开放项之前必须重新核提交历史**（§8.3 那段就是这么失真的）。
+- **一个「给出许可」的门，必须能区分「验证通过」与「没验证」**。恒假的门
+  （§8.8 的 `ZeroDrift`）和恒真的门（`s4_ready`）同样无用，而且都要命：
+  恒真会放行不可逆操作，恒假会让 spec 的退出条件永远无法宣告完成。
+  形状固定为 `ready ⇔ (前提1) ∧ (前提2) ∧ (结论)`，并另设 `void` 字段 +
+  机器可读 reason；把两者折成同一个 false 等于把「不知道」伪装成「不安全」。
+- **空扫描不是「零发现」**。判据里要有「这次扫到东西了吗」这一条，
+  且它要**数据无关**地总被求值（§8.8 的 I5c）。
+- **禁子串这种守卫写法在 Go 里几乎没有安全形态**：`sum.S4Ready =` 会命中自己
+  修好的 `sum.S4Ready = verdict.Ready`。正确形态是**数赋值点 + 核对右值**。
+  被自己的门拦下是好事（说明它在跑），但要立刻把守卫改精确，而不是放宽它。
+- **全仓扫描型守卫要把基准路径当断言钉住**；第一次跑出的「违规清单」先核对
+  目录归属（是否在本仓库内），再决定改守卫还是改代码。
+- **`gofmt -w <目录>` 会扫到你没碰过的文件**。本轮为格式化自己新写的文件
+  执行了 `gofmt -w cmd/gateway/`，把该目录下 **12 个**与本任务无关的文件
+  一并重排（其中几个是并行会话的在途改动）。提交前 `git status` 才暴露出来。
+  正确做法：`gofmt -w <精确文件列表>`，或 `gofmt -l .` 只做检查。
+  **判据**：`git status --porcelain` 里出现你**没打算改**的文件，就是批量命令
+  的范围写宽了——这与「批量还原事故」同源，一个方向误伤源文件，一个方向误伤格式。
 ```
+- **门控只覆盖系统的一部分时，去找跨越边界的交互**（§9.9）。S4 的门在**写侧**，
+  于是「读 v1 去决定写什么」的读点天然在门外——读端五档（200/500、空不空、
+  冻不冻）**全绿也不代表停写安全**。`bg/credential_recovery.go` 填成
+  `silently_empty` 甚至不算错，但它丢掉的是凭据恢复写入的授权来源。
+  推论：**新增一道门时先问它守的是哪个坐标系，以及门外还有什么坐标系。**
+  只补条目不补坐标，缺口会在下一轮换个名字重新出现。
+- **判「活的控制面依赖」之前，必须先查消费方是否真的被调用**（§9.9.3 自我更正）。
+  `credentialstate/popularity_tracker.go` 结构上完全符合 live（停写后每个 tick
+  把 `popularModels` 抹成空 map，探针间隔从 10s 退到 5min = 30 倍衰减），
+  核实后是 **dormant**：`LLM_GATEWAY_ENABLE_POPULARITY_TRACKING` 默认 false，
+  且唯一输出 `GetRecommendedProbeInterval` 全仓无生产调用方。
+  **假的风险会稀释真的风险**——而 `credential_recovery` 就是真的那条。
+  反向同样成立：`consumer` 存在不等于它在门内，`ursmRecoverSink` 存在且活着，
+  也正因为如此才危险。
+- **子代理的判定要复核，但复核的产物是「更窄的真结论」，不是「接受/否定」**。
+  batch4 报「每个请求静默新开 gw_session_id」——方向对、量级错：DB finder 是
+  兜底不是主路径（Redis `LastSystemSessionIndex` TTL 5min 才是主路径且不受门控），
+  准确的失效条件只有两条（无 Redis 部署 / Redis 索引 miss）。
+  直接接受会造出一个不存在的风险，直接否定会丢掉一个真的洞。
+- **推 `main` 时不要 rebase 主工作区**。并行检出下主工作区可能有别的会话正在
+  写的脏文件，rebase 会拒绝或覆盖它的编辑。安全做法：
+  `git worktree add -b <tmp> /tmp/<dir> main` → 在临时 worktree 里 rebase →
+  `git push origin HEAD:main` → `git update-ref refs/heads/main <new> <old>` →
+  `git reset -q`（**mixed reset 不写工作区**，只同步 index）。
+  逐文件核对 blob（`git rev-parse <sha>:<file>`）确认 rebase 没改变你的内容。
+
+---
+
+## 2026-10-02 追加：§9.18 视图源越列（读端 105/105 之外的缺陷类）
+
+### 做了什么
+
+闭环 §9.17.4 遗留第 1 条。`admin/credential_monitor_heatmap.go` 引用 `rl.origin_stage`，
+而该列不在 `request_logs_with_current_month` 的 113 列冻结契约内（真库 information_schema
+实测 0 列，物理表与 `session_turns` 各 1 列）⇒ 凭据质量热图**线上 500 至少两周**
+（自 R50 于 2026-09-21 引入算起），且因 `exclude_self_test` 缺省 true，裸调用与前端调用同走
+必错路径。
+
+改动：把 bg 的视图变体谓词**导出**为 `ProbeTrafficExclusionPredicateView`（全仓单一拼写），
+热图删掉内联三臂改用它。新增四道门 + 42 列清单文件。详见审计文档 §9.18。
+
+### 这一轮真正学到的东西
+
+- **「守卫清单是包内清单」是个隐形洞。** R49 已经把「物理表谓词对视图必 42703」识别并修好，
+  还写进注释；R50 又在 admin 包内联回去，而 R50 的调用面守卫文件列表只有 bg 包 7 个文件。
+  ⇒ **同一个陷阱可以在同一个仓库里复发，只要它发生在守卫的扫描范围之外。**
+  任何「按文件清单枚举」的守卫，都要问一句：这份清单是怎么来的、谁保证它全。
+- **修一个列名不够。** 原谓词第二臂 `NOT ('probe' = ANY(quality_flags))` 缺 COALESCE，
+  而视图对 session 臂的 `quality_flags` 做了 NULL 补位 ⇒ `NOT NULL` 不是 TRUE，
+  **40,225 / 40,275 行 session 分臂被静默丢弃**。只补列名会得到一个「返回 200、
+  但对整个已迁移数据集全盲」的热图，比 500 更难发现。
+  **判据要打在效果上（判决是否依赖 NULL），不是打在拼写上。**
+- **机械判据的假阳性会把它自己变成死代码。** 这次全仓 AST 门返工了四轮：
+  per-decl 太粗（13 假阳性）→ 逐字面量（4 假阳性）→ 没剥 SQL `--` 注释（误伤
+  `bg/shared_pick.go`，那里 `origin_stage` **只**出现在解释「不能用它」的注释里）→
+  没判列绑定到哪张表（`rb.outbound_body` 绑 bodies 视图、`AS task_id` 是输出别名、
+  `b2.task_id` 的 b2 是 CTE 别名）。**每次假阳性都是「门宽了」而不是「代码错了」。**
+- **门自己也会被自己的注释弄红。** 新写的源码钉桩门首跑即红，因为修复注释里**引用了**
+  那个坏字面量来解释它为什么错。必须先 `stripGoComments` 再匹配。
+  写反例注释的代价是让门看起来像在制造噪声。
+- **新门第一次运行就抓到了清单外的新真缺陷**：`admin/compression_stats.go:212` 的
+  `token_band` 同样不在视图契约内，且错误被 `slog.Warn` 吞掉 ⇒ token 分带聚合长期静默空。
+  它此前不在 105 条读端清单里，因为**没有任何机制会去查**。
+
+### 变异验证（4 次，全部被门抓住）
+
+| 变异 | 被谁抓住 | 证据 |
+|---|---|---|
+| 越列 `rl.origin_stage` 混入视图字面量 | AST 门 | 定位到 `credential_monitor_heatmap.go:337` |
+| 清空具名豁免表 | AST 门 | `compression_stats.go:212` 重新报出 |
+| 还原 R50 原始拼写（代码内） | 源码钉桩门 | 两条断言同时命中 |
+| 共享常量抽掉 `COALESCE(...)` | 真库门 | **9,154** vs **41,730** 行 |
+
+最后一条与独立量测互相印证（单独量旧谓词 7 天存活行 = 9,424，量级一致）。
+**两把量具不是同一把——这是数字能被采信的前提。**
+
+### 待你拍板（新增第 3 项）
+
+1. **`RawModelName` 补齐 + 恢复 SQL 端口的范围**（仍未决，阻塞 `credential_recovery` 修复）
+   - (a) 补数据源 + 端口 SQL（动热写入路径 + 需历史回填）
+   - (b) 只补数据源，端口留到 S4 灰度前
+   - (c) 改用门控（改动小、当天可落地，代价是停写期降级凭据只能等自身探针）
+2. **`origin_stage` 线上 500 是否现在修** —— **已在本轮修完并推送**（含
+   `compression_stats` 的 `token_band` 同族缺口登记为具名豁免）。
+3. **`token_band` 怎么随迁**（新增）。它与 `raw_model_name` 同属「物理表独有列未随迁」
+   缺口类：正解是把该列随迁进 `session_turns` + 710 投影；改成读物理表会丢 session 分臂，
+   与 S4 方向相反。要么并入决策 1 一起做，要么接受仪表盘这一格长期为空。
+
+### 遗留（不阻塞本轮，但阻塞 S4）
+
+- `credential_recovery` 写授权缺陷未修（`NOT EXISTS` 恒真那类，已修的是 `discovery`）。
+- **跨字面量运行时拼接的越列仍无静态门**。静态判定天花板就在这里——热图那个 case 正是
+  视图引用与谓词分属两条字面量、运行时才拼起来的。已知形状要么靠真库门覆盖，要么上真正的
+  SQL 解析器。
+- 读端 74/105 静默退化未处置 ⇒ S4 灰度方案必须自带对账，不能「看接口是否报错」。
+- `admin/session_tenant.go` 判 unaffected 依赖的假设（三条 session 腿对新 task 是否都及时
+  落行）仍未实测。
+
+---
+
+## 2026-10-02 追加（第二轮）：§9.19 两条待办收口
+
+### 修了一个真的结构性误报机：S4 停写 → 对账器报假账
+
+`usageCreditSQL()` 用 `FULL OUTER JOIN` 比对 **门内**的 `request_logs_hot.credits_charged`
+与 **族外、且永不停写**的 `credit_ledger_hot`，而 `bg/ledger_reconciliation.go` **完全不咨询
+S4 门**。停写一生效：usage 臂冻结、credit 臂继续增长 ⇒ 切换点之后每个请求都落进
+「只有 credit」分支（charged=0 / debited>0），被写进 `maas_reconciliation_findings`。
+**那些不是账务缺陷，就是停写本身**，且无上界。
+
+同文件的 `balanceChainSQL()` 只读 `credit_ledger_hot`、不跨族 ⇒ **只挡一项**，
+把它一起挡掉就是拿假报机换静默洞。
+
+修法沿用本审计已建的 `staleExpiryMayRun` 先例：纯函数
+`usageCreditComparability(logsWriteEnabled) (bool, string)` + 稳定原因键
+`s4_stop_write`，在**发查询之前**短路；新增 `SkippedChecks()` 把「跳过」与
+「扫了没发现」分开（两者返回的 0 在计数上无法区分）。
+
+### 这一轮最该记住的：我自己的守卫失败了三次
+
+1. **判据打在错误的 `return` 上** —— 用「函数体内第一个 `return 0`」判短路；删掉 skip 分支的
+   return 后，它匹配到了后面查询错误处理里的那个 ⇒ 门照样绿。**变异验证救了这条命**：
+   门是绿的，但变异是红的，这才暴露出判据钉在了错误的节点上。
+2. **只看 `IfStmt.Cond`** —— 实际写法是 `if ok, reason := f(...); !ok {`，调用在 **Init**，
+   于是门在**正确代码上**报「门不存在」。
+3. **测试执行了它声称要验证的那一步** —— 跳过列表的重置测试**手工**执行了 `r.skipped = nil`，
+   所以把 `RunOnce` 里的重置删掉仍然全绿。抽成具名方法 + AST 钉住调用位置与先后。
+4. **崩溃被当成断言命中** —— `ast.Inspect(nil, …)` panic（`IfStmt.Init` 可为 nil），
+   变异 A 的「红」其实是崩溃。差点把一次无效的变异验证当成有效证据。
+
+五道变异（抽掉门 / skip 不 return / 门恒 true / 删重置 / 重置挪位）全部被正确抓住。
+
+### 修正了我自己的一处判断（42 列按可修性二分）
+
+§9.18 说 `token_band` 要「随迁进 `session_turns`」—— **错了**。真库差集：
+
+- **A 类 5 列**（`origin_stage`、`token_band`、`client_forwarded_for`、`trace_events`、
+  `upstream_protocol`）：**`session_turns` 里已经有，只是 710 视图没投影**
+  ⇒ 纯 `CREATE OR REPLACE VIEW` 投影即可，无回填、不动写路径。
+- **B 类 37 列**：其中 23 列已在 `session_turn_details`（733 特征层，61 列、在写）
+  ⇒ 真正缺列的只剩 **19 列**。
+
+顺带一个结构事实：**`session_turns` 根本没有 `gw_task_id`**，任务关联只存在于特征层。
+⇒ 若要补 A 类那 5 列，**特征层才是对的任务关联源**，这是改 710 投影时必须先定的语义。
+
+仍不擅自改 710：那是共享契约变更（pin 要同步），且 A 类含 `origin_stage` ——
+**投影它等于把本轮刚修掉的那条越列路重新打开**，必须同时把所有视图读方切到视图变体。
+
+### `assertTaskInTenant`：我原来问错了
+
+遗留问的是「三条 session 腿是否都及时落行」，但那是 OR-of-EXISTS，任一命中即放行，
+「三条都落」从来不是不变量。真正的问题是「**有没有 task 五条腿一条都没落**」。
+
+实测：30 天内 `request_logs_hot` 7 个 distinct task，6 个 session 族未覆盖，
+**五条腿全未覆盖 = 0**，门当前不会误拒。
+
+**但面向终局有真约束**：门依赖 `request_logs_hot` + `request_logs` 两条 v1 腿，
+而终局目标正是删掉这两张表 ⇒ v1 退役后「只在 v1 留痕」的历史任务会对**所有人** 404
+（权限门翻转成阻断所有人）。**S4 退出判据必须包含「v1-only 历史已回填进 session 族」。**
+
+---
+
+## 2026-10-02 追加（第三轮）：§9.20 迁移成本从「42 列」压到「4 个投影」
+
+补上了前两轮一直缺的后半问：**这 42 个「物理表独有列」里，哪些真的有人在读？**
+
+| 类别 | 数量 | 结论 |
+|---|---:|---|
+| 被 SELECT 读、且 `session_turns` 已有该列 | **4** | `origin_stage`、`token_band`、`client_forwarded_for`、`trace_events` |
+| 被读但已有别的 session 落点 | 1 | `outbound_body` —— 从不从 `request_logs*` 直读，全走 bodies 视图族 / `session_bodies_unified` |
+| 只写不读 | 5 | 5 个 token 指标列，只见于 INSERT/UPDATE 列清单与 Go 结构体 |
+| 全仓无任何 SQL 引用 | **29** | 零迁移成本 |
+| 名字撞车 | 3 | `cache_hit`→`dashboard_access_events`；`session_summary`→`approval_requests`；`task_id`→十几张任务表 |
+
+⇒ **待决范围只剩一句话：给 710 视图补 4 个投影。** 数据已在 `session_turns`，
+**不需回填、不需动写路径**，只需一条 `CREATE OR REPLACE VIEW` + 同步 pin。
+今天唯一的真实消费方是 `admin/compression_stats.go:212`。
+
+**硬前提**：补 `origin_stage` = 把 §9.18 修掉的 500 路径重新打开，必须与
+「所有视图读方切到 `bg.ProbeTrafficExclusionPredicateView`」**同批提交**，
+`TestNoPhysicalOnlyColumnsInViewSourcedSQL` 会在任何一处遗漏时转红。
+
+### 方法学（这轮踩到的）
+
+- **扫描器输出是嫌疑清单，不是结论。** 它把 `turn_writer.go:366` 的 `token_band`
+  **INSERT 列清单**误判成视图读取，差点被读成「第五处 42703」。手验 5 处视图读点后
+  确认全部只用身份列，无越列。**每次「抓到新缺陷」都要问：这是读方还是写方？**
+- **列名撞车是真实噪声源。** 只按列名统计引用量会**高估**迁移面（`task_id` 在本仓
+  十几张无关表上都有）。必须先判「这个引用绑到哪张表」——与 §9.18.8 的教训同源。
+- **「无 SQL 引用」比「有几处引用」更有决策价值**：29/42 无人读，
+  于是真正要迁移的只有 4 个。此前把 42 列整体当迁移面是**高估**。

@@ -138,7 +138,7 @@ func (s *liteRequestLogSink) PersistRequestLog(ctx context.Context, entry *telem
 	// R78 订正：原文此处写「日志读端走 session_logs_view」不成立——该视图
 	// 零生产消费者，lite 侧没有任何 request-log 查询端点（/api/lite/sessions
 	// 只返回会话列表）。即停写之后管理面对 request_logs 既不写也不读。
-	if settings.GetPlatformBool("storage.request_logs_write_enabled", true) {
+	if settings.RequestLogsWriteEnabled() {
 		row := &storage.RequestLog{
 			RequestID:  entry.RequestID,
 			TenantID:   tenantID,
