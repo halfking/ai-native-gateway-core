@@ -2185,3 +2185,138 @@ bg 17），但**其中所有视图族判定需按 §9.1 重判**——这正是�
 `routeincident/store.go`、`data_lifecycle.go`）。这本身就是一条值得记的经验：
 **分层的机械判据（族）比人的判断（后果）可靠得多**，因为它可复现、可穷举、
 无解释空间；把人的判断挂在一道机械判据下面，错误就变得可见且可回归。
+
+## §9.9 读端分级表的坐标系里没有「控制面」这一维（2026-10-02）
+
+§9.8 的四分表 + 五档分级覆盖的是**响应面**：停写之后，接口返回 200 还是 500、
+结果集空不空、冻不冻结。这一整轮分级（105 文件 / 239 调用点）都在这个坐标系里。
+
+本轮在核实子代理产出时撞上一个坐标系外的形状，它让**读端五档全绿也不代表停写
+安全**。
+
+### §9.9.1 触发：子代理的一条判定，我不接受也不否定，先去读代码
+
+batch4 报 `domains/hooks/observability/telemetry/client.go` 为
+`silently_empty`，理由是 `FindRecentGatewaySession` 读 `request_logs_hot`
+无门控，`no rows` 被吞成 `("", nil)`，调用方拿到空串就 `createSession()`，
+结论写作「每个请求静默新开 gw_session_id，会话连续性碎裂」。
+
+这条**方向对、量级错**。核实后：
+
+- `FindRecentGatewaySession`（`client.go:593-625`）确实读 `request_logs_hot`、
+  确实无门控、确实把空结果吞成 `("", nil)`（:619-621）。
+- 但它**不是主路径**。`session_assignment.go:160-173` 先查 Redis 的
+  `LastSystemSessionIndex`（`domains/session/last_system_session.go`，TTL 固定
+  5 分钟），命中即返回，DB finder 只是兜底——注释原文：「the DB finder ... remains
+  the authority」。
+
+准确的失效条件是两条，不是「每个请求」：
+
+1. **无 Redis 部署**：`main.go:968` 的装配在 redis 分支内，无 Redis 时
+   `lastSystemSession` 为 nil，`session_assignment.go:160` 的判空直接跳过 ⇒
+   DB finder 变成**唯一**路径，完全切断。
+2. **Redis 索引 miss**（TTL 到期 / Redis 重启 / device seed 不匹配）⇒ 原本由 DB
+   兜底的续对话变成新建会话。
+
+> 判据教训：「grep 零命中」这次是**反过来**用的——不是从零命中反推读点不存在，
+> 而是从 `GetRecommendedProbeInterval` 零命中反推消费方不存在（见 §9.9.3）。
+> 同一个动作，方向不同，结论强度也不同。
+
+### §9.9.2 真正的洞：停写的门控只管写侧
+
+S4 的门是 `storage.request_logs_write_enabled`，它 gate 的是**写入**。于是有一类
+读点天然落在门控之外：**读 v1 去决定「要不要写、写什么、算作哪一轮」**。这类读点
+的输出不是 200 也不是 500，而是去改数据库里的另一个状态。
+
+五档里没有它的位置：把 `bg/credential_recovery.go` 填成 `silently_empty` 甚至
+**不算错**——它的响应确实是 200、结果集确实是空、无错误信号。它真正丢掉的东西，
+在那一列里没有格子可以写。
+
+### §9.9.3 已核实的四条（登记于 `admin/request_logs_control_plane_dependency_test.go`）
+
+**① `bg/credential_recovery.go` —— 本轮最重的一条。**
+
+`lookbackCandidateSQL()`（:1707）选出「36h 内有成功流量」的降级/离线绑定，
+结果集**直接驱动一次恢复写入**：`ursmRecoverSink(..., success=true, 0)` 写
+URSM v2 的 Recover(30)，外加 `dispatchProbe` 与候选缓存失效。代码注释原文：
+
+> Evidence-backed Recover(30) write into URSM v2. success=true is justified by
+> the SQL predicate (a logged success inside the window)
+
+停写后的两段后果，**第二段比第一段危险**：
+
+- ① 停写 36h 后候选集恒空 → `if len(candidates) == 0 { return }`（:1871-1873）
+  静默返回，无日志无告警（`recoveryLookbackScans` 计数器照常自增，掩盖了这一点）
+  ⇒ 降级凭据只能等自身探针恢复。
+- ② **停写后 36h 内仍在用停写前的陈旧成功记录授权恢复写入** ⇒ 失效方向是
+  **继续放行**，不是停止。
+
+这与本审计 §8.2 修掉的 `s4_ready` 真空为绿**同一族**：门控的前提消失后仍给出
+许可。区别在于这次放行的对象不是切流，是**凭据可用性**——而凭据恢复写入的
+`success=true` 是有下游后果的。
+
+**② `domains/hooks/observability/telemetry/client.go`** —— 会话身份
+（`FindRecentGatewaySession`，见 §9.9.1）与轮次序号（`lookupTurnNumber`
+:3767-3790，按 `gw_session_id` 数 `request_logs` 行）。turn_no 一侧确认在门控外：
+`client.go:2113` 注释原文「outbox request-completed 会话事件在门控外照常提交」。
+缓解：同处注释写明「the session/v2 aggregator owns the authoritative turn_no
+anyway」——属派生计数器，非权威，故不单列为高危。
+
+**③ `domains/providerprofile/adapters.go`** —— 每 credential 的 1h 窗口指标
+（TTFT / 错误类型分布 / 429 命中率 / 成功率）经 `bg/provider_profile_workers.go`
+的三个 worker 装配进 `AlertEngine`，由 `PGCredentialActor` 驱动**凭据自动禁用与
+恢复**。**未核实**：AlertEngine 在「无数据」时是「不告警」（降级）还是「评分掉到
+阈值以下 → 禁用凭据」（事故）——这决定它属于哪一档，**必须在生产库复核一次**。
+
+**④ `domains/credentialstate/popularity_tracker.go` —— 判 dormant，且是自我更正。**
+
+结构上完全符合 live：停写后 `refresh` 查 0 行不报错，把 `popularModels` 换成
+**空 map**（:114-116，不是保留上一份），于是 `GetProbeInterval` 对所有模型回落到
+5 分钟默认（:126-128），相对热门模型的 10 秒是 **30 倍探测衰减**——一个更隐蔽的
+形状：不是冻结，是**每个 tick 被抹一次**。
+
+逐行核实后判定为 **dormant**，两条独立理由：
+
+1. `main.go:1535` 由 `LLM_GATEWAY_ENABLE_POPULARITY_TRACKING=true` 把关，**默认 false**；
+2. 它唯一的输出 `Manager.GetRecommendedProbeInterval` **全仓无生产调用方**（仅定义）。
+
+> 若只做到第 1 层（看到「读 v1 → 决定探针节奏」就登记成 live 高危），这条会造出
+> 一个**不存在的风险**——而假的风险会稀释真的风险（§9.9.1 的 credential_recovery
+> 就是真的）。**判 live 之前必须先查消费方是否真的被调用。**
+> 反过来也成立：`consumer` 存在不等于它在门内——`ursmRecoverSink` 存在且活着，
+> 也正因为如此它才危险。
+
+### §9.9.4 落地：两条正交的轴，各配一道自己的门
+
+不把控制面塞进五档当第六档——那会把「响应退化」和「控制流退化」混进同一个枚举，
+而它们的判据、危险方向、复核方法都不同。改为独立登记表 + 独立门：
+
+| | 读端轴 | 控制面轴 |
+|---|---|---|
+| 表 | `requestLogsStopWriteClassification` | `requestLogsControlPlaneReaders` |
+| 问的问题 | 这个读点的**输出**长什么样 | 这个读点的输出**决定**了哪个写入/身份 |
+| 维度 | 5 档后果 + 4 族机械判据 | live / dormant × gated / ungated |
+| 分母 | 全部 105 个读点文件 | **非 admin 子集 52 个**（控制面只可能在请求路径与 worker 侧） |
+| 门 | `TestRequestLogsStopWriteNothingLeftUnclassified` | `TestRequestLogsControlPlaneNothingLeftUnreviewed` |
+| 常跑守卫 | 证据逐字 + 族一致性 | 证据逐字 + 键必须在清单内 + **live∧ungated 必须写 BlastRadius** |
+
+`BlastRadius` 是这张表的关键约束：它逼每一条「活的、门控外的」读点写清**它具体
+授权或改变了哪个写入**。少了这一条，「活」就只是一个形容词——而形容词不可核。
+
+两道门当前**都是红的**，这是真实状态：
+
+- 读端：99/105 未评估。
+- 控制面：**48/52 未判定**（已判定 4 条即 §9.9.3 的①②③④）。
+
+### §9.9.5 本条方法论
+
+我这一轮搭的框架（读点清单 + 后果五档 + 族门）有一个盲区，它不是「某几条判错了」，
+而是**整张表的坐标系里少了一维**。表现是：所有门都绿，缺陷照样能在生产发生。
+
+可复用的判据：**当一个门控只覆盖系统的一部分时，去找那些「跨越门控边界」的交互。**
+S4 的门在写侧，所以要找「读旧 → 写新」的跨界读点；权限门在资源侧，所以要找
+「校验资源 A → 访问资源 B」的越界访问。同一形状。门控本身不能证明边界上没有洞，
+它只证明边界内侧是对的。
+
+推论：**新增一道门时，先问它守的是哪个坐标系，以及门外还有什么坐标系。**
+只补条目不补坐标，缺口会在下一轮换个名字重新出现。
