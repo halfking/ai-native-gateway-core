@@ -2496,3 +2496,63 @@ if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnable
 2. 断言只扫 `ifStmt.Cond` → 报「没有调用」。实际写法是
    `if x := f(); cond {`，**调用在 Init 里**。改成 Init + Cond 都扫。
    两者都是「门红了但结论是错的」——门红不等于我的判据对，得看红的原因。
+
+## §9.13 读端轴推进 35/105；分类表补第 6 档，门误伤改具名豁免（2026-10-02）
+
+`TestRequestLogsStopWriteNothingLeftUnclassified` 从 **99/105 未评估** 降到 **70/105**
+（本批 29 条）。门仍红，这是真实状态。
+
+### §9.13.1 新增第 6 档：`silently_degraded_content`
+
+batch1 与 batch4 **各自独立**撞上同一堵墙：带 bodies 腿的读点停写后是
+「**行还在、某一列变空**」——主腿走 710 视图照常出行，
+`LEFT JOIN request_logs_bodies_* … COALESCE(rb.request_body,'')` 的正文腿没有
+session 兜底。
+
+- 填 `silently_empty` 不准：结果集没空。
+- 填 `silently_frozen` 不准：不是冻结在旧值，是这一列变成空串/NULL/0。
+- 硬塞进任何一档，都会让「bodies 腿到底算不算硬失败」被分类表的**沉默**吞掉。
+
+⇒ 单列一档，并给族门加**反向**约束：纯基表族停写后读点整体停止，不存在
+「行还在但某列变空」的形状，判该档即错。
+
+### §9.13.2 族门误伤了我自己两次，都不是「门太严」
+
+| 我判的 | 门报的 | 真相 |
+|---|---|---|
+| `admin/telemetry.go` → `unaffected`（读点在写门内，停写后不执行） | bodies 族不得判 unaffected | **我对**：读点不发生，与「读到空正文」是两种形状 |
+| `admin/data_lifecycle_blobs.go` → `unaffected`（读 `pg_column_size`，体量面） | 同上 | **我对**：bodies 族按正则识别，把 `pg_column_size` 也算成「读 bodies」 |
+
+改法不是放宽门，而是**默认拒绝 + 具名豁免**：新增
+`bodiesUnaffectedJustification`，缺项或空理由一律判红，放行条件从「门写宽了」
+变成「有人写下了为什么，而这段话会被 diff 审到」。
+
+> 第四次记同一件事：**守卫写宽会误伤正确代码。** 这次误伤的是我自己的判定，
+> 若不是族门先红，我可能会去「改代码迁就门」——那会把一段正确的读端分析改成错的。
+
+### §9.13.3 子代理说「6 个文件的机械族有误」——核完是它错了
+
+batch1 自报 `admin/model_status.go` 等 5 个文件的族被误标为 `reads_base_tables_only`，
+并建议复核。逐个查 `sourceFamilyOf` 的实际返回值：**全部是 `reads_710_view_only`**，
+与真实读点一致。子代理把「机械统计里的某个数字」当成了族标签。
+
+**没有照它去「修」分类器**——那会修坏一个没坏的东西，而且它的判据（族与真实
+调用点不符）本身站不住。
+
+顺带核实了一件事以免自己犯同样的错：`admin/usage_trend_series.go` 读
+`..._without_customer_id`，真库 `pg_get_viewdef` 里 `session_turns` 出现 **0 次**
+（纯 v1），而主 710 视图是 4 次；`sourceFamilyOf` 确实把它归入 base 族
+（`v1OnlyView` 分支），**分类器是对的**。
+
+### §9.13.4 三个变异，两个被门抓住、一个抓不住（后者是合理的）
+
+| 变异 | 结果 |
+|---|---|
+| M4 清空 `bodiesUnaffectedJustification` | **门红**（两个文件都报「必须具名登记」） |
+| M6 把纯 `familyBase` 文件判成 `silently_degraded_content` | **门红**（反向约束生效） |
+| M5 把 `admin/usage_trend_series.go` 改成 `silently_degraded_content` | **未被抓住** |
+
+M5 抓不住**不是门的缺陷**。该文件族是 `familyViewBase`（同时读会话臂视图与
+v1-only 视图），混合族的后果取决于**哪条腿主导**——detail 档只读 v1-only 腿会
+冻结，而 provider 档读派生表。任何机械规则都会在这里误伤正确判定。
+如实记下门的能力边界，不假装它抓到了。
