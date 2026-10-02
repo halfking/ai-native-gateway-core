@@ -647,6 +647,55 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if !strings.Contains(postDown815, "client_ip") {
 		t.Fatal("815 down must keep the 740 client_ip column (it strips only its own three)")
 	}
+
+	// ── 815 幂等：down 掉自己再 up 一次，viewdef 必须逐字节回到同一份 ──────────
+	//
+	// 这三段（up → down → up）此前只活在那次「动活库」的手跑里，不可复核：验收时
+	// 谁也不敢在活库上重跑 down + up，于是「幂等」这条结论就只存在于一次运行的
+	// 记忆里。放进 scratch 库后它变成一道**可重跑**的门。
+	//
+	// 顺序上必须先清 bookkeeping 行：815.down 按 append-only 惯例（710/734/738 同款）
+	// 保留自己的 schema_migrations 行，而该表是 PRIMARY KEY(version)，于是朴素重跑
+	// 会在文件末尾的 INSERT 处冲突、整笔事务回滚，视图停在 115 列。响亮地失败可以
+	// 接受，但操作者必须知道有这一步——否则「回滚后再前滚」会变成一次静默的空操作。
+	clear815Bookkeeping := func(what string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `DELETE FROM public.schema_migrations WHERE version = '815'`); err != nil {
+			t.Fatalf("clear 815 bookkeeping row (%s): %v", what, err)
+		}
+	}
+	clear815Bookkeeping("before re-up")
+	applyMigration("815_request_logs_view_stage_band_cff.sql")
+	reUp815 := viewDefinition(t, ctx, pool)
+	if reUp815 != ensureViewdef {
+		t.Fatalf("815 down 之后再 up，必须逐字节回到同一份 viewdef。\n"+
+			"不一致说明 815 依赖了它自己没有建立的前置状态——线上表现是"+
+			"「回滚后再前滚，视图少列或多列」，而每次都会被当成偶发。\n"+
+			"post-815 viewdef:\n%s\n\nre-up viewdef:\n%s", ensureViewdef, reUp815)
+	}
+	// 幂等的第二面：三列必须**真的有值**，而不是「列名回来了」。上面 607-624 行把
+	// session 分臂夹具改成了 node_probe/band-live，重建后仍要读到它们。列回来了而
+	// 值是 NULL，等于把「缺源」伪装成「已迁移」——正是这套视图反复出问题的形状。
+	if err := pool.QueryRow(ctx, `
+		SELECT origin_stage, token_band FROM public.request_logs_with_current_month
+		WHERE request_id = 'req-dual'
+	`).Scan(&stage, &band); err != nil {
+		t.Fatalf("815 re-up passthrough probe failed: %v", err)
+	}
+	if stage == nil || *stage != "node_probe" || band == nil || *band != "band-live" {
+		t.Fatalf("815 re-up 后三列必须仍有值；got origin_stage=%v token_band=%v。"+
+			"（列回来了但值是 NULL = 缺源被伪装成已迁移）", stage, band)
+	}
+	// 沙箱纪律：探针做完要复原。再 down 一次并要求**逐字节**等于 postDown815 ——
+	// 于是 down 的确定性也一并被钉住（同一个 down 跑两次结果不同 = 它偷偷读了
+	// 活库状态，那正是本文件最不敢依赖的一类输入）。
+	clear815Bookkeeping("before second 815 down")
+	applyDown("815_request_logs_view_stage_band_cff.down.sql")
+	if secondDown815 := viewDefinition(t, ctx, pool); secondDown815 != postDown815 {
+		t.Fatalf("815 down 必须确定性：第二次 down 的 viewdef 与第一次不同。\n"+
+			"first:\n%s\n\nsecond:\n%s", postDown815, secondDown815)
+	}
+
 	applyDown("740_view_chain_client_ip.down.sql")
 	postDown740 := viewDefinition(t, ctx, pool)
 	if strings.Contains(postDown740, "client_ip") || !strings.Contains(postDown740, "credits_rate_multiplier") {
