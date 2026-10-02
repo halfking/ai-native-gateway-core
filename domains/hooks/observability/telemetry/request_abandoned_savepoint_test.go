@@ -111,17 +111,41 @@ func TestClearRequestAbandoned_TableMissingDoesNotPoisonTx(t *testing.T) {
 	require.Equal(t, float64(1), testutil.ToFloat64(requestAbandonedMarkerOps.WithLabelValues("clear_failed"))-failedBefore)
 }
 
-// 谓词门（R35 P2）：updateRequestLog 的 clear 调用必须包在
-// `if !requestIsStartedNotFinished(entry)` 守卫内——中途 enrichment UPDATE
-// （仍 in_progress）删活标记 = abandoned 事实静默丢失。文本位置门，
-// 与 request_abandoned_gate_test.go 同族三自由度法（存在/归属/顺序）。
+// clear 正常路径（R36 补：此前 clear 只有失败腿，而 clear 是自称承重的
+// 一半——no-op 化/漏 RELEASE/漏计数的退化在全测试族都不会红）：SAVEPOINT →
+// DELETE → RELEASE，clear 计数。
+func TestClearRequestAbandoned_HappyPathReleasesSavepoint(t *testing.T) {
+	mock, err := pgxmock.NewConn()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = mock.Close(context.Background()) })
+	mock.ExpectBegin()
+	tx, err := mock.Begin(context.Background())
+	require.NoError(t, err)
+
+	clearBefore := testutil.ToFloat64(requestAbandonedMarkerOps.WithLabelValues("clear"))
+
+	mock.ExpectExec(`SAVEPOINT gw_req_abandoned_clear`).WillReturnResult(pgconn.NewCommandTag("SAVEPOINT"))
+	mock.ExpectExec(`DELETE FROM public.request_abandoned`).WithArgs(pgxmock.AnyArg()).WillReturnResult(pgconn.NewCommandTag("DELETE 1"))
+	mock.ExpectExec(`RELEASE SAVEPOINT gw_req_abandoned_clear`).WillReturnResult(pgconn.NewCommandTag("RELEASE"))
+
+	clearRequestAbandonedPending(context.Background(), tx, "req-clear-happy-pin")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.Equal(t, float64(1), testutil.ToFloat64(requestAbandonedMarkerOps.WithLabelValues("clear"))-clearBefore)
+}
+
+// 谓词门（R35 P2 引入，R36 订正为正向终态判定）：updateRequestLog 的 clear
+// 调用必须包在 `if requestLogEntryTerminal(entry)` 守卫内——只有携带终态
+// 证据的 UPDATE 才允许删活标记，中途 enrichment UPDATE（in_progress）与
+// nil/脏值方向都取「保留标记」。文本位置门，与 request_abandoned_gate_test.go
+// 同族三自由度法（存在/归属/顺序）。
 func TestAbandonedClearCallIsPredicateGuarded(t *testing.T) {
 	src := clientSource(t)
 	body := extractFuncBody(t, src, "updateRequestLog")
 	callAt := indexOfSubstring(t, body, "clearRequestAbandonedPending(ctx, tx, entry.RequestID)")
-	guardAt := indexOfSubstring(t, body, "if !requestIsStartedNotFinished(entry)")
+	guardAt := indexOfSubstring(t, body, "if requestLogEntryTerminal(entry)")
 	if guardAt < 0 || guardAt > callAt {
-		t.Fatalf("clear call must be nested under `if !requestIsStartedNotFinished(entry)` guard (guard@%d call@%d) — a mid-flight enrichment UPDATE would delete a live marker", guardAt, callAt)
+		t.Fatalf("clear call must be nested under `if requestLogEntryTerminal(entry)` guard (guard@%d call@%d) — a mid-flight enrichment UPDATE would delete a live marker", guardAt, callAt)
 	}
 }
 
