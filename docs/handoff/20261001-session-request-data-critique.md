@@ -890,3 +890,23 @@ M1–M7（S4 门）+ R1–R3（轮转门）。M7 是**对照实验**：删掉真
 
 **未做、已定性、需拍板**：`auto_route_settle_worker` 的陈旧基线标记
 （要改 HTTP 响应契约）。
+
+### 本轮交付状态（2026-10-02 收尾）
+
+- §9.26 已提交并推送 `origin/main`：`05926d177`（父 `c11cf41e9` = 并行会话的
+  `final_full` 存储收益证伪，`e4854c993` 重放后的等价提交）。
+- 推送时远端已被并行会话推进 5 个提交（`936b12266` 等）。**用临时 worktree
+  cherry-pick + 逐文件 blob 逐字节校验 + `update-ref` + mixed `git reset -q`
+  重新落地**，全程未写工作区。
+- **`admin.TestStopWriteEffectAgreesWithSourceFamily` 失败与 §9.26 无关**，已做差值归因：
+  在一个**只含并行会话未提交改动、完全不含本轮改动**的基线 worktree 上该测试
+  同样失败；且本轮改动全部在 `bg/` 包内，而该测试按登记表逐文件读 `admin/`+`domains/`、
+  不扫目录。触发源是并行会话改过的
+  `admin/request_logs_stop_write_classification_test.go` /
+  `admin/view_source_columns_contract.go` / `db/request_logs_view_schema.go`。
+- ⚠️ **工作区有 12 个文件相对新 HEAD 呈陈旧**（远端那 5 个提交动过、
+  本地工作区仍是旧内容）：`docs/audit/2026-10-02-usage-trend-model-lines.md`、
+  `docs/handoff/20261002-view-contract-815-handoff.md`、`tests/deploy_sops_test.sh`、
+  `web/src/locales/{ar-SA,de-DE,en-US,es-ES,fr-FR,ja-JP,zh-CN,zh-TW}/usageTrend.ts`、
+  `web/src/views/admin/UsageTrendExplorer.vue`。
+  **内容与旧 HEAD 逐字节一致（无丢失），但需对方自行 sync**。我未做任何清理。
