@@ -6420,6 +6420,44 @@ v1      ts   2026-10-02 10:08:57.198929+08     delta = +0.206s
 **没有一处跨族**；而 `admin/data_lifecycle_blobs.go:109` 的 bodies 联接用的正是
 `request_id` 单键。⇒ 这是**测量方法的错**，不是代码缺陷。
 
+### §9.47.3b 回填 SQL 的真库演练（`BEGIN … ROLLBACK`，不留数据）
+
+范围量出来之后，我把回填 SQL 在真库上演练了一遍——用事务回滚，所以**验了正确性
+但没有留下任何数据**。结果抓到本节**第三次**「只碰了一个面」，而且这次最危险：
+
+| 版本 | 写入面 | 填到行数 | 覆盖率 | 是否报错 |
+|---|---|---:|---:|---|
+| v1 | 只 `session_turns_hot` | 1,388 | **32.6%** | **否** |
+| v2 | 只 `session_turns`（父表） | 2,872 | 67.4% | 否 |
+| **v3** | **两面都写** | **4,260** | **100.00%** | 否 |
+
+⇒ **单面版本会安静地跑完、只覆盖三分之一。** 这与 §9.28.2（只读父表 → 对最新
+轮次失明）、§9.47.3 错法二（只联父表 → 67.46%）是**同一条纪律的第三次**，
+但这一次它在**写路径**上——前两次在读路径，症状是漏数；这一次症状是**少写**，
+且没有任何错误信号。
+
+回填 SQL 的正确形状（两个存储面各一条 UPDATE，源也必须 hot ∪ parent）：
+
+```sql
+WITH src AS (
+  SELECT request_id, COALESCE(outbound_model, client_model) AS v
+    FROM request_logs_hot WHERE ts >= NOW() - INTERVAL '36 hours'
+  UNION ALL
+  SELECT request_id, COALESCE(outbound_model, client_model) AS v
+    FROM request_logs     WHERE ts >= NOW() - INTERVAL '36 hours'
+)
+UPDATE session_turns     t SET raw_model_name = src.v FROM src
+ WHERE src.request_id = t.request_id AND t.raw_model_name IS NULL
+   AND t.ts >= NOW() - INTERVAL '36 hours' AND src.v IS NOT NULL;
+-- ↑ 父表（分区父表，落到各月分区）
+UPDATE session_turns_hot t SET raw_model_name = src.v FROM src   -- ↑ hot
+ WHERE src.request_id = t.request_id AND t.raw_model_name IS NULL
+   AND t.ts >= NOW() - INTERVAL '36 hours' AND src.v IS NOT NULL;
+```
+
+`AND t.raw_model_name IS NULL` 让它**幂等**：新代码上线后自己写的行不会被覆盖，
+回填重跑也不会改变已有值。
+
 ### §9.47.4 因此，投影的前置条件已经满足（除「新代码已上线」一条）
 
 `raw_model_name` 与 816 的 `client_ip` 相比，多一个门槛少一个前提：
