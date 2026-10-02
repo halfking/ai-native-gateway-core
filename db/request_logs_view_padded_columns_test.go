@@ -34,6 +34,14 @@ func TestEveryPaddedSessionColumnHasAVerdict(t *testing.T) {
 	}
 	// 反向：表里有的条目必须真的在补位集合里。表里多一条 = 有人把裁决写了却
 	// 忘了改投影（或反过来），两种都是「文档与代码各说各话」。
+	//
+	// 2026-10-02 补第三个出口：原先只给两个选项（挪进 registeredProjectionAppends
+	// / 从契约里删掉），但存在第三种——**列仍在契约里、也仍登记在
+	// registeredProjectionAppends 里，只是表达式被就地替换**。
+	// 816 的 client_ip 就是这一种：它从 740 时代的 `NULL::inet` 变成有源投影，
+	// 列名与列位都没动（CREATE OR REPLACE VIEW 因此合法，不需要 DROP）。
+	// 在补第三个出口之前，那次改动的正确处置在门眼里是「两个都不适用」，
+	// 而一个只会说「请选 A 或 B」的门会诱导人硬塞一个豁免。
 	for name := range paddedColumnVerdicts {
 		found := false
 		for _, p := range padded {
@@ -43,9 +51,12 @@ func TestEveryPaddedSessionColumnHasAVerdict(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("paddedColumnVerdicts 里的 %q 已不是会话投影的 NULL 补位列 —— "+
-				"要么它已被投影/改名（请把它挪进 registeredProjectionAppends 并删掉这条裁决），"+
-				"要么它已经不在契约里（请删掉这条裁决）", name)
+			t.Errorf("paddedColumnVerdicts 里的 %q 已不是会话投影的 NULL 补位列 —— 三种可能："+
+				"① 它**新增**到了契约尾部（请把它加进 registeredProjectionAppends 并删掉这条裁决）；"+
+				"② 它已经不在契约里（请删掉这条裁决）；"+
+				"③ 它仍在契约里、只是表达式被就地替换成有源投影"+
+				"（816 的 client_ip 即此形态：请确认 registeredProjectionAppends 里那一行"+
+				"也已同步更新，然后删掉这条裁决）。", name)
 		}
 	}
 }

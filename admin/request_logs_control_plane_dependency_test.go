@@ -304,8 +304,8 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 		BlastRadius: "（dormant：写入的是派生统计物化，不是决策）",
 		Note: "判 not_control_plane 的依据：写入目标是**派生数据**（分钟汇总 + 游标），" +
 			"不决定任何凭据/路由/身份。读端轴已登记为 unaffected。" +
-			"⚠️ 但 session 臂有两列恒 NULL（credits_rate_multiplier、client_ip，见读端表备注），" +
-			"会让 credits 按倍率 1.0 计、client_ip 维度塌成 __unknown__——" +
+			"⚠️ 但 session 臂的 credits_rate_multiplier 恒 NULL（见读端表备注），" +
+			"会让 credits 按倍率 1.0 计——" +
 			"这是**值劣化**，不属于任何一档，属遗留项。",
 	},
 	"bg/lite_retention_worker.go": {

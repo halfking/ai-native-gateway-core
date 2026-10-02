@@ -19,8 +19,10 @@ import (
 //     （哪天有人把它投影了，裁决就过期了 ⇒ 门红，逼人删条目并改理由）。
 //
 // 判据是「session 侧的列与 v1 侧的是不是同一个东西」，不是「session 侧有没有
-// 这个列名」。本文件里有两条就是靠这条判据被否掉的（id / client_ip），两条都
-// 在 session_turns 上有同名列，都通过了「名字对得上」这一关。
+// 这个列名」。本文件里曾有两条是这么被否掉的（id / client_ip），两条都在
+// session_turns 上有同名列、也都通过了「名字对得上」这一关。
+// **client_ip 那条已于 816 撤销**——它在 252 生产库复测后被证明与 v1 同义
+// （审计 §9.45.6.1），现为有源投影，不再是补位列。本文件现在只剩 `id` 一条。
 
 // paddedColumnVerdict 是裁决的闭集。新增取值必须同时在这里和下面的证据里
 // 说明它与既有取值的区别——闭集的意义就是「不能随手发明一个理由」。
@@ -32,7 +34,7 @@ const (
 	verdictSameThingNoSource paddedColumnVerdict = "same-thing-not-projected"
 	// verdictDifferentThing：session 侧**有**同名列，但不是同一个东西。投影它
 	// 等于给读方一个语义已变的同名列——比 NULL 更坏，因为 NULL 至少会让人
-	// 看见缺失。同 `id` / `client_ip` 两条。
+	// 看见缺失。**只剩 `id` 一条**（client_ip 已于 816 撤销，见上）。
 	verdictDifferentThing paddedColumnVerdict = "same-name-different-thing"
 	// verdictNoSessionSource：session 族整条链上都没有对应概念（不是"缺列"，
 	// 是"没有这个事实"）。读方若需要，必须去别的族取。
@@ -44,7 +46,7 @@ const (
 
 // RequestLogsViewPaddedSessionColumns 返回 canonical 视图 session 臂上
 // **仍为 NULL 补位**的列名（现网 6 列：id / test_col / test_tab_indent /
-// provider_model / credits_rate_multiplier / client_ip）。
+// provider_model / credits_rate_multiplier —— client_ip 已于 816 变成有源投影）。
 //
 // 导出它是因为「哪些列在 session 臂是空的」这条事实被多处消费，而各处如果
 // 各自维护一份清单，就会各自过期——本轮就撞上了：admin 侧那张 30 列的表钉在
@@ -133,28 +135,7 @@ var paddedColumnVerdicts = map[string]paddedColumn{
 			"session_turn_details.rate_limit_status，是状态不是倍率）⇒ 整个会话族没有" +
 			"「这一行按什么倍率计价」这个事实，补不出有源的投影。",
 	},
-	"client_ip": {
-		verdict: verdictSameThingNoSource,
-		evidence: "**2026-10-02 在 252 生产库复测后改判**（审计 §9.42.6）。原裁决为 " +
-			"verdictDifferentThing，理由是「session 侧 client_ip 与 client_forwarded_for " +
-			"逐行相同 202,014/202,014 ⇒ 它是写在 client_ip 名下的转发头副本」。" +
-			"**该理由已被证伪**：那条测量取自本机库，而本机全库 client_forwarded_for " +
-			"只有 6 个 distinct 取值（全是回环与 Docker 网桥）、多跳链路 0 条——" +
-			"在这种数据上「两列相同」无分辨力。252 生产库近 7 天实测：" +
-			"链路形态 12,468 单跳 / 138 多跳 / 181 个 distinct 取值；" +
-			"session_turns 侧 17,586 行有值，其中单跳 14,236 行 client_ip == " +
-			"client_forwarded_for（100%），**多跳 3,350 行不等（0/3,350）**。" +
-			"多跳样本 `client_ip=172.64.217.81` / `cff=2a06:98c0:3600::103, " +
-			"172.64.217.81` ⇒ client_ip 是链路的**末跳（X-Real-IP 解析出的真实客户端）**，" +
-			"不是首跳、也不是转发头副本。" +
-			"**两族同义性直接配对验证**：同 request_id 配对 826 行，" +
-			"session_turns.client_ip == host(request_logs.client_ip) **826/826、差异 0**。" +
-			"**可投影性**：近 30 天 18,870 行全部匹配 IP 形态且 client_ip::inet " +
-			"全部转换成功 ⇒ 投影进 inet 型视图列无类型风险。" +
-			"⇒ 改判 verdictSameThingNoSource：session 侧有语义相同的列、只是尚未投影，" +
-			"正解是走 815 式投影补齐。**底表的三个选项（改名 / 补真源 / 删列）全部不成立**——" +
-			"这一列存的就是真源对端 IP，它是正确的。",
-	},
+
 }
 
 // rejectedProjections 是「session 侧有同名列、但裁决为不投影」的清单。
