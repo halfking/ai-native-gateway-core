@@ -81,6 +81,13 @@ WHITELIST_PATTERNS=(
   # deploy-local-lib.sh parses DSNs with sed; the regex source lines
   # contain postgres(ql)?:// shaped literals that are not real credentials.
   'sed.*postgres(ql)?'
+  # R36 (2026-10-03): PowerShell variable interpolation in conn strings —
+  # scripts/user/client-deploy.ps1 composes DATABASE_URL from $Var segments
+  # (no literal credential on the line). The existing '${VAR}' whitelist only
+  # knows shell ALL-CAPS braces, not PS bare/mixed-case $Var (and the PS
+  # backtick escape before ':'). Both user AND password segments must be
+  # $-interpolations to suppress — a literal password still blocks.
+  '://\$\{?[A-Za-z_][A-Za-z0-9_]*\}?`?\:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?@'
 )
 
 # PUBLIC_DOMAINS: domains that are flagged by INTERNAL_DOMAIN rules but are
