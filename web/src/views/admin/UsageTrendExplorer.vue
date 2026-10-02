@@ -133,10 +133,10 @@ async function loadSeries() {
   try {
     const resp = await getUsageTrendSeries({
       time: timeQuery.value,
-      tenant_id: tenantId.value ?? undefined,
-      provider_id: providerId.value ?? undefined,
-      api_key_id: apiKeyId.value ?? undefined,
-      model: model.value ?? undefined,
+      tenant_id: tenantId.value || undefined,
+      provider_id: providerId.value || undefined,
+      api_key_id: apiKeyId.value || undefined,
+      model: model.value || undefined,
       top: PAGE_TOP_MODELS,
     })
     if (token !== seriesToken) return
@@ -159,9 +159,9 @@ async function loadModelOptions() {
   try {
     const resp = await getUsageTrendModels({
       time: timeQuery.value,
-      tenant_id: tenantId.value ?? undefined,
-      provider_id: providerId.value ?? undefined,
-      api_key_id: apiKeyId.value ?? undefined,
+      tenant_id: tenantId.value || undefined,
+      provider_id: providerId.value || undefined,
+      api_key_id: apiKeyId.value || undefined,
     })
     if (token !== modelsToken) return
     modelOptions.value = (resp.models ?? []).map((m) => ({ model: m.model, requests: m.requests }))
@@ -187,9 +187,11 @@ function syncQuery() {
     end: effectiveRange.value.end,
     metric: metric.value,
   }
-  if (providerId.value != null) next.provider = String(providerId.value)
+  // truthy 防护：el-select 清空在不同 EP 版本产出 undefined/''/null，统一按
+  // 「有值才写入」处理，避免空参数（provider=）残留在深链里。
+  if (providerId.value) next.provider = String(providerId.value)
   if (showTenantFilter && tenantId.value) next.tenant = tenantId.value
-  if (apiKeyId.value != null) next.apikey = String(apiKeyId.value)
+  if (apiKeyId.value) next.apikey = String(apiKeyId.value)
   if (model.value) next.model = model.value
   // 全量重建 query：清空的过滤器必须从深链里消失，不能沿用旧值。
   router.replace({ query: next }).catch(() => undefined)
@@ -230,7 +232,9 @@ watch(metric, () => syncQuery())
 
 const sourceLabel = computed(() => {
   switch (source.value) {
-    case 'request_stats_dim_minute': return t('dashboard.board.sourcePg')
+    case 'request_stats_dim_minute':
+    case 'request_stats_minute':
+      return t('dashboard.board.sourcePg')
     case 'request_logs_with_current_month': return t('usageTrend.sourceDetail')
     default: return source.value || '—'
   }
