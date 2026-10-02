@@ -1789,3 +1789,98 @@ M-E 抽掉兜底计数器 → `:275`（vet 干净 ⇒ 确认断言红）；M-F�
 > 另注意：`cloneTablesFrozenDDL` 只发列名+类型、不带 NOT NULL 与 DEFAULT，
 > 所以「v1 臂 id 必须为 NULL」在夹具里是 NULL 对 NULL 平凡通过——
 > 要它可红必须种显式值并断言**等于源表真值**（只断言非空太弱，turn id 也非空）。
+
+---
+
+## 第二十二轮（2026-10-02）：族分类器的 `id` 误触发 —— 表归属 —— §9.39
+
+### 结论
+
+§9.36.4 记的第 2 条相邻缺陷做完了。**族从 19 收到 12，档位一条没动。**
+
+### 根因
+
+`np`（谓词级 NULL 补位）只判断「补位列名在**这个文件里出现过**」，
+而「出现过」≠「用在这个视图上」。`id` 撞得最多，因为列同名表不同。
+
+### 归属粒度选错两次，两个方向都踩过（这次是量出来的，不是想出来的）
+
+1. **整文件口径**（原实现）：19 个本族文件里 **8 个**是这么带进来的。
+2. **字符串字面量口径**（我第一版）：`strictOnly = 0` 看着很美，直到手验
+   `bg/shared_pick.go` 发现它是**拼接 SQL**（中间夹 `<ProbeTrafficExclusionPredicateView>`
+   占位）⇒ 逐字面量口径会把这条**真谓词**判成误触发。
+   **一个更「精确」的判据反而更危险，因为它悄悄放走了真触发。**
+3. **函数作用域 + 包级字面量**（最终）：函数体 ⊇ 单个字面量 ⇒ 口径 2 能命中的它一定命中。
+
+### 7 个离开本族的文件，`id` 实际属于谁（逐个打开确认）
+
+| 文件 | 属于 | 行号 |
+|---|---|---|
+| `admin/auto_title_generator.go` | `api_keys`（`ak.id`） | :1174-1182 |
+| `admin/logs_summary.go` | `api_keys` + Go 正则字面量的 `correlation_id` | :303-308, :28 |
+| `admin/session_title.go` | `t.id`，`t` 是 session_turns 别名（视图别名是 `rl`） | :328 |
+| `bg/stats_minute_rollup.go` | `request_stats_rollup_cursor`（`WHERE id = 1`） | :94/:115/:131 |
+| `domains/routeincident/store.go` | route_incidents 表自身 | :227/:310/:387 |
+| `bg/candidate_failure_monitor.go` | `candidate_failure_logs` 腿 | :397 |
+| `admin/session_turns_tree.go` | 只在投影，有非补位列 COALESCE 兜住 | :228/:321 |
+
+### 我自己写的方向性门当场抓到了我的实现缺陷
+
+`TestNullPaddedAttributionNeverLosesALiteralLevelHit` 断言「函数体 ⊇ 字面量」，
+第一次跑就报红 `domains/sessionforensics/export.go` 与
+`domains/streaming/model_alternatives.go`——两者的 SQL 都是**包级 `const`**
+（`forensicsExportMessagesSQL` :37/:57、`alternativesSQL` :180），整段在函数之外。
+
+**没有这道门，这个缺陷会一直绿着**：它只表现为「少认了几个文件」，
+而少认的方向恰好是本轮要修的方向，看起来像正常进展。
+
+### 顺带抓到的第二个自己的错：注释在说用原文、代码在用剥过的
+
+第一版 `sourceFamilyOf` 注释写「np 用的是原始 code」，
+但函数开头已把 `code` 覆盖成剥过注释的版本 ⇒ `admin/logs_summary.go`
+靠「解析失败退回整文件」fallback 留在本族——**一个已离族的误触发被 fallback 悄悄请回来**。
+
+判别它的不是读代码，是**列出每个文件的 `via` 列**：`logs_summary.go` 的 `via` 是空串
+而它在族里，两个判据对不上。已加「归属命中与族归属必须一致」的一致性断言。
+
+### ⚠ 如实说：删 5 条失效豁免是**降低了**门槛
+
+`nullPaddedUnaffectedJustification` 删掉 5 条（`session_timeline_query` /
+`session_turns_tree` / `session_turns_unified` / `candidate_failure_monitor` /
+`gateway_adapters`），并补 `TestNullPaddedJustificationIsNotStale` 常驻检查。
+
+这 5 个文件从「null_padded + unaffected ⇒ 必须有具名论证」变成
+「view_only + unaffected ⇒ **无要求**」。它们的 unaffected 判断现在只靠族层面的事实
+（真库实测 24h 内 36.55% 的视图行来自 session_turns），不再有逐文件书面论证。
+被删论证的实质内容已抄进审计 §9.39.6，但**不再被任何门强制更新**——本轮引入的已知弱化。
+
+### 变异 3/3
+
+M1 塞一条失效豁免 → `attribution_test.go:77`；
+M2 把归属退回整文件口径 → 同文件 `:144`，**4 个已知误触发全部被抓**；
+M3 去掉包级字面量作用域 → 同文件 `:200`（vet 干净 ⇒ 确认断言红）。
+
+*M3 第一版写出未使用变量 ⇒ **编译红**；编译红不是断言红，补 `_ = inAnySpan` 后才算数。*
+
+### 仍未处理的已知不精确
+
+`domains/streaming/model_alternatives.go` 的视图名只出现在**字符串字面量里的
+SQL 注释**（`-- request_logs_with_current_month is a UNION of …`，:230）。
+本轮**没动 `vi` 那一维**的注释处理——它是另一个维度的语义，动它会把该文件整个换族。
+它因此留在本族（保守方向，安全）。本仓已有 `stripSQLLineComments`，
+但用它会**同时改变 `vi`**，必须单独评估，不能顺手带进来。
+
+### 下一轮提示词
+
+> 处理 `domains/streaming/model_alternatives.go` 这类「视图名只出现在 SQL 注释里」的读点：
+> 先量清 `vi` 维度受影响的**完整文件清单**（对每个含 `request_logs_with_current_month`
+> 的文件，比较「剥 SQL 行注释前后 `vi` 是否变化」），再决定要不要用
+> `stripSQLLineComments`。注意三条纪律：①**先量影响面再改判据**，
+> 这次一个 6 列的判据改动就已经牵动 7 个文件的族归属；②复用已有的
+> `stripSQLLineComments`（包内已有 `sqlLineCommentRE`，另起同名包级正则会编译冲突）；
+> ③`vi` 与 `np` 是**两个独立维度**，动 `vi` 的注释处理会连带改变 `np`
+> （同一份代码两处都读），必须分别验证。
+>
+> 另一件更该先做的：`auto_route_settle_worker` 的**正确修法**（改读会话族）——
+> §9.35 只让它可见（`outcome_source` 块 + 陈旧基线告警），停写 8h 后仍会全量 abandon，
+> 产物与「正常放弃」逐字段同形。可见 ≠ 正确。
