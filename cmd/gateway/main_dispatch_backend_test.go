@@ -108,14 +108,20 @@ func TestResolveGovernorBackendTableDriven(t *testing.T) {
 // ── Stage C.2: observer env-flag tests ────────────────────────────────────
 
 // TestResolveGovernorObserverDefaults verifies the default (unset env)
-// disables the observer and treats the empty string the same as "off".
+// ENABLES the observer at the 100ms tick — round 31 flipped the default
+// from off to observe so the R73 snapshot gauges are operator-visible
+// without env wiring; "off" remains the explicit opt-out
+// (TestResolveGovernorObserverOffExplicit).
 func TestResolveGovernorObserverDefaults(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_DISPATCH_GOVERNOR_OBSERVER", "")
 	t.Setenv("LLM_GATEWAY_DISPATCH_GOVERNOR_OBSERVER_TICK_MS", "")
 
 	tick, enabled := resolveGovernorObserver()
-	if enabled {
-		t.Fatalf("empty env must disable observer; got tick=%v enabled=true", tick)
+	if !enabled {
+		t.Fatal("empty env must enable observer (default observe); got enabled=false")
+	}
+	if tick != 100*time.Millisecond {
+		t.Fatalf("default tick: got %v want 100ms", tick)
 	}
 }
 

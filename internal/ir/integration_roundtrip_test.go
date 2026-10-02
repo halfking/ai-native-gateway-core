@@ -362,15 +362,12 @@ func TestIntegrationRoundtrip_OpenAI_SameProtocol(t *testing.T) {
 // TestIntegrationRoundtrip_OpenAI_AllToolChoice exhaustively walks the
 // §7.2 tool_choice enum.
 //
-// Note on the "function-named" case: today's IR preserves the wire-level
+// Note on the "function-named" case: the IR preserves the wire-level
 // type verbatim (OpenAI wire sends type="function"; Anthropic wire sends
-// type="tool"). The IR-level invariant we check is Type stability across
-// the round-trip. The Serialize{OpenAI,Anthropic} asymmetry in mapping
-// type="tool" vs type="function" — the OpenAI serializer only emits the
-// named wrapper when tc.Type=="tool" — is a known pre-existing IR gap
-// tracked under §10 Step 4.10 but outside the scope of this matrix test
-// (it is exercised by the cross-protocol preservation tests below, which
-// go through the Anthropic tc.Type=="tool" branch on the way to OpenAI).
+// type="tool"), and since round 31 (2026-10-02) serializeOpenAIToolChoice
+// maps type="function" back to the named object form — the former bare
+// string degradation ("known pre-existing IR gap" below) is fixed and
+// pinned by TestIntegrationRoundtrip_OpenAI_NamedToolChoiceWireForm.
 func TestIntegrationRoundtrip_OpenAI_AllToolChoice(t *testing.T) {
 	for _, f := range openaiFixtureToolChoiceAll() {
 		f := f
@@ -386,6 +383,55 @@ func TestIntegrationRoundtrip_OpenAI_AllToolChoice(t *testing.T) {
 				"tool_choice.type stable")
 		})
 	}
+}
+
+// TestIntegrationRoundtrip_OpenAI_NamedToolChoiceWireForm 钉住 round 31
+// 修的 GAP-2 镜像缺口（D02 域审计发现）：chat 主路径每次转发都
+// Parse→Serialize 重放请求体，命名 tool_choice 对象形经重放必须还原为
+// 对象形 {"type":"function","function":{"name":X}}，而不是退化为非法裸
+// 字符串 "function"（OpenAI 上游必 400）。变异验证：删掉
+// serialize_openai.go 的 case "function" 分支，本测试红。
+func TestIntegrationRoundtrip_OpenAI_NamedToolChoiceWireForm(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-test",
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}],
+		"tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+	}`)
+	ir1, err := ParseOpenAI(body)
+	require.NoError(t, err)
+	require.NotNil(t, ir1.ToolChoice)
+	require.Equal(t, "function", ir1.ToolChoice.Type)
+	require.Equal(t, "get_weather", ir1.ToolChoice.Name)
+
+	out, err := SerializeOpenAI(ir1)
+	require.NoError(t, err)
+
+	var wire struct {
+		ToolChoice json.RawMessage `json:"tool_choice"`
+	}
+	require.NoError(t, json.Unmarshal(out, &wire))
+	require.NotEmpty(t, wire.ToolChoice)
+	// 修复前的退化输出是 `"tool_choice":"function"` 裸字符串。
+	require.NotEqual(t, `"function"`, string(wire.ToolChoice),
+		"named tool_choice must not degrade to the bare illegal string")
+
+	var obj struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	require.NoError(t, json.Unmarshal(wire.ToolChoice, &obj))
+	assert.Equal(t, "function", obj.Type)
+	assert.Equal(t, "get_weather", obj.Function.Name)
+
+	// IR 层往返稳定（Type/Name 双字段都保留）。
+	ir2, err := ParseOpenAI(out)
+	require.NoError(t, err)
+	require.NotNil(t, ir2.ToolChoice)
+	assert.Equal(t, "function", ir2.ToolChoice.Type)
+	assert.Equal(t, "get_weather", ir2.ToolChoice.Name)
 }
 
 // TestIntegrationRoundtrip_Anthropic_SameProtocol covers: tool_choice "any",
