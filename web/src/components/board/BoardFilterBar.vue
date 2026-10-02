@@ -19,6 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'apply-range': [value: KxDateRange]
   refresh: []
+  more: []
 }>()
 
 const { t } = useI18n()
@@ -52,6 +53,16 @@ const sourceKey = computed(() => {
         :disabled="loading"
         @apply="emit('apply-range', $event)"
       />
+      <!-- 2026-10-02：时间范围右侧「更多」入口 → 全页用量趋势分析（含供应商/
+           租户/apikey/模型/指标过滤）。 -->
+      <button
+        type="button"
+        class="bfb__more"
+        :title="t('dashboard.board.trendMoreTitle')"
+        @click="emit('more')"
+      >
+        {{ t('dashboard.board.trendMore') }} ›
+      </button>
     </div>
     <div class="bfb__item">
       <span class="bfb__label">{{ t('dashboard.board.filterGran') }}</span>
@@ -133,6 +144,24 @@ const sourceKey = computed(() => {
 .bfb__refresh:disabled {
   opacity: 0.55;
   cursor: wait;
+}
+.bfb__more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 9px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.bfb__more:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 .bfb__src {
   margin-left: auto;

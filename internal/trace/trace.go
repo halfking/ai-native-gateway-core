@@ -470,7 +470,7 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 	// UPDATE 不应执行；此前该写点游离在门外，且停写后父行缺失会命中
 	// ErrTraceParentNotFound → Redis trace 永久保留、每次 flush 重试堆积。
 	// 与"宽表停写"语义一致：丢弃 trace 并清理 Redis key。
-	if !settings.GetPlatformBool("storage.request_logs_write_enabled", true) {
+	if !settings.RequestLogsWriteEnabled() {
 		if err := r.rdb.Del(ctx, key).Err(); err != nil {
 			slog.Warn("trace.FlushToPG: stop-write enabled but Redis DEL failed",
 				"request_id", requestID, "err", err)
