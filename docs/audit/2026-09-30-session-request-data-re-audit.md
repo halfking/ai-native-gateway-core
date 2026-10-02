@@ -7892,3 +7892,44 @@ up 迁移**。`.down.sql` 必须排除——down 恢复的是**旧形态**，把
 变异验证（M5）：往 817 的 proj 注入一个 `NULL::text AS client_ip_drift_probe`
 ⇒ 门报「迁移里有、表里没有：`[client_ip_drift_probe]`」，红因即差集本身。
 逐字节还原后复跑为绿。
+
+### §9.64.10 817 差点「全绿但装不上」——门替我抓到了
+
+我最初提交 817 时**没有做安装器五点同步**，而且当时是**绿的**：`db`、
+`sql/migrations/startup`、`admin` 全过。差点就这么推上去了。
+
+把提交移到 `origin/main` 之上重跑安装器模块时，那道门立刻红了：
+
+```
+canonical startup migration "817_request_logs_view_client_ip_semantic_guard.sql"
+(>=704) is not registered in dbinit.Runner.StartupFiles — run the five-point
+sync (embeddata copy, go:embed var + embeddedSQLFiles map in main.go,
+StartupFiles entry, parity map here)
+```
+
+**为什么这道缺口特别安静**：运行中的网关**不应用 startup 迁移**——
+`db.ensureRequestLogsCurrentMonthView` 的早退判据（view 存在且 body 是 v2）
+在 816 形态上就成立，所以 817 落库后**没有任何自愈通道**会把它收敛过去。
+唯一执行者是安装器。⇒ 迁移文件躺在 canonical 树里、门全绿、而**没有任何机器
+会跑到它**。
+
+这已经是同形遗漏的**第五次**（816 是第四次，`runner.go` 里那条注释记着前四次）。
+
+补的五点（并按门的要求逐点做）：
+
+| 点 | 落点 |
+|---|---|
+| embeddata 副本（up + down） | `installer/cmd/llm-gw-installer/embeddata/startup/817_*` |
+| `go:embed` 变量 | `main.go` 的 `requestLogsViewClientIPSemanticGuard817` |
+| `embeddedSQLFiles` 映射 | `main.go` |
+| `StartupFiles` 条目 + 理由 | `runner.go` |
+| TSV | `installed_startup_migrations.tsv` 第 206 行（重生成，只增一行） |
+
+变异 M6：把 817 的 `StartupFiles` 条目摘掉 ⇒ 门按预期报「not registered」；
+逐字节还原后复跑为绿。**没有这道门，本节就是一个绿的提交 + 一个永远跑不到的
+迁移。**
+
+> **「门全绿」要问一句：门覆盖的是哪个形态？** 这一轮里我在同一个下午踩了两次
+> 形态错位——一次是守卫（字符类 vs 语义），一次是权威源（815 vs 816 vs 817），
+> 一次是**执行通道**（文件在树里 vs 有没有人跑它）。三次的共同形状都是
+> **「文件/声明在」被当成了「行为在」**。
