@@ -78,7 +78,7 @@
 
 | 家族（头锚定） | 窗内计数 | 最后一条时间戳 | 判定 |
 |---|---|---|---|
-| UPDATE and CTID（更新器毒源） | ×20 | 07:06:27（812 应用前） | **812 后零复发 ✓**（R20 实证 07:20:51 更新器复写；本轮复核 model_probe_state=467 healthy/436 recovering/65 broken/31 suspicious 健康四态流转） |
+| UPDATE and CTID（更新器毒源） | ×20（快照窗；续查至 11:48 另见 2 条会话自噪音，见下行自噪音账） | 07:06:27（812 应用前） | **812 后生产零复发 ✓**（R20 实证 07:20:51 更新器复写；本轮复核 model_probe_state=467 healthy/436 recovering/65 broken/31 suspicious 健康四态流转；07:14 后仅有的 2 条 CTID 均为本轮侦察探针，逐 pid+STATEMENT 归因见下） |
 | row is too big（promote 毒源） | ×9（同 R20 毒行 size 36112 的逐 tick 重试尾巴） | 06:51（810 应用前后过渡） | **07:06 后零复发 ✓** |
 | would overlap（ensure 毒源） | ×1 | 05:20:37（811 应用前） | **811 后零复发 ✓** |
 | promote 节拍 | session_bodies 07:11/08:53/09:54 = 1.2-3.8s/批；supplier_errors 手动 tick 32 行 | — | 每小时 tick 健康 ✓ |
@@ -86,7 +86,7 @@
 
 - 满 24h 差 ~20h → **收口自动化 automation-09e1ae20 已建（10-03 07:30 一次性）**：PASS 判据、自噪音清单、物证路径写死在 prompt，产出追加本报告 §十。
 - 慢查快照（修正提取：duration 与 statement 同行、空头取续行）：≥1s **2,287 条 / 8,177s / 4.7h**。1,996 空头 = 巨 payload INSERT 续行形态——**622MB/4.7h 日志爆发（2.2MB/s，50× 基线 230B/s）= R15 巨 payload body 记录机制复现**（ZCode 会话经网关调 LLM 的 request_logs_bodies_hot MB 级字面量内联），登记不处置；140 credential_model_index_hot INSERT、20 analyze（D7'）、REFRESH 家族个位数贴 180s pin 内合法。
-- **本轮自噪音账**（11:00 后窗）：J4 毒源复现探针 CTID ×1（@11:10:38，故意的）、candidate_failure_logs count 超时 ×1（@11:20:19，30s rolconfig）、column-does-not-exist ×4（evtfunid/updated_at/relkind/stats_reset，侦察笔误）——生产对账全部剔除。
+- **本轮自噪音账**（续查至 11:48 完整口径）：毒源复现探针 CTID ×2（@10:58:07 recon2-A2 `SELECT tableoid…FROM supplier_errors GROUP BY 1` 与 @11:10:38 recon3-J4 同形状，同 pid 233516、伴随 missing FROM-clause "a" 笔误——两者都是故意的毒源复现，非生产复发）、candidate_failure_logs count 超时 ×1（@11:20:19，30s rolconfig）、column-does-not-exist ×4（evtfunid/updated_at/relkind/stats_reset，侦察笔误；10h 错误尖峰 ×58 即侦察批自身）——生产对账全部剔除；剔除后 07:14→11:48 生产 CTID/row-too-big/overlap **全部为 0**。自噪音清单已同步写入收口自动化 automation-09e1ae20 的 prompt（防明日误判为新毒源）。
 
 ## §六、⑤ E6 外部移交催办（状态更新）
 
