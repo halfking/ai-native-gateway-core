@@ -106,7 +106,8 @@ var paddedColumnVerdicts = map[string]paddedColumn{
 	"id": {
 		verdict: verdictDifferentThing,
 		evidence: "v1 的 request_logs.id 是**请求行 id**，session_turns.id 是 **turn id**。" +
-			"真库按 request_id 配对 1,515,984 行，`r.id = t.id` 命中 **0** 次；" +
+			"真库按 request_id 配对约 1.516M 行（2026-10-02 14:0x 快照 1,515,984；" +
+			"活库持续增长，同一查询稍后为 1,515,997，**结论一致：命中 0 次**），`r.id = t.id`；" +
 			"两个值域虽有重叠（v1 34,616–2,513,875 / turn 400,060–2,091,912）但从不逐行相等。" +
 			"判据是「同一个东西」而非「session 侧有这个列名」，故保持 NULL 补位。",
 	},

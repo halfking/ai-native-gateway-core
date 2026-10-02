@@ -70,20 +70,8 @@ type v1DirectPaddedColumnReader struct {
 }
 
 var v1DirectPaddedColumnReaders = map[string]v1DirectPaddedColumnReader{
-	"admin/logs.go":                           {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"admin/probe_history.go":                  {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"admin/providers.go":                      {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"admin/routing.go":                        {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"admin/swim_lane_init.go":                 {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"bg/auto_index_refresher.go":              {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"bg/auto_route_settle_worker.go":          {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"bg/credential_recovery.go":               {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"bg/credential_selfcheck.go":              {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"bg/model_probe.go":                       {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"bg/today_success_probe.go":               {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"cmd/compression-bench/main.go":           {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"db/db.go":                                {cols: []string{"id"}, why: s4PaddedReaderWhy},
-	"domains/streaming/model_alternatives.go": {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	// 唯一一条**经限定符归属判定后仍成立**的读方（§9.28.6）。
+	"cmd/compression-bench/main.go": {cols: []string{"id"}, why: s4PaddedReaderWhy},
 }
 
 // v1DirectTables 是「绕过视图直读」判定里的 v1 宽族关系名。
@@ -100,15 +88,25 @@ func TestNoUnregisteredVPaddedColumnReader(t *testing.T) {
 		t.Fatalf("walk repo root: %v", err)
 	}
 	fired := map[string]map[string]bool{} // file -> 读到的补位列
+	var unattributed []string
 	for _, f := range files {
 		rel := relToRepoRoot(f)
-		for col := range paddedColumnsReadFromV1Direct(f) {
+		cols, unattr := paddedColumnsReadFromV1Direct(f)
+		for _, c := range unattr {
+			unattributed = append(unattributed, rel+":"+c)
+		}
+		for col := range cols {
 			if fired[rel] == nil {
 				fired[rel] = map[string]bool{}
 			}
 			fired[rel][col] = true
 		}
 	}
+	// 「不可归属」必须可见。判归属的口径宁可保守也不猜，但**不猜**不等于
+	// **静默丢弃**：多关系字面量里的裸补位列既不计入登记表，也必须在输出里
+	// 点名，否则这道门就多了一个没人看得见的失明区。
+	sort.Strings(unattributed)
+	checkUnattributablePaddedRefs(t, unattributed)
 
 	// 未登记 = 需要有人拍板。
 	var unreg []string
@@ -186,13 +184,30 @@ func TestNoUnregisteredVPaddedColumnReader(t *testing.T) {
 }
 
 // paddedColumnsReadFromV1Direct 返回该文件里「以 v1 宽族为源、且同一字面量里没有
-// canonical 视图」的补位列引用。
-func paddedColumnsReadFromV1Direct(path string) map[string]bool {
-	out := map[string]bool{}
+// canonical 视图」的补位列引用，**按列绑定到哪张表判定**，不按「这个词出现过」。
+//
+// 为什么必须判归属（2026-10-02 修正，§9.28.6）：第一版只问
+// `len(findColumnRefs(body, col)) > 0`，把**整个字面量里任何位置**的该列名都算进来。
+// 于是一条 `FROM request_logs_hot rl JOIN providers p ON … WHERE p.provider_id = $1`
+// 会因为 `provider_id` 出现过而命中——可那一列绑的是 `providers` 表，v1 根本没被读它。
+// 后果是登记表从 1 膨胀到 14，S4 判据第 2 条的分母被抬高 14 倍。
+//
+// 判定规则（与 §9.18 的 AST 门同款，但这里只需要别名归属，不需要完整的绑定图）：
+//
+//	限定列 `<qual>.<col>`  → qual ∈ 本字面量的 v1 别名集合 ⇒ 命中
+//	无限定列 `<col>`        → 仅当本字面量**只有 1 个关系**且它是 v1 ⇒ 命中
+//	其余                    → 不可归属，不计入（但由调用方登记到 unattributable，
+//	                          以便「不计入」这件事在 -v 输出里可见，而不是静默）
+//
+// 不可归属的形状（多关系字面量里的裸列）无法在不引入完整 SQL 绑定分析的前提下
+// 判对。§9.18 的教训在这里同样适用：宁可让不可归属的形状在日志里点名，也不
+// 把它猜成命中或猜成不命中。
+func paddedColumnsReadFromV1Direct(path string) (cols map[string]bool, unattributable []string) {
+	cols = map[string]bool{}
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
-		return out // 构建会报解析错误，不是本门的事
+		return cols, nil // 构建会报解析错误，不是本门的事
 	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
@@ -206,11 +221,22 @@ func paddedColumnsReadFromV1Direct(path string) map[string]bool {
 		body := stripSQLLineComments(v)
 
 		hasV1, hasView := false, false
+		v1Aliases := map[string]bool{}
+		relCount := 0
 		for _, m := range fromJoinRE.FindAllStringSubmatch(body, -1) {
 			rel := strings.ToLower(m[1])
 			last := rel[strings.LastIndexByte(rel, '.')+1:]
+			relCount++
+			alias := strings.ToLower(m[2])
 			if v1DirectTables[last] {
 				hasV1 = true
+				// 无 AS 别名时，SQL 允许用表自身名引用（FROM request_logs_hot
+				// 后写 request_logs_hot.id 合法）。有别名时表名不可再引用。
+				if alias != "" {
+					v1Aliases[alias] = true
+				} else {
+					v1Aliases[last] = true
+				}
 			}
 			if last == canonicalView {
 				hasView = true
@@ -219,14 +245,95 @@ func paddedColumnsReadFromV1Direct(path string) map[string]bool {
 		if !hasV1 || hasView {
 			return true
 		}
+		singleV1Relation := relCount == 1
 		for col := range sessionArmNullPaddedColumns {
-			if len(findColumnRefs(body, col)) > 0 {
-				out[col] = true
+			for _, ref := range findColumnRefs(body, col) {
+				switch {
+				case ref.qualifier != "":
+					if v1Aliases[ref.qualifier] {
+						cols[col] = true
+					}
+					// 限定到别的关系 ⇒ 不是 v1 读方读这一列，不计。
+				case singleV1Relation:
+					cols[col] = true
+				default:
+					unattributable = append(unattributable, col)
+				}
 			}
 		}
 		return true
 	})
+	return cols, dedupeSorted(unattributable)
+}
+
+func dedupeSorted(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
 	return out
+}
+
+// unattributablePaddedRefExemptions 是「不可归属」形状的**具名豁免**，
+// 键为 `<仓库根相对路径>:<列名>`，值为必须非空的手验理由。
+//
+// 为什么需要它：多关系字面量里的裸补位列无法在不引入完整 SQL 绑定分析的前提下
+// 判对。选项只有三个——猜命中（把 1 膨胀成 14，已犯过）、猜不命中（静默失明）、
+// 或者**点名 + 具名手验**。这里选第三个。
+//
+// 与 v1DirectPaddedColumnReaders 的区别：那份表说「这个读方读 v1 的某个补位列，
+// 改指视图会拿到 NULL」；这份表说「这处引用语法上不可归属，我手验过它绑的不是
+// v1」。后者一旦 SQL 变了就自动失效（下面的自检会报红），所以它不会变成
+// 一个永不更新的占位。
+var unattributablePaddedRefExemptions = map[string]string{
+	"bg/auto_route_settle_worker.go:id": "手验（2026-10-02）：裸 `id` 出现在 " +
+		"`SELECT s.id, … FROM ( SELECT id, … FROM auto_route_selections_hot … ) s " +
+		"LEFT JOIN request_logs_hot rl` 这条字面量里，绑的是**派生表 s**（源为 " +
+		"auto_route_selections_hot，不在 v1 宽族）；该字面量里所有真正读 v1 的列都" +
+		"带 `rl.` 前缀。文件里另两处 `WHERE id = …` 属于 " +
+		"`UPDATE auto_route_selections_hot`，整条字面量不含 v1 关系。",
+	"domains/streaming/model_alternatives.go:id": "手验（2026-10-02）：该文件里读 v1 的那条 " +
+		"字面量（`FROM request_logs_hot WHERE ts > … AND success AND canonical_model IS NOT NULL " +
+		"GROUP BY canonical_model`）只读 canonical_model / ts / success，**不读任何补位列**。" +
+		"被点名的裸 `id` 在另一条字面量里（`ORDER BY id` 与 models_canonical 侧），那条字面量" +
+		"虽因内嵌 CTE 而同时含 request_logs_hot，但 id 绑的是 models_canonical。",
+}
+
+// checkUnattributablePaddedRefs 要求每个「不可归属」命中都在具名豁免表里且理由非空，
+// 并反过来要求每条豁免**仍然命中**（SQL 改了就失效，逼人复核而不是让它躺平）。
+func checkUnattributablePaddedRefs(t *testing.T, hits []string) {
+	t.Helper()
+	got := map[string]bool{}
+	for _, h := range hits {
+		got[h] = true
+		why, ok := unattributablePaddedRefExemptions[h]
+		if !ok {
+			t.Errorf("不可归属的裸补位列引用 %q 未登记。\n"+
+				"多关系字面量里的裸列无法机械判定归属，请**手验**它绑的是哪张表：\n"+
+				"  绑 v1  → 加进 v1DirectPaddedColumnReaders（改指视图会拿到 NULL）；\n"+
+				"  绑别的 → 加进 unattributablePaddedRefExemptions 并写明机制。\n"+
+				"不要靠「看起来像」决定——本表历史上就是靠「出现过」判的，"+
+				"把 1 膨胀成了 14。", h)
+			continue
+		}
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("不可归属豁免 %q 的理由是空的——空理由的豁免等于没有豁免。", h)
+		}
+	}
+	for key := range unattributablePaddedRefExemptions {
+		if !got[key] {
+			t.Errorf("不可归属豁免 %q 已失效：该形状不再出现（SQL 改过或列不再被读）。\n"+
+				"请删掉这条豁免，别让它继续占位。", key)
+		}
+	}
 }
 
 func sortedKeys(m map[string]bool) []string {
