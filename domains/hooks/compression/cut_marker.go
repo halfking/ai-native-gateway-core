@@ -22,8 +22,6 @@ package compression
 
 import (
 	"encoding/json"
-	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -121,75 +119,6 @@ func (cm CutMarker) IsExpired(ttl time.Duration) bool {
 // array that the next request should start reading from.
 func (cm CutMarker) GlobalCutIndex() int {
 	return cm.SystemMsgCount + cm.CutIndex
-}
-
-// MarshalForRedis serialises the CutMarker fields (excluding SummaryText) for
-// storage in Redis Hash. SummaryText is kept in-process (L1) only.
-func (cm CutMarker) MarshalForRedis() map[string]string {
-	out := map[string]string{
-		"cm_v":     fmt.Sprintf("%d", cm.Version),
-		"cm_ts":    fmt.Sprintf("%d", cm.CreatedAt),
-		"cm_src":   fmt.Sprintf("%d", cm.SourceMsgCount),
-		"cm_sys":   fmt.Sprintf("%d", cm.SystemMsgCount),
-		"cm_ci":    fmt.Sprintf("%d", cm.CutIndex),
-		"cm_smm":   cm.SummaryMarker,
-		"cm_strat": cm.Strategy,
-		"cm_bb":    fmt.Sprintf("%d", cm.BytesBefore),
-		"cm_ba":    fmt.Sprintf("%d", cm.BytesAfter),
-	}
-	// PreSanitizeOffsetRange 仅在 Start 或 End 至少有一个非零时写入（omitempty 语义）。
-	if cm.PreSanitizeOffsetRange[0] > 0 || cm.PreSanitizeOffsetRange[1] > 0 {
-		out["cm_psor0"] = fmt.Sprintf("%d", cm.PreSanitizeOffsetRange[0])
-		out["cm_psor1"] = fmt.Sprintf("%d", cm.PreSanitizeOffsetRange[1])
-	}
-	return out
-}
-
-// UnmarshalFromRedis deserialises CutMarker fields from a Redis Hash.
-// Returns nil if no cut marker data is present.
-func UnmarshalCutMarkerFromRedis(fields map[string]string) *CutMarker {
-	version, err := strconv.Atoi(fields["cm_v"])
-	if err != nil || version != cutMarkerSchemaVersion {
-		return nil
-	}
-	created, err1 := strconv.ParseInt(fields["cm_ts"], 10, 64)
-	source, err2 := strconv.Atoi(fields["cm_src"])
-	system, err3 := strconv.Atoi(fields["cm_sys"])
-	cut, err4 := strconv.Atoi(fields["cm_ci"])
-	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || created <= 0 ||
-		source <= 0 || system < 0 || cut <= 0 || system+cut > source {
-		return nil
-	}
-	cm := &CutMarker{
-		Version: cutMarkerSchemaVersion, CreatedAt: created, SourceMsgCount: source,
-		SystemMsgCount: system, CutIndex: cut, SummaryMarker: fields["cm_smm"],
-		Strategy: fields["cm_strat"],
-	}
-	if !isPersistedCutStrategy(cm.Strategy) {
-		return nil
-	}
-	if value, present := fields["cm_psor0"]; present {
-		start, err := strconv.Atoi(value)
-		if err != nil {
-			return nil
-		}
-		end, err := strconv.Atoi(fields["cm_psor1"])
-		if err != nil || start < 0 || start > end || end > source {
-			return nil
-		}
-		cm.PreSanitizeOffsetRange = [2]int{start, end}
-	}
-	if value, present := fields["cm_bb"]; present {
-		if cm.BytesBefore, err = strconv.Atoi(value); err != nil || cm.BytesBefore < 0 {
-			return nil
-		}
-	}
-	if value, present := fields["cm_ba"]; present {
-		if cm.BytesAfter, err = strconv.Atoi(value); err != nil || cm.BytesAfter < 0 {
-			return nil
-		}
-	}
-	return cm
 }
 
 // MarshalJSON serialises CutMarker for embedding in compression_meta JSONB.

@@ -334,13 +334,21 @@ func TestDualWriteParityCoverageReport(t *testing.T) {
 	if total == 0 {
 		t.Skip("库里没有非探针 v1 样本 —— 本门不构成任何覆盖率证据")
 	}
-	// 判红型：两个存储面都读到了，且互不重叠（pg_inherits 实测它们是独立面，
-	// 不是父子关系）。这条红 ⇒ 取样面被改窄了，而其余判据不会告诉你。
-	if got, want := total, parentFace+hotFace; got != want {
-		t.Errorf("v1 全集 %d ≠ 父表 %d + _hot %d —— **取样面被改窄了**。\n"+
+	// 判红型：_hot 面必须有真实贡献。R33 域D P2-1 勘误：原判据
+	// `total == parentFace+hotFace` 是**集合分划恒等式**——v 的两臂按 src
+	// 字面量并联，total 本来就恒等于两面之和，把 _hot 臂整个删掉它照样绿，
+	// 「唯一会判红的自检」实际防不住任何改窄。真判据是 hotFace > 0：§9.59
+	// 的洞恰是 _hot 面被漏（只读父表时 hotFace 恒 0，当场红）。
+	if hotFace <= 0 {
+		t.Errorf("_hot 面贡献 0 行（父表 %d）—— **取样面被改窄了**。\n"+
 			"request_logs 与 request_logs_hot 是两个独立存储面（不是分区父子），\n"+
-			"只读其一会整面漏掉写方的最新数据；§9.59 实测漏掉的恰是最新那批。",
-			got, parentFace, hotFace)
+			"只读其一会整面漏掉写方的最新数据；§9.59 实测漏掉的恰是最新那批。\n"+
+			"若确信本库 _hot 合法为空（>8h 无 v1 流量且 promote 已清空），请先查\n"+
+			"promote 运行状态再下结论——本门按 fail-closed 处理空面。",
+			parentFace)
+	}
+	if parentFace <= 0 {
+		t.Errorf("父表贡献 0 行（_hot %d）—— 取样面在另一侧被改窄", hotFace)
 	}
 	t.Logf("v1 非探针全集 %d（父表 + _hot 两面，已排除 probe-*)", total)
 	t.Logf("  能与会话族配对   = %d（%.1f%%）—— 这一部分由 TestDualWriteValueParity 逐字段比值",
