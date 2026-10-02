@@ -54,7 +54,55 @@ type Row struct {
 	Score          float64
 	SourcePriority int
 	Generation     int64
-	Payload        []byte
+
+	// 817 起：以下 24 个字段由 payload 提升为 typed 列（实测 payload 占
+	// heap 66%，其中 31 个键里有 7 个与本结构已有字段纯重复）。
+	// 指针类型 = hash 中该键可能不存在，落库为 SQL NULL 而不是零值
+	// ——「没采集到」与「采集到 0」在排障时是两种不同的结论。
+	UpdatedAtMS          *int64
+	LastProbeAtMS        *int64
+	LastProbeLatencyMS   *int64
+	LastAttemptMS        *int64
+	LastOKMS             *int64
+	LastRequestAtMS      *int64
+	LastRequestErrorAtMS *int64
+	ManualAtMS           *int64
+	CoolUntilMS          *int64
+	EventSeq             *int64
+	Disabled             *bool
+	LastDirectOK         *bool
+	ManualHold           *bool
+	SuccessCount         *int
+	FailureCount         *int
+	DisableCount         *int
+	LatEWMAMS            *float64
+	EmptyResponseRate1m  *float64
+	EmptyResponseRate30m *float64
+	LastErr              *string
+	ManualReason         *string
+	ManualActor          *string
+	DisabledReason       *string
+	CoolReason           *string
+
+	// Payload 817 起语义收窄：只保留 typed 列覆盖不到的 hash 键，
+	// 保住 hash schema 演进时的前向兼容（见 817 迁移头注释）。
+	Payload []byte
+}
+
+// payloadDuplicateKeys 是已在 typed 列中存在、不应再进 payload 的 hash 键。
+// 2026-10-02 实测：7 个键合计 70.8 B/行 = payload 的 24%，且全部是
+// 已有同名列以 JSON 字符串再存一遍（"generation":"43" 而列是 bigint）。
+//
+// 这是一张**白名单式的排除表**：hash 里新出现的键默认**保留**在 payload 中，
+// 只有明确列在此处的键才被剔除。方向不能反 —— 反了会在 hash 演进时静默丢字段。
+var payloadDuplicateKeys = [...]string{
+	"available",       // -> Row.Available      (boolean 列)
+	"generation",      // -> Row.Generation     (bigint  列)
+	"source_priority", // -> Row.SourcePriority (int     列)
+	"fail_streak",     // -> Row.FailStreak     (int     列)
+	"sr_1m",           // -> Row.SR1m           (real    列)
+	"sr_5m",           // -> Row.SR5m           (real    列)
+	"sr_30m",          // -> Row.SR30m          (real    列)
 }
 
 func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
@@ -164,10 +212,22 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			}
 		}
 
-		// 7. 将完整的 hash 序列化为 Payload（用于完整恢复）
-		// 即使我们已经提取了关键字段，Payload 包含所有原始数据
-		// 以防未来需要恢复其他字段（pricing, concurrency, etc.）
-		if payloadBytes, err := json.Marshal(hash); err == nil {
+		// 7. 将 hash 序列化为 Payload。
+		//
+		// 817 起语义收窄：**剔除 7 个与 typed 列重复的键**（零信息损失，
+		// 实测省 70.8 B/行），其余键原样保留 —— hash 来自 HGETALL，
+		// schema 会演进，payload 是新字段唯一的兜底仓（见 817 迁移头注释）。
+		//
+		// 排除方向是「白名单剔除」而非「黑名单保留」：hash 新增的键默认留在
+		// payload 里。若反过来（只保留已知键），hash 加字段时会静默丢数据。
+		residual := make(map[string]string, len(hash))
+		for k, v := range hash {
+			if isPayloadDuplicateKey(k) {
+				continue
+			}
+			residual[k] = v
+		}
+		if payloadBytes, err := json.Marshal(residual); err == nil {
 			row.Payload = payloadBytes
 		} else {
 			slog.Warn("ursm.v2: persist failed to marshal payload",
@@ -175,6 +235,32 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 				"error", err)
 			// 继续处理，只是 Payload 为空
 		}
+
+		// 8. 817：24 个 hash 键提升为 typed 列。
+		assignInt64(&row.UpdatedAtMS, hash["updated_at_ms"])
+		assignInt64(&row.LastProbeAtMS, hash["last_probe_at_ms"])
+		assignInt64(&row.LastProbeLatencyMS, hash["last_probe_latency_ms"])
+		assignInt64(&row.LastAttemptMS, hash["last_attempt_ms"])
+		assignInt64(&row.LastOKMS, hash["last_ok_ms"])
+		assignInt64(&row.LastRequestAtMS, hash["last_request_at_ms"])
+		assignInt64(&row.LastRequestErrorAtMS, hash["last_request_error_at_ms"])
+		assignInt64(&row.ManualAtMS, hash["manual_at_ms"])
+		assignInt64(&row.CoolUntilMS, hash["cool_until_ms"])
+		assignInt64(&row.EventSeq, hash["event_seq"])
+		assignBool(&row.Disabled, hash["disabled"])
+		assignBool(&row.LastDirectOK, hash["last_direct_ok"])
+		assignBool(&row.ManualHold, hash["manual_hold"])
+		assignInt(&row.SuccessCount, hash["success_count"])
+		assignInt(&row.FailureCount, hash["failure_count"])
+		assignInt(&row.DisableCount, hash["disable_count"])
+		assignFloat(&row.LatEWMAMS, hash["lat_ewma_ms"])
+		assignFloat(&row.EmptyResponseRate1m, hash["empty_response_rate_1m"])
+		assignFloat(&row.EmptyResponseRate30m, hash["empty_response_rate_30m"])
+		assignStr(&row.LastErr, hash["last_err"])
+		assignStr(&row.ManualReason, hash["manual_reason"])
+		assignStr(&row.ManualActor, hash["manual_actor"])
+		assignStr(&row.DisabledReason, hash["disabled_reason"])
+		assignStr(&row.CoolReason, hash["cool_reason"])
 
 		out = append(out, row)
 	}
@@ -248,14 +334,34 @@ INSERT INTO ursm_node_snapshot_min
   (snapshot_ts, recovery_epoch, provider_id, credential_id, raw_model_name, canonical_name, tenant_id,
    available, health_status, fail_streak, cool_until,
    sr_1m, sr_5m, sr_30m, samples_1m, samples_5m, samples_30m,
-   lat_p50_ms, score, source_priority, generation, payload)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::text::jsonb)
+   lat_p50_ms, score, source_priority, generation, payload,
+   -- 817：24 个由 payload 提升出来的 typed 列
+   updated_at_ms, last_probe_at_ms, last_probe_latency_ms, last_attempt_ms,
+   last_ok_ms, last_request_at_ms, last_request_error_at_ms, manual_at_ms,
+   cool_until_ms, event_seq,
+   disabled, last_direct_ok, manual_hold,
+   success_count, failure_count, disable_count,
+   lat_ewma_ms, empty_response_rate_1m, empty_response_rate_30m,
+   last_err, manual_reason, manual_actor, disabled_reason, cool_reason)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::text::jsonb,
+        $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
+        $33,$34,$35,
+        $36,$37,$38,
+        $39,$40,$41,
+        $42,$43,$44,$45,$46)
 ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`,
 			r.SnapshotTS, r.RecoveryEpoch, r.ProviderID, r.CredentialID, r.RawModel,
 			r.CanonicalName, r.TenantID, r.Available, r.HealthStatus, r.FailStreak, r.CoolUntil,
 			r.SR1m, r.SR5m, r.SR30m, r.Samples1m, r.Samples5m, r.Samples30m,
 			r.LatP50Ms, r.Score, r.SourcePriority, r.Generation,
 			payloadStr,
+			r.UpdatedAtMS, r.LastProbeAtMS, r.LastProbeLatencyMS, r.LastAttemptMS,
+			r.LastOKMS, r.LastRequestAtMS, r.LastRequestErrorAtMS, r.ManualAtMS,
+			r.CoolUntilMS, r.EventSeq,
+			r.Disabled, r.LastDirectOK, r.ManualHold,
+			r.SuccessCount, r.FailureCount, r.DisableCount,
+			r.LatEWMAMS, r.EmptyResponseRate1m, r.EmptyResponseRate30m,
+			r.LastErr, r.ManualReason, r.ManualActor, r.DisabledReason, r.CoolReason,
 		)
 		if err != nil {
 			return fmt.Errorf("insert row cid=%d model=%s: %w", r.CredentialID, r.RawModel, err)
