@@ -8,7 +8,11 @@
 ## 一句话状态
 
 第三轮遗留 #1（`credential_model_capabilities` 从来没人写）**已实现并验证**，
-代码已合入 main。**未部署**，所以没有任何生产侧结论。
+代码已合入 main（`ece68f148`）。**未部署**，所以没有任何生产侧结论。
+
+遗留 #3（热路径那次额外 Redis 读）**已在同日续轮实现并验证**（见
+[审计档 §九](../audit/2026-10-02-capability-bit-self-heal.md#九遗留-3--热路径那次额外-redis-读2026-10-02-续)），
+**同样未部署**。
 
 ## 落地了什么
 
@@ -36,23 +40,34 @@
 
 ## 下一轮该做什么（按优先级）
 
-1. **遗留 #3：热路径那次额外 Redis 读。** 本轮未做。可行路径已探明：
-   `Router.filterByNodeState` 的 MGET 结果目前被丢弃；`provider.Candidate` 加一个
-   `json:"-"` 的 state 指针无 import 环。
-   **需要先决策的语义问题**：`GetSupportsResponses` 刻意用 Redis `TIME` 而非本地
-   时间做期限判定（第四十八轮结论）。透传 state 省得掉 GET、**省不掉 TIME**；
-   若一并改本地时间就是对有审计结论的语义做未经要求的改动。
-   判据钉在「调用点是否还存在」（例如用 go-redis hook 数 node key 的 GET 次数），
-   **不是**钉函数里第一个 return。
+1. ~~**遗留 #3：热路径那次额外 Redis 读。**~~ **已做**（同日续轮）。
+   待决策的语义问题已答：**期限判定继续用 Redis `TIME`**。
+   依据是写侧 `setNodeCapabilityScript` 用 `redis.call('TIME')` 算
+   `capability_expires_at`，存下来的就是 Redis 时钟的绝对时间戳；读侧改本地
+   时间＝跨 epoch 比较。且 `TestF04_CapabilityReadRechecksRedisTimeAfterStateFetch`
+   已把该性质钉死。
+   ⚠️ **代价**：省掉 1 次 GET，仍花 1 次 TIME ⇒ 热路径 2 次往返 → 1 次，**不是 0**。
+   下一条是把它真正降到 0 的做法。
 
-2. **遗留 #2：流式能力位仍无人写。** 探针不发 SSE，零证据。需要先有流式探针。
+2. **`TIME` 搭车（#3 的续）。** 已实测可行：miniredis 支持一个 Lua 脚本同时返回
+   `TIME` + states（本机单节点 `redis.NewClient`，无 cluster 跨槽问题）。做完可把
+   热路径的最后一次往返也省掉（2 → 0）。改动面：`GetNodeStatesBatch` 返回契约、
+   `cmd/gateway/main_livestream.go:594`、router interface（`router.go:135`）+ 4 处
+   stub。**须单独一轮。**
 
-3. **回填的每日探测预算闸门。** 现在只有 `batchLimit` 与 `staleAfter` 两个隐式
+3. **遗留 #2：流式能力位仍无人写。** 探针不发 SSE，零证据。需要先有流式探针。
+
+4. **回填的每日探测预算闸门。** 现在只有 `batchLimit` 与 `staleAfter` 两个隐式
    约束，真实账单不可预测。kill switch 是止血阀，不是预算。
 
-4. **多实例并发 upsert 未实测**（ON CONFLICT 最后写者胜，结论不撕裂，但没测）。
+5. **多实例并发 upsert 未实测**（ON CONFLICT 最后写者胜，结论不撕裂，但没测）。
 
 ## 踩过的坑（别再踩）
+
+- **接缝的「消费侧判据」不等于「生产侧被测到」。** 遗留 #3 实测：把 router 的两处
+  state 挂载**全部删掉**（变异 M4），挂载侧 5 条判红，而 executor 消费侧
+  **3 条全绿**——因为消费侧拿到 nil 就安静地回落自己读。⇒ 只写消费侧判据，
+  生产侧挂载点可以完全坏掉而没人发现。**挂载点必须单独钉。**
 
 - **判据写在 SQL 里 = 一条都测不到。** 本轮第一版把全部闸门放 SQL，测试靠注入
   `scan` 接缝绕开，于是「漏抄 `c.status`」这种缺陷没有任何用例会红。第二版把

@@ -449,8 +449,16 @@ func (e *Executor) executeOpenAI(
 		!params.IsStream
 
 	if e.FpSlots != nil && e.FpSlots.Enabled() && (downgradeEligible || upgradeEligible) {
+		// 2026-10-02 (vapeur 遗留 #3): the router already read this exact node
+		// key in its batched MGET (filterHealthyNodes / chooseLeastCooledCandidate)
+		// and handed the result over as cand.RoutedNodeState. Reuse it instead of
+		// issuing a second GET of the same key on the hot path.
+		//
+		// nil ⇒ the router did not read a state for this candidate (authoritative
+		// URSM v2 path, FpSlots disabled, or the batch read failed open). That is
+		// "no snapshot", NOT "no verdict", so we fall back to the original read.
 		readSupported, readKnown, readErr := e.FpSlots.GetSupportsResponses(
-			params.R.Context(), cand.CredentialID, cand.RawModel)
+			params.R.Context(), cand.CredentialID, cand.RawModel, cand.RoutedNodeState)
 		supported, known, degraded := resolveDurableResponsesVerdict(
 			durableVerdict{Supported: readSupported, Known: readKnown, ReadErr: readErr},
 			cand.SupportsNativeResponses, cand.SupportsNativeResponsesKnown)

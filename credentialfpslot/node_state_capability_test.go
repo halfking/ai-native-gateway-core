@@ -43,7 +43,7 @@ func TestF04_DurableCapabilityBlocksRepeatedNativeAttempt(t *testing.T) {
 	// 100 sequential reads must all report the durable negative verdict.
 	require.NoError(t, mgr.SetSupportsResponses(ctx, 42, "gpt-5.6-terra", false))
 	for i := 0; i < 100; i++ {
-		supported, known, err := mgr.GetSupportsResponses(ctx, 42, "gpt-5.6-terra")
+		supported, known, err := mgr.GetSupportsResponses(ctx, 42, "gpt-5.6-terra", nil)
 		require.NoError(t, err, "read %d", i)
 		require.True(t, known, "read %d: verdict must be known", i)
 		require.False(t, supported, "read %d: verdict must be unsupported", i)
@@ -53,14 +53,14 @@ func TestF04_DurableCapabilityBlocksRepeatedNativeAttempt(t *testing.T) {
 	// must fall back to live detection rather than keep short-circuiting).
 	mr.FastForward(nodeStateTTLSec * 2 * time.Second)
 
-	supported, known, err := mgr.GetSupportsResponses(ctx, 42, "gpt-5.6-terra")
+	supported, known, err := mgr.GetSupportsResponses(ctx, 42, "gpt-5.6-terra", nil)
 	require.NoError(t, err)
 	assert.False(t, known, "expired node state must read as unknown, not unsupported")
 	assert.False(t, supported)
 
 	// A successful re-probe flips it back to supported (F04 §3.4).
 	require.NoError(t, mgr.SetSupportsResponses(ctx, 42, "gpt-5.6-terra", true))
-	supported, known, err = mgr.GetSupportsResponses(ctx, 42, "gpt-5.6-terra")
+	supported, known, err = mgr.GetSupportsResponses(ctx, 42, "gpt-5.6-terra", nil)
 	require.NoError(t, err)
 	require.True(t, known)
 	assert.True(t, supported, "successful re-probe must flip the verdict back")
@@ -92,7 +92,7 @@ func TestF04_CapabilityExpiryIsIndependentFromRefreshingNodeHealth(t *testing.T)
 	require.NoError(t, mgr.SetNodeState(ctx, state))
 	require.True(t, mr.Exists(nodeKey(43, "gpt-5.6-terra")), "node health key must remain live after the capability expiry")
 
-	supported, known, err := mgr.GetSupportsResponses(ctx, 43, "gpt-5.6-terra")
+	supported, known, err := mgr.GetSupportsResponses(ctx, 43, "gpt-5.6-terra", nil)
 	require.NoError(t, err)
 	assert.False(t, known, "capability verdict must expire on its own TTL despite a still-live node health key")
 	assert.False(t, supported)
@@ -131,7 +131,7 @@ func TestF04_ResetNodeHealthPreservesCapabilityVerdict(t *testing.T) {
 	assert.Empty(t, reset.SlideWindow)
 	assert.Equal(t, expiry, reset.CapabilityExpiresAt)
 
-	supported, known, err := mgr.GetSupportsResponses(ctx, credentialID, model)
+	supported, known, err := mgr.GetSupportsResponses(ctx, credentialID, model, nil)
 	require.NoError(t, err)
 	assert.True(t, known, "health reset must preserve independent protocol capability evidence")
 	assert.False(t, supported, "the known unsupported verdict must remain unsupported")
@@ -154,7 +154,7 @@ func TestF04_CapabilityReadRechecksRedisTimeAfterStateFetch(t *testing.T) {
 
 	hook := &advanceTimeAfterGetHook{server: mr, at: baseTime.Add(2 * time.Second)}
 	mgr.client.AddHook(hook)
-	supported, known, err := mgr.GetSupportsResponses(ctx, credentialID, model)
+	supported, known, err := mgr.GetSupportsResponses(ctx, credentialID, model, nil)
 	require.NoError(t, err)
 	assert.True(t, hook.advanced, "test must advance Redis time after the NodeState GET")
 	assert.False(t, known, "Redis TIME sampled after the GET must detect expiry crossed between commands")
@@ -197,7 +197,7 @@ func TestF04_LegacyCapabilityWithoutExpiryReadsAsUnknown(t *testing.T) {
 	state.CapabilityExpiresAt = 0 // matches pre-migration Redis payload shape
 	require.NoError(t, mgr.SetNodeState(ctx, state))
 
-	supported, known, err := mgr.GetSupportsResponses(ctx, 44, "gpt-5.6-terra")
+	supported, known, err := mgr.GetSupportsResponses(ctx, 44, "gpt-5.6-terra", nil)
 	require.NoError(t, err)
 	assert.False(t, known, "legacy capability without expiry must re-enter live detection")
 	assert.False(t, supported)
@@ -211,12 +211,12 @@ func TestF04_CapabilityRecoveryFlipsBackToSupported(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, mgr.SetSupportsResponses(ctx, 7, "gpt-5.6-terra", false))
-	_, known, err := mgr.GetSupportsResponses(ctx, 7, "gpt-5.6-terra")
+	_, known, err := mgr.GetSupportsResponses(ctx, 7, "gpt-5.6-terra", nil)
 	require.NoError(t, err)
 	require.True(t, known)
 
 	require.NoError(t, mgr.SetSupportsResponses(ctx, 7, "gpt-5.6-terra", true))
-	supported, known, err := mgr.GetSupportsResponses(ctx, 7, "gpt-5.6-terra")
+	supported, known, err := mgr.GetSupportsResponses(ctx, 7, "gpt-5.6-terra", nil)
 	require.NoError(t, err)
 	require.True(t, known)
 	assert.True(t, supported, "capability recovery must flip the verdict back to supported")
@@ -240,7 +240,7 @@ func TestF04_DefaultNilCapabilityIsNotShortCircuit(t *testing.T) {
 		"a node without a verdict must report unknown")
 	assert.False(t, state.Capabilities.ResponsesUnsupported())
 
-	supported, known, err := mgr.GetSupportsResponses(ctx, 9, "gpt-4")
+	supported, known, err := mgr.GetSupportsResponses(ctx, 9, "gpt-4", nil)
 	require.NoError(t, err)
 	assert.False(t, known, "no verdict on record must be unknown, not unsupported")
 	assert.False(t, supported)
@@ -268,7 +268,7 @@ func TestF04_CapabilityWritePreservesHealthState(t *testing.T) {
 
 	// Now the outcome writer must not drop the capability.
 	require.NoError(t, mgr.RecordNodeSuccess(ctx, 11, "gpt-4", "req-3"))
-	supported, known, err := mgr.GetSupportsResponses(ctx, 11, "gpt-4")
+	supported, known, err := mgr.GetSupportsResponses(ctx, 11, "gpt-4", nil)
 	require.NoError(t, err)
 	require.True(t, known, "an outcome write must not erase the capability verdict")
 	assert.False(t, supported)
@@ -288,12 +288,12 @@ func TestF04_CapabilityIsPerCredentialAndModel(t *testing.T) {
 	require.NoError(t, mgr.SetSupportsResponses(ctx, 1, "model-a", false))
 
 	// Sibling model, same credential: untouched.
-	_, known, err := mgr.GetSupportsResponses(ctx, 1, "model-b")
+	_, known, err := mgr.GetSupportsResponses(ctx, 1, "model-b", nil)
 	require.NoError(t, err)
 	assert.False(t, known, "sibling model must remain unknown")
 
 	// Same model, different credential: untouched.
-	_, known, err = mgr.GetSupportsResponses(ctx, 2, "model-a")
+	_, known, err = mgr.GetSupportsResponses(ctx, 2, "model-a", nil)
 	require.NoError(t, err)
 	assert.False(t, known, "other credential must remain unknown")
 }
@@ -313,7 +313,7 @@ func TestF04_DisabledRedisIsNoOp(t *testing.T) {
 
 	require.NoError(t, mgr.SetSupportsResponses(ctx, 5, "gpt-4", false))
 
-	_, known, err := mgr.GetSupportsResponses(ctx, 5, "gpt-4")
+	_, known, err := mgr.GetSupportsResponses(ctx, 5, "gpt-4", nil)
 	require.NoError(t, err)
 	assert.False(t, known, "lite mode must never fabricate a capability verdict")
 }

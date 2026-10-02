@@ -675,6 +675,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// collapses to __unknown__ on fresh installs while upgraded
 			// databases have the projection.
 			"816_request_logs_view_client_ip_projection.sql",
+			// 817 (2026-10-02, 审计 §9.64): 把 816 的字符类 client_ip 守卫换成
+			// pg_input_is_valid(v,'inet')。816 的守卫只挡非字符集垃圾，
+			// 192.168.1 / deadbeef / ::: 全部通过它后死在 ::inet 上，
+			// 打挂整条 canonical 视图的每一个读方（本机真库复现）。
+			// ensureRequestLogsCurrentMonthView 的早退在 816 形态上就成立，
+			// 所以**没有任何自愈通道会把它收敛到 817** —— 不装就永久停在
+			// 已知会崩的形态上（与 816 同一形状的第五次遗漏）。
+			"817_request_logs_view_client_ip_semantic_guard.sql",
 		},
 	}
 }
