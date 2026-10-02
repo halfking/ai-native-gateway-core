@@ -1,0 +1,68 @@
+Session storage audit: disposable Redis/PG, coherence gate=0
+OBSERVATION tests measure remaining gaps; PASS does not certify coherence.
+=== RUN   TestStorageAuditSanitizeProcesses
+    storage_real_integration_test.go:57: worker 1: exit status 1
+        === RUN   TestStorageAuditSanitizeWorker
+        2026/10/02 11:05:50 WARN sanitize_middleware: sanitize failed component=sanitize_middleware error="acquire sanitize offsets: sanitize offsets lock busy" session_id=audit-1790910350064877000
+            storage_real_integration_test.go:94: 
+                	Error Trace:	__DEV_HOME__/.codex/worktrees/session-storage-stream-audit/llm-gateway-go-3/security/sanitize/storage_real_integration_test.go:94
+                	Error:      	Not equal: 
+                	            	expected: 200
+                	            	actual  : 503
+                	Test:       	TestStorageAuditSanitizeWorker
+        --- FAIL: TestStorageAuditSanitizeWorker (0.53s)
+        FAIL
+    storage_real_integration_test.go:64: 
+        	Error Trace:	__DEV_HOME__/.codex/worktrees/session-storage-stream-audit/llm-gateway-go-3/security/sanitize/storage_real_integration_test.go:64
+        	Error:      	"map[{SENSITIVE:phone:10}:13800000008 {SENSITIVE:phone:11}:13800000009 {SENSITIVE:phone:12}:13800000010 {SENSITIVE:phone:13}:13800000011 {SENSITIVE:phone:14}:13800000012 {SENSITIVE:phone:15}:13800000013 {SENSITIVE:phone:16}:13800000014 {SENSITIVE:phone:17}:13800000015 {SENSITIVE:phone:1}:13800000000 {SENSITIVE:phone:2}:13800000016 {SENSITIVE:phone:3}:13800000001 {SENSITIVE:phone:4}:13800000002 {SENSITIVE:phone:5}:13800000003 {SENSITIVE:phone:6}:13800000004 {SENSITIVE:phone:7}:13800000005 {SENSITIVE:phone:8}:13800000006 {SENSITIVE:phone:9}:13800000007]" should have 32 item(s), but has 17
+        	Test:       	TestStorageAuditSanitizeProcesses
+--- FAIL: TestStorageAuditSanitizeProcesses (2.97s)
+=== RUN   TestStorageAuditSanitizeWorker
+    storage_real_integration_test.go:83: parent test starts this helper in a separate process
+--- SKIP: TestStorageAuditSanitizeWorker (0.00s)
+=== RUN   TestStorageAuditRealRedisLeaseLoss
+2026/10/02 11:05:53 WARN sanitize_middleware: sanitize failed component=sanitize_middleware error="persist sanitize mapping: sanitize offsets lease lost" session_id=audit-1790910353056853000
+--- PASS: TestStorageAuditRealRedisLeaseLoss (0.15s)
+=== RUN   TestStorageAuditStreamTerminalCapacity
+=== RUN   TestStorageAuditStreamTerminalCapacity/terminal_at_limit
+=== RUN   TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_at_limit
+=== RUN   TestStorageAuditStreamTerminalCapacity/terminal_over_limit
+=== RUN   TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_over_limit
+--- PASS: TestStorageAuditStreamTerminalCapacity (26.48s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/terminal_at_limit (16.00s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_at_limit (10.44s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/terminal_over_limit (0.02s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_over_limit (0.02s)
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/security/sanitize	30.478s
+=== RUN   TestStorageAuditRealColdRead
+2026/10/02 11:05:52 INFO feature_switches_snapshot session_compression=true session_cache=true circuit_degradation=true rate_limiter=true fp_slot=true
+    storage_audit_integration_test.go:92: real cold Redis + PG TurnReader: fields reset; ttl=30m0s
+--- PASS: TestStorageAuditRealColdRead (0.65s)
+=== RUN   TestStorageAuditObserveCrossInstanceState
+    storage_audit_integration_test.go:112: OBSERVATION warm_generation=old cold_generation=new coherent=false
+    storage_audit_integration_test.go:137: OBSERVATION cross_instance_updates=2 persisted_count=1 coherent=false
+--- PASS: TestStorageAuditObserveCrossInstanceState (0.62s)
+=== RUN   TestStorageAuditObserveV2MetadataBodyMismatch
+    storage_audit_integration_test.go:160: OBSERVATION redis_msg_count=1 pg_msg_count=2 old_hash_with_new_body=true coherent=false
+--- PASS: TestStorageAuditObserveV2MetadataBodyMismatch (0.72s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression	3.975s
+=== RUN   TestStorageAuditGovernanceRealRedis
+    storage_redis_audit_integration_test.go:47: two Redis clients: zero-value replacement and WRONGTYPE checked
+--- PASS: TestStorageAuditGovernanceRealRedis (0.15s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/domains/session/v2	6.368s
+=== RUN   TestStorageAuditSSEVisibleTextLatency
+=== RUN   TestStorageAuditSSEVisibleTextLatency/terminal
+    storage_stream_audit_test.go:77: production SSE writer + mandatory guard: heartbeat=1.83425ms visible_text=153.831875ms synthetic_tail=150ms
+=== RUN   TestStorageAuditSSEVisibleTextLatency/EOF
+    storage_stream_audit_test.go:77: production SSE writer + mandatory guard: heartbeat=685.5µs visible_text=152.349041ms synthetic_tail=150ms
+--- PASS: TestStorageAuditSSEVisibleTextLatency (0.31s)
+    --- PASS: TestStorageAuditSSEVisibleTextLatency/terminal (0.15s)
+    --- PASS: TestStorageAuditSSEVisibleTextLatency/EOF (0.15s)
+=== RUN   TestStorageAuditWriterBlocksCombinedTerminalCapacity
+--- PASS: TestStorageAuditWriterBlocksCombinedTerminalCapacity (5.19s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming	9.104s
+FAIL

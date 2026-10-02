@@ -1,0 +1,11 @@
+=== RUN   TestStress_IRSerialize_Concurrency50_P99
+    serialize_p99_test.go:70: serialize latency over 5000 reqs @ conc=50: p50=4.792µs p95=80.5µs p99=307.834µs
+--- PASS: TestStress_IRSerialize_Concurrency50_P99 (0.01s)
+=== RUN   TestStress_IRSerialize_Concurrency50_P99
+    serialize_p99_test.go:70: serialize latency over 5000 reqs @ conc=50: p50=4.583µs p95=24.417µs p99=614.25µs
+--- PASS: TestStress_IRSerialize_Concurrency50_P99 (0.01s)
+=== RUN   TestStress_IRSerialize_Concurrency50_P99
+    serialize_p99_test.go:70: serialize latency over 5000 reqs @ conc=50: p50=4.625µs p95=23.833µs p99=286.875µs
+--- PASS: TestStress_IRSerialize_Concurrency50_P99 (0.01s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/stress	0.248s

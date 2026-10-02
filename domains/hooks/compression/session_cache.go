@@ -744,32 +744,18 @@ func encodeSessionStateFields(st *SessionState) []any {
 		"cm_ba", fmt.Sprint(st.CutBytesAfter), "cm_psor0", fmt.Sprint(st.CutPreSanitizeStart),
 		"cm_psor1", fmt.Sprint(st.CutPreSanitizeEnd), "cmp_ph", st.CompressedPrefixHash)
 
-	// and to remain backward compatible with older readers that only know
-	// the v5 field set.
-	if st.AuditedAt > 0 {
-		fields = append(fields, "aud_at", fmt.Sprintf("%d", st.AuditedAt))
+	// A clean audit replaces the prior verdict/approval state. HSET must
+	// persist zero values too, or a cold reader resurrects old decisions.
+	boolField := func(value bool) string {
+		if value {
+			return "1"
+		}
+		return "0"
 	}
-	if st.AuditScore > 0 {
-		fields = append(fields, "aud_sc", fmt.Sprintf("%d", st.AuditScore))
-	}
-	if st.SecurityScore > 0 {
-		fields = append(fields, "sec_sc", fmt.Sprintf("%d", st.SecurityScore))
-	}
-	if st.SensitiveDetected {
-		fields = append(fields, "sen_det", "1")
-	}
-	if st.PIIStripped {
-		fields = append(fields, "pii_strip", "1")
-	}
-	if st.ApprovalStatus != "" {
-		fields = append(fields, "app_st", st.ApprovalStatus)
-	}
-	if st.ApprovalID != "" {
-		fields = append(fields, "app_id", st.ApprovalID)
-	}
-	if st.OptimizationApplied != "" {
-		fields = append(fields, "opt_app", st.OptimizationApplied)
-	}
+	fields = append(fields, "aud_at", fmt.Sprint(st.AuditedAt),
+		"aud_sc", fmt.Sprint(st.AuditScore), "sec_sc", fmt.Sprint(st.SecurityScore),
+		"sen_det", boolField(st.SensitiveDetected), "pii_strip", boolField(st.PIIStripped),
+		"app_st", st.ApprovalStatus, "app_id", st.ApprovalID, "opt_app", st.OptimizationApplied)
 	fields = append(fields, "raw_te", fmt.Sprint(st.RawTokenEstimate), "raw_mc", fmt.Sprint(st.RawMsgCount),
 		"cmp_te", fmt.Sprint(st.CompressedTokens), "cmp_mc", fmt.Sprint(st.CompressedMsgs))
 	// HSET is a patch, so omitted zero values would resurrect previous metadata

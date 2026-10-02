@@ -71,20 +71,25 @@ func TestSessionStateV6Fields_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestSessionStateV6Fields_ZeroValuesSkipped 验证空 v6 字段不写入 Redis hash。
-// 这是向后兼容的关键：legacy reader 看不到这些字段也能正确解析。
-func TestSessionStateV6Fields_ZeroValuesSkipped(t *testing.T) {
+// A later clean audit must overwrite all prior verdict and approval fields.
+func TestSessionStateV6Fields_ZeroValuesResetPriorAudit(t *testing.T) {
+	fieldMap := fieldsToMap(encodeSessionStateFields(&SessionState{
+		SchemaVersion: schemaVersion, AuditedAt: 1700000000,
+		AuditScore: 7, SecurityScore: 3, SensitiveDetected: true, PIIStripped: true,
+		ApprovalStatus: "approved", ApprovalID: "prior-approval", OptimizationApplied: "strip_tools",
+	}))
 	state := &SessionState{SchemaVersion: schemaVersion}
-	fields := encodeSessionStateFields(state)
-	fieldMap := fieldsToMap(fields)
-
-	for _, key := range []string{
-		"aud_at", "aud_sc", "sec_sc", "sen_det",
-		"pii_strip", "app_st", "app_id", "opt_app",
-	} {
-		if _, ok := fieldMap[key]; ok {
-			t.Errorf("v6 field %q should be skipped when zero, got value=%q", key, fieldMap[key])
-		}
+	for key, value := range fieldsToMap(encodeSessionStateFields(state)) {
+		fieldMap[key] = value // Redis HSET updates rather than replaces a hash.
+	}
+	var got SessionState
+	if err := decodeSessionStateFields(fieldMap, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.AuditedAt != 0 || got.AuditScore != 0 || got.SecurityScore != 0 ||
+		got.SensitiveDetected || got.PIIStripped || got.ApprovalStatus != "" ||
+		got.ApprovalID != "" || got.OptimizationApplied != "" {
+		t.Fatalf("cold read resurrected previous audit/approval: %+v", got)
 	}
 }
 
