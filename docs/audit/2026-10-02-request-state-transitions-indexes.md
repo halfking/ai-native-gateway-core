@@ -21,8 +21,11 @@ tenant_id=default  927,992 行（99.98%）
 tenant_id=chenb        324 行（0.02%）
 ```
 
-**全表 11 个索引中有 9 个以 `tenant_id` 开头。** 在 99.98% 集中在单一值的前提下，
-这些索引的第二列才具备实际选择性，首列 `tenant_id` 不贡献任何收敛。
+**全表 11 个索引中有 6 个以 `tenant_id` 开头**（journey_recent / journey_model_recent /
+journey_node_recent / journey_retry_at / tenant_request / uq_tenant_request_seq；
+R32 域D P3-2 订正：原文误作 9 个，与本文 §3 清单及真库 attnum 对照均不符）。
+在 99.98% 集中在单一值的前提下，这些索引的第二列才具备实际选择性，首列
+`tenant_id` 不贡献任何收敛。
 
 ## 3. 索引使用情况（统计量归零于 2026-09-23 06:56，9 天真实计数）
 
