@@ -166,3 +166,62 @@ func between(t *testing.T, src, start, end string) string {
 	}
 	return src[i+len(start) : j]
 }
+
+// TestMigration815GatesAreNotVacuous 把「这些门不是空转」做成结构性核验。
+//
+// 为什么需要：上面四道门里有三道是靠「迁移文件里**没有**某段文本」或
+// 「**不**包含某列」来判的。这类否定式判据在一个空文件 / 被清空的登记表上
+// 全部平凡通过——绿灯是真的绿，但什么都没测。变异验证能证明「改坏会红」，
+// 却不证明「输入为空时也会红」。后者必须由结构断言承担，且这些断言
+// **不需要重跑任何变异就能复核**。
+func TestMigration815GatesAreNotVacuous(t *testing.T) {
+	src := readMigration815(t)
+	proj := between(t, src, "proj := $proj$", "$proj$;")
+	names := between(t, src, "names := $names$", "$names$;")
+
+	// 1) 投影与列序必须非空、且规模与 815 的契约一致（118）。若 proj 被清空，
+	//    上面三道门会因为「找不到 t.<col>」而红——但那读起来像「迁移写错了」，
+	//    不像「门在空输入上通过」。所以把规模钉死在这里。
+	if strings.TrimSpace(proj) == "" {
+		t.Fatal("815 的 $proj$ 块是空的：三道门会在空投影上平凡通过")
+	}
+	if n := len(strings.Split(names, ",")); n != 118 {
+		t.Fatalf("815 的 names 块 %d 列，want 118（740 的 115 + 三列）。"+
+			"若这是有意改动，请同步 db.canonicalColumnOrderV2 与 "+
+			"TestViewV2ProjectionContractSync 的登记表", n)
+	}
+	// 2) 否决项必须真的「不在」文件里——而不是因为解析失败被跳过。
+	//    上面那道门用的是 strings.Contains，文件被换成空串时它会通过；
+	//    这里要求文件本身有可解析的内容。
+	if len(src) < 2000 {
+		t.Fatalf("815 迁移只有 %d 字节，疑似被截断/清空：所有基于 Contains 的门都会平凡通过", len(src))
+	}
+	if !strings.Contains(proj, "NULL::bigint AS id") {
+		t.Error("815 的投影里没有 `NULL::bigint AS id` —— " +
+			"「id 保持 NULL 补位」这条否决被改掉了（无论改成什么，" +
+			"都必须先有 §9.28.3 的实测依据）")
+	}
+	// 3) down 必须带「半剥离拒绝」的前置断言，否则剥不干净时会交付一个
+	//    「列数可能相等、查询仍 200、只是某一臂恒 NULL」的视图。
+	down, err := os.ReadFile(strings.TrimSuffix(migration815, ".sql") + ".down.sql")
+	if err != nil {
+		t.Fatalf("读 815 down 失败：%v", err)
+	}
+	if len(down) < 1000 {
+		t.Fatalf("815 down 只有 %d 字节，疑似被截断：它的列数对账与半剥离拒绝都会失效", len(down))
+	}
+	if !strings.Contains(string(down), "half-stripped view") {
+		t.Error("815 down 缺「半剥离视图」的前置拒绝")
+	}
+	// 4) 双树副本必须都在（缺一份 = 安装器装出另一个契约的视图）。
+	for _, p := range []string{
+		filepath.Join("..", "..", "..", "installer", "cmd", "llm-gw-installer",
+			"embeddata", "startup", migration815),
+		filepath.Join("..", "..", "..", "installer", "cmd", "llm-gw-installer",
+			"embeddata", "startup", strings.TrimSuffix(migration815, ".sql")+".down.sql"),
+	} {
+		if st, err := os.Stat(p); err != nil || st.Size() == 0 {
+			t.Errorf("installer 副本缺失或为空：%s（%v）", p, err)
+		}
+	}
+}
