@@ -1911,6 +1911,17 @@ func (r *CredentialRecovery) claimLookbackCandidate(ctx context.Context, credID 
 // neither the recover sink nor the probe submitter wired it is a no-op (the
 // SQL is not even issued, mirroring recoverFreshDegradedBindings).
 func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
+	// Reset BEFORE the hook check below. That early return used to sit above the
+	// reset, so a run that did nothing still returned the *previous* run's skip
+	// list — the exact "stale skip list" failure the sibling comment in
+	// ledger_reconciliation.go calls the worst version of this feature. It was
+	// latent only because the hooks are wired at construction and never change;
+	// publishing the list to /metrics (§9.38) would have turned it into an
+	// operator-visible lie.
+	r.resetSkipped()
+	// Publish "this round did not execute" to /metrics; deferred so it covers
+	// every return path. See bg/s4_scan_skip_metrics.go.
+	defer recordS4ScanSkipState(s4ScanWorkerCredentialRecovery, r.SkippedChecks(), time.Now())
 	if r.ursmRecoverSink == nil && r.probeSubmitter == nil {
 		return
 	}
@@ -1922,7 +1933,7 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 	// 从「可判定」变成「不可判定」——继续查只会得到一个恒空的候选集，把
 	// "不再具备判定能力" 读成 "没有需要恢复的绑定"。与 ledger_reconciliation 的
 	// usage_credit_mismatch 是同一个结构的两种方向（那边是假报机，这边是静默洞）。
-	r.resetSkipped()
+	//（reset 已移到函数顶部，覆盖下面的 hook 早退分支。）
 	if ok, reason := lookbackComparability(settings.RequestLogsWriteEnabled()); !ok {
 		r.markSkipped(reason)
 		recoveryLookbackTriggers.WithLabelValues("skipped_" + reason).Inc()

@@ -1,0 +1,81 @@
+# S4 停写期间「扫描未执行」告警（2026-10-02 审计 §9.38）
+#
+# 指标来源：bg/s4_scan_skip_metrics.go（promauto，与 bg/metrics.go 同一注册表）
+#   llm_gateway_bg_s4_scan_skipped_last_run{worker,reason}  1 = 最近一轮没执行
+#   llm_gateway_bg_s4_scan_last_run_unix{worker}           最近一轮完成时刻
+#   llm_gateway_bg_s4_scan_unregistered_skip_total{...}     未登记 reason 兜底
+#
+# 为什么必须有这一组：S4 停写让 ledger 的 usage↔credit 比对与 credential_recovery
+# 的 36h 回看扫描在发出 SQL 前短路，两者都 return 0 —— 与「扫了没发现差异」的 0
+# 在计数上不可区分。停写期间只看 findings 计数，运维会读到「账务无差异 /
+# 无恢复候选」，而真相是这两个问题**已经不再可判定**。
+#
+# 刻意不存在的指标：累计型 llm_gateway_bg_s4_scan_skip_total。停写生效后累计值
+# 停止增长，而「计数器不再增长」与「worker 卡死」在告警侧无法区分 —— 那正是
+# credential_recovery 既有 llmgw_recovery_lookback_triggers_total{outcome=
+# "skipped_s4_stop_write"} 的局限。当前状态由 gauge 表达，所以只补 gauge。
+#
+# 标签纪律（GW-00）：worker ∈ {ledger_reconciliation, credential_recovery}，
+# reason ∈ {s4_stop_write}，均为编译期闭集，基数恒定。
+
+groups:
+  - name: s4_scan_skip
+    interval: 30s
+    rules:
+      - alert: BgS4ScanSkipped
+        expr: llm_gateway_bg_s4_scan_skipped_last_run == 1
+        for: 10m
+        labels:
+          severity: warning
+          component: bg
+        annotations:
+          summary: "S4 门控下扫描未执行（{{ $labels.worker }} / {{ $labels.reason }}）"
+          description: |
+            worker {{ $labels.worker }} 的扫描因 {{ $labels.reason }} 连续 10 分钟**没有执行**。
+
+            **这不等于「没有差异」**：该检查这一轮根本没有发出 SQL，
+            它的 findings 计数为 0 只说明「没跑」，不说明「干净」。
+            在 S4 停写（storage.request_logs_write_enabled=false）期间，
+            这类检查的前提（两侧同期 / 窗口内有证据）已消失，问题从
+            「可判定」变成「不可判定」。
+
+            **排查步骤**：
+            1. 确认 storage.request_logs_write_enabled 的当前值与切换时刻
+            2. 该 worker 的下一层可观测性（哪个读点仍不可端口）见
+               docs/audit/2026-09-30-session-request-data-re-audit.md §9.36
+            3. 不要因为 findings=0 就把这条告警当成「已确认无差异」关掉
+
+      - alert: BgS4ScanStalled
+        expr: time() - llm_gateway_bg_s4_scan_last_run_unix > 3600
+        for: 15m
+        labels:
+          severity: warning
+          component: bg
+        annotations:
+          summary: "S4 门控扫描已超过 1 小时未完成一轮（{{ $labels.worker }}）"
+          description: |
+            worker {{ $labels.worker }} 的最近一轮完成时间已超过 1 小时。
+
+            与 BgS4ScanSkipped 区分：那条是「跑了但被门控跳过」，
+            这条是「根本没跑」—— worker 卡死、panic 后未重启，或循环未启动。
+            两者若都沉默，说明可观测性本身已失效。
+
+      - alert: BgS4ScanUnregisteredSkipReason
+        expr: increase(llm_gateway_bg_s4_scan_unregistered_skip_total[15m]) > 0
+        labels:
+          severity: critical
+          component: bg
+        annotations:
+          summary: "S4 扫描出现未登记的跳过原因（{{ $labels.worker }} / {{ $labels.reason }}）"
+          description: |
+            worker {{ $labels.worker }} 上线了一个**未登记进闭集**的跳过原因
+            {{ $labels.reason }}。
+
+            **为什么是 critical**：未登记的 reason 不会写进
+            llm_gateway_bg_s4_scan_skipped_last_run（该指标的标签空间必须
+            严格等于闭集），于是这一轮的 gauge 停在 0 —— 指标会把
+            「跳过了」**谎报成**「跑过了」。这是本条存在的唯一理由：
+            默认拒绝的兜底，宁可吵闹不可静默谎报。
+
+            **修复**：把该 reason 登记进 bg/s4_scan_skip_metrics.go 的
+            s4ScanSkipReasons 闭集，并为它补上告警覆盖。

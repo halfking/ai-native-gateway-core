@@ -1690,3 +1690,102 @@ M3 红在 `:139`；M4 加失效豁免红在过期自检门 `:179`。
 
 `auto_route_settle_worker` 的**正确修法**（改读会话族）——§9.35 只让它可见，没让它正确。
 族分类器的 `id` 误触发（需加表归属，可一次性消掉 6 条假论证）也仍未做。
+
+---
+
+## 第二十一轮（2026-10-02）：`SkippedChecks()` 的可观测出口 —— §9.38
+
+### 结论
+
+第二十轮列的「下一件该做」做完了。**护栏把危险动作停了，现在也看得见了。**
+
+### 缺口是可证实的，不是推测
+
+`SkippedChecks()` 全仓 grep 的消费者 = **2 个 s4_gate 测试，零生产消费者**；
+`settings.RequestLogsWriteEnabled()` 本身**也没有任何指标** ⇒ S4 停写这个状态
+在 `/metrics` 上完全不可见。
+
+**既有累计计数器救不了**：`llmgw_recovery_lookback_triggers_total{outcome=
+"skipped_s4_stop_write"}` 停写生效后**停止增长**，而「计数器不再增长」与
+「worker 卡死」在告警侧同形。要回答的是**当前状态** ⇒ 补 gauge，不补 counter。
+
+### 三个指标 + 三条告警（每个指标都有消费者，一个不多）
+
+| 指标 | 告警 | 回答 |
+|---|---|---|
+| `llm_gateway_bg_s4_scan_skipped_last_run{worker,reason}` | `BgS4ScanSkipped`（10m） | 本轮没执行吗 |
+| `llm_gateway_bg_s4_scan_last_run_unix{worker}` | `BgS4ScanStalled`（3600s/15m） | worker 还活着吗 |
+| `llm_gateway_bg_s4_scan_unregistered_skip_total{worker,reason}` | `BgS4ScanUnregisteredSkipReason` | 指标本身在谎报吗 |
+
+**刻意不加**累计型 `..._skip_total`——没有告警消费者的计数器就是装饰。
+接线一律用 **`defer`**，覆盖所有 return 分支（含未来新增的）。
+
+### 默认拒绝：新跳过源不登记就门红
+
+- **源码侧**：按**签名**（具名结果 `(comparable bool, reason string)`）而非函数名白名单
+  扫描全部可产出 reason ⇒ 新增跳过源时门不会静默放过。
+- **运行时侧**：未登记 reason 落兜底计数器 + `slog.Error`，**不写进闭集 gauge**。
+  理由：gauge 的标签空间必须严格等于闭集，否则告警表达式会依赖未登记标签值，
+  而 gauge 停在 0 会把「跳过了」**谎报成**「跑过了」——比没指标更坏。
+
+### 顺带修掉一个真 bug
+
+`scanLookbackRecoveries` 的 hook 早退**原本在 `r.resetSkipped()` 之上** ⇒
+「什么都没做的一轮」返回**上一轮**的 skip 列表。当时是潜在的（hook 构造后不变），
+但**一旦把列表发布到 `/metrics`，潜在 bug 就升级成运维可见的谎报**。
+已上移并立门钉住顺序。
+
+**把潜在 bug 接上告警 ≠ 顺手美化**：那是把它从「没人看得见」升级成「所有人看见错误的值」。
+
+### 我自己这道门先写错了三次（都记在审计 §9.38.5）
+
+1. `for _, x := range someString` 迭代的是 **rune 不是行** ⇒ GW-00 守卫报
+   `108 could not be applied builtin len()` ⇒ **那道守卫一行都没真正检查过**。
+2. 闭集门把 comparability 成功分支的 `return true, ""` 当成了 reason。
+3. `r.resetSkipped()` 的 `Fun` 是 **`*ast.SelectorExpr`**（带接收者），
+   我只判了 `*ast.Ident` ⇒ 门红在一个**从未存在过**的缺陷上。
+   （§9.35 记过反向版本：接线门只认 SelectorExpr 而包级函数是 Ident。**两种都要认**。）
+
+**一个恒红或恒「误报不存在缺陷」的门比没有门更坏**——它训练读者忽略自己。
+
+### 变异 6/6，各命中不同断言
+
+M-D 归零循环只写 1 → `:253`；M-B `defer` 降级为普通调用 → `:152`；
+M-C `resetSkipped` 挪回早退下 → `:226`；M-A 返回未登记 reason → `:102`；
+M-E 抽掉兜底计数器 → `:275`（vet 干净 ⇒ 确认断言红）；M-F′ 规则数不变只换指标名
+→ `s4_scan_skip_test.go:61`。
+
+**两次「变异没生效」当场识破并重做**：
+- M-C 第一版只加了标记、**位置根本没动** ⇒ 门正确地绿。若记「通过」就是拿没生效的变异当证据。
+- M-E 第一版写出多余 `}` ⇒ 未使用导入 ⇒ **编译红**。编译红不是断言红。
+  保留日志只抽计数器后重跑才算数。
+- M-F 第一版（删整条规则）报在 `Len(...,3)` 这个结构断言上，只证明规则数变了。
+  补做 M-F′ 才确认**覆盖断言**承重。
+
+### 明确不做：admin 端点
+
+`admin.Handler` 已持有 `credRecov`（`handler.go:78`）零接线可达，
+但 `LedgerReconciler` 只是 `main.go:4838` 的局部变量、从未注入 Handler ⇒
+要做就得改 `main.go`（共享工作区冲突面最大的文件）去重复 `/metrics` 已承载的事实。
+**判据是新字段先问「哪道门会读它」，同理适用于新端点**：没有第二个消费方就不开这个面。
+
+### 仍未做
+
+- 族分类器 `id` 误触发（补位匹配加表归属，可一次性消掉 6 条假论证）。
+- `auto_route_settle_worker` 的正确修法（改读会话族）——§9.35 只让它可见，没让它正确。
+- 响应侧 7 个读点仍不可端口。
+- §9.36 的 19 条静默档（`silently_empty` 11 / `silently_degraded_content` 4 / `silently_frozen` 4）
+  才是灰度前真正要处理的，不是「门红了」。
+
+### 下一轮提示词
+
+> 修族分类器的 `id` 误触发：给补位匹配加**表归属**约束（`NULL::bigint AS id` 只在
+> session 臂成立，v1 臂应透传真值 `SELECT rl.id,`），可一次性消掉 6 条假论证。
+> 动手前先按 §9.38 的纪律做两件事：①`pg_get_viewdef` **逐字**读三条 UNION ALL 臂
+> 各自对 `id` 的写法（上轮我把 L1 顶层投影和 L146 的 v1 分臂数混了，
+> 真实情况是 L1/L146 补 NULL 而 **L291 是 `SELECT rl.id,` 透传真值**——
+> 「`id` 永不投影」只对会话侧成立，v1-only 的行必须带着真实 `request_logs.id` 出去）；
+> ②报告任何计数时写清**量的面**（迁移文件 / 活库 viewdef / Go 常量），三者数字不同。
+> 另注意：`cloneTablesFrozenDDL` 只发列名+类型、不带 NOT NULL 与 DEFAULT，
+> 所以「v1 臂 id 必须为 NULL」在夹具里是 NULL 对 NULL 平凡通过——
+> 要它可红必须种显式值并断言**等于源表真值**（只断言非空太弱，turn id 也非空）。
