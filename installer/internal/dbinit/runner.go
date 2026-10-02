@@ -663,6 +663,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 刻意不回填：ADD COLUMN nullable 无 DEFAULT 不触发重写，收益随 7 天
 			// 保留期自然滚出。
 			"818_ursm_snapshot_typed_columns.sql",
+			// 819：public.request_abandoned ——「请求开始了却从没有终态」的独立
+			// 落点（审计 §9.66）。必须在 S4 停写开关生效**之前**应用：反过来的
+			// 顺序会造出一段「请求开始了但哪都不记」的窗口。
+			// 写方（telemetry client markRequestAbandonedPending /
+			// clearRequestAbandonedPending）刻意在 `if logsWrite {}` 之外，
+			// 所以这张表活过 v1 退役；不变式是「表里有行 ⇔ 开始了且无终态」，
+			// 终态路径 DELETE 该行。
+			"819_request_abandoned.sql",
 		},
 	}
 }
