@@ -122,9 +122,81 @@ if command -v node >/dev/null 2>&1; then
   else
     ok "npm 入口不重复实现下载/校验逻辑"
   fi
+
+  # 回退路径必须把 argv 送出去。曾经这条路径把参数整个丢掉，
+  # `npm i -g … -- --mode lite` 于是默默装了交互默认值。
+  N1="$(node -e "const m=require(process.argv[1]);process.stdout.write(m.unixFallback('http://x/install',['--mode','lite']))" "$NPM_JS" 2>&1)"
+  contains "npm 回退 unix 路径用 bash -s -- 传参" "$N1" "| bash -s -- "
+  contains "npm 回退 unix 路径带出 --mode" "$N1" "--mode"
+  contains "npm 回退 unix 路径带出 lite" "$N1" "lite"
+  N2="$(node -e "const m=require(process.argv[1]);process.stdout.write(m.unixFallback('http://x/install',[]))" "$NPM_JS" 2>&1)"
+  absent "npm 回退 unix 路径无参时不加空的 -s --" "$N2" "-s --"
+  N3="$(node -e "const m=require(process.argv[1]);process.stdout.write(m.windowsFallback('http://x/install',['--mode','lite']))" "$NPM_JS" 2>&1)"
+  contains "npm 回退 windows 路径把 --mode 翻成 MODE 环境变量" "$N3" '$env:MODE='
+  contains "npm 回退 windows 路径带出 lite" "$N3" "lite"
+  N4="$(node -e "const m=require(process.argv[1]);process.stdout.write(m.windowsFallback('http://x/install',['--yes']))" "$NPM_JS" 2>&1)"
+  contains "npm 回退 windows 路径把 --yes 翻成 NO_INTERACTIVE" "$N4" '$env:NO_INTERACTIVE='
 else
   printf '[install-entry] skip: 没有 node，跳过 npm 入口检查\n'
 fi
+
+# --yes 必须真的生效：曾经 ASSUME_YES 只被赋值、interactive() 从不读它，
+# 于是帮助文本里「--yes 全部用默认值，不再提问」是一句空话。
+if awk '/^interactive\(\) \{/,/^\}/' "$ROOT/install.sh" | grep -q 'ASSUME_YES'; then
+  ok "install.sh interactive() 真的读了 ASSUME_YES（--yes 不是空承诺）"
+else
+  bad "install.sh interactive() 没有读 ASSUME_YES，--yes 不生效"
+fi
+if [[ "$(grep -c 'ASSUME_YES' "$ROOT/install.sh")" -ge 3 ]]; then
+  ok "install.sh 的 ASSUME_YES 不止出现在赋值处"
+else
+  bad "install.sh 的 ASSUME_YES 只出现一次（赋值后从未被读，是死变量）"
+fi
+
+# 源码里不能混进 U+FFFD（编码坏字节）。它会跟着注释一路进仓库，而且本地
+# 看不出差别，评审时也不会有人去数。
+if LC_ALL=C grep -q $'\xef\xbf\xbd' "$ROOT/install.sh"; then
+  bad "install.sh 含 U+FFFD 坏字节"
+else
+  ok "install.sh 无 U+FFFD 坏字节"
+fi
+
+# ── 6. 子命令透传 ───────────────────────────────────────────────────
+# 旧实现写的是 PASSTHRU="$ACTION"（此时 ACTION 已被赋成字面量
+# "passthrough"）且 PASSTHRU_ARGS="$*"（整体加引号），于是二进制收到的第
+# 一个参数是 "passthrough"、后面所有参数被拼成一个。这条路径此前完全没有被
+# 测到。
+TESTDIR="$(mktemp -d)"
+trap 'rm -rf "$TESTDIR"' EXIT
+FAKE_HOME="$TESTDIR/fakehome"
+mkdir -p "$FAKE_HOME/bin"
+cat >"$FAKE_HOME/bin/llm-gw-installer.exe" <<'FAKEEOF'
+#!/usr/bin/env bash
+printf 'FAKE_ARGS:'
+for a in "$@"; do printf ' [%s]' "$a"; done
+printf '\n'
+FAKEEOF
+chmod +x "$FAKE_HOME/bin/llm-gw-installer.exe"
+
+PT="$(LLM_GATEWAY_HOME="$FAKE_HOME" bash "$ROOT/install.sh" upgrade --target 1.2.3 2>&1)"
+check "透传子命令退出码" "$?" "0"
+contains "透传把子命令原样交给二进制" "$PT" "FAKE_ARGS: [upgrade]"
+contains "透传保留子命令的每个参数" "$PT" "[--target] [1.2.3]"
+absent "透传没有把字面量 passthrough 传给二进制" "$PT" "passthrough"
+
+PT2="$(LLM_GATEWAY_HOME="$FAKE_HOME" bash "$ROOT/install.sh" activate 2>&1)"
+contains "透传 activate" "$PT2" "FAKE_ARGS: [activate]"
+
+PT3="$(LLM_GATEWAY_HOME="$FAKE_HOME" bash "$ROOT/install.sh" uninstall --purge 2>&1)"
+contains "透传 uninstall 带 flag" "$PT3" "FAKE_ARGS: [uninstall] [--purge]"
+
+BAD_SUB="$(LLM_GATEWAY_HOME="$FAKE_HOME" bash "$ROOT/install.sh" frobnicate 2>&1)"
+check "未知子命令被拒（不再无脑透传）" "$?" "1"
+contains "未知子命令报错点名" "$BAD_SUB" "frobnicate"
+
+# --yes 必须真的不再提问（曾经只赋值、从未被读）。
+PT4="$(LLM_GATEWAY_HOME="$FAKE_HOME" bash "$ROOT/install.sh" --yes upgrade 2>&1)"
+contains "--yes 不影响子命令透传" "$PT4" "FAKE_ARGS: [upgrade]"
 
 # ── 6. doctor 真的能跑（仅在 Windows 上有 PowerShell 时）──────────────
 if [[ "${OS:-}" == "Windows_NT" ]] && command -v powershell >/dev/null 2>&1; then

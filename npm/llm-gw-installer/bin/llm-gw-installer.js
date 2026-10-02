@@ -98,6 +98,59 @@ function usage() {
   ].join('\n'));
 }
 
+// The served entry is a shell script, so argv has to be forwarded in whatever
+// dialect the target shell speaks. Two shapes:
+//
+//   unix    curl -fsSL "$URL" | bash -s -- <args>     (args after `--`)
+//   windows irm "$URL" | iex                          (iex takes no args)
+//
+// On Windows the arguments are therefore translated into the environment
+// variables the entry already reads (MODE / CHANNEL / NO_INTERACTIVE /
+// DRY_RUN). Dropping argv on this path meant `npm i -g … -- --mode lite`
+// silently installed the interactive default instead, which is exactly the
+// class of bug this launcher is supposed to remove.
+function shellQuote(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+function unixFallback(url, argv) {
+  const tail = argv.length ? ' -s -- ' + argv.map(shellQuote).join(' ') : '';
+  return 'curl -fsSL ' + shellQuote(url) + ' | bash' + tail;
+}
+
+const PS_FLAG_TO_ENV = {
+  '--mode': 'MODE',
+  '--channel': 'CHANNEL',
+};
+
+function windowsFallback(url, argv) {
+  const env = [];
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (PS_FLAG_TO_ENV[a] && argv[i + 1] !== undefined) {
+      env.push(`$env:${PS_FLAG_TO_ENV[a]}=${shellQuoteForPS(argv[++i])}`);
+    } else if (a === '--check' || a === '--doctor' || a === '--modes') {
+      rest.push(a);
+    } else if (a === '--yes' || a === '-y') {
+      env.push("$env:NO_INTERACTIVE='1'");
+    } else if (a === '--dry-run') {
+      env.push("$env:DRY_RUN='1'");
+    } else {
+      rest.push(a);
+    }
+  }
+  if (rest.length) {
+    env.push("Write-Warning '[llm-gw-installer] 这些参数在 Windows 回退路径上不生效：" + rest.join(' '));
+  }
+  const script = `$s = Invoke-RestMethod -Uri ${shellQuoteForPS(url)}; Invoke-Expression $s`;
+  return 'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ' + shellQuote(env.join('; ') + ';' + script);
+}
+
+function shellQuoteForPS(s) {
+  return "'" + String(s).replace(/'/g, "''") + "'";
+}
+
 function main() {
   const argv = process.argv.slice(2);
 
@@ -119,11 +172,15 @@ function main() {
   if (isWindows()) {
     // `irm … | iex` is the PowerShell equivalent of `curl … | bash`; it runs
     // the same served script, which then asks for the scale and dispatches.
-    const ps = 'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ' +
-      '"$s = Invoke-RestMethod -Uri \'' + url + '\'; Invoke-Expression $s"';
-    return runShell(ps);
+    return runShell(windowsFallback(url, argv));
   }
-  return runShell('curl -fsSL "' + url + '" | bash');
+  return runShell(unixFallback(url, argv));
 }
 
-process.exit(main());
+// Exported so scripts/checks/install-entrypoints-test.sh can assert on the
+// generated command without actually fetching or executing anything.
+module.exports = { unixFallback, windowsFallback, findLocalBinary, main };
+
+if (require.main === module) {
+  process.exit(main());
+}
