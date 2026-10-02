@@ -12,6 +12,8 @@ export default {
     endDate: '終了日',
     taskType: '元タスクタイプ',
     model: 'モデル',
+    modelPlaceholder: 'すべてのモデル',
+    modelTitle: 'モデルを選択',
     humanTaskType: '人手タスクタイプ',
     minConfidence: '最小信頼度',
     maxConfidence: '最大信頼度',
