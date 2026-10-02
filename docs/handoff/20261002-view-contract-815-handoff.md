@@ -1,5 +1,15 @@
 # handoff：会话存储解耦 v3 —— §9.27 视图契约 815 + §9.28 补位列逐列裁决
 
+> **提交落点（须知）**：本轮 17 个文件的内容落在 commit `7a6356ef0`，而该 commit
+> 的标题是并行会话的 `docs(audit): ursm_node_snapshot_min 容量审计`。原因是提交
+> 那一刻并行会话执行了 `git commit`，把共享索引里**我已暂存的文件一并带走**。
+> 内容逐文件核对完整（17/17），但提交信息不对应本轮工作。
+>
+> 处置：**不 amend、不 rebase** —— 那会改写并行会话的提交并可能丢它的 message。
+> 改为在此登记落点。检索本轮改动请按文件路径（`815_request_logs_view_stage_band_cff*`、
+> `db/request_logs_view_padded_columns*`、`admin/physical_predicate_on_view_source_test.go`）
+> 或按本文件标题找，不要按 commit 标题找。
+
 > 审计正文见 [`2026-10-02-view-contract-815-and-padded-column-verdicts.md`](2026-10-02-view-contract-815-and-padded-column-verdicts.md)
 > （主文档 `2026-09-30-session-request-data-re-audit.md` 本轮正被并行会话编辑，
 > 故本轮章节单独成文，章节号从 §9.27 起顺延。）
