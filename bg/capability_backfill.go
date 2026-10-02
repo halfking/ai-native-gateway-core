@@ -732,6 +732,20 @@ func buildCapabilityEvidence(endpoint string, result httpProbeResult) []byte {
 	return raw
 }
 
+// capabilityEvidenceParam 把 evidence 包装成 pgx SimpleProtocol 安全的参数。
+//
+// evidence_json 是 jsonb 列：[]byte 直传会被 SimpleProtocol 内联为 bytea hex
+// 字面量（'\x7b22…'），PG 拒绝转 jsonb —— R11 FIX-C（providerprofile）同根，
+// 2026-10-03 R22 审计在 252 实证第四断点（18h 窗口 761 次写入全败
+// invalid input syntax for type json，能力位与 Redis 镜像一并丢失）。与
+// projectattr R71 同款：非空经 string 传，空保 nil（” 同样炸 jsonb 解析）。
+func capabilityEvidenceParam(evidence []byte) interface{} {
+	if len(evidence) == 0 {
+		return nil
+	}
+	return string(evidence)
+}
+
 // persistRow 写回 credential_model_capabilities。
 func (b *CapabilityBackfill) persistRow(ctx context.Context, row dueBinding, supported bool, evidence []byte) error {
 	pCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -745,7 +759,7 @@ func (b *CapabilityBackfill) persistRow(ctx context.Context, row dueBinding, sup
 		              last_tested_at = now(),
 		              evidence_json  = EXCLUDED.evidence_json,
 		              updated_at     = now()
-	`, row.BindingID, CapabilityNonstream, supported, evidence)
+	`, row.BindingID, CapabilityNonstream, supported, capabilityEvidenceParam(evidence))
 	if err != nil {
 		return fmt.Errorf("capability_backfill upsert binding_id=%d: %w", row.BindingID, err)
 	}

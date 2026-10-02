@@ -703,3 +703,53 @@ func TestBackfillScanLimitWidensWindow(t *testing.T) {
 		t.Fatalf("scanLimit = %d, want 50×4 = 200", got)
 	}
 }
+
+// evidence_json 参数的 SimpleProtocol 语义（2026-10-03 R22 审计根修）。
+//
+// []byte 直传会被 SimpleProtocol 内联为 bytea hex 字面量（'\x7b22…'），PG
+// 拒绝转 jsonb —— R11 FIX-C（providerprofile）同根第四断点，252 生产 18h
+// 窗口 761 次写入全败 invalid input syntax for type json，能力位与 Redis
+// 镜像一并丢失。$4 必须经 capabilityEvidenceParam（非空 string / 空 nil）
+// 进 Exec，不允许裸 []byte。
+//
+// 判据钉在 AST 上不钉在源码子串上：注释里就写着「evidence」，子串门会
+// 被注释自己喂饱。变异验证：把 persistRow 的 $4 改回裸 evidence → 本用例红。
+func TestPersistRowEvidenceParamGuard(t *testing.T) {
+	if got := capabilityEvidenceParam([]byte(`{"k":1}`)); got != `{"k":1}` {
+		t.Fatalf("capabilityEvidenceParam(non-empty) = %T (%v), want string", got, got)
+	}
+	if got := capabilityEvidenceParam(nil); got != nil {
+		t.Fatalf("capabilityEvidenceParam(nil) = %T %v, want nil（SQL NULL）", got, got)
+	}
+	if got := capabilityEvidenceParam([]byte{}); got != nil {
+		t.Fatalf("capabilityEvidenceParam(empty) = %T %v, want nil（空串同样炸 jsonb 解析）", got, got)
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "capability_backfill.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse capability_backfill.go: %v", err)
+	}
+	var offenders []string
+	//nolint:staticcheck // 包内相对路径，bg 包 AST 守卫惯例
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Exec" {
+			return true
+		}
+		for _, arg := range call.Args {
+			if id, ok := arg.(*ast.Ident); ok && id.Name == "evidence" {
+				offenders = append(offenders, fset.Position(arg.Pos()).String())
+			}
+		}
+		return true
+	})
+	if len(offenders) > 0 {
+		t.Fatalf("Exec 直接传裸 []byte evidence 于 %v；必须经 capabilityEvidenceParam "+
+			"（SimpleProtocol 会把 []byte 内联为 bytea hex 字面量，jsonb 解析必炸）", offenders)
+	}
+}
