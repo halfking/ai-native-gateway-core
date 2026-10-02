@@ -409,3 +409,75 @@ git fetch origin && git log --oneline HEAD..origin/main
   `git push origin HEAD:main` → `git update-ref refs/heads/main <new> <old>` →
   `git reset -q`（**mixed reset 不写工作区**，只同步 index）。
   逐文件核对 blob（`git rev-parse <sha>:<file>`）确认 rebase 没改变你的内容。
+
+---
+
+## 2026-10-02 追加：§9.18 视图源越列（读端 105/105 之外的缺陷类）
+
+### 做了什么
+
+闭环 §9.17.4 遗留第 1 条。`admin/credential_monitor_heatmap.go` 引用 `rl.origin_stage`，
+而该列不在 `request_logs_with_current_month` 的 113 列冻结契约内（真库 information_schema
+实测 0 列，物理表与 `session_turns` 各 1 列）⇒ 凭据质量热图**线上 500 至少两周**
+（自 R50 于 2026-09-21 引入算起），且因 `exclude_self_test` 缺省 true，裸调用与前端调用同走
+必错路径。
+
+改动：把 bg 的视图变体谓词**导出**为 `ProbeTrafficExclusionPredicateView`（全仓单一拼写），
+热图删掉内联三臂改用它。新增四道门 + 42 列清单文件。详见审计文档 §9.18。
+
+### 这一轮真正学到的东西
+
+- **「守卫清单是包内清单」是个隐形洞。** R49 已经把「物理表谓词对视图必 42703」识别并修好，
+  还写进注释；R50 又在 admin 包内联回去，而 R50 的调用面守卫文件列表只有 bg 包 7 个文件。
+  ⇒ **同一个陷阱可以在同一个仓库里复发，只要它发生在守卫的扫描范围之外。**
+  任何「按文件清单枚举」的守卫，都要问一句：这份清单是怎么来的、谁保证它全。
+- **修一个列名不够。** 原谓词第二臂 `NOT ('probe' = ANY(quality_flags))` 缺 COALESCE，
+  而视图对 session 臂的 `quality_flags` 做了 NULL 补位 ⇒ `NOT NULL` 不是 TRUE，
+  **40,225 / 40,275 行 session 分臂被静默丢弃**。只补列名会得到一个「返回 200、
+  但对整个已迁移数据集全盲」的热图，比 500 更难发现。
+  **判据要打在效果上（判决是否依赖 NULL），不是打在拼写上。**
+- **机械判据的假阳性会把它自己变成死代码。** 这次全仓 AST 门返工了四轮：
+  per-decl 太粗（13 假阳性）→ 逐字面量（4 假阳性）→ 没剥 SQL `--` 注释（误伤
+  `bg/shared_pick.go`，那里 `origin_stage` **只**出现在解释「不能用它」的注释里）→
+  没判列绑定到哪张表（`rb.outbound_body` 绑 bodies 视图、`AS task_id` 是输出别名、
+  `b2.task_id` 的 b2 是 CTE 别名）。**每次假阳性都是「门宽了」而不是「代码错了」。**
+- **门自己也会被自己的注释弄红。** 新写的源码钉桩门首跑即红，因为修复注释里**引用了**
+  那个坏字面量来解释它为什么错。必须先 `stripGoComments` 再匹配。
+  写反例注释的代价是让门看起来像在制造噪声。
+- **新门第一次运行就抓到了清单外的新真缺陷**：`admin/compression_stats.go:212` 的
+  `token_band` 同样不在视图契约内，且错误被 `slog.Warn` 吞掉 ⇒ token 分带聚合长期静默空。
+  它此前不在 105 条读端清单里，因为**没有任何机制会去查**。
+
+### 变异验证（4 次，全部被门抓住）
+
+| 变异 | 被谁抓住 | 证据 |
+|---|---|---|
+| 越列 `rl.origin_stage` 混入视图字面量 | AST 门 | 定位到 `credential_monitor_heatmap.go:337` |
+| 清空具名豁免表 | AST 门 | `compression_stats.go:212` 重新报出 |
+| 还原 R50 原始拼写（代码内） | 源码钉桩门 | 两条断言同时命中 |
+| 共享常量抽掉 `COALESCE(...)` | 真库门 | **9,154** vs **41,730** 行 |
+
+最后一条与独立量测互相印证（单独量旧谓词 7 天存活行 = 9,424，量级一致）。
+**两把量具不是同一把——这是数字能被采信的前提。**
+
+### 待你拍板（新增第 3 项）
+
+1. **`RawModelName` 补齐 + 恢复 SQL 端口的范围**（仍未决，阻塞 `credential_recovery` 修复）
+   - (a) 补数据源 + 端口 SQL（动热写入路径 + 需历史回填）
+   - (b) 只补数据源，端口留到 S4 灰度前
+   - (c) 改用门控（改动小、当天可落地，代价是停写期降级凭据只能等自身探针）
+2. **`origin_stage` 线上 500 是否现在修** —— **已在本轮修完并推送**（含
+   `compression_stats` 的 `token_band` 同族缺口登记为具名豁免）。
+3. **`token_band` 怎么随迁**（新增）。它与 `raw_model_name` 同属「物理表独有列未随迁」
+   缺口类：正解是把该列随迁进 `session_turns` + 710 投影；改成读物理表会丢 session 分臂，
+   与 S4 方向相反。要么并入决策 1 一起做，要么接受仪表盘这一格长期为空。
+
+### 遗留（不阻塞本轮，但阻塞 S4）
+
+- `credential_recovery` 写授权缺陷未修（`NOT EXISTS` 恒真那类，已修的是 `discovery`）。
+- **跨字面量运行时拼接的越列仍无静态门**。静态判定天花板就在这里——热图那个 case 正是
+  视图引用与谓词分属两条字面量、运行时才拼起来的。已知形状要么靠真库门覆盖，要么上真正的
+  SQL 解析器。
+- 读端 74/105 静默退化未处置 ⇒ S4 灰度方案必须自带对账，不能「看接口是否报错」。
+- `admin/session_tenant.go` 判 unaffected 依赖的假设（三条 session 腿对新 task 是否都及时
+  落行）仍未实测。

@@ -65,7 +65,7 @@ func TestProbePolicyPredicatesShape(t *testing.T) {
 	// probe-service（队列 gateway 轮）、credential-selfcheck-worker（自检
 	// HTTP）+ active-probe-worker（历史行兼容）——缺一即该轮流量被视图扫描
 	// 当"使用"计入（INV-3 泄漏）。
-	if got, want := probeTrafficExclusionPredicateView,
+	if got, want := ProbeTrafficExclusionPredicateView,
 		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.task_type, '') <> 'probe_triggered'"+
 			" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"; got != want {
 		t.Fatalf("probeTrafficExclusionView = %q, want %q", got, want)
@@ -223,7 +223,7 @@ func readSource(name string) (string, error) {
 //   - 物理表（request_logs_hot，428 起有 origin_stage 且网关探测轮落值）→
 //     probeTrafficExclusionPredicate（flags + origin_stage='business'）；
 //   - canonical 冻结 113 列视图（request_logs_with_current_month，
-//     origin_stage 不在契约）→ probeTrafficExclusionPredicateView
+//     origin_stage 不在契约）→ ProbeTrafficExclusionPredicateView
 //     （flags + task_type + origin_actor）。R50 首版把物理谓词铺到
 //     shared_pick/passive_probe_listener 的视图查询上，必 42703——本测试
 //     按读面分治后的真实不变量钉桩。
@@ -249,7 +249,7 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 		if got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`); got < tc.physical {
 			t.Errorf("%s has %d physical dual-arm exclusion sites, want >= %d", tc.file, got, tc.physical)
 		}
-		if got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")`); got < tc.view {
+		if got := strings.Count(src, `fmt.Sprintf(ProbeTrafficExclusionPredicateView, "rl", "rl", "rl")`); got < tc.view {
 			t.Errorf("%s has %d frozen-view exclusion sites, want >= %d", tc.file, got, tc.view)
 		}
 	}
@@ -273,7 +273,7 @@ func TestProbeUsageViewScanUsesFrozenContractPredicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read daily_probe_audit.go: %v", err)
 	}
-	const wantView = `fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")`
+	const wantView = `fmt.Sprintf(ProbeTrafficExclusionPredicateView, "rl", "rl", "rl")`
 	if !strings.Contains(src, wantView) {
 		t.Fatalf("daily_probe_audit usage scan must use the frozen-view predicate %q", wantView)
 	}
