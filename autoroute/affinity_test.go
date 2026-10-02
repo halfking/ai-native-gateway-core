@@ -253,10 +253,17 @@ func TestShouldExplore_IndependentOfStrategyAssignment(t *testing.T) {
 }
 
 func TestComputeRoutingReward_UnknownsAreNeutralNotZero(t *testing.T) {
-	// Success with no baselines available: latency/cost/health all neutral 0.5.
-	// 0.45*1 + 0.20*0.5 + 0.15*0.5 + 0.10*0.5 + 0.10*1 = 0.775
+	// Success with no baselines available: latency/cost/health/retry all
+	// neutral 0.5.
+	// 0.45*1 + 0.20*0.5 + 0.15*0.5 + 0.10*0.5 + 0.10*0.5 = 0.725
+	//
+	// ⚠️ This test used to expect 0.775, whose retry term was `0.10*1` — i.e.
+	// it asserted that an UNKNOWN retry signal scores the MAXIMUM. That
+	// contradicted the test's own name and was the §9.41 bug: 67.7% of settled
+	// selections collected a full 0.10 retry bonus for a signal nobody
+	// measured. Fixed 2026-10-02 along with RetryMeasured.
 	got := ComputeRoutingReward(RewardInput{Success: 1, HealthComponent: -1})
-	approx(t, got, 0.775, 1e-9, "success without baselines")
+	approx(t, got, 0.725, 1e-9, "success without baselines")
 
 	// The same call must score strictly better than an outright failure.
 	fail := ComputeRoutingReward(RewardInput{Success: 0, HealthComponent: -1})
@@ -265,11 +272,64 @@ func TestComputeRoutingReward_UnknownsAreNeutralNotZero(t *testing.T) {
 	}
 }
 
+// TestComputeRoutingReward_RetryIsTriState pins the contract that replaced the
+// §9.41 bug: the retry term has THREE states, and only `measured` differentiates.
+func TestComputeRoutingReward_RetryIsTriState(t *testing.T) {
+	base := func() RewardInput {
+		return RewardInput{
+			Success: 1, LatencyMs: 1000, P95BaselineMs: 2000,
+			CostUSD: 0.001, P75BaselineCost: 0.002,
+			HealthComponent: 0.9,
+		}
+	}
+
+	// measured, zero retries => retry term 1.0 (the best)
+	measuredClean := base()
+	measuredClean.RetryRatio = 0
+	measuredClean.RetryMeasured = true
+	clean := ComputeRoutingReward(measuredClean)
+
+	// measured, all retries => retry term 0.0 (the worst)
+	measuredDirty := base()
+	measuredDirty.RetryRatio = 1
+	measuredDirty.RetryMeasured = true
+	dirty := ComputeRoutingReward(measuredDirty)
+	if dirty >= clean {
+		t.Errorf("measured heavy retrying (%.4f) must score below measured clean (%.4f)", dirty, clean)
+	}
+
+	// unmeasured (RetryMeasured=false) must land BETWEEN them — neutral — and
+	// must NOT equal the best case. This is the exact failure of §9.41: an
+	// unmeasured signal used to score identically to "measured, zero retries".
+	unmeasured := base()
+	unmeasured.RetryRatio = 0 // left at zero, as the old code left it
+	neutral := ComputeRoutingReward(unmeasured)
+	if math.Abs(neutral-clean) < 1e-9 {
+		t.Errorf("unmeasured scored %.4f, identical to measured-clean %.4f — "+
+			"'not measured' is again indistinguishable from 'measured perfect'", neutral, clean)
+	}
+	if math.Abs(neutral-dirty) < 1e-9 {
+		t.Errorf("unmeasured scored %.4f, identical to measured-dirty %.4f", neutral, dirty)
+	}
+	// Neutral 0.5 must be the exact midpoint of the two measured extremes,
+	// because the retry weight is linear in the score.
+	mid := (clean + dirty) / 2
+	if math.Abs(neutral-mid) > 1e-9 {
+		t.Errorf("unmeasured %.4f is not the midpoint %.4f of the measured range "+
+			"[%.4f, %.4f] — the fallback is not the documented neutral 0.5", neutral, mid, dirty, clean)
+	}
+}
+
 func TestComputeRoutingReward_Ordering(t *testing.T) {
 	base := RewardInput{
 		Success: 1, LatencyMs: 1000, P95BaselineMs: 2000,
 		CostUSD: 0.001, P75BaselineCost: 0.002,
 		HealthComponent: 0.9, RetryRatio: 0,
+		// The ordering assertions below mutate RetryRatio and expect the
+		// reward to move — that only holds when the signal counts as
+		// measured. Without this the retry leg is neutral and `retried`
+		// would tie with `good`.
+		RetryMeasured: true,
 	}
 	good := ComputeRoutingReward(base)
 

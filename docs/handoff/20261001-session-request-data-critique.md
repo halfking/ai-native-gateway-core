@@ -2101,3 +2101,103 @@ P1 删 `-> 'attempts'` → `:50`；P2 整段退回旧裸调用 → `:50`（4 条
 >
 > 另：§9.39 遗留的 `vi` 维度 SQL 注释处理（`model_alternatives.go`）仍未做；
 > §9.38 的告警 `for:` 阈值未在真机 Prometheus 验证过。
+
+---
+
+## 第二十五轮（2026-10-02）：retry 项去掉 canonical_id 收窄 + 显式三态 —— §9.42
+
+用户拍板「一次做完」。§9.41 结尾那两件事（retry_count 数据源、RetryRatio 三态）
+一次落地。
+
+### 拍板前的测量把成本结构翻转了
+
+去掉 LATERAL 的 `canonical_id` 条件后（1747 条 selection）：
+
+| 组 | 条数 | 带条件 model_reqs | 去掉条件 |
+|---|---|---|---|
+| A：`canonical_id IS NULL` | 1183 | **0.00** | **1.00**（1182/1183 有匹配） |
+| B：有 canonical_id | 564 | 1.00 | 1.00 |
+
+A 组分布 min 0 / 中位 1 / p99 1 / **max 1** ⇒ 会话本来就只有 1 个请求。
+
+**跨模型污染实测只占 0.01%**（10 天、11,634 个 auto 会话：单请求 97.12%、
+多请求·同模型 2.87%、多请求·**跨模型** 1 个）⇒ **代价 67.7%，收益 0.01%，净负**。
+
+### 三态
+
+```
+measured     model_reqs > 0                 ⇒ 1 - retry/model_reqs
+unmeasured   model_reqs == 0（无可数行）    ⇒ 0.5 中性
+unavailable  指针 nil（LATERAL 无产出）      ⇒ 0.5 中性
+```
+
+`unavailable` 必须与 `unmeasured` 分开：前者是「读不到」（停写后 worker 永久
+处于此态），后者是「读到了确实是 0」。合并就丢掉了停写时唯一能看见的信号。
+
+`RewardInput` 新增 **`RetryMeasured bool`** 而不是 `-1` 哨兵：`RetryRatio` 是
+**比值**，0 是合法实测值；`HealthComponent` 是**分数**，-1 才可安全保留为哨兵。
+**把 0 复用成「未知」正是这个 bug 的成因。**
+
+### 暴露走指标不走列
+
+`reward_source` 有 CHECK 约束 `IN ('request','session')`（db/db.go:7764），
+扩展需迁移 ⇒ 新增 `llmgw_autoroute_settle_retry_state_total{state}`（闭集三值）。
+
+### ⚠ 两个既有测试把**错误语义写成了期望值**
+
+- `TestComputeRoutingReward_UnknownsAreNeutralNotZero`：**测试名叫
+  「UnknownsAreNeutral」，retry 项却按 `0.10*1`（满分）算**，期望 0.775。
+  改 0.725。**一个把错误值钉死的「回归测试」比没有测试更危险**——它让 bug
+  看起来是被保护着的。
+- `TestComputeRoutingReward_Ordering`：排序断言靠改 `RetryRatio` 让 reward 变动，
+  必须加 `RetryMeasured: true`，否则 retry 项中性、`retried` 与 `good` 打平。
+
+新增 `TestComputeRoutingReward_RetryIsTriState`：未测得必须**恰好落在**两个实测
+极值的中点（权重线性），且不得等于任一端。
+
+### 门 3 道 + 1 语义门，变异 4/4
+
+Q1 canonical_id 条件加回 → `auto_route_retry_state_test.go:42`（两条）；
+Q2 三态退回旧语义 → `affinity_test.go:308`/`:318`；Q3 指标不接线 → `:86`。
+
+① 是**删代码**，所以专门立门钉住它不在——删掉一个「看起来是防御性收窄」的条件，
+下一个人很容易觉得必要而加回来，而没有任何测试能证明它不在了。
+
+### ⚠ 残余风险
+
+- **线上 reward 分布会位移**：约 2/3 样本的 retry 项从 1.0 变成 0.5 或实测值。
+  方向朝正确，但**与历史 reward 不可比**——依赖绝对 reward 阈值的东西需一并复核。
+- **0.01% 对当前流量形态成立**：数据被探针流量主导（探针天然单请求会话）。
+  若日后多轮对话占比大幅上升，跨模型比例会变，收窄条件可能需以别的形式加回来
+  ——那时用 `RetryMeasured` 区分「测到 0」与「没测到」，不要靠匹配不上隐式表达。
+- **未经线上端到端验证**：本地 hot 无 selection 行，只在真库验了表达式本身。
+
+### 仍未做
+
+- §9.39 遗留：`vi` 维度 SQL 注释处理（`model_alternatives.go`）。
+- §9.38 的告警 `for:` 阈值未在真机 Prometheus 验证过。
+- §9.36 的 19 条静默档；`auto_route_settle_worker` 停写后仍会全量 abandon
+  （`canonical_id` 在会话族无来源 ⇒ 该腿无法平移），现只靠 `outcome_source` 可见。
+
+### 下一轮提示词
+
+> 停写后 `settleBatch` 的 outcome join（`LEFT JOIN request_logs_hot rl ON
+> rl.request_id = s.request_id`）仍会**整条落空** ⇒ `p.success == nil` ⇒
+> 过 4h abandon 窗口后全量 abandon，reward 永久为 NULL。这是 §9.35/§9.40
+> 一直挂着的那条，retry 项做完之后它是**最后一条**。
+>
+> 动手前先量清楚一件我至今没量的事：**停写后 selection 与会话臂的 request_id
+> 到底能不能配上**。§9.40 测的是 2026-09 分区（99.3% 能配），但那是**停写前**
+> 的双写状态。停写后 v1 停止新增、只有会话臂在写 ⇒ 理论上配得上，但需要确认
+> `auto_route_selections.request_id` 与 `session_turns.request_id` 是**同一个
+> 标识**（不是 selection 自己的 id）。
+>
+> 若能配上，正确的修法是：outcome join 改读会话族（success / latency_ms /
+> cost_usd / origin_actor 实测 100% 有值，cost_usd 还会话臂更好），
+> **并用 §9.42 的三态**把「配不上」与「配上了但失败」分开——否则又会退化成
+> 「没测到 = 满分」那一族错误。注意 origin_actor 会话臂两侧都是 0，
+> 所以 `SQLExcludeSyntheticActors` 早就在空转，别把它当成移植障碍。
+>
+> 顺带：`retryCountPerRowSQL` 里的 `'array'` 分支是真库 34 万行从未走到的
+> 防御分支，若你确认写方不会改回数组，可以考虑删掉它并把门相应放宽——
+> 但删之前先确认 `RoutingAttemptsTracker.ToJSONBytes` 没有别的调用方在产出数组。
