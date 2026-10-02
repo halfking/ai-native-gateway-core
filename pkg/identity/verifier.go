@@ -21,6 +21,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,13 +60,13 @@ const DefaultAudience = "llm-gateway-api"
 
 // Principal is the normalized identity returned by Verify.
 type Principal struct {
-	UserID             int
-	TenantID           string
-	Username           string
-	Role               string
-	Issuer             string
-	Audience           string
-	ExpiresAt          time.Time
+	UserID    int
+	TenantID  string
+	Username  string
+	Role      string
+	Issuer    string
+	Audience  string
+	ExpiresAt time.Time
 	// IssuedAt is the token's iat (legacy path only; multi-issuer tokens
 	// leave it zero). Used by the admin auth middlewares to reject tokens
 	// issued before the user's last password change.
@@ -112,9 +113,12 @@ func Verify(raw string, legacy LegacyVerifier) (*Principal, error) {
 		aud := expectedAudience()
 		if c, err := token.VerifyMultiIssuer(raw, issuers, aud); err == nil {
 			userID := atoiOrZero(c.UserID)
-			role := firstRole(c.Roles, c.Scope)
-			if role == "" {
-				role = "tenant_admin"
+			role := firstRole(c.Roles)
+			if !supportedRole(role) || !canonicalTenant(c.TenantID) {
+				// A verified shared token with invalid authorization claims
+				// is rejected here. Scope never supplies a role, and legacy
+				// fallback cannot rescue this policy failure.
+				return nil, ErrInvalidToken
 			}
 			return &Principal{
 				UserID:    userID,
@@ -131,6 +135,9 @@ func Verify(raw string, legacy LegacyVerifier) (*Principal, error) {
 
 	if legacy != nil {
 		if c, err := legacy.VerifyLegacy(raw); err == nil && c != nil {
+			if !supportedRole(c.Role) || !canonicalTenant(c.TenantID) {
+				return nil, ErrInvalidToken
+			}
 			return &Principal{
 				UserID:             c.UserID,
 				TenantID:           c.TenantID,
@@ -160,12 +167,14 @@ func atoiOrZero(s string) int {
 	if s == "" {
 		return 0
 	}
-	n := 0
 	for _, r := range s {
 		if r < '0' || r > '9' {
 			return 0
 		}
-		n = n*10 + int(r-'0')
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
 	}
 	return n
 }
@@ -179,19 +188,29 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func firstRole(roles []string, scope string) string {
+func firstRole(roles []string) string {
 	for _, r := range roles {
 		if strings.TrimSpace(r) != "" {
 			return r
 		}
 	}
-	if s := strings.TrimSpace(scope); s != "" {
-		parts := strings.Fields(s)
-		if len(parts) > 0 {
-			return parts[0]
-		}
-	}
 	return ""
+}
+
+// supportedRole uses exact Gateway roles. admin_key is a legacy context
+// marker, not a role that an authenticated JWT principal can assume.
+func supportedRole(role string) bool {
+	switch role {
+	case "user", "tenant_admin", "super_admin":
+		return true
+	default:
+		return false
+	}
+}
+
+// Missing or padded tenants cannot inherit the legacy default tenant.
+func canonicalTenant(tenant string) bool {
+	return tenant != "" && strings.TrimSpace(tenant) == tenant
 }
 
 func usernameFromExtra(extra map[string]any) string {
@@ -204,10 +223,10 @@ func usernameFromExtra(extra map[string]any) string {
 }
 
 var (
-	mu        sync.Mutex
-	issuers   []token.Issuer
-	loaded    bool
-	disabled  bool
+	mu       sync.Mutex
+	issuers  []token.Issuer
+	loaded   bool
+	disabled bool
 )
 
 // ResetForTest clears the cached allowlist + disabled flag so a test that
