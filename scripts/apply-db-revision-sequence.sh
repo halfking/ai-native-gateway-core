@@ -799,6 +799,13 @@ files=(
   # 826/826 同值）。CASE 守卫 ::inet 转换防畸形值打挂全读方；幂等。
   # 三基线+installer 五点同步（816 又漏登本通道=探门红，本轮补齐）。
   "$ROOT_DIR/sql/migrations/startup/816_request_logs_view_client_ip_projection.sql"
+
+  # 2026-10-02 s4-audit §9.64（817）：canonical 视图 client_ip 守卫从字符类
+  # 正则换语义守卫 pg_input_is_valid(v,'inet')——816 的 ^[0-9a-fA-F:.]+$ 放行
+  # 192.168.1/deadbeef/::: 等「合法字符集、非法语义」值，::inet 22P02 打挂
+  # 整条视图每读方（恰是 816 声称要防的事故形态）。写侧 ParseIP 门只保新行。
+  # 幂等；三基线+installer 同步（817 又漏登本通道=第五次同类遗漏，本轮补齐）。
+  "$ROOT_DIR/sql/migrations/startup/817_request_logs_view_client_ip_semantic_guard.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
