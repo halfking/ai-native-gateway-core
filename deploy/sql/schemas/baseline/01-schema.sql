@@ -2091,18 +2091,16 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
-        -- 裸 USING columnar（对齐 V359 模板）：citus_columnar 11.2+ 的
-        -- 压缩/stripe/chunk 参数走 columnar.* GUC（全局默认 zstd/
-        -- 150000/10000），不再接受 WITH(...) reloption。
+        -- 813: heap（was columnar）。supplier_errors 在 R18 正典单族
+        -- {routing_decision_log} 之外；列存对本族只有 UPDATE/DELETE/
+        -- tableoid 读毒面而无收益（TTL 是整分区 DROP）。存量环境的
+        -- 分区转换由迁移 813 承担；本基线保证新环境从源头建 heap。
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF supplier_errors
-             FOR VALUES FROM (%L) TO (%L) USING columnar',
+             FOR VALUES FROM (%L) TO (%L)',
             partition_name, month_start, month_end
         );
-        RAISE NOTICE 'ensure_supplier_errors_partition: created % as columnar', partition_name;
-    ELSE
-        -- 幂等：确保既有分区保持 columnar（历史分区不可变语义）
-        PERFORM enforce_columnar_partition(partition_name, 'supplier_errors');
+        RAISE NOTICE 'ensure_supplier_errors_partition: created % as heap', partition_name;
     END IF;
     RETURN partition_name;
 END;
@@ -18357,7 +18355,7 @@ CREATE VIEW public.v_adaptive_probe_targets AS
     mps.next_retry_at,
     EXTRACT(epoch FROM (now() - COALESCE(mps.last_attempt_at, (now() - '01:00:00'::interval)))) AS age_secs,
     ( SELECT count(*) AS count
-           FROM public.candidate_failure_logs cfl
+           FROM public.candidate_failure_logs_hot cfl
           WHERE ((cfl.credential_id = cmb.credential_id) AND (cfl.raw_model_name = pm.raw_model_name) AND (cfl.ts > (now() - '00:05:00'::interval)))) AS recent_passive_failures
    FROM ((((public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)))

@@ -193,6 +193,10 @@ func TestBaselineEnsureFunctionsThreeWayConsistency(t *testing.T) {
 		"ensure_request_logs_bodies_partition",
 		"ensure_request_wal_partition",
 		"ensure_next_month_request_wal_partition",
+		// R21（2026-10-02, 迁移 813）：supplier_errors 是 10-01 事故漂移
+		// 家族（R18 正典单族 {routing_decision_log} 之外），列存只有
+		// UPDATE/DELETE/tableoid 读毒面而无收益；基线必须从源头建 heap。
+		"ensure_supplier_errors_partition",
 	}
 	columnarMust := []string{
 		"ensure_next_month_archive_partition",
