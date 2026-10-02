@@ -2435,3 +2435,64 @@ UPDATE model_offers
 
 **S4 灰度的前置条件现在是两条，不是零条**：控制面轴已清，读端轴未清，
 且两条写授权缺陷（discovery / credential_recovery）尚未修复。
+
+## §9.12 修掉第一条写授权缺陷：让否定式守卫在证据消失时**不动**（2026-10-02）
+
+§9.10.2 记的 `discovery/discovery.go` 已修。修法不是「把证据换成 session 侧」，
+而是**让失效方向安全**。
+
+### §9.12.1 为什么不顺手做端口
+
+端口的技术障碍已在 §8 决策 1 的可行性实测里量化：`session_turns.raw_model_name`
+0/1,682,828 填充，而 `session_turns.model` 实测 **等于 client_model（1138/1138）**——
+本守卫要比的却是**上游名**（`lower(rl.outbound_model) = lower(raw_model_name)`）。
+拿 `model` 顶替会在发生模型映射的绑定上系统性误判（`glm-5.2 → glm-5-2-260617`）。
+
+⇒ 补 `RawModelName` 源头字段是独立的一件事，不在这里糊一个近似实现。
+**近似实现比不修更危险**：它会让下架判定「看起来在工作」。
+
+### §9.12.2 修法
+
+抽出纯函数 `staleExpiryMayRun(requestLogsWritable bool)`，`expireStaleModels`
+在执行任何 `UPDATE model_offers` **之前**用它短路：
+
+```go
+if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire {
+    slog.Info("discovery: skip stale-model expiry", "reason", blockedReason, ...)
+    return
+}
+```
+
+复用 `settings.RequestLogsWriteEnabled()`（S4 门控的权威读法），不新增第二套判断。
+`RequestLogsWriteEnabled()` 在 `settings.Global` 未初始化时回落 `true`，
+所以未初始化的进程**保持原行为**，不会因为这次改动突然什么都不下架。
+
+**同函数内第二处写入**（`credential_model_bindings`，`ENABLE_CMB_EXPIRE=1` opt-in）
+**完全不读 v1**（守卫是「本轮未发现」），S4 不影响它，本次不动——但要记下来：
+它的语义与前者不同，将来若改守卫别混为一谈。
+
+### §9.12.3 护栏本身被变异验证了四次
+
+| 变异 | 结果 |
+|---|---|
+| 删掉整个护栏块 | **编译器挡住**（`settings` 导入未使用） |
+| 保留调用、只删 `return` | **门红**：「护栏分支里没有 return」 |
+| 护栏挪到 `UPDATE` 之后 | **门红**：「护栏在第 9 条语句，UPDATE 在第 7 条」 |
+| 纯函数恒返回 true | **门红**（表测试） |
+
+**第二条是本轮最重要的一次变异**：只写「调用存在」这条断言时，
+「保留调用与日志、只删 `return`」的变体让本文件全部测试**依然全绿**——
+护栏形同虚设而门是绿的。所以断言补成三条：**调用存在 ∧ 分支含 return ∧ 位置在 UPDATE 前**。
+
+推论（与 §5.5.5 同族，但更细）：**「调用了守卫」不等于「守卫生效了」。**
+判据要钉住**效果**（分支会不会终止、执行顺序对不对），不是钉住**调用**。
+调用点是代理指标，效果才是被测性质。
+
+### §9.12.4 这次也踩了两次自己的坑，如实记
+
+1. `hasReturn(ifStmt.Body)` 传 `*ast.BlockStmt` 给 `[]ast.Stmt` 参数 → 编译不过。
+   第一轮三个变异全部 `build failed`，**等于一次都没测成**；是「基线必须先绿」
+   这条纪律把它逼出来的（`go vet && ... && go test` 的短路让基线没跑到）。
+2. 断言只扫 `ifStmt.Cond` → 报「没有调用」。实际写法是
+   `if x := f(); cond {`，**调用在 Init 里**。改成 Init + Cond 都扫。
+   两者都是「门红了但结论是错的」——门红不等于我的判据对，得看红的原因。
