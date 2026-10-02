@@ -111,3 +111,16 @@ kx_current_slot() {
   local p="$1/bin/current"
   [[ -L "$p" ]] && basename "$(readlink "$p")" || true
 }
+
+# FR-PROBE: VERSION lives at project root on legacy trees, or bin/current after kaixuan switch.
+kx_read_installed_version() {
+  local root="${1:-}" f
+  [[ -n "$root" ]] || return 1
+  for f in "$root/VERSION" "$root/bin/current/VERSION"; do
+    if [[ -f "$f" ]]; then
+      tr -d '[:space:]' < "$f"
+      return 0
+    fi
+  done
+  return 1
+}
