@@ -3092,3 +3092,104 @@ go test ./bg/ ./deploy/prometheus/rules/ ./domains/hooks/observability/telemetry
 >    `domains/streaming` 的响应头读取点（§9.52 已说明这是「正确停靠点，非最优」）。
 >    需跨包导出；`executor_chat.go` 曾被并行会话大改，**先确认冲突窗口结束**。
 > ⑤ §9.44–§9.53 没有一条改变读源语义；真正切源的收口仍待 ③ 第一项。
+
+---
+
+## 第三十五轮（§9.54）：252 生产库实测 —— **(a)/(b) 两个选项都被推翻**
+
+用户授权后经 `env-injector inject aliyun-edge-252` + SSH 只读查询 `pg-252-pg17`
+（全程只读 SELECT）。
+
+### 结论
+
+**§9.44 提的问题本身是错的。** 不是「cohort 换源族后不可比」，而是
+**cohort 在 v1 里就算错了总体**。
+
+### ★线上正在发生的缺陷（与切换无关）
+
+cohort 与已结算 selection 的 task_type 几乎不相交（**无 join，纯分组对比**）：
+
+| task_type | cohort 行数 | 30 天已结算 selection | |
+|---|---:|---:|---|
+| chat | **3** | 12,864 | p95 over 3 行不是分位数 |
+| creative | **0** | 4,985 | **NO_BASELINE** |
+| code | **10** | 3,501 | p95 over 10 行不是分位数 |
+| reasoning | **0** | 1,269 | **NO_BASELINE** |
+| planning | **0** | 4 | **NO_BASELINE** |
+| probe_triggered | **19,252** | **0** | cohort 的 99.95% 服务 0 条 |
+
+- **6,258 条已结算（29.3%）完全无基线** → latency/cost 走中性 0.5
+  （`auto_route_settle_worker.go:615/618`）。
+- **chat + code 共 16,365 条（76.6%）对着 n=3 / n=10 的「分位数」打分。**
+- `probe_triggered` 几乎撑满 cohort，却服务 0 条 selection，还把 §9.44 新加的
+  `llmgw_autoroute_settle_baseline_cohort_rows` 撑成一个**看起来健康**的数字。
+
+### 根因
+
+cohort 谓词 = `request_logs.is_auto_request IS TRUE` + `SQLExcludeSyntheticActors`；
+被结算总体 = `auto_route_selections` 里 `task_type` 非空的行。**两者词表几乎不重叠。**
+且 `SQLExcludeSyntheticActors`（`autoroute/shadow_actors.go:63-64`）**没有排除
+`node-probe-worker` / `probe-service`**，而 `middleware/origin_mw.go:404` 明确把
+`node-probe-worker` 映射到 `origin_stage = node_probe`
+——**合成探针流量被算进了奖励基线**。
+
+### (a)/(b) 的判定
+
+- **(a) 显式重新基线化**：不可行——会话族 7 天只有 **18** 条 auto 行。
+- **(b) 引入独立稳定 cohort**：不可行**且方向错**——它修「换源族不可比」，
+  而实测显示 cohort 在 v1 里就已经是错的总体。换源族修不好一个定义错的总体。
+
+⇒ **前置条件是一个此前从未出现在任何文档里的问题：cohort 的总体定义与被结算总体
+不对应。** 这是下一轮该做的第一件事。
+
+### ★我差点得出的第三个错误结论（取样假象）
+
+查「30 天已结算 selection 有多少能在 v1 找到同 `request_id`」得到 **21,367 : 15
+= 0.07%**，像灾难级丢失。**是假象**：252 上 `request_logs` **总共 32,987 行、
+全在 7 天内**（`ts > now()-30d` 的 count 等于全表 ⇒ 无分区历史）。
+两侧都取 7 天重做：21 条已结算、15 命中（71%），**仍有 6 条（29%）缺失**
+——这个 29% 需独立复核，本轮**未做完，不给结论**。
+
+⇒ 「99.93% 丢失」不能写进任何结论。这是「**没查到 = 不存在**」的第三次变体，
+只是这次发生在**时间窗口**而非文件范围上。
+
+### 附带实测（可能对别的审计有用）
+
+- v1 auto 22,406 行 / 7 天；`origin_stage`：`node_probe` 19,252 / `business` 3,154。
+- 跨族按 `request_id`（hot ∪ parent）：v1 auto 行只有 **15** 条在会话族，且全是 business。
+  ⇒ **99.5% 的业务 auto 流量根本没进会话族。**
+- 业务 auto 行的 `task_type`：**3,139 / 3,154 是 NULL**，只有 `code` 10 / `chat` 3 /
+  `long_context` 2。⇒ 它们在 cohort 里全落进 `<null>` 桶，而不是 `chat`/`code`。
+- 近 7 天未结算 selection：**0 条**（settle worker 当前无事可做）。
+- 指纹：`system_fingerprint` 在 252 上同样需要复核（§9.51 的结论来自本地库，
+  **不能外推到 252**）——这是下一轮该补的。
+
+### 测试
+
+本轮**无代码改动**（取证轮），故无测试。
+
+### 下一轮提示词
+
+> §9.54 上 252 实测，**推翻了 §9.44 的 (a)/(b) 两个选项**：不是「cohort 换源族不可比」，
+> 而是 **cohort 在 v1 里就算错了总体**。线上正在发生：
+> `creative`(4,985) / `reasoning`(1,269) / `planning`(4) 共 **29.3% 的已结算 selection
+> 完全无基线**（走中性 0.5）；`chat`(12,864) / `code`(3,501) 共 **76.6% 拿着 n=3 / n=10
+> 的「分位数」打分**；而 `probe_triggered` 贡献 cohort 的 **99.95% 行数却服务 0 条结算**。
+>
+> ① **下一轮该做的第一件事**（此前从未出现在任何文档里）：
+>    **让 cohort 的总体与被结算总体对应**。候选做法（需要你拍板）：
+>    (i) cohort 改从 `auto_route_selections` 的历史导出（与结算同源，最贴切）；
+>    (ii) 保留 `request_logs` 但把 `SQLExcludeSyntheticActors` 换成
+>         `origin_stage = 'business'`（消除 `node-probe-worker` 污染）——
+>         注意这是**行为变更**，会改线上奖励数值；
+>    (iii) 两者都做。**在此之前不要碰 (a)/(b)。**
+> ② **必须补的量具缺口**：`llmgw_autoroute_settle_baseline_cohort_rows` 是**全局**计数，
+>    在本次这个形态下（cohort 非空 19,252、但 29.3% 结算无基线）它**不会响**。
+>    需要**按 task_type 的覆盖率**指标 + 告警（无基线的结算数 / 结算总数）。
+>    这就是 §9.44 那条「cohort 归零」告警的盲区——它只测全局，不测分布。
+> ③ **待复核**（本轮没做完，不许当结论用）：7 天匹配窗口内 6/21 = **29%** 的已结算
+>    selection 在 v1 里找不到对应行。需确认是保留期问题还是真丢失。
+> ④ **需复核**：§9.51「上游从不发 `X-System-Fingerprint`」是**本地库**结论，
+>    **不能外推到 252**。252 上必须重测，否则那条告警的诊断在生产上是错的。
+> ⑤ 其余遗留未变：§9.49.8 `silently_degraded_content` 是否扩档；§9.48
+>    `silently_frozen` 21 条口径；§9.52 遗留的「arm 移到 domains/streaming」。

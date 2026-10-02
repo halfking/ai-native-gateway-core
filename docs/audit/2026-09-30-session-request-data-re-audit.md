@@ -7265,3 +7265,100 @@ v1 那 1,938 条 auto 行的 `origin_actor` 分布：
 
 ⇒ **在拿到 ①–④ 之前，(a)/(b) 的选择不应被拍板。** 本地证据既不支持 (b)，
 也不足以支持 (a)。
+
+---
+
+## §9.54 252 生产库实测：**§9.44 的 (a)/(b) 两个选项都不是正确的杠杆**
+
+经 `env-injector inject aliyun-edge-252` + SSH 只读查询 `pg-252-pg17`
+（用户授权；全程只读 SELECT）。**本节推翻 §9.44 提出的问题本身。**
+
+### §9.54.1 回答 §9.53.4 的四条
+
+**① v1 `is_auto_request` 分布（近 7 天，`request_logs` 全表）**
+
+| 值 | 行数 |
+|---|---:|
+| `TRUE` | 22,406 |
+| `NULL` | 10,581 |
+
+按 `origin_stage` 拆：`node_probe` **19,252** / `business` **3,154**。
+
+**② 会话族同谓词（近 7 天）**：`FALSE` 51,521 / **`TRUE` 18**。
+
+⇒ **(b)「引入独立稳定 cohort」判死**：会话族 7 天只有 18 条 auto 行，
+无法对任何 task_type 求 p95/p75。
+
+**③ 跨族重叠**（`request_id`，hot ∪ parent）：v1 的 22,406 条 auto 行里
+**15 条**在会话族；且这 15 条 `origin_stage = business`。
+⇒ 99.5% 的**业务** auto 流量根本没有进入会话族。
+
+**④ `origin_actor` 分布**：v1 auto 行为 `node-probe-worker` 19,221 /
+`auto-summary-generator` 1,924 / `auto-title-generator` 1,215 /
+`active-probe-worker` 31 / NULL 15。
+
+### §9.54.2 ★真正的缺陷：cohort 与 settlements 的 task_type 几乎**不相交**
+
+这一条**不需要 join**（纯 task_type 分组对比），因此没有取样假象风险：
+
+| task_type | cohort 行数 | 30 天已结算 selection | 判定 |
+|---|---:|---:|---|
+| `chat` | **3** | 12,864 | p95 over 3 行不是分位数 |
+| `creative` | **0** | 4,985 | **NO_BASELINE** |
+| `code` | **10** | 3,501 | p95 over 10 行不是分位数 |
+| `reasoning` | **0** | 1,269 | **NO_BASELINE** |
+| `planning` | **0** | 4 | **NO_BASELINE** |
+| `long_context` | 2 | 2 | |
+| `probe_triggered` | **19,252** | **0** | cohort 的 99.95% 服务 0 条 selection |
+
+⇒ **6,258 条已结算 selection（29.3%）完全没有基线**，其 latency/cost 两项按
+`auto_route_settle_worker.go:615/618` 走**中性 0.5**。
+⇒ `chat` / `code` 共 16,365 条（76.6%）被拿去和一个 n=3 / n=10 的「分位数」比较。
+⇒ `probe_triggered` 贡献了 cohort 的几乎全部行数、却服务 0 条 selection，
+同时把 §9.44 新加的 `llmgw_autoroute_settle_baseline_cohort_rows` 撑成一个
+**看起来健康**的数字。
+
+**这是线上正在发生的缺陷，与 v1→会话族的切换无关。**
+
+### §9.54.3 根因：cohort 的总体定义 ≠ 实际被结算的总体
+
+- cohort 谓词：`request_logs.is_auto_request IS TRUE` + `latency_ms IS NOT NULL`
+  + `SQLExcludeSyntheticActors`（排除 `goal-%` 与三个 `*generator`/`summary` actor）。
+- 被结算的总体：`auto_route_selections` 里 `task_type` 非空的行。
+
+这两者的 task_type 词表几乎不重叠。**`SQLExcludeSyntheticActors` 的排除名单里
+没有 `node-probe-worker` / `probe-service`**（`autoroute/shadow_actors.go:63-64`
+只列了 `goal-%` 与 `auto-title-generator` / `auto-summary-generator` /
+`session-summary`），而 `middleware/origin_mw.go:404` 明确把 `node-probe-worker`
+映射到 `origin_stage = node_probe`。⇒ **合成的探针流量被算进了奖励基线。**
+
+⇒ 正确顺序是：**先修 cohort 的总体定义**（改成从真正被结算的总体导出，
+或用 `origin_stage = 'business'` 取代手工 actor 名单），**然后**才谈它存在哪个存储族。
+换源族修不好一个定义错的总体。
+
+### §9.54.4 我在 252 上差点得出的第三个错误结论（记下来）
+
+按「30 天已结算 selection 有多少能在 v1 找到同 `request_id`」这条查，得到的数是
+**21,367 里只有 15 条命中（0.07%）**——看起来像个灾难级的丢失。
+
+**它是取样假象**：252 上 `request_logs` **总共只有 32,987 行，且全部落在 7 天内**
+（`count(*) where ts > now()-30d` 与全表相等 ⇒ 无分区历史）。30 天窗口里的绝大多数
+selection 本来就落在 v1 的覆盖范围之外。换成两侧都取 7 天窗口重做：
+21 条已结算、15 条命中（71%），**仍有 6 条（29%）在 v1 里找不到**。
+
+⇒ 「99.93% 丢失」**不能写进任何结论**。真实数字是「7 天匹配窗口内 6/21 = 29% 缺失」，
+而且这个 29% 还需要独立复核（本轮未做完，不在这里给结论）。
+
+⇒ 与 §9.53 同一个错误的第三次变体：**「没查到」被当成「不存在」**，
+只是这次发生在**时间窗口**而不是文件范围上。
+**取样方向必须先问清楚，再看数字。**
+
+### §9.54.5 结论：§9.44 的问题被推翻
+
+| 选项 | 判定 |
+|---|---|
+| (a) 显式重新基线化 | **不可行**——会话族 7 天只有 18 条 auto 行 |
+| (b) 引入独立稳定 cohort | **不可行且方向错**——它修的是「cohort 换源族不可比」，而实测显示 cohort 在 **v1 里就已经是错的总体**（29.3% 的结算无基线、76.6% 对着 n=3/n=10 比、99.95% 的行服务 0 条结算） |
+
+⇒ **两者都不是杠杆。** 前置条件是一个本轮之前从未出现在任何文档里的问题：
+**cohort 的总体定义与被结算总体不对应。**
