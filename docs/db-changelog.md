@@ -834,4 +834,6 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 815 | `815_request_logs_view_stage_band_cff.sql` | `895fe8fd74178c48784ae7ee1efc8de26eee84e0b668d6a0b706d95325e045b3` | applied+verified |
 | 816 | `816_request_logs_view_client_ip_projection.sql` | `e6f41a1f334886bd1d657c8fc5801f40aaf0a5bebdf427028d9541ce7140938a` | applied+verified |
 | 817 | `817_request_logs_view_client_ip_semantic_guard.sql` | `e101a6887e3c3922232198fcaece765b26435bbbba025b7d72a145de5f496cb9` | applied+verified |
+| 818 | `818_ursm_snapshot_typed_columns.sql` | `bb2493af5a160a8fd6df860c4117c8aeeb68212843394d74b1923ff8a30988b3` | pending deploy |
+| 819 | `819_request_abandoned.sql` | `08cf64b15be12f88e7e513449490df8eda136839663f052186a740ddb9b4b43a` | pending deploy |
 

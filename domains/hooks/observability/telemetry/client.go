@@ -2083,11 +2083,15 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 
 	// 819 落点的另一半：**终态**到达 ⇒ 删掉「开始了」的标记，于是
 	// request_abandoned 稳态下**就是** abandoned 集合本身。
-	// 同样在 if logsWrite 之外（审计 §9.66）。谓词门（R35 审计）：中途
-	// enrichment UPDATE（RequestStatus 仍 in_progress）不得删活标记——
-	// 不变式由此在函数内部自洽，不依赖「调用方恰好只发终态」的未成文纪律
-	// （EmitRequestLogUpdate 已预期存在省略终态字段的迟到 UPDATE）。
-	if !requestIsStartedNotFinished(entry) {
+	// 同样在 if logsWrite 之外（审计 §9.66）。谓词门（R35 引入，R36 订正为
+	// **正向终态判定**）：只有携带终态证据（success/failure/rate_limited）的
+	// UPDATE 才允许删活标记；中途 enrichment UPDATE（规范化后仍 in_progress）
+	// 不删。负向写法 `!requestIsStartedNotFinished` 会在 status=nil/脏值时放行
+	// clear（方向=承重事实静默丢失）；normalizeRequestStatus 虽已保证到达此处
+	// 的 status 必为四值之一（当前行为等价），正向写法把不变式「终态证据才
+	// 清账」表达在门本身，未来调用方演化时取安全侧（EmitRequestLogUpdate 已
+	// 预期存在省略终态字段的迟到 UPDATE）。
+	if requestLogEntryTerminal(entry) {
 		clearRequestAbandonedPending(ctx, tx, entry.RequestID)
 	}
 
