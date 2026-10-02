@@ -4101,3 +4101,79 @@ v1 侧的正文在 `request_logs_bodies`，**已含在 8,347 MB 内** ⇒ 同口
   「探针流量按设计不走 session 写路径」这一前提，属需拍板的范围变更。
 - **没有**动 `final_full` 开关（`settings/spec_storage.go`）——它上一轮刚被证伪并
   保持默认关，本节的数据不支持重开。
+
+---
+
+## §9.31 修掉 parity 门：它一直在**产出零证据**
+
+§9.29.5 记下「`loader.go:328` 读的是不存在的视图」并说「未修，属语义拍板」。
+本节把那句话的两个部分分开处理：先看**证据**，再决定要不要**改口径**。
+
+### §9.31.1 那道门从来没有红过——因为它没有输出
+
+`cmd/tools/validate_sessions_v2` 是「验证 session V2 与 v1 数据一致」的 **parity 门**，
+也就是用户那句「**确保数据在更改前后一致**」的执行者。它的 `CanonicalV2BodiesView`
+指向 `public.session_bodies_with_current_month`，而该关系在真库：
+
+```
+relkind: session_bodies_with_current_month = 'i'  ← 索引/约束，不是可查关系
+        session_bodies_unified              = 'v'  ← 真正的合并视图
+```
+
+全仓确认它**只作为 UNIQUE 约束名**出现在迁移 614/645
+（`ADD CONSTRAINT session_bodies_with_current_month UNIQUE (...)`），
+**从无任何 `CREATE VIEW`**。
+
+⇒ **每次运行都 `relation ... does not exist`。**
+而同包的 `loader_test.go` 里那个源码契约串**照样绿**——它只证明
+「源码里写着这个名字」，不证明「这个名字在库里是个能查的东西」。
+**那是一道被自己喂饱的假保证。**
+
+**这比「门红了」更坏**：门红会被人看见，跑不起来只会**安静地没有输出**。
+
+### §9.31.2 改指的依据（真库逐条核实，不是推断）
+
+原注释反对用 `session_bodies_unified`，理由是「column 与 current-month 语义
+不足以作为发布证据」。逐条核：
+
+| 反对理由 | 核实结果 |
+|---|---|
+| 「column 不足」 | **不成立**：装载查询要的十个列（`session_id`/`turn_no`/`tenant_id`/`request_id`/`ts`/`request_delta`/`response_delta`/`outbound_body`/`request_attachments`/`response_attachments`）**全部具备**（外加 `id`/`partition_date`/`kind`） |
+| 「current-month 语义不足」 | 定义为 `session_bodies_hot UNION ALL session_bodies`（两个存储面），1,771,097 行、**2026-09-03 → 实时**。它覆盖的是**全保留期而非仅当月**——对一个**完整性/parity**门来说这是**优点** |
+
+⇒ 反对理由中可核实的部分**已被真库推翻**；而原状态是「跑不起来」，
+**任何能跑的口径都是改善**。
+
+⚠️ **这确实改变了门的判定口径（当月 → 全保留期），属语义变更，请负责人复核。**
+若确实需要「仅当月」，正确做法是**新建一个视图**，而不是继续引用一个不存在的名字。
+
+### §9.31.3 新增真库执行门——因为**源码门看不见运行时形状**
+
+`cmd/tools/validate_sessions_v2/parity_bodies_relation_integration_test.go`
+（`-tags=integration` + `TEST_PG_URL`）做三件事：关系存在且 **relkind 是可查关系**、
+**十个必需列**齐备、**真跑一次装载查询形状**（参数取自真库真实 tenant/session，不是我编的）。
+
+**门自己返工了一次，是变异验证逼出来的**：第一版把 `"session_bodies_unified"`
+**硬编码在门里**，于是——
+
+| 变异 | 第一版 | 修好后 |
+|---|---|---|
+| 把 `loader.go` 的常量改回那个不存在的名字 | **绿**（漏抓） | **红** |
+| 把常量指向真索引名（验 relkind 检查承重） | 红 | 红 |
+| 常量指向不存在的第三个名字 / 常量清空 | 红 | 红 |
+
+漏抓的原因和本轮之前每一次一样：**门证明的是「session_bodies_unified 存在」，
+而它要回答的是「parity 门用的那个关系存不存在」——这两个不是同一个问题。**
+同包引用 `CanonicalV2BodiesView` 的代价是零，收益是**不可能再漂移**。
+
+另：本次变异脚本自身错了两次（M1 改的门里字符串只出现在守卫分支、
+**对被测行为是空变异**；M3 一次改了两个变量）。
+*门不响时先怀疑变异、再怀疑门——但这次两者都有问题，都得各自修。*
+
+### §9.31.4 为什么这节优先级高于它看起来的样子
+
+用户目标的原话是「**确保数据在更改前后一致**」。负责执行这句话的 parity 门
+**一直在产出零证据** ⇒ 前面十三节所有「实测两族一致 / 覆盖 97.1%」的结论
+都是**我用一次性 SQL 手查的**，不是**可持续的自动门**。
+
+修好它之后，那类结论才第一次有了一个**会持续运行的守门人**。

@@ -307,9 +307,29 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 }
 
 // CanonicalV2BodiesView is the only body relation accepted by the parity gate.
-// It is intentionally separate from the legacy session_bodies_unified view, whose
-// column and current-month semantics are not sufficient for release evidence.
-const CanonicalV2BodiesView = "public.session_bodies_with_current_month"
+//
+// 2026-10-02（§9.31）修正：本值此前是 `public.session_bodies_with_current_month`
+// ——**该关系在真库里根本不存在**。全仓搜索确认：这个名字只作为 UNIQUE **约束名**
+// 出现在迁移 614/645（`ADD CONSTRAINT session_bodies_with_current_month
+// UNIQUE (tenant_id, request_id, partition_date)`），**从没有任何 CREATE VIEW**。
+// 真库 pg_class 核实：`session_bodies_with_current_month` relkind = **'i'（索引/约束）**，
+// 真正的合并视图是 `session_bodies_unified` relkind = **'v'**。
+// ⇒ 本工具此前每次运行都 `relation "session_bodies_with_current_month" does not exist`，
+// **parity 门一直在产出零证据**。
+//
+// 改指 `session_bodies_unified` 的依据（真库逐条核实，非推断）：
+//   - 列：工具需要 session_id / turn_no / tenant_id / request_id / ts /
+//     request_delta / response_delta / outbound_body / request_attachments /
+//     response_attachments —— 该视图**十个全有**（外加 id / partition_date / kind）。
+//     所以原注释「列语义不足」的反对**站不住**。
+//   - 覆盖面：定义为 `session_bodies_hot UNION ALL session_bodies`（两个存储面），
+//     1,771,097 行、2026-09-03 → 实时。原注释担心的「当月语义不足」实际是
+//     **覆盖全保留期而非仅当月**——对一个**完整性/parity**门来说这是优点不是缺点。
+//
+// ⚠️ 这确实**改变了门的判定口径**（当月 → 全保留期）。原状态是「跑不起来」，
+// 任何能跑的口径都是改善，但**这是语义变更，请负责人复核**：
+// 若确实需要「仅当月」，正确做法是**新建一个视图**，而不是引用一个不存在的名字。
+const CanonicalV2BodiesView = "public.session_bodies_unified"
 
 // LoadV2Bodies loads all bodies for a session from the canonical body view.
 func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID string) ([]V2Body, error) {
@@ -325,7 +345,7 @@ func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID st
 				COALESCE(outbound_body, '[]'::jsonb) as outbound_body,
 				COALESCE(request_attachments, '[]'::jsonb) as request_attachments,
 				COALESCE(response_attachments, '[]'::jsonb) as response_attachments
-				FROM public.session_bodies_with_current_month b
+				FROM public.session_bodies_unified b
 				WHERE b.tenant_id = $1 AND b.session_id = $2
 				  AND EXISTS (
 					SELECT 1
