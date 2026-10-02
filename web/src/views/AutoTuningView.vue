@@ -43,6 +43,10 @@ const accuracyGeneratedAt = ref('')
 const accuracyLoading = ref(false)
 const accuracyError = ref('')
 
+// API encodes a nil Go slice as JSON null. Reading .length on that blanks the page.
+const proposalList = computed(() => proposals.value ?? [])
+const accuracyList = computed(() => accuracyRows.value ?? [])
+
 const statusTabs = computed(() => [
   { value: '' as StatusFilter, label: t('autoTuning.filter.statusAll') },
   { value: 'pending' as StatusFilter, label: t('autoTuning.filter.pending') },
@@ -61,7 +65,7 @@ async function load() {
       category: categoryFilter.value,
       limit: limit.value,
     })
-    proposals.value = r.proposals
+    proposals.value = Array.isArray(r.proposals) ? r.proposals : []
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('autoTuning.loadFailed')
     proposals.value = []
@@ -75,7 +79,7 @@ async function loadAccuracy() {
   accuracyError.value = ''
   try {
     const r = await getTuningAccuracy(accuracyDays.value)
-    accuracyRows.value = r.breakdown
+    accuracyRows.value = Array.isArray(r.breakdown) ? r.breakdown : []
     accuracyGeneratedAt.value = r.generated_at
   } catch (e: unknown) {
     accuracyError.value = e instanceof Error ? e.message : t('autoTuning.loadFailed')
@@ -140,7 +144,21 @@ function statusClass(s: TuningProposalStatus): string {
 // proposal JSON 每类形态不同（bg/feedback_analyzer.go、taskprofile/analyzer.go）：
 // keyword_add 带 add 数组/channel,weight_adjust 带 weights 映射,threshold_change
 // 带 key/old/new。摘要 = 关键字段 + 截断 JSON。
+function formatTs(ts: string | null | undefined): string {
+  if (!ts) return '—'
+  return ts.replace('T', ' ').slice(0, 19)
+}
+
+function fmtNum(n: number | null | undefined, digits: number): string {
+  return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(digits) : '—'
+}
+
+function fmtPct(n: number | null | undefined): string {
+  return typeof n === 'number' && Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '—'
+}
+
 function proposalSummary(p: TuningProposal): string {
+  if (!p.proposal || typeof p.proposal !== 'object') return '—'
   const rec = p.proposal as Record<string, unknown>
   const parts: string[] = []
   if (Array.isArray(rec.add) && rec.add.length) parts.push(`add=${rec.add.join(',')}`)
@@ -160,6 +178,7 @@ function proposalSummary(p: TuningProposal): string {
 
 function evidenceSummary(p: TuningProposal): string {
   const e = p.evidence
+  if (!e) return ''
   const bits: string[] = []
   if (e.sample_count != null) bits.push(`n=${e.sample_count}`)
   if (e.avg_quality != null) bits.push(`q=${e.avg_quality.toFixed(2)}`)
@@ -272,7 +291,7 @@ onMounted(() => {
     </div>
 
     <div v-else class="table-wrap">
-      <table v-if="proposals.length" class="data-table">
+      <table v-if="proposalList.length" class="data-table">
         <thead>
           <tr>
             <th>#</th>
@@ -287,9 +306,9 @@ onMounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="p in proposals" :key="p.id">
+          <tr v-for="p in proposalList" :key="p.id">
             <td class="mono">{{ p.id }}</td>
-            <td class="mono dim">{{ p.ts.replace('T', ' ').slice(0, 19) }}</td>
+            <td class="mono dim">{{ formatTs(p.ts) }}</td>
             <td>{{ categoryLabel(p.category) }}</td>
             <td class="mono">{{ p.task_type ?? t('autoTuning.table.global') }}</td>
             <td class="proposal-cell mono">{{ proposalSummary(p) }}</td>
@@ -334,7 +353,7 @@ onMounted(() => {
     <div v-if="accuracyError" class="alert alert-danger" role="alert">{{ accuracyError }}</div>
     <div v-if="accuracyLoading" class="loading-container"><p>...</p></div>
     <div v-else class="table-wrap">
-      <table v-if="accuracyRows.length" class="data-table">
+      <table v-if="accuracyList.length" class="data-table">
         <thead>
           <tr>
             <th>{{ t('autoTuning.accuracy.taskType') }}</th>
@@ -348,21 +367,21 @@ onMounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, i) in accuracyRows" :key="i">
+          <tr v-for="(row, i) in accuracyList" :key="i">
             <td class="mono">{{ row.task_type }}</td>
             <td class="mono dim">{{ row.classifier }}</td>
             <td class="mono">{{ row.total }}</td>
-            <td class="mono">{{ row.avg_quality.toFixed(3) }}</td>
-            <td class="mono">{{ (row.avg_success * 100).toFixed(1) }}%</td>
-            <td class="mono">{{ row.avg_latency.toFixed(0) }}ms</td>
-            <td class="mono">${{ row.avg_cost.toFixed(5) }}</td>
-            <td class="mono">{{ (row.drift_rate * 100).toFixed(1) }}%</td>
+            <td class="mono">{{ fmtNum(row.avg_quality, 3) }}</td>
+            <td class="mono">{{ fmtPct(row.avg_success) }}</td>
+            <td class="mono">{{ fmtNum(row.avg_latency, 0) }}ms</td>
+            <td class="mono">${{ fmtNum(row.avg_cost, 5) }}</td>
+            <td class="mono">{{ fmtPct(row.drift_rate) }}</td>
           </tr>
         </tbody>
       </table>
       <p v-else class="dim">{{ t('autoTuning.accuracy.noData') }}</p>
       <p v-if="accuracyGeneratedAt" class="dim generated-at">
-        {{ t('autoTuning.accuracy.generatedAt') }}: {{ accuracyGeneratedAt.replace('T', ' ').slice(0, 19) }}
+        {{ t('autoTuning.accuracy.generatedAt') }}: {{ formatTs(accuracyGeneratedAt) }}
       </p>
     </div>
   </div>
