@@ -359,8 +359,17 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 // 一处字面量，镜像门又需要判同一个键。抽成本 helper 是为了**两处判定与键名
 // 只有一份**——门内联两遍、其中一处日后被单独改动，就是「停写却仍落盘」的
 // 分裂入口。
+//
+// 2026-10-02 审计再修：上面那次去重**只做到了包内**。同一个键当时还散落在
+// 另外三个包（cmd/gateway/lite_telemetry_sink.go、
+// domains/hooks/observability/telemetry/client.go、internal/trace/trace.go），
+// 各自内联字面量——也就是说，本注释警告的分裂入口在 admin 之外原样存在。
+// 现在四处统一调用 settings.RequestLogsWriteEnabled()，键名与默认值的唯一
+// 副本在 settings 包（settings.KeyRequestLogsWriteEnabled），并由
+// settings.TestRequestLogsWriteEnabledKeyIsSpelledOnce 把「全仓只有一个拼法」
+// 钉住。本 helper 保留是为了 admin 侧的调用点语义清晰，不再是「唯一来源」。
 func requestLogsWriteEnabled() bool {
-	return settings.GetPlatformBool("storage.request_logs_write_enabled", true)
+	return settings.RequestLogsWriteEnabled()
 }
 
 func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLogInput) {

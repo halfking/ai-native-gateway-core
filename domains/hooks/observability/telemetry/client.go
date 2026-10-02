@@ -36,7 +36,7 @@ var errNoTelemetryDB = errors.New("telemetry database not configured")
 // （sessionv2mirror）成为唯一事实源，日志读端走 session 家族投影。与 Lite
 // sink（cmd/gateway/lite_telemetry_sink.go）同一键、同一默认。
 func requestLogsWriteEnabled() bool {
-	return settings.GetPlatformBool("storage.request_logs_write_enabled", true)
+	return settings.RequestLogsWriteEnabled()
 }
 
 // pgErrorDiagnostics extracts the server-side error fields that err.Error()
