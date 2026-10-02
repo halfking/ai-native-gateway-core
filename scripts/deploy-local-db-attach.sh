@@ -13,7 +13,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_ROOT="${LLM_GATEWAY_SYS_INSTALL_ROOT:-C:\\llm-gateway-go}"
 # Git Bash 下把 Windows 路径（C:\llm-gateway-go）转为 /c/... 形式，混合分隔符会坑 coreutils
 if command -v cygpath >/dev/null 2>&1; then
@@ -23,12 +22,24 @@ else
 fi
 MARKER="$HOME/.llm-gateway-go/db-attach.done"
 LOG_DIR="${INSTALL_ROOT_UNIX}/logs"
+# 防定时重叠锁（R29 审计）：deploy-local-sys.sh 内部 go build 可跑数分钟，
+# 旧版标记文件成功后才写，两次定时触发可完全重叠。mkdir 原子，第二实例
+# 直接退出 0 等下次触发；deploy-local-sys.sh 另有部署锁，不会递归抢锁。
+LOCK_DIR="$HOME/.llm-gateway-go/db-attach.lock"
 
 log() { printf '[db-attach %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 [[ -f "$MARKER" ]] && { log "已完成（标记 $MARKER 存在），跳过"; exit 0; }
 
-mkdir -p "$(dirname "$MARKER")" "$LOG_DIR"
+mkdir -p "$(dirname "$MARKER")"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  log "另一 db-attach 实例正在运行（holder_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '?')），本次跳过"
+  exit 0
+fi
+printf '%s' "$$" > "$LOCK_DIR/pid"
+trap 'rc=$?; rm -rf "$LOCK_DIR"; exit $rc' EXIT
+
+mkdir -p "$LOG_DIR"
 
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   log "Docker 未就绪（等待另外的任务完成安装）；下次定时再试"

@@ -36,6 +36,13 @@ DECLARE
     part record;
     v_rows bigint;
 BEGIN
+    -- to_regclass 守卫（R29 审计，612 层同款）：目标表缺席的库上直通跳过，
+    -- 避免 ::regclass 字面引用在缺表库直接抛错。
+    IF to_regclass('public.model_probe_runs') IS NULL THEN
+        RAISE NOTICE '812: public.model_probe_runs absent; nothing to convert';
+        RETURN;
+    END IF;
+
     FOR part IN
         SELECT c.relname AS name,
                pg_get_expr(c.relpartbound, c.oid) AS bound
@@ -49,6 +56,16 @@ BEGIN
         EXECUTE format('SELECT count(*) FROM public.%I', part.name) INTO v_rows;
         IF v_rows = 0 THEN
             EXECUTE format('ALTER TABLE public.model_probe_runs DETACH PARTITION public.%I', part.name);
+            -- TOCTOU 收口（R29 审计，810 同款）：DETACH 已取得 AccessExclusive，
+            -- 锁内二次 count 防预检与 DETACH 之间并发写入的行随 DROP 丢失；
+            -- 非空则 ATTACH 回去 fail-closed。
+            EXECUTE format('SELECT count(*) FROM public.%I', part.name) INTO v_rows;
+            IF v_rows > 0 THEN
+                EXECUTE format('ALTER TABLE public.model_probe_runs ATTACH PARTITION public.%I %s',
+                               part.name, part.bound);
+                RAISE NOTICE '812: partition % raced non-empty during detach (% rows); re-attached, left untouched', part.name, v_rows;
+                CONTINUE;
+            END IF;
             EXECUTE format('DROP TABLE public.%I', part.name);
             EXECUTE format(
                 'CREATE TABLE public.%I PARTITION OF public.model_probe_runs %s',

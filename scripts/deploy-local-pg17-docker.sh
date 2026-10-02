@@ -21,7 +21,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── 可调参数（非敏感项可用环境变量覆盖；密码一律走环境变量/密钥文件）──
 PG_CONTAINER="${LLM_GATEWAY_PG_CONTAINER:-kx-pg17}"

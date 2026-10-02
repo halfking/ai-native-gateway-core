@@ -188,6 +188,35 @@ func (it *SanitizeRestoreInterceptor) restoreNativeResponsesBody(ctx context.Con
 					changed = true
 				}
 			}
+		case "local_shell_call_output", "apply_patch_call_output":
+			didChange, err := restoreNativeTextField(ctx, it.sanitizer, item, "output", sm)
+			if err != nil {
+				return false, true, err
+			}
+			changed = changed || didChange
+		case "shell_call_output", "code_interpreter_call":
+			for _, field := range []string{"outputs", "code"} {
+				value, ok := item[field]
+				if !ok {
+					continue
+				}
+				restored, didChange, err := restoreNativeNestedValue(ctx, it.sanitizer, value, sm, 0)
+				if err != nil {
+					return false, true, err
+				}
+				if didChange {
+					item[field] = restored
+					changed = true
+				}
+			}
+		case "apply_patch_call":
+			if action, ok := item["action"].(map[string]any); ok {
+				didChange, err := restoreNativeTextField(ctx, it.sanitizer, action, "content", sm)
+				if err != nil {
+					return false, true, err
+				}
+				changed = changed || didChange
+			}
 		}
 	}
 	return changed, true, nil

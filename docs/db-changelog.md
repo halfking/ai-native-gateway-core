@@ -809,3 +809,12 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 810 | `810_heap_partitions_toastless_heal.sql` | `3100676e72ce3abc360cc2dd832004fbac5d11f3a575935bd22c801605f61935` | applied+verified（R20 新增：治愈「heap 但无 TOAST 表」空分区（10-01 列存事故回退/并行轨道往返实验遗留；session_bodies_2026_10 promote row-too-big ×59/14h 实证）。仅动空分区，非空 13 个 NOTICE 跳过登记；本机 0 候选 no-op + 252 治愈 8 个（21→13），promote 手动 tick 500 行实证恢复） |
 | 811 | `811_partition_bounds_shanghai_midnight_repair.sql` | `24e5ac16abc2d2d924bc157f3e58b6b8d8764a824e27097e7646ed94d3081213` | applied+verified（R20 新增：request_logs / routing_decision_log 分区边界 473 型 UTC 零点污染重建为正典 +08 零点网格（687 姊妹篇；252 ensure overlap ×8、2026_11 永远建不出来、11-01 写入时间炸弹实证）。rdl 列存单族保留+enforce 触发器自动转列存新分区；bak 两遍回灌计数守恒（rdl 444,052+2,967/rl 11,256+9,837）；本机实跑先行（途中抓出 +1 天 vs +1 月、直插分区 vs 经父表两个缺陷并修复）；分区索引叶 indisvalid 0 无效） |
 | 812 | `812_model_probe_runs_partitions_heap.sql` | `e71bd5418691e303fa667b32b92d4e92afd39bebb0ecb245971e2a718ec41cba` | applied+verified（R20 新增：model_probe_runs 空列存分区转 heap——探针状态更新器 CTID ×114 真根因（UPDATE 计划含 ColumnarScan 即被拒，R19 归因补全：非 model_probe_state 自身 AM）；三月分区 0 行空壳、806 同款处方；本机 3 个+252 3 个重建，幂等） |
+
+
+## 2026-10-02 — 12h 审计第二十九轮：810/811/812 工程缺陷收口 SHA 追认（R29）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 810 | `810_heap_partitions_toastless_heal.sql` | `f91aed8cc166460f62031766eadbde0be8ed73e57b58b42d5966c6f1b47bffc5` | applied+verified（R29 追认：TOCTOU 收口——原版 count 预检与 DETACH 之间存在并发写入窗口（session_bodies_2026_10 每小时 promote 写入面），窗口内提交的行随分区 DROP 丢失；改为 DETACH（AccessExclusive）后锁内二次 count，非空 ATTACH 回去 fail-closed。252 已治愈 8 分区不受影响（重放谓词空集 no-op）；原登记行 3100676e… 保留，任一命中即过） |
+| 811 | `811_partition_bounds_shanghai_midnight_repair.sql` | `00054f95aebe730b3aa866f054be17c014002208886ac657a336269b1f9faff9` | applied+verified（R29 追认：事务内 `SET LOCAL TIME ZONE 'Asia/Shanghai'` 钉扎——检测谓词 position('08:00:00' in bounds) 依赖 pg_get_expr 会话时区渲染，污染（UTC 零点）仅在 +08 会话命中指纹，UTC 会话（新 PG17 Docker 默认/deploy-local-sys.sh 序列通道环境）静默漏检且台账按内容指纹记为已应用；与 687/694/714 正典同款。252 已按原版修复的分区重放时渲染已为 +08 零点网格、不命中谓词，no-op；原登记行 24e5ac16… 保留） |
+| 812 | `812_model_probe_runs_partitions_heap.sql` | `357e56f03f469aecbf1604bfa1da77a16c29762cd3ebc1fb257ccfda26330fd5` | applied+verified（R29 追认：810 同款 TOCTOU 收口（DETACH 后锁内二次 count + ATTACH 回退）；252 已重建分区重放谓词空集 no-op；原登记行 e71bd541… 保留） |

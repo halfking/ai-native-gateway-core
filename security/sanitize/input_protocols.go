@@ -319,10 +319,31 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 	case "file_search_call":
 		// queries[] and results[].text are replayed plaintext.
 		return s.sanitizeFileSearchCallItem(raw, item)
+	case "local_shell_call_output":
+		// Codex family: shell stdout/stderr replayed as a JSON string
+		// (12h 审计第二十九轮, 2026-10-02).
+		field = "output"
+	case "apply_patch_call_output":
+		// Codex family: patch application log replayed as plaintext.
+		field = "output"
+	case "shell_call_output":
+		// Codex family: outputs[] are {text} containers without a type field,
+		// so the typed-block walk in sanitizeContent would skip them.
+		return s.sanitizeShellCallOutputItem(raw, item)
+	case "code_interpreter_call":
+		// code + outputs[].logs are model/tool plaintext; container_id and
+		// image outputs are metadata.
+		return s.sanitizeCodeInterpreterCallItem(raw, item)
+	case "apply_patch_call":
+		// action.content (create/update patch payload) is plaintext;
+		// action.type / action.path are metadata.
+		return s.sanitizeApplyPatchCallItem(raw, item)
 	default:
 		// Unknown item types still pass through (allowlist design); each new
-		// plaintext-bearing type must be added here. Known output-bearing
-		// families are covered above; item_reference (id-only) is harmless.
+		// plaintext-bearing type must be added here. The families above are
+		// the known output/code bearers but the list is not exhaustive
+		// (tool_search_call.arguments etc. remain future work);
+		// item_reference (id-only) is harmless.
 		return raw, false, nil
 	}
 	value, ok := item[field]
@@ -410,6 +431,11 @@ func (s *requestInputSanitizer) sanitizeWebSearchCallItem(raw json.RawMessage, i
 	}
 	var action map[string]json.RawMessage
 	if err := json.Unmarshal(actionRaw, &action); err != nil || action == nil {
+		// 显式 "action": null 与字段缺失同义直通（错误拒单与缺失直通不一致，
+		// R29 审计）；只有非对象形态才拒。
+		if actionRaw != nil && string(bytes.TrimSpace(actionRaw)) == "null" {
+			return raw, false, nil
+		}
 		return nil, false, fmt.Errorf("%w: web_search_call action object required: %v", errInvalidSanitizeInput, err)
 	}
 	query, ok := action["query"]
@@ -492,6 +518,123 @@ func (s *requestInputSanitizer) sanitizeFileSearchCallItem(raw json.RawMessage, 
 	}
 	out, err := json.Marshal(item)
 	return out, changed, err
+}
+
+// shell_call_output 回传 shell 执行产物：outputs[] 是无 type 字段的 {text}
+// 容器（sanitizeContent 的 typed-block 行走会跳过），逐元素清洗 text。
+func (s *requestInputSanitizer) sanitizeShellCallOutputItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	value, ok := item["outputs"]
+	if !ok {
+		return raw, false, nil
+	}
+	var outputs []map[string]json.RawMessage
+	if err := json.Unmarshal(value, &outputs); err != nil {
+		return nil, false, fmt.Errorf("%w: shell_call_output outputs array: %v", errInvalidSanitizeInput, err)
+	}
+	changed := false
+	for _, output := range outputs {
+		text, ok := output["text"]
+		if !ok {
+			continue
+		}
+		updated, didChange, err := s.sanitizeText(text)
+		if err != nil {
+			return nil, false, err
+		}
+		if didChange {
+			output["text"], changed = updated, true
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	outArr, err := json.Marshal(outputs)
+	if err != nil {
+		return nil, false, err
+	}
+	item["outputs"] = outArr
+	out, err := json.Marshal(item)
+	return out, true, err
+}
+
+// code_interpreter_call 回传模型代码与执行输出：code（明文）与 outputs[].logs
+//（stdout/stderr 明文）入洗；container_id 与 image 类输出不动。
+func (s *requestInputSanitizer) sanitizeCodeInterpreterCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	changed := false
+	if value, ok := item["code"]; ok {
+		updated, didChange, err := s.sanitizeText(value)
+		if err != nil {
+			return nil, false, err
+		}
+		if didChange {
+			item["code"], changed = updated, true
+		}
+	}
+	if value, ok := item["outputs"]; ok {
+		var outputs []map[string]json.RawMessage
+		if err := json.Unmarshal(value, &outputs); err != nil {
+			return nil, false, fmt.Errorf("%w: code_interpreter_call outputs array: %v", errInvalidSanitizeInput, err)
+		}
+		oChanged := false
+		for _, output := range outputs {
+			logs, ok := output["logs"]
+			if !ok {
+				continue
+			}
+			updated, didChange, err := s.sanitizeText(logs)
+			if err != nil {
+				return nil, false, err
+			}
+			if didChange {
+				output["logs"] = updated
+				oChanged = true
+			}
+		}
+		if oChanged {
+			outArr, err := json.Marshal(outputs)
+			if err != nil {
+				return nil, false, err
+			}
+			item["outputs"], changed = outArr, true
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	out, err := json.Marshal(item)
+	return out, changed, err
+}
+
+// apply_patch_call 回传补丁动作：action.content（create/update 的文件内容）
+// 是明文；action.type / action.path 与 call_id 是元数据不动。
+func (s *requestInputSanitizer) sanitizeApplyPatchCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	actionRaw, ok := item["action"]
+	if !ok {
+		return raw, false, nil
+	}
+	var action map[string]json.RawMessage
+	if err := json.Unmarshal(actionRaw, &action); err != nil || action == nil {
+		return nil, false, fmt.Errorf("%w: apply_patch_call action object required: %v", errInvalidSanitizeInput, err)
+	}
+	content, ok := action["content"]
+	if !ok {
+		return raw, false, nil
+	}
+	updated, didChange, err := s.sanitizeText(content)
+	if err != nil {
+		return nil, false, err
+	}
+	if !didChange {
+		return raw, false, nil
+	}
+	action["content"] = updated
+	actionOut, err := json.Marshal(action)
+	if err != nil {
+		return nil, false, err
+	}
+	item["action"] = actionOut
+	out, err := json.Marshal(item)
+	return out, true, err
 }
 
 func (s *requestInputSanitizer) sanitizeContent(raw json.RawMessage) (json.RawMessage, bool, error) {

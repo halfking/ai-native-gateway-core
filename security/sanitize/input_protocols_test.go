@@ -74,6 +74,29 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 			body:     `{"model":"m","prompt":["call 13800138000","mail a@b.com"]}`,
 			wantRefs: 2, wantPlaceholders: 2,
 		},
+		{
+			// 第二十九轮钉测：Codex/工具族输出承载型 item 补漏——
+			// local_shell_call_output.output / apply_patch_call_output.output /
+			// shell_call_output.outputs[].text（无 type 容器）/
+			// code_interpreter_call.code+outputs[].logs / apply_patch_call.action.content。
+			name: "responses codex output-bearing item families", path: "/v1/responses",
+			body: `{"model":"m","input":[` +
+				`{"type":"local_shell_call_output","call_id":"c1","output":"{\"output\":\"phone 13800138011\"}"},` +
+				`{"type":"apply_patch_call_output","call_id":"c2","output":"patched ok call 13800138012"},` +
+				`{"type":"shell_call_output","call_id":"c3","outputs":[{"text":"call 13800138013"}]},` +
+				`{"type":"code_interpreter_call","call_id":"c4","container_id":"k1","code":"print(\"call 13800138014\")","outputs":[{"type":"logs","logs":"phone 13800138015"},{"type":"image","image_url":"data:image/png;base64,opaque"}]},` +
+				`{"type":"apply_patch_call","call_id":"c5","action":{"type":"create","path":"a.txt","content":"call 13800138016"}}]}`,
+			wantRefs:         5,
+			wantPlaceholders: 6,
+			notWant: []string{
+				"13800138011", // local_shell_call_output.output
+				"13800138012", // apply_patch_call_output.output
+				"13800138013", // shell_call_output.outputs[].text
+				"13800138014", // code_interpreter_call.code
+				"13800138015", // code_interpreter_call.outputs[].logs
+				"13800138016", // apply_patch_call.action.content
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -51,29 +51,33 @@ fi
 INSTALL_ROOT="${LLM_GATEWAY_SYS_INSTALL_ROOT:-$DEFAULT_INSTALL_ROOT}"
 
 SERVICE_PORT="${LLM_GATEWAY_SYS_SERVICE_PORT:-8781}"
-PORT_PIN_FILE="$INSTALL_ROOT/config/service.port"
 
 # 端口自动避让：8781 可能被既有占位服务（如 http.sys 上的 llm.itestu.cn
 # placeholder）占用；被占时向上找第一个空闲端口，避免与既有基础设施冲突。
 # 解析结果固化到 config/service.port：此后所有调用（status/verify/logs）读
 # 固化值，避免"自己的 gateway 占着 8782 → 误判被占 → 漂移到 8783"。
+# R29 审计修正：端口解析移到参数解析之后调用——PORT_PIN_FILE 随
+# --install-root 重算（旧版 pin 恒落默认根），且只有变更型动作（deploy/
+# start）探测并固化端口，只读动作（status/logs/verify/stop）不再有写副作用。
 port_free() { ! netstat -ano 2>/dev/null | grep -q "[:.]${1}[[:space:]]"; }
-if [[ -f "$PORT_PIN_FILE" ]]; then
-  SERVICE_PORT="$(cat "$PORT_PIN_FILE")"
-else
+resolve_service_port() {
+  if [[ -f "$PORT_PIN_FILE" ]]; then
+    SERVICE_PORT="$(cat "$PORT_PIN_FILE")"
+    return
+  fi
+  case "$ACTION" in deploy|start) ;; *) return ;; esac
   if ! port_free "$SERVICE_PORT"; then
     if [[ -n "${LLM_GATEWAY_SYS_SERVICE_PORT:-}" ]]; then
       die "指定端口 ${SERVICE_PORT} 已被占用（LLM_GATEWAY_SYS_SERVICE_PORT 显式指定，不自动避让）"
     fi
-    candidate=$SERVICE_PORT
+    local candidate=$SERVICE_PORT
     while ! port_free "$candidate"; do candidate=$((candidate + 1)); done
     warn "端口 ${SERVICE_PORT} 被占用，自动改用 ${candidate}（固化到 $PORT_PIN_FILE；可用 LLM_GATEWAY_SYS_SERVICE_PORT 固定）"
     SERVICE_PORT="$candidate"
   fi
   mkdir -p "$(dirname "$PORT_PIN_FILE")" 2>/dev/null || true
   printf '%s' "$SERVICE_PORT" > "$PORT_PIN_FILE" 2>/dev/null || true
-fi
-LISTEN="${LLM_GATEWAY_LISTEN:-:${SERVICE_PORT}}"
+}
 DB_HOST="${LLM_GATEWAY_PG_HOST:-127.0.0.1}"
 DB_PORT="${LLM_GATEWAY_PG_PORT:-5432}"
 DB_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}"
@@ -87,6 +91,7 @@ BIN_DIR="$INSTALL_ROOT/bin"
 WEB_DIR="$INSTALL_ROOT/web"
 DATA_DIR="$INSTALL_ROOT/data"
 PID_FILE="$RUN_DIR/gateway.pid"
+PORT_PIN_FILE="$INSTALL_ROOT/config/service.port"
 
 usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -101,11 +106,34 @@ while [[ $# -gt 0 ]]; do
     --skip-db) SKIP_DB=1; shift ;;
     --install-root) INSTALL_ROOT="$2"; ENV_DIR="$INSTALL_ROOT/config"; ENV_FILE="$ENV_DIR/gateway.env";
                     RUN_DIR="$INSTALL_ROOT/run"; LOG_DIR="$INSTALL_ROOT/logs"; BIN_DIR="$INSTALL_ROOT/bin";
-                    WEB_DIR="$INSTALL_ROOT/web"; DATA_DIR="$INSTALL_ROOT/data"; PID_FILE="$RUN_DIR/gateway.pid"; shift 2 ;;
+                    WEB_DIR="$INSTALL_ROOT/web"; DATA_DIR="$INSTALL_ROOT/data"; PID_FILE="$RUN_DIR/gateway.pid";
+                    PORT_PIN_FILE="$INSTALL_ROOT/config/service.port"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
+
+resolve_service_port
+LISTEN="${LLM_GATEWAY_LISTEN:-:${SERVICE_PORT}}"
+
+# ── 并发防护（R29 审计）──────────────────────────────────────────
+# deploy 含完整 go build（分钟级）且会 stop/install/start、写 PID 与端口固化
+# 文件；db-attach 定时任务与手工 deploy 并发时此前全裸奔。mkdir 原子锁跨
+# 平台（Git Bash 未必有 flock），陈锁内含 holder pid 便于人工判断，EXIT
+# trap 兜底清理。db-attach.sh 有独立锁并经子进程调用本脚本，不会递归抢锁。
+LOCK_DIR="$RUN_DIR/.deploy.lock"
+acquire_lock() {
+  mkdir -p "$RUN_DIR" 2>/dev/null || true
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    local holder; holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '?')"
+    die "另一个 deploy/start/stop 实例正在运行（lock=$LOCK_DIR holder_pid=$holder）；确认无并发后删除该目录重试"
+  fi
+  printf '%s' "$$" > "$LOCK_DIR/pid"
+  trap 'rc=$?; rm -rf "$LOCK_DIR"; exit $rc' EXIT
+}
+case "$ACTION" in
+  deploy|start|stop) acquire_lock ;;
+esac
 
 # ── 工具函数 ───────────────────────────────────────────────────────
 to_win_path() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
@@ -132,7 +160,9 @@ pg_password() {
 gateway_pid() {
   [[ -f "$PID_FILE" ]] || return 1
   local pid
-  pid="$(cat "$PID_FILE" 2>/dev/null)" || return 1
+  # tr 防 CRLF：旧版 Windows 侧 Set-Content 写出 "PID\r\n"，\r 会让
+  # tasklist 过滤器永不匹配（R29 审计）；写侧已改 WriteAllText，读侧兜底。
+  pid="$(tr -d '[:space:]' < "$PID_FILE" 2>/dev/null)" || return 1
   [[ -n "$pid" ]] || return 1
   if (( IS_WINDOWS )); then
     tasklist //FI "PID eq $pid" 2>/dev/null | grep -qi gateway.exe || return 1
@@ -361,7 +391,7 @@ start_gateway() {
       };
       Set-Location '$(to_win_path "$INSTALL_ROOT")';
       \$p = Start-Process -FilePath '$(to_win_path "$bin")' -WorkingDirectory '$(to_win_path "$INSTALL_ROOT")' -WindowStyle Hidden -PassThru -RedirectStandardOutput '$(to_win_path "$LOG_DIR/gateway-stdout.log")' -RedirectStandardError '$(to_win_path "$LOG_DIR/gateway-stderr.log")';
-      Set-Content -Path '$(to_win_path "$PID_FILE")' -Value \$p.Id
+      [IO.File]::WriteAllText('$(to_win_path "$PID_FILE")', [string]\$p.Id)
     "
   else
     ( set -a; source "$ENV_FILE"; set +a
@@ -390,6 +420,14 @@ stop_gateway() {
     taskkill //PID "$pid" //F >/dev/null 2>&1 || true
   else
     kill "$pid" 2>/dev/null || true
+    # 等待退出（R29 审计）：旧版 kill 后立即删 PID 文件，紧随的 start 可能
+    # 因端口尚未释放而失败；最多等 5s，超时仅告警不阻断。
+    local i
+    for i in 1 2 3 4 5; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill -0 "$pid" 2>/dev/null && warn "  PID $pid 5s 后仍在运行（可能忽略 TERM），紧随的 start 可能因端口占用失败"
   fi
   rm -f "$PID_FILE"
   log "  已停止"
