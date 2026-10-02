@@ -111,3 +111,71 @@ func assertVerdictWellFormed(t *testing.T, name string, entry paddedColumn) {
 			name, len(entry.evidence))
 	}
 }
+
+// TestPaddedVerdictGatesAreNotVacuous 把「门本身不是空转」做成**结构性核验**，
+// 而不是靠「我跑过 N 次变异」这种需要重跑才能复核的证据（2026-10-02 补）。
+//
+// 背景：这套门要防的是「新增一条 NULL 补位却没人裁决」。如果补位集合本身算空了、
+// 裁决表被清空、或每条理由都短到等于没写，那么**上面三道门全部会绿**——
+// 它们在一个空输入上平凡成立。这类门最危险的地方在于它给出的绿是真的绿，
+// 但什么都没测。
+//
+// 所以这里逐条核「输入非空 + 理由有下限 + 双向对齐」，任何一条退化都直接红。
+func TestPaddedVerdictGatesAreNotVacuous(t *testing.T) {
+	// 1) 补位集合必须非空，且与 710 形态的清单**不同**——若两者相同，说明
+	//    paddedSessionColumns 又退回了 710 的 30 列（§9.28.1 的头号失效形态）。
+	padded := paddedSessionColumns()
+	if len(padded) == 0 {
+		t.Fatal("补位集合算空了：三道裁决门会在空输入上平凡通过。")
+	}
+	if len(padded) == legacyPaddedColumnsForDriftCheck {
+		t.Errorf("补位集合(%d 列)与 710 形态清单(%d 列)同样大小 —— "+
+			"很可能退回了 710 的那 30 列。§9.28.1 的恒等式是 6 = 4 + 2，现网 6 列。",
+			len(padded), legacyPaddedColumnsForDriftCheck)
+	}
+	// 2) 裁决表必须覆盖**每一个**补位列（与主门同判据，但这里独立再算一次，
+	//    免得主门和这张表共享同一个空输入而互相掩护）。
+	for _, name := range padded {
+		if _, ok := paddedColumnVerdicts[name]; !ok {
+			t.Errorf("补位列 %q 无裁决条目（结构性核验，与主门独立）", name)
+		}
+	}
+	// 3) 裁决表非空 + 每条理由有实质下限（不是「见上」「同左」这类占位）。
+	if len(paddedColumnVerdicts) == 0 {
+		t.Fatal("裁决表空了：任何新增补位都不会被要求裁决。")
+	}
+	for name, entry := range paddedColumnVerdicts {
+		assertVerdictWellFormed(t, name, entry)
+	}
+	// 4) 「不投影」清单必须非空且与补位表**不相交**——后者是「两种处置同时成立」，
+	//    前者是「否决记录被清空，半年后有人顺手补齐」。
+	if len(rejectedProjections) == 0 {
+		t.Fatal("rejectedProjections 空了：trace_events 的否决理由会随这张表一起消失。")
+	}
+	for name := range rejectedProjections {
+		if _, inPadded := paddedColumnVerdicts[name]; inPadded {
+			t.Errorf("%q 同时在裁决表与 rejectedProjections 里", name)
+		}
+	}
+	// 5) 至少要有一个「同名不同物」的裁决：这是本项目最贵的两类不作为
+	//    （id / client_ip）。如果它们被改成「有源可投影」，登记表必须跟着变，
+	//    否则这张表就在替一个已被推翻的结论背书。
+	different := 0
+	for _, e := range paddedColumnVerdicts {
+		if e.verdict == verdictDifferentThing {
+			different++
+		}
+	}
+	if different == 0 {
+		t.Error("裁决表里没有任何 verdictDifferentThing 条目。id 与 client_ip " +
+			"是本项目仅有的两个「session 侧有同名列但不是同一个东西」——" +
+			"若它们已被推翻，请连同实测依据一起改这张表，不要让它们静默消失。")
+	}
+	t.Logf("门非空转核验：补位 %d 列（%v）、裁决 %d 条、否决投影 %d 条、同名不同物 %d 条",
+		len(padded), padded, len(paddedColumnVerdicts), len(rejectedProjections), different)
+}
+
+// legacyPaddedColumnsForDriftCheck 是 710 形态补位集合的**规模锚**（30 列）。
+// 只用规模、不用列名：列名清单在 admin 侧（legacySessionArmNullPaddedColumns710），
+// 这里只防「补位集合退回 710 规模」这一个具体退化。
+const legacyPaddedColumnsForDriftCheck = 30
