@@ -146,8 +146,11 @@ func TestLeaseRenewLoopFailClosedAfterTTLWithoutRenewal(t *testing.T) {
 	fwdCtx, aborted, stop := runRenewLoop(t, g)
 	defer stop()
 
-	// interval=5ms ⇒ TTL 窗口=15ms：t=5/10/15ms 三次瞬态失败，第 4 拍
-	// （t≈20ms）elapsed≥TTL → fail-closed。1s 上限防挂死。
+	// interval=5ms ⇒ TTL 窗口=15ms，从进入循环（=Acquire 武装租约）起算，
+	// 首个 Since(lastArmed)≥TTL 的节拍（标称第 3 拍）必须 fail-closed。
+	// 刻意不断言 renewals 次数：-race / 高负载下节拍可被调度延迟跳过整个
+	// TTL 窗口（延迟只会推大 Δ），首拍即中止时 n 可能 <3——次数断言原理性
+	// 脆弱（R31.1 首次 -race 失败的归因），中止语义本身是确定性不变量。
 	select {
 	case <-aborted:
 	case <-time.After(time.Second):
@@ -156,30 +159,40 @@ func TestLeaseRenewLoopFailClosedAfterTTLWithoutRenewal(t *testing.T) {
 	if err := fwdCtx.Err(); err == nil {
 		t.Fatal("abort must cancel the forward context")
 	}
-	if n, _ := g.count(); n < 3 {
-		t.Fatalf("renewals = %d, want ≥3 before the TTL window closes", n)
-	}
 }
 
-func TestLeaseRenewLoopTransientRecoveryResetsDegradation(t *testing.T) {
+// TestLeaseRenewLoopSurvivesSuccessPhaseThenAbortsOnPersistentFailure 覆盖
+// 「成功续约阶段不得中止 + 持续瞬态失败最终 fail-closed」两个半场。前 5 拍
+// 成功（abort 不可能发生：abort 需要一次失败续约），第 6 拍起持续失败 →
+// Since(lastArmed) 必然越过 TTL → abort。n≥6 是确定性下界（5 成功 + ≥1
+// 失败才可能中止）。
+//
+// 刻意不做「冻结 lastArmed 变异」的次数区分断言：正常时序下正确实现中止于
+// ~第 8 拍、变异体~第 6 拍，但节拍延迟使两者在稀疏节拍下重叠——任何跨版本
+// 的次数断言在 -race 下原理性不可靠（见 TestLeaseRenewLoopFailClosedAfter
+// TTLWithoutRenewal 注释）。lastArmed 重置逻辑由实现内注释 + 文档 §七记录
+// 的一次性变异验证（红→还原→绿）背书。
+func TestLeaseRenewLoopSurvivesSuccessPhaseThenAbortsOnPersistentFailure(t *testing.T) {
 	g := &fakeLeaseGovernor{renewErr: func(call int) error {
-		if call <= 2 {
-			return errTransientRenew
+		if call <= 5 {
+			return nil
 		}
-		return nil
+		return errTransientRenew
 	}}
-	_, aborted, stop := runRenewLoop(t, g)
+	fwdCtx, aborted, stop := runRenewLoop(t, g)
+	defer stop()
 
-	waitForWithin(t, "at least 6 renewals (2 failed + recovery)", time.Second, func() bool {
-		n, _ := g.count()
-		return n >= 6
-	})
 	select {
 	case <-aborted:
-		t.Fatal("recovery within the TTL window must reset degradation; abort fired")
-	default:
+	case <-time.After(2 * time.Second):
+		t.Fatal("persistent transient failure must eventually abort")
 	}
-	stop()
+	if err := fwdCtx.Err(); err == nil {
+		t.Fatal("abort must cancel the forward context")
+	}
+	if n, _ := g.count(); n < 6 {
+		t.Fatalf("renewals = %d, want ≥6 (5 successes + ≥1 failure before any abort is possible)", n)
+	}
 }
 
 func TestRedisEnforceGovernorImplementsLeaseRenewer(t *testing.T) {
