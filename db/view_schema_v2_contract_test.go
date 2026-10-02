@@ -883,6 +883,18 @@ func cloneTablesFrozenDDL(ctx context.Context, liveDSN string, frozen []string) 
 	// 缺列即 notice 后 RETURN（不重建），于是列数停在 115 而末尾的 fail-closed
 	// 对账会报「rebuild did not converge」——一个指向「重建逻辑坏了」而真因是
 	// 「夹具少了一列」的失败信息。夹具要忠实反映 428/485 之后的物理表。
+	//
+	// ⚠️ 同一段代码**只发「列名 + 类型」**：不带 NOT NULL，也不带 DEFAULT（生产形态
+	// 是 `id bigint NOT NULL DEFAULT nextval('request_logs_id_seq')`）。
+	//
+	// 后果不是「夹具宽松一点」，而是**任何依赖某列真实取值的断言都会平凡通过**：
+	// 夹具不写 id ⇒ 它在 scratch 里恒为 NULL ⇒ 「id 必须是 NULL」是 NULL 对 NULL。
+	// 这个坑已经踩过一次——`id` 的值层门在 v1 臂上恒绿，而 v1 臂其实应当透传真值。
+	//
+	// 现在的做法是在 seed 里**显式给 id**（900001 / 901001），而不是给克隆补
+	// DEFAULT：补 DEFAULT 需要连带在 scratch 里建序列（顺序依赖、且会让所有
+	// 未显式给 id 的夹具行都拿到自动 id），收益只是让夹具更「像生产」。
+	// **凡给这个夹具加断言，先问：我要断言的那一列在夹具里有没有真实取值？**
 	for _, name := range []string{
 		"customer_id", "request_class", "due_at", "system_fingerprint",
 		"raw_model_name", "credits_rate_multiplier", "client_ip",
