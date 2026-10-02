@@ -330,18 +330,43 @@ func dedupeSorted(in []string) []string {
 // v1」。后者一旦 SQL 变了就自动失效（下面的自检会报红），所以它不会变成
 // 一个永不更新的占位。
 var unattributablePaddedRefExemptions = map[string]string{
-	"bg/auto_route_settle_worker.go:id": "手验（2026-10-02）：裸 `id` 出现在 " +
-		"`SELECT s.id, … FROM ( SELECT id, … FROM auto_route_selections_hot … ) s " +
-		"LEFT JOIN request_logs_hot rl` 这条字面量里，绑的是**派生表 s**（源为 " +
-		"auto_route_selections_hot，不在 v1 宽族）；该字面量里所有真正读 v1 的列都" +
-		"带 `rl.` 前缀。文件里另两处 `WHERE id = …` 属于 " +
-		"`UPDATE auto_route_selections_hot`，整条字面量不含 v1 关系。",
 	"domains/streaming/model_alternatives.go:id": "手验（2026-10-02）：该文件里读 v1 的那条 " +
 		"字面量（`FROM request_logs_hot WHERE ts > … AND success AND canonical_model IS NOT NULL " +
 		"GROUP BY canonical_model`）只读 canonical_model / ts / success，**不读任何补位列**。" +
 		"被点名的裸 `id` 在另一条字面量里（`ORDER BY id` 与 models_canonical 侧），那条字面量" +
 		"虽因内嵌 CTE 而同时含 request_logs_hot，但 id 绑的是 models_canonical。",
 }
+
+// 关于 `bg/auto_route_settle_worker.go:id` 这条豁免为什么**被删掉**而不是被改写
+// （§9.45）：
+//
+// 它的形状是「一条同时含 v1 关系与派生表的字面量里，裸 `id` 不可归属」。§9.44 把
+// settleBatch 的 SQL 从 worker 体内搬进 `bg/auto_route_settle_sql.go` 的两个纯函数，
+// 于是那条字面量被拆成若干片段，**每一片都不含任何关系名**（关系名是拼进去的
+// `src.TurnsTable`）⇒ 本门在那个文件里不再产生任何命中，豁免按「失效即报红」的
+// 设计报了出来。
+//
+// 正确处置是**删掉**，理由有两条，缺一不可：
+//
+//  1. 豁免的语义是「这处不可归属的裸列，我手验过它绑的不是 v1」。删掉后形状确实
+//     不再存在，这句话对**今天**仍然成立。
+//  2. 但删掉会让 `bg/auto_route_settle_sql.go` 对本门**完全隐形**——不是「判定为
+//     干净」，而是「看不见」。这一点由 §9.45 记录：全仓共 48 处 SQL 关系名不是字面量，
+//     其中 `requestLogsSource` / `logsSourceFromSQL` / `requestLogsFromClause` /
+//     `boardRequestLogsFromClause` 这四个**切换层**在 `days <= 7` 时直接返回
+//     `request_logs_hot`，6 个调用点对本门不可见。
+//
+// 也就是说：本门今天的「0 个读方」结论**方向正确但不完整**——它是在一个漏掉
+// 拼接式 SQL 的测量面上得到的。settle worker 那两个读点另有更强的覆盖
+// （bg/auto_route_settle_source_test.go 的 TestSettleLegsAllUseTheSameSource 与
+// TestSettleWorkerDelegatesToTheSQLBuilders 断言 SQL 里只能出现 src.TurnsTable、
+// 不得出现任何字面量表名），所以删掉这条豁免**不会**降低该读点的守门强度。
+//
+// 四个切换层的 6 个调用点经手验**当前没有读补位列**（admin/usage_credits.go 与
+// maas/usage.go、maas/credit_buckets.go 对 6 个补位列零匹配；
+// maas/consumption_detail.go 的 `id` 全部限定在 maas_settings / providers /
+// credentials / models_canonical，不是 request_logs 的别名），所以这是**潜在**盲区
+// 而非现网漏网。复现工具见 cmd/tools/sql_source_indirection_audit。
 
 // checkUnattributablePaddedRefs 要求每个「不可归属」命中都在具名豁免表里且理由非空，
 // 并反过来要求每条豁免**仍然命中**（SQL 改了就失效，逼人复核而不是让它躺平）。
