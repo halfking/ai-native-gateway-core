@@ -2081,10 +2081,15 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// 会被下面的 if logsWrite 一起关掉（详见 observeSystemFingerprint）。
 	observeSystemFingerprint(entry)
 
-	// 819 落点的另一半：终态到达 ⇒ 删掉「开始了」的标记，于是
+	// 819 落点的另一半：**终态**到达 ⇒ 删掉「开始了」的标记，于是
 	// request_abandoned 稳态下**就是** abandoned 集合本身。
-	// 同样在 if logsWrite 之外（审计 §9.66）。
-	clearRequestAbandonedPending(ctx, tx, entry.RequestID)
+	// 同样在 if logsWrite 之外（审计 §9.66）。谓词门（R35 审计）：中途
+	// enrichment UPDATE（RequestStatus 仍 in_progress）不得删活标记——
+	// 不变式由此在函数内部自洽，不依赖「调用方恰好只发终态」的未成文纪律
+	// （EmitRequestLogUpdate 已预期存在省略终态字段的迟到 UPDATE）。
+	if !requestIsStartedNotFinished(entry) {
+		clearRequestAbandonedPending(ctx, tx, entry.RequestID)
+	}
 
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
 		// UPDATE directly targets usage_ledger_hot — UPDATE-heavy
@@ -2668,6 +2673,18 @@ func markRequestAbandonedPending(ctx context.Context, tx pgx.Tx, entry *RequestL
 	if entry.CompletionTokens != nil {
 		completion = *entry.CompletionTokens
 	}
+	// The savepoint delivers the declared fail-open contract: a statement-level
+	// failure (table missing, column drift 42703, …) would otherwise abort the
+	// whole request_logs transaction — the marker INSERT runs BEFORE the main
+	// write, so every subsequent statement (usage_ledger_hot included) would
+	// fail with 25P02. Same shape as gw_final_success_claim below.
+	//nolint:errcheck // best-effort marker; failure must not fail request logging
+	if _, err := tx.Exec(ctx, `SAVEPOINT gw_req_abandoned_mark`); err != nil {
+		recordRequestAbandonedOp("mark_failed")
+		slog.Warn("request_abandoned: mark savepoint failed, skipping marker (request log write unaffected)",
+			"request_id", entry.RequestID, "error", err)
+		return
+	}
 	//nolint:errcheck // best-effort marker; failure must not fail request logging
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO public.request_abandoned (
@@ -2688,8 +2705,12 @@ func markRequestAbandonedPending(ctx context.Context, tx pgx.Tx, entry *RequestL
 		recordRequestAbandonedOp("mark_failed")
 		slog.Warn("request_abandoned: start marker write failed (request log write unaffected)",
 			"request_id", entry.RequestID, "error", err)
+		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_req_abandoned_mark`)
+		_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_req_abandoned_mark`)
 		return
 	}
+	//nolint:errcheck // best-effort
+	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_req_abandoned_mark`)
 	recordRequestAbandonedOp("mark")
 }
 
@@ -2705,6 +2726,17 @@ func clearRequestAbandonedPending(ctx context.Context, tx pgx.Tx, requestID stri
 	if tx == nil || requestID == "" {
 		return
 	}
+	// Same savepoint isolation as the mark half (R35 审计 P1 根修配套):
+	// this DELETE runs BEFORE the terminal UPDATE/ledger writes; without a
+	// savepoint a statement failure (table missing) would abort the whole
+	// terminal transaction.
+	//nolint:errcheck // best-effort; a stale marker is far cheaper than failing the terminal write
+	if _, err := tx.Exec(ctx, `SAVEPOINT gw_req_abandoned_clear`); err != nil {
+		recordRequestAbandonedOp("clear_failed")
+		slog.Warn("request_abandoned: clear savepoint failed, skipping cleanup (row stays = reads as abandoned)",
+			"request_id", requestID, "error", err)
+		return
+	}
 	//nolint:errcheck // best-effort; a stale marker is far cheaper than failing the terminal write
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM public.request_abandoned WHERE request_id = $1`,
@@ -2713,8 +2745,12 @@ func clearRequestAbandonedPending(ctx context.Context, tx pgx.Tx, requestID stri
 		recordRequestAbandonedOp("clear_failed")
 		slog.Warn("request_abandoned: terminal marker cleanup failed (row stays = reads as abandoned)",
 			"request_id", requestID, "error", err)
+		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_req_abandoned_clear`)
+		_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_req_abandoned_clear`)
 		return
 	}
+	//nolint:errcheck // best-effort
+	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_req_abandoned_clear`)
 	recordRequestAbandonedOp("clear")
 }
 

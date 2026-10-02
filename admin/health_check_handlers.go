@@ -43,7 +43,8 @@ func (h *HealthCheckHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var results []map[string]any
+	// make 非 nil：无体检项时 items 编码 [] 而非 null（同族 R34 nil-slice 批）。
+	results := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, entityID int64
 		var checkID, severity, entityType, entityName, detail, fixSQL, itemStatus string
