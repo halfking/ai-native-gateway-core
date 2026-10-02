@@ -206,10 +206,9 @@ tests:
               severity: critical
               component: bg
               job: llm-gateway
-              instance: gw1
             exp_annotations:
-              summary: "auto-route selection 在持续产出但结算已 45+ 分钟零产出（gw1）"
-              description: "产侧 llm_gateway_auto_selections_total 在 45 分钟窗口内有增长，\n但同实例的 llmgw_autoroute_settled_total 零产出（或序列不存在）。\n这不是「没流量」——是**结算管线与生产脱钩**了。\n\n**正在发生的后果**：pending selection 行持续积累；行龄超过\nsettleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出\nhot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默\n缺口，事后无法回填。\n\n**排查步骤**：\n1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，\n   按那条的步骤走\n2. 只有本条响 → 结算没报错但没产出：确认结算源族\n   （llmgw_autoroute_settle_source_total 哪个族在动）与 settings\n   写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）\n3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor\n   占比后按抑制处理\n4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）\n"
+              summary: "auto-route selection 在持续产出但结算管线已 45+ 分钟零产出（llm-gateway）"
+              description: "部署级（job 聚合）产侧 llm_gateway_auto_selections_total 在 45\n分钟窗口内有增长，但 llmgw_autoroute_settled_total 零产出（或\n序列不存在）。这不是「没流量」——是**结算管线与生产脱钩**了。\n\n**正在发生的后果**：pending selection 行持续积累；行龄超过\nsettleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出\nhot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默\n缺口，事后无法回填。\n\n**排查步骤**：\n1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，\n   按那条的步骤走\n2. 只有本条响 → 结算没报错但没产出：确认结算源族\n   （llmgw_autoroute_settle_source_total 哪个族在动）与 settings\n   写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）\n3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor\n   占比后按抑制处理\n4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）\n"
 
   # ── 场景 10：settled 序列根本不存在 → Stalled 仍须响 ──────────────────
   # 钉住 `unless on(job, instance)` 形态的存在理由：进程启动后到第一次成功
@@ -229,10 +228,9 @@ tests:
               severity: critical
               component: bg
               job: llm-gateway
-              instance: gw1
             exp_annotations:
-              summary: "auto-route selection 在持续产出但结算已 45+ 分钟零产出（gw1）"
-              description: "产侧 llm_gateway_auto_selections_total 在 45 分钟窗口内有增长，\n但同实例的 llmgw_autoroute_settled_total 零产出（或序列不存在）。\n这不是「没流量」——是**结算管线与生产脱钩**了。\n\n**正在发生的后果**：pending selection 行持续积累；行龄超过\nsettleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出\nhot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默\n缺口，事后无法回填。\n\n**排查步骤**：\n1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，\n   按那条的步骤走\n2. 只有本条响 → 结算没报错但没产出：确认结算源族\n   （llmgw_autoroute_settle_source_total 哪个族在动）与 settings\n   写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）\n3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor\n   占比后按抑制处理\n4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）\n"
+              summary: "auto-route selection 在持续产出但结算管线已 45+ 分钟零产出（llm-gateway）"
+              description: "部署级（job 聚合）产侧 llm_gateway_auto_selections_total 在 45\n分钟窗口内有增长，但 llmgw_autoroute_settled_total 零产出（或\n序列不存在）。这不是「没流量」——是**结算管线与生产脱钩**了。\n\n**正在发生的后果**：pending selection 行持续积累；行龄超过\nsettleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出\nhot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默\n缺口，事后无法回填。\n\n**排查步骤**：\n1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，\n   按那条的步骤走\n2. 只有本条响 → 结算没报错但没产出：确认结算源族\n   （llmgw_autoroute_settle_source_total 哪个族在动）与 settings\n   写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）\n3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor\n   占比后按抑制处理\n4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）\n"
 
   # ── 场景 11：双流健康 → Stalled 不响 ─────────────────────────────────
   - interval: 1m
@@ -248,7 +246,7 @@ tests:
         exp_alerts: []
 
   # ── 场景 12：产侧停滞（§9.57 的面）→ Stalled 不重复响 ────────────────
-  # 产侧归零由 auto-route-selection-output.yml 的 SelectionWritesStalled
+  # 产侧归零由 auto-route-selection-output.yml 的 AutoRouteSelectionsNotProduced
   # 负责；本条以「产侧在走」为前提，产侧停增时 lhs 为空 → 不响，两门不重叠。
   - interval: 1m
     name: 产侧停增 → Stalled 不响（归 §9.57 的门）
@@ -257,6 +255,27 @@ tests:
         values: '100x60'
       - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw1",outcome="rewarded"}'
         values: '5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts: []
+
+  # ── 场景 13：双实例拓扑、结算只发生在 leader（R33 域B P2-1 的钉）──────
+  # gw1 赢得 distlock：settled 正常增长；gw2 相位靠后从不 settle，其 settled
+  # 序列恒平而产侧照常。按 job 聚合后 gw1 的结算产出足以覆盖 → 不得响；
+  # 按 (job,instance) 聚合的旧形态会让 gw2 常驻 critical 误报（场景钉住
+  # 聚合粒度必须止于 job）。
+  - interval: 1m
+    name: 双实例单写者 → gw2 settled 恒平也不响（job 级聚合）
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+3x60'
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw2",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+2x60'
+      - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw1",outcome="rewarded"}'
+        values: '0+5x60'
+      - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw2",outcome="rewarded"}'
+        values: '7x60'
     alert_rule_test:
       - eval_time: 40m
         alertname: AutoRouteSettleStalled
