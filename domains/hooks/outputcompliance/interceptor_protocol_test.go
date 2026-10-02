@@ -596,3 +596,92 @@ func TestStreamComplianceMalformedJSONBlocks(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
+
+// 第三十一轮 §四#5 钉测：工具/检索载体 lane 扩容——这些 lane 此前不被合规
+// 游走器访问（sanitize restore 无 marker 不动 ⇒ 模型新造敏感内容直过两道
+// 输出闸）。扩容后逐 lane 必须被检查并 redact；摘掉任一新 case（变异）即红。
+func TestProtocolTextCoversToolCarrierLanes(t *testing.T) {
+	body := `{"object":"response","id":"resp","output":[` +
+		`{"type":"mcp_call","id":"m1","arguments":"{\"phone\":\"13800138001\"}","output":"call 13800138002"},` +
+		`{"type":"web_search_call","id":"w1","action":{"type":"search","query":"call 13800138003","results":["hit 13800138004",{"url":"u","text":"phone 13800138005"}]}},` +
+		`{"type":"file_search_call","id":"f1","queries":["call 13800138006"],"results":[{"file_id":"f","text":"phone 13800138007"}]},` +
+		`{"type":"local_shell_call_output","call_id":"c1","output":"phone 13800138008"},` +
+		`{"type":"shell_call_output","call_id":"c2","outputs":[{"text":"phone 13800138009"}]},` +
+		`{"type":"code_interpreter_call","id":"ci1","code":"print(\"call 13800138010\")","outputs":[{"type":"logs","logs":"phone 13800138011"}]},` +
+		`{"type":"apply_patch_call","id":"ap1","action":{"type":"create","path":"a.txt","content":"call 13800138012"}},` +
+		`{"type":"shell_call","id":"s1","status":"completed","action":{"type":"exec","command":["echo 13800138013"]}}]}`
+	checker := &protocolChecker{}
+	it := NewOutputComplianceInterceptor(checker, nil)
+	result, err := it.processBody(context.Background(), &response.InterceptRequest{TenantID: "t", SessionID: "s", ResponseBody: []byte(body)})
+	if err != nil {
+		t.Fatalf("processBody: %v", err)
+	}
+	if result.ShouldBlock {
+		t.Fatalf("unexpected block: %+v", result)
+	}
+	if len(result.ModifiedBody) == 0 {
+		t.Fatalf("expected redacted body, got observe-only: %+v", result)
+	}
+	got := string(result.ModifiedBody)
+	for _, secret := range []string{
+		"13800138001", // mcp_call.arguments
+		"13800138002", // mcp_call.output
+		"13800138003", // web_search_call.action.query
+		"13800138004", // web_search action.results[] string
+		"13800138005", // web_search action.results[].text
+		"13800138006", // file_search_call.queries[]
+		"13800138007", // file_search_call.results[].text
+		"13800138008", // local_shell_call_output.output
+		"13800138009", // shell_call_output.outputs[].text
+		"13800138010", // code_interpreter_call.code
+		"13800138011", // code_interpreter_call.outputs[].logs
+		"13800138012", // apply_patch_call.action.content
+		"13800138013", // shell_call.action.command[]
+	} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("tool-carrier lane leaked %s in redacted body: %s", secret, got)
+		}
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(result.ModifiedBody, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["id"] != "resp" {
+		t.Fatalf("protocol metadata changed: %v", decoded["id"])
+	}
+}
+
+// 第三十一轮 §四#5 流式镜像钉测：output_item.added / .done 快照与整体 body
+// 同口径覆盖工具载体；added 帧漏镜像会出现 done 才拦的半帧缝。
+func TestStreamCollectCoversToolCarrierItemFrames(t *testing.T) {
+	transform := func(label, original string) (string, int, bool, error) {
+		loc := testPhone.FindStringIndex(original)
+		if loc == nil {
+			return original, 0, false, nil
+		}
+		return original[:loc[0]] + "[PHONE]" + original[loc[1]:], 1, false, nil
+	}
+	for _, tc := range []struct{ name, event string }{
+		{
+			name:  "added",
+			event: `{"type":"response.output_item.added","output_index":0,"item":{"type":"mcp_call","id":"m1","arguments":"{\"phone\":\"13800138021\"}","output":"call 13800138022"}}`,
+		},
+		{
+			name:  "done",
+			event: `{"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call","id":"w1","action":{"query":"call 13800138023","results":["hit 13800138024"]}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, issues, blocked, err := transformVisibleJSON([]byte(tc.event), true, false, transform)
+			if err != nil || blocked {
+				t.Fatalf("out=%s issues=%d blocked=%v err=%v", out, issues, blocked, err)
+			}
+			if issues == 0 {
+				t.Fatalf("tool-carrier item frame not inspected (issues=0): %s", tc.event)
+			}
+			if strings.Contains(string(out), "1380013802") {
+				t.Fatalf("tool-carrier frame leaked: %s", out)
+			}
+		})
+	}
+}
