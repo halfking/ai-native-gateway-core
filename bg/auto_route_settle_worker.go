@@ -110,6 +110,30 @@ var (
 		},
 		[]string{"state"},
 	)
+
+	// autoRouteSettleSweepFailures 把「这一轮 sweep 没有结算任何东西」里
+	// **带错误的那一支**暴露成指标（审计 R32 §四#2：整查询级失败此前只有
+	// slog.Warn + 下一轮重查同批——settlePendingSQL 级别的回归会无告警停滞，
+	// 直到行被 8h promote 移出 hot、reward 永久 NULL）。
+	//
+	// 它与 llmgw_autoroute_settled_total 停增告警是**互补**的两面：本计数器
+	// 抓「查询报错了」，停增告警抓「没报错但也没结算」（源族切到无数据的腿、
+	// 设置门读失败静默回 v1 等——那条路径没有任何 error 可计）。
+	//
+	// 标签是闭集二值，基数恒定（GW-00）。
+	autoRouteSettleSweepFailures = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_autoroute_settle_sweep_failures_total",
+			Help: "Settle sweep cycles that aborted without settling: error (settleBatch whole-query failure) | panic (sweep cycle panicked, recovered by safeSweep).",
+		},
+		[]string{"reason"},
+	)
+)
+
+// sweep 失败原因的闭集取值（与 autoRouteSettleSweepFailures 的 reason 标签对齐）。
+const (
+	sweepFailError = "error" // settleBatch 返回 err
+	sweepFailPanic = "panic" // safeSweep recover 接住的 panic
 )
 
 // retry 信号的三态取值（闭集，与 autoRouteSettleRetryState 的 state 标签对齐）。
@@ -227,6 +251,7 @@ func (w *AutoRouteSettleWorker) run(ctx context.Context) {
 func (w *AutoRouteSettleWorker) safeSweep(ctx context.Context) {
 	defer func() {
 		if rec := recover(); rec != nil {
+			autoRouteSettleSweepFailures.WithLabelValues(sweepFailPanic).Inc()
 			slog.Error("auto-route settle sweep panic (cycle skipped, worker alive)", "recover", rec)
 		}
 	}()
@@ -275,6 +300,7 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 
 	settled, abandoned, err := w.settleBatch(sweepCtx, baselines)
 	if err != nil {
+		autoRouteSettleSweepFailures.WithLabelValues(sweepFailError).Inc()
 		slog.Warn("auto-route settle sweep failed", "error", err)
 		return
 	}
