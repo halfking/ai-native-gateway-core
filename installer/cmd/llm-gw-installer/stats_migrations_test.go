@@ -323,9 +323,6 @@ var sequenceChannelRepairs = map[string]string{
 	"810_heap_partitions_toastless_heal.sql":            "one-shot legacy repair (DETACH/ATTACH rollback needs its own transaction); fresh installs have no toastless-heap legacy",
 	"811_partition_bounds_shanghai_midnight_repair.sql": "one-shot legacy repair (SET LOCAL TIME ZONE + bound rebuild); fresh installs self-heal via sequence channel",
 	"812_model_probe_runs_partitions_heap.sql":          "one-shot legacy repair (to_regclass guard + DETACH/ATTACH); fresh installs self-heal via sequence channel",
-	// 813/814 曾在本表短暂豁免（第三十一轮）：并行会话 d5932d26c 随后按五点同步
-	// 正式注册进安装链（基线视图回读父表 candidate_failure_logs，814 在 392
-	// 建 hot 后升级视图），豁免会让注册检查被遮蔽，故撤销（2026-10-02 合并收敛）。
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
