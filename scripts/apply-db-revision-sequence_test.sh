@@ -130,6 +130,46 @@ grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/script
 grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/local-deploy-test.sh"
 canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_files" "$ensure_allowlist"
 
+# R33 (2026-10-03) channel-leg completeness — structural closeout of the
+# five-recurrence class (693/699/701/703, then 815/816, then 817): each landed
+# with the installer leg complete and the channel leg forgotten. Neither gate
+# above catches that shape in general: canonical_delivery_path_check accepts
+# ANY one of the three paths, and the top_startup check only sees the highest
+# number — so once a newer migration lands, an unregistered one becomes
+# permanently invisible and upgraded databases never receive it.
+# This invariant makes the UPGRADE path exhaustive: every >=690 startup
+# migration must be in the channel sequence, the reviewed Go-ensure allowlist,
+# or the exact installer-only exception list below. Adding a new
+# installer-only migration now demands a deliberate, commented edit here —
+# the sixth recurrence of the class fails pre-commit even when it is no
+# longer the top of the track.
+channel_gap_allowlist=$(cat <<'EOF'
+691_proxy_region_policy.sql
+692_session_summaries_user_intent_widen.sql
+747_session_mirror_outbox_source_claim.sql
+748_selfcheck_system_key_tier.sql
+759_report_snapshots_grain_dims.sql
+EOF
+)
+# 691/692: R16-documented installer-only window ("687-692 intentional sequence
+# gaps"). 747/748/759: same installer-only class — existing databases received
+# them out-of-band / via their own runtime ensure; kept exact so the next
+# member of the class is a decision, not a recurrence.
+while IFS= read -r name; do
+  [[ "$name" == *.down.sql ]] && continue
+  [[ "$name" =~ ^[0-9]{3}_.*\.sql$ ]] || continue
+  version=${name%%_*}
+  [[ "$version" < "690" ]] && continue
+  [[ "$name" == "755_drop_dead_cleanup_expired_session_turn_logs.sql" ]] && continue
+  if printf '%s\n' "$sequence_files" | grep -Fxq "$name" \
+    || printf '%s\n' "$ensure_allowlist" | grep -Fxq "$name" \
+    || printf '%s\n' "$channel_gap_allowlist" | grep -Fxq "$name"; then
+    continue
+  fi
+  printf 'startup migration %s has an installer leg but no upgrade path; register it in the channel files array, the Go-ensure allowlist, or (installer-only by design) channel_gap_allowlist\n' "$name" >&2
+  exit 1
+done <<<"$canonical_files"
+
 # Sequence-only migrations are valid fresh-install exceptions, but they must
 # remain in the upgrade contract. If either disappears, the exhaustive gate's
 # coverage can otherwise be obscured by an unrelated future StartupFiles edit.
