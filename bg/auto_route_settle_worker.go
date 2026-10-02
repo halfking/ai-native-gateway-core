@@ -351,11 +351,12 @@ func (w *AutoRouteSettleWorker) loadTaskBaselines(ctx context.Context) (map[stri
 	// string and a scan failure is iteration-fatal, so the whole baseline
 	// map would be lost; COALESCE keeps the group scannable and the
 	// taskType != "" skip below drops it (245 2026-09-16 audit).
+	src := currentSettleSource()
 	rows, err := w.db.Query(ctx, `
 		SELECT COALESCE(task_type, '') AS task_type,
 		       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p95_latency_ms,
 		       COALESCE(percentile_cont(0.75) WITHIN GROUP (ORDER BY cost_usd), 0)        AS p75_cost_usd
-		FROM request_logs_hot rl
+		FROM `+src.TurnsTable+` rl
 		WHERE rl.ts >= NOW() - $1::interval
 		  AND rl.is_auto_request = TRUE
 		  AND rl.latency_ms IS NOT NULL`+autoroute.SQLExcludeSyntheticActors("rl")+`
@@ -530,6 +531,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 	// "calls to this model minus one": a normal multi-turn session making N
 	// sequential calls is N requests, not N-1 retries. Earlier code made that
 	// mistake and penalised healthy conversation flows.
+	src := currentSettleSource()
 	rows, qErr := w.db.Query(ctx, `
 			SELECT s.id, s.partition_date, s.request_id, s.task_type, s.canonical_id, s.ts,
 			       rl.success, rl.latency_ms, rl.cost_usd,
@@ -545,16 +547,16 @@ func (w *AutoRouteSettleWorker) settleBatch(
 				ORDER BY ts
 				LIMIT $2
 			) s
-			LEFT JOIN request_logs_hot rl
+			LEFT JOIN `+src.TurnsTable+` rl
 			       ON rl.request_id = s.request_id
 			LEFT JOIN session_summaries ss
 			       ON ss.session_key = s.session_id
 			LEFT JOIN LATERAL (
 			       SELECT COUNT(*)::int AS model_reqs,
 			              SUM(`+retryCountPerRowSQL("r2")+`)::int AS retry_count
-			       FROM request_logs_hot r2
+			       FROM `+src.TurnsTable+` r2
 			       WHERE s.session_id IS NOT NULL
-			         AND r2.gw_session_id = s.session_id`+autoroute.SQLExcludeSyntheticActors("r2")+`
+			         AND r2.`+src.SessionKeyCol+` = s.session_id`+autoroute.SQLExcludeSyntheticActors("r2")+`
 			) mr ON TRUE
 	`, settleDelay.String(), settleBatchSize)
 	if qErr != nil {
@@ -620,6 +622,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 		autoRouteSettleLagSeconds.Observe(now.Sub(p.ts).Seconds())
 		autoRouteRewardScore.WithLabelValues(p.taskType).Observe(reward)
 		autoRouteSettleRetryState.WithLabelValues(retryState).Inc()
+		autoRouteSettleSource.WithLabelValues(currentSettleSource().Family).Inc()
 	}
 
 	return settled, abandoned, nil
