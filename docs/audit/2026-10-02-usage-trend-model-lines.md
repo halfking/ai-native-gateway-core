@@ -54,13 +54,66 @@
 
 ## 遗留风险与建议
 
-1. **api_key 档长窗性能**：月度分区无 api_key_id 索引（分区索引是逐月建的，新分区也不会自动带），7d+ 窗在数百万行分区上可能数十秒直至 45s 超时。根治方向二选一：给 request_logs 分区补 `(api_key_id, ts)` 索引（迁移+部署清单三处同步）；或 rollup 加 `api_key×model` 复合维（新 dim_type，写入方+回填一轮）。**在根治前，前端超时提示只有通用 loadFailed 文案，未引导用户缩窗。**
-2. **未部署**：245/154 与本地 8782 均未上本功能（截至本文落笔 main=2814bde51+本轮审计提交）。llmgateway.internal.example.com 要看到效果需走部署清单。
-3. **浏览器级 UI 未验证**：本轮门禁止于 vue-tsc/vite build/vitest 与真实库 SQL；实际渲染（canvas 尺寸、radio 溢出、深链往返）需部署后人工或浏览器实测确认。
+1. **api_key 档长窗性能**：月度分区无 api_key_id 索引（分区索引是逐月建的，新分区也不会自动带），7d+ 窗在数百万行分区上可能数十秒直至 45s 超时。根治方向二选一：给 request_logs 分区补 `(api_key_id, ts)` 索引（迁移+部署清单三处同步）；或 rollup 加 `api_key×model` 复合维（新 dim_type，写入方+回填一轮）。~~在根治前，前端超时提示只有通用 loadFailed 文案，未引导用户缩窗。~~ **2026-10-02 下午已补前端引导**（见下「遗留项跟进」§2），索引根治评估结论为暂不实施、蓝图就绪（见下 §3）。
+2. **未部署**：245/154 与本地 8782 均未上本功能（截至本文落笔 main=2814bde51+本轮审计提交）。llmgateway.internal.example.com 要看到效果需走部署清单。→ **2026-10-02 下午本地 8782 已部署 d3485a431**（见下 §1）；245/154 仍未上。
+3. **浏览器级 UI 未验证**：本轮门禁止于 vue-tsc/vite build/vitest 与真实库 SQL；实际渲染（canvas 尺寸、radio 溢出、深链往返）需部署后人工或浏览器实测确认。→ **2026-10-02 下午已实测**，结论见下 §1。
 4. 深链仅初始化读一次 query，浏览器前进/后退不会重放过滤器（低频场景，登记即可）。
+
+## 遗留项跟进（2026-10-02 下午轮）
+
+### 1. 本地 8782 部署与浏览器实测
+
+**部署事实（2026-10-02 13:50–14:05）**：main d3485a431 已上本地 8782，seq 2390（`2.5.8-d3485a43-20261002-2390`）。部署走干净 git worktree（d3485a431 检出 + 修 deploy-lib 软链 + 拷 .env.local + 显式真实库 DSN 覆盖），**未从 sibling 工作树部署**——当时 sibling 有并行会话 5 分钟前的未提交 Go WIP（session_analytics 等），直接 deploy 会把半成品编进共享网关。核验全绿：/healthz 200、/version=d3485a43#2390、部署前后容器 env diff 为零（SECRET_KEY/CREDENTIAL_ENCRYPTION_KEY 哈希一致，无 09-18 式 secret 漂移）、页面引用 chunk hash 与 slot 2390 一致、deploy 自带 VERIFY_PASS=1（admin 登录+凭据解密冒烟）。注意：sibling 的 .env.local DSN 已被并行 RLS 会话改为 `llm_gateway_test`，本次照 09-18 先例以 run/*.env 的真实 DSN 显式覆盖部署。
+
+**浏览器实测矩阵（IAB 内嵌 Chromium，admin 登录态）**：
+
+| # | 项 | 结论 |
+|---|---|---|
+| 1 | 看板卡多线渲染 | ✓ legend 7 项（top6+Others 虚线）、y 轴刻度、x 轴 5min 桶、__others__ 灰虚线 |
+| 2 | canvas 尺寸 !important 修复（审计 #3） | ✓ 内联 style height=284px 被压回 268px（CSS var --mtc-h 生效），Chart.js responsive 改写被 !important 压住 |
+| 3 | 指标切换 | ✓ Requests→Tokens：radio checked 翻转，y 轴从 10~18 变 5K~40K 紧凑刻度（compactTickValue 生效） |
+| 4 | legend 点击隐藏 / 隐藏保持回放（审计 #4） | **✗ 未通过——图表交互层不响应（新发现，见下）**；回放修复因此无法在浏览器层验证 |
+| 5 | 「更多」深链 | ✓ bfb__more → `/admin/usage-trends?start=2026-10-02&end=2026-10-02`，范围还原 Today |
+| 6 | 全页六维过滤 | ✓ provider 选择→URL `provider=2` 同步+表格联动；**清空→URL 无 `provider=` 空参残留（审计 #5 truthy 防护实证）**；apikey=727+自定义窗深链还原→detail 档 13s 返回 11 行真数据（claude-opus-4-5 6.7K req/187K tok/5.2%），source 切「Request detail」；model 下拉随过滤联动（provider=2 当日无流量→选项空，行为正确） |
+| 7 | 空态 | ✓ 2026-01-01~01-03：`No data` 占位可见、0 行、无报错、深链还原 |
+
+**新发现（本轮实测头条，P1）：图表交互层不响应。** 证据链：
+- 点击探针（document 捕获层）证实**真实 isTrusted click 落在 CANVAS 元素**（坐标命中 legend box/文字，含 5 点垂直扫描），位图零变化、无 toggle；
+- 合成 mousemove/click 同样无 tooltip、无反应；
+- 活性探针：视口 1440→1100 后 canvas CSS 963 而 **buffer 冻结在旧值**（活实例 responsive 应跟随重算）；但切指标销毁重建后的**新实例出生时 buffer 立即正确**（963）——即「出生即活、随后失活」；
+- 渲染面完全正常（多线/刻度/指标切换重绘），且指标切换路径（watch→initChart 销毁重建）本身工作。
+
+定位线索（未定论）：useChart `initChart` 的 `Chart.getChart→existing.destroy()`+`destroyChart()` 双重销毁舞步、同一 flush 内 chartConfig deep watch 与数组 watch 双触发 refreshChart、Chart.js v4.5.1 DomPlatform `addEventListener` 先 removeEventListener 同类型再挂的语义，三者在同一 canvas 上交错后的最终实例疑似 listeners 未挂/被摘；也可能是 IAB 内嵌 webview 特有（RO/事件投递）。**待办：在桌面 Chrome/Safari 复测一次以二分环境因素；若复现，修 useChart 生命周期（一次 mount 一个实例，update 代替 destroy+recreate）。legend 回放修复（hiddenModels+applyHiddenState）逻辑本身有单测，等交互层修复后重验。**
+
+### 2. detail 档超时引导文案（已交付）
+
+后端 handler 的 45s 截止经 `writeInternalErr` 被折叠成固定 op 文案（`"usage trend-series query failed"`，真实 err 只进服务端日志），前端无法从报错里看到 timeout 字样。前端识别信号取「api_key 过滤生效（detail 档）+ 错误文案含 `query failed`」（UsageTrendExplorer `detailQueryFailed`），命中时在错误行下追加引导 `usageTrend.detailTimeoutHint`（8 语言同步：zh-CN/zh-TW/en-US/ja-JP/de-DE/es-ES/fr-FR/ar-SA），文案统一引导「缩短时间范围（如 7 天内）后重试」。看板卡无 api_key 过滤（dim 档实测 30d 0.5s），不需要该引导。
+
+### 3. request_logs 分区 `(api_key_id, ts)` 索引迁移评估 —— 结论：暂不实施，蓝图就绪
+
+**现状实证（本地真库，2026-10-02）**：
+- request_logs 月分区 2026_07–2026_11 + default；2026_09 分区 2474 MB；每分区已挂 ~49 个索引。
+- **api_key_id 在全部存量分区上零索引**（tenant_id 反而有 4 个 ts 复合索引，`tenant_id_ts_idx2` 形状可直接对标）；detail 档查询谓词 `api_key_id = $ AND ts >= $ AND ts < $`（+可选 tenant/provider/model）只能顺序扫——这就是 7d 长窗数十秒的根因。
+
+**实施蓝图（仓内已有同表先例，勿发明新模式）**：728（`sql/migrations/startup/728_sql_audit_request_logs_credential_model_index.sql`）就是 request_logs 分区补 credential 复合索引的三段式迁移，`(api_key_id, ts DESC)` 版本近乎照抄：
+1. 逐分区 `CREATE INDEX CONCURRENTLY ... ON request_logs_<part> (api_key_id, ts DESC)`（`\gexec` 从 pg_inherits 生成，新库无分区时自然空操作）——PG17 分区父表不支持 CONCURRENTLY（42809）；
+2. 父表 `CREATE INDEX ... ON ONLY request_logs (api_key_id, ts DESC)` 壳（仅元数据锁）；未来月分区经 PARTITION OF 自动继承；
+3. 幂等 ATTACH 子索引（DO 守卫，防同分区已有别名子索引时 55000）。
+中断残留的 INVALID 索引必须先 DROP 再建（IF NOT EXISTS 会永久跳过，见 db/db.go ensureSqlAuditPartialIndexes）。三处同步：sql/migrations/startup/<n>（up+down）、installer embeddata/startup、installed_startup_migrations.tsv。
+
+**建号三重查重（2026-10-02 实测）**：① 仓内 `sql/migrations/startup/` max=814（813/814 已合 main；并行会话正补其 embeddata/tsv 接线，sibling 未提交）；② `go test ./sql/migrations/startup/ -run Unique` ✓；③ 共享 252 账本（ssh 245 查 `llm_gateway_migration_checksums`）813/814 已登记、999 为测试号 → **815 当前三处全空闲**。
+
+**暂不实施的理由**：
+1. **建号窗口被并行会话占用**：813/814 的 embeddata/tsv 接线尚未收口（sibling 工作区有未提交改动，当日仍活跃）。startup 迁移在 deploy 路径上（不同于可随意重编号的 hotfix 迁移），此刻落 815 就是主动复刻 694 撞号事故（他项目抢占致自愈静默失效，见迁移建号 memory）。
+2. **写放大**：request_logs 是最热写表、每分区已 49 个索引，+1 索引＝每条请求日志多一次 btree 维护；新索引估算 60–100MB/月分区（生产分区更大），换取的只有一个 admin 分析端点 detail 档的长窗加速。
+3. **需要独立运维窗口**：CONCURRENTLY 逐分区构建在真库分钟到小时级 + WAL 放大，252 宿主机根盘 197G 易满；不宜搭车功能轮。
+4. UX 缺口已由 §2 前端引导兜住，45s 超时兜底仍在。
+
+**启用条件（下一位维护者可直接执行）**：等 813/814 接线会话收口 → 重新三重查重取号（预期 815）→ 按 728 蓝图落迁移（down＝逐分区 DROP CONCURRENTLY + ONLY 壳 DROP）→ 先在本地 8782 验证 detail 档 7d EXPLAIN 走 Index Scan → 再排产 245/154（252 磁盘预检先行）。
 
 ## 门禁记录
 
 - `go build ./...` ✓；`go test ./admin/` ✓（含 S4 读面守卫、折叠/透视/分档单测）
 - `pnpm build`（menu-config 导出 + element-import-audit + vue-tsc + vite）✓；`vitest run` 154 文件 / 1112 测试 ✓
 - 真实库 11 用例（临时门控测试，已删）：全过，数据见上表
+- 下午跟进轮：`pnpm build` ✓（超时引导文案 + 8 locale 后）；`go test ./sql/migrations/startup/ -run Unique` ✓（815 三重查重之一）；`vitest run` 154 文件 / 1112 测试 ✓（与首轮基线持平）；本地 8782 实机部署 d3485a431#2390 + 浏览器实测矩阵见「遗留项跟进」§1

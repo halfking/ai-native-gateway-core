@@ -3,6 +3,7 @@ export default {
   pageTitle: 'Usage Trend Explorer',
   pageSub: 'Per-model usage over time; filter by provider / tenant / API key / model / metric',
   loadFailed: 'Failed to load',
+  detailTimeoutHint: 'Filtering by API key scans raw request logs and can time out on wide ranges; try a shorter time range (e.g. within 7 days)',
   filterProvider: 'Provider',
   filterTenant: 'Tenant',
   filterApiKey: 'API Key',
