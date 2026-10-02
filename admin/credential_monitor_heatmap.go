@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/db"
 )
 
@@ -284,15 +285,33 @@ func buildHeatmapSQL(p heatmapQueryParams) (string, []any) {
 	argIdx := 3
 
 	if p.ExcludeSelfTest {
-		// Probe/self-test rows are marked on request_logs itself: legacy
-		// ActiveProbeWorker sets task_type='probe_triggered' and every probe
-		// path tags quality_flags with 'probe'. request_context_attrs.is_probe
-		// is NOT usable here — direct-probe rows carry no rca row at all.
-		// R50: added the origin_stage arm (bg.probeTrafficExclusionPredicate
-		// shape, inlined) — the probe gateway round has origin_stage=
-		// 'node_probe' and never gets the flag, so it leaked into the
-		// business heatmap.
-		whereClauses = append(whereClauses, "COALESCE(rl.task_type, '') <> 'probe_triggered' AND NOT ('probe' = ANY(rl.quality_flags)) AND COALESCE(rl.origin_stage, 'business') = 'business'")
+		// Probe/self-test exclusion — the read face here is
+		// request_logs_with_current_month (see the FROM below), i.e. the
+		// canonical frozen-113-column view, NOT the physical request_logs
+		// tables. That distinction is load-bearing in both directions:
+		//
+		//  1. origin_stage is NOT in the view's 113-column contract
+		//     (migration 710 rebuilt the body as a session-family assembly;
+		//     real-DB information_schema: 0 columns named origin_stage on
+		//     request_logs_with_current_month, 1 on request_logs / _hot /
+		//     session_turns). R50 inlined the *physical-table* predicate here,
+		//     which 42703s on every call — and ExcludeSelfTest defaults to
+		//     true, so every default heatmap call 500'd.
+		//  2. The old hand-rolled second arm `NOT ('probe' = ANY(quality_flags))`
+		//     has no COALESCE: for the NULL flags the session arm is
+		//     NULL-padded with, `'probe' = ANY(NULL)` is NULL and
+		//     `NOT NULL` is not TRUE, so those rows are silently dropped —
+		//     measured 40,225 of 40,275 session-branch rows in 7d. Fixing
+		//     only the column reference would have made the heatmap return
+		//     200 while blind to the entire migrated dataset.
+		//
+		// So this must use the shared frozen-view spelling owned by bg, not a
+		// local copy — R49 already established that invariant and R50's
+		// inlining is what let it regress. admin already imports bg (no
+		// import cycle); the "avoid an admin→bg import" rationale in the old
+		// comment was never true.
+		whereClauses = append(whereClauses,
+			fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, "rl", "rl", "rl"))
 	}
 
 	if p.TenantID != "" {

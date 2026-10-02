@@ -2773,3 +2773,163 @@ batch2 的 25 条写入后，`TestRequestLogsStopWriteNothingLeftUnclassified` *
    —— 它的正解要先补 `RawModelName`（§8 决策 1 的可行性实测）。
 4. **S4 门控范围声明**与实际覆盖表不一致（§9.15 的 `ledger_reconciliation` 误报机），
    还有哪些表在范围外被同一套对账/聚合引用，未系统排查。
+
+---
+
+## §9.18 视图源越列：读端 105/105 之外的一类缺陷（2026-10-02）
+
+§9.17.4 遗留第 1 条（`admin/credential_monitor_heatmap.go:295` 引用 `rl.origin_stage`）经真库
+确认成立并已修。修的过程中暴露出一个**此前 105 条读端分类里没有的缺陷类**，并顺带抓出
+第二处同类真缺陷。
+
+### §9.18.1 确认：`origin_stage` 不在视图契约内
+
+| 关系 | `origin_stage` 列数（真库 information_schema） |
+|---|---:|
+| `request_logs_with_current_month` | **0** |
+| `request_logs` / `request_logs_hot` | 1 / 1 |
+| `session_turns` / `session_turns_hot` | 1 / 1 |
+
+实跑复现（2026-10-02，库 `llm_gateway`）：
+
+```
+SELECT ... COALESCE(rl.origin_stage,'business')='business'
+  FROM request_logs_with_current_month rl;
+ERROR:  column rl.origin_stage does not exist        -- SQLSTATE 42703
+```
+
+去掉该项后同查询正常返回 210,398 行。**不是偶发、不是慢，是这条查询永远执行不了。**
+且 `exclude_self_test` 在 `credential_monitor_heatmap.go` 的参数解析里**缺省 true**，
+前端 `web/src/api/credential-monitor.ts:548` 又显式下发该参数 ⇒ 裸调用与前端调用走同一条
+必错路径。凭据质量热图在线上 500 至少两周（自 R50 于 2026-09-21 引入算起）。
+
+### §9.18.2 根因不是「写错一个列名」，是三层叠加
+
+1. **读面对象与谓词变体没有绑定。** R49（2026-09-20）已识别「物理表谓词对视图必 42703」
+   并造出视图变体 `probeTrafficExclusionPredicateView`，还写进了注释；R50（2026-09-21）
+   给 admin 热图补臂时把**物理表**那条内联了回去。
+2. **调用面守卫的清单是包内清单。** `bg.TestProbeExclusionPredicateCallSitesR50` 的文件
+   列表只有 bg 包 7 个文件，admin 不在扫描范围内 ⇒ admin 的回归对整套测试隐形。
+   注释里写的「inlined to avoid an admin→bg import」也从来不是真的：admin 已在
+   `probe_history.go` / `handler.go` / `candidate_failure_handlers.go` / `probe_stream_sse.go`
+   四个文件里 import 了 bg，无循环。
+3. **SQL 字面量从未真的发给过 PostgreSQL。** `TestBuildHeatmapSQL_GuardsAgainst42803Regression`
+   对 SQL **字符串**做断言，`pgxmock` 匹配查询字符串、从不解析它 ⇒ 「这条 SQL 根本跑不起来」
+   整类缺陷在单测里不可见。这与 `admin/sql_literal_validity_test.go` 记录的 `''::jsonb`
+   是同一根因，**第三次复发**（2026-07-08 `rl.role` → 2026-08-28 `''::jsonb` → 本次
+   `rl.origin_stage`）。
+
+### §9.18.3 第二重缺陷：只补列名会造出「200 但全盲」的热图
+
+原谓词第二臂是 `NOT ('probe' = ANY(rl.quality_flags))`，**没有 COALESCE**。
+`'probe' = ANY(NULL)` 求值为 NULL，`NOT NULL` 不是 TRUE，整行被 `WHERE` 丢弃。
+而 710 迁移对 session 臂的 30 列做了 NULL 补位，`quality_flags` 正在其中。
+
+7 天窗口实测（`credential_id IS NOT NULL`）：
+
+| 交叉项 | 行数 |
+|---|---:|
+| session 臂 ∧ `quality_flags IS NULL` | **40,225** |
+| session 臂 ∧ `quality_flags IS NOT NULL` | 50 |
+| v1 臂 ∧ `quality_flags IS NULL` | 671 |
+| v1 臂 ∧ 非 NULL | 418,258 |
+
+⇒ 原谓词会丢掉 **40,225 / 40,275（99.9%）** 的 session 分臂。**只把 `origin_stage`
+换成 `origin_actor` 是不够的**：那样热图会返回 200、返回 v1 行，却对整个已迁移的
+`session_*` 数据集完全隐形——比 500 更难发现。
+
+### §9.18.4 全仓扫描：8 个命中，7 个证伪
+
+扫「同时出现 `origin_stage` 与视图名」的文件，逐个定 FROM：
+
+| 文件 | 实际数据源 | 判定 |
+|---|---|---|
+| `admin/credential_monitor_heatmap.go` | `request_logs_with_current_month` | **真缺陷** |
+| `admin/routing.go:2696` | `request_logs_hot` | 证伪（有该列） |
+| `admin/analytics.go`（7 处调用点） | `routing_analytics_source` / `routing_decision_log` | 证伪 |
+| `admin/auto_route.go:493`（3 处落点） | `routing_analytics_source` | 证伪 |
+| `bg/mv_consistency.go:230,285` | `routing_analytics_source` | 证伪 |
+| `bg/shared_pick.go:88` | 视图，但已用视图变体谓词 | 证伪 |
+| `internal/sessionv2mirror/synthetic_session.go` | 仅注释 | 证伪 |
+| `db/db.go:3167,3185` | v1 包装链定义，显式暴露 `origin_stage` | 证伪 |
+
+`analytics.go:1012` 的谓词带 `probe` 别名且限定在 `NOT EXISTS` 子查询内，绑定的是
+`routing_analytics_source probe`——逐行看出来的，不是 grep 出来的。
+
+### §9.18.5 新抓到的第二处真缺陷：`compression_stats` 的 `token_band`
+
+新写的全仓守卫第一次运行就报出 `admin/compression_stats.go:212`：
+
+```sql
+SELECT COALESCE(token_band,'') AS band, COUNT(*) FROM request_logs_with_current_month
+WHERE ... GROUP BY token_band
+```
+
+真库实测 `token_band` 在视图上 **0 列** ⇒ 必 42703。而错误被
+`slog.Warn("compression_stats band query failed")` 吞掉、不中断返回 ⇒
+**仪表盘 token 分带聚合长期静默返回空**（属 §9 读端第 1 档 `silently_empty`，
+但不在 105 条清单里，因为此前没有任何机制去查）。
+
+**未修，且不擅自修。** 同函数的兄弟查询都读视图，所以正解是把 `token_band` 随迁进
+`session_turns` + 710 投影；改成读物理表会丢掉 session 分臂，与 S4 方向相反。
+它属于**「物理表独有列未随迁」缺口类，与 §8 决策 1 的 `raw_model_name` 同族**，
+修法需要产品语义裁决。已按本仓既有范式登记为具名豁免并写明跟踪位置。
+
+### §9.18.6 改动
+
+| 文件 | 行为 |
+|---|---|
+| `bg/probe_policy.go` | `probeTrafficExclusionPredicateView` → **导出**为 `ProbeTrafficExclusionPredicateView`（含 4 个 bg 调用点与守卫测试同步改拼写，全仓单一拼写）。修正失实注释：常量有**三个** format 动词，原注释写「pass it twice」，照做会渲染出 `%!s(MISSING)` 混进 SQL。 |
+| `admin/credential_monitor_heatmap.go` | 删掉内联三臂，改用 `fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, "rl","rl","rl")`；新增 `bg` 导入。 |
+| `admin/view_source_columns_contract.go`（新） | 42 个「物理表独有列」清单（真库 information_schema 差集实测），无 build tag 供两道门共用。 |
+| `admin/view_source_column_contract_test.go`（新） | 全仓逐字面量 AST 门 + 具名豁免 + 豁免失效自检。 |
+| `admin/credential_monitor_heatmap_probe_predicate_test.go`（新） | 源码钉桩门 + 谓词 format 元数门。 |
+| `admin/credential_monitor_heatmap_sql_integration_test.go`（新） | 真库执行门 ×3。 |
+
+### §9.18.7 四道门与它们的边界
+
+| 门 | tag | 抓什么 | 抓不到什么 |
+|---|---|---|---|
+| `TestNoPhysicalOnlyColumnsInViewSourcedSQL` | `!integration` | **同一条字面量**内视图源 + 绑定到视图的越列 | 跨字面量运行时拼接的形状（**正是热图这个 case**） |
+| `TestHeatmapProbeExclusionUsesSharedViewPredicate` / `TestViewPredicateFormatArity` | `!integration` | 热图源码里的越列拼写、无 COALESCE 臂、format 元数 | 其它文件的同形缺陷 |
+| `TestCredentialHeatmapSQL_ExecutesOnRealDatabase` | `integration` | 拼装后的真实 SQL 能否被 PG 解析执行 | 任何解析期之外的语义问题 |
+| `TestHeatmapExcludeSelfTestKeepsSessionBranchRows` | `integration` | 排除谓词的判决**不依赖 `quality_flags` 是否为 NULL** | 探针分类本身准不准 |
+| `TestPhysicalOnlyColumnsListMatchesRealDatabase` | `integration` | 硬编码的 42 列清单未过期 | — |
+
+**没有任何一道门能单独替代另一道**：静态门快但看不见运行时拼接，真库门看得见一切但需要
+数据库。这与 `sql_literal_validity_test.go` 的结论一致。
+
+### §9.18.8 门自己失败的三次（记录在此，因为都是真错）
+
+1. **per-decl 粒度过粗** → 13 处假阳性。同一个 handler 常带两条独立查询
+   （`session_turns_unified.go` 的 `:68` 读 `session_bodies_unified`、`:159` 读视图），
+   声明级并集把两者混为一谈。改为逐字面量后降到 4 处。
+2. **只剥 Go 注释、没剥 SQL 注释** → `bg/shared_pick.go` 假阳性。`origin_stage` **只**出现
+   在一条 SQL 字面量内部的 `--` 行注释里，而那句话正是在解释「origin_stage 不能用」。
+3. **判不出列绑定到哪张表** → 剩余 4 处全是假阳性：`rb.outbound_body` 绑
+   `LEFT JOIN request_logs_bodies_with_current_month`；`AS task_id` 是**输出别名**
+   （源列是视图自己的 `gw_task_id`）；`b2.task_id` 的 `b2` 是 CTE `base` 的别名。
+   补上「限定符必须绑定到视图自身别名；无限定列只在字面量只有一张表时才算」的判定后归零。
+4. **门自己的注释把门弄红**：`TestHeatmapProbeExclusionUsesSharedViewPredicate` 首跑即红，
+   因为修复注释里**引用了**那个坏字面量来解释它为什么错。已改用 `stripGoComments`。
+
+### §9.18.9 变异验证（4 次，全部被门抓住）
+
+| 变异 | 结果 |
+|---|---|
+| 把 `rl.origin_stage` 重新混入一条视图字面量 | AST 门红，定位 `credential_monitor_heatmap.go:337` |
+| 清空 `viewSourcePhysicalOnlyColumnExemptions` | 门红，`compression_stats.go:212` 重新报出 |
+| 还原 R50 原始拼写（代码里，非注释） | 源码钉桩门红，两条断言同时命中 |
+| 从共享常量抽掉 `COALESCE('probe'=ANY(...), FALSE)` | 真库门红：**9,154** 行（真实 flags）vs **41,730** 行（NULL 补空数组） |
+
+最后一条的数字与本次独立量测互相印证：单独量旧谓词在 7 天窗口的存活行数得 **9,424**，
+量级一致（差值来自两次采样时刻不同）。**两把量具不是同一把。**
+
+### §9.18.10 遗留
+
+1. **`compression_stats` 的 `token_band` 未修**，与 `raw_model_name` 同族，等产品语义裁决。
+2. **跨字面量运行时拼接的越列仍无静态门**。已知形状：视图引用与谓词分属不同字面量、
+   运行时由 `strings.Join`/`fmt.Sprintf` 拼成。静态判定的天花板就在这里；要么接受靠真库门
+   覆盖，要么上真正的 SQL 解析器（成本另算）。
+3. **`admin/session_tenant.go` 判 unaffected 的未实测假设**（§9.17.4 遗留 2）仍未测。
+4. **`credential_recovery` 写授权缺陷未修**，仍阻塞 S4 灰度。
