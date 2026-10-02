@@ -3,6 +3,9 @@
 //	GET /api/admin/usage/trend-series?days|start&end&tenant_id&provider_id&api_key_id&model&top
 //	GET /api/admin/usage/trend-models?…同上过滤条件
 //
+// model 支持多选：重复 query 参数（model=a&model=b），单值形式向后兼容；
+// 上限 usageTrendMaxModels，超出截断（多选已定时三档都不再折叠长尾）。
+//
 // trend-series 返回按模型拆分的时间序列（每点含 requests/tokens/credits/cost_usd
 // 四指标，指标过滤由前端选列）；trend-models 返回当前过滤条件下的模型选项及
 // 各自总量（供全页视图的模型下拉）。
@@ -34,6 +37,10 @@ import (
 )
 
 const usageTrendOthersKey = "__others__"
+
+// usageTrendMaxModels 是 model 多选的上限：多选已定时三档读面都不折叠长尾，
+// 每个选中模型各成一条线，无上限会让序列数失控。与 top 上限 20 对齐。
+const usageTrendMaxModels = 20
 
 // 与 bg/stats_minute_rollup.go 的 model 维度同式；detail 档 SQL 中多处引用必须一致。
 const usageTrendModelExpr = `COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '__unknown__')`
@@ -79,13 +86,25 @@ type usageTrendModelsResponse struct {
 	Models []usageTrendModelEntry `json:"models"`
 }
 
-// usageTrendFilters 是三档查询共享的过滤参数。
+// usageTrendFilters 是三档查询共享的过滤参数。models 为空 = 不过滤；
+// 非空时（1 个或多个）三档统一不折叠长尾（用户已显式圈定模型集合）。
 type usageTrendFilters struct {
 	tenantID   string
 	providerID int64
 	apiKeyID   int64
-	model      string
+	models     []string
 	top        int
+}
+
+// usageTrendModelsWhere 生成模型多选谓词片段（" AND <expr> = ANY($n)"）并追加
+// 参数；modelExpr 是三档各自的模型列表达式（dim_key / provider 展示名 / 明细
+// COALESCE 口径）。models 为空返回空片段（不过滤）。
+func usageTrendModelsWhere(modelExpr string, models []string, args []any) (string, []any) {
+	if len(models) == 0 {
+		return "", args
+	}
+	args = append(args, models)
+	return fmt.Sprintf(" AND %s = ANY($%d)", modelExpr, len(args)), args
 }
 
 func usageTrendFiltersFromRequest(r *http.Request) usageTrendFilters {
@@ -93,8 +112,20 @@ func usageTrendFiltersFromRequest(r *http.Request) usageTrendFilters {
 		tenantID:   statsTenantScope(r),
 		providerID: int64(queryInt(r, "provider_id", 0)),
 		apiKeyID:   int64(queryInt(r, "api_key_id", 0)),
-		model:      queryString(r, "model"),
 		top:        queryInt(r, "top", 8),
+	}
+	// 重复 query 参数多选（model=a&model=b）；单值（model=a）是长度 1 的退化
+	// 形式，向后兼容。空值/重复值剔除，超上限截断。
+	seen := make(map[string]bool)
+	for _, m := range r.URL.Query()["model"] {
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		f.models = append(f.models, m)
+		if len(f.models) >= usageTrendMaxModels {
+			break
+		}
 	}
 	if f.top < 1 {
 		f.top = 1
@@ -165,7 +196,7 @@ func (h *Handler) usageTrendSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	series := pivotUsageTrendRows(foldUsageTrendRows(rows, f.top, f.model != ""))
+	series := pivotUsageTrendRows(foldUsageTrendRows(rows, f.top, len(f.models) > 0))
 	// '__others__' 固定排最后，其余按总请求数降序（与折叠排序一致）。
 	sort.SliceStable(series, func(i, j int) bool {
 		if series[i].Model == usageTrendOthersKey {
@@ -262,9 +293,8 @@ func (h *Handler) queryUsageTrendRollup(ctx context.Context, tr boardTimeRange, 
 		args = append(args, f.tenantID)
 		where += fmt.Sprintf(" AND m.tenant_id = $%d", len(args))
 	}
-	if f.model != "" {
-		args = append(args, f.model)
-		where += fmt.Sprintf(" AND m.dim_key = $%d", len(args))
+	if clause, nextArgs := usageTrendModelsWhere("m.dim_key", f.models, args); clause != "" {
+		where, args = where+clause, nextArgs
 	}
 	query := fmt.Sprintf(`
 		SELECT m.dim_key AS model,
@@ -302,9 +332,8 @@ func (h *Handler) queryUsageTrendProvider(ctx context.Context, tr boardTimeRange
 		args = append(args, f.tenantID)
 		where += fmt.Sprintf(" AND m.tenant_id = $%d", len(args))
 	}
-	if f.model != "" {
-		args = append(args, f.model)
-		where += fmt.Sprintf(" AND %s = $%d", providerModelsNameExpr, len(args))
+	if clause, nextArgs := usageTrendModelsWhere(providerModelsNameExpr, f.models, args); clause != "" {
+		where, args = where+clause, nextArgs
 	}
 	query := fmt.Sprintf(`
 		SELECT %s AS model,
@@ -340,9 +369,8 @@ func (h *Handler) queryUsageTrendDetail(ctx context.Context, tr boardTimeRange, 
 		args = append(args, f.apiKeyID)
 		where += fmt.Sprintf(" AND r.api_key_id = $%d", len(args))
 	}
-	if f.model != "" {
-		args = append(args, f.model)
-		where += fmt.Sprintf(" AND %s = $%d", usageTrendModelExpr, len(args))
+	if clause, nextArgs := usageTrendModelsWhere(usageTrendModelExpr, f.models, args); clause != "" {
+		where, args = where+clause, nextArgs
 	}
 	query := fmt.Sprintf(`
 		SELECT %s AS model,
@@ -381,7 +409,7 @@ func (h *Handler) scanUsageTrendRows(ctx context.Context, query string, args []a
 }
 
 // foldUsageTrendRows 把单扫出的 (model,bucket) 行按窗口总量取 top-N，其余聚合为
-// '__others__'；modelFilter 已定时 WHERE 已收敛到单模型，直接透传不折叠。
+// '__others__'；模型集合已定时 WHERE 已收敛到选中模型，直接透传不折叠。
 func foldUsageTrendRows(rows []usageTrendRow, top int, modelFiltered bool) []usageTrendRow {
 	if modelFiltered || len(rows) == 0 {
 		return rows
@@ -455,9 +483,8 @@ func (h *Handler) queryUsageTrendModelsRollup(ctx context.Context, tr boardTimeR
 		args = append(args, f.tenantID)
 		where += fmt.Sprintf(" AND m.tenant_id = $%d", len(args))
 	}
-	if f.model != "" {
-		args = append(args, f.model)
-		where += fmt.Sprintf(" AND m.dim_key = $%d", len(args))
+	if clause, nextArgs := usageTrendModelsWhere("m.dim_key", f.models, args); clause != "" {
+		where, args = where+clause, nextArgs
 	}
 	rows, err := h.db.Query(ctx, `
 		SELECT m.dim_key,
@@ -485,9 +512,8 @@ func (h *Handler) queryUsageTrendModelsProvider(ctx context.Context, tr boardTim
 		args = append(args, f.tenantID)
 		where += fmt.Sprintf(" AND m.tenant_id = $%d", len(args))
 	}
-	if f.model != "" {
-		args = append(args, f.model)
-		where += fmt.Sprintf(" AND %s = $%d", providerModelsNameExpr, len(args))
+	if clause, nextArgs := usageTrendModelsWhere(providerModelsNameExpr, f.models, args); clause != "" {
+		where, args = where+clause, nextArgs
 	}
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s,
@@ -525,9 +551,8 @@ func (h *Handler) queryUsageTrendModelsDetail(ctx context.Context, tr boardTimeR
 		args = append(args, f.apiKeyID)
 		where += fmt.Sprintf(" AND r.api_key_id = $%d", len(args))
 	}
-	if f.model != "" {
-		args = append(args, f.model)
-		where += fmt.Sprintf(" AND %s = $%d", usageTrendModelExpr, len(args))
+	if clause, nextArgs := usageTrendModelsWhere(usageTrendModelExpr, f.models, args); clause != "" {
+		where, args = where+clause, nextArgs
 	}
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s,

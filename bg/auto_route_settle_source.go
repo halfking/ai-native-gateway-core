@@ -1,8 +1,6 @@
 package bg
 
 import (
-	"log/slog"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
@@ -109,16 +107,9 @@ func currentSettleSource() settleSourceSpec {
 	return settleSourceFor(settings.RequestLogsWriteEnabled())
 }
 
-// logSettleSourceSwitch 在源族变化时打一条日志。
-//
-// 用 slog 而不是每次都打：结算每 30 秒一轮，逐轮打日志会把真正的信号淹掉。
-// 门控下源只会切换一次（或恢复一次），所以「变了才打」几乎不会触发。
-func logSettleSourceSwitch(prev, cur settleSourceSpec) {
-	if prev.Family == cur.Family {
-		return
-	}
-	slog.Info("auto-route settle: 数据源已切换",
-		"from", prev.Family, "to", cur.Family,
-		"turns_table", cur.TurnsTable, "session_key_col", cur.SessionKeyCol,
-		"detail", "S4 写门状态已变；outcome join / baseline / LATERAL 三条腿同源切换")
-}
+// R33（2026-10-02 12h 审计）：这里曾有一个 logSettleSourceSwitch（源族变化时
+// 打 slog），自 §9.43 引入起就从未被调用过——「切换时打日志」的承诺一直没
+// 生效，切换的可观测性实际由 deploy/prometheus/rules/auto-route-settle-
+// baseline.yml 的 AutoRouteSettleSourceSwitched 告警承担（该告警的求值语义
+// 由 rule_tests/auto-route-settle-baseline_test.yml 的 promtool 单测钉住）。
+// 死代码已删；若将来需要进程内日志，重新接线时别再留成无调用方的孤儿。

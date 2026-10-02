@@ -12,4 +12,11 @@ export default {
   filterAll: 'Tous',
   shareByMetric: 'Part (métrique)',
   sourceDetail: 'Détail des requêtes',
+  // 2026-10-02 multi-sélection / tout effacer / actualisation auto
+  clearAll: 'Tout effacer',
+  autoRefresh: 'Actualisation auto',
+  autoRefreshOff: 'Désactivée',
+  autoRefresh30s: '30 s',
+  autoRefresh1m: '1 min',
+  autoRefresh5m: '5 min',
 }

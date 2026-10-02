@@ -1,11 +1,9 @@
 // autoTuning.ts — 路由调参页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: '路由調參',
-    desc: '分類器調參提案（自動產生 → 回放量化 → 人工核准熱調參）與分類品質視窗報表',
     refresh: '重新整理',
     refreshing: '重新整理中…',
-    loading: '載入中…',
     loadFailed: '載入失敗',
+    panelTitle: '調參提案（批准即熱調參，5 分鐘內生效）',
     noProposals: '暫無提案（feedback_analyzer 會按視窗自動產生）',
   filter: {
     statusAll: '全部',

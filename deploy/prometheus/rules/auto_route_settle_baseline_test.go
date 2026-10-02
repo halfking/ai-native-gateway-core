@@ -63,8 +63,16 @@ func TestAutoRouteSettleBaselineRulesCoverEveryRegisteredMetric(t *testing.T) {
 	// 源族切换是**事件**，不能有 for: 抑制——它一生就发生一次，被抑制就等于没有。
 	require.Empty(t, waits["AutoRouteSettleSourceSwitched"],
 		"a source switch happens once per gate flip; a for: delay would swallow the one occurrence that matters")
-	require.Contains(t, byAlert["AutoRouteSettleSourceSwitched"], "changes(llmgw_autoroute_settle_source_total",
-		"the switch alert must be change-based (an event), not a level")
+	// R33（2026-10-02）：原版 changes(...)>0 对单调计数器 = 「窗口内结算过任意
+	// 一条」，每个 sweep 都 firing，事件被噪声淹没（promtool 实证）。判据换成
+	// 「同一实例窗口内**两族都有**增量」——settleBatch 每 sweep 只走一族，两族
+	// 同涨只出现在横跨切换的窗口。求值语义由
+	// rule_tests/auto-route-settle-baseline_test.yml 的 promtool 单测钉住。
+	require.Contains(t, byAlert["AutoRouteSettleSourceSwitched"], "count by (job, instance)",
+		"the switch alert must count active families per instance; a bare increase()/changes() on "+
+			"one family fires on every sweep (always-firing noise, R33)")
+	require.Contains(t, byAlert["AutoRouteSettleSourceSwitched"], "increase(llmgw_autoroute_settle_source_total",
+		"the switch alert must be window-increase-based (an event), not a level")
 
 	// cohort 归零必须带**活动守卫**。gauge 只在活跃族上 Set，切换后另一族的序列
 	// 会停更并冻结在旧值——对一个「已停更」的序列断言 == 0，读到的是「没在测」，
@@ -85,6 +93,11 @@ func TestAutoRouteSettleBaselineRulesCoverEveryRegisteredMetric(t *testing.T) {
 			"but one task_type group is missing")
 	require.Contains(t, byAlert["AutoRouteSettleBaselineNeutralDominant"], "sum by (term",
 		"latency and cost fall back independently, so they must stay separable in the alert")
+	// R33（2026-10-02）：原版两侧标签集 {term,family} vs {family} 不配对，比较
+	// 结果恒空（永不触发的死告警，promtool 实证）。跨标签集比较必须显式 on()。
+	require.Contains(t, byAlert["AutoRouteSettleBaselineNeutralDominant"], "on(family)",
+		"LHS is {term,family}, RHS is {family}; without explicit on(family) the comparison "+
+			"never pairs any series and the alert can never fire (dead alert, R33)")
 
 	// GW-00 低基数守卫。cohort_rows 刻意不带 task_type（它来自请求内容，基数
 	// 无上界），所以 expr 里出现 task_type 过滤就是把无界维度引进告警标签。

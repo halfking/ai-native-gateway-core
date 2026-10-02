@@ -54,6 +54,12 @@ var candidateFailureLogsMonthlyPartitionMigration392 []byte
 //go:embed embeddata/startup/535_candidate_failure_logs_atomic_promote.sql
 var candidateFailureLogsAtomicPromoteMigration535 []byte
 
+//go:embed embeddata/startup/517_handoff_pending_confirmations.sql
+var handoffPendingConfirmationsMigration517 []byte
+
+//go:embed embeddata/startup/527_handoff_durable_goal_state.sql
+var handoffDurableGoalStateMigration527 []byte
+
 //go:embed embeddata/startup/534_handoff_logs_hot_columnar.sql
 var handoffLogsHotColumnarMigration534 []byte
 
@@ -693,6 +699,30 @@ var requestLogsDefaultPartitionMigration808 []byte
 //go:embed embeddata/startup/809_instance_release_status_nullable_release_id.sql
 var instanceReleaseStatusNullableReleaseIDMigration809 []byte
 
+//go:embed embeddata/startup/813_supplier_errors_partitions_heap.sql
+var supplierErrorsPartitionsHeap813 []byte
+
+//go:embed embeddata/startup/814_adaptive_probe_targets_hot_subquery.sql
+var adaptiveProbeTargetsHotSubquery814 []byte
+
+//go:embed embeddata/startup/815_request_logs_view_stage_band_cff.sql
+var requestLogsViewStageBandCff815 []byte
+
+//go:embed embeddata/startup/816_request_logs_view_client_ip_projection.sql
+var requestLogsViewClientIPProjection816 []byte
+
+// 817 换掉 816 的**字符类** client_ip 守卫为 pg_input_is_valid(v,'inet')。
+// 816 的守卫只挡得住非字符集垃圾；192.168.1 / deadbeef / ::: 全部通过它，
+// 然后死在 ::inet 上并打挂整条 canonical 视图（审计 §9.64，本机真库复现）。
+// 不装它，新装机器会永久停在「已知会崩」的守卫形态上。
+//
+//go:embed embeddata/startup/817_request_logs_view_client_ip_semantic_guard.sql
+var requestLogsViewClientIPSemanticGuard817 []byte
+
+// 818 (2026-10-02, 存储优化 v2): ursm_node_snapshot_min 的 payload 字段拆分。
+// 与 813–817 互不依赖（不碰 canonical 视图链、不碰 supplier_errors/adaptive
+// probe 族），故排在 8xx 块末尾。
+//
 //go:embed embeddata/startup/818_ursm_snapshot_typed_columns.sql
 var ursmSnapshotTypedColumnsMigration818 []byte
 
@@ -727,6 +757,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/530_request_journey_contract.sql":                                       requestJourneyMigration530,
 	"startup/531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,
 	"startup/535_candidate_failure_logs_atomic_promote.sql":                          candidateFailureLogsAtomicPromoteMigration535,
+	"startup/517_handoff_pending_confirmations.sql":                                  handoffPendingConfirmationsMigration517,
+	"startup/527_handoff_durable_goal_state.sql":                                     handoffDurableGoalStateMigration527,
 	"startup/534_handoff_logs_hot_columnar.sql":                                      handoffLogsHotColumnarMigration534,
 	"startup/612_native_responses_capability.sql":                                    nativeResponsesCapabilityMigration612,
 	"startup/536_stats_analytics_foundation.sql":                                     statsMigration536,
@@ -904,6 +936,11 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql":        requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807,
 	"startup/808_request_logs_default_partition.sql":                                 requestLogsDefaultPartitionMigration808,
 	"startup/809_instance_release_status_nullable_release_id.sql":                    instanceReleaseStatusNullableReleaseIDMigration809,
+	"startup/813_supplier_errors_partitions_heap.sql":                                supplierErrorsPartitionsHeap813,
+	"startup/814_adaptive_probe_targets_hot_subquery.sql":                            adaptiveProbeTargetsHotSubquery814,
+	"startup/815_request_logs_view_stage_band_cff.sql":                               requestLogsViewStageBandCff815,
+	"startup/816_request_logs_view_client_ip_projection.sql":                         requestLogsViewClientIPProjection816,
+	"startup/817_request_logs_view_client_ip_semantic_guard.sql":                     requestLogsViewClientIPSemanticGuard817,
 	"startup/818_ursm_snapshot_typed_columns.sql":                                     ursmSnapshotTypedColumnsMigration818,
 }
 

@@ -186,16 +186,18 @@ func (w *IntegrityFingerprintDrift) tick(ctx context.Context) {
 		} else if !hasFP {
 			w.skippedTicks.Add(1)
 			recordFingerprintDriftSkip()
-			// §9.50：原措辞是 "re-arms when telemetry observes a fingerprint"，
-			// 那是个**未兑现的承诺**——inProcSeen 逃生口的唯一写入方
-			// markSystemFingerprintObserved() 在 persistSystemFingerprint() 内，
-			// 而后者被同一个 storage.request_logs_write_enabled 门控住
-			// （client.go:1816 / :2468 都在 if logsWrite 块内）。停写后两条腿
-			// 一起断，重启即永久关闭。门见
+			// §9.50 曾判定：arm 的唯一写入方 markSystemFingerprintObserved()
+			// 在 persistSystemFingerprint() 内、被 storage.request_logs_write_enabled
+			// 门控住，停写后探针与 arm 两条腿一起断，重启即永久关闭。
+			// §9.52（2026-10-02）已把 arm 移到 observeSystemFingerprint()、在
+			// insertRequestLog/updateRequestLog 的门控之外调用——arm 在停写下
+			// 可达。门见
 			// domains/hooks/observability/telemetry/fingerprint_escape_hatch_gate_test.go。
+			// 残余限制（R33 补记）：scanDrift 只读 v1 当前月视图，停写期间该
+			// 视图没有新行——arm 恢复 ≠ 检测恢复，会话族上的指纹行不在视野内。
 			slog.Info("integrity_fingerprint_drift: no fingerprint traffic in current window, skipping full scan",
 				"current_days", w.days/2,
-				"rearm", "only via telemetry.SystemFingerprintObservedSince, which is itself behind the request_logs stop-write gate since audit §9.50.4 — after stop-write this detector is permanently off")
+				"rearm", "via telemetry.SystemFingerprintObservedSince — outside the stop-write gate since audit §9.52, so it can re-fire under stop-write; note scanDrift reads the v1 current-month view, which has no new rows while stopped, so detection only truly recovers once the gate lifts")
 			return
 		}
 	case fingerprintScanRun:

@@ -1,0 +1,240 @@
+# promtool 单元测试 —— 验证 auto-route selection 产出侧告警的**求值语义**，
+# 而不只是 YAML 语法。
+#
+# 为什么不放在 deploy/prometheus/rules/：prometheus.yml 的 rule_files 是
+# `/etc/prometheus/rules/*.yml` 通配，本文件有 tests/rule_files 键、没有
+# groups 键，放进去会让 Prometheus 启动时报 "no groups" 而加载失败。
+#
+# 运行：
+#   docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+#     prom/prometheus check rules /p/rules/auto-route-selection-output.yml
+#   docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+#     prom/prometheus test rules /p/rule_tests/auto-route-selection-output_test.yml
+#
+# # 这个文件存在的唯一理由：把 §9.57 注释里那句断言变成可执行的事实
+#
+# 那句断言是：
+#
+#   「llm_gateway_auto_selections_total 是 CounterVec，首次 Inc() 之前 Prometheus
+#     不导出任何序列 ⇒ sum(increase(...)) 得到**空向量**而不是 0；
+#     空向量 `== 0` 仍是空向量 ⇒ **告警永远不响**。」
+#
+# 场景 A 就是在**真的没有该指标任何序列**的输入下跑这条规则，并要求它**触发**。
+# 这一条就足以证明那句注释：要在一个「空向量」上得到 1，表达式里必须存在把空
+# 转成 0 的东西。摘掉它，场景 A 立刻变红。
+#
+# ⇒ 场景 A **证明**了那条注释，而不是引用它。Go 侧那道门只能证明
+# 「文本里有 or vector(0)」；求值语义只能由这里证。
+#
+# 场景 D 是它的姊妹形态：指标**有**序列但增量为 0。两条必须同时成立——
+# 只有 A 成立说明只是 `or vector(0)` 在起作用；只有 D 成立说明规则忽略了
+# 「曾经产出过」这个信息。
+#
+# # 夹具纪律：每条**指标** series 都要带 job/instance
+#
+# 真实抓取会给每个 series 贴上 job/instance。夹具漏掉它们时，告警就会
+# 「正确地」丢掉实例归属——而 promtool 只比 exp_labels，会把它报成红，
+# 让人误以为是规则写错了。本文件第一版就踩了这个。
+# 场景 A 是唯一的例外：那里**故意**完全没有该指标的序列。
+#
+# # 这类文件守的是三种「check rules 抓不到」的静默失效
+#   1. 求值结果是空向量（规则永不触发）
+#   2. 恒触发（噪声）
+#   3. 标签集不匹配 ⇒ `and on(instance)` 两侧永不相交
+#
+# # 场景测试还抓出了规则本身的一个真缺陷
+#
+# 表达式原为 `sum(...) or vector(0) == 0 and on() (up == 1)`。`and on()`
+# 返回**左侧**的标签集，而左侧无标签 ⇒ 告警**丢掉 instance 归属**，
+# 多实例部署里无法定位是哪台网关。`promtool check rules` **不会**报这个
+# （语法完全合法），只有场景测试的 exp_labels 比对能发现。
+# 已改为显式带出 instance 维度：`sum by (instance)` 配 `0 * max by (instance)`
+# 提供的逐实例零值，再用 `and on(instance)` 对齐。
+#
+rule_files:
+  - ../rules/auto-route-selection-output.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    name: 场景A CounterVec 首次 Inc() 前无任何序列 → 必须触发
+    input_series:
+      - series: 'up{job="llm-gateway",instance="gw1"}'
+        values: '1+0x180'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: AutoRouteSelectionsNotProduced
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: auto-route
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: |-
+                auto-route 连续 1 小时没有产出任何 selection
+              description: |
+                最近 2 小时内 `llm_gateway_auto_selections_total` 的增量为 0，且已持续 1 小时。
+
+                **注意本条有两种截然不同的含义，排查前先分开**：
+                ① 该部署**没有** auto 路由流量 ⇒ 告警长期挂着属正常，先确认这一点；
+                ② auto 路由**本该有流量却停了** ⇒ 这是真故障。
+
+                ② 在 252 上真实发生过：2026-09-09 起 `auto_route_selections`
+                的日产量从约 11,000 掉到 0–14/天，**中断两周半而无人知情**；
+                §9.56 进一步在进程内确认「一次都没写出、丢弃数为 0」，
+                即**不是写入侧被丢弃，是决策器没有产出**。
+
+                **读这条之前先跑这两句**（`or vector(0)` 正是为了让「无序列」变成 0 才响）：
+
+                    curl -s :8780/metrics | grep '^llm_gateway_auto_selections'
+
+                - 有 `..._total` 但增量 0 ⇒ 曾经产出过、现在停了 ⇒ 情形 ②
+                - 只有 `..._dropped_total` ⇒ **从未产出过**（CounterVec 首次 Inc()
+                  前不导出任何序列）⇒ 这正是本条要抓的形态
+                - `..._dropped_total` 非 0 ⇒ 走下面的 `AutoRouteSelectionsDropped`
+
+                排查方向：auto 路由的开关与 `model="auto"` 的实际调用量，
+                以及决策器（`domains/streaming/auto_route.go`）是否还在被触发。
+                **不要**先去查存储族或 session 表——产出侧断流与它们无关。
+              runbook: |
+                1. 先排除假阳性：确认该部署是否真的在用 auto 路由（`model="auto"`
+                   的实际调用量）。完全不用 auto 路由的部署会长期挂着，属正常。
+                2. 确认是真断流后，看 `auto_route_selections` 的日分布找断点时刻
+                   （`SELECT ts::date, count(*) FROM auto_route_selections GROUP BY 1`）。
+                3. 断点时刻附近的网关日志里找 auto 路由决策器是否还在被触发。**注意**：
+                   252 的 journal 只回溯约 7 小时且无 Prometheus，更早的断点需要
+                   从部署记录侧反查，不要指望日志能直接给出答案。
+                4. 产出侧断流与 request_logs / session_* 表的切换**无关**，
+                   不要从存储族方向排查。
+
+  - interval: 1m
+    name: 场景C selection 正常产出 → 不触发
+    input_series:
+      - series: 'up{job="llm-gateway",instance="gw1"}'
+        values: '1+0x180'
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+100x180'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: AutoRouteSelectionsNotProduced
+        exp_alerts: []
+
+  - interval: 1m
+    name: 场景D 有序列但 2h 零增量 → 触发
+    input_series:
+      - series: 'up{job="llm-gateway",instance="gw1"}'
+        values: '1+0x180'
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '5000+0x180'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: AutoRouteSelectionsNotProduced
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: auto-route
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: |-
+                auto-route 连续 1 小时没有产出任何 selection
+              description: |
+                最近 2 小时内 `llm_gateway_auto_selections_total` 的增量为 0，且已持续 1 小时。
+
+                **注意本条有两种截然不同的含义，排查前先分开**：
+                ① 该部署**没有** auto 路由流量 ⇒ 告警长期挂着属正常，先确认这一点；
+                ② auto 路由**本该有流量却停了** ⇒ 这是真故障。
+
+                ② 在 252 上真实发生过：2026-09-09 起 `auto_route_selections`
+                的日产量从约 11,000 掉到 0–14/天，**中断两周半而无人知情**；
+                §9.56 进一步在进程内确认「一次都没写出、丢弃数为 0」，
+                即**不是写入侧被丢弃，是决策器没有产出**。
+
+                **读这条之前先跑这两句**（`or vector(0)` 正是为了让「无序列」变成 0 才响）：
+
+                    curl -s :8780/metrics | grep '^llm_gateway_auto_selections'
+
+                - 有 `..._total` 但增量 0 ⇒ 曾经产出过、现在停了 ⇒ 情形 ②
+                - 只有 `..._dropped_total` ⇒ **从未产出过**（CounterVec 首次 Inc()
+                  前不导出任何序列）⇒ 这正是本条要抓的形态
+                - `..._dropped_total` 非 0 ⇒ 走下面的 `AutoRouteSelectionsDropped`
+
+                排查方向：auto 路由的开关与 `model="auto"` 的实际调用量，
+                以及决策器（`domains/streaming/auto_route.go`）是否还在被触发。
+                **不要**先去查存储族或 session 表——产出侧断流与它们无关。
+              runbook: |
+                1. 先排除假阳性：确认该部署是否真的在用 auto 路由（`model="auto"`
+                   的实际调用量）。完全不用 auto 路由的部署会长期挂着，属正常。
+                2. 确认是真断流后，看 `auto_route_selections` 的日分布找断点时刻
+                   （`SELECT ts::date, count(*) FROM auto_route_selections GROUP BY 1`）。
+                3. 断点时刻附近的网关日志里找 auto 路由决策器是否还在被触发。**注意**：
+                   252 的 journal 只回溯约 7 小时且无 Prometheus，更早的断点需要
+                   从部署记录侧反查，不要指望日志能直接给出答案。
+                4. 产出侧断流与 request_logs / session_* 表的切换**无关**，
+                   不要从存储族方向排查。
+
+  - interval: 1m
+    name: 场景E 网关已下线 → 不触发
+    input_series:
+      - series: 'up{job="llm-gateway",instance="gw1"}'
+        values: '0+0x180'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: AutoRouteSelectionsNotProduced
+        exp_alerts: []
+
+  - interval: 1m
+    name: 场景F dropped 增长 → Dropped 告警触发
+    input_series:
+      - series: 'up{job="llm-gateway",instance="gw1"}'
+        values: '1+0x180'
+      - series: 'llm_gateway_auto_selections_dropped_total{job="llm-gateway",instance="gw1"}'
+        values: '0+12x180'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSelectionsDropped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: auto-route
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: |-
+                auto-route selection 正在被丢弃（队列满或批量写失败）
+              description: |
+                30 分钟内 `llm_gateway_auto_selections_dropped_total` 有增长。
+
+                这个计数器覆盖**两种**丢失：
+                  - 入队时队列已满（非阻塞丢弃）；
+                  - 批量 `INSERT INTO auto_route_selections_hot` 失败
+                    （`selection_writer.go` 的 flush 路径）。
+
+                为什么要告警而不只是画图：**被训练用的样本是有偏的**。
+                队列满时丢的是「突发流量」，写失败时丢的是「整批」——
+                两种偏差都会让后续的排序学习建立在被系统性削掉一部分的样本上。
+
+                区分两条路径：批量写失败会打
+                `WARN auto_route_selections batch insert failed`（含 count 与 error）；
+                队列满**不打日志**，只能由本告警发现。
+              runbook: |
+                1. 批量 INSERT 失败：日志有 `WARN auto_route_selections batch insert
+                   failed`（带 count 与 error），按 error 定位（列数不匹配 / 约束 / 超时）。
+                2. 队列满：**无日志**。看 `selection_writer.go` 的队列容量与 flush
+                   周期，确认是突发流量还是 DB 变慢导致 flush 跟不上。
+                3. 两条都修完之后，用
+                   `SELECT max(ts) FROM auto_route_selections` 确认产出恢复。
+
+  - interval: 1m
+    name: 场景G dropped 恒 0 → 不触发
+    input_series:
+      - series: 'up{job="llm-gateway",instance="gw1"}'
+        values: '1+0x180'
+      - series: 'llm_gateway_auto_selections_dropped_total{job="llm-gateway",instance="gw1"}'
+        values: '0+0x180'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSelectionsDropped
+        exp_alerts: []

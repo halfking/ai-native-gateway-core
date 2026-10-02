@@ -5637,7 +5637,9 @@ req-b2: reward_source differs: v1="session" session="request"
 | `llmgw_autoroute_settle_source_total{family}` | §9.43 已有 | `AutoRouteSettleSourceSwitched`（**本轮新增的消费者**） |
 
 `loadTaskBaselines` 的签名从 `(map, error)` 变成 `(map, int, error)`，第二个返回值
-与 `count(*)` **同在一次查询里**取回（不为一个数字多付一次每 30 秒的 RTT）。
+与 `count(*)` **同在一次查询里**取回（不为一个数字多付一次每轮的 RTT；settleInterval
+是 5 分钟，"每 30 秒" 是 2026-10-02 R33 审计订正前的笔误，代码注释里写的
+"every settleInterval" 才是对的）。
 §9.37 的纪律直接适用：门
 `TestSettleBaselineCohortCountIsConsumed` 要求那个返回值真的被 `Set` 进指标，
 否则它在事实层面就是装饰。
@@ -7698,43 +7700,6 @@ llm_gateway_auto_selections_dropped_total 0
 6 场景），而我的合并尚未解封。此时再动同一批文件只会把冲突面扩大。
 ⇒ 记账为下一轮的**第一件事**，并在此处写明判据要求（见 handoff）。
 
-### §9.64.9 顺带修掉一个**早于本轮**的红灯：写死编号的权威源
-
-`admin` 包里 `TestSessionArmNullPaddedColumnsMatchMigration` 报
-「session 臂 NULL 补位表与 **migration 815** 不一致：迁移里有、表里没有
-`[client_ip]`」。
-
-用 worktree 回到 `HEAD` 复跑确认：**早于本轮改动**，是 816 那一轮留下的。
-根因不在 `client_ip`，在**这道门把 815 当成了「当前权威迁移」**：
-
-| 迁移 | `client_ip` 形态 |
-|---|---|
-| 815（及更早） | `NULL::inet` 补位 |
-| 816 | 有源投影 + 字符类守卫 |
-| 817 | 有源投影 + 语义守卫 |
-
-816 把 `client_ip` 移出补位表之后，这道门就该改指 817——但**没人记得**，
-于是它红了整整一轮没人处理：816 那轮所有 `db` 包的测试都是绿的，
-只有这道**跨包**的 admin 门看得到。
-
-**修法不是把 815 换成 817**（那只是把同一个错误推迟到下一条迁移），
-而是**自动发现**：扫 `sql/migrations/startup/`，取**编号最大的、以
-`CREATE OR REPLACE VIEW public.request_logs_with_current_month` 重建该视图的
-up 迁移**。`.down.sql` 必须排除——down 恢复的是**旧形态**，把它算进
-「当前」会让门在回滚方向上完全失准。
-
-> **写死编号是这类门的默认失败模式**：它要求「每次新增一条重建视图的迁移」
-> 都记得回来改这里，而改漏的表现**不是**「门忘了新迁移」，是「门拿旧迁移
-> 当权威」——一个看起来完全合理的红，指向一个不存在的问题。
-> 这与「登记表 + 穷举」是同一族：真相会漂移，而**没登记就不检查**是最安静
-> 的一种失败，所以要把权威源**推导出来**而不是**记下来**。
-
-变异验证（M5）：往 817 的 proj 注入一个 `NULL::text AS client_ip_drift_probe`
-⇒ 门报「迁移里有、表里没有：`[client_ip_drift_probe]`」，红因即差集本身。
-逐字节还原后复跑为绿。
-
----
-
 ## §9.57 补上产出侧的洞：auto-route selection 写入量归零告警
 
 §9.56.4 记账的「下一轮第一件事」。本轮做完了。
@@ -7917,3 +7882,79 @@ cohort 分析、可能还有别的审计脚本）都会把 3,166 条内部生成
 
 ⇒ 我**不代为裁决**。但 §9.54.3 那条「停写前阻塞项」必须**撤回**：
 它建立在一个已被证伪的前提上。
+
+### §9.64.9 顺带修掉一个**早于本轮**的红灯：写死编号的权威源
+
+`admin` 包里 `TestSessionArmNullPaddedColumnsMatchMigration` 报
+「session 臂 NULL 补位表与 **migration 815** 不一致：迁移里有、表里没有
+`[client_ip]`」。
+
+用 worktree 回到 `HEAD` 复跑确认：**早于本轮改动**，是 816 那一轮留下的。
+根因不在 `client_ip`，在**这道门把 815 当成了「当前权威迁移」**：
+
+| 迁移 | `client_ip` 形态 |
+|---|---|
+| 815（及更早） | `NULL::inet` 补位 |
+| 816 | 有源投影 + 字符类守卫 |
+| 817 | 有源投影 + 语义守卫 |
+
+816 把 `client_ip` 移出补位表之后，这道门就该改指 817——但**没人记得**，
+于是它红了整整一轮没人处理：816 那轮所有 `db` 包的测试都是绿的，
+只有这道**跨包**的 admin 门看得到。
+
+**修法不是把 815 换成 817**（那只是把同一个错误推迟到下一条迁移），
+而是**自动发现**：扫 `sql/migrations/startup/`，取**编号最大的、以
+`CREATE OR REPLACE VIEW public.request_logs_with_current_month` 重建该视图的
+up 迁移**。`.down.sql` 必须排除——down 恢复的是**旧形态**，把它算进
+「当前」会让门在回滚方向上完全失准。
+
+> **写死编号是这类门的默认失败模式**：它要求「每次新增一条重建视图的迁移」
+> 都记得回来改这里，而改漏的表现**不是**「门忘了新迁移」，是「门拿旧迁移
+> 当权威」——一个看起来完全合理的红，指向一个不存在的问题。
+> 这与「登记表 + 穷举」是同一族：真相会漂移，而**没登记就不检查**是最安静
+> 的一种失败，所以要把权威源**推导出来**而不是**记下来**。
+
+变异验证（M5）：往 817 的 proj 注入一个 `NULL::text AS client_ip_drift_probe`
+⇒ 门报「迁移里有、表里没有：`[client_ip_drift_probe]`」，红因即差集本身。
+逐字节还原后复跑为绿。
+
+### §9.64.10 817 差点「全绿但装不上」——门替我抓到了
+
+我最初提交 817 时**没有做安装器五点同步**，而且当时是**绿的**：`db`、
+`sql/migrations/startup`、`admin` 全过。差点就这么推上去了。
+
+把提交移到 `origin/main` 之上重跑安装器模块时，那道门立刻红了：
+
+```
+canonical startup migration "817_request_logs_view_client_ip_semantic_guard.sql"
+(>=704) is not registered in dbinit.Runner.StartupFiles — run the five-point
+sync (embeddata copy, go:embed var + embeddedSQLFiles map in main.go,
+StartupFiles entry, parity map here)
+```
+
+**为什么这道缺口特别安静**：运行中的网关**不应用 startup 迁移**——
+`db.ensureRequestLogsCurrentMonthView` 的早退判据（view 存在且 body 是 v2）
+在 816 形态上就成立，所以 817 落库后**没有任何自愈通道**会把它收敛过去。
+唯一执行者是安装器。⇒ 迁移文件躺在 canonical 树里、门全绿、而**没有任何机器
+会跑到它**。
+
+这已经是同形遗漏的**第五次**（816 是第四次，`runner.go` 里那条注释记着前四次）。
+
+补的五点（并按门的要求逐点做）：
+
+| 点 | 落点 |
+|---|---|
+| embeddata 副本（up + down） | `installer/cmd/llm-gw-installer/embeddata/startup/817_*` |
+| `go:embed` 变量 | `main.go` 的 `requestLogsViewClientIPSemanticGuard817` |
+| `embeddedSQLFiles` 映射 | `main.go` |
+| `StartupFiles` 条目 + 理由 | `runner.go` |
+| TSV | `installed_startup_migrations.tsv` 第 206 行（重生成，只增一行） |
+
+变异 M6：把 817 的 `StartupFiles` 条目摘掉 ⇒ 门按预期报「not registered」；
+逐字节还原后复跑为绿。**没有这道门，本节就是一个绿的提交 + 一个永远跑不到的
+迁移。**
+
+> **「门全绿」要问一句：门覆盖的是哪个形态？** 这一轮里我在同一个下午踩了两次
+> 形态错位——一次是守卫（字符类 vs 语义），一次是权威源（815 vs 816 vs 817），
+> 一次是**执行通道**（文件在树里 vs 有没有人跑它）。三次的共同形状都是
+> **「文件/声明在」被当成了「行为在」**。
