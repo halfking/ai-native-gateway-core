@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,30 @@ const (
 	// capabilityBackfillDistLockTTL 是蓝绿单跑选举的持锁时长：周期 30min、
 	// 最坏一轮 ~50 探 × 20s ≈ 17min，25min 保证正常一轮内不换主。
 	capabilityBackfillDistLockTTL = 25 * time.Minute
+	// capabilityBackfillDefaultDailyBudget 是每 24 小时的**真实出网探测**上限。
+	//
+	// 为什么 batchLimit 不够（2026-10-03 补）：batchLimit 是**每轮**预算，
+	// 乘上轮次数才是日账单，而那个乘数由 interval 决定——改一个周期常量就能
+	// 把日花费翻倍，没有任何东西会拦。staleAfter 同理：它决定多少行处于 due
+	// 态，绑定数一多，due 行数就逼近 batchLimit，于是**每轮都打满**。
+	// 本机实测 eligible 绑定 154 行 > batchLimit 50 ⇒ 稳态就是每轮 50 探 ×
+	// 48 轮/天 = **2400 次/天**的真实上游调用，且这个数字此前无人显式批准。
+	//
+	// 选 2400 不是拍脑袋：它等于「当前默认配置自己会花掉的数」，所以默认开启
+	// 预算**不改变今天的行为**（不会一上线就少探），但把这条账单变成显式的、
+	// 可调小的、且调小后立刻生效的。要省钱就调这个数，不要去动 interval。
+	capabilityBackfillDefaultDailyBudget = 2400
+	// capabilityBackfillDailyBudgetEnv 覆盖上面的默认值。0 或负数表示
+	// **不设预算**（回到改动前的行为）——显式的逃逸阀，不是默认值。
+	capabilityBackfillDailyBudgetEnv = "LLM_GATEWAY_CAPABILITY_BACKFILL_DAILY_BUDGET"
+	// capabilityBackfillDailyBudgetWindow 是滚动窗口长度。滚动而非自然日：
+	// 自然日边界会让「23:59 用满 2400，00:01 再来一轮」的账单在两天里各出现
+	// 一次，实际上是 4800/天。滚动窗口让「每 24 小时最多 2400」这句话字面为真。
+	capabilityBackfillDailyBudgetWindow = 24 * time.Hour
+	// capabilityBackfillProbeTimestampsMax 是出网时刻台账的容量上限。
+	// 2400/天的预算下 24h 窗口最多积累 2400 条，取 2 倍余量；触顶说明
+	// 预算被绕过（不该发生），此时整体重置并记一条 Warn。
+	capabilityBackfillProbeTimestampsMax = capabilityBackfillDefaultDailyBudget * 2
 )
 
 // CapabilityBackfillEnvKillSwitch 置为 0/false/off/no 即关闭本任务。
@@ -121,6 +146,23 @@ type CapabilityBackfill struct {
 	attemptsMu sync.Mutex
 	attempts   map[int64]time.Time
 
+	// budgetMu/probes 是**出网时刻**滚动台账，用于每日预算闸门。
+	//
+	// ⚠️ 为什么不能复用 attempts：attempts 是 BindingID → 时刻，一条绑定
+	// 一次只留一条，退避逻辑只需要「最近一次」。而预算要数的是**窗口内的
+	// 出网总次数**——同一条绑定在窗口内探 4 次就是 4 次钱。两个用途的数据形状
+	// 不同，混用会把「探了 4 次的 1 条」算成「1 次」或把「4 条各 1 次」算成 4 条
+	// 都对、但去重后就错。分开记账。
+	//
+	// 进程内 = 重启即清空 ⇒ 重启后预算从头再给。最坏情况是连续重启把日花费
+	// 放大到「重启次数 × 预算」。这是已知的保守方向（只会多花，不会少算成
+	// 安全），因此可接受；真要跨重启封顶需要持久化，那是另一轮的事。
+	budgetMu sync.Mutex
+	probes   []time.Time
+
+	// dailyBudget 是每 24h 的出网探测上限；<=0 表示不设预算。
+	dailyBudget int
+
 	// probe 缺省走 singleResponsesPing。测试可以换掉它，但换掉之后测的就不再
 	// 是「真实上游帧 → 真实判定」这条链。
 	probe   func(ctx context.Context, target probeTarget, desc providercap.Descriptor) httpProbeResult
@@ -137,13 +179,14 @@ func NewCapabilityBackfill(
 	sink ResponsesCapabilitySink,
 ) *CapabilityBackfill {
 	return &CapabilityBackfill{
-		db:         db,
-		encKey:     encKey,
-		keyring:    keyring,
-		sink:       sink,
-		interval:   capabilityBackfillInterval,
-		staleAfter: capabilityBackfillStaleAfter,
-		batchLimit: capabilityBackfillBatchLimit,
+		db:          db,
+		encKey:      encKey,
+		keyring:     keyring,
+		sink:        sink,
+		interval:    capabilityBackfillInterval,
+		staleAfter:  capabilityBackfillStaleAfter,
+		batchLimit:  capabilityBackfillBatchLimit,
+		dailyBudget: capabilityBackfillDailyBudget(),
 		probe: func(ctx context.Context, target probeTarget, desc providercap.Descriptor) httpProbeResult {
 			endpoint := resolveProbeEndpoint(target, desc, ProbeModeResponses)
 			if endpoint == "" {
@@ -326,6 +369,10 @@ func (b *CapabilityBackfill) BackfillOnce(ctx context.Context) (int, error) {
 	written := 0
 	probed := 0
 	backedOff := 0
+	// 预算在**进入循环前**取一次剩余量，而不是每行重算：剩余量在循环内只会
+	// 单调减少，每行重算既没意义又会把「本轮还能探几次」和「今天还能探几次」
+	// 两个概念搅在一起。本轮上限取 min(每轮预算, 今日剩余)。
+	budgetExhausted := false
 	for _, row := range rows {
 		if probed >= b.batchLimit {
 			break
@@ -353,11 +400,105 @@ func (b *CapabilityBackfill) BackfillOnce(ctx context.Context) (int, error) {
 		if ok {
 			written++
 		}
+		// 预算耗尽在这里可见。**判定权在出网点（chargeProbe）**，不在这里——
+		// 这里只是提前收尾，避免多扫几行做无用功。⚠️ 不要把它写成
+		// 「在这里判断额度并据此决定是否继续」：那样真正的闸门就变成
+		// 这个循环了，而 probeAndPersist 里的记账会退化成没人调用的死代码
+		// （变异 B1/B2 实测：把记账挪到出网之后、或让 chargeProbe 永不
+		// 拦截，BackfillOnce 层的判据仍然全绿——因为这个循环的预检
+		// 独立地挡住了超发。闸门必须在真正花钱的地方）。
+		if rem := b.budgetRemaining(time.Now()); rem == 0 {
+			budgetExhausted = true
+			break
+		}
 	}
-	slog.Info("capability_backfill: cycle done",
+	attrs := []any{
 		"scanned", len(rows), "probed", probed, "written", written,
-		"backed_off", backedOff, "budget", b.batchLimit)
+		"backed_off", backedOff, "budget", b.batchLimit,
+		"daily_budget", b.dailyBudget,
+		"daily_remaining", b.budgetRemaining(time.Now()),
+	}
+	if budgetExhausted {
+		// 日志级别刻意抬到 Warn：这是**账单触顶**，与「batchLimit 用完」不是
+		// 同一件事——后者是正常节奏，前者意味着能力位刷新开始落后于 staleAfter，
+		// 运维需要知道自己该调大预算还是该接受刷新变慢。
+		slog.Warn("capability_backfill: daily probe budget exhausted, cycle stopped early", attrs...)
+	} else {
+		slog.Info("capability_backfill: cycle done", attrs...)
+	}
 	return written, nil
+}
+
+// capabilityBackfillDailyBudget 解析每日出网探测预算。
+//
+// 每次构造时读一次（不是每轮）：预算是**运营参数**，不是请求期开关，中途改变
+// 语义的场合只有重启——而重启本来就要重新装配。kill switch 才是每 tick 重读的
+// 那个（它是止血阀，必须能不重启就掐）。
+//
+// 未设置 / 非法 / <=0 ⇒ 不设预算（回到加预算之前的行为）。这让「预算挡错了」
+// 可以靠环境变量立刻退回，而不是必须回滚发版。
+func capabilityBackfillDailyBudget() int {
+	raw := strings.TrimSpace(os.Getenv(capabilityBackfillDailyBudgetEnv))
+	if raw == "" {
+		return capabilityBackfillDefaultDailyBudget
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		slog.Warn("capability_backfill: daily budget env is not an integer, using default",
+			"env", capabilityBackfillDailyBudgetEnv, "value", raw,
+			"default", capabilityBackfillDefaultDailyBudget)
+		return capabilityBackfillDefaultDailyBudget
+	}
+	return n
+}
+
+// budgetRemaining 返回滚动窗口内还剩多少次出网探测配额。
+// <=0 表示「不设预算」，调用方按无限制处理。
+func (b *CapabilityBackfill) budgetRemaining(now time.Time) int {
+	if b == nil || b.dailyBudget <= 0 {
+		return -1
+	}
+	b.budgetMu.Lock()
+	defer b.budgetMu.Unlock()
+	b.pruneProbesLocked(now)
+	return b.dailyBudget - len(b.probes)
+}
+
+// chargeProbe 记一次真实出网。返回 false 表示预算已用尽，调用方**不得**出网。
+//
+// ⚠️ 顺序是承重的：先 charge 再出网。反过来（先出网后记账）会在预算用尽的那
+// 一轮里超发——因为记账发生在出网之后，而超发判断也发生在记账之后。
+func (b *CapabilityBackfill) chargeProbe(now time.Time) bool {
+	if b == nil || b.dailyBudget <= 0 {
+		return true
+	}
+	b.budgetMu.Lock()
+	defer b.budgetMu.Unlock()
+	b.pruneProbesLocked(now)
+	if len(b.probes) >= b.dailyBudget {
+		return false
+	}
+	b.probes = append(b.probes, now)
+	return true
+}
+
+// pruneProbesLocked 丢掉窗口外的记账。调用方必须已持有 budgetMu。
+func (b *CapabilityBackfill) pruneProbesLocked(now time.Time) {
+	cutoff := now.Add(-capabilityBackfillDailyBudgetWindow)
+	keep := b.probes[:0]
+	for _, t := range b.probes {
+		if t.After(cutoff) {
+			keep = append(keep, t)
+		}
+	}
+	b.probes = keep
+	// 触顶说明记账量超过了预算上限（配置被调小过，或有别处绕过了 chargeProbe）。
+	// 整体重置并留一条 Warn：宁可重新计满，也不能让台账无界增长。
+	if len(b.probes) > capabilityBackfillProbeTimestampsMax {
+		slog.Warn("capability_backfill: probe ledger exceeded cap, resetting",
+			"size", len(b.probes), "cap", capabilityBackfillProbeTimestampsMax)
+		b.probes = make([]time.Time, 0, capabilityBackfillProbeTimestampsMax)
+	}
 }
 
 // attemptedRecently 报告这条绑定是否处于出网退避期内。
@@ -519,6 +660,16 @@ func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding
 	//
 	// 记账在出网之前：从这一发起，这条绑定进入 attempt 退避（无论本轮拿到
 	// 证据与否），防止无证据绑定每 30min 都被探一遍（R33 审计 #2）。
+	//
+	// ⚠️ 预算记账必须在**出网之前**，且必须在这里（而不是在 BackfillOnce 的
+	// 循环里）：循环里那个 remaining 只是「本轮还允许探几次」的预判，真正
+	// 出网的是这一行。在出网点记账，才不会把「admission 拒绝 / 端点未解析 /
+	// 解密失败」这些**零出网成本**的行算进账单——它们根本不花钱。
+	if !b.chargeProbe(time.Now()) {
+		// 预算用尽：不记账 attempt（这一行没出过网，不该进退避台账），
+		// 返回 didProbe=false 让调用方知道这一行没花预算。
+		return false, false, nil
+	}
 	b.recordAttempt(row.BindingID)
 	result := b.probe(pCtx, target, desc)
 
