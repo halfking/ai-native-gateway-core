@@ -87,8 +87,9 @@ cd web && npx vue-tsc --noEmit -p tsconfig.json
 ## 遗留
 
 - ~~**生产 UI 验收仍未闭合**~~ → **已闭合（2026-10-03 06:19 CST）**。
-  证据截图：`/tmp/ui-ACCEPT-PASS.png`（未入库，临时目录；仓库内
-  `git log --diff-filter=A -- '*.png'` 无本轮新增图片）。
+  证据截图（**已入库**，遵循 `docs/screenshots/` 既有约定 —— 证据放临时目录
+  会被清理，届时文档会指向不存在的文件）：
+  `docs/screenshots/ui-verify-stream-model-group-glm53-20261003.png`
   154 已部署 `build_seq 2408 / git_sha 1a213f4c`（含 `809ce78cf`），用
   headless Chromium（Python Playwright 1.63）驱动生产页面实测，承重判据全中：
 
@@ -173,7 +174,7 @@ cd web && npx vue-tsc --noEmit -p tsconfig.json
       | 筛选已生效 | ✅ 层计数 `0 个模型 / 58`，分组数 0 |
       | `.qp-scope-miss` 实渲染 | ✅ `glm-5.2 有节点，但不在「特色 / 近 3 天热门」范围内（本面板只展示范围内模型），故未列出分组。` |
       | SSE | ✅ `● Connected`，无 pageerror |
-      | 截图 | `/tmp/ui-glm52/11-picked.png`（选中态）、`13-layer.png`（筛选后） |
+      | 截图（已入库） | `docs/screenshots/ui-verify-stream-model-glm52-picker-20261003.png`（Zhipu AI 子面板内选中 glm-5.2，「已选 1 个」）、`ui-verify-stream-model-glm52-scopemiss-20261003.png`（筛选后，提示行实渲染） |
     - ⇒ **`glm-4.5` 那一轮作为触发对象仍然有效**（它也确有节点且不在 scope，
       提示行照样渲染），但**「glm-5.2 选不中」这个理由不成立**，
       且「若按 glm-5.2 验收会因选不中而误判」这句警告**作废**。
