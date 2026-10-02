@@ -3111,3 +3111,82 @@ session 族」的历史任务会对**所有人** 404（权限门翻转成阻断�
    本仓的十几张无关表上都有。**只按列名统计引用量会高估迁移面**——必须先判绑定关系。
 3. **「无 SQL 引用」是本轮最有价值的量。** 29/42 无人读，意味着 42 列里真正需要
    迁移的只有 4 个。之前把这 42 列整体当作「迁移面」是高估了。
+
+---
+
+## §9.21 v1 退役爆炸半径：66 个直读方里 39 个不能直接改指视图（2026-10-02）
+
+§9.20 解决了「缺哪几列」。这一轮问的是退役的**另一半**：`request_logs` /
+`request_logs_hot` 到底还有多少读方**绕过视图**直读，以及它们能不能改指视图。
+
+### §9.21.1 扫描口径
+
+一次性扫描器（`/tmp/v1scan`、`/tmp/padscan`，均不入仓库）：解析每条 SQL 字面量的
+`FROM/JOIN` 关系集合，筛出**含 v1 宽族关系、且同一字面量里没有
+`request_logs_with_current_month`** 的（即绕过视图直读 v1 的）。
+
+**口径的精度声明**：这个判据分不出 `SELECT` 与 `UPDATE ... FROM` / `ON CONFLICT`，
+所以下面的计数是**上界**——写路径（`admin/telemetry.go`、`db/db.go`、
+`telemetry/client.go`）也被计入，因为它们带 `FROM`。请按「量级」而非「精确条数」使用。
+
+### §9.21.2 结果
+
+| 分类 | 文件数 |
+|---|---:|
+| 绕过视图直读 v1 宽族 | **66** |
+| └ 其中**读了 session 臂恒 NULL 的补位列** ⇒ **不可直接改指视图** | **39** |
+| └ 其中不读补位列 ⇒ 改指视图无列可用性障碍 | 27 |
+
+读补位列的文件（节选，按主导列）：
+
+| 主导补位列 | 涉及文件数（示例） |
+|---|---|
+| `client_model` | 25（`admin/logs.go`、`admin/analytics.go`、`bg/model_probe.go`、`bg/credential_recovery.go`…） |
+| `id` | 12（`admin/providers.go`、`admin/routing.go`、`admin/swim_lane_init.go`…） |
+| `provider_id` | 8（`admin/diagnostics_credential.go`、`admin/provider_diagnose.go`…） |
+| `gw_task_id` | 2（`admin/session_tenant.go`、`admin/unified_detail.go`） |
+| `outbound_token_est` / `outbound_msg_count` / `outbound_msg_hashes` | 各 1–2（`cmd/gateway/main_v3_wiring.go`、`cmd/compression-bench`） |
+
+### §9.21.3 这不是「39 个缺陷」，是「39 个需要重写的读面」
+
+它们今天**都能正常工作**（读物理 v1，列齐全）。危险在于**改指视图的那一天**：
+session 分支的行会从这些列拿到 NULL，而接口照样返回 200 —— 就是 §9.18 那类
+「修好了但变全盲」。所以这 39 个是 S4 灰度的工作项清单，判据是：
+
+> 一个 v1 直读方可以安全改指视图，**当且仅当**它读的每一列要么不在 30 列补位清单里，
+> 要么它对该列的读取本来就带着回落到 session 侧等价列的 COALESCE。
+
+已确认带等价落地的（migration 710 文档明载的派生映射）：
+
+| 补位列 | session 侧等价 | 710 映射 |
+|---|---|---|
+| `client_model` | `model` | `outbound_model ← model` |
+| `attachments` | `attachment_count` | `has_attachments ← attachment_count` |
+
+其余 28 列**没有已登记的等价映射**。用模糊匹配去找候选列会产出噪声
+（`compression_reason` 匹配到 `completion_tokens` 之类），**不作数**——
+需要逐列做语义裁决，属于产品决策，不在本轮擅自做。
+
+### §9.21.4 一个反直觉的发现：`id` 明明在 `session_turns` 里，却**不能**进那 4 列投影
+
+真库实测：`session_turns` **有** `id` 列（模糊匹配里是精确命中）。但 v1 的
+`request_logs.id` 是**请求行 id**，session 侧的 `id` 是 **turn id** —— 两者不是同一个东西。
+视图把它补位成 NULL 很可能是**刻意的**（避免给读方一个语义已变的同名列）。
+
+⇒ **§9.20 的「补 4 个投影」清单不能顺手把 `id` 加进去。** 判据是
+「session 侧的列与 v1 侧的是**同一个东西**」，不是「session 侧有这个列」。
+`origin_stage` / `token_band` / `client_forwarded_for` / `trace_events` 满足；
+`id` 不满足。这条判断建议由你确认。
+
+### §9.21.5 由此得到的 S4 退出判据（三条，缺一不可）
+
+1. **写入面**：v1 写路径全部并入门控（`settings.RequestLogsWriteEnabled`），
+   停写稳定期 ≥ 一个 hot retention 窗口（当前 8h，`effectiveWindow` 依此夹逼）。
+2. **读面**：本轮点名的 **39 个补位列读方**逐个改为视图读法，且每个都要么
+   去掉对补位列的依赖，要么改成带等价落地的 COALESCE。
+3. **历史面**：`assertTaskInTenant` 依赖 `request_logs_hot` + `request_logs` 两条 v1 腿
+   （§9.19.4），v1 退役后「只在 v1 留痕」的历史任务会对所有人 404 ⇒
+   **v1-only 历史必须先回填进 session 族**。
+
+（另：`cmd/gateway/dual_read_validator.go` 是行级对账器，它读补位列
+`request_type` ⇒ 停写后两侧不可比，同样需要纳入判据。）
