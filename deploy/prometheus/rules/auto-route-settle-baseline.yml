@@ -37,14 +37,22 @@ groups:
     interval: 30s
     rules:
       - alert: AutoRouteSettleSourceSwitched
-        expr: changes(llmgw_autoroute_settle_source_total[10m]) > 0
+        # 判据是「同一个 scrape 目标在 10 分钟窗口内**两族都有**结算增量」。
+        # settleBatch 每个 sweep 只走一个族（S4 写门在批首捕获一次），所以
+        # 稳态下窗口内只有一族在涨；两族同涨只出现在跨越切换的窗口里 ——
+        # 这才是「切换事件」的形状。原版 changes(...)>0 对单调计数器意味着
+        # 「10 分钟内结算过任意一条」，每个 sweep 都响，事件被噪声淹没
+        # （R33 12h 审计，promtool 实证）。
+        expr: |
+          count by (job, instance) (increase(llmgw_autoroute_settle_source_total[10m]) > 0) > 1
         labels:
           severity: warning
           component: bg
         annotations:
           summary: "auto-route 结算数据源发生切换（S4 写门状态已变）"
           description: |
-            {{ $labels.family }} 族的结算计数在 10 分钟内发生了变化。
+            同一实例在 10 分钟内 v1 与 session 两族都有结算增量 —— 只有
+            跨越源切换的窗口才会出现这个形状（每个 sweep 只结算一族）。
 
             **这是事件，不是趋势** —— 所以本条没有 for: 抑制。每一次 S4 写门翻转
             都会让 outcome join / LATERAL / 基线 cohort 三条腿整体换源，而换源
@@ -89,9 +97,13 @@ groups:
                （SQLExcludeSyntheticActors）
 
       - alert: AutoRouteSettleBaselineNeutralDominant
+        # 左侧 {term,family}、右侧 {family}：比较默认按全标签配对，两个向量
+        # 永远配不上（恒空 = 永不触发的死告警，R33 12h 审计 promtool 实证）。
+        # 必须 on(family) + group_left（每个 family 有 latency/cost 两个 term，
+        # 多对一）。
         expr: |
           sum by (term, family) (increase(llmgw_autoroute_settle_baseline_neutral_total[30m]))
-            >
+            > on(family) group_left
           0.5 * sum by (family) (increase(llmgw_autoroute_settle_source_total[30m]))
         for: 10m
         labels:

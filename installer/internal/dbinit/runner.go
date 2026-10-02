@@ -652,6 +652,21 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// It depends on the view chain only, so it sits after 814 at the
 			// end of the 8xx block.
 			"815_request_logs_view_stage_band_cff.sql",
+			// 816 is wired 2026-10-02 (R33 12h audit round; fourth instance
+			// of the same omission shape — the migration landed in the
+			// canonical tree with no installer five-point sync, leaving
+			// TestCanonicalStartupMigrationsAtOrAbove704AreRegistered red
+			// on main).
+			//
+			// It rewrites exactly one line of the 815 view: the session arm's
+			// client_ip goes from NULL-padding to a session-side sourced
+			// projection guarded by a CASE on the raw text form. Without it a
+			// fresh install stays at the 815 shape forever — ensureRequestLogs-
+			// CurrentMonthView's early-exit is already satisfied by 815, so
+			// nothing converges to 816 — and the client_ip dimension silently
+			// collapses to __unknown__ on fresh installs while upgraded
+			// databases have the projection.
+			"816_request_logs_view_client_ip_projection.sql",
 		},
 	}
 }
