@@ -294,6 +294,13 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 		field = "text"
 	case "function_call":
 		field = "arguments"
+	case "tool_search_call", "mcp_approval_request":
+		// arguments is the replayed JSON tool payload — single-field siblings
+		// of function_call (第三十一轮 §四#7 收口). tool_search_call mirrors
+		// function_call's JSON-string form; mcp_approval_request degrades to
+		// whole-string restore like mcp_call.arguments when the payload is
+		// not valid JSON.
+		field = "arguments"
 	case "custom_tool_call":
 		field = "input"
 	case "custom_tool_call_output":
@@ -346,8 +353,9 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 	default:
 		// Unknown item types still pass through (allowlist design); each new
 		// plaintext-bearing type must be added here. The families above are
-		// the known output/code bearers but the list is not exhaustive
-		// (tool_search_call.arguments etc. remain future work);
+		// the known output/code bearers; tool_search_call.arguments /
+		// mcp_approval_request.arguments / web_search action.results were
+		// closed in round 31 (§四#7); the list is not exhaustive;
 		// item_reference (id-only) is harmless.
 		return raw, false, nil
 	}
@@ -427,8 +435,9 @@ func (s *requestInputSanitizer) sanitizeMcpCallItem(raw json.RawMessage, item ma
 	return out, changed, err
 }
 
-// web_search_call 的 action.query 是客户端回传的检索明文；action 其余字段与
-// item 级 id/status 是元数据不动。
+// web_search_call 的 action.query 是客户端回传的检索明文；action.results 是
+// 回传命中结果（字符串数组或 {text} 对象数组，第三十一轮 §四#7 收口），逐值
+// 入洗；action 其余字段与 item 级 id/status 是元数据不动。
 func (s *requestInputSanitizer) sanitizeWebSearchCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
 	actionRaw, ok := item["action"]
 	if !ok {
@@ -443,18 +452,68 @@ func (s *requestInputSanitizer) sanitizeWebSearchCallItem(raw json.RawMessage, i
 		}
 		return nil, false, fmt.Errorf("%w: web_search_call action object required: %v", errInvalidSanitizeInput, err)
 	}
-	query, ok := action["query"]
-	if !ok {
+	changed := false
+	if query, ok := action["query"]; ok {
+		updated, didChange, err := s.sanitizeText(query)
+		if err != nil {
+			return nil, false, err
+		}
+		if didChange {
+			action["query"], changed = updated, true
+		}
+	}
+	if resultsRaw, ok := action["results"]; ok && !(resultsRaw != nil && string(bytes.TrimSpace(resultsRaw)) == "null") {
+		// 形态口径与 file_search_call.results 同族：缺失/null 直通、非数组拒单；
+		// 元素为字符串直洗，对象洗 .text 叶，其余形态拒单。
+		var results []json.RawMessage
+		if err := json.Unmarshal(resultsRaw, &results); err != nil {
+			return nil, false, fmt.Errorf("%w: web_search_call action.results array required: %v", errInvalidSanitizeInput, err)
+		}
+		rChanged := false
+		for i, el := range results {
+			var textEl string
+			if err := json.Unmarshal(el, &textEl); err == nil {
+				updated, didChange, err := s.sanitizeText(el)
+				if err != nil {
+					return nil, false, err
+				}
+				if didChange {
+					results[i], rChanged = updated, true
+				}
+				continue
+			}
+			var obj map[string]json.RawMessage
+			if err := json.Unmarshal(el, &obj); err != nil || obj == nil {
+				return nil, false, fmt.Errorf("%w: web_search_call action.results element must be a string or an object", errInvalidSanitizeInput)
+			}
+			text, ok := obj["text"]
+			if !ok {
+				continue
+			}
+			updated, didChange, err := s.sanitizeText(text)
+			if err != nil {
+				return nil, false, err
+			}
+			if didChange {
+				obj["text"] = updated
+				out, err := json.Marshal(obj)
+				if err != nil {
+					return nil, false, err
+				}
+				results[i], rChanged = out, true
+			}
+		}
+		if rChanged {
+			out, err := json.Marshal(results)
+			if err != nil {
+				return nil, false, err
+			}
+			action["results"], changed = out, true
+		}
+	}
+	if !changed {
 		return raw, false, nil
 	}
-	updated, didChange, err := s.sanitizeText(query)
-	if err != nil {
-		return nil, false, err
-	}
-	if !didChange {
-		return raw, false, nil
-	}
-	action["query"] = updated
 	actionOut, err := json.Marshal(action)
 	if err != nil {
 		return nil, false, err
