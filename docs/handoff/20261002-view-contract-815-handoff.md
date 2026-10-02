@@ -120,8 +120,20 @@ TEST_PG_URL=... go test ./admin/ -tags integration \
    第二次 down 的 viewdef 与第一次逐字节相同（顺带钉住 down 的确定性）。两处新断言
    各做过一次变异验证，红都落在 `view_schema_v2_contract_test.go:671` / `:695`，
    均为 `t.Fatalf` 断言命中、零 panic。
-3. 810 + 815 同时在库时，canonical 视图列数 = 118，且 `id` 仍是
-   `NULL::bigint AS id,`（全库唯一 1 处命中）、`trace_events` 不在。
+3. 活库终态（`TEST_PG_DSN` 下复核）：canonical 视图列数 = 118、`trace_events` 不在、
+   `schema_migrations` 里 815 登记 1 行。`id` 的 NULL 补位在顶层 viewdef 里是
+   **2 处**（L1 顶层投影 + L146 `UNION ALL` 的 v1 分臂）⇒ **两条臂都补 NULL**，
+   与「`id` 永不投影」的决策一致。
+   该补位**源自 710**（Go 侧 `db/request_logs_view_schema.go:362`
+   `projectionExprsV2` 第 1 列 = `"NULL::bigint"`，别名由 `canonicalColumnOrderV2`
+   的首列名 `id` 拼出），815 原样继承、未改动它。
+
+> **订正一条我自己写错的数字**：本文件上一版把上面这件事写成「`id` 仍是
+> `NULL::bigint AS id,`（**全库唯一 1 处命中**）」。那个 1 数的是 **815 迁移文件里的
+> 命中数**，却被当成活库终态写了出去——**证据面张冠李戴**（同一个字面量在文件里
+> 1 处、在活库 viewdef 里 2 处，因为活库那层是 `UNION ALL`，两条臂各一处）。
+> 现按面分别写清。教训与「名字对得上不等于同一个东西」同族：这里中招的是
+> **数字对得上不等于量的是同一个面**。
 
 > **顺带发现并修掉一处「注释引用的先例与先例的实际行为相反」**：815.down 写着
 > 「schema_migrations 行按 append-only 惯例保留（**710/740 惯例**）」，而
