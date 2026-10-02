@@ -1,0 +1,244 @@
+#!/bin/bash
+# 252 PG17 索引膨胀治理（pgstatindex 双信号判据 + REINDEX CONCURRENTLY）
+#
+# 为什么单独一个脚本，不并进 pg17-vacuum-bloat.sh：
+#   vacuum-bloat 判的是「堆死元组」(pg_stat_user_tables.n_dead_tup)，
+#   本脚本判的是「索引内部空间浪费」。两者是不同的面 ——
+#   autovacuum 回收堆死元组不会让索引变紧凑。
+#
+# === 判据：pgstatindex 有三种索引浪费，形状不同，必须分开量再相加 ===
+#   deleted_pages      完全空页数。只在「按范围批量删除」时显著 ——
+#                      retention 按时间段删，页被整片清空。
+#   avg_leaf_density   叶页平均占用率(0~100)。反映「零散 churn」型膨胀：
+#                      行被随机更新/删除后每页都还剩几条存活，页不会全空。
+#   leaf_pages         叶页总数。算「未用空间」的基数。
+#   leaf_fragmentation 既不是密度也不是空页率，别拿它当判据（见下方实测）。
+#
+#   实测样本 A（临时库，30 万行删 90%，零散 churn）：
+#     重建前: size=2.79MB deleted_pages=0 leaf_pages=341  density=33.94
+#     重建后: size=0.30MB deleted_pages=0 leaf_pages=34   density=92.52
+#     deleted_pages 全程为 0，REINDEX 却回收了 89%（9.4×）→ 只看 deleted_pages 完全看不见。
+#     另测：把 autovacuum_enabled 关掉重做，deleted_pages 仍是 0 ——
+#     变量不是 autovacuum，别再往那个方向排查。
+#
+#   实测样本 B（生产 request_state_transitions_pkey，retention 批量删除）：
+#     size=94MB deleted_pages=9572 leaf_pages=2469 density=90.09
+#     空页占大头但活页排得很紧。只按密度算 → 9.3MB（低于门槛，会被误判成健康）；
+#     计入空页后 → 76.7MB。两种形态混用单一公式都会漏报。
+#
+#   可回收量 = deleted_pages + leaf_pages*(1-density/100)，单位页 × 8KB。
+#   该式是保守下界：样本 A 估 1.76MB，实测回收 2.49MB（偏低，安全方向）。
+#
+# === 报告型判据必须能区分「没有」与「没测到」===
+#   逐索引超时/报错单独计入 unmeasured 并在汇总里显式出现；
+#   一个都测不出来时 exit 2，而不是报「无膨胀」。0 个命中不打印成功符号。
+#
+# === 性能 ===
+#   pgstatindex 逐页读，>1GB 索引实测 >90s。故先按 MIN_INDEX_MB 圈定，
+#   每个索引单独加 statement_timeout，超时记 unmeasured。
+#
+# === REINDEX CONCURRENTLY ===
+#   必须单语句下发。与 SET 放同一个 -c 会被 psql 包进隐式事务块，
+#   报 "cannot run inside a transaction block"（pg17-vacuum-bloat.sh 踩过，
+#   自 2026-07-15 起每个周日 100% 静默失败）。超时参数走 PGOPTIONS。
+set -euo pipefail
+
+CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
+[ -f "$CONF" ] && source "$CONF"
+
+CONTAINER=${CONTAINER:-pg-252-pg17}
+PG_USER=${PG_USER:-postgres}
+PG_DB=${PG_DB:-llm_gateway}
+LOG=${LOG:-/var/log/pg17-index-bloat.log}
+NOTIFY=${NOTIFY:-/opt/scripts/notify.sh}
+
+# === 阈值（可被 /etc/llmgw/pg17.conf 覆盖）==========================
+MIN_INDEX_MB=${MIN_INDEX_MB:-16}          # 低于此尺寸不测：量它比回收它还贵
+MIN_DEAD_PAGES=${MIN_DEAD_PAGES:-2000}     # 批量删除型：死页下限（2000 页 ≈ 16MB）
+MIN_LEAF_DENSITY=${MIN_LEAF_DENSITY:-60}   # 零散 churn 型：叶页密度下限（%）
+MIN_RECLAIM_MB=${MIN_RECLAIM_MB:-32}       # 重建后至少能回收这么多才值得动手
+MAX_FIX_PER_RUN=${MAX_FIX_PER_RUN:-10}     # 单次运行最多重建几个，避免 cron 跑成长任务
+PROBE_TIMEOUT=${PROBE_TIMEOUT:-180}        # 单个索引 pgstatindex 超时（秒）
+REINDEX_TIMEOUT_MIN=${REINDEX_TIMEOUT_MIN:-30}
+LOCK_TIMEOUT=${LOCK_TIMEOUT:-5min}
+ALERT_CANDIDATE_MB=${ALERT_CANDIDATE_MB:-256}  # 候选索引总体积超此值才告警
+
+MODE=report
+for arg in "$@"; do
+  case "$arg" in
+    --report) MODE=report ;;
+    --fix)    MODE=fix ;;
+    *) echo "unknown arg: $arg (use --report | --fix)" >&2; exit 64 ;;
+  esac
+done
+
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+ts=$(date -Iseconds)
+log() { echo "[$ts] $*" >> "$LOG"; }
+
+log "start index-bloat mode=$MODE min_index=${MIN_INDEX_MB}MB min_dead_pages=${MIN_DEAD_PAGES} min_leaf_density=${MIN_LEAF_DENSITY}"
+
+# 必须吞掉 psql 的退出码：stderr 已并入 stdout，错误文本会作为「取值」流到下面的
+# 显式检查里。没有这层时，`x=$(de ...)` 会因 psql 返回非零被 set -e 直接掐死 ——
+# 日志停在 start、退出码 1、零诊断，运维只会看到「脚本挂了」而看不到「量具不可用」。
+de() { podman exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c "$1" 2>&1 || true; }
+
+# === 对照断言：先证明量具本身可用 ====================================
+# 不做这一步，「0 个膨胀索引」在「真的没有」与「量具根本跑不通」
+# （扩展没装、权限不足、版本字段改名）之间不可区分。
+control_idx=$(de "SELECT c.oid::regclass::text
+                   FROM pg_index i
+                   JOIN pg_class c ON c.oid = i.indexrelid
+                   JOIN pg_am am ON am.oid = c.relam AND am.amname = 'btree'
+                  WHERE c.relkind = 'i' AND NOT c.relispartition
+                    AND c.relpages > 0
+                  ORDER BY pg_relation_size(c.oid) ASC LIMIT 1;")
+if [ -z "$control_idx" ] || [ "${control_idx:0:5}" = "ERROR" ]; then
+  log "ABORT: control probe could not name a btree index: ${control_idx:-<empty>}"
+  echo "ABORT: 找不到可探测的 btree 索引，量具路径不可用" >&2
+  exit 2
+fi
+# 2026-10-03 首次实跑在这里红过：最小索引是空 TOAST 索引，avg_leaf_density 返回
+# 'NaN'（无叶页时密度无定义），被正则判成量具故障。NaN 是合法返回值，不是故障 ——
+# 探针要证明的是「pgstatindex 能跑通且返回列结构完整」，不是「密度必须是个数」。
+control_val=$(de "SELECT deleted_pages, avg_leaf_density FROM pgstatindex('$control_idx');")
+if ! [[ "$control_val" =~ ^[0-9]+\|(NaN|[0-9.]+)$ ]]; then
+  log "ABORT: control probe failed on $control_idx: ${control_val:-<empty>}"
+  echo "ABORT: 对照探针失败（$control_idx → ${control_val:-<空>}），本次报告不可信" >&2
+  exit 2
+fi
+log "control probe OK: $control_idx ${control_val}"
+
+# === 圈定候选（只取尺寸达标的 btree 索引）===========================
+candidates=$(de "SELECT c.oid::regclass::text
+                   FROM pg_index i
+                   JOIN pg_class c  ON c.oid = i.indexrelid
+                   JOIN pg_am am    ON am.oid = c.relam AND am.amname = 'btree'
+                   JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+                  WHERE c.relkind = 'i'
+                    AND NOT c.relispartition
+                    AND i.indisvalid
+                    AND pg_relation_size(c.oid) >= ${MIN_INDEX_MB} * 1024 * 1024
+                  ORDER BY pg_relation_size(c.oid) DESC;")
+
+# de() 把 stderr 合并进 stdout，psql 报错会以 ERROR 开头混进候选名单，
+# 那样每一行都会被记成 UNMEASURED，最后以「测了 0 个」收场 —— 结论不成立但看不出错在哪。
+if [ "${candidates:0:5}" = "ERROR" ]; then
+  log "ABORT: candidate query failed: ${candidates//$'\n'/ }"
+  echo "ABORT: 候选索引查询失败：${candidates//$'\n'/ }" >&2
+  exit 2
+fi
+cand_count=$(printf '%s' "$candidates" | grep -c . || true)
+log "candidates(>=${MIN_INDEX_MB}MB btree, valid, public): $cand_count"
+
+measured=0; unmeasured=0; flagged=0; cand_mb=0
+flag_list=""
+
+while IFS= read -r idx; do
+  [ -z "$idx" ] && continue
+  row=$(podman exec -e PGOPTIONS="-c statement_timeout=${PROBE_TIMEOUT}s" \
+          "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c \
+          "SELECT pg_relation_size('$idx'), s.deleted_pages, s.leaf_pages, s.avg_leaf_density
+             FROM pgstatindex('$idx') s;" 2>&1)
+
+  size_bytes=$(printf '%s' "$row" | head -1 | cut -d'|' -f1 | tr -d '[:space:]')
+  dead_pages=$(printf '%s' "$row"  | head -1 | cut -d'|' -f2 | tr -d '[:space:]')
+  leaf_pages=$(printf '%s' "$row"  | head -1 | cut -d'|' -f3 | tr -d '[:space:]')
+  density=$(printf '%s' "$row"     | head -1 | cut -d'|' -f4 | tr -d '[:space:]')
+
+  if ! [[ "$dead_pages" =~ ^[0-9]+$ ]] || ! [[ "$leaf_pages" =~ ^[0-9]+$ ]] \
+     || ! [[ "$density" =~ ^(NaN|[0-9.]+)$ ]]; then
+    unmeasured=$((unmeasured + 1))
+    log "UNMEASURED $idx : ${row//$'\n'/ }"
+    continue
+  fi
+
+  measured=$((measured + 1))
+  size_mb=$(( size_bytes / 1024 / 1024 ))
+
+  # 空索引（无叶页）密度为 NaN：没有可回收空间，直接记 ok，不要当成量不出来。
+  if [ "$density" = "NaN" ]; then
+    log "ok        $idx size=${size_mb}MB dead_pages=$dead_pages density=NaN(无叶页，无可回收)"
+    continue
+  fi
+
+  # 可回收页数 = 全空页 + 叶页未用空间。
+  # 2026-10-03 修正：原先只用 size*(1-density/100)，漏算了「全空页」这一项。
+  # 漏算的后果不是少报一点，而是把最大的回收机会判成 ok ——
+  # request_state_transitions_pkey 明明有 9572 个全空页(74.8MB)，但活页密度 90%
+  # 使旧公式只算出 9.3MB，低于门槛被跳过。实测该索引 leaf_pages 仅 2469，
+  # 正确公式给出 76.7MB。两种浪费形态必须分开算再相加。
+  # 该公式是保守下界：地面真值样本（av_on_pad）估 1.76MB，实测回收 2.49MB。
+  headroom_mb=$(awk -v d="$dead_pages" -v l="$leaf_pages" -v y="$density" \
+    'BEGIN{printf "%d", (d + l*(1-y/100))*8192/1048576}')
+  reason=""
+  [ "$dead_pages" -ge "$MIN_DEAD_PAGES" ] && reason="dead_pages=$dead_pages($(( dead_pages * 8192 / 1024 / 1024 ))MB)"
+  if awk -v y="$density" -v t="$MIN_LEAF_DENSITY" 'BEGIN{exit !(y<t)}'; then
+    reason="${reason:+$reason,}low_density=${density}%"
+  fi
+  # 累计 headroom 也能单独越过门槛（页数极多、每页都只空一点点：两个单信号都没破线，
+  # 汇总起来却超过 MIN_RECLAIM_MB）。此时 reason 会是空串，日志会打出 "reason="
+  # 这种读不出所以然的行，--fix 的日志同样带不出来。补一个兜底说明。
+  [ -z "$reason" ] && reason="aggregate(leaf_pages=${leaf_pages}×${density}%空隙)"
+
+  if [ "$headroom_mb" -ge "$MIN_RECLAIM_MB" ]; then
+    flagged=$((flagged + 1))
+    cand_mb=$((cand_mb + headroom_mb))
+    flag_list="${flag_list}${idx}|${headroom_mb}|${reason}"$'\n'
+    log "CANDIDATE $idx size=${size_mb}MB headroom≈${headroom_mb}MB reason=${reason}"
+  else
+    log "ok        $idx size=${size_mb}MB dead_pages=$dead_pages density=${density}% headroom≈${headroom_mb}MB"
+  fi
+done <<< "$candidates"
+
+log "summary: measured=$measured unmeasured=$unmeasured flagged=$flagged headroom≈${cand_mb}MB"
+
+# === 汇总必须能区分「没有」与「没测到」==============================
+if [ "$measured" -eq 0 ]; then
+  log "ABORT: 0 indexes measurable (unmeasured=$unmeasured) — 不是「无膨胀」，是「测不了」"
+  echo "ABORT: 成功量到 0 个索引（unmeasured=$unmeasured），本轮结论不成立" >&2
+  exit 2
+fi
+if [ "$flagged" -eq 0 ] && [ "$unmeasured" -gt 0 ]; then
+  log "no candidate among $measured measured, but $unmeasured unmeasured — 结论仅覆盖已测部分"
+fi
+
+# === --fix：REINDEX CONCURRENTLY ====================================
+# CONCURRENTLY 不阻塞读写，但会等待所有长事务；故设 lock_timeout，
+# 抢不到锁就记 FAILED 跳过，不排队阻塞后续索引。
+if [ "$MODE" = "fix" ] && [ "$flagged" -gt 0 ]; then
+  done_count=0; reclaimed_mb=0
+  while IFS='|' read -r idx headroom_mb reason; do
+    [ -z "$idx" ] && continue
+    if [ "$done_count" -ge "$MAX_FIX_PER_RUN" ]; then
+      log "SKIP $idx : reached MAX_FIX_PER_RUN=$MAX_FIX_PER_RUN, 留待下次"
+      continue
+    fi
+    before=$(de "SELECT pg_relation_size('$idx');" | tr -d '[:space:]')
+    [[ "$before" =~ ^[0-9]+$ ]] || { log "SKIP $idx : 无法读取当前体积"; continue; }
+    log "REINDEX CONCURRENTLY $idx (before=$((before/1024/1024))MB reason=${reason})"
+    if podman exec -e PGOPTIONS="-c statement_timeout=${REINDEX_TIMEOUT_MIN}min -c lock_timeout=${LOCK_TIMEOUT}" \
+         "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c "REINDEX INDEX CONCURRENTLY $idx;" \
+         >> "$LOG" 2>&1; then
+      after=$(de "SELECT pg_relation_size('$idx');" | tr -d '[:space:]')
+      if [[ "$after" =~ ^[0-9]+$ ]] && [ "$after" -lt "$before" ]; then
+        done_count=$((done_count + 1))
+        reclaimed_mb=$(( reclaimed_mb + (before - after) / 1024 / 1024 ))
+        log "REINDEX OK $idx : $((before/1024/1024))MB -> $((after/1024/1024))MB"
+      else
+        log "REINDEX NO-GAIN $idx : $((before/1024/1024))MB -> $((after/1024/1024))MB（阈值判据有偏差，需复核）"
+      fi
+    else
+      log "REINDEX FAILED $idx (锁等待或超时，未强制；下次运行会再次尝试)"
+    fi
+  done <<< "$flag_list"
+  log "fix done: $done_count reindexed, ~${reclaimed_mb}MB reclaimed"
+fi
+
+# === 告警 ===========================================================
+if [ "$cand_mb" -ge "$ALERT_CANDIDATE_MB" ] && [ -x "$NOTIFY" ]; then
+  "$NOTIFY" "252 索引膨胀告警：$flagged 个索引候选，潜在回收约 ${cand_mb}MB（已测 $measured / 未测 $unmeasured）" \
+    >> "$LOG" 2>&1 || log "notify failed"
+fi
+
+log "done mode=$MODE"

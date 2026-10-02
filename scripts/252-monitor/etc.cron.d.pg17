@@ -17,5 +17,13 @@ MAILTO=""
 # === 周级 bloat 清理（防 dead tuple 长期堆积）===
 15 3 * * 0 root /opt/scripts/pg17-vacuum-bloat.sh >/dev/null 2>&1
 
+# === 周级索引死页巡检（只读报告 + 超阈值告警）===
+# 2026-10-03 新增。错开 1 小时放在 vacuum-bloat 之后：两者都要重写大对象，
+# 同窗口跑会互相拖慢；且 04:15 已过业务低峰，REINDEX CONCURRENTLY 等长事务的概率更低。
+#
+# 升级为自动重建：把 --report 换成 --fix（REINDEX CONCURRENTLY，不阻塞读写；
+# 抢不到锁就跳过留待下次运行）。先确认首次 --fix 表现再切换。
+40 4 * * 0 root /opt/scripts/pg17-index-bloat.sh --report >/dev/null 2>&1
+
 # === 月度列存分区清理 ===
 30 2 1 * * root /opt/scripts/pg17-drop-old-columnar-partitions.sh >/dev/null 2>&1
