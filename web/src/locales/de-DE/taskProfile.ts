@@ -1,16 +1,14 @@
 // taskProfile.ts — 任务档案页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: 'Aufgabenprofile',
-    desc: 'AUTO-Aufgabentypen-Profile: Tier-Defaults, Korrekturstatistiken und Tier-Vorschläge (taskprofile-Plugin; apply schreibt die Tier-Konfiguration)',
     refresh: 'Aktualisieren',
     refreshing: 'Aktualisieren…',
-    loading: 'Laden…',
     loadFailed: 'Laden fehlgeschlagen',
+    noData: 'Keine Profildaten',
   registry: {
     version: 'Registry-Version',
-    schema: 'Schema-Version',
     types: 'Aufgabentypen',
-    corrections: 'Korrigierte Typen',
+    correctedTotal: 'Korrekturen im Zeitraum',
+    pendingSuggestions: 'Offene Tier-Änderungen',
   },
   table: {
     taskType: 'Aufgabentyp',

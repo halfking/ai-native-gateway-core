@@ -3,6 +3,7 @@ import common from './common'
 import nav from './nav'
 import taskProfile from './taskProfile'
 import autoTuning from './autoTuning'
+import autoOps from './autoOps'
 import customer from './customer'
 import login from './login'
 import app from './app'
@@ -83,6 +84,7 @@ export default {
   nav,
   taskProfile,
   autoTuning,
+  autoOps,
   login,
   app,
   errors,

@@ -133,13 +133,10 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/models', label: '模型与目录', labelKey: 'nav.item.models', icon: '🏷️', platformOps: true, hideForTenant: true },
       { path: '/routing-v2', label: '路由全景', labelKey: 'nav.item.routingOverview', icon: '🗺️', super: true, hideForTenant: true, exact: true },
       { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
-      { path: '/routing-v2/annotations', label: '人工标注', labelKey: 'nav.item.annotations', icon: '✍️' },
-      { path: '/routing-v2/annotations/stats', label: '标注统计', labelKey: 'nav.item.annotationStats', icon: '🧮' },
-      // v2 closed-loop P0③ (2026-09-24): taskprofile 档案 + 路由调参门面
-      // R64 (2026-09-25): task-profile 有写操作（apply-tier-config / reload），
-      // 与 auto-tuning 同为 super_admin 专属（路由 meta.requiresSuper 同步门控）。
-      { path: '/routing-v2/task-profile', label: '任务档案', labelKey: 'nav.item.taskProfile', icon: '🗂️', super: true, hideForTenant: true },
-      { path: '/routing-v2/auto-tuning', label: '路由调参', labelKey: 'nav.item.autoTuning', icon: '🎛️', super: true, hideForTenant: true },
+      // 2026-10-02 整合轮：原四项（人工标注/标注统计/任务档案/路由调参）收敛
+      // 为 AUTO 路由闭环统一工作台。标注两页签全员可用；任务档案/调参审批
+      // 页签 super_admin 专属（宿主 AutoRoutingOpsView normalizeTab 门控）。
+      { path: '/routing-v2/auto-ops', label: 'AUTO 路由运营', labelKey: 'nav.item.autoOps', icon: '♻️' },
       // 2026-09-07: /probe-health folded into 凭据监控「探测健康」tab
       // (/routing-v2/credentials?tab=probe-health); standalone menu entry removed.
       // 2026-10-02: 「系统自检」菜单入口去掉（看板横条仍可进 /dashboard?tab=selfcheck）。

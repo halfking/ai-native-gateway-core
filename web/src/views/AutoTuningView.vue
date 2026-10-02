@@ -1,13 +1,16 @@
 <script setup lang="ts">
-// AutoTuningView.vue — 路由调参页（v2 规划 P0③，2026-09-24；P1 增补生成入口）。
+// AutoTuningView.vue — 路由调参审批面板（v2 规划 P0③，2026-09-24；2026-10-02 整合轮收编）。
 //
 // tuning admin API（/api/admin/auto-route/tuning，superAdmin 权限）的运营
 // 门面：调参提案列表（状态/类别过滤）+ 批准/驳回（批准即热调参，5 分钟内
 // 经 bg/tuning_store_refresher 生效）+ 分类质量窗口报表 + 两个按需生成入口
-// （P1：人工修正驱动提案 / 信号分析器即时运行）。
+// （人工修正驱动提案 / 信号分析器即时运行）。
 // 提案由 feedback_analyzer 与 taskprofile/analyzer 自动生成（回路 C 的
 // "自动生成提案"半环）；本页是"人工批准"半环（v2 规划 §4.4：自动的是提案，
 // 生效永远是门禁+人工）。
+// 2026-10-02 整合轮：收编为 AutoRoutingOpsView 的「调参审批」面板
+// （/routing-v2/auto-ops?tab=tuning），表格迁移标准 DataTable、配色收敛
+// CSS 变量（去除裸 rgba/hex）。
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -21,6 +24,7 @@ import {
   type TuningProposalStatus,
   type TuningProposalCategory,
 } from '../api/tuning'
+import DataTable from '../components/ui/DataTable.vue'
 
 const { t } = useI18n()
 
@@ -238,10 +242,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="stats-page">
-    <div class="page-header">
-      <h2>{{ t('autoTuning.title') }}</h2>
-      <div class="header-actions">
+  <div class="panel">
+    <div class="panel-toolbar">
+      <span class="panel-title">{{ t('autoTuning.panelTitle') }}</span>
+      <div class="toolbar-actions">
         <label class="inline-label">
           {{ t('autoTuning.action.windowDays') }}
           <select v-model.number="generateDays" class="select-sm">
@@ -261,8 +265,6 @@ onMounted(() => {
         </button>
       </div>
     </div>
-
-    <p class="page-desc">{{ t('autoTuning.desc') }}</p>
 
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
     <div v-if="notice" class="alert alert-success" role="status">{{ notice }}</div>
@@ -286,12 +288,8 @@ onMounted(() => {
       </label>
     </div>
 
-    <div v-if="loading" class="loading-container">
-      <p>{{ t('autoTuning.loading') }}</p>
-    </div>
-
-    <div v-else class="table-wrap">
-      <table v-if="proposalList.length" class="data-table">
+    <DataTable :loading="loading" :empty="!loading && proposalList.length === 0" :empty-text="t('autoTuning.noProposals')" min-width="1080px">
+      <table class="data-table">
         <thead>
           <tr>
             <th>#</th>
@@ -335,8 +333,7 @@ onMounted(() => {
           </tr>
         </tbody>
       </table>
-      <p v-else class="dim">{{ t('autoTuning.noProposals') }}</p>
-    </div>
+    </DataTable>
 
     <div class="section-header">
       <h3>{{ t('autoTuning.accuracy.title') }}</h3>
@@ -351,9 +348,8 @@ onMounted(() => {
     </div>
 
     <div v-if="accuracyError" class="alert alert-danger" role="alert">{{ accuracyError }}</div>
-    <div v-if="accuracyLoading" class="loading-container"><p>...</p></div>
-    <div v-else class="table-wrap">
-      <table v-if="accuracyList.length" class="data-table">
+    <DataTable :loading="accuracyLoading" :empty="!accuracyLoading && accuracyList.length === 0" :empty-text="t('autoTuning.accuracy.noData')" min-width="860px">
+      <table class="data-table">
         <thead>
           <tr>
             <th>{{ t('autoTuning.accuracy.taskType') }}</th>
@@ -379,140 +375,180 @@ onMounted(() => {
           </tr>
         </tbody>
       </table>
-      <p v-else class="dim">{{ t('autoTuning.accuracy.noData') }}</p>
       <p v-if="accuracyGeneratedAt" class="dim generated-at">
         {{ t('autoTuning.accuracy.generatedAt') }}: {{ formatTs(accuracyGeneratedAt) }}
       </p>
-    </div>
+    </DataTable>
   </div>
 </template>
 
 <style scoped>
-.header-actions {
+/* 嵌入面板：宿主 AutoRoutingOpsView 提供外层 padding 与纵向间距 */
+.panel-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.panel-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.toolbar-actions {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
-.header-actions .inline-label {
-  margin-left: 0;
-}
+
 .filter-bar {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin: 1rem 0;
+  margin: 0.75rem 0;
   flex-wrap: wrap;
 }
+
 .chip {
   padding: 0.25rem 0.75rem;
   border-radius: 999px;
-  border: 1px solid var(--border-color, #d1d5db);
+  border: 1px solid var(--border);
   background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 0.8rem;
 }
+
 .chip.active {
-  background: var(--primary, #2563eb);
-  color: #fff;
-  border-color: var(--primary, #2563eb);
+  background: var(--bg-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
 }
+
 .inline-label {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
   font-size: 0.85rem;
-  color: var(--text-secondary, #666);
+  color: var(--text-muted);
   margin-left: auto;
 }
+
 .select-sm {
   padding: 0.2rem 0.4rem;
-  border: 1px solid var(--border-color, #ccc);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg-card, #fff);
+  background: var(--card);
+  color: var(--text);
 }
-.table-wrap {
-  overflow-x: auto;
-}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.85rem;
 }
+
 .data-table th,
 .data-table td {
   padding: 0.45rem 0.6rem;
-  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: top;
 }
+
 .data-table th {
   font-weight: 600;
-  color: var(--text-secondary, #555);
+  color: var(--text-muted);
   white-space: nowrap;
 }
+
+.data-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   white-space: nowrap;
 }
+
 .dim {
-  color: var(--text-secondary, #999);
+  color: var(--text-muted);
 }
+
 .proposal-cell {
   max-width: 24rem;
   overflow-wrap: anywhere;
   white-space: normal;
 }
+
 .note-cell {
   font-size: 0.75rem;
   max-width: 12rem;
   overflow-wrap: anywhere;
 }
+
 .actions {
   white-space: nowrap;
 }
+
 .actions .btn {
   margin-right: 0.35rem;
 }
+
 .btn-xs {
   padding: 0.15rem 0.5rem;
   font-size: 0.75rem;
 }
+
 .status-badge {
   display: inline-block;
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
   font-size: 0.75rem;
-  border: 1px solid var(--border-color, #d1d5db);
+  border: 1px solid var(--border);
 }
+
 .status-pending {
-  background: rgba(245, 158, 11, 0.15);
-  border-color: rgba(245, 158, 11, 0.5);
+  background: var(--warning-bg);
+  border-color: var(--warning);
+  color: var(--warning-strong);
 }
+
 .status-approved {
-  background: rgba(59, 130, 246, 0.12);
-  border-color: rgba(59, 130, 246, 0.4);
+  background: var(--info-bg);
+  border-color: var(--accent);
+  color: var(--accent);
 }
+
 .status-applied {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.4);
+  background: var(--success-bg);
+  border-color: var(--success);
+  color: var(--success-strong);
 }
+
 .status-rejected {
-  background: rgba(107, 114, 128, 0.12);
-  border-color: rgba(107, 114, 128, 0.4);
+  background: var(--bg-secondary);
+  border-color: var(--border);
+  color: var(--text-muted);
 }
+
 .section-header {
   display: flex;
   align-items: center;
   gap: 1rem;
-  margin: 2rem 0 0.5rem;
+  margin: 1.5rem 0 0.5rem;
 }
+
 .section-header h3 {
   margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
 }
-.section-header .inline-label {
-  margin-left: 0;
-}
+
 .generated-at {
   font-size: 0.75rem;
   margin-top: 0.4rem;
