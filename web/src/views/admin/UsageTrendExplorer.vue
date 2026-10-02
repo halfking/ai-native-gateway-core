@@ -230,6 +230,14 @@ function rowClass({ row }: { row: Record<string, unknown> }): string {
 // 指标是纯前端选列，不触发重查，但要同步深链。
 watch(metric, () => syncQuery())
 
+// detail 档（按 API Key 过滤）超时引导：handler 的 45s 截止在 writeInternalErr
+// 被折叠成固定 op 文案（真实 err 只进服务端日志），前端以
+// 「按 Key 过滤 + 错误含 query failed」作为可判信号，提示用户缩短时间范围。
+const detailQueryFailed = computed(() => {
+  if (!apiKeyId.value || !error.value) return false
+  return /query failed/i.test(error.value)
+})
+
 const sourceLabel = computed(() => {
   switch (source.value) {
     case 'request_stats_dim_minute':
@@ -346,7 +354,10 @@ onMounted(() => {
         :loading="loading"
         :height="440"
       />
-      <div v-if="error" class="ute__err">{{ t('usageTrend.loadFailed') }}：{{ error }}</div>
+      <div v-if="error" class="ute__err">
+        {{ t('usageTrend.loadFailed') }}：{{ error }}
+        <div v-if="detailQueryFailed" class="ute__err-hint">{{ t('usageTrend.detailTimeoutHint') }}</div>
+      </div>
     </div>
 
     <div class="ute__table">
@@ -458,6 +469,11 @@ export default { name: 'UsageTrendExplorer' }
   font-size: 12px;
   color: var(--danger);
   padding-top: 6px;
+}
+.ute__err-hint {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding-top: 2px;
 }
 .ute__others {
   color: var(--text-muted);

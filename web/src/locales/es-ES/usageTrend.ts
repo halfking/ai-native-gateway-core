@@ -3,6 +3,7 @@ export default {
   pageTitle: 'Análisis de tendencias de uso',
   pageSub: 'Uso por modelo en el tiempo; filtra por proveedor / inquilino / clave API / modelo / métrica',
   loadFailed: 'Error al cargar',
+  detailTimeoutHint: 'Al filtrar por clave de API se analizan los registros de solicitudes, lo que puede agotar el tiempo de espera en rangos amplios; prueba un rango más corto (p. ej., 7 días)',
   filterProvider: 'Proveedor',
   filterTenant: 'Inquilino',
   filterApiKey: 'Clave API',
