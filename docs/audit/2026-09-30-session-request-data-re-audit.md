@@ -7697,3 +7697,38 @@ llm_gateway_auto_selections_dropped_total 0
 `a0da9066d` 改动（它新增了 `auto-route-settle-baseline_test.yml` 的 promtool
 6 场景），而我的合并尚未解封。此时再动同一批文件只会把冲突面扩大。
 ⇒ 记账为下一轮的**第一件事**，并在此处写明判据要求（见 handoff）。
+
+### §9.64.9 顺带修掉一个**早于本轮**的红灯：写死编号的权威源
+
+`admin` 包里 `TestSessionArmNullPaddedColumnsMatchMigration` 报
+「session 臂 NULL 补位表与 **migration 815** 不一致：迁移里有、表里没有
+`[client_ip]`」。
+
+用 worktree 回到 `HEAD` 复跑确认：**早于本轮改动**，是 816 那一轮留下的。
+根因不在 `client_ip`，在**这道门把 815 当成了「当前权威迁移」**：
+
+| 迁移 | `client_ip` 形态 |
+|---|---|
+| 815（及更早） | `NULL::inet` 补位 |
+| 816 | 有源投影 + 字符类守卫 |
+| 817 | 有源投影 + 语义守卫 |
+
+816 把 `client_ip` 移出补位表之后，这道门就该改指 817——但**没人记得**，
+于是它红了整整一轮没人处理：816 那轮所有 `db` 包的测试都是绿的，
+只有这道**跨包**的 admin 门看得到。
+
+**修法不是把 815 换成 817**（那只是把同一个错误推迟到下一条迁移），
+而是**自动发现**：扫 `sql/migrations/startup/`，取**编号最大的、以
+`CREATE OR REPLACE VIEW public.request_logs_with_current_month` 重建该视图的
+up 迁移**。`.down.sql` 必须排除——down 恢复的是**旧形态**，把它算进
+「当前」会让门在回滚方向上完全失准。
+
+> **写死编号是这类门的默认失败模式**：它要求「每次新增一条重建视图的迁移」
+> 都记得回来改这里，而改漏的表现**不是**「门忘了新迁移」，是「门拿旧迁移
+> 当权威」——一个看起来完全合理的红，指向一个不存在的问题。
+> 这与「登记表 + 穷举」是同一族：真相会漂移，而**没登记就不检查**是最安静
+> 的一种失败，所以要把权威源**推导出来**而不是**记下来**。
+
+变异验证（M5）：往 817 的 proj 注入一个 `NULL::text AS client_ip_drift_probe`
+⇒ 门报「迁移里有、表里没有：`[client_ip_drift_probe]`」，红因即差集本身。
+逐字节还原后复跑为绿。

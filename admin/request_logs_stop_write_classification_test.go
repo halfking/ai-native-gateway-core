@@ -36,6 +36,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1129,8 +1130,64 @@ var legacySessionArmNullPaddedColumns710 = map[string]struct{}{
 	"virtual_ip": {}, "virtual_mac": {},
 }
 
+// currentCanonicalViewMigrationPath 返回**当前权威迁移**——即 startup 目录里
+// 编号最大的、以 CREATE OR REPLACE VIEW 重建 canonical 视图的 **up** 迁移。
+//
+// 为什么必须自动发现，不能写死编号（2026-10-02，审计 §9.64）：
+//
+//	权威源：710 → 734 → 740 → 815 → 816 → 817
+//
+//	写死 815 时门是绿的；816 把 client_ip 从 NULL 补位改成有源投影后，
+//	这张门**当轮就红了**，而且红得像代码坏了。它红了整整一轮没人处理，
+//	因为「816 那轮所有 db 包的测试都是绿的」，只有跨包这道 admin 门看得到。
+//
+//	写死编号的失败模式特别难查：**它要求「每次新增一条重建视图的迁移」都记得
+//	回来改这里**，而改漏了的表现不是「门忘了新迁移」，是「门拿旧迁移当权威」
+//	——一个看起来完全合理的红，却指向一个不存在的问题。
+//
+//	. down.sql 必须排除：down 恢复的是**旧形态**（817 down 回到 816 的形态，
+//	816 down 回到 NULL 补位）。把 down 算进「当前」会让门在回滚方向上完全失准。
+func currentCanonicalViewMigrationPath(t *testing.T, root string) string {
+	t.Helper()
+	dir := filepath.Join(root, "sql", "migrations", "startup")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读 startup 迁移目录失败：%v", err)
+	}
+	const needle = "CREATE OR REPLACE VIEW public.request_logs_with_current_month"
+	bestNum, bestName := -1, ""
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") || strings.HasSuffix(name, ".down.sql") {
+			continue
+		}
+		num, _, ok := strings.Cut(name, "_")
+		if !ok {
+			continue
+		}
+		n, err := strconv.Atoi(num)
+		if err != nil {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("读 %s 失败：%v", name, err)
+		}
+		if !strings.Contains(string(b), needle) || n <= bestNum {
+			continue
+		}
+		bestNum, bestName = n, name
+	}
+	if bestName == "" {
+		t.Fatalf("startup 目录里找不到重建 canonical 视图的 up 迁移 —— " +
+			"要么迁移被搬走了，要么 CREATE 语句的写法变了。本门会因此拿不到权威源，" +
+			"而那正是它唯一能发现的事。")
+	}
+	return filepath.Join(dir, bestName)
+}
+
 // TestSessionArmNullPaddedColumnsMatchMigration 钉住派生集合与**当前权威迁移**
-// （815 的 $proj$，即 710 拼装体 + 734 details + 815 三列）声明的一致。
+// （= 当前重建该视图的最高号 up 迁移的 $proj$）声明的一致。
 //
 // 权威源为什么从 710 换成 815：710 的 $proj$ 是 734 **之前**的形态，它的 30 条
 // `NULL::` 占位里有 24 条在 734 之后已经被 `d.<col>` 取代。原实现拿 710 当权威，
@@ -1138,24 +1195,29 @@ var legacySessionArmNullPaddedColumns710 = map[string]struct{}{
 // 形态）与自己。这正是「门测的不是它声称测的那个东西」的教科书形态：它确实在
 // 校验一致性，只是两边的错误抵消了。
 //
+// 权威源又为什么从写死 815 换成**自动发现**（2026-10-02）：816 落地后这张门红了，
+// 而写死编号这件事本身就是失败模式——详见 currentCanonicalViewMigrationPath
+// 的注释。
+//
 // 现在两侧的独立性来自：左侧派生自 **db 包的生效投影**（withDetails=true），
-// 右侧解析自 **815 迁移文件**的 $proj$ 块。两者由 db 包的 viewdef 等价契约
+// 右侧解析自**当前权威迁移文件**的 $proj$ 块。两者由 db 包的 viewdef 等价契约
 // （TestRequestLogsViewV2EnsureMatchesMigration）保证同源但不同路径。
 func TestSessionArmNullPaddedColumnsMatchMigration(t *testing.T) {
 	root := repoRootFromCaller(t)
-	raw, err := os.ReadFile(filepath.Join(root,
-		"sql/migrations/startup/815_request_logs_view_stage_band_cff.sql"))
+	migPath := currentCanonicalViewMigrationPath(t, root)
+	raw, err := os.ReadFile(migPath)
 	if err != nil {
-		t.Fatalf("读 migration 815 失败 %v", err)
+		t.Fatalf("读权威迁移 %s 失败 %v", migPath, err)
 	}
+	t.Logf("当前权威迁移 = %s", filepath.Base(migPath))
 	declared := map[string]struct{}{}
 	re := regexp.MustCompile(`NULL::[A-Za-z\[\] ]+ AS ([a-z_]+)`)
 	for _, m := range re.FindAllStringSubmatch(string(raw), -1) {
 		declared[m[1]] = struct{}{}
 	}
 	if len(declared) == 0 {
-		t.Fatal("migration 815 里没解析出任何 NULL 补位列——正则失效或迁移被重写，" +
-			"族分类器会静默退化成「视图族一律行级可用」")
+		t.Fatalf("%s 里没解析出任何 NULL 补位列——正则失效或迁移被重写，"+
+			"族分类器会静默退化成「视图族一律行级可用」", filepath.Base(migPath))
 	}
 	var missing, extra []string
 	for c := range declared {
@@ -1171,10 +1233,10 @@ func TestSessionArmNullPaddedColumnsMatchMigration(t *testing.T) {
 	sort.Strings(missing)
 	sort.Strings(extra)
 	if len(missing) > 0 || len(extra) > 0 {
-		t.Errorf("session 臂 NULL 补位表与 migration 815 不一致：\n"+
+		t.Errorf("session 臂 NULL 补位表与当前权威迁移 %s 不一致：\n"+
 			"  迁移里有、表里没有：%v\n  表里有、迁移里没有：%v\n"+
 			"后果：族分类器会把「谓词级空」误判成「行级有」，"+
-			"从而拒绝正确的 silently_empty 判定。", missing, extra)
+			"从而拒绝正确的 silently_empty 判定。", filepath.Base(migPath), missing, extra)
 	}
 }
 
