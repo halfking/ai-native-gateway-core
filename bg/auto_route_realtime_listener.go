@@ -94,7 +94,11 @@ func NewAutoRouteRealtimeListener(pool *pgxpool.Pool, refresher indexRefresher) 
 // reconciliation triggers) should wait on Ready.
 func (l *AutoRouteRealtimeListener) Ready() <-chan struct{} {
 	if l == nil {
-		return nil
+		// nil receiver 返回 nil channel 会让调用方 select 永久阻塞；返回
+		// 已关闭 channel 表达"无可等待的就绪信号"（R29 审计）。
+		ch := make(chan struct{})
+		close(ch)
+		return ch
 	}
 	return l.ready
 }

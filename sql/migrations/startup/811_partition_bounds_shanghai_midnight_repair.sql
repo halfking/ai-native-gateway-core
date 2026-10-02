@@ -40,6 +40,12 @@ BEGIN;
 
 SET LOCAL statement_timeout = '30min';
 SET LOCAL lock_timeout = '120s';
+-- 时区钉扎（R29 审计）：第一遍检测谓词 position('08:00:00' in bounds) 依赖
+-- pg_get_expr 按会话时区渲染——污染（UTC 零点）仅在 +08 会话下才渲染为
+-- '...T08:00:00+08' 命中指纹；UTC 会话（新 PG17 Docker 默认，亦是
+-- deploy-local-sys.sh 序列通道的执行环境）下渲染 '...T00:00:00+00' 会静默
+-- 漏检且台账按内容指纹记为已应用。与 687/694/714 正典 ensure 同款钉扎。
+SET LOCAL TIME ZONE 'Asia/Shanghai';
 
 DO $$
 DECLARE

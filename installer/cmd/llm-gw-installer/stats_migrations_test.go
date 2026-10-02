@@ -63,7 +63,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 //   - embeddata 已有的每个 down 必须与 canonical 字节一致（漂移即红）；
 //   - 数量只增不减（≥74 棘轮）。
 //
-// canonical 侧另有 245 个 down 按历史选择性约定未镜像（含 802-804/807），
+// canonical 侧另有 248 个 down 按历史选择性约定未镜像（含 802-804/807），
 // 不在本守卫强制范围；新迁移的 down 应循 808/809/730/612 先例双侧镜像。
 func TestDownMigrationsMirrorCanonicalSources(t *testing.T) {
 	t.Helper()
@@ -302,6 +302,20 @@ var operatorGatedCleanup = map[string]string{
 	"755_drop_dead_cleanup_expired_session_turn_logs.sql": "legacy cleanup with explicit BEGIN/COMMIT and external-job check",
 }
 
+// 810/811/812 (2026-10-02, R20 252 SQL-log audit round) are one-shot repairs
+// for upgraded databases: toastless-heap empty partitions (810), UTC-midnight
+// bound pollution (811), columnar probe-run partitions (812). A fresh install
+// never creates those states — the 687+ baseline already builds heap+toast
+// partitions with +08 bounds — so like 755 there is nothing for the installer
+// to do. Each file also wraps itself in an explicit BEGIN/COMMIT and cannot
+// ride the installer's psql --single-transaction; they ship via the
+// revision-sequence channel only (files array, registered 2026-10-02).
+var sequenceChannelRepairs = map[string]string{
+	"810_heap_partitions_toastless_heal.sql":            "explicit BEGIN/COMMIT; legacy toastless-heap repair, fresh installs unaffected (687+ baseline)",
+	"811_partition_bounds_shanghai_midnight_repair.sql": "explicit BEGIN/COMMIT; legacy bound-pollution repair, fresh installs unaffected (687+ baseline)",
+	"812_model_probe_runs_partitions_heap.sql":          "explicit BEGIN/COMMIT; legacy columnar-partition repair, fresh installs unaffected (687+ baseline)",
+}
+
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
 // audit) closes the drift direction no test covered: a canonical migration
 // that never reached the installer (704/705/709/710 drifted out — R30
@@ -348,6 +362,10 @@ func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
 		}
 		if reason, exempt := operatorGatedCleanup[name]; exempt {
 			t.Logf("canonical startup migration %q intentionally operator-gated: %s", name, reason)
+			continue
+		}
+		if reason, exempt := sequenceChannelRepairs[name]; exempt {
+			t.Logf("canonical startup migration %q intentionally sequence-channel-only: %s", name, reason)
 			continue
 		}
 		if _, ok := registered[name]; !ok {

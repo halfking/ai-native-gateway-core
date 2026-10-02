@@ -72,6 +72,19 @@ BEGIN
         END IF;
 
         EXECUTE format('ALTER TABLE %s DETACH PARTITION %s', part.parent, part.qualified_name);
+        -- TOCTOU 收口（R29 审计）：预检 count 与 DETACH 之间存在并发写入窗口
+        -- （session_bodies_2026_10 有每小时 promote 写入面），随分区 DROP 会
+        -- 丢行。DETACH 已取得 AccessExclusive，此后锁内二次 count：非空则
+        -- ATTACH 回去（若 default 分区在窗口期收走行，ATTACH 报错即为期望的
+        -- fail-closed，优于静默丢行）。
+        EXECUTE format('SELECT count(*) FROM %s', part.qualified_name) INTO v_rows;
+        IF v_rows > 0 THEN
+            EXECUTE format('ALTER TABLE %s ATTACH PARTITION %s %s',
+                           part.parent, part.qualified_name, part.bound);
+            RAISE NOTICE '810: % raced non-empty during detach (% rows); re-attached, left untouched', part.qualified_name, v_rows;
+            CONTINUE;
+        END IF;
+
         EXECUTE format('DROP TABLE %s', part.qualified_name);
         EXECUTE format('CREATE TABLE %s PARTITION OF %s %s',
                        part.qualified_name, part.parent, part.bound);
