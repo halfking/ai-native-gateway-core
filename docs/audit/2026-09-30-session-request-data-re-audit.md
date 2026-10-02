@@ -5637,7 +5637,9 @@ req-b2: reward_source differs: v1="session" session="request"
 | `llmgw_autoroute_settle_source_total{family}` | §9.43 已有 | `AutoRouteSettleSourceSwitched`（**本轮新增的消费者**） |
 
 `loadTaskBaselines` 的签名从 `(map, error)` 变成 `(map, int, error)`，第二个返回值
-与 `count(*)` **同在一次查询里**取回（不为一个数字多付一次每 30 秒的 RTT）。
+与 `count(*)` **同在一次查询里**取回（不为一个数字多付一次每轮的 RTT；settleInterval
+是 5 分钟，"每 30 秒" 是 2026-10-02 R33 审计订正前的笔误，代码注释里写的
+"every settleInterval" 才是对的）。
 §9.37 的纪律直接适用：门
 `TestSettleBaselineCohortCountIsConsumed` 要求那个返回值真的被 `Set` 进指标，
 否则它在事实层面就是装饰。

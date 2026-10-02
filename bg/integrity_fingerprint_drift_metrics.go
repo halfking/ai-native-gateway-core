@@ -40,7 +40,11 @@ import (
 // S4 停写的真实影响是**前瞻性**的：腿 2（`inProcSeen` 的进程内 arm）的唯一写入方
 // `markSystemFingerprintObserved()` 在 `persistSystemFingerprint()` 内调用，而后者
 // 位于 `if logsWrite {}` 块内（client.go:1816 / :2468）⇒ 停写后它一次都不执行。
-// ⇒ **即便上游将来开始发指纹，停写 + 重启后检测器也永远不会恢复。**
+// ⇒ §9.50 曾据此断言「即便上游将来开始发指纹，停写 + 重启后检测器也永远不会恢复」
+// ——**该断言已被 §9.52（2026-10-02）作废**：arm 移到 `observeSystemFingerprint()`、
+// 在 insertRequestLog/updateRequestLog 的门控之外调用，停写下可达。
+// 残余限制（R33 补记）：scanDrift 只读 v1 当前月视图，停写期间没有新行，
+// arm 恢复 ≠ 检测恢复——检测能力要等停写解除才真正回来。
 // 门见 domains/hooks/observability/telemetry/fingerprint_escape_hatch_gate_test.go。
 //
 // 这不是「读点变空」那种显示层降级，而是**一个安全检测器自己把自己关掉了**。

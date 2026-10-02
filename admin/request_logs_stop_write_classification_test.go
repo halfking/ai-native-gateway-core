@@ -1130,23 +1130,28 @@ var legacySessionArmNullPaddedColumns710 = map[string]struct{}{
 }
 
 // TestSessionArmNullPaddedColumnsMatchMigration 钉住派生集合与**当前权威迁移**
-// （815 的 $proj$，即 710 拼装体 + 734 details + 815 三列）声明的一致。
+// （816 的 $proj$，即 815 形态 − client_ip 改有源投影）声明的一致。
 //
-// 权威源为什么从 710 换成 815：710 的 $proj$ 是 734 **之前**的形态，它的 30 条
-// `NULL::` 占位里有 24 条在 734 之后已经被 `d.<col>` 取代。原实现拿 710 当权威，
-// 于是那张表过期了整整两轮而门一直绿——因为它比的是自己（派生自 710 的同一份
-// 形态）与自己。这正是「门测的不是它声称测的那个东西」的教科书形态：它确实在
-// 校验一致性，只是两边的错误抵消了。
+// 权威源为什么从 710 换到 815 再换到 816：710 的 $proj$ 是 734 **之前**的形态，
+// 它的 30 条 `NULL::` 占位里有 24 条在 734 之后已经被 `d.<col>` 取代。原实现拿
+// 710 当权威，于是那张表过期了整整两轮而门一直绿——因为它比的是自己（派生自
+// 710 的同一份形态）与自己。这正是「门测的不是它声称测的那个东西」的教科书
+// 形态：它确实在校验一致性，只是两边的错误抵消了。
+//
+// 816（2026-10-02）把 session 臂的 client_ip 从 NULL 补位改为有源投影，同时
+// b28ad0c98 把 client_ip 从 db.RequestLogsViewPaddedSessionColumns 里移除——
+// 权威源停在 815 时门红（迁移里有、表里没有），这是对的：权威必须跟着**最新
+// 视图迁移**走，否则又回到「自己比自己」。
 //
 // 现在两侧的独立性来自：左侧派生自 **db 包的生效投影**（withDetails=true），
-// 右侧解析自 **815 迁移文件**的 $proj$ 块。两者由 db 包的 viewdef 等价契约
+// 右侧解析自 **816 迁移文件**的 $proj$ 块。两者由 db 包的 viewdef 等价契约
 // （TestRequestLogsViewV2EnsureMatchesMigration）保证同源但不同路径。
 func TestSessionArmNullPaddedColumnsMatchMigration(t *testing.T) {
 	root := repoRootFromCaller(t)
 	raw, err := os.ReadFile(filepath.Join(root,
-		"sql/migrations/startup/815_request_logs_view_stage_band_cff.sql"))
+		"sql/migrations/startup/816_request_logs_view_client_ip_projection.sql"))
 	if err != nil {
-		t.Fatalf("读 migration 815 失败 %v", err)
+		t.Fatalf("读 migration 816 失败 %v", err)
 	}
 	declared := map[string]struct{}{}
 	re := regexp.MustCompile(`NULL::[A-Za-z\[\] ]+ AS ([a-z_]+)`)
@@ -1154,7 +1159,7 @@ func TestSessionArmNullPaddedColumnsMatchMigration(t *testing.T) {
 		declared[m[1]] = struct{}{}
 	}
 	if len(declared) == 0 {
-		t.Fatal("migration 815 里没解析出任何 NULL 补位列——正则失效或迁移被重写，" +
+		t.Fatal("migration 816 里没解析出任何 NULL 补位列——正则失效或迁移被重写，" +
 			"族分类器会静默退化成「视图族一律行级可用」")
 	}
 	var missing, extra []string

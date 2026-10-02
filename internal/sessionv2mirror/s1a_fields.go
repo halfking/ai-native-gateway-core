@@ -4,10 +4,12 @@
 // request_logs 独有的五类数据（计费/路由/诊断/检索·完整性/访问维度）补采进
 // V2 会话族，使 session_turns 成为 turn 级唯一事实源（plan §3 D1）。
 //
-// 数据源事实（2026-09-14 审计）：RequestLogEntry 缺 TraceEvents / SearchText /
-// RequestChecksum / RawModelName —— 这些列已建（707）但保持零值；缺
-// StreamDoneSent，最接近的 StreamDoneReceived 作映射。缺源列由 S2 视图
-// NULL 补位登记（plan §9）。
+// 数据源事实（2026-09-14 审计，2026-10-02 订正）：RequestLogEntry 曾缺
+// TraceEvents / SearchText / RequestChecksum / RawModelName —— 这些列已建
+// （707）但保持零值；RawModelName 已于 2026-10-02 接线（entry.OutboundModel/
+// ClientModel → req.RawModelName，见 s1a_raw_model_name_test.go），其余三项
+// 仍零值。缺 StreamDoneSent，最接近的 StreamDoneReceived 作映射。缺源列由
+// S2 视图 NULL 补位登记（plan §9）。
 //
 // 全部指针安全：nil 字段零值跳过，落库时由 turn_writer 的 nilIf* 助手转
 // SQL NULL，保住方案 §8-B 填充率验收的语义。
