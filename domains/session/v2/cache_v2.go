@@ -387,7 +387,7 @@ func (c *SessionCacheV2) CompressionMetadata(ctx context.Context, tenantID, sess
 		return nil, err
 	}
 	meta := state.CompressionMeta
-	return map[string]any{
+	exported := map[string]any{
 		"last_compressed_at":          meta.LastCompressedAt,
 		"recently_compressed_at":      meta.RecentlyCompressedAt,
 		"summary_marker":              meta.SummaryMarker,
@@ -397,7 +397,6 @@ func (c *SessionCacheV2) CompressionMetadata(ctx context.Context, tenantID, sess
 		"strategy":                    meta.Strategy,
 		"tools_hash":                  meta.ToolsHash,
 		"cut_marker":                  meta.CutMarker,
-		"pre_sanitize_offset_range":   meta.PreSanitizeOffsetRange,
 		"alignment_map":               meta.AlignmentMap,
 		"sanitize_map_ref":            meta.SanitizeMapRef,
 		"sanitize_map_generation":     meta.SanitizeMapGeneration,
@@ -405,7 +404,16 @@ func (c *SessionCacheV2) CompressionMetadata(ctx context.Context, tenantID, sess
 		"raw_snapshot":                meta.RawSnapshot,
 		"sanitized_snapshot":          meta.SanitizedSnapshot,
 		"sanitize_message_refs":       meta.SanitizeMessageRefs,
-	}, nil
+	}
+	// An unset PSOR must be omitted, not exported as a typed-nil []int: the
+	// compression-side provenance validator reads "key exists" as "value must
+	// be a valid 2-int range", and an interface-wrapped nil slice fails that
+	// check — abandoning V2 cold-start incremental recovery for sessions that
+	// never had a sanitize range. Same write-side caliber as intPairMeta.
+	if meta.PreSanitizeOffsetRange != nil {
+		exported["pre_sanitize_offset_range"] = meta.PreSanitizeOffsetRange
+	}
+	return exported, nil
 }
 
 // HasState reports whether any prior session state exists. It is the

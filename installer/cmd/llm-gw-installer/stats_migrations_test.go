@@ -430,3 +430,35 @@ func TestDurableFamilyPrerequisitesRegistered(t *testing.T) {
 		}
 	}
 }
+
+// TestHandoffFamilyPrerequisitesRegistered (R32, 2026-10-02; 12h 审计 P2-E)：
+// handoff 族的 fresh-install 顺序不变量。527 是 517 的**补完**迁移——517 只建
+// 半成品表（CHECK 缺 accounting_confirmed 等值、缺 goal_state/restore_* 列），
+// 而 confirmation_pg.go 的正常写路径直写这些列/值；527<704 不受
+// TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 的注册底线覆盖，
+// 「同时删两文件+两处注册」或「把 527 挪到 517 之前」零门红，直到某个
+// fresh-install 在 42703 上炸掉（runner.go:167-180 注释记载的正是这段历史）。
+// durable 族的 TestDurableFamilyPrerequisitesRegistered 是同款守卫的先例。
+func TestHandoffFamilyPrerequisitesRegistered(t *testing.T) {
+	t.Helper()
+
+	runner := dbinit.NewRunner("", "", "", "")
+	position := make(map[string]int, len(runner.StartupFiles))
+	for i, name := range runner.StartupFiles {
+		position[name] = i
+	}
+
+	base := "517_handoff_pending_confirmations.sql"
+	completer := "527_handoff_durable_goal_state.sql"
+	basePos, ok := position[base]
+	if !ok {
+		t.Fatalf("%s is not registered in dbinit.Runner.StartupFiles — 527 completes its half-built table and a fresh install cannot succeed without it", base)
+	}
+	compPos, ok := position[completer]
+	if !ok {
+		t.Fatalf("%s is not registered in dbinit.Runner.StartupFiles — 517 alone hands dependents a table whose CHECK/goal_state contract it does not have (SQLSTATE 42703)", completer)
+	}
+	if compPos < basePos {
+		t.Errorf("%s (pos %d) must come after %s (pos %d) in StartupFiles", completer, compPos, base, basePos)
+	}
+}
