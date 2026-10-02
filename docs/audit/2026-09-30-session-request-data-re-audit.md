@@ -4375,3 +4375,90 @@ request_id                  | v1_value | view_value | view_success | v1_rowcount
 - 只覆盖 `upstream_status_code` 一列。其余列在两族都有值时零分歧（§9.32），
   但**「某一侧未记录」的其他列未逐列追查成因**——其中 6 列已有具名裁决
   （`db/request_logs_view_padded_columns.go`），`raw_model_name` 0% 填充仍待拍板。
+
+---
+
+## §9.34 §9.31/§9.32 两道新门在 CI 里的真实状态：**两道机制同时让它们失效**
+
+§9.32 结尾把「是否接进 CI」列为待拍板，并写明「需要 `TEST_PG_URL`，默认跳过」。
+本节不去猜，**把 CI 的门禁 harness 跑一遍**，回答这个问题。
+结论：它们在 CI 里**双重失效**，且**不应该**接进那个 harness。
+
+### §9.34.1 发现一：这个包**已经**在 CI 门禁列表里，是 §9.31 自己加的
+
+`scripts/audit/derive-gate-packages.sh` 从「有 integration-only 测试文件」派生包列表。
+`parity_bodies_relation_integration_test.go` 是 §9.31（`a3cc27f0f`）加的，
+所以 `./cmd/tools/validate_sessions_v2` **已经**在 29 个门禁包中。
+⇒ 不是「要不要接进去」，而是「它已经在了，而且状态如何」。
+
+### §9.34.2 发现二：harness **确实**注入 `TEST_PG_URL`，所以不会因缺 env 而跳过
+
+`scripts/audit/run-integration-gate.sh:586` 注入全部 14 个 DSN 名字，
+其中包含 `TEST_PG_URL`，且有 `sql/schema/integration_gate_test.go` 的守卫
+（`TestGateInjectsEveryDBCredentialName`）保证名单不漂移。
+⇒ 「默认跳过」这个说法**只在 `go test` 裸跑时成立**；进 harness 就一定会连库。
+
+### §9.34.3 实测：对着门禁库，两道门**正确地 SKIP 并自陈不构成证据**
+
+按 harness 的完整流程在一次性库里复现（prereqs → HEAD 版基线 → 200 条启动迁移，
+442 relations），然后带 `TEST_PG_URL` 跑这两道门：
+
+```
+--- SKIP: TestDualWriteValueParity
+    dual_write_value_parity_integration_test.go:115:
+    库里没有可配对的非探针样本 —— 本门不构成证据
+--- SKIP: TestParityGateBodiesRelationExists
+    parity_bodies_relation_integration_test.go:108:
+    库里没有可用的 session_turns 样本（no rows in result set）——本门不构成证据
+```
+
+**这是设计正确**：门在无样本时拒绝成为证据，而不是拿 0/0 真空通过
+（对比本会话早前在 `cloneTablesFrozenDDL` 上踩的「夹具丢 DEFAULT ⇒ 断言恒真」）。
+但它同时意味着：**门禁库是空的，这两道门在那里永远 SKIP。**
+
+### §9.34.4 失效机制之二：workflow 的 `paths:` 不含 `cmd/**`
+
+`.github/workflows/integration-testcontainers-ci.yml` 的 `paths:` 过滤是
+`domains / tests/integration / internal / durable / db / bg / autoupdate / center /
+fault / licensing / vibecoding / sql/migrations / sql/schema / installer / scripts/audit /
+go.mod / go.sum / 本文件自身`。
+**`cmd/**` 不在其中。** ⇒ 我加测试文件的提交**根本不会触发**这个 workflow。
+
+即便触发：harness 的真空判据是 `NPASS==0 → exit 3`，而该包的普通单测会 PASS，
+于是走 `NSKIP>0` 的**警告分支**（"green with skips"，非致命）⇒ **CI 绿，而两道门零证据**。
+
+### §9.34.5 决策：**不接**，并且这是类别性错误而非取舍
+
+一个跨 762,652 行配对样本的值层一致性门，**无法在一次性空库上成立**——
+那里没有双写样本可比。要让它在 CI 里真跑，只有两条路：
+
+1. 给门禁库**播种**双写样本 —— 那是制造数据来证明数据的门，且播种口径本身
+   会成为新的、未经审计的事实来源。
+2. 让它对**生产形态**的库跑 —— 那是本机 `llm_gateway` 的用法，不是 CI 的用法。
+
+⇒ 正确结论：**这两道门是本机生产形态库上的核对工具，不是 CI 门禁。**
+把它们接进 `integration-gate` 只会制造一个「绿着但什么都没证明」的条目——
+正是本会话反复拆除的那类假保证。**保持现状（不接），并把这一事实写清楚。**
+
+### §9.34.6 途中撞到并已定位的**他处**缺陷（不属于本轮范围，未动）
+
+第一次跑 harness 时它在**跑任何测试之前**就死了：
+`ERROR: relation "public.candidate_failure_logs_hot" does not exist`（01-schema.sql:18510）。
+
+- 已确证**不是已提交代码的问题**：`d5932d26c`（并行会话，2026-10-02 13:50，已在 origin/main）
+  已把那行改回读父表 `candidate_failure_logs`。用 `git show HEAD:sql/schema/01-schema.sql`
+  重建库 → **基线干净通过**，200 条迁移 applied=200 failed=0。
+- 真正原因是**工作区有一个未提交的并行会话改动**（`M sql/schema/01-schema.sql`）
+  把该行改回了 `candidate_failure_logs_hot`。按纪律**未做任何还原**，
+  只用 HEAD 版本绕过。
+- 同时撞到 `embeddata/startup/` 有 4 个未提交改动（未逐一核实其影响）。
+
+**教训复述**：共享工作区里「跑出来红了」与「代码是红的」是两件事。
+判别三件套的第 ③ 项（该路径 `git status` 的时间关系）在这里直接改变了结论方向：
+若据红改代码，会把一个**已被修好**的问题重新引入。
+
+### §9.34.7 本节边界
+
+- 门禁库是**本机**容器里的一次性库；CI 用 amd64 镜像，形态可能不同。
+- 442 vs harness 记录的 443 relations 差 1，**未追查**（4 个未提交的 embeddata
+  改动是候选嫌疑之一）。这不影响本节结论——门在有无样本时行为都已实测。
