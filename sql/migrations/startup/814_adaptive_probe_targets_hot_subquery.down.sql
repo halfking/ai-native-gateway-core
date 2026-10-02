@@ -1,6 +1,7 @@
--- Migration 814 down: 恢复 038 原始定义（子查询读 candidate_failure_logs
--- 分区父表）。注意：该形态的 recent_passive_failures 恒 0（0-8h 行在
--- hot，见 814 头注）——down 仅用于契约回退演练，不应长期驻留。
+-- Migration 814 down: 恢复 814 应用前的视图形态（038 建立后经后续演进的
+-- 版本，以 814 前一刻 pg_get_viewdef 为准；注意 038 原始体与此不同——
+-- 投影/类型标注在后续轮次演进过）。恢复后的 recent_passive_failures 恒 0
+-- （0-8h 行在 hot，见 814 头注）——down 仅用于契约回退演练，不应长期驻留。
 DO $$
 BEGIN
     IF to_regclass('public.v_adaptive_probe_targets') IS NULL THEN

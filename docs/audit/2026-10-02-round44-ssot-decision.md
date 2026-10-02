@@ -144,9 +144,13 @@ relation ... does not exist` 时不必重新调查一遍。
 `applied=200 failed=0`、整包 `PASS=173 FAIL=0`，且全新安装库里
 `to_regclass('public.credential_model_capabilities')` 由 `false` 变 `true`。
 
-### 5b.1 517 为什么不注册：结构性冲突，不是顺序问题
+### 5b.1 517 已注册：Owner 拍板 + 三组实验
 
-试注册后门禁直接报：
+**Owner 拍板（2026-10-02，明确确认）：把 517 注册到 534 之前，不加唯一约束也不加外键。**
+
+在此之前先做了三组真实 PostgreSQL 实验，其中第二组推翻了当时倾向的方案。
+
+**实验一：534 之后 517 建不起来。** 试注册后门禁直接报：
 
 ```
 517_handoff_pending_confirmations.sql :: ERROR: there is no unique constraint
@@ -155,34 +159,58 @@ matching given keys for referenced table "handoff_logs"
 
 517 声明 `handoff_log_id INTEGER REFERENCES handoff_logs(id)`，在基线堆表上
 合法（`id` 是主键）。而 534 把 `handoff_logs` 重建为 `PARTITION BY RANGE (created_at)`
-的父表，**且没有给它任何唯一约束**——534 里唯一的 `PRIMARY KEY` 属于
-`handoff_logs_hot`，是另一张表。分区表上的唯一约束必须包含分区键，所以 534 之后
-`handoff_logs(id)` 不再唯一，517 的外键失去被引用目标。
+的父表，**且没有给它任何唯一约束**。这不是疏漏而是 PostgreSQL 强制的——
+在分区表上直接建 `PRIMARY KEY (id)` 会被服务端拒绝：
 
-**先跑 517 也不行（机制订正，2026-10-02 第二十七轮审计）**：原文写「534 会
-RENAME 旧堆表、外键指向被改名的遗留表（静默错误）」——与 534 实际代码不符。
-534 的 DO 块（`534_handoff_logs_hot_columnar.sql:289-307`）会**显式 DROP**
+```
+ERROR:  unique constraint on partitioned table must include all partitioning columns
+DETAIL:  PRIMARY KEY constraint on table "handoff_logs" lacks column "created_at"
+        which is part of the partition key.
+```
+
+**实验二：加唯一约束 + 加宽外键，运行时仍然失败。** 按当时的方案
+（`UNIQUE (id, created_at)` + 两列外键）建表，两个 DDL 都成功；但复刻
+`domains/hooks/handoff/confirmation_pg.go` 的真实写路径后：
+
+| 步骤 | 结果 |
+|---|---|
+| `ALTER TABLE handoff_logs ADD CONSTRAINT ... UNIQUE (id, created_at)` | 成功 |
+| `FOREIGN KEY (handoff_log_id, handoff_log_created_at) REFERENCES handoff_logs(id, created_at)` | 成功 |
+| Go:129 `INSERT INTO handoff_logs_hot ... RETURNING id` → Go:162 `UPDATE ... SET handoff_log_id=<该 id>` | **失败 SQLSTATE 23503 外键冲突** |
+| 对照组：先把该行提升进父表（复刻 `promote_handoff_logs_hot_to_partition`），再 `UPDATE` | 成功 |
+
+原因：Go 代码把行写进 **`handoff_logs_hot`**，此刻父表一行都没有；随后立刻用这个
+id 设 `handoff_log_id`，而外键是**即时校验**的。提升由
+`promote_handoff_logs_hot_to_partition` 异步执行，保留期
+`lifecycle.handoff_logs_hot_retention_hours` = 8 小时。
+
+**结论：517 的外键是 534 引入 hot/parent 拆分之前的遗留物**——那时写入直接落
+`handoff_logs`，外键成立。加唯一约束解决不了它，因为被引用的行根本不在父表里。
+而且唯一约束本身有实打实的生产代价（分区表上要跨全部分区建索引），外键却仍会被删。
+
+**实验三：`517 → 534` 顺序可行。** 534 的 DO 块（`534:289-307`）会**显式 DROP**
 `handoff_pending_confirmations` 上所有指向 `handoff_logs` /
-`handoff_logs_legacy_532` 的外键：517 先建的外键会在 534 执行时被删掉，链能跑通。
-但这不等于「先跑 517 就安全」——「去掉外键」（下述解法 2）这个设计决定会被
-534 的既有代码**隐式**替 Owner 做掉（存量库路径上 534 已这样处置过一次），
-拍板权仍应留给 Owner，故本轮不注册 517 的结论不变。
+`handoff_logs_legacy_532` 的外键。在干净库上跑
+`00-prereqs + 基线 + 517 + 534`：`rc=0` 零错误，终态是
+`handoff_pending_confirmations` 存在、`handoff_logs` 为分区父表、
+指向 `handoff_logs` 的外键数 = 0。这与生产现有形态一致——生产的 534 早已删过该外键。
 
-两条路都需要改 schema 设计而非改接线：
+（此处更正本节早前两处说法：「RENAME 导致外键指向遗留表」与 534 实际代码不符；
+「先跑 517 链能通但拍板权应留给 Owner」现在已由 Owner 实际拍板解决。）
 
-1. 给分区父表加含分区键的唯一约束（如 `(id, created_at)`）并相应加宽 517 的外键；
-2. 去掉 517 的外键。
+**落地与验证**：517 按四点登记接进链，位次在 534 **之前**（顺序是承重的，
+`517 → 534 → 535`）。门禁实测 `applied=201 failed=0`、
+`sql/migrations/startup` **整包 `exit=0 PASS=173 SKIP=0 FAIL=0`**、
+门禁形态 relations 442 → 443。终态在真实库上复核：
+`handoff_pending_confirmations` 存在、`handoff_logs` 是分区父表、
+残留外键 = 0。
 
-**没有替用户选。** 门禁的失败信息里明确写着「不要为了让门禁变绿而放宽这里的判据」，
-而 `sql/schema/startup_known_gaps.tsv` 虽然可以登记已知缺口，本轮**刻意没有登记**——
-因为这不是「已知且接受的缺口」，是一个还没做的设计决定。登记它会让下一次有人
-以为这件事已经有人判断过。
-
-现状：`handoff_pending_confirmations` 在全新安装上不存在，handoff 确认流程会
-在运行时 42P01。这是**接上 534 之前就存在**的状态（534 接线前的全新安装同样没有
-这张表），所以本轮没有让任何东西变坏，但也没有把它修好。
-
----
+**这关闭了一个真实的 42P01 缺口**：`domains/hooks/handoff/confirmation_pg.go` 的
+写入与 `bg/handoff_pending_trimmer.go` 的清理都是裸 SQL、无容忍，全新安装上原本
+必然报错。严重性说明：该状态在接 534 之前就已存在，且 `handoff.enabled`
+**默认 false**、`confirmation_pg.go:133-146` 已记载这条记账路径在本 schema 下
+**从未成功执行过一次**——所以它不是「新引入的回归」，是一个一直存在、此前无人
+走到的缺口。
 
 ## 5c. §9-7 结论：`sql/objects/` 的定位
 
@@ -285,8 +313,7 @@ grep 会命中 `//go:build !nintegration`（实测多出 `internal/collector`，
 
 ## 9. 本记录没有回答的
 
-- **`handoff_pending_confirmations`（517）怎么处理**——见 §5b.1，需要 schema 设计决定，
-  本轮没有替用户选，也没有登记进 `startup_known_gaps.tsv`。
+- ~~`handoff_pending_confirmations`（517）怎么处理~~ —— **已决并落地**，见 §5b.1。
 - `sql/objects/` 怎么收口成真正的部署惰性——见 §5c，缺口很小（一个脚本）但本轮未做。
 - 族 3 / 族 4 何时治、用什么数据——需要业务输入，不在本轮。
 - `outbox_events` / `supplier_errors` 三件套在纯迁移路径下确实不存在，

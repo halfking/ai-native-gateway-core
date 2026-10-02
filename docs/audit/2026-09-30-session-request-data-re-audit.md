@@ -2671,3 +2671,610 @@ request_logs wide family」时，应该顺势问一句：还有哪些表**不在
 
 > 这已经是**第三类**触发 bodies 假阳性的语境：SQL 内容读 / 写门内 / 结构面。
 > 正则按列名识别表，识别不出「读的是内容还是名字」。**每次都要具名写清是哪一种。**
+
+## §9.16 读端轴推进 80/105（batch4 的 22 条）（2026-10-02）
+
+未评估从 47 降到 **25**（只剩 batch2 的 25 条）。门仍红。
+
+### §9.16.1 族门第七次抓到我：四处改判，两处真触发两处需具名
+
+| 文件 | 原判 | 结论 | 依据 |
+|---|---|---|---|
+| `bg/stats_minute_rollup.go` | unaffected | **真触发** → degraded_content | `:205/:281 ON CONFLICT (bucket, tenant_id, provider_id, canonical_id)`——补位列在**冲突键**里，取值 `COALESCE(r.provider_id,0)` ⇒ 新流量全落 `provider_id=0` 假桶，事实表与维度表双双归错桶 |
+| `admin/model_routing_diagnostic.go` | unaffected | **真触发（部分）** → degraded_content | `:95-99` 的 WHERE 在 710 视图上，是三分支 OR；`client_model` 那臂因补位恒不命中，另两臂（outbound_model / canonical_model）仍有效 ⇒ 不是全空，是「按客户端名查模型」这条路失效 |
+| `admin/session_analytics_timeseries.go` | unaffected | **真触发** → degraded_content | `:62 AND %s.provider_id::text = ANY($n)` 的 alias 就是视图别名 ⇒ `NULL::text = ANY(...)` 求值为 NULL（非 true）⇒ **同一面板里按 provider 过滤恒空、不过滤照常有数据**，两种过滤给出矛盾的空/非空 |
+| `admin/usage.go` | unaffected | **真假混合** → degraded_content | `:806-810` 的 `provider_id IS NOT NULL` **确实**在 `FROM request_logs_with_current_month rl2` 子查询内 ⇒ 真触发；但 `:334-366 ak.owner_user`、`:456-583 providers.provider_id`、`:767 api_keys.id` 这些列**同名却属于别的表**，那些表没有补位 |
+
+### §9.16.2 `admin/usage.go` 是「机械判定为何只能保守近似」的最好样本
+
+同一个文件里同时存在：
+- **真触发**：谓词落在 710 视图上、用的是补位列；
+- **假触发**：同名列属于 `api_keys` / `applications` / `providers` / `usage_ledger`——
+  **列名相同，表完全不同**，那些表根本没有补位。
+
+文件级的正则匹配看不出「这个 `provider_id` 属于哪张表」。这就是为什么该族
+判 `unaffected` 走**具名论证**而不是直接放行：理由必须由读过代码的人写下，
+并接受 diff 审阅。自动判据在这里只能**标记嫌疑**，不能**下结论**。
+
+### §9.16.3 两条具名论证（真·假触发各一）
+
+- `internal/collector/gateway_adapters.go`：`:61/:64` 的 `client_model` 都排在
+  `COALESCE(NULLIF(outbound_model,''), client_model, …)` 里，而 `outbound_model`
+  是 session 臂真值且排**第一位** ⇒ 谓词对有真实 outbound_model 的行照样通过。
+- `admin/session_timeline_query.go`：`:32` 只是投影，且同一投影里并列了
+  `outbound_model`，消费方取模型名时有非补位列可选；不用任何补位列做谓词。
+
+> 至此 `nullPaddedUnaffectedJustification` 已有 5 条论证，覆盖四种过度触发语境：
+> URL/JSON 字面量、**以非补位列打头的 COALESCE**、仅投影、以及（§9.14）
+> 同名不同表。**每次都要具名写清是哪一种**——这本身就是这条族维度的能力边界说明。
+
+## §9.17 读端轴收口：105/105，两道覆盖率门全绿（2026-10-02）
+
+batch2 的 25 条写入后，`TestRequestLogsStopWriteNothingLeftUnclassified` **转绿**。
+至此本审计两道覆盖率门都是绿的：**读端 105/105、控制面 52/52，未评估 0、未判定 0**。
+
+### §9.17.1 最终分布
+
+| 档位 | 文件数 | 灰度时是否可见 |
+|---|---:|---|
+| `silently_empty` | **27** | ❌ 静默 |
+| `silently_frozen` | **24** | ❌ 静默 |
+| `silently_degraded_content` | **23** | ❌ 静默 |
+| `unaffected_by_stop_write` | 19 | — 不受影响 |
+| `errors_out` | 11 | ✅ 立刻暴露 |
+| `validator_dual_read` | 1 | — 刻意对账 |
+
+**105 个文件里 74 个（70.5%）会在停写后继续给出错误答案且不报错。**
+只有 11 个会立刻失败——而那 11 个恰恰是**不构成风险**的那批（灰度时一看就知道）。
+
+源族分布（机械判定）：
+
+| 族 | 文件数 |
+|---|---:|
+| `reads_base_tables_only` | 47 |
+| `reads_view_with_null_padded_predicate` | **33** |
+| `reads_bodies_plus_other` | 17 |
+| `reads_view_and_base` | 5 |
+| `reads_710_view_only` | 2 |
+| `reads_bodies_family` | 1 |
+
+### §9.17.2 这个分布说明的事
+
+**S4 灰度不可能「跑通了就说明没问题」。** 灰度能观测到的只有那 11 个 `errors_out`；
+剩下 74 个的失败形态恰好是「接口 200、字段齐全、值是错的」。
+
+⇒ 灰度方案必须**自带对账**而不是「看接口有没有报错」。可用的对照物有三个：
+`cmd/gateway/dual_read_gate.go` 的 S4 门（已修真空为绿）、
+`domains/sessionforensics` 的双源比对、
+以及本表本身（每条都锚在逐字证据上，可复查）。
+
+### §9.17.3 本轮批次的族门战绩：抓到我 9 次
+
+| 批次 | 触发条数 | 性质 |
+|---|---:|---|
+| batch1 | 3（`data_lifecycle` / `routeincident` / `integrity_fingerprint_drift`） | 真错 |
+| batch3→§9.14 | 3（`model_status` / `candidate_failure_monitor` / `stats_minute_rollup_retire`） | 真错 |
+| batch4→§9.16 | 4（`stats_minute_rollup` / `model_routing_diagnostic` / `session_analytics_timeseries` / `usage`） | 真错 |
+| batch2→§9.17 | 2（`daily_probe_audit` / `session_management_api`） | 真错 |
+| 具名论证 | 9 条 | 假触发，逐条写清机制 |
+
+**9 次真错、9 次假触发。** 两边都需要门：没有族门，那 9 条错判定会一路进到 S4 决策里；
+没有具名论证通道，那 9 条假触发会逼着后来者「改代码迁就门」。
+
+### §9.17.4 遗留（不阻塞本次收口，但会阻塞 S4）
+
+1. **`admin/credential_monitor_heatmap.go:295` 引用 `rl.origin_stage`**，而 710/734 的
+   canonical 列契约（`db/request_logs_view_schema.go:575-615`）里没有这一列。
+   若真库视图确无此列，`exclude_self_test=1` 的查询会**直接 SQL 报错**——
+   与停写无关的既存缺陷，待真库确认。
+2. **`admin/session_tenant.go` 判 unaffected 依赖一条未实测的假设**：三条 session 腿
+   对新 task 是否都及时落行。若某类 task 只在 v1 留痕，权限门仍可能翻转成 404。
+3. **两条写授权缺陷**：`discovery` 已修（§9.12），`credential_recovery` 未修
+   —— 它的正解要先补 `RawModelName`（§8 决策 1 的可行性实测）。
+4. **S4 门控范围声明**与实际覆盖表不一致（§9.15 的 `ledger_reconciliation` 误报机），
+   还有哪些表在范围外被同一套对账/聚合引用，未系统排查。
+
+---
+
+## §9.18 视图源越列：读端 105/105 之外的一类缺陷（2026-10-02）
+
+§9.17.4 遗留第 1 条（`admin/credential_monitor_heatmap.go:295` 引用 `rl.origin_stage`）经真库
+确认成立并已修。修的过程中暴露出一个**此前 105 条读端分类里没有的缺陷类**，并顺带抓出
+第二处同类真缺陷。
+
+### §9.18.1 确认：`origin_stage` 不在视图契约内
+
+| 关系 | `origin_stage` 列数（真库 information_schema） |
+|---|---:|
+| `request_logs_with_current_month` | **0** |
+| `request_logs` / `request_logs_hot` | 1 / 1 |
+| `session_turns` / `session_turns_hot` | 1 / 1 |
+
+实跑复现（2026-10-02，库 `llm_gateway`）：
+
+```
+SELECT ... COALESCE(rl.origin_stage,'business')='business'
+  FROM request_logs_with_current_month rl;
+ERROR:  column rl.origin_stage does not exist        -- SQLSTATE 42703
+```
+
+去掉该项后同查询正常返回 210,398 行。**不是偶发、不是慢，是这条查询永远执行不了。**
+且 `exclude_self_test` 在 `credential_monitor_heatmap.go` 的参数解析里**缺省 true**，
+前端 `web/src/api/credential-monitor.ts:548` 又显式下发该参数 ⇒ 裸调用与前端调用走同一条
+必错路径。凭据质量热图在线上 500 至少两周（自 R50 于 2026-09-21 引入算起）。
+
+### §9.18.2 根因不是「写错一个列名」，是三层叠加
+
+1. **读面对象与谓词变体没有绑定。** R49（2026-09-20）已识别「物理表谓词对视图必 42703」
+   并造出视图变体 `probeTrafficExclusionPredicateView`，还写进了注释；R50（2026-09-21）
+   给 admin 热图补臂时把**物理表**那条内联了回去。
+2. **调用面守卫的清单是包内清单。** `bg.TestProbeExclusionPredicateCallSitesR50` 的文件
+   列表只有 bg 包 7 个文件，admin 不在扫描范围内 ⇒ admin 的回归对整套测试隐形。
+   注释里写的「inlined to avoid an admin→bg import」也从来不是真的：admin 已在
+   `probe_history.go` / `handler.go` / `candidate_failure_handlers.go` / `probe_stream_sse.go`
+   四个文件里 import 了 bg，无循环。
+3. **SQL 字面量从未真的发给过 PostgreSQL。** `TestBuildHeatmapSQL_GuardsAgainst42803Regression`
+   对 SQL **字符串**做断言，`pgxmock` 匹配查询字符串、从不解析它 ⇒ 「这条 SQL 根本跑不起来」
+   整类缺陷在单测里不可见。这与 `admin/sql_literal_validity_test.go` 记录的 `''::jsonb`
+   是同一根因，**第三次复发**（2026-07-08 `rl.role` → 2026-08-28 `''::jsonb` → 本次
+   `rl.origin_stage`）。
+
+### §9.18.3 第二重缺陷：只补列名会造出「200 但全盲」的热图
+
+原谓词第二臂是 `NOT ('probe' = ANY(rl.quality_flags))`，**没有 COALESCE**。
+`'probe' = ANY(NULL)` 求值为 NULL，`NOT NULL` 不是 TRUE，整行被 `WHERE` 丢弃。
+而 710 迁移对 session 臂的 30 列做了 NULL 补位，`quality_flags` 正在其中。
+
+7 天窗口实测（`credential_id IS NOT NULL`）：
+
+| 交叉项 | 行数 |
+|---|---:|
+| session 臂 ∧ `quality_flags IS NULL` | **40,225** |
+| session 臂 ∧ `quality_flags IS NOT NULL` | 50 |
+| v1 臂 ∧ `quality_flags IS NULL` | 671 |
+| v1 臂 ∧ 非 NULL | 418,258 |
+
+⇒ 原谓词会丢掉 **40,225 / 40,275（99.9%）** 的 session 分臂。**只把 `origin_stage`
+换成 `origin_actor` 是不够的**：那样热图会返回 200、返回 v1 行，却对整个已迁移的
+`session_*` 数据集完全隐形——比 500 更难发现。
+
+### §9.18.4 全仓扫描：8 个命中，7 个证伪
+
+扫「同时出现 `origin_stage` 与视图名」的文件，逐个定 FROM：
+
+| 文件 | 实际数据源 | 判定 |
+|---|---|---|
+| `admin/credential_monitor_heatmap.go` | `request_logs_with_current_month` | **真缺陷** |
+| `admin/routing.go:2696` | `request_logs_hot` | 证伪（有该列） |
+| `admin/analytics.go`（7 处调用点） | `routing_analytics_source` / `routing_decision_log` | 证伪 |
+| `admin/auto_route.go:493`（3 处落点） | `routing_analytics_source` | 证伪 |
+| `bg/mv_consistency.go:230,285` | `routing_analytics_source` | 证伪 |
+| `bg/shared_pick.go:88` | 视图，但已用视图变体谓词 | 证伪 |
+| `internal/sessionv2mirror/synthetic_session.go` | 仅注释 | 证伪 |
+| `db/db.go:3167,3185` | v1 包装链定义，显式暴露 `origin_stage` | 证伪 |
+
+`analytics.go:1012` 的谓词带 `probe` 别名且限定在 `NOT EXISTS` 子查询内，绑定的是
+`routing_analytics_source probe`——逐行看出来的，不是 grep 出来的。
+
+### §9.18.5 新抓到的第二处真缺陷：`compression_stats` 的 `token_band`
+
+新写的全仓守卫第一次运行就报出 `admin/compression_stats.go:212`：
+
+```sql
+SELECT COALESCE(token_band,'') AS band, COUNT(*) FROM request_logs_with_current_month
+WHERE ... GROUP BY token_band
+```
+
+真库实测 `token_band` 在视图上 **0 列** ⇒ 必 42703。而错误被
+`slog.Warn("compression_stats band query failed")` 吞掉、不中断返回 ⇒
+**仪表盘 token 分带聚合长期静默返回空**（属 §9 读端第 1 档 `silently_empty`，
+但不在 105 条清单里，因为此前没有任何机制去查）。
+
+**未修，且不擅自修。** 同函数的兄弟查询都读视图，所以正解是把 `token_band` 随迁进
+`session_turns` + 710 投影；改成读物理表会丢掉 session 分臂，与 S4 方向相反。
+它属于**「物理表独有列未随迁」缺口类，与 §8 决策 1 的 `raw_model_name` 同族**，
+修法需要产品语义裁决。已按本仓既有范式登记为具名豁免并写明跟踪位置。
+
+### §9.18.6 改动
+
+| 文件 | 行为 |
+|---|---|
+| `bg/probe_policy.go` | `probeTrafficExclusionPredicateView` → **导出**为 `ProbeTrafficExclusionPredicateView`（含 4 个 bg 调用点与守卫测试同步改拼写，全仓单一拼写）。修正失实注释：常量有**三个** format 动词，原注释写「pass it twice」，照做会渲染出 `%!s(MISSING)` 混进 SQL。 |
+| `admin/credential_monitor_heatmap.go` | 删掉内联三臂，改用 `fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, "rl","rl","rl")`；新增 `bg` 导入。 |
+| `admin/view_source_columns_contract.go`（新） | 42 个「物理表独有列」清单（真库 information_schema 差集实测），无 build tag 供两道门共用。 |
+| `admin/view_source_column_contract_test.go`（新） | 全仓逐字面量 AST 门 + 具名豁免 + 豁免失效自检。 |
+| `admin/credential_monitor_heatmap_probe_predicate_test.go`（新） | 源码钉桩门 + 谓词 format 元数门。 |
+| `admin/credential_monitor_heatmap_sql_integration_test.go`（新） | 真库执行门 ×3。 |
+
+### §9.18.7 四道门与它们的边界
+
+| 门 | tag | 抓什么 | 抓不到什么 |
+|---|---|---|---|
+| `TestNoPhysicalOnlyColumnsInViewSourcedSQL` | `!integration` | **同一条字面量**内视图源 + 绑定到视图的越列 | 跨字面量运行时拼接的形状（**正是热图这个 case**） |
+| `TestHeatmapProbeExclusionUsesSharedViewPredicate` / `TestViewPredicateFormatArity` | `!integration` | 热图源码里的越列拼写、无 COALESCE 臂、format 元数 | 其它文件的同形缺陷 |
+| `TestCredentialHeatmapSQL_ExecutesOnRealDatabase` | `integration` | 拼装后的真实 SQL 能否被 PG 解析执行 | 任何解析期之外的语义问题 |
+| `TestHeatmapExcludeSelfTestKeepsSessionBranchRows` | `integration` | 排除谓词的判决**不依赖 `quality_flags` 是否为 NULL** | 探针分类本身准不准 |
+| `TestPhysicalOnlyColumnsListMatchesRealDatabase` | `integration` | 硬编码的 42 列清单未过期 | — |
+
+**没有任何一道门能单独替代另一道**：静态门快但看不见运行时拼接，真库门看得见一切但需要
+数据库。这与 `sql_literal_validity_test.go` 的结论一致。
+
+### §9.18.8 门自己失败的三次（记录在此，因为都是真错）
+
+1. **per-decl 粒度过粗** → 13 处假阳性。同一个 handler 常带两条独立查询
+   （`session_turns_unified.go` 的 `:68` 读 `session_bodies_unified`、`:159` 读视图），
+   声明级并集把两者混为一谈。改为逐字面量后降到 4 处。
+2. **只剥 Go 注释、没剥 SQL 注释** → `bg/shared_pick.go` 假阳性。`origin_stage` **只**出现
+   在一条 SQL 字面量内部的 `--` 行注释里，而那句话正是在解释「origin_stage 不能用」。
+3. **判不出列绑定到哪张表** → 剩余 4 处全是假阳性：`rb.outbound_body` 绑
+   `LEFT JOIN request_logs_bodies_with_current_month`；`AS task_id` 是**输出别名**
+   （源列是视图自己的 `gw_task_id`）；`b2.task_id` 的 `b2` 是 CTE `base` 的别名。
+   补上「限定符必须绑定到视图自身别名；无限定列只在字面量只有一张表时才算」的判定后归零。
+4. **门自己的注释把门弄红**：`TestHeatmapProbeExclusionUsesSharedViewPredicate` 首跑即红，
+   因为修复注释里**引用了**那个坏字面量来解释它为什么错。已改用 `stripGoComments`。
+
+### §9.18.9 变异验证（4 次，全部被门抓住）
+
+| 变异 | 结果 |
+|---|---|
+| 把 `rl.origin_stage` 重新混入一条视图字面量 | AST 门红，定位 `credential_monitor_heatmap.go:337` |
+| 清空 `viewSourcePhysicalOnlyColumnExemptions` | 门红，`compression_stats.go:212` 重新报出 |
+| 还原 R50 原始拼写（代码里，非注释） | 源码钉桩门红，两条断言同时命中 |
+| 从共享常量抽掉 `COALESCE('probe'=ANY(...), FALSE)` | 真库门红：**9,154** 行（真实 flags）vs **41,730** 行（NULL 补空数组） |
+
+最后一条的数字与本次独立量测互相印证：单独量旧谓词在 7 天窗口的存活行数得 **9,424**，
+量级一致（差值来自两次采样时刻不同）。**两把量具不是同一把。**
+
+### §9.18.10 遗留
+
+1. **`compression_stats` 的 `token_band` 未修**，与 `raw_model_name` 同族，等产品语义裁决。
+2. **跨字面量运行时拼接的越列仍无静态门**。已知形状：视图引用与谓词分属不同字面量、
+   运行时由 `strings.Join`/`fmt.Sprintf` 拼成。静态判定的天花板就在这里；要么接受靠真库门
+   覆盖，要么上真正的 SQL 解析器（成本另算）。
+3. **`admin/session_tenant.go` 判 unaffected 的未实测假设**（§9.17.4 遗留 2）仍未测。
+4. **`credential_recovery` 写授权缺陷未修**，仍阻塞 S4 灰度。
+
+---
+
+## §9.19 两条待办收口：S4 门控影响半径 + session_tenant 权限门假设（2026-10-02）
+
+§9.18 之后剩的两条**不被产品决策阻塞**的待办，本轮做完。结论一条是「我原来的问法问错了」，
+一条是「修了一个真的结构性误报机」。
+
+### §9.19.1 S4 门控影响半径：范围声明与实际跨界的对账（已修）
+
+`settings.KeyRequestLogsWriteEnabled` 声明的范围是 **request_logs 宽族**
+（`request_logs_hot` 主行 + `request_logs_bodies_hot` 正文）。逐个调用点核实：
+
+| 门调用点 | 同文件/同事务内触及的关系 | 是否越界 |
+|---|---|---|
+| `admin/telemetry.go:391,454` | `request_logs_hot` / `request_logs_bodies_hot` / 镜像 | 否，范围正确；注释明确「关停后只保留 usage_ledger 计费行」 |
+| `domains/hooks/observability/telemetry/client.go:1140,1284,2014,2067` | 同上 + `usage_ledger_hot` | 否，`usage_ledger` 是**有意不归该门管**（计费不受停写影响） |
+| `internal/trace/trace.go:473` | `request_logs` / `request_logs_hot` | 否 |
+| `discovery/discovery.go:1110` | `request_logs` | 否 |
+| **`bg/ledger_reconciliation.go`（不咨询该门）** | `request_logs_hot` × **`credit_ledger_hot`** | **越界** |
+
+真缺陷形态：`usageCreditSQL()` 用 `FULL OUTER JOIN` 比对
+**门内**的 `request_logs_hot.credits_charged` 与**族外、且永远不会停写**的
+`credit_ledger_hot`（`entry_type='consume'`），而对账器**完全不咨询 S4 门**。
+
+停写一旦生效：
+
+- usage 臂 → 在切换点**冻结**（不再有新 `credits_charged` 行）
+- credit 臂 → **继续增长**（计费不归该门管）
+
+⇒ 切换点之后的每个请求都落进 `FULL OUTER JOIN` 的「只有 credit」分支
+（`charged=0 / debited>0`），被当成差异写进 `maas_reconciliation_findings`。
+**那些不是账务缺陷，就是停写本身**，且数量无上界、不是瞬态。
+
+同一文件的 `balanceChainSQL()` 不受影响 —— 它整段只读 `credit_ledger_hot`
+（按 `(created_at, id)` 回放 `balance_after` 链，自洽），不跨族。**所以只挡一项**。
+
+**修法**（沿用本审计已建的 `staleExpiryMayRun` 先例）：
+
+- 新增纯函数 `usageCreditComparability(logsWriteEnabled bool) (bool, string)` +
+  稳定原因键 `usageCreditSkipS4StopWrite = "s4_stop_write"`；
+- `checkUsageCredit` 在**发查询之前**短路，记录原因、返回 0；
+- 新增 `SkippedChecks()`：跳过的检查返回的 0 与「扫了没发现」的 0 在计数上无法区分，
+  必须有一条独立通道把它们分开 —— **「扫到 0 个问题」和「扫了 0 个」不是同一句话**。
+  `resetSkipped()` 在每轮 `RunOnce` 开头清空，否则会为**真跑过且确实没发现**的一轮
+  继续报「已跳过」，那比没有这个功能更坏。
+
+### §9.19.2 我自己的守卫失败了三次（都记在这，因为都是真错）
+
+1. **判据打在错误的 `return` 上。** 结构门最初用「函数体内第一个 `return 0`」判短路。
+   变异（删掉 skip 分支的 `return`）后它匹配到了后面查询错误处理里的 `return 0` ⇒
+   **门照样绿**。改为用 AST 锁定「调用该谓词的那个 `IfStmt` 的 Body 内是否有 `ReturnStmt`」。
+2. **只看 `IfStmt.Cond` 漏掉了实际写法。** 门写成
+   `if ok, reason := usageCreditComparability(...); !ok {`，调用在 **Init** 而非 Cond
+   ⇒ 门在**正确代码上**报「门不存在」。已同时检查 Init。
+3. **测试执行了它声称要验证的那一步。** 跳过列表的重置测试**手工**执行了
+   `r.skipped = nil`，所以把 `RunOnce` 里的重置删掉仍然全绿。抽成具名 `resetSkipped()`
+   并用 AST 钉住 `RunOnce` 在两个检查**之前**调用它。
+4. （附带）`ast.Inspect(nil, …)` 会 panic（`IfStmt.Init` 可为 nil）。修之前，
+   变异 A 的「红」其实是**崩溃**而不是断言命中 —— 差点把一次无效的变异验证当成有效证据。
+
+**五道变异全部被正确抓住**：抽掉门 / skip 分支不 return / 门恒返回 true /
+删掉 `RunOnce` 的重置 / 把重置挪到检查之后。
+
+### §9.19.3 42 个「物理表独有列」按可修性二分（修正 §9.18 的一处判断）
+
+§9.18 把 `compression_stats` 的 `token_band` 归为「需随迁进 `session_turns`」。**这个判断错了**，
+真库差集显示 42 列分成两类：
+
+| 类别 | 数量 | 列 | 修法 |
+|---|---:|---|---|
+| **A：`session_turns` 已有，只差 710 视图投影** | 5 | `origin_stage`、`token_band`、`client_forwarded_for`、`trace_events`、`upstream_protocol` | **给视图补投影即可，无需回填、无需动写路径** |
+| **B：`session_turns` 也没有** | 37 | 见下 | 需迁移 + 历史回填 |
+
+B 类里又有 **23 列已在 `session_turn_details`（733 特征层）**里 —— 该表 61 列、在写
+（1,682,905 行，与 `session_turns` 的 1,682,911 同步；`_hot` 1,286 行、同为当前），
+且 **`session_turns` 根本没有 `gw_task_id`，任务关联只存在于特征层**。
+⇒ 真正缺列的只剩 **19 列**：
+`billed_despite_cancellation`、`compression_end_index`、`compression_ratio`、
+`compression_start_index`、`continuation_keywords`、`discard_events`、`ir_extensions`、
+`is_terminal`、`outbound_body`、`request_depth`、`sanitizer_mutations`、
+`session_summary`、`session_title`、`vendor_metadata`，以及 A 类那 5 列
+（它们在特征层也没有，但**在 `session_turns` 里有**，仍属纯投影问题）。
+
+**这条结论改变了修法的成本估算**：`token_band` 从「动写路径 + 回填」降级为
+「一条 CREATE OR REPLACE VIEW 加 5 个投影」。但**本轮仍不擅自改**：
+改 710 视图是共享契约变更（`TestRequestLogsViewSessionArmPinIsCurrent` 等
+pin 需要同步），且 A 类里 `origin_stage` 正是本轮刚修掉的越列来源，语义要逐列确认。
+
+### §9.19.4 `assertTaskInTenant`：我原来问错了问题
+
+§9.17.4 遗留 3 问的是「三条 session 腿对新 task 是否都及时落行」。**这个问题本身没有
+决策价值** —— 那是个 OR-of-EXISTS，任一腿命中即放行，「三条腿都落」从来不是不变量。
+真正该问的是：**有没有 task 五条腿一条都没落**。
+
+30 天窗口实测（`request_logs_hot` 侧，因为 session 侧的任务集就是 `session_turn_details`
+本身、按构造自覆盖）：
+
+| 量 | 值 |
+|---|---:|
+| `request_logs_hot` 的 distinct task | 7 |
+| 其中 session 族（details / details_hot / summaries）全未覆盖 | 6 |
+| 五条腿全未覆盖 ⇒ 会 404 | **0** |
+
+那 6 个仍被 v1 腿命中，所以门当前不会误拒。**但面向终局有一个真约束**：
+
+`assertTaskInTenant` 的五条腿里有两条是 `request_logs_hot` + `request_logs` ——
+**而本项目的终局目标正是删掉这两张表**。v1 退役后，那些「只在 v1 留痕、未回填进
+session 族」的历史任务会对**所有人** 404（权限门翻转成阻断所有人）。
+⇒ **S4 退出判据必须包含「v1-only 历史已回填进 session 族」这一条**，
+否则门会在 v1 真正消失的那一刻静默翻转。
+
+### §9.19.5 遗留（本节新增）
+
+1. **42 列的 A 类（5 列）值得单独做**：纯视图投影，无回填。但改 710 是共享契约变更，
+   需同步 pin，且要逐列确认语义（`origin_stage` 刚被本轮修成越列来源，投影它等于
+   把那条路重新打开 —— **必须同时把所有视图读方的谓词切到视图变体**）。
+2. **19 列 session 族真的没有**，需要迁移 + 回填，或明确裁决「这些列随 v1 一起退役」。
+3. `assertTaskInTenant` 依赖两张将被删除的表 ⇒ 写入 S4 退出判据。
+4. `credential_recovery` 写授权缺陷未修（阻塞灰度）。
+
+---
+
+## §9.20 把 42 列的迁移成本压到 4 个投影（2026-10-02）
+
+§9.19.3 只回答了「哪些列在 session 族里没有」，没回答「**哪些列真的有人在读**」。
+这一轮补上后半问，结论把待决范围缩小了一个数量级。
+
+方法：一次性 AST 扫描器（`/tmp/colscan`，不入仓库），复用 §9.18 那套已验证的
+「列绑定到哪张表」判据，对每条 SQL 字面量解析其 `FROM/JOIN` 关系集合，再把每处列
+引用归到它绑定的关系。**扫描器的输出只是嫌疑清单** —— 它对多关系字面量会过度归因
+（本轮就把 `turn_writer.go` 的 INSERT 列清单误判成视图读取），每一条都要手验。
+
+### §9.20.1 42 列的真实用途分布
+
+| 类别 | 数量 | 结论 |
+|---|---:|---|
+| **被 SELECT 读、且 `session_turns` 已有该列** | **4** | `origin_stage`、`token_band`、`client_forwarded_for`、`trace_events` ⇒ **纯 710 投影** |
+| 被 SELECT 读、但已有别的 session 族落点 | 1 | `outbound_body`：**从不从 `request_logs`/`request_logs_hot` 直读**；所有读取走 `request_logs_bodies*` 或 `session_bodies_unified`，bodies 族已随迁 |
+| **只写不读**（INSERT/UPDATE 列清单，零 SELECT） | 5 | `audio_tokens`、`image_tokens`、`video_tokens`、`provider_tokens`、`reasoning_tokens` —— 只见于 `telemetry/client.go:1362`（INSERT）与 `:2150-2153`（UPDATE）及 Go 结构体字段 |
+| **全仓无任何 SQL 引用** | 29 | 零迁移成本，可随 v1 退役 |
+| **名字撞车，不是真的读 request_logs** | 3 | `cache_hit` → 实为 `dashboard_access_events`；`session_summary` → `approval_requests`；`task_id` → 分布在 `durable_llm_tasks` / `hosted_task_events` / `session_dim` 等十余张任务表，**没有一处从 request_logs 读** |
+
+`api_key_fingerprint`、`upstream_protocol` 等落在「无任何 SQL 引用」一类 ——
+它们**存在**（A 类里确实在 `session_turns` 有列），但今天没有任何查询读它们。
+
+### §9.20.2 于是待决范围只剩一句话
+
+> **给 710 视图补 4 个投影：`origin_stage`、`token_band`、`client_forwarded_for`、`trace_events`。**
+
+这 4 列的**数据已经在 `session_turns` 里**（§9.19.3 的 A 类实测），所以：
+
+- **不需要回填**（历史数据已在 session 族里）；
+- **不需要动写路径**（`turn_writer.go` 的 INSERT 列清单已含 `token_band` 等）；
+- 只需一条 `CREATE OR REPLACE VIEW` + 同步 `TestRequestLogsViewSessionArmPinIsCurrent` 等 pin。
+
+今天唯一的真实消费方是 `admin/compression_stats.go:212` 的 token 分带聚合
+（§9.18.5 抓到的那处静默空）。另外 3 列目前无人读，补上是为将来与语义完整性。
+
+### §9.20.3 但补 `origin_stage` 有个硬前提
+
+`origin_stage` 正是 §9.18 修掉的那处线上 500 的来源列。把它投影进视图，等于**把那条
+越列路径重新打开**——所有以该视图为源的读方，只要用物理表版谓词，立刻又 42703。
+
+所以补投影与「把所有视图读方切到 `bg.ProbeTrafficExclusionPredicateView`」**必须同批**，
+不能拆成两个提交。§9.18 新建的 `TestNoPhysicalOnlyColumnsInViewSourcedSQL` 会在
+任何一处遗漏时转红（它按「限定符绑定到视图自身别名」判定，见 §9.18.8 第 3 条）。
+
+### §9.20.4 方法学留记
+
+1. **扫描器输出是嫌疑清单，不是结论。** 本轮它把 `turn_writer.go:366` 的
+   `token_band` INSERT 列清单归到了 `session_turns_with_current_month`，
+   差点被读成「第五处 42703」。手验 5 处视图读点后确认：全部只用身份列
+   （`session_id`/`turn_no`/`request_id`/`tenant_id`/`partition_date`），无越列。
+2. **列名撞车是真实噪声源。** `cache_hit` / `session_summary` / `task_id` 三个名字在
+   本仓的十几张无关表上都有。**只按列名统计引用量会高估迁移面**——必须先判绑定关系。
+3. **「无 SQL 引用」是本轮最有价值的量。** 29/42 无人读，意味着 42 列里真正需要
+   迁移的只有 4 个。之前把这 42 列整体当作「迁移面」是高估了。
+
+---
+
+## §9.21 v1 退役爆炸半径：66 个直读方里 39 个不能直接改指视图（2026-10-02）
+
+§9.20 解决了「缺哪几列」。这一轮问的是退役的**另一半**：`request_logs` /
+`request_logs_hot` 到底还有多少读方**绕过视图**直读，以及它们能不能改指视图。
+
+### §9.21.1 扫描口径
+
+一次性扫描器（`/tmp/v1scan`、`/tmp/padscan`，均不入仓库）：解析每条 SQL 字面量的
+`FROM/JOIN` 关系集合，筛出**含 v1 宽族关系、且同一字面量里没有
+`request_logs_with_current_month`** 的（即绕过视图直读 v1 的）。
+
+**口径的精度声明**：这个判据分不出 `SELECT` 与 `UPDATE ... FROM` / `ON CONFLICT`，
+所以下面的计数是**上界**——写路径（`admin/telemetry.go`、`db/db.go`、
+`telemetry/client.go`）也被计入，因为它们带 `FROM`。请按「量级」而非「精确条数」使用。
+
+### §9.21.2 结果
+
+| 分类 | 文件数 |
+|---|---:|
+| 绕过视图直读 v1 宽族 | **66** |
+| └ 其中**读了 session 臂恒 NULL 的补位列** ⇒ **不可直接改指视图** | **39** |
+| └ 其中不读补位列 ⇒ 改指视图无列可用性障碍 | 27 |
+
+读补位列的文件（节选，按主导列）：
+
+| 主导补位列 | 涉及文件数（示例） |
+|---|---|
+| `client_model` | 25（`admin/logs.go`、`admin/analytics.go`、`bg/model_probe.go`、`bg/credential_recovery.go`…） |
+| `id` | 12（`admin/providers.go`、`admin/routing.go`、`admin/swim_lane_init.go`…） |
+| `provider_id` | 8（`admin/diagnostics_credential.go`、`admin/provider_diagnose.go`…） |
+| `gw_task_id` | 2（`admin/session_tenant.go`、`admin/unified_detail.go`） |
+| `outbound_token_est` / `outbound_msg_count` / `outbound_msg_hashes` | 各 1–2（`cmd/gateway/main_v3_wiring.go`、`cmd/compression-bench`） |
+
+### §9.21.3 这不是「39 个缺陷」，是「39 个需要重写的读面」
+
+它们今天**都能正常工作**（读物理 v1，列齐全）。危险在于**改指视图的那一天**：
+session 分支的行会从这些列拿到 NULL，而接口照样返回 200 —— 就是 §9.18 那类
+「修好了但变全盲」。所以这 39 个是 S4 灰度的工作项清单，判据是：
+
+> 一个 v1 直读方可以安全改指视图，**当且仅当**它读的每一列要么不在 30 列补位清单里，
+> 要么它对该列的读取本来就带着回落到 session 侧等价列的 COALESCE。
+
+已确认带等价落地的（migration 710 文档明载的派生映射）：
+
+| 补位列 | session 侧等价 | 710 映射 |
+|---|---|---|
+| `client_model` | `model` | `outbound_model ← model` |
+| `attachments` | `attachment_count` | `has_attachments ← attachment_count` |
+
+其余 28 列**没有已登记的等价映射**。用模糊匹配去找候选列会产出噪声
+（`compression_reason` 匹配到 `completion_tokens` 之类），**不作数**——
+需要逐列做语义裁决，属于产品决策，不在本轮擅自做。
+
+### §9.21.4 一个反直觉的发现：`id` 明明在 `session_turns` 里，却**不能**进那 4 列投影
+
+真库实测：`session_turns` **有** `id` 列（模糊匹配里是精确命中）。但 v1 的
+`request_logs.id` 是**请求行 id**，session 侧的 `id` 是 **turn id** —— 两者不是同一个东西。
+视图把它补位成 NULL 很可能是**刻意的**（避免给读方一个语义已变的同名列）。
+
+⇒ **§9.20 的「补 4 个投影」清单不能顺手把 `id` 加进去。** 判据是
+「session 侧的列与 v1 侧的是**同一个东西**」，不是「session 侧有这个列」。
+`origin_stage` / `token_band` / `client_forwarded_for` / `trace_events` 满足；
+`id` 不满足。这条判断建议由你确认。
+
+### §9.21.5 由此得到的 S4 退出判据（三条，缺一不可）
+
+1. **写入面**：v1 写路径全部并入门控（`settings.RequestLogsWriteEnabled`），
+   停写稳定期 ≥ 一个 hot retention 窗口（当前 8h，`effectiveWindow` 依此夹逼）。
+2. **读面**：本轮点名的 **39 个补位列读方**逐个改为视图读法，且每个都要么
+   去掉对补位列的依赖，要么改成带等价落地的 COALESCE。
+3. **历史面**：`assertTaskInTenant` 依赖 `request_logs_hot` + `request_logs` 两条 v1 腿
+   （§9.19.4），v1 退役后「只在 v1 留痕」的历史任务会对所有人 404 ⇒
+   **v1-only 历史必须先回填进 session 族**。
+
+（另：`cmd/gateway/dual_read_validator.go` 是行级对账器，它读补位列
+`request_type` ⇒ 停写后两侧不可比，同样需要纳入判据。）
+
+---
+
+## §9.22 把 §9.21 的 39 个读方变成有门的工作项（2026-10-02）
+
+§9.21 的 66/39 来自一次性扫描器（`/tmp`，不入仓库、无回归保护）。数字驱动着
+S4 退出判据，**没有门的数字会随代码演进而静默过期**——所以本轮把它落成
+`admin/v1_direct_padded_column_reader_test.go`。
+
+### §9.22.1 门的形状
+
+判定复用 §9.18 那套已验证的机制（`goFilesUnder` / `stripSQLLineComments` /
+`fromJoinRE` / `findColumnRefs` / `relToRepoRoot`），口径是：
+
+> 一条 SQL 字面量，**FROM/JOIN 集合里含 v1 宽族、且同一字面量里没有 canonical 视图**
+> ⇒ 它是「绕过视图直读 v1」的读方。若它还读了 30 列补位集里的任何一列，
+> 就进登记表 `v1DirectPaddedColumnReaders`。
+
+**不是禁止。** 这些读方在 v1 存活期间是**正确**的代码，全面禁止会把 S4 之前的
+正常迭代也堵死。正确形状是「**默认未登记 = 需要有人拍板**」，与
+`request_logs_stop_write_classification_test.go` 的具名论证同一范式。
+
+登记表条目形如 `{cols []string; why string}`：`cols` 是该读方**今天读到的补位列集合**，
+`why` 必须非空且会随失败输出打印。登记表由**门自己的输出生成**（不是手抄），
+所以登记口径与执行口径不会漂移。
+
+### §9.22.2 门自己漏过一次，被变异验证逼出来
+
+第一版只判「文件在不在登记表里」。给 `admin/analytics.go` 追加一个
+`client_model` 过滤条件 ⇒ 门不响。
+
+原因不是实现 bug，是**文件级粒度看不见「已登记读方又多读了一列」**——文件早就在
+表里，列集合变了但文件集合没变。⇒ 登记表升级为记录**列集合**，并加两条判定：
+
+1. 已登记读方**新读了**登记集合外的补位列 ⇒ 红（附当前登记集合）。
+2. 登记的列**不再被读到**（收缩）⇒ 判为登记项失效，红（要求同步更新）。
+
+**教训与 §9.19.2 同源**：第一版「已覆盖 39 个文件」听起来完整，实际只覆盖了
+「文件级」这一个维度。**覆盖率的单位要和风险的单位一致**——这里风险是
+「哪些列需要重写」，所以粒度必须是列而不是文件。
+
+（另记一次变异设计错误：最初给 `admin/analytics.go` 加的是又一个 `client_model`，
+而它本来就读 `client_model`，列集合没变，门正确地不响——**是我把变异设计坏了，
+不是门宽了**。换成它没读的 `gw_task_id` 后门立刻响。）
+
+### §9.22.3 五道变异（全部被正确抓住）
+
+| 变异 | 结果 |
+|---|---|
+| 已登记读方多读一列（`admin/analytics.go` 加 `gw_task_id`） | 红：`已登记读方新读了补位列 gw_task_id（登记集合为 auto_profile, client_model）` |
+| 清空整张登记表 | 红：39 个未登记读方全部报出 |
+| 登记项指向不存在的路径 | 红：`已失效：该位置不再触发本门` |
+| 在**未**登记文件里新增读方（`admin/body_resolver.go`） | 红：`新增了「绕过…直读 v1 宽族、且读了补位列 client_model」的读方` |
+| 登记列集合收缩（多登记一个 `gw_task_id`） | 红：`登记了补位列 gw_task_id，但该读方已不再读它们` |
+| **同时**让两条登记失效（多条时必须各自报对文件） | 红，且两条各自报对路径 —— 见 §9.22.6 |
+
+### §9.22.4 交叉印证
+
+`/tmp` 扫描器与仓库内这道门是**两套独立代码路径**，都报出 **39**。
+数字一致这一点本身是弱证据（思路同源），但足以支持「39 不是扫描器的假象」这一判断。
+
+### §9.22.5 这道门管不到什么（边界写在门上）
+
+1. **分不出 SELECT 与 `UPDATE...FROM` / `ON CONFLICT`** ⇒ 39 是**上界**，
+   登记项里含写路径。表里多数条目是读方，但不要读成 39 条 SELECT。
+2. **只覆盖「绕过视图直读 v1」的读方**。已经在读视图的 105 条读端分类由
+   `TestRequestLogsStopWriteNothingLeftUnclassified` 覆盖，两道门互补不重叠。
+3. **不判断语义等价性**。`client_model` 与 `outbound_model←model` 是否等价、
+   `id` 与 session 侧 `id` 是否同一个东西（§9.21.4 已论证不是），
+   这些都不是机械判定，仍需人工裁决。
+
+### §9.22.6 自查时发现的第三个自身缺陷：失效报告会把原因报到别的文件头上
+
+写完门后通读一遍，发现失效报告的实现有真 bug：
+
+```go
+var stale []string                       // 收的是「原因」字符串
+sort.Strings(stale)                      // 排的是【原因】不是【路径】
+t.Errorf("登记 %q 已失效：%s", registryOrder()[i], stale[i])   // 却拿路径去配
+```
+
+多条失效时 `registryOrder()[i]` 与 `stale[i]` **不相关**——会把 `A` 文件的原因报到
+`B` 文件头上。变异 5 当时只有一条失效，所以**侥幸是对的**：我差点把它当成
+「变异验证通过」的证据。已改为收集 `(路径, 原因)` 成对再按路径排序，并用变异 6
+（**同时**制造两条失效）验证两条各自报对。
+
+**与 §9.19.2 的教训同族**：判据必须钉在**该有的那个节点**上，不能靠「当前恰好对」。
+单条样本通过不构成「多组也正确」的证据。
