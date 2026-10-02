@@ -109,6 +109,9 @@ v2: {
     trendTokens: 'Tokens',
     trendCredits: 'Credits',
     trendCost: 'Cost (USD)',
+    trendMore: 'Plus',
+    trendMoreTitle: "Ouvrir l'analyse des tendances d'utilisation en pleine page",
+    trendOthers: 'Autres',
     filterProvider: 'Provider ID',
     allProviders: 'All',
 

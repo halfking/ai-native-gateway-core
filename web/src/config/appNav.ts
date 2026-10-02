@@ -148,6 +148,10 @@ export const NAV_GROUPS: NavGroup[] = [
       // 本项 = 供应商结算对帐（goal #2）。页面内含 provider/internal 双视角
       // 切换；结算报表（internal 视角）入口见「租户用户」组同名项。
       { path: '/admin/reconciliation', label: '供应商对账', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
+      // 2026-10-02 看板轮：全页用量趋势分析（按模型分线 + 供应商/租户/API Key/
+      // 模型/指标过滤）。看板「用量趋势」卡时间范围右侧「更多」按钮跳同一页；
+      // 路由 meta 仅 requiresAuth（服务端按角色收租户范围），菜单入口超管可见。
+      { path: '/admin/usage-trends', label: '用量趋势分析', labelKey: 'nav.item.usageTrends', icon: '📈', super: true, hideForTenant: true },
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },

@@ -33,6 +33,7 @@ export default {
     providers: 'Providers',
     reconciliation: 'Provider Reconciliation',
     settlementReport: 'Settlement Report',
+    usageTrends: 'Usage Trends',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
