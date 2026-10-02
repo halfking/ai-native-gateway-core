@@ -9,10 +9,21 @@
 # === 判据：pgstatindex 有三种索引浪费，形状不同，必须分开量再相加 ===
 #   deleted_pages      完全空页数。只在「按范围批量删除」时显著 ——
 #                      retention 按时间段删，页被整片清空。
-#   avg_leaf_density   叶页平均占用率(0~100)。反映「零散 churn」型膨胀：
-#                      行被随机更新/删除后每页都还剩几条存活，页不会全空。
 #   leaf_pages         叶页总数。算「未用空间」的基数。
+#   avg_leaf_density   页内**已用字节**占比(0~100)。反映零散 churn 型膨胀。
 #   leaf_fragmentation 既不是密度也不是空页率，别拿它当判据（见下方实测）。
+#
+#   ★ avg_leaf_density 度量的是「已用字节」，不是「存活元组占比」——
+#     死元组的行指针在被 vacuum 之前一直占位，计为已用。
+#     决定性实测（2026-10-03 02:00，同一索引同一 341 叶页）：
+#       before VACUUM  deleted_pages=0  avg_leaf_density=92.26
+#       (跑一次 VACUUM)
+#       after  VACUUM  deleted_pages=0  avg_leaf_density=33.94
+#     同 autovacuum_enabled=false 的表，密度却是 92.26 ——
+#     可见它统计的是「有没有被 vacuum 清过行指针」，不是「页有多空」。
+#     ⇒ 曾据此加过一个「密度>=88 视为已达重建上限」的豁免分支，已撤除：
+#       该阈值是建立在这个误读上的，不能留。
+#     正面用途不变：它确实能区分 churn 型膨胀（33.94 vs 重建后 92.52）。
 #
 #   实测样本 A（临时库，30 万行删 90%，零散 churn）：
 #     重建前: size=2.79MB deleted_pages=0 leaf_pages=341  density=33.94
@@ -178,7 +189,14 @@ while IFS= read -r idx; do
   # request_state_transitions_pkey 明明有 9572 个全空页(74.8MB)，但活页密度 90%
   # 使旧公式只算出 9.3MB，低于门槛被跳过。实测该索引 leaf_pages 仅 2469，
   # 正确公式给出 76.7MB。两种浪费形态必须分开算再相加。
-  # 该公式是保守下界：地面真值样本（av_on_pad）估 1.76MB，实测回收 2.49MB。
+  #
+  # ★ 但它对 churn 型大表是**上界**，不是期望值：
+  #   REINDEX 只能合并相邻键范围的页，不能重排行序。索引越大、行序越乱，
+  #   重建后的可达密度就越低。
+  #   生产实测 2026-10-03：ursm_node_snapshot_min_pkey（1987 万行）估 132MB、
+  #   实收 46MB；重建后密度 90.20%、仍估 115MB —— 它会持续被选中、每次只回收一点。
+  #   曾为此加「密度>=88 视为已达上限」的豁免分支，因 avg_leaf_density 语义被误读
+  #   （见文件头）而撤除。此处仅记录该行为已知，不再据此下结论。
   headroom_mb=$(awk -v d="$dead_pages" -v l="$leaf_pages" -v y="$density" \
     'BEGIN{printf "%d", (d + l*(1-y/100))*8192/1048576}')
   reason=""
