@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/kaixuan/llm-gateway-go/pkg/identity/token"
 )
 
@@ -66,6 +67,36 @@ func TestVerifierPrincipalRolePolicy(t *testing.T) {
 			p, err := Verify(policyToken(t, []string{role}, "tenant_admin unrelated:scope", "tenant-a", "42"), nil)
 			if err != nil || p == nil || p.Role != role || p.UserID != 42 || p.Username != "alice" || p.TenantID != "tenant-a" || p.Issuer != "acc" || p.Audience != DefaultAudience {
 				t.Fatal("explicit supported role and original principal must be preserved")
+			}
+		})
+	}
+}
+
+func TestVerifierPrincipalMalformedPrimaryRole(t *testing.T) {
+	withSharedSecret(t)
+	for _, tc := range []struct {
+		name string
+		role any
+	}{
+		{"null", nil},
+		{"number", 123},
+		{"boolean", true},
+		{"object", map[string]any{"name": "user"}},
+		{"array", []string{"user"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+				"iss": "acc", "sub": "alice", "aud": DefaultAudience,
+				"exp": time.Now().Add(time.Hour).Unix(), "user_id": "42",
+				"tenant_id": "tenant-a", "roles": []any{tc.role, "super_admin"},
+			}).SignedString([]byte(testSharedSecret))
+			if err != nil {
+				t.Fatal("malformed role fixture signing failed")
+			}
+			fallback := &policyLegacyVerifier{claims: &LegacyClaims{UserID: 9, TenantID: "tenant-a", Role: "super_admin"}}
+			p, err := Verify(raw, fallback)
+			if !errors.Is(err, ErrInvalidToken) || p != nil || fallback.calls != 0 {
+				t.Fatal("non-string primary role must reject without selecting a later administrator or legacy fallback")
 			}
 		})
 	}
