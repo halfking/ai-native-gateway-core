@@ -2389,6 +2389,11 @@ func (h *ChatHandler) serveWithExecutor(
 				writeErrorJSONCtx(r.Context(), w, http.StatusPaymentRequired, requestID, "insufficient_quota", i18n.MsgBudgetExhausted, nil)
 				return
 			}
+			// 非 BudgetExceeded 错误（DB 故障等）按既存设计放行，但必须留痕：
+			// gateway_budget_checks_total{outcome="error"} 是聚合面，这里是
+			// 带错误详情的单点日志（第三十轮）。
+			slog.Warn("budget check failed; allowing request (fail-open design)",
+				"request_id", requestID, "key_id", keyInfo.ID, "error", budgetErr)
 		}
 	}
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 )
 
@@ -193,6 +194,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			return nil, fmt.Errorf("check stream lane %q: %w", lane, errOrMissingResult(err))
 		}
 		if result.Blocked {
+			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamLane).Inc()
 			return nil, errors.New("output policy blocked stream lane")
 		}
 		if !state.redact || result.RedactedOutput == "" || result.RedactedOutput == original {
@@ -370,6 +372,7 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 			return nil, errOrMissingResult(err)
 		}
 		if result.Blocked {
+			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamComment).Inc()
 			return nil, errors.New("output policy blocked stream comment")
 		}
 		checked.parts = append(checked.parts, &streamTextPart{
@@ -422,6 +425,7 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 			return nil, errOrMissingResult(err)
 		}
 		if result.Blocked {
+			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamEvent).Inc()
 			return nil, errors.New("output policy blocked stream event")
 		}
 		if incremental {

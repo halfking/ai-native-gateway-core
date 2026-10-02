@@ -85,9 +85,12 @@ deploy/sql/
 
 ### 关键原则
 
-1. **schemas/baseline/** 与 **sql/schema/** 内容完全相同
-   - `schemas/baseline/` 是 installer 嵌入使用的副本
-   - 通过 `migrate-sql-files.sh` 保持同步
+1. **schemas/baseline/ 与 sql/schema/ 内容完全相同**（字节等价，守卫强制）
+   - `sql/schema/` 是 SSOT；`schemas/baseline/` 是部署包（one-click/手工 psql）消费的副本，
+     installer 嵌入的是 `installer/cmd/llm-gw-installer/embeddata/01-schema.sql`（三方须收敛）
+   - 同步机制 = `scripts/verify-stats-schema-mirror.sh`（cmp 字节等价 + embeddata 忽略空白等价），
+     已接 `deploy/build-image.sh` 构建门；角点修复先落 SSOT，再 `cp` 到两镜像
+   - `migrate-sql-files.sh` 是 2026-08 的一次性搬家脚本，不是同步机制
 
 2. **objects/ 不再入库**（2026-08-17 结构治理）
    - `deploy/sql/objects/` 曾是 `sql/objects/` 的部署副本（sync-objects.sh 生成），已出现漂移且无脚本引用
@@ -302,9 +305,11 @@ bash sync-objects.sh
 
 ### Q1: schemas/baseline/ 和 sql/schema/ 有什么区别？
 
-**A**: 内容完全相同，但用途不同：
-- `sql/schema/` 是开发时的 SSOT，由 `pg_dump` 从生产库导出
-- `schemas/baseline/` 是 installer 嵌入使用的副本，供新环境初始化
+**A**: 内容完全相同（字节等价），但用途不同：
+- `sql/schema/` 是开发时的 SSOT（dump 谱系 + 手工维护，角点修复先落这里）
+- `schemas/baseline/` 是部署包副本（one-click bootstrap / 手工 psql -f 消费）
+- installer 嵌入副本在 `installer/cmd/llm-gw-installer/embeddata/`，与 baseline 忽略空白等价
+- 三方一致性由 `scripts/verify-stats-schema-mirror.sh` 守卫（build-image 构建门内强制）
 
 ### Q2: 为什么不把 sql/migrations/ 也复制到 deploy/sql/？
 

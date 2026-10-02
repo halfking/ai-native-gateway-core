@@ -3,12 +3,14 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -117,18 +119,21 @@ func TestBudgetCheck_DedupesRequestIDDuplicatedAcrossHotAndParent(t *testing.T) 
 	keyID := seedBudgetKey(t, pool, "zz-bgate-b", 100.0)
 
 	// 父表一份（2026_08 分区内、ts 较早、7.0）+ hot 一份（ts=now 较新、3.0）：
-	// 同一 request_id 只计一次，取 ts 最新（hot 那份）。
+	// 同一 request_id 只计一次，取 ts 最新（hot 那份）。request_id 带纳秒
+	// 后缀：本库是共享 dev 实例，cleanup 是 best-effort（errcheck 豁免），
+	// 固定字面量会撞上历史残留行 23505（第三十轮实测）。
+	dupRequestID := fmt.Sprintf("zz-bgate-b-dup-%d", time.Now().UnixNano())
 	if _, err := pool.Exec(context.Background(), `
 		INSERT INTO usage_ledger (request_id, tenant_id, ts, api_key_id, cost_usd)
 		VALUES ($1, 'default', '2026-08-15T12:00:00Z', $2, 7.0)`,
-		"zz-bgate-b-dup", keyID); err != nil {
+		dupRequestID, keyID); err != nil {
 		t.Fatalf("seed parent spend: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
-			`DELETE FROM usage_ledger WHERE request_id = $1`, "zz-bgate-b-dup")
+			`DELETE FROM usage_ledger WHERE request_id = $1`, dupRequestID)
 	})
-	insertHotSpend(t, pool, keyID, "zz-bgate-b-dup", 3.0)
+	insertHotSpend(t, pool, keyID, dupRequestID, 3.0)
 
 	resp, rec := callBudgetCheck(h, keyID)
 	if rec.Code != http.StatusOK {
@@ -166,5 +171,63 @@ func TestBudgetCheck_FailClosedWhenSpendingUnreadable(t *testing.T) {
 	}
 	if resp.SpentUSD != 0 || resp.Exceeded {
 		t.Fatalf("fail-closed 路径不应产出自洽的预算数字: %+v", resp)
+	}
+}
+
+// 第三十轮钉测：budgetCheck 租户围栏。旧实现硬编码 tenant_id='default'，
+// 而 AdminMiddleware 只验 JWT 不验角色——任意租户的 tenant_admin 可用数字
+// ID 枚举 default 租户任意 key 的预算与实时花费（跨租户泄露面），非 default
+// 租户自己的 key 反而一律 404。修复后与 verifyKey（R46 形态）同款：
+// tenant_admin 钉本租户，super_admin/admin_key 放行全租户。
+func TestBudgetCheck_TenantScoping(t *testing.T) {
+	pool := reorderTestPool(t)
+	h := &Handler{db: pool}
+	defaultKeyID := seedBudgetKey(t, pool, "zz-bgate-td", 10.0)
+
+	var appID int
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO applications (code, display_name) VALUES ('zz-bgate-tenant-x', 'budget tenant scoping test') RETURNING id`).Scan(&appID); err != nil {
+		t.Fatalf("seed application: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM api_keys WHERE application_id = $1`, appID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM applications WHERE id = $1`, appID)
+	})
+	var tenantKeyID int
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO api_keys (application_id, key_hash, key_prefix, enabled, budget_usd, created_at, tenant_id)
+		VALUES ($1, 'zz-budget-hash-tx', 'zz-bgate-tx', true, 10.0, now(), 'zz-tenant-x')
+		RETURNING id`, appID).Scan(&tenantKeyID); err != nil {
+		t.Fatalf("seed tenant api_key: %v", err)
+	}
+
+	callWithRole := func(role, tenant string, keyID int) (int, *httptest.ResponseRecorder) {
+		t.Helper()
+		body := `{"api_key_id":` + strconv.Itoa(keyID) + `}`
+		req := httptest.NewRequest(http.MethodPost, "/api/keys/budget-check", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		ctx := context.WithValue(req.Context(), authContextKey{}, &AuthContext{
+			UserID: 1, TenantID: tenant, Username: "scope-test", Role: role, IsJWT: true,
+		})
+		rec := httptest.NewRecorder()
+		h.budgetCheck(rec, req.WithContext(ctx))
+		return rec.Code, rec
+	}
+
+	// tenant_admin(zz-tenant-x) 查本租户 key → 200。
+	if code, rec := callWithRole("tenant_admin", "zz-tenant-x", tenantKeyID); code != http.StatusOK {
+		t.Fatalf("tenant_admin own key: status = %d, body = %s —— 本租户 key 必须可查（旧实现恒 404）", code, rec.Body.String())
+	}
+	// tenant_admin(zz-tenant-x) 查 default 租户 key → 404（围栏拦截）。
+	if code, rec := callWithRole("tenant_admin", "zz-tenant-x", defaultKeyID); code != http.StatusNotFound {
+		t.Fatalf("tenant_admin cross-tenant: status = %d, body = %s —— 跨租户预算/花费探测必须 404（旧实现 200 泄露）", code, rec.Body.String())
+	}
+	// super_admin 查 default 租户 key → 200（全租户放行）。
+	if code, rec := callWithRole("super_admin", "default", defaultKeyID); code != http.StatusOK {
+		t.Fatalf("super_admin default key: status = %d, body = %s", code, rec.Body.String())
+	}
+	// 无租户上下文（legacy admin_key 形态）→ IsTenantAdmin=false → 全租户放行 → 200。
+	if code, rec := callWithRole("", "", defaultKeyID); code != http.StatusOK {
+		t.Fatalf("no-auth-context (legacy admin_key): status = %d, body = %s", code, rec.Body.String())
 	}
 }

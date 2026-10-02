@@ -129,6 +129,11 @@ acquire_lock() {
     die "另一个 deploy/start/stop 实例正在运行（lock=$LOCK_DIR holder_pid=$holder）；确认无并发后删除该目录重试"
   fi
   printf '%s' "$$" > "$LOCK_DIR/pid"
+  # INT/TERM 先转成非零退出，让 EXIT trap 统一清锁（kill -9 无解；陈锁由
+  # die 消息的恢复指引人工清理——手工 deploy 场景 fail-closed 优于自愈，
+  # 自愈会重新打开并发部署窗口）。
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   trap 'rc=$?; rm -rf "$LOCK_DIR"; exit $rc' EXIT
 }
 case "$ACTION" in
