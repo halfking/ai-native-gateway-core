@@ -2,6 +2,7 @@ package authentication
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -294,6 +295,37 @@ func TestKeyVerifier_CheckBudget_OK(t *testing.T) {
 
 	if err := kv.CheckBudget(context.Background(), 1); err != nil {
 		t.Fatalf("err = %v, want nil", err)
+	}
+}
+
+// TestKeyVerifier_CheckBudget_QueryTimeout pins the 5s bound on the ledger
+// queries: streaming/embeddings pass r.Context() with no deadline, so a
+// stalled DB must surface as a fast context error (→ outcome=error, then the
+// caller's budget-unavailable path) instead of hanging the request for its
+// whole lifetime (round-31 §四#8). Mutation-bearing: wiring the raw ctx back
+// in makes the 10s mock delay fall through and this test hangs→fails.
+func TestKeyVerifier_CheckBudget_QueryTimeout(t *testing.T) {
+	mp := newMockPool(t)
+	defer mp.Close()
+	kv := NewKeyVerifier()
+	kv.setDBQuerier(mp, "secret")
+
+	mp.ExpectQuery(`SELECT budget_usd`).
+		WithArgs(1).
+		WillReturnRows(pgxmock.NewRows([]string{"budget_usd"}).AddRow(nil)).
+		WillDelayFor(10 * time.Second)
+
+	start := time.Now()
+	err := kv.CheckBudget(context.Background(), 1)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error from stalled budget query, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > budgetCheckQueryTimeout+2*time.Second {
+		t.Fatalf("CheckBudget returned after %v; %v query timeout not enforced", elapsed, budgetCheckQueryTimeout)
 	}
 }
 
