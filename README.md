@@ -235,11 +235,18 @@ NO_INTERACTIVE=1 bash install.sh --mode full
 Installer subcommands pass straight through, so existing usage keeps working:
 
 ```bash
-bash install.sh doctor        # installer-level environment check
 bash install.sh upgrade       # upgrade an existing instance
-bash install.sh uninstall
+bash install.sh uninstall     # --purge also drops the data
 bash install.sh activate
+bash install.sh heartbeat
+bash install.sh upgrade check --target 1.2.3
 ```
+
+Note that `doctor` and `version` are claimed by the **bootstrap** itself, not passed
+through: they answer "what can this machine install" and "what version do I have and
+how do I get updates", which is the more useful question before you have an installer
+installed at all. An unknown first argument is rejected with a clear error rather than
+being handed to the binary.
 
 ### Option A: Docker Compose (recommended, < 10 minutes)
 

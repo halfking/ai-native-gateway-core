@@ -23,8 +23,12 @@
 #   bash install.sh doctor               # 只看本机具备哪些安装条件
 #   bash install.sh build                # 只编译，不安装
 #   bash install.sh version              # 只查版本与可获取的更新
-#   bash install.sh upgrade|uninstall|activate|heartbeat|doctor
+#   bash install.sh upgrade|uninstall|activate|heartbeat|completion
 #                                      # 透传给 llm-gw-installer
+#
+# 注意 doctor / version 归本脚本自己（回答"这台机器能装什么"、"我是什么版本、
+# 怎么拿更新"），不透传——还没装 installer 时问这个更有用。子命令放行前先
+# 对照 KNOWN_SUBCOMMANDS 校验，未知参数直接报错，不塞给二进制。
 #
 # 选项：
 #   --channel source|goinstall|npm|binary|maintain
