@@ -255,7 +255,10 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.id
 		FROM credentials c
-		JOIN LATERAL (
+		-- v1 臂改为 LEFT JOIN：原本是 INNER JOIN（e.last_error_at IS NOT NULL），
+		-- 那会让 v1 证据成为硬前置，即使补了 session 臂也永远轮不上它 ——
+		-- 即「补了臂但没接线」。改成 LEFT JOIN 后，硬前置由下面的 se 承担。
+		LEFT JOIN LATERAL (
 			SELECT MAX(rl.ts) AS last_error_at
 			FROM request_logs_hot rl
 			WHERE rl.credential_id = c.id
@@ -268,6 +271,36 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 			  -- the deferred F18 candidate_failure_logs attribution.
 			  AND (rl.success = FALSE OR COALESCE(rl.status_code, 0) >= 400)
 		) e ON e.last_error_at IS NOT NULL
+		-- 2026-10-02 审计：第二条错误证据臂指向 session 族（SSOT，不受 S4 停写门管）。
+		--
+		-- 上面那条臂是**硬过滤**（e.last_error_at IS NOT NULL），不是排序：停写生效 24h 后
+		-- request_logs_hot 不再产生新的失败行 ⇒ 没有任何凭据能通过 ⇒ 自检**自己静默**。
+		-- 这与 credential_recovery 的 lookbackCandidateSQL 同形（方向 ②：证据缺失）。
+		--
+		-- 真库实测（2026-10-02，24h 窗口，按凭据去重）：
+		--   v1 侧有报错的凭据 41，session 侧 15，**两侧都有 15，只有 v1 有 26**。
+		-- 再按 origin_stage 拆那 26：**全部是 node_probe**。
+		-- ⇒ 业务失败在两族都有（15/15 重合），探针失败**只存在于 v1**——
+		--    因为探针流量按设计不走 session 写路径，**它无法被端口**。
+		--
+		-- 所以本臂的定位要写清楚：
+		--   - 保住的是**业务失败**的检测（停写后仍有效）；
+		--   - 放弃的是「探针最近失败 ⇒ 现在去复检」这条**快捷信号**。
+		-- 后者不是能力丢失：探针系统本身（node_probe / node_probe_state）不受该门管，
+		-- 仍会直接发现不健康。selfcheck 用 v1 探针失败行只是取证捷径。
+		-- ⇒ 因此**不门控整个自检 worker**（那会连同仍然有效的故障发现一起停掉），
+		--   改为补这条臂把「止错」的部分保住。
+		--
+		-- 纯增量：两条臂同时生效，命中集合是原集合的超集，不改变今天的挑选结果
+		-- （24h 内 v1 已覆盖全部业务失败——实测 15 个两侧都有的凭据已包含在 41 里）。
+		-- credential_id 类型不同（v1 是 bigint、session_turns 是 text），故显式 CAST。
+		LEFT JOIN LATERAL (
+			SELECT MAX(st.ts) AS last_error_at
+			FROM session_turns st
+			WHERE st.credential_id = c.id::text
+			  AND st.ts >= now() - interval '24 hours'
+			  AND (st.success = FALSE OR COALESCE(st.status_code, 0) >= 400)
+		) se ON COALESCE(e.last_error_at, se.last_error_at) IS NOT NULL
 		LEFT JOIN LATERAL (
 			SELECT MAX(completed_at) AS last_at
 			FROM self_check_runs scr
@@ -281,7 +314,11 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		-- pick per 5m tick, newest-error-first let 3 noisy credentials starve
 		-- everything else; rotating on l.last_at guarantees every erroring
 		-- credential gets its turn.
-		ORDER BY COALESCE(l.last_at, '1970-01-01'::timestamptz) ASC, e.last_error_at DESC, c.id
+		-- e.last_error_at → COALESCE(e.last_error_at, se.last_error_at)：与上面的硬前置
+		-- 同一个接线问题。停写后唯一合格的群体 v1 值为 NULL，PostgreSQL 的
+		-- DESC 默认 NULLS FIRST，会把他们全部挤到最前，丢掉「最近报错优先」的排序语义。
+		ORDER BY COALESCE(l.last_at, '1970-01-01'::timestamptz) ASC,
+		         COALESCE(e.last_error_at, se.last_error_at) DESC, c.id
 		LIMIT 1`, fmt.Sprintf("%d seconds", int(credentialSelfcheckWindow.Seconds()))).Scan(&id)
 	if err != nil {
 		if err == pgx.ErrNoRows {
