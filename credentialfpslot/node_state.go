@@ -10,6 +10,7 @@
 package credentialfpslot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -68,6 +69,62 @@ type NodeState struct {
 	Capabilities        *NodeCapabilities `json:"capabilities,omitempty"`
 	CapabilityUpdatedAt int64             `json:"capability_updated_at,omitempty"` // unix seconds
 	CapabilityExpiresAt int64             `json:"capability_expires_at,omitempty"` // unix seconds
+}
+
+// UnmarshalJSON tolerates the "empty Lua table" shape for slide_window.
+//
+// Every writer of this payload is a Redis Lua script, and Lua's `{}` is an
+// empty TABLE, which Redis' cjson re-encodes as the JSON OBJECT `{}` — not the
+// array `[]` that `[]NodeRecord` needs. The same trap is already called out on
+// the Capabilities field above (solved with a nil-able pointer); slide_window
+// hit it too and was missed.
+//
+// The production consequence was not cosmetic. Observed live on
+// api.vapeur.ai / credential 126 (2026-10-02):
+//
+//	llmgw:cred_fp_node:126:gpt-5.6-terra =
+//	  {"slide_window":{},"disabled":false,"credential_id":126,...,
+//	   "capabilities":{"supports_responses":true}, ...}
+//
+// Every GetNodeState on such a key returned
+// `unmarshal node state: json: cannot unmarshal object into Go struct field
+// NodeState.slide_window of type []credentialfpslot.NodeRecord`, so
+// GetSupportsResponses always errored. Every caller treats a read error as
+// "no usable verdict" — which silently disabled BOTH directions of the
+// durable Responses capability gate (the F04 downgrade short-circuit added
+// 2026-09-30 and the enable path added 2026-10-02). The verdict was being
+// written correctly the whole time and simply never read back.
+//
+// Normalising `{}` → `[]` restores it: an empty Lua table means "no records",
+// which is exactly what an empty Go slice means. A NON-empty object shape
+// would be genuinely unexpected, so it is left to fail loudly.
+func (n *NodeState) UnmarshalJSON(data []byte) error {
+	// Hot-path guard. GetNodeStatesBatch decodes one NodeState per routing
+	// candidate on every request, so the common case must stay a single parse.
+	// A cheap substring test is enough to skip the fix-up work entirely for
+	// every payload that cannot be affected.
+	if !bytes.Contains(data, []byte(`"slide_window"`)) {
+		type alias NodeState
+		return json.Unmarshal(data, (*alias)(n))
+	}
+	// alias sheds the method set, so the inner decode does not recurse.
+	type alias NodeState
+	var probe struct {
+		SlideWindow json.RawMessage `json:"slide_window"`
+	}
+	if err := json.Unmarshal(data, &probe); err == nil {
+		trimmed := bytes.TrimSpace(probe.SlideWindow)
+		if len(trimmed) > 0 && trimmed[0] == '{' {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(data, &fields); err == nil {
+				fields["slide_window"] = json.RawMessage("[]")
+				if patched, err := json.Marshal(fields); err == nil {
+					data = patched
+				}
+			}
+		}
+	}
+	return json.Unmarshal(data, (*alias)(n))
 }
 
 // NodeCapabilities holds durable protocol-capability verdicts for one
