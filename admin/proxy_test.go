@@ -300,3 +300,48 @@ func TestValidateHealthCheckURLRejectsSSRFTargets(t *testing.T) {
 		}
 	}
 }
+
+// TestProxyPolicyAdvisoryExposed（R31.1 批判复审补钉）：round 31 把
+// load_balance_strategy/location_affinity「仅持久化、出站不生效」标注为
+// /api/proxy/policy 响应的 selection_advisory 字段；此前只有编译级存在，
+// 无任何行为断言。本钉测保证 GET 与 PUT 的 200 响应都真实回带该字段。
+func TestProxyPolicyAdvisoryExposed(t *testing.T) {
+	h := NewHandler(nil, "test-secret", nil)
+	// proxyRuntime 惰性初始化挂在 h.db 上；nil db 时返回 nil manager。
+	// 直接注入一个无 store 的 Manager（构造不触库），GET/PUT 均可走通。
+	h.proxyMgr = proxy.NewManager(nil, nil, nil)
+
+	// GET 必须回带 advisory。
+	rec := httptest.NewRecorder()
+	h.handleProxyGetPolicy(rec, httptest.NewRequest(http.MethodGet, "/api/proxy/policy", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET policy: status %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	var getResp struct {
+		Advisory string `json:"selection_advisory"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("GET policy: decode: %v; body: %s", err, rec.Body.String())
+	}
+	if getResp.Advisory == "" {
+		t.Fatalf("GET policy: selection_advisory empty; body: %s", rec.Body.String())
+	}
+
+	// PUT 合法策略更新同样必须回带 advisory。
+	rec2 := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/proxy/policy",
+		strings.NewReader(`{"load_balance_strategy":"round_robin"}`))
+	h.handleProxySetPolicy(rec2, req)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("PUT policy: status %d, want 200; body: %s", rec2.Code, rec2.Body.String())
+	}
+	var putResp struct {
+		Advisory string `json:"selection_advisory"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &putResp); err != nil {
+		t.Fatalf("PUT policy: decode: %v; body: %s", err, rec2.Body.String())
+	}
+	if putResp.Advisory == "" {
+		t.Fatalf("PUT policy: selection_advisory empty; body: %s", rec2.Body.String())
+	}
+}
