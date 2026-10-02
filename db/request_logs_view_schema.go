@@ -472,10 +472,25 @@ var projectionExprsV2 = []string{
 	"NULL::timestamptz",
 	"t.system_fingerprint",
 	"t.raw_model_name",
-	// 738/740 追加尾列：session 分支无源补位（738 NULL::double precision
-	// 同款；session_turns.client_ip 为 text 且未回填，不能直映）。
+	// 738 追加尾列：session 分支无源补位（NULL::double precision）。
 	"NULL::double precision",
-	"NULL::inet",
+	// 740 追加的 client_ip：**816 起改为 session 侧有源投影**（审计 §9.45.6.1）。
+	//
+	// 原注释写「session_turns.client_ip 为 text 且未回填，不能直映」——两半都要改：
+	// 「未回填」是**错的**（本机 7 天 172,305/202,774 = 85.0% 有值；252 7 天 17,586 行
+	// 有值），而「text 不能直映」只说明它**需要一次显式转换**，不是不能映。
+	//
+	// 与 v1 同义的依据（252 生产库，审计 §9.45.6.1）：同 request_id 配对 826 行
+	// session_turns.client_ip == host(request_logs.client_ip) **826/826、差异 0**。
+	// 本机那条「两列 100% 相同 ⇒ 它是转发头副本」的旧裁决已被证伪——本机全库
+	// client_forwarded_for 只有 6 个 distinct 取值、多跳链路 0 条，零分辨力。
+	//
+	// 为什么带 CASE 守卫而不是直转：session_turns.client_ip 是 **text**，没有类型
+	// 约束，一个畸形值会让 `::inet` 抛错并**打挂整条 canonical 视图的每一个读方**。
+	// 守卫与本投影已有的 application_id / api_key_id / credential_id 转换同款，
+	// 代价是「畸形 → NULL」而不是「整条查询报错」。
+	// 实测支撑：252 近 30 天 18,870 行全部匹配该正则且 client_ip::inet 全部可转。
+	"(CASE WHEN t.client_ip ~ '^[0-9a-fA-F:.]+$' THEN t.client_ip::inet END)",
 	// 813 追加尾列（§9.22）：三列的 session 侧源在 session_turns 上，且与 v1
 	// 逐值一致（真库 1,515,960 行同 request_id 配对实测 both_differ=0），
 	// 缺的只是「近窗覆盖率」——近 7 天 origin_stage/client_forwarded_for 已达

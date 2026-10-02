@@ -167,9 +167,12 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 	}
 	// Composition width: wrapper with credits+client_ip composes the
 	// 118-name contract; missing either falls back to 113 + the 815 three.
-	if full := canonicalV2DDL(testMiddleCols, true, true, true, true, true); !strings.Contains(full, "NULL::inet AS client_ip") ||
+	// client_ip 的表达式 2026-10-02 起是有源投影（816），不再是 NULL 补位——
+	// 本断言随投影同体更新，钉的是「全宽形态里这一列**不是**补位」。
+	if full := canonicalV2DDL(testMiddleCols, true, true, true, true, true); strings.Contains(full, "NULL::inet AS client_ip") ||
+		!strings.Contains(full, "THEN t.client_ip::inet END) AS client_ip") ||
 		!strings.Contains(full, "NULL::double precision AS credits_rate_multiplier") {
-		t.Error("post-738/740 base must compose the full body (credits + client_ip session placeholders + 815 three)")
+		t.Error("post-738/740 base must compose the full body (credits 补位 + client_ip 有源投影 + 815 three)")
 	}
 	if stale := canonicalV2DDL(testMiddleCols, true, true, true, false, true); strings.Contains(stale, "AS client_ip") ||
 		strings.Contains(stale, "AS credits_rate_multiplier") {
@@ -247,7 +250,12 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 // §9.22（815 的三列 + id/trace_events 被拒的实测依据）。
 var registeredProjectionAppends = []string{
 	"NULL::double precision AS credits_rate_multiplier", // 738
-	"NULL::inet AS client_ip",                           // 740
+	// 816：740 落地时是 NULL 补位（理由「session 侧未回填」），该理由已被 252
+	// 生产库复测证伪——session 侧 85% 有值、且与 v1 配对 826/826 同义
+	// （审计 §9.45.6.1）。改为有源投影。守卫 CASE 与本投影既有的
+	// application_id / api_key_id / credential_id 转换同款：text→inet 没有类型
+	// 约束，一个畸形值会让整条 canonical 视图的每个读方报错。
+	"(CASE WHEN t.client_ip ~ '^[0-9a-fA-F:.]+$' THEN t.client_ip::inet END) AS client_ip", // 816
 	"t.origin_stage AS origin_stage",                    // 815
 	"t.token_band AS token_band",                        // 815
 	"t.client_forwarded_for AS client_forwarded_for",    // 815

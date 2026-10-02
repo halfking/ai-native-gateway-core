@@ -559,8 +559,10 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Evidence: "COUNT(*) FILTER (WHERE r.request_status = 'success')::bigint,",
 		Note: "rollupMain/rollupDims 三处读 710，窗口由 request_stats_rollup_cursor.last_ts 推进，" +
 			"session 臂持续产新 ts 行 ⇒ 分钟汇总照常滚动；Exec 错误 return err 上抛。\n" +
-			"**仍然成立**的降级：client_ip 在 session 臂恒 NULL ⇒ client_ip 维度塌成 " +
-			"__unknown__；credits_rate_multiplier 恒 NULL ⇒ credits 估算按倍率 1.0 计。值劣化，见 §9.15 五种方向。\n" +
+			"**仍然成立**的降级：credits_rate_multiplier 恒 NULL ⇒ credits 估算按倍率 1.0 计。值劣化，见 §9.15 五种方向。\n" +
+			"**已作废（816）**：client_ip 在 session 臂恒 NULL ⇒ client_ip 维度塌成 __unknown__ —— " +
+			"816 已把它从 NULL 补位改为 session 侧有源投影（带 CASE 守卫的 text→inet），" +
+			"真库往返配对 1,735 行逐值精确匹配 1,294、失配 0。\n" +
 			"（订正：本条原写「session_turns.client_ip 是 client_forwarded_for 的错名副本，" +
 			"202,014/202,014 逐行相同」——那个数字取自本机库且**无分辨力**（全库 cff 仅 6 个" +
 			"distinct 取值、多跳链路 0 条）。252 生产库复测：多跳 3,350 行两列**不等**，" +
