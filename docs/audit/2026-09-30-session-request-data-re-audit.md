@@ -6728,3 +6728,166 @@ provider 归属），而这里是「行与 reward 都在，但 reward 的**分�
 | N3 把登记指向 `admin/analytics.go`（可被直接扫到） | 红（`:118` 间接性已消失） |
 
 N1 第一次注入是**编译红**（结构体字面量混写），不算证据；改用整段替换重做。
+
+---
+
+## §9.50 `IntegrityFingerprintDrift`：一个安全检测器会在 S4 停写后**永久关闭**
+
+### §9.50.1 要观测的失效形态
+
+`bg/integrity_fingerprint_drift.go` 的 `tick()` 每轮先做一次短路判定：
+
+```go
+_, inProcSeen := telemetry.SystemFingerprintObservedSince()
+switch fingerprintScanDecision(inProcSeen, w.probeDone, w.probeEmpty) {
+case fingerprintScanSkip:
+	w.skippedTicks.Add(1)
+	return                       // ← 全量扫描在这里就结束了
+case fingerprintScanProbe:
+	hasFP, err := w.probeFingerprintTraffic(probeCtx)   // 读 v1
+	...
+}
+```
+
+短路本身是 2026-09-25 审计 round 8（D11）的正确设计：252 上所有指纹列恒空，
+全量扫描是纯 no-op（~490k EXPLAIN、128k 行 seq scan），被 30s rolconfig
+超时打死 3 次/55min。**问题不在设计，在于它读的那张表正在被退役。**
+
+停写后 v1 不再产生新行 ⇒ 探针恒空 ⇒ `probeDone && probeEmpty` ⇒ 每轮第一行
+return ⇒ 7 天窗口的指纹漂移扫描**再也不执行**。
+
+这与 §9.43–§9.49 记的那一整族「读点变空」是**不同性质**的事：那些是显示层少一块
+数据，这里是**一个凭据/模型指纹安全检测器自己判定「没流量可扫」而关掉自己**。
+凭据被悄悄换掉（上游模型指纹漂移）不会被任何现有信号发现。
+
+### §9.50.2 停写前它**完全不可见**——这是本次改动的根因
+
+| 痕迹 | 建告警前的事实 |
+|---|---|
+| `skippedTicks` | 全仓 3 处引用**全是 `Add(1)`，没有任何地方读它** |
+| Prometheus 指标 | 该文件此前**一个都没有** |
+| 日志 | 只有「那一刻」一条 `slog.Info`（`:189`），之后每轮静默 |
+| `Stats()` | 只导出 `scannedCycles`（`:131`），`skippedTicks` 连 Stats 都没进 |
+
+⇒ 停写那一刻运维会看到一条 Info，**然后再无任何信号**，直到有人从别处发现漂移
+检测一直没跑。§9.38 已在 `ledger_reconciliation` / `credential_recovery` 上修过
+同一种形状（`SkippedChecks()` 无出口）；这个文件当时没做。
+
+### §9.50.3 改动：把「自己关掉了」变成可告警的事实
+
+新增 `bg/integrity_fingerprint_drift_metrics.go`，三个指标**刻意不带标签**（GW-00）：
+
+| 指标 | 语义 |
+|---|---|
+| `llm_gateway_bg_fingerprint_drift_scanned_total` | 真正执行了全量扫描的轮数 |
+| `llm_gateway_bg_fingerprint_drift_skipped_total` | 被短路、没扫描的轮数 |
+| `llm_gateway_bg_fingerprint_drift_last_scan_unix` | 最近一次真正扫描的时刻 |
+
+`last_scan_unix` 在 `Start()` 里就置为**进程启动时刻**，不是 0。这不是随手写的：
+探针**每进程最多跑一次**，「启动后一次都没扫过」是停写后刚重启那一刻的真实形态。
+置 0 ⇒ `time() - 0` 恒为巨大值 ⇒ **每个刚起来的进程都立刻告警**；不初始化 ⇒
+序列不存在 ⇒ 告警永不响。
+
+`deploy/prometheus/rules/integrity-fingerprint-drift.yml` 两条告警：
+
+- `BgFingerprintDriftNeverScanned`（critical）：`time() - last_scan_unix > 7200`，
+  `for: 10m`。**持续状态**，用 `for:` 抑制重启抖动。
+- `BgFingerprintDriftSkippedNoScan`（warning）：`increase(skipped[15m]) > 0 and
+  increase(scanned[15m]) == 0`，`for: 10m`。**退化中状态**。
+
+两条都需要：只看 last_scan，扫描间隔逼近阈值时迟迟不响；只看 skipped，
+「worker 压根没启动」会漏掉（那时 skipped 也不涨）。
+
+### §9.50.4 ★订正：第一版告警文案里的一个**错误断言**
+
+第一版 yml 写的是：
+
+> **逃生口**（为什么它有时会自己恢复）：`telemetry.SystemFingerprintObservedSince()`
+> —— 进程内遥测观测到指纹流量时会把全量扫描重新 arm。这条链**不读 v1**，
+> 所以恢复与否取决于当前进程有没有真的处理过带指纹的请求。
+
+**这句是错的**，而且是本轮最贵的一个错：它把「停写 + 重启 ⇒ 永久关闭」写成了
+「有时会自愈」。据那条错误前提还发了规则。逐行核实后的真实链路是：
+
+```
+markSystemFingerprintObserved()                 ← systemFingerprintLastObserved 的唯一写入方
+  ↑ 唯一调用点
+persistSystemFingerprint()                       client.go:2540，执行 UPDATE request_logs_hot
+  ↑ 两个调用点 client.go:1816 / :2468
+insertRequestLog / updateRequestLog 的 `if logsWrite { … }` 块内
+  ↑ logsWrite := requestLogsWriteEnabled()  →  settings.RequestLogsWriteEnabled()
+  ↑ = KeyRequestLogsWriteEnabled = "storage.request_logs_write_enabled"   ← S4 停写键
+```
+
+我最初以为「逃生口在写事务里，但 UPDATE 匹配 0 行也返回 nil，仍会 arm」。**这也错**：
+`client.go:1839` 的 `}` 关闭 `insertRequestLog` 的 `if logsWrite` 块，而
+`persistSystemFingerprint` 在 `:1816`——**在块内**。`updateRequestLog` 同理
+（`:2126` 开、`:2471` 关、调用在 `:2468`）。
+
+⇒ **两条腿断在同一个开关上**：探针读 v1 恒空，进程内 arm 也恒不触发。
+**停写 + 任意一次重启 = 检测器永久关闭**，没有任何其他信号。
+（不停写时它是健壮的：只对本实例没见过、且一次性探针也没见过的流量才跳。）
+
+一个会让运维「先等等看」的告警，比没有这个告警更坏——它把人引向一个不会发生的
+结果。已改写为「**逃生口也是关着的**（不要指望它自愈）」，并在文案里留了一条
+⚠ 说明本条曾经被写错、订正于 §9.50.4。
+
+**同一处错误断言还有第二个载体**：`tick()` 里那条 `slog.Info` 原本写着
+`"… skipping full scan (re-arms when telemetry observes a fingerprint)"`。已改为
+如实描述，并附 `rearm=` 字段指向 §9.50.4。
+
+⇒ 教训：**一个未兑现的承诺会在多个载体里复制**（告警文案、日志、注释、文档）。
+订正时必须把载体找全，否则下一个读到旧日志的人还会照着那个承诺行动。
+
+正确修法（**本轮未实施**，需要先实测）：探针改读会话族，并把 `inProcSeen` 的 arm
+移到门控之外。
+
+### §9.50.5 门（7 道）与变异验证 8/8
+
+| 门 | 位置 | 断言的是哪一侧 |
+|---|---|---|
+| 指标↔告警一一对应 | `deploy/prometheus/rules/` | 每个注册的指标都有告警消费（反方向不判，见 §9.37） |
+| 告警必须说出 stop-write 成因 | 同上 | 文案点名 `fingerprintScanSkip` 与「自己把自己关掉」 |
+| **告警不得承诺自愈** | 同上 | 含「逃生口也是关着的」/「不要指望它自愈」，且不含 §9.50.4 撤回的那两句 |
+| 计数器与指标同生共死 | `bg/` | 同一基本块内 `<counter>.Add` 与记录器调用**一一相邻**（不预设分支数量） |
+| `Start()` 必须播种 last_scan | `bg/` | 恰好一处调用，且在 `Start()` 内 |
+| 指标定义文件存在 | `bg/` | 三个指标名都还在（**不是**「有人在读」） |
+| **逃生口在停写门内** | `telemetry/` | `markSystemFingerprintObserved` 唯一调用点在 `persistSystemFingerprint` 内；后者两个调用点都在 `if logsWrite` 内 |
+| `logsWrite` 就是 S4 键（三跳） | `telemetry/` | `logsWrite := requestLogsWriteEnabled()` ×2 → wrapper 是**单语句纯转发** → 键值 = `storage.request_logs_write_enabled` |
+
+**门自己抓到的三个真 bug**（都是先红后修，不是事后补记）：
+
+1. `hasCall` 只认一级 selector，而 `w.skippedTicks.Add` 是**两级** ⇒ 在三个挂载点
+   全齐的真实代码上报「计数器消失」。
+2. `hasCall` 会**下探嵌套块**，于是外层 `switch` 节点「认领」了 case 体里的调用，
+   位置被归到函数体 ⇒ 报了一个与真实代码无关的红。
+3. 位置用「行号」无法区分**相邻两行**的 `Add` / 记录器 ⇒ 改用「所属基本块 + 块内下标」。
+
+**门的三次失败注入记录**：
+
+| 变异 | 注入 | 结果 |
+|---|---|---|
+| M1 删掉一处 `recordFingerprintDriftSkip()` | 3 处 → 2 处 | 红，`case@…:174#0` 无后继记录器 |
+| M2 新增只有计数器、无记录器的跳过分支 | `Add` 2 → 3 | 红，`blk@…:178#0` |
+| M3 把记录器挪到计数器**之前**（破坏相邻性） | 顺序对调 | 红，下标 `#0` → **`#1`**（与 M1 可区分） |
+| M3b 删掉 `Start()` 里的 `recordFingerprintDriftStart` | 2 → 1 | 红 |
+| M4 把 `persistSystemFingerprint` 挪出 `if logsWrite` | 门控外 | 红，`client.go:1863 is NOT inside` |
+| M5 wrapper 改成 `if <key> {return true}; return true` | 值被偷换 | **第一次没抓住**，见下 |
+| M6 加第二条 arm 路径 | 递归调用 | 红，「exactly one call site」 |
+| M7 把 §9.50.4 撤回的那句放回 yml | 文案回退 | 红 |
+| M8 把「一直不扫」告警改挂到 counter 上 | expr 替换 | 红，`last_scan_unix` 变成「无人消费的指标」 |
+
+**M5 是本轮唯一逃过的一道门，值得单独记**：第一版 hop-2 判据只数了
+`settings.RequestLogsWriteEnabled` 的**引用次数**（== 1）。M5 之后 wrapper 仍引用
+该键一次，**返回值却已被偷换**，门照样绿。⇒ 改成断言**函数体形状**：恰好一条
+`return settings.RequestLogsWriteEnabled()`、没有第二条语句。重放 M5 后红。
+
+⇒ 这条与 §9.44 的教训同族：**「数量对」不等于「值对」**。
+
+### §9.50.6 一个必须说清楚的边界
+
+这道门断言的是 **AST 层面的词法包含关系 + `logsWrite` 的来源**，运行期由同一个变量
+控制；两者合起来构成完整论证。**无法证明的那一侧**（探针在运行期到底返回什么）
+由 bg 侧的告警覆盖，不在这里假装。门也**不能**替你决定该不该改：如果有人把
+`persistSystemFingerprint` 挪到门控之外（这正是 §9.50.4 给的正确修法之一），
+门会红并要求同步改告警文案——那个摩擦是**故意的**。

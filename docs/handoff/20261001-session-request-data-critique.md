@@ -2752,3 +2752,83 @@ go test ./admin/ -count=1   → 仅 1 个 FAIL：TestSessionArmNullPaddedColumns
 >    口径再动手；70 条静默档的成因尚未逐条分析（建议先挑 5 条做样板）。
 > ⑤ 其余遗留未变：§9.38 告警 `for:` 阈值未在真机 Prometheus 验证；
 >    §9.39 的 `vi` 维度 SQL 注释；响应侧 7 个读点仍不可端口。
+
+---
+
+## 第三十一轮（§9.50）：`IntegrityFingerprintDrift` 会在 S4 停写后永久关闭
+
+### 结论
+
+发现一个**安全相关检测器**在停写后**永久关闭**，且此前**完全不可见**。加了三个
+Prometheus 指标 + 两条告警 + 7 道门。
+
+更重要的是：**本轮自己写的第一版告警文案里有一个错误断言，已订正并加了门防止复发。**
+
+### 关键事实（已逐行核实）
+
+`bg/integrity_fingerprint_drift.go` 的短路有两条腿，**都断在同一个开关上**：
+
+| 腿 | 机制 | 停写后 |
+|---|---|---|
+| 1 探针 | `probeFingerprintTraffic` 读 `request_logs_hot` / `request_logs` 的 `system_fingerprint IS NOT NULL` | v1 无新行 ⇒ 恒空 ⇒ `fingerprintScanSkip` |
+| 2 进程内 arm | `fingerprintScanDecision` 的 `inProcSeen` 分支 ← `telemetry.SystemFingerprintObservedSince()` | 唯一写入方 `markSystemFingerprintObserved()` 只在 `persistSystemFingerprint()` 内调用，而后者的两个调用点（client.go:1816 / :2468）**都在 `if logsWrite {}` 块内**（`:1336`–`:1839` / `:2126`–`:2471`）；`logsWrite = requestLogsWriteEnabled() = settings.RequestLogsWriteEnabled() = "storage.request_logs_write_enabled"` |
+
+⇒ **停写 + 任意一次重启 = 检测器永久关闭**。凭据被悄悄换掉不会被现有信号发现。
+
+### 我这轮犯的错（必须记）
+
+1. **文案层面的错误断言**：第一版 yml 写「逃生口这条链**不读 v1**，所以恢复与否取决于
+   当前进程有没有处理过带指纹的请求」——听起来会自愈。**事实相反**。已改写为
+   「逃生口也是关着的（不要指望它自愈）」。
+2. **中间还错了一次**：我以为「UPDATE 匹配 0 行也返回 nil，所以仍会 arm」。**也错**——
+   那个调用点在 `if logsWrite` 块**内**。判断门控范围不能靠读调用点附近的代码，
+   要数括号。
+3. **门自己抓到 3 个真 bug**（先红后修）：一级 selector 认不出两级 selector；
+   `hasCall` 下探嵌套块导致外层 `switch` 认领内层调用；行号无法区分相邻两行。
+4. **M5 逃过了门**（唯一一次）：hop-2 只数「引用次数 == 1」，wrapper 被改成
+   `if <key> {return true}; return true` 后引用仍是一次、值已偷换 ⇒ 绿。
+   改成断言**函数体形状**（单语句纯转发）后抓住。
+   ⇒ 与 §9.44 同族：**「数量对」不等于「值对」**。
+
+### 门只能断言能被证明的那一侧
+
+逃生口门断言的是 **AST 词法包含 + `logsWrite` 来源三跳**；运行期由同一变量控制。
+**无法证明的**（探针运行期取值）由告警覆盖，不在门里假装。门也**不替你决定该不该改**：
+若有人把 `persistSystemFingerprint` 挪出门控（§9.50.4 给的正确修法之一），门会红
+并要求同步改文案——**那个摩擦是故意的**。
+
+### 正确修法（本轮未实施，需先实测）
+
+1. 探针改读会话族（`session_turns` 的 `system_fingerprint` 覆盖**必须先在真库实测**）。
+2. 把 `inProcSeen` 的 arm 移到 `if logsWrite` 之外（与写解耦：arm 是进程内观测，
+   不是宽表写入的副产品）。
+
+### 测试
+
+```
+go build ./... && go vet ./bg/ ./domains/hooks/observability/telemetry/ ./deploy/prometheus/rules/   → OK
+go test ./bg/ ./domains/hooks/observability/telemetry/ ./deploy/prometheus/rules/ -count=1            → 全过
+变异 8/8（M1 M2 M3 M3b M4 M5 M6 M7 M8），每次都确认是**断言命中**而非编译红，且全部还原
+```
+
+### 下一轮提示词
+
+> §9.50 修了一个**安全检测器在停写后永久关闭**的问题（指纹漂移），并订正了自己
+> 第一版告警文案里的错误断言（「逃生口不读 v1 所以会自愈」是错的）。新门用 AST 断言
+> 逃生口在 `if logsWrite {}` 内，三跳验证 `logsWrite` 就是 S4 键。
+>
+> ① **务必沿用的方法论**：门里写「数量对」的判据（引用次数、调用次数）**不等于**
+>    「值对」。M5 就是在这一条上逃过去的。任何「计数 == N ⇒ 正确」的判据都要问一句
+>    「有没有一种错法能让计数不变」。
+> ② **可做**（§9.50 留下的）：实施 §9.50 的两条修法——探针改读会话族 +
+>    `inProcSeen` 的 arm 移出门控。**前置是实测** `session_turns` 上
+>    `system_fingerprint` 的覆盖率（若会话族根本不写这一列，改读会话族是空转）。
+> ③ **仍未做且需要拍板**（三项，都是原始需求的收口）：
+>    - §9.44 基线 cohort 跨切换：(a) 显式重新基线化 / (b) 引入独立稳定 cohort。
+>      这是「确保数据在更改前后一致」的唯一未闭环项。
+>    - §9.49.8 的 `silently_degraded_content` 档是否扩档。
+>    - §9.48 的 `silently_frozen` 21 条（唯一永不红的一档）的处理口径。
+> ④ §9.44–§9.50 这一族改动都是「让不可见的东西变可见」，**没有一条改变了读源的
+>    语义**。真正切源的收口仍然待 ③ 第一项。
+> ⑤ 其余遗留未变：§9.38 告警 `for:` 阈值未在真机 Prometheus 验证；§9.39 的 `vi`
+>    维度 SQL 注释；响应侧 7 个读点仍不可端口。

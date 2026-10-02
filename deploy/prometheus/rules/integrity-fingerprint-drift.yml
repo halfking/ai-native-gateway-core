@@ -1,0 +1,104 @@
+# integrity fingerprint drift 检测器「自己把自己关掉了」的告警（2026-10-02 审计 §9.50）
+#
+# 指标来源：bg/integrity_fingerprint_drift_metrics.go
+#   llm_gateway_bg_fingerprint_drift_scanned_total   真正执行了全量扫描的轮数
+#   llm_gateway_bg_fingerprint_drift_skipped_total   被一次性探针短路、没扫描的轮数
+#   llm_gateway_bg_fingerprint_drift_last_scan_unix  最近一次真正扫描的时刻
+#
+# # 为什么这组告警不是「常规巡检」
+#
+# IntegrityFingerprintDrift 是**安全相关检测器**（凭据/模型指纹漂移）。它每轮先问
+# 一个一次性探针「当前半窗口有没有带 system_fingerprint 的流量」，而那个探针读的是
+# **v1**（`system_fingerprint IS NOT NULL` 打在 request_logs_hot / request_logs 上）。
+#
+# S4 停写之后：v1 不再产生新行 ⇒ 探针恒空 ⇒ `fingerprintScanDecision` 返回
+# `fingerprintScanSkip` ⇒ **每轮在第一行 return，全量扫描不再执行**。
+#
+# 更糟的是第二条腿也在同一个开关下：`inProcSeen` 逃生口的唯一写入方
+# `markSystemFingerprintObserved()` 只在 `persistSystemFingerprint()` 内调用，
+# 而后者位于 `insertRequestLog` / `updateRequestLog` 的 `if logsWrite` 块内
+# （client.go:1816 / :2468）⇒ 停写后它一次都不执行。**停写 + 重启 = 永久关闭。**
+#
+# 这与「某个读点变空」是不同性质的事：不是显示层少了一块，是**检测器自己关掉了**。
+# 而在此之前完全不可见——`skippedTicks` 全仓只有 `Add(1)`、没有任何地方读它，
+# 该文件此前一个 Prometheus 指标都没有，唯一的痕迹是那一刻的一条 slog.Info。
+#
+# # 为什么两条告警而不是一条
+#
+#   BgFingerprintDriftNeverScanned   「距上次扫描超过 2h」——**持续状态**，用 for: 抑制
+#   BgFingerprintDriftSkippedNoScan  「15 分钟内在跳、一次都没扫」——**两者同时成立**
+#
+# 第一条覆盖「worker 启动后一直没扫」（含启动时刻初始化后的情形）；第二条覆盖
+# 「曾经扫过、现在只剩跳过」这一类**退化中**的状态——只靠 last_scan 的阈值，
+# 扫描间隔正好接近阈值时会迟迟不响。
+#
+# 标签纪律（GW-00）：三个指标都不带标签，基数为 1。
+
+groups:
+  - name: integrity_fingerprint_drift
+    interval: 30s
+    rules:
+      - alert: BgFingerprintDriftNeverScanned
+        expr: time() - llm_gateway_bg_fingerprint_drift_last_scan_unix > 7200
+        for: 10m
+        labels:
+          severity: critical
+          component: bg
+        annotations:
+          summary: "指纹漂移检测器已超过 2 小时没有执行过全量扫描"
+          description: |
+            `IntegrityFingerprintDrift` 连续 10 分钟**没有**跑过一次全量扫描。
+            默认扫描间隔是 1 小时（`LLM_GATEWAY_INTEGRITY_FP_DRIFT_INTERVAL`），
+            所以 2 小时 + 10 分钟的持续窗口意味着它**确定**没在扫。
+
+            **最可能的原因就是 S4 停写**：扫描前的一次性存在性探针读 v1
+            （`system_fingerprint IS NOT NULL`），停写后 v1 不再产生新行 ⇒ 探针恒空
+            ⇒ `fingerprintScanDecision` 走 `fingerprintScanSkip` ⇒ 每轮直接 return。
+            审计 §9.50 记录了这个形态：**检测器不是坏了，是自己判定「没流量可扫」，
+            而那个判定所依据的表正在被退役。**
+
+            **逃生口也是关着的**（不要指望它自愈）。`fingerprintScanDecision`
+            还有一条 `inProcSeen` 分支：进程内遥测观测到带指纹的请求就会重新 arm 全量扫描。
+            但那条链的唯一写入方 `markSystemFingerprintObserved()` 只在
+            `persistSystemFingerprint()` 内被调用，而后者**被同一个
+            `storage.request_logs_write_enabled` 门控住**（`insertRequestLog` /
+            `updateRequestLog` 的 `if logsWrite` 块内，client.go:1816 / :2468）。
+            停写之后它一次都不会执行 ⇒ `SystemFingerprintObservedSince()` 永远返回
+            `(0, false)` ⇒ `inProcSeen` 恒 false。
+
+            ⇒ **两条腿断在同一个开关上**：探针读 v1 恒空（`probeEmpty`），
+            进程内 arm 也恒不触发。停写 + **任意一次重启**之后，检测器**永久关闭**，
+            没有任何其他信号。（不停写时它是健壮的：只对本实例没见过的流量才跳。）
+
+            ⚠ 本条曾经被写错成「逃生口不读 v1，所以能自愈」，并按那条错误前提发了
+            规则。审计 §9.50.4 已订正：`client.go` 的两个调用点都在 `if logsWrite`
+            块内，停写即失效。
+
+            **排查步骤**：
+            1. 看 `llm_gateway_bg_fingerprint_drift_skipped_total` 是否在涨
+               （涨 = 被短路；不涨 = worker 本身没在跑，是另一个问题）
+            2. 确认 `storage.request_logs_write_enabled` 的当前值与切换时刻
+            3. 若确为停写导致：**这是探针的数据源退役，不是漂移本身消失**，
+               且**不要等它自愈**（逃生口在同一个门里）。
+               正确修法是让探针改读会话族（`session_turns` 的 system_fingerprint
+               覆盖需要先实测），并把 `inProcSeen` 的 arm 移到门控之外，
+               而不是调大间隔或关掉告警
+
+      - alert: BgFingerprintDriftSkippedNoScan
+        expr: |
+          increase(llm_gateway_bg_fingerprint_drift_skipped_total[15m]) > 0
+            and increase(llm_gateway_bg_fingerprint_drift_scanned_total[15m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+          component: bg
+        annotations:
+          summary: "指纹漂移检测器连续 15 分钟只在跳过、一次都没扫描"
+          description: |
+            15 分钟内 `skipped_total` 在涨而 `scanned_total` 没动 ⇒ 这个检测器
+            **当前完全没有在工作**，而不是「扫得少」。
+
+            与 `BgFingerprintDriftNeverScanned` 区分：那条问「距上次扫描多久」
+            （持续状态），这条问「此刻在跳但不扫」（正在退化的状态）。两条都需要：
+            只看 last_scan，扫描间隔接近阈值时会迟迟不响；只看 skipped，
+            「worker 压根没启动」会漏掉。
