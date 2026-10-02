@@ -958,11 +958,21 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var budgetUSD *float64
-	err := h.db.QueryRow(ctx, `
+	// 租户围栏与 verifyKey（本文件 R46 形态）一致：tenant_admin 只能查本
+	// 租户；super_admin/admin_key 放行全租户。旧实现硬编码 tenant_id=
+	// 'default'——AdminMiddleware 只验 JWT 不验角色，任意租户的 tenant_admin
+	// 可用数字 ID 枚举 default 租户任意 key 的预算与实时花费（跨租户泄露
+	// 面），非 default 租户自己的 key 反而一律 404（第三十轮收口）。
+	budgetQuery := `
 		SELECT budget_usd FROM api_keys
-		WHERE id = $1 AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'
-	`, req.APIKeyID).Scan(&budgetUSD)
+		WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'`
+	budgetArgs := []any{req.APIKeyID}
+	if IsTenantAdmin(r) {
+		budgetQuery += ` AND tenant_id = $2`
+		budgetArgs = append(budgetArgs, GetTenantID(r))
+	}
+	var budgetUSD *float64
+	err := h.db.QueryRow(ctx, budgetQuery, budgetArgs...).Scan(&budgetUSD)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "api_key not found")
 		return

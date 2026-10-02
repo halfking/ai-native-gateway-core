@@ -74,14 +74,16 @@ CREATE TABLE IF NOT EXISTS public.provider_error_aggregator_state (
 );
 
 -- credentials + providers — required by 631's status CHECK expansion.
+-- 列名对齐生产（sql/schema/01-schema.sql）：credentials.label（不是 name——
+-- 幻影列名会让按生产形态回放的脚本 42703）；providers.display_name。
 CREATE TABLE IF NOT EXISTS public.credentials (
     id bigserial PRIMARY KEY,
-    name text NOT NULL,
+    label text NOT NULL,
     status text NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS public.providers (
     id bigserial PRIMARY KEY,
-    name text NOT NULL,
+    display_name text NOT NULL,
     deleted_at timestamptz
 );
 

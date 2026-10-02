@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // InterceptorChain chains multiple ResponseInterceptors together.
@@ -67,6 +68,7 @@ func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *Intercep
 			// optional hooks (goal/audit), whose transient failures must not
 			// kill traffic.
 			if fc, ok := interceptor.(interface{ FailClosed() bool }); ok && fc.FailClosed() {
+				metrics.OutputGateFailClosedErrorsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateSourceChainFailClose).Inc()
 				return nil, err
 			}
 			slog.Warn("interceptor_chain: interceptor failed",
@@ -136,6 +138,7 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 		result, err := interceptor.InterceptStreamChunk(ctx, currentChunk, meta)
 		if err != nil {
 			if fc, ok := interceptor.(interface{ FailClosed() bool }); ok && fc.FailClosed() {
+				metrics.OutputGateFailClosedErrorsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateSourceChainFailClose).Inc()
 				return &ChunkResult{ShouldBlock: true}, err
 			}
 			slog.Warn("interceptor_chain: stream chunk interceptor failed",

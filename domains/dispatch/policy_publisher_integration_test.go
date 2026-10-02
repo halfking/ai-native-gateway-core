@@ -38,9 +38,12 @@ CREATE TABLE public.credentials (
 	concurrency_limit INT,
 	rpm_limit INT,
 	tpm_limit INT,
+	fp_slot_limit INT,
 	max_queue_depth INT,
 	max_queue_wait_ms INT,
-	revision BIGINT NOT NULL
+	-- 生产默认 0（sql/schema/01-schema.sql credentials.revision），显式给默认
+	-- 与生产形态一致（第三十轮夹具对齐）。
+	revision BIGINT NOT NULL DEFAULT 0
 );`
 
 func newPolicyPublisherTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {

@@ -338,6 +338,11 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 		// action.content (create/update patch payload) is plaintext;
 		// action.type / action.path are metadata.
 		return s.sanitizeApplyPatchCallItem(raw, item)
+	case "shell_call", "local_shell_call", "computer_call":
+		// Codex/computer-use 请求侧配对项（*_output 必有对应 call，回放成对）：
+		// action 子树（command[]、type 动作的 text、env 等）是客户端回显明文，
+		// 逐叶子清洗（第三十轮，2026-10-02）。
+		return s.sanitizeShellActionCallItem(raw, item)
 	default:
 		// Unknown item types still pass through (allowlist design); each new
 		// plaintext-bearing type must be added here. The families above are
@@ -613,8 +618,13 @@ func (s *requestInputSanitizer) sanitizeApplyPatchCallItem(raw json.RawMessage, 
 		return raw, false, nil
 	}
 	var action map[string]json.RawMessage
-	if err := json.Unmarshal(actionRaw, &action); err != nil || action == nil {
+	if err := json.Unmarshal(actionRaw, &action); err != nil {
 		return nil, false, fmt.Errorf("%w: apply_patch_call action object required: %v", errInvalidSanitizeInput, err)
+	}
+	if action == nil {
+		// 显式 "action": null 与缺失同义直通，非对象形态才拒——与
+		// web_search_call 同口径（R29 修 web_search、R30 补齐本族）。
+		return raw, false, nil
 	}
 	content, ok := action["content"]
 	if !ok {
@@ -633,6 +643,34 @@ func (s *requestInputSanitizer) sanitizeApplyPatchCallItem(raw json.RawMessage, 
 		return nil, false, err
 	}
 	item["action"] = actionOut
+	out, err := json.Marshal(item)
+	return out, true, err
+}
+
+// shell_call / local_shell_call / computer_call 的 action 子树逐叶子入洗
+// （复用 sanitizeToolValue 的递归行走，credential 键名语义一并继承）。
+// 显式 "action": null 与字段缺失同义直通；非对象形态拒单——与
+// web_search_call 同口径（R29/R30）。
+func (s *requestInputSanitizer) sanitizeShellActionCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	actionRaw, ok := item["action"]
+	if !ok {
+		return raw, false, nil
+	}
+	trimmed := bytes.TrimSpace(actionRaw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return raw, false, nil
+	}
+	if trimmed[0] != '{' {
+		return nil, false, fmt.Errorf("%w: action object required", errInvalidSanitizeInput)
+	}
+	updated, didChange, err := s.sanitizeToolValue(actionRaw, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	if !didChange {
+		return raw, false, nil
+	}
+	item["action"] = updated
 	out, err := json.Marshal(item)
 	return out, true, err
 }

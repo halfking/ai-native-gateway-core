@@ -32,11 +32,26 @@ log() { printf '[db-attach %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 [[ -f "$MARKER" ]] && { log "已完成（标记 $MARKER 存在），跳过"; exit 0; }
 
 mkdir -p "$(dirname "$MARKER")"
+# 陈锁自愈（R30 审计）：kill -9 等致死信号不走 EXIT trap，残留锁会让定时
+# 任务此后永远 exit 0 静默跳过、DB 接线无限期搁置且无告警。合法运行最长
+# 面 = pg17 脚本 + 完整 deploy（含 go build）+ 150s readyz 等待 ≈ 10 分钟级，
+# 30 分钟阈值在其之上；锁目录 mtime 超龄即视为死实例残留，清理后继续。
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  log "另一 db-attach 实例正在运行（holder_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '?')），本次跳过"
-  exit 0
+  if [[ -d "$LOCK_DIR" ]] && find "$LOCK_DIR" -maxdepth 0 -mmin +30 >/dev/null 2>&1 \
+     && [[ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +30 2>/dev/null)" ]]; then
+    log "检测到陈锁（mtime 超过 30 分钟，holder_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '?')），判定为死实例残留，清理后继续"
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR"
+  else
+    log "另一 db-attach 实例正在运行（holder_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '?')），本次跳过"
+    exit 0
+  fi
 fi
 printf '%s' "$$" > "$LOCK_DIR/pid"
+# INT/TERM 先转成非零退出，让 EXIT trap 统一清锁（kill -9 仍无解，由上面的
+# 陈锁自愈兜底）。
+trap 'exit 130' INT
+trap 'exit 143' TERM
 trap 'rc=$?; rm -rf "$LOCK_DIR"; exit $rc' EXIT
 
 mkdir -p "$LOG_DIR"

@@ -909,6 +909,58 @@ $$;
 
 
 --
+-- Name: columnar_heal(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.columnar_heal() RETURNS TABLE(parent_name text, partition_name text, converted boolean, pre_size_bytes bigint, post_size_bytes bigint, error_message text)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    rec record;
+    pre_size bigint;
+    post_size bigint;
+BEGIN
+    FOR rec IN
+        SELECT
+            p.relname AS parent_name,
+            c.relname AS partition_name,
+            c.oid AS partition_oid
+        FROM pg_inherits i
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_am am ON am.oid = c.relam
+        JOIN pg_namespace n ON n.oid = p.relnamespace
+        WHERE n.nspname='public'
+          AND am.amname = 'heap'
+          AND p.relname = ANY(columnar_insert_only_parents())
+    LOOP
+        pre_size := pg_total_relation_size(rec.partition_oid);
+        BEGIN
+            EXECUTE format('ALTER TABLE public.%I SET ACCESS METHOD columnar',
+                           rec.partition_name);
+            post_size := pg_total_relation_size(rec.partition_oid);
+            parent_name := rec.parent_name;
+            partition_name := rec.partition_name;
+            converted := true;
+            pre_size_bytes := pre_size;
+            post_size_bytes := post_size;
+            error_message := NULL;
+            RETURN NEXT;
+        EXCEPTION WHEN OTHERS THEN
+            parent_name := rec.parent_name;
+            partition_name := rec.partition_name;
+            converted := false;
+            pre_size_bytes := pre_size;
+            post_size_bytes := pre_size;
+            error_message := SQLERRM;
+            RETURN NEXT;
+        END;
+    END LOOP;
+END;
+$$;
+
+
+--
 -- Name: columnar_healthcheck(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -976,61 +1028,6 @@ CREATE FUNCTION public.columnar_drift_report() RETURNS TABLE(parent_name text, c
 $$;
 
 
---
--- Name: columnar_heal(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.columnar_heal() RETURNS TABLE(parent_name text, partition_name text, converted boolean, pre_size_bytes bigint, post_size_bytes bigint, error_message text)
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    rec record;
-    pre_size bigint;
-    post_size bigint;
-BEGIN
-    FOR rec IN
-        SELECT
-            p.relname AS parent_name,
-            c.relname AS partition_name,
-            c.oid AS partition_oid
-        FROM pg_inherits i
-        JOIN pg_class p ON p.oid = i.inhparent
-        JOIN pg_class c ON c.oid = i.inhrelid
-        JOIN pg_am am ON am.oid = c.relam
-        JOIN pg_namespace n ON n.oid = p.relnamespace
-        WHERE n.nspname='public'
-          AND am.amname = 'heap'
-          AND p.relname = ANY(columnar_insert_only_parents())
-    LOOP
-        pre_size := pg_total_relation_size(rec.partition_oid);
-        BEGIN
-            EXECUTE format('ALTER TABLE public.%I SET ACCESS METHOD columnar',
-                           rec.partition_name);
-            post_size := pg_total_relation_size(rec.partition_oid);
-            parent_name := rec.parent_name;
-            partition_name := rec.partition_name;
-            converted := true;
-            pre_size_bytes := pre_size;
-            post_size_bytes := post_size;
-            error_message := NULL;
-            RETURN NEXT;
-        EXCEPTION WHEN OTHERS THEN
-            parent_name := rec.parent_name;
-            partition_name := rec.partition_name;
-            converted := false;
-            pre_size_bytes := pre_size;
-            post_size_bytes := pre_size;
-            error_message := SQLERRM;
-            RETURN NEXT;
-        END;
-    END LOOP;
-END;
-$$;
-
-
---
--- Name: create_next_month_partitions(); Type: FUNCTION; Schema: public; Owner: -
---
 
 CREATE FUNCTION public.create_next_month_partitions() RETURNS text
     LANGUAGE plpgsql
@@ -2996,10 +2993,41 @@ CREATE FUNCTION public.notify_auto_route_refresh() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ DECLARE entity_id text := ''; BEGIN IF TG_TABLE_NAME = 'credential_model_bindings' THEN entity_id := COALESCE(NEW.credential_id, OLD.credential_id)::text; ELSIF TG_TABLE_NAME IN ('credentials', 'api_keys', 'providers') THEN entity_id := COALESCE(NEW.id, OLD.id)::text; END IF; PERFORM pg_notify('auto_route_refresh', TG_TABLE_NAME || ':' || TG_OP || ':' || entity_id); RETURN COALESCE(NEW, OLD); END; $$;
 
+-- Name: bump_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.bump_credentials_governor_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSIF OLD.concurrency_limit IS DISTINCT FROM NEW.concurrency_limit
+       OR OLD.concurrency_mode IS DISTINCT FROM NEW.concurrency_mode
+       OR OLD.rpm_limit IS DISTINCT FROM NEW.rpm_limit
+       OR OLD.tpm_limit IS DISTINCT FROM NEW.tpm_limit
+       OR OLD.fp_slot_limit IS DISTINCT FROM NEW.fp_slot_limit
+       OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
+       OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
+        NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSE
+        NEW.revision := OLD.revision;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- Name: notify_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_credentials_governor_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN PERFORM pg_notify('credentials_revision', NEW.revision::text); RETURN NEW; END; $$;
+
 
 --
 -- Name: populate_model_name_mapping_from_provider_models(); Type: FUNCTION; Schema: public; Owner: -
---
+
 
 CREATE FUNCTION public.populate_model_name_mapping_from_provider_models() RETURNS void
     LANGUAGE plpgsql
@@ -4797,7 +4825,107 @@ $$;
 
 CREATE FUNCTION public.update_session_summary() RETURNS trigger
     LANGUAGE plpgsql
-    AS $$ DECLARE v_input_cost DECIMAL(12,6); v_output_cost DECIMAL(12,6); v_total_cost DECIMAL(12,6); v_prompt_tokens BIGINT; v_completion_tokens BIGINT; v_latency_ms INT; v_status VARCHAR(50); v_client_model VARCHAR(100); v_upstream_model VARCHAR(100); v_work_type VARCHAR(50); v_provider VARCHAR(50); BEGIN v_input_cost := COALESCE(NEW.input_cost, 0); v_output_cost := COALESCE(NEW.output_cost, 0); v_total_cost := COALESCE(NEW.total_cost, 0); v_prompt_tokens := COALESCE(NEW.prompt_tokens, 0); v_completion_tokens := COALESCE(NEW.completion_tokens, 0); v_latency_ms := COALESCE(NEW.latency_ms, 0); v_status := NEW.status; v_client_model := NEW.client_model; v_upstream_model := NEW.upstream_model; v_work_type := NEW.work_type; v_provider := NEW.provider; INSERT INTO session_summaries (session_key, tenant_id, first_request_at, last_request_at, request_count, success_count, error_count, total_cost_usd, input_cost_usd, output_cost_usd, total_prompt_tokens, total_completion_tokens, avg_latency_ms, min_latency_ms, max_latency_ms, models_used, work_types, providers, client_models, updated_at) VALUES (NEW.session_key, NEW.tenant_id, NEW.created_at, NEW.created_at, 1, CASE WHEN v_status = 'success' THEN 1 ELSE 0 END, CASE WHEN v_status != 'success' THEN 1 ELSE 0 END, v_total_cost, v_input_cost, v_output_cost, v_prompt_tokens, v_completion_tokens, v_latency_ms, v_latency_ms, v_latency_ms, ARRAY[v_upstream_model]::TEXT[], CASE WHEN v_work_type IS NOT NULL THEN ARRAY[v_work_type]::TEXT[] ELSE '{}'::TEXT[] END, CASE WHEN v_provider IS NOT NULL THEN ARRAY[v_provider]::TEXT[] ELSE '{}'::TEXT[] END, CASE WHEN v_client_model IS NOT NULL THEN ARRAY[v_client_model]::TEXT[] ELSE '{}'::TEXT[] END, NOW()) ON CONFLICT (session_key) DO UPDATE SET last_request_at = GREATEST(session_summaries.last_request_at, NEW.created_at), request_count = session_summaries.request_count + 1, success_count = session_summaries.success_count + CASE WHEN v_status = 'success' THEN 1 ELSE 0 END, error_count = session_summaries.error_count + CASE WHEN v_status != 'success' THEN 1 ELSE 0 END, total_cost_usd = session_summaries.total_cost_usd + v_total_cost, input_cost_usd = session_summaries.input_cost_usd + v_input_cost, output_cost_usd = session_summaries.output_cost_usd + v_output_cost, total_prompt_tokens = session_summaries.total_prompt_tokens + v_prompt_tokens, total_completion_tokens = session_summaries.total_completion_tokens + v_completion_tokens, avg_latency_ms = ((session_summaries.avg_latency_ms * session_summaries.request_count + v_latency_ms) / (session_summaries.request_count + 1))::INT, min_latency_ms = LEAST(session_summaries.min_latency_ms, v_latency_ms), max_latency_ms = GREATEST(session_summaries.max_latency_ms, v_latency_ms), models_used = array_unique_append(session_summaries.models_used, v_upstream_model), work_types = array_unique_append(session_summaries.work_types, v_work_type), providers = array_unique_append(session_summaries.providers, v_provider), client_models = array_unique_append(session_summaries.client_models, v_client_model), updated_at = NOW(); RETURN NEW; END; $$;
+    AS $$
+DECLARE
+    v_input_cost DECIMAL(12,6);
+    v_output_cost DECIMAL(12,6);
+    v_total_cost DECIMAL(12,6);
+    v_prompt_tokens BIGINT;
+    v_completion_tokens BIGINT;
+    v_latency_ms INT;
+    v_status VARCHAR(50);
+    v_client_model VARCHAR(100);
+    v_upstream_model VARCHAR(100);
+    v_work_type VARCHAR(50);
+    v_provider VARCHAR(50);
+BEGIN
+    -- Only process rows with gw_session_id to avoid double-counting
+    -- when rows are promoted from hot to columnar
+    IF NEW.gw_session_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    -- Extract cost and token metrics
+    v_input_cost := COALESCE(NEW.input_cost, 0);
+    v_output_cost := COALESCE(NEW.output_cost, 0);
+    v_total_cost := COALESCE(NEW.total_cost, 0);
+    v_prompt_tokens := COALESCE(NEW.prompt_tokens, 0);
+    v_completion_tokens := COALESCE(NEW.completion_tokens, 0);
+    v_latency_ms := COALESCE(NEW.latency_ms, 0);
+
+    -- Extract categorical fields
+    v_status := NEW.status;
+    v_client_model := NEW.client_model;
+    v_upstream_model := NEW.upstream_model;
+    v_work_type := NEW.work_type;
+    v_provider := NEW.provider;
+
+    -- Insert or update session summary using gw_session_id as the key
+    INSERT INTO session_summaries (
+        session_key,
+        tenant_id,
+        first_request_at,
+        last_request_at,
+        request_count,
+        success_count,
+        error_count,
+        total_cost_usd,
+        input_cost_usd,
+        output_cost_usd,
+        total_prompt_tokens,
+        total_completion_tokens,
+        avg_latency_ms,
+        min_latency_ms,
+        max_latency_ms,
+        models_used,
+        work_types,
+        providers,
+        client_models,
+        updated_at
+    ) VALUES (
+        NEW.gw_session_id,
+        NEW.tenant_id,
+        NEW.ts,
+        NEW.ts,
+        1,
+        CASE WHEN v_status = 'success' THEN 1 ELSE 0 END,
+        CASE WHEN v_status != 'success' THEN 1 ELSE 0 END,
+        v_total_cost,
+        v_input_cost,
+        v_output_cost,
+        v_prompt_tokens,
+        v_completion_tokens,
+        v_latency_ms,
+        v_latency_ms,
+        v_latency_ms,
+        ARRAY[v_upstream_model]::TEXT[],
+        CASE WHEN v_work_type IS NOT NULL THEN ARRAY[v_work_type]::TEXT[] ELSE '{}'::TEXT[] END,
+        CASE WHEN v_provider IS NOT NULL THEN ARRAY[v_provider]::TEXT[] ELSE '{}'::TEXT[] END,
+        CASE WHEN v_client_model IS NOT NULL THEN ARRAY[v_client_model]::TEXT[] ELSE '{}'::TEXT[] END,
+        NOW()
+    )
+    ON CONFLICT (session_key) DO UPDATE SET
+        last_request_at = GREATEST(session_summaries.last_request_at, NEW.ts),
+        request_count = session_summaries.request_count + 1,
+        success_count = session_summaries.success_count + CASE WHEN v_status = 'success' THEN 1 ELSE 0 END,
+        error_count = session_summaries.error_count + CASE WHEN v_status != 'success' THEN 1 ELSE 0 END,
+        total_cost_usd = session_summaries.total_cost_usd + v_total_cost,
+        input_cost_usd = session_summaries.input_cost_usd + v_input_cost,
+        output_cost_usd = session_summaries.output_cost_usd + v_output_cost,
+        total_prompt_tokens = session_summaries.total_prompt_tokens + v_prompt_tokens,
+        total_completion_tokens = session_summaries.total_completion_tokens + v_completion_tokens,
+        avg_latency_ms = ((session_summaries.avg_latency_ms * session_summaries.request_count + v_latency_ms) / (session_summaries.request_count + 1))::INT,
+        min_latency_ms = LEAST(session_summaries.min_latency_ms, v_latency_ms),
+        max_latency_ms = GREATEST(session_summaries.max_latency_ms, v_latency_ms),
+        models_used = array_unique_append(session_summaries.models_used, v_upstream_model),
+        work_types = array_unique_append(session_summaries.work_types, v_work_type),
+        providers = array_unique_append(session_summaries.providers, v_provider),
+        client_models = array_unique_append(session_summaries.client_models, v_client_model),
+        updated_at = NOW();
+
+    RETURN NEW;
+END;
+$$;
 
 
 --
@@ -4976,6 +5104,7 @@ CREATE TABLE public.api_key_auto_profile (
     first_chosen_at timestamp with time zone DEFAULT now(),
     last_used_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT api_key_auto_profile_pkey PRIMARY KEY (api_key_id),
     CONSTRAINT api_key_auto_profile_profile_check CHECK ((profile = ANY (ARRAY['smart'::text, 'speed_first'::text, 'cost_first'::text])))
 );
 
@@ -6715,10 +6844,9 @@ CREATE TABLE public.credentials (
     default_probe_model_picked_at timestamp with time zone,
     concurrency_limit_auto integer,
     concurrency_mode text,
-    fp_slot_limit integer NOT NULL,
     max_queue_depth integer,
     max_queue_wait_ms integer,
-    tpm_limit integer,
+    fp_slot_limit integer NOT NULL,
     probe_enabled boolean DEFAULT true,
     probe_interval_sec integer DEFAULT 300,
     last_probe_at timestamp with time zone,
@@ -6728,6 +6856,8 @@ CREATE TABLE public.credentials (
     plan_type text,
     plan_type_updated_at timestamp with time zone,
     rpm_limit integer,
+    tpm_limit integer,
+    revision bigint DEFAULT 0 NOT NULL,
     auto_disabled_at timestamp with time zone,
     auto_disabled_reason text,
     auto_enabled_at timestamp with time zone,
@@ -6820,6 +6950,13 @@ the template rpmLimit; paid credentials are typically NULL.';
 
 
 --
+-- Name: COLUMN credentials.revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.credentials.revision IS 'Globally monotonic governor policy revision. Bumped by governor-relevant credential writes and consumed by domains/dispatch/policy_publisher.go via LISTEN credentials_revision.';
+
+
+--
 -- Name: COLUMN credentials.auto_disabled_at; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -6871,6 +7008,19 @@ CREATE SEQUENCE public.credentials_id_seq
 --
 
 ALTER SEQUENCE public.credentials_id_seq OWNED BY public.credentials.id;
+
+
+--
+-- Name: credentials_governor_revision_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.credentials_governor_revision_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    MINVALUE 1
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -13205,9 +13355,11 @@ COMMENT ON TABLE public.request_logs_archive IS 'Tiered storage: columnar partit
 
 -- Re-arm columnar for the request_logs_bodies* family: the production 252
 -- schema has request_logs_bodies_2026_07..10 on columnar (compressed, read-only)
--- and request_logs_bodies_hot on heap, which is what the next SET heap restores.
--- This is the matching close of the heap block opened before request_logs_2026_*.
+-- and request_logs_bodies_hot on heap, which is what the SET heap below restores.
+-- This is the matching close of the heap block opened right after the
+-- request_logs_2026_* tables above.
 SET default_table_access_method = columnar;
+
 
 --
 -- Name: request_logs_bodies; Type: TABLE; Schema: public; Owner: -
@@ -22262,11 +22414,27 @@ ALTER TABLE ONLY public.tenant_credit_wallets
 
 
 --
+-- Name: tenant_model_policies tenant_model_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_policies
+    ADD CONSTRAINT tenant_model_policies_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: tenant_model_policies tenant_model_policies_tenant_id_canonical_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tenant_model_policies
     ADD CONSTRAINT tenant_model_policies_tenant_id_canonical_name_key UNIQUE (tenant_id, canonical_name);
+
+
+--
+-- Name: tenant_model_policies_audit tenant_model_policies_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_policies_audit
+    ADD CONSTRAINT tenant_model_policies_audit_pkey PRIMARY KEY (id);
 
 
 --
@@ -23264,6 +23432,12 @@ CREATE INDEX idx_credentials_auto_limit ON public.credentials USING btree (concu
 --
 
 CREATE INDEX idx_credentials_plan_type ON public.credentials USING btree (plan_type);
+
+--
+-- Name: credentials_revision_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX credentials_revision_idx ON public.credentials USING btree (revision);
 
 
 --
@@ -28880,7 +29054,22 @@ CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credentia
 -- Name: credentials trg_notify_auto_route_creds; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+
+-- Name: credentials trg_bump_credentials_governor_revision; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_bump_credentials_governor_revision BEFORE INSERT OR UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.bump_credentials_governor_revision();
+
+-- Name: credentials trg_notify_credentials_governor_revision_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_credentials_governor_revision_insert AFTER INSERT ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.notify_credentials_governor_revision();
+
+-- Name: credentials trg_notify_credentials_governor_revision_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_credentials_governor_revision_update AFTER UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms ON public.credentials FOR EACH ROW WHEN ((old.revision IS DISTINCT FROM new.revision)) EXECUTE FUNCTION public.notify_credentials_governor_revision();
 
 
 --
