@@ -3371,3 +3371,67 @@ go test ./deploy/prometheus/rules/ -count=1 → ok
 >    取代手工 actor 名单（**会改线上奖励数值**）/ (iii) 两者都做）。
 > ③ §9.57.6 的两个局限里，「本部署是否启用 auto 路由」缺少配置位，
 >    导致不用 auto 路由的部署会永久报红。若要消除需新增部署级开关。
+
+## 第四十轮（§9.58）：★撤回 §9.54.3 的「停写前阻塞项」
+
+### 结论
+
+§9.54.3 写「99.5% 的业务 auto 流量根本没进会话族」，并列为停写前阻塞项。
+**前提是错的，撤回。**
+
+我当时用 `origin_stage = 'business'` 当「真实业务流量」的代理。252 实测：
+
+| origin_actor | origin_stage | 行数 |
+|---|---|---:|
+| `auto-summary-generator` | `business` | 1,924 |
+| `auto-title-generator` | `business` | 1,242 |
+| `<null>` | `business` | **15** |
+
+按 `task_type` 是否为空切分：**空 3,166 条 → 进会话族 0 条；
+非空 15 条 → 进会话族 15 条（100%）。**
+
+⇒ **真正的业务 auto 流量是 15 条，且 15 条全部进了会话族。**
+那 3,166 条是 auto 标题/摘要生成器，**被排除是正确的**（不是用户轮次）。
+
+⇒ **镜像行为完全正确，是我把内部生成器误认成业务流量。**
+
+### 根因：两份「内部 actor」名单互不相认
+
+`IsInternalAutoEntry`（telemetry 包）认 `auto-title-generator` /
+`auto-summary-generator`；而 `middleware/origin_mw.go` 的
+`trustedOriginOwners` / `systemOwnerFallbackStage` /
+`globalAuthStageActorPairs` **三个名单里这两串一次都没出现**
+⇒ origin 中间件把它们盖成 `stage=business`。
+
+⇒ **同一件事有两份真相源，其中一份漏了两个成员。**
+（同族：§9.45 的「三个真相源让门测不出差别」、
+`KeyRequestLogsWriteEnabled` 因「同一键被五处各写字面量」才被提成常量。）
+
+### 后果
+
+`origin_stage` 在 auto 总体上**不是**可靠的「是否内部」判据。任何用
+`origin_stage='business'` 筛选的查询（含 §9.54.2 的 cohort 分析）
+都会混进 3,166 条内部生成器。
+
+### 修法（需拍板，本轮不实施）
+
+(a) 把两个 actor 补进 origin 的系统 actor 名单 —— **会改历史行判定口径**；
+(b) 新增「是否内部」的单一判定函数，所有筛选方改用它 —— 不碰历史值；
+(c) 先只加门钉出差异 —— **会常红挂 CI**，应先裁决再落。
+
+### 下一轮提示词
+
+> ⚠️ **§9.54.3 的「99.5% 业务 auto 流量没进会话族 = 停写前阻塞项」已撤回**（§9.58）：
+> 那 3,154 条里 99.5% 是 `auto-title-generator`/`auto-summary-generator`，
+> 被排除出 `session_turns` 是**正确的**；真正业务 auto 只有 15 条，15 条全在会话族。
+> **会话族的镜像行为没有问题。**
+>
+> ① 需要拍板：三份 origin actor 名单与 `IsInternalAutoEntry` 的名单不一致
+>    （`auto-title-generator` / `auto-summary-generator` 缺失），选 (a)(b)(c) 哪条。
+>    在裁决前，**不要**再用 `origin_stage='business'` 当「真实业务」的判据。
+> ② 仍未查明：auto-route 自 2026-09-15 起不产出 selection 的原因（需覆盖
+>    09-08/09-09 的日志或 Prometheus 历史序列，现有环境不具备）。**不写归因。**
+> ③ 仍未拍板：cohort 总体修正方案 / §9.49.8 是否扩档 / §9.48
+>    `silently_frozen` 21 条口径。注意 §9.54.2 的 cohort 分析也受本节影响。
+> ④ 推送状态：§9.57 已上 origin/main（2e68487a8）；本地 main 仍有 3 个
+>    等价文档提交 + 并行会话 4 个提交，合并需人工裁决，**不要用 rebase**。
