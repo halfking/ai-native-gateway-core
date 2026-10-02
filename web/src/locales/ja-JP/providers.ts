@@ -35,6 +35,7 @@ export default {
     freeBadgeTooltipNo: 'このプロバイダーには無料モデルがありません',
     sortLabel: '並べ替え',
     sortDefault: 'デフォルト',
+    sortName: '名前順',
     sortUsage: '24h リクエスト',
     sortQuality: '品質スコア',
     sortAvailability: '可用性',

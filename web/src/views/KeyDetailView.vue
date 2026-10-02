@@ -899,7 +899,6 @@ watch(keyId, async () => {
 
 <style scoped>
 .key-detail-page {
-  max-width: 1400px;
 }
 
 .page-header {

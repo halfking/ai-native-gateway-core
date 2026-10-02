@@ -288,8 +288,6 @@ onMounted(load)
 <style scoped>
 .correlations-view {
   padding: 24px;
-  max-width: 1400px;
-  margin: 0 auto;
   color: var(--text);
 }
 h1 {

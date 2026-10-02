@@ -37,6 +37,7 @@ export default {
     freeBadgeTooltipNo: 'This provider has no free models',
     sortLabel: 'Sort',
     sortDefault: 'Default order',
+    sortName: 'Name',
     sortUsage: '24h requests',
     sortQuality: 'Quality score',
     sortAvailability: 'Availability score',
