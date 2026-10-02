@@ -103,6 +103,10 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 	// 0. Pre-flight template validation: reject disabled templates (a disabled template may
 	//    carry stale credentials, and triggering a scan would consume upstream API quota
 	//    while writing a failed task; consistent with List(enabledOnly)).
+	//
+	//    R30 域A P1-②（round 31 标注）：disabled 是单向门——本拒绝 + 调度器
+	//    只取 enabled=TRUE，且无自动复活路径；免费 token 池「暂不投入」的
+	//    产品裁决未拍板前，此入口对 disabled 模板结构性锁死（复活只能手工）。
 	tpl, err := e.templates.Get(ctx, req.TenantID, req.TemplateID)
 	if err != nil {
 		if errors.Is(err, ErrTemplateNotFound) {
