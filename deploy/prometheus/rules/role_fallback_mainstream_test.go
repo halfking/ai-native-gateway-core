@@ -56,26 +56,31 @@ func readRoleFallbackYAML(t *testing.T) string {
 
 // requireSetOperatorMatchesOnEmptyLabels 钉住 set operator 的匹配口径。
 //
-// 这条是本规则文件最隐蔽的失效形态：PromQL 的 and 默认按"除 metric name
-// 外的全部标签"匹配。gauge 侧带着 scrape 注入的 job/instance，sum() 侧
-// 没有任何标签，两侧标签集不相等 → and 产出**空向量** → 告警永不触发，
-// 而 Prometheus 不报任何错。改成 `and on()` 才真正按空标签集过滤。
+// 它防的是一个**纯静默**的失效：PromQL 的 and 默认按"除 metric name 外的
+// 全部标签"匹配。左侧若带 scrape 注入的 job/instance、右侧 sum() 无标签，
+// 两侧标签集不相等 → and 产出**空向量** → 告警永不触发，而 Prometheus
+// 不报任何错。
+//
+// promtool 四变体对照实测（deploy/prometheus/rule_tests/，输入带 job/instance）：
+//
+//	裸 and + 未聚合 gauge        → 不触发  ← 静默失效
+//	裸 and + max() 折叠          → 触发
+//	and on() + 未聚合 gauge      → 触发
+//	and on() + max() 折叠（现行）→ 触发
+//
+// 即 max() 与 and on() **各自都能**独立解决。本门要求两者同时存在，是为了
+// 任一被后人"顺手简化"掉时仍然安全——只留一个也正确，但那时必须重跑
+// promtool 单元测试确认。
 //
 // 断言方式是"把 and on() 全部抹掉后，剩余文本里不得再有裸 and"，而不是
 // "表达式里含有 and on()"——后者太弱：主流层告警有**两个** set operator，
 // 只退化其中一个时 Contains 仍然成立（变异 M2 实测踩中：门绿，变异存活）。
 // 逐个 set operator 承重的门必须用"全部剥离后无残留"的口径。
-//
-// 诚实声明：这是**结构性**断言，只能证明表达式文本里是这个形式，不能
-// 证明 PromQL 求值结果符合预期。本轮环境无 promtool（未安装、无 docker
-// 镜像、vendor 里也没有 promql parser），该语义**尚未经真正的解析器或线上
-// 验证**。落地时必须 promtool check rules 复核，并在灰度环境确认告警能从
-// firing 状态被真实触发一次。
 func requireSetOperatorMatchesOnEmptyLabels(t *testing.T, expr string) {
 	t.Helper()
 
 	require.Contains(t, expr, "and on()",
-		"set operator 必须写成 and on()：裸 and 按全部标签匹配，gauge 带 job/instance 而 sum() 无标签，标签集不相等会让告警产出空向量、静默失效")
+		"set operator 必须写成 and on()：裸 and 按全部标签匹配，未聚合 gauge 带 job/instance 而 sum() 无标签，标签集不相等会让告警产出空向量、静默失效")
 
 	stripped := strings.ReplaceAll(expr, "and on()", "")
 	bare := regexp.MustCompile(`\band\b`).FindAllString(stripped, -1)

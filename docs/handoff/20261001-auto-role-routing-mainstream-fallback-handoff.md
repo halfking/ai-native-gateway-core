@@ -223,13 +223,47 @@ StartupFiles entry "809_instance_release_status_nullable_release_id.sql" is not 
 | `AutoRouteRoleRoutingDisabled` | info | 兜底机制到底装载了没有（灰度决策依据） |
 | `AutoRouteRoleFallbackNeverExercised` | info | 兜底路径有没有被真实流量验证过 |
 
-**⚠️ 未验证项（务必接手时先做）**：本轮环境**无 promtool**（未安装、无 docker
-镜像、vendor 里也没有 promql parser），PromQL 语义**未经真正的解析器验证**。
-已改用 `and on()` 规避一个**纯静默**失效：PromQL 的 `and` 默认按「除 metric
-name 外全部标签」匹配，gauge 带 scrape 注入的 `job`/`instance` 而 `sum()` 无标签，
-标签集不相等 → `and` 产出空向量 → 告警永不触发且 Prometheus 不报错。
-**落地前必须 `promtool check rules` 复核，并在灰度环境确认告警能从 firing
-被真实触发一次。**
+**✅ PromQL 语义已用 promtool 验证**（2026-10-02 补，见 `deploy/prometheus/rule_tests/`）。
+
+原提交信息里写的「未经 promtool 验证」已过时。补验证时（prom/prometheus
+官方镜像）做了一件本该一开始做的事：**先证伪自己的担心，再决定要不要改**。
+
+四变体对照（输入带 `job`/`instance` 抓取标签，占比 83%、开关开）：
+
+| 写法 | 实测 |
+|---|---|
+| 裸 `and` + 未聚合 gauge | **不触发** ← 唯一真正静默失效的形态 |
+| 裸 `and` + `max()` 折叠 | 触发 |
+| `and on()` + 未聚合 gauge | 触发 |
+| `and on()` + `max()`（本轮采用） | 触发 |
+
+结论修正了两处认知：
+1. 危险形态是**「裸 and」与「未聚合 gauge」同时存在**，不是 `and on()` 单独
+   的问题。`max()` 与 `and on()` **各自都能**独立解决——本轮同时采用是冗余
+   但安全的，任何一个被"顺手简化"掉仍然正确。
+2. 最初提交信息与代码注释把功劳全记在 `and on()` 上，**这是不准确的**，
+   已订正（yml 注释 + Go 门注释）。留着错误注释比没有注释更危险：它会让
+   下一个人以为 `max()` 可以随便删。
+
+6 个 promtool 场景全绿（占比高触发 / 开关关不触发 / 占比低不触发 /
+样本量不足不触发 / 6h 兜底未验证触发 / 零流量三条都不触发）。
+
+**夹具侧的一个坑（已写入 yml 注释）**：`for: 30m` + `increase([6h])` 的场景
+**必须用 1m 采样**，不能用 30m——稀疏样本下 `increase()` 外推会让条件在
+pending 窗口内反复翻转，告警永远等不满（实测：同表达式去掉 `for` 就正常，
+加 `for` 就不响）。生产中 Prometheus 按 15~60s 抓取，6h 窗口有 360~1440 个
+样本，不存在该问题——这是**夹具**约束，不是规则约束。
+
+运行方式（不装 promtool，用官方镜像）：
+```bash
+docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+  prom/prometheus check rules /p/rules/role-fallback-mainstream.yml
+docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+  prom/prometheus test rules /p/rule_tests/role-fallback-mainstream_test.yml
+```
+
+仍需灰度环境确认一次真实触发（promtool 只验求值语义，不验端到端抓取与
+Alertmanager 投递链路）。
 
 ### 7.2 优先级 2：修 main 既有红（808/809 embed 接线）
 
