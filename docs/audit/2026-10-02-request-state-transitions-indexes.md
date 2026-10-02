@@ -78,18 +78,98 @@ SELECT model, count(*) FROM request_state_transitions
 **这条 2.2M 次的主路径只用到唯一约束索引，12 个 buffer 命中，代价可忽略。**
 即：绝大多数流量根本不碰那些大索引。
 
-## 5. 处置建议（分级，均需拍板）
+## 5. 生产可达性核实（19:20，pg_stat_statements 21 天窗口）
 
-| 级别 | 对象 | 潜在回收 | 前置条件 |
-|---|---|---|---|
-| **高置信** | `idx_state_transitions_journey_model_recent` (520 MB) | 520 MB | 已用生产形状 EXPLAIN 证明 planner 拒绝它。仍需确认 `repository.go:136` 的调用方是否在管理端 UI 中暴露 |
-| **高置信** | `idx_state_transitions_tenant_request` (472 MB) | 472 MB | 首两列 `(tenant_id, request_id)` 被 `uq_state_transitions_tenant_request_seq` 完全覆盖（后者多了 `seq` 且是唯一约束），无独立价值 |
-| **中置信** | `idx_state_transitions_request` (411 MB)、`idx_state_transitions_request_attempt` (141 MB)、`request_state_transitions_pkey` (94 MB) | 646 MB | 需先确认对应代码路径（`repository.go` 的 `WHERE request_id = $2` 无 tenant 限定形状）是否在生产执行 |
-| **待定** | `idx_state_transitions_journey_recent` (553 MB)、`idx_state_transitions_journey_node_recent` (413 MB) | 966 MB | 两者服务于 `attempt_facts.go` / `repository.go:189,242` 等形状。**idx_scan=0 只说明这些代码路径在近 9 天未被执行，不等于形状无效**；需逐个确认调用方可达性后再决定 |
+§5 初版把"删索引前需确认代码路径可达性"列为前置条件。核实用
+`pg_stat_statements`（窗口 2026-09-11 ~ 2026-10-02，**21 天**，比
+`idx_scan` 的 9 天硬）完成 —— 该表 21 天内的全部语句：
 
-**明确不建议动的**：`uq_state_transitions_tenant_request_seq`（2.2M 次，在用）、
-`idx_state_transitions_created`（retention 在用）、`uq_state_transitions_legacy_request_seq`
-（唯一约束，删了会破坏 ON CONFLICT 契约）。
+| 类型 | 调用数 | 说明 |
+|---|---|---|
+| INSERT | **5,100,572** | writer 主写链 |
+| DELETE | 1,577 | retention（`WHERE created_at < NOW() - interval`），均值 1,978 ms，累计删 5,213,593 行 |
+| **SELECT** | **26** | **只有一条形状**，均值 22.32 ms，共 259 行 |
+| CREATE INDEX/TABLE/ALTER | 477 + 13 | 启动 EnsureSchema 反复执行 DDL |
+
+那条唯一的 SELECT 全文：
+```sql
+SELECT tenant_id, gateway_instance_id, request_id, seq, event_type, stage,
+       requested_model, resolved_model, model, provider_id, provider, ...
+FROM request_state_transitions
+WHERE tenant_id = $1 AND request_id = $2 AND event_type IS NOT NULL
+ORDER BY seq
+```
+即 `repository.go:111`，**由保留的 `uq_state_transitions_tenant_request_seq` 独占服务**
+（该索引 idx_scan 2,234,400 = INSERT 的 ON CONFLICT + 这 26 次查询）。
+`attempt_facts.go` / `repository.go:136,189,242` 的查询形状
+**21 天内一次都没有执行过**。
+
+补充核实：
+- `pg_constraint WHERE confrelid='request_state_transitions'` → **0 行**（无任何外键引用）
+- `pg_depend` 依赖视图/规则 → **0 个**
+- 全部 11 条索引 DDL 已留档 `/tmp/rst_index_ddl.txt`
+
+## 5b. 已执行（19:22）
+
+删除 6 个零扫描普通索引，**回收 2,510 MB**（表 3.4 GB → **928 MB**，11 索引 → 5）：
+
+| 已删 | 大小 |
+|---|---|
+| `idx_state_transitions_journey_recent` | 553 MB |
+| `idx_state_transitions_journey_model_recent` | 520 MB |
+| `idx_state_transitions_tenant_request` | 472 MB |
+| `idx_state_transitions_journey_node_recent` | 413 MB |
+| `idx_state_transitions_request` | 411 MB |
+| `idx_state_transitions_request_attempt` | 141 MB |
+
+保留 5 个：`uq_state_transitions_tenant_request_seq`（唯一约束 + 唯一真实查询）、
+`request_state_transitions_pkey`（94 MB，见下）、`idx_state_transitions_created`
+（retention 在用，EXPLAIN 确认 DELETE 仍走它）、`uq_state_transitions_legacy_request_seq`
+（legacy 行 ON CONFLICT）、`idx_state_transitions_journey_retry_at`（1.4 MB）。
+
+**`request_state_transitions_pkey`（94 MB）未删**：它需要
+`ALTER TABLE ... DROP CONSTRAINT` 而非 `DROP INDEX`，属结构性变更，
+不在本次授权范围内。虽然零外键引用 + 零扫描的证据同样成立，仍单列待定。
+
+### 删后验证（真实生产形状）
+
+```
+Index Scan using uq_state_transitions_tenant_request_seq
+  Index Cond: (tenant_id = 'default' AND request_id = ...)
+  Buffers: shared hit=10 read=1
+Planning Time: 4.204 ms     ← 删前 11 索引时为 5.570 ms（−24%）
+```
+稳态实测 5 次：**0.034 / 0.049 / 0.092 / 0.167 / 3.638 ms**（首次含冷缓存）。
+retention DELETE 计划不变（仍 `Index Scan using idx_state_transitions_created`）。
+写入链路正常（近 5 分钟 153 行，latest 19:24:29），锁等待 0。
+
+### ⚠️ 一次假警报：基线量具选错了形状
+
+删后第一次复测报出 **Execution Time 33,855 ms**，比删前基线（0.280 ms）劣化 12 万倍。
+**根因是基线本身有问题**：基线查询为了合成 `request_id`，自己加了一个
+`ORDER BY occurred_at DESC LIMIT 1` 子查询，而该子查询恰好依赖被删的
+`idx_state_transitions_journey_recent`。而真实生产查询的 `request_id` 是
+**绑定参数、根本没有子查询**。
+
+换回真实形状后耗时 0.034~0.092 ms，**与删前无实质差异**。
+
+教训：判断"删索引是否安全"的量具必须是**生产实际执行的形状**，
+不能自己拼一个"看起来像"的查询来造基线——否则会同时产生
+假警报（本例：33.8 秒）和假安全感（本例：0.280 ms 里有一半是靠被删索引拿到的）。
+判据来源应是 `pg_stat_statements` 的实际查询文本，不是代码里的函数名。
+
+### 唯一保留待定项
+
+`request_state_transitions_pkey`（94 MB，`id BIGSERIAL PRIMARY KEY`）：
+零外键引用、21 天零扫描，证据与已删的 6 个同样成立，但删除需
+`ALTER TABLE ... DROP CONSTRAINT`（结构性变更，非 `DROP INDEX`），
+未在本次授权范围内。表若将来需要按 `id` 定位或被外键引用，该约束不可逆，
+故单列待定而非一并删除。
+
+### 回滚
+
+11 条原始 DDL 留档于 252 的 `/tmp/rst_index_ddl.txt`，逐条 `CREATE INDEX` 即可重建。
+
 
 ## 6. 结构性根因（比逐个删索引更值得修）
 
@@ -99,10 +179,18 @@ SELECT model, count(*) FROM request_state_transitions
 `app.bypass_rls` 事务内删除路径中单独处理，不依赖索引首列），或按
 `(occurred_at DESC)` 等真实收敛列重建。
 
-## 7. 本次审计未做的事
+## 7. 本次审计未做的事（初版记录，19:22 后已失效，保留以留痕）
 
-- 全程只读，未对生产库做任何 DDL。
-- 未逐个确认 §5「中置信」「待定」两档索引对应代码路径的**生产可达性**——
-  这是删索引前的必要前置，本次未完成，因此不建议现在动它们。
-- 未验证 `idx_scan=0` 的 9 天窗口是否覆盖了所有业务周期（如月度批处理），
-  若存在低频周期任务仍可能命中这些索引。
+> 以下三条是**审计初版**的未做项。§5 用 pg_stat_statements 21 天窗口完成了
+> 生产可达性核实，§5b 已据此执行删除 6 个索引。**「全程只读」与
+> 「未确认可达性」两条已完成，「月度批处理」一条仍为残余风险。**
+
+- ~~全程只读，未对生产库做任何 DDL~~ → §5b 已执行 `DROP INDEX` × 6。
+- ~~未逐个确认索引对应代码路径的生产可达性~~ → §5 已用 pg_stat_statements
+  21 天窗口完成：21 天内该表只有一条 SELECT 形状被执行 26 次。
+- **仍然未做**：未验证 21 天窗口是否覆盖了所有业务周期（如月度批处理、
+  季度结算等低频任务）。若存在此类任务命中已删索引，会退化为
+  `idx_state_transitions_created` 上的扫描或顺序扫描。窗口 21 天对
+  "日常读路径"的覆盖是充分的，对"月度任务"不是——这一条残余风险
+  需要按业务日历另行确认，本审计无法从数据库侧证伪。
+
