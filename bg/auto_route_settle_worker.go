@@ -277,6 +277,44 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 // answer is not to reintroduce this union. Either run two queries and merge
 // in Go (lookup-style merge is safe; percentile merge is not), or use
 // LATERAL per partition explicitly.
+//
+// # S4 停写后的数据源：两个直觉替代方案都被实测否决（审计 §9.40）
+//
+// 停写后本 worker 会**全量 abandon**（三个读点全部落空 → p.success == nil →
+// 过 settleAbandonAfter 即盖 settled_at、reward 留 NULL，产物与「正常放弃」
+// 逐字段同形）。§9.35 给三个响应加了 `outcome_source` 陈旧基线标记让它可见，
+// 但**可见 ≠ 正确**。以下是 2026-10-02 真库实测的移植评估，动手前先读这段：
+//
+// **(a) 不能改成读 710 视图 `request_logs_with_current_month`。**
+// 它不是 drop-in。真库 EXPLAIN 实测：settleBatch 这条 LEFT JOIN 的计划里，
+// 该视图的 v1 臂（citus 父表 request_logs）被展开成 **7 个叶子分区 Seq Scan**
+// （request_logs_2026_07 … request_logs_default）。本 worker 每 30 秒跑一次、
+// 每次 100 行，扛不住。
+// 注意：上面那段注释描述的 `invalid perminfoindex` 报错在这条查询上**没有复现**
+// —— 实测到的不是报错，而是**更坏的东西：计划**。一个「没报错但计划烂掉」的
+// 替代方案比报错那个更危险，因为它更容易被接受。
+//
+// **(b) 不能简单改成读会话族——它不是等价替换。**
+// 真库 2026-09 分区实测（1747 条 auto_route_selections）：
+//   · 99.3% 的 request_id 在会话臂有对应行；
+//   · success / latency_ms 100% 有值；cost_usd 会话臂**反而更好**（100% vs v1 3.6%）；
+//   · session 身份可平移：会话臂 `session_id` 100% 有值，710 视图的会话臂就是
+//     `CASE WHEN t.session_id ~~ 'sys:%' THEN NULL ELSE t.session_id END AS gw_session_id`；
+//   · **但 `canonical_id`：v1 32.3% 有值，会话臂 1.9%，且会话族里根本没有这一列**
+//     （session_turns / session_turn_details 都没有）⇒ **settleBatch 的 LATERAL
+//     retry_count 腿无法平移**。这是架构缺口，不是工程问题。
+//   · **且 `is_auto_request`：v1 99.9% vs 会话臂 83.0%** ⇒ loadTaskBaselines 的
+//     cohort 会缩水约 17%，p95/p75 基线随之改变。
+//
+// 顺带更正一个可以验证的细节：`origin_actor` 在**两侧都是 0**（v1 0/1746、
+// 会话臂 0/1734），所以 `SQLExcludeSyntheticActors` 对这批行**早就空转**——
+// 它既不是移植引入的新问题，也不构成阻止移植的理由；但「排除合成流量」这个
+// 假设在本 worker 上**已经不成立**，应当单独记账。
+//
+// 结论：正确的移植必须先决定 `canonical_id` 缺口怎么办（回填会话侧，还是改写
+// retry_count 的定义），而那会改动 **reward 语义**。在此之前不要动这三个读点。
+// 由 TestAutoRouteSettleWorkerDoesNotUseThe710View 与
+// TestAutoRouteSettleWorkerSourceConstraintIsDocumented 钉住本段结论。
 
 // loadTaskBaselines computes cohort p95 latency and p75 cost per task type over
 // the recent window, across every model.

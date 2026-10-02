@@ -1884,3 +1884,110 @@ SQL 注释**（`-- request_logs_with_current_month is a UNION of …`，:230）�
 > 另一件更该先做的：`auto_route_settle_worker` 的**正确修法**（改读会话族）——
 > §9.35 只让它可见（`outcome_source` 块 + 陈旧基线告警），停写 8h 后仍会全量 abandon，
 > 产物与「正常放弃」逐字段同形。可见 ≠ 正确。
+
+---
+
+## 第二十三轮（2026-10-02）：`auto_route_settle_worker` 的正确修法 —— 实测**否决**了两个方案 —— §9.40
+
+### 结论（先说，因为它是否定的）
+
+第二十二轮提示词里我说「下一件该做 `auto_route_settle_worker` 的正确修法」。
+**我做了，结果证明我上一轮给的修法建议本身是错的。** 本节的价值在证伪，不在实现。
+
+§9.35 和 handoff 里都写着「正确修法是改读会话族」。实测后：
+**方案 A（换读 710 视图）被计划否决，方案 B（换读会话族）不是等价替换。**
+三个读点**一个都没动**。
+
+### 方案 A：710 视图 —— 不是被报错否决，是被**计划**否决
+
+真库 EXPLAIN 实测 worker 真实的 `settleBatch` LEFT JOIN：
+710 视图的 v1 臂（citus 父表 `request_logs`）被展开成 **7 个叶子分区 Seq Scan**
+（request_logs_2026_07/08/default + 09/10/11 的索引扫描）。
+文件顶部注释描述的 `invalid perminfoindex` 报错**没有复现**。
+
+> **一个「没报错但计划烂掉」的替代方案比报错那个更危险**——报错会让人停下来看，
+> 计划不会。门里写的是「实测到的**计划**代价」，不是复述报错。
+
+### 方案 B：会话族 —— 99.3% 可平移，但有两处硬伤
+
+2026-09 分区实测（1747 条 selection；`auto_route_selections_hot` **当前是空的**，
+本地库没这类流量，只能用 9 月分区——这是取样妥协）：
+
+| 维度 | v1 | 会话臂 | 判定 |
+|---|---|---|---|
+| `request_id` 覆盖 | 1746 | 1734（99.3%） | 可平移 |
+| `success` / `latency_ms` | 100% / 99.3% | 100% / 100% | 可平移 |
+| `cost_usd` | **3.6%** | **100%** | 会话臂**更好** |
+| session 身份 | `gw_session_id` 100% | `session_id` 100%（0 条 `sys:%`） | 可平移 |
+| `origin_actor` | **0** | **0** | **两侧都空** |
+| `canonical_id` | **32.3%** | **1.9%** | **真退化** |
+| `is_auto_request` | 99.9% | **83.0%** | **真退化** |
+
+1. **`canonical_id` 会话族里根本没有来源**（`session_turns`/`session_turn_details` 都没这列，
+   查 `information_schema` 确认）⇒ LATERAL `retry_count` 腿**无法平移**。
+   **架构缺口，不是工程问题。**
+2. **`is_auto_request` 差 17pp** ⇒ `loadTaskBaselines` 的 cohort 缩水 17%。
+
+**顺带更正我自己一个错误**：我原本把 `origin_actor`（会话臂 100% NULL）列成移植障碍，
+实测 v1 侧**同样是 0** ⇒ `SQLExcludeSyntheticActors` 对这批行**早就空转**。
+它不是移植的障碍，但意味着「排除合成流量」这个假设**在本 worker 上已经不成立**
+（影响现在的基线质量，与停写无关），应单独记账。
+
+### 取样方向：第一轮测量差点得出**相反结论**
+
+用今日 hot 测：v1 的 auto 行 **0%** 配到会话臂、会话臂 **0** 条 auto 行
+⇒ 按那个数就该直接否决方案 B。
+
+**那是错的**：今日 hot 的 2172 条 auto 行里 **2158 条是 `probe-%`**
+（`origin_actor` = `active-probe-worker`/`node-probe-worker`）——探针流量，会话写方不覆盖。
+
+> **判一个 join 腿能不能平移，取样必须是 join 的另一侧**（`auto_route_selections`），
+> 不是「上游表 + 某个标签」。按标签取样会拿到另一个总体。
+
+### 我自己那道门第一版假阳性、又太弱（两次都记在这）
+
+- **假阳性**：对整份源码跑 `(?i)JOIN\s+request_logs\s`，命中第 15 行**注释里的散文**
+  `//  3. Join request_logs for success / latency / cost.` ⇒ 改成只对 **AST 提取的
+  字符串字面量**跑判据。
+- **太弱**：文档门查「注释里有没有 `canonical_id`」，而这词在文件里出现十几次
+  （SQL 里就 6 处）⇒ **删光整段实质文档它照样绿**。⇒ 钉到只有实质文档才有的
+  **特征句**（`会话族里根本没有这一列`、`叶子分区 Seq Scan`）。
+
+**一道删掉它所守之物之后仍然通过的判据，就是装饰。**
+
+### 变异 2/2（N2 第一版「没生效」被当场识破）
+
+N1 换 710 视图 → `auto_route_settle_source_gate_test.go:87`；
+N2 删掉 `canonical_id` 缺口整段 → `:133`（钉特征句之后才真正承重）。
+*N2 第一版只在一行末尾加标记，而那行本来就不含 `canonical_id` ⇒ 门正确地绿。*
+
+### 落地了什么
+
+- `bg/auto_route_settle_source_gate_test.go`（新）2 道门。
+- `bg/auto_route_settle_worker.go` 文件注释写入完整实测评估（含被否决的两个方案）。
+- 登记表 `bg/auto_route_settle_worker.go` 的 Note **订正**——原文写着
+  「正确修法是改读会话族」，现改为带实测数字的证伪结论。
+
+**三个读点没动**：正确修法要先决定 `canonical_id` 缺口怎么办，而那会改动
+**reward 语义**；在本地 hot 分区为空、无法验证运行时行为的环境里改 reward 输入，
+是拿「看起来更正确」换「无法验证」。
+
+### 下一轮提示词
+
+> 需要**一个明确决定**，不是更多审计：停写后 `auto_route_settle_worker` 的
+> `retry_count` 怎么办？三个选项，各自的代价要先写清再选：
+> ① **回填 `canonical_id` 到会话族**（`session_turns` 加列 + 写方补齐）——
+>    代价是会话族多一个 v1 概念，且要处理 32.3%→100% 的历史缺口；
+> ② **改写 retry_count 定义**，去掉 canonical_id 等价条件，改用别的会话内标识
+>    （`outbound_model` + 时间窗？`request_checksum`？）——代价是 reward 语义变化，
+>    线上已有的 reward 分布不可比；
+> ③ **接受降级**：停写后 retry_count 恒 0，但把它变成**显式信号**而非静默 0
+>    （复用 §9.38 的 `outcome_source` 模式，加一个 `retry_count_unavailable` 档位）。
+>
+> 选之前必须先量两件事：①`auto_route_selections` 里的 `canonical_id` 现在
+> **实际有多少可回填**（join 到 session_turns 的命中率，**用 9 月分区**，
+> 别用空的 hot）；②reward 分布对 `retry_count` 的实际敏感度——
+> 如果 0 与真实值在现有 reward 函数下差异很小，选项 ③的成本最低。
+>
+> 另：§9.39 遗留的 `vi` 维度 SQL 注释处理仍未做（`model_alternatives.go`），
+> 以及 §9.38 的告警 `for:` 阈值未在真机 Prometheus 验证过。
