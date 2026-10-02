@@ -472,6 +472,14 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 					// R52: 兜底层归属必须跟着缓存走，否则首轮落主流模型、
 					// 后续缓存轮审计字段空成""，主流层用量被系统性低估。
 					decision.RoleFallbackLayer = cached.RoleFallbackLayer
+					// R53: 缓存命中轮同样埋点。刻意与首轮对齐——缓存轮**确实**
+					// 在用重量模型服务这个请求，排除它会让"主流层占比"低报真实
+					// 成本；SQL 侧 auto_decision 在缓存轮同样带 role_fallback_layer
+					// （同一字段同一路径），两边不漏不多。非空才埋：flag-off 期
+					// 写下的旧缓存该字段是空串，埋进去会把"机制没开"记成"命中过"。
+					if decision.RoleFallbackLayer != "" {
+						recordRoleFallbackLayer(decision.RoleFallbackLayer)
+					}
 				}
 				d.annotateTreatment(ctx, apiKeyID, decision)
 				d.populateShadow(ctx, sigs, decision)
@@ -652,6 +660,10 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
 			recommended = promoted
 			roleFallbackLayer = layerName(rolePlan.layerOf(hit))
+			// R53: 埋点与审计字段同源（同一个 layerName 结果），只在本
+			// 路径命中时递增——rolePrefs 非空即 role 路由已介入，无需
+			// 再查 flag（resolveRolePrefs 在 flag-off 时返回空 plan）。
+			recordRoleFallbackLayer(roleFallbackLayer)
 			if hit != preRoleWinner {
 				routingSource = "role_route"
 			}
@@ -767,12 +779,15 @@ func (p rolePrefPlan) layerOf(hit string) int {
 }
 
 // layerName 把层号渲染成 Decision.RoleFallbackLayer 的取值。
+// 取值常量（RoleLayerKind / RoleLayerMainstream）与 Prometheus 埋点共用，
+// 避免"审计字段写 kind、指标记 mainstream"这类分叉——那会让告警在
+// 真实的整层掉线上保持沉默。
 func layerName(layer int) string {
 	switch layer {
 	case 1:
-		return "kind"
+		return RoleLayerKind
 	case 2:
-		return "mainstream"
+		return RoleLayerMainstream
 	default:
 		return ""
 	}
