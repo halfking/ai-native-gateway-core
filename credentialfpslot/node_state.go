@@ -453,25 +453,22 @@ func (m *Manager) SetSupportsResponses(ctx context.Context, credentialID int, mo
 // wrongly honoured. An earlier revision of this function did exactly that and
 // the test caught it. One extra round trip is the correct price; do not
 // "optimise" the order.
+//
+// ⚠️ THE AGE CHECK MUST NOT SAMPLE ITS OWN CLOCK (2026-10-03 复审).
+// A revision checked snapshot freshness by taking a TIME sample *before*
+// deciding whether to trust the snapshot, then took a second one for the
+// deadline. That is two TIME round trips on the hot path, and the accounting
+// came out at: router MGET + 2×TIME = 3, versus 3 before the optimisation
+// (MGET + GET + TIME). **Net zero saving, and worse when the snapshot is
+// rejected** (MGET + TIME + GET + TIME = 4). The whole point of the change was
+// to remove a round trip; that revision quietly gave it back and then some.
+//
+// Both checks need only the scalar `now`, so one sample serves both — as long
+// as it is taken in the right place, i.e. AFTER the state is in hand. The age
+// check therefore runs *after* the freshness decision has been made possible,
+// reusing that same sample.
 func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, model string, prefetched *NodeState) (supported bool, ok bool, err error) {
 	state := prefetched
-
-	// Freshness gate, but ONLY when we already hold a state. Deciding this
-	// before the read would need a clock sample, and taking that sample first
-	// breaks the ordering invariant documented above.
-	if state != nil {
-		now, err := m.redisNow(ctx)
-		if err != nil {
-			return false, false, fmt.Errorf("get redis time for capability read failed (credential_id=%d, model=%s): %w", credentialID, model, err)
-		}
-		// CapabilityUpdatedAt is written by the same Lua script that sets the
-		// deadline, on the Redis clock. A payload without it predates that
-		// field, so its age is unknowable — re-read rather than assume fresh.
-		if state.CapabilityUpdatedAt <= 0 || now-state.CapabilityUpdatedAt > prefetchMaxAgeSec {
-			state = nil
-		}
-	}
-
 	if state == nil {
 		var err error
 		state, err = m.GetNodeState(ctx, credentialID, model)
@@ -487,13 +484,26 @@ func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, mo
 		// traffic-driven NodeState TTL refreshes cannot keep legacy verdicts alive.
 		return false, false, nil
 	}
-	// Sampled AFTER the state is in hand on purpose: a verdict whose deadline
-	// elapses between the GET and this check must be seen as expired, not
-	// honoured. See the ordering note above.
+	// ONE clock sample, taken after the state is in hand, serving both the
+	// snapshot-age check and the deadline check below.
 	now, err := m.redisNow(ctx)
 	if err != nil {
 		return false, false, fmt.Errorf("get redis time for capability read failed (credential_id=%d, model=%s): %w", credentialID, model, err)
 	}
+	// A prefetched snapshot may be arbitrarily old (the request can sit in the
+	// dispatch queue for an unbounded time — see the prefetchMaxAgeSec note),
+	// so a verdict rewritten inside its TTL would be missed. Re-read instead.
+	//
+	// Only meaningful for the prefetched case; a state we just read is current
+	// by construction, and CapabilityUpdatedAt is absent on pre-migration
+	// payloads whose age is unknowable.
+	if prefetched != nil &&
+		(state.CapabilityUpdatedAt <= 0 || now-state.CapabilityUpdatedAt > prefetchMaxAgeSec) {
+		return m.GetSupportsResponses(ctx, credentialID, model, nil)
+	}
+	// Sampled AFTER the state is in hand on purpose: a verdict whose deadline
+	// elapses between the GET and this check must be seen as expired, not
+	// honoured. See the ordering note above.
 	if state.CapabilityExpiresAt <= now {
 		return false, false, nil
 	}
