@@ -200,6 +200,65 @@ func TestRedisEnforceLongStreamRenewal(t *testing.T) {
 	}
 }
 
+// TestRedisEnforceRenewAdvancesScoreAgainstPruning pins the B-#1 failure:
+// Acquire prunes members whose score is below (trunc_sec(now) - TTL), so a
+// lease whose score stayed frozen at acquire time is pruned by ANY
+// concurrent Acquire once the server clock crosses into a later second past
+// (acquire+TTL) — even while its keepalive loop renews faithfully — and the
+// next Renew reports definitive loss, aborting a healthy long stream. With
+// the fix (renew rewrites the score to server time), a renewed lease
+// survives concurrent Acquires indefinitely.
+func TestRedisEnforceRenewAdvancesScoreAgainstPruning(t *testing.T) {
+	a, _, _ := makeBackendPair(t)
+
+	spec := GovernorSpec{
+		CredentialID: 7, ProviderID: 42, Mode: ModeConcurrency, Limit: 1,
+		Backend: BackendRedisEnforce, LeaseTTL: 150 * time.Millisecond, Revision: 1,
+	}
+	g, err := a.New(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rg := g.(*redisEnforceGovernor)
+	qr := &QueuedRequest{}
+	acquireWall := time.Now()
+	if err := rg.Acquire(context.Background(), qr, acquireWall.Add(5*time.Second)); err != nil {
+		t.Fatalf("initial Acquire: %v", err)
+	}
+
+	// Renew every 50ms (tighter than TTL/3) until the wall clock has crossed
+	// into a later second than acquire — only then is a frozen score below
+	// Acquire's pruning cutoff, so the probe below actually discriminates
+	// the fix. Renewals keep the key's PEXPIRE armed throughout.
+	for sec := acquireWall.Unix(); time.Now().Unix() == sec; {
+		time.Sleep(50 * time.Millisecond)
+		if err := rg.Renew(context.Background(), qr); err != nil {
+			t.Fatalf("mid-window Renew: %v", err)
+		}
+		if time.Since(acquireWall) > 3*time.Second {
+			t.Fatalf("wall clock never crossed a second boundary; test precondition broken")
+		}
+	}
+
+	// A concurrent admission from another instance must NOT prune the
+	// renewed lease: the window is genuinely full (limit=1).
+	raw, err := a.acquireS.Run(context.Background(), a.client,
+		[]string{redisGovernorKey(spec.ProviderID, spec.CredentialID, ModeConcurrency)},
+		spec.Limit, spec.Limit, "probe-token-concurrent").Slice()
+	if err != nil {
+		t.Fatalf("concurrent probe acquire: %v", err)
+	}
+	if code, _ := raw[0].(int64); code != 0 {
+		t.Fatalf("renewed lease must survive concurrent Acquire across TTL: probe admitted with code=%d (lease was pruned)", code)
+	}
+
+	// The keepalive loop's next Renew must still find the token.
+	if err := rg.Renew(context.Background(), qr); err != nil {
+		t.Fatalf("Renew after concurrent Acquire: %v (renewed lease was pruned)", err)
+	}
+	rg.Release(qr)
+}
+
 // TestRedisEnforceRenewAfterExpiry pins the contract that Renew on an
 // already-expired lease returns wrapped ErrGovernorUnavailable — i.e.
 // the keepalive loop must observe the failure and re-Acquire rather
@@ -233,6 +292,9 @@ func TestRedisEnforceRenewAfterExpiry(t *testing.T) {
 	if !errors.Is(err, ErrGovernorUnavailable) {
 		t.Fatalf("Renew error must wrap ErrGovernorUnavailable, got %v", err)
 	}
+	if !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("Renew after expiry is definitive loss: must wrap ErrLeaseLost, got %v", err)
+	}
 }
 
 // TestRedisEnforceRenewUnregistered pins that calling Renew without a
@@ -257,5 +319,8 @@ func TestRedisEnforceRenewUnregistered(t *testing.T) {
 	}
 	if !errors.Is(err, ErrGovernorUnavailable) {
 		t.Fatalf("Renew error must wrap ErrGovernorUnavailable, got %v", err)
+	}
+	if !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("Renew without a lease is definitive loss: must wrap ErrLeaseLost, got %v", err)
 	}
 }
