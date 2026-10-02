@@ -57,6 +57,9 @@ MODE=""
 ACTION="install"
 DRY_RUN=0
 ASSUME_YES=0
+PASSTHRU=""
+# 数组必须显式声明：set -u 下对空数组做 "${arr[@]}" 会报未绑定。
+PASSTHRU_ARGS=()
 
 log()  { printf '[install] %s\n' "$*"; }
 warn() { printf '[install] WARN: %s\n' "$*" >&2; }
@@ -91,6 +94,7 @@ USAGEEOF
 }
 
 interactive() {
+  [[ "$ASSUME_YES" == "1" ]] && return 1
   [[ "${NO_INTERACTIVE:-0}" == "1" ]] && return 1
   [[ "$DRY_RUN" == "1" ]] && return 1
   [ -t 0 ] || return 1
@@ -215,7 +219,7 @@ choose_channel() {
     log "安装方式由参数指定：${CHANNEL}"
     return 0
   fi
-  # 非交互时按"手上有什���就用什么"排序，与业界一键脚本的兜底思路一致。
+  # 非交互时按"手上有什么就用什么"排序，与业界一键脚本的兜底思路一致。
   if ! interactive; then
     if [[ -n "$(local_binary || true)" ]]; then CHANNEL="binary"
     elif [[ "$HAVE_GO" == "1" && -d "$REPO_DIR/installer" ]]; then CHANNEL="source"
@@ -410,10 +414,24 @@ main() {
       --mode)      MODE="${2:-}"; shift 2 ;;
       --mode=*)    MODE="${1#*=}"; shift ;;
       --dir)       INSTALL_DIR="${2:-}"; shift 2 ;;
-      --yes|-y)    ASSUME_YES=1; export NO_INTERACTIVE=1; shift ;;
+      --yes|-y)    ASSUME_YES=1; shift ;;
       --dry-run)   DRY_RUN=1; shift ;;
       -h|--help)   ACTION="help"; shift ;;
-      *) ACTION="passthrough"; PASSTHRU="$ACTION"; PASSTHRU_ARGS="$*"; break ;;
+      *)
+        # 其余的第一个参数只能是 llm-gw-installer 自己的子命令。放行前先
+        # 对照 KNOWN_SUBCOMMANDS：旧写法是无条件透传，于是 `install.sh
+        # --mode`（少写一个值）会把 "--mode" 当子命令塞给二进制，报错信息
+        # 完全指不到本脚本身上。子命令之后的参数原样保留（数组，不合并）。
+        PASSTHRU="$1"
+        case " $KNOWN_SUBCOMMANDS " in
+          *" $PASSTHRU "*) ;;
+          *) die "未知子命令 '${PASSTHRU}'。本脚本的用法：${KNOWN_SUBCOMMANDS} 或 install|build|doctor|version|help（--help 看细节）" ;;
+        esac
+        shift
+        PASSTHRU_ARGS=("$@")
+        ACTION="passthrough"
+        break
+        ;;
     esac
   done
 
@@ -431,7 +449,7 @@ main() {
       local bin
       bin="$(local_binary || true)"
       [[ -n "$bin" ]] || die "找不到 llm-gw-installer（先跑 bash install.sh --channel source）"
-      exec "$bin" "$PASSTHRU" "$PASSTHRU_ARGS"
+      exec "$bin" "$PASSTHRU" ${PASSTHRU_ARGS[@]+"${PASSTHRU_ARGS[@]}"}
       ;;
   esac
 
