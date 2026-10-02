@@ -666,11 +666,31 @@ type firstTurnQueryOptions struct {
 // count equal to ft's (dedupes replayed auto_route_selections rows and
 // multi-day sessions snapshots). Placeholders $1..$4 are the fixed
 // ft-subquery args (startTS, endTS exclusive, startDay, endDay inclusive).
+//
+// ⚠️ §9.29：ft 必须同时读**两个存储面**。会话族写方只写 session_turns_hot，
+// 冷行由 promote 搬到分区父表，边界随 promote 节奏移动（本机实测父表停在
+// 2026-10-02 06:06:31、_hot 从 06:07:14 接到实时）。
+// 只读父表 ⇒ **今天新建的会话首轮查不到**（真库实测：1,397 个会话首轮只在
+// _hot、父表 0 命中，且这 1,397 个**全部是 2026-10-02 当天**新建的；作为对照首轮在父表的有
+// 832,627 个）。即「标注功能对当天的新会话 100% 失明」。
+//
+// 另注：这里刻意**不用** session_turns_with_current_month 视图（它自己已做两面合并，
+// 1,684,512 行、最新到实时），因为 ft 还要按 partition_date 二次下推，
+// 直读基表两面 UNION 才能保留这个谓词下推。
 const firstTurnFromClause = `
 		FROM (
 			SELECT st.session_id, st.request_id, st.tenant_id, st.ts,
-			       st.status_code, st.success, st.latency_ms
-			FROM public.session_turns st
+			       st.status_code, st.success, st.latency_ms,
+			       st.turn_no, st.partition_date
+			FROM (
+				SELECT session_id, request_id, tenant_id, ts, status_code,
+				       success, latency_ms, turn_no, partition_date
+				FROM public.session_turns
+				UNION ALL
+				SELECT session_id, request_id, tenant_id, ts, status_code,
+				       success, latency_ms, turn_no, partition_date
+				FROM public.session_turns_hot
+			) st
 			WHERE st.turn_no = 1
 			  AND st.ts >= $1 AND st.ts < $2
 			  AND st.partition_date >= $3 AND st.partition_date <= $4
