@@ -401,10 +401,14 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 			writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted", "insufficient_quota", "budget_exhausted")
 			return nil, false
 		}
-		// 非 BudgetExceeded 错误按既存设计放行，但必须留痕（与 chat 主路径
-		// 同款，第三十轮）。
-		slog.Warn("budget check failed; allowing embedding request (fail-open design)",
-			"request_id", requestID, "key_id", keyInfo.ID, "error", err)
+		// 与 chat 面 budget pre-check 同款 fail-closed：非超预算错误 =
+		// 「不知道超没超」，不放行（12h 审计第二十九轮承继项）。
+		slog.Error("embeddings budget check failed, failing closed",
+			"request_id", requestID,
+			"key_id", keyInfo.ID,
+			"error", err)
+		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "Budget check temporarily unavailable", "server_error", "budget_unavailable")
+		return nil, false
 	}
 	return keyInfo, true
 }

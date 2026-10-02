@@ -770,6 +770,22 @@ files=(
   # 即被 citus 拒绝，与目标表 AM 无关；R19 归因补全）。三个月分区全 0 行
   # 空壳（活数据在 model_probe_runs_hot=heap），806 同款仅动空分区；幂等。
   "$ROOT_DIR/sql/migrations/startup/812_model_probe_runs_partitions_heap.sql"
+
+  # 2026-10-02 SQL 日志审计二十一轮（813）：supplier_errors 族 AM 归一
+  # heap——R20 §五.2「Row-level DELETE 11-06 必炸」经复核为误登记（TTL
+  # 实为 689 helper 整分区 DROP，列存安全），但列存残留仍是正典单族之外
+  # 的漂移：UPDATE/DELETE/tableoid 读毒面 + ensure 函数 ELSE 分支每小时
+  # enforce_columnar_partition 自愈反噬环。两步齐做（689 同款）：先换
+  # ensure 函数为 heap 版，再转四分区（空壳 812 通道 / 带数据 689 通道，
+  # 2026_09=124,846 行实测）；幂等。三基线函数体同步（新环境从源头 heap）。
+  "$ROOT_DIR/sql/migrations/startup/813_supplier_errors_partitions_heap.sql"
+
+  # 2026-10-02 SQL 日志审计二十一轮（814）：v_adaptive_probe_targets
+  # recent_passive_failures 死列修复（R21 N2 拍板）——子查询改读
+  # candidate_failure_logs_hot（5min 窗 ⊂ 8h promote 保留窗 ⇒ hot 是
+  # 精确源且走复合索引；分区父表侧行集恒空=该列自 038 起恒 0）。
+  # CREATE OR REPLACE VIEW 列集不变；幂等。三基线+objects 视图同步。
+  "$ROOT_DIR/sql/migrations/startup/814_adaptive_probe_targets_hot_subquery.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -827,7 +843,12 @@ intentional_function_chains=(
   'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|698_promote_hot_partition_timezone_pin.sql|739_promote_functions_rate_multiplier.sql|'
   # 699 re-pins ensure_supplier_errors_partition (V371 deployed the original
   # out-of-repo-family body) to Asia/Shanghai; the pin must stay the later entry.
-  'ensure_supplier_errors_partition|V371__supplier_errors_hot_and_stats.sql|699_supplier_errors_ensure_timezone_pin.sql|'
+  # 813 (R21 SQL-log audit round) re-derives the body dropping columnar
+  # (supplier_errors partitions become heap; TTL is whole-partition DROP so
+  # columnar has no read benefit); 813 must stay the later entry — landed
+  # without this registration and failed the canonical delivery gate on the
+  # merge with 第三十轮 (2026-10-02).
+  'ensure_supplier_errors_partition|V371__supplier_errors_hot_and_stats.sql|699_supplier_errors_ensure_timezone_pin.sql|813_supplier_errors_partitions_heap.sql|'
   # 703 re-pins promote_supplier_errors_hot_to_partition month grouping to
   # Asia/Shanghai on top of V371's original body; the pin must stay the later
   # entry (same V371-track pattern as 699; 703 landed without this
