@@ -172,7 +172,35 @@ func (it *SanitizeRestoreInterceptor) restoreNativeResponsesBody(ctx context.Con
 					return false, true, err
 				}
 				changed = changed || didChange
+				if results, ok := action["results"]; ok {
+					// 输入侧 action.results 口径的镜像：字符串数组/{text} 对象
+					// 数组逐值还原（第三十一轮 §四#7）。
+					restored, didChange, err := restoreNativeNestedValue(ctx, it.sanitizer, results, sm, 0)
+					if err != nil {
+						return false, true, err
+					}
+					if didChange {
+						action["results"] = restored
+						changed = true
+					}
+				}
 			}
+		case "tool_search_call":
+			// function_call.arguments 的单字段同族（第三十一轮 §四#7）：
+			// JSON-string 形态，非法 JSON 拒绝还原（requireJSON=true）。
+			didChange, err := it.restoreNativeArgumentField(ctx, item, "arguments", sm, true)
+			if err != nil {
+				return false, true, err
+			}
+			changed = changed || didChange
+		case "mcp_approval_request":
+			// mcp_call.arguments 的单字段同族（第三十一轮 §四#7）：非法 JSON
+			// 退化为整串文本还原（requireJSON=false）。
+			didChange, err := it.restoreNativeArgumentField(ctx, item, "arguments", sm, false)
+			if err != nil {
+				return false, true, err
+			}
+			changed = changed || didChange
 		case "file_search_call":
 			for _, field := range []string{"queries", "results"} {
 				value, ok := item[field]

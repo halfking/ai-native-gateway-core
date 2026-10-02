@@ -2,9 +2,11 @@ package dispatch
 
 // governor_snapshot_observer.go — Stage C.2: periodic per-credential
 // snapshot collector that emits via the closed-enum metric allowlist
-// introduced in C.1. The observer is OPT-IN: the Pipeline owns a nilable
-// *governorSnapshotObserver field and only spawns the tick goroutine
-// when one is wired (LLM_GATEWAY_DISPATCH_GOVERNOR_OBSERVER=observe).
+// introduced in C.1. Since round 31 (f6591965d follow-up) the observer is
+// default-observe: the Pipeline spawns it unless the operator explicitly
+// opts out (LLM_GATEWAY_DISPATCH_GOVERNOR_OBSERVER=off). Note this also
+// feeds SnapshotForCred (capacity_aware_sort soft-penalty), so flipping the
+// env changes routing behavior, not just metrics.
 //
 // Why a new type: the existing SetQueueMirror / SetQueueObservationSink
 // observability paths are observation-event driven (push), while the
