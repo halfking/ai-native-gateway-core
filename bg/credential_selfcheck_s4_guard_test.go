@@ -78,10 +78,13 @@ func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 	// 只读父表 ⇒ 对最新轮次盲 —— 而真库实测在父表覆盖不到的那段窗口里，
 	// 旧形状看到 0 个失败轮次、两面合并看到 761 个：**这条臂存在的意义正是抓
 	// 最新失败，单面读法让它对自己的目标完全失明。**
+	// R32（P2-D）：SELECT 清单加了 partition_date（分区裁剪下推，见
+	// credential_selfcheck.go 同址注释）——两个面的形状断言随之同步。
 	for _, want := range []string{
-		"SELECT ts, success, status_code, credential_id FROM session_turns",
-		"SELECT ts, success, status_code, credential_id FROM session_turns_hot",
+		"SELECT ts, success, status_code, credential_id, partition_date FROM session_turns",
+		"SELECT ts, success, status_code, credential_id, partition_date FROM session_turns_hot",
 		"UNION ALL",
+		"st.partition_date >= (now() - interval '24 hours')::date",
 	} {
 		if !strings.Contains(seArm, want) {
 			t.Errorf("session 臂没有同时读会话族的两个存储面，缺：%s\n"+
