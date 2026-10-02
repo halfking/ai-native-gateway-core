@@ -3309,3 +3309,54 @@ cohort 谓词 = `request_logs.is_auto_request IS TRUE` + `SQLExcludeSyntheticAct
 > ③ 需要拍板的三项仍未变：§9.44 cohort（**注意：§9.54/§9.55 已表明 (a)/(b) 都不是
 >    杠杆，真正的前置是「cohort 总体 ≠ 被结算总体」**）、§9.49.8 是否扩档、
 >    §9.48 `silently_frozen` 21 条口径。
+
+---
+
+## ⚠️ 第三十八轮：绕开共享工作区推送，**留下一个必须知道的分叉**
+
+### 做了什么
+
+`sql/schema/01-schema.sql`、`sql/schema/installed_startup_migrations.tsv`、
+`deploy/sql/schemas/baseline/01-schema.sql` 三个文件一直被并行会话的**未提交**改动
+占着，常规 `git merge origin/main` 被 git 拒绝。**没有 stash、没有 restore、
+没有代为提交别人的在途工作。**
+
+改用：`git worktree add` 建一个独立 worktree（分支基于 `origin/main`），
+在里面只重放**我自己的**两个文档文件，然后
+`git push origin mavis/push-9xx:main`。**主工作区全程未被触碰**
+（那三个文件原样保留）。
+
+### ★cherry-pick 会删除并行会话的内容——已放弃该路径
+
+第一次在 worktree 里用 `cherry-pick` 重放我的 3 个提交，**git 报「自动合并」且无冲突**，
+看起来是成功的。逐节核验时发现它**删除了 10 行**：并行会话 `a0da9066d` 新增的
+`§9.62`（`client_ip` ParseIP 门的 5 行输入/输出表）与 `§9.63`
+（`raw_model_name` 不需要 817 的结论）。
+
+**原因**：cherry-pick 的 diff 是相对**我本地基**算的，而我的基不含那两节
+⇒ 「我这边没有」被算成「删除」。**冲突为空 ≠ 内容无损。**
+
+⇒ 改用：`git reset --hard origin/main` 还原，再把自己的三节**纯追加**回去。
+最终提交 `3ae6c5295` 是 **623 行插入、0 删除**，§9.62/§9.63 与 R33 的笔误订正
+全部保留。
+
+### ★★留下的分叉：下次合并会撞
+
+| | 内容 | 提交 |
+|---|---|---|
+| `origin/main` | §9.54/55/56 | **`3ae6c5295`**（三个文档合成一个提交） |
+| 本地 `main` | §9.54/55/56 | `6841c90a8` / `0e2ea9e2f` / `d82e23e12`（三个独立提交） |
+
+两边**内容相同、提交历史不同**。下次把 `origin/main` 合进本地 `main` 时，
+审计文档的 EOF 追加**大概率冲突**（上下文不同：远端在我的三节之前有 §9.62/63）。
+
+**处理方式需要你或下一个会话决定，本轮不代劳**——因为本地 `main` 上还挂着
+并行会话自己的 4 个提交（ursm 817→818、payload 字段拆分、installer 818 同步、
+INSERT 列序门），动它的历史会牵连那些提交。可选：
+- 合并时**丢弃**本地那 3 个文档提交（内容已在上游），保留并行会话的 4 个；
+- 或先把这 3 个文档提交的改动 `git checkout` 掉再合并。
+**不要**用 rebase（会重写别人提交的哈希）。
+
+### 清理
+
+临时 worktree 与临时分支已删除；`git worktree list` 恢复原状。
