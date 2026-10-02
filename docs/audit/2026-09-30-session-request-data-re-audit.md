@@ -2707,3 +2707,69 @@ request_logs wide family」时，应该顺势问一句：还有哪些表**不在
 > 至此 `nullPaddedUnaffectedJustification` 已有 5 条论证，覆盖四种过度触发语境：
 > URL/JSON 字面量、**以非补位列打头的 COALESCE**、仅投影、以及（§9.14）
 > 同名不同表。**每次都要具名写清是哪一种**——这本身就是这条族维度的能力边界说明。
+
+## §9.17 读端轴收口：105/105，两道覆盖率门全绿（2026-10-02）
+
+batch2 的 25 条写入后，`TestRequestLogsStopWriteNothingLeftUnclassified` **转绿**。
+至此本审计两道覆盖率门都是绿的：**读端 105/105、控制面 52/52，未评估 0、未判定 0**。
+
+### §9.17.1 最终分布
+
+| 档位 | 文件数 | 灰度时是否可见 |
+|---|---:|---|
+| `silently_empty` | **27** | ❌ 静默 |
+| `silently_frozen` | **24** | ❌ 静默 |
+| `silently_degraded_content` | **23** | ❌ 静默 |
+| `unaffected_by_stop_write` | 19 | — 不受影响 |
+| `errors_out` | 11 | ✅ 立刻暴露 |
+| `validator_dual_read` | 1 | — 刻意对账 |
+
+**105 个文件里 74 个（70.5%）会在停写后继续给出错误答案且不报错。**
+只有 11 个会立刻失败——而那 11 个恰恰是**不构成风险**的那批（灰度时一看就知道）。
+
+源族分布（机械判定）：
+
+| 族 | 文件数 |
+|---|---:|
+| `reads_base_tables_only` | 47 |
+| `reads_view_with_null_padded_predicate` | **33** |
+| `reads_bodies_plus_other` | 17 |
+| `reads_view_and_base` | 5 |
+| `reads_710_view_only` | 2 |
+| `reads_bodies_family` | 1 |
+
+### §9.17.2 这个分布说明的事
+
+**S4 灰度不可能「跑通了就说明没问题」。** 灰度能观测到的只有那 11 个 `errors_out`；
+剩下 74 个的失败形态恰好是「接口 200、字段齐全、值是错的」。
+
+⇒ 灰度方案必须**自带对账**而不是「看接口有没有报错」。可用的对照物有三个：
+`cmd/gateway/dual_read_gate.go` 的 S4 门（已修真空为绿）、
+`domains/sessionforensics` 的双源比对、
+以及本表本身（每条都锚在逐字证据上，可复查）。
+
+### §9.17.3 本轮批次的族门战绩：抓到我 9 次
+
+| 批次 | 触发条数 | 性质 |
+|---|---:|---|
+| batch1 | 3（`data_lifecycle` / `routeincident` / `integrity_fingerprint_drift`） | 真错 |
+| batch3→§9.14 | 3（`model_status` / `candidate_failure_monitor` / `stats_minute_rollup_retire`） | 真错 |
+| batch4→§9.16 | 4（`stats_minute_rollup` / `model_routing_diagnostic` / `session_analytics_timeseries` / `usage`） | 真错 |
+| batch2→§9.17 | 2（`daily_probe_audit` / `session_management_api`） | 真错 |
+| 具名论证 | 9 条 | 假触发，逐条写清机制 |
+
+**9 次真错、9 次假触发。** 两边都需要门：没有族门，那 9 条错判定会一路进到 S4 决策里；
+没有具名论证通道，那 9 条假触发会逼着后来者「改代码迁就门」。
+
+### §9.17.4 遗留（不阻塞本次收口，但会阻塞 S4）
+
+1. **`admin/credential_monitor_heatmap.go:295` 引用 `rl.origin_stage`**，而 710/734 的
+   canonical 列契约（`db/request_logs_view_schema.go:575-615`）里没有这一列。
+   若真库视图确无此列，`exclude_self_test=1` 的查询会**直接 SQL 报错**——
+   与停写无关的既存缺陷，待真库确认。
+2. **`admin/session_tenant.go` 判 unaffected 依赖一条未实测的假设**：三条 session 腿
+   对新 task 是否都及时落行。若某类 task 只在 v1 留痕，权限门仍可能翻转成 404。
+3. **两条写授权缺陷**：`discovery` 已修（§9.12），`credential_recovery` 未修
+   —— 它的正解要先补 `RawModelName`（§8 决策 1 的可行性实测）。
+4. **S4 门控范围声明**与实际覆盖表不一致（§9.15 的 `ledger_reconciliation` 误报机），
+   还有哪些表在范围外被同一套对账/聚合引用，未系统排查。
