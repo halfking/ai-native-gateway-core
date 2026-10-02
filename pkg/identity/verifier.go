@@ -189,10 +189,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 func firstRole(roles []string) string {
-	for _, r := range roles {
-		if strings.TrimSpace(r) != "" {
-			return r
-		}
+	if len(roles) > 0 {
+		return roles[0]
 	}
 	return ""
 }

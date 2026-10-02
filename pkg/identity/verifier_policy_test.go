@@ -42,6 +42,8 @@ func TestVerifierPrincipalRolePolicy(t *testing.T) {
 		{"absent", nil, ""},
 		{"empty", []string{}, ""},
 		{"blank", []string{"", "  "}, ""},
+		{"empty primary before administrator", []string{"", "super_admin"}, ""},
+		{"blank primary before administrator", []string{"  ", "tenant_admin"}, ""},
 		{"scope is not a role", nil, "tenant_admin session:read"},
 		{"unknown", []string{"external_role"}, ""},
 		{"unknown before administrator", []string{"external_role", "tenant_admin"}, ""},

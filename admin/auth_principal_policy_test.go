@@ -105,6 +105,8 @@ func TestAdminPrincipalPolicySharedBoundary(t *testing.T) {
 		{"missing role", nil, "", "tenant-a", "42"},
 		{"scope-only role", nil, "tenant_admin", "tenant-a", "42"},
 		{"unknown primary role", []string{"external_role", "super_admin"}, "", "tenant-a", "42"},
+		{"empty primary before administrator", []string{"", "super_admin"}, "", "tenant-a", "42"},
+		{"blank primary before administrator", []string{"  ", "tenant_admin"}, "", "tenant-a", "42"},
 		{"missing tenant", []string{"user"}, "", "", "42"},
 		{"overflow user", []string{"user"}, "", "tenant-a", wrapToOne.String()},
 	} {
