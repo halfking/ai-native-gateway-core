@@ -164,7 +164,10 @@ func TestCanonicalQueryContracts(t *testing.T) {
 	source := string(data)
 	for _, want := range []string{
 		"public.session_turns_with_current_month",
-		"public.session_bodies_with_current_month",
+		// 2026-10-02（§9.31）：原值是 public.session_bodies_with_current_month ——
+		// 该关系在真库不存在（只作为 UNIQUE 约束名存在于迁移 614/645），
+		// parity 门一直产出零证据。改指真实存在的合并视图。
+		"public.session_bodies_unified",
 		"gw_session_id",
 	} {
 		if !strings.Contains(source, want) {
