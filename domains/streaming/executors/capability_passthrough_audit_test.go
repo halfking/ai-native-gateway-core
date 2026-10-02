@@ -1,11 +1,14 @@
 package executors
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/redis/go-redis/v9"
 )
 
 // 批判式审计（2026-10-03）—— 遗留 #3 透传改动的**行为等价性**核验。
@@ -382,5 +385,165 @@ func TestAudit_AgeGuardMustNotDisableTheOptimisation(t *testing.T) {
 		t.Fatalf("(supported=%v, known=%v), want (true, true): a FRESH snapshot must be used. "+
 			"If the age guard rejects everything, the optimisation is silently disabled and no "+
 			"other test notices.", supported, known)
+	}
+}
+
+// redisCmdCounter counts every Redis command by name, so a test can assert on
+// the ROUND TRIP BUDGET rather than on a single command's absence.
+//
+// Why this exists (2026-10-03 复审): the first cut of the age guard took its
+// own TIME sample to decide whether to trust the snapshot, then a second one
+// for the deadline. That kept every existing assertion green — "the GET is
+// gone" still held, "TIME is still called" still held — while the actual
+// round-trip count went from 3 to 3 (and to 4 when the snapshot was rejected).
+// The optimisation had been given straight back and no test noticed.
+//
+// A criterion that asks "is the expensive command absent" cannot catch a change
+// that ADDS a cheap command. Only a budget can.
+type redisCmdCounter struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (c *redisCmdCounter) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (c *redisCmdCounter) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		c.bump(cmd.Name())
+		return next(ctx, cmd)
+	}
+}
+
+func (c *redisCmdCounter) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		for _, cmd := range cmds {
+			c.bump(cmd.Name())
+		}
+		return next(ctx, cmds)
+	}
+}
+
+func (c *redisCmdCounter) bump(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.counts == nil {
+		c.counts = map[string]int{}
+	}
+	c.counts[name]++
+}
+
+func (c *redisCmdCounter) get(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[name]
+}
+
+// TestAudit_PrefetchHitStaysWithinRoundTripBudget is the budget criterion.
+//
+// Contract, stated as a budget because that is what can actually be violated:
+// on the prefetch-hit path this function must cost **at most one GET and one
+// TIME** — no more. The revision that silently undid the optimisation still
+// satisfied "no GET" and "at least one TIME"; it violated this.
+func TestAudit_PrefetchHitStaysWithinRoundTripBudget(t *testing.T) {
+	_, fpMgr, _, client := newF04ExecutorWithRedisClient(t)
+	const credID, model = 22, "gpt-5.6-terra"
+	ctx := t.Context()
+
+	if err := fpMgr.SetSupportsResponses(ctx, credID, model, false); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	snapshot, err := fpMgr.GetNodeState(ctx, credID, model)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	counter := &redisCmdCounter{}
+	client.AddHook(counter)
+
+	if _, _, err := fpMgr.GetSupportsResponses(ctx, credID, model, snapshot); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	gets := counter.get("get")
+	times := counter.get("time")
+	t.Logf("透传命中：GET=%d TIME=%d", gets, times)
+	if gets != 0 {
+		t.Fatalf("GET=%d, want 0", gets)
+	}
+	if times > 1 {
+		t.Fatalf("TIME=%d, want <=1: the age check and the deadline check must share ONE "+
+			"clock sample. Two TIME round trips give back the saving this change exists for "+
+			"(router MGET + 2×TIME is no better than the original MGET + GET + TIME).", times)
+	}
+}
+
+// TestAudit_NoPrefetchStaysWithinRoundTripBudget pins the other side: with no
+// snapshot the function must not cost more than it did before the change
+// (one GET + one TIME). A guard that re-reads on top of an existing read would
+// land here.
+func TestAudit_NoPrefetchStaysWithinRoundTripBudget(t *testing.T) {
+	_, fpMgr, _, client := newF04ExecutorWithRedisClient(t)
+	const credID, model = 22, "gpt-5.6-terra"
+	ctx := t.Context()
+
+	if err := fpMgr.SetSupportsResponses(ctx, credID, model, false); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	counter := &redisCmdCounter{}
+	client.AddHook(counter)
+
+	if _, _, err := fpMgr.GetSupportsResponses(ctx, credID, model, nil); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	gets := counter.get("get")
+	times := counter.get("time")
+	t.Logf("无透传：GET=%d TIME=%d", gets, times)
+	if gets != 1 {
+		t.Fatalf("GET=%d, want exactly 1", gets)
+	}
+	if times != 1 {
+		t.Fatalf("TIME=%d, want exactly 1: the no-snapshot path is the pre-existing path "+
+			"and must not have grown", times)
+	}
+}
+
+// TestAudit_RejectedSnapshotCostsOneExtraReadAndNothingElse records what the
+// rejection path actually costs, so the trade is visible rather than assumed:
+// prefetch TIME (budget check) + fallback GET + fallback TIME.
+func TestAudit_RejectedSnapshotCostsOneExtraReadAndNothingElse(t *testing.T) {
+	_, fpMgr, mr, client := newF04ExecutorWithRedisClient(t)
+	const credID, model = 22, "gpt-5.6-terra"
+	ctx := t.Context()
+
+	base := time.Unix(1_800_000_000, 0)
+	mr.SetTime(base)
+	if err := fpMgr.SetSupportsResponses(ctx, credID, model, false); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	snapshot, err := fpMgr.GetNodeState(ctx, credID, model)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	// Push the snapshot past the age guard.
+	mr.SetTime(base.Add(60 * time.Second))
+
+	counter := &redisCmdCounter{}
+	client.AddHook(counter)
+
+	if _, _, err := fpMgr.GetSupportsResponses(ctx, credID, model, snapshot); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	gets := counter.get("get")
+	times := counter.get("time")
+	t.Logf("快照被拒：GET=%d TIME=%d（拒绝路径的已知代价）", gets, times)
+	if gets != 1 {
+		t.Fatalf("GET=%d, want 1: a rejected snapshot must cost exactly one fallback read", gets)
+	}
+	if times > 2 {
+		t.Fatalf("TIME=%d, want <=2 (one budget sample + one deadline sample after the "+
+			"fallback read)", times)
 	}
 }
