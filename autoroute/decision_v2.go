@@ -126,6 +126,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 							decision.TaskKind = string(normalizeTaskKind(cached.Kind))
 							// R52: 与 V1 同款，兜底层归属随缓存复用。
 							decision.RoleFallbackLayer = cached.RoleFallbackLayer
+							// R53: 与 V1 同款缓存轮埋点（理由见 decision.go）：
+							// 缓存轮确实在用重量模型服务该请求，排除会低报真实成本。
+							if decision.RoleFallbackLayer != "" {
+								recordRoleFallbackLayer(decision.RoleFallbackLayer)
+							}
 						}
 						d.annotateTreatment(ctx, apiKeyID, decision)
 						d.populateShadow(ctx, sigs, decision)
@@ -320,6 +325,8 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
 			recommended = promoted
 			roleFallbackLayer = layerName(rolePlan.layerOf(hit))
+			// R53: 与 V1 同款埋点（见 decision.go 同步注释）。
+			recordRoleFallbackLayer(roleFallbackLayer)
 			roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != postTierWinner
 		}
 	}
