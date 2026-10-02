@@ -15,9 +15,12 @@ package dispatch
 // Failure policy is fail-closed:
 //   - renewal reports definitive loss (ErrLeaseLost: expired/evicted on the
 //     shared store) → abort the stream immediately;
-//   - renewal faults transiently (Redis unreachable) → keep retrying, but a
-//     full lease TTL (3 × RenewInterval) without a successful renewal means
-//     the lease has necessarily expired server-side → abort.
+//   - renewal faults transiently (Redis unreachable) → keep retrying, but
+//     once a full lease TTL has elapsed since the lease was last (re)armed
+//     (Acquire or the last successful Renew) the lease has necessarily
+//     expired server-side → abort. The deadline is measured from the last
+//     arm, not from the first failure, so the stream never runs on an
+//     expired lease.
 //
 // Aborting means cancelling the attempt's forward context: the upstream call
 // unwinds, ForwardFunc returns, and the normal first-byte-aware completion
@@ -69,7 +72,13 @@ func (cf *credForwarder) leaseRenewLoop(fwdCtx context.Context, stopCh <-chan st
 	ttl := 3 * interval // RenewInterval contract: TTL/3
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	var degradedAt time.Time
+	// lastArmed 是租约最后一次确定被武装的时刻：进入循环前的 Acquire、
+	// 之后每次成功的 Renew。fail-closed 截止时间必须从这里起算，而不是
+	// 从首次失败起算：租约恰在 lastArmed+TTL 过期，取「首个 ≥ 该时刻的
+	// 节拍」中止可保证流永远不会跑在已过期租约上——按首失败起算会让
+	// 中止最晚滑到过期后一个节拍（默认 TTL/3 ≈ 10s），恰好是本接线要
+	// 堵的未记账窗口（R31.1 批判复审修正）。
+	lastArmed := time.Now()
 	for {
 		select {
 		case <-stopCh:
@@ -84,7 +93,7 @@ func (cf *credForwarder) leaseRenewLoop(fwdCtx context.Context, stopCh <-chan st
 		err := renewer.Renew(fwdCtx, qr)
 		switch {
 		case err == nil:
-			degradedAt = time.Time{}
+			lastArmed = time.Now()
 		case errors.Is(err, ErrLeaseLost):
 			metricGovernorLeaseLost.Inc()
 			slog.Error("dispatch: governor lease lost; aborting stream fail-closed",
@@ -94,19 +103,16 @@ func (cf *credForwarder) leaseRenewLoop(fwdCtx context.Context, stopCh <-chan st
 			abort()
 			return
 		default:
-			if degradedAt.IsZero() {
-				degradedAt = time.Now()
-			}
 			// Transient fault: the lease may still be alive server-side.
-			// Tolerate until one full lease TTL has passed since the last
-			// successful renewal — past that the lease has necessarily
-			// expired and the slot is unaccounted.
-			if elapsed := time.Since(degradedAt); elapsed >= ttl {
+			// Abort at the first tick at/after lastArmed+TTL — past that
+			// point the lease has necessarily expired and the slot is
+			// unaccounted.
+			if time.Since(lastArmed) >= ttl {
 				metricGovernorLeaseLost.Inc()
 				slog.Error("dispatch: governor lease renewal degraded past lease TTL; aborting stream fail-closed",
 					"request_id", qr.ID,
 					"credential_id", cf.cred.CredentialID,
-					"degraded_ms", elapsed.Milliseconds(),
+					"since_last_armed_ms", time.Since(lastArmed).Milliseconds(),
 					"last_error", err)
 				abort()
 				return
