@@ -3360,3 +3360,136 @@ INSERT 列序门），动它的历史会牵连那些提交。可选：
 ### 清理
 
 临时 worktree 与临时分支已删除；`git worktree list` 恢复原状。
+
+---
+
+## 第三十九轮（§9.57）：补上 auto-route **产出侧**的洞
+
+### 做了什么
+
+`llm_gateway_auto_selections_total` 此前**有生产者、有值、零消费者**——
+到 §9.56 为止所有告警都建在**读侧**。本轮补两条产出侧告警 + 3 道 Go 门 +
+6 个 promtool 场景。`selection_metrics.go` 注释里那句
+「dropped worth alerting on rather than merely graphing」此前**没有门兑现**。
+
+### ★核心：CounterVec 陷阱
+
+带标签的 CounterVec 在**首次 `Inc()` 之前不导出任何序列** ⇒
+`sum(increase(...)) == 0` 在「从未产出」时得到**空向量**，`empty == 0` 仍是
+空向量 ⇒ **告警永远不响**，而那正是它唯一要抓的场景。
+
+**这条断言不是靠注释声明的，是被 promtool 场景 A 证明的**：在真的没有该指标
+任何序列的输入下要求规则触发；要得到 1，表达式里必须有「把空转成 0」的那一项。
+
+### ★场景测试抓出规则本身的两个真缺陷（`check rules` 全无感）
+
+1. `and on()` 返回**左侧**标签集，左侧无标签 ⇒ 告警**丢 instance 归属**。
+2. 修成 `by (instance)` 后**仍丢 job** ⇒ 最终是 `by (job, instance)` +
+   `and on(job, instance)`。
+
+### ★我自己的 Go 门在修复面前误报了两次
+
+第一版门用 `Contains(expr, "or vector(0)")`。第二轮把表达式改成
+`or (0 * max by (job, instance) (up))`（**同一个作用**，还多保住了标签）后门红了。
+
+⇒ **门若钉死字面串，就会在一次修复面前误报。** 改成断言**机制**（正则）。
+
+**与 §9.52「门被反转」是同一模式的反面**：那次门在缺陷修好后红（**正确**），
+这次门在缺陷修好后仍红（**不正确**）。区别在于判据锚的是**字面串**还是**机制**。
+
+### 已知局限（已写进 yml，且有门守着「必须写下来」）
+
+1. 假设该部署在用 auto-route；完全不用 auto 路由的部署会**永久**报红。
+2. **252 上没有 Prometheus ⇒ 这组告警在 252 不生效**（适用 154 / 本地）。
+
+### 验证
+
+```
+promtool check rules  → SUCCESS: 2 rules found
+promtool test rules   → SUCCESS（6 场景）
+go test ./deploy/prometheus/rules/ -count=1 → ok
+变异 P1/P2/P3（promtool）+ N1/N2/N3（Go 门）全红，全部还原
+```
+
+### 下一轮提示词
+
+> ⚠️ **仍未推送**：本节 + §9.57 三个新文件，以及 §9.54/55/56 已上远端但
+> 本地 main 仍留着三个等价提交（见第三十八轮记录）。合并时需人工裁决，
+> **不要用 rebase**。
+>
+> ① §9.57 已补上 auto-route 产出侧的洞。**剩下的真实问题不是告警，是
+>    auto-route 为什么从 2026-09-15 起不产出 selection**（§9.56）——
+>    证据（覆盖 09-08/09-09 的日志 / Prometheus 历史序列）本轮不具备，
+>    **拿到之前不要写归因**。
+> ② 需要拍板的三项仍未变：§9.49.8 `silently_degraded_content` 是否扩档、
+>    §9.48 `silently_frozen` 21 条口径、以及 cohort 总体修正方案
+>    （(i) 从 `auto_route_selections` 历史导出 / (ii) `origin_stage='business'`
+>    取代手工 actor 名单（**会改线上奖励数值**）/ (iii) 两者都做）。
+> ③ §9.57.6 的两个局限里，「本部署是否启用 auto 路由」缺少配置位，
+>    导致不用 auto 路由的部署会永久报红。若要消除需新增部署级开关。
+
+---
+
+## 第四十轮（§9.58）：★撤回 §9.54.3 的「停写前阻塞项」
+
+### 结论
+
+§9.54.3 写「99.5% 的业务 auto 流量根本没进会话族」，并列为停写前阻塞项。
+**前提是错的，撤回。**
+
+我当时用 `origin_stage = 'business'` 当「真实业务流量」的代理。252 实测：
+
+| origin_actor | origin_stage | 行数 |
+|---|---|---:|
+| `auto-summary-generator` | `business` | 1,924 |
+| `auto-title-generator` | `business` | 1,242 |
+| `<null>` | `business` | **15** |
+
+按 `task_type` 是否为空切分：**空 3,166 条 → 进会话族 0 条；
+非空 15 条 → 进会话族 15 条（100%）。**
+
+⇒ **真正的业务 auto 流量是 15 条，且 15 条全部进了会话族。**
+那 3,166 条是 auto 标题/摘要生成器，**被排除是正确的**（不是用户轮次）。
+
+⇒ **镜像行为完全正确，是我把内部生成器误认成业务流量。**
+
+### 根因：两份「内部 actor」名单互不相认
+
+`IsInternalAutoEntry`（telemetry 包）认 `auto-title-generator` /
+`auto-summary-generator`；而 `middleware/origin_mw.go` 的
+`trustedOriginOwners` / `systemOwnerFallbackStage` /
+`globalAuthStageActorPairs` **三个名单里这两串一次都没出现**
+⇒ origin 中间件把它们盖成 `stage=business`。
+
+⇒ **同一件事有两份真相源，其中一份漏了两个成员。**
+（同族：§9.45 的「三个真相源让门测不出差别」、
+`KeyRequestLogsWriteEnabled` 因「同一键被五处各写字面量」才被提成常量。）
+
+### 后果
+
+`origin_stage` 在 auto 总体上**不是**可靠的「是否内部」判据。任何用
+`origin_stage='business'` 筛选的查询（含 §9.54.2 的 cohort 分析）
+都会混进 3,166 条内部生成器。
+
+### 修法（需拍板，本轮不实施）
+
+(a) 把两个 actor 补进 origin 的系统 actor 名单 —— **会改历史行判定口径**；
+(b) 新增「是否内部」的单一判定函数，所有筛选方改用它 —— 不碰历史值；
+(c) 先只加门钉出差异 —— **会常红挂 CI**，应先裁决再落。
+
+### 下一轮提示词
+
+> ⚠️ **§9.54.3 的「99.5% 业务 auto 流量没进会话族 = 停写前阻塞项」已撤回**（§9.58）：
+> 那 3,154 条里 99.5% 是 `auto-title-generator`/`auto-summary-generator`，
+> 被排除出 `session_turns` 是**正确的**；真正业务 auto 只有 15 条，15 条全在会话族。
+> **会话族的镜像行为没有问题。**
+>
+> ① 需要拍板：三份 origin actor 名单与 `IsInternalAutoEntry` 的名单不一致
+>    （`auto-title-generator` / `auto-summary-generator` 缺失），选 (a)(b)(c) 哪条。
+>    在裁决前，**不要**再用 `origin_stage='business'` 当「真实业务」的判据。
+> ② 仍未查明：auto-route 自 2026-09-15 起不产出 selection 的原因（需覆盖
+>    09-08/09-09 的日志或 Prometheus 历史序列，现有环境不具备）。**不写归因。**
+> ③ 仍未拍板：cohort 总体修正方案 / §9.49.8 是否扩档 / §9.48
+>    `silently_frozen` 21 条口径。注意 §9.54.2 的 cohort 分析也受本节影响。
+> ④ 推送状态：§9.57 已上 origin/main（2e68487a8）；本地 main 仍有 3 个
+>    等价文档提交 + 并行会话 4 个提交，合并需人工裁决，**不要用 rebase**。
