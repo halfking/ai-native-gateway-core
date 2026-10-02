@@ -837,3 +837,10 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 818 | `818_ursm_snapshot_typed_columns.sql` | `bb2493af5a160a8fd6df860c4117c8aeeb68212843394d74b1923ff8a30988b3` | pending deploy |
 | 819 | `819_request_abandoned.sql` | `08cf64b15be12f88e7e513449490df8eda136839663f052186a740ddb9b4b43a` | pending deploy |
 
+## 2026-10-02T21:23:48Z — deploy 154 build_seq 2408 (1a213f4c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 818 | `818_ursm_snapshot_typed_columns.sql` | `bb2493af5a160a8fd6df860c4117c8aeeb68212843394d74b1923ff8a30988b3` | applied+verified |
+| 819 | `819_request_abandoned.sql` | `08cf64b15be12f88e7e513449490df8eda136839663f052186a740ddb9b4b43a` | applied+verified |
+
