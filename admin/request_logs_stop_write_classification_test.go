@@ -196,9 +196,17 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Note:     "附件归属校验（attachmentOwnedByTenant）只读 710 视图 EXISTS/JOIN，视图 = session 臂 ∪ v1 臂，session 臂继续增长 ⇒ 新请求仍能命中判归属，fail-closed 语义不变。",
 	},
 	"admin/model_status.go": {
-		Effect:   effectUnaffected,
+		Effect:   effectSilentlyEmpty,
 		Evidence: "FROM request_logs_with_current_month\n\t\t WHERE ts >= $1\n\t\t   AND client_model IS NOT NULL",
-		Note:     "queryModelStatusAggs / queryModelStatusHourBuckets 两个读点都只读 710 视图（族=reads_710_view_only，机械判定与真实读点一致）。视图含持续增长的 session 臂，模型健康度看板不受停写影响。",
+		// 2026-10-02 **自我更正**：batch1 判 unaffected（理由「读 710 视图，session 臂继续供数」），
+		// 被新增的 null-padded 族门判红——判对了。逐行核实：:268-269 与 :296-297 是
+		//   AND client_model IS NOT NULL
+		//   AND TRIM(client_model) <> ''
+		// 而 client_model 正是 migration 710 在 session 臂上补位成 NULL 的 30 列之一。
+		// ⇒ 视图**照样返回行**，但这两条过滤把全部新流量滤掉 ⇒ 结果集真的为空。
+		// 「视图有 session 臂所以不会空」只在不用补位列做谓词时成立。
+		Note: "模型健康度看板在停写后**永久空白**：行级有 session 臂，但 client_model 恒 NULL 使过滤恒不命中。" +
+			"接口 200、字段齐全、无任何错误信号。",
 	},
 	"admin/session_extract.go": {
 		Effect:   effectUnaffected,
@@ -211,14 +219,31 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Note:     "主轮次/子请求两腿都已迁 710 视图（:324 是唯一真实调用点，其余 request_logs 命中全是注释）；视图 session 臂继续增长，树照常构建。",
 	},
 	"bg/candidate_failure_monitor.go": {
-		Effect:   effectUnaffected,
+		Effect:   effectSilentlyDegradedContent,
 		Evidence: "(SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes')",
-		Note:     "checkStaleness 与 checkAutoCool 均只读 710 视图（族=reads_710_view_only）。session 臂继续写入 ⇒ 5 分钟活性探针与 auto-cool 失败率窗口照常有新行，读端不受停写影响。（控制面轴另判为 live：它 UPDATE credentials。）",
+		// 2026-10-02 **自我更正**：batch3/batch1 判 unaffected，被 null-padded 族门判红。
+		// 核实 :267 `GROUP BY credential_id, provider_id, raw_model_name, error_kind`
+		// —— provider_id 是 session 臂补位成 NULL 的列之一（raw_model_name 亦然，
+		// 它是 v1-only 列）。行照样出、5 分钟 max(ts) 活性探针照样工作，
+		// 但**分组键变了**：新流量全部归到 provider_id=NULL 那一组，
+		// 失败率按 provider 的分母静默失真 ⇒ 5 档里没有这一形，取第 6 档。
+		Note: "行级与时间窗都不受影响，坏的是分组归属。5 分钟活性探针（max(ts)）照常工作，" +
+			"但按 provider 聚合的失败率把新流量全算到 NULL 组。（控制面轴另判 live：它 UPDATE credentials。）",
 	},
 	"bg/stats_minute_rollup_retire.go": {
-		Effect:   effectUnaffected,
+		Effect:   effectSilentlyDegradedContent,
 		Evidence: "FROM request_logs_with_current_month AS r\n    WHERE r.request_status IN ('success', 'failure', 'rate_limited')",
-		Note:     "三条 retire SQL 都以 710 视图作 NOT EXISTS 保护，视图持续产出键 ⇒ 重扫/退役逻辑读端照常工作。（控制面轴判 live：它 DELETE 派生聚合。）",
+		// 2026-10-02 **自我更正**：batch1 判 unaffected，被 null-padded 族门判红。
+		// 核实 :27 / :106-108 的 NOT EXISTS 保护用的是补位列：
+		//   AND COALESCE(r.provider_id, 0) = m.provider_id
+		//   AND COALESCE(NULLIF(r.outbound_model,''), NULLIF(r.client_model,''), '') = m
+		//   AND COALESCE(NULLIF(r.client_profile,''), '') = m.client_profile
+		// provider_id / client_model / client_profile 三列在 session 臂恒 NULL
+		// ⇒ COALESCE 兜成 0 / '' ⇒ 与已有 rollup 键**匹配不上** ⇒
+		// 「这个键近期还有流量」的保护失效 ⇒ 本该保留的分钟行会被当成陈旧退役。
+		// 失效方向是**多删派生数据**（不是少读），故取第 6 档并在此写明方向。
+		Note: "退役判定依赖补位列做键匹配；停写后保护失效，派生分钟聚合被过度清理。" +
+			"（控制面轴判 live：它 DELETE 三张 rollup 表。）",
 	},
 	"admin/auto_title_generator.go": {
 		Effect:   effectSilentlyDegradedContent,
@@ -435,11 +460,19 @@ const classificationHowTo = `打开该文件、找到读 request_logs 的位置�
   silently_frozen         结果静默冻结为停写前的常数，无任何错误信号
   unaffected_by_stop_write  读表结构/体量/生命周期，不读流量
   validator_dual_read     刻意做 v1↔session 对账
+  silently_degraded_content  行还在，但某一列内容静默变空/降级（第 6 档，2026-10-02）
 
 并把该处**逐字**的一段 SQL 片段填进 Evidence（门会核它是否真的在文件里）。
 
 先看族再看后果：只读 710 视图的读点停写后**不会查空**（视图含 session 臂），
 判 silently_empty 会被 TestStopWriteEffectAgreesWithSourceFamily 判红。
+
+⚠️ 但「读 710 视图」本身**不**再禁止 silently_empty：migration 710 在 session 臂上
+把 30 列补成了 NULL（client_model / provider_id / attachments / outbound_msg_count /
+api_key_owner_user / gw_task_id / model_chosen …）。视图**照样返回行**，但只要
+WHERE / GROUP BY / JOIN 用到这些列，就是「行级有、谓词级空」——按该列过滤恒 0 行。
+族分类器会把这类文件分到 reads_view_with_null_padded_predicate 族。
+在该族里判 unaffected 需要在 nullPaddedUnaffectedJustification 里具名论证。
 不要按「读哪张表」或「函数名像不像会话查询」来分——审计 §5.5.6 记过：第一版把
 gw_task_id 过滤的三处误判成会话内读，差了两档。`
 
@@ -505,6 +538,9 @@ const (
 	familyBase        = "reads_base_tables_only"
 	familyBodiesMixed = "reads_bodies_plus_other"
 	familyViewBase    = "reads_view_and_base"
+	// familyViewNullPadded：读 710 视图（行级有 session 臂），但**谓词/分组/连接**
+	// 用到了 session 臂恒 NULL 的 30 列之一 ⇒ 行级有、谓词级空。
+	familyViewNullPadded = "reads_view_with_null_padded_predicate"
 )
 
 var (
@@ -541,6 +577,86 @@ var requestLogsViewsWithSessionArm = map[string]struct{}{
 	"request_logs_with_current_month": {},
 }
 
+// sessionArmNullPaddedColumns 是 710 视图 session 臂上**恒为 NULL** 的列。
+//
+// 为什么必须单独记一张表（2026-10-02）：「710 视图含 session 臂 ⇒ 停写后不会
+// 查空」这句话只在**行级**成立。migration 710 的 session 臂对 30 列做 NULL 补位
+// （`710_request_logs_view_session_family_v2.sql`），其中包括 client_model、
+// provider_id、attachments、outbound_msg_count、outbound_token_est、
+// api_key_owner_user、gw_task_id、model_chosen、strategy_used……
+//
+// ⇒ 任何在 WHERE / GROUP BY / JOIN / COALESCE 判定里用到这几列的读点，会
+// **行级有、谓词级空**：视图照常返回行，但按该列过滤的结果集恒为空。
+// 这不是「查不到」，是「查得到但没有一行匹配」——旧族约束（视图族不得判
+// silently_empty）在这里是**错的**，而且会拒绝正确的判定。
+//
+// 实证：domains/attachments/handler.go 读 `attachments::text`，session 臂该列
+// 恒 NULL ⇒ Scan 报错 ⇒ 被当成「无附件」⇒ 200 + attachments: []。
+// 附件数据其实还在 request_attachments 表里，丢的只是这条 JSONB 读腿。
+var sessionArmNullPaddedColumns = map[string]struct{}{
+	"affinity_hit": {}, "api_key_owner_user": {}, "api_key_prefix": {},
+	"application_code": {}, "attachments": {}, "auto_profile": {},
+	"client_model": {}, "client_profile": {}, "compression_reason": {},
+	"due_at": {}, "gw_task_id": {}, "id": {}, "key_alias": {},
+	"model_chosen": {}, "outbound_msg_count": {}, "outbound_msg_hashes": {},
+	"outbound_token_est": {}, "owner_user": {}, "provider_id": {},
+	"provider_model": {}, "quality_fix_actions": {}, "request_class": {},
+	"request_type": {}, "strategy_used": {}, "stream_chunk_errors": {},
+	"stream_chunks_sent": {}, "test_tab_indent": {}, "transform_rule_id": {},
+	"virtual_ip": {}, "virtual_mac": {},
+}
+
+// TestSessionArmNullPaddedColumnsMatchMigration 钉住上面那张表与 migration 710
+// 声明的一致，防止「视图加了列 / 迁移改了投影」之后表悄悄过期。
+//
+// 这张表过期 = 族分类器开始把「谓词级空」判成「行级有」= 门会拒绝正确判定。
+// 所以它必须由**权威来源**（迁移文件）反向校验，而不是靠人记得更新。
+func TestSessionArmNullPaddedColumnsMatchMigration(t *testing.T) {
+	root := repoRootFromCaller(t)
+	raw, err := os.ReadFile(filepath.Join(root,
+		"sql/migrations/startup/710_request_logs_view_session_family_v2.sql"))
+	if err != nil {
+		t.Fatalf("读 migration 710 失败 %v", err)
+	}
+	declared := map[string]struct{}{}
+	re := regexp.MustCompile(`NULL::[A-Za-z ]+ AS ([a-z_]+)`)
+	for _, m := range re.FindAllStringSubmatch(string(raw), -1) {
+		declared[m[1]] = struct{}{}
+	}
+	// test_tab_indent 是迁移里的探针列，保留在表内以便 mismatch 报告完整。
+	if len(declared) == 0 {
+		t.Fatal("migration 710 里没解析出任何 NULL 补位列——正则失效或迁移被重写，" +
+			"族分类器会静默退化成「视图族一律行级可用」")
+	}
+	var missing, extra []string
+	for c := range declared {
+		if _, ok := sessionArmNullPaddedColumns[c]; !ok {
+			missing = append(missing, c)
+		}
+	}
+	for c := range sessionArmNullPaddedColumns {
+		if _, ok := declared[c]; !ok {
+			extra = append(extra, c)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	if len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("session 臂 NULL 补位表与 migration 710 不一致：\n"+
+			"  迁移里有、表里没有：%v\n  表里有、迁移里没有：%v\n"+
+			"后果：族分类器会把「谓词级空」误判成「行级有」，"+
+			"从而拒绝正确的 silently_empty 判定。", missing, extra)
+	}
+}
+
+// nullPaddedColWordRE 为某个 NULL 补位列构造词边界匹配。
+//
+// 用词边界而不是裸子串：`id` 是补位列，但 `provider_id` / `session_id` 里都含
+// "id"，裸子串会把几乎每个文件都判成谓词级空，那条族约束就废了。
+func nullPaddedColWordRE(col string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(col) + `\b`)
+}
+
 // sourceFamilyOf 从文件源码机械判定它读哪一族。
 func sourceFamilyOf(code string) string {
 	code = gateStopWriteLineCommentRE.ReplaceAllString(code, " ")
@@ -559,7 +675,22 @@ func sourceFamilyOf(code string) string {
 	// 读了 v1-only 视图的，即使 SQL 文本里没有裸 FROM request_logs，也是
 	// 实质上的基表读者——这是「只看 from request_logs 就会漏掉」的一类。
 	ba := familyBaseRE.MatchString(code) || v1OnlyView
+	// 视图族的第二维：谓词级 NULL 补位（2026-10-02）。
+	// 只在「确实读会话臂视图」且「代码里出现 NULL 补位列名」时成立——
+	// 后者是个偏保守的近似（SELECT 出来与 WHERE 过滤同形），但方向安全：
+	// 它只会**放开** silently_empty、**禁止** unaffected，不会把正确判定判错。
+	np := false
+	if vi {
+		for col := range sessionArmNullPaddedColumns {
+			if nullPaddedColWordRE(col).MatchString(code) {
+				np = true
+				break
+			}
+		}
+	}
 	switch {
+	case vi && np && !ba:
+		return familyViewNullPadded
 	case bo && (vi || ba):
 		return familyBodiesMixed
 	case bo:
@@ -602,20 +733,22 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 			undetermined)
 	}
 	total := 0
-	for _, k := range []string{familyBodies, familyBodiesMixed, familyView, familyBase, familyViewBase} {
+	for _, k := range []string{familyBodies, familyBodiesMixed, familyView, familyBase,
+		familyViewBase, familyViewNullPadded} {
 		total += counts[k]
 	}
 	if total != len(requestLogsReadInventory) {
-		t.Errorf("四族合计 %d ≠ 读点清单 %d —— 有文件被重复计数或漏计", total, len(requestLogsReadInventory))
+		t.Errorf("六族合计 %d ≠ 读点清单 %d —— 有文件被重复计数或漏计", total, len(requestLogsReadInventory))
 	}
 	t.Logf("S4 停写影响面（按读表族，机械判定）：\n"+
-		"  bodies_only=%d        正文无兜底 ⇒ 硬失败\n"+
-		"  bodies_plus_other=%d  正文腿硬失败（轮次腿可能照常）\n"+
-		"  view_only=%d          session 臂仍供数 ⇒ 静默少计\n"+
-		"  base_only=%d          完全停止增长\n"+
-		"  view_and_base=%d      部分退化",
+		"  bodies_only=%d                正文无兜底 ⇒ 硬失败\n"+
+		"  bodies_plus_other=%d          正文腿硬失败（轮次腿可能照常）\n"+
+		"  view_only=%d                  session 臂仍供数 ⇒ 静默少计\n"+
+		"  view_with_null_padded=%d      **行级有、谓词级空**（migration 710 补位 30 列）\n"+
+		"  base_only=%d                  完全停止增长\n"+
+		"  view_and_base=%d              部分退化",
 		counts[familyBodies], counts[familyBodiesMixed], counts[familyView],
-		counts[familyBase], counts[familyViewBase])
+		counts[familyViewNullPadded], counts[familyBase], counts[familyViewBase])
 }
 
 // TestStopWriteEffectAgreesWithSourceFamily 拦住本项目已经犯过一次的错：
@@ -626,8 +759,24 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 	// 「静默变空」要求读点**完全**没有 session 侧供给。只读 710 视图不满足
 	// 这个前提——真库实测该视图 24h 内 36.55% 的行来自 session_turns。
+	// 「静默变空」要求读点**完全**没有 session 侧供给。
+	//
+	// ⚠️ 2026-10-02 收窄：这条原本一刀切套在 familyView 上，**是错的**。
+	// migration 710 对 session 臂补了 30 列 NULL（client_model / provider_id /
+	// attachments / outbound_msg_count / api_key_owner_user …），凡在
+	// WHERE / GROUP BY / JOIN 用到这些列的读点，会「行级有、谓词级空」——
+	// 视图照常返回行，但按该列过滤恒 0 行。这类文件判 silently_empty 是**正确**的，
+	// 旧规则会拒绝它。现在它们被分到 familyViewNullPadded，只约束 unaffected。
 	forbidden := map[string][]string{
 		familyView: {effectSilentlyEmpty},
+		// 谓词级空族：结果集可以真的为空（合法）。
+		//
+		// 「不受影响」**不直接判红、而是要求具名论证**——因为 sourceFamilyOf 的
+		// 这一维是**保守近似**：它只检查代码里是否出现补位列名，无法区分
+		// 「用在 WHERE/GROUP BY」（真触发）与「只出现在投影里 / 路径字符串 /
+		// Go 结构体字段里」（过度触发）。实测 5 个被标记文件里 3 真 2 假。
+		// 机械地一刀切会再次误伤正确代码（同 §9.13.2 的教训），
+		// 所以这里要求 nullPaddedUnaffectedJustification 具名登记。
 	}
 	root := repoRootFromCaller(t)
 	for file, c := range requestLogsStopWriteClassification {
@@ -640,12 +789,21 @@ func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 			continue
 		}
 		fam := sourceFamilyOf(string(raw))
+		if fam == familyViewNullPadded && c.Effect == effectUnaffected {
+			if reason, ok := nullPaddedUnaffectedJustification[file]; !ok || strings.TrimSpace(reason) == "" {
+				t.Errorf("%s（族=%s）判为「停写不受影响」，但它在 session 臂 NULL 补位的列上出现。\n"+
+					"该族的自动判定是保守近似（只看列名出现，不区分谓词与投影），所以这里不直接判红，\n"+
+					"但必须在 nullPaddedUnaffectedJustification 里具名论证：若该列只出现在投影/路径/结构体\n"+
+					"字段里，或已被同表达式的非补位列 COALESCE 兜住，写清机制即可放行。", file, fam)
+			}
+		}
 		for _, bad := range forbidden[fam] {
 			if c.Effect == bad {
-				t.Errorf("%s（族=%s）被判 %q，但它读的是 710 视图，停写后 session 臂仍供数"+
-					"（真库实测 24h 内 36.55%% 的视图行来自 session_turns），不可能静默变空。"+
-					"应为 %q（静默少计）或 %q（报错）。",
-					file, fam, bad, effectSilentlyFrozen, effectErrorsOut)
+				t.Errorf("%s（族=%s）被判 %q，但它只读 710 视图且**未**触及任何 session 臂\n"+
+					"NULL 补位列 ⇒ 停写后 session 臂仍按行供数（真库实测 24h 内 36.55%% 的视图行\n"+
+					"来自 session_turns），不可能静默变空。应为 %q（静默少计）或 %q（报错）。\n"+
+					"若本文件其实用到了补位列做谓词，它应被分到 %s 族——请核 sourceFamilyOf。",
+					file, fam, bad, effectSilentlyFrozen, effectErrorsOut, familyViewNullPadded)
 			}
 		}
 		// bodies 族无 session 侧等价物，判「不受影响」几乎一定是错的。
@@ -684,4 +842,25 @@ func effectsKeyList() string {
 	}
 	sort.Strings(keys)
 	return strings.Join(keys, "/")
+}
+
+// nullPaddedUnaffectedJustification 登记「触及 session 臂 NULL 补位列、但仍判
+// unaffected」的**具名论证**。
+//
+// 与 bodiesUnaffectedJustification 同一模式：**默认要求论证，具名放行**。
+// 存在的理由是 sourceFamilyOf 的这一维只能看「列名是否出现」，分不清
+// 「用在 WHERE/GROUP BY」（真触发：结果集谓词级恒空）与
+// 「只出现在投影 / URL 路径 / Go 结构体字段 / 已被同表达式非补位列 COALESCE
+// 兜住」（过度触发）。
+//
+// 每条必须回答：**停写之后，这个读点过滤/分组用的列会不会变？**
+var nullPaddedUnaffectedJustification = map[string]string{
+	"admin/attachments_routes.go": "两处命中都不是 SQL：`/api/attachments/` 是 HTTP 路径字面量" +
+		"（第 38 行 strings.TrimPrefix），`\"attachments\": []any{}` 是响应 JSON 的键（第 103 行）。" +
+		"本文件对 710 视图的读点是 attachmentOwnedByTenant 的 EXISTS/JOIN，只用 request_id 与 " +
+		"tenant_id 过滤，两列在 session 臂都有真值 ⇒ 判 unaffected 成立。",
+	"admin/session_turns_tree.go": "命中列只出现在**投影**里，且已被同表达式的非补位列兜住：" +
+		"`COALESCE(outbound_model, client_model, '')`（:228）里 outbound_model 在 session 臂是真值，" +
+		"所以 client_model 为 NULL 不改变结果；`COALESCE(request_type, 'main')`（:321/:333）同理有默认。" +
+		"本文件不用任何补位列做 WHERE / GROUP BY / JOIN ⇒ 判 unaffected 成立。",
 }
