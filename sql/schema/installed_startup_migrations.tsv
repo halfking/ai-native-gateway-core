@@ -216,3 +216,5 @@
 198	807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql
 199	808_request_logs_default_partition.sql
 200	809_instance_release_status_nullable_release_id.sql
+201	813_supplier_errors_partitions_heap.sql
+202	814_adaptive_probe_targets_hot_subquery.sql
