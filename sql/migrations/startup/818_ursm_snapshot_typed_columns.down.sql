@@ -1,8 +1,8 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/817_ursm_snapshot_typed_columns.down.sql
--- Migration:     817 (down)
+-- File:          sql/migrations/startup/818_ursm_snapshot_typed_columns.down.sql
+-- Migration:     818 (down)
 -- Database:      llm_gateway
--- Purpose:       回滚 817 —— 丢弃 24 个由 payload 提升出来的 typed 列。
+-- Purpose:       回滚 818 —— 丢弃 24 个由 payload 提升出来的 typed 列。
 --
 -- **数据不可逆**：down 之后这 24 列的值随之消失。本迁移刻意**没有**回填
 -- 历史行（见 up 头注释），所以：

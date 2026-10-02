@@ -11,14 +11,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
-// 817 回归门。
+// 818 回归门。
 //
 // 本文件钉住三件事，其中第三件是**唯一会静默丢数据**的失败模式：
 //
 //  1. payload 剔除 7 个与 typed 列重复的键（省 70.8 B/行 = payload 的 24%）；
 //  2. 24 个已知键正确落到 typed 列，且**键缺失时落 NULL 而非零值**；
 //  3. **payload 的排除方向是「白名单剔除」** —— hash 里新出现的、
-//     817 不知道的键必须仍然留在 payload 中。
+//     818 不知道的键必须仍然留在 payload 中。
 //
 // 第 3 条为什么是最要紧的：hash 来自 Redis HGETALL，schema 会演进
 // （writer.go 原注释明写「以防未来需要恢复其他字段（pricing, concurrency,
@@ -56,7 +56,7 @@ func payloadKeys(t *testing.T, r Row) map[string]any {
 	return m
 }
 
-func Test817PayloadStripsKeysThatAlreadyHaveTypedColumns(t *testing.T) {
+func Test818PayloadStripsKeysThatAlreadyHaveTypedColumns(t *testing.T) {
 	r := collectOne(t, map[string]string{
 		// 7 个重复键：必须从 payload 消失（它们已在 typed 列里）
 		"available": "1", "generation": "43", "source_priority": "20",
@@ -76,8 +76,8 @@ func Test817PayloadStripsKeysThatAlreadyHaveTypedColumns(t *testing.T) {
 	}
 }
 
-func Test817PayloadKeepsUnknownHashKeysForForwardCompat(t *testing.T) {
-	// 这三个键模拟 817 之后 hash 新增的字段。它们的值在生产上可能不存在，
+func Test818PayloadKeepsUnknownHashKeysForForwardCompat(t *testing.T) {
+	// 这三个键模拟 818 之后 hash 新增的字段。它们的值在生产上可能不存在，
 	// 但测试必须钉住：任何未被列为重复键的键都要留在 payload 里。
 	future := map[string]string{
 		"pricing_tier_v2":  "gold",
@@ -93,7 +93,7 @@ func Test817PayloadKeepsUnknownHashKeysForForwardCompat(t *testing.T) {
 	for k, v := range future {
 		gv, ok := got[k]
 		if !ok {
-			t.Errorf("payload dropped unknown hash key %q — 817 的排除表方向反了，"+
+			t.Errorf("payload dropped unknown hash key %q — 818 的排除表方向反了，"+
 				"hash 演进时该字段会静默丢失", k)
 			continue
 		}
@@ -103,7 +103,7 @@ func Test817PayloadKeepsUnknownHashKeysForForwardCompat(t *testing.T) {
 	}
 }
 
-func Test817TypedColumnsArePopulatedFromHash(t *testing.T) {
+func Test818TypedColumnsArePopulatedFromHash(t *testing.T) {
 	r := collectOne(t, map[string]string{
 		"available": "1",
 		"updated_at_ms":          "1790915622313",
@@ -149,8 +149,8 @@ func Test817TypedColumnsArePopulatedFromHash(t *testing.T) {
 	}
 }
 
-func Test817MissingHashKeysStayNilNotZero(t *testing.T) {
-	// 只有一个极简 hash：绝大多数 817 列的键根本不存在。
+func Test818MissingHashKeysStayNilNotZero(t *testing.T) {
+	// 只有一个极简 hash：绝大多数 818 列的键根本不存在。
 	r := collectOne(t, map[string]string{"available": "1"})
 
 	for name, got := range map[string]any{
@@ -170,7 +170,7 @@ func Test817MissingHashKeysStayNilNotZero(t *testing.T) {
 	}
 }
 
-func Test817MalformedValuesAreDroppedNotZeroed(t *testing.T) {
+func Test818MalformedValuesAreDroppedNotZeroed(t *testing.T) {
 	// 不可解析的值必须落 nil，而不是被静默当作 0 —— 否则库里会出现
 	// 一个看起来是真的、实际是解析失败的读数。
 	r := collectOne(t, map[string]string{

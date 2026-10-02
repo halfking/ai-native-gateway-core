@@ -1,6 +1,6 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/817_ursm_snapshot_typed_columns.sql
--- Migration:     817
+-- File:          sql/migrations/startup/818_ursm_snapshot_typed_columns.sql
+-- Migration:     818
 -- Database:      llm_gateway
 -- Purpose:       ursm_node_snapshot_min.payload 字段拆分 —— 31 个 hash 键
 --                提升为 typed 列，payload 退化为「未知字段的前向兼容仓」
@@ -79,11 +79,11 @@ ALTER TABLE public.ursm_node_snapshot_min
   ADD COLUMN IF NOT EXISTS cool_reason              text;
 
 COMMENT ON COLUMN public.ursm_node_snapshot_min.updated_at_ms IS
-  '817: 由 payload->>''updated_at_ms'' 提升。原为 13 位十进制字符串。';
+  '818: 由 payload->>''updated_at_ms'' 提升。原为 13 位十进制字符串。';
 COMMENT ON COLUMN public.ursm_node_snapshot_min.last_err IS
-  '817: 由 payload->>''last_err'' 提升。实测 17 个取值，是该表最常被人工排查引用的字段。';
+  '818: 由 payload->>''last_err'' 提升。实测 17 个取值，是该表最常被人工排查引用的字段。';
 COMMENT ON COLUMN public.ursm_node_snapshot_min.payload IS
-  '817 起语义收窄：仅保留**未被 24 个 typed 列覆盖**的 hash 键（writer.go 已剔除 '
+  '818 起语义收窄：仅保留**未被 24 个 typed 列覆盖**的 hash 键（writer.go 已剔除 '
   'available/generation/source_priority/fail_streak/sr_1m/sr_5m/sr_30m 七个重复键）。'
   '保留 payload 的目的是保住 hash schema 演进时的前向兼容（见迁移头注释）。'
   '历史行的 payload 仍是全量 —— 本迁移刻意不回填（理由见迁移头注释）。';
