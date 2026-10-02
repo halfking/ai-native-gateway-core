@@ -176,6 +176,11 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 		`).Scan(&canonCols); err != nil {
 				return fmt.Errorf("probe request_logs_with_current_month column count: %w", err)
 			}
+			// 813 前的形态：113 列（710 体）/ 115 列（738+740 追加倍率/client_ip
+			// 后的 v1 体）。118 列（813 三列）只会出现在**会话体**上，而会话体
+			// 早在上面的 bodyIsV2 分支就返回了 —— 走到这里说明视图还是 v1 体，
+			// 所以集合不必含 118。其余即冻结基础交集契约漂移，强行 UNION 必
+			// 失败——保留现状，由视图契约修复流程先归位。
 			if canonCols != 113 && canonCols != 115 {
 				slog.Warn("request_logs_with_current_month column count not in {113,115} (frozen contract drift); keeping v1 body",
 					"columns", canonCols)
@@ -471,6 +476,15 @@ var projectionExprsV2 = []string{
 	// 同款；session_turns.client_ip 为 text 且未回填，不能直映）。
 	"NULL::double precision",
 	"NULL::inet",
+	// 813 追加尾列（§9.22）：三列的 session 侧源在 session_turns 上，且与 v1
+	// 逐值一致（真库 1,515,960 行同 request_id 配对实测 both_differ=0），
+	// 缺的只是「近窗覆盖率」——近 7 天 origin_stage/client_forwarded_for 已达
+	// 86%。trace_events 同批**不**投影：镜像从未写它（1d/7d/30d 非空率恒为
+	// 0），而 v1 侧有 691,883 行带值且已被反连接丢弃 ⇒ 投影它等于把数据
+	// 换成 NULL，是 §9.18「修好了但变全盲」的同一形状。
+	"t.origin_stage",
+	"t.token_band",
+	"t.client_forwarded_for",
 }
 
 // sessionFamilyProjectionV2 is the session branch projection for BOTH turn
@@ -495,27 +509,53 @@ var detailsProjectionColumns = map[string]string{
 	"request_type": "text", "request_class": "text", "due_at": "timestamptz",
 }
 
-// buildSessionProjectionExprs composes the session-branch expressions by
-// canonical column name: details positions flip between NULL placeholders
-// (710 shape) and d.<col> (734 shape); everything else stays positional with
-// projectionExprsV2.
-func buildSessionProjectionExprs(withDetails bool) []string {
-	return buildSessionProjectionExprsN(withDetails, len(canonicalColumnOrderV2))
-}
-
-func buildSessionProjectionExprsN(withDetails bool, cols int) []string {
-	out := make([]string, cols)
-	for i, name := range canonicalColumnOrderV2[:cols] {
+// buildSessionProjectionExprs composes the session-branch expressions for an
+// explicit canonical column-name list: details positions flip between NULL
+// placeholders (710 shape) and d.<col> (734 shape); everything else comes
+// from projectionExprsV2 **looked up by column name**.
+//
+// 按名查而不是按下标取，是 815 引入 preRateColumnOrder 之后的硬要求：回退
+// 列序不是完整列序的前缀（credits/client_ip 插在 815 三列之前），按下标取
+// 会把 `NULL::double precision` 贴到 `origin_stage` 这个名字上——列名对得上
+// 而列是错的，UNION ALL 只按位置匹型，所以它不报错、只是让 pre-736 回退体
+// 的三列恒 NULL。守卫 TestViewV2ProjectionContractSync 的三形态断言就是
+// 为这条而设：它读的是 `t.<col> AS <col>` 这段文本，下标错位会立刻变红。
+func buildSessionProjectionExprs(names []string, withDetails bool) []string {
+	out := make([]string, len(names))
+	for i, name := range names {
 		if withDetails {
 			if _, ok := detailsProjectionColumns[name]; ok {
 				out[i] = "d." + name
 				continue
 			}
 		}
-		out[i] = projectionExprsV2[i]
+		expr, ok := projectionExprByColumn[name]
+		if !ok {
+			// 契约漂移：投影表里没有这一列。panic 而非静默产出空表达式——
+			// 静默会渲染出 ` AS origin_stage` 这种语法错，错误现场离真因很远。
+			panic(fmt.Sprintf("session projection: no expression registered for column %q", name))
+		}
+		out[i] = expr
 	}
 	return out
 }
+
+// projectionExprByColumn 是 projectionExprsV2 的按名索引，与
+// canonicalColumnOrderV2 一一对应（init 期自校验长度与逐位一致）。
+var projectionExprByColumn = func() map[string]string {
+	m := make(map[string]string, len(projectionExprsV2))
+	for i, name := range canonicalColumnOrderV2 {
+		if i >= len(projectionExprsV2) {
+			panic(fmt.Sprintf("projectionExprsV2 shorter than canonicalColumnOrderV2 at %q", name))
+		}
+		m[name] = projectionExprsV2[i]
+	}
+	if len(projectionExprsV2) != len(canonicalColumnOrderV2) {
+		panic(fmt.Sprintf("projectionExprsV2 has %d entries, canonicalColumnOrderV2 has %d",
+			len(projectionExprsV2), len(canonicalColumnOrderV2)))
+	}
+	return m
+}()
 
 // middleWrapperCols returns the middle wrapper's explicit column list
 // (quote_ident'd, attnum order) minus the 738/740 appended columns — the
@@ -539,31 +579,31 @@ func (d *DB) middleWrapperCols(ctx context.Context) (string, error) {
 	return cols, nil
 }
 
-// sessionFamilyProjection renders the named projection (details-aware). Both
-// the view-ensure chain and native readers go through this one composer.
-func sessionFamilyProjection(withDetails bool) string {
-	return sessionFamilyProjectionN(withDetails, len(canonicalColumnOrderV2))
-}
-
-// sessionFamilyProjectionN renders the first cols canonical columns — the
-// 738/740 stub composes at 115 on post-736 chains and falls back to the
-// frozen 113 when the base wrapper predates the appended columns.
-func sessionFamilyProjectionN(withDetails bool, cols int) string {
-	exprs := buildSessionProjectionExprsN(withDetails, cols)
-	if len(exprs) != cols {
+// sessionFamilyProjectionFor renders the named projection (details-aware) for
+// an explicit canonical name list.
+func sessionFamilyProjectionFor(names []string, withDetails bool) string {
+	exprs := buildSessionProjectionExprs(names, withDetails)
+	if len(exprs) != len(names) {
 		panic(fmt.Sprintf("session projection drift: %d exprs vs %d contract names",
-			len(exprs), cols))
+			len(exprs), len(names)))
 	}
 	parts := make([]string, len(exprs))
 	for i, expr := range exprs {
-		parts[i] = expr + " AS " + canonicalColumnOrderV2[i]
+		parts[i] = expr + " AS " + names[i]
 	}
 	return strings.Join(parts, ",\n\t\t")
 }
 
+// sessionFamilyProjection renders the full canonical-column projection
+// (details-aware). Both the view-ensure chain and native readers go through
+// this one composer.
+func sessionFamilyProjection(withDetails bool) string {
+	return sessionFamilyProjectionFor(canonicalColumnOrderV2, withDetails)
+}
+
 // canonicalV2Comment 与迁移 734 的 COMMENT ON VIEW 同文（COMMENT 的 IS 只收
 // 单个字面量，不能像 SQL 赋值那样 || 拼接）。
-const canonicalV2Comment = `'会话存储解耦 v3（734）: 710 拼装体升级——session 分支 LEFT JOIN session_turn_details(_hot)（733 特征层，键 tenant_id+request_id+partition_date），30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。LEFT 语义：details 缺行时 NULL，与 710 逐位兼容。仍 NULL：id/test_col/test_tab_indent/provider_model。'`
+const canonicalV2Comment = `'会话存储解耦 v3（813）: 710 拼装体 + 734 details 特征层 LEFT JOIN（733，键 tenant_id+request_id+partition_date）——30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。813 再追加 3 列（origin_stage/token_band/client_forwarded_for，session 侧直映 t.<col>、v1 侧 lateral），修掉 compression_stats 的 token_band 静默空。LEFT 语义：details 缺行时 NULL，与 710 逐位兼容。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
 
 // canonicalColumnOrderV2 是 115 列的契约顺序（= 现网 canonical 视图列序：
 // 710 冻结 113 列 + 738 credits_rate_multiplier + 740 client_ip）。
@@ -613,6 +653,31 @@ var canonicalColumnOrderV2 = []string{
 	// rollup（r.credits_rate_multiplier）与 client_ip 维度在读端缺列。
 	"credits_rate_multiplier",
 	"client_ip",
+	// 813 追加尾列：origin_stage/token_band/client_forwarded_for。id 刻意
+	// 不在其中——真库 1,515,984 组同 request_id 配对里 r.id = t.id 命中
+	// **0** 次：v1 的 request_logs.id 是请求行 id，session_turns.id 是 turn
+	// id，判据是「同一个东西」而不是「session 侧有这个名字」。
+	"origin_stage",
+	"token_band",
+	"client_forwarded_for",
+}
+
+// preRateColumnOrder 是 pre-736/740 极简链回退用的列序：113 冻结契约 + 813
+// 的三列，**剔除** credits_rate_multiplier/client_ip（那两列的源在中层包装
+// 自身，极简链上没有）。
+//
+// 刻意不复用 canonicalColumnOrderV2 的前缀切片：追加列不是接在 113 之后的
+// ——credits/client_ip 插在 813 三列之前，前缀切片会把它们带进来，而
+// canonicalV2DDL 的 pre-736 回退分支恰恰要求它们缺席。
+func preRateColumnOrder() []string {
+	out := make([]string, 0, len(canonicalColumnOrderV2))
+	for _, n := range canonicalColumnOrderV2 {
+		if n == "credits_rate_multiplier" || n == "client_ip" {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // canonicalV2DDL 组装 710/734 视图体 + 738/740 追加尾列。middleCols 是中层
@@ -630,9 +695,10 @@ var canonicalColumnOrderV2 = []string{
 // lateral 追加序固定 class, due, fp, raw。
 //
 // baseHasCredits/baseHasCIP 描述 736/738 倍率列与 341/740 client_ip 是否已
-// 在中层包装上：在（738/740 迁移后的常态）→ 外层投影展开 115 名单、内层末
-// 尾 v.<col> 引用；缺任一（<736 极简链）→ 回退 710 的 113 列契约。两者刻
-// 意不走 lateral——源就是中层自身，lateral 化会改变引用文本打破等价契约。
+// 在中层包装上：在（738/740 迁移后的常态）→ 外层投影展开 118 名单、内层末
+// 尾 v.<col> 引用；缺任一（<736 极简链）→ 回退 710 的 113 列契约 + 813 的
+// 三列（preRateColumnOrder，剔除 credits/client_ip）。两者刻意不走
+// lateral——源就是中层自身，lateral 化会改变引用文本打破等价契约。
 //
 // 外层按 canonicalColumnOrderV2 按名归一化后与会话分支按位置对齐；反连接
 // 守卫走 idx_session_turns_request / idx_session_turns_hot_request。
@@ -643,18 +709,30 @@ var canonicalColumnOrderV2 = []string{
 // 组合文本与迁移 710/734/738/740 的产物逐字对齐——任何一侧漂移都会打破
 // TestRequestLogsViewV2EnsureMatchesMigration 的 viewdef 等价契约。
 func canonicalV2DDL(middleCols string, baseHasFP, baseHasRaw, baseHasCredits, baseHasCIP, hasDetails bool) string {
-	cols := len(canonicalColumnOrderV2)
+	names := canonicalColumnOrderV2
 	if !baseHasCredits || !baseHasCIP {
-		cols = 113 // pre-736/740 极简链：回退 710 冻结契约
+		names = preRateColumnOrder() // pre-736/740 极简链：回退 710 冻结契约 + 813 三列
 	}
-	appendCols := []string{"source.request_class", "source.due_at"}
+	appendCols := []string{
+		"source.request_class", "source.due_at",
+		// 815（§9.22）：origin_stage/token_band/client_forwarded_for 在 session
+		// 侧走 t.<col> 直映，v1 侧恒走 lateral——中层包装链（577/610/696/700
+		// 形态）冻结于更早的列集，从不带这三列，所以不存在「基础链已自带」
+		// 这一形态，不需要 fp/raw 那样的条件化。序固定在 fp/raw **之前**：
+		// 与迁移 815 的 append_cols/lateral 字面量同序，viewdef 等价契约
+		// 比的就是这段文本。
+		"source.origin_stage", "source.token_band", "source.client_forwarded_for",
+	}
 	if !baseHasFP {
 		appendCols = append(appendCols, "source.system_fingerprint")
 	}
 	if !baseHasRaw {
 		appendCols = append(appendCols, "source.raw_model_name")
 	}
-	lateralCols := []string{"h.request_class", "h.due_at"}
+	lateralCols := []string{
+		"h.request_class", "h.due_at",
+		"h.origin_stage", "h.token_band", "h.client_forwarded_for",
+	}
 	if !baseHasFP {
 		lateralCols = append(lateralCols, "h.system_fingerprint")
 	}
@@ -675,7 +753,7 @@ func canonicalV2DDL(middleCols string, baseHasFP, baseHasRaw, baseHasCredits, ba
 	}
 	innerSelects := append([]string{middleCols}, appendCols...)
 	innerSelects = append(innerSelects, vExtras...)
-	proj := sessionFamilyProjectionN(hasDetails, cols)
+	proj := sessionFamilyProjectionFor(names, hasDetails)
 	hotJoin := ""
 	parentJoin := ""
 	if hasDetails {
@@ -717,7 +795,7 @@ func canonicalV2DDL(middleCols string, baseHasFP, baseHasRaw, baseHasCredits, ba
 	  AND NOT EXISTS (SELECT 1 FROM public.session_turns tp WHERE tp.request_id = rl.request_id)`,
 		proj, hotJoin,
 		proj, parentJoin,
-		strings.Join(canonicalColumnOrderV2[:cols], ", "),
+		strings.Join(names, ", "),
 		strings.Join(innerSelects, ", "),
 		strings.Join(lateralCols, ", "),
 		strings.Join(parentCols, ", "))

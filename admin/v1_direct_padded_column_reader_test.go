@@ -12,28 +12,57 @@ import (
 	"testing"
 )
 
-// S4 v1 退役的读面门（2026-10-02，见审计文档 §9.21）。
+// S4 v1 退役的读面门（2026-10-02 建，§9.26 重分类）。
 //
-// §9.21 扫描出 66 个「绕过视图直读 v1 宽族」的文件，其中 39 个读了
-// session 臂恒 NULL 的 30 列补位集。那 39 个今天都能正常工作（读物理 v1，列齐全），
-// **危险不在今天，在改指视图的那一天**：session 分臂的行会从这些列拿到 NULL，
-// 而接口照样返回 200 —— 即 §9.18 修掉的「200 但全盲」那一类。
+// 门的作用不变：把「绕过 canonical 视图直读 v1 宽族、且读到 session 臂恒 NULL
+// 补位列」的读方变成**显式登记表**。新增一个必须登记并写明理由；登记项失效
+// （文件改完、被删、或不再读那些列）时门反过来报红。
 //
-// 那 66/39 两个数字来自一次性扫描器（/tmp/v1scan、/tmp/padscan，不入仓库、无回归保护）。
-// 这道门把那批文件变成**显式登记表**：新增一个「直读 v1 且读补位列」的读方必须登记
-// 并写明理由，而登记项失效（文件改完或被删）时门会反过来报红。
+// # §9.26 把 39 改成 14，以及为什么原来的 39 是错的
 //
-// 为什么不是「禁止」：这些读方在 v1 还在的时候是**正确**的代码，全面禁止会把
-// S4 之前的正常迭代也堵死。正确的形状是「默认未登记 = 需要有人拍板」，而不是
-// 「一律不许」——与 request_logs_stop_write_classification_test.go 的具名论证同一范式。
+// 建门时的口径是「读了 710 那 30 列补位集里的任何一列」。但 710 的 $proj$ 是
+// **734 之前**的形态：734 已经把其中 27 列换成了 session_turn_details 特征层的
+// 真实值（真库覆盖 99.9996%：hot 1,344/1,344 无缺失，parent 1,683,104/1,683,098）。
+// 那 27 列在 session 分臂**不是空的**，所以按旧口径判成「恒 NULL」是错的，
+// 而错的代价不只是多列 25 个文件——
 //
-// 口径精度（必须随登记表一起读）：本门只看 SQL 字面量的 FROM/JOIN 关系集合，
-// 分不出 SELECT 与 UPDATE...FROM / ON CONFLICT，所以写路径也会被计入；
-// 登记表里的多数条目是读方，但**不应**把 39 读成 39 条 SELECT 语句。
+//   - 族分类器（request_logs_stop_write_classification_test.go）会因此把「行级
+//     有值」判成「谓词级空」，从而**拒绝正确的判定**；
+//   - S4 退出判据第 2 条「39 个读方逐个改视图读法」把 39 当成分母，会让人以为
+//     逐个重写是必要成本，而实际上 25 个现在就能改指视图。
+//
+// 现口径：补位集取自 db.RequestLogsViewPaddedSessionColumns()（**生效投影**
+// withDetails=true 里形如 `NULL::` 的列），现网 6 列。同一批文件按新口径重算：
+// **14 个**，且 14 个全部命中同一列 —— `id`。
+//
+// # 为什么 14 个不能靠补投影消解
+//
+// `id` 是本项目里少见的「session 侧有同名列但不是同一个东西」：v1 的
+// request_logs.id 是**请求行 id**，session_turns.id 是 **turn id**，真库
+// 1,515,984 组同 request_id 配对里 `r.id = t.id` 命中 **0** 次。补投影等于给读方
+// 一个语义已变的同名列，比 NULL 更坏（NULL 至少看得见）。⇒ 这 14 个只能改读法。
+//
+// # 为什么不是「禁止」
+//
+// 这些读方在 v1 还在的时候是**正确**的代码，全面禁止会把 S4 之前的正常迭代
+// 也堵死。正确的形状是「默认未登记 = 需要有人拍板」——与
+// request_logs_stop_write_classification_test.go 的具名论证同一范式。
+//
+// # 口径精度（必须随登记表一起读）
+//
+// 本门只看 SQL 字面量的 FROM/JOIN 关系集合，分不出 SELECT 与 UPDATE...FROM /
+// ON CONFLICT，所以写路径也会被计入；登记表里的多数条目是读方，但**不应**把
+// 14 读成 14 条 SELECT 语句。
 
-// v1DirectPaddedColumnReaders 登记「绕过视图直读 v1 且读了补位列」的读方。
-// 键是仓库根相对路径，值是必须非空的理由——理由会随登记一起出现在失败输出里，
-// 所以它不能是一句空话。统一指向审计文档 §9.21 的工作项清单。
+// s4PaddedReaderWhy 是本表所有条目的统一理由（§9.26 起）。逐条不同的部分只有
+// cols —— 也就是「这个读方多读了几列补位列」这件唯一影响重写工作量的事。
+//
+// 为什么共用一条而不是逐条写：39 条逐条文案里 39 条都在复述同一句「读了 session
+// 臂恒 NULL 的补位列」，而那句话在 §9.21 里**对 27 列是错的**（它们由 734 的
+// details 层供值，非空率 99.9996%）。把错误复述 39 遍，等于给错误结论盖了 39 个
+// 戳。共用一条之后，理由只有一份，改对一处就够。
+const s4PaddedReaderWhy = `S4 退出工作项（§9.26 重分类后的**真补位**阻塞项）：绕过 canonical 视图直读 v1 宽族，且读到了 session 臂**恒为 NULL**的补位列。恒 NULL 集现网只有 6 列（db.RequestLogsViewPaddedSessionColumns()），本条命中的正是其中的 ` + "`" + `id` + "`" + ` —— 它**证明不可投影**（真库 1,515,984 组同 request_id 配对里 r.id = t.id 命中 0 次：v1 是请求行 id、session 侧是 turn id），所以只能改读法：去掉对 id 的依赖，或改用 request_id 回查。v1 退役前必须完成。`
+
 // v1DirectPaddedColumnReader 是登记表的条目：cols 是该读方今天读到的补位列集合。
 type v1DirectPaddedColumnReader struct {
 	cols []string
@@ -41,45 +70,20 @@ type v1DirectPaddedColumnReader struct {
 }
 
 var v1DirectPaddedColumnReaders = map[string]v1DirectPaddedColumnReader{
-	"admin/analytics.go":                       {cols: []string{"auto_profile", "client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/credential_success_rate.go":         {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/data_lifecycle_attachments.go":      {cols: []string{"attachments", "client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/diagnostics_credential.go":          {cols: []string{"client_model", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/logs.go":                            {cols: []string{"client_model", "id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/memora_handlers.go":                 {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/probe_history.go":                   {cols: []string{"id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/provider_diagnose.go":               {cols: []string{"provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/providers.go":                       {cols: []string{"id", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/request_trace.go":                   {cols: []string{"client_model", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/routing.go":                         {cols: []string{"client_model", "id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/session_tenant.go":                  {cols: []string{"gw_task_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/swim_lane_init.go":                  {cols: []string{"client_model", "id", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/tenants.go":                         {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/unified_detail.go":                  {cols: []string{"client_model", "gw_task_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"admin/work_types.go":                      {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"autoroute/recommend_v2.go":                {cols: []string{"client_model", "model_chosen"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"bg/auto_index_refresher.go":               {cols: []string{"client_model", "id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"bg/auto_route_settle_worker.go":           {cols: []string{"id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"bg/credential_recovery.go":                {cols: []string{"client_model", "id", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"bg/credential_selfcheck.go":               {cols: []string{"client_model", "id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"bg/model_probe.go":                        {cols: []string{"client_model", "id", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"bg/model_tier.go":                         {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"bg/today_success_probe.go":                {cols: []string{"id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"cmd/compression-bench/main.go":            {cols: []string{"id", "outbound_msg_count", "outbound_token_est"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"cmd/gateway/dual_read_validator.go":       {cols: []string{"request_type"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"cmd/gateway/main_v3_wiring.go":            {cols: []string{"outbound_msg_count", "outbound_msg_hashes", "outbound_token_est"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"cmd/gateway/output_compliance_control.go": {cols: []string{"api_key_owner_user", "owner_user"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"cmd/gateway/waterfall_by_request.go":      {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"cmd/gateway/waterfall_db.go":              {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"cmd/tools/validate_sessions_v2/loader.go": {cols: []string{"client_model", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"db/db.go":                      {cols: []string{"auto_profile", "client_model", "id", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"domains/analysis/optimizer.go": {cols: []string{"outbound_token_est"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"domains/credentialstate/popularity_tracker.go": {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"domains/sessionforensics/export.go":            {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"domains/streaming/model_alternatives.go":       {cols: []string{"id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"internal/quality/minute_aggregator.go":         {cols: []string{"client_model", "provider_id"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"tests/session_audit/cmd/audit-test/main.go":    {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
-	"tests/test_popularity_tracker.go":              {cols: []string{"client_model"}, why: "S4 退出工作项（审计文档 §9.21 读面清单第 2 条）：绕过 canonical 视图直读 v1 宽族，且读了 session 臂恒 NULL 的补位列。今天行为正确，v1 退役前须改为视图读法（去掉补位列依赖，或改成带 session 侧等价落地的 COALESCE）。"},
+	"admin/logs.go":                           {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"admin/probe_history.go":                  {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"admin/providers.go":                      {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"admin/routing.go":                        {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"admin/swim_lane_init.go":                 {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"bg/auto_index_refresher.go":              {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"bg/auto_route_settle_worker.go":          {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"bg/credential_recovery.go":               {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"bg/credential_selfcheck.go":              {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"bg/model_probe.go":                       {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"bg/today_success_probe.go":               {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"cmd/compression-bench/main.go":           {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"db/db.go":                                {cols: []string{"id"}, why: s4PaddedReaderWhy},
+	"domains/streaming/model_alternatives.go": {cols: []string{"id"}, why: s4PaddedReaderWhy},
 }
 
 // v1DirectTables 是「绕过视图直读」判定里的 v1 宽族关系名。

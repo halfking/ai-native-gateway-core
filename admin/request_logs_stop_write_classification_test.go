@@ -35,6 +35,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // stopWriteEffect 是「S4 停写之后这个读点会怎样」。
@@ -207,214 +209,33 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Note:     "附件归属校验（attachmentOwnedByTenant）只读 710 视图 EXISTS/JOIN，视图 = session 臂 ∪ v1 臂，session 臂继续增长 ⇒ 新请求仍能命中判归属，fail-closed 语义不变。",
 	},
 	"admin/model_status.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs_with_current_month\n\t\t WHERE ts >= $1\n\t\t   AND client_model IS NOT NULL",
-		// 2026-10-02 **自我更正**：batch1 判 unaffected（理由「读 710 视图，session 臂继续供数」），
-		// 被新增的 null-padded 族门判红——判对了。逐行核实：:268-269 与 :296-297 是
-		//   AND client_model IS NOT NULL
-		//   AND TRIM(client_model) <> ''
-		// 而 client_model 正是 migration 710 在 session 臂上补位成 NULL 的 30 列之一。
-		// ⇒ 视图**照样返回行**，但这两条过滤把全部新流量滤掉 ⇒ 结果集真的为空。
-		// 「视图有 session 臂所以不会空」只在不用补位列做谓词时成立。
-		Note: "模型健康度看板在停写后**永久空白**：行级有 session 臂，但 client_model 恒 NULL 使过滤恒不命中。" +
-			"接口 200、字段齐全、无任何错误信号。",
-	},
-	"admin/session_extract.go": {
-		Effect:   effectUnaffected,
-		Evidence: "SELECT api_key_id FROM request_logs_with_current_month",
-		Note:     "三个读点（api_key_id / tenant_id / 轮次列表）均走 710 视图，代码注释 282-284、305-306 显式说明这是为 S4 停写做的加固（「直读物理表对新会话恒空，这里会静默返回 0 且无告警」）⇒ 停写后反而是正确形态。",
-	},
-	"admin/session_turns_tree.go": {
-		Effect:   effectUnaffected,
-		Evidence: "FROM request_logs_with_current_month\n\t\t\t\t\tWHERE parent_request_id = ANY($1)",
-		Note:     "主轮次/子请求两腿都已迁 710 视图（:324 是唯一真实调用点，其余 request_logs 命中全是注释）；视图 session 臂继续增长，树照常构建。",
-	},
-	"bg/candidate_failure_monitor.go": {
-		Effect:   effectUnaffected,
-		Evidence: "(SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes')",
-		// 2026-10-02 **二次更正（第三十一轮 D2）**：§9.14 曾把它改判为
-		// silently_degraded_content，机制论据失实。核实：:267 的
-		// `GROUP BY credential_id, provider_id, raw_model_name, error_kind`
-		// 落在 **candidate_failure_logs_with_current_month**（迁移 392 建，
-		// = candidate_failure_logs_hot ∪ candidate_failure_logs，纯 v1 族，
-		// 无 session 臂、无 NULL 补位），不是 710 视图；其写入方
-		// domains/streaming/executors/candidate_failure_logger.go 不受 S4
-		// 门控（domains/streaming/ 全树零处 RequestLogsWriteEnabled）⇒
-		// 停写后新行照常带真 provider_id 流入，「新流量归 NULL 组」不成立。
-		// 本文件对 710 视图的读点只有 :206 活性探针 max(ts) 与 :336 按
-		// credential_id 计数，两列都不是补位列 ⇒ unaffected，机制见具名论证表。
-		Note: "按 provider 聚合的失败率读的是 candidate_failure 族（392 纯 v1 视图，" +
-			"writer 不受 S4 门控），停写后照常供数；710 视图读点只用 ts 与 credential_id。" +
-			"（控制面轴另判 live：它 UPDATE credentials。）",
-	},
-	"bg/stats_minute_rollup_retire.go": {
+		// 2026-10-02（§9.28.2）**第二次**自我更正，且这次是降级：batch1 判
+		// unaffected，被 null-padded 族门判红（判对了）→ 改判 silently_empty
+		// （理由：client_model 是 710 在 session 臂补位成 NULL 的 30 列之一，
+		//  两条过滤恒不命中 ⇒ 看板永久空白）。**那条理由本身依赖 710 形态**：
+		// 734 已把 client_model 换成 d.client_model（733 特征层），真库覆盖
+		// 99.9996%（parent 1,683,104/1,683,098 缺 6，hot 1,344/1,344 缺 0）
+		// ⇒ 过滤正常命中，看板**不再空白**。
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "FROM request_logs_with_current_month AS r\n    WHERE r.request_status IN ('success', 'failure', 'rate_limited')",
-		// 2026-10-02 **自我更正**：batch1 判 unaffected，被 null-padded 族门判红。
-		// 核实 :27 / :106-108 的 NOT EXISTS 保护用的是补位列：
-		//   AND COALESCE(r.provider_id, 0) = m.provider_id
-		//   AND COALESCE(NULLIF(r.outbound_model,''), NULLIF(r.client_model,''), '') = m
-		//   AND COALESCE(NULLIF(r.client_profile,''), '') = m.client_profile
-		// provider_id / client_model / client_profile 三列在 session 臂恒 NULL
-		// ⇒ COALESCE 兜成 0 / '' ⇒ 与已有 rollup 键**匹配不上** ⇒
-		// 「这个键近期还有流量」的保护失效 ⇒ 本该保留的分钟行会被当成陈旧退役。
-		// 失效方向是**多删派生数据**（不是少读），故取第 6 档并在此写明方向。
-		Note: "退役判定依赖补位列做键匹配；停写后保护失效，派生分钟聚合被过度清理。" +
-			"（控制面轴判 live：它 DELETE 三张 rollup 表。）",
-	},
-	"admin/auto_title_generator.go": {
-		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id",
-		Note:     "主腿读 710 视图（行照常出），bodies 腿是可选增强且为 LEFT JOIN + 回落 response_preview ⇒ 标题生成主流程可用，但语料从全文降级为预览片段，接口 200 无错误。属 2026-10-02 新增的第 6 档。",
-	},
-	"admin/data_lifecycle_blobs.go": {
-		Effect:   effectUnaffected,
-		Evidence: "COALESCE(pg_column_size(rb.request_body), 0)",
-		Note:     "读的是 pg_column_size 体量/待清理行数与 DDL 式 VACUUM，属体量与生命周期面；bodies 腿 LEFT JOIN + COALESCE 兜 0，读的是「存量多大、清理能省多少」而非流量本身。",
-	},
-	"admin/no_topic_session.go": {
-		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb\n\t\t  ON rb.request_id = rl.request_id",
-		Note:     "主体读 710 视图（轮次行照常出、preview 字段可用），bodies 腿无 session 兜底 ⇒ 停写后新会话 response_body 全为 NULL/''。基于 body 的无话题判定与摘要内容静默为空，行仍在 ⇒ 第 6 档而非 silently_empty。",
-	},
-	"admin/telemetry.go": {
-		Effect:   effectUnaffected,
-		Evidence: "if requestLogsWriteEnabled() {",
-		Note:     "本文件是写路径：读 request_logs_hot（upsertRequestLogBodies 的 ts 回填）与 bodies 镜像全部包在 if requestLogsWriteEnabled() 门内（:391、:454），停写后这段根本不执行 ⇒ 读点不发生。",
-	},
-	"cmd/tools/backfill_session_bodies/main.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs\n\t\tWHERE gw_session_id = $1 AND ($2 = '' OR tenant_id = $2)",
-		Note:     "一次性 backfill 工具：Step1 按 gw_session_id 查母表取 turn 元数据，Step2 查 bodies 派生 session_bodies。停写后新会话在 v1 侧无行 ⇒ turnRows 空、派生不出 delta，log.Fatalf 不触发，工具静默「跑完但零产出」。",
-	},
-	"domains/sessionforensics/export.go": {
-		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id",
-		Note:     "forensicsExportMessagesSQL 主腿读 710 视图（元数据仍出 session 行），bodies 腿 COALESCE(rb.request_body,'{}') 无 session 兜底 ⇒ 停写后新会话导出包 body 全为 {}。另 ListRecentSessions（:416 裸母表）完全冻结——一处两态，取降级档并在此说明。",
-	},
-	"admin/credential_success_rate.go": {
-		Effect:   effectSilentlyFrozen,
-		Evidence: "(SELECT MIN(ts) FROM request_logs_with_current_month rl\n\t\t\t WHERE rl.credential_id = c.id",
-		Note:     "MIN(ts) 与 rsr 子查询走 710 视图（能持续更新），但同文件 resetCredentialSuccessRateRows 对 request_logs_hot 执行 DELETE 清 10 分钟前失败行（:117）；停写后清理无新行可删、MIN(ts) 反映冻结面 ⇒ 凭据「近期成功率」长期显示旧样本。",
-	},
-	"admin/provider_models.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "SELECT COUNT(*) FROM request_logs rl WHERE %s",
-		Note:     "providerLogs 列表：count 腿裸读母表（:443，err 时 total=0 静默），data 腿读 710 视图。停写后 count 冻结在停写前总数、data 列表只剩历史，页数/总数与实际返回行自相矛盾且无错误提示。",
-	},
-	"admin/tenants.go": {
-		Effect:   effectSilentlyFrozen,
-		Evidence: "FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿",
-		Note:     "7 天 credits/cost 聚合（:764-770）显式内联 hot UNION ALL 母表裸双腿绕开视图（注释：视图带租户过滤 COUNT 30s 超时）。停写后该并集完全冻结 ⇒ 租户账单恒为停写前 7 天旧值，接口 200、数值齐全、无告警。",
-	},
-	"admin/usage_trend_series.go": {
-		Effect:   effectSilentlyFrozen,
-		Evidence: "FROM request_logs_with_current_month_without_customer_id r",
-		Note:     "detail 档读 ..._without_customer_id —— 这是**纯 v1 中间层视图**（hot UNION ALL 母表，无 session 臂），停写后完全冻结；provider 档读 request_stats_minute 同样不再增长 ⇒ 两条腿都恒为旧值。",
-	},
-	"domains/streaming/model_alternatives.go": {
-		Effect:   effectSilentlyFrozen,
-		Evidence: "SELECT canonical_model, COUNT(*) AS cnt\n    FROM request_logs_hot\n    WHERE ts > now() - interval '7 days'",
-		Note:     "失败兜底推荐的 usage_7d CTE 读 hot 7 天窗（注释 229-242 明说为绕开视图改读 hot）。停写后该集合冻结为停写前 7 天的 popular 分层，COALESCE(u.cnt,0)>0 不再反映真实近期热度，无错误。",
-	},
-	// ── batch3：2026-10-02 逐点评估（23 条）────────────────────────────────
-	//
-	// 本批的核心价值不是 23 条判定，而是它逼出了 §9.14 的族分类器新维度：
-	// migration 710 在 session 臂补了 30 列 NULL，视图「行级可用」≠「谓词级可用」。
-	// 本批有 5 个文件因此被分到 familyViewNullPadded，其中 3 个的 unaffected
-	// 判定在 §9.14.4 被改成 silently_empty / silently_degraded_content。
-	"admin/auto_route.go": {
-		Effect:   effectSilentlyFrozen,
-		Evidence: "FROM request_logs_with_current_month_without_customer_id",
-		Note:     "handleDecisions(:140) 刻意读 v1-only 中间层视图（7 天窗口），停写后继续吐停写前的旧决策。handleAudit(:534) 走 routing_analytics_source，而 bg/materialized_view_refresher.go:290,306 仍在每轮 REFRESH 这两个 MV ⇒ 不是「MV 停用导致冻结减轻」，而是**持续重算同一份冻结数据**，数值会随窗口排空而衰减（不是恒定常数）。",
-	},
-	"admin/diagnostics_credential.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "AND ts > now() - ($2 || ' minutes')::interval",
-		Note:     "凭据诊断「最近失败」段查 request_logs_hot 的分钟级窗口，零行时 for 循环不执行，d.RecentFailuresCount = len(...) 变 0（:171），analyzeDiag 照常产出分析与恢复建议，接口 200、字段齐全。:166 注释已自认「RecentFailuresCount 会被低估成 0」。",
-	},
-	"admin/request_trace.go": {
-		Effect:   effectErrorsOut,
-		Evidence: "SELECT request_status, trace_events, ts FROM request_logs_hot WHERE request_id = $1",
-		Note:     "按 request_id 点查，新请求在两张 v1 表都无行 ⇒ pgx.ErrNoRows ⇒ traceStateMissing ⇒ handleTrace(:133) 返 404 not_found，失败可见。次要腿 fetchRequestSummary(:311) 零行返回半填充结构不报错，但上游已先 404。",
-	},
-	"admin/swim_lane_init.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs_hot rl",
-		Note:     "泳道初始化读最近 N 小时，零行时循环不执行，返回 nil 切片 + 全零 stats + rows.Err()==nil，HandleSwimLaneInit(:74) 照样 json.Encode 200 ⇒ 前端拿到「一条请求都没有」的泳道。",
-	},
-	"bg/auto_route_settle_worker.go": {
-		Effect:   effectSilentlyFrozen,
-		Evidence: "LEFT JOIN request_logs_hot rl",
-		Note:     "结算 outcome 腿(:392) 与 cohort 基线(:298)全读 request_logs_hot。停写后 p.success == nil ⇒ 每条待结算选择超过 settleAbandonAfter 就被计为 abandoned 而非 settled，而 loadTaskBaselines 返回空 map 且 err==nil，奖励函数继续用空/陈旧基线打分——整条链路无任何错误信号。",
-	},
-	"bg/ledger_reconciliation.go": {
-		Effect:   effectSilentlyFrozen,
-		Evidence: "FROM request_logs_hot",
-		// 2026-10-02 口径保留：真实行为比「冻结」更坏，方向写在 Note 里。
-		Note: "usageCreditSQL(:261) 是 request_logs_hot 与 credit_ledger_hot 的 FULL OUTER JOIN，" +
-			"而 S4 开关**只门控 request_logs 族、不门控 credit_ledger**。停写后 usage 腿归零、ledger 腿继续增长 " +
-			"⇒ 每笔新 consume 都变成 charged=0 vs debited>0 的**假 mismatch**，每轮最多 200 条灌进 " +
-			"maas_reconciliation_findings，不报错。归档为 silently_frozen 是按「无错误信号的持续判定」；" +
-			"语义上它不是冻结而是**误报洪水**，方向已写明以免后来者误读。",
-	},
-	"bg/today_success_probe.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs_hot rl",
-		Note:     "used CTE(:147) 取 24h 内成功流量，窗口排空后返回 0 行 ⇒ 不再产出任何 (credential, model) 对 ⇒ 自愈探针永久停摆，而调用侧(:133)照打 slog.Info(\"today success probe queued\", \"pairs\", 0)，日志看起来一切正常。",
-	},
-	"cmd/gateway/output_compliance_control.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs\n\t\t\tWHERE gw_session_id = sd.gw_session_id",
-		Note:     "lookupOwners(:74) 用 LATERAL 从 request_logs 取 api_key_owner_user 作 callerOwner（该列是 session 臂补位 NULL 的 30 列之一）。停写后该腿恒无行 ⇒ callerOwner 恒为 \"\"，dataOwner 仍来自 session_dim 有值 ⇒ owner 规则判定「caller≠data」⇒ **所有合规输出被静默全量脱敏**。方向保守不泄漏，但功能整体失效且无错误。",
-	},
-	"discovery/discovery.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "SELECT 1 FROM request_logs rl",
-		Note: "读端后果是那条 NOT EXISTS 守卫「查不到就判过期」。**该写入缺陷已于 §9.12 修复**" +
-			"（staleExpiryMayRun：证据源停写时不下架），本条记录的是修复前/未开 ENABLE_CMB_EXPIRE 时的形状。" +
-			"停写后守卫恒不命中 ⇒ 仍在被成功调用的 model 也被 UPDATE model_offers SET available = FALSE。" +
-			"注意它是**破坏性写**且 RowsAffected>0 反而打 Info「expired stale models」。",
-	},
-	"domains/providerprofile/adapters.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs_hot",
-		Note:     "供应商画像 4 个查询全部 clamp 到 8h hot 保留期(:122)。停写后 COUNT(*) 归零而 err==nil ⇒ total_requests=0、error_count=0、AVG 为 NULL，BucketSuccessRates(:241) 返回空切片——「0 请求 0 错误」会被健康度/推荐逻辑读成「无异常」。（控制面轴另判 live：驱动凭据自动禁用。）",
-	},
-	"internal/trace/trace.go": {
-		Effect:   effectErrorsOut,
-		Evidence: "SELECT trace_events FROM (",
-		Note:     "写路径整段已在门控内：FlushToPG(:473) 在 !settings.RequestLogsWriteEnabled() 时丢弃 trace 并 DEL Redis key 后 return nil，其下的 UPDATE request_logs_hot(:496) 停写期间根本不执行。唯一未门控的是读腿 LoadFromPG(:601)，停写后新 request_id 返 nil,nil ⇒ 上游 404，失败可见。",
-	},
-	"admin/live_stream_sse.go": {
-		Effect:   effectSilentlyDegradedContent,
-		Evidence: "FROM request_logs_with_current_month rl",
-		Note:     "行级完全可用：replay(:2423) 的 WHERE 只用 ts/tenant，session 臂照常供行，request_status 的 CASE 与 credential_id 都有真值，终态 overlay(:2546) 照常纠正。但 client_model 是补位 NULL ⇒ 泳道模型名静默变空并掉进 InferVendorFromModel 兜底。属第 6 档。",
-	},
-	"admin/session_analytics_breakdown.go": {
-		Effect:   effectSilentlyDegradedContent,
-		Evidence: "FROM request_logs_with_current_month rl",
-		Note:     "queryModelBreakdown(:266) 照常工作（outbound_model/cost/latency 在 session 臂有真值）；但 provider_id 是补位 NULL ⇒ queryProviderBreakdown(:308) 的 COALESCE(rl.provider_id::text,'unknown') 把全部新流量塌进单个 unknown 桶，且 buildWhereClause(:710) 的 AND rl.provider_id = $n 过滤器静默返 0 行、端点仍 200 + []。",
-	},
-	"admin/session_summary_v2.go": {
-		Effect:   effectErrorsOut,
-		Evidence: "FROM request_logs_with_current_month rl",
-		Note:     "正文腿 queryTurnsForSummary 读 session 族不受影响；只有主路径 0 轮时才走的 fallback(:208) 读 v1 视图且带 MirrorDriftClassSQL = 'genuine_loss'，停写后返 0 行 ⇒ :212 return nil, fmt.Errorf(\"no turns found\") ⇒ HTTP 500。影响面是 V2 shadow-write 关闭的那部分会话（注释记近 3 天触发比例 10.87%），500 是可见失败，可接受。",
-	},
-	"admin/top_problems.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "AND rl.client_model IS NOT NULL AND rl.client_model != ''",
-		Note:     "credential 榜(:194) 照常工作（credential_id 在 session 臂有真值）；但模型榜(:238) 靠 client_model 过滤，而该列是 session 臂补位 NULL 之一 ⇒ 新流量一条都进不来 ⇒ items := make([]topProblemsItem, 0, limit)(:209) 返回 200 + 空数组，「问题模型 Top N」永久空白且无任何提示。",
-	},
-	"bg/shared_pick.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs_with_current_month rl",
-		Note:     "Priority 1「最常用 client_model」(:84) 带 AND client_model IS NOT NULL，session 臂该列恒 NULL ⇒ Scan 报 no rows ⇒ 代码 if err == nil && topModel != \"\" 不成立，**静默**降级到 Priority 2 featured、再降 random_fallback/empty。探针目标模型的选择依据从「真实最常用」悄悄变成「随便挑」，日志与返回值都不含任何降级标记。",
+		Evidence: "FROM request_logs_with_current_month\n\t\t WHERE ts >= $1\n\t\t   AND client_model IS NOT NULL\n\t\t   AND TRIM(client_model) <> ''",
+		Note: "残余风险从「永久空白」降为「静默少计」：缺 details 行的 session 行（本机真库 " +
+			"parent 6 行 / hot 0 行，占 0.0004%）client_model 为 NULL，被这两条过滤整行滤掉 ⇒ " +
+			"看板计数略低于真实值，接口 200、字段齐全、无任何错误信号。\n" +
+			"**这一格曾经被登记成最高危档（silently_empty），依据是 710 形态的补位事实；" +
+			"该依据在 734 之后就不成立了。** 教训与 §9.28.2 同源：任何以「哪一列在 session 臂恒 NULL」" +
+			"为前提的判定，都必须声明它钉在哪个投影形态上——否则过期时没有任何信号。",
 	},
 	"domains/attachments/handler.go": {
-		Effect:   effectSilentlyEmpty,
+		// 同上：原判 silently_empty 的依据是「710 视图对 session 臂投影
+		// NULL::jsonb AS attachments」。734 已改成 d.attachments（733 特征层），
+		// 覆盖 99.9996% ⇒ 绝大多数 session 行能取到真值。
+		Effect:   effectSilentlyDegradedContent,
 		Evidence: "SELECT attachments::text FROM request_logs_with_current_month WHERE request_id = $1",
-		Note:     "710 视图对 session 臂投影 NULL::jsonb AS attachments（session_turns 只有 request_attachments、无 attachments）⇒ 新请求视图**照样返回行**，但 Scan(&raw []byte) 遇 NULL 报错 ⇒ :171 把 err 当成「无附件」⇒ 返 200 + attachments: []。附件数据其实还在 request_attachments 表里（domains/attachments/repository.go:183 已有读法），丢的只是这条 JSONB 读腿——属可修的读迁移，不需要数据抢救。",
+		Note: "残余风险：缺 details 行的 session 行（本机真库 parent 6 行 / hot 0 行）attachments 为 NULL " +
+			"⇒ :171 的 Scan(&raw []byte) 报错 ⇒ 被当成「无附件」⇒ 返 200 + attachments: []。" +
+			"行还在、接口 200、字段齐全，只是**这 6 个请求的附件列表被静默清空**。\n" +
+			"附件数据本身在 request_attachments 表里未丢（domains/attachments/repository.go:183 已有读法），" +
+			"所以这是读腿的退化，不是数据丢失。",
 	},
 	"admin/compression_sessions.go": {
 		Effect:   effectSilentlyDegradedContent,
@@ -514,14 +335,18 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Note:     "request_stats CTE 按 24h 窗口统计 requests_24h/success_rate/p95/timeout/quota，外层 LEFT JOIN request_stats 且 COALESCE(...,0)。⚠️ 但 provider_id 是 session 臂补位 NULL 之一（§9.14），该 CTE 若按 provider_id 分组会塌进 unknown 桶——本条判 unaffected 的前提是它不按补位列分组，读端族门会复核这一点。",
 	},
 	"admin/session_analytics_timeseries.go": {
-		// 2026-10-02 **自我更正**：batch4 判 unaffected，被 null-padded 族门判红。核实 :62
-		// `AND %s.provider_id::text = ANY($%d)` 的 alias 就是 710 视图别名。
-		// provider_id 在 session 臂恒 NULL ⇒ `NULL::text = ANY(...)` 求值为 NULL（非 true）
-		// ⇒ 停写后**按 provider 过滤的时间线恒返回空**，而不过滤的路径照常有数据，
-		// 同一个面板里两种过滤给出矛盾的空/非空，无任何错误。
+		// 历史：batch4 判 unaffected → null-padded 族门判红 → 改判 degraded，
+		// 理由是「provider_id 在 session 臂恒 NULL ⇒ 按 provider 过滤恒空」。
+		// 2026-10-02（§9.28.2）**该理由作废**：provider_id 现由 734 的
+		// d.provider_id（733 特征层）供值，真库覆盖 99.9996%（parent 缺 6 行 /
+		// hot 缺 0 行）⇒ `provider_id::text = ANY(...)` 正常命中，过滤路径不再恒空。
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "FROM request_logs_with_current_month rl",
-		Note:     "activity/cost/latency 三个读点（:193/:269/:340）全部读 710 视图，聚合列 request_status、cost_usd、prompt/completion tokens、cache_read/write_tokens、latency_ms、stream_first_chunk_ms 在 session 臂都由 t.* 真实投影（request_status 由 success/status_code 表达式算出）⇒ 停写后时间线/成本/延迟序列照常增长，错误路径仅在真 SQL 错误时 500。",
+		Note: "activity/cost/latency 三个读点（:193/:269/:340）读 710 视图，聚合列 request_status、" +
+			"cost_usd、tokens、cache_read/write_tokens、latency_ms、stream_first_chunk_ms 在 session 臂由 " +
+			"t.* 真实投影 ⇒ 停写后时间线/成本/延迟序列照常增长。\n" +
+			"残余：缺 details 行的那少数 session 行（本机 6/1.68M）按 provider 过滤时整行丢失 ⇒ " +
+			"该 provider 的序列略短，接口 200、无错误信号。**原判据「恒 NULL ⇒ 恒空」已随 734 失效。**",
 	},
 	"admin/session_timeline_query.go": {
 		Effect:   effectUnaffected,
@@ -529,30 +354,34 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Note:     "已按注释(:23-30)刻意改读 710 视图而非物理表，视图体 = session_turns_hot ∪ session_turns ∪（v1 冻结分支反连接）⇒ 停写后新会话轮次由 session 分支继续供数，镜像链启用之前的历史窗口仍由 v1 分支兜住；无行时返回 nil 由调用方各自还原成 null/[]，两种形态都不是新增的静默空。",
 	},
 	"admin/usage.go": {
-		// 2026-10-02 **自我更正**：batch4 判 unaffected，被 null-padded 族门判红。判对了，但
-		// **只对一半**：本文件是「真触发 + 假触发混在一起」的样本，正好说明文件级
-		// 机械判定为何只能保守近似。
-		//   真：:806-810 `OR (NOT success AND COALESCE(failure_stage,'') = '' AND
-		//       provider_id IS NOT NULL …)` 位于 `FROM request_logs_with_current_month rl2`
-		//       的子查询内 ⇒ 停写后新失败的 provider_id 恒 NULL，该分支对新增流量永不命中，
-		//       失败分桶计数静默漏计。
-		//   假：:334-366 的 ak.owner_user / app.code AS application_code、:456-583 的
-		//       providers.provider_id、:767/:865/:1001 的 api_keys.id —— 这些列**同名但属于
-		//       别的表**（api_keys / applications / providers / usage_ledger），那些表没有补位。
+		// 历史：batch4 判 unaffected → null-padded 族门判红 → 改判 degraded，理由是
+		// 「:806-810 的 provider_id IS NOT NULL 位于 710 子查询内 ⇒ 停写后永不命中」。
+		// 2026-10-02（§9.28.2）**该理由作废**：provider_id 现由 d.provider_id 供值，
+		// 覆盖 99.9996%。另 :334-366/:456-583/:767/:865/:1001 的同名列本就属于别的表
+		// （api_keys / applications / providers / usage_ledger），那部分「假触发」判断不变。
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "COUNT(*) FILTER (WHERE success) AS success_count,",
-		Note:     "三处 710 读点（:810/:817 的 key 详情、:1107 的 usageKeyTraffic 5 分钟分桶）靠 session 臂继续变化。但吞错形态确实存在：`_ = h.db.QueryRow(...).Scan(&gatewayRejected, ...)` 把 810 那条整体吞掉，失败时三个字段静默 0，而同一响应里 total_requests/cost/success_rate 走的是另一个仍在长的 usage_ledger_with_current_month ⇒ 这是「静默矛盾」的高危形状（分账本不同源），只是 S4 本身不触发它。",
+		Note: "三处 710 读点（:810/:817 的 key 详情、:1107 的 usageKeyTraffic 5 分钟分桶）靠 session 臂继续变化。\n" +
+			"残余：缺 details 行的那少数 session 行在本文件被 provider_id 谓词漏掉，失败分桶略少计；" +
+			"且 :810 那条查询被 `_ = h.db.QueryRow(...).Scan(...)` 整体吞错 ⇒ 该退化连日志都没有。\n" +
+			"**注意**：吞错形态与补位无关，它独立存在；变的是「漏计多少」（原判「新增流量全部漏计」不成立）。",
 	},
 	"bg/stats_minute_rollup.go": {
-		// 2026-10-02 **自我更正**：batch4 判 unaffected，被 null-padded 族门判红——判对了。
-		// 核实 :205/:281 `ON CONFLICT (bucket, tenant_id, provider_id, canonical_id)`：
-		// provider_id / client_profile / client_model 都在**冲突键或分组维度**里，且取值来自
-		// `COALESCE(r.provider_id, 0)`、`COALESCE(NULLIF(r.client_profile,''), '__unknown__')`。
-		// 这三列在 session 臂恒 NULL ⇒ 停写后新流量全部落进 provider_id=0 / __unknown__ 桶，
-		// 维度表与事实表**双双**归到假桶。行照常写入、Exec 正常返回，所以没有任何错误信号。
+		// 历史：batch4 判 unaffected → null-padded 族门判红 → 改判 degraded，理由是
+		// 「provider_id / client_profile / client_model 在冲突键与分组维度里且 session 臂恒 NULL
+		//  ⇒ 新流量全落进 provider_id=0 / __unknown__ 桶」。
+		// 2026-10-02（§9.28.2）**该理由的三列全部作废**（734 details 层供值，99.9996%）。
+		// 但同一文件里**另一条**理由仍然成立：credits_rate_multiplier 与 client_ip 确实
+		// 还在恒 NULL 补位集里（它们是 738/740 的追加列，session 族没有对应事实/是错名副本），
+		// 逐列裁决见 db/request_logs_view_padded_columns.go。
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "COUNT(*) FILTER (WHERE r.request_status = 'success')::bigint,",
-		Note:     "rollupMain/rollupDims 三处读 710，窗口由 request_stats_rollup_cursor.last_ts 游标推进，session 臂持续产新 ts 行 ⇒ 分钟汇总照常滚动；Exec 错误会 return err 上抛。⚠️ 但 session 臂有两列恒 NULL（credits_rate_multiplier、client_ip）⇒ client_ip 维度会塌成 __unknown__、credits 估算按倍率 1.0 计——这是**值劣化**，见 Note 与 §9.15 的五种方向。",
+		Note: "rollupMain/rollupDims 三处读 710，窗口由 request_stats_rollup_cursor.last_ts 推进，" +
+			"session 臂持续产新 ts 行 ⇒ 分钟汇总照常滚动；Exec 错误 return err 上抛。\n" +
+			"**仍然成立**的降级：client_ip 在 session 臂恒 NULL（且 session_turns.client_ip 是 " +
+			"client_forwarded_for 的错名副本，202,014/202,014 逐行相同）⇒ client_ip 维度塌成 " +
+			"__unknown__；credits_rate_multiplier 恒 NULL ⇒ credits 估算按倍率 1.0 计。值劣化，见 §9.15 五种方向。\n" +
+			"**已作废**：provider_id=0 / __unknown__ 桶那一条——那三列现在有真值。",
 	},
 	"internal/collector/gateway_adapters.go": {
 		Effect:   effectUnaffected,
@@ -663,15 +492,17 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Note:     "findingsFor 的证据抽样读 710 视图（ts >= $2 从 inc.FirstFailureAt 起算），session 臂继续供数；total == 0 时返回空 findings 而非报错，是设计好的「证据不足」语义（InsufficientData），停写不改变这一行为。",
 	},
 	"admin/session_management_api.go": {
-		// 2026-10-02 **自我更正**：batch2 判 unaffected，被 null-padded 族门判红。核实 :298
-		// `SELECT rl.request_id, rl.ts, rl.client_model, rl.request_preview …` 是**裸投影**，
-		// 没有 COALESCE 到非补位列 ⇒ client_model 在 session 臂恒 NULL ⇒ 会话详情的
-		// Requests 列表里**模型名一列对停写后的新请求恒为空**（行仍在、时间戳仍在）。
-		// ⇒ 不是全空，是该列静默降级，取第 6 档。
-		// 另 :230/:309 的 owner_user 命中在 session_dim 上（另一张表，未补位），属假触发。
+		// 历史：batch2 判 unaffected → null-padded 族门判红 → 改判 degraded，理由是
+		// 「:298 裸投影 client_model，session 臂恒 NULL ⇒ 模型名一列对新请求恒为空」。
+		// 2026-10-02（§9.28.2）**该理由作废**：client_model 现由 d.client_model 供值，
+		// 覆盖 99.9996% ⇒ 新请求的模型名有真值。:230/:309 的 owner_user 命中在
+		// session_dim 上（另一张表，未补位），那条「假触发」判断不变。
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "WHERE rl.gw_session_id = $1",
-		Note:     "会话详情 Requests 列表读 710 视图（本文件 292-296 行注释明示这就是为「S4 停写后新会话查不到」而做的切换），停写后 session 臂继续供数。仍需注意 err != nil 分支只把 Requests 置空、接口照返 200（既存降级设计）。",
+		Note: "会话详情 Requests 列表读 710 视图（本文件 292-296 行注释明示这就是为「S4 停写后新会话查不到」" +
+			"而做的切换），停写后 session 臂继续供数，模型名/预览/时间戳都有真值。\n" +
+			"残余：缺 details 行的那少数 session 行模型名为空 ⇒ 列表里那几行少一列；另有既存降级设计——" +
+			"err != nil 分支只把 Requests 置空而接口照返 200（与补位无关）。",
 	},
 	"admin/session_turns_unified.go": {
 		Effect:   effectUnaffected,
@@ -1006,64 +837,102 @@ var requestLogsViewsWithSessionArm = map[string]struct{}{
 	"request_logs_with_current_month": {},
 }
 
-// sessionArmNullPaddedColumns 是 710 视图 session 臂上**恒为 NULL** 的列。
+// sessionArmNullPaddedColumns 是 canonical 视图 session 臂上**仍为 NULL 补位**的列。
 //
-// 为什么必须单独记一张表（2026-10-02）：「710 视图含 session 臂 ⇒ 停写后不会
-// 查空」这句话只在**行级**成立。migration 710 的 session 臂对 34 列做 NULL 补位
-// （`710_request_logs_view_session_family_v2.sql`），其中包括 client_model、
-// provider_id、attachments、outbound_msg_count、outbound_token_est、
-// api_key_owner_user、gw_task_id、model_chosen、strategy_used……
+// 2026-10-02（§9.26）把它从硬编码的 30 列改成**从生效投影派生**，因为原来那份
+// 钉在 migration 710 的 $proj$ 块上——那是 734 之前的形态，而现网早已是
+// 734 的 details-joined 体：
 //
-// ⇒ 任何在 WHERE / GROUP BY / JOIN / COALESCE 判定里用到这几列的读点，会
-// **行级有、谓词级空**：视图照常返回行，但按该列过滤的结果集恒为空。
-// 这不是「查不到」，是「查得到但没有一行匹配」——旧族约束（视图族不得判
-// silently_empty）在这里是**错的**，而且会拒绝正确的判定。
+//   - 710：30 列 `NULL::` 占位；
+//   - 734：其中 **24 列**换成了 session_turn_details 特征层的真实值
+//     （client_model / provider_id / attachments / quality_* / request_class …）；
+//   - 815：再补 3 列（origin_stage / token_band / client_forwarded_for）。
 //
-// 实证：domains/attachments/handler.go 读 `attachments::text`，session 臂该列
-// 恒 NULL ⇒ Scan 报错 ⇒ 被当成「无附件」⇒ 200 + attachments: []。
-// 附件数据其实还在 request_attachments 表里，丢的只是这条 JSONB 读腿。
+// 真库 details 覆盖率 99.9996%（hot 1,344/1,344 无缺失；parent
+// 1,683,104/1,683,098）⇒ 那 24 列在 session 分臂**不是空的**。
 //
-// 34 列口径（第三十一轮 D1）：初版只认得 30 列——反向校验正则
-// `NULL::[A-Za-z ]+` 匹配不了带参数/数组类型的补位（numeric(4,3)、text[]、
-// numeric(3,2)），confidence_num / quality_flags / quality_score / test_col
-// 四列被静默漏掉，用这几列做谓词的读点会被错归 familyView。
-var sessionArmNullPaddedColumns = map[string]struct{}{
+// 后果不是「多报几个」，而是方向反了：族分类器把「行级有值」判成「谓词级空」，
+// 于是会**拒绝正确的判定**（本文件自己的注释就写过这条后果），并让 105 条读端
+// 分类里的一批被按错误前提登记。§9.21 的「39 个读方读了恒 NULL 的补位列」同源
+// —— 同一个被 710 形态污染的基线。
+//
+// 派生口径 = db.RequestLogsViewPaddedSessionColumns()（生效投影 withDetails=true
+// 里形如 `NULL::` 的表达式对应列名）。权威在 db 包，这里只做转换，理由与
+// 逐列裁决一起登记在 db/request_logs_view_padded_columns.go。
+//
+// **仍然成立的那一半**：这 6 列对读方依旧是「行级有、谓词级空」——视图照常返回
+// 行，但按这些列过滤的结果集恒为空。且这 6 列里最要紧的 `id` 是**证明不可投影**
+// 的（见同文件裁决表），所以它们只能靠改读法消解，不能靠补投影消解。
+var sessionArmNullPaddedColumns = func() map[string]struct{} {
+	m := make(map[string]struct{})
+	for _, c := range dbpkg.RequestLogsViewPaddedSessionColumns() {
+		m[c] = struct{}{}
+	}
+	return m
+}()
+
+// sessionArmDetailsSuppliedColumns 是 734 用 session_turn_details 特征层顶掉的
+// 那批列：**行级有值、缺 details 行时 NULL**。它们与上面那 6 列不是同一类风险，
+// 所以单独登记而不是混进补位表——
+//
+//   - 补位列：恒 NULL（details 缺行与否都一样），过滤它们恒空；
+//   - 本组：99.9996% 有值，过滤它们基本可用，只有 details 缺行的那 6 行会丢。
+//
+// 登记它是为了让「详情层缺行」这件事有一条独立的、可被单独盯的账，而不是
+// 藏在「补位」这个过宽的词里。
+var sessionArmDetailsSuppliedColumns = func() map[string]struct{} {
+	m := make(map[string]struct{})
+	for _, c := range dbpkg.SessionFamilyDetailsProjectionColumns() {
+		m[c] = struct{}{}
+	}
+	return m
+}()
+
+// legacySessionArmNullPaddedColumns710 是 710 形态下的 30 列清单，**仅**供
+// TestSessionArmNullPaddedColumnsMatchMigration 做差集报告用。
+//
+// 保留它的理由：那张表是「我们曾经相信过什么」的记录。删掉它，下一个人就只能
+// 靠 git log 去考古「为什么 §9.21 说是 39 个」；留着它，差集报告能直接打印
+// 「哪些列从恒 NULL 变成了有值」，这正是本轮最重要的那条结论。
+var legacySessionArmNullPaddedColumns710 = map[string]struct{}{
 	"affinity_hit": {}, "api_key_owner_user": {}, "api_key_prefix": {},
 	"application_code": {}, "attachments": {}, "auto_profile": {},
 	"client_model": {}, "client_profile": {}, "compression_reason": {},
-	"confidence_num": {}, "due_at": {}, "gw_task_id": {}, "id": {},
-	"key_alias": {}, "model_chosen": {}, "outbound_msg_count": {},
-	"outbound_msg_hashes": {}, "outbound_token_est": {}, "owner_user": {},
-	"provider_id": {}, "provider_model": {}, "quality_fix_actions": {},
-	"quality_flags": {}, "quality_score": {}, "request_class": {},
+	"due_at": {}, "gw_task_id": {}, "id": {}, "key_alias": {},
+	"model_chosen": {}, "outbound_msg_count": {}, "outbound_msg_hashes": {},
+	"outbound_token_est": {}, "owner_user": {}, "provider_id": {},
+	"provider_model": {}, "quality_fix_actions": {}, "request_class": {},
 	"request_type": {}, "strategy_used": {}, "stream_chunk_errors": {},
-	"stream_chunks_sent": {}, "test_col": {}, "test_tab_indent": {},
-	"transform_rule_id": {}, "virtual_ip": {}, "virtual_mac": {},
+	"stream_chunks_sent": {}, "test_tab_indent": {}, "transform_rule_id": {},
+	"virtual_ip": {}, "virtual_mac": {},
 }
 
-// TestSessionArmNullPaddedColumnsMatchMigration 钉住上面那张表与 migration 710
-// 声明的一致，防止「视图加了列 / 迁移改了投影」之后表悄悄过期。
+// TestSessionArmNullPaddedColumnsMatchMigration 钉住派生集合与**当前权威迁移**
+// （815 的 $proj$，即 710 拼装体 + 734 details + 815 三列）声明的一致。
 //
-// 这张表过期 = 族分类器开始把「谓词级空」判成「行级有」= 门会拒绝正确判定。
-// 所以它必须由**权威来源**（迁移文件）反向校验，而不是靠人记得更新。
+// 权威源为什么从 710 换成 815：710 的 $proj$ 是 734 **之前**的形态，它的 30 条
+// `NULL::` 占位里有 24 条在 734 之后已经被 `d.<col>` 取代。原实现拿 710 当权威，
+// 于是那张表过期了整整两轮而门一直绿——因为它比的是自己（派生自 710 的同一份
+// 形态）与自己。这正是「门测的不是它声称测的那个东西」的教科书形态：它确实在
+// 校验一致性，只是两边的错误抵消了。
+//
+// 现在两侧的独立性来自：左侧派生自 **db 包的生效投影**（withDetails=true），
+// 右侧解析自 **815 迁移文件**的 $proj$ 块。两者由 db 包的 viewdef 等价契约
+// （TestRequestLogsViewV2EnsureMatchesMigration）保证同源但不同路径。
 func TestSessionArmNullPaddedColumnsMatchMigration(t *testing.T) {
 	root := repoRootFromCaller(t)
 	raw, err := os.ReadFile(filepath.Join(root,
-		"sql/migrations/startup/710_request_logs_view_session_family_v2.sql"))
+		"sql/migrations/startup/815_request_logs_view_stage_band_cff.sql"))
 	if err != nil {
-		t.Fatalf("读 migration 710 失败 %v", err)
+		t.Fatalf("读 migration 815 失败 %v", err)
 	}
 	declared := map[string]struct{}{}
-	// 类型段必须涵盖参数化与数组类型（numeric(4,3)、text[]、jsonb、
-	// timestamptz）：窄化成 [A-Za-z ] 会静默漏列（第三十一轮 D1——漏掉的
-	// 恰好是 4 列，「对账通过」但其实对的是一个不完整集合）。
-	re := regexp.MustCompile(`NULL::[A-Za-z0-9_(),\[\]]+ AS ([a-z_]+)`)
+	re := regexp.MustCompile(`NULL::[A-Za-z\[\] ]+ AS ([a-z_]+)`)
 	for _, m := range re.FindAllStringSubmatch(string(raw), -1) {
 		declared[m[1]] = struct{}{}
 	}
-	// test_tab_indent 是迁移里的探针列，保留在表内以便 mismatch 报告完整。
 	if len(declared) == 0 {
-		t.Fatal("migration 710 里没解析出任何 NULL 补位列——正则失效或迁移被重写，" +
+		t.Fatal("migration 815 里没解析出任何 NULL 补位列——正则失效或迁移被重写，" +
 			"族分类器会静默退化成「视图族一律行级可用」")
 	}
 	var missing, extra []string
@@ -1080,11 +949,62 @@ func TestSessionArmNullPaddedColumnsMatchMigration(t *testing.T) {
 	sort.Strings(missing)
 	sort.Strings(extra)
 	if len(missing) > 0 || len(extra) > 0 {
-		t.Errorf("session 臂 NULL 补位表与 migration 710 不一致：\n"+
+		t.Errorf("session 臂 NULL 补位表与 migration 815 不一致：\n"+
 			"  迁移里有、表里没有：%v\n  表里有、迁移里没有：%v\n"+
 			"后果：族分类器会把「谓词级空」误判成「行级有」，"+
 			"从而拒绝正确的 silently_empty 判定。", missing, extra)
 	}
+}
+
+// TestPaddedAndDetailsSuppliedSetsAreDisjointAndComplete 把两张表的关系钉死：
+// 它们必须是**互斥且完备**的两半，而不是两份各自为政的清单。
+//
+// 上一轮的失效形态是「补位表里塞着 24 个其实有值的列」——它既不互斥（那些列
+// 同时是 details 供值列）也不完备（漏了 815 之后的 client_ip 等）。这条门让
+// 「两张表重叠」直接变成一次可读的报告，而不是等人从族分类的异常里反推。
+func TestPaddedAndDetailsSuppliedSetsAreDisjointAndComplete(t *testing.T) {
+	var overlap []string
+	for c := range sessionArmNullPaddedColumns {
+		if _, ok := sessionArmDetailsSuppliedColumns[c]; ok {
+			overlap = append(overlap, c)
+		}
+	}
+	sort.Strings(overlap)
+	if len(overlap) > 0 {
+		t.Errorf("同一列同时被登记为「恒 NULL 补位」与「details 供值」：%v\n"+
+			"两者是相反的风险判断（恒空 vs 99.9996%% 有值），同时成立说明有人没想清楚。", overlap)
+	}
+	// 完备性：710 的 30 条要么在补位表、要么在 details 表，两边都找不到的
+	// 说明「从恒 NULL 变成了有值」这条结论没有登记来源。
+	var unaccounted []string
+	for c := range legacySessionArmNullPaddedColumns710 {
+		_, inPadded := sessionArmNullPaddedColumns[c]
+		_, inDetails := sessionArmDetailsSuppliedColumns[c]
+		if !inPadded && !inDetails {
+			unaccounted = append(unaccounted, c)
+		}
+	}
+	sort.Strings(unaccounted)
+	if len(unaccounted) > 0 {
+		t.Errorf("710 的补位列里，这些既不在当前补位表也不在 details 供值表：%v\n"+
+			"请在 db/request_logs_view_padded_columns.go 给它一条裁决（补投影 / 不同东西 / "+
+			"无源 / 随 v1 退役），否则「从恒 NULL 变成了有值」这个结论没有落点。", unaccounted)
+	}
+	// 报告口径：把「不再恒 NULL」的列数按真实集合算出来，让这条差集在 CI 日志
+	// 里可见。不能用 len(legacy)-overlap-unaccounted —— 那样算出来的是
+	// 「legacy 与 padded 的差」，而 815 之后新增的列（test_col / client_ip /
+	// credits_rate_multiplier）不在 legacy 里，会被这个式子悄悄算进"迁移过来的"。
+	stillPadded := 0
+	for c := range legacySessionArmNullPaddedColumns710 {
+		if _, ok := sessionArmNullPaddedColumns[c]; ok {
+			stillPadded++
+		}
+	}
+	t.Logf("session 臂列账：恒 NULL 补位 %d 列（其中 %d 列沿自 710），"+
+		"details 供值（缺行时 NULL）%d 列，710 时期记为恒 NULL、现已不是的 %d 列",
+		len(sessionArmNullPaddedColumns), stillPadded,
+		len(sessionArmDetailsSuppliedColumns),
+		len(legacySessionArmNullPaddedColumns710)-stillPadded)
 }
 
 // nullPaddedColWordRE 为某个 NULL 补位列构造词边界匹配。
@@ -1301,12 +1221,6 @@ var nullPaddedUnaffectedJustification = map[string]string{
 		"`COALESCE(outbound_model, client_model, '')`（:228）里 outbound_model 在 session 臂是真值，" +
 		"所以 client_model 为 NULL 不改变结果；`COALESCE(request_type, 'main')`（:321/:333）同理有默认。" +
 		"本文件不用任何补位列做 WHERE / GROUP BY / JOIN ⇒ 判 unaffected 成立。",
-	"bg/candidate_failure_monitor.go": "列名命中（provider_id / raw_model_name）全部发生在 " +
-		"**candidate_failure_logs_with_current_month**（迁移 392 建 = hot ∪ base，纯 v1 族，" +
-		"无 session 臂、无补位）：:267 的 GROUP BY 与 :343-345 的按 credential_id 计数都在该视图上，" +
-		"且其写入方 candidate_failure_logger 不受 S4 门控 ⇒ 停写后照常带真值流入。本文件对 710 " +
-		"视图的读点只有 :206 活性探针 max(ts) 与 :336 按 credential_id 计数，两列都不是补位列。" +
-		"回答门的问题：停写之后，这个读点过滤/分组用的列不会变 ⇒ 判 unaffected 成立（第三十一轮 D2）。",
 	"admin/session_timeline_query.go": "唯一的补位列命中是 :32 的投影 " +
 		"`SELECT request_id, ts, success, client_model, outbound_model, …`。client_model " +
 		"在 session 臂为 NULL，但**同一投影里并列了 outbound_model**（session 臂有真值），" +

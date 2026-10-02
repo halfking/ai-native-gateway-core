@@ -76,25 +76,26 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 	if len(goExprs) == 0 || len(sqlExprs) == 0 {
 		t.Fatalf("empty projection (go=%d sql=%d)", len(goExprs), len(sqlExprs))
 	}
-	// 734 冻结块（113 列）必须是 Go 投影的前缀；其后仅允许注册过的追加
-	// 尾列（738 credits_rate_multiplier + 740 client_ip，R57 B7）——再增列
-	// 必须先落迁移再改本清单。
-	if len(goExprs) != len(sqlExprs)+2 {
-		t.Fatalf("projection expression count drifted: go=%d sql(734)=%d (frozen 113 + 2 registered appends)", len(goExprs), len(sqlExprs))
+	// 734 冻结块（113 列）必须是 Go 投影的前缀；其后仅允许**登记过**的追加
+	// 尾列——再增列必须先落迁移，再往 registeredProjectionAppends 加一行。
+	//
+	// 登记成表而不是四段手写断言：原形态是「计数 +2」加两条逐位比对，下一次
+	// 追加要把三处魔数一起改，而少改一处的表现是门在**正确代码**上报
+	// 「count drifted」——一个读不懂自己失败原因的门。表驱动后，追加是一行，
+	// 失败信息直接是「第 N 个追加列漂移：期望 X，实得 Y」。
+	if len(goExprs) != len(sqlExprs)+len(registeredProjectionAppends) {
+		t.Fatalf("projection expression count drifted: go=%d sql(734)=%d registered appends=%d",
+			len(goExprs), len(sqlExprs), len(registeredProjectionAppends))
 	}
 	for i := range sqlExprs {
 		if goExprs[i] != sqlExprs[i] {
 			t.Fatalf("projection expr %d drifted:\n  go  = %s\n  sql = %s", i+1, goExprs[i], sqlExprs[i])
 		}
 	}
-	if goExprs[len(sqlExprs)] != "NULL::double precision AS credits_rate_multiplier" {
-		t.Fatalf("append #1 (738 credits) drifted: %q", goExprs[len(sqlExprs)])
-	}
-	if goExprs[len(sqlExprs)+1] != "NULL::inet AS client_ip" {
-		t.Fatalf("append #2 (740 client_ip) drifted: %q", goExprs[len(sqlExprs)+1])
-	}
-	if len(goExprs) != 115 {
-		t.Fatalf("frozen contract: projection must carry 115 expressions, got %d", len(goExprs))
+	for i, want := range registeredProjectionAppends {
+		if got := goExprs[len(sqlExprs)+i]; got != want {
+			t.Fatalf("registered append #%d drifted:\n  want = %s\n  got  = %s", i+1, want, got)
+		}
 	}
 
 	// 734 details overlay: the canonical projection must reference the details
@@ -116,9 +117,8 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 	// v.<col> at the inner-select tail (the 738 regexp insert position),
 	// never laterally appended and never carried by a v.* star (star
 	// expansion is creation-time-frozen and can never byte-match the
-	// migration product). Lateral append order is the chronological
-	// migration order and is part of the ensure↔migration viewdef-equality
-	// contract.
+	// migration product). 815 的三列**恒**走 lateral（会话侧 t.<col> 直映、
+	// v1 侧无包装链可依），所以它们不属于「条件化」那一类，钉在下一条断言里。
 	testMiddleCols := "id, request_id, ts, tenant_id"
 	frozenDDL := canonicalV2DDL(testMiddleCols, false, false, false, false, true)
 	if !strings.Contains(frozenDDL, "source.system_fingerprint") ||
@@ -127,12 +127,36 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		strings.Contains(frozenDDL, "source.client_ip") {
 		t.Error("frozen-chain v2 DDL must laterally append fp/raw only — never credits/client_ip")
 	}
+	// 815 三列在**每一种基座形态**下都必须经 lateral 出现在 v1 分支内层。
+	// 少一条的后果不是编译错或 DDL 错，而是 v1 分支那一臂拿到 NULL——
+	// 而 UNION ALL 只按位置匹型，列数不变，所以门只能在这里拦。
+	for _, shape := range []struct {
+		name                       string
+		fp, raw, credits, cip, det bool
+	}{
+		{"frozen", false, false, false, false, true},
+		{"dynamic", true, true, true, true, true},
+		{"pre-736", false, false, false, false, true},
+	} {
+		ddl := canonicalV2DDL(testMiddleCols, shape.fp, shape.raw, shape.credits, shape.cip, shape.det)
+		for _, col := range []string{"origin_stage", "token_band", "client_forwarded_for"} {
+			if !strings.Contains(ddl, "source."+col) {
+				t.Errorf("%s base shape: v1 branch must lateral-append source.%s", shape.name, col)
+			}
+			if !strings.Contains(ddl, "h."+col) || !strings.Contains(ddl, "p."+col) {
+				t.Errorf("%s base shape: lateral must select both h.%s and p.%s", shape.name, col, col)
+			}
+			if !strings.Contains(ddl, "t."+col+" AS "+col) {
+				t.Errorf("%s base shape: session branch must project t.%s", shape.name, col)
+			}
+		}
+	}
 	// Inner-select tail order (post-738/740 wrapper): middleCols, laterals,
-	// then v.credits/v.client_ip; the all-frozen probe composes the 113
+	// then v.credits/v.client_ip; the all-frozen probe composes the
 	// contract with no v-refs at all.
 	if !strings.Contains(canonicalV2DDL(testMiddleCols, false, false, true, true, true),
-		testMiddleCols+", source.request_class, source.due_at, source.system_fingerprint, source.raw_model_name, v.credits_rate_multiplier, v.client_ip") {
-		t.Error("inner select must be middleCols + laterals + v.credits/v.client_ip (738 insert position)")
+		testMiddleCols+", source.request_class, source.due_at, source.origin_stage, source.token_band, source.client_forwarded_for, source.system_fingerprint, source.raw_model_name, v.credits_rate_multiplier, v.client_ip") {
+		t.Error("inner select must be middleCols + laterals (815 three, then fp/raw) + v.credits/v.client_ip (738 insert position)")
 	}
 	if strings.Contains(canonicalV2DDL(testMiddleCols, false, false, false, false, true), "v.credits_rate_multiplier") {
 		t.Error("pre-736 wrapper must not reference v.credits_rate_multiplier")
@@ -142,14 +166,34 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		t.Error("dynamic-chain v2 DDL must not re-append columns the base wrapper already carries")
 	}
 	// Composition width: wrapper with credits+client_ip composes the
-	// 115-name contract; missing either falls back to the frozen 113.
+	// 118-name contract; missing either falls back to 113 + the 815 three.
 	if full := canonicalV2DDL(testMiddleCols, true, true, true, true, true); !strings.Contains(full, "NULL::inet AS client_ip") ||
 		!strings.Contains(full, "NULL::double precision AS credits_rate_multiplier") {
-		t.Error("post-738/740 base must compose the 115-column body (credits + client_ip session placeholders)")
+		t.Error("post-738/740 base must compose the full body (credits + client_ip session placeholders + 815 three)")
 	}
 	if stale := canonicalV2DDL(testMiddleCols, true, true, true, false, true); strings.Contains(stale, "AS client_ip") ||
 		strings.Contains(stale, "AS credits_rate_multiplier") {
-		t.Error("pre-740 base must fall back to the frozen 113-column contract")
+		t.Error("pre-740 base must fall back to the pre-rate contract (113 + 815 three)")
+	}
+	// preRateColumnOrder 的存在理由：815 的三列排在 credits/client_ip **之后**，
+	// 所以「冻结 113 + 三列」不是 canonicalColumnOrderV2 的前缀。若哪天有人
+	// 把回退实现改回前缀切片，这三列会连同 credits/client_ip 一起消失。
+	if n := len(preRateColumnOrder()); n != len(canonicalColumnOrderV2)-2 {
+		t.Fatalf("preRateColumnOrder must drop exactly credits_rate_multiplier+client_ip: %d vs %d",
+			n, len(canonicalColumnOrderV2))
+	}
+	for _, col := range registeredColumnAppends[2:] {
+		found := false
+		for _, n := range preRateColumnOrder() {
+			if n == col {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("preRateColumnOrder dropped the 815 column %q — the pre-736 fallback would then "+
+				"compose a body whose v1 branch has no source for it", col)
+		}
 	}
 	// hasDetails=false fallback: no details JOIN, no d.* references.
 	if legacyDDL := canonicalV2DDL(testMiddleCols, false, false, false, false, false); strings.Contains(legacyDDL, "session_turn_details") {
@@ -173,19 +217,48 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 	for i := range sqlNames {
 		sqlNames[i] = strings.TrimSpace(sqlNames[i])
 	}
-	if len(canonicalColumnOrderV2) != len(sqlNames)+2 {
-		t.Fatalf("name count drifted: go=%d sql(734)=%d (frozen 113 + 2 registered appends)", len(canonicalColumnOrderV2), len(sqlNames))
+	if len(canonicalColumnOrderV2) != len(sqlNames)+len(registeredColumnAppends) {
+		t.Fatalf("name count drifted: go=%d sql(734)=%d registered appends=%d",
+			len(canonicalColumnOrderV2), len(sqlNames), len(registeredColumnAppends))
 	}
 	for i := range sqlNames {
 		if sqlNames[i] != canonicalColumnOrderV2[i] {
 			t.Fatalf("column order drifted at position %d: go=%s sql=%s", i+1, canonicalColumnOrderV2[i], sqlNames[i])
 		}
 	}
-	if canonicalColumnOrderV2[len(sqlNames)] != "credits_rate_multiplier" ||
-		canonicalColumnOrderV2[len(sqlNames)+1] != "client_ip" {
-		t.Fatalf("registered name appends drifted: %v / %v",
-			canonicalColumnOrderV2[len(sqlNames)], canonicalColumnOrderV2[len(sqlNames)+1])
+	for i, want := range registeredColumnAppends {
+		if got := canonicalColumnOrderV2[len(sqlNames)+i]; got != want {
+			t.Fatalf("registered name append #%d drifted:\n  want = %s\n  got  = %s", i+1, want, got)
+		}
 	}
+}
+
+// registeredProjectionAppends / registeredColumnAppends 是 734 冻结 113 列
+// 之后的**尾列登记表**，两侧必须逐项一致（表达式文本 + 列名）。
+//
+// 为什么是表而不是散落的断言：每加一列，原来那套「len == sql+2」加两条
+// 手写比对的形态要同步改三处魔数，而漏改一处的表现是门在**正确代码**上报
+// count drifted——一个读不出自己失败原因的门比没有门更坏。表驱动之后，
+// 追加一列 = 迁移文件 + 两张表各一行；漂移时失败信息直接指出是第几个、
+// 期望什么、实得什么。
+//
+// 登记纪律：先落迁移（815 及后续），再登记；未登记的追加一律视为漂移。
+// 追加列的语义裁决见 docs/audit/2026-09-30-session-request-data-re-audit.md
+// §9.22（815 的三列 + id/trace_events 被拒的实测依据）。
+var registeredProjectionAppends = []string{
+	"NULL::double precision AS credits_rate_multiplier", // 738
+	"NULL::inet AS client_ip",                           // 740
+	"t.origin_stage AS origin_stage",                    // 815
+	"t.token_band AS token_band",                        // 815
+	"t.client_forwarded_for AS client_forwarded_for",    // 815
+}
+
+var registeredColumnAppends = []string{
+	"credits_rate_multiplier", // 738
+	"client_ip",               // 740
+	"origin_stage",            // 815
+	"token_band",              // 815
+	"client_forwarded_for",    // 815
 }
 
 // Live round-trip (TEST_PG_DSN): on a scratch database holding
@@ -307,6 +380,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	applyMigration("734_request_logs_view_details_join.sql")
 	applyMigration("738_view_chain_credits_rate_multiplier.sql")
 	applyMigration("740_view_chain_client_ip.sql")
+	applyMigration("815_request_logs_view_stage_band_cff.sql")
 
 	// Cold-build equivalence: drop the canonical and let the ensure rebuild
 	// it from the post-740 base shape.
@@ -331,6 +405,14 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	}
 	if !strings.Contains(ensureViewdef, "credits_rate_multiplier") {
 		t.Fatal("ensure must compose the 738 credits_rate_multiplier column into the rebuilt body")
+	}
+	for _, col := range []string{"origin_stage", "token_band", "client_forwarded_for"} {
+		if !strings.Contains(ensureViewdef, "t."+col) {
+			t.Errorf("ensure must compose the 815 session-branch column t.%s into the rebuilt body", col)
+		}
+		if !strings.Contains(ensureViewdef, "h."+col) {
+			t.Errorf("ensure must compose the 815 v1-branch lateral column h.%s into the rebuilt body", col)
+		}
 	}
 	// Idempotency: second pass must not change the definition.
 	if err := db.ensureRequestLogsCurrentMonthView(ctx); err != nil {
@@ -382,20 +464,26 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	applyMigration("734_request_logs_view_details_join.sql")
 	applyMigration("738_view_chain_credits_rate_multiplier.sql")
 	applyMigration("740_view_chain_client_ip.sql")
+	applyMigration("815_request_logs_view_stage_band_cff.sql")
 	migrationViewdef := viewDefinition(t, ctx, pool)
 	if migrationViewdef != ensureViewdef {
-		t.Fatalf("ensure and migrations 710+734+738+740 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
+		t.Fatalf("ensure and migrations 710+734+738+740+815 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
 			ensureViewdef, migrationViewdef)
 	}
 
 	// Data semantics: dedup + D4 NULL passthrough + details overlay + 740
 	// client_ip passthrough.
 	seed := `
-		INSERT INTO public.request_logs_hot (request_id, gw_session_id, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags, client_ip)
-		VALUES ('req-v1-only', 'sess-legacy', 10, 5, 1, 'immediate', 'm-alpha', 'cli-alpha', '{}', '203.0.113.7')
-		     , ('req-dual', 'sess-dual', 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}', NULL);
-		INSERT INTO public.request_logs (request_id, gw_session_id, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
-		VALUES ('req-parent-only', NULL, 1, 2, 3, 'immediate', 'm-gamma');
+		-- ts 必须给：真库 request_logs.ts 是 NOT NULL，而 v1 分支的 lateral
+		-- 以 h.ts = v.ts 关联。旧夹具不写 ts ⇒ lateral 恒不命中 ⇒ v1 分支的
+		-- request_class/due_at/fp/raw 全是 NULL，而**没有任何断言碰过这条腿**
+		-- （client_ip 走 v.client_ip 绕过了 lateral），所以这个缺陷一直藏着。
+		-- 815 的第一批断言是第一个读 lateral 的断言，当场把它挖了出来。
+		INSERT INTO public.request_logs_hot (request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags, client_ip, origin_stage, token_band, client_forwarded_for)
+		VALUES ('req-v1-only', 'sess-legacy', now(), 10, 5, 1, 'immediate', 'm-alpha', 'cli-alpha', '{}', '203.0.113.7', 'business', 'band-mid', '203.0.113.9')
+		     , ('req-dual', 'sess-dual', now(), 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}', NULL, 'business', 'band-dual-v1', '198.51.100.1');
+		INSERT INTO public.request_logs (request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
+		VALUES ('req-parent-only', NULL, now(), 1, 2, 3, 'immediate', 'm-gamma');
 		INSERT INTO public.session_turns_hot (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
 		VALUES ('sess-dual', 'default', 'req-dual', now(), 1, 'm-beta-live', true, 200, 7, CURRENT_DATE)
 		     , ('sys:probe:cred9:20260914', 'default', 'req-synthetic', now(), 1, 'm-probe', true, 200, 0, CURRENT_DATE);
@@ -490,6 +578,51 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("view coverage = %d rows, want 5 (both branches visible)", rows)
 	}
 
+	// ── 815 三列的数据语义（两侧各一条腿都要有源）─────────────────────────
+	// 这三条不是「列存在」而是「值真的出来了」：UNION ALL 只按位置匹型，
+	// 少给 v1 分支 lateral 那一列，列数照样相等、查询照样 200，而 v1-only 行
+	// 从这三列拿到 NULL——正是 §9.18/§9.22 反复出现的「修好了但变全盲」。
+	var stage, band, cff *string
+	if err := pool.QueryRow(ctx, `
+		SELECT origin_stage, token_band, client_forwarded_for
+		FROM public.request_logs_with_current_month WHERE request_id = 'req-v1-only'
+	`).Scan(&stage, &band, &cff); err != nil {
+		t.Fatalf("815 v1-branch passthrough probe failed: %v", err)
+	}
+	if stage == nil || *stage != "business" {
+		t.Fatalf("815 v1-branch lateral origin_stage = %v, want \"business\" "+
+			"(lateral 匹配条件是 h.request_id = v.request_id AND h.ts = v.ts；"+
+			"夹具的 v1 行若仍缺 ts，这条腿恒不命中，而症状是 NULL 而非报错)", stage)
+	}
+	if band == nil || *band != "band-mid" {
+		t.Fatalf("815 v1-branch lateral token_band = %v, want \"band-mid\"", band)
+	}
+	if cff == nil || *cff != "203.0.113.9" {
+		t.Fatalf("815 v1-branch lateral client_forwarded_for = %v, want \"203.0.113.9\"", cff)
+	}
+	// 反连接那条更隐蔽的腿：req-dual 在 v1 与 session_turns 都有行，视图只
+	// 输出 session 臂那一行。session 侧缺该列时读方拿 NULL 是**契约内的**
+	// 行为（覆盖缺口），但必须只出现一次——若反连接与追加列的组合让 v1 那条
+	// 也漏了行/多了一行，dualCount 断言会先变红。
+	if _, err := pool.Exec(ctx, `
+		UPDATE public.session_turns_hot SET origin_stage = 'node_probe', token_band = 'band-live'
+		WHERE request_id = 'req-dual'
+	`); err != nil {
+		t.Fatalf("stage 815 session-branch values: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT origin_stage, token_band FROM public.request_logs_with_current_month
+		WHERE request_id = 'req-dual'
+	`).Scan(&stage, &band); err != nil {
+		t.Fatalf("815 session-branch passthrough probe failed: %v", err)
+	}
+	if stage == nil || *stage != "node_probe" {
+		t.Fatalf("815 session-branch origin_stage = %v, want \"node_probe\"", stage)
+	}
+	if band == nil || *band != "band-live" {
+		t.Fatalf("815 session-branch token_band = %v, want \"band-live\"", band)
+	}
+
 	// Down chain in reverse numeric order (740 down → 738 down → 734 down →
 	// 733 down → 710 down). 734 down must rebuild the 710 body — its
 	// "already v2" probe must NOT mistake the 734 details-joined body for the
@@ -503,6 +636,16 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
 			t.Fatalf("apply %s: %v", name, err)
 		}
+	}
+	applyDown("815_request_logs_view_stage_band_cff.down.sql")
+	postDown815 := viewDefinition(t, ctx, pool)
+	for _, col := range []string{"origin_stage", "token_band", "client_forwarded_for"} {
+		if strings.Contains(postDown815, col) {
+			t.Fatalf("815 down must strip %s from the canonical view; got:\n%s", col, postDown815)
+		}
+	}
+	if !strings.Contains(postDown815, "client_ip") {
+		t.Fatal("815 down must keep the 740 client_ip column (it strips only its own three)")
 	}
 	applyDown("740_view_chain_client_ip.down.sql")
 	postDown740 := viewDefinition(t, ctx, pool)
@@ -569,10 +712,16 @@ func frozenContractColumnList(ctx context.Context, scratch *pgxpool.Pool, liveDS
 	}
 	defer live.Close()
 
+	// 减去**全部**追加列，来源是登记表而不是硬编码清单：硬编码那份在 815
+	// 之后会少减三列，于是 frozen 从 108 变 111，报错信息是「frozen base
+	// contract = 111 columns, want 108」——一个把「清单没跟上」说成「契约
+	// 漂移」的消息，排查方向被直接带偏。
 	appended := map[string]bool{
 		"customer_id": true, "request_class": true, "due_at": true,
 		"system_fingerprint": true, "raw_model_name": true,
-		"credits_rate_multiplier": true, "client_ip": true,
+	}
+	for _, c := range registeredColumnAppends {
+		appended[c] = true
 	}
 	rows, err := live.Query(ctx, `
 		SELECT column_name FROM information_schema.columns
@@ -621,7 +770,15 @@ func cloneTablesFrozenDDL(ctx context.Context, liveDSN string, frozen []string) 
 	for _, name := range frozen {
 		keep[name] = true
 	}
-	for _, name := range []string{"customer_id", "request_class", "due_at", "system_fingerprint", "raw_model_name", "credits_rate_multiplier", "client_ip"} {
+	// 815 的三列必须留在克隆里：迁移 815 对物理 request_logs(_hot) 有源守卫，
+	// 缺列即 notice 后 RETURN（不重建），于是列数停在 115 而末尾的 fail-closed
+	// 对账会报「rebuild did not converge」——一个指向「重建逻辑坏了」而真因是
+	// 「夹具少了一列」的失败信息。夹具要忠实反映 428/485 之后的物理表。
+	for _, name := range []string{
+		"customer_id", "request_class", "due_at", "system_fingerprint",
+		"raw_model_name", "credits_rate_multiplier", "client_ip",
+		"origin_stage", "token_band", "client_forwarded_for",
+	} {
 		keep[name] = true
 	}
 
