@@ -363,3 +363,76 @@ export async function downloadProviderDetailExport(providerId: number, time: Boa
   a.click()
   URL.revokeObjectURL(url)
 }
+// ─── 2026-10-02 看板轮：按模型拆分的用量趋势序列 ───
+// 后端 admin/usage_trend_series.go。trend-series 供看板「用量趋势」卡与全页
+// 用量趋势视图共用；trend-models 供全页视图的模型下拉选项（随当前过滤条件变化）。
+
+export type UsageTrendMetric = 'requests' | 'tokens' | 'credits' | 'cost'
+
+export interface UsageTrendPoint {
+  bucket: string
+  requests: number
+  tokens: number
+  credits: number
+  cost_usd: number
+}
+
+export interface UsageTrendModelSeries {
+  model: string
+  total_requests: number
+  total_tokens: number
+  total_credits: number
+  total_cost_usd: number
+  points: UsageTrendPoint[]
+}
+
+export interface UsageTrendSeriesResponse {
+  start: string
+  end: string
+  bucket_minutes: number
+  top: number
+  source: string
+  series: UsageTrendModelSeries[]
+}
+
+export interface UsageTrendModelEntry {
+  model: string
+  requests: number
+  tokens: number
+  credits: number
+  cost_usd: number
+}
+
+export interface UsageTrendModelsResponse {
+  start: string
+  end: string
+  source: string
+  models: UsageTrendModelEntry[]
+}
+
+export interface UsageTrendFilterQuery {
+  time: BoardTimeQuery
+  tenant_id?: string
+  provider_id?: number
+  api_key_id?: number
+  model?: string
+  top?: number
+}
+
+function usageTrendQs(q: UsageTrendFilterQuery): URLSearchParams {
+  const qs = usageTimeQs(q.time)
+  if (q.tenant_id) qs.set('tenant_id', q.tenant_id)
+  if (q.provider_id != null && q.provider_id > 0) qs.set('provider_id', String(q.provider_id))
+  if (q.api_key_id != null && q.api_key_id > 0) qs.set('api_key_id', String(q.api_key_id))
+  if (q.model) qs.set('model', q.model)
+  if (q.top != null) qs.set('top', String(q.top))
+  return qs
+}
+
+export function getUsageTrendSeries(q: UsageTrendFilterQuery, signal?: AbortSignal) {
+  return req<UsageTrendSeriesResponse>('GET', `/api/admin/usage/trend-series?${usageTrendQs(q)}`, undefined, { signal })
+}
+
+export function getUsageTrendModels(q: UsageTrendFilterQuery, signal?: AbortSignal) {
+  return req<UsageTrendModelsResponse>('GET', `/api/admin/usage/trend-models?${usageTrendQs(q)}`, undefined, { signal })
+}
