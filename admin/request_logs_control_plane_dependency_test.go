@@ -262,10 +262,12 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 			"r.markSkipped(reason); slog.Info(...); return 0 }`（:377-384），" +
 			"而 SQL 在 :386 才发出 ⇒ **查询一次都不发**。BlastRadius 已清空：该字段的定义是「它授权/改变的具体写入」，" +
 			"停写期间这次 INSERT 根本不会发生。\n\n" +
-			"**遗留缺口（不在本档范围）**：`SkippedChecks()`(:94-101) 是机器可读的「本轮未执行」通道，" +
-			"但全仓 grep 到的消费者**只有测试**（bg/ledger_reconciliation_s4_gate_test.go、" +
-			"bg/credential_recovery_s4_gate_test.go）⇒ 返回值 0 在计数上仍与「扫了没发现差异」不可区分，" +
-			"停写期间只看 findings 计数会显示「账务无差异」。**护栏把查询停了，但停没停没人看得见。**",
+			"**此缺口已闭合（§9.38）**：`SkippedChecks()`(:94-101) 原是只有测试消费的通道，" +
+			"返回值 0 在计数上与「扫了没发现差异」不可区分。现已由 " +
+			"`bg/s4_scan_skip_metrics.go` 发布为 `llm_gateway_bg_s4_scan_skipped_last_run`" +
+			"{worker,reason}（1=本轮未执行），由 " +
+			"`deploy/prometheus/rules/s4-scan-skip.yml` 的 `BgS4ScanSkipped` 告警消费。" +
+			"RunOnce 用 `defer` 记录，覆盖全部 return 分支。**护栏把查询停了，现在也看得见了。**",
 	},
 	"bg/model_tier.go": {
 		Feeds:    "request_logs_hot 流量 → IsFeaturedModel() 的分层结果 → 路由",

@@ -194,6 +194,13 @@ func (r *LedgerReconciler) RunOnce(ctx context.Context) int {
 	// previous one. A stale skip list is the worst version of this feature — it
 	// would report "skipped" for a check that ran and really did find nothing.
 	r.resetSkipped()
+	// Publish "this round did not execute" to /metrics. Deferred so it covers
+	// every return path (including ones added later) — the skipped list is read
+	// at exit, after the checks have had their chance to markSkipped. Without
+	// this, a skipped check returns 0 and is indistinguishable from "scanned
+	// and found nothing" on the findings counter, so stop-write reads as
+	// "ledger clean". See bg/s4_scan_skip_metrics.go.
+	defer recordS4ScanSkipState(s4ScanWorkerLedgerReconciliation, r.SkippedChecks(), time.Now())
 	total := 0
 	total += r.checkBalanceChain(runCtx, window)
 	total += r.checkUsageCredit(runCtx, window)

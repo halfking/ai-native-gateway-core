@@ -4848,3 +4848,125 @@ Evidence 仍逐字存在（代码没删那段 SQL）、`Live && !Gated` 时 Blas
 
 *M1 第一版**没注入成功**（gofmt 改了对齐空格数，锚点没匹配上，测试照常 `ok`）——
 **没生效的变异不是证据**，按锚点重做后才算数。*
+
+---
+
+## §9.38 `SkippedChecks()` 的可观测出口：把「没跑」从「跑了没发现」里分出来
+
+§9.37.6 留下的缺口。本节把它闭合，并**顺带修掉一个被它暴露出来的陈旧状态 bug**。
+
+### §9.38.1 缺口是可证实的，不是推测
+
+两处 S4 停写门控都在**发出 SQL 之前**短路、都 `return 0`：
+
+| worker | 门控函数 | 短路点 | SQL |
+|---|---|---|---|
+| `bg/ledger_reconciliation.go` | `usageCreditComparability` | `checkUsageCredit` 首行（`:377`） | `:386` 才发出 |
+| `bg/credential_recovery.go` | `lookbackComparability` | `scanLookbackRecoveries`（`:1937`） | `:1950` 才发出 |
+
+**全仓 grep `SkippedChecks` 的消费者 = 2 个 s4_gate 测试，零生产消费者。**
+而 `settings.RequestLogsWriteEnabled()` 本身也**没有任何指标**——
+S4 停写这个状态在 `/metrics` 上完全不可见。
+
+停写期间的实际后果：`maas_reconciliation_findings` 不增长、lookback 无候选，
+运维读到的是「账务无差异 / 无需恢复」，而真相是这两个问题**已经不再可判定**。
+
+**既有的累计计数器救不了这个洞**：`credential_recovery` 已有
+`llmgw_recovery_lookback_triggers_total{outcome="skipped_s4_stop_write"}`，
+但它是累计的——停写生效后它**停止增长**，而「计数器不再增长」与「worker 卡死」
+在告警侧完全同形。要回答的是**当前状态**，所以补的是 gauge 而不是 counter。
+
+### §9.38.2 三个指标，每个都有告警在消费
+
+| 指标 | 类型 | 回答的问题 | 消费它的告警 |
+|---|---|---|---|
+| `llm_gateway_bg_s4_scan_skipped_last_run{worker,reason}` | gauge | 本轮**没执行**吗 | `BgS4ScanSkipped`（for: 10m） |
+| `llm_gateway_bg_s4_scan_last_run_unix{worker}` | gauge | worker 还活着吗 | `BgS4ScanStalled`（> 3600s, for: 15m） |
+| `llm_gateway_bg_s4_scan_unregistered_skip_total{worker,reason}` | counter | 指标本身在**谎报**吗 | `BgS4ScanUnregisteredSkipReason` |
+
+**刻意不加**累计型 `..._skip_total`：当前状态已由 gauge 表达，
+加一个没有告警消费者的计数器就是 §9.37 说的装饰。`last_run_unix` 若不加
+`BgS4ScanStalled`，它自己就成了装饰——所以「新增的每个指标都必须在告警里出现」
+被写成契约门（`s4_scan_skip_test.go:61`）。
+
+接线用 **`defer`**：逐个 `return` 手写一遍是「只补了已知路径」的老形状。
+`defer` 覆盖所有 return 分支，包括未来新增的。
+
+### §9.38.3 默认拒绝：新跳过源必须登记，否则门红
+
+`reason` 是 gauge 的标签值，**标签空间必须严格等于闭集**。
+若新跳过源带着未登记的 reason 上线，它**不会**被写进 `skipped_last_run`——
+于是 gauge 停在 0，指标把「跳过了」**谎报成**「跑过了」。
+这比没有指标更坏，所以两侧都堵：
+
+- **源码侧**：扫描包内所有**具名结果为 `(comparable bool, reason string)`** 的函数，
+  收集其能产出的 reason（含字面量与常量解析），要求全部在闭集内。
+  判据是**签名**而非函数名白名单 ⇒ 新增跳过源时门不会静默放过。
+  （`bg` 里其余返回 `(bool, string)` 的函数全是**无名**结果，不被扫到，
+  也不该被扫到：它们返回错误文案，不是跳过原因键。）
+- **运行时侧**：未登记的 reason 落进兜底计数器 + `slog.Error`，
+  **不写进闭集 gauge**。默认拒绝，宁可吵闹不可静默谎报。
+
+空串被显式排除：两个 comparability 的成功分支都是 `return true, ""`，
+空串表示「本轮可判定、真跑了」，不是原因键。
+
+### §9.38.4 顺带修掉一个真 bug：`resetSkipped()` 早退在它之上
+
+`scanLookbackRecoveries` 的 hook 早退
+
+```go
+if r.ursmRecoverSink == nil && r.probeSubmitter == nil { return }
+```
+
+**原本位于 `r.resetSkipped()` 之上** ⇒ 「什么都没做的一轮」返回**上一轮**的 skip 列表。
+当时是潜在的（hook 构造后不变，首轮起就恒定早退），但**一旦把列表发布到 `/metrics`，
+它就变成运维可见的谎报**——这正是 `ledger_reconciliation.go:193-195`
+注释里警告的「陈旧 skip 列表是最坏形态」。已把 `resetSkipped()` 上移到早退之前，
+并立门钉住顺序（`TestResetSkippedPrecedesEarlyReturnInLookbackScan`）。
+
+**这不是顺手美化**：把一个潜在 bug 接上告警，等于把它从「没人看得见」
+升级成「所有人看见错误的值」。
+
+### §9.38.5 我自己这道门先写错了三次——都记在这里
+
+| 症状 | 真因 | 教训 |
+|---|---|---|
+| GW-00 守卫报 `108 could not be applied builtin len()` | `for _, x := range someString` 迭代的是 **rune 不是行**，`require.NotContains` 在对 int32 调 `len()` ⇒ **这道守卫一行都没真正检查过** | 对字符串 `range` 出的是字节；断言前先确认迭代出的类型是不是你以为的 |
+| 闭集门报 `skip reason "" is not registered` | comparability 成功分支的 `return true, ""` 被当成 reason | 判据要先问「这个值的语义是不是我以为的那种」 |
+| 「`scanLookbackRecoveries` 不再调用 `resetSkipped`」 | `r.resetSkipped()` 的 `Fun` 是 **`*ast.SelectorExpr`**（带接收者），我只判了 `*ast.Ident` ⇒ 门红在一个**从未存在过**的缺陷上 | §9.35 记过「接线门只认 `*ast.SelectorExpr` 而 `writeJSONOk` 是包级函数」，这次是**反向**：方法是 SelectorExpr、包级函数才是 Ident。两种都要认 |
+| 「hook 早退不见了」 | `a == nil && b == nil` 解析成 `BinaryExpr{Op:LAND, X:BinaryExpr{Op:EQL, X:SelectorExpr, Y:nil}}`——选择器在 `be.X`，我查的是 `be.Y` | AST 判据必须拿真实解析结果对照，不能凭印象写 |
+
+前两条尤其要记：**一个恒红或恒「误报不存在缺陷」的门，比没有门更坏**——
+它训练读者忽略自己，久了真的坏了也没人看。
+
+### §9.38.6 门必须变异验证：6/6，各命中不同的断言
+
+| 变异 | 红在 | 证明的是 |
+|---|---|---|
+| M-D 归零循环只写 1 不写 0 | `s4_scan_skip_metrics_test.go:253` | 显式归零承重（§9.35 M3 的回归） |
+| M-B `RunOnce` 的 `defer` 降级为普通调用 | 同文件 `:152` | 门认的是 **defer**，不是「出现过这个调用」 |
+| M-C 把 `resetSkipped()` 挪回早退之下 | 同文件 `:226` | 顺序被钉住 |
+| M-A `lookbackComparability` 返回未登记 reason | 同文件 `:102` | 闭集默认拒绝 |
+| M-E 抽掉未登记 reason 的兜底计数器 | 同文件 `:275`（vet 干净 ⇒ 确认是**断言红**而非编译红） | 未登记 reason 不会被静默吞掉 |
+| M-F′ 规则数保持 3，只让 `last_run_unix` 失去告警 | `s4_scan_skip_test.go:61` | 覆盖断言承重，**不是**靠 `Len(3)` 蒙对的 |
+
+**两次「变异没生效」被当场识破并重做**——这正是它们没有污染证据的原因：
+
+1. **M-C 第一版**：只加了标记，`resetSkipped()` 的位置**根本没动** ⇒ 门正确地保持绿。
+   若就此记「M-C 通过」，就是拿一个没生效的变异当承重证据。改成真的下移后命中 `:226`。
+2. **M-E 第一版**：写出多余 `}` ⇒ `log/slog` 变成未使用导入 ⇒ **编译失败**。
+   编译红不是断言红。保留日志、只抽掉计数器后，vet 干净、`:275` 命中。
+
+M-F 也先做了一版「删掉整条规则」，报在 `Len(..., 3)` 这个结构断言上——
+它只证明规则数变了，没证明「指标失去了消费者」。于是补做 M-F′（规则数不变、
+只换掉一个 expr 里的指标名），确认承重的是覆盖断言本身。
+
+### §9.38.7 留在本档范围之外
+
+- **admin 端点没做**。`admin.Handler` 已经持有 `credRecov`（`handler.go:78`），
+  零接线可达；但 `LedgerReconciler` 只是 `cmd/gateway/main.go:4838` 的局部变量，
+  从未注入 Handler ⇒ 要做就得改 `main.go`（共享工作区里冲突面最大的文件），
+  去重复一个 `/metrics` 已经承载的事实。**判据是新字段先问「哪道门会读它」**，
+  同理也适用于新端点：没有第二个消费方就不开这个面。
+- **响应侧 7 个读点仍不可端口**、**族分类器 `id` 误触发未修**、
+  **`auto_route_settle_worker` 的正确修法（改读会话族）未做**——见 §9.36.3 清单。
