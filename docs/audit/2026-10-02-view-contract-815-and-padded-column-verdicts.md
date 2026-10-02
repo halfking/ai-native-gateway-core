@@ -238,13 +238,37 @@ id、session 侧的 `id` 是 turn id。判据「session 侧的列与 v1 侧的�
 
 ### §9.27.9 真库往返（最强的一条证据）
 
-`TestRequestLogsViewV2EnsureMatchesMigration`（`TEST_PG_DSN` 门控）在 scratch
-库上重放 `710 → 734 → 738 → 740 → 815`，要求 Go 自愈体与迁移产物
+`TestRequestLogsViewV2EnsureMatchesMigration`（`TEST_PG_DSN` 门控，**本轮实跑
+PASS**）在独立 scratch 库 `llmgw_view_v2_contract_test` 上重放
+`733 → 710 → 734 → 738 → 740 → 815`，要求 Go 自愈体与迁移产物
 **viewdef 逐字节相同**，并验证：反连接去重、`sys:%` 的 NULL 语义、details
 叠加、`client_ip` 透传、815 三列在**会话分支与 v1 分支各一条腿**都有值、
 以及 down 链（815 → 740 → 738 → 734）逐级还原。
 
-815 本身也已在真库上实跑（up → 118 列，down → 115 列，up → 118 列）。
+**815 幂等：从「一次性手跑」升级为可重跑的门。** 此前那条证据是「真库实跑 up → 118 /
+down → 115 / up → 118」——它要动活库，验收时谁也不敢重跑，于是这条结论只活在那次
+运行的记忆里，属于**不可复核的证据**。现已在同一个 scratch 库内跑 `up → down → up`，
+并加三条断言：
+
+- re-up 后 viewdef **逐字节**等于 down 前那一份（不一致 ⇒ 815 依赖了它自己没有建立的
+  前置状态，线上表现是「回滚后再前滚，视图少列或多列」，每次都会被当成偶发）；
+- re-up 后三列**仍有值**，不只是列名回来。列回来了而值是 NULL，等于把「缺源」伪装成
+  「已迁移」——这正是这套视图反复出问题的形状；
+- 第二次 down 的 viewdef 与第一次**逐字节相同**，顺带钉住 down 的确定性（同一个 down
+  跑两次结果不同 = 它偷偷读了库外状态）。
+
+前两条与第三条各做过一次变异验证：把比较对象换成故意错的字符串 ⇒ 红分别落在
+`view_schema_v2_contract_test.go:671` / `:695`，都是 `t.Fatalf` 断言命中、零 panic。
+
+**顺带发现：注释引用的先例与先例的实际行为相反。** 815.down 写着「schema_migrations
+行按 append-only 惯例保留（**710/740 惯例**）」，而 740.down 末行恰恰是
+`DELETE FROM public.schema_migrations WHERE version = '740'`。数了多数派：
+**710 / 734 / 738 / 815 保留，只有 740 删**（4 比 1）⇒ 815 的*行为*是对的，
+*引用的先例*是错的，已改写注释。**操作后果不是理论**：`schema_migrations` 是
+`PRIMARY KEY(version)`，而 up 文件末尾会 INSERT 自己那一行 ⇒ down 之后**朴素重跑 up
+会在该 INSERT 处主键冲突、整笔事务回滚，视图停在 115 列**。响亮地失败可以接受，但
+「回滚后再前滚」必须先 `DELETE FROM schema_migrations WHERE version='815'`，而这个
+顺序现在被上面那道门钉住了。
 
 **down 的级联面**（真库实测）：`DROP ... CASCADE` 会带走
 `v_model_health_dashboard` 与 `v_probe_system_health`。二者由

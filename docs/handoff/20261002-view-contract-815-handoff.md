@@ -93,7 +93,7 @@ TEST_PG_URL=... go test ./admin/ -tags integration \
 > 正好落在编译窗口内。⇒ 在共享工作区里，「跑出来红」与「代码是红的」是两件事；
 > 报告红灯前先重跑一次并同时看 `git status --porcelain -- <该包>`。
 
-本轮补的两道「门非空转」断言（各自已变异验证，详见审计正文 §9.27.8b）：
+本轮补的两道「门非空转」断言（**不需要重跑任何变异就能复核**，详见审计正文 §9.27.8b）：
 
 - `db.TestPaddedVerdictGatesAreNotVacuous` — PASS，运行时自证结构：
   `补位 6 列 [id test_col test_tab_indent provider_model credits_rate_multiplier client_ip]、
@@ -105,12 +105,29 @@ TEST_PG_URL=... go test ./admin/ -tags integration \
 
 真库往返（本轮最强的一条证据，审计正文 §9.27.9 展开）：
 
-1. `TestRequestLogsViewV2EnsureMatchesMigration` 在 scratch 库上重放
-   `710 → 734 → 738 → 740 → 815`，要求 Go 自愈体与迁移产物 **viewdef 逐字节相同**，
-   并验证 down 链（815 → 740 → 738 → 734）逐级还原。
-2. 815 本身在真库实跑三段：**up → 118 列 / down → 115 列 / up → 118 列**（幂等）。
+1. `TestRequestLogsViewV2EnsureMatchesMigration`（`TEST_PG_DSN` 门控，本轮**实跑 PASS
+   1.05s / 整包 6.25s**，离线时同命令 0.24s —— 差值即真库门确实在跑、没 skip）在
+   独立 scratch 库 `llmgw_view_v2_contract_test` 上重放 `733 → 710 → 734 → 738 →
+   740 → 815`，要求 Go 自愈体与迁移产物 **viewdef 逐字节相同**，并逐级验证 down 链
+   （815 → 740 → 738 → 734 → 733 → 710）。**活库全程只读**，scratch 库自动删净。
+2. **815 幂等已从「一次性手跑」升级为可重跑的门**（原先只有一次动活库的
+   118 → 115 → 118，不可复核）：同一个 scratch 库里跑 `up → down → up`，要求 re-up
+   后 viewdef **逐字节**等于 down 前那一份、三列**仍有值**（不只是列名回来），并且
+   第二次 down 的 viewdef 与第一次逐字节相同（顺带钉住 down 的确定性）。两处新断言
+   各做过一次变异验证，红都落在 `view_schema_v2_contract_test.go:671` / `:695`，
+   均为 `t.Fatalf` 断言命中、零 panic。
 3. 810 + 815 同时在库时，canonical 视图列数 = 118，且 `id` 仍是
    `NULL::bigint AS id,`（全库唯一 1 处命中）、`trace_events` 不在。
+
+> **顺带发现并修掉一处「注释引用的先例与先例的实际行为相反」**：815.down 写着
+> 「schema_migrations 行按 append-only 惯例保留（**710/740 惯例**）」，而
+> 740.down 末行恰恰是 `DELETE FROM public.schema_migrations WHERE version='740'`。
+> 数了多数派：**710 / 734 / 738 / 815 保留，只有 740 删**（4 比 1），所以 815 的
+> *行为*是对的、*引用的先例*是错的，已改写注释。**操作后果不是理论**：该表是
+> `PRIMARY KEY(version)`，而 up 文件末尾 INSERT 自己那行 ⇒ down 之后**朴素重跑 up
+> 会在那个 INSERT 处主键冲突、整笔事务回滚，视图停在 115 列**。响亮地失败可以接受，
+> 但「回滚后再前滚」必须先 `DELETE FROM schema_migrations WHERE version='815'` ——
+> 那个顺序现在被上面第 2 条的门钉住了。
 
 真库集成门的两条关键输出：
 - 热图在 118 列视图上执行成功，返回 21（默认排除自检）/ 45（含自检）条凭据序列；

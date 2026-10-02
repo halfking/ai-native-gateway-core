@@ -112,6 +112,15 @@ BEGIN
   RAISE NOTICE '815 down: canonical view back to 115 columns OK';
 END $$;
 
--- schema_migrations 行按 append-only 惯例保留（710/740 惯例）。
+-- schema_migrations 行按 append-only 惯例保留。多数派是这一支：710 / 734 / 738
+-- 都保留。**740 是例外**（740.down 末行 DELETE FROM schema_migrations WHERE
+-- version='740'），所以本行原先引用的「710/740 惯例」把先例说反了。
+--
+-- 操作后果（不是理论）：本表是 PRIMARY KEY(version)，而 up 文件末尾会
+-- INSERT 自己那一行。down 之后**朴素重跑 up 会在那个 INSERT 处主键冲突、
+-- 整笔事务回滚，视图停在 115 列**。响亮地失败可以接受，但「回滚后再前滚」
+-- 必须先 `DELETE FROM schema_migrations WHERE version='815'`。
+-- 该顺序已被 db.TestRequestLogsViewV2EnsureMatchesMigration 钉住
+-- （down → 清 bookkeeping → up → 要求 viewdef 逐字节回到 down 前那一份）。
 
 COMMIT;
