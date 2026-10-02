@@ -464,16 +464,21 @@ func buildCapabilityEvidence(endpoint string, result httpProbeResult) []byte {
 func (b *CapabilityBackfill) persistRow(ctx context.Context, row dueBinding, supported bool, evidence []byte) error {
 	pCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// evidence 必须走 string()+::text::jsonb（integrity_harvester/node_probe
+	// 同款 idiom）：本池全量 SimpleProtocol，[]byte 参数会内联成 bytea hex
+	// 字面量（'\x7b22…'），json 列解析即炸 `Token "\" is invalid`——
+	// 2026-10-03 24h 收口对账实证 ×1032/7h（00:51 起每次带证据的回填
+	// 全灭）。jsonParamOrNULL（domains/providerprofile）是同一处方。
 	tag, err := b.db.Exec(pCtx, `
 		INSERT INTO credential_model_capabilities
 		       (credential_model_binding_id, capability, supported, last_tested_at, evidence_json, updated_at)
-		VALUES ($1, $2, $3, now(), $4, now())
+		VALUES ($1, $2, $3, now(), $4::text::jsonb, now())
 		ON CONFLICT (credential_model_binding_id, capability)
 		DO UPDATE SET supported      = EXCLUDED.supported,
 		              last_tested_at = now(),
 		              evidence_json  = EXCLUDED.evidence_json,
 		              updated_at     = now()
-	`, row.BindingID, CapabilityNonstream, supported, evidence)
+	`, row.BindingID, CapabilityNonstream, supported, string(evidence))
 	if err != nil {
 		return fmt.Errorf("capability_backfill upsert binding_id=%d: %w", row.BindingID, err)
 	}

@@ -146,3 +146,32 @@
 - 「机制存在」与「机制运行过」分开举证：day-2 gate 本次仅代码级证实 + 数学推演，live-fire 留待 11-02 验证（如实标注，不冒充已验证）。
 - repo grep 结论必须补 DB 侧函数体扫描才算闭环（函数级 drift 首例的教训成文化）。
 - **未提交工作态被并行会话清空的再发事故**：本节内容首次落盘后、提交前，被并行会话的 merge/checkout 操作清空（工作树回退到 d598bdea3），本节为重建后的第二次落盘。教训升级：多会话共享工作区时，编辑→提交→推送必须单序列完成（memory 既有条目的强化实例）。
+
+## §十二、24h 零错误对账收口（2026-10-03，automation-09e1ae20 执行）
+
+窗口 = 2026-10-02 07:14 → 10-03 07:14（252 CST；取证至 07:31）。精确边界 = schema_migrations.applied_at：810/811=07:07:57、812=07:16:01、813/814=11:33:01。物证 = 252:/tmp/pg252-r21-closeout/（combined-r21-window.log 1.50GB = ctr.log-20261003 归档[10-02 03:51→10-03 03:07] + ctr-log-current[10-03 03:08→07:31] 拼接，window-slice.log 164 万行窗口切片）。
+
+### 四家族头锚定计数（二段计数后）
+
+| 家族 | 窗口原始计数 | applied_at 后生产复发 | 判定 |
+|---|---|---|---|
+| UPDATE and CTID scans | 3 | **0**（07:06:27 <812 applied_at；10:58:07/11:10:38=已入册侦察自噪音 pid 233516） | PASS |
+| row is too big | **0** | **0** | PASS |
+| would overlap partition | **0** | **0** | PASS |
+| canceling statement due to statement timeout | 488 | 不计入 gate；逐条归因：project_backfill（WITH targets…sync_session_project_attr）×159+多行体抽样同族≈370（注册容忍族）、其余零散（probe cycle/REFRESH 贴 30s rolconfig） | 归因毕 |
+
+### 三 tick 存活正证
+- promote 12 族全给出慢日志节拍（>1s 才入日志）：request_logs ×38 / turns ×36 / bodies ×31 / session_bodies ×28 / usage_ledger ×24 / turn_details ×15 / request_wal ×11 / rdl ×10 / **supplier_errors ×3（813 后 heap 新路径由网关 tick 实跑）** 等，零错误。
+- model_probe_state 流转：healthy=687 / suspicious=97 / healthy_confirmed=8 / recovering=3 / broken_confirmed=2——recovering 小额快周转=更新器存活；state='healthy' 字面量=db.go watchdog upsert 写入方（repo 正典代码，状态机随并行轨道演进，非漂移）。
+- ensure ticks：窗口内零 ensure/overlap 错误。
+
+### E6
+294/24h ≈ 12.25/h 恒定整点节拍（自 R14 起五天纹丝不动）——外部移交维持，催办注记同 §六。
+
+### 窗口新发现（gate 外，两起）
+1. **P1（我方代码，本轮已修）**：`credential_model_capabilities.evidence_json` bytea-hex 炸——capability_backfill.persistRow 把 json.Marshal 的 `[]byte` 直接绑 `$4`（SimpleProtocol 内联成 `'\x7b22…'` bytea hex，jsonb 解析 `Token "\" is invalid`），**10-03 00:51 起每次带证据的回填全灭 ×1,032/7h**。fact 63 已修三处（alert_store/credential_actor/reconciliation）的漏网点。修复=bg 正典 idiom（`string(evidence)` + `$4::text::jsonb`，integrity_harvester/node_probe 同款），本机真库回滚探针 PASS（含转义引号 body_sample 往返）、`go test ./bg/ -run Capability` 绿。**修复需随下次网关部署生效**（Go 代码非 SQL 迁移，无预应用通道）；生效前生产每 30min tick 仍报。
+2. **外部移交（acc 轨道）**：`UPDATE acc_candidate_saga_steps … claimed_at < $1 - $2::interval` ×4,392/00h-07h（10-02 全天 0，午夜起与 #1 同时段爆发=多项目部署波）——未类型化 `$1` 在 `- interval` 运算中被 PG 吸收为 interval → `timestamptz < interval`（fact 9 同族）。全仓零命中=opencode-acc 侧代码，处方 `$1::timestamptz - $2::interval`，移交。
+3. 02T14h 尖峰 ×152 = cancel 基线 ×93 + 外部新指纹 `trailing junk after numeric literal at or near "Ns"` ×12（登记观察）+ E6 ×12。
+
+### 判定：**PASS**
+三根修（810/811/812）在各自 applied_at 之后 24h 窗生产零复发；promote/ensure/更新器三 tick 存活正证齐；statement timeout 逐条归因完毕且全部属已知容忍族。窗口两起新发现（我方 capability json 已修待部署 / acc 外部移交）不影响本 gate，分别跟进。
