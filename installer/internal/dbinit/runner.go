@@ -588,6 +588,32 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 的旧版本」，天然可能没有对应 releases 行 —— 这是真实业务流，
 			// 不是夹具。外键保留（外键允许 NULL，非空时引用完整性照旧）。
 			"809_instance_release_status_nullable_release_id.sql",
+			// 813/814 are wired 2026-10-02 so the chain stops short of the
+			// registered set. TestStartupFilesAreAllEmbedded (>=704 floor) was
+			// red on main for both: neither is in the psql-concurrency /
+			// operator-gated / sequence-channel exemption maps, so the repo's
+			// own contract is that they belong in the installer.
+			//
+			// 813_supplier_errors_partitions_heap — supplier_errors family AM
+			// normalisation: the columnar partitions go back to heap and the
+			// ensure function is de-columnarised. Its own header records the
+			// reason as a dated landmine: "R20 登记的 supplier_errors 90d TTL
+			// 是 Row-level DELETE、11-06 必炸". Converting only the partitions
+			// without replacing the function leaves the self-heal loop
+			// re-applying columnar, so the drift recurs; 813 does both.
+			// Depends on 689 (position 126) and 699 (position 136), both
+			// already registered, and supersedes 699 at runtime.
+			//
+			// 814_adaptive_probe_targets_hot_subquery — rebuilds
+			// v_adaptive_probe_targets so recent_passive_failures reads the
+			// hot twin instead of the partitioned parent. It is a
+			// CREATE OR REPLACE VIEW with an unchanged column list, and its
+			// dependency candidate_failure_logs_hot is created by 392.
+			//
+			// Placed at the end of the chain: the 8xx block is ordered by
+			// dependency, not by number. Both are idempotent.
+			"813_supplier_errors_partitions_heap.sql",
+			"814_adaptive_probe_targets_hot_subquery.sql",
 		},
 	}
 }
