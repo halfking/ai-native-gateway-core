@@ -230,16 +230,22 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Note:     "主轮次/子请求两腿都已迁 710 视图（:324 是唯一真实调用点，其余 request_logs 命中全是注释）；视图 session 臂继续增长，树照常构建。",
 	},
 	"bg/candidate_failure_monitor.go": {
-		Effect:   effectSilentlyDegradedContent,
+		Effect:   effectUnaffected,
 		Evidence: "(SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes')",
-		// 2026-10-02 **自我更正**：batch3/batch1 判 unaffected，被 null-padded 族门判红。
-		// 核实 :267 `GROUP BY credential_id, provider_id, raw_model_name, error_kind`
-		// —— provider_id 是 session 臂补位成 NULL 的列之一（raw_model_name 亦然，
-		// 它是 v1-only 列）。行照样出、5 分钟 max(ts) 活性探针照样工作，
-		// 但**分组键变了**：新流量全部归到 provider_id=NULL 那一组，
-		// 失败率按 provider 的分母静默失真 ⇒ 5 档里没有这一形，取第 6 档。
-		Note: "行级与时间窗都不受影响，坏的是分组归属。5 分钟活性探针（max(ts)）照常工作，" +
-			"但按 provider 聚合的失败率把新流量全算到 NULL 组。（控制面轴另判 live：它 UPDATE credentials。）",
+		// 2026-10-02 **二次更正（第三十一轮 D2）**：§9.14 曾把它改判为
+		// silently_degraded_content，机制论据失实。核实：:267 的
+		// `GROUP BY credential_id, provider_id, raw_model_name, error_kind`
+		// 落在 **candidate_failure_logs_with_current_month**（迁移 392 建，
+		// = candidate_failure_logs_hot ∪ candidate_failure_logs，纯 v1 族，
+		// 无 session 臂、无 NULL 补位），不是 710 视图；其写入方
+		// domains/streaming/executors/candidate_failure_logger.go 不受 S4
+		// 门控（domains/streaming/ 全树零处 RequestLogsWriteEnabled）⇒
+		// 停写后新行照常带真 provider_id 流入，「新流量归 NULL 组」不成立。
+		// 本文件对 710 视图的读点只有 :206 活性探针 max(ts) 与 :336 按
+		// credential_id 计数，两列都不是补位列 ⇒ unaffected，机制见具名论证表。
+		Note: "按 provider 聚合的失败率读的是 candidate_failure 族（392 纯 v1 视图，" +
+			"writer 不受 S4 门控），停写后照常供数；710 视图读点只用 ts 与 credential_id。" +
+			"（控制面轴另判 live：它 UPDATE credentials。）",
 	},
 	"bg/stats_minute_rollup_retire.go": {
 		Effect:   effectSilentlyDegradedContent,
@@ -1003,7 +1009,7 @@ var requestLogsViewsWithSessionArm = map[string]struct{}{
 // sessionArmNullPaddedColumns 是 710 视图 session 臂上**恒为 NULL** 的列。
 //
 // 为什么必须单独记一张表（2026-10-02）：「710 视图含 session 臂 ⇒ 停写后不会
-// 查空」这句话只在**行级**成立。migration 710 的 session 臂对 30 列做 NULL 补位
+// 查空」这句话只在**行级**成立。migration 710 的 session 臂对 34 列做 NULL 补位
 // （`710_request_logs_view_session_family_v2.sql`），其中包括 client_model、
 // provider_id、attachments、outbound_msg_count、outbound_token_est、
 // api_key_owner_user、gw_task_id、model_chosen、strategy_used……
@@ -1016,17 +1022,23 @@ var requestLogsViewsWithSessionArm = map[string]struct{}{
 // 实证：domains/attachments/handler.go 读 `attachments::text`，session 臂该列
 // 恒 NULL ⇒ Scan 报错 ⇒ 被当成「无附件」⇒ 200 + attachments: []。
 // 附件数据其实还在 request_attachments 表里，丢的只是这条 JSONB 读腿。
+//
+// 34 列口径（第三十一轮 D1）：初版只认得 30 列——反向校验正则
+// `NULL::[A-Za-z ]+` 匹配不了带参数/数组类型的补位（numeric(4,3)、text[]、
+// numeric(3,2)），confidence_num / quality_flags / quality_score / test_col
+// 四列被静默漏掉，用这几列做谓词的读点会被错归 familyView。
 var sessionArmNullPaddedColumns = map[string]struct{}{
 	"affinity_hit": {}, "api_key_owner_user": {}, "api_key_prefix": {},
 	"application_code": {}, "attachments": {}, "auto_profile": {},
 	"client_model": {}, "client_profile": {}, "compression_reason": {},
-	"due_at": {}, "gw_task_id": {}, "id": {}, "key_alias": {},
-	"model_chosen": {}, "outbound_msg_count": {}, "outbound_msg_hashes": {},
-	"outbound_token_est": {}, "owner_user": {}, "provider_id": {},
-	"provider_model": {}, "quality_fix_actions": {}, "request_class": {},
+	"confidence_num": {}, "due_at": {}, "gw_task_id": {}, "id": {},
+	"key_alias": {}, "model_chosen": {}, "outbound_msg_count": {},
+	"outbound_msg_hashes": {}, "outbound_token_est": {}, "owner_user": {},
+	"provider_id": {}, "provider_model": {}, "quality_fix_actions": {},
+	"quality_flags": {}, "quality_score": {}, "request_class": {},
 	"request_type": {}, "strategy_used": {}, "stream_chunk_errors": {},
-	"stream_chunks_sent": {}, "test_tab_indent": {}, "transform_rule_id": {},
-	"virtual_ip": {}, "virtual_mac": {},
+	"stream_chunks_sent": {}, "test_col": {}, "test_tab_indent": {},
+	"transform_rule_id": {}, "virtual_ip": {}, "virtual_mac": {},
 }
 
 // TestSessionArmNullPaddedColumnsMatchMigration 钉住上面那张表与 migration 710
@@ -1042,7 +1054,10 @@ func TestSessionArmNullPaddedColumnsMatchMigration(t *testing.T) {
 		t.Fatalf("读 migration 710 失败 %v", err)
 	}
 	declared := map[string]struct{}{}
-	re := regexp.MustCompile(`NULL::[A-Za-z ]+ AS ([a-z_]+)`)
+	// 类型段必须涵盖参数化与数组类型（numeric(4,3)、text[]、jsonb、
+	// timestamptz）：窄化成 [A-Za-z ] 会静默漏列（第三十一轮 D1——漏掉的
+	// 恰好是 4 列，「对账通过」但其实对的是一个不完整集合）。
+	re := regexp.MustCompile(`NULL::[A-Za-z0-9_(),\[\]]+ AS ([a-z_]+)`)
 	for _, m := range re.FindAllStringSubmatch(string(raw), -1) {
 		declared[m[1]] = struct{}{}
 	}
@@ -1286,6 +1301,12 @@ var nullPaddedUnaffectedJustification = map[string]string{
 		"`COALESCE(outbound_model, client_model, '')`（:228）里 outbound_model 在 session 臂是真值，" +
 		"所以 client_model 为 NULL 不改变结果；`COALESCE(request_type, 'main')`（:321/:333）同理有默认。" +
 		"本文件不用任何补位列做 WHERE / GROUP BY / JOIN ⇒ 判 unaffected 成立。",
+	"bg/candidate_failure_monitor.go": "列名命中（provider_id / raw_model_name）全部发生在 " +
+		"**candidate_failure_logs_with_current_month**（迁移 392 建 = hot ∪ base，纯 v1 族，" +
+		"无 session 臂、无补位）：:267 的 GROUP BY 与 :343-345 的按 credential_id 计数都在该视图上，" +
+		"且其写入方 candidate_failure_logger 不受 S4 门控 ⇒ 停写后照常带真值流入。本文件对 710 " +
+		"视图的读点只有 :206 活性探针 max(ts) 与 :336 按 credential_id 计数，两列都不是补位列。" +
+		"回答门的问题：停写之后，这个读点过滤/分组用的列不会变 ⇒ 判 unaffected 成立（第三十一轮 D2）。",
 	"admin/session_timeline_query.go": "唯一的补位列命中是 :32 的投影 " +
 		"`SELECT request_id, ts, success, client_model, outbound_model, …`。client_model " +
 		"在 session 臂为 NULL，但**同一投影里并列了 outbound_model**（session 臂有真值），" +
