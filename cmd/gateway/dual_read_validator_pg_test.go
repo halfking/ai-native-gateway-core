@@ -17,7 +17,8 @@ package main
 //	I2  sum(ByRequestStatus[].Rows)  == V1RowsWithoutTurns
 //	I3  GenuineLossRows + InternalLoopbackRows + NonTerminalRows == V1RowsWithoutTurns
 //	I4  GenuineLossRows <= V1Rows
-//	I5  S4Ready == (GenuineLossRows == 0)
+//	I5  S4Ready 与 S4GateVoid 复算 s4GateVerdictOf 的完整契约
+//	    （v1 写入中 ∧ 窗口扫到过东西 ∧ 无真漏写），且 void ⇒ ¬ready
 //
 // I1/I2 尤其关键：两个分桶查询与 V1RowsWithoutTurns 来自**同一段**
 // mirrorDriftScopeSQL 的**三次独立执行**。任何一次被静默截断（行被 guard 吞掉、
@@ -247,9 +248,35 @@ func TestDualReadValidator_Summarize_RealDB(t *testing.T) {
 		t.Errorf("I4 GenuineLossRows(%d) > V1Rows(%d) —— 漂移多于总量，分母查询疑似被截断",
 			sum.GenuineLossRows, sum.V1Rows)
 	}
-	// I5：独立复算 S4Ready，而不是复述实现里的 `GenuineLossRows == 0`。
-	if want := sum.GenuineLossRows == 0; sum.S4Ready != want {
-		t.Errorf("I5 S4Ready = %v, want %v (GenuineLossRows=%d)", sum.S4Ready, want, sum.GenuineLossRows)
+	// I5：独立复算 S4Ready。**判据已于 2026-10-02 收紧**。
+	//
+	// 原判据是 `S4Ready == (GenuineLossRows == 0)`。它是对的当且仅当 v1 还在
+	// 写且窗口里扫到过东西——两个前提都不由这条不变式自己保证，而 S4 一停写
+	// 两条同时失效，于是该字段恒真（真库实测：窗口内零 V1 行 ⇒ S4Ready=true）。
+	// 换句话说，这道门原本把缺陷本身钉成了「不变式」。
+	//
+	// 现在复算完整契约：S4Ready 为真当且仅当（v1 写入中 ∧ 窗口扫到过东西 ∧
+	// 无真漏写）。三者缺一都必须为假，并按 s4GateVerdictOf 的分类给出 void 理由。
+	verdict := s4GateVerdictOf(s4GateInput{
+		v1Rows:      sum.V1Rows,
+		genuineLoss: sum.GenuineLossRows,
+		v1WritesOn:  currentV1WritesEnabled(),
+	})
+	if sum.S4Ready != verdict.Ready {
+		t.Errorf("I5 S4Ready = %v, want %v (V1Rows=%d GenuineLossRows=%d v1WritesEnabled=%v)",
+			sum.S4Ready, verdict.Ready, sum.V1Rows, sum.GenuineLossRows, sum.V1WritesEnabled)
+	}
+	if sum.S4GateVoid != verdict.Void {
+		t.Errorf("I5b S4GateVoid = %v, want %v (reason=%q)", sum.S4GateVoid, verdict.Void, sum.S4GateVoidReason)
+	}
+	// I5c：把「void」与「ready」在产物层面互斥掉。这是本次修复的核心不变式，
+	// 且与数据无关——不依赖窗口里恰好有没有漂移行，因此永远会被求值。
+	if sum.S4GateVoid && sum.S4Ready {
+		t.Errorf("I5c void 与 ready 同时为真（reason=%q）——这正是 2026-10-02 修掉的真空为绿",
+			sum.S4GateVoidReason)
+	}
+	if sum.S4GateVoid != (sum.S4GateVoidReason != "") {
+		t.Errorf("I5d S4GateVoid=%v 与 reason=%q 不自洽", sum.S4GateVoid, sum.S4GateVoidReason)
 	}
 	// I1 / I2：两个分桶查询各自跑了一遍同一段 scope SQL，行数之和必须与
 	// V1RowsWithoutTurns 相等。任一次静默截断都会打破这条。

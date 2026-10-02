@@ -2389,6 +2389,19 @@ func (h *ChatHandler) serveWithExecutor(
 				writeErrorJSONCtx(r.Context(), w, http.StatusPaymentRequired, requestID, "insufficient_quota", i18n.MsgBudgetExhausted, nil)
 				return
 			}
+			// R89-133 缺陷B 同款语义：非超预算的错误是「不知道超没超」，
+			// 不是「没超」。DB 故障时放行会把预算闸门变成静默 fail-open，
+			// 与 admin 侧 budgetCheck 的 fail-closed 收口对齐（12h 审计
+			// 第二十九轮承继项）。视图缺失等既定降级在 verifier 内部已
+			// 消化为 nil，走到这里的都是真故障。
+			slog.Error("budget check failed, failing closed",
+				"request_id", requestID,
+				"key_id", keyInfo.ID,
+				"error", budgetErr)
+			captureAndEmitFailure("budget_unavailable", "budget check unavailable", nil, nil)
+			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+				"Budget check temporarily unavailable", "server_error", "budget_unavailable")
+			return
 		}
 	}
 
