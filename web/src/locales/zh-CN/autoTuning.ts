@@ -1,11 +1,9 @@
 // autoTuning.ts — 路由调参页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: '路由调参',
-    desc: '分类器调参提案（自动生成 → 回放量化 → 人工批准热调参）与分类质量窗口报表',
     refresh: '刷新',
     refreshing: '刷新中…',
-    loading: '加载中…',
     loadFailed: '加载失败',
+    panelTitle: '调参提案（批准即热调参，5 分钟内生效）',
     noProposals: '暂无提案（feedback_analyzer 会按窗口自动生成）',
   filter: {
     statusAll: '全部',

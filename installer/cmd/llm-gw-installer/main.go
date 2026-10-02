@@ -696,6 +696,17 @@ var instanceReleaseStatusNullableReleaseIDMigration809 []byte
 //go:embed embeddata/startup/818_ursm_snapshot_typed_columns.sql
 var ursmSnapshotTypedColumnsMigration818 []byte
 
+//go:embed embeddata/startup/816_request_logs_view_client_ip_projection.sql
+var requestLogsViewClientIPProjection816 []byte
+
+// 817 换掉 816 的**字符类** client_ip 守卫为 pg_input_is_valid(v,'inet')。
+// 816 的守卫只挡得住非字符集垃圾；192.168.1 / deadbeef / ::: 全部通过它，
+// 然后死在 ::inet 上并打挂整条 canonical 视图（审计 §9.64，本机真库复现）。
+// 不装它，新装机器会永久停在「已知会崩」的守卫形态上。
+//
+//go:embed embeddata/startup/817_request_logs_view_client_ip_semantic_guard.sql
+var requestLogsViewClientIPSemanticGuard817 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -904,8 +915,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql":        requestLogsBodiesHotDropDuplicateRequestIDIndexMigration807,
 	"startup/808_request_logs_default_partition.sql":                                 requestLogsDefaultPartitionMigration808,
 	"startup/809_instance_release_status_nullable_release_id.sql":                    instanceReleaseStatusNullableReleaseIDMigration809,
-	"startup/818_ursm_snapshot_typed_columns.sql":                                     ursmSnapshotTypedColumnsMigration818,
-}
+	"startup/813_supplier_errors_partitions_heap.sql":                                supplierErrorsPartitionsHeap813,
+	"startup/814_adaptive_probe_targets_hot_subquery.sql":                            adaptiveProbeTargetsHotSubquery814,
+	"startup/815_request_logs_view_stage_band_cff.sql":                               requestLogsViewStageBandCff815,
+	"startup/816_request_logs_view_client_ip_projection.sql":                         requestLogsViewClientIPProjection816,
+	"startup/817_request_logs_view_client_ip_semantic_guard.sql":                     requestLogsViewClientIPSemanticGuard817,
+	"startup/818_ursm_snapshot_typed_columns.sql":                                    ursmSnapshotTypedColumnsMigration818}
 
 // 临时存放 embed SQL 的目录（运行时写入）
 

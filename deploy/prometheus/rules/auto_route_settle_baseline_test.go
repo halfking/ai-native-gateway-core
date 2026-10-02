@@ -47,11 +47,15 @@ func TestAutoRouteSettleBaselineRulesCoverEveryRegisteredMetric(t *testing.T) {
 	}
 	exprs := strings.Join(mapValues(byAlert), "\n")
 
-	// 三个注册的指标，每个都必须有告警在消费。少一条 = 那个指标是装饰。
+	// 五个注册的指标，每个都必须有告警在消费。少一条 = 那个指标是装饰。
+	// 前三条是基线族（bg/auto_route_settle_baseline_metrics.go + _source.go）；
+	// 后两条是 R32 §四#2/#3 的停滞面（bg/auto_route_settle_worker.go）。
 	registered := map[string]string{
 		"llmgw_autoroute_settle_source_total":           "AutoRouteSettleSourceSwitched",
 		"llmgw_autoroute_settle_baseline_cohort_rows":   "AutoRouteSettleBaselineCohortEmpty",
 		"llmgw_autoroute_settle_baseline_neutral_total": "AutoRouteSettleBaselineNeutralDominant",
+		"llmgw_autoroute_settle_sweep_failures_total":   "AutoRouteSettleSweepFailing",
+		"llmgw_autoroute_settled_total":                 "AutoRouteSettleStalled",
 	}
 	for metric, alert := range registered {
 		require.Contains(t, byAlert, alert, "no alert named %s for metric %s", alert, metric)
@@ -63,8 +67,16 @@ func TestAutoRouteSettleBaselineRulesCoverEveryRegisteredMetric(t *testing.T) {
 	// 源族切换是**事件**，不能有 for: 抑制——它一生就发生一次，被抑制就等于没有。
 	require.Empty(t, waits["AutoRouteSettleSourceSwitched"],
 		"a source switch happens once per gate flip; a for: delay would swallow the one occurrence that matters")
-	require.Contains(t, byAlert["AutoRouteSettleSourceSwitched"], "changes(llmgw_autoroute_settle_source_total",
-		"the switch alert must be change-based (an event), not a level")
+	// R33（2026-10-02）：原版 changes(...)>0 对单调计数器 = 「窗口内结算过任意
+	// 一条」，每个 sweep 都 firing，事件被噪声淹没（promtool 实证）。判据换成
+	// 「同一实例窗口内**两族都有**增量」——settleBatch 每 sweep 只走一族，两族
+	// 同涨只出现在横跨切换的窗口。求值语义由
+	// rule_tests/auto-route-settle-baseline_test.yml 的 promtool 单测钉住。
+	require.Contains(t, byAlert["AutoRouteSettleSourceSwitched"], "count by (job, instance)",
+		"the switch alert must count active families per instance; a bare increase()/changes() on "+
+			"one family fires on every sweep (always-firing noise, R33)")
+	require.Contains(t, byAlert["AutoRouteSettleSourceSwitched"], "increase(llmgw_autoroute_settle_source_total",
+		"the switch alert must be window-increase-based (an event), not a level")
 
 	// cohort 归零必须带**活动守卫**。gauge 只在活跃族上 Set，切换后另一族的序列
 	// 会停更并冻结在旧值——对一个「已停更」的序列断言 == 0，读到的是「没在测」，
@@ -85,6 +97,32 @@ func TestAutoRouteSettleBaselineRulesCoverEveryRegisteredMetric(t *testing.T) {
 			"but one task_type group is missing")
 	require.Contains(t, byAlert["AutoRouteSettleBaselineNeutralDominant"], "sum by (term",
 		"latency and cost fall back independently, so they must stay separable in the alert")
+	// R33（2026-10-02）：原版两侧标签集 {term,family} vs {family} 不配对，比较
+	// 结果恒空（永不触发的死告警，promtool 实证）。跨标签集比较必须显式 on()。
+	require.Contains(t, byAlert["AutoRouteSettleBaselineNeutralDominant"], "on(family)",
+		"LHS is {term,family}, RHS is {family}; without explicit on(family) the comparison "+
+			"never pairs any series and the alert can never fire (dead alert, R33)")
+
+	// 停滞面（R32 §四#2/#3）的语义钉。SweepFailing 必须是窗口增量：有失败即
+	// 可见，窗口滑过后自愈——单次瞬断短暂可见，持续失败持续响。
+	require.Contains(t, byAlert["AutoRouteSettleSweepFailing"], "increase(llmgw_autoroute_settle_sweep_failures_total",
+		"the sweep-failure alert must be window-increase-based (a bare >0 level would "+
+			"fire forever after the first transient blip)")
+	// SettleStalled 的判据必须是 unless on(job, instance) 而不是
+	// `increase(settled) == 0`：settled_total 序列在首次成功结算前**不存在**，
+	// absent 对 ==0 判空剔除——「从启动起就没结算过」恰是最需要响的形态，
+	// ==0 形态下它永远静默（promtool 场景 10 钉住该语义）。unless 对 absent
+	// 的 rhs 判「无匹配即保留」，两种形态（存在但为 0 / 根本不存在）都响。
+	require.Contains(t, byAlert["AutoRouteSettleStalled"], "unless on(job, instance)",
+		"the stall alert must use `unless on(job, instance)`; `increase(...) == 0` silently "+
+			"drops the absent-series case (never settled since boot), which is exactly the "+
+			"shape that must fire (promtool scenario 10)")
+	// 停增告警必须以「产侧仍在产出」为前提——没有这条守卫，普通无流量时段
+	// 会误报；产侧停增的面归 §9.57 的 SelectionWritesStalled（promtool 场景
+	// 12 钉住两门不重叠）。
+	require.Contains(t, byAlert["AutoRouteSettleStalled"], "llm_gateway_auto_selections_total",
+		"the stall alert must be conditioned on production still flowing; without it "+
+			"every quiet period pages, and the production-stall face duplicates §9.57")
 
 	// GW-00 低基数守卫。cohort_rows 刻意不带 task_type（它来自请求内容，基数
 	// 无上界），所以 expr 里出现 task_type 过滤就是把无界维度引进告警标签。

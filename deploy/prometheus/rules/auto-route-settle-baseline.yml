@@ -4,6 +4,9 @@
 #   llmgw_autoroute_settle_source_total{family}            按源族结算的 selection 数
 #   llmgw_autoroute_settle_baseline_cohort_rows{family}    本轮基线 cohort 的行数（gauge）
 #   llmgw_autoroute_settle_baseline_neutral_total{term,family} 走了中性回落的 selection 数
+# 停滞面（2026-10-02 24h 审计第三十二轮 §四#2/#3）：
+#   llmgw_autoroute_settle_sweep_failures_total{reason}    整查询失败/panic 的 sweep 轮数
+#   llmgw_autoroute_settled_total{outcome}                 结算产出（与上面互补：停增=没产出）
 #
 # # 为什么 cohort 归零是一件必须报警的事
 #
@@ -37,14 +40,22 @@ groups:
     interval: 30s
     rules:
       - alert: AutoRouteSettleSourceSwitched
-        expr: changes(llmgw_autoroute_settle_source_total[10m]) > 0
+        # 判据是「同一个 scrape 目标在 10 分钟窗口内**两族都有**结算增量」。
+        # settleBatch 每个 sweep 只走一个族（S4 写门在批首捕获一次），所以
+        # 稳态下窗口内只有一族在涨；两族同涨只出现在跨越切换的窗口里 ——
+        # 这才是「切换事件」的形状。原版 changes(...)>0 对单调计数器意味着
+        # 「10 分钟内结算过任意一条」，每个 sweep 都响，事件被噪声淹没
+        # （R33 12h 审计，promtool 实证）。
+        expr: |
+          count by (job, instance) (increase(llmgw_autoroute_settle_source_total[10m]) > 0) > 1
         labels:
           severity: warning
           component: bg
         annotations:
           summary: "auto-route 结算数据源发生切换（S4 写门状态已变）"
           description: |
-            {{ $labels.family }} 族的结算计数在 10 分钟内发生了变化。
+            同一实例在 10 分钟内 v1 与 session 两族都有结算增量 —— 只有
+            跨越源切换的窗口才会出现这个形状（每个 sweep 只结算一族）。
 
             **这是事件，不是趋势** —— 所以本条没有 for: 抑制。每一次 S4 写门翻转
             都会让 outcome join / LATERAL / 基线 cohort 三条腿整体换源，而换源
@@ -89,9 +100,13 @@ groups:
                （SQLExcludeSyntheticActors）
 
       - alert: AutoRouteSettleBaselineNeutralDominant
+        # 左侧 {term,family}、右侧 {family}：比较默认按全标签配对，两个向量
+        # 永远配不上（恒空 = 永不触发的死告警，R33 12h 审计 promtool 实证）。
+        # 必须 on(family) + group_left（每个 family 有 latency/cost 两个 term，
+        # 多对一）。
         expr: |
           sum by (term, family) (increase(llmgw_autoroute_settle_baseline_neutral_total[30m]))
-            >
+            > on(family) group_left
           0.5 * sum by (family) (increase(llmgw_autoroute_settle_source_total[30m]))
         for: 10m
         labels:
@@ -109,3 +124,78 @@ groups:
 
             latency 与 cost 是**独立**塌陷的：p95 有值而 p75 为 0 是常见形态
             （例如没有 cost_usd 的流量），所以按 term 分开统计，不合并成一个数。
+
+      - alert: AutoRouteSettleSweepFailing
+        # 结算 sweep 的**查询级失败**面（R32 审计 §四#2）。此前 settleBatch
+        # 整查询出错只有 slog.Warn + 下一轮重查同批——任何 settlePendingSQL
+        # 级别的回归都会无告警停滞，直到行被 8h promote 移出 hot、reward
+        # 永久 NULL。计数器 bg/auto_route_settle_worker.go（reason ∈
+        # {error,panic} 闭集）；panic 臂由 safeSweep 的 recover 递增。
+        expr: |
+          sum by (job, instance) (increase(llmgw_autoroute_settle_sweep_failures_total[30m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: bg
+        annotations:
+          summary: "auto-route 结算 sweep 近 30 分钟内有查询级失败（{{ $labels.instance }}）"
+          description: |
+            30 分钟窗口内至少一轮 sweep 以 error（settleBatch 整查询失败）或
+            panic（safeSweep 接住）收场，那一批 selection 本轮没结算。
+
+            **这条与停增告警（AutoRouteSettleStalled）是互补的两面**：本条抓
+            「查询报错了」，停增抓「没报错但也没产出」（源族切到无数据的腿、
+            设置门读失败静默回 v1——那条路径没有任何 error 可计）。
+
+            **排查步骤**：
+            1. 网关日志 grep "auto-route settle sweep failed"，看 error 正文
+               （42P01=表没了 / 42703=列没了 / 57014=4m sweepCtx 超时）
+            2. 单条失败+自愈 = 瞬断，30m 窗口过后自动恢复；持续增长才是回归
+            3. panic 臂非零 → grep "settle sweep panic"，panic 不停的 sweep
+               每轮都空转，selection 行照常积累
+
+      - alert: AutoRouteSettleStalled
+        # 结算**产出停增**面（R32 审计 §四#2/#3 的收口臂）。产侧（selection
+        # 持久化）在走、结算侧 45 分钟零产出 —— 与源无关：settleBatch 查错表、
+        # 设置门读失败静默回 v1 而该腿无数据、行龄超过 4h abandon 窗口等，
+        # 全部落进这一个条件。
+        #
+        # 判据用 `unless on(job, instance)` 而不是 `increase(...) == 0`：
+        # settled_total 是 CounterVec，进程启动后到第一次成功结算前**序列不
+        # 存在**，而 absent 序列对 `== 0` 判空剔除——「从启动起就没结算过」
+        # 恰是最需要响的形态，`==0` 形态下它永远静默。unless 对 absent 的
+        # rhs 判「无匹配即保留」，两种形态（存在但为 0 / 根本不存在）都响。
+        #
+        # 已知误报面（如实登记）：goal-*/loopback 合成 selection 在写入时即被
+        # 盖 settled（reward=NULL）且刻意不计入 settled_total——若窗口内产侧
+        # 全是合成流量，本条会响。处置先核对 origin_actor 合成占比
+        # （SQLExcludeSyntheticActors 同族过滤），再查结算侧。
+        expr: |
+          sum by (job, instance) (increase(llm_gateway_auto_selections_total[45m])) > 0
+            unless on(job, instance)
+          sum by (job, instance) (increase(llmgw_autoroute_settled_total[45m])) > 0
+        for: 15m
+        labels:
+          severity: critical
+          component: bg
+        annotations:
+          summary: "auto-route selection 在持续产出但结算已 45+ 分钟零产出（{{ $labels.instance }}）"
+          description: |
+            产侧 llm_gateway_auto_selections_total 在 45 分钟窗口内有增长，
+            但同实例的 llmgw_autoroute_settled_total 零产出（或序列不存在）。
+            这不是「没流量」——是**结算管线与生产脱钩**了。
+
+            **正在发生的后果**：pending selection 行持续积累；行龄超过
+            settleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出
+            hot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默
+            缺口，事后无法回填。
+
+            **排查步骤**：
+            1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，
+               按那条的步骤走
+            2. 只有本条响 → 结算没报错但没产出：确认结算源族
+               （llmgw_autoroute_settle_source_total 哪个族在动）与 settings
+               写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）
+            3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor
+               占比后按抑制处理
+            4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）

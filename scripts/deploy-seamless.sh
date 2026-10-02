@@ -1340,9 +1340,13 @@ do_deploy() {
   # 旧流程只检查 127.0.0.1:8781/healthz, gateway 存活 ≠ 公网通. OOM 现场
   # gateway 活 + nginx failed = 1h21min 公网 502. 现增加 127.0.0.1:443/healthz
   # 校验, 失败 = nginx failed → 自动 rollback.
-  log "[9.5/9] 验证目标机自身 nginx→gateway (127.0.0.1:443/healthz)"
+  # 2026-10-03: 探测 URL/参数改由 target 合同下发 (245 钉 llmgo vhost +
+  # --resolve 回环), 回滚改走 _bluegreen_abort 与其余 9.x 门禁同语义 —
+  # 原走 _seamless_auto_rollback → host_restart_service 会 restart 合同
+  # service_name (245 = 已 mask 的弃用 llmgo-245.service), 回滚必失败.
+  log "[9.5/9] 验证目标机自身 nginx→gateway (合同 internal_https_health_url)"
   if ! host_wait_https_healthy "$SSH_CMD" "$TARGET" 30 2>&1; then
-    _seamless_auto_rollback "nginx (443) healthz 失败 — OOM 或 nginx 未自愈, 立即回滚" "$version" || true
+    _bluegreen_abort "nginx (443) healthz 失败 — OOM 或 nginx 未自愈, 立即回滚" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
 
@@ -1353,19 +1357,25 @@ do_deploy() {
   # 此处经 nginx 路径读 healthz 的 version 字段, 必须携带本次 build_seq+sha8
   # (同码重部署靠 seq 区分, 换码重部署靠 sha 区分); 不符 → 先补一次 nginx
   # reload (幂等修复) 再验, 仍不符 → 与 9.5 同一失败语义自动回滚。
-  local _nginx_hc_url _nginx_seen
+  # 2026-10-03 误判修复: 探测必须钉 llmgo vhost (245 的 443 为多站点共享
+  # nginx, 无 Host 头的 127.0.0.1 命中默认 server 块 → 其它站点硬编码的
+  # 8781) — 否则凡候选落在 8782, 仲裁读到的永远是旧端口版本, 假「半切换态」
+  # 触发假回滚 (2026-10-03 00:52 seq 2401 实证); 探测参数由 target 合同
+  # internal_https_probe_args 下发 (--resolve 回环, 请求不出目标机)。
+  local _nginx_hc_url _nginx_probe_args _nginx_seen
   _nginx_hc_url=$(target_field "$TARGET" internal_https_health_url)
+  _nginx_probe_args=$(target_field "$TARGET" internal_https_probe_args)
   if [[ -n "$_nginx_hc_url" ]]; then
     log "[9.6/9] 仲裁 nginx 实际路由身份 (期望 seq=$seq_val sha=${version#*-})"
-    _nginx_seen=$("$SSH_CMD" "curl -ksS --max-time 5 '$_nginx_hc_url' 2>/dev/null" 2>/dev/null || true)
+    _nginx_seen=$("$SSH_CMD" "curl -ksS ${_nginx_probe_args} --max-time 5 '$_nginx_hc_url' 2>/dev/null" 2>/dev/null || true)
     if [[ "$_nginx_seen" != *"$seq_val"* || "$_nginx_seen" != *"${version#*-}"* ]]; then
       warn "nginx 实际路由版本与本次发布不符 — 疑似半切换态, 补 reload 后重验"
       "$SSH_CMD" "systemctl reload nginx" >/dev/null 2>&1 || true
       sleep 2
-      _nginx_seen=$("$SSH_CMD" "curl -ksS --max-time 5 '$_nginx_hc_url' 2>/dev/null" 2>/dev/null || true)
+      _nginx_seen=$("$SSH_CMD" "curl -ksS ${_nginx_probe_args} --max-time 5 '$_nginx_hc_url' 2>/dev/null" 2>/dev/null || true)
     fi
     if [[ "$_nginx_seen" != *"$seq_val"* || "$_nginx_seen" != *"${version#*-}"* ]]; then
-      _seamless_auto_rollback "nginx 实际路由版本与本次发布不符 (文件已切、流量未切 = 半切换态)" "$version" || true
+      _bluegreen_abort "nginx 实际路由版本与本次发布不符 (文件已切、流量未切 = 半切换态)" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
       exit 1
     fi
     ok "nginx 路由身份仲裁通过"
@@ -1410,7 +1420,7 @@ do_deploy() {
     exit 1
   fi
   if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
-    _seamless_auto_rollback "标记 release verified 失败" "$version" || true
+    _bluegreen_abort "标记 release verified 失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
   ok "healthz + DB + running release 通过，标记 verified"

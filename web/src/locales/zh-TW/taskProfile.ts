@@ -1,16 +1,14 @@
 // taskProfile.ts — 任务档案页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: '任務檔案',
-    desc: 'AUTO 任務類型檔案：分層預設值、人工修正統計與升檔建議（taskprofile 插件模組，apply 後寫入 tier 設定）',
     refresh: '重新整理',
     refreshing: '重新整理中…',
-    loading: '載入中…',
     loadFailed: '載入失敗',
+    noData: '暫無檔案資料',
   registry: {
     version: '檔案版本',
-    schema: 'Schema 版本',
     types: '任務類型數',
-    corrections: '被修正類型數',
+    correctedTotal: '視窗內修正總數',
+    pendingSuggestions: '待裁決升檔',
   },
   table: {
     taskType: '任務類型',

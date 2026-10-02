@@ -1,0 +1,34 @@
+f609ecab1 fix(bg): settle 停滞零告警面收口——sweep 失败计数器+settled_total 停增告警(R32 §四#2/#3)
+57f65f7c6 Merge remote-tracking branch 'origin/main' into HEAD
+5575414bf refactor(auto-ops): 标注工作台模型选择换装 ModelPicker 标准控件，弃原生下拉
+9fb513312 docs(s4-audit): R31 §五遗留收口轮入档——D03-①两层根修(状态五字段+LLM摘要打标,锚点层为本轮实证新增)+D02 loss双臂与死函数实况反写+D01 typed-nil PSOR+四项R31部署冒烟+deploy-local docker模式三缺陷移交
+76b5106d4 chore(release): build_seq → 2399（bb3d1343 本地部署产物回写，烧号防并行会话复用 2399 撞号）
+38497afed fix(r32-audit): D03-① 4xx恢复路径SessionState不一致根修——Recover persist走buildSessionState同步出向身份字段+LLM分支摘要打标对齐主动路径线协议(diff锚点才能识别恢复体)+extractSummaryFromCachedBody感知marker行;D02 Responses budget形reasoning对称loss上报+Ollama出向reasoning loss双臂(DeserializeResponsesRequest已被f33b4ebae反向桥接线,上报即生产行为);D01 typed-nil PSOR不导出可选键(V2冷启动增量恢复不再被空键废掉);钉测:状态一致性双分支+Recover→Prepare delta端到端+loss双臂含负例+PSOR双向;变异验证:旧persist双红(审计症状strategy=""精确复现)/去打标delta红/还原全绿
+783e5df8f fix(channel): 817 补登升级通道 files 数组——第五次同类遗漏 + 轮文档 §四#1 处置更新
+e9488ab7b Merge remote-tracking branch 'codeup/main'
+e9abad10f docs(audit): 24h审计第三十二轮闭环——轮文档 + runs/R92 四域归档
+fe40c0802 fix(bg): selfcheck se 臂形状门同步 partition_date 下推——P2-D 配套
+91466ce63 docs(audit): 各域 P3 批处理——retention 索引归属/结算 worker 频率注释/索引审计 9→6 订正
+7d55159b4 fix(schema): baseline-lag 门翻转口径——快照收敛后 10 对象转「收敛态」合法，供给链 needle 块继续承重（域A P2-2）
+e474c6331 fix(s4-audit): §9.59 值层对账门漏了 v1 的整个 _hot 存储面 —— 「前后一致」首次在生产库被验证
+41af920d5 fix(mixed): 12h审计让行 P2-B/P2-D/P2-E/P2-F 采纳——桥接 usage 记账/selfcheck 分区裁剪/517-527 成对守卫/815 skip 失实注释订正
+b58b42b8a merge(main): 同步 origin/main（并行 s4-audit/installer/sweep 轮）
+830f2f221 fix(admin): integration 标签树编译缝根修——v1DirectTables 抽无标签共享文件（域A P1-2）
+8fcb0d392 docs(sweep): 2026-10-02 一致性清扫（第十六轮）—— README 八语种迁移计数 809→816 跟齐 sql/migrations/startup 实测；session-management.md 两处 docs 重组后死路径修正(ops→06-deployment/04-runbooks/ops、api→03-design/03-interface-design/api-yaml)；session-analytics.yaml 会话列表补 task_id 参数(e5197e0a4 落地后规格缺项)
+dbc2e760d Merge remote-tracking branch 'codeup/main'
+0bda13c41 fix(dispatch): 12h审计让行 P2-A/P2-C 采纳——租约中止送达 detached 流 + lastArmed 语义 CI 承重
+242114d08 perf(capability): 透传路由已读 node state，消掉热路径那次额外 GET（vapeur 遗留 #3）
+fccbf08e4 docs(s4-audit): 补回 rebase 丢掉的四处 §9.61/§9.62.4/§9.63/§9.60 订正
+9f09ed39d fix(installer): 817 五点同步 —— 否则这个迁移全绿但永远跑不到
+ab1c1b804 fix(s4-audit): §9.64 816 的 client_ip 守卫是假守卫 —— 一行数据打挂整条 canonical 视图
+4bfa6215a Merge remote-tracking branch 'origin/main'
+317351daf feat(auto-ops): 人工标注/标注统计/任务档案/路由调参四页整合为 AUTO 路由运营统一工作台
+208bc393a docs(s4-audit): §9.58 撤回 §9.54.3 的停写前阻塞项（纯追加）
+2602bd32e feat(usage-trend): 模型多选 + 清除全部 + 自动刷新 —— /admin/usage-trends 过滤三能力收口
+2e68487a8 feat(alerts): §9.57 补上 auto-route **产出侧**的洞 —— selection 写入量归零告警
+3ae6c5295 docs(s4-audit): §9.54–§9.56 252 生产库实测三节（纯追加）
+e5197e0a4 fix(admin): 会话列表按日期和网关 task_id 过滤
+60b372bd7 fix(auto-tuning): proposals/accuracy 空窗返回 [] 而非 JSON null —— nil slice 编码 null 会打断前端 .length 读法致整页空白；前端同加数组防护与空值格式化兜底
+f762e60f1 feat(usage-trend): 全屏铺满轮收口 —— fillViewport 路由+图表 fill 模式+模型过滤迁移标准 ModelPicker+「系统自检」菜单入口移除(看板横条仍可达)
+ece68f148 feat(capability): 补能力位自愈回填任务 + 读错误不再被当默认值（vapeur 遗留 #1）
+8f79ad402 fix(channel): 815/816 补登升级通道 files 数组——第四次同类遗漏，开局探门红收口

@@ -145,7 +145,7 @@ func TestResetInMemoryNodeStatePreservesResponsesCapability(t *testing.T) {
 	require.NotNil(t, reset)
 	assert.False(t, reset.Disabled)
 	assert.Zero(t, reset.FailureCount)
-	supported, known, err := fpSlots.GetSupportsResponses(ctx, credentialID, model)
+	supported, known, err := fpSlots.GetSupportsResponses(ctx, credentialID, model, nil)
 	require.NoError(t, err)
 	assert.True(t, known, "health reset must preserve independent protocol capability evidence")
 	assert.False(t, supported)

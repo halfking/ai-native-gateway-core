@@ -109,7 +109,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Workers en segundo plano — sondeo, limpieza del ciclo de vida, agregación de estadísticas, mantenimiento de particiones |
 | `storage/` | Fábrica de almacenamiento de doble modo (`full`: PG+Redis / `lite`: SQLite+ficheros+KV en proceso) |
 | `internal/` | Infraestructura transversal — IR, strip de campos del proveedor, espejo de sesión, outbox, telemetría… |
-| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 809) |
+| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 817) |
 | `installer/` | Módulo instalador/actualizador autónomo multiplataforma |
 | `scripts/`, `deploy/` | Herramientas de build, despliegue, espejo y verificación |
 

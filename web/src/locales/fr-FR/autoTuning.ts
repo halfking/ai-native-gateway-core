@@ -1,11 +1,9 @@
 // autoTuning.ts — 路由调参页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: 'Réglage du routage',
-    desc: 'Propositions de réglage du classifieur (générées automatiquement → backtest → approuvées par un humain, appliquées à chaud) et rapport de qualité de classification',
     refresh: 'Actualiser',
     refreshing: 'Actualisation…',
-    loading: 'Chargement…',
     loadFailed: 'Échec du chargement',
+    panelTitle: 'Propositions de réglage (approbation = application à chaud sous 5 min)',
     noProposals: 'Aucune proposition pour l’instant (feedback_analyzer les génère par fenêtre)',
   filter: {
     statusAll: 'Tout',

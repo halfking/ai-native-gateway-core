@@ -4481,6 +4481,14 @@ func main() {
 				nodeProbeWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
 
+				// capability_backfill (2026-10-02, 遗留 #1): credential_model_
+				// capabilities 一直没有任何代码写入（全树唯一引用是
+				// provider/client.go 的那条 SELECT），所以
+				// cand.SupportsNativeResponses 对每个模型都恒为 false。
+				// 这个任务定期对 openai-responses 绑定跑一次现成的
+				// responses 探测器，把结论写回那张表。
+				go bg.NewCapabilityBackfill(dbConn.Pool(), fernetKey, keyring, fpSlots).Run(context.Background())
+				slog.Info("CHECKPOINT: capability_backfill started")
 				dailyProbeAudit = bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbeWorker)
 				dailyProbeAudit.Start(context.Background())
 				slog.Info("CHECKPOINT: daily_probe_audit started")
@@ -4659,6 +4667,11 @@ func main() {
 			}
 			nodeProbeWorker.Start(context.Background())
 			slog.Info("authoritative URSM v2 node_probe_worker started")
+			// capability_backfill: 同一张能力位表在 URSM v2 authoritative
+			// 路径下同样需要有人维护——与上面的 node_probe_worker 装配点
+			// 互斥，两条路径各起一份。
+			go bg.NewCapabilityBackfill(dbConn.Pool(), fernetKey, keyring, fpSlots).Run(context.Background())
+			slog.Info("authoritative URSM v2 capability_backfill started")
 			// 2026-09-11 fix: mirror branch-1's credRecovery wiring. The
 			// authoritative fallback path starts its own nodeProbeWorker but
 			// never handed credRecovery a submitter, so after f56598b59
