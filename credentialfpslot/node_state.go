@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
@@ -34,8 +35,44 @@ const (
 	// in the dispatch queue for an unbounded time between the router's MGET and
 	// this gate. See GetSupportsResponses for the full argument.
 	//
-	// 5s: the router→gate gap is ~6ms on the common path, so this never
-	// triggers in steady state; it exists to cap the tail.
+	// ⚠️ 5s IS NOW CALIBRATED AGAINST A MEASURED DISTRIBUTION (2026-10-03).
+	// It was previously an engineering guess, and the audit called it the only
+	// uncalibrated parameter in the project. Measured on request_logs_hot
+	// (168 rows with a full waterfall, window filtered on t0_arrived_at,
+	// 2026-10-02 21:19 → 2026-10-03 05:27), on the span that actually contains
+	// the router's MGET — T2 total-dequeued → T5 cred-enqueued, which brackets
+	// model resolution and candidate selection:
+	//
+	//	p50 0.005s   p90 0.040s   p95 5.41s   p99 17.88s   max 26.04s
+	//	> 5s: 11/168 = 6.5%
+	//
+	// The distribution is BIMODAL, and that is the whole story: 93.5% of
+	// requests route in tens of milliseconds, and a thin tail sits at 5–26s.
+	// 5s therefore cuts *inside* the tail rather than above it — it keeps the
+	// optimisation for ~93.5% of traffic and deliberately re-reads the ~6.5%
+	// that queued long enough for the verdict to plausibly have been rewritten.
+	//
+	// Why 5s and not 30s (the observed max): raising it to cover the tail would
+	// mean trusting snapshots up to 26s old, which is precisely the unbounded
+	// staleness window the guard exists to close. The guard's job is to bound
+	// divergence from a fresh read, not to maximise hit rate — a dropped
+	// snapshot is always SAFE (it re-reads), a wrongly-trusted one is not.
+	//
+	// Why not lower it to p90 (0.04s): the tail is where the guard earns its
+	// keep. Rejecting everything past 40ms would re-read on the requests that
+	// actually queued, and would make the metric useless for its stated purpose
+	// (seeing the tail approach the bound).
+	//
+	// ⚠️ The 5–26s tail is NOT queue depth — T1→T2 admission, T3→T4 model and
+	// T5→T6 credential queues are ALL milliseconds (max 82ms) on the same rows.
+	// The seconds live in T2→T5, i.e. in routing/selection itself. Anyone
+	// re-deriving this must measure that span, not the total queue wait, or
+	// they will calibrate against the wrong distribution.
+	//
+	// TO RE-DERIVE: see docs/audit/2026-10-03-prefetch-age-calibration.md for
+	// the query and the reasoning. After deploying, prefer the live signal
+	// (llmgw_node_state_prefetch_age_seconds and
+	// llmgw_node_state_prefetch_dropped_total) over re-querying logs.
 	prefetchMaxAgeSec = 5
 )
 
@@ -83,6 +120,34 @@ type NodeState struct {
 	Capabilities        *NodeCapabilities `json:"capabilities,omitempty"`
 	CapabilityUpdatedAt int64             `json:"capability_updated_at,omitempty"` // unix seconds
 	CapabilityExpiresAt int64             `json:"capability_expires_at,omitempty"` // unix seconds
+
+	// SnapshotReadAt is the instant at which THIS PROCESS read the key. It is
+	// populated by the read paths (GetNodeStatesBatch / GetNodeState) and is
+	// deliberately NOT serialised into Redis — it describes this process's
+	// copy, not the stored verdict.
+	//
+	// json:"-" because it must never reach the payload: the Lua writers decode
+	// and re-encode the whole state through cjson, and any extra key would
+	// either be dropped on the next write or, worse, be read back as if it
+	// were a stored field. It is also why a NodeState that has been through
+	// SetNodeState is unstamped on the way back out — correct, because such a
+	// value is no longer a snapshot of a live read.
+	//
+	// ⚠️ WHY THIS FIELD EXISTS (2026-10-03 复审, 能力位遗留 #3 续):
+	// the snapshot-age guard needs "how long have I been holding this copy",
+	// and CapabilityUpdatedAt is NOT that quantity — it is the verdict's WRITE
+	// time with a 3600s TTL. Comparing `now` against a 3600s-scale timestamp
+	// with a 5s bound rejects essentially every real snapshot: a verdict
+	// written 30 minutes ago is perfectly live, yet the guard called its
+	// 6ms-old snapshot "too old" and re-read the key, giving back the round
+	// trip the optimisation exists to save (measured GET=1 TIME=2 in the gate,
+	// i.e. 4 hot-path round trips against a pre-change 3).
+	//
+	// It is a time.Time rather than an int64 so it carries Go's MONOTONIC
+	// reading: the age is a duration between two local reads, so an NTP step
+	// must not be able to make a fresh snapshot look ancient (which would
+	// silently re-disable the optimisation) or vice versa.
+	SnapshotReadAt time.Time `json:"-"`
 }
 
 // UnmarshalJSON tolerates the "empty Lua table" shape for slide_window.
@@ -241,6 +306,7 @@ func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model stri
 		return nil, fmt.Errorf("node state identity mismatch: key=(%d,%s) payload=(%d,%s)",
 			credentialID, model, state.CredentialID, state.Model)
 	}
+	state.SnapshotReadAt = time.Now()
 	return &state, nil
 }
 
@@ -263,10 +329,15 @@ func (m *Manager) GetNodeStatesBatch(ctx context.Context, keys []NodeStateKey) (
 	if len(keys) == 0 {
 		return nil, nil
 	}
+	// One stamp for the whole batch: every entry in this MGET is by definition
+	// read at the same instant, and taking it before the call keeps it
+	// independent of how long the round trip took.
+	readAt := time.Now()
 	out := make([]*NodeState, len(keys))
 	if m.client == nil {
 		for i, k := range keys {
 			out[i] = newZeroNodeState(k.CredentialID, k.Model)
+			out[i].SnapshotReadAt = readAt
 		}
 		return out, nil
 	}
@@ -282,6 +353,7 @@ func (m *Manager) GetNodeStatesBatch(ctx context.Context, keys []NodeStateKey) (
 		s, ok := v.(string)
 		if !ok || s == "" {
 			out[i] = newZeroNodeState(keys[i].CredentialID, keys[i].Model)
+			out[i].SnapshotReadAt = readAt
 			continue
 		}
 		var state NodeState
@@ -289,6 +361,7 @@ func (m *Manager) GetNodeStatesBatch(ctx context.Context, keys []NodeStateKey) (
 			// One corrupt entry must not fail the whole batch — the caller
 			// fail-opens on error, which would un-filter every node.
 			out[i] = newZeroNodeState(keys[i].CredentialID, keys[i].Model)
+			out[i].SnapshotReadAt = readAt
 			continue
 		}
 		if state.CredentialID == 0 {
@@ -301,8 +374,10 @@ func (m *Manager) GetNodeStatesBatch(ctx context.Context, keys []NodeStateKey) (
 		// to a zero state the same way as malformed JSON.
 		if state.CredentialID != keys[i].CredentialID || state.Model != keys[i].Model {
 			out[i] = newZeroNodeState(keys[i].CredentialID, keys[i].Model)
+			out[i].SnapshotReadAt = readAt
 			continue
 		}
+		state.SnapshotReadAt = readAt
 		out[i] = &state
 	}
 	return out, nil
@@ -484,8 +559,12 @@ func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, mo
 		// traffic-driven NodeState TTL refreshes cannot keep legacy verdicts alive.
 		return false, false, nil
 	}
-	// ONE clock sample, taken after the state is in hand, serving both the
-	// snapshot-age check and the deadline check below.
+	// ONE Redis clock sample, taken after the state is in hand, serving the
+	// deadline check below. The snapshot-age check deliberately does NOT use
+	// it: age is a LOCAL duration between two reads by this process, so
+	// comparing it against a Redis-clock instant would reintroduce the very
+	// cross-clock comparison the deadline note above forbids. The local sample
+	// below costs no round trip.
 	now, err := m.redisNow(ctx)
 	if err != nil {
 		return false, false, fmt.Errorf("get redis time for capability read failed (credential_id=%d, model=%s): %w", credentialID, model, err)
@@ -494,12 +573,39 @@ func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, mo
 	// dispatch queue for an unbounded time — see the prefetchMaxAgeSec note),
 	// so a verdict rewritten inside its TTL would be missed. Re-read instead.
 	//
-	// Only meaningful for the prefetched case; a state we just read is current
-	// by construction, and CapabilityUpdatedAt is absent on pre-migration
-	// payloads whose age is unknowable.
-	if prefetched != nil &&
-		(state.CapabilityUpdatedAt <= 0 || now-state.CapabilityUpdatedAt > prefetchMaxAgeSec) {
-		return m.GetSupportsResponses(ctx, credentialID, model, nil)
+	// ⚠️ THE AGE MUST BE MEASURED AGAINST THE SNAPSHOT'S READ TIME, not against
+	// CapabilityUpdatedAt (2026-10-03 复审，实测推翻上一轮的修法). They are
+	// different quantities on wildly different scales:
+	//
+	//	CapabilityUpdatedAt = when the VERDICT was written; TTL 3600s
+	//	snapshot age        = when THIS PROCESS read the key; ~6ms typical
+	//
+	// The previous revision compared `now` against CapabilityUpdatedAt with a
+	// 5s bound. A verdict written 30 minutes ago is perfectly live, yet its
+	// 6ms-old snapshot was rejected as "too old" and the key was re-read —
+	// on essentially every production request. Measured cost inside the gate:
+	// GET=1 TIME=2, i.e. MGET + TIME + GET + TIME = 4 hot-path round trips
+	// against a pre-change baseline of 3. The optimisation was net-negative,
+	// and every existing criterion stayed green because they all used
+	// same-second fixtures where the two clocks coincide.
+	//
+	// `readAt` is stamped by the read paths (GetNodeStatesBatch / GetNodeState).
+	// Zero means "this copy did not come from a read" ⇒ age unknowable ⇒
+	// re-read, which is also why the `unstamped` reason exists.
+	if prefetched != nil {
+		if readAt := prefetched.SnapshotReadAt; !readAt.IsZero() {
+			// Monotonic duration: immune to an NTP step between the read and
+			// this check, which a wall-clock subtraction would not be.
+			age := time.Since(readAt).Seconds()
+			if age > float64(prefetchMaxAgeSec) {
+				metrics.RecordNodeStatePrefetchDropped(metrics.PrefetchDropReasonStale)
+				return m.GetSupportsResponses(ctx, credentialID, model, nil)
+			}
+			metrics.ObserveNodeStatePrefetchAge(age)
+		} else {
+			metrics.RecordNodeStatePrefetchDropped(metrics.PrefetchDropReasonUnstamped)
+			return m.GetSupportsResponses(ctx, credentialID, model, nil)
+		}
 	}
 	// Sampled AFTER the state is in hand on purpose: a verdict whose deadline
 	// elapses between the GET and this check must be seen as expired, not
