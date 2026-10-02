@@ -82,12 +82,44 @@ cd web && npx vue-tsc --noEmit -p tsconfig.json
   154 已部署 `build_seq 2408 / git_sha 1a213f4c`（含 `809ce78cf`），用
   headless Chromium（Python Playwright 1.63）驱动生产页面实测，承重判据全中：
 
-  | 判据 | 实测 |
-  |---|---|
-  | 恰好 1 个 glm-5.3 分组 | ✅ 层计数 `1 个模型 / 64`，`分组数 = 1` |
-  | 标题不含 flash 系 | ✅ 唯一分组名 `glm-5.3`（`glm-5.3-flash` 未混入） |
-  | `.qp-scope-miss` 提示行 | ✅ 实渲染：`glm-4.5 有节点，但不在「特色 / 近 3 天热门」范围内（本面板只展示范围内模型），故未列出分组。` |
-  | SSE 连通 | ✅ `● Connected`，无 pageerror |
+  | 判据 | 实测 | 性质 |
+  |---|---|---|
+  | 恰好 1 个 glm-5.3 分组 | ✅ 层计数 `1 个模型 / 64`，`分组数 = 1` | **不变式**（分组数由筛选值与 scope 决定） |
+  | 标题不含 flash 系 | ✅ 唯一分组名 `glm-5.3`（`glm-5.3-flash` 未混入） | **不变式**（`glm-5.3`/`glm-5.3-flash` 是 canonical_id 2422803 / 2716170 两个独立条目，`modelGroups` 按 scopeKey 分组） |
+  | `.qp-scope-miss` 提示行 | ✅ 实渲染：`glm-4.5 有节点，但不在「特色 / 近 3 天热门」范围内（本面板只展示范围内模型），故未列出分组。` | **不变式** |
+  | SSE 连通 | ✅ `● Connected`，无 pageerror | **不变式** |
+  | ~~10 节点~~ | ⚠️ **非不变式，见下** | **随时间漂移，不得当门** |
+
+  ### 「10 节点」是机队状态快照，不是判据（原目标该行已作废）
+
+  目标里写的「10 节点」**在本轮实测未复现**：06:19 的生产渲染是 `9 节点`，
+  06:16 的另一次渲染是 `10 节点`。该数字**随时间漂移，不能当验收门**。
+  机制（可审计）：
+
+  - 面板那个数字来自 `QueuePerspectivePanel.vue:1344` 的
+    `{{ group.nodes.length }} 节点`，而 `group` 取自 `filteredModelGroups`
+    （`:667-672`），其 `nodes` 已被 `passesStatusFilter` 过滤。
+  - **过滤基准 = 默认只勾「在用」**：`liveStreamPreferences.ts:92-97`
+    的 `statusFilter` 默认 `active: true`、其余三类 `false`
+    （注释「2026-08-21: default to "in use" only」）；桶的判定见
+    `QueuePerspectivePanel.vue:590-598` 的 `nodeStatusBucket`。
+  - **口径 = canonical scope 的全部别名，不是字面量**：分组按 scopeKey
+    聚合 `raw_models` 里**任意别名**（`GLM-5.3`、`GLM-5.3-Flash`、
+    `glm-5-3-flash-260828` 等）落到 canonical `glm-5.3` 的节点。
+    按字面量 `glm-5.3` 统计会**少算 2 个节点**。
+
+  同日三次 SSE 实测（各 40s 窗口，取最后一次 `node_update`）：
+
+  | 样本 | 总节点 | 组节点（别名口径） | 桶分布 | active（=默认显示） |
+  |---|---|---|---|---|
+  | #2 | 73 | 14 | active 8 / manualDisabled 4 / degraded 1 / exhausted 1 | **8** |
+  | #3 | 73 | 14 | active 9 / manualDisabled 4 / exhausted 1 | **9** |
+
+  样本 #3 的 active=9 与 06:19 界面渲染的 `9 节点` **完全吻合**，机制自证；
+  06:16 渲染出 10 是另一个时刻的机队状态（degraded 桶节点进出所致）。
+  ⇒ **下一次审计请勿以任何具体节点数判红**；要判的是
+  「分组数 = 1」「标题 = glm-5.3」「`.qp-scope-miss` 出现」三条不变式，
+  节点数只作为当次观测记录在案。
 
   - **「必须人工前台标签页」的前提被证伪**：headless Chromium 里
     `document.hidden === false`，面板 **9 秒**即渲染。内嵌 FilePanel 标签
