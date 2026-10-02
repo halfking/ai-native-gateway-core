@@ -872,6 +872,10 @@ const hasReportedRawModels = computed(() => nodes.value.some(node => Array.isArr
 // 时出现，避免把「压根没有节点」也归到范围问题上去。
 const outOfScopeFilterModels = computed<string[]>(() => {
   if (props.modelFilter.size === 0) return []
+  // 范围未就绪或加载失败时 scope 是「未知」而非「不在范围内」——此时提示
+  // 会把加载窗口读成范围排除（modelFilter 持久化于 localStorage，挂载即
+  // 非空，scope 解析需秒级），失败态还与「模型范围暂不可用」文案同屏矛盾。
+  if (modelScopeLoading.value || modelScopeError.value) return []
   const withNodes = new Set<string>()
   for (const node of nodes.value) {
     if (!Array.isArray(node.raw_models)) continue

@@ -552,6 +552,45 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.find('.qp-scope-miss').exists()).toBe(false)
   })
 
+  it('stays silent about scope misses while the scope is still loading', async () => {
+    // 2026-10-03 R35 审计：modelFilter 持久化于 localStorage（挂载即非空），而
+    // scope 解析（featured + top-models + resolveRouting 链）需秒级。加载窗口内
+    // scope 是「未知」而非「不在范围内」——提示必须沉默，否则初载闪现错误断言。
+    getFeatured.mockResolvedValue({ featured_models: ['glm-5.3'] })
+    resolveRouting.mockImplementation(async () => ({ canonical_id: null, canonical_name: null, raw_models: [], candidates: [] }))
+    liveStreamState.nodes = [
+      { credential_id: 9, provider_id: 1, provider_code: 'zhipu', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-5.2'] },
+    ]
+    const wrapper = mount(QueuePerspectivePanel, {
+      props: { modelFilter: new Set(['glm-5.2']) },
+      global: { plugins: [i18n] },
+    })
+    // 挂载后立即断言（未 flush）：有节点的已选模型在 loading 态不得提示。
+    expect(wrapper.find('.qp-scope-miss').exists()).toBe(false)
+    await flushPromises()
+    // 加载完成且双源有结果：非范围模型恢复提示（与上文正向用例口径一致）。
+    expect(wrapper.find('.qp-scope-miss').exists()).toBe(true)
+  })
+
+  it('stays silent about scope misses when both scope sources fail', async () => {
+    // 失败态：scope 未知却被说成「不在范围内」，还会与「模型范围暂不可用」
+    // 文案同屏矛盾——同样必须沉默。
+    getFeatured.mockRejectedValue(new Error('boom'))
+    vi.mocked(getRequestLogTopModels).mockRejectedValueOnce(new Error('boom'))
+    resolveRouting.mockImplementation(async () => ({ canonical_id: null, canonical_name: null, raw_models: [], candidates: [] }))
+    liveStreamState.nodes = [
+      { credential_id: 9, provider_id: 1, provider_code: 'zhipu', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-5.2'] },
+    ]
+    const wrapper = mount(QueuePerspectivePanel, {
+      props: { modelFilter: new Set(['glm-5.2']) },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+    expect(wrapper.find('.qp-scope-miss').exists()).toBe(false)
+    // 错误文案在场（区分「沉默」与「整个区块没渲染」）。
+    expect(wrapper.text()).toContain('模型范围暂不可用')
+  })
+
   it('shows nothing for a filtered model that is outside the featured/hot universe instead of borrowing another model group', async () => {
     // 2026-09-29 二轮审计发现的同型残留：集合里只有 glm-4.7-flash，节点却上报
     // raw 'glm-4.7'（canonical 51）。旧实现会把它挂到 glm-4.7-flash 名下，于是
