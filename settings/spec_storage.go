@@ -107,7 +107,7 @@ func StorageSpecs() []*Spec {
 			Category:        CategoryStorage,
 			Default:         false,
 			Description:     "会话最后完整快照（final_full）+ 停写 outbound_body",
-			DescriptionLong: "开启后 SessionWriterV2 每轮把完整 outbound upsert 进 session_bodies(kind='final_full', turn_no=0) 一行，并停止逐轮写 outbound_body（差集读端优先读 final_full、未命中回退旧行）。关闭时完全回到旧行为。默认关闭；方案 §6 估算停写 outbound_body 月省约 1.8GB。",
+			DescriptionLong: "开启后 SessionWriterV2 每轮把完整 outbound upsert 进 session_bodies(kind='final_full', turn_no=0) 一行，并停止逐轮写 outbound_body（差集读端优先读 final_full、未命中回退旧行）。关闭时完全回到旧行为。**生产实测（2026-10-02）：真实流量 98~99.9% 为单轮会话，存储收益近似为零——payload 不变、每会话反增 1 行 + 索引项 + 1 次冷启动探测；且中间轮 outbound_body 会永久丢失，构成审计/取证回退。故保持默认关闭**，仅在流量转向多轮形态时按 storage-optimization-plan §4-12 重新评估。",
 			DangerLevel:     Dangerous,
 			HotReload:       true,
 		},
