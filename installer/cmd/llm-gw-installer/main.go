@@ -54,6 +54,12 @@ var candidateFailureLogsMonthlyPartitionMigration392 []byte
 //go:embed embeddata/startup/535_candidate_failure_logs_atomic_promote.sql
 var candidateFailureLogsAtomicPromoteMigration535 []byte
 
+//go:embed embeddata/startup/517_handoff_pending_confirmations.sql
+var handoffPendingConfirmationsMigration517 []byte
+
+//go:embed embeddata/startup/527_handoff_durable_goal_state.sql
+var handoffDurableGoalStateMigration527 []byte
+
 //go:embed embeddata/startup/534_handoff_logs_hot_columnar.sql
 var handoffLogsHotColumnarMigration534 []byte
 
@@ -693,6 +699,15 @@ var requestLogsDefaultPartitionMigration808 []byte
 //go:embed embeddata/startup/809_instance_release_status_nullable_release_id.sql
 var instanceReleaseStatusNullableReleaseIDMigration809 []byte
 
+//go:embed embeddata/startup/813_supplier_errors_partitions_heap.sql
+var supplierErrorsPartitionsHeap813 []byte
+
+//go:embed embeddata/startup/814_adaptive_probe_targets_hot_subquery.sql
+var adaptiveProbeTargetsHotSubquery814 []byte
+
+//go:embed embeddata/startup/815_request_logs_view_stage_band_cff.sql
+var requestLogsViewStageBandCff815 []byte
+
 //go:embed embeddata/startup/818_ursm_snapshot_typed_columns.sql
 var ursmSnapshotTypedColumnsMigration818 []byte
 
@@ -741,6 +756,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/530_request_journey_contract.sql":                                       requestJourneyMigration530,
 	"startup/531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,
 	"startup/535_candidate_failure_logs_atomic_promote.sql":                          candidateFailureLogsAtomicPromoteMigration535,
+	"startup/517_handoff_pending_confirmations.sql":                                  handoffPendingConfirmationsMigration517,
+	"startup/527_handoff_durable_goal_state.sql":                                     handoffDurableGoalStateMigration527,
 	"startup/534_handoff_logs_hot_columnar.sql":                                      handoffLogsHotColumnarMigration534,
 	"startup/612_native_responses_capability.sql":                                    nativeResponsesCapabilityMigration612,
 	"startup/536_stats_analytics_foundation.sql":                                     statsMigration536,

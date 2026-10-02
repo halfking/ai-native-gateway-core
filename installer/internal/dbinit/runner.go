@@ -121,37 +121,64 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//
 			// Citus columnar is not a new dependency here: 392/532/535/562/627
 			// in this same chain already use it.
+			//
+			// 517 is registered here — AHEAD of 534 — on the Owner's decision
+			// (2026-10-02), after the "keep it unregistered" note below was
+			// written. Placement is load-bearing; the rest of this comment is
+			// the evidence for it.
+			//
+			// Why ahead: 517 declares handoff_log_id REFERENCES handoff_logs(id),
+			// valid on the baseline heap table. 534 rebuilds handoff_logs as a
+			// RANGE-partitioned parent with no unique constraint (PostgreSQL
+			// refuses PK(id) on a partitioned table — the constraint must
+			// contain the partition key). So 534-after-517 fails outright:
+			//   ERROR: there is no unique constraint matching given keys for
+			//   referenced table "handoff_logs"
+			// 534's own DO block (534:289-307) then DROPs that FK. Registering
+			// 517 first and letting 534 remove it is the same end state
+			// production is already in — 534 has done this on existing
+			// databases — and it closes the 42P01 gap for fresh installs.
+			//
+			// Why the Owner chose "no unique constraint, no FK" rather than
+			// keeping a partition-compatible UNIQUE (id, created_at): measured
+			// on a real PG reproducing confirmation_pg.go's write path, the FK
+			// is unsatisfiable regardless. Go:129 INSERTs into handoff_logs_hot
+			// and returns its id; Go:162 immediately uses that id for
+			// handoff_log_id, but the row is in the HOT table and promotion
+			// into handoff_logs is async (retention
+			// lifecycle.handoff_logs_hot_retention_hours = 8h):
+			//   -> UPDATE fails, SQLSTATE 23503 foreign key violation
+			// Control case (promote the row first, then UPDATE) -> succeeds.
+			// So 517's FK is a leftover from the pre-534 world where writes
+			// landed directly in handoff_logs. A unique constraint would be
+			// paid for on every production install (building it spans every
+			// partition) and 534 would drop the FK anyway.
+			//
+			// Verified end state on a clean database
+			// (00-prereqs + baseline + 517 + 534): rc=0, zero errors,
+			// handoff_pending_confirmations present, handoff_logs a partitioned
+			// parent, handoff_logs_hot + handoff_logs_with_current_month
+			// present, and 0 FKs left pointing at handoff_logs.
+			"517_handoff_pending_confirmations.sql",
+			// 527 is NOT optional with 517 and must stay immediately after it.
+			// 517 creates the base table; 527 is what completes it. Registering
+			// 517 alone is not merely incomplete — it is actively wrong:
+			//   * 517's CHECK is status IN ('pending','confirmed','expired'),
+			//     while confirmation_pg.go writes 'accounting_confirmed'. 527
+			//     widens status to VARCHAR(32) and adds that value (plus
+			//     restored / manual_required) to the constraint.
+			//   * 527 adds goal_state / goal_state_version / restore_status /
+			//     restore_error / restore_attempted_at / restored_at and the
+			//     idx_handoff_pending_restore index.
+			// Caught by the full-package sweep, not by the migration gate:
+			//   domains/hooks/handoff TestPGStoreSavePendingSemantics
+			//   ERROR: column "goal_state" of relation
+			//   "handoff_pending_confirmations" does not exist (SQLSTATE 42703)
+			// That test used to pass only because nothing created the table at
+			// all, so it made its own full one. Registering 517 alone handed it
+			// the half-built table instead.
+			"527_handoff_durable_goal_state.sql",
 			"534_handoff_logs_hot_columnar.sql",
-			// 517 is NOT registered, and that is a deliberate pending decision,
-			// not an oversight. Registering it fails on a fresh install:
-			//
-			//   517_handoff_pending_confirmations.sql :: ERROR: there is no
-			//   unique constraint matching given keys for referenced table
-			//   "handoff_logs"
-			//
-			// The conflict is structural, not an ordering mistake. 517 declares
-			//   handoff_log_id INTEGER REFERENCES handoff_logs(id)
-			// which is valid on the baseline heap table (id is its primary key).
-			// 534 rebuilds handoff_logs as a RANGE-partitioned parent and adds
-			// NO unique constraint to it — the only PRIMARY KEY in 534 belongs
-			// to handoff_logs_hot, a different table. On a partitioned table a
-			// unique constraint must contain the partition key, so handoff_logs
-			// is not unique on id afterwards and 517's FK has nothing to bind.
-			//
-			// Running 517 first does not work either (mechanism corrected in the
-			// round-27 audit, 2026-10-02): 534's DO block (534:289-307) explicitly
-			// DROPs any FK on handoff_pending_confirmations referencing
-			// handoff_logs / handoff_logs_legacy_532, so the FK 517 just created
-			// is silently removed when 534 runs — the chain passes, but the
-			// "drop the FK" design decision is made implicitly by existing 534
-			// code instead of by the Owner. Either way the call belongs to the
-			// Owner, so 517 stays unregistered.
-			//
-			// Resolving this needs a schema decision (add a partition-compatible
-			// unique constraint such as (id, created_at) and widen the FK, or
-			// drop the FK), which is not a wiring change. Left unregistered and
-			// documented. See
-			// docs/audit/2026-10-02-round44-ssot-decision.md.
 			"535_candidate_failure_logs_atomic_promote.sql",
 			"536_stats_analytics_foundation.sql",
 			"537_usage_facts.sql",
