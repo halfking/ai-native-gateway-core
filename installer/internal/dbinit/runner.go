@@ -160,6 +160,24 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// parent, handoff_logs_hot + handoff_logs_with_current_month
 			// present, and 0 FKs left pointing at handoff_logs.
 			"517_handoff_pending_confirmations.sql",
+			// 527 is NOT optional with 517 and must stay immediately after it.
+			// 517 creates the base table; 527 is what completes it. Registering
+			// 517 alone is not merely incomplete — it is actively wrong:
+			//   * 517's CHECK is status IN ('pending','confirmed','expired'),
+			//     while confirmation_pg.go writes 'accounting_confirmed'. 527
+			//     widens status to VARCHAR(32) and adds that value (plus
+			//     restored / manual_required) to the constraint.
+			//   * 527 adds goal_state / goal_state_version / restore_status /
+			//     restore_error / restore_attempted_at / restored_at and the
+			//     idx_handoff_pending_restore index.
+			// Caught by the full-package sweep, not by the migration gate:
+			//   domains/hooks/handoff TestPGStoreSavePendingSemantics
+			//   ERROR: column "goal_state" of relation
+			//   "handoff_pending_confirmations" does not exist (SQLSTATE 42703)
+			// That test used to pass only because nothing created the table at
+			// all, so it made its own full one. Registering 517 alone handed it
+			// the half-built table instead.
+			"527_handoff_durable_goal_state.sql",
 			"534_handoff_logs_hot_columnar.sql",
 			"535_candidate_failure_logs_atomic_promote.sql",
 			"536_stats_analytics_foundation.sql",

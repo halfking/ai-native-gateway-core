@@ -117,6 +117,27 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 				"13800138024", // computer_call.action.text
 			},
 		},
+		{
+			// 第三十一轮钉测（§四#7 收口）：边缘载体三处——
+			// tool_search_call.arguments（function_call.arguments 的单字段同族，
+			// JSON-string）/ mcp_approval_request.arguments（mcp_call.arguments
+			// 同族）/ web_search_call.action.results（字符串数组与 {text} 对象
+			// 数组逐值）。此前三者全部落 default 直通。
+			name: "responses edge tool carriers", path: "/v1/responses",
+			body: `{"model":"m","input":[` +
+				`{"type":"tool_search_call","id":"ts_1","status":"completed","arguments":"{\"query\":\"call 13800138031\"}"},` +
+				`{"type":"mcp_approval_request","id":"mar_1","status":"pending","arguments":"{\"cmd\":\"phone 13800138032\"}"},` +
+				`{"type":"web_search_call","id":"ws_2","status":"completed","action":{"type":"search","query":"call 13800138033","results":["hit 13800138034",{"url":"https://x","text":"phone 13800138035"}]}}]}`,
+			wantRefs:         3,
+			wantPlaceholders: 5,
+			notWant: []string{
+				"13800138031", // tool_search_call.arguments
+				"13800138032", // mcp_approval_request.arguments
+				"13800138033", // web_search_call.action.query
+				"13800138034", // web_search_call.action.results[] string
+				"13800138035", // web_search_call.action.results[].text
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -287,6 +308,33 @@ func TestInputSanitizerActionShapeSemantics(t *testing.T) {
 		{
 			name:       "web_search_call null action passes (R29 pin)",
 			item:       `{"type":"web_search_call","call_id":"s8","action":null}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			// 第三十一轮 §四#7 形态口径：results 缺失/null 直通、非数组拒单
+			//（与 file_search_call.results 同族）。
+			name:       "web_search_call missing results passes",
+			item:       `{"type":"web_search_call","call_id":"s9","action":{"type":"search","query":"q"}}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "web_search_call null results passes",
+			item:       `{"type":"web_search_call","call_id":"s10","action":{"type":"search","query":"q","results":null}}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "web_search_call non-array results rejected",
+			item:       `{"type":"web_search_call","call_id":"s11","action":{"type":"search","query":"q","results":"junk"}}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "tool_search_call missing arguments passes",
+			item:       `{"type":"tool_search_call","id":"ts_2","status":"completed"}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "mcp_approval_request null arguments passes",
+			item:       `{"type":"mcp_approval_request","id":"mar_2","arguments":null}`,
 			wantStatus: http.StatusOK,
 		},
 	}

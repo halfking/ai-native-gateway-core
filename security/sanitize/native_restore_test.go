@@ -265,3 +265,48 @@ func TestNativeResponsesRestoresCodexToolFamily(t *testing.T) {
 	require.Equal(t, "call 13800138031", cc["text"])
 	require.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
 }
+
+// 第三十一轮钉测（§四#7 承债）：tool_search_call.arguments /
+// mcp_approval_request.arguments / web_search_call.action.query+results 的
+// restore 镜像此前零测试承重——摘掉任一 restore case 只会表现为线上整响应
+// block（占位符残留命中输出守卫），测试全绿。逐载体唯一敏感值 + 逐值 Equal，
+// 任一 case 退回"不认识该 item"即红。
+func TestNativeResponsesRestoresEdgeToolCarriers(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	const tenant, session = "tenant-responses-31", "responses-session-31"
+	require.NoError(t, rdb.HSet(context.Background(), sanitizeMapKey(tenant, session), map[string]any{
+		"{SENSITIVE:phone:1}": "13800138041",
+		"{SENSITIVE:phone:2}": "13800138042",
+		"{SENSITIVE:phone:3}": "13800138043",
+		"{SENSITIVE:phone:4}": "13800138044",
+	}).Err())
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, time.Minute)
+	require.NoError(t, err)
+	body := []byte(`{"object":"response","id":"resp_31","output":[` +
+		`{"type":"tool_search_call","id":"ts_1","status":"completed","arguments":"{\"query\":\"call {SENSITIVE:phone:1}\"}"},` +
+		`{"type":"mcp_approval_request","id":"mar_1","status":"pending","arguments":"{\"cmd\":\"phone {SENSITIVE:phone:2}\"}"},` +
+		`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"call {SENSITIVE:phone:3}","results":["hit {SENSITIVE:phone:4}",{"url":"https://x","text":"untouched"}]}}]}`)
+	result, err := it.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		TenantID: tenant, SessionID: session, ClientProtocol: "openai-responses", ResponseBody: body,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.ShouldBlock)
+	var got struct {
+		Output []map[string]any `json:"output"`
+	}
+	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
+	require.Len(t, got.Output, 3)
+	require.JSONEq(t, `{"query":"call 13800138041"}`, got.Output[0]["arguments"].(string))
+	require.JSONEq(t, `{"cmd":"phone 13800138042"}`, got.Output[1]["arguments"].(string))
+	ws := got.Output[2]["action"].(map[string]any)
+	require.Equal(t, "call 13800138043", ws["query"])
+	results, ok := ws["results"].([]any)
+	require.True(t, ok)
+	require.Len(t, results, 2)
+	require.Equal(t, "hit 13800138044", results[0])
+	require.Equal(t, "untouched", results[1].(map[string]any)["text"])
+	require.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
+}
