@@ -17,12 +17,11 @@
 # ⇒ **停写之前探针就已经是空的**；这个检测器自 2026-09-25（D11 短路上线）起
 # 一直关着，与 S4 无关。
 #
-# S4 停写的影响是**前瞻性**的：短路的第二条腿（`inProcSeen` 的进程内 arm）的唯一
-# 写入方 `markSystemFingerprintObserved()` 只在 `persistSystemFingerprint()` 内调用，
-# 而后者位于 `insertRequestLog` / `updateRequestLog` 的 `if logsWrite` 块内
-# （client.go:1816 / :2468）⇒ 停写后它一次都不执行。
-# ⇒ **即便上游将来开始发指纹，停写 + 重启之后检测器也永远不会恢复。**
-# 这才是本组告警要守的东西。
+# S4 停写对它的影响曾经是**前瞻性**的：短路的第二条腿（`inProcSeen` 的进程内
+# arm）原先只在 `persistSystemFingerprint()` 内 arm，而后者的调用点都在
+# `insertRequestLog` / `updateRequestLog` 的 `if logsWrite` 块内 ⇒ 停写后 arm 一次
+# 都不触发。审计 §9.52 已把 arm 移到门控**之外**（`observeSystemFingerprint`）。
+# ⇒ 现在**上游一旦开始发指纹，检测器就能自己醒过来**；这才是本组告警要守的东西。
 #
 # 这与「某个读点变空」是不同性质的事：不是显示层少了一块，是**检测器自己关掉了**。
 # 而在此之前完全不可见——`skippedTicks` 全仓只有 `Add(1)`、没有任何地方读它，
@@ -75,26 +74,30 @@ groups:
             ⇒ **停写之前探针就已经是空的**。这个检测器自 2026-09-25（D11 短路
             上线）起就一直关着，与 S4 无关。
 
-            **S4 停写的影响是前瞻性的，而且比看上去更糟**。短路有两条腿：
-            腿 1 是上面那个探针（今天已经断了）；腿 2 是 `inProcSeen` 的
-            进程内 arm —— **逃生口也是关着的**，不要指望它自愈。
-            它的唯一写入方 `markSystemFingerprintObserved()` 只在
-            `persistSystemFingerprint()` 内被调用，而后者**被同一个
-            `storage.request_logs_write_enabled` 门控住**（`insertRequestLog` /
-            `updateRequestLog` 的 `if logsWrite` 块内，client.go:1816 / :2468）。
-            停写之后它一次都不会执行 ⇒ `SystemFingerprintObservedSince()` 永远返回
-            `(0, false)`。
+            **S4 停写的影响是前瞻性的，但已在 §9.52 修掉**。短路有两条腿：
+            腿 1 是上面那个探针；腿 2 是 `inProcSeen` 的进程内 arm —— 进程内
+            遥测观测到带指纹的请求就会重新 arm 全量扫描。
 
-            ⇒ 即便上游将来开始发指纹，**停写 + 任意一次重启之后检测器也永远不会
-            恢复**。这才是这条告警要守的东西：不是「现在扫不到」，而是
-            **「将来有了数据也扫不到」**。（不停写时它是健壮的：只对本实例没见过、
-            且一次性探针也没见过的流量才跳。）
+            腿 2 曾**也**断在同一个开关上：它的写入方 `markSystemFingerprintObserved()`
+            原先只在 `persistSystemFingerprint()` 内被调用，而后者的两个调用点都在
+            `insertRequestLog` / `updateRequestLog` 的 `if logsWrite {}` 块内
+            （client.go:1816 / :2468）⇒ 停写后 arm 一次都不触发。
 
-            ⚠ 本条经过两次订正，都记在审计里：
-            §9.50.4 撤回了「逃生口那条链与宽表无关、会自行恢复」的说法——
-            真代码里它被同一个停写键挡住了；
-            §9.51 撤回了「停写是当前不扫描的主因」的说法——真库实测显示上游
-            从不返回该响应头，这一条与停写无关。
+            §9.52 已把 arm 移到 `observeSystemFingerprint()`，在**门控之外**调用
+            （`insertRequestLog` / `updateRequestLog` 各自的 `if logsWrite` 之前）。
+            arm 记录的是「本进程见过带指纹的请求」，与该请求是否落进 v1 无关。
+            不变式由 `domains/hooks/observability/telemetry/fingerprint_escape_hatch_gate_test.go`
+            钉住：arm 调用链上没有任何一环在门内。
+
+            ⇒ **但当前仍然不扫描，主因没有变**：上游不发 `X-System-Fingerprint`，
+            arm 也就无从触发。这条告警现在守的是「**上游一旦开始发指纹，检测器要
+            能自己醒过来**」——修复前它醒不过来。
+
+            ⚠ 本条经过三次订正，都记在审计里：
+            §9.50.4 撤回了「逃生口那条链与宽表无关、会自行恢复」；
+            §9.51 撤回了「停写是当前不扫描的主因」——真库实测显示上游从不返回
+            该响应头，这一条与停写无关；
+            §9.52 撤回了「arm 仍然是关着的」这一说法——停写对它的影响已修掉。
 
             **排查步骤**：
             1. 看 `llm_gateway_bg_fingerprint_drift_skipped_total` 是否在涨
@@ -107,13 +110,13 @@ groups:
                `0 / N` ⇒ 与停写无关，就是没有指纹流量（**当前的常态**）。
             3. 确认 `storage.request_logs_write_enabled` 的当前值与切换时刻。
                停写**不是**当前不扫的原因，但它决定了**将来**能不能恢复。
-            4. 修法（按这个顺序，不要做第 2 件事）：
-               a. 把 `inProcSeen` 的 arm 移出 `if logsWrite` —— 这是唯一的代码
-                  修复，且**不依赖上游**；
+            4. 修法（a 已于 §9.52 完成，剩下的是产品决策）：
+               a. ~~把 `inProcSeen` 的 arm 移出 `if logsWrite`~~ —— **已做**。
+                  今后若再看到本告警，**不要**重复这一步；
                b. **不要**为了让探针「有数据」而去改读会话族：实测会话族的
                   `system_fingerprint` 同样是全空（同一上游原因，168 万行 0 非空），
                   改过去只是把「因为缺数据而空」伪装成「已修好」；
-               c. 真正的长期问题需要产品决策：这个检测器在没有任何指纹数据时
+               c. 剩下的长期问题需要产品决策：这个检测器在没有任何指纹数据时
                   本来就无对象可检。要么让上游发指纹，要么承认这项检测能力当前
                   是空的并如实记录 —— 而不是靠调大间隔把告警压下去。
 

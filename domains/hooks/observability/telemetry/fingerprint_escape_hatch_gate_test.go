@@ -174,35 +174,75 @@ func isCallTo(stmt ast.Stmt, target string) bool {
 	return found
 }
 
-func TestFingerprintEscapeHatchIsInsideTheStopWriteGate(t *testing.T) {
-	// 腿 2a：inProcSeen 的写入方只有一个，不能有第二条 arm 路径藏在别处。
-	observed := findFingerprintCalls(t, fingerprintObservedMarker)
-	require.Len(t, observed, 1,
-		"%s() must have exactly one call site. A second one would be a second arm path "+
-			"for the drift worker's inProcSeen branch, and §9.50's alert text claims there is none.",
-		fingerprintObservedMarker)
-	require.Equal(t, "persistSystemFingerprint", observed[0].fn,
-		"%s() must stay inside persistSystemFingerprint — that is the only place that "+
-			"knows a fingerprint row was actually written", fingerprintObservedMarker)
+func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
+	// §9.51 这道门被**反转过一次**。第一版断言的是「arm 在 `if logsWrite`
+	// 内」——那正是缺陷本身。修好之后同一段判据会红，于是必须把它换成
+	// **可持久的不变式**：
+	//
+	//	进程内指纹 arm 的整条调用链上，**没有任何一环**在 `if logsWrite {}` 体内。
+	//
+	// 这才是「修好了」的定义。钉死具体行号或具体函数名会在下一次重构时变成噪音，
+	// 而这条不变式在重构后依然可判定。
+	//
+	// 断言顺序**不是随意的**：环 3 排在最前，因为它是「别把修复撤销掉」的守卫。
+	// 撤销修复会同时触发环 1/环 2，若它们在前，环 3 就永远轮不到——而一条
+	// 排在更严格断言之后、自己不可达的断言就是装饰（本门第一版正是如此）。
 
-	// 腿 2b：persistSystemFingerprint 的每个调用点都在 S4 停写门内。
-	persists := findFingerprintCalls(t, fingerprintPersistMarker)
-	require.Len(t, persists, 2,
-		"expected exactly two persistSystemFingerprint call sites (INSERT + final UPDATE); "+
-			"got %d — if a third was added, re-derive whether it is inside the gate too",
-		len(persists))
-	for _, p := range persists {
-		require.True(t, p.inGate,
-			"persistSystemFingerprint() at %s:%d is NOT inside `if logsWrite {}`. "+
-				"That call is the ONLY thing that re-arms the fingerprint drift detector "+
-				"in-process, so this is a deliberate fix, not a refactor — before landing it, "+
-				"update deploy/prometheus/rules/integrity-fingerprint-drift.yml, whose "+
-				"\"逃生口也是关着的\" paragraph is now false, and record the change in §9.50.",
-			p.file, p.line)
-		require.Contains(t, []string{"insertRequestLog", "updateRequestLog"}, p.fn,
-			"persistSystemFingerprint() at %s:%d is called from %s, outside the two known "+
-				"write paths — re-derive the stop-write story for the new call site",
-			p.file, p.line, p.fn)
+	// ── 环 3：落列那个函数的函数体里不得再 arm ──────────────────────────────
+	//
+	// 第一版这里写的是「persistSystemFingerprint 的调用点不能自我递归」。
+	// 它读起来像是这条，但它量的是完全不同的东西，而且几乎恒真。已订正。
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "client.go", nil, 0)
+	require.NoError(t, err)
+	var persist *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == fingerprintPersistMarker {
+			persist = fn
+		}
+	}
+	require.NotNil(t, persist, "client.go no longer defines %s()", fingerprintPersistMarker)
+
+	// 用深匹配而不是 isCallTo：后者为「调用归属哪个基本块」设计，是浅匹配，
+	// 用在这里会恒假（详见 blockCallsDeep 的注释）。
+	for _, arm := range []string{"observeSystemFingerprint", fingerprintObservedMarker} {
+		require.False(t, blockCallsDeep(persist.Body, arm),
+			"%s() calls %s() again — that is exactly the coupling audit §9.51 removed. "+
+				"%s is only ever called from `if logsWrite {}`, so arming there makes the "+
+				"in-process re-arm die at S4 stop-write again.",
+			fingerprintPersistMarker, arm, fingerprintPersistMarker)
+	}
+
+	// ── 环 1：arm 的唯一底层写入方，且它自己不在门内 ─────────────────────────
+	observed := findFingerprintCalls(t, fingerprintObservedMarker)
+	require.NotEmpty(t, observed,
+		"%s() has no call site — the in-process re-arm would be permanently dead code",
+		fingerprintObservedMarker)
+	for _, o := range observed {
+		require.False(t, o.inGate,
+			"%s() at %s:%d is inside `if logsWrite {}`. The in-process re-arm records that "+
+				"THIS PROCESS saw fingerprint traffic; it has nothing to do with whether that "+
+				"traffic was written to the wide table. §9.51 moved it out for exactly this reason.",
+			fingerprintObservedMarker, o.file, o.line)
+		require.Equal(t, "observeSystemFingerprint", o.fn,
+			"%s() must be reached only through observeSystemFingerprint() — that wrapper "+
+				"holds the nil/empty guard, and a bare call site would arm on an empty value",
+			fingerprintObservedMarker)
+	}
+
+	// ── 环 2：arm 的入口必须在两个写路径里，且都在门控之外 ───────────────────
+	arms := findFingerprintCalls(t, "observeSystemFingerprint")
+	require.Len(t, arms, 2,
+		"the arm must be wired into both insertRequestLog and updateRequestLog; got %d "+
+			"call sites — a request that only ever reaches one of them would never re-arm "+
+			"the detector on that path", len(arms))
+	for _, a := range arms {
+		require.False(t, a.inGate,
+			"observeSystemFingerprint() at %s:%d is inside `if logsWrite {}` — that is the "+
+				"exact defect audit §9.51 fixed; do not move it back", a.file, a.line)
+		require.Contains(t, []string{"insertRequestLog", "updateRequestLog"}, a.fn,
+			"observeSystemFingerprint() at %s:%d is called from %s; re-derive the stop-write "+
+				"story for a new call site", a.file, a.line, a.fn)
 	}
 }
 
@@ -318,4 +358,35 @@ func TestLogsWriteSnapshotReadsTheStopWriteKey(t *testing.T) {
 		"settings.%s must remain the S4 stop-write key; if it was renamed, the alert text in "+
 			"deploy/prometheus/rules/integrity-fingerprint-drift.yml and §9.50 must be updated "+
 			"with it (got %q)", keyName, key)
+}
+
+// blockCallsDeep 判断一个函数体里（**任意深度**）是否出现目标调用。
+//
+// 与 isCallTo 的区别是本门最容易踩的坑，代价是三轮：
+// isCallTo 是**浅**匹配，遇到 *ast.BlockStmt 就停止下探——那是为「把调用
+// 归属到正确的基本块」设计的（findFingerprintCalls 靠它定位）。但「这个
+// 函数到底调没调 X」是另一个问题，答案需要**穿透**所有嵌套块。
+//
+// 把 isCallTo 用在函数体上会得到恒假的结论：把 Body 本身传进去，它在根
+// 节点就返回 false；改传 Body.List 的元素，调用在 `if err == nil { … }`
+// 里面，同样返回 false。⇒ 写出一条看起来在守、实际永远为真的装饰断言。
+//
+// **门里凡是「某函数是否调用了 X」都要走这里**；凡是「调用归属于哪个基本块」
+// 才走 isCallTo。两种问题不要共用一个匹配器。
+func blockCallsDeep(body *ast.BlockStmt, target string) bool {
+	if body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == target {
+			found = true
+		}
+		return true
+	})
+	return found
 }
