@@ -2626,3 +2626,48 @@ NULL ⇒ `Scan` 报错 ⇒ 被当成「无附件」⇒ 200 + `attachments: []`�
 | M8 从补位表删掉 `client_model` | **红**：`迁移里有、表里没有：[client_model]` |
 
 M8 特别重要：它证明补位清单不是写死的常量，而是**真的在和迁移对账**。
+
+## §9.15 读端轴推进 58/105（batch3 的 23 条）（2026-10-02）
+
+未评估从 70 降到 **47**。门仍红。
+
+### §9.15.1 本批暴露的新东西不是 23 条判定，是一条守卫的**方向性错误**
+
+`bg/ledger_reconciliation.go`：`usageCreditSQL`(:261) 是 `request_logs_hot` 与
+`credit_ledger_hot` 的 **FULL OUTER JOIN**，而 S4 开关**只门控 request_logs 族、
+不门控 credit_ledger**（`settings/key_request_logs_write_enabled.go:3-4` 写明
+范围是「request_logs wide family」）。
+
+⇒ 停写后 usage 腿归零、ledger 腿继续增长 ⇒ **每笔新 consume 都变成
+`charged=0 vs debited>0` 的假 mismatch**，每轮最多 200 条灌进
+`maas_reconciliation_findings`，不报错。
+
+这条的意义超出它本身：**门控的「范围声明」和它实际覆盖的表不一致**时，
+停写不是让对账变静默，而是让对账变成**结构性误报机**。
+读到 `KeyRequestLogsWriteEnabled` 注释里那句「the S4 stop-write gate for the
+request_logs wide family」时，应该顺势问一句：还有哪些表**不在**这个范围里，
+却被同一个对账/聚合逻辑引用。
+
+### §9.15.2 归档为 silently_frozen，但方向写在 Note 里
+
+`ledger_reconciliation` 归档 `silently_frozen`——按「无错误信号的持续判定」这个
+判据它成立。但它的真实语义既不是冻结也不是空，而是**误报洪水**。
+在 Note 里写明方向，是为了让后来者不会把这一档读成「停止更新、无害」。
+
+同类还有 `bg/stats_minute_rollup_retire.go`（§9.14.4 的过度清理）。
+**同一个「证据源消失」，在不同守卫位置已经产出五种方向**：
+继续放行 / 主动禁用 / 退回保守 / 静默失效 / 过度清理/误报。
+
+### §9.15.3 又一次「族门要求具名论证」
+
+`db/db.go` 被判为 bodies 族（bodies 族按正则识别），但我核了它的两处
+`request_logs_bodies` 命中：`:7197` 与 `:7231` 都是 **pg_class.relname 的字符串
+名单**（ALTER TABLE SET storage / ANALYZE 分区巡检）——表名出现在正则/数组里，
+不是 FROM/JOIN 任何一张表。
+
+与 `attachments_routes.go`（URL 路径字面量）、`data_lifecycle_blobs.go`
+（`pg_column_size`）同形。加进 `bodiesUnaffectedJustification`，
+默认拒绝、具名放行。
+
+> 这已经是**第三类**触发 bodies 假阳性的语境：SQL 内容读 / 写门内 / 结构面。
+> 正则按列名识别表，识别不出「读的是内容还是名字」。**每次都要具名写清是哪一种。**
