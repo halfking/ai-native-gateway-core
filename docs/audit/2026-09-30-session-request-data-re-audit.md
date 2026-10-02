@@ -5493,241 +5493,6 @@ latency 就不在同一批行上算——**那比缺数据更隐蔽，因为数�
 
 ---
 
-## §9.42 §9.31 遗留四条的执行轮：一条做完、一条证伪前提、两条卡在同一个根因上
-
-本轮执行 §9.31 遗留清单里的 1/2/3/4（`raw_model_name` 端口）。结论一句话：
-**只有第 1 条是可执行代码工作，做完了；另外三条的根因不在它们各自指向的地方。**
-
-### §9.42.1 `cmd/compression-bench` 的 `id`：做完，但撞上一个更硬的东西
-
-§9.29.5 读面判据第 2 条要求「1 个真补位读方改读法」。这一条是全部 106 个读方里
-**唯一一个经限定符归属判定后仍成立**的（§9.29.4），所以它必须先落地。
-
-`id` 的处置：**删掉，不回查**。理由是它在本工具里只当行标识用
-（`requestLogRow.ID` → `benchResult.RowID` → 结果表 `row_id`），**不参与任何压缩比
-判定**，而 `request_id` 本来就已在结果里、且两族都有同名列。
-
-改动：`cmd/compression-bench/main.go` —— SELECT 去掉 `id`、scan 去掉 `&r.ID`、
-`benchResult` 去掉 `RowID`、结果表 DDL 与 CopyFrom 列清单去掉 `row_id`。
-`row_id` 在 DDL 里一并去掉而不是留成 NULL 死列；已存在的表走 `CREATE TABLE IF NOT EXISTS`，
-旧表保留该列且不再写入，不构成迁移。
-
-### §9.42.2 顺手撞见的真 bug：这个工具**今天根本跑不起来**
-
-改 `id` 之前我先在真库上跑了它那条查询，想确认 `id` 是不是唯一障碍。它不是：
-
-```
-ERROR:  column "request_body" does not exist
-LINE 5:  COALESCE(outbound_body::text, request_body::text, '{}') AS body ...
-```
-
-真库 `request_logs` **没有 `request_body` 这一列**。`information_schema` 逐列核对
-（`request_logs`）：`id` / `request_id` / `tenant_id` / `gw_session_id` /
-`outbound_body` / `outbound_token_est` / `outbound_msg_count` /
-`compression_strategy` / `ts` 全部存在，**只有 `request_body` 不存在**。
-
-它搬到哪儿去了：`request_logs_bodies` 腿（`\d request_logs_bodies` 三列
-`request_body` / `outbound_body` / `response_body`，主键 `(request_id, ts)`）。
-这与 §9.28 的 bodies 腿是同一件事，但 §9.28 讲的是「10 个读点不能无损改指」，
-**没有发现这个工具的查询是硬报错的**——因为它是一条没人跑过的离线 CLI 查询。
-
-⇒ 修法：正文改从 `request_logs_bodies` 腿 join 上来，联键用主键
-`(request_id, ts)`。真库验证（近 2 天、October 分区、限 500）：
-**500/500 全部联上**，正文 87–176 字节。
-
-顺带**去掉了 `request_body` 兜底而不是改指它**：那是**入站完整载荷**，
-而本工具量的是**出站压缩比**（`BytesBefore` 直接取 `OutboundBody` 长度）。
-拿入站正文顶替出站正文，会让每个比值都是两种东西的字节数相除——数字照样出得来，
-结论是假的。宁可少一批样本。
-
-**端到端证据**（真库实跑，非仅编译通过）：
-
-```
-DATABASE_URL=… go run ./cmd/compression-bench --days 2 --max-samples 5 \
-  --test-mode mechanical --skip-llm-summary
---- Strategy Distribution ---  noop 5 (100.0%)
-=== Summary === loaded rows → 正常输出聚合
-```
-
-（`noop` 100% 是数据形状而非缺陷：近 2 天的行都是 87–176 字节的探针流量，
-远低于任何压缩触发阈值。）
-
-### §9.42.3 但「改指视图」这条路**并没有因此打通**——挡路的是 bodies 腿
-
-把 `id` 去掉只是解除了**一个**障碍。剩下的那个更大，而且它不是我能顺手解的：
-
-| 事实 | 真库实测 |
-|---|---|
-| canonical 视图**没有** `outbound_body` 列 | `information_schema` 查 `request_logs_with_current_month` = false |
-| v1 `request_logs_bodies.outbound_body` 与 `session_bodies.outbound_body` 在同 `request_id` 上**从不相等** | 配对 20,000 行：内容相同 **0**、**长度**都相同 **0** |
-
-⇒ 正文这条腿在两族之间**不可移植**，不是「换个表名」能解决的。§9.28 已经量过
-`request_body` 那一侧（session 只有 message 数组、无 `max_tokens`/`stream`），
-本节补上 `outbound_body` 那一侧：**连长度都对不上**，所以 §9.28 的结论
-「10 个 bodies 腿读点不能无损改指」对本工具同样成立。
-
-⇒ **S4 读面判据第 2 条的措辞需要更正**：它写的是「1 个真补位读方改视图读法」，
-但实测是「去掉 `id` 之后，这个读方仍被 bodies 腿挡住，**改不成**视图读法」。
-补位阻塞已解除，**bodies 腿阻塞未解除**，两者是不同的工程量。
-
-### §9.42.4 门：登记表清空，并加一道「必须保持空」的门
-
-`admin/v1_direct_padded_column_reader_test.go`：
-
-- 删掉唯一一条登记（`cmd/compression-bench/main.go` / `id`）。**不改成豁免**——
-  本门的设计是「失效即报红」，改成豁免会让登记表退化成永不更新的占位。
-  实测它确实先红了一次再被我改绿，红的理由正是「该位置不再触发本门」。
-- 新增 `TestNoVPaddedColumnReaderRemains`：断言登记表**必须为空**。
-  理由是 §9.32.3 那条纪律——本项目最贵的两个决定都是**不做**，
-  而「不做」没有任何编译期信号。空表本身没人看得见，
-  「它必须保持空」这件事需要有人守。断言的是计数为零而不是逐个点名文件：
-  逐个点名会在有人新增第 2 个读方时给出误导性的通过。
-
-绿：`v1 直读 + 读补位列的读方：0 个（其中已登记 0，未登记 0）`。
-
-**变异 2/2，均为断言命中（非崩溃），且两处行号不同**：
-
-| 变异 | 命中 |
-|---|---|
-| M1 把 `rl.id` 注回 compression-bench 的 SELECT | `v1_direct_padded_column_reader_test.go:157`「新增了…读补位列 id 的读方」 |
-| M2 往登记表塞回一条 compression-bench 条目 | `:109`「登记表有 1 条登记，但应为空」+ `:217`「登记已失效」 |
-
-（按 §9.38 的 M-C 纪律逐条串行：每次注入前先 grep 标记确认**恰好 1 处**，
-还原后确认归零再注入下一处。）
-
-### §9.42.5 `trace_events`：覆盖率量到了，而「镜像从不写它」这句话是**错的**
-
-§9.31 遗留第 1 条与 815 的做法一样，先量覆盖率。真库（2026-10-02 17:5x 快照）：
-
-| 窗口 | v1 `request_logs` 非空 | session（hot ∪ 父表）非空 |
-|---|---|---|
-| 近 1 天 | 36.11%（1,595 / 4,417） | **0** |
-| 近 7 天 | 35.95%（207,579 / 577,421） | **0** |
-| 近 30 天 | 33.30%（720,630 / 2,163,770） | **0** |
-
-配对（7 天内 v1 有值的行限 50,000）：能在 session 侧按 `request_id` 找到
-**45,197** 行，其中 session 侧有值的 **0** 行，`both_differ` **0**
-——但这个 0 是**空集上的 0**，不构成「两侧一致」的证据。**投影它就是净数据损失**，
-§9.22 / 815 据此不投影的结论**成立且被本轮重新确认**。
-
-**但根因与文档里写的不一样。** 代码注释（`db/request_logs_view_schema.go:606`、
-`internal/sessionv2mirror/s1a_fields.go:84`）说的是「镜像从不写它」。逐行读下来，
-这句话**不准确**，真实链路是三段：
-
-1. **会话写方一直在写这一列。** `domains/session/v2/turn_writer.go:369` 的 INSERT
-   列清单里有 `trace_events`，`:433` 写 `nilIfEmptyJSON(rec.TraceEvents)`。
-   ⇒ 不是「不写」，是**恒写 NULL**（`nilIfEmptyJSON` 把空值转成 SQL NULL）。
-2. **镜像的源结构体没有这个字段。**
-   `internal/sessionv2mirror/s1a_fields.go:24` 的签名是
-   `applyStorageS1AFields(req *v2.ProcessedRequest, entry *telemetry.RequestLogEntry)`，
-   `:84` 明写「req.TraceEvents：RequestLogEntry 无此字段，保持零值」。
-   `telemetry.RequestLogEntry` 缺 `TraceEvents` / `SearchText` / `RequestChecksum` /
-   `RawModelName` 四个字段（包注释 `:7` 有列）。
-3. **v1 的值由另一条更晚的路径产生。** `internal/trace/trace.go:497`
-   `UPDATE request_logs_hot SET trace_events = $1::jsonb WHERE request_id = $2`，
-   数据来自 Redis，**在请求完成时**才 flush；而
-   `domains/streaming/handler.go:2134` 的注释写明「FlushToPG 可能早于 telemetry
-   worker 写入 request_logs」并为此加了退避重试——**两者存在已知竞态**。
-
-⇒ 所以「让镜像写入」这个工作的**实际范围不在 `internal/sessionv2mirror` 侧**：
-写方已就位，缺的是①给 `telemetry.RequestLogEntry` 加字段、②把 Redis 里的 trace
-载荷接到该字段上。这是**热写路径 + 请求收尾时序**的改动。
-
-成本我量了（供拍板用）：v1 近 7 天 `trace_events` 共 **392 MB**，
-平均 1,981 字节 / 行，最大 5,583 字节。放大倍数不是问题——
-近 7 天 `session_turns` 202,822 行 / 202,822 个 distinct `request_id`
-（**1 turn ≈ 1 request**），194,369 个 session 平均 1.043 轮。
-⇒ 逐轮复制在这份数据上**近似 1:1，不放大**。
-
-**本节没有动写路径**，理由见 §9.42.7。
-
-### §9.42.6 `client_ip`：§9.27.2 的裁决**建立在一个没有分辨力的测量上**
-
-§9.31 遗留第 2 条要在「有人顺手把 740 的 client_ip 补上」之前定处置。
-动手前我先复核那条裁决的证据（§9.27.2：「真库按 request_id 配对 202,014 行实测：
-session 侧 `client_ip` 与 `client_forwarded_for` 相同 **202,014/202,014**、不同 0」）。
-
-我按同样的方法重测，得到**同样的 100%**，然后去看了这些值是什么：
-
-```
-cff(client_forwarded_for) 全历史 distinct = 6 个取值：
-  127.0.0.1 (334,610) / 172.17.0.1 (59,542) / 172.18.0.1 (9,468)
-  172.29.0.1 (140) / ::1 (66) / 172.21.0.1 (35)
-client_ip 的 distinct 取值集合与之**完全相同**（inet 形态，带 /32 或 /128）
-多跳链路（cff 含逗号）行数：**0**
-```
-
-**全库没有一个真实客户端 IP，也没有一条多跳 XFF 链路。** 六个取值全是本机回环
-与 Docker 网桥地址。
-
-⇒ **「两列 100% 相同」在这份数据上零分辨力**：当 `client_ip` 存的是**正确的**对端
-IP 时，它也必然等于 `client_forwarded_for`——因为在这台机器上，对端**就是**那个
-代理/回环。§9.27.2 的测量为真，但**它不能区分**「client_ip 是错名副本」与
-「client_ip 恰好等于链路首跳」这两种互斥解释。
-
-而且代码给出了第三种、且更简单的解释：`middleware/origin_mw.go:499-501`
-
-```go
-// If a single value came from X-Real-IP but no XFF chain is
-// available, persist the single value as the chain too so the
-// (single, chain) tuple is never (a, "").
-if chain == "" && single != "" { chain = single }
-```
-
-⇒ **在没有 XFF 头时，中间件主动把 chain 设成 single**，于是两列**必然**相等。
-本机 0 条多跳链路 ⇒ 观测到的 100% 由这条兜底完全解释，
-**不需要**「client_ip 是错名副本」这个假设。
-
-⇒ **`verdictDifferentThing` 这条裁决目前没有支撑它的证据**，而它是承重的：
-migration 740 让视图 `client_ip` 由 v1 侧 lateral 供真源 inet、session 臂保持
-NULL 补位，正是按「两者不是同一个东西」设计的。
-**在拿到有真实代理链路的数据（252 / 154）之前，「改名 / 补真源 / 删列」三个选项
-都无法负责任地选**——按现有证据选任何一个，都是在给一个零分辨力的测量投票。
-
-**本节没有动 `client_ip`**，也没有改那条裁决。把它降级为「待生产数据复测」
-比替它换一个同样无支撑的结论更有用。
-
-### §9.42.7 `raw_model_name`：与 `trace_events` **同一个根因**
-
-§9.31 遗留第 4 条要求「先定义字段来源」。本轮的结论是：**它与 §9.42.5 是同一件事**，
-不是两个独立工作项。
-
-- 两者都缺在 `telemetry.RequestLogEntry` 上（`s1a_fields.go:7` 把
-  `TraceEvents` / `SearchText` / `RequestChecksum` / `RawModelName` 列为同一组缺源字段，
-  `:81` 与 `:84` 分别是 RawModelName 与 TraceEvents 的两行注释）。
-- 两者都因为「值恒空」而在**四张表**里非空为 0（§9.30.2 实测）。
-- 两者都因此**不能投影**、都被 S2 视图 NULL 补位。
-
-字段来源的定义（承接 §9.30.2，此处只把它钉成一句可施工的话）：
-
-> `raw_model_name` = **绑定解析出的上游原始模型名**，即
-> `COALESCE(rl.outbound_model, rl.client_model)` 那一侧的值（§9.30.2 的比对口径）。
-> **不是** `session_turns.model`——后者等于 `client_model`（§9.12.1 实测 1138/1138），
-> 在发生模型映射的绑定上会系统性误判（`glm-5.2 → glm-5-2-260617`）。
-> 写路径上它是**已经算出来**的那个值（路由候选解析的结果），
-> 不是从落库的 model 列反推的——**这就是「近似实现比不修更危险」的具体理由**：
-> 用 `model` 顶替会造出一个持续产出看似合理结论的假信号。
-
-⇒ **合并建议**：把 `trace_events` 与 `raw_model_name` 作为**同一个写路径工作项**排期，
-一次给 `RequestLogEntry` 补字段、一次接线，而不是分两轮各改一遍热写入路径。
-回填范围仍是切换时刻的 36h lookback 窗口（§9.30.2），不是全量历史。
-
-### §9.42.8 本节没有做的
-
-- **没有动镜像/写路径**（`trace_events` 与 `raw_model_name`）。理由：真实范围是
-  「给 `telemetry.RequestLogEntry` 加字段 + 接 Redis 载荷」，属**热写路径 + 请求
-  收尾时序**变更，且 §9.28 已立下「需拍板的范围变更不擅自做」的先例。
-- **没有改 `client_ip` 的裁决**，也没有执行改名/补源/删列。见 §9.42.6。
-- **没有把 compression-bench 改指 canonical 视图**。挡路的是 bodies 腿（§9.42.3），
-  不是 `id`；在 bodies 腿有结论之前改指只会把一个「跑不起来」的工具换成
-  「跑得起来但测的是另一种东西」的工具。
-- **没有**给 `trace_events` 的 0 覆盖率补新门：815 的
-  `TestMigration815ExcludesTraceEventsAndID` 已经在守「不投影」，
-  而「什么时候可以投影」的前置条件是**写方有值**，那只能由真库门守，
-  空库上是绿而无证据（§9.34）。
-
----
-
 ## §9.44 会话族分支第一次被执行，以及一个此前无人测量的失效形态
 
 > 本节的两个标题都不是修辞：
@@ -5914,3 +5679,366 @@ req-b2: reward_source differs: v1="session" session="request"
 - **没有**把这两道新集成测试接进 CI。它们是 `//go:build integration` 的
   testcontainers 测试，接进 CI 会在一次性空库上退化（§9.34：绿而无证据）。
   `go test -tags=integration ./bg/` 是它们的正确运行方式。
+
+---
+
+## §9.45 §9.31 遗留四条的执行轮：一条做完、一条证伪两条前提、两条卡在同一个根因上
+
+本轮执行 §9.31 遗留清单里的 1/2/3/4（`raw_model_name` 端口）。结论一句话：
+**只有第 1 条是可执行代码工作，做完了；另外三条的根因不在它们各自指向的地方。**
+
+### §9.45.1 `cmd/compression-bench` 的 `id`：做完，但撞上一个更硬的东西
+
+§9.29.5 读面判据第 2 条要求「1 个真补位读方改读法」。这一条是全部 106 个读方里
+**唯一一个经限定符归属判定后仍成立**的（§9.29.4），所以它必须先落地。
+
+`id` 的处置：**删掉，不回查**。理由是它在本工具里只当行标识用
+（`requestLogRow.ID` → `benchResult.RowID` → 结果表 `row_id`），**不参与任何压缩比
+判定**，而 `request_id` 本来就已在结果里、且两族都有同名列。
+
+改动：`cmd/compression-bench/main.go` —— SELECT 去掉 `id`、scan 去掉 `&r.ID`、
+`benchResult` 去掉 `RowID`、结果表 DDL 与 CopyFrom 列清单去掉 `row_id`。
+`row_id` 在 DDL 里一并去掉而不是留成 NULL 死列；已存在的表走 `CREATE TABLE IF NOT EXISTS`，
+旧表保留该列且不再写入，不构成迁移。
+
+### §9.45.2 顺手撞见的真 bug：这个工具**今天根本跑不起来**
+
+改 `id` 之前我先在真库上跑了它那条查询，想确认 `id` 是不是唯一障碍。它不是：
+
+```
+ERROR:  column "request_body" does not exist
+LINE 5:  COALESCE(outbound_body::text, request_body::text, '{}') AS body ...
+```
+
+真库 `request_logs` **没有 `request_body` 这一列**。`information_schema` 逐列核对
+（`request_logs`）：`id` / `request_id` / `tenant_id` / `gw_session_id` /
+`outbound_body` / `outbound_token_est` / `outbound_msg_count` /
+`compression_strategy` / `ts` 全部存在，**只有 `request_body` 不存在**。
+
+它搬到哪儿去了：`request_logs_bodies` 腿（`\d request_logs_bodies` 三列
+`request_body` / `outbound_body` / `response_body`，主键 `(request_id, ts)`）。
+这与 §9.28 的 bodies 腿是同一件事，但 §9.28 讲的是「10 个读点不能无损改指」，
+**没有发现这个工具的查询是硬报错的**——因为它是一条没人跑过的离线 CLI 查询。
+
+⇒ 修法：正文改从 `request_logs_bodies` 腿 join 上来，联键用主键
+`(request_id, ts)`。真库验证（近 2 天、October 分区、限 500）：
+**500/500 全部联上**，正文 87–176 字节。
+
+顺带**去掉了 `request_body` 兜底而不是改指它**：那是**入站完整载荷**，
+而本工具量的是**出站压缩比**（`BytesBefore` 直接取 `OutboundBody` 长度）。
+拿入站正文顶替出站正文，会让每个比值都是两种东西的字节数相除——数字照样出得来，
+结论是假的。宁可少一批样本。
+
+**端到端证据**（真库实跑，非仅编译通过）：
+
+```
+DATABASE_URL=… go run ./cmd/compression-bench --days 2 --max-samples 5 \
+  --test-mode mechanical --skip-llm-summary
+--- Strategy Distribution ---  noop 5 (100.0%)
+=== Summary === loaded rows → 正常输出聚合
+```
+
+（`noop` 100% 是数据形状而非缺陷：近 2 天的行都是 87–176 字节的探针流量，
+远低于任何压缩触发阈值。）
+
+### §9.45.3 但「改指视图」这条路**并没有因此打通**——挡路的是 bodies 腿
+
+把 `id` 去掉只是解除了**一个**障碍。剩下的那个更大，而且它不是我能顺手解的：
+
+| 事实 | 真库实测 |
+|---|---|
+| canonical 视图**没有** `outbound_body` 列 | `information_schema` 查 `request_logs_with_current_month` = false |
+| v1 `request_logs_bodies.outbound_body` 与 `session_bodies.outbound_body` 在同 `request_id` 上**从不相等** | 配对 20,000 行：内容相同 **0**、**长度**都相同 **0** |
+
+⇒ 正文这条腿在两族之间**不可移植**，不是「换个表名」能解决的。§9.28 已经量过
+`request_body` 那一侧（session 只有 message 数组、无 `max_tokens`/`stream`），
+本节补上 `outbound_body` 那一侧：**连长度都对不上**，所以 §9.28 的结论
+「10 个 bodies 腿读点不能无损改指」对本工具同样成立。
+
+⇒ **S4 读面判据第 2 条的措辞需要更正**：它写的是「1 个真补位读方改视图读法」，
+但实测是「去掉 `id` 之后，这个读方仍被 bodies 腿挡住，**改不成**视图读法」。
+补位阻塞已解除，**bodies 腿阻塞未解除**，两者是不同的工程量。
+
+### §9.45.4 门：登记表清空，并加一道「必须保持空」的门
+
+`admin/v1_direct_padded_column_reader_test.go`：
+
+- 删掉唯一一条登记（`cmd/compression-bench/main.go` / `id`）。**不改成豁免**——
+  本门的设计是「失效即报红」，改成豁免会让登记表退化成永不更新的占位。
+  实测它确实先红了一次再被我改绿，红的理由正是「该位置不再触发本门」。
+- 新增 `TestNoVPaddedColumnReaderRemains`：断言登记表**必须为空**。
+  理由是 §9.32.3 那条纪律——本项目最贵的两个决定都是**不做**，
+  而「不做」没有任何编译期信号。空表本身没人看得见，
+  「它必须保持空」这件事需要有人守。断言的是计数为零而不是逐个点名文件：
+  逐个点名会在有人新增第 2 个读方时给出误导性的通过。
+
+绿：`v1 直读 + 读补位列的读方：0 个（其中已登记 0，未登记 0）`。
+
+**变异 2/2，均为断言命中（非崩溃），且两处行号不同**：
+
+| 变异 | 命中 |
+|---|---|
+| M1 把 `rl.id` 注回 compression-bench 的 SELECT | `v1_direct_padded_column_reader_test.go:157`「新增了…读补位列 id 的读方」 |
+| M2 往登记表塞回一条 compression-bench 条目 | `:109`「登记表有 1 条登记，但应为空」+ `:217`「登记已失效」 |
+
+（按 §9.38 的 M-C 纪律逐条串行：每次注入前先 grep 标记确认**恰好 1 处**，
+还原后确认归零再注入下一处。）
+
+### §9.45.5 `trace_events`：覆盖率量到了，而「镜像从不写它」这句话是**错的**
+
+§9.31 遗留第 1 条与 815 的做法一样，先量覆盖率。真库（2026-10-02 17:5x 快照）：
+
+| 窗口 | v1 `request_logs` 非空 | session（hot ∪ 父表）非空 |
+|---|---|---|
+| 近 1 天 | 36.11%（1,595 / 4,417） | **0** |
+| 近 7 天 | 35.95%（207,579 / 577,421） | **0** |
+| 近 30 天 | 33.30%（720,630 / 2,163,770） | **0** |
+
+配对（7 天内 v1 有值的行限 50,000）：能在 session 侧按 `request_id` 找到
+**45,197** 行，其中 session 侧有值的 **0** 行，`both_differ` **0**
+——但这个 0 是**空集上的 0**，不构成「两侧一致」的证据。**投影它就是净数据损失**，
+§9.22 / 815 据此不投影的结论**成立且被本轮重新确认**。
+
+**但根因与文档里写的不一样。** 代码注释（`db/request_logs_view_schema.go:606`、
+`internal/sessionv2mirror/s1a_fields.go:84`）说的是「镜像从不写它」。逐行读下来，
+这句话**不准确**，真实链路是三段：
+
+1. **会话写方一直在写这一列。** `domains/session/v2/turn_writer.go:369` 的 INSERT
+   列清单里有 `trace_events`，`:433` 写 `nilIfEmptyJSON(rec.TraceEvents)`。
+   ⇒ 不是「不写」，是**恒写 NULL**（`nilIfEmptyJSON` 把空值转成 SQL NULL）。
+2. **镜像的源结构体没有这个字段。**
+   `internal/sessionv2mirror/s1a_fields.go:24` 的签名是
+   `applyStorageS1AFields(req *v2.ProcessedRequest, entry *telemetry.RequestLogEntry)`，
+   `:84` 明写「req.TraceEvents：RequestLogEntry 无此字段，保持零值」。
+   `telemetry.RequestLogEntry` 缺 `TraceEvents` / `SearchText` / `RequestChecksum` /
+   `RawModelName` 四个字段（包注释 `:7` 有列）。
+3. **v1 的值由另一条更晚的路径产生。** `internal/trace/trace.go:497`
+   `UPDATE request_logs_hot SET trace_events = $1::jsonb WHERE request_id = $2`，
+   数据来自 Redis，**在请求完成时**才 flush；而
+   `domains/streaming/handler.go:2134` 的注释写明「FlushToPG 可能早于 telemetry
+   worker 写入 request_logs」并为此加了退避重试——**两者存在已知竞态**。
+
+⇒ 所以「让镜像写入」这个工作的**实际范围不在 `internal/sessionv2mirror` 侧**：
+写方已就位，缺的是①给 `telemetry.RequestLogEntry` 加字段、②把 Redis 里的 trace
+载荷接到该字段上。这是**热写路径 + 请求收尾时序**的改动。
+
+成本我量了（供拍板用）：v1 近 7 天 `trace_events` 共 **392 MB**，
+平均 1,981 字节 / 行，最大 5,583 字节。放大倍数不是问题——
+近 7 天 `session_turns` 202,822 行 / 202,822 个 distinct `request_id`
+（**1 turn ≈ 1 request**），194,369 个 session 平均 1.043 轮。
+⇒ 逐轮复制在这份数据上**近似 1:1，不放大**。
+
+**本节没有动写路径**，理由见 §9.45.7。
+
+### §9.45.6 `client_ip`：§9.27.2 的裁决**建立在一个没有分辨力的测量上**
+
+§9.31 遗留第 2 条要在「有人顺手把 740 的 client_ip 补上」之前定处置。
+动手前我先复核那条裁决的证据（§9.27.2：「真库按 request_id 配对 202,014 行实测：
+session 侧 `client_ip` 与 `client_forwarded_for` 相同 **202,014/202,014**、不同 0」）。
+
+我按同样的方法重测，得到**同样的 100%**，然后去看了这些值是什么：
+
+```
+cff(client_forwarded_for) 全历史 distinct = 6 个取值：
+  127.0.0.1 (334,610) / 172.17.0.1 (59,542) / 172.18.0.1 (9,468)
+  172.29.0.1 (140) / ::1 (66) / 172.21.0.1 (35)
+client_ip 的 distinct 取值集合与之**完全相同**（inet 形态，带 /32 或 /128）
+多跳链路（cff 含逗号）行数：**0**
+```
+
+**全库没有一个真实客户端 IP，也没有一条多跳 XFF 链路。** 六个取值全是本机回环
+与 Docker 网桥地址。
+
+⇒ **「两列 100% 相同」在这份数据上零分辨力**：当 `client_ip` 存的是**正确的**对端
+IP 时，它也必然等于 `client_forwarded_for`——因为在这台机器上，对端**就是**那个
+代理/回环。§9.27.2 的测量为真，但**它不能区分**「client_ip 是错名副本」与
+「client_ip 恰好等于链路首跳」这两种互斥解释。
+
+而且代码给出了第三种、且更简单的解释：`middleware/origin_mw.go:499-501`
+
+```go
+// If a single value came from X-Real-IP but no XFF chain is
+// available, persist the single value as the chain too so the
+// (single, chain) tuple is never (a, "").
+if chain == "" && single != "" { chain = single }
+```
+
+⇒ **在没有 XFF 头时，中间件主动把 chain 设成 single**，于是两列**必然**相等。
+本机 0 条多跳链路 ⇒ 观测到的 100% 由这条兜底完全解释，
+**不需要**「client_ip 是错名副本」这个假设。
+
+⇒ **`verdictDifferentThing` 这条裁决目前没有支撑它的证据**，而它是承重的：
+migration 740 让视图 `client_ip` 由 v1 侧 lateral 供真源 inet、session 臂保持
+NULL 补位，正是按「两者不是同一个东西」设计的。
+**在拿到有真实代理链路的数据（252 / 154）之前，「改名 / 补真源 / 删列」三个选项
+都无法负责任地选**——按现有证据选任何一个，都是在给一个零分辨力的测量投票。
+
+#### §9.45.6.1 252 生产库复测（用户拍板「去 252 复测后再定」）⇒ 裁决被推翻
+
+经 `env-injector inject aliyun-edge-252` + SSH 只读查询 `pg-252-pg17`。**近 7 天**：
+
+| 量 | 本机 | **252 生产** |
+|---|---:|---:|
+| `client_forwarded_for` distinct 取值 | **6** | **181** |
+| 多跳链路（含逗号）行数 | **0** | **138** |
+| session 侧有值行 | 172,305 | 17,586 |
+
+**分链路形态拆开看**（这是决定性的一刀）：
+
+| 形态 | 行数 | `client_ip == client_forwarded_for` | `== cff 首跳` |
+|---|---:|---:|---:|
+| 单跳 | 14,236 | **14,236（100%）** | 14,236 |
+| **多跳** | **3,350** | **0** | **0** |
+
+多跳样本：
+
+```
+client_ip = 172.64.217.81   cff = 2a06:98c0:3600::103, 172.64.217.81
+client_ip = 104.23.251.28   cff = 2a06:98c0:3600::103, 104.23.251.28
+```
+
+⇒ `client_ip` 是链路的**末跳**（Cloudflare 侧 `X-Real-IP` 解析出的真实客户端），
+不是首跳、**更不是转发头副本**。19.1% 的行两列不等，正是「两个列存着两个事实」
+的正确表现。本机那 100% 是**回环数据**的假象。
+
+**两族同义性直接配对**（同 `request_id`）：826 行，
+`session_turns.client_ip == host(request_logs.client_ip)` **826/826、差异 0**。
+**可投影性**：近 30 天 18,870 行全部匹配 IP 形态，`client_ip::inet` **全部转换成功**
+⇒ 投影进 inet 型视图列无类型风险。
+
+⇒ **改判 `verdictDifferentThing` → `verdictSameThingNoSource`**
+（`db/request_logs_view_padded_columns.go`）。新裁决的含义是
+「session 侧有语义相同的列、只是尚未投影」，正解是走 815 式投影补齐。
+
+⇒ **底表的三个选项（改名 / 补真源 / 删列）全部不成立**——这一列存的就是真源对端 IP，
+它是正确的。**要做的恰恰是相反方向：把它投影进视图 session 臂**（815 形状，本轮未做）。
+
+> **方法学**：这一节的教训与 §9.42.3 那条同源——**一次测量能不能区分两个互斥解释，
+> 决定了它算不算证据**。本机的 202,014/202,014 是**真的**，但它测的是
+> `127.0.0.1` 对 `127.0.0.1`。凡是要用「逐行相同」下结论的，
+> 必须同时报出**该列有几种不同取值**与**是否存在多行形态**；
+> 只有一个取值的列，任何两列都会 100% 相同。
+
+> 顺带修掉两处会替旧结论背书的文案：
+> ① `db/request_logs_view_padded_columns_test.go` 的非空转门原文写着
+> 「id 与 client_ip 是本项目**仅有的两个**同名不同物」——后半句已作废，改写；
+> ② `admin/request_logs_stop_write_classification_test.go` 里
+> `internal/collector/gateway_adapters.go` 那条 Note 复述了「错名副本」，
+> 但它的**降级结论不受影响**（锚在「未投影」上而不是「为什么没投影」），已就地订正。
+
+### §9.45.7 `raw_model_name`：**「缺源字段」这个根因本身是错的**
+
+§9.31 遗留第 4 条要求「先定义字段来源」。本节先照 §9.45.5 的写法去看根因，
+结果发现**根因描述与事实不符**，而错误的方向是**把成本高估了一个量级**。
+
+`s1a_fields.go` 的包注释（`:7`）写着：「数据源事实（2026-09-14 审计）：
+RequestLogEntry 缺 TraceEvents / SearchText / RequestChecksum / RawModelName」，
+`:81` 写着「req.RawModelName：RequestLogEntry 无此字段，保持零值」。
+
+**逐字核对 `telemetry.RequestLogEntry`（`client.go:253`）后，这句话是假的**：
+
+```go
+ClientModel   *string `json:"client_model,omitempty"`     // :274
+OutboundModel *string `json:"outbound_model,omitempty"`   // :275
+```
+
+两个字段**都在**，而且是上游/入站模型名这一对。`outbound_model` 是绑定解析后
+**实际发往上游**的模型名，`client_model` 是入站请求里的名字。
+
+⇒ 真实根因不是「源结构体没有这个字段」，而是**接线漏了**：值一直流过
+`RequestLogEntry`，只是 `applyStorageS1AFields` 没把它落到 `req.RawModelName`。
+
+⇒ **§9.30.2 的整段成本估算要打折**。它写「端口的真正前置是**新增一个有正确来源
+的字段**」，并据此把这条从「补齐已有列」升级成一个需拍板的热写入路径变更。
+实际上它是**纯搬运**：源字段已存在、写方已就位（`turn_writer.go:369/433` 早就在写
+`raw_model_name` 这一列），只差一行映射。**「四张表全空」是真的，但它的成因
+是漏接线，不是缺事实。**
+
+这与 §9.45.5 的 `trace_events` **不同**——后者确实要动热写入路径与收尾时序
+（v1 的值在请求收尾后才从 Redis flush）。本节把两者混为一谈，是 §9.45.5 结尾那句
+「合并成一个工作项」的**反面**：它们共享「值恒空」这个**症状**，不共享根因与成本。
+
+字段来源的定义（承接 §9.30.2，此处钉成一句可施工的话，且已施工）：
+
+> `raw_model_name` = **绑定解析出的上游原始模型名** = `COALESCE(outbound_model, client_model)`。
+> **不是** `session_turns.model`——后者等于 `client_model`（§9.12.1 实测 1138/1138），
+> 在发生模型映射的绑定上会系统性误判。写路径上它是**已经算出来**的那个值
+> （路由候选解析的结果），不是从落库的 model 列反推的——**这就是「近似实现比不修
+> 更危险」的具体理由**：用 `model` 顶替会造出一个持续产出看似合理结论的假信号。
+
+### §9.45.8 `raw_model_name` 接线：落地 + 门 + 变异
+
+用户 2026-10-02 拍板「只做 raw_model_name，trace_events 延后」。改动一行：
+
+```go
+// internal/sessionv2mirror/s1a_fields.go
+req.RawModelName = firstNonEmpty(strVal(entry.OutboundModel), strVal(entry.ClientModel))
+```
+
+**为什么必须 COALESCE 而不是只用 outbound_model**：252 近 7 天
+`outbound_model` 有 **4,903/29,201 = 16.8%** 为 NULL。此时回落 client_model 才能让
+这一列在两族之间**保持同义**；留空会把「同义」变成「一半缺值」，那才是真的不可比。
+
+**为什么这不是「用近似值凑数」**：252 实测两列**确实不同**的行有
+**3,227/29,201 = 11.0%**，且差异是真实映射而非噪声：
+
+```
+client_model  | outbound_model
+minimax-m3    | MiniMax-M3
+glm-5.3       | glm-5.3-flash
+```
+
+即大小写规范化 + 别名映射。取 `client_model` 去比
+`provider_models.raw_model_name`，会在**这 11% 的行**上让
+`credential_recovery` 的下架判定系统性误判——这正是 §9.30.2 警告的那个失败形态。
+另外 252 上 v1 `request_logs.raw_model_name` 仍为 **0** 非空，与本机一致。
+
+**门**：新增 `internal/sessionv2mirror/s1a_raw_model_name_test.go`，
+**行为断言**而非源码扫描——构造 entry、跑 `applyStorageS1AFields`、断言落到的值。
+6 个用例覆盖：两值不同取上游 / outbound 为 nil 回落 / outbound 为**空串**也回落 /
+两个都空留空 / 只有 outbound / **否定式**「不许拿 canonical_model 顶替」。
+
+> 选行为门而不是源码扫描门的理由：这道门要守的失败形态是**一次接线漏失**，
+> 而上一版注释正是用一句关于**源结构体**的话把接线缺陷伪装成结构性事实。
+> 源码扫描型门在「文件里有没有这个词」上假阳性率高；
+> 这里断言的是「给一个两值不同的 entry，落到 `RawModelName` 上的是哪一个」——
+> **这正是这段接线的全部语义**，且天然对「顺序反了」「退回零值」两种变异敏感。
+
+**变异 2/2，均为断言命中（非崩溃），行号不同**：
+
+| 变异 | 命中 |
+|---|---|
+| M1 把优先级反过来（先 ClientModel） | `s1a_raw_model_name_test.go:88` `RawModelName = "minimax-m3", want "MiniMax-M3"` |
+| M2 退回接线前状态（恒零值） | `:88` × 4 条 + `:110` setup 卫语句 |
+
+**未做**：本轮**没有**把 `raw_model_name` 投影进视图（它仍是 NULL 补位列），
+也没有历史回填。投影的前置是「写方有值」——现在刚成立，需要一个观察窗口确认
+新写入的行确实带值之后再动迁移。
+
+### §9.45.9 本节没有做的
+
+- **`trace_events` 的写路径**（用户拍板延后）。理由见 §9.45.5：真实范围是
+  「给 `telemetry.RequestLogEntry` 加字段 + 接 Redis 载荷」，属**热写路径 + 请求
+  收尾时序**变更；而镜像只处理**终态 entry**（`hook.go` 的 in-progress 过滤），
+  请求处理中只能拿到**部分** trace，与 v1 的「最终 trace」语义不同，
+  需要单独设计收尾后回写。
+- **没有把 `client_ip` 投影进视图**。裁决已改判为「同义、待投影」（§9.45.6.1），
+  但投影是 815 形状的迁移改动，本轮只做裁决更正版。
+- **没有把 `raw_model_name` 投影进视图**，也没有回填。见 §9.45.8 末。
+- **没有把 compression-bench 改指 canonical 视图**。挡路的是 bodies 腿（§9.45.3），
+  不是 `id`；在 bodies 腿有结论之前改指只会把一个「跑不起来」的工具换成
+  「跑得起来但测的是另一种东西」的工具。
+- **没有**给 `trace_events` 的 0 覆盖率补新门：815 的
+  `TestMigration815ExcludesTraceEventsAndID` 已经在守「不投影」，
+  而「什么时候可以投影」的前置条件是**写方有值**，那只能由真库门守，
+  空库上是绿而无证据（§9.34）。
+
+### §9.45.10 遗留（下一轮）
+
+1. **`client_ip` / `raw_model_name` 两个投影**（815 形状的新迁移）。两列的裁决都
+   已经是「同义、待投影」，前置只差写方有值的观察窗口。
+2. **`trace_events` 写路径**（用户已拍板延后）。需先定「写最终 trace」还是
+   「写部分 trace」。
+3. **bodies 腿的不可移植性**（§9.45.3）：两族 `outbound_body` 配对 20,000 行
+   内容相同 0、长度相同 0 ⇒ 10 个 bodies 腿读点的改指需要先决定正文来源。
+4. **本机库不适合做「逐行相同」类裁决**。凡此类结论必须标注是否在 252/154 复测过。
