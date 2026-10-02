@@ -166,14 +166,16 @@ retention 型索引上工作得很好（所以 10-02 那天它是够用的）；
 
 | # | 场景 | 期望 | 实测 |
 |---|---|---|---|
-| V1 | 地面真值：已重建样本（密度 90.05） | 判 `ok` | ✅ `ok headroom≈0MB` |
-| V2 | 地面真值：未重建样本（密度 9.27 / 33.94） | 判 `CANDIDATE` | ✅ 4/4 全部命中 |
+| V1 | 地面真值：已重建样本（密度 92.52） | 判 `ok` | ✅ `ok headroom≈0MB` |
+| V2 | 地面真值：churn 型样本（密度 33.94 / 9.27） | 判 `CANDIDATE` | ✅ 全部命中 |
 | V3 | 目标库无 `pgstattuple` 扩展 | `exit 2` + 指名原因 | ✅ `exit 2`，诊断含 `function pgstatindex(unknown) does not exist` |
 | V4 | 候选集查询失败 | `exit 2`，不得当成 0 个索引 | ✅ 显式 ERROR 分支 |
-| V5 | 生产只读巡检 | 出报告，不改数据 | ✅ 见 §6 |
+| V5 | 生产只读巡检 | 出报告，不改数据 | ✅ 44 索引全测成 `unmeasured=0` |
+| V6 | 首批 `--fix` 后复测 4 个索引 | 已修的回落、未修的仍命中 | ✅ 3/4 回落；`ursm_pkey` 仍高 → 触发 §6c 的第三次推翻 |
 
 V1/V2 用的是同一份数据造出的两个索引，只让「是否 REINDEX 过」这一个变量不同。
-夹具固化为 `scripts/252-monitor/pg17-index-bloat-selftest.sql`，可复现。
+夹具固化为 `scripts/252-monitor/pg17-index-bloat-selftest.sql`，可复现
+（须在 `DELETE` 后显式 `VACUUM`，理由见 §6c）。
 
 ## 6. 生产巡检结果
 
@@ -312,6 +314,78 @@ REINDEX 只能合并相邻键范围的页，**不能重排行序**，所以回�
 
 ⇒ REINDEX 无副作用。**教训**：这台机器上「哪台 host 提供什么」的地址我记错过一次，
 凡涉及跨机结论必须先查仓库里的既有文档，不凭记忆。
+
+## 6c. 判据的第三次推翻：`avg_leaf_density` 的语义被我读错了
+
+复测「刚 REINDEX 完的 4 个」时发现异常：
+
+| 索引 | 重建前 headroom | 重建后 headroom | 密度变化 |
+|---|---|---|---|
+| `rst_pkey` | 76 MB | 1.7 MB | 90.08 → 90.06 |
+| `rst_created` | 75 MB | 1.7 MB | 90.08 → 90.06 |
+| `route_idem` | 91 MB | 13.2 MB | 58.20 → 90.54 |
+| `ursm_pkey` | 132 MB | **115 MB** | 89.14 → 90.20 |
+
+前三个正确回落（判据无假阳性）。但 `ursm_pkey` 重建后仍报 115 MB——按当前逻辑它会
+**永远留在候选名单里**，每个周日被重复选中、每次只回收一点。
+
+我据此加了一个「密度 ≥ 88 视为已达重建上限」的豁免分支（理由：REINDEX 只能合并相邻
+键范围的页、不能重排行序，1987 万行索引重建后 ~90% 就是可达密度）。**这个分支已撤除。**
+
+### 撤除的理由：密度不是「存活元组占比」
+
+为构造地面真值而重跑夹具时，密度两次给出不同结果（33.94 vs 92.26），同样的表结构、
+同样的操作。第一次归因于「autovacuum 替 REINDEX 干了活」——**这个解释也是错的**：
+
+| 变体 | leaf_pages | avg_leaf_density |
+|---|---|---|
+| `av_on`（autovacuum 默认开） | 341 | **33.94** |
+| `floor_sparse`（`autovacuum_enabled=false`） | 341 | **92.26** |
+
+关掉 autovacuum 反而让密度变高，与「autovacuum 回收死页」正好相反。
+
+决定性实验——对同一索引跑一次 `VACUUM`，其他什么都不动：
+
+```
+before VACUUM   deleted_pages=0  leaf_pages=341  avg_leaf_density=92.26
+     (VACUUM)
+after  VACUUM   deleted_pages=0  leaf_pages=341  avg_leaf_density=33.94
+```
+
+⇒ **`pgstatindex.avg_leaf_density` 度量的是页内已用字节占比。死元组的行指针在被
+vacuum 之前一直占位、计为「已用」。** 我把「页内占位」误读成了「页排得满」。
+
+这个误读直接污染了两个结论：
+
+1. 「重建后密度 90.20% ⇒ 已达可达密度」——不成立，那个 90.20% 可能只是没被 vacuum 过。
+2. 由此设的 `REBUILD_FLOOR_DENSITY=88` 阈值没有依据，连带 `at_rebuild_floor` 计数
+   与 `floor-selftest.sql` 夹具一并撤除/删除。
+
+**正面用途不变**：`avg_leaf_density` 确实能区分 churn 型膨胀（33.94 vs 重建后 92.52），
+前提是样本/索引已被 vacuum 过。生产库由 autovacuum 常态维护，该前提成立。
+
+### 夹具的连带修正
+
+`pg17-index-bloat-selftest.sql` 原本在 `DELETE` 之前 VACUUM、之后不 VACUUM，
+因此密度依赖运气、两次跑可能不同。已在 `DELETE` 之后补 `VACUUM (ANALYZE)`，
+并把上述决定性实验写进文件头。修正后连跑稳定复现 33.94 / 92.52。
+
+原本为豁免分支写的 `pg17-index-bloat-floor-selftest.sql` 中，第三个样本
+（想造出「密度高但有全空页」的边界形态）反复三次没造对：
+`WHERE id > 30000` 删高位 90% → `deleted_pages` 仍为 0；`TRUNCATE` 后重插再删 →
+删了个寂寞（`n_live_tup/n_dead_tup = 300000/300000`）。**留一个造不出来的夹具
+比没有更糟**，该文件已删除。
+
+### 这一段的教训
+
+三次推翻里有两次（`deleted_pages` 盲区、密度语义）**都不是读代码看出来的，是被
+「让这个判据证明自己有效」逼出来的**。而在追查过程中我连续给出两个错误解释
+（autovacuum 回收了、autovacuum 开着才会假高），都是**看到结果对不上就立刻找一个
+说得通的机制**，而不是先做隔离变量实验。第三次才做出决定性实验（一行 `VACUUM`），
+一次就把范围锁死。
+
+⇒ 判据类工作里，「结果不稳定」本身是最高价值的信号：它说明量具有隐藏前提，
+而隐藏前提正是最容易写进代码、也最难被发现的东西。
 
 ## 7. 部署状态与待决事项
 
