@@ -110,9 +110,10 @@ for a in "${alerts[@]}"; do
   case "$a" in 🔴*) level=critical; break;; esac
 done
 
-echo "[$(date -Iseconds)] level=$level disk=${used_pct}% avail=${avail_gb}GB db_llm_gateway=${db_size_gb}GB db_total=${db_all_gb}GB req_logs_hot=${req_logs_hot_size}MB mp_hot=${mp_hot_size}MB handoff=${handoff_size}MB columnar_chunk=${columnar_chunk_gb}GB wal=${pg_wal_gb}GB docker_storage=${docker_storage_gb}GB" >> "$LOG"
-echo "[$(date -Iseconds)] top5: $top_tables" >> "$LOG"
-echo "[$(date -Iseconds)] dead_tup_top3: $dead_tup_pct_top" >> "$LOG"
+ts=$(date -Iseconds)
+echo "[$ts] level=$level disk=${used_pct}% avail=${avail_gb}GB db_llm_gateway=${db_size_gb}GB db_total=${db_all_gb}GB req_logs_hot=${req_logs_hot_size}MB mp_hot=${mp_hot_size}MB handoff=${handoff_size}MB columnar_chunk=${columnar_chunk_gb}GB wal=${pg_wal_gb}GB docker_storage=${docker_storage_gb}GB" >> "$LOG"
+echo "[$ts] top5: $top_tables" >> "$LOG"
+echo "[$ts] dead_tup_top3: $dead_tup_pct_top" >> "$LOG"
 
 # === 告警去重（防 10 分钟一次的 IM 噪声）===
 # 规则：
@@ -120,7 +121,7 @@ echo "[$(date -Iseconds)] dead_tup_top3: $dead_tup_pct_top" >> "$LOG"
 #   - 但 alert log 仍每条都写
 #   - critical 默认 1 小时冷却；warning 30 分钟；info 不推送
 if [ "$level" != "ok" ]; then
-  msg="[$(date -Iseconds)] [252] ${level}"
+  msg="[$ts] [252] ${level}"
   for a in "${alerts[@]}"; do msg+=$'\n'"$a"; done
   msg+=$'\n'""
   msg+=$'\n'"disk=${used_pct}% avail=${avail_gb}GB"
@@ -131,7 +132,7 @@ if [ "$level" != "ok" ]; then
   msg+=$'\n'"📊 top5 tables: $top_tables"
   msg+=$'\n'"💀 dead_tup_top3: $dead_tup_pct_top"
 
-  echo "[$(date -Iseconds)] $msg" >> "$ALERT_LOG"
+  echo "[$ts] $msg" >> "$ALERT_LOG"
 
   if [ -x "$NOTIFY" ]; then
     # 默认有 cooldown:critical 1h / warning 30min
@@ -150,7 +151,7 @@ if [ "$level" != "ok" ]; then
 
     push_im=true
     if [ -n "$last_ts" ] && [ $((now_epoch - last_ts)) -lt $((COOLDOWN_MIN * 60)) ]; then
-      echo "[$(date -Iseconds)] cooldown active for $level (last=${last_ts}s ago, cooldown=${COOLDOWN_MIN}m), local log only" >> "$LOG"
+      echo "[$ts] cooldown active for $level (last=${last_ts}s ago, cooldown=${COOLDOWN_MIN}m), local log only" >> "$LOG"
       push_im=false
     fi
 
