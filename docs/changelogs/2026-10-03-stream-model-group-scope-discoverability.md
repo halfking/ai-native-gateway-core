@@ -78,10 +78,37 @@ cd web && npx vue-tsc --noEmit -p tsconfig.json
 
 ## 遗留
 
-- **生产 UI 验收仍未闭合**：筛 `glm-5.3` 后的运行时截图没拿到。
-  单元层已覆盖同一判据（`modelFilter: new Set(['glm-5.3'])` ⇒ 恰好 1 组、
-  名为 `glm-5.3`、不含 `glm-5.3-flash`），但那是 2026-09-29 的回归夹具，
-  不等于当前生产运行时实测。
-- 上述改动**尚未部署到 154**，截图会同时验证部署结果。
-- `document.hidden` 无兜底那条（嵌入式看板永久空白却显示「已连接」）**未开单**，
-  本轮只记录在案。
+- ~~**生产 UI 验收仍未闭合**~~ → **已闭合（2026-10-03 06:19 CST）**。
+  154 已部署 `build_seq 2408 / git_sha 1a213f4c`（含 `809ce78cf`），用
+  headless Chromium（Python Playwright 1.63）驱动生产页面实测，承重判据全中：
+
+  | 判据 | 实测 |
+  |---|---|
+  | 恰好 1 个 glm-5.3 分组 | ✅ 层计数 `1 个模型 / 64`，`分组数 = 1` |
+  | 标题不含 flash 系 | ✅ 唯一分组名 `glm-5.3`（`glm-5.3-flash` 未混入） |
+  | `.qp-scope-miss` 提示行 | ✅ 实渲染：`glm-4.5 有节点，但不在「特色 / 近 3 天热门」范围内（本面板只展示范围内模型），故未列出分组。` |
+  | SSE 连通 | ✅ `● Connected`，无 pageerror |
+
+  - **「必须人工前台标签页」的前提被证伪**：headless Chromium 里
+    `document.hidden === false`，面板 **9 秒**即渲染。内嵌 FilePanel 标签
+    渲染不出来是**该标签 renderer 被冻结**的验收工具限制，与本改动无关
+    （若走 `liveStreamStore.ts:1335` 的 page-hidden 分支，必会打出
+    `:1336` 的 `console.debug`，实测一条没有）。
+  - **`.qp-scope-miss` 的真实触发对象不是 `glm-5.2`**：模型选择器
+    （`mp-dialog`，含全部 15 个「更多…(N)」展开区共 388 项候选）里
+    **没有任何 `glm-5.2` 条目**（glm 系只有 4 / 4.5 系 / 5.1 / 5.3 /
+    5.3-flash）。所以本轮用 `glm-4.5`（可选中、4 个节点、不在 scope）
+    作为触发对象。**若仍按「筛 glm-5.2 看提示行」验收，会因为选不中而误判
+    成「提示行没上线」。**
+- ~~**尚未部署到 154**~~ → **已部署**（`2408-1a213f4c`，
+  线上 `web/assets/` 三处命中 `qp-scope-miss`：JS 类名绑定、中文文案、CSS 规则）。
+- ~~`document.hidden` 无兜底那条**未开单**~~ → **已开单**：
+  `docs/agents/issue-tracker.md` §2 `LIVE-STREAM-HIDDEN`（open）。
+  该单同时订正了「内嵌 Browser 失败即本缺陷证据」的误判。
+- **新发现（未开单，待裁决）**：迁移 `818_ursm_snapshot_typed_columns.sql`
+  在 1965 万行热表上做 DDL，而 252 PG 的 `statement_timeout=30s` 是硬限、
+  `lock_timeout=0` 使**等锁时间计入语句超时**。首次 deploy-154 即被它挡住
+  （`ERROR: canceling statement due to statement timeout`），同形态探针
+  复测秒过 ⇒ 瞬时锁争用而非工时不足，重跑即过。245 部署会撞同一堵墙。
+  本仓既有解法是 `SET LOCAL statement_timeout = '10min'`
+  （`649` / `689` / `813` 同款），本轮未改动迁移文件。

@@ -70,22 +70,21 @@ ticket 关闭状态与当前 active 计划。
      分支不进，但 `missedWhileHidden = false` 仍被执行（`:324` 在 if 之外）⇒
      这一次丢帧窗口被**静默抹掉**，重连永远不会发生。这条比第 1 条更隐蔽：
      它连「等一下变可见就好」这条退路都堵死了。
-- **今天（2026-10-03）内嵌 Browser 的实测，与本单同型但未定位到具体分支**：
-  `https://llm.kxpms.cn/dashboard?tab=stream`（154 / build_seq 2408）：
-  `GET /api/admin/live-stream` 返回 **HTTP 200 + `text/event-stream`**，
-  但客户端**一帧都没处理**、console 里**零条 `[LiveStream]` 输出**
-  （含 `:1336` 那条 `console.debug` 的 page-hidden 分支日志也一条没有），
-  于是 `QueuePerspectivePanel` 的 `hasReportedRawModels` 恒为 false，
-  「按模型分组的可用节点」分区（`QueuePerspectivePanel.vue:1295` 的
-  `v-if` gate）永不渲染。
-  **同端 curl 对照证明后端无辜**：同一 JWT 打同一端点，秒出
-  `event: message` / `data: {"type":"initial_data",...}` 且带真实
-  `glm-5.3` 请求记录。
-  ⇒ 收敛结论：**帧在浏览器侧没进到应用**，与「后端/nginx/鉴权」无关。
-  ⚠️ 诚实标注：本次**没有**复现出 `:1335` 那条 page-hidden 分支的
-  debug 日志，所以**不能**断言本次就是 `document.hidden` 导致的；
-  已知的是同一类症状（连接态与实际处理量脱钩 + 静默）。根因待人工在
-  前台标签页复现后收敛。
+- **今天（2026-10-03）的证据与一次订正**：
+  - **内嵌 Browser 的失败不是本缺陷的证据**。用 headless Chromium（Python
+    Playwright 1.63）驱动同一个 `https://llm.kxpms.cn/dashboard?tab=stream`，
+    实测 `document.hidden === false`、SSE `● Connected`，面板 **9 秒**即渲染，
+    63 个分组、节点卡齐全、无 pageerror。
+    ⇒ 内嵌 FilePanel 标签的现象（HTTP 200 + `text/event-stream` 但客户端零帧
+    处理、零 `[LiveStream]` 日志）**不能**归因到本单的 `document.hidden`
+    丢弃分支：那条分支会打 `console.debug`（`:1336`），而实测一条没有。
+    收敛为：**该标签的 renderer 被冻结/节流，事件未被派发**——属于验收工具
+    的环境限制，不是本单要修的东西。
+  - **原「阻塞验收」的说法作废**。既然 headless Chromium 能跑通，
+    `dashboard?tab=stream` 的生产 UI 验收**不需要人工前台标签页**，本轮
+    已由自动化闭合（见 changelog）。
+  - 剩下的、与本单真正相关的是代码层那三条（丢帧 + 连接态说谎 +
+    `refCount > 0` 守卫把恢复路径堵死），它们仍未修。
 - **不做的事**：不改 SSE 协议、不动「隐藏时不写 state」这个**对真人用户
   合理**的省电设计（`:309-325` 的重连自愈就是为它准备的）。要修的是
   **说谎**的部分：丢帧时连接态必须反映「数据未送达」，以及上面
@@ -96,8 +95,6 @@ ticket 关闭状态与当前 active 计划。
   否则丢帧窗口仍会被抹掉。
 - **关联**：`docs/changelogs/2026-10-03-stream-model-group-scope-discoverability.md`
   §遗留（该轮已记录但**未开单**）；`docs/changelogs/2026-08-19-stream-state-machine.md`。
-- **阻塞的验收**：`dashboard?tab=stream` 的生产 UI 人工验收必须前台标签页
-  才能做（`liveStreamStore.ts:1334`），内嵌 Browser 无法闭合。
 
 ## §3 SP-01..04 期间的 follow-up 风险
 
