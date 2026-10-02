@@ -705,6 +705,9 @@ var supplierErrorsPartitionsHeap813 []byte
 //go:embed embeddata/startup/814_adaptive_probe_targets_hot_subquery.sql
 var adaptiveProbeTargetsHotSubquery814 []byte
 
+//go:embed embeddata/startup/815_request_logs_view_stage_band_cff.sql
+var requestLogsViewStageBandCff815 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -917,6 +920,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/809_instance_release_status_nullable_release_id.sql":                    instanceReleaseStatusNullableReleaseIDMigration809,
 	"startup/813_supplier_errors_partitions_heap.sql":                                supplierErrorsPartitionsHeap813,
 	"startup/814_adaptive_probe_targets_hot_subquery.sql":                            adaptiveProbeTargetsHotSubquery814,
+	"startup/815_request_logs_view_stage_band_cff.sql":                               requestLogsViewStageBandCff815,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

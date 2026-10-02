@@ -632,6 +632,26 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// dependency, not by number. Both are idempotent.
 			"813_supplier_errors_partitions_heap.sql",
 			"814_adaptive_probe_targets_hot_subquery.sql",
+
+			// 815 is wired 2026-10-02. Third instance of the same omission:
+			// the migration file was committed in both trees but never
+			// registered, so TestStartupFilesAreAllEmbedded was red on main and
+			// the fix it carries never ran on a fresh install.
+			//
+			// What it fixes is a live defect, not hygiene: it adds origin_stage
+			// / token_band / client_forwarded_for to the canonical
+			// request_logs_with_current_month view (118-column contract).
+			// admin/compression_stats.go:212 reads token_band from that view and
+			// the column was never in the contract, so every call raised 42703
+			// and the error was swallowed by slog.Warn — that dashboard cell
+			// has been silently empty. 815 also carries a view-chain guard
+			// (skips when the 680-incident wrapper shape is absent) and its
+			// data precondition was measured against a real 1,515,960-row
+			// request_id pairing, not inferred.
+			//
+			// It depends on the view chain only, so it sits after 814 at the
+			// end of the 8xx block.
+			"815_request_logs_view_stage_band_cff.sql",
 		},
 	}
 }
