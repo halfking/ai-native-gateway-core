@@ -439,6 +439,162 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 		BlastRadius: "（dormant：只服务响应）",
 		Note:        "无写入。停写后查不到 → errors_out（可接受失败模式），已在读端轴登记。",
 	},
+	// ── 第四批：2026-10-02 收口，52/52 ────────────────────────────────────
+	//
+	// 这一批的证据**逐条从源码实取**（脚本打印真实匹配行），不用词宽的
+	// `request_logs` 子串——否则「已评估」与「凭印象」就分不开了。
+	"domains/analysis/optimizer.go": {
+		Feeds:    "request_logs 会话级 token/压缩统计 → INSERT INTO session_optimization_suggestions",
+		Live:     true,
+		Gated:    false,
+		Evidence: "COALESCE((SELECT SUM(COALESCE(cache_read_tokens,0)) FROM request_logs WHERE gw_session_id = ss.session_key), 0)",
+		BlastRadius: "`INSERT INTO session_optimization_suggestions`（:232）——优化建议落库，" +
+			"其 detect() 规则（如「存在压缩空间」）决定是否产出建议。",
+		Note: "会话其余统计来自仍在长的 session_summaries，只有这三个子查询直读 v1。" +
+			"⇒ 停写后 cache_read_tokens / compression_strategy / outbound_token_est 恒 0，" +
+			"而 request_count 与成本照常有值 ⇒ **建议照常写入、内容静默失真**。",
+	},
+	"domains/analysis/request_summary.go": {
+		Feeds:    "request_logs 会话内请求 → INSERT INTO session_request_summaries（LLM 阶段）",
+		Live:     true,
+		Gated:    false,
+		Evidence: "FROM request_logs",
+		BlastRadius: "`INSERT INTO session_request_summaries … ON CONFLICT DO UPDATE`（:174）" +
+			"——单请求摘要落库。",
+		Note: "与 optimizer 同形：直读 v1 裸表，session 侧无兜底。",
+	},
+	"domains/sessionsummary/system_prompt_prefix.go": {
+		Feeds:       "bodies 腿取会话首条请求体的 system prompt → 作为总结 LLM 的额外输入 → 写 session_summaries",
+		Live:        true,
+		Gated:       false,
+		Evidence:    "FROM request_logs_with_current_month rl",
+		BlastRadius: "与 summarizer.go 共用同一次 `UPDATE session_summaries` 写入（:812）。",
+		Note: "**bodies 族的具体实例**：JOIN request_logs_bodies_with_current_month，" +
+			"bodies 没有 session 臂 ⇒ 停写后取不到 system prompt，会话摘要**质量**静默下降" +
+			"（摘要照常生成，只是少了原始系统提示词这一路输入）。",
+	},
+	"cmd/gateway/dual_read_validator.go": {
+		Feeds:       "v1 ↔ session 对账 → 发布 S4 门控判定（不写服务状态）",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs_hot",
+		BlastRadius: "（dormant：产出的是判定报告，本身不决定凭据/路由/身份）",
+		Note: "**它就是 S4 那道门本身**。§8.2 已修掉它的真空为绿（s4_ready ⇔ 写入中 ∧ 扫到过 ∧ 无真漏写）。" +
+			"在本轴上它不是「读 v1 决定写」，而是「读两侧做对账」，故判 not_control_plane；" +
+			"它的问题归 validator 轴，不归控制面轴。",
+	},
+	"cmd/gateway/waterfall_by_request.go": {
+		Feeds:       "request_id → waterfall 响应（查不到即 404）",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs_hot",
+		BlastRadius: "（dormant：无写入）",
+		Note:        "失败模式是 errors_out（404），属可接受：灰度立刻暴露。",
+	},
+	"cmd/compression-bench/main.go": {
+		Feeds:       "历史行 → 离线压缩基准样本",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs",
+		BlastRadius: "（dormant：离线 CLI，无写入，不在服务路径）",
+		Note: "样本为空不 Fatal，只打日志 ⇒ 停写后基准结论静默变成「S4 之前」口径。" +
+			"不影响在线面，但会让离线基准失去可比性。",
+	},
+	"cmd/scenario_driver/main.go": {
+		Feeds:       "自造流量后测量 v1/bodies 增量",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "SELECT count(*) FROM request_logs_bodies_hot",
+		BlastRadius: "（dormant：离线工具，无写入）",
+		Note:        "停写后必然测不到（delta=0）→ 硬失败 `Passed=false`，属「工具失效」而非服务退化。",
+	},
+	"cmd/traffic-replay/main.go": {
+		Feeds:       "历史行 → 离线回放样本",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs",
+		BlastRadius: "（dormant：离线 CLI）",
+		Note: "注释里的 request_logs 已被扫描器剔除（§8.5 的 40 条注释规则），" +
+			"此处证据取自 :133 的真实代码行。",
+	},
+	"cmd/tools/backfill_session_bodies/main.go": {
+		Feeds:       "v1 → 回填 session_bodies（离线迁移工具）",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "query from request_logs_bodies_hot",
+		BlastRadius: "（dormant：离线迁移工具，不在服务路径）",
+		Note: "⚠️ 但它本身是 v1→session 的迁移工具：S4 之后**它的输入会随时间消失**，" +
+			"回填窗口是关闭的。这是迁移排期的约束，不是停写期的退化。",
+	},
+	"cmd/tools/validate_sessions_v2/loader.go": {
+		Feeds:       "v1 与 v2 双读 → 校验报告",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs_bodies_hot",
+		BlastRadius: "（dormant：离线校验工具）",
+		Note:        "LoadV1Turns / LoadV2Turns 成对存在，语义上就是 validator 轴。",
+	},
+	"db/db.go": {
+		Feeds:       "启动期 DDL：ensureRoutingAnalyticsColumns 建/改分析视图",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs_hot",
+		BlastRadius: "（dormant：改的是 schema/视图定义，不是服务状态）",
+		Note: "读点位于迁移 SQL 字符串里（:3169/:3187/:5871）。停写不删表，DDL 行为不变。" +
+			"**核实过程的一处自我更正**：我一度以为扫描器把注释当读点，证据是 :77/:181/:224 " +
+			"四处 request_logs 全在注释里；逐行核对后确认那四处确实被剔除，真实读点在 3169 等行，" +
+			"扫描器无缺陷。",
+	},
+	"db/probe_views_unified.go": {
+		Feeds:       "返回 CREATE OR REPLACE VIEW 的 SQL 文本",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs_with_current_month rl",
+		BlastRadius: "（dormant：产出视图定义）",
+		Note:        "视图的 session 臂覆盖情况由读端表的 pg_get_viewdef 门负责，不在本轴。",
+	},
+	"domains/sessionforensics/export.go": {
+		Feeds:       "v1 → 会话取证导出包",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs_with_current_month rl",
+		BlastRadius: "（dormant：导出，不决定服务状态）",
+		Note:        "停写后导出内容只剩停写前的行——这是数据保全问题，已在 §8.6 的 641,452 行议题内。",
+	},
+	"internal/collector/gateway_adapters.go": {
+		Feeds:       "PgTrafficReader.Snapshot → TPS/p50/p99/Top20/in-flight 采样",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs_with_current_month",
+		BlastRadius: "（dormant：只读快照）",
+		Note: "吞错形态确实存在（`if err != nil { return TrafficSnapshot{}, nil }`），" +
+			"但停写本身不触发该路径。读 710 ⇒ session 臂继续供数。",
+	},
+	"storage/sqlite/request_log_store.go": {
+		Feeds:       "lite 模式自己的 SQLite request_logs（9 列轻量形态）",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs",
+		BlastRadius: "（dormant：与 PG 侧 S4 门控不同链）",
+		Note:        "StorageModeLite 下才被 factory 选中，full 模式走 newPgRequestLogStore。",
+	},
+	"tests/session_audit/cmd/audit-test/main.go": {
+		Feeds:       "抽取测试语料",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs",
+		BlastRadius: "（dormant：测试工具）",
+		Note:        "本包在 tests/ 下且文件名非 _test.go，扫描器不排除，故进了清单。",
+	},
+	"tests/test_popularity_tracker.go": {
+		Feeds:       "手工验证 popularity tracker 的脚本",
+		Live:        false,
+		Gated:       false,
+		Evidence:    "FROM request_logs",
+		BlastRadius: "（dormant：手工脚本）",
+		Note: "它手工查 v1 造热度数据来验证 tracker，与 domains/credentialstate 的 " +
+			"dormant 判定是同一件事的两端。",
+	},
 	"domains/credentialstate/popularity_tracker.go": {
 		Feeds: "模型热度 → GetProbeInterval → 探针节奏（10s/2m/10m）",
 		Live:  false,
