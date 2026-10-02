@@ -142,7 +142,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/routing-v2/auto-tuning', label: '路由调参', labelKey: 'nav.item.autoTuning', icon: '🎛️', super: true, hideForTenant: true },
       // 2026-09-07: /probe-health folded into 凭据监控「探测健康」tab
       // (/routing-v2/credentials?tab=probe-health); standalone menu entry removed.
-      { path: '/dashboard?tab=selfcheck', label: '系统自检', labelKey: 'nav.item.systemMonitor', icon: '📈', super: true, hideForTenant: true },
+      // 2026-10-02: 「系统自检」菜单入口去掉（看板横条仍可进 /dashboard?tab=selfcheck）。
       { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
       // 2026-09-26 审计轮 F1：对账报表落地轮漏挂菜单入口（只能手敲 URL），
       // 本项 = 供应商结算对帐（goal #2）。页面内含 provider/internal 双视角

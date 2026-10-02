@@ -21,11 +21,13 @@ const props = withDefaults(defineProps<{
   metric: UsageTrendMetric
   bucketMinutes: number
   loading?: boolean
-  /** 画布高度（px），看板卡 280 / 全页 460。 */
+  /** 画布高度（px），看板卡 280。全屏页传 fill，由父级 flex 决定高度。 */
   height?: number
+  fill?: boolean
 }>(), {
   loading: false,
   height: 280,
+  fill: false,
 })
 
 const { t } = useI18n()
@@ -140,9 +142,14 @@ onBeforeUnmount(() => {
 <template>
   <!-- 画布高度走 CSS var + !important（与 TrendLineChart 同模式）：
        Chart.js responsive 会改写 canvas 内联 style，只有 !important 声明压得住。 -->
-  <div class="mtc" v-loading="loading" :style="{ '--mtc-h': `${props.height}px`, minHeight: `${props.height + 16}px` }">
+  <div
+    class="mtc"
+    :class="{ 'mtc--fill': fill }"
+    v-loading="loading"
+    :style="fill ? undefined : { '--mtc-h': `${props.height}px`, minHeight: `${props.height + 16}px` }"
+  >
     <canvas v-show="hasData" ref="canvasRef" />
-    <div v-if="!loading && !hasData" class="mtc__empty" :style="{ paddingTop: `${props.height / 2.6}px` }">
+    <div v-if="!loading && !hasData" class="mtc__empty" :style="fill ? undefined : { paddingTop: `${props.height / 2.6}px` }">
       {{ t('dashboard.board.empty') }}
     </div>
   </div>
@@ -159,9 +166,28 @@ onBeforeUnmount(() => {
   height: var(--mtc-h, 280px) !important;
   display: block;
 }
+.mtc--fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.mtc--fill canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100% !important;
+}
 .mtc__empty {
   color: var(--text-muted);
   text-align: center;
   padding-bottom: 40px;
+}
+.mtc--fill .mtc__empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 </style>

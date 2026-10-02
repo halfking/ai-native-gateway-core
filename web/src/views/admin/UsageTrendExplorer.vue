@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// UsageTrendExplorer.vue — 全页用量趋势分析（2026-10-02 看板轮）。
+// UsageTrendExplorer.vue — 全屏用量趋势分析（2026-10-02 看板轮）。
 // 看板「用量趋势」卡的「更多」入口（BoardFilterBar 时间范围右侧按钮）落到本页；
 // 菜单「模型与路由」组亦挂入口。过滤维度：时间范围 / 供应商 / 租户（超管）/
-// API Key / 模型 / 指标（请求数、Token、积分、成本）。全部过滤条件同步 URL
-// query（深链/分享），图表按模型分线（top 10 + 长尾折叠），下表为模型汇总。
+// API Key / 模型（标准 ModelPicker）/ 指标（请求数、Token、积分、成本）。
+// 全部过滤条件同步 URL query（深链/分享），图表按模型分线（top 10 + 长尾折叠），
+// 下表为模型汇总。路由 meta.fillViewport 让本页铺满主区。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -16,11 +17,11 @@ import {
   ElTableColumn,
 } from 'element-plus'
 import ModelTrendChart from '../../components/analytics/ModelTrendChart.vue'
+import ModelPicker from '../../components/ModelPicker.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
 import { makeDateRangePresets } from '../../components/ui/kxDatePresets'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
 import {
-  getUsageTrendModels,
   getUsageTrendSeries,
   type UsageTrendMetric,
   type UsageTrendModelSeries,
@@ -49,7 +50,7 @@ const range = ref<KxDateRange | null>(readRangeFromQuery())
 const providerId = ref<number | null>(readNumFromQuery('provider'))
 const tenantId = ref<string | null>(typeof route.query.tenant === 'string' && route.query.tenant ? route.query.tenant : null)
 const apiKeyId = ref<number | null>(readNumFromQuery('apikey'))
-const model = ref<string | null>(typeof route.query.model === 'string' && route.query.model ? route.query.model : null)
+const model = ref(typeof route.query.model === 'string' ? route.query.model : '')
 const metric = ref<UsageTrendMetric>(readMetricFromQuery())
 
 function readRangeFromQuery(): KxDateRange | null {
@@ -90,7 +91,6 @@ function defaultRange(): KxDateRange {
 const providers = ref<Provider[]>([])
 const tenants = ref<TenantSummary[]>([])
 const keys = ref<ApiKey[]>([])
-const modelOptions = ref<{ model: string; requests: number }[]>([])
 
 const keyLabel = (k: ApiKey) => {
   const name = k.key_alias || k.owner_user || k.application_code || `#${k.id}`
@@ -151,27 +151,6 @@ async function loadSeries() {
     if (token === seriesToken) loading.value = false
   }
 }
-
-let modelsToken = 0
-
-async function loadModelOptions() {
-  const token = ++modelsToken
-  try {
-    const resp = await getUsageTrendModels({
-      time: timeQuery.value,
-      tenant_id: tenantId.value || undefined,
-      provider_id: providerId.value || undefined,
-      api_key_id: apiKeyId.value || undefined,
-    })
-    if (token !== modelsToken) return
-    modelOptions.value = (resp.models ?? []).map((m) => ({ model: m.model, requests: m.requests }))
-  } catch {
-    if (token === modelsToken) modelOptions.value = []
-  }
-}
-
-// 模型选项跟随时间/供应商/租户/apikey 变化（不含 model 自身）。
-watch([effectiveRange, providerId, tenantId, apiKeyId], () => void loadModelOptions())
 
 watch(
   [effectiveRange, providerId, tenantId, apiKeyId, model],
@@ -250,7 +229,6 @@ const sourceLabel = computed(() => {
 
 onMounted(() => {
   void loadFilterOptions()
-  void loadModelOptions()
   void loadSeries()
 })
 </script>
@@ -319,22 +297,13 @@ onMounted(() => {
           <el-option v-for="k in keys" :key="k.id" :value="k.id" :label="keyLabel(k)" />
         </el-select>
       </div>
-      <div class="ute__filter">
+      <div class="ute__filter ute__filter--model">
         <label class="ute__label">{{ t('usageTrend.filterModel') }}</label>
-        <el-select
+        <ModelPicker
           v-model="model"
-          clearable
-          filterable
           :placeholder="t('usageTrend.filterAll')"
-          class="ute__select ute__select--wide"
-        >
-          <el-option
-            v-for="m in modelOptions"
-            :key="m.model"
-            :value="m.model"
-            :label="m.model === USAGE_TREND_OTHERS ? t('dashboard.board.trendOthers') : `${m.model} (${compactTickValue(m.requests)})`"
-          />
-        </el-select>
+          :title="t('usageTrend.filterModel')"
+        />
       </div>
       <div class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterMetric') }}</label>
@@ -352,7 +321,7 @@ onMounted(() => {
         :metric="metric"
         :bucket-minutes="bucketMinutes"
         :loading="loading"
-        :height="440"
+        fill
       />
       <div v-if="error" class="ute__err">
         {{ t('usageTrend.loadFailed') }}：{{ error }}
@@ -397,10 +366,15 @@ export default { name: 'UsageTrendExplorer' }
 .ute {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  max-width: 1440px;
-  margin: 0 auto;
-  padding: 18px 20px 40px;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 12px 16px 16px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .ute__head {
   display: flex;
@@ -408,6 +382,7 @@ export default { name: 'UsageTrendExplorer' }
   justify-content: space-between;
   gap: 14px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .ute__title {
   font-size: 18px;
@@ -437,6 +412,7 @@ export default { name: 'UsageTrendExplorer' }
   align-items: flex-end;
   gap: 14px;
   flex-wrap: wrap;
+  flex-shrink: 0;
   padding: 12px 14px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -458,12 +434,33 @@ export default { name: 'UsageTrendExplorer' }
 .ute__select--wide {
   width: 260px;
 }
+.ute__filter--model {
+  width: 260px;
+  min-width: 200px;
+}
+.ute__filter--model :deep(.model-picker),
+.ute__filter--model :deep(.mp-trigger) {
+  width: 100%;
+}
 .ute__chart,
 .ute__table {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 14px 16px;
+}
+.ute__chart {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ute__table {
+  flex: 0 1 34%;
+  min-height: 160px;
+  max-height: 38%;
+  overflow: auto;
 }
 .ute__err {
   font-size: 12px;
@@ -484,14 +481,24 @@ export default { name: 'UsageTrendExplorer' }
 }
 @media (max-width: 900px) {
   .ute {
-    padding: 12px 12px 32px;
+    padding: 12px;
+    overflow: auto;
   }
   .ute__select,
-  .ute__select--wide {
+  .ute__select--wide,
+  .ute__filter--model {
     width: 100%;
   }
   .ute__filter {
     width: 100%;
+  }
+  .ute__chart {
+    min-height: 280px;
+    flex: 1 0 280px;
+  }
+  .ute__table {
+    max-height: none;
+    flex: 0 0 auto;
   }
 }
 </style>
