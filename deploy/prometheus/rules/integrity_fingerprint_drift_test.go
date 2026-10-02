@@ -111,35 +111,40 @@ func TestIntegrityFingerprintDriftAlertExplainsTheStopWriteCause(t *testing.T) {
 			"or the reader will conclude the detector is unconditionally dead")
 }
 
-// TestIntegrityFingerprintDriftAlertDoesNotPromiseSelfHealing 钉住 §9.50.4 的订正。
+// TestIntegrityFingerprintDriftAlertTracksTheArmFix 钉住 §9.52 之后的事实。
 //
-// 这是本轮最贵的一个错：告警第一版写的是「**逃生口这条链不读 v1**，所以恢复与否取决于
-// 当前进程有没有真的处理过带指纹的请求」——听起来像是会自愈。事实相反：
-// `markSystemFingerprintObserved()` 的唯一调用点在 `persistSystemFingerprint()` 内，
-// 而后者的两个调用点都在 `if logsWrite {}`（S4 停写键）里 ⇒ **停写 + 重启 = 永久关闭**。
+// 这道门**被反转过一次**，过程本身就是记录：
+// §9.50 我写它是为了禁止文案承诺自愈（「逃生口也是关着的」）。
+// §9.51 保留了它。§9.52 把 arm 移出门控之后，那句话变成假话——门随即变红，
+// 迫使文案改口。**这个摩擦是故意留的**：文案与代码状态不一致时，最省事的
+// 做法是两边都不改，而不是让其中一边提醒另一边。
 //
-// 一个会让运维「先等等看」的告警，比一个没有的告警更坏：它把人引向一个不会发生的
-// 结果。domains/hooks/observability/telemetry 里的
-// TestFingerprintEscapeHatchIsInsideTheStopWriteGate 从代码侧证明这个事实；
-// 这里从文案侧防止它再次被写成相反的话。
-func TestIntegrityFingerprintDriftAlertDoesNotPromiseSelfHealing(t *testing.T) {
+// 现在的方向：arm 已在门控之外，所以文案**不得**再说它关着；
+// 同时「上游一旦发指纹检测器就能自己醒」这句话必须留着，因为它是运维判断
+// 「这条告警还值不值得留着」的唯一依据。
+func TestIntegrityFingerprintDriftAlertTracksTheArmFix(t *testing.T) {
 	data, err := os.ReadFile("integrity-fingerprint-drift.yml")
 	require.NoError(t, err)
 	text := string(data)
 
-	// 用 require.True 而不是 require.Contains：Contains 失败会把整份 yml
-	// dump 出来（几百行），把真正的断言信息埋在噪声里。
-	require.True(t, strings.Contains(text, "逃生口也是关着的"),
-		"the alert must state that the in-process re-arm path is behind the SAME stop-write gate — "+
-			"§9.50.4 corrected an earlier version of this file that promised self-healing")
-	require.True(t, strings.Contains(text, "不要指望它自愈"),
-		"the troubleshooting steps must not send the reader into waiting for a recovery "+
-			"that cannot come without a code change")
+	// 必须包含：arm 已在门控之外的事实。
+	require.True(t, strings.Contains(text, "门控之外"),
+		"the alert must record that the in-process re-arm is now outside the stop-write gate "+
+			"(audit §9.52) — otherwise the reader keeps a limitation that no longer exists")
+	require.True(t, strings.Contains(text, "自己醒过来"),
+		"the alert must say the detector can wake itself once upstream traffic appears; "+
+			"that is the whole reason this alert is still worth keeping after §9.52")
 
-	for _, banned := range []string{"这条链不读 v1", "所以恢复与否取决于当前进程"} {
-		require.NotContains(t, text, banned,
-			"%q is the §9.50.4 retracted claim: the in-process re-arm is gated by "+
-				"storage.request_logs_write_enabled exactly like the write it depends on", banned)
+	// 必须不再包含：arm 已死的两处措辞（§9.50.4 / §9.51 各写过一次）。
+	for _, banned := range []string{
+		"逃生口也是关着的",
+		"不要指望它自愈",
+		"这条链不读 v1",
+		"所以恢复与否取决于当前进程",
+	} {
+		require.True(t, !strings.Contains(text, banned),
+			"%q describes the arm as dead, but audit §9.52 moved it out of the stop-write gate. "+
+				"The claim is now false.", banned)
 	}
 }
 

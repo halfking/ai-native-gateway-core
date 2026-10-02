@@ -1283,6 +1283,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// S4 停写门控：每事务读一次，快照贯穿整个写入路径。
 	logsWrite := requestLogsWriteEnabled()
 
+	// §9.51：进程内指纹 arm 必须在门控**之外**——它记录的是「本实例见过带
+	// 指纹的请求」，不是「值落进了 v1」。放在 persistSystemFingerprint 里
+	// 会被下面的 if logsWrite 一起关掉（详见 observeSystemFingerprint）。
+	observeSystemFingerprint(entry)
+
 	// INSERT directly targets usage_ledger_hot (the canonical write
 	// target per the 2026-07 data-lifecycle architecture). UPDATE-heavy
 	// operations (cost/tokens/latency enrichment after streaming) require
@@ -2066,6 +2071,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// S4 停写门控：每事务读一次，快照贯穿整个写入路径。
 	logsWrite := requestLogsWriteEnabled()
 
+	// §9.51：进程内指纹 arm 必须在门控**之外**——它记录的是「本实例见过带
+	// 指纹的请求」，不是「值落进了 v1」。放在 persistSystemFingerprint 里
+	// 会被下面的 if logsWrite 一起关掉（详见 observeSystemFingerprint）。
+	observeSystemFingerprint(entry)
+
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
 		// UPDATE directly targets usage_ledger_hot — UPDATE-heavy
 		// operations require heap storage with row-level UPDATE support.
@@ -2537,6 +2547,12 @@ func upsertProtocolMetadata(ctx context.Context, tx pgx.Tx, entry *RequestLogEnt
 // UPDATE：零参数重排风险，且覆盖 UPDATE 主语句与 RowsAffected==0 回落
 // INSERT 两条路径（调用点在回落之后）。指纹每上游部署一份，last-write-wins；
 // entry 未携带时 no-op，历史语句集合不变。
+//
+// §9.51：本函数**不再**调用 markSystemFingerprintObserved()。它此前在
+// `if err == nil` 分支里 arm 进程内检测器，而本函数的两个调用点都在
+// `insertRequestLog` / `updateRequestLog` 的 `if logsWrite {}` 块内
+// ⇒ S4 停写后 arm 永不触发。arm 已移到 observeSystemFingerprint（门控之外）。
+// 落列与 arm 是**两件事**：前者是「把值写进 v1」，后者是「本实例见过这种流量」。
 func persistSystemFingerprint(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) error {
 	if entry == nil || entry.SystemFingerprint == nil || *entry.SystemFingerprint == "" {
 		return nil
@@ -2546,10 +2562,28 @@ func persistSystemFingerprint(ctx context.Context, tx pgx.Tx, entry *RequestLogE
 		   SET system_fingerprint = $2
 		 WHERE request_id = $1
 	`, entry.RequestID, *entry.SystemFingerprint)
-	if err == nil {
-		markSystemFingerprintObserved()
-	}
 	return err
+}
+
+// observeSystemFingerprint 记录「本实例见过带指纹的请求」。
+//
+// 这是指纹漂移检测器（bg/integrity_fingerprint_drift.go）**唯一**的进程内
+// arm 来源，经 SystemFingerprintObservedSince() 读出。
+//
+// §9.51：它**必须**与宽表写入解耦。此前 arm 发生在 persistSystemFingerprint
+// 内部，而那个函数只在 `if logsWrite {}` 里被调用 ⇒ S4 停写之后，
+// 即便上游开始返回 `X-System-Fingerprint`，检测器也永远不会恢复扫描。
+// arm 记录的是**观测**（本进程处理过一个带指纹的请求），与该请求是否落进
+// v1 无关。
+//
+// 调用点选在 insertRequestLog / updateRequestLog 的门控之外：这两个函数写
+// usage_ledger 的部分本就在门控之外（S4 停写的契约是「宽表停写、计费照常」），
+// 所以它们会活过 v1 退役——arm 放在这里不会跟着宽表一起消失。
+func observeSystemFingerprint(entry *RequestLogEntry) {
+	if entry == nil || entry.SystemFingerprint == nil || *entry.SystemFingerprint == "" {
+		return
+	}
+	markSystemFingerprintObserved()
 }
 
 // systemFingerprintLastObserved tracks (in-process) when an entry carrying a
