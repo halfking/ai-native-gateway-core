@@ -1,0 +1,148 @@
+# auto-route selection 产出侧的告警（2026-10-02 审计 §9.57）
+#
+# 指标来源：domains/hooks/observability/telemetry/selection_metrics.go
+#   llm_gateway_auto_selections_total{task_type,affinity_applied,explore}
+#                              CounterVec —— 成功落库的 selection 行数
+#   llm_gateway_auto_selections_dropped_total
+#                              Counter     —— 因队列满或批量 INSERT 失败而丢掉的行数
+#
+# # 为什么这组告警是补一个**产出侧**的洞
+#
+# 到 §9.56 为止，告警全部建在**读侧**（结算、基线、漂移）。
+# 产出侧「selection 写入量归零」一直没有门。审计 §9.56 在 252 实测：
+#
+#   llm_gateway_auto_selections_dropped_total 0      ← 没有丢
+#   llm_gateway_auto_selections_total  （完全缺席）    ← 一次都没写出
+#
+# 进程自 2026-10-01 05:19 起连续运行 1 天 17 小时，一条 selection 都没产出。
+# 而这一状态在监控上**不可见**——除非有人专门去数 `auto_route_selections` 的日分布。
+#
+# `auto_route_selections` 近 30 天日量（252）：09-07 = 10,933、09-08 = 11,411、
+# 09-09 起 0–14/天，**已中断两周半而无人知情**。
+#
+# 这与 §9.37「没有告警读的指标在事实层面就是装饰」是**镜像形态**：
+# 这里的指标有生产者、有值、**无消费者**。
+#
+# # ★第一条告警里 `or vector(0)` 不是可选的
+#
+# `llm_gateway_auto_selections_total` 是 **CounterVec**。Prometheus 约定下，
+# 带标签的 CounterVec 在**首次 Inc() 之前不导出任何时间序列**。
+#
+# 于是最自然的写法会**静默失效**：
+#
+#     sum(increase(llm_gateway_auto_selections_total[2h])) == 0
+#
+#   永不产生 selection 时，左边求和得到的是**空向量**（不是 0）；
+#   空向量 `== 0` 仍是空向量；空向量不满足任何 alert 的触发条件
+#   ⇒ **告警永远不响**，而这恰恰是它唯一要抓的场景。
+#
+# `or vector(0)` 把「空」显式转成 0，告警才会响。**删掉它，这道门就是装饰。**
+#
+# 同样地，`and on(job, instance) (up{job=~"llm-gateway.*"} == 1)` 不能省：
+# 进程挂掉 / 抓取失败时同样得到空向量，同样被 `or vector(0)` 变成 0。
+# 没有这道守卫，告警会在「网关根本没在跑」时报「auto-route 不产出」——
+# 两种完全不同的故障共用一条告警，值班的人会被引向错误的方向。
+# `up{job=~"llm-gateway.*"}` 是本仓既有的网关存活写法（见 alerts.yml）。
+#
+# 聚合维度是 **(job, instance)** 而不是只 by (instance)：只按 instance 聚合会把
+# `job` 消掉，告警因此丢掉集群归属。这是 promtool 场景测试抓出来的
+# （`check rules` 对此完全无感，因为语法合法）。
+#
+# # 已知局限（如实登记，不假装覆盖）
+#
+# 1. **本告警假设该部署在用 auto-route。** 完全没有 `model="auto"` 流量、因而
+#    一条 selection 都不该有的部署，会被这条告警**永久**报红。仓库里没有
+#    「本部署是否启用 auto-route」的配置位可依赖，因此这里用
+#    `severity: warning` + `for: 1h`（而不是 critical + 短窗口），
+#    并在描述里写明「先确认该部署是否真的在用 auto 路由」。
+#    真要消除这个假阳性需要新增一个部署级开关，**本轮不做**。
+# 2. **252 上没有 Prometheus**（§9.56 实测：无 prometheus/grafana 容器）。
+#    ⇒ 这组告警在 252 **不会生效**，它的适用环境是有 TSDB 的部署（154 / 本地）。
+#    252 的可观测性现状是「只能看进程内计数器」，这是既有的环境限制。
+# 3. 窗口取 2h：auto 流量过去是约 460 条/小时，2h 静默远低于正常波动。
+#    30 分钟级的短窗口会把低流量部署推成常态告警。
+
+groups:
+  - name: auto_route_selection_output
+    interval: 30s
+    rules:
+      - alert: AutoRouteSelectionsNotProduced
+        expr: |
+          (
+            sum by (job, instance) (increase(llm_gateway_auto_selections_total[2h]))
+            or
+            (0 * max by (job, instance) (up{job=~"llm-gateway.*"}))
+          ) == 0
+          and on(job, instance)
+          (max by (job, instance) (up{job=~"llm-gateway.*"}) == 1)
+        for: 1h
+        labels:
+          severity: warning
+          component: auto-route
+        annotations:
+          summary: "auto-route 连续 1 小时没有产出任何 selection"
+          description: |
+            最近 2 小时内 `llm_gateway_auto_selections_total` 的增量为 0，且已持续 1 小时。
+
+            **注意本条有两种截然不同的含义，排查前先分开**：
+            ① 该部署**没有** auto 路由流量 ⇒ 告警长期挂着属正常，先确认这一点；
+            ② auto 路由**本该有流量却停了** ⇒ 这是真故障。
+
+            ② 在 252 上真实发生过：2026-09-09 起 `auto_route_selections`
+            的日产量从约 11,000 掉到 0–14/天，**中断两周半而无人知情**；
+            §9.56 进一步在进程内确认「一次都没写出、丢弃数为 0」，
+            即**不是写入侧被丢弃，是决策器没有产出**。
+
+            **读这条之前先跑这两句**（`or vector(0)` 正是为了让「无序列」变成 0 才响）：
+
+                curl -s :8780/metrics | grep '^llm_gateway_auto_selections'
+
+            - 有 `..._total` 但增量 0 ⇒ 曾经产出过、现在停了 ⇒ 情形 ②
+            - 只有 `..._dropped_total` ⇒ **从未产出过**（CounterVec 首次 Inc()
+              前不导出任何序列）⇒ 这正是本条要抓的形态
+            - `..._dropped_total` 非 0 ⇒ 走下面的 `AutoRouteSelectionsDropped`
+
+            排查方向：auto 路由的开关与 `model="auto"` 的实际调用量，
+            以及决策器（`domains/streaming/auto_route.go`）是否还在被触发。
+            **不要**先去查存储族或 session 表——产出侧断流与它们无关。
+          runbook: |
+            1. 先排除假阳性：确认该部署是否真的在用 auto 路由（`model="auto"`
+               的实际调用量）。完全不用 auto 路由的部署会长期挂着，属正常。
+            2. 确认是真断流后，看 `auto_route_selections` 的日分布找断点时刻
+               （`SELECT ts::date, count(*) FROM auto_route_selections GROUP BY 1`）。
+            3. 断点时刻附近的网关日志里找 auto 路由决策器是否还在被触发。**注意**：
+               252 的 journal 只回溯约 7 小时且无 Prometheus，更早的断点需要
+               从部署记录侧反查，不要指望日志能直接给出答案。
+            4. 产出侧断流与 request_logs / session_* 表的切换**无关**，
+               不要从存储族方向排查。
+
+      - alert: AutoRouteSelectionsDropped
+        expr: increase(llm_gateway_auto_selections_dropped_total[30m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: auto-route
+        annotations:
+          summary: "auto-route selection 正在被丢弃（队列满或批量写失败）"
+          description: |
+            30 分钟内 `llm_gateway_auto_selections_dropped_total` 有增长。
+
+            这个计数器覆盖**两种**丢失：
+              - 入队时队列已满（非阻塞丢弃）；
+              - 批量 `INSERT INTO auto_route_selections_hot` 失败
+                （`selection_writer.go` 的 flush 路径）。
+
+            为什么要告警而不只是画图：**被训练用的样本是有偏的**。
+            队列满时丢的是「突发流量」，写失败时丢的是「整批」——
+            两种偏差都会让后续的排序学习建立在被系统性削掉一部分的样本上。
+
+            区分两条路径：批量写失败会打
+            `WARN auto_route_selections batch insert failed`（含 count 与 error）；
+            队列满**不打日志**，只能由本告警发现。
+          runbook: |
+            1. 批量 INSERT 失败：日志有 `WARN auto_route_selections batch insert
+               failed`（带 count 与 error），按 error 定位（列数不匹配 / 约束 / 超时）。
+            2. 队列满：**无日志**。看 `selection_writer.go` 的队列容量与 flush
+               周期，确认是突发流量还是 DB 变慢导致 flush 跟不上。
+            3. 两条都修完之后，用
+               `SELECT max(ts) FROM auto_route_selections` 确认产出恢复。
