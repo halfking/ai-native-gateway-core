@@ -22,8 +22,12 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 const settleWorkerSchema = `
@@ -62,6 +66,28 @@ CREATE TABLE session_summaries (
 	health_score integer,
 	error_count integer,
 	request_count integer
+);
+-- §9.44: the session family had NO table in this fixture, which is precisely
+-- why §9.43's session branch shipped without ever being executed — the one
+-- harness that could have run it could not even name the table. Column types
+-- mirror the real table where the settle SQL touches them (verified against
+-- the live DB: cost_usd is numeric(14,8) here but double precision in the
+-- request_logs_hot fixture above, so the parity test also proves the SQL is
+-- insensitive to that difference).
+CREATE TABLE session_turns_hot (
+	session_id text NOT NULL,
+	turn_no integer NOT NULL,
+	tenant_id text NOT NULL,
+	request_id text NOT NULL,
+	success boolean,
+	latency_ms integer,
+	cost_usd numeric(14,8),
+	canonical_id bigint,
+	task_type text,
+	is_auto_request boolean,
+	origin_actor text,
+	routing_attempts jsonb,
+	ts timestamptz NOT NULL DEFAULT NOW()
 );
 `
 
@@ -110,7 +136,7 @@ func TestAutoRouteSettleBaselinesExcludeSyntheticActors(t *testing.T) {
 		('req-goal-b', TRUE, 100000, 50.0, 'code', TRUE, 'goal-audit', NOW())`)
 
 	w := NewAutoRouteSettleWorker(pool)
-	baselines, err := w.loadTaskBaselines(ctx)
+	baselines, _, err := w.loadTaskBaselines(ctx)
 	if err != nil {
 		t.Fatalf("loadTaskBaselines: %v", err)
 	}
@@ -156,7 +182,7 @@ func TestAutoRouteSettleBatchMrLateralExcludesSyntheticActors(t *testing.T) {
 		VALUES ('req-sel', 'code', 7, NOW() - INTERVAL '10 minutes', 'gs_sess1')`)
 
 	w := NewAutoRouteSettleWorker(pool)
-	baselines, err := w.loadTaskBaselines(ctx)
+	baselines, _, err := w.loadTaskBaselines(ctx)
 	if err != nil {
 		t.Fatalf("loadTaskBaselines: %v", err)
 	}
@@ -225,7 +251,7 @@ func TestAutoRouteSettleBatchSkipsSyntheticActorSelections(t *testing.T) {
 		('req-loop', 'chat', 44, NOW() - INTERVAL '10 minutes', NULL)`)
 
 	w := NewAutoRouteSettleWorker(pool)
-	baselines, err := w.loadTaskBaselines(ctx)
+	baselines, _, err := w.loadTaskBaselines(ctx)
 	if err != nil {
 		t.Fatalf("loadTaskBaselines: %v", err)
 	}
@@ -269,4 +295,338 @@ func TestAutoRouteSettleBatchSkipsSyntheticActorSelections(t *testing.T) {
 			t.Errorf("%s reward = %v, want NULL (synthetic actors must not produce rewards)", reqID, *reward)
 		}
 	}
+}
+
+// scanPendingSettleRows runs one settlePendingSQL variant and scans it the
+// same way settleBatch does.
+//
+// It duplicates settleBatch's Scan argument list on purpose: the claim under
+// test is "the session family yields the same rows as v1", and a shared scan
+// helper would have meant refactoring the worker to share it — turning a test
+// into a refactor. The duplication is bounded to this file and the column list
+// is asserted against the worker's own by
+// TestSettleSQLBuildersAreTheOnlyDefinitionOfTheLegs.
+func scanPendingSettleRows(t *testing.T, ctx context.Context, pool *pgxpool.Pool, src settleSourceSpec) []pendingSelection {
+	t.Helper()
+	rows, err := pool.Query(ctx, settlePendingSQL(src), settleDelay.String(), settleBatchSize)
+	if err != nil {
+		t.Fatalf("settlePendingSQL(%s): %v", src.Family, err)
+	}
+	defer rows.Close()
+
+	var out []pendingSelection
+	for rows.Next() {
+		var p pendingSelection
+		if err := rows.Scan(
+			&p.id, &p.partitionDate, &p.requestID, &p.taskType, &p.canonicalID, &p.ts,
+			&p.success, &p.latencyMs, &p.costUSD,
+			&p.originActor,
+			&p.rlCanonicalID, &p.rlTenantID,
+			&p.sessionHealth, &p.sessionErrors, &p.sessionReqs,
+			&p.modelReqsInSes, &p.retryCount,
+		); err != nil {
+			t.Fatalf("scan (%s): %v", src.Family, err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err (%s): %v", src.Family, err)
+	}
+	return out
+}
+
+// TestAutoRouteSettleSessionSourceMatchesV1OnIdenticalRows is the first
+// execution of §9.43's session branch anywhere in this repo, and the only
+// direct evidence for the claim "确保数据在更改前后一致".
+//
+// It seeds the SAME logical request into both families — identical success,
+// latency, cost, canonical_id, tenant, origin_actor, routing_attempts — and
+// differs only in which column carries the session key (gw_session_id vs
+// session_id), which is the entire point of settleSourceSpec. Then it runs
+// both SQL variants against real PostgreSQL and requires:
+//
+//   - the cohort baselines are equal (p95, p75, cohort_rows);
+//   - every pending row is field-for-field equal;
+//   - computeSelectionReward produces the identical reward for each row.
+//
+// §9.43 shipped with this untested: the fixture had no session_turns_hot table,
+// so the only harness that could have run the branch could not name the table.
+func TestAutoRouteSettleSessionSourceMatchesV1OnIdenticalRows(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
+	defer cleanup()
+
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec %q: %v", sql, err)
+		}
+	}
+
+	// Two sessions. ses-a: one real turn, one synthetic shadow round that the
+	// SQLExcludeSyntheticActors filter must drop (so model_reqs=1, not 2).
+	// ses-b: two real turns, so the LATERAL has something to aggregate. One
+	// selection carries no session at all, exercising the s.session_id IS NOT
+	// NULL guard.
+	mustExec(`INSERT INTO request_logs_hot
+		(request_id, success, latency_ms, cost_usd, canonical_id, tenant_id, gw_session_id, task_type, is_auto_request, origin_actor, routing_attempts, ts)
+		VALUES
+		('req-a1', TRUE,  800, 0.25, 7, 't1', 'ses-a', 'code', TRUE, 'user-app',  '{"attempts":[{"a":1},{"a":2}]}', NOW()),
+		('req-a2', TRUE,  900, 0.30, 7, 't1', 'ses-a', 'code', TRUE, 'goal-audit', '{"attempts":[{"a":1},{"a":2},{"a":3}]}', NOW()),
+		('req-b1', FALSE, 1500, 0.40, 8, 't1', 'ses-b', 'code', TRUE, 'user-app',  '{"attempts":[{"a":1}]}', NOW()),
+		('req-b2', TRUE,  700, 0.20, 8, 't1', 'ses-b', 'code', TRUE, 'user-app',  NULL, NOW()),
+		('req-c1', TRUE, 1100, 0.35, 9, 't1', NULL,    'code', TRUE, 'user-app',  '{"attempts":[{"a":1}]}', NOW())`)
+
+	// Same rows, same values, only the session-key column is renamed.
+	//
+	// req-c1's turn belongs to ses-c, which NO selection references: the case
+	// under test is that the *selection* has session_id NULL, so the LATERAL's
+	// `s.session_id IS NOT NULL` guard must yield 0 rows even though a matching
+	// turn exists. (session_id is NOT NULL in the real table — verified against
+	// the live DB — so a session-less turn is not a state that can exist.)
+	mustExec(`INSERT INTO session_turns_hot
+		(session_id, turn_no, tenant_id, request_id, success, latency_ms, cost_usd, canonical_id, task_type, is_auto_request, origin_actor, routing_attempts, ts)
+		VALUES
+		('ses-a', 1, 't1', 'req-a1', TRUE,  800, 0.25, 7, 'code', TRUE, 'user-app',  '{"attempts":[{"a":1},{"a":2}]}', NOW()),
+		('ses-a', 2, 't1', 'req-a2', TRUE,  900, 0.30, 7, 'code', TRUE, 'goal-audit', '{"attempts":[{"a":1},{"a":2},{"a":3}]}', NOW()),
+		('ses-b', 1, 't1', 'req-b1', FALSE, 1500, 0.40, 8, 'code', TRUE, 'user-app',  '{"attempts":[{"a":1}]}', NOW()),
+		('ses-b', 2, 't1', 'req-b2', TRUE,  700, 0.20, 8, 'code', TRUE, 'user-app',  NULL, NOW()),
+		('ses-c', 1, 't1', 'req-c1', TRUE, 1100, 0.35, 9, 'code', TRUE, 'user-app',  '{"attempts":[{"a":1}]}', NOW())`)
+
+	mustExec(`INSERT INTO session_summaries (session_key, health_score, error_count, request_count)
+		VALUES ('ses-a', 90, 0, 1), ('ses-b', 40, 1, 2)`)
+
+	mustExec(`INSERT INTO auto_route_selections_hot
+		(request_id, task_type, canonical_id, ts, session_id)
+		VALUES
+		('req-a1', 'code', 7, NOW() - INTERVAL '10 minutes', 'ses-a'),
+		('req-a2', 'code', 7, NOW() - INTERVAL '10 minutes', 'ses-a'),
+		('req-b1', 'code', 8, NOW() - INTERVAL '10 minutes', 'ses-b'),
+		('req-b2', 'code', NULL, NOW() - INTERVAL '10 minutes', 'ses-b'),
+		('req-c1', 'code', 9, NOW() - INTERVAL '10 minutes', NULL)`)
+
+	v1 := settleSourceFor(true)
+	sess := settleSourceFor(false)
+	if v1.TurnsTable == sess.TurnsTable {
+		t.Fatal("settleSourceFor returned the same table for both families — the test would prove nothing")
+	}
+
+	// --- baselines must be identical -------------------------------------
+	type baseRow struct {
+		taskType   string
+		p95        int
+		p75        float64
+		cohortRows int
+	}
+	readBaselines := func(src settleSourceSpec) map[string]baseRow {
+		t.Helper()
+		rows, err := pool.Query(ctx, settleBaselinesSQL(src), baselineWindow.String())
+		if err != nil {
+			t.Fatalf("settleBaselinesSQL(%s): %v", src.Family, err)
+		}
+		defer rows.Close()
+		out := map[string]baseRow{}
+		for rows.Next() {
+			var b baseRow
+			if err := rows.Scan(&b.taskType, &b.p95, &b.p75, &b.cohortRows); err != nil {
+				t.Fatalf("scan baselines (%s): %v", src.Family, err)
+			}
+			out[b.taskType] = b
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err baselines (%s): %v", src.Family, err)
+		}
+		return out
+	}
+	bV1 := readBaselines(v1)
+	bSess := readBaselines(sess)
+	if len(bV1) == 0 {
+		t.Fatal("v1 baselines are empty — the fixture seeded no is_auto_request rows, so the comparison is vacuous")
+	}
+	if len(bV1) != len(bSess) {
+		t.Fatalf("baseline task-type sets differ: v1=%v session=%v", bV1, bSess)
+	}
+	for tt, bv1 := range bV1 {
+		bs := bSess[tt]
+		if bs.p95 != bv1.p95 || bs.p75 != bv1.p75 || bs.cohortRows != bv1.cohortRows {
+			t.Errorf("baseline %q differs across families: v1=%+v session=%+v", tt, bv1, bs)
+		}
+	}
+	// The synthetic shadow round must have been excluded from BOTH cohort
+	// reads. 5 auto rows are seeded (req-a1/a2/b1/b2/c1) and exactly one of
+	// them is goal-audit, so cohort_rows==4. Assert it against the seeded
+	// total rather than a bare literal so the filter's effect is visible.
+	const seededAutoRows = 5
+	if got, want := bV1["code"].cohortRows, seededAutoRows-1; got != want {
+		t.Errorf("v1 cohort_rows = %d, want %d (%d seeded is_auto_request rows minus the goal-audit shadow round)", got, want, seededAutoRows)
+	}
+
+	// --- pending rows and rewards must be identical ---------------------
+	pV1 := scanPendingSettleRows(t, ctx, pool, v1)
+	pSess := scanPendingSettleRows(t, ctx, pool, sess)
+	if len(pV1) != 5 || len(pSess) != 5 {
+		t.Fatalf("expected 5 pending rows from each source, got v1=%d session=%d", len(pV1), len(pSess))
+	}
+
+	base := bV1["code"]
+	baseLine := taskBaseline{P95LatencyMs: base.p95, P75CostUSD: base.p75}
+	byReq := func(ps []pendingSelection) map[string]pendingSelection {
+		m := map[string]pendingSelection{}
+		for _, p := range ps {
+			m[p.requestID] = p
+		}
+		return m
+	}
+	mV1, mSess := byReq(pV1), byReq(pSess)
+	for reqID, a := range mV1 {
+		b, ok := mSess[reqID]
+		if !ok {
+			t.Errorf("request %q present under v1 but missing under the session family", reqID)
+			continue
+		}
+		// The comparison helpers print VALUES, not addresses. A gate whose
+		// failure message reads "v1=0xc000123456 session=0xc000123789" tells
+		// the next reader nothing about what diverged.
+		if d := diffBoolPtr(a.success, b.success); d != "" {
+			t.Errorf("%s: success differs: %s", reqID, d)
+		}
+		if d := diffIntPtr(a.latencyMs, b.latencyMs); d != "" {
+			t.Errorf("%s: latency differs: %s", reqID, d)
+		}
+		if d := diffFloatPtr(a.costUSD, b.costUSD); d != "" {
+			t.Errorf("%s: cost differs: %s", reqID, d)
+		}
+		if d := diffInt64Ptr(a.rlCanonicalID, b.rlCanonicalID); d != "" {
+			t.Errorf("%s: rlCanonicalID differs: %s", reqID, d)
+		}
+		// The LATERAL must agree, including the synthetic-actor filter: this is
+		// where a wrong SessionKeyCol would show up as model_reqs 2 vs 1.
+		if d := diffIntPtr(a.modelReqsInSes, b.modelReqsInSes); d != "" {
+			t.Errorf("%s: model_reqs differs: %s", reqID, d)
+		}
+		if d := diffIntPtr(a.retryCount, b.retryCount); d != "" {
+			t.Errorf("%s: retry_count differs: %s", reqID, d)
+		}
+
+		rV1, srcV1, _ := computeSelectionReward(a, baseLine)
+		rSess, srcSess, _ := computeSelectionReward(b, baseLine)
+		if rV1 != rSess {
+			t.Errorf("%s: REWARD differs across families: v1=%.10f (%s) session=%.10f (%s) — "+
+				"this is the exact quantity §9.43 promised to keep constant across the source switch",
+				reqID, rV1, srcV1, rSess, srcSess)
+		}
+		if srcV1 != srcSess {
+			t.Errorf("%s: reward_source differs: v1=%q session=%q", reqID, srcV1, srcSess)
+		}
+	}
+
+	// Pin the LATERAL's aggregate, not just its agreement: agreement between
+	// two identical wrong shapes is still wrong.
+	if got := mV1["req-a1"].modelReqsInSes; got == nil || *got != 1 {
+		t.Errorf("req-a1 model_reqs = %v, want 1 (ses-a has 2 turns, one is goal-audit and must be filtered)", got)
+	}
+	if got := mV1["req-c1"].modelReqsInSes; got == nil || *got != 0 {
+		t.Errorf("req-c1 model_reqs = %v, want 0 (its selection has session_id NULL)", got)
+	}
+}
+
+// TestAutoRouteSettleMissingCohortIsCounted proves the §9.44 guard is live.
+//
+// The state under test: the cohort has no row for the selection's task_type, so
+// both reward terms take the neutral 0.5 fallback. That fallback is correct
+// behaviour and produces no error — which is the whole reason it needed a
+// counter. Before §9.44 this was indistinguishable from "measured, and neutral".
+func TestAutoRouteSettleMissingCohortIsCounted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
+	defer cleanup()
+
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec %q: %v", sql, err)
+		}
+	}
+
+	// request rows exist for the outcome join, but with task_type 'other' —
+	// so the cohort (GROUP BY task_type) has NO entry for the selections'
+	// task_type 'ghost'.
+	mustExec(`INSERT INTO request_logs_hot
+		(request_id, success, latency_ms, cost_usd, task_type, is_auto_request, origin_actor, ts)
+		VALUES ('req-g1', TRUE, 500, 0.1, 'other', TRUE, 'user-app', NOW())`)
+	mustExec(`INSERT INTO auto_route_selections_hot
+		(request_id, task_type, ts, session_id)
+		VALUES ('req-g1', 'ghost', NOW() - INTERVAL '10 minutes', NULL),
+		       ('req-g2', 'ghost', NOW() - INTERVAL '10 minutes', NULL)`)
+
+	w := NewAutoRouteSettleWorker(pool)
+	baselines, cohortRows, err := w.loadTaskBaselines(ctx)
+	if err != nil {
+		t.Fatalf("loadTaskBaselines: %v", err)
+	}
+	if _, ok := baselines["ghost"]; ok {
+		t.Fatal("baseline for 'ghost' exists; the fixture no longer isolates the missing-cohort path")
+	}
+	if cohortRows != 1 {
+		t.Errorf("cohortRows = %d, want 1 (the single seeded 'other' auto row)", cohortRows)
+	}
+
+	latency := autoRouteSettleBaselineNeutral.WithLabelValues(baselineTermLatency, settleFamilyV1)
+	cost := autoRouteSettleBaselineNeutral.WithLabelValues(baselineTermCost, settleFamilyV1)
+	beforeLatency := testutil.ToFloat64(latency)
+	beforeCost := testutil.ToFloat64(cost)
+
+	// Only req-g1 has a logged outcome; req-g2 must be abandoned (no outcome).
+	settled, _, err := w.settleBatch(ctx, baselines)
+	if err != nil {
+		t.Fatalf("settleBatch: %v", err)
+	}
+	if settled != 1 {
+		t.Fatalf("settled = %d, want 1", settled)
+	}
+
+	if got := testutil.ToFloat64(latency) - beforeLatency; got != 1 {
+		t.Errorf("latency neutral-fallback counter +%v, want +1 — the §9.44 guard is not wired into settleBatch", got)
+	}
+	if got := testutil.ToFloat64(cost) - beforeCost; got != 1 {
+		t.Errorf("cost neutral-fallback counter +%v, want +1", got)
+	}
+}
+
+// diffBoolPtr / diffIntPtr / diffFloatPtr / diffInt64Ptr report a human-readable
+// difference between two nullable scalars, treating nil as a distinct value from
+// zero (which matters: a missing outcome must not compare equal to a measured
+// false / zero).
+func diffBoolPtr(a, b *bool) string {
+	return diffPtr(a, b, func(p *bool) string { return fmt.Sprintf("%v", *p) })
+}
+
+func diffIntPtr(a, b *int) string {
+	return diffPtr(a, b, func(p *int) string { return fmt.Sprintf("%d", *p) })
+}
+
+func diffFloatPtr(a, b *float64) string {
+	return diffPtr(a, b, func(p *float64) string { return fmt.Sprintf("%.8f", *p) })
+}
+
+func diffInt64Ptr(a, b *int64) string {
+	return diffPtr(a, b, func(p *int64) string { return fmt.Sprintf("%d", *p) })
+}
+
+func diffPtr[T comparable](a, b *T, show func(*T) string) string {
+	switch {
+	case a == nil && b == nil:
+		return ""
+	case a == nil:
+		return "v1=NULL session=" + show(b)
+	case b == nil:
+		return "v1=" + show(a) + " session=NULL"
+	case *a != *b:
+		return "v1=" + show(a) + " session=" + show(b)
+	}
+	return ""
 }

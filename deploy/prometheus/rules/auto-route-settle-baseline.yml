@@ -1,0 +1,111 @@
+# auto-route 结算的源族切换与基线可用性告警（2026-10-02 审计 §9.44）
+#
+# 指标来源：bg/auto_route_settle_source.go + bg/auto_route_settle_baseline_metrics.go
+#   llmgw_autoroute_settle_source_total{family}            按源族结算的 selection 数
+#   llmgw_autoroute_settle_baseline_cohort_rows{family}    本轮基线 cohort 的行数（gauge）
+#   llmgw_autoroute_settle_baseline_neutral_total{term,family} 走了中性回落的 selection 数
+#
+# # 为什么 cohort 归零是一件必须报警的事
+#
+# ComputeRoutingRewardWithWeights 的延迟项与成本项都以 0.5 起手，只有基线非零才
+# 用实测值替换。取到空 map（task_type miss）或零值时，**整条 selection 的延迟项
+# 和成本项同时塌成 0.5**。这不产生任何错误，计数器照常增长，reward 仍在 [0,1] 内
+# —— 但 cohort 基线存在的唯一理由（区分快模型与慢模型、贵模型与便宜模型）就此失效，
+# 而且与「实测结果恰好中性」在输出上逐字相同。
+#
+# §9.43 把基线 cohort 的来源表接到了 S4 写门上（src.TurnsTable）。真库实测
+# （24h 窗口，is_auto_request=TRUE AND latency_ms IS NOT NULL）：
+#
+#   v1 侧      2178 行
+#   会话族侧      0 行
+#
+# 即在当前这份数据上切换会立刻得到空 map。
+#
+# # gauge 陈旧性：为什么每条规则都带活动守卫
+#
+# cohort_rows 只在**本轮实际使用**的那个族上 Set。源族切换后，另一个族的序列会
+# 停更并冻结在旧值上 —— 对一个「已停更」的序列断言 == 0，读到的是「没在测」，
+# 不是「测出来是 0」。所以每条 cohort 规则都同时要求该族近期确有结算
+# （increase(source_total{family=...}[15m]) > 0），把「正在被使用」写进条件本身。
+#
+# 标签纪律（GW-00）：family ∈ {v1, session}，term ∈ {latency, cost}，
+# 均为编译期闭集（bg/auto_route_settle_source.go 与 _baseline_metrics.go 的 init
+# 预置），基数恒定。刻意**不带** task_type —— 它来自请求内容，基数无上界。
+
+groups:
+  - name: auto_route_settle_source_and_baseline
+    interval: 30s
+    rules:
+      - alert: AutoRouteSettleSourceSwitched
+        expr: changes(llmgw_autoroute_settle_source_total[10m]) > 0
+        labels:
+          severity: warning
+          component: bg
+        annotations:
+          summary: "auto-route 结算数据源发生切换（S4 写门状态已变）"
+          description: |
+            {{ $labels.family }} 族的结算计数在 10 分钟内发生了变化。
+
+            **这是事件，不是趋势** —— 所以本条没有 for: 抑制。每一次 S4 写门翻转
+            都会让 outcome join / LATERAL / 基线 cohort 三条腿整体换源，而换源
+            会改变 reward 分布（即使数据等价，见
+            TestAutoRouteSettleSessionSourceMatchesV1OnIdenticalRows）。
+
+            **换源时必须一起确认的**：
+            1. AutoRouteSettleBaselineCohortEmpty 是否随之触发 —— 会话族的
+               is_auto_request 覆盖只有 v1 的 80.4%（2026-09-19..26 实测：
+               659252 / 820336），且本地近 24h 为 0 行
+            2. cohort 的 p95/p75 会随总体改变（实测 p95 偏移 15.2%，注意该数字
+               取自本地探针流量，不代表生产），因此**切换前后的 reward 不可逐位相等**，
+               这一点必须写进变更记录，不要按「数据一致」验收
+            3. 若需要真正跨切换可比，只能引入一个与被退役表无关的稳定 cohort
+               —— 尚未实现，见审计 §9.44 的未决项
+
+      - alert: AutoRouteSettleBaselineCohortEmpty
+        expr: |
+          llmgw_autoroute_settle_baseline_cohort_rows == 0
+            and increase(llmgw_autoroute_settle_source_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: bg
+        annotations:
+          summary: "auto-route 基线 cohort 为空，所有 reward 的延迟/成本项已塌成中性 0.5（{{ $labels.family }}）"
+          description: |
+            {{ $labels.family }} 族连续 5 分钟结算出了 selection，但基线 cohort 行数为 0。
+
+            **正在发生的后果**：这些 selection 的延迟项与成本项都走了
+            `0.5` 中性回落（ComputeRoutingRewardWithWeights 里 `P95BaselineMs > 0`
+            不成立）。没有任何错误，reward 仍在 [0,1] 内，计数器照常增长 ——
+            只有 cohort 区分快慢 / 贵贱的能力消失了，而且与「实测恰好中性」
+            在输出上完全相同。
+
+            **排查步骤**：
+            1. 该族在 baselineWindow（24h）内 `is_auto_request = TRUE AND
+               latency_ms IS NOT NULL` 的行数——直接查库，不要只看指标
+            2. 若刚发生 S4 写门切换：会话族的 auto 覆盖不足是最可能的原因
+               （本机实测 24h 内 0 行 vs v1 2178 行）
+            3. 检查 `origin_actor` 合成流量过滤是否把 cohort 滤空
+               （SQLExcludeSyntheticActors）
+
+      - alert: AutoRouteSettleBaselineNeutralDominant
+        expr: |
+          sum by (term, family) (increase(llmgw_autoroute_settle_baseline_neutral_total[30m]))
+            >
+          0.5 * sum by (family) (increase(llmgw_autoroute_settle_source_total[30m]))
+        for: 10m
+        labels:
+          severity: warning
+          component: bg
+        annotations:
+          summary: "超过一半的 auto-route selection 走了基线中性回落（{{ $labels.term }} / {{ $labels.family }}）"
+          description: |
+            30 分钟内，{{ $labels.term }} 项有超过 50% 的已结算 selection
+            用的是中性 0.5 而不是实测基线归一化后的值。
+
+            **这条比 cohort 归零更早发现局部问题**：cohort 可能整体非空，
+            但**某个 task_type 的分组为空**（GROUP BY task_type 的 map 取值
+            miss），此时全局 cohort_rows 看着正常，只有按 term 的回落率会动。
+
+            latency 与 cost 是**独立**塌陷的：p95 有值而 p75 为 0 是常见形态
+            （例如没有 cost_usd 的流量），所以按 term 分开统计，不合并成一个数。

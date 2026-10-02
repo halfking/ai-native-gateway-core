@@ -2279,3 +2279,152 @@ M2 默认方向反转 → `:30`/`:33`/`:36`。
 > ③ 仍未做：§9.39 遗留的 `vi` 维度 SQL 注释处理（`model_alternatives.go`）；
 >    §9.38 告警 `for:` 阈值未在真机 Prometheus 验证；§9.36 的 19 条静默档；
 >    响应侧 7 个读点仍不可端口。
+
+---
+
+## 第二十七轮（§9.44）：会话族分支第一次被执行 + 基线 cohort 静默塌陷的发现
+
+上一轮留下的 ①（补一个能真正跑起来的验证）②（切换事件告警）**本轮都做了**，
+但做的过程里翻出了一个比这两项都更重要的问题，所以本轮的主线其实是第三件事。
+
+### 结论先行
+
+1. **会话族分支现在真的跑过了**，并有了一道证明「同一批数据在两族上 reward
+   逐位相同」的集成测试（testcontainers，`//go:build integration`）。上一轮说
+   它「从未执行过」——本轮之前确实从未执行过。
+2. **新发现**：切到会话族会让 `auto_route_selections_hot` 的基线 cohort 变成
+   **空 map**，而空 map 不是 error，于是**每条 selection 的延迟项与成本项同时
+   静默塌成中性 0.5**。cohort 基线存在的唯一理由就此失效，且与「实测恰好中性」
+   在输出上逐字相同。已加指标 + 告警让它变响，但**没有**从根上消除（见未决项）。
+3. **诚实限定**：本地 auto 流量全部是 `probe_triggered` 探针流量，所以
+   p95 偏移 15.2% 这个数字**不代表生产**。结构性的结论（换源必然换 cohort 总体）
+   与本地数据无关；幅度是未知的。
+
+### 做了什么
+
+**抽出 SQL 纯函数**（`bg/auto_route_settle_sql.go`，新文件）
+`settleBaselinesSQL(src)` / `settlePendingSQL(src)`。直接原因：`settings.RequestLogsWriteEnabled()`
+只有读取器、**没有 setter**，所以只要源由全局门决定，集成测试就只能跑 v1 分支
+——也就是今天线上已经在跑的那条。
+
+**集成测试 2 道**（`bg/auto_route_settle_worker_integration_test.go`）
+- `TestAutoRouteSettleSessionSourceMatchesV1OnIdenticalRows`：夹具原本**没有**
+  `session_turns_hot` 表——这正是上一轮分支无法被测的原因。现在把同一批请求种进
+  两族（只改会话身份列名），要求基线三元组相等、pending 逐字段相等、
+  `computeSelectionReward` 输出相等。
+- `TestAutoRouteSettleMissingCohortIsCounted`：证明新增护栏真的在计数。
+
+**指标 2 个 + 告警 3 条**（`bg/auto_route_settle_baseline_metrics.go`、
+`deploy/prometheus/rules/auto-route-settle-baseline.yml`）
+`llmgw_autoroute_settle_baseline_cohort_rows{family}`、
+`llmgw_autoroute_settle_baseline_neutral_total{term,family}`，
+以及上一轮那个**没有消费者**的 `llmgw_autoroute_settle_source_total`
+（`AutoRouteSettleSourceSwitched`，`changes(...[10m]) > 0`，**不带 `for:`**）。
+
+### 门 6 道，变异 7/7
+
+新增：`TestSettleSQLFilesStillCarrySQL`、`TestSettleWorkerDelegatesToTheSQLBuilders`、
+`TestSettleBaselineCohortCountIsConsumed`、
+`TestAutoRouteSettleBaselineRulesCoverEveryRegisteredMetric`、
+`TestAutoRouteSettleBaselineAlertDocumentsTheRealMeasurement`；
+改造 2 道既有门（见下）。
+
+### 三个值得单独记住的教训
+
+**① 搬动 SQL 顺手制造了一道假绿。**
+把查询从 `auto_route_settle_worker.go` 搬进新文件后，两道只扫 worker 一个文件的门
+行为分叉：`TestSettleLegsAllUseTheSameSource`（数 `src.TurnsTable` ≥ 3）**变红**，
+而 `TestAutoRouteSettleWorkerDoesNotUseThe710View`（扫 SQL 字面量找 710 视图）
+**仍然绿**——它从此对着一个不含 SQL 的文件断言「没有 710 视图」。
+**只有红的那一道救了场。** 修法是引入 `settleSQLFiles` 清单供所有扫 SQL 的门共用，
+再加一道门挡住「清单与实际位置脱节」。
+
+**② 一条子串门被注释喂饱。**
+`TestSettleBaselineCohortCountIsConsumed` 第一版先写
+`strings.Contains(raw, "autoRouteSettleBaselineCohortRows")`。删掉那行 `Set` 之后
+它**判为通过**——命中的是 `loadTaskBaselines` 文档注释里的
+「see autoRouteSettleBaselineCohortRows」。已删掉该弱判据，只留要求完整调用形状
+（标识符 + `WithLabelValues` + `Set(float64(cohortRows))`）的正则。
+
+**③ 告警的 gauge 会陈旧，而陈旧的 gauge 会误报。**
+`cohort_rows` 只在**活跃族**上 `Set`；切换后另一个族的序列停更并冻结在旧值。
+对一个「已停更」的序列断言 `== 0`，读到的是「没在测」而不是「测出来是 0」。
+所以每条 cohort 规则都带活动守卫
+（`increase(source_total{family=...}[15m]) > 0`），**把「正在被使用」写进条件本身**。
+变异验证：删掉守卫后门变红。
+
+### 两个差点写错的结论（靠读定义躲掉）
+
+- §9.40 记「`canonical_id` 会话族根本没有这列」。真库 `pg_attribute`：
+  `session_turns_hot` **有** `canonical_id bigint`。那句话指的是 **710 视图的会话臂
+  不投影它**。差点据此又写一节「分支一跑就崩」。
+- 本地 `auto_route_selections_hot` 0 行。`pg_class.relkind='r'`、`relispartition=false`
+  ⇒ 它是普通表，hot 内容由 `bg/partition_manager.go` 定期搬进分区父表。
+  **hot 为空是正常的**，不是「worker 从来没结算过」。只看行数不看 relkind，
+  这会是一条很难看的假发现。
+
+### 测试
+
+```
+go build ./... && go vet ./bg/ ./autoroute/ && go vet -tags=integration ./bg/
+go test ./bg/ ./autoroute/ ./deploy/prometheus/rules/ ./domains/streaming/executors/ -count=1
+  → ok 25.965s / ok 4.020s / ok 0.414s / ok 33.917s
+go test -tags=integration -timeout 15m -count=1 -run TestAutoRouteSettle ./bg/
+  → ok 7.878s
+```
+
+### ⚠ admin 包 5 个红灯：已核实**不是**本轮引入
+
+`TestRequestLogsControlPlaneKnownEntriesAreReal`、
+`TestRequestLogsReadInventoryIsComplete`、
+`TestRequestLogsStopWriteClassificationEvidenceIsReal`、
+`TestRequestLogsStopWriteSourceFamilyCoversInventory`、
+`TestNoUnregisteredVPaddedColumnReader`。
+
+核实方式：在 `git worktree` 里检出 HEAD（`624a50c3b`，**不含本轮任何未提交改动**）
+跑同一批测试，**5 个全部逐字复现**。HEAD 是 `075760768` 的后代，中间两个提交
+`aa05e630b` / `624a50c3b` 属于并行会话，其中 `aa05e630b` 动了
+`admin/v1_direct_padded_column_reader_test.go`。上一轮收尾时 admin 是 `ok 70.1s`。
+
+**其中一条指向本轮的文件，必须点名**：
+`不可归属豁免 "bg/auto_route_settle_worker.go:id" 已失效：该形状不再出现`。
+根因是 §9.39 那道「v1 直读 + 读补位列」的扫描器靠**字面量表名**归属读方；
+`src.TurnsTable` 化之后表名变成间接引用，**扫描器对这条读方失去了可见性**。
+这不是「豁免该删」那么简单——它意味着这类读方现在**可能整体逃出检测**。
+按既有纪律**没有代为修改他人登记表**（本审计记录过三次的反模式），
+但这是并行会话需要知道的事实。
+
+### 遗留风险
+
+- **基线 cohort 跨切换不可能相等**，除非引入一个与被退役表无关的稳定 cohort
+  （例如独立长期统计表）。**本轮没有实现，也认为不该由一道门或一次文档改写
+  单方面「解决」**——这是需要单独排期的未决项。
+- 本地会话族 `is_auto_request=TRUE` 近 24h 为 0 行，但**本地 auto 流量本身已塌**
+  （09-27 起总量掉约 20 倍），**分不清是写方停写还是本地没有 auto 流量**。
+  要判定需要一台仍在跑 auto 路由的实例，不做推测。
+- 两道新集成测试**没有**接 CI（一次性空库上会退化，§9.34：绿而无证据）。
+  正确运行方式：`go test -tags=integration ./bg/`。
+- 告警的 `for:` 阈值仍未在真机 Prometheus 验证（承接 §9.38 遗留）。
+
+### 下一轮提示词
+
+> 本轮把 `auto_route_settle_worker` 的会话族分支**真正跑起来并证明了一致性**，
+> 代价是搬动了 SQL——而搬动暴露了一个更值得处理的问题：
+>
+> ① **优先**：`TestNoUnregisteredVPaddedColumnReader` 报
+>    `不可归属豁免 "bg/auto_route_settle_worker.go:id" 已失效`。根因不是「豁免该删」，
+>    而是 §9.39 那道扫描器靠**字面量表名**归属读方，`src.TurnsTable` 化之后
+>    **这类读方可能整体逃出检测**。需要判断：扫描器能不能在不接受「表名不可知」
+>    的前提下仍然覆盖间接表名？（提示：§9.39 已经为「补位列名」做过一次
+>    函数作用域归属的细化，方向是通的。）**注意 admin 登记表是并行会话的，
+>    不要代改**——但这个判断该做。
+> ② **未决项，需要拍板**：基线 cohort 跨切换不可能相等。选项是
+>    (a) 接受一次**显式、有告警、有人确认**的 cohort 重新基线化；
+>    (b) 引入与被退役表无关的稳定 cohort（独立长期统计表），让跨切换可比。
+>    (b) 才是真正满足原始需求「确保数据在更改前后一致」的那条路，但它是新表 +
+>    新写路径，不该顺手做。
+> ③ 会话族 `is_auto_request` 为 0 的根因仍未判定。需要一台**仍在跑 auto 路由**的
+>    实例对比两侧同日 auto 行数；本地已经不能作为证据面（流量塌了）。
+> ④ 仍未做：§9.39 的 `vi` 维度 SQL 注释处理（`model_alternatives.go`）；
+>    §9.38 告警 `for:` 阈值未在真机 Prometheus 验证；§9.36 的 19 条静默档；
+>    响应侧 7 个读点仍不可端口。
