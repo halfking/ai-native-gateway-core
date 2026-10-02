@@ -596,11 +596,11 @@ LLM 提供商（如 OpenAI/Anthropic）支持 Prompt Caching：
 
 ### 8.1 健康评分详细规则
 
-完整规则参见：`docs/ops/session-health-operations.md`
+完整规则参见：`docs/06-deployment/04-runbooks/ops/session-health-operations.md`
 
 ### 8.2 API 参考
 
-完整 API 文档：`docs/api/session-analytics.yaml`
+完整 API 文档：`docs/03-design/03-interface-design/api-yaml/session-analytics.yaml`
 
 ### 8.3 术语对照表
 
