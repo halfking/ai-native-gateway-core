@@ -1991,3 +1991,113 @@ N2 删掉 `canonical_id` 缺口整段 → `:133`（钉特征句之后才真正�
 >
 > 另：§9.39 遗留的 `vi` 维度 SQL 注释处理仍未做（`model_alternatives.go`），
 > 以及 §9.38 的告警 `for:` 阈值未在真机 Prometheus 验证过。
+
+---
+
+## 第二十四轮（2026-10-02）：`retry_count` 的推导对真实数据**从未成立过** —— §9.41
+
+### 结论
+
+§9.40 说「下一件需要一个决定」。我去量决定所需的数字，**撞上一个与停写完全无关的
+现存缺陷**：`retry_count` 的 SQL 表达式对真实数据**从来没有正确执行过一次**。
+
+### 缺陷
+
+`settleBatch` 的 LATERAL 原本是：
+
+```sql
+SUM(GREATEST(COALESCE(jsonb_array_length(r2.routing_attempts), 1) - 1, 0))
+```
+
+它假设该列是 JSON **数组**。写方 `ToJSONBytes` 产出的是
+`map[string]interface{}{"attempts": [...]}` —— **object**。真库实测：
+
+```
+ERROR:  cannot get array length of a non-array
+```
+
+**且 `array` 形态在 `request_logs` 里从未存在过**：340,917 行、最早 2026-09-03，
+全部 `object`。
+
+### 失败范围是整条查询，不是一行
+
+LATERAL 在主查询里，一行抛错 ⇒ 整条 `settleBatch` 中止 ⇒ **该批最多 500 条**
+（`settleBatchSize = 500`）selection 全不结算；调用方只 `slog.Warn` 后 return，
+下一轮重查**同一批** ⇒ 反复卡死，不是一次性丢一批。
+
+实测影响面（2026-09 分区 1747 条）：
+
+| 情形 | 条数 | 占比 |
+|---|---|---|
+| `canonical_id IS NULL` ⇒ LATERAL 恒空、**不报错** | 1183 | 67.7% |
+| 有 canonical_id、匹配行全无 `routing_attempts`、不报错 | 104 | 6.0% |
+| 有 canonical_id、匹配行带 `routing_attempts` ⇒ **整批中止** | **460** | **26.3%** |
+
+### ⚠ 顺带量化一个**方向相反**的偏差（停写关闭的今天就在发生）
+
+`RetryRatio` 只在 `*modelReqsInSes > 0` 时赋值 ⇒ 那 **67.7%** 的 `model_reqs=0`
+⇒ `RetryRatio=0` ⇒ `retryScore = 1.0`（**满分**）。retry 权重 **0.10**。
+
+> **三分之二的已结算 selection 在白拿 retry 项满分**，「没测到」被当成「测到完美」。
+
+`ComputeRoutingReward` 注释写的「Unknown inputs resolve to neutral 0.5 rather than 0,
+so 'not measured' is never mistaken for 'measured as bad'」——**这条不变量在
+`RetryRatio` 上不成立**：未测得 → 0 → `1.0 - 0` = **最好**，不是中性。
+这是「把缺失报成在场」族，且方向是**抬高**。
+
+### 错误的第二处化身
+
+`executors/routing_tracker.go` 注释原文写着
+`retry_count = jsonb_array_length(routing_attempts) - 1`——**那正是消费者的 bug**。
+把 bug 写进写方注释＝给下一个人发一份错误契约。已订正为
+`len(routing_attempts -> 'attempts') - 1` 并立门禁止它回来。
+
+### 修法与验证
+
+抽成具名 `retryCountPerRowSQL(alias)`（可静态测），按 `jsonb_typeof` 分派：
+`'array'` 走整列（防御性，真库从未出现，删掉它会让假想情形**静默退化成 0 重试**）；
+`'object'` 走 `-> 'attempts'`（主体）；外层 `WHERE jsonb_typeof(v.a)='array'`
+守卫让畸形值退化为「这行算 0」而非整条查询中止。
+
+真库同一批数据：旧 → `ERROR`；新 → 1002 行、retry 总数 **1669**、无报错。
+
+### 门 3 道，变异 3/3
+
+P1 删 `-> 'attempts'` → `:50`；P2 整段退回旧裸调用 → `:50`（4 条缺失）+ `:58`
+（「裸调用」专用判据）；P3 把错误契约放回写方注释 → `:101`。
+
+**为什么是形状门不是集成测试**：`auto_route_selections_hot` 当前是空的、
+本地 CI 库没这类流量 ⇒ 需要真实行的集成测试在这里**证明不了任何事**
+（§9.34：空库上的真库门是绿而无证据）。所以断言可静态证明的那一侧。
+
+### ⚠ 我自己写错了一处（已改）
+
+§9.40 我在 worker 注释里写「每 30 秒跑一次、每次 **100** 行」——
+实际 `settleBatchSize = 500`。已订正。**写注释时引用的常量要回查定义，不要凭印象。**
+
+### 仍未修：retry 项「未测得 ⇒ 满分」
+
+修它等于改 reward 语义（让未测得落回中性 0.5？还是按可用性开关该权重？），
+与 §9.40 结尾那个「需要一个明确决定」是**同一个决定**，应一起做，不宜夹带。
+已记为本轮**新发现的现存缺陷**（与停写无关）。
+
+### 下一轮提示词
+
+> 仍然需要**一个明确决定**，现在有两件事绑在一起，都改 reward 语义：
+> **(1) `retry_count` 的数据源**（停写后 `canonical_id` 在会话族无来源 ⇒ LATERAL 腿无法平移）
+> **(2) `RetryRatio` 未测得 ⇒ `retryScore=1.0` 满分**（67.7% 的 selection 现在就在白拿 0.10 权重）
+>
+> 三个候选，建议**一次做完**：
+> ① **让 retry 项显式三态**（measured / unmeasured / unavailable），
+>    `unmeasured` 落回中性 0.5 而不是满分 1.0，同时停写时给 `unavailable`
+>    —— 一处改动同时解决 (1) 和 (2)，且不依赖「回填 canonical_id」这件大工程；
+> ② 回填 `canonical_id` 到会话族（解决 (1)，但 (2) 仍在：没测到还是满分）；
+> ③ 接受现状只加指标（最省事，但 67.7% 白拿权重这件事继续存在）。
+>
+> 选 ① 之前必须先量：**这 67.7% 里 `model_reqs` 本来会是多少**——
+> 若它们在会话族里也能算出真实 `model_reqs`（只是 `canonical_id` 缺失），
+> 那 (1) 的成本远低于「回填」，因为 LATERAL 的 `r2.canonical_id = s.canonical_id`
+> 这一条可能可以去掉、改用别的会话内标识。用 9 月分区量，别用空的 hot。
+>
+> 另：§9.39 遗留的 `vi` 维度 SQL 注释处理（`model_alternatives.go`）仍未做；
+> §9.38 的告警 `for:` 阈值未在真机 Prometheus 验证过。
