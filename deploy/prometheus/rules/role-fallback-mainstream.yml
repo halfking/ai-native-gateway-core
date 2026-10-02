@@ -12,12 +12,19 @@ groups:
       # 表达式的四条硬约束（改动前请先读，删掉任何一条都会让告警**静默失效**
       # 而非误报——这是本文件最需要小心的地方）：
       #
-      # 1. `and on()` 显式声明按**空标签集**匹配。PromQL 的 and 默认按
-      #    "除 metric name 外的全部标签"匹配：左侧 llmgw_..._active 带着
-      #    scrape 注入的 job/instance，右侧 sum() 结果没有任何标签，两侧
-      #    标签集不相等 → and 产出空向量 → 告警永不触发。写成 and on()
-      #    （或把左侧包一层 max()）才能真正过滤。**这一条无法用字符串断言
-      #    之外的任何本地手段验证，只能靠 promtool / 线上验证。**
+      # 1. gauge 侧被 max() 折叠 + set operator 写成 `and on()`，两者缺一不可地
+      #    共同防住一个**纯静默**失效：PromQL 的 and 默认按"除 metric name 外的
+      #    全部标签"匹配。若左侧是**未聚合**的 gauge（带 scrape 注入的
+      #    job/instance）、右侧是 sum()（无标签），两侧标签集不相等 → and 产出
+      #    空向量 → 告警永不触发，且 Prometheus 不报任何错。
+      #    promtool 四变体对照实测（输入带 job/instance）：
+      #      裸 and + 未聚合 gauge        → **不触发**（静默失效）
+      #      裸 and + max() 折叠          → 触发
+      #      and on() + 未聚合 gauge      → 触发
+      #      and on() + max() 折叠（现行）→ 触发
+      #    即两种手段**各自都能**独立解决，此处同时采用是为了任一被后人
+      #    "顺手简化"掉时仍然安全。删除 max() 或删除 and on() 都必须重跑
+      #    rule_tests/ 下的 promtool 单元测试确认仍触发。
       #
       # 2. 分母是 layer="kind" + layer="mainstream" 之和，即**role 路由实际
       #    介入的请求数**，不是全量 auto 请求数。用全量做分母会把 main
