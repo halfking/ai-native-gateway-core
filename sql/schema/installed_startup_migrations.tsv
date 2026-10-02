@@ -219,3 +219,4 @@
 201	809_instance_release_status_nullable_release_id.sql
 202	813_supplier_errors_partitions_heap.sql
 203	814_adaptive_probe_targets_hot_subquery.sql
+204	815_request_logs_view_stage_band_cff.sql
