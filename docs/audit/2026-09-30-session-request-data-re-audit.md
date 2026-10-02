@@ -4608,3 +4608,134 @@ live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**�
   正确顺序是先把既有那张门收绿，再在它上面加可移植性维度。
 
 ⇒ 缺口已**具名记账**于 §9.28 与本节，不作为「待办」冒充已完成。
+
+---
+
+## §9.36 把 S4 停写分级门**收绿**：31/106 → 0/106
+
+§9.35 结尾定的下一步是收绿覆盖门。本节记结果，**并记三个我原本会判错的地方**。
+
+### §9.36.1 结果
+
+`TestRequestLogsStopWriteNothingLeftUnclassified` 由 **31/106 未评估**变为 **0**。
+新增 31 条逐点评估（batch6 20 条 + batch7 11 条），另补 2 条 `nullPaddedUnaffectedJustification`
+具名论证。八道相关门全绿：
+
+| 门 | 状态 |
+|---|---|
+| `TestRequestLogsReadInventoryIsComplete` | PASS（106 文件 / 240 调用点双向一致） |
+| `TestRequestLogsStopWriteNothingLeftUnclassified` | **PASS（0/106）** |
+| `TestRequestLogsStopWriteClassificationEvidenceIsReal` | PASS（31 条证据逐字命中） |
+| `TestRequestLogsStopWriteSourceFamilyCoversInventory` | PASS |
+| `TestStopWriteEffectAgreesWithSourceFamily` | PASS |
+| `TestNoUnregisteredVPaddedColumnReader` / `…PhysicalOnlyColumns…` | PASS |
+| `go test -tags s4audit ./admin/` 全量 | **ok 69.6s，零 FAIL** |
+
+**门必须变异验证**，三条各命中不同的门、且都是**断言命中**而非崩溃：
+
+| 变异 | 红在 |
+|---|---|
+| M1 删掉一条新登记（实际跨了 6 条） | 覆盖门 `coverage_gate_test.go:40`，报「**6**/106 未评估」——**精确数出我删的条数** |
+| M2 把 Evidence 改成文件里没有的片段 | 逐字门 `classification_test.go:939` |
+| M3 抽掉 `session_turns_tree` 的 null-padded 具名论证 | 族一致门 `classification_test.go:1328` |
+
+*M3 第一版把字符串截断导致**编译失败**——崩溃不是证据，那一版变异无效，
+改成按 map 条目边界删除、`go vet` 确认语法完好后才重跑。*
+
+### §9.36.2 三处**我原本会判错**的地方
+
+这批评估由四个子代理并行做，**三处出现两个子代理给出互相矛盾档位**。
+它们在**两个方向上**都会错，所以逐条手验不是形式。
+
+#### ① 判「视图读点停写后是否还供数」**必须量近期填充率，不能用全历史均值**
+
+`admin/session_extract.go`：谓词是 `gw_task_id = $1`，而 710 视图的 `gw_task_id`
+取自 `d.*`（details 的 LEFT JOIN）。**全历史口径**下 session 臂 94.1% 为 NULL
+⇒ 看起来「停写后恒 0 行」⇒ 判 `silently_empty`。
+**按天口径**（真库）：
+
+| 日期 | 09-22 | 09-24 | 09-29 | 09-30 | 10-01 | 10-02 |
+|---|---|---|---|---|---|---|
+| `gw_task_id` 非空 | 0.36% | 5.34% | 4.77% | 37.88% | **97.72%** | **98.51%** |
+| `api_key_prefix` 非空 | 33.60% | 37.30% | 99.98% | 100% | 100% | 100% |
+
+⇒ details 写入链在 09-30 前后已修好，**近期行带着这些值**，读点照常命中
+⇒ 正确档位是 `unaffected_by_stop_write`。**全历史均值会给出相反的结论。**
+
+⇒ **纪律**：停写后果是**前瞻**问题，量具必须能回答「现在和以后」，
+而历史均值被已修好的旧数据主导。
+
+#### ② 同一个量，方向相反的第二处：`provider_id` 在**恶化**
+
+`admin/session_analytics_breakdown.go` 的 provider 分解按 `rl.provider_id` 分组，
+而视图里它是 `d.*`。真库按天：
+
+| 日期 | 09-27 | 09-28 | 09-29 | 09-30 | 10-01 | 10-02 |
+|---|---|---|---|---|---|---|
+| `provider_id` 缺失率 | 22.15% | 46.38% | 47.75% | 51.87% | **68.03%** | 49.19% |
+
+同期的 `outbound_model` 缺失率 **0.00%**、`cost_usd` NULL 率 **0.00%**。
+⇒ 停写后**约一半新流量不再计入其真实 provider**（且 `provider_id=0` 不是 NULL，
+`COALESCE(…,'unknown')` 收不住它们，会聚成一个退化的 0/'unknown' 桶）
+⇒ 正确档位是 `silently_degraded_content`，**不是** `unaffected`。
+
+**这条同时是一条新的运营事实**：会话族的 provider 归属当前只有约一半填得上，
+而且**趋势在恶化**——它是退役决策的一个独立输入，不属于停写后果。
+
+#### ③ 我自己犯的测法错误：按 `request_id` 跨存储面猜行来源
+
+我一度判定 `request_logs_with_current_month_without_customer_id`
+「70% 的行来自 session 族」，并据此差点把 `admin/usage_trend_series.go`
+从 `silently_frozen` 改判成 `unaffected`。**那是错的。**
+`pg_get_viewdef` 的真库定义是纯 `request_logs_hot UNION ALL request_logs`，
+**不含任何 session 分支**。
+
+错因：我按 `request_id` 把该视图的行与 session 族 LEFT JOIN 数「重合率」，
+而**该包装视图没有顶层 710 那层反连接**（顶层用 `NOT EXISTS session_*` 去重），
+于是 v1 行的 `request_id` 本来就与 session 行重合 ⇒ 70% 是**假象**。
+
+⇒ **纪律**：判断一个视图有没有 session 臂，量具是 **`pg_get_viewdef` 逐字读**，
+不是「按 id 猜行来源」——后者在有去重/无去重的两层视图之间会系统性造假。
+（这与 §9.28 的「列名撞车」、§9.24 的「关系名相同不代表同一存储面」同族：
+**跨面对齐 id 是最容易被当成「实测」的错误测法**。）
+
+#### 附：子代理提出的 6 个 UNRESOLVED，两个我用真库直接定案
+
+- `request_logs_with_current_month_without_customer_id` 有无 session 臂 → 上面 ③ 已定（**无**）。
+- 线上生效的 `recent_success_rate()` 读哪张表 → 查 `pg_proc.prosrc`：
+  **直读 `request_logs_hot`、3 小时窗口** ⇒ `admin/credential_success_rate.go` 判
+  `silently_empty` 成立（子代理正确）。
+
+### §9.36.3 收口后的分布与灰度含义
+
+31 条新增评估的档位分布：
+
+| 档位 | 条数 | 灰度含义 |
+|---|---|---|
+| `silently_empty` | 11 | **最危险**：接口 200、字段齐全、数值全零或空列表 |
+| `unaffected_by_stop_write` | 8 | 读点在写门内 / 流量由 session 臂供给 / 读体量不读内容 |
+| `silently_degraded_content` | 4 | 行还在但某列静默变空（bodies 正文腿、provider 归属） |
+| `silently_frozen` | 4 | 冻结为停写前常数 |
+| `errors_out` | 3 | 响亮失败，灰度立刻可见（**可接受**） |
+| `validator_dual_read` | 1 | §9.35 的新鲜度探针 |
+
+**⇒ 灰度前必须先处理的 19 条（`silently_empty` + `silently_degraded_content` + `silently_frozen`）**
+不是「门红了」，而是「门绿了但风险已被登记」。这张表现在是**可执行的清单**，
+而不是「待评估」。
+
+**本节不改变 §9.35 的结论**：登记表绿了不等于可以停写。
+`auto_route_settle_worker` 仍会全量 abandon（只是现在看得见），
+响应侧 7 个读点仍不可端口，正确修法仍是改读会话族。
+
+### §9.36.4 途中发现、**未修**的两处相邻缺陷（记账，不在本轮范围）
+
+1. **`discovery/discovery.go` 的控制面登记表已过期**：
+   `request_logs_control_plane_dependency_test.go:297-309` 仍登记 `Gated: false`，
+   Note 描述的是「未加护栏时」的失效形态，而护栏是 `e52687954`（§9.12）后加的。
+   **没有任何一道门把 `Gated` 与代码里的实际护栏对照** ⇒ 这条过期不会被自动发现。
+2. **`nullPaddedUnaffectedJustification` 已有 4 条是同一个误触发的产物**：
+   族分类器用词边界匹配补位集里的 `id`，而命中常来自**别的表**的
+   `WHERE id = $1`（`admin/attachments_routes.go` 的 `attachments` 是 HTTP 路径字面量、
+   `admin/route_incidents.go` 的 31 处 `id` 全在 Go 代码里）。本批的
+   `admin/live_stream_sse.go` 与 `bg/candidate_failure_monitor.go` 是同一形态，
+   已在各自登记与论证里点名。**根修应是给补位匹配加表归属**，不是继续逐条写论证。
