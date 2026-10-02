@@ -3053,3 +3053,61 @@ session 族」的历史任务会对**所有人** 404（权限门翻转成阻断�
 2. **19 列 session 族真的没有**，需要迁移 + 回填，或明确裁决「这些列随 v1 一起退役」。
 3. `assertTaskInTenant` 依赖两张将被删除的表 ⇒ 写入 S4 退出判据。
 4. `credential_recovery` 写授权缺陷未修（阻塞灰度）。
+
+---
+
+## §9.20 把 42 列的迁移成本压到 4 个投影（2026-10-02）
+
+§9.19.3 只回答了「哪些列在 session 族里没有」，没回答「**哪些列真的有人在读**」。
+这一轮补上后半问，结论把待决范围缩小了一个数量级。
+
+方法：一次性 AST 扫描器（`/tmp/colscan`，不入仓库），复用 §9.18 那套已验证的
+「列绑定到哪张表」判据，对每条 SQL 字面量解析其 `FROM/JOIN` 关系集合，再把每处列
+引用归到它绑定的关系。**扫描器的输出只是嫌疑清单** —— 它对多关系字面量会过度归因
+（本轮就把 `turn_writer.go` 的 INSERT 列清单误判成视图读取），每一条都要手验。
+
+### §9.20.1 42 列的真实用途分布
+
+| 类别 | 数量 | 结论 |
+|---|---:|---|
+| **被 SELECT 读、且 `session_turns` 已有该列** | **4** | `origin_stage`、`token_band`、`client_forwarded_for`、`trace_events` ⇒ **纯 710 投影** |
+| 被 SELECT 读、但已有别的 session 族落点 | 1 | `outbound_body`：**从不从 `request_logs`/`request_logs_hot` 直读**；所有读取走 `request_logs_bodies*` 或 `session_bodies_unified`，bodies 族已随迁 |
+| **只写不读**（INSERT/UPDATE 列清单，零 SELECT） | 5 | `audio_tokens`、`image_tokens`、`video_tokens`、`provider_tokens`、`reasoning_tokens` —— 只见于 `telemetry/client.go:1362`（INSERT）与 `:2150-2153`（UPDATE）及 Go 结构体字段 |
+| **全仓无任何 SQL 引用** | 29 | 零迁移成本，可随 v1 退役 |
+| **名字撞车，不是真的读 request_logs** | 3 | `cache_hit` → 实为 `dashboard_access_events`；`session_summary` → `approval_requests`；`task_id` → 分布在 `durable_llm_tasks` / `hosted_task_events` / `session_dim` 等十余张任务表，**没有一处从 request_logs 读** |
+
+`api_key_fingerprint`、`upstream_protocol` 等落在「无任何 SQL 引用」一类 ——
+它们**存在**（A 类里确实在 `session_turns` 有列），但今天没有任何查询读它们。
+
+### §9.20.2 于是待决范围只剩一句话
+
+> **给 710 视图补 4 个投影：`origin_stage`、`token_band`、`client_forwarded_for`、`trace_events`。**
+
+这 4 列的**数据已经在 `session_turns` 里**（§9.19.3 的 A 类实测），所以：
+
+- **不需要回填**（历史数据已在 session 族里）；
+- **不需要动写路径**（`turn_writer.go` 的 INSERT 列清单已含 `token_band` 等）；
+- 只需一条 `CREATE OR REPLACE VIEW` + 同步 `TestRequestLogsViewSessionArmPinIsCurrent` 等 pin。
+
+今天唯一的真实消费方是 `admin/compression_stats.go:212` 的 token 分带聚合
+（§9.18.5 抓到的那处静默空）。另外 3 列目前无人读，补上是为将来与语义完整性。
+
+### §9.20.3 但补 `origin_stage` 有个硬前提
+
+`origin_stage` 正是 §9.18 修掉的那处线上 500 的来源列。把它投影进视图，等于**把那条
+越列路径重新打开**——所有以该视图为源的读方，只要用物理表版谓词，立刻又 42703。
+
+所以补投影与「把所有视图读方切到 `bg.ProbeTrafficExclusionPredicateView`」**必须同批**，
+不能拆成两个提交。§9.18 新建的 `TestNoPhysicalOnlyColumnsInViewSourcedSQL` 会在
+任何一处遗漏时转红（它按「限定符绑定到视图自身别名」判定，见 §9.18.8 第 3 条）。
+
+### §9.20.4 方法学留记
+
+1. **扫描器输出是嫌疑清单，不是结论。** 本轮它把 `turn_writer.go:366` 的
+   `token_band` INSERT 列清单归到了 `session_turns_with_current_month`，
+   差点被读成「第五处 42703」。手验 5 处视图读点后确认：全部只用身份列
+   （`session_id`/`turn_no`/`request_id`/`tenant_id`/`partition_date`），无越列。
+2. **列名撞车是真实噪声源。** `cache_hit` / `session_summary` / `task_id` 三个名字在
+   本仓的十几张无关表上都有。**只按列名统计引用量会高估迁移面**——必须先判绑定关系。
+3. **「无 SQL 引用」是本轮最有价值的量。** 29/42 无人读，意味着 42 列里真正需要
+   迁移的只有 4 个。之前把这 42 列整体当作「迁移面」是高估了。

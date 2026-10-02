@@ -543,3 +543,35 @@ S4 门**。停写一生效：usage 臂冻结、credit 臂继续增长 ⇒ 切换
 **但面向终局有真约束**：门依赖 `request_logs_hot` + `request_logs` 两条 v1 腿，
 而终局目标正是删掉这两张表 ⇒ v1 退役后「只在 v1 留痕」的历史任务会对**所有人** 404
 （权限门翻转成阻断所有人）。**S4 退出判据必须包含「v1-only 历史已回填进 session 族」。**
+
+---
+
+## 2026-10-02 追加（第三轮）：§9.20 迁移成本从「42 列」压到「4 个投影」
+
+补上了前两轮一直缺的后半问：**这 42 个「物理表独有列」里，哪些真的有人在读？**
+
+| 类别 | 数量 | 结论 |
+|---|---:|---|
+| 被 SELECT 读、且 `session_turns` 已有该列 | **4** | `origin_stage`、`token_band`、`client_forwarded_for`、`trace_events` |
+| 被读但已有别的 session 落点 | 1 | `outbound_body` —— 从不从 `request_logs*` 直读，全走 bodies 视图族 / `session_bodies_unified` |
+| 只写不读 | 5 | 5 个 token 指标列，只见于 INSERT/UPDATE 列清单与 Go 结构体 |
+| 全仓无任何 SQL 引用 | **29** | 零迁移成本 |
+| 名字撞车 | 3 | `cache_hit`→`dashboard_access_events`；`session_summary`→`approval_requests`；`task_id`→十几张任务表 |
+
+⇒ **待决范围只剩一句话：给 710 视图补 4 个投影。** 数据已在 `session_turns`，
+**不需回填、不需动写路径**，只需一条 `CREATE OR REPLACE VIEW` + 同步 pin。
+今天唯一的真实消费方是 `admin/compression_stats.go:212`。
+
+**硬前提**：补 `origin_stage` = 把 §9.18 修掉的 500 路径重新打开，必须与
+「所有视图读方切到 `bg.ProbeTrafficExclusionPredicateView`」**同批提交**，
+`TestNoPhysicalOnlyColumnsInViewSourcedSQL` 会在任何一处遗漏时转红。
+
+### 方法学（这轮踩到的）
+
+- **扫描器输出是嫌疑清单，不是结论。** 它把 `turn_writer.go:366` 的 `token_band`
+  **INSERT 列清单**误判成视图读取，差点被读成「第五处 42703」。手验 5 处视图读点后
+  确认全部只用身份列，无越列。**每次「抓到新缺陷」都要问：这是读方还是写方？**
+- **列名撞车是真实噪声源。** 只按列名统计引用量会**高估**迁移面（`task_id` 在本仓
+  十几张无关表上都有）。必须先判「这个引用绑到哪张表」——与 §9.18.8 的教训同源。
+- **「无 SQL 引用」比「有几处引用」更有决策价值**：29/42 无人读，
+  于是真正要迁移的只有 4 个。此前把 42 列整体当迁移面是**高估**。
