@@ -683,6 +683,21 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 所以**没有任何自愈通道会把它收敛到 817** —— 不装就永久停在
 			// 已知会崩的形态上（与 816 同一形状的第五次遗漏）。
 			"817_request_logs_view_client_ip_semantic_guard.sql",
+			// 818 (2026-10-02, 存储优化 v2): ursm_node_snapshot_min 的 payload
+			// 字段拆分 —— 24 个 hash 键提升为 typed 列，payload 退化为未知字段的
+			// 前向兼容仓并剔除 7 个与已有列重复的键。实测该表 payload 占 heap
+			// 66%（872 MB/天）；该表 22 GB 占库 56%，且运行时零读方。
+			// 刻意不回填：ADD COLUMN nullable 无 DEFAULT 不触发重写，收益随 7 天
+			// 保留期自然滚出。
+			"818_ursm_snapshot_typed_columns.sql",
+			// 819：public.request_abandoned ——「请求开始了却从没有终态」的独立
+			// 落点（审计 §9.66）。必须在 S4 停写开关生效**之前**应用：反过来的
+			// 顺序会造出一段「请求开始了但哪都不记」的窗口。
+			// 写方（telemetry client markRequestAbandonedPending /
+			// clearRequestAbandonedPending）刻意在 `if logsWrite {}` 之外，
+			// 所以这张表活过 v1 退役；不变式是「表里有行 ⇔ 开始了且无终态」，
+			// 终态路径 DELETE 该行。
+			"819_request_abandoned.sql",
 		},
 	}
 }

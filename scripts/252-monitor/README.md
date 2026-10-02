@@ -24,6 +24,7 @@
 | 3 | `pg17-emergency-cleanup.sh --auto` | `*/15 * * * *` | `disk >= 90%` 自动 L2（**中风险**：DROP 空表 + VACUUM FULL，已修复默认分区验证逻辑） |
 | 4 | `pg17-vacuum-bloat.sh` | 周日 03:15 | 周级 VACUUM FULL bloat > 30% / size > 256 MB 表 |
 | 5 | `pg17-drop-old-columnar-partitions.sh` | 每月 1 号 02:30 | DROP 老月分区 + VACUUM FULL 列存元数据 |
+| 5b | `pg17-index-bloat.sh` | 周日 04:15 | **索引死页**巡检（pgstatindex deleted_pages），`--report` 只读 + 超阈值告警；`--fix` 走 REINDEX CONCURRENTLY（2026-10-03 新增）|
 | 6 | `notify.sh` | 被动调用 | Feishu (HMAC-SHA256 签名) / DingTalk / Telegram / Generic |
 
 部署位置：
@@ -36,12 +37,14 @@
 /opt/scripts/pg17-drop-old-columnar-partitions.sh
 /opt/scripts/pg17-emergency-cleanup.sh
 /opt/scripts/pg17-vacuum-bloat.sh
+/opt/scripts/pg17-index-bloat.sh                  # 索引死页巡检 (2026-10-03 新增)
 /usr/local/bin/llmgw-source                 # cron env 加载包装
 /etc/profile.d/llmgw-notify.sh             # 交互 shell env 加载
 /etc/llmgw/notify.conf                     # webhook 凭证 (mode 600)
 /var/log/pg17-disk-watch.log               # 采样 log
 /var/log/pg17-disk-watch.alert.log         # 触发 alert log
 /var/log/pg17-proactive-cleanup.log        # 预防性清理日志 (2026-09-06 新增)
+/var/log/pg17-index-bloat.log            # 索引死页巡检日志 (2026-10-03 新增)
 /var/log/llmgw-notify.log                  # 推送记录
 /var/tmp/pg17-disk-watch.cooldown          # cooldown 状态 (防噪声)
 /var/tmp/pg17-proactive-cleanup.cooldown   # 预防性清理 cooldown (2026-09-06 新增)

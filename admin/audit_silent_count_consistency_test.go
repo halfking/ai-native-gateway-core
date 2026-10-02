@@ -104,13 +104,14 @@ func TestAuditDocSilentClaimMatchesRegistry(t *testing.T) {
 // 可观测：登记表里出现未声明的档位值 ⇒ 红 ⇒ 必须显式决定它算不算静默。
 func TestStopWriteEffectValuesAreFromTheDeclaredSet(t *testing.T) {
 	declared := map[string]bool{
-		effectSilentlyEmpty:           true,
-		effectSilentlyDegradedContent: true,
-		effectSilentlyFrozen:          true,
-		effectErrorsOut:               true,
-		effectUnaffected:              true,
-		effectValidator:               true,
-		effectUnclassified:            true,
+		effectSilentlyEmpty:             true,
+		effectSilentlyDegradedContent:   true,
+		effectSilentlyFrozen:            true,
+		effectSilentlyDegradedAggregate: true,
+		effectErrorsOut:                 true,
+		effectUnaffected:                true,
+		effectValidator:                 true,
+		effectUnclassified:              true,
 	}
 	seen := map[string]int{}
 	for f, c := range requestLogsStopWriteClassification {
@@ -147,6 +148,88 @@ func TestStopWriteEffectValuesAreFromTheDeclaredSet(t *testing.T) {
 	for e := range declared {
 		if seen[e] == 0 {
 			t.Logf("注意：档位 %q 已声明但登记表里 0 条使用（可能是刚加的档位或名字写错）", e)
+		}
+	}
+}
+
+// TestSilentFormsAreEitherListedOrRegisteredAsExcluded 补上「两头都是沉默」那个洞。
+//
+// # 漏洞的形状
+//
+// countSilentStopWriteEffects 刻意**不**取补集（理由见该函数注释）：新增一个静默
+// 失效形态时，它该不该进灰度清单需要人判断。可是这个设计的另一面是——
+//
+//	新增一个静默档 → 它不进 switch → 70 不变 → 两道门全绿 → **什么也没发生**。
+//
+// 也就是说：「刻意不取补集」把「悄悄算进去」挡住了，却把「悄悄漏掉」放行了。
+// 而本文件存在的全部理由就是防后者（见 §9.48 那句「可执行的清单」）。
+//
+// 判据不是数字，而是**三态穷举**：登记表里用到的每一档，必须能被归到
+//
+//	① 灰度清单（switch 里的三档）之一，或
+//	② silentFormsOutsideGreyList 里**带非空理由**的一条，或
+//	③ errors_out / unaffected / validator / unclassified（非静默形态）。
+//
+// 落在这三类之外的档位 ⇒ 红。⇒ 「新增一个静默档却什么都不说」不再是绿的。
+func TestSilentFormsAreEitherListedOrRegisteredAsExcluded(t *testing.T) {
+	const (
+		listedMarker = "" // switch 里的档用空串标记
+	)
+	listed := map[string]string{
+		effectSilentlyEmpty:           listedMarker,
+		effectSilentlyDegradedContent: listedMarker,
+		effectSilentlyFrozen:          listedMarker,
+	}
+	nonSilent := map[string]bool{
+		effectErrorsOut:    true,
+		effectUnaffected:   true,
+		effectValidator:    true,
+		effectUnclassified: true,
+	}
+
+	seen := map[string]int{}
+	for _, c := range requestLogsStopWriteClassification {
+		seen[c.Effect]++
+	}
+
+	// 登记表里用到的每一档都必须能被归类。
+	for effect, n := range seen {
+		_, inList := listed[effect]
+		_, inNonSilent := nonSilent[effect]
+		reason, inExcluded := silentFormsOutsideGreyList[effect]
+		switch {
+		case inList || inNonSilent:
+			// 合规。
+		case inExcluded && strings.TrimSpace(reason) != "":
+			// 合规：静默形态但被显式排除，且写了理由。
+		default:
+			t.Errorf("档位 %q 在登记表里用了 %d 次，却既不在灰度清单的 switch 里、"+
+				"也不在 nonSilent 集合里、也不在 silentFormsOutsideGreyList 里带理由登记。\n"+
+				"  新增失效形态时必须**显式决定**它算不算「灰度前必须处理」的静默档：\n"+
+				"  ① 要算   → 加进 countSilentStopWriteEffects 的 switch，并改文档里那一句；\n"+
+				"  ② 不算   → 登记进 silentFormsOutsideGreyList 并写明为什么；\n"+
+				"  ③ 两处都不做 ⇒ 就是本门要挡的「悄悄漏掉一整类失效形态」。", effect, n)
+		}
+	}
+
+	// 反向：排除登记表自己不能腐烂。
+	// ① 登记了但没人用 ⇒ 过期排除（档位改名/读点消失），它在骗人说「我们考虑过」。
+	// ② 登记了但理由是空的 ⇒ 同上，且更坏：它连判断都没留下。
+	// ③ 登记了却同时在灰度清单的 switch 里 ⇒ 两处矛盾，70 的口径已不可解释。
+	for effect, reason := range silentFormsOutsideGreyList {
+		if seen[effect] == 0 {
+			t.Errorf("silentFormsOutsideGreyList 登记了档位 %q，但登记表里 0 条使用。\n"+
+				"  这是**过期排除**——它让读者以为这一类仍被显式考虑过，而实际上它已经不存在了。\n"+
+				"  请删除该登记项。", effect)
+		}
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("silentFormsOutsideGreyList 对档位 %q 的排除理由是空的。\n"+
+				"  排除是一个**判断**，判断必须留下理由；空理由的排除与没有排除无法区分。", effect)
+		}
+		if _, both := listed[effect]; both {
+			t.Errorf("档位 %q 同时在灰度清单的 switch 里、又在 silentFormsOutsideGreyList 里。\n"+
+				"  这两处必须互斥：在一处意味着计入 70，在另一处意味着不计入。\n"+
+				"  同时出现在两处 ⇒ 70 这个对外数字已不可解释。", effect)
 		}
 	}
 }

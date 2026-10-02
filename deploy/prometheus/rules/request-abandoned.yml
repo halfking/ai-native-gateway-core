@@ -1,0 +1,210 @@
+# request_abandoned 落点的可观测性（迁移 819，审计 §9.66 / §9.67）
+#
+# 指标来源：domains/hooks/observability/telemetry/request_abandoned_metrics.go
+#   llm_gateway_request_abandoned_marker_ops_total{op}
+#     op = "mark" / "clear"          — 819 不变式的两半（开始 / 终态删除）
+#     op = "mark_failed" / "clear_failed" — fail-open 分支被打到
+#
+# # 这张表的三种真实失效形态，以及为什么必须**三条**告警
+#
+# 819 的不变式是「表里有行 ⇔ 请求开始了且无终态记录」。它有三种坏法：
+#
+#   ① 一次都没写     —— 二进制没部署，或 819 迁移没上，或接线被拆掉
+#   ② 写了但失败     —— fail-open 分支（设计如此，见 client.go 的注释）
+#   ③ 写了但删不掉   —— **DELETE 半边坏了**，表以全流量速率增长
+#
+# 只写 ③ 的告警是最常见的做法，而它恰恰是最危险的一道：
+# ①② 下表**完全空**，而空表与「一切正常」在值上不可区分。
+#
+# # 为什么 ① 必须用 `or vector(0)`（不是可选的）
+#
+# `{op="mark"}` 是一个**带标签的 CounterVec**。Prometheus 约定下，
+# 带标签的 CounterVec 在**首次 Inc() 之前不导出任何时间序列**。
+# 于是最自然的写法：
+#
+#     sum by (job,instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="mark"}[30m])) == 0
+#
+# 永不写 marker 时左边求和得到**空向量**（不是 0）⇒ 空向量满足任何触发条件吗？
+# 否 ⇒ **告警永远不响**，而这正是它唯一要抓的场景。
+# `or vector(0)` 把「空」显式变成 0。
+#
+# 这不是假想：同一目录下的 `auto-route-selection-output.yml` 记录了
+# 完全同款陷阱（`llm_gateway_auto_selections_total` 是 CounterVec），
+# 审计 §9.68/§9.69 还发现 252 上那个指标**连样本都没有**。
+#
+# `and on(job,instance) (max by (job,instance) (up{job=~"llm-gateway.*"}) == 1)`
+# 同样不能省：进程挂掉时同样得到空向量，同样被 `or vector(0)` 变成 0。
+# 没有这道守卫，告警会在「网关根本没在跑」时报「落点没接线」——
+# 两种完全不同的故障共用一条告警，把值班的人引向反方向。
+#
+# 聚合维度是 **(job, instance)**：只 by (instance) 会把 job 消掉，
+# 丢掉集群归属（这是既有 promtool 场景测试抓出来的，`check rules` 无感）。
+#
+# # 阈值怎么定的（252 生产实测 2026-10-03，审计 §9.66）
+#
+# 实测基线：遗弃率 **0.047%**（19 / 40,585，约每天 6–7 条），
+# 其中 19/19 带 prompt_tokens、合计 414,168，而 cost_usd 全空。
+#
+# ⇒ ③ 的判据**不设绝对条数**，而设**比例**（clear < mark 的 50%）。
+#   因为真正要抓的是「DELETE 半边整体坏了」——那时差值 ≈ 全流量，
+#   与部署规模无关；而正常遗弃的 0.047% 永远达不到 50%。
+#   比例判据因此与流量规模解耦，改判据时不必重新量基线。
+#
+#   `rate(mark[30m]) > 0.05`（≈ 3 条/分钟）这道下限是**噪声闸**：
+#   极低流量部署上，比率在 0/0 附近抖动，不设下限会长期假红。
+#
+# # 已知局限（如实登记，不假装覆盖）
+#
+# 1. **本组告警只在有 Prometheus 的环境生效。** 252 实测**没有** Prometheus
+#    （审计 §9.56），所以在 252 上这三条**一条都不会响**。252 的可观测性
+#    现状是「只能看进程内计数器」+ 手工 SQL。
+# 2. **计数器是进程内存的，重启清零。** 短窗口速率不受影响（重启清零的是
+#    绝对量，不是正在发生的泄漏），所以 ③ 的判据成立。
+#    **但** ① 因此在「部署二进制、忘上迁移」的场景下**可能不响**：
+#    此时 `mark` 会走 fail-open 分支去数 `mark_failed`（见告警 ②），而不是彻底静默。
+# 3. **不覆盖「表已经有大量历史行」这件事。** 819 不回填历史（§9.67.6），
+#    已有行数要手工 `SELECT count(*) FROM request_abandoned`。
+# 4. **不覆盖「清得掉但清得太晚」。** 比例判据只看 30 分钟窗口内的比值；
+#    若 DELETE 半边只是**延迟**而非**丢失**，需要看板上的表深度配合观察。
+
+groups:
+  - name: request_abandoned_marker
+    interval: 30s
+    rules:
+      # ── ① 一次都没写 ────────────────────────────────────────────────
+      - alert: RequestAbandonedMarkerNeverWritten
+        expr: |
+          (
+            sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="mark"}[1h]))
+            or
+            (0 * max by (job, instance) (up{job=~"llm-gateway.*"}))
+          ) == 0
+          and on(job, instance)
+          (max by (job, instance) (up{job=~"llm-gateway.*"}) == 1)
+        for: 2h
+        labels:
+          severity: warning
+          component: session-abandoned
+        annotations:
+          summary: "request_abandoned 落点从未被写入（开始/终态这一对标记都没动过）"
+          description: |
+            1 小时内 `op="mark"` 的速率恒为 0，且已持续 2 小时。
+
+            这不是「没有请求遗弃」——**没有请求遗弃时 mark 仍然每个请求都会 +1**
+            （每次 in_progress INSERT 都写标记）。mark 恒为 0 意味着
+            **写路径压根没跑**，三种可能：
+
+              ① 二进制没有 819 的接线（`markRequestAbandonedPending` 未被调用）
+              ② 819 迁移没应用 ⇒ 走 fail-open ⇒ 这种情况下应当同时看到
+                 `op="mark_failed"` 增长（见 `RequestAbandonedMarkerWritesFailing`）
+              ③ 请求根本没进到 telemetry 的 INSERT 路径
+
+            先跑这一句区分 ① 和 ②：
+
+                curl -s :8780/metrics | grep request_abandoned_marker_ops
+
+            - 完全没有这个指标 ⇒ 情况 ①：二进制里没有这段代码
+            - 有 `{op="mark_failed"}` ⇒ 情况 ②：**819 迁移没上**
+              （这是设计内的 fail-open：表不存在时只 warn，不打挂请求日志）
+            - 什么都没有 ⇒ 情况 ③，或该指标注册路径没走到
+          runbook: |
+            1. 确认二进制版本包含 819（`/opt/llm-gateway-go/version.json` 的
+               git_sha 是否为含 `819_request_abandoned.sql` 的提交）。
+            2. 确认 819 已应用：`SELECT to_regclass('public.request_abandoned')`，
+               非空即可；为空则先跑迁移再重启。
+            3. **不要**因为「表是空的」就判定落点工作正常——
+               空表与「压根没写」在值上不可区分，这正是本告警存在的理由。
+
+      # ── ② 写了但失败 ────────────────────────────────────────────────
+      - alert: RequestAbandonedMarkerWritesFailing
+        expr: |
+          sum by (job, instance) (increase(llm_gateway_request_abandoned_marker_ops_total{op=~"mark_failed|clear_failed"}[30m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: session-abandoned
+        annotations:
+          summary: "request_abandoned 标记写入在持续失败（fail-open 分支）"
+          description: |
+            30 分钟内 `mark_failed` 或 `clear_failed` 有增长。
+
+            落点的写路径是**刻意 fail-open** 的：失败只 slog.Warn，
+            **不回滚** request_logs 主事务（理由：819 未应用时不应打挂
+            全部请求日志）。代价就是——**失败在请求侧完全不可见**，
+            只有这条告警能发现。
+
+            两种失败的含义完全不同：
+
+            - `mark_failed` 高：开始标记写不进去 ⇒ 这段时间的遗弃请求
+              **根本没有落点**，且这些请求往往正是异常的那批
+              （DB 不可达 / 819 未应用 / 列集漂移）
+            - `clear_failed` 高：终态删除失败 ⇒ 那些行会**永久留在表里**，
+              表语义从「abandoned 集合」退化成「一堆已完成但没删掉的请求」
+
+            日志侧对应：
+              `WARN request_abandoned: start marker write failed`
+              `WARN request_abandoned: terminal marker cleanup failed`
+          runbook: |
+            1. `mark_failed`：看 error。`relation "request_abandoned" does not
+               exist` ⇒ 819 迁移没应用；`column ... does not exist` ⇒ 表结构漂移
+               （819 自带列集守卫，会在迁移时报 missing column）；
+               超时/连接错误 ⇒ 数据库侧问题。
+            2. `clear_failed`：多半是 DB 抖动或权限/GUC 问题；
+               恢复后**已残留的行不会自动清掉**，
+               需要 `DELETE FROM request_abandoned WHERE created_at < now() - interval '1 day'`
+               手工回收（先确认这些请求确实都已终态）。
+            3. 两条都修完后，用
+               `SELECT count(*) FROM public.request_abandoned` 确认回落。
+
+      # ── ③ 写了但删不掉（DELETE 半边坏了）──────────────────────────
+      - alert: RequestAbandonedLeaking
+        expr: |
+          (
+            sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="mark"}[30m]))
+            -
+            sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="clear"}[30m]))
+          )
+          >
+          0.5 * sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="mark"}[30m]))
+          and on(job, instance)
+          sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="mark"}[30m])) > 0.05
+          and on(job, instance)
+          (max by (job, instance) (up{job=~"llm-gateway.*"}) == 1)
+        for: 30m
+        labels:
+          severity: critical
+          component: session-abandoned
+        annotations:
+          summary: "request_abandoned 在以超过 50% 的速率泄漏（DELETE 半边失效）"
+          description: |
+            30 分钟窗口内，**超过一半**的「开始」标记没有被「终态」标记删掉。
+
+            判据是**比例**而不是绝对条数，因为要抓的失效形态是
+            **DELETE 半边整体坏掉**——那时差值 ≈ 全流量，与部署规模无关；
+            而正常遗弃率实测只有 **0.047%**（252，19/40,585），
+            永远达不到 50%。
+
+            ⇒ 这条告警响的时候，`request_abandoned` 表**正在以全流量速率增长**。
+              照 §9.66 实测（13,500 请求/天），漏 50% 就是每天数千行，
+              而这张表的语义是「abandoned 集合」——**一旦混入已完成但没删掉的
+              申请，它就不再能被当遗弃集合读了**。
+
+            注意与 `RequestAbandonedMarkerWritesFailing` 的分工：
+            本条抓的是**成功写入但不删除**（`clear` 没跑或没生效）；
+            那条抓的是**写失败**（`clear_failed` 计数在涨）。
+            若两条同时响，先按本条处置（泄漏更严重且更隐蔽）。
+          runbook: |
+            1. 确认 DELETE 半边还在跑：代码里 `clearRequestAbandonedPending`
+               的调用点在 `updateRequestLog` 的 `if logsWrite {}` **之外**；
+               仓库里有一道形状门
+               `TestAbandonedMarkerCallsAreOutsideTheS4Gate` 钉住这个位置。
+               若该门被跳过，先跑 `go test ./domains/hooks/observability/telemetry/
+               -run TestAbandonedMarker` 看红因。
+            2. 确认终态路径真的在发：如果 `mark` 在涨而 `clear` 恒 0，
+               查 `clear` 调用点是否被拆掉，或 `updateRequestLog` 是否
+               根本没被调用（那会让所有请求都算遗弃）。
+            3. 修复后已泄漏的行需要手工清理：
+               `SELECT count(*) FROM public.request_abandoned;`
+               确认这些 request_id 在 `request_logs` 里**已有终态**之后，
+               再 `DELETE FROM public.request_abandoned WHERE created_at < now() - interval '1 day'`。
+               **先验证再删**——直接 DELETE 会把真正的遗弃记录一起清掉。

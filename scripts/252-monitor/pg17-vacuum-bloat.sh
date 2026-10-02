@@ -27,8 +27,14 @@ for meta in "${META_TABLES[@]}"; do
   size=$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
     "SELECT pg_total_relation_size('columnar_internal.${meta}')/1024/1024" 2>/dev/null || echo "0")
   echo "[$ts]   columnar_internal.${meta} size=${size}MB - start VACUUM FULL" >> "$LOG"
-  docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
-    "SET statement_timeout='${TABLE_TIMEOUT_MIN}min'; SET lock_timeout='5min'; VACUUM FULL columnar_internal.${meta}" >> "$LOG" 2>&1 \
+  # 2026-10-03 修复：原写法把 SET 与 VACUUM FULL 放在同一个 -c 里，psql 会把它们
+  # 包进一个隐式事务块，VACUUM 恒报 "cannot run inside a transaction block" ——
+  # 自 2026-07-15 上线起每一个周日 100% 失败（已核对 /var/log/pg17-vacuum-bloat.log）。
+  # 退出码还被 `|| echo FAILED` 吞掉，结尾照打 done，所以长期无人察觉。
+  # 正确写法：超时参数走 PGOPTIONS，VACUUM FULL 单独一条语句下发。
+  docker exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
+    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
+    -c "VACUUM FULL columnar_internal.${meta}" >> "$LOG" 2>&1 \
     || echo "[$ts]   VACUUM FULL columnar_internal.${meta} FAILED" >> "$LOG"
   new_size=$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
     "SELECT pg_total_relation_size('columnar_internal.${meta}')/1024/1024" 2>/dev/null || echo "0")
@@ -65,8 +71,10 @@ else
   while IFS='|' read -r tname size dead_pct; do
     [ -z "$tname" ] && continue
     echo "[$ts]   VACUUM FULL ${tname} (size=${size} bytes, dead_pct=${dead_pct}%)" >> "$LOG"
-    docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
-      "SET statement_timeout='${TABLE_TIMEOUT_MIN}min'; SET lock_timeout='5min'; VACUUM FULL ${tname}" >> "$LOG" 2>&1 \
+    # 2026-10-03 同上修复（事务块问题）
+    docker exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
+      "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
+      -c "VACUUM FULL ${tname}" >> "$LOG" 2>&1 \
       || echo "[$ts]   VACUUM FULL ${tname} FAILED" >> "$LOG"
   done <<< "$TARGETS"
 fi
