@@ -2671,3 +2671,39 @@ request_logs wide family」时，应该顺势问一句：还有哪些表**不在
 
 > 这已经是**第三类**触发 bodies 假阳性的语境：SQL 内容读 / 写门内 / 结构面。
 > 正则按列名识别表，识别不出「读的是内容还是名字」。**每次都要具名写清是哪一种。**
+
+## §9.16 读端轴推进 80/105（batch4 的 22 条）（2026-10-02）
+
+未评估从 47 降到 **25**（只剩 batch2 的 25 条）。门仍红。
+
+### §9.16.1 族门第七次抓到我：四处改判，两处真触发两处需具名
+
+| 文件 | 原判 | 结论 | 依据 |
+|---|---|---|---|
+| `bg/stats_minute_rollup.go` | unaffected | **真触发** → degraded_content | `:205/:281 ON CONFLICT (bucket, tenant_id, provider_id, canonical_id)`——补位列在**冲突键**里，取值 `COALESCE(r.provider_id,0)` ⇒ 新流量全落 `provider_id=0` 假桶，事实表与维度表双双归错桶 |
+| `admin/model_routing_diagnostic.go` | unaffected | **真触发（部分）** → degraded_content | `:95-99` 的 WHERE 在 710 视图上，是三分支 OR；`client_model` 那臂因补位恒不命中，另两臂（outbound_model / canonical_model）仍有效 ⇒ 不是全空，是「按客户端名查模型」这条路失效 |
+| `admin/session_analytics_timeseries.go` | unaffected | **真触发** → degraded_content | `:62 AND %s.provider_id::text = ANY($n)` 的 alias 就是视图别名 ⇒ `NULL::text = ANY(...)` 求值为 NULL（非 true）⇒ **同一面板里按 provider 过滤恒空、不过滤照常有数据**，两种过滤给出矛盾的空/非空 |
+| `admin/usage.go` | unaffected | **真假混合** → degraded_content | `:806-810` 的 `provider_id IS NOT NULL` **确实**在 `FROM request_logs_with_current_month rl2` 子查询内 ⇒ 真触发；但 `:334-366 ak.owner_user`、`:456-583 providers.provider_id`、`:767 api_keys.id` 这些列**同名却属于别的表**，那些表没有补位 |
+
+### §9.16.2 `admin/usage.go` 是「机械判定为何只能保守近似」的最好样本
+
+同一个文件里同时存在：
+- **真触发**：谓词落在 710 视图上、用的是补位列；
+- **假触发**：同名列属于 `api_keys` / `applications` / `providers` / `usage_ledger`——
+  **列名相同，表完全不同**，那些表根本没有补位。
+
+文件级的正则匹配看不出「这个 `provider_id` 属于哪张表」。这就是为什么该族
+判 `unaffected` 走**具名论证**而不是直接放行：理由必须由读过代码的人写下，
+并接受 diff 审阅。自动判据在这里只能**标记嫌疑**，不能**下结论**。
+
+### §9.16.3 两条具名论证（真·假触发各一）
+
+- `internal/collector/gateway_adapters.go`：`:61/:64` 的 `client_model` 都排在
+  `COALESCE(NULLIF(outbound_model,''), client_model, …)` 里，而 `outbound_model`
+  是 session 臂真值且排**第一位** ⇒ 谓词对有真实 outbound_model 的行照样通过。
+- `admin/session_timeline_query.go`：`:32` 只是投影，且同一投影里并列了
+  `outbound_model`，消费方取模型名时有非补位列可选；不用任何补位列做谓词。
+
+> 至此 `nullPaddedUnaffectedJustification` 已有 5 条论证，覆盖四种过度触发语境：
+> URL/JSON 字面量、**以非补位列打头的 COALESCE**、仅投影、以及（§9.14）
+> 同名不同表。**每次都要具名写清是哪一种**——这本身就是这条族维度的能力边界说明。
