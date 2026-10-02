@@ -100,9 +100,20 @@ return redis.call('ZCARD', key)
 // redisEnforceRenewLua refreshes the TTL for an existing lease token
 // without re-running the capacity check (the slot is already held). The
 // caller is responsible for ensuring the token is still in the ZSET —
-// ZADD-score-without-create lets us atomically confirm presence + bump
-// expiry in a single script. Returns 1 on success, 0 when the token has
-// already expired or never existed.
+// presence check + bump expiry in a single script. Returns 1 on success,
+// 0 when the token has already expired or never existed.
+//
+// The score must advance to server time: Acquire evicts members with
+// ZREMRANGEBYSCORE (-inf, cutoff] where cutoff = trunc_sec(now) - TTL, so a
+// score frozen at acquire time is pruned by ANY concurrent Acquire once the
+// clock crosses into a later second past (acquire+TTL) — even while the
+// keepalive loop renews faithfully. The next Renew would then report
+// definitive loss and abort a healthy long stream (round-31 B-#1; the
+// pre-fix behavior turned the keepalive wiring into a deterministic
+// long-stream killer). Full-ms clock (same shape as redisRateAcquireLua) so
+// sub-second renewal cadences actually advance the score; Acquire's
+// second-granularity cutoff only ever makes survival longer by <1s, never
+// shorter.
 const redisEnforceRenewLua = `
 local key = KEYS[1]
 local token = ARGV[1]
@@ -114,7 +125,9 @@ local score = redis.call('ZSCORE', key, token)
 if score == false then
   return 0
 end
-redis.call('ZADD', key, score, token)
+local now_parts = redis.call('TIME')
+local now_ms = now_parts[1] * 1000 + math.floor(now_parts[2] / 1000)
+redis.call('ZADD', key, now_ms, token)
 redis.call('PEXPIRE', key, ttl_ms)
 return 1
 `

@@ -359,23 +359,50 @@ func newReorderTestFixture(t *testing.T, pool *pgxpool.Pool, creds int) *reorder
 
 	f := &reorderTestFixture{pool: pool, providerID: providerID, rawModel: rawModel}
 	for i := 0; i < creds; i++ {
-		var credID, bindingID int64
+		var credID int64
 		if err := tx.QueryRow(ctx,
 			`INSERT INTO credentials (provider_id, label, status, lifecycle_status) VALUES ($1, $2, 'active', 'active') RETURNING id`,
 			providerID, rawModel+"-cred-"+reorderItoxa(uniq+int64(i)),
 		).Scan(&credID); err != nil {
 			t.Fatalf("insert credential: %v", err)
 		}
-		priority := i + 1
-		if err := tx.QueryRow(ctx,
-			`INSERT INTO credential_model_bindings (credential_id, provider_model_id, manual_priority) VALUES ($1, $2, $3) RETURNING id`,
-			credID, modelID, priority,
-		).Scan(&bindingID); err != nil {
-			t.Fatalf("insert binding: %v", err)
-		}
 		f.credIDs = append(f.credIDs, credID)
-		f.bindingIDs = append(f.bindingIDs, bindingID)
 		f.providerIDs = append(f.providerIDs, providerID)
+	}
+	// migration 541's scope-revision bump trigger is STATEMENT-level: the
+	// bindings must go in as ONE multi-row INSERT so a fresh fixture reads
+	// revision "1:" regardless of credential count. Per-row INSERTs each
+	// bump the singleton (1 → 2 → …) and every revision expectation in the
+	// reorder tests drifts by one (round-31 B-#2).
+	credArr := make([]int64, len(f.credIDs))
+	prioArr := make([]int16, len(f.credIDs))
+	copy(credArr, f.credIDs)
+	for i := range prioArr {
+		prioArr[i] = int16(i + 1)
+	}
+	rows, err := tx.Query(ctx,
+		`INSERT INTO credential_model_bindings (credential_id, provider_model_id, manual_priority)
+		 SELECT c, $2, p FROM unnest($1::bigint[], $3::smallint[]) WITH ORDINALITY AS t(c, p, ord)
+		 ORDER BY ord
+		 RETURNING id`,
+		credArr, modelID, prioArr)
+	if err != nil {
+		t.Fatalf("insert bindings: %v", err)
+	}
+	for rows.Next() {
+		var bindingID int64
+		if err := rows.Scan(&bindingID); err != nil {
+			rows.Close()
+			t.Fatalf("scan binding id: %v", err)
+		}
+		f.bindingIDs = append(f.bindingIDs, bindingID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate bindings: %v", err)
+	}
+	if len(f.bindingIDs) != creds {
+		t.Fatalf("inserted %d bindings, want %d", len(f.bindingIDs), creds)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("fixture commit: %v", err)
@@ -513,8 +540,12 @@ func TestRoutingCandidateBindingReorder_IntegrationHappy(t *testing.T) {
 	}
 
 	var auditCount int
+	// after_json's top-level keys are {scope, expected_revision, scope_version,
+	// items, raw_model|canonical_id}; rawModel is a VALUE, so the jsonb `?`
+	// key-existence operator was always false here (round-31 B-#2) and the
+	// assertion failed regardless of the audit row being written correctly.
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM routing_audit_log WHERE action = 'routing_candidate_binding_reorder' AND after_json ? $1`,
+		`SELECT count(*) FROM routing_audit_log WHERE action = 'routing_candidate_binding_reorder' AND after_json->>'raw_model' = $1`,
 		f.rawModel,
 	).Scan(&auditCount); err != nil {
 		t.Fatalf("audit count: %v", err)

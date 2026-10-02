@@ -120,6 +120,24 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 			}
 		}
 	}
+	// addStringishArray covers the replayed hit/output arrays: elements are
+	// either plaintext strings or {text|-key} containers. Used by
+	// web_search/file_search results, file_search/shell_call_output style
+	// arrays and code_interpreter outputs (第三十一轮 §四#5 lane 扩容).
+	addStringishArray := func(raw any, lane, objectKey string) {
+		items, ok := raw.([]any)
+		if !ok {
+			return
+		}
+		for index, rawItem := range items {
+			switch element := rawItem.(type) {
+			case string:
+				fields = append(fields, visibleTextField{array: items, index: index, lane: fmt.Sprintf("%s.%d", lane, index)})
+			case map[string]any:
+				add(element, objectKey, fmt.Sprintf("%s.%d.%s", lane, index, objectKey), false)
+			}
+		}
+	}
 	var addTextParts func(any, string, bool)
 	addTextParts = func(raw any, lane string, thinkingImmutable bool) {
 		parts, ok := raw.([]any)
@@ -219,6 +237,38 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 		case "reasoning":
 			addTextParts(item["summary"], itemLane+".summary", false)
 			addTextParts(item["content"], itemLane+".content", false)
+		// ── 第三十一轮 §四#5 lane 扩容（2026-10-02）────────────────────────
+		// 此前只认 message/function_call/custom_tool_call/reasoning 四型：模型
+		// 新造敏感内容写进工具/检索载体 lane（restore 无 marker 不动）会直过
+		// 两道输出闸。扩容后与 input 侧 sanitize / restore 侧 native_restore
+		// 的载体集合对齐；结构化子树沿用 credential-key label 语义
+		//（mandatory 闸阻断、owner 闸就地 redact），标量 lane 走普通文本。
+		case "mcp_call":
+			addToolInput(item, "arguments", itemLane+".arguments")
+			add(item, "output", itemLane+".output", false)
+		case "web_search_call":
+			if action, ok := item["action"].(map[string]any); ok {
+				add(action, "query", itemLane+".action.query", false)
+				addStringishArray(action["results"], itemLane+".action.results", "text")
+			}
+		case "file_search_call":
+			addStringishArray(item["queries"], itemLane+".queries", "text")
+			addStringishArray(item["results"], itemLane+".results", "text")
+		case "local_shell_call_output", "apply_patch_call_output":
+			add(item, "output", itemLane+".output", false)
+		case "shell_call_output":
+			addStringishArray(item["outputs"], itemLane+".outputs", "text")
+		case "code_interpreter_call":
+			add(item, "code", itemLane+".code", false)
+			addStringishArray(item["outputs"], itemLane+".outputs", "logs")
+		case "apply_patch_call":
+			if action, ok := item["action"].(map[string]any); ok {
+				add(action, "content", itemLane+".action.content", false)
+			}
+		case "shell_call", "local_shell_call", "computer_call":
+			if action, ok := item["action"].(map[string]any); ok {
+				collectToolInputStringsWithLabel(action, itemLane+".action", "", &fields)
+			}
 		}
 	}
 	if output, ok := root["output"].([]any); ok {
@@ -356,6 +406,34 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 							addResponsePart(part, fmt.Sprintf("%s.summary.%d", initialLane, index))
 						}
 					}
+				}
+			// ── 第三十一轮 §四#5 镜像（2026-10-02）：added 帧与 done 快照
+			// 同口径，否则工具/检索载体存在 added/done 之间的半帧缝。
+			case "mcp_call":
+				addToolInput(item, "arguments", initialLane+".arguments")
+				add(item, "output", initialLane+".output", false)
+			case "web_search_call":
+				if action, ok := item["action"].(map[string]any); ok {
+					add(action, "query", initialLane+".action.query", false)
+					addStringishArray(action["results"], initialLane+".action.results", "text")
+				}
+			case "file_search_call":
+				addStringishArray(item["queries"], initialLane+".queries", "text")
+				addStringishArray(item["results"], initialLane+".results", "text")
+			case "local_shell_call_output", "apply_patch_call_output":
+				add(item, "output", initialLane+".output", false)
+			case "shell_call_output":
+				addStringishArray(item["outputs"], initialLane+".outputs", "text")
+			case "code_interpreter_call":
+				add(item, "code", initialLane+".code", false)
+				addStringishArray(item["outputs"], initialLane+".outputs", "logs")
+			case "apply_patch_call":
+				if action, ok := item["action"].(map[string]any); ok {
+					add(action, "content", initialLane+".action.content", false)
+				}
+			case "shell_call", "local_shell_call", "computer_call":
+				if action, ok := item["action"].(map[string]any); ok {
+					collectToolInputStringsWithLabel(action, initialLane+".action", "", &fields)
 				}
 			}
 		}
