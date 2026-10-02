@@ -302,6 +302,27 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		      WHERE rl.request_id = s.request_id
 		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
 		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
+		  -- 2026-10-02 审计：第三条臂指向 session 族（SSOT，且不受 S4 停写门管）。
+		  --
+		  -- 前两条臂都在**门内**（request_logs_hot / request_logs 属
+		  -- settings.KeyRequestLogsWriteEnabled 声明的 request_logs 宽族），而本查询的
+		  -- 驱动表 auto_route_selections 由 domains/hooks/observability/telemetry/
+		  -- selection_writer.go 写入，**该写方不咨询该门**（实测 0 处调用）。
+		  -- 于是停写一旦生效：驱动表继续收新行，而这两条 NOT EXISTS 因证据表冻结而
+		  -- **恒真** ⇒ 合成流量（goal-* / 标题、摘要生成器）不再被排除，
+		  -- 直接进入亲和度聚合 ⇒ 模型被合成流量污染，且无任何信号。
+		  --
+		  -- 这是跨门边界的第三个失效方向：前两个是「比较两侧」（假报机）与
+		  -- 「证据缺失」（静默洞），这个是「**过滤臂在门内、驱动表在门外**」
+		  -- ⇒ 过滤静默失效、方向为过度纳入。
+		  --
+		  -- 纯增量：保留前两条臂（今天双写期行为完全不变——同一 request_id 必然
+		  -- 同时命中 v1 臂），新臂在双写期是 no-op，停写后才成为承重臂。
+		  AND NOT EXISTS (
+		      SELECT 1 FROM session_turns st
+		      WHERE st.request_id = s.request_id
+		        AND (COALESCE(st.origin_actor, '') LIKE 'goal-%'
+		          OR COALESCE(st.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
 		GROUP BY s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant_id, '')
 	`, affinityWindow.String())
 	if err != nil {

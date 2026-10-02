@@ -3,6 +3,7 @@ export default {
   pageTitle: '使用量トレンド分析',
   pageSub: 'モデル別の使用量推移。プロバイダー / テナント / APIキー / モデル / 指標で絞り込み',
   loadFailed: '読み込みに失敗しました',
+  detailTimeoutHint: 'APIキーで絞り込む場合はリクエスト明細をスキャンするため、広い期間ではタイムアウトすることがあります。期間を短く（例：7日以内）して再試行してください',
   filterProvider: 'プロバイダー',
   filterTenant: 'テナント',
   filterApiKey: 'APIキー',

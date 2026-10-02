@@ -3,6 +3,7 @@ export default {
   pageTitle: 'Analyse des tendances d\'utilisation',
   pageSub: 'Usage par modèle dans le temps ; filtres par fournisseur / locataire / clé API / modèle / métrique',
   loadFailed: 'Échec du chargement',
+  detailTimeoutHint: 'Le filtrage par clé d\'API analyse les journaux de requêtes et peut expirer sur de larges plages ; essayez une plage plus courte (ex. 7 jours)',
   filterProvider: 'Fournisseur',
   filterTenant: 'Locataire',
   filterApiKey: 'Clé API',
