@@ -55,7 +55,7 @@ type Row struct {
 	SourcePriority int
 	Generation     int64
 
-	// 817 起：以下 24 个字段由 payload 提升为 typed 列（实测 payload 占
+	// 818 起：以下 24 个字段由 payload 提升为 typed 列（实测 payload 占
 	// heap 66%，其中 31 个键里有 7 个与本结构已有字段纯重复）。
 	// 指针类型 = hash 中该键可能不存在，落库为 SQL NULL 而不是零值
 	// ——「没采集到」与「采集到 0」在排障时是两种不同的结论。
@@ -84,8 +84,8 @@ type Row struct {
 	DisabledReason       *string
 	CoolReason           *string
 
-	// Payload 817 起语义收窄：只保留 typed 列覆盖不到的 hash 键，
-	// 保住 hash schema 演进时的前向兼容（见 817 迁移头注释）。
+	// Payload 818 起语义收窄：只保留 typed 列覆盖不到的 hash 键，
+	// 保住 hash schema 演进时的前向兼容（见 818 迁移头注释）。
 	Payload []byte
 }
 
@@ -214,9 +214,9 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 
 		// 7. 将 hash 序列化为 Payload。
 		//
-		// 817 起语义收窄：**剔除 7 个与 typed 列重复的键**（零信息损失，
+		// 818 起语义收窄：**剔除 7 个与 typed 列重复的键**（零信息损失，
 		// 实测省 70.8 B/行），其余键原样保留 —— hash 来自 HGETALL，
-		// schema 会演进，payload 是新字段唯一的兜底仓（见 817 迁移头注释）。
+		// schema 会演进，payload 是新字段唯一的兜底仓（见 818 迁移头注释）。
 		//
 		// 排除方向是「白名单剔除」而非「黑名单保留」：hash 新增的键默认留在
 		// payload 里。若反过来（只保留已知键），hash 加字段时会静默丢数据。
@@ -236,7 +236,7 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			// 继续处理，只是 Payload 为空
 		}
 
-		// 8. 817：24 个 hash 键提升为 typed 列。
+		// 8. 818：24 个 hash 键提升为 typed 列。
 		assignInt64(&row.UpdatedAtMS, hash["updated_at_ms"])
 		assignInt64(&row.LastProbeAtMS, hash["last_probe_at_ms"])
 		assignInt64(&row.LastProbeLatencyMS, hash["last_probe_latency_ms"])
@@ -335,7 +335,7 @@ INSERT INTO ursm_node_snapshot_min
    available, health_status, fail_streak, cool_until,
    sr_1m, sr_5m, sr_30m, samples_1m, samples_5m, samples_30m,
    lat_p50_ms, score, source_priority, generation, payload,
-   -- 817：24 个由 payload 提升出来的 typed 列
+   -- 818：24 个由 payload 提升出来的 typed 列
    updated_at_ms, last_probe_at_ms, last_probe_latency_ms, last_attempt_ms,
    last_ok_ms, last_request_at_ms, last_request_error_at_ms, manual_at_ms,
    cool_until_ms, event_seq,
