@@ -81,7 +81,8 @@ func (p snapshotRetentionPool) Begin(ctx context.Context) (SnapshotRetentionTx, 
 }
 
 // SnapshotRetentionWorker 周期分批删除超过保留期的 ursm_node_snapshot_min 行
-// （按 snapshot_ts 判定，走 ursm_node_snapshot_min_ts_idx）。
+// （按 snapshot_ts 判定；EXPLAIN 实测走 pkey 首列 snapshot_ts 的 Index Only
+// Scan，此处曾误写 ts_idx——R32 域D P3-1 订正）。
 // db 为 nil 或 Retention <= 0 时 Start 是 no-op。生命周期跟随进程；
 // Stop 幂等，优雅退出时尽力清一次。
 type SnapshotRetentionWorker struct {

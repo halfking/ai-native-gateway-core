@@ -56,6 +56,13 @@ import (
 //   - tools entries are flat ({type,name,description,parameters}) — no nested
 //     {function:{...}} wrapper
 //   - previous_response_id is native (no anomaly on Responses source)
+//
+// Production wiring: this serializer used to have zero production callers
+// (registered as dead code in the 2026-10-02 D02 audit); the vapeur
+// chat→responses reverse bridge (chatBodyToResponsesBody in
+// domains/streaming/executors/responses_mode_bridge.go) now drives it on
+// every bridged attempt, so the cross-protocol loss reports below are live
+// behavior, not dead-code hardening.
 func SerializeResponsesRequest(req *InternalRequest) ([]byte, error) {
 	if req == nil {
 		return nil, fmt.Errorf("request is nil")
@@ -791,6 +798,21 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 			"loss",
 			"Anthropic thinking config cannot be expressed on Responses API",
 			nil,
+		)
+	}
+	// Budget-shaped reasoning intent: buildResponsesReasoning renders only
+	// effort/summary, so a cross-protocol token budget (Gemini
+	// thinkingBudget) is silently dropped. Report it — same symmetric-loss
+	// contract as the thinking block above.
+	if req.Reasoning != nil && req.Reasoning.BudgetTokens != nil {
+		ReportProtocolLoss(
+			"unknown",
+			"reasoning.budget_tokens",
+			ifaceNonEmpty(src, ProtocolGeminiGenerate),
+			ProtocolOpenAIResponses,
+			"loss",
+			"token-budget reasoning config has no Responses equivalent; only effort/summary survive",
+			map[string]any{"budget_tokens": *req.Reasoning.BudgetTokens},
 		)
 	}
 	if len(req.MCPServers) > 0 {

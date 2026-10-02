@@ -645,8 +645,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// the column was never in the contract, so every call raised 42703
 			// and the error was swallowed by slog.Warn — that dashboard cell
 			// has been silently empty. 815 also carries a view-chain guard
-			// (skips when the 680-incident wrapper shape is absent) and its
-			// data precondition was measured against a real 1,515,960-row
+			// that RAISE NOTICEs and RETURNs when the 680-incident wrapper
+			// shape is absent — but the trailing column-count DO block then
+			// runs unconditionally and RAISE EXCEPTIONs (count <> 118), so
+			// every "skip" path actually terminates the migration. The
+			// no-op-plus-self-heal wording (here and in the skip notices) is
+			// therefore false advertising; fail-closed is the real behavior.
+			// R32 registers the contradiction (12h 审计 P2-F); aligning the
+			// two blocks means editing an applied migration's content, which
+			// is a channel-replay decision left to the owner. The data
+			// precondition was measured against a real 1,515,960-row
 			// request_id pairing, not inferred.
 			//
 			// It depends on the view chain only, so it sits after 814 at the

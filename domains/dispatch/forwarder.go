@@ -41,6 +41,18 @@ type credForwarder struct {
 	// pendingOld holds the channel displaced by the most recent grow, so a
 	// request that raced the swap and landed in it can be reclaimed.
 	pendingOld atomic.Pointer[chan *QueuedRequest]
+	// now 是租约续约循环的时钟缝（R32 P2-C）：生产为 nil → time.Now；
+	// 钉测注入手动时钟后，lastArmed 的「成功重置/整 TTL 截止」语义可在
+	// CI 确定性承重（12h 审计 P2-C：此前只有一次性手工变异背书）。
+	now func() time.Time
+}
+
+// nowClock 返回续约循环使用的时钟。
+func (cf *credForwarder) nowClock() time.Time {
+	if cf.now != nil {
+		return cf.now()
+	}
+	return time.Now()
 }
 
 func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credForwarder {
@@ -521,9 +533,20 @@ func (cf *credForwarder) attempt(qr *QueuedRequest, gov Governor) {
 	// semantics; only the renewer's abort cancels it early.
 	fwdCtx, cancelFwd := context.WithCancel(ctxOf(qr))
 	defer cancelFwd()
+	// R32 (P2-A, 12h 审计让行项采纳): executor 对 surviving-stream 的
+	// upstream 上下文会 WithoutCancel 剥离 fwdCtx 的整条取消链（客户端断开
+	// 与租约中止一起没了）。另铸一条只随租约中止触发的取消源钉进 value：
+	// WithoutCancel 保留 value，executor 的 upstreamContext 把它并回
+	// detached 流的 Done 集（见 domains/dispatch/detached_abort.go）。
+	detachAbort, cancelDetachAbort := context.WithCancel(context.WithoutCancel(fwdCtx))
+	defer cancelDetachAbort()
+	fwdCtx = WithDetachedStreamAbort(fwdCtx, detachAbort)
 	var stopLeaseRenewer func()
 	if _, isRenewer := gov.(LeaseRenewer); isRenewer {
-		stopLeaseRenewer = cf.startLeaseRenewer(fwdCtx, cancelFwd, gov, qr)
+		stopLeaseRenewer = cf.startLeaseRenewer(fwdCtx, func() {
+			cancelFwd()
+			cancelDetachAbort()
+		}, gov, qr)
 	}
 	var releaseOnce sync.Once
 	releaseResources := func() {

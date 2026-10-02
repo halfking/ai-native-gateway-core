@@ -110,13 +110,8 @@ func TestNoVPaddedColumnReaderRemains(t *testing.T) {
 	}
 }
 
-// v1DirectTables 是「绕过视图直读」判定里的 v1 宽族关系名。
-var v1DirectTables = map[string]bool{
-	"request_logs": true, "request_logs_hot": true,
-	"request_logs_bodies": true, "request_logs_bodies_hot": true,
-}
-
-const canonicalView = "request_logs_with_current_month"
+// v1DirectTables / canonicalView 已抽到无标签共享文件
+// request_logs_v1_direct_tables_test.go（R32 P1-2：integration 树编译缝根修）。
 
 func TestNoUnregisteredVPaddedColumnReader(t *testing.T) {
 	files, err := goFilesUnder("..")
