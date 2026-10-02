@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Service manages model discovery from providers.
@@ -1070,8 +1071,46 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 // omitting a model, or list pagination) from disabling the only working
 // credential for a model. The grace period is configurable via
 // DISCOVERY_GRACE_HOURS (default 24).
+// staleExpiryBlockedS4Reason 非空表示下架被禁止，原因见此常量。
+//
+// 2026-10-02（审计 §9.10.2）：下面 model_offers 的宽限守卫是
+// `NOT EXISTS (request_logs 近 N 小时成功)` —— 一条**否定式守卫**。S4 停写后
+// 该子查询不是「查不到」，而是**结构性恒空**：守卫从「已验证近期无成功」
+// 退化成「根本没有证据」，而代码会照常执行下架 ⇒ 无论模型是否真在用，
+// 都被判为 auto_discovery_expired。这不是降级，是主动禁用仍在工作的凭据模型，
+// 且写成功就是成功，不会有任何异常信号。
+//
+// 否定式比肯定式危险一个量级：肯定式在证据消失时不做动作（安全降级），
+// 否定式在证据消失时**做动作**。
+const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 request_logs，证据源已停止写入，下架判定不成立"
+
+// staleExpiryMayRun 判定「能否基于 v1 证据执行 stale 下架」。
+//
+// 抽成纯函数是为了可无库测试：缺陷所在的正是「证据源停止」这个分支，
+// 而它在线上是停写之后才出现的，集成测试永远撞不到。
+func staleExpiryMayRun(requestLogsWritable bool) (bool, string) {
+	if !requestLogsWritable {
+		return false, staleExpiryBlockedS4Reason
+	}
+	return true, ""
+}
+
 func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 	if len(seen) == 0 {
+		return
+	}
+
+	// S4 停写护栏：证据源停止写入时，宽限守卫失去判据，此时**不动**才是安全方向。
+	//
+	// 这里刻意**不做**「把证据换成 session 侧」的端口：session_turns 的
+	// raw_model_name 目前 0 填充（源头 RequestLogEntry 无该字段，见
+	// session_writer_v2.go 的「视图 NULL 补位」登记），而拿 session_turns.model
+	// 代替是错的——实测它等于 client_model（1138/1138），本守卫要比的却是上游名。
+	// 补齐那个字段是独立的一件事，不在这里顺手糊一个近似实现。
+	if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire {
+		slog.Info("discovery: skip stale-model expiry",
+			"reason", blockedReason,
+			"would_expire", "model_offers(available=FALSE) + credential_model_bindings(opt-in)")
 		return
 	}
 

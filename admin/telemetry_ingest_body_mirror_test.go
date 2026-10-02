@@ -113,16 +113,28 @@ func TestF5AdminIngestMirrorHonorsStopWriteGate(t *testing.T) {
 }
 
 // TestRequestLogsWriteEnabledSingleKeyLit 钉桩 admin 侧的 S4 判定只有一个
-// 来源（requestLogsWriteEnabled），键名不内联散落多处。
+// 来源（requestLogsWriteEnabled），且该来源**不含键字面量**。
 //
 // 背景：F5 缺陷的成因正是「同一语义键在两个调用点各自内联字面量」，日后单独
-// 改动其一即产生分裂。本用例在门的关键性之上再加一道结构性约束——键字面量在
-// admin/telemetry.go 中只允许出现一次。
+// 改动其一即产生分裂。
+//
+// 2026-10-02 收紧：原判据是「键字面量在 admin/telemetry.go 中恰好出现 1 次」——
+// 它只约束了 admin 这一个包，而同样的字面量当时还散落在另外三个包
+// （cmd/gateway、domains/hooks/observability/telemetry、internal/trace）。
+// 现在四处全部改为调用 settings.RequestLogsWriteEnabled()，本文件里的计数
+// 合法地变成 **0**，而「整个仓库只有一个拼法」这条性质由
+// settings.TestRequestLogsWriteEnabledKeyIsSpelledOnce 承担。
+//
+// 两道门并存是刻意的：这道管「admin 确实走共享来源」，那道管「全仓没有第二个
+// 拼法」。只留任何一道都会漏掉另一半——只留本道，生产代码里再多一个字面量它
+// 照样绿；只留那道，admin 自己退回内联也不会被本包察觉。
 func TestRequestLogsWriteEnabledSingleKeyLit(t *testing.T) {
 	src, err := os.ReadFile("telemetry.go")
 	require.NoError(t, err)
-	require.Equal(t, 1, strings.Count(string(src), `"storage.request_logs_write_enabled"`),
-		"S4 键字面量必须只在 requestLogsWriteEnabled() 里出现一次")
+	require.Zero(t, strings.Count(string(src), `"storage.request_logs_write_enabled"`),
+		"admin/telemetry.go 不得再内联 S4 键字面量，必须经 settings.RequestLogsWriteEnabled()")
+	require.Contains(t, string(src), "settings.RequestLogsWriteEnabled()",
+		"admin 的 S4 判定必须走共享来源，而不是自己读设置")
 }
 
 // failingBeginDB 是 Begin 即失败的 ingesterDB stub。

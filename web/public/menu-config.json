@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-30T20:10:08.113Z",
+  "exported_at": "2026-10-02T03:19:53.953Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -170,6 +170,16 @@
           "pluginScope": "*"
         },
         {
+          "path": "/admin/usage-trends",
+          "label": "用量趋势分析",
+          "labelKey": "nav.item.usageTrends",
+          "icon": "📈",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
           "path": "/pricing",
           "label": "成本价格",
           "labelKey": "nav.item.pricing",
@@ -309,6 +319,14 @@
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/session-analytics/users",
+          "label": "会话分析中心",
+          "labelKey": "nav.item.sessionAnalytics",
+          "icon": "📊",
+          "tenantScope": "*",
           "pluginScope": "*"
         },
         {

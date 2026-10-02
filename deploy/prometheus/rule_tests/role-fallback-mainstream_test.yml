@@ -1,0 +1,173 @@
+# promtool 单元测试 —— 验证 role 兜底告警的**求值语义**，而不只是 YAML 语法。
+#
+# 为什么不放在 deploy/prometheus/rules/：prometheus.yml 的 rule_files 是
+# `/etc/prometheus/rules/*.yml` 通配，本文件有 tests/rule_files 键、没有
+# groups 键，放进去会让 Prometheus 启动时报 "no groups" 而加载失败。
+#
+# 运行：
+#   docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+#     prom/prometheus check rules /p/rules/role-fallback-mainstream.yml
+#   docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+#     prom/prometheus test rules /p/rule_tests/role-fallback-mainstream_test.yml
+#
+# 本文件守的是三条**静默失效**：YAML 合法、promtool check rules 通过，
+# 但求值结果为空向量 / 恒不触发 / 恒触发——这三种都不会让 check rules 报错。
+#   1. 裸 `and` 的标签集不匹配（gauge 带 job/instance，sum() 无标签）
+#   2. 父开关关闭时 0/0 = NaN，与阈值比较恒为 false
+#   3. 阈值写错导致恒真或恒假
+
+rule_files:
+  - ../rules/role-fallback-mainstream.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ── 场景 A：开关开 + 主流层占比高 → 告警必须响 ──────────────────────
+  # 这是整条告警存在的理由。若这条不响，"低价不可用退主流"仍然是静默的。
+  - interval: 1m
+    name: 主流层占比 83% 且开关开启 → Spike 触发
+    input_series:
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="kind"}'
+        values: '0+10x30'
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="mainstream"}'
+        values: '0+50x30'
+      - series: 'llmgw_autoroute_role_routing_active'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteRoleFallbackMainstreamSpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: llm-gateway
+              component: autoroute
+            exp_annotations:
+              summary: "auto 路由：低价模型整层缺席，请求持续静默升档到主流模型"
+              description: "过去 15 分钟 role 路由命中的请求里，83.33% 落在主流兜底层（轻量池整层不可用），且样本量已达下限。轻量池整体掉线（欠费/下线/被 tier 滤除）会让搜索、总结、git_ops、运维类子代理请求静默改用重量模型——成本上升但请求全部成功，HTTP 层与 routing_source 都看不出异常。layer=kind 计数同时下降可交叉验证轻量池确实在掉线。"
+              runbook: "查 request_logs 里 auto_decision->>'task_kind' 的分布，确认哪些 kind 受影响；核对受影响轻量模型的凭据状态与配额（POST /api/routing/credentials/{id}/reset-state 可复位）；检查 work_type tier 配置是否把轻量模型整体滤除。若确认短时抖动可临时关 AUTO_ROLE_ROUTING_MAINSTREAM_FALLBACK=false 退回旧口径（代价：静默让位，无兜底层）。"
+      # 开关开着，Disabled 有 for:30m，20m 时尚未 firing
+      - eval_time: 20m
+        alertname: AutoRouteRoleRoutingDisabled
+        exp_alerts: []
+      # 兜底层在用，NeverExercised 不该响
+      - eval_time: 20m
+        alertname: AutoRouteRoleFallbackNeverExercised
+        exp_alerts: []
+
+  # ── 场景 B：同样流量但开关关闭 → Spike 绝不响 ────────────────────────
+  # 这条守的是 flag gate。若去掉 `max(...) == 1 and on()`，0/0 = NaN，
+  # NaN 与 0.2 比较恒为 false —— 告警静默，而"没告警"会被读成"轻量池健康"。
+  - interval: 1m
+    name: 父开关关闭 → Spike 不触发（0/0=NaN 不参与比较）
+    input_series:
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="kind"}'
+        values: '0+10x50'
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="mainstream"}'
+        values: '0+50x50'
+      - series: 'llmgw_autoroute_role_routing_active'
+        values: '0+0x50'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteRoleFallbackMainstreamSpike
+        exp_alerts: []
+      # 开关关着，Disabled 必须响——这是灰度决策的依据。
+      # eval_time 必须 > for(30m)：20m 时条件成立但仍在 pending，不算 firing。
+      - eval_time: 40m
+        alertname: AutoRouteRoleRoutingDisabled
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              service: llm-gateway
+              component: autoroute
+            exp_annotations:
+              summary: "auto role 路由兜底层未生效（AUTO_ROLE_ROUTING_ENABLED 关闭）"
+              description: "父开关 AUTO_ROLE_ROUTING_ENABLED 已关闭超过 30 分钟，整套 role 路由（含 R52 的主流兜底层）当前对线上零影响。后果：轻量池整层掉线时没有任何通往重量池的路径，请求静默改用评分结果，运维从 routing_source 上看不出异常。父开关由产品/灰度决策控制，本告警不表示故障。"
+              runbook: "确认这是有意的灰度决策还是误关；确需启用则设 AUTO_ROLE_ROUTING_ENABLED=true 并重启网关，同时订阅 AutoRouteRoleFallbackMainstreamSpike。"
+
+  # ── 场景 C：轻量池健康（占比低）→ Spike 不响 ─────────────────────────
+  # 守阈值不是恒真：主流层占比 2% 属于正常，不能告警。
+  - interval: 1m
+    name: 主流层占比 2% → Spike 不触发
+    input_series:
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="kind"}'
+        values: '0+100x30'
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="mainstream"}'
+        values: '0+2x30'
+      - series: 'llmgw_autoroute_role_routing_active'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteRoleFallbackMainstreamSpike
+        exp_alerts: []
+
+  # ── 场景 D：轻量池健康但低流量 → Spike 不响（样本量下界）────────────
+  # 守 `>= 5`：1 次 mainstream / 1 次 kind = 100%，没有下界就是假阳性。
+  - interval: 1m
+    name: 单次主流层事件（占比 100% 但样本量不足）→ Spike 不触发
+    input_series:
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="kind"}'
+        values: '0+0x5 1+0x25'
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="mainstream"}'
+        values: '0+0x10 1+0x20'
+      - series: 'llmgw_autoroute_role_routing_active'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteRoleFallbackMainstreamSpike
+        exp_alerts: []
+
+  # ── 场景 E：role 路由在跑但兜底层 6h 内从未命中 → NeverExercised 响 ──
+  # 守 kind 侧量下界(>100)与 mainstream==0 的组合语义。
+  # 采样间隔必须是 1m 而不是 30m：increase() 对稀疏样本会做外推，
+  # 30m 间隔 + 6h 窗口的合成数据会让条件在 for:30m 窗口内反复翻转，
+  # 告警永远等不满 pending（实测：同表达式去掉 for 就正常，加 for 就不响）。
+  # 生产中 Prometheus 按 15~60s 抓取，6h 窗口有 360~1440 个样本，不存在
+  # 这个稀疏问题——它是**夹具**的约束，不是规则的约束。
+  - interval: 1m
+    name: 6 小时 kind 增量 360、mainstream 为 0 → NeverExercised 触发
+    input_series:
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="kind"}'
+        values: '0+1x360'
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="mainstream"}'
+        values: '0+0x360'
+      - series: 'llmgw_autoroute_role_routing_active'
+        values: '1+0x360'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: AutoRouteRoleFallbackNeverExercised
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              service: llm-gateway
+              component: autoroute
+            exp_annotations:
+              summary: "auto role 路由兜底层 6 小时内从未被触发，兜底能力未经真实流量验证"
+              description: "过去 6 小时 role 路由命中超过 100 次，但主流兜底层命中为 0。说明轻量池一直健康（这是好事），代价是兜底路径从未在真实流量下跑过——一旦轻量池整层掉线，回退是否如预期工作没有任何历史证据支撑。属可见性提示，不是故障。"
+              runbook: "无需立即处理；把它当作「兜底路径未被验证」的记账项。若要主动验证，可在灰度环境关掉轻量池凭据，观察 AutoRouteRoleFallbackMainstreamSpike 是否按预期触发。"
+      # 兜底层从未命中，Spike 也不该响
+      - eval_time: 6h
+        alertname: AutoRouteRoleFallbackMainstreamSpike
+        exp_alerts: []
+
+  # ── 场景 F：零流量 → 三条都不该响 ───────────────────────────────────
+  # 守"空扫描 vs 真的没问题"的区分：counter 存在但无事件时，
+  # NeverExercised 的 kind>100 不成立，不该误报。
+  - interval: 1m
+    name: 开关开但 role 路由从未介入（counter 恒 0）→ 三条告警均不响
+    input_series:
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="kind"}'
+        values: '0+0x30'
+      - series: 'llmgw_autoroute_role_fallback_layer_total{layer="mainstream"}'
+        values: '0+0x30'
+      - series: 'llmgw_autoroute_role_routing_active'
+        values: '1+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteRoleFallbackMainstreamSpike
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AutoRouteRoleFallbackNeverExercised
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AutoRouteRoleRoutingDisabled
+        exp_alerts: []

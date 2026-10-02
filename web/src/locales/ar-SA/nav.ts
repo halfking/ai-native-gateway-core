@@ -30,6 +30,7 @@ export default {
     providers: "المزودون",
     reconciliation: "تهوية الحسابات",
     settlementReport: "تقرير التسوية",
+    usageTrends: "اتجاهات الاستخدام",
     pricing: "تكلفة التسعير",
     modelPricing: "إدارة التسعير",
     freePool: "الموارد المجانية",

@@ -43,6 +43,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const (
@@ -77,6 +79,41 @@ type LedgerReconciler struct {
 	stopCh            chan struct{}
 	stopOnce          sync.Once
 	running           atomic.Bool
+	// skipped records, per run, which checks did NOT execute and why.
+	// A skipped check returns 0, which is indistinguishable from "scanned
+	// and found nothing" in the returned count — so the two must be
+	// separable by callers and tests. "Swept 0 findings" and "swept 0
+	// requests" are not the same statement.
+	skippedMu sync.Mutex
+	skipped   []string
+}
+
+// SkippedChecks returns the machine-readable reason keys of checks that were
+// skipped in the most recent RunOnce, in execution order. Empty means every
+// check actually ran.
+func (r *LedgerReconciler) SkippedChecks() []string {
+	if r == nil {
+		return nil
+	}
+	r.skippedMu.Lock()
+	defer r.skippedMu.Unlock()
+	return append([]string(nil), r.skipped...)
+}
+
+func (r *LedgerReconciler) markSkipped(reason string) {
+	r.skippedMu.Lock()
+	defer r.skippedMu.Unlock()
+	r.skipped = append(r.skipped, reason)
+}
+
+// resetSkipped clears the per-run skip list. Extracted as a named method (rather
+// than inlined in RunOnce) so a test can pin that RunOnce actually calls it: the
+// first version of that test reset the field *by hand* and therefore verified
+// nothing — a mutation that deleted the reset from RunOnce stayed green.
+func (r *LedgerReconciler) resetSkipped() {
+	r.skippedMu.Lock()
+	defer r.skippedMu.Unlock()
+	r.skipped = nil
 }
 
 func NewLedgerReconciler(pool *pgxpool.Pool) *LedgerReconciler {
@@ -153,6 +190,10 @@ func (r *LedgerReconciler) RunOnce(ctx context.Context) int {
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	window := r.effectiveWindow()
+	// Reset per-run skip state: SkippedChecks must describe THIS run, never a
+	// previous one. A stale skip list is the worst version of this feature — it
+	// would report "skipped" for a check that ran and really did find nothing.
+	r.resetSkipped()
 	total := 0
 	total += r.checkBalanceChain(runCtx, window)
 	total += r.checkUsageCredit(runCtx, window)
@@ -255,9 +296,48 @@ func (r *LedgerReconciler) checkBalanceChain(ctx context.Context, window time.Du
 	return count
 }
 
+// usageCreditSkipS4StopWrite is the machine-readable reason key recorded when
+// the usage↔credit comparison is skipped because S4 stop-write is active.
+const usageCreditSkipS4StopWrite = "s4_stop_write"
+
+// usageCreditComparability reports whether the usage↔credit comparison is
+// currently *decidable*, and why not when it isn't.
+//
+// The comparison spans the S4 gate boundary: usageCreditSQL joins
+// request_logs_hot (INSIDE the request_logs wide family, i.e. what
+// storage.request_logs_write_enabled gates) against credit_ledger_hot (a
+// billing table that is not in that family and never will be). The reconciler
+// did not consult the gate at all, so the moment stop-write fires the two sides
+// stop describing the same period:
+//
+//   - usage arm   → freezes at the cutover (no new credits_charged rows)
+//   - credit arm  → keeps growing (billing is not gated)
+//
+// Every request after the cutover therefore lands in the FULL OUTER JOIN's
+// unmatched-credit branch with charged=0 / debited>0 and is recorded as a
+// difference in maas_reconciliation_findings. Those are not ledger defects —
+// they are the stop-write itself, reported as if they were. The count grows
+// without bound, so it is not a transient either.
+//
+// Same shape as the discovery stale-expiry guard: the premise ("both sides are
+// live over the same window") disappears when the gate flips, and what remains
+// must be "stop and say so", not "keep running and call the output a finding".
+// Deliberately a pure function so the decision is testable without a database
+// and without touching the gate.
+func usageCreditComparability(logsWriteEnabled bool) (comparable bool, reason string) {
+	if !logsWriteEnabled {
+		return false, usageCreditSkipS4StopWrite
+	}
+	return true, ""
+}
+
 // usageCreditSQL compares per-request credit charges (request_logs_hot)
 // against ledger consume deductions (credit_ledger_hot). Extracted for the
 // SQL-shape regression test.
+//
+// Note the two sides are NOT in the same blast radius — see
+// usageCreditComparability, which is why this must not be run while S4
+// stop-write is active.
 func usageCreditSQL() string {
 	return `
 		WITH usage AS (
@@ -289,7 +369,20 @@ func usageCreditSQL() string {
 
 // checkUsageCredit compares per-request credit charges (request_logs_hot)
 // against ledger consume deductions (credit_ledger_hot).
+//
+// Gated on the S4 stop-write key: the two sides belong to different blast
+// radii, so while stop-write is active the comparison is not decidable and
+// running it would land an unbounded stream of false findings. See
+// usageCreditComparability for the full failure shape.
 func (r *LedgerReconciler) checkUsageCredit(ctx context.Context, window time.Duration) int {
+	if ok, reason := usageCreditComparability(settings.RequestLogsWriteEnabled()); !ok {
+		r.markSkipped(reason)
+		slog.Info("ledger reconciliation: usage↔credit 比对已跳过（本轮未执行，非「无差异」）",
+			"reason", reason,
+			"detail", "request_logs_hot 已停写而 credit_ledger_hot 继续增长，两侧不再同期；"+
+				"继续比对会把停写本身记成账务差异")
+		return 0
+	}
 	rows, err := r.pool.Query(ctx, usageCreditSQL(), window, ledgerSettleLag, r.maxFindingsPerRun)
 	if err != nil {
 		slog.Warn("ledger reconciliation: usage↔credit scan failed", "error", err)

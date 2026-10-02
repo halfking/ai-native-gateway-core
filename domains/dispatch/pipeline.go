@@ -442,6 +442,21 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 	return p.governorBackend
 }
 
+// governorBackendKind returns the closed-enum backend label for the
+// governor metric surface (governor_metrics.go): the wired backend's kind,
+// or local when no backend is wired (the in-process governors' de-facto
+// backend). Round 31: acquire/release metrics are emitted from the
+// forwarder hot paths and need this label without re-deriving it per call.
+func (p *Pipeline) governorBackendKind() GovernorBackendKind {
+	if p == nil {
+		return BackendLocal
+	}
+	if b := p.GovernorBackend(); b != nil {
+		return b.Kind()
+	}
+	return BackendLocal
+}
+
 // governorForCredential returns the live Governor for a credential.
 //
 // specRevision is the policy revision stamped onto the Redis-backed

@@ -217,6 +217,20 @@ func (it *SanitizeRestoreInterceptor) restoreNativeResponsesBody(ctx context.Con
 				}
 				changed = changed || didChange
 			}
+		case "shell_call", "local_shell_call", "computer_call":
+			// 请求侧配对项：action 子树（command[]/text/env）与输入侧
+			// sanitizeShellActionCallItem 镜像，递归恢复全部字符串叶子
+			//（第三十轮，2026-10-02）。
+			if action, ok := item["action"]; ok {
+				restored, didChange, err := restoreNativeNestedValue(ctx, it.sanitizer, action, sm, 0)
+				if err != nil {
+					return false, true, err
+				}
+				if didChange {
+					item["action"] = restored
+					changed = true
+				}
+			}
 		}
 	}
 	return changed, true, nil

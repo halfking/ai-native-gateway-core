@@ -145,7 +145,7 @@ func credentialTwoProbeSuccessGateSQL(credIDExpr string) string {
 // 428 added the column and the X-LLM-Origin-Stage bridge populates it
 // (verified on the real DB: 11.6k node_probe rows stamped vs 3.1k business).
 // It must NOT be used against the canonical 113-column view — see
-// probeTrafficExclusionPredicateView below.
+// ProbeTrafficExclusionPredicateView below.
 //
 // Both format verbs take the same request_logs alias (pass it twice).
 // Every usage scan must exclude probe traffic, otherwise probes count as
@@ -153,7 +153,7 @@ func credentialTwoProbeSuccessGateSQL(credIDExpr string) string {
 const probeTrafficExclusionPredicate = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
 	" AND COALESCE(%s.origin_stage, 'business') = 'business')"
 
-// probeTrafficExclusionPredicateView is the frozen-113-column-contract variant
+// ProbeTrafficExclusionPredicateView is the frozen-113-column-contract variant
 // for request_logs_with_current_month. R49 self-audit correction
 // (2026-09-20): origin_stage is NOT part of the view's frozen 113-column
 // contract (neither projected from session_turns nor present in the pre-485
@@ -172,8 +172,18 @@ const probeTrafficExclusionPredicate = "(NOT COALESCE('probe' = ANY(%s.quality_f
 //     kept for historical rows. Missing probe-service/selfcheck let those
 //     rounds count as "usage" in every view-based scan (INV-3 leak).
 //
-// Both format verbs take the same view alias (pass it twice).
-const probeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
+// Exported (was unexported until 2026-10-02) so out-of-package read faces
+// stop hand-copying the spelling: admin/credential_monitor_heatmap.go
+// re-inlined the PHYSICAL variant into a view query in R50 (2026-09-21), which
+// 42703'd on every call (ExcludeSelfTest defaults true). A local copy has no
+// drift guard — the R50 call-site guard scanned bg files only, so the admin
+// regression passed the whole suite. admin already imports bg; there is no
+// import cycle.
+//
+// THREE format verbs, one per arm — pass the alias THREE times. (The previous
+// comment said "twice"; a two-arg call silently renders %!s(MISSING) into the
+// SQL, which then fails as a syntax error far from the real mistake.)
+const ProbeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
 	" AND COALESCE(%s.task_type, '') <> 'probe_triggered'" +
 	" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"
 
