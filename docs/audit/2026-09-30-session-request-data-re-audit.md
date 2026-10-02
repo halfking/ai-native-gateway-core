@@ -5317,3 +5317,101 @@ than 0, so 'not measured' is never mistaken for 'measured as bad'」——
 那个「需要一个明确决定」是**同一个决定**，应一起做，不宜夹带。
 
 已记账为本轮**新发现的现存缺陷**（与停写无关），列在残余风险里。
+
+---
+
+## §9.42 retry 项：去掉 `canonical_id` 收窄 + 显式三态（用户 2026-10-02 拍板「一次做完」）
+
+§9.41 结尾把两件事绑在一起交给用户决定：`(1) retry_count 的数据源`、
+`(2) RetryRatio 未测得 ⇒ 满分`。用户选「一次做完」。本节是落地记录。
+
+### §9.42.1 拍板前的测量：成本结构被翻转了
+
+我在 §9.41 结尾写了「选 ① 之前必须先量：这 67.7% 里 `model_reqs` 本来会是多少」。
+量完的结果把决定的成本整个翻转：
+
+**去掉 LATERAL 的 `canonical_id` 条件后**（2026-09 分区 1747 条 selection）：
+
+| 组 | 条数 | 带条件 model_reqs | 去掉条件 model_reqs |
+|---|---|---|---|
+| A：`canonical_id IS NULL` | 1183 | **0.00** | **1.00**（1182/1183 有匹配） |
+| B：有 `canonical_id` | 564 | 1.00 | 1.00 |
+
+A 组的分布是 min 0 / 中位 1 / p99 1 / **max 1** ⇒ **会话本就只有 1 个请求**，
+所以「混进别的模型的流量」这个担忧在数据上不成立。
+
+**跨模型污染到底有多少**（10 天 auto 流量，11,634 个会话）：
+
+| 会话类型 | 数量 | 占比 |
+|---|---|---|
+| 单请求 | 11,299 | 97.12% |
+| 多请求·同模型 | 334 | 2.87% |
+| 多请求·**跨模型** | **1** | **0.01%** |
+
+⇒ **保留该条件：代价 67.7% 测不到信号，收益 0.01%。** 净负收益，移除。
+
+### §9.42.2 三态取代隐式判定
+
+```
+measured     model_reqs > 0                ⇒ retryScore = 1 - retry/model_reqs
+unmeasured   model_reqs == 0（会话无可数行） ⇒ retryScore = 0.5 中性
+unavailable  指针为 nil（LATERAL 无产出）     ⇒ retryScore = 0.5 中性
+```
+
+**`unavailable` 必须与 `unmeasured` 分开**：前者是「读不到」（停写后 worker 会
+永久处在这个状态），后者是「读到了，确实是 0」。合并成一个就丢掉了停写时唯一
+能看见的那个信号。
+
+`autoroute.RewardInput` 新增 `RetryMeasured bool` 而**不是** `-1` 哨兵：
+`RetryRatio` 是**比值**，它的 0 是合法的实测值（「测到、零重试」）；
+`HealthComponent` 是**分数**，它的 -1 才可安全地保留为哨兵。
+**把 0 复用成「未知」正是这个 bug 的成因。**
+
+### §9.42.3 暴露方式：走指标，不走列
+
+`reward_source` 有 CHECK 约束 `IN ('request','session')`（`db/db.go:7764`），
+扩展取值需要迁移。所以三态经新指标暴露：
+
+```
+llmgw_autoroute_settle_retry_state_total{state="measured|unmeasured|unavailable"}
+```
+
+闭集三值，基数恒定。**没有它，运维从 reward 分布上看不出多少样本的 retry 项
+是中性、多少是实测**——只能看到分布整体偏移。
+
+### §9.42.4 两个既有测试把**错误语义写成了期望值**
+
+| 测试 | 原期望 | 新期望 | 说明 |
+|---|---|---|---|
+| `TestComputeRoutingReward_UnknownsAreNeutralNotZero` | 0.775 | **0.725** | 它的注释逐项算的是 `… + 0.10*1`——**测试名叫「UnknownsAreNeutral」，retry 项却按满分算**。它与自己的名字矛盾。 |
+| `TestComputeRoutingReward_Ordering` | 依赖 RetryRatio 生效 | 加 `RetryMeasured: true` | 排序断言靠改 `RetryRatio` 让 reward 变动；不标记 measured 时 retry 项是中性，`retried` 会与 `good` 打平。 |
+
+**第一个测试的存在本身就是这个 bug 能活这么久的证据**：一个把错误值钉死的
+「回归测试」，比没有测试更危险——它让 bug 看起来是被保护着的。
+
+新增 `TestComputeRoutingReward_RetryIsTriState`，钉住三态的关键性质：
+未测得的分数必须**恰好落在**两个实测极值的中点（retry 权重对分数是线性的），
+且**不得等于**任一端。
+
+### §9.42.5 门：3 道 + 1 道语义门，变异 4/4
+
+| 变异 | 红在 |
+|---|---|
+| Q1 把 `canonical_id` 条件加回 LATERAL | `auto_route_retry_state_test.go:42`（两条断言） |
+| Q2 把三态退回 `1.0 - ratio` 旧语义 | `affinity_test.go:308` / `:318`（新三态门） |
+| Q3 指标不接线 | `auto_route_retry_state_test.go:86` |
+
+① 是**删代码**，所以专门立门钉住它不在——删掉一个「看起来是防御性收窄」的
+条件，下一个人很容易觉得它必要而加回来，而没有任何测试能证明它不在了。
+
+### §9.42.6 残余风险（必须写清）
+
+- **本次改动会让线上 reward 分布位移**：约 2/3 样本的 retry 项从 1.0 变成
+  0.5（中性）或实测值。方向是**朝正确**，但**与历史 reward 不可比**——
+  依赖绝对 reward 阈值的东西（若存在）需要一并复核。
+- **0.01% 这个数字对当前流量形态成立**。本数据集被探针流量主导（探针天然
+  单请求会话）。若日后 auto 流量中多轮对话占比大幅上升，跨模型比例会变，
+  收窄条件可能需要以别的形式加回来——那时应当用 `RetryMeasured` 区分
+  「测到 0」与「没测到」，而不是靠匹配不上来隐式表达。
+- **未经线上端到端验证**：本地 `auto_route_selections_hot` 为空，只能在真库上
+  验证表达式本身，worker 的端到端结算行为未跑过。

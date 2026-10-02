@@ -95,6 +95,28 @@ var (
 		},
 		[]string{"task_type"},
 	)
+
+	// autoRouteSettleRetryState 暴露 retry 信号的三态（审计 §9.41/§9.42）。
+	//
+	// 为什么必须有它：retry 项占 reward 权重 0.10，而「没测到」在旧实现里
+	// 等价于「测到完美」。没有这个计数器，运维从 reward 分布上**看不出**
+	// 有多少样本的 retry 项是中性 0.5、多少是实测值——只能看到分布整体偏移。
+	//
+	// 标签是闭集三值，基数恒定（GW-00）。
+	autoRouteSettleRetryState = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_autoroute_settle_retry_state_total",
+			Help: "Settled selections by retry-signal state: measured (retry term from real data) | unmeasured (session had no countable rows) | unavailable (LATERAL produced nothing).",
+		},
+		[]string{"state"},
+	)
+)
+
+// retry 信号的三态取值（闭集，与 autoRouteSettleRetryState 的 state 标签对齐）。
+const (
+	retryStateMeasured    = "measured"    // model_reqs > 0 ⇒ retryScore = 1 - ratio
+	retryStateUnmeasured  = "unmeasured"  // model_reqs == 0 ⇒ retryScore = 0.5 中性
+	retryStateUnavailable = "unavailable" // LATERAL 无产出 ⇒ retryScore = 0.5 中性
 )
 
 // taskBaseline is the per-task-type cohort baseline used to normalise latency
@@ -424,13 +446,54 @@ type pendingSelection struct {
 // `retry_count = jsonb_array_length(routing_attempts) - 1`——**那份注释与
 // 写方自己的输出矛盾**，是同一个错误的第二处化身，已一并订正。
 //
-// # 为什么同时保留 'array' 分支
+// # 为什么 LATERAL 不再按 canonical_id 收窄（2026-10-02 实测后移除）
+//
+// 原来还有两条：
+//
+//	AND s.canonical_id IS NOT NULL AND r2.canonical_id = s.canonical_id
+//
+// 意图是「只数**这个模型**的请求」，避免一个模型继承同会话里别的模型的失败。
+// 真库 10 天 auto 流量实测（11,634 个会话）把这个意图的性价比量清了：
+//
+//	单请求会话            11,299  97.12%
+//	多请求·同模型           334   2.87%
+//	多请求·**跨模型**        1   **0.01%**
+//
+// 也就是说：保留该条件，**67.7%** 的 selection 因 `canonical_id IS NULL` 而
+// LATERAL 恒空 → `model_reqs = 0` → retry 信号**根本没测到**；而它防住的
+// 跨模型污染只占 **0.01%**。**代价 67.7%，收益 0.01%。**
+//
+// 移除后实测：1183 条无 canonical_id 的 selection 里 **1182 条**能匹配到行，
+// 平均请求数 1.00（会话本就只有 1 个请求，不存在「混进别的模型」）。
+//
+// 残余风险要说清：本数据集被探针流量主导（探针天然单请求会话），因此
+// 「跨模型只占 0.01%」这个结论对**当前流量形态**成立。若日后 auto 流量中
+// 多轮对话占比大幅上升，这个比例会变，条件可能需要以别的形式加回来——
+// 那时应当用 RetryMeasured（见下）区分「测到 0」与「没测到」，而不是靠
+// 匹配不上来隐式表达。
+//
+// # retry 信号的三态
+//
+// LATERAL 命中与否不再隐式决定 retry 项。`computeSelectionReward` 显式产出：
+//
+//	measured     —— model_reqs > 0，retryScore = 1 - retry/model_reqs
+//	unmeasured   —— model_reqs == 0（会话确实没有可数的行）⇒ retryScore = 0.5 中性
+//	unavailable  —— retryCount / modelReqsInSes 为 NULL（LATERAL 没能产出）⇒ 0.5 中性
+//
+// 三者里只有 measured 参与区分，其余一律落回 0.5。**旧实现把 unmeasured 当成
+// 「测到 0 次重试」⇒ retryScore = 1.0 满分**，白拿 0.10 权重（审计 §9.41）。
+//
+// 状态经 `llmgw_autoroute_settle_retry_state_total{state}` 暴露。
+// 之所以走指标而不是 reward_source 列：那张表有 CHECK 约束
+// `reward_source IN ('request','session')`（db/db.go），扩展取值需要迁移。
+//
+// # 为什么 retryCountPerRowSQL 同时保留 'array' 分支
 //
 // `array` 形态在真库 340,917 行里**从未出现过**（最早 2026-09-03 即为 object），
 // 所以这一支是防御性的、当前走不到。留着它是因为删掉它会让「万一历史数据或
 // 未来写方改回数组」的假想情形直接退化成 0 重试（静默错值），而多一个
 // CASE 分支的代价是零。
-//
+
 // 外层 `WHERE jsonb_typeof(...) = 'array'` 是必需的：`- > 'attempts'` 在
 // `{"attempts": "x"}` 这种畸形值上会返回非数组，再调 jsonb_array_length 依旧抛错。
 // 有了它，最坏情况退化成「这行算 0 次重试」而不是「整条查询中止」。
@@ -491,9 +554,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 			              SUM(`+retryCountPerRowSQL("r2")+`)::int AS retry_count
 			       FROM request_logs_hot r2
 			       WHERE s.session_id IS NOT NULL
-			         AND r2.gw_session_id = s.session_id
-			         AND s.canonical_id IS NOT NULL
-			         AND r2.canonical_id = s.canonical_id`+autoroute.SQLExcludeSyntheticActors("r2")+`
+			         AND r2.gw_session_id = s.session_id`+autoroute.SQLExcludeSyntheticActors("r2")+`
 			) mr ON TRUE
 	`, settleDelay.String(), settleBatchSize)
 	if qErr != nil {
@@ -549,7 +610,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 			continue
 		}
 
-		reward, source := computeSelectionReward(p, baselines[p.taskType])
+		reward, source, retryState := computeSelectionReward(p, baselines[p.taskType])
 		if uErr := w.writeReward(ctx, p, reward, source); uErr != nil {
 			slog.Debug("auto-route settle write failed", "request_id", p.requestID, "error", uErr)
 			continue
@@ -558,6 +619,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 		autoRouteSettledTotal.WithLabelValues("rewarded").Inc()
 		autoRouteSettleLagSeconds.Observe(now.Sub(p.ts).Seconds())
 		autoRouteRewardScore.WithLabelValues(p.taskType).Observe(reward)
+		autoRouteSettleRetryState.WithLabelValues(retryState).Inc()
 	}
 
 	return settled, abandoned, nil
@@ -565,11 +627,19 @@ func (w *AutoRouteSettleWorker) settleBatch(
 
 // computeSelectionReward turns a settled row into a reward in [0,1].
 //
-// Returns the reward and its attribution source: "session" when session-level
-// health was folded in, "request" when only per-request signals were available.
-func computeSelectionReward(p pendingSelection, base taskBaseline) (float64, string) {
+// Returns the reward, its attribution source ("session" when session-level
+// health was folded in, "request" when only per-request signals were
+// available), and the retry signal's tri-state (see retryState* constants).
+//
+// The tri-state exists because the retry term is 0.10 of the reward and
+// "unmeasured" used to score as 1.0 — the maximum — so two thirds of settled
+// selections collected a full retry bonus for a signal nobody measured
+// (audit §9.41). Only `measured` now differentiates; the other two fall back
+// to neutral 0.5.
+func computeSelectionReward(p pendingSelection, base taskBaseline) (float64, string, string) {
 	in := autoroute.RewardInput{
 		HealthComponent: -1, // -1 => neutral; overridden below when attributable
+		RetryMeasured:   false,
 	}
 
 	if p.success != nil && *p.success {
@@ -584,8 +654,20 @@ func computeSelectionReward(p pendingSelection, base taskBaseline) (float64, str
 	in.P95BaselineMs = base.P95LatencyMs
 	in.P75BaselineCost = base.P75CostUSD
 
-	if p.modelReqsInSes != nil && p.retryCount != nil && *p.modelReqsInSes > 0 {
+	// Retry tri-state. Order matters: a nil pointer means the LATERAL produced
+	// nothing at all (unavailable), which is a different failure from "the
+	// session genuinely had no countable rows" (unmeasured) — and under
+	// stop-write it is the state the worker will be in permanently.
+	retryState := retryStateUnavailable
+	switch {
+	case p.modelReqsInSes == nil || p.retryCount == nil:
+		retryState = retryStateUnavailable
+	case *p.modelReqsInSes > 0:
 		in.RetryRatio = float64(*p.retryCount) / float64(*p.modelReqsInSes)
+		in.RetryMeasured = true
+		retryState = retryStateMeasured
+	default:
+		retryState = retryStateUnmeasured
 	}
 
 	source := "request"
@@ -598,7 +680,7 @@ func computeSelectionReward(p pendingSelection, base taskBaseline) (float64, str
 		source = "session"
 	}
 
-	return autoroute.ComputeRoutingReward(in), source
+	return autoroute.ComputeRoutingReward(in), source, retryState
 }
 
 // routingOnlyHealth converts session health into the [0,1] component the reward

@@ -358,7 +358,26 @@ type RewardInput struct {
 
 	// RetryRatio in [0,1]: share of this session's requests that were retries
 	// against this same model.
+	//
+	// ⚠️ RetryRatio == 0 is **ambiguous** and must not be read as "no retries
+	// happened": it is also what an UNMEASURED retry signal leaves behind.
+	// RetryMeasured is what disambiguates it. Before this field existed the
+	// scorer did `retryScore = 1.0 - clamp01(RetryRatio)`, so an unmeasured
+	// signal scored **1.0 — the maximum**, i.e. "we measured and there were
+	// no retries". Real impact (2026-10-02 audit §9.41): 67.7% of settled
+	// selections had model_reqs=0 (their canonical_id was NULL), took exactly
+	// that path, and collected a free 0.10 of the reward for a signal nobody
+	// measured.
 	RetryRatio float64
+
+	// RetryMeasured reports whether RetryRatio was actually computed from a
+	// real measurement. False ⇒ the retry term falls back to neutral 0.5.
+	//
+	// Why a bool and not a -1 sentinel like HealthComponent: RetryRatio is a
+	// *ratio* whose 0 is a legitimate measured value ("measured, zero
+	// retries"), whereas HealthComponent is already a *score* whose -1 can be
+	// unambiguously reserved. Overloading 0 here is precisely the bug.
+	RetryMeasured bool
 }
 
 // ComputeRoutingReward produces the reward in [0,1] used to rank models.
@@ -388,7 +407,22 @@ func ComputeRoutingRewardWithWeights(in RewardInput, w RoutingRewardWeights) flo
 		health = clamp01(in.HealthComponent)
 	}
 
-	retryScore := 1.0 - clamp01(in.RetryRatio)
+	// retryScore defaults to NEUTRAL, not to perfect.
+	//
+	// The old code was `retryScore := 1.0 - clamp01(in.RetryRatio)`, which
+	// scored an unmeasured signal 1.0 — the maximum — so "nobody looked" read
+	// as "looked, and found zero retries". That silently inflated 67.7% of
+	// settled rewards by the full 0.10 retry weight (audit §9.41).
+	//
+	// This also repairs the invariant stated on ComputeRoutingReward below:
+	// "Unknown inputs resolve to neutral 0.5 rather than 0, so 'not measured'
+	// is never mistaken for 'measured as bad'". For RetryRatio the violation
+	// was worse than the comment described — not measured resolved to the BEST
+	// possible value, not to a neutral one.
+	retryScore := 0.5
+	if in.RetryMeasured {
+		retryScore = 1.0 - clamp01(in.RetryRatio)
+	}
 
 	total := w.Success + w.Latency + w.Cost + w.Health + w.Retry
 	if total <= 0 {
