@@ -109,7 +109,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | 后台 worker —— 探测、生命周期清理、统计聚合、分区维护 |
 | `storage/` | 双模式存储工厂（`full`：PG+Redis / `lite`：SQLite+文件+进程内 KV） |
 | `internal/` | 横切基础设施 —— IR、vendor 字段剥离、会话镜像、outbox、遥测… |
-| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 809） |
+| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 817） |
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 

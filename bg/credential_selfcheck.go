@@ -306,12 +306,19 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		LEFT JOIN LATERAL (
 			SELECT MAX(st.ts) AS last_error_at
 			FROM (
-				SELECT ts, success, status_code, credential_id FROM session_turns
+				SELECT ts, success, status_code, credential_id, partition_date FROM session_turns
 				UNION ALL
-				SELECT ts, success, status_code, credential_id FROM session_turns_hot
+				SELECT ts, success, status_code, credential_id, partition_date FROM session_turns_hot
 			) st
 			WHERE st.credential_id = c.id::text
 			  AND st.ts >= now() - interval '24 hours'
+			  -- R32（12h 审计 P2-D）：session_turns 按 RANGE(partition_date)
+			  -- 分区，ts 谓词不参与分区裁剪——EXPLAIN 实测 7 叶子 6 个 Seq
+			  -- Scan（text 等值也用不上 credential_id 的 bigint CASE 表达式
+			  -- 索引），LATERAL 对每候选全扫所有分区。行窗 ⊂ 24h ⇒ 其
+			  -- partition_date ≥ date(now()-24h) 恒成立，谓词是恒真收窄
+			  -- （语义不变），让 planner 把父表裁到今天/昨天两个分区。
+			  AND st.partition_date >= (now() - interval '24 hours')::date
 			  AND (st.success = FALSE OR COALESCE(st.status_code, 0) >= 400)
 		) se ON COALESCE(e.last_error_at, se.last_error_at) IS NOT NULL
 		LEFT JOIN LATERAL (

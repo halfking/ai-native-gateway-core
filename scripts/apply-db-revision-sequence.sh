@@ -786,6 +786,30 @@ files=(
   # 精确源且走复合索引；分区父表侧行集恒空=该列自 038 起恒 0）。
   # CREATE OR REPLACE VIEW 列集不变；幂等。三基线+objects 视图同步。
   "$ROOT_DIR/sql/migrations/startup/814_adaptive_probe_targets_hot_subquery.sql"
+
+  # 2026-10-02 s4-audit §9.22（815）：canonical 视图补 origin_stage /
+  # token_band / client_forwarded_for 三尾列——token_band 是
+  # admin/compression_stats.go 分带聚合的既有读点（此前每调 42703 被
+  # 吞掉、仪表盘静默为空）。顶层 view 全量重建为 118 列契约；幂等。
+  # 三基线+installer 五点同步（815 曾漏登本通道=守卫红，见 f7f1c97f4）。
+  "$ROOT_DIR/sql/migrations/startup/815_request_logs_view_stage_band_cff.sql"
+
+  # 2026-10-02 s4-audit §9.46（816）：canonical 视图 client_ip 从 NULL
+  # 补位改为 session 侧有源投影（§9.60.6.1 裁决更正落地；252 生产复测
+  # 826/826 同值）。【注释订正 R33 域A P3-1：本条原写「CASE 守卫 ::inet 转换
+  # 防畸形值打挂全读方」——已被同日 817（§9.64）证伪：字符类
+  # ^[0-9a-fA-F:.]+$ 放行 192.168.1/deadbeef 等合法字符集、非法语义值，
+  # ::inet 22P02 照打挂全读方；真守卫是 817 的 pg_input_is_valid，816 在
+  # 视图链上只是中间形态】幂等。
+  # 三基线+installer 五点同步（816 又漏登本通道=探门红，本轮补齐）。
+  "$ROOT_DIR/sql/migrations/startup/816_request_logs_view_client_ip_projection.sql"
+
+  # 2026-10-02 s4-audit §9.64（817）：canonical 视图 client_ip 守卫从字符类
+  # 正则换语义守卫 pg_input_is_valid(v,'inet')——816 的 ^[0-9a-fA-F:.]+$ 放行
+  # 192.168.1/deadbeef/::: 等「合法字符集、非法语义」值，::inet 22P02 打挂
+  # 整条视图每读方（恰是 816 声称要防的事故形态）。写侧 ParseIP 门只保新行。
+  # 幂等；三基线+installer 同步（817 又漏登本通道=第五次同类遗漏，本轮补齐）。
+  "$ROOT_DIR/sql/migrations/startup/817_request_logs_view_client_ip_semantic_guard.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

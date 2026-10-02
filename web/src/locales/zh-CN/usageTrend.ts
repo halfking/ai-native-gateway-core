@@ -12,4 +12,11 @@ export default {
   filterAll: '全部',
   shareByMetric: '当前指标占比',
   sourceDetail: '请求明细',
+  // 2026-10-02 多选/清除全部/自动刷新轮
+  clearAll: '清除全部',
+  autoRefresh: '自动刷新',
+  autoRefreshOff: '关',
+  autoRefresh30s: '30 秒',
+  autoRefresh1m: '1 分钟',
+  autoRefresh5m: '5 分钟',
 }

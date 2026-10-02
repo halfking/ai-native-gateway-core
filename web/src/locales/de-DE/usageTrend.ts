@@ -12,4 +12,11 @@ export default {
   filterAll: 'Alle',
   shareByMetric: 'Anteil (Metrik)',
   sourceDetail: 'Anforderungsdetail',
+  // 2026-10-02 Mehrfachauswahl / Alle löschen / Auto-Aktualisierung
+  clearAll: 'Alle löschen',
+  autoRefresh: 'Auto-Aktualisierung',
+  autoRefreshOff: 'Aus',
+  autoRefresh30s: '30 Sek.',
+  autoRefresh1m: '1 Min.',
+  autoRefresh5m: '5 Min.',
 }

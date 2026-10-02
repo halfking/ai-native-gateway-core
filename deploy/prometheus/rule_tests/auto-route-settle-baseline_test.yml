@@ -1,0 +1,263 @@
+# promtool 单元测试 —— 验证 auto-route 结算基线告警的**求值语义**，而不只是 YAML 语法。
+#
+# 为什么不放在 deploy/prometheus/rules/：prometheus.yml 的 rule_files 是
+# `/etc/prometheus/rules/*.yml` 通配，本文件有 tests/rule_files 键、没有
+# groups 键，放进去会让 Prometheus 启动时报 "no groups" 而加载失败。
+#
+# 运行：
+#   docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+#     prom/prometheus test rules /p/rule_tests/auto-route-settle-baseline_test.yml
+#
+# 序列语法注意：promtool 的 values 不支持逗号分段，也不支持 `+` 链接
+# （均 parse error，实测）。平台段用空格分段、第二段从字面值重新起步：
+# `'0+5x12 60x28'` = 0..60 递增 13 个点后恒 60；`'0x15 0+5x25'` =
+# 15 个 0 后从 0 起 +5 递增。
+#
+# 本文件守的是 R33（2026-10-02 12h 审计）抓出的两条静默失效，外加把
+# CohortEmpty 的正确语义固化：
+#   1. SourceSwitched 原版 changes(...)>0 对单调计数器 = 「窗口内结算过任意
+#      一条」，每个 sweep 都 firing（恒触发，事件被噪声淹没）
+#   2. NeutralDominant 原版两侧标签集 {term,family} vs {family} 不配对，
+#      比较结果恒空（永不触发的死告警）
+#   3. CohortEmpty 的活动守卫语义（停更的 gauge 序列不算数）当时是对的，
+#      在这里钉住，防止后续改动退化
+
+rule_files:
+  - ../rules/auto-route-settle-baseline.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ── 场景 1：纯 v1 稳态结算，从不切换 → SourceSwitched 绝不响 ────────
+  # 这条守的是「恒触发」失效：原版 changes(...)>0 在此场景 35m 时照样
+  # firing（R33 实证），把真切换事件淹没在每-sweep 噪声里。
+  - interval: 1m
+    name: 纯 v1 稳态结算 → 不切换不响
+    input_series:
+      - series: 'llmgw_autoroute_settle_source_total{family="v1"}'
+        values: '0+5x40'
+      - series: 'llmgw_autoroute_settle_source_total{family="session"}'
+        values: '0x40'
+      - series: 'llmgw_autoroute_settle_baseline_cohort_rows{family="v1"}'
+        values: '50x40'
+      - series: 'llmgw_autoroute_settle_baseline_neutral_total{term="latency",family="v1"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: AutoRouteSettleSourceSwitched
+        exp_alerts: []
+
+  # ── 场景 2：v1 结算到 12m 后停，session 从 15m 起接手 → 切换窗口内响 ──
+  # 只有横跨切换的 10m 窗口里两族同涨；切换完成 10m 后必须安静。
+  - interval: 1m
+    name: 源切换 straddle 窗口 → SourceSwitched 响一次后自愈
+    input_series:
+      - series: 'llmgw_autoroute_settle_source_total{family="v1"}'
+        values: '0+5x12 60x28'
+      - series: 'llmgw_autoroute_settle_source_total{family="session"}'
+        values: '0x15 0+5x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteSettleSourceSwitched
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: bg
+            exp_annotations:
+              summary: "auto-route 结算数据源发生切换（S4 写门状态已变）"
+              description: "同一实例在 10 分钟内 v1 与 session 两族都有结算增量 —— 只有\n跨越源切换的窗口才会出现这个形状（每个 sweep 只结算一族）。\n\n**这是事件，不是趋势** —— 所以本条没有 for: 抑制。每一次 S4 写门翻转\n都会让 outcome join / LATERAL / 基线 cohort 三条腿整体换源，而换源\n会改变 reward 分布（即使数据等价，见\nTestAutoRouteSettleSessionSourceMatchesV1OnIdenticalRows）。\n\n**换源时必须一起确认的**：\n1. AutoRouteSettleBaselineCohortEmpty 是否随之触发 —— 会话族的\n   is_auto_request 覆盖只有 v1 的 80.4%（2026-09-19..26 实测：\n   659252 / 820336），且本地近 24h 为 0 行\n2. cohort 的 p95/p75 会随总体改变（实测 p95 偏移 15.2%，注意该数字\n   取自本地探针流量，不代表生产），因此**切换前后的 reward 不可逐位相等**，\n   这一点必须写进变更记录，不要按「数据一致」验收\n3. 若需要真正跨切换可比，只能引入一个与被退役表无关的稳定 cohort\n   —— 尚未实现，见审计 §9.44 的未决项\n"
+      - eval_time: 30m
+        alertname: AutoRouteSettleSourceSwitched
+        exp_alerts: []
+
+  # ── 场景 3：latency 项 60% 走中性回落 → NeutralDominant 只响 latency ──
+  # 原版在这份数据上恒空（标签集不配对）。latency 与 cost 独立塌陷，
+  # 30% 的 cost 不该被 60% 的 latency 连坐。
+  - interval: 1m
+    name: latency 回落率 60% → 按项独立触发
+    input_series:
+      - series: 'llmgw_autoroute_settle_baseline_neutral_total{term="latency",family="v1"}'
+        values: '0+6x40'
+      - series: 'llmgw_autoroute_settle_baseline_neutral_total{term="cost",family="v1"}'
+        values: '0+1x40'
+      - series: 'llmgw_autoroute_settle_source_total{family="v1"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: AutoRouteSettleBaselineNeutralDominant
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: bg
+              term: latency
+              family: v1
+            exp_annotations:
+              summary: "超过一半的 auto-route selection 走了基线中性回落（latency / v1）"
+              description: "30 分钟内，latency 项有超过 50% 的已结算 selection\n用的是中性 0.5 而不是实测基线归一化后的值。\n\n**这条比 cohort 归零更早发现局部问题**：cohort 可能整体非空，\n但**某个 task_type 的分组为空**（GROUP BY task_type 的 map 取值\nmiss），此时全局 cohort_rows 看着正常，只有按 term 的回落率会动。\n\nlatency 与 cost 是**独立**塌陷的：p95 有值而 p75 为 0 是常见形态\n（例如没有 cost_usd 的流量），所以按 term 分开统计，不合并成一个数。\n"
+
+  # ── 场景 4：回落率 30% → NeutralDominant 绝不响 ──────────────────────
+  - interval: 1m
+    name: 回落率 30% → 不响
+    input_series:
+      - series: 'llmgw_autoroute_settle_baseline_neutral_total{term="latency",family="v1"}'
+        values: '0+2x40'
+      - series: 'llmgw_autoroute_settle_source_total{family="v1"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: AutoRouteSettleBaselineNeutralDominant
+        exp_alerts: []
+
+  # ── 场景 5：session 族 cohort 归零且仍在结算 → CohortEmpty 响（5m for）──
+  # 同时钉住活动守卫：v1 族健康时不得因停更序列误报。
+  - interval: 1m
+    name: session cohort 归零 + 活跃结算 → CohortEmpty 响
+    input_series:
+      - series: 'llmgw_autoroute_settle_baseline_cohort_rows{family="session"}'
+        values: '0x40'
+      - series: 'llmgw_autoroute_settle_source_total{family="session"}'
+        values: '0+2x40'
+      - series: 'llmgw_autoroute_settle_baseline_cohort_rows{family="v1"}'
+        values: '50x40'
+      - series: 'llmgw_autoroute_settle_source_total{family="v1"}'
+        values: '0+2x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AutoRouteSettleBaselineCohortEmpty
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AutoRouteSettleBaselineCohortEmpty
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: bg
+              family: session
+            exp_annotations:
+              summary: "auto-route 基线 cohort 为空，所有 reward 的延迟/成本项已塌成中性 0.5（session）"
+              description: "session 族连续 5 分钟结算出了 selection，但基线 cohort 行数为 0。\n\n**正在发生的后果**：这些 selection 的延迟项与成本项都走了\n`0.5` 中性回落（ComputeRoutingRewardWithWeights 里 `P95BaselineMs > 0`\n不成立）。没有任何错误，reward 仍在 [0,1] 内，计数器照常增长 ——\n只有 cohort 区分快慢 / 贵贱的能力消失了，而且与「实测恰好中性」\n在输出上完全相同。\n\n**排查步骤**：\n1. 该族在 baselineWindow（24h）内 `is_auto_request = TRUE AND\n   latency_ms IS NOT NULL` 的行数——直接查库，不要只看指标\n2. 若刚发生 S4 写门切换：会话族的 auto 覆盖不足是最可能的原因\n   （本机实测 24h 内 0 行 vs v1 2178 行）\n3. 检查 `origin_actor` 合成流量过滤是否把 cohort 滤空\n   （SQLExcludeSyntheticActors）\n"
+
+  # ── 场景 6：session 族停更（切换后）→ CohortEmpty 不得误报 ────────────
+  # gauge 冻结在 0 但该族已不再结算（increase=0）——读到的是「没在测」，
+  # 不是「测出来是 0」。这是活动守卫存在的理由。
+  - interval: 1m
+    name: session 停更冻结在 0 → CohortEmpty 不响
+    input_series:
+      - series: 'llmgw_autoroute_settle_baseline_cohort_rows{family="session"}'
+        values: '0x40'
+      - series: 'llmgw_autoroute_settle_source_total{family="session"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteSettleBaselineCohortEmpty
+        exp_alerts: []
+  # ── 场景 7：sweep 查询级失败 → SweepFailing 响，窗口滑过后自愈 ─────────
+  # 前半段（t=1..5m）连续 5 轮失败后恢复。30m 窗口仍含失败点 → t=20m firing
+  # （for:10m 已满足）；t=45m 时 30m 窗口（15..45）已不含任何失败点 → 自愈。
+  # 钉住「单次瞬断只在窗口内短暂可见，持续失败持续响」的语义。
+  - interval: 1m
+    name: sweep 失败 5 轮后恢复 → SweepFailing 响后自愈
+    input_series:
+      - series: 'llmgw_autoroute_settle_sweep_failures_total{job="llm-gateway",instance="gw1",reason="error"}'
+        values: '0+1x5 5x50'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteSettleSweepFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: bg
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: "auto-route 结算 sweep 近 30 分钟内有查询级失败（gw1）"
+              description: "30 分钟窗口内至少一轮 sweep 以 error（settleBatch 整查询失败）或\npanic（safeSweep 接住）收场，那一批 selection 本轮没结算。\n\n**这条与停增告警（AutoRouteSettleStalled）是互补的两面**：本条抓\n「查询报错了」，停增抓「没报错但也没产出」（源族切到无数据的腿、\n设置门读失败静默回 v1——那条路径没有任何 error 可计）。\n\n**排查步骤**：\n1. 网关日志 grep \"auto-route settle sweep failed\"，看 error 正文\n   （42P01=表没了 / 42703=列没了 / 57014=4m sweepCtx 超时）\n2. 单条失败+自愈 = 瞬断，30m 窗口过后自动恢复；持续增长才是回归\n3. panic 臂非零 → grep \"settle sweep panic\"，panic 不停的 sweep\n   每轮都空转，selection 行照常积累\n"
+      - eval_time: 45m
+        alertname: AutoRouteSettleSweepFailing
+        exp_alerts: []
+
+  # ── 场景 8：从未失败（序列不存在）→ SweepFailing 静默 ─────────────────
+  # 失败计数器是 CounterVec，首次失败前序列不存在；absent 对 increase>0
+  # 判空剔除 → 不响。健康态不得因「没数据」而误报。
+  - interval: 1m
+    name: 无失败序列 → SweepFailing 不响
+    input_series:
+      - series: 'llmgw_autoroute_settle_source_total{job="llm-gateway",instance="gw1",family="v1"}'
+        values: '0+5x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteSettleSweepFailing
+        exp_alerts: []
+
+  # ── 场景 9：产侧在走 + settled 存在但停增 → Stalled 响 ────────────────
+  # R32 §四#2 的核心面：settlement 与生产脱钩（切到无数据腿 / 设置门静默
+  # 回 v1 / 行龄出窗）。settled_total 冻结在 5，产侧持续 +5/m。
+  - interval: 1m
+    name: 产侧增长而 settled 停增 → Stalled 响
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+5x60'
+      - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw1",outcome="rewarded"}'
+        values: '5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: bg
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: "auto-route selection 在持续产出但结算已 45+ 分钟零产出（gw1）"
+              description: "产侧 llm_gateway_auto_selections_total 在 45 分钟窗口内有增长，\n但同实例的 llmgw_autoroute_settled_total 零产出（或序列不存在）。\n这不是「没流量」——是**结算管线与生产脱钩**了。\n\n**正在发生的后果**：pending selection 行持续积累；行龄超过\nsettleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出\nhot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默\n缺口，事后无法回填。\n\n**排查步骤**：\n1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，\n   按那条的步骤走\n2. 只有本条响 → 结算没报错但没产出：确认结算源族\n   （llmgw_autoroute_settle_source_total 哪个族在动）与 settings\n   写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）\n3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor\n   占比后按抑制处理\n4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）\n"
+
+  # ── 场景 10：settled 序列根本不存在 → Stalled 仍须响 ──────────────────
+  # 钉住 `unless on(job, instance)` 形态的存在理由：进程启动后到第一次成功
+  # 结算前 settled_total 序列不存在，`increase(...) == 0` 对 absent 判空
+  # 剔除——「从启动起就没结算过」恰是最需要响的形态，==0 形态下永远静默。
+  # 本场景就是该语义的变异靶：把 unless 换成 ==0，本场景变假绿。
+  - interval: 1m
+    name: settled 序列不存在 → Stalled 响（unless 语义）
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: bg
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: "auto-route selection 在持续产出但结算已 45+ 分钟零产出（gw1）"
+              description: "产侧 llm_gateway_auto_selections_total 在 45 分钟窗口内有增长，\n但同实例的 llmgw_autoroute_settled_total 零产出（或序列不存在）。\n这不是「没流量」——是**结算管线与生产脱钩**了。\n\n**正在发生的后果**：pending selection 行持续积累；行龄超过\nsettleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出\nhot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默\n缺口，事后无法回填。\n\n**排查步骤**：\n1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，\n   按那条的步骤走\n2. 只有本条响 → 结算没报错但没产出：确认结算源族\n   （llmgw_autoroute_settle_source_total 哪个族在动）与 settings\n   写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）\n3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor\n   占比后按抑制处理\n4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）\n"
+
+  # ── 场景 11：双流健康 → Stalled 不响 ─────────────────────────────────
+  - interval: 1m
+    name: 产侧与 settled 同增 → Stalled 不响
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+5x60'
+      - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw1",outcome="rewarded"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts: []
+
+  # ── 场景 12：产侧停滞（§9.57 的面）→ Stalled 不重复响 ────────────────
+  # 产侧归零由 auto-route-selection-output.yml 的 SelectionWritesStalled
+  # 负责；本条以「产侧在走」为前提，产侧停增时 lhs 为空 → 不响，两门不重叠。
+  - interval: 1m
+    name: 产侧停增 → Stalled 不响（归 §9.57 的门）
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '100x60'
+      - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw1",outcome="rewarded"}'
+        values: '5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts: []

@@ -372,10 +372,39 @@ func (m *Manager) SetSupportsResponses(ctx context.Context, credentialID int, mo
 // current verdict" (never probed, capability expiry elapsed, or the node key
 // expired), which callers must treat as "keep using live detection", not as
 // "unsupported".
-func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, model string) (supported bool, ok bool, err error) {
-	state, err := m.GetNodeState(ctx, credentialID, model)
-	if err != nil {
-		return false, false, err
+//
+// prefetched (2026-10-02, vapeur 遗留 #3) is an OPTIONAL node state the caller
+// already read for this exact (credential, model) — the router's batched MGET
+// hands it down so the hot path does not GET the same key twice. nil means "I
+// have nothing", and this function then reads the key itself; it never means
+// "there is no verdict".
+//
+// ⚠️ CLOCK SOURCE — the expiry decision deliberately uses Redis TIME, NOT
+// local time, and this must not be "optimised" into time.Now() without a
+// separate decision. The stored deadline is written by setNodeCapabilityScript
+// as `redis.call('TIME')[1] + ttl`, i.e. capability_expires_at is an ABSOLUTE
+// timestamp on the REDIS clock. Comparing it against the local clock compares
+// two different epochs, so any clock skew between this process and Redis
+// becomes error in the expiry decision — a verdict could outlive its TTL or
+// expire early. The skew is bounded and small, but the deadline is 3600s and
+// the verdict gates protocol selection, so "bounded and small" is not a
+// licence to silently change the epoch. Round 48 chose Redis TIME for exactly
+// this reason.
+//
+// Consequence, stated plainly so nobody re-derives it as a bug: passing
+// `prefetched` removes the node-key GET but does NOT remove the TIME
+// round trip. The hot path goes 2 Redis round trips → 1, not → 0. Eliminating
+// the remaining TIME means folding TIME into the router's existing batched
+// read (a Lua script returning TIME + the states in one shot), which changes
+// GetNodeStatesBatch's contract and is deliberately NOT done here.
+func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, model string, prefetched *NodeState) (supported bool, ok bool, err error) {
+	state := prefetched
+	if state == nil {
+		var err error
+		state, err = m.GetNodeState(ctx, credentialID, model)
+		if err != nil {
+			return false, false, err
+		}
 	}
 	if state == nil || !state.Capabilities.SupportsResponsesKnown() {
 		return false, false, nil
@@ -385,6 +414,8 @@ func (m *Manager) GetSupportsResponses(ctx context.Context, credentialID int, mo
 		// traffic-driven NodeState TTL refreshes cannot keep legacy verdicts alive.
 		return false, false, nil
 	}
+	// Sampled AFTER the state read on purpose: a verdict whose deadline elapses
+	// between the GET and this check must be seen as expired, not honoured.
 	now, err := m.redisNow(ctx)
 	if err != nil {
 		return false, false, fmt.Errorf("get redis time for capability read failed (credential_id=%d, model=%s): %w", credentialID, model, err)

@@ -183,6 +183,75 @@ func TestOriginMiddleware_HonoursXFFFromTrustedPeer(t *testing.T) {
 	}
 }
 
+// TestOriginMiddleware_RejectsMalformedHeaderIPs (R33, 2026-10-02 12h audit):
+// a trusted proxy is trusted to forward, not to sanitize. A single value
+// that fails net.ParseIP must NOT be persisted as client_ip — downstream,
+// migration 816's view casts client_ip via ::inet behind a CASE guard that
+// only checks the character class, so "deadbeef" or "192.168.1" from a
+// misbehaving proxy would poison the read side. Invalid X-Real-IP falls
+// through to a valid XFF first hop, then to RemoteAddr; the XFF chain
+// itself is still stored verbatim for audit.
+func TestOriginMiddleware_RejectsMalformedHeaderIPs(t *testing.T) {
+	cidrs := ParseTrustedProxyCIDRs([]string{"127.0.0.1/32", "::1/128"})
+	newReq := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		r.RemoteAddr = "127.0.0.1:1234" // trusted peer
+		return r
+	}
+	run := func(r *http.Request) (ip, xff string) {
+		mw := NewOriginMiddlewareWithTrustedProxies(cidrs)
+		var seen map[string]string
+		downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = map[string]string{
+				"ip":  ContextClientIP(r.Context()),
+				"xff": ContextClientForwardedFor(r.Context()),
+			}
+		})
+		mw.Wrap(downstream).ServeHTTP(httptest.NewRecorder(), r)
+		return seen["ip"], seen["xff"]
+	}
+
+	// Invalid X-Real-IP + valid XFF first hop → first hop wins.
+	r := newReq()
+	r.Header.Set("X-Real-IP", "deadbeef")
+	r.Header.Set("X-Forwarded-For", "198.51.100.9, 10.0.0.1")
+	ip, xff := run(r)
+	if ip != "198.51.100.9" {
+		t.Fatalf("invalid X-Real-IP must fall through to the valid XFF first hop, got client_ip %q", ip)
+	}
+	if xff != "198.51.100.9, 10.0.0.1" {
+		t.Fatalf("XFF chain must stay verbatim for audit, got %q", xff)
+	}
+
+	// Invalid X-Real-IP + invalid XFF first hop → RemoteAddr, chain verbatim.
+	r = newReq()
+	r.Header.Set("X-Real-IP", "192.168.1")
+	r.Header.Set("X-Forwarded-For", ":::: not-an-ip, 10.0.0.1")
+	ip, xff = run(r)
+	if ip != "127.0.0.1" {
+		t.Fatalf("no valid header IP anywhere → RemoteAddr expected, got client_ip %q", ip)
+	}
+	if xff != ":::: not-an-ip, 10.0.0.1" {
+		t.Fatalf("XFF chain must stay verbatim even when the first hop is invalid, got %q", xff)
+	}
+
+	// Invalid X-Real-IP alone → RemoteAddr (not the garbage).
+	r = newReq()
+	r.Header.Set("X-Real-IP", "spoofed-host.example")
+	ip, _ = run(r)
+	if ip != "127.0.0.1" {
+		t.Fatalf("invalid X-Real-IP with no XFF → RemoteAddr expected, got client_ip %q", ip)
+	}
+
+	// Valid IPv6 single still passes (no over-validation).
+	r = newReq()
+	r.Header.Set("X-Real-IP", "2001:db8::1")
+	ip, _ = run(r)
+	if ip != "2001:db8::1" {
+		t.Fatalf("valid IPv6 X-Real-IP must be honoured, got client_ip %q", ip)
+	}
+}
+
 // TestOriginMiddleware_NilAllowlistIgnoresAllHeaders covers the default
 // "trust nothing" behaviour — when the constructor is invoked without
 // an allowlist (legacy NewOriginMiddleware path or a config that was

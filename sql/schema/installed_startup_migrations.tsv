@@ -220,3 +220,5 @@
 202	813_supplier_errors_partitions_heap.sql
 203	814_adaptive_probe_targets_hot_subquery.sql
 204	815_request_logs_view_stage_band_cff.sql
+205	816_request_logs_view_client_ip_projection.sql
+206	817_request_logs_view_client_ip_semantic_guard.sql

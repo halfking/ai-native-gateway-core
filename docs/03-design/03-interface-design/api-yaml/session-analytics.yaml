@@ -56,6 +56,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/DateFrom'
         - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/TaskId'
         - $ref: '#/components/parameters/Model'
         - $ref: '#/components/parameters/Provider'
         - $ref: '#/components/parameters/ComplianceStatus'
@@ -656,6 +657,14 @@ components:
         format: date
         example: "2026-07-07"
       description: 结束日期（默认今天）
+
+    TaskId:
+      name: task_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: 按网关任务 ID 过滤（匹配 session_dim.task_id 或 session_summaries.gw_task_id）
 
     Model:
       name: model

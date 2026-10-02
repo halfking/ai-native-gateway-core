@@ -461,6 +461,15 @@ func ResolveOriginForSystemKey(ctx context.Context, ownerUser string) (stage, ac
 // audit trails. For the chain we keep the *original* X-Forwarded-For
 // header value (after trimming whitespace) so operators can audit
 // every proxy hop when the peer is trusted.
+//
+// Value validation (R33, 2026-10-02 12h audit): header-derived single
+// values must survive net.ParseIP before they are trusted. The trusted
+// proxy is trusted to forward, not to sanitize — a malformed X-Real-IP
+// (e.g. "deadbeef", "192.168.1", ":::") would otherwise be persisted
+// verbatim into client_ip and blow up every `::inet` cast on the read
+// side (migration 816's CASE guard only checks the character class,
+// not the semantic form). An invalid single falls through to the next
+// priority instead of being stored.
 func (m *OriginMiddleware) resolveClientIP(r *http.Request) (single, chain string) {
 	remoteHost, _, splitErr := net.SplitHostPort(r.RemoteAddr)
 	if splitErr != nil {
@@ -472,17 +481,22 @@ func (m *OriginMiddleware) resolveClientIP(r *http.Request) (single, chain strin
 	if trusted {
 		for _, cidr := range m.trustedProxies {
 			if cidr.Contains(remoteIP) {
-				if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
+				if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" && net.ParseIP(v) != nil {
 					single = v
 				}
 				if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
 					chain = v
-					// If no X-Real-IP, fall back to the first hop.
+					// If no (valid) X-Real-IP, fall back to the first hop —
+					// same ParseIP gate as above.
 					if single == "" {
+						var hop string
 						if i := strings.IndexByte(v, ','); i >= 0 {
-							single = strings.TrimSpace(v[:i])
+							hop = strings.TrimSpace(v[:i])
 						} else {
-							single = strings.TrimSpace(v)
+							hop = strings.TrimSpace(v)
+						}
+						if net.ParseIP(hop) != nil {
+							single = hop
 						}
 					}
 				}

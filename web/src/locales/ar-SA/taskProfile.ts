@@ -1,16 +1,14 @@
 // taskProfile.ts — 任务档案页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: 'ملفات المهام',
-    desc: 'ملفات أنواع مهام AUTO: قيم الطبقة الافتراضية وإحصاءات التصحيح البشري واقتراحات الطبقة (إضافة taskprofile؛ يعمل apply على كتابة إعداد الطبقة)',
     refresh: 'تحديث',
     refreshing: 'جارٍ التحديث…',
-    loading: 'جارٍ التحميل…',
     loadFailed: 'فشل التحميل',
+    noData: 'لا توجد بيانات ملفات',
   registry: {
     version: 'إصدار السجل',
-    schema: 'إصدار المخطط',
     types: 'أنواع المهام',
-    corrections: 'الأنواع المصححة',
+    correctedTotal: 'إجمالي التصحيحات في النافذة',
+    pendingSuggestions: 'تغييرات مستوى بانتظار القرار',
   },
   table: {
     taskType: 'نوع المهمة',

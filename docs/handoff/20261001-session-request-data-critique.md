@@ -3493,3 +3493,108 @@ go test ./deploy/prometheus/rules/ -count=1 → ok
 >    `silently_frozen` 21 条口径。注意 §9.54.2 的 cohort 分析也受本节影响。
 > ④ 推送状态：§9.57 已上 origin/main（2e68487a8）；本地 main 仍有 3 个
 >    等价文档提交 + 并行会话 4 个提交，合并需人工裁决，**不要用 rebase**。
+
+---
+
+## 第四十一轮（§9.59）：★核心目标「前后数据一致」第一次在**生产库**上被验证 —— 并发现我那道门漏了一整个存储面
+
+### 结论
+
+用户目标原话「**确保数据在更改前后一致**」的执行者是 §9.32 建的
+`TestDualWriteValueParity`。但它**只在本机库跑过**（§9.32.5 自陈
+「写入方身份未确认」），252 上验的一直只是存储可用性。
+本轮在 252 上跑了**同一道门**（不重写 SQL），并修了它的一个取样洞。
+
+### 三个根因
+
+1. **门漏了一整个存储面（已修）**
+   `request_logs_hot` 与 `request_logs` 是**独立存储面，不是分区父子**
+   （`pg_inherits` 实测：`request_logs` 只有 4 个月度子分区）。
+   原门 v1 侧只 `FROM public.request_logs`，而 session 侧读两面 ⇒ **口径不对称**。
+   252 实测漏 **2,121 对（占全部配对的 16.5%）**，且漏的恰是**最新**那批。
+   修正后配对行 10,634 → **12,798**，判据仍全绿（`success` 零差异）。
+
+2. **内连接数的门，看不见镜像侧的丢失（已补报告门）**
+   补 `TestDualWriteParityCoverageReport`：**只报告、从不判红**——
+   因为「v1 有行而会话族没有」本身不是缺陷（内部生成器按设计就不镜像），
+   把它变判红门需要先裁决口径（§9.58 刚在同族字段上栽过）。
+   它唯一会红的一格是**自检**：`全集 == 父表 + _hot`，防止取样面被静默改窄。
+
+3. **连接参数只改了一半（已修，抽象成 `openParityPool`）**
+   252 `statement_timeout` 默认 30s，覆盖率查询冷缓存 23s。
+   先只改一道门，**同一轮里另一道就以 `SQLSTATE 57014` 红了**——
+   而那条报错长得像「SQL 写错了」。
+
+### 关键实测数字（252，2026-10-02 23:2x–23:4x，活库）
+
+| 项 | 值 |
+|---|---|
+| v1 非探针全集（父表 + `_hot`） | 16,550 |
+| 能与会话族配对 | 12,802（**77.4%**） |
+| `success` 不一致 | **0** |
+| `prompt_tokens` 不一致 | 5（0.039%，阈 0.05%） |
+| 模型归一化后仍不同 | 14（0.11%，阈 2%） |
+| 未配对·内部生成器 | 3,722 ✅ **按设计不镜像** |
+| 未配对·非内部·卡非终态 | 20 ⚠️ 按设计（`isTerminalFailure` 不认 `in_progress`） |
+| 未配对·非内部·**已终态却无孪生** | **6 ❌ 未查明** |
+
+配对成功的 12,802 行里 `in_progress` **一条都没有** ⇒ 镜像首门按设计工作。
+
+### 我自己写了一道装饰门，靠变异删掉了
+
+`TestTerminalGateAndIsTerminalFailureStayConsistent` 里**复刻**了一份首门判定式。
+变异 M2 把 `hook.go:71` 真门改成 `if !entry.Success { return }` 时，**它全绿**。
+真正抓住 M2 的是既有的 `TestPersistHook_MirrorsTerminalFailure`。
+⇒ 已删除该护栏并写明原因。**门测的必须是被守的那一处。**
+
+### 交付物
+
+| 文件 | 改动 |
+|---|---|
+| `cmd/tools/validate_sessions_v2/dual_write_value_parity_integration_test.go` | v1 侧补 `_hot`（两处查询）；新增 `openParityPool`；新增覆盖率报告门（含取样面自检） |
+| `internal/sessionv2mirror/terminal_failure_gate_test.go` | **新增**：`isTerminalFailure` 接受集合 10 条表驱动子用例 |
+
+### 测试
+
+```bash
+go build ./...                      # OK
+go test ./internal/sessionv2mirror/ ./cmd/tools/validate_sessions_v2/ ./cmd/gateway/ -count=1
+# ok / ok / ok
+# 真库（252 经隧道）：
+TEST_PG_URL=postgres://…@127.0.0.1:15432/llm_gateway?sslmode=disable \
+  go test ./cmd/tools/validate_sessions_v2/ -run TestDualWrite -tags=integration -count=1
+# PASS（值层 12,798 配对；覆盖率 16,550 → 12,802 / 3,722 / 20 / 6）
+```
+
+变异验证：M1（`isTerminalFailure` 收 `in_progress`）红；
+M2（真门改坏）由既有门红；M2 第一版 perl 未匹配=**没生效的变异，不算证据**。
+
+### 遗留风险
+
+1. **6 条已终态却无孪生的请求仍未查明**。已排除整族无痕 / 合成会话 /
+   `IsInternalAutoEntry`；未排除异步队列丢弃、`shadowWriteEnabled` 当时为假、
+   `entryToProcessedRequest` 返回 nil。**未写归因。**
+2. **「哪些请求开始了却没结束」在 S4 之后将无法回答**——`in_progress` 行只存在于 v1，
+   而 v1 将不再写入。这是**退役口径**问题，不是镜像 bug，需要拍板是否补落点。
+3. **spec 的退出条件仍未满足**：「dual_read_validator 对账 7 天零漂移」。
+   本节是**单次快照**，不满足它；且 §8.4 已记录 validator 读 v1 面、
+   S4 会关掉自己的观测手段这一设计矛盾。**不要把 §9.59 当成 S4 的放行依据。**
+4. 模型归一化后残余里有 `session=""`（session 侧模型为空串），
+   量级 5/12,798，未定性。
+
+### 下一轮提示词
+
+> ① **优先**：查 §9.59.9 那 6 条「已终态却无孪生」的请求。方向：
+>    镜像异步队列是否有丢弃计数、`sessions_v2.shadow_write` 在
+>    2026-10-01/02 是否曾为假、`entryToProcessedRequest` 的返回 nil 条件。
+>    **拿到证据前不写归因。**
+> ② 需要拍板：「开始了却没结束」这个事实，退役 v1 后要不要留落点
+>    （在会话族补一类状态 / 接受丢失 / 另建小表）。这是口径决策。
+> ③ 仍待拍板（沿用上轮）：三份 origin actor 名单与 `IsInternalAutoEntry`
+>    不一致选 (a)(b)(c)；cohort 总体修正方案；§9.49.8 扩档；
+>    §9.48 `silently_frozen` 21 条口径。
+> ④ 仍未查明：auto-route 自 2026-09-15 不产出 selection 的原因
+>    （需覆盖 09-08/09-09 的日志或 Prometheus 历史序列）。
+> ⑤ 通用纪律（本轮两次踩到）：**同族的东西要一起改**——
+>    本轮修了连接参数只改一半，当场红了；**新写的门必须做变异**，
+>    本轮一道门就是这么变装饰的。

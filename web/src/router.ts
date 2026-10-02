@@ -71,13 +71,11 @@ const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 
-// P2.1+ Human Annotation Web workflow (2026-09-06)
-const AnnotationView = () => import('./views/AnnotationView.vue')
-const AnnotationStatsView = () => import('./views/AnnotationStatsView.vue')
-
-// v2 routing closed-loop P0③ (2026-09-24): taskprofile 档案 + 路由调参门面
-const TaskProfileView = () => import('./views/TaskProfileView.vue')
-const AutoTuningView = () => import('./views/AutoTuningView.vue')
+// P2.1+ Human Annotation Web workflow (2026-09-06) → 2026-10-02 整合轮:
+// AnnotationView / AnnotationStatsView / TaskProfileView / AutoTuningView
+// 四个子面板由 AutoRoutingOpsView 直接 import（无独立路由），此处只保留
+// 宿主懒加载入口。
+const AutoRoutingOpsView = () => import('./views/AutoRoutingOpsView.vue')
 
 // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线（mock stage）
 const RequestRegistryView = () => import('./views/RequestRegistryView.vue')
@@ -199,16 +197,21 @@ export const router = createRouter({
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/:key',     component: WorkTypesView, meta: { requiresSuper: true } },
-    // P2.1+ Human annotation Web workflow (2026-09-06): accessible by any authenticated user
-    { path: '/routing-v2/annotations',        component: AnnotationView },
-    { path: '/routing-v2/annotations/stats',  component: AnnotationStatsView },
+    // P2.1+ Human annotation Web workflow (2026-09-06): accessible by any authenticated user.
+    // 2026-10-02 整合轮：四页收敛为 AutoRoutingOpsView 统一工作台
+    // （标注工作台/标注统计 全员；任务档案/调参审批 super_admin，宿主内
+    // normalizeTab 双保险）。旧四路由 redirect 保深链兼容。
+    { path: '/routing-v2/auto-ops',           component: AutoRoutingOpsView },
+    { path: '/routing-v2/annotations',        redirect: { path: '/routing-v2/auto-ops', query: { tab: 'annotate' } } },
+    { path: '/routing-v2/annotations/stats',  redirect: { path: '/routing-v2/auto-ops', query: { tab: 'stats' } } },
     // v2 closed-loop P0③: 档案/调参页。两页的写端点都是超管面：
     // tuning 端点挂 h.superAdmin（admin/auto_route_tuning.go）；task-profile 的
     // 变更端点（apply-tier-config / reload，TaskProfileView 有写操作）后端暂挂
-    // 普通 admin 中间件（admin/handler.go RegisterTaskProfileRoutes），前端
-    // 路由先做 super 门控兜底（R64，2026-09-25）。
-    { path: '/routing-v2/task-profile',       component: TaskProfileView, meta: { requiresSuper: true } },
-    { path: '/routing-v2/auto-tuning',        component: AutoTuningView, meta: { requiresSuper: true } },
+    // 普通 admin 中间件（admin/handler.go RegisterTaskProfileRoutes）。前端门控
+    // 落在宿主页签级（R64，2026-09-25）：redirect 后守卫落在目标路由，非 super
+    // 深链 ?tab=profiles|tuning 会被 normalizeTab 弹回标注页签。
+    { path: '/routing-v2/task-profile',       redirect: { path: '/routing-v2/auto-ops', query: { tab: 'profiles' } } },
+    { path: '/routing-v2/auto-tuning',        redirect: { path: '/routing-v2/auto-ops', query: { tab: 'tuning' } } },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },
     { path: '/free-discovery',     component: FreeDiscoveryView,   meta: { requiresSuper: true } },
@@ -270,7 +273,7 @@ export const router = createRouter({
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
-    { path: '/admin/usage-trends', component: UsageTrendExplorerView, meta: { requiresAuth: true } }, // 全页用量趋势分析（2026-10-02：按模型分线 + 供应商/租户/apikey/模型/指标过滤；服务端按角色收租户范围）
+    { path: '/admin/usage-trends', component: UsageTrendExplorerView, meta: { requiresAuth: true, fillViewport: true } }, // 全屏用量趋势（2026-10-02：铺满主区；模型用 ModelPicker）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表

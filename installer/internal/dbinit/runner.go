@@ -579,6 +579,83 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 的旧版本」，天然可能没有对应 releases 行 —— 这是真实业务流，
 			// 不是夹具。外键保留（外键允许 NULL，非空时引用完整性照旧）。
 			"809_instance_release_status_nullable_release_id.sql",
+			// 813/814 are wired 2026-10-02 so the chain stops short of the
+			// registered set. TestStartupFilesAreAllEmbedded (>=704 floor) was
+			// red on main for both: neither is in the psql-concurrency /
+			// operator-gated / sequence-channel exemption maps, so the repo's
+			// own contract is that they belong in the installer.
+			//
+			// 813_supplier_errors_partitions_heap — supplier_errors family AM
+			// normalisation: the columnar partitions go back to heap and the
+			// ensure function is de-columnarised. Its own header records the
+			// reason as a dated landmine: "R20 登记的 supplier_errors 90d TTL
+			// 是 Row-level DELETE、11-06 必炸". Converting only the partitions
+			// without replacing the function leaves the self-heal loop
+			// re-applying columnar, so the drift recurs; 813 does both.
+			// Depends on 689 (position 126) and 699 (position 136), both
+			// already registered, and supersedes 699 at runtime.
+			//
+			// 814_adaptive_probe_targets_hot_subquery — rebuilds
+			// v_adaptive_probe_targets so recent_passive_failures reads the
+			// hot twin instead of the partitioned parent. It is a
+			// CREATE OR REPLACE VIEW with an unchanged column list, and its
+			// dependency candidate_failure_logs_hot is created by 392.
+			//
+			// Placed at the end of the chain: the 8xx block is ordered by
+			// dependency, not by number. Both are idempotent.
+			"813_supplier_errors_partitions_heap.sql",
+			"814_adaptive_probe_targets_hot_subquery.sql",
+
+			// 815 is wired 2026-10-02. Third instance of the same omission:
+			// the migration file was committed in both trees but never
+			// registered, so TestStartupFilesAreAllEmbedded was red on main and
+			// the fix it carries never ran on a fresh install.
+			//
+			// What it fixes is a live defect, not hygiene: it adds origin_stage
+			// / token_band / client_forwarded_for to the canonical
+			// request_logs_with_current_month view (118-column contract).
+			// admin/compression_stats.go:212 reads token_band from that view and
+			// the column was never in the contract, so every call raised 42703
+			// and the error was swallowed by slog.Warn — that dashboard cell
+			// has been silently empty. 815 also carries a view-chain guard
+			// that RAISE NOTICEs and RETURNs when the 680-incident wrapper
+			// shape is absent — but the trailing column-count DO block then
+			// runs unconditionally and RAISE EXCEPTIONs (count <> 118), so
+			// every "skip" path actually terminates the migration. The
+			// no-op-plus-self-heal wording (here and in the skip notices) is
+			// therefore false advertising; fail-closed is the real behavior.
+			// R32 registers the contradiction (12h 审计 P2-F); aligning the
+			// two blocks means editing an applied migration's content, which
+			// is a channel-replay decision left to the owner. The data
+			// precondition was measured against a real 1,515,960-row
+			// request_id pairing, not inferred.
+			//
+			// It depends on the view chain only, so it sits after 814 at the
+			// end of the 8xx block.
+			"815_request_logs_view_stage_band_cff.sql",
+			// 816 is wired 2026-10-02 (R33 12h audit round; fourth instance
+			// of the same omission shape — the migration landed in the
+			// canonical tree with no installer five-point sync, leaving
+			// TestCanonicalStartupMigrationsAtOrAbove704AreRegistered red
+			// on main).
+			//
+			// It rewrites exactly one line of the 815 view: the session arm's
+			// client_ip goes from NULL-padding to a session-side sourced
+			// projection guarded by a CASE on the raw text form. Without it a
+			// fresh install stays at the 815 shape forever — ensureRequestLogs-
+			// CurrentMonthView's early-exit is already satisfied by 815, so
+			// nothing converges to 816 — and the client_ip dimension silently
+			// collapses to __unknown__ on fresh installs while upgraded
+			// databases have the projection.
+			"816_request_logs_view_client_ip_projection.sql",
+			// 817 (2026-10-02, 审计 §9.64): 把 816 的字符类 client_ip 守卫换成
+			// pg_input_is_valid(v,'inet')。816 的守卫只挡非字符集垃圾，
+			// 192.168.1 / deadbeef / ::: 全部通过它后死在 ::inet 上，
+			// 打挂整条 canonical 视图的每一个读方（本机真库复现）。
+			// ensureRequestLogsCurrentMonthView 的早退在 816 形态上就成立，
+			// 所以**没有任何自愈通道会把它收敛到 817** —— 不装就永久停在
+			// 已知会崩的形态上（与 816 同一形状的第五次遗漏）。
+			"817_request_logs_view_client_ip_semantic_guard.sql",
 			// 818 (2026-10-02, 存储优化 v2): ursm_node_snapshot_min 的 payload
 			// 字段拆分 —— 24 个 hash 键提升为 typed 列，payload 退化为未知字段的
 			// 前向兼容仓并剔除 7 个与已有列重复的键。实测该表 payload 占 heap

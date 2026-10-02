@@ -630,3 +630,30 @@ func diffPtr[T comparable](a, b *T, show func(*T) string) string {
 	}
 	return ""
 }
+
+// TestAutoRouteSettleSweepFailureCounterWiresUp 钉住 error 臂的接线（R32
+// 审计 §四#2）。settleBatch 整查询失败此前只有 slog.Warn + 下轮重查同批——
+// llmgw_autoroute_settle_sweep_failures_total{reason="error"} 是
+// AutoRouteSettleSweepFailing 告警的唯一数据源，这条接线断了，告警就是装饰。
+// 空私有 schema 上跑一轮 sweep：settlePendingSQL 引用的 request_logs_hot
+// 不存在 → 42P01 → error 臂必须 +1。（loadTaskBaselines 同样失败，但按设计
+// 它走中性回落不计数——那不是 sweep 失败，是降级，有 CohortEmpty 族盯着。）
+func TestAutoRouteSettleSweepFailureCounterWiresUp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// "SELECT 1" 只是让 extraSchema 非空，从而走 testschema 私有 schema 隔离
+	// （空串会拿到未隔离的真库门池——那会让 sweep 结算真表，这是本测试
+	// 明确不要的）。
+	pool, cleanup := DispatchPostgresContainer(t, ctx, "SELECT 1;")
+	defer cleanup()
+
+	w := NewAutoRouteSettleWorker(pool)
+	key := autoRouteSettleSweepFailures.WithLabelValues(sweepFailError)
+	before := testutil.ToFloat64(key)
+	w.sweep(ctx)
+	if got := testutil.ToFloat64(key); got != before+1 {
+		t.Fatalf("sweep failures{reason=error} delta = %v, want +1 — settleBatch failure is not "+
+			"wired to the counter; AutoRouteSettleSweepFailing would be a decoration", got)
+	}
+}

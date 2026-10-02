@@ -1,11 +1,9 @@
 // autoTuning.ts — 路由调参页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: 'ルートチューニング',
-    desc: '分類器チューニング提案（自動生成 → バックテスト → 人手承認のホット適用）と分類品質レポート',
     refresh: '更新',
     refreshing: '更新中…',
-    loading: '読み込み中…',
     loadFailed: '読み込みに失敗しました',
+    panelTitle: 'チューニング提案（承認後 5 分以内にホット適用）',
     noProposals: '提案はまだありません（feedback_analyzer が期間ごとに自動生成します）',
   filter: {
     statusAll: 'すべて',

@@ -5637,7 +5637,9 @@ req-b2: reward_source differs: v1="session" session="request"
 | `llmgw_autoroute_settle_source_total{family}` | §9.43 已有 | `AutoRouteSettleSourceSwitched`（**本轮新增的消费者**） |
 
 `loadTaskBaselines` 的签名从 `(map, error)` 变成 `(map, int, error)`，第二个返回值
-与 `count(*)` **同在一次查询里**取回（不为一个数字多付一次每 30 秒的 RTT）。
+与 `count(*)` **同在一次查询里**取回（不为一个数字多付一次每轮的 RTT；settleInterval
+是 5 分钟，"每 30 秒" 是 2026-10-02 R33 审计订正前的笔误，代码注释里写的
+"every settleInterval" 才是对的）。
 §9.37 的纪律直接适用：门
 `TestSettleBaselineCohortCountIsConsumed` 要求那个返回值真的被 `Set` 进指标，
 否则它在事实层面就是装饰。
@@ -6092,7 +6094,7 @@ glm-5.3       | glm-5.3-flash
 
 **守卫不是防御性编程，是承重的**：`session_turns.client_ip` 是 **text**、
 无类型约束，一个畸形值会让 `::inet` 抛错并**打挂整条 canonical 视图的每一个读方**。
-真库实测守卫行为（**816 的字符类形态**）：
+真库实测守卫行为：
 
 | 输入 | 守卫输出 | 字符类 `[0-9a-fA-F:.]` 合法？ |
 |---|---|---|
@@ -6105,7 +6107,7 @@ glm-5.3       | glm-5.3-flash
 单独盯住它（§9.61.4）。
 
 > **订正（2026-10-02，§9.64）**：这张表**三个坏值全部是字符类不合法的**
-> ——`garbage` 含 `g/r/b`、多跳链含逗号、`''` 长度不足。也就是说它只证明了
+> ——`garbage` 含 `g/r/b`、多跳链含逗号、`''` 长度不足。它只证明了
 > 「守卫挡住了非字符集垃圾」，而我当时把它读成了「守卫已覆盖畸形值」。
 >
 > **字符类合法但语义非法**的那一类（`192.168.1` / `deadbeef` / `1.2.3.4.5.6` /
@@ -7285,9 +7287,6 @@ v1 那 1,938 条 auto 行的 `origin_actor` 分布：
 
 ⇒ **在拿到 ①–④ 之前，(a)/(b) 的选择不应被拍板。** 本地证据既不支持 (b)，
 也不足以支持 (a)。
-
----
-
 ## §9.54 252 生产库实测：**§9.44 的 (a)/(b) 两个选项都不是正确的杠杆**
 
 经 `env-injector inject aliyun-edge-252` + SSH 只读查询 `pg-252-pg17`
@@ -7698,43 +7697,6 @@ llm_gateway_auto_selections_dropped_total 0
 6 场景），而我的合并尚未解封。此时再动同一批文件只会把冲突面扩大。
 ⇒ 记账为下一轮的**第一件事**，并在此处写明判据要求（见 handoff）。
 
-### §9.64.9 顺带修掉一个**早于本轮**的红灯：写死编号的权威源
-
-`admin` 包里 `TestSessionArmNullPaddedColumnsMatchMigration` 报
-「session 臂 NULL 补位表与 **migration 815** 不一致：迁移里有、表里没有
-`[client_ip]`」。
-
-用 worktree 回到 `HEAD` 复跑确认：**早于本轮改动**，是 816 那一轮留下的。
-根因不在 `client_ip`，在**这道门把 815 当成了「当前权威迁移」**：
-
-| 迁移 | `client_ip` 形态 |
-|---|---|
-| 815（及更早） | `NULL::inet` 补位 |
-| 816 | 有源投影 + 字符类守卫 |
-| 817 | 有源投影 + 语义守卫 |
-
-816 把 `client_ip` 移出补位表之后，这道门就该改指 817——但**没人记得**，
-于是它红了整整一轮没人处理：816 那轮所有 `db` 包的测试都是绿的，
-只有这道**跨包**的 admin 门看得到。
-
-**修法不是把 815 换成 817**（那只是把同一个错误推迟到下一条迁移），
-而是**自动发现**：扫 `sql/migrations/startup/`，取**编号最大的、以
-`CREATE OR REPLACE VIEW public.request_logs_with_current_month` 重建该视图的
-up 迁移**。`.down.sql` 必须排除——down 恢复的是**旧形态**，把它算进
-「当前」会让门在回滚方向上完全失准。
-
-> **写死编号是这类门的默认失败模式**：它要求「每次新增一条重建视图的迁移」
-> 都记得回来改这里，而改漏的表现**不是**「门忘了新迁移」，是「门拿旧迁移
-> 当权威」——一个看起来完全合理的红，指向一个不存在的问题。
-> 这与「登记表 + 穷举」是同一族：真相会漂移，而**没登记就不检查**是最安静
-> 的一种失败，所以要把权威源**推导出来**而不是**记下来**。
-
-变异验证（M5）：往 817 的 proj 注入一个 `NULL::text AS client_ip_drift_probe`
-⇒ 门报「迁移里有、表里没有：`[client_ip_drift_probe]`」，红因即差集本身。
-逐字节还原后复跑为绿。
-
----
-
 ## §9.57 补上产出侧的洞：auto-route selection 写入量归零告警
 
 §9.56.4 记账的「下一轮第一件事」。本轮做完了。
@@ -7833,8 +7795,6 @@ sum(increase(llm_gateway_auto_selections_total[2h])) == 0
 
 `promtool check rules` SUCCESS；`promtool test rules` 6 场景 SUCCESS。
 
----
-
 ## §9.58 ★订正 §9.54.3：我把「内部生成器流量」当成了「业务 auto 流量」
 
 §9.54.3 写的是「99.5% 的业务 auto 流量根本没进会话族」，并把它列为停写前的
@@ -7917,3 +7877,261 @@ cohort 分析、可能还有别的审计脚本）都会把 3,166 条内部生成
 
 ⇒ 我**不代为裁决**。但 §9.54.3 那条「停写前阻塞项」必须**撤回**：
 它建立在一个已被证伪的前提上。
+
+### §9.64.9 顺带修掉一个**早于本轮**的红灯：写死编号的权威源
+
+`admin` 包里 `TestSessionArmNullPaddedColumnsMatchMigration` 报
+「session 臂 NULL 补位表与 **migration 815** 不一致：迁移里有、表里没有
+`[client_ip]`」。
+
+用 worktree 回到 `HEAD` 复跑确认：**早于本轮改动**，是 816 那一轮留下的。
+根因不在 `client_ip`，在**这道门把 815 当成了「当前权威迁移」**：
+
+| 迁移 | `client_ip` 形态 |
+|---|---|
+| 815（及更早） | `NULL::inet` 补位 |
+| 816 | 有源投影 + 字符类守卫 |
+| 817 | 有源投影 + 语义守卫 |
+
+816 把 `client_ip` 移出补位表之后，这道门就该改指 817——但**没人记得**，
+于是它红了整整一轮没人处理：816 那轮所有 `db` 包的测试都是绿的，
+只有这道**跨包**的 admin 门看得到。
+
+**修法不是把 815 换成 817**（那只是把同一个错误推迟到下一条迁移），
+而是**自动发现**：扫 `sql/migrations/startup/`，取**编号最大的、以
+`CREATE OR REPLACE VIEW public.request_logs_with_current_month` 重建该视图的
+up 迁移**。`.down.sql` 必须排除——down 恢复的是**旧形态**，把它算进
+「当前」会让门在回滚方向上完全失准。
+
+> **写死编号是这类门的默认失败模式**：它要求「每次新增一条重建视图的迁移」
+> 都记得回来改这里，而改漏的表现**不是**「门忘了新迁移」，是「门拿旧迁移
+> 当权威」——一个看起来完全合理的红，指向一个不存在的问题。
+> 这与「登记表 + 穷举」是同一族：真相会漂移，而**没登记就不检查**是最安静
+> 的一种失败，所以要把权威源**推导出来**而不是**记下来**。
+
+变异验证（M5）：往 817 的 proj 注入一个 `NULL::text AS client_ip_drift_probe`
+⇒ 门报「迁移里有、表里没有：`[client_ip_drift_probe]`」，红因即差集本身。
+逐字节还原后复跑为绿。
+
+### §9.64.10 817 差点「全绿但装不上」——门替我抓到了
+
+我最初提交 817 时**没有做安装器五点同步**，而且当时是**绿的**：`db`、
+`sql/migrations/startup`、`admin` 全过。差点就这么推上去了。
+
+把提交移到 `origin/main` 之上重跑安装器模块时，那道门立刻红了：
+
+```
+canonical startup migration "817_request_logs_view_client_ip_semantic_guard.sql"
+(>=704) is not registered in dbinit.Runner.StartupFiles — run the five-point
+sync (embeddata copy, go:embed var + embeddedSQLFiles map in main.go,
+StartupFiles entry, parity map here)
+```
+
+**为什么这道缺口特别安静**：运行中的网关**不应用 startup 迁移**——
+`db.ensureRequestLogsCurrentMonthView` 的早退判据（view 存在且 body 是 v2）
+在 816 形态上就成立，所以 817 落库后**没有任何自愈通道**会把它收敛过去。
+唯一执行者是安装器。⇒ 迁移文件躺在 canonical 树里、门全绿、而**没有任何机器
+会跑到它**。
+
+这已经是同形遗漏的**第五次**（816 是第四次，`runner.go` 里那条注释记着前四次）。
+
+补的五点（并按门的要求逐点做）：
+
+| 点 | 落点 |
+|---|---|
+| embeddata 副本（up + down） | `installer/cmd/llm-gw-installer/embeddata/startup/817_*` |
+| `go:embed` 变量 | `main.go` 的 `requestLogsViewClientIPSemanticGuard817` |
+| `embeddedSQLFiles` 映射 | `main.go` |
+| `StartupFiles` 条目 + 理由 | `runner.go` |
+| TSV | `installed_startup_migrations.tsv` 第 206 行（重生成，只增一行） |
+
+变异 M6：把 817 的 `StartupFiles` 条目摘掉 ⇒ 门按预期报「not registered」；
+逐字节还原后复跑为绿。**没有这道门，本节就是一个绿的提交 + 一个永远跑不到的
+迁移。**
+
+> **「门全绿」要问一句：门覆盖的是哪个形态？** 这一轮里我在同一个下午踩了两次
+> 形态错位——一次是守卫（字符类 vs 语义），一次是权威源（815 vs 816 vs 817），
+> 一次是**执行通道**（文件在树里 vs 有没有人跑它）。三次的共同形状都是
+> **「文件/声明在」被当成了「行为在」**。
+
+---
+
+## §9.59 ★在 252 生产库上跑值层对账：「确保数据在更改前后一致」终于有了生产证据 —— 顺带发现我那道门**漏了一整个存储面**
+
+### §9.59.0 为什么这一节排在最前面
+
+用户目标的原话是「**确保数据在更改前后一致**」。执行这句话的门是 §9.32 建的
+`TestDualWriteValueParity`。但 §9.32.5 自己写着：
+
+> 全部数字来自**本机 `llm_gateway` 库**，写入方身份未确认（§9.30.4）。
+
+而 §9.54–§9.58 这五节在 252 上验的是**存储可用性**（行数、分区在不在），
+**从没人在生产上跑过那道值层对账**。
+
+⇒ 核心目标的最后一个闭环，一直挂在一个**写入方身份未确认的样本**上。
+本节补上它。
+
+### §9.59.1 连接方式与一条纪律
+
+252 的 postgres 绑在 `172.16.2.210:5432`（**不是** `0.0.0.0`），只能走隧道：
+
+```
+ssh -N -L 15432:172.16.2.210:5432 -p 25022 root@115.29.212.252
+TEST_PG_URL=postgres://…@127.0.0.1:15432/llm_gateway?sslmode=disable
+```
+
+**纪律：直接跑原门，不重写 SQL。** 我先在 `psql` 里手写了一遍等价查询才敢改，
+但最终进代码的是原门本身——手写查询与门之间的口径漂移，正是 §9.32 第一版
+`IS DISTINCT FROM` 那个 79.8% 假红的来源。
+
+### §9.59.2 原样跑：全绿，但配对数不对
+
+```
+配对行 10634（已排除 probe-*）
+  success 不一致        = 0
+  prompt_tokens 不一致  = 2      (0.019%)
+  completion_tokens     = 0
+  latency_ms            = 0
+  upstream_status_code  = 0
+  模型：原始串不同 2472；归一化后仍不同 8
+PASS
+```
+
+判据全过。**但 10,634 这个数本身让我停下来**：252 上 v1 非探针行是 16,475
+（父表 13,819 + `_hot` 2,656），配到会话族的其实是 **12,743**。
+
+⇒ **门只看了 10,634，2,109 对（16.5%）根本没进比对集。**
+
+### §9.59.3 ★根因：v1 侧只读了一个存储面，而它**不是**另一个的分区
+
+`pg_inherits` 实测（252）：
+
+| 父表 | 子分区数 | 子分区 |
+|---|---|---|
+| `request_logs` | 4 | `request_logs_2026_08/09/10/11` |
+| `session_turns` | 6 | `session_turns_2026_07…11` + `_default` |
+
+`request_logs_hot` **不在** `pg_inherits` 里 —— 它和 `session_turns_hot` 一样，
+是**独立存储面**，不是分区。写方只写 `_hot`，冷数据才落到父表。
+
+原门的 `v` CTE 只 `FROM public.request_logs`：
+
+```sql
+v AS (SELECT … FROM public.request_logs WHERE request_id NOT LIKE 'probe-%')
+```
+
+而 `s` CTE 读的是 `session_turns UNION ALL session_turns_hot` —— **两侧口径不对称**。
+
+**漏掉的恰好是最新那批**（`_hot` = 当天数据），而双写回归最先出现在最新数据上。
+这个洞的形状是：**样本越少、门越绿**。
+
+### §9.59.4 修正后重跑
+
+v1 侧补 `request_logs_hot`（模型差异那条查询同样补），配对行 **10,634 → 12,798（+20.5%）**，
+判据仍全过：
+
+| 字段 | 修正前 | 修正后 | 阈值 |
+|---|---|---|---|
+| 配对行 | 10,634 | **12,798** | — |
+| `success` 不一致 | 0 | **0** | 零容忍 ✅ |
+| `prompt_tokens` | 2 | 5（0.039%） | 0.05% ✅ |
+| `completion_tokens` | 0 | 0 | 0.05% ✅ |
+| `latency_ms` | 0 | 0 | 0.05% ✅ |
+| `upstream_status_code` | 0 | 0 | 0.05% ✅ |
+| 模型（归一化后） | 8 | 14（0.11%） | 2% ✅ |
+
+**「两族在共有的事实上值层一致」这个结论，现在建立在生产数据上。**
+
+### §9.59.5 但内连接有个构造性盲区：**镜像侧系统性丢失时，这道门会变得更绿**
+
+原门是内连接：它只比「两侧都存在」的 `request_id`。这在语义上对，
+但它数不了「v1 有、会话族没有」的那部分。于是必须单独量。
+
+修正后未配对 3,748 条的分桶（252 实测）：
+
+| 桶 | 行数 | 判定 |
+|---|---|---|
+| 内部生成器（auto-title / auto-summary） | **3,722** | ✅ **按设计不镜像**，正确 |
+| 非内部 · 卡在非终态（`request_status` 非 success/failure/rate_limited） | 20 | ⚠️ 按设计不镜像，但见 §9.59.6 |
+| 非内部 · **已终态却无孪生** | **6** | ❌ **未查明** |
+
+覆盖率：v1 非探针全集 16,550，能配对 12,802（**77.4%**）。
+
+⇒ 前一大桶再次印证 §9.58：把内部生成器算成「不一致」是错的。**分桶这一步不是
+修辞，是防止我第二次犯同一个错。**
+
+### §9.59.6 那 20 条卡在非终态的：按设计，但退役后无迹可寻
+
+机制在 `internal/sessionv2mirror/hook.go:71`：
+
+```go
+if !entry.Success && !isTerminalFailure(entry) { return }
+```
+
+`isTerminalFailure`（`hook.go:1012`）只认 `request_status ∈ {failure, rate_limited}`
+或 `error_kind` 非空。`in_progress` 不在其中 ⇒ **按设计不镜像**
+（v2 turns 按 `request_id` 幂等、首次插入后不可更新，镜像占位行会把
+`success=false` 永久写死并吞掉后续富化——注释所述）。
+
+**门按设计工作的证据**：配对成功的 12,802 行里，`in_progress` **一条都没有**。
+这是零，不是巧合。
+
+**但结论要写全**：`in_progress` 行意味着「这个请求开始了，却从没有终态」。
+v1 停写（S4）之后，**这个事实将只存在于 v1，而 v1 即将不再写入** ⇒
+「哪些请求开始了却没结束」这件事将无法回答。这不是镜像 bug，是**退役口径**问题。
+
+### §9.59.7 ★我先写了一道装饰门，然后靠变异发现并删掉了它
+
+我给 §9.59.6 的谓词加了 `TestIsTerminalFailureAcceptedSet`（10 条表驱动子用例）。
+第一版我还加了「自指护栏」`TestTerminalGateAndIsTerminalFailureStayConsistent`，
+里面有**一份首门判定形式的复刻**。变异验证：
+
+| 变异 | 结果 |
+|---|---|
+| M1：`isTerminalFailure` 额外接受 `in_progress` | ✅ 我那张表红（`in_progress 不算终态` 子用例） |
+| M2：`hook.go:71` 真门改成 `if !entry.Success { return }` | ❌ **我的自指护栏全绿** |
+
+M2 证明那道护栏是**装饰**：它测的是自己那份复刻，不是真门。
+**一道在真门被改坏后仍然通过的判据，比没有它更坏** —— 它给读代码的人一个
+「首门已被钉住」的错觉，而实际钉住它的是 `hook_test.go` 里既有的
+`TestPersistHook_MirrorsTerminalFailure` / `...RateLimited`。
+
+⇒ 已删除该护栏，并在文件里写明它为什么不该存在、首门由谁钉。
+这与 §9.59.3 是同一条纪律的两个实例：**门测的必须是被守的那一处。**
+
+### §9.59.8 ★修「连接参数只改了一半」——当场就红了
+
+覆盖率查询冷缓存 23s，而 252 的 `statement_timeout` 默认 **30s**。
+第一次跑以 `SQLSTATE 57014` 失败——**那条报错长得像「SQL 写错了」，
+实际只是没给够时间**。
+
+我先只给覆盖率那道门加了超时，值层那道没加。**同一轮里它就红了**
+（56s > 30s）。⇒ 抽成 `openParityPool`，两处共用，**参数只能有一处定义**。
+
+> 两处各写一份，就一定会有下一次只改一半，而没被改到的那一道会以
+> 「查询失败」的形式报错，读起来像 SQL 问题、超时，指向完全错误的排查方向。
+
+### §9.59.9 仍未查明的 6 条
+
+3 条 `success` + 3 条 `failure` 的非内部请求，两道镜像门都放行，却仍无孪生。
+已排除：整族无痕（`session_audit_records` / `session_bodies_unified` /
+`session_mirror_outbox` 均为 0）、合成会话（`gw_session_id` 真实非空）、
+`IsInternalAutoEntry`（`is_auto_request` 为空，第一道门即 false）。
+
+**未排除**：异步队列丢弃、`shadowWriteEnabled` 当时为假、
+`entryToProcessedRequest` 返回 nil。**本节不给归因**，记账为下一轮。
+
+### §9.59.10 结论与边界
+
+**正面回答**「确保数据在更改前后一致」：
+252 生产库上，两族在**共有的事实上逐行一致**（`success` 零差异，覆盖 12,798 对），
+覆盖了 v1 非探针流量的 77.4%；未覆盖的 22.6% 中 99.1% 是**按设计排除**的
+内部生成器，真实异常 26 条（20 条按设计、6 条未查明）。
+
+**边界**：
+- 数字来自 **2026-10-02 23:2x–23:4x 的 252 生产库**（活库，配对行数逐轮微增）。
+- 探针流量两侧均按设计排除，不在任何统计内。
+- 本门**需要 `TEST_PG_URL`，默认跳过**；跳过不构成证据。
+- spec 写的退出条件仍是「dual_read_validator 对账 7 天零漂移」，
+  **本节是单次快照，不满足它**（且 §8.4 已记录 validator 读 v1 面、S4 会关掉
+  自己的观测手段这一设计矛盾）。**不要把本节当成 S4 的放行依据。**

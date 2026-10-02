@@ -12,4 +12,11 @@ export default {
   filterAll: 'All',
   shareByMetric: 'Share (metric)',
   sourceDetail: 'Request detail',
+  // 2026-10-02 multi-select / clear-all / auto-refresh round
+  clearAll: 'Clear all',
+  autoRefresh: 'Auto refresh',
+  autoRefreshOff: 'Off',
+  autoRefresh30s: '30s',
+  autoRefresh1m: '1 min',
+  autoRefresh5m: '5 min',
 }

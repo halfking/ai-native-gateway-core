@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-10-02T03:19:53.953Z",
+  "exported_at": "2026-10-02T17:07:33.408Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -105,49 +105,11 @@
           "pluginScope": "*"
         },
         {
-          "path": "/routing-v2/annotations",
-          "label": "人工标注",
-          "labelKey": "nav.item.annotations",
-          "icon": "✍️",
+          "path": "/routing-v2/auto-ops",
+          "label": "AUTO 路由运营",
+          "labelKey": "nav.item.autoOps",
+          "icon": "♻️",
           "tenantScope": "*",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/routing-v2/annotations/stats",
-          "label": "标注统计",
-          "labelKey": "nav.item.annotationStats",
-          "icon": "🧮",
-          "tenantScope": "*",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/routing-v2/task-profile",
-          "label": "任务档案",
-          "labelKey": "nav.item.taskProfile",
-          "icon": "🗂️",
-          "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/routing-v2/auto-tuning",
-          "label": "路由调参",
-          "labelKey": "nav.item.autoTuning",
-          "icon": "🎛️",
-          "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/dashboard?tab=selfcheck",
-          "label": "系统自检",
-          "labelKey": "nav.item.systemMonitor",
-          "icon": "📈",
-          "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
           "pluginScope": "*"
         },
         {
