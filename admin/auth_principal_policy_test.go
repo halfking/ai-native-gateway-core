@@ -146,6 +146,34 @@ func TestAdminPrincipalPolicyPreservesExplicitTiers(t *testing.T) {
 	}
 }
 
+func TestAdminPrincipalPolicyMalformedPrimaryRole(t *testing.T) {
+	withSharedSecret(t)
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", legacySecret)
+	t.Setenv(identity.EnvExpectedAudience, identity.DefaultAudience)
+	for _, tc := range []struct {
+		name string
+		role any
+	}{
+		{"null", nil},
+		{"number", 123},
+		{"boolean", true},
+		{"object", map[string]any{"name": "user"}},
+		{"array", []string{"user"}},
+	} {
+		for _, transport := range []string{"bearer", "cookie", "query"} {
+			t.Run(tc.name+" "+transport, func(t *testing.T) {
+				raw := mintMultiIssuerForTest(t, "acc", "alice", identity.DefaultAudience, sharedSecret, time.Hour, jwt.MapClaims{
+					"user_id": "42", "tenant_id": "tenant-a", "roles": []any{tc.role, "super_admin"},
+				})
+				status, calls, _ := requestPrincipalPolicy(t, raw, transport)
+				if status != http.StatusUnauthorized || calls != 0 {
+					t.Fatalf("malformed primary role must reject before handlers: status=%d calls=%d", status, calls)
+				}
+			})
+		}
+	}
+}
+
 func TestAdminPrincipalPolicyCanonicalLegacyWithEqualSecrets(t *testing.T) {
 	withSharedSecret(t)
 	t.Setenv("LLM_GATEWAY_JWT_SECRET", sharedSecret)
