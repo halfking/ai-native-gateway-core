@@ -1354,3 +1354,55 @@ SQL 却还在用 `IS DISTINCT FROM`（把「一侧 NULL、另一侧有值」也�
    v1 退役后 `completion_tokens` 就只剩 session 侧那份。
 2. parity 门判定口径复核（当月 → 全保留期）。
 3. `auto_route_settle_worker` 陈旧基线标记。
+
+---
+
+## 第十六轮（§9.33）：把 45,337 追到底 —— **证伪**，并撤回一份错误的读方清单
+
+上一轮留下一个数字：「仅 v1 记录 `upstream_status_code` 45,337 行」。
+本轮追到底，**结论是它既不是缺陷，也不是退役 v1 的代价**。
+
+### 三步
+
+1. **先确认 NULL 本身不是异常**：视图 94.40% NULL，v1 基表 91.88%，
+   session 93.50% —— 两族基线都 ~9 成。该列只在错误路径记。
+   ⇒ **不立「非 NULL 率」门**，它会以 94% 基线报红，是假警报机器。
+2. **定位真洞**：按 `request_id` 配对，v1 有值 176,134 → 也在 session 的 155,282
+   → session 侧也有值的 109,945 **与 v1 零分歧**；为 NULL 的 **45,337**。
+   710 视图 v1 臂的反连接去重把 v1 的 200 挡在门外，session 臂出场带 NULL。
+   三臂**都**投影了这一列 ⇒ 洞在取值不在投影。
+3. **成因是写方上线时点**：session 侧填充率 09-13 前 ≤2.9% → 09-14 31.2%
+   → **09-15 起至今 100%**。45,337 全部落在部署前，**今天零缺失**。
+   构成印证无价值：45,323 是 `success=true`+`200`，14 是 `false`+`200`。
+
+### 撤回：上一轮的「受影响读方清单」是错的
+
+按「**同时**引用 710 视图 **且**用该列」求交集，非测试 Go 文件只有 2 个：
+`db/request_logs_view_schema.go`（视图定义本身）、`bg/candidate_failure_monitor.go`
+（`:258` 在 `candidate_failure_logs` 族，它读 710 视图的 `:333` 不取该列）。
+
+上一轮点名的 `bg/provider_error_aggregator.go`（读 `candidate_failure_logs`）、
+`admin/candidate_failure_handlers.go`（同族）、
+`internal/quality/minute_aggregator.go`（读 **`request_logs_hot` 基表**，
+且 `:36` 判据 `upstream_status_code IS NULL AND success` **本就 NULL 容错**）
+—— **三个都不经过 710 视图**。
+
+**信号**：`view_success` 实跑是 `t` ⇒ 成功信号存活，唯一有用的谓词仍然工作。
+
+### 决策
+
+- **不修**（回填 45,337 个 `200` 无价值；改反连接为 LEFT JOIN 要重建 2.3M 行视图）。
+- **不是退役代价**：今天已经给 NULL，退役后反连接本就该消失，洞自动不存在。
+- **不立门**：该列的守点已被 §9.32 值层门覆盖（两族都有值时零分歧）。
+- 归入「某一侧未记录」账本的**已定性条目**，不是待办。
+
+**教训**：grep 命中「文件里出现过这个列名」≠「这个读方从这层视图读这一列」。
+跨族撞车（`candidate_failure_logs` 也叫 `upstream_status_code`）会让扫描器
+产出高置信度的假受影响方。**必须求交集后再手验**（与 §9.21 同族）。
+
+### 待拍板（仍是四件，未变）
+
+1. 轮次写入器要不要持久化完整请求载荷（`request_payload` 列）。
+2. parity 门判定口径复核（当月 → 全保留期）。
+3. `auto_route_settle_worker` 陈旧基线标记（需改 HTTP 响应契约）。
+4. §9.31/§9.32 两道新门是否接进 CI（需 `TEST_PG_URL`）。
