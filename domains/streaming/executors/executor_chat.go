@@ -445,6 +445,53 @@ func (e *Executor) executeOpenAI(
 			nativeStream = false
 		}
 	}
+
+	// DurableVerdict (2026-10-02): the gate above is one-directional. It can only
+	// turn native Responses OFF, never ON, because the positive side lives in a
+	// different store than the one that opens the gate:
+	//
+	//   · cand.SupportsNativeResponses is loaded by provider/client.go from the
+	//     SQL table credential_model_capabilities (migration 612/613);
+	//   · every probe verdict is persisted by SetSupportsResponses into the
+	//     Redis node-state capability key (bg/probe_http.go sets it only on a
+	//     2xx from the responses endpoint, or on an explicit unsupported
+	//     verdict);
+	//   · NOTHING in the Go tree ever inserts into credential_model_capabilities
+	//     — the only reference is that SELECT. Migrations 612/613 say so
+	//     themselves ("opt-in", "until an external probe populates it") and no
+	//     such probe exists.
+	//
+	// Consequence measured on vapEUR / credential 126: the table held exactly
+	// one row (grok-4.6, 2026-09-25) out of ~101 bindings, so /v1/responses
+	// traffic never once reached api.vapeur.ai/v1/responses in 30 minutes
+	// (54 chat calls, 0 responses calls) — the "默认走 responses" intent was
+	// silently inert for every model.
+	//
+	// Honour a known-positive durable verdict as an opt-in for the native gate,
+	// so both directions read one source of truth. Scope notes:
+	//   · non-stream only — the probe's verdict is non-stream evidence
+	//     (probe_http.go issues one non-streaming ping), so it must not be
+	//     extrapolated to the streaming leg, which stays on the SQL flag;
+	//   · TTL-bounded by CapabilityExpiresAt, and a read error falls back to
+	//     today's behaviour, so a Redis outage cannot change routing.
+	if !nativeNonStream && !nativeStream && params.ResponsesBodyBytes != nil &&
+		cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
+		!params.IsStream && e.FpSlots != nil && e.FpSlots.Enabled() {
+		if supported, known, err := e.FpSlots.GetSupportsResponses(
+			params.R.Context(), cand.CredentialID, cand.RawModel); err != nil {
+			slog.Debug("durable capability read failed, keeping the SQL capability flag",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"error", err)
+		} else if known && supported {
+			slog.Debug("durable capability says Responses works, enabling native Responses",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel)
+			nativeNonStream = true
+		}
+	}
 	// Fix-2026-09-25: only hard-block when the native Responses capability is
 	// explicitly enabled but the required infrastructure is missing. When the
 	// capability is not enabled (credential_model_capabilities absent/false),
@@ -468,6 +515,18 @@ func (e *Executor) executeOpenAI(
 	// native responses 分支下面会覆写 sourceBody 为 ResponsesBodyBytes；
 	// 模式回退时需要从这里恢复。
 	clientSourceBody := sourceBody
+	// upgradedFromChat (2026-10-02, chat→responses bridge) marks that WE, not
+	// the client, turned a chat-shaped request into a Responses one because the
+	// upstream refused the chat leg. The success path must then convert the
+	// Responses reply back into a chat envelope before writing it — a
+	// chat-shaped client handed a raw `{"object":"response",...}` body would see
+	// a malformed answer. Stays false for a genuine Responses client, which
+	// keeps the existing passthrough behaviour.
+	//
+	// Declared here, before the retry loop, for the same reason as the other
+	// per-attempt locals: a mode fallback mutates them and returns
+	// retryableError, so they must survive into the next iteration.
+	upgradedFromChat := false
 	var bodyBytes []byte
 	// R34-A1: responses 专属压缩链的 provenance JSON（strategy + dropped
 	// indexes + AlignmentMap）。proactive 与 4xx recovery 两条路径写入，
@@ -994,6 +1053,7 @@ func (e *Executor) executeOpenAI(
 				// out WHY the upstream rejected us. Goes after the
 				// attemptLog call (the resp.Body is still untouched at
 				// this point).
+
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.Body != nil {
 					peek := make([]byte, 256)
 					n, _ := resp.Body.Read(peek)
@@ -1245,6 +1305,80 @@ func (e *Executor) executeOpenAI(
 					}
 				}
 
+				// 模式回退（chat→responses，2026-10-02）：上面的分支处理「provider
+				// 不支持 Responses → 退回 chat」。本分支补上反向缺口：「模型只存在于
+				// Responses → chat 腿被拒」。此前该方向完全没有降级：reqprobe.Diagnose
+				// 会给出 SuggestMode:"responses"，但 diagnose.go 明确写着「仅记录建议，
+				// executor 不自动切换」，于是 vapEUR 上 gpt-5.3-codex 的 chat 腿 400
+				// （code 4006 "The requested operation is unsupported."）必然 503，而
+				// 探针走 responses 腿拿到 200，节点还被判为健康。
+				//
+				// 守门条件（缺一不可）：
+				//  · cand.Protocol == openai-responses —— 通用「不支持」文案只有在
+				//    「provider 本身就声明 responses 原生」时才有「换条线格式可行」这层
+				//    含义；对任何其他 provider这是在浪费一次必败重试；
+				//  · chatRequiresResponses —— 参数形状类拒绝不放行，避免用切换线格式
+				//    掩盖请求体 bug（与 providercap.ResponsesUnsupportedError 同一切法）；
+				//  · 未试过 / 未升级过 —— 每请求至多一次。
+				//
+				// 客户端协议决定「转换」的方向，这是本分支最关键的分叉
+				// （2026-10-02 审计修正）。两种客户端的请求体形状本来就不同：
+				//  · chat 客户端：body 是 chat 形态，必须转成 Responses 才能打
+				//    /responses，且回来的 Responses 响应必须转回 chat 才能给客户端；
+				//  · Responses 客户端：body 已经是 Responses 形态（params 里有
+				//    ResponsesBodyBytes），只需换出站腿，响应原样透传即可。
+				// 早期实现对两者一视同仁地走「转成 chat」，于是 /v1/responses
+				// 客户端收到 chat.completion.chunk，responses handler 判不出终止帧
+				// → response.failed / All providers unavailable（真机实证）。
+				if !probe.modeTried && !upgradedFromChat &&
+					cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
+					!nativeNonStream && !nativeStream &&
+					chatRequiresResponses(resp.StatusCode, string(body[:n])) {
+					responsesClient := params.ClientProtocol == providercatalog.ProtocolOpenAIResponses &&
+						len(params.ResponsesBodyBytes) > 0
+					var retryBody []byte
+					if responsesClient {
+						retryBody = append([]byte(nil), params.ResponsesBodyBytes...)
+					} else if converted, convOK := chatBodyToResponsesBody(clientSourceBody, cand.RawModel); convOK {
+						retryBody = converted
+					}
+					if len(retryBody) > 0 {
+						slog.Warn("upstream chat/completions rejected: retrying via /v1/responses",
+							"request_id", params.RequestID,
+							"provider_id", cand.ProviderID,
+							"credential_id", cand.CredentialID,
+							"raw_model", cand.RawModel,
+							"status", resp.StatusCode,
+							"client_protocol", params.ClientProtocol,
+						)
+						bodyBytes = retryBody
+						sourceBody = clientSourceBody
+						// upgradedFromChat 只在「我们替 chat 客户端造了 Responses
+						// 体」时为真——它同时是响应侧需要转回 chat 信封的开关。
+						// Responses 客户端必须保持 false，才能走原生透传分支。
+						upgradedFromChat = !responsesClient
+						if params.IsStream {
+							nativeStream = true
+						} else {
+							nativeNonStream = true
+						}
+						probe.modeTried = true
+						probe.active = true
+						probeRetry = true
+						e.ledgerRecordProbe(params, cand, nil, "chat", "responses")
+						// 与反向分支同理：模式回退是准入内的第二次上游调用，必须补记
+						// 到准入 Governor 的 RPM/TPM 桶。
+						meterExtraUpstreamCall(params)
+						return nil, &retryableError{err: &upstreampkg.Error{
+							Kind:       errKind,
+							Message:    fmt.Sprintf("upstream %d (chat unsupported; responses fallback retry)", resp.StatusCode),
+							Body:       append([]byte(nil), body[:n]...),
+							StatusCode: resp.StatusCode,
+							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+						}}
+					}
+				}
+
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
 					resp.StatusCode != 429 && resp.StatusCode != 401 &&
 					resp.StatusCode != 403 && resp.StatusCode != 402 &&
@@ -1477,7 +1611,12 @@ func (e *Executor) executeOpenAI(
 				// writer，让 upstream body 照常读入 params.Capture 而不
 				//触碰已失效的客户端连接。
 				streamSink := responseSink(params)
-				if nativeStream {
+				// upgradedFromChat (chat→responses bridge, 2026-10-02): the client
+				// asked in chat, so the reply must be rendered as chat SSE. The
+				// native passthrough below would forward Responses frames verbatim,
+				// which is exactly what this client cannot read — route it through
+				// the switch instead, where the body-converting branch lives.
+				if nativeStream && !upgradedFromChat {
 					streamOutcome = e.NativeResponsesStream(streamReaderContext(params, resp), streamSink, resp, diagnosticRequestID(params), params.Capture, params.ClientSemanticBytesVisible)
 				} else {
 					switch {
@@ -1509,6 +1648,20 @@ func (e *Executor) executeOpenAI(
 						)
 					case params.StreamWrapper != nil:
 						streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
+					// chat→responses bridge, streaming half (2026-10-02): we upgraded a
+					// chat-shaped request onto the Responses wire, so the upstream speaks
+					// Responses SSE while the client expects chat SSE. Convert on the
+					// BODY and hand the response to the ordinary chat reader below — that
+					// keeps [DONE] handling, usage accounting and interruption telemetry on
+					// their existing tested path instead of forking the stream handler.
+					case e.StreamChat != nil && nativeStream && upgradedFromChat:
+						bridgeResp := *resp
+						bridgeResp.Body = responsesToChatStream(
+							streamReaderContext(params, resp), resp.Body, outboundModel)
+						streamOutcome = e.StreamChat(
+							streamReaderContext(params, resp), streamSink, &bridgeResp,
+							params.ClientModel, outboundModel, cand.CatalogCode,
+							e.Normalize, params.Capture, params.ToolsRequested)
 					case e.StreamChat != nil:
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
 						streamOutcome = e.StreamChat(streamReaderContext(params, resp), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
@@ -1706,6 +1859,41 @@ func (e *Executor) executeOpenAI(
 				if validationErr := validateNativeResponsesBody(respBody); validationErr != nil {
 					return nil, validationErr
 				}
+			}
+			// chat→responses bridge (2026-10-02): WE upgraded this chat-shaped
+			// request onto the Responses wire because the upstream refused the
+			// chat leg. The reply therefore arrives in Responses shape and must
+			// be converted back before it reaches a chat-shaped client —
+			// otherwise it receives `{"object":"response",...}` where it expects
+			// `chat.completion`.
+			//
+			// validateNativeResponsesBody above already ran on the genuine
+			// upstream body, so this only rewrites the client-facing copy.
+			//
+			// A failed conversion is NOT written through: forwarding the raw
+			// Responses envelope would hand the client a malformed answer, and
+			// an empty conversion is indistinguishable from an upstream failure.
+			// Returning before WriteHeader lets the caller's existing
+			// empty-response / candidate-failover contract handle it.
+			if nativeNonStream && upgradedFromChat {
+				chatBody, convOK := responsesBodyToChatBody(respBody, params.ClientModel)
+				if !convOK {
+					slog.Warn("chat→responses bridge: cannot render the Responses reply as a chat completion",
+						"request_id", params.RequestID,
+						"provider_id", cand.ProviderID,
+						"credential_id", cand.CredentialID,
+						"raw_model", cand.RawModel,
+						"body_bytes", len(respBody),
+					)
+					return nil, &upstreampkg.Error{
+						Kind:       errorsx.KindEmptyResponse,
+						Message:    "responses reply could not be converted to a chat completion",
+						Body:       append([]byte(nil), respBody...),
+						StatusCode: resp.StatusCode,
+						RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+					}
+				}
+				respBody = chatBody
 			}
 			// 2026-07-15: non-stream empty-response failover. The upstream
 			// returned HTTP 200 with a well-formed but content-less body
