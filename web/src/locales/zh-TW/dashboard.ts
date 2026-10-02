@@ -100,6 +100,9 @@ tabs: {
     trendTokens: 'Token',
     trendCredits: '積分',
     trendCost: '成本 (USD)',
+    trendMore: '更多',
+    trendMoreTitle: '開啟全頁用量趨勢分析',
+    trendOthers: '其他',
     filterProvider: '供應商 ID',
     allProviders: '全部',
 

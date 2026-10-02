@@ -31,6 +31,7 @@ export default {
     providers: "Proveedores",
     reconciliation: "Conciliación de proveedores",
     settlementReport: "Informe de liquidación",
+    usageTrends: "Tendencias de uso",
     pricing: "Precios de coste",
     modelPricing: "Gestión de precios",
     freePool: "Pool gratuito",

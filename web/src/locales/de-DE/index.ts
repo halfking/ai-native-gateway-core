@@ -75,8 +75,10 @@ import nodeHealthTimeline from './nodeHealthTimeline'
 import proxy from './proxy'
 import requestDetail from './requestDetail'
 import reports from './reports'
+import usageTrend from './usageTrend'
 
 export default {
+  usageTrend,
   common,
   customer,
   annotation,
