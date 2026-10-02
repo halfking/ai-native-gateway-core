@@ -133,9 +133,82 @@ if command -v node >/dev/null 2>&1; then
   absent "npm 回退 unix 路径无参时不加空的 -s --" "$N2" "-s --"
   N3="$(node -e "const m=require(process.argv[1]);process.stdout.write(m.windowsFallback('http://x/install',['--mode','lite']))" "$NPM_JS" 2>&1)"
   contains "npm 回退 windows 路径把 --mode 翻成 MODE 环境变量" "$N3" '$env:MODE='
-  contains "npm 回退 windows 路径带出 lite" "$N3" "lite"
+  contains "npm windows 回退带出 lite" "$N3" "lite"
+  # 生成的 PowerShell 源码必须纯 ASCII：-Command 参数会经控制台代码页转码，
+  # 非 ASCII 在里面会被毁到连引号都配不平（中文提示 → ParserError）。
+  if printf '%s' "$N3" | LC_ALL=C grep -q '[^ -~	]'; then
+    bad "npm windows 回退生成的 PowerShell 源码含非 ASCII 字符"
+  else
+    ok "npm windows 回退生成的 PowerShell 源码是纯 ASCII"
+  fi
   N4="$(node -e "const m=require(process.argv[1]);process.stdout.write(m.windowsFallback('http://x/install',['--yes']))" "$NPM_JS" 2>&1)"
   contains "npm 回退 windows 路径把 --yes 翻成 NO_INTERACTIVE" "$N4" '$env:NO_INTERACTIVE='
+  N5="$(node -e "const m=require(process.argv[1]);process.stdout.write(JSON.stringify(m.windowsClassifyArgs(['--mode','lite','doctor','--yes'])))" "$NPM_JS" 2>&1)"
+  contains "npm windows 把 --mode 收进 env" "$N5" 'MODE'
+  contains "npm windows 把 doctor 归为无法生效的参数" "$N5" 'doctor'
+  contains "npm windows 把 --yes 收进 env 而不是忽略" "$N5" 'NO_INTERACTIVE'
+
+  # doctor / version 必须由引导自己回答，不许掉进回退路径。usage 里承诺了这两条，
+  # 而 `irm | iex` 收不到位置参数，所以在 Windows 上它们只能就地实现。
+  ND="$(node "$NPM_JS" doctor 2>&1)"
+  check "npm doctor 退出码" "$?" "0"
+  contains "npm doctor 报出平台" "$ND" "platform"
+  contains "npm doctor 报出 node 版本" "$ND" "node"
+  contains "npm doctor 报出 release 入口" "$ND" "llmgateway.internal.example.com"
+  contains "npm doctor 报出 lite 规模" "$ND" "lite"
+  contains "npm doctor 报出 full 规模" "$ND" "full"
+  NV="$(node "$NPM_JS" version 2>&1)"
+  check "npm version 退出码" "$?" "0"
+  contains "npm version 报出版本号" "$NV" "llm-gw-installer"
+  contains "npm version 报出 release 入口" "$NV" "llmgateway.internal.example.com"
+  if printf '%s%s' "$ND" "$NV" | grep -q 'no local installer binary found'; then
+    bad "npm doctor/version 掉进了安装回退路径（usage 承诺的子命令没就地实现）"
+  else
+    ok "npm doctor/version 不触发安装回退"
+  fi
+
+  # ---- windows 回退路径必须真的能执行，不能只长得像 ----
+  # 这一段是被一次真实事故逼出来的：`npm i -g` 之后跑 `llm-gw-installer doctor`
+  # 会弹出一个 cmd 窗口、打印 banner 和提示符、什么都不执行、然后退出码 0。
+  # 根因是 spawn 用了 `cmd.exe -c` —— cmd 的开关是 `/c`，给成 `-c` 且没有 `/c`
+  # 时 cmd 会直接起一个**交互式** cmd。上面那些只断言「生成的字符串」，完全抓不到
+  # 它：字符串是对的，错的是怎么把它送进 shell。所以这里必须真的 spawn 一次。
+  NC="$(node -e "const m=require(process.argv[1]);process.stdout.write(JSON.stringify(m.fallbackPlan('http://x/install',['--mode','lite'],'win32')))" "$NPM_JS" 2>&1)"
+  contains "npm windows 回退直接 spawn powershell.exe" "$NC" 'powershell.exe'
+  contains "npm windows 回退用 -Command 传脚本" "$NC" '-Command'
+  if printf '%s' "$NC" | grep -q 'cmd\.exe\|ComSpec'; then
+    bad "npm windows 回退又绕回 cmd.exe 了（-c 开关与 POSIX 转义两个坑）"
+  else
+    ok "npm windows 回退不经过 cmd.exe"
+  fi
+  NL="$(node -e "const m=require(process.argv[1]);process.stdout.write(JSON.stringify(m.fallbackPlan('http://x/install',[],'linux')))" "$NPM_JS" 2>&1)"
+  contains "npm unix 回退走 /bin/sh -c" "$NL" '/bin/sh'
+  contains "npm unix 回退带 -c" "$NL" '"-c"'
+
+  # main() 必须真的经过 fallbackPlan 派发。曾经事故就发生在 main() 里：
+  # helper 完全正常，只有派发绕回了 cmd.exe，只测 helper 的门是绿的。
+  if grep -vE "^[[:space:]]*(//|\*|/\*)" "$NPM_JS" | grep -q 'cmd\.exe\|ComSpec'; then
+    bad "npm 入口源码里仍出现 cmd.exe/ComSpec（-c 开关那个坑）"
+  else
+    ok "npm 入口源码里没有 cmd.exe/ComSpec"
+  fi
+  if grep -qE 'return run\(plan\.bin, plan\.args\)' "$NPM_JS"; then
+    ok "npm main() 的回退派发走 fallbackPlan（门覆盖的就是这条路径）"
+  else
+    bad "npm main() 没有走 fallbackPlan，门覆盖不到真实派发"
+  fi
+
+  # 真的执行一次同样的 spawn 形状（脚本换成无害的 marker，不打网络），
+  # 证明「这套 argv 确实会被执行」而不是「看起来像会执行」。探针放在独立 .cjs
+  # 里：把 node -e 的多行脚本塞进 bash 单引号，转义已经咬过两次了。
+  if [ "${OS:-}" = Windows_NT ]; then
+    NSP="$(node "$ROOT/scripts/checks/npm-spawn-shape-probe.cjs" "$NPM_JS" 2>&1)"
+    contains "npm windows spawn 形状真的执行了脚本" "$NSP" "SPARNSHAPE_RAN"
+    contains "npm windows spawn 形状退出码为 0" "$NSP" "status=0"
+    contains "npm windows spawn 形状带出了 MODE" "$NSP" "mode=lite"
+  else
+    printf '[install-entry] skip: 非 Windows，无法真跑 windows spawn 形状\n'
+  fi
 else
   printf '[install-entry] skip: 没有 node，跳过 npm 入口检查\n'
 fi
