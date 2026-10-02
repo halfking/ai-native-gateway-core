@@ -2556,3 +2556,73 @@ M5 抓不住**不是门的缺陷**。该文件族是 `familyViewBase`（同时�
 v1-only 视图），混合族的后果取决于**哪条腿主导**——detail 档只读 v1-only 腿会
 冻结，而 provider 档读派生表。任何机械规则都会在这里误伤正确判定。
 如实记下门的能力边界，不假装它抓到了。
+
+## §9.14 族分类器少了一维：视图的「行级可用」不等于「谓词级可用」（2026-10-02）
+
+batch3 报了一条影响全局的发现，核实后成立，且**推翻了我自己写下的一条族约束**。
+
+### §9.14.1 事实
+
+`710_request_logs_view_session_family_v2.sql` 对 710 视图的 session 臂做了
+**30 列 NULL 补位**（`NULL::type AS col`）：
+
+```
+affinity_hit api_key_owner_user api_key_prefix application_code attachments
+auto_profile client_model client_profile compression_reason due_at gw_task_id id
+key_alias model_chosen outbound_msg_count outbound_msg_hashes outbound_token_est
+owner_user provider_id provider_model quality_fix_actions request_class
+request_type strategy_used stream_chunk_errors stream_chunks_sent test_tab_indent
+transform_rule_id virtual_ip virtual_mac
+```
+
+于是「710 视图含 session 臂 ⇒ 停写后不会查空」**只在行级成立**。只要读点在
+`WHERE / GROUP BY / JOIN` 里用到这几列，就是**行级有、谓词级空**：视图照常返回行，
+但按该列过滤的结果集恒为 0 行。
+
+实证（`domains/attachments/handler.go`）：读 `attachments::text`，session 臂该列恒
+NULL ⇒ `Scan` 报错 ⇒ 被当成「无附件」⇒ 200 + `attachments: []`。
+**附件数据其实还在 `request_attachments` 表里**（`repository.go:183` 已有读法），
+丢的只是这条 JSONB 读腿——属可修的读迁移，不需要数据抢救。
+
+### §9.14.2 我原来的族约束在这里是错的
+
+旧规则：`familyView` 不得判 `silently_empty`（理由：真库实测 24h 内 36.55% 的视图行
+来自 `session_turns`）。这条规则**会拒绝正确的判定**——`admin/top_problems.go`
+（`AND client_model IS NOT NULL`）、`bg/shared_pick.go`（Priority 1 带
+`client_model IS NOT NULL`）、`admin/session_analytics_breakdown.go`
+（`provider_id` 分组）等，判 `silently_empty` 都对，但会被门判红。
+
+⇒ 门在**惩罚正确代码**。这已经是本审计第四次记「守卫写宽会误伤正确代码」。
+
+### §9.14.3 修法：新增第 6 个族 + 具名论证
+
+`familyViewNullPadded = reads_view_with_null_padded_predicate`（**33 个文件**）。
+- 该族**允许** `silently_empty`（谓词级空，结果集真的为空）。
+- 该族判 `unaffected` **不直接判红、而是要求具名论证**——因为这一维的自动判定是
+  **保守近似**：只看列名是否出现，分不清「用在谓词里」（真触发）与
+  「只出现在投影 / URL 路径 / Go 结构体字段 / 已被同表达式非补位列 COALESCE 兜住」
+  （过度触发）。实测被标记的 5 个文件里 **3 真 2 假**。
+
+补位列清单由 `TestSessionArmNullPaddedColumnsMatchMigration` **反向校验** migration 710
+的声明——不靠人记得更新。清单过期 = 族分类器把「谓词级空」误判成「行级有」= 门开始
+拒绝正确判定，所以它必须钉在权威来源上。
+
+### §9.14.4 族门第四次抓到我自己的错，三处改判
+
+| 文件 | 原判 | 改判 | 依据 |
+|---|---|---|---|
+| `admin/model_status.go` | unaffected | **silently_empty** | :268-269/:296-297 `AND client_model IS NOT NULL`，而 client_model 是补位列 ⇒ 新流量全被滤掉，模型健康度看板**永久空白** |
+| `bg/candidate_failure_monitor.go` | unaffected | **silently_degraded_content** | :267 `GROUP BY … provider_id …` ⇒ 新流量全归到 NULL 组，按 provider 的失败率分母静默失真；行与时间窗都正常，坏的是分组键 |
+| `bg/stats_minute_rollup_retire.go` | unaffected | **silently_degraded_content** | :27/:106-108 的 NOT EXISTS 保护用 `COALESCE(r.provider_id,0)=m.provider_id` 等补位列 ⇒ 保护失效，本该保留的分钟行被当陈旧退役。**失效方向是多删派生数据** |
+
+第 3 条特别值得记：它的失效方向与本审计已知的四种都不同——不是少读、不是放行、
+不是误禁用，而是**过度清理**。同一个「证据源消失」，在不同守卫位置会产出五种方向。
+
+### §9.14.5 两个变异验证
+
+| 变异 | 结果 |
+|---|---|
+| M7 清空 `nullPaddedUnaffectedJustification` | **红**（2 条具名论证缺失） |
+| M8 从补位表删掉 `client_model` | **红**：`迁移里有、表里没有：[client_model]` |
+
+M8 特别重要：它证明补位清单不是写死的常量，而是**真的在和迁移对账**。
