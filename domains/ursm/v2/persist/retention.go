@@ -22,7 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -63,7 +63,7 @@ func SnapshotRetentionConfigFromEnv() SnapshotRetentionConfig {
 // SnapshotRetentionTx / SnapshotRetentionDB 把清理逻辑与 pgx 连接池解耦，
 // 测试可注入假实现（每批一个事务，Begin 会被多次调用）。
 type SnapshotRetentionTx interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Commit(ctx context.Context) error
 	Rollback(ctx context.Context) error
 }
@@ -170,51 +170,85 @@ func (w *SnapshotRetentionWorker) CleanupOnce(ctx context.Context) {
 // CleanupExpired 分批删除 snapshot_ts 早于保留期的行。每批独立事务：
 // 单批失败即停止并返回已删数量与错误；批次循环直到删空或超过
 // MaxCleanupWindow 墙钟上限（剩余量由下一个 tick 续删）。
+//
+// 游标（2026-10-02 生产修正）：批次之间必须携带 snapshot_ts 下界。
+// 原实现每批都从索引头部重新开始找候选行，而已删除的行只是变成死元组、
+// 仍留在索引里——于是第 N 批要先走过前 N-1 批删掉的全部索引条目才能凑满
+// BatchSize，放大系数随累计删除量线性增长，整轮退化为 O(n²)。
+// 252 实测（45.6M 行 / 26.1M 待删）：速率 8,658 → 15,024 → 4,208 行/秒，
+// 单调恶化，EXPLAIN 显示子查询走 Index Only Scan using
+// ursm_node_snapshot_min_pkey（snapshot_ts 是首列），每批都从最老死条目起步。
+// 下界取 `>=`（含）而非 `>`：同一 snapshot_ts 上约有 1,008 行（一次 flush
+// 全量落盘全部组合），含边界只会让下一批重扫这一个时间戳，绝不会跳过任何行。
 func (w *SnapshotRetentionWorker) CleanupExpired(ctx context.Context) (int64, error) {
 	if w.Disabled() || w.db == nil {
 		return 0, nil
 	}
 	deadline := time.Now().Add(w.cfg.MaxCleanupWindow)
 	var total int64
+	// floor 初始为零值时刻：等价于"无下界"，从保留期边界内的最老行开始。
+	var floor time.Time
 	for {
 		batchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		deleted, err := w.deleteBatch(batchCtx)
+		deleted, nextFloor, err := w.deleteBatch(batchCtx, floor)
 		cancel()
 		total += deleted
 		if err != nil {
 			return total, err
 		}
-		if deleted < int64(w.cfg.BatchSize) {
+		// 本批删空且没有推进游标 → 已无可删行，退出。
+		if deleted < int64(w.cfg.BatchSize) && !nextFloor.After(floor) {
 			return total, nil
 		}
+		floor = nextFloor
 		if time.Now().After(deadline) {
 			return total, nil
 		}
 	}
 }
 
-// deleteBatch 执行单批删除。行构造器 IN 命中主键
-// (snapshot_ts, tenant_id, credential_id, raw_model_name)，
-// 子查询走 ursm_node_snapshot_min_ts_idx 定位候选，避免全表扫描。
-func (w *SnapshotRetentionWorker) deleteBatch(ctx context.Context) (int64, error) {
+// deleteBatch 执行单批删除，并把本批触及的最大 snapshot_ts 作为下一批的
+// 扫描下界返回（游标，见 CleanupExpired 的说明）。
+//
+// 行构造器 IN 命中主键 (snapshot_ts, tenant_id, credential_id, raw_model_name)，
+// 子查询由 `snapshot_ts >= $3` 起步走 pkey 首列（snapshot_ts）的索引范围扫描，
+// 不再从头遍历前面批次遗留的死索引条目。
+//
+// $3 是**含**边界：宁可让下一批重扫一个 snapshot_ts（约 1,008 行），
+// 也不能用 `>` 冒险跳过与边界同时间戳的存活行。
+func (w *SnapshotRetentionWorker) deleteBatch(ctx context.Context, floor time.Time) (int64, time.Time, error) {
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return 0, floor, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // safe no-op if Commit succeeds
-	tag, err := tx.Exec(ctx, `
-		DELETE FROM ursm_node_snapshot_min
-		WHERE (snapshot_ts, tenant_id, credential_id, raw_model_name) IN (
+	const stmt = `
+		WITH batch AS (
 			SELECT snapshot_ts, tenant_id, credential_id, raw_model_name
 			FROM ursm_node_snapshot_min
 			WHERE snapshot_ts < NOW() - $1::interval
+			  AND snapshot_ts >= $3::timestamptz
+			ORDER BY snapshot_ts, tenant_id, credential_id, raw_model_name
 			LIMIT $2
-		)`, w.cfg.Retention.String(), w.cfg.BatchSize)
-	if err != nil {
-		return 0, err
+		), deleted AS (
+			DELETE FROM ursm_node_snapshot_min t
+			USING batch b
+			WHERE (t.snapshot_ts, t.tenant_id, t.credential_id, t.raw_model_name)
+			    = (b.snapshot_ts, b.tenant_id, b.credential_id, b.raw_model_name)
+			RETURNING t.snapshot_ts
+		)
+		SELECT count(*)::bigint AS deleted, max(snapshot_ts) AS next_floor FROM deleted`
+	var deleted int64
+	var nextFloor *time.Time
+	if err := tx.QueryRow(ctx, stmt, w.cfg.Retention.String(), w.cfg.BatchSize, floor).
+		Scan(&deleted, &nextFloor); err != nil {
+		return 0, floor, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+		return 0, floor, err
 	}
-	return tag.RowsAffected(), nil
+	if nextFloor != nil {
+		floor = nextFloor.UTC()
+	}
+	return deleted, floor, nil
 }

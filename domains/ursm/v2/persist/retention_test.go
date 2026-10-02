@@ -2,24 +2,25 @@ package persist
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // fakeSnapshotRetentionDB captures the cleanup SQL / args and lets tests
-// script per-batch RowsAffected (batch loop) and injected errors.
+// script per-batch rows-deleted + returned cursor (batch loop) and injected errors.
 type fakeSnapshotRetentionDB struct {
 	mu           sync.Mutex
 	begins       int
 	execSQL      []string
 	execArgs     [][]any
 	commit       bool
-	batchResults []int64 // consumed per Exec; last value repeats once exhausted
+	batchResults []int64   // consumed per batch; last value repeats once exhausted
+	batchFloors  []time.Time // next cursor per batch; zero value = NULL
 	execErr      error
 }
 
@@ -27,23 +28,55 @@ type fakeSnapshotRetentionTx struct {
 	db *fakeSnapshotRetentionDB
 }
 
-func (tx *fakeSnapshotRetentionTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+// fakeRow is a minimal pgx.Row: Scan fills (deleted int64, nextFloor *time.Time).
+type fakeRow struct {
+	deleted   int64
+	nextFloor *time.Time
+	err       error
+}
+
+func (r fakeRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	for _, d := range dest {
+		switch p := d.(type) {
+		case *int64:
+			*p = r.deleted
+		case **time.Time:
+			*p = r.nextFloor
+		}
+	}
+	return nil
+}
+
+func (tx *fakeSnapshotRetentionTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 	tx.db.execSQL = append(tx.db.execSQL, sql)
 	tx.db.execArgs = append(tx.db.execArgs, args)
 	if tx.db.execErr != nil {
-		return pgconn.CommandTag{}, tx.db.execErr
+		return fakeRow{err: tx.db.execErr}
+	}
+	idx := len(tx.db.execSQL) - 1
+	pick := func(n int) int {
+		if idx >= n {
+			return n - 1
+		}
+		return idx
 	}
 	var rows int64
 	if len(tx.db.batchResults) > 0 {
-		idx := len(tx.db.execSQL) - 1
-		if idx >= len(tx.db.batchResults) {
-			idx = len(tx.db.batchResults) - 1
-		}
-		rows = tx.db.batchResults[idx]
+		rows = tx.db.batchResults[pick(len(tx.db.batchResults))]
 	}
-	return pgconn.NewCommandTag("DELETE " + strconv.FormatInt(rows, 10)), nil
+	var floor *time.Time
+	if len(tx.db.batchFloors) > 0 {
+		f := tx.db.batchFloors[pick(len(tx.db.batchFloors))]
+		if !f.IsZero() {
+			floor = &f
+		}
+	}
+	return fakeRow{deleted: rows, nextFloor: floor}
 }
 
 func (tx *fakeSnapshotRetentionTx) Commit(ctx context.Context) error {
@@ -102,9 +135,9 @@ func TestSnapshotRetentionBatchLoopStopsOnPartialBatch(t *testing.T) {
 			t.Fatalf("batch %d SQL must delete expired snapshots by snapshot_ts, got:\n%s", i, stmt)
 		}
 	}
-	// Args are (retention interval, batch size); the default config is 30 days.
-	if len(db.execArgs[0]) != 2 {
-		t.Fatalf("exec args = %v, want (interval, batch size)", db.execArgs[0])
+	// Args are (retention interval, batch size, scan floor).
+	if len(db.execArgs[0]) != 3 {
+		t.Fatalf("exec args = %v, want (interval, batch size, floor)", db.execArgs[0])
 	}
 	if interval, ok := db.execArgs[0][0].(string); !ok || !strings.HasPrefix(interval, "720h") {
 		t.Fatalf("retention arg = %v, want 30d duration string (720h...)", db.execArgs[0][0])
@@ -245,4 +278,62 @@ func TestSnapshotRetentionConfigFromEnv(t *testing.T) {
 			t.Fatalf("retention = %s, want default 30d on invalid input", cfg.Retention)
 		}
 	})
+}
+
+// TestSnapshotRetentionAdvancesScanFloorBetweenBatches pins the 2026-10-02
+// production defect: without a per-batch scan floor, every batch restarts its
+// candidate scan at the head of the pkey index and must walk past all index
+// entries deleted by earlier batches before it can fill BatchSize. On 252
+// (45.6M rows / 26.1M expired) the measured rate decayed 8,658 → 15,024 →
+// 4,208 rows/s, i.e. O(n^2) across a round.
+//
+// The floor must therefore be carried forward. It is INCLUSIVE (>=) on
+// purpose: one flush writes ~1,008 rows sharing a single snapshot_ts, so a
+// strict (>) cursor risks silently skipping live rows that share the
+// boundary timestamp. Re-scanning one timestamp is cheap; skipping rows is
+// not.
+func TestSnapshotRetentionAdvancesScanFloorBetweenBatches(t *testing.T) {
+	first := time.Date(2026, 9, 6, 23, 56, 50, 0, time.UTC)
+	second := time.Date(2026, 9, 6, 23, 58, 10, 0, time.UTC)
+	db := &fakeSnapshotRetentionDB{
+		batchResults: []int64{5000, 5000, 17},
+		batchFloors:  []time.Time{first, second, second},
+	}
+	worker := NewSnapshotRetentionWorker(nil, DefaultSnapshotRetentionConfig())
+	worker.db = db
+
+	deleted, err := worker.CleanupExpired(context.Background())
+	if err != nil {
+		t.Fatalf("CleanupExpired() error = %v", err)
+	}
+	if want := int64(10017); deleted != want {
+		t.Fatalf("deleted = %d, want %d", deleted, want)
+	}
+
+	args := db.execArgs
+	if len(args) != 3 {
+		t.Fatalf("batches = %d, want 3", len(args))
+	}
+	// Batch 1 starts from the zero floor: the "no lower bound" seed.
+	if got, ok := args[0][2].(time.Time); !ok || !got.IsZero() {
+		t.Fatalf("batch 1 floor = %v, want zero time", args[0][2])
+	}
+	// Batches 2 and 3 must resume from the previous batch's max snapshot_ts.
+	for i, want := range []time.Time{first, second} {
+		got, ok := args[i+1][2].(time.Time)
+		if !ok || !got.Equal(want) {
+			t.Fatalf("batch %d floor = %v, want %v", i+2, args[i+1][2], want)
+		}
+	}
+
+	// The floor predicate must be inclusive. A strict ">" would let the
+	// scanner step past live rows sharing the boundary timestamp.
+	for i, stmt := range db.statements() {
+		if !strings.Contains(stmt, "snapshot_ts >= $3::timestamptz") {
+			t.Fatalf("batch %d must use an INCLUSIVE floor (>=), got:\n%s", i, stmt)
+		}
+		if strings.Contains(stmt, "snapshot_ts > $3") {
+			t.Fatalf("batch %d uses a strict floor (>) which can skip live rows:\n%s", i, stmt)
+		}
+	}
 }
