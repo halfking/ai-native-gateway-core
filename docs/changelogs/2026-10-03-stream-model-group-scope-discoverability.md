@@ -67,6 +67,10 @@ cd web && npx vue-tsc --noEmit -p tsconfig.json
 # exit 0
 ```
 
+> 订正（2026-10-03 06:50 复跑）：上面第一条现为 **39 passed**。
+> 差的 2 条来自 `fd5f36a30`（另一会话的 R35 审计）与本改动无关，
+> 仍是绿的。此处保留 37 以记录**本轮改动当时的数字**，勿据它判断测试丢失。
+
 变异验证（两道新测试都承重，不是摆设）：
 
 | 变异 | 预期红 | 实测 |
@@ -79,6 +83,8 @@ cd web && npx vue-tsc --noEmit -p tsconfig.json
 ## 遗留
 
 - ~~**生产 UI 验收仍未闭合**~~ → **已闭合（2026-10-03 06:19 CST）**。
+  证据截图：`/tmp/ui-ACCEPT-PASS.png`（未入库，临时目录；仓库内
+  `git log --diff-filter=A -- '*.png'` 无本轮新增图片）。
   154 已部署 `build_seq 2408 / git_sha 1a213f4c`（含 `809ce78cf`），用
   headless Chromium（Python Playwright 1.63）驱动生产页面实测，承重判据全中：
 
@@ -126,6 +132,25 @@ cd web && npx vue-tsc --noEmit -p tsconfig.json
     渲染不出来是**该标签 renderer 被冻结**的验收工具限制，与本改动无关
     （若走 `liveStreamStore.ts:1335` 的 page-hidden 分支，必会打出
     `:1336` 的 `console.debug`，实测一条没有）。
+  - **「`?tab=stream` 深链漂移」同样是那个环境假象，不是代码缺陷**
+    （2026-10-03 06:47 补测，原判「页面常在 ~60s 内漂回 `/dashboard`」作废）：
+    - **代码侧穷举**：`DashboardView.vue` 全文没有任何把 `?tab=stream`
+      写成裸 `/dashboard` 的路径。`onMounted` 只**读** `route.query.tab`、
+      不写；`switchTab` 的 `router.replace` 显式带 `tab: next`，且有
+      `route.query.tab !== next` 前置判断；`watch(route.query.tab)` 在
+      `next` 为 null（query 被清空）时**直接不执行**。
+      全仓另有两处会抹掉 query 的写入 —— `HomeView.vue:30` 与
+      `App.vue:173`，但二者都跳 `{ path: '/', query: { login: '1' } }`
+      （终点是 `/` 而非 `/dashboard`），且都只在**未登录/登出**分支触发。
+    - **实跑反证（决定性）**：headless Chromium 登录后进入
+      `?tab=stream`，每 3s 采一次 URL 共 40 次 / 120s ⇒
+      **唯一 URL 恒为 `https://llmgateway.internal.example.com/dashboard?tab=stream`，零转折点**，
+      面板 **3.0s** 即渲染，无 pageerror。
+    - ⇒ 与内嵌 FilePanel 标签的 renderer 冻结**同源**：那是个别标签的
+      渲染进程被节流导致的环境假象，**不为此开代码缺陷单**。
+    - **判别方法（供下轮复用，别再重查）**：要区分「深链漂移」与
+      「面板没数据」，先在 headless 里跑 URL 轮询。URL 稳 ⇒ 是环境；
+      URL 真变 ⇒ 才是代码。
   - **`.qp-scope-miss` 的真实触发对象不是 `glm-5.2`**：模型选择器
     （`mp-dialog`，含全部 15 个「更多…(N)」展开区共 388 项候选）里
     **没有任何 `glm-5.2` 条目**（glm 系只有 4 / 4.5 系 / 5.1 / 5.3 /
