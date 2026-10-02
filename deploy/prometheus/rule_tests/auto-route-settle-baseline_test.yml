@@ -150,3 +150,114 @@ tests:
       - eval_time: 20m
         alertname: AutoRouteSettleBaselineCohortEmpty
         exp_alerts: []
+  # ── 场景 7：sweep 查询级失败 → SweepFailing 响，窗口滑过后自愈 ─────────
+  # 前半段（t=1..5m）连续 5 轮失败后恢复。30m 窗口仍含失败点 → t=20m firing
+  # （for:10m 已满足）；t=45m 时 30m 窗口（15..45）已不含任何失败点 → 自愈。
+  # 钉住「单次瞬断只在窗口内短暂可见，持续失败持续响」的语义。
+  - interval: 1m
+    name: sweep 失败 5 轮后恢复 → SweepFailing 响后自愈
+    input_series:
+      - series: 'llmgw_autoroute_settle_sweep_failures_total{job="llm-gateway",instance="gw1",reason="error"}'
+        values: '0+1x5 5x50'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteSettleSweepFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: bg
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: "auto-route 结算 sweep 近 30 分钟内有查询级失败（gw1）"
+              description: "30 分钟窗口内至少一轮 sweep 以 error（settleBatch 整查询失败）或\npanic（safeSweep 接住）收场，那一批 selection 本轮没结算。\n\n**这条与停增告警（AutoRouteSettleStalled）是互补的两面**：本条抓\n「查询报错了」，停增抓「没报错但也没产出」（源族切到无数据的腿、\n设置门读失败静默回 v1——那条路径没有任何 error 可计）。\n\n**排查步骤**：\n1. 网关日志 grep \"auto-route settle sweep failed\"，看 error 正文\n   （42P01=表没了 / 42703=列没了 / 57014=4m sweepCtx 超时）\n2. 单条失败+自愈 = 瞬断，30m 窗口过后自动恢复；持续增长才是回归\n3. panic 臂非零 → grep \"settle sweep panic\"，panic 不停的 sweep\n   每轮都空转，selection 行照常积累\n"
+      - eval_time: 45m
+        alertname: AutoRouteSettleSweepFailing
+        exp_alerts: []
+
+  # ── 场景 8：从未失败（序列不存在）→ SweepFailing 静默 ─────────────────
+  # 失败计数器是 CounterVec，首次失败前序列不存在；absent 对 increase>0
+  # 判空剔除 → 不响。健康态不得因「没数据」而误报。
+  - interval: 1m
+    name: 无失败序列 → SweepFailing 不响
+    input_series:
+      - series: 'llmgw_autoroute_settle_source_total{job="llm-gateway",instance="gw1",family="v1"}'
+        values: '0+5x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AutoRouteSettleSweepFailing
+        exp_alerts: []
+
+  # ── 场景 9：产侧在走 + settled 存在但停增 → Stalled 响 ────────────────
+  # R32 §四#2 的核心面：settlement 与生产脱钩（切到无数据腿 / 设置门静默
+  # 回 v1 / 行龄出窗）。settled_total 冻结在 5，产侧持续 +5/m。
+  - interval: 1m
+    name: 产侧增长而 settled 停增 → Stalled 响
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+5x60'
+      - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw1",outcome="rewarded"}'
+        values: '5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: bg
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: "auto-route selection 在持续产出但结算已 45+ 分钟零产出（gw1）"
+              description: "产侧 llm_gateway_auto_selections_total 在 45 分钟窗口内有增长，\n但同实例的 llmgw_autoroute_settled_total 零产出（或序列不存在）。\n这不是「没流量」——是**结算管线与生产脱钩**了。\n\n**正在发生的后果**：pending selection 行持续积累；行龄超过\nsettleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出\nhot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默\n缺口，事后无法回填。\n\n**排查步骤**：\n1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，\n   按那条的步骤走\n2. 只有本条响 → 结算没报错但没产出：确认结算源族\n   （llmgw_autoroute_settle_source_total 哪个族在动）与 settings\n   写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）\n3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor\n   占比后按抑制处理\n4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）\n"
+
+  # ── 场景 10：settled 序列根本不存在 → Stalled 仍须响 ──────────────────
+  # 钉住 `unless on(job, instance)` 形态的存在理由：进程启动后到第一次成功
+  # 结算前 settled_total 序列不存在，`increase(...) == 0` 对 absent 判空
+  # 剔除——「从启动起就没结算过」恰是最需要响的形态，==0 形态下永远静默。
+  # 本场景就是该语义的变异靶：把 unless 换成 ==0，本场景变假绿。
+  - interval: 1m
+    name: settled 序列不存在 → Stalled 响（unless 语义）
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: bg
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: "auto-route selection 在持续产出但结算已 45+ 分钟零产出（gw1）"
+              description: "产侧 llm_gateway_auto_selections_total 在 45 分钟窗口内有增长，\n但同实例的 llmgw_autoroute_settled_total 零产出（或序列不存在）。\n这不是「没流量」——是**结算管线与生产脱钩**了。\n\n**正在发生的后果**：pending selection 行持续积累；行龄超过\nsettleAbandonAfter（4h）后仍 unsettled 的行会被 8h promote 移出\nhot 表，那一批 selection 的 reward **永久 NULL**——训练数据静默\n缺口，事后无法回填。\n\n**排查步骤**：\n1. AutoRouteSettleSweepFailing 是否同时响——是 → 查询级回归，\n   按那条的步骤走\n2. 只有本条响 → 结算没报错但没产出：确认结算源族\n   （llmgw_autoroute_settle_source_total 哪个族在动）与 settings\n   写门当前值是否一致；设置门读失败会静默回 v1（审计 §四#3）\n3. 产侧全是 goal-*/loopback 合成流量 → 误报，核对 origin_actor\n   占比后按抑制处理\n4. 都不是 → 查 settle worker 进程是否存活（up == 0 另有门）\n"
+
+  # ── 场景 11：双流健康 → Stalled 不响 ─────────────────────────────────
+  - interval: 1m
+    name: 产侧与 settled 同增 → Stalled 不响
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '0+5x60'
+      - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw1",outcome="rewarded"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts: []
+
+  # ── 场景 12：产侧停滞（§9.57 的面）→ Stalled 不重复响 ────────────────
+  # 产侧归零由 auto-route-selection-output.yml 的 SelectionWritesStalled
+  # 负责；本条以「产侧在走」为前提，产侧停增时 lhs 为空 → 不响，两门不重叠。
+  - interval: 1m
+    name: 产侧停增 → Stalled 不响（归 §9.57 的门）
+    input_series:
+      - series: 'llm_gateway_auto_selections_total{job="llm-gateway",instance="gw1",task_type="chat",affinity_applied="false",explore="false"}'
+        values: '100x60'
+      - series: 'llmgw_autoroute_settled_total{job="llm-gateway",instance="gw1",outcome="rewarded"}'
+        values: '5x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AutoRouteSettleStalled
+        exp_alerts: []
