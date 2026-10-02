@@ -483,6 +483,75 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).not.toContain('glm-5.3-flash')
   })
 
+  it('explains a filtered model that has nodes but falls outside the featured/hot scope', async () => {
+    // 2026-10-03 审计：范围外模型「不显示而不冒名」是有意行为（同上一条用例），
+    // 但筛 glm-5.2 过去只得到一个空区块 + 零提示，运维会读成「没节点/已下线」。
+    // 本条钉住解释行：只在「该模型确实有节点」时出现，且不改变过滤结果。
+    getFeatured.mockResolvedValue({ featured_models: ['glm-5.3'] })
+    resolveRouting.mockImplementation(async (model: string) => {
+      if (model === 'glm-5.3') {
+        return {
+          canonical_id: 2422803,
+          canonical_name: 'glm-5.3',
+          raw_models: ['glm-5.3'],
+          candidates: [
+            { credential_id: 22, model_name: 'glm-5.3', canonical_id: 2422803, manual_priority: 1, routing_tier: 1, priority: false },
+          ],
+        }
+      }
+      return { canonical_id: null, canonical_name: null, raw_models: [], candidates: [] }
+    })
+    // 凭据 #9 上报 raw 'glm-5.2'（canonical 173264），但 glm-5.2 既不在 featured
+    // 也不在 top-models 列表（模块级 mock 返回 gpt-4o / claude-sonnet / m-1）。
+    liveStreamState.nodes = [
+      { credential_id: 9, provider_id: 1, provider_code: 'zhipu', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-5.2'] },
+      { credential_id: 22, provider_id: 1, provider_code: 'zhipu', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-5.3'] },
+    ]
+
+    const wrapper = mount(QueuePerspectivePanel, {
+      props: { modelFilter: new Set(['glm-5.2']) },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+
+    // 行为不变：范围外不冒名、不出分组。
+    expect(wrapper.findAll('.qp-model-group')).toHaveLength(0)
+    // 但必须讲清楚为什么空。
+    const miss = wrapper.find('.qp-scope-miss')
+    expect(miss.exists()).toBe(true)
+    expect(miss.text()).toContain('glm-5.2')
+    expect(miss.text()).toContain('范围内')
+  })
+
+  it('does not blame the scope for a filtered model that has no nodes at all', async () => {
+    // 反向对照：压根没有节点的模型不是范围问题，提示它会把人带偏。
+    getFeatured.mockResolvedValue({ featured_models: ['glm-5.3'] })
+    resolveRouting.mockImplementation(async (model: string) => {
+      if (model === 'glm-5.3') {
+        return {
+          canonical_id: 2422803,
+          canonical_name: 'glm-5.3',
+          raw_models: ['glm-5.3'],
+          candidates: [
+            { credential_id: 22, model_name: 'glm-5.3', canonical_id: 2422803, manual_priority: 1, routing_tier: 1, priority: false },
+          ],
+        }
+      }
+      return { canonical_id: null, canonical_name: null, raw_models: [], candidates: [] }
+    })
+    liveStreamState.nodes = [
+      { credential_id: 22, provider_id: 1, provider_code: 'zhipu', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-5.3'] },
+    ]
+
+    const wrapper = mount(QueuePerspectivePanel, {
+      props: { modelFilter: new Set(['glm-9.9-never-seen']) },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.qp-scope-miss').exists()).toBe(false)
+  })
+
   it('shows nothing for a filtered model that is outside the featured/hot universe instead of borrowing another model group', async () => {
     // 2026-09-29 二轮审计发现的同型残留：集合里只有 glm-4.7-flash，节点却上报
     // raw 'glm-4.7'（canonical 51）。旧实现会把它挂到 glm-4.7-flash 名下，于是
