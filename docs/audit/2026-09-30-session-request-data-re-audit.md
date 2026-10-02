@@ -1302,9 +1302,13 @@ comm -12 <(git diff --name-only P1 M | sort) <(git diff --name-only P2 M | sort)
 5. **决策正文存储**：S6 前必须定 `session_bodies` 是否补全量字段。
 6. **S6 DROP**。
 
-## 8. 待你拍板（截至 2026-10-01 10:30，共 3 项待决 + 3 项已关闭）
+## 8. 待你拍板（截至 2026-10-02，共 3 项待决 + 4 项已关闭）
 
 第 6 项因合并自动关闭；第 7 项同日拍板并落地（连同新挖出的缺陷 7，见 §5.11）。
+
+**2026-10-02 追加**：§8.5 列出的三处硬阻塞中，第 ② 条（validator 换源）已修复 ——
+见 §8.8。它不但换源，还修了该门在停写后**永久真空为真**的失效形态。
+剩余 ①（104 个文件的逐点依赖评估）与 ③（§8 第 3 项口径决定）仍开放。
 
 | # | 事项 | 性质 | 状态 |
 |---|------|------|------|
@@ -1679,7 +1683,9 @@ INSERT/DELETE 语句误捕。
 不是「缺口已被评估」。后者仍是 104 个文件的活。
 
 **结论**：S4 不是「漂移干净了就能翻」。它还缺三件事——
-① 110 个文件的依赖分类；② validator 换源或明确「灰度期不验漂移、只验可观测性」；
+① 104 个文件的依赖分类（**仍未做**，是当前最大的一块未开工工作）；
+② validator 换源或明确「灰度期不验漂移、只验可观测性」
+（**2026-10-02 已做，见 §8.8**）；
 ③ §8 第 3 项的全量流量口径决定（决定 routeincident / analytics 这类看板是
 保留 v1 冻结分支，还是接受停写后的空）。§8 第 1 项与第 3 项是**同一条链上的
 前后两段**，不能分开拍板。
@@ -1854,3 +1860,463 @@ anti-join 扫描**被完整跑了三遍**，只有外层 `GROUP BY` 的键不同
 **建议改**，但需要你确认影响面可接受。改动本身已就位（两个函数并存），
 只差把 `queryRequestLogsFallback` 从 `…AndTS` 切到 `…ByRequestID`。
 
+
+### 8.8 【P0，2026-10-02】S4 停写后，`s4_ready` 会**永久真空为真**——前置判据自己关掉了自己
+
+§8.5 记的是「S4 会关掉它自己的观测手段」：validator 读 `request_logs_hot` /
+`request_logs`，而 spec 的退出条件恰恰是「dual_read_validator 对账 7 天零漂移」。
+本节把这句话落到具体的失效形态，并已修复。
+
+**根因**（`cmd/gateway/dual_read_validator.go` 的 `Summarize`）：
+
+```go
+sum.S4Ready = sum.GenuineLossRows == 0     // 修复前
+```
+
+`GenuineLossRows` 的定义是「有会话头、但在 session 族里找不到对应行的 V1 行」。
+**停写之后，窗口内 V1 行恒为 0，于是无行可缺，`GenuineLossRows` 恒 0，
+`S4Ready` 恒 true** —— 与镜像是否健康无关。
+
+**真库实测**（PG 17.10，用 `Summarize` 的生产原句 `mirrorDriftScopeSQL`，
+窗口取在 V1 无行的区间——这正是关停超过一个窗口后的真实形态）：
+
+| | 场景 A：当前态（过去 7 天） | 场景 B：窗口内零 V1 行（= 停写后） |
+|---|---|---|
+| `V1Rows` | 245,460 | **0** |
+| `V1RowsWithoutTurns` | 9,635 | **0** |
+| `GenuineLossRows` | 见下 | **0** |
+| `S4Ready`（修复前） | 需分类 | **true** ← 真空为绿 |
+
+**为什么这条比一般的「观测失效」严重**：它是**唯一会给出「可以关写」许可的信号**。
+它的失效方向是许可而不是告警——关停的那一刻起它就永久报绿，且响应 JSON 与健康态
+**逐字节相同**（`s4_ready: true`，其余字段全 0）。没有 `void` 概念，调用方无法把
+「没验证」与「验证了、没漂移」区分开。
+
+**同一根因的另外两处，一并处置**：
+
+1. **空扫描判为空**。即使不关停，只要窗口内 V1 流量为 0（静默集群、租户过滤命中
+   0 条），`s4_ready` 同样真空为真。「扫到 0 个问题」和「扫了 0 个」必须分开。
+2. **`ZeroDrift` 恒假**。`CompareDetail` 是反方向：停写后 v1 冻结、v2 继续增长，
+   `OnlyInV2` 必然单调增长 ⇒ `ZeroDrift` 永久为 false。而 spec 的退出条件正是
+   「7 天零漂移」，于是**这道门在停写之后永远无法宣告完成**。恒假与恒真同样无用。
+
+**修法**（`cmd/gateway/dual_read_gate.go`，判定抽为纯函数以便无库测试）：
+
+```
+ready ⇔ (v1 写入中) ∧ (窗口扫到过 V1 行) ∧ (无真漏写)
+```
+
+并把「没能评估」与「评估了、有漂移」分成两个字段：
+`S4GateVoid`（附机器可读的 `S4GateVoidReason`：`v1_writes_disabled` /
+`no_v1_traffic_in_window`）与 `S4Ready`。把两者都折成 `s4_ready=false` 会把
+「不知道」伪装成「不安全」——那是同一个 bug 的镜像版本。
+`DualReadDetail` 侧对应新增 `ZeroDriftEvaluable` / `V1WritesEnabled`。
+
+**门控读数必须来自设置，不能靠启发式**：没有采用「比较两侧 `MAX(ts)` 差值」这类
+带阈值的推断，而是新增 `settings.KeyRequestLogsWriteEnabled` /
+`settings.RequestLogsWriteEnabled()`。顺带收掉一个既有分裂面——该键此前在
+**4 个包的 4 处**各写一遍字面量（`admin/telemetry.go`、
+`cmd/gateway/lite_telemetry_sink.go`、`domains/hooks/observability/telemetry/client.go`、
+`internal/trace/trace.go`），而 `admin` 自己的注释已经点名了这个失效形态
+（「门内联两遍…就是分裂入口」），只是那次去重只做了包内。
+
+**顺带修正一道把缺陷钉成「不变式」的门**：`dual_read_validator_pg_test.go` 的
+**I5** 原本写的是 `S4Ready == (GenuineLossRows == 0)`——它对缺陷前的实现永远是绿的。
+一个把 bug 写成不变式的门，比没有门更坏：它给后来者「这里有覆盖」的错觉。
+现在 I5 复算完整契约，并新增 **I5c `void ⇒ ¬ready`**——**数据无关**，不依赖窗口里
+恰好有没有漂移行，因此永远会被求值（I6 那条栽过一次「数据依赖 ⇒ 变异仍绿」）。
+
+**变异验证（7/7 转红）**：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| 1 | 删掉停写判据 | 红 |
+| 2 | 删掉空扫描判据 | 红 |
+| 3 | `Summarize` 改回直接赋值（绕过 verdict） | 红 |
+| 4 | `ZeroDrift` 可评估性判定挪到赋值之后 | 红 |
+| 5 | 某生产文件把键改回字面量 | 红 |
+| 6 | spec 表给键改名而常量不跟 | 红 |
+| 7 | 回落默认改成 `false` | 红 |
+| 8 | **真库门在缺陷代码下**（真实 Summarize + 真实 SQL + 真实数据） | 红，并复现原症状 |
+
+真库门的对照输出（同一库、同一窗口、同一段 SQL，只换门控读数）：
+
+```
+基线(写入中): v1=2547 noTurns=4 genuine=0 ready=true  void=false reason=""
+关停后:      v1=2547 noTurns=4 genuine=0 ready=false void=true  reason="v1_writes_disabled"
+```
+
+注意**漂移数字逐位不变**（2547 / 4 / 0）——门控只改变「能不能这么声称」，
+不改变「实际扫到了什么」。这条对照本身也是一条断言（真库门里已钉住）：
+若哪天为了让门翻转去动 SQL，它会立刻红。
+
+#### 8.8.1 一条必须写下来的教训：守卫写宽会误伤**我自己的正确实现**
+
+`TestSummarizeNoLongerAssignsS4ReadyDirectly` 第一版禁的是 `sum.S4Ready =` 这个
+**前缀**——而修好之后的正确代码 `sum.S4Ready = verdict.Ready` 同样以它开头，
+于是这道门对自己的正确实现报红。
+
+正确形态是**数赋值点并核对右值**（恰好 1 处、且必须是 `verdict.Ready`），
+而不是禁前缀。前者对「顺手简化回直接判定」照红，后者则永远不会绿。
+
+被自己的门拦下这件事本身是好事：它说明这道门在跑，而不是等别人来发现。
+但它也说明**「禁某个子串」这种写法在 Go 里几乎没有安全形态**——
+赋值语句天然以 `X =` 开头，与被禁的形态同前缀。
+
+#### 8.8.2 扫描基准错了，而守卫立刻替我抓到了
+
+键唯一性守卫第一版从包目录往上走了**两级**，即仓库的**父目录**。它报出 7 处
+「违规」，其中包含一个**隔壁 checkout**（`llm-gateway-go-2`）的文件。
+
+这是「守卫在报假警」还是「我基准错了」的典型二选一。判据：**先看它报的路径是否
+在本仓库内**——一眼可辨。改成往上一级后，真实违规数从 7 降到 2，且那 2 处正是
+白名单里的常量声明与 spec 表。
+
+**教训**：全仓扫描型守卫，基准路径要当成断言的一部分钉住；
+第一次跑出来的「违规清单」必须先核对**目录归属**，再决定是改守卫还是改代码。
+
+#### 8.8.3 本轮自己制造并已回退的一次事故（记在这里而不是只记在 handoff）
+
+为格式化自己新写的三个文件，我执行了 `gofmt -w cmd/gateway/` —— **按目录**。
+结果是该目录下 **12 个**与本任务无关的文件被一并重排，其中几个是**并行会话的
+在途改动**（`main_dispatch_observation.go`、`plugin_lifecycle_init.go` 等）。
+
+暴露它的是提交前的 `git status --porcelain`：多出 12 行我没打算改的文件。
+回退方式不是「凭印象挑几个」，而是
+
+```bash
+git diff --name-only HEAD -- '*.go'        # 全部改动
+# 减去自己打算改的清单 → 其余即附带改动
+git checkout HEAD -- <其余>
+# 再逐个 git diff --quiet 核已逐字节还原
+```
+
+与本项目此前记录的「批量还原事故」是同一类，方向相反：那次是**批量还原**误伤
+源文件，这次是**批量格式化**误伤格式。两者都只靠 `git status` 才看得见，
+所以「范围写宽的批量命令之后必须跑一次 `git status --porcelain`」不是谨慎，
+是必要步骤。
+
+另注：`docs/audit/2026-10-01-rebuild-vs-inplace-feasibility.md` 是另一条工作线
+的未跟踪产物，**未纳入本轮提交**。并行检出下「工作区里出现的东西」不等于
+「我改的东西」。
+
+## 9. S4 停写影响面：从「104 个文件待评估」到一张可行动的四分表（2026-10-02）
+
+§8.5 的结论是：读 `request_logs` 的生产文件 **104 个、调用点 237 处**，而逐点评估
+**一个都没做过**。本节开工，并当场**推翻了本轮自己差点照单全收的一个结论**。
+
+### 9.1 关键前提：710 视图不是 v1 表的别名，它有 session 臂
+
+`request_logs_with_current_month` 的真库定义（`pg_get_viewdef`，非读注释）：
+
+```
+= session_turns ∪ session_turns_hot ∪ request_logs ∪ request_logs_hot
+```
+
+**停写只冻结 v1 那两条臂，session 那两条臂继续增长**（镜像链不归 S4 管）。
+本地库 24h 实测：视图 7,221 行 = session 臂 2,639（36.55%）+ v1 臂 4,582（63.45%）。
+
+> ⚠️ **我差点把 30 个视图族文件全判成「静默变空」，那是系统性错误。**
+> 判空的依据是「停写 ⇒ v1 不再增长 ⇒ 查不到」，而它漏掉了 session 臂仍在供数。
+> 后果不是某个文件判错，而是**一批实际还能用的读点被误报成最危险档，
+> 把真正该处置的 44 个基表读者淹没在噪声里**。
+
+这条错误不是靠「再想一遍」发现的，是靠**一道族门**发现的（§9.4）——它也发现了我
+**自己**写在登记里的同款错误（`bg/integrity_fingerprint_drift.go`、`domains/routeincident/store.go`）。
+
+### 9.2 四分表：按「读哪一族表」机械分类（不靠判断）
+
+剥注释后按模式判定（`admin/request_logs_stop_write_classification_test.go` 的
+`sourceFamilyOf`）。四族的本质差别是**有无 session 侧兜底**：
+
+| 族 | 文件数 | 停写之后 | 判据 |
+|---|---:|---|---|
+| **bodies 族** | **26** | **硬失败，无任何退路** | bodies 只有 v1 一份；`session_bodies` 只有增量、无 `final_full` 全量（§6） |
+| **710 视图** | **30** | 静默少计（session 臂仍供数） | 视图含 session 臂 |
+| **基表 `request_logs`/`_hot`** | **44** | **完全停止增长** | v1 专有，无 session 等价物 |
+| 视图+基表都读 | **29**（含 bodies） | 部分退化 | — |
+
+合计 104，**每个文件都落进某一族，0 个未定**。这张表比「逐点判断后果」更可靠，
+因为它是**机械判定**：测的是「按代码测出的族」与「按代码测出的族」相等，
+没有解释空间，所以不会恒绿。
+
+### 9.3 少记的那部分是什么：99.8% 是探针流量，不是业务
+
+v1 独有的 4,580 行（24h）拆开：
+
+| 构成 | 行数 | 占比 |
+|---|---:|---:|
+| `task_type='probe_triggered'`（探针/自检流量） | **4,570** | 99.78% |
+| `request_status='in_progress'` 非终态占位（按设计不镜像） | **10** | 0.22% |
+| **有会话头却真漏写** | **0** | 0% |
+
+所以 S4 的代价**不是丢业务数据**，而是「analytics 里还看不看得见探针流量」。
+这正好把 §8 第 3 项（全量流量聚合口径）从「抽象的产品口味问题」变成
+「有数字的问题」：**放弃的是 63% 的近期行，其中 99.8% 是探针流量**。
+
+> **口径声明（必须与上表分开读）**：63.45% / 36.55% 这些**幅度**是**本地开发库**
+> `llm_gateway` 的 24h 窗口实测，生产库的业务/探针配比可能不同。
+> 可移植的是**结构性事实**（视图有 session 臂 ⇒ 视图读者不会查空）与
+> **少记部分的构成**（≈99.8% 是探针与占位行）。
+
+### 9.4 两道门，以及它们各自抓到的错
+
+| 门 | 作用 | 抓到的错 |
+|---|---|---|
+| `TestRequestLogsStopWriteSourceFamilyCoversInventory` | 机械四分表；验证四族合计 == 清单条数 | 剥注释这一步被变异验证承重（去掉后 view 30→26、base 44→41、4 个文件被带偏） |
+| `TestStopWriteEffectAgreesWithSourceFamily` | **族 × 档位的合法组合**：710 视图族不得判 `silently_empty` | 抓出我登记里两处同款错误；也拦住了子代理对 30 个视图族文件的系统性误判 |
+| `TestRequestLogsStopWriteClassificationEvidenceIsReal` | 每条登记的 `Evidence` 必须在该文件里逐字存在 | 这是「已评估」与「凭印象」的分界 |
+| `TestRequestLogsStopWriteNothingLeftUnclassified`（`s4audit` tag） | 未评估必须为 0 | 现在红：6/104 |
+
+**为什么最后一道门单独放 build tag**：它是「把一件事做完」的闸，不是「防止变坏」的
+守卫。常红只会挡住所有人，却不会让那 98 个文件被评估；条件 `Skip` 更坏——把未完成
+伪装成通过。`s4audit` 给出第三条路：**默认不挡路，显式调用时绝不放过**，进度由
+常跑的 `…Progress` 打日志（`6/104 已评估，未评估 98 个`）暴露。
+
+### 9.5 又一次自摆的乌龙，以及它为什么值得记
+
+临时查询先报「有会话头却未镜像 = **10 行**」，数字看着像新 P0。逐行看才发现
+**10 行全是 `request_status='in_progress'` + `error_kind` 为空**，即文档记载的
+`non_terminal` 按设计排除桶，真值仍为 **0**。
+
+错因：**自造了一条判据**（`gw_session_id IS NOT NULL`），没用
+`db.MirrorDriftClassSQL`。而审计 §5.5.6 早就写过「复用诊断口径的分类表达式前，
+先确认标签方向」——**同一个坑，当场又踩了一次**。
+
+教训：**当「某个量应该为 0」的查询返回了非 0，第一反应应该是「我的判据对吗」，
+而不是「发现了新缺陷」**。特别是当仓库里已经存在一个成熟的分类表达式时。
+
+### 9.6 当前状态与下一步
+
+**已完成**：机械四分表（104/104 落族）、两道新门 + 变异验证、6 个文件的人工核实
+分级（含两处自我更正）、少记构成的量化。
+
+**未完成**：98 个文件的后果分级。三份子代理批量评估已产出（admin 50 / domains 13 /
+bg 17），但**其中所有视图族判定需按 §9.1 重判**——这正是族门存在的意义。
+下一步应按族分批做：**先 44 个基表族 + 26 个 bodies 族**（真正会断的），
+视图族可最后做且多数结论会是「少计探针流量」。
+
+⛔ **S4 仍不可开**：§8.5 三处硬阻塞的 ①（逐点依赖评估）刚开工，且本节把
+「停写会少记 63% 近期行」这一新事实摆到了台面上——它需要你先就 §8 第 3 项表态。
+
+### 9.7 第二次自我推翻：视图族不能靠**视图名**判，要靠**视图真实构成**
+
+§9.1 说「710 视图有 session 臂 ⇒ 视图族停写后仍供数」。这条**被我用名字模式
+实现成了 `request_logs_with_[a-z_]+`**，然后它就错了。
+
+真库逐个视图查 `pg_get_viewdef`：
+
+| 视图 | 真实构成 |
+|---|---|
+| `request_logs_with_current_month` | **HAS_SESSION_ARM** |
+| `request_logs_with_current_month_without_customer_id` | **V1_ONLY** ← 我判成视图族了 |
+| `request_logs_with_current_month_without_request_class_due_at` | **V1_ONLY** ← 我判成视图族了 |
+| `request_logs_bodies_with_current_month` | V1_ONLY（bodies 族，本就无 session 臂） |
+
+后两个是 577/734 迁移**故意**建成的 v1-only 中间层 —— `admin/auto_route.go` 的注释
+写得很清楚：顶层视图的 session 分支 `provider_id` 投影为 NULL，按 provider 过滤会
+静默丢行，所以刻意绕开顶层去读中间层。**这是一个正确的设计取舍，不是迁移遗漏**；
+而我的名字匹配把它当成了视图族。
+
+**影响面**：7 个生产文件引用这两个视图（`admin/auto_route.go`、
+`admin/auto_route_correlations.go`、`admin/attempt_quality_api.go`、
+`admin/analytics_materialized.go`、`admin/board_time_range.go`、
+`admin/usage_trend_series.go`、`bg/mv_consistency.go`），它们的停写后果从
+「仍供数」变成「**完全停止增长**」。
+
+**修正后的四分表**（白名单化，104→**105** 文件 / 237→**239** 调用点，
+增量为并行会话新增的读者，已被 `TestRequestLogsReadInventoryIsComplete` 正常跟踪）：
+
+| 族 | 修正前 | **修正后** |
+|---|---:|---:|
+| bodies 族（无兜底，硬失败） | 1 | **1** |
+| 有 session 臂的视图 | 30 | **27** |
+| 基表 + v1-only 视图（完全停止增长） | 44 | **47** |
+| 视图+基表都读 | 29 | **30** |
+
+**改法**：族判定不再匹配视图名，而是查一张**白名单**
+`requestLogsViewsWithSessionArm`；白名单默认是空的 —— 新增 v1-only 视图会**自动
+落进 base 族**（保守、正确的方向），要改成视图族得显式加进来并说明理由。
+
+**白名单由真库门钉住**（`cmd/gateway/request_logs_view_session_arm_pin_test.go`，
+`TestRequestLogsViewSessionArmPinIsCurrent`）：从 `pg_get_viewdef` 重算，与白名单
+**双向**比对。手工名单会过期、视图定义会被后续迁移改写，两个方向都要抓：
+
+- 视图新增/变为含 session 臂 → 报「未登记」
+- 视图变为不含 session 臂 / 被删 → 报「清单陈旧」
+
+变异验证：白名单塞入不存在的视图 → 红（报陈旧）；把有臂视图从白名单删掉 → 红
+（报未登记）；还原后绿。真库实测输出：`含 session 臂 1 个，纯 v1 3 个`。
+
+**这一节是 §9.1 的续集，两次都是同一类错**：把「一个名字对应一个语义」当成事实，
+而实际语义住在数据库里。**名字是索引，不是定义。** 凡是用正则/名字模式去判定
+「读的东西在停写后还在不在长」，都必须由真库定义来裁定。
+
+### 9.8 第三次分类修正：`familyMixed` 把两件本质不同的事混在一起
+
+§9.7 修完视图名问题后，四分表里剩下一个 `mixed` 桶（30 个文件）。它把两类**后果
+相反**的文件放在了一起：
+
+- **view + base**（5 个）：视图腿由 session 臂继续供数，基表腿冻结 ⇒ **部分退化**。
+- **bodies + 其他**（25 个）：主轮次腿可能照常工作，但**正文腿没有任何 session 兜底**
+  ⇒ 表现为「拿得到轮次、拿不到正文」，**不是部分退化**。
+
+「一并读」不等于「部分退化」——这是 §9.7 之后我自己犯的第三类分类错误（前两次：
+把视图名当定义、把 bodies 藏进 mixed）。
+
+**拆开后（105 文件）**：
+
+| 族 | 文件数 | 停写之后 |
+|---|---:|---|
+| `reads_bodies_family` | 1 | 正文无兜底 ⇒ 硬失败 |
+| `reads_bodies_plus_other` | **25** | **正文腿硬失败**（轮次腿可能照常） |
+| `reads_710_view_only` | 27 | session 臂仍供数 ⇒ 静默少计 |
+| `reads_base_tables_only` | 47 | 完全停止增长 |
+| `reads_view_and_base` | 5 | 部分退化 |
+
+**族门随即又抓到我自己一处错**：`admin/data_lifecycle.go` 初判
+`unaffected_by_stop_write`（理由「生命周期/体量/保留期只读存量」）。逐行核实后，
+它的 7 天**增长趋势**里有一条 bodies 腿（:226-241，
+`COUNT(DISTINCT request_id) ... outbound_body IS NOT NULL`）。⇒ 停写后 requests
+趋势（走 710 视图）继续增长、compressed 趋势冻结，**两条线分叉且无错误信号**。
+比「整个端点冻结」更隐蔽：页面照常 200，只有一条线停住。已改判 `silently_frozen`。
+
+**这已经是族门第三次抓到我自己的判定错误**（`integrity_fingerprint_drift`、
+`routeincident/store.go`、`data_lifecycle.go`）。这本身就是一条值得记的经验：
+**分层的机械判据（族）比人的判断（后果）可靠得多**，因为它可复现、可穷举、
+无解释空间；把人的判断挂在一道机械判据下面，错误就变得可见且可回归。
+
+## §9.9 读端分级表的坐标系里没有「控制面」这一维（2026-10-02）
+
+§9.8 的四分表 + 五档分级覆盖的是**响应面**：停写之后，接口返回 200 还是 500、
+结果集空不空、冻不冻结。这一整轮分级（105 文件 / 239 调用点）都在这个坐标系里。
+
+本轮在核实子代理产出时撞上一个坐标系外的形状，它让**读端五档全绿也不代表停写
+安全**。
+
+### §9.9.1 触发：子代理的一条判定，我不接受也不否定，先去读代码
+
+batch4 报 `domains/hooks/observability/telemetry/client.go` 为
+`silently_empty`，理由是 `FindRecentGatewaySession` 读 `request_logs_hot`
+无门控，`no rows` 被吞成 `("", nil)`，调用方拿到空串就 `createSession()`，
+结论写作「每个请求静默新开 gw_session_id，会话连续性碎裂」。
+
+这条**方向对、量级错**。核实后：
+
+- `FindRecentGatewaySession`（`client.go:593-625`）确实读 `request_logs_hot`、
+  确实无门控、确实把空结果吞成 `("", nil)`（:619-621）。
+- 但它**不是主路径**。`session_assignment.go:160-173` 先查 Redis 的
+  `LastSystemSessionIndex`（`domains/session/last_system_session.go`，TTL 固定
+  5 分钟），命中即返回，DB finder 只是兜底——注释原文：「the DB finder ... remains
+  the authority」。
+
+准确的失效条件是两条，不是「每个请求」：
+
+1. **无 Redis 部署**：`main.go:968` 的装配在 redis 分支内，无 Redis 时
+   `lastSystemSession` 为 nil，`session_assignment.go:160` 的判空直接跳过 ⇒
+   DB finder 变成**唯一**路径，完全切断。
+2. **Redis 索引 miss**（TTL 到期 / Redis 重启 / device seed 不匹配）⇒ 原本由 DB
+   兜底的续对话变成新建会话。
+
+> 判据教训：「grep 零命中」这次是**反过来**用的——不是从零命中反推读点不存在，
+> 而是从 `GetRecommendedProbeInterval` 零命中反推消费方不存在（见 §9.9.3）。
+> 同一个动作，方向不同，结论强度也不同。
+
+### §9.9.2 真正的洞：停写的门控只管写侧
+
+S4 的门是 `storage.request_logs_write_enabled`，它 gate 的是**写入**。于是有一类
+读点天然落在门控之外：**读 v1 去决定「要不要写、写什么、算作哪一轮」**。这类读点
+的输出不是 200 也不是 500，而是去改数据库里的另一个状态。
+
+五档里没有它的位置：把 `bg/credential_recovery.go` 填成 `silently_empty` 甚至
+**不算错**——它的响应确实是 200、结果集确实是空、无错误信号。它真正丢掉的东西，
+在那一列里没有格子可以写。
+
+### §9.9.3 已核实的四条（登记于 `admin/request_logs_control_plane_dependency_test.go`）
+
+**① `bg/credential_recovery.go` —— 本轮最重的一条。**
+
+`lookbackCandidateSQL()`（:1707）选出「36h 内有成功流量」的降级/离线绑定，
+结果集**直接驱动一次恢复写入**：`ursmRecoverSink(..., success=true, 0)` 写
+URSM v2 的 Recover(30)，外加 `dispatchProbe` 与候选缓存失效。代码注释原文：
+
+> Evidence-backed Recover(30) write into URSM v2. success=true is justified by
+> the SQL predicate (a logged success inside the window)
+
+停写后的两段后果，**第二段比第一段危险**：
+
+- ① 停写 36h 后候选集恒空 → `if len(candidates) == 0 { return }`（:1871-1873）
+  静默返回，无日志无告警（`recoveryLookbackScans` 计数器照常自增，掩盖了这一点）
+  ⇒ 降级凭据只能等自身探针恢复。
+- ② **停写后 36h 内仍在用停写前的陈旧成功记录授权恢复写入** ⇒ 失效方向是
+  **继续放行**，不是停止。
+
+这与本审计 §8.2 修掉的 `s4_ready` 真空为绿**同一族**：门控的前提消失后仍给出
+许可。区别在于这次放行的对象不是切流，是**凭据可用性**——而凭据恢复写入的
+`success=true` 是有下游后果的。
+
+**② `domains/hooks/observability/telemetry/client.go`** —— 会话身份
+（`FindRecentGatewaySession`，见 §9.9.1）与轮次序号（`lookupTurnNumber`
+:3767-3790，按 `gw_session_id` 数 `request_logs` 行）。turn_no 一侧确认在门控外：
+`client.go:2113` 注释原文「outbox request-completed 会话事件在门控外照常提交」。
+缓解：同处注释写明「the session/v2 aggregator owns the authoritative turn_no
+anyway」——属派生计数器，非权威，故不单列为高危。
+
+**③ `domains/providerprofile/adapters.go`** —— 每 credential 的 1h 窗口指标
+（TTFT / 错误类型分布 / 429 命中率 / 成功率）经 `bg/provider_profile_workers.go`
+的三个 worker 装配进 `AlertEngine`，由 `PGCredentialActor` 驱动**凭据自动禁用与
+恢复**。**未核实**：AlertEngine 在「无数据」时是「不告警」（降级）还是「评分掉到
+阈值以下 → 禁用凭据」（事故）——这决定它属于哪一档，**必须在生产库复核一次**。
+
+**④ `domains/credentialstate/popularity_tracker.go` —— 判 dormant，且是自我更正。**
+
+结构上完全符合 live：停写后 `refresh` 查 0 行不报错，把 `popularModels` 换成
+**空 map**（:114-116，不是保留上一份），于是 `GetProbeInterval` 对所有模型回落到
+5 分钟默认（:126-128），相对热门模型的 10 秒是 **30 倍探测衰减**——一个更隐蔽的
+形状：不是冻结，是**每个 tick 被抹一次**。
+
+逐行核实后判定为 **dormant**，两条独立理由：
+
+1. `main.go:1535` 由 `LLM_GATEWAY_ENABLE_POPULARITY_TRACKING=true` 把关，**默认 false**；
+2. 它唯一的输出 `Manager.GetRecommendedProbeInterval` **全仓无生产调用方**（仅定义）。
+
+> 若只做到第 1 层（看到「读 v1 → 决定探针节奏」就登记成 live 高危），这条会造出
+> 一个**不存在的风险**——而假的风险会稀释真的风险（§9.9.1 的 credential_recovery
+> 就是真的）。**判 live 之前必须先查消费方是否真的被调用。**
+> 反过来也成立：`consumer` 存在不等于它在门内——`ursmRecoverSink` 存在且活着，
+> 也正因为如此它才危险。
+
+### §9.9.4 落地：两条正交的轴，各配一道自己的门
+
+不把控制面塞进五档当第六档——那会把「响应退化」和「控制流退化」混进同一个枚举，
+而它们的判据、危险方向、复核方法都不同。改为独立登记表 + 独立门：
+
+| | 读端轴 | 控制面轴 |
+|---|---|---|
+| 表 | `requestLogsStopWriteClassification` | `requestLogsControlPlaneReaders` |
+| 问的问题 | 这个读点的**输出**长什么样 | 这个读点的输出**决定**了哪个写入/身份 |
+| 维度 | 5 档后果 + 4 族机械判据 | live / dormant × gated / ungated |
+| 分母 | 全部 105 个读点文件 | **非 admin 子集 52 个**（控制面只可能在请求路径与 worker 侧） |
+| 门 | `TestRequestLogsStopWriteNothingLeftUnclassified` | `TestRequestLogsControlPlaneNothingLeftUnreviewed` |
+| 常跑守卫 | 证据逐字 + 族一致性 | 证据逐字 + 键必须在清单内 + **live∧ungated 必须写 BlastRadius** |
+
+`BlastRadius` 是这张表的关键约束：它逼每一条「活的、门控外的」读点写清**它具体
+授权或改变了哪个写入**。少了这一条，「活」就只是一个形容词——而形容词不可核。
+
+两道门当前**都是红的**，这是真实状态：
+
+- 读端：99/105 未评估。
+- 控制面：**48/52 未判定**（已判定 4 条即 §9.9.3 的①②③④）。
+
+### §9.9.5 本条方法论
+
+我这一轮搭的框架（读点清单 + 后果五档 + 族门）有一个盲区，它不是「某几条判错了」，
+而是**整张表的坐标系里少了一维**。表现是：所有门都绿，缺陷照样能在生产发生。
+
+可复用的判据：**当一个门控只覆盖系统的一部分时，去找那些「跨越门控边界」的交互。**
+S4 的门在写侧，所以要找「读旧 → 写新」的跨界读点；权限门在资源侧，所以要找
+「校验资源 A → 访问资源 B」的越界访问。同一形状。门控本身不能证明边界上没有洞，
+它只证明边界内侧是对的。
+
+推论：**新增一道门时，先问它守的是哪个坐标系，以及门外还有什么坐标系。**
+只补条目不补坐标，缺口会在下一轮换个名字重新出现。

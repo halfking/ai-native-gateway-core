@@ -64,7 +64,16 @@ type DualReadDetail struct {
 	V2CreditsTotal int64 `json:"v2_credits_total"`
 
 	// ZeroDrift 为真 = 双侧行集相等且无字段漂移（§8-C/D 同判）。
-	ZeroDrift bool `json:"zero_drift"`
+	//
+	// ⚠️ 2026-10-02：ZeroDriftEvaluable 为假时，ZeroDrift **不代表「有漂移」**。
+	// S4 停写后 v1 冻结、v2 继续增长，任何新轮次在 v1 侧都没有对应行，
+	// OnlyInV2 必然单调增长 ⇒ ZeroDrift 永久为 false。而 spec 的退出条件正是
+	// 「dual_read_validator 对账 7 天零漂移」——照字面读，这道门在停写之后
+	// 永远无法宣告完成。与 Summarize 的真空为绿是同一根因的两个方向：
+	// 一个恒真、一个恒假，都不是观测。
+	ZeroDrift          bool `json:"zero_drift"`
+	ZeroDriftEvaluable bool `json:"zero_drift_evaluable"`
+	V1WritesEnabled    bool `json:"v1_writes_enabled"`
 }
 
 // DualDriftSample is one drifted request with the offending fields.
@@ -152,8 +161,21 @@ type MirrorDriftSummary struct {
 	ByWorkType      []MirrorDriftBucket `json:"by_work_type,omitempty"`
 	ByRequestStatus []MirrorDriftBucket `json:"by_request_status,omitempty"`
 
-	// S4Ready 为真 = 窗口内没有真漏写。S4 停写门控的前置判据。
+	// S4Ready 为真 = 窗口内没有真漏写，**且本次运行确实验证了这件事**。
+	// S4 停写门控的前置判据。
+	//
+	// ⚠️ 「且本次运行确实验证了这件事」是 2026-10-02 补的硬条件。此前本字段
+	// 单纯是 `GenuineLossRows == 0`，而停写会让这个条件**恒真**——S4 一关，
+	// 窗口内 V1 行恒为 0，于是无行可缺、GenuineLoss 恒 0、Ready 恒 true，
+	// 且响应 JSON 与健康态逐字节相同。判定规则见 dual_read_gate.go。
 	S4Ready bool `json:"s4_ready"`
+
+	// 以下三项让「没验证」与「验证了、有漂移」在响应里可区分。把两者都折成
+	// s4_ready=false 会把「不知道」伪装成「不安全」，而这正是本门最初犯的错的
+	// 镜像版本。
+	V1WritesEnabled  bool   `json:"v1_writes_enabled"`
+	S4GateVoid       bool   `json:"s4_gate_void"`
+	S4GateVoidReason string `json:"s4_gate_void_reason,omitempty"`
 }
 
 // mirrorDriftClassSQL classifies a drifting V1 row into the three buckets.
@@ -297,7 +319,19 @@ func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, window
 		return nil, err
 	}
 
-	sum.S4Ready = sum.GenuineLossRows == 0
+	// 门控读数只取一次：settings.GetPlatformBool 每次调用都是一次
+	// settings_kv 往返（Global.EffectiveValue），取两次既多一次 DB 往返，
+	// 又让「两次读到的值可能不同」成为一个本不该存在的分支。
+	v1WritesOn := currentV1WritesEnabled()
+	sum.V1WritesEnabled = v1WritesOn
+	verdict := s4GateVerdictOf(s4GateInput{
+		v1Rows:      sum.V1Rows,
+		genuineLoss: sum.GenuineLossRows,
+		v1WritesOn:  v1WritesOn,
+	})
+	sum.S4Ready = verdict.Ready
+	sum.S4GateVoid = verdict.Void
+	sum.S4GateVoidReason = verdict.Reason
 	return sum, nil
 }
 
@@ -564,6 +598,17 @@ func (v *DualReadValidator) CompareDetail(ctx context.Context, tenant, session s
 	}
 	// Drift counts are capped by sampleLimit; when the cap is hit, report the
 	// capped value conservatively (the zero-drift gate treats >0 as fail).
+	//
+	// Evaluability, not the verdict, is what the S4 gate changes here: with
+	// v1 writes off the v1 side is a frozen snapshot, so a set difference
+	// against it measures "time passed", not "data disagrees". Callers must
+	// read ZeroDriftEvaluable before treating false as evidence of drift.
+	d.V1WritesEnabled = currentV1WritesEnabled()
+	d.ZeroDriftEvaluable = d.V1WritesEnabled
+	if !d.ZeroDriftEvaluable {
+		d.ZeroDrift = false
+		return d, nil
+	}
 	d.ZeroDrift = d.OnlyInV1Count == 0 && d.OnlyInV2Count == 0 && len(d.DriftSamples) == 0
 	return d, nil
 }

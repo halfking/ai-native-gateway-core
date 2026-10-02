@@ -30,6 +30,7 @@ export default {
     providers: "プロバイダー",
     reconciliation: "プロバイダー照合",
     settlementReport: "決算レポート",
+    usageTrends: "使用量トレンド",
     pricing: "コスト価格",
     modelPricing: "価格管理",
     freePool: "無料リソース",

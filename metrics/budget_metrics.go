@@ -7,17 +7,16 @@ import (
 
 // Budget enforcement observability (第三十轮, 2026-10-02).
 //
-// 执行面预算检查（CheckBudget）对非 BudgetExceededError 一律静默放行
-// （verifier.go 两个调用点的类型断言形态，"best-effort" 既存设计）——
-// 本指标让该面第一次可见：DB 故障放行量、快照模式跳过量、台账视图缺失
-// 降级量都有独立 series。fail-closed 切换（Owner 拍板项）落地前后都靠它
-// 观测，label 为闭集枚举（GW-00）。
+// 执行面预算检查（CheckBudget）的错误结局此前被两调用点类型断言静默吞掉。
+// 并行会话 f215e22d0（12h 第三十轮）已把两调用点切为 fail-closed 503
+// budget_unavailable；本指标是执行面的统一观测轴——ok/exceeded/error/
+// skipped_snapshot/degraded_no_ledger 五结局闭集（GW-00）。
 var (
 	// BudgetChecksTotal counts every CheckBudget invocation by outcome.
 	// outcome is the closed enum:
 	//   ok               — check ran, under budget
 	//   exceeded         — check ran, budget exceeded (402 path)
-	//   error            — DB/查询错误，请求被放行（fail-open 既有语义）
+	//   error            — DB/查询错误（调用方 fail-closed 503 budget_unavailable）
 	//   skipped_snapshot — snapshot-only verifier，无台账可查（设计跳过）
 	//   degraded_no_ledger — usage_ledger_with_current_month 视图缺失，
 	//     预算执行整体降级为放行（迁移 344 未应用）。注意：这是降级**事件**

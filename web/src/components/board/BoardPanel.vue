@@ -91,6 +91,15 @@ function onApplyRange(range: KxDateRange) {
 function scrollToDist() {
   document.querySelector('.board-panel__dist')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
+
+// 「更多」入口跳全页用量趋势时，带上当前看板时间范围（start/end 深链）。
+const trendExplorerQuery = computed(() => {
+  const { startMs, endMs } = resolveBoardRangeMs(timeRange.value)
+  return {
+    start: new Date(startMs).toISOString().slice(0, 10),
+    end: new Date(Math.max(startMs, endMs - 1)).toISOString().slice(0, 10),
+  }
+})
 </script>
 
 <template>
@@ -106,6 +115,7 @@ function scrollToDist() {
       :source="board?.source"
       @apply-range="onApplyRange"
       @refresh="boardState.load()"
+      @more="router.push({ path: '/admin/usage-trends', query: trendExplorerQuery })"
     />
     <div class="board-panel__charts">
       <BoardModelDist :board="board" :loading="loading" />
