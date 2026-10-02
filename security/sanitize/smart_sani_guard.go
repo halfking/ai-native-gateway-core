@@ -1,20 +1,15 @@
 // Package sanitize - smart_sani_guard.go
 //
-// SmartSaniGuard 主链路集成组件：
-//   - SanitizeInputMiddleware: 在真实 chatHandler 之前对请求体做可逆脱敏
-//   - SanitizeRestoreInterceptor: 接入 ResponseInterceptor 链，在输出安全检查
-//     之后把占位符还原为真实敏感值，再返回给客户端
+// SmartSaniGuard protects the request and response boundaries:
+//  1. Input: detect visible text and replace values with stable session tokens.
+//  2. Persist the mapping, offsets and generation under a tenant/session lease.
+//  3. Compression sees sanitized history; generated summaries are checked.
+//  4. Output: mask/block newly generated sensitive values, restore known tokens,
+//     then apply the existing owner-aware policy to actual client-visible text.
 //
-// 设计要点（对齐用户需求"先安全检查，再还原"）：
-//  1. 输入侧：检测敏感信息 → 替换为 {SENSITIVE:type:index} 占位符
-//     → 占位符→原始值映射持久化到 Redis（会话级，TTL=30分钟）
-//  2. 上游 LLM 只看到脱敏后的占位符
-//  3. 响应侧：OutputComplianceInterceptor 先对含占位符的文本做安全检查
-//     （敏感信息不暴露给安全检查服务）
-//  4. SanitizeRestoreInterceptor 再还原占位符为真实值返回给用户
-//
-// 跨轮次占位符冲突：占位符索引在会话内连续递增（每类从1开始），
-// 通过 Redis 中保存的每类计数偏移量，保证不同轮次不撞号。
+// Same type/value reuses its oldest token; new values advance the type offset.
+// Redis-free requests keep a private mapping in context. Persistence/logging of
+// original request bodies belongs to the separate raw-body storage boundary.
 package sanitize
 
 import (
@@ -29,6 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,17 +39,28 @@ import (
 // RestoreInterceptorName 是还原拦截器在链中的名字（日志/观测）
 const RestoreInterceptorName = "sanitize_restore"
 
+// Keep the sanitizer's pre-handler read cap aligned with streaming.maxBodySize.
+// The sanitizer runs first and must not allocate an unbounded request body.
+const maxSanitizeBodySize = 128 << 20
+const defaultOffsetLeaseTTL = 15 * time.Second
+
+func sanitizeGenerationKey(tenantID, sessionID string) string {
+	return sanitizeMapKey(tenantID, sessionID) + ":generation"
+}
+
+var errSanitizeBodyTooLarge = errors.New("sanitize request body too large")
+
 // SanitizeInputMiddleware 在真实 chatHandler 之前对请求体做可逆脱敏。
 //
 // 作用：把敏感信息（手机号/身份证/邮箱等）替换为占位符，确保：
-//   - 上游 LLM 与日志/审计只看到脱敏文本
+//   - 上游 LLM 只看到脱敏文本；原始正文存储有独立的权限与保留策略
 //   - 占位符→原始值映射存入 Redis（会话级），供响应侧还原
 //
 // 处理流程：
 //  1. 解析 OpenAI chat.completions 请求体
-//  2. 遍历 messages，对每条 user/system 消息做脱敏
+//  2. 按协议扫描历史文本、工具参数和工具结果，保留结构标识和媒体
 //  3. 把脱敏后的请求体重写回 r.Body
-//  4. 把 SanitizeMap 存入 Redis（key: session:sanitize:{sessionID}）
+//  4. 原子提交租户隔离的 map/offset/generation，再交给下游处理
 //
 // 占位符索引使用会话级偏移量（Redis 里记录每类已用最大值），
 // 避免跨轮次撞号。
@@ -64,10 +71,17 @@ type SanitizeInputMiddleware struct {
 	logger    *slog.Logger
 	// getSessionID 从请求头提取会话ID（由调用方注入，便于测试）
 	getSessionID func(r *http.Request) string
-	// stateMu serializes offset read/allocate/write on this middleware instance.
-	// Redis keys remain tenant scoped for cross-process isolation; the mutex
-	// closes the in-process read-modify-write race for concurrent requests.
-	stateMu sync.Mutex
+	// sessionLocks serializes offset read/allocate/write per (tenant, session)
+	// on this middleware instance. Redis keys remain tenant scoped for
+	// cross-process isolation; this lock only removes the in-process
+	// read-modify-write race, so it is keyed by session rather than global —
+	// a process-wide mutex would also serialize unrelated sessions together
+	// with their Redis round trips and regex scan, capping gateway throughput
+	// at one request per detect latency.
+	sessionLocks sanitizeSessionLocks
+	// offsetLeaseTTL bounds crash recovery; an owner renews while sanitizing.
+	// Tests can shorten it to exercise slow detector and lease-loss paths.
+	offsetLeaseTTL time.Duration
 	// censorSink（706，可选）：把占位符→原始值映射双写 DB
 	// （public.session_censors），Redis 降级为热缓存。nil 时仅 Redis。
 	censorSink CensorSink
@@ -89,16 +103,13 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 		ttl = 30 * time.Minute
 	}
 	return &SanitizeInputMiddleware{
-		sanitizer: s,
-		redis:     redis,
-		ttl:       ttl,
-		logger:    slog.Default().With("component", "sanitize_middleware"),
-		// 与 chatHandler（domains/streaming/session_routing.go 的
-		// SessionHeadersPriority）保持一致的 5 个候选 header 顺序。
-		// 不读 body 里的 session_id：中间件先于 chatHandler 解析 session，
-		// body 解析属于 chatHandler 的核心职责，且 body 里 session_id 可能
-		// 出现在 messages content 里（被中间件当作 PII 替换掉），会让中间件
-		// 误读自身内容 — 因此本中间件只接受 header 形式的 sessionID。
+		sanitizer:      s,
+		redis:          redis,
+		ttl:            ttl,
+		offsetLeaseTTL: defaultOffsetLeaseTTL,
+		logger:         slog.Default().With("component", "sanitize_middleware"),
+		// Header priority mirrors ChatHandler; a top-level body session_id
+		// overrides it after envelope parsing. Message text is never an ID source.
 		getSessionID: func(r *http.Request) string {
 			for _, header := range sessionIDHeaderPriority {
 				if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
@@ -108,6 +119,49 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 			return ""
 		},
 	}, nil
+}
+
+// sanitizeSessionLocks is a keyed mutex: callers holding the same key run one
+// at a time, callers on different keys run fully in parallel. Entries are
+// reference counted and removed when the last holder leaves, so the map cannot
+// grow with the number of distinct sessions the process has ever served.
+type sanitizeSessionLocks struct {
+	mu    sync.Mutex
+	locks map[string]*sanitizeSessionLock
+}
+
+type sanitizeSessionLock struct {
+	// ch carries a single slot. Sending acquires; receiving releases.
+	ch   chan struct{}
+	refs int
+}
+
+func (l *sanitizeSessionLocks) lock(key string) func() {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = make(map[string]*sanitizeSessionLock)
+	}
+	entry, ok := l.locks[key]
+	if !ok {
+		entry = &sanitizeSessionLock{ch: make(chan struct{}, 1)}
+		l.locks[key] = entry
+	}
+	// Count the holder BEFORE acquiring: the entry must outlive every waiter,
+	// otherwise the last release could delete a key another goroutine is
+	// already blocked on and a third caller would get a fresh lock.
+	entry.refs++
+	l.mu.Unlock()
+
+	entry.ch <- struct{}{}
+	return func() {
+		<-entry.ch
+		l.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(l.locks, key)
+		}
+		l.mu.Unlock()
+	}
 }
 
 // sessionIDHeaderPriority 与 chatHandler 一致的会话 ID header 候选。
@@ -133,8 +187,8 @@ func envelopeSessionID(body []byte) string {
 	return strings.TrimSpace(envelope.SessionID)
 }
 
-// Wrap 返回一个 http.Handler 包装器。
-// 在真实 handler 之前执行脱敏；脱敏失败时降级放行（不阻断请求）。
+// Wrap 返回一个 http.Handler 包装器。在真实 handler 之前完成脱敏。
+// 读取、检测或映射持久化失败时停止请求，避免原始敏感文本流向上游。
 func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if m == nil || m.sanitizer == nil {
@@ -147,32 +201,44 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		sessionID := m.getSessionID(r)
-		rawTenantID := strings.TrimSpace(r.Header.Get("X-Gw-Tenant-Id"))
-		tenantID := rawTenantID
+		tenantID := strings.TrimSpace(authenticatedTenant(r.Context()))
 		if tenantID == "" {
 			tenantID = "_unknown"
 		}
-		// readBody 恢复 r.Body，因此下面每条 passthrough 路径都安全：
-		// 无脱敏、脱敏失败、读取失败都会把原始 body 交给下游。
+		// readBody 恢复 r.Body；只有确认不需要脱敏时才让原始 body 进入下游。
 		body, err := readBody(r)
 		if err != nil {
-			m.logger.Warn("sanitize_middleware: read body failed, passthrough",
+			m.logger.Warn("sanitize_middleware: read body failed",
 				"error", err, "session_id", sessionID)
-			next.ServeHTTP(w, r)
+			status := http.StatusBadRequest
+			if errors.Is(err, errSanitizeBodyTooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			writeSanitizeFailure(w, r, status)
 			return
 		}
 		if bodySessionID := envelopeSessionID(body); bodySessionID != "" {
 			sessionID = bodySessionID
 		}
 
-		// 解析并脱敏
-		m.stateMu.Lock()
-		sanitizedBody, sm, messageRefs, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID)
-		m.stateMu.Unlock()
+		// 解析并脱敏。只有存在跨请求共享的会话状态（Redis 租约 + offset +
+		// 映射表）时才需要加锁，且按 (租户, 会话) 键控：同一会话的并发
+		// 轮次仍串行，不同会话互不阻塞。没有会话 ID 或没有 Redis 时，
+		// offset 与映射表都是本次调用私有的，不加锁也不会有竞态。
+		release := func() {}
+		if m.redis != nil && sessionID != "" {
+			release = m.sessionLocks.lock(sanitizeOffsetKey(tenantID, sessionID))
+		}
+		sanitizedBody, sm, currentMap, messageRefs, generation, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID, r.URL.Path)
+		release()
 		if err != nil {
-			m.logger.Warn("sanitize_middleware: sanitize failed, passthrough",
+			m.logger.Warn("sanitize_middleware: sanitize failed",
 				"error", err, "session_id", sessionID)
-			next.ServeHTTP(w, r)
+			status := http.StatusServiceUnavailable
+			if errors.Is(err, errInvalidSanitizeInput) {
+				status = http.StatusBadRequest
+			}
+			writeSanitizeFailure(w, r, status)
 			return
 		}
 
@@ -185,143 +251,143 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			// 全部走 r.ContentLength 字段，不再回写 header）。
 			// 与 armor middleware.withReplayedBody 保持一致。
 			r.ContentLength = int64(len(sanitizedBody))
+		}
+		if generation != "" {
 			*r = *r.WithContext(WithSanitizeMap(r.Context(), sm))
 			// SC-1 (docs/修订0811/19): 同时把脱敏桥接信息放入 ctx，供
 			// session compressor 写入 SessionState v8 的 SanitizeMapRef /
 			// SanitizeStats，使三层缓存的 L3 脱敏字段不再悬空。
-			info := buildSanitizeInfoForSession(tenantID, sessionID, sm)
+			info := buildSanitizeInfoForSession(tenantID, sessionID, currentMap)
+			if len(currentMap) == 0 {
+				info.Stats = compression.SanitizeStats{}
+			}
+			info.RawSnapshot = compression.SnapshotForBody(body)
+			effectiveBody := sanitizedBody
+			if effectiveBody == nil {
+				effectiveBody = body
+			}
+			info.SanitizedSnapshot = compression.SnapshotForBody(effectiveBody)
 			info.MessageRefs = messageRefs
+			info.MapGeneration = generation
+			if m.redis == nil || sessionID == "" {
+				info.MapRef = ""
+			} else {
+				info.MapRef = sanitizeMapKey(tenantID, sessionID)
+			}
 			*r = *r.WithContext(compression.WithSanitizeInfo(r.Context(), info))
 		}
 
+		*r = *r.WithContext(compression.WithGeneratedTextGuard(r.Context(), func(ctx context.Context, text string) (string, error) {
+			checker := &outputSensitiveChecker{sanitizer: m.sanitizer, action: OutputMask}
+			label := ""
+			document := bytes.TrimSpace([]byte(text))
+			if len(document) > 0 && (document[0] == '{' || document[0] == '[') && json.Valid(document) {
+				label = "__tool_json"
+			}
+			result, err := checker.CheckField(ctx, "", label, text)
+			if err != nil {
+				return "", err
+			}
+			if result == nil || result.Blocked {
+				return "", errors.New("generated structured credential rejected")
+			}
+			return result.RedactedOutput, nil
+		}))
 		next.ServeHTTP(w, r)
 	})
 }
 
-// sanitizeRequestBody 解析 OpenAI 请求体并脱敏 messages。
-// 返回 (脱敏后的请求体, SanitizeMap)。无敏感信息时返回 (nil, 空map)。
-func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string, tenantIDs ...string) ([]byte, SanitizeMap, []compression.SanitizedMessageRef, error) {
-	// 解析请求体为通用结构
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, nil, nil, err
-	}
-
-	messagesRaw, ok := raw["messages"]
-	if !ok {
-		return nil, nil, nil, nil // 无 messages 字段，跳过
-	}
-	messages, ok := messagesRaw.([]any)
-	if !ok {
-		return nil, nil, nil, nil
-	}
-
+// sanitizeRequestBody 按客户端协议脱敏可见文本，并保留非文本多模态字段。
+// Dictionary captures all live mappings for restoration; currentMap only counts
+// values sanitized in this request. An unchanged turn retains its generation.
+func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string, tenantID, path string) ([]byte, SanitizeMap, SanitizeMap, []compression.SanitizedMessageRef, string, error) {
 	// 会话级偏移量（记录每类已用最大编号，保证跨轮次不撞号）
-	tenantID := firstSanitizeTenant(tenantIDs)
-	// R35 (2026-09-17 audit P0-2): the load→assign→save sequence is a
-	// cross-process critical section. stateMu guards one process only; two
-	// replicas reading the same offsets baseline handed out identical
-	// placeholder indices for different values, and the absolute HSET then
-	// made it last-writer-wins — the restore interceptor could return
-	// instance A's sensitive value for instance B's placeholder. Serialize
-	// the section with a short Redis lock (best-effort: degraded to unlocked
-	// when Redis errors out or contention exceeds the retry budget).
-	releaseOffsets := m.acquireOffsetsLock(ctx, sessionID, tenantID)
-	defer releaseOffsets()
-	offset := m.loadOffsets(ctx, sessionID, tenantID)
+	// The Redis lock spans load, allocation, and an atomic, lease-checked
+	// map+offset commit. A lost lease or Redis failure must stop dispatch:
+	// otherwise a second process can reuse a placeholder for another value.
+	lease, err := m.acquireOffsetsLock(ctx, sessionID, tenantID)
+	if err != nil {
+		return nil, nil, nil, nil, "", fmt.Errorf("acquire sanitize offsets: %w", err)
+	}
+	defer m.releaseOffsetsLock(ctx, lease)
+	offset, err := m.loadOffsets(ctx, sessionID, tenantID)
+	if err != nil {
+		return nil, nil, nil, nil, "", fmt.Errorf("load sanitize offsets: %w", err)
+	}
 	// loadOffsets legitimately returns nil on a cache miss or when Redis is
 	// disabled. Keep a local map so allocating placeholder indexes below is
 	// safe in both modes.
 	if offset == nil {
 		offset = make(map[SensitiveType]int)
 	}
-	changed := false
-	sm := make(SanitizeMap)
-	usedCount := make(map[string]int) // 每类本轮新用计数（用于更新 offset）
-	// Keep one ref per message, not only for messages containing PII. This is
-	// the positional contract consumed by compression: unchanged messages are
-	// still needed to prove that raw and sanitized coordinates stayed aligned.
-	messageRefs := make([]compression.SanitizedMessageRef, 0, len(messages))
-
-	for i, msgAny := range messages {
-		originalMessage, marshalErr := json.Marshal(msgAny)
-		if marshalErr != nil {
-			return nil, nil, nil, marshalErr
+	existing := make(sanitizeReuseIndex)
+	dictionary := make(SanitizeMap)
+	generation := ""
+	if m.redis != nil && sessionID != "" {
+		values, loadErr := redissafe.SafeHGetAll(ctx, m.redis, sanitizeMapKey(tenantID, sessionID))
+		if loadErr != nil && !errors.Is(loadErr, redissafe.ErrKeyNotFound) {
+			return nil, nil, nil, nil, "", fmt.Errorf("load sanitize reuse map: %w", loadErr)
 		}
-		ref := compression.SanitizedMessageRef{
-			RawIndex: i, SanitizedIndex: i,
-			RawHash:       compression.MessageFingerprint(originalMessage),
-			SanitizedHash: compression.MessageFingerprint(originalMessage),
+		if len(values) > 0 {
+			generation, loadErr = m.redis.Get(ctx, sanitizeGenerationKey(tenantID, sessionID)).Result()
+			if loadErr != nil && !errors.Is(loadErr, redis.Nil) {
+				return nil, nil, nil, nil, "", fmt.Errorf("load sanitize generation: %w", loadErr)
+			}
 		}
-
-		msg, ok := msgAny.(map[string]any)
-		if !ok {
-			messageRefs = append(messageRefs, ref)
-			continue
-		}
-		content, hasStringContent := msg["content"].(string)
-		role, _ := msg["role"].(string)
-		// 只脱敏 user 和 system 消息（assistant 消息是上游生成，不应改动）
-		if !hasStringContent || (role != "user" && role != "system") {
-			messageRefs = append(messageRefs, ref)
-			continue
-		}
-
-		result, err := m.sanitizer.sanitizeInput(ctx, content, offset)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if len(result.SanitizeMap) == 0 {
-			messageRefs = append(messageRefs, ref)
-			continue
-		}
-
-		msg["content"] = result.SanitizedText
-		messages[i] = msg
-		sanitizedMessage, marshalErr := json.Marshal(msg)
-		if marshalErr != nil {
-			return nil, nil, nil, marshalErr
-		}
-		ref.SanitizedHash = compression.MessageFingerprint(sanitizedMessage)
-		ref.Changed = true
-		ref.PlaceholderCount = len(result.SanitizeMap)
-		messageRefs = append(messageRefs, ref)
-		changed = true
-
-		// 合并映射表 + 更新每类计数
-		for ph, val := range result.SanitizeMap {
-			sm[ph] = val
-			if p, ok := ParsePlaceholder(ph); ok {
-				typ := string(p.Type)
-				if p.Index > usedCount[typ] {
-					usedCount[typ] = p.Index
+		for token, value := range values {
+			if p, ok := ParsePlaceholder(token); ok && p.Index > 0 {
+				dictionary[token] = value
+				key := sensitiveValue{p.Type, value}
+				previous, exists := existing[key]
+				old, _ := ParsePlaceholder(previous)
+				if !exists || p.Index < old.Index {
+					existing[key] = token
 				}
-				if offset[p.Type] < p.Index {
+				if p.Index > offset[p.Type] {
 					offset[p.Type] = p.Index
 				}
 			}
 		}
 	}
-
-	if !changed {
-		return nil, nil, nil, nil
+	worker := requestInputSanitizer{
+		ctx: ctx, sanitizer: m.sanitizer, offset: offset,
+		mapping: make(SanitizeMap), usedCount: make(map[string]int), existing: existing,
+	}
+	if err := reserveInputPlaceholders(body, offset); err != nil {
+		return nil, nil, nil, nil, "", err
+	}
+	newBody, messageRefs, err := worker.sanitizeEnvelope(body, path)
+	if err != nil {
+		return nil, nil, nil, nil, "", err
+	}
+	if len(worker.mapping) == 0 && len(dictionary) == 0 {
+		return nil, nil, nil, messageRefs, "", nil
 	}
 
-	// 持久化映射表到 Redis（同时把每类本轮最大编号刷回 offset key）
-	if m.redis != nil && sessionID != "" {
-		if err := m.saveMapAndOffsets(ctx, sessionID, sm, usedCount, tenantID); err != nil {
-			m.logger.Warn("sanitize_middleware: save map failed (restore degraded to single-turn)",
-				"error", err, "session_id", sessionID)
+	if generation == "" {
+		token := make([]byte, 16)
+		if _, err := rand.Read(token); err != nil {
+			return nil, nil, nil, nil, "", err
+		}
+		generation = hex.EncodeToString(token)
+	}
+	// Persist high-water reservations even on an unchanged turn. Capture the
+	// entire dictionary so an upstream request outlives Redis TTL/recreation.
+	for typ, index := range offset {
+		if index > worker.usedCount[string(typ)] {
+			worker.usedCount[string(typ)] = index
 		}
 	}
-
-	// 重新序列化
-	newBody, err := json.Marshal(raw)
-	if err != nil {
-		return nil, nil, nil, err
+	// 持久化映射表到 Redis（同时把每类本轮最大编号刷回 offset key）
+	if m.redis != nil && sessionID != "" {
+		if err := m.saveMapAndOffsets(ctx, lease, sessionID, worker.mapping, worker.usedCount, generation, tenantID); err != nil {
+			return nil, nil, nil, nil, "", fmt.Errorf("persist sanitize mapping: %w", err)
+		}
 	}
-
-	return newBody, sm, messageRefs, nil
+	for token, value := range worker.mapping {
+		dictionary[token] = value
+	}
+	return newBody, dictionary, worker.mapping, messageRefs, generation, nil
 }
 
 // releaseOffsetsLockScript deletes the lock only when the value still matches
@@ -333,49 +399,92 @@ end
 return 0
 `)
 
-// acquireOffsetsLock takes the per-session offsets lock (SET NX PX 5s, three
-// 50ms retries). Returns a no-op release when Redis is unavailable or the
-// lock cannot be taken within the budget — the request then runs unlocked,
-// which is exactly the pre-R35 behaviour, instead of blocking the hot path.
-func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessionID, tenantID string) func() {
+var renewOffsetsLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+	return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+`)
+
+type sanitizeOffsetLease struct {
+	key, token string
+	stop, done chan struct{}
+}
+
+// acquireOffsetsLock takes the per-session lock. Redis-backed sessions never
+// proceed unlocked; the commit script verifies this lease before writing.
+func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessionID, tenantID string) (sanitizeOffsetLease, error) {
 	if m.redis == nil || sessionID == "" {
-		return func() {}
+		return sanitizeOffsetLease{}, nil
 	}
 	key := sanitizeOffsetKey(tenantID, sessionID) + ":lock"
 	var token [8]byte
 	if _, err := rand.Read(token[:]); err != nil {
-		// Degraded to unlocked mode without a token; make the lost-mutex
-		// window visible (R36 audit: this path previously logged nothing).
-		m.logger.Warn("sanitize_middleware: offsets lock token generation failed, proceeding unlocked",
-			"session_id", sessionID, "error", err)
-		return func() {}
+		return sanitizeOffsetLease{}, err
 	}
 	tok := hex.EncodeToString(token[:])
+	leaseTTL := m.offsetLeaseTTL
+	if leaseTTL <= 0 {
+		leaseTTL = defaultOffsetLeaseTTL
+	}
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return func() {}
+				return sanitizeOffsetLease{}, ctx.Err()
 			case <-time.After(50 * time.Millisecond):
 			}
 		}
-		ok, err := m.redis.SetNX(ctx, key, tok, 5*time.Second).Result()
+		ok, err := m.redis.SetNX(ctx, key, tok, leaseTTL).Result()
 		if err != nil {
-			// Warn, not Debug: degradation reopens the cross-process
-			// offset race and must be observable in production logs.
-			m.logger.Warn("sanitize_middleware: offsets lock unavailable, proceeding unlocked",
-				"session_id", sessionID, "error", err)
-			return func() {}
+			return sanitizeOffsetLease{}, err
 		}
 		if ok {
-			return func() {
-				_ = releaseOffsetsLockScript.Run(context.WithoutCancel(ctx), m.redis, []string{key}, tok).Err()
+			lease := sanitizeOffsetLease{key: key, token: tok, stop: make(chan struct{}), done: make(chan struct{})}
+			go m.renewOffsetsLease(ctx, lease, leaseTTL)
+			return lease, nil
+		}
+	}
+	return sanitizeOffsetLease{}, errors.New("sanitize offsets lock busy")
+}
+
+func (m *SanitizeInputMiddleware) renewOffsetsLease(ctx context.Context, lease sanitizeOffsetLease, ttl time.Duration) {
+	defer close(lease.done)
+	interval := ttl / 3
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-lease.stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			ok, err := renewOffsetsLockScript.Run(renewCtx, m.redis, []string{lease.key}, lease.token, ttl.Milliseconds()).Int()
+			cancel()
+			if err != nil || ok != 1 {
+				m.logger.Warn("sanitize_middleware: offsets lease renewal stopped", "error", err, "key", lease.key)
+				return
 			}
 		}
 	}
-	m.logger.Warn("sanitize_middleware: offsets lock contention timeout, proceeding unlocked",
-		"session_id", sessionID)
-	return func() {}
+}
+
+func (m *SanitizeInputMiddleware) releaseOffsetsLock(ctx context.Context, lease sanitizeOffsetLease) {
+	if lease.key == "" {
+		return
+	}
+	close(lease.stop)
+	<-lease.done
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := releaseOffsetsLockScript.Run(releaseCtx, m.redis, []string{lease.key}, lease.token).Err(); err != nil {
+		m.logger.Warn("sanitize_middleware: release offsets lock failed", "error", err)
+	}
 }
 
 // loadOffsets 从 Redis 加载每类已用最大编号作为偏移量。
@@ -383,47 +492,45 @@ func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessio
 // 偏移量单独存于 session:{sid}:sanitize:offsets（Redis Hash，
 // field=类型字符串, value=本类型已用最大编号）。每次请求只读一个
 // 紧凑 hash，不再扫描整个 sanitize map。
-func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID string, tenantIDs ...string) map[SensitiveType]int {
+func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID string, tenantIDs ...string) (map[SensitiveType]int, error) {
 	if m.redis == nil || sessionID == "" {
-		return nil
+		return nil, nil
 	}
-	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
-	// when the offsets hash key collides with a non-hash type. ErrKeyNotFound
-	// (key absent) is collapsed into the existing nil-map return below;
-	// TypedError (WRONGTYPE) and other errors also fall through to nil
-	// because this method's contract is "no offsets is fine, we start at 1".
 	tenantID := firstSanitizeTenant(tenantIDs)
 	vals, err := redissafe.SafeHGetAll(ctx, m.redis, sanitizeOffsetKey(tenantID, sessionID))
 	if err != nil {
-		return nil
+		if !errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, err
+		}
+		return m.recoverOffsetsFromMapFields(ctx, sessionID, tenantID)
 	}
 	if len(vals) == 0 {
 		return m.recoverOffsetsFromMapFields(ctx, sessionID, tenantID)
 	}
 	maxIdx := make(map[SensitiveType]int, len(vals))
 	for tStr, v := range vals {
-		var idx int
-		if _, scanErr := fmt.Sscanf(v, "%d", &idx); scanErr != nil || idx <= 0 {
-			continue
+		idx, parseErr := strconv.Atoi(v)
+		if parseErr != nil || idx <= 0 {
+			return nil, fmt.Errorf("invalid sanitize offset %q=%q", tStr, v)
 		}
 		maxIdx[SensitiveType(tStr)] = idx
 	}
-	if len(maxIdx) > 0 {
-		return maxIdx
-	}
-	return m.recoverOffsetsFromMapFields(ctx, sessionID, firstSanitizeTenant(tenantIDs))
+	return maxIdx, nil
 }
 
 // recoverOffsetsFromMapFields prevents placeholder reuse when the compact
 // offsets hash expired before the primary sanitize map. It inspects only Redis
 // field names (placeholders), never the mapped plaintext values.
-func (m *SanitizeInputMiddleware) recoverOffsetsFromMapFields(ctx context.Context, sessionID, tenantID string) map[SensitiveType]int {
+func (m *SanitizeInputMiddleware) recoverOffsetsFromMapFields(ctx context.Context, sessionID, tenantID string) (map[SensitiveType]int, error) {
 	if m.redis == nil || sessionID == "" {
-		return nil
+		return nil, nil
 	}
 	fields, err := m.redis.HKeys(ctx, sanitizeMapKey(tenantID, sessionID)).Result()
-	if err != nil || len(fields) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if len(fields) == 0 {
+		return nil, nil
 	}
 	maxIdx := make(map[SensitiveType]int)
 	for _, field := range fields {
@@ -433,79 +540,112 @@ func (m *SanitizeInputMiddleware) recoverOffsetsFromMapFields(ctx context.Contex
 		}
 		maxIdx[placeholder.Type] = placeholder.Index
 	}
-	return maxIdx
+	return maxIdx, nil
 }
 
-// saveMapAndOffsets 把映射表写入 Redis，并刷新每类最大编号到 offset key。
-func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, sessionID string, sm SanitizeMap, usedCount map[string]int, tenantIDs ...string) error {
+// commitSanitizeMapScript checks lease ownership and writes the map and
+// offsets together. Expired workers cannot overwrite another worker's map.
+var commitSanitizeMapScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return redis.error_reply('sanitize offsets lease lost')
+end
+local function hash_or_absent(key)
+  local kind = redis.call('TYPE', key).ok
+  return kind == 'none' or kind == 'hash'
+end
+if not hash_or_absent(KEYS[2]) or not hash_or_absent(KEYS[3]) then
+  return redis.error_reply('sanitize map or offsets wrong type')
+end
+local legacy = ARGV[5] == '1'
+if legacy and (not hash_or_absent(KEYS[4]) or not hash_or_absent(KEYS[5])) then
+  return redis.error_reply('legacy sanitize map or offsets wrong type')
+end
+local map_count = tonumber(ARGV[3])
+local offset_count = tonumber(ARGV[4])
+local pos = 7
+for i = 1, map_count do
+  local current = redis.call('HGET', KEYS[2], ARGV[pos])
+  if current and current ~= ARGV[pos + 1] then
+    return redis.error_reply('sanitize placeholder value conflict')
+  end
+  local old = legacy and redis.call('HGET', KEYS[4], ARGV[pos])
+  if old and old ~= ARGV[pos + 1] then
+    return redis.error_reply('legacy sanitize placeholder value conflict')
+  end
+  pos = pos + 2
+end
+pos = 7
+for i = 1, map_count do
+  redis.call('HSET', KEYS[2], ARGV[pos], ARGV[pos + 1])
+  if legacy then redis.call('HSET', KEYS[4], ARGV[pos], ARGV[pos + 1]) end
+  pos = pos + 2
+end
+for i = 1, offset_count do
+  local current = tonumber(redis.call('HGET', KEYS[3], ARGV[pos])) or 0
+  local next_value = math.max(current, tonumber(ARGV[pos + 1]))
+  redis.call('HSET', KEYS[3], ARGV[pos], next_value)
+  if legacy then
+    local old = tonumber(redis.call('HGET', KEYS[5], ARGV[pos])) or 0
+    redis.call('HSET', KEYS[5], ARGV[pos], math.max(old, next_value))
+  end
+  pos = pos + 2
+end
+local ttl_ms = tonumber(ARGV[2])
+redis.call('SET', KEYS[6], ARGV[6], 'PX', ttl_ms)
+redis.call('PEXPIRE', KEYS[2], ttl_ms)
+if offset_count > 0 then redis.call('PEXPIRE', KEYS[3], ttl_ms) end
+if legacy then
+  redis.call('PEXPIRE', KEYS[4], ttl_ms)
+  if offset_count > 0 then redis.call('PEXPIRE', KEYS[5], ttl_ms) end
+end
+return 1
+`)
+
+// saveMapAndOffsets writes placeholder values and each type's high-water mark.
+func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, lease sanitizeOffsetLease, sessionID string, sm SanitizeMap, usedCount map[string]int, generation string, tenantIDs ...string) error {
 	tenantID := firstSanitizeTenant(tenantIDs)
+	if lease.key == "" || lease.token == "" {
+		return errors.New("sanitize offsets lease required")
+	}
 	mapKey := sanitizeMapKey(tenantID, sessionID)
-
-	// 写占位符→原始值
-	if len(sm) > 0 {
-		fields := make(map[string]any, len(sm))
-		for ph, val := range sm {
-			fields[ph] = val
-		}
-		if err := m.redis.HSet(ctx, mapKey, fields).Err(); err != nil {
-			return err
-		}
-		// 706 双写 DB（best-effort：失败仅告警，不影响 Redis 主链路；
-		// 恢复语义不变——DB 行供审计回溯，不参与还原热路径）。
-		if m.censorSink != nil {
-			entries := make([]CensorEntry, 0, len(sm))
-			for ph, val := range sm {
-				e := CensorEntry{Placeholder: ph, Original: val}
-				if p, ok := ParsePlaceholder(ph); ok {
-					e.SensitiveType = string(p.Type)
-				}
-				entries = append(entries, e)
-			}
-			m.censorSink.SaveCensorMappings(ctx, tenantID, sessionID, entries)
-		}
-		if tenantID == "_unknown" {
-			if err := m.redis.HSet(ctx, SanitizeRedisKey(sessionID), fields).Err(); err != nil {
-				return err
-			}
-		}
+	ttlMS := m.ttl.Milliseconds()
+	if ttlMS < 1 {
+		ttlMS = 1
 	}
-
-	// 刷新每类最大编号到 offset key（仅写入用过的类型，未用类型保留）
-	if len(usedCount) > 0 {
-		offsetFields := make(map[string]any, len(usedCount))
-		for tStr, idx := range usedCount {
-			offsetFields[tStr] = idx
-		}
-		offsetKey := sanitizeOffsetKey(tenantID, sessionID)
-		if err := m.redis.HSet(ctx, offsetKey, offsetFields).Err(); err != nil {
-			return err
-		}
-		_ = m.redis.Expire(ctx, offsetKey, m.ttl).Err()
-		if tenantID == "_unknown" {
-			legacyOffsetKey := SanitizeOffsetRedisKey(sessionID)
-			if err := m.redis.HSet(ctx, legacyOffsetKey, offsetFields).Err(); err != nil {
-				return err
-			}
-			_ = m.redis.Expire(ctx, legacyOffsetKey, m.ttl).Err()
-		}
+	legacyFlag := "0"
+	if tenantID == "_unknown" {
+		legacyFlag = "1"
 	}
-
-	// 刷新主 hash 的 TTL
-	if err := m.redis.Expire(ctx, mapKey, m.ttl).Err(); err != nil {
+	args := make([]any, 0, 5+2*len(sm)+2*len(usedCount))
+	args = append(args, lease.token, ttlMS, len(sm), len(usedCount), legacyFlag, generation)
+	for ph, val := range sm {
+		args = append(args, ph, val)
+	}
+	for kind, idx := range usedCount {
+		args = append(args, kind, idx)
+	}
+	keys := []string{lease.key, mapKey, sanitizeOffsetKey(tenantID, sessionID), SanitizeRedisKey(sessionID), SanitizeOffsetRedisKey(sessionID), sanitizeGenerationKey(tenantID, sessionID)}
+	if err := commitSanitizeMapScript.Run(ctx, m.redis, keys, args...).Err(); err != nil {
 		return err
 	}
-	if tenantID == "_unknown" {
-		return m.redis.Expire(ctx, SanitizeRedisKey(sessionID), m.ttl).Err()
+	// DB double-write is audit-only and remains best effort after Redis commit.
+	if m.censorSink != nil && len(sm) > 0 {
+		entries := make([]CensorEntry, 0, len(sm))
+		for ph, val := range sm {
+			e := CensorEntry{Placeholder: ph, Original: val}
+			if p, ok := ParsePlaceholder(ph); ok {
+				e.SensitiveType = string(p.Type)
+			}
+			entries = append(entries, e)
+		}
+		m.censorSink.SaveCensorMappings(ctx, tenantID, sessionID, entries)
 	}
 	return nil
 }
 
-// SanitizeRestoreInterceptor 实现 response.ResponseInterceptor。
-// 在输出安全检查（OutputComplianceInterceptor）之后执行，
-// 从 Redis 读取会话级映射表，把占位符还原为真实敏感值。
-//
-// 顺序契约：本拦截器必须在 OutputComplianceInterceptor 之后注册，
-// 确保安全检查先看到占位符，还原后再把真实值返回给用户。
+// SanitizeRestoreInterceptor restores trusted input placeholders after the
+// mandatory sensitive-output gate and before owner-aware output compliance.
+// Reserved markers outside supported visible fields fail closed.
 //
 // 流式响应（2026-08-07 P2 修复）：
 //
@@ -518,16 +658,31 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, session
 //	interceptingStreamWriter 接入点），还原后用户看到真实值。
 //
 //	单个 SSE 事件内部的多次 Write 会由 streaming.interceptingStreamWriter
-//	先组装完整后再调用本拦截器；但如果上游把一个 placeholder 拆到多个
-//	独立 SSE 事件，当前接口不会跨事件重组，相关文本会按事件原样透传。
-//
-//	降级：chain 为 nil / Redis 不可用 / chunk JSON 解析失败时均返回 nil，
-//	原样透传 chunk 到客户端。
+//	先组装完整后再调用本拦截器；跨完整事件的 placeholder 前缀由 request-local
+//	StreamMeta.State 按协议 delta lane 暂存，且有 lane/字节上限。
+//	Redis 映射缺失/读取失败时仍遮蔽未知完整 marker，但已知值无法恢复；
+//	无法解析的事件若有待续 marker 尾片则阻断，避免原样泄漏脱离前缀的片段。
 type SanitizeRestoreInterceptor struct {
 	sanitizer *Sanitizer
 	redis     *redis.Client
 	ttl       time.Duration
 	logger    *slog.Logger
+}
+
+const (
+	streamRestoreStateKey   = "sanitize_restore"
+	maxStreamRestoreLanes   = 64
+	maxPlaceholderTailBytes = 256
+)
+
+// streamRestoreState is owned by one response StreamMeta, never by the shared
+// interceptor. Carry is bounded both by lane count and by placeholder length.
+// Once lane capacity is exhausted, the rest of that stream is blocked so a
+// later delta cannot leak a suffix detached from its withheld prefix.
+type streamRestoreState struct {
+	mu      sync.Mutex
+	tails   map[string]string
+	blocked bool
 }
 
 // NewSanitizeRestoreInterceptor 创建还原拦截器。
@@ -554,17 +709,39 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 	if it == nil || it.sanitizer == nil || req == nil || len(req.ResponseBody) == 0 {
 		return nil, nil
 	}
-	if req.SessionID == "" {
+	localMap, _ := SanitizeMapFromContext(ctx)
+	if req.SessionID == "" && len(localMap) == 0 {
+		// Without a session we cannot load the mapping table, so nothing in
+		// this body can be restored. A reserved marker must still not reach
+		// the client (the stream wing blocks for the same reason); mask it
+		// rather than pass the internal token through.
+		if hasReservedPlaceholder(req.ResponseBody) {
+			it.logger.WarnContext(ctx, "sanitize_restore: no session id, masking placeholders")
+			return it.maskUnrecognizedBody(ctx, req, SanitizeMap{})
+		}
 		return nil, nil
 	}
 
 	sm, err := it.loadMap(ctx, req.SessionID, req.TenantID)
 	if err != nil {
-		it.logger.Warn("sanitize_restore: load map failed, skip restore",
+		it.logger.Warn("sanitize_restore: load map failed, mask placeholders",
 			"error", err, "session_id", req.SessionID)
-		return nil, nil
+		// Fail closed for gateway placeholders even when the map is unavailable:
+		// known values cannot be restored, but raw internal tokens must not leak.
+		//
+		// Native shapes (Messages / Responses) block outright: their restorers
+		// rebuild structured tool arguments and content blocks, and masking
+		// with an empty map would corrupt those payloads (native_restore_test
+		// contract). Legacy chat choices keep the mask-and-pass behavior
+		// (smart_sani_guard_test contract).
+		if root := mustDecodeJSONMap(req.ResponseBody); root != nil &&
+			(isNativeMessagesShape(root) || isNativeResponsesShape(root)) &&
+			bytes.Contains(req.ResponseBody, []byte("{SENSITIVE:")) {
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+		sm = SanitizeMap{}
 	}
-	if len(sm) == 0 {
+	if len(sm) == 0 && !hasReservedPlaceholder(req.ResponseBody) {
 		return nil, nil
 	}
 
@@ -583,9 +760,89 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 		metrics.SanitizePlaceholderTamperingTotal.WithLabelValues("llm_generated").Add(float64(len(invalidPlaceholders)))
 	}
 
+	// Native shapes first: Anthropic Messages (type=message) and OpenAI
+	// Responses (object=response) carry content blocks / tool arguments the
+	// legacy choices-only restorer cannot walk. restoreNative* mutates the
+	// decoded map in place and reports (changed, recognized, error); an
+	// unrecognized body falls through to the legacy choices restorer.
+	//
+	// Recognized bodies with a residual marker anywhere (vendor fields,
+	// media data, escaped tokens) block: the restorers only touch known
+	// visible lanes, so what is left over is a marker we cannot restore
+	// and must not emit (chat_restore_test contract).
+	nativeRoot := mustDecodeJSONMap(req.ResponseBody)
+	if nativeRoot != nil {
+		// Run both restorers for effect: messages first, then responses
+		// (a body matches at most one shape; the other reports
+		// recognized=false without touching the tree). Restorers mutate
+		// nativeRoot in place.
+		mChanged, mOK, mErr := it.restoreNativeMessagesBody(ctx, nativeRoot, sm)
+		rChanged, rOK, rErr := it.restoreNativeResponsesBody(ctx, nativeRoot, sm)
+		if (mOK && mErr != nil) || (rOK && rErr != nil) {
+			it.logger.WarnContext(ctx, "sanitize_restore: native restore blocked",
+				"messages_err", mErr, "responses_err", rErr, "session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+		if (mOK && mChanged) || (rOK && rChanged) {
+			if out, merr := json.Marshal(nativeRoot); merr == nil && !bytes.Contains(out, []byte("{SENSITIVE:")) {
+				return &response.InterceptResult{ModifiedBody: out, Action: "sanitize_restore",
+					Metadata: map[string]any{"sanitize_restored": true, "placeholder_count": len(sm)}}, nil
+			}
+		}
+	}
+
+	// Marshal-path marker guard: any body that still carries a reserved
+	// marker after the restore pass must never leave the interceptor
+	// unchecked. Native shapes (Messages / Responses) block outright — their
+	// restorers only touch known visible lanes, so a leftover marker means a
+	// vendor field / media object / escaped token we cannot safely rewrite
+	// (chat_restore_test contract). Legacy chat choices are rewritten too,
+	// so the same residual check applies with the escaped-variant probe;
+	// genuinely malformed JSON with a raw marker also blocks.
+	//
+	// A body that is valid JSON but matches NONE of the three known envelopes
+	// (vendor-specific error envelopes, Gemini `candidates`, bare `output_text`)
+	// used to fall through every guard and reach `return nil, nil` with the
+	// internal marker intact. Blocking outright would turn a routine upstream
+	// error envelope into a gateway 502, so mask instead: known placeholders
+	// are restored, unknown ones become [REDACTED], and the client still gets
+	// a well-formed response.
+	if hasReservedPlaceholder(req.ResponseBody) {
+		if nativeRoot == nil {
+			// Truncated / malformed JSON body containing a marker.
+			it.logger.WarnContext(ctx, "sanitize_restore: malformed body carries reserved marker",
+				"session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+		if isNativeMessagesShape(nativeRoot) || isNativeResponsesShape(nativeRoot) {
+			it.logger.WarnContext(ctx, "sanitize_restore: residual marker in recognized native body",
+				"session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
+		if !isChatChoicesShape(nativeRoot) {
+			return it.maskUnrecognizedBody(ctx, req, sm)
+		}
+	}
+
 	restored, err := it.restoreResponseBody(ctx, req.ResponseBody, sm)
 	if err != nil || restored == nil {
+		// No visible lane changed: either not a chat body at all (passthrough)
+		// or a recognized chat body whose marker sits outside the visible
+		// lanes (vendor field, media object). The latter must never leak.
+		if nativeRoot != nil && isChatChoicesShape(nativeRoot) && hasReservedPlaceholder(req.ResponseBody) {
+			it.logger.WarnContext(ctx, "sanitize_restore: residual marker in chat body outside visible lanes",
+				"session_id", req.SessionID)
+			return &response.InterceptResult{ShouldBlock: true}, nil
+		}
 		return nil, nil
+	}
+	if hasReservedPlaceholder(restored) {
+		// The choices restorer changed something yet a marker survived
+		// (unmapped placeholder forged as raw token, vendor field beside
+		// choices). Fail closed instead of emitting a half-restored body.
+		it.logger.WarnContext(ctx, "sanitize_restore: residual marker in chat body after restore",
+			"session_id", req.SessionID)
+		return &response.InterceptResult{ShouldBlock: true}, nil
 	}
 
 	return &response.InterceptResult{
@@ -604,39 +861,164 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 // chain 调用方（InterceptorChain.InterceptStreamChunk）会用 ModifiedChunk
 // 替换原 chunk 写入客户端。
 //
-// 降级：chain 为 nil / Redis 不可用 / 不含 sessionID / 无 placeholder 时
-// 返回 nil，原样透传。
+// 映射为空或 Redis 读取失败时仍检查/遮蔽 placeholder；已知值因无映射不能恢复。
+// 不含待续 marker 且无可处理 delta 的 chunk 返回 nil，交由 chain 原样透传。
 func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, chunk []byte, meta *response.StreamMeta) (*response.ChunkResult, error) {
 	if it == nil || it.sanitizer == nil || len(chunk) == 0 {
 		return nil, nil
 	}
-	if meta == nil || meta.SessionID == "" {
+	localMap, _ := SanitizeMapFromContext(ctx)
+	if meta == nil || (meta.SessionID == "" && len(localMap) == 0) {
+		// A reserved gateway marker must never reach the client regardless of
+		// session bookkeeping; an ordinary frame without a session is opaque
+		// data and keeps its original framing (sse_restore.go probe rules).
+		if meta == nil && hasReservedPlaceholder(chunk) {
+			return &response.ChunkResult{ShouldBlock: true}, nil
+		}
+		if meta != nil && meta.SessionID == "" && hasReservedPlaceholder(chunk) {
+			return &response.ChunkResult{ShouldBlock: true}, nil
+		}
 		return nil, nil
 	}
 
 	sm, err := it.loadMap(ctx, meta.SessionID, meta.TenantID)
 	if err != nil {
-		it.logger.Warn("sanitize_restore: stream chunk load map failed, passthrough",
+		it.logger.Warn("sanitize_restore: stream chunk load map failed, masking placeholders",
 			"error", err, "session_id", meta.SessionID)
+		sm = SanitizeMap{}
+	}
+	if meta.State == nil {
+		// Production writers initialize State before passing chunks. This
+		// fallback keeps direct interceptor use safe; callers that invoke chunks
+		// concurrently must provide a shared StreamState explicitly.
+		meta.State = response.NewStreamState()
+	}
+	state, _ := meta.State.GetOrCreate(streamRestoreStateKey, func() any {
+		return &streamRestoreState{tails: make(map[string]string)}
+	}).(*streamRestoreState)
+	if state == nil {
 		return nil, nil
 	}
-	if len(sm) == 0 {
-		return nil, nil
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.blocked {
+		return &response.ChunkResult{ShouldBlock: true}, nil
 	}
 
-	modified, changed, err := it.restoreStreamChunk(ctx, chunk, sm)
-	if err != nil || !changed {
-		// 解析失败 / 无 placeholder → 原样透传（不要因为格式问题阻断流式）
+	var wire []byte
+	changedAny := false
+	for _, event := range splitSSEEvents(chunk) {
+		modified, changed, block := it.restoreSSEEvent(ctx, event, sm, state)
+		if block {
+			state.blocked = true
+			return &response.ChunkResult{ShouldBlock: true}, nil
+		}
+		if changed {
+			wire = append(wire, modified...)
+		} else {
+			// Unchanged events keep their original framing bytes verbatim
+			// (heartbeat comments, opaque payloads, [DONE] markers) so a
+			// mixed chunk is byte-identical outside the rewritten events.
+			wire = append(wire, event...)
+		}
+		changedAny = changedAny || changed
+	}
+	if !changedAny {
 		return nil, nil
 	}
-
 	return &response.ChunkResult{
-		ModifiedChunk: modified,
+		ModifiedChunk: wire,
 	}, nil
 }
 
+// maskUnrecognizedBody is the last-resort fail-closed path: the body is valid
+// JSON but matches none of the envelopes the structured restorers understand
+// (or no mapping table is available at all), so no lane-based restorer will
+// ever touch the bytes carrying a marker. Restore decoded string leaves,
+// redact the rest, re-encode valid JSON, and hand the body back — a leaked internal token and
+// a 502 on a routine upstream error envelope are both worse than a redacted
+// field.
+func (it *SanitizeRestoreInterceptor) maskUnrecognizedBody(ctx context.Context, req *response.InterceptRequest, sm SanitizeMap) (*response.InterceptResult, error) {
+	if req == nil || len(req.ResponseBody) == 0 {
+		return nil, nil
+	}
+	if len(sm) == 0 {
+		sm = SanitizeMap{}
+	}
+	root := mustDecodeJSONMap(req.ResponseBody)
+	if root == nil {
+		return &response.InterceptResult{ShouldBlock: true}, nil
+	}
+	restored, changed, err := restoreNativeNestedValue(ctx, it.sanitizer, root, sm, 0)
+	if err != nil {
+		it.logger.WarnContext(ctx, "sanitize_restore: mask unrecognized body failed, blocking",
+			"session_id", req.SessionID, "error", err)
+		return &response.InterceptResult{ShouldBlock: true}, nil
+	}
+	masked, marshalErr := json.Marshal(restored)
+	if marshalErr != nil || !changed || hasReservedPlaceholder(masked) {
+		it.logger.WarnContext(ctx, "sanitize_restore: unrecognized body still carries marker after mask, blocking",
+			"session_id", req.SessionID)
+		return &response.InterceptResult{ShouldBlock: true}, nil
+	}
+	it.logger.WarnContext(ctx, "sanitize_restore: unrecognized envelope, masked placeholders",
+		"session_id", req.SessionID, "placeholder_count", len(sm))
+	return &response.InterceptResult{
+		ModifiedBody: masked,
+		Action:       "sanitize_restore_masked",
+		Metadata: map[string]any{
+			"sanitize_restored": true,
+			"placeholder_count": len(sm),
+			"masked":            true,
+		},
+	}, nil
+}
+
+// mustDecodeJSONMap decodes body, tolerating malformed JSON (returns nil,
+// which callers treat as unrecognized). Numbers decode as json.Number so
+// token counts beyond 2^53 round-trip exactly through restore + re-marshal.
+func mustDecodeJSONMap(body []byte) map[string]any {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var raw map[string]any
+	if err := decoder.Decode(&raw); err != nil {
+		return nil
+	}
+	return raw
+}
+
+func isNativeMessagesShape(root map[string]any) bool {
+	if root == nil {
+		return false
+	}
+	typ, _ := root["type"].(string)
+	return typ == "message"
+}
+
+// isChatChoicesShape 判定 legacy OpenAI chat completions 形态
+// （顶层含 choices 数组）。
+func isChatChoicesShape(root map[string]any) bool {
+	if root == nil {
+		return false
+	}
+	_, ok := root["choices"].([]any)
+	return ok
+}
+
+func isNativeResponsesShape(root map[string]any) bool {
+	if root == nil {
+		return false
+	}
+	object, _ := root["object"].(string)
+	return object == "response"
+}
+
 // InterceptStreamEnd 流结束时 body 已重组为非流式形态，复用非流式还原。
-// 注：流式响应字节已在流中发送给客户端，还原只影响持久化/观测。
+//
+// 顺序契约决定了这里只能「试还原」，不能把结果写回：流式字节早已下发，
+// 而 OutputCompliance 必须先看到占位符。因此本次调用不改变任何输出，只用
+// 于观测——restored 非 nil 表示该响应体存在可还原的可见 lane。
+// 注意 meta.ResponseBody 仍保持占位符原文。
 func (it *SanitizeRestoreInterceptor) InterceptStreamEnd(ctx context.Context, meta *response.StreamMeta) (*response.EndResult, error) {
 	if it == nil || it.sanitizer == nil || meta == nil || len(meta.ResponseBody) == 0 || meta.SessionID == "" {
 		return nil, nil
@@ -667,16 +1049,16 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamEnd(ctx context.Context, me
 //
 // 协议适配（2026-08-07）：
 //   - OpenAI chat completion delta：choices[].delta.content
-//   - OpenAI Responses API delta：response.output_text.delta / content_part.delta
+//   - OpenAI Responses API text/tool/refusal/transcript delta events
 //   - Anthropic Messages delta：content_block_delta.delta.text
 //
 // 解析失败 / 不识别 schema → 返回 (nil, false, nil)，由 caller 原样透传。
 // 成功但无 placeholder → 返回 (nil, false, nil)，同样原样透传（避免无谓的
 // JSON 重序列化引入额外 marshal/unmarshal 噪声）。
 //
-// 跨 chunk 占位符：RestoreOutputOrMask 是纯字符串替换，未匹配部分由下一个
-// chunk 继续处理，因此 chunk-by-chunk 处理是安全的。
-func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, chunk []byte, sm SanitizeMap) ([]byte, bool, error) {
+// 跨 SSE 事件的占位符尾片保存在本请求 StreamMeta.State 中；未完成尾片
+// 不会透传，连接结束时随 stream writer 生命周期释放。
+func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, chunk []byte, sm SanitizeMap, meta *response.StreamMeta, state *streamRestoreState) ([]byte, bool, bool, error) {
 	// 1. 按行扫描。SSE 帧结构：注释行（:...）/ event: 行 / data: 行 + 末尾 \n\n。
 	//    LLM 流式 chunk 实际只发一条 data 行；遇到多 data 行时退化为「拼接所有
 	//    data 内容」，但 framing（event:/注释/末尾 \n\n）单独保留。
@@ -723,7 +1105,7 @@ func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, ch
 		rest = rest[lineEnd+1:]
 	}
 	if len(jsonPayload) == 0 {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	// 此时 rest 是「data: 行换行符之后剩余的内容」。SSE 帧分隔符
 	// （\n\n 或 \n<空行>\n）就在这里。直接保留为尾缀，无需进一步解析。
@@ -732,22 +1114,44 @@ func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, ch
 	// 2. JSON 反序列化为通用结构。失败 → 透传（不要因为单 chunk 格式问题
 	//    阻断整条流；典型场景：chunk 携带的是控制字段而非 content 增量）。
 	var raw map[string]any
-	if err := json.Unmarshal(jsonPayload, &raw); err != nil {
-		return nil, false, nil
+	decoder := json.NewDecoder(bytes.NewReader(jsonPayload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
+		if len(state.tails) > 0 {
+			// We withheld a placeholder prefix from a previous event. An opaque
+			// data payload cannot be assigned to a protocol lane, so passing it
+			// through could expose the detached remainder of that marker.
+			return nil, false, true, nil
+		}
+		return nil, false, false, nil
 	}
 
 	// 3. 在三种 delta schema 中做占位符替换
 	changed := false
-	changed = it.restoreStreamOpenAIDelta(ctx, raw, sm) || changed
-	changed = it.restoreStreamAnthropicDelta(ctx, raw, sm) || changed
-	changed = it.restoreStreamResponsesDelta(ctx, raw, sm) || changed
+	blocked := false
+	var fieldChanged bool
+	fieldChanged, blocked = it.restoreStreamOpenAIDelta(ctx, raw, sm, state)
+	changed = fieldChanged || changed
+	if blocked {
+		return nil, false, true, nil
+	}
+	fieldChanged, blocked = it.restoreStreamAnthropicDelta(ctx, raw, sm, state)
+	changed = fieldChanged || changed
+	if blocked {
+		return nil, false, true, nil
+	}
+	fieldChanged, blocked = it.restoreStreamResponsesDelta(ctx, raw, sm, state)
+	changed = fieldChanged || changed
+	if blocked {
+		return nil, false, true, nil
+	}
 	if !changed {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 
 	out, err := json.Marshal(raw)
 	if err != nil {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 
 	// 4. 重组 framing：注释行 + event: 行 + data: + 重新序列化的 JSON + 尾缀
@@ -758,57 +1162,302 @@ func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, ch
 	if len(trailing) > 0 {
 		buf.Write(trailing)
 	}
-	return buf.Bytes(), true, nil
+	return buf.Bytes(), true, false, nil
 }
 
 // restoreStreamOpenAIDelta 处理 OpenAI chat completion delta schema
-// (choices[].delta.content)。返回是否替换了占位符。
-func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
+// (choices[].delta.content + choices[].delta.tool_calls[*].function.arguments)。
+// 返回是否替换了占位符。
+func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Context, raw map[string]any, sm SanitizeMap, state *streamRestoreState) (bool, bool) {
 	choices, ok := raw["choices"].([]any)
 	if !ok {
-		return false
+		return false, false
 	}
 	changed := false
-	for _, cAny := range choices {
+	for choiceIndex, cAny := range choices {
 		c, ok := cAny.(map[string]any)
 		if !ok {
 			continue
+		}
+		choiceLane := streamLaneValue(c, "index", choiceIndex)
+		if didChange, blocked := it.restoreStreamStringField(ctx, c, "text", sm, state, "openai.choice."+choiceLane+".text"); blocked {
+			return changed, true
+		} else if didChange {
+			changed = true
 		}
 		delta, ok := c["delta"].(map[string]any)
 		if !ok {
 			continue
 		}
-		if !restoreStringField(ctx, it.sanitizer, delta, "content", sm) {
-			continue
+		if didChange, blocked := it.restoreStreamStringField(ctx, delta, "content", sm, state, "openai.choice."+choiceLane+".content"); blocked {
+			return changed, true
+		} else if didChange {
+			changed = true
 		}
-		changed = true
+		if didChange, blocked := it.restoreStreamStringField(ctx, delta, "refusal", sm, state, "openai.choice."+choiceLane+".refusal"); blocked {
+			return changed, true
+		} else if didChange {
+			changed = true
+		}
+		if didChange, blocked := it.restoreStreamStringField(ctx, delta, "reasoning_content", sm, state, "openai.choice."+choiceLane+".reasoning_content"); blocked {
+			return changed, true
+		} else if didChange {
+			changed = true
+		}
+		if audio, ok := delta["audio"].(map[string]any); ok {
+			if didChange, blocked := it.restoreStreamStringField(ctx, audio, "transcript", sm, state, "openai.choice."+choiceLane+".audio.transcript"); blocked {
+				return changed, true
+			} else if didChange {
+				changed = true
+			}
+		}
+		if functionCall, ok := delta["function_call"].(map[string]any); ok {
+			if didChange, blocked := it.restoreStreamStringField(ctx, functionCall, "arguments", sm, state, "openai.choice."+choiceLane+".function_call.arguments"); blocked {
+				return changed, true
+			} else if didChange {
+				changed = true
+			}
+		}
+		// 流式 tool_calls.arguments：上游按 token 增量下发
+		// {"tool_calls":[{"index":0,"function":{"arguments":"..."}}]}
+		// 同一 SSE frame 里只有一个工具的一段 arguments 增量；做占位符替换。
+		toolCalls, _ := delta["tool_calls"].([]any)
+		for toolPos, toolAny := range toolCalls {
+			tool, ok := toolAny.(map[string]any)
+			if !ok {
+				continue
+			}
+			fn, ok := tool["function"].(map[string]any)
+			if !ok {
+				continue
+			}
+			lane := "openai.choice." + choiceLane + ".tool." + streamLaneValue(tool, "index", toolPos) + ".arguments"
+			if didChange, blocked := it.restoreStreamStringField(ctx, fn, "arguments", sm, state, lane); blocked {
+				return changed, true
+			} else if didChange {
+				changed = true
+			}
+		}
 	}
-	return changed
+	return changed, false
 }
 
 // restoreStreamAnthropicDelta 处理 Anthropic Messages delta schema
-// (type="content_block_delta" + delta.text)。返回是否替换了占位符。
-func (it *SanitizeRestoreInterceptor) restoreStreamAnthropicDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
+// (type="content_block_delta" + delta.text / delta.input)。返回是否替换了占位符。
+func (it *SanitizeRestoreInterceptor) restoreStreamAnthropicDelta(ctx context.Context, raw map[string]any, sm SanitizeMap, state *streamRestoreState) (bool, bool) {
 	// Anthropic 在 SSE 流中既发送 type="content_block_start" 等控制事件，
-	// 也发送 type="content_block_delta" 携带 delta.text 文本增量。
-	// 只处理 content_block_delta，避免误改控制字段。
-	if t, _ := raw["type"].(string); t != "content_block_delta" {
-		return false
+	// 也发送 type="content_block_delta" 携带 delta.text 文本增量，
+	// 以及 type=input_json_delta 携带 tool_use.input 的 JSON 片段。
+	// 统一在 content_block_delta 上处理：text 走普通替换，
+	// partial_json 走 JSON 字符串占位符替换（增量通常为 { 或 key 部分）。
+	t, _ := raw["type"].(string)
+	if t != "content_block_delta" {
+		return false, false
 	}
 	delta, ok := raw["delta"].(map[string]any)
 	if !ok {
-		return false
+		return false, false
 	}
-	return restoreStringField(ctx, it.sanitizer, delta, "text", sm)
+	index := streamLaneValue(raw, "index", 0)
+	changed := false
+	if didChange, blocked := it.restoreStreamStringField(ctx, delta, "text", sm, state, "anthropic."+index+".text"); blocked {
+		return changed, true
+	} else if didChange {
+		changed = true
+	}
+	// Anthropic tool_use.input 是 partial JSON：先把增量累计成一个 JSON 字符串
+	// 做占位符替换（占位符必须整段出现才会被识别，所以一般 incremental
+	// 输出含 partial 字段名/数字的场景不会误命中；只要完整 JSON 落地时
+	// 落在一次 Write 里就能命中）。
+	if didChange, blocked := it.restoreStreamStringField(ctx, delta, "input", sm, state, "anthropic."+index+".input"); blocked {
+		return changed, true
+	} else if didChange {
+		// delta.input 可能是 string（Anthropic 增量）或 map（旧版）；
+		// restoreStringField 只处理 string 路径。
+		changed = true
+	}
+	if didChange, blocked := it.restoreStreamStringField(ctx, delta, "partial_json", sm, state, "anthropic."+index+".partial_json"); blocked {
+		return changed, true
+	} else if didChange {
+		changed = true
+	}
+	return changed, false
 }
 
 // restoreStreamResponsesDelta 处理 OpenAI Responses API delta schema
 // (type="response.output_text.delta" + delta)。返回是否替换了占位符。
-func (it *SanitizeRestoreInterceptor) restoreStreamResponsesDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
-	if t, _ := raw["type"].(string); t != "response.output_text.delta" {
+func (it *SanitizeRestoreInterceptor) restoreStreamResponsesDelta(ctx context.Context, raw map[string]any, sm SanitizeMap, state *streamRestoreState) (bool, bool) {
+	t, _ := raw["type"].(string)
+	field := ""
+	switch t {
+	case "response.output_text.delta", "response.function_call_arguments.delta", "response.refusal.delta", "response.audio_transcript.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta", "response.custom_tool_call_input.delta":
+		field = "delta"
+	case "response.output_text.done", "response.reasoning_text.done", "response.reasoning_summary_text.done":
+		field = "text"
+	case "response.function_call_arguments.done":
+		field = "arguments"
+	case "response.custom_tool_call_input.done":
+		field = "input"
+	case "response.refusal.done":
+		field = "refusal"
+		if _, ok := raw[field]; !ok {
+			field = "text"
+		}
+	case "response.audio_transcript.done":
+		field = "transcript"
+		if _, ok := raw[field]; !ok {
+			field = "text"
+		}
+	default:
+		return false, false
+	}
+	lane := "responses." + t + "." + streamLaneValue(raw, "output_index", 0) + "." + streamLaneValue(raw, "content_index", 0) + "." + streamLaneValue(raw, "summary_index", 0) + "." + streamLaneID(raw, "item_id")
+	return it.restoreStreamStringField(ctx, raw, field, sm, state, lane)
+}
+
+func streamLaneValue(object map[string]any, key string, fallback int) string {
+	if number, ok := object[key].(json.Number); ok {
+		if value, err := number.Int64(); err == nil && value >= 0 && value <= 1<<31-1 {
+			return fmt.Sprint(value)
+		}
+	}
+	if value, ok := object[key].(float64); ok && value >= 0 && value <= 1<<31-1 && value == float64(int64(value)) {
+		return fmt.Sprint(int64(value))
+	}
+	return fmt.Sprint(fallback)
+}
+
+func streamLaneID(object map[string]any, key string) string {
+	if value, ok := object[key].(string); ok && value != "" {
+		// Opaque provider IDs are untrusted. Store a fixed-size key component,
+		// not the original value, in request-local carry state.
+		digest := sha256.Sum256([]byte(value))
+		return hex.EncodeToString(digest[:])
+	}
+	return ""
+}
+
+// restoreStreamStringField holds only a syntactically valid placeholder prefix
+// at the end of a delta. The held bytes are scoped to the response writer via
+// StreamMeta.State and are never emitted raw. If the next delta completes the
+// token, replacement/masking happens before any part reaches the client.
+func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Context, object map[string]any, field string, sm SanitizeMap, state *streamRestoreState, lane string) (bool, bool) {
+	value, ok := object[field].(string)
+	if !ok {
+		return false, false
+	}
+	previous := state.tails[lane]
+	combined := previous + value
+	delete(state.tails, lane)
+
+	safe := combined
+	tail := ""
+	start, partial := incompletePlaceholderStart(combined)
+	if partial {
+		candidate := combined[start:]
+		if len(candidate) > maxPlaceholderTailBytes {
+			safe = combined[:start] + "[REDACTED]"
+		} else {
+			safe = combined[:start]
+			tail = candidate
+		}
+	}
+
+	restoreMap := sm
+	if strings.HasSuffix(lane, ".arguments") || strings.HasSuffix(lane, ".partial_json") || (strings.HasPrefix(lane, "anthropic.") && strings.HasSuffix(lane, ".input")) || strings.Contains(lane, "response.function_call_arguments.") {
+		restoreMap = make(SanitizeMap)
+		for _, token := range PlaceholderPattern.FindAllString(safe, -1) {
+			if original, ok := sm[token]; ok {
+				encoded, err := json.Marshal(original)
+				if err != nil {
+					return false, true
+				}
+				restoreMap[token] = string(encoded[1 : len(encoded)-1])
+			}
+		}
+	}
+	restored, err := it.sanitizer.RestoreOutputOrMask(ctx, safe, restoreMap)
+	if err != nil {
+		return false, false
+	}
+	if previous != "" && tail == "" && restored == combined {
+		// The continuation made the buffered prefix syntactically invalid. A
+		// plain brace prefix is common in streamed JSON/code, so release it with
+		// the continuation to preserve the response. Once the reserved marker
+		// prefix has started, redact this delta instead of either exposing a
+		// malformed internal token or aborting the whole client stream.
+		if strings.HasPrefix(previous, "{SENSITIVE:") {
+			object[field] = "[REDACTED]"
+			return true, false
+		}
+		object[field] = combined
+		return true, false
+	}
+	if tail != "" {
+		if _, exists := state.tails[lane]; !exists && len(state.tails) >= maxStreamRestoreLanes {
+			// Do not let later chunks resume without the prefix they depend on.
+			return false, true
+		}
+		state.tails[lane] = tail
+	}
+	if previous == "" && tail == "" && restored == value {
+		return false, false
+	}
+	object[field] = restored
+	return true, false
+}
+
+// incompletePlaceholderStart finds a valid prefix of the placeholder grammar
+// at the end of text. Invalid brace text is ordinary model output and passes
+// through; a full placeholder is handled by RestoreOutputOrMask.
+func incompletePlaceholderStart(text string) (int, bool) {
+	start := strings.LastIndexByte(text, '{')
+	if start < 0 {
+		return 0, false
+	}
+	candidate := text[start:]
+	if !validPlaceholderPrefix(candidate) {
+		return 0, false
+	}
+	return start, true
+}
+
+func validPlaceholderPrefix(candidate string) bool {
+	const marker = "{SENSITIVE:"
+	if len(candidate) <= len(marker) {
+		return strings.HasPrefix(marker, candidate)
+	}
+	if !strings.HasPrefix(candidate, marker) || strings.Contains(candidate, "}") {
 		return false
 	}
-	return restoreStringField(ctx, it.sanitizer, raw, "delta", sm)
+	rest := candidate[len(marker):]
+	colon := strings.IndexByte(rest, ':')
+	if colon < 0 {
+		if rest == "" {
+			return true
+		}
+		for _, r := range rest {
+			if !(r >= 'a' && r <= 'z') && r != '_' {
+				return false
+			}
+		}
+		return true
+	}
+	if colon == 0 {
+		return false
+	}
+	for _, r := range rest[:colon] {
+		if !(r >= 'a' && r <= 'z') && r != '_' {
+			return false
+		}
+	}
+	index := rest[colon+1:]
+	for _, r := range index {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // restoreStringField 把 m[field]（必须为 string）做占位符替换后写回。
@@ -828,8 +1477,9 @@ func restoreStringField(ctx context.Context, s *Sanitizer, m map[string]any, fie
 
 // loadMap 从 Redis 读取会话级映射表。
 func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID string, tenantIDs ...string) (SanitizeMap, error) {
+	local, _ := SanitizeMapFromContext(ctx)
 	if it.redis == nil {
-		return nil, nil
+		return local, nil
 	}
 	tenant := firstSanitizeTenant(tenantIDs)
 	key := sanitizeMapKey(tenant, sessionID)
@@ -842,6 +1492,9 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 		if errors.Is(err, redissafe.ErrKeyNotFound) {
 			vals = nil
 		} else {
+			if len(local) > 0 {
+				return local, nil
+			}
 			return nil, err
 		}
 	}
@@ -857,10 +1510,21 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 		}
 	}
 	if len(vals) == 0 {
-		return nil, nil
+		return local, nil
+	}
+	if info, ok := compression.SanitizeInfoFromContext(ctx); ok && info.MapGeneration != "" {
+		generation, err := it.redis.Get(ctx, sanitizeGenerationKey(tenant, sessionID)).Result()
+		if err != nil || generation != info.MapGeneration {
+			// The map may expire/recreate while the upstream is generating.
+			// Never restore this response with a newer request's dictionary.
+			return local, nil
+		}
 	}
 	sm := make(SanitizeMap, len(vals))
 	for ph, val := range vals {
+		sm[ph] = val
+	}
+	for ph, val := range local {
 		sm[ph] = val
 	}
 	// 每次还原都刷新 TTL（用户继续会话）。刷新主 map 与 offset hash
@@ -870,6 +1534,7 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 		return nil, err
 	}
 	_ = it.redis.Expire(ctx, sanitizeOffsetKey(tenant, sessionID), it.ttl).Err()
+	_ = it.redis.Expire(ctx, sanitizeGenerationKey(tenant, sessionID), it.ttl).Err()
 	return sm, nil
 }
 
@@ -896,17 +1561,25 @@ func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, 
 	return invalidPlaceholders
 }
 
-// restoreResponseBody 还原 OpenAI 响应体 choices[].message.content 中的占位符。
+// restoreResponseBody 还原 OpenAI 响应体 choices[].message.content + tool_calls
+// 中的占位符，确保下游拿到真实敏感值。
 //
 // 还原策略（统一使用 RestoreOutputOrMask）：
 //   - role=assistant：还原为真实敏感值；映射表中没有的占位符用 [REDACTED] 替换
 //     防止上游注入的占位符文本泄漏
 //   - role=user/tool/function 等：还原 + mask（语义同 assistant，但生产路径上
 //     这些 role 的响应消息通常不含 placeholder）
+//   - message.tool_calls[*].function.arguments：JSON 字符串，按 key/value 遍历还原
+//     （网关在调用工具前必须拿到真实敏感值，否则下游工具拿到的就是占位符文本）
+//   - 顶层 tool_calls[*].function.arguments：同上（部分 schema 把 tool_calls
+//     直接挂在 choices 而非 message 上）
 func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, body []byte, sm SanitizeMap) ([]byte, error) {
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, err
+	// UseNumber, like the native branch: a plain Unmarshal would re-render any
+	// usage/token count above 2^53 in float form and silently rewrite the
+	// client's accounting numbers (native_restore contract).
+	raw := mustDecodeJSONMap(body)
+	if raw == nil {
+		return nil, errors.New("sanitize_restore: response body is not a JSON object")
 	}
 	choices, ok := raw["choices"].([]any)
 	if !ok {
@@ -918,23 +1591,33 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 		if !ok {
 			continue
 		}
-		msg, ok := c["message"].(map[string]any)
-		if !ok {
-			continue
+		// 1) message visible text lanes: content / refusal / reasoning_content
+		if msg, ok := c["message"].(map[string]any); ok {
+			for _, field := range []string{"content", "refusal", "reasoning_content"} {
+				if restoreLegacyTextField(ctx, it.sanitizer, msg, field, sm) {
+					changed = true
+				}
+			}
+			if audio, ok := msg["audio"].(map[string]any); ok && restoreLegacyTextField(ctx, it.sanitizer, audio, "transcript", sm) {
+				changed = true
+			}
+			// 2) message.function_call.arguments（旧版单函数调用形态）
+			if fn, ok := msg["function_call"].(map[string]any); ok {
+				if restoreLegacyFunctionArgs(ctx, it.sanitizer, fn, sm) {
+					changed = true
+				}
+			}
+			// 3) message.tool_calls[*].function.arguments
+			if restoreToolCallsArgs(ctx, it.sanitizer, msg, "tool_calls", sm) {
+				changed = true
+			}
 		}
-		content, ok := msg["content"].(string)
-		if !ok {
-			continue
+		// 4) completion 风格 choices[].text
+		if restoreLegacyTextField(ctx, it.sanitizer, c, "text", sm) {
+			changed = true
 		}
-
-		// 一律用 RestoreOutputOrMask：已知占位符还原 + 未知占位符 mask，
-		// 防止 {SENSITIVE:type:99} 这种 raw 文本泄漏到客户端。
-		restored, err := it.sanitizer.RestoreOutputOrMask(ctx, content, sm)
-		if err != nil {
-			continue
-		}
-		if restored != content {
-			msg["content"] = restored
+		// 5) 顶层 tool_calls[*].function.arguments（部分 schema 透传）
+		if restoreToolCallsArgs(ctx, it.sanitizer, c, "tool_calls", sm) {
 			changed = true
 		}
 	}
@@ -946,6 +1629,118 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 		return nil, err
 	}
 	return out, nil
+}
+
+// restoreLegacyTextField 对 obj[field]（字符串）做占位符还原；已映射的还原成
+// 原值，未映射的 mask 成 [REDACTED]。仅当字段被改动时返回 true。
+func restoreLegacyTextField(ctx context.Context, s *Sanitizer, obj map[string]any, field string, sm SanitizeMap) bool {
+	value, ok := obj[field].(string)
+	if !ok || !PlaceholderPattern.MatchString(value) {
+		return false
+	}
+	restored, err := s.RestoreOutputOrMask(ctx, value, sm)
+	if err != nil || restored == value {
+		return false
+	}
+	obj[field] = restored
+	return true
+}
+
+// restoreLegacyFunctionArgs 还原 function.arguments（JSON 字符串）里的占位符；
+// arguments 不是合法 JSON 对象时退化为普通字符串还原。
+func restoreLegacyFunctionArgs(ctx context.Context, s *Sanitizer, fn map[string]any, sm SanitizeMap) bool {
+	argsStr, ok := fn["arguments"].(string)
+	if !ok || !PlaceholderPattern.MatchString(argsStr) {
+		return false
+	}
+	decoder := json.NewDecoder(strings.NewReader(argsStr))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return false
+	}
+	if !json.Valid([]byte(argsStr)) {
+		return false
+	}
+	restored, changed, err := restoreNativeNestedValue(ctx, s, value, sm, 0)
+	if err != nil || !changed {
+		return false
+	}
+	body, err := json.Marshal(restored)
+	if err != nil {
+		return false
+	}
+	fn["arguments"] = string(body)
+	return true
+}
+
+// restoreToolCallsArgs 在 obj[key]（数组）中遍历每个 tool_call，
+// 对 function.arguments（JSON 字符串）按 key/value 还原占位符；
+// function.arguments 解析失败或不含占位符时整段保留原样。
+// 返回是否发生了修改。
+func restoreToolCallsArgs(ctx context.Context, s *Sanitizer, obj map[string]any, key string, sm SanitizeMap) bool {
+	arr, ok := obj[key].([]any)
+	if !ok || len(arr) == 0 {
+		return false
+	}
+	changed := false
+	for _, tcAny := range arr {
+		tc, ok := tcAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := tc["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if restoreLegacyFunctionArgs(ctx, s, fn, sm) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// restoreJSONRecursive 在 m 或 restoreJSONRecursive 在 m 的字符串字段里做占位符还原
+// （浅遍历一个 JSON 对象：值为字符串时还原；值为对象/数组时递归）。
+// 任何一字段被改动即返回 true。
+func restoreJSONRecursive(ctx context.Context, s *Sanitizer, m map[string]any, sm SanitizeMap) bool {
+	changed := false
+	for k, v := range m {
+		switch vv := v.(type) {
+		case string:
+			if !PlaceholderPattern.MatchString(vv) {
+				continue
+			}
+			restored, err := s.RestoreOutputOrMask(ctx, vv, sm)
+			if err == nil && restored != vv {
+				m[k] = restored
+				changed = true
+			}
+		case map[string]any:
+			if restoreJSONRecursive(ctx, s, vv, sm) {
+				changed = true
+			}
+		case []any:
+			for i, item := range vv {
+				switch it := item.(type) {
+				case string:
+					if !PlaceholderPattern.MatchString(it) {
+						continue
+					}
+					restored, err := s.RestoreOutputOrMask(ctx, it, sm)
+					if err == nil && restored != it {
+						vv[i] = restored
+						changed = true
+					}
+				case map[string]any:
+					if restoreJSONRecursive(ctx, s, it, sm) {
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	return changed
 }
 
 // HashTenant returns the stable 16-char tenant hash used in Redis key scopes.
@@ -1039,23 +1834,25 @@ func SanitizeMapFromContext(ctx context.Context) (SanitizeMap, bool) {
 
 type sanitizeMapCtxKey struct{}
 
-// readBody 读取请求体并把它恢复回 r.Body，使后续 handler 仍能完整读取。
-//
-// 2026-08-07 事故修复：此前只读取、不恢复，导致下游 chatHandler 读到空 body
-// 并以 json_parse_error 400 拒绝请求。恢复动作必须在读取后立即完成 —
-// 包含读取失败的情况（已消费的字节数不可退回，但把已读部分接回去比留一个
-// 耗尽的 Body 更接近原状，且下游会给出准确的 body_read_error）。
+// readBody reads at most the streaming handler's 128 MiB cap plus one byte.
+// It restores accepted bytes for the downstream handler. Read failures and
+// oversized bodies are rejected by the middleware, never dispatched.
 func readBody(r *http.Request) ([]byte, error) {
+	return readBodyLimit(r, maxSanitizeBodySize)
+}
+
+func readBodyLimit(r *http.Request, limit int) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return nil, nil
 	}
-	buf := new(bytes.Buffer)
-	_, err := buf.ReadFrom(r.Body)
-	b := buf.Bytes()
-	// 把已读字节接回 r.Body，避免下游拿到耗尽的 Body。
-	// 不调用 r.Body.Close()：Go server 端 *http.Request 的 Body.Close 是
-	// no-op（eofReader 链），关闭原 reader 不会归还连接；保持与 armor
-	// middleware.withReplayedBody 一致即可。
+	if r.ContentLength > int64(limit) {
+		return nil, errSanitizeBodyTooLarge
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
+	if len(b) > limit {
+		return nil, errSanitizeBodyTooLarge
+	}
+	// Keep the prior replay contract for successful reads and partial reads.
 	r.Body = io.NopCloser(bytes.NewReader(b))
 	if err != nil {
 		return nil, err

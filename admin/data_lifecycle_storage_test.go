@@ -10,6 +10,7 @@ package admin
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +102,7 @@ func TestQueryFilesystem(t *testing.T) {
 	if info.UsedPercent < 0 || info.UsedPercent > 100 {
 		t.Errorf("UsedPercent out of range: %d", info.UsedPercent)
 	}
-	if !strings.HasPrefix(info.Path, "/") {
+	if !filepath.IsAbs(info.Path) {
 		t.Errorf("Path should be absolute, got %q", info.Path)
 	}
 }
@@ -121,7 +122,7 @@ func TestQueryDirectory(t *testing.T) {
 	if !cwd.Exists {
 		t.Error("expected Exists=true for current dir")
 	}
-	if !strings.HasPrefix(cwd.Path, "/") {
+	if !filepath.IsAbs(cwd.Path) {
 		t.Errorf("Path should be absolute, got %q", cwd.Path)
 	}
 }

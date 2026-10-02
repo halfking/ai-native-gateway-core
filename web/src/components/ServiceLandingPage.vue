@@ -328,9 +328,13 @@ const pipeline = computed(() =>
   cursor: pointer;
 }
 .kx-landing__cta:hover { background: var(--landing-primary-hover); transform: translateY(-1px); }
+/* 2026-09-29 暗色修复：背景原为 var(--on-primary)，而 --on-primary → --kx-text-on-primary
+   → #ffffff 在明暗两套皮肤里都是同一个纯白（style.css L28 / L168），于是暗色下「下载安装包」
+   变成一块刺眼白底 + 深色文字的大色块。改用本组件已声明、随皮肤切换的 --landing-surface
+   （→ --surface-elevated：亮色 rgba(255,255,255,.88)，暗色 rgba(26,34,45,.92)）。 */
 .kx-landing__cta-secondary {
   color: var(--landing-text);
-  background: var(--on-primary);
+  background: var(--landing-surface);
   border: 1px solid var(--landing-border);
 }
 .kx-landing__cta-secondary:hover { transform: translateY(-1px); border-color: var(--info-bd); }
@@ -406,7 +410,7 @@ const pipeline = computed(() =>
 }
 .kx-landing__pipeline-step.is-active {
   border-color: var(--info-bd);
-  background: var(--on-primary);
+  background: var(--landing-surface);
 }
 .kx-landing__pipeline-step.is-active span {
   background: var(--landing-primary);
@@ -523,7 +527,7 @@ const pipeline = computed(() =>
   padding: 18px;
   border: 1px solid var(--landing-border);
   border-radius: 12px;
-  background: var(--on-primary);
+  background: var(--landing-surface);
   text-align: left;
 }
 .kx-landing__adv-index {

@@ -29,6 +29,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testdb"
 )
 
 // boundaryInstantUTC is 2027-04-01 02:00 Asia/Shanghai = 2027-03-31 18:00 UTC.
@@ -326,6 +328,26 @@ func filterColumnarDefs(t *testing.T, sql string) string {
 func partitionBehaviorContainer(t *testing.T, ctx context.Context) (*pgx.Conn, func()) {
 	t.Helper()
 	if dsn := os.Getenv("TEST_PG_URL"); dsn != "" {
+		// A dedicated scratch database, NOT the database TEST_PG_URL names.
+		//
+		// The five callers (694, 705, 706-708, 717, 759) each build a fixture
+		// out of `public.`-qualified DDL that is shaped like a PRE-migration
+		// database, and the migration files they then apply are production SQL
+		// which also says `public.` explicitly. A per-test SCHEMA cannot serve
+		// them: search_path only routes unqualified names, and the migration
+		// body is not test code. So the isolation unit has to be the whole
+		// database — which is what the testcontainer branch below always
+		// provided, and what the DSN branch silently stopped providing.
+		//
+		// Measured on the shared gate database (shape=installer, 435 relations),
+		// 2026-10-02, 6 of the package's failures were this:
+		//   705     CREATE TABLE public.request_logs      -> 42P07
+		//   706-708 CREATE TABLE public.session_turns_hot -> 42P07
+		//   717     CREATE TABLE public.request_logs_hot  -> 42P07
+		//   541x2   DROP TABLE public.credential_model_bindings -> 2BP01,
+		//            which on a populated database is destructive, not merely
+		//            redundant.
+		dsn = testdb.Create(t, dsn)
 		cfg, err := pgx.ParseConfig(dsn)
 		if err != nil {
 			t.Fatalf("parse TEST_PG_URL: %v", err)

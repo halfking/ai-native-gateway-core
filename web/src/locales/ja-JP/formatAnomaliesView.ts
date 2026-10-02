@@ -109,4 +109,57 @@ export default {
     markFailed: 'マーク失敗',
     needSuperAdmin: 'スーパー管理者権限が必要です',
   },
+
+  // 2026-09-21: 请求错误 tab（reqprobe）
+  tabs: {
+      format: 'レスポンス形式異常',
+      request: 'リクエストエラー',
+  },
+  requestTab: {
+      stats: {
+          unresolved: '未解決（ページ内）',
+          autoRecovered: '自動復旧',
+          total: '合計',
+      },
+      filter: {
+          day: '日付',
+          trigger: '種別',
+          triggerPlaceholder: '種別を選択…',
+      },
+      trigger: {
+          all: 'すべて',
+          param_rejected: 'パラメータ拒否',
+          mode_mismatch: 'モード不一致',
+          upstream_error: '上流エラー',
+      },
+      triggerDesc: {
+          param_rejected: '上流がリクエストパラメータ（例: reasoning_effort）を拒否、ゲートウェイが除去して再試行',
+          mode_mismatch: 'リクエストの API 形態（responses / chat）がプロバイダと不一致',
+          upstream_error: '分類できないリクエスト側 4xx、要トリアージ',
+      },
+      batch: {
+          selected: '{n} 件選択',
+          resolveSelected: '選択を解決',
+          resolveFiltered: '未解決を一括解決',
+      },
+      table: {
+          day: '日付',
+          trigger: '種別',
+          param: 'パラメータ / 提案',
+          status: 'ステータス',
+          occurrences: '回数',
+          recoveredCount: '自己修復 {n} 回',
+      },
+      detail: {
+          title: 'リクエストエラー詳細',
+          clientModel: 'クライアントモデル',
+          protocol: '送信プロトコル',
+          suggestMode: '推奨モード',
+          firstSeen: '初回検出',
+          lastSeen: '最終検出',
+          errorSample: '上流エラーサンプル',
+          occurrences: '発生統計',
+          recoveredHint: 'うち {n} 回はパラメータ除去 / モード切替で自動復旧',
+      },
+  },
 }

@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/installer/internal/instancemeta"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/launcher/api"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/launcher/backend"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/launcher/checker"
@@ -229,6 +231,76 @@ func deviceProofFromEnvironment() upgrader.DeviceProof {
 	}
 }
 
+// resolveInstallDir picks the directory to read {dir}/state/activation.json
+// from. Lookup order mirrors the wizard / installer (agent A/B) so that a
+// launcher started in the same process tree as a wizard run sees the file
+// it just wrote:
+//
+//  1. $INSTALL_DIR              — set by wizard & installer shell exports
+//  2. $LLM_GATEWAY_INSTALL_DIR  — alias for systemd / container envs
+//  3. parent of --data-dir       — launcher data dir defaults to
+//                                 {installDir}/state on that layout
+//  4. os.Getwd()                — fallback for dev / foreground launches
+//  5. /var/lib/kx-gateway       — last-resort production default
+//
+// We never error out: a missing installDir just means no activation.json
+// is visible, and the /status endpoint will simply omit the meta block
+// (omitempty hides zero-value fields).
+func resolveInstallDir(dataDir string) string {
+	if v := strings.TrimSpace(os.Getenv("INSTALL_DIR")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INSTALL_DIR")); v != "" {
+		return v
+	}
+	if dataDir != "" {
+		// Assume launcher data-dir sits at <install>/state — the layout
+		// documented for the blue-green runtime. If data-dir is somewhere
+		// unrelated (e.g. /var/lib/kx-launcher on a system service), the
+		// parent will be wrong but harmless: instancemeta.Load will just
+		// return ErrNotExist and we fall through to the rest of the meta.
+		return filepath.Dir(dataDir)
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		return wd
+	}
+	return "/var/lib/kx-gateway"
+}
+
+// loadInstanceMeta reads activation.json from the resolved install dir. It
+// is intentionally best-effort: any failure (missing file, broken JSON,
+// permission error) logs a Warn and returns a zero InstanceMeta so the
+// /status endpoint can keep serving the legacy 5-field payload.
+//
+// Called once per /status request — Load is cheap (single small JSON read)
+// and we don't want to cache an answer that might be stale by the time
+// the operator clicks "Apply" 30 seconds later.
+func loadInstanceMeta(installDir string) api.InstanceMeta {
+	if installDir == "" {
+		return api.InstanceMeta{}
+	}
+	m, err := instancemeta.Load(installDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("load activation.json failed; meta block will be empty",
+				"dir", installDir, "err", err)
+		}
+		return api.InstanceMeta{}
+	}
+	if m.IsZero() {
+		return api.InstanceMeta{}
+	}
+	return api.InstanceMeta{
+		InstallMode:      m.InstallMode,
+		InstanceID:       m.InstanceID,
+		DeviceCode:       m.DeviceCode,
+		IPAddress:        m.IPAddress,
+		ActivationStatus: m.ActivationStatus,
+		ActivationError:  m.ActivationError,
+		ActivatedAt:      m.ActivatedAt,
+	}
+}
+
 func main() {
 	var (
 		listen        = flag.String("listen", ":8781", "listen address (client-facing)")
@@ -307,6 +379,7 @@ func main() {
 	}
 
 	// REST API + UI.
+	installDir := resolveInstallDir(*dataDir)
 	a := api.New(api.Config{
 		TokenProvider: func() string { return tokenStr },
 		StatusProvider: func() api.Status {
@@ -317,6 +390,11 @@ func main() {
 				PlanID:        d.getCurrentPlan(),
 				PlanState:     d.currentPlanState(),
 			}
+		},
+		// InstanceMeta is best-effort and re-read on every /status hit so
+		// the UI reflects the latest activation state without restart.
+		InstanceMetaProvider: func() api.InstanceMeta {
+			return loadInstanceMeta(installDir)
 		},
 		PlanProvider: func() *store.Plan {
 			id := d.getCurrentPlan()

@@ -49,6 +49,8 @@ var hotPromoteTableMap = map[string]string{
 	"session_memora_hot":  "promote_session_memora_hot_to_partition",
 	"session_censors_hot": "promote_session_censors_hot_to_partition",
 	"session_tools_hot":   "promote_session_tools_hot_to_partition",
+	// 733（会话存储解耦 v3）：turn 特征层
+	"session_turn_details_hot": "promote_session_turn_details_hot_to_partition",
 }
 
 // HotJobStatus 状态枚举
@@ -807,7 +809,7 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", quoteIdentifier(req.PartitionName))
 	if _, err := h.db.Exec(ctx, dropSQL); err != nil {
 		resp.Status = "failed"
-		resp.Message = fmt.Sprintf("drop failed: %v", err)
+		resp.Message = "drop failed"
 		slog.Error("data-lifecycle: drop partition failed", "partition", req.PartitionName, "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Header().Set("Content-Type", "application/json")

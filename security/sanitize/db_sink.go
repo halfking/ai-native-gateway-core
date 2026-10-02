@@ -8,6 +8,19 @@
 // 合规（plan §1/§9）：原文按 AES-GCM 加密落库（LLM_GATEWAY_SESSION_CENSOR_KEY，
 // 任意非空口令派生）；密钥未配置时降级为只存 type+占位符
 // （original_encrypted=NULL），可在部署侧按需启用可逆。
+//
+// R71 更正（2026-10-01，实测真库）：上述「DB 为权威 / 可逆」在当前部署下
+// **不成立**，验收时不要按此前提判 PASS。
+//   - 真库 public.session_censors 29410 行，count(original_encrypted) = 0：
+//     envs.samples 的 LLM_GATEWAY_SESSION_CENSOR_KEY 默认为空，线上未配置。
+//   - 全仓没有任何解密读取方（grep original_encrypted 只命中本文件）。
+//
+// 因此本表现实语义是「脱敏元数据审计（哪条会话脱敏过哪几类、多少条）」，
+// **不是**「原文可回溯」。要恢复可回溯需同时满足：配置密钥 + 补一个带读
+// 审计的读取端点；只配密钥会让列里出现无人能解的密文。
+// 另一个后果：RLS 策略当前只有 USING 没有 WITH CHECK，且写入路径不设
+// app.current_tenant —— 之所以没暴露，是因为网关连接角色是
+// rolsuper/rolbypassrls。改用非 superuser 角色前必须先补这两项。
 package sanitize
 
 import (
@@ -24,6 +37,11 @@ import (
 	"strings"
 	"time"
 )
+
+// censorEntryArgsPerRow is the number of bind parameters each mapping row
+// contributes to the batch INSERT. The failure log used to divide by 6, which
+// is only right when the row count is a multiple of 3.
+const censorEntryArgsPerRow = 7
 
 // CensorEntry is one placeholder→original mapping row.
 type CensorEntry struct {
@@ -99,6 +117,9 @@ func (s *PostgresCensorSink) SaveCensorMappings(ctx context.Context, tenantID, s
 		tenantID = "_unknown"
 	}
 	if len(entries) > s.limit {
+		slog.Warn("sanitize censor sink: entry cap reached, audit rows dropped",
+			"session_id", sessionID, "tenant_id", tenantID,
+			"entries", len(entries), "cap", s.limit)
 		entries = entries[:s.limit]
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -117,7 +138,7 @@ func (s *PostgresCensorSink) SaveCensorMappings(ctx context.Context, tenantID, s
 		if i > 0 {
 			b.WriteString(",")
 		}
-		base := i * 7
+		base := i * censorEntryArgsPerRow
 		fmt.Fprintf(&b, "($%d,$%d,$%d,$%d,$%d,$%d,$%d)", base+1, base+2, base+3, base+4, base+5, base+6, base+7)
 		enc := encryptOriginal(aead, e.Original)
 		var encArg any
@@ -130,6 +151,6 @@ func (s *PostgresCensorSink) SaveCensorMappings(ctx context.Context, tenantID, s
 
 	if _, err := s.db.ExecContext(ctx, b.String(), args...); err != nil {
 		slog.Warn("sanitize censor sink: persist mappings failed (audit degraded to redis-only)",
-			"session_id", sessionID, "rows", len(args)/6, "error", err)
+			"session_id", sessionID, "rows", len(args)/censorEntryArgsPerRow, "error", err)
 	}
 }

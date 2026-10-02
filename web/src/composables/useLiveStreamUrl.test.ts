@@ -2,7 +2,7 @@
 //
 // 覆盖：localStorage 持久化 / 编辑状态机 / 保存-重连 / 重置 / 取消 / 连接测试弹窗。
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest'
 import { ref, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
@@ -16,8 +16,12 @@ function makeConnection(state: ConnectionState) {
   return ref<ConnectionState>(state)
 }
 
-function makeT() {
-  return vi.fn((key: string, named?: Record<string, unknown>) => {
+// vitest 5 的 Mock/vi.fn 是单泛型 <T extends Procedure> 函数形态
+// （vitest 1.x 的双泛型 <TArgs, R> 元组形态已不适用）
+type TFn = Mock<(key: string, named?: Record<string, unknown>) => string>
+
+function makeT(): TFn {
+  return vi.fn<(key: string, named?: Record<string, unknown>) => string>((key, named) => {
     if (key === 'dashboard.liveStream.sseTestOk') return `OK ${named?.url}`
     if (key === 'dashboard.liveStream.sseTestFail') return `FAIL ${named?.status} ${named?.url}`
     return key
@@ -47,7 +51,7 @@ function mountHarness(
 
 describe('useLiveStreamUrl', () => {
   let connection: ReturnType<typeof makeConnection>
-  let reconnect: ReturnType<typeof vi.fn>
+  let reconnect: Mock<() => void>
   let t: ReturnType<typeof makeT>
   let alertSpy: ReturnType<typeof vi.fn>
 
@@ -57,7 +61,7 @@ describe('useLiveStreamUrl', () => {
     localStorage.clear()
     __resetCustomEndpointForTest()
     connection = makeConnection('idle')
-    reconnect = vi.fn()
+    reconnect = vi.fn<() => void>()
     t = makeT()
     alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {}) as unknown as ReturnType<typeof vi.fn>
   })

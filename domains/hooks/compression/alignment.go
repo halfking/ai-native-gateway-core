@@ -27,11 +27,19 @@ func buildAlignmentMap(before, after []byte, summaryIdx int) []AlignmentInfo {
 }
 
 func buildAlignmentMapForProtocol(before, after []byte, summaryIdx int, protocol string) []AlignmentInfo {
-	beforeMsgs, err := extractMessages(before)
+	retainedSpace := TargetSpaceMessages
+	return buildAlignmentMapWithExtractor(before, after, summaryIdx, protocol, retainedSpace, extractMessages)
+}
+
+// buildAlignmentMapWithExtractor 是 buildAlignmentMapForProtocol 的
+// 抽取器参数化内核（R34-A1）：messages 车道与 responses 专属压缩链
+// 共用同一套 hash-match 对齐算法，仅消息抽取形态与保留坐标空间不同。
+func buildAlignmentMapWithExtractor(before, after []byte, summaryIdx int, protocol string, retainedSpace string, extract func([]byte) ([]rawMsg, error)) []AlignmentInfo {
+	beforeMsgs, err := extract(before)
 	if err != nil || len(beforeMsgs) == 0 {
 		return nil
 	}
-	afterMsgs, err := extractMessages(after)
+	afterMsgs, err := extract(after)
 	if err != nil {
 		afterMsgs = nil
 	}
@@ -55,7 +63,7 @@ func buildAlignmentMapForProtocol(before, after []byte, summaryIdx int, protocol
 		info := AlignmentInfo{
 			OriginalIndex: i, CompressedIndex: -1, IsCompressed: true,
 			CompressedInto: -1, Hash: h, Occurrence: occurrence,
-			TargetKind: "dropped", TargetSpace: "none",
+			TargetKind: TargetKindDropped, TargetSpace: TargetSpaceNone,
 		}
 		if h != "" {
 			positions := afterByHash[h]
@@ -63,17 +71,17 @@ func buildAlignmentMapForProtocol(before, after []byte, summaryIdx int, protocol
 			if used < len(positions) {
 				info.IsCompressed = false
 				info.CompressedIndex = positions[used]
-				info.TargetKind = "retained"
-				info.TargetSpace = "messages"
+				info.TargetKind = TargetKindRetained
+				info.TargetSpace = retainedSpace
 				usedAfter[h] = used + 1
 			} else if summaryIdx >= 0 {
 				info.CompressedIndex = summaryIdx
 				info.CompressedInto = summaryIdx
-				info.TargetKind = "summary"
-				info.TargetSpace = "messages"
+				info.TargetKind = TargetKindSummary
+				info.TargetSpace = retainedSpace
 			} else if summaryInSystem {
-				info.TargetKind = "summary"
-				info.TargetSpace = "top_level_system"
+				info.TargetKind = TargetKindSummary
+				info.TargetSpace = TargetSpaceTopLevelSystem
 			}
 		}
 		align = append(align, info)

@@ -125,7 +125,7 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 			%s %s
 		`, baseFromFallback, baseWhere), totalArgs...).Scan(&resp.TotalSessions, &resp.ActiveSessions)
 		if err2 != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("query total failed: %v", err))
+			writeInternalErr(w, "query total failed", err)
 			return
 		}
 		// 记录警告：session_dim 表缺失，建议执行350迁移
@@ -211,10 +211,16 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		for rows.Next() {
 			var point CostTrendPoint
 			var date time.Time
-			if err := rows.Scan(&date, &point.Cost, &point.Sessions); err == nil {
-				point.Date = date.Format("2006-01-02")
-				resp.CostTrend = append(resp.CostTrend, point)
+			if err := rows.Scan(&date, &point.Cost, &point.Sessions); err != nil {
+				warnRowSkip("session stats cost trend", err)
+				continue
 			}
+			point.Date = date.Format("2006-01-02")
+			resp.CostTrend = append(resp.CostTrend, point)
+		}
+		if rerr := rows.Err(); rerr != nil {
+			slog.Warn("dashboard panel iteration aborted; panel degraded", "panel", "cost_trend", "error", rerr)
+			resp.CostTrend = []CostTrendPoint{}
 		}
 	}
 	for i, j := 0, len(resp.CostTrend)-1; i < j; i, j = i+1, j-1 {
@@ -243,13 +249,19 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		for clientRows.Next() {
 			var item ClientRankItem
 			var avgHealth sql.NullInt64
-			if err := clientRows.Scan(&item.ClientID, &item.SessionCount, &item.TotalCost, &avgHealth); err == nil {
-				if avgHealth.Valid {
-					val := int(avgHealth.Int64)
-					item.AvgHealth = &val
-				}
-				resp.TopClients = append(resp.TopClients, item)
+			if err := clientRows.Scan(&item.ClientID, &item.SessionCount, &item.TotalCost, &avgHealth); err != nil {
+				warnRowSkip("session stats top clients", err)
+				continue
 			}
+			if avgHealth.Valid {
+				val := int(avgHealth.Int64)
+				item.AvgHealth = &val
+			}
+			resp.TopClients = append(resp.TopClients, item)
+		}
+		if rerr := clientRows.Err(); rerr != nil {
+			slog.Warn("dashboard panel iteration aborted; panel degraded", "panel", "top_clients", "error", rerr)
+			resp.TopClients = []ClientRankItem{}
 		}
 	} else {
 		// 降级查询：从 client_models 数组提取（启发式：取第一个元素）
@@ -270,13 +282,19 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 			for clientFallbackRows.Next() {
 				var item ClientRankItem
 				var avgHealth sql.NullInt64
-				if err := clientFallbackRows.Scan(&item.ClientID, &item.SessionCount, &item.TotalCost, &avgHealth); err == nil {
-					if avgHealth.Valid {
-						val := int(avgHealth.Int64)
-						item.AvgHealth = &val
-					}
-					resp.TopClients = append(resp.TopClients, item)
+				if err := clientFallbackRows.Scan(&item.ClientID, &item.SessionCount, &item.TotalCost, &avgHealth); err != nil {
+					warnRowSkip("session stats top clients fallback", err)
+					continue
 				}
+				if avgHealth.Valid {
+					val := int(avgHealth.Int64)
+					item.AvgHealth = &val
+				}
+				resp.TopClients = append(resp.TopClients, item)
+			}
+			if rerr := clientFallbackRows.Err(); rerr != nil {
+				slog.Warn("dashboard panel iteration aborted; panel degraded", "panel", "top_clients_fallback", "error", rerr)
+				resp.TopClients = []ClientRankItem{}
 			}
 		}
 	}
@@ -303,13 +321,19 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		for taskRows.Next() {
 			var item TaskRankItem
 			var avgHealth sql.NullInt64
-			if err := taskRows.Scan(&item.TaskID, &item.SessionCount, &item.TotalCost, &avgHealth); err == nil {
-				if avgHealth.Valid {
-					val := int(avgHealth.Int64)
-					item.AvgHealth = &val
-				}
-				resp.TopTasks = append(resp.TopTasks, item)
+			if err := taskRows.Scan(&item.TaskID, &item.SessionCount, &item.TotalCost, &avgHealth); err != nil {
+				warnRowSkip("session stats top tasks", err)
+				continue
 			}
+			if avgHealth.Valid {
+				val := int(avgHealth.Int64)
+				item.AvgHealth = &val
+			}
+			resp.TopTasks = append(resp.TopTasks, item)
+		}
+		if rerr := taskRows.Err(); rerr != nil {
+			slog.Warn("dashboard panel iteration aborted; panel degraded", "panel", "top_tasks", "error", rerr)
+			resp.TopTasks = []TaskRankItem{}
 		}
 	} else {
 		// task_id 在 session_summaries 中不存在，无法降级，记录警告

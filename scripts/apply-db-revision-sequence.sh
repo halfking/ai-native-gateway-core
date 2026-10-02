@@ -63,6 +63,23 @@ sequence_name="session-summary-and-integrity-2026-09"
 # ensure/promote auto_route_selections functions missing on every boot). Each
 # underlying migration is idempotent, so re-running is safe.
 psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
+# 2026-09-21 252 部署验证轮（纪律⑨，F4 机制债收口）：台账从"按文件名记账"
+# 升级为"文件名+内容指纹记账"。content_sha256 为 NULL 的行是历史遗留记账
+# （指纹通道上线前应用，无法证明当时应用的是哪个内容版本）；此后本脚本的
+# 每次应用都记录当前文件内容 sha256，同名文件内容变更即可被识别并重放
+# （通道契约：每个迁移幂等，重跑安全——见文件头注释）。
+psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS content_sha256 text"
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    printf 'error: no sha256sum/shasum available for content fingerprinting\n' >&2
+    exit 1
+  fi
+}
 
 # Fixed order: 655 restores the canonical session_summaries columns; 560
 # supplies the tenant uniqueness guard; 572 must replace the bounded token
@@ -404,6 +421,15 @@ files=(
   # session_module_executions 实际复发一次 473 类边界漂移（42P17），本迁移
   # 除根。纯 CREATE OR REPLACE FUNCTION + 账本 upsert，幂等收敛；714 编号
   # 已核对本机与 origin/main 双侧空闲。
+  # 2026-10-02 24h 审计第二十八轮（534 canonical 收编）：handoff_logs_hot 列存
+  # 改造此前只进 installer StartupFiles（fresh 链 baseline-gap 簇），存量库的
+  # sequence 通道断链——809 触发「最高编号必须在 files 数组」预提交门红 60 提交
+  # 时才现形（该守卫只盯最高编号，534 静默漏网）。头注明示 legacy heap/已升级
+  # 252/fresh baseline 三形态 safe to replay。位置硬约束（clobber guard 实证）：
+  # 其 ensure_handoff_logs_partition 与 714 同名异体，必须先于 714——714 的
+  # handoff_logs 腿本就是 534 columnar 体的时区钉扎版，倒序会让 534 旧体覆盖
+  # 714 钉扎体（deploy exit 5）。
+  "$ROOT_DIR/sql/migrations/startup/534_handoff_logs_hot_columnar.sql"
   "$ROOT_DIR/sql/migrations/startup/714_partition_timezone_pin_remaining.sql"
   # 2026-09-17 R33 审计（通道登记补齐）：715 route_incidents pending state。
   # bba08b922 引入 StatePending、6f3d03073 接线 Go-ensure（ensure 的 CHECK/
@@ -473,6 +499,298 @@ files=(
   # （rollup ON CONFLICT 42P10 全失败）在存量库的标准修复通道。
   # ctid 去重 + CREATE UNIQUE INDEX IF NOT EXISTS 幂等。
   "$ROOT_DIR/sql/migrations/startup/726_restore_credential_model_index_hot_unique.sql"
+  # 2026-09-20 252 PG SQL 日志审计轮（本轮交付）：727 慢查询索引三连——
+  # request_stage_events 保留清理 DELETE 补 created_at 索引（9 天均值 10.5s
+  # 撞 30s 批超时，retention 文件头 2026-09-05 预登记条件达成）；
+  # session_turns 父表 + session_turns_hot 独立表补 CASE 表达式索引
+  # （会话存在性 EXISTS 视图查询 P50 687ms→1.1ms，真库 A/B 实证）。
+  # CREATE INDEX CONCURRENTLY IF NOT EXISTS 幂等；2026-09-20 已在 252
+  # 存量真库实跑验证。
+  "$ROOT_DIR/sql/migrations/startup/727_sql_audit_slow_query_indexes.sql"
+  # 2026-09-21 252 PG SQL 日志审计复核轮：728 request_logs 分区侧
+  # credential+model 表达式索引（父表 + 存量月分区三段式，hot 侧
+  # sql/objects 已有）——provider-model 抽屉轮询查询窗口跨入月分区时
+  # Parallel Seq Scan（pss 10 天 184,620 次/累计 8.6h 全库第一；
+  # 72h 窗 EXPLAIN ANALYZE 实测 105s）。CREATE INDEX CONCURRENTLY
+  # IF NOT EXISTS 幂等；本日已在 252 存量真库实跑验证。
+  "$ROOT_DIR/sql/migrations/startup/728_sql_audit_request_logs_credential_model_index.sql"
+  # 2026-09-20 R48（ec605014c 交付本体，本条目为门禁收口补登记）：730
+  # session role hierarchy——会话角色识别 + role_task_llm_mapping 配置表
+  # （按角色×任务类型自动选 LLM）。CREATE TABLE IF NOT EXISTS 幂等。
+  # R48 提交时漏登记致契约门禁红（R33 期 715 同款缺口），补录于此。
+  "$ROOT_DIR/sql/migrations/startup/730_session_role_hierarchy.sql"
+  # 2026-09-21 R50 审计轮：731 auto_route_selections 角色路由归因三列
+  # （agent_role/task_kind/routing_source，父表+hot 双表 ADD COLUMN IF NOT
+  # EXISTS 幂等）——亲和学习剔除 role 强制选型行的数据基础。
+  "$ROOT_DIR/sql/migrations/startup/731_auto_route_selection_role_attribution.sql"
+  # 2026-09-20 会话存储解耦 v3（六点同步登记：db.Open ensure 链不扫 SQL
+  # 文件，新迁移必须进本清单才会在存量库应用）：原编 727/728 与 origin
+  # 上 R46/R48 撞号，重编 733/734。733 建 session_turn_details 特征层
+  # 表族（hot + 月分区 + RLS + promote + request_logs 反向回填）；
+  # 734 把 canonical 视图 session 分支 30 个 NULL 占位换成 details
+  # LEFT JOIN。Go 侧 ensure（ensureRequestLogsCurrentMonthView）在表族
+  # 缺席时自动回退 710 形态，双形态兼容。
+  "$ROOT_DIR/sql/migrations/startup/733_session_turn_details.sql"
+  "$ROOT_DIR/sql/migrations/startup/734_request_logs_view_details_join.sql"
+  # 2026-09-21 252 部署验证轮：729 session_turns credential+ts 表达式索引
+  # （父表 + 存量月分区三段式 + session_turns_hot 独立表）——抽屉轮询查询
+  # 72h 长窗的 session_turns 分支裸 ts 范围扫 + 逐行 CASE 过滤（252 分支
+  # cost 60650/总 71260，实测残余 10.9s）。CREATE INDEX CONCURRENTLY
+  # IF NOT EXISTS 幂等；本日已在 252 与本机存量真库实跑验证。
+  "$ROOT_DIR/sql/migrations/startup/729_sql_audit_session_turns_credential_ts_index.sql"
+  # 2026-09-21 R51 审计轮：735 models_canonical active 折叠名表达式唯一索引
+  # （R50 F19 对账收口，表达式与 modelname.DedupCanonicalNameSQL run-collapse
+  # 臂逐字一致）。fail-closed 守卫：active 折叠重复对未清零时拒绝执行并指路
+  # cleanup 脚本（CASCADE 引用族的裁决不进启动迁移）。守卫+IF NOT EXISTS 幂等；
+  # 本轮已在本机存量真库先跑对账脚本后验证通过。
+  "$ROOT_DIR/sql/migrations/startup/735_models_canonical_active_folded_unique.sql"
+  # 2026-09-22 Wave 3 B1：736 峰谷倍率 —— usage_ledger[_hot].rate_multiplier
+  # / request_logs[_hot].credits_rate_multiplier 四列（ADD COLUMN IF NOT
+  # EXISTS，分区族自动级联）+ maas_resolve_rate_multiplier() 共享取档函数
+  # （与 maas.ResolveRateMultiplier 同规则，配置 maas.rate_periods）。
+  # 幂等，默认 enabled=false 行为零漂移。
+  "$ROOT_DIR/sql/migrations/startup/736_maas_rate_multiplier.sql"
+  # 2026-09-22 Wave 3 B8：737 内部对账落表 —— maas_reconciliation_findings
+  # （CREATE TABLE IF NOT EXISTS，幂等），bg.LedgerReconciler 差异落表。
+  "$ROOT_DIR/sql/migrations/startup/737_maas_reconciliation_findings.sql"
+  # 2026-09-22 764d2514b：738 view 链补 credits_rate_multiplier 列（B1
+  # follow-up：680/717/734 冻结体不自动补列，bg/stats_minute_rollup 每分钟
+  # INSERT 抛 column does not exist）。幂等；R56 补登——该提交当时漏了本
+  # 通道登记（693/699/701/703 同型复发形态）。
+  "$ROOT_DIR/sql/migrations/startup/738_view_chain_credits_rate_multiplier.sql"
+  # 2026-09-23 R56：739 promote 函数补倍率列（698 的两个 promote 显式列
+  # 清单止于 system_fingerprint/error_kind，736 加列后热窗转移把倍率证据
+  # 落 NULL/DEFAULT 1.0）。幂等（CREATE OR REPLACE FUNCTION）。
+  "$ROOT_DIR/sql/migrations/startup/739_promote_functions_rate_multiplier.sql"
+  # 2026-09-23 R57 B7：740 view 链补投影真实 client_ip——virtual_ip 是
+  # identity 派生假名 10.x，GeoIP 归类对它不可达；rollup/看板切真源
+  # client_ip（341 列经 740 投影进链）。regexp 补列 + 顶层全量重建 +
+  # 列数守卫 fail-closed（738 惯用法）。幂等。
+  "$ROOT_DIR/sql/migrations/startup/740_view_chain_client_ip.sql"
+  # 2026-09-23 R65：742 hosted_task_events 类型 CHECK 扩容新增 'recalled'，
+  # 供 POST /v1/hosted-tasks/{id}/recall（§3.3 轻量快照路径）追加召回事件
+  # （711 白名单不含 recalled；741 已被 B11 申领故跳号）。经 sequence 通道
+  # 升级的存量库不下发此行则 recall 写事件违反约束。幂等（约束重建）。
+  "$ROOT_DIR/sql/migrations/startup/742_hosted_task_recalled_event.sql"
+  # 2026-09-24 R60 S3-F4：743 存量 providers/provider_catalog.protocol 归一
+  # 清洗（vapeur 类脏值，如 openai-response→openai-responses）——映射与
+  # provider/catalog NormalizeProviderProtocol 别名表逐条对齐；未知值保持
+  # 原样（与 Go 侧语义一致）。幂等；R59 已封三个写边界，本迁移清洗存量。
+  # 经 sequence 通道升级的存量库不下发则管理面（健康检查/探针）对脏行
+  # 持续误判（读面归一为防御层，非替代）。
+  "$ROOT_DIR/sql/migrations/startup/743_normalize_provider_protocol.sql"
+  # 2026-09-24 252 SQL 日志审计第六轮：744 部分索引补课
+  # （A: session_aggregate_outbox done 行 TTL 清理缺 (status='done',
+  # completed_at) 组合，645MB 全表扫 ×255 次/45min 是整库背景噪音主源；
+  # B: session_turns digest 回填 WHERE digest IS NULL 无索引，backlog=0
+  # 仍空扫 68 万行。分区父表三段式，与 727/728/729 同法）。c2f78d1c0
+  # 重编号交付时漏登此条，门禁必需项已由 aa1160746 上账，此处补齐尾巴。
+  # 经 sequence 通道升级的存量库不下发则两处全表扫噪音在升级库原样保留。
+  "$ROOT_DIR/sql/migrations/startup/744_sql_audit_partial_indexes.sql"
+  # 2026-09-24 对账报表设计切片（R63 收口）：745 report_snapshots 日报快照
+  # 表（scope×model×day 粒度，UNIQUE 四键）。原文件曾死放 migrations/ 顶层
+  # （无任何投递通道，五点同步全缺），本轮修正表结构后投递 startup 通道；
+  # 消费方 worker 尚未实现，属设计预埋（幂等 CREATE TABLE IF NOT EXISTS）。
+  "$ROOT_DIR/sql/migrations/startup/745_report_snapshots.sql"
+  # 2026-09-25 R65 补登：746 report_snapshots internal dims（tenant_id
+  # bigint→text + credits/latency 三列 + scope 枚举扩员）。9635b9b17 交付
+  # 时走了 dbinit + boot ensure 双臂但漏登本 sequence 通道（744/745 先例
+  # 均三臂齐备）；ALTER TYPE text::text 与 ADD COLUMN IF NOT EXISTS 均
+  # 可重入，boot ensure 已升级过的库重跑本迁移体无副作用。
+  "$ROOT_DIR/sql/migrations/startup/746_report_snapshots_internal_dims.sql"
+  # 2026-09-26 R67 24h 审计轮：749 usage_facts occurred_at 前导索引——
+  # 每日 rollup 五查询 + stats 对账全是纯 occurred_at 范围条件，537 的
+  # 4 个二级索引全部非 occurred_at 前导，无索引可用即全表顺序扫，线性
+  # 退化至被共享 PG 30s statement_timeout 成批击杀。分区父表三段式
+  # （逐分区 CONCURRENTLY → ONLY 壳 → ATTACH，744 同法），不经 installer
+  # （psql --single-transaction 容不下 CONCURRENTLY）；存量库由本通道 +
+  # db.ensureUsageFactsOccurredAtIndex 双臂收敛（真库 ensure 回归 +
+  # EXPLAIN 实证走索引）。
+  "$ROOT_DIR/sql/migrations/startup/749_usage_facts_occurred_at_index.sql"
+  # 2026-09-26 R68 24h 审计轮：750 usage_facts 按日分区函数 + 当日/次日
+  # 预建——749 仅解决索引，partition pruning 仍不可用（无具体分区则 PG
+  # 只能扫 DEFAULT 全表）；DEFAULT 保留作历史 catch-all，新一日数据走
+  # 日分区。function 安装可走 installer（CREATE TABLE PARTITION OF 不需
+  # 事务），同时由 db.ensureUsageFactsDailyPartition 在 boot 链兜底
+  # （与 749 双通道收敛同款）。
+  "$ROOT_DIR/sql/migrations/startup/750_usage_facts_daily_partition.sql"
+  # 2026-09-26 R69 12h 审计轮：751 ensure_usage_facts_daily_partition
+  # 时区钉扎（ALTER FUNCTION SET timezone）——750 的 DECLARE 初始化器
+  # 边界转换 p_date::timestamptz 随会话时区求值，UTC 会话产出与
+  # Shanghai 日边界错位 8h 的分区窗口；函数级 GUC 在函数入口生效、
+  # 覆盖初始器（694 先例的对偶）。幂等 ALTER；boot 链
+  # db.ensureUsageFactsDailyPartition 同语句双通道收敛。
+  "$ROOT_DIR/sql/migrations/startup/751_usage_facts_partition_tz_pin.sql"
+  # 2026-09-27 mock probe 生产入口收口轮：752 mock_probe_history 历史表 +
+  # 按日分区函数——DDL 原死放 migrations/ 顶层（036）无投递通道（745 同款
+  # 病），仅 252 被手工跑过，收编正典通道。相对 036 加固：函数级 SET
+  # timezone 钉扎（751 对偶）+ move-then-attach（750 同款）。幂等，252
+  # 存量库重放安全。Go 侧 ensure 点在 internal/mockprobe HistoryStore
+  # （启动 bootstrap + writeLoop 每日 tick），无 db.go boot ensure。
+  "$ROOT_DIR/sql/migrations/startup/752_mock_probe_history.sql"
+  # 2026-09-24 supplier-protocol-optimization §3.2：800 provider_endpoint_
+  # protocols 每 provider 多端点表 + 从 providers 旧行回填（ON CONFLICT
+  # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何
+  # 存量库投递通道，本轮移入 startup 目录并在此登记（文件移动由并行代理
+  # 完成，登记先行；无 Go boot ensure，本通道是升级库唯一投递路径）。
+  "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
+  # 2026-09-27 R67 session-storage 审计子任务 2：753 session_turn_logs
+  # 可配 TTL——保留期在写入方（turn_logs_writer.go）按 settings_kv 的
+  # lifecycle.session_turn_logs_ttl_hours 烘焙进 expires_at；清理函数
+  # cleanup_session_turn_logs_by_ttl(p_ttl_hours, p_batch_size) 只做
+  # 「到期即删」（expires_at < NOW()），每调用删一有界批（LIMIT 主键选批），
+  # bg 侧循环消化积压（R72 审计轮修订；p_ttl_hours 是 [1,168] 越界 RAISE
+  # 的 fail-closed 联锁，不参与谓词；不建任何索引——430:275 已有同列索引，
+  # 初稿的重复索引已被批判式审计移除）。430 定义的旧清理函数全仓无调用方，
+  # 本迁移是首次真正接上清扫，不是参数化既有行为。
+  # 编号：模板原写 745，但 745/750/751/752 已被 report_snapshots /
+  # usage_facts_daily_partition / usage_facts_partition_tz_pin（已 applied
+  # 到 245 库）/ mock_probe_history 依次占用，故取当时首个空闲号 753。
+  # 无 CONCURRENTLY（普通堆表，走 installer 单事务通道）；Go 侧调用点在
+  # bg.PartitionManager.cleanupSessionTurnLogsByTTL（跑在 24h 的
+  # archiveOldPartitionsIfNeeded tick 上），支持热重载。
+  "$ROOT_DIR/sql/migrations/startup/753_session_turn_logs_ttl.sql"
+  # 2026-09-27 R67 session-storage 审计子任务 7：754 request_logs 主表
+  # archive 流水线——331 移除 archive_request_logs 整族后主表月分区一直
+  # 只保留不归档；本迁移按 lifecycle.request_logs_ttl_days 把超出窗口的
+  # 月分区摘要字段落进 request_logs_archive_YYYY_MM（丢弃 18 个大 JSONB
+  # 列）。源分区不 DROP（R68 move-then-attach 纪律）。逐分区建表用
+  # CREATE TABLE IF NOT EXISTS，函数 CREATE OR REPLACE，天然幂等；小批量
+  # 1000 行 + 主键游标，无 CONCURRENTLY（走 installer 单事务通道）。
+  # 编号：模板原写 746，已被 report_snapshots_internal_dims 占用；750~753
+  # 亦已占用，故取复核时的首个空闲号 754。
+  "$ROOT_DIR/sql/migrations/startup/754_archive_request_logs_default.sql"
+  # 756 makes 754's id cursor index-backed on upgraded databases. Build at
+  # a controlled migration window because the non-concurrent index takes a
+  # write-blocking lock on existing request_logs partitions.
+  "$ROOT_DIR/sql/migrations/startup/756_request_logs_id_index.sql"
+  # 757/758 repair production read/write contracts. Both are idempotent and
+  # also registered in the installer for fresh databases.
+  "$ROOT_DIR/sql/migrations/startup/757_session_turns_origin_actor_projection.sql"
+  "$ROOT_DIR/sql/migrations/startup/758_routeincident_missing_columns.sql"
+  # 760/761/762 (2026-09-29/30 审计 R27/R28/R33，此前只在 installer 新库通道
+  # 登记、漏掉本升级序列——R63 "迁移双轨制死区"教训的补登)：760 给
+  # analysis_events / stats_event_inbox 补 TTL 部分索引；761 回填 stats inbox
+  # processing_status（R28 HC-10 收口）；762 项目维度回填链（resolve/sync
+  # 函数 + session_dim 双触发器 + 回填扫描部分索引，R33 P-3）。三者均幂等，
+  # 且已在 installer embeddata 完成五点同步。
+  "$ROOT_DIR/sql/migrations/startup/760_analysis_events_inbox_ttl_indexes.sql"
+  "$ROOT_DIR/sql/migrations/startup/761_stats_inbox_sync_status_backfill.sql"
+  "$ROOT_DIR/sql/migrations/startup/762_session_project_backfill_chain.sql"
+  # 2026-09-30 R14 批判式复审轮：763 provider_events 契约对齐收编正典通道
+  # （round11 D16 登记 → round14 部署窗手工执行的 parity 文件
+  # deploy/sql/migrations/2026-07-26-provider-events-local.sql 从未进任何
+  # 投递通道，752 收编 036 同款病）。幂等：CREATE IF NOT EXISTS ×3 + 幂等
+  # ALTER + conname 守卫 PK + is_called 感知防回退 setval；存量 id 有重复时
+  # PK 显式失败（fail-closed）。252/本机已手工修复，重放为 no-op 并补台账。
+  "$ROOT_DIR/sql/migrations/startup/763_provider_events_contract.sql"
+  # 2026-09-30 三十六轮 R36-B3：request_logs 分区家族补 (tenant_id, ts DESC)
+  # 索引——341 只索引 hot 侧，分区父表从未有 tenant 前导索引，tenant 维度
+  # days>7 聚合对每分区全表扫（252-dev 实测 3 行租户 6.5s / default 21.5s）。
+  # 父表 CREATE INDEX IF NOT EXISTS 级联全部分区，重放 no-op 并补台账。
+  "$ROOT_DIR/sql/migrations/startup/764_request_logs_tenant_ts_index.sql"
+  # 765 (2026-09-30, R16 存储轮): bodies 月分区列存化 + lz4 TOAST +
+  # request_stage_events 三死索引（pss 19 天 0 扫描）。
+  "$ROOT_DIR/sql/migrations/startup/765_bodies_columnar_storage.sql"
+  # 2026-09-30 补登 800/801 升级通道（ec5edcfd7 只落了 installer StartupFiles，
+  # 序列通道缺席 → 目录驱动门报「startup migration 801 exists but is missing
+  # from the channel files=(...) array」，正是该门注释里点名的 693/699/701/703
+  # 复发形态：fresh install 有、存量库升级永远不落地）。
+  # 800：每 provider 多端点表 + providers 旧行回填，CREATE TABLE IF NOT
+  # EXISTS + ON CONFLICT DO NOTHING 幂等。
+  # 801（原 759，撞号让位后改号）：只 CREATE OR REPLACE 733 建的
+  # promote_session_turn_details_hot_to_partition，不跑批量 DELETE、不改
+  # 存量分区，重放安全。位置约束同 StartupFiles：必须晚于 733（其目标函数
+  # 依赖 733 建的 session_turn_details 表与 hot 表），故排在序列末尾。
+  "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
+  "$ROOT_DIR/sql/migrations/startup/801_session_turn_details_duplicate_drain.sql"
+  # 2026-09-30 会话存储解耦 v3 S4 前置（802）：session_turn_details 族补
+  # (tenant_id, gw_task_id) 部分索引（母表 + hot）。跨租户访问门
+  # assertTaskInTenant 的 session 族腿依赖它——缺索引时 EXISTS 判定会对
+  # 167 万行母表做顺序扫描。幂等：CREATE INDEX IF NOT EXISTS ×2 + 两条
+  # COMMENT ON（重复执行覆盖注释，无副作用）。位置约束同 StartupFiles：
+  # 必须晚于 733（建表与分区）与 801（同族），故排在序列末尾。
+  "$ROOT_DIR/sql/migrations/startup/802_session_turn_details_gw_task_id_index.sql"
+  # 2026-10-01 fresh-install e2e 轮（803-806，canonical 收编四件）：首批登
+  # 记进本清单——本轮实证它们此前只进 installer StartupFiles，存量库的
+  # sequence 通道是断链的（fresh-install e2e 轮 §五.1「跑脚本会顺带应用 803-806」与当时
+  # 的清单不符）。
+  #   803 candidate_failure_logs hot 列对账 / 804 credential_model_bindings
+  #   context_window 列：均 ALTER TABLE IF EXISTS + ADD COLUMN IF NOT
+  #   EXISTS，存量库 no-op。
+  #   805 session_dim 全形：CREATE TABLE IF NOT EXISTS + 索引 IF NOT EXISTS
+  #   + RLS policy DROP IF EXISTS+CREATE（按生产真库 2026-10-01 实测形态
+  #   重建，存量库语义不变）。位置约束（fresh 链内须先于 683）只约束
+  #   installer 通道；本清单的服务对象是存量库，session_dim 皆已存在。
+  #   806 session_bodies columnar 分区转 heap：仅对「非 heap 且为空」分区
+  #   动手；生产/本机 session_bodies 分区全 heap，循环为空集零动作。位置
+  #   约束：晚于 708（其 S1A 结构），已满足。
+  "$ROOT_DIR/sql/migrations/startup/803_candidate_failure_logs_hot_column_reconcile.sql"
+  "$ROOT_DIR/sql/migrations/startup/804_credential_model_context_window_columns.sql"
+  "$ROOT_DIR/sql/migrations/startup/805_session_dim_reconcile.sql"
+  "$ROOT_DIR/sql/migrations/startup/806_session_bodies_partitions_heap.sql"
+  # 2026-10-01 审计十七轮（807）：request_logs_bodies_hot 删除被同列 UNIQUE
+  # 索引 idx_request_logs_bodies_hot_request_id（455/678 建，承重
+  # ON CONFLICT (request_id) upsert）全量影蔽的冗余普通索引。DROP INDEX
+  # CONCURRENTLY 不允许在事务块内执行——文件带 dbinit:no-transaction 标记
+  # 走非事务通道；幂等（IF EXISTS + NOTICE skipping）。位置约束：晚于
+  # 455/678（保留侧创建者），排在序列末尾。
+  "$ROOT_DIR/sql/migrations/startup/807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql"
+  # 2026-10-02 24h 审计第二十八轮（612/808/809，canonical 收编三件）：
+  # 本轮独立复审发现 809 接线时未登记本清单——预提交门「最高编号必须在
+  # files 数组」红了 60 个提交（提交方绕过）；且该守卫只盯最高编号，
+  # 612/808 两条静默漏网（同 803-806 批注的断链形态：只进 installer
+  # StartupFiles，存量库的 sequence 通道拿不到）。三条对存量库均可重放：
+  #   612 native_responses_capability：CREATE TABLE IF NOT EXISTS 幂等。
+  #   808 request_logs DEFAULT 分区兜底：存在性检查 + NOTICE skipping。
+  #   809 instance_release_status nullable release_id：DROP NOT NULL +
+  #     偏索引 IF NOT EXISTS，重放 no-op。
+  # 534 亦同批收编但位次受 clobber guard 约束——其 ensure_handoff_logs_partition
+  # 与 714 同名异体，必须先于 714（见 714 条目上方）；见 710/714 之间。
+  "$ROOT_DIR/sql/migrations/startup/612_native_responses_capability.sql"
+  "$ROOT_DIR/sql/migrations/startup/808_request_logs_default_partition.sql"
+  "$ROOT_DIR/sql/migrations/startup/809_instance_release_status_nullable_release_id.sql"
+
+
+  # 2026-10-02 SQL 日志审计二十轮（810）：治愈「heap 但无 TOAST 表」的空分区
+  # （10-01 列存事故回退/并行轨道往返实验遗留；session_bodies_2026_10 上
+  # promote row-too-big ×59/14h 实证）。仅动空分区（count=0），非空分区
+  # NOTICE 跳过指路 806/562 通道；幂等（治愈后扫描为空集）。
+  "$ROOT_DIR/sql/migrations/startup/810_heap_partitions_toastless_heal.sql"
+
+  # 2026-10-02 SQL 日志审计二十轮（811）：request_logs / routing_decision_log
+  # 分区边界 473 型 UTC 零点污染重建为正典 +08 零点网格（687 姊妹篇；
+  # 252 生产 overlap ×8、ensure 2026_11 永远建不出来、11-01 写入时间炸弹
+  # 实证）。存储引擎跟随原分区（rdl=columnar 单族）；bak 两遍回灌计数
+  # 守恒；幂等（干净边界跳过）。位置约束：晚于 694（时区钉扎正典）。
+  "$ROOT_DIR/sql/migrations/startup/811_partition_bounds_shanghai_midnight_repair.sql"
+
+  # 2026-10-02 SQL 日志审计二十轮（812）：model_probe_runs 空列存分区转
+  # heap——探针状态更新器 CTID ×114 家族真根因（UPDATE 计划含 ColumnarScan
+  # 即被 citus 拒绝，与目标表 AM 无关；R19 归因补全）。三个月分区全 0 行
+  # 空壳（活数据在 model_probe_runs_hot=heap），806 同款仅动空分区；幂等。
+  "$ROOT_DIR/sql/migrations/startup/812_model_probe_runs_partitions_heap.sql"
+)
+
+# 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
+# 迁移文件内容被加固（幂等守卫重建、canonical 清单扩充等）而编号不变时，
+# 仅按文件名记账的台账永远不会重放它——644 的 self_check_runs CHECK 就因此
+# 在 252 上停在 09-03 旧版清单，运行时写新类别全被 23514 拒绝（2026-09-21
+# 复核轮 F4，当时靠手工重放解围）。本清单登记"内容已加固、必须在下次部署
+# 重放"的文件，格式 "basename|当前内容 sha256"：
+#   - 台账行 sha 为 NULL（遗留记账）且文件在清单中 → 按当前内容重放一次，
+#     然后台账记录 sha，此后进入常规指纹管理；
+#   - 台账行 sha 非空且与文件当前 sha 不一致 → 内容在应用后又变更，自动
+#     重放（幂等契约兜底安全性）；
+#   - 台账行 sha 与文件一致 → 正常跳过。
+# 清单条目与文件内容由契约测试（apply-db-revision-sequence_test.sh）核对，
+# 文件再改动而条目未同步时门禁变红——白名单自清洁，与 sqlreadguard 同款。
+legacy_content_replays=(
+  # 2026-09-21 复核轮 F4：§C DO 块重建 self_check_runs CHECK 为 canonical
+  # errorsx 类别清单（09-03 应用的是缺 concurrent 等类别的旧版）。文件自带
+  # definition-aware 守卫（canonical CHECK 已在位时不再重跑 ADD CONSTRAINT），
+  # 重放对已修复库是幂等 no-op，对未修复库补齐加固。
+  '644_tuning_views_selfcheck_and_candidate_failure_cache.sql|5dc5731fb58af65039a26536d7867ffba55c77169d0e5cc4db84aa1e0ea4553c'
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -486,6 +804,11 @@ files=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 534 (24h 审计第二十八轮 canonical 收编) 引入 ensure_handoff_logs_partition
+  # 的 columnar 体；714 的 handoff_logs 腿是同一函数的 Asia/Shanghai 时区钉扎版
+  # （DECLARE 初始化器移入函数体）。714 必须保持为后项——与 699/703 的
+  # V371-track 同型：钉扎版必须是活库里的最终体。
+  'ensure_handoff_logs_partition|534_handoff_logs_hot_columnar.sql|714_partition_timezone_pin_remaining.sql|'
   # 563 restores the hot trigger with the corrected unbounded-numeric ratio
   # body; 661 re-asserts the same fixed body AFTER 563 and validates the
   # function source. 572 must stay before 563; 661 must stay last.
@@ -499,7 +822,9 @@ intentional_function_chains=(
   # 697 appends system_fingerprint to the three explicit column lists on top
   # of 695's body (self-heal demote kept); 698 adds the Asia/Shanghai pin on
   # top of 697's body and must stay the later entry.
-  'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 739 (R56) re-derives the body on top of 698 adding credits_rate_multiplier
+  # to the three explicit column lists; 739 must stay the later entry.
+  'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|698_promote_hot_partition_timezone_pin.sql|739_promote_functions_rate_multiplier.sql|'
   # 699 re-pins ensure_supplier_errors_partition (V371 deployed the original
   # out-of-repo-family body) to Asia/Shanghai; the pin must stay the later entry.
   'ensure_supplier_errors_partition|V371__supplier_errors_hot_and_stats.sql|699_supplier_errors_ensure_timezone_pin.sql|'
@@ -509,12 +834,22 @@ intentional_function_chains=(
   # registration and aborted every later deploy at the pre-flight guard,
   # 2026-09-14 deploy-local incident).
   'promote_supplier_errors_hot_to_partition|V371__supplier_errors_hot_and_stats.sql|703_supplier_errors_promote_timezone_pin.sql|'
+  # 801（原 759 撞号让位后改号）以有界无损版本重定义 733 建的
+  # promote_session_turn_details_hot_to_partition：733 的 parent anti-join 在
+  # backfill 已插入同一 request key 时滞留旧 hot 行。801 必须保持为后项。
+  'promote_session_turn_details_hot_to_partition|733_session_turn_details.sql|801_session_turn_details_duplicate_drain.sql|'
   # 705 rewrote ensure_request_logs_partition as the attached-aware body
   # (detached-shell re-attach + default-gap self-heal) on top of 694's
   # timezone-pinned body; the rewrite must stay the later entry. 705 landed
   # without this registration — same pre-flight guard abort class as 703
   # (caught 2026-09-14 when S1a files joined the sequence).
   'ensure_request_logs_partition|694_partition_ensure_timezone.sql|705_request_logs_reattach_detached_partitions.sql|'
+  # 765 (R16 bodies columnar round) redefines 694's ensure_request_logs_bodies_partition
+  # so new month partitions are created USING citus_columnar when the extension is
+  # present (heap fallback otherwise); 765 must stay the later entry. 765 landed
+  # without this registration and aborted every later deploy at the pre-flight
+  # guard (caught 2026-10-01 during the R35-N1 critical-review deploy).
+  'ensure_request_logs_bodies_partition|694_partition_ensure_timezone.sql|765_bodies_columnar_storage.sql|'
   # 659 rewrote these seven promote bodies as the single atomic CTE form;
   # 688 later aligned their defaults to the Go scheduler (not in this array,
   # so invisible to the scanner) and 698 re-derives each body from the
@@ -523,7 +858,9 @@ intentional_function_chains=(
   'promote_tool_usage_stats_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_credit_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_request_logs_bodies_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
-  'promote_usage_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 739 (R56) re-derives the body on top of 698 adding rate_multiplier to the
+  # three explicit column lists; 739 must stay the later entry.
+  'promote_usage_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|739_promote_functions_rate_multiplier.sql|'
   'promote_request_wal_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_credential_model_index_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_routing_decision_log_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
@@ -603,14 +940,43 @@ fi
 
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
-  marker="${sequence_name}:$(basename "$file")"
+  base="$(basename "$file")"
+  marker="${sequence_name}:${base}"
+  file_sha="$(sha256_file "$file")"
+  # 本文件在 legacy_content_replays 中登记的期望指纹（格式严格的
+  # "basename|sha" 全等匹配；登记过期由契约测试先红）。
+  replay_expected_sha=""
+  for entry in "${legacy_content_replays[@]}"; do
+    if [[ "$entry" == "${base}|${file_sha}" ]]; then replay_expected_sha="$file_sha"; break; fi
+  done
+  stored_sha="$(psql_query "SELECT content_sha256 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")"
+  if [[ -n "$stored_sha" ]]; then
+    if [[ "$stored_sha" == "$file_sha" ]]; then
+      printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
+      continue
+    fi
+    # 台账已记指纹且与当前文件不同：文件在应用后被内容加固过。通道契约
+    # （每个迁移幂等）兜底重放安全性，重放使库状态收敛到当前文件内容。
+    printf 'content replay (ledger %.12s -> file %.12s): applying %s\n' "$stored_sha" "$file_sha" "${file#"$ROOT_DIR/"}"
+    psql_file "$file"
+    psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}' WHERE sequence_name='${marker}'"
+    continue
+  fi
   if [[ "$(psql_query "SELECT 1 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")" == 1 ]]; then
-    printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
+    if [[ -n "$replay_expected_sha" ]]; then
+      # 遗留记账（指纹通道上线前应用）且登记在重放清单：按当前内容重放
+      # 一次，之后进入常规指纹管理。
+      printf 'content replay (legacy, registered): applying %s\n' "${file#"$ROOT_DIR/"}"
+      psql_file "$file"
+      psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}' WHERE sequence_name='${marker}'"
+    else
+      printf 'already applied (pre-fingerprint legacy marker): %s\n' "${file#"$ROOT_DIR/"}"
+    fi
     continue
   fi
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
-  psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name) VALUES ('${marker}') ON CONFLICT (sequence_name) DO NOTHING"
+  psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256) VALUES ('${marker}', '${file_sha}') ON CONFLICT (sequence_name) DO NOTHING"
 done
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"

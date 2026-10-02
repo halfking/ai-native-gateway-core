@@ -7,10 +7,13 @@
 // 无界增长表。默认 7 天窗口与 request_state_transitions 的 journey 保留
 // （requestjourney.RetentionWorker）对齐——两者同属请求链路观测数据。
 //
-// 实现差异说明：该表没有 created_at 单列索引（现有索引均以 tenant/stage
-// 为前导列），子查询按 created_at 过滤会走顺序扫描；得益于"最老行物理
-// 靠前"的堆布局与 LIMIT 批次，首清存量后每 tick 的增量成本很小。若生产
-// 实测扫描成本高，再补 created_at 索引迁移，本 worker 的 SQL 无需变化。
+// 实现差异说明：子查询按 created_at 过滤并 LIMIT 批次，靠索引取最老的一批。
+// 本段原先写着「该表没有 created_at 单列索引……若生产实测扫描成本高，再补
+// created_at 索引迁移」——该前提已不成立（2026-09-29 R79 续十 实测）：
+// idx_stage_events_created_at 已存在，EXPLAIN 走 Index Scan 而非顺序扫描
+// （request_stage_events 3,286,679 行 / 2035 MB）。留此注记是为了避免后续维护者
+// 按旧注记再做一次已完成的索引迁移；判定逻辑见
+// tests/48h-audit/D07-hot-columnar/data/retention_trim_index_test.go。
 // 表无 RLS（pg_class.relrowsecurity = f），无需 bypass_rls GUC。
 package trace
 

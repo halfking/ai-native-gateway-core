@@ -48,6 +48,19 @@ const (
 	HealthDegraded HealthState = "degraded"
 	HealthDown     HealthState = "down"
 	HealthUnknown  HealthState = "unknown"
+	// HealthStorage 表示「资产本身没坏，但它依赖的存储读路径不可用」
+	// （数据库不可达、连接池为空、读事务开不起来）。与 HealthDown 的区别很
+	// 重要：down 意味着探针确认资产不响应，storage_degraded 意味着探针还能
+	// 跑但读不到持久化状态 —— 对应的 HTTP 语义是 503 + storage_status，
+	// 而不是 500。
+	//
+	// 供 admin 会话读端点在存储降级时上报（Subtask 4，handoff §6）。
+	//
+	// R73 审计登记：当前**零消费点**——503 路径（admin/storage_degraded.go）
+	// 只写 HTTP 响应体的 storage_status 与 metrics_storage 打点，从未把
+	// session_bodies 等资产的 HealthState 映射为 storage_degraded。保留为
+	// 预留枚举：接入前任何读者都应把它当作「尚未接线」而非「已上报」。
+	HealthStorage HealthState = "storage_degraded"
 )
 
 // Asset is the unified resource record. The primary key is the composite

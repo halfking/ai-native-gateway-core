@@ -2,6 +2,8 @@ package autoupdate
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -129,6 +131,12 @@ func (s *PgxStore) ListReleases(ctx context.Context, channel Channel, offset, li
 		releases = append(releases, rel)
 	}
 
+	// 迭代终检：连接中断时 Next() 提前返回 false，与「正常读完」无法区分。
+	// 不查 Err() 就把半个发布列表连同 nil error 交给调用方——升级决策会
+	// 基于一份静默截断的清单做。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("autoupdate.PgxStore.ListReleases: iterate rows: %w", err)
+	}
 	return releases, total, nil
 }
 
@@ -313,12 +321,16 @@ func (s *PgxStore) GetInstanceStatus(ctx context.Context, instanceID string) (*R
 		WHERE instance_id = $1
 	`
 	rs := &ReleaseStatus{}
+	// release_id 可空（迁移 809）：扫进局部可空变量再赋值，避免把 NULL
+	// 折成 0 哨兵 —— ReleaseStatus 也是 UpdateInstanceStatus 的写命令参数。
+	var releaseID *int64
 	err := s.db.QueryRow(ctx, query, instanceID).Scan(
-		&rs.ReleaseID, &rs.InstanceID, &rs.Status, &rs.Version, &rs.StartedAt, &rs.CompletedAt, &rs.Error, &rs.RetryCount,
+		&releaseID, &rs.InstanceID, &rs.Status, &rs.Version, &rs.StartedAt, &rs.CompletedAt, &rs.Error, &rs.RetryCount,
 	)
 	if err != nil {
 		return nil, err
 	}
+	rs.ReleaseID = releaseID
 	return rs, nil
 }
 
@@ -352,11 +364,31 @@ func (s *PgxStore) RecordUpdateReport(ctx context.Context, report *UpdateReportD
 	defer tx.Rollback(ctx)
 
 	// 1. 查找 release_id（通过 to_version）
-	var releaseID int64
+	//
+	// 查不到时必须写 NULL，不能写 0。
+	//
+	// 旧代码在这里兜底成 0，注释写的是「允许主控端先上报，release 记录稍后
+	// 创建」，但 instance_release_status.release_id 带
+	// `REFERENCES releases(id)` 外键，而 releases_id_seq 恒从 1 开始，
+	// id=0 的行永远不存在 —— 于是这条「兜底」每次都撞 SQLSTATE 23503，
+	// handler 直接回 500，上报丢失。回滚上报的 ToVersion 是「回滚到的那个
+	// 旧版本」，天然可能没有对应的 releases 行，所以这是真实业务流，不是
+	// 边角情况。迁移 809 解除 NOT NULL（外键保留，外键本就允许 NULL），
+	// 「没有 release」由 NULL 表达。
+	//
+	// 另一处同批修掉的：旧代码用 `if err != nil` 吞掉**所有**错误，于是
+	// 连接中断、权限不足这类真实故障也会被当成「没查到 release」静默
+	// 降级成兜底值。现在只对 pgx.ErrNoRows 走 NULL 分支，其余错误上抛。
+	var releaseID *int64
 	releaseQuery := `SELECT id FROM releases WHERE version = $1`
-	if err := tx.QueryRow(ctx, releaseQuery, report.ToVersion).Scan(&releaseID); err != nil {
-		// 如果找不到 release，使用 0（允许主控端先上报，release 记录稍后创建）
-		releaseID = 0
+	var found int64
+	switch err := tx.QueryRow(ctx, releaseQuery, report.ToVersion).Scan(&found); {
+	case err == nil:
+		releaseID = &found
+	case errors.Is(err, pgx.ErrNoRows):
+		releaseID = nil // 该版本还没有 releases 行，见上方说明
+	default:
+		return fmt.Errorf("lookup release_id for to_version=%q: %w", report.ToVersion, err)
 	}
 
 	// 2. 写入 instance_release_status

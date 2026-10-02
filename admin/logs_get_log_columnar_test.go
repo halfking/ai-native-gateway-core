@@ -55,7 +55,9 @@ func TestFetchRequestBodies_HotOnly_PassesInUnderOneSecond(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-fetch-bodies-hot-" + time.Now().Format("20060102-150405.000000")
 	insertTestRequestLogWithBodies(t, pool, requestID)
-	t.Cleanup(func() { cleanupTestRequestLog(t, pool, requestID) })
+	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
+	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
+	defer cleanupTestRequestLog(t, pool, requestID)
 
 	h := &Handler{db: pool}
 	start := time.Now()
@@ -204,7 +206,9 @@ func TestBodyFetchCache_HitUnderOneMillisecond(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-cache-hit-" + time.Now().Format("20060102-150405.000000")
 	insertTestRequestLogWithBodies(t, pool, requestID)
-	t.Cleanup(func() { cleanupTestRequestLog(t, pool, requestID) })
+	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
+	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
+	defer cleanupTestRequestLog(t, pool, requestID)
 
 	// Per-test cache (avoid cross-test pollution). 100 entries, 1min TTL is
 	// sufficient for this single-key test.
@@ -227,8 +231,8 @@ func TestBodyFetchCache_HitUnderOneMillisecond(t *testing.T) {
 	// Stats: 1 miss + 1 hit.
 	size, hits, misses, _ := h.bodyFetchCache.Stats()
 	assert.Equal(t, 1, size, "cache should hold 1 entry")
-	assert.Equal(t, uint64(1), hits, "should record 1 hit")
-	assert.Equal(t, uint64(1), misses, "should record 1 miss")
+	assert.EqualValues(t, 1, hits, "should record 1 hit")
+	assert.EqualValues(t, 1, misses, "should record 1 miss")
 }
 
 // TestBodyFetchCache_TTLExpires exercises the TTL expiry path: a value
@@ -241,7 +245,9 @@ func TestBodyFetchCache_TTLExpires(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-cache-ttl-" + time.Now().Format("20060102-150405.000000")
 	insertTestRequestLogWithBodies(t, pool, requestID)
-	t.Cleanup(func() { cleanupTestRequestLog(t, pool, requestID) })
+	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
+	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
+	defer cleanupTestRequestLog(t, pool, requestID)
 
 	// 1ms TTL — guaranteed expiry on the second call.
 	h := &Handler{db: pool, bodyFetchCache: newBodyFetchCache(100, time.Millisecond)}
@@ -260,8 +266,8 @@ func TestBodyFetchCache_TTLExpires(t *testing.T) {
 	// After TTL expiry, the second call must hit the DB again
 	// (>= 1ms typically). Cache must record 2 misses total.
 	_, hits, misses, _ := h.bodyFetchCache.Stats()
-	assert.Equal(t, uint64(0), hits, "TTL expired → must not count as hit")
-	assert.GreaterOrEqual(t, misses, uint64(2), "TTL expired → both calls should be misses")
+	assert.EqualValues(t, 0, hits, "TTL expired → must not count as hit")
+	assert.GreaterOrEqual(t, misses, 2, "TTL expired → both calls should be misses")
 	t.Logf("post-TTL re-fetch elapsed=%s hits=%d misses=%d", elapsed, hits, misses)
 }
 
@@ -294,8 +300,8 @@ func TestBodyFetchCache_NotFoundIsCached(t *testing.T) {
 		"not-found cache hit should be < 1ms (got %s)", elapsed)
 
 	_, hits, misses, _ := h.bodyFetchCache.Stats()
-	assert.Equal(t, uint64(1), hits, "second not-found call should be a cache hit")
-	assert.Equal(t, uint64(1), misses, "first not-found call should be a cache miss")
+	assert.EqualValues(t, 1, hits, "second not-found call should be a cache hit")
+	assert.EqualValues(t, 1, misses, "first not-found call should be a cache miss")
 }
 
 // TestBodyFetchCache_LRUEvictsOldest verifies that when capacity is

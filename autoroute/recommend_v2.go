@@ -2,12 +2,30 @@ package autoroute
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// taskVocabularyAbsentTotal 是 R73 审计登记④/D11#1 的观测收口：分类学
+// fail-open（中性化）分支每次触发计一次。零观测时「模型库 tags 被误清空」
+// 与「正常路由」在指标面不可区分——每个请求都静默降级为价格/通道质量
+// 排序，唯一发现手段是手工跑 E2E harness。label=task 取值来自分类结果
+// 的有界任务集（~10 个 TaskType），基数受控。中性化后的 wire 侧
+// vocabulary_present 字段是否引入仍属 owner 拍板项（R73 P2-1 登记④）。
+var taskVocabularyAbsentTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "autoroute_task_vocabulary_absent_total",
+		Help: "Taxonomy fail-open events: the scored candidate pool carries none of the tags this task requires, so the tag dimension is neutralised to 0.5 and routing degrades to price/quality ranking. Sustained non-zero rates mean the models_canonical tag vocabulary is empty or mismatched for that task.",
+	},
+	[]string{"task"},
 )
 
 // RecommendV2 is the new candidate recommendation path. It enforces
@@ -114,6 +132,25 @@ func (idx *Index) RecommendV2WithHints(
 		available = append(available, c)
 	}
 
+	// Taxonomy fail-open (2026-09-28 live audit). When the model library
+	// carries none of the capability tags this task requires, every candidate
+	// scores TaskMatchScore == 0 and the tag dimension carries no information.
+	// Left as 0 that is read as a capability verdict rather than as missing
+	// data, which is what pushed code / code_audit / creative /
+	// intent_classification / vision into the 48h popularity collapse below
+	// (124/240 cases of the E2E suite, every one of them resolving to the same
+	// single model). Neutralise to the same "unknown" score chat already uses so
+	// routing keeps deciding on price / channel quality / reliability — real
+	// signals — instead of discarding the pool for a taxonomy gap.
+	vocabularyPresent := TaskVocabularyRepresented(task, available)
+	if len(available) > 0 && !vocabularyPresent {
+		// R73 审计 D11#1：fail-open 触发必须留痕（见 taskVocabularyAbsentTotal）。
+		taskVocabularyAbsentTotal.WithLabelValues(string(task)).Inc()
+		for i := range available {
+			available[i].TaskMatchScore = TaskMatchScoreUnknown
+		}
+	}
+
 	if len(available) == 0 {
 		fallback := idx.get48hFallback(ctx)
 		if fallback != nil {
@@ -150,10 +187,24 @@ func (idx *Index) RecommendV2WithHints(
 		}
 
 		if len(hotTop3) < 3 {
-			for canonID, cands := range byCanonical {
+			// Deterministic backfill order. Go randomises map iteration, and
+			// every downstream step (stable sort on Composite, then the
+			// optimizer hooks that reorder the list) inherits that order: for
+			// two candidates with identical scores the winner was decided by
+			// map iteration order, so the same request could pick a different
+			// model on every call. That surfaced as an intermittent
+			// TestDecideV2_RecommendModelHook_ReordersWinner failure (audit
+			// M-7, ~1 in 8 runs) and made decision traces irreproducible.
+			// Ascending canonical id is a neutral, stable tie-break.
+			rest := make([]int, 0, len(byCanonical))
+			for canonID := range byCanonical {
 				if !hotCanonIDs[canonID] {
-					candidatePool = append(candidatePool, cands...)
+					rest = append(rest, canonID)
 				}
+			}
+			sort.Ints(rest)
+			for _, canonID := range rest {
+				candidatePool = append(candidatePool, byCanonical[canonID]...)
 			}
 		}
 	}
@@ -269,7 +320,25 @@ func (idx *Index) RecommendV2WithHints(
 		scored = scored[:topN]
 	}
 
-	if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 {
+	// 48h popularity collapse — only sound when the tag dimension is actually
+	// discriminating. A sub-30 winner means "nothing in this pool suits the
+	// task" only if some candidate was capable of scoring above 30 in the first
+	// place. When the pool has no vocabulary for the task, every candidate
+	// scores 0 by construction, and collapsing here would replace a real,
+	// fully-scored, diverse pool with one unscored popularity pick — losing
+	// both the price/quality ranking and the failover ladder that protects the
+	// request when that single model's upstream rate-limits. The neutralisation
+	// above already keeps scored[0] at 50 in that case; this guard makes the
+	// invariant explicit and survives future scoring changes.
+	//
+	// R73 审计 M-1 根修：present 判定必须针对**实际参与打分的 candidatePool**，
+	// 而非全量 available。非 FullCandidateSet 时打分发生在 hot-top3 子池——
+	// 词表代表只在子池外时，旧判定仍 true，全 0 子池照样坍缩到 48h 热度单
+	// 模型（多样性 3→1，429 放大器复现条件；long_context 结构性坍缩即此）。
+	// 词表在子池外 ≠ 子池不能服务任务：此时按池内真实分数继续排序（价格/
+	// 质量维度仍然有效）。全量层的 vocabularyPresent 仅保留给上面的中性化
+	// 使用（整库无词表 → 打分无意义 → 中性化）。
+	if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 && TaskVocabularyRepresented(task, candidatePool) {
 		fallback := idx.get48hFallback(ctx)
 		if fallback != nil {
 			return []ScoredCandidate{{
@@ -491,9 +560,22 @@ func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
 	for rows.Next() {
 		var id int
 		var count int64
-		if err := rows.Scan(&id, &count); err == nil {
-			result = append(result, id)
+		if err := rows.Scan(&id, &count); err != nil {
+			// R66: 裸 err == nil 会把坏行静默丢掉，热门榜因此少一项
+			// 且无痕（挑选的是错模型，不是「挑不到模型」）。
+			dbrows.WarnRowSkip("autoroute.Index.getHotTop3Canonicals", err)
+			continue
 		}
+		result = append(result, id)
+	}
+	// R66（category 5）：hot Top-3 直接决定 48h fallback 挑哪个
+	// canonical 模型。截断 → 挑错模型；更糟的是残缺结果会被写进
+	// 2 分钟 TTL 缓存并持续生效。本函数无 error 返回值（签名不可改），
+	// 故：留痕 + 拒绝缓存残缺结果，下个请求重新查。
+	if err := rows.Err(); err != nil {
+		slog.Warn("autoroute: hot top-3 row iteration aborted; result truncated, cache not updated",
+			"error", err, "collected", len(result))
+		return result
 	}
 
 	// Update cache

@@ -40,6 +40,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
+	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -338,6 +340,10 @@ type StreamOutcome = struct {
 	Reason      string
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
+	// TerminalRendered mirrors streaming.StreamOutcome (field-identical for
+	// the type alias to stay assignable): the bridge already wrote a
+	// protocol terminal for this committed-output interruption.
+	TerminalRendered bool
 
 	// Kind (2026-07-28 §5.6) is the structured errorsx.ErrorKind the
 	// executor assigns to the interruption. When non-empty,
@@ -373,6 +379,16 @@ type ProbeSyncFunc func(
 // Clears the node_probe_state failure gate for a (credential, model) pair
 // after a successful real business request.
 type NodeProbeHealthyFunc func(ctx context.Context, credentialID int, rawModel string) error
+
+// NodeProbeConfirmFunc is the contract bg.NodeProbeWorker.ProbeConfirm
+// satisfies (Wave 3 B2②, 2026-09-22). Defined here for the same
+// decoupling reason as ProbeSyncFunc. It runs the flash-blip double
+// confirmation: two lightweight direct pings inside the 2~5s design
+// window; true = node confirmed broken (both pings failed) and the
+// deferred degrade must be applied, false = transient blip, node stays
+// healthy. Nil disables flash-blip confirmation and keeps the immediate
+// degrade behaviour.
+type NodeProbeConfirmFunc func(ctx context.Context, credentialID int, rawModel string) bool
 
 // StreamWrapperFunc is injected by the main.go wiring to handle streaming
 // responses. Receives the upstream resp and returns a StreamOutcome to let
@@ -419,7 +435,10 @@ type AnthropicToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter
 // API SSE to w. Used by executeOpenAI when ClientProtocol ==
 // "openai-responses" (Phase E, 2026-07-01).
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
-type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// 2026-09-23: added toolsRequested so main.go can wrap resp.Body with the
+// XML/minimax tool-call coercer before the conversion runs (leak fix — the
+// bridge previously never coerced, unlike the chat passthrough loop).
+type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, toolsRequested bool) StreamOutcome
 
 // NativeResponsesSSEFunc forwards an already-native OpenAI Responses SSE stream
 // without converting it through the Chat Completions bridge.
@@ -455,7 +474,10 @@ type ChatResponseToAnthropicFunc func(body []byte, clientModel, requestID string
 //
 // Wired from main.go (streaming.StreamOpenAIToAnthropicSSE).
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
-type OpenAIToAnthropicSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, inputTokensEstimate int) StreamOutcome
+// 2026-09-23: added toolsRequested so main.go can wrap resp.Body with the
+// XML/minimax tool-call coercer before the conversion runs (minimax-m3
+// wrapper tokens previously leaked verbatim into anthropic client text).
+type OpenAIToAnthropicSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, inputTokensEstimate int, toolsRequested bool) StreamOutcome
 
 // SanitizeAnthropicToolsFunc strips OpenAI/custom tool type wrappers from
 // an Anthropic Messages request body before forwarding to upstream.
@@ -529,9 +551,11 @@ type Executor struct {
 	// nil (default, flag LLM_GATEWAY_ATTACHMENT_URL_FETCH_FALLBACK off)
 	// keeps the legacy byte-for-byte outbound body.
 	AttachmentURLFetchFallback *attachments.URLFetchFallback
-	// dispatchPipeline (V2, 479): when non-nil AND dispatch_v2 gate is on,
-	// Execute routes through the multi-tier dispatch pipeline instead of the
-	// synchronous candidate loop. See executor_dispatch.go.
+	// dispatchPipeline (V2, 479): the sole Execute path since AUDIT_24H B2b
+	// (2026-08-17) — the synchronous candidate loop and its async 202 fallback
+	// were retired, and the dispatch_v2.enabled kill-switch no longer bypasses
+	// the pipeline. nil here means a wiring bug; main_dispatch.go wires it
+	// unconditionally. See executor_dispatch.go.
 	dispatchPipeline         *dispatch.Pipeline
 	dispatchModelRecommender DispatchModelRecommender
 	capacityAwareSortOn      bool
@@ -539,6 +563,17 @@ type Executor struct {
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
+
+	// RequestProbe (2026-09-21) 请求侧异常探测：上游 4xx 时的参数剔除
+	// 重试、native responses→chat 模式回退重试与结果记录（见
+	// reqprobe_integration.go）。nil 时全部行为关闭，仅影响探测特性。
+	RequestProbe *reqprobe.Coordinator
+
+	// ParamLedger (2026-09-22) 参数协商账本：paramguard/reqprobe 的出站
+	// 调整按 request_id 记账，native responses 回程把 reasoning.effort
+	// 回显还原为客户端原值（见 paramledger_integration.go）。nil 时全部
+	// 行为关闭。Full 模式下由 main.go 注入带 Redis 镜像的实例。
+	ParamLedger *paramledger.Ledger
 
 	// liveActions (2026-08-15, V3.3-OBS OBS-B1) 请求生命周期动作事件发射器
 	// （credential_selected / upstream_request / reply / node_switch /
@@ -653,7 +688,14 @@ type Executor struct {
 	// the executor adapts its existing circuit/state/URSM/probe dependencies.
 	NodeOutcomeReducer *nodehealth.OutcomeReducer
 	NodeHealthAdapter  nodehealth.Adapter
-	nodeHealthMu       sync.Mutex
+
+	// flashBlipInFlight (Wave 3 B2②) guards one pending double-confirm per
+	// node key "<credID>|<model>": while a confirm runs, later failures on
+	// the same node skip spawning a second one. Guarded by flashBlipMu,
+	// lazily initialised.
+	flashBlipMu       sync.Mutex
+	flashBlipInFlight map[string]struct{}
+	nodeHealthMu      sync.Mutex
 	// Provider is the credential/candidate resolver. Typed as an interface
 	// (defined in routing) so the compaction fallback tests can inject a
 	// stub without standing up a real pgx pool. The concrete
@@ -808,6 +850,13 @@ type Executor struct {
 	// Wired from main.go to bg.MarkNodeProbeHealthy.
 	// Nil is safe — the call is skipped.
 	NodeProbeHealthy NodeProbeHealthyFunc
+
+	// NodeProbeConfirm (Wave 3 B2②) gates the FIRST consecutive
+	// network/timeout failure of a node behind a flash-blip double
+	// confirmation: the degrade-family state writes are deferred while
+	// two lightweight pings verify the error. Wired from main.go to
+	// bg.NodeProbeWorker.ProbeConfirm. Nil keeps the immediate degrade.
+	NodeProbeConfirm NodeProbeConfirmFunc
 
 	// asyncDepth is the recursion guard (Track C C4). The async
 	// goroutine (runAsyncRetry) calls Execute again; we bump this
@@ -1021,6 +1070,15 @@ func extractClientType(r *http.Request) string {
 	case strings.Contains(ua, "jetbrains/"), strings.Contains(ua, "intellij/"),
 		strings.Contains(ua, "pycharm/"), strings.Contains(ua, "webstorm/"):
 		return "jetbrains"
+	// 2026-09-21 audit: domestic coding-agent clients. Must mirror
+	// domains/streaming/client_fingerprint.go:extractClientType — two copies
+	// exist because of the executors-package zero-deps contract.
+	case strings.Contains(ua, "minimax-code/"), strings.Contains(ua, "minimax-code-"):
+		return "minimax-code"
+	case strings.Contains(ua, "deepseek-code/"), strings.Contains(ua, "deepseek-code-"),
+		strings.Contains(ua, "deepseek-ide/"), strings.Contains(ua, "deepseek-ide-"),
+		strings.Contains(ua, "deepseek-cli/"), strings.Contains(ua, "deepseek-cli-"):
+		return "deepseek-code"
 	}
 	return ""
 }
@@ -1248,6 +1306,13 @@ type ExecParams struct {
 	// DispatchAttemptID is stable for one real dispatch ForwardFunc invocation
 	// and is the idempotency key for node-health reduction.
 	DispatchAttemptID string
+	// ExtraUpstreamCall charges the admitting credential governor for an
+	// extra upstream call issued inside the protocol retry loop (reqprobe
+	// param-strip / mode-fallback retries, context-length recovery,
+	// R51-F15). Wired by forwardForDispatch from the dispatch attempt's
+	// QueuedRequest; nil in legacy (non-dispatch) executions. Must be
+	// non-blocking.
+	ExtraUpstreamCall func()
 	// FirstSemanticByteCallback is bound to the current dispatch attempt. Stream
 	// bridges invoke it only for the first real content/tool SSE frame; non-stream
 	// execution invokes it after the complete successful response is available.
@@ -1308,6 +1373,15 @@ type ExecParams struct {
 	// accounting.
 	FailoverNotices      *FailoverNoticeCollector
 	SuppressSuccessWrite bool
+	// DeferredOutputGovernance (R25-V): the handler owns the client write
+	// and runs output governance at commit time (deferredNonStreamWriter on
+	// the chat lane). Distinct from SuppressSuccessWrite: the chat lane still
+	// needs the success write to land in the capture buffer (W != nil), but
+	// must NOT consume the cached-replay slot here (GetLatest) nor record
+	// LogClientResponse — the handler governs those bytes and may still block
+	// or rewrite them, so replaying the cache would bypass governance and
+	// logging here would persist a blocked provider body as approved.
+	DeferredOutputGovernance bool
 	// AttachmentMetadata carries the extractor's stored-attachment records
 	// (MM-1) so the executor can swap inline base64 blocks for gateway URLs
 	// per outbound candidate. nil on the legacy path (feature off).
@@ -1487,12 +1561,13 @@ func (d *discardResponseWriter) Flush()                      {}
 
 // responseSink returns the writer downstream write paths should use.
 // It is params.W for a normal request-scoped call, or a discard writer
-// when W is nil (async retry goroutine). Never returns nil, so callers
+// when W is nil (async retry goroutine) or the protocol handler owns the
+// non-stream success write. Never returns nil, so callers
 // can pass the result straight into the stream/response writers without
 // a nil check.
 func responseSink(params *ExecParams) http.ResponseWriter {
 	var writer http.ResponseWriter = &discardResponseWriter{}
-	if params != nil && params.W != nil {
+	if params != nil && params.W != nil && !(params.SuppressSuccessWrite && !params.IsStream) {
 		writer = params.W
 	}
 	if params != nil && params.IsStream && params.FirstSemanticByteCallback != nil {
@@ -1514,6 +1589,11 @@ type firstSemanticResponseWriter struct {
 }
 
 func (w *firstSemanticResponseWriter) FirstSemanticByteCallback() func() { return w.callback }
+
+func (w *firstSemanticResponseWriter) OutputPolicyBlocked() bool {
+	blocker, ok := w.ResponseWriter.(interface{ OutputPolicyBlocked() bool })
+	return ok && blocker.OutputPolicyBlocked()
+}
 
 func (w *firstSemanticResponseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
@@ -1851,6 +1931,9 @@ func releaseFpLease(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) 
 	if lease == nil || m == nil || !m.Enabled() {
 		return
 	}
+	// A normal release is happening — cancel the pending B14 hard-cap
+	// watchdog so it does not linger (and misfire) after the slot is freed.
+	lease.StopWatchdogTimer()
 	select {
 	case fpReleaseQueue <- fpReleaseJob{m: m, lease: lease}:
 	default:
@@ -2133,7 +2216,18 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 				)
 			}
 		}
-		if isRetry {
+		// Native protocol handlers own the non-stream success write and
+		// conversion. A cached chat-shaped body cannot bypass that boundary.
+		// R25-V (2026-09-30 round 30): under SuppressSuccessWrite the handler
+		// owns the client write and runs output governance at commit time —
+		// replaying the cache here would bypass that governance AND consume
+		// the fallback slot (GetLatest) so the governed lane could never see
+		// it. When suppressed, leave the retry to the handler lane.
+		// DeferredOutputGovernance covers the chat lane: the body still lands
+		// in the handler's capture buffer (W is a deferredNonStreamWriter, not
+		// nil), but the handler governs it at commit — the cache must not be
+		// consumed here for the same reason.
+		if isRetry && !params.SuppressSuccessWrite && !params.DeferredOutputGovernance {
 			entry, requestID, found, _ := e.PendingStore.GetLatest(params.R.Context(), params.SessionID)
 			if found && entry != nil && entry.Body != "" && entry.Status == pending.StatusCompleted {
 				slog.Info("executor: retry keyword, replaying cached completed response",
@@ -3066,7 +3160,14 @@ func stickyHitForChosen(stickyCredentialID *int, chosenCredentialID int) *bool {
 	return boolPtrCompat(*stickyCredentialID == chosenCredentialID)
 }
 
-func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
+// recordStickySuccess 在请求成功后写回 sticky 绑定并喂 sticky 负载滑窗。
+//
+// 2026-09-19 会话保持：当本请求带着 sticky 钉扎、钉扎节点被尝试且以
+// 非致命错误失败、最终由其他节点服务时（stickyPreserveBinding），
+// 不重写绑定——会话留在原节点，下一次请求仍优先回到原节点（prompt-cache
+// 亲和）。持续失败由节点健康冷却兜底：sticky 节点连败进入冷却后被
+// 过滤出候选，此路径自然走"未被尝试 → 迁移"分支。
+func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int, dctx *dispatchCtx) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil {
 		return
 	}
@@ -3074,6 +3175,20 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	// Do not create bindings during that interval that could affect routing
 	// after the module is enabled again.
 	if !ratelimit.IsRateLimitEnabled() {
+		return
+	}
+
+	if stickyPreserveBinding(dctx, credentialID) {
+		slog.Info("sticky: transient failover, keeping session binding on original node",
+			"sticky_credential_id", *dctx.stickyCredID,
+			"served_credential_id", credentialID,
+			"error_kind", string(dctx.stickyFailKind),
+			"session_id", params.SessionID,
+			"request_id", params.RequestID,
+		)
+		if e.Router.StickyLoad != nil {
+			e.Router.StickyLoad.ObserveActivity(credentialID)
+		}
 		return
 	}
 
@@ -3088,11 +3203,24 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 			params.Model,
 			credentialID,
 		)
+		// 2026-09-19: 绑定写入即观察——会话计入该节点的 5 分钟滑窗。
+		if e.Router.StickyLoad != nil {
+			if l1, _, _ := buildStickyKeys(
+				params.TenantID, params.AppID, params.ApiKeyID,
+				params.ClientID.Fingerprint.ClientProfile,
+				params.SessionID, params.Model,
+			); l1 != "" {
+				e.Router.StickyLoad.ObserveSession(credentialID, l1)
+			}
+		}
 		return
 	}
 
 	// Fallback to L3-only recording
 	if params.StickyKey == "" || params.Policy == nil {
+		if e.Router.StickyLoad != nil {
+			e.Router.StickyLoad.ObserveActivity(credentialID)
+		}
 		return
 	}
 	// Policy.StickyTTLSeconds is in seconds (DB column `sticky_ttl_seconds`).
@@ -3104,6 +3232,29 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 		stickyTTL = time.Minute
 	}
 	e.Router.Sticky.RecordSuccess(params.StickyKey, credentialID, stickyTTL)
+	if e.Router.StickyLoad != nil {
+		e.Router.StickyLoad.ObserveActivity(credentialID)
+	}
+}
+
+// stickyPreserveBinding 判定"瞬时失败 failover 成功后是否保持会话在原
+// sticky 节点"。保持（返回 true）需同时满足：
+//   - 本请求有 sticky 钉扎，且实际服务节点 ≠ 钉扎节点（发生了 failover）；
+//   - 钉扎节点确实被尝试过且失败（stickyFailed）——若它根本没进候选
+//     （冷却/熔断/被过滤）或请求未触达它，视为严重情形，走迁移；
+//   - 失败类型非 credential-fatal（瞬时：超时/网络/429/过载等；
+//     严重：auth/quota 系列，见 errorsx.IsCredentialFatal）。
+func stickyPreserveBinding(dctx *dispatchCtx, servedCredentialID int) bool {
+	if dctx == nil || dctx.stickyCredID == nil {
+		return false
+	}
+	if *dctx.stickyCredID == servedCredentialID {
+		return false // 同节点成功：正常刷新绑定，不涉及保持/迁移
+	}
+	if !dctx.stickyFailed {
+		return false // sticky 节点未被尝试（被过滤/未触达）→ 迁移
+	}
+	return !errorsx.IsCredentialFatal(dctx.stickyFailKind)
 }
 
 func fpSlotTenantID(params *ExecParams) string {
@@ -3192,6 +3343,11 @@ type streamInterruptedError struct {
 	kind         errorsx.ErrorKind // Errorsx kind to record on the circuit (defaults to KindStreamTimeout)
 	statusCode   int
 	rawError     string
+	// terminalRendered: the bridge already wrote a protocol terminal for
+	// this interruption (StreamOutcome.TerminalRendered). forwardForDispatch
+	// wraps errorsx.ErrProtocolTerminalRendered so the handler blackholes
+	// any second terminal.
+	terminalRendered bool
 }
 
 func (e *streamInterruptedError) Error() string {
@@ -3401,6 +3557,10 @@ func (e *contextLengthExhaustedError) Unwrap() error {
 func classifyExecError(err error) errorsx.ErrorKind {
 	if err == nil {
 		return ""
+	}
+	var interrupted *streamInterruptedError
+	if errors.As(err, &interrupted) && interrupted != nil && interrupted.kind != "" {
+		return interrupted.kind
 	}
 	var ue *upstreampkg.Error
 	if errors.As(err, &ue) && ue != nil {

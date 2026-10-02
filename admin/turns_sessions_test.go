@@ -262,8 +262,19 @@ func TestBuildTurnsSessionWhere_APIKeyAndStatus(t *testing.T) {
 	if !strings.Contains(where, "s.status = $3") {
 		t.Fatalf("missing status clause: %s", where)
 	}
-	if !strings.Contains(where, "request_logs_with_current_month") {
-		t.Fatalf("api_key filter must join request_logs view: %s", where)
+	// 会话存储解耦 v3（2026-09-30）：该 EXISTS 的 enrich 腿由
+	// request_logs_with_current_month 换成 session 族原生源。
+	//
+	// 等价性依据（不是假设）：驱动腿 ft 本身是 session_turns 行，而视图的
+	// v1 冻结分支按定义只贡献「session_turns 里没有」的 request_id，
+	// 永远匹配不上 `ON rl.request_id = ft.request_id`。真库对账（40 个真实
+	// 会话）旧新两条腿 pairs=18,725 / sessions=22 / keys=1 逐项相同。
+	if strings.Contains(where, "request_logs_with_current_month") {
+		t.Fatalf("api_key filter must not depend on the frozen v1 view: %s", where)
+	}
+	if !strings.Contains(where, "FROM public.session_turns_hot t") ||
+		!strings.Contains(where, "FROM public.session_turns t") {
+		t.Fatalf("api_key filter must read both session-family legs: %s", where)
 	}
 	if len(args) != 3 || nextArg != 4 {
 		t.Fatalf("expected 3 args / nextArg=4, got %d / %d", len(args), nextArg)
@@ -347,5 +358,36 @@ func TestResolveTurnsSessionsTenant(t *testing.T) {
 				t.Fatalf("resolveTurnsSessionsTenant() = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// TestTurnsSessionSQLHasNoFormatArtifacts 守住「原生源 SQL 不得过 fmt.Sprintf」。
+//
+// 2026-09-30 实踩：把 db.SessionFamilyTurnsSourceSQL() 拼进 fmt.Sprintf 的格式串，
+// 而那段 SQL 含 `LIKE 'sys:%'` 与 `~ '^[0-9]+$'`，`%` 被当成格式动词。生成的
+// WHERE 里出现三处残渣：
+//
+//	%!'(int=2) THEN NULL ELS      ← LIKE 'sys:%' 吃掉了 argIdx
+//	%!'(MISSING) THEN NULL E      ← 第二条腿已无参数可吃
+//	%d(MISSING)                   ← api_key_id 的 $N 也被吞掉
+//
+// 后果是运行期 SQL 语法错 + 参数绑定错位，而**任何「SQL 里包含 X」的正则
+// 断言都发现不了**，因为残渣恰好让 `rl.api_key_id = $N` 不再成立、整条查询
+// 在 PG 解析阶段就失败。本测试直接判「生成结果里不得出现 fmt 的错误动词」。
+func TestTurnsSessionSQLHasNoFormatArtifacts(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?api_key_id=42&status=active", nil)
+	where, args, _ := buildTurnsSessionWhere(req, "t1", time.Time{}, time.Time{}, time.Time{}, "", 1)
+	for _, artifact := range []string{"%!", "%(MISSING", "%!(MISSING", "%(int="} {
+		if strings.Contains(where, artifact) {
+			t.Fatalf("generated WHERE carries fmt artifact %q — the native source SQL was passed through fmt.Sprintf:\n%s",
+				artifact, where)
+		}
+	}
+	// 参数绑定必须与 args 对得上：$1=tenant $2=api_key_id $3=status。
+	if !strings.Contains(where, "rl.api_key_id = $2") {
+		t.Fatalf("api_key_id predicate lost its bind position:\n%s", where)
+	}
+	if len(args) != 3 {
+		t.Fatalf("expected 3 bound args, got %#v", args)
 	}
 }

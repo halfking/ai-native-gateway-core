@@ -29,7 +29,7 @@ func NewRoutingHealthChecker(db *pgxpool.Pool) *RoutingHealthChecker {
 
 func (w *RoutingHealthChecker) Start(ctx context.Context) {
 	slog.Info("routing_health_checker started", "interval", w.interval)
-	go func() {
+	SpawnLoop(ctx, "routing_health_checker.loop", func(context.Context) {
 		w.runOnce(ctx)
 		ticker := time.NewTicker(w.interval)
 		defer ticker.Stop()
@@ -45,7 +45,7 @@ func (w *RoutingHealthChecker) Start(ctx context.Context) {
 				w.runOnce(ctx)
 			}
 		}
-	}()
+	})
 }
 
 func (w *RoutingHealthChecker) Stop() {

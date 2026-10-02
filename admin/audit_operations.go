@@ -222,7 +222,7 @@ func (h *Handler) handleAuditNodeOperations(w http.ResponseWriter, r *http.Reque
 		err = withTenantTx(ctx, h.db, GetTenantID(r), query)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 

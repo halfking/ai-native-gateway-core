@@ -81,7 +81,7 @@ func (h *Handler) HandleSessionHealth(w http.ResponseWriter, r *http.Request) {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "session not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "failed to get health: "+err.Error())
+			writeInternalErr(w, "failed to get health", err)
 		}
 		return
 	}
@@ -118,7 +118,7 @@ func (h *Handler) HandleRecomputeSessionHealth(w http.ResponseWriter, r *http.Re
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "session not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			writeInternalErr(w, "query failed", err)
 		}
 		return
 	}
@@ -129,7 +129,7 @@ func (h *Handler) HandleRecomputeSessionHealth(w http.ResponseWriter, r *http.Re
 
 	// 写入数据库
 	if err := h.updateSessionHealth(ctx, gwSessionID, health); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -348,7 +348,7 @@ func (h *Handler) HandleSessionInspectorFindings(w http.ResponseWriter, r *http.
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "session not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "fetch session dim failed: "+err.Error())
+			writeInternalErr(w, "fetch session dim failed", err)
 		}
 		return
 	}
@@ -394,7 +394,7 @@ func (h *Handler) HandleSessionInspectorStats(w http.ResponseWriter, r *http.Req
 
 	stats, err := h.fetchSessionInspectorStats(ctx, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "fetch stats failed: "+err.Error())
+		writeInternalErr(w, "fetch stats failed", err)
 		return
 	}
 	stats.GeneratedAt = time.Now()
@@ -453,7 +453,7 @@ func (h *Handler) HandleSessionRecycle(w http.ResponseWriter, r *http.Request) {
 		AND ($3 = '' OR tenant_id = $3)
 	`, gwSessionID, body.Reason, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "recycle failed: "+err.Error())
+		writeInternalErr(w, "recycle failed", err)
 		return
 	}
 

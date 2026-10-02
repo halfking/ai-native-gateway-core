@@ -70,7 +70,7 @@ func (h *PeakHandlers) handleGetPeaks(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -87,6 +87,7 @@ func (h *PeakHandlers) handleGetPeaks(w http.ResponseWriter, r *http.Request) {
 
 		if err := rows.Scan(&weekStart, &credID, &rawModel, &peak, &p95, &avg,
 			&total, &sampleDays, &currentLimit, &suggested, &reason, &updatedAt); err != nil {
+			warnRowSkip("peak.handleGetPeaks", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -106,6 +107,12 @@ func (h *PeakHandlers) handleGetPeaks(w http.ResponseWriter, r *http.Request) {
 			entry["suggestion_reason"] = reason
 		}
 		results = append(results, entry)
+	}
+	// 峰值样本少一截 = 限流建议基于不完整样本算出来的，直接 apply 会
+	// 压错限。不查 Err() 就 200 等于把半份数据当完整依据。
+	if err := rows.Err(); err != nil {
+		writeInternalTextErr(w, "internal error (see server logs)", err)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -135,7 +142,7 @@ func (h *PeakHandlers) handlePreview(w http.ResponseWriter, r *http.Request) {
 		LIMIT 50
 	`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -149,6 +156,7 @@ func (h *PeakHandlers) handlePreview(w http.ResponseWriter, r *http.Request) {
 		var weekStart, updatedAt time.Time
 		if err := rows.Scan(&credID, &rawModel, &current, &suggested, &reason,
 			&peak, &p95, &weekStart, &updatedAt); err != nil {
+			warnRowSkip("peak.handlePreview", err)
 			continue
 		}
 		previewEnd := updatedAt.Add(24 * time.Hour)
@@ -167,6 +175,11 @@ func (h *PeakHandlers) handlePreview(w http.ResponseWriter, r *http.Request) {
 			"ready_to_apply":  remaining <= 0,
 			"remaining_hours": int(remaining.Hours()),
 		})
+	}
+	// 建议清单少一截 = 部分该提的限流没进入人工确认队列（静默漏项）。
+	if err := rows.Err(); err != nil {
+		writeInternalTextErr(w, "internal error (see server logs)", err)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -219,7 +232,7 @@ func (h *PeakHandlers) handleApply(w http.ResponseWriter, r *http.Request) {
 		UPDATE credentials SET concurrency_limit = $1, updated_at = NOW()
 		WHERE id = $2
 	`, req.NewLimit, req.CredentialID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 	_, _ = h.db.Exec(ctx, `
@@ -251,7 +264,7 @@ func (h *PeakHandlers) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 		LIMIT 100
 	`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -268,6 +281,7 @@ func (h *PeakHandlers) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 		var appliedBy *string
 		if err := rows.Scan(&id, &credID, &rawModel, &action, &oldLimit, &newLimit,
 			&reason, &peak, &p95, &weekStart, &createdAt, &appliedBy); err != nil {
+			warnRowSkip("peak.handleAuditLog", err)
 			continue
 		}
 		entry := map[string]interface{}{
@@ -299,6 +313,12 @@ func (h *PeakHandlers) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 			entry["applied_by"] = *appliedBy
 		}
 		entries = append(entries, entry)
+	}
+	// 自动调参审计链：截断的审计日志 = 限流被谁改过少了几条，事后追责
+	// 与回滚都会拿不到证据。必须上抛。
+	if err := rows.Err(); err != nil {
+		writeInternalTextErr(w, "internal error (see server logs)", err)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{

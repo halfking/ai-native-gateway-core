@@ -8,7 +8,9 @@ import type { EChartsOption } from 'echarts'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElButton, ElCard, ElCol, ElRadioButton, ElRadioGroup, ElRow, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { ElButton, ElCard, ElCol, ElRow, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -17,6 +19,11 @@ const owner = computed(() => route.params.owner as string)
 const loading = ref(false)
 const data = ref<UserProfileDetail | null>(null)
 const days = ref(30)
+const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+  { days: 7, labelKey: 'dashboard.range.last7d' },
+  { days: 30, labelKey: 'dashboard.range.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
 
 const costChartRef = ref<HTMLElement>()
 let costChart: echarts.ECharts | null = null
@@ -99,11 +106,12 @@ function healthGradeColor(grade?: string): 'success' | 'primary' | 'warning' | '
     <div class="page-header">
       <el-button text @click="router.back()">← {{ t('common.back') }}</el-button>
       <h2>{{ t('sessions.userProfile.detailTitle') }}: {{ owner }}</h2>
-      <el-radio-group v-model="days" size="small" @change="load">
-        <el-radio-button :value="7">7{{ t('common.days') }}</el-radio-button>
-        <el-radio-button :value="30">30{{ t('common.days') }}</el-radio-button>
-        <el-radio-button :value="90">90{{ t('common.days') }}</el-radio-button>
-      </el-radio-group>
+      <KxDateRangePicker
+        :model-value="rangeValue"
+        :presets="dayPresets"
+        :max-span-days="90"
+        @apply="applyRange"
+      />
     </div>
 
     <div v-loading="loading">

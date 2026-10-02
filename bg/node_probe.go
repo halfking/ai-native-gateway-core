@@ -77,8 +77,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 const (
@@ -111,6 +115,23 @@ const (
 	// upstream pressure beyond what the background worker would
 	// produce.
 	nodeProbeSyncFanout = 8
+
+	// nodeProbePerCredSyncConcurrency (Wave 3 B2③, 2026-09-22) caps
+	// concurrent ProbeSync direct probes against ONE credential. The
+	// global fanout above bounds worker-wide pressure but a no_candidate
+	// burst naming many models on the same credential could still point
+	// all 8 slots at a single upstream account; per-credential ≤2 keeps
+	// the burst spread across credentials. Design §6.3 "同凭据探测并发≤2".
+	nodeProbePerCredSyncConcurrency = 2
+
+	// Flash-blip double-confirm pacing (Wave 3 B2②, 2026-09-22). After a
+	// request-path error that would degrade the node, two lightweight
+	// direct pings run inside the 2~5s design window; the degrade is
+	// applied only when BOTH fail (design §6.3 "闪断双确认").
+	nodeProbeConfirmFirstPingDelay = 2 * time.Second
+	nodeProbeConfirmPingGap        = 2 * time.Second
+	// nodeProbeConfirmBudget bounds the whole confirm (pings + gaps).
+	nodeProbeConfirmBudget = 15 * time.Second
 
 	// 2026-09-03 P1.3: bounded retry + persistent failure for
 	// submitViaQueueSource. ProbeQueue.Enqueue can fail with transient DB
@@ -157,16 +178,20 @@ type nodeProbeAuditDB interface {
 // "unavailable" (real requests through proxy → timeout), producing the
 // "models briefly work then 5xx" pattern.
 type NodeProbeWorker struct {
-	db            *pgxpool.Pool
-	auditDB       nodeProbeAuditDB
-	encKey        []byte
-	keyring       *secret.Keyring
-	apiKey        string
-	baseURL       string
-	client        *http.Client // direct (no proxy), for probeGateway
-	probeClient   *http.Client // proxy-respecting, for probeDirect
-	stateObserver credentialstate.StateObserver
-	stateSink     NodeProbeStateSink
+	db             *pgxpool.Pool
+	auditDB        nodeProbeAuditDB
+	encKey         []byte
+	keyring        *secret.Keyring
+	apiKey         string
+	baseURL        string
+	client         *http.Client // direct (no proxy), for probeGateway
+	probeClient    *http.Client // proxy-respecting, for probeDirect
+	stateObserver  credentialstate.StateObserver
+	stateSink      NodeProbeStateSink
+	capabilitySink ResponsesCapabilitySink
+	// resolveDirectTargetFn is the deterministic test seam for the upstream
+	// target lookup; production leaves it nil and uses the database resolver.
+	resolveDirectTargetFn func(ctx context.Context, credID int, model string) (plain, outboundModel, baseURL, protocol string, providerID int, err error)
 	// tenantResolver looks up the tenant ID for a credential. Production
 	// wires it to credentials.tenant_id via (*pgxpool.Pool).QueryRow; tests
 	// can inject a stub to assert the backfill branch without spinning up
@@ -202,6 +227,14 @@ type NodeProbeWorker struct {
 	// wiring leaves it nil and enqueue() falls through to probeQueue.Enqueue.
 	enqueueFn func(ctx context.Context, task ProbeQueueTask) (int64, bool, error)
 
+	// requestFailureThrottleFn (2026-09-26 P0-2) is the test seam over
+	// requestFailureTriggerThrottled's node_probe_state read, same
+	// injectable-fn style as enqueueFn. Production leaves it nil and the
+	// helper runs the real predicate SQL; unit tests stub it to pin the
+	// wiring (skip → no enqueue) without a live database — the SQL semantics
+	// themselves are pinned by the TEST_PG_URL-gated contract test.
+	requestFailureThrottleFn func(ctx context.Context, credID int, model string, minGapSeconds int) bool
+
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
 	invalidateCandidateCache func(credentialID int)
@@ -229,6 +262,17 @@ type NodeProbeWorker struct {
 	// the recovered availability.
 	syncWaitersMu sync.Mutex
 	syncWaiters   map[string][]chan struct{}
+
+	// credSyncSem (Wave 3 B2③) holds one buffered channel per credential
+	// seen by ProbeSync, capping same-credential concurrent direct probes
+	// at nodeProbePerCredSyncConcurrency. Entries are never evicted: the
+	// map is bounded by the credential count and an idle entry is one
+	// empty buffered channel.
+	credSyncSem sync.Map // map[int]chan struct{}
+
+	// probeConfirmRound is the Wave 3 B2② test seam over probeDirect for
+	// ProbeConfirm. Production leaves it nil.
+	probeConfirmRound func(ctx context.Context, credID int, model string) nodeProbeRoundResult
 
 	// decryptFailures / decryptTrippedAt implement the instance-level
 	// decrypt circuit (2026-09-17 incident: a dev instance on 252 with a
@@ -370,7 +414,7 @@ func (w *NodeProbeWorker) resetDecryptFailures() {
 	w.decryptFailures.Store(0)
 	w.decryptTrippedAt.Store(0)
 	if wasTripped {
-		go w.deescalateGatewaySideProbeState(context.Background())
+		Go("node_probe.deescalate", func() { w.deescalateGatewaySideProbeState(context.Background()) })
 	}
 }
 
@@ -394,6 +438,14 @@ func (w *NodeProbeWorker) SetStateObserver(observer credentialstate.StateObserve
 func (w *NodeProbeWorker) SetNodeStateSink(sink NodeProbeStateSink) {
 	if w != nil {
 		w.stateSink = sink
+	}
+}
+
+// SetResponsesCapabilitySink wires durable capability feedback for native
+// Responses evidence gathered by this worker's direct upstream probe.
+func (w *NodeProbeWorker) SetResponsesCapabilitySink(sink ResponsesCapabilitySink) {
+	if w != nil {
+		w.capabilitySink = sink
 	}
 }
 
@@ -557,7 +609,7 @@ func (w *NodeProbeWorker) Start(ctx context.Context) {
 	// misconfigured instance already wrote can still hold hours-future
 	// next_retry_at ladders and probe_endpoint_build-poisoned bindings. Sweep
 	// them once at startup so recovery does not wait out every backoff.
-	go w.deescalateGatewaySideProbeState(ctx)
+	Go("node_probe.deescalate", func() { w.deescalateGatewaySideProbeState(ctx) })
 	slog.Info("node_probe_worker started",
 		"tick_interval", nodeProbeTickInterval,
 		"max_attempts", nodeProbeMaxAttempts,
@@ -661,7 +713,72 @@ func (w *NodeProbeWorker) Stop() {
 	})
 }
 
+// nodeProbeLoop 退避参数（loop 的 panic 自动重启策略）。
+const (
+	// R50 引入：panic 重启按 30s 起步、5min 封顶的指数退避。
+	nodeProbeLoopInitialBackoff = 30 * time.Second
+	nodeProbeLoopMaxBackoff     = 5 * time.Minute
+	// R51 审计 P3：loopOnce 只在 panic 或 ctx/stop 时返回，"健康运行"只能
+	// 用运行时长度量。上一轮存活 ≥3 个 tick（90s，真正干过活）后的 panic
+	// 视作偶发故障——退避重置到起步值，不再被历史 panic 序列把重启间隔
+	// 永久钉在封顶值。
+	nodeProbeLoopHealthyRunAge = 3 * nodeProbeTickInterval
+)
+
+// nodeProbeWorkerRestartsTotal 统计 loop panic 自动重启次数（R51 审计 P3）。
+// 只增不减：健康运行重置的是退避，不是计数——用于发现反复 panic 的 worker。
+var nodeProbeWorkerRestartsTotal = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "llmgw_node_probe_worker_restarts_total",
+	Help: "Total number of node_probe_worker loop restarts after a recovered panic.",
+})
+
+// nextProbeLoopBackoff 计算 panic 重启后的下一次退避：上一轮健康运行足够久
+// 则重置到起步值；否则翻倍、封顶。（原实现无健康重置，且封顶判断有误——
+// 240s<5min 会翻成 8min——本函数把封顶修正为真正的 min(×2, 5min)。）
+func nextProbeLoopBackoff(prevBackoff, previousRun time.Duration) time.Duration {
+	if previousRun >= nodeProbeLoopHealthyRunAge {
+		return nodeProbeLoopInitialBackoff
+	}
+	if prevBackoff < nodeProbeLoopMaxBackoff {
+		if next := prevBackoff * 2; next < nodeProbeLoopMaxBackoff {
+			return next
+		}
+	}
+	return nodeProbeLoopMaxBackoff
+}
+
+// loop 是 loopOnce 的守护包装（R50 审计 P3）：原实现 recover 后直接返回，
+// 探测一旦 panic 即静默停摆且无任何调度面感知。现 panic 后按 30s 起步、
+// 5min 封顶的指数退避自动重启；ctx 取消 / Stop 时正常退出。
+// R51 审计 P3：重启打 Prometheus 计数 + 带累计值/上轮时长的日志；健康运行
+// （≥3 tick）后的 panic 重置退避。
 func (w *NodeProbeWorker) loop(ctx context.Context) {
+	backoff := nodeProbeLoopInitialBackoff
+	restarts := 0
+	for {
+		started := time.Now()
+		w.loopOnce(ctx)
+		ran := time.Since(started)
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		case <-time.After(backoff):
+		}
+		// 能走到这里说明上一轮 loopOnce 是 panic 退出（正常退出只经由
+		// ctx/stop，那两个分支已在上面 return）。
+		restarts++
+		nodeProbeWorkerRestartsTotal.Inc()
+		backoff = nextProbeLoopBackoff(backoff, ran)
+		slog.Warn("node_probe_worker: loop restarted after recovered panic",
+			"restarts_total", restarts,
+			"previous_run", ran.Round(time.Second),
+			"next_backoff", backoff)
+	}
+}
+
+func (w *NodeProbeWorker) loopOnce(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("node_probe_worker panic", "recover", r)
@@ -803,43 +920,16 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 	//
 	// The 2-second flash-protection in Manager.UpdateOnFailure still
 	// prevents transient noise (a success within 2s) from re-arming.
-	_, _ = w.db.Exec(ctx, `
-		INSERT INTO node_probe_state (credential_id, raw_model_name, next_retry_at, next_retry_seconds, paused, in_flight_until, consecutive_failures, last_err_code)
-		VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE, NULL, 0, NULL)
-		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-		SET next_retry_at = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		        THEN now() + interval '5 seconds'
-		        ELSE node_probe_state.next_retry_at
-		    END,
-		    next_retry_seconds = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		        THEN 5
-		        ELSE node_probe_state.next_retry_seconds
-		    END,
-		    in_flight_until = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		        THEN NULL
-		        ELSE node_probe_state.in_flight_until
-		    END,
-		    paused = FALSE,
-		    -- Reset the counter only when the cycle is being restarted
-		    -- from a paused row. For already-expired rows the worker
-		    -- (runOne) owns the counter and increments it by 1 per round;
-		    -- touching it here would collapse the ladder back to rung 1.
-		    consecutive_failures = CASE
-		        WHEN node_probe_state.paused = TRUE THEN 0
-		        ELSE node_probe_state.consecutive_failures
-		    END,
-		    last_err_code = CASE
-		        WHEN node_probe_state.paused = TRUE THEN NULL
-		        ELSE node_probe_state.last_err_code
-		    END,
-		    updated_at = now()
-	`, credID, model)
+	//
+	// 2026-09-20 probe-volume policy (INV-2): the re-arm condition gains a
+	// healthy-parked branch. Success now parks rows 30 days out
+	// (MarkNodeProbeHealthy / mirrorNodeProbeState / runOne success), so a
+	// future next_retry_at alone no longer implies "mid-ladder" — it is
+	// usually a healthy row parked by design. A fresh REAL failure must
+	// restart tracking immediately for exactly those rows. Ladder rows
+	// (last_err_code set or consecutive_failures > 0) keep the 2026-07-16
+	// semantics: their schedule is left alone so the chain can advance.
+	_, _ = w.db.Exec(ctx, nodeProbeSubmitUpsertSQL(), credID, model)
 	key := fmt.Sprintf("%d|%s", credID, model)
 	w.mu.Lock()
 	w.triggers[key] = nodeProbeTrigger{
@@ -870,6 +960,9 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 // it. Best-effort on DB error: the source-parameterized helper
 // submitViaQueueSource already retries + persists failures (P1.3), so this
 // wrapper only logs at Warn when the helper ultimately fails.
+//
+// The request_failure pair gate runs once inside submitViaQueueSource, shared
+// with other request_failure callers. Periodic submissions bypass that gate.
 func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqID string) {
 	if _, err := w.submitViaQueueSource(credID, model, tenantID, parentReqID, "request_failure"); err != nil {
 		slog.Warn("node_probe_worker: submit via queue failed",
@@ -939,6 +1032,25 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	start := time.Now()
+
+	// 2026-09-26 (P0-2 request_failure pair 级频控): one business failure is
+	// enough to schedule verification — the Nth failure in the same minute
+	// must not enqueue the Nth probe. Skip when the pair already has a probe
+	// scheduled (future next_retry_at on a row with error evidence — the same
+	// mid-ladder shape nodeProbeSubmitUpsertSQL refuses to collapse) or the
+	// last probe ran within probe.request_failure_min_gap_seconds.
+	// Healthy-parked rows carry no error evidence and never trip the gate, so
+	// INV-2's immediate re-arm on a fresh real failure is unchanged. 0
+	// disables the gate entirely (legacy behavior).
+	if source == "request_failure" {
+		if gap := settings.ProbeRequestFailureMinGapSeconds(); gap > 0 && w.requestFailureTriggerThrottled(ctx, credID, model, gap) {
+			nodeProbeRequestFailureSkipTotal.Inc()
+			nodeProbeQueueSubmissionTotal.WithLabelValues(source, "throttled").Inc()
+			nodeProbeQueueSubmissionDuration.WithLabelValues(source, "throttled").Observe(time.Since(start).Seconds())
+			return false, nil
+		}
+	}
 
 	task := ProbeQueueTask{
 		CredentialID: int64(credID),
@@ -956,7 +1068,6 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 		DedupKey:    buildNodeProbeTaskID(credID, model),
 	}
 
-	start := time.Now()
 	var (
 		inserted        bool
 		lastErr         error
@@ -1050,6 +1161,78 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 	)
 	return false, fmt.Errorf("enqueue probe task: exhausted %d attempts: %w",
 		nodeProbeQueueSubmitMaxAttempts, lastErr)
+}
+
+// requestFailureTriggerThrottled implements the P0-2 request_failure
+// pair-level frequency gate (2026-09-26). It reports whether a
+// request_failure trigger for (credID, model) should be skipped because:
+//
+//   - the pair is mid-ladder with a probe already scheduled —
+//     next_retry_at in the future on a row carrying error evidence
+//     (recorded err code or pending failure counter, the same evidence
+//     pumpDueStatesSQL keys on). Healthy-parked rows never match this
+//     arm: a fresh real failure must still re-arm them immediately
+//     (INV-2). Mirror semantics of the legacy nodeProbeSubmitUpsertSQL,
+//     which likewise refuses to collapse a mid-ladder schedule.
+//   - or the last probe ran within minGapSeconds — a probe just executed
+//     for this pair; an immediate re-trigger adds no information.
+//
+// Absent row, read error, or non-positive gap → false (fail open: a
+// trigger must not be lost to a flaky read; the gap knob itself is the
+// kill-switch). The SQL semantics are pinned by the TEST_PG_URL-gated
+// contract test; unit tests stub requestFailureThrottleFn for wiring.
+func (w *NodeProbeWorker) requestFailureTriggerThrottled(ctx context.Context, credID int, model string, minGapSeconds int) bool {
+	if w == nil || minGapSeconds <= 0 {
+		return false
+	}
+	if w.requestFailureThrottleFn != nil {
+		return w.requestFailureThrottleFn(ctx, credID, model, minGapSeconds)
+	}
+	if w.db == nil {
+		return false
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var throttled bool
+	err := w.db.QueryRow(qCtx, requestFailureThrottleSQL(), credID, model, minGapSeconds).Scan(&throttled)
+	if err != nil {
+		return false
+	}
+	return throttled
+}
+
+// requestFailureThrottleSQL is the single source of the throttle predicate,
+// shared by the production read above and the TEST_PG_URL-gated contract
+// test that pins its semantics against a real database. Params: $1 credID,
+// $2 model, $3 min gap seconds.
+func requestFailureThrottleSQL() string {
+	return `
+		SELECT (COALESCE(nps.last_err_code, '') <> '' OR COALESCE(nps.consecutive_failures, 0) > 0)
+		   AND (nps.next_retry_at > now()
+		        OR nps.last_attempt_at > now() - make_interval(secs => $3))
+		FROM node_probe_state nps
+		WHERE nps.credential_id = $1 AND nps.raw_model_name = $2`
+}
+
+// loadConsecutiveFailures reads node_probe_state.consecutive_failures for a
+// pair without creating the row (2026-09-26 P0-2, 队列任务代际 attempt 重置).
+// ok=false on absent row or read error — callers fail open to the queue
+// task's own attempt counter.
+func (w *NodeProbeWorker) loadConsecutiveFailures(ctx context.Context, credID int, model string) (int, bool) {
+	if w == nil || w.db == nil {
+		return 0, false
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var cf int
+	err := w.db.QueryRow(qCtx, `
+		SELECT consecutive_failures FROM node_probe_state
+		WHERE credential_id = $1 AND raw_model_name = $2`,
+		credID, model).Scan(&cf)
+	if err != nil {
+		return 0, false
+	}
+	return cf, true
 }
 
 // persistSubmitFailure records the final submission error onto
@@ -1251,12 +1434,21 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 // merely exists, so a stricter filter would stop pumping probeable rows, and
 // a (re)created binding lets the row re-enter the pump automatically —
 // mirroring the eligibility gate's re-entry semantics.
+//
+// 2026-09-20 probe-volume policy (INV-1): the pump only enqueues rows with
+// row-level error evidence (recorded err code, pending failure counter, or
+// never confirmed healthy). Healthy-parked rows — including legacy rows whose
+// 30-day-parked next_retry_at has elapsed — stay out: probing a pair that
+// succeeded (business or probe) with zero error signal is exactly the
+// "normal-state continuous probing" this policy removes. The first real
+// failure flips the row back into this filter via Submit's re-arm.
 func pumpDueStatesSQL() string {
 	return `
 		SELECT nps.credential_id, nps.raw_model_name, COALESCE(cred.tenant_id, 'default')
 		FROM node_probe_state nps
 		JOIN credentials cred ON cred.id = nps.credential_id
 		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
+		  AND ` + nodeProbeErrorEvidenceSQL("nps") + `
 		  AND ` + automaticProbeEligibilityExistsSQL("nps.credential_id") + `
 		  AND EXISTS (
 			SELECT 1
@@ -1313,12 +1505,14 @@ func nonBlockingWake(ch chan<- struct{}) {
 // ladder rolls over — up to the 6h ladder cap after the most recent
 // failure (the ladder no longer parks rows indefinitely).
 //
-// The "next_retry_at = now() + 1h" choice mirrors runOne's success
-// branch (BUG #6 fix, 2026-07-22). Previously was 24h; that left
-// credentials un-probed for 24h after every successful probe, which
-// was too long for upstream changes (key rotation, quota change,
-// model deprecation) to be detected. Capped to 1h so the asset
-// health probe + credential_recovery ticker can act within an hour.
+// The "next_retry_at = now() + 30 days" choice is the 2026-09-20 probe-volume
+// policy: park, don't re-arm (docs/probe/2026-09-20-probe-volume-optimization.md).
+// The pre-2026-09-20 value (+1h) meant every successful business request armed
+// another probe one hour later, so healthy in-use pairs were re-probed
+// indefinitely by the pump/reconcile loop. A healthy-parked row
+// (last_direct_ok=TRUE, no err, no failure counter) is now invisible to every
+// scheduler; the first new real failure re-arms it to now()+5s via Submit's
+// ON CONFLICT healthy-parked branch.
 //
 // 2026-09-08: also writes through to credential_model_bindings and
 // credentials (syncHealthyNodeSurfaces). The executor calls this on every
@@ -1334,14 +1528,14 @@ func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID in
 			last_direct_ok, last_gateway_ok,
 			last_err_code, last_err_detail,
 			updated_at
-		) VALUES ($1, $2, 0, 1, now(), now() + interval '1 hour', 3600, FALSE, NULL, TRUE, TRUE, NULL, NULL, now())
+		) VALUES ($1, $2, 0, 1, now(), now() + interval '30 days', 2592000, FALSE, NULL, TRUE, TRUE, NULL, NULL, now())
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
 		SET consecutive_failures = 0,
 		    consecutive_successes = node_probe_state.consecutive_successes + 1,
 		    last_attempt_at = now(),
-		    next_retry_at = now() + interval '1 hour',
-		    next_retry_seconds = 3600,
-		    paused = FALSE,
+		    next_retry_at = now() + interval '30 days',
+		    next_retry_seconds = 2592000,
+		    paused = node_probe_state.paused,
 		    in_flight_until = NULL,
 		    last_direct_ok = TRUE,
 		    last_gateway_ok = TRUE,
@@ -1508,9 +1702,20 @@ func (w *NodeProbeWorker) ProbeSync(
 	for _, j := range freshJobs {
 		j := j
 		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
+		Go("node_probe.probeSyncFanout", func() {
 			defer wg.Done()
+			// Wave 3 B2③: per-credential ≤2 on top of the global fanout.
+			// R57 §三.2：获取序为 per-cred → 全局（原为全局先取、goroutine
+			// 内后取 per-cred——同凭据 N 个 (cred,model) 突发可在 per-cred
+			// 闸前占满全部 8 个全局槽，把其它凭据的热路径探测饿在
+			// sem<- 上）。改为先取 per-cred 再取全局：落选的突发 goroutine
+			// 停在 credSem<- 上不占全局槽，单凭据最多经 ≤2 闸支配 2 个全
+			// 局槽。无死锁：全局槽持有者已持 per-cred 槽，完成路径不再
+			// 依赖任何其它资源（锁序不变：w.mu → syncWaitersMu）。
+			credSem := w.credSemaphore(j.credID)
+			credSem <- struct{}{}
+			defer func() { <-credSem }()
+			sem <- struct{}{}
 			defer func() { <-sem }()
 			// Ensure the in-flight slot for THIS key is released and any
 			// concurrent ProbeSync caller that attached as a reuse waiter
@@ -1523,13 +1728,40 @@ func (w *NodeProbeWorker) ProbeSync(
 			defer w.finishProbe(j.key)
 			res := freshResult{job: j}
 			res.direct = w.probeDirect(ctx, j.credID, j.model)
+			// 2026-09-29 (R-vapeur2): URSM 视图写 + 候选缓存失效先行。这个
+			// Redis 写是 authoritative 路由唯一的恢复信号（毫秒级、自身已
+			// WithoutCancel 免疫 hold 过期），原顺序把它排在 binding/observed/
+			// health 各段 DB 簿记之后 —— DB 抖动时每段挂起数秒，视图翻转被
+			// 拖到 hold 边界之后，winner 投递随之超时：2026-09-29 gpt-6-astra
+			// 事故三次实证（探针成功、视图翻绿、请求仍 503，winner 无人接收）。
+			// 提前它使 executor 的 re-plan 立即看到恢复。
+			// 2026-08-18: the sync path also drives the URSM v2 authoritative
+			// router. Without this write the probe "recovered" only the PG
+			// binding while PlanCandidatesWithContext kept rejecting the node
+			// for its missing/expired Redis node key, so the executor's retry
+			// after ProbeSync returned 503 again (glm-5.2 outage on 154).
+			// Success reflects the direct round only: the gateway round is
+			// routed through this same URSM filter and can 503 circularly
+			// while the key is missing.
+			// R42: failures honor the gateway-side predicate (see runOne) —
+			// a misconfigured instance must not poison the shared node key.
+			if res.direct.ok || w.ursmFailureWritable(res.direct.errCode, res.direct.errDetail) {
+				w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)
+			}
+			if w.invalidateCandidateCache != nil {
+				w.invalidateCandidateCache(j.credID)
+			}
+			// hold ctx 过期只应终止"等待结果"，不应把收尾簿记腰斩成半态
+			// （binding 已写而 audit 永缺）。bookCtx 与 hold 解耦，5s 自限。
+			bookCtx, bookCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer bookCancel()
 			if res.direct.ok {
 				// CRITICAL: update state BEFORE probeGateway so the
 				// routing layer sees the restored credential, not the
 				// stale cooling state left by the original 5xx.
-				w.updateBindingAvailability(ctx, j.credID, j.model, true, "", 0, "")
-				w.updateCredentialHealth(ctx, j.credID)
-				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
+				w.updateBindingAvailability(bookCtx, j.credID, j.model, true, "", 0, "")
+				w.updateCredentialHealth(bookCtx, j.credID)
+				w.updateObservedState(bookCtx, j.credID, j.model, true, "", time.Now())
 				// 2026-08-24: smart-fallback tentative restore (需求 6
 				// bullet 6). A sync probe "passed in isolation" — stamp a
 				// revert deadline so bg.ProbeRollback reverts the binding
@@ -1548,7 +1780,6 @@ func (w *NodeProbeWorker) ProbeSync(
 					}
 					markCancel()
 				}
-				res.gateway = w.probeGateway(ctx, j.credID, j.model)
 			} else {
 				// 2026-09-17: gateway-side errors (decrypt/endpoint build) must
 				// not touch the shared availability surfaces — same doctrine as
@@ -1566,28 +1797,21 @@ func (w *NodeProbeWorker) ProbeSync(
 					// keeps the generic 5-minute cooldown for a first 404 —
 					// the tick/queue paths escalate to the model-not-served
 					// horizon once their attempt counts confirm it.
-					w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)
+					w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)
 					recoverAt := time.Now().Add(5 * time.Minute)
-					w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
+					w.updateObservedState(bookCtx, j.credID, j.model, false, res.direct.errCode, recoverAt)
 				}
 			}
-			// 2026-08-18: the sync path also drives the URSM v2 authoritative
-			// router. Without this write the probe "recovered" only the PG
-			// binding while PlanCandidatesWithContext kept rejecting the node
-			// for its missing/expired Redis node key, so the executor's retry
-			// after ProbeSync returned 503 again (glm-5.2 outage on 154).
-			// Success reflects the direct round only: the gateway round is
-			// routed through this same URSM filter and can 503 circularly
-			// while the key is missing.
-			// R42: failures honor the gateway-side predicate (see runOne) —
-			// a misconfigured instance must not poison the shared node key.
-			if res.direct.ok || w.ursmFailureWritable(res.direct.errCode, res.direct.errDetail) {
-				w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)
+			// 先投递 winner（契约=direct 轮）。gateway round 与 audit 是诊断
+			// 簿记：各自要再打一次上游/DB，DB 抖动时同样可能秒级挂起，不应
+			// 扣住已成功的恢复。投递后不得再改 res（channel 接收方并发拷贝），
+			// gateway 结果走独立变量仅供 audit。
+			results <- res
+			var gwRound nodeProbeRoundResult
+			if res.direct.ok {
+				gwRound = w.probeGateway(bookCtx, j.credID, j.model)
 			}
-			if w.invalidateCandidateCache != nil {
-				w.invalidateCandidateCache(j.credID)
-			}
-			if err := w.emitSyncAudit(ctx, j.credID, j.model, res.direct, res.gateway, start, parentReqID); err != nil {
+			if err := w.emitSyncAudit(bookCtx, j.credID, j.model, res.direct, gwRound, start, parentReqID); err != nil {
 				slog.Warn("node_probe_worker: sync audit persist failed",
 					"credential_id", j.credID,
 					"raw_model", j.model,
@@ -1595,8 +1819,7 @@ func (w *NodeProbeWorker) ProbeSync(
 					"parent_request_id", parentReqID,
 					"error", err)
 			}
-			results <- res
-		}()
+		})
 	}
 
 	var (
@@ -1630,10 +1853,10 @@ func (w *NodeProbeWorker) ProbeSync(
 	}
 
 	doneFresh := make(chan struct{})
-	go func() {
+	Go("node_probe.freshWait", func() {
 		wg.Wait()
 		close(doneFresh)
-	}()
+	})
 
 drainLoop:
 	for {
@@ -1655,6 +1878,21 @@ drainLoop:
 			}
 		case <-ctx.Done():
 			break drainLoop
+		}
+	}
+
+	// 2026-09-29 (R-vapeur2): ctx 过期与结果投递存在边界竞态 —— 实测投递可
+	// 恰好落在 ctx.Done 之后几十毫秒（结果投递含 Redis 写，DB 抖动时被拖到
+	// hold 边界）。退出前做一次非阻塞清扫，已到达的恢复不再丢弃。
+sweep:
+	for {
+		select {
+		case res := <-results:
+			if !winnerIsSet() && probeRecovered(res.direct) {
+				takeWinner(res.direct, res.gateway)
+			}
+		default:
+			break sweep
 		}
 	}
 
@@ -1733,6 +1971,110 @@ drainLoop:
 // gateway round remains an audit signal and is still emitted to diagnostics.
 func probeRecovered(direct nodeProbeRoundResult) bool {
 	return direct.ok
+}
+
+// credSemaphore returns the per-credential ProbeSync slot channel
+// (Wave 3 B2③). Safe for concurrent use; entries are created on first use
+// and never evicted (bounded by the credential count).
+func (w *NodeProbeWorker) credSemaphore(credID int) chan struct{} {
+	if v, ok := w.credSyncSem.Load(credID); ok {
+		return v.(chan struct{})
+	}
+	v, _ := w.credSyncSem.LoadOrStore(credID, make(chan struct{}, nodeProbePerCredSyncConcurrency))
+	return v.(chan struct{})
+}
+
+// nodeProbeConfirmSlotWait bounds how long ProbeConfirm waits for a
+// per-credential direct-probe slot before each ping.
+const nodeProbeConfirmSlotWait = 1500 * time.Millisecond
+
+// acquireCredSlotForConfirm takes the shared per-credential ≤2 direct-probe
+// gate with a bounded wait. R57 §三.2：ProbeConfirm 原先绕过 per-cred ≤2 闸
+// （同凭据 N 模型同时确认 → 2N 并发直连），现在每次 ping 前有界等闸；闸的
+// 睡眠窗口（首 ping 延迟/ping 间隔）不占槽。等待超时属容量饥饿而非节点状
+// 态证据 → fail-open（false = 未确认损坏，不降级），与「确认才降级」教义
+// 一致；ctx 取消仍按既有教义 fail-closed。返回释放函数与是否获得闸。
+func (w *NodeProbeWorker) acquireCredSlotForConfirm(ctx context.Context, credID int) (func(), bool) {
+	credSem := w.credSemaphore(credID)
+	select {
+	case credSem <- struct{}{}:
+		return func() { <-credSem }, true
+	case <-time.After(nodeProbeConfirmSlotWait):
+		nodeProbeConfirmSlotStarved.Inc()
+		return nil, false
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+// ProbeConfirm is the Wave 3 B2② flash-blip double confirmation. After a
+// request-path error that would degrade the node, the caller defers the
+// degrade and asks ProbeConfirm for the verdict: two lightweight direct
+// pings run inside the design window (first after 2s, second after another
+// 2s, whole confirm bounded by nodeProbeConfirmBudget). The node counts as
+// confirmed broken — and the caller applies the deferred degrade — only when
+// BOTH pings fail; any success means the error was a transient blip and the
+// node keeps its healthy state.
+//
+// The pings go through probeDirect only: no state writes, no circuit
+// recording, no node_probe_state mutation — the confirm must not stack
+// breaker or probe-backoff effects on top of the request failure it
+// verifies ("只影响状态写入不叠加熔断"). R57 §三.2：每次 ping 受共享的
+// per-credential ≤2 直连闸约束（与 ProbeSync 同一 credSemaphore），等待
+// 窗口不占槽。
+//
+// A nil worker or a cancelled context fails CLOSED (returns true) so a
+// dead node cannot be kept routable by an unverifiable confirm.
+func (w *NodeProbeWorker) ProbeConfirm(ctx context.Context, credID int, model string) bool {
+	if w == nil {
+		return true
+	}
+	cctx, cancel := context.WithTimeout(ctx, nodeProbeConfirmBudget)
+	defer cancel()
+	round := w.probeConfirmRound
+	if round == nil {
+		round = w.probeDirect
+	}
+	time.Sleep(nodeProbeConfirmFirstPingDelay)
+	release, ok := w.acquireCredSlotForConfirm(cctx, credID)
+	if !ok {
+		if cctx.Err() == nil {
+			// 容量饥饿（非 ctx 取消）：无法验证 ≠ 已确认损坏 → fail-open。
+			slog.Warn("node_probe_worker: confirm ping skipped on per-cred slot starvation (fail-open)",
+				"credential_id", credID, "model", model)
+			return false
+		}
+		return true
+	}
+	// R59 audit (S5-F3): release was inlined after round() — a round panic
+	// leaked the slot and the per-cred capacity permanently dropped to ≤1.
+	// defer makes the release panic-safe.
+	first := func() (r nodeProbeRoundResult) {
+		defer release()
+		return round(cctx, credID, model)
+	}()
+	if first.ok {
+		return false
+	}
+	select {
+	case <-cctx.Done():
+		return true
+	case <-time.After(nodeProbeConfirmPingGap):
+	}
+	release2, ok := w.acquireCredSlotForConfirm(cctx, credID)
+	if !ok {
+		if cctx.Err() == nil {
+			slog.Warn("node_probe_worker: confirm second ping skipped on per-cred slot starvation (fail-open)",
+				"credential_id", credID, "model", model)
+			return false
+		}
+		return true
+	}
+	second := func() (r nodeProbeRoundResult) {
+		defer release2()
+		return round(cctx, credID, model)
+	}()
+	return !second.ok
 }
 
 // emitSyncAudit writes a node_probe_runs row for a sync_request probe
@@ -2132,37 +2474,50 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
 	if success {
-		// 2026-07-22 fix (BUG #6): previous value was 24h, which left
-		// the credential un-probed for 24h after every successful
-		// probe. Combined with the backoff chain (30s → 1m → 5m → 1h →
-		// 2h → 24h), a cred that just hit attempt=6 (24h cooldown)
-		// was effectively never re-checked for a full day after the
-		// last failure — long enough for the upstream to silently
-		// change (rotate API key, quota change, deprecation) without
-		// the gateway noticing. Capped to 1h: the active_probe
-		// submitter (consecutive_threshold=2, line 2184-ish) and
-		// credential_recovery 60s ticker can act on any new auth /
-		// availability state within ~1h of upstream change. The
-		// asset health probe still runs hourly, so this is a
-		// layered defense — the cred is re-probed at most once per
-		// hour instead of once per day.
+		// 2026-09-20 probe-volume policy: success parks the row 30 days out
+		// instead of re-arming +1h. The 2026-07-22 BUG #6 fix chose +1h so a
+		// silently-changed upstream (key rotation, quota, deprecation) would
+		// be re-checked within an hour; in practice it turned every probe
+		// success into another probe an hour later, indefinitely, for
+		// healthy pairs. Under the error-gated policy the failure detectors
+		// (active_probe submitter consecutive_threshold=2, request-path
+		// Submit, credential_recovery ticker) own change detection: the first
+		// real failure re-arms this row to now()+5s immediately.
+		//
+		// 2026-09-25 (对健康节点零探测): the parked row must land in the
+		// healthy-parked shape — nodeProbeHealthyParkedSQL requires an EMPTY
+		// last_err_code, so parking with firstErrCode(direct, gw) (the
+		// gateway round's code on a direct-only recovery) kept the row in
+		// the stale-state reconciler's candidate set (cmb.available=TRUE AND
+		// NOT healthy-parked) and re-probed a provably healthy node every
+		// tick. last_err_code/last_err_detail are therefore written as SQL
+		// NULL literals (R65 audit A: the pool runs QueryExecModeSimpleProtocol
+		// per db/db.go — inline NULL literals are unambiguous, untyped Go nil
+		// params are not); the gateway anomaly stays operator-visible via
+		// last_gateway_ok = $3 and the node_probe_runs audit row
+		// (gateway_err_code/gateway_err_detail).
+		if !gw.ok {
+			slog.Warn("node_probe_worker: direct round healthy, gateway round failed — node parked, gateway anomaly not laddered",
+				"credential_id", credID, "model", model,
+				"gateway_err_code", gw.errCode, "gateway_root_cause", gw.rootCause)
+		}
 		if _, err := w.db.Exec(ctx, `
 				UPDATE node_probe_state SET
 					consecutive_failures = 0,
 					consecutive_successes = consecutive_successes + 1,
 					last_attempt_at = now(),
-					next_retry_at = now() + interval '1 hour',
-					next_retry_seconds = 3600,
+					next_retry_at = now() + interval '30 days',
+					next_retry_seconds = 2592000,
 					paused = FALSE,
 					last_run_id = NULL,
 					last_direct_ok = TRUE,
 					last_gateway_ok = $3,
-					last_err_code = $4,
-					last_err_detail = $5,
+					last_err_code = NULL,
+					last_err_detail = NULL,
 					in_flight_until = NULL,
 					updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2
-			`, credID, model, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw)); err != nil {
+			`, credID, model, gw.ok); err != nil {
 
 			w.logNodeProbeStateUpdateWarning("success", direct.providerID, credID, model, trigger.parentID, err)
 		}
@@ -2213,10 +2568,15 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// model-not-served long horizon on confirmed attempts; network/timeout
 		// → short chain; everything else → the 7-step ladder) so the legacy
 		// cycle and the queue don't ladder the same pair at different speeds.
-		backoff := ProbeBackoffForErrCode(direct.errCode, attempt)
+		// 2026-09-25: root-cause aware — a protocol-shaped failure (contract
+		// mismatch, see probe_root_cause.go) never heals by re-probing, so
+		// confirmed protocol failures park at the model-not-served recheck
+		// horizon instead of walking the generic ladder.
+		backoff := probeBackoffForDirectOutcome(direct.errCode, direct.rootCause, attempt)
 		if gatewaySide {
 			backoff = nodeProbeGatewaySideRetryDelay
 		}
+		logProbeRoundRootCause("direct", direct)
 		nextRetryAt := now.Add(backoff)
 		nextSec := int(backoff.Seconds())
 		if _, err := w.db.Exec(ctx, `
@@ -2363,6 +2723,19 @@ type nodeProbeRoundResult struct {
 	requestBody    string
 	responseBody   string // 前512字节
 	viaProxy       bool   // probeDirect是否通过代理
+	// rootCause（2026-09-25）是本轮失败的根因归类（node/protocol/gateway，
+	// 见 probe_root_cause.go）。ok=true 时为空。它回答"是协议问题还是节点的
+	// 问题"：protocol 形失败重试梯永远治不好，只能按 6h 长回看停放等配置
+	// 修正；gateway 形失败不是节点的错，不得进共享可用性面。
+	rootCause ProbeRootCause
+	// chatFallback（2026-09-28）标记 ok 来自 responses-unsupported 的 chat
+	// 降级复探而非原生 responses 成功——该 (credential, model) 经
+	// chat/completions 可用，原生 Responses 未验证。
+	chatFallback bool
+	// supportsResponses is non-nil only when this round directly exercised a
+	// native Responses endpoint and got either a success or explicit
+	// unsupported verdict. A successful Chat fallback does not erase false.
+	supportsResponses *bool
 }
 
 func probeHeadersJSON(headers map[string]string) string {
@@ -2389,9 +2762,35 @@ func probeHeadersJSON(headers map[string]string) string {
 // raw_model_name would fail the JOIN (since node_probe_state stores
 // COALESCE(outbound,raw), the outbound name) and report endpoint_build
 // failures for a healthy credential.
-func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) nodeProbeRoundResult {
-	r := nodeProbeRoundResult{errCode: "none"}
-	plain, outboundModel, baseURL, protocol, providerID, err := w.resolveDirectTarget(ctx, credID, model)
+//
+// The return is NAMED on purpose (P1 fix, 2026-09-26): the defer below
+// classifies rootCause + annotates errDetail on the return slot. With an
+// unnamed return, every `return r` copies the struct BEFORE the defer runs,
+// so callers received rootCause="" — the live metric then defaulted every
+// failure to cause=node (llmgw_node_probe_root_cause_total had zero
+// protocol/gateway rows on 2251/2252) and probeBackoffForDirectOutcome's
+// protocol 6h parking never fired from this path.
+func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) (r nodeProbeRoundResult) {
+	r = nodeProbeRoundResult{errCode: "none"}
+	defer func() {
+		if err := writeResponsesCapability(ctx, w.capabilitySink, credID, model, r.supportsResponses); err != nil {
+			slog.Warn("node_probe_worker: persisting Responses capability failed",
+				"credential_id", credID, "model", model, "error", err)
+		}
+	}()
+	// 失败出口统一收口（2026-09-25）：每个失败 return 前不必各自分类，
+	// defer 兜底一次 root-cause 分类 + err_detail 标注。ok 时不标注。
+	defer func() {
+		if !r.ok {
+			r.rootCause = classifyProbeRootCause(r.errCode, r.httpStatus, r.responseBody)
+			annotateRootCause(&r)
+		}
+	}()
+	resolveTarget := w.resolveDirectTarget
+	if w.resolveDirectTargetFn != nil {
+		resolveTarget = w.resolveDirectTargetFn
+	}
+	plain, outboundModel, baseURL, protocol, providerID, err := resolveTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
 		r.errDetail = fmt.Sprintf("build endpoint failed: %s (cred_id=%d, model=%s)", err.Error(), credID, model)
@@ -2468,6 +2867,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	}
 	defer resp.Body.Close()
 	r.httpStatus = resp.StatusCode
+	responsesProbe := probeDescriptorFor(protocol).ChatProbeEndpoint == upstreamurl.EpResponses
 
 	// 读取响应body（前512字节）
 	respBuf := make([]byte, 512)
@@ -2476,6 +2876,9 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		r.ok = true
+		if responsesProbe {
+			r.supportsResponses = boolEvidence(true)
+		}
 		return r
 	}
 	r.errCode = fmt.Sprintf("http_%d", resp.StatusCode)
@@ -2485,6 +2888,32 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		statusText = statusText[:idx]
 	}
 	r.errDetail = fmt.Sprintf("upstream returned HTTP %d %s (cred_id=%d, url=%s, model=%s)", resp.StatusCode, statusText, credID, endpoint, bodyModel)
+
+	// 2026-09-28 vapeur 轮：openai-responses 供应商的多厂商聚合中转对部分
+	// 模型族（claude/qwen/doubao/gemini…）在 /v1/responses 上回
+	// 「该供应商不支持 Responses API」（400）或「X provider does not support
+	// the Responses API」（502），而这些模型的 /v1/chat/completions 全部
+	// 200。按供应商协议一刀切打 responses 会把健康节点探成红 → URSM v2
+	// 视图 available=0 → 路由整体排除该凭据。降级规则：responses 探针命中
+	// 「不支持 Responses API」裁决时，向同一 base_url 补一发 chat 探针；
+	// chat 绿 → 该 (credential, model) 经 chat 可用，本轮按成功回报
+	// （rootCause 分类在 defer 中只在 !ok 时执行，成功路径不受污染）。
+	// chat 也挂 → 维持原 responses 失败结论，附注 fallback 结果。
+	if responsesProbe &&
+		providercap.ResponsesUnsupportedError(resp.StatusCode, r.responseBody) {
+		r.supportsResponses = boolEvidence(false)
+		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, w.probeClient, plain, baseURL, bodyModel)
+		if fbOK {
+			r.ok = true
+			r.chatFallback = true
+			r.httpStatus = fbStatus
+			r.errCode = "none"
+			r.errDetail = responsesUnsupportedDetail(resp.StatusCode, fbStatus, fbBody, fbLatency, true)
+			r.responseBody = fbBody
+			return r
+		}
+		r.errDetail += "; " + responsesUnsupportedDetail(resp.StatusCode, fbStatus, fbBody, fbLatency, false)
+	}
 	return r
 }
 
@@ -2503,6 +2932,9 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 	//   network_error   -> Network (request_build/transport)
 	//   http_<status>   -> mapped from the upstream status code
 	status := nodeProbeResultToStatus(result)
+	// 2026-09-25: root-cause counter — one increment per failed round, the
+	// single counting choke point (logProbeRoundRootCause only logs).
+	recordProbeRootCause(origin, result)
 	// 2026-07-17: forward the diagnostic detail already collected by
 	// probeDirect/probeGateway so the emitter can surface the real
 	// request/response context in auto_decision + synthetic traces.
@@ -2514,6 +2946,7 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 		ErrCode:      result.errCode,
 		ErrMsg:       result.errDetail,
 		LatencyMs:    result.latencyMs,
+		RootCause:    string(result.rootCause),
 		RespPreview:  result.responseBody,
 		ResponseBody: result.responseBody,
 		RequestURL:   result.requestURL,
@@ -2774,29 +3207,39 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 	return string(pt), outboundModel, baseURL, protocol, providerID, nil
 }
 
+// directProbeEndpoint/directProbeBody 按 nodelist 直连探针的协议分发。
+// 2026-09-25：改用 probeDescriptorFor（归一 + providercap.Resolve）统一入口，
+// openai-responses 凭据（vapeur/hxt-local）走原生 /v1/responses
+// {"input","max_output_tokens"}——其 chat 端点对小 max_tokens 探针 400。
 func directProbeEndpoint(baseURL, protocol string) string {
-	ep := upstreamurl.EpChatCompletions
-	if strings.HasPrefix(protocol, "anthropic") {
-		ep = upstreamurl.EpMessages
-	}
-	return upstreamurl.Build(baseURL, ep)
+	return upstreamurl.Build(baseURL, probeDescriptorFor(protocol).ChatProbeEndpoint)
 }
 
 func directProbeBody(model, protocol string) string {
-	if strings.HasPrefix(protocol, "anthropic") {
+	desc := probeDescriptorFor(protocol)
+	switch desc.ChatProbeEndpoint {
+	case upstreamurl.EpMessages:
 		body, _ := json.Marshal(map[string]any{
 			"model":      model,
 			"max_tokens": 10,
 			"messages":   []map[string]any{{"role": "user", "content": "ping"}},
 		})
 		return string(body)
+	case upstreamurl.EpResponses:
+		body, _ := json.Marshal(map[string]any{
+			"model":             model,
+			"input":             "ping",
+			"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
+		})
+		return string(body)
+	default:
+		body, _ := json.Marshal(map[string]any{
+			"model":      model,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens": 10,
+		})
+		return string(body)
 	}
-	body, _ := json.Marshal(map[string]any{
-		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 10,
-	})
-	return string(body)
 }
 
 func (w *NodeProbeWorker) logNodeProbeStateUpdateWarning(phase string, providerID, credID int, model, parentRequestID string, err error) {
@@ -2961,10 +3404,21 @@ func (w *NodeProbeWorker) updateObservedState(ctx context.Context, credID int, m
 }
 
 // probeGateway issues a chat-completion ping through the local gateway
-// using the system API key.  This catches routing, auth, transform,
+// using the system API key. This catches routing, auth, transform,
 // rate-limit, and compression regressions that a direct call cannot.
-func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model string) nodeProbeRoundResult {
-	r := nodeProbeRoundResult{errCode: "none"}
+//
+// Named return for the same defer-mutates-the-return-slot reason as
+// probeDirect (P1 fix, 2026-09-26).
+func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model string) (r nodeProbeRoundResult) {
+	r = nodeProbeRoundResult{errCode: "none"}
+	// 与 probeDirect 相同的失败出口收口（2026-09-25）；2026-09-26 起用 gateway
+	// 轮专用分类——回环 transport 失败是本实例不可达，不是节点故障。
+	defer func() {
+		if !r.ok {
+			r.rootCause = classifyGatewayRoundRootCause(r.errCode, r.httpStatus, r.responseBody)
+			annotateRootCause(&r)
+		}
+	}()
 	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, model)
 	endpoint := w.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))

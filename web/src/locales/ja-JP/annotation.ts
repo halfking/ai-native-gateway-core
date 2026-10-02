@@ -144,6 +144,23 @@ export default {
     count: '件数',
     percentage: '割合',
     distribution: '分布',
+    taskCorrections: 'タスク型修正統計（taskprofile）',
+    exportCsv: 'CSV エクスポート',
+    exporting: 'エクスポート中...',
+    importCsv: 'CSV インポート',
+    importing: 'インポート中...',
+    applySuggestions: '階層提案を適用',
+    applying: '適用中...',
+    applyConfirm: '修正駆動の階層提案を task_type_tier_config に書き込みますか？',
+    applyDone: '適用済み：{types}',
+    applyNone: '適用すべき修正駆動の昇格はありません',
+    importDone: 'インポート完了：{imported} 件追加、{skipped} 件スキップ、行エラー {errors} 件',
+    tpTaskType: 'タスク型',
+    tpTotal: '合計',
+    tpAgrees: '一致',
+    tpCorrected: '修正',
+    tpRate: '修正率',
+    tpSuggested: '提案階層',
   },
   // Actions
   batchSelected: '{count} 件選択中',
@@ -168,4 +185,14 @@ export default {
   // Loading states
   loading: '読み込み中...',
   noSamples: 'アノテーションサンプルがありません',
+
+  // taskprofile エクスポート/インポート (2026-09-18 round 2)
+  taskProfile: {
+    exportBtn: 'CSV エクスポート',
+    importBtn: 'CSV インポート',
+    exportOk: '{name} をエクスポートしました',
+    exportFailed: 'エクスポートに失敗しました',
+    importOk: 'インポート {imported}、スキップ {skipped}、エラー {errors}',
+    importFailed: 'インポートに失敗しました',
+  },
 }

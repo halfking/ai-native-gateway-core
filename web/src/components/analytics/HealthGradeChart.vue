@@ -8,6 +8,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
+import { getChartTheme } from '../../composables/useChart'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -31,6 +32,7 @@ const props = defineProps<{
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
 const isDestroyed = ref(false)
+let themeObserver: MutationObserver | null = null
 
 const gradeColors: Record<string, string> = {
   A: '#3fb950',
@@ -68,6 +70,10 @@ function initChart() {
 function updateChart() {
   if (!chartInstance || !props.distribution || isDestroyed.value) return
 
+  // 2026-09-29 暗色修复：tooltip/legend/text 默认色全部从 CSS token 读，
+  // 亮色皮肤下用 `--kx-text`（深蓝灰）替代原硬编码 `#e6edf3`（暗色白）。
+  const theme = getChartTheme()
+
   const gradeKeys = ['a', 'b', 'c', 'd', 'f'] as const
   const gradeLabels: Record<string, string> = {
     a: t('dashboard.charts.gradeA'),
@@ -88,9 +94,9 @@ function updateChart() {
   const option: EChartsOption = {
     tooltip: {
       trigger: 'item',
-      backgroundColor: 'rgba(28, 33, 40, 0.95)',
-      borderColor: 'rgba(48, 54, 61, 0.8)',
-      textStyle: { color: '#e6edf3', fontSize: 12 },
+      backgroundColor: theme.cardBorder,
+      borderColor: theme.grid,
+      textStyle: { color: theme.text, fontSize: 12 },
       formatter: (params: any) => {
         const pct = total.value > 0 ? ((params.value / total.value) * 100).toFixed(1) : '0'
         return `${params.marker} ${params.name}: ${params.value} (${pct}%)`
@@ -100,7 +106,7 @@ function updateChart() {
       orient: 'vertical',
       right: 10,
       top: 'center',
-      textStyle: { color: '#8b949e', fontSize: 11 },
+      textStyle: { color: theme.muted, fontSize: 11 },
     },
     graphic: (props.avgScore !== undefined && props.avgScore !== null
       ? [
@@ -111,7 +117,7 @@ function updateChart() {
             style: {
               text: props.avgScore.toFixed(1),
               textAlign: 'center',
-              fill: '#e6edf3',
+              fill: theme.text,
               fontSize: 28,
               fontWeight: 700,
             },
@@ -123,7 +129,7 @@ function updateChart() {
             style: {
               text: t('dashboard.charts.avgScore'),
               textAlign: 'center',
-              fill: '#8b949e',
+              fill: theme.muted,
               fontSize: 12,
             },
           },
@@ -137,7 +143,7 @@ function updateChart() {
         avoidLabelOverlap: false,
         label: { show: false },
         emphasis: {
-          label: { show: true, fontSize: 14, fontWeight: 'bold', color: '#e6edf3' },
+          label: { show: true, fontSize: 14, fontWeight: 'bold', color: theme.text },
         },
         labelLine: { show: false },
         data: pieData,
@@ -156,6 +162,8 @@ function handleResize() {
 function cleanupChart() {
   isDestroyed.value = true
   window.removeEventListener('resize', handleResize)
+  themeObserver?.disconnect()
+  themeObserver = null
   if (chartInstance) {
     chartInstance.dispose()
     chartInstance = null
@@ -165,6 +173,15 @@ function cleanupChart() {
 onMounted(() => {
   initChart()
   window.addEventListener('resize', handleResize)
+  // 2026-09-29：data-theme 变化时重画，让 chart 颜色随皮肤切换
+  themeObserver = new MutationObserver(() => {
+    if (isDestroyed.value) return
+    nextTick(() => updateChart())
+  })
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme']
+  })
 })
 
 onUnmounted(() => {

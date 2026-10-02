@@ -16,6 +16,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -41,6 +42,68 @@ type SQLitePragmasConfig struct {
 	BusyTimeoutMS int    `yaml:"busy_timeout_ms"`
 }
 
+// HotZoneConfig 全模式本地热区层（docs/storage/2026-09-24-hotzone-dual-mode-plan.md）。
+// 适用范围：两模式（lite / full）共享同一配置；Enabled=false 时整层下线，
+// lite 仍保留既有 L1.5 文件缓存目录；full 退回 L1→L2→L3 历史装配。
+//
+// 热区目录布局（与 lite cache_dir 同构，full 额外多一个 requests/ 子树）：
+//
+//	{HotZone.Dir}/cache/           SessionStateV2 JSON（L1.5）
+//	{HotZone.Dir}/session_bodies/  会话 turn body（与 lite session_bodies 同语义）
+//	{HotZone.Dir}/requests/        请求侧镜像（H3 接线）
+//
+// 三子树共享 HotZone.MaxSizeGB 预算；RetentionHours 控制 trimmer 阈值。
+type HotZoneConfig struct {
+	// Enabled 是否启用热区层。YAML 与 env 双通道；runtime 阶段仍可由 settings_kv
+	//（storage.hotzone_enabled）覆盖。
+	Enabled *bool `yaml:"enabled" env:"LLM_GATEWAY_HOTZONE_ENABLED"`
+	// Dir 热区根目录，默认 ./data/hotzone。
+	Dir string `yaml:"dir" env:"LLM_GATEWAY_HOTZONE_DIR"`
+	// RetentionHours 保留时长（小时），默认 7，范围 1–168。
+	RetentionHours int `yaml:"retention_hours" env:"LLM_GATEWAY_HOTZONE_RETENTION_HOURS"`
+	// MaxSizeGB 硬上限（GB），默认 1，范围 1–100。扩容 FileCache.ResizeMax
+	// 立即生效；缩容由下一轮 trimmer 执行。
+	MaxSizeGB int `yaml:"max_size_gb" env:"LLM_GATEWAY_HOTZONE_MAX_SIZE_GB"`
+	// RequestMirror 是否写入请求体镜像（H3 接线，full 模式默认开启；
+	// lite 模式沿用既有 session_bodies 写入路径，不重复镜像）。
+	RequestMirror *bool `yaml:"request_mirror" env:"LLM_GATEWAY_HOTZONE_REQUEST_MIRROR"`
+}
+
+// IsEnabled 报告 HotZone 是否启用；nil 指针与未配置均回落 defaultEnabled。
+func (h *HotZoneConfig) IsEnabled(defaultEnabled bool) bool {
+	if h == nil || h.Enabled == nil {
+		return defaultEnabled
+	}
+	return *h.Enabled
+}
+
+// RequestMirrorEnabled 报告请求体镜像是否启用；nil 回落 defaultEnabled。
+func (h *HotZoneConfig) RequestMirrorEnabled(defaultEnabled bool) bool {
+	if h == nil || h.RequestMirror == nil {
+		return defaultEnabled
+	}
+	return *h.RequestMirror
+}
+
+// Contains 报告 dir 是否位于热区目录之内（含相等），用于装配层判断某个
+// 既有子树（如 lite.CacheDir）是否落入热区统一预算——是则 settings
+// storage.hotzone_max_size_gb 热重载同时驱动该子树的 FileCache.ResizeMax，
+// 否则该子树沿用自身配额旋钮（H4 §改动4：lite 的 10GB 默认不动）。
+// 双侧 filepath.Clean 后按路径段边界比较，避免 "data/hotzone-x" 误判为
+// "data/hotzone" 的前缀碰撞；相对/绝对混排视为不包含（调用方两侧路径
+// 应同源，均出自同一配置）。nil 指针 / 任一侧为空恒 false。
+func (h *HotZoneConfig) Contains(dir string) bool {
+	if h == nil || h.Dir == "" || dir == "" {
+		return false
+	}
+	root := filepath.Clean(h.Dir)
+	target := filepath.Clean(dir)
+	if root == target {
+		return true
+	}
+	return strings.HasPrefix(target, root+string(filepath.Separator))
+}
+
 type StorageConfig struct {
 	// Mode 存储模式："full" 或 "lite"。空值非法（见 Validate）。
 	Mode string `yaml:"storage_mode" env:"LLM_GATEWAY_STORAGE_MODE"`
@@ -48,6 +111,9 @@ type StorageConfig struct {
 	Full *FullStorageConfig `yaml:"full_storage"`
 	// Lite lite 模式的存储明细；mode=lite 时必填。
 	Lite *LiteStorageConfig `yaml:"lite_storage"`
+	// HotZone 全模式本地热区层（2026-09-24 H2 接线）。两模式共用，
+	// 段缺失时 ApplyDefaults 按 mode 补默认；Enabled=false 时整层下线。
+	HotZone *HotZoneConfig `yaml:"hotzone"`
 }
 
 // FullStorageConfig full 模式：外部 PostgreSQL + Redis。
@@ -100,7 +166,12 @@ type LiteStorageConfig struct {
 	Retention struct {
 		SessionBodiesDays int `yaml:"session_bodies_days"`
 		RequestLogsDays   int `yaml:"request_logs_days"`
-		CacheHours        int `yaml:"cache_hours"`
+		// CacheHours 是 L1.5 文件缓存的清理保留期（小时）。注意它不能
+		// 小于 CacheTTLHours：读侧按 TTL 判过期、删侧按本值删文件，配小了
+		// 会删掉仍被当作有效缓存的条目。装配层（cmd/gateway initStorageMode
+		// 的 resolveCacheTrimRetention）取两者安全上界并对收敛情况告警，
+		// 故本字段只用于「比 TTL 多留一段时间」，缩短缓存寿命请改 CacheTTLHours。
+		CacheHours int `yaml:"cache_hours"`
 	} `yaml:"retention"`
 
 	// Consistency lite 跨介质一致性对账（后台 worker，审计 B-#2 接线）配置。
@@ -152,7 +223,134 @@ func (c *StorageConfig) Validate() error {
 		}
 		return fmt.Errorf(`invalid storage_mode %q: must be "full" or "lite"`, c.Mode)
 	}
+	if err := c.validateHotZonePaths(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateHotZonePaths prevents the short hotzone retention from touching
+// authoritative lite storage. Canonical paths include existing symlinked
+// ancestors, so aliases cannot bypass the overlap check. The three managed
+// child directories must themselves be real directories when they exist.
+func (c *StorageConfig) validateHotZonePaths() error {
+	if c.HotZone == nil || !c.HotZone.IsEnabled(true) {
+		return nil
+	}
+	if strings.TrimSpace(c.HotZone.Dir) == "" {
+		return fmt.Errorf("hotzone.dir must not be empty when enabled")
+	}
+	root := c.HotZone.Dir
+	rawRoot := filepath.FromSlash(root)
+	rootForStat := strings.TrimRight(rawRoot, string(filepath.Separator))
+	if rootForStat == "" {
+		rootForStat = rawRoot
+	}
+	if info, err := os.Lstat(rootForStat); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("hotzone.dir %q must be a directory, not a symlink", root)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("hotzone.dir %q: %w", root, err)
+	}
+	canonicalRoot, err := canonicalStoragePath(root)
+	if err != nil {
+		return fmt.Errorf("hotzone.dir %q: %w", root, err)
+	}
+	if c.NormalizeMode() == StorageModeLite && c.Lite != nil {
+		for _, item := range []struct{ name, path string }{
+			{"lite_storage.sqlite_path", c.Lite.SQLitePath},
+			{"lite_storage.bodies_dir", c.Lite.BodiesDir},
+			{"lite_storage.logs_dir", c.Lite.LogsDir},
+		} {
+			if strings.TrimSpace(item.path) == "" {
+				continue
+			}
+			authority, err := canonicalStoragePath(item.path)
+			if err != nil {
+				return fmt.Errorf("%s %q: %w", item.name, item.path, err)
+			}
+			if storagePathsOverlap(canonicalRoot, authority) {
+				return fmt.Errorf("hotzone.dir %q overlaps authoritative %s %q", root, item.name, item.path)
+			}
+		}
+	}
+	for _, name := range []string{"cache", "session_bodies", "requests"} {
+		// Do not filepath.Join here: it would clean link/../ before the OS
+		// resolves the link, potentially checking a different directory.
+		child := rawRoot + string(filepath.Separator) + name
+		info, err := os.Lstat(child)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("hotzone managed directory %q: %w", child, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("hotzone managed directory %q must be a directory, not a symlink", child)
+		}
+	}
+	return nil
+}
+
+// canonicalStoragePath resolves components in order, before processing "..".
+// filepath.Abs/Clean cannot be used first: cleaning link/../x would erase the
+// link even though the filesystem resolves it before "..". Missing suffixes
+// are retained; dangling symlinks fail closed.
+func canonicalStoragePath(path string) (string, error) {
+	path = filepath.FromSlash(path)
+	var current string
+	if filepath.IsAbs(path) {
+		volume := filepath.VolumeName(path)
+		current = volume + string(filepath.Separator)
+		path = strings.TrimPrefix(path, volume)
+	} else {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		current, err = filepath.EvalSymlinks(cwd)
+		if err != nil {
+			return "", err
+		}
+	}
+	for _, component := range strings.Split(path, string(filepath.Separator)) {
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, component)
+		info, err := os.Lstat(next)
+		if os.IsNotExist(err) {
+			current = next
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			current, err = filepath.EvalSymlinks(next)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			current = next
+		}
+	}
+	return filepath.Clean(current), nil
+}
+
+func storagePathsOverlap(a, b string) bool {
+	return storagePathWithin(a, b) || storagePathWithin(b, a)
+}
+
+func storagePathWithin(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && !filepath.IsAbs(rel) && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ApplyLiteDefaults 为 lite 模式补齐默认值：任何空字符串/零值字段都采用
@@ -257,6 +455,54 @@ func (c *StorageConfig) ApplyDefaults() {
 		}
 	case StorageModeLite:
 		c.ApplyLiteDefaults()
+	}
+	// HotZone 默认值（2026-09-24 H2 接线）：两模式共用，未配置即开。
+	// 与 settings.hotzone_enabled 默认 true 对齐；一段配置缺失则按
+	// mode-aware 默认值兜底（lite 复用 cache_dir 上层；full 默认 ./data/hotzone）。
+	c.ApplyHotZoneDefaults()
+}
+
+// ApplyHotZoneDefaults 为 HotZoneConfig 补默认值。两模式共用；段缺失时
+// 自动创建。Enabled / RequestMirror 用指针区分「未配置（nil）→ 默认值」
+// 与 YAML/env 显式 false。
+//
+// 默认值表：
+//   - Enabled：true（两模式均默认开启，行为变更点；可通过
+//     LLM_GATEWAY_HOTZONE_ENABLED=false 一键关闭）
+//   - Dir：lite = "./data/hotzone"，full = "./data/hotzone"
+//   - RetentionHours：7（1–168h）
+//   - MaxSizeGB：1（1–100GB；lite 默认覆盖 cache_max_size_gb=10GB）
+//   - RequestMirror：true（full 写 H3 镜像；lite 不消费该字段）
+func (c *StorageConfig) ApplyHotZoneDefaults() {
+	if c == nil {
+		return
+	}
+	if c.HotZone == nil {
+		c.HotZone = &HotZoneConfig{}
+	}
+	h := c.HotZone
+	if h.Dir == "" {
+		h.Dir = "./data/hotzone"
+	}
+	if h.RetentionHours <= 0 {
+		h.RetentionHours = 7
+	}
+	if h.RetentionHours > 168 {
+		h.RetentionHours = 168
+	}
+	if h.MaxSizeGB <= 0 {
+		h.MaxSizeGB = 1
+	}
+	if h.MaxSizeGB > 100 {
+		h.MaxSizeGB = 100
+	}
+	if h.Enabled == nil {
+		e := true
+		h.Enabled = &e
+	}
+	if h.RequestMirror == nil {
+		rm := true
+		h.RequestMirror = &rm
 	}
 }
 
@@ -447,6 +693,41 @@ func applyEnvOverrides(cfg *StorageConfig) {
 			cfg.Lite = &LiteStorageConfig{}
 		}
 		applyPositiveIntEnv("LLM_GATEWAY_CONSISTENCY_MAX_SESSIONS_PER_RUN", &cfg.Lite.Consistency.MaxSessionsPerRun)
+	}
+
+	// HotZone 段（2026-09-24 H2 接线）：两模式共用，env-only 部署也支持。
+	// 段缺失但 env 有值时自动创建对应段。
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_ENABLED"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		applyOptionalBoolEnv(v, &cfg.HotZone.Enabled)
+	}
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_DIR"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		if cfg.HotZone.Dir == "" {
+			cfg.HotZone.Dir = v
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_RETENTION_HOURS"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		applyPositiveIntEnv("LLM_GATEWAY_HOTZONE_RETENTION_HOURS", &cfg.HotZone.RetentionHours)
+	}
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_MAX_SIZE_GB"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		applyPositiveIntEnv("LLM_GATEWAY_HOTZONE_MAX_SIZE_GB", &cfg.HotZone.MaxSizeGB)
+	}
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_REQUEST_MIRROR"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		applyOptionalBoolEnv(v, &cfg.HotZone.RequestMirror)
 	}
 }
 

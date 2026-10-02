@@ -144,6 +144,23 @@ export default {
     count: 'Count',
     percentage: 'Percentage',
     distribution: 'Distribution',
+    taskCorrections: 'Task-type corrections (taskprofile)',
+    exportCsv: 'Export CSV',
+    exporting: 'Exporting...',
+    importCsv: 'Import CSV',
+    importing: 'Importing...',
+    applySuggestions: 'Apply tier suggestions',
+    applying: 'Applying...',
+    applyConfirm: 'Write correction-driven tier suggestions into task_type_tier_config?',
+    applyDone: 'Applied: {types}',
+    applyNone: 'No correction-driven escalations to apply',
+    importDone: 'Import done: {imported} imported, {skipped} skipped, {errors} row errors',
+    tpTaskType: 'Task type',
+    tpTotal: 'Total',
+    tpAgrees: 'Confirmed',
+    tpCorrected: 'Corrected',
+    tpRate: 'Correction rate',
+    tpSuggested: 'Suggested tier',
   },
   // Actions
   batchSelected: '{count} selected',
@@ -168,4 +185,14 @@ export default {
   // Loading states
   loading: 'Loading...',
   noSamples: 'No annotation samples',
+
+  // taskprofile export/import (2026-09-18 round 2)
+  taskProfile: {
+    exportBtn: 'Export CSV',
+    importBtn: 'Import CSV',
+    exportOk: 'Exported {name}',
+    exportFailed: 'Export failed',
+    importOk: 'Imported {imported}, skipped {skipped}, errors {errors}',
+    importFailed: 'Import failed',
+  },
 }

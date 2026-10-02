@@ -100,19 +100,25 @@ import (
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
+	"github.com/kaixuan/llm-gateway-go/internal/auth"
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/hostedcallback"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/internal/mockprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
+	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
@@ -127,6 +133,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/proxy"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
@@ -137,6 +144,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/storage"
 	"github.com/kaixuan/llm-gateway-go/tenantops"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/kaixuan/llm-gateway-go/vibecoding"
@@ -413,16 +421,27 @@ func main() {
 			"hint", "set LLM_GATEWAY_ENV=production to enforce fail-closed")
 	}
 
+	// 三十七轮审计 §三#6 (2026-09-30): SK==CEK 冲突在一切 env 都是确定性故障
+	// （09-28 §7.1 全网 503 事故形态），shell 门（deploy-local-lib + load-env
+	// 两变体）只护 operator shell，systemd env 等装载通道此前零防护——这里
+	// 对齐 shell 门语义：硬失败，不随 LLM_GATEWAY_ENV 降级为告警。
+	if violation := cfg.ValidateSecretKeyDistinct(); violation != "" {
+		panic("auth fail-closed: " + violation)
+	}
+
 	// Rule 20 §3: ops token SHOULD carry the ops_ prefix (soft check, non-blocking)
 	if cfg.AdminAPIKey != "" && !strings.HasPrefix(cfg.AdminAPIKey, "ops_") {
 		slog.Warn("auth: ops token should use ops_ prefix per rule 20 §3",
 			"hint", "rotate to ops_-prefixed value at next maintenance window")
 	}
 
-	// ── 双模式存储装配（Task 4.2）─────────────────────────────────────────
-	// LLM_GATEWAY_STORAGE_MODE 未设置或为 full 时 storageRt 为 nil，以下全部
-	// 走既有装配路径（行为零变化）；lite 模式在此初始化存储工厂、L1.5 文件
-	// 缓存与后台清理任务，Shutdown 挂在优雅关闭段末尾。
+	// ── 双模式存储装配（Task 4.2 + 2026-09-24 方案 H2/P3）───────────────────
+	// LLM_GATEWAY_STORAGE_MODE 未设置/非法时 storageRt 为 nil；显式 full 且
+	// 热区关闭（config 通道）时同样为 nil——两者都走既有装配路径（行为零变化）。
+	// lite 模式在此初始化存储工厂、L1.5 文件缓存与后台清理任务；full+热区
+	// 装配 hotZoneOnly runtime（非 nil 但 liteMode()==false）。⚠ 一切「lite
+	// 语义」判据必须用 storageRt.liteMode()，不得直接判 storageRt != nil。
+	// Shutdown 挂在优雅关闭段末尾。
 	storageCfg := loadStorageConfig(configFile)
 	storageRt, storageInitErr := initStorageMode(cfg, storageCfg)
 	if storageInitErr != nil {
@@ -448,13 +467,30 @@ func main() {
 	// "postgres connected max_conns=N" 日志为准。
 	// （已知噪音：deploy-252-gateway.sh / start-full.sh 会无条件 export 该
 	// env，full 模式下每次启动一条 Warn——脚本侧待清理，见 R43 轮文档遗留。）
-	if storageRt == nil {
+	if !storageRt.liteMode() {
 		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS")); v != "" {
 			slog.Warn("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS set but does NOT cap the full-mode gateway PG pool",
 				"effective_knob", "LLM_GATEWAY_DB_MAX_CONNS",
 				"scope", "storage factory only (lite SQLite / future full wiring)",
 				"value", v)
 		}
+	}
+
+	// ── FF_OLLAMA_NATIVE 防呆护栏（R72 审计 §3.1，2026-10-01）──
+	// 该开关当前不可开启：IR 模式下 ExecParams.ClientProtocol 由
+	// ir.DetectProtocol 打标，产出的是 IR 词表（"openai-chat"），而 ollama
+	// executor 的门禁（finalizeOllamaUpstreamBody）只认 catalog 词表
+	// （"openai-completions"）——永不相等，开关一开所有 Ollama 出站全量 501。
+	// 显式开启时在此打一条显眼的启动 Warn（GetP4Flags 的默认值是 false，
+	// 值为 true 必然来自显式设置）；501 门禁行为不动，待四步接线
+	// （usage 拆分 → ollama.* 命名空间 → tool_calls 解析 → 开开关）完成后
+	// 本护栏随开关一起退役。
+	if settings.GetP4Flags().OllamaNativeEnabled {
+		slog.Warn("FF_OLLAMA_NATIVE is explicitly enabled but the ollama-native path is NOT wired: "+
+			"IR protocol vocabulary (e.g. openai-chat) never matches the ollama executor gate's catalog vocabulary (openai-completions), "+
+			"so ALL Ollama outbound traffic will fail with 501. Keep the flag false until the four-step wiring lands",
+			"flag", "FF_OLLAMA_NATIVE",
+			"audit_ref", "docs/全面审计v3/2026-10-01/42-R72 §3.1")
 	}
 
 	// ── full_storage.postgres_url ↔ DATABASE_URL 双向对齐（audit 2026-09-14 R28 #17）──
@@ -489,7 +525,7 @@ func main() {
 	// PostgreSQL 初始化（openDBWithBootRetry 对空 URL 返回 nil，即既有 no-DB
 	// 降级路径），避免无谓的连接重试拖慢启动。
 	bootDatabaseURL := cfg.DatabaseURL
-	if storageRt != nil {
+	if storageRt.liteMode() {
 		slog.Warn("storage lite mode: PostgreSQL disabled, using SQLite + local dirs",
 			"database_url_configured", cfg.DatabaseURL != "")
 		bootDatabaseURL = ""
@@ -818,7 +854,10 @@ func main() {
 	healthHandler.SetRuntimeIdentity(cfg.RuntimeRole, cfg.Listen)
 	// lite storage mode: PostgreSQL is bypassed by design — nil dbPinger must
 	// not pin /healthz ready=false and /readyz 503 forever (audit B1).
-	if storageRt != nil {
+	// Only flip the optional flag when PG is actually disabled; otherwise a
+	// half-initialized dbConn (e.g. ensure still running on a large table)
+	// would let /readyz return 200 while DB queries fail downstream.
+	if dbConn == nil || !dbConn.Enabled() {
 		healthHandler.SetDepsOptional(true)
 	}
 
@@ -860,6 +899,14 @@ func main() {
 	var stateManager *credentialstate.Manager // 2026-06-30: credential×model state manager
 	var lastSystemSession *session.LastSystemSessionIndex
 	var sessionPref *session.SessionPreference
+	// reqProbeCoord (2026-09-21) 请求侧异常探测（参数剔除/模式回退重试 +
+	// 记录）。按部署模式选存储：Redis 可用 → RedisStore（跨重启保留，
+	// Full 形态），否则 MemoryStore（lite 形态，重启清零）。装配在
+	// executor 构造前，注入点两处：routingExec.RequestProbe 与
+	// adminHandler.SetRequestAnomalyStore。
+	var reqProbeCoord *reqprobe.Coordinator
+	// paramLedger (2026-09-22) 参数协商账本：见 executor 构造段的装配说明。
+	var paramLedger *paramledger.Ledger
 	// 2026-07-28 request-flow Step 3 (spec §6.3 + Step 3): session_state_init
 	// 返回的 DBWriter 需要在 telemetryClient.Stop 之后、pools.CloseAll 之前
 	// 显式 Stop（flush 排空）。声明为函数级变量以便 shutdown goroutine 访问；
@@ -889,11 +936,12 @@ func main() {
 	// 成功时（ROUTING_OPT_ENABLED=true 且有 DB pool）非 nil，否则保持 nil
 	// （关闭路径零开销）。
 	var routingOptimizerForShutdown *routingopt.RealOptimizer
-	// 2026-09-14 R28 #16: lite 模式（storageRt != nil）按策略禁用 Redis——
+	// 2026-09-14 R28 #16: lite 模式（storageRt.liteMode()）按策略禁用 Redis——
 	// 主 Config 在上方 env 收口之前已完成解析，cfg.RedisAddr 可能仍残留值，
-	// 此处以 storageRt == nil 为准做二次门控；跳过本段后 sessionMgr 等
-	// 保持 nil，走与"Redis 未配置/不可达"一致的既有降级路径。
-	if cfg.RedisAddr != "" && storageRt == nil {
+	// 此处以 !liteMode() 为准做二次门控（full 热区装配 P3 的 runtime 非 nil
+	// 但不是 lite，Redis 必须照常装配——它是 L2 治理缓存）；跳过本段后
+	// sessionMgr 等保持 nil，走与"Redis 未配置/不可达"一致的既有降级路径。
+	if cfg.RedisAddr != "" && !storageRt.liteMode() {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		// 2026-09-04 availability: bounded boot-ping retry so a Redis that
 		// comes up slightly after the gateway (container ordering, short
@@ -1277,27 +1325,19 @@ func main() {
 					slog.Info("turn_logs aggregator stopped")
 					return
 				case <-ticker.C:
-					rows, err := dbConn.Pool().Query(turnLogsCtx, `
-						SELECT tenant_id, session_id
-						FROM public.session_turn_logs
-						WHERE expires_at > NOW()
-						GROUP BY tenant_id, session_id
-						LIMIT 100
-					`)
+					// Extracted to TurnLogsAggregator.PendingSessions so the
+					// selection order is testable; it used to be an inline
+					// query here with no ORDER BY (critical audit 2026-09-27).
+					pending, err := turnLogsAgg.PendingSessions(turnLogsCtx, 100)
 					if err != nil {
 						slog.Warn("turn_logs aggregator: poll query failed", "err", err)
 						continue
 					}
-					for rows.Next() {
-						var t, s string
-						if scanErr := rows.Scan(&t, &s); scanErr != nil {
-							continue
-						}
-						if aggErr := turnLogsAgg.AggregateAndFlush(turnLogsCtx, t, s); aggErr != nil {
-							slog.Warn("turn_logs aggregator: flush failed", "tenant", t, "session", s, "err", aggErr)
+					for _, k := range pending {
+						if aggErr := turnLogsAgg.AggregateAndFlush(turnLogsCtx, k.TenantID, k.SessionID); aggErr != nil {
+							slog.Warn("turn_logs aggregator: flush failed", "tenant", k.TenantID, "session", k.SessionID, "err", aggErr)
 						}
 					}
-					rows.Close()
 				}
 			}
 		}()
@@ -1405,6 +1445,9 @@ func main() {
 		resolver.SetDB(dbConn.Pool())
 	}
 	var stickyCache *executors.StickyCache // promoted to function scope so admin.SetHotReloadDeps (later in main) can wire the same instance
+	// stickyLoadTrackerForShutdown — R47：提升到函数作用域供停机段 Close
+	// sweep goroutine（进程级单例，此前只靠进程退出兜底）。
+	var stickyLoadTrackerForShutdown *executors.StickyLoadTracker
 	if providerClient.Enabled() {
 		stickyCache = executors.NewStickyCache()
 		if dbConn != nil && dbConn.Enabled() {
@@ -1428,6 +1471,17 @@ func main() {
 		// 注入 Router.LiveLoad，使 P2C 拿到真正的 in-flight 计数。
 		router.LiveLoad = peakCollector
 		routingRouter = router
+
+		// 2026-09-19 sticky-session load balancing：每凭据 5 分钟 sticky
+		// 会话滑窗 + 最近请求时间信号，接入 P2C 评分（新会话节点选择按
+		// 并发容量拉平 sticky 会话数，降低上游并发会话封禁风险）。
+		// 无 Redis 部署（252 形态）退化为纯本实例内存窗口。
+		stickyLoadTrackerForShutdown = executors.NewStickyLoadTracker()
+		stickyLoadTracker := stickyLoadTrackerForShutdown
+		if redisClientForCache != nil {
+			stickyLoadTracker.SetStore(ursmcache.NewStickyLoadStore(redisClientForCache.Client()))
+		}
+		router.StickyLoad = stickyLoadTracker
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
@@ -1497,44 +1551,34 @@ func main() {
 			slog.Info("timeout config wired to router")
 		}
 
-		// UNUSED (audit 2026-09-14 R28 #20): Bandit wiring disabled; Router.Bandit
-		// is always nil in production — see executors/router.go banditOrder.
-		// The block below is retained as the re-enable recipe only.
-		//
-		// Phase 1 Bandit Scoring (2026-06-26): Initialize Thompson Sampling scorer
-		// for intelligent credential selection based on historical performance.
-		// Flushes state to database every 10s or when 100 credentials are dirty.
-		// Controlled by LLM_GATEWAY_ENABLE_BANDIT_SCORING (default: false).
-		//
-		// NET-012 fix: 此段在 main 分支上构建断裂（cfg.EnableBanditScoring
-		// / banditScorer.LoadFromDB 符号不存在）。WIP feature，临时注释掉。
-		// 修复 tracked in: <TBD>
-		_ = "bandit scoring disabled (WIP build break) — re-enable when BanditScorer API stabilizes"
-		// if cfg.EnableBanditScoring && dbConn != nil && dbConn.Enabled() {
-		// 	banditScorer := credential.NewBanditScorer()
-		//
-		// 	// Load historical state from database (cold start recovery)
-		// 	if err := banditScorer.LoadFromDB(context.Background(), dbConn.Pool()); err != nil {
-		// 		slog.Warn("bandit: failed to load state from database", "error", err)
-		// 	}
-		//
-		// 	banditFlusher := credential.NewBanditFlusher(
-		// 		dbConn.Pool(),
-		// 		banditScorer,
-		// 		10*time.Second, // flush interval
-		// 		100,            // batch size
-		// 	)
-		// 	banditFlusher.Start()
-		// 	defer banditFlusher.Stop()
-		//
-		// 	router.Bandit = banditScorer
-		// 	router.BanditFlusher = banditFlusher
-		// 	slog.Info("bandit_scoring", "enabled", true, "flush_interval", "10s", "batch_size", 100)
-		// } else if cfg.EnableBanditScoring {
-		// 	slog.Warn("bandit_scoring", "enabled", false, "reason", "database not available")
-		// }
+		// Bandit 选路已删除（2026-09-19）：Router.Bandit/BanditFlusher 自
+		// 2026-06-26 起从未在生产接线（该块一直是注释），R28 审计 #20 判定死
+		// 代码后整体移除。Thompson Sampling 评分器本体仍在
+		// domains/credential（reputation worker 每日聚合使用）。
 
 		norm := streaming.NewNormalizer()
+		// reqprobe (2026-09-21): 请求侧异常探测协调器。fpSlotRedis 非空
+		// 说明 Redis 通道已 ping 通（Full 形态）；lite/无 Redis 形态落
+		// 进程内存。full 但 Redis 不可达的场景同样安全降级为内存。
+		if fpSlotRedis != nil {
+			reqProbeCoord = reqprobe.NewCoordinator(reqprobe.NewRedisStore(fpSlotRedis, "llmgw:reqanom"))
+			slog.Info("reqprobe coordinator wired (redis-backed)")
+		} else {
+			reqProbeCoord = reqprobe.NewCoordinator(reqprobe.NewMemoryStore())
+			slog.Info("reqprobe coordinator wired (in-memory, lite mode)")
+		}
+		// paramledger (2026-09-22): 参数协商账本——paramguard/reqprobe 的
+		// 出站调整记账，native responses 回程把 reasoning.effort 回显还原
+		// 为客户端原值。主存为进程内存（流式逐帧还原零网络）；Full 形态
+		// 异步镜像到 Redis 供跨进程审计。
+		if fpSlotRedis != nil {
+			paramLedger = paramledger.New(paramledger.RedisMirror(fpSlotRedis, "llmgw:paramledger"))
+			slog.Info("paramledger wired (in-memory + redis mirror)")
+		} else {
+			paramLedger = paramledger.New(nil)
+			slog.Info("paramledger wired (in-memory, lite mode)")
+		}
+		streaming.SetParamLedger(paramLedger)
 		routingExec = executors.NewExecutor(
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
@@ -1571,6 +1615,8 @@ func main() {
 			},
 			auditSink,
 		)
+		routingExec.RequestProbe = reqProbeCoord
+		routingExec.ParamLedger = paramLedger
 		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
@@ -1748,6 +1794,7 @@ func main() {
 			cap *audit.StreamCapture,
 			pcAny any,
 			inputTokensEstimate int,
+			toolsRequested bool,
 		) executors.StreamOutcome {
 			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
@@ -1760,6 +1807,13 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
+			// 2026-09-23 (leak fix): agent clients on /v1/messages over an
+			// OpenAI-shaped upstream previously bypassed the XML/minimax
+			// tool-call coercer entirely (it was wired only into the chat
+			// passthrough loop), so minimax-m3 wrapper tokens leaked into
+			// client-visible text. Coerce at the body-reader seam so the
+			// bridge converts a real tool_calls delta instead of text.
+			resp.Body = streaming.NewXMLToolCallCoercingBody(resp.Body, toolsRequested)
 			// 审计 R3 #2 (2026-09-09)：透传 executor 基于请求体的 input_tokens 估算值，
 			// 写入 message_start.usage.input_tokens（此前恒 0）。
 			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics, inputTokensEstimate)
@@ -1804,6 +1858,7 @@ func main() {
 			clientModel, outboundModel, requestID string,
 			cap *audit.StreamCapture,
 			pcAny any,
+			toolsRequested bool,
 		) executors.StreamOutcome {
 			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
@@ -1816,6 +1871,9 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
+			// 2026-09-23 (leak fix): see the OpenAIToAnthropicStream wiring
+			// above — coerce XML/minimax tool-call text before conversion.
+			resp.Body = streaming.NewXMLToolCallCoercingBody(resp.Body, toolsRequested)
 			outcome := streaming.StreamOpenAIToResponsesSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
@@ -2006,6 +2064,31 @@ func main() {
 			routingExec.ContextLimitUpdater = dbx.NewDBContextLimitUpdater(dbConn.Pool())
 			contextLimitUpdateQueue = executors.NewContextLimitUpdateQueue(routingExec.ContextLimitUpdater, 64)
 			routingExec.ContextLimitUpdateQueue = contextLimitUpdateQueue
+		}
+		// 三十七轮审计 §三#4 (2026-09-30): 熔断器迁移接通三个消费面。此前
+		// credentials.circuit_state 只有 RestoreOnSuccess 一个 'closed' 写入方
+		// （生产恒 'closed'）、RecordCircuitStateChange 零调用、routing 健康检
+		// 查的 circuit_open 永假。DB 面经 128 容量异步队列顺序落库（热路径零
+		// 阻塞），metrics 面直连全局 recorder 的 transitions 计数器。
+		if dbConn != nil && dbConn.Enabled() {
+			circuitSync := credential.NewDBStateSync(dbConn.Pool(), 128)
+			// SpawnLoop 而非 Go（2026-10-01 审计）：DBStateSync.Run 是纯 select
+			// 消费循环，无 wg.Done/done channel 外部握手（见
+			// domains/credential/state_sync.go Run）——正是 SpawnLoop 的适用形态。
+			// bg.Go 语义是 recover→日志→goroutine 终止**不重启**：一次 panic
+			// （如 pgx 驱动深层异常）后 circuit_state 永久停止更新，三十七轮
+			// 审计 §三#4 修掉的「熔断状态恒 closed」病灶复发且无人重启。
+			// SpawnLoop（BaseWorker 监督）在 panic 后指数退避于同一 ctx 上重启
+			// 自愈，restart 计数进 llm_gateway_bg_worker_restarts_total。
+			// 同一 P1 的结构性根因（约 40 个 done 握手型循环 worker 无法迁移
+			// SpawnLoop，重启会二次触发握手）属设计变更，见 bg/spawn.go 头注。
+			// 重启语义钉测：bg/circuit_state_sync_supervise_test.go。
+			bg.SpawnLoop(context.Background(), "circuit_state_sync.run", circuitSync.Run)
+			cm.SetObserver(func(sc credential.StateChange) {
+				metrics.Global().RecordCircuitStateChange(sc.From.String(), sc.To.String())
+				circuitSync.Observe(sc)
+			})
+			slog.Info("circuit state sync enabled (breaker → credentials.circuit_state + transitions counter)")
 		}
 		routingExec.FpSlots = fpSlots
 
@@ -2279,7 +2362,16 @@ func main() {
 		chatHandler.SetStaticDataPlaneKey(cfg.SecretKey)
 		slog.Warn("API key authentication: DB verifier unavailable — static secret-key-only auth enforced for all data-plane requests (sk-* keys rejected)")
 	} else {
-		exposed := storageRt != nil // lite 模式即常态开放；full 降级态为临时暴露
+		exposed := storageRt.liteMode() // lite 模式即常态开放；full 降级态为临时暴露（full 热区装配 P3 的 runtime 非 nil 但非 lite）
+		if exposed && os.Getenv("LLM_GATEWAY_LITE_ALLOW_UNAUTHENTICATED") != "1" {
+			// R28-S-3 (2026-09-30 round 31): lite is a deliberate deployment
+			// mode, not a transient degradation — shipping its data plane with
+			// zero auth is a configuration hole. Refuse to start unless the
+			// operator explicitly opts in to an open data plane. The full-mode
+			// degraded boot below keeps the historical warn-and-continue.
+			slog.Error("lite mode requires data-plane authentication: set LLM_GATEWAY_SECRET_KEY (static-key fallback), LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR (snapshot auth), or LLM_GATEWAY_LITE_ALLOW_UNAUTHENTICATED=1 to explicitly accept an unauthenticated data plane")
+			os.Exit(1)
+		}
 		slog.Error("DATA PLANE UNAUTHENTICATED: api key verification unavailable and no static key configured — any bearer token is accepted. Set LLM_GATEWAY_SECRET_KEY (static-key fallback) or LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR (snapshot auth) to close this.",
 			"lite_mode", exposed)
 	}
@@ -2293,10 +2385,33 @@ func main() {
 	// 2026-09-05 审计 B2 接线：lite 模式（无 PG，telemetry Enabled 恒 false、
 	// 请求日志不落盘）把 telemetry 持久化管道桥接到存储工厂——SQLite
 	// request_logs/sessions/session_turns + FileBodies 原文文件。full/未启用
-	// 模式（storageRt == nil）不注册 sink，全部路径行为零变化。
-	if storageRt != nil {
+	// 模式不注册 sink，全部路径行为零变化（full 热区装配 P3 的 runtime 非 nil
+	// 但 liteMode()==false，必须走历史 PG 持久化，factory 亦为 nil）。
+	// lite 会话读面（R28-S-2）：lite 块先捕获 reader，admin handler 创建后
+	// 再注入（adminHandler 在本函数更晚处构造）。
+	var liteSessionsReader func(ctx context.Context, tenantID string, opts *storage.ListOptions) ([]*storage.Session, error)
+	if storageRt.liteMode() {
 		telemetryClient.SetRequestLogSink(storageRt.newLiteRequestLogSink())
 		slog.Info("storage lite mode: telemetry request log sink wired (SQLite request_logs + session journal + file bodies)")
+		// R28-S-1/S-2 (2026-09-30 round 31): lite 模式的能力边界显式声明——
+		// 计费面（积分扣费/usage_ledger/对帐）不运行；cost_usd 依赖 PG 价表
+		// （model_offers/pricing_plans），lite 无 PG 时恒 NULL（价表进 lite
+		// 属产品决策，登记待 owner 拍板）；管理面 PG 端点 503，会话数据经
+		// /api/lite/sessions 读 SQLite。
+		slog.Warn("storage lite mode capability boundary: NO billing face (credits/usage_ledger/reconciliation); cost_usd is NULL without the PG price tables; admin PG endpoints return 503; sessions are readable via /api/lite/sessions")
+		if sessionsStore := storageRt.factory.NewSessionStore(); sessionsStore != nil {
+			liteSessionsReader = func(ctx context.Context, tenantID string, opts *storage.ListOptions) ([]*storage.Session, error) {
+				return sessionsStore.ListSessions(ctx, tenantID, opts)
+			}
+		}
+	}
+	// H3 请求侧镜像（2026-09-24 方案）：full 热区装配时把 RequestMirror 的
+	// fire-and-forget 投递闭包注入 telemetry——persistRequestLog 顶部与 PG 往返
+	// 之前镜像三件套，PG 不可用时镜像仍写入。lite / 热区关闭 / request_mirror
+	// 关闭时 bodyMirrorFn() 为 nil，telemetry 保持纯落库行为。
+	if mirrorFn := storageRt.bodyMirrorFn(); mirrorFn != nil {
+		telemetryClient.SetBodyMirror(mirrorFn)
+		slog.Info("storage hotzone: telemetry request body mirror wired (fire-and-forget, fail-open)")
 	}
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
@@ -2527,6 +2642,15 @@ func main() {
 	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
 		sessionV2Writer = initSessionV2Writer(dbConn.Pool())
 		if sessionV2Writer != nil {
+			// H3 请求侧镜像（2026-09-24 方案）：full 热区装配时给
+			// SessionWriterV2 注入镜像 seam——turn bodies 写入成功后
+			// fire-and-forget 投递三件套（per-turn + final_full）。lite /
+			// 热区关闭 / request_mirror 关闭时 bodyMirrorFn() 为 nil，
+			// SessionWriterV2 零开销 no-op。
+			if mirrorFn := storageRt.bodyMirrorFn(); mirrorFn != nil {
+				sessionV2Writer.SetBodyMirror(mirrorFn)
+				slog.Info("storage hotzone: session v2 body mirror wired (fire-and-forget, fail-open)")
+			}
 			// session_dim 维度（任务/项目/属主/客户端）随同一 hook 维护：
 			// 旧 350/358 触发器链路在部分环境缺失，这里以 Go 侧 best-effort
 			// UPSERT 兜底，/admin/turns 的项目→任务层级依赖该表。
@@ -2598,8 +2722,9 @@ func main() {
 			// Use cfg.RedisAddr + cfg.RedisDB from outer scope (2026-08-25:
 			// session:v2 governance cache must respect db isolation, no longer
 			// hardcoded to db=0).
-			// Task 4.2: lite 模式走 mode-aware 装配（摘除 L2、注入 L1.5 文件缓存）；
-			// full/未启用模式（storageRt == nil）保持历史构造行为不变。
+			// Task 4.2 + H2/P3: lite 走 mode-aware 装配（摘除 L2、注入 L1.5）；
+			// full 热区走 WithMode(full, fileCache)（保留 L2、注入 L1.5，读链
+			// L1→L1.5→L2→L3）；未启用双模式（runtime nil）保持历史构造不变。
 			sessionCacheV2 = storageRt.newSessionCacheV2(dbConn.Pool(), cfg.RedisAddr, cfg.RedisDB)
 			sessionCacheV2ForShutdown = sessionCacheV2
 
@@ -2607,7 +2732,7 @@ func main() {
 				"outbound_builder", outboundBuilder != nil,
 				"session_cache_v2", sessionCacheV2 != nil,
 				"redis_addr", cfg.RedisAddr)
-		} else if storageRt != nil {
+		} else if storageRt.liteMode() {
 			// Task 4.2: lite 模式且 PG 被跳过时仍装配 V2 缓存（L1 + L1.5 文件
 			// 两层，L3 无 db 时等价于永远 miss），保证压缩链路不依赖 PostgreSQL。
 			sessionCacheV2 = storageRt.newSessionCacheV2(nil, "", 0)
@@ -2899,6 +3024,40 @@ func main() {
 		if adminHandler != nil {
 			adminHandler.StartProxyRuntime()
 		}
+		// R28-P-1 (2026-09-30 round 29): data-plane egress routing —
+		// providers marked egress_profile='proxy' leave through their
+		// subscription node pool instead of the env single proxy / direct.
+		// R28-P-3: providers marked 'direct' join the never-proxy list so
+		// policy, not the hardcoded domestic table, decides who bypasses
+		// the env proxy.
+		if adminHandler != nil && liteSessionsReader != nil {
+			adminHandler.SetLiteSessionsReader(liteSessionsReader)
+		}
+		if adminHandler != nil && adminDB != nil {
+			if egressMgr := adminHandler.EgressProxyManager(); egressMgr != nil {
+				upClient.SetEgressProvider(proxy.NewEgressProvider(egressMgr, adminDB, 0))
+				if directHosts := loadDirectEgressHosts(context.Background(), adminDB); len(directHosts) > 0 {
+					upClient.Proxy().AddDomesticHosts(directHosts...)
+					slog.Info("egress: injected direct-profile provider hosts into never-proxy list", "hosts", len(directHosts))
+				}
+			}
+		}
+		// Wave 1 A1 (2026-09-22): /api/routing/resolve 的 plan_order 与真实
+		// 选路同源——resolve 经同一 Router.PlanCandidatesPinned 产出运行时
+		// 候选序。routingRouter 为 nil（provider 路由未启用）时不注入，
+		// resolve 返回 plan_order_source=unavailable。
+		if adminHandler != nil && routingRouter != nil {
+			adminHandler.SetLiveRoutingSource(&admin.LiveRoutingSource{
+				Router:   routingRouter,
+				Resolver: providerClient,
+			})
+		}
+		// reqprobe (2026-09-21): 管理页（/format-anomalies 请求错误 tab +
+		// 导航徽标）直读同一协调器。reqProbeCoord 在 provider 路由未启用时
+		// 为 nil，路由保留、请求时 503。
+		if reqProbeCoord != nil {
+			adminHandler.SetRequestAnomalyStore(reqProbeCoord)
+		}
 		// ── 免费资源自动发现 (2026-09-09, 084 迁移) ──
 		// stdlib 桥接 + credential keyring 注入; no-DB 模式下 SetFreeDiscovery
 		// 内部跳过, 路由在请求时返回 503.
@@ -3139,6 +3298,11 @@ func main() {
 		// pipeline (ApprovalGateHook → approval_queue).
 		approvalTimeout := sessionAuditApprovalTimeoutFromEnv()
 		approvalMgr = sessionaudit.NewApprovalManager(dbConn.Pool(), approvalTimeout)
+		// R49 接线 session_audit.timeout_action；R50 审计 P2 修订：装配期
+		// 一次性读取违背 spec 的 HotReload:true 契约（UI 改 deny 收紧后
+		// 清扫仍按旧值放行直至重启），动作解析已下沉到 ApprovalTimeoutWorker
+		// 的每轮 sweep（resolveSessionAuditTimeoutAction，见下方 worker
+		// 构造点）。这里保持 reject 默认即可。
 		adminHandler.SetApprovalManager(approvalMgr)
 		slog.Info("session audit approval manager wired",
 			"timeout", approvalTimeout.String())
@@ -3790,6 +3954,17 @@ func main() {
 		// against key models to verify gateway availability (2026-07-12).
 		slog.Info("CHECKPOINT: before self-check worker init")
 
+		// P0-1 startup self-heal (probe-cost-optimization §5): legacy
+		// self-check system keys sit in the 'default' tier (12 RPM) and
+		// self-throttle the probes into a zero-signal storm. Promote them to
+		// 'system' (300 RPM); idempotent, no-op on fresh installs. Migration
+		// 748 is the installer-channel twin of this UPDATE.
+		if healed, err := bg.HealSelfCheckSystemKeyTier(context.Background(), dbConn.Pool()); err != nil {
+			slog.Warn("self-check system key tier heal failed (non-fatal)", "error", err)
+		} else {
+			slog.Info("CHECKPOINT: self-check system key tier heal ran", "updated_keys", healed)
+		}
+
 		// Try env var first, then generate system key
 		selfCheckAPIKey := os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY")
 		if selfCheckAPIKey == "" {
@@ -3910,6 +4085,16 @@ func main() {
 				credProbeV2.SetKeyring(keyring)
 			}
 			credProbeV2.SetAvailabilityCache(modelAvailabilityCache)
+			// F04 (V3 持久化协议能力, 2026-09-30): wire the fpslot node-state
+			// manager so the probe can persist durable protocol-capability
+			// verdicts (e.g. "this credential+model does not support the
+			// Responses API"). Without this the verdict is rediscovered on
+			// every single request. nil-safe: the setter tolerates a disabled
+			// manager, in which case the capability write is a no-op and the
+			// request path keeps live detection.
+			if fpSlots != nil {
+				credProbeV2.SetFpSlots(fpSlots)
+			}
 			// 2026-06-30: wire state manager so probe results update
 			// the real-time state cache immediately.
 			if stateManager != nil {
@@ -4008,6 +4193,7 @@ func main() {
 			// manual_disable.
 			slog.Info("CHECKPOINT: before NewModelProbeRunner")
 			modelProbe = bg.NewModelProbeRunner(dbConn.Pool(), fernetKey)
+			modelProbe.SetResponsesCapabilitySink(fpSlots)
 			if keyring != nil {
 				modelProbe.SetKeyring(keyring)
 			}
@@ -4065,45 +4251,36 @@ func main() {
 		// 自动出现在实时请求流中。
 		if !bgDataPlaneOnly && dbConn != nil && dbConn.Enabled() {
 			slog.Info("CHECKPOINT: before NewActiveProbeWorker")
-			epEnabled := true
-			epThreshold := 2
-			epMaxAttempts := 5
-			epTimeoutMs := 30000
-			epWorkers := 1
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_ENABLED"); envStr == "false" || envStr == "0" {
-				epEnabled = false
-			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_CONSECUTIVE_THRESHOLD"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epThreshold = n
-				}
-			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_MAX_ATTEMPTS"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epMaxAttempts = n
-				}
-			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_TIMEOUT_MS"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epTimeoutMs = n
-				}
-			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_WORKERS"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epWorkers = n
-				}
-			}
+			// 2026-09-22 Wave 3 B5: the four error_probe.* settings keys were
+			// registered but never consumed (UI-editable no-ops). Wired here
+			// with the same priority chain as the workers key below —
+			// settings_kv > env (each spec's EnvName keeps the historical
+			// LLM_GATEWAY_ERROR_PROBE_* vars working) > default. Values are
+			// captured once at construction (executor HTTP client, worker
+			// pool, manager threshold are all fixed at Start), so the specs
+			// are HotReload=false by design.
+			epEnabled := settings.ErrorProbeEnabled()
+			epThreshold := settings.ErrorProbeConsecutiveThreshold()
+			epMaxAttempts := settings.ErrorProbeMaxAttempts()
+			epTimeoutMs := settings.ErrorProbeTimeoutMs()
+			// 2026-09-22 Wave 2: workers moved into the settings registry
+			// (error_probe.workers, default 5 / max 5 per design §5.6).
+			// Priority settings_kv > env (LLM_GATEWAY_ERROR_PROBE_WORKERS,
+			// kept as the spec's EnvName) > default; pool size is fixed at
+			// Start, so the spec is HotReload=false by design.
+			epWorkers := settings.ErrorProbeWorkers()
 			activeProbe = bg.NewActiveProbeWorker(bg.ActiveProbeWorkerConfig{
-				DB:                   dbConn.Pool(),
-				Keyring:              keyring,
-				EncKey:               fernetKey,
-				Telemetry:            telemetryClient,
-				StateManager:         stateManager,
-				Enabled:              epEnabled,
-				ConsecutiveThreshold: epThreshold,
-				MaxAttempts:          epMaxAttempts,
-				TimeoutMs:            epTimeoutMs,
-				Workers:              epWorkers,
+				DB:                      dbConn.Pool(),
+				Keyring:                 keyring,
+				EncKey:                  fernetKey,
+				ResponsesCapabilitySink: fpSlots,
+				Telemetry:               telemetryClient,
+				StateManager:            stateManager,
+				Enabled:                 epEnabled,
+				ConsecutiveThreshold:    epThreshold,
+				MaxAttempts:             epMaxAttempts,
+				TimeoutMs:               epTimeoutMs,
+				Workers:                 epWorkers,
 			})
 			slog.Info("CHECKPOINT: before activeProbe.Start")
 			if stateManager != nil {
@@ -4125,6 +4302,7 @@ func main() {
 				slog.Info("durable probe queue DISABLED by env (legacy node_probe path)")
 			} else {
 				queueExecutor = bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
+				queueExecutor.SetResponsesCapabilitySink(fpSlots)
 				probeQueue = bg.NewProbeQueue(dbConn.Pool())
 				if ursmV2Mgr != nil && ursmV2Mgr.StrictCanary() {
 					probeQueue.SetScope(ursmV2Mgr)
@@ -4181,13 +4359,16 @@ func main() {
 			// 2026-07-13: wire active_probe submitter so consecutive_fails >= threshold
 			// immediately triggers a direct-to-provider probe (instead of waiting
 			// for credProbeV2's 5-min delayed reprobe).
-			if activeProbe != nil {
-				activeProbeThresh := 2
-				if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_CONSECUTIVE_THRESHOLD"); envStr != "" {
-					if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-						activeProbeThresh = n
-					}
-				}
+			// R56 audit: only in legacy probe mode. In the default new-probe
+			// mode activeProbe.Start is skipped, so its Submit enqueued into a
+			// queue with no consumer (per-key running leak + WARN spam once
+			// full); the new probe stack owns failure-triggered probing there.
+			if activeProbe != nil && !useNewProbeMode() {
+				// 2026-09-22 Wave 3 B5: same resolution chain as the
+				// epThreshold read at construction (settings_kv > env >
+				// default). The previous second env-only parse here would
+				// have diverged from a settings_kv override.
+				activeProbeThresh := settings.ErrorProbeConsecutiveThreshold()
 				stateManager.SetActiveProbeSubmitter(activeProbe.Submit, activeProbeThresh)
 				slog.Info("credstate: active_probe submitter wired",
 					"consecutive_threshold", activeProbeThresh)
@@ -4217,6 +4398,7 @@ func main() {
 				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
 				// backoff, direct + gateway two rounds.
 				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+				nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
 				if ursmV2Mgr != nil && (ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative || ursmV2Mgr.StrictCanary()) {
 					nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 				}
@@ -4244,11 +4426,15 @@ func main() {
 				if routingExec != nil {
 					syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
 					routingExec.SyncNoCandidateProbe = syncOn
-					routingExec.SyncNoCandidateTimeout = 5 * time.Second
+					routingExec.SyncNoCandidateTimeout = syncNoCandidateTimeoutEnv()
 					routingExec.ProbeSync = nodeProbeWorker.ProbeSync
 					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 					}
+					// Wave 3 B2②: flash-blip double confirmation for the
+					// dispatch node-health path (first network/timeout
+					// failure defers its degrade behind two light pings).
+					routingExec.NodeProbeConfirm = nodeProbeWorker.ProbeConfirm
 					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
 				}
 
@@ -4411,6 +4597,7 @@ func main() {
 		// worker independently and route its final state through the v2 sink.
 		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+			nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 			nodeProbeWorker.SetEmitter(newProbeEmitter())
 			if probeStreamHub != nil {
@@ -4460,11 +4647,14 @@ func main() {
 			if routingExec != nil {
 				syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
 				routingExec.SyncNoCandidateProbe = syncOn
-				routingExec.SyncNoCandidateTimeout = 5 * time.Second
+				routingExec.SyncNoCandidateTimeout = syncNoCandidateTimeoutEnv()
 				routingExec.ProbeSync = nodeProbeWorker.ProbeSync
 				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 				}
+				// Wave 3 B2②: same flash-blip double confirmation as the
+				// primary wiring site above.
+				routingExec.NodeProbeConfirm = nodeProbeWorker.ProbeConfirm
 				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "path", "authoritative_fallback", "timeout", routingExec.SyncNoCandidateTimeout)
 			}
 			nodeProbeWorker.Start(context.Background())
@@ -4510,9 +4700,7 @@ func main() {
 			// Can be disabled by setting model_quality.enabled = false in settings_kv.
 			mqEnabledRaw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.enabled", "")
 			mqEnabled := true // default enabled
-			if len(mqEnabledRaw) > 0 {
-				_ = json.Unmarshal(mqEnabledRaw, &mqEnabled)
-			}
+			jsoncol.Decode("gateway.modelQuality/enabled", mqEnabledRaw, &mqEnabled)
 
 			if mqEnabled {
 				var mqDataDir, mqBaseURL, mqAPIKey string
@@ -4523,7 +4711,7 @@ func main() {
 
 				// 读取data_dir
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.data_dir", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqDataDir)
+					jsoncol.Decode("gateway.modelQuality/data_dir", raw, &mqDataDir)
 				}
 				if mqDataDir == "" {
 					mqDataDir = "./data"
@@ -4531,7 +4719,7 @@ func main() {
 
 				// 读取base_url
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.base_url", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqBaseURL)
+					jsoncol.Decode("gateway.modelQuality/base_url", raw, &mqBaseURL)
 				}
 				if mqBaseURL == "" {
 					mqBaseURL = "http://localhost:8787"
@@ -4539,7 +4727,7 @@ func main() {
 
 				// 读取api_key
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.api_key", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqAPIKey)
+					jsoncol.Decode("gateway.modelQuality/api_key", raw, &mqAPIKey)
 				}
 				useDedicatedKey := mqAPIKey != ""
 				if mqAPIKey == "" {
@@ -4548,7 +4736,7 @@ func main() {
 
 				// 读取interval_hours
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.interval_hours", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqIntervalHours)
+					jsoncol.Decode("gateway.modelQuality/interval_hours", raw, &mqIntervalHours)
 				}
 				if mqIntervalHours < 1 {
 					mqIntervalHours = 24
@@ -4556,12 +4744,12 @@ func main() {
 
 				// 读取use_lite_benchmark
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.use_lite_benchmark", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqUseLite)
+					jsoncol.Decode("gateway.modelQuality/use_lite_benchmark", raw, &mqUseLite)
 				}
 
 				// 读取alert_threshold
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.alert_threshold", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqAlertThreshold)
+					jsoncol.Decode("gateway.modelQuality/alert_threshold", raw, &mqAlertThreshold)
 				}
 				if mqAlertThreshold < 1.0 {
 					mqAlertThreshold = 5.0
@@ -4569,7 +4757,7 @@ func main() {
 
 				// 读取test_timeout_seconds
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.test_timeout_seconds", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqTimeoutSec)
+					jsoncol.Decode("gateway.modelQuality/test_timeout_seconds", raw, &mqTimeoutSec)
 				}
 				if mqTimeoutSec < 10 {
 					mqTimeoutSec = 30
@@ -4592,7 +4780,7 @@ func main() {
 				// 需要 DB pool + fernet/keyring 才能解密凭据并发现节点。
 				var mqEnablePerNode bool
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.enable_per_node", ""); len(raw) > 0 {
-					_ = json.Unmarshal(raw, &mqEnablePerNode)
+					jsoncol.Decode("gateway.modelQuality/enable_per_node", raw, &mqEnablePerNode)
 				}
 				mqConfig.EnablePerNodeTesting = mqEnablePerNode
 
@@ -4642,6 +4830,14 @@ func main() {
 		slog.Info("CHECKPOINT: before partitionManager.Start")
 		partitionManager.Start(context.Background())
 		slog.Info("CHECKPOINT: after partitionManager.Start")
+
+		// Wave 3 B8 (2026-09-22): internal ledger reconciliation —
+		// balance_after chain integrity plus request-log credit charges vs
+		// credit_ledger consume deductions; differences land in
+		// maas_reconciliation_findings with a warning log + metric.
+		ledgerReconciler := bg.NewLedgerReconciler(dbConn.Pool())
+		ledgerReconciler.Start(context.Background())
+		slog.Info("CHECKPOINT: after ledgerReconciler.Start")
 
 		// 2026-08-30 审计修复 P1-7: VACUUM worker for request_logs_bodies
 		// Runs VACUUM FULL weekly (default: Sunday 2am) to reclaim TOAST space.
@@ -4705,6 +4901,15 @@ func main() {
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
 		admin.SetIngesterRedisClient(fpSlotRedis)
+		// 2026-10-01 F5：admin HTTP ingest（/api/telemetry/request-log）是
+		// request_logs_bodies_hot 的第三落库点（方案 §3-H3 只点了 telemetry
+		// client 与 session v2），补接热区请求侧镜像。闭包与前两处同源
+		// （storageRt.bodyMirrorFn()，full 热区装配时才非 nil）；lite 模式 /
+		// 热区关闭 / request_mirror=false 时为 nil，ingester 保持纯落库。
+		if mirrorFn := storageRt.bodyMirrorFn(); mirrorFn != nil {
+			admin.SetIngesterBodyMirror(mirrorFn)
+			slog.Info("storage hotzone: admin ingest request body mirror wired (fire-and-forget, fail-open)")
+		}
 		defer admin.StopIngester()
 
 		slog.Info("CHECKPOINT: after StartIngester")
@@ -4712,7 +4917,48 @@ func main() {
 		// 已通过 adminHandler.SetApprovalManager 注入；这里直接构造 worker
 		// 并把 mgr 复用过去。
 		if approvalMgr != nil {
-			approvalTimeoutWorker := bg.NewApprovalTimeoutWorker(approvalMgr)
+			// R50 审计 P2：timeout_action spec 声明 HotReload:true，改为每轮
+			// sweep 重读。仅 auto_approve 放行；deny/escalate/空/未知值/
+			// settings 未就绪一律 reject fail-safe。escalate 未实现，配置
+			// 变化时显式 Warn 不静默；留痕只在配置值变化时打，避免 60s tick
+			// 刷日志。
+			lastConfiguredTimeoutAction := "\x00init"
+			resolveSessionAuditTimeoutAction := func() sessionaudit.TimeoutAction {
+				action := sessionaudit.TimeoutActionReject
+				configured := ""
+				if settings.Global != nil {
+					if sp := settings.Global.Spec("session_audit.timeout_action"); sp != nil {
+						if raw, _, err := settings.Global.EffectiveValue(sp.Scope, "session_audit.timeout_action", ""); err == nil && len(raw) > 0 {
+							var s string
+							if json.Unmarshal(raw, &s) == nil {
+								configured = s
+							}
+						}
+					}
+				}
+				switch configured {
+				case "auto_approve":
+					action = sessionaudit.TimeoutActionApprove
+				case "deny", "escalate", "":
+				default:
+					configured = "unknown:" + configured
+				}
+				if configured != lastConfiguredTimeoutAction {
+					switch configured {
+					case "auto_approve":
+						slog.Warn("session audit timeout action = auto_approve: expired approvals will be AUTO-APPROVED by the timeout sweep")
+					case "escalate":
+						slog.Warn("session audit timeout action = escalate: NOT IMPLEMENTED, acting as reject (fail-safe)")
+					case "deny", "":
+					default:
+						slog.Warn("session_audit.timeout_action unknown value, keeping reject fail-safe", "value", configured)
+					}
+					slog.Info("session audit timeout action resolved", "configured", configured, "action", action.String())
+					lastConfiguredTimeoutAction = configured
+				}
+				return action
+			}
+			approvalTimeoutWorker := bg.NewApprovalTimeoutWorker(approvalMgr).WithActionResolver(resolveSessionAuditTimeoutAction)
 			approvalTimeoutWorker.Start(context.Background())
 			defer approvalTimeoutWorker.Stop()
 			slog.Info("approval timeout worker started")
@@ -5100,6 +5346,9 @@ func main() {
 			}
 			retentionCfgProvider := newStorageRetentionConfigProvider()
 			retentionWorker := bg.NewStorageRetentionWorker(attachmentStorage, logDirForWorker, retentionCfgProvider)
+			// §三#2（2026-09-30 三十七轮续）：附件删除前反查 request_attachments
+			// 存活引用；nil 时 worker fail-closed 拒删附件。
+			retentionWorker.RefChecker = bg.NewAttachmentRefChecker(dbConn.Pool())
 			if ttl, _ := readIntSettingPublic("storage.attachment_ttl_days"); ttl > 0 {
 				retentionWorker.AttachmentTTLDays = ttl
 			} else {
@@ -5132,6 +5381,15 @@ func main() {
 			workTypeRouteRefresher.Start(context.Background())
 			defer workTypeRouteRefresher.Stop()
 			decider.SetWorkTypeRouteStore(workTypeRouteStore)
+
+			// R48 (2026-09-20): role × kind LLM 偏好路由器（role_task_llm_mapping
+			// 表 + 内存默认表）。灰度开关 AUTO_ROLE_ROUTING_ENABLED 默认关闭，
+			// 装配不改变 flag-off 行为；refresher 让 admin 改表 1 分钟内生效。
+			roleLLMRouter := autoroute.NewRoleLLMRouter(dbConn.Pool())
+			roleLLMRouterRefresher := bg.NewRoleLLMRouterRefresher(roleLLMRouter)
+			roleLLMRouterRefresher.Start(context.Background())
+			defer func() { roleLLMRouterRefresher.Stop() }()
+			decider.SetRoleLLMRouter(roleLLMRouter)
 			// 2026-07-17 (audit H1): wire the apiKeyID -> tenantID resolver so
 			// tenant-scoped default routing rows can actually match. Without
 			// this, TenantResolver stays nil, tenantID is always empty, and every
@@ -5245,6 +5503,14 @@ func main() {
 			sessionSummariesTrimmer.Start(context.Background())
 			defer sessionSummariesTrimmer.Stop()
 
+			// 2026-09-30 (R33 P-3): session_summaries.gw_project_id 存量
+			// 分批回填（迁移 762 触发器负责增量写链）。批上限走 settings
+			// lifecycle.session_project_backfill_batches（HotReload），
+			// tick 10m；排空后批次为 0 自动转为空转轮询。
+			sessionProjectBackfillWorker := bg.NewSessionProjectBackfillWorker(dbConn.Pool())
+			sessionProjectBackfillWorker.Start(context.Background())
+			defer sessionProjectBackfillWorker.Stop()
+
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
 			// mode to avoid write load on the secondary instance.
@@ -5252,6 +5518,21 @@ func main() {
 			feedbackAnalyzer.Start(context.Background())
 			if adminHandler != nil {
 				adminHandler.SetFeedbackAnalyzer(feedbackAnalyzer)
+			}
+
+			// 2026-09-25 (对账报表落地轮): 每日对账报表聚合——昨日
+			// usage_facts → report_snapshots 六 scope 快照，钟点走
+			// settings reports.daily_rollup.hour（默认凌晨 02:00 UTC，
+			// HotReload）。与 FeedbackAnalyzer 同处跳过 data-plane 模式。
+			// R65 披露：本块还隐式继承外层 !IsCredRecoveryDisabled()
+			// 门控——运维设 LLM_GATEWAY_CRED_RECOVERY_DISABLED=true 会
+			// 连带停掉对账日报（gate-swap 系 2026-09-10 有意设计，非
+			// 本 worker 引入）；如需解耦，把报表 worker 挪出该条件块。
+			reportRollupWorker := bg.NewReportRollupWorker(dbConn.Pool())
+			reportRollupWorker.Start(context.Background())
+			defer reportRollupWorker.Stop()
+			if adminHandler != nil {
+				adminHandler.SetReportRollupWorker(reportRollupWorker)
 			}
 		}
 		{
@@ -5621,6 +5902,12 @@ func main() {
 
 	slog.Info("CHECKPOINT: before healthz registration")
 
+	// Redis/DB-free and lite startup must still protect visible request/output
+	// text. With no Redis, restoration uses the current request's private map.
+	if sanitizePatternDetector == nil && chatHandler != nil {
+		sanitizePatternDetector = installSmartSaniGuard(chatHandler, nil, nil)
+	}
+
 	// ── Sensitive Word Engine (2026-07-18) ───────────────────────────────
 	// AC automaton for multi-pattern sensitive word detection. Lifted out
 	// of buildV2DispatchPipeline so it's always available regardless of
@@ -5726,6 +6013,24 @@ func main() {
 	// LLM_GATEWAY_ADMIN_API_KEY 静态 token（与 AdminTokenMiddleware 配合）。
 	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
 	registerStorageMetricsHandler(mux, storageRt, cfg.AdminAPIKey) // Task 5.3: 存储分层指标端点，鉴权与 /metrics 一致
+
+	// Mock Probe 端点（2026-09-24 v2 设计；2026-09-26 生产入口接入，审计
+	// docs/audit/2026-09-27-mock-probe-production-entry-audit.md §修复）。仅 MockProbeEnabled=true
+	// 时注册（关闭时 /mock/* 落 mux 404，语义与未部署该子系统一致——需求
+	// "开关关闭时不可见"）。每个端点挂 auth.MockEndpoint 守卫（POST +
+	// Bearer mock-probe-client + 供应商 scope 白名单）。协议矩阵：OpenAI
+	// Chat Completions（探测主通道，协议锁定）+ Anthropic Messages（管理/
+	// 联调用，探测不经过），4 端点 = 2 供应商 × 2 协议；stream/non-stream
+	// 由请求体决定。鉴权全局门对 /mock/ 前缀放行（middleware/auth_mw.go
+	// bypass 规则），端点守卫是唯一强制点。
+	if cfg.MockProbeEnabled {
+		mux.Handle("/mock/v1/chat/completions/fast", auth.MockEndpoint(mock.CodeFast, mock.ChatCompletionsFast()))
+		mux.Handle("/mock/v1/chat/completions/slow", auth.MockEndpoint(mock.CodeSlow, mock.ChatCompletionsSlow()))
+		mux.Handle("/mock/v1/messages/fast", auth.MockEndpoint(mock.CodeFast, mock.MessagesFast()))
+		mux.Handle("/mock/v1/messages/slow", auth.MockEndpoint(mock.CodeSlow, mock.MessagesSlow()))
+		slog.Info("mock probe endpoints registered",
+			"paths", "/mock/v1/chat/completions/{fast,slow},/mock/v1/messages/{fast,slow}")
+	}
 
 	// 2026-07-20: telemetry fallback ring buffer 暴露面。
 	// 路径: /internal/telemetry/fallback-buffer/{stats,dump,clear,replay}
@@ -5983,6 +6288,12 @@ func main() {
 	mux.Handle("/v1/chat/completions", chatRouteHandler)
 	mux.Handle("/v1/completions", chatRouteHandler)
 	mux.Handle("/v1/messages", messagesRouteHandler)
+	// 2026-09-21: Anthropic Messages token-count endpoint. Claude Code probes
+	// it every context-management cycle; without the route the mux answered a
+	// plain-text 404 that strict clients treat as a session-fatal error. The
+	// handler answers with the same heuristic estimate the streaming bridge
+	// writes into message_start.usage.input_tokens.
+	mux.Handle("/v1/messages/count_tokens", streaming.NewCountTokensHandler(chatHandler))
 	mux.Handle("/v1/responses", responsesRouteHandler)
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
 	if embeddingsHandler != nil {
@@ -6009,10 +6320,10 @@ func main() {
 	// fallback inside v2DispatchHandler; the Pipeline re-routes
 	// through them on a stage error or feature-flag off path.
 	if v2DispatchEnabled {
-		if _, v2Deps, ok := v2DispatchMux(chatRouteHandler, messagesRouteHandler, responsesRouteHandler); ok && v2Deps != nil {
-			// 2026-07-18 P1 fix: Wire the sensitive word engine created above
-			// into v2Deps so the Pipeline plugins can reference it.
-			v2Deps.SensitiveWordEngine = swEngine
+		// Pass the engine in so the Pipeline's sensitive-word plugins scan with
+		// the SAME instance the admin handler reloads. Assigning it to v2Deps
+		// afterwards was a dead wire: buildV2DispatchPipeline had already run.
+		if _, v2Deps, ok := v2DispatchMux(chatRouteHandler, messagesRouteHandler, responsesRouteHandler, swEngine); ok && v2Deps != nil {
 
 			// PR-V4-09 / PR-V4-10: 注入 DB pool + ApprovalManager + Publisher +
 			// IntentStore 后再启动 Loop 和 Flusher。
@@ -6700,6 +7011,7 @@ func main() {
 		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
 		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
+		mux.HandleFunc("/api/admin/dispatch/waterfall/request/", wrapAdmin(handleDispatchWaterfallByRequest))
 		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
 		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
 		// V6-W1.6 R10（2026-08-27 范围修正）：按请求查分维成员归属；执行轨迹
@@ -6730,9 +7042,22 @@ func main() {
 		// Provides session detail query from gateway.session_* tables and LLM-powered session summary
 		sessionDetailAPI := admin.NewSessionDetailV2API(dbConn.Pool())
 		sessionSummaryAPI := admin.NewSessionSummaryV2API(dbConn.Pool())
+		// 2026-09-29 (审计二十一轮): 注入真实 LLM 摘要链路（Handler.
+		// SessionSummaryLLMCaller，与 session title 同一 admin LLM 任务管线）。
+		// 此前端点内是写死 localhost:8080/gpt-4o-mini 的占位桩，生产必败
+		// 静默落入字节截断伪摘要。
+		if adminHandler != nil {
+			sessionSummaryAPI.SetLLMCaller(adminHandler.SessionSummaryLLMCaller())
+		}
 		mux.HandleFunc("/api/admin/sessions/detail", wrapAdmin(sessionDetailAPI.ServeHTTP))
 		mux.HandleFunc("/api/admin/sessions/summary", wrapAdmin(sessionSummaryAPI.ServeHTTP))
-		slog.Info("Phase 3.6.5 sessions v2 API enabled (/api/admin/sessions/detail, /summary)")
+		// R69 audit: list v2（9f62818c5 落地的信封化列表端点）此前无生产
+		// 构造点——/api/admin/sessions/list 被 /sessions/ 子树路由吞成
+		// sessionID="list"（sessionforensics --from 模式因此必 404）。精确
+		// pattern 优先于子树，挂载即闭合该契约；鉴权/租户钉扎在 handler 内。
+		sessionListV2API := admin.NewSessionListV2API(dbConn.Pool())
+		mux.HandleFunc("/api/admin/sessions/list", wrapAdmin(sessionListV2API.ServeHTTP))
+		slog.Info("Phase 3.6.5 sessions v2 API enabled (/api/admin/sessions/detail, /summary, /list)")
 
 		// Phase 3.7 (A3-1): Agent Registry API (Track A APIHub)
 		agentsAPI := admin.NewAgentsHandler(apihubSvc)
@@ -6894,7 +7219,7 @@ func main() {
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
-	pipeline := wireDispatchPipeline(routingExec)
+	pipeline := wireDispatchPipeline(routingExec, executorHotConfig)
 	// Wire every dependency that affects lazily-created forwarders before
 	// starting the worker pool. This guarantees the first credential lane
 	// observes Redis/local Governor policy and the optional snapshot observer.
@@ -7030,6 +7355,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// ── Mock Probe runner 装配（2026-09-24 v2 设计；2026-09-26 生产入口
+	// 接入）。默认不启动（cfg.MockProbeEnabled=false 时完全静默——需求
+	// "开关关闭时客户端不发任何请求"）；启用时复用主 DB 池落
+	// mock_probe_history（无 DB 部署降级为只打指标）。实际 Start 在下方
+	// 监听绑定之后，保证首轮探测不因入口未就绪记脏失败。probeCtx 独立
+	// 派生：停机序列先 cancel 它使在途探测即刻收敛，再排空历史写入。
+	var probeRunner *mockprobe.Runner
+	probeCtx, probeCancel := context.WithCancel(ctx)
+	defer probeCancel()
+	if cfg.MockProbeEnabled {
+		probeRunner = startMockProbeRunner(probeCtx, cfg, dbConn)
+	}
+
 	// ── Start mDNS advertiser if enabled ──────────────────────────────────
 	var lanAdvertiser *discovery.LANAdvertiser
 	if cfg.LANAdvertise {
@@ -7067,9 +7405,29 @@ func main() {
 		}
 	}
 
+	// 监听绑定改为主 goroutine 同步完成（原 ListenAndServe 在子 goroutine
+	// 内绑定）：Mock Probe runner（设计 §四"部署时同步启动"）必须在入口
+	// 绑定后、Serve 前启动——内核 accept 队列兜住绑定后到达的连接，首轮
+	// 探测不记脏失败。绑定失败沿用在子 goroutine 中的清理路径（异常退出
+	// 日志 + 资源监控停止 + os.Exit(1)）。
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		slog.Error("gateway listen failed", "error", err)
+		if resourceMonitor != nil {
+			_ = resourceMonitor.Stop()
+		}
+		if persistentLogger != nil {
+			persistentLogger.LogAbnormalExit("listen_error", err.Error())
+			_ = persistentLogger.Close()
+		}
+		os.Exit(1)
+	}
+	if probeRunner != nil {
+		probeRunner.Start(probeCtx)
+	}
 	go func() {
 		slog.Info("gateway listening", "listen", cfg.Listen)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("gateway listen failed", "error", err)
 			if resourceMonitor != nil {
 				_ = resourceMonitor.Stop()
@@ -7092,6 +7450,19 @@ func main() {
 	if lanAdvertiser != nil {
 		lanAdvertiser.Stop()
 		slog.Info("mDNS advertiser stopped")
+	}
+
+	// Mock Probe runner 先停（设计 §二"先停 runner → 关 mux"）：先 cancel
+	// 运行 ctx 使在途探测（单次自带 probeTimeout 超时）即刻收敛，再以独立
+	// 5s 预算排空历史写入队列——正常毫秒级，5s 是 PG 停摆兜底上限；不与
+	// 下方 23s srv.Shutdown 预算混算（systemd TimeoutStopSec=35s 下两者
+	// 不叠加挤占，drain 典型远小于 1s）。
+	if probeRunner != nil {
+		probeCancel()
+		probeDrainCtx, probeDrainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		probeRunner.Stop(probeDrainCtx)
+		probeDrainCancel()
+		slog.Info("mock probe runner stopped")
 	}
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
@@ -7130,6 +7501,10 @@ func main() {
 		// monitor is idempotent and safely handles a not-started instance.
 		if candidateFailureMonitor != nil {
 			candidateFailureMonitor.Stop()
+		}
+		// R47：停 sticky 负载滑窗的 sweep goroutine（sync.Once 幂等）。
+		if stickyLoadTrackerForShutdown != nil {
+			stickyLoadTrackerForShutdown.Close()
 		}
 		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
 		if pipeline != nil {

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,6 +65,18 @@ type tenantModelBreakdown struct {
 type tenantAppBreakdown struct {
 	AppCode  string  `json:"application_code"`
 	Requests int64   `json:"requests"`
+	Tokens   int64   `json:"tokens"`
+	Credits  int64   `json:"credits"`
+	Cost     float64 `json:"cost_usd"`
+}
+
+// tenantDailyStat — 租户统计按天时序行（2026-09-30 统计 UI 优化轮）。
+// 无流量日由 SQL generate_series 左连接补零，前端趋势图拿到连续序列。
+type tenantDailyStat struct {
+	Date     string  `json:"date"` // YYYY-MM-DD
+	Requests int64   `json:"requests"`
+	Success  int64   `json:"success"`
+	Errors   int64   `json:"errors"`
 	Tokens   int64   `json:"tokens"`
 	Credits  int64   `json:"credits"`
 	Cost     float64 `json:"cost_usd"`
@@ -239,7 +252,7 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 		ORDER BY t.code
 	`, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -249,9 +262,13 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 		var t tenantInfo
 		if err := rows.Scan(&t.Code, &t.Name, &t.Status, &t.Description, &t.ContactEmail,
 			&t.CreatedAt, &t.UpdatedAt, &t.UserCount, &t.APIKeyCount, &t.TotalRequests); err != nil {
+			warnRowSkip("tenants.list", err)
 			continue
 		}
 		tenants = append(tenants, t)
+	}
+	if writeAggRowsErr(w, "tenants.list", rows.Err()) {
+		return
 	}
 	if tenants == nil {
 		tenants = []tenantInfo{}
@@ -291,6 +308,7 @@ func (h *Handler) attachTenantUsage7d(ctx context.Context, tenants []tenantInfo)
 		var reqs, tokens, credits int64
 		var cost float64
 		if err := rows.Scan(&code, &reqs, &tokens, &credits, &cost); err != nil {
+			warnRowSkip("tenants.attachUsage7d", err)
 			continue
 		}
 		if i, ok := idx[code]; ok {
@@ -299,6 +317,12 @@ func (h *Handler) attachTenantUsage7d(ctx context.Context, tenants []tenantInfo)
 			tenants[i].Credits7d = credits
 			tenants[i].Cost7d = cost
 		}
+	}
+	// 富化降级通道（无 ResponseWriter）：查询失败时上面已经直接 return，
+	// 迭代中断同样不能静默——留痕后按已取到的租户继续，不把 7 天用量升格成
+	// listTenants 的 500。
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("tenants usage 7d enrichment iteration aborted; fields degraded", "error", rerr)
 	}
 }
 
@@ -343,7 +367,7 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// DB failure — log + 500 (do not silently bypass limit)
-		writeError(w, http.StatusInternalServerError, "community mode limit check failed: "+err.Error())
+		writeInternalErr(w, "community mode limit check failed", err)
 		return
 	}
 
@@ -357,7 +381,7 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
+		writeInternalErr(w, "transaction start failed", err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
@@ -380,7 +404,7 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid status value")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create tenant failed: "+err.Error())
+		writeInternalErr(w, "create tenant failed", err)
 		return
 	}
 
@@ -402,12 +426,12 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "default admin username already exists: "+adminUsername)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create default admin failed: "+err.Error())
+		writeInternalErr(w, "create default admin failed", err)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "transaction commit failed: "+err.Error())
+		writeInternalErr(w, "transaction commit failed", err)
 		return
 	}
 
@@ -535,7 +559,7 @@ func (h *Handler) updateTenant(w http.ResponseWriter, r *http.Request, code stri
 			writeError(w, http.StatusBadRequest, "invalid status value")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -575,7 +599,7 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 		FROM users WHERE tenant_id = $1 ORDER BY id
 	`, code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -585,9 +609,13 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 		var u userInfo
 		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email,
 			&u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
+			warnRowSkip("tenants.listUsers", err)
 			continue
 		}
 		users = append(users, u)
+	}
+	if writeAggRowsErr(w, "tenants.listUsers", rows.Err()) {
+		return
 	}
 	if users == nil {
 		users = []userInfo{}
@@ -619,7 +647,7 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 		ORDER BY ak.id DESC
 	`, code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -647,10 +675,14 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 		if err := rows.Scan(&k.ID, &k.TenantID, &k.KeyPrefix, &k.KeyAlias, &k.OwnerUser,
 			&k.Enabled, &k.Status, &k.AppID, &k.AppCode,
 			&k.TotalReqs, &k.TotalCost, &expiresAt, &k.CreatedAt); err != nil {
+			warnRowSkip("tenants.listKeys", err)
 			continue
 		}
 		k.ExpiresAt = expiresAt
 		keys = append(keys, k)
+	}
+	if writeAggRowsErr(w, "tenants.listKeys", rows.Err()) {
+		return
 	}
 	if keys == nil {
 		keys = []tenantKeyInfo{}
@@ -661,12 +693,24 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 // ── getTenantStats: GET /api/admin/tenants/{code}/stats ───────────
 
 func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code string) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// 2026-09-30 R36-B3：5s 在真库上不够——byModel/byApp/daily 聚合在
+	// 百万行级 usage/request 家族上实测可达 3s+（252-dev 实测），5s 会把
+	// 后续查询饿死成静默空序列。上调至 10s（与 users 端点 15s 同量级）。
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Verify tenant exists
+	// Verify tenant exists.
+	//
+	// 2026-09-30 (R36-B4): the error was discarded as `_ =`, so ANY database
+	// failure — deadline, connection loss, 57014 statement_timeout — left
+	// `exists` at its zero value and the handler answered 404 "tenant not
+	// found" for a tenant that exists. A database error is not a missing
+	// tenant; surface it as a failure so the caller does not cache a false 404.
 	var exists bool
-	_ = h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tenants WHERE code = $1)`, code).Scan(&exists)
+	if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tenants WHERE code = $1)`, code).Scan(&exists); err != nil {
+		writeTenantStatsError(w, ctx, code, "tenant existence check", err)
+		return
+	}
 	if !exists {
 		writeError(w, http.StatusNotFound, "tenant not found")
 		return
@@ -690,39 +734,75 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		UniqueKeys    int                    `json:"unique_keys"`
 		UniqueModels  int                    `json:"unique_models"`
 		UniqueApps    int                    `json:"unique_apps"`
+		InputTokens   int64                  `json:"input_tokens"`
+		OutputTokens  int64                  `json:"output_tokens"`
+		CacheRead     int64                  `json:"cache_read_tokens"`
+		CacheWrite    int64                  `json:"cache_write_tokens"`
+		AvgLatencyMs  float64                `json:"avg_latency_ms"`
 		ByModel       []tenantModelBreakdown `json:"by_model"`
 		ByApplication []tenantAppBreakdown   `json:"by_application"`
+		Daily         []tenantDailyStat      `json:"daily"`
 	}
 
 	var s tenantStats
 	s.Days = days
 
-	// 2026-07-05 migration 341: 当 days <= 7 时查询 *_default（等价于 _hot），
-	// 当 days > 7 时跨月查询 request_logs_with_current_month 视图（聚合热表 + 月度分区）。
-	// 符合 docs/partition/partition-standards.md 查询规范。
-	// 当 days <= 7 时查 _default 热表（heap，最快）
-	// 当 days > 7 时查询父表（自动聚合所有 ATTACHED 月度分区）
-	logsTable := "request_logs"
-	usageTable := "usage_ledger"
-	if days <= 7 {
-		logsTable = "request_logs_hot"
-		usageTable = "usage_ledger_hot"
-	}
+	// 2026-09-30 三十六轮合并定稿（远端十五轮 P1 实勘 + 本轮 R36-B3 真库根修）：
+	// ① hot 保留窗仅 8h（partition_manager.DefaultRetentionWindow）——days<=7
+	// 走 hot-only 会让默认"近 7 天"视图 totals/credits/daily 只见最近 ~8h、
+	// 前 ~6 天恒零，且与同响应 byModel/byApp 自相矛盾 → 全窗口统一读并集。
+	// ② 富化视图 request_logs_with_current_month（LATERAL request_class + 双
+	// NOT EXISTS 反连接 session_turns）带租户过滤 COUNT 即 30s 超时（252-dev
+	// 实测，users 端点头注同因放弃该视图）→ 聚合读面改走内联 raw union
+	//（migration 330 首发形态）：显式列投影——真库 hot 与父表列数已漂移，
+	// SELECT * UNION 报 42601。语义：不排除已进 session_turns 的请求（与
+	// totals/修复前父表读法一致，统计聚合数全量请求）。
+	logsTable := `(SELECT tenant_id, ts, application_id, outbound_model, client_model,
+	                       success, total_tokens, prompt_tokens, completion_tokens,
+	                       credits_charged, cost_usd, latency_ms,
+	                       cache_read_tokens, cache_write_tokens
+	                FROM request_logs_hot
+	        UNION ALL
+	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
+	                      success, total_tokens, prompt_tokens, completion_tokens,
+	                      credits_charged, cost_usd, latency_ms,
+	                      cache_read_tokens, cache_write_tokens
+	        FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）`
+	usageTable := "usage_ledger_with_current_month"
 
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)
-	_ = h.db.QueryRow(ctx, `
+	//
+	// 2026-09-30 (R36-B4): both totals were `_ =`, so a dead context or a
+	// statement_timeout silently published TotalRequests=0 / TotalCredits=0
+	// alongside whatever the later queries managed to return — an internally
+	// inconsistent 200 that reads as "this tenant burned nothing". Fail loudly
+	// instead of fabricating zeros.
+	if err := h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0.0),
 		       COUNT(DISTINCT api_key_id), COUNT(DISTINCT COALESCE(NULLIF(raw_model_name, ''), canonical_id::text)),
 		       COUNT(DISTINCT application_id)
 		FROM `+usageTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, code, days).Scan(&s.TotalRequests, &s.TotalTokens, &s.TotalCost,
-		&s.UniqueKeys, &s.UniqueModels, &s.UniqueApps)
-	_ = h.db.QueryRow(ctx, `
-		SELECT COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint
+		&s.UniqueKeys, &s.UniqueModels, &s.UniqueApps); err != nil {
+		writeTenantStatsError(w, ctx, code, "totals aggregate", err)
+		return
+	}
+	if err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(completion_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(cache_write_tokens, 0)), 0)::bigint,
+		       COALESCE(AVG(latency_ms), 0)::float8
 		FROM `+logsTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
-	`, code, days).Scan(&s.TotalCredits)
+	`, code, days).Scan(
+		&s.TotalCredits, &s.InputTokens, &s.OutputTokens,
+		&s.CacheRead, &s.CacheWrite, &s.AvgLatencyMs); err != nil {
+		writeTenantStatsError(w, ctx, code, "credits aggregate", err)
+		return
+	}
 
 	// By model (credits + cost from request_logs)
 	modelRows, err := h.db.Query(ctx, `
@@ -731,18 +811,35 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
-		FROM request_logs_with_current_month
+		FROM `+logsTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY 1
 		ORDER BY SUM(COALESCE(credits_charged, 0)) DESC, SUM(COALESCE(cost_usd, 0)) DESC
 		LIMIT 20
 	`, code, days)
-	if err == nil {
+	if err != nil {
+		// R36-B4: `if err == nil { ... }` with no else published an empty
+		// by_model list on failure — the client cannot tell "no traffic" from
+		// "the query died". Report the failure.
+		writeTenantStatsError(w, ctx, code, "by-model aggregate", err)
+		return
+	}
+	{
 		defer modelRows.Close()
 		for modelRows.Next() {
 			var m tenantModelBreakdown
-			_ = modelRows.Scan(&m.Model, &m.Requests, &m.Tokens, &m.Credits, &m.Cost)
+			// R78: 扫描失败原本是 `_ =`，坏行会把全零的 model 条目塞进
+			// by_model（客户端看不出是坏数据还是真零流量）。跳行留痕。
+			if scanErr := modelRows.Scan(&m.Model, &m.Requests, &m.Tokens, &m.Credits, &m.Cost); scanErr != nil {
+				warnRowSkip("tenants.stats.byModel", scanErr)
+				continue
+			}
 			s.ByModel = append(s.ByModel, m)
+		}
+		// 迭代中断会静默截断 top-20 列表；同 daily 段口径显式失败。
+		if rerr := modelRows.Err(); rerr != nil {
+			writeTenantStatsError(w, ctx, code, "by-model aggregate iteration", rerr)
+			return
 		}
 	}
 	if s.ByModel == nil {
@@ -750,32 +847,132 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	}
 
 	// By application (credits + cost from request_logs)
+	//
+	// R65: 别名 `rl` 必须从新行开始——logsTable 片段以 `-- sqlreadguard:allow`
+	// 行注释收尾，同一行拼接的任何 token 都会被注释吞掉（修前实锤
+	// 42P01 missing FROM-clause entry for table "rl"，TestTenantStatsDaily_Live
+	// 是本修法的回归网）。
 	appRows, err := h.db.Query(ctx, `
 		SELECT COALESCE(app.code, '<none>') AS app_code,
 		       COUNT(*)::bigint,
 		       COALESCE(SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(rl.credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(rl.cost_usd, 0)), 0)::float8
-		FROM request_logs_with_current_month rl
+		FROM `+logsTable+`
+		rl
 		LEFT JOIN applications app ON app.id = rl.application_id
 		WHERE rl.tenant_id = $1 AND rl.ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY app.code
 		ORDER BY SUM(COALESCE(rl.credits_charged, 0)) DESC, SUM(COALESCE(rl.cost_usd, 0)) DESC
 		LIMIT 20
 	`, code, days)
-	if err == nil {
+	if err != nil {
+		writeTenantStatsError(w, ctx, code, "by-application aggregate", err)
+		return
+	}
+	{
 		defer appRows.Close()
 		for appRows.Next() {
 			var a tenantAppBreakdown
-			_ = appRows.Scan(&a.AppCode, &a.Requests, &a.Tokens, &a.Credits, &a.Cost)
+			if scanErr := appRows.Scan(&a.AppCode, &a.Requests, &a.Tokens, &a.Credits, &a.Cost); scanErr != nil {
+				warnRowSkip("tenants.stats.byApplication", scanErr)
+				continue
+			}
 			s.ByApplication = append(s.ByApplication, a)
+		}
+		if rerr := appRows.Err(); rerr != nil {
+			writeTenantStatsError(w, ctx, code, "by-application aggregate iteration", rerr)
+			return
 		}
 	}
 	if s.ByApplication == nil {
 		s.ByApplication = []tenantAppBreakdown{}
 	}
 
+	// Daily time series (2026-09-30 统计 UI 优化轮)：generate_series 左连接
+	// 补零，保证前端趋势图拿到 days 条连续日期。表选择与上方 credits/byModel/
+	// byApp 同口径（全窗口 raw union 含热尾，三十六轮合并定稿）。
+	// 日切显式钉 Asia/Shanghai（R36-A3）：与 usage_facts 日分区边界（迁移
+	// 750/751）及用户统计 daily 同口径，不随会话时区漂移；对账页保持显式
+	// UTC 日（结算口径，有意分叉）。
+	dailyRows, err := h.db.Query(ctx, `
+		WITH days AS (
+			SELECT generate_series(
+				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - (($2::int - 1) * INTERVAL '1 day'),
+				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'),
+				INTERVAL '1 day')::date AS d
+		), agg AS (
+			SELECT date_trunc('day', ts AT TIME ZONE 'Asia/Shanghai')::date AS d,
+			       COUNT(*)::bigint AS requests,
+			       COUNT(*) FILTER (WHERE success IS TRUE)::bigint AS success,
+			       COUNT(*) FILTER (WHERE success IS NOT TRUE)::bigint AS errors,
+			       COALESCE(SUM(COALESCE(total_tokens, 0)), 0)::bigint AS tokens,
+			       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint AS credits,
+			       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8 AS cost
+			FROM `+logsTable+`
+			WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
+			GROUP BY 1
+		)
+		SELECT to_char(days.d, 'YYYY-MM-DD'),
+		       COALESCE(agg.requests, 0), COALESCE(agg.success, 0), COALESCE(agg.errors, 0),
+		       COALESCE(agg.tokens, 0), COALESCE(agg.credits, 0), COALESCE(agg.cost, 0)
+		FROM days LEFT JOIN agg ON agg.d = days.d
+		ORDER BY days.d
+	`, code, days)
+	if err != nil {
+		// R36-A2 logged this; R36-B4 raises it to an explicit failure. A warn
+		// plus an all-zero trend is still a 200 the client will render as
+		// "this tenant had no traffic", which is a materially wrong answer
+		// rather than a missing one.
+		writeTenantStatsError(w, ctx, code, "daily aggregate", err)
+		return
+	}
+	for dailyRows.Next() {
+		var d tenantDailyStat
+		if scanErr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); scanErr != nil {
+			dailyRows.Close()
+			writeTenantStatsError(w, ctx, code, "daily aggregate scan", scanErr)
+			return
+		}
+		s.Daily = append(s.Daily, d)
+	}
+	if rerr := dailyRows.Err(); rerr != nil {
+		// Truncated series: pgx surfaces mid-iteration failures (connection
+		// drop, statement_timeout) here, after Next() already returned true.
+		dailyRows.Close()
+		writeTenantStatsError(w, ctx, code, "daily aggregate iteration", rerr)
+		return
+	}
+	dailyRows.Close()
+	if s.Daily == nil {
+		s.Daily = []tenantDailyStat{}
+	}
+
 	writeJSON(w, http.StatusOK, s)
+}
+
+// writeTenantStatsError reports a failed stage of the tenant stats pipeline as
+// an explicit HTTP error instead of letting the zero value reach the client.
+//
+// 2026-09-30 (R36-B4): every aggregate in getTenantStats used to swallow its
+// error, so one dead context produced a fully-formed 200 whose totals were
+// zero and whose breakdowns were empty. That is the worst failure shape for a
+// stats endpoint — the caller cannot distinguish "no traffic" from "the query
+// was killed", and both reconcile and billing read these numbers.
+//
+// A context deadline is reported as 504 with a hint to narrow `days`, because
+// the aggregates are sequential on one shared 10s budget and the 30-day window
+// is the one that overruns it. Anything else is a 500.
+func writeTenantStatsError(w http.ResponseWriter, ctx context.Context, code, stage string, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		slog.Warn("tenant stats: stage exceeded context budget",
+			"tenant", code, "stage", stage, "err", err)
+		writeError(w, http.StatusGatewayTimeout,
+			"tenant stats query timed out; retry with a smaller days window")
+		return
+	}
+	slog.Error("tenant stats: stage failed", "tenant", code, "stage", stage, "err", err)
+	writeError(w, http.StatusInternalServerError, "tenant stats query failed")
 }
 
 // getActorFromRequest returns the username from AuthContext, or "unknown".

@@ -327,6 +327,9 @@ func (b *sessionDigestBackfill) processBatch(ctx context.Context) (int, error) {
 		digestBackfillTotal.WithLabelValues("error").Inc()
 		return 0, fmt.Errorf("select candidates: %w", err)
 	}
+	// 12h 审计加固：panic 路径下 rows 无人关闭（下方显式 Close 只覆盖
+	// return 路径）；defer 与显式 Close 幂等共存。
+	defer rows.Close()
 	batch := make([]digestBackfillRow, 0, b.batchSize)
 	for rows.Next() {
 		var r digestBackfillRow

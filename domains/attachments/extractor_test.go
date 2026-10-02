@@ -1,7 +1,10 @@
 package attachments
 
 import (
+	"encoding/base64"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
 func TestExtractFromOpenAIBody(t *testing.T) {
@@ -152,5 +155,247 @@ func TestCountOnly(t *testing.T) {
 	]}]}`)
 	if n := CountOnly(body, "openai-chat"); n != 2 {
 		t.Errorf("CountOnly = %d, want 2", n)
+	}
+}
+
+// ── N21-3（2026-09-29）：input_audio / video_url / file / anthropic document
+// 此前不入附件列（session_bodies/attachments 对含音频轮次恒空）。
+
+func TestExtractFromOpenAIBody_InputAudio(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStorage(dir)
+	e := NewExtractor(s)
+
+	audioB64 := base64.StdEncoding.EncodeToString([]byte("RIFFfake-wav-payload"))
+	body := []byte(`{
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "input_audio", "input_audio": {"data": "` + audioB64 + `", "format": "wav"}},
+				{"type": "input_audio", "input_audio": {"data": "` + audioB64 + `", "format": "mp3"}},
+				{"type": "input_audio", "input_audio": {"data": "` + audioB64 + `"}}
+			]
+		}]
+	}`)
+
+	result := e.ExtractFromOpenAIBody("req-audio", body)
+	if result.TotalFound != 3 || result.Saved != 3 {
+		t.Fatalf("TotalFound/Saved = %d/%d, want 3/3", result.TotalFound, result.Saved)
+	}
+	wantCT := []string{"audio/wav", "audio/mpeg", "application/octet-stream"}
+	for i, ct := range wantCT {
+		if got := result.Attachments[i].ContentType; got != ct {
+			t.Errorf("Attachments[%d].ContentType = %q, want %q", i, got, ct)
+		}
+		if got := result.Attachments[i].Type; got != "audio" {
+			t.Errorf("Attachments[%d].Type = %q, want audio", i, got)
+		}
+	}
+}
+
+func TestExtractFromOpenAIBody_VideoAndFileBlocks(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStorage(dir)
+	e := NewExtractor(s)
+
+	pdfB64 := base64.StdEncoding.EncodeToString([]byte("%PDF-fake"))
+	body := []byte(`{
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,` + pdfB64 + `"}},
+				{"type": "file", "file": {"file_data": "data:application/pdf;base64,` + pdfB64 + `", "filename": "doc.pdf"}},
+				{"type": "file", "file": {"file_data": "https://example.com/remote.pdf"}},
+				{"type": "video_url", "video_url": {"url": "https://example.com/remote.mp4"}}
+			]
+		}]
+	}`)
+
+	result := e.ExtractFromOpenAIBody("req-media", body)
+	if result.TotalFound != 2 || result.Saved != 2 {
+		t.Fatalf("TotalFound/Saved = %d/%d, want 2/2 (HTTP URLs must not count)", result.TotalFound, result.Saved)
+	}
+	if got := result.Attachments[0].Type; got != "video" {
+		t.Errorf("Attachments[0].Type = %q, want video", got)
+	}
+	if got := result.Attachments[0].ContentType; got != "video/mp4" {
+		t.Errorf("Attachments[0].ContentType = %q, want video/mp4", got)
+	}
+	if got := result.Attachments[1].Type; got != "file" {
+		t.Errorf("Attachments[1].Type = %q, want file", got)
+	}
+	if got := result.Attachments[1].ContentType; got != "application/pdf" {
+		t.Errorf("Attachments[1].ContentType = %q, want application/pdf", got)
+	}
+}
+
+func TestExtractFromAnthropicBody_Document(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStorage(dir)
+	e := NewExtractor(s)
+
+	pdfB64 := base64.StdEncoding.EncodeToString([]byte("%PDF-fake"))
+	body := []byte(`{
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "` + pdfB64 + `"}}
+			]
+		}]
+	}`)
+
+	result := e.ExtractFromAnthropicBody("req-doc", body)
+	if result.TotalFound != 1 || result.Saved != 1 {
+		t.Fatalf("TotalFound/Saved = %d/%d, want 1/1", result.TotalFound, result.Saved)
+	}
+	if got := result.Attachments[0].Type; got != "file" {
+		t.Errorf("Type = %q, want file", got)
+	}
+	if got := result.Attachments[0].ContentType; got != "application/pdf" {
+		t.Errorf("ContentType = %q, want application/pdf", got)
+	}
+}
+
+// ── N21-3 余项（2026-09-30）：/v1/responses 入口此前零提取——
+// input[] 平铺块与包裹 content[] 两形态、input_image 字符串/对象双形态、
+// input_audio / input_file 均不入附件列（responses 轮次恒空）。
+
+func TestExtractFromResponsesBody(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStorage(dir)
+	e := NewExtractor(s)
+
+	pdfB64 := base64.StdEncoding.EncodeToString([]byte("%PDF-fake"))
+	audioB64 := base64.StdEncoding.EncodeToString([]byte("RIFFfake-wav-payload"))
+	body := []byte(`{
+		"model": "gpt-4o",
+		"input": [
+			{"type": "input_image", "image_url": "` + testPNGDataURI() + `"},
+			{"type": "message", "role": "user", "content": [
+				{"type": "input_text", "text": "看图读文档"},
+				{"type": "input_file", "filename": "doc.pdf", "file_data": "data:application/pdf;base64,` + pdfB64 + `"},
+				{"type": "input_audio", "input_audio": {"data": "` + audioB64 + `", "format": "wav"}}
+			]}
+		]
+	}`)
+
+	result := e.ExtractFromResponsesBody("req-responses-1", body)
+	if result.TotalFound != 3 || result.Saved != 3 {
+		t.Fatalf("TotalFound/Saved = %d/%d, want 3/3", result.TotalFound, result.Saved)
+	}
+	want := []struct{ kind, ct string }{
+		{"image", "image/png"},
+		{"file", "application/pdf"},
+		{"audio", "audio/wav"},
+	}
+	for i, w := range want {
+		if got := result.Attachments[i].Type; got != w.kind {
+			t.Errorf("Attachments[%d].Type = %q, want %q", i, got, w.kind)
+		}
+		if got := result.Attachments[i].ContentType; got != w.ct {
+			t.Errorf("Attachments[%d].ContentType = %q, want %q", i, got, w.ct)
+		}
+	}
+	if got := result.Attachments[0].MessageIndex; got != 0 {
+		t.Errorf("flat item MessageIndex = %d, want 0", got)
+	}
+	if got := result.Attachments[1].MessageIndex; got != 1 {
+		t.Errorf("wrapped item MessageIndex = %d, want 1", got)
+	}
+}
+
+func TestExtractFromResponsesBody_ObjectDialectAndFileMapForm(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStorage(dir)
+	e := NewExtractor(s)
+
+	pdfB64 := base64.StdEncoding.EncodeToString([]byte("%PDF-fake"))
+	body := []byte(`{
+		"input": [
+			{"type": "input_image", "image_url": {"url": "` + testPNGDataURI() + `"}},
+			{"type": "input_file", "file": {"file_data": "data:application/pdf;base64,` + pdfB64 + `"}}
+		]
+	}`)
+
+	result := e.ExtractFromResponsesBody("req-responses-2", body)
+	if result.TotalFound != 2 || result.Saved != 2 {
+		t.Fatalf("TotalFound/Saved = %d/%d, want 2/2", result.TotalFound, result.Saved)
+	}
+	if got := result.Attachments[0].Type; got != "image" {
+		t.Errorf("object-dialect image Type = %q, want image", got)
+	}
+	if got := result.Attachments[1].Type; got != "file" {
+		t.Errorf("file-map form Type = %q, want file", got)
+	}
+}
+
+func TestExtractFromResponsesBody_NegativeCases(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStorage(dir)
+	e := NewExtractor(s)
+
+	// input 为纯字符串 / HTTP URL 引用 / file_id 引用均不入列
+	body := []byte(`{
+		"input": [
+			{"type": "input_image", "image_url": "https://example.com/x.png"},
+			{"type": "input_file", "file_id": "file-abc123"},
+			{"type": "message", "role": "user", "content": "plain text"}
+		]
+	}`)
+	if result := e.ExtractFromResponsesBody("req-responses-3", body); result.TotalFound != 0 {
+		t.Errorf("HTTP/file-id/text-only must not extract, TotalFound = %d", result.TotalFound)
+	}
+
+	// input 为纯字符串（非数组）
+	if result := e.ExtractFromResponsesBody("req-responses-4", []byte(`{"input":"hello"}`)); result.TotalFound != 0 {
+		t.Errorf("string input must not extract, TotalFound = %d", result.TotalFound)
+	}
+}
+
+// TestGeminiInlineMediaExtractionViaConversion 实证 gemini 入站腿：inlineData
+// → ParseGemini → SerializeOpenAI 合成体（image_url 重建 data URI / 音频落
+// input_audio）→ ExtractFromOpenAIBody 全部入列。二十一轮 N21-3 的
+// 「gemini 轮次附件列恒空」对图片不成立（既有提取在合成体上生效），音频/
+// 视频腿由本次 input_audio/video_url 扩展闭合。
+func TestGeminiInlineMediaExtractionViaConversion(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStorage(dir)
+	e := NewExtractor(s)
+
+	pngB64 := testPNGDataURI()
+	pngB64 = pngB64[len("data:image/png;base64,"):]
+	wavB64 := base64.StdEncoding.EncodeToString([]byte("RIFFfake-wav-payload"))
+	geminiBody := []byte(`{
+		"contents": [{
+			"role": "user",
+			"parts": [
+				{"text": "看图听音频"},
+				{"inlineData": {"mimeType": "image/png", "data": "` + pngB64 + `"}},
+				{"inlineData": {"mimeType": "audio/wav", "data": "` + wavB64 + `"}}
+			]
+		}]
+	}`)
+
+	irReq, err := ir.ParseGemini(geminiBody)
+	if err != nil {
+		t.Fatalf("ParseGemini: %v", err)
+	}
+	openaiBody, err := ir.SerializeOpenAI(irReq)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI: %v", err)
+	}
+
+	result := e.ExtractFromOpenAIBody("req-gemini", openaiBody)
+	if result.TotalFound != 2 || result.Saved != 2 {
+		t.Fatalf("TotalFound/Saved = %d/%d, want 2/2", result.TotalFound, result.Saved)
+	}
+	if got := result.Attachments[0].Type; got != "image" {
+		t.Errorf("image leg Type = %q, want image", got)
+	}
+	if got := result.Attachments[1].Type; got != "audio" {
+		t.Errorf("audio leg Type = %q, want audio", got)
+	}
+	if got := result.Attachments[1].ContentType; got != "audio/wav" {
+		t.Errorf("audio leg ContentType = %q, want audio/wav", got)
 	}
 }

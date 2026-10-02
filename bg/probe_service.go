@@ -169,6 +169,12 @@ type ProbeService struct {
 	siblingModelsFn func(ctx context.Context, credID int, model string) ([]string, error)
 	lastProbeRunFn  func(ctx context.Context, credID int, model string) (*nodeProbeRunSummary, error)
 	removeSkippedFn func(ctx context.Context, task ProbeQueueTask, reason string)
+	// twoSiblingSuccessesFn overrides condition ③'s evidence lookup
+	// (2026-09-20 probe-volume policy, INV-4): bool = "credential already has
+	// two recently probe-verified models and the pair carries no error state".
+	// error fails open (probe runs). Tests stub it; production uses the SQL
+	// path in probe_necessity.go.
+	twoSiblingSuccessesFn func(ctx context.Context, credID int, model string) (bool, error)
 	// skipQueue overrides the queue the skip-removal path runs through —
 	// tests stub it (Remove + publishRemovedTransition) instead of building
 	// a *ProbeQueue on a live pgxpool. Production leaves it nil so removal
@@ -189,6 +195,12 @@ type ProbeService struct {
 	// heartbeatFn defaults to ProbeQueue.ExtendLease but can be overridden in
 	// tests to assert the lease-extension cadence without touching the DB.
 	heartbeatFn func(context.Context, ProbeQueueTask, time.Duration) error
+	// stateFailuresFn (2026-09-26 P0-2) overrides the
+	// node_probe_state.consecutive_failures read that keeps the failure
+	// ladder position alive across queue task generations (see Run). Tests
+	// stub it; production leaves it nil and Run reads through
+	// worker.loadConsecutiveFailures (fail-open on absent row / read error).
+	stateFailuresFn func(ctx context.Context, credID int, model string) (int, bool)
 	// automaticEligibilityFn defaults to the queue's current-state check and is
 	// injectable for focused service tests without a live database.
 	automaticEligibilityFn func(context.Context, ProbeQueueTask) (bool, error)
@@ -330,6 +342,25 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		}
 	}
 
+	// 2026-09-26 (P0-2 队列任务代际 attempt 重置): task.Attempt is
+	// generation-local — every time the pump re-enqueues a pair after a task
+	// generation exhausts max_attempts, the counter restarts at 1 and the
+	// ladder collapsed back to the 5s rung (protocol-class pairs even got two
+	// fresh fast probes per generation before re-parking at 6h). The ladder
+	// position is node-state-owned: attempt is the greater of the task's own
+	// count and node_probe_state.consecutive_failures+1 — the same arithmetic
+	// legacy runOne uses — so consecutive generations keep climbing toward the
+	// 6h cap instead of restarting. Absent row / read error fails open to the
+	// task's own count (first generation, or a row dropped by the necessity
+	// gate above).
+	if read := s.stateFailuresFn; read != nil {
+		if cf, ok := read(ctx, credID, model); ok && cf+1 > attempt {
+			attempt = cf + 1
+		}
+	} else if cf, ok := s.worker.loadConsecutiveFailures(ctx, credID, model); ok && cf+1 > attempt {
+		attempt = cf + 1
+	}
+
 	// Lease heartbeat (2026-08-18): refresh lease_until every
 	// ProbeQueueHeartbeatInterval while Run() does its work. Without this, a
 	// direct+gateway+side-effects run that takes >30s (the old lease window)
@@ -405,7 +436,19 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		gw.errDetail = "legacy gateway probe cannot prove credential attribution"
 	}
 
-	success := direct.ok && gw.ok && gateway.pinned
+	// 2026-09-25 (对健康节点零探测 / "错误的探测要搞清楚是协议问题还是节点的
+	// 问题"): the composite `direct.ok && gw.ok && pinned` verdict regressed
+	// the 2026-09-10 hzx-2 doctrine in unified-queue mode — a direct-verified
+	// healthy node whose GATEWAY round failed (gateway 5xx, pin unsupported)
+	// settled as ProbeQueueFailed, armed mirrorNodeProbeState's failure
+	// branch (last_err_code = gateway code, consecutive_failures = attempt,
+	// backoff re-arm), and the volume pump then re-enqueued the pair at every
+	// ladder rung: a provably healthy node probed forever because the
+	// gateway side of the house was broken. The direct round is the node
+	// verdict (it dials the upstream with the credential's own key); the
+	// gateway round only refines evidence and its anomaly is reported, never
+	// laddered. Same semantics as legacy runOne (`success := direct.ok`).
+	success := direct.ok
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
 		// Bail BEFORE side effects (URSM update + applyOutcome + mirror +
 		// notify) so the other worker that reclaimed this task does not
@@ -436,11 +479,13 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	})
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
-	errCode := ""
-	if c := firstErrCode(direct, gw); c != nil {
-		errCode = *c
-	}
-	backoff := ProbeBackoffForErrCode(errCode, attempt)
+	// 2026-09-25: the ladder is node-owned — pace it from the DIRECT round's
+	// err code + root cause only. With success = direct.ok this branch now
+	// runs exclusively on direct failures, so the gateway round can no
+	// longer shorten/lengthen the node's retry schedule. errCode drives the
+	// featured-multiplier exemption and the audit/queue ReasonCode below.
+	errCode := direct.errCode
+	backoff := probeBackoffForDirectOutcome(direct.errCode, direct.rootCause, attempt)
 	// 2026-08-13: 常用模型失败回退缩短（probe.featured_backoff_multiplier，默认
 	// 50% → 更快重试恢复）；非常用按标准 7 步链。仅影响失败后的下次重试间隔，
 	// 不降低探测深度（仍走 direct+gateway 双轮）。
@@ -449,8 +494,11 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// but a defensive floor here guards against future chain rungs <5s.
 	// 2026-09-17: a confirmed model-not-served 404 must NOT be shortened — the
 	// multiplier exists to re-verify transient failures faster, and halving a
-	// catalog-mismatch horizon just re-churns the 404.
-	if globalIsFeaturedModel(model, "") && !isModelNotServedProbeError(errCode) {
+	// catalog-mismatch horizon just re-churns the 404. 2026-09-25: the same
+	// protection extends to every protocol-shaped failure (contract mismatch
+	// parked at 6h by probeBackoffForDirectOutcome must not be shortened back
+	// into a churn loop).
+	if globalIsFeaturedModel(model, "") && !isModelNotServedProbeError(errCode) && direct.rootCause != ProbeRootCauseProtocol {
 		if pct := settings.GetPlatformInt("probe.featured_backoff_multiplier", 50); pct > 0 && pct < 100 {
 			scaled := time.Duration(float64(backoff) * float64(pct) / 100.0)
 			if scaled < 5*time.Second {
@@ -469,6 +517,17 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	nextSec := int(backoff.Seconds())
 	if nextSec <= 0 {
 		nextSec = 5 // defensive floor for sub-second backoff (audit #6)
+	}
+	// 2026-09-25: operator-facing "协议还是节点" verdict for the node-verdict
+	// round (counter fires per round in emitProbe).
+	logProbeRoundRootCause("direct", direct)
+	// Mirror the legacy runOne success-branch warn: a parked (healthy) node
+	// with a failing gateway round must still surface the gateway anomaly.
+	if success && (!gw.ok || !gateway.pinned) {
+		slog.Warn("probe_service: direct round healthy, gateway round degraded — node parked, gateway anomaly not laddered",
+			"credential_id", credID, "model", model,
+			"gateway_ok", gw.ok, "gateway_pinned", gateway.pinned,
+			"gateway_err_code", gw.errCode, "gateway_root_cause", gw.rootCause)
 	}
 
 	// Mirror into node_probe_state for backward compat with existing dashboard /
@@ -502,6 +561,28 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		auditPersistFailedTotal.WithLabelValues(task.Source).Inc()
 	}
 
+	// 2026-09-25: a direct-verified node settles the task terminal — NO
+	// NextRunAt, so the queue worker cannot re-arm a healthy node. When the
+	// gateway round degraded, the reason rides along as observability-only
+	// metadata (the same settle shape as probe_out_of_scope / lease_lost):
+	// dashboards keep the "why is last_gateway_ok false" answer without the
+	// queue mistaking it for a node failure.
+	successResult := func() ProbeQueueResult {
+		res := ProbeQueueResult{
+			Status:     ProbeQueueSuccess,
+			HTTPStatus: direct.httpStatus,
+			LatencyMs:  direct.latencyMs,
+		}
+		if !gateway.pinned {
+			res.ReasonCode = "gateway_pin_unsupported"
+			res.ReasonDetail = gw.errDetail
+		} else if !gw.ok {
+			res.ReasonCode = "gateway_round_degraded"
+			res.ReasonDetail = fmt.Sprintf("%s: %s", gw.errCode, gw.errDetail)
+		}
+		return res
+	}
+
 	// Build the queue result. On success the task is terminal; on failure the
 	// queue worker re-arms in-place up to max_attempts using next_run_at.
 	if auditErr != nil {
@@ -525,7 +606,7 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 			wrappedErr = fmt.Errorf("%w (queue_id=%d cred=%d model=%s): %v", ErrProbeAuditPersistFailed, task.ID, credID, model, auditErr)
 		}
 		if success {
-			return ProbeQueueResult{Status: ProbeQueueSuccess, HTTPStatus: direct.httpStatus, LatencyMs: direct.latencyMs}, wrappedErr
+			return successResult(), wrappedErr
 		}
 		nextRetryAt := now.Add(backoff)
 		return ProbeQueueResult{
@@ -539,7 +620,7 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	}
 
 	if success {
-		return ProbeQueueResult{Status: ProbeQueueSuccess, HTTPStatus: direct.httpStatus, LatencyMs: direct.latencyMs}, nil
+		return successResult(), nil
 	}
 	nextRetryAt := now.Add(backoff)
 	return ProbeQueueResult{
@@ -587,7 +668,7 @@ func (s *ProbeService) startLeaseHeartbeat(parent context.Context, task ProbeQue
 	if extend == nil {
 		extend = s.queue.ExtendLease
 	}
-	go func() {
+	SpawnLoop(hbCtx, "probe_service.heartbeat", func(context.Context) {
 		ticker := time.NewTicker(ProbeQueueHeartbeatInterval)
 		defer ticker.Stop()
 		for {
@@ -617,7 +698,7 @@ func (s *ProbeService) startLeaseHeartbeat(parent context.Context, task ProbeQue
 				heartbeatExtendedTotal.WithLabelValues("probe_service").Inc()
 			}
 		}
-	}()
+	})
 	return hbCtx, cancel
 }
 
@@ -687,6 +768,7 @@ func (s *ProbeService) gatewayRound(ctx context.Context, credID int, model strin
 	return gatewayProbeResult{round: nodeProbeRoundResult{
 		errCode:   "gateway_pin_unsupported",
 		errDetail: "legacy gateway probe cannot prove credential attribution",
+		rootCause: ProbeRootCauseGateway,
 	}, pinned: false}
 }
 
@@ -767,6 +849,15 @@ func probeResultToRound(model string, pr *ProbeResult) nodeProbeRoundResult {
 			r.errCode = string(pr.Status)
 		}
 		r.errDetail = pr.ErrMsg
+		// 2026-09-25: classify when the producer didn't (legacy executor
+		// rounds carry no RootCause yet). errCode+status+body preview are the
+		// same evidence probeDirect classifies from. 2026-09-26: gateway-round
+		// specific classifier — loopback transport failures are this
+		// instance's fault (see classifyGatewayRoundRootCause).
+		r.rootCause = ProbeRootCause(pr.RootCause)
+		if r.rootCause == "" {
+			r.rootCause = classifyGatewayRoundRootCause(r.errCode, r.httpStatus, r.responseBody)
+		}
 	}
 	return r
 }
@@ -820,21 +911,29 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 		return
 	}
 	if success {
+		// 2026-09-20 probe-volume policy: park 30 days instead of re-arming
+		// +1h — a probe success must not schedule the next probe. A new real
+		// failure re-arms via Submit's healthy-parked branch (+5s).
+		// 2026-09-25 (对健康节点零探测): last_err_code stays NULL — parking a
+		// gateway-round failure code here would keep the direct-verified row
+		// out of the healthy-parked shape and feed the stale-state
+		// reconciler / pump an endless "error" that is not the node's. The
+		// gateway outcome stays visible via last_gateway_ok = gw.ok.
 		_, _ = w.db.Exec(ctx, `
 			UPDATE node_probe_state SET
 				consecutive_failures = 0,
 				consecutive_successes = consecutive_successes + 1,
 				last_attempt_at = now(),
-				next_retry_at = now() + interval '1 hour',
-				next_retry_seconds = 3600,
+				next_retry_at = now() + interval '30 days',
+				next_retry_seconds = 2592000,
 				paused = FALSE,
 				last_direct_ok = TRUE,
-				last_gateway_ok = TRUE,
+				last_gateway_ok = $3,
 				last_err_code = NULL,
 				last_err_detail = NULL,
 				in_flight_until = NULL,
 				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model)
+			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok)
 		return
 	}
 	// 2026-09-17 (R39): mirror the legacy runOne ladder's gateway-side guard —

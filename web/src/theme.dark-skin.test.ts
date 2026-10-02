@@ -97,3 +97,115 @@ describe('dark skin bridging (EP components)', () => {
     }
   })
 })
+
+// 2026-09-29 用户报告：暗色下落地页「下载安装包」是一块看不清的亮色大块。
+// 根因：它把「反白文字色」令牌 --on-primary 当成了表面色，而该令牌在明暗两套皮肤里
+// 都是同一个纯白 #ffffff（style.css L28 亮 / L168 暗），对暗色皮肤完全不敏感。
+// 门禁的作用是锁死「文字色令牌不得当背景」这条不变量，而不是记住某个具体色值。
+describe('text tokens must not be used as surfaces', () => {
+  const landing = readFileSync(
+    resolve(process.cwd(), 'src/components/ServiceLandingPage.vue'),
+    'utf8',
+  )
+  const styleCss = readFileSync(resolve(process.cwd(), 'src/style.css'), 'utf8')
+
+  // --on-primary / --kx-text-on-primary 都是「压在主色上的文字色」，语义是前景而非表面。
+  const TEXT_TOKENS = ['--on-primary', '--kx-text-on-primary']
+
+  function backgroundDeclarations(css: string): string[] {
+    const out: string[] = []
+    // 只取 background / background-color 的值，忽略注释，避免把修复说明本身当成违规。
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    for (const m of stripped.matchAll(/background(?:-color)?\s*:\s*([^;]+);/g)) {
+      out.push(m[1].trim())
+    }
+    return out
+  }
+
+  it('landing page never paints a background with a text-on-primary token', () => {
+    const offenders = backgroundDeclarations(landing).filter((value) =>
+      TEXT_TOKENS.some((token) => value.includes(`var(${token})`)),
+    )
+    expect(offenders).toEqual([])
+  })
+
+  it('landing secondary CTA paints with the theme-aware surface token', () => {
+    // 显式钉住修复本身：次要 CTA 的任何背景都必须是随皮肤走的 --landing-surface
+    // （→ --surface-elevated）。只断言「真正写了 background 的那些规则」，因为该选择器
+    // 同时出现在共享规则 `.kx-landing__cta, .kx-landing__cta-secondary {…}` 里——
+    // 那条只有排版属性、无 background，不该被要求带表面色。
+    const bodies: string[] = []
+    for (const m of landing.matchAll(/\n([^\n{}]*)\{([^{}]*)\}/g)) {
+      if (m[1].trim() === '.kx-landing__cta-secondary') bodies.push(m[2])
+    }
+    const painted = bodies.filter((b) => /background(?:-color)?\s*:/.test(b))
+    expect(painted.length).toBeGreaterThan(0)
+    for (const body of painted) {
+      expect(body).toMatch(/background(?:-color)?:\s*var\(--landing-surface\)/)
+    }
+  })
+
+  it('--kx-text-on-primary is theme-invariant white (so it can never be a surface)', () => {
+    // 这条把「为什么不能用它当背景」钉成可执行事实：两套皮肤都是 #ffffff。
+    const decls = [...styleCss.matchAll(/--kx-text-on-primary:\s*(#[0-9a-f]{3,8})\s*;/gi)].map(
+      (m) => m[1].toLowerCase(),
+    )
+    expect(decls.length).toBeGreaterThanOrEqual(2)
+    expect(new Set(decls)).toEqual(new Set(['#ffffff']))
+  })
+})
+
+// 2026-09-29 全站皮肤一致性巡检后追加：禁用「皮肤不变的黑底/白底当背景」
+// 的两类形态——它们与 `--on-primary` 同源（文字/背景色令牌被错用），但形态不同。
+describe('inline background should not be theme-invariant white or black', () => {
+  const SRC = resolve(process.cwd(), 'src')
+  const TEXT_TOKENS = ['--on-primary', '--kx-text-on-primary']
+
+  // 1. inline `background: rgba(0,0,0,...)` 当面背景（不是遮罩层 drawback）
+  function findFiles(): string[] {
+    const out: string[] = []
+    const fs = require('node:fs') as typeof import('node:fs')
+    const path = require('node:path') as typeof import('node:path')
+    const stack = [SRC]
+    while (stack.length) {
+      const dir = stack.pop()!
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name)
+        if (e.isDirectory()) stack.push(full)
+        else if (/\.(vue|css|ts)$/.test(e.name)) out.push(full)
+      }
+    }
+    return out
+  }
+
+  function inlineBlackBackgrounds(css: string): Array<{ line: number; val: string }> {
+    // 找 background/background-color: rgba(0, 0, 0, ...) 形式，排除 .drawer-backdrop 类遮罩
+    const out: Array<{ line: number; val: string }> = []
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    for (const m of stripped.matchAll(/background(?:-color)?\s*:\s*([^;]+);/g)) {
+      const val = m[1].trim()
+      if (/^rgba?\(\s*0\s*,\s*0\s*,\s*0\s*,/.test(val)) {
+        // 排除遮罩层（命名以 .drawer-backdrop / .overlay / .modal-mask 开头或 inline style 上以 modal/mask/backdrop 出现）
+        out.push({ line: -1, val })
+      }
+    }
+    return out
+  }
+
+  it('no inline background uses rgba(0,0,0,...) outside drawer/overlay masks', () => {
+    const exceptions = /(drawer-backdrop|overlay|mask-backdrop|modal-backdrop)/i
+    const offenders: Array<{ file: string; val: string }> = []
+    for (const f of findFiles()) {
+      const src = require('node:fs').readFileSync(f, 'utf8')
+      for (const { val } of inlineBlackBackgrounds(src)) {
+        // 看上下 8 行有没有例外标签
+        const idx = src.indexOf(val)
+        const nearby = src.slice(Math.max(0, idx - 200), idx + val.length + 200)
+        if (!exceptions.test(nearby)) {
+          offenders.push({ file: f.replace(process.cwd() + '/', ''), val })
+        }
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+})

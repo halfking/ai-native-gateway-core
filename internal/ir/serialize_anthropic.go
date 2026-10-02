@@ -3,6 +3,8 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
 // SerializeAnthropic serializes an InternalRequest into an Anthropic Messages request body.
@@ -11,9 +13,12 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		return nil, fmt.Errorf("request is nil")
 	}
 
+	// finalMaxTokens 是本次 wire 请求最终生效的 max_tokens（客户端省略时由
+	// 序列化默认值收敛），下方 thinking budget 的最终一致性钳制以它为准。
+	finalMaxTokens := anthropicMaxTokens(req.MaxTokens)
 	out := map[string]any{
 		"model":      req.Model,
-		"max_tokens": req.MaxTokens,
+		"max_tokens": finalMaxTokens,
 	}
 
 	// Streaming
@@ -48,7 +53,7 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	}
 
 	// Messages
-	messages := serializeAnthropicMessages(req, req.TargetProvider, req.Model)
+	messages := serializeAnthropicMessages(req, req.TargetProvider, req.Model, irRequestID(req))
 	if len(messages) > 0 {
 		out["messages"] = messages
 	}
@@ -92,11 +97,21 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		}
 	}
 
-	// Thinking config
+	// Thinking config (native Anthropic). Budget tokens are only emitted
+	// when the type is explicit "enabled" — adaptive / disabled omit it
+	// (mirrors TestAnthropicNativeThinkingPrecedesReasoning).
 	if req.Thinking != nil {
-		out["thinking"] = map[string]any{
-			"type":          req.Thinking.Type,
-			"budget_tokens": req.Thinking.BudgetTokens,
+		t := map[string]any{
+			"type": req.Thinking.Type,
+		}
+		if req.Thinking.Type == "enabled" {
+			t["budget_tokens"] = req.Thinking.BudgetTokens
+		}
+		out["thinking"] = t
+		// claude-opus-5-5 always thinks; record loss when native disabled intent
+		// is requested (TestNativeDisabledModelLossesRemainVisible/Anthropic_native_thinking).
+		if req.Thinking.Type == "disabled" && anthropicRejectsDisabledThinking(req.Model) {
+			reportSerializeAnthropicUnsupportedDisable(req)
 		}
 	}
 
@@ -107,29 +122,113 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	// reasonnorm (based on LiteLLM production constants), replacing the ad-hoc
 	// mapEffortToBudget that had different values (low→2048 vs canonical 1024).
 	if req.Reasoning != nil && req.Thinking == nil {
-		thinking := map[string]any{}
-		if req.Reasoning.Type != "" {
-			thinking["type"] = req.Reasoning.Type
-		} else {
-			thinking["type"] = "enabled"
+		// Resolve intent by precedence (mirrors reasoningDisabled in reasoning_dialect.go):
+		//   1. explicit Type wins — but only the known directive vocabulary
+		//      (enabled/disabled/adaptive). Responses reasoning.summary values
+		//      ("auto"/"concise"/"detailed") collide into this field
+		//      (parseResponsesReasoning) and are NOT thinking directives;
+		//      emitting them as thinking.type is an upstream 400
+		//      (N21-2 residue, fixed 2026-09-30).
+		//   2. explicit BudgetTokens: zero disables, positive beats "none"/"disabled" effort
+		//   3. Effort spelling (cross-protocol "none" / "disabled" / " DISABLED ") is the fallback
+		typeIsDirective := req.Reasoning.Type == "enabled" ||
+			req.Reasoning.Type == "disabled" || req.Reasoning.Type == "adaptive"
+		thinkingType := "enabled"
+		thinkingBudget := 0
+		hasBudget := false
+		disableUnsupported := false
+		switch {
+		case typeIsDirective:
+			thinkingType = req.Reasoning.Type
+			if thinkingType == "enabled" {
+				// Explicit Type wins, but must not drop an explicit positive
+				// budget (R23-A): parse_gemini builds {Type:"enabled",
+				// BudgetTokens} for any positive thinkingBudget, and Anthropic
+				// requires budget_tokens whenever thinking is enabled.
+				hasBudget = true
+				if req.Reasoning.BudgetTokens != nil && *req.Reasoning.BudgetTokens > 0 {
+					thinkingBudget = *req.Reasoning.BudgetTokens
+				} else {
+					thinkingBudget = 8192 // safe default (xhigh); enabled without budget is an API error
+				}
+			}
+			// disabled / adaptive carry no budget: the adaptive canonical form
+			// is budgetless (reasonnorm renders native adaptive without one),
+			// mirroring the native Thinking path.
+		case req.Reasoning.BudgetTokens != nil:
+			if *req.Reasoning.BudgetTokens == 0 {
+				thinkingType = "disabled"
+			} else {
+				thinkingBudget = *req.Reasoning.BudgetTokens
+				hasBudget = true
+			}
+		case req.Reasoning.Effort != "":
+			if reasonnorm.IsDisableEffort(req.Reasoning.Effort) {
+				thinkingType = "disabled"
+			} else if b, ok := reasonnormEffortToBudget(req.Reasoning.Effort); ok && b > 0 {
+				thinkingBudget = b
+				hasBudget = true
+			} else {
+				thinkingBudget = 8192 // safe default (xhigh)
+				hasBudget = true
+			}
+		default:
+			// No recognizable intent (unknown Type vocabulary only, no budget,
+			// no effort): omit the thinking block entirely — a budgetless
+			// {"type":"enabled"} is an Anthropic 400.
+			thinkingType = ""
 		}
-		if req.Reasoning.BudgetTokens != nil {
-			thinking["budget_tokens"] = *req.Reasoning.BudgetTokens
-		} else if req.Reasoning.Effort != "" {
-			budget, ok := reasonnormEffortToBudget(req.Reasoning.Effort)
-			if !ok {
-				budget = 8192 // safe default (xhigh)
+
+		// Model-specific gate: claude-opus-5-5 always thinks; the API
+		// rejects thinking.type=disabled. Per TestAnthropicOpus55Disabled
+		// OmittedAndReported, omit the entire thinking block on this model
+		// (the client intent to disable is recorded as a loss instead).
+		if thinkingType == "disabled" && anthropicRejectsDisabledThinking(req.Model) {
+			disableUnsupported = true
+			thinkingType = "" // omit the entire block
+		}
+
+		// 2026-10-01 审计：thinking budget × 最终 max_tokens 的最终一致性钳制
+		// （**仅客户端省略 max_tokens 时生效**，req.MaxTokens<=0 → 最终值是
+		// 序列化默认 4096，客户端从未见过该值）。Reasoning 派生的 budget
+		// （effort 预算表、8192 兜底、跨协议恢复值）此前从不对照最终
+		// max_tokens：effort=xhigh 兜底 budget=8192 vs 默认 max_tokens=4096 →
+		// budget_tokens(8192) >= max_tokens(4096) → Anthropic 硬 400；同请求
+		// 走 legacy 路径会被 reasonnorm.renderAnthropic 钳到 4095 成功发出。
+		// 钳制语义与 renderAnthropic / ClampRestoredReasoningForAnthropic 同款：
+		// cap 到 max-1；cap 后低于 1024 硬下限则整体省略 thinking（可发出的
+		// 请求优先于必 400 的请求）。
+		// 显式 max_tokens 时不钳：原生 thinking（req.Thinking）与 Reasoning 派生
+		// budget 都保持逐字透传——显式 max_tokens + 超界 budget 的组合由 legacy
+		// ChatToAnthropic 同样原样发射（chat_to_anthropic_parity 金标准钉住两路
+		// 对等），此处收口会破坏两路对等并被该金标准捕获；该组合的最终治理属
+		// 序列化边界整体钳制设计，不在本修复范围。
+		// 仅作用于 Reasoning 派生路径的省略 max_tokens 形态；native req.Thinking
+		// 客户端显式选值恒不钳（TestSerializeAnthropic_Thinking 钉住 1024/10000）。
+		if req.MaxTokens <= 0 && thinkingType != "" && thinkingType != "disabled" && hasBudget {
+			if thinkingBudget >= finalMaxTokens {
+				thinkingBudget = finalMaxTokens - 1
 			}
-			if budget > 0 {
-				thinking["budget_tokens"] = budget
-			}
-			// effort=="none" → budget==0 → no thinking block emitted
-			if budget == 0 {
-				thinking = nil
+			if thinkingBudget < anthropicMinBudget {
+				thinkingType = "" // 放不下 thinking：整体省略
 			}
 		}
-		if thinking != nil {
-			out["thinking"] = thinking
+
+		if thinkingType != "" {
+			thinking := map[string]any{}
+			thinking["type"] = thinkingType
+			// Disabled thinking cannot carry a budget_tokens field
+			// (TestReasoningDisabledConflictPrecedence/type_disabled_beats_budget);
+			// hasBudget is never set for disabled in the switch above.
+			if hasBudget && thinkingType != "disabled" {
+				thinking["budget_tokens"] = thinkingBudget
+			}
+			if len(thinking) > 0 {
+				out["thinking"] = thinking
+			}
+		}
+		if disableUnsupported {
+			reportSerializeAnthropicUnsupportedDisable(req)
 		}
 	}
 
@@ -235,6 +334,8 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 		return
 	}
 	src := req.SourceProtocol
+	// S2-F3/R60：上报带上真实请求 id（irRequestID，缺失回落 "unknown"）。
+	reqID := irRequestID(req)
 
 	// OpenAI Chat Completions → Anthropic: any OpenAI-only field that
 	// does not have a 1:1 Anthropic equivalent is a loss. Skip on
@@ -266,7 +367,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 				continue
 			}
 			ReportProtocolLoss(
-				"unknown",
+				reqID,
 				f.field,
 				ifaceNonEmpty(src, ProtocolOpenAIChat),
 				ProtocolAnthropicMessages,
@@ -283,7 +384,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 	// kept for symmetry with other same-protocol guards).
 	if req.PreviousResponseID != "" && src != ProtocolAnthropicMessages {
 		ReportProtocolLoss(
-			"unknown",
+			reqID,
 			"previous_response_id",
 			ifaceNonEmpty(src, ProtocolOpenAIChat),
 			ProtocolAnthropicMessages,
@@ -296,7 +397,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 	// semantically. (When SourceProtocol is Anthropic this is normal usage.)
 	if req.TopK != nil && *req.TopK == 0 && src == ProtocolOpenAIChat {
 		ReportProtocolLoss(
-			"unknown",
+			reqID,
 			"top_k",
 			ProtocolOpenAIChat,
 			ProtocolAnthropicMessages,
@@ -305,6 +406,29 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 			map[string]any{"top_k_value": 0},
 		)
 	}
+}
+
+// reportSerializeAnthropicUnsupportedDisable records that a model rejected
+// thinking.type=disabled (e.g. claude-opus-5-5 always thinks). The IR's
+// disable intent is reported as an ir_protocol_loss with reason="unsupported"
+// so the request still goes upstream but the loss is observable downstream.
+func reportSerializeAnthropicUnsupportedDisable(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	fieldPath := "reasoning_effort"
+	if req.SourceProtocol == ProtocolAnthropicMessages && req.Thinking != nil {
+		fieldPath = "thinking.type"
+	}
+	ReportProtocolLoss(
+		irRequestID(req),
+		fieldPath,
+		req.SourceProtocol,
+		ProtocolAnthropicMessages,
+		"unsupported",
+		"Anthropic model rejected thinking.type=disabled; omitted thinking block to keep request valid",
+		map[string]any{"model": req.Model},
+	)
 }
 
 // serializeAnthropicSystem serializes the system prompt.
@@ -360,11 +484,11 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
 // modelName is used to detect relay scenarios (e.g., NVIDIA forwarding to MiniMax).
-func serializeAnthropicMessages(req *InternalRequest, targetProvider string, modelName string) []map[string]any {
+func serializeAnthropicMessages(req *InternalRequest, targetProvider string, modelName string, requestID string) []map[string]any {
 	messages := make([]map[string]any, 0, len(req.Messages))
 
 	for _, msg := range req.Messages {
-		messages = append(messages, serializeAnthropicMessage(msg, targetProvider, modelName))
+		messages = append(messages, serializeAnthropicMessage(msg, targetProvider, modelName, requestID))
 	}
 
 	return messages
@@ -373,7 +497,9 @@ func serializeAnthropicMessages(req *InternalRequest, targetProvider string, mod
 // serializeAnthropicMessage converts a single IR Message to Anthropic format.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
-func serializeAnthropicMessage(msg Message, targetProvider string, modelName string) map[string]any {
+// requestID 是上报 format-anomaly 用的网关请求 id（S2-F3/R60：由 SerializeAnthropic
+// 从 req.Metadata.RequestID 取出逐层下传，缺失时为 "unknown"）。
+func serializeAnthropicMessage(msg Message, targetProvider string, modelName string, requestID string) map[string]any {
 	// Tool role messages: convert to user+tool_result format (Anthropic convention)
 	if msg.Role == "tool" {
 		out := map[string]any{
@@ -427,7 +553,7 @@ func serializeAnthropicMessage(msg Message, targetProvider string, modelName str
 		out["content"] = msg.Content[0].Text
 	} else {
 		// Content blocks (may include tool_use blocks)
-		content := serializeAnthropicMessageContent(msg, targetProvider, modelName)
+		content := serializeAnthropicMessageContent(msg, targetProvider, modelName, requestID)
 		out["content"] = content
 	}
 
@@ -455,11 +581,19 @@ func joinTextPartsAnthropic(parts []string) string {
 // serializeAnthropicMessageContent converts IR message content to Anthropic content blocks.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
-func serializeAnthropicMessageContent(msg Message, targetProvider string, modelName string) []map[string]any {
+// requestID 随 format-anomaly 上报（S2-F3/R60 plumb，"unknown" 表示无请求上下文）。
+func serializeAnthropicMessageContent(msg Message, targetProvider string, modelName string, requestID string) []map[string]any {
 	result := make([]map[string]any, 0)
 
-	// First, add text and other content blocks
+	// First, add text and other content blocks.
+	// GAP-3 (Wave5, 2026-09-22): Anthropic 拒收空 text 块（400）。旧实现把
+	// content:"" 的 assistant 消息连同 tool_use 一并序列化为
+	// {"type":"text","text":""}，上游直接报错；手写转换器在该形态下抑制
+	// 空 text。凡 text 块 Text 为空一律跳过。
 	for _, block := range msg.Content {
+		if block.Type == "text" && block.Text == "" {
+			continue
+		}
 		result = append(result, serializeAnthropicContentBlock(block, targetProvider, modelName))
 	}
 
@@ -470,12 +604,28 @@ func serializeAnthropicMessageContent(msg Message, targetProvider string, modelN
 			"id":   tc.ID,
 			"name": tc.Function.Name,
 		}
-		// Parse arguments JSON. If arguments isn't valid JSON, fall back to
-		// passing the raw string through as the tool_use input.
-		var args any
+		// Parse arguments JSON. 2026-09-22 (Wave 1 A2 设计红线): Anthropic 要求
+		// tool_use.input 必须是 JSON 对象。旧实现把非法 JSON 以原始字符串直塞
+		// input，Anthropic 系上游直接 400，且被误归类为节点故障触发切换/冷却。
+		// 现在凡解析结果不是 JSON 对象（含解析失败、数组、标量、null）一律
+		// 包裹为 {"raw": <原文>} 并记 format-anomaly；合法对象保持原样。
+		var args any = map[string]any{}
 		if tc.Function.Arguments != "" {
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				args = tc.Function.Arguments
+			var parsed any
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
+				parsed = nil
+			}
+			if obj, ok := parsed.(map[string]any); ok {
+				args = obj
+			} else {
+				args = map[string]any{"raw": tc.Function.Arguments}
+				// S2-F3/R60: requestID 由调用链下传（见 irRequestID），不再写死
+				// "unknown"——全局 dedup key 含 RequestID，写死会把去重退化成
+				// 每进程一次。
+				ReportProtocolLoss(requestID, "messages[*].tool_use.input", "", ProtocolAnthropicMessages,
+					"loss",
+					"tool arguments are not a JSON object; wrapped as {\"raw\":...} to keep tool_use.input schema-valid",
+					map[string]any{"anomaly": "format", "arg_bytes": len(tc.Function.Arguments)})
 			}
 		}
 		toolUse["input"] = args
@@ -830,7 +980,12 @@ func serializeAnthropicToolChoice(tc *ToolChoice) any {
 		return tc.Type
 	case "required":
 		return "any" // Anthropic uses "any" for required
-	case "tool":
+	case "tool", "function":
+		// GAP-2 (Wave5, 2026-09-22): "tool" 是 Anthropic 方言（ParseAnthropic
+		// 存原样），"function" 是 OpenAI 方言（ParseOpenAI 存原样 type）。
+		// 旧实现无 "function" 分支，落到末尾 return tc.Type 输出裸字符串
+		// "function"——非合法 Anthropic 形态。serializeOpenAIToolChoice 对
+		// 反方向（"tool"→OpenAI function 形态）已有对称映射，此处补齐镜像。
 		return map[string]any{
 			"type": "tool",
 			"name": tc.Name,
@@ -1051,4 +1206,24 @@ func reasonnormEffortToBudget(effort string) (int, bool) {
 	}
 	v, ok := effortBudgets[effort]
 	return v, ok
+}
+
+// DefaultAnthropicMaxTokens matches the pre-IR conversion path
+// (domains/transformation/anthropic/chat_to_anthropic.go used 4096 when the
+// client sent no max_tokens).
+const DefaultAnthropicMaxTokens = 4096
+
+// anthropicMaxTokens guards Anthropic's hard requirement: `max_tokens` is
+// mandatory and must be > 0.
+//
+// The IR path used to emit `req.MaxTokens` verbatim, so an OpenAI client that
+// omitted max_tokens (very common, streaming in particular) produced
+// `{"max_tokens": 0}`, which the upstream rejects with 400. The pre-IR
+// conversion defaulted to 4096, so this was a regression introduced when
+// Anthropic requests were routed through the IR serializer.
+func anthropicMaxTokens(n int) int {
+	if n > 0 {
+		return n
+	}
+	return DefaultAnthropicMaxTokens
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -367,10 +368,23 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 		}
 		creds = append(creds, c)
 	}
+	// R66: 迭代被静默截断 = 部分 credential 整轮不做模型发现，其
+	// provider_models 停留在旧快照/空集，表现为「某些 provider 突然
+	// 没有可用模型」且无任何 error。调用方已能正确处理 error，上抛。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("discovery.Service.loadCredentials: iterate rows: %w", err)
+	}
 	return creds, nil
 }
 
 func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([]string, int, error) {
+	// 2026-09-23 vapeur 事故读面归一：providers.protocol 无 CHECK 约束，
+	// 存量行可能带别名拼写（"anthropic"、"claude" 等）。比较前先归一到
+	// catalog 枚举；归一失败保留原值（行为不变）。cred 是值拷贝，这里
+	// 的归一只影响本次发现决策，不回写存储。
+	if normed, normErr := providercatalog.NormalizeProviderProtocol(cred.Protocol); normErr == nil {
+		cred.Protocol = normed
+	}
 	if cred.Protocol == "anthropic-messages" {
 		return nil, 0, nil
 	}
@@ -703,6 +717,13 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	} else {
 		canonicalName = NormalizeModelName(rawName)
 		family := InferFamily(canonicalName)
+		// 2026-09-23 audit round: migration 735's folded-name unique index
+		// fires 23505 when an active row folds equal to the incoming name but
+		// its raw canonical_name differs — ON CONFLICT (canonical_name) below
+		// cannot cover the expression index. Pre-resolve to the existing row
+		// so the upsert takes the DO UPDATE merge branch instead (252 log
+		// 2026-09-23 05:06: 18 failures in 32s, model sync stalled).
+		adoptFoldedExisting(ctx, s.db, &canonicalName, &family)
 		// Upsert into models_canonical. The INSERT path writes a seed tags
 		// array with `family:<id>` so a freshly discovered model is never
 		// visible in the /models family-chip filter with an empty tag set
@@ -763,7 +784,15 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 				)
 				ELSE models_canonical.tags
 			END,
-			status = 'active',
+			-- 2026-09-21: a 'disabled' canonical is an explicit operator
+			-- kill — the discovery/refresh feed must never resurrect it
+			-- (same rule as taxonomy_sync upsertAlias and alias_sync's
+			-- WHERE status <> 'disabled' guard). Before this guard, every
+			-- provider tick flipped 09-20's disabled qwen3-max-cn /
+			-- deepseek-v4-*-ga rows back to 'active' (observed live).
+			status = CASE WHEN models_canonical.status = 'disabled'
+				THEN models_canonical.status
+				ELSE 'active' END,
 			/* 2026-08-09 sticky-modality fix.
 			   The previous expression was
 			     modality = COALESCE(models_canonical.modality, $4)
@@ -803,12 +832,17 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		if normalizedAlias == "" {
 			continue
 		}
+		// 2026-09-21: a 'disabled' alias pair is an explicit operator kill —
+		// discovery must never resurrect it (same WHERE guard as alias_sync's
+		// rebuildAliasIndex; 'deprecated' pairs still reactivate). Without the
+		// guard every provider tick flipped disabled aliases back to 'active'.
 		_, err := s.db.Exec(ctx, `
 				INSERT INTO model_aliases (canonical_id, raw_name, status)
 				VALUES ($1, $2, 'active')
 				ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
 					status = 'active',
 					updated_at = NOW()
+				WHERE model_aliases.status <> 'disabled'
 			`, canonicalID, normalizedAlias)
 		if err != nil {
 			return fmt.Errorf("upsert model alias %q: %w", normalizedAlias, err)
@@ -897,6 +931,10 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	canonicalName = NormalizeModelName(rawName)
 	family := InferFamily(canonicalName)
 	inferredModality := modelname.InferModality(rawName)
+	// 2026-09-23 audit round: same migration-735 folded-name pre-resolve as
+	// upsertModel (see the comment there) — 23505 otherwise stalls refresh
+	// feeds when an active row folds equal but differs in raw name.
+	adoptFoldedExisting(ctx, db, &canonicalName, &family)
 
 	err = db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
@@ -930,7 +968,15 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 				)
 				ELSE models_canonical.tags
 			END,
-			status = 'active',
+			-- 2026-09-21: a 'disabled' canonical is an explicit operator
+			-- kill — the discovery/refresh feed must never resurrect it
+			-- (same rule as taxonomy_sync upsertAlias and alias_sync's
+			-- WHERE status <> 'disabled' guard). Before this guard, every
+			-- provider tick flipped 09-20's disabled qwen3-max-cn /
+			-- deepseek-v4-*-ga rows back to 'active' (observed live).
+			status = CASE WHEN models_canonical.status = 'disabled'
+				THEN models_canonical.status
+				ELSE 'active' END,
 			modality = CASE
 				WHEN models_canonical.modality = 'text' AND $5 <> 'text'
 				THEN $5
@@ -953,12 +999,15 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 			continue
 		}
 		seenAliases[normalizedAlias] = struct{}{}
+		// 2026-09-21: 'disabled' alias pairs stay disabled — same WHERE guard
+		// as alias_sync's rebuildAliasIndex ('deprecated' still reactivates).
 		if _, execErr := db.Exec(ctx, `
 			INSERT INTO model_aliases (canonical_id, raw_name, status)
 			VALUES ($1, $2, 'active')
 			ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
 				status = 'active',
 				updated_at = NOW()
+			WHERE model_aliases.status <> 'disabled'
 		`, canonicalID, normalizedAlias); execErr != nil {
 			return 0, "", fmt.Errorf("upsert model_alias %q: %w", normalizedAlias, execErr)
 		}
@@ -983,12 +1032,15 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 			continue
 		}
 		seenAliases[normalizedAlias] = struct{}{}
+		// 2026-09-21: 'disabled' alias pairs stay disabled — same WHERE guard
+		// as alias_sync's rebuildAliasIndex ('deprecated' still reactivates).
 		if _, execErr := db.Exec(ctx, `
 			INSERT INTO model_aliases (canonical_id, raw_name, status)
 			VALUES ($1, $2, 'active')
 			ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
 				status = 'active',
 				updated_at = NOW()
+			WHERE model_aliases.status <> 'disabled'
 		`, canonicalID, normalizedAlias); execErr != nil {
 			return fmt.Errorf("upsert model_alias %q: %w", normalizedAlias, execErr)
 		}

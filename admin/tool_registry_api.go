@@ -32,11 +32,7 @@ func (api *ToolRegistryAPI) HandleReload(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 
 	if err := api.toolRegistry.Reload(ctx); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to reload tool registry",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to reload tool registry", err)
 		return
 	}
 
@@ -66,11 +62,7 @@ func (api *ToolRegistryAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		// List by category
 		tools, err := api.toolRegistry.GetCategory(ctx, tenantID, category)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"status":  "error",
-				"message": "Failed to list tools",
-				"error":   err.Error(),
-			})
+			writeInternalErrStr(w, "Failed to list tools", err)
 			return
 		}
 
@@ -116,11 +108,7 @@ func (api *ToolRegistryAPI) HandleGet(w http.ResponseWriter, r *http.Request) {
 
 	tool, err := api.toolRegistry.Get(ctx, tenantID, toolID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to get tool",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to get tool", err)
 		return
 	}
 

@@ -62,10 +62,12 @@ Handles all user-facing LLM requests with OpenAI/Anthropic/Responses/Gemini comp
 - `/v1/chat/completions` - OpenAI Chat Completions
 - `/v1/completions` - OpenAI Legacy Completions
 - `/v1/messages` - Anthropic Messages API
+- `/v1/messages/count_tokens` - Anthropic Message token counting
 - `/v1/responses` - Responses API
 - `/v1/embeddings` - Embeddings (OpenAI-compatible)
 - `/v1/models` - Available models
 - Gemini endpoints (`/v1/models/{model}:generateContent`, etc.)
+- `/v1/hosted-tasks` - Hosted task delegation facade: `POST` create, `GET /{id}` status, `GET /{id}/result`, `POST /{id}/cancel`, `POST /{id}/recall`
 
 ### Control Plane
 
@@ -98,15 +100,16 @@ Requests flow through **two routing layers**, both observable in the Routing Pan
 3. **Tier-based fallback** (primary → secondary → tertiary credentials)
 4. Billing mode preference (metered → free → quota)
 5. **Sticky sessions** (session → credential binding, survives model switches)
-6. **P2C scoring** (Power-of-Two-Choices over latency, success rate, concurrency)
+6. **P2C scoring** (Power-of-Two-Choices over latency, success rate, concurrency, plus cost, sticky-session load, recency, balance, plan quota)
 
 **Dynamic switching**: credential health is continuously scored from rolling request outcomes and background probes. Failing credentials are automatically degraded (rate-limited / cooling down / unreachable → suspended) and traffic shifts to healthy candidates; recovery is automatic after cooldown. Routing policies and settings hot-reload at runtime (~5s) without restarts.
 
 **Current Status**:
 - ✅ Work-type classification, availability, tenant, protocol, tier, billing, sticky, P2C baseline
 - ✅ Health-aware degradation/recovery, hot config reload
-- 🚧 Cost/quality/context-aware scoring (shadow mode, not default active)
-- 🔬 Advanced bandit algorithms (exploration phase)
+- ✅ Cost-aware scoring (marginal-cost penalty folded into P2C score by default since 2026-09-19; `LLM_GATEWAY_ROUTING_W_COST` to disable)
+- 🚧 Context-aware scoring (shadow mode, not default active)
+- 🔬 Advanced bandit algorithms — routing bandit branch removed 2026-09-19 (dead-code cleanup; credential-reputation BanditScorer remains)
 
 ### Intelligent Context Compression
 
@@ -217,9 +220,9 @@ The two modes share the same `storage` interfaces; per-store mapping table and c
 ## Technology Stack
 
 **Backend**:
-- Go 1.21+
+- Go 1.27.1
 - PostgreSQL 14+ (with RLS)
-- Redis 7+
+- Redis 7+ (optional in lite storage mode)
 
 **Frontend**:
 - Vue 3 + TypeScript
@@ -255,6 +258,10 @@ The two modes share the same `storage` interfaces; per-store mapping table and c
 
 ## Further Reading
 
+- [Internal Architecture Deep Dive](03-design/01-architecture/architecture/ARCHITECTURE.md) - Evidence-graded, code-verified architecture facts (authoritative, Chinese)
+- [System Requirements](01-requirements/SYSTEM_REQUIREMENTS.md) - Regenerated SRS (2026-10-01 audit)
+- [Feature Catalog](01-requirements/functional/FEATURES_CATALOG.md) - Feature-to-code mapping with parallel-implementation flags
+- [Parallel Implementations Comparison](03-design/01-architecture/parallel-implementations-comparison.md) - Old-vs-new dual implementation audit
 - [Getting Started](getting-started.md) - Deploy in 10 minutes
 - [Environment & Configuration](environment.md) - Environment variables and settings
 - [Routing Analytics](deployment/routing-analytics-mv-deployment-guide.md) - Deep dive into routing logic

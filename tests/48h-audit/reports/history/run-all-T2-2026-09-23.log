@@ -1,0 +1,97 @@
+[0;34m[run-all][0m domains=D01-ir-lifecycle,D02-protocol-adaptation,D03-three-tier-cache,D04-queue-concurrency,D05-auto-compression,D06-dual-storage-mode,D07-hot-columnar,D08-provider-errors,D09-node-state-selfcheck,D10-stats-aggregation,D11-auto-model,D12-egress-proxy,D13-free-token-pool,D14-security,D15-observability-ux,D16-flow-closure,D17-code-hygiene
+[0;34m[run-all][0m categories=business data stress safety
+[0;34m[run-all][0m race=1
+[0;34m[run-all][0m ── D01-ir-lifecycle ──
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/business	1.226s
+[0;32m[ok][0m   business: PASS
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/data	1.223s
+[0;32m[ok][0m   data: PASS
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/stress	1.269s
+[0;32m[ok][0m   stress: PASS
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/safety	1.223s
+[0;32m[ok][0m   safety: PASS
+[0;34m[run-all][0m ── D02-protocol-adaptation ──
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D02-protocol-adaptation/business	1.231s
+[0;32m[ok][0m   business: PASS
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D02-protocol-adaptation/safety	1.234s
+[0;32m[ok][0m   safety: PASS
+[0;34m[run-all][0m ── D03-three-tier-cache ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D04-queue-concurrency ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D05-auto-compression ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D06-dual-storage-mode ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D07-hot-columnar ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D08-provider-errors ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D09-node-state-selfcheck ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D10-stats-aggregation ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D11-auto-model ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D12-egress-proxy ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D13-free-token-pool ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D14-security ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D15-observability-ux ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D16-flow-closure ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D17-code-hygiene ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ───────────────────────────────────────────
+[0;34m[run-all][0m domains: 17  pass: 17  fail: 0
+[0;32m[ok][0m ALL DOMAINS PASS

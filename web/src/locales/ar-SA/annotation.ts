@@ -144,6 +144,23 @@ export default {
     count: 'العدد',
     percentage: 'النسبة',
     distribution: 'التوزيع',
+    taskCorrections: 'إحصاءات تصحيحات أنواع المهام (taskprofile)',
+    exportCsv: 'تصدير CSV',
+    exporting: 'جارٍ التصدير...',
+    importCsv: 'استيراد CSV',
+    importing: 'جارٍ الاستيراد...',
+    applySuggestions: 'تطبيق اقتراحات المستوى',
+    applying: 'جارٍ التطبيق...',
+    applyConfirm: 'كتابة اقتراحات المستوى المدفوعة بالتصحيحات في task_type_tier_config؟',
+    applyDone: 'تم التطبيق: {types}',
+    applyNone: 'لا توجد ترقيات مدفوعة بالتصحيحات لتطبيقها',
+    importDone: 'اكتمل الاستيراد: أُضيف {imported}، وتُخطي {skipped}، وأخطاء صفوف {errors}',
+    tpTaskType: 'نوع المهمة',
+    tpTotal: 'الإجمالي',
+    tpAgrees: 'مؤكدة',
+    tpCorrected: 'مصححة',
+    tpRate: 'معدل التصحيح',
+    tpSuggested: 'المستوى المقترح',
   },
   // Actions
   batchSelected: 'تم تحديد {count}',
@@ -168,4 +185,14 @@ export default {
   // Loading states
   loading: 'جارٍ التحميل...',
   noSamples: 'لا توجد عينات تعليق',
+
+  // taskprofile تصدير/استيراد (2026-09-18 round 2)
+  taskProfile: {
+    exportBtn: 'تصدير CSV',
+    importBtn: 'استيراد CSV',
+    exportOk: 'تم تصدير {name}',
+    exportFailed: 'فشل التصدير',
+    importOk: 'تم استيراد {imported}، تم تخطي {skipped}، أخطاء {errors}',
+    importFailed: 'فشل الاستيراد',
+  },
 }

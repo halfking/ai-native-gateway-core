@@ -61,8 +61,10 @@ func TestProbeBackoffForErrCodeModelNotServed(t *testing.T) {
 	if first == modelNotServedRecheckInterval || first <= 0 {
 		t.Fatalf("unconfirmed 404 keeps the generic ladder rung, got %s", first)
 	}
-	if got := ProbeBackoffForErrCode("timeout", 9); got > time.Minute {
-		t.Fatalf("timeout stays on the short network chain, got %s", got)
+	// 2026-09-26 P0-2: a plain timeout never parks — it rides the network
+	// ladder, which now long-tails to the 6h cap instead of looping at 60s.
+	if got := ProbeBackoffForErrCode("timeout", 9); got != 6*time.Hour {
+		t.Fatalf("timeout rides the long-tail network chain to 6h, got %s", got)
 	}
 }
 
@@ -96,14 +98,17 @@ func TestDeescalateGatewaySideProbeStateWiring(t *testing.T) {
 	if !strings.Contains(reset, "wasTripped := w.decryptFailures.Load() >= decryptTripThreshold") {
 		t.Errorf("resetDecryptFailures must detect a previously-tripped circuit")
 	}
-	if !strings.Contains(reset, "go w.deescalateGatewaySideProbeState(context.Background())") {
+	// 2026-09-30 (三十七轮续 §三#5): 裸 `go` 语句统一迁入 bg.Go panic 收口包装，
+	// spawn 字面量随之从 `go w.deescalate...` 变为 Go(...) 包装形态；钉测守卫力
+	// 不变——两处 sweep 调用任一被删除仍会红。
+	if !strings.Contains(reset, `Go("node_probe.deescalate", func() { w.deescalateGatewaySideProbeState(context.Background()) })`) {
 		t.Errorf("a closed-after-tripped circuit must trigger the de-escalation sweep")
 	}
 
 	start := sourceBetween(t, src,
 		"func (w *NodeProbeWorker) Start(ctx context.Context)",
 		"// resolveProbeAPIKey preserves")
-	if !strings.Contains(start, "go w.deescalateGatewaySideProbeState(ctx)") {
+	if !strings.Contains(start, `Go("node_probe.deescalate", func() { w.deescalateGatewaySideProbeState(ctx) })`) {
 		t.Errorf("Start must run the startup de-escalation sweep")
 	}
 

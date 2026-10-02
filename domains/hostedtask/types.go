@@ -5,8 +5,9 @@
 // 单写者原则（§1.1/§1.3）：执行真相在 ACC（Runtime Control dispatch + lease/
 // fencing），存储真相在 Memora，通知真相在网关。本包只做三件事：
 //
-//  1. 接入面：/v1/hosted-tasks 门面（委托/查询/结果/取消）；
-//  2. 投影：reconciler 订阅 ACC 事件 + 轮询兜底，CAS 写 hosted_tasks；
+//  1. 接入面：/v1/hosted-tasks 门面（委托/查询/结果/取消/召回）；
+//  2. 投影：reconciler 每 tick 轮询 ACC command（状态权威），CAS 写
+//     hosted_tasks；
 //  3. 通知：签名回调（safehttpclient + outbox.SignPayload）+ 拉取兜底。
 //
 // 网关不建第二套执行 owner：hosted_tasks 是关联投影（D4），dispatch 重试 =
@@ -95,9 +96,10 @@ func (s Status) APIStatus() string {
 
 // ─── 事件（§4.3）────────────────────────────────────────────────────────────
 
-// EventType 是 hosted_task_events 的事件类型。与迁移 711 的
-// hosted_task_events_type_check 严格一一对应；P1 事件（budget_exceeded /
-// recalled / phase_changed）需要先改迁移再改这里。
+// EventType 是 hosted_task_events 的事件类型。与迁移 711+742 的
+// hosted_task_events_type_check 严格一一对应；改任一侧必须同步另一侧。
+// 仍属 P1、尚未入库的事件（budget_exceeded / phase_changed）需先改迁移再改
+// 这里。
 type EventType string
 
 const (
@@ -110,6 +112,7 @@ const (
 	EventFailed           EventType = "failed"
 	EventExpired          EventType = "expired"
 	EventCancelled        EventType = "cancelled"
+	EventRecalled         EventType = "recalled"
 	EventCallbackDone     EventType = "callback_delivered"
 	EventCallbackDLQ      EventType = "callback_dlq"
 )
@@ -145,7 +148,6 @@ type Task struct {
 	DispatchKey      string         `json:"-"`
 	DispatchAttempts int            `json:"-"`
 	GwSessionID      string         `json:"gw_session_id,omitempty"`
-	SSECursor        string         `json:"-"`
 	CallbackURLHash  string         `json:"-"`
 	Result           map[string]any `json:"result,omitempty"`
 	ResultVersion    int64          `json:"-"`

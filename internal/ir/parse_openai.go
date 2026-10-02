@@ -4,13 +4,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // ParseOpenAI parses an OpenAI Chat Completions request body into InternalRequest.
 //
 // Extensions support (P0 fix, 2026-07-13):
 // Unknown fields (vendor-specific params like reasoning_effort, web_search,
-// bot_setting, etc.) are extracted into IR.Extensions for lossless passthrough.
+// etc.) are extracted into IR.Extensions for lossless passthrough.
+// R52: repetition_penalty / mask_sensitive_info / bot_setting are promoted to
+// first-class IR fields (no longer Extension passthrough); bot_setting falls
+// back to Extensions only when the value fails to unmarshal (raw-byte
+// fidelity via the extensions_restore dialect guard).
 func ParseOpenAI(body []byte) (*InternalRequest, error) {
 	// Phase 1: Parse to map to capture ALL fields (including unknown ones)
 	var rawMap map[string]json.RawMessage
@@ -54,6 +60,17 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		SafetyIdentifier   string          `json:"safety_identifier,omitempty"`
 		PreviousResponseID string          `json:"previous_response_id,omitempty"`
 		Truncation         string          `json:"truncation,omitempty"`
+
+		// 2026-09-21 audit (P1-1, P2-3, P2-4): promote previously-Extension-only
+		// fields to first-class IR fields so they can be type-checked, normalized,
+		// and emitted deterministically.
+		RepetitionPenalty *float64        `json:"repetition_penalty,omitempty"`
+		MaskSensitiveInfo *bool           `json:"mask_sensitive_info,omitempty"`
+		BotSetting        json.RawMessage `json:"bot_setting,omitempty"`
+
+		// Legacy Completions text input (mutually exclusive with `messages`).
+		// Promoted into a user message below — see the handling site.
+		Prompt string `json:"prompt,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -72,6 +89,13 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		"store": true, "service_tier": true, "prediction": true, "verbosity": true,
 		"web_search_options": true, "prompt_cache_key": true, "safety_identifier": true,
 		"previous_response_id": true, "truncation": true,
+		// 2026-09-21 audit: promoted to first-class IR fields.
+		"repetition_penalty": true, "mask_sensitive_info": true, "bot_setting": true,
+		// Legacy Completions text input. Must be listed here, otherwise it is
+		// ALSO captured into Extensions and paramreg then drops it as a
+		// DialectResponses-only key — reintroducing exactly the data loss the
+		// promotion below exists to prevent.
+		"prompt": true,
 	}
 
 	extensions := make(map[string]json.RawMessage)
@@ -105,6 +129,8 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		SafetyIdentifier:   src.SafetyIdentifier,
 		PreviousResponseID: src.PreviousResponseID,
 		Truncation:         src.Truncation,
+		RepetitionPenalty:  src.RepetitionPenalty,
+		MaskSensitiveInfo:  src.MaskSensitiveInfo,
 		Extensions:         extensions, // P0 fix: preserve unknown fields
 	}
 
@@ -153,6 +179,21 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		}
 	}
 
+	// 2026-09-21 audit (P2-4): parse bot_setting into typed IR fields.
+	// R52：畸形输入（非数组/元素非对象）不再静默吞——回退 Extensions 保留
+	// 原始字节。键已在 knownFields 剔除名单内，需显式塞回：MiniMax 目标经
+	// extensions_restore 的 Decide（IRHandled+Dialects 守卫）按原始字节
+	// Restore，非 MiniMax 目标 Drop——与 KindDialectOnly 时代的逐字节透传
+	// 保真等价，只是收敛到既有守卫机制。
+	if src.BotSetting != nil && string(src.BotSetting) != "null" {
+		var bots []BotSetting
+		if err := json.Unmarshal(src.BotSetting, &bots); err == nil {
+			ir.BotSetting = bots
+		} else {
+			ir.Extensions["bot_setting"] = src.BotSetting
+		}
+	}
+
 	if src.MaxTokens != nil {
 		ir.MaxTokens = *src.MaxTokens
 	} else if src.MaxCompletionTokens != nil {
@@ -183,6 +224,25 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 			return nil, fmt.Errorf("parse messages: %w", err)
 		}
 		ir.Messages = messages
+	}
+
+	// Legacy OpenAI Completions carries the input in a top-level `prompt`
+	// string instead of `messages`. Without this promotion the field falls
+	// through to Extensions, where paramreg classifies `prompt` as a
+	// DialectResponses-only key (the reusable prompt-TEMPLATE reference
+	// {id,version,variables}) and drops it for an openai-chat source — the
+	// request then went upstream with no content at all, silently losing the
+	// user's entire input. Same key, two unrelated meanings; the meaning is
+	// decided by which fields the body actually carries, not by the key name.
+	//
+	// `messages` wins when both are present: it is the richer, structured
+	// form, and the legacy `prompt` is then a redundant echo. This matches
+	// the Completions API itself, where `prompt` is a convenience alias.
+	if len(ir.Messages) == 0 && len(src.Prompt) > 0 {
+		ir.Messages = []Message{{
+			Role:    "user",
+			Content: []ContentBlock{{Type: "text", Text: src.Prompt}},
+		}}
 	}
 
 	// Parse tools
@@ -264,6 +324,16 @@ func parseOpenAIMessage(msg map[string]any) (*Message, error) {
 		irMsg.Content = blocks
 	case nil:
 		irMsg.Content = []ContentBlock{}
+	default:
+		// R72 §3.4: content 为 number/object/bool 等非法类型时，过去会静默
+		// 落空——消息解析「成功」但内容为空，随后被 validate_and_fix.go 的
+		// removeEmptyMessages 整条删除，请求带空会话发上游返 200，客户端
+		// JSON 缺陷被转成「模型对空输入作答」。在源头拒为客户端错误（仓库
+		// 现成的 *ParseError/KindClientBug 机制），不进 fix 层。
+		return nil, &ParseError{
+			Kind:    errorsx.KindClientBug,
+			Message: fmt.Sprintf("message content must be a string, an array of content blocks, or null; got %s", jsonTypeName(content)),
+		}
 	}
 
 	// Handle tool_calls (assistant messages)
@@ -622,9 +692,18 @@ func extractSystemPrompt(messages *[]Message) *SystemPrompt {
 	for i, msg := range *messages {
 		if msg.Role == "system" {
 			system := &SystemPrompt{}
-			if len(msg.Content) > 0 && msg.Content[0].Type == "text" {
-				system.Content = msg.Content[0].Text
+			// GAP-1 (Wave5, 2026-09-22): OpenAI 允许 system content 为块数组；
+			// 手写转换器（chat_to_anthropic.go chatSystemContent）把全部 text
+			// 块按 \n join。旧实现只保留首块，其余块静默丢失（数据丢失）。
+			// 非 text 块（IR 侧合法存在）不参与 join，与手写侧报错语义的
+			// 差异维持 IR 的宽容解析约定。
+			var texts []string
+			for _, block := range msg.Content {
+				if block.Type == "text" {
+					texts = append(texts, block.Text)
+				}
 			}
+			system.Content = strings.Join(texts, "\n")
 			// Remove system message from the list
 			// We need to reconstruct without the system message
 			newMessages := make([]Message, 0, len(*messages)-1)

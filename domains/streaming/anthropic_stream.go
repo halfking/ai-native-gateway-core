@@ -123,6 +123,13 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	// Disabled (default) this is the identity function — legacy wire bytes.
 	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
 	w, gate := wrapAttemptWriter(ctx, w, ProtocolAnthropic)
+	// vapeur3（46acf0a1d）同款尾部兜底：vapeur 形态上游的 `data: [DONE]\n`
+	// 无空行终止帧会滞留 GateWriter.pending，survival 分支由 coordinator
+	// Finish() 兜住，非 survival 路径此前无人排水——终端帧丢失但请求记
+	// success。DrainPending 对空 pending 是 no-op，重复排水无害。
+	if gw, ok := w.(*GateWriter); ok {
+		defer gw.DrainPending()
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -494,51 +501,39 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			// model_context_window_exceeded mean the stream FAILED rather
 			// than ended normally. Reclassify to an upstream interruption
 			// instead of mapping them to end_turn.
-			switch fr {
-			case "network_error":
-				midStreamHalt = &StreamOutcome{
-					Interrupted: true,
-					Reason:      "network_error",
-					Kind:        errorsx.KindNetwork,
-					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
-					ChunkCount:  chunkCount,
-				}
-				if capture != nil {
-					capture.MarkInterruptedWithReason("network_error")
-				}
-				emitQ2GateError("network_error", "upstream stream error: network_error")
-				return true
-			case "sensitive":
-				midStreamHalt = &StreamOutcome{
-					Interrupted: true,
-					Reason:      "content_filter",
-					Kind:        errorsx.KindContentFilter,
-					Resumable:   false,
-					ChunkCount:  chunkCount,
-				}
-				if capture != nil {
-					capture.MarkInterruptedWithReason("content_filter")
-				}
-				emitQ2GateError("content_filter", "upstream refused to produce this content")
-				return true
-			case "model_context_window_exceeded":
+			// Wave4-D3 (2026-09-22): detection moved to the single errorsx
+			// vendor-channel table (misspelling tolerance included); the
+			// presentation below preserves each canonical value's historical
+			// Reason/emit/Resumable behavior.
+			if kind, isVendorFailure := errorsx.FinishReasonVendorFailureKind(fr); isVendorFailure {
 				// R35 (2026-09-17 audit P1): Resumable followed the chunk
 				// count, not a hardcoded false — with zero client-visible
 				// output the attempt is transparently retryable (survival
 				// failover / compressed re-request); once semantic output was
 				// committed the terminal frame is correct. Matches the
 				// empty-response and error-event branches in anthropic_bridge.
+				resumable := !attemptHasClientSemanticOutput(gate, chunkCount)
+				var reason, emitCode, emitMsg string
+				switch kind {
+				case errorsx.KindNetwork:
+					reason, emitCode, emitMsg = "network_error", "network_error", "upstream stream error: network_error"
+				case errorsx.KindContentFilter:
+					reason, emitCode, emitMsg = "content_filter", "content_filter", "upstream refused to produce this content"
+					resumable = false
+				default: // errorsx.KindContextLength
+					reason, emitCode, emitMsg = "context_length_exceeded", "request_too_large", "upstream context window exceeded"
+				}
 				midStreamHalt = &StreamOutcome{
 					Interrupted: true,
-					Reason:      "context_length_exceeded",
-					Kind:        errorsx.KindContextLength,
-					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					Reason:      reason,
+					Kind:        kind,
+					Resumable:   resumable,
 					ChunkCount:  chunkCount,
 				}
 				if capture != nil {
-					capture.MarkInterruptedWithReason("context_length_exceeded")
+					capture.MarkInterruptedWithReason(reason)
 				}
-				emitQ2GateError("request_too_large", "upstream context window exceeded")
+				emitQ2GateError(emitCode, emitMsg)
 				return true
 			}
 			finalFinishReason = fr
@@ -892,12 +887,17 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
+					// 2026-09-23: retryable=true — transient class (stream
+					// timeout) after committed output; the client's
+					// discard-and-regenerate turn retry recovers it. See the
+					// §11.6 note in stream.go for the full rationale.
 					errPayload := map[string]any{
 						"type":  "error",
-						"error": map[string]any{"type": "timeout", "message": "upstream read timeout"},
+						"error": map[string]any{"type": "timeout", "message": "upstream read timeout", "retryable": true},
 					}
 					writeSSEWithCapturer(w, pc, "error", errPayload)
 					flusher.Flush()
+					outcome.TerminalRendered = true
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
@@ -911,12 +911,15 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					capture.MarkInterruptedWithReason(failure.Reason)
 				}
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
+					// 2026-09-23: retryable=true — see the timeout branch note
+					// above; network/read failures are transient by definition.
 					errPayload := map[string]any{
 						"type":  "error",
-						"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err)},
+						"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err), "retryable": true},
 					}
 					writeSSEWithCapturer(w, pc, "error", errPayload)
 					flusher.Flush()
+					outcome.TerminalRendered = true
 				}
 				failure.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome = failure
@@ -971,7 +974,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	// pathology). Return a resumable empty-response outcome instead so the
 	// executor tries the next candidate; in buffered-gate mode the
 	// pre-declared scaffolding never committed and is discarded with the
-	// attempt (transparent failover, mirrors Q3/Q4 IsAnthropicStreamEmpty and
+	// attempt (transparent failover, mirrors Q3/Q4 emptyoutcome.IsEmptyOutcome and
 	// the OpenAI chat early-empty gate).
 	if !outcome.Interrupted && chunkCount == 0 {
 		if capture != nil {

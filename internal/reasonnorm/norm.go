@@ -19,6 +19,8 @@
 package reasonnorm
 
 import (
+	"strings"
+
 	"github.com/kaixuan/llm-gateway-go/internal/reasoncap"
 )
 
@@ -70,7 +72,7 @@ type Intent struct {
 // (litellm/constants.py:83-192 + transformation.py:1174-1229).
 
 var effortToBudget = map[string]int{
-	"none":    0,     // 0 = disable thinking entirely
+	"none":    0, // 0 = disable thinking entirely
 	"minimal": 1024,
 	"low":     1024,
 	"medium":  2048,
@@ -112,11 +114,38 @@ func EffortToBudget(effort string) (int, bool) {
 
 // ─── clamp effort to model's supported set ───────────────────────────────────
 
+// disableIntentEfforts are client spellings that mean "turn reasoning OFF",
+// not "pick a reasoning tier". They are cross-vendor vocabulary: OpenAI's
+// Responses API, several OpenAI-compatible gateways, and hand-rolled agent
+// harnesses all use `disabled` / `off` to mean the same thing.
+//
+// Before this set existed they fell through to effortIndex's `medium`
+// fallback (index 3) and ClampEffort rounded them to the *nearest supported
+// tier* — which is `medium`, i.e. a mid-strength thinking budget. Asking to
+// disable reasoning silently produced reasoning, and the round-trip through
+// paramguard's report made it look like the value had been "narrowed to the
+// model's capability" (it had) rather than "inverted" (it had). Models that do
+// not offer a true zero tier (e.g. deepseek-v4's {low,high,max}) would then be
+// forced to the *cheapest* available thinking tier — still thinking, but
+// billed as a deliberate choice by the client.
+var disableIntentEfforts = map[string]bool{
+	"disabled": true, "disable": true, "off": true, "false": true,
+	"none": true, "no": true, "0": true,
+}
+
 // ClampEffort maps an effort value to the nearest value supported by the model.
 // If the model supports no effort enum (empty Efforts), it returns "".
 // If effort is already in the supported set, it is returned unchanged.
 // On a tie (equidistant up/down), prefers rounding UP (higher effort) to avoid
 // under-serving the user's intent. This matches LiteLLM behaviour.
+//
+// Disable-intent spellings (see disableIntentEfforts) are handled BEFORE the
+// nearest-tier search: they resolve to the *cheapest* supported tier, never
+// to a mid or high tier. A zero tier that is itself spelled `none` returns
+// `none`. There is no dedicated off-switch translation here — "" is only
+// returned when the supported set is empty (pre-filtered by callers), so a
+// disable intent on a model without a zero tier lands on its cheapest tier
+// (2026-09-29 二十轮：原文声称可返回 "" 与实现不符，已订正).
 func ClampEffort(effort string, supported []string) string {
 	if len(supported) == 0 {
 		return ""
@@ -125,6 +154,9 @@ func ClampEffort(effort string, supported []string) string {
 		if s == effort {
 			return effort
 		}
+	}
+	if disableIntentEfforts[strings.ToLower(strings.TrimSpace(effort))] {
+		return cheapestEffort(supported)
 	}
 	// Map both sides to a canonical numeric tier so we can find the closest.
 	requested := effortIndex(effort)
@@ -138,6 +170,21 @@ func ClampEffort(effort string, supported []string) string {
 			// Prefer closer; on ties prefer higher effort (round up).
 			best = s
 			bestIdx = idx
+		}
+	}
+	return best
+}
+
+// cheapestEffort returns the supported value with the lowest canonical tier.
+// Used to resolve disable-intent spellings. Ties cannot occur (canonical
+// indices are unique per spelling), but the comparison is strict so a
+// hypothetical duplicate keeps the earlier entry — deterministic either way.
+func cheapestEffort(supported []string) string {
+	best := supported[0]
+	bestIdx := effortIndex(best)
+	for _, s := range supported[1:] {
+		if idx := effortIndex(s); idx < bestIdx {
+			best, bestIdx = s, idx
 		}
 	}
 	return best
@@ -159,6 +206,35 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// NormalizeEffortAlias 归一客户端 effort 写法差异（2026-09-22）。
+// 同一档位存在两种拼写：OpenAI / Claude Code 新客户端发 "x-high"（连字符），
+// 而 effortOrder 与 reasoncap 能力表统一用 "xhigh"。此前 "x-high" 落进
+// effortIndex 的 medium 兜底档，ClampEffort 的就近映射会系统性失真
+// （对 [low,medium] 类模型会错选 medium）。归一只做拼写统一，
+// 不改变档位语义。
+func NormalizeEffortAlias(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "x-high", "x_high":
+		return "xhigh"
+	default:
+		return effort
+	}
+}
+
+// IsDisableEffort reports whether the given effort spelling means "no
+// thinking / disabled". The IR disables intent resolves through this
+// function as the last-resort spelling check; explicit Type and explicit
+// zero BudgetTokens take precedence in reasoningDisabled.
+// Cross-protocol aliases accepted: "none" (OpenAI/Anthropic conventional
+// disable), "disabled" (newer IR spelling), case-insensitive, trimmed.
+func IsDisableEffort(effort string) bool {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "disabled":
+		return true
+	}
+	return false
 }
 
 // ─── Render: Intent → per-dialect output ──────────────────────────────────────

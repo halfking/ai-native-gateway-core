@@ -28,6 +28,13 @@ import (
 //	L4 降级（stream-undo 撤销控制事件 / 通用客户端 restart 注释 + thinking
 //	   + 完整重生成；策略禁止重复时回退错误信封）
 //
+// 2026-09-29 (审计二十一轮) 接线现状：L0–L2 由 survival coordinator 消费
+// （survival_coordinator.go，L2 默认 LLM_GATEWAY_RECOVERY_L2_MODE=off）；
+// L3 默认关、白名单启用；**L4 的 RenderStreamRestartFrames 全仓零生产
+// 调用方**（仅测试引用）——已提交字节后中断走 ADR-Disp-003 错误信封终态，
+// 「stream-undo / restart 注释 + thinking + 完整重生成」渲染路径未接线。
+// 接线属行为变更，须 owner 决策窗口；在那之前勿把本头注当「L4 已实现」。
+//
 // StreamRecoveryState is request-scoped only (R12.3): it never enters URSM;
 // the terminal summary is journaled by the caller. The ADR-Disp-007
 // cross-credential gate is CrossCredentialUnlockAllowed (R12.6).

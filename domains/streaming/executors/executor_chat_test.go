@@ -130,11 +130,12 @@ func TestChatExecutor_WriteNonStreamResponse_DoesNotReuseUpstreamLengthAfterRewr
 func TestCopyNonStreamResponseHeaders_ReplacesWireHeaders(t *testing.T) {
 	dst := make(http.Header)
 	src := http.Header{
-		"Content-Length":    {"999"},
-		"Content-Encoding":  {"gzip"},
-		"Transfer-Encoding": {"chunked"},
-		"Connection":        {"close"},
-		"X-Request-Id":      {"provider-245"},
+		"Content-Length":                {"999"},
+		"Content-Encoding":              {"gzip"},
+		"Transfer-Encoding":             {"chunked"},
+		"Connection":                    {"close"},
+		"X-Request-Id":                  {"provider-245"},
+		"X-LLM-Gateway-RateLimit-Scope": {"shared_key"},
 	}
 	copyNonStreamResponseHeaders(dst, src, 847)
 	if got := dst.Get("Content-Length"); got != "847" {
@@ -147,6 +148,9 @@ func TestCopyNonStreamResponseHeaders_ReplacesWireHeaders(t *testing.T) {
 	}
 	if got := dst.Get("X-Request-Id"); got != "provider-245" {
 		t.Errorf("X-Request-Id = %q, want provider-245", got)
+	}
+	if got := dst.Get("X-LLM-Gateway-RateLimit-Scope"); got != "" {
+		t.Errorf("gateway rate-limit scope leaked from upstream: %q", got)
 	}
 }
 

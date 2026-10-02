@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -68,12 +69,18 @@ func journalSnapshotReceiptOwner(instanceID string) string {
 // QueueBackend, GovernorBackend, snapshot observation, and capacity-aware
 // routing before calling Pipeline.Start so the first lazily-created
 // credential forwarder sees the live policy backend.
-func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
+func wireDispatchPipeline(routingExec *executors.Executor, hotCfg *hotconfig.Config) *dispatch.Pipeline {
 	if routingExec == nil {
 		slog.Warn("dispatch: routingExec nil, V2 pipeline not wired")
 		return nil
 	}
-	p := routingExec.NewDispatchPipeline()
+	// R28-Q-1: seed the pipeline from llmgw_dispatch_* hotconfig keys (they
+	// were previously never consumed) and keep the live knobs (queue-wait
+	// budgets, retry budgets, registry limits) in sync with the 30s
+	// hotconfig poll. Worker counts do not resize live (documented in
+	// Pipeline.Reload); they apply on the next process restart.
+	p := routingExec.NewDispatchPipeline(hotCfg)
+	startDispatchConfigReload(hotCfg, p)
 	p.SetObservationSink(gatewayRequestJourneySink)
 	// audit-24h-20260828-r3: wire the attempt journal sink so the
 	// per-request execution trace flows into requestjourney at terminal
@@ -296,4 +303,20 @@ func handleDispatchRequestDimensions(w http.ResponseWriter, r *http.Request) {
 		"request_id": requestID,
 		"entries":    entries,
 	})
+}
+
+// startDispatchConfigReload applies dispatch.LoadConfig immediately and then
+// re-applies it on every 30s hotconfig poll tick (R28-Q-1). nil-safe.
+func startDispatchConfigReload(hotCfg *hotconfig.Config, p *dispatch.Pipeline) {
+	if hotCfg == nil || p == nil {
+		return
+	}
+	p.Reload(dispatch.LoadConfig(hotCfg))
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			p.Reload(dispatch.LoadConfig(hotCfg))
+		}
+	}()
 }

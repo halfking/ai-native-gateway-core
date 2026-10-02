@@ -60,12 +60,23 @@ func (w *ConcurrencyAutoScaleUp) Start(ctx context.Context) {
 				slog.Info("concurrency_auto_scaleup stopped")
 				return
 			case <-ticker.C:
-				if err := w.scaleUp(ctx); err != nil {
-					slog.Error("concurrency_auto_scaleup failed", "error", err)
-				}
+				w.scaleUpRecovered(ctx)
 			}
 		}
 	}()
+}
+
+// scaleUpRecovered 守护单轮 scaleUp（R51 审计 P2：Start 的 goroutine 原先
+// 无任何 recover，单次 panic 即整进程崩溃）——panic 记日志后 tick 循环继续。
+func (w *ConcurrencyAutoScaleUp) scaleUpRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("concurrency_auto_scaleup: tick panic recovered", "recover", rec)
+		}
+	}()
+	if err := w.scaleUp(ctx); err != nil {
+		slog.Error("concurrency_auto_scaleup failed", "error", err)
+	}
 }
 
 // Stop gracefully stops the worker. Idempotent; safe on a
@@ -153,6 +164,13 @@ func (w *ConcurrencyAutoScaleUp) scaleUp(ctx context.Context) error {
 			"total_calls_1h", totalCalls,
 			"success_rate", successRate)
 		count++
+	}
+
+	// R66: 候选批被截断 = 少扩容若干本该扩容的 credential×model，
+	// 并发上限长期偏低表现为「莫名其妙的速度上限」。
+	if err := rows.Err(); err != nil {
+		slog.Warn("concurrency_auto_scaleup: row iteration aborted; candidate batch truncated",
+			"error", err, "scaled_up", count)
 	}
 
 	if count > 0 {

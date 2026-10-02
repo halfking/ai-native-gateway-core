@@ -83,6 +83,11 @@ const v2SessionBodiesBaseQuery = `
 		  ON t.tenant_id = b.tenant_id
 		 AND t.request_id = b.request_id
 	WHERE b.session_id = $1
+	  -- Wave 1 A5 (2026-09-22): 网关影子轮（origin_actor='goal-%'，见
+	  -- response_interceptor_helpers.go followUpSourceActor）不进会话拼装链
+	  -- （设计 §5.12"影子指令不进入会话上下文"）。影子轮镜像行保留在
+	  -- session_turns 供对账（方案 18 §3），仅装配型读者在此排除。
+	  AND COALESCE(t.origin_actor, '') NOT LIKE 'goal-%'
 `
 
 // fetchTurns runs the parameterised join (tenant + optional since-ts filter,

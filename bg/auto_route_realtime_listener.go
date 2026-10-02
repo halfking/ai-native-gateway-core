@@ -56,6 +56,13 @@ type AutoRouteRealtimeListener struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 
+	// ready 在 LISTEN 首次注册成功后关闭。Start 返回只代表 goroutine 已派生，
+	// 注册是异步的——注册之前发出的 NOTIFY 会静默丢失（生产里是收流早于
+	// 武装的小窗口丢刷新事件，由周期性全量对账兜底；测试里是 33% flaky 的
+	// 根因，24h 审计第二十八轮实测收口）。
+	readyOnce sync.Once
+	ready     chan struct{}
+
 	// notifyCh feeds the single debounce goroutine. It is buffered; a full
 	// channel means a debounce cycle is already scheduled and the event
 	// coalesces into it.
@@ -74,8 +81,22 @@ func NewAutoRouteRealtimeListener(pool *pgxpool.Pool, refresher indexRefresher) 
 		pool:           pool,
 		refresher:      refresher,
 		debounceWindow: 5 * time.Second,
+		ready:          make(chan struct{}),
 		notifyCh:       make(chan string, 64),
 	}
+}
+
+// Ready returns a channel that is closed once LISTEN has been registered on
+// the live connection for the first time. Start returns as soon as the
+// goroutines are spawned; a change committed before that registration lands
+// is silently lost (no listener => pg_notify goes nowhere). Callers that
+// need change-observation guarantees (integration tests, post-deploy
+// reconciliation triggers) should wait on Ready.
+func (l *AutoRouteRealtimeListener) Ready() <-chan struct{} {
+	if l == nil {
+		return nil
+	}
+	return l.ready
 }
 
 // Start spawns the LISTEN and debounce goroutines. Cancelling ctx stops
@@ -95,8 +116,8 @@ func (l *AutoRouteRealtimeListener) Start(ctx context.Context) {
 	l.cancel = cancel
 	l.cancelMu.Unlock()
 	l.wg.Add(2)
-	go func() { defer l.wg.Done(); l.run(cctx) }()
-	go func() { defer l.wg.Done(); l.debounceLoop(cctx) }()
+	Go("auto_route_realtime_listener.run", func() { defer l.wg.Done(); l.run(cctx) })
+	Go("auto_route_realtime_listener.debounceLoop", func() { defer l.wg.Done(); l.debounceLoop(cctx) })
 	slog.Info("auto route realtime listener started", "channel", "auto_route_refresh", "debounce", l.debounceWindow.String())
 }
 
@@ -118,51 +139,87 @@ func (l *AutoRouteRealtimeListener) Stop() {
 	}
 }
 
+// connOutcome 描述一次连接 episode 结束后外层 run 循环的下一步动作。
+type connOutcome int
+
+const (
+	// connStop：ctx 已取消 / 监听器停机，外层循环退出。
+	connStop connOutcome = iota
+	// connRetryBackoff：先释放连接再退避 5s 重试（Acquire 或 LISTEN 失败）。
+	connRetryBackoff
+	// connReconnect：立即重取连接（通知循环因传输错误 break，非停机）。
+	connReconnect
+)
+
 // run is the main LISTEN loop. It holds one long-lived connection for as
 // long as the subscription is active and reacquires (with a cancellable
 // backoff) after transport errors.
+//
+// 2026-10-01 审计：连接的释放收敛到 serveOne 的 defer——此前 Acquire 成功后
+// Release 只在 LISTEN 失败与通知循环正常 break 两处手动执行，
+// handleNotification 一旦 panic（Go 收口后 goroutine 退出）Release 永不执行，
+// 池化连接永久泄漏（ acquire计数只增不减，最终耗尽连接池）。
 func (l *AutoRouteRealtimeListener) run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-
-		conn, err := l.pool.Acquire(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Warn("auto route listener: acquire failed", "error", err)
+		switch l.serveOne(ctx) {
+		case connStop:
+			return
+		case connRetryBackoff:
 			if !sleepCtx(ctx, 5*time.Second) {
 				return
 			}
-			continue
+		case connReconnect:
+			// 立即重取连接。
 		}
-
-		if _, err := conn.Exec(ctx, "LISTEN auto_route_refresh"); err != nil {
-			conn.Release()
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Warn("auto route listener: LISTEN failed", "error", err)
-			if !sleepCtx(ctx, 5*time.Second) {
-				return
-			}
-			continue
-		}
-
-		for ctx.Err() == nil {
-			notif, err := conn.Conn().WaitForNotification(ctx)
-			if err != nil {
-				if ctx.Err() == nil {
-					slog.Warn("auto route listener: WaitForNotification error", "error", err)
-				}
-				break
-			}
-			l.handleNotification(notif.Payload)
-		}
-		conn.Release()
 	}
+}
+
+// serveOne 执行一个连接 episode：Acquire 一条池化连接、LISTEN、循环消费通知
+// 直到传输错误或 ctx 取消。返回外层循环的下一步动作。
+//
+// Release 走 defer（Acquire 成功后立刻登记）：任何退出路径——LISTEN 失败、
+// 通知循环 break、handleNotification panic——都恰好释放一次。本仓 pgxpool
+// v5.9.2 的 Conn.Release 自身幂等（res==nil 直返），但此处不依赖重复调用：
+// defer 形态保证 Acquire/Release 严格一一配对。释放发生在返回之前，因此
+// connRetryBackoff 的 5s 退避 sleep 期间不占住连接（与修复前手动 Release
+// 的时序一致）。
+func (l *AutoRouteRealtimeListener) serveOne(ctx context.Context) connOutcome {
+	conn, err := l.pool.Acquire(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return connStop
+		}
+		slog.Warn("auto route listener: acquire failed", "error", err)
+		return connRetryBackoff
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "LISTEN auto_route_refresh"); err != nil {
+		if ctx.Err() != nil {
+			return connStop
+		}
+		slog.Warn("auto route listener: LISTEN failed", "error", err)
+		return connRetryBackoff
+	}
+	l.readyOnce.Do(func() { close(l.ready) })
+
+	for ctx.Err() == nil {
+		notif, err := conn.Conn().WaitForNotification(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Warn("auto route listener: WaitForNotification error", "error", err)
+			}
+			break
+		}
+		l.handleNotification(notif.Payload)
+	}
+	if ctx.Err() != nil {
+		return connStop
+	}
+	return connReconnect
 }
 
 // debounceLoop owns the single trailing-edge debounce timer. Every

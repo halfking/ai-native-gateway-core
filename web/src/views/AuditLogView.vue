@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { formatDateTime, formatTimeOnly } from '../utils/datetime'
+import { formatDateTime, formatTimeOnly, parseLocalMinute } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
 import { ref, onMounted, computed } from 'vue'
@@ -20,11 +20,13 @@ const error = ref('')
 
 const filters = ref<Record<string, string>>({ actor: '', action: '', from: '', to: '' })
 
-// FilterBar 声明式定义（label 走 computed 以随语言切换更新）
+// FilterBar 声明式定义（label 走 computed 以随语言切换更新）。
+// 2026-09-30 审计 P3-5：新模板 daterange 仅渲染 def.label，fromLabel/toLabel 为
+// 死契约已删除；label 复用既有 fromLabel 词条（不再另立新词条）。
 const filterDefs = computed<FilterDefinition[]>(() => [
   { key: 'actor', type: 'search', label: t('auditLog.filter.actorLabel'), placeholder: t('auditLog.filter.actorPlaceholder') },
   { key: 'action', type: 'search', label: t('auditLog.filter.actionLabel'), placeholder: t('auditLog.filter.actionPlaceholder') },
-  { key: 'time', type: 'daterange', fromKey: 'from', toKey: 'to', fromLabel: t('auditLog.filter.fromLabel'), toLabel: t('auditLog.filter.toLabel') },
+  { key: 'time', type: 'daterange', fromKey: 'from', toKey: 'to', label: t('auditLog.filter.fromLabel') },
 ])
 
 const detailVisible = ref(false)
@@ -41,8 +43,9 @@ async function load() {
       size: size.value,
       actor: filters.value.actor.trim() || undefined,
       action: filters.value.action.trim() || undefined,
-      from: filters.value.from ? new Date(filters.value.from).toISOString() : undefined,
-      to: filters.value.to ? new Date(filters.value.to).toISOString() : undefined,
+      // filters 存 datetime-local 的 'YYYY-MM-DDTHH:mm'（无秒非规范格式，补秒解析，P3-3）
+      from: filters.value.from ? parseLocalMinute(filters.value.from).toISOString() : undefined,
+      to: filters.value.to ? parseLocalMinute(filters.value.to).toISOString() : undefined,
     })
     entries.value = r.entries || []
     total.value = r.total || 0

@@ -8,8 +8,14 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // acNode AC 自动机节点
@@ -28,6 +34,11 @@ type SensitiveWordEngine struct {
 	categories map[string]*WordCategory
 	mu         sync.RWMutex
 	logger     *slog.Logger
+	// cfgMu guards configPath only. It is deliberately separate from mu:
+	// Match never touches it, so hot-reload bookkeeping cannot contend with
+	// in-flight matching, and vice versa. It used to be written with no lock
+	// at all while WatchConfig and the admin reload handler read it.
+	cfgMu      sync.RWMutex
 	configPath string // 记录配置文件路径，供 ReloadFromFile 使用
 }
 
@@ -56,6 +67,12 @@ func (e *SensitiveWordEngine) Build(config *SensitiveWordConfig) error {
 			Level: level,
 		}
 		for _, word := range cc.Words {
+			if strings.TrimSpace(word) == "" {
+				// An empty rule reaches the root node and yields Begin == End,
+				// violating the 0 <= Begin < End invariant every position-based
+				// consumer relies on — and inflating LoadedWordCount.
+				continue
+			}
 			insertWord(root, []rune(word), &MatchResult{
 				Word:     word,
 				Category: cats[key],
@@ -73,7 +90,12 @@ func (e *SensitiveWordEngine) Build(config *SensitiveWordConfig) error {
 
 // BuildFromFile 从 JSON 文件路径构建，并记录路径供 ReloadFromFile 使用
 func (e *SensitiveWordEngine) BuildFromFile(path string) error {
-	e.configPath = path
+	// Record the path BEFORE reading the file: a failed load must still leave
+	// a reloadable engine, and admin reload / WatchConfig poll this field
+	// concurrently with this write. It used to be written outside every lock,
+	// which -race flags and which can tear a Go string header (ptr/len) into a
+	// mismatched value under contention.
+	e.setConfigPath(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read config failed: %w (path=%s)", err, path)
@@ -85,21 +107,37 @@ func (e *SensitiveWordEngine) BuildFromFile(path string) error {
 	return e.Build(&config)
 }
 
+func (e *SensitiveWordEngine) setConfigPath(path string) {
+	e.cfgMu.Lock()
+	e.configPath = path
+	e.cfgMu.Unlock()
+}
+
+func (e *SensitiveWordEngine) currentConfigPath() string {
+	e.cfgMu.RLock()
+	defer e.cfgMu.RUnlock()
+	return e.configPath
+}
+
 // ReloadFromFile 重新加载配置文件（热加载）
 //
 //	读取同一路径的最新内容并原子替换 AC 自动机。
-//	并发安全：读取中的 Match 不受影响（写锁仅用于替换指针）。
+//	并发安全：Match 走 mu 读锁且只读取已构建的指针，热加载在写锁内整体
+//	替换；配置路径另由 cfgMu 保护。两者互不嵌套。
 func (e *SensitiveWordEngine) ReloadFromFile() error {
-	if e.configPath == "" {
+	path := e.currentConfigPath()
+	if path == "" {
 		return fmt.Errorf("no config path set; call BuildFromFile first")
 	}
-	return e.BuildFromFile(e.configPath)
+	return e.BuildFromFile(path)
 }
 
 // Match 在文本中搜索所有敏感词
 //
-//	返回去重、按位置排序的匹配结果。
-//	并发安全：读锁保护。
+//	返回去重、按位置排序的匹配结果。区间按 Begin 升序，但**允许相互重叠**
+//	（词表里 "abcd"/"cde" 同时存在时，"abcdef" 会产出 [0,4) 与 [2,5)）。
+//	调用方若要按 Begin/End 切片，必须自行消解重叠。
+//	并发安全：读锁保护；热加载只原子替换指针，在途 Match 不受影响。
 func (e *SensitiveWordEngine) Match(text string) []*MatchResult {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -113,6 +151,19 @@ func (e *SensitiveWordEngine) Match(text string) []*MatchResult {
 	node := root
 	seen := make(map[string]*MatchResult)
 
+	// prefixLen[i] is the byte length of the first i runes. One O(n) pass up
+	// front replaces what used to be `len([]byte(string(runes[:i+1])))` per
+	// match — that copied the whole prefix on every hit, making Match O(n²) in
+	// the number of hits (a 127 KB body of dictionary words burned 2.8 s of
+	// CPU on a single request, and the check runs on the synchronous
+	// governance path).
+	prefixLen := make([]int, len(runes)+1)
+	off := 0
+	for i, r := range runes {
+		off += utf8.RuneLen(r)
+		prefixLen[i+1] = off
+	}
+
 	for i, r := range runes {
 		for node.children[r] == nil && node != root {
 			node = node.fail
@@ -121,15 +172,22 @@ func (e *SensitiveWordEngine) Match(text string) []*MatchResult {
 			node = next
 		}
 		for _, out := range node.outputs {
-			end := len([]byte(string(runes[:i+1])))
-			begin := end - len([]byte(out.Word))
+			wordRunes := utf8.RuneCountInString(out.Word)
+			if wordRunes == 0 {
+				continue // empty rule: would yield Begin == End
+			}
+			end := prefixLen[i+1]
+			begin := end - (prefixLen[i+1] - prefixLen[i+1-wordRunes])
+			if begin < 0 {
+				continue // defensive: rule longer than the scanned prefix
+			}
 			res := &MatchResult{
 				Word:     out.Word,
 				Begin:    begin,
 				End:      end,
 				Category: out.Category,
 			}
-			key := fmt.Sprintf("%s:%d", out.Word, begin)
+			key := out.Word + ":" + strconv.Itoa(begin)
 			if _, dup := seen[key]; !dup {
 				seen[key] = res
 			}
@@ -152,7 +210,10 @@ func (e *SensitiveWordEngine) Match(text string) []*MatchResult {
 //	并发安全：ReloadFromFile 内部使用写锁，Match 使用读锁。
 func (e *SensitiveWordEngine) WatchConfig(ctx context.Context, interval time.Duration) <-chan error {
 	errCh := make(chan error, 1)
-	if e.configPath == "" {
+	// Snapshot the path once; reload may re-point it later, and every use
+	// below must read a consistent string rather than a racing field.
+	path := e.currentConfigPath()
+	if path == "" {
 		errCh <- fmt.Errorf("watch: no config path set")
 		return errCh
 	}
@@ -160,7 +221,7 @@ func (e *SensitiveWordEngine) WatchConfig(ctx context.Context, interval time.Dur
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		var lastMod time.Time
-		if fi, err := os.Stat(e.configPath); err == nil {
+		if fi, err := os.Stat(path); err == nil {
 			lastMod = fi.ModTime()
 		}
 		for {
@@ -168,7 +229,7 @@ func (e *SensitiveWordEngine) WatchConfig(ctx context.Context, interval time.Dur
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				fi, err := os.Stat(e.configPath)
+				fi, err := os.Stat(path)
 				if err != nil {
 					continue
 				}
@@ -273,15 +334,17 @@ func defaultLevel(key string) AlertLevel {
 	}
 }
 
+// sortResults orders by (Begin, End) ascending. This used to be a
+// hand-rolled O(m²) selection sort; with ~44k matches on a 256 KB body it
+// dominated everything else and kept Match quadratic even after the
+// per-match offset recomputation was removed. A real sort is O(m log m).
 func sortResults(results []*MatchResult) {
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[i].Begin > results[j].Begin ||
-				(results[i].Begin == results[j].Begin && results[i].End > results[j].End) {
-				results[i], results[j] = results[j], results[i]
-			}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Begin != results[j].Begin {
+			return results[i].Begin < results[j].Begin
 		}
-	}
+		return results[i].End < results[j].End
+	})
 }
 
 // EvaluateSafety 评估文本安全性，返回评分和建议动作
@@ -324,12 +387,18 @@ func (e *SensitiveWordEngine) EvaluateSafety(text string) *SafetyResult {
 
 	score = math.Min(score, 1.0)
 
+	// LevelP2=0 < LevelP1=1 < LevelP0=2, i.e. a LARGER value is MORE severe.
+	// This loop used to look for `level < highestLevel` seeded with the least
+	// severe level, so the condition never held and mainCategory was pinned to
+	// "mixed" for every non-empty result — the audit field carried no
+	// information at all. Compare with `>`, and break ties by hit count inside
+	// the worst level so map iteration order cannot change the answer.
 	mainCategory := "mixed"
 	highestLevel := LevelP2
 	maxCount := 0
 	for cat, level := range categoryLevel {
 		count := categoryCount[cat]
-		if level < highestLevel || (level == highestLevel && count > maxCount) {
+		if level > highestLevel || (level == highestLevel && count > maxCount) {
 			highestLevel = level
 			maxCount = count
 			mainCategory = cat
@@ -338,10 +407,14 @@ func (e *SensitiveWordEngine) EvaluateSafety(text string) *SafetyResult {
 
 	action := ActionAllow
 	reason := ""
-	if score >= 0.6 {
+	// Wave 3 B5② (2026-09-22): thresholds were hardcoded 0.6/0.3; now
+	// settings-driven (≤5s cache, admin-writable) with a defensive clamp
+	// keeping warn below block.
+	blockScore, warnScore := settings.CachedSensitiveScores()
+	if score >= blockScore {
 		action = ActionBlock
 		reason = fmt.Sprintf("high risk score %.2f, %d sensitive words detected", score, len(matches))
-	} else if score >= 0.3 {
+	} else if score >= warnScore {
 		action = ActionWarn
 		reason = fmt.Sprintf("medium risk score %.2f, %d sensitive words detected", score, len(matches))
 	} else {
@@ -364,9 +437,13 @@ func (e *SensitiveWordEngine) GetHighestAlertLevel(matches []*MatchResult) Alert
 	if len(matches) == 0 {
 		return LevelP2
 	}
+	// Same direction fix as EvaluateSafety: a bigger level is more severe, so
+	// this must scan for the maximum. It previously scanned for the minimum
+	// against a LevelP2 seed and therefore reported PASS for everything,
+	// including BLOCK-level P0 hits.
 	highest := LevelP2
 	for _, match := range matches {
-		if match.Category != nil && match.Category.Level < highest {
+		if match.Category != nil && match.Category.Level > highest {
 			highest = match.Category.Level
 		}
 	}

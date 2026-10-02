@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -108,14 +109,14 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 	var total int
 	err := h.db.QueryRow(ctx, countQuery, countArgs...).Scan(&total)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to count sessions: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to count sessions", err)
 		return
 	}
 
 	// 查询会话列表
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to query sessions: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query sessions", err)
 		return
 	}
 	defer rows.Close()
@@ -149,7 +150,7 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 			&lastSummarizedAt,
 		)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to scan session: %v", err), http.StatusInternalServerError)
+			writeInternalTextErr(w, "failed to scan session", err)
 			return
 		}
 
@@ -173,7 +174,7 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := rows.Err(); err != nil {
-		http.Error(w, fmt.Sprintf("error iterating sessions: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to iterate sessions", err)
 		return
 	}
 
@@ -262,7 +263,7 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-		http.Error(w, fmt.Sprintf("failed to query session: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query session", err)
 		return
 	}
 
@@ -287,22 +288,28 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 查询会话中的请求列表（最近50条）
+	//
+	// 此前直读 request_logs_hot 单腿：① 只能看到 7 天热窗内的行，被 promote 进月
+	// 分区的历史行不可见；② S4 停写（storage.request_logs_write_enabled=false）
+	// 后新会话一行都查不到，而下面 err 分支只把 Requests 置空、不上报，接口仍返
+	// 200 —— 表现为「会话详情 Requests 列表静默空白」。改读 734 视图：视图体已
+	// 拼装 session 族（hot ∪ 月分区）∪ v1 冻结分支，两种状态都供数。
 	requestsQuery := `
-			SELECT request_id, ts, client_model, request_preview, success,
-			       total_tokens, cost_usd, latency_ms
-			FROM request_logs_hot
-			WHERE gw_session_id = $1
+			SELECT rl.request_id, rl.ts, rl.client_model, rl.request_preview, rl.success,
+			       rl.total_tokens, rl.cost_usd, rl.latency_ms
+			FROM request_logs_with_current_month rl
+			WHERE rl.gw_session_id = $1
 		`
 	requestArgs := []interface{}{sessionKey}
 	if tenantID := effectiveScopeTenant(r); tenantID != "" {
-		requestsQuery += " AND tenant_id = $2"
+		requestsQuery += " AND rl.tenant_id = $2"
 		requestArgs = append(requestArgs, tenantID)
 	}
 	if IsRegularUser(r) {
-		requestsQuery += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM session_dim sd_scope WHERE sd_scope.gw_session_id = request_logs_hot.gw_session_id AND sd_scope.tenant_id = request_logs_hot.tenant_id AND sd_scope.owner_user = $%d)", len(requestArgs)+1)
+		requestsQuery += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM session_dim sd_scope WHERE sd_scope.gw_session_id = rl.gw_session_id AND sd_scope.tenant_id = rl.tenant_id AND sd_scope.owner_user = $%d)", len(requestArgs)+1)
 		requestArgs = append(requestArgs, GetAuthContext(r).Username)
 	}
-	requestsQuery += " ORDER BY ts DESC LIMIT 50"
+	requestsQuery += " ORDER BY rl.ts DESC LIMIT 50"
 
 	rows, err := h.db.Query(ctx, requestsQuery, requestArgs...)
 	if err != nil {
@@ -338,7 +345,13 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 					req.LatencyMs = &latency
 				}
 				requests = append(requests, req)
+			} else {
+				warnRowSkip("sessionDetail.requests", err)
 			}
+		}
+		if rerr := rows.Err(); rerr != nil {
+			// 非关键面板（头注同因）：中断留痕后按已取到的请求继续。
+			slog.Warn("sessionDetail requests iteration aborted; panel degraded", "error", rerr)
 		}
 		detail.Requests = requests
 	}
@@ -431,7 +444,7 @@ func (h *Handler) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.db.Exec(ctx, query, args...)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to update session: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to update session", err)
 		return
 	}
 	if result.RowsAffected() == 0 {

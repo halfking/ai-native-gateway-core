@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -33,11 +34,17 @@ type embeddingProviderResolver interface {
 	GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error)
 }
 
+type embeddingKeyVerifier interface {
+	Enabled() bool
+	Verify(ctx context.Context, rawKey string) (*authentication.KeyInfo, error)
+	CheckBudget(ctx context.Context, keyID int) error
+}
+
 // EmbeddingsHandler proxies OpenAI-compatible embedding requests.
 type EmbeddingsHandler struct {
 	provider    embeddingProviderResolver
 	upstream    *upstream.Client
-	keyVerifier *authentication.KeyVerifier
+	keyVerifier embeddingKeyVerifier
 	rateLimiter ratelimit.RPMLimiter
 	telemetry   *telemetry.Client
 	// autoIndex enables model="auto" for embeddings (22 章 §22.2).
@@ -179,7 +186,7 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var lastErr string
 	attempt := 0
 	for _, candidate := range candidates {
-		if !candidate.IsAvailable() || candidate.APIKey == "" || candidate.Protocol == "anthropic-messages" {
+		if !candidate.IsAvailable() || candidate.APIKey == "" || candidate.Protocol == providercatalog.ProtocolAnthropicMessages {
 			continue
 		}
 		attemptStart := time.Now()
@@ -375,6 +382,7 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 		return nil, false
 	}
 	if keyInfo.Status == "throttled" {
+		ratelimit.MarkGatewaySharedKeyRateLimit(w)
 		h.recordRateLimited(requestID, keyInfo, "<unknown>", "key_throttled")
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
@@ -382,6 +390,7 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, nil); !outcome.Skipped {
 		writeRateLimitHeaders(w, outcome)
 		if outcome.Blocked {
+			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			h.recordRateLimited(requestID, keyInfo, "<unknown>", "rate_limit_exceeded")
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return nil, false

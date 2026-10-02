@@ -134,6 +134,8 @@ export default {
   duration: 'Duración',
   edit: 'Editar',
   enabled: 'Habilitado',
+  endDate: 'Fecha de fin',
+  exportFailed: 'Error al exportar',
   lastOccurred: 'Última ocurrencia',
   loading: 'Cargando…',
   never: 'Nunca',
@@ -142,6 +144,7 @@ export default {
   refresh: 'Actualizar',
   send: 'Enviar',
   session: 'Sesión',
+  startDate: 'Fecha de inicio',
   time: 'Hora',
   warning: 'Advertencia',
   yes: 'Sí',
@@ -172,4 +175,27 @@ export default {
   copied: 'Copied',
 
   add: 'Add',
+
+  // 2026-09-30 统一日历组件族（KxDateRangePicker / KxDatePicker）共用词条
+  dateRange: {
+    title: 'Rango de tiempo',
+    custom: 'Personalizado',
+    startDate: 'Fecha de inicio',
+    endDate: 'Fecha de fin',
+    openAria: 'Seleccionar rango de tiempo',
+    endBeforeStart: 'El fin no puede ser anterior al inicio',
+    afterLatest: 'No posterior a {date}',
+    spanTooLong: 'El rango supera {n} días',
+    pickDate: 'Elegir fecha',
+    preset: {
+      today: 'Hoy',
+      yesterday: 'Ayer',
+      last24h: 'Últimas 24 horas',
+      last7d: 'Últimos 7 días',
+      last14d: 'Últimos 14 días',
+      last30d: 'Últimos 30 días',
+      thisMonth: 'Este mes',
+      lastMonth: 'Mes pasado',
+    },
+  },
 }

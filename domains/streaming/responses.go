@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
 
@@ -105,6 +106,20 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	if h.chatHandler.sanitizeInputMiddleware != nil {
+		var authorized bool
+		r, authorized = h.chatHandler.prepareSanitizeRequest(r)
+		if !authorized {
+			h.serveHTTPInner(w, r)
+			return
+		}
+		h.chatHandler.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
+		return
+	}
+	h.serveHTTPInner(w, r)
+}
+
+func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
 	var (
@@ -208,7 +223,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeResponsesError(w, http.StatusUnauthorized, "Missing API key", "authentication_error", "missing_key")
 			return
 		}
-		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
+		ki, verifyErr := verifyRequestKey(r, h.chatHandler.keyVerifier, rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				attemptErrCode = "invalid_key"
@@ -254,6 +269,24 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
 	}
+	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
+		logCtx.OutboundProvenance = prov
+	}
+	// N21-3（2026-09-30）：/v1/responses 入口此前零附件提取——含媒体轮次的
+	// attachments 列恒空。与 messages lane 同构：body 读取后即刻提取，
+	// strict 模式（显式 opt-in）下存储失败 503，默认 lenient 仅记录。
+	if h.chatHandler.attachmentExtractor != nil {
+		extractResult := h.chatHandler.attachmentExtractor.ExtractFromResponsesBody(requestID, bodyBytes)
+		if applyAttachmentResult(logCtx, extractResult) && attachmentStrictMode() {
+			attemptErrCode = "attachment_store_failed"
+			attemptErrMsg = "attachment storage failed"
+			logCtx.SetError(attemptErrCode, attemptErrMsg)
+			logCtx.EmitFailure(attemptErrCode, attemptErrMsg, nil, nil)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusServiceUnavailable, "Attachment storage failed", "api_error", "attachment_store_failed")
+			return
+		}
+	}
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"
 		attemptErrMsg = "request body too large"
@@ -296,7 +329,16 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestedModel := reqBody.Model
 
 	// model=auto: classify + rewrite before CanonicalizeClientModel.
-	if reqBody.Model == autoRequestMagic {
+	//
+	// 2026-09-29 X-Gw-Test-Mode (see auto_route.go) overrides the auto path
+	// for authorised callers. mock / auto-only short-circuit with a
+	// synthetic Responses-format body after the auto decision lands;
+	// other-only skips the auto call entirely.
+	testMode, testModeSet := ParseTestMode(r, testModeAllowed(r))
+	if testModeSet {
+		logCtx.SetTestMode(testMode.String())
+	}
+	if reqBody.Model == autoRequestMagic && !testMode.SkipsAutoRoute() {
 		var apiKeyID int
 		if keyInfo != nil {
 			apiKeyID = keyInfo.ID
@@ -322,6 +364,20 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			autoWire = wire
 		} else {
 			logCtx.IsAutoRequest = true
+		}
+
+		// 2026-09-29 X-Gw-Test-Mode mock short-circuit: mirror the chat
+		// path — write a synthetic Responses body and stop. The chosen
+		// post-decider model is the one the test runner verifies against.
+		//
+		// recordMockRequestLog (not a bare *attemptLogged = true) so the
+		// request still produces its one request_logs row.
+		if testMode.IsMockMode() {
+			chosen := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
+			h.chatHandler.recordMockRequestLog(logCtx, testMode, chosen, keyInfo)
+			*attemptLogged = true
+			writeMockResponsesResponse(w, testMode, requestID, chosen, reqBody.Stream)
+			return
 		}
 	}
 
@@ -379,6 +435,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
 			logCtx.EmitRateLimited(attemptErrCode, attemptErrMsg, nil, nil)
 			*attemptLogged = true
+			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
 			return
 		}
@@ -419,7 +476,32 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// verbatim honor left bare-UUID client identities in a heterogeneous
 		// namespace (turn aggregation stuck at 1) and never registered the
 		// session, so every follow-up request re-hit ErrSessionNotFound.
-		sessionID, sessionInfo = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		var sessErr error
+		sessionID, sessionInfo, sessErr = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
+		if errors.Is(sessErr, errClientSessionForbidden) {
+			// R24-B (V3-A02): a client-supplied session owned by another
+			// key/tenant is rejected before any turn is created (chat-path
+			// parity; previously the foreign sessionInfo flowed unchecked).
+			attemptErrCode = "session_forbidden"
+			attemptErrMsg = "session not owned by this api key"
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusForbidden, "session not owned by this api key", "invalid_request_error", "session_forbidden")
+			return
+		}
+		if errors.Is(sessErr, errClientSessionUnavailable) {
+			// R25-W (V3-A02): the session store faulted — ownership could not
+			// be verified. Dispatching anyway would trust an unverified
+			// client-supplied id; 503 tells the client to retry.
+			attemptErrCode = "session_unavailable"
+			attemptErrMsg = "session store unavailable"
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusServiceUnavailable, "session store unavailable", "server_error", "session_unavailable")
+			return
+		}
 	}
 	if sessionID == "" {
 		sessionID = provisionalSessionID
@@ -724,19 +806,26 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R25-C: authenticated key owner for the interceptor's owner compare;
+	// empty means "owner unknown" → conservative redaction on every field.
+	_, callerOwner, _ := keyMetaFromKeyInfo(keyInfo)
 	usedSurvival := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
 	var result *executors.ExecuteResult
 	var execErr error
+	var nativeStreamWriter *interceptingStreamWriter
 	if usedSurvival {
 		base := w
 		if h.chatHandler.responseInterceptor != nil {
-			base = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+			nativeStreamWriter = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "openai-responses",
+				ClientModel:    clientModel,
 			})
-			defer base.(*interceptingStreamWriter).finish()
+			base = nativeStreamWriter
+			defer nativeStreamWriter.finish()
 		}
 		// SP-02: state machine — survival branch dispatches upstream.
 		rt.Emit(state.EventDispatching)
@@ -751,7 +840,59 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// SP-02: state machine — executor has accepted the request.
 		rt.Emit(state.EventDispatching)
-		result, execErr = h.chatHandler.executor.Execute(buildExecParams(w))
+		// R25-G: the non-survival stream must flow through the same
+		// intercepting writer as the survival lane; a bare writer left the
+		// whole compliance chain bypassed for ordinary streams.
+		execWriter := http.ResponseWriter(w)
+		if isStream && h.chatHandler.responseInterceptor != nil {
+			nativeStreamWriter = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "openai-responses",
+				ClientModel:    clientModel,
+			})
+			defer nativeStreamWriter.finish()
+			execWriter = nativeStreamWriter
+		}
+		result, execErr = h.chatHandler.executor.Execute(buildExecParams(execWriter))
+	}
+	if nativeStreamWriter != nil {
+		// Finalize buffered output before the generic execErr branch. A policy
+		// rejection already writes its one protocol terminal from finish(); the
+		// request must be logged as a policy failure without adding an upstream
+		// error terminal or success audit.
+		nativeStreamWriter.finish()
+		if nativeStreamWriter.OutputPolicyBlocked() {
+			const blockCode = "output_policy_blocked"
+			const blockMessage = "Response blocked by output policy"
+			attemptErrCode, attemptErrMsg = blockCode, blockMessage
+			auditBuilder.Success(false)
+			rt.Emit(state.EventFailed)
+			providerID, credentialID := attemptProviderID, attemptCredentialID
+			if result != nil {
+				if result.Candidate.ProviderID != 0 {
+					id := result.Candidate.ProviderID
+					providerID = &id
+				}
+				if result.Candidate.CredentialID != 0 {
+					id := result.Candidate.CredentialID
+					credentialID = &id
+				}
+			}
+			if logCtx != nil {
+				logCtx.SetRoute(providerID, credentialID)
+				logCtx.SetError(blockCode, blockMessage)
+				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID)
+			} else {
+				latency := int(time.Since(startTime).Milliseconds())
+				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+					providerID, credentialID, blockCode, blockMessage, latency, chatBodyBytes, keyInfo, r)
+			}
+			*attemptLogged = true
+			return
+		}
 	}
 
 	if execErr != nil {
@@ -763,7 +904,16 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		errCode := "provider_error"
 		errMsg := execErr.Error()
-		if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
+		// R59 audit (S7-1): survival terminal decisions must keep their
+		// structured failure_detail_code on every protocol face, not just
+		// chat (handler.go). Without this, /v1/responses logs
+		// gateway_survival_<action> as a bland provider_error.
+		if ste, ok := execErr.(*survivalTerminalError); ok {
+			errCode = ste.detailCode()
+			if ste.kinds != "" {
+				w.Header().Set("X-Gateway-Last-Kind", ste.kinds)
+			}
+		} else if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
 			errCode = "model_not_found"
 			errMsg = "all providers unavailable"
 		}
@@ -812,8 +962,39 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 
 	var responseBody []byte
+	outputBlocked := false
 	if !isStream {
-		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
+		// R25-B: carry full request identity into the non-stream
+		// interception — the zero-value default previously left
+		// TenantID/SessionID empty, disabling tenant policy and owner
+		// resolution for native non-stream responses.
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID, nativeResponseInterception{
+			ctx: r.Context(),
+			request: response.InterceptRequest{
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: "openai-responses",
+				ClientModel:    clientModel,
+			},
+			failureEmit: func() {
+				outputBlocked = true
+				if logCtx != nil {
+					providerID, credentialID := result.Candidate.ProviderID, result.Candidate.CredentialID
+					logCtx.EmitFailure("output_policy_blocked", "Response blocked by output policy", &providerID, &credentialID)
+				}
+			},
+		})
+	}
+	if outputBlocked {
+		// R25-V (2026-09-30 round 30): the failure row emitted inside
+		// failureEmit is the terminal audit record for this request. A
+		// follow-up success telemetry row would contradict it — the audit
+		// trail must show exactly one output_policy_blocked failure, never
+		// a success row for a response the client never received.
+		*attemptLogged = true
+		return
 	}
 
 	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.InboundBody, responseBody, logCtx)
@@ -1173,7 +1354,7 @@ func normalizeResponsesTools(value any) any {
 	return normalized
 }
 
-func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
+func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string, opts ...nativeResponseInterception) []byte {
 	if len(body) == 0 {
 		writeResponsesError(w, http.StatusInternalServerError, "Failed to read upstream response", "server_error", "upstream_read_error")
 		return nil
@@ -1188,6 +1369,43 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []
 	respBody := body
 	if format != nonStreamResponseResponses {
 		respBody = convertChatResponseToResponses(body, clientModel, requestID)
+	}
+
+	// 2026-09-29: wire 收紧 / 真实合规 hook 由 chain 走。
+	if h.chatHandler != nil && h.chatHandler.responseInterceptor != nil {
+		var opt nativeResponseInterception
+		if len(opts) > 0 {
+			opt = opts[0]
+		}
+		if opt.ctx == nil {
+			opt.ctx = context.Background()
+		}
+		if opt.request.ClientProtocol == "" {
+			opt.request.ClientProtocol = "openai-responses"
+		}
+		if opt.request.ResponseBody == nil {
+			opt.request.ResponseBody = respBody
+		}
+		// R25-U3 (2026-09-30 round 27, ruling): on interceptor ERROR the
+		// original body passes through (fail-open). This mirrors the chat
+		// path and processBody's documented rationale — a transient infra
+		// failure (policy DB down) must not kill all traffic. The stream
+		// path stays fail-closed because mid-stream bytes already left and
+		// cannot be recalled; the asymmetry is deliberate.
+		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, respBody); err == nil && !blocked && modified != nil {
+			respBody = modified
+		} else if blocked {
+			// R25-V (2026-09-30 round 30): the blocked provider body must be
+			// reflected in the audit trail — a success row (or no row) hides
+			// that output governance rejected this response. Emit a failure
+			// row attributed to the chosen provider/credential before the
+			// terminal error write; the provider body itself never persists.
+			if opt.failureEmit != nil {
+				opt.failureEmit()
+			}
+			writeResponsesError(w, http.StatusForbidden, "Response blocked by output policy", "output_policy_blocked", "blocked")
+			return nil
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

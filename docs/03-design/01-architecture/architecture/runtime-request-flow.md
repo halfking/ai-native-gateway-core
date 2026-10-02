@@ -25,7 +25,7 @@ Executor
   |
   +--> provider candidate query and lifecycle/routability filters
   +--> URSM/state backend + tier/billing/sticky/protocol affinity
-  +--> P2C/Bandit ordering and shadow strategy observation
+  +--> P2C ordering (sticky/cost penalty folded in) and shadow strategy observation
   +--> FP slot / concurrency / RPM resource gates
   v
 Dispatch Pipeline

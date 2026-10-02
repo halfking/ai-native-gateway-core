@@ -109,4 +109,57 @@ export default {
     markFailed: 'فشل التحديد',
     needSuperAdmin: 'يتطلب صلاحية مدير عام',
   },
+
+  // 2026-09-21: 请求错误 tab（reqprobe）
+  tabs: {
+      format: 'شذوذ صيغة الاستجابة',
+      request: 'أخطاء الطلبات',
+  },
+  requestTab: {
+      stats: {
+          unresolved: 'غير محلولة (الصفحة)',
+          autoRecovered: 'استُعيدت تلقائيًا',
+          total: 'الإجمالي',
+      },
+      filter: {
+          day: 'التاريخ',
+          trigger: 'النوع',
+          triggerPlaceholder: 'اختر النوع…',
+      },
+      trigger: {
+          all: 'كل الأنواع',
+          param_rejected: 'معامل مرفوض',
+          mode_mismatch: 'عدم تطابق النمط',
+          upstream_error: 'خطأ المزوّد',
+      },
+      triggerDesc: {
+          param_rejected: 'رفض المزوّد معامل طلب (مثل reasoning_effort)؛ أزالته البوابة وأعادت المحاولة',
+          mode_mismatch: 'شكل الواجهة (responses / chat) لا يطابق المزوّد',
+          upstream_error: 'خطأ 4xx من جهة الطلب غير مصنف، بانتظار الفرز',
+      },
+      batch: {
+          selected: 'تم تحديد {n}',
+          resolveSelected: 'حل المحدد',
+          resolveFiltered: 'حل كل غير المحلول',
+      },
+      table: {
+          day: 'التاريخ',
+          trigger: 'النوع',
+          param: 'المعامل / الاقتراح',
+          status: 'الحالة',
+          occurrences: 'المرات',
+          recoveredCount: 'شفاء ذاتي ×{n}',
+      },
+      detail: {
+          title: 'تفاصيل خطأ الطلب',
+          clientModel: 'نموذج العميل',
+          protocol: 'بروتوكول الصادر',
+          suggestMode: 'النمط المقترح',
+          firstSeen: 'أول ظهور',
+          lastSeen: 'آخر ظهور',
+          errorSample: 'نموذج خطأ المزوّد',
+          occurrences: 'إحصاءات',
+          recoveredHint: 'استُعيد {n} منها تلقائيًا بإزالة معامل أو تبديل النمط',
+      },
+  },
 }

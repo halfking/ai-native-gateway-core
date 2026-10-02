@@ -219,3 +219,45 @@ func TestDamerauSimilarityTransposition(t *testing.T) {
 		t.Fatalf("similarity = %.3f, want >= 0.9", s)
 	}
 }
+
+// 2026-09-21: a trailing "-cn" token is provider-feed distribution noise,
+// not a variant — the 09-20/21 audit found kling/wan/viduq3/qwen "-cn"
+// canonicals with no base anywhere, re-seeded minutes after each manual
+// cleanup because "x-cn" scored below AutoLinkThreshold against "x".
+// The matcher must fold "-cn" so discovery links the raw onto the base.
+func TestMatchStandardModels_CNSuffixFoldsIntoBase(t *testing.T) {
+	catalog := []string{"kling-v2-1", "wan2.7-image-pro", "qwen3-max", "viduq3-turbo"}
+	cases := map[string]string{
+		"kling-v2-1-cn":       "kling-v2-1",
+		"wan2.7-image-pro-cn": "wan2.7-image-pro",
+		"qwen3-max-cn":        "qwen3-max",
+		"viduq3-turbo-cn":     "viduq3-turbo",
+	}
+	for raw, want := range cases {
+		best := BestStandardModelMatch(raw, catalog)
+		if best == nil || best.Name != want || best.Score < AutoLinkThreshold {
+			t.Fatalf("-cn raw %q must auto-link to %q, got %+v", raw, want, best)
+		}
+	}
+}
+
+// Vendor-qualified -cn raws fold too: the suffix noise is independent of
+// the prefix shape.
+func TestMatchStandardModels_VendorQualifiedCNSuffixFolds(t *testing.T) {
+	catalog := []string{"z-ai-glm-4.7", "glm-4.7"}
+	best := BestStandardModelMatch("z-ai/glm-4.7-cn", catalog)
+	if best == nil || best.Name != "glm-4.7" || best.Score < AutoLinkThreshold {
+		t.Fatalf("vendor-qualified -cn raw must auto-link to base glm-4.7, got %+v", best)
+	}
+}
+
+// "-cn" folding must not create phantom matches: a bare "cn", a "-cn"
+// middle token, and catalogs with no base all stay unmatched.
+func TestMatchStandardModels_CNSuffixFoldingEdgeCases(t *testing.T) {
+	if best := BestStandardModelMatch("cn", []string{"kling-v2-1"}); best != nil {
+		t.Fatalf("bare cn must not match, got %+v", best)
+	}
+	if best := BestStandardModelMatch("wan2.7-image-cn", []string{"wan2.7-image-pro"}); best != nil && best.Score >= AutoLinkThreshold {
+		t.Fatalf("-cn strip must not fabricate a different base match, got %+v", best)
+	}
+}

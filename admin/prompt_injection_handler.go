@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/lib/pq"
 )
 
@@ -164,7 +165,7 @@ func (h *PromptInjectionHandler) getPolicy(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get policy: " + err.Error()})
+		writeInternalErrStr(w, "Failed to get policy", err)
 		return
 	}
 
@@ -231,7 +232,7 @@ func (h *PromptInjectionHandler) updatePolicy(w http.ResponseWriter, r *http.Req
 	).Scan(&policyID)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update policy: " + err.Error()})
+		writeInternalErrStr(w, "Failed to update policy", err)
 		return
 	}
 
@@ -337,7 +338,7 @@ func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Reques
 
 	rows, err := h.pool.Query(r.Context(), query, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list rules: " + err.Error()})
+		writeInternalErrStr(w, "Failed to list rules", err)
 		return
 	}
 	defer func() { rows.Close() }()
@@ -349,10 +350,16 @@ func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Reques
 			&rule.Pattern, &rule.Description, &rule.Severity, &rule.Enabled, &rule.CaseSensitive,
 			&rule.IsSystem, &rule.ActionOverride, &rule.Tags, &rule.Examples,
 			&rule.CreatedAt, &rule.UpdatedAt); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan rule: " + err.Error()})
+			writeInternalErrStr(w, "Failed to scan rule", err)
 			return
 		}
 		rules = append(rules, rule)
+	}
+	// 迭代中断只让 Next() 返回 false。不查 Err() 就 200，规则清单会
+	// 静默少一截 —— 安全规则的缺失等于检测被静默关闭。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate rules", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"rules": rules, "count": len(rules)})
@@ -382,7 +389,7 @@ func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Reque
 	).Scan(&ruleID)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create rule: " + err.Error()})
+		writeInternalErrStr(w, "Failed to create rule", err)
 		return
 	}
 
@@ -407,7 +414,7 @@ func (h *PromptInjectionHandler) updateRule(w http.ResponseWriter, r *http.Reque
 	)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update rule: " + err.Error()})
+		writeInternalErrStr(w, "Failed to update rule", err)
 		return
 	}
 
@@ -425,7 +432,7 @@ func (h *PromptInjectionHandler) deleteRule(w http.ResponseWriter, r *http.Reque
 		`DELETE FROM prompt_injection_rules WHERE id=$1 AND COALESCE(is_system, true) = false`, ruleID)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete rule: " + err.Error()})
+		writeInternalErrStr(w, "Failed to delete rule", err)
 		return
 	}
 
@@ -466,7 +473,7 @@ func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Reque
 		`UPDATE prompt_injection_rules SET enabled = $1, updated_at = NOW() WHERE id = $2`,
 		req.Enabled, ruleID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to toggle rule: " + err.Error()})
+		writeInternalErrStr(w, "Failed to toggle rule", err)
 		return
 	}
 
@@ -569,7 +576,7 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 	countQuery := strings.Replace(query, "SELECT id, tenant_id, request_id, session_key, detected_at, detection_score, risk_level,\n\t\tmatched_rules, matched_rules_count, action_taken, blocked, evidence_text,\n\t\tCOALESCE(categories::text[], '{}'), llm_confidence, COALESCE(llm_reason, ''),\n\t\tCOALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),\n\t\tCOALESCE(replaced_content, ''), client_ip, user_agent", "SELECT COUNT(*)", 1)
 	var total int
 	if err := h.pool.QueryRow(r.Context(), countQuery, args...).Scan(&total); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to count detections: " + err.Error()})
+		writeInternalErrStr(w, "Failed to count detections", err)
 		return
 	}
 
@@ -578,7 +585,7 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 
 	rows, err := h.pool.Query(r.Context(), query, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list detections: " + err.Error()})
+		writeInternalErrStr(w, "Failed to list detections", err)
 		return
 	}
 	defer func() { rows.Close() }()
@@ -591,10 +598,16 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 			&d.ActionTaken, &d.Blocked, &d.EvidenceText, &d.Categories,
 			&d.LLMConfidence, &d.LLMReason, &d.CanaryTokenLeaked, &d.ApprovalID,
 			&d.ReplacedContent, &d.ClientIP, &d.UserAgent); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan detection: " + err.Error()})
+			writeInternalErrStr(w, "Failed to scan detection", err)
 			return
 		}
 		detections = append(detections, d)
+	}
+	// 检测记录是安全审计证据链：静默截断会让"这批请求没有注入命中"
+	// 成为假结论。上抛，不返回半份 detections。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate detections", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -646,7 +659,7 @@ func (h *PromptInjectionHandler) handleStats(w http.ResponseWriter, r *http.Requ
 	if err == pgx.ErrNoRows {
 		stats = &DetectionStats{}
 	} else if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get stats: " + err.Error()})
+		writeInternalErrStr(w, "Failed to get stats", err)
 		return
 	}
 
@@ -733,7 +746,7 @@ func (h *PromptInjectionHandler) listEngines(w http.ResponseWriter, r *http.Requ
 		LEFT JOIN models_canonical m ON e.model_canonical_id = m.id
 		WHERE e.tenant_id = $1 ORDER BY e.priority DESC, e.engine_name`, tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list engines: " + err.Error()})
+		writeInternalErrStr(w, "Failed to list engines", err)
 		return
 	}
 	defer func() { rows.Close() }()
@@ -747,10 +760,15 @@ func (h *PromptInjectionHandler) listEngines(w http.ResponseWriter, r *http.Requ
 			&e.SystemPrompt, &e.DetectionPrompt, &e.Priority, &e.Enabled,
 			&e.TotalCalls, &e.TotalDetections, &e.AvgLatencyMs, &e.ErrorCount,
 			&e.LastCalledAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan engine: " + err.Error()})
+			writeInternalErrStr(w, "Failed to scan engine", err)
 			return
 		}
 		engines = append(engines, e)
+	}
+	// 引擎清单少一截 → 优先级排序后派发到哪个 LLM 引擎的结论失真。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate engines", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"engines": engines, "count": len(engines)})
@@ -780,7 +798,7 @@ func (h *PromptInjectionHandler) getEngine(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get engine: " + err.Error()})
+		writeInternalErrStr(w, "Failed to get engine", err)
 		return
 	}
 
@@ -816,7 +834,7 @@ func (h *PromptInjectionHandler) createEngine(w http.ResponseWriter, r *http.Req
 	).Scan(&engineID)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create engine: " + err.Error()})
+		writeInternalErrStr(w, "Failed to create engine", err)
 		return
 	}
 
@@ -843,7 +861,7 @@ func (h *PromptInjectionHandler) updateEngine(w http.ResponseWriter, r *http.Req
 	)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update engine: " + err.Error()})
+		writeInternalErrStr(w, "Failed to update engine", err)
 		return
 	}
 
@@ -861,7 +879,7 @@ func (h *PromptInjectionHandler) deleteEngine(w http.ResponseWriter, r *http.Req
 		`DELETE FROM prompt_injection_llm_engines WHERE id=$1`, engineID)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete engine: " + err.Error()})
+		writeInternalErrStr(w, "Failed to delete engine", err)
 		return
 	}
 
@@ -943,7 +961,7 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 			CASE severity_level WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 WHEN 'critical' THEN 4 END`,
 			tenantID)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get matrix: " + err.Error()})
+			writeInternalErrStr(w, "Failed to get matrix", err)
 			return
 		}
 		defer func() { rows.Close() }()
@@ -957,11 +975,16 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 				&s.NotifyOnDetect, &channelsJSON,
 				&s.AffectSessionHealth, &s.SessionHealthPenalty,
 				&s.TerminateOnRepeat, &s.RepeatThreshold); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan: " + err.Error()})
+				writeInternalErrStr(w, "Failed to scan", err)
 				return
 			}
-			_ = json.Unmarshal([]byte(channelsJSON), &s.NotifyChannels)
+			jsoncol.Decode("admin.promptInjection.severityMatrix/notify_channels", []byte(channelsJSON), &s.NotifyChannels)
 			matrix = append(matrix, s)
+		}
+		// 处置矩阵缺行 = 某个 severity 没有动作 = 该级别命中后"不处置"。
+		if err := rows.Err(); err != nil {
+			writeInternalErrStr(w, "Failed to iterate severity matrix", err)
+			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{"matrix": matrix})
@@ -988,7 +1011,7 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 				s.TerminateOnRepeat, s.RepeatThreshold,
 				tenantID, s.SeverityLevel)
 			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update: " + err.Error()})
+				writeInternalErrStr(w, "Failed to update", err)
 				return
 			}
 		}
@@ -1060,7 +1083,7 @@ func (h *PromptInjectionHandler) listCanaryTokens(w http.ResponseWriter, r *http
 			active, expires_at, times_injected, times_leaked, last_leaked_at, created_at
 		FROM canary_tokens WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list tokens: " + err.Error()})
+		writeInternalErrStr(w, "Failed to list tokens", err)
 		return
 	}
 	defer func() { rows.Close() }()
@@ -1071,10 +1094,15 @@ func (h *PromptInjectionHandler) listCanaryTokens(w http.ResponseWriter, r *http
 		if err := rows.Scan(&t.ID, &t.TenantID, &t.TokenValue, &t.TokenType, &t.TokenName,
 			&t.Description, &t.LeakAction, &t.NotifyOnLeak,
 			&t.Active, &t.ExpiresAt, &t.TimesInjected, &t.TimesLeaked, &t.LastLeakedAt, &t.CreatedAt); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan token: " + err.Error()})
+			writeInternalErrStr(w, "Failed to scan token", err)
 			return
 		}
 		tokens = append(tokens, t)
+	}
+	// 蜜罐 token 清单少一截 = 泄露探针少一批 = 泄露事件被静默漏报。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate tokens", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"tokens": tokens, "count": len(tokens)})
@@ -1106,7 +1134,7 @@ func (h *PromptInjectionHandler) createCanaryToken(w http.ResponseWriter, r *htt
 	).Scan(&tokenID)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create token: " + err.Error()})
+		writeInternalErrStr(w, "Failed to create token", err)
 		return
 	}
 
@@ -1125,7 +1153,7 @@ func (h *PromptInjectionHandler) updateCanaryToken(w http.ResponseWriter, r *htt
 		req.TokenName, req.Description, req.LeakAction, req.NotifyOnLeak, req.Active, req.ExpiresAt, tokenID)
 
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update token: " + err.Error()})
+		writeInternalErrStr(w, "Failed to update token", err)
 		return
 	}
 
@@ -1135,7 +1163,7 @@ func (h *PromptInjectionHandler) updateCanaryToken(w http.ResponseWriter, r *htt
 func (h *PromptInjectionHandler) deleteCanaryToken(w http.ResponseWriter, r *http.Request, tokenID string) {
 	result, err := h.pool.Exec(r.Context(), `DELETE FROM canary_tokens WHERE id=$1`, tokenID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete token: " + err.Error()})
+		writeInternalErrStr(w, "Failed to delete token", err)
 		return
 	}
 
@@ -1192,7 +1220,7 @@ func (h *PromptInjectionHandler) handleAttackVectors(w http.ResponseWriter, r *h
 		ORDER BY severity DESC, created_at DESC LIMIT $2 OFFSET $3`,
 		tenantID, pageSize, offset)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list vectors: " + err.Error()})
+		writeInternalErrStr(w, "Failed to list vectors", err)
 		return
 	}
 	defer func() { rows.Close() }()
@@ -1202,10 +1230,15 @@ func (h *PromptInjectionHandler) handleAttackVectors(w http.ResponseWriter, r *h
 		v := AttackVector{}
 		if err := rows.Scan(&v.ID, &v.TenantID, &v.AttackText, &v.AttackHash,
 			&v.Categories, &v.Severity, &v.Source, &v.RequestID, &v.DetectedAt, &v.CreatedAt); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan: " + err.Error()})
+			writeInternalErrStr(w, "Failed to scan", err)
 			return
 		}
 		vectors = append(vectors, v)
+	}
+	// 攻击向量清单是威胁情报读面，截断即"没有更多攻击手法"的假结论。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate attack vectors", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"vectors": vectors, "page": page, "page_size": pageSize})

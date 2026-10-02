@@ -23,9 +23,13 @@ export default {
     credentialMonitor: "مراقبة بيانات الاعتماد",
     annotations: 'التعليق اليدوي',
     annotationStats: 'إحصاءات التعليق',
+    taskProfile: 'ملفات المهام',
+    autoTuning: 'ضبط التوجيه',
     probeHealth: "صحة الاستكشاف",
     systemMonitor: "مراقبة النظام",
     providers: "المزودون",
+    reconciliation: "تهوية الحسابات",
+    settlementReport: "تقرير التسوية",
     pricing: "تكلفة التسعير",
     modelPricing: "إدارة التسعير",
     freePool: "الموارد المجانية",
@@ -104,4 +108,9 @@ export default {
   publicSupport: 'الدعم الفني',
 
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'شذوذ الطلبات غير المحلول',
+  },
 }

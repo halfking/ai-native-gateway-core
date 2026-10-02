@@ -46,7 +46,7 @@ func (k *AvailabilityKeyCounter) Start(ctx context.Context) {
 		return
 	}
 	ctx, k.cancel = context.WithCancel(ctx)
-	go k.run(ctx)
+	Go("model_availability_keycounter.run", func() { k.run(ctx) })
 	slog.Info("availability key counter started", "interval", k.interval)
 }
 

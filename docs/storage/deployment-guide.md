@@ -131,17 +131,19 @@ go run ./cmd/gateway        # 或 go build -o bin/gateway ./cmd/gateway && ./bin
 
 启动期装配（`cmd/gateway/storage_mode_init.go`）：`LLM_GATEWAY_STORAGE_MODE=lite` 时旁路
 PG 初始化 → `ApplyLiteDefaults` → `Validate` → 创建存储工厂 → 创建 L1.5 FileCache
-（`CacheTTLHours` 小时 / `CacheMaxSizeGB` 换算字节）→ 启动 `bg.CacheTrimmer` 与
-`bg.BodiesTrimmer` 两个后台清理任务。SIGTERM/SIGINT 优雅关闭：先取消 trimmers（有界等待
+（`CacheTTLHours` 小时 / `CacheMaxSizeGB` 换算字节）→ 启动 `bg.CacheTrimmer`、
+`bg.BodiesTrimmer` 与 `bg.LiteRetentionWorker` 三个后台清理任务（R46 F6 起行级
+retention 生效）。SIGTERM/SIGINT 优雅关闭：先取消 trimmers（有界等待
 3s），再 `factory.Close()`（排空 bodies 异步写队列保证落盘），已真机 smoke 验证
 exit 0。
 
 ### 5. 验证
 
 - 启动日志出现 `storage lite 模式已启用`（slog，含 sqlite_path / bodies_dir / cache_dir /
-  logs_dir / cache_ttl_hours / cache_max_size_gb / async_writers / retention_* 字段快照）。
-- 清理任务日志：`cache trimmer 已启动` 与 `bodies trimmer 已启动`（启动即先执行一次清理，
-  不用等一个完整周期）。
+  logs_dir / cache_ttl_hours / cache_max_size_gb / async_writers / retention_* 字段快照，
+  以及缓存清理的生效值 `cache_trim_retention`）。
+- 清理任务日志：`cache trimmer 已启动`、`bodies trimmer 已启动` 与
+  `lite retention worker 已启动`（启动即先执行一次清理，不用等一个完整周期）。
 - 配置不合法会直接启动失败并给出明确报错（如
   `storage_mode "lite" requires a lite_storage section in yaml`）。
 - SQLite 文件生成：`sqlite_path` 对应文件出现，且同目录生成 `-wal` / `-shm` 两个 WAL
@@ -225,6 +227,41 @@ go run ./cmd/gateway
 | `async_writers` | bodies 异步落盘的写 worker 数 |
 | `retention.*` | 各类数据保留期，由后台清理任务执行，见"保留期与磁盘规划" |
 
+#### hotzone 段（全量模式热区，2026-09-24 方案 / 2026-09-30 落地）
+
+full 模式可选叠加本地热区层（`data/hotzone/` 三子树 cache / session_bodies /
+requests 共享磁盘预算）。架构与指标说明见 [README「全量模式热区」](README.md)。
+
+**三通道优先级：settings > env > YAML > default**（settings 热重载仅作用于运行期；
+装配门见下方"装配语义"）。配置定义 `config/storage.go:59-69` 与
+`settings/spec_storage.go`（CategoryStorage）。
+
+| 字段 | env | settings key | 默认值 | 生效通道与说明 |
+|------|-----|--------------|--------|----------------|
+| `hotzone.enabled` | `LLM_GATEWAY_HOTZONE_ENABLED` | `storage.hotzone_enabled`（默认 true） | `true` | **装配门只认 config 通道**（env/YAML，进程启动判定）；settings 运行期 false 仅让 trimmer 跳过清理轮，不卸载已装配热区，停新装配需改 config 通道后重启 |
+| `hotzone.dir` | `LLM_GATEWAY_HOTZONE_DIR` | — | `data/hotzone` | 热区根目录；已存在且为 symlink/非目录时告警并降级历史装配 |
+| `hotzone.max_size_gb` | `LLM_GATEWAY_HOTZONE_MAX_SIZE_GB` | `storage.hotzone_max_size_gb` | `1`（范围 1–100） | 三子树共享字节预算；settings 热重载扩容经 `FileCache.ResizeMax` 立即生效，缩容交由下一轮 trimmer |
+| `hotzone.retention_hours` | `LLM_GATEWAY_HOTZONE_RETENTION_HOURS` | `storage.hotzone_retention_hours` | `7`（范围 1–168） | 三子树 mtime 过期线（= L1.5 TTL 同参数）；settings 热重载由 trimmer 每 tick 原子替换，L1.5 读侧 TTL 经 `FileCache.SetTTL` 同步同界（2026-10-01 审计 F2 收口，此前扩容仅删侧生效） |
+| `hotzone.request_mirror` | `LLM_GATEWAY_HOTZONE_REQUEST_MIRROR` | — | `true` | 请求侧镜像（telemetry 三件套 + session bodies 三件套），fire-and-forget fail-open，可独立关闭 |
+
+运维提示：
+
+- **回滚**：热区纯缓存语义，`LLM_GATEWAY_HOTZONE_ENABLED=false` 一键关闭新装配，
+  删除 `data/hotzone/` 目录即完成数据回滚。
+- **临时文件回收**：trimmer 豁免在飞临时文件（含 `.tmp` 的文件名）于配额相，
+  但 mtime 早于 retention 过期线的 `.tmp` 会按过期清理回收（在飞写入存活
+  毫秒级，过期 `.tmp` = 写入方崩溃遗留的孤儿；2026-10-01 审计 F1 收口，此前
+  全量豁免导致无界累积且不进配额口径）。retention 被误配为极小值时注意此
+  清扫与主过期相同线生效。
+- **对账口径（镜像 vs PG，审计 F4 留档）**：镜像落盘的是换算后、body summary
+  摘要**之前**的原文——开启 `requestBodiesSummaryEnabled` 的租户上，镜像=全文、
+  PG=摘要信封，「gunzip 与 PG 内容一致」抽查会对不上，属预期；另外空/非法 JSON
+  会收敛为 `"{}"`，镜像侧跳过 `"{}"` 而 PG 侧照落库。对账脚本须按此口径豁免
+  `null`/`{}` 行，且失败重试可能对同一路径产生一次覆盖式重写（内容一致，幂等无害，
+  量级看 `mirror.by_mode` 计数）。
+- 指标：`/metrics/storage` 的 `mirror.by_mode`、`l1_5_by_mode`（含命中率）、
+  `hotzone.hit_total_by_mode`、`hotzone_enabled`。
+
 ---
 
 ## 三、性能调优
@@ -287,8 +324,8 @@ go run ./cmd/gateway
 | 字段 | 默认值 | 作用对象 | 清理方式 |
 |------|--------|----------|----------|
 | `session_bodies_days` | `30` | `bodies_dir` 下超过保留期的会话目录 | `bg.BodiesTrimmer`（lite 装配自动启动）：默认每 6 小时一轮，会话目录 mtime 超期即整目录删除（先统计体积再 RemoveAll），并顺带清理变空的分片/租户父目录 |
-| `request_logs_days` | `7` | 请求日志 | **lite 模式暂无自动清理 worker**（当前 trimmer 只覆盖 cache 与 bodies），SQLite `request_logs` 行需人工或后续任务清理 |
-| `cache_hours` | `24` | `cache_dir` 下过期的 L1.5 快照文件 | `bg.CacheTrimmer`（lite 装配自动启动）：默认每 1 小时一轮，按文件 mtime 删除过期缓存文件 |
+| `request_logs_days` | `7` | SQLite `request_logs` 按行、`sessions`/`session_turns` 按会话（含全部轮次） | `bg.LiteRetentionWorker`（R46 F6 起 lite 装配自动启动）：默认每 6 小时一轮；无 opt-out（≤0 视为默认 7 天）。会话清理在单事务内以删除时刻的 `updated_at` 求值，清理缝隙内复活的会话整体豁免（R47） |
+| `cache_hours` | `24` | `cache_dir` 下过期的 L1.5 快照文件 | `bg.CacheTrimmer`（lite 装配自动启动）：默认每 1 小时一轮，按文件 mtime 删除过期缓存文件。生效值恒 `>= cache_ttl_hours`（见下文"保留期与磁盘规划"） |
 
 两个 trimmer 的 `Start(ctx)` 均为阻塞式，由 `storage_mode_init.go` 以协程启动；启动即先执行
 一次清理，之后按周期运行；统计快照（删除文件/会话数、释放字节）随日志输出
@@ -299,8 +336,14 @@ go run ./cmd/gateway
 - `session_bodies_days`：bodies 占磁盘大头，按"故障复盘需要回溯多久"取值；本地开发 7 天
   足够，单人部署 30 天。
 - `request_logs_days`：仅元数据（SQLite 行），磁盘占用小，7~30 天均可。
-- `cache_hours`：与 `cache_ttl_hours` 保持同量级即可（默认均 24）；缓存可随时重建，调小
-  只影响重启后首请求的回源次数。
+- `cache_hours`：**不会**让清理早于 `cache_ttl_hours` 生效。删除侧按 mtime 删文件，
+  读侧（`FileCache.Get`）也按 mtime 判过期；若清理 retention 小于 TTL，就会删掉读侧
+  仍视为有效的条目，使该窗口内每次读都退化成 miss 并回源下层，缓存退化为「只写不读」。
+  因此装配层取两者的安全上界：`cache_hours <= cache_ttl_hours` 时按 `cache_ttl_hours`
+  执行，并在启动日志打 `retention.cache_hours 小于 cache_ttl_hours` 告警 + 输出生效值
+  `cache_trim_retention`；`cache_hours > cache_ttl_hours` 时按 `cache_hours` 执行（条目在
+  逻辑 TTL 后多留一段，抬高 TTL 时无需冷启动重填）。想真正缩短缓存寿命，改
+  `cache_ttl_hours` 即可。
 
 ### 磁盘占用估算方法
 
@@ -314,6 +357,7 @@ cache 上限 ≤ cache_max_size_gb（硬上限，超出自动淘汰）
 示例：日 1 万轮次、原始 body 平均 100KB、gzip 省 70% → bodies 日增约 0.3GB，
 30 天保留约 9GB，加 10GB 缓存上限，规划 25GB 磁盘并预留 20% 余量。
 
-> 注意：`retention.request_logs_days` 在 lite 模式当前没有对应的自动清理 worker
-> （只有 cache / bodies 两个 trimmer 随 lite 装配启动），SQLite 请求日志表的增长需人工
-> 关注（见 troubleshooting "磁盘空间增长快"）。
+> 注意（R46 F6 后更新）：`retention.request_logs_days` 由 `bg.LiteRetentionWorker`
+> 自动清理（lite 装配启动，无 opt-out，≤0 视为默认 7 天）。注意 bodies 文件侧保留期
+> 仍由 `session_bodies_days`（默认 30 天）独立控制——会话行删除后其 body 文件最多
+> 再存活 23 天由 BodiesTrimmer 回收，属预期行为（见 troubleshooting "磁盘空间增长快"）。

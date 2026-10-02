@@ -618,7 +618,7 @@ func (h *Handler) assertKeyTenantScope(w http.ResponseWriter, r *http.Request, i
 	var tenantID string
 	err := h.db.QueryRow(ctx, `SELECT tenant_id FROM api_keys WHERE id = $1`, id).Scan(&tenantID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "key not found")
+		writeLookupErr(w, "key not found", err)
 		return false
 	}
 	if tenantID != GetTenantID(r) {
@@ -695,9 +695,13 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 			&k.TotalRequests, &k.TotalPromptTokens, &k.TotalCompletionTokens,
 			&k.TotalCostUSD, &k.LastRequestAt,
 			&k.TenantID, &k.KeyAlias); err != nil {
+			warnRowSkip("keys.list", err)
 			continue
 		}
 		keys = append(keys, k)
+	}
+	if writeAggRowsErr(w, "keys.list", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, keys)
 }
@@ -757,6 +761,9 @@ func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"key_id": id, "api_key": plaintext})
+	// 与 credential.secret_revealed 对称（三十七轮审计 P2）：API key 明文
+	// reveal 此前零审计，取证链断裂。审计写在响应之后（同凭据 reveal 口径）。
+	h.writeAuditLog(r, "apikey.secret_revealed", "api_key", id, nil)
 }
 
 // isRevealableKeyCiphertext returns false for empty or placeholder values that
@@ -792,7 +799,7 @@ func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	if _, err := h.db.Exec(ctx, `UPDATE api_keys SET enabled = $1 WHERE id = $2`, enabled, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	h.invalidateKeyCache(id)
@@ -855,7 +862,7 @@ func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int
 		    rate_limit_tpm = $3
 		WHERE id = $4
 	`, rpmArg, concurrentArg, tpmArg, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -961,9 +968,27 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 花费必须从 usage_ledger_with_current_month（= hot ∪ 已 promote 的月分区）
+	// 读取：两条台账写方都直接写 hot、promote 按批调度，读裸 usage_ledger
+	// 父表意味着任何时刻都存在一个滚动的 7 天盲区，恰好覆盖预算闸门最该
+	// 起作用的窗口（R89-133 实证：最近 8h 裸父表 0 行、hot 2,162 行）。
+	// DISTINCT ON 与对账读路径（pg_reconciliation_store）同款：防 promote
+	// 异常形态在 hot 与父表残留同一 request_id 的双份，取 ts 最新的一份。
 	var spent float64
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.QueryRow(ctx, `SELECT COALESCE(SUM(cost_usd), 0) FROM usage_ledger WHERE api_key_id = $1`, req.APIKeyID).Scan(&spent)
+	err = h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(cost_usd), 0) FROM (
+			SELECT DISTINCT ON (request_id) cost_usd
+			FROM usage_ledger_with_current_month
+			WHERE api_key_id = $1
+			ORDER BY request_id, ts DESC
+		) deduped`, req.APIKeyID).Scan(&spent)
+	if err != nil {
+		// 预算闸门必须 fail-closed：查询失败时 spent 保持零值会被下游当成
+		// 「没超预算」放行并回 200——DB 故障的语义是「不知道超没超」，
+		// 不是「没超」（R89-133 缺陷 B）。
+		writeError(w, http.StatusInternalServerError, "usage query failed")
+		return
+	}
 
 	exceeded := budgetUSD != nil && spent >= *budgetUSD
 	var remainingUSD *float64
@@ -1131,9 +1156,13 @@ func (h *Handler) listKeyApplications(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&a.ID, &a.ClientIP, &a.Contact, &a.Purpose,
 			&a.Status, &a.IssuedKeyID, &a.AdminNotes, &a.ReviewedBy,
 			&a.ReviewedAt, &a.CreatedAt, &a.ExpiresAt); err != nil {
+			warnRowSkip("keys.listApplications", err)
 			continue
 		}
 		apps = append(apps, a)
+	}
+	if writeAggRowsErr(w, "keys.listApplications", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, apps)
 }
@@ -1177,7 +1206,7 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 	var status, contact string
 	err := h.db.QueryRow(ctx, `SELECT status, COALESCE(contact,'') FROM key_applications WHERE id = $1::uuid`, appID.String()).Scan(&status, &contact)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "application not found")
+		writeLookupErr(w, "application not found", err)
 		return
 	}
 	if status != "pending" {
@@ -1270,7 +1299,7 @@ func (h *Handler) rejectKeyApplication(w http.ResponseWriter, r *http.Request, a
 	var status string
 	err := h.db.QueryRow(ctx, `SELECT status FROM key_applications WHERE id = $1::uuid`, appID.String()).Scan(&status)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "application not found")
+		writeLookupErr(w, "application not found", err)
 		return
 	}
 	if status != "pending" {
@@ -1459,7 +1488,7 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 	cmd, err := h.db.Exec(ctx, query, args...)
 	if err != nil {
 		slog.Error("patchKey SQL failed", "query", query, "args", args, "error", err)
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	if cmd.RowsAffected() == 0 {

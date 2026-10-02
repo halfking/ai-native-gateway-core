@@ -44,18 +44,19 @@ func TestPersistRequestLog_BothTablesWritten(t *testing.T) {
 	// Execute dual-write
 	ingester.persistRequestLog(ctx, input)
 
-	// Verify request_logs_hot has metadata but NO bodies
-	var rlRequestBody, rlResponseBody *string
+	// Verify request_logs_hot has metadata WITHOUT bodies columns.
+	// R65 夹具适配：迁移 573 已 DROP request_logs_hot.{request,response}_body
+	//（bodies SSOT 迁往 request_logs_bodies_hot），元数据表只余 preview 字段；
+	// 修前查询引用已删列实锤 42703。列不存在本身即双写分离的存储层契约
+	//（由下方 bodies 查询断言补全内容侧）。
 	var rlRequestPreview, rlResponsePreview *string
 	err := pool.QueryRow(ctx, `
-		SELECT request_body, response_body, request_preview, response_preview
+		SELECT request_preview, response_preview
 		FROM request_logs_hot
 		WHERE request_id = $1
-	`, requestID).Scan(&rlRequestBody, &rlResponseBody, &rlRequestPreview, &rlResponsePreview)
+	`, requestID).Scan(&rlRequestPreview, &rlResponsePreview)
 	require.NoError(t, err, "request_logs_hot should have the record")
 
-	assert.Nil(t, rlRequestBody, "request_logs_hot.request_body should be NULL")
-	assert.Nil(t, rlResponseBody, "request_logs_hot.response_body should be NULL")
 	assert.NotNil(t, rlRequestPreview, "request_logs_hot.request_preview should exist")
 	assert.NotNil(t, rlResponsePreview, "request_logs_hot.response_preview should exist")
 
@@ -86,9 +87,19 @@ func TestPersistRequestLog_BothTablesWritten(t *testing.T) {
 	cleanupTestRequestLog(t, pool, requestID)
 }
 
-// TestPersistRequestLog_TransactionRollback verifies that if one INSERT fails,
-// the entire transaction rolls back (neither table gets the record).
-func TestPersistRequestLog_TransactionRollback(t *testing.T) {
+// TestPersistRequestLog_ReingestUpsertsSameRequestID verifies the idempotent
+// re-ingest contract for a repeated request_id.
+//
+// R65 契约适配：本测试原名 TransactionRollback，断言"重复 INSERT 违反
+// UNIQUE 后整事务回滚、旧 payload 保留"。生产实现自 migration-455
+// UNIQUE(request_id) 起改为**幂等 upsert**（request_logs_hot
+// ON CONFLICT DO UPDATE、bodies UPDATE-then-INSERT，见
+// persistRequestLog/upsertRequestLogBodies 注释：遥测为 at-least-once
+// 投递，同 request_id 重投语义是刷新而非重复行）。修前断言与该契约
+// 矛盾实锤红（重投后 bodies 为最新 payload）。现行契约：
+//   - 两个表都恰好 1 行（不产生重复）
+//   - bodies 内容被最新一次投递覆盖（新投递胜出）
+func TestPersistRequestLog_ReingestUpsertsSameRequestID(t *testing.T) {
 	pool := setupTestDB(t)
 	defer pool.Close()
 
@@ -110,7 +121,7 @@ func TestPersistRequestLog_TransactionRollback(t *testing.T) {
 	}
 	ingester.persistRequestLog(ctx, baseInput)
 
-	// Now try to insert the SAME request_id again (should violate UNIQUE constraint)
+	// Re-ingest the SAME request_id (upsert refresh, no duplicate row)
 	duplicateInput := &requestLogInput{
 		RequestID:     baseRequestID,
 		TenantID:      "test-tenant",
@@ -122,8 +133,6 @@ func TestPersistRequestLog_TransactionRollback(t *testing.T) {
 		RequestBody:   strPtrTelemetry(`{"test":"duplicate"}`),
 		ResponseBody:  strPtrTelemetry(`{"result":"duplicate"}`),
 	}
-
-	// This should fail silently (logged, but not panic)
 	ingester.persistRequestLog(ctx, duplicateInput)
 
 	// Verify only ONE record exists in request_logs_hot
@@ -132,22 +141,22 @@ func TestPersistRequestLog_TransactionRollback(t *testing.T) {
 		SELECT COUNT(*) FROM request_logs_hot WHERE request_id = $1
 	`, baseRequestID).Scan(&count)
 	require.NoError(t, err)
-	assert.Equal(t, 1, count, "should have exactly 1 record (duplicate should be rolled back)")
+	assert.Equal(t, 1, count, "re-ingest must not create a duplicate metadata row")
 
 	// Verify only ONE record exists in request_logs_bodies_hot
 	err = pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM request_logs_bodies_hot WHERE request_id = $1
 	`, baseRequestID).Scan(&count)
 	require.NoError(t, err)
-	assert.Equal(t, 1, count, "bodies table should also have exactly 1 record")
+	assert.Equal(t, 1, count, "re-ingest must not create a duplicate bodies row")
 
-	// Verify the content is from the FIRST insert (not overwritten)
+	// Verify the bodies content is from the LATEST delivery (upsert wins)
 	var requestBody string
 	err = pool.QueryRow(ctx, `
 		SELECT request_body::text FROM request_logs_bodies_hot WHERE request_id = $1
 	`, baseRequestID).Scan(&requestBody)
 	require.NoError(t, err)
-	assert.Contains(t, requestBody, "base", "should contain original data, not duplicate")
+	assert.Contains(t, requestBody, "duplicate", "latest delivery must win under the upsert contract")
 
 	// Cleanup
 	cleanupTestRequestLog(t, pool, baseRequestID)

@@ -420,3 +420,47 @@ func TestAutoRouteE2E_ConsistencyAcrossProtocols(t *testing.T) {
 			chatWire.TaskType, msgsWire.TaskType, respWire.TaskType)
 	}
 }
+
+// TestAutoRouteE2E_NonChat_AgentRoleHeaderParsed（R49 自审钉桩，2026-09-20）：
+// /v1/messages 与 /v1/responses 协议面必须解析 X-Gw-Agent-Role——上一轮
+// a7baa1f5a 修复前这两个面 sigs.AgentRole 恒空（角色路由静默失效），当时
+// 只有修复声明、没有本测试。断言经 wire.signals 可观测。
+func TestAutoRouteE2E_NonChat_AgentRoleHeaderParsed(t *testing.T) {
+	enableAutoOnAllProtocols(t)
+
+	t.Run("messages", func(t *testing.T) {
+		ch := &ChatHandler{}
+		ch.SetAutoRoute(newE2EDecider())
+		h := &MessagesHandler{chatHandler: ch}
+		rb := &messagesRequestBody{Model: autoRequestMagic, Messages: []byte(`[{"role":"user","content":"write a function"}]`)}
+		rawBody := []byte(`{"model":"auto","messages":[{"role":"user","content":"write a function"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		req.Header.Set(autoroute.AgentRoleHeader, "worker")
+
+		_, wire, shouldFail := h.maybeResolveAutoForMessages(rb, rawBody, req, 7)
+		if shouldFail || wire == nil {
+			t.Fatalf("shouldFail=%v wire=%v", shouldFail, wire)
+		}
+		if wire.signals.AgentRole != autoroute.RoleWorker {
+			t.Fatalf("messages path must parse agent role header, got %q", wire.signals.AgentRole)
+		}
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		ch := &ChatHandler{}
+		ch.SetAutoRoute(newE2EDecider())
+		h := &ResponsesHandler{chatHandler: ch}
+		rb := &responsesRequestBody{Model: autoRequestMagic, Input: []byte(`"write a function"`)}
+		rawBody := []byte(`{"model":"auto","input":"write a function"}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set(autoroute.AgentRoleHeader, "worker")
+
+		_, wire, shouldFail := h.maybeResolveAutoForResponses(rb, rawBody, req, 7)
+		if shouldFail || wire == nil {
+			t.Fatalf("shouldFail=%v wire=%v", shouldFail, wire)
+		}
+		if wire.signals.AgentRole != autoroute.RoleWorker {
+			t.Fatalf("responses path must parse agent role header, got %q", wire.signals.AgentRole)
+		}
+	})
+}

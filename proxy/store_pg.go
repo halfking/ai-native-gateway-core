@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // PgStore 是基于 pgxpool 的 proxy.Store 实现。
@@ -813,19 +814,19 @@ func (s *PgStore) scanSubscription(ctx context.Context, q string, args ...interf
 // scanSubscriptionRow 将一行扫描结果组装成 Subscription，对可空列使用指针避免 NULL 扫描错误。
 func (s *PgStore) scanSubscriptionRow(scan func(...interface{}) error) (*Subscription, error) {
 	var (
-		id               int
-		name             string
-		subscribeURL     string
-		status           string
-		lastFetchAt      *time.Time
-		lastFetchStatus  *string
-		lastError        *string
-		nodeCount        int
-		priority         int
-		notes            *string
-		bannedRegions    []string
-		createdAt        time.Time
-		updatedAt        time.Time
+		id              int
+		name            string
+		subscribeURL    string
+		status          string
+		lastFetchAt     *time.Time
+		lastFetchStatus *string
+		lastError       *string
+		nodeCount       int
+		priority        int
+		notes           *string
+		bannedRegions   []string
+		createdAt       time.Time
+		updatedAt       time.Time
 	)
 	if err := scan(
 		&id, &name, &subscribeURL, &status, &lastFetchAt, &lastFetchStatus,
@@ -835,15 +836,15 @@ func (s *PgStore) scanSubscriptionRow(scan func(...interface{}) error) (*Subscri
 	}
 
 	sub := &Subscription{
-		ID:              id,
-		Name:            name,
-		SubscribeURL:    subscribeURL,
-		Status:          status,
-		NodeCount:       nodeCount,
-		Priority:        priority,
-		BannedRegions:   normalizeRegions(bannedRegions),
-		CreatedAt:       createdAt,
-		UpdatedAt:       updatedAt,
+		ID:            id,
+		Name:          name,
+		SubscribeURL:  subscribeURL,
+		Status:        status,
+		NodeCount:     nodeCount,
+		Priority:      priority,
+		BannedRegions: normalizeRegions(bannedRegions),
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
 	}
 	if lastFetchAt != nil {
 		sub.LastFetchAt = *lastFetchAt
@@ -891,26 +892,26 @@ func (s *PgStore) scanNode(ctx context.Context, q string, args ...interface{}) (
 // scanNodeRow 将一行扫描结果组装成 Node，对可空列使用指针，并在读取时按需解密密码。
 func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 	var (
-		id                     int
-		subscriptionID         int
-		name                   string
-		protocol               string
-		server                 string
-		port                   int
-		username               *string
-		password               *string
-		config                 []byte
-		location               *string
-		status                 string
-		healthCheckURL         string
-		lastHealthCheckAt      *time.Time
-		lastHealthCheckStatus  *string
-		responseTimeMs         *int
-		successRate            *float64
-		consecutiveFailures    *int
-		bannedRegions          []string
-		createdAt              time.Time
-		updatedAt              time.Time
+		id                    int
+		subscriptionID        int
+		name                  string
+		protocol              string
+		server                string
+		port                  int
+		username              *string
+		password              *string
+		config                []byte
+		location              *string
+		status                string
+		healthCheckURL        string
+		lastHealthCheckAt     *time.Time
+		lastHealthCheckStatus *string
+		responseTimeMs        *int
+		successRate           *float64
+		consecutiveFailures   *int
+		bannedRegions         []string
+		createdAt             time.Time
+		updatedAt             time.Time
 	)
 	if err := scan(
 		&id, &subscriptionID, &name, &protocol, &server, &port, &username, &password, &config,
@@ -921,17 +922,17 @@ func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 	}
 
 	node := &Node{
-		ID:                id,
-		SubscriptionID:    subscriptionID,
-		Name:              name,
-		Protocol:          protocol,
-		Server:            server,
-		Port:              port,
-		Status:            status,
-		HealthCheckURL:    healthCheckURL,
-		BannedRegions:     normalizeRegions(bannedRegions),
-		CreatedAt:         createdAt,
-		UpdatedAt:         updatedAt,
+		ID:             id,
+		SubscriptionID: subscriptionID,
+		Name:           name,
+		Protocol:       protocol,
+		Server:         server,
+		Port:           port,
+		Status:         status,
+		HealthCheckURL: healthCheckURL,
+		BannedRegions:  normalizeRegions(bannedRegions),
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
 	}
 	if username != nil {
 		node.Username = *username
@@ -954,10 +955,8 @@ func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 	if consecutiveFailures != nil {
 		node.ConsecutiveFailures = *consecutiveFailures
 	}
-	if len(config) > 0 {
-		// 容忍不合法的 JSON：保持 nil，不中断查询。
-		_ = json.Unmarshal(config, &node.Config)
-	}
+	// 容忍不合法的 JSON：保持 nil，不中断查询（R67 语义：留痕后继续）。
+	jsoncol.Decode("proxy.PgStore.scanNodeRow/config", config, &node.Config)
 
 	// 密码：数据库列可能加密也可能为历史明文。dec 为 nil 或解密失败时保留原值。
 	// 审计修复 (2026-08-29)：问题 11 - 设置解密失败标志，调用方可据此判断密码是否可用。

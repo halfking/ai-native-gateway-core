@@ -1,8 +1,9 @@
 # LLM Gateway Go — 功能模块详细指南
 
-> **版本**: v2.5.3  
-> **更新日期**: 2026-09-06  
+> **版本**: v3.0（统计口径刷新）  
+> **更新日期**: 2026-10-01  
 > **目标读者**: 开发者、架构师、运维人员  
+> **配套**: 逐特性的实现映射（功能→包→API→前端页，含 🔴 新旧并行标注）以 [01-requirements/functional/FEATURES_CATALOG.md](./01-requirements/functional/FEATURES_CATALOG.md) 为权威，本指南为策展版讲解。  
 
 ---
 
@@ -23,23 +24,23 @@
 
 ```
 llm-gateway-go/
-├── cmd/                    # 可执行程序入口（30个）
+├── cmd/                    # 可执行程序入口（34个，2026-10-01 扫描）
 │   ├── gateway/           # 主网关程序 ⭐
-│   ├── gateway-v2/        # Pipeline验证入口
+│   ├── gateway-v2/        # Pipeline 演示入口（并行未接管，见并行对比文档 P-01）
 │   ├── license-authority/ # License授权服务
 │   └── tools/             # 工具集合
-├── domains/               # 领域模型层（64个领域）⭐
-├── admin/                 # Admin API（453文件）⭐
-├── bg/                    # 后台Worker（217文件）⭐
+├── domains/               # 领域模型层（67个领域）⭐
+├── admin/                 # Admin API（531文件）⭐
+├── bg/                    # 后台Worker（294文件）⭐
 ├── web/                   # Vue管理面板 ⭐
 ├── installer/             # 安装器（独立Go模块）⭐
 ├── middleware/            # HTTP中间件
 ├── adapter/               # 协议适配器
 ├── internal/              # 内部共享代码
 ├── pkg/                   # 可复用包
-├── migrations/            # 数据库迁移（1个，主迁移在 db/migrations/ 和 sql/migrations/）
+├── migrations/            # 数据库迁移（1个，主迁移在 db/migrations/ 和 sql/migrations/；startup 7xx 序列最新 765）
 ├── scripts/               # 自动化脚本
-├── docs/                  # 文档（110+文件）
+├── docs/                  # 文档
 └── deploy/                # 部署配置
 ```
 
@@ -49,7 +50,7 @@ llm-gateway-go/
 |------|----------|----------|
 | **数据面** | 20+ | 请求处理、路由、流式中继 |
 | **控制面** | 15+ | 管理API、配置、监控 |
-| **领域模型** | 64 | 业务逻辑、状态管理 |
+| **领域模型** | 67 | 业务逻辑、状态管理 |
 | **基础设施** | 30+ | 数据库、缓存、消息队列 |
 | **后台任务** | 50+ | 定时任务、数据治理 |
 | **工具程序** | 25+ | 开发、测试、运维工具 |
@@ -160,7 +161,7 @@ Client Request
     │
     ├─→ [7] Sticky检查（会话粘性）
     │
-    ├─→ [8] P2C/Bandit评分排序 ⭐
+    ├─→ [8] P2C评分排序 ⭐
     │
     └─→ [9] 返回Top-N候选
 ```

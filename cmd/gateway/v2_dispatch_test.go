@@ -141,7 +141,7 @@ func TestV2Dispatch_DefaultOff_NoPipeline(t *testing.T) {
 	}
 
 	chat := &v2ChatHandlerStub{}
-	mux, deps, ok := v2DispatchMux(chat, chat, chat)
+	mux, deps, ok := v2DispatchMux(chat, chat, chat, nil)
 	if ok {
 		t.Fatalf("v2DispatchMux() must report !ok when flag is off; got ok=%v deps=%v", ok, deps)
 	}
@@ -168,7 +168,7 @@ func TestV2Dispatch_ExplicitFalse_NoPipeline(t *testing.T) {
 				t.Fatalf("v2UsePipeline() must return false for value %q", v)
 			}
 			chat := &v2ChatHandlerStub{}
-			_, _, ok := v2DispatchMux(chat, chat, chat)
+			_, _, ok := v2DispatchMux(chat, chat, chat, nil)
 			if ok {
 				t.Fatalf("v2DispatchMux() must report !ok for value %q", v)
 			}
@@ -192,7 +192,7 @@ func TestV2Dispatch_ExplicitTrue_BuildsPipeline(t *testing.T) {
 			}
 
 			chat := &v2ChatHandlerStub{}
-			mux, deps, ok := v2DispatchMux(chat, chat, chat)
+			mux, deps, ok := v2DispatchMux(chat, chat, chat, nil)
 			if !ok {
 				t.Fatal("v2DispatchMux() must report ok=true when flag is on")
 			}
@@ -249,7 +249,7 @@ func TestV2Dispatch_AllFourEndpointsForwardToFallback(t *testing.T) {
 	// register them again here. /v1/chat/completions and
 	// /v1/completions each get their own stub so call counters
 	// stay independent.
-	mux, deps, ok := v2DispatchMux(chat1, messages, responses)
+	mux, deps, ok := v2DispatchMux(chat1, messages, responses, nil)
 	if !ok || deps == nil {
 		t.Fatalf("v2DispatchMux() must report ok=true deps=non-nil; got ok=%v", ok)
 	}
@@ -308,7 +308,7 @@ func TestV2Dispatch_PipelineExecutesBeforeFallback(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_USE_V2_PIPELINE", "true")
 
 	chat := &v2ChatHandlerStub{}
-	mux, deps, ok := v2DispatchMux(chat, chat, chat)
+	mux, deps, ok := v2DispatchMux(chat, chat, chat, nil)
 	if !ok || deps == nil {
 		t.Fatalf("v2DispatchMux() must succeed; got ok=%v", ok)
 	}
@@ -342,7 +342,7 @@ func TestV2Dispatch_NilChatHandlerSafe(t *testing.T) {
 			t.Fatalf("v2DispatchMux panicked on nil chatHandler: %v", r)
 		}
 	}()
-	mux, deps, ok := v2DispatchMux(nil, nil, nil)
+	mux, deps, ok := v2DispatchMux(nil, nil, nil, nil)
 	if ok {
 		t.Fatal("v2DispatchMux() must report !ok when chatHandler is nil")
 	}
@@ -474,7 +474,7 @@ func TestV2Dispatch_PipelineErrorDoesNotBlockFallback(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_USE_V2_PIPELINE", "true")
 
 	chat := &v2ChatHandlerStub{}
-	_, deps, ok := v2DispatchMux(chat, chat, chat)
+	_, deps, ok := v2DispatchMux(chat, chat, chat, nil)
 	if !ok || deps == nil {
 		t.Fatalf("v2DispatchMux() must succeed; got ok=%v", ok)
 	}

@@ -87,6 +87,13 @@ type SessionUpdate struct {
 	ClientIP      string
 	AgentName     string
 
+	// 730 会话角色归因三列（R50 F15 写入方）。与 706 同款首值优先：
+	// AgentRole ""=未声明（SQL 侧 COALESCE(NULLIF(…),'main') 落列默认，
+	// CHECK 五值约束不变）；parent 双列 ""→NULL（部分索引谓词依赖 NULL 语义）。
+	AgentRole       string
+	ParentSessionID string
+	ParentTaskID    string
+
 	// Incremental counters (add to existing)
 	TurnIncrement   int
 	TokensIncrement int
@@ -217,18 +224,23 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			client_type,
 			project_id, api_key_id, application_id, end_user_id,
 			owner_user, client_ip, agent_name,
-			partition_date
-		) VALUES (
-			$1, $2,
-			$3, $3, 'active',
-			$4, $5, $6,
-			$7, $8, $9,
-			$10, $11,
-			$12,
-			$13, $14, $15, $16,
-			$17, $18, $19,
-			$20
-		)
+			agent_role, parent_session_id, parent_task_id,
+				partition_date,
+				primary_request_id
+			) VALUES (
+				$1, $2,
+				$3, $3, 'active',
+				$4, $5, $6,
+				$7, $8, $9,
+				$10, $11,
+				$12,
+				$13, $14, $15, $16,
+				$17, $18, $19,
+				COALESCE(NULLIF($20, ''), 'main'),
+				NULLIF($21, ''), NULLIF($22, ''),
+				$23,
+				NULLIF($24, '')
+			)
 		-- 租户守卫（2026-09-07 审计）：客户端提供的 gw_ 会话 id 在 Redis
 		-- 缓存过期后无法做归属校验，WHERE 挡住他租户 key 用同 id 混写
 		-- 本行计数/摘要 —— 冲突但不满足租户条件时整条 UPDATE 跳过。
@@ -250,7 +262,33 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			end_user_id = COALESCE(NULLIF(EXCLUDED.end_user_id, ''), public.sessions.end_user_id),
 			owner_user = COALESCE(NULLIF(EXCLUDED.owner_user, ''), public.sessions.owner_user),
 			client_ip = COALESCE(NULLIF(EXCLUDED.client_ip, ''), public.sessions.client_ip),
-			agent_name = COALESCE(NULLIF(EXCLUDED.agent_name, ''), public.sessions.agent_name)
+			agent_name = COALESCE(NULLIF(EXCLUDED.agent_name, ''), public.sessions.agent_name),
+			-- 730 归因三列（R50 F15）：首值优先。agent_role 的空值已在
+			-- VALUES 臂归一为 'main'（列 NOT NULL），EXCLUDED 恒为合法五值
+			-- 之一、不触碰 CHECK。冲突臂用"默认可精化"语义：存量仍是 'main'
+			-- （未归因默认）时允许后续轮声明精化，任何已固化角色不被默认值
+			-- 降级——不能用 COALESCE(NULLIF(EXCLUDED...))，否则重放轮的
+			-- 归一默认 'main' 会覆盖首写角色（真库演练实捕，pgxmock 测不出）。
+			agent_role = CASE
+				WHEN public.sessions.agent_role = 'main' THEN EXCLUDED.agent_role
+				ELSE public.sessions.agent_role
+			END,
+			parent_session_id = COALESCE(EXCLUDED.parent_session_id, public.sessions.parent_session_id),
+			parent_task_id = COALESCE(EXCLUDED.parent_task_id, public.sessions.parent_task_id),
+			-- R69 审计：首值优先固化首个请求 id。admin 会话详情端点的
+			-- gw_session_id 反向映射臂（session_detail_v2.go resolveSessionID
+			-- 步骤 2）经 sessions.primary_request_id 关联 request_logs——本
+			-- 写入者此前不含该列，活跃会话恒 NULL，反向臂只服务 backfill/
+			-- repair 期数据。聚合按轮到达顺序追加，首个非空 RequestID 即
+			-- 语义上的"第一个请求"，与 430 列注释一致。
+			-- R71 审计修正：R69 初版把冲突臂写成
+			-- COALESCE(NULLIF(EXCLUDED…), sessions…)——EXCLUDED 优先即
+			-- last-write-wins，每轮 upsert 把指针推到最新轮，与 430 列注释
+			-- /repair 工具（v1Turns[0]）/本注释三方"第一个请求"契约相反；
+			-- 且指针被无限推向最新热行、永不收敛。翻转为存量优先：首个
+			-- 非空 RequestID 固化后不再被后续轮改写（与 730 归因列注释的
+			-- "不能用 COALESCE(NULLIF(EXCLUDED...))" 形态学一致）。
+			primary_request_id = COALESCE(public.sessions.primary_request_id, NULLIF(EXCLUDED.primary_request_id, ''))
 		WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
 	`,
 		update.SessionID, update.TenantID,
@@ -261,7 +299,9 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 		update.ClientType,
 		update.ProjectID, update.APIKeyID, update.ApplicationID, update.EndUserID,
 		update.OwnerUser, update.ClientIP, update.AgentName,
+		update.AgentRole, update.ParentSessionID, update.ParentTaskID,
 		partitionDate,
+		update.RequestID,
 	)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)

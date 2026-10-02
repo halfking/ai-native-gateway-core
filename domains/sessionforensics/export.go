@@ -10,7 +10,69 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
+
+// forensicsExportMessagesSQL and forensicsExportMessagesSQLAlt are the session
+// message-stream statement for the two call sites (a tenant transaction and a
+// plain store query). Factored out on 2026-10-01 so the integration gate can
+// execute the production text itself instead of a paraphrase.
+//
+// This statement carried two fatal defects for its entire life:
+//
+//  1. `SELECT rl.role` — request_logs_with_current_month has 115 columns and no
+//     `role` (information_schema confirms 0 rows) → 42703 on every call.
+//  2. `COALESCE(rb.request_body, ”::jsonb)` — PostgreSQL evaluates the constant
+//     at parse time and `”` is not a JSON document → 22P02.
+//
+// Neither was ever caught: every existing test in this package drives a mocked
+// store, and a mock matches a query *string* — it never asks PostgreSQL to parse
+// one. The `role` derivation below mirrors admin/session_export.go so the two
+// exporters cannot disagree about message direction.
+//
+// They remain two literals because there are two call sites, and a repair that
+// touches one but not the other is exactly the failure this gate exists to
+// catch; TestForensicsExportSQLVariantsStayInSync enforces they stay identical.
+// Do not inline either one back.
+const forensicsExportMessagesSQL = `
+		SELECT
+			rl.id::text,
+			(CASE
+				WHEN rl.work_type IN ('agent', 'memora') THEN 'assistant'
+				WHEN lower(COALESCE(rl.request_mode, '')) IN ('completion', 'embedding') THEN 'assistant'
+				ELSE 'user'
+			END) AS role,
+			rl.parent_request_id,
+			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
+			rl.attachments, rl.ts,
+			COALESCE(rb.request_body, '{}'::jsonb) AS request_body,
+			COALESCE(rb.response_body, '{}'::jsonb) AS response_body,
+			rl.client_model, rl.outbound_model
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC, rl.id ASC
+	`
+
+const forensicsExportMessagesSQLAlt = `
+		SELECT
+			rl.id::text,
+			(CASE
+				WHEN rl.work_type IN ('agent', 'memora') THEN 'assistant'
+				WHEN lower(COALESCE(rl.request_mode, '')) IN ('completion', 'embedding') THEN 'assistant'
+				ELSE 'user'
+			END) AS role,
+			rl.parent_request_id,
+			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
+			rl.attachments, rl.ts,
+			COALESCE(rb.request_body, '{}'::jsonb) AS request_body,
+			COALESCE(rb.response_body, '{}'::jsonb) AS response_body,
+			rl.client_model, rl.outbound_model
+ 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC, rl.id ASC
+	`
 
 // ErrorDBUnavailable 当 DB 连接不可用时返回。
 var ErrorDBUnavailable = errors.New("sessionforensics: db unavailable")
@@ -112,22 +174,20 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 	turn := 0
 	seenAtt := map[string]struct{}{}
 
-	rows, err := tx.Query(ctx, `
-		SELECT
-			rl.id::text, rl.role, rl.parent_request_id,
-			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-			rl.attachments, rl.ts,
-			COALESCE(rb.request_body, ''::jsonb) AS request_body,
-			COALESCE(rb.response_body, ''::jsonb) AS response_body,
-			rl.client_model, rl.outbound_model
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.ts ASC, rl.id ASC
-	`, sessionID, tenantID)
+	rows, err := tx.Query(ctx, forensicsExportMessagesSQL, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
+	// R67-B 修正：本函数原先**没有** `defer rows.Close()`。此前循环总是跑到
+	// 耗尽，而 pgx 在 `Next()` 返回 false 时会自动 Close，所以那个洞是潜伏的。
+	// R66 在循环中加了 `return nil, ...`（取证包必须完整，见下），这条路径
+	// 于是变得可达：rows 会在结果集仍挂载时被丢下，而 tx 是**调用方持有**的
+	// ——调用方随后以半读的结果集去 rollback / 释放事务。
+	//
+	// 注意形式差异：另外两个函数走 `e.store`（database/sql，`Close()` 返回
+	// error，故写作 `defer func(){ _ = rows.Close() }()`）；此处是
+	// `tx.Query`（pgx.Rows，`Close()` 无返回值），只能直接 defer。
+	defer rows.Close()
 
 	for rows.Next() {
 		var (
@@ -140,8 +200,10 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 		if err := rows.Scan(&id, &role, &parentID, &reason, &strategy,
 			&compMeta, &attachments, &createdAt, &reqBody, &respBody,
 			&clientModel, &outboundModel); err != nil {
-			slog.Warn("scan row failed", "session", sessionID, "err", err)
-			continue
+			// R66（category 4）：取证包必须是**完整**的会话转录。跳行会
+			// 让 turn 序号与真实请求错位（turn++ 在其后），产出一份
+			// 看起来自洽、实则缺轮的证据包——比导出失败危险得多。上抛。
+			return nil, fmt.Errorf("scan message row (session %s): %w", sessionID, err)
 		}
 		turn++
 		msg := ExportMessage{
@@ -152,9 +214,7 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 			CompressionStrategy: strategy,
 			CreatedAt:           createdAt.UTC().Format(time.RFC3339),
 		}
-		if len(compMeta) > 0 {
-			_ = json.Unmarshal(compMeta, &msg.CompressionMeta)
-		}
+		jsoncol.Decode("sessionforensics.export/compression_meta", compMeta, &msg.CompressionMeta)
 		if respBody != nil && *respBody != "" {
 			msg.Content = *respBody
 		} else if reqBody != nil {
@@ -238,19 +298,7 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 	}
 	turn := 0
 
-	rows, err := e.store.Query(ctx, `
-		SELECT
-			rl.id::text, rl.role, rl.parent_request_id,
-			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-			rl.attachments, rl.ts,
-			COALESCE(rb.request_body, ''::jsonb) AS request_body,
-			COALESCE(rb.response_body, ''::jsonb) AS response_body,
-			rl.client_model, rl.outbound_model
- 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.ts ASC, rl.id ASC
-	`, sessionID, tenantID)
+	rows, err := e.store.Query(ctx, forensicsExportMessagesSQLAlt, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
@@ -268,8 +316,10 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 		if err := rows.Scan(&id, &role, &parentID, &reason, &strategy,
 			&compMeta, &attachments, &createdAt, &reqBody, &respBody,
 			&clientModel, &outboundModel); err != nil {
-			slog.Warn("scan row failed", "session", sessionID, "err", err)
-			continue
+			// R66（category 4）：取证包必须是**完整**的会话转录。跳行会
+			// 让 turn 序号与真实请求错位（turn++ 在其后），产出一份
+			// 看起来自洽、实则缺轮的证据包——比导出失败危险得多。上抛。
+			return nil, fmt.Errorf("scan message row (session %s): %w", sessionID, err)
 		}
 		turn++
 		msg := ExportMessage{
@@ -280,9 +330,7 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 			CompressionStrategy: strategy,
 			CreatedAt:           createdAt.UTC().Format(time.RFC3339),
 		}
-		if len(compMeta) > 0 {
-			_ = json.Unmarshal(compMeta, &msg.CompressionMeta)
-		}
+		jsoncol.Decode("sessionforensics.export/compression_meta", compMeta, &msg.CompressionMeta)
 		if respBody != nil && *respBody != "" {
 			msg.Content = *respBody
 		} else if reqBody != nil {
@@ -391,7 +439,9 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 		)
 		if err := rows.Scan(&sid, &turns, &hits, &mis, &ptOk,
 			&tpTokens, &trTokens, &tcost, &earliest, &lates, &models); err != nil {
-			continue
+			// R66（category 4）：会话审计清单跳行 = 该会话在审计视图里
+			// 凭空消失（审计面不会显示“少了一条”）。上抛。
+			return nil, fmt.Errorf("scan session audit row (tenant %s): %w", tenantID, err)
 		}
 		if sid == nil || *sid == "" {
 			continue
@@ -416,6 +466,13 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 			a.LatestAt = *lates
 		}
 		out = append(out, a)
+	}
+	// R66（category 4）：清单被静默截断 = 审计视角下最近会话凭空少了
+	// 一段，且 limit 已填满的假象会让人以为“就这些了”。上抛。
+	// 本函数走 e.store 的 RowIterator 接口（Close() error），不是 pgx.Rows，
+	// 故直接调 rows.Err()，不走 internal/dbrows。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sessionforensics.Exporter.ListRecentSessions: iterate rows: %w", err)
 	}
 	return out, nil
 }

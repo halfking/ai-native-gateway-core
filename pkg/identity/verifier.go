@@ -66,6 +66,10 @@ type Principal struct {
 	Issuer             string
 	Audience           string
 	ExpiresAt          time.Time
+	// IssuedAt is the token's iat (legacy path only; multi-issuer tokens
+	// leave it zero). Used by the admin auth middlewares to reject tokens
+	// issued before the user's last password change.
+	IssuedAt           time.Time
 	Source             string // "legacy" | "multi_issuer"
 	MustChangePassword bool   // only meaningful for Source=="legacy"
 }
@@ -88,6 +92,10 @@ type LegacyClaims struct {
 	Username           string
 	Role               string
 	MustChangePassword bool
+	// IssuedAt carries the token's iat so callers can implement
+	// post-password-change session revocation (Wave 3 B4). Zero for
+	// verifiers that do not expose it.
+	IssuedAt time.Time
 }
 
 // Verify tries, in order:
@@ -131,6 +139,7 @@ func Verify(raw string, legacy LegacyVerifier) (*Principal, error) {
 				Issuer:             "llm-gateway",
 				Audience:           DefaultAudience,
 				ExpiresAt:          time.Time{},
+				IssuedAt:           c.IssuedAt,
 				Source:             "legacy",
 				MustChangePassword: c.MustChangePassword,
 			}, nil

@@ -94,6 +94,10 @@ const sessionTurnDigestQuery = `
 		t.digest
 	FROM public.session_turns_with_current_month t
 	WHERE t.session_id = $1
+	  -- Wave 1 A5 (2026-09-22): 影子轮（origin_actor='goal-%'）不进会话拼装
+	  -- 链，与 v2SessionBodiesBaseQuery 的排除同语义；轮本身的 digest 行保留
+	  -- 供 admin/turn_digest 与对账。
+	  AND COALESCE(t.origin_actor, '') NOT LIKE 'goal-%'
 `
 
 func (m *perTurnDigestSource) fetchDigestTurns(ctx context.Context, tenantID, sessionKey string, since time.Time) ([]digestTurnRow, error) {

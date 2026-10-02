@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // CandidateFailureAlert is the row shape inserted into the in-memory
@@ -125,7 +126,7 @@ func (m *CandidateFailureMonitor) Start(ctx context.Context) {
 	m.started = true
 	ctx, m.cancel = context.WithCancel(ctx)
 	m.stateMu.Unlock()
-	go m.run(ctx)
+	Go("candidate_failure_monitor.run", func() { m.run(ctx) })
 	slog.Info("candidate_failure_monitor started")
 }
 
@@ -293,6 +294,11 @@ func (m *CandidateFailureMonitor) checkAlerts(ctx context.Context) error {
 			m.fireAlert(a)
 		}
 	}
+	// R66: 聚合分组被截断 = 少发若干告警，监控面看不到。
+	if err := rows.Err(); err != nil {
+		slog.Warn("candidate_failure_monitor: alert row iteration aborted; batch truncated",
+			"error", err, "window_sec", int(m.alertWindow.Seconds()))
+	}
 	return nil
 }
 
@@ -309,8 +315,21 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 	// auto-cool never saw current traffic and never fired.
 	rows, err := m.db.Query(ctx, `
 		WITH win AS (
-		    SELECT credential_id, COUNT(*) FILTER (WHERE lower(COALESCE(request_status, '')) = 'failure') AS fails,
-		                  COUNT(*) AS attempts
+		    SELECT credential_id,
+		           COUNT(*) FILTER (
+		               WHERE lower(COALESCE(request_status, '')) = 'failure'
+		                 -- 2026-09-25: exclude node-probe failures from the
+		                 -- auto-cool failure ratio. The probe worker hits every
+		                 -- model on a credential (146 models on a multi-model
+		                 -- provider), and transient probe errors (rate_limit,
+		                 -- 5xx, timeout) were counted as user-request failures,
+		                 -- cooling healthy credentials that had zero real-user
+		                 -- failures. Probe results live in node_probe_state and
+		                 -- drive per-model gating via v_routable_credential_models;
+		                 -- they must not feed the credential-level auto-cool.
+		                 AND COALESCE(error_kind, '') NOT LIKE 'probe_direct_%'
+		           ) AS fails,
+		           COUNT(*) AS attempts
 		    FROM request_logs_with_current_month
 		    WHERE ts >= now() - interval '5 minutes'
 		      AND credential_id IS NOT NULL
@@ -339,7 +358,9 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 	for rows.Next() {
 		var credID, attempts, fails, recentFails int
 		if err := rows.Scan(&credID, &attempts, &fails, &recentFails); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.CandidateFailureMonitor.checkAutoCool", err) {
+				continue
+			}
 		}
 		ratio := float64(fails) / float64(attempts)
 		slog.Warn("candidate_failure_monitor: auto-cool trigger",
@@ -353,6 +374,11 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 			slog.Warn("candidate_failure_monitor: applyAutoCool failed",
 				"credential_id", credID, "error", err)
 		}
+	}
+	// R66: 被截断 = 少冷却若干本该冷却的 credential，失败率会继续冲高。
+	if err := rows.Err(); err != nil {
+		slog.Warn("candidate_failure_monitor: auto-cool row iteration aborted; batch truncated",
+			"error", err)
 	}
 	return nil
 }
@@ -431,7 +457,7 @@ func (m *CandidateFailureMonitor) fireAlert(a CandidateFailureAlert) {
 	if m.webhookURL == "" {
 		return
 	}
-	go m.postWebhook(a)
+	Go("candidate_failure_monitor.postWebhook", func() { m.postWebhook(a) })
 }
 
 func (m *CandidateFailureMonitor) postWebhook(a CandidateFailureAlert) {

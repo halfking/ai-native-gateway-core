@@ -8,6 +8,7 @@ export default {
     compression: 'Compression',
     rateLimit: 'Limite de débit',
     timeout: 'Délai d\'attente',
+    retry: 'Réessai',
     routing: 'Routage',
     session: 'Session',
     security: 'Sécurité',

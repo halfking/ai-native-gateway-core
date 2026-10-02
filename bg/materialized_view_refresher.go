@@ -8,6 +8,18 @@
 // Refresh strategy:
 //   - routing_analytics_7d / routing_audit_summary_7d:
 //     REFRESH MATERIALIZED VIEW CONCURRENTLY every RefreshInterval.
+//   - Ticks are aligned to wall-clock boundaries (UTC multiples of
+//     RefreshInterval), not to each process's start time. The token and
+//     advisory locks below are mutual-exclusion WITHIN an overlapping
+//     window only — they cannot dedup ticks that arrive minutes apart.
+//     With phase-random tickers, every gateway instance on the shared
+//     database refreshed on its own phase and the locks never fired
+//     (252 production 2026-09-28: three instances → three fixed tick
+//     phases → 3× REFRESH amplification, ~90s of matview maintenance per
+//     10min). Aligned ticks make concurrent instances contend at the same
+//     instant, which is exactly the case the locks DO collapse — one
+//     refresh per window fleet-wide. Clock skew beyond one refresh cycle
+//     degrades to the old behavior (correct, just duplicated).
 //   - Cross-instance coordination is a token-bucket: every RefreshInterval
 //     tick is one "token", and exactly one gateway instance should redeem
 //     it. Two lock backends implement that mutual exclusion:
@@ -76,6 +88,18 @@ const (
 	// mvDriftAlertCooldown prevents a persistent drift from sending an alert on
 	// every ten-minute refresh cycle. Metrics remain updated on every check.
 	mvDriftAlertCooldown = 30 * time.Minute
+
+	// mvRefreshStatementTimeout lifts the connection-default statement_timeout
+	// for the REFRESH statement only (2026-09-21, 252 PG 日志审计轮). The
+	// llm_gateway role carries `statement_timeout=30s` (252 生产角色级配置，
+	// 兜底所有应用语句)，而 routing_analytics_7d 的 REFRESH CONCURRENTLY
+	// 单次物化 ~17M 行、均值 6.2s 但 ~50% 周期在 29.9s 被角色级上限击杀
+	// （252 生产日志 6.3h 窗口：38 次超时 / 35 次慢完成）——陈旧度契约
+	// （15min）被打破，admin 端点退化回基础视图重查询。客户端 ctx 上限
+	// RefreshTimeout=5min 本就允许更久，这里把该连接的语句上限抬到
+	// 180s（< 5min ctx，且 < RefreshInterval 的 2 倍，不会堆积周期），
+	// 用后立刻 RESET，不污染连接池归还后的其他语句。
+	mvRefreshStatementTimeout = "180s"
 )
 
 // MaterializedViewRefresher manages periodic refresh of routing analytics
@@ -119,7 +143,9 @@ func NewMaterializedViewRefresher(db *pgxpool.Pool) *MaterializedViewRefresher {
 // cross-instance leader election (2026-09-01 — token-bucket refresh
 // coordination). Optional: when never called, or called with a manager
 // whose Enabled() is false, refreshView transparently falls back to the
-// Postgres advisory lock. Safe to call before or after Start().
+// Postgres advisory lock. Call before Start(): the field is read by the
+// refresh loop goroutine without a lock, so a post-Start call is a data
+// race (current production wiring in main.go only calls it before Start).
 func (r *MaterializedViewRefresher) SetDistLock(mgr distlock.Manager) {
 	r.distLock = mgr
 }
@@ -129,7 +155,7 @@ func (r *MaterializedViewRefresher) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 
-	go r.refreshLoop(ctx)
+	Go("materialized_view_refresher.refreshLoop", func() { r.refreshLoop(ctx) })
 	slog.Info("materialized_view_refresher started",
 		"interval", RefreshInterval.String(),
 		"timeout", RefreshTimeout.String())
@@ -147,7 +173,8 @@ func (r *MaterializedViewRefresher) Stop() {
 
 // SetAlertCallback sets the callback function for refresh failure alerts.
 // The callback is invoked when consecutive failures reach 2 or more.
-// Safe to call before or after Start().
+// Call before Start(): alertCallback is read by the refresh loop goroutine
+// without a lock, so a post-Start call is a data race.
 func (r *MaterializedViewRefresher) SetAlertCallback(cb func(viewName string, consecutiveFailures int, err error)) {
 	r.alertCallback = cb
 }
@@ -173,16 +200,41 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 	}
 	r.refreshAll(ctx)
 
-	ticker := time.NewTicker(RefreshInterval)
-	defer ticker.Stop()
+	// 2026-09-28 252 PG 日志审计轮（R12-F1）：对齐墙钟边界，不用
+	// time.NewTicker 的"进程启动相位"。根因实证：252 三台网关各持一个
+	// 相位随机的 10min ticker，而 Redis token / advisory lock 都只是
+	// "重叠窗口内互斥"——只去重并发刷新，不去重错峰 tick。生产日志
+	// 50min 窗口 15 次 routing_analytics_7d REFRESH 呈三个固定相位
+	// （:15/:25/:35…、:19/:29…、:23/:33…）= 三实例各刷各的，每轮
+	// REFRESH 15-22s + 漂移核查，~90s/10min 持续烧在重复物化上。
+	// 对齐后所有实例在同一边界瞬间竞争，既有互斥随之收敛为每窗口
+	// 恰好一次 REFRESH。时钟偏移超过单轮刷新时长时退化为旧行为
+	//（正确性无损，仅重复）。每轮重算等待时间，刷新耗时不会累积漂移。
+	timer := time.NewTimer(nextAlignedWait(time.Now(), RefreshInterval))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			r.refreshAll(ctx)
+			timer.Reset(nextAlignedWait(time.Now(), RefreshInterval))
 		}
 	}
+}
+
+// nextAlignedWait returns how long to sleep until the next wall-clock
+// multiple of interval, anchored to the Unix epoch in UTC so every gateway
+// instance — regardless of local timezone or process start time — wakes on
+// the same boundary (CST=UTC+8 is a whole multiple of 10min, so the
+// boundary set is identical in local time). Landing exactly on a boundary
+// yields a full interval, never a zero-length wait.
+func nextAlignedWait(now time.Time, interval time.Duration) time.Duration {
+	phase := time.Duration(now.UnixNano()) % interval
+	if phase < 0 {
+		phase += interval
+	}
+	return interval - phase
 }
 
 // refreshAll refreshes all materialized views.
@@ -200,18 +252,34 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	// cycle (both views share one token — no reason to elect a leader
 	// twice per tick). Redis is preferred: it works for any instance
 	// count and self-heals on crash via TTL expiry with no manual unlock.
-	// When Redis is nil/disabled/unreachable, useAdvisoryLock stays true
-	// and refreshView falls back to its per-view Postgres advisory lock
-	// exactly as before this change.
+	// When Redis is nil/disabled/unreachable, the Postgres advisory lock
+	// below runs exactly as before this change.
+	//
+	// 2026-09-23 252 SQL 日志审计轮（FIX-4）：advisory lock 升级为全局互斥
+	// 后端，Redis leader 不再绕过它（原 useAdvisoryLock=false 删除）。
+	// 根因实证：Redis 选举与 advisory 兜底互不可见——无 Redis 的实例
+	// （252-dev 形态）走 advisory，Redis leader（154/245）裸奔 REFRESH，
+	// 同一视图双发叠跑，252-dev 每 10min tick 饿死在 180s pin 上
+	// （击杀时间轴 05:33/05:43/05:53/06:03 = tick 起点精确 +180s，watcher
+	// 红手抓捕 252-dev 刷新 98s 仍在跑）。现在 advisory lock 是唯一真理：
+	// 任一后端赢了选举，另一个实例 pg_try_advisory_lock 失败即跳过。
 	useAdvisoryLock := true
 	if handle := r.acquireDistLock(ctx); handle != nil {
 		defer handle.Release(context.WithoutCancel(ctx))
 		if !handle.IsLeader() {
 			slog.Info("materialized view refresh skipped, redis token held by another instance")
+			// 十七轮审计接线：coordination 指标族此前是零调用死代码，
+			// R12-F1（墙钟对齐）的"每窗口收敛单刷新"回验只能靠 slog 肉眼
+			// 对账。follower 跳过时两视图各记一次 skipped_follower。
+			recordMVCoordination("redis_follower")
+			recordMVRefreshSkipped("routing_analytics_7d", "skipped_follower")
+			recordMVRefreshSkipped("routing_audit_summary_7d", "skipped_follower")
 			return
 		}
-		useAdvisoryLock = false
 		slog.Info("materialized view refresh: redis leader token acquired")
+		recordMVCoordination("redis_leader")
+	} else {
+		recordMVCoordination("advisory_only")
 	}
 
 	var hasError bool
@@ -219,28 +287,32 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	var failedView string
 
 	start := time.Now()
-	if err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock); err != nil {
+	if skipped, err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_analytics_7d"
+		recordMVRefreshFailure("routing_analytics_7d")
 		slog.Error("failed to refresh routing_analytics_7d",
 			"error", err,
 			"elapsed", time.Since(start))
-	} else {
+	} else if !skipped {
+		recordMVRefreshSuccess("routing_analytics_7d", time.Since(start).Seconds())
 		slog.Info("refreshed routing_analytics_7d",
 			"elapsed", time.Since(start))
 		r.checkConsistency(ctx, MVDriftViewRoutingAnalytics7d)
 	}
 
 	auditStart := time.Now()
-	if err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock); err != nil {
+	if skipped, err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_audit_summary_7d"
+		recordMVRefreshFailure("routing_audit_summary_7d")
 		slog.Error("failed to refresh routing_audit_summary_7d",
 			"error", err,
 			"elapsed", time.Since(auditStart))
-	} else {
+	} else if !skipped {
+		recordMVRefreshSuccess("routing_audit_summary_7d", time.Since(auditStart).Seconds())
 		slog.Info("refreshed routing_audit_summary_7d",
 			"elapsed", time.Since(auditStart))
 		r.checkConsistency(ctx, MVDriftViewRoutingAuditSummary7d)
@@ -297,11 +369,37 @@ func (r *MaterializedViewRefresher) acquireDistLock(ctx context.Context) *distlo
 
 // checkConsistency records drift metrics after a successful refresh and emits
 // a bounded operator alert when the same process observes material drift.
+//
+// 2026-09-24 252 SQL 日志审计轮：漂移核查重扫 7 天 routing_analytics_source，
+// 在 252 当前负载下 med 21s / max 29.4s，被角色级 statement_timeout=30s
+// 击杀（45min 窗口 ×14：mv_data effective_task_type ×8 + audit_summary ×6，
+// 每次刷新后必跟一次）。核查跑在与刷新同等的会话级预算上（mvRefresh-
+// StatementTimeout, 180s）：核查对 180s 仍然超时属于真异常，走既有的
+// query_failed 指标路径暴露；被 30s rolconfig 误杀则只会留下"检查坏了"的
+// 假信号并浪费 30s×N 的数据库时间。
 func (r *MaterializedViewRefresher) checkConsistency(ctx context.Context, viewName string) {
 	if r == nil || r.db == nil {
 		return
 	}
-	result, err := CheckMVConsistency(ctx, r.db, viewName)
+	// Pin one connection: the session-level statement_timeout must survive
+	// both statements of the check (same pattern as refreshView).
+	conn, err := r.db.Acquire(ctx)
+	if err != nil {
+		RecordMVConsistencyError(viewName, "query_failed")
+		slog.Warn("materialized view consistency check: acquire conn failed", "view", viewName, "error", err)
+		return
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx,
+		"SET statement_timeout = '"+mvRefreshStatementTimeout+"'"); err != nil {
+		RecordMVConsistencyError(viewName, "query_failed")
+		slog.Warn("materialized view consistency check: timeout pin failed", "view", viewName, "error", err)
+		return
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout")
+	}()
+	result, err := CheckMVConsistency(ctx, conn, viewName)
 	if err != nil {
 		RecordMVConsistencyError(viewName, "query_failed")
 		slog.Warn("materialized view consistency check failed", "view", viewName, "error", err)
@@ -329,12 +427,16 @@ func (r *MaterializedViewRefresher) checkConsistency(ctx context.Context, viewNa
 // A missing view (e.g. migration 632 not applied on this database) is a
 // skip, not an error — callers fall back to base-view queries anyway.
 //
+// The boolean return reports "skipped" (missing view / lock held by
+// another instance) so the caller can distinguish it from success in
+// metrics — 十七轮审计接线，skip 语义此前与 success 在观测上不可分。
+//
 // useAdvisoryLock controls the Postgres pg_try_advisory_lock guard
 // (2026-09-01): the caller sets it to false when refreshAll already holds
 // the Redis leader token for this cycle, since a second lock layer would
 // only add latency. It stays true whenever Redis coordination is
 // unavailable, preserving the original single-database dedup behaviour.
-func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool) error {
+func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool) (bool, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -344,36 +446,51 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 		)
 	`, viewName).Scan(&exists)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !exists {
+		recordMVRefreshSkipped(viewName, "skipped_missing_view")
 		slog.Warn("materialized view does not exist, skipping refresh",
 			"view", viewName)
-		return nil
+		return true, nil
 	}
 
-	if !useAdvisoryLock {
-		_, err = r.db.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
-		return err
-	}
-
-	// Pin one connection for the whole lock/refresh/unlock sequence:
-	// advisory locks are session-scoped, and pool.Exec may hop connections.
+	// Pin one connection for the whole timeout/refresh(/lock/unlock) sequence:
+	// the session-level statement_timeout below and advisory locks are both
+	// session-scoped, and pool.Exec may hop connections.
 	conn, err := r.db.Acquire(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer conn.Release()
+
+	// Lift the role-level statement_timeout (252 生产 llm_gateway 角色=30s)
+	// for this session only; see mvRefreshStatementTimeout. Reset via
+	// WithoutCancel so a canceled/failed refresh still returns a clean
+	// connection to the pool.
+	if _, err := conn.Exec(ctx,
+		"SET statement_timeout = '"+mvRefreshStatementTimeout+"'"); err != nil {
+		return false, err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout")
+	}()
+
+	if !useAdvisoryLock {
+		_, err = conn.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
+		return false, err
+	}
 
 	var locked bool
 	if err := conn.QueryRow(ctx,
 		`SELECT pg_try_advisory_lock($1)`, mvRefreshLockKey).Scan(&locked); err != nil {
-		return err
+		return false, err
 	}
 	if !locked {
+		recordMVRefreshSkipped(viewName, "skipped_no_lock")
 		slog.Info("materialized view refresh skipped, another instance holds the lock",
 			"view", viewName)
-		return nil
+		return true, nil
 	}
 	defer func() {
 		// Unlock even when ctx is done, or the lock sticks to the pooled
@@ -383,7 +500,7 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	}()
 
 	_, err = conn.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
-	return err
+	return false, err
 }
 
 // TriggerRefresh manually triggers an immediate refresh cycle (admin tools,

@@ -1,8 +1,8 @@
 # LLM Gateway Go — 项目总览与架构设计
 
-> **版本**: v2.5.3  
-> **更新日期**: 2026-09-06  
-> **状态**: 生产运行中  
+> **版本**: v3.0（全码审计重生成）  
+> **更新日期**: 2026-10-01  
+> **状态**: 生产运行中 · 本版基于全码审计刷新（四域子代理 + 主代理实证），新增/重生文档见 §8  
 
 ---
 
@@ -35,17 +35,17 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 ---
 
-### 1.4 代码统计（基于真实代码扫描，2026-09-06）
+### 1.4 代码统计（基于真实代码扫描，2026-10-01，均不含 vendor/ 与 installer/；旧版数字含 vendor 依赖不可比）
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| Go源文件总数 | 22,921 个 | `find . -name "*.go" -type f \| wc -l` |
-| Admin API文件 | 453 个 | `find ./admin -name "*.go" -type f \| wc -l` |
-| 后台Worker文件 | 217 个 | `find ./bg -name "*.go" -type f \| wc -l` |
-| 领域模块数量 | 64 个 | `ls ./domains/ \| wc -l` (一级目录) |
-| 数据库迁移 | 757 个 | `find ./sql/migrations -name "*.sql" \| wc -l` |
-| 单元测试文件 | 5,000+ 个 | `*_test.go` 文件 |
-| 可执行程序 | 30 个 | `ls ./cmd/ \| wc -l` |
+| Go源文件总数 | 4,559 个 | `find . -name "*.go" -not -path "./vendor/*" \| wc -l` |
+| Admin API文件 | 537 个 | `find ./admin -name "*.go" -type f \| wc -l` |
+| 后台Worker文件 | 304 个 | `find ./bg -name "*.go" -type f \| wc -l` |
+| 领域模块数量 | 67 个 | `ls ./domains/ \| wc -l` (一级目录) |
+| 数据库迁移 | 932 个 SQL | `sql/migrations/` 全量；startup 数字序列 7xx 活跃至 **765**（bodies 列存化；另有预留段 800-802），下一枚 766 |
+| 单元测试文件 | 2,320 个 | `*_test.go`（不含 vendor/installer） |
+| 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
 
 ---
 
@@ -102,7 +102,7 @@ Client Request
     ├─→ [4] 智能路由决策 (domains/streaming/executors)
     │       • model=auto 自动选模型
     │       • 候选凭据发现 (availability/tier/billing/sticky)
-    │       • P2C/Bandit 评分排序
+    │       • P2C 评分排序（sticky/成本惩罚折入，选路 Bandit 分支已于 2026-09-19 删除）
     │
     ├─→ [5] 资源治理 (domains/credential, ratelimit)
     │       • FP槽位并发控制
@@ -141,7 +141,7 @@ Client Request
 | **审计钩子** | `domains/hooks/audit` | 请求审计、流完整性、事件记录 |
 | **安全合规** | `domains/security`, `domains/promptinjection` | Prompt注入检测、输出合规 |
 | **模型质量** | `domains/modelquality` | 质量评分、特色模型推荐 |
-| **自动路由** | `domains/autoroute` | Cost/Quality策略、反馈优化 |
+| **自动路由** | `./autoroute/`（顶层包） | Cost/Quality策略、反馈优化；注意与 `domains/` 下领域区分 |
 | **工具执行** | `domains/toolexecution` | MCP工具调用、编排 |
 | **记忆集成** | `domains/memory` | Memora记忆服务集成 |
 
@@ -184,7 +184,7 @@ Client Request
 
 | 策略 | 文件 | 说明 |
 |------|------|------|
-| **Cost-Optimized** | `router_scoring.go` | 成本优先，生产默认 |
+| **Cost-Optimized** | `router_scoring.go` | 成本惩罚 0.15 参与 P2C 综合分（2026-09-19 起默认开，env 可关；非成本主导） |
 | **Quality-Aware** | `autoroute/scorer/quality.go` | 质量优先 |
 | **Context-Aware** | `autoroute/scorer/context.go` | 上下文窗口优先 |
 | **Cache-Optimized** | `cache/scorer.go` | 缓存命中优先 |
@@ -406,14 +406,16 @@ Client Request
 ## 5. 代码统计
 
 ```
-Go源文件总数:     22,921 个
-Admin API文件:      453 个
-后台Worker文件:     217 个
-领域模块:           85+ 个 (domains/)
-数据库迁移:         340+ 个 (migrations/)
-测试文件:         5,000+ 个 (*_test.go)
-文档文件:           110+ 个 (docs/)
+Go源文件总数:     4,559 个 (不含 vendor/installer)
+Admin API文件:      537 个
+后台Worker文件:     304 个
+领域模块:            67 个 (domains/ 一级目录)
+数据库迁移:         932 个 SQL (sql/migrations/; startup 7xx 活跃序列最新 765, 预留段 800-802, 下一枚 766)
+测试文件:         2,320 个 (*_test.go, 不含 vendor/installer)
+可执行程序:           34 个 (cmd/)
 ```
+
+> 新旧并行实现（autoroute 三代、Session V1/V2、探测新旧 worker 族、入口 v1/v2 等 10 组 + 7 处死代码）的重点标注与收敛方案见 [03-design/01-architecture/parallel-implementations-comparison.md](./03-design/01-architecture/parallel-implementations-comparison.md)。
 
 ---
 
@@ -477,7 +479,11 @@ Admin API文件:      453 个
 
 ### 8.1 核心文档
 
-- [架构设计](./03-design/01-architecture/architecture/ARCHITECTURE.md) - 系统架构详细设计
+- [系统需求规格说明书](./01-requirements/SYSTEM_REQUIREMENTS.md) - 系统需求（FR×19 域/NFR×13，2026-10-01 重生）⭐
+- [功能特性目录](./01-requirements/functional/FEATURES_CATALOG.md) - 功能→代码→API→前端页映射（含 🔴 并行标注）⭐
+- [架构设计](./03-design/01-architecture/architecture/ARCHITECTURE.md) - 系统架构详细设计（事实快照 2026-10-01）
+- [新旧并行实现对比](./03-design/01-architecture/parallel-implementations-comparison.md) - 新旧版本实现重点标注与收敛方案
+- [统一优化提示词方案](./03-design/01-architecture/unified-optimization-prompts.md) - 逐项可执行收敛提示词包
 - [请求流程](./03-design/01-architecture/architecture/runtime-request-flow.md) - 请求处理流程
 - [路由状态](./03-design/01-architecture/architecture/routing-and-state.md) - 路由与状态管理
 - [部署指南](./06-deployment/README.md) - 部署与运维
@@ -507,5 +513,5 @@ Admin API文件:      453 个
 
 ---
 
-**最后更新**: 2026-09-06  
+**最后更新**: 2026-10-01（全码审计重生成轮）  
 **维护团队**: LLM Gateway Team

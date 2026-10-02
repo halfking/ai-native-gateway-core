@@ -1,7 +1,6 @@
 package autoroute
 
 import (
-	"math"
 	"sort"
 	"strings"
 )
@@ -227,115 +226,6 @@ func ScoreSimplified(c Candidate, task TaskType, costCtx CostContext, correction
 	}
 }
 
-// ScoreWithChannelQuality 实现 4 维评分（CHANNEL_QUALITY_ROUTING）：
-//
-//	FinalScore = IntentMatch * 0.4
-//	           + Price * 0.2
-//	           + ChannelQuality * 0.3
-//	           + Reliability * 0.1
-//	           + Correction
-//
-// 权重设计的理由：
-//   - ChannelQuality 0.3：质量分主导，体现"质量优先于价格"
-//   - IntentMatch 0.4：仍是最大权重，路由必须先匹配任务类型
-//   - Price 0.2：从 0.4 降到 0.2，价格不再是主要决策因子
-//   - Reliability 0.1：作为安全网，反映凭据的实时健康
-//
-// PriceScore 与 ScoreSimplified 共用 scorePriceByCostContext（P75 归一化，
-// 详见该函数注释）。池分层（preferred/fallback）由 RecommendV2 在调
-// 用本函数后单独处理：本函数只产出 composite，不施加 demotion 系数。
-//
-// 当 ProviderCategory 为空（冷启动 / SQL 尚未加载该字段）时，
-// ChannelQuality 走默认 base=40；不会拉黑候选，但会让该候选落入
-// fallback 池。
-func ScoreWithChannelQuality(c Candidate, task TaskType, costCtx CostContext, correctionScore float64) ScoringBreakdown {
-	intentMatch := c.TaskMatchScore * 100
-
-	priceScore := scorePriceByCostContext(c, costCtx)
-	channelQuality := scoreChannelQuality(c)
-	reliability := scoreReliability(c)
-	correction := clampCorrection(correctionScore)
-
-	composite := intentMatch*0.4 +
-		priceScore*0.2 +
-		channelQuality*0.3 +
-		reliability*0.1 +
-		correction
-
-	return ScoringBreakdown{
-		MatchScore:     intentMatch,
-		PriceScore:     priceScore,
-		ChannelQuality: channelQuality,
-		Reliability:    reliability,
-		Composite:      composite,
-		// 其余维度保持为 0，保持结构兼容
-		SpeedScore:     0,
-		StabilityScore: 0,
-		PressureScore:  0,
-		ContextFit:     0,
-		VersionRecency: 0,
-		StrengthMatch:  0,
-	}
-}
-
-// AffinityWeight 是学习亲和度在 composite 中的权重。
-//
-// 现有 4 维权重整体乘 (1 - AffinityWeight) 后腾出这一份，因此 4 维之间的
-// 相对比例完全不变——本次改动只是让出 15% 给实测信号，不重新平衡既有维度。
-const AffinityWeight = 0.15
-
-// ScoreWithAffinity 在 4 维渠道质量评分之上叠加第 5 维「学习亲和度」：
-//
-//	FinalScore = IntentMatch * 0.34
-//	           + Price * 0.17
-//	           + ChannelQuality * 0.255
-//	           + Reliability * 0.085
-//	           + Affinity * 0.15
-//	           + Correction
-//
-// （0.4/0.2/0.3/0.1 各乘 0.85 得到前四项。）
-//
-// affinity 由调用方从 AffinityStore.Lookup 取得，已完成最小样本门槛、
-// 陈旧衰减与 [10,90] 钳制；本函数只做 NaN/Inf 兜底。
-//
-// applied=false（shadow 模式或探索流量）时只记录 Affinity 字段，
-// Composite 与 ScoreWithChannelQuality 逐位相同——这正是影子期的意义：
-// 同一条代码路径既能观测又能生效，不存在「上线才第一次跑」的分支。
-//
-// 边界：亲和度只在**已通过硬约束**（活性过滤、ban）的候选之间排序。
-// 它不能让不可用或被封禁的模型复活——那些过滤发生在 RecommendV2 里、
-// 在本函数之前。
-func ScoreWithAffinity(
-	c Candidate,
-	task TaskType,
-	costCtx CostContext,
-	correctionScore float64,
-	affinity float64,
-	applied bool,
-) ScoringBreakdown {
-	b := ScoreWithChannelQuality(c, task, costCtx, correctionScore)
-
-	// NaN/Inf 兜底：坏数据退化为「无意见」，绝不污染 composite。
-	if math.IsNaN(affinity) || math.IsInf(affinity, 0) {
-		affinity = AffinityNeutral
-	}
-	b.Affinity = affinity
-	b.AffinityApplied = applied
-
-	if !applied {
-		return b
-	}
-
-	// correction 是绝对偏移（±10），不应被 0.85 缩放稀释：先摘出、
-	// 缩放 4 维基础分、叠加亲和度、再原样加回。
-	correction := clampCorrection(correctionScore)
-	base := b.Composite - correction
-	b.Composite = base*(1-AffinityWeight) + affinity*AffinityWeight + correction
-
-	return b
-}
-
-// clampCorrection 把校正分钳制在 [-10, +10] 区间。
 func clampCorrection(v float64) float64 {
 	if v < -10 {
 		return -10
@@ -407,67 +297,6 @@ func recommendCostContext(cands []Candidate) CostContext {
 	return ctx
 }
 
-// ── 池分层（preferred/fallback） ──────────────────────────────────
-
-// StratifyByChannelQuality 把候选按 ChannelQuality 拆分为 preferred
-// 与 fallback 两个池。preferred 池的 ChannelQuality 严格 >= 阈值。
-//
-// 阈值通过 ChannelQualityPreferredThreshold（=50）常量定义。
-//
-// 调用方在排序后处理：
-//   - 若 preferred 池足够（>= topN），只返回 preferred
-//   - 否则用 fallback 池补足，并对 fallback 的 composite 施加 demotion
-//
-// 注意：此函数只做拆分，不修改 composite。要施加 demotion 请调用
-// ApplyFallbackDemotion。
-func StratifyByChannelQuality(scored []ScoredCandidate) (preferred, fallback []ScoredCandidate) {
-	for _, sc := range scored {
-		if sc.Breakdown.ChannelQuality >= ChannelQualityPreferredThreshold {
-			preferred = append(preferred, sc)
-			continue
-		}
-		fallback = append(fallback, sc)
-	}
-	return preferred, fallback
-}
-
-// FallbackDemotionFactor 是 fallback 池的 demotion 系数（严格 < 1.0）。
-// 设计：preferred 池未饱和时给 0.5（fallback 难以胜出），
-// saturated 时给 0.85（仍低于 preferred 但保留竞争力）。
-//
-// 详见 RecommendV2 中根据主渠道饱和度切换系数的逻辑。
-const FallbackDemotionFactor = 0.5
-const FallbackDemotionFactorSaturated = 0.85
-
-// ApplyFallbackDemotion 给 fallback 候选的 composite 乘 demotion 系数。
-// 注意：MatchScore / PriceScore / ChannelQuality / Reliability 维度
-// 分数保持不变，只调整 composite。便于可观测：仍能看到 fallback 候选
-// 自身的通道质量分，只是总分会下降。
-func ApplyFallbackDemotion(scored []ScoredCandidate, factor float64) {
-	for i := range scored {
-		scored[i].Breakdown.Composite *= factor
-	}
-}
-
-// IsPreferredChannelSaturated 判断主渠道（Preferred 池）是否饱和。
-// 规则：Preferred 池中所有候选的 PressureRatio >= 0.95。
-//
-// 当 Preferred 池为空时（仅 fallback 候选），返回 true（视为饱和，
-// 让 fallback 有机会胜出）。
-func IsPreferredChannelSaturated(preferred []ScoredCandidate) bool {
-	if len(preferred) == 0 {
-		return true
-	}
-	for _, sc := range preferred {
-		if sc.Candidate.PressureRatio < 0.95 {
-			return false
-		}
-	}
-	return true
-}
-
-// ── 其它（保持兼容） ────────────────────────────────────────────
-
 // ComputeAvgPriceByCanonical 计算每个 canonical model 的平均价格
 // 只统计可用的 credentials（UnavailableReason == ""）
 //
@@ -501,53 +330,4 @@ func ComputeAvgPriceByCanonical(candidates []Candidate) map[int]float64 {
 	}
 
 	return result
-}
-
-// ComputeCorrectionScore 计算会话校正分
-//
-// 基于上次任务结果：
-//   - 上次成功且快速 → +5
-//   - 上次失败 → -10
-//   - 任务类型变化 → 0
-//   - 无历史记录 → 0
-//
-// 参数：
-//   - lastTask: 上次任务类型
-//   - lastModel: 上次选择的模型 (canonical_name)
-//   - lastSuccess: 上次是否成功
-//   - lastLatencyMs: 上次延迟（毫秒）
-//   - currentTask: 当前任务类型
-//   - currentModel: 当前候选模型 (canonical_name)
-//
-// 返回：-10 ~ +10 的校正分
-func ComputeCorrectionScore(
-	lastTask TaskType,
-	lastModel string,
-	lastSuccess bool,
-	lastLatencyMs int,
-	currentTask TaskType,
-	currentModel string,
-) float64 {
-	// 只对同一模型应用校正
-	if lastModel != currentModel {
-		return 0
-	}
-
-	// 任务类型变化 → 校正归零
-	if lastTask != currentTask {
-		return 0
-	}
-
-	// 上次失败 → 降权
-	if !lastSuccess {
-		return -10
-	}
-
-	// 上次成功且快速（< 2 秒）→ 小幅加分
-	if lastLatencyMs > 0 && lastLatencyMs < 2000 {
-		return 5
-	}
-
-	// 上次成功但较慢 → 不加分
-	return 0
 }

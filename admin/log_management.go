@@ -298,7 +298,7 @@ func (h *Handler) handleLogFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := logging.ListFiles()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list log files: "+err.Error())
+		writeInternalErr(w, "list log files", err)
 		return
 	}
 

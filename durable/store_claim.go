@@ -81,7 +81,12 @@ const claimSelectSQL = `
 	WHERE commit_state IN ('none', 'metadata')
 	  AND status IN ('waiting_recovery', 'retry_scheduled', 'running')
 	  AND (status <> 'running' OR lease_until < $2)
-	  AND next_retry_at IS NOT NULL AND next_retry_at <= $2 + INTERVAL '5 seconds'
+	  -- 2026-09-21 (252 PG SQL 日志审计复核轮自审计): $2 必须显式
+	  -- ::timestamptz——网关连接是 QueryExecModeSimpleProtocol（db/db.go），
+	  -- $2 被内联为无型别字面量，PG17 会把 时间字面量 + INTERVAL 解析为
+	  -- interval+interval 而必炸（同 bg/feature_stats_worker.go 根修；
+	  -- 252 生产 pss 零调用=休眠哑弹，durable 模式一启用即触发）。
+	  AND next_retry_at IS NOT NULL AND next_retry_at <= $2::timestamptz + INTERVAL '5 seconds'
 	  AND deadline_at > $2
 	  AND (lease_until IS NULL OR lease_until < $2)
 	  AND NOT EXISTS (SELECT 1 FROM durable_task_settlement_intents si WHERE si.task_id = durable_llm_tasks.id)

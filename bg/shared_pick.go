@@ -2,10 +2,12 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // pickDB is the subset of *pgxpool.Pool that PickProbeModelForCredential needs.
@@ -79,10 +81,14 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	var topModel string
 	err = db.QueryRow(ctx, `
 		SELECT client_model
-		FROM request_logs_with_current_month
-		WHERE credential_id = $1
+		FROM request_logs_with_current_month rl
+		WHERE rl.credential_id = $1
 		  AND ts > now() - interval '7 days'
 		  AND success = TRUE
+		  -- R50 dual-arm exclusion, frozen-view variant (R49 自纠 S1：origin_stage 不在
+		  -- 113 列契约，视图读面必须用 view 谓词；INV-3) — a model only probes ever
+		  -- touched must not win "most-used" and steer the probe target.
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
 		  AND client_model IS NOT NULL
 		GROUP BY client_model
 		ORDER BY count(*) DESC
@@ -127,9 +133,17 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	defer rows.Close()
 	if rows.Next() {
 		var pick string
-		if scanErr := rows.Scan(&pick); scanErr == nil && pick != "" {
+		if scanErr := rows.Scan(&pick); scanErr != nil {
+			dbrows.WarnRowSkip("bg.PickProbeModelForCredential/featured", scanErr)
+		} else if pick != "" {
 			return PickProbeResult{Model: pick, Source: "auto:domestic_featured"}, nil
 		}
+	}
+	// R66（category 5）：featured 读被中断后静默落到 Priority 3 随机兜底，
+	// 等于把「读失败」翻译成「该 credential 没有常用模型」——探针模型选择
+	// 因此走错分支。必须上抛。
+	if err := rows.Err(); err != nil {
+		return PickProbeResult{}, fmt.Errorf("bg.PickProbeModelForCredential/featured: iterate rows: %w", err)
 	}
 
 	// Priority 3: safety-net random pick across all available bindings.
@@ -154,9 +168,16 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.PickProbeModelForCredential/randomFallback", err) {
+				continue
+			}
 		}
 		candidates = append(candidates, name)
+	}
+	// R66（category 5）：兜底候选集被截断会让随机抽样在残缺集合上做，
+	// 选出的探针模型与「全部可用绑定」的真实意图不符。必须上抛。
+	if err := rows.Err(); err != nil {
+		return PickProbeResult{}, fmt.Errorf("bg.PickProbeModelForCredential/randomFallback: iterate rows: %w", err)
 	}
 	if len(candidates) > 0 {
 		pick := candidates[time.Now().UnixNano()%int64(len(candidates))]

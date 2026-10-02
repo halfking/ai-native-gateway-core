@@ -2,7 +2,9 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +151,25 @@ func TestParseServiceEntry(t *testing.T) {
 	}
 }
 
+// isMulticastEgressUnavailable reports whether err indicates the host cannot
+// send multicast at all (routing/firewall/policy), as opposed to a discovery
+// logic failure. Matches syscall errors like "no route to host" and
+// "network is unreachable" wrapped by the mDNS layer.
+func isMulticastEgressUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) {
+		return false
+	}
+	// EHOSTUNREACH / ENETUNREACH / ENETDOWN surface in the wrapped message.
+	msg := err.Error()
+	return strings.Contains(msg, "no route to host") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "network is down")
+}
+
 // TestDiscoverGateways is skipped by default because it requires real network multicast
 // which may not work reliably in all environments (firewalls, network policies, etc.)
 func TestDiscoverGateways(t *testing.T) {
@@ -171,6 +192,13 @@ func TestDiscoverGateways(t *testing.T) {
 	// Discover gateways
 	gateways, err := DiscoverGateways(ctx, 2*time.Second)
 	if err != nil {
+		// Environment exemption only: multicast egress is unavailable on this
+		// host (no route / firewall / managed network). The test's own header
+		// says it requires real multicast; a host that cannot even send the
+		// query proves nothing about discovery logic. Skip instead of red.
+		if isMulticastEgressUnavailable(err) {
+			t.Skipf("mDNS multicast egress unavailable in this environment: %v", err)
+		}
 		t.Fatalf("Discovery failed: %v", err)
 	}
 

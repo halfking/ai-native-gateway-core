@@ -201,10 +201,16 @@ func (h *Handler) handleDataLifecycleAttachments(w http.ResponseWriter, r *http.
 		var attText string
 		if err := rows.Scan(&row.RequestID, &row.Ts, &row.TenantID,
 			&row.ClientModel, &row.Success, &attText); err != nil {
+			warnRowSkip("dataLifecycle.attachments.list", err)
 			continue
 		}
 		row.Attachments = json.RawMessage(attText)
 		items = append(items, row)
+	}
+	// 附件清单是保留/取证读面：截断的清单会被当成"就这么多附件"，
+	// 静默 200 比失败更有害。
+	if writeAggRowsErr(w, "dataLifecycle.attachments.list", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -288,11 +294,17 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 	for rows.Next() {
 		var b bucket
 		if err := rows.Scan(&b.Type, &b.ContentType, &b.Count, &b.TotalBytes); err != nil {
+			warnRowSkip("dataLifecycle.attachments.stats", err)
 			continue
 		}
 		buckets = append(buckets, b)
 		totalCount += b.Count
 		totalBytes += b.TotalBytes
+	}
+	// total_count / total_bytes 是容量归属的汇总基数，截断会给出偏小的
+	// 附件总占用（与查询侧同语义：整块 500，不返回半份统计）。
+	if writeAggRowsErr(w, "dataLifecycle.attachments.stats", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -621,7 +633,7 @@ func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *ht
 		ORDER BY ts DESC LIMIT 1`, tenantPred)
 	err := h.db.QueryRow(ctx, query, args...).Scan(&ts, &tenantID, &clientModel, &success, &attText)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "request not found")
+		writeLookupErr(w, "request not found", err)
 		return
 	}
 

@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
@@ -488,7 +489,17 @@ func (e *Executor) recordExecutionSuccess(ctx context.Context, execID int64, res
 		WHERE execution_id = $1
 	`
 
-	_, err := e.db.Exec(ctx, query, execID, durationMs, summaryJSON, detailJSON)
+	// R71 审计：result_summary/result_detail 是 jsonb 列。[]byte 直传在
+	// SimpleProtocol 池下内联为 bytea hex 字面量（R11 FIX-C 同根）；
+	// marshal 失败的 nil 保持 NULL 语义。接线前修复到位（当前无生产构造点）。
+	var summaryParam, detailParam interface{}
+	if len(summaryJSON) > 0 {
+		summaryParam = string(summaryJSON)
+	}
+	if len(detailJSON) > 0 {
+		detailParam = string(detailJSON)
+	}
+	_, err := e.db.Exec(ctx, query, execID, durationMs, summaryParam, detailParam)
 	return err
 }
 
@@ -552,7 +563,9 @@ func (e *Executor) BatchCheck(
 		)
 
 		if err := rows.Scan(&moduleName, &execID, &status, &summaryJSON, &detailJSON, &durationMs, &expiresAt); err != nil {
-			continue
+			if dbrows.SkipOrFail("moduleexec.Executor.BatchCheck", err) {
+				continue
+			}
 		}
 
 		result := &ExecuteResult{
@@ -575,6 +588,13 @@ func (e *Executor) BatchCheck(
 		}
 
 		results[moduleName] = result
+	}
+	// R66: 缓存命中读被静默截断 = 部分模块被判为「无缓存」而重复执行
+	// （白烧上游调用），调用方拿到残缺 map + nil，无从察觉。
+	// 直接消费 rows.Err()（非 dbrows.Err 包装）使站位级守卫能逐循环判定；
+	// 单行跳行留痕仍走 dbrows.SkipOrFail。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("moduleexec.Executor.BatchCheck: iterate rows: %w", err)
 	}
 
 	return results, nil

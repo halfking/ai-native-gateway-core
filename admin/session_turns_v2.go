@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // session_turns_v2.go — V2 会话详情端点实现（2026-08-07）。
@@ -74,6 +75,13 @@ func (h *Handler) serveSessionTurnSubroute(w http.ResponseWriter, r *http.Reques
 }
 
 // serveSessionTurnsList 返回会话轮次列表（按 turn_no 倒序，cursor 分页）。
+//
+// R69 遮蔽标注：exact 路由 /api/admin/sessions/{id}/turns 注册了更具体的
+// handleSessionTurnsListRouted（handler.go），Go ServeMux 最具体优先使子树
+// 的 case "turns"（session_state_handlers.go）成为死路径；且本实现与
+// serveSessionTurnsUnifiedDB 约 70% 重复（同表/同 cursor/同 digest 规则），
+// 且装配 TurnListItem 不填 IDKind/PrimaryKey（9f62818c5 标注覆盖遗漏面，
+// 复活即漏标）。清理候选：删 case "turns" 分支或两实现收敛为一条。
 func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, sessionID string) {
 	serveSessionTurnsListDB(h.db, h.secret, w, r, sessionID)
 }
@@ -114,7 +122,13 @@ func serveSessionTurnsListDB(db sessionTurnsDB, secret string, w http.ResponseWr
 		       COALESCE(t.attachment_count,0), t.request_id,
 		       COALESCE(t.cache_read_tokens,0), COALESCE(t.latency_ms,0), COALESCE(t.success,FALSE),
 			   t.error_kind, t.compression_applied, t.compression_tokens_saved, t.digest,
-			   b.request_delta, b.response_delta
+			   b.request_delta, b.response_delta,
+			   -- 十六轮审计 E6d：与详情侧 classifyBodyStatus 对齐——
+			   -- JSON 字面量 null 不算 payload，否则同 turn 列表=available
+			   -- 而详情=unavailable。
+			   ((b.request_delta IS NOT NULL AND b.request_delta <> 'null'::jsonb)
+			     OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
+			     OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb)) AS body_present
 		FROM public.session_turns_with_current_month t
 		LEFT JOIN public.session_bodies_unified b
 		  ON b.tenant_id=t.tenant_id AND b.session_id=t.session_id
@@ -141,15 +155,22 @@ func serveSessionTurnsListDB(db sessionTurnsDB, secret string, w http.ResponseWr
 			compressionTokensSaved      *int
 			persistedDigestRaw          []byte
 			requestRaw, responseRaw     []byte
+			bodyPresent                 bool
 		)
 		if err := rows.Scan(&it.TurnNo, &it.Ts, &it.Title, &it.Summary, &it.RequestTokens,
 			&it.ResponseTokens, &it.CostUSD, &it.Model, &it.Provider, &it.StatusCode,
 			&it.SubmitMode, &it.InjectionVerdict, &it.OutputVerdict, &it.AttachmentCount,
 			&requestID, &cacheReadTokens, &latencyMs, &success, &errorKind,
-			&compressionApplied, &compressionTokensSaved, &persistedDigestRaw, &requestRaw, &responseRaw); err != nil {
+			&compressionApplied, &compressionTokensSaved, &persistedDigestRaw, &requestRaw, &responseRaw, &bodyPresent); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
 		}
+		// Subtask 3 — body_status two-state contract. The list endpoint stays
+		// metadata-only (raw body bytes are decoded solely to feed the digest
+		// fallback); the wire-visible classification comes from a SQL
+		// EXISTS-style probe, not from scanning payload bytes. See
+		// admin/body_status.go for the contract.
+		it.BodyStatus = bodyStatusFromPresent(bodyPresent)
 		request := decodeStoredJSON("request_delta", requestID, requestRaw)
 		response := decodeStoredJSON("response_delta", requestID, responseRaw)
 		meta := map[string]any{
@@ -367,6 +388,11 @@ func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.
 		}
 	}
 	meta["timing_semantics"] = "request_level_last_write"
+	// Subtask 3 — body_status two-state contract. The detail endpoint decodes
+	// all three JSONB body columns, so we classify straight from the scanned
+	// raw bytes via classifyBodyStatus (admin/body_status.go). Consumers see
+	// the result under meta.body_status in the wire response.
+	meta["body_status"] = classifyBodyStatus(requestDeltaRaw, responseDeltaRaw, outboundBodyRaw)
 	governance := map[string]any{
 		"submit_mode":              submitMode,
 		"compression_applied":      compressionApplied,
@@ -656,28 +682,28 @@ func boolPtrValue(p *bool) bool {
 // 数据源为 public.sessions（V2 会话快照，migration 456 添加了
 // title/summary/summary_generated_at 列，migration 430 有 last_model/last_provider）。
 type sessionSnapshotV2 struct {
-	SessionID          string     `json:"session_id"`
-	TenantID           string     `json:"tenant_id"`
-	Title              string     `json:"title"`
-	Summary            string     `json:"summary"`
-	SummaryGeneratedAt *time.Time `json:"summary_generated_at,omitempty"`
-	TotalTurns         int        `json:"total_turns"`
-	TotalTokens        int        `json:"total_tokens"`
-	TotalCostUSD       float64    `json:"total_cost_usd"`
-	LastTurnNo         int        `json:"last_turn_no"`
-	LastModel          *string    `json:"last_model,omitempty"`
-	LastProvider       *string    `json:"last_provider,omitempty"`
-	LastRequestSummary string     `json:"last_request_summary,omitempty"`
-	LastResponseSummary string    `json:"last_response_summary,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	ClosedAt           *time.Time `json:"closed_at,omitempty"`
-	Status             string     `json:"status"`
-	TaskType           string     `json:"task_type,omitempty"`
-	ClientType         string     `json:"client_type,omitempty"`
-	Topic              string     `json:"topic,omitempty"`
-	Intent             string     `json:"intent,omitempty"`
-	UserTags           []string   `json:"user_tags,omitempty"`
+	SessionID           string     `json:"session_id"`
+	TenantID            string     `json:"tenant_id"`
+	Title               string     `json:"title"`
+	Summary             string     `json:"summary"`
+	SummaryGeneratedAt  *time.Time `json:"summary_generated_at,omitempty"`
+	TotalTurns          int        `json:"total_turns"`
+	TotalTokens         int        `json:"total_tokens"`
+	TotalCostUSD        float64    `json:"total_cost_usd"`
+	LastTurnNo          int        `json:"last_turn_no"`
+	LastModel           *string    `json:"last_model,omitempty"`
+	LastProvider        *string    `json:"last_provider,omitempty"`
+	LastRequestSummary  string     `json:"last_request_summary,omitempty"`
+	LastResponseSummary string     `json:"last_response_summary,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	ClosedAt            *time.Time `json:"closed_at,omitempty"`
+	Status              string     `json:"status"`
+	TaskType            string     `json:"task_type,omitempty"`
+	ClientType          string     `json:"client_type,omitempty"`
+	Topic               string     `json:"topic,omitempty"`
+	Intent              string     `json:"intent,omitempty"`
+	UserTags            []string   `json:"user_tags,omitempty"`
 	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
 	// （LEFT JOIN LATERAL 命中时非空）。与 turns_sessions / session_detail_v2
 	// 的 SessionAnalysis 字段保持同一形状，前端 SessionSummaryBar 可直接复用。
@@ -706,7 +732,11 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			            ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END AS title,
 			       COALESCE(NULLIF(s.summary, ''), ss.summary, '') AS summary,
 			       s.summary_generated_at, s.total_turns, s.total_tokens, s.total_cost_usd,
-			       s.last_turn_no, s.last_model, s.last_provider,
+			       s.last_turn_no, s.last_model,
+		       -- 2026-09-20: sessions.last_provider 存的是 provider ID 的文本形式
+		       -- (migration 430)，直接透出前端会显示 "glm-5.3 · 34"。数值时 JOIN
+		       -- providers 取 display_name；非数值（空串/历史残留）原样回退。
+		       COALESCE(NULLIF(plp.display_name, ''), NULLIF(plp.code, ''), s.last_provider) AS last_provider,
 			       COALESCE(s.last_request_summary, '') AS last_request_summary,
 			       COALESCE(s.last_response_summary, '') AS last_response_summary,
 			       s.created_at, s.updated_at, s.closed_at, COALESCE(s.status, 'active') AS status,
@@ -717,8 +747,10 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			       COALESCE(s.user_tags, ARRAY[]::text[]) AS user_tags,
 			       sam.status, sam.schema_version, sam.input_hash,
 			       sam.source_task_id, sam.updated_at, sam.payload
-			FROM public.sessions s
-			LEFT JOIN session_dim sd
+		FROM public.sessions s
+		LEFT JOIN providers plp
+			ON plp.id = CASE WHEN s.last_provider ~ '^[0-9]+$' THEN s.last_provider::bigint END
+		LEFT JOIN session_dim sd
 				ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
 			LEFT JOIN session_summaries ss
 				ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
@@ -793,14 +825,23 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	tenantID := tenantFromQueryOrContext(r)
-	api := &SessionSummaryV2API{pool: h.db}
+	// 2026-09-29 (审计二十一轮): 注入真实 LLM 摘要链路 + r 透传（此前端点
+	// 内是写死 localhost 的占位桩，生产必败静默落入伪摘要）。
+	api := &SessionSummaryV2API{pool: h.db, llmCall: h.SessionSummaryLLMCaller()}
 	summary, err := api.generateSummary(r.Context(), &SessionSummaryRequest{
 		SessionID: sessionID,
 		Tenant:    tenantID,
-	}, tenantID)
+	}, tenantID, r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "serveSessionSummaryGenerate failed",
 			"session_id", sessionID, "tenant_id", tenantID, "error", err.Error())
+		// 2026-09-29 (审计二十二轮): 存储不可用走 503 降级契约——与兄弟端点
+		// /api/admin/sessions/summary（session_summary_v2.go writeSummaryError，
+		// 二十一轮接齐）对齐，存储抖动不再呈现为 500 代码缺陷告警。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentSummary, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "summary failed")
 		return
 	}
@@ -820,6 +861,11 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 	if uerr != nil {
 		slog.ErrorContext(r.Context(), "serveSessionSummaryGenerate update failed",
 			"session_id", sessionID, "tenant_id", tenantID, "error", uerr.Error())
+		// 2026-09-29 (审计二十二轮): 回写失败同走 503 降级契约（见上方注记）。
+		if IsStorageUnavailable(uerr) {
+			WriteStorageDegraded(w, observability.StorageComponentSummary, uerr)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "update snapshot failed")
 		return
 	}
@@ -845,6 +891,11 @@ func tenantFromQueryOrContext(r *http.Request) string {
 		return GetTenantID(r)
 	}
 	if t := r.URL.Query().Get("tenant"); t != "" {
+		return t
+	}
+	// R69：V1 同族端点（session_state_handlers 等）的参数名是 tenant_id，
+	// 兼容读取旧名，避免调用方控件命名漂移时静默落回 auth 租户。
+	if t := r.URL.Query().Get("tenant_id"); t != "" {
 		return t
 	}
 	if t := r.Header.Get("X-Tenant-ID"); t != "" {

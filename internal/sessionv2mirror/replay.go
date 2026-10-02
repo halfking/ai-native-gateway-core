@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -35,7 +37,7 @@ import (
 
 const (
 	mirrorReplayDefaultInterval = 30 * time.Second
-	mirrorReplayDefaultBatch    = 100
+	mirrorReplayDefaultBatch    = 250
 	mirrorReplayDefaultMaxAtts  = 10
 	// mirrorReplayMaxBackoff caps the exponential schedule (30s base).
 	mirrorReplayMaxBackoff = 1 * time.Hour
@@ -43,11 +45,54 @@ const (
 	// that state before another tick re-claims it — the crash-orphan safety
 	// net (same rationale as 630's sessionOutboxClaimLease).
 	mirrorReplayClaimLease = 5 * time.Minute
+	// mirrorReplayWorkersCap caps the parallel-claim fan-out so a single
+	// mirror stall cannot exhaust the DB pool. NumCPU() on 32-core hosts is
+	// far more than the 4 workers the reaper's batch actually needs — each
+	// worker holds a pool conn for the duration of claimBatch + replayOne.
+	mirrorReplayWorkersCap = 4
+	// mirrorReplayMaxAttsFloor / Ceiling clamp the hot-reload setting so an
+	// operator cannot dial the dead-letter budget past the documented safe
+	// range (5-30). The ceiling is the audit-handoff hard guardrail; the
+	// floor prevents a typo from dead-lettering every row on first failure.
+	mirrorReplayMaxAttsFloor   = 5
+	mirrorReplayMaxAttsCeiling = 30
 )
 
 // mirrorReplayWriteBudgetMs matches the live shadow-write budget so a
 // replayed turn and a live turn have identical DB-side expectations.
 const mirrorReplayWriteBudgetMs = defaultShadowWriteTimeoutMs
+
+// currentMaxAtts reads the hot-reload setting sessions_v2.mirror_outbox_max_attempts,
+// falling back to def when settings.Global is nil (unit-test binary) or the key is
+// unregistered. Clamps to [mirrorReplayMaxAttsFloor, mirrorReplayMaxAttsCeiling] so an
+// operator typo cannot dead-letter every row on first failure or never dead-letter at
+// all. The clamp bounds match the spec's hard guardrails (audit handoff §7).
+func currentMaxAtts(def int) int {
+	v := settings.GetPlatformInt("sessions_v2.mirror_outbox_max_attempts", def)
+	if v < mirrorReplayMaxAttsFloor {
+		return mirrorReplayMaxAttsFloor
+	}
+	if v > mirrorReplayMaxAttsCeiling {
+		return mirrorReplayMaxAttsCeiling
+	}
+	return v
+}
+
+// mirrorReplayWorkers returns the parallel-claim fan-out: min(NumCPU, cap).
+// Floor of 1 keeps the reaper functional on machines reporting 0 cores
+// (cgroup isolation); cap of 4 keeps DB connection pressure bounded — the
+// reaper's claimBatch holds one pool conn per worker for the duration of
+// the batch.
+func mirrorReplayWorkers() int {
+	n := runtime.NumCPU()
+	if n < 1 {
+		n = 1
+	}
+	if n > mirrorReplayWorkersCap {
+		n = mirrorReplayWorkersCap
+	}
+	return n
+}
 
 var (
 	mirrorOutboxPending = promauto.NewGauge(prometheus.GaugeOpts{
@@ -56,11 +101,15 @@ var (
 	})
 	mirrorReplayTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "llmgw_session_mirror_outbox_replays_total",
-			Help: "session_mirror_outbox replay outcomes",
+			Name: "session_mirror_outbox_replays_total",
+			Help: "session_mirror_outbox replay outcomes (ok|retry|dead|skipped). The dead label is the per-attempt dead-letter rate; session_mirror_outbox_dead_total is the aggregate dead-letter event count and the alerting-friendly top-level signal.",
 		},
 		[]string{"result"}, // ok | retry | dead | skipped
 	)
+	mirrorReplayDeadTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "session_mirror_outbox_dead_total",
+		Help: "session_mirror_outbox rows permanently dead-lettered after exhausting mirror_outbox_max_attempts retries. Sustained growth means manual reconciliation is required (spec §12 GAP 2 dead contract).",
+	})
 )
 
 // replayDB is the minimal pool surface the reaper needs.
@@ -111,6 +160,7 @@ type MirrorOutboxReaper struct {
 	interval  time.Duration
 	batchSize int
 	maxAtts   int
+	workers   int
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 	mu        sync.Mutex
@@ -129,7 +179,8 @@ func StartMirrorOutboxReaper(ctx context.Context, pool *pgxpool.Pool, writer V2W
 		writer:    writer,
 		interval:  mirrorReplayDefaultInterval,
 		batchSize: mirrorReplayDefaultBatch,
-		maxAtts:   mirrorReplayDefaultMaxAtts,
+		maxAtts:   currentMaxAtts(mirrorReplayDefaultMaxAtts),
+		workers:   mirrorReplayWorkers(),
 		stopCh:    make(chan struct{}),
 		doneCh:    make(chan struct{}),
 	}
@@ -175,8 +226,9 @@ func (r *MirrorOutboxReaper) run(ctx context.Context) {
 	defer close(r.doneCh)
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
-	// First tick fires immediately so rows registered before a restart are
-	// drained without waiting a full interval.
+	// time.NewTicker 首跳在 interval（30s）后而非立即；重启后重启前排出的
+	// 积压至多延迟一个 interval 才开始排空。若要立即消化，可在此处先手动
+	// tick 一次（M-6③ 裁决：30s 延迟可接受，只修注释不改行为）。
 	for {
 		select {
 		case <-ctx.Done():
@@ -214,19 +266,90 @@ func (r *MirrorOutboxReaper) tick(ctx context.Context) error {
 		return err
 	}
 
-	// 2. Claim a batch. Claiming and replaying are deliberately separate
-	// transactions: the lease permits crash recovery between them, and
-	// replay relies on v2.Write's request_id idempotency.
-	rows, err := r.claimBatch(ctx)
-	if err != nil {
-		return err
+	// 2. Claim and replay in parallel. Each worker independently calls
+	// claimBatch (its own tx with FOR UPDATE SKIP LOCKED) so workers never
+	// double-claim the same row. A worker stops when its claim returns
+	// fewer than batchSize rows — the table is drained.
+	workers := r.workers
+	if workers < 1 {
+		workers = 1
 	}
-	for _, row := range rows {
-		r.replayOne(ctx, row)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// M-6①：Go 里任意 goroutine 的未恢复 panic 会击穿整个进程；
+			// replay 链路（claimBatch→replayOne→writer.Write→桥接转换）
+			// 任一环 panic 只记日志不坠机，行保持 claimed 由 lease 孤儿
+			// 回收兜底回 pending。
+			defer func() {
+				if p := recover(); p != nil {
+					slog.Error("sessionv2mirror: outbox replay worker panic",
+						"panic", p, "stack", string(debug.Stack()))
+				}
+			}()
+			r.drainWorker(ctx)
+		}()
 	}
+	wg.Wait()
 
 	// 3. Refresh the depth gauge (also covers hook-side registrations).
 	return r.refreshGauge(ctx)
+}
+
+// drainWorker loops claimBatch → replayOne until no rows remain. FOR UPDATE
+// SKIP LOCKED makes the loop safe under N workers; a short batch signals
+// the table is drained.
+// drainEmptyConfirmations 是「本 worker 连续几次拿到空批次后才认定排空」的
+// 次数。
+//
+// 为什么不能只看「短批次」：claimBatch 用的是 FOR UPDATE SKIP LOCKED，短批次
+// 只说明「本次快照里未被别的事务锁住、且够 LIMIT 的行不足」，不等于表已排空。
+// 并行 drain 时兄弟 worker 的 claim 事务尚未提交、hook 侧 INSERT 与本轮并发，
+// 都会让某个 worker 读到短批次。若据此退出，全部 worker 可能集体提前收工，
+// 剩余行要等下一个 tick（本实现 30s）才被捡起——高写入量下出箱堆积速度可能
+// 反超排空速度，与本 worker 的初衷相反。
+//
+// 改成「连续 N 次空批次」后，单次因锁竞争/并发写入造成的短读不会让 worker
+// 提前退出；真正的排空（表确实空了）只需要多跑 N-1 次空查询，代价可忽略
+// （每 tick 每 worker 多 1~2 次极轻量的 SELECT ... FOR UPDATE SKIP LOCKED）。
+const drainEmptyConfirmations = 2
+
+func (r *MirrorOutboxReaper) drainWorker(ctx context.Context) {
+	emptyStreak := 0
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// M-6②：ctx 是 Background（永不过期），停机信号只走 stopCh；
+		// 不查它则 Stop() 后 run 的 wg.Wait 会被 drain-until-empty 拖住
+		// （大积压 + 后台 ctx 时优雅停机无界阻塞）。中途退出时已 claim
+		// 的行由 lease 孤儿回收兜底。
+		select {
+		case <-r.stopCh:
+			return
+		default:
+		}
+		rows, err := r.claimBatch(ctx)
+		if err != nil {
+			slog.Warn("sessionv2mirror: outbox claimBatch failed", "error", err)
+			return
+		}
+		if len(rows) == 0 {
+			// 空批次连续出现 drainEmptyConfirmations 次才收工，把「锁竞争 /
+			// 并发写入导致的短读」与「真的排空了」区分开。
+			emptyStreak++
+			if emptyStreak >= drainEmptyConfirmations {
+				return
+			}
+			continue
+		}
+		emptyStreak = 0
+		for _, row := range rows {
+			r.replayOne(ctx, row)
+		}
+	}
 }
 
 func (r *MirrorOutboxReaper) claimBatch(ctx context.Context) ([]claimRow, error) {
@@ -289,6 +412,14 @@ func (r *MirrorOutboxReaper) replayOne(ctx context.Context, row claimRow) {
 		mirrorReplayTotal.WithLabelValues("skipped").Inc()
 		return
 	}
+	// R60 S2-F4 gate parity：探针合成会话自 hook 起即不入 mirror（R51 教训），
+	// 已登记的存量失败行（多为 advisory lock 超时噪声）在重放时直接删除，
+	// 不再无限重试刷噪声。
+	if IsProbeSyntheticSession(&entry) {
+		r.deleteRow(ctx, row.id, "skipped: probe synthetic session (R51 mirror-skip class)")
+		mirrorReplayTotal.WithLabelValues("skipped").Inc()
+		return
+	}
 	synthetic := entry.GwSessionID == nil || *entry.GwSessionID == ""
 	if !synthetic && telemetry.IsInternalAutoEntry(&entry) {
 		r.deleteRow(ctx, row.id, "skipped: internal loopback (hook exclusion class)")
@@ -330,10 +461,13 @@ func (r *MirrorOutboxReaper) replayOne(ctx context.Context, row claimRow) {
 }
 
 // requeue schedules another attempt with exponential backoff, or marks the
-// row dead once attempts are exhausted.
+// row dead once attempts are exhausted. maxAtts is read per-call so the
+// hot-reload setting sessions_v2.mirror_outbox_max_attempts is honored
+// without restarting the gateway (audit handoff §7).
 func (r *MirrorOutboxReaper) requeue(ctx context.Context, row claimRow, writeErr error) {
+	maxAtts := currentMaxAtts(r.maxAtts)
 	attempts := row.attempts + 1
-	if attempts >= r.maxAtts {
+	if attempts >= maxAtts {
 		r.markDead(ctx, row, "write: "+writeErr.Error())
 		return
 	}
@@ -341,18 +475,26 @@ func (r *MirrorOutboxReaper) requeue(ctx context.Context, row claimRow, writeErr
 	if backoff > mirrorReplayMaxBackoff {
 		backoff = mirrorReplayMaxBackoff
 	}
-	if _, err := execBypass(ctx, r.db, `
+	tag, err := execBypass(ctx, r.db, `
 		UPDATE public.session_mirror_outbox
 		SET status = 'pending', attempts = $2, last_error = $3,
 		    next_retry_at = NOW() + $4::interval, claimed_at = NULL, updated_at = NOW()
 		WHERE id = $1 AND status = 'claimed'
-	`, row.id, attempts, writeErr.Error(), backoff); err != nil {
+	`, row.id, attempts, writeErr.Error(), backoff)
+	if err != nil {
 		// The row stays 'claimed' past the lease and the orphan recovery
 		// re-queues it — no loss, just a slower retry.
 		slog.Warn("sessionv2mirror: outbox requeue update failed",
 			"request_id", row.requestID, "error", err)
+	} else if tag.RowsAffected() == 0 {
+		// 十六轮审计 E6a：UPDATE 带 status='claimed' 守卫，lease 已被
+		// 孤儿回收并可能被兄弟 worker 重 claim——本次 retry 实际未生效，
+		// 不计 retry 指标，行的下一次重试由新 claim 路径驱动。
+		slog.Warn("sessionv2mirror: outbox requeue superseded (row no longer claimed)",
+			"request_id", row.requestID)
+	} else {
+		mirrorReplayTotal.WithLabelValues("retry").Inc()
 	}
-	mirrorReplayTotal.WithLabelValues("retry").Inc()
 }
 
 func (r *MirrorOutboxReaper) markDead(ctx context.Context, row claimRow, reason string) {
@@ -360,13 +502,24 @@ func (r *MirrorOutboxReaper) markDead(ctx context.Context, row claimRow, reason 
 	// whose lease the orphan recovery already returned to 'pending' (and that
 	// a second worker re-claimed and re-dead-lettered) could resurrect the row
 	// back to 'pending' here, breaking the dead-letter contract.
-	if _, err := execBypass(ctx, r.db, `
+	tag, err := execBypass(ctx, r.db, `
 		UPDATE public.session_mirror_outbox
 		SET status = 'dead', last_error = $2, claimed_at = NULL, updated_at = NOW()
 		WHERE id = $1 AND status = 'claimed'
-	`, row.id, reason); err != nil {
+	`, row.id, reason)
+	if err != nil {
 		slog.Error("sessionv2mirror: outbox dead-mark update failed",
 			"request_id", row.requestID, "reason", reason, "error", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		// 十六轮审计 E6a：0 行命中 = 行并未落死信（lease 交接给了新的
+		// claim）——不计 dead、不报数据丢失，与 630 reaper 的
+		// RowsAffected 先查口径一致；否则死信计数虚高且误报
+		// "mirror data lost"。
+		slog.Warn("sessionv2mirror: outbox dead-mark superseded (row no longer claimed)",
+			"request_id", row.requestID, "reason", reason)
+		return
 	}
 	// A dead row is permanently lost mirror data — same observability
 	// contract as the 630 reaper's dead-letter counters.
@@ -374,6 +527,7 @@ func (r *MirrorOutboxReaper) markDead(ctx context.Context, row claimRow, reason 
 		"request_id", row.requestID, "session_id", row.sessionID,
 		"attempts", row.attempts, "reason", reason)
 	mirrorReplayTotal.WithLabelValues("dead").Inc()
+	mirrorReplayDeadTotal.Inc()
 }
 
 func (r *MirrorOutboxReaper) deleteRow(ctx context.Context, id int64, why string) {

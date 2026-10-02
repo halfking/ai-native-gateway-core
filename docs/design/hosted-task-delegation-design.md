@@ -56,7 +56,7 @@ RedClaw 蜂群契约佐证：companion 本地 API 只读、写路径必须经 AC
 │ zcode/claude/… │ ─────────▶ │ llm-gateway-go              │ ────────▶ │ ACC acc-go   │
 │ 只对接网关      │ ◀───────── │  · /v1/hosted-tasks 门面     │  runtime  │  :4101       │
 │                │  ⑤通知/拉取 │  · hosted_tasks 投影+台账    │  dispatch │ 任务账本/租约 │
-└────────────────┘            │  · reconciler 订阅 ACC 事件  │ ◀─SSE/轮询─│ fencing/SSE  │
+└────────────────┘            │  · reconciler 轮询 ACC 状态  │ ◀──轮询────│ fencing/SSE  │
                               │  · 签名回调(SSRF防护)        │           └──────┬──────┘
                               │  · 线层:会话正文/成本/计费    │                  │③派发
                               └────────────────────────────┘                  ▼
@@ -122,7 +122,7 @@ RedClaw 蜂群契约佐证：companion 本地 API 只读、写路径必须经 AC
 | HMAC 签名 | 复用 `internal/outbox/signature.go:10-37`（`timestamp.nonce.body`，hmac-sha256=）与 wire envelope 渲染（`wire.go:55-82`） |
 | SSRF 防护 | 复用 `internal/safehttpclient`（私网/回环/metadata/IPv6/DNS rebinding/redirect 复验，allowlist 显式开启内网）`safe_http_client.go:57-109` |
 | 后台 worker | 复用 `bg/base_worker.go:45-149`（幂等 Start/Stop、panic 隔离） |
-| 迁移纪律 | 下一编号 **711**（704=R28 探测退避；705–710 已被远程会话 V2 等批次占用：`705…710_*.sql`）；唯一编号测试 `migration_version_unique_test.go` |
+| 迁移纪律 | startup 序列至 740；**741 已被 B11 申领，R65 占 742**；唯一编号测试 `migration_version_unique_test.go` + installer 注册门禁（≥704 须入 runner 清单） |
 | 会话线层 | dispatch 会话组 `gw_<hosted_task_id>`；正文/成本权威在 request_logs/usage_ledger，零改造入账 |
 | 现有 GoalRun | 仅作参考模式；P0 不写入 goal_runs（避免与 chat-goal 语义混淆） |
 
@@ -151,8 +151,8 @@ RedClaw 蜂群契约佐证：companion 本地 API 只读、写路径必须经 AC
    pi 全部 LLM → 网关 loopback /v1/chat/completions → usage_ledger 入账（零改造）
 
 ④网关 reconciler（BaseWorker）:
-   订阅 GET /api/v2/orchestration/runs/{run_id}/events/stream（after/Last-Event-ID 持久游标）
-   + 定时轮询 GET /api/v2/runtime/commands/{command_id} 兜底
+   定时轮询 GET /api/v2/runtime/commands/{command_id}（状态权威；R65 D7 起
+   不再订阅 run events SSE——每 tick 全量轮询投影，无本地续传态）
    → 投影 hosted_tasks.status/progress（CAS revision）+ hosted_task_events
    → 终态判定: pi 结果须校验 raw.stop_reason≠error（§0-F4）；unknown_outcome 不猜测，
      进入 needs_review（人工对账状态，P0 暴露为 failed(unknown) + 事件注明）
@@ -168,11 +168,12 @@ RedClaw 蜂群契约佐证：companion 本地 API 只读、写路径必须经 AC
 前端 `POST .../cancel` → 网关 CAS（终态抢占）→ ACC `commands/:id/cancel`（requested）→ 事件 `cancel_requested`。
 回执 delivered/effective 由 reconciler 跟踪；**effective 依赖 companion 侧 CommandCanceler 修复（P1）**，P0 文档明确"取消=请求受理"。
 
-### 3.3 召回/拉回（P1）
+### 3.3 召回/拉回（轻量路径已落地 R65；完整路径 P1）
 
 `POST .../recall` → 网关组装 handoff 包（不改 ACC 状态时用轻量路径：cancel + 快照）：
 ① 线层导出（request_logs 该 gw 会话 turns 摘要/引用）；② 续层指针（pi native session id，来自 ACC session report 四元索引）；③ 知层（Memora scope_chain + context-manifest 引用 + 最新 compress 结果）；④ StructuredHandoffPacket{goal, currentResult, doneWhen, blockers, nextOwner, requiresInputFrom, artifactRefs}。
 需执行权转移时走 ACC v3 transfer（source_fence→snapshot_capture→source_stop→source_release→commit）。事件 `hosted_task.recalled`，前端凭包续跑。
+**R65 现状**：④ 包本体 + 非终态 cancelled 抢占 + `recalled` 事件（迁移 742）+ 回调幂等键复用已落地（单事务 `RecallTask`）；①②③ 与 ACC v3 transfer 仍为 P1。
 
 ---
 
@@ -186,7 +187,7 @@ RedClaw 蜂群契约佐证：companion 本地 API 只读、写路径必须经 AC
 | `GET /v1/hosted-tasks/{id}` | 状态 + 事件时间线；跨租户/不存在统一 404 |
 | `GET /v1/hosted-tasks/{id}/result` | running→202+Retry-After；终态→200 `{summary, output, artifact_refs[], memora{scope_chain, manifest_key}, cost, gw_session_id, pi_session_ref, result_version, content_hash}`（PG 权威，Redis 仅投影） |
 | `POST /v1/hosted-tasks/{id}/cancel` | 202 `{cancel_status:"requested"}`；终态后 409 |
-| `POST /v1/hosted-tasks/{id}/recall` | **P0 返回 501**（显式不支持），P1 实现 |
+| `POST /v1/hosted-tasks/{id}/recall` | 召回（§3.3 ④ 轻量快照：非终态先 cancelled 抢占 + 尽力 ACC cancel，返回 `StructuredHandoffPacket`，`recalled` 事件 + 回调按 `hosted_<id>_ev<seq>` 幂等重置；R65 落地，迁移 742） |
 
 ### 4.2 hosted_tasks 状态机（独立于 GoalRun 字符串）
 
@@ -199,8 +200,8 @@ delegated → dispatching → running → completed | failed
 
 ### 4.3 事件（hosted_task_events，append-only，唯一 (task_id, seq)）
 
-`accepted / dispatch_degraded / running / progress / cancel_requested / completed / failed / expired / cancelled / callback_delivered / callback_dlq`
-（P1 增：budget_exceeded / recalled / phase_changed）
+`accepted / dispatch_degraded / running / progress / cancel_requested / completed / failed / expired / cancelled / recalled / callback_delivered / callback_dlq`
+（迁移 742 扩 `recalled`——R65 召回轻量路径；P1 待增：budget_exceeded / phase_changed）
 
 ---
 
@@ -236,22 +237,22 @@ delegated → dispatching → running → completed | failed
 | `domains/hostedtask/types.go` | 状态/事件枚举 + 纯函数迁移矩阵（表驱动测试） |
 | `domains/hostedtask/store.go` | Tx 内幂等创建/CAS 投影/终态抢占/事件追加（参照 routeincident store.go:77-164 的 FOR UPDATE+version CAS） |
 | `domains/hostedtask/handler.go` | 五端点；authenticate 复用 session 模式（跨包 InvalidKeyError 断言） |
-| `domains/hostedtask/acc_client.go` | Runtime Control 客户端：dispatch/getCommand/cancel/run SSE（token env `LLM_GATEWAY_ACC_SERVICE_TOKEN`、base env `LLM_GATEWAY_ACC_BASE_URL`；注入 http.Client 便于测试；SSE 游标持久化在 hosted_tasks 行） |
+| `domains/hostedtask/acc_client.go` | Runtime Control 客户端：dispatch/getCommand/cancel（token env `LLM_GATEWAY_ACC_SERVICE_TOKEN`、base env `LLM_GATEWAY_ACC_BASE_URL`；注入 http.Client 便于测试。R65 D7：run SSE 订阅移除，hosted_tasks.sse_cursor 列保留停用） |
 | `domains/hostedtask/callbacks.go` + `internal/hostedcallback/` | callback deliverer：safehttpclient（redirect=0 或逐跳复验；allowlist 可配）+ 复用 `outbox.SignPayload` 头；退避重试→DLQ；event_id=`hosted_<id>_ev<seq>` 固定 |
-| `bg/hosted_task_reconciler.go` | BaseWorker：SSE 订阅（断线 after 恢复）+ 轮询兜底 + deadline reaper + 终态触发回调入队 |
+| `bg/hosted_task_reconciler.go` | BaseWorker：轮询投影（状态权威，R65 D7）+ deadline reaper + 终态触发回调入队 |
 | `cmd/gateway/main.go` | 装配 + `mux.Handle("/v1/hosted-tasks", …)`、`/v1/hosted-tasks/`；**顺带修复**：`/v1/goal-runs/{id}` 挂载前先给 goalrun_handler 补 KeyVerifier 归属校验（独立小 PR） |
 | `installer/…/embeddata/startup/711_*` + `runner.go` 清单 + `docs/db-changelog.md` | 三处同步（§0 反例教训） |
 | `config/config.go` + `.env.example` | hostedtask 配置块（ACC URL/token、callback allowlist、deadline 默认值、worker 开关） |
 
 ### 6.2 P0 明确不做
 
-recall（501）、多阶段拆解、budget 熔断执行、多 runtime 调度、pi 沙箱（P0 以 workspace 白名单+低权用户+内网过渡，P2 容器化）、修改现有 ASM outbox 语义。
+recall 完整路径（轻量快照已 R65 落地；线层导出/续层指针/知层引用/ACC v3 transfer 仍 P1）、多阶段拆解、budget 熔断执行、多 runtime 调度、pi 沙箱（P0 以 workspace 白名单+低权用户+内网过渡，P2 容器化）、修改现有 ASM outbox 语义。
 
 ---
 
 ## 7. P1 / P2 路线
 
-- **P1（2–3 周）**：recall/handoff 包（§3.3，含 ACC transfer 接线或轻量快照路径）；ACC canonical task 双写（账本对齐，资源版本乐观并发）；多阶段（ACC 拆解/阶段边界 Memora compress+ingest 自动化）；budget 熔断（usage_ledger 按 gw_session 归集 + 原子扣减 + `budget_exceeded` 单次事件）；companion 侧修复【跨仓库】：FacadeExecutor 实现 CommandCanceler、pi stopReason=error→失败、MemoraSearch tenant 参数化。
+- **P1（2–3 周）**：recall/handoff 完整路径（§3.3：轻量快照已 R65 落地，余下 ACC v3 transfer 接线 + 线层导出/续层指针/知层引用；若需亚 tick 投影反应，SSE 订阅以 worker-lifetime ctx 重新设计——见 D7）；ACC canonical task 双写（账本对齐，资源版本乐观并发）；多阶段（ACC 拆解/阶段边界 Memora compress+ingest 自动化）；budget 熔断（usage_ledger 按 gw_session 归集 + 原子扣减 + `budget_exceeded` 单次事件）；companion 侧修复【跨仓库】：FacadeExecutor 实现 CommandCanceler、pi stopReason=error→失败、MemoraSearch tenant 参数化。
 - **P2**：多 pi 并发/多宿主（runtime registry 负载策略）、pi 容器化/cube 隔离、web 管理看板、前端 delegate/recall skill、pi 接 ACC MCP 工具（复用 pi-swarm accmcp 扩展）。
 
 ---
@@ -266,7 +267,7 @@ recall（501）、多阶段拆解、budget 熔断执行、多 runtime 调度、p
 | D 迁移/RLS | 711 fresh/upgrade/down-up；NOSUPERUSER+NOBYPASSRLS 租户 A/B 负向；无 TEST_DATABASE_URL 不得记 PASS |
 | E 回调 | HMAC 正确/过期/重放；2xx；4xx 不重试；5xx 退避→DLQ；loopback/RFC1918/metadata/redirect 复验全拒；POST 成功 commit 前崩溃→重投+event_id 幂等 |
 | F 结果 | Redis 清空后 PG 回源；result_version 单调；hash/tenant 不匹配拒绝 |
-| G 恢复 | 网关重启后 SSE 游标续传；同 Idempotency-Key 重放不双发；unknown_outcome→needs_review 不猜测 |
+| G 恢复 | 网关重启后轮询从 ACC 权威重建投影（无本地续传态，R65 D7）；同 Idempotency-Key 重放不双发；unknown_outcome→needs_review 不猜测 |
 | H 取消 | 2xx=requested；旧执行迟到回写被终态 CAS 拒（0 行） |
 
 ---
@@ -296,3 +297,4 @@ recall（501）、多阶段拆解、budget 熔断执行、多 runtime 调度、p
 | D4 hosted_tasks 定位 | 关联投影表，非执行 owner | 防 durable/goalrun/ACC 三方状态竞争（R28 审计结论） |
 | D5 P0 回调实现 | 新建 hosted_task_callbacks+deliverer，不动 ASM outbox | F1 核实：现 outbox 单端点语义不匹配 |
 | D6 P0 驱动协议 | pi `--mode json` headless | F3 核实：RPC/ACP 驱动尚未实现，headless 已实证可跑 |
+| D7 P0 投影通道 | reconciler 移除 SSE 订阅，轮询为唯一状态权威（2026-09-23 R65 仲裁） | R36 给 tick 加 passCtx 预算后，SSE 流 ctx 被级联取消、退化为每 tick 重连（R62 修复被 758bf92c2 判过设计撤回）；poll 每 tick 全量投影本就是状态权威，亚 tick 终态加速无需求方（pi 任务分钟级、tick 5s、功能默认关）。P1 若需 SSE，须以 worker-lifetime ctx 重新设计订阅生命周期（R62 教训：passCtx 改动必须 grep 下游"长期持有 ctx"语义）；hosted_tasks.sse_cursor 列保留停用 |

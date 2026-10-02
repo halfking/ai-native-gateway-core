@@ -20,6 +20,12 @@ import (
 // regular-user owner filters to a WHERE clause and returns the next arg index.
 // Filters are pinned to request_logs/owner_user against session_dim so RLS +
 // application-layer filtering remain defense in depth.
+// timeseriesAlias 是三条趋势查询给数据源起的别名。必须显式传进
+// appendTimeseriesFilters —— 此前三处都传空串，拼出来的是
+// `AND .tenant_id = $4` 这种无限定名谓词，只要带租户/模型/供应商过滤就是语法
+// 错误，整个端点 500。
+const timeseriesAlias = "rl"
+
 func appendTimeseriesFilters(r *http.Request, alias string, filters *timeseriesFilters, argStart int) (string, []any, int) {
 	fragments := []string{}
 	args := []any{}
@@ -40,13 +46,20 @@ func appendTimeseriesFilters(r *http.Request, alias string, filters *timeseriesF
 			idx++
 		}
 	}
+	// 模型过滤：session 族契约里没有 upstream_model，实际发出模型列名为
+	// outbound_model（与 session_analytics_breakdown.go 的分组列一致）。
 	if len(filters.model) > 0 {
-		fragments = append(fragments, fmt.Sprintf(" AND %s.upstream_model = ANY($%d)", alias, idx))
+		fragments = append(fragments, fmt.Sprintf(" AND %s.outbound_model = ANY($%d)", alias, idx))
 		args = append(args, filters.model)
 		idx++
 	}
+	// provider 过滤：request_logs 物理表与 115 列契约都只有 provider_id，
+	// 没有 provider 文本列 —— 旧谓词 `%s.provider` 引用的是不存在的列，
+	// 该过滤从未生效过（叠加空 alias 语法错误）。改为按 provider_id 过滤，
+	// 与 breakdown 面板输出的 provider_id 对齐。查询参数仍是字符串数组，
+	// 这里显式转文本比较，避免要求调用方改参数类型。
 	if len(filters.provider) > 0 {
-		fragments = append(fragments, fmt.Sprintf(" AND %s.provider = ANY($%d)", alias, idx))
+		fragments = append(fragments, fmt.Sprintf(" AND %s.provider_id::text = ANY($%d)", alias, idx))
 		args = append(args, filters.provider)
 		idx++
 	}
@@ -58,7 +71,7 @@ func appendTimeseriesFilters(r *http.Request, alias string, filters *timeseriesF
 type timeseriesFilters struct {
 	dateFrom    time.Time
 	dateTo      time.Time
-	granularity string   // day/week/month
+	granularity string // day/week/month
 	model       []string
 	provider    []string
 }
@@ -84,11 +97,11 @@ type ActivityResponse struct {
 
 // ActivitySummary 活动趋势汇总
 type ActivitySummary struct {
-	TotalSessions     int     `json:"total_sessions"`
-	TotalRequests     int     `json:"total_requests"`
-	AvgDailySessions  float64 `json:"avg_daily_sessions"`
-	PeakDate          string  `json:"peak_date"`
-	PeakSessions      int     `json:"peak_sessions"`
+	TotalSessions    int     `json:"total_sessions"`
+	TotalRequests    int     `json:"total_requests"`
+	AvgDailySessions float64 `json:"avg_daily_sessions"`
+	PeakDate         string  `json:"peak_date"`
+	PeakSessions     int     `json:"peak_sessions"`
 }
 
 // CostDataPoint 成本趋势数据点
@@ -169,22 +182,22 @@ func (h *Handler) HandleActivityTrend(w http.ResponseWriter, r *http.Request) {
 
 	query := `
 		SELECT
-			date_trunc($1, ts)::date AS date,
-			COUNT(DISTINCT gw_session_id) AS session_count,
+			date_trunc($1, rl.ts)::date AS date,
+			COUNT(DISTINCT rl.gw_session_id) AS session_count,
 			COUNT(*) AS request_count,
-			SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,
-			SUM(CASE WHEN lower(COALESCE(request_status, '')) = 'failure' THEN 1 ELSE 0 END) AS error_count,
-		SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
-		SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS total_tokens,
-		COUNT(DISTINCT end_user_id) AS distinct_users
-	FROM request_logs
-	WHERE ts >= $2 AND ts < $3`
+			SUM(CASE WHEN rl.success THEN 1 ELSE 0 END) AS success_count,
+			SUM(CASE WHEN lower(COALESCE(rl.request_status, '')) = 'failure' THEN 1 ELSE 0 END) AS error_count,
+		SUM(COALESCE(rl.cost_usd, 0)) AS total_cost_usd,
+		SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, 0)) AS total_tokens,
+		COUNT(DISTINCT rl.end_user_id) AS distinct_users
+	FROM request_logs_with_current_month rl
+	WHERE rl.ts >= $2 AND rl.ts < $3`
 
 	args := []interface{}{filters.granularity, filters.dateFrom, filters.dateTo}
-	extra, extraArgs, _ := appendTimeseriesFilters(r, "", filters, 4)
+	extra, extraArgs, _ := appendTimeseriesFilters(r, timeseriesAlias, filters, 4)
 	query += extra
 	args = append(args, extraArgs...)
-	query += ` GROUP BY date_trunc($1, ts) ORDER BY date ASC`
+	query += ` GROUP BY date_trunc($1, rl.ts) ORDER BY date ASC`
 
 	var series []ActivityDataPoint
 	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
@@ -205,7 +218,7 @@ func (h *Handler) HandleActivityTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -241,20 +254,26 @@ func (h *Handler) HandleCostTrend(w http.ResponseWriter, r *http.Request) {
 
 	query := `
 		SELECT
-			date_trunc($1, ts)::date AS date,
-			SUM(COALESCE(input_cost_usd, 0)) AS input_cost_usd,
-		SUM(COALESCE(output_cost_usd, 0)) AS output_cost_usd,
-		SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
-		SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
-		SUM(COALESCE(cache_creation_tokens, 0)) AS cache_write_tokens
-	FROM request_logs
-	WHERE ts >= $2 AND ts < $3`
+			date_trunc($1, rl.ts)::date AS date,
+			-- 输入/输出成本拆分在 session 族 115 列契约内没有对应列（真库
+			-- information_schema 核验：视图无 input_cost_usd / output_cost_usd），
+			-- 且 request_logs 物理表上同样不存在这两个列 —— 也就是说本查询此前
+			-- 每次调用都必然 42703，该端点在迁移前是坏的，不存在可回退的历史行为。
+			-- 契约字段不能删（CostDataPoint 无 omitempty，删了会改 JSON 形状），
+			-- 故显式置 0 并在此登记；总成本与缓存 token 仍是真值。
+			0::numeric AS input_cost_usd,
+			0::numeric AS output_cost_usd,
+		SUM(COALESCE(rl.cost_usd, 0)) AS total_cost_usd,
+		SUM(COALESCE(rl.cache_read_tokens, 0)) AS cache_read_tokens,
+		SUM(COALESCE(rl.cache_write_tokens, 0)) AS cache_write_tokens
+	FROM request_logs_with_current_month rl
+	WHERE rl.ts >= $2 AND rl.ts < $3`
 
 	args := []interface{}{filters.granularity, filters.dateFrom, filters.dateTo}
-	extra, extraArgs, _ := appendTimeseriesFilters(r, "", filters, 4)
+	extra, extraArgs, _ := appendTimeseriesFilters(r, timeseriesAlias, filters, 4)
 	query += extra
 	args = append(args, extraArgs...)
-	query += ` GROUP BY date_trunc($1, ts) ORDER BY date ASC`
+	query += ` GROUP BY date_trunc($1, rl.ts) ORDER BY date ASC`
 
 	var series []CostDataPoint
 	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
@@ -275,7 +294,7 @@ func (h *Handler) HandleCostTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -311,21 +330,21 @@ func (h *Handler) HandleLatencyTrend(w http.ResponseWriter, r *http.Request) {
 
 	query := `
 		SELECT
-			date_trunc($1, ts)::date AS date,
-			percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::int AS p50_latency_ms,
-		percentile_cont(0.9) WITHIN GROUP (ORDER BY latency_ms)::int AS p90_latency_ms,
-		percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::int AS p99_latency_ms,
-		MAX(latency_ms) AS max_latency_ms,
-		AVG(latency_ms)::int AS avg_latency_ms,
-		COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY stream_first_chunk_ms)::int, 0) AS stream_first_chunk_p50_ms
-	FROM request_logs
-	WHERE ts >= $2 AND ts < $3 AND latency_ms IS NOT NULL`
+			date_trunc($1, rl.ts)::date AS date,
+			percentile_cont(0.5) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p50_latency_ms,
+		percentile_cont(0.9) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p90_latency_ms,
+		percentile_cont(0.99) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p99_latency_ms,
+		MAX(rl.latency_ms) AS max_latency_ms,
+		AVG(rl.latency_ms)::int AS avg_latency_ms,
+		COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY rl.stream_first_chunk_ms)::int, 0) AS stream_first_chunk_p50_ms
+	FROM request_logs_with_current_month rl
+	WHERE rl.ts >= $2 AND rl.ts < $3 AND rl.latency_ms IS NOT NULL`
 
 	args := []interface{}{filters.granularity, filters.dateFrom, filters.dateTo}
-	extra, extraArgs, _ := appendTimeseriesFilters(r, "", filters, 4)
+	extra, extraArgs, _ := appendTimeseriesFilters(r, timeseriesAlias, filters, 4)
 	query += extra
 	args = append(args, extraArgs...)
-	query += ` GROUP BY date_trunc($1, ts) ORDER BY date ASC`
+	query += ` GROUP BY date_trunc($1, rl.ts) ORDER BY date ASC`
 
 	var series []LatencyDataPoint
 	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
@@ -346,7 +365,7 @@ func (h *Handler) HandleLatencyTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -374,7 +393,7 @@ func (h *Handler) HandleHealthTrend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	tenantID := effectiveScopeTenant(r)
@@ -451,7 +470,7 @@ ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 

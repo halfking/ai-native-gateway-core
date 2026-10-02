@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // ModelConfigValidator periodically validates and auto-fixes provider model configurations.
@@ -33,7 +34,7 @@ func (v *ModelConfigValidator) Start(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	v.cancel = cancel
 
-	go func() {
+	Go("model_config_validator.loop", func() {
 		defer close(v.done)
 
 		// Run immediately on startup
@@ -50,7 +51,7 @@ func (v *ModelConfigValidator) Start(ctx context.Context) {
 				v.runOnce(ctx)
 			}
 		}
-	}()
+	})
 
 	slog.Info("model_config_validator started", "interval", "30m")
 }
@@ -140,7 +141,9 @@ func (v *ModelConfigValidator) detectMismatchedEndpoints(ctx context.Context) er
 		var id int
 		var providerName, rawName, stdName, outboundName string
 		if err := rows.Scan(&id, &providerName, &rawName, &stdName, &outboundName); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.ModelConfigValidator.detectMismatchedEndpoints", err) {
+				continue
+			}
 		}
 
 		mismatchCount++
@@ -151,6 +154,12 @@ func (v *ModelConfigValidator) detectMismatchedEndpoints(ctx context.Context) er
 			"standardized_name", stdName,
 			"outbound_model_name", outboundName,
 			"hint", "verify that outbound_model_name matches the actual upstream API endpoint")
+	}
+
+	// R66: 巡检批被截断 = 少报若干 outbound 端点错配，配置漂移无声累积。
+	if err := rows.Err(); err != nil {
+		slog.Warn("model_config_validator: mismatch row iteration aborted; batch truncated",
+			"error", err, "detected", mismatchCount)
 	}
 
 	if mismatchCount > 0 {

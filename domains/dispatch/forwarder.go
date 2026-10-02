@@ -72,11 +72,14 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 }
 
 // buildForwarderGovernor wraps the policy-aware governor constructor with a
-// fail-open fallback for the cold-start path. ApplyPolicy itself must
-// fail-closed when the backend rejects a spec; but a cold-start forwarder
-// cannot block dispatch when the Redis backend is transiently unavailable —
-// we degrade to the in-process governor and rely on the publisher's retry
-// to install the Redis governor once the cluster recovers.
+// fallback for the cold-start path. ApplyPolicy itself must fail-closed when
+// the backend rejects a spec. The fallback direction depends on the backend
+// kind: with the strict redis_enforce backend a cold-start failure returns
+// unavailableGovernor{}, whose Acquire always fails with
+// ErrGovernorUnavailable — i.e. fail-CLOSED, dispatch to that credential is
+// blocked until the publisher's retry installs the real Redis governor.
+// The in-process degradation (newGovernor below) only exists for non-strict
+// backends (local / nil), where there is no cluster budget to protect.
 func buildForwarderGovernor(pipe *Pipeline, cred CredentialRef) Governor {
 	gov, err := pipe.governorForCredential(cred, pipe.ActiveRevision())
 	if err == nil {
@@ -411,6 +414,10 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) (Governor, bool) {
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing reserved attempt")})
 		return nil, false
 	}
+	// R51-F15: meter extra upstream calls issued inside this admission
+	// (reqprobe retries, context-length recovery) back into the admitting
+	// governor. nil when the governor has no ExtraCallRecorder capability.
+	qr.OnExtraUpstreamCall = extraCallMeterFor(gov, qr)
 
 	// V3.3-OBS OBS-B1 (2026-08-15): node_selected 动作事件（S7 前，最终选定
 	// 节点——通过 governor 准入，即将开始转发）。

@@ -229,7 +229,7 @@ func (w *ModelQualityWorker) TriggerNodeIQTest(credentialID int, rawModel string
 	w.triggerLast[key] = now
 	w.triggerMu.Unlock()
 
-	go func() {
+	Go("model_quality_worker.testSingleNode", func() {
 		defer func() {
 			w.triggerMu.Lock()
 			delete(w.triggerInFlight, key)
@@ -250,7 +250,7 @@ func (w *ModelQualityWorker) TriggerNodeIQTest(credentialID int, rawModel string
 		}
 		slog.Info("model_iq: anomaly-triggered node test done",
 			"credential_id", credentialID, "model", rawModel, "overall_score", score.OverallScore)
-	}()
+	})
 }
 
 // RunPerNodeCheck 手动触发一次"按凭据节点"测试：遍历所有活跃节点，
@@ -432,7 +432,7 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 		"per_node", w.config.EnablePerNodeTesting)
 
 	// 异步运行主循环
-	go w.loop(ctx, storage, stopCh, doneCh)
+	Go("model_quality_worker.loop", func() { w.loop(ctx, storage, stopCh, doneCh) })
 }
 
 // Stop 停止worker
@@ -522,13 +522,13 @@ func (w *ModelQualityWorker) loop(ctx context.Context, storage modelquality.Moni
 		nodeTickerC = nodeTicker.C
 		defer nodeTicker.Stop()
 		// 启动时立即跑一次
-		go func() {
+		Go("model_quality_worker.perNodeCheck", func() {
 			if n, err := w.RunPerNodeCheck(ctx, storage); err != nil {
 				slog.Warn("per-node quality check error", "tested", n, "error", err)
 			} else {
 				slog.Info("per-node quality check done", "tested", n)
 			}
-		}()
+		})
 	}
 
 	for {
@@ -620,7 +620,7 @@ func NewModelIQCleaner(pool *pgxpool.Pool, interval time.Duration, retentionDays
 func (c *ModelIQCleaner) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
-	go c.run(ctx)
+	Go("model_quality_worker.run", func() { c.run(ctx) })
 	slog.Info("model_iq cleaner started", "interval", c.interval, "retention_days", c.retentionDays)
 }
 

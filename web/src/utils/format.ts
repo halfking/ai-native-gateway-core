@@ -28,3 +28,25 @@ export function formatBytes(bytes?: number | null): string {
 
   return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`
 }
+/**
+ * Format a number with locale-aware grouping ('1,234,567').
+ *
+ * 2026-10-01 (第十八轮 ④ format 收敛): 单一实现收敛自 DataLifecycleView /
+ * StorageOverview / HotPartitionManager / UsageCost 四处各自内联的
+ * toLocaleString 包装。语义：
+ *   - null / undefined / 非有限值 → '0'（与 formatBytes 的"缺失统一呈现"
+ *     审计口径一致，消除个别旧实现 undefined 直抛 TypeError 的形态）；
+ *   - locale 缺省时交给运行时默认 locale（等价 value.toLocaleString()）。
+ *
+ * @param n      数值（可缺省）。
+ * @param locale BCP-47 locale（可缺省；传响应式 locale.value 保持语言切换）。
+ */
+export function formatNumberLocale(
+  n: number | null | undefined,
+  locale?: string,
+): string {
+  if (n == null || !Number.isFinite(n)) {
+    return (0).toLocaleString(locale)
+  }
+  return n.toLocaleString(locale)
+}

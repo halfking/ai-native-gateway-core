@@ -84,7 +84,7 @@ func (h *Handler) handleResetCredentialState(w http.ResponseWriter, r *http.Requ
 			if errors.Is(err, pgx.ErrNoRows) {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
-				writeError(w, http.StatusInternalServerError, "tenant lookup failed: "+err.Error())
+				writeInternalErr(w, "tenant lookup failed", err)
 			}
 			return
 		}
@@ -113,7 +113,7 @@ func (h *Handler) handleResetCredentialState(w http.ResponseWriter, r *http.Requ
 				beforeAfter["audit_outcome"] = "partial_failed"
 				h.logAudit(r, "routing_credential_reset_state", beforeAfter)
 			}
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 		}
 		return
 	}

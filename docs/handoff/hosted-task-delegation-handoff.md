@@ -19,13 +19,13 @@
 ### 1.2 P0 范围
 - ✅ 5 个 REST 端点（委托/查询/结果/取消/召回-501）
 - ✅ 8 态状态机（delegated → dispatching → running → 5 终态）
-- ✅ ACC 投影（SSE 订阅 + 轮询兜底 + 终态判定）
+- ✅ ACC 投影（轮询状态权威 + 终态判定；R65 D7 起 SSE 订阅移除）
 - ✅ 租户隔离（RLS + JWT 鉴权 + workspace 白名单）
 - ✅ 签名回调（HMAC + SSRF 防护 + 重试 DLQ）
 - ✅ 幂等与冲突（同键同体 200 / 同键异体 409）
 
 ### 1.3 P0 明确不做
-- ⏸ recall 召回（端点返回 501）
+- ⏸ recall 完整路径（轻量快照已 R65 落地：迁移 742 + StructuredHandoffPacket + recalled 事件；线层导出/续层指针/知层引用/ACC v3 transfer 仍 P1）
 - ⏸ 多阶段任务拆解
 - ⏸ budget 熔断执行
 - ⏸ Memora typed-ingest（P0 采用 prompt 内联简化）
@@ -41,7 +41,7 @@
 ### 2.2 Phase 2: 代码实施（2026-09-14）
 - 迁移 711：3 表（hosted_tasks / events / callbacks）+ RLS 策略
 - domains/hostedtask：6 个 .go 文件 + 5 个 *_test.go（~4100 行实现 + ~1100 行测试）
-- bg/hosted_task_reconciler：SSE 订阅 + 轮询 + 终态判定（503 行）
+- bg/hosted_task_reconciler：轮询投影 + 终态判定（R65 D7 起 SSE 移除）
 - internal/hostedcallback：签名投递 + SSRF 防护（393 行）
 
 ### 2.3 Phase 3: 初次审计（2026-09-15）
@@ -70,7 +70,7 @@
 | HTTP 门面 | `domains/hostedtask/handler.go` | 530 | ✅ 5 端点 + workspace 必填 | ✅ 幂等/鉴权/路由 |
 | ACC 客户端 | `domains/hostedtask/acc_client.go` | 380 | ✅ 完整 | ✅ 宽容解析 |
 | 回调投递 | `domains/hostedtask/callbacks.go` + `internal/hostedcallback/` | 393 | ✅ 完整 | ✅ SSRF/HMAC |
-| reconciler | `bg/hosted_task_reconciler.go` | 503 | ✅ SSE + 轮询 + 终态判定 | ✅ 终态/SSE |
+| reconciler | `bg/hosted_task_reconciler.go` | — | ✅ 轮询 + 终态判定（R65 起 SSE 移除） | ✅ 终态 |
 | 装配 | `cmd/gateway/main.go:6000-6053` | 53 | ✅ mux 挂载 | ✅ httptest |
 
 ### 3.2 测试验证（100%）
@@ -84,7 +84,7 @@ PASS (15 tests, 1 skip - PG集成需环境变量)
 ✅ TestCanTransitionMatrix - 状态机转移矩阵（8态）
 ✅ TestHandlerIdempotentReplay - 同键同体200/同键异体409
 ✅ TestHandlerValidation - workspace_id必填+白名单+SSRF防护
-✅ TestACCClientStreamEvents - SSE断点续传
+⛔ TestACCClientStreamEvents - 已随 R65 D7 SSE 移除删除
 ✅ TestCallbackBackoffCapped - 回调退避重试
 ✅ TestHandlerNeedsReviewExposedAsFailed - unknown_outcome映射
 ```
@@ -152,7 +152,7 @@ LLM_GATEWAY_HOSTED_TASKS_ENABLED=true
 - `needs_review`: ACC command 无 stop_reason，进入人工对账
 
 **指标监控**:
-- SSE 断线重连频率
+- （R65 起 SSE 移除）轮询失败率/重连延迟
 - 终态任务占比（completed / failed / needs_review / cancelled / expired）
 - 平均任务时长（delegated → completed）
 
@@ -201,7 +201,7 @@ LLM_GATEWAY_HOSTED_TASKS_ENABLED=true
 
 | 风险点 | 可能性 | 影响 | 缓解措施 |
 |--------|--------|------|---------|
-| SSE 长连接中断 | 中 | 终态判定延迟（轮询兜底） | Last-Event-ID 游标 + 退避重连 |
+| 轮询失败（ACC 不可达） | 中 | 终态判定延迟至下一 tick | deadline reaper 兜底 + 下一 tick 重试 |
 | callback URL 变更 | 低 | 通知失败 → callback_dlq | 提示调用方使用固定 endpoint |
 | needs_review 堆积 | 低 | 人工对账工作量 | ACC pi 修复假成功 bug |
 

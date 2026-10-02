@@ -390,7 +390,7 @@ func TestSerializeAnthropic_ToolRoleNestedToolResultID(t *testing.T) {
 				},
 			}
 
-			out := serializeAnthropicMessage(msg, tt.provider, "")
+			out := serializeAnthropicMessage(msg, tt.provider, "", "unknown")
 			content := out["content"].([]map[string]any)
 			result := content[0]
 			if got := result[tt.idField]; got != tt.wantID {
@@ -722,4 +722,78 @@ func BenchmarkSerializeAnthropic(b *testing.B) {
 // Helper
 func intPtr(i int) *int {
 	return &i
+}
+
+// TestSerializeAnthropic_OmittedMaxTokensClampsEffortBudget 钉住 2026-10-01
+// 审计反例：OpenAI Chat 形 {"reasoning_effort":"xhigh"} 且省略 max_tokens →
+// ParseOpenAI（ParseOpenAI 收顶层 reasoning_effort 字段，映射为
+// Reasoning.Effort）→ SerializeAnthropic。序列化默认 max_tokens=4096（DefaultAnthropicMaxTokens
+// 只在序列化期生效、不写回 req.MaxTokens），而 effort=xhigh 经 effort 预算表
+// 兜出 budget=8192；修复前 wire 对 {max_tokens:4096, budget_tokens:8192}
+// 触发 Anthropic `budget_tokens >= max_tokens` 硬 400（ClampRestoredReasoningForAnthropic
+// 的 `req.MaxTokens > 0 &&` 守卫令钳制在省略 max_tokens 时永不触发，且本路径
+// 不经过该函数）。修复后 budget 必须被钳进界内（4095），与 legacy
+// renderAnthropic 同款语义。
+func TestSerializeAnthropic_OmittedMaxTokensClampsEffortBudget(t *testing.T) {
+	body := []byte(`{"model":"claude-x","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`)
+	req, err := ParseOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.MaxTokens > 0 {
+		t.Fatalf("fixture sanity: max_tokens must be omitted, got %d", req.MaxTokens)
+	}
+	out, err := SerializeAnthropic(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatal(err)
+	}
+	mt, ok := result["max_tokens"].(float64)
+	if !ok || mt != float64(DefaultAnthropicMaxTokens) {
+		t.Fatalf("max_tokens = %v, want serialization default %d", result["max_tokens"], DefaultAnthropicMaxTokens)
+	}
+	thinking, ok := result["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking block missing, got %v", result["thinking"])
+	}
+	budget, ok := thinking["budget_tokens"].(float64)
+	if !ok {
+		t.Fatalf("budget_tokens missing, got %v", thinking)
+	}
+	if budget >= mt {
+		t.Fatalf("budget_tokens(%v) >= max_tokens(%v): invalid wire pair, Anthropic hard 400", budget, mt)
+	}
+	if budget != float64(DefaultAnthropicMaxTokens-1) {
+		t.Fatalf("budget_tokens = %v, want clamped to %d", budget, DefaultAnthropicMaxTokens-1)
+	}
+}
+
+// TestSerializeAnthropic_ExplicitMaxTokensValidPairUnchanged 钉住修复的第二
+// 半约束：显式 max_tokens 且 budget 本就在界内时，钳制必须是 no-op——
+// effort 派生 budget（xhigh→8192）与显式 max_tokens=20000 的合法组合逐字不变。
+func TestSerializeAnthropic_ExplicitMaxTokensValidPairUnchanged(t *testing.T) {
+	ir := &InternalRequest{
+		Model:     "claude-x",
+		MaxTokens: 20000,
+		Reasoning: &ReasoningConfig{Effort: "xhigh"},
+		Messages:  []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}},
+	}
+	out, err := SerializeAnthropic(ir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["max_tokens"] != float64(20000) {
+		t.Fatalf("max_tokens = %v, want 20000", result["max_tokens"])
+	}
+	thinking := result["thinking"].(map[string]any)
+	if thinking["budget_tokens"] != float64(8192) {
+		t.Fatalf("budget_tokens = %v, want untouched 8192", thinking["budget_tokens"])
+	}
 }

@@ -10,6 +10,9 @@ import {
   type CompressionSessionItem,
 } from '../api'
 import { getSetting } from '../api/settings'
+import { parseLocalMinute } from '../utils/datetime'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 
 const { t } = useI18n()
 
@@ -36,8 +39,6 @@ type TabId = '24h' | '7d' | '30d' | 'custom'
 const activeTab = ref<TabId>('24h')
 const customFrom = ref('')
 const customTo = ref('')
-const customFromInput = ref('')
-const customToInput = ref('')
 const showCustom = ref(false)
 
 const sessionPage = ref(1)
@@ -141,9 +142,17 @@ function switchTab(tab: TabId) {
   loadAll()
 }
 
-function applyCustom() {
-  if (customFromInput.value) customFrom.value = customFromInput.value
-  if (customToInput.value) customTo.value = customToInput.value
+// 2026-09-30 统一日历轮：custom 范围换 KxDateRangePicker（datetime 精度，面板内显式「应用」，
+// 与 RequestLogsView custom 分支同款交互）。组件值 'YYYY-MM-DD HH:mm' ↔ 页面 customFrom/customTo
+// 维持原 datetime-local 的 'YYYY-MM-DDTHH:mm' 契约（API from/to 与时长计算不变）。
+const customRangeValue = computed<KxDateRange | null>(() => {
+  if (!customFrom.value || !customTo.value) return null
+  return { start: customFrom.value.replace('T', ' '), end: customTo.value.replace('T', ' ') }
+})
+
+function applyCustom(range: KxDateRange) {
+  customFrom.value = range.start.replace(' ', 'T')
+  customTo.value = range.end.replace(' ', 'T')
   sessionPage.value = 1
   loadAll()
 }
@@ -210,7 +219,8 @@ const timeBucketLabel = computed(() => {
   if (!stats.value?.hourly_series?.length) return ''
   const hours = activeTab.value === 'custom'
     ? (customFrom.value && customTo.value
-        ? (new Date(customTo.value).getTime() - new Date(customFrom.value).getTime()) / 3600000
+        // 'YYYY-MM-DDTHH:mm' 无秒非规范格式，补秒解析（P3-3）
+        ? (parseLocalMinute(customTo.value).getTime() - parseLocalMinute(customFrom.value).getTime()) / 3600000
         : 24)
     : (displayHours.value || 24)
   if (hours <= 48) return t('compression.timeBucketHour')
@@ -269,20 +279,12 @@ watch(activeTab, loadAll)
         </button>
       </div>
       <div v-if="showCustom" class="custom-range">
-        <input
-          v-model="customFromInput"
-          type="datetime-local"
-          class="input-sm"
-          :placeholder="t('compression.custom.from')"
+        <KxDateRangePicker
+          :model-value="customRangeValue"
+          :presets="[]"
+          precision="datetime"
+          @apply="applyCustom"
         />
-        <span class="range-sep">{{ t('compression.custom.sep') }}</span>
-        <input
-          v-model="customToInput"
-          type="datetime-local"
-          class="input-sm"
-          :placeholder="t('compression.custom.to')"
-        />
-        <button class="btn btn-sm btn-primary" @click="applyCustom">{{ t('compression.custom.apply') }}</button>
       </div>
       <button class="btn btn-ghost btn-sm refresh-btn" @click="loadAll" :disabled="loading">
         {{ loading ? t('compression.loading') : t('compression.refresh') }}
@@ -512,18 +514,6 @@ watch(activeTab, loadAll)
   display: flex;
   align-items: center;
   gap: 6px;
-}
-.custom-range .input-sm {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 12px;
-}
-.range-sep {
-  color: var(--text-secondary);
-  font-size: 12px;
 }
 
 .refresh-btn {

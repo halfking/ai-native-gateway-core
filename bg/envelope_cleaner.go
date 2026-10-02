@@ -20,7 +20,7 @@ func NewEnvelopeCleaner(db *pgxpool.Pool) *EnvelopeCleaner {
 
 func (c *EnvelopeCleaner) Start(ctx context.Context) {
 	ctx, c.cancel = context.WithCancel(ctx)
-	go c.run(ctx)
+	Go("envelope_cleaner.run", func() { c.run(ctx) })
 	slog.Info("envelope cleaner started", "interval", "3600s")
 }
 

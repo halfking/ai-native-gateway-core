@@ -134,6 +134,8 @@ export default {
   duration: 'المدة',
   edit: 'تحرير',
   enabled: 'مفعّل',
+  endDate: 'تاريخ الانتهاء',
+  exportFailed: 'فشل التصدير',
   lastOccurred: 'آخر حدوث',
   loading: 'جارٍ التحميل…',
   never: 'مطلقًا',
@@ -142,6 +144,7 @@ export default {
   refresh: 'تحديث',
   send: 'إرسال',
   session: 'الجلسة',
+  startDate: 'تاريخ البدء',
   time: 'الوقت',
   warning: 'تحذير',
   yes: 'نعم',
@@ -172,4 +175,27 @@ export default {
   copied: 'Copied',
 
   add: 'Add',
+
+  // 2026-09-30 统一日历组件族（KxDateRangePicker / KxDatePicker）共用词条
+  dateRange: {
+    title: 'النطاق الزمني',
+    custom: 'مخصص',
+    startDate: 'تاريخ البداية',
+    endDate: 'تاريخ النهاية',
+    openAria: 'اختر النطاق الزمني',
+    endBeforeStart: 'يجب ألا يكون تاريخ النهاية قبل البداية',
+    afterLatest: 'لا يمكن أن يكون بعد {date}',
+    spanTooLong: 'المدة تتجاوز {n} يومًا',
+    pickDate: 'اختر تاريخًا',
+    preset: {
+      today: 'اليوم',
+      yesterday: 'أمس',
+      last24h: 'آخر 24 ساعة',
+      last7d: 'آخر 7 أيام',
+      last14d: 'آخر 14 يومًا',
+      last30d: 'آخر 30 يومًا',
+      thisMonth: 'هذا الشهر',
+      lastMonth: 'الشهر الماضي',
+    },
+  },
 }

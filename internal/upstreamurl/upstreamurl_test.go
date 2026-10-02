@@ -19,6 +19,7 @@ func TestBuild(t *testing.T) {
 		// /v1 suffix on completion suffix: strip → re-add.
 		{"openai chat completions suffix", "https://api.openai.com/v1/chat/completions", EpChatCompletions, "https://api.openai.com/v1/chat/completions"},
 		{"anthropic messages suffix", "https://api.anthropic.com/v1/messages", EpMessages, "https://api.anthropic.com/v1/messages"},
+		{"anthropic duplicate separator suffix", "https://api.anthropic.com//messages", EpMessages, "https://api.anthropic.com/v1/messages"},
 
 		// Mid-path /v3, /v4 must be preserved (not stripped to /v1).
 		{"zhipu mid /v4", "https://open.bigmodel.cn/api/coding/paas/v4", EpChatCompletions, "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"},
@@ -45,6 +46,20 @@ func TestBuild(t *testing.T) {
 		{"messages endpoint", "https://api.anthropic.com", EpMessages, "https://api.anthropic.com/v1/messages"},
 		{"responses endpoint", "https://api.openai.com", EpResponses, "https://api.openai.com/v1/responses"},
 
+		// Ollama-native endpoint (r0924 supplier-protocol-optimization §3.6).
+		// Ollama native wire is /api/chat — NO /v1 prefix. Real Ollama returns
+		// 404 on /v1/api/chat, so a trailing /vN is STRIPPED for EpOllamaChat
+		// (r0924 fix-a task 4) while OpenAI-family endpoints keep theirs.
+		{"ollama chat native", "http://localhost:11434", EpOllamaChat, "http://localhost:11434/api/chat"},
+		{"ollama chat trailing slash", "http://localhost:11434/", EpOllamaChat, "http://localhost:11434/api/chat"},
+		// r0924 fix-a task 4: the old expectation "…/v1/api/chat" was a 404 on
+		// real Ollama (the code comment itself admitted it). versionTrailing is
+		// skipped for EpOllamaChat, so the /v1 suffix is dropped.
+		{"ollama chat with /v1", "http://localhost:11434/v1", EpOllamaChat, "http://localhost:11434/api/chat"},
+		{"ollama chat with /v9", "http://ollama.example.com/v9", EpOllamaChat, "http://ollama.example.com/api/chat"},
+		{"ollama chat idempotent", "http://localhost:11434/api/chat", EpOllamaChat, "http://localhost:11434/api/chat"},
+		{"ollama chat idempotent after v1", "http://localhost:11434/v1/api/chat", EpOllamaChat, "http://localhost:11434/api/chat"},
+
 		// Empty base.
 		{"empty", "", EpChatCompletions, ""},
 	}
@@ -68,6 +83,14 @@ func TestConvenienceShorthands(t *testing.T) {
 		{"ChatCompletionsURL volcano v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3/chat/completions", ChatCompletionsURL},
 		{"MessagesURL anthropic", "https://api.anthropic.com", "https://api.anthropic.com/v1/messages", MessagesURL},
 		{"ResponsesURL openai", "https://api.openai.com", "https://api.openai.com/v1/responses", ResponsesURL},
+		// OllamaChatURL (r0924 supplier-protocol-optimization §3.6):
+		{"OllamaChatURL localhost bare", "http://localhost:11434", "http://localhost:11434/api/chat", OllamaChatURL},
+		{"OllamaChatURL trailing slash", "http://localhost:11434/", "http://localhost:11434/api/chat", OllamaChatURL},
+		{"OllamaChatURL already api/chat", "http://localhost:11434/api/chat", "http://localhost:11434/api/chat", OllamaChatURL},
+		// r0924 fix-a task 4: /v1 is stripped for the Ollama endpoint
+		// (was "…/v1/api/chat", a 404 on real Ollama).
+		{"OllamaChatURL with /v1", "http://localhost:11434/v1", "http://localhost:11434/api/chat", OllamaChatURL},
+		{"OllamaChatURL empty", "", "", OllamaChatURL},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,6 +136,17 @@ func TestModelsURLCandidates(t *testing.T) {
 			name: "empty",
 			in:   "",
 			want: nil,
+		},
+		{
+			// R73 E-2：主机名尾字符落在裁剪集 {'/','v','1'} 内时不得被
+			// 字符集裁剪吞掉（TrimRight 时代 root 会变成 https://gw）。
+			name: "host tail char in v1 cutset",
+			in:   "https://gw1/v1",
+			want: []string{
+				"https://gw1/v1/models",
+				"https://gw1/v1/models",
+				"https://gw1/v1/v1/models",
+			},
 		},
 		{
 			name: "trailing slash",

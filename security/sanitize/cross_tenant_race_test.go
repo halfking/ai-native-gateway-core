@@ -5,7 +5,7 @@
 // 覆盖：
 //   - 同一 sessionID 不同 tenant 并发请求：每个 tenant 只看到自己的占位符映射表；
 //   - 同一 (tenant, session) N 个 goroutine 并发请求：所有 placeholder index 唯一且连续；
-//   - allocateOffsets 原子性：并发 N 次分配，每类的 index 累加精确等于 N×M；
+//   - 跨请求 offset 分配：并发 N 次分配，每类的 index 累加精确等于 N×M；
 //   - Restore 拦截器跨租户不会读到对方的 map。
 package sanitize
 
@@ -60,7 +60,7 @@ func (rm *raceMiddleware) fireRequest(t *testing.T, tenantID, sessionID, body st
 		req.Header.Set("X-Gw-Session-Id", sessionID)
 	}
 	if tenantID != "" {
-		req.Header.Set("X-Gw-Tenant-Id", tenantID)
+		req = req.WithContext(WithAuthenticatedTenant(req.Context(), tenantID))
 	}
 	var captured string
 	handler := rm.mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -100,14 +100,14 @@ func TestSanitizeMiddleware_CrossTenantIsolation_Concurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			for r := 0; r < rounds; r++ {
-				body := fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":"A %d-%d 13800138000"}]}`, idx, r)
+				body := fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":"A %d-%d 138%08d"}]}`, idx, r, idx*rounds+r)
 				rm.fireRequest(t, tenantA, sessionID, body)
 			}
 		}(i)
 		go func(idx int) {
 			defer wg.Done()
 			for r := 0; r < rounds; r++ {
-				body := fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":"B %d-%d a@b.com"}]}`, idx, r)
+				body := fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":"B %d-%d a%d-%d@b.com"}]}`, idx, r, idx, r)
 				rm.fireRequest(t, tenantB, sessionID, body)
 			}
 		}(i)
@@ -120,7 +120,7 @@ func TestSanitizeMiddleware_CrossTenantIsolation_Concurrent(t *testing.T) {
 	require.NotEmpty(t, mapA, "tenant A map should not be empty")
 	for placeholder, plaintext := range mapA {
 		require.Contains(t, placeholder, "{SENSITIVE:phone:", "tenant A only emits phone placeholders, got %s", placeholder)
-		require.Contains(t, plaintext, "13800138000", "tenant A plaintext should be its own PII, got %q (placeholder=%s)", plaintext, placeholder)
+		require.True(t, strings.HasPrefix(plaintext, "138"), "tenant A plaintext should be its own PII, got %q (placeholder=%s)", plaintext, placeholder)
 	}
 
 	// === 断言 B 的 map 只含 B 的 PII ===
@@ -129,7 +129,7 @@ func TestSanitizeMiddleware_CrossTenantIsolation_Concurrent(t *testing.T) {
 	require.NotEmpty(t, mapB, "tenant B map should not be empty")
 	for placeholder, plaintext := range mapB {
 		require.Contains(t, placeholder, "{SENSITIVE:email:", "tenant B only emits email placeholders, got %s", placeholder)
-		require.Contains(t, plaintext, "a@b.com", "tenant B plaintext should be its own PII, got %q (placeholder=%s)", plaintext, placeholder)
+		require.True(t, strings.HasSuffix(plaintext, "@b.com"), "tenant B plaintext should be its own PII, got %q (placeholder=%s)", plaintext, placeholder)
 	}
 
 	// === 关键断言：A 和 B 的 map 大小必须各自反映自己 goroutine × rounds 的产出 ===
@@ -143,7 +143,7 @@ func TestSanitizeMiddleware_CrossTenantIsolation_Concurrent(t *testing.T) {
 // 失败模式（修复前）：read-modify-write race 导致两个 goroutine 都读到 phone=5，
 // 都生成 phone:6 占位符 → 同一 phone:6 出现两次，sanitizeMap 互相覆盖，
 // LLM 看到的占位符与最终还原时的 map 不一致。
-// 修复后：Lua/HINCRBY 单脚本原子分配，phone offset 从 0 累加到 N（= goroutines 次数）。
+// 修复后：Redis lease 保护读取/分配，Lua 校验 lease 并原子提交 map+offset。
 func TestSanitizeMiddleware_AllocateOffsets_NoIndexLeak(t *testing.T) {
 	rm := newRaceMiddleware(t)
 	defer rm.cleanup()
@@ -159,7 +159,7 @@ func TestSanitizeMiddleware_AllocateOffsets_NoIndexLeak(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for r := 0; r < rounds; r++ {
-				body := `{"model":"m","messages":[{"role":"user","content":"phone 13800138000"}]}`
+				body := fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":"phone 138%08d"}]}`, i*rounds+r)
 				rm.fireRequest(t, tenantID, sessionID, body)
 			}
 		}()
@@ -194,7 +194,7 @@ func TestSanitizeMiddleware_AllocateOffsets_NoIndexLeak(t *testing.T) {
 }
 
 // TestSanitizeMiddleware_AllocateOffsets_MultiType 验证多类型并发：每个 goroutine
-// 的请求同时产生 phone 和 email，Lua 必须为两类独立原子预占。
+// 的请求同时产生 phone 和 email，提交必须为两类保持独立高水位。
 func TestSanitizeMiddleware_AllocateOffsets_MultiType(t *testing.T) {
 	rm := newRaceMiddleware(t)
 	defer rm.cleanup()
@@ -208,7 +208,7 @@ func TestSanitizeMiddleware_AllocateOffsets_MultiType(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			body := `{"model":"m","messages":[{"role":"user","content":"phone 13800138000 email a@b.com"}]}`
+			body := fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":"phone 138%08d email a%d@b.com"}]}`, i, i)
 			rm.fireRequest(t, tenantID, sessionID, body)
 		}()
 	}
@@ -239,7 +239,8 @@ func TestSanitizeRestoreInterceptor_CrossTenant_DoesNotLeakMap(t *testing.T) {
 	require.NoError(t, rm.rdb.HSet(ctx, SanitizeRedisKey(HashTenant(tenantA), sessionID),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
-	// 用 tenant B 的 interceptor 试图还原 — 必须返回 nil（无 map）
+	// 用 tenant B 的 interceptor 试图还原 — 不得读取 A 的真实值；未知
+	// placeholder 应被 mask，而不是原样透传。
 	s, err := NewSanitizer(NewPatternDetector())
 	require.NoError(t, err)
 	it, err := NewSanitizeRestoreInterceptor(s, rm.rdb, 30*60*1000)
@@ -252,10 +253,13 @@ func TestSanitizeRestoreInterceptor_CrossTenant_DoesNotLeakMap(t *testing.T) {
 		ResponseBody: respBody,
 	})
 	require.NoError(t, err)
-	require.Nil(t, result, "tenant B restore must not see tenant A's map")
+	require.NotNil(t, result, "tenant B must still scrub unknown placeholder tokens")
+	require.NotContains(t, string(result.ModifiedBody), "13800138000", "tenant B must not read tenant A's mapped PII")
+	require.Contains(t, string(result.ModifiedBody), "[REDACTED]")
+	require.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
 }
 
-// TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown 并发验证：缺 tenant header
+// TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown 并发验证：缺可信 tenant context
 // 的请求都落到 _unknown sentinel 桶（共用一个 hash），但不同 (sid) 仍隔离。
 func TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown(t *testing.T) {
 	rm := newRaceMiddleware(t)
@@ -270,7 +274,7 @@ func TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			body := `{"model":"m","messages":[{"role":"user","content":"phone 13800138000"}]}`
-			// 不设 X-Gw-Tenant-Id → 落到 sentinel
+			// 不设可信 tenant context → 落到 sentinel
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Gw-Session-Id", sessionID)
@@ -285,5 +289,5 @@ func TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown(t *testing.T) {
 	sentinelHash := HashTenant("_unknown")
 	mapVals, err := rm.rdb.HGetAll(context.Background(), SanitizeRedisKey(sentinelHash, sessionID)).Result()
 	require.NoError(t, err)
-	require.Equal(t, goroutines, len(mapVals), "无 tenant 请求都进 sentinel bucket")
+	require.Equal(t, 1, len(mapVals), "无 tenant 的重复值复用 sentinel bucket 映射")
 }

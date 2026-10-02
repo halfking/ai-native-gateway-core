@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/lib/pq"
 )
 
@@ -550,7 +551,7 @@ func (d *Detector) getSeverityAction(ctx context.Context, tenantID, riskLevel st
 		return nil, err
 	}
 
-	_ = json.Unmarshal([]byte(channelsJSON), &sa.NotifyChannels)
+	jsoncol.Decode("promptinjection.getSeverityAction/notify_channels", []byte(channelsJSON), &sa.NotifyChannels)
 	return sa, nil
 }
 
@@ -943,10 +944,19 @@ func (d *CanaryDetector) Detect(ctx context.Context, tenantID, input string) (*C
 	}
 	defer func() { _ = rows.Close() }()
 
+	// R66（安全读面）：canary token 清单被静默截断 = 真实泄漏的
+	// Canary Token 恰好落在没读到的后半段，Detect 返回 nil（“未泄漏”），
+	// 这是**假阴性**且完全无痕。上抛；调用方 (Detect 第 4 层) 已按
+	// warn 降级处理，不会中断检测流程。
+	//
+	// 本文件用 database/sql（非 pgx），故直接调 rows.Err()，不走
+	// internal/dbrows（其签名只接 pgx.Rows）。
 	for rows.Next() {
 		var id int
 		var tokenValue string
 		if err := rows.Scan(&id, &tokenValue); err != nil {
+			slog.Warn("prompt_injection: canary token scan failed, row skipped",
+				"tenant_id", tenantID, "error", err)
 			continue
 		}
 
@@ -966,6 +976,9 @@ func (d *CanaryDetector) Detect(ctx context.Context, tenantID, input string) (*C
 				}},
 			}, nil
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("promptinjection.CanaryDetector.Detect: iterate rows: %w", err)
 	}
 
 	return nil, nil

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 )
 
@@ -199,9 +200,17 @@ func (m *Manager) RegisterNodesForCredential(ctx context.Context, credID int, mo
 	for rows.Next() {
 		var model string
 		if err := rows.Scan(&model); err != nil {
-			continue
+			if dbrows.SkipOrFail("credentialstate.Manager.RegisterNodesForCredential", err) {
+				continue
+			}
 		}
 		dbModels = append(dbModels, model)
+	}
+	// R66: 绑定读被静默截断 = 若干模型节点**根本没有被注册**，
+	// 而收尾 slog 照常打「batch registration completed」，把漏注册
+	// 伪装成正常完成。必须上抛。
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("credentialstate.Manager.RegisterNodesForCredential: iterate rows: %w", err)
 	}
 
 	// 合并用户提供的模型列表（去重）

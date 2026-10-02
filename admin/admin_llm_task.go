@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -125,9 +126,19 @@ func (h *Handler) resolveAdminLLMFallbackModel(ctx context.Context, workTypeKey 
 	var names []string
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err == nil && strings.TrimSpace(name) != "" {
+		if err := rows.Scan(&name); err != nil {
+			warnRowSkip("adminLLMTask.resolveFallbackModel", err)
+			continue
+		}
+		if strings.TrimSpace(name) != "" {
 			names = append(names, strings.TrimSpace(name))
 		}
+	}
+	// 迭代中断会退化成 len(names)==0 → 落回 minimax-m2.7 兜底：表面上
+	// "有兜底所以没事"，实际是路由被静默改到别的模型。必须留痕。
+	if err := rows.Err(); err != nil {
+		slog.Warn("admin llm task: fallback model candidates truncated; falling back to default",
+			"work_type", workTypeKey, "error", err)
 	}
 	if len(names) == 0 {
 		return "minimax-m2.7"
@@ -183,6 +194,18 @@ func (h *Handler) callAdminLLMChat(
 	return adminLLMChatResult{Content: content, ResolvedModel: resolvedModel}, nil
 }
 
+// adminLLMShouldRetryExplicit 判断一次内部 LLM 调用失败后是否值得改用显式模型
+// 重试（即错误来自「模型解析/路由」而非「模型本身不可用」）。
+//
+// R78 订正：第三个分支原先匹配 `auto_route_unavailable`——**该错误码全仓没有
+// 产生方**。它只出现在 domains/streaming/auto_route.go 的文件头注释里，而真实
+// 的错误码是 `auto_route_decider_failed`（handler.go:3097/3103、responses.go、
+// messages.go 三处产出）。于是该分支**恒为 false**：内部 LLM 任务（用
+// model:"auto"）在 auto 路由失败时不会触发显式模型重试。
+//
+// 为什么一直没被发现：admin_llm_task_test.go 的用例喂的是**假字面量**
+// "auto_route_unavailable"，函数对假字符串当然返回 true，于是测试一直是绿的
+// ——测试固化了一个不存在的错误码，恰好把真实缺陷盖住。本次把用例改成真实错误码。
 func adminLLMShouldRetryExplicit(err error) bool {
 	if err == nil {
 		return false
@@ -190,7 +213,9 @@ func adminLLMShouldRetryExplicit(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "no_candidate") ||
 		strings.Contains(msg, "no available provider") ||
-		strings.Contains(msg, "auto_route_unavailable")
+		// 真实错误码（见上）。保留 retired 的 auto_route_unavailable 匹配已移除：
+		// 没有任何生产代码产生它，留着只会让人以为这条路径生效。
+		strings.Contains(msg, "auto_route_decider_failed")
 }
 
 func (h *Handler) postAdminLLMChat(

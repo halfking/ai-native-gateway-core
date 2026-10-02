@@ -102,3 +102,34 @@ func TestRecommendModelAlternativesPrefersTaskCandidateListOrder(t *testing.T) {
 		t.Fatalf("alternatives = %v, want task candidate order %v", got, want)
 	}
 }
+
+// R73 审计 E3 回归钉：整池无任务词表时（untagged 线上库），
+// TaskMatchScore<=0 过滤必须跳过，建议列表不得 fail-closed 成
+// ErrNoCandidates（非 chat 任务 503 建议位恒空的复发形态）。
+func TestRecommendModelAlternatives_AbsentVocabularyKeepsSuggestions(t *testing.T) {
+	oldFlags := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseChannelQualityRouting: true})
+	defer SetGlobalFeatureFlagsForTest(oldFlags)
+
+	idx := &Index{
+		entries: []Candidate{
+			{CredentialID: 1, CanonicalID: 1, CanonicalName: "claude-sonnet-4-5", SuccessRate: 0.99},
+			{CredentialID: 2, CanonicalID: 2, CanonicalName: "claude-opus-4-8", SuccessRate: 0.95},
+		},
+		lastRefresh: time.Now(),
+	}
+	decider := NewDecider(&v2TestClassifier{task: TaskCode}, nil, idx, NewMemoryProfileStore())
+
+	got, err := decider.RecommendModelAlternatives(context.Background(), ModelAlternativeRequest{
+		Task:         TaskCode,
+		Profile:      ProfileSmart,
+		InitialModel: "claude-sonnet-4-5",
+		TriedModels:  []string{"claude-sonnet-4-5"},
+	})
+	if err != nil {
+		t.Fatalf("alternatives with absent vocabulary: %v", err)
+	}
+	if want := []string{"claude-opus-4-8"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("alternatives = %v, want %v", got, want)
+	}
+}

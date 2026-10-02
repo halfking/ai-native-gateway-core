@@ -8,6 +8,7 @@ export default {
     compression: '壓縮',
     rateLimit: '限流',
     timeout: '逾時',
+    retry: '重試與逾時',
     routing: '路由',
     session: '會話',
     security: '安全',

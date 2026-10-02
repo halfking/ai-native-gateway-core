@@ -29,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/domains/reportrollup" // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
@@ -36,6 +37,7 @@ import (
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -60,6 +62,10 @@ type Handler struct {
 	secret               string
 	encKey               []byte
 	keyring              *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
+	// requestAnomalies (2026-09-21) 请求侧异常（reqprobe）存储门面；
+	// nil → /api/admin/request-anomalies* 返回 503。SetRequestAnomalyStore
+	// 在启动时按 Full(Redis)/lite(内存) 模式注入。
+	requestAnomalies *reqprobe.Coordinator
 	// freeDiscovery (2026-09-09): 免费资源自动发现服务 (084 迁移三表).
 	// SetFreeDiscovery 在启动时注入; nil = 路由返回 503 (no-DB 模式).
 	freeDiscovery *freeDiscoveryDeps
@@ -82,7 +88,11 @@ type Handler struct {
 	// concurrency_limit on PATCH credential/binding. The Limiter pool's
 	// per-credential semaphore capacity is refreshed by
 	// HandleRoutingCandidateBindingUpdate / updateCredential.
-	limiter     LimiterCapacitySetter
+	limiter LimiterCapacitySetter
+	// liveRouting (Wave 1 A1, 2026-09-22): 生产路由源，/api/routing/resolve
+	// 用它经 Router.PlanCandidatesPinned 产出与真实请求同源的 plan_order。
+	// nil → plan_order 空 + source=unavailable（no-DB / 老装配形态）。
+	liveRouting *LiveRoutingSource
 	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
 	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
@@ -90,6 +100,8 @@ type Handler struct {
 	// 避免改动所有 Handler 构造点。请求路径不会启动后台 goroutine。
 	proxyOnce  sync.Once
 	proxyMgr   *proxy.Manager
+	// liteSessions 为 lite(sqlite) 存储模式的会话读面（R28-S-2）；nil=非 lite 模式。
+	liteSessions LiteSessionsReader
 	proxyStore proxy.Store
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
@@ -181,6 +193,10 @@ type Handler struct {
 	}
 	feedbackAnalyzer interface {
 		AnalyzeOnce(ctx context.Context) error
+	}
+	// reportRollupWorker 对账报表每日聚合 worker（手动重跑端点用）。
+	reportRollupWorker interface {
+		RollupDateDetached(day time.Time) (reportrollup.RollupStats, error)
 	}
 	// memoraClient provides connectivity status for the admin UI.
 	// Structural interface avoids importing the memora package directly.
@@ -897,6 +913,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
 	mux.HandleFunc("/api/admin/format-anomalies", h.superAdmin(h.handleFormatAnomalies))
 	mux.HandleFunc("/api/admin/format-anomalies/", h.superAdmin(h.handleFormatAnomalySubrouter))
+	// reqprobe (2026-09-21): 请求侧异常（参数被拒/模式不匹配）列表、
+	// 徽标计数与批量解决；存储与部署模式无关（Full=Redis / lite=内存）。
+	mux.HandleFunc("/api/admin/request-anomalies", h.superAdmin(h.handleRequestAnomalies))
+	mux.HandleFunc("/api/admin/request-anomalies/", h.superAdmin(h.handleRequestAnomalySubrouter))
 	// 2026-07-28: model integrity detection (model_mismatch,
 	// finish_refusal, finish_truncation, empty_response, repeated_content,
 	// fingerprint_drift). See domains/streaming/integrity/ and
@@ -1042,6 +1062,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
 	mux.HandleFunc("/api/admin/stats", admin(h.handleStats))
 	mux.HandleFunc("/api/admin/stats/", admin(h.handleStats))
+	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
+	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
+	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))
 	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))
@@ -1066,6 +1089,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-07: P2会话分析 - 用户画像（三层隔离：super_admin/tenant_admin/user）
 	mux.HandleFunc("/api/admin/session-analytics/users", admin(h.handleUserAnalyticsList))
 	mux.HandleFunc("/api/admin/session-analytics/users/", admin(h.handleUserAnalyticsDetail))
+
+	// 2026-09-30 统计 UI 优化轮：/users 页面用户级用量统计
+	// （api_key_owner_user 维度；不依赖缺失的 session_owners 视图，
+	//   详见 admin/user_usage_stats.go 头注）。注意精确路径必须在
+	// /api/admin/users/ 前缀路由之前注册。
+	mux.HandleFunc("/api/admin/users/usage-summary", admin(h.handleUserUsageSummary))
+	mux.HandleFunc("/api/admin/users/", admin(h.handleUserStatsDispatcher))
 
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))
@@ -1299,6 +1329,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
 
 	// 2026-08-29 代理管理（出口基础设施，仅 superAdmin）
+	// R28-S-2: lite(sqlite) 会话读面——lite 模式此前只写不读。
+	mux.HandleFunc("/api/lite/sessions", h.admin(h.handleLiteSessions))
 	mux.HandleFunc("/api/proxy/status", h.superAdmin(h.handleProxyStatus))
 	mux.HandleFunc("/api/proxy/subscriptions", h.superAdmin(h.handleProxySubscriptionsRoot))
 	mux.HandleFunc("/api/proxy/subscriptions/", h.superAdmin(h.handleProxySubscriptions))
@@ -1368,26 +1400,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// + SetAuditHook 避免反向依赖 admin；本侧注入 sink：结构化 slog
 		// （journald/日志管道可检索），actor 从 admin 鉴权上下文提取。
 		// hook 在 taskprofile 内已 panic 隔离，这里保持非阻塞。
-		taskProfileHandlers.SetAuditHook(func(ev taskprofile.AuditEvent) {
-			actor, tenant := "unknown", "default"
-			if ev.Request != nil {
-				if ac := GetAuthContext(ev.Request); ac != nil {
-					if ac.Username != "" {
-						actor = ac.Username
-					}
-					if ac.TenantID != "" {
-						tenant = ac.TenantID
-					}
-				}
-			}
-			slog.Info("taskprofile.audit",
-				"action", ev.Action,
-				"outcome", ev.Outcome,
-				"actor", actor,
-				"tenant_id", tenant,
-				"detail", ev.Detail,
-			)
-		})
+		// R46 F5: sink 抽为命名函数 taskProfileAuditSink——行为可测
+		// （actor 提取此前零测试执行）。
+		taskProfileHandlers.SetAuditHook(taskProfileAuditSink)
 		taskProfileHandlers.RegisterTaskProfileRoutes(mux, admin)
 
 		// P2.2 Track C (2026-09-07): routing-opt admin API — stats / accuracy /

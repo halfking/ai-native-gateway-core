@@ -24,7 +24,8 @@ import (
 //	L0:   Turn delta storage (incremental messages in session_bodies)
 //	L1:   CompressionMetaCache — 进程内 LRU，只存压缩元数据（无完整 body）
 //	L1.5: FileCache — 本地磁盘上的 SessionStateV2 快照，进程重启后仍可命中；
-//	      仅 lite 模式在读路径上使用（full 模式即使注入了 l1_5 也不读它）
+//	      lite 默认装配；full 由 H2 装配点可选注入，注入即参与读链
+//	      与 L3 回填（da6b95627 契约：注入且非空 = 共享，不再按模式门控）
 //	L2:   RedisGovernanceCache — Redis 治理元数据（verdicts only）；
 //	      仅 full 模式使用，lite 模式跳过（lite = SQLite + File + Memory，无 Redis）
 //	L3:   SessionTurnsReader — 冷启动回源（读 session_turns，不是 request_logs）
@@ -170,11 +171,22 @@ type CompressionMeta struct {
 	// Recovery metadata is body-free and schema-tolerant. These fields carry
 	// coordinates and opaque hash/ref records only; summary plaintext is never
 	// persisted in V2.
-	CutMarker              map[string]interface{}
-	PreSanitizeOffsetRange []int
-	AlignmentMap           []map[string]interface{}
-	SanitizeMapRef         string
-	SanitizeMessageRefs    []map[string]interface{}
+	CutMarker                 map[string]interface{}
+	PreSanitizeOffsetRange    []int
+	AlignmentMap              []map[string]interface{}
+	SanitizeMapRef            string
+	SanitizeMapGeneration     string
+	CompressionSourceSnapshot StageSnapshot
+	RawSnapshot               StageSnapshot
+	SanitizedSnapshot         StageSnapshot
+	SanitizeMessageRefs       []map[string]interface{}
+}
+
+// StageSnapshot is privacy-safe provenance, never a stored plaintext body.
+type StageSnapshot struct {
+	Hash          string `json:"hash,omitempty"`
+	MessageCount  int    `json:"message_count,omitempty"`
+	TokenEstimate int    `json:"token_estimate,omitempty"`
 }
 
 // GovernanceMeta stores governance-related metadata
@@ -200,13 +212,20 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		monitoring.Default().RecordL1Miss()
 	}
 
-	// L1.5 (local file snapshot, lite mode only). 未命中/过期/损坏统一返回包装
-	// errCacheMiss 的错误，按缓存未命中继续回源；其他错误记日志后同样放行
-	// （缓存层 fail-open，绝不阻断主链路）。
+	// L1.5（本地文件快照）：两模式都可用——lite 默认装配；full 由 H2 装配点
+	// 可选注入。注入且非空时进入读链。未命中/过期/损坏统一返回包装 errCacheMiss
+	// 的错误，按缓存未命中继续回源；其他错误记日志后同样放行（缓存层 fail-open，
+	// 绝不阻断主链路）。
 	// 读 + 回填在同一分片锁内（B4）：防止并发 Invalidate 落在「L1.5 命中」
 	// 与「回填 L1」之间把已删除的旧状态重新播种进 L1。
-	if c.effectiveMode() == storage.StorageModeLite && c.l1_5 != nil {
+	if c.l1_5 != nil {
 		var l15State *SessionStateV2
+		// H5（P5）：L1.5 命中按存储模式分列。cache 自持 effectiveMode
+		//（测试可能单进程构造两种模式），故用显式 mode 参数而非进程戳。
+		l15Mode := monitoring.ModeFull
+		if c.effectiveMode() == storage.StorageModeLite {
+			l15Mode = monitoring.ModeLite
+		}
 		g := c.guardFor(tenantID, sessionID)
 		g.Lock()
 		s, err := c.l1_5.Get(tenantID, sessionID)
@@ -218,11 +237,11 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		}
 		g.Unlock()
 		if l15State != nil {
-			monitoring.Default().RecordL15Hit()
+			monitoring.Default().RecordL15HitForMode(l15Mode)
 			slog.DebugContext(ctx, "cache v2 l1.5 hit", "session_id", sessionID)
 			return l15State, nil
 		}
-		monitoring.Default().RecordL15Miss()
+		monitoring.Default().RecordL15MissForMode(l15Mode)
 		if err != nil && !errors.Is(err, errCacheMiss) {
 			slog.WarnContext(ctx, "cache v2 l1.5 get failed", "session_id", sessionID, "error", err)
 		}
@@ -260,11 +279,11 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		state.GovernanceMeta = *govMeta
 	}
 	// 回填更热的层，让下一个请求不必再冷启动：
-	//   lite + l1_5 → 回填 L1.5；full + l2 → 回填 L2。
+	//   l1_5 非空时回填 L1.5；full 模式额外回填 L2。
 	// L1/L1.5 的回填与 Invalidate 的删除共用分片锁（B4）：L3 读到的是读时刻
 	// 的旧数据，若回填与失效交错、失效落在回填之后，旧状态会残留在 L1/L1.5
 	// 直至 LRU/TTL 逐出。锁内无网络 IO（L2 回填留在锁外，不在 B4 范围）。
-	if c.effectiveMode() == storage.StorageModeLite && c.l1_5 != nil {
+	if c.l1_5 != nil {
 		g := c.guardFor(tenantID, sessionID)
 		g.Lock()
 		if c.l1 != nil {
@@ -287,8 +306,13 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 	return state, nil
 }
 
-// Set updates the cache at the tiers selected by mode:
-// full → L1 + L2(Redis 治理元数据)；lite → L1 + L1.5(文件快照)。
+// Set updates the cache at the tiers selected by mode + presence:
+//   - 通用：始终写 L1；l1_5 非空时写 L1.5（两模式共享）；
+//   - lite + l2 == nil：写完 L1 + L1.5 即返回；
+//   - full + l2 != nil：再写 L2（治理元数据）。
+//
+// 写路径在 H2 接线后，full 模式也会写 L1.5；l2 仅在 full + l2 装配时落 Redis。
+//
 // A nil state is a no-op (see CompressionMetaCache.Set) rather than a
 // nil-deref on state.TenantID. 缓存层 fail-open：下层写失败只记日志。
 // L1/L1.5 写入与 Invalidate 的删除共用分片锁（B4）。
@@ -296,31 +320,22 @@ func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
 	if c == nil || state == nil {
 		return nil
 	}
-	if c.effectiveMode() == storage.StorageModeLite {
-		if c.l1_5 != nil {
-			g := c.guardFor(state.TenantID, state.SessionID)
-			g.Lock()
-			if c.l1 != nil {
-				c.l1.Set(state)
-			}
-			err := c.l1_5.Set(state)
-			g.Unlock()
-			if err != nil {
-				slog.WarnContext(ctx, "cache v2 l1.5 set failed", "session_id", state.SessionID, "error", err)
-			}
-		} else if c.l1 != nil {
-			c.l1.Set(state)
-		}
-		return nil
-	}
 	if c.l1 != nil {
 		c.l1.Set(state)
+	}
+	if c.l1_5 != nil {
+		g := c.guardFor(state.TenantID, state.SessionID)
+		g.Lock()
+		err := c.l1_5.Set(state)
+		g.Unlock()
+		if err != nil {
+			slog.WarnContext(ctx, "cache v2 l1.5 set failed", "session_id", state.SessionID, "error", err)
+		}
 	}
 	if c.l2 == nil {
 		return nil
 	}
-	err := c.l2.Set(ctx, state.TenantID, state.SessionID, &state.GovernanceMeta)
-	if err != nil {
+	if err := c.l2.Set(ctx, state.TenantID, state.SessionID, &state.GovernanceMeta); err != nil {
 		slog.WarnContext(ctx, "cache v2 l2 set failed", "session_id", state.SessionID, "error", err)
 	}
 	return nil
@@ -373,19 +388,23 @@ func (c *SessionCacheV2) CompressionMetadata(ctx context.Context, tenantID, sess
 	}
 	meta := state.CompressionMeta
 	return map[string]any{
-		"last_compressed_at":        meta.LastCompressedAt,
-		"recently_compressed_at":    meta.RecentlyCompressedAt,
-		"summary_marker":            meta.SummaryMarker,
-		"compressed_prefix_hash":    meta.CompressedPrefixHash,
-		"token_estimate":            meta.TokenEstimate,
-		"msg_count":                 meta.MsgCount,
-		"strategy":                  meta.Strategy,
-		"tools_hash":                meta.ToolsHash,
-		"cut_marker":                meta.CutMarker,
-		"pre_sanitize_offset_range": meta.PreSanitizeOffsetRange,
-		"alignment_map":             meta.AlignmentMap,
-		"sanitize_map_ref":          meta.SanitizeMapRef,
-		"sanitize_message_refs":     meta.SanitizeMessageRefs,
+		"last_compressed_at":          meta.LastCompressedAt,
+		"recently_compressed_at":      meta.RecentlyCompressedAt,
+		"summary_marker":              meta.SummaryMarker,
+		"compressed_prefix_hash":      meta.CompressedPrefixHash,
+		"token_estimate":              meta.TokenEstimate,
+		"msg_count":                   meta.MsgCount,
+		"strategy":                    meta.Strategy,
+		"tools_hash":                  meta.ToolsHash,
+		"cut_marker":                  meta.CutMarker,
+		"pre_sanitize_offset_range":   meta.PreSanitizeOffsetRange,
+		"alignment_map":               meta.AlignmentMap,
+		"sanitize_map_ref":            meta.SanitizeMapRef,
+		"sanitize_map_generation":     meta.SanitizeMapGeneration,
+		"compression_source_snapshot": meta.CompressionSourceSnapshot,
+		"raw_snapshot":                meta.RawSnapshot,
+		"sanitized_snapshot":          meta.SanitizedSnapshot,
+		"sanitize_message_refs":       meta.SanitizeMessageRefs,
 	}, nil
 }
 
@@ -757,19 +776,23 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 		return
 	}
 	var meta struct {
-		LastCompressedAt       time.Time                `json:"last_compressed_at"`
-		RecentlyCompressedAt   time.Time                `json:"recently_compressed_at"`
-		SummaryMarker          string                   `json:"summary_marker"`
-		CompressedPrefixHash   string                   `json:"compressed_prefix_hash"`
-		TokenEstimate          int                      `json:"token_estimate"`
-		MsgCount               int                      `json:"msg_count"`
-		Strategy               string                   `json:"strategy"`
-		ToolsHash              string                   `json:"tools_hash"`
-		CutMarker              map[string]interface{}   `json:"cut_marker"`
-		PreSanitizeOffsetRange []int                    `json:"pre_sanitize_offset_range"`
-		AlignmentMap           []map[string]interface{} `json:"alignment_map"`
-		SanitizeMapRef         string                   `json:"sanitize_map_ref"`
-		SanitizeMessageRefs    []map[string]interface{} `json:"sanitize_message_refs"`
+		LastCompressedAt          time.Time                `json:"last_compressed_at"`
+		RecentlyCompressedAt      time.Time                `json:"recently_compressed_at"`
+		SummaryMarker             string                   `json:"summary_marker"`
+		CompressedPrefixHash      string                   `json:"compressed_prefix_hash"`
+		TokenEstimate             int                      `json:"token_estimate"`
+		MsgCount                  int                      `json:"msg_count"`
+		Strategy                  string                   `json:"strategy"`
+		ToolsHash                 string                   `json:"tools_hash"`
+		CutMarker                 map[string]interface{}   `json:"cut_marker"`
+		PreSanitizeOffsetRange    []int                    `json:"pre_sanitize_offset_range"`
+		AlignmentMap              []map[string]interface{} `json:"alignment_map"`
+		SanitizeMapRef            string                   `json:"sanitize_map_ref"`
+		SanitizeMapGeneration     string                   `json:"sanitize_map_generation"`
+		CompressionSourceSnapshot StageSnapshot            `json:"compression_source_snapshot"`
+		RawSnapshot               StageSnapshot            `json:"raw_snapshot"`
+		SanitizedSnapshot         StageSnapshot            `json:"sanitized_snapshot"`
+		SanitizeMessageRefs       []map[string]interface{} `json:"sanitize_message_refs"`
 		// R36: producer-side provenance block (buildOutboundProvenance) —
 		// whitelisted through the sessions_v2 metadata mirror, surfaced here
 		// so in-process readers see the window composition and truncation
@@ -810,6 +833,18 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 	}
 	if len(meta.AlignmentMap) > 0 {
 		dst.AlignmentMap = meta.AlignmentMap
+	}
+	if meta.CompressionSourceSnapshot.Hash != "" {
+		dst.CompressionSourceSnapshot = meta.CompressionSourceSnapshot
+	}
+	if meta.RawSnapshot.Hash != "" {
+		dst.RawSnapshot = meta.RawSnapshot
+	}
+	if meta.SanitizedSnapshot.Hash != "" {
+		dst.SanitizedSnapshot = meta.SanitizedSnapshot
+	}
+	if meta.SanitizeMapGeneration != "" {
+		dst.SanitizeMapGeneration = meta.SanitizeMapGeneration
 	}
 	if meta.SanitizeMapRef != "" {
 		dst.SanitizeMapRef = meta.SanitizeMapRef

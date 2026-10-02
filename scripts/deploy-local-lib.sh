@@ -58,8 +58,29 @@ dl_default_shared_root() {
     *) printf '%s\n' "$HOME/kaixuan" ;;
   esac
 }
-dl_shared_root() { printf '%s\n' "${KAIXUAN_ROOT:-$(dl_default_shared_root)}"; }
-dl_shared_pg_dir() { printf '%s\n' "$(dl_shared_root)/postgres"; }
+# 2026-09-23：递归自引用 ${KAIXUAN_ROOT:-${KAIXUAN_ROOT:-...}} 的 KAIXUAN_ROOT
+# 会被原样吐出（如 `${KAIXUAN_ROOT:-/Users/xutaohuang/kaixuan}`），导致下游
+# `docker --mount source=...` 报 "invalid mount path: ... must be absolute"。
+# 用绝对路径白名单守门：路径必须以 `/` 开头才算可信，否则回退到默认
+# `dl_default_shared_root` 并 warn 一次，避免下游 6 处的 SHARED_*_DIR 都被污染。
+# R59 审计（S8-F1）：552770c96 的守门被 81e4ab932（T2 轮取远端消冲突）整体
+# 回滚且零红灯——本轮原样恢复，并补契约测试防再犯。
+dl_shared_root() {
+  local v="${KAIXUAN_ROOT:-$(dl_default_shared_root)}"
+  if [[ "$v" != /* || "$v" =~ \$\{[A-Za-z_][A-Za-z0-9_]*:- ]]; then
+    printf '[deploy-local] warning: KAIXUAN_ROOT=%s looks recursive or non-absolute; falling back to %s\n' "$v" "$(dl_default_shared_root)" >&2
+    v="$(dl_default_shared_root)"
+  fi
+  printf '%s\n' "$v"
+}
+dl_shared_pg_dir() {
+  local v; v=$(dl_shared_root)
+  if [[ "$v" != /* ]]; then
+    printf '[deploy-local] warning: shared_root=%s is non-absolute; falling back to %s/postgres\n' "$v" "$(dl_default_shared_root)" >&2
+    v="$(dl_default_shared_root)"
+  fi
+  printf '%s\n' "${v%/}/postgres"
+}
 dl_shared_redis_dir() { printf '%s\n' "$(dl_shared_root)/redis"; }
 dl_pg_log_dir() { printf '%s\n' "$(dl_shared_pg_dir)/logs"; }
 dl_pg_backup_dir() { printf '%s\n' "$(dl_shared_pg_dir)/backups"; }
@@ -336,6 +357,15 @@ dl_load_project_env() {
     return 0
   fi
   local kv key val
+  # R55-F1b fix: the previous `_dl_safe_env_source ... >/dev/null 2>&1; env -0`
+  # call silently DROPPED Python's NUL-delimited KEY=value records (the only
+  # source of new env vars) and `env -0` runs in a different process, so it
+  # never saw Python's os.environ writes either — the function was a no-op.
+  # Replaced with a direct call into `<(...)` so bash reads the records.
+  # Also moved the long context block OUT of `<(...)`: bash 5.x parses
+  # process-substitution comments too aggressively and would segfault on
+  # `${VAR}` / `(...)` characters inside them when this function was invoked
+  # from a `()` subshell.
   while IFS= read -r -d '' kv; do
     key="${kv%%=*}"
     case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
@@ -343,17 +373,136 @@ dl_load_project_env() {
     if [[ -z "$val" ]]; then
       export "$key=${kv#*=}"
     fi
-  done < <(
-    # .env.local prints a friendly summary when sourced; suppress it so
-    # deploy diagnostics stay redacted and the env dump stays clean.
-    # set -a is load-bearing: the file uses plain KEY=VALUE dotenv
-    # assignments (no `export`), which land as shell-only variables that
-    # `env -0` never sees. Without it the loader imports zero keys and
-    # deploy() dies on the empty SECRET_KEY gate (incident 2026-09-07,
-    # "LLM_GATEWAY_SECRET_KEY is empty" on an otherwise valid .env.local).
-    # shellcheck disable=SC1090
-    { set -a; source "$file" >/dev/null 2>&1; set +a; env -0; }
-  )
+  done < <(_dl_safe_env_source "$file")
+}
+
+# _dl_safe_env_source — print KEY=value\0 records for _dl_load_project_env.
+# Honors ${VAR} / $VAR interpolation from the current environment (and from
+# values earlier in the same file, e.g. CRM_DATABASE_URL referencing the
+# CRM_DB_USER assignment a few lines up), treats unquoted shell
+# metacharacters (&, |, ;, (, ), <, >, `, $) as literal bytes, and accepts
+# double- or single-quoted values verbatim. os.environ is updated as we
+# parse so subsequent lines can reference earlier ones. Failure is non-fatal:
+# the caller falls back to whatever was already in the calling environment.
+_dl_safe_env_source() {
+  local file="$1"
+  python3 - "$file" <<'PY' || return 0
+import os, re, sys
+
+keys_re = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$')
+export_re = re.compile(r'^export\s+')
+var_ref_re = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)')
+
+def expand(val):
+    def repl(m):
+        name = m.group(1) or m.group(2)
+        return os.environ.get(name, '')
+    return var_ref_re.sub(repl, val)
+
+with open(sys.argv[1], encoding='utf-8') as fh:
+    for raw in fh:
+        line = raw.rstrip('\n').rstrip('\r')
+        s = line.lstrip()
+        if not s or s.startswith('#'):
+            continue
+        m = export_re.match(s)
+        if m:
+            s = s[m.end():]
+        m = keys_re.match(s)
+        if not m:
+            continue
+        key, raw_val = m.group(1), m.group(2)
+        quoted = False
+        quote_char = ''
+        if len(raw_val) >= 2 and raw_val[0] == raw_val[-1] and raw_val[0] in ('"', "'"):
+            quoted = True
+            quote_char = raw_val[0]
+            val = raw_val[1:-1]
+        else:
+            val = raw_val
+        # Bash semantics: unquoted + double-quoted honor ${VAR}/$VAR
+        # interpolation; single-quoted forbids ANY expansion (R55-F1b fix).
+        if quote_char != "'":
+            val = expand(val)
+        os.environ[key] = val
+        sys.stdout.buffer.write(f'{key}={val}\x00'.encode('utf-8'))
+PY
+}
+
+# 12h 修订审计轮 2026-09-26（docs/handoff/20260926-probe-p02-longtail-throttle-audit.md
+# §6.1 预防建议落地）：.env.local 重建曾丢 LLM_GATEWAY_ADMIN_PASSWORD（09-19，
+# 旧 SSOT bin/2239/env 已不存在），sync_admin_password_from_env 对空密码只
+# warn+skip、users 表留着旧 hash，凭据解密冒烟等到 ~2 分钟构建后才 401。
+# deploy() 在 build 前调用本函数：用户名已设而密码为空时，冒烟与
+# handleLogin 用同一 env，此形态必败，显式失败并给出修法。逃生口
+# DL_ALLOW_EMPTY_ADMIN_PASSWORD=true（空密码管理员奇局）；两值同空维持
+# 旧行为（sync 侧 warn+skip，不新增门槛）。
+dl_admin_password_preflight() {
+  if [[ -n "${LLM_GATEWAY_ADMIN_USER:-}" && -z "${LLM_GATEWAY_ADMIN_PASSWORD:-}" \
+        && "${DL_ALLOW_EMPTY_ADMIN_PASSWORD:-false}" != "true" ]]; then
+    _dl_die 'LLM_GATEWAY_ADMIN_USER is set but LLM_GATEWAY_ADMIN_PASSWORD is empty — the credential decrypt smoke would 401 after the build (fix .env.local / the calling environment, or set DL_ALLOW_EMPTY_ADMIN_PASSWORD=true to bypass)'
+  fi
+}
+
+# 2026-09-29 R79 follow-up (audit 2026-09-28 §7.1 / §8.5 #2): .env.local lines
+# 34-35 are gitignored and the repo had no machine-checked gate on the SK/CEK
+# pair. Concurrent session 23:00 deployed 2300 with SK==CEK=identical 44-byte
+# value (a CEK pasted into the SK slot); the gateway could not decrypt any
+# stored credential, dispatch returned ErrNoRoute, the whole site 503'd for
+# ~80 minutes. The two existing single-key guards were both satisfied:
+#
+#   * deploy() line 1111 `[[ -n SK ]] || die` — SK was non-empty
+#   * gate_credential_encryption_key() line 995 — CEK was non-empty
+#
+# Neither asks "are they the same value?" or "are they long enough to be
+# keys?"; the same-shape fix in deploy-local.sh would have to repeat after
+# every future incident. This function adds the missing pair-level guard and
+# runs once per deploy, BEFORE bump_local_version burns a build_seq.
+#
+# Invariants enforced:
+#   1. SK != CEK when both are present (collision = definite bug; HS256
+#      signing key and AES-256 credential encryption key must never share a
+#      value, even though both are 32-byte secrets).
+#   2. Each key >= 32 bytes — the minimum for either HS256 or AES-256. Short
+#      values (placeholders, leftover fragments of an old deployment) cannot
+#      be valid signing/encryption material.
+#
+# Both invariants are fail-closed by default; DL_ALLOW_KEY_DRIFT=true is the
+# one explicit bypass and is logged so an audit trail exists. Either side
+# empty is intentionally left to the existing single-key guards so clean CI
+# environments (no .env.local at all) still pass through dl_load_project_env
+# unchanged.
+dl_key_drift_preflight() {
+  local sk="${LLM_GATEWAY_SECRET_KEY:-}"
+  local cek="${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}"
+
+  # At least one side empty: leave it to the single-key guards
+  # (deploy() line 1111 for SK, gate_credential_encryption_key for CEK).
+  # Both empty is the clean-CI case and is never actionable.
+  if [[ -z "$sk" || -z "$cek" ]]; then
+    return 0
+  fi
+
+  local sk_len=${#sk} cek_len=${#cek}
+  local problem=''
+  if [[ "$sk" == "$cek" ]]; then
+    problem="LLM_GATEWAY_SECRET_KEY and LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY are identical (${sk_len} bytes each); using the same value for the JWT signing key and the AES-256 credential encryption key produces a sitewide 503 with zero usable diagnostics (incident 2026-09-28 §7.1, deploy 2300). Check .env.local lines 34-35"
+  elif (( sk_len < 32 )); then
+    problem="LLM_GATEWAY_SECRET_KEY is only ${sk_len} bytes; the minimum for HS256 is 32 bytes (audit canonical length: 64 chars). Check .env.local line 34"
+  elif (( cek_len < 32 )); then
+    problem="LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY is only ${cek_len} bytes; the minimum for AES-256 is 32 bytes (audit canonical length: 44 chars). Check .env.local line 35"
+  fi
+
+  if [[ -z "$problem" ]]; then
+    return 0
+  fi
+
+  if [[ "${DL_ALLOW_KEY_DRIFT:-false}" == "true" ]]; then
+    printf '[deploy-lib] warning: DL_ALLOW_KEY_DRIFT=true bypassed key-drift check: %s\n' "$problem" >&2
+    return 0
+  fi
+
+  _dl_die "$problem. Set DL_ALLOW_KEY_DRIFT=1 to bypass"
 }
 
 dl_write_env() {
@@ -443,6 +592,15 @@ dl_write_env() {
     # 显式值，未设时写空行（gateway 侧视为未设置走默认）。
     dl_emit_env_line LLM_GATEWAY_DB_MAX_CONNS "${LLM_GATEWAY_DB_MAX_CONNS:-}"
     dl_emit_env_line LLM_GATEWAY_STORAGE_MAX_CONNECTIONS "${LLM_GATEWAY_STORAGE_MAX_CONNECTIONS:-}"
+    # 2026-09-30 hotzone 部署演练 D1：双模式与热区旋钮透传。白名单此前缺失
+    # 这组键，走管线部署的 full 环境热区永远不激活（dispatcher 对空 mode 走
+    # 历史装配）；未设时写空行，gateway 侧视为未设置，行为与历史完全一致。
+    dl_emit_env_line LLM_GATEWAY_STORAGE_MODE "${LLM_GATEWAY_STORAGE_MODE:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_ENABLED "${LLM_GATEWAY_HOTZONE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_DIR "${LLM_GATEWAY_HOTZONE_DIR:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_RETENTION_HOURS "${LLM_GATEWAY_HOTZONE_RETENTION_HOURS:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_MAX_SIZE_GB "${LLM_GATEWAY_HOTZONE_MAX_SIZE_GB:-}"
+    dl_emit_env_line LLM_GATEWAY_HOTZONE_REQUEST_MIRROR "${LLM_GATEWAY_HOTZONE_REQUEST_MIRROR:-}"
   } > "$file"
   chmod 0600 "$file"
 }
@@ -640,6 +798,56 @@ dl_active_port() {
   printf '%s\n' "$candidate"
 }
 dl_candidate_port() { local cur; cur=$(dl_active_port); [[ "$cur" == 8782 ]] && printf 8781 || printf 8782; }
+
+# 2026-09-19（部署工单）：蓝绿轮换前先实测哪个端口真的有网关在监听。
+# deploy-local.sh 与网关同机，127.0.0.1 是合法探测目标（远程部署路径
+# deploy-seamless.sh 的对应逻辑走 remote_ssh，勿混用）。
+dl_port_listening() {
+  local port="$1"
+  curl -fsS -o /dev/null --max-time 1 "http://127.0.0.1:${port}/healthz" 2>/dev/null && return 0
+  # /healthz 未应答不等于没人监听（网关可能在启动 ensure 链上，还没 bind
+  # 完 / 或 503）——退回裸 TCP 探测，只要端口有人占就当它在监听。
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+}
+
+# 输出 8781/8782 中正在监听的端口（0-2 行）。
+dl_detect_active_port() {
+  local port
+  for port in 8781 8782; do
+    dl_port_listening "$port" && printf '%s\n' "$port"
+  done
+  return 0
+}
+
+# dl_active_port 的文件/env 链与实测监听复核后的 active 端口（2026-09-20 修订）。
+# 本地无代理拓扑里 active 端口就是对外契约端口（客户端直连 127.0.0.1:8782），
+# 实测永远不能改写它——否则一次失败部署留下的残留候选（8781）会把下一次
+# 部署整体劫持到 8781，对外端口 8782 静默死亡，再部署一次又可能翻回来，
+# 形成用户观察到的 8781/8782 交替。修订后的语义：
+#   文件/env 链结果永远优先（操作者意图 = 对外契约）
+#   实测仅用于诊断：declared 没人监听而另一侧有人 → 大声 warn，本次部署
+#   仍落回 declared（部署流程会在 cutover 阶段把 declared 端口重新拉起，
+#   并清掉另一侧残留），对外端口自愈而不是漂移。
+#   双监听 → declared（另一侧是残留候选，start_instance 起候选时先清理）
+#   都没监听 → declared（全新安装 / 网关已停）
+# 显式 LLM_GATEWAY_ACTIVE_PORT/SERVICE_PORT 自定义端口（非 8781/8782）时
+# 同样透传，尊重操作者意图。
+dl_resolve_active_port() {
+  local declared probed
+  declared=$(dl_active_port)
+  [[ "$declared" == 8781 || "$declared" == 8782 ]] || { printf '%s\n' "$declared"; return 0; }
+  probed=$(dl_detect_active_port)
+  if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
+    local other
+    other=$([[ "$declared" == 8781 ]] && printf 8782 || printf 8781)
+    if printf '%s\n' "$probed" | grep -qx "$other"; then
+      printf '[deploy-local] warning: 对外端口 %s 当前无人监听，而另一侧 %s 有残留网关 —— 仍按文件链部署到 %s（对外契约端口不可漂移），%s 将在本次部署中被清理\n' "$declared" "$other" "$declared" "$other" >&2
+    else
+      printf '[deploy-local] warning: 对外端口 %s 当前无人监听（全新安装或网关已停止）—— 部署仍落 %s\n' "$declared" "$declared" >&2
+    fi
+  fi
+  printf '%s\n' "$declared"
+}
 dl_wait_http() {
   local url="$1" deadline=$(( $(date +%s)+${2:-60} ))
   while (( $(date +%s) < deadline )); do curl -fsS --max-time 2 "$url" >/dev/null 2>&1 && return 0; sleep 1; done

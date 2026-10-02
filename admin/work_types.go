@@ -195,7 +195,14 @@ func (h *WorkTypeHandlers) fetchL1Counts(ctx context.Context) (map[string]int, e
 		var c int
 		if err := rows.Scan(&k, &c); err == nil {
 			out[k] = c
+		} else {
+			warnRowSkip("workTypes.fetchL1Counts", err)
 		}
+	}
+	// Caller 已显式声明"出错则回退 canonical-only"，所以这里必须把迭代中断
+	// 也算作出错——否则调用方的 `dbCounts, _ :=` 会拿到半个 map 并当成全量。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("l1 task type counts: %w", err)
 	}
 	return out, nil
 }
@@ -294,7 +301,14 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 			var c int
 			if err := rows.Scan(&k, &c); err == nil {
 				wtDirect[k] = c
+			} else {
+				warnRowSkip("workTypes.stats.byWorkType", err)
 			}
+		}
+		// This handler previously swallowed the rows error entirely, which
+		// shipped an empty/undercounted by_work_type to the UI with a 200.
+		if writeAggRowsErr(w, "workTypes.stats.byWorkType", rows.Err()) {
+			return
 		}
 		rows.Close()
 	}
@@ -333,7 +347,14 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 			var c int
 			if err := rows.Scan(&k, &c); err == nil {
 				l1Dist[k] = c
+			} else {
+				warnRowSkip("workTypes.stats.byL1Task", err)
 			}
+		}
+		// 2026-06-24 的 R37 事故就是这个吞错形态把 by_l1_task 变成空 map 的：
+		// 查询侧失败与迭代中断都必须显式分类，不能让 200 掩盖空聚合。
+		if writeAggRowsErr(w, "workTypes.stats.byL1Task", rows.Err()) {
+			return
 		}
 		rows.Close()
 	}
@@ -374,7 +395,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		ORDER BY sort_order, key
 	`)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer configRows.Close()
@@ -383,6 +404,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	for configRows.Next() {
 		var row wtRow
 		if err := configRows.Scan(&row.Key, &row.Label, &row.Category, &row.L1TaskType); err != nil {
+			warnRowSkip("workTypes.stats.config", err)
 			continue
 		}
 		row.CountDirect = wtDirect[row.Key]
@@ -401,6 +423,9 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 			"count_direct":   row.CountDirect,
 			"count_l1_proxy": row.CountL1,
 		}
+	}
+	if writeAggRowsErr(w, "workTypes.stats.config", configRows.Err()) {
+		return
 	}
 	out["by_work_type"] = byWT
 
@@ -428,7 +453,12 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 			var c int
 			if err := rows.Scan(&m, &c); err == nil {
 				topModels = append(topModels, map[string]interface{}{"model": m, "count": c})
+			} else {
+				warnRowSkip("workTypes.stats.topModels", err)
 			}
+		}
+		if writeAggRowsErr(w, "workTypes.stats.topModels", rows.Err()) {
+			return
 		}
 		rows.Close()
 	}
@@ -515,7 +545,7 @@ func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request)
 
 	rows, err := h.db.Query(ctx, query)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -525,14 +555,18 @@ func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		wt, err := scanWorkType(rows)
 		if err != nil {
+			warnRowSkip("workTypes.list", err)
 			continue
 		}
 		out = append(out, wt)
 		keys = append(keys, wt.Key)
 	}
+	if writeAggRowsErr(w, "workTypes.list", rows.Err()) {
+		return
+	}
 	routeMap, err := h.fetchRoutesForKeys(ctx, keys)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	for i := range out {
@@ -551,13 +585,13 @@ func (h *WorkTypeHandlers) getWorkType(w http.ResponseWriter, r *http.Request, k
 			writeJSONErrCtx(w, r, http.StatusNotFound, "admin_work_type_not_found")
 			return
 		}
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
 	routes, err := h.fetchRoutes(ctx, key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	wt.ModelRoutes = routes
@@ -604,13 +638,13 @@ func (h *WorkTypeHandlers) createWorkType(w http.ResponseWriter, r *http.Request
 			writeJSONErrCtx(w, r, http.StatusConflict, "admin_key_already_exists")
 			return
 		}
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
 	wt, err := h.fetchWorkType(ctx, req.Key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, wt)
@@ -705,7 +739,7 @@ func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request
 	query := fmt.Sprintf(`UPDATE work_type_config SET %s WHERE key = $%d`, strings.Join(setClauses, ", "), argN)
 	tag, err := h.db.Exec(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -715,7 +749,7 @@ func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request
 
 	wt, err := h.fetchWorkType(ctx, key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSONOk(w, wt)
@@ -729,7 +763,7 @@ func (h *WorkTypeHandlers) deleteWorkType(w http.ResponseWriter, r *http.Request
 		UPDATE work_type_config SET enabled = FALSE, updated_at = NOW() WHERE key = $1
 	`, key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -790,7 +824,7 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 
 	var exists bool
 	if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_type_config WHERE key = $1)`, key).Scan(&exists); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if !exists {
@@ -800,14 +834,14 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `DELETE FROM work_type_model_route WHERE work_type_key = $1`, key); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -825,19 +859,19 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
 			`, key, rt.CanonicalName, wt, rt.MinScore, rt.Enabled, tier, rt.TaskQualityScore)
 		if err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
 	out, err := h.fetchRoutes(ctx, key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSONOk(w, map[string]interface{}{"key": key, "model_routes": out})
@@ -875,11 +909,15 @@ func (h *WorkTypeHandlers) fetchRoutes(ctx context.Context, key string) ([]model
 		var weight, minScore float64
 		if err := rows.Scan(&rt.ID, &rt.CanonicalName, &weight, &minScore, &rt.Enabled,
 			&rt.Tier, &rt.TaskQualityScore); err != nil {
+			warnRowSkip("workTypes.fetchRoutes", err)
 			continue
 		}
 		rt.Weight = weight
 		rt.MinScore = minScore
 		out = append(out, rt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("work type model routes: %w", err)
 	}
 	return out, nil
 }
@@ -909,11 +947,15 @@ func (h *WorkTypeHandlers) fetchRoutesForKeys(ctx context.Context, keys []string
 		var weight, minScore float64
 		if err := rows.Scan(&key, &rt.ID, &rt.CanonicalName, &weight, &minScore, &rt.Enabled,
 			&rt.Tier, &rt.TaskQualityScore); err != nil {
+			warnRowSkip("workTypes.fetchRoutesForKeys", err)
 			continue
 		}
 		rt.Weight = weight
 		rt.MinScore = minScore
 		out[key] = append(out[key], rt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("work type model routes by key: %w", err)
 	}
 	return out, nil
 }

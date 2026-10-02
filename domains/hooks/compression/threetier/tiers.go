@@ -14,9 +14,9 @@ import (
 type Tier int
 
 const (
-	TierRaw Tier = iota + 1 // 1: 原始会话（uncompressed body）
-	TierCompressed           // 2: 压缩后（after Lite/Caveman/ToolFocused/LLM summary）
-	TierSanitized            // 3: 脱敏后（after security/sanitize smart_sani_guard）
+	TierRaw        Tier = iota + 1 // 1: 原始会话（uncompressed body）
+	TierCompressed                 // 2: 压缩后（after Lite/Caveman/ToolFocused/LLM summary）
+	TierSanitized                  // 3: 脱敏后（after security/sanitize smart_sani_guard）
 )
 
 // Name 把 Tier 映射为可读字符串，与 request_logs.compression_strategy 标签对齐。
@@ -62,7 +62,7 @@ func TokenCount(s *compression.SessionState, t Tier) int {
 	case TierCompressed:
 		return s.CompressedTokens
 	case TierSanitized:
-		return 0 // SanitizeStats 不含 token 计数；保守返回 0
+		return s.SanitizedSnapshot.TokenEstimate
 	default:
 		return 0
 	}
@@ -79,8 +79,7 @@ func MessageCount(s *compression.SessionState, t Tier) int {
 	case TierCompressed:
 		return s.CompressedMsgs
 	case TierSanitized:
-		// SanitizeStats 不含 message 计数。返回 0。
-		return 0
+		return s.SanitizedSnapshot.MessageCount
 	default:
 		return 0
 	}
@@ -112,6 +111,7 @@ func Snapshot(s *compression.SessionState) [3]TierSnapshot {
 	san := TierSnapshot{
 		Tier:   TierSanitized,
 		HasMap: s.SanitizeMapRef != "",
+		Tokens: s.SanitizedSnapshot.TokenEstimate, Messages: s.SanitizedSnapshot.MessageCount,
 	}
 	return [3]TierSnapshot{raw, cmp, san}
 }

@@ -188,7 +188,7 @@ func (h *OutputComplianceHandler) getPolicy(w http.ResponseWriter, r *http.Reque
 	tenantID := GetTenantID(r)
 	policy, err := h.fetchPolicy(r.Context(), tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get policy: " + err.Error()})
+		writeInternalErrStr(w, "Failed to get policy", err)
 		return
 	}
 
@@ -346,7 +346,7 @@ func (h *OutputComplianceHandler) updatePolicy(w http.ResponseWriter, r *http.Re
 		req.RetentionDays, adminUser, adminUser, now, now,
 	).Scan(&policyID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update policy: " + err.Error()})
+		writeInternalErrStr(w, "Failed to update policy", err)
 		return
 	}
 
@@ -409,7 +409,7 @@ func (h *OutputComplianceHandler) listKeywords(w http.ResponseWriter, r *http.Re
 
 	rows, err := h.pool.Query(r.Context(), query, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list keywords: " + err.Error()})
+		writeInternalErrStr(w, "Failed to list keywords", err)
 		return
 	}
 	defer rows.Close()
@@ -418,10 +418,15 @@ func (h *OutputComplianceHandler) listKeywords(w http.ResponseWriter, r *http.Re
 	for rows.Next() {
 		k, err := scanKeyword(rows)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan keyword: " + err.Error()})
+			writeInternalErrStr(w, "Failed to scan keyword", err)
 			return
 		}
 		keywords = append(keywords, *k)
+	}
+	// 违禁词清单少一截 = 该词不再被拦截 = 静默放行。审计读面不返回半份。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate keywords", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"keywords": keywords})
@@ -466,7 +471,7 @@ func (h *OutputComplianceHandler) createKeyword(w http.ResponseWriter, r *http.R
 		tenantID, req.Keyword, defaultVal(req.Category, "custom"), req.Severity, defaultVal(req.Action, "warn"), req.Enabled, req.Description, adminUser,
 	).Scan(&id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to save keyword: " + err.Error()})
+		writeInternalErrStr(w, "Failed to save keyword", err)
 		return
 	}
 
@@ -487,7 +492,7 @@ func (h *OutputComplianceHandler) deleteKeyword(w http.ResponseWriter, r *http.R
 
 	_, err = h.pool.Exec(r.Context(), "DELETE FROM output_compliance_custom_keywords WHERE id = $1 AND tenant_id = $2", id, tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete keyword: " + err.Error()})
+		writeInternalErrStr(w, "Failed to delete keyword", err)
 		return
 	}
 
@@ -513,13 +518,13 @@ func (h *OutputComplianceHandler) toggleKeyword(w http.ResponseWriter, r *http.R
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to query keyword: " + err.Error()})
+		writeInternalErrStr(w, "Failed to query keyword", err)
 		return
 	}
 
 	_, err = h.pool.Exec(r.Context(), "UPDATE output_compliance_custom_keywords SET enabled = $1, updated_at=NOW() WHERE id=$2 AND tenant_id=$3", !current, id, tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to toggle keyword: " + err.Error()})
+		writeInternalErrStr(w, "Failed to toggle keyword", err)
 		return
 	}
 
@@ -561,7 +566,7 @@ func (h *OutputComplianceHandler) listReviewQueue(w http.ResponseWriter, r *http
 
 	rows, err := h.pool.Query(r.Context(), query, tenantID, status, limit, offset)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list review queue: " + err.Error()})
+		writeInternalErrStr(w, "Failed to list review queue", err)
 		return
 	}
 	defer rows.Close()
@@ -570,10 +575,15 @@ func (h *OutputComplianceHandler) listReviewQueue(w http.ResponseWriter, r *http
 	for rows.Next() {
 		it, err := scanReviewQueueItem(rows)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan review item: " + err.Error()})
+			writeInternalErrStr(w, "Failed to scan review item", err)
 			return
 		}
 		items = append(items, *it)
+	}
+	// 待审队列少一截 = 待人工复核的合规问题被静默从队列里消失。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate review queue", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items, "status": status, "limit": limit, "offset": offset})
@@ -625,7 +635,7 @@ func (h *OutputComplianceHandler) reviewItem(w http.ResponseWriter, r *http.Requ
 		WHERE id=$4 AND tenant_id=$5`,
 		status, reviewer, comment, id, tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update review item: " + err.Error()})
+		writeInternalErrStr(w, "Failed to update review item", err)
 		return
 	}
 
@@ -665,7 +675,7 @@ func (h *OutputComplianceHandler) listFeedback(w http.ResponseWriter, r *http.Re
 
 	rows, err := h.pool.Query(r.Context(), query, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list feedback: " + err.Error()})
+		writeInternalErrStr(w, "Failed to list feedback", err)
 		return
 	}
 	defer rows.Close()
@@ -674,10 +684,15 @@ func (h *OutputComplianceHandler) listFeedback(w http.ResponseWriter, r *http.Re
 	for rows.Next() {
 		fb := &OutputComplianceFeedback{}
 		if err := rows.Scan(&fb.ID, &fb.TenantID, &fb.AuditID, &fb.FeedbackType, &fb.Reporter, &fb.Comment, &fb.CreatedAt); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan feedback: " + err.Error()})
+			writeInternalErrStr(w, "Failed to scan feedback", err)
 			return
 		}
 		items = append(items, *fb)
+	}
+	// 合规反馈少一截 = 复核结论被静默丢弃。
+	if err := rows.Err(); err != nil {
+		writeInternalErrStr(w, "Failed to iterate feedback", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"feedback": items, "limit": limit, "offset": offset})
@@ -702,7 +717,7 @@ func (h *OutputComplianceHandler) createFeedback(w http.ResponseWriter, r *http.
 		VALUES ($1, $2, $3, $4, $5) RETURNING id`
 	err := h.pool.QueryRow(r.Context(), query, tenantID, req.AuditID, req.FeedbackType, reporter, req.Comment).Scan(&id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to save feedback: " + err.Error()})
+		writeInternalErrStr(w, "Failed to save feedback", err)
 		return
 	}
 
@@ -723,7 +738,7 @@ func (h *OutputComplianceHandler) handleStats(w http.ResponseWriter, r *http.Req
 		`SELECT COUNT(*) FILTER (WHERE tenant_id=$1), COUNT(*) FILTER (WHERE tenant_id=$1 AND blocked=true)
 		FROM output_compliance_audit`, tenantID).Scan(&totalIssues, &blocked)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to query stats: " + err.Error()})
+		writeInternalErrStr(w, "Failed to query stats", err)
 		return
 	}
 

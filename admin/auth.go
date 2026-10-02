@@ -93,6 +93,13 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			//    signed by pocket / memora / redclaw / acc / llm-gateway as
 			//    long as aud=llm-gateway-api.
 			if p, err := identity.Verify(tokenStr, legacyAdapter(secretKey)); err == nil && p != nil && p.UserID > 0 {
+				// B4 (2026-09-22): a token issued before the user's last
+				// password change is revoked. Only local (legacy) tokens —
+				// cross-project principals have foreign user_id semantics.
+				if p.Source == "legacy" && authRevocationProbe(r.Context(), db, p.UserID, p.IssuedAt) {
+					writeError(w, http.StatusUnauthorized, "session revoked: password changed")
+					return
+				}
 				if p.Source == "legacy" && p.MustChangePassword {
 					if !isPasswordChangeAllowedPath(r.URL.Path) {
 						writeError(w, http.StatusForbidden, errPasswordChangeRequired.Error())
@@ -114,6 +121,16 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			// 2) Legacy single-secret path (always available, backward compat).
 			claims, err := VerifyToken(tokenStr, secretKey)
 			if err == nil && claims.UserID > 0 {
+				// B4 (2026-09-22): same password-change revocation gate as
+				// the identity path above.
+				issuedAt := time.Time{}
+				if claims.IssuedAt != nil {
+					issuedAt = claims.IssuedAt.Time
+				}
+				if authRevocationProbe(r.Context(), db, claims.UserID, issuedAt) {
+					writeError(w, http.StatusUnauthorized, "session revoked: password changed")
+					return
+				}
 				authReq := SetAuthContext(r, &AuthContext{
 					UserID:             claims.UserID,
 					TenantID:           claims.TenantID,
@@ -358,6 +375,16 @@ func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 			if err == nil && claims.UserID > 0 {
 				if claims.Role != "super_admin" {
 					writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
+					return
+				}
+				// B4 (2026-09-22): password-change revocation, same gate as
+				// AdminMiddleware.
+				issuedAt := time.Time{}
+				if claims.IssuedAt != nil {
+					issuedAt = claims.IssuedAt.Time
+				}
+				if authRevocationProbe(r.Context(), db, claims.UserID, issuedAt) {
+					writeError(w, http.StatusUnauthorized, "session revoked: password changed")
 					return
 				}
 				if enforceMustChangePassword(w, r, claims) {

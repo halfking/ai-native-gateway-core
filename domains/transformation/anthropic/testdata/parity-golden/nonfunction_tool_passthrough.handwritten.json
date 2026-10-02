@@ -1,0 +1,1 @@
+{"max_tokens":5,"messages":[{"content":"draw","role":"user"}],"model":"gpt-x","tools":[{"input_schema":{},"name":"f"}]}

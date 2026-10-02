@@ -4,7 +4,7 @@
 // 用途: 标注工作台提交人工标注时，同步把"人工确认/改判的任务类型"作为
 // 逐请求修正写入 task_type_corrections，形成分类反馈闭环。
 
-import { req } from './_core'
+import { req, headers, BASE, ApiError } from './_core'
 
 export interface TaskProfileInfo {
   task_type: string
@@ -63,6 +63,8 @@ export interface TaskTypeCorrection {
 export interface CorrectionStatsResponse {
   since: string
   stats: Record<string, TaskProfileCorrectionStat>
+  // 每个被修正任务类型的当前分层建议（handler.go handleCorrectionStats）。
+  suggestions?: Record<string, TaskProfileSuggestion>
   recent: TaskTypeCorrection[]
 }
 
@@ -76,10 +78,12 @@ export interface AppliedTierConfig {
 /** 记录一条人工任务类型修正（request_id 冲突返回 409）。 */
 export function createTaskTypeCorrection(data: CreateTaskTypeCorrectionRequest): Promise<TaskTypeCorrection> {
   // 后端信封为 {success, correction}（taskprofile/handler.go handleCreateCorrection）；
-  // R43: 原写法把响应泛型写成 TaskTypeCorrection 再 as 强转，vue-tsc TS2352。
-  return req<{ correction: TaskTypeCorrection }>('POST', '/api/admin/task-profile/corrections', data).then(
-    (r) => r.correction
-  )
+  // 显式声明响应形状再取 correction，避免把整封信封当 correction 强转。
+  return req<{ correction: TaskTypeCorrection }>(
+    'POST',
+    '/api/admin/task-profile/corrections',
+    data
+  ).then((r) => r.correction)
 }
 
 /** 任务档案总览（注册表 + 修正统计 + 分层建议合并视图）。 */
@@ -106,4 +110,71 @@ export function applyTierConfig(taskTypes?: string[]): Promise<{ applied: Applie
 /** 重新加载 overlay 档案文件（TASKPROFILE_OVERLAY；未配置则复位内嵌默认）。 */
 export function reloadTaskProfile(): Promise<{ registry_version: string }> {
   return req('POST', '/api/admin/task-profile/reload', {})
+}
+
+// ── Export / Import CSV（2026-09-18 round 2） ───────────────────────
+
+export interface CorrectionImportSummary {
+  total_rows: number
+  imported: number
+  skipped: number
+  row_errors?: { line: number; message: string }[]
+}
+
+export interface CorrectionsExportResult {
+  filename: string
+  content: string
+}
+
+/**
+ * GET /api/admin/task-profile/corrections/export?since_days=30。
+ * 直接拿到 CSV 文本（后端已设 Content-Disposition）；上层负责落盘。
+ */
+export async function exportCorrections(sinceDays = 30): Promise<CorrectionsExportResult> {
+  const path = `/api/admin/task-profile/corrections/export?since_days=${sinceDays}`
+  const r = await fetch(BASE + path, {
+    method: 'GET',
+    headers: headers('GET', false),
+    credentials: 'same-origin',
+  })
+  if (!r.ok) {
+    let detail = r.statusText
+    try {
+      const j = await r.json()
+      detail = j?.error?.message ?? j?.error ?? j?.detail ?? detail
+    } catch { /* ignore */ }
+    throw new ApiError(r.status, detail || 'export failed')
+  }
+  // 后端 Content-Disposition: attachment; filename="task-type-corrections-YYYYMMDD.csv"
+  const dispo = r.headers.get('Content-Disposition') ?? ''
+  const m = /filename="([^"]+)"/.exec(dispo)
+  const filename = m?.[1] ?? `task-type-corrections-${new Date().toISOString().slice(0, 10)}.csv`
+  const content = await r.text()
+  return { filename, content }
+}
+
+/**
+ * POST /api/admin/task-profile/corrections/import，body 必须是 raw CSV text。
+ * 后端要求 Content-Type: text/csv，不能走 req()（它写 application/json）。
+ */
+export async function importCorrections(csvText: string): Promise<CorrectionImportSummary> {
+  const r = await fetch(BASE + '/api/admin/task-profile/corrections/import', {
+    method: 'POST',
+    headers: {
+      ...headers('POST', true),
+      'Content-Type': 'text/csv; charset=utf-8',
+    },
+    credentials: 'same-origin',
+    body: csvText,
+  })
+  if (!r.ok) {
+    let detail = r.statusText
+    try {
+      const j = await r.json()
+      detail = j?.error?.message ?? j?.error ?? j?.detail ?? detail
+    } catch { /* ignore */ }
+    throw new ApiError(r.status, detail || 'import failed')
+  }
+  const j = (await r.json()) as { success: boolean; summary: CorrectionImportSummary }
+  return j.summary
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -11,45 +12,45 @@ import (
 
 // ClientAnalyticsListResponse 客户端分析列表响应
 type ClientAnalyticsListResponse struct {
-	Clients    []ClientAnalyticsSummary `json:"clients"`
-	Total      int                      `json:"total"`
-	Limit      int                      `json:"limit"`
-	Offset     int                      `json:"offset"`
-	RefreshedAt time.Time               `json:"refreshed_at"`
+	Clients     []ClientAnalyticsSummary `json:"clients"`
+	Total       int                      `json:"total"`
+	Limit       int                      `json:"limit"`
+	Offset      int                      `json:"offset"`
+	RefreshedAt time.Time                `json:"refreshed_at"`
 }
 
 // ClientAnalyticsSummary 客户端分析摘要
 type ClientAnalyticsSummary struct {
-	ClientID           string    `json:"client_id"`
-	SessionCount       int       `json:"session_count"`
-	ActiveSessions24h  int       `json:"active_sessions_24h"`
-	TotalRequests      int64     `json:"total_requests"`
-	TotalCost          float64   `json:"total_cost_usd"`
-	AvgCostPerSession  float64   `json:"avg_cost_per_session"`
-	AvgHealthScore     *int      `json:"avg_health_score,omitempty"`
+	ClientID           string             `json:"client_id"`
+	SessionCount       int                `json:"session_count"`
+	ActiveSessions24h  int                `json:"active_sessions_24h"`
+	TotalRequests      int64              `json:"total_requests"`
+	TotalCost          float64            `json:"total_cost_usd"`
+	AvgCostPerSession  float64            `json:"avg_cost_per_session"`
+	AvgHealthScore     *int               `json:"avg_health_score,omitempty"`
 	HealthDistribution HealthDistribution `json:"health_distribution"`
-	TotalSuccess       int64     `json:"total_success"`
-	TotalErrors        int64     `json:"total_errors"`
-	AvgLatencyMs       *int      `json:"avg_latency_ms,omitempty"`
-	FirstSeenAt        time.Time `json:"first_seen_at"`
-	LastSeenAt         time.Time `json:"last_seen_at"`
-	ModelsUsed         []string  `json:"models_used"`
+	TotalSuccess       int64              `json:"total_success"`
+	TotalErrors        int64              `json:"total_errors"`
+	AvgLatencyMs       *int               `json:"avg_latency_ms,omitempty"`
+	FirstSeenAt        time.Time          `json:"first_seen_at"`
+	LastSeenAt         time.Time          `json:"last_seen_at"`
+	ModelsUsed         []string           `json:"models_used"`
 }
 
 // ClientAnalyticsDetailResponse 客户端详情响应
 type ClientAnalyticsDetailResponse struct {
 	ClientAnalyticsSummary
-	RelatedTasks    []RelatedTaskItem     `json:"related_tasks"`
-	DailyCostTrend  []DailyCostPoint      `json:"daily_cost_trend"`
-	RecentSessions  []RecentSessionItem   `json:"recent_sessions"`
+	RelatedTasks   []RelatedTaskItem   `json:"related_tasks"`
+	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
+	RecentSessions []RecentSessionItem `json:"recent_sessions"`
 }
 
 // RelatedTaskItem 关联任务项
 type RelatedTaskItem struct {
-	TaskID       string  `json:"task_id"`
-	SessionCount int     `json:"session_count"`
-	TotalCost    float64 `json:"total_cost_usd"`
-	AvgHealth    *int    `json:"avg_health,omitempty"`
+	TaskID       string    `json:"task_id"`
+	SessionCount int       `json:"session_count"`
+	TotalCost    float64   `json:"total_cost_usd"`
+	AvgHealth    *int      `json:"avg_health,omitempty"`
 	LastActivity time.Time `json:"last_activity"`
 }
 
@@ -62,12 +63,12 @@ type DailyCostPoint struct {
 
 // RecentSessionItem 最近会话项
 type RecentSessionItem struct {
-	SessionID   string    `json:"session_id"`
-	RequestCount int      `json:"request_count"`
-	Cost        float64   `json:"cost_usd"`
-	HealthScore *int      `json:"health_score,omitempty"`
-	HealthGrade *string   `json:"health_grade,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	SessionID    string    `json:"session_id"`
+	RequestCount int       `json:"request_count"`
+	Cost         float64   `json:"cost_usd"`
+	HealthScore  *int      `json:"health_score,omitempty"`
+	HealthGrade  *string   `json:"health_grade,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // handleClientAnalyticsList 客户端分析列表
@@ -132,7 +133,7 @@ func (h *Handler) handleClientAnalyticsList(w http.ResponseWriter, r *http.Reque
 	var total int
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM session_client_stats %s", whereClause)
 	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("count failed: %v", err))
+		writeAnalyticsQueryErr(w, "count failed", err)
 		return
 	}
 
@@ -154,7 +155,7 @@ func (h *Handler) handleClientAnalyticsList(w http.ResponseWriter, r *http.Reque
 
 	rows, err := h.db.Query(ctx, listSQL, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
+		writeAnalyticsQueryErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -176,6 +177,7 @@ func (h *Handler) handleClientAnalyticsList(w http.ResponseWriter, r *http.Reque
 			&c.FirstSeenAt, &c.LastSeenAt, &modelsUsed, &refreshedAt,
 		)
 		if err != nil {
+			warnRowSkip("session analytics clients", err)
 			continue
 		}
 
@@ -193,6 +195,9 @@ func (h *Handler) handleClientAnalyticsList(w http.ResponseWriter, r *http.Reque
 		}
 
 		clients = append(clients, c)
+	}
+	if writeAggRowsErr(w, "session analytics clients", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, &ClientAnalyticsListResponse{
@@ -221,20 +226,20 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-		days := queryInt(r, "days", 30)
-		if days < 1 || days > 90 {
-			days = 30
-		}
+	days := queryInt(r, "days", 30)
+	if days < 1 || days > 90 {
+		days = 30
+	}
 
-		// 普通用户暂不可见
-		if IsRegularUser(r) {
-			writeError(w, http.StatusForbidden, "client analytics requires admin access")
-			return
-		}
+	// 普通用户暂不可见
+	if IsRegularUser(r) {
+		writeError(w, http.StatusForbidden, "client analytics requires admin access")
+		return
+	}
 
-		tenantID := queryString(r, "tenant_id")
-		callerTenant := GetTenantID(r)
-		isSuper := IsSuperAdminOrLegacy(r)
+	tenantID := queryString(r, "tenant_id")
+	callerTenant := GetTenantID(r)
+	isSuper := IsSuperAdminOrLegacy(r)
 
 	if !isSuper && tenantID != "" && tenantID != callerTenant {
 		writeError(w, http.StatusForbidden, "cross-tenant access denied")
@@ -280,7 +285,8 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 		&resp.FirstSeenAt, &resp.LastSeenAt, &modelsUsed, &refreshedAt,
 	)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "client not found")
+		// R35: 42P01（缺 357 视图）此前被吞成 404 误导排查，先分类。
+		writeAnalyticsDetailErr(w, "client not found", err)
 		return
 	}
 
@@ -315,13 +321,19 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 		for taskRows.Next() {
 			var item RelatedTaskItem
 			var avgHealth sql.NullInt64
-			if err := taskRows.Scan(&item.TaskID, &item.SessionCount, &item.TotalCost, &avgHealth, &item.LastActivity); err == nil {
-				if avgHealth.Valid {
-					val := int(avgHealth.Int64)
-					item.AvgHealth = &val
-				}
-				resp.RelatedTasks = append(resp.RelatedTasks, item)
+			if err := taskRows.Scan(&item.TaskID, &item.SessionCount, &item.TotalCost, &avgHealth, &item.LastActivity); err != nil {
+				warnRowSkip("session analytics client detail related-tasks", err)
+				continue
 			}
+			if avgHealth.Valid {
+				val := int(avgHealth.Int64)
+				item.AvgHealth = &val
+			}
+			resp.RelatedTasks = append(resp.RelatedTasks, item)
+		}
+		if rerr := taskRows.Err(); rerr != nil {
+			slog.Warn("analytics detail panel iteration aborted; panel degraded", "panel", "related_tasks", "error", rerr)
+			resp.RelatedTasks = []RelatedTaskItem{}
 		}
 	}
 	if resp.RelatedTasks == nil {
@@ -351,10 +363,16 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 		for trendRows.Next() {
 			var point DailyCostPoint
 			var date time.Time
-			if err := trendRows.Scan(&date, &point.Cost, &point.Sessions); err == nil {
-				point.Date = date.Format("2006-01-02")
-				resp.DailyCostTrend = append(resp.DailyCostTrend, point)
+			if err := trendRows.Scan(&date, &point.Cost, &point.Sessions); err != nil {
+				warnRowSkip("session analytics client detail daily-cost-trend", err)
+				continue
 			}
+			point.Date = date.Format("2006-01-02")
+			resp.DailyCostTrend = append(resp.DailyCostTrend, point)
+		}
+		if rerr := trendRows.Err(); rerr != nil {
+			slog.Warn("analytics detail panel iteration aborted; panel degraded", "panel", "daily_cost_trend", "error", rerr)
+			resp.DailyCostTrend = []DailyCostPoint{}
 		}
 	}
 	if resp.DailyCostTrend == nil {
@@ -382,16 +400,22 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 			var item RecentSessionItem
 			var healthScore sql.NullInt64
 			var healthGrade sql.NullString
-			if err := recentRows.Scan(&item.SessionID, &item.RequestCount, &item.Cost, &healthScore, &healthGrade, &item.CreatedAt); err == nil {
-				if healthScore.Valid {
-					val := int(healthScore.Int64)
-					item.HealthScore = &val
-				}
-				if healthGrade.Valid {
-					item.HealthGrade = &healthGrade.String
-				}
-				resp.RecentSessions = append(resp.RecentSessions, item)
+			if err := recentRows.Scan(&item.SessionID, &item.RequestCount, &item.Cost, &healthScore, &healthGrade, &item.CreatedAt); err != nil {
+				warnRowSkip("session analytics client detail recent-sessions", err)
+				continue
 			}
+			if healthScore.Valid {
+				val := int(healthScore.Int64)
+				item.HealthScore = &val
+			}
+			if healthGrade.Valid {
+				item.HealthGrade = &healthGrade.String
+			}
+			resp.RecentSessions = append(resp.RecentSessions, item)
+		}
+		if rerr := recentRows.Err(); rerr != nil {
+			slog.Warn("analytics detail panel iteration aborted; panel degraded", "panel", "recent_sessions", "error", rerr)
+			resp.RecentSessions = []RecentSessionItem{}
 		}
 	}
 	if resp.RecentSessions == nil {

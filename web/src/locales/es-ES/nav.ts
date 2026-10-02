@@ -24,9 +24,13 @@ export default {
     credentialMonitor: "Monitor de credenciales",
     annotations: 'Anotación manual',
     annotationStats: 'Estadísticas de anotación',
+    taskProfile: 'Perfiles de tareas',
+    autoTuning: 'Ajuste de enrutamiento',
     probeHealth: "Salud del sondeo",
     systemMonitor: "Monitoreo del sistema",
     providers: "Proveedores",
+    reconciliation: "Conciliación de proveedores",
+    settlementReport: "Informe de liquidación",
     pricing: "Precios de coste",
     modelPricing: "Gestión de precios",
     freePool: "Pool gratuito",
@@ -104,4 +108,9 @@ export default {
   publicSupport: 'Soporte',
 
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'Anomalías de solicitud sin resolver',
+  },
 }

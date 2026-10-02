@@ -15,7 +15,14 @@ type stubClassifier struct {
 }
 
 func (s *stubClassifier) Classify(_ context.Context, _ ClassificationSignals) (*Classification, error) {
-	return s.out, s.err
+	// Each caller must own its Classification: Decide mutates the result in
+	// place (PostClassify confidence adjustment at decision.go:532), so a
+	// shared fixture pointer is a data race under concurrent Decide tests.
+	if s.out == nil {
+		return nil, s.err
+	}
+	cp := *s.out
+	return &cp, s.err
 }
 func (s *stubClassifier) Name() string { return s.name }
 
@@ -26,10 +33,17 @@ type stubIndex struct {
 }
 
 func (s *stubIndex) Recommend(_ TaskType, _ ClassificationSignals, _ Profile, topN int) []ScoredCandidate {
-	if topN > 0 && len(s.cands) > topN {
-		return s.cands[:topN]
+	// Each caller must own its slice: the tier policy path writes RouteTier
+	// into elements in place (applyTierPolicyWithRoutes, the only live
+	// in-place write on the Decide candidate path), so handing out the
+	// shared fixture backing array is a data race under concurrent Decide
+	// tests that wire a WorkTypeRouteStore.
+	out := make([]ScoredCandidate, len(s.cands))
+	copy(out, s.cands)
+	if topN > 0 && len(out) > topN {
+		return out[:topN]
 	}
-	return s.cands
+	return out
 }
 func (s *stubIndex) Snapshot() []Candidate  { return nil }
 func (s *stubIndex) LastRefresh() time.Time { return time.Now() }

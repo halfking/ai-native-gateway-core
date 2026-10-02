@@ -189,6 +189,11 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 // the TaskType fallback; see applyAutoRouteFields on the success path, which
 // keeps business auto turns mirrored by carrying TaskType.)
 //
+// Wave 1 A5 (2026-09-22 设计 §5.12"影子指令不进入会话上下文")：影子轮按
+// origin_actor 前缀 'goal-%' 被会话拼装型读者排除（sessionsummary 两个
+// MessageSource），镜像/对账行本身保留——打标不排除、过滤权在查询侧
+// （方案 18 §3 的既定语义，本波把它落到了装配查询上）。
+//
 // Returns (statusCode, bodySnippet). Body is truncated to 256 bytes so log
 // lines stay bounded on bad upstream payloads.
 func defaultDispatchFollowUp(

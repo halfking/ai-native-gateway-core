@@ -267,8 +267,8 @@ func (r *CredentialRecovery) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
 	r.started = true
 	r.lifecycleMu.Unlock()
-	go r.run(ctx)
-	go r.runLookbackScan(ctx)
+	Go("credential_recovery.run", func() { r.run(ctx) })
+	Go("credential_recovery.runLookbackScan", func() { r.runLookbackScan(ctx) })
 	slog.Info("credential recovery task started",
 		"interval", r.tickIntervalLocked().String(),
 		"lookback_scan_interval", r.lookbackScanIntervalLocked().String())
@@ -326,12 +326,12 @@ func (r *CredentialRecovery) dispatchProbe(fn func()) {
 	sem := r.probeDispatchSem
 	r.probeDispatchWG.Add(1)
 	r.probeDispatchMu.Unlock()
-	go func() {
+	Go("credential_recovery.dispatchProbe", func() {
 		defer r.probeDispatchWG.Done()
 		sem <- struct{}{}
 		defer func() { <-sem }()
 		fn()
-	}()
+	})
 }
 
 func (r *CredentialRecovery) waitProbeDispatch() {
@@ -1366,14 +1366,16 @@ func (r *CredentialRecovery) recoverFreshDegradedBindings(ctx context.Context) e
 //   - cmb.available = TRUE (the binding has been admitted by the probe
 //     or the catalog path; otherwise the credential_recovery availability
 //     UPDATE above is responsible for the row, not this branch).
-//   - node_probe_state is in a stale failed/backoff/paused state —
-//     i.e. at least one of last_direct_ok/last_gateway_ok/paused/
-//     next_retry_at indicates the pair needs re-verification. We use
-//     `last_direct_ok IS DISTINCT FROM TRUE OR paused OR next_retry_at
-//     IS NULL OR next_retry_at > now()` so a row that was probed
-//     successfully AND whose ladder has elapsed still gets a fresh
-//     round (the ladder continues naturally — Submit's arming branch
-//     only re-arms paused or expired rows).
+//   - node_probe_state is NOT healthy-parked — i.e. the row carries real
+//     error evidence (recorded last_err_code, pending failure counter, or
+//     last_direct_ok/gateway_ok not confirmed TRUE). 2026-09-20 probe-volume
+//     policy: the previous eligibility ALSO matched `next_retry_at > now()`
+//     and `next_retry_at IS NULL`, which made every healthy row parked by a
+//     success (then +1h, now +30d) look "stale" — this 30s-tick reconciler
+//     re-submitted those pairs forever, the single largest normal-state
+//     probe generator. A future next_retry_at now means "not due", never
+//     "stale". Healthy rows leave no work for this branch: failure
+//     detection belongs to the request path (Submit) and the ladder.
 //   - credential / lifecycle / provider / manual guards identical to
 //     recoverExpiredBindings.
 //   - availability_state = 'ready' (do not enqueue a probe for a
@@ -1402,12 +1404,15 @@ func reconcileStaleNodeProbeStateSQL() string {
 		JOIN providers   p ON p.id = c.provider_id
 		WHERE cmb.available = TRUE
 			  AND COALESCE(nps.paused, FALSE) = FALSE
-			  AND (
-			      nps.last_direct_ok  IS DISTINCT FROM TRUE
-			      OR nps.last_gateway_ok IS DISTINCT FROM TRUE
-			      OR nps.next_retry_at IS NULL
-			      OR nps.next_retry_at > now()
-			  )
+			  AND NOT ` + nodeProbeHealthyParkedSQL("nps") + `
+			  -- R65 audit G (2026-09-25): the reconciler must honor the
+			  -- node_probe_state scheduling surface exactly like
+			  -- pumpDueStatesSQL does. Without this gate a gateway-side
+			  -- failure row (cmb.available stays TRUE — updateBindingAvailability
+			  -- refuses the write — plus a 15m fixed backoff) sits in this
+			  -- candidate set and Submit re-enqueued it at now()+5s every 30s
+			  -- tick, bypassing the backoff ladder entirely.
+			  AND nps.next_retry_at <= now()
 
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
@@ -1722,6 +1727,11 @@ func lookbackCandidateSQL() string {
 		  -- UT-CR-09: only nodes with a SUCCESS inside the lookback window
 		  -- are candidates. Outside the window / no success → excluded,
 		  -- nothing triggers.
+		  -- R50 note: probe rows are deliberately counted here (no
+		  -- origin_stage arm). A probe success IS proof the binding works —
+		  -- the direction is self-limiting (probe success restores
+		  -- availability and exits the recovery candidate set), unlike the
+		  -- usage scans where R49 F4/R50 closed the loop.
 		  AND (
 		      EXISTS (
 		          SELECT 1 FROM request_logs_hot rl

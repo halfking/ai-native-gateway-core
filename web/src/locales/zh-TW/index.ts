@@ -3,6 +3,8 @@ import common from './common'
 import customer from './customer'
 import annotation from './annotation'
 import nav from './nav'
+import taskProfile from './taskProfile'
+import autoTuning from './autoTuning'
 import login from './login'
 import app from './app'
 import errors from './errors'
@@ -72,12 +74,15 @@ import connectionRegistry from './connectionRegistry'
 import nodeHealthTimeline from './nodeHealthTimeline'
 import proxy from './proxy'
 import requestDetail from './requestDetail'
+import reports from './reports'
 
 export default {
   common,
   customer,
   annotation,
   nav,
+  taskProfile,
+  autoTuning,
   login,
   app,
   errors,
@@ -146,4 +151,5 @@ export default {
   nodeHealthTimeline,
   proxy,
   requestDetail,
+  reports,
 }

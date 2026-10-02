@@ -135,10 +135,19 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
       { path: '/routing-v2/annotations', label: '人工标注', labelKey: 'nav.item.annotations', icon: '✍️' },
       { path: '/routing-v2/annotations/stats', label: '标注统计', labelKey: 'nav.item.annotationStats', icon: '🧮' },
+      // v2 closed-loop P0③ (2026-09-24): taskprofile 档案 + 路由调参门面
+      // R64 (2026-09-25): task-profile 有写操作（apply-tier-config / reload），
+      // 与 auto-tuning 同为 super_admin 专属（路由 meta.requiresSuper 同步门控）。
+      { path: '/routing-v2/task-profile', label: '任务档案', labelKey: 'nav.item.taskProfile', icon: '🗂️', super: true, hideForTenant: true },
+      { path: '/routing-v2/auto-tuning', label: '路由调参', labelKey: 'nav.item.autoTuning', icon: '🎛️', super: true, hideForTenant: true },
       // 2026-09-07: /probe-health folded into 凭据监控「探测健康」tab
       // (/routing-v2/credentials?tab=probe-health); standalone menu entry removed.
       { path: '/dashboard?tab=selfcheck', label: '系统自检', labelKey: 'nav.item.systemMonitor', icon: '📈', super: true, hideForTenant: true },
       { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
+      // 2026-09-26 审计轮 F1：对账报表落地轮漏挂菜单入口（只能手敲 URL），
+      // 本项 = 供应商结算对帐（goal #2）。页面内含 provider/internal 双视角
+      // 切换；结算报表（internal 视角）入口见「租户用户」组同名项。
+      { path: '/admin/reconciliation', label: '供应商对账', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
@@ -155,6 +164,12 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/keys', label: 'API 密钥', labelKey: 'nav.item.keys', icon: '🔑' },
       { path: '/key-applications', label: '密钥申请', labelKey: 'nav.item.keyApplications', icon: '📬', super: true, hideForTenant: true },
       { path: '/audit-logs', label: '审计日志', labelKey: 'nav.item.auditLogs', icon: '📋', super: true, hideForTenant: true },
+      // 2026-09-26 审计轮 F1：租户结算报表（goal #1）入口，直开 internal
+      // 视角（按租户/人员/模型分组 + 积分/内部价口径）。当前后端
+      // /api/admin/report-rollup/* 仍 superAdmin-only——非超管租户侧自助
+      // 查看自身租户报表需独立鉴权轮（设计文档 §11 G2 登记），故先以
+      // super 门控挂载，不虚标已对租户开放。
+      { path: '/admin/reconciliation?view=internal', label: '结算报表', labelKey: 'nav.item.settlementReport', icon: '📑', super: true, hideForTenant: true },
     ],
   },
   {
@@ -165,6 +180,15 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
       { path: '/dispatch/waterfall', label: '队列瀑布图', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
       { path: '/admin/turns', label: '轮次列表', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },
+      // 2026-10-01 R85-C P1：会话聚合观测「可交付未交付」——
+      // cmd/gateway/main.go:6901-6906 的 /api/admin/session-analytics 三端点
+      // 与真库 session_dim（121 万行）均已就绪，但本组原先没有任何入口挂载，
+      // 导致 router.ts:257-258 的 /admin/session-analytics/users 与
+      // /users/:owner 成为硬孤儿路由（只能手敲 URL）。
+      // 挂载列表页即让整族可达：/clients/:id 与 /tasks/:id 是其子路由，
+      // 由 UserProfileListView / UserProfileView 内部跳转。
+      // 权限对齐 router.ts:257 的 meta.requiresAuth（任何已登录用户）。
+      { path: '/admin/session-analytics/users', label: '会话分析中心', labelKey: 'nav.item.sessionAnalytics', icon: '📊' },
       // T9 — 请求注册表 + 连接注册台（mock stage）
       { path: '/admin/request-registry', label: '请求注册表', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
       { path: '/admin/connection-registry', label: '连接注册台', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },

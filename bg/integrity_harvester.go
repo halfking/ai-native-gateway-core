@@ -89,7 +89,7 @@ func (h *IntegrityHarvester) Start(ctx context.Context) {
 	if !h.started.CompareAndSwap(false, true) {
 		return
 	}
-	go h.run(ctx)
+	SpawnLoop(ctx, "integrity_harvester.run", h.run)
 	slog.Info("integrity_harvester started",
 		"interval", h.cfg.Interval,
 		"critical_age", h.cfg.CriticalAge,
@@ -106,7 +106,7 @@ func (h *IntegrityHarvester) Stop() {
 	// Use a short-lived cancel via goroutine because the loop reads
 	// from the same done channel; the loop selects on ctx.Done() so
 	// we can also signal it to drain.
-	go func() { close(h.done) }()
+	Go("integrity_harvester.signalDone", func() { close(h.done) })
 	slog.Info("integrity_harvester stopped",
 		"cycles", h.cycles.Load(),
 		"critical_bridged", h.criticalBridged.Load(),

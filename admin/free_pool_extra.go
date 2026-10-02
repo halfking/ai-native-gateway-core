@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 // ── Static Catalog (mirrors Python free_pool_signup_hub.py) ────────────────
@@ -369,9 +370,17 @@ func (h *Handler) handleFreePoolSignupHub(w http.ResponseWriter, r *http.Request
 		defer rows.Close()
 		for rows.Next() {
 			var code string
-			if rows.Scan(&code) == nil {
+			if err := rows.Scan(&code); err == nil {
 				registered[code] = true
+			} else {
+				warnRowSkip("freePool.signupHubRegisteredCodes", err)
 			}
+		}
+		// best-effort：registered 只驱动 pool_registered 这一个展示位，查询
+		// 失败时已有上游的 err==nil 保护，中断同样只留痕不 500。
+		if err := rows.Err(); err != nil {
+			slog.Warn("admin free pool signup hub registered codes iteration aborted",
+				"op", "freePool.signupHubRegisteredCodes", "error", err)
 		}
 	}
 
@@ -1239,7 +1248,7 @@ func (h *Handler) handleFreePoolListKeys(w http.ResponseWriter, r *http.Request)
 		ORDER BY c.updated_at DESC
 	`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1289,6 +1298,9 @@ func (h *Handler) handleFreePoolListKeys(w http.ResponseWriter, r *http.Request)
 			"provider_name":      providerName,
 			"base_url":           baseURL,
 		})
+	}
+	if writeAggRowsErr(w, "freePool.listKeys", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1359,6 +1371,14 @@ func (h *Handler) handleFreePoolAddKey(w http.ResponseWriter, r *http.Request) {
 	if protocol == "" {
 		protocol = "openai-completions"
 	}
+	// 2026-09-23 vapeur incident: normalize aliases ("openai-response" →
+	// "openai-responses") and reject unknown values before persistence.
+	normalized, normErr := providercatalog.NormalizeProviderProtocol(protocol)
+	if normErr != nil {
+		writeError(w, http.StatusBadRequest, normErr.Error())
+		return
+	}
+	protocol = normalized
 	models := req.Models
 	if len(models) == 0 && platform != nil && platform.ModelsHint != "" {
 		for _, m := range strings.Split(platform.ModelsHint, ",") {

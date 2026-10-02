@@ -7,10 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // cacheEntry 缓存条目，包含节点列表和过期时间（阶段 2 优化：TTL 机制）。
@@ -58,6 +61,10 @@ type Manager struct {
 	nextHealthChecks sync.Map // node_id -> time.Time
 	// subscriptionBans 缓存订阅级禁用地区，避免每次 selectNode 都查 DB。
 	subscriptionBans sync.Map // subscription_id -> []string
+	// subscriptionPriorities 缓存订阅优先级（R46 F7：此前 Priority 入库+API
+	// 可见但选路从不消费，是死配置）。语义沿用网关 manual_priority 惯例：
+	// 数值越小优先级越高；0 = 未设置，与健康节点同桶不特殊对待。
+	subscriptionPriorities sync.Map // subscription_id -> int
 	// nodeProbes 把同一节点 ID 的探活串行化（HealthCheckNode / swapProbeOne /
 	// healthCheckAllNodesInner 的 per-node 分支），防止并发的 checker.Check + write-back
 	// 对同一个 *Node 对象产生竞态。值是 *sync.Mutex，按需 lazy 创建。
@@ -94,20 +101,31 @@ type Manager struct {
 func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	metrics := NewMetrics(nil)
-	factory := NewTransportFactory(nil)
+	// 2026-09-30 三十七轮：业务 transport 与直连侧同源——
+	// ResponseHeaderTimeout 走 LLM_GATEWAY_RESPONSE_HEADER_TIMEOUT（默认
+	// 120s），不再用工厂硬编码 30s：推理型模型经池首字节常超 30s，会被
+	// 传输层砍断误判 KindTimeout 并错误冷却凭据（"只有走池的凭据坏"假画像）。
+	// 连接池容量对齐直连（128/32）。
+	factory := NewTransportFactory(&TransportFactoryConfig{
+		MaxIdleConns:          128,
+		MaxIdleConnsPerHost:   32,
+		ResponseHeaderTimeout: upstream.ResponseHeaderTimeout(),
+	})
 	factory.metrics = metrics
 
 	return &Manager{
-		store:                 store,
-		parser:                parser,
-		checker:               checker,
-		loadBalancer:          NewLoadBalancer(StrategyBestOnly),
-		transportFactory:      factory,
-		metrics:               metrics,
-		selectionPolicy:       DefaultSelectionPolicy(),
-		active:                make(map[string]*activeSelection),
-		autoRefreshInterval:   time.Hour,
-		healthCheckInterval:   5 * time.Minute,
+		store:            store,
+		parser:           parser,
+		checker:          checker,
+		loadBalancer:     NewLoadBalancer(StrategyBestOnly),
+		transportFactory: factory,
+		metrics:          metrics,
+		selectionPolicy:  DefaultSelectionPolicy(),
+		active:           make(map[string]*activeSelection),
+		// S8-F4 (R60)：订阅刷新 / 全节点探活间隔原为硬编码（1h / 5m），
+		// 改为 env 可配，默认值不变。非法或非正值 warn 后回退默认，不 fatal。
+		autoRefreshInterval:   envDurationOrDefault("LLM_GATEWAY_PROXY_SUBSCRIPTION_REFRESH", time.Hour),
+		healthCheckInterval:   envDurationOrDefault("LLM_GATEWAY_PROXY_PROBE_INTERVAL", 5*time.Minute),
 		unknownDomainStrategy: "direct",
 		cacheTTL:              5 * time.Minute,
 		autoDisableThreshold:  3,
@@ -117,6 +135,33 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 		cancel:                cancel,
 		stopCh:                make(chan struct{}),
 	}
+}
+
+// envDurationOrDefault 读取 duration 型 env 旋钮，未设置时返回 def。
+// 沿用仓内 envDuration（cmd/gateway/main_pipeline.go）/
+// parseDurationEnv（bg/candidate_failure_monitor.go）的 ParseDuration 惯例，
+// 差异点：非法值 / 非正值 slog.Warn 后回退默认（不 fatal、不静默），
+// 使误配置可观测（S8-F4，R60）。
+// R61（S4-P3-1）：过小正值有 30s 下界——循环体是同步执行的，1ns/1ms 级
+// 间隔等于对全部上游节点背靠背探活/刷新风暴；过大值只 warn 不截断。
+func envDurationOrDefault(key string, def time.Duration) time.Duration {
+	const minInterval = 30 * time.Second
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		slog.Warn("proxy: invalid duration env, falling back to default",
+			"env", key, "value", v, "default", def.String())
+		return def
+	}
+	if d < minInterval {
+		slog.Warn("proxy: duration env below 30s floor, clamping",
+			"env", key, "value", v, "floor", minInterval.String())
+		return minInterval
+	}
+	return d
 }
 
 // Start 启动定时任务。多次调用只会启动一组后台任务。
@@ -347,13 +392,21 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 		candidates = cloneNodes(candidates)
 	}
 
+	// R52：overlay 读 settings（虽有 ≤5s 缓存仍是潜在 DB 读）不进
+	// selectionMu 临界区——同一把锁护着 loadBalancer 选择，锁内 IO 会让
+	// 所有出口选择串行排队。
+	overlayBans := defaultBannedRegionsOverlay()
+
 	m.selectionMu.Lock()
 	threshold := m.autoDisableThreshold
 	if threshold <= 0 {
 		threshold = 3
 	}
 	// 订阅层禁用地区：每个候选节点按其所在订阅取出订阅 banned，做并集过滤。
+	// R51：叠加平台级默认禁用地区 overlay（proxy.default_banned_regions，
+	// 默认 HK），存量订阅未回填 banned_regions 也被规避覆盖。
 	subscriptionBans := m.subscriptionBansSnapshot(subscriptionID)
+	subPriorities := m.subscriptionPrioritiesSnapshot()
 	m.selectionMu.Unlock()
 
 	activeNodes := make([]*Node, 0, len(candidates))
@@ -370,7 +423,7 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 			undialable++
 			continue
 		}
-		if IsRegionBanned(node.Location, subscriptionBans[node.SubscriptionID], node.BannedRegions) {
+		if IsRegionBanned(node.Location, subscriptionBans[node.SubscriptionID], node.BannedRegions, overlayBans) {
 			regionBanned++
 			continue
 		}
@@ -383,7 +436,7 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 			if m.metrics != nil {
 				m.metrics.IncEgressSelection("region_banned")
 			}
-			return nil, fmt.Errorf("all %d candidate(s) excluded by region ban (subscription banned regions: %v)", regionBanned, subscriptionBans)
+			return nil, fmt.Errorf("all %d candidate(s) excluded by region ban (subscription banned regions: %v, platform default banned regions: %v)", regionBanned, subscriptionBans, overlayBans)
 		case undialable > 0:
 			result = "no_dialable"
 			if m.metrics != nil {
@@ -399,9 +452,30 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 		}
 	}
 
+	// R46 F7: 排序键第 2 位按订阅优先级升序分桶（小值优先，沿用网关
+	// manual_priority 惯例；缺省 0 与"未设置"同桶）。放在 ConsecutiveFailures
+	// 之后：健康等级优先于运营偏好——高优先订阅的连败节点不得压过低优先
+	// 订阅的健康节点。
+	subPrioritiesSort := func(n *Node) int {
+		if p, ok := subPriorities[n.SubscriptionID]; ok {
+			// R50: 读侧 clamp 到 [0,99]——50859fe75 只堵了 API 写入口，
+			// 存量负值行会排到 0 值订阅之前（越权最高优先）。
+			if p < 0 {
+				return 0
+			}
+			if p > 99 {
+				return 99
+			}
+			return p
+		}
+		return 0
+	}
 	sort.Slice(activeNodes, func(i, j int) bool {
 		if activeNodes[i].ConsecutiveFailures != activeNodes[j].ConsecutiveFailures {
 			return activeNodes[i].ConsecutiveFailures < activeNodes[j].ConsecutiveFailures
+		}
+		if pi, pj := subPrioritiesSort(activeNodes[i]), subPrioritiesSort(activeNodes[j]); pi != pj {
+			return pi < pj
 		}
 		if activeNodes[i].SuccessRate != activeNodes[j].SuccessRate {
 			return activeNodes[i].SuccessRate > activeNodes[j].SuccessRate
@@ -641,7 +715,7 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 }
 
 // refreshSubscriptionBans 把订阅级 banned_regions 同步到内存缓存。
-// LoadCache / RefreshSubscription / Subscription PUT 后调用，保证 selectNode
+// ReloadCache / RefreshSubscription / Subscription PUT 后调用，保证 selectNode
 // 看到最新的禁用集合，避免仍命中已被禁用的节点。
 func (m *Manager) refreshSubscriptionBans(ctx context.Context, subscriptionID int) {
 	sub, err := m.store.GetSubscription(ctx, subscriptionID)
@@ -671,11 +745,14 @@ func (m *Manager) refreshAllSubscriptionBans(ctx context.Context) {
 		seen[sub.ID] = struct{}{}
 		if len(sub.BannedRegions) == 0 {
 			m.subscriptionBans.Delete(sub.ID)
-			continue
+		} else {
+			bans := make([]string, len(sub.BannedRegions))
+			copy(bans, sub.BannedRegions)
+			m.subscriptionBans.Store(sub.ID, bans)
 		}
-		bans := make([]string, len(sub.BannedRegions))
-		copy(bans, sub.BannedRegions)
-		m.subscriptionBans.Store(sub.ID, bans)
+		// R46 F7: 优先级随同一轮订阅刷新维护；优先级变更走 UpdateSubscription
+		// → ReloadCache → 本函数，覆盖全部生效路径。
+		m.subscriptionPriorities.Store(sub.ID, sub.Priority)
 	}
 	// 清掉已删除订阅的残留。
 	m.subscriptionBans.Range(func(key, _ interface{}) bool {
@@ -685,9 +762,25 @@ func (m *Manager) refreshAllSubscriptionBans(ctx context.Context) {
 		}
 		if _, exists := seen[id]; !exists {
 			m.subscriptionBans.Delete(id)
+			m.subscriptionPriorities.Delete(id)
 		}
 		return true
 	})
+}
+
+// subscriptionPrioritiesSnapshot 返回订阅优先级快照（selectNodeExcluding
+// 排序键用）。
+func (m *Manager) subscriptionPrioritiesSnapshot() map[int]int {
+	out := make(map[int]int)
+	m.subscriptionPriorities.Range(func(key, value interface{}) bool {
+		if id, ok := key.(int); ok {
+			if p, ok := value.(int); ok {
+				out[id] = p
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // healthCheckPolicy returns a consistent snapshot while callers may update the
@@ -1908,6 +2001,10 @@ func (m *Manager) RegionStatsReport(ctx context.Context) ([]RegionStats, error) 
 	m.selectionMu.Lock()
 	bansSnapshot := m.subscriptionBansSnapshot(nil)
 	m.selectionMu.Unlock()
+	// R52：Banned 统计叠加平台默认禁区 overlay，与选择路径口径对齐——
+	// 此前 admin 地区分布对 HK-only-by-overlay 节点显示未禁（纯展示分叉）。
+	// overlay 在锁外读（内部自带 ≤5s settings 缓存）。
+	overlayBans := defaultBannedRegionsOverlay()
 
 	type bucket struct {
 		stats RegionStats
@@ -1939,7 +2036,7 @@ func (m *Manager) RegionStatsReport(ctx context.Context) ([]RegionStats, error) 
 		case "unhealthy":
 			b.stats.Unhealthy++
 		}
-		if IsRegionBanned(n.Location, bansSnapshot[n.SubscriptionID], n.BannedRegions) {
+		if IsRegionBanned(n.Location, bansSnapshot[n.SubscriptionID], overlayBans, n.BannedRegions) {
 			b.stats.Banned++
 		}
 		if n.LastHealthCheckStatus == "success" && n.ResponseTimeMs > 0 {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,13 @@ type SessionWriterV2 struct {
 	// memoraWriter（706，可选）：会话首 turn 时写初始环境/上下文快照。
 	// nil 时跳过（旧部署/测试无需该表存在）。
 	memoraWriter *SessionMemoraWriter
+	// detailsWriter（733/734 会话存储解耦 v3，可选）：每 turn 特征层
+	// session_turn_details(_hot) 写入。nil 或表族缺席时跳过。
+	detailsWriter *SessionTurnDetailsWriter
+	// bodyMirror（2026-09-24 方案 H3，可选）：热区请求侧镜像投递回调，在
+	// turn bodies / final_full 写入成功后 fire-and-forget 触发。nil 时零开销
+	// 跳过（未装配热区 / lite 模式 / 离线 backfill 工具均不注入）。
+	bodyMirror BodyMirrorFunc
 
 	// aggWg tracks the in-flight aggregate snapshot goroutines so Stop can
 	// wait for them (spec §6.3). Each Write that reaches the aggregate step
@@ -107,6 +115,69 @@ func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggr
 // Call before the first Write; nil disables the snapshot write.
 func (w *SessionWriterV2) SetMemoraWriter(mw *SessionMemoraWriter) {
 	w.memoraWriter = mw
+}
+
+// BodyMirrorFunc 是热区请求侧镜像的投递 seam（2026-09-24 方案 H3）。由存储
+// 装配层注入，底层为 storage/file.RequestMirror 的 fire-and-forget 异步写
+// （失败仅计数，绝不阻断主链路）。direction 取 "req"/"resp"/"out" 字面量
+// （与 storage/file 的 DirRequest/DirResponse/DirOutput 值一致）；payload 是
+// 与 session_bodies_hot 落库同源换算（safeJSONMarshal）的 JSON 原文；at 是
+// 镜像日期分区取样时刻（对位 rec.Ts / req.Timestamp）。
+//
+// 实现契约：不等待、不返回错误、不因镜像失败改变 turn+bodies 主链路结果。
+type BodyMirrorFunc func(tenantID, requestID, direction string, payload json.RawMessage, at time.Time)
+
+// SetBodyMirror wires the optional hotzone request-body mirror (H3).
+// Call before the first Write; nil disables mirroring — the turn+bodies path
+// is unaffected. 与 SetMemoraWriter 同契约：仅启动装配期调用，不与在途请求并发。
+func (w *SessionWriterV2) SetBodyMirror(fn BodyMirrorFunc) {
+	w.bodyMirror = fn
+}
+
+// mirrorTurnBodies 把 turn bodies 三件套投递给热区镜像（H3，fire-and-forget）。
+// 换算与 WriteBodiesInTx 同源（safeJSONMarshal / jsonTextOrNull 的空值语义：
+// len==0 → PG 存 json null）；镜像侧跳过空与字面 "null" 载荷，不产生 null
+// 噪声文件。镜像失败只由底层计数（BodyMirrorFunc 契约），不影响本链路。
+// mirror outbox 重放（sessionv2mirror GAP-2）经同一 Write 路径再次触发镜像：
+// 同 (tenant, requestID, direction) 路径覆盖写、内容一致，幂等无害。
+func (w *SessionWriterV2) mirrorTurnBodies(rec BodiesRecord) {
+	if w.bodyMirror == nil {
+		return
+	}
+	if req, err := safeJSONMarshal(rec.RequestDelta); err == nil && mirrorableTurnPayload(req) {
+		w.bodyMirror(rec.TenantID, rec.RequestID, "req", req, rec.Ts)
+	}
+	if resp, err := safeJSONMarshal(rec.ResponseDelta); err == nil && mirrorableTurnPayload(resp) {
+		w.bodyMirror(rec.TenantID, rec.RequestID, "resp", resp, rec.Ts)
+	}
+	if out, err := safeJSONMarshal(rec.OutboundBody); err == nil && mirrorableTurnPayload(out) {
+		w.bodyMirror(rec.TenantID, rec.RequestID, "out", out, rec.Ts)
+	}
+}
+
+// mirrorFinalFull 投递 final_full 终态快照镜像（H3）：requestID 与 PG 行口径
+// 一致（'final_full:<session>'，WriteFinalFullInTx 同款），仅 "out" 一个方向。
+func (w *SessionWriterV2) mirrorFinalFull(req *ProcessedRequest) {
+	if w.bodyMirror == nil || len(req.OutboundBody) == 0 {
+		return
+	}
+	if out, err := safeJSONMarshal(req.OutboundBody); err == nil && mirrorableTurnPayload(out) {
+		w.bodyMirror(req.TenantID, "final_full:"+req.SessionID, "out", out, req.Timestamp)
+	}
+}
+
+// mirrorableTurnPayload 报告序列化后的载荷是否值得镜像：空与字面 "null"
+// （safeJSONMarshal(nil) 的产物）跳过——PG 侧对应 json null，镜像成文件
+// 只会是对账噪声。
+func mirrorableTurnPayload(data []byte) bool {
+	return len(data) > 0 && string(data) != "null"
+}
+
+// SetDetailsWriter wires the optional session_turn_details feature-layer
+// writer (733/734 v3). Call before the first Write; nil (or an unavailable
+// probe) disables the details write — the turn+bodies path is unaffected.
+func (w *SessionWriterV2) SetDetailsWriter(dw *SessionTurnDetailsWriter) {
+	w.detailsWriter = dw
 }
 
 // Stop signals shutdown and waits for all in-flight aggregate goroutines to
@@ -228,16 +299,24 @@ type ProcessedRequest struct {
 	// 补位登记）。
 
 	// 访问维度（sessions 存首值做会话归属，turns 存每轮值做计费精确到轮）。
-	APIKeyID          string
-	ApplicationID     string
-	EndUserID         string
-	CustomerID        int64
-	OwnerUser         string
-	ClientIP          string
+	APIKeyID           string
+	ApplicationID      string
+	EndUserID          string
+	CustomerID         int64
+	OwnerUser          string
+	ClientIP           string
 	ClientForwardedFor string
-	AgentName         string
-	AgentType         string
-	VirtualClientID   string
+	AgentName          string
+	AgentType          string
+	VirtualClientID    string
+
+	// 730 会话角色归因三列（R50 F15 写入方）：agent_role 取
+	// ResolveAgentRoleFromHeaders 的已解析值（""=未声明，SQL 侧落 'main'
+	// 列默认）；parent_session_id 来自 X-Gw-Parent-Session-Id；parent_task_id
+	// 复用 X-Gw-Task-Id 关联头。三列均会话首值优先（与 706 访问维度同款）。
+	AgentRole       string
+	ParentSessionID string
+	ParentTaskID    string
 
 	// 计费组（credits_charged 是计费事实源，D7 双读校验前提）。
 	CreditsCharged int64
@@ -259,19 +338,19 @@ type ProcessedRequest struct {
 	RawModelName    string
 
 	// 诊断组。
-	TraceEvents         json.RawMessage
-	FailureStage        string
-	FailureDetailCode   string
-	UpstreamStatusCode  int
+	TraceEvents          json.RawMessage
+	FailureStage         string
+	FailureDetailCode    string
+	UpstreamStatusCode   int
 	UpstreamFinishReason string
-	StreamFirstChunkMs  int
-	StreamChunkCount    int
-	StreamInterrupted   bool
-	StreamDoneSent      bool
-	ClientRequestID     string
-	ClientEndpoint      string
-	ClientTimeout       bool
-	EgressProtocol      string
+	StreamFirstChunkMs   int
+	StreamChunkCount     int
+	StreamInterrupted    bool
+	StreamDoneSent       bool
+	ClientRequestID      string
+	ClientEndpoint       string
+	ClientTimeout        bool
+	EgressProtocol       string
 
 	// 检索/完整性组。
 	RequestPreview    string
@@ -289,6 +368,11 @@ type ProcessedRequest struct {
 
 	// Multimodal content tracking
 	MultimodalTypes []string // Types present: ["image", "audio", "video", "document"]
+
+	// Details（733/734 会话存储解耦 v3）：turn 特征层。nil = 无特征可写
+	//（陈旧 bridge / 非 mirror 写方）；键（SessionID/TurnNo）由 Write 在
+	// AppendTurn 返回后补齐。
+	Details *DetailsRecord
 
 	// Processing stages (for turn logs)
 	ProcessingStages []ProcessingStage
@@ -495,53 +579,53 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		RequestDeltaJSON:  nil,
 		ResponseDeltaJSON: nil,
 
-		APIKeyID:           req.APIKeyID,
-		ApplicationID:      req.ApplicationID,
-		EndUserID:          req.EndUserID,
-		CustomerID:         req.CustomerID,
-		CreditsCharged:     req.CreditsCharged,
-		CostDisplay:        req.CostDisplay,
-		CostCurrency:       req.CostCurrency,
-		WorkType:           req.WorkType,
-		TokenBand:          req.TokenBand,
-		UsageSource:        req.UsageSource,
-		IsAutoRequest:      req.IsAutoRequest,
-		AutoDecision:       req.AutoDecision,
-		AutoConfidence:     req.AutoConfidence,
-		TaskTypeChosen:     req.TaskTypeChosen,
-		RoutingAttempts:    []byte(req.RoutingAttempts),
-		RoutingSummary:     req.RoutingSummary,
-		CanonicalID:        req.CanonicalID,
-		CanonicalModel:     req.CanonicalModel,
-		RawModelName:       req.RawModelName,
-		TraceEvents:        []byte(req.TraceEvents),
-		FailureStage:       req.FailureStage,
-		FailureDetailCode:  req.FailureDetailCode,
-		UpstreamStatusCode: req.UpstreamStatusCode,
+		APIKeyID:             req.APIKeyID,
+		ApplicationID:        req.ApplicationID,
+		EndUserID:            req.EndUserID,
+		CustomerID:           req.CustomerID,
+		CreditsCharged:       req.CreditsCharged,
+		CostDisplay:          req.CostDisplay,
+		CostCurrency:         req.CostCurrency,
+		WorkType:             req.WorkType,
+		TokenBand:            req.TokenBand,
+		UsageSource:          req.UsageSource,
+		IsAutoRequest:        req.IsAutoRequest,
+		AutoDecision:         req.AutoDecision,
+		AutoConfidence:       req.AutoConfidence,
+		TaskTypeChosen:       req.TaskTypeChosen,
+		RoutingAttempts:      []byte(req.RoutingAttempts),
+		RoutingSummary:       req.RoutingSummary,
+		CanonicalID:          req.CanonicalID,
+		CanonicalModel:       req.CanonicalModel,
+		RawModelName:         req.RawModelName,
+		TraceEvents:          []byte(req.TraceEvents),
+		FailureStage:         req.FailureStage,
+		FailureDetailCode:    req.FailureDetailCode,
+		UpstreamStatusCode:   req.UpstreamStatusCode,
 		UpstreamFinishReason: req.UpstreamFinishReason,
-		StreamFirstChunkMs: req.StreamFirstChunkMs,
-		StreamChunkCount:   req.StreamChunkCount,
-		StreamInterrupted:  req.StreamInterrupted,
-		StreamDoneSent:     req.StreamDoneSent,
-		ClientRequestID:    req.ClientRequestID,
-		ClientEndpoint:     req.ClientEndpoint,
-		ClientTimeout:      req.ClientTimeout,
-		EgressProtocol:     req.EgressProtocol,
-		SearchText:         "",
-		RequestPreview:     req.RequestPreview,
-		ResponsePreview:    req.ResponsePreview,
-		TransformSummary:   req.TransformSummary,
-		IdentityHash:       req.IdentityHash,
-		RequestChecksum:    req.RequestChecksum,
-		ResponseChecksum:   req.ResponseChecksum,
-		SystemFingerprint:  req.SystemFingerprint,
-		OriginStage:        req.OriginStage,
-		OriginActor:        req.OriginActor,
-		ClientIP:           req.ClientIP,
-		ClientForwardedFor: req.ClientForwardedFor,
-		AgentName:          req.AgentName,
-		AgentType:          req.AgentType,
-		VirtualClientID:    req.VirtualClientID,
+		StreamFirstChunkMs:   req.StreamFirstChunkMs,
+		StreamChunkCount:     req.StreamChunkCount,
+		StreamInterrupted:    req.StreamInterrupted,
+		StreamDoneSent:       req.StreamDoneSent,
+		ClientRequestID:      req.ClientRequestID,
+		ClientEndpoint:       req.ClientEndpoint,
+		ClientTimeout:        req.ClientTimeout,
+		EgressProtocol:       req.EgressProtocol,
+		SearchText:           "",
+		RequestPreview:       req.RequestPreview,
+		ResponsePreview:      req.ResponsePreview,
+		TransformSummary:     req.TransformSummary,
+		IdentityHash:         req.IdentityHash,
+		RequestChecksum:      req.RequestChecksum,
+		ResponseChecksum:     req.ResponseChecksum,
+		SystemFingerprint:    req.SystemFingerprint,
+		OriginStage:          req.OriginStage,
+		OriginActor:          req.OriginActor,
+		ClientIP:             req.ClientIP,
+		ClientForwardedFor:   req.ClientForwardedFor,
+		AgentName:            req.AgentName,
+		AgentType:            req.AgentType,
+		VirtualClientID:      req.VirtualClientID,
 	}
 
 	// S1b 灰度开关①：每轮正文同步进 session_turns（宽表路线第一步）。
@@ -590,6 +674,25 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
 	}
+	// H3 镜像的投递点在 tx.Commit 成功之后（见 committed=true 处）：镜像必须
+	// 与 PG 行共存亡——commit 失败回滚时 PG 无 bodies 行，镜像若已投递就成了
+	// 对账无法解释的孤儿文件。
+
+	// 733/734 特征层：与 turn+bodies 同事务（任一失败整体回滚）。键由
+	// AppendTurn 返回的 turnNo 补齐；幂等 upsert 支持晚到回填重放。
+	if req.Details != nil && w.detailsWriter != nil {
+		detailsRec := *req.Details
+		detailsRec.SessionID = req.SessionID
+		detailsRec.TenantID = req.TenantID
+		detailsRec.RequestID = req.RequestID
+		detailsRec.TurnNo = turnNo
+		if detailsRec.Ts.IsZero() {
+			detailsRec.Ts = req.Timestamp
+		}
+		if err := w.detailsWriter.UpsertDetailsInTx(lockCtx, tx, detailsRec); err != nil {
+			return fmt.Errorf("write details: %w", err)
+		}
+	}
 
 	// S1b 灰度开关②（写点）：每会话"最后完整快照"行。方案 D2 原设计为
 	// 会话关闭时拼装写入；本库无自动关闭链路（CloseSession 零调用方，
@@ -598,6 +701,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// request_id='final_full:<session>' + kind='final_full'，经 708 部分唯
 	// 一索引守护每会话每分区至多一行；幂等 upsert 走既有
 	// (tenant_id, request_id, partition_date) 唯一约束。
+	finalFullWritten := false
 	if settings.GetPlatformBool("storage.session_final_full_enabled", false) && len(req.OutboundBody) > 0 {
 		if err := w.bodiesWriter.WriteFinalFullInTx(lockCtx, tx, FinalFullRecord{
 			SessionID:    req.SessionID,
@@ -607,6 +711,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		}); err != nil {
 			return fmt.Errorf("write final_full: %w", err)
 		}
+		finalFullWritten = true
 	}
 
 	// 706：会话首 turn 持久化时一次写入初始环境/上下文快照（insert-only，
@@ -642,6 +747,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		OwnerUser:           req.OwnerUser,
 		ClientIP:            req.ClientIP,
 		AgentName:           req.AgentName,
+		AgentRole:           req.AgentRole,
+		ParentSessionID:     req.ParentSessionID,
+		ParentTaskID:        req.ParentTaskID,
 		TurnIncrement:       1,
 		TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 		CostIncrement:       req.CostUSD,
@@ -656,14 +764,36 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	}
 	committed = true
 
+	// H3 镜像（fire-and-forget，2026-09-24 方案）：turn+bodies 事务**提交成功**
+	// 后投递热区镜像；镜像与主链路完全解耦（失败仅计数，不影响已提交数据）。
+	// 放在 commit 之后而非 INSERT 成功后：commit 失败回滚时 PG 无 bodies 行，
+	// 先投递的镜像会成为对账无法解释的孤儿文件（2026-09-30 批判式审计 F-A）。
+	// final_full 灰度开启时 per-turn outbound 已被置 nil（停写门），此处自然
+	// 跳过 "out" 方向，终态由下方 final_full 镜像行承载——与 PG 侧双路径落库
+	// 口径一致。mirror outbox 重放经同一 Write 路径再次镜像：同路径覆盖写、
+	// 内容一致，幂等无害。
+	w.mirrorTurnBodies(bodiesRec)
+	if finalFullWritten {
+		// final_full 行的 request_id 口径与 PG 一致
+		//（'final_full:<session>'，WriteFinalFullInTx 同款）。
+		w.mirrorFinalFull(req)
+	}
+
 	// 5. Write turn logs (processing stages) — best-effort, NOT in the tx.
 	//
 	// spec §6.2 allows turn logs to fail without failing the write; keeping
 	// them out of the atomic tx means a slow/stale stage log can't hold the
 	// turn+bodies transaction open.
+	//
+	// 2026-09-27 (12h audit round 15, D-1): one WriteStages call, not a
+	// per-row loop. A single statement makes the whole turn's rows visible
+	// atomically, so the 5-minute aggregator tick can never observe (and
+	// flush, delete, then re-emit under the same turn_N key) a half-written
+	// turn — see WriteStages' doc comment.
 	if w.turnLogsWriter != nil && len(req.ProcessingStages) > 0 {
+		recs := make([]TurnLogRecord, 0, len(req.ProcessingStages))
 		for _, stage := range req.ProcessingStages {
-			err := w.turnLogsWriter.WriteStage(ctx, TurnLogRecord{
+			recs = append(recs, TurnLogRecord{
 				SessionID: req.SessionID,
 				TurnNo:    turnNo,
 				TenantID:  req.TenantID,
@@ -677,15 +807,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 				StartedAt:   stage.StartedAt,
 				CompletedAt: stage.CompletedAt,
 			})
-
-			if err != nil {
-				// Log but don't fail the write (turn logs are optional)
-				slog.ErrorContext(ctx, "write turn log failed",
-					"session_id", req.SessionID,
-					"turn_no", turnNo,
-					"stage", stage.Stage,
-					"error", err)
-			}
+		}
+		if err := w.turnLogsWriter.WriteStages(ctx, recs); err != nil {
+			// Log but don't fail the write (turn logs are optional)
+			slog.ErrorContext(ctx, "write turn logs failed",
+				"session_id", req.SessionID,
+				"turn_no", turnNo,
+				"error", err)
 		}
 	}
 
@@ -727,6 +855,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 			OwnerUser:           req.OwnerUser,
 			ClientIP:            req.ClientIP,
 			AgentName:           req.AgentName,
+			AgentRole:           req.AgentRole,
+			ParentSessionID:     req.ParentSessionID,
+			ParentTaskID:        req.ParentTaskID,
 			TurnIncrement:       1,
 			TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 			CostIncrement:       req.CostUSD,
@@ -955,6 +1086,37 @@ func calculateTotalBytes(requestAttachments, responseAttachments []AttachmentRef
 	return total
 }
 
+// stripMarkdownNoise 去除常见 markdown 装饰，供人类阅读的摘要面使用
+// （R69，审计 checklist"抽取会话信息便于人类查看（去除格式）"）：
+// 代码围栏整段剔除、行首标题/列表符剥除、粗体与行内代码反引号去除、
+// 空行折叠为单空格。刻意不做完整 markdown 解析——摘要面只需要"大体
+// 可读"，语义与换行结构不承诺保留。
+func stripMarkdownNoise(s string) string {
+	var b strings.Builder
+	inFence := false
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		t = strings.TrimLeft(t, "#-*•► ")
+		t = strings.ReplaceAll(t, "**", "")
+		t = strings.ReplaceAll(t, "`", "")
+		if t == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(t)
+	}
+	return b.String()
+}
+
 // summarizeMessages creates a brief summary of messages for session snapshot
 func summarizeMessages(messages []Message) string {
 	if len(messages) == 0 {
@@ -964,9 +1126,15 @@ func summarizeMessages(messages []Message) string {
 	// Take first message content, truncate to 200 runes (not bytes) to avoid
 	// cutting UTF-8 sequences in the middle. PostgreSQL text columns enforce
 	// valid UTF-8, so byte-slicing [:200] would panic on insert if the cut
-	// lands inside a multi-byte character.
+	// lands inside a multi-byte character. R69: markdown 噪音在截断前剥除，
+	// 让 title/summary/last_request_summary 面向人类阅读而非原始格式。
+	// R71：剥噪后为空且原文非空时回退原文——响应整体是一个（或未闭合的）
+	// 代码围栏时 stripMarkdownNoise 返回空串，摘要信息量反而从"有"变"无"。
 	firstMsg := messages[0]
-	content := firstMsg.Content
+	content := stripMarkdownNoise(firstMsg.Content)
+	if content == "" && firstMsg.Content != "" {
+		content = strings.TrimSpace(firstMsg.Content)
+	}
 	runes := []rune(content)
 	if len(runes) > 200 {
 		content = string(runes[:200]) + "..."

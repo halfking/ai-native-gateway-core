@@ -139,7 +139,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "summary query failed: "+err.Error())
+		writeInternalErr(w, "summary query failed", err)
 		return
 	}
 	summary.TotalCreditsCharged = h.queryTotalCreditsCharged(ctx, tid, days)
@@ -290,7 +290,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "dashboard query failed: "+err.Error())
+		writeInternalErr(w, "dashboard query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, overview)
@@ -375,7 +375,7 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 			)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "hot-keys query failed: "+err.Error())
+		writeInternalErr(w, "hot-keys query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -403,9 +403,13 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 			&k.TotalCostUSD,
 			&k.LastUsedAt,
 		); err != nil {
+			warnRowSkip("usageHotKeys", err)
 			continue
 		}
 		keys = append(keys, k)
+	}
+	if writeAggRowsErr(w, "usageHotKeys", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, keys)
 }
@@ -484,7 +488,7 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 			)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "by-provider query failed: "+err.Error())
+		writeInternalErr(w, "by-provider query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -507,9 +511,13 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 			&u.RequestCount, &u.PromptTokens, &u.CompletionTokens,
 			&u.TotalCostUSD, &u.SuccessRate,
 		); err != nil {
+			warnRowSkip("usageByProvider", err)
 			continue
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageByProvider", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -586,7 +594,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 			)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "by-model query failed: "+err.Error())
+		writeInternalErr(w, "by-model query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -610,9 +618,13 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 			&u.TotalCostUSD,
 			&u.AvgLatencyMs,
 		); err != nil {
+			warnRowSkip("usageByModel", err)
 			continue
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageByModel", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -678,7 +690,7 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "by-key query failed: "+err.Error())
+		writeInternalErr(w, "by-key query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -699,9 +711,13 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 			&u.RequestCount, &u.CostUSD,
 			&u.PromptTokens, &u.CompletionTokens,
 		); err != nil {
+			warnRowSkip("usageByKey", err)
 			continue
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageByKey", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -745,7 +761,7 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 	var keyPrefix string
 	err = h.db.QueryRow(ctx, `SELECT COALESCE(key_prefix,'') FROM api_keys WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'`, keyID).Scan(&keyPrefix)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "API key not found")
+		writeLookupErr(w, "API key not found", err)
 		return
 	}
 
@@ -786,14 +802,14 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 			COALESCE((
 				SELECT MAX(bucket_count) FROM (
 					SELECT COUNT(*) AS bucket_count
-					  FROM request_logs rl2
+					  FROM request_logs_with_current_month rl2
 					 WHERE rl2.api_key_id = $1
 					   AND rl2.ts >= $2 AND rl2.ts < $3
 					 GROUP BY date_trunc('hour', rl2.ts)
 					        + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')
 				) peaks
 			), 0)
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
 	`, keyID, startTime, endTime).Scan(&gatewayRejected, &upstreamFailed, &peakRequests5m)
 
@@ -843,7 +859,7 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 	var keyExists int
 	err := h.db.QueryRow(ctx, `SELECT 1 FROM api_keys WHERE id = $1`, keyID).Scan(&keyExists)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "API key not found")
+		writeLookupErr(w, "API key not found", err)
 		return
 	}
 
@@ -887,6 +903,7 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 		var firstAt, lastAt *time.Time
 		if err := rows.Scan(&u.Model, &u.RequestCount, &u.PromptTokens, &u.CompletionTokens,
 			&u.TotalTokens, &u.CostUSD, &u.AvgLatencyMs, &u.SuccessRate, &firstAt, &lastAt); err != nil {
+			warnRowSkip("usageKeyModels", err)
 			continue
 		}
 		if firstAt != nil {
@@ -898,6 +915,9 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 			u.LastUsedAt = &s
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageKeyModels", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -974,7 +994,7 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 
 	var keyExists int
 	if err := h.db.QueryRow(ctx, `SELECT 1 FROM api_keys WHERE id = $1`, keyID).Scan(&keyExists); err != nil {
-		writeError(w, http.StatusNotFound, "API key not found")
+		writeLookupErr(w, "API key not found", err)
 		return
 	}
 
@@ -1039,9 +1059,13 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 	for rows.Next() {
 		var t trendEntry
 		if err := rows.Scan(&t.Period, &t.Requests, &t.PromptTokens, &t.CompletionTokens, &t.TotalTokens, &t.CostUSD); err != nil {
+			warnRowSkip("usageKeyTrend", err)
 			continue
 		}
 		trends = append(trends, t)
+	}
+	if writeAggRowsErr(w, "usageKeyTrend", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, trends)
 }
@@ -1075,13 +1099,13 @@ func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID 
 				   OR COALESCE(failure_detail_code, '') LIKE 'gw_%'
 			) AS gateway_rejected,
 			COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'upstream') AS upstream_failed
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
 		GROUP BY 1
 		ORDER BY 1
 	`, keyID, startTime, endTime)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "traffic query failed: "+err.Error())
+		writeInternalErr(w, "traffic query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1099,12 +1123,17 @@ func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID 
 	for rows.Next() {
 		var b bucket
 		if err := rows.Scan(&b.Bucket, &b.Requests, &b.SuccessCount, &b.FailureCount, &b.GatewayRejected, &b.UpstreamFailed); err != nil {
+			warnRowSkip("usageKeyTraffic", err)
 			continue
 		}
 		if b.Requests > peak {
 			peak = b.Requests
 		}
 		buckets = append(buckets, b)
+	}
+
+	if writeAggRowsErr(w, "usageKeyTraffic", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1147,7 +1176,7 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 		ORDER BY total_cost_usd DESC
 	`, days, tid)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "by-application query failed: "+err.Error())
+		writeInternalErr(w, "by-application query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1168,9 +1197,13 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&u.ApplicationCode, &u.RequestCount, &u.TotalCostUSD,
 			&u.TotalTokens, &u.PromptTokens, &u.CompletionTokens,
 			&u.UniqueKeys, &u.UniqueModels); err != nil {
+			warnRowSkip("usageByApplication", err)
 			continue
 		}
 		usage = append(usage, u)
+	}
+	if writeAggRowsErr(w, "usageByApplication", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -1273,7 +1306,7 @@ func (h *Handler) usageByTenant(w http.ResponseWriter, r *http.Request) {
 		&u.TotalCostUSD, &u.UniqueKeys, &u.UniqueModels, &u.UniqueApps,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "tenant usage query failed: "+err.Error())
+		writeInternalErr(w, "tenant usage query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, u)
@@ -1297,7 +1330,7 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 			GROUP BY ak.tenant_id
 		`, tid)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "tenants query failed: "+err.Error())
+			writeInternalErr(w, "tenants query failed", err)
 			return
 		}
 		defer rows.Close()
@@ -1312,9 +1345,13 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var t tenantSummary
 			if err := rows.Scan(&t.TenantID, &t.KeyCount, &t.TotalReqs, &t.TotalTokens, &t.TotalCostUSD); err != nil {
+				warnRowSkip("listTenants.cached", err)
 				continue
 			}
 			tenants = append(tenants, t)
+		}
+		if writeAggRowsErr(w, "listTenants.cached", rows.Err()) {
+			return
 		}
 		writeJSON(w, http.StatusOK, tenants)
 		return
@@ -1335,7 +1372,7 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 		ORDER BY total_cost_usd DESC
 	`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "tenants query failed: "+err.Error())
+		writeInternalErr(w, "tenants query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1351,9 +1388,13 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var t tenantSummary
 		if err := rows.Scan(&t.TenantID, &t.KeyCount, &t.TotalReqs, &t.TotalTokens, &t.TotalCostUSD); err != nil {
+			warnRowSkip("listTenants", err)
 			continue
 		}
 		tenants = append(tenants, t)
+	}
+	if writeAggRowsErr(w, "listTenants", rows.Err()) {
+		return
 	}
 	writeJSON(w, http.StatusOK, tenants)
 }

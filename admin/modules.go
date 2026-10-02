@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -823,9 +825,7 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var v any
-		if raw != nil {
-			_ = json.Unmarshal(raw, &v)
-		}
+		jsoncol.Decode("admin.modulesGet/config_value", raw, &v)
 		config[ck] = map[string]any{
 			"value":  v,
 			"source": src2,
@@ -948,7 +948,7 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := store.Set(sp.Scope, found.SettingKey, body.Enabled); err != nil {
-		writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
+		writeInternalErr(w, "save failed", err)
 		return
 	}
 	if found.SettingKey == ratelimit.RateLimitGateKey {
@@ -1215,9 +1215,10 @@ func (h *Handler) testFeishuBotWebhook(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
+		slog.Error("feishu webhook test: build request failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"reachable": false,
-			"error":     "build request failed: " + err.Error(),
+			"error":     "build request failed",
 		})
 		return
 	}
@@ -1303,7 +1304,7 @@ func (h *Handler) feishuBotConfigSummary(w http.ResponseWriter, r *http.Request)
 			return ""
 		}
 		var v string
-		_ = json.Unmarshal(raw, &v)
+		jsoncol.Decode("admin.feishuBotConfigSummary/string", raw, &v)
 		return v
 	}
 	readBool := func(key string) bool {
@@ -1316,7 +1317,7 @@ func (h *Handler) feishuBotConfigSummary(w http.ResponseWriter, r *http.Request)
 			return false
 		}
 		var v bool
-		_ = json.Unmarshal(raw, &v)
+		jsoncol.Decode("admin.feishuBotConfigSummary/bool", raw, &v)
 		return v
 	}
 	readInt := func(key string) int {
@@ -1329,7 +1330,7 @@ func (h *Handler) feishuBotConfigSummary(w http.ResponseWriter, r *http.Request)
 			return 0
 		}
 		var v int
-		_ = json.Unmarshal(raw, &v)
+		jsoncol.Decode("admin.feishuBotConfigSummary/int", raw, &v)
 		return v
 	}
 

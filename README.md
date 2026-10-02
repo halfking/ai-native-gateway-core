@@ -6,9 +6,9 @@
 [![Go](https://img.shields.io/badge/Go-1.27+-00ADD8.svg)](https://golang.org)
 [![Version](https://img.shields.io/badge/version-2.5.x-green.svg)](CHANGELOG.md)
 
-**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+**English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [Français](README.fr.md) | [Español](README.es.md) | [العربية](README.ar.md)
 
-[Quick Start](#quick-start) • [Core Values](#-four-core-values) • [Session Governance](#-session-governance) • [Feature Preview](#-product-feature-preview) • [Comparison](#-differentiation--comparison) • [Architecture](docs/architecture.md) • [Roadmap](ROADMAP.md)
+[Quick Start](#-quick-start) • [Core Values](#-four-core-values) • [Architecture](#-architecture-at-a-glance) • [Session Governance](#-session-governance) • [Feature Preview](#-product-feature-preview) • [Comparison](#-differentiation--comparison) • [Roadmap](ROADMAP.md)
 
 ---
 
@@ -61,7 +61,66 @@ Built with **Go + PostgreSQL + Redis**, running today in production on k3s (dual
 | **Credentials** | Multi-credential + fingerprint pool + adaptive probing + manual disable |
 | **Deployment** | Dual instances (Docker + k3s NodePort) sharing a single PostgreSQL schema |
 
-See [Architecture Documentation](docs/architecture.md) for details.
+See the [Architecture at a Glance](#-architecture-at-a-glance) section below, or the full [Architecture Diagram Collection](docs/architecture-diagrams.md) for details.
+
+---
+
+## 🏛️ Architecture at a Glance
+
+One Go process (`cmd/gateway`) hosts the **data plane, control plane, and admin UI on a single mux** (h2c: HTTP/1.1 + HTTP/2 on one port). PostgreSQL holds durable facts (RLS-isolated, monthly-partitioned); Redis holds hot state (routing, limits, sticky sessions). The same `storage` interfaces back both **full mode** (PG + Redis) and **lite mode** (SQLite + local files — zero external dependencies, single binary).
+
+```mermaid
+graph TB
+    AGENT["AI Agent / IDE / Apps"] -->|"OpenAI / Anthropic / Gemini/Responses · HTTP + SSE"| GW
+    ADMIN["Admin Browser"] -->|"/admin + /api/admin/*"| GW
+    subgraph GW["cmd/gateway — single Go process"]
+        DP["Data plane<br/>auth → protocol/IR → routing → dispatch → upstream relay"]
+        CP["Control plane<br/>Admin API + embedded Vue SPA"]
+        BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
+    end
+    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
+    DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
+    CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
+
+```
+
+**Request pipeline (v1 production path, sole execution route since 2026-08)**:
+
+```text
+HTTP/SSE → middleware chain → protocol/IR normalization → session assignment
+  → (model=auto: L1 model selection) → resource prep (semantic cache / prompt compression)
+  → Executor (attempt budget) → dispatch queues (global → model → credential)
+  → Router (tier / health / sticky filters + URSM v2 state + P2C scoring)
+  → resource gates (fingerprint slot / concurrency / RPM)
+  → upstream relay (0 internal retries; pre-first-byte failover only adds attempts)
+  → SSE write-back with integrity checks
+  → request_logs + usage ledger (canonical facts)
+  → onPersisted hooks: session V2 shadow write · session_dim upsert · ASM outbox
+```
+
+**Repository layout**
+
+| Path | Role |
+|------|------|
+| `cmd/gateway/` | Composition root — single-binary production entry (data + control plane) |
+| `domains/` | 67 DDD domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, security… |
+| `admin/` + `web/` | Admin REST API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
+| `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
+| `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
+| `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 809) |
+| `installer/` | Standalone cross-platform installer / upgrader module |
+| `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
+
+Scale snapshot (2026-10-01 code scan): **~4,600 Go files · 2,421 test files · 945 migration SQLs · 67 domain packages · 34 binaries** under `cmd/`.
+
+**Deeper reading**
+
+- [Architecture Diagram Collection](docs/architecture-diagrams.md) — full Mermaid set: context, containers, request chain, two-layer routing, storage, deployment, workers
+- [Evidence-graded Architecture](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — internal authority doc (CURRENT / SHADOW / PARALLEL grading, snapshot 2026-10-01)
+- [Session Lifecycle](docs/session-lifecycle.md) — session from first request to archival, fully diagrammed
+- [Runtime Request Flow](docs/03-design/01-architecture/architecture/runtime-request-flow.md) · [Routing & State](docs/03-design/01-architecture/architecture/routing-and-state.md)
 
 ---
 
@@ -76,6 +135,8 @@ Most gateways treat every request as an isolated event. AI Native Gateway treats
 - **Identity Tunneling**: agent traffic is attributed via virtual IP/MAC/ClientID so multi-tenant isolation holds even when many agents share one egress
 - **4-Tier Data Lifecycle**: hot (0–7 d) / warm (7–30 d) / cold (30–90 d) / expired (>90 d) with archive preview — "here is exactly what will move" before you execute
 
+How a session actually flows through the gateway — three-layer model (Redis hot state / `request_logs` canonical facts / Sessions V2 shadow tables), ID assignment, per-turn sequence, sticky binding, compression, and archival — is fully diagrammed in [Session Lifecycle](docs/session-lifecycle.md).
+
 ---
 
 ## 🎛️ Product Feature Preview
@@ -86,6 +147,16 @@ All modules below are shipped and running in the k3s production deployment. Scre
 
 ![Dashboard Request Stream](docs/assets/screenshots/dashboard-request-stream.png)
 *Live request stream grouped by processing queue, with dispatch-chain stats (in-flight, p50/p95 latency, node availability) and per-model node health*
+
+### Statistics Board — Usage & Cost at a Glance
+
+![Statistics Board](docs/assets/screenshots/dashboard-board.png)
+*Board tab of the dashboard: hero metrics (requests / tokens / cost / credits charged), RPM · TPM · latency, key/model/provider counts, and the provider cost & procurement section — the fee-settlement view embedded in the board (captured 2026-10, v2.5.8)*
+
+### Fee Settlement — Provider Cost & Procurement
+
+![Provider Cost Settlement](docs/assets/screenshots/provider-cost-settlement.png)
+*Provider cost cards (window cost, credits charged, balance/plan) and the per-provider usage table — requests, tokens, cost (USD), credits, success rate — settlement-grade cost accounting inside the statistics board, exportable to Excel*
 
 ### Routing Panorama — Two-Layer Routing, Fully Observable
 
@@ -169,6 +240,116 @@ The quick-start stack is the **same binary and schema as production** — moving
 
 See [Production Deployment](docs/06-deployment/) for details.
 
+### Installer — One-click Deployer (`installer/`)
+
+The `installer/` subtree ships a **single cross-platform Go binary** (`llm-gw-installer`) that wraps the full deploy flow into a 13-step interactive wizard. It supports Windows / Linux / macOS / 国产 OS / 国产 CPU out of the box.
+
+**Subcommands**
+
+```bash
+llm-gw-installer doctor      # detect OS / docker / network / ports
+llm-gw-installer install     # one-click install + deploy
+llm-gw-installer uninstall   # uninstall (--purge removes data)
+```
+
+**Cross-platform build**
+
+```bash
+GOOS=linux  GOARCH=amd64   go build -o dist/llm-gw-installer-linux-amd64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=arm64   go build -o dist/llm-gw-installer-linux-arm64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=loong64 go build -o dist/llm-gw-installer-linux-loong64 ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=amd64   go build -o dist/llm-gw-installer-darwin-amd64  ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=arm64   go build -o dist/llm-gw-installer-darwin-arm64  ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=amd64  go build -o dist/llm-gw-installer-windows-amd64.exe ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe ./installer/cmd/llm-gw-installer/
+```
+
+#### Storage Modes (full vs. lite)
+
+The installer ships **two storage modes**; pick one at install time:
+
+| Mode | Storage backend | Use case | Images pulled at install | Initializes schema? |
+|------|------------------|----------|---------------------------|---------------------|
+| **`full`** (default) | PostgreSQL (kx-citus) + Redis | Production / multi-replica / high concurrency | `kx-llm-gateway-go` + `kx-citus` + `kx-redis` | Yes (waits for PG ready + `InitSchema`) |
+| **`lite`** | SQLite + local | Single machine / dev / CI / demo | `kx-llm-gateway-go` only | No (SQLite auto-creates tables) |
+
+**Selection priority**
+
+1. CLI flag: `--mode lite` or `--mode full` (highest priority)
+2. Config file (`--config /path/to/install.env`):
+   ```
+   STORAGE_MODE=lite
+   LLM_GATEWAY_MASTER_URL=https://llm.kxpms.cn
+   INSTALL_SKIP_ACTIVATION=0
+   ```
+3. Interactive wizard: prompt `[1] full  [2] lite`, default `1`
+
+In non-TTY (CI / `--skip-prompt`) without `--config`, the default is `full`.
+
+**`lite` install behavior**
+
+| Step | `full` | `lite` |
+|------|--------|--------|
+| 1. Environment detection | same | same |
+| 2. Configuration (wizard / config) | same | same (now includes storage mode + master URL) |
+| 3. Image pull | `kx-citus` + `kx-redis` + `kx-llm-gateway-go` | **`kx-llm-gateway-go` only** |
+| 4. Write `.env` | all keys | same fields, only `LLM_GATEWAY_STORAGE_MODE=lite` |
+| 5. Directory layout | full | full (db/data and redis/data dirs created but unused) |
+| 6. `compose.yml` | 3 services | **`kx-citus` + `kx-redis` stripped**; gateway loses `depends_on` + PG/Redis env |
+| 7. Start containers | 3 containers | **`kx-llm-gateway-go` only** |
+| 8. DB initialization | Wait for PG ready + `InitSchema` (450+ startup migrations) | **Skipped** (SQLite auto-creates) |
+| 9. Health check | 5-item full check | container + `/healthz` only; PG/Redis/Schema forced ✅ in report |
+
+**New install flags**
+
+```
+--mode string         # full | lite (empty → wizard / default full)
+--master-url string   # control-plane URL (default https://llm.kxpms.cn)
+--skip-activation     # bool, skip the auto-activation call at end of install
+```
+
+**New `.env` keys** (written to `{installDir}/.env`)
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `LLM_GATEWAY_STORAGE_MODE` | `full` | Read by `cmd/gateway` `storage_mode_init`; `lite` → SQLite, `full` → PG/Redis |
+| `LLM_GATEWAY_MASTER_URL` | `https://llm.kxpms.cn` | License activation + heartbeat target |
+| `INSTALL_SKIP_ACTIVATION` | `0` | Skip the auto-enroll activation call at install tail (see `activation.RunAutoActivate`) |
+
+#### Image Source Fallback Chain
+
+All container images are pulled via a 4-tier fallback chain so installs work whether you are online, behind a corporate proxy, or fully air-gapped:
+
+```
+[1] Offline bundle images/*.tar.gz  (highest priority)
+    ↓ on miss
+[2] registry.kxpms.cn              (internal registry)
+    ↓ on miss
+[3] registry.cn-hangzhou.aliyuncs.com (Aliyun mirror)
+    ↓ on miss
+[4] registry-1.docker.io           (official Docker Hub)
+    ↓ on miss
+❌ clear, actionable error
+```
+
+**Environment overrides**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KX_REGISTRY` | `registry.kxpms.cn` | Custom internal registry |
+| `KX_REGISTRY_USERNAME` / `_PASSWORD` | empty | Registry credentials |
+| `KX_REGISTRY_INSECURE` | `false` | Allow plain HTTP |
+| `APP_IMAGE_TAG` | read from MANIFEST | Override the application image tag |
+| `GOPROXY` | `https://goproxy.cn,direct` | Go module proxy |
+
+#### Known Limitations
+
+- **HarmonyOS NEXT**: not supported (no Linux container support)
+- **macOS**: user must pre-install OrbStack or Docker Desktop
+- **Windows**: user must pre-install Docker Desktop + WSL2
+
+For the installer's full design, see [installer/README.md](installer/README.md).
+
 ---
 
 ## 📐 Differentiation & Comparison
@@ -249,13 +430,18 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 | Category | Document |
 |----------|----------|
 | Getting started | [docs/getting-started.md](docs/getting-started.md) — deploy in 10 minutes |
-| Architecture | [docs/architecture.md](docs/architecture.md) — system design and components |
+| Architecture diagrams | [docs/architecture-diagrams.md](docs/architecture-diagrams.md) — full Mermaid collection (context / containers / request chain / routing / storage / deployment) |
+| Session lifecycle | [docs/session-lifecycle.md](docs/session-lifecycle.md) — session processing lifecycle, fully diagrammed |
+| Architecture (evidence-graded) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — internal authority (CURRENT/SHADOW/PARALLEL grading) |
+| Architecture (overview) | [docs/architecture.md](docs/architecture.md) — system design and components |
+| Requirements | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 domains / NFR×13 |
+| Feature catalog | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — feature → code → API → admin-page map |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — data plane and admin API specs |
 | Environment | [docs/environment.md](docs/environment.md) — deployment environments and variables |
 | Quick reference | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) — common commands and troubleshooting |
 | Comparison | [docs/comparison.md](docs/comparison.md) — vs LiteLLM, OmniRoute, Portkey, Kong |
 | Project overview | [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — features and module map |
-| Docs index | [docs/archive/2026-09/INDEX.md](docs/archive/2026-09/INDEX.md) — full documentation navigation |
+| Docs index | [docs/README.md](docs/README.md) · [docs/archive/2026-09/INDEX.md](docs/archive/2026-09/INDEX.md) — full documentation navigation |
 | Dual-repo policy | [docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md) — codeup ⇄ GitHub workflow |
 | Security | [SECURITY.md](SECURITY.md) — vulnerability reporting + scanner usage |
 | Legal | [docs/02-resources/compliance/legal/disguise-compliance.md](docs/02-resources/compliance/legal/disguise-compliance.md) — request disguise compliance whitelist |
@@ -273,10 +459,10 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 
 ```bash
 git push              # → codeup (no extra checks)
-git push github       # → github (strict secret scan, blocked on hit)
+git push github       # → github (secret scan, blocked on BLOCK-level hit)
 ```
 
-Sensitive-information protection: `.githooks/pre-push` automatically runs `scripts/scan-secrets.sh` in strict mode (49 rules) when pushing to GitHub. See the [mirror policy](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md).
+Sensitive-information protection: `.githooks/pre-push` automatically runs `scripts/scan-secrets.sh` (50 rules; default normal mode — BLOCK findings block, WARN findings warn; `STRICT_SCANNER=1` opts into strict) when pushing to GitHub. See the [mirror policy](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md).
 
 ---
 

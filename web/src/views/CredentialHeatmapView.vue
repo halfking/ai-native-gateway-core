@@ -13,8 +13,10 @@ import {
 } from '../api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { useFilterChips, type FilterChip } from '../composables/useFilterChips'
-import { formatDateTimeIso } from '../utils/datetime'
+import { formatDateTimeIso, parseLocalMinute } from '../utils/datetime'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 
 // CredentialHeatmapView — 热力图 tab
 // docs/FEATURE-REQ-credential-heatmap-routing-log.md §4:
@@ -43,6 +45,27 @@ const TIME_PRESET_LABELS: Record<TimeRangePreset, string> = {
   '7d': '最近7天',
   month: '本月',
   custom: '自定义',
+}
+
+// 2026-09-30 统一日历轮：custom 分支换 KxDateRangePicker（datetime 精度，presets=[]，
+// 预设 select 保留）。原 datetime-local 无 @change、无按钮——刷新经由「建议粒度变化 →
+// watch(granularity) → loadHeatmap」联动，故保持默认带应用按钮；apply 后对齐建议粒度
+// 并刷新，等价还原原联动链路。customTimeStart/End 维持 datetime-local 的 'T' 分隔，
+// 仅在边界做 'T'↔空格 互转（组件契约为空格分隔）。
+const customRangeValue = computed<KxDateRange | null>(() => {
+  if (!customTimeStart.value || !customTimeEnd.value) return null
+  return { start: customTimeStart.value.replace('T', ' '), end: customTimeEnd.value.replace('T', ' ') }
+})
+
+function onKxRangeApply(range: KxDateRange) {
+  customTimeStart.value = range.start.replace(' ', 'T')
+  customTimeEnd.value = range.end.replace(' ', 'T')
+  // 粒度若需变化交由 watch(granularity) 触发刷新，避免双重请求；否则手动刷新
+  if (granularity.value === suggestedGranularity.value) {
+    loadHeatmap()
+  } else {
+    granularity.value = suggestedGranularity.value as Granularity
+  }
 }
 
 // Granularity
@@ -149,8 +172,9 @@ const computedTimeRange = computed(() => {
       if (!customTimeStart.value || !customTimeEnd.value) {
         start = new Date(now.getTime() - 24 * 60 * 60 * 1000)
       } else {
-        start = new Date(customTimeStart.value)
-        end = new Date(customTimeEnd.value)
+        // 'YYYY-MM-DDTHH:mm' 无秒非规范格式，补秒解析（P3-3）
+        start = parseLocalMinute(customTimeStart.value)
+        end = parseLocalMinute(customTimeEnd.value)
       }
       break
     default:
@@ -588,11 +612,13 @@ onUnmounted(() => {
           <select v-model="timeRangePreset" class="field-input w-time">
             <option v-for="(label, value) in TIME_PRESET_LABELS" :key="value" :value="value">{{ label }}</option>
           </select>
-          <template v-if="timeRangePreset === 'custom'">
-            <input type="datetime-local" v-model="customTimeStart" class="field-input w-datetime" />
-            <span class="label">→</span>
-            <input type="datetime-local" v-model="customTimeEnd" class="field-input w-datetime" />
-          </template>
+          <KxDateRangePicker
+            v-if="timeRangePreset === 'custom'"
+            :model-value="customRangeValue"
+            :presets="[]"
+            precision="datetime"
+            @apply="onKxRangeApply"
+          />
           <span class="v-sep" aria-hidden="true"></span>
           <span class="label">粒度</span>
           <select v-model="granularity" class="field-input w-granularity">
@@ -937,7 +963,6 @@ onUnmounted(() => {
 .w-time { width: 128px; flex-shrink: 0; }
 .w-granularity { width: 92px; flex-shrink: 0; }
 .w-model { width: 220px; max-width: 320px; }
-.w-datetime { width: 190px; flex-shrink: 0; }
 .interval-select { width: 76px; flex-shrink: 0; }
 
 .v-sep {
@@ -1124,10 +1149,10 @@ onUnmounted(() => {
   vertical-align: middle;
   white-space: nowrap;
 }
-.node-status-badge.ns-healthy { background: rgba(34, 197, 94, 0.18); color: #16a34a; }
-.node-status-badge.ns-broken { background: rgba(239, 68, 68, 0.18); color: #dc2626; }
-.node-status-badge.ns-warn { background: rgba(234, 179, 8, 0.18); color: #a16207; }
-.node-status-badge.ns-muted { background: rgba(107, 114, 128, 0.16); color: #6b7280; }
+.node-status-badge.ns-healthy { background: var(--tone-ok-bg); color: var(--kx-success); }
+.node-status-badge.ns-broken { background: var(--tone-err-bg); color: var(--kx-danger); }
+.node-status-badge.ns-warn { background: var(--tone-warn-bg); color: var(--kx-warning); }
+.node-status-badge.ns-muted { background: var(--neutral-bg); color: var(--kx-muted); }
 
 /* Cells */
 .heatmap-table td.cell {

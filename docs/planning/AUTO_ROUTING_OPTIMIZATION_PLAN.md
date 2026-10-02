@@ -18,7 +18,7 @@
 - ✅ 反馈闭环：决策时 stash → 完成时 backfill 真实 outcome（2026-09-08 audit 修复）
 - ✅ 测试覆盖：`decision_v2_optimizer_test.go` (6个测试)
 
-#### **路由优化插件** (`routingopt/` 包，30个文件)
+#### **路由优化插件** (`routingopt/` 包，29个文件；R63 §三.12 勘误：原记 30，实测 29 个 .go 文件，testdata/ 目录不计)
 - ✅ RealOptimizer 集成器（4大模块 + ONNX ML re-ranker + A/B测试门）
 - ✅ 用户亲和力缓存（Redis + PostgreSQL，TTL 1小时）
 - ✅ 置信度调整器（基于历史准确率）

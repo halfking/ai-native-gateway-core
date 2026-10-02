@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -50,9 +51,14 @@ type txBeginner interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
 
+// ErrNilDatabasePool 表示连接池根本没配（或是指针为 nil 的空池）。
+// 用哨兵错误而不是裸字符串，调用方才能用 errors.Is 判定「这是装配问题、
+// 属于存储降级」，而不必去匹配易碎的错误文案（Subtask 4 / §6）。
+var ErrNilDatabasePool = errors.New("nil database pool")
+
 func withTx(ctx context.Context, pool txBeginner, options pgx.TxOptions, fn func(tx pgx.Tx) error) error {
 	if pool == nil || isNilTxBeginner(pool) {
-		return fmt.Errorf("nil database pool")
+		return ErrNilDatabasePool
 	}
 	tx, err := pool.BeginTx(ctx, options)
 	if err != nil {

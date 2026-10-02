@@ -12,7 +12,10 @@ import (
 // before forwarding and Release after completion.
 //
 // Implementations:
-//   - concurrencyGovernor: weighted semaphore (in-flight hard cap).
+//   - concurrencyGovernor: scalar in-flight hard cap (a plain cap/used
+//     counter with CAS increment — there is no per-credential weighting
+//     concept here; weighted load balancing lives in the candidate
+//     selection layer, see executors/router.go, R73 §2).
 //   - rpmGovernor: requests-per-minute token bucket.
 //   - tpmGovernor: tokens-per-minute token bucket (Acquire takes the
 //     request's estimated prompt tokens).
@@ -24,6 +27,31 @@ type Governor interface {
 	Acquire(ctx context.Context, qr *QueuedRequest, giveUp time.Time) error
 	// Release frees an in-flight slot (no-op for rate-based governors).
 	Release(qr *QueuedRequest)
+}
+
+// ExtraCallRecorder is the optional Governor capability for metering extra
+// upstream calls issued inside one admission. The executor's retry loop can
+// fire additional upstream HTTP calls without a fresh Acquire — reqprobe
+// param-strip / mode-fallback retries and context-length recovery (R51-F15)
+// — so rate-based admission counted one call while up to four hit the
+// upstream. Rate governors charge the bucket into bounded debt: the
+// in-flight deterministic fix is never paced, but the overshoot makes the
+// next admission wait proportionally. Concurrency governors hold their
+// in-flight slot for the whole admission and deliberately do not implement
+// this capability.
+type ExtraCallRecorder interface {
+	RecordExtraCall(qr *QueuedRequest)
+}
+
+// extraCallMeterFor adapts the optional ExtraCallRecorder capability into the
+// per-request meter callback carried on the QueuedRequest. Governors without
+// the capability leave the meter nil and the executor skips charging.
+func extraCallMeterFor(gov Governor, qr *QueuedRequest) func() {
+	rec, ok := gov.(ExtraCallRecorder)
+	if !ok {
+		return nil
+	}
+	return func() { rec.RecordExtraCall(qr) }
 }
 
 // newGovernor builds the governor for a credential based on its mode/limits.
@@ -49,7 +77,7 @@ func newGovernor(ref CredentialRef) Governor {
 	}
 }
 
-// ── concurrency: weighted semaphore ────────────────────────────────────────
+// ── concurrency: scalar cap/used counter ───────────────────────────────────
 
 type concurrencyGovernor struct {
 	cap  int64
@@ -185,6 +213,17 @@ func (g *rpmGovernor) Acquire(ctx context.Context, _ *QueuedRequest, giveUp time
 }
 func (g *rpmGovernor) Release(_ *QueuedRequest) {} // rate-based: nothing to release
 
+// RecordExtraCall charges one extra upstream call into the bucket. Debt is
+// allowed down to -rpm: the in-flight deterministic retry (reqprobe /
+// context-length recovery) must not be paced, but the overshoot delays the
+// following admissions by the refill time it consumed (R51-F15).
+func (g *rpmGovernor) RecordExtraCall(_ *QueuedRequest) {
+	g.mu.Lock()
+	g.tokens = max(g.tokens-1, -float64(g.rpm))
+	g.mu.Unlock()
+	metricExtraUpstreamCalls.WithLabelValues(ModeRPM).Inc()
+}
+
 // ── tpm: tokens-per-minute token bucket ────────────────────────────────────
 
 // tpmGovernor refills tpm/60 tokens per second (cap = tpm). Acquire charges
@@ -249,6 +288,21 @@ func (g *tpmGovernor) Acquire(ctx context.Context, qr *QueuedRequest, giveUp tim
 	}
 }
 func (g *tpmGovernor) Release(_ *QueuedRequest) {}
+
+// RecordExtraCall charges the request's token estimate again for an extra
+// upstream call (same cost model as Acquire). Debt floor -tpm mirrors the
+// rpm semantics: never pace the in-flight fix, always account the overshoot
+// (R51-F15).
+func (g *tpmGovernor) RecordExtraCall(qr *QueuedRequest) {
+	cost := qr.EstimatedTokens
+	if cost <= 0 {
+		cost = defaultTokenEstimate
+	}
+	g.mu.Lock()
+	g.tokens = max(g.tokens-float64(cost), -float64(g.tpm))
+	g.mu.Unlock()
+	metricExtraUpstreamCalls.WithLabelValues(ModeTPM).Inc()
+}
 
 // ── disabled / unlimited ───────────────────────────────────────────────────
 

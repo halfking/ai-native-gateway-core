@@ -311,6 +311,7 @@ import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { formatDateTime } from '../../utils/datetime'
+import { formatNumberLocale } from '../../utils/format'
 import AppSpinner from '../../components/AppSpinner.vue'
 import {
   dataLifecycleStorage,
@@ -561,7 +562,8 @@ function humanBytes(n: number | undefined | null): string {
 }
 
 function formatNumber(n: number): string {
-  return n.toLocaleString(localeRef.value)
+  // 2026-10-01 ④ format 收敛：实现单点化至 utils/format.ts。
+  return formatNumberLocale(n, localeRef.value)
 }
 
 // 审计 R3#10：时间格式化统一走 utils/datetime.ts（unix 秒 → 毫秒）。

@@ -21,6 +21,13 @@
 // baseline relies on), and asserts the listener observes and coalesces
 // real NOTIFY events end-to-end.
 //
+// 隔离形态（24h 审计第二十八轮，遗留#1 收口）：四个测试走
+// DispatchPostgresDatabase —— TEST_PG_URL 下派生一次性空库，standalone 下
+// 起一次性容器。私有库里 public 与夹具重合，下方 DML 的 public. 限定名
+// 落夹具自身，不再写门禁库的生产形态 public.credentials（fb3d938dc 遗留
+// 的"隔离只做了 DDL 一半"）。由此本测试测的是夹具镜像触发器而非生产
+// 触发器——镜像漂移风险以 autoRouteListenerSchema 注释锚定 baseline。
+//
 // Run with:
 //
 //	go test -tags=integration -timeout 5m -count=1 -run TestAutoRouteRealtimeListener_Integration ./bg
@@ -31,6 +38,8 @@ package bg
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,25 +47,41 @@ import (
 )
 
 // autoRouteListenerSchema mirrors the production baseline's credentials
-// trigger definition (see deploy/sql/schemas/baseline/01-schema.sql:27802
-// and the notify_auto_route_refresh() function body). Only the columns
-// the trigger inspects are required.
+// trigger definition (see sql/schema/01-schema.sql:29057 and the
+// notify_auto_route_refresh() function body). Only the columns the trigger
+// inspects plus the NOT NULL columns seedCredential inserts are required.
+//
+// 镜像锚定（24h 审计第二十八轮）：本测试在 DispatchPostgresDatabase 形态下
+// 测的是这份镜像触发器而非生产触发器。生产侧 trg_notify_auto_route_creds 的
+// UPDATE OF 列清单（含 804 补的 fp_slot_limit 等六列）与
+// notify_auto_route_refresh 的 payload 契约（'auto_route_refresh' 频道、
+// TG_TABLE_NAME||':'||TG_OP||':'||entity_id 三段式）若在 schema 变更，
+// 必须同步此处——首轮实跑即抓到镜像已落后生产六列（隔离前 DML 打的是生产
+// 表，漂移不可见）。
 const autoRouteListenerSchema = `
-CREATE TABLE public.credentials (
+CREATE TABLE credentials (
 	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	tenant_id TEXT NOT NULL DEFAULT 't0',
 	provider_id BIGINT NOT NULL DEFAULT 1,
+	label TEXT NOT NULL DEFAULT 'e2e-listener',
 	raw_model TEXT NOT NULL DEFAULT 'm0',
 	status TEXT NOT NULL DEFAULT 'active',
 	availability_state TEXT NOT NULL DEFAULT 'available',
 	quota_state TEXT NOT NULL DEFAULT 'ok',
 	circuit_state TEXT NOT NULL DEFAULT 'closed',
 	concurrency_limit INT NOT NULL DEFAULT 8,
+	concurrency_mode TEXT NOT NULL DEFAULT 'concurrency',
+	rpm_limit INT,
+	tpm_limit INT,
+	fp_slot_limit INT NOT NULL DEFAULT 8,
+	max_queue_depth INT,
+	max_queue_wait_ms INT,
 	lifecycle_status TEXT NOT NULL DEFAULT 'live',
-	manual_disabled BOOLEAN NOT NULL DEFAULT false
+	manual_disabled BOOLEAN NOT NULL DEFAULT false,
+	CONSTRAINT credentials_unique_provider_label UNIQUE (provider_id, tenant_id, label)
 );
 
-CREATE OR REPLACE FUNCTION public.notify_auto_route_refresh()
+CREATE OR REPLACE FUNCTION notify_auto_route_refresh()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
 	entity_id TEXT := '';
@@ -73,10 +98,11 @@ $$;
 
 CREATE TRIGGER trg_notify_auto_route_creds
 AFTER UPDATE OF status, availability_state, quota_state, circuit_state,
-	concurrency_limit, lifecycle_status, manual_disabled
-ON public.credentials
+	concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit,
+	max_queue_depth, max_queue_wait_ms, lifecycle_status, manual_disabled
+ON credentials
 FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
-EXECUTE FUNCTION public.notify_auto_route_refresh();
+EXECUTE FUNCTION notify_auto_route_refresh();
 `
 
 // seedCredential inserts a baseline row so the UPDATE in each test has
@@ -85,10 +111,46 @@ EXECUTE FUNCTION public.notify_auto_route_refresh();
 func seedCredential(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	var id int64
-	if err := pool.QueryRow(ctx, `INSERT INTO public.credentials DEFAULT VALUES RETURNING id`).Scan(&id); err != nil {
+	// Not DEFAULT VALUES any more. public.credentials carries three NOT NULL
+	// columns with no default — provider_id, label, fp_slot_limit — so the old
+	// bare insert failed with SQLSTATE 23502. That failure was invisible for
+	// months because the test never got this far: it died earlier at
+	// `relation "auto_route_selections_hot" already exists` (42P07) while
+	// creating its fixture schema on the fully-migrated gate database. Fixing
+	// the shape collision uncovered it, which is the usual way these things
+	// surface: one shallow fix, one deeper defect behind it.
+	//
+	// Values are arbitrary: the listener keys off `status` becoming 'cooling'.
+	// fp_slot_limit is 8 rather than 0 because 0 is a sentinel elsewhere in
+	// this codebase and this fixture should not lean on that.
+	//
+	// label MUST be unique per call: credentials carries
+	// UNIQUE (provider_id, tenant_id, label), and one of these tests seeds twice
+	// in a single test (the burst case), so a fixed label would fail the second
+	// insert with 23505. A fixed label is a bug my first version of this fix
+	// introduced — the unique violation it caused was a genuinely new failure,
+	// not a pre-existing one.
+	var seq atomic.Uint64
+	label := fmt.Sprintf("e2e-realtime-listener-%d-%d", time.Now().UnixNano(), seq.Add(1))
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO public.credentials (provider_id, label, fp_slot_limit)
+		 VALUES (1, $1, 8) RETURNING id`, label).Scan(&id); err != nil {
 		t.Fatalf("seed credentials: %v", err)
 	}
 	return id
+}
+
+// awaitListenerReady 等待 LISTEN 首次注册成功。Start 返回只代表 goroutine
+// 已派生，注册是异步的——注册之前发出的 NOTIFY 会静默丢失（24h 审计第二
+// 十八轮实测：隔离前 33% flaky "real NOTIFY never reached" 的真因是这条
+// 注册竞态，与生产表耦合无关）。
+func awaitListenerReady(t *testing.T, l *AutoRouteRealtimeListener) {
+	t.Helper()
+	select {
+	case <-l.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("listener LISTEN never became ready within 10s")
+	}
 }
 
 // TestAutoRouteRealtimeListener_IntegrationTriggerFiresRefreshOnce wires
@@ -99,7 +161,7 @@ func TestAutoRouteRealtimeListener_IntegrationTriggerFiresRefreshOnce(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, cleanup := DispatchPostgresContainer(t, ctx, autoRouteListenerSchema)
+	pool, cleanup := DispatchPostgresDatabase(t, ctx, autoRouteListenerSchema)
 	defer cleanup()
 
 	fake := &fakeRefresher{}
@@ -107,6 +169,7 @@ func TestAutoRouteRealtimeListener_IntegrationTriggerFiresRefreshOnce(t *testing
 	l.debounceWindow = 100 * time.Millisecond
 
 	l.Start(ctx)
+	awaitListenerReady(t, l)
 	defer l.Stop()
 
 	seedCredential(t, ctx, pool)
@@ -137,7 +200,7 @@ func TestAutoRouteRealtimeListener_IntegrationBurstCoalescesInRealListen(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, cleanup := DispatchPostgresContainer(t, ctx, autoRouteListenerSchema)
+	pool, cleanup := DispatchPostgresDatabase(t, ctx, autoRouteListenerSchema)
 	defer cleanup()
 
 	fake := &fakeRefresher{}
@@ -145,6 +208,7 @@ func TestAutoRouteRealtimeListener_IntegrationBurstCoalescesInRealListen(t *test
 	l.debounceWindow = 150 * time.Millisecond
 
 	l.Start(ctx)
+	awaitListenerReady(t, l)
 	defer l.Stop()
 
 	id := seedCredential(t, ctx, pool)
@@ -153,7 +217,18 @@ func TestAutoRouteRealtimeListener_IntegrationBurstCoalescesInRealListen(t *test
 	// every statement fires its own pg_notify.
 	burst := []string{
 		`UPDATE public.credentials SET status='cooling' WHERE id=$1`,
-		`UPDATE public.credentials SET availability_state='degraded' WHERE id=$1`,
+		// 'rate_limited', not 'degraded'. availability_state is constrained to
+		// {ready,cooling,rate_limited,auth_failed,unreachable,suspended} and
+		// 'degraded' belongs to a DIFFERENT column's enum (status /
+		// trust_level). The test wrote 'degraded' here, so the UPDATE failed
+		// with 23514 credentials_availability_state_check. Like the 23502 seed
+		// above, this was invisible until the 42P07 shape collision was fixed
+		// and the test could finally reach its own body.
+		//
+		// The test's intent is "N distinct UPDATEs on one row inside the
+		// debounce window coalesce into one refresh", so the specific value
+		// only has to be a legal one that actually changes the row.
+		`UPDATE public.credentials SET availability_state='rate_limited' WHERE id=$1`,
 		`UPDATE public.credentials SET quota_state='warning' WHERE id=$1`,
 		`UPDATE public.credentials SET circuit_state='half_open' WHERE id=$1`,
 		`UPDATE public.credentials SET manual_disabled=true WHERE id=$1`,
@@ -183,7 +258,7 @@ func TestAutoRouteRealtimeListener_IntegrationStopReturnsPromptlyAfterRealListen
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, cleanup := DispatchPostgresContainer(t, ctx, autoRouteListenerSchema)
+	pool, cleanup := DispatchPostgresDatabase(t, ctx, autoRouteListenerSchema)
 	defer cleanup()
 
 	fake := &fakeRefresher{}
@@ -191,6 +266,21 @@ func TestAutoRouteRealtimeListener_IntegrationStopReturnsPromptlyAfterRealListen
 	l.debounceWindow = 50 * time.Millisecond
 
 	l.Start(ctx)
+	awaitListenerReady(t, l)
+	// Stop must be on the CLEANUP path, not the success path.
+	//
+	// The two tests above use `defer l.Stop()` right after Start, which does run
+	// on t.Fatalf (runtime.Goexit unwinds defers). This one called Stop inline
+	// further down, so any failure between here and there — and there were two
+	// real ones, the 23502 seed and the debounce assertion — left the listener's
+	// LISTEN/NOTIFY goroutine running. A leaked listener keeps reconnecting and
+	// logging, and the test binary never exits: the package HANGS instead of
+	// reporting its failures.
+	//
+	// That is the same shape as the autoupdate panic in Round 44: one failure
+	// stops being reported, and everything scheduled after it stops running.
+	// t.Cleanup (not defer) makes the guarantee explicit and test-scoped.
+	t.Cleanup(l.Stop)
 
 	id := seedCredential(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `UPDATE public.credentials SET status='cooling' WHERE id=$1`, id); err != nil {
@@ -235,7 +325,7 @@ func TestAutoRouteRealtimeListener_IntegrationContextCancelStopsPendingRefresh(t
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, cleanup := DispatchPostgresContainer(t, ctx, autoRouteListenerSchema)
+	pool, cleanup := DispatchPostgresDatabase(t, ctx, autoRouteListenerSchema)
 	defer cleanup()
 
 	fake := &fakeRefresher{}
@@ -244,6 +334,7 @@ func TestAutoRouteRealtimeListener_IntegrationContextCancelStopsPendingRefresh(t
 
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 	l.Start(parentCtx)
+	awaitListenerReady(t, l)
 
 	id := seedCredential(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `UPDATE public.credentials SET status='cooling' WHERE id=$1`, id); err != nil {

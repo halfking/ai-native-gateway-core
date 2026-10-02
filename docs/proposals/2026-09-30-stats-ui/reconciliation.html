@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>效果图 A · 对账结算页改版 — llm-gateway</title>
+<link rel="stylesheet" href="assets/mockup.css">
+</head>
+<body>
+<button class="btn theme-fab" onclick="mockToggleTheme()">🌓 切换主题</button>
+
+<div class="page">
+  <div class="page-header">
+    <h1>对账结算</h1>
+    <span class="sub">区间快照汇总 · 每日凌晨自动聚合，T+1 生成</span>
+    <span class="header-spacer"></span>
+    <span class="badge badge-outline">效果图 A · 2026-09-30 方案轮</span>
+  </div>
+
+  <div class="mock-banner">📐 本页为静态效果图（数据为演示值）。布局对标参考看板：KPI 主副指标卡 → 双趋势图 → 双分布表（占比条 + 按 Token/按金额切换）→ 分组明细。实施时沿用全站 --kx-* 令牌与 chart.js。</div>
+
+  <!-- ═══ 工具栏 ═══ -->
+  <div class="toolbar">
+    <div class="seg" id="viewSeg">
+      <button class="active" data-view="provider">供应商对账</button>
+      <button data-view="internal">内部对账</button>
+    </div>
+    <div class="divider"></div>
+    <label>时间范围</label>
+    <input class="inp mono" style="width:220px" value="2026-09-23 ~ 2026-09-29" readonly>
+    <div class="chips">
+      <button class="chip">昨天</button>
+      <button class="chip active">近 7 天</button>
+      <button class="chip">近 30 天</button>
+      <button class="chip">本月</button>
+    </div>
+    <div class="divider"></div>
+    <select class="sel" id="providerSel"><option>全部供应商</option><option>Anthropic</option><option>OpenAI</option><option>xAI</option><option>Google</option><option>DeepSeek</option></select>
+    <select class="sel"><option>全部模型</option><option>claude-opus-5</option><option>gpt-5.6-terra</option><option>grok-4.7</option></select>
+    <div class="divider"></div>
+    <button class="btn btn-primary">⟳ 刷新</button>
+    <button class="btn">⬇ 导出 Excel</button>
+    <button class="btn btn-ghost">↻ 重跑结束日</button>
+    <span class="badge badge-green">7 天快照已覆盖</span>
+  </div>
+
+  <!-- ═══ KPI 区（对标参考图四卡 + 扩展） ═══ -->
+  <div class="kpi-grid" id="kpiGrid"></div>
+
+  <!-- ═══ 趋势区（对标参考图 Token 使用趋势） ═══ -->
+  <div class="section-title">
+    <h2>趋势</h2><span class="hint">按天粒度（快照日聚合）· 成本口径随视角切换</span>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">
+        <h3>请求与成本趋势</h3><span class="spacer"></span>
+        <div class="chart-legend">
+          <span class="item"><span class="dot" style="background:var(--chart-1)"></span>成功</span>
+          <span class="item"><span class="dot" style="background:var(--chart-6)"></span>失败</span>
+          <span class="item"><span class="dot" style="background:var(--chart-5)"></span>成本 / 积分（右轴）</span>
+        </div>
+      </div>
+      <div class="chart-box" id="chartReq"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">
+        <h3>Token 构成与缓存命中</h3><span class="spacer"></span>
+        <div class="chart-legend">
+          <span class="item"><span class="dot" style="background:var(--chart-1)"></span>输入</span>
+          <span class="item"><span class="dot" style="background:var(--chart-2)"></span>输出</span>
+          <span class="item"><span class="dot" style="background:var(--chart-4)"></span>缓存读</span>
+          <span class="item"><span class="dot" style="background:var(--chart-3)"></span>缓存写</span>
+          <span class="item"><span class="dot" style="background:var(--chart-5)"></span>命中率%（右轴）</span>
+        </div>
+      </div>
+      <div class="chart-box" id="chartTok"></div>
+    </div>
+  </div>
+
+  <!-- ═══ 分布区（对标参考图 模型分布 / 分组使用分布） ═══ -->
+  <div class="section-title">
+    <h2 id="distTitle">按供应商</h2><span class="hint">占比条 = 该行指标占区间总额比例 · 支持行点击下钻（同视角带过滤重查）</span>
+    <span class="header-spacer"></span>
+    <div class="chips" id="metricChips">
+      <button class="chip active" data-metric="token">按 Token</button>
+      <button class="chip" data-metric="money">按金额</button>
+    </div>
+  </div>
+  <div class="grid-2-31">
+    <div class="card">
+      <div id="distTableWrap"></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><h3>失败原因分布（区间 Top）</h3><span class="spacer"></span><span class="text-muted" style="font-size:12px">悬停查看供应商/模型明细</span></div>
+      <div id="reasonWrap"></div>
+    </div>
+  </div>
+
+  <div class="grid-2-31">
+    <div class="card">
+      <div class="card-title"><h3 id="byModelTitle">按模型</h3><span class="spacer"></span><span class="text-muted" style="font-size:12px">Top N · 全部 23 个模型</span></div>
+      <div id="modelTableWrap"></div>
+    </div>
+    <div class="card" id="personCard">
+      <div class="card-title"><h3>按人员</h3><span class="spacer"></span><span class="badge badge-blue">内部对账视角</span></div>
+      <div id="personTableWrap"></div>
+    </div>
+  </div>
+
+  <!-- ═══ 按天明细 ═══ -->
+  <div class="section-title"><h2>按天明细</h2><span class="hint">可折叠 · 与趋势图同源（快照日行）</span></div>
+  <div class="card">
+    <div id="dayTableWrap"></div>
+  </div>
+
+  <p class="mt-4 text-muted" style="font-size:12px">
+    <a class="nav-link" href="index.html">← 返回效果图目录</a> ·
+    <a class="nav-link" href="tenant-stats.html">下一页：租户统计 →</a>
+  </p>
+</div>
+
+<script src="assets/mockup.js"></script>
+<script>
+/* ─────────── 演示数据（口径自洽：总额 = 各分组合计） ─────────── */
+var DAYS = ['09-23','09-24','09-25','09-26','09-27','09-28','09-29'];
+var OK   = [3850, 4440, 3580, 4650, 4250, 2910, 4767];
+var FAIL = [ 380,  437,  360,  443,  410,  300,  401];
+var COST = [802.4, 921.1, 748.6, 976.2, 889.5, 612.3, 992.28];   // USD
+var CRED = [444610, 515930, 423760, 536410, 491760, 334890, 499530]; // 积分
+var TOK = {
+  input:  [38, 44, 36, 47, 43, 29, 55.47],
+  output: [1.6, 1.9, 1.5, 2.1, 1.9, 1.3, 2.37],
+  cread:  [128, 148, 121, 156, 142, 97, 194],
+  cwrite: [4, 4.7, 3.8, 4.9, 4.5, 3, 6.1]
+};
+var HIT = [58.1, 60.2, 59.4, 63.8, 61.7, 57.2, 64.5];
+
+var PROVIDERS = [
+  { name:'Anthropic', req:13450, tokM:999.94, cost:2342.18, fail:4.2, quality:91.2, tone:'' },
+  { name:'OpenAI',    req: 8127, tokM:722.62, cost:1119.30, fail:6.1, quality:88.4, tone:'tone-green' },
+  { name:'xAI',       req: 3248, tokM:161.72, cost: 551.99, fail:12.8, quality:79.3, tone:'tone-purple' },
+  { name:'Google',    req: 3154, tokM: 92.40, cost:1532.60, fail:9.4, quality:85.1, tone:'tone-cyan' },
+  { name:'DeepSeek',  req: 1954, tokM: 58.06, cost: 152.60, fail:5.5, quality:90.7, tone:'' },
+  { name:'MiniMax',   req: 1245, tokM: 52.21, cost:  49.37, fail:7.7, quality:86.9, tone:'' }
+];
+var TENANTS = [
+  { name:'default', label:'默认租户', req:18342, tokM:812.4, credits:1982340, cny:14308.22, fail:6.8, tone:'' },
+  { name:'kxtech',  label:'KX 科技',  req: 7881, tokM:356.2, credits: 891205, cny: 6438.10, fail:11.2, tone:'tone-green' },
+  { name:'acctest', label:'验收测试', req: 4955, tokM:154.7, credits: 373345, cny: 2671.20, fail:8.9, tone:'tone-purple' }
+];
+var PERSONS = [
+  { tenant:'default', name:'zhangsan',  req: 8127, tokM:356.8, credits:842330, cny:6083.10 },
+  { tenant:'kxtech',  name:'wangwu',    req: 5578, tokM:261.4, credits:690112, cny:4982.60 },
+  { tenant:'default', name:'qianqi',    req: 5694, tokM:253.9, credits:588806, cny:4244.97 },
+  { tenant:'default', name:'lisi',      req: 4521, tokM:201.7, credits:551204, cny:3980.15 },
+  { tenant:'acctest', name:'test-cache',req: 4955, tokM:154.7, credits:373345, cny:2671.20 },
+  { tenant:'kxtech',  name:'zhaoliu',   req: 2303, tokM: 94.8, credits:201093, cny:1455.50 }
+];
+var MODELS = [
+  { model:'claude-opus-5',    prov:'Anthropic', req: 8127, tokM:722.62, cost:1119.30, credits:1120340, p95:41.2, hit:68.2, reasons:[['429 rate_limited',142],['timeout',86]] },
+  { model:'claude-haiku-5',   prov:'Anthropic', req: 5323, tokM:128.33, cost:1222.88, credits: 860300, p95:12.1, hit:72.4, reasons:[['quota_exceeded',34]] },
+  { model:'gpt-5.6-terra',    prov:'OpenAI',    req: 6957, tokM:611.40, cost: 988.10, credits: 891470, p95:35.7, hit:61.5, reasons:[['429 rate_limited',98],['timeout',112]] },
+  { model:'grok-4.7',         prov:'xAI',       req: 3248, tokM:161.72, cost: 551.99, credits: 446810, p95:28.3, hit:42.1, reasons:[['429 rate_limited',204],['quota_exceeded',41]] },
+  { model:'gemini-3-pro',     prov:'Google',    req: 3154, tokM: 92.40, cost:1532.60, credits: 384920, p95:22.9, hit:55.8, reasons:[['500 upstream',57]] },
+  { model:'deepseek-v4',      prov:'DeepSeek',  req: 1954, tokM: 58.06, cost: 152.60, credits: 183200, p95: 9.8, hit:38.0, reasons:[['timeout',19]] },
+  { model:'gpt-6-sol',        prov:'OpenAI',    req: 1170, tokM:111.22, cost: 131.20, credits: 129830, p95:18.4, hit:47.3, reasons:[['timeout',22]] },
+  { model:'minimax-m2',       prov:'MiniMax',   req: 1245, tokM: 52.21, cost:  49.37, credits: 126010, p95:15.6, hit:30.2, reasons:[['429 rate_limited',37]] }
+];
+var REASONS = [
+  { code:'429 rate_limited', count: 481, tone:'badge-yellow' },
+  { code:'timeout',          count: 239, tone:'badge-red' },
+  { code:'quota_exceeded',   count:  75, tone:'badge-purple' },
+  { code:'500 upstream',     count:  57, tone:'badge-red' },
+  { code:'context_too_long', count:  31, tone:'badge-gray' }
+];
+
+var view = 'provider';
+var metric = 'token';
+function fmtInt(n){ return n.toLocaleString('en-US'); }
+function money(row){ return view==='provider' ? '$'+row.cost.toLocaleString('en-US',{minimumFractionDigits:2}) : fmtInt(row.credits)+' 积分'; }
+function moneyHeader(){ return view==='provider' ? '成本 (USD)' : '内部积分'; }
+function moneySub(row){ return view==='provider' ? '' : '¥'+row.cny.toLocaleString('en-US',{minimumFractionDigits:2}); }
+
+/* ─────────── KPI ─────────── */
+function renderKpi(){
+  var g = document.getElementById('kpiGrid');
+  var cards = view==='provider' ? [
+    { icon:'📥', tone:'tone-blue',  label:'总请求数', value:fmtInt(31178), sub:'成功 <b class="up">28,447</b> · 失败 <b class="down">2,731</b>（8.75%）' },
+    { icon:'🔢', tone:'cyan',   label:'总 Token', value:'1.32B', sub:'输入 292.47M · 输出 12.67M' },
+    { icon:'💸', tone:'green',  label:'供应商成本', value:'$5,942.38', sub:'缓存命中 <b>62.4%</b> · 缓存读 986M' },
+    { icon:'🏅', tone:'purple', label:'质量评分', value:'87.5', sub:'成功率 × 时效因子 · 6 家供应商' },
+    { icon:'⏱️', tone:'orange', label:'平均耗时', value:'11.67s', sub:'P50 4.2s · P95 38.9s' },
+    { icon:'📈', tone:'blue',   label:'日均请求', value:fmtInt(4454), sub:'环比上周 <b class="up">+12.6%</b>' }
+  ] : [
+    { icon:'📥', tone:'tone-blue',  label:'总请求数', value:fmtInt(31178), sub:'成功 <b class="up">28,447</b> · 失败 <b class="down">2,731</b>（8.75%）' },
+    { icon:'🔢', tone:'cyan',   label:'总 Token', value:'1.32B', sub:'输入 292.47M · 输出 12.67M' },
+    { icon:'🪙', tone:'green',  label:'内部积分', value:fmtInt(3246890), sub:'内部金额 ¥23,417.52（CNY）' },
+    { icon:'🏠', tone:'purple', label:'结算租户', value:'3', sub:'default · kxtech · acctest' },
+    { icon:'👤', tone:'orange', label:'活跃人员', value:'6', sub:'人均请求 5,196 · 人均积分 541,148' },
+    { icon:'📊', tone:'blue',   label:'积分 / 请求', value:'104.1', sub:'环比上周 <b class="up">+3.2%</b>' }
+  ];
+  g.innerHTML = cards.map(function(c){
+    return '<div class="kpi"><div class="kpi-icon '+c.tone+'">'+c.icon+'</div><div class="kpi-body">'
+      + '<div class="kpi-label">'+c.label+'</div><div class="kpi-value">'+c.value+'</div>'
+      + '<div class="kpi-sub">'+c.sub+'</div></div></div>';
+  }).join('');
+}
+
+/* ─────────── 分布表（占比条 + 按 Token/按金额切换，对标参考图） ─────────── */
+function renderDist(){
+  var rows = view==='provider' ? PROVIDERS : TENANTS;
+  var key = metric==='token' ? 'tokM' : (view==='provider' ? 'cost' : 'credits');
+  var max = Math.max.apply(null, rows.map(function(r){ return r[key]; }));
+  var totalReq = rows.reduce(function(a,r){ return a+r.req; },0);
+  var html = '<table class="tbl"><thead><tr>'
+    + '<th>'+(view==='provider'?'供应商':'租户')+'</th>'
+    + '<th class="num">请求数</th><th class="num">Token</th>'
+    + '<th class="num">'+moneyHeader()+'</th>'
+    + '<th class="num">失败率</th>'
+    + (view==='provider' ? '<th class="num">质量</th>' : '<th class="num">占比</th>')
+    + '</tr></thead><tbody>';
+  rows.forEach(function(r){
+    var w = (r[key]/max*100).toFixed(1);
+    var name = view==='provider' ? r.name : (r.label+' <span class="cell-sub mono">'+r.name+'</span>');
+    html += '<tr class="clickable">'
+      + '<td><div class="bar-cell"><div class="name">'+name+'</div><div class="track"><div class="fill '+r.tone+'" style="width:'+w+'%"></div></div></div></td>'
+      + '<td class="num">'+fmtInt(r.req)+'<div class="cell-sub">'+(r.req/totalReq*100).toFixed(1)+'%</div></td>'
+      + '<td class="num">'+r.tokM.toFixed(2)+'M</td>'
+      + '<td class="num">'+money(r)+(view==='internal'?'<div class="cell-sub">¥'+r.cny.toLocaleString('en-US',{minimumFractionDigits:2})+'</div>':'')+'</td>'
+      + '<td class="num"><span class="badge '+(r.fail>10?'badge-red':r.fail>7?'badge-yellow':'badge-green')+'">'+r.fail.toFixed(1)+'%</span></td>'
+      + (view==='provider'
+        ? '<td class="num"><b>'+r.quality.toFixed(1)+'</b></td>'
+        : '<td class="num">'+(r.req/totalReq*100).toFixed(1)+'%</td>')
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('distTableWrap').innerHTML = html;
+  document.getElementById('distTitle').textContent = view==='provider' ? '按供应商' : '按租户';
+}
+
+/* ─────────── 失败原因（徽章化，替代纯文本 k:v 拼接） ─────────── */
+function renderReasons(){
+  var max = REASONS[0].count;
+  document.getElementById('reasonWrap').innerHTML = REASONS.map(function(r){
+    return '<div class="mt-2" style="display:flex;align-items:center;gap:10px">'
+      + '<span class="badge '+r.tone+' mono" style="min-width:150px;justify-content:center">'+r.code+'</span>'
+      + '<div class="track" style="flex:1;height:6px;border-radius:3px;background:var(--grid-line)"><div style="height:100%;border-radius:3px;width:'+(r.count/max*100)+'%;background:var(--kx-danger)"></div></div>'
+      + '<span class="mono text-right" style="min-width:60px">'+fmtInt(r.count)+'</span>'
+      + '</div>';
+  }).join('') + '<p class="mt-3 text-muted" style="font-size:12px">合计 2,731 次失败 · 点击徽章在下方模型表联动过滤</p>';
+}
+
+/* ─────────── 按模型表 ─────────── */
+function renderModels(){
+  var rows = MODELS.slice().sort(function(a,b){ return metric==='token' ? b.tokM-a.tokM : (view==='provider'? b.cost-a.cost : b.credits-a.credits); });
+  var key = metric==='token' ? 'tokM' : (view==='provider' ? 'cost' : 'credits');
+  var max = Math.max.apply(null, rows.map(function(r){ return r[key]; }));
+  var html = '<table class="tbl"><thead><tr><th>模型</th><th class="num">请求</th><th class="num">Token</th>'
+    + '<th class="num">'+moneyHeader()+'</th><th class="num">P95</th><th class="num">缓存命中</th></tr></thead><tbody>';
+  rows.forEach(function(m){
+    var w = (m[key]/max*100).toFixed(1);
+    var reasonHtml = m.reasons.map(function(rr,i){ return i<2 ? '<span class="badge badge-outline mono" style="font-size:10.5px">'+rr[0].replace(/_/g,' ')+' ×'+rr[1]+'</span>' : ''; }).join(' ');
+    html += '<tr class="clickable">'
+      + '<td><div class="bar-cell"><div class="name mono" style="font-size:12.5px">'+m.model+' <span class="cell-sub">'+m.prov+'</span></div>'
+      + '<div class="track"><div class="fill" style="width:'+w+'%"></div></div>'
+      + '<div class="mt-2" style="display:flex;gap:4px">'+reasonHtml+'</div></div></td>'
+      + '<td class="num">'+fmtInt(m.req)+'</td><td class="num">'+m.tokM.toFixed(2)+'M</td>'
+      + '<td class="num">'+(view==='provider' ? '$'+m.cost.toLocaleString('en-US',{minimumFractionDigits:2}) : fmtInt(m.credits))+'</td>'
+      + '<td class="num">'+m.p95.toFixed(1)+'s</td>'
+      + '<td class="num">'+m.hit.toFixed(1)+'%</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('modelTableWrap').innerHTML = html;
+}
+
+/* ─────────── 按人员（internal） ─────────── */
+function renderPersons(){
+  var wrap = document.getElementById('personTableWrap');
+  if (view!=='internal') { document.getElementById('personCard').style.display='none'; return; }
+  document.getElementById('personCard').style.display='';
+  var max = Math.max.apply(null, PERSONS.map(function(p){ return p.req; }));
+  wrap.innerHTML = '<table class="tbl"><thead><tr><th>人员</th><th class="num">请求</th><th class="num">Token</th><th class="num">积分</th><th class="num">内部金额</th></tr></thead><tbody>'
+    + PERSONS.map(function(p){
+      return '<tr class="clickable"><td><div class="bar-cell"><div class="name">'+p.name+' <span class="cell-sub mono">'+p.tenant+'</span></div>'
+        + '<div class="track"><div class="fill tone-green" style="width:'+(p.req/max*100)+'%"></div></div></div></td>'
+        + '<td class="num">'+fmtInt(p.req)+'</td><td class="num">'+p.tokM.toFixed(1)+'M</td>'
+        + '<td class="num">'+fmtInt(p.credits)+'</td><td class="num">¥'+p.cny.toLocaleString('en-US',{minimumFractionDigits:2})+'</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
+/* ─────────── 按天明细 ─────────── */
+function renderDays(){
+  var html = '<table class="tbl"><thead><tr><th>日期</th><th class="num">请求</th><th class="num">成功</th><th class="num">失败</th>'
+    + '<th class="num">失败率</th><th class="num">Token</th><th class="num">'+(view==='provider'?'成本 (USD)':'内部积分')+'</th></tr></thead><tbody>';
+  DAYS.forEach(function(d,i){
+    var total = OK[i]+FAIL[i];
+    var tok = TOK.input[i]+TOK.output[i]+TOK.cread[i]+TOK.cwrite[i];
+    html += '<tr><td class="mono">2026-'+d+'</td><td class="num">'+fmtInt(total)+'</td><td class="num">'+fmtInt(OK[i])+'</td>'
+      + '<td class="num">'+fmtInt(FAIL[i])+'</td><td class="num">'+(FAIL[i]/total*100).toFixed(2)+'%</td>'
+      + '<td class="num">'+tok.toFixed(0)+'M</td>'
+      + '<td class="num">'+(view==='provider' ? '$'+COST[i].toFixed(2) : fmtInt(CRED[i]))+'</td></tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('dayTableWrap').innerHTML = html;
+}
+
+/* ─────────── 趋势图 ─────────── */
+function renderCharts(){
+  var moneySer = view==='provider' ? COST : CRED.map(function(c){ return c/1000; });
+  mockAutoRedraw(function(){
+    mockStackedBars('chartReq', { labels: DAYS, series: [
+      { name:'成功', data: OK, color: cssVarC('--chart-1') },
+      { name:'失败', data: FAIL, color: cssVarC('--chart-6') },
+      { name:'成本', data: moneySer, color: cssVarC('--chart-5'), axis:'right' }
+    ]});
+    mockStackedArea('chartTok', { labels: DAYS, series: [
+      { name:'输入', data: TOK.input, color: cssVarC('--chart-1') },
+      { name:'输出', data: TOK.output, color: cssVarC('--chart-2') },
+      { name:'缓存读', data: TOK.cread, color: cssVarC('--chart-4') },
+      { name:'缓存写', data: TOK.cwrite, color: cssVarC('--chart-3') },
+      { name:'命中率', data: HIT, color: cssVarC('--chart-5'), axis:'right' }
+    ], fmtRight: function(v){ return v.toFixed(0)+'%'; }});
+  });
+}
+function cssVarC(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+/* ─────────── 交互 ─────────── */
+document.getElementById('viewSeg').addEventListener('click', function(e){
+  var b = e.target.closest('button'); if(!b) return;
+  document.querySelectorAll('#viewSeg button').forEach(function(x){ x.classList.remove('active'); });
+  b.classList.add('active');
+  view = b.dataset.view;
+  renderKpi(); renderDist(); renderModels(); renderPersons(); renderDays(); renderCharts();
+});
+document.getElementById('metricChips').addEventListener('click', function(e){
+  var b = e.target.closest('button'); if(!b) return;
+  document.querySelectorAll('#metricChips .chip').forEach(function(x){ x.classList.remove('active'); });
+  b.classList.add('active');
+  metric = b.dataset.metric;
+  renderDist(); renderModels();
+});
+
+renderKpi(); renderDist(); renderReasons(); renderModels(); renderPersons(); renderDays(); renderCharts();
+</script>
+</body>
+</html>

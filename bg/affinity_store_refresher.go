@@ -49,7 +49,7 @@ func (r *AffinityStoreRefresher) Start(ctx context.Context) {
 	if !r.started.CompareAndSwap(false, true) {
 		return
 	}
-	go r.run(ctx)
+	Go("affinity_store_refresher.run", func() { r.run(ctx) })
 	slog.Info("affinity store refresher started", "interval", r.tick.String())
 }
 

@@ -117,11 +117,14 @@ func serveGetProviderModels(w http.ResponseWriter, r *http.Request, db offerQuer
 			&o.CanonicalName,
 			&o.ContextWindow, &o.ContextWindowOverride,
 		); err != nil {
-			slog.Warn("getProviderModels scan failed", "error", err)
+			warnRowSkip("providerModels.list", err)
 			continue
 		}
 		o.AvailabilitySource = classifyAvailability(o.Available, o.UnavailableReason)
 		offers = append(offers, o)
+	}
+	if writeAggRowsErr(w, "providerModels.list", rows.Err()) {
+		return
 	}
 	if offers == nil {
 		offers = []modelOffer{}
@@ -130,7 +133,7 @@ func serveGetProviderModels(w http.ResponseWriter, r *http.Request, db offerQuer
 	// complete catalog — 500 beats a silently truncated list the operator
 	// cannot tell is truncated.
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		writeInternalErr(w, "scan failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, offers)
@@ -154,7 +157,7 @@ func (h *Handler) clearProviderModels(w http.ResponseWriter, r *http.Request, pr
 
 	deleted, err := modelcatalog.ClearProviderBindings(ctx, h.db, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "clear failed: "+err.Error())
+		writeInternalErr(w, "clear failed", err)
 		return
 	}
 
@@ -346,7 +349,7 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 		offers = append(offers, o)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		writeInternalErr(w, "scan failed", err)
 		return
 	}
 
@@ -489,10 +492,14 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 			&l.PromptTokens, &l.CompletionTokens, &l.TotalTokens,
 			&l.CostUSD, &l.LatencyMs,
 		); err != nil {
-			slog.Warn("providerLogs scan failed", "error", err)
+			warnRowSkip("providerModels.logs", err)
 			continue
 		}
 		items = append(items, l)
+	}
+	// 分页日志被截断 → 本页条数少于 page_size 而 total 仍是全量。
+	if writeAggRowsErr(w, "providerModels.logs", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

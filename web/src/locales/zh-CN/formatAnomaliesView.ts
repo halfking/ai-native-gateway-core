@@ -103,4 +103,57 @@ export default {
     markFailed: '标记失败',
     needSuperAdmin: '需要超级管理员权限',
   },
+
+  // 2026-09-21: 请求错误 tab（reqprobe）
+  tabs: {
+      format: '响应格式异常',
+      request: '请求错误',
+  },
+  requestTab: {
+      stats: {
+          unresolved: '未解决（本页）',
+          autoRecovered: '自动恢复成功',
+          total: '总数',
+      },
+      filter: {
+          day: '日期',
+          trigger: '类型',
+          triggerPlaceholder: '选择类型…',
+      },
+      trigger: {
+          all: '全部类型',
+          param_rejected: '参数被拒',
+          mode_mismatch: '请求形态不匹配',
+          upstream_error: '上游错误',
+      },
+      triggerDesc: {
+          param_rejected: '上游拒绝了请求参数（如 reasoning_effort），网关已自动剔除并重试',
+          mode_mismatch: '请求的 API 形态（responses / chat）与供应商不符',
+          upstream_error: '无法归类的请求侧 4xx，待人工分类',
+      },
+      batch: {
+          selected: '已选 {n} 项',
+          resolveSelected: '解决已选',
+          resolveFiltered: '一键解决全部未解决',
+      },
+      table: {
+          day: '日期',
+          trigger: '类型',
+          param: '参数 / 建议',
+          status: '状态码',
+          occurrences: '次数',
+          recoveredCount: '自愈 {n} 次',
+      },
+      detail: {
+          title: '请求错误详情',
+          clientModel: '客户端模型',
+          protocol: '出站协议',
+          suggestMode: '建议形态',
+          firstSeen: '首次出现',
+          lastSeen: '最近出现',
+          errorSample: '上游错误样例',
+          occurrences: '出现统计',
+          recoveredHint: '其中 {n} 次通过剔除参数 / 切换形态自动恢复',
+      },
+  },
 }

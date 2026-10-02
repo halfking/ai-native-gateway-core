@@ -2,13 +2,13 @@ package executors
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 type headerProfile struct {
@@ -63,12 +63,10 @@ func (h *HeaderProfileCache) load(ctx context.Context, catalogCode, protocol str
 	}
 
 	p := &headerProfile{Headers: make(map[string]string)}
-	if len(headersJSON) > 0 {
-		_ = json.Unmarshal(headersJSON, &p.Headers)
-	}
+	jsoncol.Decode("streaming.headerProfile/headers", headersJSON, &p.Headers)
 	if len(stripJSON) > 0 {
 		var raw []string
-		_ = json.Unmarshal(stripJSON, &raw)
+		jsoncol.Decode("streaming.headerProfile/strip_prefixes", stripJSON, &raw)
 		for _, s := range raw {
 			p.StripPrefixes = append(p.StripPrefixes, strings.ToLower(s))
 		}

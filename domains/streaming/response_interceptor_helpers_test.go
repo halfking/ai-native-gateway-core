@@ -9,8 +9,12 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
+	"github.com/redis/go-redis/v9"
 )
 
 // streamChunkTestInterceptor verifies that the handler writer sends complete
@@ -82,6 +86,133 @@ func TestInterceptingStreamWriterBuffersAndInterceptsSSEFrame(t *testing.T) {
 	}
 	if got := recorder.Body.String(); got != "data: {\"content\":\"restored\"}\n\n" {
 		t.Fatalf("output = %q, want restored SSE frame", got)
+	}
+}
+
+func TestInterceptingStreamWriterRestoresPlaceholderSplitAcrossCompleteEvents(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mini.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	defer rdb.Close()
+	ctx := context.Background()
+	if err := rdb.HSet(ctx, sanitize.SanitizeRedisKey("sess-writer-split"),
+		"{SENSITIVE:phone:1}", "13800138000").Err(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := sanitize.NewSanitizer(sanitize.NewPatternDetector())
+	if err != nil {
+		t.Fatal(err)
+	}
+	interceptor, err := sanitize.NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	writer := newInterceptingStreamWriter(recorder, response.NewInterceptorChain(interceptor), ctx,
+		response.StreamMeta{SessionID: "sess-writer-split", RequestID: "req-writer-split"})
+
+	frames := [][]byte{
+		[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"call {SENSITIVE:phone:\"}}]}\n\n"),
+		[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"1} now\"}}]}\n\n"),
+	}
+	for i, frame := range frames {
+		if n, err := writer.Write(frame); err != nil || n != len(frame) {
+			t.Fatalf("frame %d Write = (%d, %v), want (%d, nil)", i, n, err, len(frame))
+		}
+	}
+	writer.finish()
+
+	got := recorder.Body.String()
+	if strings.Contains(got, "{SENSITIVE:") {
+		t.Fatalf("placeholder fragment leaked through production intercepting writer: %q", got)
+	}
+	if !strings.Contains(got, `"content":"call "`) || !strings.Contains(got, "13800138000 now") {
+		t.Fatalf("stream output did not preserve safe text and restore the completed token: %q", got)
+	}
+}
+
+func TestInterceptingStreamWriterBuffersCRLFSSEFrameAcrossWrites(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	interceptor := &streamChunkTestInterceptor{}
+	writer := newInterceptingStreamWriter(recorder, interceptor, context.Background(), response.StreamMeta{})
+
+	part1 := []byte("data: {\"content\":\"placeholder\"}\r\n\r")
+	if n, err := writer.Write(part1); err != nil || n != len(part1) {
+		t.Fatalf("first Write = (%d, %v), want (%d, nil)", n, err, len(part1))
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("partial CRLF frame was written before delimiter: %q", recorder.Body.String())
+	}
+	if n, err := writer.Write([]byte("\n")); err != nil || n != 1 {
+		t.Fatalf("second Write = (%d, %v), want (1, nil)", n, err)
+	}
+	writer.finish()
+
+	if interceptor.calls != 1 {
+		t.Fatalf("interceptor calls = %d, want 1", interceptor.calls)
+	}
+	if got, want := recorder.Body.String(), "data: {\"content\":\"restored\"}\r\n\r\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestInterceptingStreamWriterRejectsOversizedFrameWithoutLeaking(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writer := newInterceptingStreamWriter(recorder, &streamChunkTestInterceptor{}, context.Background(), response.StreamMeta{RequestID: "req-large"})
+	chunk := bytes.Repeat([]byte("x"), maxInterceptingSSEFrameBytes+1)
+
+	n, err := writer.Write(chunk)
+	if err == nil {
+		t.Fatal("oversized unterminated frame must fail closed")
+	}
+	if n != 0 {
+		t.Fatalf("Write accepted %d bytes before rejecting the first frame, want 0", n)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("oversized frame leaked to the client: %d bytes", recorder.Body.Len())
+	}
+	if len(writer.pending) != 0 {
+		t.Fatalf("oversized frame retained %d bytes after rejection", len(writer.pending))
+	}
+}
+
+func TestInterceptingStreamWriterDropsIncompleteTailAtFinish(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	interceptor := &streamChunkTestInterceptor{}
+	writer := newInterceptingStreamWriter(recorder, interceptor, context.Background(), response.StreamMeta{RequestID: "req-tail"})
+	tail := []byte("data: {\"content\":\"placeholder\"}")
+	if n, err := writer.Write(tail); err != nil || n != len(tail) {
+		t.Fatalf("Write = (%d, %v), want (%d, nil)", n, err, len(tail))
+	}
+
+	writer.finish()
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("unterminated frame bypassed interception: %q", recorder.Body.String())
+	}
+	if interceptor.calls != 0 {
+		t.Fatalf("interceptor calls = %d, want 0 for incomplete tail", interceptor.calls)
+	}
+}
+
+func TestInterceptingStreamWriterKeepsPriorFrameAndRejectsOversizedNextFrame(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	interceptor := &streamChunkTestInterceptor{}
+	writer := newInterceptingStreamWriter(recorder, interceptor, context.Background(), response.StreamMeta{})
+	frame := []byte("data: {\"content\":\"placeholder\"}\n\n")
+	chunk := append(append([]byte(nil), frame...), bytes.Repeat([]byte("x"), maxInterceptingSSEFrameBytes+1)...)
+
+	n, err := writer.Write(chunk)
+	if err == nil {
+		t.Fatal("oversized second frame must fail closed")
+	}
+	if n != len(frame) {
+		t.Fatalf("Write accepted %d bytes, want first complete frame size %d", n, len(frame))
+	}
+	if got, want := recorder.Body.String(), "data: {\"content\":\"restored\"}\n\n"; got != want {
+		t.Fatalf("output = %q, want only intercepted first frame %q", got, want)
 	}
 }
 

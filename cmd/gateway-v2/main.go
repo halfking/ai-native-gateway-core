@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,6 +32,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/domain"                                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"           //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -53,6 +56,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/internal/auth"
+	"github.com/kaixuan/llm-gateway-go/internal/mockprobe"
+	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
+	"github.com/kaixuan/llm-gateway-go/internal/shutdown"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/prometheus/client_golang/prometheus"
@@ -70,6 +77,16 @@ type v2Config struct {
 	EnableApprovalGate bool // 2026-06-27: approval gate 独立开关(v2 demo 默认关,需 DB+Redis)
 	EnableObserv       bool
 	EnableStreaming    bool
+
+	// Mock Probe 通道（2026-09-24，docs/design/2026-09-23-mock-probe-channel）。
+	// 四个值均从 config.Load() 同步（单一事实源：LLM_GATEWAY_MOCK_PROBE_*
+	// env / yaml）。DatabaseURL 仅用于 mock_probe_history 落库，为空时
+	// runner 只打指标不写历史。
+	MockProbeEnabled          bool
+	MockProbeHideInAdmin      bool
+	MockProbeInterval         time.Duration
+	MockProbeFailureThreshold int
+	DatabaseURL               string
 }
 
 // loadConfig 加载配置
@@ -85,6 +102,14 @@ func loadConfig() *v2Config {
 		EnableObserv:       getEnv("LLM_GATEWAY_V2_OBSERV", "true") == "true",
 		EnableStreaming:    getEnv("LLM_GATEWAY_V2_STREAMING", "true") == "true",
 	}
+	// Mock Probe 四字段：交给 config 包统一解析（env/yaml/钳制），v2 侧
+	// 只取值不重复实现默认逻辑。
+	full := config.Load()
+	cfg.MockProbeEnabled = full.MockProbeEnabled
+	cfg.MockProbeHideInAdmin = full.MockProbeHideInAdmin
+	cfg.MockProbeInterval = full.MockProbeInterval
+	cfg.MockProbeFailureThreshold = full.MockProbeFailureThreshold
+	cfg.DatabaseURL = full.DatabaseURL
 	return cfg
 }
 
@@ -118,7 +143,12 @@ func authChain(deps *v2Deps, cfg *v2Config) http.Handler {
 	// 注意：logging 中间件包外层、auth 包里层 —— 这样 401 请求也被记录
 	// 到访问日志（运维可观测"被拒绝"流量）。
 	if cfg.APIKey != "" {
-		h = simpleAPIKeyAuth(cfg.APIKey)(h)
+		apiGate := simpleAPIKeyAuth(cfg.APIKey)(h)
+		// Mock Probe 旁路（2026-09-24）：Bearer mock-probe-client 且路径
+		// /mock/* 的探测请求绕过 X-API-Key 门直进 mux；端点自身仍有
+		// auth.MockEndpoint 守卫（Bearer + scope 白名单）。子系统关闭时
+		// 不旁路，/mock/* 请求走原鉴权后落 mux 404。
+		h = auth.MockProbeBypass(deps != nil && deps.Config != nil && deps.Config.MockProbeEnabled, apiGate, h)
 	} else {
 		// API Key 未配置时显式警告，但允许通过（演示场景）。
 		slog.Warn("v2 API key authentication disabled (LLM_GATEWAY_API_KEY not set)")
@@ -1001,6 +1031,21 @@ func httpHandler(deps *v2Deps) http.Handler {
 		}
 	})
 
+	// Mock Probe 端点（2026-09-24，docs/design/2026-09-23-mock-probe-channel）。
+	// 仅 MockProbeEnabled=true 时注册（关闭时 ServeMux 自然 404）；每个
+	// 端点挂 auth.MockEndpoint 守卫（POST + Bearer mock-probe-client +
+	// 供应商 scope 白名单）。协议矩阵：OpenAI Chat Completions（探测主
+	// 通道，协议锁定）+ Anthropic Messages（管理/联调用，探测不经过）。
+	// 4 个端点 = 2 供应商 × 2 协议；stream/non-stream 由请求体决定。
+	if deps.Config != nil && deps.Config.MockProbeEnabled {
+		mux.Handle("/mock/v1/chat/completions/fast", auth.MockEndpoint(mock.CodeFast, mock.ChatCompletionsFast()))
+		mux.Handle("/mock/v1/chat/completions/slow", auth.MockEndpoint(mock.CodeSlow, mock.ChatCompletionsSlow()))
+		mux.Handle("/mock/v1/messages/fast", auth.MockEndpoint(mock.CodeFast, mock.MessagesFast()))
+		mux.Handle("/mock/v1/messages/slow", auth.MockEndpoint(mock.CodeSlow, mock.MessagesSlow()))
+		slog.Info("mock probe endpoints registered",
+			"paths", "/mock/v1/chat/completions/{fast,slow},/mock/v1/messages/{fast,slow}")
+	}
+
 	return mux
 }
 
@@ -1065,6 +1110,16 @@ func main() {
 	deps.Pipeline = buildPipeline(deps)
 
 	logger.Info("gateway-v2 starting", "listen", cfg.Listen, "stages", len(deps.Pipeline.Stages()))
+	// 设计 §四 Step 2：启动时打印 mock probe 4 个配置值（debug 级）。
+	slog.Debug("mock probe config",
+		"enabled", cfg.MockProbeEnabled,
+		"hide_in_admin", cfg.MockProbeHideInAdmin,
+		"interval", cfg.MockProbeInterval.String(),
+		"failure_threshold", cfg.MockProbeFailureThreshold)
+
+	// 优雅退出
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	srv := &http.Server{
 		Addr: cfg.Listen,
@@ -1081,23 +1136,87 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	// 优雅退出
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 启动竞态修复（audit P3）：先显式 net.Listen 建立监听，再启动 mock
+	// probe runner——保证探测首轮发出时网关入口已绑定，首轮探测不会因
+	// 入口未就绪而记脏失败。监听建立后、Serve 开始 accept 前到达的连接
+	// 由内核 accept 队列兜住，不丢。
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		logger.Error("server failed", "err", err)
+		os.Exit(1)
+	}
+
+	// Mock Probe runner（2026-09-24）：默认不启动；启用时可选挂 PG 历史
+	// 落库（无 DATABASE_URL 则只打指标）。注册 shutdown.Manager 为
+	// NonStream kind，停机顺序"先停 runner → 关 mux"。
+	var probeRunner *mockprobe.Runner
+	var probePool *pgxpool.Pool
+	if cfg.MockProbeEnabled {
+		probeRunner, probePool = startMockProbeRunner(ctx, cfg)
+	}
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		logger.Info("shutting down")
+		// 先停 mock probe runner（排空历史写入），再关 HTTP 服务。
+		if probeRunner != nil {
+			// 停机预算分账（audit P3）：先 cancel runner 的运行 ctx 使在途
+			// 探测（单次自带 probeTimeout 超时）即刻收敛，再为历史排空单独
+			// 给 5s 预算——不再与在途探测共享同一个 10s 总预算互相挤占。
+			cancel()
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			probeRunner.Stop(drainCtx)
+			drainCancel()
+			// pgxpool 释放（audit P3）：历史排空完成后关闭连接池。
+			if probePool != nil {
+				probePool.Close()
+			}
+		}
 		_ = deps.AuditWriter.Close()
-		_ = srv.Shutdown(ctx)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = srv.Shutdown(shutdownCtx)
+		shutdownCancel()
 	}()
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "err", err)
 		os.Exit(1)
 	}
+}
+
+// startMockProbeRunner 装配并启动 mock probe 子系统（cfg.MockProbeEnabled
+// 已为 true）。DB 不可达时降级为"只打指标"并继续——探测主诉是链路自检，
+// 历史落库是附属能力，不应因 PG 抖动阻塞启动。返回的 pgxpool（可能为
+// nil）由调用方在停机序列负责 Close（历史排空之后）。
+func startMockProbeRunner(ctx context.Context, cfg *v2Config) (*mockprobe.Runner, *pgxpool.Pool) {
+	var history *mockprobe.HistoryStore
+	var pool *pgxpool.Pool
+	if cfg.DatabaseURL != "" {
+		poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+		if err != nil {
+			slog.Warn("mock probe: invalid DATABASE_URL, history disabled", "err", err)
+		} else {
+			poolCfg.MaxConns = 2 // 历史写入是单 goroutine 低频路径
+			p, err := pgxpool.NewWithConfig(ctx, poolCfg)
+			if err != nil {
+				slog.Warn("mock probe: DB pool unavailable, history disabled", "err", err)
+			} else {
+				pool = p
+				history = mockprobe.NewHistoryStore(ctx, p)
+			}
+		}
+	} else {
+		slog.Warn("mock probe: DATABASE_URL not set, history writes disabled (metrics only)")
+	}
+	client := mockprobe.NewClient(mockprobe.BaseURLFromListen(cfg.Listen))
+	mgr := shutdown.NewManager()
+	runner := mockprobe.NewRunner(client, cfg.MockProbeInterval, cfg.MockProbeFailureThreshold, history, mgr)
+	if !runner.Start(ctx) {
+		slog.Warn("mock probe runner failed to start (shutdown in progress?)")
+	}
+	return runner, pool
 }
 
 // 编译期检查：确保新包被使用

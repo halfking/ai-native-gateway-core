@@ -1,0 +1,9 @@
+FROM --platform=linux/arm64 kx-base/golang:1.27-alpine AS src
+WORKDIR /src
+ENV CGO_ENABLED=1
+ENV GOOS=linux
+ENV GOARCH=arm64
+COPY . /src/
+RUN cd /src && go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/gateway ./cmd/gateway
+FROM --platform=linux/arm64 scratch AS out
+COPY --from=src /out/gateway /gateway

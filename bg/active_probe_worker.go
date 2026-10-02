@@ -34,17 +34,18 @@ import (
 
 // ActiveProbeWorkerConfig holds runtime configuration for the worker.
 type ActiveProbeWorkerConfig struct {
-	DB                   *pgxpool.Pool
-	Keyring              *secret.Keyring
-	EncKey               []byte
-	Telemetry            *telemetry.Client
-	StateManager         credentialstate.StateObserver
-	Enabled              bool
-	ConsecutiveThreshold int // 2 by default; the value from settings
-	MaxAttempts          int // 5 by default
-	TimeoutMs            int // 30000 by default
-	QueueSize            int // 128 by default
-	Workers              int // 1 by default; bounded parallel probe consumers
+	DB                      *pgxpool.Pool
+	Keyring                 *secret.Keyring
+	EncKey                  []byte
+	ResponsesCapabilitySink ResponsesCapabilitySink
+	Telemetry               *telemetry.Client
+	StateManager            credentialstate.StateObserver
+	Enabled                 bool
+	ConsecutiveThreshold    int // 2 by default; the value from settings
+	MaxAttempts             int // 5 by default
+	TimeoutMs               int // 30000 by default
+	QueueSize               int // 128 by default
+	Workers                 int // 1 by default; bounded parallel probe consumers
 }
 
 // ActiveProbeWorker is the singleton orchestrator.
@@ -108,6 +109,7 @@ func NewActiveProbeWorker(cfg ActiveProbeWorkerConfig) *ActiveProbeWorker {
 		running:  make(map[string]*probeState, 64),
 		done:     make(chan struct{}),
 	}
+	w.executor.SetResponsesCapabilitySink(cfg.ResponsesCapabilitySink)
 	return w
 }
 
@@ -247,9 +249,31 @@ func (w *ActiveProbeWorker) runLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			w.processOne(ctx, task)
+			w.processOneRecovered(ctx, task)
 		}
 	}
+}
+
+// processOneRecovered 守护单个探测任务（R51 审计 P2：runLoop goroutine 原先
+// 无任何 recover，单次 panic 即整进程崩溃）——panic 记日志后 worker 继续
+// 消费队列，其余 in-flight worker 不受影响。
+//
+// R52：panic 时必须释放 running[key] 去重键。processOne 只在
+// markSuccess/markFailedFinal/markFailedRetry 正常路径上清理该键；panic
+// 打断后键残留，Submit 的 dedup 会让该 (credential, model) 探测对静默
+// 丢弃直至进程重启（"崩溃"变成"单键探测永锁"）。
+func (w *ActiveProbeWorker) processOneRecovered(ctx context.Context, task probeTask) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("active_probe worker: task panic recovered",
+				"credential_id", task.CredID, "model", task.Model, "recover", rec)
+			key := probeKey(task.CredID, task.Model)
+			w.mu.Lock()
+			delete(w.running, key)
+			w.mu.Unlock()
+		}
+	}()
+	w.processOne(ctx, task)
 }
 
 // processOne handles a single (credID, model) probe cycle: it pulls the

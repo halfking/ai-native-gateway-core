@@ -67,8 +67,15 @@ func cachedEffectiveRaw(key string) (raw jsonRawMessage, source string, ok bool)
 
 // InvalidatePlatformValue removes one cached setting immediately after a
 // successful DB write, so admin updates do not wait for the TTL.
+//
+// 2026-09-22 Wave 2: also clears the platformIntCache entry so the write
+// path (store_db.go / admin settingsPut) covers BOTH cached families.
+// Before this, InvalidatePlatformInt had zero production callers and
+// CachedPlatformInt readers (gateway.max_prompt_tokens, threshold keys)
+// waited out the full 5s TTL after every admin write.
 func InvalidatePlatformValue(key string) {
 	platformValueCache.Delete(key)
+	platformIntCache.Delete(key)
 }
 
 // CachedPlatformInt reads a platform integer without querying PostgreSQL on

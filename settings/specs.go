@@ -53,6 +53,21 @@ func PlatformSpecs() []*Spec {
 	// Gateway admission controls are platform-scoped and must be registered so
 	// settings_kv values can override the environment fallback.
 	out = append(out, GatewaySpecs()...)
+	// 2026-09-21: R51 代理出口平台级默认禁用地区（海外默认禁 HK 的规避 overlay）。
+	out = append(out, ProxySpecs()...)
+	// 2026-09-22: Wave 2 任务一 —— 路由/探测/指纹槽阈值常量表集中化
+	// （节点 streak / Disabled 冷却 / sticky 阈值 / fp slot TTL / 探测并发）。
+	out = append(out, ThresholdSpecs()...)
+	// 2026-09-22: Wave 3 B5 —— 流式继续/重试词典（zh/en/ja，hotconfig 通道）
+	// 与敏感词评分阈值（security.sensitive_block/warn_score）。
+	out = append(out, NodeFailoverSpecs()...)
+	out = append(out, SensitiveSpecs()...)
+	// 2026-09-22: Wave 3 B1 —— 峰谷倍率时段表（maas.rate_periods，
+	// Go/SQL 双侧同源取档）。
+	out = append(out, MaasRatePeriodSpecs()...)
+	// 2026-09-25: 对账报表每日聚合钟点（reports.daily_rollup.hour，
+	// 默认凌晨 02:00 UTC，HotReload）。
+	out = append(out, ReportRollupSpecs()...)
 	return out
 }
 

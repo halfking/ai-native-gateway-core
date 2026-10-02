@@ -27,7 +27,7 @@ func StartWorkTypeACCSync(ctx context.Context, db *pgxpool.Pool, syncFn func(con
 		return
 	}
 	slog.Info("work_type ACC sync worker started", "interval", interval.String())
-	go func() {
+	SpawnLoop(ctx, "work_type_sync.loop", func(context.Context) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -42,5 +42,5 @@ func StartWorkTypeACCSync(ctx context.Context, db *pgxpool.Pool, syncFn func(con
 				cancel()
 			}
 		}
-	}()
+	})
 }

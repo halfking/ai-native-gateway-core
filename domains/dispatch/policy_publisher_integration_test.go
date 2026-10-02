@@ -12,6 +12,24 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
+// policyPublisherSchema mirrors the columns publishCatchUp actually reads.
+// domains/dispatch/policy_publisher.go:220-223 selects
+//
+//	id, provider_id, COALESCE(concurrency_mode,'concurrency'),
+//	COALESCE(concurrency_limit,0), COALESCE(rpm_limit,0), COALESCE(tpm_limit,0),
+//	COALESCE(max_queue_depth,0), COALESCE(max_queue_wait_ms,0), revision
+//
+// The last two were added to the product query (566_credentials_governor_revision)
+// without this fixture following, so the test failed 42703
+// "column max_queue_depth does not exist" — measured 2026-10-02, and both
+// publishCatchUp tests in this file. The column does exist in the real schema
+// (verified with information_schema.columns: credentials.max_queue_depth integer,
+// nullable, no default), so this was fixture drift, not a product reference to a
+// column that never existed.
+//
+// Types and nullability are taken from that measurement rather than guessed:
+// the queue columns are nullable integers with no default, exactly like the
+// rate columns already here.
 const policyPublisherSchema = `
 CREATE TABLE public.credentials (
 	id BIGINT PRIMARY KEY,
@@ -20,6 +38,8 @@ CREATE TABLE public.credentials (
 	concurrency_limit INT,
 	rpm_limit INT,
 	tpm_limit INT,
+	max_queue_depth INT,
+	max_queue_wait_ms INT,
 	revision BIGINT NOT NULL
 );`
 

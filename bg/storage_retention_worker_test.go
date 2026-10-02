@@ -82,9 +82,11 @@ func TestWalkDirSafe_ToleratesIsolatedErrors(t *testing.T) {
 	// Plant a symlink to a non-existent target so the walk itself
 	// surfaces an "lstat ... no such file or directory" once for that
 	// entry. That's a single isolated error and must not abort the
-	// traversal.
+	// traversal. Creating a dangling symlink needs admin privilege on
+	// Windows (R75 lesson: a gate verified on one OS only is half a
+	// gate), so skip rather than fail where the fixture cannot be built.
 	if err := os.Symlink("/nonexistent/llm-gateway-test-target", filepath.Join(root, "bad-link")); err != nil {
-		t.Fatalf("seed bad symlink: %v", err)
+		t.Skipf("seed bad symlink (needs symlink privilege on this OS): %v", err)
 	}
 	for i := 0; i < 30; i++ {
 		if err := os.WriteFile(filepath.Join(root, "f-"+strconv.Itoa(i)), []byte("x"), 0o600); err != nil {

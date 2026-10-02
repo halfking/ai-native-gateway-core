@@ -10,6 +10,12 @@
 //  4. 写入走「临时文件 + rename」，读侧要么看到旧的完整文件、要么看到新的
 //     完整文件，不会读到半截 JSON；读到损坏 JSON 按缓存未命中处理并清理
 //
+// 索引（2026-09-24 H1，全模式热区层方案）：
+//   - 内存中维护 map[string]*indexEntry，key=tenantID+"/"+sessionID
+//   - 与 sizeUsed 同受 fc.mu 保护；启动期 Walk 阶段顺带填充
+//   - Get 命中索引可跳过 Stat（mtime/size 以索引为准，读后仍校验内容可解析）
+//   - 索引与磁盘漂移时按 miss 处理并摘除索引（fail-open 风格）
+//
 // 勘察结论（2026-09-05, Task 2.3）：
 //   - SessionStateV2（cache_v2.go）自带 TenantID / SessionID 字段，因此 Set
 //     直接采用 Set(state *SessionStateV2) error 签名，无需 (tenantID, sessionID,
@@ -38,6 +44,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/atomicrename"
 )
 
 // errCacheMiss 表示文件缓存未命中（不存在 / 已过期 / 内容损坏）。
@@ -52,21 +60,36 @@ const (
 	defaultFileCacheTTL = 30 * time.Minute
 )
 
+// indexEntry 是 FileCache 内存索引的单条目。key=tenantID+"/"+sessionID
+// （cacheIndexKey 构造）；path 是相对 baseDir 的缓存文件路径；modTime
+// 是最近一次观测到的 mtime（启动期 Walk 填一次，写入时更新）；size
+// 与 sizeUsed 记账共享，删除时同步扣减。
+type indexEntry struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
 // FileCache 是 L1.5 本地文件缓存：
-//   - 线程安全（sync.Mutex 保护 sizeUsed 记账与所有文件变更）
+//   - 线程安全（sync.Mutex 保护 sizeUsed 记账、index 与所有文件变更）
 //   - Get 未命中返回包装 errCacheMiss 的错误；Set/Delete 幂等或容错（fail-open，
 //     缓存层失败不阻断主链路）
+//   - 内存索引（index）作为磁盘实况的加速视图；任何漂移按 miss 兜底
 type FileCache struct {
 	baseDir  string
 	ttl      time.Duration
 	maxSize  int64
 	sizeUsed int64 // 当前已占用字节数（仅统计 *.json，由 mu 保护）
 
+	// index 是磁盘实况的内存索引视图（H1 接线，2026-09-24）。Get 命中索引
+	// 可减少一次 os.Stat；任何「索引有 / 磁盘无」按 miss 处理并摘除索引。
+	index map[string]*indexEntry
+
 	mu sync.Mutex
 }
 
 // NewFileCache 创建本地文件缓存：创建 baseDir（0755）并 filepath.Walk 统计
-// 现有占用，使进程重启后 sizeUsed 与磁盘现状对齐。
+// 现有占用，使进程重启后 sizeUsed 与磁盘现状对齐；Walk 阶段同步填充内存索引。
 func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache, error) {
 	if baseDir == "" {
 		return nil, errors.New("file cache: baseDir is empty")
@@ -80,8 +103,13 @@ func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache,
 	if err := os.MkdirAll(baseDir, fileCacheDirPerm); err != nil {
 		return nil, fmt.Errorf("file cache: mkdir %s: %w", baseDir, err)
 	}
-	fc := &FileCache{baseDir: baseDir, ttl: ttl, maxSize: maxSize}
-	// 启动时统计现有 *.json 占用（遗留的临时文件不计入，也不清理，交由运维处理）
+	fc := &FileCache{
+		baseDir: baseDir,
+		ttl:     ttl,
+		maxSize: maxSize,
+		index:   make(map[string]*indexEntry),
+	}
+	// 启动时统计现有 *.json 占用 + 填充索引（遗留的临时文件不计入，也不清理，交由运维处理）
 	if err := filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -91,12 +119,70 @@ func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache,
 		}
 		if !info.IsDir() && strings.HasSuffix(path, ".json") {
 			fc.sizeUsed += info.Size()
+			// 路径里隐含 tenantID 与 sessionID：{baseDir}/{tenant}/{shard}/{session}.json
+			// rel 形如 {tenant}/{shard}/{session}.json，逆解析首段为 tenant，
+			// 文件名去后缀为 sessionID；shard 仅作分片，不参与 key。
+			if rel, relErr := filepath.Rel(baseDir, path); relErr == nil {
+				parts := strings.SplitN(rel, string(filepath.Separator), 2)
+				if len(parts) == 2 {
+					tenant := parts[0]
+					session := strings.TrimSuffix(filepath.Base(parts[1]), ".json")
+					if tenant != "" && session != "" {
+						fc.index[cacheIndexKey(tenant, session)] = &indexEntry{
+							path:    path,
+							size:    info.Size(),
+							modTime: info.ModTime(),
+						}
+					}
+				}
+			}
 		}
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("file cache: walk %s: %w", baseDir, err)
 	}
 	return fc, nil
+}
+
+// ResizeMax 修改 maxSize 上限（热重载入口，H4 接线：settings 变更 → 本方法）。
+// 仅立即生效扩容；缩容不主动删除，分两种落点：
+//   - cache 子树位于热区目录内（full 热区装配 / lite CacheDir 落入热区）：
+//     缩容由 HotZoneTrimmer 配额相执行（startHotZoneTrimmer 接线，与本注释
+//     互为印证）。2026-09-29 二十轮订正时该机制尚未接线（P3 之前），订正在
+//     当时为真；2026-10-01 审计随 P3 落地补记两段式口径。
+//   - 热区外（lite 独立 cache 目录）：确无配额型 trimmer（bg/cache_trimmer.go
+//     只按 TTL 删），靠后续写入触发 ensureSpaceLocked 的写时淘汰回落，低写入
+//     场景下超限占用要等 TTL 到期才回落。
+//
+// 零值或负值拒绝（与构造时校验一致）。
+// 内部持 fc.mu 写 maxSize：热重载由 settings/admin goroutine 调用，与 Set
+// 锁内的 `sizeUsed+needed <= maxSize` 判定并发，必须同锁互斥（mu 是私有
+// 字段，外部调用方无法按要求持锁，锁必须在方法内部获取）。nil-safe。
+func (fc *FileCache) ResizeMax(newMaxSize int64) {
+	if fc == nil || newMaxSize <= 0 {
+		return
+	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.maxSize = newMaxSize
+}
+
+// SetTTL 修改缓存 TTL（热重载入口，H4 接线：settings retention 变更 → 本方法，
+// 与 ResizeMax 同理内部自持 fc.mu，外部调用方无法按要求持锁）。nil-safe；
+// d<=0 拒绝（与构造时校验一致）。
+//
+// 存在理由（2026-10-01 审计 F2）：full 热区装配把 TTL 与 hotzone retention
+// 设为同参（读侧 Get 过期判定与删侧 trimmer retention 同界），但 TTL 若只在
+// 构造期钉死，retention 热重载扩容后读侧仍按旧 TTL 自删（Get →
+// removeExpiredLocked），扩容对 L1.5 读路径不生效；缩容则读侧滞后于删侧，
+// 属纯语义无损（miss 回源）。两侧经本方法同步后才真正"同参"。
+func (fc *FileCache) SetTTL(d time.Duration) {
+	if fc == nil || d <= 0 {
+		return
+	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.ttl = d
 }
 
 // buildPath 生成缓存文件路径：
@@ -110,6 +196,13 @@ func (fc *FileCache) buildPath(tenantID, sessionID string) string {
 	return filepath.Join(fc.baseDir, tenantID, shard, sessionID+".json")
 }
 
+// cacheIndexKey 构造内存索引 key：tenantID+"/"+sessionID。
+// 用 "/" 作分隔符以避免 tenant 与 session 拼接时的碰撞（与 cache_v2.go
+// 的 cacheKey 风格对齐，但保留独立命名以免误用）。
+func cacheIndexKey(tenantID, sessionID string) string {
+	return tenantID + "/" + sessionID
+}
+
 // validCacheID 校验 ID 可以安全地作为路径段（非空、不含路径分隔符、不是相对
 // 路径特殊项），防止外部 ID 把文件写到 baseDir 之外。
 func validCacheID(s string) bool {
@@ -119,9 +212,29 @@ func validCacheID(s string) bool {
 	return !strings.ContainsAny(s, `/\`)
 }
 
-// expired 判断 mtime 是否已超过 TTL。
-func (fc *FileCache) expired(modTime time.Time) bool {
-	return fc.ttl > 0 && time.Since(modTime) >= fc.ttl
+// expired 判断 mtime 是否已超过 ttl。ttl 必须由调用方在持 fc.mu 的窗口内
+// 读取后传入：fc.ttl 可被 SetTTL 热重载并发写（2026-10-01 审计 F2 补充），
+// 锁外读取是数据竞争（-race 可报）。
+func fileCacheExpired(ttl time.Duration, modTime time.Time) bool {
+	return ttl > 0 && time.Since(modTime) >= ttl
+}
+
+// TTL 返回当前生效的缓存 TTL（nil-safe，返回 0）。
+//
+// 读侧（Get 按 mtime 判过期）与删侧（bg.CacheTrimmer 按 mtime 删文件）必须
+// 共享同一个 TTL 口径，否则删除侧会删掉读侧仍视为有效的条目。装配层
+// （cmd/gateway initStorageMode）用本方法在启动期断言这一不变量，配置校验
+// 与日志都以此为唯一事实来源，不从配置字段二次推导。
+//
+// 内部持 fc.mu 读：SetTTL 热重载会并发写 fc.ttl（2026-10-01 审计补充，
+// 与 ResizeMax/SetTTL 的锁纪律一致）。
+func (fc *FileCache) TTL() time.Duration {
+	if fc == nil {
+		return 0
+	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return fc.ttl
 }
 
 // Get 读取会话状态。
@@ -130,30 +243,77 @@ func (fc *FileCache) expired(modTime time.Time) bool {
 // 已过期的文件会被顺带删除并扣减 sizeUsed。
 // 任意 os.Stat 失败（含不存在）按缓存未命中处理：缓存层 fail-open，调用方
 // 回源 L3 即可。
+//
+// 索引优先（H1）：命中索引时可跳过 Stat（仍校验内容可解析）；索引与磁盘
+// 漂移时（"索引说有、磁盘说无"）按 miss 处理并摘除索引。
 func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 	if fc == nil || !validCacheID(tenantID) || !validCacheID(sessionID) {
 		return nil, fmt.Errorf("file cache: get %s/%s: %w", tenantID, sessionID, errCacheMiss)
 	}
 	path := fc.buildPath(tenantID, sessionID)
+	key := cacheIndexKey(tenantID, sessionID)
 
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("file cache: get %s: %w", path, errCacheMiss)
-	}
-	if fc.expired(fi.ModTime()) {
-		fc.removeExpired(path)
+	fc.mu.Lock()
+	// ttl 必须在锁窗口内快照：fc.ttl 可被 SetTTL 热重载并发写，锁外读取
+	// 是数据竞争。下方非索引路径（锁外 Stat 后判过期）复用本快照——热重载
+	// 与单次 Get 并发时按旧值或新值判定皆可接受（单次读的线性化点取快照）。
+	ttl := fc.ttl
+	entry, indexed := fc.index[key]
+	if indexed && fileCacheExpired(ttl, entry.modTime) {
+		// 索引条目已过期：复检磁盘后删除（避免误删并发 Set 刚刷新的同名文件）
+		fc.removeExpiredLocked(path)
+		delete(fc.index, key)
+		fc.mu.Unlock()
 		return nil, fmt.Errorf("file cache: get %s: expired: %w", path, errCacheMiss)
+	}
+	fc.mu.Unlock()
+
+	if !indexed {
+		// 索引 miss：Stat 磁盘一次；存在则回填索引。
+		fi, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("file cache: get %s: %w", path, errCacheMiss)
+		}
+		if fileCacheExpired(ttl, fi.ModTime()) {
+			fc.removeExpired(path)
+			return nil, fmt.Errorf("file cache: get %s: expired: %w", path, errCacheMiss)
+		}
+		fc.mu.Lock()
+		// 回填索引刻意不累加 sizeUsed（2026-10-01 审计 F4 补注）：运行期
+		// "磁盘有而索引无"只可能来自锁内 Set（记账已在 Set 完成，此处再加
+		// 即双计）——损坏 JSON 竞态路径摘索引后残留的正是并发 Set 的新文件。
+		// 启动期磁盘实况由 NewFileCache 的 Walk 一次性入账，两边都不经此处。
+		fc.index[key] = &indexEntry{path: path, size: fi.Size(), modTime: fi.ModTime()}
+		fc.mu.Unlock()
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// 读窗口内被并发 Delete/过期清理删除 → 视为未命中
+		// 读窗口内被并发 Delete/过期清理删除 → 视为未命中（同时摘除残留索引）
+		fc.mu.Lock()
+		delete(fc.index, key)
+		fc.mu.Unlock()
 		return nil, fmt.Errorf("file cache: read %s: %w", path, errCacheMiss)
 	}
 	var state SessionStateV2
 	if err := json.Unmarshal(data, &state); err != nil {
-		// 读到损坏 JSON（如异常断电留下的半截文件）：按缓存未命中处理并清理
-		fc.removeIfUnchanged(path, fi)
+		// 读到损坏 JSON（如异常断电留下的半截文件）：按缓存未命中处理并清理。
+		// 索引条目可能与磁盘现状漂移（文件已被并发 Set 替换），必须 Stat 一次取
+		// 磁盘实况传给 removeIfUnchanged，以"文件自读取后 mtime/size 未变"为准
+		// 删除，避免误删并发 Set 刚写入的新文件。
+		fc.mu.Lock()
+		seen, statErr := os.Stat(path)
+		fc.mu.Unlock()
+		if statErr != nil {
+			fc.mu.Lock()
+			delete(fc.index, key)
+			fc.mu.Unlock()
+		} else {
+			fc.removeIfUnchanged(path, seen)
+			fc.mu.Lock()
+			delete(fc.index, key)
+			fc.mu.Unlock()
+		}
 		return nil, fmt.Errorf("file cache: unmarshal %s: %w", path, errCacheMiss)
 	}
 	return &state, nil
@@ -162,7 +322,7 @@ func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 // Set 写入会话状态（覆盖写）。
 //
 // 流程：序列化 → 记下旧文件大小 → ensureSpaceLocked 腾空间 → MkdirAll →
-// 临时文件 + rename（0644）→ 按差额记账。写失败不记账、删成功才扣减。
+// 临时文件 + rename（0644）→ 按差额记账 → 登记索引。写失败不记账、删成功才扣减。
 func (fc *FileCache) Set(state *SessionStateV2) error {
 	if fc == nil || state == nil {
 		// 与包内 CompressionMetaCache.Set / SessionCacheV2.Set 的 nil 容错约定一致
@@ -177,6 +337,7 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 		return fmt.Errorf("file cache: marshal: %w", err)
 	}
 	path := fc.buildPath(state.TenantID, state.SessionID)
+	key := cacheIndexKey(state.TenantID, state.SessionID)
 
 	// 全程持锁（含文件 IO）：保证 sizeUsed 记账与文件状态严格一致，
 	// 也保证 ensureSpaceLocked 不会重入加锁（见文件头「锁策略」）。
@@ -218,7 +379,9 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("file cache: chmod %s: %w", tmpPath, err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	// Windows 上并发替换同目标（同会话并行轮次的快照覆盖写）会得瞬态
+	// ACCESS_DENIED，经 atomicrename 有界重试对齐 POSIX 语义。
+	if err := atomicrename.Replace(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("file cache: rename %s -> %s: %w", tmpPath, path, err)
 	}
@@ -226,7 +389,7 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 	// 写成功才记账：先减被覆盖的旧文件，再加新文件。
 	// ensureSpaceLocked 返回 healed：自愈路径已把 sizeUsed 重置为「不含
 	// excludePath」的磁盘实况，此时再减 oldSize 会把从未计入的体积重复扣减
-	// （2026-09-05 审计 B3 负漂移），直接按新值累加即可。
+	//（2026-09-05 审计 B3 负漂移），直接按新值累加即可。
 	if healed {
 		fc.sizeUsed += int64(len(data))
 	} else {
@@ -234,6 +397,14 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 	}
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
+	}
+	// 登记索引（H1）：覆盖写时只更新，不删旧条目后再插入；
+	// 保证在锁内的"sizeUsed 扣减→重增"与"索引 path/size/modTime 替换"
+	// 对外是不可分割的操作。
+	fc.index[key] = &indexEntry{
+		path:    path,
+		size:    int64(len(data)),
+		modTime: time.Now(),
 	}
 	return nil
 }
@@ -245,24 +416,27 @@ func (fc *FileCache) Delete(tenantID, sessionID string) error {
 		return nil
 	}
 	path := fc.buildPath(tenantID, sessionID)
+	key := cacheIndexKey(tenantID, sessionID)
 
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 
 	fi, err := os.Stat(path)
 	if err != nil {
-		return nil // 不存在 → 幂等成功
+		// 不存在 → 幂等成功（同时摘除可能存在的残留索引）
+		delete(fc.index, key)
+		return nil
 	}
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil // 并发下已被删除，同样视为幂等成功
-		}
+	// Windows 上与并发读者（Get 打开快照）冲突会报瞬态共享冲突，
+	// atomicrename.Remove 幂等 + 有界重试对齐 POSIX unlink 语义。
+	if err := atomicrename.Remove(path); err != nil {
 		return fmt.Errorf("file cache: remove %s: %w", path, err)
 	}
 	fc.sizeUsed -= fi.Size()
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
 	}
+	delete(fc.index, key)
 	return nil
 }
 
@@ -285,6 +459,7 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) (healed
 		path string
 		size int64
 		mod  time.Time
+		key  string
 	}
 	var items []candidate
 	var onDisk int64
@@ -312,11 +487,20 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) (healed
 		if fc.sizeUsed+needed <= fc.maxSize {
 			break
 		}
-		if err := os.Remove(it.path); err == nil {
+		if err := atomicrename.Remove(it.path); err == nil {
 			// 删成功才扣减
 			fc.sizeUsed -= it.size
 			if fc.sizeUsed < 0 {
 				fc.sizeUsed = 0
+			}
+			// 同步重建索引：路径 → {tenant,session} 逆向解析
+			if rel, relErr := filepath.Rel(fc.baseDir, it.path); relErr == nil {
+				parts := strings.SplitN(rel, string(filepath.Separator), 2)
+				if len(parts) == 2 {
+					tenant := parts[0]
+					session := strings.TrimSuffix(filepath.Base(parts[1]), ".json")
+					delete(fc.index, cacheIndexKey(tenant, session))
+				}
 			}
 		}
 	}
@@ -325,24 +509,33 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) (healed
 
 // removeExpired 在锁内复检 mtime 后删除过期文件并扣减 sizeUsed。
 // 锁内复检是为了避免误删并发 Set 刚刚刷新过的同名文件。
+// （同时摘除索引条目，保持索引与磁盘一致。）
 func (fc *FileCache) removeExpired(path string) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
+	fc.removeExpiredLocked(path)
+}
 
+// removeExpiredLocked 复用 removeExpired 的核心逻辑但要求调用方已持锁。
+// Get 在检测到索引过期时会先持锁调用本函数，避免重复加锁。
+func (fc *FileCache) removeExpiredLocked(path string) {
 	fi, err := os.Stat(path)
-	if err != nil || !fc.expired(fi.ModTime()) {
+	if err != nil || !fileCacheExpired(fc.ttl, fi.ModTime()) {
 		return // 已被并发删除，或已被并发 Set 刷新
 	}
-	if err := os.Remove(path); err != nil {
-		if !os.IsNotExist(err) {
-			slog.Warn("file cache: remove expired failed", "path", path, "error", err)
-			return // 删除失败不扣减记账
-		}
-		return
+	if err := atomicrename.Remove(path); err != nil {
+		slog.Warn("file cache: remove expired failed", "path", path, "error", err)
+		return // 删除失败不扣减记账
 	}
 	fc.sizeUsed -= fi.Size()
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
+	}
+	if rel, relErr := filepath.Rel(fc.baseDir, path); relErr == nil {
+		parts := strings.SplitN(rel, string(filepath.Separator), 2)
+		if len(parts) == 2 {
+			delete(fc.index, cacheIndexKey(parts[0], strings.TrimSuffix(filepath.Base(parts[1]), ".json")))
+		}
 	}
 }
 
@@ -356,26 +549,30 @@ func (fc *FileCache) removeIfUnchanged(path string, seen os.FileInfo) {
 	if err != nil || !fi.ModTime().Equal(seen.ModTime()) || fi.Size() != seen.Size() {
 		return // 文件已被并发替换/删除，不动它
 	}
-	if err := os.Remove(path); err != nil {
-		if !os.IsNotExist(err) {
-			slog.Warn("file cache: remove corrupt failed", "path", path, "error", err)
-			return
-		}
+	if err := atomicrename.Remove(path); err != nil {
+		slog.Warn("file cache: remove corrupt failed", "path", path, "error", err)
 		return
 	}
 	fc.sizeUsed -= fi.Size()
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
 	}
+	if rel, relErr := filepath.Rel(fc.baseDir, path); relErr == nil {
+		parts := strings.SplitN(rel, string(filepath.Separator), 2)
+		if len(parts) == 2 {
+			delete(fc.index, cacheIndexKey(parts[0], strings.TrimSuffix(filepath.Base(parts[1]), ".json")))
+		}
+	}
 }
 
-// Stats 返回缓存占用统计：size_used_bytes / max_size_bytes / usage_percent。
+// Stats 返回缓存占用统计：size_used_bytes / max_size_bytes / usage_percent / index_entries。
 func (fc *FileCache) Stats() map[string]interface{} {
 	if fc == nil {
 		return map[string]interface{}{
 			"size_used_bytes": int64(0),
 			"max_size_bytes":  int64(0),
 			"usage_percent":   0.0,
+			"index_entries":   0,
 		}
 	}
 	fc.mu.Lock()
@@ -389,6 +586,7 @@ func (fc *FileCache) Stats() map[string]interface{} {
 		"size_used_bytes": fc.sizeUsed,
 		"max_size_bytes":  fc.maxSize,
 		"usage_percent":   percent,
+		"index_entries":   len(fc.index),
 	}
 }
 

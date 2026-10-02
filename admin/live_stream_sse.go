@@ -393,7 +393,10 @@ func (c *LiveStreamConfig) defaults() {
 		c.IdleThreshold = LiveStreamIdleThreshold
 	}
 	if c.IdleTickInterval <= 0 {
-		c.IdleTickInterval = 5 * time.Minute
+		// Wave 3 B10 (2026-09-22): 5min → 1min so the no_traffic_1min
+		// tier is actually observed; the scan is index-driven (方案C)
+		// and cheap at this cadence.
+		c.IdleTickInterval = 1 * time.Minute
 	}
 	if c.KeepaliveInterval <= 0 {
 		c.KeepaliveInterval = 25 * time.Second
@@ -1772,7 +1775,8 @@ func (h *LiveStreamSSEHub) checkRedisHealth() *LiveStreamHealth {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	if err := h.store.rdb.Ping(ctx).Err(); err != nil {
-		return &LiveStreamHealth{RedisConnected: false, RedisError: err.Error()}
+		slog.Warn("live stream sse: redis ping failed", "err", err)
+		return &LiveStreamHealth{RedisConnected: false, RedisError: "redis ping failed"}
 	}
 	return &LiveStreamHealth{RedisConnected: true}
 }
@@ -1943,7 +1947,15 @@ func (h *LiveStreamSSEHub) logDeltaDetails(scope string, tenantID string, reques
 		}
 	}
 
-	slog.Info("live stream delta push",
+	// 2026-09-23 (request-forensics audit): this per-push detail line ran at
+	// Info on EVERY broadcast and dominated the gateway log (measured 99.7%
+	// of bytes, ~130KB per line with lane rollups), rotating the 100MB×10
+	// file set in ~9 minutes — stream-failure evidence (survival_attempt_*,
+	// executor: stream interrupted, survival_resume_blocked) was already on
+	// disk but aged out before anyone could read it. Demoted to Debug: the
+	// swim-lane debug value survives behind a debug level while the request
+	// audit trail retains hours of history at the default Info level.
+	slog.Debug("live stream delta push",
 		"scope", scope,
 		"tenant_id", tenantID,
 		"trigger_request", requestID,
@@ -2434,6 +2446,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 			&r.CompletionTokens, &r.TotalTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.CostUSD, &r.ErrorKind,
 			&r.CredentialID, &r.CredentialLabel,
 		); err != nil {
+			warnRowSkip("liveStream.replay", err)
 			continue
 		}
 		r.Ts = ts.UTC().Format(time.RFC3339)
@@ -2462,6 +2475,12 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		}
 
 		out = append(out, r)
+	}
+	// 迭代中断只让 Next() 返回 false，不查 Err() 就把「回放读到一半断了」
+	// 当成「回放读完了」→ 首帧静默少一批请求，泳道图看上去只是「最近很
+	// 闲」。上抛给调用方，由它按既有语义 warn + 跳过首帧。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("live stream replay: iterate rows: %w", err)
 	}
 	return out, nil
 }
@@ -2537,9 +2556,15 @@ func (h *LiveStreamSSEHub) terminalStatusesFromDB(ctx context.Context, requestID
 	for rows.Next() {
 		var id, status string
 		if err := rows.Scan(&id, &status); err != nil {
+			warnRowSkip("liveStream.terminalOverlay", err)
 			continue
 		}
 		out[id] = status
+	}
+	// best-effort overlay：失败不阻塞 SSE，但必须留痕——否则「终态纠正」
+	// 静默半途失效时，in_progress tile 会一直卡住而无人知道纠正器挂了。
+	if err := rows.Err(); err != nil {
+		slog.Warn("live stream terminal overlay rows iteration aborted; overlay partial", "count", len(requestIDs), "err", err.Error())
 	}
 	return out
 }

@@ -64,6 +64,16 @@ var (
 		Help: "Number of request goroutines currently blocked on an in-flight background probe (dedup reuse).",
 	})
 
+	// R57 §三.2: ProbeConfirm direct pings now share the per-credential ≤2
+	// gate with ProbeSync. This counter fires when a ping was skipped
+	// because no slot freed up within nodeProbeConfirmSlotWait — the
+	// confirm fails OPEN (no degrade) in that case, so sustained non-zero
+	// rates mean per-cred probe capacity is undersized for confirm traffic.
+	nodeProbeConfirmSlotStarved = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmgw_node_probe_confirm_slot_starved_total",
+		Help: "ProbeConfirm pings skipped on per-credential slot starvation (fail-open, no degrade applied).",
+	})
+
 	// 2026-09-03 P1.3: ProbeQueue submission observability.
 	//
 	// The node_probe submission path (bg/node_probe.go::submitViaQueueSource)
@@ -113,6 +123,20 @@ var (
 		},
 		[]string{"source", "outcome"},
 	)
+
+	// 2026-09-25 P0-2 (docs/03-design/perf-2026-09-25-probe-cost-optimization.md
+	// §5 改动 2): pair-level skip counter for request_failure triggers.
+	// submitViaQueue consults node_probe_state.next_retry_at before enqueueing;
+	// when the pair is already in failure-recovery with a fresh schedule
+	// (within probe.request_failure_min_gap_seconds), the trigger is skipped to
+	// prevent the persistent 429/5xx storm from enqueuing one probe per
+	// business failure. A sustained non-zero rate paired with
+	// node_probe_queue_submission_total{source="request_failure"} plateaus
+	// means the upstream is rate-limiting and the skip is doing its job.
+	nodeProbeRequestFailureSkipTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmgw_node_probe_request_failure_skip_total",
+		Help: "request_failure triggers skipped because the (credential, model) pair is already in failure-recovery with a fresh schedule (probe.request_failure_min_gap_seconds).",
+	})
 
 	// 2026-08-29 P2: Hot table promote metrics for monitoring partition migration health.
 	//
@@ -185,6 +209,75 @@ var (
 		},
 		[]string{"table"},
 	)
+	// R47（存储演进批，R46 §五#8）：per-table hot 剩余行数 gauge——promote
+	// 排水结束后的水位。持续高于「批量×周期」即排水速度跟不上写入，
+	// 是 hot 表 8h 不变式承压的前瞻信号。
+	hotTableBacklogRows = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llm_gateway_hot_table_backlog_rows",
+			Help: "Rows remaining in the hot table after each promote drain cycle. Persistently high values mean promote throughput lags write throughput.",
+		},
+		[]string{"table"},
+	)
+	// R48（§五#3 存储演进二批）：oldest-row-age gauge——每张 hot 表内最旧一行
+	// 距今的秒数（EXTRACT(EPOCH FROM (now() - MIN(<ts_col>)))）。0 = 表为空。
+	// 与 backlog_rows 互补：backlog 看"剩多少"，oldest 看"最旧多久"——
+	// 两者一起定位 promote 是否滞后（高 backlog + 大 age = 写入速度跑赢排水）。
+	// 观测窗口足够长（sessions 族 TTL 一周）即可裁决 sessions/session_turns/
+	// session_bodies 是否纳入 stateTableTTLSpecs 的 enabled 开关。
+	hotTableOldestRowAgeSeconds = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llm_gateway_hot_table_oldest_row_age_seconds",
+			Help: "Seconds since the oldest row currently in the hot table. 0 when the table is empty. Persistently large values mean write throughput outpaces promote drain — pair with backlog_rows to confirm.",
+		},
+		[]string{"table"},
+	)
+
+	// R73 审计 N2 收口（R72 §三遗留）：session_turn_logs 聚合积压三件套。
+	// pending 行 = expires_at > NOW()（聚合器只消费未过期行，过期未聚合即
+	// 永久丢失——这组 gauge 就是「丢失风险」的前瞻水位）。命名沿用 R47/R48
+	// hot 表配对惯例：rows 看"剩多少"、pending_sessions 看影响多少会话、
+	// oldest_age 看"最旧多久"（高 rows + 大 age = 聚合器跟不上写入或停摆；
+	// 全零 = 聚合链路健康）。刷新挂在 runCleanup 的 1h tick（见
+	// refreshTurnLogsBacklogGauge）。
+	sessionTurnLogsBacklogRows = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llm_gateway_session_turn_logs_backlog_rows",
+		Help: "session_turn_logs rows awaiting aggregation (expires_at > NOW()). Growth means the turn-logs aggregator is falling behind or down; expired-but-unaggregated rows are lost at expiry.",
+	})
+	sessionTurnLogsBacklogPendingSessions = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llm_gateway_session_turn_logs_backlog_pending_sessions",
+		Help: "Distinct (tenant_id, session_id) pairs with unaggregated session_turn_logs rows. Blast-radius companion to backlog_rows.",
+	})
+	sessionTurnLogsBacklogOldestAgeSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llm_gateway_session_turn_logs_backlog_oldest_age_seconds",
+		Help: "Seconds since the oldest unaggregated session_turn_logs row (expires_at > NOW()). 0 when no backlog. Large values with rows>0 mean the aggregator is stalled and the oldest rows are nearest to silent expiry.",
+	})
+
+	// metricWorkerRestarts (R53, R51-F13) — self-healing restarts of bg
+	// workers after a runFn panic (BaseWorker supervise loop). Label
+	// "worker" is the compile-time literal worker name (closed set, ~25
+	// values). A sustained rate > 0 on one worker means that worker hits a
+	// recurring panic and needs a real fix, not just the backoff.
+	metricWorkerRestarts = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_bg_worker_restarts_total",
+			Help: "Self-healing restarts of a bg worker after a runFn panic (BaseWorker supervise loop).",
+		},
+		[]string{"worker"},
+	)
+
+	// metricGoroutinePanics (三十七轮审计 §三#5, 2026-09-30) — panics contained
+	// by bg.Go/GoArg (one-shot or handshake-bearing goroutines that must not
+	// restart). Label "name" is the compile-time literal spawn name. A rate > 0
+	// means the contained goroutine died and its function is degraded until
+	// process restart — alert, then fix the panic cause.
+	metricGoroutinePanics = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_bg_goroutine_panics_total",
+			Help: "Panics contained by bg.Go/GoArg (no restart; goroutine is dead until process restart).",
+		},
+		[]string{"name"},
+	)
 )
 
 // recordPromoteFailure increments the failure counter for a table.
@@ -203,9 +296,57 @@ func recordPromoteDuration(table string, seconds float64) {
 	hotTablePromoteDurationSeconds.WithLabelValues(table).Observe(seconds)
 }
 
-// recordPromoteSkipped increments the skipped counter for a table.
+// recordPromoteSkipped increments the skipped counter.
 func recordPromoteSkipped(table string) {
 	hotTablePromoteSkippedTotal.WithLabelValues(table).Inc()
+}
+
+// recordHotTableBacklog sets the post-drain hot table row count (R47).
+func recordHotTableBacklog(table string, rows int64) {
+	hotTableBacklogRows.WithLabelValues(table).Set(float64(rows))
+}
+
+// recordHotTableOldestRowAge sets the oldest-row age in seconds (R48 §五#3).
+// ageSeconds < 0 表示表为空或查询失败（保持 last value + Warn）。
+func recordHotTableOldestRowAge(table string, ageSeconds float64) {
+	hotTableOldestRowAgeSeconds.WithLabelValues(table).Set(ageSeconds)
+}
+
+// hotTableTSColumn returns the timestamp column name for a hot-table label.
+// Defaults to "ts" (canonical for most hot tables in this repo); overrides
+// only for tables whose schema is known to use a different column.
+//
+// R48 §五#3：观测 sessions 族 TTL 裁决前置——需要知道每张表的最旧
+// 行落在哪一列。本映射必须与 sql/migrations 中对应表的 CREATE 保持一致，
+// 添加新 hot 表时必须同步更新此处。
+// R51 (2026-09-21)：移除 harness_hot / session_audit_logs_hot /
+// probe_feedback_hot 三条映射——仓库中无这三张表的建表/写入路径（幽灵表），
+// 留在白名单里只会让本映射与实际 CREATE 的"必须一致"契约失真。
+//
+// 2026-09-23 252 PG SQL 日志审计轮：R48 初版映射 10/20 张表与真库不符
+// （session_turns/session_bodies/auto_route/candidate_failure_logs 写成
+// created_at 实为 ts；request_wal/credit_ledger/tool_usage_stats/handoff_logs
+// 走默认 ts 实为 created_at；credential_model_index_hot 实为 bucket；
+// supplier_errors_hot 实为 occurred_at），oldest-age gauge 每 promote 周期
+// 固定产生 10 条 42703（252 快照 74min 实证），gauge 对这些表从未工作。
+// 本映射逐表对照 252 真库 information_schema 重写；真库回归钉在
+// hot_ts_column_realdb_test.go（TEST_DATABASE_URL 门控）。
+func hotTableTSColumn(label string) string {
+	switch label {
+	case "request_wal_hot", "credit_ledger", "tool_usage_stats",
+		"handoff_logs_hot", "session_memora_hot", "session_censors_hot",
+		"session_tools_hot", "session_module_executions_hot",
+		"dashboard_access_events_hot", "session_last_requests":
+		return "created_at"
+	case "credential_model_index_hot":
+		// 时间列是 bucket TIMESTAMPTZ（索引刷新的 5min 桶），无 ts/created_at。
+		return "bucket"
+	case "supplier_errors_hot":
+		// V371 建表，时间列 occurred_at。
+		return "occurred_at"
+	default:
+		return "ts"
+	}
 }
 
 // incPromoteZombieLockStreak (2026-08-31, P2-8) bumps the per-table

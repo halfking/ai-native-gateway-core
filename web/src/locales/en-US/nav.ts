@@ -26,9 +26,13 @@ export default {
     credentialMonitor: 'Credential Monitor',
     annotations: 'Human Annotation',
     annotationStats: 'Annotation Statistics',
+    taskProfile: 'Task Profiles',
+    autoTuning: 'Route Tuning',
     probeHealth: 'Probe Health',
     systemMonitor: 'System Monitoring',
     providers: 'Providers',
+    reconciliation: 'Provider Reconciliation',
+    settlementReport: 'Settlement Report',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
@@ -97,4 +101,9 @@ export default {
   publicSupport: 'Support',
   // 2026-07-21: a11y skip-link target, used by LifecycleShell.vue.
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'Unresolved request-side anomalies',
+  },
 }

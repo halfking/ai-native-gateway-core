@@ -101,7 +101,7 @@ func (s *DefaultProbeScanner) Start(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	s.lifecycleMu.Unlock()
-	go s.run(runCtx)
+	Go("default_probe_scanner.run", func() { s.run(runCtx) })
 	slog.Info("default probe scanner started", "interval", s.interval)
 }
 

@@ -192,9 +192,16 @@ func (s *PGStore) SaveAttribution(ctx context.Context, tenantID, gwSessionID str
 		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''),
 			 $6, $7, $8, $9, NOW(), NOW())
 		ON CONFLICT (tenant_id, gw_session_id) DO NOTHING`
+	// R71 审计：evidence 是 jsonb 列。[]byte 直传在 SimpleProtocol 池下
+	// 内联为 bytea hex 字面量（R11 FIX-C 同根）；nil 须保持 NULL 语义
+	// （string(nil)='' 会同样炸 jsonb 解析），经 interface{} 传。
+	var evidenceParam interface{}
+	if len(evidence) > 0 {
+		evidenceParam = string(evidence)
+	}
 	return s.q.Exec(ctx, q,
 		gwSessionID, tenantID, r.ProjectRef, r.ProjectLabel, r.TaskRef,
-		string(r.Method), r.Confidence, string(r.Status), evidence)
+		string(r.Method), r.Confidence, string(r.Status), evidenceParam)
 }
 
 // LoadProjects 读取启用中的项目维表。

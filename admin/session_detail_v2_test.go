@@ -95,14 +95,28 @@ func newSessionDetailAuthRequest(t *testing.T, target, role, tenant string) *htt
 	return SetAuthContext(r, &AuthContext{TenantID: tenant, Role: role, IsJWT: true})
 }
 
+// TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant:
+// 期望三次 SQL 调用：
+//  1. resolveSessionID direct lookup（input == sessions.session_id）
+//  2. querySession 的 LEFT JOIN LATERAL session_analysis_metadata
+//  3. queryTurns 的 session_turns_with_current_month
+//
+// 三次 SELECT 的次序由 ServeHTTP 锁住：resolve 在前，querySession 在后。
+// 反转就破契约 —— 这是 §3 P0 任务要求的"session_id 强制作为主键"。
 func TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	// 1. resolveSessionID direct: input 命中 sessions.session_id → 直接返回
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_abc", "tenant-a").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).AddRow("gw_abc"))
+	// 2. querySession: LEFT JOIN LATERAL session_analysis_metadata
 	mock.ExpectQuery(`LEFT JOIN LATERAL`).WithArgs("gw_abc", "tenant-a").
 		WillReturnRows(makeSessionDetailMockRowForTenant(nil, "tenant-a"))
+	// 3. queryTurns: session_turns_with_current_month
 	mock.ExpectQuery(`FROM public\.session_turns_with_current_month`).
 		WithArgs("gw_abc", "tenant-a", 20, 0).
 		WillReturnRows(makeSessionTurnMockRows())
@@ -125,8 +139,14 @@ func TestSessionDetailServeHTTPAllowsSuperAdminTenantSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	// 1. resolveSessionID direct lookup
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_abc", "tenant-b").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).AddRow("gw_abc"))
+	// 2. querySession LEFT JOIN LATERAL
 	mock.ExpectQuery(`LEFT JOIN LATERAL`).WithArgs("gw_abc", "tenant-b").
 		WillReturnRows(makeSessionDetailMockRowForTenant(nil, "tenant-b"))
+	// 3. queryTurns
 	mock.ExpectQuery(`FROM public\.session_turns_with_current_month`).
 		WithArgs("gw_abc", "tenant-b", 50, 0).
 		WillReturnRows(makeSessionTurnMockRows())
@@ -279,9 +299,11 @@ func TestQuerySession_LeftJoinMissLeavesAnalysisNil(t *testing.T) {
 }
 
 func TestQuerySession_NoRowsReturnsNilSessionNilError(t *testing.T) {
-	// 现有实现用 err.Error() == "no rows in result set" 把 pgx.ErrNoRows 翻译成
-	// (nil, nil) —— 调用方 querySessionDetail 进一步把它当 404 处理。本测试
-	// 锁住这个契约，避免后续"修复"成 errors.Is 时悄悄改变 404 的语义。
+	// 契约：ErrNoRows → (nil, nil)，调用方 querySessionDetail 进一步把它
+	// 当 404 处理。R69 起实现用 errors.Is(err, pgx.ErrNoRows) 判定——语义
+	// 与旧字符串比较等价（本测试 mock 返回的就是 pgx.ErrNoRows），且在
+	// 错误被包装（超时/事务层）时仍保持 404 而非误判 500。本测试锁住
+	// (nil, nil) 返回契约本身。
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)

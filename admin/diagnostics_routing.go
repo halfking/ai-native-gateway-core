@@ -74,7 +74,7 @@ func (h *Handler) handleRoutingBlockedDiagnostic(w http.ResponseWriter, r *http.
 
 	diag, err := buildRoutingBlockedDiagnostic(ctx, h.db, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("diagnostic failed: %v", err))
+		writeInternalErr(w, "diagnostic failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, diag)
@@ -117,6 +117,7 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 	for rows.Next() {
 		var b routingBlockedBinding
 		if err := rows.Scan(&b.CredentialID, &b.CredentialLabel, &b.RawModelName, &b.IsRoutable, &b.UnavailableReason); err != nil {
+			warnRowSkip("routingBlockedDiagnostic.bindings", err)
 			continue
 		}
 		key := bindingKey{credID: b.CredentialID, model: b.RawModelName}
@@ -132,6 +133,12 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 			}
 			reasonBreakdown[reason]++
 		}
+	}
+	// 迭代中断（连接断开/服务端错误）与正常收敛不可区分，必须查 rows.Err()：
+	// 否则会静默返回一个 200 + 截断的 bindings 列表，运维据此判断"没有更多
+	// 被阻塞的绑定"，方向完全错。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("v_routable_credential_models iterate rows: %w", err)
 	}
 
 	truncated := total > maxBindings
@@ -174,7 +181,17 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 				if err := credRows.Scan(&cid, &st.label, &st.status, &st.availabilityState, &st.healthStatus,
 					&st.manualDisabled, &st.lifecycleStatus); err == nil {
 					credStateMap[cid] = st
+				} else {
+					warnRowSkip("routingBlockedDiagnostic.credState", err)
 				}
+			}
+			// best-effort 补齐：credential 状态查询失败/中断只影响标签与状态
+			// 字段，binding 侧的 label 已有回退路径（见下方 cs.label=="" 分支），
+			// 不应把整个诊断打成 500 —— 但必须留痕，否则"凭据状态全空"会被
+			// 误读成"所有凭据都没有状态"。
+			if err := credRows.Err(); err != nil {
+				slog.Warn("admin routing-blocked diagnostic credential state rows iteration aborted",
+					"op", "routingBlockedDiagnostic.credState", "provider_id", providerID, "error", err)
 			}
 		}
 	}
@@ -274,7 +291,7 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		      OR consecutive_failures > 0
 		  )
 	`, req.ProviderID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("credential reset failed: %v", err))
+		writeInternalErr(w, "credential reset failed", err)
 		return
 	}
 
@@ -291,7 +308,7 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		  AND c.provider_id = $1
 		  AND (cmb.available IS NOT TRUE OR cmb.unavailable_reason IS NOT NULL)
 	`, req.ProviderID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("binding reset failed: %v", err))
+		writeInternalErr(w, "binding reset failed", err)
 		return
 	}
 
@@ -308,7 +325,7 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		  AND c.provider_id = $1
 		  AND mps.state IN ('broken_confirmed', 'recovering', 'unknown', 'suspicious', 'failing')
 	`, req.ProviderID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("probe state reset failed: %v", err))
+		writeInternalErr(w, "probe state reset failed", err)
 		return
 	}
 
@@ -333,7 +350,7 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		  AND c.provider_id = $1
 		  AND nps.last_direct_ok = FALSE
 	`, req.ProviderID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("node probe state reset failed: %v", err))
+		writeInternalErr(w, "node probe state reset failed", err)
 		return
 	}
 

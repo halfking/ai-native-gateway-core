@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -536,14 +535,15 @@ func readBoolSetting(key string) (bool, string) {
 }
 
 // diskUsageAt 返回 path 所在磁盘的 (usage%, total, free, used, error)
+// statfsBytes 返回 (total, availToRoot, free)；used 必须用 total-Bfree
+// （第三个返回值）推回，直接拿第三个值当 used 会把"已用%"算成"空闲%"。
 func diskUsageAt(path string) (pct float64, total, free, used uint64, err error) {
-	var stat syscall.Statfs_t
-	if err = syscall.Statfs(path, &stat); err != nil {
+	total, free, freeAll := statfsBytes(path)
+	if total == 0 {
+		err = fmt.Errorf("disk usage unavailable for %s", path)
 		return
 	}
-	total = stat.Blocks * uint64(stat.Bsize)
-	free = stat.Bavail * uint64(stat.Bsize)
-	used = total - (stat.Bfree * uint64(stat.Bsize))
+	used = total - freeAll
 	if total > 0 {
 		pct = float64(used) / float64(total) * 100
 	}

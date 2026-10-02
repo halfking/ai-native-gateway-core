@@ -640,6 +640,15 @@ func (c *TransportIRConverter) extractResponseExtensions(body []byte, resp *ir.I
 		resp.Extensions = make(map[string]json.RawMessage, len(bag.ClientRaw))
 	}
 	for k, v := range bag.ClientRaw {
+		if isStandardResponseField(k) {
+			// 2026-09-21 R50 根修(usage 全 0 链路): Extract 的白名单是请求字段集,
+			// 对响应体而言 choices/created/object 等源协议标准字段会被当成
+			// "扩展"并在 Serialize*Response 后回填,产生 OpenAI+Anthropic 双协议
+			// 合并体——下游 classify 先命中 choices 走 OpenAI 再转换,读不到
+			// prompt_tokens,usage 归零。响应侧必须按响应字段集过滤,只把真正的
+			// 非标字段(厂商私有/自定义)留作往返扩展。
+			continue
+		}
 		resp.Extensions[k] = v
 	}
 }

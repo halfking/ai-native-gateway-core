@@ -77,7 +77,7 @@ func NewOpslogTrimmer(pool *pgxpool.Pool) *OpslogTrimmer {
 // Performs an initial trim on startup so a fresh deploy drains any
 // pre-existing backlog without waiting 24h.
 func (t *OpslogTrimmer) Start(ctx context.Context) {
-	go t.run(ctx)
+	Go("opslog_trimmer.run", func() { t.run(ctx) })
 	slog.Info("opslog trimmer started",
 		"cfl_retention", t.cflRetention.String(),
 		"cpm_retention", t.cpmRetention.String(),
@@ -131,12 +131,50 @@ func (t *OpslogTrimmer) TrimOnce(ctx context.Context) (cflDeleted, cpmDeleted in
 	// Failures are escalated to slog.Error with a consecutive-failure
 	// streak (cflFailStreak) so a persistently broken delete path is
 	// visible at error level instead of being swallowed as a Warn.
+	//
+	// 2026-09-29 (12h 审计二十轮 P2): 形态从 `id IN + ORDER BY` 改为
+	// `ctid IN` 并去掉 ORDER BY。去掉 ORDER BY 确实有收益——它是 top-N
+	// heapsort 吃满 67,608 行。写入 318/24h ≪ 5,000/天删除能力，单批即够，
+	// 无需循环。
+	//
+	// 2026-09-29 (续十九, P1 数据损坏): 上一版的 `ctid IN` 是错的，本轮改回
+	// `(tableoid, ctid)` 复合键。candidate_failure_logs 是 11 分区的父表，
+	// 而 **ctid 只在单个分区内唯一**，物理地址在分区之间会重复。子查询返回的
+	// ctid 会被下推到**每一个**分区，于是每个分区都删掉处在同一物理偏移上的
+	// 行——这些行从未被保留期谓词选中。
+	//
+	// 真库复刻实测（PG 17.10，TEMP 分区表，数据取自生产 83,584 行，
+	// BEGIN…ROLLBACK 内完成，零持久变更）：
+	//
+	//	ctid IN            子查询选中 5,000 → 实删 10,000
+	//	                  最坏布局（9 月分区全过期、10 月分区全未过期）
+	//	                  误删 4,722 行未过期数据
+	//	(tableoid, ctid)  实删 5,000，误删 0
+	//
+	// 复合键的 tableoid 是「这张行物理上属于哪个分区」，ctid 只在 tableoid
+	// 之内寻址，于是子查询的谓词与外层的定位都锁定在同一分区内，语义精确。
+	// **叶子分区（如 candidate_failure_logs_2026_09）用裸 ctid 是对的**，
+	// 单分区内 ctid 唯一；错的只是打在父表上。门见
+	// tests/48h-audit/D07-hot-columnar/data/partitioned_parent_ctid_form_test.go。
+	//
+	// 顺带更正两处被污染的实测数字，免得下一轮再被它们误导：
+	//
+	//  1. 上一版注释的「411ms → 19ms（22 倍）」是在**单个叶子分区**上量的，
+	//     而代码删的是父表。形态 (tableoid, ctid) 在父表上实测 5,000 行
+	//     需 16.8ms，量级本就接近 19ms。结论「去掉 ORDER BY 有收益」成立，
+	//     但「22 倍」不能当作父表上的提速依据。
+	//  2. 改成 ctid 形态**之前**的 `id IN` 其实一行都删不掉：真库 83,306 行
+	//     的 id **全部为 NULL**（该列可空、无默认值、无索引、无主键；应用写
+	//     candidate_failure_logs_hot 时不填 id，promote 函数整表搬过去），
+	//     而 `id IN (…, NULL, …)` 永不匹配。7 天 TTL 一直是失效的，只是
+	//     失效方式是「删不掉」而非「删错」——本轮才换成真正生效的形态。
+	//     失效有界：drop_old_state_partitions 每月 2 号按 7 天 TTL 整分区
+	//     DROP，所以实际保留期退化成约 30 天（当前分区 81% 是已过期未删行）。
 	res1, err := t.pool.Exec(ctx, `
 		DELETE FROM candidate_failure_logs
-		WHERE id IN (
-			SELECT id FROM candidate_failure_logs
+		WHERE (tableoid, ctid) IN (
+			SELECT tableoid, ctid FROM candidate_failure_logs
 			WHERE ts < NOW() - $1::interval
-			ORDER BY ts
 			LIMIT 5000
 		)
 	`, cflRetention.String())

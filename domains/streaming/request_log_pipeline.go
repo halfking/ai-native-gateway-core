@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
 )
@@ -98,6 +99,17 @@ type RequestLogContext struct {
 	AutoDecision   []byte // serialised autoRouteDecision JSON
 	AutoConfidence float64
 	AutoSignals    autoroute.ClassificationSignals
+
+	// 2026-09-29 X-Gw-Test-Mode (see auto_route.go). Empty value is the
+	// production default ("live"); non-empty values are the test-mode
+	// tokens (mock / auto-only / other-only).
+	//
+	// NOT persisted: request_logs has no test_mode column, so this stays
+	// in-process only. Operators filter internal test traffic with
+	// `WHERE error_kind NOT LIKE '%_mock'` — that column IS written, by
+	// recordMockRequestLog on the mock short-circuit path. Do not write
+	// comments here claiming a test_mode column until the migration lands.
+	TestMode string
 
 	// D5: model-level fallback list. The canonical model names from the
 	// auto-route CandidatesTop3, EXCLUDING the already-chosen winner. Used by
@@ -212,6 +224,11 @@ type RequestLogContext struct {
 	meta     requestAttemptMeta
 	logged   atomic.Bool
 	terminal atomic.Bool
+
+	// R52：body-marker 识别结果 memo（resolved 置位后不再重复全 body
+	// JSON 扫描；识别不出同样置位避免每次 refreshMeta 重扫）。
+	bodyMarkerResolved bool
+	bodyMarker         string
 }
 
 func (c *RequestLogContext) SetError(code, msg string) {
@@ -366,11 +383,19 @@ func (c *RequestLogContext) RecordFix(actions map[string]any) {
 
 // NewRequestLogContext starts a per-request log cache. Call EnsureCaptured early.
 func (h *ChatHandler) NewRequestLogContext(r *http.Request, requestID string, start time.Time) *RequestLogContext {
+	// R59 audit (S6-2): T0 must default to the request arrival time. Before
+	// this, T0ArrivedAt was only stamped on the dispatch-queue path, so
+	// pre-dispatch rejections (auth/budget/rate-limit) and synthetic probe
+	// rows landed with t0_arrived_at NULL — 99.5% of request_logs_hot, which
+	// poisoned every time-window query that filtered on it (154 critical
+	// audit R3). Dispatch-path ApplyQueueTimestamps* still overwrite with
+	// the queue-side stamp when one exists.
 	return &RequestLogContext{
-		handler:   h,
-		RequestID: requestID,
-		StartTime: start,
-		Request:   r,
+		handler:     h,
+		RequestID:   requestID,
+		StartTime:   start,
+		T0ArrivedAt: &start,
+		Request:     r,
 	}
 }
 
@@ -399,6 +424,21 @@ func (c *RequestLogContext) SetClientModel(model string) {
 // SetWorkType stores the X-Gw-Work-Type header for request_logs.work_type.
 func (c *RequestLogContext) SetWorkType(wt string) {
 	c.WorkType = strings.TrimSpace(wt)
+}
+
+// SetTestMode stores the parsed X-Gw-Test-Mode value on the in-process
+// context. Empty value clears the field (live / header absent).
+func (c *RequestLogContext) SetTestMode(mode string) {
+	c.TestMode = strings.TrimSpace(mode)
+}
+
+// TestModeValue returns the request's test mode, or "" for live. Nil-safe
+// so audit / shutdown paths can call it on a possibly-nil context.
+func (c *RequestLogContext) TestModeValue() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.TestMode)
 }
 
 func (c *RequestLogContext) SetOutboundModel(model string) {
@@ -571,7 +611,31 @@ func (c *RequestLogContext) EnsureCaptured() {
 	if c.meta.SystemPrompt == "" && len(c.Body) > 0 {
 		c.meta.SystemPrompt = agenttelemetry.ExtractSystemPromptFromBody(c.Body, c.Request.URL.Path)
 	}
+	// R52：body-marker 覆盖判定从 EnsureCaptured 移入 refreshMeta——
+	// 首个 EnsureCaptured 调用点（chat 主路径 handler.go:1960）先于
+	// SetKey（:2102）执行 header 链，AgentName 恒为 ""，旧位置上 body
+	// 结论会无条件压过 UA/X-Agent-Name（UA=zcode/2.0 + model=deepseek-*
+	// 的真实客户端被记成 deepseek-code）。见 refreshMeta。
 	c.refreshMeta()
+}
+
+// shouldOverrideWithBodyMarker reports whether the header-derived AgentName
+// is weak enough that a body-marker-based identification should win.
+//
+// Mirrors the policy in request_meta.go:shouldOverrideAgentName — generic
+// HTTP client libraries (go-client / python-client / curl / postman /
+// insomnia) and "unknown" don't tell us anything about the AI agent using
+// them, while a body marker almost always does.
+//
+// 2026-09-21 audit.
+func shouldOverrideWithBodyMarker(headerName string) bool {
+	switch headerName {
+	case "", "unknown",
+		"go-client", "python-client",
+		"curl", "postman", "insomnia":
+		return true
+	}
+	return false
 }
 
 // recordMetadataLoss reports request metadata dropped by a marshal/unmarshal
@@ -644,6 +708,21 @@ func (c *RequestLogContext) refreshMeta() {
 		return
 	}
 	c.handler.fillAttemptMeta(c.Request, c.KeyInfo, &c.meta)
+	// R52：body-marker 第三层识别在 header 链（fillAttemptMeta）之后跑，
+	// 只有弱名（unknown / 通用 HTTP 客户端库）才被 body 证据覆盖——与
+	// shouldOverrideWithBodyMarker 的语义一致。识别结果 memo 一次（识别
+	// 不出也置位），避免每次 refreshMeta 重复全 body JSON 扫描。
+	if !c.bodyMarkerResolved {
+		c.bodyMarkerResolved = true
+		if len(c.Body) > 0 {
+			c.bodyMarker = agenttelemetry.ExtractClientTypeFromBody(c.Body, c.Request.Header.Get("X-Code-Session-Id"))
+		} else if c.Request != nil && c.Request.Header.Get("X-Code-Session-Id") != "" {
+			c.bodyMarker = "minimax-code"
+		}
+	}
+	if c.bodyMarker != "" && (c.meta.AgentName == "" || shouldOverrideWithBodyMarker(c.meta.AgentName)) {
+		c.meta.AgentName = c.bodyMarker
+	}
 }
 
 func (c *RequestLogContext) SessionTask() (sessionID, taskID string) {
@@ -845,6 +924,9 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 
 	gwSessionID, gwTaskID := c.SessionTask()
+	// R50 F15：730 sessions 归因三列的采集点（role/父会话头；父任务复用
+	// gwTaskID）。仅进 Mirror-only 传输字段，request_logs 列契约不动。
+	agentRole, parentSessionID := gwAgentAttributionFromRequest(c.Request)
 	clientProfile := c.meta.ClientProfile
 	identityHash := c.meta.IdentityHash
 	if c.Request != nil && (clientProfile == "" || identityHash == "") {
@@ -981,6 +1063,8 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		RequestMode:       strPtr(c.RequestMode()),
 		GwSessionID:       strPtr(gwSessionID),
 		GwTaskID:          strPtr(gwTaskID),
+		AgentRole:         strPtr(agentRole),
+		ParentSessionID:   strPtr(parentSessionID),
 		LatencyMs:         &latency,
 		Success:           false,
 		RequestStatus:     strPtr(status),
@@ -1055,6 +1139,22 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		if summary := c.RoutingTracker.Summary(); summary != "" {
 			reqLog.RoutingSummary = &summary
 		}
+	}
+
+	// 2026-09-25: failure/rate_limited terminal rows lost origin metadata —
+	// this builder never applied the OriginMiddleware context (only the
+	// success path's initial INSERT did), so probe/self-check traffic that
+	// exits early (gw_rpm_exceeded / no_candidate) landed with origin_stage
+	// NULL and client_ip lost. Apply ctx + DB-system-key fallback here, and
+	// propagate the stage onto the log context so the side-table
+	// request_context_attrs row derives is_probe for the 仅探测 filter.
+	var originCtx context.Context
+	if c.Request != nil {
+		originCtx = c.Request.Context()
+	}
+	applyOriginMetadata(reqLog, c.KeyInfo, originCtx)
+	if reqLog.OriginStage != nil && c.OriginStage == "" {
+		c.SetOriginStage(*reqLog.OriginStage)
 	}
 
 	return reqLog
@@ -1395,8 +1495,11 @@ func mergeCompressionMetaV3(
 // plaintext) and hard-capped so compression_meta stays far below its JSONB
 // comfort zone; on overflow the arrays are truncated and a *_truncated flag
 // kept, on runaway size only the counters survive.
-func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentInfo) []byte {
+func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentInfo, source ...compression.MessageSnapshot) []byte {
 	prov := make(map[string]any, 3)
+	if len(source) > 0 && !source[0].IsZero() {
+		prov["compression_source_snapshot"] = source[0]
+	}
 
 	windowSource := map[string]int{}
 	for _, a := range alignment {
@@ -1431,6 +1534,10 @@ func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentI
 				prov["sanitize_refs_truncated"] = true
 			}
 			prov["sanitize_message_refs"] = refs
+			prov["sanitize_map_ref"] = info.MapRef
+			prov["sanitize_map_generation"] = info.MapGeneration
+			prov["raw_snapshot"] = info.RawSnapshot
+			prov["sanitized_snapshot"] = info.SanitizedSnapshot
 		}
 	}
 
@@ -1537,6 +1644,45 @@ func (c *RequestLogContext) SetOriginStage(stage string) {
 		return
 	}
 	c.OriginStage = strings.TrimSpace(stage)
+}
+
+// applyOriginMetadata 把 origin 元数据落到 telemetry 条目上（2026-09-25）。
+//
+// ① ctx 路径：OriginMiddleware 已判定的值（可信 worker 的声明 stage，或
+//
+//	business 缺省）——成功路径的初始 INSERT 此前是唯一应用点
+//	（recordInitialRequestLog），failure/rate_limited 终态行从不应用。
+//
+// ② DB 系统键兜底：auth 中间件对 sk-* 数据面键不注册 owner（DB 校验发生在
+//
+//	handler 内、晚于 OriginMiddleware），后者的信任判定因此永远走剥头
+//	降级路径——持 DB 系统 key（如自检 worker 自动生成的 sk-selfcheck-*）
+//	的探测请求被标成 business；而提前退出（gw_rpm_exceeded /
+//	no_candidate）的行连初始 INSERT 都没有，origin 全空。本地部署 8 小时
+//	内积压 4.1 万条 NULL-stage 的 'user: ping' 行，会话视图无法识别为
+//	探测即此缺陷。此处用已解析的 owner 重跑信任判定，把声明 stage（或
+//	owner 规范映射）补写到条目上；owner 来自 api_keys.is_system 行而非
+//	客户端输入，业务 key 不会命中信任清单，无伪造面。
+func applyOriginMetadata(entry *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo, ctx context.Context) {
+	if entry == nil {
+		return
+	}
+	if ctx != nil {
+		entry.ApplyOriginFromContext(ctx)
+	}
+	if keyInfo == nil || keyInfo.OwnerUser == nil || *keyInfo.OwnerUser == "" {
+		return
+	}
+	stage, actor, ok := middleware.ResolveOriginForSystemKey(ctx, *keyInfo.OwnerUser)
+	if !ok {
+		return
+	}
+	if entry.OriginStage == nil || *entry.OriginStage == "" || *entry.OriginStage == "business" {
+		entry.OriginStage = strPtr(stage)
+		if actor != "" && (entry.OriginActor == nil || *entry.OriginActor == "") {
+			entry.OriginActor = strPtr(actor)
+		}
+	}
 }
 
 // streamCountersFromContext (2026-07-28 §5.5) returns the

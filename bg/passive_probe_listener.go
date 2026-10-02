@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
 // transientErrorKinds are the error types that indicate a credential/network
@@ -59,7 +60,7 @@ func (l *PassiveProbeListener) SetAvailabilityCache(cache *ModelAvailabilityCach
 
 func (l *PassiveProbeListener) Start(ctx context.Context) {
 	ctx, l.cancel = context.WithCancel(ctx)
-	go l.run(ctx)
+	Go("passive_probe_listener.run", func() { l.run(ctx) })
 	slog.Info("passive probe listener (Layer 5) started",
 		"poll_interval", l.pollInterval,
 	)
@@ -117,11 +118,15 @@ func (l *PassiveProbeListener) resetCountersOnSuccess(ctx context.Context) {
 			-- 154), so recent successes were invisible and "consecutive"
 			-- streaks never reset. pollNewErrors already reads the
 			-- current-month surface; every recent-window read must too.
-			FROM request_logs_with_current_month
-			WHERE success = TRUE
-			  AND ts > NOW() - INTERVAL '5 minutes'
-			  AND credential_id IS NOT NULL
-			  AND outbound_model IS NOT NULL
+			-- R50: probe traffic excluded (dual-arm) — the passive listener
+			-- profiles BUSINESS traffic; probe rows would both arm and
+			-- reset streaks for models probes touch.
+			FROM request_logs_with_current_month rl
+			WHERE `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
+			  AND rl.success = TRUE
+			  AND rl.ts > NOW() - INTERVAL '5 minutes'
+			  AND rl.credential_id IS NOT NULL
+			  AND rl.outbound_model IS NOT NULL
 		) AS success_pairs
 		WHERE pps.credential_id = success_pairs.credential_id
 		  AND pps.raw_model_name = success_pairs.raw_model_name
@@ -185,6 +190,10 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		  AND rl.error_kind = ANY($1)
 		  AND rl.error_kind IS NOT NULL
 		  AND COALESCE(rl.failure_stage, 'upstream') = 'upstream'
+		  -- R50: dual-arm probe exclusion — a probe's own upstream failure
+		  -- is real, but feeding it back here re-arms probes on probe-only
+		  -- traffic (the same self-reinforcement INV-3 closed for usage).
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
 		  AND rl.credential_id IS NOT NULL
 		  AND rl.outbound_model IS NOT NULL
 		  AND pps.credential_id IS NULL
@@ -215,11 +224,14 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    -- 2026-09-10: same cold-parent staleness as resetCountersOnSuccess —
 		    -- recent traffic lives in request_logs_hot, which only the
 		    -- current-month surface exposes.
-		    FROM request_logs_with_current_month
-		    WHERE ts > NOW() - INTERVAL '5 minutes'
-		      AND credential_id IS NOT NULL
-		      AND outbound_model IS NOT NULL
-		    GROUP BY credential_id, COALESCE(outbound_model, client_model)
+		    -- R50: probe traffic excluded so the error_rate denominator is
+		    -- business traffic only (consistent with Step 1 above).
+		    FROM request_logs_with_current_month rl
+		    WHERE rl.ts > NOW() - INTERVAL '5 minutes'
+		      AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
+		      AND rl.credential_id IS NOT NULL
+		      AND rl.outbound_model IS NOT NULL
+		    GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model)
 		) AS win
 		WHERE pps.credential_id = win.credential_id
 		  AND pps.raw_model_name = win.raw_model_name
@@ -283,7 +295,9 @@ func (l *PassiveProbeListener) reviewPromotion(ctx context.Context) {
 					var credID int
 					var rawModel string
 					if err := rows.Scan(&credID, &rawModel); err != nil {
-						continue
+						if dbrows.SkipOrFail("bg.PassiveProbeListener.reviewPromotion/cachePrime", err) {
+							continue
+						}
 					}
 					nextRetryAt := time.Now().Add(5 * time.Minute)
 					_ = l.cache.Set(timeout, credID, rawModel, modelAvailabilityFields(
@@ -297,6 +311,13 @@ func (l *PassiveProbeListener) reviewPromotion(ctx context.Context) {
 						&nextRetryAt,
 						"passive_probe",
 					))
+				}
+				// R66: 缓存预热是尽力而为——被截断只意味着少数 reviewing
+				// 条目没进缓存（下一轮补上），但必须留痕，否则路由侧会
+				// 观察到「无理由的少量 reviewing 不在缓存」。
+				if err := rows.Err(); err != nil {
+					slog.Warn("passive probe: cache prime row iteration aborted; batch truncated",
+						"error", err)
 				}
 			}
 		}
@@ -345,9 +366,17 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 	for rows.Next() {
 		var p pending
 		if err := rows.Scan(&p.credentialID, &p.rawModel, &p.errorKind, &p.errCount); err != nil {
-			continue
+			if dbrows.SkipOrFail("bg.PassiveProbeListener.reviewResolution", err) {
+				continue
+			}
 		}
 		toResolve = append(toResolve, p)
+	}
+	// R66: 到期批被截断 = 少把若干 reviewing 条目送去裁决（漏标
+	// unreachable，方向偏保守），但静默不可接受。
+	if err := rows.Err(); err != nil {
+		slog.Warn("passive probe: resolution row iteration aborted; batch truncated",
+			"error", err, "pending", len(toResolve))
 	}
 
 	if len(toResolve) == 0 {

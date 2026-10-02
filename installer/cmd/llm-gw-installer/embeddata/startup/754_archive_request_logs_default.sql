@@ -1,0 +1,334 @@
+-- 754: request_logs 主表 archive 默认函数 (P2 数据归档, 2026-09-26)
+--
+-- R73 审计 E-1 登记（头注，无 DDL 变更）：request_logs_archive_YYYY_MM
+-- 月表为独立 heap 表，**不带 RLS**——当前全仓无任何 Go 读路径（纯写侧
+-- 合规归档），租户隔离由归档行自带的 tenant_id 列 + 未来读方的 Go 层
+-- WHERE 钉扎承担。两个语义依赖钉死于此，后继改动前必读：
+--   1. 源分区读取必须**直查分区名**（本函数 format('...FROM %I')），
+--      不得改走父表 request_logs——父表 FORCE RLS 会让 bg 会话
+--      （get_current_tenant()='default'）静默漏读非 default 租户行；
+--   2. 若未来给月表加 SQL 层 RLS/policy，必须同时设计归档读方角色，
+--      默认 deny-all 会把合规读路径一起堵死。归属：owner 拍板项。
+--
+-- 背景: request_logs 是 PARTITION BY RANGE (ts) 月分区父表（537 之前
+-- 的 005/043 已奠基），330 行前的 archive_request_logs(date) 路径在
+-- 331 (2026-07-04) 与 archive_request_wal 一起被整族移除——archive
+-- 表空间开销小、无应用查询方、维护成本不抵。此后归档流水线空缺，仅
+-- request_logs_bodies 由 drop_old_request_logs_bodies_partitions(int)
+-- 自动 DROP（partition_manager:761）。本迁移补齐主表归档。
+--
+-- 设计基线:
+--   * 表语义: request_logs 主表的月分区保留 p_retention_days 天的
+--     「全字段」语义，旧的月分区中只把摘要字段（ts、tenant_id、
+--     request_id、gw_session_id、provider_model、prompt_tokens、
+--     completion_tokens、cost_usd、upstream_status_code、success、error_kind）
+--     落进 request_logs_archive_YYYY_MM。丢弃大 JSONB（request_body、
+--     response_body、outbound_body、headers、trace_events、
+--     routing_attempts、tool_calls、attachments、dlp_violations、
+--     content_safety_score、auto_decision、compression_meta、
+--     outbound_msg_hashes、sanitizer_mutations、vendor_metadata、
+--     ir_extensions 等 18 列）以让归档体积 ≈ 主表的 5% 级，
+--     长期挂载在月分区供对账/合规回溯。
+--     **归档表的列名与源列名不同**：归档侧叫 session_id / status_code，
+--     源侧的真名是 gw_session_id / upstream_status_code（见下「首跑即死」
+--     段）。这两组名字不要互相替换——归档表自己的列名是有下游读方契约的。
+--
+--   * 风格: 沿 750 (usage_facts_daily_partition) move-then-attach
+--     范式——INSERT 归档行优先于任何 source-side 副作用（archive
+--     完成前即使 source 被并行 DROP 也不丢数据）；本函数不 DROP
+--     源分区（R68 修订已禁止 drop partition_by_range 父表的月分区，
+--     见迁移 654 / 337 的事故复盘）。owner 通过 lifecycle.
+--     request_logs_ttl_days (默认 30 天) 控制归档触发；过期的
+--     request_logs 月分区继续保留在主表（运维可手动 DROP 或由
+--     后续迁移接 drop）。
+--
+--   * 幂等: 归档表 UNIQUE INDEX (request_id, ts) + INSERT ... ON
+--     CONFLICT DO NOTHING。重跑同月分区时已存在行被 DO NOTHING
+--     吸收，函数可安全在 partition_manager 每日 tick 上调用。
+--
+--   * 并发: 同一月份串行化——pg_advisory_xact_lock(hashtext(
+--     'archive_request_logs_default:' || yyyy-mm))，多实例共享库
+--     或重入 partition_manager 不会双跑。
+--
+--   * 性能: 1000 行/批 主键游标（partition 局部 id 唯一——每月分
+--     区 ts 约束在一个月内），单批 INSERT 在毫秒级、跨分区数万
+--     至数十万行不超 252 共享 PG 的 30s statement_timeout 边界。
+--     （十六轮审计订正 + R73 残留收口：函数内不 SET LOCAL——集合
+--     返回函数的整个调用是单个驱动层语句，函数内批游标不稀释
+--     statement_timeout，Go ctx 预算也不覆盖服务端 GUC。真正的
+--     抬升在调用方 bg.archiveOldRequestLogs：显式事务内
+--     SET LOCAL statement_timeout='30min'，与 30min Go 预算对齐
+--     （promote 60s / analyze 10min 同型先例）。已应用库保留旧注释
+--     属装饰性漂移，台账不重跑，可执行语句零变更。）
+--
+--   * 列宽守卫: 不修改 request_logs schema、不动现有视图/RLS，
+--     归档表独立 namespace（新表 + 独立索引），不在 views 引用
+--     链上、不影响主表查询路径。
+--
+-- 与既有归档函数族的差异（兼容性对照）:
+--   * archive_routing_decision_log / archive_credential_model_index
+--     走 (status, rows_migrated, partition_dropped) 三元组；
+--     本函数按 §9.2 契约返回 (archived_partition, rows_archived)
+--     二元组，partition_manager 走新分支 (runRequestLogsArchive)。
+--   * 不传 month date、不传 scalar bigint；传 p_retention_days int。
+--   * 现有归档函数 month_end = date_trunc('month', archive_month)
+--     + interval '1 month'，本函数遍历所有过期月分区（month_end
+--     < NOW() - p_retention_days），单次调用覆盖整窗。
+--
+-- 落地路径: bg/partition_manager.go::archiveSpecs 增加 day=5 条目
+-- + lifecycle.request_logs_ttl_days spec。boot ensure / installer /
+-- 升级通道（scripts/apply-db-revision-sequence.sh files=()）三通道
+-- 与 750 同款——CREATE OR REPLACE FUNCTION 与 CREATE TABLE IF NOT
+-- EXISTS 是天然幂等的，无需 advisory-lock 防双跑。
+
+-- ============================================================================
+--
+-- **这不是数据搬移，是摘要抽取。** 本函数内**没有任何 DELETE**（可自证：
+-- 剥注释后 grep -c 'DELETE' 本文件 == 0），源分区一个字节都不会被删除。
+-- 注意这条自检必须剥掉 `--` 注释再数，否则本说明自己就把它数成 1（本次就踩了）。
+-- 因此：
+--   * request_logs 主表**不会因为本迁移而变小**，它仍在增长，需要运维另行
+--     处置（受 R68 约束：禁止 DROP partition_by_range 父表的月分区，见迁移
+--     654 / 337 事故复盘）；
+--   * 开启 lifecycle.request_logs_ttl_days **不等于**「旧数据离开主表」，
+--     只等于「旧分区多一份可供对账/合规回溯的摘要副本」。
+-- 名字里的 "archive" 容易被读成前者，此处显式写明以免误判。
+--
+-- **另一个必须知道的代价**：本函数没有「已归档」标记。每次调用都会枚举所有
+-- month_end 已过期的月分区，并把每个源分区的**全部行**再走一遍
+-- INSERT ... ON CONFLICT DO NOTHING —— 已归档的行只是被唯一索引冲突吸收，
+-- 行仍然被读取、投影、再插入尝试。因此单次成本 =
+-- O(所有超过保留窗口的行)，且随时间单调增长，不会自行收敛。
+-- 故 bg 侧把它限制在**每日一次**（bg/archiveOldRequestLogs 的注释有详述）。
+--
+-- 2026-09-29 R80（D07 plan §8.1）：本段原先写「彻底解法是加一张 archive
+-- ledger 记 (partition, max_id)，**因 SQL 从未真跑而有意未做**」。该前提已随
+-- S-01 失效（本函数已真跑通 25.96s / 2,125,857 行，迁移 756 补齐批游标首列
+-- 索引），故用新实测重新回答「是否值得上 ledger」：
+--     热重跑  6 过期分区 / 1.8M 行 : 5.78-7.87s，rows_archived=0
+--     热重跑 12 过期分区 / 3.6M 行 : 10.44s， rows_archived=0
+-- 过期数据翻倍耗时约翻倍 —— **是线性重扫**（每批 Index Scan，S-01 实测
+-- 230 buffers / 1.294ms），不是 O(rows²) 活锁；按实测 2.1M 行/月摄入率外推，
+-- 1 年历史 ≈98s、5 年 ≈493s，均远在 30min 预算内且每日仅一次。
+-- **结论：不建 ledger 迁移**（收益是每天省几秒 CPU，代价是新表 + 每次归档的
+-- upsert + 跨实例一致性推理 + 一条新的 fail-closed 门，还会新增「ledger 说已
+-- 归档而源分区被重写」这一不一致面）。重估触发条件（任一命中即重开）：
+--   (a) 摄入速率 > 实测 2.1M 行/月 的 10 倍；
+--   (b) 归档频率由每日改为每小时；
+--   (c) 实测单次热重跑逼近 30min 预算。
+--
+-- ============================================================================
+-- **2026-09-29 S-01 首跑即死（已在本文件内修正）：本函数此前从未成功执行过一次。**
+-- ============================================================================
+-- D07 S-01「兼容 PG EXPLAIN / 大分区实测」在本机 PostgreSQL 17.10 上真跑了
+-- 首跑，结果是 SQLSTATE 42703：
+--
+--     ERROR:  column "session_id" does not exist
+--     HINT:  Perhaps you meant to reference the column
+--            "request_logs_2026_08.gw_session_id".
+--
+-- 根因：candidates CTE 投影的 11 个摘要列里有 **2 个在 request_logs 上根本
+-- 不存在**——真表（基线 01-schema.sql 与线上 4 个真实分区逐列核对一致，137 列）
+-- 叫 `gw_session_id`（会话）与 `upstream_status_code`（整数 HTTP 状态），
+-- 迁移里写的是 `session_id` 与 `status_code`。这两个名字看起来是照着
+-- session_* 族表（session_turns 等确实有 session_id）的列清单抄的。
+--
+-- 为什么所有既有门禁都没拦住——三条独立原因叠加，缺一不可：
+--   1. 函数体是 format('%I') + EXECUTE 的**动态 SQL**，列名要到运行时才解析；
+--      CREATE FUNCTION 阶段不做任何列存在性校验（CREATE 通过）。
+--   2. D-01 只核「function/installer/embed/caller 形状」，SF-01 只核「源分区
+--      直查 / 独立归档表 / 无 DELETE」的静态字面量，都是对文本的断言。
+--   3. 整条归档链路**从未被任何测试驱动过一次真执行**——包括线上。
+-- 后果：bg.archiveOldRequestLogs 每天 03:xx 命中第一个过期分区即抛错回滚，
+-- 只留一条 "request_logs archive failed" 日志，request_logs_archive_* 表
+-- 从未有过一行。审计报告里「归档已接线」「每日一次闸门通过」全部属实，
+-- 但接线的那根线从第一天起就插在空插座上。
+--
+-- 本次修正只改**源投影的 2 个列名**（gw_session_id / upstream_status_code），
+-- 归档表自身的列名 session_id / status_code 保持不变（有下游读方契约）。
+-- 防复发：tests/48h-audit/D07-hot-columnar/data/archive_source_columns_test.go
+-- 从基线 DDL 解析 request_logs 真实列集合，与本文件投影列交叉校验——
+-- 不需要数据库就能红，这是本条缺陷唯一真正的守门人。
+--
+-- **已应用 754 的环境需要重跑本文件**（CREATE OR REPLACE FUNCTION 幂等）：
+--     scripts/apply-db-revision-sequence.sh files=(754_archive_request_logs_default.sql)
+-- 迁移台账会跳过已应用的 754，不重跑就拿不到修正。
+--
+-- 落地路径勘误：本文件头早先写的是「archiveSpecs 增加 day=5 条目」，**未实施**
+-- —— archiveSpecs 按「日期参数 + 标量/tuple 返回」设计，而本函数收 retention
+-- 天数、RETURNS TABLE 是每分区一行的集合返回，硬塞会错传参数并按错列形状扫描
+-- （与 2026-09-03/04 的 42703 同源）。实为 bg/partition_manager.go 的
+-- pm.archiveOldRequestLogs（runCleanup step 12），每日一次。
+-- ============================================================================
+
+\set ON_ERROR_STOP on
+
+-- 防御性清理: 旧版同名函数（如有）DROP 后重建，避免重载冲突。
+DROP FUNCTION IF EXISTS public.archive_request_logs_default(integer);
+
+CREATE OR REPLACE FUNCTION public.archive_request_logs_default(p_retention_days integer)
+    RETURNS TABLE(archived_partition text, rows_archived bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    batch_size CONSTANT integer := 1000;
+    cutoff_ts  timestamptz;
+    rec        record;
+    src_part   text;
+    dst_part   text;
+    month_start date;
+    month_end   date;
+    new_last_id  bigint;
+    batch_count  bigint;
+    last_id      bigint;
+    total_rows   bigint;
+BEGIN
+    -- 守卫: 与 settings/spec_lifecycle.go Min/Max=7/365 保持一致；留存
+    -- 边界是 owner 拍板（业务对账窗口 ≈ 7 天 = 法定合规最低线）。
+    IF p_retention_days < 7 THEN
+        RAISE EXCEPTION 'archive_request_logs_default: retention_days=% < 7 floor', p_retention_days;
+    END IF;
+    IF p_retention_days > 365 THEN
+        RAISE EXCEPTION 'archive_request_logs_default: retention_days=% > 365 ceiling', p_retention_days;
+    END IF;
+
+    cutoff_ts := NOW() - make_interval(days => p_retention_days);
+
+    -- 月分区游走: pg_inherits 枚举 request_logs 下形如
+    -- request_logs_YYYY_MM 的月分区，剔除 DEFAULT / bodies 同族
+    -- (_bodies_2026_07 等不会被 pg_inherits 列入 request_logs 子集，
+    -- 此处命名正则 ^request_logs_[0-9]{4}_[0-9]{2}$ 即足够严密；
+    -- 十六轮审计补钉 relnamespace=public——其他 schema 下的同名
+    -- 父表子分区不会被误收，与下方归档表存在性守卫同款口径)。
+    FOR rec IN
+        SELECT
+            c.relname                                    AS partition_name,
+            to_date(
+                substring(c.relname FROM 'request_logs_([0-9]{4}_[0-9]{2})$'),
+                'YYYY_MM'
+            )                                            AS partition_month
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = 'request_logs'
+          AND p.relnamespace = 'public'::regnamespace
+          AND c.relname ~ '^request_logs_[0-9]{4}_[0-9]{2}$'
+        ORDER BY partition_month
+    LOOP
+        month_start := date_trunc('month', rec.partition_month)::date;
+        month_end   := (month_start + INTERVAL '1 month')::date;
+
+        -- 跳过仍在保留窗口内的月分区。
+        IF month_end > cutoff_ts THEN
+            CONTINUE;
+        END IF;
+
+        src_part := rec.partition_name;
+        dst_part := 'request_logs_archive_' || to_char(month_start, 'YYYY_MM');
+
+        -- 串行化同一月份的并发 ensure（多实例 partition_manager、
+        -- 共享库 boot ensure、installer 升级通道同时投递时不会双跑）。
+        PERFORM pg_advisory_xact_lock(
+            hashtext('archive_request_logs_default:' || to_char(month_start, 'YYYY-MM'))
+        );
+
+        -- 归档表: 独立 heap 表（非 columnar——归档按月分片后读取
+        -- 通常是单分区时间窗扫描，columnar 收益不明显；非分区父
+        -- 表——挂载到 request_logs_archive 会让 archive_default
+        -- 与具体分区并存，迁移阶段更难治理）。11 个摘要字段+
+        -- UNIQUE(request_id, ts) 兜住 ON CONFLICT DO NOTHING
+        -- 幂等需求；二级索引 (ts) 兜对账窗口扫表。
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_class
+            WHERE relname = dst_part AND relnamespace = 'public'::regnamespace
+        ) THEN
+            EXECUTE format(
+                'CREATE TABLE %I (
+                    request_id        text             NOT NULL,
+                    ts                timestamptz      NOT NULL,
+                    tenant_id         text,
+                    session_id        text,
+                    model             text,
+                    prompt_tokens     integer,
+                    completion_tokens integer,
+                    cost_usd          numeric(14, 8),
+                    status_code       integer,
+                    success           boolean,
+                    error_kind        text,
+                    archived_at       timestamptz      NOT NULL DEFAULT NOW()
+                )', dst_part);
+            EXECUTE format(
+                'CREATE UNIQUE INDEX %I ON %I (request_id, ts)',
+                dst_part || '_req_ts_uniq', dst_part);
+            EXECUTE format(
+                'CREATE INDEX %I ON %I (ts DESC)',
+                dst_part || '_ts_idx', dst_part);
+        END IF;
+
+        -- 主键游标批式 INSERT: 单分区内 id bigint 唯一（PK 是
+        -- (id, ts) 但 ts 在月内被约束到同一月，id 局部唯一）。
+        -- ON CONFLICT (request_id, ts) DO NOTHING 让重跑同月分区
+        -- 时已存在的行被吸收，rows_archived 只计新增。
+        total_rows := 0;
+        last_id    := 0;
+        LOOP
+            -- 单查询三件事: 取下一批候选 → 写归档 → 返回 new_last_id
+            -- 与本批实际写入数。CTE 顺序: candidates 取源、max_id
+            -- 算下一轮游标、inserted 写归档并返回被插入行数。
+            EXECUTE format(
+                'WITH
+                 candidates AS (
+                     SELECT id, request_id, ts, tenant_id, gw_session_id,
+                            provider_model, prompt_tokens, completion_tokens,
+                            cost_usd, upstream_status_code, success, error_kind
+                     FROM %I
+                     WHERE id > %L
+                     ORDER BY id
+                     LIMIT %L
+                 ),
+                 max_id AS (
+                     SELECT COALESCE(MAX(id), 0) AS new_last FROM candidates
+                 ),
+                 inserted AS (
+                     INSERT INTO %I (
+                         request_id, ts, tenant_id, session_id, model,
+                         prompt_tokens, completion_tokens, cost_usd,
+                         status_code, success, error_kind
+                     )
+                     SELECT request_id, ts, tenant_id, gw_session_id,
+                            provider_model, prompt_tokens, completion_tokens,
+                            cost_usd, upstream_status_code, success, error_kind
+                     FROM candidates
+                     ON CONFLICT (request_id, ts) DO NOTHING
+                     RETURNING 1 AS r
+                 )
+                 SELECT
+                     (SELECT new_last FROM max_id),
+                     (SELECT count(*) FROM inserted)',
+                src_part, last_id, batch_size,
+                dst_part
+            ) INTO new_last_id, batch_count;
+
+            total_rows := total_rows + batch_count;
+
+            -- 终止条件: 无候选（new_last_id = 0）或已读完该分区
+            -- （本批不足 batch_size 行）。前者兜极端空源，后者兜
+            -- 末批。R73 订正：两条 EXIT 是「任一成立即退出」，且
+            -- 第二条在空源时同样命中（0 - last_id < batch_size），
+            -- 第一条实为冗余保险——任一即退正是防全冲突批次死循环
+            -- 的机制（冲突不减少候选数，id 游标只增，循环必然收敛）。
+            EXIT WHEN new_last_id = 0;
+            EXIT WHEN (new_last_id - last_id) < batch_size;
+
+            last_id := new_last_id;
+        END LOOP;
+
+        archived_partition := dst_part;
+        rows_archived      := total_rows;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON FUNCTION public.archive_request_logs_default(integer) IS
+    'Archive summary fields from request_logs monthly partitions older than p_retention_days (7-365) into per-month heap tables request_logs_archive_YYYY_MM. Idempotent (ON CONFLICT DO NOTHING), batched at 1000 rows/iteration via id cursor, advisory-lock-serialized per month. Does NOT drop source partition (R68 freeze). Migration 754 (2026-09-26). Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9.';

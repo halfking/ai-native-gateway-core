@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,13 +20,11 @@ import (
 
 func (h *Handler) assertCredentialBelongs(ctx context.Context, providerID, credentialID int) error {
 	var n int
-	err := h.db.QueryRow(ctx, `
+	// R35-N1：err 原样上抛（含 ErrNoRows），由调用方 writeLookupErr 分类
+	// ——此前这里把连接故障/缺表一并吞成 "credential not found"。
+	return h.db.QueryRow(ctx, `
 		SELECT 1 FROM credentials WHERE id = $1 AND provider_id = $2
 	`, credentialID, providerID).Scan(&n)
-	if err != nil {
-		return fmt.Errorf("credential not found")
-	}
-	return nil
 }
 
 func (h *Handler) handleCredentialModels(w http.ResponseWriter, r *http.Request, providerID, credentialID int) {
@@ -35,7 +32,7 @@ func (h *Handler) handleCredentialModels(w http.ResponseWriter, r *http.Request,
 	defer cancel()
 
 	if err := h.assertCredentialBelongs(ctx, providerID, credentialID); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeLookupErr(w, "credential not found", err)
 		return
 	}
 
@@ -64,7 +61,7 @@ func serveListCredentialModels(w http.ResponseWriter, ctx context.Context, db of
 		ORDER BY mo.raw_model_name
 	`, credentialID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -81,7 +78,7 @@ func serveListCredentialModels(w http.ResponseWriter, ctx context.Context, db of
 	// 2026-09-11 audit: surface mid-iteration failures instead of returning a
 	// silently truncated list (same guard as getProviderModels).
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		writeInternalErr(w, "scan failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, offers)
@@ -93,7 +90,7 @@ func (h *Handler) clearCredentialModels(w http.ResponseWriter, r *http.Request, 
 
 	deleted, err := modelcatalog.ClearCredentialBindings(ctx, h.db, credentialID, includeProtected)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "clear failed: "+err.Error())
+		writeInternalErr(w, "clear failed", err)
 		return
 	}
 	var protectedKept int
@@ -131,7 +128,7 @@ func (h *Handler) createCredentialModel(w http.ResponseWriter, r *http.Request, 
 	if canonicalID == nil {
 		id, _, err := discovery.EnsureCanonicalAndAliases(ctx, h.refreshDB(), stdName, "manual")
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "ensure canonical failed: "+err.Error())
+			writeInternalErr(w, "ensure canonical failed", err)
 			return
 		}
 		canonicalID = &id
@@ -144,7 +141,7 @@ func (h *Handler) createCredentialModel(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if err := h.patchCanonicalCaps(ctx, *canonicalID, req); err != nil {
-		writeError(w, http.StatusInternalServerError, "update canonical caps failed: "+err.Error())
+		writeInternalErr(w, "update canonical caps failed", err)
 		return
 	}
 
@@ -171,7 +168,7 @@ func (h *Handler) createCredentialModel(w http.ResponseWriter, r *http.Request, 
 		ContextWindow:     req.ContextWindow,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		writeInternalErr(w, "create failed", err)
 		return
 	}
 
@@ -203,7 +200,7 @@ func (h *Handler) createProviderOffer(w http.ResponseWriter, r *http.Request, pr
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if err := h.assertCredentialBelongs(ctx, providerID, *peek.CredentialID); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeLookupErr(w, "credential not found", err)
 		return
 	}
 	h.createCredentialModel(w, r, ctx, *peek.CredentialID)
@@ -218,7 +215,7 @@ func (h *Handler) refreshCredentialModels(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	if err := h.assertCredentialBelongs(ctx, providerID, credentialID); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeLookupErr(w, "credential not found", err)
 		return
 	}
 

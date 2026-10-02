@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { store, isDefaultTenant } from './store'
 import { showOpsPlatform } from './config/edition'
+import { locationFromInternalPath } from './utils/safeRedirect'
 
 // Critical views loaded immediately (login, home, layout)
 import LoginView from './views/LoginView.vue'
@@ -57,6 +58,7 @@ const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
 const OutputComplianceView = () => import('./views/OutputComplianceView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
+const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
 // 2026-08-09: 跨会话轮次列表页
@@ -71,6 +73,10 @@ const UserProfileView = () => import('./views/UserProfileView.vue')
 // P2.1+ Human Annotation Web workflow (2026-09-06)
 const AnnotationView = () => import('./views/AnnotationView.vue')
 const AnnotationStatsView = () => import('./views/AnnotationStatsView.vue')
+
+// v2 routing closed-loop P0③ (2026-09-24): taskprofile 档案 + 路由调参门面
+const TaskProfileView = () => import('./views/TaskProfileView.vue')
+const AutoTuningView = () => import('./views/AutoTuningView.vue')
 
 // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线（mock stage）
 const RequestRegistryView = () => import('./views/RequestRegistryView.vue')
@@ -195,6 +201,13 @@ export const router = createRouter({
     // P2.1+ Human annotation Web workflow (2026-09-06): accessible by any authenticated user
     { path: '/routing-v2/annotations',        component: AnnotationView },
     { path: '/routing-v2/annotations/stats',  component: AnnotationStatsView },
+    // v2 closed-loop P0③: 档案/调参页。两页的写端点都是超管面：
+    // tuning 端点挂 h.superAdmin（admin/auto_route_tuning.go）；task-profile 的
+    // 变更端点（apply-tier-config / reload，TaskProfileView 有写操作）后端暂挂
+    // 普通 admin 中间件（admin/handler.go RegisterTaskProfileRoutes），前端
+    // 路由先做 super 门控兜底（R64，2026-09-25）。
+    { path: '/routing-v2/task-profile',       component: TaskProfileView, meta: { requiresSuper: true } },
+    { path: '/routing-v2/auto-tuning',        component: AutoTuningView, meta: { requiresSuper: true } },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },
     { path: '/free-discovery',     component: FreeDiscoveryView,   meta: { requiresSuper: true } },
@@ -256,6 +269,7 @@ export const router = createRouter({
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
+    { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
     { path: '/admin/proxy',        component: ProxyView, meta: { requiresSuper: true } }, // 2026-08-29: 代理管理
@@ -387,9 +401,12 @@ router.beforeEach(async (to) => {
   if (!to.meta.public && !isAuthed()) {
     return { path: '/', query: { login: '1', redirect: to.fullPath } }
   }
-  // 2. Bounce authed users away from /login
-  if (to.path === '/login' && isAuthed()) {
-    return { path: '/' }
+  // 2. Bounce authed users away from /login, restoring the original page
+  // when a 401 bounce (or login modal) left `redirect` on the URL.
+  if ((to.path === '/login' || (to.path === '/' && (to.query.login === '1' || to.query.login === 'true'))) && isAuthed()) {
+    const restored = locationFromInternalPath(to.query.redirect)
+    if (restored) return restored
+    if (to.path === '/login') return { path: '/' }
   }
   // 3. Super-admin role check
   if (to.meta.requiresSuper && !isSuperAdmin()) {

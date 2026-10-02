@@ -1,0 +1,149 @@
+# auto_matching_suite_v3.jsonl — v2 规划 P0② 套件扩充（2026-09-24，140 例）。
+# 目标：套件总量 60(v1) + 40(v2) + 140(v3) = 240 例（规划门槛 ≥200）。
+# 设计：docs/planning/AUTO_ROUTING_CLOSED_LOOP_V2_PLAN.md §4.3。
+#  - v1 60 例为回归锚点，禁止改写；本文件全部为新增用例。
+#  - 覆盖面：11 个任务类型的业务化提示词（中/英），IDE 指纹 11 种客户端
+#    全覆盖，代码围栏/关键词面/专项硬覆盖/工具派发/硬覆盖优先级仲裁，
+#    以及 code-negation、产品名词引用守卫等边界陷阱。
+#  - 新增来源优先级：真实修正回流（auto-testbench -mode generate 产出候选，
+#    人工脱敏转正后追加到本文件尾部并同步登记 autoMatchingSuiteFiles minSize）。
+{"name": "code_ide_vscode_extract", "bucket": "coding_agent", "expected_task": "code", "client_type": "vscode", "prompt": "把这个 Python 脚本里的重复代码抽成公共函数"}
+{"name": "code_ide_copilot_ts", "bucket": "coding_agent", "expected_task": "code", "client_type": "copilot", "prompt": "给这个 React 组件加上 TypeScript 类型定义"}
+{"name": "code_ide_zed_rust", "bucket": "coding_agent", "expected_task": "code", "client_type": "zed", "prompt": "Rust 这里报 borrow of moved value,帮我改一下"}
+{"name": "code_ide_jetbrains_stream", "bucket": "coding_agent", "expected_task": "code", "client_type": "jetbrains", "prompt": "把这个 for 循环改成 Java Stream API 的写法"}
+{"name": "code_ide_roocode_split", "bucket": "coding_agent", "expected_task": "code", "client_type": "roocode", "prompt": "把这个两千行的大文件按功能拆成多个模块"}
+{"name": "code_ide_opencode_parser", "bucket": "coding_agent", "expected_task": "code", "client_type": "opencode", "prompt": "实现一个简单的 JSON 解析器,支持转义字符"}
+{"name": "code_ide_codex_cli", "bucket": "coding_agent", "expected_task": "code", "client_type": "codex", "prompt": "给这个 CLI 工具加一个 --verbose 参数"}
+{"name": "code_ide_cc_goroutine", "bucket": "coding_agent", "expected_task": "code", "client_type": "claude-code", "prompt": "这里的 goroutine 泄漏了,帮我排查并修复"}
+{"name": "code_ide_cursor_decorator", "bucket": "coding_agent", "expected_task": "code", "client_type": "cursor", "prompt": "给这个类加一个装饰器,记录所有方法的执行耗时"}
+{"name": "code_ide_windsurf_form", "bucket": "coding_agent", "expected_task": "code", "client_type": "windsurf", "prompt": "表单提交后没有校验必填项,补上前端校验逻辑"}
+{"name": "code_ide_cursor_readme", "bucket": "coding_agent", "expected_task": "code", "client_type": "cursor", "prompt": "读一下这个仓库的入口文件,告诉我启动流程", "expect_note": "IDE 指纹硬覆盖:即使诉求偏阅读理解,来自 IDE 的请求按现状归 code"}
+{"name": "code_fence_go_goroutine", "bucket": "code_fence", "expected_task": "code", "prompt": "```go\nfunc worker(jobs <-chan int) {\n    for j := range jobs {\n        process(j)\n    }\n}\n```\n这个 worker 退出后为什么还有 goroutine 没结束?帮我修复"}
+{"name": "code_fence_sql_index", "bucket": "code_fence", "expected_task": "code", "prompt": "```sql\nSELECT * FROM orders WHERE tenant_id = 42 ORDER BY created_at DESC;\n```\n这条查询很慢,该怎么加索引优化"}
+{"name": "code_fence_py_typeerror", "bucket": "code_fence", "expected_task": "code", "prompt": "```python\ntotal = '100' + 50\n```\nTypeError: unsupported operand type(s) 报错怎么解决"}
+{"name": "code_fence_ts_any", "bucket": "code_fence", "expected_task": "code", "prompt": "```typescript\nfunction parse(input: any) {\n    return JSON.parse(input);\n}\n```\n把这里的 any 换成精确类型"}
+{"name": "code_fence_yaml_probe", "bucket": "code_fence", "expected_task": "code", "prompt": "```yaml\nlivenessProbe:\n  httpGet:\n    path: /healthz\n  initialDelaySeconds: 60\n```\n这个探针配置有什么问题吗"}
+{"name": "code_fence_java_npe", "bucket": "code_fence", "expected_task": "code", "prompt": "```java\nUser u = repo.find(id);\nreturn u.getName();\n```\n这段为什么会 NPE,帮我加上防护"}
+{"name": "code_zh_algo_lru", "bucket": "code_keyword", "expected_task": "code", "prompt": "实现一个 LRU 缓存,要求 get 和 put 都是 O(1)"}
+{"name": "code_zh_sdk_retry", "bucket": "code_keyword", "expected_task": "code", "prompt": "实现一个带重试和超时的 HTTP 客户端 SDK"}
+{"name": "code_zh_bug_race", "bucket": "code_keyword", "expected_task": "code", "prompt": "这个支付模块有个并发 bug,偶发重复扣款,帮我调试一下"}
+{"name": "code_en_pipeline", "bucket": "code_keyword", "expected_task": "code", "prompt": "Write a bash script to gzip all log files older than 7 days", "expect_note": "script(code)与 write a(creative)各 0.4 打平,优先级 code>creative"}
+{"name": "code_en_unit_test", "bucket": "code_keyword", "expected_task": "code", "prompt": "Add unit tests for the pricing service, cover the discount edge cases"}
+{"name": "code_zh_refactor_loop", "bucket": "code_keyword", "expected_task": "code", "prompt": "这段循环嵌套太深了,帮我重构一下,提取成几个小函数"}
+{"name": "code_zh_regex_phone", "bucket": "code_keyword", "expected_task": "code", "prompt": "实现一个校验大陆手机号的正则表达式"}
+{"name": "code_en_cr_pr", "bucket": "code_keyword", "expected_task": "code", "prompt": "Prepare a pull request for the auth refactor branch"}
+{"name": "code_zh_review_ttl", "bucket": "code_keyword", "expected_task": "code", "prompt": "review代码:这个改动把缓存 TTL 从 300 秒改成 3600 秒,有什么风险"}
+{"name": "audit_zh_inject", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "对这段用户输入处理逻辑做安全审计,重点看命令注入风险"}
+{"name": "audit_zh_dep_scan", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "帮我做一次依赖库漏洞扫描,看看 log4j 有没有受影响"}
+{"name": "audit_en_pr", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "Please do a code audit of PR #4821 before we merge it"}
+{"name": "audit_zh_quality_func", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "上线前做一遍代码质量检查,把圈复杂度超标的函数列出来"}
+{"name": "audit_en_vuln", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "Run a vulnerability scan against the payment service codebase"}
+{"name": "audit_zh_thirdparty", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "对引入的三个第三方 SDK 做一次安全审查,输出风险清单"}
+{"name": "trap_audit_fence_is_code", "bucket": "trap", "expected_task": "code", "prompt": "```java\nString cmd = \"bash -c \" + userInput;\nRuntime.exec(cmd);\n```\n对这段代码做安全审计", "expect_note": "代码围栏强信号(1.2)先于审计硬覆盖(1.5):带代码块的审计请求归 code"}
+{"name": "trap_audit_5tools_is_agent", "bucket": "trap", "expected_task": "agent", "tools": 5, "tool_results": true, "prompt": "调用扫描器对仓库做漏洞扫描,汇总所有发现", "expect_note": "N2-2 工具上下文守卫:审计任务在 agent 编排场景让位 agent 通道"}
+{"name": "plan_zh_okr", "bucket": "planning", "expected_task": "planning", "prompt": "帮部门写一份下季度的 OKR 规划,按团队拆解目标"}
+{"name": "plan_zh_hybrid_cloud", "bucket": "planning", "expected_task": "planning", "prompt": "制定一个混合云迁移方案,分三个阶段推进"}
+{"name": "plan_en_archdoc", "bucket": "planning", "expected_task": "planning", "prompt": "Write a technical design document for the event-driven refactor"}
+{"name": "plan_en_wbs", "bucket": "planning", "expected_task": "planning", "prompt": "Create a work breakdown structure for the website revamp project"}
+{"name": "plan_zh_tech_roadmap", "bucket": "planning", "expected_task": "planning", "prompt": "给数据平台画一张明年的技术路线图,标注每个季度的交付物"}
+{"name": "plan_zh_hiring", "bucket": "planning", "expected_task": "planning", "prompt": "帮我拟定一个后端团队的招聘计划,包含 HC 分配和面试流程"}
+{"name": "plan_zh_sharding", "bucket": "planning", "expected_task": "planning", "prompt": "为订单库的分库分表制定实施计划,明确每一步的回滚预案"}
+{"name": "plan_en_proposal", "bucket": "planning", "expected_task": "planning", "prompt": "Draft a technical proposal for reducing infra costs by 30%"}
+{"name": "plan_zh_kickoff", "bucket": "planning", "expected_task": "planning", "prompt": "项目启动会之前,先把任务拆解出来并分配负责人"}
+{"name": "plan_zh_design_scheme", "bucket": "planning", "expected_task": "planning", "prompt": "针对这个高并发场景设计方案,对比至少两种架构"}
+{"name": "intent_zh_nps", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "对下面这条客服评价做情感分类:客服很耐心,但物流太慢"}
+{"name": "intent_zh_multilabel", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "识别以下 5 条消息的意图类别,输出 JSON:退货/换货/咨询"}
+{"name": "intent_en_email", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "Classify this email into one of: meeting invite, newsletter, transactional. Email: Hi, when is the Q3 review?"}
+{"name": "intent_zh_moderation", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "判断这段用户评论是否违规,给出类别标签:广告/辱骂/正常"}
+{"name": "intent_en_sentiment", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "Run sentiment analysis on this review and tell me if it is positive or negative"}
+{"name": "intent_zh_route_groups", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "对每条进线工单做意图归类,分到对应的处理组"}
+{"name": "intent_zh_binary", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "看这句话是正面还是负面:界面好看但经常闪退"}
+{"name": "intent_en_triage", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "Classify this support message into billing / technical / spam"}
+{"name": "intent_zh_survey", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "把问卷里的每一条开放题回答做文本分类,归入预设的主题类别"}
+{"name": "intent_zh_kb_match", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "对以下用户提问做意图检测,匹配最相近的知识库条目"}
+{"name": "fc_zh_flight", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "帮我订一张周四早上北京到成都的机票,靠窗"}
+{"name": "fc_zh_alarm", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "定一个工作日早上七点半的闹钟"}
+{"name": "fc_en_email_room", "bucket": "function_call", "expected_task": "function_call", "tools": 2, "prompt": "Send an email to the team about tomorrow's kickoff and book a room for it"}
+{"name": "fc_zh_noise", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "放一首适合工作时听的白噪音"}
+{"name": "fc_zh_incident", "bucket": "function_call", "expected_task": "function_call", "tools": 2, "prompt": "建一个线上事故的跟踪工单,指派给值班同学,优先级拉到最高"}
+{"name": "fc_en_timer", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "Start a 25 minute focus timer"}
+{"name": "fc_mix_translate", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "把这份合同的关键条款翻译成英文发我邮箱", "expect_note": "1-2 工具派发(0.8)压过翻译关键词(0.4):工具声明是更强信号"}
+{"name": "fc_zh_meeting_room", "bucket": "function_call", "expected_task": "function_call", "tools": 2, "prompt": "查一下下午还有哪些会议室空闲,预订一间能容纳 8 人的"}
+{"name": "fc_zh_weather_camp", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "上海周末天气适合露营吗?帮我查一下"}
+{"name": "agent_zh_crawl_price", "bucket": "agent", "expected_task": "agent", "tools": 6, "tool_results": true, "prompt": "先用爬虫抓取这三个竞品官网的价格页,再对比我们的定价,输出差距表"}
+{"name": "agent_en_flaky_ci", "bucket": "agent", "expected_task": "agent", "tools": 4, "tool_results": true, "prompt": "Pull the latest CI logs, find the flaky test, open a fix branch"}
+{"name": "agent_zh_db_reconcile", "bucket": "agent", "expected_task": "agent", "tools": 5, "tool_results": true, "prompt": "连上测试库核对这批订单的金额,把不一致的行导出来"}
+{"name": "agent_zh_lit_review", "bucket": "agent", "expected_task": "agent", "tools": 3, "tool_results": true, "prompt": "检索最近一年的相关论文,筛出引用量前十的,整理成综述提纲"}
+{"name": "agent_en_oncall", "bucket": "agent", "expected_task": "agent", "tools": 4, "tool_results": true, "prompt": "Check the alerts dashboard, correlate with recent deploys, and post a summary to the ops channel"}
+{"name": "agent_zh_batch_translate", "bucket": "agent", "expected_task": "agent", "tools": 4, "tool_results": true, "prompt": "读取共享盘里的三份英文规格文档,逐份翻译成中文后归档"}
+{"name": "rea_zh_socks", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "抽屉里有 10 只袜子,黑白灰三种颜色,至少取几只才能保证配成一双同色?说明推理过程"}
+{"name": "rea_zh_coin", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "一枚硬币连抛五次都是正面,第六次是正面的概率是多少?请给出推导"}
+{"name": "rea_en_switches", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "Three switches downstairs, one bulb upstairs. You may go up once. Which switch controls the bulb? Explain why step by step."}
+{"name": "rea_zh_game24", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "求解 24 点:用 3、3、8、8 这四个数和加减乘除算出 24"}
+{"name": "rea_zh_logic_grid", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "甲乙丙三人分别来自北京上海广州,职业互不相同,根据以下条件推理谁是谁"}
+{"name": "rea_en_recipe", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "If a recipe for 4 people needs 300g of flour, how much flour do I need for 7? Calculate it step by step."}
+{"name": "rea_zh_clock_angle", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "计算 3 点 15 分时针与分针的夹角是多少度"}
+{"name": "rea_zh_induction", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "用数学归纳法证明 1+2+...+n = n(n+1)/2"}
+{"name": "rea_en_fallacy", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "Is appeal to authority a formal or informal fallacy? Explain the logical structure."}
+{"name": "rea_zh_promo", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "促销满 300 减 50,购物车 860 元,怎么组合下单最省?要列出计算过程"}
+{"name": "rea_zh_elevator", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "从排队论角度分析电梯调度策略,论证其合理性,要有严密的逻辑链"}
+{"name": "rea_en_caesar", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "Prove that the Caesar cipher is trivially breakable; walk through the reasoning on a 200-letter ciphertext."}
+{"name": "rea_zh_percent", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "某商品先涨价 20% 再降价 20%,最终比原价高还是低?推理说明"}
+{"name": "rea_zh_chess", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "象棋残局:红方只剩仕相帅,黑方单车,判断黑方是否能必胜,给出推理"}
+{"name": "rea_zh_gas_law", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "推导理想气体状态方程 PV=nRT 的量纲一致性"}
+{"name": "rea_zh_delivery", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "快递员要在 10 个小区送货,怎么安排顺序总里程最短?请给出求解思路"}
+{"name": "cre_zh_wechat", "bucket": "creative", "expected_task": "creative", "prompt": "给公众号写一篇 500 字的推文,主题是秋天的第一杯奶茶"}
+{"name": "cre_zh_naming_app", "bucket": "creative", "expected_task": "creative", "prompt": "帮新上线的记账 App 起 10 个有创意的名字"}
+{"name": "cre_zh_rewrite_formal", "bucket": "creative", "expected_task": "creative", "prompt": "把这句话改写得更书面化:这事儿咱们就这么定了"}
+{"name": "cre_en_blog_grpc", "bucket": "creative", "expected_task": "creative", "prompt": "Draft a blog post about our move from REST to gRPC"}
+{"name": "cre_zh_weekly_summary", "bucket": "creative", "expected_task": "creative", "prompt": "把上面的周报内容总结成三句话给老板看"}
+{"name": "cre_zh_modern_poem", "bucket": "creative", "expected_task": "creative", "prompt": "以深夜的书房为题创作一首现代诗歌"}
+{"name": "cre_en_welcome", "bucket": "creative", "expected_task": "creative", "prompt": "Compose a warm welcome message for our community newsletter"}
+{"name": "cre_zh_poem_en", "bucket": "creative", "expected_task": "creative", "prompt": "把《静夜思》翻译成英文,尽量保留意境"}
+{"name": "cre_zh_expand_product", "bucket": "creative", "expected_task": "creative", "prompt": "把这个 200 字的产品介绍扩写成 800 字,突出安全性"}
+{"name": "cre_zh_lantern_sms", "bucket": "creative", "expected_task": "creative", "prompt": "撰写一条元宵节门店促销的短信文案,70 字以内"}
+{"name": "cre_en_wedding_toast", "bucket": "creative", "expected_task": "creative", "prompt": "Write a short wedding toast for my best friend's reception"}
+{"name": "cre_zh_skit", "bucket": "creative", "expected_task": "creative", "prompt": "创作一个两分钟的小品剧本,主题是程序员相亲"}
+{"name": "cre_zh_title_polish", "bucket": "creative", "expected_task": "creative", "prompt": "帮我把论文标题润色一下,要更学术一些:论大数据的应用"}
+{"name": "cre_zh_subway_story", "bucket": "creative", "expected_task": "creative", "prompt": "以末班地铁为背景构思一个悬疑故事的开头"}
+{"name": "cre_en_podcast_summary", "bucket": "creative", "expected_task": "creative", "prompt": "Summarize the key takeaways of this podcast episode in five bullets"}
+{"name": "cre_zh_haiku_peak", "bucket": "creative", "expected_task": "creative", "prompt": "以早高峰为题写一首俳句"}
+{"name": "chat_zh_sleep", "bucket": "chat", "expected_task": "chat", "prompt": "最近总是睡不好,有什么放松的办法吗"}
+{"name": "chat_zh_dinner", "bucket": "chat", "expected_task": "chat", "prompt": "今晚不知道吃什么,给点建议呗"}
+{"name": "chat_en_weekend", "bucket": "chat", "expected_task": "chat", "prompt": "Any fun plans for the weekend?"}
+{"name": "chat_zh_greet2", "bucket": "chat", "expected_task": "chat", "prompt": "在吗?想找你聊聊天"}
+{"name": "chat_zh_library", "bucket": "chat", "expected_task": "chat", "prompt": "请问去图书馆怎么走?"}
+{"name": "chat_en_thanks", "bucket": "chat", "expected_task": "chat", "prompt": "Thanks a lot, that really helped!"}
+{"name": "chat_zh_movie", "bucket": "chat", "expected_task": "chat", "prompt": "推荐几部适合周末看的电影呗"}
+{"name": "chat_zh_learn_english", "bucket": "chat", "expected_task": "chat", "prompt": "我英语基础不好,怎么开始学比较好?"}
+{"name": "chat_en_rain", "bucket": "chat", "expected_task": "chat", "prompt": "It's raining again here, I miss the sun."}
+{"name": "chat_zh_lb_concept", "bucket": "chat", "expected_task": "chat", "prompt": "用大白话说说什么是负载均衡?"}
+{"name": "chat_zh_api_concept", "bucket": "chat", "expected_task": "chat", "prompt": "什么是 RESTful API?给我讲讲概念就行"}
+{"name": "chat_zh_cat", "bucket": "chat", "expected_task": "chat", "prompt": "我家猫最近总挠耳朵,是怎么回事呀?"}
+{"name": "chat_zh_continue", "bucket": "chat", "expected_task": "chat", "prompt": "抱歉刚才打断你了,我们继续吧"}
+{"name": "chat_zh_remote_work", "bucket": "chat", "expected_task": "chat", "prompt": "你觉得远程办公会不会成为常态?"}
+{"name": "chat_en_longtime", "bucket": "chat", "expected_task": "chat", "prompt": "Hey, long time no see! How have you been?"}
+{"name": "chat_zh_time_dinner", "bucket": "chat", "expected_task": "chat", "prompt": "现在几点了?哦不对,我是说晚饭想吃点清淡的"}
+{"name": "vis_zh_menu", "bucket": "vision", "expected_task": "vision", "image": true, "prompt": "看看这份菜单,推荐一个不辣的菜"}
+{"name": "vis_zh_whiteboard", "bucket": "vision", "expected_task": "vision", "image": true, "prompt": "把白板上的流程整理成文字步骤", "expect_note": "vision 硬覆盖最高优先级,步骤等 reasoning 词不参与"}
+{"name": "vis_en_chart", "bucket": "vision", "expected_task": "vision", "image": true, "prompt": "Read the values off this bar chart and list them"}
+{"name": "vis_zh_handwriting", "bucket": "vision", "expected_task": "vision", "image": true, "prompt": "帮我把手写的会议签到表转成电子名单"}
+{"name": "vis_zh_ide_error", "bucket": "vision", "expected_task": "vision", "image": true, "client_type": "cursor", "prompt": "看看这个报错弹窗,怎么处理", "expect_note": "vision(1.1) 先于 IDE 强信号(1.2):截图排障归 vision"}
+{"name": "vis_zh_ui_color", "bucket": "vision", "expected_task": "vision", "image": true, "prompt": "这个界面配色怎么样,有什么改进空间"}
+{"name": "long_zh_contract", "bucket": "long_context", "expected_task": "long_context", "pad_to_tokens": 60000, "prompt": "以上是完整合同文本,请列出所有涉及违约金的条款"}
+{"name": "long_en_transcript", "bucket": "long_context", "expected_task": "long_context", "pad_to_tokens": 60000, "prompt": "Here is the full interview transcript. Extract every question the interviewer asked about leadership."}
+{"name": "long_zh_errorlog", "bucket": "long_context", "expected_task": "long_context", "pad_to_tokens": 60000, "prompt": "上面是最近 24 小时的全部错误日志,请按出现频率排序归纳问题"}
+{"name": "long_en_pii", "bucket": "long_context", "expected_task": "long_context", "pad_to_tokens": 60000, "prompt": "The attached documentation set describes our data model. Find every table that stores PII and list the columns."}
+{"name": "trap_chat_closure_concept", "bucket": "trap", "expected_task": "chat", "prompt": "什么是闭包?不用写代码,讲清楚概念就行", "expect_note": "code-negation 守卫:显式声明不写代码时,关键词层 code 评分被抑制"}
+{"name": "trap_ide_complexity", "bucket": "trap", "expected_task": "code", "client_type": "cursor", "prompt": "这段代码的时间复杂度怎么推导?", "expect_note": "IDE 强信号先于关键词通道,推导等 reasoning 词不参与"}
+{"name": "mix_intent_1tool", "bucket": "mixed_signal", "expected_task": "intent_classification", "tools": 1, "prompt": "对这条消息做意图分类:帮我把会议改到下午三点", "expect_note": "意图硬覆盖(1.5)先于工具派发(2);intent 的工具守卫只在 tools+tool_results 同时存在时让位"}
+{"name": "trap_plan_travel", "bucket": "trap", "expected_task": "planning", "prompt": "帮我制定一个五天的云南旅行计划,预算八千", "expect_note": "动宾组合(制定+计划)不区分业务/技术场景,行程规划按现状归 planning"}
+{"name": "trap_fc_planning_words", "bucket": "trap", "expected_task": "planning", "tools": 2, "prompt": "根据这两个工具返回的数据,帮我制定下一步的选品方案", "expect_note": "planning 硬覆盖先于 1-2 工具派发;规划词压过 function_call"}
+{"name": "mix_long_audit", "bucket": "mixed_signal", "expected_task": "code_audit", "pad_to_tokens": 60000, "prompt": "以上是整个代码仓库的导出,对认证模块做一次安全审计", "expect_note": "审计硬覆盖(1.5)先于长上下文(1.3):60k 词的审计请求归 code_audit(文档化现状)"}
+{"name": "trap_chat_leave_note", "bucket": "trap", "expected_task": "chat", "prompt": "帮我给老师写一条请假留言"}
+{"name": "trap_rea_story_compound", "bucket": "trap", "expected_task": "creative", "prompt": "用一个小故事解释什么是复利,两百字以内", "expect_note": "产出物是故事→creative;解释类动词不构成 reasoning 关键词"}
+{"name": "trap_chat_oop_concept", "bucket": "trap", "expected_task": "chat", "prompt": "我不是程序员,就想知道面向对象大概是什么意思"}
+{"name": "mix_ide_60k_sql", "bucket": "mixed_signal", "expected_task": "code", "client_type": "zcode", "pad_to_tokens": 60000, "prompt": "基于以上完整的仓库上下文,把所有裸 SQL 调用改成参数化查询", "expect_note": "IDE 强信号先于长上下文(与 v2 mix_ide_60k 同族,zcode 客户端复核)"}
+{"name": "trap_intent_product_copy", "bucket": "trap", "expected_task": "creative", "prompt": "我们在做文本分类赛道的竞品调研,帮忙写一段 100 字的产品文案", "expect_note": "意图短语作为产品名词引用,施行语境守卫(无指示词)压制 intent;真实诉求是文案→creative"}
+{"name": "trap_agent_sentiment_words", "bucket": "trap", "expected_task": "agent", "tools": 4, "tool_results": true, "prompt": "上面 4 个工具抓回来的评论,逐条做情感分析,汇总正负面占比", "expect_note": "agent 编排中的批量分类让位 agent 通道(N2-2 守卫)"}
+{"name": "trap_vision_audit_words", "bucket": "trap", "expected_task": "vision", "image": true, "prompt": "对这张架构图截图做一次安全审查", "expect_note": "vision 硬覆盖(1.1)最先;审计词不参与"}

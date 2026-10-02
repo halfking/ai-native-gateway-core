@@ -51,6 +51,19 @@ const (
 	EpResponses Endpoint = "responses"
 	// EpEmbeddings is POST /v1/embeddings (OpenAI Embeddings API).
 	EpEmbeddings Endpoint = "embeddings"
+	// EpOllamaChat is POST /api/chat (Ollama native NDJSON chat-completion).
+	// RESERVED(r0924 supplier-protocol-optimization §3.6):
+	// the Ollama-native executor uses this Endpoint to construct the
+	// wire-level /api/chat URL; ollama-native is intentionally NOT
+	// versioned (no /v1 prefix) because Ollama's wire convention differs
+	// from OpenAI/Anthropic.
+	EpOllamaChat Endpoint = "ollama_chat"
+	// EpGeminiGenerate is POST /v1beta/models/{m}:generateContent (Gemini
+	// native generateContent API). The full path is constructed by
+	// appending the model id + suffix at serialize-time (the upstream
+	// URL SSOT only owns the prefix). 2026-09-24 placeholder — actual
+	// executor wiring lives in P3 follow-up.
+	EpGeminiGenerate Endpoint = "gemini_generate"
 )
 
 // versionTrailing matches an optional trailing version segment "/v1"
@@ -74,6 +87,13 @@ var completionSuffixes = []string{
 	"/embeddings",
 	"/messages",
 	"/models",
+	// Ollama-native: /api/chat (and /api/generate for completeness) live
+	// outside the /v1 family. Operators occasionally paste a base URL that
+	// already includes /api/chat — we strip it and re-append to keep the
+	// rule idempotent, mirroring how OpenAI /v1/chat/completions is
+	// handled in the same table above.
+	"/api/chat",
+	"/api/generate",
 }
 
 // stripCompletionSuffix trims trailing "/" and strips one well-known
@@ -87,6 +107,9 @@ func stripCompletionSuffix(baseURL string) string {
 			break
 		}
 	}
+	// Strip any trailing "/" left after suffix removal (e.g. "//messages"
+	// → "/" → "") so Build() remains idempotent across repeated calls.
+	baseURL = strings.TrimRight(baseURL, "/")
 	return baseURL
 }
 
@@ -106,6 +129,15 @@ func pathAfterVersion(ep Endpoint) string {
 		return "/responses"
 	case EpEmbeddings:
 		return "/embeddings"
+	case EpOllamaChat:
+		// Ollama native wire is unversioned; both /v1 and the bare URL
+		// resolve to the same /api/chat endpoint.
+		return "/api/chat"
+	case EpGeminiGenerate:
+		// Gemini generateContent is a per-model sub-resource; the
+		// executor constructs the full path with model id at call site.
+		// The bare prefix is intentionally empty here.
+		return ""
 	}
 	return ""
 }
@@ -126,6 +158,13 @@ func PathFor(ep Endpoint) string {
 		return "/v1/responses"
 	case EpEmbeddings:
 		return "/v1/embeddings"
+	case EpOllamaChat:
+		// Ollama is intentionally NOT /v1-prefixed; the bare /api/chat
+		// is canonical and `/v1/api/chat` is a 404 on real Ollama.
+		return "/api/chat"
+	case EpGeminiGenerate:
+		// Placeholder for the Gemini-native executor (P3 follow-up).
+		return "/v1beta/models"
 	}
 	return ""
 }
@@ -147,11 +186,21 @@ func PathFor(ep Endpoint) string {
 //	Build("https://api.example.com", EpChatCompletions)
 //	  → "https://api.example.com/v1/chat/completions"
 //	Build("", EpChatCompletions) → ""
+//
+// EXCEPTION (r0924 fix-a task 4): EpOllamaChat is unversioned on the wire —
+// a trailing /v1..v9 is STRIPPED instead of preserved, because real Ollama
+// returns 404 on /v1/api/chat. OpenAI-family endpoints keep the rule above.
 func Build(baseURL string, ep Endpoint) string {
 	if baseURL == "" {
 		return ""
 	}
 	cleaned := stripCompletionSuffix(baseURL)
+	if ep == EpOllamaChat {
+		// Ollama native wire is unversioned: "http://host:11434/v1" must
+		// land on /api/chat, not the 404-ing /v1/api/chat.
+		cleaned = versionTrailing.ReplaceAllString(cleaned, "")
+		return cleaned + pathAfterVersion(ep)
+	}
 	if versionTrailing.MatchString(cleaned) {
 		return cleaned + pathAfterVersion(ep)
 	}
@@ -189,6 +238,24 @@ func EmbeddingsURL(baseURL string) string {
 	return Build(baseURL, EpEmbeddings)
 }
 
+// OllamaChatURL is shorthand for Build(baseURL, EpOllamaChat).
+//
+//	OllamaChatURL("http://localhost:11434") → "http://localhost:11434/api/chat"
+//	OllamaChatURL("http://localhost:11434/api/chat") → "http://localhost:11434/api/chat"
+//	OllamaChatURL("http://localhost:11434/v1") → "http://localhost:11434/api/chat"
+//	OllamaChatURL("") → ""
+//
+// RESERVED(r0924 supplier-protocol-optimization §3.6): this is the
+// upstream URL SSOT for the ollama-native executor. Real Ollama servers
+// (default :11434) listen on /api/chat; older operators may paste a
+// `/v1` OpenAI-compatible base URL — the versionTrailing rule does NOT
+// apply to this endpoint (r0924 fix-a task 4): a trailing /v1..v9 is
+// stripped so the URL lands on /api/chat instead of the 404-ing
+// /v1/api/chat on real Ollama.
+func OllamaChatURL(baseURL string) string {
+	return Build(baseURL, EpOllamaChat)
+}
+
 // ModelsURLCandidates returns the candidate models-endpoint URLs to try
 // for a provider, in priority order. Empty baseURL returns nil.
 //
@@ -217,7 +284,11 @@ func ModelsURLCandidates(baseURL string) []string {
 		normalized + "/v1/models",
 	}
 	if strings.HasSuffix(normalized, "/v1") {
-		root := strings.TrimRight(normalized, "/v1")
+		// R73 审计 E-2：这里必须是 TrimSuffix（后缀裁剪）而非
+		// TrimRight(normalized, "/v1")——后者是字符集裁剪，主机名尾字符
+		// 落在 {'/','v','1'} 时会被一并吞掉（"https://gw1/v1" 的 root 变
+		// "https://gw"，探针打到错误主机）。
+		root := strings.TrimSuffix(normalized, "/v1")
 		root = strings.TrimRight(root, "/")
 		out = append([]string{root + "/v1/models"}, out...)
 	}

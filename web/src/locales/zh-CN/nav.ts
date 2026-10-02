@@ -27,9 +27,13 @@ export default {
     credentialMonitor: '凭据监控',
     annotations: '人工标注',
     annotationStats: '标注统计',
+    taskProfile: '任务档案',
+    autoTuning: '路由调参',
     probeHealth: '探测健康度',
     systemMonitor: '系统自检',
     providers: '供应商',
+    reconciliation: '供应商对账',
+    settlementReport: '结算报表',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',
@@ -98,4 +102,9 @@ export default {
   publicSupport: '技术支持',
   // 2026-07-21: a11y skip-link target, used by LifecycleShell.vue.
   skip: '跳到主要内容',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: '未解决的请求侧异常',
+  },
 }

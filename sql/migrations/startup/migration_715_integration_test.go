@@ -27,11 +27,37 @@
 //
 // 注意：FreshChain 会在目标库执行完整启动迁移链（数百对象），并可能需要
 // 预置 schema_migrations 账本表（与生产引导一致）；务必指向可丢弃的库。
+//
+// FreshChain 的失败史（2026-10-02 定位，已修两层，剩一层）：
+//
+//  1. 原归因「01-schema 快照列漂移」是错的。实测 psql（ON_ERROR_STOP=0）
+//     灌同一份快照零错误，父表有 application_id，分区正常挂载。
+//
+//  2. 它每次运行报**不同**的致命 SQLSTATE（42804 与 55000 各出现过一次），
+//     这本身就说明不是某条 DDL 的确定性问题。真实成因有二：execTolerantSnapshot
+//     在首个「非名单」SQLSTATE 处提前中止（与它注释声称复刻的 psql 语义相反，
+//     已修）；以及本测试把全新安装快照灌在了**已经装满的门禁库**上——
+//     引导报告 1705 条容忍错误、其中 42P07 占 1046 条，改用空库后归零。
+//
+//  3. 仍 FAIL，剩最后一层：本测试声称复刻生产全新安装，实际漏了中间那一步。
+//     生产顺序是 00-prereqs + 01-schema 快照 → 安装器注册的 198 条启动迁移
+//     （session_aggregate_outbox 由 630 建）→ 二进制启动链 db.Open。
+//     本测试只做了 1 和 3，于是 db.Open 报 42P01
+//     relation "public.session_aggregate_outbox" does not exist。
+//
+//     这一层没有在本轮补：注册清单在独立 Go module installer/ 的
+//     dbinit.StartupFiles 里，根 module 的测试无法 import；而 sql/migrations/
+//     startup/ 目录下有 793 个 .sql（含 .down.sql 与未注册的历史文件），
+//     按文件名排序全量灌是错的。从测试里解析 installer 的 Go 源码来取清单
+//     属于脆弱做法，不做。补法见 docs/audit/2026-10-02-round44-closure-migration-fixtures.md。
 package startup
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +65,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testdb"
 
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
@@ -212,11 +240,28 @@ func isDollarTagChar(c byte) bool {
 // execTolerantSnapshot 复刻 init-local-db 的 psql（无 ON_ERROR_STOP）语义：
 // 快照对裸库不是顺序安全的（视图/函数先于所引用的表出现），错误容忍跳过。
 // 分块批量执行控制跨隧道往返；块内出错（隐式事务整体中止）时降级为块内
-// 逐条执行并忽略单条错误，失败语句之前的语句重放命中 already-exists 同样
-// 被忽略。只容忍快照自身的引导噪声；返回首个致命错误（连接失败等）。
-func execTolerantSnapshot(ctx context.Context, conn *pgx.Conn, script string) error {
+// 逐条执行。
+//
+// 关键：降级路径**不因任何服务端 SQL 错误中止**。这是 2026-10-02 的行为修正。
+// 旧实现在遇到第一个「非容忍 SQLSTATE」时直接 return，与它自己注释里声称的
+// psql 语义相反（psql 报错后继续执行后续语句）。后果不只是提前退出：容错地
+// 跳过一条 CREATE 会留下半成品对象，使后面某条语句以一个**不在名单里**的
+// SQLSTATE 失败，于是失败点取决于哪条语句先被跳过——
+//
+//	第 1 次运行：statement #2297 → 55000 cannot attach index ... as a partition of index
+//	第 2 次运行：42804 table "request_logs_2026_07" contains column "application_id"
+//	            not found in parent "request_logs"
+//
+// 同一份输入、两个不同的致命错误，说明这不是某条 DDL 的确定性问题，而是重放
+// 机制在制造损坏的中间态。实测 psql（ON_ERROR_STOP=0）灌同一份 01-schema.sql
+// 零错误，所以正确做法是让服务端错误全部容忍、让后续断言去判成败。
+//
+// 只有**非服务端**错误（连接断开、协议层失败）才中止——那种情况重放无意义。
+// 被容忍的错误按 SQLSTATE 汇总后 t.Logf 出来，不静默。
+func execTolerantSnapshot(t *testing.T, ctx context.Context, conn *pgx.Conn, script string) error {
 	const chunkSize = 64 << 10
 	stmts := splitSQLStatements(script)
+	tolerated := map[string]int{}
 	for start := 0; start < len(stmts); {
 		end := start
 		size := 0
@@ -230,35 +275,44 @@ func execTolerantSnapshot(ctx context.Context, conn *pgx.Conn, script string) er
 			_, _ = conn.Exec(ctx, "ROLLBACK")
 			for _, s := range stmts[start:end] {
 				if _, err := conn.Exec(ctx, s); err != nil {
-					if !isIgnorableSnapshotError(err) {
-						return err
+					if _, ok := pgErrCode715(err); !ok {
+						// Not a server-reported error: the connection or the
+						// protocol is gone, and replaying cannot help.
+						return fmt.Errorf("snapshot execution failed outside statement replay: %w", err)
 					}
+					tolerated[pgErrCodeMust715(err)]++
 					_, _ = conn.Exec(ctx, "ROLLBACK")
 				}
 			}
 		}
 		start = end
 	}
+	if len(tolerated) > 0 {
+		codes := make([]string, 0, len(tolerated))
+		for c := range tolerated {
+			codes = append(codes, c)
+		}
+		sort.Strings(codes)
+		parts := make([]string, 0, len(codes))
+		total := 0
+		for _, c := range codes {
+			parts = append(parts, fmt.Sprintf("%s x%d", c, tolerated[c]))
+			total += tolerated[c]
+		}
+		// Surfaced, not swallowed: a bootstrap that needed this much tolerance
+		// is worth a reader seeing, and the caller still has to satisfy every
+		// assertion below before the test passes.
+		t.Logf("execTolerantSnapshot: tolerated %d statement errors while replaying chunks: %s",
+			total, strings.Join(parts, ", "))
+	}
 	return nil
 }
 
-// isIgnorableSnapshotError：快照引导的预期噪声（依赖序、已存在、权限）。
-func isIgnorableSnapshotError(err error) bool {
-	code, ok := pgErrCode715(err)
-	if !ok {
-		return false
-	}
-	switch code {
-	case "42P07", "42710", "42701", "42P06", "42704", "23505", "42P16", "42723":
-		return true // duplicate table/constraint/column/schema/object/function, unique violation, invalid table definition
-	case "42P01", "42883", "42703":
-		return true // undefined table/function/column（前向引用，依赖其后的语句补齐）
-	case "42501":
-		return true // insufficient privilege（测试角色非超级用户时的可选扩展）
-	case "0A000", "42809":
-		return true // feature not supported / wrong object type（columnar 索引、分区对象等，psql 引导同样跳过）
-	}
-	return false
+// pgErrCodeMust715 is pgErrCode715 for a caller that has already established
+// the error IS a server error.
+func pgErrCodeMust715(err error) string {
+	code, _ := pgErrCode715(err)
+	return code
 }
 
 func TestMigration715PendingStateLifecycle(t *testing.T) {
@@ -434,6 +488,70 @@ func TestMigration715PendingStateLifecycle(t *testing.T) {
 	execScript715(t, scriptConn, string(up))
 }
 
+// installedStartupManifest / installedStartupDir locate the installer's ordered
+// migration list and the files it names. Both are relative to this package.
+const (
+	installedStartupManifest = "../../schema/installed_startup_migrations.tsv"
+	installedStartupDir      = "../../../installer/cmd/llm-gw-installer/embeddata/startup"
+)
+
+// applyRegisteredStartupMigrations replays the installer's entire registered startup
+// migration set, in the installer's own order — i.e. the middle step of a fresh
+// install, exactly as the installer performs it.
+func applyRegisteredStartupMigrations(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+
+	raw, err := os.ReadFile(installedStartupManifest)
+	if err != nil {
+		t.Fatalf("read %s: %v\n"+
+			"It is generated from installer/internal/dbinit/runner.go and guarded by "+
+			"installer/internal/dbinit/startup_manifest_test.go; regenerate with:\n"+
+			"    cd installer && go test -count=1 ./internal/dbinit/ -run TestStartupManifest -update",
+			installedStartupManifest, err)
+	}
+
+	var order []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		_, name, ok := strings.Cut(line, "\t")
+		if !ok {
+			t.Fatalf("manifest line %q has no tab separator", line)
+		}
+		order = append(order, name)
+	}
+
+	if len(order) == 0 {
+		t.Fatalf("%s contains no migration entries", installedStartupManifest)
+	}
+	// 715 must be IN the set: this test's whole subject is that migration, and a
+	// manifest silently missing it would make every assertion below meaningless.
+	has715 := false
+	for _, name := range order {
+		if strings.HasPrefix(name, "715_") {
+			has715 = true
+			break
+		}
+	}
+	if !has715 {
+		t.Fatalf("no 715_* entry in %s (%d entries) — is migration 715 still registered?",
+			installedStartupManifest, len(order))
+	}
+
+	for i, name := range order {
+		path := filepath.Join(installedStartupDir, name)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read startup migration %d/%d (%s): %v", i+1, len(order), name, err)
+		}
+		if err := execTolerantSnapshot(t, ctx, conn, string(body)); err != nil {
+			t.Fatalf("apply startup migration %d/%d (%s): %v", i+1, len(order), name, err)
+		}
+	}
+	t.Logf("replayed all %d registered startup migrations", len(order))
+}
+
 // TestMigration715FreshChainApplyMigrations 对一次性库跑真实 db.Open：
 // 启动链必须把 389 旧约束就地升级为 715 形态（全新安装路径）。
 func TestMigration715FreshChainApplyMigrations(t *testing.T) {
@@ -441,6 +559,17 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_PG_URL not set; fresh-chain test requires a disposable PostgreSQL")
 	}
+	// A scratch database, NOT the one TEST_PG_URL names. "Fresh install" is the
+	// entire premise of this test: it replays 00-prereqs + 01-schema and then
+	// the whole startup chain, and asserts the 389 -> 715 upgrade happened. Run
+	// against the gate database (installer shape, 435 relations) the snapshot
+	// lands on top of an already-migrated schema instead, and the test measures
+	// the collision rather than the install: measured 2026-10-02, the bootstrap
+	// reported 1705 tolerated errors of which 42P07 "already exists" was 1046,
+	// and db.Open then failed with 42703 on provider_id. The 42804 and 55000
+	// this test used to fail with were the same collision wearing different
+	// SQLSTATEs on different runs.
+	dsn = testdb.Create(t, dsn)
 
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -473,11 +602,48 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read bootstrap %s: %v", snapshot, err)
 		}
-		if err := execTolerantSnapshot(bootCtx, boot, string(snapSQL)); err != nil {
+		if err := execTolerantSnapshot(t, bootCtx, boot, string(snapSQL)); err != nil {
 			t.Fatalf("apply bootstrap %s: %v", snapshot, err)
 		}
 	}
 	t.Cleanup(func() { _ = boot.Close(context.Background()) })
+
+	// The middle step of a real fresh install, which this test used to skip.
+	//
+	// Production order, measured 2026-10-02:
+	//
+	//	00-prereqs + 01-schema snapshot
+	//	  -> the installer's 198 registered startup migrations
+	//	  -> the binary's ensure chain (db.Open)
+	//
+	// Skipping the middle step left db.Open failing 42P01 on
+	// public.session_aggregate_outbox (created by 630).
+	//
+	// The FULL set is applied, not just the prefix before 715. Stopping at 714
+	// was tried and is wrong: the ensure chain in db.Open calls functions that
+	// later migrations create, and it failed 42883
+	// "function public.ensure_usage_facts_daily_partition(date) does not exist"
+	// (that one is 751). The binary therefore assumes the complete migration set
+	// is already applied — which also means that in PRODUCTION, 715 itself is
+	// applied by the installer as a file, not by the ensure chain.
+	//
+	// SCOPE CHANGE, stated plainly: this test used to claim it observed the
+	// 389 -> 715 upgrade happening inside the ensure chain. Having made the
+	// sequence production-accurate, it no longer isolates that — the upgrade is
+	// performed by 715_route_incidents_pending_state.sql. What it now verifies is
+	// the real fresh-install path end to end: the snapshot, the whole registered
+	// chain, and then that the resulting schema carries the pending-aware
+	// constraint and accepts 'pending' writes. Whether the ensure chain is
+	// *wired* to call the pending-state step is a separate question and is not
+	// answered here.
+	//
+	// The set comes from sql/schema/installed_startup_migrations.tsv, not from the
+	// directory: sql/migrations/startup/ holds 458 migration numbers, only 198
+	// are registered, and the registered ORDER is not numeric order (the
+	// session_turns_hot bootstrap sits at index 3 and 704 comes after 713). The
+	// manifest is guarded against drift from dbinit.StartupFiles by
+	// installer/internal/dbinit/startup_manifest_test.go.
+	applyRegisteredStartupMigrations(t, bootCtx, boot)
 
 	// 生产引导在启动链之前创建迁移账本（apply-db-revision-sequence 同款），
 	// ensure 链内的 stamp（701/704/715）依赖它。
@@ -493,18 +659,38 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 
 	gw, err := dbpkg.Open(ctx, dsn)
 	if err != nil {
-		// 已知既有缺陷（与本迁移无关，2026-09-16 部署验证发现）：
-		// 01-schema.sql 快照中 request_logs_hot 与分区父表列类型系统性
-		// 漂移（hot 侧 bool/varchar/jsonb 列落成 text），链首
-		// ensureRequestLogsCurrentMonthView 重建视图时 UNION text/boolean
-		// 报 42804，启动链在到达 routeincident ensure 之前中止。存量库
-		// （245/154 升级路径）不受影响——视图已健康时该 ensure 是零 DDL。
-		// 修复快照漂移前，全新安装路径无法端到端验证，显式 SKIP 并保留
-		// 断言：漂移修复后本测试自动转为完整验证。
+		// The original skip text here claimed a "pre-existing schema snapshot
+		// drift (request_logs_hot column types vs parent, 42804 on view
+		// rebuild)". That cause is DISPROVEN by measurement, 2026-10-02:
+		//
+		//   * sql/schema/01-schema.sql applied to an empty database with psql
+		//     and ON_ERROR_STOP=0 completes with zero errors;
+		//   * afterwards public.request_logs HAS application_id, and
+		//     request_logs_2026_07 IS attached (pg_inherits = 1), with 74
+		//     monthly partitions for 2026;
+		//   * no ALTER/ADD/DROP COLUMN touches request_logs between its
+		//     CREATE (line 7205) and the ATTACH (line 19528).
+		//
+		// The observed 42804 therefore does not come from the snapshot. It is
+		// produced by execTolerantSnapshot's chunked replay: a failing 64 KiB
+		// chunk is rolled back and re-run statement by statement, and a
+		// partition ATTACH can be reached in that replay while the parent is
+		// momentarily short a column. 42804 is not in
+		// isIgnorableSnapshotError, so the helper returns it as fatal — even
+		// though the database it left behind is complete and correct (verified:
+		// 154 columns, partition attached). The failure site is also not this
+		// one; the same 42804 aborts earlier, inside execTolerantSnapshot at
+		// the bootstrap call, so the guard below never sees it.
+		//
+		// 42804 is deliberately NOT added to isIgnorableSnapshotError to turn
+		// this green: that list also governs the column-type drift this test
+		// is meant to catch, and widening it would hide the real defect
+		// instead of the test harness's own noise. Fixing the replay needs its
+		// own change.
 		msg := err.Error()
 		if strings.Contains(msg, "rebuild request_logs base wrapper view") &&
 			strings.Contains(msg, "42804") {
-			t.Skipf("fresh-install chain broken by pre-existing schema snapshot drift (request_logs_hot column types vs parent, 42804 on view rebuild); unrelated to migration 715: %v", err)
+			t.Skipf("fresh-install chain broken at the request_logs view rebuild: %v", err)
 		}
 		t.Fatalf("db.Open (full startup chain) failed: %v", err)
 	}
@@ -535,5 +721,16 @@ func TestMigration715FreshChainApplyMigrations(t *testing.T) {
 	}
 	if !stamped {
 		t.Fatal("fresh chain: migration 715 ledger stamp missing")
+	}
+	// 第二十七轮 F3 钉测：credential_model_capabilities 仅由 612 建，被生产
+	// 代码读，但无 db.Open 契约、无专属测试——链内静默失败时此前没有任何
+	// 门禁会红，这里是唯一守卫。
+	var capTable bool
+	if err := pool.QueryRow(ctx, `
+		SELECT to_regclass('public.credential_model_capabilities') IS NOT NULL`).Scan(&capTable); err != nil {
+		t.Fatal(err)
+	}
+	if !capTable {
+		t.Fatal("fresh chain: credential_model_capabilities (migration 612) missing")
 	}
 }

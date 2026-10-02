@@ -209,35 +209,48 @@ func TestHalfOpenProbeFailure(t *testing.T) {
 	}
 }
 
-func TestRateLimitExponentialBackoff(t *testing.T) {
+// Wave 1 A4 (2026-09-22): 429/限流不再计入断路器失败——熔断只由真实故障驱动。
+// 短期限流排序降权由 writer.go 绑定级冷却（Retry-After 优先，默认 3min）承担。
+func TestRateLimitExcludedFromBreaker(t *testing.T) {
 	b := New(1, 1)
 
-	// Confirmed rate limit → 900s (15 min) cooling
-	b.RecordFailure(KindRateLimit)
-	b.RecordFailure(KindRateLimit)
-	if b.State() != StateOpen {
-		t.Fatalf("expected open, got %s", b.State())
+	// 429 风暴不开断路器、不累计失败
+	for i := 0; i < 10; i++ {
+		b.RecordFailure(KindRateLimit)
+	}
+	if b.State() != StateClosed {
+		t.Fatalf("expected closed under 429 storm, got %s", b.State())
+	}
+	if b.ConsecutiveFailures() != 0 {
+		t.Fatalf("consecutive failures = %d, want 0", b.ConsecutiveFailures())
+	}
+	if !b.Allow() {
+		t.Fatal("closed breaker under 429 storm should allow requests")
 	}
 
-	b.mu.Lock()
-	firstCooling := time.Until(b.coolingExpires)
-	b.mu.Unlock()
-	if firstCooling < 118*time.Second || firstCooling > 122*time.Second {
-		t.Fatalf("expected ~120s cooling, got %v", firstCooling)
+	// HALF_OPEN 探针撞 429：归还探针槽、保持 HALF_OPEN，不确认失败
+	b2 := New(1, 2)
+	b2.mu.Lock()
+	b2.state.Store(int32(StateHalfOpen))
+	b2.nextProbeAt = time.Now()
+	b2.mu.Unlock()
+	if !b2.Allow() {
+		t.Fatal("half-open should admit the probe")
+	}
+	b2.RecordFailure(KindRateLimit)
+	if b2.State() != StateHalfOpen {
+		t.Fatalf("429 probe must not change state, got %s", b2.State())
+	}
+	if !b2.Allow() {
+		t.Fatal("probe slot must be released after 429 so the next request can probe")
 	}
 
-	// Second rate limit → still 120s (at max)
-	b.mu.Lock()
-	b.coolingExpires = time.Now().Add(-1 * time.Second) // expire current cooling
-	b.mu.Unlock()
-	b.Allow()                      // transition to half-open
-	b.RecordFailure(KindRateLimit) // half-open probe failure
-
-	b.mu.Lock()
-	secondCooling := time.Until(b.coolingExpires)
-	b.mu.Unlock()
-	if secondCooling < 118*time.Second || secondCooling > 122*time.Second {
-		t.Fatalf("expected ~120s cooling, got %v", secondCooling)
+	// 对照：真实故障种类仍然开断路器（限流剔除不弱化故障路径，阈值为 2）
+	b3 := New(1, 3)
+	b3.RecordFailure(KindUpstreamDown)
+	b3.RecordFailure(KindUpstreamDown)
+	if b3.State() != StateOpen {
+		t.Fatalf("real failures must still open the breaker, got %s", b3.State())
 	}
 }
 
@@ -287,6 +300,30 @@ func TestReset(t *testing.T) {
 	}
 	if !b.Allow() {
 		t.Fatal("should allow after reset")
+	}
+	// 2026-10-01 第十八轮审计：Reset 还必须清掉剩余冷却窗口——否则管理面
+	// 复位后 R87 的 sameIncident 判定窗仍以旧 coolingExpires 为界（最长
+	// 30 分钟），交替故障族计数不归零、复位后更易跳闸。注意必须用
+	// KindTransient 触发（KindQuota 落 Quarantined，不写 coolingExpires，
+	// 断言会空过——第一版正是这样失去判别力的）。
+	b.RecordFailure(KindTransient)
+	b.RecordFailure(KindTransient)
+	if b.State() != StateOpen {
+		t.Fatalf("expected open after transient failures, got %s", b.State())
+	}
+	b.mu.Lock()
+	coolingSet := !b.coolingExpires.IsZero()
+	b.mu.Unlock()
+	if !coolingSet {
+		t.Fatal("precondition: transient trip must set coolingExpires")
+	}
+	b.Reset()
+	b.mu.Lock()
+	coolingCleared := b.coolingExpires.IsZero()
+	b.mu.Unlock()
+	if !coolingCleared {
+		t.Fatal("Reset left coolingExpires set: the same-incident window survives a " +
+			"manual recovery, making the breaker MORE trip-prone after reset than before")
 	}
 }
 
@@ -895,5 +932,94 @@ func TestEscalatedCoolingBacksOffExponentially(t *testing.T) {
 		if cycle != i || d != want {
 			t.Fatalf("free escalation cycle %d: cycle=%d cooling=%v, want %v", i, cycle, d, want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R87（2026-10-01）：失败计数的「同一事件」判定补时间窗
+//
+// 缺陷：transientFamily 只覆盖 4 种，KindUpstreamDown 不在其中
+// ⇒ Timeout↔UpstreamDown 交替时每次都判「族变化」⇒ consecutive 清零
+// ⇒ 永远够不到 threshold ⇒ 熔断永不跳闸。
+// 详见 breaker.go RecordFailure 内的 R87 注释。
+// ---------------------------------------------------------------------------
+
+// T1：交替族在**同一事件**窗口内 ⇒ 计数继续累积 ⇒ 最终跳闸。
+// 修复前：每次族变化都清零 ⇒ consecutive 恒为 1 ⇒ 永远 Closed。
+func TestAlternatingErrorFamiliesWithinIncidentStillTrip(t *testing.T) {
+	b := New(1, 1)
+	b.RecordFailure(KindTimeout)
+	b.RecordFailure(KindUpstreamDown)
+	b.RecordFailure(KindTimeout)
+	if b.State() != StateOpen {
+		t.Fatalf("交替错误族在同一次事件内应累积到阈值并跳闸，"+
+			"实际 state=%s consecutive=%d（修复前恒为 Closed，consecutive 恒 1）",
+			b.State(), b.ConsecutiveFailures())
+	}
+}
+
+// T2：交替族但**间隔超出**事件窗口 ⇒ 判为新事件 ⇒ 计数归零 ⇒ 不跳闸。
+// 这是新增时间窗判据的反向护栏：防止「窗口过宽导致任何失败都算同一次事件」。
+func TestAlternatingErrorFamiliesBeyondWindowDoNotAccumulate(t *testing.T) {
+	b := New(1, 1)
+	backdate := func() {
+		b.mu.Lock()
+		b.lastFailureAt = time.Now().Add(-1 * time.Hour) // 远超任何策略窗口
+		b.mu.Unlock()
+	}
+	b.RecordFailure(KindTimeout)
+	backdate()
+	b.RecordFailure(KindUpstreamDown)
+	backdate()
+	b.RecordFailure(KindTimeout)
+	if b.State() != StateClosed {
+		t.Fatalf("超出事件窗口的交替族应判为新事件并清零计数，实际 state=%s consecutive=%d",
+			b.State(), b.ConsecutiveFailures())
+	}
+}
+
+// T3：同一事件内的族变化仍要把 coolingCycle 归零并从 1 重新起步。
+// 这是 R34（2026-09-17）记录的意图：族变化不继承陈旧升级档，
+// 否则下次升级会直接从 2³× 起步。本门保证 R87 的修复没有把它一起废掉。
+func TestFamilyChangeStillResetsCoolingCycleWithinIncident(t *testing.T) {
+	b := New(1, 1)
+	for i := 0; i < 3; i++ {
+		b.RecordFailure(KindTimeout)
+	}
+	b.mu.Lock()
+	cycleBefore := b.coolingCycle
+	b.mu.Unlock()
+	if cycleBefore == 0 {
+		t.Skip("该策略路径未推进 coolingCycle，本用例的前提不成立")
+	}
+
+	b.RecordFailure(KindUpstreamDown) // 同事件窗口内的族变化
+	b.mu.Lock()
+	cycleAfter := b.coolingCycle
+	b.mu.Unlock()
+	// 注意：不能断言 cycleAfter == 0 —— 归零之后**同一次调用内**就会因
+	// KindUpstreamDown 是 RecoveryExponential 而 coolingCycle++，所以终值是 1。
+	// R34 的意图是「不从陈旧档位继续爬」，即重新起步到 1，而不是接着 2 走到 3。
+	if cycleAfter != 1 {
+		t.Fatalf("族变化应把 coolingCycle 归零后从 1 重新起步（R34 意图：不得继承陈旧档），"+
+			"实际 修复前=%d 修复后=%d（若为 %d 说明归零那行被删/失效）",
+			cycleBefore, cycleAfter, cycleBefore+1)
+	}
+}
+
+// T4：既有行为不回归 —— RecordSuccess 后计数与升级档均归零。
+func TestSuccessStillResetsCountersAfterR87Change(t *testing.T) {
+	b := New(1, 1)
+	b.RecordFailure(KindTimeout)
+	b.RecordFailure(KindTimeout)
+	b.RecordSuccess()
+	if got := b.ConsecutiveFailures(); got != 0 {
+		t.Fatalf("RecordSuccess 后 consecutive 应为 0，实际 %d", got)
+	}
+	b.mu.Lock()
+	cycle := b.coolingCycle
+	b.mu.Unlock()
+	if cycle != 0 {
+		t.Fatalf("RecordSuccess 后 coolingCycle 应为 0，实际 %d", cycle)
 	}
 }

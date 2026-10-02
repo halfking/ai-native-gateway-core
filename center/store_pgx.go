@@ -3,9 +3,11 @@ package center
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 // PgxStore PostgreSQL实现
@@ -116,6 +118,11 @@ func (s *PgxStore) ListInstances(ctx context.Context, status string, offset, lim
 		}
 		instances = append(instances, instance)
 	}
+	// R66: 迭代中断只让 Next() 返回 false；不终检就把「读到第 N 个实例时
+	// 连接断了」当成「实例列表已读完」，调用方拿到残缺列表 + nil。
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("center.PgxStore.ListInstances: iterate rows: %w", err)
+	}
 
 	return instances, total, nil
 }
@@ -160,8 +167,15 @@ func (s *PgxStore) RecordHeartbeat(ctx context.Context, instanceID string, paylo
 		INSERT INTO instance_heartbeats (instance_id, timestamp, uptime_secs, num_goroutine, alloc_mb, status, metrics)
 		VALUES ($1, now(), $2, $3, $4, $5, $6)
 	`
+	// R72 审计：metrics 是 jsonb 列，[]byte 直传在 SimpleProtocol 池下内联
+	// 为 bytea hex 字面量（R11 FIX-C 同根，R71 修 UpdateCommandStatus 时漏此
+	// 臂）。当前 center.Client 无生产构造点，接线前修复到位。
+	var metricsParam interface{}
+	if len(metricsJSON) > 0 {
+		metricsParam = string(metricsJSON)
+	}
 	if _, err := tx.Exec(ctx, insertQuery,
-		instanceID, payload.UptimeSecs, payload.NumGoroutine, payload.AllocMB, StatusOnline, metricsJSON,
+		instanceID, payload.UptimeSecs, payload.NumGoroutine, payload.AllocMB, StatusOnline, metricsParam,
 	); err != nil {
 		return err
 	}
@@ -203,20 +217,35 @@ func (s *PgxStore) GetHeartbeatHistory(ctx context.Context, instanceID string, s
 		}
 		records = append(records, record)
 	}
+	// R66: 心跳历史被静默截断 = 实例存活曲线凭空少一段。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("center.PgxStore.GetHeartbeatHistory: iterate rows: %w", err)
+	}
 
 	return records, nil
 }
 
 // CreateCommand 创建命令
 func (s *PgxStore) CreateCommand(ctx context.Context, cmd *Command) error {
-	argsJSON, _ := json.Marshal(cmd.Args)
+	argsJSON, err := json.Marshal(cmd.Args)
+	if err != nil {
+		return fmt.Errorf("marshal command args: %w", err)
+	}
 	query := `
 		INSERT INTO center_commands (command_id, instance_id, command, args, status, issued_at, issued_by, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id
 	`
+	// R72 审计：args 是 jsonb 列（377_center_ops.sql:45），[]byte 直传在
+	// SimpleProtocol 池下内联为 bytea hex 字面量（R11 FIX-C 同根）——
+	// 本位点有活跃生产构造点（POST /admin/center/instances/:id/command
+	// → IssueCommand → 此处），下发命令必败。string 化修复。
+	var argsParam interface{}
+	if len(argsJSON) > 0 {
+		argsParam = string(argsJSON)
+	}
 	return s.db.QueryRow(ctx, query,
-		cmd.CommandID, cmd.InstanceID, cmd.Command, argsJSON, cmd.Status,
+		cmd.CommandID, cmd.InstanceID, cmd.Command, argsParam, cmd.Status,
 		cmd.IssuedAt, cmd.IssuedBy, cmd.ExpiresAt,
 	).Scan(&cmd.ID)
 }
@@ -239,12 +268,11 @@ func (s *PgxStore) GetCommand(ctx context.Context, commandID string) (*Command, 
 		return nil, err
 	}
 
-	if len(argsJSON) > 0 {
-		_ = json.Unmarshal(argsJSON, &cmd.Args)
-	}
-	if len(resultJSON) > 0 {
-		_ = json.Unmarshal(resultJSON, &cmd.Result)
-	}
+	// R67：jsonb 反序列化失败按零值继续并留痕，不上抛——单行数据坏了不应
+	// 把整个命令查询变成错误。原先 `_ = json.Unmarshal(...)` 零痕迹，运维
+	// 无法区分「这行本来就是空的」与「这行数据坏了」。
+	jsoncol.Decode("center.PgxStore.GetCommand/args", argsJSON, &cmd.Args)
+	jsoncol.Decode("center.PgxStore.GetCommand/result", resultJSON, &cmd.Result)
 
 	return cmd, nil
 }
@@ -273,10 +301,12 @@ func (s *PgxStore) ListPendingCommands(ctx context.Context, instanceID string) (
 		); err != nil {
 			return nil, err
 		}
-		if len(argsJSON) > 0 {
-			_ = json.Unmarshal(argsJSON, &cmd.Args)
-		}
+		jsoncol.Decode("center.PgxStore.ListPendingCommands/args", argsJSON, &cmd.Args)
 		commands = append(commands, cmd)
+	}
+	// R66: 待执行命令被静默截断 = 节点侧永远收不到后半批命令。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("center.PgxStore.ListPendingCommands: iterate rows: %w", err)
 	}
 
 	return commands, nil
@@ -290,7 +320,14 @@ func (s *PgxStore) UpdateCommandStatus(ctx context.Context, commandID, status st
 		SET status = $2, executed_at = now(), result = $3
 		WHERE command_id = $1
 	`
-	_, err := s.db.Exec(ctx, query, commandID, status, resultJSON)
+	// R71 审计：result 是 jsonb 列，[]byte 直传在 SimpleProtocol 池下内联
+	// 为 bytea hex 字面量（R11 FIX-C 同根）；marshal 失败的 nil 保持 NULL
+	// 语义。接线前修复到位（当前无生产构造点）。
+	var resultParam interface{}
+	if len(resultJSON) > 0 {
+		resultParam = string(resultJSON)
+	}
+	_, err := s.db.Exec(ctx, query, commandID, status, resultParam)
 	return err
 }
 
@@ -320,13 +357,13 @@ func (s *PgxStore) GetCommandHistory(ctx context.Context, instanceID string, lim
 		); err != nil {
 			return nil, err
 		}
-		if len(argsJSON) > 0 {
-			_ = json.Unmarshal(argsJSON, &cmd.Args)
-		}
-		if len(resultJSON) > 0 {
-			_ = json.Unmarshal(resultJSON, &cmd.Result)
-		}
+		jsoncol.Decode("center.PgxStore.GetCommandHistory/args", argsJSON, &cmd.Args)
+		jsoncol.Decode("center.PgxStore.GetCommandHistory/result", resultJSON, &cmd.Result)
 		commands = append(commands, cmd)
+	}
+	// R66: 命令历史被静默截断 = 运维审计面凭空少若干条下发记录。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("center.PgxStore.GetCommandHistory: iterate rows: %w", err)
 	}
 
 	return commands, nil
@@ -473,6 +510,7 @@ func (s *PgxStore) GetRuntimeMetricsSummary(ctx context.Context, hours int) ([]R
 		}
 		summaries = append(summaries, summary)
 	}
-
+	// R66: 聚合面被静默截断 = 集群运行时指标凭空少若干实例。直接消费
+	// rows.Err()（非 dbrows.Err 包装），使站位级守卫能逐循环判定。
 	return summaries, rows.Err()
 }

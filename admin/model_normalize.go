@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,6 +38,17 @@ func loadModelAliasIndex(ctx context.Context, db *pgxpool.Pool) (*modelAliasInde
 	for rows.Next() {
 		var canon, raw string
 		if err := rows.Scan(&canon, &raw); err != nil {
+			// R67-A 修正：这里**不能**上抛。两个调用方（analytics.go:356/:435）
+			// 都是 `aliasIdx, _ :=` 丢弃错误并继续用 idx，于是上抛的实际效果
+			// 不是「让调用方知道」，而是**在第一行坏数据处把整个别名索引截断**，
+			// 且这个截断对调用方完全不可见 —— 比原来的「跳过一行」更差：
+			// analytics 的 canonical 列会静默退化成 raw 名，看起来像
+			// 「模型换了名字」。
+			//
+			// 正确形态：跳行留痕。迭代中断（下面的 rows.Err()）仍上抛，
+			// 因为那是另一种故障——调用方的降级容忍覆盖不到它，且它同样会被
+			// 丢弃方吞掉，故在下方注释说明。
+			warnRowSkip("modelNormalize.loadModelAliasIndex", err)
 			continue
 		}
 		canon = strings.TrimSpace(canon)
@@ -52,6 +64,9 @@ func loadModelAliasIndex(ctx context.Context, db *pgxpool.Pool) (*modelAliasInde
 				idx.rawToCanon[norm] = canon
 			}
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return idx, fmt.Errorf("load model alias index: iterate rows: %w", err)
 	}
 	return idx, nil
 }

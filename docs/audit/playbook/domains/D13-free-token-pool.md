@@ -44,3 +44,9 @@
 重点：窗口内 freediscovery/freerescovery 改动的 RLS 特权写、模板更新语义、注册幂等。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R85 回注（2026-10-01，域门与本域文件零重叠 + 整域休眠根因已闭合）
+- **本域验收门对本域 34 个非测试文件零覆盖**：`plan.md` §6 的门只跑 `./bg`（selfcheck 429）与 `./ratelimit`（race），D13 目录自身 **0 个 `_test.go`**（17 域中 11 域为 0）。**补门时按 `conventions.md` §9 走准入清单。**
+- **整域休眠且自我锁死（主代理真库实证，因果链闭合）**：`provider_templates` 6 行 `enabled` **全为 f**；5 个 `api_key_encrypted` **全 NULL**（keyring 路径生产从未走通）⇒ key 只能来自 `os.Getenv` ⇒ 未配置则 `consecutive_scan_failures` 累到 3 触发**自动禁用**（09-17 四个、09-24 一个，与最后一条 `discovery_tasks` 日期精确吻合）⇒ `discovery_engine.go:113-116` 在 `createTask` **之前** return `ErrTemplateDisabled`（**连任务行都不再写**）⇒ 模板**无自动复活路径**（`bg/` 复活 SQL 全作用于 `credentials` 而非 `provider_templates`）。
+- **key 来源绕开凭据体系**：`template_manager.go:369-396` 是「keyring ‖ `os.Getenv`」二选一，三域内 `FROM/INTO credentials` **零命中** ⇒ 绕开了 86 条凭据的加密/轮换/健康体系。
+- **非缺陷（勿再上报）**：playbook「连续 N 次失败自动禁用」**实测成立**；`donations` 表属 licensing/分发域（`db/db.go:6888`），**与本域无关**；「两套 error 文案」是 `template_manager.go:392` 同一路径的历史版本（git `3fb83f8a7` + DB 日期边界双印证），**不是两条活路径**。

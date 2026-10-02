@@ -131,7 +131,7 @@ func (h *AutoRouteHandlers) listDefaultRouting(w http.ResponseWriter, r *http.Re
 
 	rows, err := h.db.Query(r.Context(), sb.String(), args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -144,13 +144,13 @@ func (h *AutoRouteHandlers) listDefaultRouting(w http.ResponseWriter, r *http.Re
 			&row.TenantID, &row.Priority, &row.Reason, &row.CreatedBy,
 			&row.ExpiresAt, &row.CreatedAt, &row.UpdatedAt,
 		); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -219,7 +219,7 @@ func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.
 	ctx := r.Context()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
@@ -239,7 +239,7 @@ func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.
 				"a default with the same (task_type, profile, tier, tenant_id) already exists")
 			return
 		}
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if _, err := tx.Exec(ctx, `
@@ -249,11 +249,11 @@ func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.
 		newID, req.TaskType, req.Profile, req.Tier, req.CanonicalModel, req.TenantID,
 		req.Priority, req.Reason, req.ExpiresAt, createdBy,
 	); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -272,7 +272,7 @@ func (h *AutoRouteHandlers) deleteDefaultRouting(w http.ResponseWriter, r *http.
 	ctx := r.Context()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
@@ -289,7 +289,7 @@ func (h *AutoRouteHandlers) deleteDefaultRouting(w http.ResponseWriter, r *http.
 		return
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM task_default_routing WHERE id = $1`, id); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if _, err := tx.Exec(ctx, `
@@ -299,11 +299,11 @@ func (h *AutoRouteHandlers) deleteDefaultRouting(w http.ResponseWriter, r *http.
 		row.ID, row.TaskType, row.Profile, row.Tier, row.CanonicalModel, row.TenantID,
 		row.Priority, row.Reason, row.ExpiresAt, createdBy,
 	); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "deleted"})
@@ -362,7 +362,7 @@ func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.
 	ctx := r.Context()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
@@ -405,7 +405,7 @@ func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.
 				"a default with the same (task_type, profile, tier, tenant_id) already exists")
 			return
 		}
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if res.RowsAffected() == 0 {
@@ -420,7 +420,7 @@ func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.
 		&row.ID, &row.TaskType, &row.Profile, &row.Tier, &row.CanonicalModel,
 		&row.TenantID, &row.Priority, &row.Reason, &row.ExpiresAt,
 	); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if _, err := tx.Exec(ctx, `
@@ -430,11 +430,11 @@ func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.
 		row.ID, row.TaskType, row.Profile, row.Tier, row.CanonicalModel, row.TenantID,
 		row.Priority, row.Reason, row.ExpiresAt, createdBy,
 	); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "updated"})
@@ -452,7 +452,7 @@ func (h *AutoRouteHandlers) listDefaultRoutingAudit(w http.ResponseWriter, r *ht
 		ORDER BY ts DESC
 		LIMIT 500`)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -480,13 +480,13 @@ func (h *AutoRouteHandlers) listDefaultRoutingAudit(w http.ResponseWriter, r *ht
 			&row.Tier, &row.CanonicalModel, &row.TenantID, &row.Priority, &row.Reason,
 			&row.ExpiresAt, &row.Actor,
 		); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"audit": out, "count": len(out)})

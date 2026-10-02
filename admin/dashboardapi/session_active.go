@@ -172,6 +172,9 @@ func (h *SessionActiveHandler) queryActiveSessions(ctx context.Context, params Q
 		}
 		sessions = append(sessions, item)
 	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
 	return totalActive, sessions, nil
 }
 

@@ -264,7 +264,7 @@ func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQueri
 			    updated_at = NOW()
 			WHERE id = $2
 		`, *req.OutboundModelName, offerID); err != nil {
-			writeError(w, http.StatusInternalServerError, "update outbound_model_name failed: "+err.Error())
+			writeInternalErr(w, "update outbound_model_name failed", err)
 			return
 		}
 		slog.Info("model_offers.outbound_model_name updated",
@@ -312,7 +312,7 @@ func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQueri
 				    updated_at = now()
 				WHERE id = $2
 			`, *req.ContextWindow, offerID); err != nil {
-				writeError(w, http.StatusInternalServerError, "update context_window failed: "+err.Error())
+				writeInternalErr(w, "update context_window failed", err)
 				return
 			}
 		} else {
@@ -324,7 +324,7 @@ func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQueri
 				    updated_at = now()
 				WHERE id = $1
 			`, offerID); err != nil {
-				writeError(w, http.StatusInternalServerError, "clear context_window failed: "+err.Error())
+				writeInternalErr(w, "clear context_window failed", err)
 				return
 			}
 		}
@@ -463,6 +463,7 @@ func serveModelOfferSuggestions(w http.ResponseWriter, r *http.Request, db offer
 	for rows.Next() {
 		var o canonicalOption
 		if err := rows.Scan(&o.ID, &o.CanonicalName, &o.DisplayName, &o.Family); err != nil {
+			warnRowSkip("modelOffer.suggestions.canonicalCatalog", err)
 			continue
 		}
 		options = append(options, o)
@@ -471,7 +472,7 @@ func serveModelOfferSuggestions(w http.ResponseWriter, r *http.Request, db offer
 	// 2026-09-11 audit: don't silently truncate the catalog on a
 	// mid-iteration connection failure.
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan catalog failed: "+err.Error())
+		writeInternalErr(w, "scan catalog failed", err)
 		return
 	}
 
@@ -941,6 +942,7 @@ func (h *Handler) applyURSMManualDisabled(ctx context.Context, credID int, disab
 	for rows.Next() {
 		var rawModel string
 		if err := rows.Scan(&rawModel); err != nil {
+			warnRowSkip("ursm.applyAdminManualDisabled.boundModels", err)
 			continue
 		}
 		out.models++
@@ -961,6 +963,13 @@ func (h *Handler) applyURSMManualDisabled(ctx context.Context, credID int, disab
 			continue
 		}
 		out.applied = true
+	}
+	// Best-effort sync (callers only surface out.errors and never fail the
+	// endpoint): a truncated binding list means some models silently keep the
+	// stale manual_disabled flag in URSM, so it must leave a trace.
+	if err := rows.Err(); err != nil {
+		slog.Warn("manual_disabled: bound models rows iteration aborted",
+			"cred", credID, "models", out.models, "errors", out.errors, "error", err)
 	}
 	return out
 }
@@ -1035,7 +1044,7 @@ func (h *Handler) pickDefaultProbeModel(w http.ResponseWriter, r *http.Request, 
 
 	result, err := bgPickProbeModel(ctx, h.db, credID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "pick failed: "+err.Error())
+		writeInternalErr(w, "pick failed", err)
 		return
 	}
 
@@ -1109,6 +1118,7 @@ func (h *Handler) getRoutableSummary(w http.ResponseWriter, r *http.Request, pro
 		var reason string
 		var cnt int
 		if err := rows.Scan(&reason, &cnt); err != nil {
+			warnRowSkip("routing.routableSummary", err)
 			continue
 		}
 		breakdown[reason] = cnt
@@ -1116,6 +1126,10 @@ func (h *Handler) getRoutableSummary(w http.ResponseWriter, r *http.Request, pro
 		if reason == "routable" {
 			routable = cnt
 		}
+	}
+
+	if writeAggRowsErr(w, "routing.routableSummary", rows.Err()) {
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

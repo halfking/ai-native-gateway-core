@@ -103,3 +103,29 @@ func TestInsertNodeProbeRunClampsAttempt(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+// R51 审计 P3：panic 重启退避策略。原实现间隔只增不减（几次 panic 后永久
+// 钉在"封顶"值——且封顶判断有误，240s×2=8min 超过宣称的 5min）；现健康
+// 运行（≥3 tick）后的 panic 重置到起步值，短命 panic 指数翻倍且真正封顶。
+func TestNextProbeLoopBackoff(t *testing.T) {
+	cases := []struct {
+		name        string
+		prevBackoff time.Duration
+		previousRun time.Duration
+		want        time.Duration
+	}{
+		{"first short panic doubles", nodeProbeLoopInitialBackoff, 0, 60 * time.Second},
+		{"short run keeps doubling", 4 * time.Minute, time.Second, nodeProbeLoopMaxBackoff},
+		{"cap is a true 5min", nodeProbeLoopMaxBackoff, time.Second, nodeProbeLoopMaxBackoff},
+		{"never exceeds 5min (240s case)", 4 * time.Minute, 0, nodeProbeLoopMaxBackoff},
+		{"healthy run resets to initial", nodeProbeLoopMaxBackoff, 3 * nodeProbeTickInterval, nodeProbeLoopInitialBackoff},
+		{"healthy run after one panic resets", 60 * time.Second, 91 * time.Second, nodeProbeLoopInitialBackoff},
+		{"just under healthy age still doubles", nodeProbeLoopInitialBackoff, 89 * time.Second, 60 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := nextProbeLoopBackoff(tc.prevBackoff, tc.previousRun); got != tc.want {
+			t.Errorf("%s: nextProbeLoopBackoff(%v, %v) = %v, want %v",
+				tc.name, tc.prevBackoff, tc.previousRun, got, tc.want)
+		}
+	}
+}

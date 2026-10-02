@@ -109,7 +109,37 @@ func isInterruptionCode(s string) bool {
 		"eof_mid_tool_call",
 		// 2026-08-02: mid-stream integrity abort (looping model cut
 		// short by the incremental repeated-content rule).
-		"integrity_repeated_content":
+		"integrity_repeated_content",
+		// 2026-09-29 (24h 审计二十一轮): 空响应族。四座桥都以
+		// MarkInterruptedWithReason 上报「上游 200 零内容」
+		// （responses_bridge.go 的 anthropic_/openai_empty_response、
+		// stream.go 的 empty_stream_no_content/early_empty_detection），
+		// 但此前不在白名单——failure_detail_code 恒缺席，
+		// streamErrorKindForDetailCode 落兜底 stream_error，
+		// llm_gateway_empty_response_attempts_total（R45 落地、二十轮
+		// 才接线）在生产恒零。入白名单后该族进 empty_response
+		// ErrorKind + 空响应指标，且凭据详情按真实失败展示。
+		"anthropic_empty_response",
+		"openai_empty_response",
+		"empty_stream_no_content",
+		"early_empty_detection",
+		// 2026-09-30 (三十七轮审计): 与 MarkInterruptedWithReason 字面量发射点
+		// 的差集清零——以下码此前缺席 → failure_detail_code 恒丢、
+		// streamErrorKindForDetailCode 落 stream_error 兜底、专用指标恒零
+		// （与二十轮修掉的 empty_response 恒零同构）。差集由
+		// Test_isInterruptionCode_covers_all_MarkInterruptedWithReason_literals
+		// 源码扫描棘轮钉住（非字面量发射点不在此列，新增变量发射需手检）。
+		"client_write_failed",
+		"incomplete_tool_call",
+		"incomplete_tool_call_interrupted",
+		"invalid_chunk",
+		"json_error_in_stream",
+		"malformed_sse_frame",
+		"malformed_sse_frame_mid_stream",
+		"minimax_base_resp_error",
+		"native_response_failed",
+		"stream_panic",
+		"upstream_error":
 		return true
 	}
 	return false

@@ -57,7 +57,7 @@ func (r *TuningViewRefresher) Start(ctx context.Context) {
 		// Already started; a second run() would double-close r.done.
 		return
 	}
-	go r.run(ctx)
+	Go("tuning_view_refresher.run", func() { r.run(ctx) })
 	slog.Info("tuning view refresher started", "interval", r.tick.String())
 }
 

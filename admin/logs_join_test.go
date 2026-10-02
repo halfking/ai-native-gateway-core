@@ -59,11 +59,14 @@ func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert into request_logs_bodies_hot with ts2 (slightly different!)
+	// R65 夹具适配：迁移 601/604（2026-08-25）已 DROP bodies 表的 tenant_id
+	// 残留列——bodies 只存 payload，租户经 request_id JOIN request_logs 解析
+	//（rule 22 §9.1）。修前夹具显式插入该列实锤 42703。
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
-			request_id, ts, tenant_id,
+			request_id, ts,
 			request_body, response_body
-		) VALUES ($1, $2, 'test-tenant',
+		) VALUES ($1, $2,
 			'{"messages":[{"role":"user","content":"test"}]}'::jsonb,
 			'{"choices":[{"message":{"role":"assistant","content":"response"}}]}'::jsonb
 		)
@@ -71,6 +74,10 @@ func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, tx.Commit(ctx))
+
+	// R65：本测试历史上提交后不清理（request_id 唯一故无冲突，但共享真库
+	// 逐轮累积夹具行）——注册顺序在 pool.Close 之后，LIFO 保证先清理后关池。
+	defer func() { cleanupTestRequestLog(t, pool, requestID) }()
 
 	// Query using the current JOIN pattern (with ts condition)
 	var requestBodyWithTS, responseBodyWithTS *string
@@ -86,9 +93,11 @@ func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	`, requestID).Scan(&requestBodyWithTS, &responseBodyWithTS)
 	require.NoError(t, err)
 
-	// Current behavior: JOIN fails due to ts mismatch, bodies are NULL
-	assert.Nil(t, requestBodyWithTS, "Expected NULL with ts condition (current broken behavior)")
-	assert.Nil(t, responseBodyWithTS, "Expected NULL with ts condition (current broken behavior)")
+	// Current behavior: JOIN fails due to ts mismatch, bodies are NULL.
+	// R65 断言适配：查询用 COALESCE(rb.x::text, '')——无匹配时得到空串
+	// 而非 NULL（修前断言 Nil 与自身查询形状矛盾，任何数据下都不可能通过）。
+	assert.Empty(t, requestBodyWithTS, "Expected empty (COALESCE '') with ts condition (current broken behavior)")
+	assert.Empty(t, responseBodyWithTS, "Expected empty (COALESCE '') with ts condition (current broken behavior)")
 
 	// Query using the proposed JOIN pattern (without ts condition)
 	var requestBodyWithoutTS, responseBodyWithoutTS *string

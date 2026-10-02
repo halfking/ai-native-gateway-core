@@ -192,4 +192,19 @@ export default {
     emDash: '—',
     colon: '：',
   },
+ // — Subtask 3 (handoff §5): body_status two-state banners —
+  // 出典: /api/admin/sessions/detail の turns[].body_status。/snapshot には
+  // turns がなく、/turns 一覧はメタデータのみなので使わないこと。
+  bodyStatus: {
+    // 出典: /api/admin/sessions/detail の turns[].body_status。/snapshot に
+    // は turns がない。バックエンドが返すのは available | unavailable の
+    // 2 状態だけで、dropped は返さない（session_bodies に保持期設定も、
+    // その行を削除するジョブも存在しない）。admin/body_status.go の
+    // CONTRACT 参照。
+    unavailableTitle: '一部のターンにリクエスト/レスポンス本文がありません',
+    unavailableBody: 'これらのターンでは本文が取得されていませんでした（機能が無効、または該当ターンに内容がありませんでした）。サマリー・指標・トークン使用量には影響しません。',
+    affectedTurns: '対象のターン: {list}',
+    dismiss: 'OK',
+
+  },
 }

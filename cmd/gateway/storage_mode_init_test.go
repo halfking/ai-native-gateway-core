@@ -177,16 +177,26 @@ func TestInitStorageModeNonLiteReturnsNil(t *testing.T) {
 	if rt, err := initStorageMode(nil, empty); err != nil || rt != nil {
 		t.Errorf("initStorageMode(empty mode) = (%v, %v), want (nil, nil)", rt, err)
 	}
-	// 显式 full
+	// 显式 full + 热区关闭（config 通道）→ nil runtime（历史装配）。
+	// 2026-09-24 方案 H2（P3）起，full + 热区启用（默认）装配 hotZoneOnly
+	// runtime，见 storage_mode_init_full_hotzone_test.go；本用例保留
+	// 「关闭开关后行为与 main 历史一致」的对照半边。
+	off := false
 	full := &config.StorageConfig{
 		Mode: "full",
 		Full: &config.FullStorageConfig{
 			PostgresURL: "postgres://gateway:secret@127.0.0.1:5432/gateway",
 			RedisURL:    "127.0.0.1:6379",
 		},
+		HotZone: &config.HotZoneConfig{
+			Dir:            filepath.Join(t.TempDir(), "hotzone"),
+			Enabled:        &off,
+			RetentionHours: 7,
+			MaxSizeGB:      1,
+		},
 	}
 	if rt, err := initStorageMode(nil, full); err != nil || rt != nil {
-		t.Errorf("initStorageMode(full) = (%v, %v), want (nil, nil)", rt, err)
+		t.Errorf("initStorageMode(full, hotzone off) = (%v, %v), want (nil, nil)", rt, err)
 	}
 }
 
@@ -345,4 +355,193 @@ func TestInitStorageModeConsistencyWorkerWiring(t *testing.T) {
 			rt3.consistencyWorker.Interval(), rt3.consistencyWorker.IdleThreshold(), rt3.consistencyWorker.MaxSessions())
 	}
 	rt3.Shutdown()
+}
+
+// TestResolveCacheTrimRetention 覆盖缓存删侧 retention 的解析口径。
+//
+// 核心不变量：返回值恒 >= cacheTTL —— CacheTrimmer 永不删除 FileCache
+// 仍视为有效的条目（否则 cache_ttl_hours 被静默架空，缓存退化为只写不读）。
+func TestResolveCacheTrimRetention(t *testing.T) {
+	cases := []struct {
+		name       string
+		cacheTTL   int
+		retentionH int
+		want       time.Duration
+	}{
+		// 默认配置：两侧同为 24h，原样透传（不改变既有行为）。
+		{"default both 24h", 24, 24, 24 * time.Hour},
+		// 危险方向：retention 小于 ttl —— 必须收敛到 ttl（旧行为会删活跃条目）。
+		{"retention 1h below ttl 24h clamps up", 24, 1, 24 * time.Hour},
+		{"retention 6h below ttl 24h clamps up", 24, 6, 24 * time.Hour},
+		// retention 未配置（<=0）：收敛到 ttl。
+		{"retention unset clamps to ttl", 12, 0, 12 * time.Hour},
+		{"retention negative clamps to ttl", 12, -5, 12 * time.Hour},
+		// 安全方向：retention 大于 ttl —— 保留更大的值（逻辑 TTL 后多留一段）。
+		{"retention 48h above ttl 24h keeps larger", 24, 48, 48 * time.Hour},
+		// ttl 未配置：兜底 24h（与 config.ApplyLiteDefaults 同口径）。
+		{"ttl unset falls back to 24h", 0, 24, 24 * time.Hour},
+		{"ttl unset and retention unset", 0, 0, 24 * time.Hour},
+		{"ttl negative falls back to 24h", -1, 1, 24 * time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveCacheTrimRetention(tc.cacheTTL, tc.retentionH)
+			if got != tc.want {
+				t.Errorf("resolveCacheTrimRetention(%d, %d) = %v, want %v",
+					tc.cacheTTL, tc.retentionH, got, tc.want)
+			}
+			// 不变量本体：任何输入组合下都不得小于 ttl。
+			ttl := time.Duration(tc.cacheTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 24 * time.Hour
+			}
+			if got < ttl {
+				t.Errorf("retention %v < cache TTL %v —— 清理侧会删除读侧仍有效的条目", got, ttl)
+			}
+		})
+	}
+}
+
+// TestCacheTrimmerNeverDeletesLiveEntries 是装配层的端到端不变量断言：
+// 真正构造出来的 FileCache 的 TTL，必须不大于真正装配的清理侧 retention。
+// 用 getter 读回真实 FileCache（而非从配置二次推导），避免断言只验证了
+// 自己的算术。
+func TestCacheTrimmerNeverDeletesLiveEntries(t *testing.T) {
+	// 三组配置分别覆盖：默认、危险方向（retention < ttl）、安全方向（retention > ttl）。
+	for _, tc := range []struct {
+		name       string
+		cacheTTL   int
+		retentionH int
+	}{
+		{"default", 24, 24},
+		{"retention below ttl", 24, 1},
+		{"retention above ttl", 6, 72},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := liteStorageConfigForTest(t)
+			cfg.Lite.CacheTTLHours = tc.cacheTTL
+			cfg.Lite.Retention.CacheHours = tc.retentionH
+
+			rt, err := initStorageMode(nil, cfg)
+			require.NoError(t, err)
+			require.NotNil(t, rt)
+			defer rt.Shutdown()
+
+			if rt.fileCache == nil {
+				t.Fatal("fileCache = nil, want assembled L1.5 cache")
+			}
+			if rt.cacheTrimmer == nil {
+				t.Fatal("cacheTrimmer = nil, want assembled cache trimmer")
+			}
+			// 先把 TTL getter 锚定到配置值：否则 getter 一旦少报（比如返回 0），
+			// 下面的不变量断言会退化成 `retention < 0` 而恒真，变成空断言。
+			if got, want := rt.fileCache.TTL(), time.Duration(tc.cacheTTL)*time.Hour; got != want {
+				t.Errorf("file cache TTL = %v, want configured cache_ttl_hours %v", got, want)
+			}
+			// 断言读真实 worker 与真实 FileCache 的字段，不另存快照比自己。
+			if rt.cacheTrimmer.Retention() < rt.fileCache.TTL() {
+				t.Errorf("cache trim retention %v < file cache TTL %v —— 清理侧会删除读侧仍有效的缓存条目",
+					rt.cacheTrimmer.Retention(), rt.fileCache.TTL())
+			}
+		})
+	}
+}
+
+// TestInitStorageModeHotZoneTrimmerWiring H4 P2 装配验收：默认（config 段
+// 缺失 → ApplyHotZoneDefaults 默认开启 + settings 默认 true）时 hotzone
+// trimmer 被装配且生命周期挂入 trimmerCtx/trimmerWG。
+func TestInitStorageModeHotZoneTrimmerWiring(t *testing.T) {
+	cfg := liteStorageConfigForTest(t)
+	hzDir := filepath.Join(filepath.Dir(cfg.Lite.CacheDir), "hotzone")
+	cfg.HotZone = &config.HotZoneConfig{Dir: hzDir} // Enabled/其余字段走默认值
+
+	rt, err := initStorageMode(nil, cfg)
+	if err != nil {
+		t.Fatalf("initStorageMode(lite) error = %v", err)
+	}
+	if rt == nil {
+		t.Fatal("runtime = nil")
+	}
+	defer rt.Shutdown()
+
+	if rt.hotZoneTrimmer == nil {
+		t.Fatal("hotZoneTrimmer = nil, want wired (双通道默认均开启)")
+	}
+	// Dir 默认值归一：显式传入的 hzDir 应原样生效（ApplyHotZoneDefaults 只补空值）
+	st, err := os.Stat(hzDir)
+	if err == nil && !st.IsDir() {
+		t.Errorf("%s 应为目录（若已创建）", hzDir)
+	}
+	// trimmer 未对缺失目录做任何写入（缺失即 no-op）
+	if _, err := os.Stat(hzDir); !os.IsNotExist(err) {
+		t.Logf("hotzone dir 已存在（可能由其他步骤创建）: %v", err)
+	}
+}
+
+// TestInitStorageModeHotZoneDisabledByConfig config 通道关闭（YAML/env 显式
+// enabled=false）：AND 语义下不装配 trimmer，L1.5 FileCache 预算不受热区
+// settings 影响（H4 §改动4：lite 10GB 默认不动）。
+func TestInitStorageModeHotZoneDisabledByConfig(t *testing.T) {
+	cfg := liteStorageConfigForTest(t)
+	off := false
+	cfg.HotZone = &config.HotZoneConfig{
+		Dir:            filepath.Join(filepath.Dir(cfg.Lite.CacheDir), "hotzone"),
+		Enabled:        &off,
+		RetentionHours: 7,
+		MaxSizeGB:      1,
+	}
+
+	rt, err := initStorageMode(nil, cfg)
+	if err != nil {
+		t.Fatalf("initStorageMode(lite) error = %v", err)
+	}
+	defer rt.Shutdown()
+
+	if rt.hotZoneTrimmer != nil {
+		t.Fatal("hotZoneTrimmer != nil, want nil (config 显式关闭)")
+	}
+}
+
+// TestInitStorageModeHotZoneResizeMaxWiring ResizeMax/SetTTL 联动（H4 §改动3
+// + 2026-10-01 审计 F2）：L1.5 cache 子树位于热区目录内时，首轮 applyReload
+// 把 FileCache.maxSize 收敛到 settings hotzone 预算（构造值 10GB → settings
+// 默认 1GB），TTL 同步收敛到 settings retention 默认 7h（构造值 2h）。
+func TestInitStorageModeHotZoneResizeMaxWiring(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.StorageConfig{Mode: "lite"}
+	cfg.Lite = &config.LiteStorageConfig{
+		SQLitePath:     filepath.Join(dir, "gateway.db"),
+		BodiesDir:      filepath.Join(dir, "bodies"),
+		CacheDir:       filepath.Join(dir, "hotzone", "cache"), // 落入热区
+		LogsDir:        filepath.Join(dir, "logs"),
+		CacheTTLHours:  2,
+		CacheMaxSizeGB: 10, // 故意 ≠ settings 默认 1GB，可观测 ResizeMax 生效
+		AsyncWriters:   2,
+	}
+	cfg.Lite.Retention.SessionBodiesDays = 30
+	cfg.Lite.Retention.RequestLogsDays = 7
+	cfg.Lite.Retention.CacheHours = 24
+	cfg.HotZone = &config.HotZoneConfig{Dir: filepath.Join(dir, "hotzone")}
+
+	rt, err := initStorageMode(nil, cfg)
+	if err != nil {
+		t.Fatalf("initStorageMode(lite) error = %v", err)
+	}
+	defer rt.Shutdown()
+
+	if rt.hotZoneTrimmer == nil {
+		t.Fatal("hotZoneTrimmer = nil, want wired")
+	}
+	// 首轮 applyReload 在 Start goroutine 内异步执行，轮询等待生效
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := rt.fileCache.Stats()["max_size_bytes"].(int64); got == int64(1)<<30 &&
+			rt.fileCache.TTL() == 7*time.Hour {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got := rt.fileCache.Stats()["max_size_bytes"].(int64)
+	t.Errorf("FileCache maxSize = %d, want %d (hotzone settings 预算); TTL = %v, want 7h (settings retention 同参)",
+		got, int64(1)<<30, rt.fileCache.TTL())
 }

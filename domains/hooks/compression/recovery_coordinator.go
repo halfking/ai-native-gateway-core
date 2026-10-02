@@ -130,7 +130,7 @@ func (rc *RecoveryCoordinator) Recover(
 		}
 	}
 	if attempt == 0 && rc.deps.Cache != nil && gwSessionID != "" {
-		if state, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID); state != nil && state.HasCutMarker {
+		if state, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID); state != nil && state.HasCutMarker && sanitizeGenerationMatches(ctx, state.SanitizeMapGeneration) {
 			marker := state.ToCutMarker("")
 			if marker != nil && !marker.IsExpired(sessionCacheRedisTTL()) {
 				// The summary text is in L1 only; try to get it from cache.
@@ -147,7 +147,7 @@ func (rc *RecoveryCoordinator) Recover(
 				} else {
 					rebuilt, ok = IncrementalBuildTail(body, *marker, protocol)
 				}
-				if ok {
+				if ok && cachedBodyPassesGuard(ctx, rebuilt) {
 					newTokens := estimateBodyTokens(rebuilt)
 					if newTokens < res.EstTokensBefore {
 						res.NewBody = rebuilt
@@ -195,6 +195,16 @@ func (rc *RecoveryCoordinator) Recover(
 	strategy := ""
 	if rc.deps.Summarizer != nil {
 		s, ok := rc.deps.Summarizer(ctx, body, protocol)
+		if ok {
+			guarded, err := guardGeneratedText(ctx, s)
+			if err != nil {
+				// 此前完全无日志：LLM 摘要被 guard 拒绝后静默回退机械路径，
+				// 压缩质量降级零可见（24h 审计第二十八轮）。
+				slog.Warn("recovery: generated summary rejected, falling back to mechanical",
+					"error", err)
+			}
+			s, ok = guarded, err == nil
+		}
 		if ok && s != "" {
 			summaryText = s
 			strategy = "smart_window_llm"
@@ -245,9 +255,10 @@ func (rc *RecoveryCoordinator) Recover(
 
 	if rc.deps.Cache != nil && gwSessionID != "" {
 		state, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
-		if state == nil {
+		if state == nil || !sanitizeGenerationMatches(ctx, state.SanitizeMapGeneration) {
 			state = &SessionState{SchemaVersion: schemaVersion}
 		}
+		hydrateSanitizeInfo(ctx, state)
 		state.SetCutMarker(marker)
 		state.LastCompressedAt = time.Now().Unix()
 		state.RecentlyCompressedAt = time.Now().Unix()
@@ -286,6 +297,10 @@ func (rc *RecoveryCoordinator) recoverFromV2Metadata(ctx context.Context, body [
 	if err != nil || len(meta) == 0 {
 		return RecoveryResult{}, false
 	}
+	cachedGeneration, _ := meta["sanitize_map_generation"].(string)
+	if !sanitizeGenerationMatches(ctx, cachedGeneration) {
+		return RecoveryResult{}, false
+	}
 	cut, ok := meta["cut_marker"].(map[string]interface{})
 	if !ok || len(cut) == 0 {
 		return RecoveryResult{}, false
@@ -307,7 +322,7 @@ func (rc *RecoveryCoordinator) recoverFromV2Metadata(ctx context.Context, body [
 	} else {
 		rebuilt, ok = IncrementalBuildTail(body, marker, protocol)
 	}
-	if !ok || len(rebuilt) >= len(body) {
+	if !ok || !cachedBodyPassesGuard(ctx, rebuilt) || len(rebuilt) >= len(body) {
 		return RecoveryResult{}, false
 	}
 	return RecoveryResult{

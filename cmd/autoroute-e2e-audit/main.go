@@ -7,11 +7,24 @@
 //
 // 用法：
 //
+//	# 默认：每个用例发一次真实上游调用（消耗 LLM token）
 //	go run ./cmd/autoroute-e2e-audit \
 //	  -gateway http://127.0.0.1:8782 \
 //	  -api-key sk-xxx \
 //	  -suite autoroute/testdata/auto_matching_suite.jsonl \
 //	  -out /tmp/auto_e2e_results.jsonl
+//
+//	# 2026-09-29: 不消耗上游 token 的回归模式。仅验证 auto 决策层
+//	# （X-Gw-Auto-Decision header + 选中的 model），网关发回合成
+//	# OpenAI 响应。可对 252 / 本地高频跑 — Pass / Fail 判定与
+//	# live 模式等价。X-Gw-Source-Actor 由本工具内置为
+//	# "autoroute-e2e-audit"（受信任白名单成员），无需手动配置。
+//	go run ./cmd/autoroute-e2e-audit \
+//	  -gateway http://252.llm-gateway:8782 \
+//	  -api-key sk-xxx \
+//	  -test-mode mock \
+//	  -suite autoroute/testdata/auto_matching_suite.jsonl \
+//	  -out /tmp/auto_e2e_mock_results.jsonl
 //
 // 设计约定见 docs/audit/2026-09-14-auto-matching-prompt-e2e-audit.md。
 // 不在参数或仓内存储真实 key；超时/上游错误如实记录为 error 结果行。
@@ -82,6 +95,12 @@ type resultRow struct {
 	GotTask      string        `json:"got_task,omitempty"`
 	Pass         *bool         `json:"pass"`
 	Decision     *autoDecision `json:"decision,omitempty"`
+	// 2026-09-29: TestMode echoes the X-Gw-Test-Mode header sent on the wire
+	// so a downstream reader can split live rows from mock rows. Empty means
+	// "live / no override" — the audit ran the real upstream path. This is
+	// how scripts can answer "how many cases did we save by mocking?" by
+	// simply counting non-empty TestMode rows.
+	TestMode string `json:"test_mode,omitempty"`
 }
 
 const paddingParagraph = "This section of the transcript discusses the quarterly platform review, including reliability metrics, capacity planning notes, incident timelines, and follow-up actions agreed by the team. "
@@ -119,10 +138,36 @@ func main() {
 	out := flag.String("out", "", "results JSONL output path (default stdout only)")
 	maxTokens := flag.Int("max-tokens", 24, "completion budget per case")
 	timeout := flag.Duration("timeout", 180*time.Second, "per-request timeout")
+	// 2026-09-29: X-Gw-Test-Mode integration. Default "" sends a real upstream
+	// call (legacy behaviour); "mock" sets X-Gw-Test-Mode: mock so the
+	// gateway returns the synthetic OpenAI body without burning an LLM
+	// token. The mock path is the cost-regression option for running the
+	// audit suite against a live gateway (252, 245, local) on a tight
+	// cadence — it only verifies the auto matching decision, not the
+	// upstream response. The decision header X-Gw-Auto-Decision still
+	// arrives in the response so Pass / Fail verdicts are identical.
+	//
+	// The gateway authorises non-live modes with a shared secret
+	// (LLM_GW_TEST_MODE_TOKEN on the server, AUTO_AUDIT_TEST_MODE_TOKEN
+	// here), NOT with X-Gw-Source-Actor: that header is stripped by the
+	// gateway's loopback middleware for every non-loopback caller, so an
+	// actor-based gate silently downgrades mock to live — and the run then
+	// burns real upstream tokens while appearing to be a free mock run.
+	// runCase therefore verifies the X-Gw-Mock-Marker response header and
+	// reports a loud error when a requested mock did not take effect.
+	testMode := flag.String("test-mode", "", "X-Gw-Test-Mode value sent on every request; '' = live, 'mock' = no upstream call (auto decision only)")
+	testModeToken := flag.String("test-mode-token", os.Getenv("AUTO_AUDIT_TEST_MODE_TOKEN"), "shared secret matching the gateway's LLM_GW_TEST_MODE_TOKEN; required when -test-mode is set")
 	flag.Parse()
 
 	if strings.TrimSpace(*apiKey) == "" {
 		fatalf("-api-key or AUTO_AUDIT_API_KEY is required; do not store real keys in the repository")
+	}
+	if strings.TrimSpace(*testMode) != "" && strings.TrimSpace(*testModeToken) == "" {
+		// Fail before the first request: without the secret the gateway
+		// downgrades every request to live, and the run would spend real
+		// upstream money while reporting mock rows.
+		fatalf("-test-mode %q requires -test-mode-token (or AUTO_AUDIT_TEST_MODE_TOKEN) matching the gateway's LLM_GW_TEST_MODE_TOKEN; without it the gateway silently runs LIVE and this run costs real tokens",
+			*testMode)
 	}
 
 	cases := loadSuite(*suite)
@@ -142,7 +187,7 @@ func main() {
 	client := &http.Client{Timeout: *timeout}
 	passCount, failCount, errCount, knownXpass := 0, 0, 0, 0
 	for i, tc := range cases {
-		row := runCase(client, *gateway, *apiKey, tc, *maxTokens)
+		row := runCase(client, *gateway, *apiKey, *testMode, *testModeToken, tc, *maxTokens)
 		_ = enc.Encode(row)
 		switch {
 		case row.Error != "":
@@ -253,8 +298,15 @@ func buildTools(n int) []map[string]any {
 	return tools
 }
 
-func runCase(client *http.Client, gateway, apiKey string, tc suiteCase, maxTokens int) resultRow {
+func runCase(client *http.Client, gateway, apiKey, testMode, testModeToken string, tc suiteCase, maxTokens int) resultRow {
 	row := resultRow{Name: tc.Name, Bucket: tc.Bucket, ExpectedTask: tc.ExpectedTask, KnownFailure: tc.KnownFailure}
+	// Surface the mode in the JSONL row so a downstream reader can tell
+	// mock-mode rows from live-mode rows without re-running the audit.
+	// Empty string means "live / no override"; non-empty is the literal
+	// X-Gw-Test-Mode value sent on the wire.
+	if testMode != "" {
+		row.TestMode = testMode
+	}
 
 	pad := func(p string) string {
 		body := p
@@ -285,6 +337,18 @@ func runCase(client *http.Client, gateway, apiKey string, tc suiteCase, maxToken
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// 2026-09-29: X-Gw-Test-Mode integration. The gateway authorises
+	// non-live modes with a shared secret, NOT with X-Gw-Source-Actor:
+	// that header is in loopback.CorrelationHeaders and is stripped from
+	// every request that lacks this process's per-boot loopback token, so
+	// an actor-based gate always evaluated false for this external tool
+	// and silently downgraded the run back to a real upstream call.
+	if testMode != "" {
+		req.Header.Set("X-Gw-Test-Mode", testMode)
+		if testModeToken != "" {
+			req.Header.Set("X-Gw-Test-Mode-Token", testModeToken)
+		}
+	}
 	if tc.ClientType != "" {
 		req.Header.Set("X-Gw-Client-Type", tc.ClientType)
 	}
@@ -310,6 +374,19 @@ func runCase(client *http.Client, gateway, apiKey string, tc suiteCase, maxToken
 	}
 	defer resp.Body.Close()
 	row.HTTPStatus = resp.StatusCode
+
+	// 2026-09-29: verify the requested test mode actually took effect
+	// before trusting any verdict. A gateway that rejects the token
+	// silently downgrades to live and issues a REAL upstream call; the
+	// decision header still arrives, so Pass/Fail would look identical
+	// while the run quietly spent money. Asserting the marker here is
+	// what turns a silent downgrade into a loud, attributable error.
+	if strings.TrimSpace(testMode) != "" && testMode != "full" && testMode != "live" {
+		if marker := resp.Header.Get("X-Gw-Mock-Marker"); marker == "" {
+			row.Error = fmt.Sprintf("test_mode %q requested but gateway returned no X-Gw-Mock-Marker — the mode was rejected and this request ran LIVE against the upstream provider", testMode)
+			return row
+		}
+	}
 
 	if dh := resp.Header.Get("X-Gw-Auto-Decision"); dh != "" {
 		var dec autoDecision

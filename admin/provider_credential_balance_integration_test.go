@@ -189,8 +189,14 @@ func TestRefreshCredentialBalanceIntegration(t *testing.T) {
 		if balErr == nil || !strings.HasPrefix(*balErr, "balance probe failed") {
 			t.Fatalf("balance_error must be stamped, got %v", balErr)
 		}
-		if checked == nil {
-			t.Fatal("balance_last_checked_at must advance on failure too")
+		// R43（2026-09-19，fde958650）契约：失败**有意不推进**
+		// balance_last_checked_at——manual 保护窗（source='manual' AND
+		// checked_at > NOW()-24h）若随失败点击无限续期，会在 vendor 端点
+		// 持续故障期间永久挂起该行的自动探测。失败只落 balance_error。
+		// （本测试 2026-09-18 05:34 写于 R43 之前，"must advance on failure
+		// too" 是被 R43 推翻的旧期望，修前从未随生产语义更新。）
+		if checked != nil {
+			t.Fatalf("R43: failure must NOT bump balance_last_checked_at (manual protection window), got %v", *checked)
 		}
 	})
 

@@ -17,6 +17,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -129,7 +130,7 @@ func (h *Handler) HandleSessionPanorama(w http.ResponseWriter, r *http.Request) 
 		return nil
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "panorama load failed: "+err.Error())
+		writeInternalErr(w, "panorama load failed", err)
 		return
 	}
 	if notFound {
@@ -166,36 +167,13 @@ func (h *Handler) loadSessionDetailDataInTx(ctx context.Context, tx pgx.Tx, tena
 	if err != nil {
 		return nil, err
 	}
-	timelineQuery := `
-		SELECT request_id, ts, success, client_model, outbound_model,
-		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0),
-		       COALESCE(cost_usd,0), COALESCE(latency_ms,0),
-		       work_type, compression_strategy, cache_read_tokens,
-		       error_kind, request_preview, response_preview
-		FROM request_logs WHERE gw_session_id = $1`
-	tArgs := []any{gwSessionID}
-	if tenantID != "" {
-		timelineQuery += " AND tenant_id = $2"
-		tArgs = append(tArgs, tenantID)
-	}
-	timelineQuery += " ORDER BY ts ASC LIMIT 100"
-	rows, err := tx.Query(ctx, timelineQuery, tArgs...)
+	timeline, err := loadSessionTimelineInTx(ctx, tx, gwSessionID, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	timeline := []RequestEvent{}
-	for rows.Next() {
-		var e RequestEvent
-		var ts time.Time
-		if err := rows.Scan(&e.RequestID, &ts, &e.Success, &e.ClientModel, &e.UpstreamModel,
-			&e.PromptTokens, &e.CompletionTokens, &e.CostUSD, &e.LatencyMs,
-			&e.WorkType, &e.CompressionStrategy, &e.CacheReadTokens,
-			&e.ErrorMessage, &e.RequestPreview, &e.ResponsePreview); err != nil {
-			return nil, err
-		}
-		e.CreatedAt = ts
-		timeline = append(timeline, e)
+	// 本端点历史上空结果序列化成 [] 而不是 null，保持不变。
+	if timeline == nil {
+		timeline = []RequestEvent{}
 	}
 	analysis, err := h.buildSessionAnalysisInTx(ctx, tx, tenantID, gwSessionID, timeline)
 	if err != nil {
@@ -254,7 +232,7 @@ func (h *Handler) HandleSessionTags(w http.ResponseWriter, r *http.Request) {
 			ON CONFLICT (gw_session_id, tag_key, tag_value) DO NOTHING`,
 			gwSessionID, tid, body.TagKey, body.TagValue, getUsername(r))
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "save tag: "+err.Error())
+			writeInternalErr(w, "save tag", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -306,7 +284,7 @@ func (h *Handler) handleSessionTagDelete(w http.ResponseWriter, r *http.Request)
 	}
 	_, err = h.db.Exec(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeInternalErr(w, "delete failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -361,7 +339,7 @@ func (h *Handler) handleSessionTagUpdate(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusNotFound, "tag not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "load tag: "+err.Error())
+		writeInternalErr(w, "load tag", err)
 		return
 	}
 	newKey := curKey
@@ -380,7 +358,7 @@ func (h *Handler) handleSessionTagUpdate(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusConflict, "tag with this key+value already exists on this session")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -447,7 +425,7 @@ func (h *Handler) HandleSessionSuggestionApply(w http.ResponseWriter, r *http.Re
 	_, err = h.db.Exec(ctx, query, args...)
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "apply failed: "+err.Error())
+		writeInternalErr(w, "apply failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -477,7 +455,12 @@ func (h *Handler) loadStepSummaries(ctx context.Context, gwSessionID string, ten
 		if err := rows.Scan(&s.StepIndex, &s.RequestID, &s.RequestSummary, &s.ResponseSummary,
 			&s.IsLLMGenerated, &s.ToolCallsSummary); err == nil {
 			out = append(out, s)
+		} else {
+			warnRowSkip("panoramaStepSummaries", err)
 		}
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("panorama step summaries iteration aborted; panel degraded", "error", rerr)
 	}
 	return out
 }
@@ -502,7 +485,12 @@ func (h *Handler) loadTags(ctx context.Context, gwSessionID string, tenantID str
 		var t SessionTag
 		if err := rows.Scan(&t.ID, &t.TagKey, &t.TagValue, &t.TagSource, &t.Confidence, &t.CreatedBy, &t.CreatedAt); err == nil {
 			out = append(out, t)
+		} else {
+			warnRowSkip("panoramaTags", err)
 		}
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("panorama tags iteration aborted; panel degraded", "error", rerr)
 	}
 	return out
 }
@@ -529,7 +517,12 @@ func (h *Handler) loadSuggestions(ctx context.Context, gwSessionID string, tenan
 		if err := rows.Scan(&s.ID, &s.Category, &s.Severity, &s.Title, &s.Description,
 			&s.PotentialSavingsTokens, &s.PotentialSavingsCost, &s.Applied, &s.Dismissed, &s.CreatedAt); err == nil {
 			out = append(out, s)
+		} else {
+			warnRowSkip("panoramaSuggestions", err)
 		}
+	}
+	if rerr := rows.Err(); rerr != nil {
+		slog.Warn("panorama suggestions iteration aborted; panel degraded", "error", rerr)
 	}
 	return out
 }

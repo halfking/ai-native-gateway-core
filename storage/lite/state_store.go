@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/storage"
 )
 
@@ -66,13 +67,16 @@ func NewMemoryStateStoreWithInterval(interval time.Duration) *MemoryStateStore {
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
 	}
-	go s.janitor()
+	// 2026-10-01 结构性 P1：janitor 迁入 bg.SpawnLoopDone 自愈监督——panic
+	// 重启不再二次触发 doneCh close（close 所有权归 BaseWorker，监督循环
+	// 最终退出时恰好一次）；此前 panic 会让过期条目停止回收直到进程重启。
+	bg.SpawnLoopDone(context.Background(), "storage.lite.stateStore.janitor", s.doneCh, func(context.Context) { s.janitor() })
 	return s
 }
 
 // janitor 后台清理协程：按 sweepInterval 周期扫描并删除过期条目，Close 后退出。
+// doneCh 的 close 所有权已下沉 BaseWorker（SpawnLoopDone），此处不再触碰。
 func (s *MemoryStateStore) janitor() {
-	defer close(s.doneCh)
 	ticker := time.NewTicker(s.sweepInterval)
 	defer ticker.Stop()
 	for {

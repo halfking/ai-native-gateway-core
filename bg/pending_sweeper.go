@@ -60,7 +60,7 @@ func NewPendingSweeper(store *pending.Store, staleTimeout, interval time.Duratio
 
 func (s *PendingSweeper) Start(ctx context.Context) {
 	ctx, s.cancel = context.WithCancel(ctx)
-	go s.run(ctx)
+	Go("pending_sweeper.run", func() { s.run(ctx) })
 	slog.Info("pending_sweeper started",
 		"interval", s.interval,
 		"stale_timeout", s.staleTimeout,

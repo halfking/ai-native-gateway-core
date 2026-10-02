@@ -6,6 +6,9 @@ import {
   type RoutingLogKind,
   type RoutingLogResult,
 } from '../api'
+import { parseLocalMinute } from '../utils/datetime'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 
 // RoutingLogView — 路由记录 tab (docs/FEATURE-REQ-credential-heatmap-routing-log.md §5)
 // Unified timeline of routing decisions / self-test runs / status changes.
@@ -18,6 +21,21 @@ const customTimeEnd = ref('')
 const kindFilter = ref<RoutingLogKind>('all')
 const resultFilter = ref<RoutingLogResult>('all')
 const modelInput = ref('')
+
+// 2026-09-30 统一日历轮：custom 分支换 KxDateRangePicker（datetime 精度，instant——
+// 原 @change=resetAndLoad 即时生效；presets=[] 因工具栏自带预设 select）。
+// customTimeStart/End 维持 datetime-local 的 'T' 分隔，仅在边界做 'T'↔空格 互转
+// （组件契约为空格分隔）。
+const customRangeValue = computed<KxDateRange | null>(() => {
+  if (!customTimeStart.value || !customTimeEnd.value) return null
+  return { start: customTimeStart.value.replace('T', ' '), end: customTimeEnd.value.replace('T', ' ') }
+})
+
+function onKxRangeApply(range: KxDateRange) {
+  customTimeStart.value = range.start.replace(' ', 'T')
+  customTimeEnd.value = range.end.replace(' ', 'T')
+  resetAndLoad()
+}
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -61,8 +79,9 @@ function computeRange(): { start: string; end: string } {
       start = new Date(now.getFullYear(), now.getMonth(), 1)
       break
     case 'custom':
-      start = customTimeStart.value ? new Date(customTimeStart.value) : new Date(now.getTime() - 24 * 3600 * 1000)
-      end = customTimeEnd.value ? new Date(customTimeEnd.value) : now
+      // 'YYYY-MM-DDTHH:mm' 无秒非规范格式，补秒解析（P3-3）
+      start = customTimeStart.value ? parseLocalMinute(customTimeStart.value) : new Date(now.getTime() - 24 * 3600 * 1000)
+      end = customTimeEnd.value ? parseLocalMinute(customTimeEnd.value) : now
       break
   }
   return { start: start.toISOString(), end: end.toISOString() }
@@ -216,10 +235,14 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
       </div>
 
       <div class="toolbar-row" v-if="timePreset === 'custom'">
-        <span class="label">开始时间</span>
-        <input type="datetime-local" v-model="customTimeStart" class="field-input w-datetime" @change="resetAndLoad" />
-        <span class="label">结束时间</span>
-        <input type="datetime-local" v-model="customTimeEnd" class="field-input w-datetime" @change="resetAndLoad" />
+        <span class="label">自定义区间</span>
+        <KxDateRangePicker
+          :model-value="customRangeValue"
+          :presets="[]"
+          precision="datetime"
+          instant
+          @apply="onKxRangeApply"
+        />
       </div>
     </div>
 
@@ -402,7 +425,6 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .field-input.w-preset { width: 128px; flex-shrink: 0; }
 .field-input.w-kind { width: 130px; flex-shrink: 0; }
 .field-input.w-result { width: 110px; flex-shrink: 0; }
-.field-input.w-datetime { width: 190px; flex-shrink: 0; }
 
 .model-input {
   width: 200px;

@@ -20,13 +20,16 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
-	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
+	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -126,6 +129,9 @@ func (c *ChatExecutor) BuildRequest(cand provider.Candidate, body []byte, isStre
 	if err != nil {
 		return nil, err
 	}
+	// R28-P-1: stamp the provider so the shared upstream client can route
+	// egress_profile='proxy' providers through their subscription node pool.
+	req = upstreampkg.WithEgressMeta(req, cand.ProviderID)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cand.APIKey)
 	if isStream {
@@ -370,20 +376,103 @@ func (e *Executor) executeOpenAI(
 		}()
 	}
 
-	nativeNonStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponses && !params.IsStream
-	nativeStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponsesStream && params.IsStream
-	if cand.Protocol == "openai-responses" &&
-		((params.IsStream && (!cand.SupportsNativeResponsesStream || e.NativeResponsesStream == nil)) ||
-			(!params.IsStream && !cand.SupportsNativeResponses)) {
+	// Fix-2026-09-25: native Responses is only used when a Responses-format
+	// request body is actually available (ResponsesBodyBytes non-empty). When
+	// the client sends a Chat Completions request to an openai-responses
+	// provider, ResponsesBodyBytes is empty, so we fall through to Chat
+	// Completions (the provider's /v1/chat/completions endpoint) instead of
+	// trying to use an empty body. The provider's native Responses capability
+	// is irrelevant when no Responses body was prepared. The mode-fallback
+	// path populates ResponsesBodyBytes from the chat body before calling
+	// executeOpenAI, so reqprobe-driven Responses→Chat fallback still works.
+	nativeNonStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
+		cand.SupportsNativeResponses && !params.IsStream &&
+		len(params.ResponsesBodyBytes) > 0
+	nativeStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
+		cand.SupportsNativeResponsesStream && params.IsStream &&
+		len(params.ResponsesBodyBytes) > 0
+
+	// A live request is authoritative protocol-capability evidence on both an
+	// exact unsupported response and a completed native Responses exchange.
+	// Persist it best-effort for this credential/model. Detach from client
+	// cancellation because the observation remains useful if the client leaves.
+	recordResponsesCapability := func(supported bool) {
+		if e.FpSlots == nil || !e.FpSlots.Enabled() || cand.CredentialID <= 0 || cand.RawModel == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(params.R.Context()), 2*time.Second)
+		defer cancel()
+		if err := e.FpSlots.SetSupportsResponses(ctx, cand.CredentialID, cand.RawModel, supported); err != nil {
+			slog.Warn("live Responses capability persistence failed",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"supports_responses", supported,
+				"error", err)
+		}
+	}
+
+	// F04 (V3 持久化协议能力, 2026-09-30): the probe already concluded, for
+	// THIS (credential, raw model), that the provider rejects the Responses
+	// API. Without this check every single request re-discovers that verdict
+	// by sending a doomed Responses attempt and then falling back to Chat —
+	// one guaranteed-failing upstream call per request, forever within the
+	// node-state TTL.
+	//
+	// Short-circuit to Chat directly. Deliberately conservative:
+	//   - no verdict (never probed / TTL expired / Redis down) → no-op, keep
+	//     the live-detection path;
+	//   - a positive verdict → no-op;
+	//   - a read error → no-op (fail-open to the old behavior) rather than
+	//     guessing.
+	// The verdict is per (credential, model), which is exactly the node-state
+	// key the probe wrote, so a sibling model on the same credential is
+	// unaffected.
+	if (nativeNonStream || nativeStream) && e.FpSlots != nil && e.FpSlots.Enabled() {
+		if responsesUnsupported, known, err := e.FpSlots.GetSupportsResponses(
+			params.R.Context(), cand.CredentialID, cand.RawModel); err != nil {
+			slog.Debug("durable capability read failed, falling back to live detection",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"error", err)
+		} else if known && !responsesUnsupported {
+			slog.Debug("durable capability says Responses unsupported, using chat completions",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel)
+			nativeNonStream = false
+			nativeStream = false
+		}
+	}
+	// Fix-2026-09-25: only hard-block when the native Responses capability is
+	// explicitly enabled but the required infrastructure is missing. When the
+	// capability is not enabled (credential_model_capabilities absent/false),
+	// fall through to Chat Completions instead of returning 501. This keeps
+	// openai-responses providers usable before the capability table is
+	// populated by probes.
+	if cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
+		cand.SupportsNativeResponsesStream &&
+		params.IsStream &&
+		len(params.ResponsesBodyBytes) > 0 &&
+		e.NativeResponsesStream == nil {
 		return nil, &upstreampkg.Error{
 			Kind:       errorsx.KindUnsupportedFeature,
-			Message:    "native Responses transport is not enabled for this request",
+			Message:    "native Responses stream reader is not initialized",
 			StatusCode: http.StatusNotImplemented,
 		}
 	}
 
 	sourceBody := append([]byte(nil), params.BodyBytes...)
+	// reqprobe (2026-09-21): 保留客户端原始（chat 形态）出站体引用。
+	// native responses 分支下面会覆写 sourceBody 为 ResponsesBodyBytes；
+	// 模式回退时需要从这里恢复。
+	clientSourceBody := sourceBody
 	var bodyBytes []byte
+	// R34-A1: responses 专属压缩链的 provenance JSON（strategy + dropped
+	// indexes + AlignmentMap）。proactive 与 4xx recovery 两条路径写入，
+	// preTrimMeta 构建处统一合入 request_logs.compression_meta。
+	var responsesProvenance []byte
 	if nativeNonStream || nativeStream {
 		sourceBody = append([]byte(nil), params.ResponsesBodyBytes...)
 		if len(sourceBody) == 0 {
@@ -398,14 +487,25 @@ func (e *Executor) executeOpenAI(
 			contextWindow = *cand.ContextWindow
 		}
 		reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
-		bodyBytes = transformation.CompressResponsesInputIfNeeded(sourceBody, contextWindow, reserve)
+		// R34-A1: responses 专属压缩链带 provenance（dropped indexes 等），
+		// 由 recordResponsesInputTrim 合入 request_logs.compression_meta。
+		var responsesTrimMeta *transformation.ResponsesInputTrimMeta
+		bodyBytes, responsesTrimMeta = transformation.CompressResponsesInputIfNeededWithMeta(sourceBody, contextWindow, reserve)
+		recordResponsesInputTrimMeta(&responsesProvenance, sourceBody, bodyBytes, responsesTrimMeta)
 		bodyBytes = transformation.RewriteResponsesModel(bodyBytes, cand.RawModel)
+		// paramledger (2026-09-22): native responses 分支不经过
+		// finalizeOpenAIUpstreamBody，paramguard（嵌套 reasoning.effort 的
+		// 归一/能力降档）在此显式执行并记账。
+		bodyBytes = e.applyParamguardLedger(params, bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol))
 	} else {
 		bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
 		if err != nil {
 			return nil, err
 		}
 	}
+	// reqprobe: 前置应用已学习的参数剔除规则（此前已被"剔除后重试成功"
+	// 验证过的参数，24h 滑窗；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。
+	bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand, params.RequestID)
 
 	// 2026-07-16: Pre-request validation
 	if e.PreRequestValidator != nil {
@@ -435,6 +535,9 @@ func (e *Executor) executeOpenAI(
 	// no 4xx happened. Without this the pre-request trim runs silently
 	// and operators can't see how many bytes were saved.
 	preTrimMeta := buildPreRequestTrimMeta(len(sourceBody), len(bodyBytes), cand.ContextWindow)
+	// R34-A1: responsesProvenance 的合并在下方三处 result 构造点进行——
+	// 4xx recovery 会在此之后覆盖 responsesProvenance，提前合并会丢
+	// recovery 侧证据。
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
 		outboundModel = cand.RawModel
@@ -446,6 +549,66 @@ func (e *Executor) executeOpenAI(
 	// Track whether we've already retried once for model_not_found on this credential.
 	// This flag persists across attempts within the retry loop.
 	mnfRetried := false
+
+	// reqprobe (2026-09-21): 请求侧探测状态（参数剔除/模式回退各最多一次，
+	// 重试不消耗预算、跳过退避）。probeRetry 与 ctxLenRecoveryRetry 同机制。
+	probe := reqProbeRuntime{}
+	probeRetry := false
+	probeNoDelay := false
+	// A successful Chat probe after an explicit "Responses API unsupported"
+	// verdict is also a valid execution path. Apply the same decision to live
+	// requests before the ordinary 5xx retry/failover branch handles relay 502s.
+	// The non-stream Responses handler can convert the Chat result only when it
+	// owns the final write (SuppressSuccessWrite).
+	tryUnsupportedResponsesFallback := func(status int, errorBody []byte, kind errorsx.ErrorKind, headers http.Header) (bool, error) {
+		if !(nativeNonStream || nativeStream) || probe.modeTried ||
+			!providercap.ResponsesUnsupportedError(status, string(errorBody)) {
+			return false, nil
+		}
+		recordResponsesCapability(false)
+		if len(clientSourceBody) == 0 ||
+			!(params.IsStream || params.ClientProtocol != providercatalog.ProtocolOpenAIResponses || params.SuppressSuccessWrite) {
+			return false, nil
+		}
+		fallbackBody, fbErr := e.finalizeOpenAIUpstreamBody(params, cand, clientSourceBody)
+		if fbErr != nil {
+			slog.Warn("responses unsupported: could not prepare chat fallback", "request_id", params.RequestID, "error", fbErr)
+			return false, nil
+		}
+		slog.Warn("native responses unsupported, falling back to chat/completions",
+			"request_id", params.RequestID,
+			"provider_id", cand.ProviderID,
+			"credential_id", cand.CredentialID,
+			"raw_model", cand.RawModel,
+			"status", status,
+		)
+		if e.RequestProbe != nil {
+			probe.input = reqprobe.Input{
+				HTTPStatus: status, ErrorBody: append([]byte(nil), errorBody[:min(len(errorBody), 1024)]...),
+				OutboundBody: bodyBytes, ErrorKind: string(kind), Protocol: cand.Protocol, NativeResponses: true,
+			}
+			probe.diag = reqprobe.Diagnosis{
+				Trigger: reqprobe.TriggerModeMismatch, SuggestMode: "chat", Reason: "responses_api_unsupported",
+			}
+			probe.meta = reqprobe.TerminalMeta{
+				RequestID: params.RequestID, ProviderID: cand.ProviderID,
+				ProviderCode: cand.CatalogCode, ClientModel: params.ClientModel, OutboundModel: cand.RawModel,
+			}
+			probe.active = true
+		}
+		sourceBody = clientSourceBody
+		bodyBytes = fallbackBody
+		nativeNonStream, nativeStream = false, false
+		probe.modeTried = true
+		probeRetry = true
+		e.ledgerRecordProbe(params, cand, nil, "responses", "chat")
+		meterExtraUpstreamCall(params)
+		return true, &retryableError{err: &upstreampkg.Error{
+			Kind: kind, Message: fmt.Sprintf("upstream %d (responses unsupported; chat fallback retry)", status),
+			Body: append([]byte(nil), errorBody...), StatusCode: status,
+			RetryAfter: upstreampkg.RetryAfterFromHeaders(headers),
+		}}
+	}
 
 	// BUG-2 fix (2026-06-19): compute timeout once outside the retry loop.
 	// Previously the timeout was computed inside the anonymous closure, which
@@ -469,7 +632,7 @@ func (e *Executor) executeOpenAI(
 	// iteration should NOT increment attempt, allowing the compressed body to
 	// be retried immediately without consuming the retry budget.
 	ctxLenRecoveryRetry := false
-	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
+	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus || probeRetry; attempt++ {
 		// Candidate-attempt boundary is intentionally logged once per attempt,
 		// rather than once per streamed frame, so a retry/failover can be
 		// reconstructed without logging request content or secrets.
@@ -491,7 +654,12 @@ func (e *Executor) executeOpenAI(
 			ctxLenRecoveryRetry = false
 			attempt-- // cancel the increment so the compressed retry is free
 		}
-		if attempt > 0 {
+		if probeRetry {
+			probeRetry = false
+			attempt--           // reqprobe 重试同样免费
+			probeNoDelay = true // 且立即重发，不退避（参数探测是确定性修正）
+		}
+		if attempt > 0 && !probeNoDelay {
 			delay := time.Duration(5*(1<<(attempt-1))) * time.Second
 			if isUpstreamOverloaded(lastErr) {
 				delay = errorsx.DefaultOverloadRetryDelay
@@ -518,6 +686,7 @@ func (e *Executor) executeOpenAI(
 			case <-time.After(delay):
 			}
 		}
+		probeNoDelay = false
 
 		// BUG-2 fix (2026-06-19): create the upstream context at loop scope
 		// (not inside the closure with defer cancel()). For the session path,
@@ -533,7 +702,7 @@ func (e *Executor) executeOpenAI(
 			var reqPool *pool.Pool
 			var upstreamURL string
 			switch {
-			case cand.Protocol == "anthropic-messages":
+			case cand.Protocol == providercatalog.ProtocolAnthropicMessages:
 				upstreamURL = upstreamurl.MessagesURL(cand.BaseURL)
 			case nativeNonStream || nativeStream:
 				upstreamURL = upstreamurl.ResponsesURL(cand.BaseURL)
@@ -567,6 +736,12 @@ func (e *Executor) executeOpenAI(
 				return nil, err
 			}
 
+			// R30 (2026-09-30): the LIVE chat request build (the
+			// BuildRequest method below is not on this path — it has no
+			// production callers). Stamp the provider so the shared upstream
+			// client can route egress_profile='proxy' providers through
+			// their subscription node pool (R28-P-1).
+			req = upstreampkg.WithEgressMeta(req, cand.ProviderID)
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+cand.APIKey)
 			if params.IsStream {
@@ -832,6 +1007,14 @@ func (e *Executor) executeOpenAI(
 			}
 
 			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
+				if resp != nil {
+					if switched, fallbackErr := tryUnsupportedResponsesFallback(resp.StatusCode, uErr.Body, uErr.Kind, resp.Header); switched {
+						if resp.Body != nil {
+							_ = resp.Body.Close()
+						}
+						return nil, fallbackErr
+					}
+				}
 				errKind := uErr.Kind
 				// 2026-08-08: a 5xx whose body says "overloaded / try again
 				// later" is a load signal, not a dead upstream. upstream.Do
@@ -896,6 +1079,9 @@ func (e *Executor) executeOpenAI(
 				e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "openai-completions"), body[:n])
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
+				if switched, fallbackErr := tryUnsupportedResponsesFallback(resp.StatusCode, body[:n], errKind, resp.Header); switched {
+					return nil, fallbackErr
+				}
 
 				if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound || bodyKind == errorsx.KindModelDeprecated {
 					// Internal retry for model_not_found (2026-06-20):
@@ -968,6 +1154,97 @@ func (e *Executor) executeOpenAI(
 
 				}
 
+				// reqprobe (2026-09-21): 请求侧异常探测，在可重试判定之前
+				// 执行——参数剔除/模式回退是确定性修正，先于盲目退避重试
+				// 触发才能省掉整个 5s 退避窗。各探测每请求一次，重试免费
+				// （probeRetry 抵消 attempt++ 且跳过退避）。
+				if e.RequestProbe != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+					probeIn := reqprobe.Input{
+						HTTPStatus:      resp.StatusCode,
+						ErrorBody:       body[:min(n, 1024)],
+						OutboundBody:    bodyBytes,
+						ErrorKind:       string(errKind),
+						Protocol:        cand.Protocol,
+						NativeResponses: nativeNonStream || nativeStream,
+					}
+					if diag, diagOK := reqprobe.Diagnose(probeIn); diagOK {
+						probe.input = probeIn
+						probe.diag = diag
+						probe.meta = reqprobe.TerminalMeta{
+							RequestID:     params.RequestID,
+							ProviderID:    cand.ProviderID,
+							ProviderCode:  cand.CatalogCode,
+							ClientModel:   params.ClientModel,
+							OutboundModel: cand.RawModel,
+						}
+						// 模式回退：当前在 native responses 传输、未试过、
+						// 且响应侧有 chat→客户端协议转换通道。非流式
+						// Responses 客户端只有在 handler 负责最终写入时才安全。
+						if diag.Trigger == reqprobe.TriggerModeMismatch &&
+							diag.SuggestMode == "chat" &&
+							(nativeNonStream || nativeStream) && !probe.modeTried &&
+							(params.IsStream || params.ClientProtocol != "openai-responses" || params.SuppressSuccessWrite) {
+							if fallbackBody, fbErr := e.finalizeOpenAIUpstreamBody(params, cand, clientSourceBody); fbErr == nil {
+								slog.Warn("reqprobe: native responses transport rejected, falling back to chat/completions",
+									"request_id", params.RequestID,
+									"provider_id", cand.ProviderID,
+									"credential_id", cand.CredentialID,
+									"raw_model", cand.RawModel,
+									"status", resp.StatusCode,
+									"reason", diag.Reason,
+								)
+								sourceBody = clientSourceBody
+								bodyBytes = fallbackBody
+								nativeNonStream, nativeStream = false, false
+								probe.modeTried = true
+								probe.active = true
+								probeRetry = true
+								e.ledgerRecordProbe(params, cand, nil, "responses", "chat")
+								// R51-F15: 模式回退是准入内的第二次上游调用，补记
+								// 到准入 Governor 的 RPM/TPM 桶（不阻塞确定性修正）。
+								meterExtraUpstreamCall(params)
+								return nil, &retryableError{err: &upstreampkg.Error{
+									Kind:       errKind,
+									Message:    fmt.Sprintf("upstream %d (reqprobe mode fallback retry)", resp.StatusCode),
+									Body:       append([]byte(nil), body[:n]...),
+									StatusCode: resp.StatusCode,
+									RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+								}}
+							}
+						}
+						// 参数剔除：优先按错误点名参数，未点名则剔除全部
+						// 不常见参数。每请求一次。
+						if diag.Trigger == reqprobe.TriggerParamRejected && !probe.paramTried {
+							if strippedBody, stripped := reqprobe.StripParams(bodyBytes, diag.Param); len(stripped) > 0 {
+								slog.Warn("reqprobe: upstream rejected request, retrying with params stripped",
+									"request_id", params.RequestID,
+									"provider_id", cand.ProviderID,
+									"credential_id", cand.CredentialID,
+									"raw_model", cand.RawModel,
+									"status", resp.StatusCode,
+									"stripped", strings.Join(stripped, ","),
+									"named_param", diag.Param,
+								)
+								bodyBytes = strippedBody
+								probe.paramTried = true
+								probe.diag.Param = strings.Join(stripped, ",")
+								probe.active = true
+								probeRetry = true
+								e.ledgerRecordProbe(params, cand, stripped, "", "")
+								// R51-F15: 参数剔除重试同型补记。
+								meterExtraUpstreamCall(params)
+								return nil, &retryableError{err: &upstreampkg.Error{
+									Kind:       errKind,
+									Message:    fmt.Sprintf("upstream %d (reqprobe param-strip retry: %s)", resp.StatusCode, probe.diag.Param),
+									Body:       append([]byte(nil), body[:n]...),
+									StatusCode: resp.StatusCode,
+									RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+								}}
+							}
+						}
+					}
+				}
+
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
 					resp.StatusCode != 429 && resp.StatusCode != 401 &&
 					resp.StatusCode != 403 && resp.StatusCode != 402 &&
@@ -1031,7 +1308,7 @@ func (e *Executor) executeOpenAI(
 					// mid-stream rewriting would break the byte contract.
 					if (errorsx.IsContextLength(errKind) ||
 						shouldHeuristicCompact(resp.StatusCode, errKind, len(sourceBody), cand.ContextWindow)) &&
-						cand.Protocol != "anthropic-messages" {
+						cand.Protocol != providercatalog.ProtocolAnthropicMessages {
 						switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode, body[:n]) {
 						case ctxLenRetry:
 							if nativeNonStream || nativeStream {
@@ -1040,7 +1317,13 @@ func (e *Executor) executeOpenAI(
 									contextWindow = *cand.ContextWindow
 								}
 								reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
-								sourceBody = transformation.CompressResponsesInputAggressively(sourceBody, contextWindow, reserve)
+								// R34-A1: 4xx recovery 的 aggressive 裁剪同样留
+								// provenance；覆盖 proactive 侧（后者是同一次
+								// attempt 链的前置 trim，recovery 值反映最终形态）。
+								preRecoveryBody := sourceBody
+								var recoveryTrimMeta *transformation.ResponsesInputTrimMeta
+								sourceBody, recoveryTrimMeta = transformation.CompressResponsesInputAggressivelyWithMeta(sourceBody, contextWindow, reserve)
+								recordResponsesInputTrimMeta(&responsesProvenance, preRecoveryBody, sourceBody, recoveryTrimMeta)
 								bodyBytes = transformation.RewriteResponsesModel(sourceBody, cand.RawModel)
 							} else {
 								bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
@@ -1054,6 +1337,8 @@ func (e *Executor) executeOpenAI(
 							// the bug where recovery succeeded but the compressed payload was
 							// never sent because attempt >= effectiveMaxRetries on the next loop.
 							ctxLenRecoveryRetry = true
+							// R51-F15: 压缩后的重发同样是准入内的额外上游调用，补记。
+							meterExtraUpstreamCall(params)
 							// 2026-07-03 (Bug #N extension): preserve errKind in the
 							// retryableError wrapper so if retries are exhausted, the
 							// outer tryCandidate returns lastErr with the precise Kind.
@@ -1078,6 +1363,32 @@ func (e *Executor) executeOpenAI(
 								status:       resp.StatusCode,
 								body:         string(body[:min(n, 200)]),
 							}
+						}
+					}
+					// reqprobe 终端记录（2026-09-21）：探测已在可重试判定前
+					// 触发过（触发即 return 重试），能走到这里说明本次诊断
+					// 无可尝试手段（upstream_error / 不可回退的模式不匹配 /
+					// 点名参数不可剔），或探测重试后仍失败。probe.recorded
+					// 防多次记账；probe.active=true 表示探测重试过但最终仍
+					// 失败 → 记 recovered=false。
+					if e.RequestProbe != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 && !probe.recorded {
+						probeIn := reqprobe.Input{
+							HTTPStatus:      resp.StatusCode,
+							ErrorBody:       body[:min(n, 1024)],
+							OutboundBody:    bodyBytes,
+							ErrorKind:       string(errKind),
+							Protocol:        cand.Protocol,
+							NativeResponses: nativeNonStream || nativeStream,
+						}
+						if diag, diagOK := reqprobe.Diagnose(probeIn); diagOK {
+							probe.recorded = true
+							e.RequestProbe.RecordTerminal(probeIn, diag, reqprobe.TerminalMeta{
+								RequestID:     params.RequestID,
+								ProviderID:    cand.ProviderID,
+								ProviderCode:  cand.CatalogCode,
+								ClientModel:   params.ClientModel,
+								OutboundModel: cand.RawModel,
+							}, false)
 						}
 					}
 					// Do not write 4xx to ResponseWriter here — Execute() may
@@ -1124,6 +1435,10 @@ func (e *Executor) executeOpenAI(
 				e.TTFBTracker.Record(cand.CredentialID, upstreamLatency)
 			}
 			recordAttemptSuccess := func(chunkCount int) {
+				if nativeNonStream || nativeStream {
+					recordResponsesCapability(true)
+				}
+				e.reqprobeRecordSuccess(&probe)
 				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 				if e.PostExecutionHook != nil {
 					_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
@@ -1163,38 +1478,53 @@ func (e *Executor) executeOpenAI(
 				//触碰已失效的客户端连接。
 				streamSink := responseSink(params)
 				if nativeStream {
-					streamOutcome = e.NativeResponsesStream(params.R.Context(), streamSink, resp, diagnosticRequestID(params), params.Capture, params.ClientSemanticBytesVisible)
+					streamOutcome = e.NativeResponsesStream(streamReaderContext(params, resp), streamSink, resp, diagnosticRequestID(params), params.Capture, params.ClientSemanticBytesVisible)
 				} else {
 					switch {
 					case e.OpenAIToAnthropicStream != nil &&
-						params.ClientProtocol == "anthropic-messages" &&
-						cand.Protocol != "anthropic-messages":
+						params.ClientProtocol == providercatalog.ProtocolAnthropicMessages &&
+						cand.Protocol != providercatalog.ProtocolAnthropicMessages:
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
 						// 审计 R3 #2 (2026-09-09): params.BodyBytes 此时仍是客户端原始
 						// Anthropic 体(上游体在 bodyBytes 中另行转换),以其估算
 						// message_start.usage.input_tokens,替代恒 0。
 						streamOutcome = e.OpenAIToAnthropicStream(
-							params.R.Context(), streamSink, resp,
+							streamReaderContext(params, resp), streamSink, resp,
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
 							estimateAnthropicInputTokens(params.BodyBytes),
+							params.ToolsRequested,
 						)
 					case e.OpenAIToResponsesStream != nil &&
-						params.ClientProtocol == "openai-responses" &&
-						cand.Protocol != "anthropic-messages":
+						params.ClientProtocol == providercatalog.ProtocolOpenAIResponses &&
+						cand.Protocol != providercatalog.ProtocolAnthropicMessages:
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
 						streamOutcome = e.OpenAIToResponsesStream(
-							params.R.Context(), streamSink, resp,
+							streamReaderContext(params, resp), streamSink, resp,
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
+							params.ToolsRequested,
 						)
 					case params.StreamWrapper != nil:
 						streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
 					case e.StreamChat != nil:
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
-						streamOutcome = e.StreamChat(params.R.Context(), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+						streamOutcome = e.StreamChat(streamReaderContext(params, resp), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+					}
+				}
+				// A native Messages/Responses interceptor rejection is reported by
+				// the protocol bridge as a failed client write. Preserve its actual
+				// cause here so dispatch cannot retry the provider or downgrade the
+				// policy block to a generic upstream interruption.
+				if blocker, ok := streamSink.(interface{ OutputPolicyBlocked() bool }); ok && blocker.OutputPolicyBlocked() {
+					streamOutcome = StreamOutcome{
+						Interrupted:      true,
+						Reason:           "output_policy_blocked",
+						Resumable:        false,
+						Kind:             errorsx.KindContentFilter,
+						TerminalRendered: true,
 					}
 				}
 				if params.OnStreamCompleted != nil {
@@ -1262,6 +1592,7 @@ func (e *Executor) executeOpenAI(
 					if streamOutcome.Reason == "empty_stream_no_content" {
 						streamKind = errorsx.KindEmptyResponse
 					}
+					gatewayPolicyBlocked := streamOutcome.Reason == "output_policy_blocked"
 
 					slog.Warn("executor: stream interrupted",
 						"request_id", params.RequestID,
@@ -1277,7 +1608,11 @@ func (e *Executor) executeOpenAI(
 						"classified_as", streamKind,
 					)
 
-					if isResumable {
+					if gatewayPolicyBlocked {
+						// The provider returned a response; the gateway's output policy
+						// rejected it. Keep this non-resumable, but do not poison the
+						// provider circuit or credential health state.
+					} else if isResumable {
 						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
 						if streamKind == errorsx.KindConcurrent {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
@@ -1330,6 +1665,7 @@ func (e *Executor) executeOpenAI(
 						reason: streamOutcome.Reason, credentialID: cand.CredentialID,
 						resumable: isResumable, kind: streamKind,
 						statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+						terminalRendered: streamOutcome.TerminalRendered,
 					}
 				}
 				recordAttemptSuccess(streamOutcome.ChunkCount)
@@ -1345,7 +1681,7 @@ func (e *Executor) executeOpenAI(
 					// metadata so emitTelemetry can write compression_meta.
 					CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 					CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta)),
 					// 2026-06-19 quality fix mode: relay/stream.go populated
 					// capture.QualityFlags as each chunk was processed.
 					// relay/handler.go emitTelemetry writes these into
@@ -1417,10 +1753,20 @@ func (e *Executor) executeOpenAI(
 							ResponseBody: append([]byte(nil), respBody...),
 						})
 					}
-					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
+					// paramledger (2026-09-22): Responses 响应对象回显
+					// reasoning.effort——出站被降级/归一时，把回显值还原为
+					// 客户端原始值再写回。
+					// R51 (2026-09-21): restore/redact 都可能改写 body 长度，
+					// 必须在 copyNonStreamResponseHeaders 计算 Content-Length
+					// 之前完成全部改写；此前先按上游 body 定长再改写，
+					// net/http 按旧定长截断，客户端拿到残缺 JSON。
+					respBody = e.redactClientResponse(params, e.restoreClientEcho(params, respBody))
+					if !params.DeferredOutputGovernance {
+						e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
+					}
 					copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 					params.W.WriteHeader(resp.StatusCode)
-					_, _ = params.W.Write(e.redactClientResponse(params, respBody))
+					_, _ = params.W.Write(respBody)
 
 				}
 				recordAttemptSuccess(0)
@@ -1431,7 +1777,7 @@ func (e *Executor) executeOpenAI(
 					IntegrityObserved:   e.IntegrityDetector != nil && !params.SuppressSuccessWrite && params.W != nil && len(respBody) > 0,
 					CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 					CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta)),
 					RoutingTracker:      params.RoutingTracker,
 				}, nil
 			}
@@ -1499,7 +1845,7 @@ func (e *Executor) executeOpenAI(
 			// Prefer the IR path when the feature flag is on; otherwise
 			// fall back to the legacy hook. 2026-06-29 fix — see
 			// docs/2026-06-29-protocol-conversion-matrix.md.
-			if params.ClientProtocol == "anthropic-messages" && cand.Protocol != "anthropic-messages" {
+			if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages && cand.Protocol != providercatalog.ProtocolAnthropicMessages {
 				if e.IR != nil {
 					var irScoped IRConverter
 					if scoped, ok := e.IR.(ProviderScoped); ok {
@@ -1583,7 +1929,14 @@ func (e *Executor) executeOpenAI(
 					})
 				}
 				respBody = e.redactClientResponse(params, respBody)
-				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
+				if !params.DeferredOutputGovernance {
+					// R25-V: under DeferredOutputGovernance these bytes only
+					// reached the handler's capture buffer; the handler may
+					// still block or rewrite them, so LogClientResponse (the
+					// "bytes the client actually received" lane) waits for the
+					// governed commit.
+					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
+				}
 				copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 				params.W.WriteHeader(resp.StatusCode)
 				//nolint:errcheck // HTTP write error non-recoverable
@@ -1607,7 +1960,7 @@ func (e *Executor) executeOpenAI(
 				// request_logs.compression_*.
 				CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 				CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-				CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+				CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta)),
 				// Round 47 compression v7 T-NEW-4: pre-request trim
 				// metadata merged in via mergeCompressionMeta above.
 				// 2026-06-19 quality fix mode: relay/handler.go emitTelemetry
@@ -1673,7 +2026,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	// Phase B (2026-06-22): When e.IR is set, use Parse→IR→Serialize instead of
 	// the legacy AnthropicToOpenAI callback. This reduces conversion complexity
 	// from O(N²) to O(N) and unifies all protocol handling through the IR layer.
-	if params.ClientProtocol == "anthropic-messages" && e.IR != nil {
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages && e.IR != nil {
 		// Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
@@ -1765,6 +2118,9 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				"messages", lf,
 			)
 		}
+		// R61 S2-F3 续：serialize_openai 的 report* 经 irRequestID 读载体，
+		// stamp 使 openai 面 format-anomaly 带真实 request_id（对齐 anthropic 面）。
+		irReq = stampIRRequestID(irReq, params.RequestID)
 		bodyBytes, err := irScoped.SerializeOpenAI(irReq)
 		if err != nil {
 			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseAnthropic.
@@ -1794,7 +2150,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	// Legacy path (no IR converter set): use existing callbacks
 	p := *params
 	p.BodyBytes = sourceBody
-	bodyBytes := prepareRequestBody(&p, cand)
+	bodyBytes := prepareRequestBody(&p, cand, e.ParamLedger)
 
 	// 2026-07-12: Apply format validation even in legacy path.
 	// Parse → Validate → Serialize to clean up malformed requests.
@@ -1832,6 +2188,8 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			// 使 applyThinkingToOpenAIChat 能按本次已知的 TargetProvider
 			// 方言渲染。无携带值时为无操作（原生 OpenAI 入向不受影响）。
 			irReq = ir.RestoreSourceReasoning(irReq, params.R.Context())
+			// R61 S2-F3 续：同上，openai 主路径序列化前 stamp。
+			irReq = stampIRRequestID(irReq, params.RequestID)
 			serializedBody, serializeErr := irScoped.SerializeOpenAI(irReq)
 			if serializeErr != nil {
 				slog.Warn("finalizeOpenAIUpstreamBody: legacy IR serialization failed; preserving pre-validation body",
@@ -1877,6 +2235,8 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				irReq2.TargetProvider = cand.CatalogCode
 				// R45: 断路器兜底路径同样恢复 context 携带的入向推理意图。
 				irReq2 = ir.RestoreSourceReasoning(irReq2, params.R.Context())
+				// R61 S2-F3 续：断路器兜底路径同样 stamp。
+				irReq2 = stampIRRequestID(irReq2, params.RequestID)
 				if fixedBytes, err3 := ir.SerializeOpenAI(irReq2); err3 == nil {
 					bodyBytes = fixedBytes
 					slog.Warn("finalizeOpenAIUpstreamBody: IR circuit open, validated via breaker-independent fallback",
@@ -1951,7 +2311,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	if e.NormalizeOpenAITools != nil {
 		bodyBytes = e.NormalizeOpenAITools(bodyBytes)
 	}
-	if params.ClientProtocol == "anthropic-messages" {
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
 		// Phase 3.2: Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
@@ -1982,8 +2342,8 @@ func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Cand
 	// IR-circuit-open fallback has a single, audited implementation.
 	p := *params
 	p.BodyBytes = sourceBody
-	bodyBytes := prepareRequestBody(&p, cand)
-	if params.ClientProtocol == "anthropic-messages" {
+	bodyBytes := prepareRequestBody(&p, cand, e.ParamLedger)
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
 				return nil, fmt.Errorf("format conversion disabled for provider %d (anthropic→openai)", cand.ProviderID)
@@ -2045,7 +2405,7 @@ func (e *Executor) applyOpenAITailTransforms(params *ExecParams, cand provider.C
 	if params.SessionKey != "" && cand.SupportsPromptCache {
 		bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
 	}
-	return paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol)), nil
+	return e.applyParamguardLedger(params, bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol)), nil
 }
 
 // prepareRequestBody builds the upstream request body from params and cand.
@@ -2103,7 +2463,13 @@ func resolveOutboundModel(params *ExecParams, cand provider.Candidate) string {
 	return cand.RawModel
 }
 
-func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
+// prepareBodyLedger（可 nil）承接 paramguard 的语义级调整记账
+// （2026-09-22，paramledger）。变参以兼容历史两参调用点。
+func prepareRequestBody(params *ExecParams, cand provider.Candidate, ledgerOpt ...*paramledger.Ledger) []byte {
+	var prepareBodyLedger *paramledger.Ledger
+	if len(ledgerOpt) > 0 {
+		prepareBodyLedger = ledgerOpt[0]
+	}
 	outboundModel := resolveOutboundModel(params, cand)
 
 	bodyBytes := params.BodyBytes
@@ -2116,7 +2482,7 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	// message_delta events and has no stream_options field; injecting it would
 	// either be silently ignored or, worse, rejected by strict providers.
 	// Guard on protocol.
-	if params.IsStream && cand.Protocol != "anthropic-messages" {
+	if params.IsStream && cand.Protocol != providercatalog.ProtocolAnthropicMessages {
 		bodyBytes = injectStreamOptions(bodyBytes)
 	}
 	if params.Transform != nil {
@@ -2131,14 +2497,14 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 		bodyBytes = transformation.CollapseToolHistory(bodyBytes)
 	}
 	bodyBytes = transformation.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
-	bodyBytes = paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol))
+	bodyBytes = applyGuardToLedger(prepareBodyLedger, params.RequestID, bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol))
 	bodyBytes = transformation.MergeConsecutiveMessages(bodyBytes)
 	// Client-side context window enforcement for Q1/Q2/Q3 openai protocol.
 	// Q4 (anthropic-messages) is handled in prepareAnthropicRequestBody
 	// (executor_anthropic.go). See transform/ctx_compress.go for rationale:
 	// upstreams like minimax trim server-side on direct calls, but proxy
 	// clients must trim at the gateway.
-	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
+	if cand.Protocol != providercatalog.ProtocolAnthropicMessages && cand.ContextWindow != nil {
 		reserve := transformation.OutputTokenReserve(bodyBytes, params.ClientProtocol)
 		bodyBytes = transformation.CompressMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
 	}
@@ -2175,6 +2541,19 @@ func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (c
 		return context.WithCancel(params.R.Context())
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
+}
+
+// streamReaderContext uses the context attached to the actual upstream
+// response. Durable streams intentionally detach that context from client
+// cancellation, so protocol readers must not fall back to params.R here.
+func streamReaderContext(params *ExecParams, resp *http.Response) context.Context {
+	if resp != nil && resp.Request != nil {
+		return resp.Request.Context()
+	}
+	if params != nil && params.R != nil {
+		return params.R.Context()
+	}
+	return context.Background()
 }
 
 // parseMiniMaxBaseResp extracts MiniMax's HTTP 200-wrapped error signal

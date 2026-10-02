@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
 type FormatAnomalyRecord struct {
@@ -174,9 +174,7 @@ func (h *Handler) handleFormatAnomalies(w http.ResponseWriter, r *http.Request) 
 			); err != nil {
 				return err
 			}
-			if len(structureRaw) > 0 {
-				_ = json.Unmarshal(structureRaw, &item.Structure)
-			}
+			jsoncol.Decode("admin.formatAnomalies.list/structure", structureRaw, &item.Structure)
 			items = append(items, item)
 		}
 		return rows.Err()

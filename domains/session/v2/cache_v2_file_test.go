@@ -181,6 +181,36 @@ func TestFileCacheTTLExpiry(t *testing.T) {
 	}
 }
 
+func TestFileCacheSetTTLHotReload(t *testing.T) {
+	fc := newTestFileCache(t, t.TempDir(), time.Hour, 1<<20)
+
+	if err := fc.Set(newTestFileState("tenant-ttlhot", "sess-ttlhot", 1)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// 热重载缩 TTL：读侧过期判定立即按新值（H4 retention 热重载接线，
+	// 2026-10-01 审计 F2——TTL 构造期钉死时扩 retention 读侧不生效）
+	fc.SetTTL(20 * time.Millisecond)
+	if got := fc.TTL(); got != 20*time.Millisecond {
+		t.Fatalf("TTL after SetTTL(20ms) = %v, want 20ms", got)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if _, err := fc.Get("tenant-ttlhot", "sess-ttlhot"); !errors.Is(err, errCacheMiss) {
+		t.Fatalf("Get after TTL shrink: want errCacheMiss (expired), got %v", err)
+	}
+
+	// 非正值拒绝：TTL 维持现值（与 ResizeMax 同款守卫）
+	fc.SetTTL(0)
+	fc.SetTTL(-time.Second)
+	if got := fc.TTL(); got != 20*time.Millisecond {
+		t.Fatalf("TTL after SetTTL(<=0) = %v, want unchanged 20ms", got)
+	}
+
+	// nil-safe
+	var nilFC *FileCache
+	nilFC.SetTTL(time.Hour)
+}
+
 func TestFileCacheEvictionLRU(t *testing.T) {
 	// 用探针条目测量单条 JSON 大小，maxSize 恰好容纳 2 条：
 	// 写第 3 条时必须淘汰最旧的 s1，最终 sizeUsed == 2*entrySize <= maxSize。
@@ -455,4 +485,230 @@ func fileCacheOnDiskBytes(t *testing.T, dir string) int64 {
 		t.Fatalf("walk: %v", err)
 	}
 	return total
+}
+
+// TestFileCacheIndexConsistency H1 验收：并发 Set/Delete/过期交错后，索引
+// 与磁盘 Walk 结果一致（条目数与体积均匹配）。原 Plan §3 H1「验收」项。
+func TestFileCacheIndexConsistency(t *testing.T) {
+	fc := newTestFileCache(t, t.TempDir(), 30*time.Millisecond, 16*1024)
+
+	const goroutines = 8
+	const opsPerG = 60
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(seed))
+			for i := 0; i < opsPerG; i++ {
+				sid := fmt.Sprintf("sess-%03d", rng.Intn(12))
+				switch rng.Intn(4) {
+				case 0, 1:
+					if err := fc.Set(newTestFileState("tenant-idx", sid, i+1)); err != nil {
+						t.Errorf("Set: %v", err)
+						return
+					}
+				case 2:
+					if _, err := fc.Get("tenant-idx", sid); err != nil && !errors.Is(err, errCacheMiss) {
+						t.Errorf("Get: %v", err)
+						return
+					}
+				default:
+					if err := fc.Delete("tenant-idx", sid); err != nil {
+						t.Errorf("Delete: %v", err)
+						return
+					}
+				}
+				time.Sleep(3 * time.Millisecond)
+			}
+		}(int64(g))
+	}
+	wg.Wait()
+
+	// 等待 TTL 让所有条目过期（30ms TTL）
+	time.Sleep(60 * time.Millisecond)
+	// 触发一次扫描式 Get 促使过期清理
+	for i := 0; i < 12; i++ {
+		_, _ = fc.Get("tenant-idx", fmt.Sprintf("sess-%03d", i))
+	}
+
+	stats := fc.Stats()
+	used := stats["size_used_bytes"].(int64)
+	indexEntries := stats["index_entries"].(int)
+	if used < 0 || indexEntries < 0 {
+		t.Fatalf("stats anomaly: used=%d entries=%d", used, indexEntries)
+	}
+	// 索引条目数与磁盘 .json 文件数应一致（每个索引条目对应一个文件）
+	var onDiskFiles int
+	_ = filepath.Walk(fc.baseDir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".json") {
+			onDiskFiles++
+		}
+		return nil
+	})
+	if indexEntries != onDiskFiles {
+		t.Fatalf("index entries %d != disk files %d (drift)", indexEntries, onDiskFiles)
+	}
+	if used != fileCacheOnDiskBytes(t, fc.baseDir) {
+		t.Fatalf("sizeUsed %d != disk usage", used)
+	}
+}
+
+// TestFileCacheIndexSurvivesRestart H1 验收：进程重启后内存索引从磁盘
+// Walk 重建，Set 后 Get 命中索引（不需额外 Stat）。
+func TestFileCacheIndexSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	fc1 := newTestFileCache(t, dir, time.Minute, 1<<20)
+	if err := fc1.Set(newTestFileState("tenant-r", "sess-restart", 1)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := fc1.Set(newTestFileState("tenant-r", "sess-other", 2)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	_ = fc1.Close()
+
+	// 重启 → 索引重建
+	fc2 := newTestFileCache(t, dir, time.Minute, 1<<20)
+	if got := fc2.Stats()["index_entries"].(int); got != 2 {
+		t.Fatalf("重启后 index_entries = %d, want 2", got)
+	}
+	if _, err := fc2.Get("tenant-r", "sess-restart"); err != nil {
+		t.Fatalf("Get after restart: %v", err)
+	}
+	// 命中索引路径不应删条目
+	if got := fc2.Stats()["index_entries"].(int); got != 2 {
+		t.Fatalf("Get 后 index_entries = %d, want 2 (索引应保留)", got)
+	}
+}
+
+// TestFileCacheResizeMax H4 验收：ResizeMax 扩容立即生效；
+// 缩容拒绝（不强制淘汰）。ResizeMax 内部自持 fc.mu（H4 热重载接线由
+// settings goroutine 调用，无法预持私有锁），测试直接调用，
+// maxSize 经公开 Stats()（同锁读取）观察。
+func TestFileCacheResizeMax(t *testing.T) {
+	fc := newTestFileCache(t, t.TempDir(), time.Minute, 1024)
+
+	fc.ResizeMax(2048)
+	if got := fc.Stats()["max_size_bytes"].(int64); got != 2048 {
+		t.Fatalf("ResizeMax 后 maxSize = %d, want 2048", got)
+	}
+	// 非法值拒绝
+	fc.ResizeMax(0)
+	fc.ResizeMax(-1)
+	if got := fc.Stats()["max_size_bytes"].(int64); got != 2048 {
+		t.Fatalf("非法 ResizeMax 修改了值: maxSize = %d", got)
+	}
+}
+
+// BenchmarkFileCacheGet H1 验收补充（2026-09-30 审计轮）：Get 索引命中分支
+// 静态不含 os.Stat（cache_v2_file.go 的 indexed 分支仅 ReadFile；Stat 只在
+// 索引 miss 回填分支出现），即"热路径减少 1 次 Stat"。本基准给出命中与
+// miss 两态的单次 Get 时延对照作旁证；系统调用级计数需 dtruss/dtrace
+// （macOS SIP 阻断、CI 不可复现），故不作机器级断言。
+func BenchmarkFileCacheGet(b *testing.B) {
+	dir := b.TempDir()
+	fc, err := NewFileCache(filepath.Join(dir, "l15"), time.Hour, 1<<20)
+	if err != nil {
+		b.Fatalf("NewFileCache: %v", err)
+	}
+	state := newTestFileState("bench-tenant", "bench-sess", 1)
+	if err := fc.Set(state); err != nil {
+		b.Fatalf("Set: %v", err)
+	}
+
+	b.Run("index_hit", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := fc.Get("bench-tenant", "bench-sess"); err != nil {
+				b.Fatalf("Get(hit): %v", err)
+			}
+		}
+	})
+	b.Run("index_miss_absent", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := fc.Get("bench-tenant", "no-such-sess"); !errors.Is(err, errCacheMiss) {
+				b.Fatalf("Get(miss) = %v, want errCacheMiss", err)
+			}
+		}
+	})
+}
+
+// TestFileCacheSetTTLGetRace 钉住 2026-10-01 审计修复：SetTTL 写 fc.ttl 持
+// fc.mu，Get 的两条过期判定路径必须在锁窗口内取 ttl——索引命中路径原本就在
+// 锁内；非索引路径（索引 miss → 磁盘 Stat 后判过期）修复前在 Unlock 后直接
+// fc.expired()（无锁读 fc.ttl），与并发 SetTTL 是数据竞争（-race 必报）。
+//
+// 运行方式：go test -race -run TestFileCacheSetTTLGetRace ./domains/session/v2/
+// 变异验证：把 Get 非索引路径改回锁外 fc.expired(fi.ModTime()) → -race 红。
+func TestFileCacheSetTTLGetRace(t *testing.T) {
+	dir := t.TempDir()
+	fc, err := NewFileCache(filepath.Join(dir, "l15"), time.Hour, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tenant, session := "tenant-race", "sessionrace1"
+	// 直接落盘（绕过 Set）：磁盘有文件而索引无条目，迫使 Get 走非索引路径
+	// （Stat 后判过期），这正是修复前锁外读 fc.ttl 的竞争窗口。
+	shard := session[:2]
+	fileDir := filepath.Join(fc.baseDir, tenant, shard)
+	if err := os.MkdirAll(fileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := newTestFileState(tenant, session, 1)
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fileDir, session+".json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// goroutine A：热重载循环改写 fc.ttl（写侧持锁）。
+	go func() {
+		defer wg.Done()
+		toggle := false
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if toggle {
+				fc.SetTTL(2 * time.Hour)
+			} else {
+				fc.SetTTL(24 * time.Hour)
+			}
+			toggle = !toggle
+		}
+	}()
+
+	// goroutine B：持续 Get，覆盖索引 miss（本 key 未入索引）与索引命中
+	// （Set 一次后）两条过期判定路径。
+	go func() {
+		defer wg.Done()
+		seeded := false
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = fc.Get(tenant, session) // 结果不论（命中/过期/miss 都合法）
+			if !seeded {
+				_ = fc.Set(state) // 让索引命中路径也参与并发
+				seeded = true
+			}
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }

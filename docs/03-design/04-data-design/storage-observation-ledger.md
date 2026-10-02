@@ -188,3 +188,164 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-19T01:00:42Z
 - 抽样 10/10 PASS（biz_multi×4、loop_single×3、sys×3），G1 四项零漂移。
 - claim 置位结构性漏镜像近 24h 未产生缺失（重起后首日干净）。**R44 收口更新（09-19，本轮观察落笔后补注）：真凶已定位并修复，非"后台 job 裸 UPDATE"**——ReplayFallback（DB 降级回放路径）绕行 onPersisted hooks，同事务 final-success claim 照常置位而 mirror hook 收不到终态信号；修复 2c5d1f804 抽出 firePersistedHooks 供 persistRequestLog 与回放共用，回放成功后补发（进 fallback 的 entry 此前从未成功落库，补发即 exactly-once；turns 按 request_id 幂等）。09-15 f403405b / 09-18 44728e27 两行缺失与"降级窗口积累→恢复后回放"时序吻合，该待办关闭（裁决详见 docs/audit/2026-09-19-r44-24h-audit-round.md §一 P1-E6）。R45 复核补登：回放为 at-least-once 语义（文件/ring 双通道，见 R45 轮文档 P2 登记）——单通道回放纪律入 runbook。
 - **连续归零累计 1/7**（09-19 计 Day 1，09-18 FAIL 清零后重起）。7 天达标 earliest 2026-09-25 每日轮。
+
+### 每日观察 2026-09-20 09:02 (+08)，build=ca68b4d6/2155 —— **首扫 FAIL（claim 结构性漏镜像第 3 例，回填兜回归零）；本日不计入，计数自 09-21 重起**
+
+构建身份：ca68b4d6/2155 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=1|verdict=FAIL
+ROUND_RESULT|sessions=10|fail=0|global_g2=1|verdict=FAIL|at=2026-09-20T01:02:06Z
+```
+
+- 抽样 10/10 PASS、G1 四项零漂移；缺失行 `7c69781a…`（00:00:49，business/main，outbox 空=hook 静默跳过）。
+- 处置：幂等回填灌 1 行 → reaper 消化 → GLOBAL_G2 复验=0（09:05），outbox 清空。
+- **判定：本日（09-20）不计入连续归零**，计数自 2026-09-21 每日轮重新起算，7 天达标 earliest 顺延至 **2026-09-27 每日轮**。
+- **频率量化（升级为 S4 前最高优待办）**：claim 置位 is_final_success 结构性漏镜像实测频率——09-15、09-18、09-20 各 1 行，**约每 2 天 1 行**。按此频率，7 天连续归零窗口期望被打断 2~4 次，观察期靠"回填兜底"几乎无法自然凑满。**建议：先落 claim 路径修复（UPDATE 置位后补发 mirror 触发/直接登记 outbox）再重启计数**，否则观察期语义已退化为"回填兜底运行正常性验证"。
+
+### 每日观察 2026-09-21 09:00 (+08)，build=293b29a0/2156 —— **PASS，连续归零 Day 1/7（09-20 FAIL 清零后重起）**
+
+构建身份：293b29a0/2156 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=7|fail=0|global_g2=0|verdict=PASS|at=2026-09-21T01:00:39Z
+```
+
+- 抽样 7/7 PASS（biz_multi×1、loop_single×3、sys×3；多轮会话样本偏少系当日流量构成，非异常），G1 四项零漂移。
+- claim 置位结构性漏镜像近 24h 未产生缺失（09-20 回填后干净一整天）；待办（S4 停写前修复 claim 路径或登记 E6）维持，等待用户拍板。
+- **连续归零累计 1/7**（09-21 计 Day 1，09-20 FAIL 清零后重起）。7 天达标 earliest 2026-09-27 每日轮。
+
+### 每日观察 2026-09-22 09:00 (+08)，build=f1efc5b4/2161 —— **首扫 FAIL（claim 结构性漏镜像第 4/5 例，回填兜回归零）；本日不计入，计数自 09-23 重起**
+
+构建身份：f1efc5b4/2161 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=2|verdict=FAIL
+ROUND_RESULT|sessions=10|fail=0|global_g2=2|verdict=FAIL|at=2026-09-22T01:00:58Z
+```
+
+- 抽样 10/10 PASS、G1 四项零漂移；缺失 2 行（`5be64651…` 00:16 / `eba4290d…` 前日 15:08，均 business/main，outbox 空=hook 静默跳过）。
+- 处置：幂等回填灌 2 行 → reaper 消化 → GLOBAL_G2 复验=0（09:04）。
+- **判定：本日（09-22）不计入连续归零**，计数自 2026-09-23 每日轮重新起算，7 天达标 earliest 顺延至 **2026-09-29 每日轮**。
+- **累计结论（第 4 次因同根因打断观察期）**：claim 置位 is_final_success 结构性漏镜像实测 5 行/8 天（09-15×1、09-18×1、09-20×1、09-22×2），频率约 0.6 行/天——7 天连续归零在现状下达成概率极低。观察期自 09-15 起已被打断 4 次（另有 09-15 PG recovery 基础设施根因 1 次），**重放器+回填兜底架构对该根因无效（hook 从未收到终态信号、无登记可重放）已充分实证**。修复 claim 路径（UPDATE 置位后补登记 outbox 或补发 mirror 触发，小改动+单测+部署一轮）是达成 7 天 gate 的唯一可行路径，等待拍板。
+
+### 每日观察 2026-09-23 09:00 (+08)，build=f7f8f66d/2185 —— **PASS，连续归零 Day 1/7（09-22 FAIL 清零后重起）**
+
+构建身份：f7f8f66d/2185 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过（外部并行线密集部署，build_seq 已至 2185，撞号风险持续）。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-23T01:00:41Z
+```
+
+- 抽样 10/10 PASS（biz_multi×4、loop_single×3、sys×3，sys 单桶峰值 15077 轮），G1 四项零漂移。
+- claim 置位结构性漏镜像近 24h 未产生缺失；待办（S4 停写前修复 claim 路径，累计 5 行/8 天实证）维持，等待拍板。
+- **连续归零累计 1/7**（09-23 计 Day 1，09-22 FAIL 清零后重起）。7 天达标 earliest 2026-09-29 每日轮。
+
+### 每日观察 2026-09-24 09:01 (+08)，build=ef87317c/2242 —— **PASS，连续归零 Day 2/7**
+
+构建身份：ef87317c/2242 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-24T01:01:54Z
+```
+
+- 抽样 10/10 PASS（biz_multi×4、loop_single×3、sys×3），G1 四项零漂移。
+- **高流量压测效应**：sys 探针会话单桶峰值 41691 轮（前日 15077 的 2.8 倍，探针流量持续上涨），biz_multi 样本 616-774 轮——镜像链路在高流量下连续两日保持 G2=0，shadow-write 8 槽+2000ms 预算与 outbox/reaper 链路未见瓶颈。
+- claim 置位结构性漏镜像近 24h 未产生缺失；待办维持。
+- **连续归零累计 2/7**（09-24 计 Day 2）。7 天达标 earliest 2026-09-29 每日轮。
+
+### 每日观察 2026-09-25 09:02 (+08)，build=ef87317c/2242 —— **PASS，连续归零 Day 3/7**
+
+构建身份：ef87317c/2242（与 09-24 同构建，未再部署），含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-25T01:02:16Z
+```
+
+- 抽样 10/10 PASS（biz_multi×4 达 958-1222 轮、loop_single×3、sys×3），G1 四项零漂移。
+- **探针流量继续翻倍**：sys 单桶峰值 cred126 53408 轮（前日 27396 的 1.95 倍），三日连续 G2=0——镜像链路在流量 3 天翻 3.5 倍的斜率下保持零缺失，为 S4 停写后的 turn-only 写链容量提供了实证支撑。
+- claim 置位结构性漏镜像连续第 4 天未产生缺失（历史频率约 0.6 行/天，当前好运区间持续）。
+- **连续归零累计 3/7**（09-25 计 Day 3）。7 天达标 earliest 2026-09-29 每日轮。
+
+### 每日观察 2026-09-26 09:02 (+08)，build=19eb3153/2263 —— **PASS，连续归零 Day 4/7**
+
+构建身份：19eb3153/2263 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-26T01:02:25Z
+```
+
+- 抽样 10/10 PASS（biz_multi×4 达 467-1045 轮、loop_single×3、sys×3），G1 四项零漂移。
+- sys 探针流量回落至 3014/2633/1772 轮（09-24/25 的 3-5 万轮为探针活动尖峰）；高流量尖峰与回落两个阶段 G2 均保持零缺失。
+- claim 置位结构性漏镜像连续第 5 天未产生缺失。
+- **连续归零累计 4/7**（09-26 计 Day 4）。7 天达标 earliest 2026-09-29 每日轮（Day 7）。
+
+### 每日观察 2026-09-26 09:06 (+08)，build=19eb3153/2263 —— **PASS，连续归零 Day 5/7（闲时兜底轮）**
+
+构建身份：19eb3153/2263（与 Day 4 同构建），含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-26T01:06:00Z
+```
+
+- 抽样 10/10 PASS，G1 四项零漂移；claim 结构性漏镜像持续未再现。
+- 注记：本日 09:02 cron 已跑过一轮（Day 4 记录）；本轮为闲时兜底重复确认轮（计数以 09:02 轮为准，本轮为冗余验证，不重复计 Day）——**Day 4 与本轮均落 09-26 同一自然日，连续归零仍为 4 个自然日 + 本轮确认**。计数严格口径：09-23/24/25/26 四个自然日 PASS，Day 5 = 09-27 每日轮待跑。
+- **运维注记**：每日 cron automation-15b858fd 已达 maxRuns=12 上限停止（09-26 09:02 为其最后一跑），Day 6（09-28）/Day 7（09-29）需用户在 Automations 页面续建每日任务（cron `0 9 * * *`，maxRuns=3，prompt 复用旧任务并把计数说明改为"当前 4/7"）或手动执行 `bash scripts/audit/storage_observation_round.sh`。
+
+### 每日观察 2026-09-27 09:02 (+08)，build=eff61ecd/2273 —— **PASS，连续归零 Day 5/7**
+
+构建身份：eff61ecd/2273 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=7|fail=0|global_g2=0|verdict=PASS|at=2026-09-27T01:02:09Z
+```
+
+- 抽样 7/7 PASS（biz_multi×4 达 219-1320 轮、loop_single×3；sys 桶今日未抽到样本，全局扫描为主指标不受影响），G1 四项零漂移。
+- claim 置位结构性漏镜像连续第 7 天未产生缺失（自 09-20 回填后保持干净，已超出其历史平均复发间隔）。
+- **连续归零累计 5/7**（09-27 计 Day 5）。Day 6=09-28、Day 7=09-29——后两日均 PASS 即达标"S4 停写 gate 观察期"。
+
+### 每日观察 2026-09-28 09:01 (+08)，build=774ad643/2283 —— **PASS，连续归零 Day 6/7**
+
+构建身份：774ad643/2283 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=7|fail=0|global_g2=0|verdict=PASS|at=2026-09-28T01:01:07Z
+```
+
+- 抽样 7/7 PASS（biz_multi×4、loop_single×3），G1 四项零漂移。
+- claim 置位结构性漏镜像连续第 8 天未产生缺失。
+- **连续归零累计 6/7**（09-28 计 Day 6）。**明日（09-29）每日轮 PASS 即满 7 天**，届时台账标注"S4 停写 gate 观察期达标，可评估触发停写"。
+
+### 每日观察 2026-09-29 09:01 (+08)，build=e1b73e88/2322 —— **PASS —— 连续归零 Day 7/7，S4 停写 gate 观察期达标 ✅**
+
+构建身份：e1b73e88/2322 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=6|fail=0|global_g2=0|verdict=PASS|at=2026-09-29T01:01:59Z
+```
+
+- 抽样 6/6 PASS（biz_multi×3、loop_single×3），G1 四项零漂移。
+- **✅ S4 停写 gate 观察期达标**：GLOBAL_G2 连续 7 个自然日归零（09-23 / 09-24 / 09-25 / 09-26 / 09-27 / 09-28 / 09-29），加上判定前夜的确认轮共 8 轮全 PASS；观察期内 G1 四项（token/cost/success/credits）与 G3 每日零漂移，抽样覆盖 biz_multi/loop_single/sys 三层与 3-5 万轮探针流量尖峰。
+- **可评估触发 S4 停写**（plan §4-S4）：settings 一键收口 telemetry/admin ingest 对 request_logs_hot 与 bodies_hot 的写入（usage_ledger、session 族 turns/bodies 写入不变）；停写后 §6 的 1.8GB/月 outbound_body 收益 + request_logs 归零增长生效。触发前建议：①确认生产 252 已应用 711/712 且同类观察（生产侧数据形态与本机不同，gate 判定应各自独立）；②复核 claim 置位 is_final_success 结构性漏镜像待办在停写后的语义（停写后 v1 行消失，该类"v1 有账 turns 缺"的度量自然消亡，但 turn-only 写链下 hook gate 静默跳过语义仍建议在加固轮处理）。
+- **运维**：每日观察 cron（automation-15b858fd）已完成使命，请用户删除该定时任务。
+- 计数史：09-15 PG recovery FAIL（清零）→ 09-16/17 双 PASS → 09-18 claim 漏镜像 FAIL（清零）→ 09-19 PASS → 09-20 claim FAIL（清零）→ 09-21 PASS → 09-22 claim FAIL（清零）→ **09-23~09-29 七连 PASS 达标**。claim 结构性漏镜像观察期内共 3 例（09-15/18/20/22 计 5 行，均在清零日内回填兜回），09-22 后未再复发。
+
+### S4 停写触发评估（2026-09-30 03:2x，审计第十四轮 D6' 窗口）
+
+- **gate 达标事实（复核）**：GLOBAL_G2 连续 7 个自然日归零（09-23~09-29）+ 判定前夜确认轮共 8 轮 PASS；G1 四项与 G3 全程零漂移；探针流量三日翻 3.5 倍背景下零缺失。
+- **前置①（生产 schema）**：252 生产库 711/712/747 均已应用（2026-09-30 03:0x 实测 schema_migrations）。
+- **前置①（生产观察）**：**未满足**——同类 7 天观察仅在本机（8782 本地构建）执行；生产 252 数据形态为真实多租户流量，gate 判定按环境独立（台账 09-29 节既定原则）。**生产触发前需在生产侧建同类观察期。**
+- **前置②（claim 置位漏镜像语义）**：D12 同事务补偿登记（迁移 747）09-25 随三台部署上线，观察期内 claim 源登记 0 行、G2 零复发（round13 §三直查）；停写后 v1 行停止增长，该度量自然消亡——不构成阻塞。hook gate 静默跳过语义的加固仍留加固轮（09-29 节注记维持）。
+- **评估结论**：
+  - **本机：具备触发条件。** S4 停写动作 = plan §4-S4 settings 一键收口（telemetry/admin ingest 停写 request_logs_hot 与 bodies_hot；usage_ledger、session 族 turns/bodies 写入不变；710 拼装视图已就位，历史窗口经 v1 分支正常供数）。实际拨动属存储行为变更，**留待用户拍板执行**（可随 252-dev 新构建已在位的下一部署窗一并做）。
+  - **生产 252：不触发**（schema 前置满足、观察前置未满足）。
+- **运维收口**：automation-15b858fd（每日观察轮，09-29 已跑满使命）与 automation-3497ecaa（Day7 收口判定，09-29 09:30 已执行）于本轮删除；后续如需重启观察期（含生产侧），重建 cron 时复用 `scripts/audit/storage_observation_round.sh` 流程。

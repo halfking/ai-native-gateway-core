@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testdb"
 )
 
 const fixtureCleanup541 = `
@@ -47,6 +49,16 @@ func TestMigration541ScopeRevisionIntegration(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_PG_URL not set; migration 541 integration test requires a disposable PostgreSQL database")
 	}
+	// A scratch database derived from the one TEST_PG_URL names — never that
+	// database itself. fixtureCleanup541 issues DROP TABLE
+	// public.credential_model_bindings and DROP TABLE public.provider_models,
+	// so on a shared production-shaped database this is not a redundant
+	// teardown, it is a destructive one. Measured on the gate database
+	// (shape=installer, 435 relations) it failed 2BP01 "cannot drop table …
+	// because other objects depend on it"; against a real deployment the same
+	// statements are data loss. The fixture is fully self-contained (it creates
+	// pgcrypto and both tables), so an empty database is all it needs.
+	dsn = testdb.Create(t, dsn)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -198,6 +210,10 @@ func TestMigration541ScopeRevisionConcurrentBump(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_PG_URL not set; migration 541 concurrency test requires a disposable PostgreSQL database")
 	}
+	// Same reasoning as TestMigration541ScopeRevisionIntegration: the fixture
+	// teardown drops production-named tables, so it must never run against the
+	// database TEST_PG_URL names.
+	dsn = testdb.Create(t, dsn)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 

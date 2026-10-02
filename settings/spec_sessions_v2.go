@@ -145,6 +145,20 @@ func SessionsV2Specs() []*Spec {
 			HotReload:       true,
 		},
 		{
+			Key:             "sessions_v2.mirror_outbox_max_attempts",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategorySession,
+			Min:             floatPtr(5),
+			Max:             floatPtr(30),
+			Default:         10,
+			Description:     "Mirror 失败重放次数上限",
+			DescriptionLong: "session_mirror_outbox 欠账行重放多少次后转入 dead-letter（重放次数 >= 本值即 markDead）。MirrorOutboxReaper.requeue 每次调用都经 currentMaxAtts 重新读取本键，因此改动**即时生效、无需重启**。范围 5-30：下限防止一次配置失误把每一行都在首次失败时就判死（欠账被静默吞掉），上限防止把重试路径饿死。越界值由 Go 侧 currentMaxAtts 钳制到 [5,30]，故登记 Min/Max 与代码钳制必须同时存在——只写消费点不登记本键会让 GetPlatformInt 恒返回 fallback，热重载形同虚设（审计 §23 F-15）。",
+			Unit:            "次",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
 			Key:             "sessions_v2.compression_enabled",
 			Type:            TypeBool,
 			Scope:           ScopePlatform,
@@ -157,13 +171,20 @@ func SessionsV2Specs() []*Spec {
 			HotReload:       true,
 		},
 		{
-			Key:             "sessions_v2.turn_logs_retention_hours",
-			Type:            TypeInt,
-			Scope:           ScopePlatform,
-			Category:        CategorySession,
-			Default:         24,
-			Description:     "环节日志保留时间",
-			DescriptionLong: "session_turn_logs表中环节日志的保留时间(小时)，超时后自动清理。",
+			Key:         "sessions_v2.turn_logs_retention_hours",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategorySession,
+			Default:     24,
+			Description: "环节日志保留时间（已废弃，无效果）",
+			// R73 审计 B-F6：该键自登记起无任何 Get 消费者——turn_logs 的
+			// 活 TTL 键是 lifecycle.session_turn_logs_ttl_hours（写入端
+			// turn_logs_writer 与清扫端 partition_manager 双端消费）。
+			// 原 DescriptionLong「超时后自动清理」为假（F-15 同类：登记
+			// 未消费第 5 例）。改为此废弃声明防误导运维；键本身保留以
+			// 兼容已存过该键的 settings 存储，下一清理轮连同
+			// spec_sessions_v2_test.go 的键清单一起删除。
+			DescriptionLong: "已废弃别名：真实生效键为 lifecycle.session_turn_logs_ttl_hours（Min1/Max168/Default24）。本键修改无任何效果。",
 			Unit:            "小时",
 			DangerLevel:     Safe,
 			HotReload:       true,
