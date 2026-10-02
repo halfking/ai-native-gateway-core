@@ -446,3 +446,84 @@ vacuum 之前一直占位、计为「已用」。** 我把「页内占位」误�
 3. 重跑 `TestInstallerMigrationsRegistered` 转绿后再部署。
 
 在 1 完成前，818 保持「代码在仓库、未上生产」的状态。
+
+---
+
+# 补记（2026-10-03 06:40）：第二批 REINDEX 的有效性核验是一条**恒假判据**
+
+## 1. 事件
+
+第二批 9 个 `REINDEX INDEX CONCURRENTLY` 执行完（9 成功 / 0 失败 / 回收 341 MB），
+脚本末尾有一道有效性核验：
+
+```bash
+v=$(q "SELECT indisvalid::text||'/'||indisready::text FROM pg_index WHERE indexrelid='$i'::regclass")
+[ "$v" = "t/t" ] || printf "  !! %s -> %s\n" "$i" "$v"
+```
+
+判据里把**两个不同的渲染形态**混为一谈了。地面真值：
+
+```sql
+SELECT (true)::text, (true), (true)::text||'/'||(true)::text;
+--    true    |  t  |        true/true
+```
+
+- `::text` 渲染：`true` / `false`
+- psql 默认展示：`t` / `f`
+
+脚本里 `::text` 拿到的是 `true/true`，与字面量 `t/t` **永不相等**
+⇒ 这条检查**恒为假**，且是「健康与失效都触发」的那种恒假。
+
+| 索引实际状态 | `$v` | `[ "$v" = "t/t" ]` | 脚本输出 |
+|---|---|---|---|
+| 健康 | `true/true` | 假 | `!!` |
+| **失效** | `false/true` | 假 | `!!` |
+
+⇒ **它无法区分健康与失效**。真出现一个 INVALID 索引时，它的输出与这 9 行噪声完全同形。
+
+## 2. 为什么结论还是对的
+
+上一轮记的是「索引实际值显示全部 `true/true`（健康）」—— 那是**逐行读了值**得出的，
+不是脚本判出来的。本轮用地面真值补做了独立复核：
+
+```sql
+SELECT count(*) FROM pg_index WHERE NOT indisvalid OR NOT indisready;  -- → 0
+```
+
+全库 0 个无效/未就绪索引，逐个点名确认 9 个全为 `true/true`。
+**结论成立，但成立的原因是补了测量，不是原判据。**
+
+## 3. 修法
+
+```bash
+bad=0
+for i in "${IDXES[@]}"; do
+  v=$(q "SELECT indisvalid::text||'/'||indisready::text ...")
+  if [ "$v" != "true/true" ]; then printf "  !! %s -> %s\n" "$i" "$v"; bad=$((bad+1)); fi
+done
+echo "  异常 ${bad} 个（0 = 全部 valid/ready）"
+[ "$bad" -eq 0 ] || exit 1
+```
+
+两处改动：**比对字面量改成 `true/true`**；**只打日志改为计数 + 非零即 exit 1**
+（人不去读日志的检查等于没有）。
+
+## 4. 判据能不能区分合格与不合格 —— 必须自己构造反面输入
+
+引用任何「核验通过」之前，先把 expected 改成一个反面值看它是否变红。
+本次：把 `!= "true/true"` 改成 `!= "false/true"`，9 行 `!!` 全部出现 ⇒ 判据有鉴别力。
+
+**教训形态**：这类缺陷不是「漏报」，是「**假装在报**」——
+脚本确实吐了 9 行 `!!`，与真故障时的输出同形，于是永远不会被当真故障发现。
+凡是「断言条件恒定」的检查，都要先问它能否区分两个方向。
+
+## 5. 顺带发现：仓库脚本把无效索引**静默排除**在候选之外
+
+`scripts/252-monitor/pg17-index-bloat.sh:141` 的候选查询带 `AND i.indisvalid`，
+这是正确的 SQL 布尔谓词（不是上面那种字符串比对），但副作用是：
+
+> INVALID 索引不会出现在报告的候选里，且**没有「因无效而跳过」的计数**。
+
+与本文件 §「报告型判据必须区分『没有』与『没测到』」同族：
+当前全库 INVALID 数为 0，所以这是**潜在缺口而非活跃故障**。
+待办：给候选查询加一个 `skipped_invalid` 计数并纳入 `unmeasured` 口径。
