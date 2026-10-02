@@ -78,7 +78,25 @@ func applyStorageS1AFields(req *v2.ProcessedRequest, entry *telemetry.RequestLog
 		req.CanonicalID = int64(*entry.CanonicalID)
 	}
 	req.CanonicalModel = strVal(entry.CanonicalModel)
-	// req.RawModelName：RequestLogEntry 无此字段，保持零值（707 列已建）
+	// raw_model_name = 绑定解析出的**上游原始模型名**（2026-10-02 接线，审计 §9.45.8）。
+	//
+	// 取值口径与 §9.30.2 的比对口径逐字一致：COALESCE(outbound_model, client_model)。
+	// 这**不是**一个新字段——telemetry.RequestLogEntry 本来就同时带 OutboundModel
+	// 与 ClientModel（client.go:274-275），本文件早前的注释「RequestLogEntry 无此字段」
+	// 是错的，§9.30.2 据此把「补源字段」当成端口前置也是错的。真实情况是**接线漏了**。
+	//
+	// 为什么不能拿 session_turns.model 顶替：那是 client_model 的同义列
+	// （§9.12.1 实测 1138/1138）。252 生产库近 7 天实测 outbound_model <> client_model
+	// 的行有 3,227/29,201 = 11.0%，且差异是**真实映射**而非噪声：
+	// `minimax-m3 → MiniMax-M3`、`glm-5.3 → glm-5.3-flash`（大小写 + 别名）。
+	// 在这 11% 的行上用 client_model 去比 provider_models.raw_model_name，
+	// credential_recovery 的下架判定会系统性误判。
+	//
+	// 为什么必须 COALESCE：outbound_model 在 252 有 4,903/29,201 = 16.8% 为 NULL
+	//（请求未走到解析出上游名，或走 passthrough），此时与 v1 的比对口径一致地
+	// 回落到 client_model，而不是留空——留空会让这一列在两族之间**从「同义」变成
+	// 「一半缺值」**，那才是真的不可比。
+	req.RawModelName = firstNonEmpty(strVal(entry.OutboundModel), strVal(entry.ClientModel))
 
 	// 诊断组
 	// req.TraceEvents：RequestLogEntry 无此字段，保持零值

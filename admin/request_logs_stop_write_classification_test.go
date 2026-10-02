@@ -551,15 +551,21 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		//  ⇒ 新流量全落进 provider_id=0 / __unknown__ 桶」。
 		// 2026-10-02（§9.28.2）**该理由的三列全部作废**（734 details 层供值，99.9996%）。
 		// 但同一文件里**另一条**理由仍然成立：credits_rate_multiplier 与 client_ip 确实
-		// 还在恒 NULL 补位集里（它们是 738/740 的追加列，session 族没有对应事实/是错名副本），
-		// 逐列裁决见 db/request_logs_view_padded_columns.go。
+		// 还在恒 NULL 补位集里，逐列裁决见 db/request_logs_view_padded_columns.go。
+		// 其中 client_ip 的「是错名副本」这个理由已于同日（§9.42.6）在 252 生产库证伪，
+		// 但**「session 臂恒 NULL ⇒ 维度塌成 __unknown__」这个后果仍然成立**——
+		// 它依赖的是「没投影」，不依赖「为什么没投影」。
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "COUNT(*) FILTER (WHERE r.request_status = 'success')::bigint,",
 		Note: "rollupMain/rollupDims 三处读 710，窗口由 request_stats_rollup_cursor.last_ts 推进，" +
 			"session 臂持续产新 ts 行 ⇒ 分钟汇总照常滚动；Exec 错误 return err 上抛。\n" +
-			"**仍然成立**的降级：client_ip 在 session 臂恒 NULL（且 session_turns.client_ip 是 " +
-			"client_forwarded_for 的错名副本，202,014/202,014 逐行相同）⇒ client_ip 维度塌成 " +
+			"**仍然成立**的降级：client_ip 在 session 臂恒 NULL ⇒ client_ip 维度塌成 " +
 			"__unknown__；credits_rate_multiplier 恒 NULL ⇒ credits 估算按倍率 1.0 计。值劣化，见 §9.15 五种方向。\n" +
+			"（订正：本条原写「session_turns.client_ip 是 client_forwarded_for 的错名副本，" +
+			"202,014/202,014 逐行相同」——那个数字取自本机库且**无分辨力**（全库 cff 仅 6 个" +
+			"distinct 取值、多跳链路 0 条）。252 生产库复测：多跳 3,350 行两列**不等**，" +
+			"且两族配对 826/826 相同 ⇒ 它存的是真源对端 IP，裁决已改判。" +
+			"但本条的**降级结论不受影响**，因为它锚在「未投影」上。）\n" +
 			"**已作废**：provider_id=0 / __unknown__ 桶那一条——那三列现在有真值。",
 	},
 	"internal/collector/gateway_adapters.go": {

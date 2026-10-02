@@ -134,24 +134,26 @@ var paddedColumnVerdicts = map[string]paddedColumn{
 			"「这一行按什么倍率计价」这个事实，补不出有源的投影。",
 	},
 	"client_ip": {
-		verdict: verdictDifferentThing,
-		evidence: "session_turns.client_ip 存在（text，非空 202,014/1,683,104）但它**不是** " +
-			"客户端真源 IP：与同表 client_forwarded_for 逐行相同 **202,014/202,014**；" +
-			"与 v1 request_logs.client_forwarded_for 相同 202,014/202,014，" +
-			"与 v1 request_logs.client_ip 相同 **0**。即它是一个写在 client_ip 名下的 " +
-			"forwarded-for 副本。视图的 client_ip 契约是 inet 型的真源 IP，直映它等于" +
-			"把转发头当成对端 IP（740 当时的结论「不能直映」成立，但理由不是注释里写的" +
-			"「未回填」——它已回填 12%，真理由是语义不同）。" +
-			"｜**2026-10-02 追加：上面那段证据已被判为无分辨力，需在 252/154 复测**（审计 §9.42.6）。" +
-			"本机全库 request_logs.client_forwarded_for 只有 6 个 distinct 取值" +
-			"（127.0.0.1 / 172.17.0.1 / 172.18.0.1 / 172.29.0.1 / ::1 / 172.21.0.1，全是回环与" +
-			"Docker 网桥），多跳链路 **0** 条。在这种数据上「两列 100% 相同」**无法区分**" +
-			"「错名副本」与「对端 IP 恰好等于链路首跳」两种互斥解释——对端在这台机器上" +
-			"本来就是那个回环。且 middleware/origin_mw.go:499-501 在无 XFF 头时主动" +
-			"`chain = single`，可完全解释该现象，**不需要**错名这个假设。" +
-			"**裁决本身未改**（视图继续 NULL 补位、由 740 从 v1 侧供真源 inet），" +
-			"因为那是两种解释下**都安全**的保守选择；被标注的是它的**理由**。" +
-			"底表处置（改名 / 补真源 / 删列）在拿到有真实代理链路的数据之前无法定。",
+		verdict: verdictSameThingNoSource,
+		evidence: "**2026-10-02 在 252 生产库复测后改判**（审计 §9.42.6）。原裁决为 " +
+			"verdictDifferentThing，理由是「session 侧 client_ip 与 client_forwarded_for " +
+			"逐行相同 202,014/202,014 ⇒ 它是写在 client_ip 名下的转发头副本」。" +
+			"**该理由已被证伪**：那条测量取自本机库，而本机全库 client_forwarded_for " +
+			"只有 6 个 distinct 取值（全是回环与 Docker 网桥）、多跳链路 0 条——" +
+			"在这种数据上「两列相同」无分辨力。252 生产库近 7 天实测：" +
+			"链路形态 12,468 单跳 / 138 多跳 / 181 个 distinct 取值；" +
+			"session_turns 侧 17,586 行有值，其中单跳 14,236 行 client_ip == " +
+			"client_forwarded_for（100%），**多跳 3,350 行不等（0/3,350）**。" +
+			"多跳样本 `client_ip=172.64.217.81` / `cff=2a06:98c0:3600::103, " +
+			"172.64.217.81` ⇒ client_ip 是链路的**末跳（X-Real-IP 解析出的真实客户端）**，" +
+			"不是首跳、也不是转发头副本。" +
+			"**两族同义性直接配对验证**：同 request_id 配对 826 行，" +
+			"session_turns.client_ip == host(request_logs.client_ip) **826/826、差异 0**。" +
+			"**可投影性**：近 30 天 18,870 行全部匹配 IP 形态且 client_ip::inet " +
+			"全部转换成功 ⇒ 投影进 inet 型视图列无类型风险。" +
+			"⇒ 改判 verdictSameThingNoSource：session 侧有语义相同的列、只是尚未投影，" +
+			"正解是走 815 式投影补齐。**底表的三个选项（改名 / 补真源 / 删列）全部不成立**——" +
+			"这一列存的就是真源对端 IP，它是正确的。",
 	},
 }
 

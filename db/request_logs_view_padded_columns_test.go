@@ -157,9 +157,14 @@ func TestPaddedVerdictGatesAreNotVacuous(t *testing.T) {
 			t.Errorf("%q 同时在裁决表与 rejectedProjections 里", name)
 		}
 	}
-	// 5) 至少要有一个「同名不同物」的裁决：这是本项目最贵的两类不作为
-	//    （id / client_ip）。如果它们被改成「有源可投影」，登记表必须跟着变，
-	//    否则这张表就在替一个已被推翻的结论背书。
+	// 5) 至少要有一个「同名不同物」的裁决。
+	// 2026-10-02 订正：这条门原本写的是「id 与 client_ip 是本项目**仅有的两个**」。
+	// 那半句已被证伪——client_ip 在 252 生产库复测后改判为 verdictSameThingNoSource
+	// （审计 §9.42.6：两族配对 826/826 相同，多跳行 3,350 行不等，证明它是真源对端 IP
+	// 而不是转发头副本）。现在仅剩 `id` 一条，它的依据是硬的：1,515,984 组同
+	// request_id 配对里 v1.r.id = session.t.id 命中 **0**。
+	// 门本身不变（仍要求 ≥1 条），改的是**它对读者的断言**——一条会替已被推翻的
+	// 结论背书的门，比没有门更坏。
 	different := 0
 	for _, e := range paddedColumnVerdicts {
 		if e.verdict == verdictDifferentThing {
@@ -167,9 +172,9 @@ func TestPaddedVerdictGatesAreNotVacuous(t *testing.T) {
 		}
 	}
 	if different == 0 {
-		t.Error("裁决表里没有任何 verdictDifferentThing 条目。id 与 client_ip " +
-			"是本项目仅有的两个「session 侧有同名列但不是同一个东西」——" +
-			"若它们已被推翻，请连同实测依据一起改这张表，不要让它们静默消失。")
+		t.Error("裁决表里没有任何 verdictDifferentThing 条目。`id` 是本项目仅剩的一个" +
+			"「session 侧有同名列但不是同一个东西」（1,515,984 组配对里 r.id = t.id 命中 0）。" +
+			"若它也被推翻，请连同实测依据一起改这张表，不要让它静默消失。")
 	}
 	t.Logf("门非空转核验：补位 %d 列（%v）、裁决 %d 条、否决投影 %d 条、同名不同物 %d 条",
 		len(padded), padded, len(paddedColumnVerdicts), len(rejectedProjections), different)
