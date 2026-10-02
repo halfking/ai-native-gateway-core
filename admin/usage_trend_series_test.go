@@ -27,6 +27,34 @@ func TestUsageTrendSeriesDispatchRegistered(t *testing.T) {
 	}
 }
 
+// ─── model 多选解析（重复 query 参数） ───
+
+func TestUsageTrendFiltersFromRequestModels(t *testing.T) {
+	mk := func(rawQuery string) usageTrendFilters {
+		return usageTrendFiltersFromRequest(httptest.NewRequest(http.MethodGet, "/api/admin/usage/trend-series?"+rawQuery, nil))
+	}
+
+	if got := mk("").models; len(got) != 0 {
+		t.Errorf("no model param should yield empty models, got %v", got)
+	}
+	if got := mk("model=gpt-4o").models; len(got) != 1 || got[0] != "gpt-4o" {
+		t.Errorf("single model param must stay a 1-element set, got %v", got)
+	}
+	got := mk("model=m-alpha&model=m-beta&model=m-alpha&model=").models
+	if len(got) != 2 || got[0] != "m-alpha" || got[1] != "m-beta" {
+		t.Errorf("repeated params must dedupe and drop empties, got %v", got)
+	}
+
+	// 超上限截断（usageTrendMaxModels=20）。
+	q := ""
+	for i := 0; i < usageTrendMaxModels+5; i++ {
+		q += "model=m" + string(rune('a'+i)) + "&"
+	}
+	if got := mk(q).models; len(got) != usageTrendMaxModels {
+		t.Errorf("model params must cap at %d, got %d", usageTrendMaxModels, len(got))
+	}
+}
+
 // ─── 纯函数单测 ───
 
 func TestUsageTrendSourceTiering(t *testing.T) {
@@ -35,7 +63,7 @@ func TestUsageTrendSourceTiering(t *testing.T) {
 		want string
 	}{
 		{usageTrendFilters{}, "request_stats_dim_minute"},
-		{usageTrendFilters{tenantID: "t1", model: "gpt-4o"}, "request_stats_dim_minute"},
+		{usageTrendFilters{tenantID: "t1", models: []string{"gpt-4o"}}, "request_stats_dim_minute"},
 		{usageTrendFilters{providerID: 3}, "request_stats_minute"},
 		{usageTrendFilters{providerID: 3, tenantID: "t1"}, "request_stats_minute"},
 		{usageTrendFilters{apiKeyID: 7}, "request_logs_with_current_month"},
@@ -130,10 +158,13 @@ func setupUsageTrendFixtures(t *testing.T, db *pgxpool.Pool, tenantID string) {
 	}
 	for i, m := range models {
 		for j := 0; j < 3; j++ {
+			// $1 显式 cast：不 cast 时 PG 把 `? + interval` 的未知参数推断成
+			// interval（42804），真库插入必挂（skip 守卫此前把这条路径藏住了）。
 			_, err := db.Exec(ctx, `
 				INSERT INTO request_stats_dim_minute
 					(bucket, tenant_id, dim_type, dim_key, requests, total_tokens, credits_charged, cost_usd)
-				VALUES ($1 + ($4 * interval '1 minute'), $2, 'model', $3, $5, $5 * 10, $5, $5 / 100.0)
+				VALUES ($1::timestamptz + ($4::int * interval '1 minute'), $2, 'model', $3,
+					$5::numeric, $5::numeric * 10, $5::numeric, $5::numeric / 100.0)
 				ON CONFLICT (bucket, tenant_id, dim_type, dim_key) DO UPDATE SET requests = EXCLUDED.requests
 			`, bucket, tenantID, m.key, j, m.requests+int64(i))
 			if err != nil {
@@ -193,6 +224,26 @@ func TestUsageTrendSeriesTopFoldAndModelFilter(t *testing.T) {
 	}
 	if len(resp2.Series) != 1 || resp2.Series[0].Model != "m-gamma" {
 		t.Fatalf("model filter must return exactly m-gamma: %+v", resp2.Series)
+	}
+
+	// model 多选：重复参数圈定两个模型，各成一条线、无 __others__ 折叠行。
+	req3 := httptest.NewRequest(http.MethodGet,
+		"/api/admin/usage/trend-series?tenant_id="+tenantID+"&model=m-gamma&model=m-beta", nil)
+	w3 := httptest.NewRecorder()
+	h.usageTrendSeries(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w3.Code, w3.Body.String())
+	}
+	var resp3 usageTrendSeriesResponse
+	if err := json.Unmarshal(w3.Body.Bytes(), &resp3); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp3.Series) != 2 {
+		t.Fatalf("multi-model filter must yield exactly 2 series, got %d: %+v", len(resp3.Series), resp3.Series)
+	}
+	got3 := map[string]bool{resp3.Series[0].Model: true, resp3.Series[1].Model: true}
+	if !got3["m-beta"] || !got3["m-gamma"] {
+		t.Fatalf("multi-model filter must pick m-beta+m-gamma, got %+v", resp3.Series)
 	}
 }
 

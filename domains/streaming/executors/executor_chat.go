@@ -412,79 +412,64 @@ func (e *Executor) executeOpenAI(
 		}
 	}
 
-	// F04 (V3 持久化协议能力, 2026-09-30): the probe already concluded, for
-	// THIS (credential, raw model), that the provider rejects the Responses
-	// API. Without this check every single request re-discovers that verdict
-	// by sending a doomed Responses attempt and then falling back to Chat —
-	// one guaranteed-failing upstream call per request, forever within the
-	// node-state TTL.
+	// F04 (V3 持久化协议能力, 2026-09-30) + DurableVerdict (2026-10-02)：
+	// 两个方向的能力闸门合并成**一次**持久结论解析。
 	//
-	// Short-circuit to Chat directly. Deliberately conservative:
-	//   - no verdict (never probed / TTL expired / Redis down) → no-op, keep
-	//     the live-detection path;
-	//   - a positive verdict → no-op;
-	//   - a read error → no-op (fail-open to the old behavior) rather than
-	//     guessing.
-	// The verdict is per (credential, model), which is exactly the node-state
-	// key the probe wrote, so a sibling model on the same credential is
-	// unaffected.
-	if (nativeNonStream || nativeStream) && e.FpSlots != nil && e.FpSlots.Enabled() {
-		if responsesUnsupported, known, err := e.FpSlots.GetSupportsResponses(
-			params.R.Context(), cand.CredentialID, cand.RawModel); err != nil {
-			slog.Debug("durable capability read failed, falling back to live detection",
+	// F04 原意：探针已对 THIS (credential, raw model) 判过「上游拒绝
+	// Responses API」。没有这一步，每个请求都要靠发一发注定失败的 Responses
+	// 再回落 Chat 来重新发现同一个结论——在 node-state TTL 内，每请求一次
+	// 必败的上游调用。
+	//
+	// 2026-10-02 改的是**读错误与无结论的处置**，不是结论本身：
+	//   - Redis 有结论        → 用 Redis 结论（两个方向都生效）；
+	//   - Redis 读错误        → 回落 SQL 持久结论（credential_model_
+	//     capabilities，由 bg/capability_backfill 回填），**不再回落默认值**；
+	//   - Redis 无结论        → 回落 SQL 持久结论。
+	// 读错误从 debug 抬到 warn：一个读不出来却仍在按持久结论路由的节点，
+	// 需要被人看见——第三轮审计里 `slide_window:{}` 的解码 bug 正是靠这个
+	// 静默了整整一轮。
+	//
+	// 方向性约束：负向结论同时关掉两条腿（保守外推，退回 chat 永远安全）；
+	// 正向结论**只**开非流式腿——探针发的是一次非流式请求，对 SSE 没有任何
+	// 证据，勿外推。
+	downgradeEligible := nativeNonStream || nativeStream
+	upgradeEligible := !downgradeEligible &&
+		// ⚠️ 这里与本轮之前的写法**有意不同**，必须留痕：旧代码用
+		// `params.ResponsesBodyBytes != nil`，本轮改为 `len(...) > 0`。
+		// 二者在「非 nil 但为空切片」时不一致——旧写法会让开闸条件成立，
+		// 于是 nativeNonStream 被置 true 并把一个**空 body**发往
+		// /v1/responses。nativeNonStream 自己的定义一直用的是
+		// `len(...) > 0`，所以旧写法与它自相矛盾。改后与该定义一致。
+		// 代价：这条差异本轮没有专门用例，只由既有 DurableVerdict 用例间接覆盖。
+		len(params.ResponsesBodyBytes) > 0 &&
+		cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
+		!params.IsStream
+
+	if e.FpSlots != nil && e.FpSlots.Enabled() && (downgradeEligible || upgradeEligible) {
+		readSupported, readKnown, readErr := e.FpSlots.GetSupportsResponses(
+			params.R.Context(), cand.CredentialID, cand.RawModel)
+		supported, known, degraded := resolveDurableResponsesVerdict(
+			durableVerdict{Supported: readSupported, Known: readKnown, ReadErr: readErr},
+			cand.SupportsNativeResponses, cand.SupportsNativeResponsesKnown)
+
+		if degraded {
+			slog.Warn("durable capability read failed, using the SQL durable conclusion",
 				"request_id", params.RequestID,
 				"credential_id", cand.CredentialID,
 				"raw_model", cand.RawModel,
-				"error", err)
-		} else if known && !responsesUnsupported {
+				"sql_supported", cand.SupportsNativeResponses,
+				"sql_known", cand.SupportsNativeResponsesKnown,
+				"error", readErr)
+		}
+		switch {
+		case known && !supported:
 			slog.Debug("durable capability says Responses unsupported, using chat completions",
 				"request_id", params.RequestID,
 				"credential_id", cand.CredentialID,
 				"raw_model", cand.RawModel)
 			nativeNonStream = false
 			nativeStream = false
-		}
-	}
-
-	// DurableVerdict (2026-10-02): the gate above is one-directional. It can only
-	// turn native Responses OFF, never ON, because the positive side lives in a
-	// different store than the one that opens the gate:
-	//
-	//   · cand.SupportsNativeResponses is loaded by provider/client.go from the
-	//     SQL table credential_model_capabilities (migration 612/613);
-	//   · every probe verdict is persisted by SetSupportsResponses into the
-	//     Redis node-state capability key (bg/probe_http.go sets it only on a
-	//     2xx from the responses endpoint, or on an explicit unsupported
-	//     verdict);
-	//   · NOTHING in the Go tree ever inserts into credential_model_capabilities
-	//     — the only reference is that SELECT. Migrations 612/613 say so
-	//     themselves ("opt-in", "until an external probe populates it") and no
-	//     such probe exists.
-	//
-	// Consequence measured on vapEUR / credential 126: the table held exactly
-	// one row (grok-4.6, 2026-09-25) out of ~101 bindings, so /v1/responses
-	// traffic never once reached api.vapeur.ai/v1/responses in 30 minutes
-	// (54 chat calls, 0 responses calls) — the "默认走 responses" intent was
-	// silently inert for every model.
-	//
-	// Honour a known-positive durable verdict as an opt-in for the native gate,
-	// so both directions read one source of truth. Scope notes:
-	//   · non-stream only — the probe's verdict is non-stream evidence
-	//     (probe_http.go issues one non-streaming ping), so it must not be
-	//     extrapolated to the streaming leg, which stays on the SQL flag;
-	//   · TTL-bounded by CapabilityExpiresAt, and a read error falls back to
-	//     today's behaviour, so a Redis outage cannot change routing.
-	if !nativeNonStream && !nativeStream && params.ResponsesBodyBytes != nil &&
-		cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
-		!params.IsStream && e.FpSlots != nil && e.FpSlots.Enabled() {
-		if supported, known, err := e.FpSlots.GetSupportsResponses(
-			params.R.Context(), cand.CredentialID, cand.RawModel); err != nil {
-			slog.Debug("durable capability read failed, keeping the SQL capability flag",
-				"request_id", params.RequestID,
-				"credential_id", cand.CredentialID,
-				"raw_model", cand.RawModel,
-				"error", err)
-		} else if known && supported {
+		case known && supported && upgradeEligible:
 			slog.Debug("durable capability says Responses works, enabling native Responses",
 				"request_id", params.RequestID,
 				"credential_id", cand.CredentialID,

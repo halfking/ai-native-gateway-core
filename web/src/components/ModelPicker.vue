@@ -293,7 +293,7 @@ watch(() => props.modelValue, () => {
   <div class="model-picker" :class="{ disabled }">
     <template v-if="isMulti && compact">
       <button type="button" class="mp-trigger" :disabled="disabled" @click="openMain">
-        <span v-if="multiValues.length" class="mp-value">已选 {{ multiValues.length }} 个模型</span>
+        <span v-if="multiValues.length" class="mp-value">{{ triggerLabel }}</span>
         <span v-else class="mp-placeholder">{{ placeholder }}</span>
         <span class="mp-actions">
           <span v-if="multiValues.length" class="mp-badge">{{ multiValues.length }}</span>

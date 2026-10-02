@@ -609,19 +609,29 @@ func (w *AutoRouteSettleWorker) settleBatch(
 		// cost terms as neutral 0.5, which is indistinguishable downstream from
 		// "measured, and it came out neutral". Count it so the cohort's failure
 		// to discriminate fast from slow models is visible as a rate.
+		//
+		// R33: family comes from the batch's captured src, not a fresh
+		// currentSettleSource() read — if the S4 gate flips between the query
+		// and this row, a fresh read would attribute the row to the other
+		// family's metric series while the SQL actually ran against src. The
+		// neutral counters also only increment after writeReward succeeds: a
+		// failed write is retried by a later sweep, and counting it here would
+		// double-count the same selection in the neutral rate.
 		base, hasBase := baselines[p.taskType]
-		family := currentSettleSource().Family
-		if !hasBase || base.P95LatencyMs <= 0 {
-			autoRouteSettleBaselineNeutral.WithLabelValues(baselineTermLatency, family).Inc()
-		}
-		if !hasBase || base.P75CostUSD <= 0 {
-			autoRouteSettleBaselineNeutral.WithLabelValues(baselineTermCost, family).Inc()
-		}
+		family := src.Family
+		neutralLatency := !hasBase || base.P95LatencyMs <= 0
+		neutralCost := !hasBase || base.P75CostUSD <= 0
 
 		reward, source, retryState := computeSelectionReward(p, base)
 		if uErr := w.writeReward(ctx, p, reward, source); uErr != nil {
 			slog.Debug("auto-route settle write failed", "request_id", p.requestID, "error", uErr)
 			continue
+		}
+		if neutralLatency {
+			autoRouteSettleBaselineNeutral.WithLabelValues(baselineTermLatency, family).Inc()
+		}
+		if neutralCost {
+			autoRouteSettleBaselineNeutral.WithLabelValues(baselineTermCost, family).Inc()
 		}
 		settled++
 		autoRouteSettledTotal.WithLabelValues("rewarded").Inc()

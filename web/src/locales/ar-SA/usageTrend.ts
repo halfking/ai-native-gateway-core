@@ -12,4 +12,11 @@ export default {
   filterAll: 'الكل',
   shareByMetric: 'الحصة (المقياس)',
   sourceDetail: 'تفاصيل الطلبات',
+  // 2026-10-02 التحديد المتعدد/مسح الكل/التحديث التلقائي
+  clearAll: 'مسح الكل',
+  autoRefresh: 'تحديث تلقائي',
+  autoRefreshOff: 'إيقاف',
+  autoRefresh30s: '30 ثانية',
+  autoRefresh1m: 'دقيقة واحدة',
+  autoRefresh5m: '5 دقائق',
 }

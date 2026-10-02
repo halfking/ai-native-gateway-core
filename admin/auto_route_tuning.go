@@ -233,7 +233,9 @@ func (h *TuningHandlers) handleProposals(w http.ResponseWriter, r *http.Request)
 		ReviewNote *string         `json:"review_note"`
 	}
 
-	var results []proposalRow
+	// nil slice encodes as JSON null; the auto-tuning page reads .length and
+	// blanks the whole view. Always emit [].
+	results := make([]proposalRow, 0)
 	for rows.Next() {
 		var row proposalRow
 		if err := rows.Scan(&row.ID, &row.Ts, &row.Category, &row.TaskType,
@@ -797,7 +799,8 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 		DriftRate  float64 `json:"drift_rate"`
 	}
 
-	var results []accuracyRow
+	// Same contract as proposals: empty window must be [] so the page can render.
+	results := make([]accuracyRow, 0)
 	for rows.Next() {
 		var row accuracyRow
 		if err := rows.Scan(&row.TaskType, &row.Classifier, &row.Total,

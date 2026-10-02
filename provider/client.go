@@ -181,6 +181,16 @@ type Candidate struct {
 	// non-stream native Responses request/response handling. Streaming remains
 	// disabled until a separate SSE capability is implemented and verified.
 	SupportsNativeResponses bool `json:"supports_native_responses,omitempty"`
+	// SupportsNativeResponsesKnown reports whether the binding actually HAS a
+	// credential_model_capabilities row, as opposed to falling back to the
+	// column default. The projection collapses "never backfilled" and
+	// "backfilled with a negative verdict" into the same FALSE, so the bool
+	// above cannot answer "do we have evidence?". This is the field that can.
+	//
+	// It exists for the degraded read path: when the Redis verdict store
+	// cannot be read, the durable conclusion to fall back to is the SQL one,
+	// and "no row" is a different answer from "row says false".
+	SupportsNativeResponsesKnown bool `json:"supports_native_responses_known,omitempty"`
 	// SupportsNativeResponsesStream is an independently verified native Responses SSE capability.
 	SupportsNativeResponsesStream bool   `json:"supports_native_responses_stream,omitempty"`
 	APIKey                        string `json:"-"`
@@ -1621,6 +1631,9 @@ SELECT
 			v.unavailable_reason,
 				CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
 				COALESCE(cmcap.supported, FALSE) AS supports_native_responses,
+			-- 三态：能力行是否存在。与上面的 COALESCE 并存，后者把
+			-- 「没回填过」和「回填了但为 false」压成同一个 FALSE。
+			(cmcap.id IS NOT NULL) AS supports_native_responses_known,
 			COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream,
 				COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
 				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
@@ -1883,6 +1896,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.BlockReason,
 			&cand.SupportsPromptCache,
 			&cand.SupportsNativeResponses,
+			&cand.SupportsNativeResponsesKnown,
 			&cand.SupportsNativeResponsesStream,
 			&cand.CacheMode,
 			&cand.ManualPriority,
