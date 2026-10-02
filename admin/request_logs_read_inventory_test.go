@@ -99,7 +99,6 @@ var requestLogsReadInventory = map[string]int{
 	"autoroute/recommend_v2.go":                       2,
 	"bg/auto_index_refresher.go":                      4,
 	"bg/auto_route_affinity_worker.go":                2,
-	"bg/auto_route_settle_worker.go":                  2,
 	"bg/candidate_failure_monitor.go":                 2,
 	"bg/credential_recovery.go":                       2,
 	"bg/credential_selfcheck.go":                      3,

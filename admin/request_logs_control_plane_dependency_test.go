@@ -47,6 +47,14 @@ type controlPlaneVerdict struct {
 	// Evidence：必须在该文件里逐字存在的片段。
 	Evidence string
 
+	// EvidenceIn：Evidence 实际所在文件，默认为登记键本身。
+	//
+	// 为什么需要它（§9.49）：「消费方在 A 文件、证明读 v1 的 SQL 在 B 文件」
+	// 是 §9.43/§9.44 把 SQL 抽成纯函数后的常态。两种错误做法都不可接受：
+	// 把 Evidence 改成 A 文件里**没有**的文本（登记在说谎），或加一条注释让
+	// 扫描器看见（伪造测量）。指路是唯一诚实的选项。
+	EvidenceIn string
+
 	// BlastRadius：Live && !Gated 时必填——「它授权/改变的具体写入是什么」。
 	// 逼着每条活的、未被门控的读点都写清楚它能动什么，而不是只贴个 SQL。
 	BlastRadius string
@@ -241,9 +249,18 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 		Feeds:       "request_logs_hot 结算证据 → auto_route_selections_hot（UPDATE ×2）",
 		Live:        true,
 		Gated:       false,
-		Evidence:    "FROM request_logs_hot rl",
-		BlastRadius: "`UPDATE auto_route_selections_hot`（:557/:578）——自动路由选择的结算状态。",
-		Note:        "注释（:252）说明这是 hot-only 结算。停写后结算证据断流。",
+		Evidence:    "LEFT JOIN ` + src.TurnsTable + ` rl",
+		EvidenceIn:  "bg/auto_route_settle_sql.go",
+		BlastRadius: "`UPDATE auto_route_selections_hot`——自动路由选择的结算状态。",
+		Note: "⚠ **§9.49：Evidence 已不在本文件里。** §9.43 把关系名改成 src.TurnsTable" +
+			"（S4 写门决定读 v1 还是会话族），§9.44 又把两条查询搬进 settleBaselinesSQL / " +
+			"settlePendingSQL 两个纯函数，于是本文件里不再有任何 v1 SQL。" +
+			"本条登记的**消费方仍是本文件**（sweep 调度 + writeReward/abandon 落库），" +
+			"但证明它读 v1 的那段 SQL 搬到了 auto_route_settle_sql.go ⇒ 用 EvidenceIn 指路。" +
+			"停写后结算源自动切到会话族（§9.43/§9.44），因此**不再是「结算证据断流」**，而是" +
+			"「结算源换族」：outcome 腿仍命中（会话臂覆盖 99.3%），但基线 cohort 换总体、" +
+			"可能塌成空 map 使 reward 的延迟/成本项静默中性化（§9.44 实测本机 24h 内 0 行）。" +
+			"⚠ 本条未随 §9.43 同步更新，拖了三轮才被发现——见审计 §9.49 关于「用后代提交当基线」的错误。",
 	},
 	"bg/ledger_reconciliation.go": {
 		Feeds:       "request_logs_hot 对账证据 → maas_reconciliation_findings（INSERT）",
@@ -674,8 +691,23 @@ func controlPlaneUnreviewed() []string {
 func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 	root := repoRootFromCaller(t)
 	for file, v := range requestLogsControlPlaneReaders {
-		if _, ok := requestLogsReadInventory[file]; !ok {
-			t.Errorf("%s: 不在 requestLogsReadInventory 里——控制面表不得凭空多出文件", file)
+		// §9.49：一个文件可以是「**消费方但不是读方**」——settle worker 读 SQL
+		// 已被 §9.43/§9.44 抽进 auto_route_settle_sql.go，它自己只负责调度与落库。
+		// 这时它不在读点清单里，但它的 EvidenceIn 指向的**是**已知读点，
+		// 「控制面不得凭空多出文件」这条不变量依然成立。
+		_, isDirectReader := requestLogsReadInventory[file]
+		_, isIndirectReader := indirectRequestLogsReaders[file]
+		evidenceIsKnownReader := false
+		if v.EvidenceIn != "" {
+			_, evidenceIsKnownReader = requestLogsReadInventory[v.EvidenceIn]
+			if !evidenceIsKnownReader {
+				_, evidenceIsKnownReader = indirectRequestLogsReaders[v.EvidenceIn]
+			}
+		}
+		if !isDirectReader && !isIndirectReader && !evidenceIsKnownReader {
+			t.Errorf("%s: 不在 requestLogsReadInventory / indirectRequestLogsReaders 里"+
+				"（EvidenceIn=%q 也不是已知读点）——控制面表不得凭空多出文件",
+				file, v.EvidenceIn)
 			continue
 		}
 		if strings.TrimSpace(v.Feeds) == "" {
@@ -696,13 +728,17 @@ func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 			t.Errorf("%s: Evidence 为空", file)
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(root, file))
+		evFile := file
+		if v.EvidenceIn != "" {
+			evFile = v.EvidenceIn
+		}
+		raw, err := os.ReadFile(filepath.Join(root, evFile))
 		if err != nil {
 			t.Errorf("%s: 读取失败 %v", file, err)
 			continue
 		}
 		if !strings.Contains(string(raw), v.Evidence) {
-			t.Errorf("%s: Evidence 在该文件中不存在：\n  %q", file, v.Evidence)
+			t.Errorf("%s: Evidence 在 %s 中不存在：\n  %q", file, evFile, v.Evidence)
 		}
 		// 关键约束：活的且门控外的读点，必须点名它授权/改变的写入。
 		// 少了这一条，「活」就只是一个形容词。
