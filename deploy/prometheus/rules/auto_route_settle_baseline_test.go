@@ -113,12 +113,19 @@ func TestAutoRouteSettleBaselineRulesCoverEveryRegisteredMetric(t *testing.T) {
 	// absent 对 ==0 判空剔除——「从启动起就没结算过」恰是最需要响的形态，
 	// ==0 形态下它永远静默（promtool 场景 10 钉住该语义）。unless 对 absent
 	// 的 rhs 判「无匹配即保留」，两种形态（存在但为 0 / 根本不存在）都响。
-	require.Contains(t, byAlert["AutoRouteSettleStalled"], "unless on(job, instance)",
-		"the stall alert must use `unless on(job, instance)`; `increase(...) == 0` silently "+
+	require.Contains(t, byAlert["AutoRouteSettleStalled"], "unless on(job)",
+		"the stall alert must use `unless on(job)`; `increase(...) == 0` silently "+
 			"drops the absent-series case (never settled since boot), which is exactly the "+
 			"shape that must fire (promtool scenario 10)")
+	// 聚合必须止于 job 级（R33 域B P2-1）：结算由 distlock 单写者执行，蓝绿
+	// 双实例下从实例的 settled 序列恒平而产侧照常——按 instance 评估会让
+	// 相位靠后实例常驻 critical 误报。部署级属性用部署级聚合。
+	require.Contains(t, byAlert["AutoRouteSettleStalled"], "sum by (job) (increase(llmgw_autoroute_settled_total",
+		"settlement is a distlock-elected single writer; per-instance evaluation would "+
+			"fire permanently on the follower instance whose settled series never grows "+
+			"(R33 domain-B P2-1, blue-green dual-instance topology)")
 	// 停增告警必须以「产侧仍在产出」为前提——没有这条守卫，普通无流量时段
-	// 会误报；产侧停增的面归 §9.57 的 SelectionWritesStalled（promtool 场景
+	// 会误报；产侧停增的面归 §9.57 的 AutoRouteSelectionsNotProduced（promtool 场景
 	// 12 钉住两门不重叠）。
 	require.Contains(t, byAlert["AutoRouteSettleStalled"], "llm_gateway_auto_selections_total",
 		"the stall alert must be conditioned on production still flowing; without it "+
