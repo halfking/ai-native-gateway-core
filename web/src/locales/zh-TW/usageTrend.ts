@@ -12,4 +12,11 @@ export default {
   filterAll: '全部',
   shareByMetric: '當前指標佔比',
   sourceDetail: '請求明細',
+  // 2026-10-02 多選/清除全部/自動重新整理
+  clearAll: '清除全部',
+  autoRefresh: '自動重新整理',
+  autoRefreshOff: '關',
+  autoRefresh30s: '30 秒',
+  autoRefresh1m: '1 分鐘',
+  autoRefresh5m: '5 分鐘',
 }

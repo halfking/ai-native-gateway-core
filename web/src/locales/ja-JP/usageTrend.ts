@@ -12,4 +12,11 @@ export default {
   filterAll: 'すべて',
   shareByMetric: '指標シェア',
   sourceDetail: 'リクエスト明細',
+  // 2026-10-02 複数選択/全消去/自動更新
+  clearAll: 'すべてクリア',
+  autoRefresh: '自動更新',
+  autoRefreshOff: 'オフ',
+  autoRefresh30s: '30秒',
+  autoRefresh1m: '1分',
+  autoRefresh5m: '5分',
 }
