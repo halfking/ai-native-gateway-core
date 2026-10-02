@@ -47,8 +47,9 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-echo "[$(date -Iseconds)] ========== proactive empty table cleanup start ==========" >> "$LOG"
-echo "[$(date -Iseconds)] DRY_RUN=$DRY_RUN FORCE=$FORCE" >> "$LOG"
+ts=$(date -Iseconds)
+echo "[$ts] ========== proactive empty table cleanup start ==========" >> "$LOG"
+echo "[$ts] DRY_RUN=$DRY_RUN FORCE=$FORCE" >> "$LOG"
 
 docker_exec() { docker exec "$CONTAINER" "$@" 2>/dev/null; }
 
@@ -58,16 +59,16 @@ if [ "$FORCE" = "false" ] && [ -f "$COOLDOWN_FILE" ]; then
   now_epoch=$(date +%s)
   elapsed_hours=$(( (now_epoch - last_run) / 3600 ))
   if [ "$elapsed_hours" -lt "$COOLDOWN_HOURS" ]; then
-    echo "[$(date -Iseconds)] SKIP: cooldown active (last run ${elapsed_hours}h ago, threshold ${COOLDOWN_HOURS}h)" >> "$LOG"
+    echo "[$ts] SKIP: cooldown active (last run ${elapsed_hours}h ago, threshold ${COOLDOWN_HOURS}h)" >> "$LOG"
     exit 0
   fi
 fi
 
 # === 预检查 2: 磁盘使用率 ===
 used_pct=$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}')
-echo "[$(date -Iseconds)] disk usage: ${used_pct}%" >> "$LOG"
+echo "[$ts] disk usage: ${used_pct}%" >> "$LOG"
 if [ "$used_pct" -ge "$DISK_THRESHOLD_PCT" ]; then
-  echo "[$(date -Iseconds)] SKIP: disk usage ${used_pct}% >= ${DISK_THRESHOLD_PCT}% (let emergency-cleanup handle it)" >> "$LOG"
+  echo "[$ts] SKIP: disk usage ${used_pct}% >= ${DISK_THRESHOLD_PCT}% (let emergency-cleanup handle it)" >> "$LOG"
   [ -x "$NOTIFY" ] && "$NOTIFY" -l warning -t "252 预防性清理跳过" -b "磁盘使用率 ${used_pct}% >= ${DISK_THRESHOLD_PCT}%，由紧急清理接管" || true
   exit 0
 fi
@@ -76,7 +77,7 @@ fi
 running_vacuum=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
   "SELECT COUNT(*) FROM pg_stat_activity WHERE query ILIKE '%VACUUM FULL%' AND state = 'active'" || echo "0")
 if [ "$running_vacuum" -gt 0 ]; then
-  echo "[$(date -Iseconds)] SKIP: VACUUM FULL is running (avoid lock conflict)" >> "$LOG"
+  echo "[$ts] SKIP: VACUUM FULL is running (avoid lock conflict)" >> "$LOG"
   exit 0
 fi
 
@@ -84,7 +85,7 @@ disk_before_gb=$(df -P / | awk 'NR==2 {printf "%.1f", ($3/1024/1024)}')
 db_before_gb=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
   "SELECT round(pg_database_size('$PG_DB')/1024.0/1024.0/1024.0, 2)" || echo "0")
 
-echo "[$(date -Iseconds)] pre-cleanup: disk=${disk_before_gb}GB used, db=${db_before_gb}GB" >> "$LOG"
+echo "[$ts] pre-cleanup: disk=${disk_before_gb}GB used, db=${db_before_gb}GB" >> "$LOG"
 
 # === 查找空表（n_live_tup=0 AND n_dead_tup=0 AND size >= 100MB）===
 EMPTY_TABLES_SQL="
@@ -105,11 +106,11 @@ ORDER BY pg_total_relation_size(s.relid) DESC;
 EMPTY_TABLES=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tA -F'|' -c "$EMPTY_TABLES_SQL" || echo "")
 
 if [ -z "$EMPTY_TABLES" ]; then
-  echo "[$(date -Iseconds)] no empty tables found (n_live=0 AND n_dead=0 AND size >= ${MIN_TABLE_SIZE_MB}MB)" >> "$LOG"
+  echo "[$ts] no empty tables found (n_live=0 AND n_dead=0 AND size >= ${MIN_TABLE_SIZE_MB}MB)" >> "$LOG"
   exit 0
 fi
 
-echo "[$(date -Iseconds)] found empty tables:" >> "$LOG"
+echo "[$ts] found empty tables:" >> "$LOG"
 echo "$EMPTY_TABLES" >> "$LOG"
 
 # === 查找默认分区（需要额外 COUNT(*) 验证）===
@@ -143,22 +144,22 @@ while IFS='|' read -r tname size_mb n_live n_dead; do
   actual_count=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT COUNT(*) FROM ${tname}" 2>/dev/null || echo "-1")
   
   if [ "$actual_count" != "0" ]; then
-    echo "[$(date -Iseconds)] SKIP ${tname}: n_live_tup=0 but COUNT(*)=${actual_count} (stats may be stale)" >> "$LOG"
+    echo "[$ts] SKIP ${tname}: n_live_tup=0 but COUNT(*)=${actual_count} (stats may be stale)" >> "$LOG"
     skipped_nonempty_count=$((skipped_nonempty_count + 1))
     skipped_nonempty_list+="${tname} (${actual_count} rows), "
     continue
   fi
   
   if [ "$DRY_RUN" = "true" ]; then
-    echo "[$(date -Iseconds)] [DRY-RUN] would DROP ${tname} (${size_mb}MB, ${actual_count} rows)" >> "$LOG"
+    echo "[$ts] [DRY-RUN] would DROP ${tname} (${size_mb}MB, ${actual_count} rows)" >> "$LOG"
     dropped_count=$((dropped_count + 1))
   else
-    echo "[$(date -Iseconds)] DROP TABLE ${tname} (${size_mb}MB, verified ${actual_count} rows)" >> "$LOG"
+    echo "[$ts] DROP TABLE ${tname} (${size_mb}MB, verified ${actual_count} rows)" >> "$LOG"
     if docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "DROP TABLE IF EXISTS ${tname}" >> "$LOG" 2>&1; then
-      echo "[$(date -Iseconds)]   → OK" >> "$LOG"
+      echo "[$ts]   → OK" >> "$LOG"
       dropped_count=$((dropped_count + 1))
     else
-      echo "[$(date -Iseconds)]   → FAILED" >> "$LOG"
+      echo "[$ts]   → FAILED" >> "$LOG"
     fi
   fi
 done <<< "$EMPTY_TABLES"
@@ -171,23 +172,23 @@ while IFS='|' read -r child_name parent_name; do
   actual_count=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT COUNT(*) FROM ${child_name}" 2>/dev/null || echo "-1")
   
   if [ "$actual_count" != "0" ]; then
-    echo "[$(date -Iseconds)] SKIP default partition ${child_name}: has ${actual_count} rows (NOT EMPTY!)" >> "$LOG"
+    echo "[$ts] SKIP default partition ${child_name}: has ${actual_count} rows (NOT EMPTY!)" >> "$LOG"
     skipped_nonempty_count=$((skipped_nonempty_count + 1))
     skipped_nonempty_list+="${child_name} (${actual_count} rows), "
     continue
   fi
   
   if [ "$DRY_RUN" = "true" ]; then
-    echo "[$(date -Iseconds)] [DRY-RUN] would DETACH + DROP ${child_name} from ${parent_name}" >> "$LOG"
+    echo "[$ts] [DRY-RUN] would DETACH + DROP ${child_name} from ${parent_name}" >> "$LOG"
     dropped_count=$((dropped_count + 1))
   else
-    echo "[$(date -Iseconds)] DETACH + DROP default partition ${child_name} from ${parent_name}" >> "$LOG"
+    echo "[$ts] DETACH + DROP default partition ${child_name} from ${parent_name}" >> "$LOG"
     if docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
         "ALTER TABLE ${parent_name} DETACH PARTITION ${child_name}; DROP TABLE IF EXISTS ${child_name};" >> "$LOG" 2>&1; then
-      echo "[$(date -Iseconds)]   → OK" >> "$LOG"
+      echo "[$ts]   → OK" >> "$LOG"
       dropped_count=$((dropped_count + 1))
     else
-      echo "[$(date -Iseconds)]   → FAILED" >> "$LOG"
+      echo "[$ts]   → FAILED" >> "$LOG"
     fi
   fi
 done <<< "$DEFAULT_PARTS"
@@ -198,10 +199,10 @@ db_after_gb=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
 disk_saved_gb=$(awk -v before="$disk_before_gb" -v after="$disk_after_gb" 'BEGIN {printf "%.1f", before - after}')
 db_saved_gb=$(awk -v before="$db_before_gb" -v after="$db_after_gb" 'BEGIN {printf "%.2f", before - after}')
 
-echo "[$(date -Iseconds)] post-cleanup: disk=${disk_after_gb}GB used, db=${db_after_gb}GB" >> "$LOG"
-echo "[$(date -Iseconds)] saved: disk=${disk_saved_gb}GB, db=${db_saved_gb}GB" >> "$LOG"
-echo "[$(date -Iseconds)] dropped=${dropped_count} tables, skipped=${skipped_nonempty_count} non-empty" >> "$LOG"
-echo "[$(date -Iseconds)] ========== done ==========" >> "$LOG"
+echo "[$ts] post-cleanup: disk=${disk_after_gb}GB used, db=${db_after_gb}GB" >> "$LOG"
+echo "[$ts] saved: disk=${disk_saved_gb}GB, db=${db_saved_gb}GB" >> "$LOG"
+echo "[$ts] dropped=${dropped_count} tables, skipped=${skipped_nonempty_count} non-empty" >> "$LOG"
+echo "[$ts] ========== done ==========" >> "$LOG"
 
 # === 更新 cooldown ===
 if [ "$DRY_RUN" = "false" ]; then
