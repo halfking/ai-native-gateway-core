@@ -64,6 +64,14 @@ type httpProbeResult struct {
 	// kept through Chat fallback so fallback success cannot turn a negative
 	// Responses verdict into a positive one.
 	supportsResponses *bool
+	// bodySample is the upstream response body as received, truncated. It is
+	// NOT errMsg: on a 2xx, classifyHTTPResponse leaves errMsg empty, so a
+	// caller that wants to record "what did the upstream actually say" for a
+	// POSITIVE verdict had nothing to record until this field existed
+	// (2026-10-02: the capability backfill wrote an empty body_sample for
+	// every positive verdict — an evidence field that is always empty is a
+	// decorative field).
+	bodySample string
 }
 
 var (
@@ -174,6 +182,9 @@ func singleResponsesPing(ctx context.Context, endpoint, apiKey, modelField strin
 	latencyMs := int(time.Since(start).Milliseconds())
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	result := classifyHTTPResponse(resp.StatusCode, string(respBody), latencyMs)
+	// Keep the received frame on every outcome, not just the error ones — the
+	// capability backfill records it as evidence for the verdict it writes.
+	result.bodySample = truncateProbeBody(string(respBody), 500)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		result.supportsResponses = boolEvidence(true)
 	} else if providercap.ResponsesUnsupportedError(resp.StatusCode, string(respBody)) {
