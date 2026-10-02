@@ -4739,3 +4739,112 @@ live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**�
    `admin/route_incidents.go` 的 31 处 `id` 全在 Go 代码里）。本批的
    `admin/live_stream_sse.go` 与 `bg/candidate_failure_monitor.go` 是同一形态，
    已在各自登记与论证里点名。**根修应是给补位匹配加表归属**，不是继续逐条写论证。
+
+---
+
+## §9.37 控制面登记表的 `Gated` 字段**从来不被验证** —— 补口 + 三条过期记录
+
+§9.36.4 记了第 1 条相邻缺陷（`discovery/discovery.go` 的 `Gated:false` 与代码矛盾）。
+本节把它查到底，发现**不是孤例**，并补上那道一直缺失的门。
+
+### §9.37.1 洞：`Gated` 是个装饰字段
+
+`requestLogsControlPlaneReaders` 每条登记有 `Gated bool`（「该消费方是否被 S4 写门覆盖」）。
+本轮核对发现，**在 2026-10-02 之前没有任何一道门验证过它**。
+既有那道 `TestRequestLogsControlPlaneKnownEntriesAreReal` 只核三件事：
+Evidence 非空、Evidence 在登记文件里逐字存在、`Live && !Gated` 时 BlastRadius 非空。
+**`Gated` 自己从不被读。**
+
+### §9.37.2 后果已经发生三次，而且每一次都可完整复原
+
+| 登记条目 | 护栏引入 | 登记表最后改写 | 差 |
+|---|---|---|---|
+| `discovery/discovery.go` | `e52687954` 12:25 | `af4ef4b32` **12:14** | 晚 11 分 |
+| `bg/credential_recovery.go` | `9b8424fd8` 14:00 | `b585c036e` **11:55** | 晚 2h05m |
+| `bg/ledger_reconciliation.go` | `dfd4da2f1` 13:35 | `b585c036e` **11:55** | 晚 1h40m |
+
+三次的形状**完全一样**：先写登记（`Gated:false` + 一段描述失效形态的 Note），
+后加护栏，**此后门全绿、登记表一个字不动**。
+`discovery` 那条的 Note 至今写着「**本表方向最危险的一条**…停写后 NOT EXISTS 恒真
+⇒ 主动禁用仍在工作的凭据模型」——**而那件事已经被修掉了**。
+这张表当时正在对外说假话，而且没有任何一道门会发现。
+
+**为什么没人发现**：三条都符合既有门的所有判据——
+Evidence 仍逐字存在（代码没删那段 SQL）、`Live && !Gated` 时 BlastRadius 仍非空
+（三条的 BlastRadius 当时都填着）。**只有 `Gated` 这一个字段是凭记忆写的，
+而它是唯一一个不被检查的字段。**
+
+### §9.37.3 补的门：`TestControlPlaneGatedFlagAgreesWithCode`
+
+判据是**默认拒绝 + 具名豁免**：
+
+> 文件（**剥掉 Go 注释与 SQL 注释后**）出现 S4 门控标识符
+> ⇒ 该登记必须 ① `Gated: true`，或 ② 在 `gatedFlagExemption` 里具名说明为什么不是。
+
+**为什么不一刀切禁止**——方向不对称：「文件里有护栏」**不能**推出「登记的那个读点被门控」。
+一个文件可能有多个读点，护栏只盖住其中一个；护栏也可能在调用方。
+一刀切会再次误伤正确代码——而**一个把「在」报成「不在」的门比没有门更坏**。
+
+**为什么不断言反方向**：「`Gated:false` ⇒ 文件里不该有护栏」是**证伪不了的**
+（护栏完全可能在调用方、另一个文件、或接口注入）。本门只断言能被证明的那一侧。
+
+配套 `TestGatedFlagExemptionIsNotStale` 查**反方向**：豁免表里若有一条已不再出现
+门控标识符（护栏被删了/改名了），它在**掩盖**一件该重判的事——**失效的豁免比没有豁免更坏**。
+
+### §9.37.4 写这道门时**我自己**踩的假阳性面
+
+第一版只剥 Go 注释（`//` 与 `/* */`），结果在 `bg/auto_route_affinity_worker.go` 上误报。
+**那一层的注释根本不是 Go 注释**——它藏在 raw string 里的 SQL 注释中：
+
+```
+-- settings.KeyRequestLogsWriteEnabled 声明的 request_logs 宽族），而本查询的
+```
+
+而那个文件**根本没有 Go 层护栏**。⇒ 第一版的门会**要求为不存在的护栏写豁免**，
+**一道逼人写假豁免的门**。已改为三段剥离（Go 行注释 → Go 块注释 → SQL 行注释，
+后者**复用包内已有的 `stripSQLLineComments`**，不另起同名正则以免编译冲突）。
+修好后该文件正确退出误报清单。
+
+### §9.37.5 逐条裁定结果：3 条需具名豁免，2 条已订正
+
+先按「文件里有护栏标识符」筛出 7 个候选，再逐条追调用链——
+**其中 3 条的 `Gated:false` 本来就是对的**：
+
+| 文件 | 文件里有护栏 | 登记的读点被护住吗 | 结论 |
+|---|---|---|---|
+| `internal/trace/trace.go` | 有（`:473`） | **否**——它在 `FlushToPG` 里，护的是 Redis→PG 的 **UPDATE 写入**；登记的读点在**独立函数** `LoadFromPG`(:601)，调用方 `admin/request_trace.go:148-156` 也无门控 | 豁免 |
+| `domains/hooks/observability/telemetry/client.go` | 有（5 处调用点） | **否**——护栏**全在写路径**；登记的两个读点 `FindRecentGatewaySession`(:607) 与 `lookupTurnNumber` 都不在其中，:2122-2125 的注释明写「outbox request-completed 在门控外照常提交」 | 豁免 |
+| `bg/auto_route_affinity_worker.go` | **否**（只有 SQL 注释） | — | 修好 §9.37.4 后自动退出 |
+| `bg/ledger_reconciliation.go` | 有（`:378`） | **是**——护栏在 `checkUsageCredit` **首行**(:377-384)，SQL 在 :386 才发出 | **订正为 `Gated:true`** |
+| `bg/credential_recovery.go` | 有（`:1926`） | **是**——`return` 在 :1933，SQL 在 **:1939** 才发出、同函数体内 | **订正为 `Gated:true`** |
+| `discovery/discovery.go` | 有（`:1110`） | **是**——`staleExpiryMayRun` 在 :1091 消费于 :1110 | **订正为 `Gated:true`** |
+
+`client.go` 那条比 `trace.go` 更隐蔽：**护栏与读点在同一文件、同一包**，
+只看「文件有没有门」必然误判——所以它必须由人具名承担，不能靠机械判据。
+
+### §9.37.6 三条都清空了 `BlastRadius`，但**这不等于无事**
+
+`BlastRadius` 的定义是「`Live && !Gated` 时必填 —— 它授权/改变的具体写入是什么」。
+`Gated` 变 true 后这些写入在停写期间**根本不会发生**，留着旧值等于对外声明一件不存在的事。
+三条已清空，并把「若护栏被误删/改坏，退化路径是什么」写进各自的 Note——
+**护栏是可被回退的，Note 是那份回退路径的唯一记录。**
+
+**但共同留了一个真缺口**：`SkippedChecks()` 是机器可读的「本轮未执行」通道，
+`ledger_reconciliation` 与 `credential_recovery` 都调用了它，
+而**全仓 grep 到的消费者只有测试**（`bg/ledger_reconciliation_s4_gate_test.go`、
+`bg/credential_recovery_s4_gate_test.go`）——没有 metric、admin 端点或告警。
+⇒ 停写期间，**护栏把危险动作停了，但「为什么没动作」只留在 `slog` 里**。
+返回值 0 在计数上仍与「扫了没发现差异」不可区分。
+**这是下一件该做的**（§9.36.3 清单里 control-plane 三条中的第三条）。
+
+### §9.37.7 门必须变异验证：4/4，各命中不同的门
+
+| 变异 | 红在 |
+|---|---|
+| M1 `discovery` 改回 `Gated:false`（**复现 `af4ef4b32` 时的历史状态**） | `gated_flag_test.go:139`，指名 `staleExpiryMayRun` |
+| M2 抽掉 `internal/trace` 的具名豁免 | 同门（`:131`，行号上移是因豁免被删了 8 行——**两次行号不同恰恰说明两次变异都生效了**） |
+| M3 `ledger_reconciliation` 改回 `Gated:false` | 同门（`:139`），指名 `usageCreditComparability` |
+| M4 加一条失效豁免（文件无门控标识符） | `TestGatedFlagExemptionIsNotStale`（`:179`） |
+
+*M1 第一版**没注入成功**（gofmt 改了对齐空格数，锚点没匹配上，测试照常 `ok`）——
+**没生效的变异不是证据**，按锚点重做后才算数。*
