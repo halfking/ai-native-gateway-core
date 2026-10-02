@@ -1,11 +1,9 @@
 // autoTuning.ts — 路由调参页文案（v2 闭环 P0③，2026-09-24）。
 export default {
-    title: 'Ajuste de enrutamiento',
-    desc: 'Propuestas de ajuste del clasificador (generadas automáticamente → backtest → aprobadas por humanos, aplicadas en caliente) e informe de calidad de clasificación',
     refresh: 'Actualizar',
     refreshing: 'Actualizando…',
-    loading: 'Cargando…',
     loadFailed: 'Error al cargar',
+    panelTitle: 'Propuestas de ajuste (aprobada = aplicación en caliente en 5 min)',
     noProposals: 'Aún no hay propuestas (feedback_analyzer las genera por ventana)',
   filter: {
     statusAll: 'Todo',

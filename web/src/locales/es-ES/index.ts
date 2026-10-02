@@ -6,6 +6,7 @@ import annotation from './annotation'
 import nav from './nav'
 import taskProfile from './taskProfile'
 import autoTuning from './autoTuning'
+import autoOps from './autoOps'
 import login from './login'
 import app from './app'
 import errors from './errors'
@@ -86,6 +87,7 @@ export default {
   nav,
   taskProfile,
   autoTuning,
+  autoOps,
   login,
   app,
   errors,

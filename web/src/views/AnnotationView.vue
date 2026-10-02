@@ -6,6 +6,10 @@
 // 展示会话标题/客户端/原任务类型/自动模型/置信度/状态/标注信息,
 // 人工标注沉淀「任务类型 + 所选模型」用于 auto 任务类型定位训练。
 // 旧请求级样本列表仍在 GET /api/admin/annotations/samples 保留。
+//
+// 2026-10-02 整合轮：本页成为 AutoRoutingOpsView 的「标注工作台」面板
+// （无页头 h2/页级 padding，工具栏紧凑化）；独立路由已 redirect 到
+// /routing-v2/auto-ops?tab=annotate。
 import { ref, computed, onMounted } from 'vue'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
@@ -311,31 +315,28 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="annotation-page">
-    <div class="page-header">
-      <h2>{{ t('annotation.page.title') }}</h2>
-      <div class="header-actions">
-        <span class="count-chip" aria-live="polite">{{ t('annotation.page.totalChip', { n: total }) }}</span>
-        <button class="btn btn-ghost btn-sm" :disabled="exportImportBusy" @click="handleExportCSV">
-          {{ t('annotation.taskProfile.exportBtn') }}
-        </button>
-        <label class="btn btn-ghost btn-sm" :class="{ disabled: exportImportBusy }">
-          {{ t('annotation.taskProfile.importBtn') }}
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            class="hidden-file-input"
-            :disabled="exportImportBusy"
-            @change="handleImportCSV"
-          />
-        </label>
-        <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">
-          {{ loading ? t('annotation.page.refreshing') : t('annotation.page.refresh') }}
-        </button>
-      </div>
+  <div class="panel">
+    <div class="panel-toolbar">
+      <span class="count-chip" aria-live="polite">{{ t('annotation.page.totalChip', { n: total }) }}</span>
+      <button class="btn btn-ghost btn-sm" :disabled="exportImportBusy" @click="handleExportCSV">
+        {{ t('annotation.taskProfile.exportBtn') }}
+      </button>
+      <label class="btn btn-ghost btn-sm" :class="{ disabled: exportImportBusy }">
+        {{ t('annotation.taskProfile.importBtn') }}
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          class="hidden-file-input"
+          :disabled="exportImportBusy"
+          @change="handleImportCSV"
+        />
+      </label>
+      <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">
+        {{ loading ? t('annotation.page.refreshing') : t('annotation.page.refresh') }}
+      </button>
     </div>
 
-    <p class="page-desc">{{ t('annotation.page.firstTurnDesc') }}</p>
+    <p class="panel-desc">{{ t('annotation.page.firstTurnDesc') }}</p>
 
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
     <div v-if="correctionWarning" class="alert alert-warning" role="alert">{{ correctionWarning }}</div>
@@ -593,40 +594,27 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.annotation-page {
-  padding: 1.5rem;
-}
-
-.page-header {
+/* 嵌入面板：宿主 AutoRoutingOpsView 提供外层 padding 与纵向间距 */
+.panel-toolbar {
   display: flex;
-  justify-content: space-between;
+  gap: 0.5rem;
   align-items: center;
-  margin-bottom: 1rem;
-}
-
-.page-header h2 {
-  margin: 0;
-  font-size: 1.5rem;
-  font-weight: 600;
-}
-
-.header-actions {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
+  flex-wrap: wrap;
 }
 
 .count-chip {
   padding: 0.25rem 0.75rem;
+  margin-right: auto;
   background: var(--bg-secondary);
   border-radius: 12px;
   font-size: 0.875rem;
   font-weight: 500;
 }
 
-.page-desc {
+.panel-desc {
   color: var(--text-muted);
-  margin-bottom: 1.5rem;
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
 }
 
 .table-container {

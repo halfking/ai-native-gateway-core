@@ -415,16 +415,21 @@ export interface UsageTrendFilterQuery {
   tenant_id?: string
   provider_id?: number
   api_key_id?: number
-  model?: string
+  /** 模型过滤：单值向后兼容；数组序列化为重复 model 参数（后端 ANY 多选）。 */
+  model?: string | string[]
   top?: number
 }
 
-function usageTrendQs(q: UsageTrendFilterQuery): URLSearchParams {
+export function usageTrendQs(q: UsageTrendFilterQuery): URLSearchParams {
   const qs = usageTimeQs(q.time)
   if (q.tenant_id) qs.set('tenant_id', q.tenant_id)
   if (q.provider_id != null && q.provider_id > 0) qs.set('provider_id', String(q.provider_id))
   if (q.api_key_id != null && q.api_key_id > 0) qs.set('api_key_id', String(q.api_key_id))
-  if (q.model) qs.set('model', q.model)
+  if (Array.isArray(q.model)) {
+    q.model.filter((m) => !!m).forEach((m) => qs.append('model', m))
+  } else if (q.model) {
+    qs.set('model', q.model)
+  }
   if (q.top != null) qs.set('top', String(q.top))
   return qs
 }
