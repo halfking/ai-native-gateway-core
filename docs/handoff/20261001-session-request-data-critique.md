@@ -1459,3 +1459,75 @@ harness 首次运行在**跑任何测试前**就死：
 1. 轮次写入器要不要持久化完整请求载荷（`request_payload` 列）。
 2. parity 门判定口径复核（当月 → 全保留期）。
 3. `auto_route_settle_worker` 陈旧基线标记（需改 HTTP 响应契约）。
+
+---
+
+## 第十八轮（§9.35）：三项拍板落地 —— 一件上线，两件「按证据收窄」
+
+拍板结果：① **不加** `request_payload` 列；② parity 门**保持当月**；
+③ **做** `auto_route_settle_worker` 陈旧基线标记，改响应契约。
+
+### 已上线：`outcome_source` 响应契约块
+
+`admin/auto_route_outcome_freshness.go`，挂三个暴露 reward/success 的端点
+（`/auto-route/audit`、`/affinity/ranking`、`/affinity/selections`）。
+加字段不改既有字段；`reason` 闭集 `live|no_rows|stale|absent|query_failed`；
+门槛 = `settleAbandonAfter`(4h) 而非 `baselineWindow`(24h)，因为绑定约束是
+abandon 视界。v1 被退役后 `42P01` 映射成 `reason:"absent"` 而不是 5xx。
+`MAX(ts)` 实测 **0.275ms** Index Only Scan。
+
+**5/5 变异全部断言命中**，红在 `:347 / :256 / :149 / :146 / :149`。
+**M3 抓到真 bug**：`Stale` 初始化为 `true` 后 live 分支忘了设回 `false`
+⇒ 该字段恒 true，标记退化成「永远陈旧」，等于没加。已修。
+
+**写门时自己踩的两个坑**（已写进测试注释）：
+- 接线门只认 `*ast.SelectorExpr`，而 `writeJSONOk` 是**包级函数**（`*ast.Ident`）
+  ⇒ 在三个挂载齐全的文件里报**零挂载**。**把「在」报成「不在」的门比没有门更坏。**
+- 镜像门按标识符**首次出现**切行，而该名字先出现在 doc comment 里 ⇒ 把散文当 Go 解析。
+  **锚点要钉在声明上，不是钉在名字上。**
+
+### 失效方向更正：不是 ③，是 ②
+
+我此前记成「结算继续但用陈旧基线」。按代码重推：停写 8h 后热表空 ⇒
+分位数 NULL ⇒ **基线塌成 0**；且 `rl.success` 恒 NULL ⇒ **每条新 selection 都被 abandon**，
+`settled_at` 有值、`reward: null`，**与「正常放弃」逐字段同形**。
+这是**静默洞（漏判）**，不是过度纳入。
+
+### ⚠ 撤回我在拍板问卷里对「不加列」说错的一句
+
+我写的是「把 10 个读点改成不再依赖该事实」。派子代理逐读点核实后**不成立**：
+
+- 实际是 **22 文件 / 约 30 读点**，不是 10。
+- **响应侧整体不可端口**（§9.28 完全没记的一条）：v1 `response_body` 是
+  `{"choices":[{"message":…}]}` 信封，`session_bodies.response_delta` 是**裸消息数组**
+  （`BodiesRecord.ResponseDelta []Message`）。⇒ 7 个按 `choices[].message.content`
+  取值的读点**静默返回空串**。
+- 另有 4 类结构性不可端口：`tools` 键、**整份 JSON 透传**（4 处，无 Go 侧解析）、
+  **逐行聚合语义**（delta 只含本轮新增 ⇒ 系统性低估）、
+  `system`/`instructions` 顶层键。
+- 可复现的只有 **8 处**（且都是请求侧只依赖 `messages`），**且必须显式包一层
+  `{"messages": <delta>}`**，否则 `len(Messages)==0` 全部返空——静默失败不是报错。
+
+**所以本轮没有做**：①没改指那 8 处（半改比全不改更难推理）；②没建 bodies 可移植性
+登记表门（既有分类门当前就红在 **31/105 未评估**，`7a6356ef0`，与本轮无关；
+在它还红时另起一套 = 制造两套互相漂移的登记表）。
+
+### 下一步的正确顺序
+
+1. 先把既有 `request_logs_stop_write_classification_test.go` 收绿（31/105）。
+2. 再在它上面加「可移植性」维度，而不是另建一张表。
+3. 只有当响应侧形状对（`response_delta` 是信封而非数组）或写入器补列，
+   响应侧那 7 个读点才可改指。
+
+### 仍待拍板
+
+**无**。原四件已全部关闭：CI 那一件由 §9.34 实测关闭（本机工具，不接 CI）；
+其余三件本轮落地或按证据收窄。
+
+### 遗留风险（未变，按危险度）
+
+1. 既有分类门红在 31/105 ⇒ **S4 灰度前必须收绿**，否则 silently_empty /
+   silently_frozen 两档会让灰度「通过之后继续给出错误答案」。
+2. 响应侧 7 个读点 + 4 类结构性缺口：退役 v1 后要么改写入器，要么接受降级。
+3. `auto_route_settle_worker` 的**标记**已上线，但**它的正确修法**（改读会话族）
+   仍未做 ⇒ 停写后它仍会全量 abandon，只是现在**看得见了**。

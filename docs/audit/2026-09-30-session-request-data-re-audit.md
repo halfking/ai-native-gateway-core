@@ -4462,3 +4462,149 @@ go.mod / go.sum / 本文件自身`。
 - 门禁库是**本机**容器里的一次性库；CI 用 amd64 镜像，形态可能不同。
 - 442 vs harness 记录的 443 relations 差 1，**未追查**（4 个未提交的 embeddata
   改动是候选嫌疑之一）。这不影响本节结论——门在有无样本时行为都已实测。
+
+---
+
+## §9.35 拍板落地：加陈旧基线标记（已上线）+ **撤回我自己在选项描述里的一个说法**
+
+三项待拍板已回：① 不加 `request_payload` 列；② parity 门保持当月；
+③ **`auto_route_settle_worker` 的陈旧基线标记要��，改响应契约**。
+本节记 ③ 的落地，并更正我在问卷里对 ① 的一句**说错的话**。
+
+### §9.35.1 失效形状：不是「静默用陈旧基线」，是**全量 abandon**
+
+我此前把这个 worker 的失效方向记成「结算继续发生但用陈旧基线」（方向 ③）。
+按代码重新推导，**那个描述不准确**：
+
+| 组件 | 停写后 | 后果 |
+|---|---|---|
+| `loadTaskBaselines` | `percentile_cont` 查 `request_logs_hot` 的 24h 窗口，但热保留 8h ⇒ 8h 后**零行** | 分位数 NULL ⇒ `COALESCE(...,0)` ⇒ **基线塌成 0** |
+| `settleBatch` | `LEFT JOIN request_logs_hot` ⇒ `rl.success` 恒 NULL | 走 `p.success == nil` 分支 ⇒ 超过 `settleAbandonAfter`(4h) 即 **abandon** |
+
+⇒ 停写约 8h 后，**每一条新 selection 都会被盖上 `settled_at` 并 abandon**，
+`reward` 留 NULL。API 继续返回 200、`settled_at` 有值、`reward: null`
+——**与「正常放弃」逐字段同形**。这是方向 ②（静默洞），不是 ③。
+affinity rollup 随之停止学习，同样没有任何信号。
+
+### §9.35.2 已上线：`outcome_source` 响应契约块
+
+`admin/auto_route_outcome_freshness.go`，挂在**三个**暴露 reward/success 的响应上：
+
+| 端点 | 为什么必须有 |
+|---|---|
+| `GET /api/admin/auto-route/audit` | 成功率与路由 KPI 全部是 worker 事后结算的 |
+| `GET /api/admin/auto-route/affinity/ranking` | `avg_reward` / `ema_reward` 直接来自 worker 的基线 |
+| `GET /api/admin/auto-route/affinity/selections` | 逐条 `reward` / `reward_source` / `settled_at` |
+
+块形态（**加字段，不改任何既有字段**，老消费方不受影响）：
+
+```json
+"outcome_source": {
+  "available": true,
+  "as_of": "2026-10-02T07:41:12Z",
+  "age_seconds": 11312,
+  "stale": false,
+  "stale_after_seconds": 14400,
+  "reason": "live"
+}
+```
+
+`reason` 是闭集：`live` / `no_rows` / `stale` / `absent` / `query_failed`。
+
+三个设计要点：
+
+1. **门槛 = `settleAbandonAfter`(4h)，不是 `baselineWindow`(24h)。**
+   结算只需要请求自己那一行（请求后数秒内落 hot），所以**绑定约束是 abandon 视界**，
+   不是基线回看窗。超过 4h ⇒ 下一轮 sweep 不可能再从 v1 结算出任何东西。
+2. **不门控 worker。** 门控只会让数字不再变化，而 worker 的正确修法是改读会话族，
+   不是被消音。这是 §9.24「止错 ≠ 必须门控」的又一次应用。
+3. **v1 被退役后端点必须还能答。** `MAX(ts)` 报 `42P01` 时映射成
+   `reason:"absent"` 而非 5xx——退役是**预期终态**，不是故障。
+
+**性能**：挂在 3s 超时的 handler 里，实测 `EXPLAIN ANALYZE` 是
+`Index Only Scan using idx_request_logs_hot_ts`，执行 **0.275ms**、5 buffers。
+
+### §9.35.3 门与变异（5/5，全部断言命中）
+
+| 门 | 守住什么 |
+|---|---|
+| `TestQueryOutcomeFreshness` | 8 个分支：live / 边界不陈旧 / 边界+1s 陈旧 / 冻结 72h / 空表 / 表已删 / 其他错误 / 未来时间戳夹到 0 |
+| `TestOutcomeSourceStaleAfterMirrorsSettleAbandonAfter` | 从 bg 源码**按值**解析 `settleAbandonAfter`，防止镜像常量漂移 |
+| `TestAutoRouteFreshnessMountedOnEveryNamedHandler` | 默认拒绝：三个挂载点缺一即红 |
+| `TestOutcomeSourceReasonsAreClosed` | reason 闭集 |
+| `TestOutcomeSourceFreshnessKeysAreJSONTagged` | 线上字段名 |
+
+| 变异 | 红在 |
+|---|---|
+| M1 摘掉 `HandleAffinityRanking` 的挂载 | `:347` |
+| M2 镜像常量 4h→8h | `:256` |
+| M3 **抽掉 `out.Stale = false`** | `:149`（3 条断言） |
+| M4 破坏 42P01 识别 | `:146` |
+| M5 边界 `>` 改 `>=` | `:149` |
+
+**M3 是真 bug，被测试抓到的**：`Stale` 在初始化时 pessimistically 置 `true`，
+live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**恒为 true**，
+标记会退化成「永远陈旧」，等于没加。已修。
+
+**写门时自己踩的两个坑**（都记在测试文件的注释里）：
+
+- 接线门第一版只认 `*ast.SelectorExpr`，而 `writeJSONOk` 是**包级函数**
+  （`call.Fun` 是 `*ast.Ident`）⇒ 在三个挂载齐全的文件里报告**零挂载**。
+  **一个把「在」报成「不在」的门，比没有门更坏**——它训练读者忽略自己。
+- 镜像门第一版按**首次出现**的标识符切行，而该名字先出现在 doc comment 里
+  ⇒ 把一句散文当 Go 解析。已改成只认 `settleAbandonAfter = <duration>` 声明行。
+  **锚点必须钉在声明上，不是钉在名字上。**
+
+### §9.35.4 更正：我在拍板问卷里对「不加列」的说法**说错了一句**
+
+我给该选项写的描述是「**把 10 个读点改成不再依赖该事实**」。
+派子代理逐读点核实后，这句话**不成立**，按它做会引入静默失败：
+
+1. **数量不对**：实际是 **22 个文件 / 约 30 个 SQL 读点**，不是 10 个。
+2. **响应侧整体不可端口**——这是 §9.28 完全没记的一条。v1 `response_body` 是
+   provider 信封 `{"choices":[{"message":{…}}]}`；`session_bodies.response_delta`
+   是**裸消息数组**（`BodiesRecord.ResponseDelta []Message`，`bodies_writer.go:200`）。
+   仓库自己的 V2 读法可证：`json.Unmarshal(request_delta, &msgs)`，`msgs` 是切片
+   （`message_source_v2.go:141-144`）。⇒ **凡是按 `choices[].message.content`
+   取值的读点，拿到 delta 会静默返回空串**：
+   `no_topic_session.go:140`、`memora_handlers.go:784`、`body_resolver.go:211/230`、
+   `history_store.go:82`、`session_compare.go:899`、`session_bodies_batch.go:66`、
+   `passive_probe_listener.go:180`。
+3. **另有 4 类结构性不可端口**（与键名无关）：
+   - `tools` 键（`quality_correlations.go:172`）→ session 侧恒无 ⇒ 分桶塌成单一桶；
+   - **整份 JSON 透传**（`session_export.go:224`、`sessionforensics/export.go:48/68`、
+     `logs.go:1150/1179`、`unified_detail.go:93`）⇒ 无 Go 侧解析，字段级保真直接丢；
+   - **逐行聚合语义**（`quality_correlations.go:183/194`、`compression_sessions.go:142`）
+     ⇒ delta 只含**本轮新增**，多图 `images` 分桶、`code_block` 分桶、压缩前消息数
+     全部系统性低估；
+   - **`system`/`instructions` 顶层键**（`system_prompt_prefix.go:175`）⇒
+     Anthropic / Responses 协议取不到系统提示前缀。
+4. **可端口的那部分也不是「把 delta 丢进去就行」**：v1 读点是
+   `json.Unmarshal(body, &struct{Messages []…})`（顶层对象），而 `request_delta` 是数组，
+   **必须显式包一层 `{"messages": <delta>}`**，否则 `len(Messages)==0` 全部返空——
+   **静默失败，不是报错**。
+
+**可无损复现的只有 8 处**（且都是请求侧、只依赖 `messages`）：
+`auto_title_generator.go:835`、`session_title.go:187`、`logs_summary.go:196`、
+`logs_summary.go:258`、`no_topic_session.go:316`、`session_sanitize_matches.go:225`、
+`summarizer.go:646/690`。
+
+**另记一处非阻塞语义差**：`summarizer.go:646` 的
+`COALESCE(rb.request_body->>'role','user')` 读**顶层** `role`，而 OpenAI chat 载荷
+顶层没有 `role` 键 ⇒ v1 实际**恒为 `'user'`**。迁到 delta 后若按末条消息的 `role` 读，
+助手轮会返回 `'assistant'` ⇒ 这是**行为变更，不是等价复现**。
+
+### §9.35.5 因此本轮**没有**做的事，和为什么
+
+- **没有**把那 8 个可复现读点改指 session 侧。理由：同一次改动里会有 8 处
+  「包一层 `{"messages": …}`」的静默陷阱与 4 类不可端口读点共存，
+  **一半改一半不改比全不改更难推理**；且用户拍板的是「保持现状」。
+- **没有**新建 bodies 可移植性登记表门。理由：既有的
+  `admin/request_logs_stop_write_classification_test.go` 已经在做
+  「逐文件 + 逐字证据 + 默认拒绝」这件事，而且**它当前就是红的**
+  （**31/105 未评估**，最后一次提交 `7a6356ef0`，与本轮无关）。
+  在它还在红的时候另起一套关于同一批读点的登记表，等于制造
+  **两套互相漂移的登记表**——这正是本审计反复拆除的那类隐患。
+  正确顺序是先把既有那张门收绿，再在它上面加可移植性维度。
+
+⇒ 缺口已**具名记账**于 §9.28 与本节，不作为「待办」冒充已完成。
