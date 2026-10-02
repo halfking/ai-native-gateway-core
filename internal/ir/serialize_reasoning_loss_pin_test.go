@@ -51,17 +51,20 @@ func TestSerializeResponsesRequest_EffortOnlyReasoningIsNotALoss(t *testing.T) {
 func TestSerializeOllama_ReportsReasoningLoss(t *testing.T) {
 	cap := resetDedupAndInstall(t)
 	budget := 2048
+	maxRT := 4096
 	req := &InternalRequest{
 		Model:          "llama3.1",
 		SourceProtocol: ProtocolOpenAIChat,
-		Reasoning:      &ReasoningConfig{Type: "enabled", Effort: "high", BudgetTokens: &budget},
+		Reasoning:      &ReasoningConfig{Type: "enabled", Effort: "high", BudgetTokens: &budget, MaxReasoningTokens: &maxRT},
 		Thinking:       &ThinkingConfig{Type: "enabled", BudgetTokens: budget},
 		Messages:       []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}},
 	}
 	if _, err := SerializeOllama(req); err != nil {
 		t.Fatalf("serialize ollama: %v", err)
 	}
-	for _, field := range []string{"thinking", "reasoning.type", "reasoning.effort", "reasoning.budget_tokens"} {
+	// 五臂全量：max_reasoning_tokens 臂曾是唯一没有钉测的臂（R33 审计 #4），
+	// 腐化时全部测试仍绿——补上后五臂齐钉。
+	for _, field := range []string{"thinking", "reasoning.type", "reasoning.effort", "reasoning.budget_tokens", "reasoning.max_reasoning_tokens"} {
 		if !cap.hasEvent(AnomalyEvent{
 			AnomalyType:    AnomalyProtocolLoss,
 			FieldPath:      field,
