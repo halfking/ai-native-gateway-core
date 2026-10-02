@@ -100,6 +100,9 @@ tabs: {
     trendTokens: 'トークン',
     trendCredits: 'クレジット',
     trendCost: 'コスト (USD)',
+    trendMore: 'もっと見る',
+    trendMoreTitle: '全画面の使用量トレンド分析を開く',
+    trendOthers: 'その他',
     filterProvider: 'プロバイダー ID',
     allProviders: 'すべて',
 
