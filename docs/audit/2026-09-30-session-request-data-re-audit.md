@@ -2320,3 +2320,118 @@ S4 的门在写侧，所以要找「读旧 → 写新」的跨界读点；权限
 
 推论：**新增一道门时，先问它守的是哪个坐标系，以及门外还有什么坐标系。**
 只补条目不补坐标，缺口会在下一轮换个名字重新出现。
+
+## §9.10 控制面不是一条，是一簇；且最危险的那条是「否定式守卫」（2026-10-02）
+
+§9.9 立了控制面这张表，第一版只登记了 4 条。本轮把 `bg/` 整个 worker 簇逐个打开后
+发现：**这不是一条孤例，是一簇**，而且方向不止一种。
+
+### §9.10.1 已判定的 36 条分布
+
+| 判定 | 数量 | 典型 |
+|---|---:|---|
+| `control_plane_live` | 30 | 凭据可用性、路由亲和、探针节奏、会话摘要、故障事件 |
+| `not_control_plane` / `dormant` | 6 | lite SQLite 保留期、统计物化、trace 读取、备选模型列表 |
+
+### §9.10.2 最危险的一条：`discovery/discovery.go`
+
+```sql
+UPDATE model_offers
+   SET available = FALSE, unavailable_reason = 'auto_discovery_expired'
+ WHERE credential_id = $1 AND raw_model_name NOT IN (...)
+   AND NOT EXISTS (
+       SELECT 1 FROM request_logs rl
+        WHERE rl.credential_id = $1
+          AND lower(rl.outbound_model) = lower(model_offers.raw_model_name)
+          AND rl.success = TRUE
+          AND rl.ts > now() - interval '%d hours')
+```
+
+它与 §9.9.3 ① 的 `credential_recovery` **同形但方向相反，而且是否定式守卫**：
+判据是「v1 里查不到近期成功」。
+
+⇒ 停写后 `NOT EXISTS` **恒真**。无论模型是否真的在用，都会被判为
+`auto_discovery_expired` 而**下架**。
+
+这比「恢复变慢」重得多：它不是少做一件事，是**主动禁用仍在正常工作的凭据模型**，
+且无异常、无告警（写成功就是成功）。失效方向与 `s4_ready` 真空为绿同族，
+但写的是**可用性**，后果更重。
+
+> 一般化：否定式守卫（`NOT EXISTS(证据)`）比肯定式（`EXISTS(证据)`）危险一个量级。
+> 肯定式在证据消失时**不做动作**（安全降级）；否定式在证据消失时**做动作**。
+> 审计门控依赖时，先问「前提消失后我是停止，还是执行」。
+
+### §9.10.3 方向谱系：同一个类，失效方向至少四种
+
+| 方向 | 代表 | 停写后 |
+|---|---|---|
+| **继续放行** | `credential_recovery` ① | 36h 内用陈旧证据授权恢复写入 |
+| **主动禁用** | `discovery` §9.10.2 | `NOT EXISTS` 恒真 → 误下架可用模型 |
+| **退回保守** | `model_probe` | 热度没了 → `next_retry_at` 不再推后 → 探针**变频繁** |
+| **静默失效** | `today_success_probe` | 候选集空 → 不再提交探测 → 只能等自身恢复 |
+
+第 3 条尤其反直觉：它不是「少探测」而是「**多探测**」——因为退避加成的输入
+（v1 成功流量）消失，`usage` CTE 恒空，热门模型失去 `next_retry_at` 推后。
+只看终点（`available=FALSE` 那条 UPDATE）会把它误判成「凭据被误禁用」；
+实际上 `reconcileBrokenConfirmedBindings`（:1072）**不读 v1**，它读
+`model_probe_state`，v1 的影响在**上游**两跳。
+
+### §9.10.4 进度与不做的事
+
+控制面门：**36/52 已判定，17 条待判**（`s4audit` tag 下持续报出真实清单）。
+读端门：99/105 待评估。
+
+**明确没做的事**：剩下那 17 条里有一批是离线工具（`cmd/tools/*`、
+`cmd/traffic-replay`、`cmd/scenario_driver`）、测试（`tests/*`）、lite 存储
+（`storage/sqlite`）、导出（`domains/sessionforensics`）与视图层
+（`db/probe_views_unified.go`）。它们大概率是 `not_control_plane`，
+**但我没有批量填**——那样只能拿到一个词宽的 `request_logs` 子串当证据，
+而本表的价值恰恰在于「已评估」与「凭印象」可区分。门会继续盯着这 17 条。
+
+## §9.11 控制面轴收口：52/52，31 条是活的（2026-10-02）
+
+`TestRequestLogsControlPlaneNothingLeftUnreviewed` **转绿**。这是本审计第一道
+从「全部未评估」走到「全部判定」的轴。
+
+| 判定 | 数量 |
+|---|---:|
+| `control_plane_live`（输出决定写入或身份，消费方是活的） | **31** |
+| `not_control_plane` / `dormant` | 21 |
+| **未判定** | **0** |
+
+### §9.11.1 31 条里，只有两条是「写授权」，但它们正好是两个方向
+
+| 文件 | 守卫形态 | 方向 | 停写后果 |
+|---|---|---|---|
+| `discovery/discovery.go` | `NOT EXISTS(近期成功)` | **主动禁用** | `available=FALSE` 恒真 ⇒ 误下架可用模型 |
+| `bg/credential_recovery.go` | `EXISTS(近期成功)` | **继续放行** | 36h 内用陈旧证据授权恢复 |
+
+其余 29 条虽也是 live，但写入的是**派生状态**（探针节奏、亲和度、汇总、事件、
+建议、指标），不是凭据可用性这个级别的开关。区分标准是「写的东西被谁消费」：
+被路由/凭据选择直接消费的是授权，被报表消费的是派生。
+
+### §9.11.2 收口过程中的两次量具自查
+
+**① 怀疑扫描器把注释当读点 —— 不成立。** `db/db.go` 的 grep 前 4 处
+`request_logs` 全在注释里（:77/:181/:224/:2002），一度以为清单分母虚高。
+逐行核对后确认扫描器**确实**剔除了它们（`requestLogsReadPattern` 匹配后
+再按 `//`/`*`/`/*` 前缀过滤，§8.5 的 40 条注释规则），真实读点在
+:3169/:3187/:5871。**分母没有虚高，扫描器无缺陷。**
+这条自查的价值在于：它差点变成一条写进报告的假缺陷。
+
+**② 统计脚本给出 4/52 —— 不成立。** 用 Python 正则切分 Go 的 map 字面量
+没匹配上（gofmt 后的格式与预期不符），输出 `合计=4`。
+改用 Go 直接遍历后是 `TOTAL=52 LIVE=31 NOT_CP=21`。
+**量具本身出错时，先怀疑量具，别把它的输出当结论**——这与 §9.10 里
+「先量具后结论」是同一条纪律的两个方向。
+
+### §9.11.3 剩余的轴
+
+- **控制面轴：完成（0 待判）。**
+- **读端轴：99/105 待评估**，`TestRequestLogsStopWriteNothingLeftUnclassified`
+  仍红。4 批子代理产出已收割，但**每条都要过族门**才准写入——族门在本轮已
+  抓到我三次判定错误（`integrity_fingerprint_drift`、`routeincident/store.go`、
+  `data_lifecycle.go`），这个「先过机械判据再过人的判断」的顺序不能省。
+
+**S4 灰度的前置条件现在是两条，不是零条**：控制面轴已清，读端轴未清，
+且两条写授权缺陷（discovery / credential_recovery）尚未修复。
