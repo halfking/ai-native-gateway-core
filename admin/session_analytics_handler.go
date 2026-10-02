@@ -306,6 +306,14 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 		args = append(args, "%"+search+"%", search)
 		argCount += 2
 	}
+	q := r.URL.Query()
+	where, args, argCount, err := appendSessionAnalyticsListFilters(
+		where, args, argCount, q.Get("task_id"), q.Get("date_from"), q.Get("date_to"),
+	)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	listQuery := "SELECT " + sessionSummarySelectCols +
 		" FROM session_summaries ss" +
@@ -323,7 +331,7 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 		sessions []AnalyticsSessionSummary
 		total    int
 	)
-	err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+	err = h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, listQuery, pagedArgs...)
 		if err != nil {
 			return fmt.Errorf("list query: %w", err)
