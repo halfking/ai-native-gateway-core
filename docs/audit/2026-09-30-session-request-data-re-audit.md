@@ -6137,6 +6137,35 @@ glm-5.3       | glm-5.3-flash
 | M2 去掉 CASE 守卫（`CASE WHEN true`） | `:53` **单独命中**（与 M1 签名不同） |
 | M3 down 迁移不回滚（保持有源投影） | `:77 / :81` |
 
+### §9.46.4b 真库往返门（`TestRequestLogsViewV2EnsureMatchesMigration`）替我抓了 3 处
+
+816 改了 Go 镜像体，而**生产启动走的是 Go 那条路**、不是迁移文件。
+`db/view_schema_v2_contract_test.go` 那道真库门（在 scratch 库上重建整条包装链、
+逐字节比对 ensure 与迁移链的 viewdef）第一次跑就红了，**三次**，每一处都是真问题：
+
+1. **重放链里没有 816** ⇒ 「ensure 与 710+734+738+740+815 产出不同 viewdef」。
+   这正是这道门存在的意义：Go 镜像体与迁移链必须同体，漏一个迁移会在这里现形，
+   而不是等到某台机器启动时把视图重建歪。
+2. **815 down 必须先 816 down**。816 的 proj 是完整 118 列契约（含 815 那三列），
+   单独执行 815 down 会把 816 建的视图直接拆成 115 列**而不报错**——
+   「能跑完但结果不是你以为的形态」这一类半吊子状态。
+3. **我那条「815 down 确定性」断言在比两个不同起点的产物**。postDown815 采自
+   816-down 之后，而第二次 down 接在 815+816 的 re-up 之后 ⇒ 它测的是
+   「815 down 对 816 产出的 viewdef 与对 815 产出的 viewdef 结果是否相同」，
+   并不是我以为的「同一个 down 跑两次」。修正后拆成两件：
+   - `postDown815 == postDown815From816`：**816 的存在不扰动 815 的 down 结果**
+     （否则回滚链的产物会取决于「816 有没有跑过」）；
+   - 连做两次相同 down 序列，产物逐字节相同：**这才是确定性**。
+
+⇒ 教训与 §9.46.5 同源：**「跑出来红」要先分诊是门错了还是代码错了**，
+而这次三处红**全是代码/测试真的错了**，只有第 3 处是「测试在测一个它没打算测的量」。
+
+迁移 3/3 之外，Go 投影的变异也做了：**去掉 CASE 守卫**（能编译的形态）同时打红
+`TestViewV2ProjectionContractSync:97`（registered append #2 drifted）与
+`TestRequestLogsViewV2EnsureMatchesMigration:423`（ensure 的 client_ip 投影丢了守卫），
+两处行号不同。**第一版注入把行尾注释写进了复合字面量里，编译失败——那不是证据**，
+改成前置注释后才拿到有效证据。
+
 ### §9.46.5 这道门自己写错了一次——**子串门被约束注释喂饱**
 
 M0（第一版）判 `down` 里有没有 `DROP VIEW`，用的是子串匹配。而 down 文件的
@@ -6160,3 +6189,129 @@ S4 标识符出现在 SQL 注释里）。修法也不是退化成「不判了」
 - **没有动 `credits_rate_multiplier`**。它是 `verdictNoSessionSource`
   ——会话族**整条链上都没有「这一行按什么倍率计价」这个事实**，不是缺列，
   补不出有源投影。这与 `client_ip` 是两类问题：一个是**有源未投**，一个是**无源**。
+
+---
+
+## §9.45 S4 读面门的一个结构性盲区，以及一个「两个真相源让门测不出差别」的实例
+
+§9.44 末尾记了一条由本轮改动引起的红灯：
+`不可归属豁免 "bg/auto_route_settle_worker.go:id" 已失效`。本节把它查到底，
+结论比那条红灯大得多。
+
+### §9.45.1 红灯本身：删掉，而不是改写
+
+`admin/v1_direct_padded_column_reader_test.go` 的 `unattributablePaddedRefExemptions`
+里那条 `bg/auto_route_settle_worker.go:id`，形状是「一条同时含 v1 关系与派生表的
+字面量里，裸 `id` 不可归属」。§9.44 把 settleBatch 的 SQL 搬进
+`bg/auto_route_settle_sql.go` 的两个纯函数后，那条字面量被拆成若干片段，
+**每一片都不含任何关系名**（关系名是拼进去的 `src.TurnsTable`）⇒ 该文件对这个门
+不再产生任何命中 ⇒ 豁免按「失效即报红」的设计报了出来。
+
+处置是**删掉**。两条理由缺一不可：
+
+1. 豁免的语义是「这处不可归属的裸列，我手验过它绑的不是 v1」。形状确实不存在了，
+   这句话对今天仍然成立。
+2. 删掉之后 `bg/auto_route_settle_sql.go` 对这道门**完全隐形**——不是「判定为干净」，
+   是「看不见」。这一点值得单独一节，因为它不是本轮才有的问题。
+
+### §9.45.2 盲区的机制：关系名必须是字面量
+
+`paddedColumnsReadFromV1Direct` 的口径是：从 **SQL 字面量文本**里用 `fromJoinRE`
+抽 `FROM`/`JOIN` 后的关系名。`FROM request_logs_hot` 是完整字面量，抽得到；
+`FROM ` + logsTable + ` WHERE …` 抽不到——字面量里根本没有关系名。
+
+这不是本项目特有的写法，恰恰是**为了退役而刻意造的**：把表名收进集中式切换层，
+改一处就能整体端口。实测有四个这样的层：
+
+| 切换层 | 定义位置 | `days <= 7` 时返回 |
+|---|---|---|
+| `maas.requestLogsSource` | `maas/usage.go:66` | `request_logs_hot AS r` |
+| `admin.requestLogsFromClause` | `admin/usage_credits.go:91` | `request_logs_hot AS r` |
+| `admin.logsSourceFromSQL` | `admin/logs_turns_source.go:62` | canonical 视图或会话族（**从不** v1） |
+| `admin.boardRequestLogsFromClause` | `admin/board_time_range.go:136` | canonical 视图 |
+
+⇒ **门的设计与退役规划的方向是冲突的**：规划把读法集中化以便可整体切换，
+而门只能看见没被集中化的那些。
+
+### §9.45.3 实测：可复现工具与它的三个错误
+
+新工具 `cmd/tools/sql_source_indirection_audit`（**不是门、不进 CI**，理由写在其
+包注释里）。全仓 **60 处拼接点 / 36 个文件**，其中解析到 v1 宽族的有 **8 处 / 5 个文件**：
+
+| 位置 | 解析结果 |
+|---|---|
+| `admin/usage_credits.go:120` | `request_logs_hot AS r` \| `request_logs_with_current_month AS r` |
+| `maas/usage.go:106,116,134,170` | 同上 |
+| `maas/credit_buckets.go:47` | 同上 |
+| `maas/consumption_detail.go:79` | 同上 |
+| `cmd/tools/backfill_session_bodies/main.go:96` | `request_logs_bodies` |
+
+**工具的第一版踩了三个方向相反的错，三个都是「输出看起来很正常」型的**：
+
+1. **把「不知道」报成「安全」**。`x := someFunc(...)` 这种绑定没解析，未知标识符被
+   原样当作候选表名 ⇒ `logsTable` 变成「名为 logsTable 的非 v1 表」⇒ 归入
+   「退役安全」。6 个真 v1 调用点**一个都没报出来**。
+2. **变量按包级绑定**。`logsTable` 是函数局部变量，但 `admin` 包里三个互不相干的
+   函数各绑一次、返回**三张不同的表**。「首个胜出」让三者都拿到第一个函数的值 ⇒
+   输出一份格式正确、数值合理、**结论全错**的报告。
+3. **用前缀判 v1**。视图名 `request_logs_with_current_month*` 同样以 `request_logs_`
+   开头 ⇒ 6 个**只读视图**的拼接点被报成读 v1，方向完全相反的假阳性。
+
+⇒ 修法：按**包**建环境、变量按**函数作用域**、只认精确表名集合、跨包调用与 struct
+字段一律判「不可判定」（共 40 处），**不猜**。
+
+### §9.45.4 这三条修完之后，又撞上「两个真相源让门测不出差别」
+
+`isV1Relation` 一度同时有三层判据：精确表名集合 + 排除 canonical 视图的正则 +
+`request_logs_` 前缀兜底。变异验证连做两次，**两次都没能让门变红**：
+
+| 变异 | 门的反应 |
+|---|---|
+| A：加回前缀兜底 | **仍绿**——正则守卫已经挡住了视图名 |
+| B：删掉视图正则 | **仍绿**——精确集合里本来就没有视图名 |
+
+⇒ 行为被**三个真相源同时决定**，任何删掉其中一个的变异都测不出差别。这与本文件族
+反复出现的教训是同一条：§9.26 的注释早就写着「门拿错误源与错误派生式互相校验，
+所以它一直绿着」。我刚在工具里重建了它。⇒ 收敛到**唯一**真相源（4 元素精确表名
+集合，与 `v1DirectTables` 同源），其余删掉。
+
+第三道门（片段检测的 `\s+$` 锚点）也是先绿后红：夹具里只放了一条**孤立**的完整
+字面量，而它根本不在 `+` 链里，`ast.Inspect` 不会访问它 ⇒ 锚点在不在都测不出差别。
+补上「完整字面量**自己参与拼接**」（条件查询拼接，本项目到处都是）之后，变异才
+生效。⇒ **一道门测不出变异，先怀疑夹具没覆盖区分点，而不是怀疑变异没生效。**
+
+### §9.45.5 结论：盲区是真的，当前没有活的漏网
+
+对那 8 处逐个手验是否读**补位列**（现网 6 列：`id` `test_col` `test_tab_indent`
+`provider_model` `credits_rate_multiplier` `client_ip`）：
+
+- `admin/usage_credits.go`、`maas/usage.go`、`maas/credit_buckets.go`：**零匹配**。
+- `maas/consumption_detail.go`：`maas_settings.id` 与 `p.id` / `c.id` / `mc.id`
+  —— 全部限定在别的关系上，且这三行是**从别名读**（`alias.provider_id`）而非读
+  `alias.id`。
+- `cmd/tools/backfill_session_bodies/main.go:96`：读 `request_body` / `response_body`
+  / `request_id`，均非补位列（该文件唯一的 `id` 出现在 flag 描述文本里）。
+
+⇒ **§9.26 的「14 → 1 → 0 收口」结论方向正确，但它是站在一个漏掉拼接式 SQL 的
+测量面上得到的。** 补位读点当前确实为 0；不过这个 0 的**支撑面**比看上去窄。
+
+### §9.45.6 建议（属于门的所有者，本节不代为实施）
+
+1. **不要**把 8 处（或 60 处）登记进任何豁免表。§9.37 已记录：先写登记、后加护栏
+   的顺序会系统性腐烂，而这 8 处的形状是**条件性**的（`days <= 7` 才读 v1），
+   登记表完全无法表达这种条件。
+2. 更合适的形状是在**切换层**上加门：四个切换层的返回值是有限集合，让一道门断言
+   「这些集合里出现过的每个表名都在允许清单内」。切换层是端口的**单点**，
+   守住它等于守住了所有下游读点——这比逐个读点登记更接近退役规划本身的结构。
+3. 本节**没有**实施第 2 条：`admin/` 与 `maas/` 的这些文件当前有并行会话的未提交
+   改动（`admin/usage_credits.go` 已被改过），代为加门会与他们的工作冲突。
+   本节只交付工具、证据与口径。
+
+### §9.45.7 本节没有做的
+
+- **没有**给 admin 的读面门加拼接式 SQL 检测。理由见 §9.45.6.3。
+- **没有**把工具接进 CI。它的结论依赖 Go 层表达式解析，冻结成登记表就是下一次
+  腐烂的起点（§9.37）；正确用法是按需运行、把输出当证据读。
+- **没有**动 `maas.requestLogsSource` 与 `admin.requestLogsFromClause` 的行为。
+  它们在 `days <= 7` 时读 v1 是**当前的正确代码**（短窗口要避开分区扫描），
+  退役时要改的是那时的取舍，不是现在。
