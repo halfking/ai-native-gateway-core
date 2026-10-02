@@ -411,6 +411,18 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if !strings.Contains(ensureViewdef, "client_ip") {
 		t.Fatal("ensure must compose the 740 client_ip column into the rebuilt body")
 	}
+	// 816 起 client_ip 必须是**有源**投影且**带守卫**（审计 §9.46）：
+	// `t.client_ip::inet` 无守卫时，一个畸形 text 值会打挂整条视图链的每个读方。
+	// pg_get_viewdef 会把 `CASE WHEN c THEN x END` 重排成 `WHEN c THEN x` + `END`
+	//（外层 CASE 字样消失），所以判据用渲染后仍存在的片段。
+	if !strings.Contains(ensureViewdef, "t.client_ip::inet") {
+		t.Error("ensure must project t.client_ip on the session branch (816); " +
+			"falling back to NULL padding re-creates the __unknown__ client_ip dimension")
+	}
+	if !strings.Contains(ensureViewdef, "WHEN t.client_ip ~ ") {
+		t.Error("ensure's client_ip projection lost its CASE guard (816); " +
+			"an unguarded text->inet cast breaks every reader of the canonical view")
+	}
 	if !strings.Contains(ensureViewdef, "credits_rate_multiplier") {
 		t.Fatal("ensure must compose the 738 credits_rate_multiplier column into the rebuilt body")
 	}
@@ -473,9 +485,15 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	applyMigration("738_view_chain_credits_rate_multiplier.sql")
 	applyMigration("740_view_chain_client_ip.sql")
 	applyMigration("815_request_logs_view_stage_band_cff.sql")
+	// 816（审计 §9.46）：client_ip 由 NULL 补位改为 session 侧有源投影。
+	// **这道门第一次跑就红了**，报「ensure 和 710+734+738+740+815 产出不同
+	// viewdef」——因为重放链里没有 816，而 Go ensure 已经是 816 的形态。
+	// 这正是它存在的意义：Go 镜像体（生产启动走的那条）与迁移链必须同体，
+	// 漏掉一个迁移就会在这里现形，而不是等到某台机器启动时把视图重建歪。
+	applyMigration("816_request_logs_view_client_ip_projection.sql")
 	migrationViewdef := viewDefinition(t, ctx, pool)
 	if migrationViewdef != ensureViewdef {
-		t.Fatalf("ensure and migrations 710+734+738+740+815 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
+		t.Fatalf("ensure and migrations 710+734+738+740+815+816 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
 			ensureViewdef, migrationViewdef)
 	}
 
@@ -705,6 +723,18 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 			t.Fatalf("apply %s: %v", name, err)
 		}
 	}
+	// 816（审计 §9.46）在 815 之上，所以**必须先 down 816**：它的 proj 是
+	// 完整的 118 列契约（含 815 那三列），815 down 单独执行会把 816 建的
+	// 视图直接拆成 115 列而不报错——「能跑完但结果不是你以为的形态」这一类
+	// 半吊子状态，正是本门存在的理由。
+	applyDown("816_request_logs_view_client_ip_projection.down.sql")
+	postDown816 := viewDefinition(t, ctx, pool)
+	if strings.Contains(postDown816, "t.client_ip::inet") {
+		t.Fatalf("816 down must remove the client_ip cast from the canonical view; got:\n%s", postDown816)
+	}
+	if !strings.Contains(postDown816, "client_ip") {
+		t.Fatalf("816 down must KEEP the 740 client_ip column (it only replaces an expression); got:\n%s", postDown816)
+	}
 	applyDown("815_request_logs_view_stage_band_cff.down.sql")
 	postDown815 := viewDefinition(t, ctx, pool)
 	for _, col := range []string{"origin_stage", "token_band", "client_forwarded_for"} {
@@ -734,12 +764,19 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	}
 	clear815Bookkeeping("before re-up")
 	applyMigration("815_request_logs_view_stage_band_cff.sql")
+	// 816 的 down 会删掉自己的 bookkeeping 行（append-only 下它本来也不会冲突），
+	// 但显式清理一次，让「重跑 up」不依赖「down 恰好删干净了」这个隐含前提——
+	// 幂等门要能在 down 实现变化后仍然成立。
+	if _, err := pool.Exec(ctx, `DELETE FROM public.schema_migrations WHERE version = '816'`); err != nil {
+		t.Fatalf("clear 816 bookkeeping row: %v", err)
+	}
+	applyMigration("816_request_logs_view_client_ip_projection.sql")
 	reUp815 := viewDefinition(t, ctx, pool)
 	if reUp815 != ensureViewdef {
-		t.Fatalf("815 down 之后再 up，必须逐字节回到同一份 viewdef。\n"+
-			"不一致说明 815 依赖了它自己没有建立的前置状态——线上表现是"+
-			"「回滚后再前滚，视图少列或多列」，而每次都会被当成偶发。\n"+
-			"post-815 viewdef:\n%s\n\nre-up viewdef:\n%s", ensureViewdef, reUp815)
+		t.Fatalf("815+816 down 之后再 up，必须逐字节回到同一份 viewdef。\n"+
+			"不一致说明迁移依赖了它自己没有建立的前置状态——线上表现是"+
+			"「回滚后再前滚，视图少列、多列或表达式被悄悄换掉」，而每次都会被当成偶发。\n"+
+			"post-816 viewdef:\n%s\n\nre-up viewdef:\n%s", ensureViewdef, reUp815)
 	}
 	// 幂等的第二面：三列必须**真的有值**，而不是「列名回来了」。上面 607-624 行把
 	// session 分臂夹具改成了 node_probe/band-live，重建后仍要读到它们。列回来了而
@@ -754,14 +791,36 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("815 re-up 后三列必须仍有值；got origin_stage=%v token_band=%v。"+
 			"（列回来了但值是 NULL = 缺源被伪装成已迁移）", stage, band)
 	}
-	// 沙箱纪律：探针做完要复原。再 down 一次并要求**逐字节**等于 postDown815 ——
-	// 于是 down 的确定性也一并被钉住（同一个 down 跑两次结果不同 = 它偷偷读了
-	// 活库状态，那正是本文件最不敢依赖的一类输入）。
-	clear815Bookkeeping("before second 815 down")
-	applyDown("815_request_logs_view_stage_band_cff.down.sql")
-	if secondDown815 := viewDefinition(t, ctx, pool); secondDown815 != postDown815 {
+	// 沙箱纪律：探针做完要复原，并把 down 的确定性一并钉住
+	//（同一个 down 跑两次结果不同 = 它偷偷读了活库状态，那正是本文件最不敢
+	// 依赖的一类输入）。
+	//
+	// **两次必须从同一状态出发**（2026-10-02 修正）。第一版把「第二次 down」
+	// 接在 815+816 的 re-up 之后，而 postDown815 采自 816-down 之后 ——
+	// 于是这条断言在比两个**不同起点**的产物，测的是一个我没打算测的量：
+	// 815 的 down 对「816 产出的 viewdef」和对「815 产出的 viewdef」做正则
+	// 手术，结果本就可能不同。修正后的结构把两件事分开：
+	//   ① postDown815 == postDown815From816 —— 816 的存在不扰动 815 的 down 结果；
+	//   ② 连做两次同样的 down 序列，产物逐字节相同 —— 真正的确定性。
+	downChain := func(what string) string {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `DELETE FROM public.schema_migrations WHERE version = '816'`); err != nil {
+			t.Fatalf("clear 816 bookkeeping row (%s): %v", what, err)
+		}
+		applyDown("816_request_logs_view_client_ip_projection.down.sql")
+		clear815Bookkeeping(what)
+		applyDown("815_request_logs_view_stage_band_cff.down.sql")
+		return viewDefinition(t, ctx, pool)
+	}
+	postDown815From816 := downChain("run 1")
+	if postDown815From816 != postDown815 {
+		t.Fatalf("816 的存在扰动了 815 down 的结果：816-down+815-down 走出来的形态 "+
+			"必须与纯 815-down 逐字节相同，否则回滚链的结果取决于「816 有没有跑过」。\n"+
+			"pure-815:\n%s\n\nvia-816:\n%s", postDown815, postDown815From816)
+	}
+	if secondDown := downChain("run 2"); secondDown != postDown815From816 {
 		t.Fatalf("815 down 必须确定性：第二次 down 的 viewdef 与第一次不同。\n"+
-			"first:\n%s\n\nsecond:\n%s", postDown815, secondDown815)
+			"first:\n%s\n\nsecond:\n%s", postDown815From816, secondDown)
 	}
 
 	applyDown("740_view_chain_client_ip.down.sql")
