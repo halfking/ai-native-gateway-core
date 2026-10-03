@@ -13211,3 +13211,99 @@ git rev-list --count 2b6d337b2..origin/main   →  790 个提交
 4. 现网 `session_turns.search_text` 0% **不是故障**，是未部署。
    但它确实是**退役 v1 的硬阻塞的当前状态**——一旦要退役 v1，
    这条必须先部署并验证填充率。
+
+---
+
+## §9.108 把「阻塞 #1 读取侧」从抽象问题变成**可定量的两段方案**
+
+前面几轮一直把「`session_turns_with_current_month` 要不要加 `search_text`、
+`admin/logs.go` 何时切会话族」当成一个待拍板的抽象问题。
+本节把它量化——**这个决定要买的东西有多贵，数字是多少。**
+
+### §9.108.1 读取面的真实规模
+
+`admin/logs.go`（主查询读 `request_logs_with_current_month`，统计查询读
+`request_logs_hot`）用到的 `rl.*` 去重列共 **71 个**。
+
+与会话侧对账（列名逐个比对；会话侧列取自真安装库）：
+
+| 分类 | 列数 | 含义 |
+|---|---|---|
+| 会话**视图已投影** | **16** | 直接可用 |
+| **父表有、视图未投影** | **30** | **给视图加投影即可覆盖** |
+| 会话侧**完全没有** | **25** | 需要来源决策 |
+
+⇒ **46 / 71（65%）只差「视图没投影」这一层**。
+
+### §9.108.2 机械的那一段：加宽视图可覆盖 30 列
+
+父表 `session_turns`（104 列）已经有、但 55 列的视图没带出来的，且 admin 用到的：
+
+```
+agent_name, agent_type, api_key_id, canonical_id, canonical_model,
+client_request_id, cost_currency, cost_display, credits_charged, customer_id,
+egress_protocol, end_user_id, failure_detail_code, failure_stage,
+identity_hash, request_checksum, request_preview, response_checksum,
+response_preview, routing_attempts, routing_summary, search_text,
+stream_chunk_count, stream_done_sent, stream_first_chunk_ms,
+stream_interrupted, transform_summary, upstream_finish_reason,
+usage_source, virtual_client_id
+```
+
+**这一段是机械的**：加宽视图定义即可，无回填、无写链改动。
+**`search_text` 就在这 30 列里**——这才是「加不加 `search_text`」这个问题的真实
+规模：不是 1 列，是**一次视图口径重定**。
+
+### §9.108.3 非机械的那一段：25 列会话侧没有
+
+```
+affinity_hit, api_key_owner_user, api_key_prefix, application_code, attachments,
+client_model, client_profile, compression_reason, due_at, gw_session_id,
+gw_task_id, outbound_model, outbound_msg_count, outbound_msg_hashes,
+outbound_token_est, provider_id, request_class, request_mode, request_status,
+stream_done_received, total_tokens, trace_seq, transform_rule_id, virtual_ip,
+virtual_mac
+```
+
+其中**两类要分开看**（我按名字与父表现有列的关系做的**初判，不是结论**）：
+
+- **可派生 / 改名对齐**（父表有等价物，只是名字不同或可算）：
+  `total_tokens`（= prompt+completion，v1 就是这么存的）、
+  `gw_session_id`（会话侧的键就叫 `session_id`）、
+  `request_status`（会话侧有 `success` + `status_code` + `error_kind`，
+  v1 侧也是用 `requestLogStatusExpr` 派生的）、
+  `attachments`（父表有 `attachment_count` / `multimodal_types`，非等价）、
+  `provider_id`（父表是 `provider`）。
+- **真正没有来源**：`outbound_msg_hashes`、`outbound_token_est`、
+  `outbound_msg_count`、`virtual_ip`、`virtual_mac`、`request_class`、`due_at`、
+  `affinity_hit`、`trace_seq` 等——这些是 v1 **独有的采集面**，
+  不是「搬过去」的事。
+
+### §9.108.4 必须说清的三条限定（防止这份表被过度使用）
+
+1. **这是按列名比对的，不是按语义**。`success` 两侧都有，但 v1 与会话侧的口径
+   是否一致**没有验证**。同名 ≠ 同义。
+2. **视图加宽本身有代价**：55 → 85 列的宽视图，
+   在 §9.104 已知的「三份 baseline 是手工维护的孤儿」背景下，
+   改视图定义要同改三份 + 相应迁移，**不是一行 SQL**。
+3. **25 列的归属是产品决策，不是工程判断**。它们是 v1 独有的采集面，
+   退役时是「接受能力下降」还是「补采集」，属口径裁决。
+
+### §9.108.5 因此，「读取侧」这个待拍板项可以拆成三个独立决定
+
+| # | 决定 | 性质 | 规模 |
+|---|---|---|---|
+| A | 会话视图是否加宽到覆盖那 30 列 | **机械** | 视图定义 ×3 + 迁移 |
+| B | 那 16 个已有列的**语义**是否与 v1 等价 | **需核对** | 逐列对账 |
+| C | 剩下 25 列是「接受能力下降」还是「补采集」 | **产品决策** | 未知 |
+
+A 不必等 B/C，可以先做；B 和 C 决定「v1 能不能退役」。
+
+### §9.108.6 这一节的教训
+
+> **把「要不要做」翻译成「要做的话买什么」。** 我把读取侧挂成抽象问题挂了好几轮，
+> 而它其实可以立刻被量化：**71 列里 65% 只差视图投影**。
+> 数字一变，这件事的性质就从「开放决策」变成「一段机械工作 + 两个有界决定」。
+>
+> **同名不等于同义**：这份表是按列名比对的，语义核对（决定 B）独立存在，
+> 不能因为「列都在」就说 A 和 B 一起完成了。
