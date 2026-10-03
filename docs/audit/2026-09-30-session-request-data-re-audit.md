@@ -11830,3 +11830,182 @@ startup migration 820 exists but is missing from the channel files=(...) array
 6. 顺带清掉一个**与本轮无关**的既有红：`embeddata/startup/.DS_Store`（未跟踪的
    macOS 垃圾文件）会让 `TestStartupFilesAreAllEmbedded` 报红。
    已用 `git stash` 回 HEAD 验证该门**在改动前就红**，确认与 820 无关。
+
+## §9.93 ★★★批判式复审：§9.92 的第一版实现**是恒不生效的**，而且我差点在它上面盖章
+
+2026-10-04。用户要求对 §9.92 做批判式复审。结论先行：
+
+> **§9.92 交付的第一版落点，一个请求都记不到。**不是「漏标了一点」，
+> 是结构性恒不生效。而且它在编译、测试、门全绿的情况下交付了。
+> 本节记录 8 个缺陷、一次决定性实测、一个被变异抓出来的**门本身的洞**，
+> 以及一条差点让我把「没跑」当成「通过」的过程失误。
+
+### §9.93.1 根因：打标挂在**同步**路径上，而终态 turn 由**异步**写入
+
+`§9.92` 的判据挂在 telemetry `client.go` 的 `updateRequestLog` 竞态回落分支上
+（那里 `SELECT EXISTS` 本来就在跑 ⇒ 判据零成本，这个设计是对的，保留）。
+
+但**执行打标的地方**选错了。终态 turn 由 `internal/sessionv2mirror/hook.go`
+的 `runShadowWrite` 写入，而它被派发到**有界 goroutine 池**：
+
+```go
+// hook.go:189
+var shadowWriteDispatchAsync = true     // ← 默认
+select { case sema <- struct{}{}: go func(){ runShadowWrite(...) }() }
+```
+
+⇒ 在同步路径上发 `UPDATE session_turns` 时，那一行**几乎必然还不存在**。
+`mark_no_row` 会接近 100%，`is_abandoned` 列**永远是 NULL**。
+
+这比「有界的漏标」严重得多：§9.92.4 把它记成「已知缺口」，
+而缺口意味着「大部分能记到」。实际是**记不到**。
+**一个恒不生效的落点比没有落点更糟**——列看起来权威而实际是空的。
+
+### §9.93.2 修正：把「事实」挂到 entry 上，在 `w.Write` 之后打标
+
+```
+telemetry  updateRequestLog 竞态回落分支
+            └─ entry.T0Missing = true          ← 只置事实，不写库
+                  ↓（同一指针，firePersistedHooks(entry) 在其后调用）
+sessionv2mirror PersistHook → runShadowWrite
+            ├─ err := w.Write(ctx, req)        ← 终态 turn 在此提交
+            └─ if err == nil && entry.T0Missing { markAbandonedTurnIfT0Missing(...) }
+```
+
+`Write` 在 `session_writer_v2.go:762` 提交后才返回 ⇒ 同一 goroutine、同一超时预算、
+**行必然已存在**。无竞态，且热路径上没多一句 SQL。
+
+### §9.93.3 ★★决定性实测：RLS 会让打标**静默恒为 0 行**——这是读代码看不出来的
+
+搬对位置之后我差点又交付一个恒不生效的版本。`pool.Exec` 在**没有 GUC 的连接**上跑，
+而两张面都开着 RLS。用 `llm-gateway-pg` 容器实测（`SET ROLE rls_probe`，
+该角色 `rolsuper=f` **且** `rolbypassrls=f`，但对两张表有全权）：
+
+| 形态 | 结果 |
+|---|---|
+| 裸 `pool.Exec`（无 GUC） | `UPDATE 0` |
+| 仅 `set app.current_tenant` | **`UPDATE 0`** ← 关键 |
+| `setBypassGUCs` + tenant（本轮形态） | **`UPDATE 1`** |
+| 再跑一次（幂等） | `UPDATE 0` |
+
+**中间那行是本节最值钱的一条**：只补 `app.current_tenant`（也就是 `Write` 自己设的那个）
+**不够**。原因是策略不止一条：
+
+```
+public.session_turns_hot:
+  session_turns_hot_tenant_isolation   PERMISSIVE  tenant_id = current_setting('app.current_tenant', true)
+  session_turns_hot_super_admin_bypass PERMISSIVE  app.current_role='super_admin' OR app.bypass_rls='true'
+  session_turns_hot_owner_filter       RESTRICTIVE  ← 还要 request_logs 里有同会话同属主的行
+```
+
+PostgreSQL 先 OR 全部 PERMISSIVE，再 AND 全部 RESTRICTIVE。
+`owner_filter` 是 **RESTRICTIVE**，它不看 tenant，只看
+`request_logs`/`request_logs_hot` 里有没有匹配的 `owner_user` ⇒ 与 tenant GUC 无关地挡死。
+
+⇒ 结论不是「补一个 GUC」，而是「**打标必须和写行处在同一个 RLS 上下文**」。
+`w.Write` 在**另一条连接**上、**另一个事务**里自建 GUC 上下文，
+所以打标语句**不能假定**自己看得见刚写的行。修法是本包**自己的既有配方**：
+`replay.go:128` 的 `setBypassGUCs`（`app.current_role=super_admin` + `app.bypass_rls=true`），
+外加 `app.current_tenant` 说明这条语句打的是哪个租户的行。
+
+> **这一条同时是 §9.53「本地量具量不出真问题」最锋利的一次实例**：
+> 本机对 `session_turns_hot` 有全权的角色是 `llm_gateway`，而它
+> `rolsuper=t` **且** `rolbypassrls=t` ⇒ **RLS 对它永不生效**。
+> 任何用这个角色做的本地端到端测试都会在缺陷版本上**通过**。
+> 判别必须换一个非超级、非 bypass、但有授权的角色。
+
+### §9.93.4 八个缺陷（全部是我自己上一轮写的）
+
+| # | 缺陷 | 后果 | 严重度 |
+|---|---|---|---|
+| D1 | `nonEmptyStr` 全仓不存在 | **编译不过** | 高 |
+| D2 | telemetry 与 sessionv2mirror 两处 `promauto` 注册**同名**指标 | `cmd/gateway/main.go` 同时链接两侧 ⇒ **启动 init panic** | 高 |
+| D3 | 标志设在 `fallback`（`*entry` 的**副本**）上，消费者读 `entry` | 编译通过、门全绿、**落点恒不触发** | 高 |
+| D4 | UPDATE 的 tenant 用 `nonEmpty(..., "default")` | turn 行实写 `entry.TenantID`（**含空串**）⇒ 空租户流量**永久打空** | 高 |
+| D5 | `settleAbandonedTurn` 是**空实现**且有调用点 | 审计里点名过的「死代码换个名字」：承重判据没有单点，只有一具被命名过的空壳 | 中 |
+| D6 | `markAbandonedTurn` 搬迁后成孤儿 | 重复实现 | 中 |
+| D7 | UPDATE 无 RLS GUC | **静默恒 0 行** | 高 |
+| D8 | 注释自陈「本包有自己的 go.mod」 | **该 go.mod 不存在**；一个错误的自我说明比没有说明更坏 | 低 |
+
+D1/D2 是**编译期与启动期**的硬伤——它们说明 §9.92 交付时**根本没有编译过、
+也没有启动过**。D3 是最隐蔽的一个：它让「修好了」这件事在每一个可观测维度上
+都表现为成功。
+
+### §9.93.5 ★变异抓出了**门自己的洞**——不是产品有洞
+
+15 条变异全部先**证实落盘**（断言原文本消失且新文本出现）再跑门，恢复后 `cmp`
+逐字节比对。15/15 门转红。其中一条**第一版跑出来是 GATE-GREEN**：
+
+> 变异：把调用点改成 `tenantOr(req.TenantID)`（一个补 `default` 的包装函数）。
+> 门的两条检查是「参数里含 `req.TenantID`」与「参数里含 `nonEmpty` 或 `"default"`」。
+> `tenantOr(req.TenantID)` **同时满足两条**——`req.TenantID` 是子串，
+> 而 `"default"` 字面量在函数体内、不在调用里。**门绿了，而代码永久错误。**
+
+⇒ 修法不是再加一条子串检查，而是**断言参数结构**：必须存在一个**恰好等于**
+`req.TenantID` 的参数，且没有任何参数带默认值（`callArgs` 按顶层逗号切分，
+跳过嵌套括号与字符串）。
+
+另外三条变异第一版是 **BUILD-BROKEN**，我**没有**把它们算作证据——
+「编译失败」只证明编译器看见了，不证明门有牙。修的是变异本身
+（把插入点挪进循环体内、给包装函数补定义），直到包仍能编译、只有门转红。
+
+### §9.93.6 ★差点把「没跑」当成「通过」
+
+告警门我用 `-run Abandoned` 过滤，报告了「全绿」。实际上有 4 道门
+（`TestWritesFailingAlertCoversTheNoPoolState`、
+`TestRunbookDoesNotPointAtTheDeletedTelemetryPad`、
+`TestRulesUseTheCurrentMigrationNumber`、
+`TestRulesStateTheUncalibratedThreshold`）**名字里没有 `Abandoned`，一条都没跑**。
+其中一道的 lookbehind 语法（RE2 不支持）在**全量跑**时才炸出来。
+
+⇒ **过滤后的「全绿」必须同时报出「跑了 N 条 / 共 M 条」**，
+否则它与「没跑」在输出上不可区分。这与 §9.54 那条「门绿只说明两个集合相等，
+而它们可以同时少一个而仍然相等」是同族：**计数与内容必须分别断言**。
+
+### §9.93.7 `mark_no_row` 的语义**反转**了，连带改了三件事
+
+| | 首版（同步路径打标） | 本版（`w.Write` 之后打标） |
+|---|---|---|
+| `mark_no_row` 的含义 | **常态**（异步竞态） | **异常**（行不在我们看的地方） |
+| 健康值 | 比例高属正常 | ≈ 0 |
+| ③ 告警门限 | 0.9 | **0.5** |
+| 0.9 为什么抓不到首版 | — | 首版实际比例 ≈0.99，要 0.99 才报 |
+
+0.9 是**按「异步竞态是常态」推的**；语义反转后它成了**按错误的模型算出来的门限**。
+降到 0.5 的理由是结构性的（健康值 ≈0 ⇒ 一半打空就明确是坏了），
+**不是**观测出来的——仍然未经生产实测，门与文档都照旧标注。
+
+新增 op `mark_no_pool`（连接池未初始化 ⇒ **一次都没尝试**）：搬迁之后才可能出现这个状态，
+此时既没有 `mark` 也没有 `mark_failed`，①② 都不响，**运维会看到「指标很干净」的假象**。
+② 因此改为读 `op=~"mark_failed|mark_no_pool"`。
+
+promtool 场景从 5 条加到 **7 条**：新增 F（`mark_no_pool`）与
+G（`mark_no_row` 占 0.4 < 0.5 ⇒ **不得**响）。G 的作用是把「③ 判的是**比例**
+而不是**存在性**」从阈值的副产品变成被断言的性质。
+
+### §9.93.8 顺带清掉的陈旧引用
+
+- `runner.go` 注释仍写「写方（telemetry markAbandonedTurn）」⇒ 改为新位置。
+- 告警文件全文 `820` ⇒ `821`（820 已被上游 `93cbce8a3` 的音频回填占用）。
+- runbook 的 `grep -c markAbandonedTurn 于 …/telemetry/` 指向**已删除的文件**。
+  grep 会 exit 1，看起来像「接线缺失」——**与事实相反**。已加门钉住。
+- 门文件的 `repoRoot` 说明（见 D8）。
+
+### §9.93.9 本节没有做的 / 仍然成立的风险
+
+1. **没有部署**。821 未上 252，`storage.request_logs_write_enabled` 仍未 seed。
+   因此 §9.92.8 遗留的第 1 条依然成立。
+2. **没有端到端跑过一次真实请求**。本轮的落点正确性由
+   「单条 UPDATE 的实测（A/B/C/D 四形态）+ 15 条变异 + 9+9 道门」支撑，
+   **不是**由「观察线上 `is_abandoned` 计数上涨」支撑。这是本节最大的未验证项。
+3. **0.5 门限未经生产实测**（理由同 §9.92.8 第 4 条，门限值变了但性质没变）。
+4. **新分区是否继承 `is_abandoned` 仍未验证**（§9.92.5 遗留，需真建新分区）。
+   本轮**新查到**一条相关事实：`promote_session_turns_hot_to_partition`（迁移 526）
+   的列清单是**运行时从 `pg_attribute` 取的**，所以**已提升**的行会自动带上该列；
+   且该函数在两面列集不一致时会 `RAISE EXCEPTION`——真库实测两面列集**仍然一致**
+   （`shapes_identical = t`），821 没有破坏这个契约。
+5. **能力边界不变**：仍**不覆盖**「只有 t0、之后彻底静默」那一类（§9.92.4）。
+6. **历史漏标不可追补**：t0 缺失在 v1 侧无从事后查证。
+7. **上游 820 音频迁移的七点同步仍未修**（§9.92.7h 的坐标仍然有效）。
+   本轮实测：该迁移在 `origin/main` 上**仍然存在**且最大号仍是 820 ⇒ **821 未被占用**，
+   让号决策依然正确。

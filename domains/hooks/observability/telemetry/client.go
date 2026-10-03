@@ -496,7 +496,24 @@ type RequestLogEntry struct {
 	// V3.1 (2026-08-13, migration 491): 9-stage dispatch queue timestamps.
 	// Populated from domains/dispatch.QueuedRequest when the V2 pipeline is on.
 	// All nullable — early complete / legacy path leave them NULL.
-	T0ArrivedAt       *time.Time `json:"t0_arrived_at,omitempty"`
+	T0ArrivedAt *time.Time `json:"t0_arrived_at,omitempty"`
+
+	// T0Missing is set by updateRequestLog's upsert-race branch when the t1
+	// UPDATE matched 0 rows AND request_id does not exist on the v1 side —
+	// i.e. this request produced a terminal record but never had a t0.
+	//
+	// ⚠ It is a **signal to the mirror side**, not a landing pad on its own.
+	// The terminal turn is written asynchronously (hook.go dispatches the DB
+	// write to a bounded goroutine pool; shadowWriteDispatchAsync defaults to
+	// true), so a marker written from the synchronous telemetry path races
+	// the turn insert and loses — it would match 0 rows on essentially every
+	// attempt. Carrying the fact on the entry lets sessionv2mirror apply the
+	// flag to the turn *after* w.Write has returned, where the row is
+	// guaranteed to exist.
+	//
+	// json:"-": it is process-local control flow, never part of a payload.
+	// The durable form of the fact is the is_abandoned column (migration 821).
+	T0Missing         bool       `json:"-"`
 	T1TotalEnqueuedAt *time.Time `json:"t1_total_enqueued_at,omitempty"`
 	T2TotalDequeuedAt *time.Time `json:"t2_total_dequeued_at,omitempty"`
 	T3ModelEnqueuedAt *time.Time `json:"t3_model_enqueued_at,omitempty"`
@@ -2076,20 +2093,13 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// 会被下面的 if logsWrite 一起关掉（详见 observeSystemFingerprint）。
 	observeSystemFingerprint(entry)
 
-	// 「请求开始了却没结束」落点的另一半：**终态**到达 ⇒ 收掉那条非终态占位。
-	// 谓词必须**正向**判定：只有携带终态证据（success/failure/rate_limited）的
-	// UPDATE 才允许收口；中途 enrichment UPDATE（规范化后仍 in_progress）不收。
-	//
-	// ⚠ 负向写法（`!是「开始了没结束」`）会在 status=nil/脏值时放行 clear
-	// （方向=承重事实静默丢失）；normalizeRequestStatus 只回填 nil/空、
-	// 不清洗非空脏值（「到达此处的 status 恒为四值」靠全部调用方先经
-	// normalize 且只用 RequestStatus* 常量的纪律维持，非 normalize 的保证），
-	// 当前行为严格等价。正向写法把不变式「终态证据才收口」表达在门本身，
-	// 未来调用方演化时取安全侧（EmitRequestLogUpdate 已预期存在省略终态
-	// 字段的迟到 UPDATE）。
-	if requestLogEntryTerminal(entry) {
-		settleAbandonedTurn(ctx, entry)
-	}
+	// 审计 §9.93：此处原有的 `if requestLogEntryTerminal(entry) { settleAbandonedTurn(...) }`
+	// 整段已删除。`settleAbandonedTurn` 的函数体是空实现——它被调用、被注释
+	// 解释为「让『终态才动落点』这条不变式有位置可钉」，但钉住的什么也没发生。
+	// 这正是审计里点名过的形态：承重判据没有单点，只有一具被命名过的空壳。
+	// 真实落点只有一个动作（在终态 turn 上打标），它已经在
+	// internal/sessionv2mirror/abandoned_turn.go 里，且打标本身只可能发生在
+	// 终态路径上——不需要第二个函数来复述这件事。
 
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
 		// UPDATE directly targets usage_ledger_hot — UPDATE-heavy
@@ -2518,8 +2528,21 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			// ⚠ 判据必须**正向**（exists==false 才置位）。写成 `if exists` 会
 			// 把**每一次正常完成**都标成遗弃——那是方向反了，且比例约 100%，
 			// 不会触发任何阈值告警，只会安静地污染整张表。
-			markAbandonedTurn(ctx, tx, entry)
-
+			//
+			// ⚠⚠ 这里**只置标志，不写库**（审计 §9.93 的自我修正）。
+			// 终态 turn 由 sessionv2mirror 派发到有界 goroutine 池异步写入
+			// （hook.go 的 shadowWriteDispatchAsync 默认 true），
+			// 而本分支是同步的 ⇒ 在这里 UPDATE session_turns 必然命中 0 行。
+			// 第一版正是这么写的，落点因此几乎记不到任何东西。
+			// 正确形态：把「v1 侧无 t0」这个**事实**挂到 entry 上，
+			// 由 mirror 在 `w.Write` 返回**之后**给那一行打标——
+			// 同一 goroutine，行必然已存在，无竞态。
+			//
+			// ⚠⚠⚠ 必须设在 **entry**（调用方持有的那个指针）上，不能只设在
+			// 下面的 fallback 副本上。消费者是 firePersistedHooks(entry) →
+			// PersistHook → runShadowWrite，它读的是 entry；只改副本的话
+			// 标志到此为止，落点是恒不触发的空转。第一版修复就踩了这个。
+			entry.T0Missing = true
 			fallback := *entry
 			fallback.Op = RequestLogInsert
 			return c.insertRequestLog(&fallback)
