@@ -82,9 +82,19 @@ func TestUpdateRequestLogCarriesRequestClass(t *testing.T) {
 		t.Fatalf("UPDATE statement not found")
 	}
 	seg := src[idx : idx+20000]
+	// 2026-10-02（§9.74.2）：$98 的判据由 `$98 IS NULL` 改为 `$98::text IS NULL`。
+	// 语义完全不变 —— 这个门断言的三件事（$98→request_class、$99→due_at、
+	// 判据为 NULL 时保留旧值）都还在。改动的原因是**类型推断**，不是语义：
+	// 裸参数出现在 CASE 的 WHEN 判据里没有类型上下文，PG 拒绝整条语句
+	// （SQLSTATE 42P08），于是这条生产写入路径上的 request_class/due_at
+	// 永远不落库。根因与最小复现见 client.go 该处注释，以及
+	// TestCaseWhenPlaceholderHasTypeContext（离线门，真库测试没 DSN 时会 skip）。
+	//
+	// 仍然按字面量钉：既有的「due_at 判据复用 $98」这个耦合（class 为 NULL
+	// 时 due_at 也不写）尚未裁决，钉住字面量意味着任何改动都必须先想清楚。
 	for _, want := range []string{
-		"request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END",
-		"due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END",
+		"request_class = CASE WHEN $98::text IS NULL THEN request_class ELSE $98 END",
+		"due_at = CASE WHEN $98::text IS NULL THEN due_at ELSE $99 END",
 	} {
 		if !strings.Contains(seg, want) {
 			t.Fatalf("UPDATE missing 608 assignment %q", want)

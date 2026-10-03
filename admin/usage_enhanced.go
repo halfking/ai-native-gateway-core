@@ -44,6 +44,12 @@ type CostTrendResponse struct {
 	Entries    []CostTrendEntry `json:"entries"`     // 分组条目
 	OtherCost  float64          `json:"other_cost"`  // 其他（占比<2%合并）
 	OtherCount int              `json:"other_count"` // 其他条目数量
+
+	// Degraded / DegradedReason 语义见 PeriodCompareResponse。
+	// 这里的降级形状是「可选视图未迁移」⇒ 200 + 空 entries + total_cost 0，
+	// 页面上表现为一张空饼图。若不标记，它与「这段时间真的一分钱没花」同形。
+	Degraded       bool   `json:"degraded"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
 }
 
 // costTrendPlan 是 cost-trend 某个 group_by 的取数方案：基表、基表别名、
@@ -200,7 +206,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		if IsMissingRelationError(err) {
-			ReportMissingRelation(slog.Default(), "usageCostTrend", err)
+			reason := ReportMissingRelation(slog.Default(), "usageCostTrend", err)
 			writeJSON(w, http.StatusOK, CostTrendResponse{
 				GroupBy:    groupBy,
 				DateFrom:   startTime.Format("2006-01-02"),
@@ -208,6 +214,12 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 				Entries:    []CostTrendEntry{},
 				OtherCost:  0,
 				OtherCount: 0,
+				// 同一形状的降级必须同一套标记。上一提交给同文件的
+				// PeriodCompare / CacheEconomics 加了 degraded，却漏了这里 ——
+				// 结果是「本轮已修降级载荷」这句话对自己文件都不成立。
+				// 用户侧看到的是一张空饼图 + total_cost 0。
+				Degraded:       true,
+				DegradedReason: reason,
 			})
 			return
 		}
@@ -304,6 +316,19 @@ type PeriodCompareResponse struct {
 	Trend       string                 `json:"trend"`        // up | down | flat
 	Significant bool                   `json:"significant"`  // 是否显著（|变化| > 20%）
 	ByDimension map[string][]DimChange `json:"by_dimension"` // 按维度细分变化
+
+	// Degraded 标记本响应**不是**真实测量值，而是「schema 落后于代码」时的降级
+	// 占位。恒发（不带 omitempty）：健康时显式 false，客户端才能断言
+	// 「服务端确认过它是好的」；字段缺失与 false 在 API 语义上无法区分，
+	// 那正是本字段要消灭的歧义。
+	//
+	// 为什么需要它：降级原本返回 200 + 全 0，与「这段时间真的没花钱」在
+	// 页面上完全一样。2026-10-03 实测：2026-09 实际花费 1139.62 美元，
+	// period-compare 却显示 0 —— 用户看到的是「本月没花钱」。false 会让下一个人
+	// 再次以为「0 = 没有数据」。
+	Degraded bool `json:"degraded"`
+	// DegradedReason 运维口径的原因（缺哪个关系/列），仅降级时下发。
+	DegradedReason string `json:"degraded_reason,omitempty"`
 }
 
 // DimChange 维度变化
@@ -351,11 +376,15 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	currentStats, err := h.queryPeriodStats(ctx, tid, currentStart, currentEnd, currentPeriod)
 	if err != nil {
 		if IsSchemaBehindError(err) {
-			ReportSchemaBehind(slog.Default(), "usagePeriodCompare:current", err)
+			// ReportSchemaBehind 本来就返回原因串，之前被丢弃了 ——
+			// 于是降级载荷与「这段时间真的没花钱」完全同形。
+			reason := ReportSchemaBehind(slog.Default(), "usagePeriodCompare:current", err)
 			writeJSON(w, http.StatusOK, PeriodCompareResponse{
-				Current:     PeriodStats{Period: currentPeriod},
-				Previous:    PeriodStats{Period: previousPeriod},
-				ByDimension: map[string][]DimChange{},
+				Current:        PeriodStats{Period: currentPeriod},
+				Previous:       PeriodStats{Period: previousPeriod},
+				ByDimension:    map[string][]DimChange{},
+				Degraded:       true,
+				DegradedReason: reason,
 			})
 			return
 		}
@@ -367,11 +396,13 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	previousStats, err := h.queryPeriodStats(ctx, tid, previousStart, previousEnd, previousPeriod)
 	if err != nil {
 		if IsSchemaBehindError(err) {
-			ReportSchemaBehind(slog.Default(), "usagePeriodCompare:previous", err)
+			reason := ReportSchemaBehind(slog.Default(), "usagePeriodCompare:previous", err)
 			writeJSON(w, http.StatusOK, PeriodCompareResponse{
-				Current:     PeriodStats{Period: currentPeriod},
-				Previous:    PeriodStats{Period: previousPeriod},
-				ByDimension: map[string][]DimChange{},
+				Current:        PeriodStats{Period: currentPeriod},
+				Previous:       PeriodStats{Period: previousPeriod},
+				ByDimension:    map[string][]DimChange{},
+				Degraded:       true,
+				DegradedReason: reason,
 			})
 			return
 		}
@@ -568,6 +599,13 @@ type CacheEconomicsResponse struct {
 	CompressionSaved   float64 `json:"compression_saved"`    // 压缩节省（估算）
 	TotalSaved         float64 `json:"total_saved"`          // 总节省
 	SavingsRate        float64 `json:"savings_rate"`         // 综合节省率
+
+	// Degraded / DegradedReason 语义见 PeriodCompareResponse 的同名字段。
+	// 这个响应在 UsageCost.vue 上一次渲染 6 个指标，2026-10-03 实测降级时
+	// 6 个全是 0 而页面上没有任何提示 —— 与「本月一点没花」无法区分。
+	// 恒发 false，让「服务端确认过它是好的」与「字段不存在」不再同形。
+	Degraded       bool   `json:"degraded"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
 }
 
 func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
@@ -611,14 +649,16 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 		%s
 	`, whereClause)
 
-	// compression_strategy 的原生归属是 request_logs。走 request_logs 单表而不是
+	// compression_strategy 的原生归属是 request_logs。走 request_logs 而不是
 	// join 回 ledger：ledger→request_logs 是 2M×2M 嵌套循环，30 天窗口实测 28s，
-	// 而 request_logs 按月分区自带 ts 剪枝，同窗口实测 1.7s（2026-10-03 实测）。
-	// 两表 cost 口径经核对一致（同窗口均 150.15 美元），因此这里只是换张表，
-	// 不引入新的计费口径。
+	// 而按 ts 过滤的单表读同窗口实测 1.7s（2026-10-03 实测）。两表 cost 口径经
+	// 核对一致（同窗口均 150.15 美元），因此这里只是换张表，不引入新的计费口径。
+	// 读的是 hot∪母表双腿视图而非裸母表：最近 8h 的行只在 request_logs_hot
+	//（hot 默认仅保留 8h），裸母表读对当月面板是真实盲区（sqlreadguard 读面
+	// 纪律）；视图两腿都吃 ts 谓词下推，剪枝收益不丢。
 	compressedQuery := `
 		SELECT COUNT(*)
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		WHERE rl.ts >= $1 AND rl.ts < $2
 		  AND rl.compression_strategy IS NOT NULL
 		  AND rl.compression_strategy <> ''
@@ -654,10 +694,12 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		if IsSchemaBehindError(err) {
-			ReportSchemaBehind(slog.Default(), "usageCacheEconomics", err)
+			reason := ReportSchemaBehind(slog.Default(), "usageCacheEconomics", err)
 			resp := CacheEconomicsResponse{
-				DateFrom: startTime.Format("2006-01-02"),
-				DateTo:   endTime.Format("2006-01-02"),
+				DateFrom:       startTime.Format("2006-01-02"),
+				DateTo:         endTime.Format("2006-01-02"),
+				Degraded:       true,
+				DegradedReason: reason,
 			}
 			writeJSON(w, http.StatusOK, resp)
 			return

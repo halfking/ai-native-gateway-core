@@ -445,7 +445,17 @@ function descendantHasScrollable(src, css, anchorClasses) {
 // 契约 C：列表 × (日期控件 / 模型控件 / 名称排序) 清单
 // ─────────────────────────────────────────────────────────────
 
-const DATE_FILTER_RE = /el-date-picker|type="daterange"|type='daterange'|DateRange|dateRange|date-range|date_range/
+// 2026-10-03 修正：原模式只认 el-date-picker / daterange 一族，**不认本项目
+// 自己的统一日历组件 KxDatePicker，也不认 type="month"**。实测 5 个视图
+// （UsageCost / ProvidersView / RoutingOverrideView / CredsTab /
+// FormatAnomaliesView）已经接了 KxDatePicker，却被判「日期✗」——
+// 判据对产品实际使用的形态失明，于是「列表需要日期选择控件」这条要求
+// 在这些页面上根本无法被验证。
+//
+// 教训与本轮另外三处同源：弹层探针漏了 position:static 面板、读取清单漏了
+// Go 字符串里的表名、这次漏了自研日期组件 —— 都是**判据的元素集合没先证明
+// 覆盖全集**。加形态时必须同时加反向对照（见自检的「日期控件」两条）。
+const DATE_FILTER_RE = /el-date-picker|type="daterange"|type='daterange'|DateRange|dateRange|date-range|date_range|KxDatePicker|type="(date|month|week|datetime)"|type='(date|month|week|datetime)'/
 const MODEL_FILTER_RE = /<ModelPicker|ModelPicker\.vue|<model-picker|modelFilter|model-filter|modelFilterKey/
 const NAME_SORT_RE = /sortBy[^\n]*name|sort_by[^\n]*name|localeCompare\(|collation\.|\bsortName\b|nameAsc|byName|sortByName/
 const TABLE_RE = /<el-table|<table\b|class="[^"]*\btable\b/
@@ -610,6 +620,15 @@ function open(o) {
     REVIEW_ITEMS.length = 0
     return flagged
   })()])
+
+  // ── 日期控件形态：正向 + 反向缺一不可 ──
+  //
+  // 正向只证明「认得 KxDatePicker」；反向证明「没有日期控件时不会误认」。
+  // 只写正向的话，把模式改成 /./ 也能过 —— 那正是恒绿装饰品的做法。
+  r.push(['日期控件：认得本仓统一日历 KxDatePicker 与 type="month"', DATE_FILTER_RE.test('<KxDatePicker v-model="p" type="month" />')])
+  r.push(['日期控件：认得 el-date-picker / daterange（原有形态未回退）', DATE_FILTER_RE.test('<el-date-picker v-model="r" type="daterange" />')])
+  r.push(['日期控件：确实没有日期控件时不得误认（反向对照）', !DATE_FILTER_RE.test('<table><tr><td>only rows</td></tr></table>')])
+  r.push(['日期控件：泛化的 type="text" 不得被当成日期控件（反向对照）', !DATE_FILTER_RE.test('<input type="text" />')])
 
   console.log('── 判据自检 ──')
   let ok = true

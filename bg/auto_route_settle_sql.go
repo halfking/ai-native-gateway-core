@@ -1,6 +1,8 @@
 package bg
 
 import (
+	"fmt"
+
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 )
 
@@ -26,10 +28,48 @@ import (
 
 // settleBaselinesSQL 构造 cohort p95/p75 的基线查询。
 //
-// 表名与会话键列名来自 src，其余谓词两族逐字相同：基线的**总体定义**（近
-// baselineWindow 的 is_auto_request 行、排除合成 actor、latency 非空）不随源族改变，
-// 改变的只是这些行从哪张表来。
+// 表名与会话键列名来自 src；谓词按族分派（§9.73.4/§9.73.5，2026-10-03）。
+//
+// # cohort 的总体定义，2026-10-03 修过一次
+//
+// 修之前：**只有** `is_auto_request` + 排除合成 actor + latency 非空。
+// 252 生产实测（`baselineWindow` = 24h，bg/auto_route_settle_worker.go:63）：
+//
+//	cohort 8,270 行里 8,269 行是探针（origin_stage='node_probe' ∧
+//	task_type='probe_triggered'），而 `probe_triggered` **根本不在
+//	auto_route_selections 的 task_type 词表里**（30 天只出现
+//	chat/creative/code/reasoning/planning/long_context）
+//	⇒ cohort 的 99.99% 服务 0 条结算；同期 24h 只有 1 条 chat selection，
+//	  它的基线是 **n=1**。
+//
+// `autoroute.SQLExcludeSyntheticActors`（`dc01a69c5` 2026-10-02 加入）只排 actor，
+// **完全不看探针** ⇒ 那一半从未被修。
+//
+// 修之后（3 天全量口径实测）：cohort 从 20,355 行降到 **15 行**
+// （code 10 / chat 3 / long_context 2，全部 origin_actor 为空、request_type='main'）
+// ——即「真实业务 auto 流量」的全量。
+//
+// ⚠ **仍不解决问题，只是让数字回到真实规模**：15 行 vs 30 天 22,625 条 selection，
+// `creative` 4,985 + `reasoning` 1,269 的 cohort **恒为 0**。
+// 「cohort 的总体定义 ≠ 被结算的总体」这条**没有**被这次修正解决（§9.54.3），
+// 本次只把**探针污染**这一类去掉。别把 15 读成「cohort 现在是对的」。
 func settleBaselinesSQL(src settleSourceSpec) string {
+	probeExclusion, ok := probeTrafficExclusionPredicateFor(src.Family, "rl")
+	if !ok {
+		// 响，而不是静默。
+		//
+		// 回落成「返回空谓词」看起来最无害，实际后果是最坏的一种：cohort 变空 ⇒
+		// baselines 每个 taskType 都取 miss ⇒ **每条 selection 的延迟项与成本项
+		// 同时塌成中性 0.5**，而空 map 不是 error、告警要等到 ratio 失衡才响。
+		// 那正是本次审计一路在追的形态（「没有错误信号的静默退化」）。
+		//
+		// panic 在这里是正确的：settleSourceFor 是**同包内**的两分支闭集，
+		// 未知族按构造不可达，撞上它意味着有人加了族却没配谓词。
+		// 那时最需要的正是「立刻、显眼、可归因」地停下来。
+		panic(fmt.Sprintf("settleBaselinesSQL: 源族 %q 没有配探针排除谓词（probeTrafficExclusionPredicateFor 返回 ok=false）。"+
+			" 新增源族时必须同时在 bg/probe_policy.go 配一条该族可用的谓词；"+
+			" 静默回落到 v1 会让会话族用上引用 quality_flags 的物理谓词并每次 42703。", src.Family))
+	}
 	return `
 		SELECT COALESCE(task_type, '') AS task_type,
 		       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p95_latency_ms,
@@ -38,7 +78,8 @@ func settleBaselinesSQL(src settleSourceSpec) string {
 		FROM ` + src.TurnsTable + ` rl
 		WHERE rl.ts >= NOW() - $1::interval
 		  AND rl.is_auto_request = TRUE
-		  AND rl.latency_ms IS NOT NULL` + autoroute.SQLExcludeSyntheticActors("rl") + `
+		  AND rl.latency_ms IS NOT NULL
+		  AND ` + probeExclusion + autoroute.SQLExcludeSyntheticActors("rl") + `
 		GROUP BY task_type
 	`
 }

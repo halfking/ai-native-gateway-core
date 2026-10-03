@@ -211,6 +211,54 @@ func TestBuildOutbound_CompressedDuplicateAnchorFailsOpen(t *testing.T) {
 	}
 }
 
+// TestBuildOutbound_TwoSegmentAmbiguousTailFailsOpen 两段式锚点的保守契约：
+// head（首条 user）匹配客户端前缀后，tail 在客户端历史中出现两次 ⇒ 两个锚点
+// 候选证明不了唯一世系 ⇒ 与旧「重复连续出现 fail-open」同款，不猜测。
+func TestBuildOutbound_TwoSegmentAmbiguousTailFailsOpen(t *testing.T) {
+	last := makeBody([]map[string]string{
+		summaryMsg("prior"), userMsg("u1"), userMsg("t1"), assistantMsg("t2"),
+	})
+	client := makeBody([]map[string]string{
+		userMsg("u1"), assistantMsg("mid"), userMsg("t1"), assistantMsg("t2"),
+		userMsg("t1"), assistantMsg("t2"), userMsg("new"),
+	})
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("two-segment ambiguous tail must fail open: %+v", res)
+	}
+}
+
+// TestBuildOutbound_TwoSegmentUniqueHeadTailAnchors 两段式正向钉：head 锚
+// 客户端前缀 0、tail 唯一连续出现 ⇒ 命中，被摘要覆盖的中段不重发，仅增量追加。
+func TestBuildOutbound_TwoSegmentUniqueHeadTailAnchors(t *testing.T) {
+	last := makeBody([]map[string]string{
+		summaryMsg("prior"), userMsg("u1"), userMsg("u3"), assistantMsg("a3"),
+	})
+	client := makeBody([]map[string]string{
+		userMsg("u1"), assistantMsg("a1"), userMsg("u2"), assistantMsg("a2"),
+		userMsg("u3"), assistantMsg("a3"), userMsg("u4"),
+	})
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsNewSess || res.DeltaCount != 1 {
+		t.Fatalf("two-segment unique anchor must hit (IsNewSess=false, DeltaCount=1), got IsNewSess=%v DeltaCount=%d", res.IsNewSess, res.DeltaCount)
+	}
+	outMsgs, err := extractMessages(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 合并体 = 保留布局 + 增量：[marker, u1, u3, a3, u4]——被摘要的中段
+	// [a1,u2,a2] 不回灌。
+	if len(outMsgs) != 5 {
+		t.Fatalf("merged body must be retained(4) + delta(1), got %d msgs", len(outMsgs))
+	}
+}
+
 func TestBuildOutbound_RejectsStaleCachedBodyHash(t *testing.T) {
 	last := makeBody([]map[string]string{userMsg("cached")})
 	client := makeBody([]map[string]string{userMsg("cached"), userMsg("new")})

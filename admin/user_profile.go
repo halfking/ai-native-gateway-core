@@ -33,19 +33,19 @@ type UserProfileSummary struct {
 // UserProfileDetailResponse 用户画像详情
 type UserProfileDetailResponse struct {
 	UserProfileSummary
-	DailyCostTrend    []DailyCostPoint       `json:"daily_cost_trend"`
-	TopTasks          []TaskRankItem         `json:"top_tasks"`
-	TopEndUsers       []EndUserRankItem      `json:"top_end_users"`
-	RecentSessions    []RecentSessionItem    `json:"recent_sessions"`
-	HealthDist        HealthDistribution     `json:"health_distribution"`
+	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
+	TopTasks       []TaskRankItem      `json:"top_tasks"`
+	TopEndUsers    []EndUserRankItem   `json:"top_end_users"`
+	RecentSessions []RecentSessionItem `json:"recent_sessions"`
+	HealthDist     HealthDistribution  `json:"health_distribution"`
 }
 
 // EndUserRankItem 终端用户排行项
 type EndUserRankItem struct {
-	EndUserID    string  `json:"end_user_id"`
-	SessionCount int     `json:"session_count"`
-	TotalCost    float64 `json:"total_cost_usd"`
-	AvgHealth    *int    `json:"avg_health,omitempty"`
+	EndUserID    string    `json:"end_user_id"`
+	SessionCount int       `json:"session_count"`
+	TotalCost    float64   `json:"total_cost_usd"`
+	AvgHealth    *int      `json:"avg_health,omitempty"`
 	LastActivity time.Time `json:"last_activity"`
 }
 
@@ -54,9 +54,10 @@ type EndUserRankItem struct {
 // handleUserAnalyticsList GET /api/admin/session-analytics/users
 // 返回当前租户（或调用者可见范围）内的 owner_user 列表。
 // 三层隔离：
-//   super_admin/admin_key → 全部 owner（可指定 tenant_id 参数）
-//   tenant_admin          → 本租户全部 owner
-//   普通用户              → 仅自己（返回单条）
+//
+//	super_admin/admin_key → 全部 owner（可指定 tenant_id 参数）
+//	tenant_admin          → 本租户全部 owner
+//	普通用户              → 仅自己（返回单条）
 func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -148,12 +149,18 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 		// 每次打开都报 console 错误。与 usage_* 的降级口径保持一致：
 		// schema 落后于代码时返回空列表 + 200，并把原因记进服务端日志。
 		if IsSchemaBehindError(err) {
-			ReportSchemaBehind(slog.Default(), "userProfile.list", err)
+			reason := ReportSchemaBehind(slog.Default(), "userProfile.list", err)
+			// degraded 恒发：空列表在页面上与「真的没有用户」同形，
+			// 而 2026-10-03 的 /api/logs 扫描里这条正是「13 条动态路由
+			// 因取不到 ID 而未纳入」的三条之一。至少让调用方知道
+			// 「这是降级，不是没有数据」。
 			writeJSON(w, http.StatusOK, map[string]any{
-				"users":  []UserProfileSummary{},
-				"total":  0,
-				"limit":  limit,
-				"offset": offset,
+				"users":           []UserProfileSummary{},
+				"total":           0,
+				"limit":           limit,
+				"offset":          offset,
+				"degraded":        true,
+				"degraded_reason": reason,
 			})
 			return
 		}

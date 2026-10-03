@@ -22,7 +22,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -437,5 +440,38 @@ func TestBudget_EgressPointIsTheGate(t *testing.T) {
 	}
 	if probes != 1 {
 		t.Fatalf("实际出网 %d 次，want 1", probes)
+	}
+}
+
+// TestBudget_GateRecordsMetrics pins the R37-遗留#4 observability wiring:
+// chargeProbe must move the charged counter on every real egress and the
+// blocked counter on every budget refusal, so rate(blocked) on a dashboard
+// is the signal that the gate started refusing work (previously Warn-log
+// only). Deleting either Record* call must fail this test.
+func TestBudget_GateRecordsMetrics(t *testing.T) {
+	b := NewCapabilityBackfill(nil, nil, nil, nil)
+	chargedBefore := testutil.ToFloat64(metrics.CapabilityBackfillProbeChargedTotal)
+	blockedBefore := testutil.ToFloat64(metrics.CapabilityBackfillProbeBudgetBlockedTotal)
+
+	now := time.Now()
+	for i := 0; i < b.dailyBudget; i++ {
+		if !b.chargeProbe(now) {
+			t.Fatalf("precondition: charge %d must succeed under budget %d", i+1, b.dailyBudget)
+		}
+	}
+	if got := testutil.ToFloat64(metrics.CapabilityBackfillProbeChargedTotal); got != chargedBefore+float64(b.dailyBudget) {
+		t.Fatalf("charged counter moved %v -> %v, want +%d (one per real egress)",
+			chargedBefore, got, b.dailyBudget)
+	}
+
+	// The very next charge is refused by the budget gate — blocked must move.
+	for i := 0; i < 3; i++ {
+		if b.chargeProbe(now) {
+			t.Fatalf("precondition: charge beyond budget must be refused")
+		}
+	}
+	if got := testutil.ToFloat64(metrics.CapabilityBackfillProbeBudgetBlockedTotal); got != blockedBefore+3 {
+		t.Fatalf("blocked counter moved %v -> %v, want +3 (one per refused row)",
+			blockedBefore, got)
 	}
 }

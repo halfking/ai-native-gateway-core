@@ -415,6 +415,10 @@ export default {
       periodCompare: 'Échec du chargement de la comparaison',
       cacheEconomics: 'Échec du chargement de l’économie cache',
     },
+    degraded: {
+      title: 'Certaines métriques sont indisponibles :',
+      hint: 'Le schéma de la base de données est en retard sur cette version ; les valeurs ci-dessous sont des espaces réservés « non calculables », et non des mesures (ce n\'est pas la même chose qu\'aucune donnée sur cette période). Demandez à un administrateur d\'exécuter la migration d\'agrégation.',
+    },
   },
   confirmDeleteCleanup: 'Supprimer {rows} lignes ?\nEspace libéré estimé : {size}\n\nAction irréversible !',
   confirmArchiveCleanup: 'Archiver {rows} lignes ?\nEspace libéré estimé : {size}\n\nAction irréversible !',
