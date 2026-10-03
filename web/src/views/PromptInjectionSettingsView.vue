@@ -841,13 +841,22 @@ const loadEngines = async () => {
   } finally { enginesLoading.value = false }
 }
 const loadAvailableModels = async () => {
-  // Models API: best-effort. If endpoint fails, just leave the dropdown empty.
+  // 2026-10-03：原来打的是 `/api/admin/models?with_versions=true` —— 这条路由
+  // 在后端**根本不存在**（/api/models 与 /api/models/families 才存在，200）。
+  // 它外面还包着 `catch { availableModels.value = [] }`，于是表现为
+  // 「下拉框永远是空的」，同时每次打开页面在 console 留一条 404。
+  // 改用既有的 listModels()：返回 { items: [{ id, canonical_name, … }] }，
+  // 与模板 line 608 需要的 { id, canonical_name } 完全对上。
   try {
-    const res = await req<any>('GET', '/api/admin/models?with_versions=true')
-    availableModels.value = (res.families || []).flatMap((f: any) => (f.versions || []).map((v: any) => ({ id: v.id, canonical_name: v.canonical_name || v.display_name })))
+    const res = await listModels()
+    availableModels.value = (res.items ?? []).map((m) => ({
+      id: m.id,
+      canonical_name: m.canonical_name || m.display_name || String(m.id),
+    }))
   } catch { availableModels.value = [] }
 }
 import { req } from '../api/_core'
+import { listModels } from '../api/models'
 import EmptyState from '../components/EmptyState.vue'
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）

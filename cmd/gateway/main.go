@@ -3014,6 +3014,7 @@ func main() {
 	// 保证 /api/auth/* 路由全部注册上，DB 相关 handler 在请求时再 503/500。
 	var adminHandler *admin.Handler
 	var promptInjectionHandler *admin.PromptInjectionHandler
+	var outputComplianceHandler *admin.OutputComplianceHandler
 	var scanScheduler *bg.ScanScheduler // R20 §二.6: FreeDiscovery periodic scan worker
 	{
 		var adminDB *pgxpool.Pool
@@ -3102,6 +3103,15 @@ func main() {
 		// 之前 handler 已实现但从未被 wire 到 main mux,导致 SPA 中所有
 		// prompt-injection API 都返回 404 (page is empty)。
 		promptInjectionHandler = admin.NewPromptInjectionHandler(adminDB, cfg.SecretKey)
+
+		// 2026-10-03：output-compliance 与上面 prompt-injection 是同一种病 ——
+		// handler 写好了、RegisterRoutes 也有，但从来没被 wire 到 main mux，
+		// 于是 /admin/output-compliance 页面所有 API 全 404、页面永远空。
+		// 它的单测能过是因为测试自己 new 了一个 handler 直接打，
+		// 覆盖不到「路由到底注册没有」这一层。
+		if adminDB != nil {
+			outputComplianceHandler = admin.NewOutputComplianceHandler(adminDB)
+		}
 
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
@@ -6516,6 +6526,11 @@ func main() {
 		if promptInjectionHandler != nil {
 			promptInjectionHandler.RegisterRoutes(mux)
 			slog.Info("prompt-injection API registered")
+		}
+		// /api/admin/output-compliance/* — 策略、关键词、复核队列、反馈、统计。
+		if outputComplianceHandler != nil {
+			outputComplianceHandler.RegisterRoutes(mux)
+			slog.Info("output-compliance API registered")
 		}
 		// Routing health check endpoints (2026-07-10)
 		if dbConn != nil && dbConn.Enabled() {

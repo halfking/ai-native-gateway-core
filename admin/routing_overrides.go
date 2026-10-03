@@ -398,7 +398,11 @@ func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r
 	}
 	defer rows.Close()
 
-	var entries []AuditEntry
+	// 2026-10-03：必须是空切片而不是 nil 切片。nil 切片 json.Marshal 成 `null`，
+	// 前端 `entries.value = r.entries` 拿到 null，模板 `entries.length` 直接抛
+	// TypeError ⇒ /routing/overrides/audit 整页白屏（0 行数据时必现）。
+	// 契约声明是 RoutingAuditEntry[]，序列化结果必须与之一致。
+	entries := []AuditEntry{}
 	for rows.Next() {
 		var e AuditEntry
 		if err := rows.Scan(&e.ID, &e.TS, &e.Action, &e.OverrideID,

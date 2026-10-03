@@ -1047,6 +1047,15 @@ async function refreshWindowStats() {
     mergeCardWindowEntries(nextEntries, statsKey(credentialId, model), entries)
   }
 
+  // 没有目标就别发请求：服务端对空 items 直接回 400「items required」，
+  // 于是「页面上暂时没有可看的凭据」这种正常状态，会在 /dashboard 和 / 上
+  // 各留下一条 400 + console 错误，然后白跑一次 legacy 回退轮询。
+  if (targets.length === 0) {
+    windowStatsByKey.value = next
+    windowEntriesByKey.value = nextEntries
+    return
+  }
+
   try {
     const batch = await getSlidingWindowBatch(
       targets.map(t => ({ credential_id: t.credentialId, model: t.model })),

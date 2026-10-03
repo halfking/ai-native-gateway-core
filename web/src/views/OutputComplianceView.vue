@@ -120,8 +120,22 @@ async function loadStats() {
     const params = new URLSearchParams()
     if (filterTenantID.value) params.append('tenant_id', filterTenantID.value)
     const url = `/api/admin/output-compliance/stats${params.toString() ? '?' + params.toString() : ''}`
-    const data = await req<ComplianceStats>('GET', url)
-    stats.value = data
+    const data = await req<Partial<ComplianceStats> & { blocked?: number; total_issues?: number }>('GET', url)
+    // 2026-10-03：这里原本直接把响应赋给 stats.value。响应成功但**字段对不上**时
+    // （后端实际给的是 { blocked, pending_reviews, total_issues }，视图要的是
+    // total_checks/pii_hits/…），模板第 326 行 `stats.total_checks.toLocaleString()`
+    // 对 undefined 调用 → TypeError → 整页白屏。
+    // 失败路径有 catch 填零，成功路径却没有归一化 —— 白屏恰恰发生在「接口通了」之后。
+    // 一律按视图契约补齐，缺字段记 0。
+    stats.value = {
+      total_checks: data.total_checks ?? data.total_issues ?? 0,
+      pii_hits: data.pii_hits ?? 0,
+      secret_hits: data.secret_hits ?? 0,
+      toxicity_hits: data.toxicity_hits ?? 0,
+      jailbreak_hits: data.jailbreak_hits ?? 0,
+      avg_latency_ms: data.avg_latency_ms ?? 0,
+      last_updated: data.last_updated ?? new Date().toISOString(),
+    }
   } catch (e: unknown) {
     statsError.value = e instanceof Error ? e.message : String(e)
     // 如果API不存在，使用模拟数据
