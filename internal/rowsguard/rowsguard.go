@@ -90,6 +90,17 @@ var skipDirs = map[string]bool{
 var nextLoopRe = regexp.MustCompile(`for\s+(\w+)\.Next\(`)
 
 // collectSites 走遍仓库，返回所有 `for X.Next()` 站点。
+// mustRel makes a repo-relative path, falling back to the path itself if the
+// walk ever hands us something outside root. A malformed key is still a stable
+// key, which is all the exemption table needs.
+func mustRel(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return path
+	}
+	return rel
+}
+
 func collectSites(root string) ([]site, error) {
 	var out []site
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -105,7 +116,7 @@ func collectSites(root string) ([]site, error) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		rel, _ := filepath.Rel(root, path)
+		rel := filepath.ToSlash(mustRel(root, path))
 		fset := token.NewFileSet()
 		f, perr := parser.ParseFile(fset, path, nil, 0)
 		if perr != nil {
@@ -218,7 +229,7 @@ func CheckAll(root string, exemptions map[string]string) (int, []string, error) 
 	// 按文件分组，站点与 Err() 调用点共用同一 fset，位置可直接比较。
 	byFile := map[string][]*ast.ForStmt{}
 	for path, f := range files {
-		rel, _ := filepath.Rel(root, path)
+		rel := filepath.ToSlash(mustRel(root, path))
 		for _, loop := range forNextLoops(f) {
 			byFile[rel] = append(byFile[rel], loop)
 		}
