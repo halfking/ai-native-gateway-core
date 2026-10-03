@@ -75,6 +75,29 @@ package admin
 //
 //  两处变异均已还原（`git diff` 干净、变异标记 grep 归零）。
 //
+// 独立复验（2026-10-03 06:54 CST，另一轮会话重做，非沿用上述结论）：
+//  起因是「DSN-gated SKIP」有可能是**恒跳过的空壳**——若 CI/本地从未设
+//  TEST_RESOLVE_INVARIANT_DB_URL，本门会一直 t.Skip，而文档里所有「实测绿」
+//  都可能只是 SKIP。实测三步：
+//   1) 设 DSN（.env.local 的 LLM_GATEWAY_DATABASE_URL，注意门要的是
+//      **TEST_RESOLVE_INVARIANT_DB_URL**，不是 LLM_GATEWAY_DATABASE_URL）
+//      实跑 → **PASS**（非 SKIP），逐模型列出，13.9s ⇒ 门体有真断言、
+//      不是装饰。
+//   2) 重放变异 1（同一处 `routing.go:469`，标记 grep 确认恰好 1 处）
+//      → **FAIL，156 处 INVARIANT BROKEN**，与上一轮数字**完全一致**
+//      ⇒ 承重性可复现，不是上一轮的一次性巧合。
+//   3) 还原 → 标记归零、`git diff` 干净、真库门与 AST 门皆 ok。
+//  ⚠️ 关于「CI 里会不会 SKIP」——已查证（2026-10-03 06:58），结论是**会跑**：
+//   * `scripts/audit/run-integration-gate.sh:587` 显式注入
+//     `TEST_RESOLVE_INVARIANT_DB_URL="$GATE_URL"`（连同另外 12 个 DSN 变量）。
+//   * `integration-testcontainers-ci.yml:244` 逐包调用该脚本；包列表由
+//     `derive-gate-packages.sh` 派生，实测 `./admin` **在**该列表内
+//     （该包另有 10+ 个 integration-tag 测试文件，满足派生条件）。
+//   * 本门**无 build tag**，故不受脚本 `-tags=integration` 影响；
+//     同包的旧门与 AST 门同样无 tag，三者都会在这个 gate 下运行。
+//   ⇒ 无 DSN 时会 SKIP 的只有「本地/CI 之外随手跑 `go test ./admin/`」这种情况；
+//     正式门禁路径上本门是承重的。
+//
 //  与旧门的关系：**旧门不删**。旧门是「手写副本 + 纯函数」的自洽闭环，
 //  它测不到 handler；本门测 handler。删掉旧门不会增加任何保证，只会少一条
 //  在无 handler 依赖时也能跑的参照。两者并列时才构成完整覆盖。

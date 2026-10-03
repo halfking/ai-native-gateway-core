@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# SOURCE_OF_TRUTH: ~/workspace/ai-native-tools/llm-gateway/ai-native-maintain/scripts/user/upgrade.sh
-# SYNC_POLICY: 修改本脚本时同步改 maintain 对应位置。service identity 由本仓库维护。
-# ADAPTATIONS: 加 loong64 严格门；INSTALL_ROOT 默认智能探测；service_stop / service_start 加 macOS launchd 路径。
-
 # upgrade.sh — 用户侧升级工具。
 #
 # 子命令（默认 run = 全流程）：
@@ -96,6 +92,251 @@ run_priv() {
   fi
 }
 
+# ─── JSON 读取（不依赖 python3 / jq） ───
+# 客户机不保证有 python3。此前版本用 `python3 -c` 解析每个 API 响应，缺 python3
+# 时它静默输出空串，脚本把"解析失败"当成"没有发布版本"，用户只看到
+# `no published release` —— 与真实原因毫无关系。这里用 awk 实现唯一一份 JSON
+# 文法；install-host.sh 与 install-docker.sh 内嵌的这段必须逐字一致，由
+# scripts/tests/static-check.sh 守护。
+#
+# 兼容性：只使用 POSIX awk（无 gawk 专有的三参数 match / gensub），并在 awk
+# 调用前设置 LC_ALL=C，保证 \u00XX 还原为字节。
+json_flatten() {
+  LC_ALL=C awk '
+    function skipws(   c) {
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") return
+        i++
+      }
+    }
+    function hexval(c) {
+      if (c >= "0" && c <= "9") return c + 0
+      if (c >= "a" && c <= "f") return index("abcdef", c) + 9
+      if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
+      return -1
+    }
+    # 调用时 s[i] 是起始引号。只还原 \uXXXX —— Go 的 encoding/json 会把 & < >
+    # 转义，直链（storage_uri）里很常见。
+    # 其余转义一律保持原样（反斜杠 + 字母）：扁平化协议是"每条记录一行"，
+    # 还原成真实换行/制表符会把一条记录劈成两半，json_get 于是只取到半截值且
+    # 不报错。JSON 字符串本就不允许裸控制字符，所以这样输出永远不会断行。
+    function read_string(   c, esc, j, v, d) {
+      i++
+      out = ""
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") {
+          esc = substr(s, i + 1, 1)
+          if (esc == "u") {
+            v = 0
+            for (j = 1; j <= 4; j++) {
+              d = hexval(substr(s, i + 1 + j, 1))
+              if (d < 0) { v = -1; break }
+              v = v * 16 + d
+            }
+            if (v >= 32 && v < 127) out = out sprintf("%c", v)
+            else out = out substr(s, i, 6)
+            i += 6
+            continue
+          }
+          out = out "\\" esc
+          i += 2
+          continue
+        }
+        if (c == "\"") { i++; return out }
+        out = out c
+        i++
+      }
+      return out
+    }
+    function parse_value(path,   c, j) {
+      skipws()
+      if (i > n) return
+      c = substr(s, i, 1)
+      if (c == "{") { parse_obj(path); return }
+      if (c == "[") { parse_arr(path); return }
+      if (c == "\"") { print path "\t" read_string(); return }
+      j = i
+      while (j <= n && index(",} \t\r\n]", substr(s, j, 1)) == 0) j++
+      if (j > i) print path "\t" substr(s, i, j - i)
+      i = j
+    }
+    function parse_obj(path,   c) {
+      i++
+      skipws()
+      if (substr(s, i, 1) == "}") { i++; return }
+      while (i <= n) {
+        skipws()
+        if (substr(s, i, 1) != "\"") { i++; continue }
+        key = read_string()
+        skipws()
+        if (substr(s, i, 1) == ":") i++
+        parse_value((path == "$") ? "$." key : path "." key)
+        skipws()
+        c = substr(s, i, 1)
+        if (c == ",") { i++; continue }
+        if (c == "}") { i++; return }
+        i++
+      }
+    }
+    function parse_arr(path,   c, idx) {
+      i++
+      skipws()
+      if (substr(s, i, 1) == "]") { i++; return }
+      idx = 0
+      while (i <= n) {
+        parse_value(path "." idx)
+        idx++
+        skipws()
+        c = substr(s, i, 1)
+        if (c == ",") { i++; continue }
+        if (c == "]") { i++; return }
+        i++
+      }
+    }
+    { doc = doc $0 "\n" }
+    END {
+      s = doc
+      n = length(s)
+      i = 1
+      skipws()
+      parse_value("$")
+    }
+  '
+}
+
+# json_get_flat <已扁平化的文本> <路径>，如 $.latest_version
+json_get_flat() {
+  printf '%s\n' "$1" | awk -F'\t' -v p="$2" '$1 == p { print $2; exit }'
+}
+
+# json_get <JSON 原文> <路径>
+json_get() {
+  json_get_flat "$(printf '%s' "$1" | json_flatten)" "$2"
+}
+
+# json_artifact_field <JSON 原文> <字段>：version-check 响应里第一个目标制品。
+# 服务端按 (platform, arch) 过滤 target_artifacts，取 [0] 与既有实现一致。
+json_artifact_field() {
+  json_get "$1" "\$.target_artifacts.0.$2"
+}
+
+# catalog_sha_from_json <JSON 原文> <version> <platform> <arch>
+# 在 versions[].items[] 两层结构里定位制品并打印 sha256（找不到则无输出）。
+# 服务端 CatalogItem.SHA256 带 omitempty，未登记校验和的制品本来就可能缺字段，
+# 因此这里"取不到"必须能安静地表达成空值。
+catalog_sha_from_json() {
+  local flat outer out
+  flat="$(printf '%s' "$1" | json_flatten)"
+  for outer in '$.versions.' '$.items.'; do
+    out="$(printf '%s\n' "$flat" | awk -F'\t' -v outer="$outer" \
+      -v want_v="$2" -v want_p="$3" -v want_a="$4" '
+      { nrec++; path[nrec] = $1; val[nrec] = $2 }
+      END {
+        # 两遍扫描，**不依赖键的先后顺序**。单遍流式匹配要求 version 先于 items
+        # 出现：真实服务端按结构体字段顺序编码恰好满足，但换成 map 序列化
+        # （字母序，version 排在 items 之后）就会静默取不到校验和。
+        # 请求侧也要剥 v：下载页允许 VERSION=v1.2.3，目录里存的是 1.2.3。
+        sub(/^v/, "", want_v)
+        target = ""
+        for (r = 1; r <= nrec; r++) {
+          if (index(path[r], outer) != 1) continue
+          rest = substr(path[r], length(outer) + 1)
+          d = index(rest, ".")
+          if (d == 0 || substr(rest, d + 1) != "version") continue
+          v = val[r]
+          sub(/^v/, "", v)
+          if (v == want_v) { target = substr(rest, 1, d - 1); break }
+        }
+        if (target == "") exit 0
+        for (r = 1; r <= nrec; r++) {
+          if (index(path[r], outer) != 1) continue
+          rest = substr(path[r], length(outer) + 1)
+          d = index(rest, ".")
+          if (d == 0 || substr(rest, 1, d - 1) != target) continue
+          tail_ = substr(rest, d + 1)
+          if (index(tail_, "items.") != 1) continue
+          t2 = substr(tail_, 7)
+          d2 = index(t2, ".")
+          if (d2 == 0) continue
+          iidx = substr(t2, 1, d2 - 1)
+          key = substr(t2, d2 + 1)
+          if (key == "platform") plat[iidx] = val[r]
+          else if (key == "arch") arch[iidx] = val[r]
+          else if (key == "sha256") sum[iidx] = val[r]
+        }
+        for (k = 0; k < 100000; k++) {
+          if ((k in plat) && plat[k] == want_p && arch[k] == want_a) { print sum[k]; exit }
+        }
+      }')"
+    if [[ -n "$out" ]]; then
+      printf '%s' "$out"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# ─── JSON 写入 ───
+# upgrade.sh 需要把任意命令输出（可能带引号/换行/反斜杠）拼成合法 JSON。
+# 以前靠 python3 的 json.dumps；这里用 awk 做等价转义。注意不能用 gsub 做替换：
+# gsub 的替换串里 \ 与 & 都有特殊含义，转义一层就够再转一层才能得到想要的字面量。
+#
+# 写出侧与读入侧**故意不对称**：json_string 产出标准 JSON（服务端 Go 的
+# json.Unmarshal 能正确还原），而 json_flatten 保留 \n \t \\ \" 这些转义的原样
+# 文本。原因见 read_string 的注释 —— 扁平化协议是"每条记录一行"，还原成真实
+# 换行会把记录劈开。实际链路里两者不往返：写出去的只被服务端读，读回来的字段
+# （url / file_name / sha256 / version）都是 ASCII 裸值，不含这些转义。
+json_escape() {
+  printf '%s' "$1" | LC_ALL=C awk '
+    { if (NR > 1) doc = doc "\n"; doc = doc $0 }
+    function esc(s,   i, c, out) {
+      out = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") out = out "\\\\"
+        else if (c == "\"") out = out "\\\""
+        else if (c == "\t") out = out "\\t"
+        else if (c == "\r") out = out "\\r"
+        else if (c == "\n") out = out "\\n"
+        else out = out c
+      }
+      return out
+    }
+    END { printf "%s", esc(doc) }
+  '
+}
+
+# json_string <值> → 带引号的 JSON 字符串字面量
+json_string() { printf '"%s"' "$(json_escape "$1")"; }
+
+# json_object <key> <json-literal> [<key> <json-literal> ...]
+# 值必须已经是 JSON 字面量：字符串用 json_string 包一层，布尔/数字直接写。
+json_object() {
+  local out="{" first=1 k v
+  while [[ $# -ge 2 ]]; do
+    k="$1"; v="$2"; shift 2
+    [[ "$first" -eq 1 ]] || out="$out,"
+    first=0
+    out="$out\"$k\":$v"
+  done
+  printf '%s}' "$out"
+}
+
+# mapfile 的可移植替代：mapfile 是 bash 4.0+，macOS 自带 /bin/bash 是 3.2。
+# 逐行读入调用方的 fields 数组并保留空行，保持与 mapfile -t 一致的下标语义。
+read_into_fields() {
+  local line
+  fields=()
+  while IFS= read -r line; do
+    fields+=("$line")
+  done < <("$@" || true)
+}
+
+# 辅助函数（load_config_file / save_config_file / prompt_value / run_priv /
+# JSON 工具）都在上面定义完了，这里先把 ~/.kxmaint/config 读进来，让下面的
+# normalize / validate 基于最终生效值运行。
 load_config_file
 
 # 在 default 之前用交互补齐——同时供后续 validate 复用。
@@ -105,21 +346,39 @@ fi
 
 MAINTAIN_BASE="${MAINTAIN_BASE:-https://llmgo.kxpms.cn/maintain-api}"
 CHANNEL="${CHANNEL:-stable}"
-if [[ -z "${INSTALL_ROOT:-}" ]]; then
-  if [[ -d /opt/llm-gateway ]]; then INSTALL_ROOT=/opt/llm-gateway
-  elif [[ -d "${HOME}/Downloads/llm-gateway-files" ]]; then INSTALL_ROOT="${HOME}/Downloads/llm-gateway-files"
-  else
-    case "$(uname -s)" in
-      Darwin*) INSTALL_ROOT="${HOME}/kaixuan/llm-gateway-go" ;;
-      Linux*) INSTALL_ROOT=/opt/kaixuan/llm-gateway-go ;;
-      *) INSTALL_ROOT="${HOME}/kaixuan/llm-gateway-go" ;;
-    esac
+# kaixuan-layout.sh 只在"脚本来自文件"时加载。`curl … | bash -s -- run`（下载页
+# 给的就是这条命令）下 BASH_SOURCE 为空，旧写法退化成当前工作目录：既加载不到
+# 真正的库，又会在 $PWD 下执行一个来路不明的同名文件。
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  _KX_LAYOUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/kaixuan-layout.sh"
+  if [[ -f "$_KX_LAYOUT" ]]; then
+    # shellcheck source=lib/kaixuan-layout.sh
+    source "$_KX_LAYOUT"
   fi
 fi
+if ! declare -F kx_resolve_install_root >/dev/null 2>&1; then
+  kx_resolve_install_root() {
+    [[ -n "${INSTALL_ROOT:-}" ]] && { printf '%s\n' "$INSTALL_ROOT"; return 0; }
+    [[ -d /opt/llm-gateway ]] && { printf '%s\n' /opt/llm-gateway; return 0; }
+    [[ -d "${HOME}/Downloads/llm-gateway-files" ]] && { printf '%s\n' "${HOME}/Downloads/llm-gateway-files"; return 0; }
+    case "$(uname -s 2>/dev/null || echo unknown)" in
+      Darwin) printf '%s\n' "${HOME}/kaixuan/llm-gateway-go" ;;
+      Linux) printf '%s\n' "/opt/kaixuan/llm-gateway-go" ;;
+      MINGW*|MSYS*|CYGWIN*)
+        if [[ -d /d && -w /d ]]; then printf '%s\n' /d/kaixuan/llm-gateway-go
+        elif [[ -d /c && -w /c ]]; then printf '%s\n' /c/kaixuan/llm-gateway-go
+        else printf '%s\n' "${HOME}/kaixuan/llm-gateway-go"; fi ;;
+      *) printf '%s\n' "${HOME}/kaixuan/llm-gateway-go" ;;
+    esac
+  }
+fi
+INSTALL_ROOT="$(kx_resolve_install_root)"
 INSTANCE_ID="${INSTANCE_ID:-$(cat "${INSTALL_ROOT}/instance_id" 2>/dev/null || true)}"
 CURRENT_VERSION="${CURRENT_VERSION:-$(cat "${INSTALL_ROOT}/VERSION" 2>/dev/null || echo v0.0.0)}"
+# Customer gateway probes — never default to maintain control-plane ports or /maintain/version.
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8781/healthz}"
 READYZ_URL="${READYZ_URL:-${HEALTH_URL%/healthz}/readyz}"
+# Empty VERSION_PROBE_URL => compare INSTALL_ROOT/VERSION to LATEST (FR-PROBE).
 VERSION_PROBE_URL="${VERSION_PROBE_URL:-}"
 HEALTH_RETRIES="${HEALTH_RETRIES:-30}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -156,18 +415,13 @@ case "$INSTALL_MODE" in
   *) echo "[upgrade] invalid INSTALL_MODE=${INSTALL_MODE} (auto|host|compose)" >&2; exit 2 ;;
 esac
 
-arch="${ARCH:-$(uname -m)}"
+arch="$(uname -m)"
 case "$arch" in
   x86_64|amd64) ARCH=amd64 ;;
   aarch64|arm64) ARCH=arm64 ;;
-  loongarch64|loong64) ARCH=loong64 ;;
+  loongarch64) ARCH=loong64 ;;
   *) echo "unsupported arch: $arch" >&2; exit 2 ;;
 esac
-# loong64 默认严格：未显式 LOONG64_OK=1 时直接退出（CI 默认不发 loong64 artifact）。
-if [[ "$ARCH" == "loong64" && "${LOONG64_OK:-0}" != "1" ]]; then
-  echo "[upgrade] loongarch64 默认不启用（CI 默认不发 loong64 artifact）。如需安装请设 LOONG64_OK=1。" >&2
-  exit 2
-fi
 
 LATEST=""
 URL=""
@@ -194,24 +448,18 @@ write_state() {
     return 0
   fi
   tmp="${TMPDIR:-/tmp}/upgrade-state.$$"
-  if ! STATE_TMP="$tmp" S_MODE="$INSTALL_MODE_EFFECTIVE" \
-    S_BACKUP="$backup" S_ROLLBACK="$ROLLBACK_SCRIPT" S_LOG="$LOG_PATH" \
-    S_LOG_AVAILABLE="$LOG_AVAILABLE" S_CURRENT="$CURRENT_VERSION" S_TARGET="$target" \
-    S_STATUS="$status" python3 -c '
-import json, os
-with open(os.environ["STATE_TMP"], "w", encoding="utf-8") as f:
-    json.dump({
-        "install_mode": os.environ["S_MODE"],
-        "backup_dir": os.environ["S_BACKUP"],
-        "rollback_script": os.environ["S_ROLLBACK"],
-        "log_path": os.environ["S_LOG"],
-        "log_available": os.environ["S_LOG_AVAILABLE"] == "1",
-        "current_version": os.environ["S_CURRENT"],
-        "target_version": os.environ["S_TARGET"],
-        "status": os.environ["S_STATUS"],
-    }, f, ensure_ascii=False, indent=2)
-    f.write("\n")
-'; then
+  # log_available 必须是 JSON 布尔而不是字符串，否则 Go 侧反序列化会整条失败。
+  local log_avail="false"
+  [[ "$LOG_AVAILABLE" == "1" ]] && log_avail="true"
+  if ! json_object \
+      "install_mode"    "$(json_string "$INSTALL_MODE_EFFECTIVE")" \
+      "backup_dir"      "$(json_string "$backup")" \
+      "rollback_script" "$(json_string "$ROLLBACK_SCRIPT")" \
+      "log_path"        "$(json_string "$LOG_PATH")" \
+      "log_available"   "$log_avail" \
+      "current_version" "$(json_string "$CURRENT_VERSION")" \
+      "target_version"  "$(json_string "$target")" \
+      "status"          "$(json_string "$status")" >"$tmp"; then
     echo "[upgrade] WARN cannot write state $STATE_PATH (stdout/stderr remain the log source)" >&2
     rm -f "$tmp"
     return 0
@@ -293,7 +541,10 @@ verify_sha256() {
     echo "[upgrade] no sha256 tool (sha256sum/shasum) — cannot verify $file" >&2
     return 1
   fi
-  if [[ "${actual,,}" != "${expected,,}" ]]; then
+  # 用 tr 折叠大小写而不是 ${var,,}：后者是 bash 4.0+ 语法，而下载页把 darwin
+  # 列为正式安装平台，macOS 自带的 /bin/bash 是 3.2。
+  if [[ "$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')" != \
+        "$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')" ]]; then
     echo "[upgrade] checksum MISMATCH $file" >&2
     echo "[upgrade]   expected=$expected" >&2
     echo "[upgrade]   actual  =$actual" >&2
@@ -305,20 +556,16 @@ verify_sha256() {
 report() {
   local status="$1" err="${2:-}"
   [[ -n "$INSTANCE_ID" ]] || { echo "[upgrade] skip report (no INSTANCE_ID) status=$status"; return 0; }
-  # error 来自任意命令输出，可能带引号/换行/反斜杠；字符串拼接会产出非法 JSON
-  # 或注入额外字段。统一交给 json.dumps（同 scripts/release-pipeline.sh）。
+  # error 来自任意命令输出，可能带引号/换行/反斜杠；直接字符串拼接会产出非法
+  # JSON 或注入额外字段。json_string 负责逐字符转义（等价于 python 的
+  # json.dumps，但不需要 python3）。
   local body
-  if ! body="$(R_INSTANCE="$INSTANCE_ID" R_FROM="$CURRENT_VERSION" R_TO="${LATEST:-}" \
-    R_STATUS="$status" R_ERR="$err" python3 -c '
-import json, os
-print(json.dumps({
-    "instance_id": os.environ["R_INSTANCE"],
-    "from_version": os.environ["R_FROM"],
-    "to_version": os.environ["R_TO"],
-    "status": os.environ["R_STATUS"],
-    "error": os.environ["R_ERR"],
-}, ensure_ascii=False))
-')"; then
+  if ! body="$(json_object \
+      "instance_id"  "$(json_string "$INSTANCE_ID")" \
+      "from_version" "$(json_string "$CURRENT_VERSION")" \
+      "to_version"   "$(json_string "${LATEST:-}")" \
+      "status"       "$(json_string "$status")" \
+      "error"        "$(json_string "$err")")"; then
     echo "[upgrade] report payload build failed (status=$status)" >&2
     return 0
   fi
@@ -343,25 +590,7 @@ published_sha() {
   if ! json="$(curl -fsSL "${MAINTAIN_BASE}/distribution/versions?channel=${CHANNEL}" 2>/dev/null)"; then
     json="$(curl -fsSL "${MAINTAIN_BASE}/downloads/catalog" 2>/dev/null)" || return 0
   fi
-  LOOKUP_JSON="$json" WANT_VERSION="$version" WANT_PLATFORM=linux WANT_ARCH="$ARCH" python3 - <<'PY'
-import json, os
-try:
-    d = json.loads(os.environ["LOOKUP_JSON"])
-except Exception:
-    raise SystemExit(0)
-want_v = os.environ["WANT_VERSION"].lstrip("v")
-want_p = os.environ["WANT_PLATFORM"]
-want_a = os.environ["WANT_ARCH"]
-for v in (d.get("items") or d.get("versions") or []):
-    if not isinstance(v, dict):
-        continue
-    if (v.get("version") or "").lstrip("v") != want_v:
-        continue
-    for a in (v.get("items") or v.get("artifacts") or []):
-        if isinstance(a, dict) and a.get("platform") == want_p and a.get("arch") == want_a:
-            print(a.get("sha256") or "")
-            raise SystemExit(0)
-PY
+  catalog_sha_from_json "$json" "$version" linux "$ARCH"
 }
 
 fetch_check() {
@@ -370,44 +599,37 @@ fetch_check() {
   # to obtain signed storage_uri for the latest matching platform; if target is
   # set and differs from latest we fall back to ticket.
   CHECK_JSON="$(curl -fsSL "${MAINTAIN_BASE}/distribution/version-check?channel=${CHANNEL}&current=${current}&platform=linux&arch=${ARCH}")"
-  CHECK_JSON="$CHECK_JSON" TARGET_VERSION="$TARGET_VERSION" python3 - <<'PY' >"${TMPDIR:-/tmp}/.upgrade-parse.$$"
-import json, os
-d = json.loads(os.environ["CHECK_JSON"])
-target = (os.environ.get("TARGET_VERSION") or "").strip().lstrip("v")
-arts = d.get("target_artifacts") or []
-art = arts[0] if arts else {}
-latest = (d.get("latest_version") or "").lstrip("v")
-avail = "true" if d.get("update_available") else "false"
-if target:
+  local flat latest cur_ver avail target
+  flat="$(printf '%s' "$CHECK_JSON" | json_flatten)"
+  latest="$(json_get_flat "$flat" '$.latest_version')"
+  latest="${latest#v}"
+  cur_ver="$(json_get_flat "$flat" '$.current_version')"
+  cur_ver="${cur_ver#v}"
+  avail="false"
+  [[ "$(json_get_flat "$flat" '$.update_available')" == "true" ]] && avail="true"
+  # TARGET_VERSION 可能带空白或 v 前缀（用户直接输入）。这里用 tr 去掉全部空白，
+  # 比逐侧 strip 更容易读，对版本号这种取值也没有实际差别。
+  target="$(printf '%s' "${TARGET_VERSION:-}" | tr -d '[:space:]')"
+  target="${target#v}"
+  if [[ -n "$target" ]]; then
     # Pin target; treat as available when target != current.
-    current = (d.get("current_version") or "").lstrip("v")
-    avail = "true" if target and target != current else "false"
-    latest = target
-print(avail)
-print(latest)
-print(art.get("storage_uri") or "")
-print(art.get("sha256") or "")
-print(art.get("artifact_name") or art.get("filename") or "")
-PY
-  mapfile -t _f < "${TMPDIR:-/tmp}/.upgrade-parse.$$"
-  rm -f "${TMPDIR:-/tmp}/.upgrade-parse.$$"
-  UPDATE_AVAILABLE="${_f[0]:-false}"
-  LATEST="${_f[1]:-}"
-  URL="${_f[2]:-}"
-  SHA="${_f[3]:-}"
-  FILE="${_f[4]:-}"
+    if [[ -n "$target" && "$target" != "$cur_ver" ]]; then avail="true"; else avail="false"; fi
+    latest="$target"
+  fi
+  UPDATE_AVAILABLE="$avail"
+  LATEST="$latest"
+  URL="$(json_get_flat "$flat" '$.target_artifacts.0.storage_uri')"
+  SHA="$(json_get_flat "$flat" '$.target_artifacts.0.sha256')"
+  FILE="$(json_get_flat "$flat" '$.target_artifacts.0.artifact_name')"
 
   if [[ -n "$TARGET_VERSION" && ( -z "$URL" || "${LATEST#v}" != "${TARGET_VERSION#v}" ) ]]; then
     local ver="${TARGET_VERSION#v}"
     local ticket ticket_body
-    ticket_body="$(TV="$ver" TA="$ARCH" python3 -c '
-import json, os
-print(json.dumps({"version": os.environ["TV"], "platform": "linux", "arch": os.environ["TA"]}))
-')"
+    ticket_body="$(printf '{"version":"%s","platform":"linux","arch":"%s"}' "$ver" "$ARCH")"
     ticket="$(curl -fsSL -X POST "${MAINTAIN_BASE}/downloads/ticket" -H 'Content-Type: application/json' \
-      -d "$ticket_body")"
-    URL="$(printf '%s' "$ticket" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("url",""))')"
-    FILE="$(printf '%s' "$ticket" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("file_name",""))')"
+      --data "$ticket_body")"
+    URL="$(json_get "$ticket" '$.url')"
+    FILE="$(json_get "$ticket" '$.file_name')"
     LATEST="$ver"
     UPDATE_AVAILABLE=true
     # ticket 没有 sha256 —— 从目录接口补齐，而不是把校验值清空。
@@ -423,34 +645,62 @@ cmd_list() {
   else
     LIST_JSON="$(curl -fsSL "${MAINTAIN_BASE}/downloads/catalog")"
   fi
-  LIST_JSON="$LIST_JSON" python3 - <<'PY'
-import json, os
-raw = os.environ.get("LIST_JSON") or "{}"
-try:
-    d = json.loads(raw)
-except Exception as e:
-    print("  (parse failed)", e)
-    raise SystemExit(0)
-items = d.get("items") or d.get("versions") or []
-for v in items:
-    if not isinstance(v, dict):
-        print(" ", v)
-        continue
-    ver = v.get("version") or ""
-    seq = v.get("build_seq", "")
-    ch = v.get("channel", "")
-    arts = v.get("artifacts") or v.get("items") or []
-    parts = []
-    for a in arts:
-        if not isinstance(a, dict):
-            continue
-        plat = a.get("platform") or "?"
-        arch = a.get("arch") or "?"
-        size = a.get("size_label") or a.get("size_bytes") or "?"
-        parts.append(f"{plat}/{arch}:{size}")
-    sizes = ", ".join(parts) or "-"
-    print(f"  {ver}  build={seq}  channel={ch}  [{sizes}]")
-PY
+  # 在扁平化流上分组打印。优先 $.items（服务端把同一份列表同时挂在 items 和
+  # versions 两个键下），再退回 $.versions。
+  #
+  # 写法约束：**"}" 与 "else" 必须同一行**。这些脚本在 Windows 检出时是 CRLF，
+  # 而 awk 程序文本里 "}" 和 "else" 之间夹一个 CR 会让 gawk 直接报语法错误。
+  printf '%s' "$LIST_JSON" | json_flatten | awk -F'\t' '
+    { n++; p[n] = $1; v[n] = $2 }
+    END {
+      root = ""
+      for (r = 1; r <= n; r++) {
+        s = substr(p[r], 3); d = index(s, "."); if (d == 0) continue
+        seg = substr(s, 1, d - 1)
+        if (seg == "items") { root = seg; break }
+        if (seg == "versions" && root == "") root = seg
+      }
+      if (root == "") { print "  (no versions)"; exit 0 }
+      for (r = 1; r <= n; r++) {
+        s = substr(p[r], 3); d = index(s, "."); if (d == 0) continue
+        if (substr(s, 1, d - 1) != root) continue
+        rest = substr(s, d + 1)
+        d2 = index(rest, "."); if (d2 == 0) continue
+        vi = substr(rest, 1, d2 - 1)
+        tail = substr(rest, d2 + 1)
+        if (tail == "version") { ver[vi] = v[r]; if (!(vi in seen)) { seen[vi] = 1; order[++no] = vi } }
+        else if (tail == "build_seq") { seq[vi] = v[r] }
+        else if (tail == "channel") { ch[vi] = v[r] }
+        else {
+          d3 = index(tail, "."); if (d3 == 0) continue
+          grp = substr(tail, 1, d3 - 1)
+          if (grp != "items" && grp != "artifacts") continue
+          t2 = substr(tail, d3 + 1)
+          d4 = index(t2, "."); if (d4 == 0) continue
+          id = vi "." substr(t2, 1, d4 - 1)      # 版本.制品，全局唯一
+          key = substr(t2, d4 + 1)
+          if (key == "platform") { plat[id] = v[r] }
+          else if (key == "arch") { arch[id] = v[r] }
+          else if (key == "size_label") { size[id] = v[r] }
+          else if (key == "size_bytes") { if (!(id in size)) size[id] = v[r] }
+          if ((id in plat) && !(id in jseen)) { jseen[id] = 1; jorder[++jno] = id }
+        }
+      }
+      for (o = 1; o <= no; o++) {
+        vi = order[o]; parts = ""; np = 0
+        for (q = 1; q <= jno; q++) {
+          id = jorder[q]
+          oi = id; sub(/\.[0-9]+$/, "", oi)     # 只取版本部分，用于分组
+          if (oi != vi) continue
+          p_ = ((id in plat) && plat[id] != "") ? plat[id] : "?"
+          a_ = ((id in arch) && arch[id] != "") ? arch[id] : "?"
+          s_ = ((id in size) && size[id] != "") ? size[id] : "?"
+          parts = (np++ ? parts ", " : "") p_ "/" a_ ":" s_
+        }
+        if (parts == "") parts = "-"
+        printf "  %s  build=%s  channel=%s  [%s]\n", ver[vi], (vi in seq ? seq[vi] : ""), (vi in ch ? ch[vi] : ""), parts
+      }
+    }'
   fetch_check
   echo "[upgrade] current=${CURRENT_VERSION} latest=${LATEST:-?} update_available=${UPDATE_AVAILABLE:-false}"
 }
@@ -586,17 +836,8 @@ service_stop() {
     compose_exec stop
     return
   fi
-  # Linux + systemd
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -E -q '^llm-gateway-go(\.service)?'; then
-    run_priv systemctl stop llm-gateway-go
-    return
-  fi
-  # macOS + launchd
-  if command -v launchctl >/dev/null 2>&1 && [[ "$(uname -s)" == "Darwin" ]]; then
-    local plist="/Library/LaunchDaemons/com.kaixuan.llm-gateway-go.plist"
-    if [[ -f "$plist" ]]; then
-      run_priv launchctl bootout system "$plist" 2>/dev/null || true
-    fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -E -q '^llm-gateway(\.service)?'; then
+    run_priv systemctl stop llm-gateway
   fi
 }
 
@@ -606,17 +847,8 @@ service_start() {
     compose_exec up -d --force-recreate
     return
   fi
-  # Linux + systemd
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -E -q '^llm-gateway-go(\.service)?'; then
-    run_priv systemctl start llm-gateway-go
-    return
-  fi
-  # macOS + launchd
-  if command -v launchctl >/dev/null 2>&1 && [[ "$(uname -s)" == "Darwin" ]]; then
-    local plist="/Library/LaunchDaemons/com.kaixuan.llm-gateway-go.plist"
-    if [[ -f "$plist" ]]; then
-      run_priv launchctl bootstrap system "$plist"
-    fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -E -q '^llm-gateway(\.service)?'; then
+    run_priv systemctl start llm-gateway
   fi
 }
 
@@ -631,7 +863,6 @@ cmd_switch() {
     echo "rsync required for switch" >&2
     return 1
   fi
-  # shellcheck disable=SC2155 # mask is acceptable: $INSTALL_ROOT is always set at this point and a stale path would only fail downstream.
   local BACKUP="${INSTALL_ROOT}/.upgrade-backup-$(date +%Y%m%d%H%M%S)-$$"
   detect_install_mode || return 1
   validate_compose_upgrade || return 1
@@ -642,7 +873,6 @@ cmd_switch() {
     return 1
   fi
   # 备份在停服之前做，且失败就退出 —— 此时线上安装还未被触碰。
-  # shellcheck disable=SC2010 # ls/grep is fine here: we filter literal `.upgrade*` names, filenames are well-known
   if [[ -n "$(ls -A "$INSTALL_ROOT" 2>/dev/null | grep -v '^\.upgrade' || true)" ]]; then
     if ! make_backup "$BACKUP"; then
       echo "[upgrade] aborting switch: 没有可用备份，不会覆盖 ${INSTALL_ROOT}" >&2
@@ -657,6 +887,12 @@ cmd_switch() {
     return 1
   fi
   service_start
+  if declare -F kx_prepare_layout >/dev/null 2>&1; then
+    kx_prepare_layout "$INSTALL_ROOT" 0 0
+  fi
+  if declare -F kx_switch_current >/dev/null 2>&1 && [[ -n "$LATEST" ]]; then
+    kx_switch_current "$INSTALL_ROOT" "$LATEST" "${BUILD_SEQ:-}"
+  fi
   write_state switched "$BACKUP" "$LATEST"
   prune_old_backups
   echo "[upgrade] switched; service restarted if available (mode=${INSTALL_MODE_EFFECTIVE})"
@@ -673,42 +909,67 @@ cmd_test() {
       healthz)  label="/healthz"; url="$HEALTH_URL" ;;
       readyz)   label="/readyz";  url="$READYZ_URL" ;;
       version)
-        # 版本探针：解析出的版本必须等于 LATEST（去掉 v 前缀、大小写不敏感）。
-        # 之前切完只查 /healthz，起一个会回 200 的旧二进制也被判定为成功。
-        label="/version"; url="$VERSION_PROBE_URL"
+        # 版本探针：默认读客户机 VERSION 文件；仅当 VERSION_PROBE_URL 显式设置时才走 HTTP。
+        # 禁止默认打 maintain /maintain/version（FR-PROBE）。
+        label="version"
         if [[ -z "${LATEST:-}" ]]; then
           echo "[upgrade] $label: skipped (no LATEST recorded)" >&2
           failures=$((failures + 1))
           continue
         fi
-        local body want_have
+        local got want_have
+        want_have="${LATEST#v}"
+        if [[ -z "${VERSION_PROBE_URL:-}" ]]; then
+          if declare -F kx_read_installed_version >/dev/null 2>&1; then
+            got="$(kx_read_installed_version "$INSTALL_ROOT" 2>/dev/null || true)"
+          else
+            if [[ -f "${INSTALL_ROOT}/VERSION" ]]; then
+              got="$(tr -d '[:space:]' < "${INSTALL_ROOT}/VERSION")"
+            elif [[ -f "${INSTALL_ROOT}/bin/current/VERSION" ]]; then
+              got="$(tr -d '[:space:]' < "${INSTALL_ROOT}/bin/current/VERSION")"
+            else
+              got=""
+            fi
+          fi
+          got="${got#v}"
+          if [[ -z "$got" ]]; then
+            echo "[upgrade] $label: missing VERSION under ${INSTALL_ROOT} or bin/current" >&2
+            failures=$((failures + 1))
+            continue
+          fi
+          # tr 折叠大小写而不是 ${got,,}（bash 4.0+，macOS 自带 bash 3.2 跑不了）。
+          if [[ "$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]')" != \
+                "$(printf '%s' "$want_have" | tr '[:upper:]' '[:lower:]')" ]]; then
+            echo "[upgrade] $label: file=$got expected=$want_have" >&2
+            failures=$((failures + 1))
+            continue
+          fi
+          echo "[upgrade] $label OK (file $got matches LATEST=$want_have)"
+          continue
+        fi
+        url="$VERSION_PROBE_URL"
+        local body
         body="$(curl -fsS "$url" 2>/dev/null || true)"
         if [[ -z "$body" ]]; then
           echo "[upgrade] $label: empty/non-2xx from $url" >&2
           failures=$((failures + 1))
           continue
         fi
-        # 既支持顶层 version 字段，也支持 service_version/build_version 兼容字段。
-        local got
-        got="$(printf '%s' "$body" | python3 -c '
-import json, sys
-try:
-    d = json.loads(sys.stdin.read() or "{}")
-except Exception:
-    raise SystemExit(0)
-for k in ("version", "service_version", "build_version"):
-    v = d.get(k)
-    if isinstance(v, str) and v:
-        print(v)
-        raise SystemExit(0)
-')"
+        # 依次尝试 version / service_version / build_version，取第一个非空字符串。
+        local flat k
+        flat="$(printf '%s' "$body" | json_flatten)"
+        got=""
+        for k in version service_version build_version; do
+          got="$(json_get_flat "$flat" "\$.$k")"
+          [[ -n "$got" ]] && break
+        done
         if [[ -z "$got" ]]; then
           echo "[upgrade] $label: no version field in response" >&2
           failures=$((failures + 1))
           continue
         fi
-        want_have="${LATEST#v}"
-        if [[ "${got,,}" != "${want_have,,}" ]]; then
+        if [[ "$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]')" != \
+              "$(printf '%s' "$want_have" | tr '[:upper:]' '[:lower:]')" ]]; then
           echo "[upgrade] $label: reported=$got expected=$want_have" >&2
           failures=$((failures + 1))
           continue

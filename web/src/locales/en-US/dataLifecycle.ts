@@ -181,6 +181,10 @@ export default {
       periodCompare: 'Failed to fetch period comparison',
       cacheEconomics: 'Failed to fetch cache economics',
     },
+    degraded: {
+      title: 'Some metrics are unavailable:',
+      hint: 'The database schema is behind this build, so the figures below are placeholders for "could not be computed" — not measurements (which is not the same as no data for this period). Ask an admin to run the data-aggregation migration.',
+    },
   },
 
   // ── Storage overview (StorageOverview.vue) ────────────────────

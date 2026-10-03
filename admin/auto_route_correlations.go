@@ -274,6 +274,12 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		return
 	}
 
+	// 2026-10-03：五个切片字段全是「零行时保持 nil」的写法，而 nil 切片
+	// json.Marshal 成 null。前端 CorrelationsView.vue 模板直接写
+	// `resp.by_model.length` —— null.length 抛 TypeError，/correlations 整页白屏。
+	// 收敛在写出口而不是逐个查询处初始化：字段以后还会加，漏一个就白屏一次。
+	normalizeCorrelationsResponse(&resp)
+
 	writeJSON(w, http.StatusOK, resp)
 	slog.Debug("auto-route correlations computed",
 		"days", days, "by_model", len(resp.ByModel),
@@ -349,4 +355,27 @@ func applyTenantFilterToQuery(r *http.Request, query string, args []any) (string
 	}
 	args = append(args, tenantArgs...)
 	return query, args
+}
+
+// normalizeCorrelationsResponse 把五个切片字段里的 nil 收敛成空切片。
+//
+// 抽成独立函数而不是内联在 handler 里，是因为**这类 bug 只有在没有数据时
+// 才复现**（有数据时切片非 nil，接口完全正常），打真实接口的集成测试基本
+// 碰不到。配套单测直接构造零值结构体调用本函数，见 admin/json_contract_test.go。
+func normalizeCorrelationsResponse(resp *AutoRouteCorrelationsResponse) {
+	if resp.ByModel == nil {
+		resp.ByModel = []CorrelationRow{}
+	}
+	if resp.ByStrategy == nil {
+		resp.ByStrategy = []CorrelationRow{}
+	}
+	if resp.ByTaskType == nil {
+		resp.ByTaskType = []CorrelationRow{}
+	}
+	if resp.ByModelTask == nil {
+		resp.ByModelTask = []CorrelationRowMT{}
+	}
+	if resp.Verdict == nil {
+		resp.Verdict = []CorrelationVerdict{}
+	}
 }

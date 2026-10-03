@@ -94,7 +94,23 @@ var requestLogsReadInventory = map[string]int{
 	"admin/unified_detail.go":               6,
 	"admin/usage.go":                        3,
 	// 2026-10-02: usage trend-series detail 路径读当月视图（与 board fallback 同源）。
-	"admin/usage_trend_series.go":                     2,
+	"admin/usage_trend_series.go": 2,
+	// 2026-10-03: usage_enhanced.go 读 request_logs 两处，但扫描器只数到 1 处 ——
+	//
+	//   ① usageCacheEconomics 的压缩请求数（"FROM request_logs rl"，SQL 字面量）
+	//   ② usageCostTrend 的 work_type / intent 基表（planCostTrend 里的
+	//      Go 字符串 BaseTable: "request_logs rl"）
+	//
+	// ② 不是 SQL 文本，requestLogsReadPattern 的 `from\s+request_logs` 看不见它。
+	// 本表登记的是**扫描器测到的值** 1，不是真实调用点数 2 —— 别把它读成
+	// 「这里只读了一处」。
+	//
+	// ② 这条路径由另一道门从结构上覆盖：planCostTrend 的维度归属断言
+	// （TestPlanCostTrend_DimensionProvenance）直接断言 work_type/intent 的
+	// 基表就是 request_logs rl，比 grep 计数强。扫描器看不见 ≠ 没有覆盖。
+	// 要把 ② 也数进来，得把模式扩到「裸表名字符串」，那会改动本表其余条目
+	// （审计 §8.5），留给需要它的那一轮单独评估。
+	"admin/usage_enhanced.go":                         1,
 	"admin/work_types.go":                             4,
 	"autoroute/recommend_v2.go":                       2,
 	"bg/auto_index_refresher.go":                      4,

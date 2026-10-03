@@ -43,9 +43,7 @@ func (g *fakeLeaseGovernor) Renew(_ context.Context, _ *QueuedRequest) error {
 	g.mu.Lock()
 	g.renewals++
 	call := g.renewals
-	// renewErr 的读必须在锁内：T2/T3 钉测会在循环运行途中换注入（R33 域D
-	// P1-1，-race 实锤——旧代码锁外裸读 vs 测试 goroutine 裸写是数据竞争）。
-	renewErr := g.renewErr
+	fn := g.renewErr
 	g.mu.Unlock()
 	if g.renewedCh != nil {
 		select {
@@ -53,18 +51,18 @@ func (g *fakeLeaseGovernor) Renew(_ context.Context, _ *QueuedRequest) error {
 		default:
 		}
 	}
-	if renewErr == nil {
+	if fn == nil {
 		return nil
 	}
-	return renewErr(call)
+	return fn(call)
 }
 
-// setRenewErr 并发安全地换错误注入（配套 Renew 锁内读；测试 goroutine 与
-// renew 循环 goroutine 并发，裸赋值 = 数据竞争）。
+// setRenewErr 供测试在续约循环运行中途改写行为：renewErr 的读写都必须
+// 在 g.mu 内，否则 -race 下与 Renew 的读构成数据竞争（R33 实跑复现）。
 func (g *fakeLeaseGovernor) setRenewErr(f func(int) error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	g.renewErr = f
+	g.mu.Unlock()
 }
 
 func (g *fakeLeaseGovernor) count() (int, int) {
@@ -86,12 +84,15 @@ func runRenewLoop(t *testing.T, g *fakeLeaseGovernor) (fwdCtx context.Context, a
 	go func() {
 		defer close(stopped)
 		cf.leaseRenewLoop(ctx, stopCh, g, &QueuedRequest{}, 5*time.Millisecond, func() {
+			// cancel 先于信号：context 的 Err 在 CancelFunc 返回前已生效，
+			// 观察到 aborted 关闭的断言方可立即依赖 fwdCtx.Err()（反序在
+			// 两者之间留 TOCTOU 窗，T1 类「abort 必取消」断言会偶发假红）。
+			cancel()
 			select {
 			case <-aborted:
 			default:
 				close(aborted)
 			}
-			cancel()
 		})
 	}()
 	stop = func() {

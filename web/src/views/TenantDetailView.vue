@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { formatDateTime } from '../utils/datetime'
+import { sortByName } from '../utils/sortByName'
 import { localeRef } from '../i18n'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import {
@@ -169,6 +170,16 @@ const visibleKeys = computed(() => keys.value.filter((k) => {
   if (keyOwnerFilter.value && k.owner_user !== keyOwnerFilter.value) return false
   return true
 }))
+
+// 2026-10-03：租户详情页内嵌的「用户」与「密钥」两张表之前完全按后端返回顺序。
+// 同仓 TenantsView 已经按名称排了，这里不排就是同一个实体两套行为。
+// 两张表首列都是 ID（代理列），人认的分别是用户名与密钥别名，所以按那个排。
+const sortedUsers = computed(() => sortByName(users.value, (a, b) => a.id - b.id, ['username']))
+
+// 密钥表：别名优先（人写的名字），没有别名时退到 key_prefix。
+const sortedVisibleKeys = computed(() =>
+  sortByName(visibleKeys.value, (a, b) => a.id - b.id, ['key_alias', 'key_prefix']),
+)
 // 概览 sparkline：近 7 天 daily 序列。
 const spark7d = (key: 'requests' | 'tokens' | 'credits') => overviewDaily.value.map((d) => d[key] ?? 0)
 // 概览副指标同样取自近 7 天序列（与 stats tab 的窗口解耦）。
@@ -551,7 +562,7 @@ watch(() => route.params.tenantId, loadTenant)
             <tr><th>ID</th><th>用户名</th><th>显示名</th><th>邮箱</th><th>角色</th><th>状态</th><th>最后登录</th><th>操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="u in users" :key="u.id">
+            <tr v-for="u in sortedUsers" :key="u.id">
               <td>{{ u.id }}</td>
               <td><strong>{{ u.username }}</strong></td>
               <td>{{ u.display_name || '-' }}</td>
@@ -584,7 +595,7 @@ watch(() => route.params.tenantId, loadTenant)
             <tr><th>ID</th><th>密钥前缀</th><th>别名</th><th>应用</th><th>状态</th><th>请求数</th><th>费用</th><th>创建</th></tr>
           </thead>
           <tbody>
-            <tr v-for="k in visibleKeys" :key="k.id">
+            <tr v-for="k in sortedVisibleKeys" :key="k.id">
               <td>{{ k.id }}</td>
               <td><code>{{ k.key_prefix }}</code></td>
               <td>{{ k.key_alias || '-' }}</td>

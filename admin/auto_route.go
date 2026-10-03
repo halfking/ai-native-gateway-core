@@ -180,7 +180,12 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	out := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var ts time.Time
-		var reqID, taskType, prof, clientModel, outbound string
+		var reqID, taskType, clientModel, outbound string
+		// 2026-10-03：auto_profile 允许为 NULL（没有命中自动路由画像的请求）。
+		// 原来按 string 扫（dest 是 *string = 不可空），遇到 NULL 行直接
+		// `cannot scan NULL into *string` → 整页 /routing-v2/work-types 500。
+		// 同一行的其它可空列本来都用指针，这里是漏网的。
+		var prof *string
 		var workTypeVal sql.NullString
 		var apiKeyID, credentialID *int
 		var confidence *float64

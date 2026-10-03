@@ -1322,10 +1322,13 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 		// 2026-10-02 (vapeur 遗留 #3): hand the already-fetched state to the
 		// executor so its durable Responses gate does not re-GET the same key.
 		//
-		// Attached on the healthy branch only, and only when a state actually
-		// came back. Both branches below return the candidate by value, so the
-		// pointer travels with the Candidate struct through p2cOrder /
-		// promoteWinner / the retry loop into executeOpenAI.
+		// Attached whenever a state object came back — including candidates
+		// about to be filtered out below: the unhealthy copies are dropped
+		// here and never reach the executor, so the extra attachment on them
+		// is dead weight, not a contract. Both branches below return the
+		// candidate by value, so the pointer travels with the Candidate
+		// struct through p2cOrder / promoteWinner / the retry loop into
+		// executeOpenAI.
 		//
 		// Left nil on the two paths that must NOT claim a snapshot:
 		//   · batch read error → this function returned early, states unused;

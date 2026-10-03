@@ -35,6 +35,9 @@
 
 - [R36] provenance 写端三键（window_source/alignment_map_truncated/sanitize_refs_truncated）未进镜像白名单被静默丢弃（commit 声称"白名单已知"不成立）→ 白名单补键+safeWindowSource 有界过滤+读侧字段；sanitizer 锁降级必须 Warn 级（Debug 在生产不可见，竞态窗口重开无观测）
 
+- [R33 2026-10-03] diff 引擎 Anthropic 车道结构性 fail-open（WP-2 审计登记，升级自「OpenAI 带前导 system」单点声明）：① 摘要驻顶层 system 字段而 hasGatewaySummary 只扫 messages[] 的 content ⇒ Anthropic 恒走「无摘要→严格前缀匹配」分支，压缩后下一轮锚点必失配、每轮 fail-open 全量重发+重压缩（成本问题，无数据丢失；本轮修复的 delta 增益在 Anthropic 车道结构性拿不到）；② system 为非空 string 形态时 injectSummaryMarker 静默 no-op（rebuilder_anthropic 把摘要追加在原文之后，markerizeAnthropicSystem 要求整串以前缀开头）。证据 diff.go:195-227/367-391、session_compressor.go:1234-1239、rebuilder_anthropic.go:104-108。待 diff 引擎专项收口（与 OpenAI 前导 system 边界同一专项）
+- [R35 2026-10-03] 上述两项的可执行复现钉测已落位（anthropic_failopen_repro_test.go×3，钉当前缺陷行为作为专项翻转靶）。**附加观察：仅补「marker 可见性」修不好①**——Anthropic 保留布局=[首条 user 原样 + 尾部 turn 对]是**两段非相邻片段**（中间隔着被压缩的历史），不是客户端历史的连续子序列；即使 hasGatewaySummary 能看见，唯一连续后缀匹配（diff.go:216-226）对 [u1,…,u3,a3] 仍失配。专项须两段式锚点（首条 user 例外+连续尾部后缀）或改 Anthropic 保留布局为纯连续尾部。
+
 ## 5. 子代理派发提示词
 
 ```text

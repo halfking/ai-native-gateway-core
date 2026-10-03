@@ -190,7 +190,11 @@ export interface PeriodStats {
   total_tokens: number
   avg_cost_per_req: number
   unique_models: number
-  unique_sessions: number
+  // unique_sessions 已随 PeriodStats 一并移除（2026-10-03）：它需要
+  // COUNT(DISTINCT gw_session_id)，而 usage_ledger 是计费宽表不含会话维度，
+  // 换源后在交互预算内也算不出来（request_logs 实测 30 天窗口 72s）。
+  // 该字段全库无渲染点，故删除而非返回 0 —— 见
+  // admin/usage_enhanced.go 的 PeriodStats 注释。
 }
 
 export interface DimChange {
@@ -200,7 +204,23 @@ export interface DimChange {
   change_pct: number
 }
 
-export interface PeriodCompareResponse {
+/**
+ * 降级标记（2026-10-03）。
+ *
+ * 后端在「schema 落后于代码」时会返回 200 + 全 0，与「这段时间真的没数据」
+ * 在页面上完全同形 —— 2026-10-03 实测 period-compare 把 2026-09 的
+ * 1139.62 美元显示成 0。现在后端恒发 degraded，false 表示「服务端确认过
+ * 它是好的」，字段缺失才是「不知道」。
+ *
+ * 注意不要用 `degraded?: boolean`：可选字段在 JSON 里缺失时读到 undefined，
+ * 与 false 同形 —— 那等于把这个标记自己又废掉了一半。
+ */
+export interface DegradationMarker {
+  degraded: boolean
+  degraded_reason?: string
+}
+
+export interface PeriodCompareResponse extends DegradationMarker {
   current: PeriodStats
   previous: PeriodStats
   change_pct: number
@@ -210,7 +230,7 @@ export interface PeriodCompareResponse {
   by_dimension: Record<string, DimChange[]>
 }
 
-export interface CacheEconomicsResponse {
+export interface CacheEconomicsResponse extends DegradationMarker {
   date_from: string
   date_to: string
   total_requests: number

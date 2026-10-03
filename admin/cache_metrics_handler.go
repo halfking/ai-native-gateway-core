@@ -225,7 +225,9 @@ func (h *CacheMetricsHandler) handleTimeline(w http.ResponseWriter, r *http.Requ
 		Misses      int64  `json:"misses"`
 		TokensSaved int64  `json:"tokens_saved"`
 	}
-	var buckets []bucket
+	// make 非 nil：空窗返回 {"buckets":[]} 而非 null（nil-slice 编码 null 会
+	// 打断前端 .length 读法，同族 R34 已修 session_analytics/candidate_failure）。
+	buckets := make([]bucket, 0)
 	for rows.Next() {
 		var ts time.Time
 		var hits, misses, tokensSaved int64
