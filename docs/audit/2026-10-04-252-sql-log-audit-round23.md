@@ -136,6 +136,6 @@ R22 修复（35a35b063）压在 main 上一天未部署，json_hex 以 ~208/h（
 ## §九、产物与物证
 
 - 代码/迁移：sql/migrations/startup/822_session_summaries_health_pending_index.{sql,down.sql} + installer 五点同步（提交 29723508e）；合并提交 6082b5275/25a864398（origin/main=25a864398）；252-dev 部署 5461c1676（VERIFY_COMMIT 证据在 deploy 日志）。
-- 日志物证：252:/tmp/pg252-r23/（ctr-snap-r23.log、ctr.log-20261004-snap-r23.log、errors_r23.tsv 5,000+ 行、slow_r23.tsv 2.4 万行、summary_r23.json、r23_extract.py）。
+- 日志物证：252:/tmp/pg252-r23/（ctr-snap-r23.log、ctr.log-20261004-snap-r23.log、errors_r23.tsv 37,973 行、slow_r23.tsv 24,351 行、summary_r23.json、r23_extract.py）。
 - 关键实测值：acc 末错 21:21:55；json_hex ×4,999 且 06:40 仍活跃（部署前基线）；EXPLAIN 前后 Parallel Seq Scan → Index Scan（本机+252 双库）；822 台账 applied_at=06:35:20；vacuum-bloat 03:15:01 FAILED ×3 实录；归档表观=du=963,012,664B/真实内容 252MB。
 - 本报告：docs/audit/2026-10-04-252-sql-log-audit-round23.md。
