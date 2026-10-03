@@ -824,6 +824,14 @@ files=(
   # 写方（telemetry markAbandonedTurn）fail-open，故本迁移未应用时只是标记缺失。
   # 幂等（ADD COLUMN IF NOT EXISTS + 列集守卫）；母表与 hot 两面都要有。
   "$ROOT_DIR/sql/migrations/startup/821_session_turns_abandoned_marker.sql"
+
+  # 2026-10-04（822）：session_summaries 健康分待评分捞取查询的部分索引
+  # （252 SQL 日志审计 R23）。bg/session_health_worker（10-02 ece68f148 接入
+  # 生产）每 60min/实例 tick，无索引支撑时对 58.6 万行表 Parallel Seq Scan
+  # +Sort，252 真库实测 25.8-29.4s/次（>1s 慢日志 24h 28 条）。
+  # 带 dbinit:no-transaction 标记（CREATE INDEX CONCURRENTLY）；幂等，
+  # 失败留 INVALID 复跑即清。
+  "$ROOT_DIR/sql/migrations/startup/822_session_summaries_health_pending_index.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
