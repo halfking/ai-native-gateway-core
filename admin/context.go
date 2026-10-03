@@ -16,6 +16,9 @@ type AuthContext struct {
 	Role               string // super_admin | tenant_admin | admin_key
 	IsJWT              bool   // true if authenticated via JWT
 	MustChangePassword bool
+	Issuer             string // original verified issuer
+	Subject            string // original issuer's subject
+	CanonicalUserID    string // explicit shared identity; empty for legacy
 }
 
 // SetAuthContext stores the AuthContext in the request context.

@@ -20,6 +20,52 @@ type DAO struct {
 // NewDAO 构造 DAO。
 func NewDAO(db *sql.DB) *DAO { return &DAO{db: db} }
 
+// ProviderBinding is an explicitly linked identity in the target provider.
+type ProviderBinding struct {
+	CanonicalUserID string
+	Subject         string
+}
+
+// ErrProviderNotLinked covers absent, disabled and ambiguous bindings.
+var ErrProviderNotLinked = errors.New("identity: provider binding unavailable")
+
+// ResolveProvider reads an active canonical identity and exactly one target
+// subject in the same tenant. It never creates or guesses account links.
+func (d *DAO) ResolveProvider(ctx context.Context, provider, subject, tenantID, targetProvider string) (*ProviderBinding, error) {
+	if d == nil || d.db == nil || provider == "" || subject == "" || tenantID == "" || targetProvider == "" {
+		return nil, ErrProviderNotLinked
+	}
+	rows, err := d.db.QueryContext(ctx, `
+SELECT su.canonical_user_id, target.subject
+FROM shadow_user_providers source
+JOIN shadow_users su ON su.shadow_user_id = source.shadow_user_id
+JOIN shadow_user_providers target ON target.shadow_user_id = su.shadow_user_id
+WHERE source.provider = $1 AND source.subject = $2 AND source.tenant_id = $3
+  AND su.status = 'active' AND target.provider = $4 AND target.tenant_id = $3
+LIMIT 2`, provider, subject, tenantID, targetProvider)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var binding *ProviderBinding
+	for rows.Next() {
+		if binding != nil {
+			return nil, ErrProviderNotLinked
+		}
+		binding = &ProviderBinding{}
+		if err := rows.Scan(&binding.CanonicalUserID, &binding.Subject); err != nil {
+			return nil, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if binding == nil || binding.CanonicalUserID == "" || binding.Subject == "" {
+		return nil, ErrProviderNotLinked
+	}
+	return binding, nil
+}
+
 // GetByProvider 用 (provider, subject, tenant_id) 三元组查询 shadow_user。
 //
 // 未命中返回 nil, nil（不是错误）；调用方决定是否创建。

@@ -109,10 +109,12 @@ func VerifyMultiIssuer(raw string, issuers []Issuer, expectedAud string) (*Claim
 		out.Scope = v
 	}
 	if roles, ok := mc["roles"].([]any); ok {
-		out.Roles = make([]string, 0, len(roles))
-		for _, r := range roles {
+		// Preserve role positions. An invalid primary element stays empty
+		// so authorization cannot promote a later role to primary.
+		out.Roles = make([]string, len(roles))
+		for i, r := range roles {
 			if s, ok := r.(string); ok {
-				out.Roles = append(out.Roles, s)
+				out.Roles[i] = s
 			}
 		}
 	}
