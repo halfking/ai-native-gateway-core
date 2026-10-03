@@ -33,7 +33,9 @@ async function load() {
       days: filterDays.value,
       limit: filterLimit.value,
     })
-    entries.value = r.entries
+    // 防御：后端若吐 `null`（Go nil 切片）而不是 `[]`，模板的 `entries.length`
+    // 会抛 TypeError 整页白屏。数组字段一律 ?? []，不让一个 null 决定整页生死。
+    entries.value = Array.isArray(r.entries) ? r.entries : []
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {

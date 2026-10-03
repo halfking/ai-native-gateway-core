@@ -190,27 +190,65 @@ export type SlidingWindowBatchResult = {
   error?: string
 }
 
+/**
+ * 看板的「队列视角」会把所有 凭据×模型 对一次塞进来（实测 ~250 条），
+ * 而服务端硬上限是 slidingWindowBatchMaxItems = 100，超了直接 400
+ * `items must be at most 100`（admin/credential_monitor_sliding_window.go:105）。
+ *
+ * 原来的后果不是「少了一批数据」，而是**整批失败**：调用方 catch 之后回退到
+ * legacy N 路 GET 轮询，于是 /dashboard 和 / 每次打开都先报一条 400，
+ * 再发 250 个单条请求。错误信息（400）还和真正的原因（分批）毫无关系，
+ * 排查时很容易被带偏。
+ *
+ * 这里在 API 层按上限切片并行发出再合并：
+ *  - 切片数不写死，跟随服务端上限常量（见下方 SLIDING_WINDOW_BATCH_MAX）。
+ *  - 合并顺序按切片序号稳定拼接，避免结果顺序随网络返回抖动。
+ */
+const SLIDING_WINDOW_BATCH_MAX = 100
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
 /** Queue-perspective stats: one POST for many credential×model pairs. */
 export function getSlidingWindowBatch(
   items: SlidingWindowBatchItem[],
   minutesOrOptions: number | SlidingWindowBatchOptions = 5,
   requestOptions?: RequestOptions,
-) {
+): Promise<{
+  window_minutes: number
+  count: number
+  results: SlidingWindowBatchResult[]
+}> {
   const options: SlidingWindowBatchOptions =
     typeof minutesOrOptions === 'number'
       ? { minutes: minutesOrOptions }
       : (minutesOrOptions ?? {})
   const minutes = options.minutes ?? 5
-  const body: Record<string, unknown> = { minutes, items }
-  if (options.includeEntries) {
-    body.include_entries = true
-    if (options.entryLimit != null) body.entry_limit = options.entryLimit
+
+  const post = (chunkItems: SlidingWindowBatchItem[]) => {
+    const body: Record<string, unknown> = { minutes, items: chunkItems }
+    if (options.includeEntries) {
+      body.include_entries = true
+      if (options.entryLimit != null) body.entry_limit = options.entryLimit
+    }
+    return req<{
+      window_minutes: number
+      count: number
+      results: SlidingWindowBatchResult[]
+    }>('POST', '/api/credentials/sliding-window/batch', body, requestOptions)
   }
-  return req<{
-    window_minutes: number
-    count: number
-    results: SlidingWindowBatchResult[]
-  }>('POST', '/api/credentials/sliding-window/batch', body, requestOptions)
+
+  if (items.length <= SLIDING_WINDOW_BATCH_MAX) return post(items)
+
+  const chunks = chunk(items, SLIDING_WINDOW_BATCH_MAX)
+  return Promise.all(chunks.map(post)).then((parts) => ({
+    window_minutes: minutes,
+    count: parts.reduce((n, p) => n + (p.count ?? 0), 0),
+    results: parts.flatMap((p) => p.results ?? []),
+  }))
 }
 
 export function promoteCredential(credentialId: number, reason: string) {

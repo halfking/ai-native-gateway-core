@@ -50,6 +50,15 @@ watch(modelName, () => {
 async function loadTabData(tab: TabId) {
   loading.value = true
   try {
+    // 2026-10-03：直接访问 /probe-health/detail（没带 ?model=）时 modelName 是空串，
+    // 拼出来的是 `/api/admin/probe/model//nodes` —— 空路径段，后端 400，
+    // console 每次都留一条错。这个页面所有内容都挂在单个模型上，
+    // 没有模型就没什么可取的，直接短路。
+    if (!modelName.value) {
+      nodes.value = []
+      nodeSummary.value = null
+      return
+    }
     switch (tab) {
       case 'nodes': await loadNodes(); break
       case 'routing': await loadRouting(); break
