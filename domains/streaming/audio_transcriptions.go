@@ -16,6 +16,7 @@ package streaming
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -190,10 +191,11 @@ func (e *transcriptionsParseError) Error() string { return e.msg }
 //
 //	file            (required)  音频文件
 //	model           (required)  模型名（canonical）
-//	language        (optional)  ISO-639-1；chat-audio 桥接形态下小米不收
-//	                           text part，该字段被忽略（实测 400
-//	                           "must not include text parts"）
-//	prompt          (optional)  同上，仅 multipart 透传形态生效
+//	language        (optional)  ISO-639-1；chat-audio 桥接形态下透传为
+//	                           asr_options.language（上游只认 zh/en/auto，
+//	                           见 normalizeASRLanguageForCandidate 的
+//	                           归一与丢弃口径）
+//	prompt          (optional)  仅 multipart 透传形态生效（小米拒收 text part）
 //	response_format(optional)  json（默认）| text | verbose_json | srt | vtt
 //	temperature     (optional)
 //	stream          (optional)  true → SSE
@@ -249,9 +251,19 @@ func parseTranscriptionsMultipart(w http.ResponseWriter, r *http.Request) (*Tran
 	return req, nil
 }
 
-// writeAudioError maps a transcription/synthesis pipeline error onto the
-// gateway error envelope. 「无候选」给 503 no_provider（openpocket 的
-// isNoProvider 识别口径），其余按 502 upstream_error 透出脱敏原因。
+// writeAudioError 把转写/合成链路的错误映射到网关错误信封。
+//
+// 「无候选」给 503 no_provider（openpocket 的 isNoProvider 识别口径）。
+// 上游 4xx 按语义分流（2026-10-04 小米实测引入）：
+//
+//	400/413/422 → 400 调用方请求问题（unsupported input_audio.format、
+//	              Unknown voice、asr_options.language 非法值等）
+//	429        → 429 上游配额
+//	401/403    → 502 网关自己那把上游 key 的问题，不是调用方的
+//	其余 5xx   → 502
+//
+// 之前一律 502，客户端（openpocket 的探测缓存、5xx 告警）会把「参数写错」
+// 误判成「网关故障」。
 func writeAudioError(w http.ResponseWriter, requestID string, err error) {
 	if err == nil {
 		return
@@ -261,7 +273,34 @@ func writeAudioError(w http.ResponseWriter, requestID string, err error) {
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "No audio provider available for model", "server_error", "no_provider")
 		return
 	}
+	var upErr *audioUpstreamStatusError
+	if errors.As(err, &upErr) {
+		switch {
+		case upErr.clientFault():
+			writeErrorJSON(w, http.StatusBadRequest, requestID,
+				"Audio request rejected by upstream: "+sanitizeAudioErrorMessage(upErr.Error()),
+				"invalid_request_error", "upstream_rejected_request")
+			return
+		case upErr.status == http.StatusTooManyRequests:
+			writeErrorJSON(w, http.StatusTooManyRequests, requestID,
+				"Upstream audio provider rate limited: "+sanitizeAudioErrorMessage(upErr.Error()),
+				"rate_limit_error", "upstream_rate_limited")
+			return
+		}
+	}
+	// 桥接前置校验（不支持的音频格式 / voiceclone 缺样本）也是调用方问题。
+	if isAudioClientInputErr(err) {
+		writeErrorJSON(w, http.StatusBadRequest, requestID, sanitizeAudioErrorMessage(err.Error()),
+			"invalid_request_error", "invalid_audio_request")
+		return
+	}
 	writeErrorJSON(w, http.StatusBadGateway, requestID, "Audio upstream failed: "+sanitizeAudioErrorMessage(msg), "server_error", "upstream_error")
+}
+
+// isAudioClientInputErr 报告错误是否是本地前置校验判定的调用方问题。
+func isAudioClientInputErr(err error) bool {
+	var cie *audioClientInputError
+	return errors.As(err, &cie)
 }
 
 // sanitizeAudioErrorMessage 截断并清洗上游错误文本（供应商体里可能带
