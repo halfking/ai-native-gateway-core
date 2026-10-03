@@ -79,3 +79,39 @@ describe('sortByName 的 keys 参数（排序键须与首列显示的主键一�
     expect(byDisplay).not.toEqual(byUsername)
   })
 })
+
+describe('sortByName 键选择的稳定性', () => {
+  // 2026-10-03：ProviderCredential.label 被加进 NameLike 以支持凭据表按名称排。
+  // 它**刻意不在** DEFAULT_KEYS 里 —— 默认顺序已经上线在供应商/租户/用户/密钥
+  // 四处，一旦有人顺手把 label 加进默认候选，那些页面的行序会静默改变。
+  // 这条测试把「不进默认」钉死。
+  it('label 不会被默认当作排序键（供应商行序不因新增 label 而改变）', () => {
+    const rows = [
+      { name: 'Zeta', label: 'aaa-first' },
+      { name: 'Alpha', label: 'zzz-last' },
+    ]
+    // 若 label 进了默认候选，会按 aaa-first / zzz-last 排成 Zeta, Alpha
+    expect(sortByName(rows).map((r) => r.name)).toEqual(['Alpha', 'Zeta'])
+  })
+
+  it('显式传 label 作为排序键时按 label 排（凭据表走这条）', () => {
+    const rows = [
+      { id: 2, name: 'Zeta', label: 'aaa-first' },
+      { id: 1, name: 'Alpha', label: 'zzz-last' },
+    ]
+    expect(
+      sortByName(rows, (a, b) => a.id - b.id, ['label']).map((r) => r.label),
+    ).toEqual(['aaa-first', 'zzz-last'])
+  })
+
+  it('label 缺失时回退到 name，不产生空名沉底', () => {
+    const rows = [
+      { id: 1, name: 'Bravo', label: null },
+      { id: 2, name: 'Alpha', label: null },
+    ]
+    expect(sortByName(rows, (a, b) => a.id - b.id, ['label', 'name']).map((r) => r.name)).toEqual([
+      'Alpha',
+      'Bravo',
+    ])
+  })
+})
