@@ -1,0 +1,56 @@
+# session_mirror_outbox 重放面告警（§9.92，2026-10-03）
+#
+# 指标来源（internal/sessionv2mirror/replay.go:99-112，promauto 注册）：
+#   session_mirror_outbox_pending            — 待重放行数（gauge）
+#   session_mirror_outbox_replays_total{result} — 重放结果分布 ok|retry|dead|skipped
+#   session_mirror_outbox_dead_total         — 累计判死事件数
+#
+# ★为什么这两条告警到本轮才存在：
+#   `session_mirror_outbox_dead_total` 的 metric Help 自称
+#   "the alerting-friendly top-level signal"；`docs/db-changelog.md:751` 也把它
+#   标为「适合做告警主信号」。**但仓内零告警读它**（`grep session_mirror_outbox
+#   deploy/prometheus/` 无命中）——一个被两处文档指定为告警主信号的计数器，
+#   从来没有人写那条告警。这就是 §9.37「没有告警读的指标是装饰」的又一次。
+#
+# ★还有一个更隐蔽的坑：这两个指标**改过名**（去掉 `llmgw_` 前缀，
+# 见 db-changelog.md:744-746「改名即断流」）。仓内无引用证明不了仓外的
+# Grafana 面板 / 告警规则 / 采集配置已经同步——**任何仓外告警都可能已断流**。
+# 本文件用的是**改名后的**名字；`mirror_outbox_metric_name_test.go` 会把规则里的
+# 指标名与 replay.go 的 `Name:` 字面量对账，改名时必须同步改这里（门会红）。
+#
+# 已知局限：
+#   1. 252 无 Prometheus/Grafana，本组规则在该环境**不生效**。
+#   2. `session_v2_mirror_backlog_pending`（内存兜底深度）**故意不加告警**：
+#      它在 252 当前为 1 且不归零（进程自 2026-10-01 起已累积 246 次写失败），
+#      加上就是一条永久 firing 的告警。是否落属运维姿态决策，需负责人拍板。
+#   3. `dead_total` 是**单调计数器**，不因重放恢复而归零；它是累计判死事件数，
+#      表达的是「有多少镜像行永久丢失待人工对账」，不是当前积压量。
+
+groups:
+  - name: session_mirror_outbox
+    interval: 30s
+    rules:
+      - alert: MirrorOutboxDeadLettered
+        # 一条重放行耗尽全部重试次数 = 该 turn 永久丢失。
+        # replay.go:526 的原文就是 "mirror data lost pending manual reconciliation"。
+        expr: increase(session_mirror_outbox_dead_total[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: session_v2
+        annotations:
+          summary: "会话镜像重放行被判死（永久丢失）"
+          description: "过去 1 小时内有 session_mirror_outbox 行耗尽重试次数被判死，对应 turn 永久未写入 session_turns。代码原文：mirror data lost pending manual reconciliation。请查 /var/log/messages 的 'outbox row dead' 并人工对账 request_id。"
+
+      - alert: MirrorOutboxBacklogStuck
+        # 待重放行 30 分钟不降 = 重放面卡住（advisory lock 争用 / DB 超时）。
+        # 用 gauge 的绝对值而不是 rate：pending 本来就该非零一阵，
+        # 真正要抓的是「一直不降」。
+        expr: session_v2_mirror_outbox_pending > 0
+        for: 30m
+        labels:
+          severity: warning
+          component: session_v2
+        annotations:
+          summary: "会话镜像重放队列 30 分钟未消化"
+          description: "session_mirror_outbox 待重放行数持续非零超过 30 分钟，说明重放器没有正常消化（常见原因：advisory lock 争用、DB 超时、reaper 未运行）。查 'outbox replay tick failed' 日志与 session_mirror_outbox_replays_total{result=\"retry\"} 的增长。"

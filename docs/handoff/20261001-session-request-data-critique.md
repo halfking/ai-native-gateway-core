@@ -4945,3 +4945,69 @@ attempts = 9，created 2026-09-23，updated 2026-10-01
 - §9.59.9 / §9.90 的 A 群那 6 条终态请求（会话从未被创建）——**本节不提供新归因**。
 - B 群 10 条（会话存在、个别轮缺失）。
 - `session_v2_mirror_backlog_pending = 1` 的那一条是谁。
+
+---
+
+## 第四十四轮（§9.92）：★★**再撤一次** —— §9.91 的「重放计数已计数但未导出」也是错的；并**补上真正该补的告警**
+
+### 连着两轮的自我订正
+
+| 轮次 | 我的结论 | 真相 |
+|---|---|---|
+| §9.90.4 | 「outbox 已死 10 天」 | ❌ 正常工作（重放成功后 `DELETE`） |
+| §9.91.2 | 「重放计数**根本没导出**到 `/metrics`」 | ❌ **一直在导出** |
+
+§9.91.2 错在哪：我用 `grep -E "^mirror_replay|^session_v2_mirror"` 去搜 `/metrics`，
+而这两个 `promauto` 计数器的**导出名与 Go 变量名完全不同**：
+
+| Go 变量 | 实际导出名 | 命中？ |
+|---|---|---|
+| `mirrorReplayTotal` | `session_mirror_outbox_replays_total` | ❌ |
+| `mirrorReplayDeadTotal` | `session_mirror_outbox_dead_total` | ❌ |
+
+**我拿源码标识符去搜运行时产物。** 真值：`{ok}=2301 {retry}=1392 {dead}=112`，
+`dead_total=112` 与按日志数的 112 条 ERROR **完全相等**（独立交叉验证）。
+**重放面工作得很好。**
+
+### 真正的洞（比原来说的更硬）
+
+指标在、有值、还被**两处文档点名是告警主信号**：
+- `replay.go:105` Help：*"the alerting-friendly top-level signal"*
+- `db-changelog.md:751`：*"适合做告警主信号"*
+
+**而仓内零告警读它。** 意图被写下了，执行没发生。
+
+更隐蔽的是：这两个指标**改过名**（去 `llmgw_` 前缀）。`db-changelog.md:744-746`
+警告「改名即断流」，且明说「仓外 Grafana/告警/采集配置不在该论证范围内」
+⇒ **仓内 grep 无引用推不出没有断流风险。**
+
+### 本轮落地
+
+- `deploy/prometheus/rules/session-mirror-outbox.yml`
+  `MirrorOutboxDeadLettered`（`increase(dead_total[1h]) > 0 for: 5m`）
+  + `MirrorOutboxBacklogStuck`（`pending > 0 for: 30m`）
+- `deploy/prometheus/rules/session_mirror_outbox_rules_test.go`
+  两道门：**从 `replay.go` 的 `Name:` 推导指标名并与规则对账** + 结构完整性。
+
+**门必须从源码推导、不能把名字写死**：写死 = 改名时顺手把门里的名字也改掉
+⇒ 又回到人肉同步，**而那正是 db-changelog 警告的失效模式本身**。
+
+变异 3/3 红因即断言：M1 改源码 `Name:` / M2 规则残留 `llmgw_` 前缀 / M3 删 `for:`。
+`promtool check rules`：新文件 SUCCESS(2 rules)，`rules/*.yml` 全目录 SUCCESS。
+
+### 未做（需拍板）
+
+`session_v2_mirror_backlog_pending > 0` 告警**故意未加**：252 恒为 1，
+加上即永久 firing，属运维姿态决策。
+
+### 纪律（连踩两次）
+
+> **grep 运行时产物（`/metrics`、JSON、HTTP 响应）时，关键词必须取自
+> 「产物里的那个名字」，不能取自源码里的变量名。**
+> 变量名→指标名要经过重命名+加前缀的转换，这个转换**源码里看得见，grep 里看不见**。
+> 「grep 不到」的精确形态不是「不存在」，而是**「你的关键词写对了没有」**。
+
+### 仍然未查明
+
+A 群 6 条终态请求（会话从未被创建）、B 群 10 条、`backlog_pending=1` 的那一条。
+**两轮未查明，不写归因。**
