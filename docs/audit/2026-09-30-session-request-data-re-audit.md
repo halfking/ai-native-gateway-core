@@ -13307,3 +13307,85 @@ A 不必等 B/C，可以先做；B 和 C 决定「v1 能不能退役」。
 >
 > **同名不等于同义**：这份表是按列名比对的，语义核对（决定 B）独立存在，
 > 不能因为「列都在」就说 A 和 B 一起完成了。
+
+---
+
+## §9.109 决定 B（逐列语义对账）第一列就抓到硬阻断：`credential_id` 类型不兼容，**且只在运行时暴露**
+
+§9.108 把读取侧拆成 A（加宽视图）/ B（语义对账）/ C（25 列归属）。
+本节做 B 的第一列，结果不是「口径可能不一致」这种软结论，
+而是**一个可复现的运行时错误**。
+
+### §9.109.1 16 列的类型对账：14 一致，2 不同
+
+同一张库里取两侧（避免跨两个来源比）：
+
+| 列 | 会话视图 | v1 (`request_logs_hot`) |
+|---|---|---|
+| `credential_id` | **text** | **bigint** |
+| `tenant_id` | `character varying` | `text` |
+| `client_protocol` | `text` | `character varying` |
+| 其余 13 列 | 一致 | 一致 |
+
+`tenant_id` / `client_protocol` 只是 `text` vs `varchar`，字符串之间可比较，**无碍**。
+
+### §9.109.2 ★但 `credential_id` 是硬阻断，而且 PREPARE 查不出来
+
+`admin/logs.go:531`：
+
+```go
+if v := queryIntPtr(r, "credential_id"); v != nil {
+    addFilter("rl.credential_id = $%d", *v)      // 传的是**整数**
+}
+```
+
+**第一层检查（PREPARE）通过**：
+
+```
+PREPARE p1 AS SELECT count(*) FROM session_turns_with_current_month WHERE credential_id = $1;  → OK
+```
+
+因为 `$1` 未定型，PG 按 `texteq` 把它定为 `text`，语句能解析。
+
+**第二层检查（运行时形态）炸了**：
+
+```
+SELECT count(*) FROM session_turns_with_current_month WHERE credential_id = 42;
+  ERROR: operator does not exist: text = integer          ← 42883
+对照：request_logs_hot（bigint）同样写法 → 正常
+```
+
+父表 `session_turns`（104 列，视图未投影那一层）**同样**炸——所以这不是「加宽视图」
+能解决的，是**列类型本身**的问题。
+
+**为什么运行时是字面量**：§9.102 已经坐实 `db/db.go:72` 设
+`QueryExecModeSimpleProtocol`，pgx **把参数客户端内联成字面量**。
+所以线上真正执行的是 `= 42`，而不是 `= $1`。
+
+⇒ **只要把 `admin/logs.go` 的 `rl` 切到会话族，credential_id 过滤每个请求都会 42883。**
+
+### §9.109.3 修法有两种，都要拍板（属决定 A/B 的延伸）
+
+| 方案 | 代价 | 备注 |
+|---|---|---|
+| 查询侧加 cast：`rl.credential_id::bigint = $1` | 索引可能失效 | 会话侧 `credential_id` 是 text，**是否有以它为前缀的索引要单独确认** |
+| 改过滤参数类型：`= $1::text` | 需把 int 转字符串再比 | 不改索引，但入参语义从数值变字符串 |
+
+**在选之前必须先量一件事**：`session_turns(_hot)` 上有没有以 `credential_id`
+为前导列的索引。这决定 cast 方案是否可接受。**本节不擅自改**——它改变查询形状。
+
+### §9.109.4 这一节的教训（比结论本身更值钱）
+
+> **PREPARE 通过 ≠ 运行时会过——当客户端把参数内联成字面量时。**
+> §9.102 我用「两协议对照」推翻了自己的两个假 P0，根因正是这个内联；
+> 这一轮同一个机制又制造了反向的陷阱：**PREPARE 给了假的绿灯**。
+> ⇒ 凡是「类型不兼容」的怀疑，**必须两种形态都测**：
+> `PREPARE`（占位符形态）+ 内联字面量形态（运行形态）。
+>
+> **第 3 步方法论：逐列对账要在第 1 列就用足量手段。** 我原本打算「16 列逐一核对语义」，
+> 结果**第 1 列就发现硬阻断**——这说明「语义对账」这个动作的产出密度比预期高，
+> 不必等到列完 71 列。
+>
+> **注意别把上一轮的教训用反**：§9.102 说「PREPARE 的失败在生产不成立」，
+> 这一轮说「PREPARE 的通过在生产也不成立」。**两个方向都不可单独采信**，
+> 判据必须贴着被测对象的真实执行形态。
