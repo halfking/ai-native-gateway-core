@@ -11744,15 +11744,43 @@ startup migration 820 exists but is missing from the channel files=(...) array
 ⇒ **结论：让号这个决定是有效的**——它让冲突从「两个迁移抢同一个文件名」
 降级为「一份可重建的清单 + 一份纯文档」，而前者根本不该进版本控制仲裁。
 
-⚠ 但有一件事**合并时必须人工处理**，否则会静默出错：
-`origin/main` 的 TSV 里**仍然登记着 `819_request_abandoned.sql`**，
-且**完全没有 `820_audio_modality_backfill.sql`**。
-⇒ 合并后重生成 TSV 时，`820_audio_modality_backfill` 会**被自动写进清单**，
-而它的七点同步仍然是缺的（通道腿 0 / embeddata 副本 0）⇒ **照样 exit 4**。
-**TSV 被自动补上，恰恰会让「缺通道腿」这件事更难被发现**：
-清单看着齐了，而升级序列依然跑不动。
+⚠ 合并**不会**自动修好上游那个 820，原因与机制已实测：
+`installed_startup_migrations.tsv` 是从 **`dbinit.Runner.StartupFiles`** 推导的
+（`startup_manifest_test.go` 的 `regenerate()`），而 `820_audio_modality_backfill`
+**不在 StartupFiles 里** ⇒ 它不会被写进清单。
 
-⇒ 合并前的必做项：**给上游那个 820 补通道腿与 embeddata 副本**（本轮未做，见 §9.92.7e）。
+⚠ **订正我上一轮的一个推断**（当时是推理，没有实测）：
+我写过「TSV 重建会把 820 自动补进清单，反而更难发现」——**这是错的**。
+实测合并后态：TSV 里 `820_audio_modality` 的行数是 **0**。
+⇒ 重生成**不会**掩盖它；恰恰是 `TestStartupManifestMatchesCanonicalSources`
+这条更完整的检查在报：
+
+| 阶段 | 红因 |
+|---|---|
+| 合并前 `origin/main` | `startup migration 820 exists but is missing from the channel files=(...) array`（`tail -1` 那条旧检查） |
+| 合并后 | `canonical startup migration 820_audio_modality_backfill.sql has no approved delivery path; register it in StartupFiles, the revision sequence, or the reviewed Go-ensure allowlist` |
+
+⇒ 合并后红因**更具体**（点名了文件名与三条可选登记位置），
+这是**好消息**：不是变得更隐蔽，而是既有门给出的诊断更准了。
+
+⇒ 仍然成立的那一条：**给上游那个 820 补通道腿 + StartupFiles + embeddata 副本**
+（本轮未做，不在授权范围，见 §9.92.7e）。
+
+### §9.92.7g 合并演练的完整结果（只读，未改动任何本地状态）
+
+在临时 worktree 里基于 `origin/main` 实跑了一次完整合并
+（`--no-commit --no-ff`），处理完冲突后测：
+
+| 项 | 结果 |
+|---|---|
+| 冲突文件 | 2 个，与预演一致：审计文档 + TSV |
+| TSV 解法 | **不手工解**，用 `-update` 重建（它是 StartupFiles 的派生物） |
+| 合并后 TSV 尾部 | `215 818_ursm…` / `216 821_session_turns_abandoned_marker.sql` ← 我的 821 正确登记 |
+| `go build ./...` | **EXIT=0** |
+| 契约测试 | **EXIT=1**，红因是上游 820（见上表） |
+
+⚠ **演练后演练态已删除**（`git worktree remove --force` + `prune`），
+`main` 与本分支均未被改动。
 
 ### §9.92.8 本节没有做的 / 遗留
 
