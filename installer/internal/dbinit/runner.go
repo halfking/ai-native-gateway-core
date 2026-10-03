@@ -811,6 +811,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 紧接在 mirror 写完终态 turn 之后执行，fail-open，故本迁移未应用时
 			// 只是标记缺失，不会打挂镜像写链（审计 §9.93）。
 			"821_session_turns_abandoned_marker.sql",
+			// 822 (2026-10-04, 252 SQL 日志审计 R23): session_summaries 健康分
+			// 待评分捞取查询的部分索引 (last_request_at DESC) WHERE health_score
+			// IS NULL。bg/session_health_worker（10-02 ece68f148 接入生产）每
+			// 60min/实例 tick，无索引支撑时对 58.6 万行表 Parallel Seq Scan +
+			// Sort，252 真库实测 25.8-29.4s/次（>1s 慢日志 24h 28 条）。
+			// 带 dbinit:no-transaction 标记，走非事务通道。
+			"822_session_summaries_health_pending_index.sql",
 		},
 	}
 }
