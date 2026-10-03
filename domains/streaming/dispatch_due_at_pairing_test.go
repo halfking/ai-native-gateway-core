@@ -18,11 +18,18 @@ import (
 // （scheduled + dueAt），要么把 dueAt 清零写 immediate。
 //
 // ── 为什么这条不变量需要一道门 ────────────────────────────────────────
-// telemetry 的 UPDATE 里，due_at 的判据**复用**了 $98
-// （`due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END`），即「class
-// 为空就不动 due_at」。今天这不构成缺陷——正因这条不变量让
-// `$98 IS NULL AND $99 IS NOT NULL` 不可达。
+// 判据 ①/② 与 telemetry 的 SQL 形状**无关**，它们只保证**进入 SQL 之前**
+// 那对字段的配对关系。这仍然必要，但理由已换（2026-10-03 裁决，审计 §9.90.1）：
+// due_at 的判据原先复用 $98，今天已改为自己的 $99::timestamptz，两列判据解耦。
+// ⇒ 「class 为空则 due_at 也不写」这个**兜底已经不存在了**，
+// 不变量不再靠 SQL 兜底，只靠本门。
 //
+// ⚠ 这条依赖关系是**加强**了而不是放松了：过去即使有人新增了只填其一的
+// handler，due_at 也会被静默跳过（不落库）；现在 due_at 会**真的写进去**，
+// 于是「class 缺失 + due_at 有值」第一次成为一个**在库里可见**的形态。
+// ⇒ 判据 ① 抓的那类缺陷（实际 scheduled 被记成 immediate）现在会造成
+// 一行 class='immediate' 却带 due_at 的矛盾记录，比之前更难被发现。
+
 // 不变量的**真实危害不是 due_at 被丢弃**，而是请求被记错档：
 // 新增协议 handler 若只调 parseDispatchDueAt 而忘了 stamp，logCtx 上
 // RequestClass 与 DueAt 都是零值，该行落库时 request_class 取列默认

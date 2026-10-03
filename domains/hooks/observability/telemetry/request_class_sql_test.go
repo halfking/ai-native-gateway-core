@@ -3,6 +3,7 @@ package telemetry
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -90,15 +91,52 @@ func TestUpdateRequestLogCarriesRequestClass(t *testing.T) {
 	// 永远不落库。根因与最小复现见 client.go 该处注释，以及
 	// TestCaseWhenPlaceholderHasTypeContext（离线门，真库测试没 DSN 时会 skip）。
 	//
-	// 仍然按字面量钉：既有的「due_at 判据复用 $98」这个耦合（class 为 NULL
-	// 时 due_at 也不写）尚未裁决，钉住字面量意味着任何改动都必须先想清楚。
-	for _, want := range []string{
-		"request_class = CASE WHEN $98::text IS NULL THEN request_class ELSE $98 END",
-		"due_at = CASE WHEN $98::text IS NULL THEN due_at ELSE $99 END",
-	} {
-		if !strings.Contains(seg, want) {
-			t.Fatalf("UPDATE missing 608 assignment %q", want)
+	// 2026-10-03（§9.90.1，用户拍板解耦）：due_at 的判据由复用 $98 改为
+	// 自己的 $99。那是 608 迁移「class 与 due_at 一起下发」的历史遗留耦合，
+	// class 为 NULL 时 due_at 被连带跳过。
+	//
+	// ⚠ **只把字面量换成新的不够**——那只是让门跟着实现走，将来谁把它们
+	// 绑回去，重新钉一次字面量就又绿了。所以这里断言的是**各自判据**这个
+	// 语义：每列的 WHEN 判据必须用**它自己**的那个占位符。
+	// 判据形如 `<col> = CASE WHEN $<n>::<type> IS NULL THEN <col> ELSE $<m> END`，
+	// 这里要求 n == m（判据与写入值同参），并额外钉住 $98/$99 的归属。
+	// ⚠ RE2 **不支持反向引用**（`\1` 在 Compile 期就报 invalid escape sequence），
+	// 所以 THEN 分支也捕获一次、再在 Go 里比对列名相等，而不是写进正则。
+	assignRe := regexp.MustCompile(
+		`(?m)^\s*,\s*(request_class|due_at)\s*=\s*CASE WHEN \$(\d+)::([a-z ]+) IS NULL THEN (request_class|due_at) ELSE \$(\d+) END`)
+
+	got := map[string][2]int{}
+	for _, m := range assignRe.FindAllStringSubmatch(seg, -1) {
+		if m[1] != m[4] {
+			t.Fatalf("assignment 形状异常：写入 %s 却把 %s 当保留旧值的列", m[1], m[4])
 		}
+		n1, err := strconv.Atoi(m[2])
+		if err != nil {
+			t.Fatalf("%s: 判据占位符 %q 解析失败: %v", m[1], m[2], err)
+		}
+		n2, err := strconv.Atoi(m[5])
+		if err != nil {
+			t.Fatalf("%s: 写入值占位符 %q 解析失败: %v", m[1], m[5], err)
+		}
+		got[m[1]] = [2]int{n1, n2}
+	}
+	for _, col := range []string{"request_class", "due_at"} {
+		ns, ok := got[col]
+		if !ok {
+			t.Fatalf("UPDATE missing 608 assignment for %s (pattern no longer matches; "+
+				"if the SQL shape changed on purpose, update this gate deliberately)", col)
+		}
+		if ns[0] != ns[1] {
+			t.Fatalf("%s: 判据用 $%d 而写入值用 $%d —— 两列的判据必须各自用"+
+				"自己的占位符；共用一个是 608 迁移的历史耦合，已于 §9.90.1 裁决解耦", col, ns[0], ns[1])
+		}
+	}
+	// 归属钉死：换了占位符编号而不改这里，说明有人在重排参数。
+	if got["request_class"] != [2]int{98, 98} {
+		t.Fatalf("request_class 占位符 = %v, want [98 98]", got["request_class"])
+	}
+	if got["due_at"] != [2]int{99, 99} {
+		t.Fatalf("due_at 占位符 = %v, want [99 99]", got["due_at"])
 	}
 }
 

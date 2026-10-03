@@ -100,6 +100,66 @@ if [[ -n "$top_startup" ]]; then
   }
 fi
 
+# ── Reverse direction + full-coverage (2026-10-03 23:5x, audit §9.92.7d) ──
+#
+# The check above is `tail -1`, so it only ever looks at the HIGHEST number.
+# That is enough to catch "a new migration was added but never registered",
+# and **blind to the other direction**: a registration that points at a file
+# which no longer exists.
+#
+# That second direction is not hypothetical. Removing migration 819 (the
+# request_abandoned table, overturned in favour of migration 820) left this
+# array pointing at a deleted path, and `apply-db-revision-sequence.sh:1000`
+# answers a missing file with `exit 4` — so every 252/154 upgrade run would
+# have died before applying anything. Nothing in the Go gates, the installer
+# tests, or the check above can see that: the file list is a **data** array,
+# so "nothing calls it" and "something references it" look identical to an
+# identifier-based scan.
+#
+# Two independent facts are asserted here, in both directions:
+#   (1) every path named in the channel array must exist on disk;
+#   (2) every numbered startup migration must appear in the array, not just
+#       the highest one.
+#
+# ⚠ The extraction MUST skip commented-out entries. The channel array carries
+# at least one deliberately disabled registration (666, abandoned 2026-09-06
+# in favour of 667, and the file was deleted in the same move). A naive
+# "find the quoted path" extraction reads that comment as a live registration
+# and reports a file that was intentionally removed — the first version of this
+# check did exactly that, and the honest reading of its output was "a
+# pre-existing broken reference", which was wrong.
+#
+# The test applied is: the opening quote of the path literal must not be
+# preceded by a '#' anywhere earlier on the line.
+while IFS= read -r ref; do
+  [[ -n "$ref" ]] || continue
+  if [[ ! -f "$ref" ]]; then
+    printf 'channel files=(...) references a migration that does not exist: %s\n' "$ref" >&2
+    printf '    (apply-db-revision-sequence.sh exits 4 on a missing migration, so this breaks every upgrade run)\n' >&2
+    printf '    if this entry is intentionally disabled, comment the line out — a commented entry is not checked.\n' >&2
+    exit 1
+  fi
+done < <(grep -v '^[[:space:]]*#' "$SCRIPT" \
+         | sed -nE 's#.*\$ROOT_DIR/(sql/migrations/startup/[^"]+)"#\1#p' \
+         | while read -r rel; do printf '%s/%s\n' "$ROOT_DIR" "$rel"; done)
+
+# NOTE on (2) "every migration must appear in the array": that direction is
+# **already covered** further down this file (the `canonical_files` loop around
+# line 226, which accepts sequence ∪ ensure_allowlist ∪ channel_gap_allowlist,
+# bounded at >= 690 because 690-and-below has a long history of intentional
+# installer-only gaps — 691/692/747/748/759 are all on that allowlist).
+#
+# A first draft of this block tried to add its own full-coverage check over the
+# whole numbered range and reported 000_base_tables, then 535, as gaps. Both
+# were wrong: 000-533 is base-schema history an upgraded database has already
+# applied, and 535 travels a different channel (db.go ensure, not this array).
+# Duplicating an existing gate with a narrower understanding of its scope is
+# how a guard starts reporting fiction.
+#
+# What was genuinely missing is only the **reverse** direction above: a
+# registration that points at a file which no longer exists. Nothing else here
+# can see that, because the channel list is a data array.
+
 # R30 canonical delivery-path gate: prevent the post-690 startup catalog from
 # drifting outside every real installation/upgrade/self-heal channel. The
 # allowlist is deliberately exact: each entry has a reviewed db.go ensure and

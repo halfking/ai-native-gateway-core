@@ -248,6 +248,21 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 		if entry.IsDir() || strings.HasSuffix(name, ".down.sql") {
 			continue
 		}
+		// Skip OS / editor droppings. This gate reads the **filesystem**, not
+		// git, so a `.DS_Store` that macOS recreates in any directory the user
+		// has ever browsed in Finder fails the build even though the file is
+		// (a) untracked and (b) already listed in .gitignore.
+		//
+		// The failure mode is worse than a wrong red: it is **intermittent and
+		// machine-local**, so it looks like a regression in somebody's change
+		// while having nothing to do with that change. Delete the file and it
+		// comes back.
+		//
+		// These names are not migrations and must never be registered, so
+		// skipping them cannot hide a real five-point-sync gap.
+		if isOSDroppings(name) {
+			continue
+		}
 		if _, ok := registered[name]; !ok {
 			t.Errorf("embeddata/startup file %q is not registered in dbinit.Runner.StartupFiles — wire it into runner.go StartupFiles plus the go:embed var and embeddedSQLFiles entry in main.go, or delete the stray copy", name)
 		}
@@ -458,4 +473,21 @@ func TestHandoffFamilyPrerequisitesRegistered(t *testing.T) {
 	if compPos < basePos {
 		t.Errorf("%s (pos %d) must come after %s (pos %d) in StartupFiles", completer, compPos, base, basePos)
 	}
+}
+
+// isOSDroppings reports whether a filename is operating-system or editor
+// detritus rather than a migration.
+//
+// The leading dot covers the Apple/Finder family (.DS_Store, ._AppleDouble,
+// .Spotlight-V100, .Trashes); the rest are the Windows and Linux equivalents
+// that turn up in archives built on those platforms.
+func isOSDroppings(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	switch name {
+	case "Thumbs.db", "thumbs.db", "desktop.ini", "Desktop.ini":
+		return true
+	}
+	return false
 }
