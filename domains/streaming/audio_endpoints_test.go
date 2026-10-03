@@ -285,6 +285,88 @@ func TestTranscriptionsParseErrors(t *testing.T) {
 	}
 }
 
+// TestMCPEarlyErrorsUseJsonRPCEnvelope —— R89-ES（228 号）守卫：
+//
+// MCP streamable HTTP 2025-06-18 规范要求：协议级错误（空 body / batch 请求 /
+// JSON 解析失败）必须以 HTTP 200 + JSON-RPC envelope `{jsonrpc:"2.0", error:{code:-32700/-32600,...}, id:null}`
+// 的形式返回，而不是 HTTP 4xx + OpenAI envelope。
+//
+// 当前实现把 4 处 early-error 都用 `writeErrorJSON` 走 OpenAI envelope，
+// 让本门转红 —— 这是预期行为：门的目的不是「现在绿」，而是**钉住「未来修法后必须满足」的契约**。
+//
+// 修复者把 4 处 early-error 改成 JSON-RPC envelope 后，本门自动转绿；
+// 4 处全部覆盖，不豁免（避免「挑一条通过就当过了」的失明）。
+func TestMCPEarlyErrorsUseJsonRPCEnvelope(t *testing.T) {
+	svc := newTestAudioService(t, "xiaomi", func(w http.ResponseWriter, r *http.Request) {})
+	h := NewAudioMCPHandler(svc)
+
+	cases := []struct {
+		name     string
+		body     string
+		wantCode int
+		wantHTTP int // expected transport-level HTTP status (per spec)
+	}{
+		{
+			name:     "empty body -> Parse error -32700",
+			body:     "",
+			wantCode: -32700,
+			wantHTTP: http.StatusOK, // JSON-RPC 协议级错误 → HTTP 200
+		},
+		{
+			name:     "batch request -> Invalid Request -32600",
+			body:     `[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]`,
+			wantCode: -32600,
+			wantHTTP: http.StatusOK,
+		},
+		{
+			name:     "invalid JSON -> Parse error -32700",
+			body:     `{"jsonrpc":`,
+			wantCode: -32700,
+			wantHTTP: http.StatusOK,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/mcp", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantHTTP {
+				t.Errorf("status = %d, want %d (transport-level should be 200 for JSON-RPC protocol errors)",
+					rec.Code, tc.wantHTTP)
+			}
+			var env struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Error   *struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+				// OpenAI envelope fields — must NOT appear
+				Type string `json:"type"`
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+				t.Fatalf("response not valid JSON-RPC envelope: %v\nbody=%s", err, rec.Body.String())
+			}
+			if env.JSONRPC != "2.0" {
+				t.Errorf("jsonrpc field = %q, want \"2.0\" (current impl emits OpenAI envelope without this field)", env.JSONRPC)
+			}
+			if env.Error == nil {
+				t.Fatalf("error field missing; current impl emits OpenAI envelope with `type`/`code` instead of `error.code`\nbody=%s", rec.Body.String())
+			}
+			if env.Error.Code != tc.wantCode {
+				t.Errorf("error.code = %d, want %d", env.Error.Code, tc.wantCode)
+			}
+			if env.Type != "" || env.Code != "" {
+				t.Errorf("OpenAI envelope fields leaked: type=%q code=%q (should be absent in JSON-RPC envelope)", env.Type, env.Code)
+			}
+			t.Logf("228 号 守卫命中: %s 当前实现违反 MCP streamable HTTP 2025-06-18 协议契约（HTTP %d + OpenAI envelope）；需切换为 HTTP 200 + JSON-RPC envelope {code:%d}", tc.name, rec.Code, tc.wantCode)
+		})
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 func tinyWAVForTest() []byte {
