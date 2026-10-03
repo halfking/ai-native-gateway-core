@@ -253,7 +253,9 @@ func parseTranscriptionsMultipart(w http.ResponseWriter, r *http.Request) (*Tran
 
 // writeAudioError 把转写/合成链路的错误映射到网关错误信封。
 //
-// 「无候选」给 503 no_provider（openpocket 的 isNoProvider 识别口径）。
+// 「无候选」给 503 no_provider（openpocket 的 isNoProvider 识别口径），按
+// audioNoProviderError 类型判定——错误文本是我们自己拼的，但用子串反推
+// 语义意味着上游 4xx 错误体（供应商可控）一旦恰好含同样子串就会被误分。
 // 上游 4xx 按语义分流（2026-10-04 小米实测引入）：
 //
 //	400/413/422 → 400 调用方请求问题（unsupported input_audio.format、
@@ -269,7 +271,8 @@ func writeAudioError(w http.ResponseWriter, requestID string, err error) {
 		return
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "no audio provider available") || strings.Contains(msg, "resolve candidates") {
+	var noProvErr *audioNoProviderError
+	if errors.As(err, &noProvErr) {
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "No audio provider available for model", "server_error", "no_provider")
 		return
 	}

@@ -465,3 +465,82 @@ func TestMCPUnsupportedFormatUsesInvalidParams(t *testing.T) {
 		t.Errorf("upstream must not be called, got %d", hits)
 	}
 }
+
+// ── 7. no_provider 语义的类型化判定（2026-10-04 审计补） ─────────────────
+//
+// writeAudioError 曾用 strings.Contains(msg, "resolve candidates") 反推
+// 「无候选」语义，且排在 typed 上游错误检查之前——上游 4xx 错误体是供应商
+// 可控文本，一旦恰好含同样子串，调用方参数错误就被误判成 503 no_provider。
+// 这两条测试把「子串不能劫持语义」与「真实无候选仍回 503」都钉住。
+
+func TestUpstreamBodyContainingNoProviderSubstringsIsNotMisrouted(t *testing.T) {
+	// 上游 400 错误体故意带上 no_provider 的两个旧判定子串：修复前这里
+	// 回 503 no_provider（字符串匹配抢先命中），修复后必须仍是 400
+	// upstream_rejected_request。
+	svc := newTestAudioService(t, "xiaomi", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"400","message":"Param Incorrect: cannot resolve candidates for model; no audio provider available"}}`))
+	})
+	h := NewAudioTranscriptionsHandler(svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	buildTranscriptionsMultipartBody(t, req, tinyWAVForTest(), "a.wav", "mimo-v2.5-asr", "")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("upstream 400 with hostile body -> gateway %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_rejected_request") {
+		t.Errorf("body should carry upstream_rejected_request: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "no_provider") {
+		t.Errorf("hostile upstream body must not trigger no_provider: %s", rec.Body.String())
+	}
+}
+
+func TestNoCandidatesMapsTo503NoProvider(t *testing.T) {
+	// resolver 返回空候选列表：锁定 typed audioNoProviderError 仍映射成
+	// 503 no_provider（openpocket 的 isNoProvider 识别口径不能退化）。
+	ran := false
+	svc := newTestAudioService(t, "xiaomi", func(w http.ResponseWriter, r *http.Request) {
+		ran = true
+		_, _ = w.Write([]byte(`{}`))
+	})
+	svc.provider = &fakeAudioResolver{candidates: nil}
+	h := NewAudioTranscriptionsHandler(svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	buildTranscriptionsMultipartBody(t, req, tinyWAVForTest(), "a.wav", "mimo-v2.5-asr", "")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if ran {
+		t.Errorf("no candidates must fail before any upstream call")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("no candidates -> gateway %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no_provider") {
+		t.Errorf("body should carry no_provider: %s", rec.Body.String())
+	}
+}
+
+func TestTTSNoCandidatesMapsTo503NoProvider(t *testing.T) {
+	// TTS 面同款：Synthesize 的「无候选」也要走 typed 判定回 503。
+	svc := newTestAudioService(t, "xiaomi", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	})
+	svc.provider = &fakeAudioResolver{candidates: nil}
+	h := NewAudioSpeechHandler(svc)
+	payload := `{"model":"mimo-v2.5-tts","input":"你好"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("tts no candidates -> gateway %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no_provider") {
+		t.Errorf("body should carry no_provider: %s", rec.Body.String())
+	}
+}
