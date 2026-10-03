@@ -72,6 +72,22 @@
 #   ⇒ minute 粒度仍保留（用于对判为异常的桶**下钻**），不作巡检判定。
 #     注意 minute 模式下同时段基线只有 7 个样本，中位数不稳，仅供调试。
 #
+# === 为什么必须区分「次数塌陷」和「速率下降」 ===
+#   §5.6 那次 24 小时事件的指纹是：**有数据的那些分钟速率完全正常**
+#   （单分钟中位 2,100~2,570，仍是双写的 ~2,400 量级），
+#   塌掉的是**落库次数**（60/60 分钟 → 1~20/60）。
+#   旧判据只看「每小时总行数」，会把下面两种根因完全不同的形态压成同一个「降级」：
+#     SPARSE 次数塌陷 —— collect/Flush 整批失败（§5.3.1 路径 A/B）
+#     SLOW   速率下降 —— 单批变小 / 流量或采样变稀
+#   两者修法不同：前者指向 redis SCAN 超时与 ctx 预算，后者指向双写是否只剩单写
+#   或采样率是否被动过。所以判据必须能分开报，退出码可以相同。
+#   反向对照实测（NOW_EXPR，见 §5.7.6）：
+#     10-01 12:00 → 0/0/0            exit 0（正常日不响）
+#     10-03 08:00 → 3 SPARSE         exit 1（4/60、1/60、2/60 活跃分钟）
+#     10-03 12:00 → 2 SPARSE + 1 VOID  exit 2
+#   ⚠ 数据集里**没有**天然的 SLOW 样本，所以 SLOW 这一路**未被反向对照覆盖**。
+#     它有代码路径但没有实测证据，将来真出现时要看它的判读是否合理。
+#
 # === 退出码（cron 与人工都能据此分流）===
 #   0  正常
 #   1  有单写降级桶（数据不丢，写入量低于同时段常态）
@@ -113,6 +129,18 @@ CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
 # 0.5 对应「双写 2.00×，掉一台即半写」（b2077c204 实测定论）。
 : "${DEGRADED_RATIO:=0.5}"
 
+# 「落库次数塌陷」的判据（§5.6 事件形态）。需要**同时**满足两条才算塌陷：
+#   ① 活跃分钟数 < SPARSE_MIN_RATIO × 同时段基线活跃分钟数
+#   ② 但「每个活跃分钟的行数」仍 ≥ SPARSE_KEEP_RATIO × 基线
+# ② 的作用是把「次数塌陷」与「速率下降」分开：
+#   只满足 ①（活跃分钟少**且**每次也写得少）⇒ 判 SLOW 而不是 SPARSE，
+#   因为那更像「流量本身变少 / 采样变稀」，不是「整批没落库」。
+: "${ACTIVE_DAYS:=3}"
+
+# 「落库次数塌陷」的两个比值阈值
+: "${SPARSE_MIN_RATIO:=0.5}"
+: "${SPARSE_KEEP_RATIO:=0.5}"
+
 # 本脚本只读会话的 statement_timeout（应用角色的 30s 不够用，见 de() 注释）
 : "${STMT_TIMEOUT:=180s}"
 
@@ -122,14 +150,24 @@ case "$GRANULARITY" in
   # ★ 两套 slot 表达式：表里按 snapshot_ts 算（基线 CTE 用），
   #   joined 里已经看不到表了，得按桶列 s.m 算。踩过：两处共用一个表达式，
   #   joined 里 snapshot_ts 不在作用域 ⇒ ERROR: column "snapshot_ts" does not exist。
+  #
+  # ★ G_ACTIVE：桶内「有多少个子单位真的有数据」。这是 §5.6 事件的直接指纹 ——
+  #   事件期间**有数据的那些分钟速率完全正常**（~2,400/分），
+  #   塌掉的是「落库的次数」（60/60 分钟 → 1~20/60）。
+  #   只看「每小时总行数」会把两种根因不同的形态压成同一个「降级」：
+  #     次数塌陷（collect/Flush 整批失败）vs 速率下降（单批变小 / 采样变稀）
+  #   两者修法不同，判据必须能分开。
+  #   minute 粒度下每个桶只含 1 个子单位 ⇒ 恒为 1，该判据自动失效（设计如此）。
   hour)
     G_UNIT="hour"; G_TRUNC="date_trunc('hour',"; G_LABEL="HH24:00"; G_STEP="1 hour"; G_IV="interval '1 hour'"
     G_SLOT_TS="extract(hour from date_trunc('hour', snapshot_ts))::int"
-    G_SLOT_M="extract(hour from s.m)::int" ;;
+    G_SLOT_M="extract(hour from s.m)::int"
+    G_ACTIVE="count(DISTINCT date_trunc('minute', snapshot_ts))"; G_MAXA=60 ;;
   minute)
     G_UNIT="minute"; G_TRUNC="date_trunc('minute',"; G_LABEL="HH24:MI"; G_STEP="1 minute"; G_IV="interval '1 minute'"
     G_SLOT_TS="(extract(hour from snapshot_ts)::int * 60 + extract(minute from snapshot_ts)::int)"
-    G_SLOT_M="(extract(hour from s.m)::int * 60 + extract(minute from s.m)::int)" ;;
+    G_SLOT_M="(extract(hour from s.m)::int * 60 + extract(minute from s.m)::int)"
+    G_ACTIVE="1::bigint"; G_MAXA=1 ;;
   *) echo "GRANULARITY 只能是 hour 或 minute，收到: $GRANULARITY" >&2; exit 64 ;;
 esac
 
@@ -186,13 +224,13 @@ WITH win AS (
 ),
 series AS (SELECT generate_series(lo, hi_excl - $G_IV, '$G_STEP') AS m FROM win),
 cur AS (
-  SELECT $G_TRUNC snapshot_ts) AS m, count(*) AS c
+  SELECT $G_TRUNC snapshot_ts) AS m, count(*) AS c, $G_ACTIVE AS a
   FROM ursm_node_snapshot_min, win
   WHERE snapshot_ts >= win.lo AND snapshot_ts < win.hi_excl
   GROUP BY 1
 ),
 joined AS (
-  SELECT s.m, coalesce(c.c, 0) AS c, $G_SLOT_M AS slot
+  SELECT s.m, coalesce(c.c, 0) AS c, coalesce(c.a, 0) AS a, $G_SLOT_M AS slot
   FROM series s LEFT JOIN cur c ON c.m = s.m
 ),
 -- 基线：同一批小时位在更早的 N 天里的**每个桶**各自计数，
@@ -206,6 +244,24 @@ base_buckets AS (
   FROM ursm_node_snapshot_min
   WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $BASELINE_DAYS)
     AND snapshot_ts < (SELECT lo FROM win)
+  GROUP BY 1, $G_TRUNC snapshot_ts)),
+-- 活跃子单位的基线**单独用短窗口**算。
+-- ★ 性能实测（252，7 天 ≈ 600 万行）：
+--     count(DISTINCT date_trunc('minute', ts))  7 天 = 44.5s   ← 不可接受
+--                                        2 天 =  9.7s
+--                                        1 天 =  3.6s
+--   而同一批数据只做 count(*) 是 7.2s ⇒ **DISTINCT 是全部增量**。
+--   行数基线要 7 天（量纲敏感），但「这个小时位正常时该有多少分钟有数据」
+--   是一个**比行数稳定得多**的量（干净日实测 53~60/60），短窗口足够。
+base_active AS (
+  SELECT $G_SLOT_TS AS slot, count(*) AS c, $G_ACTIVE AS a
+  FROM ursm_node_snapshot_min
+  WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $ACTIVE_DAYS)
+    AND snapshot_ts < (SELECT lo FROM win)
+    -- ★ 只算窗口里**真的用到**的小时位（3h 窗 ⇒ 3~4 个 slot，不是 24 个）。
+    --   DISTINCT 的排序/哈希成本正比于分组数，砍掉 6~8 倍。
+    --   不加这个过滤时主判据 32.9s，加上后实测见提交信息。
+    AND $G_SLOT_TS IN (SELECT slot FROM joined)
   GROUP BY 1, $G_TRUNC snapshot_ts))
 "
 log "start ursm-snapshot-health mode=report now=${NOW_EXPR} window=${WINDOW_HOURS}h granularity=${G_UNIT} baseline=${BASELINE_DAYS}d ratio=${DEGRADED_RATIO}"
@@ -224,25 +280,58 @@ fi
 log "control ok: rows_in_last_10min=$control"
 
 rows=$(de "$BUCKETS_SQL,
-slot_ref AS (SELECT slot, percentile_cont(0.5) WITHIN GROUP (ORDER BY c) AS p50 FROM base_buckets GROUP BY 1),
--- 逐桶先定判定，再聚合。四种判定互斥且穷尽，计数不会重复也不会漏。
+-- 行数基线（7 天，只有 count(*)，便宜）
+ref_rows AS (
+  SELECT slot, percentile_cont(0.5) WITHIN GROUP (ORDER BY c) AS p50
+  FROM base_buckets GROUP BY 1
+),
+-- 活跃度基线（短窗口，需要 DISTINCT）
+-- ★ a50 用 **max** 而不是中位数：「这个小时位正常时该有多少分钟有数据」是
+--   **上界**问题，用 max 才不会被某个坏日子把基线拉低（那会让 SPARSE 变宽松）。
+ref_act AS (
+  SELECT slot,
+         max(a) AS a50,
+         -- 「每个活跃子单位写多少行」是中心量 ⇒ 中位数。
+         -- a>0 才入样本，否则整点空桶会把基线拉到 0，让 SPARSE 恒不成立。
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY c::numeric / a)
+           FILTER (WHERE a > 0) AS rate
+  FROM base_active GROUP BY 1
+),
+-- 两段聚合各自独立算完再 1:1 连接。写成 `base_buckets b LEFT JOIN base_active a
+-- ON a.slot=b.slot GROUP BY b.slot` 会产生 7×3 的笛卡尔积（虽然中位数碰巧不变，
+-- 但那是「碰巧对」，不是「对」）。
+slot_ref AS (
+  SELECT r.slot, r.p50, t.a50, t.rate
+  FROM ref_rows r LEFT JOIN ref_act t ON t.slot = r.slot
+),
+-- 逐桶先定判定，再聚合。五种判定互斥且穷尽，计数不会重复也不会漏。
+-- ★ SPARSE 与 SLOW 的分界就是「次数塌陷」vs「速率下降」（见 DEGRADED_RATIO 上方注释）：
+--     SPARSE = 活跃分钟腰斩，但**每一次落库的量仍然正常** ⇒ 整批没落库
+--     SLOW   = 活跃分钟还行，但总量低 ⇒ 单批变小 / 流量或采样变稀
+--   两者退出码相同（1），但指向的根因完全不同，报告里必须能分开看。
 judged AS (
-  SELECT j.c, r.p50 AS slot_ref,
+  SELECT j.c, j.a, r.p50 AS ref_rows, r.a50 AS ref_active, r.rate AS ref_rate,
          CASE WHEN r.slot IS NULL OR r.p50 <= 0 THEN 'NO_BASELINE'
               WHEN j.c = 0                          THEN 'VOID'
-              WHEN j.c < $DEGRADED_RATIO * r.p50    THEN 'DEGRADED'
-              ELSE 'ok' END AS v
+              WHEN j.c >= $DEGRADED_RATIO * r.p50    THEN 'ok'
+              WHEN j.a <  $SPARSE_MIN_RATIO * r.a50
+               AND (j.c::numeric / greatest(j.a, 1)) >= $SPARSE_KEEP_RATIO * r.rate
+                                                     THEN 'SPARSE'
+              ELSE 'SLOW' END AS v
   FROM joined j LEFT JOIN slot_ref r ON r.slot = j.slot
 )
 SELECT
   count(*),
   count(*) FILTER (WHERE v = 'VOID'),
-  count(*) FILTER (WHERE v = 'DEGRADED'),
+  count(*) FILTER (WHERE v = 'SPARSE'),
+  count(*) FILTER (WHERE v = 'SLOW'),
   count(*) FILTER (WHERE v = 'NO_BASELINE'),
   count(*) FILTER (WHERE v = 'ok'),
   round(percentile_cont(0.5) WITHIN GROUP (ORDER BY c) FILTER (WHERE c > 0)),
   round((SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY p50) FROM slot_ref)),
-  round(max(c))
+  round(max(c)),
+  -- 活跃子单位占比中位数（1.0 = 每个子单位都有数据）。1.0 是常态。
+  round(100.0 * percentile_cont(0.5) WITHIN GROUP (ORDER BY a::numeric / greatest(1, $G_MAXA)) FILTER (WHERE c > 0))
 FROM judged;")
 
 if sql_failed "$rows"; then
@@ -254,12 +343,12 @@ fi
 case "$rows" in
   *$'\n'*) echo "ABORT: 主判据返回多行，无法解析: ${rows//$'\n'/ }" >&2; exit 3 ;;
 esac
-# 必须恰好 8 个字段，少一个都不行（下游 awk 会静默取到空值并当成 0，
+# 必须恰好 10 个字段，少一个都不行（下游 awk 会静默取到空值并当成 0，
 # 那样就是「判据字段缺失 ⇒ 全部报 0 ⇒ 报 OK」——又是一次恒真假绿灯）。
 nfield=$(printf '%s' "$rows" | awk -F'|' '{print NF}')
-[ "$nfield" = "8" ] || { echo "ABORT: 期望 8 个字段，实得 $nfield: $rows" >&2; exit 3; }
+[ "$nfield" = "10" ] || { echo "ABORT: 期望 10 个字段，实得 $nfield: $rows" >&2; exit 3; }
 # 基线为空 ⇒ 判据没有任何参照系，所有桶都会被判成 ok = 恒真绿灯。
-ref_p50=$(printf '%s' "$rows" | awk -F'|' '{print $7+0}')
+ref_p50=$(printf '%s' "$rows" | awk -F'|' '{print $8+0}')
 if [ "$ref_p50" -le 0 ] 2>/dev/null; then
   echo "ABORT: 同时段基线为空（ref_p50=${ref_p50:-空}）—— 判据没有参照系，本次不出结论。" >&2
   echo "      常见原因：BASELINE_DAYS 超过快照保留天数，或表被清空。" >&2
@@ -269,22 +358,29 @@ log "summary: ${rows//$'\n'/ }"
 
 buckets_total=$(printf '%s' "$rows" | awk -F'|' '{print $1+0}')
 void_b=$(printf '%s' "$rows"        | awk -F'|' '{print $2+0}')
-degraded=$(printf '%s' "$rows"      | awk -F'|' '{print $3+0}')
-no_base=$(printf '%s' "$rows"       | awk -F'|' '{print $4+0}')
-normal=$(printf '%s' "$rows"        | awk -F'|' '{print $5+0}')
-p50=$(printf '%s' "$rows"           | awk -F'|' '{print $6+0}')
-peak=$(printf '%s' "$rows"          | awk -F'|' '{print $8+0}')
+sparse=$(printf '%s' "$rows"        | awk -F'|' '{print $3+0}')
+slow=$(printf '%s' "$rows"          | awk -F'|' '{print $4+0}')
+no_base=$(printf '%s' "$rows"       | awk -F'|' '{print $5+0}')
+normal=$(printf '%s' "$rows"        | awk -F'|' '{print $6+0}')
+p50=$(printf '%s' "$rows"           | awk -F'|' '{print $7+0}')
+peak=$(printf '%s' "$rows"          | awk -F'|' '{print $9+0}')
+active_pct=$(printf '%s' "$rows"    | awk -F'|' '{print $10+0}')
+degraded=$(( sparse + slow ))
 
 pct=$(awk -v r="$DEGRADED_RATIO" 'BEGIN{printf "%.0f", r*100}')
 echo
 echo "===== URSM 快照写入健康（最近 ${WINDOW_HOURS} 小时，粒度 ${G_UNIT}，基线 ${BASELINE_DAYS} 天同时段）====="
 printf '  统计桶总数     : %s\n' "$buckets_total"
 printf '  正常           : %s   (>= %s%% 同时段基线)\n' "$normal" "$pct"
-printf '  单写降级       : %s   (< %s%% 同时段基线, 数据不丢, 写入量下降)\n' "$degraded" "$pct"
+printf '  ├ 次数塌陷     : %s   活跃分钟腰斩、但每次落库量正常 ⇒ 整批没落库（§5.6 形态）\n' "$sparse"
+printf '  └ 速率下降     : %s   活跃分钟尚可、但总量低 ⇒ 单批变小 / 流量或采样变稀\n' "$slow"
 printf '  真空洞         : %s   (同时段基线>0 但本桶 0 行, 真丢数据)\n' "$void_b"
 printf '  无基线桶       : %s   (该小时位历史无流量, 不参与判定)\n' "$no_base"
 printf '  本窗 p50 / 峰值: %s 行/桶 / %s 行/桶\n' "$p50" "$peak"
 printf '  同时段基线中位 : %s 行/桶\n' "$ref_p50"
+if [ "$G_UNIT" = "hour" ]; then
+  printf '  活跃分钟占比   : %s%%   (常态 100%%；塌到个位数即 §5.6 的指纹)\n' "$active_pct"
+fi
 echo
 case "$G_UNIT" in
   hour)
@@ -300,14 +396,26 @@ esac
 
 # === 异常桶明细（最多 20 条）===
 echo
-echo "----- 异常桶明细（真空洞 + 降级 + 无基线，最多 20 条）-----"
+if [ $(( void_b + sparse + slow + no_base )) -eq 0 ]; then
+  echo "----- 异常桶明细：本窗无异常桶，跳过（省一次整条基线重算，实测省 ~33s）-----"
+  log "OK: 无真空洞，无降级"
+  exit 0
+fi
+echo "----- 异常桶明细（真空洞 + 次数塌陷 + 速率下降 + 无基线，最多 20 条）-----"
 detail=$(de "$BUCKETS_SQL,
-slot_ref AS (SELECT slot, percentile_cont(0.5) WITHIN GROUP (ORDER BY c) AS p50 FROM base_buckets GROUP BY 1)
+ref_rows AS (SELECT slot, percentile_cont(0.5) WITHIN GROUP (ORDER BY c) AS p50 FROM base_buckets GROUP BY 1),
+ref_act AS (SELECT slot, max(a) AS a50,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY c::numeric / a) FILTER (WHERE a > 0) AS rate
+            FROM base_active GROUP BY 1),
+slot_ref AS (SELECT r.slot, r.p50, t.a50, t.rate FROM ref_rows r LEFT JOIN ref_act t ON t.slot = r.slot)
 SELECT to_char(j.m,'MM-DD $G_LABEL'), j.c, coalesce(round(r.p50)::text,'-'),
+       j.a::text || '/' || $G_MAXA,
        CASE WHEN r.slot IS NULL OR r.p50 <= 0 THEN 'NO-BASELINE'
             WHEN j.c = 0                 THEN 'VOID'
-            WHEN j.c < $DEGRADED_RATIO * r.p50 THEN 'DEGRADED'
-            ELSE 'ok' END
+            WHEN j.c >= $DEGRADED_RATIO * r.p50 THEN 'ok'
+            WHEN j.a <  $SPARSE_MIN_RATIO * r.a50
+             AND (j.c::numeric / greatest(j.a, 1)) >= $SPARSE_KEEP_RATIO * r.rate THEN 'SPARSE'
+            ELSE 'SLOW' END
 FROM joined j LEFT JOIN slot_ref r ON r.slot = j.slot
 WHERE r.slot IS NULL OR r.p50 <= 0 OR j.c < $DEGRADED_RATIO * r.p50
 ORDER BY (CASE WHEN j.c = 0 THEN 0 ELSE 1 END), j.m LIMIT 20;")
@@ -317,9 +425,9 @@ if sql_failed "$detail"; then
 elif [ -z "$detail" ]; then
   echo "  无异常桶"
 else
-  echo "  时间                 行数     同时段基线  判定"
-  printf '%s\n' "$detail" | while IFS='|' read -r t c ref v; do
-    printf '  %-20s %8s  %10s  %s\n' "$t" "$c" "$ref" "$v"
+  echo "  时间                 行数     同时段基线  活跃子单位  判定"
+  printf '%s\n' "$detail" | while IFS='|' read -r t c ref a v; do
+    printf '  %-20s %8s  %10s  %9s  %s\n' "$t" "$c" "$ref" "$a" "$v"
   done
 fi
 
@@ -332,7 +440,15 @@ if [ "$void_b" -gt 0 ]; then
   exit 2
 fi
 if [ "$degraded" -gt 0 ]; then
-  echo "⚠️  单写降级 ${degraded} 个${G_UNIT}桶 —— 数据未丢，但写入量低于同时段常态。" >&2
+  if [ "$sparse" -gt 0 ]; then
+    echo "⚠️  次数塌陷 ${sparse} 个${G_UNIT}桶 —— 活跃分钟腰斩但每次落库量正常 ⇒ 整批没落库。" >&2
+    echo "   优先排查：redis SCAN/TYPE 超时（路径 A）与 Collect 挤占 Flush 预算（路径 B）。" >&2
+    echo "   迁 URSM 到独立 db 是两条路径的共同解（SCAN 实测 0.11s）。" >&2
+  fi
+  if [ "$slow" -gt 0 ]; then
+    echo "⚠️  速率下降 ${slow} 个${G_UNIT}桶 —— 活跃分钟尚可但总量低于同时段常态（数据未丢）。" >&2
+    echo "   方向不同：查双写是否只剩单写（§7 shadow 门禁），或采样率是否变化。" >&2
+  fi
   exit 1
 fi
 if [ "$no_base" -gt 0 ]; then
