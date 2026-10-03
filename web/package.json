@@ -22,7 +22,10 @@
     "responsive:check": "node scripts/responsive-audit.mjs --strict",
     "element:check": "node scripts/element-import-audit.mjs",
     "color:check": "node scripts/color-token-audit.mjs --strict --baseline scripts/color-audit-baseline.json",
-    "color:baseline:update": "node scripts/color-token-audit.mjs --update-baseline --baseline scripts/color-audit-baseline.json"
+    "color:baseline:update": "node scripts/color-token-audit.mjs --update-baseline --baseline scripts/color-audit-baseline.json",
+    "ui:sweep:selftest": "node scripts/ui-sweep.mjs --selftest",
+    "ui:sweep:pages": "node scripts/ui-sweep.mjs --strict",
+    "ui:sweep:overlays": "node scripts/ui-sweep.mjs --overlays --strict"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
