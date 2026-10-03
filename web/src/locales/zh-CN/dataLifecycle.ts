@@ -181,6 +181,10 @@ export default {
       periodCompare: '加载周期对比失败',
       cacheEconomics: '加载缓存经济学失败',
     },
+    degraded: {
+      title: '部分指标不可用：',
+      hint: '数据库结构落后于当前版本，以下数字是「无法计算」的占位，不是真实测量值（不等于这段时间没有数据）。请联系管理员执行数据聚合迁移。',
+    },
   },
 
   // ── 存储总览 (StorageOverview.vue) ────────────────────
