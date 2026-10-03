@@ -259,6 +259,38 @@ func (e *Executor) applyNodeHealthPersist(ctx context.Context, decision nodeheal
 // applyNodeHealthDegradeEffect applies one degrade-family effect (binding /
 // credential unavailable, URSM failure record, candidate cache
 // invalidation).
+// ursmOutcomeFromDecision 把 nodehealth 的归一化决策翻译成 URSM v2 的写入意图。
+//
+// 抽成纯函数而不是内联在 applyNodeHealthDegradeEffect 里，是为了**让这段可测**：
+// e.URSMv2 是具体类型 *ursmv2.Manager 而非接口，EffectUpdateURSM 分支此前
+// 无法在不构造真实 Manager 的前提下写单测 —— 这正是 HealthStatus 被漏掉
+// 两年都没人发现的结构性原因。
+//
+// 2026-10-03 补 HealthStatus：此前本映射**没有**这一项，于是
+// ursmv2api.RequestOutcome.HealthStatus 恒空 → store 侧恒空 →
+// record_request.lua 的 `valid_health[""]` 恒假 → `HSET node_key "health"`
+// 永不执行 → health_status typed 列在生产上 100% 为空。
+// 而 api/types.go 的字段契约写着 "Supplied by the executor"。
+//
+// 词表对齐：decision.Status 是 requestjourney.NodeHealthStatus（11 值），
+// api 侧只认 5 个（healthy/suspect/degraded/recovering/quarantined）。
+// 其余（unknown/cooling/probing/disabled/unhealthy）不是「健康信号」，
+// 交给 lua 的 valid_health 表拒掉并保持原值 —— 语义正确，此处不过滤。
+func ursmOutcomeFromDecision(decision nodehealth.Decision, kind credential.ErrorKind) ursmv2api.RequestOutcome {
+	return ursmv2api.RequestOutcome{
+		CredentialID: int(decision.Node.CredentialID),
+		RawModel:     decision.Node.Model,
+		TenantID:     decision.Node.TenantID,
+		BillingMode:  decision.BillingMode,
+		Success:      decision.Outcome == requestjourney.OutcomeSuccess,
+		LatencyMs:    decision.LatencyMs,
+		ErrorKind:    string(kind),
+		RequestID:    decision.RequestID,
+		DedupKey:     decision.AttemptID,
+		HealthStatus: string(decision.Status),
+	}
+}
+
 func (e *Executor) applyNodeHealthDegradeEffect(ctx context.Context, decision nodehealth.Decision, effect nodehealth.Effect, errs *[]error) {
 	kind := errorKindFromNodeHealth(decision.ErrorKind)
 	switch effect.Kind {
@@ -278,17 +310,7 @@ func (e *Executor) applyNodeHealthDegradeEffect(ctx context.Context, decision no
 		}
 	case nodehealth.EffectUpdateURSM:
 		if e.URSMv2 != nil {
-			err := e.URSMv2.RecordRequest(ctx, ursmv2api.RequestOutcome{
-				CredentialID: int(decision.Node.CredentialID),
-				RawModel:     decision.Node.Model,
-				TenantID:     decision.Node.TenantID,
-				BillingMode:  decision.BillingMode,
-				Success:      decision.Outcome == requestjourney.OutcomeSuccess,
-				LatencyMs:    decision.LatencyMs,
-				ErrorKind:    string(kind),
-				RequestID:    decision.RequestID,
-				DedupKey:     decision.AttemptID,
-			})
+			err := e.URSMv2.RecordRequest(ctx, ursmOutcomeFromDecision(decision, kind))
 			if err != nil {
 				*errs = append(*errs, err)
 			}
