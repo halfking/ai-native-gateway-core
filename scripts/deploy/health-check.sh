@@ -30,7 +30,7 @@ for i in $(seq 1 $MAX_RETRIES); do
         exit 1
     fi
     
-    echo "   ⏳ 尝试 $i/$MAX_RETRIES，等待 ${RETRY_INTERVAL}s..."
+    echo "   ⏳ 尝试 ${i}/${MAX_RETRIES}，等待 ${RETRY_INTERVAL}s..."
     sleep $RETRY_INTERVAL
 done
 
