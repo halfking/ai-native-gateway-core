@@ -57,7 +57,7 @@ describe('sortProvidersByQuality: name（老板点名要的查找性排序）', 
   const named: ProviderWithQuality<{ id: number; display_name: string }>[] = [
     { id: 3, display_name: 'OpenAI' },
     { id: 1, display_name: '阿里云' },
-    { id: 2, display_name: 'Anthropic' },
+    { id: 2, display_name: 'anthropic' },
   ]
 
   it('按名称排序，且与码点序不同 —— 证明用的是 localeCompare 而不是 < / >', () => {
@@ -71,7 +71,8 @@ describe('sortProvidersByQuality: name（老板点名要的查找性排序）', 
     expect(got).toEqual(expected)
 
     // 性质 2（鉴别力）：朴素码点序必须与它不同，否则这条判据恒绿没有意义。
-    // 「阿里云」的码点远大于 ASCII 字母，naive < 会把它甩到最后。
+    // 小写 anthropic 与大写 OpenAI 保证 en-US 下也能区分码点序；
+    // 不能假设所有宿主默认中文区域，靠「阿里云」排首位区分。
     const codePointOrder = [...named].sort((a, b) => (a.display_name < b.display_name ? -1 : 1)).map((r) => r.display_name)
     expect(codePointOrder).not.toEqual(expected)
   })
