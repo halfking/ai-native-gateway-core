@@ -5632,3 +5632,93 @@ cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
    - 能枚举的 SQL 用 `PREPARE` 扫（不需写权限），但**要按被测对象的协议解读结果**
    - 潜伏缺陷比现网故障危险（这条仍然成立）
    - 观测量全来自被检验对象内部的门，多半验不了那个对象
+
+---
+
+## 第五十四轮（§9.103）：让一道**长期红**的真库门变绿——它红的两个原因都不是写链坏
+
+§9.102.5 记下 `TestPersistHook_Integration_DBWrite` 长期红。修它不是为了好看——
+**它红着，就意味着「会话写链在真库上可用」从来没被验证过**，
+而这正是本次任务要求确认的存储可用性。
+
+### 一、失败一：断言查错了表（必然 0）
+
+```
+expected 1 bodies row → actual: 0
+```
+
+`SessionBodiesWriter.WriteBodiesInTx` 写的是 **`session_bodies_hot`**
+（注释原话：「Write to session_bodies_hot (8-hour window), not directly to
+partitioned table；PartitionManager 在 8h 后提升到 session_bodies 月度分区」），
+而断言查的是 `public.session_bodies`——刚写的行在 `_hot` 里，分区表必然没有。
+**这条断言从写下那天起就不可能通过。**
+
+（与我 §9.100 主动从自己测试里删掉的 `session_turns` 父表断言同类：
+把**周期搬运**编码成**写链的期望**。我犯了，仓里早有一处一样的。）
+
+### 二、失败二：全新安装没有**当月**分区（真缺陷，但是启动窗口）
+
+```
+ERROR: no partition of relation "sessions" found for row (SQLSTATE 23514)
+```
+
+真安装库 `sessions` 只有 `sessions_2026_07` / `sessions_2026_08`，
+**没有当月的 `sessions_2026_10`**。schema 是建库当时的月份形状，没人往后铺。
+仓里有现成函数（迁移 430 的 `ensure_sessions_v2_partitions`），
+但**只有 `bg/partition_manager.go` 后台工调它**，写链自己不调。
+
+**实测**：`SELECT public.ensure_sessions_v2_partitions(current_date)` 立刻创建出
+`sessions_2026_10` ⇒ 函数是好的，只是没被调到。
+
+**定性**：**启动时序窗口**，不是永久缺陷。让写链自己 ensure 是行为变更
+（每请求一次函数调用），属需拍板，**本轮只做测试侧对齐**。
+
+### 三、结果
+
+```
+--- PASS: TestPersistHook_Integration_DBWrite
+    Integration test passed: session=intg_test_… turn=1 bodies=1 sessions=1
+```
+
+三个 1 是**第一次同时为真**：turn 进 hot、bodies 进 hot、sessions 进当月分区。
+⇒ **「会话写链在全新安装上可用」现在有了真库证据**，而不是「没人跑过所以不知道」。
+
+再次核过：`sessions_2026_10` 是 `sessions` 的**分区**（pg_inherits），
+而 `session_bodies_hot`/`session_turns_hot` 是**独立存储面**。
+**分区父表（异步搬运）与独立热表（直接写）不能混为一谈。**
+
+### 四、测试
+
+```
+TEST_DB_URL=… go test -tags=integration ./internal/sessionv2mirror/   → ok（两道 integration 门都过）
+go test ./internal/sessionv2mirror/ ./domains/session/v2/
+  ./domains/hooks/observability/telemetry/                            → 全 ok
+```
+
+### 五、教训
+
+> **一道长期红的门，等于一段没被验证过的代码。** 我一直把它当噪音记着；
+> 修它才暴露出「存储可用」这件事我此前从未真正验过。
+>
+> **红着的门要先问「它红是因为被测对象坏，还是因为门自己写错了」。**
+> 这次两个原因都是后者。**先修门，再谈被测对象。**
+>
+> **「查错表」和「等异步」是两个独立故障，会互相掩护**：
+> bodies 断言遮住了 sessions 断言。逐条修才逐条暴露。
+
+### 六、下一轮
+
+**不需要拍板**：
+- 查 `outbox_events` / `gateway.session_tags` 缺失是否有意（两侧均无）
+- 补 `01-schema.sql` 三副本同步门 + Makefile gofmt 门
+- auto-route 自 2026-09-15 断流原因（仍缺 09-08/09-09 日志或 Prometheus 历史）
+- A 群 6 条 / B 群 10 条 / `backlog_pending=1`（五轮未收敛）
+- **新增候选**：是否让写链在缺当月分区时自 ensure（属行为变更，**需拍板**）
+
+**待拍板**（与前几轮相同）：
+- 阻塞 #1 读取侧：`session_turns_with_current_month` 加不加 `search_text`
+  + `admin/logs.go` 的 `rl` 何时从 v1 切会话族
+- 阻塞 #2 `is_final_success`：唯一索引 + claim-and-supersede 同批上线
+- 等价口径 (i)/(ii)/(iii)
+- `session_v2_mirror_backlog_pending` 告警（252 恒为 1，加即永久 firing）
+- 内部 actor 名单 (a)(b)(c) / cohort 修正 / §9.49.8 扩档 / §9.48 口径

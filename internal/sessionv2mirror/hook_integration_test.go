@@ -51,6 +51,21 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	db, err := pgxpool.NewWithConfig(ctx, cfg)
 	require.NoError(t, err)
 	require.NoError(t, db.Ping(ctx))
+
+	// §9.103: a fresh install ships no partition for the CURRENT month — only
+	// the months that existed when the schema was built. Writing a session row
+	// then fails with 23514 "no partition of relation \"sessions\" found for
+	// row". The function that creates them (migration 430's
+	// ensure_sessions_v2_partitions) is only invoked by the bg/partition_manager
+	// worker, so a fresh install has a startup window where session writes are
+	// rejected until that worker first runs.
+	//
+	// Do the same thing here that boot/the worker does, rather than asserting
+	// the write path works without it. This is a startup-ordering window, not
+	// a permanent defect: production's worker runs continuously.
+	if _, err := db.Exec(ctx, `SELECT public.ensure_sessions_v2_partitions(current_date)`); err != nil {
+		t.Fatalf("ensure_sessions_v2_partitions(current_date): %v", err)
+	}
 	// Enable the V2 schema — defer settings init will pick up the feature flags
 	// from the DB (settings_kv), but since the pool is separate the local
 	// settings.Global may be nil → flags return false → hook short-circuits.
@@ -140,12 +155,19 @@ func TestPersistHook_Integration_DBWrite(t *testing.T) {
 	require.Equal(t, 1, turnCount, "expected one hot turn")
 	require.Equal(t, "1", digestSchemaVersion, "expected persisted digest schema version")
 
+	// §9.103: this assertion read public.session_bodies and could never pass.
+	// SessionBodiesWriter.WriteBodiesInTx writes to session_bodies_hot (bodies_writer.go,
+	// "Write to session_bodies_hot (8-hour window), not directly to partitioned
+	// table"); PartitionManager promotes rows into the session_bodies monthly
+	// partitions later. So a row written moments ago is in _hot and nowhere
+	// else — the test has been red for as long as it has existed, and the
+	// failure had nothing to do with the write path it claimed to cover.
 	var bodyCount int
 	err = db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM public.session_bodies WHERE session_id = $1 AND tenant_id = $2`,
+		`SELECT COUNT(*) FROM public.session_bodies_hot WHERE session_id = $1 AND tenant_id = $2`,
 		sessionID, tenantID).Scan(&bodyCount)
 	require.NoError(t, err)
-	require.Equal(t, 1, bodyCount, "expected 1 bodies row")
+	require.Equal(t, 1, bodyCount, "expected 1 bodies row in session_bodies_hot")
 
 	// Session aggregator runs async (goroutine), so give it a moment
 	time.Sleep(500 * time.Millisecond)
