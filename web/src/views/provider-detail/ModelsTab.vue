@@ -20,6 +20,7 @@ import {
 } from '../../api'
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import { sortByName } from '../../utils/sortByName'
 
 const { t: td } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -74,6 +75,16 @@ const routingDiagFixed = ref(false)
 const routingDiagErr = ref('')
 
 const probeAllLoading = ref(false)
+// 2026-10-03：首列是「凭据」显示名，排序键必须用**渲染时真正显示的那个名字**，
+// 否则按 credential_id 数字排，用户看到的行序仍与查找预期不符。
+// 把显示名注入成 `name` 字段（默认候选第一位），而不是自造 __sortName 键 ——
+// 自造键需要 `as never` 绕过泛型，代价是把整行的类型信息丢掉（模板里
+// r.credential_id / r.latency_ms 会一起报不存在）。
+const sortedProbeAll = computed(() => {
+  const rows = probeAllResults.value.map((r) => ({ ...r, name: credentialDisplayName(r.credential_id) }))
+  return sortByName(rows, (a, b) => String(a.raw_model_name).localeCompare(String(b.raw_model_name)))
+})
+
 const probeAllResults = ref<ProbeAllResult[]>([])
 const probeAllSummary = ref<{ ok: number; model_unavailable: number; provider_error: number; skipped: number } | null>(null)
 
@@ -464,7 +475,7 @@ load()
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in probeAllResults" :key="`${r.credential_id}-${r.raw_model_name}`">
+              <tr v-for="r in sortedProbeAll" :key="`${r.credential_id}-${r.raw_model_name}`">
                 <td>{{ credentialDisplayName(r.credential_id) }}</td>
                 <td><code>{{ r.raw_model_name }}</code></td>
                 <td><span class="badge" :class="probeResultBadge(r.category)">{{ r.status }}</span></td>

@@ -1,9 +1,19 @@
 # 252 PG17 全面监控与清理 (2026-07-15 升级)
 #
+# ★ 同步契约：本文件必须与服务器 /etc/cron.d/pg17 逐行一致。
+#   部署方式是**整文件覆盖**，不是合并 —— 少一条就会在覆盖时把生产任务删掉。
+#   2026-10-03 复核发现本模板漂移出两处，会直接造成生产事故：
+#     1) 漏掉了 `0 2 * * * pg17-proactive-empty-table-cleanup.sh`（服务器上一直在跑）
+#     2) 删掉了所有任务的 `llmgw-source` 包装。服务器注释写明
+#        「cron 不自动加载 /etc/profile,所以通过 llmgw-source 包装」——
+#        去掉后 5 条任务都会在缺环境下失败。
+#   改本文件后，务必 diff 服务器现网版本复核（见 README「cron 同步」一节）。
+#
 # 触发频率（运行成本可控）：
 #   - pg17-disk-watch.sh    每 10 分钟  采样 + 告警推送
 #   - pg17-emergency.sh     每 15 分钟  disk>=90% 自动 L2
 #   - pg17-vacuum-bloat.sh  周日 03:15  VACUUM FULL 防患于未然
+#   - pg17-index-bloat.sh   周日 04:40  只读巡检 + 超阈值告警（--report）
 #   - pg17-drop-columnar.sh 每月 1 号 02:30  DROP 老分区 + VACUUM FULL 元数据
 #
 SHELL=/bin/bash
@@ -11,11 +21,23 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
 
 # === 高频监控 ===
-*/10 * * * * root /opt/scripts/pg17-disk-watch.sh >/dev/null 2>&1
-*/15 * * * * root /opt/scripts/pg17-emergency-cleanup.sh --auto >/dev/null 2>&1
+*/10 * * * * root llmgw-source /opt/scripts/pg17-disk-watch.sh >/dev/null 2>&1
+*/15 * * * * root llmgw-source /opt/scripts/pg17-emergency-cleanup.sh --auto >/dev/null 2>&1
 
 # === 周级 bloat 清理（防 dead tuple 长期堆积）===
-15 3 * * 0 root /opt/scripts/pg17-vacuum-bloat.sh >/dev/null 2>&1
+15 3 * * 0 root llmgw-source /opt/scripts/pg17-vacuum-bloat.sh >/dev/null 2>&1
+
+# === 周级索引死页巡检（只读报告 + 超阈值告警）===
+# 2026-10-03 新增。错开 1 小时放在 vacuum-bloat 之后：两者都要重写大对象，
+# 同窗口跑会互相拖慢；且 04:40 已过业务低峰，长事务的概率更低。
+#
+# ★ 全量探测实测 >10 分钟（42 候选），首次唤醒需确认不会被 statement_timeout 打断。
+# 升级为自动重建：把 --report 换成 --fix（REINDEX CONCURRENTLY，不阻塞读写；
+# 抢不到锁就跳过留待下次运行）。先确认首次 --fix 表现再切换。
+40 4 * * 0 root llmgw-source /opt/scripts/pg17-index-bloat.sh --report >/dev/null 2>&1
 
 # === 月度列存分区清理 ===
-30 2 1 * * root /opt/scripts/pg17-drop-old-columnar-partitions.sh >/dev/null 2>&1
+30 2 1 * * root llmgw-source /opt/scripts/pg17-drop-old-columnar-partitions.sh >/dev/null 2>&1
+
+# === 预防性空表清理（2026-09-06 新增）===
+0 2 * * * root llmgw-source /opt/scripts/pg17-proactive-empty-table-cleanup.sh >/dev/null 2>&1

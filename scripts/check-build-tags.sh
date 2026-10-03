@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-build-tags.sh — 在**每个**构建 tag 配置下编译含构建约束的包。
 #
-# 为什么这道门存在（2026-10-02，审计 §9.65）：
+# 为什么这道门存在（2026-10-02，审计 §9.74）：
 #
 # `verify.sh` 的 `go test ./...` 与 `go vet ./...` **都不带 tag**；
 # `integration-testcontainers-ci.yml` 的 paths 过滤又不含 `admin/**`

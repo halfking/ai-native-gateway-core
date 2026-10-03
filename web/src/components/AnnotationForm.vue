@@ -4,10 +4,13 @@
 // 标注语义升级:人工标注的 ground truth 是「任务类型 + 所选模型」
 // (供应商不重要),由后端写入 training_human_annotations.annotation_metadata,
 // 用于 auto 任务类型定位训练。是否正确/原因沿用原语义。
+// 2026-10-03:模型选择从原生 <select> 下拉换为站内标准控件 ModelPicker
+// (厂商分组选卡),候选由 ModelPicker 自取,不再依赖父组件传 models。
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { VALID_REASONS, type FirstTurnSample } from '../api/annotations'
 import type { AnnotationReason } from '../api/annotations'
+import ModelPicker from './ModelPicker.vue'
 
 const { t } = useI18n()
 
@@ -16,8 +19,6 @@ const props = defineProps<{
   defaultAnnotator?: string
   /** L1 task type options (key + display label). */
   taskTypes?: { key: string; label: string }[]
-  /** Candidate model names for the "which model should have been picked" pick. */
-  models?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -43,7 +44,6 @@ const errors = ref<Record<string, string>>({})
 const taskTypeChoices = computed<{ key: string; label: string }[]>(() =>
   props.taskTypes?.length ? props.taskTypes : [{ key: 'chat', label: 'chat' }],
 )
-const modelChoices = computed<string[]>(() => props.models ?? [])
 
 // Initialize form when sample changes; prefill with the auto decision.
 watch(() => props.sample, (newSample) => {
@@ -141,20 +141,17 @@ function handleCancel() {
       </div>
 
       <div class="form-field">
-        <label for="anno-model" class="form-label">
+        <label class="form-label">
           {{ t('annotation.form.model') }}
           <span class="required">*</span>
         </label>
-        <select
-          id="anno-model"
-          v-model="model"
-          class="form-select"
-          :class="{ 'is-invalid': errors.model }"
-        >
-          <option value="">{{ t('annotation.form.selectModel') }}</option>
-          <option v-for="m in modelChoices" :key="m" :value="m">{{ m }}</option>
-          <option v-if="model && !modelChoices.includes(model)" :value="model">{{ model }}</option>
-        </select>
+        <div class="model-picker-field" :class="{ 'is-invalid': errors.model }">
+          <ModelPicker
+            v-model="model"
+            :title="t('annotation.filter.modelTitle')"
+            :placeholder="t('annotation.form.selectModel')"
+          />
+        </div>
         <span v-if="errors.model" class="error-message">{{ errors.model }}</span>
       </div>
 
@@ -308,6 +305,11 @@ function handleCancel() {
 
 .form-select.is-invalid,
 .form-input.is-invalid {
+  border-color: var(--danger);
+}
+
+/* ModelPicker 触发器的校验红框（组件自身无 invalid 态透传） */
+.model-picker-field.is-invalid :deep(.mp-trigger) {
   border-color: var(--danger);
 }
 

@@ -17,6 +17,7 @@ import {
 } from '../api'
 import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
+import { sortByName } from '../utils/sortByName'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
 
@@ -81,6 +82,15 @@ const {
     return true
   },
 })
+
+// 2026-10-03：标准模型定价表首列是「标准模型」（display_name 为主、canonical_name 为副），
+// 之前完全按后端返回顺序，找某个模型只能翻。
+//
+// 复核更正：上一轮我把这个页面记成「排序会连带改筛选/分组语义，待决策」——
+// **那个理由不成立**。useModelCatalogFilters 内部只做 filter（厂商 / 模式 / 搜索），
+// 既不排序也不分组（src/composables/useModelCatalogFilters.ts:36-60），
+// 所以在视图里排不碰任何筛选语义，无需决策。
+const sortedFiltered = computed(() => sortByName(filtered.value, (a, b) => a.canonical_id - b.canonical_id, ['display_name']))
 
 const selectedRows = ref<Set<number>>(new Set())
 const clipboard = ref<{ in: number; out: number; cache_in: number; cache_out: number; image: number; audio: number; video: number } | null>(null)
@@ -579,7 +589,7 @@ onMounted(load)
           <tr v-if="!loading && filtered.length === 0">
             <td :colspan="5 + textRateFields.length" class="empty-cell">{{ t('standardModelPricing.table.empty') }}</td>
           </tr>
-          <tr v-for="row in filtered" :key="row.canonical_id" :class="{ selected: selectedRows.has(row.canonical_id) }">
+          <tr v-for="row in sortedFiltered" :key="row.canonical_id" :class="{ selected: selectedRows.has(row.canonical_id) }">
             <td><input type="checkbox" :checked="selectedRows.has(row.canonical_id)" @change="toggleRow(row.canonical_id)" /></td>
             <td>
               <div class="model-name">{{ row.display_name }}</div>

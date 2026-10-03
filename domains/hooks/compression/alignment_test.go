@@ -199,6 +199,9 @@ func TestSessionState_AlignmentMapRoundTrip(t *testing.T) {
 			{OriginalIndex: 0, CompressedIndex: 0, IsCompressed: true, CompressedInto: 0, Hash: "h0", Occurrence: 0, TargetKind: "summary", TargetSpace: "messages"},
 			{OriginalIndex: 1, CompressedIndex: 1, IsCompressed: false, CompressedInto: -1, Hash: "h1", Occurrence: 0, TargetKind: "retained", TargetSpace: "messages"},
 		},
+		SanitizeMessageRefs: []SanitizedMessageRef{
+			{RawIndex: 0, SanitizedIndex: 0, RawHash: "rh0", SanitizedHash: "sh0", Changed: true},
+		},
 	}
 	fields := encodeSessionStateFields(st)
 
@@ -212,8 +215,12 @@ func TestSessionState_AlignmentMapRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got.AlignmentMap, st.AlignmentMap) {
 		t.Fatalf("algn round-trip mismatch:\n got  %+v\n want %+v", got.AlignmentMap, st.AlignmentMap)
 	}
+	if !reflect.DeepEqual(got.SanitizeMessageRefs, st.SanitizeMessageRefs) {
+		t.Fatalf("san_msg_refs round-trip mismatch:\n got  %+v\n want %+v", got.SanitizeMessageRefs, st.SanitizeMessageRefs)
+	}
 
-	// Corrupt "algn" → nil, not an error.
+	// Corrupt "algn" → nil, not an error (0458 同族：jsoncol.Decode 留 Warn，
+	// 本断言锁行为契约——坏数据不半填充、不失败整包解码).
 	bad := map[string]string{"algn": "{{{not-json"}
 	gotBad := &SessionState{}
 	if err := decodeSessionStateFields(bad, gotBad); err != nil {
@@ -221,6 +228,18 @@ func TestSessionState_AlignmentMapRoundTrip(t *testing.T) {
 	}
 	if gotBad.AlignmentMap != nil {
 		t.Fatalf("corrupt algn should degrade to nil, got %+v", gotBad.AlignmentMap)
+	}
+	// Corrupt "san_msg_refs" → nil, not an error, and must not leak into algn.
+	badRefs := map[string]string{"san_msg_refs": `[{"raw_index":"not-an-int"}]`, "algn": `[{"original_index":2}]`}
+	gotRefs := &SessionState{}
+	if err := decodeSessionStateFields(badRefs, gotRefs); err != nil {
+		t.Fatalf("corrupt san_msg_refs must not fail decode: %v", err)
+	}
+	if gotRefs.SanitizeMessageRefs != nil {
+		t.Fatalf("corrupt san_msg_refs should degrade to nil, got %+v", gotRefs.SanitizeMessageRefs)
+	}
+	if len(gotRefs.AlignmentMap) != 1 {
+		t.Fatalf("algn must decode independently of corrupt san_msg_refs, got %+v", gotRefs.AlignmentMap)
 	}
 }
 

@@ -1319,6 +1319,24 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 	now := time.Now()
 	for i, cand := range candidates {
 		state := states[i]
+		// 2026-10-02 (vapeur 遗留 #3): hand the already-fetched state to the
+		// executor so its durable Responses gate does not re-GET the same key.
+		//
+		// Attached whenever a state object came back — including candidates
+		// about to be filtered out below: the unhealthy copies are dropped
+		// here and never reach the executor, so the extra attachment on them
+		// is dead weight, not a contract. Both branches below return the
+		// candidate by value, so the pointer travels with the Candidate
+		// struct through p2cOrder / promoteWinner / the retry loop into
+		// executeOpenAI.
+		//
+		// Left nil on the two paths that must NOT claim a snapshot:
+		//   · batch read error → this function returned early, states unused;
+		//   · state == nil     → nothing was read for this key.
+		// nil means "no snapshot" (caller re-reads), never "no verdict".
+		if state != nil {
+			cand.RoutedNodeState = state
+		}
 		if state == nil || state.IsUsable(now) {
 			healthy = append(healthy, cand)
 			continue
@@ -1372,21 +1390,37 @@ func (r *Router) chooseLeastCooledCandidate(candidates []provider.Candidate) *pr
 	bestIdx := 0
 	bestUntil := int64(1<<62 - 1)
 	now := time.Now().Unix()
+	// picked/pickedIdx track WHICH index won. They must be kept together:
+	// the early-exit branches (nil state, cooldown already expired) select an
+	// index that is generally NOT bestIdx, and attaching states[bestIdx] to a
+	// candidate picked at another index would pair it with another node's
+	// snapshot. picked is a copy, never a pointer into the caller's slice:
+	// attaching RoutedNodeState must not mutate the caller's candidate list.
+	var picked provider.Candidate
+	pickedIdx := -1
 	for i, s := range states {
 		if s == nil {
 			// No node state ⇒ never disabled ⇒ most eligible.
-			return &candidates[i]
+			picked, pickedIdx = candidates[i], i
+			break
 		}
 		until := s.DisabledUntil
 		if until <= now {
-			return &candidates[i]
+			picked, pickedIdx = candidates[i], i
+			break
 		}
 		if until < bestUntil {
 			bestUntil = until
 			bestIdx = i
 		}
 	}
-	return &candidates[bestIdx]
+	if pickedIdx < 0 {
+		picked, pickedIdx = candidates[bestIdx], bestIdx
+	}
+	// 2026-10-02 (vapeur 遗留 #3): this path already paid the same batched
+	// MGET, so the executor's durable Responses gate can reuse it too.
+	picked.RoutedNodeState = states[pickedIdx]
+	return &picked
 }
 
 func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {

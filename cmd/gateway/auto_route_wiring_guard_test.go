@@ -41,6 +41,16 @@ func TestAutoRouteWiringNotGatedOnDataPlaneMode(t *testing.T) {
 		t.Fatal("O5 regression: the autoroute decision engine is gated behind !bgDataPlaneOnly again — data-plane instances would serve model=\"auto\" from the dead default")
 	}
 
+	// ⚠️ The Contains() check above is spelling-dependent and was MEASURED to
+	// be bypassable (see TestAutoRouteEngineBlockIsUnconditional below): the
+	// natural re-introduction is the INVERTED form
+	//
+	//     if bgDataPlaneOnly { } else { <engine> }
+	//
+	// which reintroduces the identical outage without the searched spelling
+	// ever appearing. So the load-bearing assertion is the block-shape one.
+	engineBlockIsUnconditional(t, text, splitIdx, wireIdx)
+
 	// The engine block itself must be entered unconditionally: after the split
 	// marker's closing brace there must be a bare `{` block (the A/B split).
 	afterMarker := text[splitIdx+strings.Index(text[splitIdx:], "\n"):]
@@ -93,6 +103,84 @@ func TestAutoLLMMetricsWiredInBuildAutoLLMCaller(t *testing.T) {
 	} {
 		if !strings.Contains(text[fnIdx:], wiring) {
 			t.Fatalf("main_types.go: %q not wired inside buildAutoLLMCaller — llm_gateway_llm_classifier_* would stay at zero in production", wiring)
+		}
+	}
+}
+
+// engineBlockIsUnconditional asserts the *block shape* rather than a spelling:
+// the statements from autoroute.InitFeatureFlags() up to SetAutoRoute(decider)
+// must live in a block that is entered unconditionally — i.e. the text that
+// opens that block must be a bare `{`, with no `if` / `for` / `switch` /
+// `select` governing it.
+//
+// Why shape and not text: the original guard searched for the literal
+// `if !bgDataPlaneOnly`. Mutation-verified on 2026-10-03: rewriting the block
+// as the inverted `if bgDataPlaneOnly { } else { ... }` reintroduces the exact
+// O5 outage (audit §9.70 traced it to a 6-day production blackout, 09-09→09-14)
+// while that guard stays green. A gate that only recognises one spelling of the
+// defect it exists to catch is decorative against the natural way of writing it.
+//
+// Method: walk forward from the split marker, tracking brace depth. The engine
+// statements begin at the first `autoroute.InitFeatureFlags()` at the block's
+// own depth; the governing opener is the `{` of the block containing them.
+// Everything between the previous statement terminator and that `{` must be
+// whitespace / comments.
+func engineBlockIsUnconditional(t *testing.T, text string, splitIdx, wireIdx int) {
+	t.Helper()
+
+	const firstEngineStmt = "autoroute.InitFeatureFlags()"
+	engineIdx := strings.Index(text[splitIdx:splitIdx+wireIdx], firstEngineStmt)
+	if engineIdx < 0 {
+		t.Fatalf("main.go: %s not found between the split marker and SetAutoRoute — "+
+			"the engine region moved; re-evaluate this guard", firstEngineStmt)
+	}
+	engineAbs := splitIdx + engineIdx
+
+	// Walk back from the engine's first statement to the `{` that opens its
+	// block, tracking depth so nested `{}` (composite literals, func bodies)
+	// do not confuse us.
+	depth := 0
+	openIdx := -1
+	for i := engineAbs - 1; i > splitIdx; i-- {
+		switch text[i] {
+		case '}':
+			depth++
+		case '{':
+			if depth == 0 {
+				openIdx = i
+			} else {
+				depth--
+			}
+		}
+		if openIdx >= 0 {
+			break
+		}
+	}
+	if openIdx < 0 {
+		t.Fatal("main.go: could not locate the block opening that contains the autoroute engine — " +
+			"re-evaluate this guard")
+	}
+
+	// The text that governs the opener: from the last statement terminator
+	// before the `{`, up to (but excluding) the `{` itself.
+	governing := text[openIdx-260 : openIdx]
+	if idx := strings.LastIndex(governing, "}"); idx >= 0 {
+		governing = governing[idx+1:]
+	}
+
+	// `else` must be in this list: the measured bypass rewrote the block as
+	// `if bgDataPlaneOnly { } else { <engine> }`, and the text governing the
+	// engine's own opening brace is then just "\n\t\telse " — the searched
+	// `if` sits one brace earlier and is stripped by the LastIndex("}") above.
+	// A first version of this helper omitted `else` and PASSED the very
+	// mutation it was written to catch.
+	for _, kw := range []string{"if ", "if(", "else", "for ", "for(", "switch ", "select ", "case "} {
+		if strings.Contains(governing, kw) {
+			t.Fatalf("O5 regression (spelling-independent): the autoroute decision engine is inside a "+
+				"conditional block — governing text before its opening brace contains %q: %q\n"+
+				"data-plane instances would serve model=\"auto\" from the dead fallback "+
+				"(this exact class of gate caused the 2026-09-09→09-14 blackout, audit §9.70)",
+				kw, strings.TrimSpace(governing))
 		}
 	}
 }

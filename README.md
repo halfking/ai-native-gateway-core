@@ -109,7 +109,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
 | `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
 | `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
-| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 809) |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 817) |
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 
@@ -186,6 +186,67 @@ All modules below are shipped and running in the k3s production deployment. Scre
 ---
 
 ## 🚀 Quick Start
+
+### Install (one command, two scales)
+
+Every install method below is available **from this source tree** — clone and go, no
+release bundle required. The entry point asks which *scale* you want before it does
+anything, so you never end up with a stack you didn't intend:
+
+| Scale | Storage | Use case |
+|-------|---------|----------|
+| **`lite`** | SQLite, single process | single host, intranet, evaluation, CI |
+| **`full`** | PostgreSQL + Redis | production, multi-replica, high concurrency |
+
+```bash
+git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
+cd llm-gateway-go
+
+# Interactive: probes your machine, asks lite vs full, then installs
+bash install.sh            # macOS / Linux / Windows(Git Bash)
+.\install.ps1              # Windows PowerShell
+install.bat                # Windows CMD
+```
+
+Not sure what your machine can do? Ask it first — nothing is downloaded or written:
+
+```bash
+bash install.sh doctor      # what is available here
+bash install.sh version     # what version you have + how to get updates
+```
+
+#### Pick a channel explicitly
+
+| Channel | Command | Notes |
+|---------|---------|-------|
+| Source build | `bash install.sh --channel source` | `go build` from this tree; needs Go, no registry |
+| Go ecosystem | `go install github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer@latest` | canonical Go install |
+| npm | `npm install -g @kaixuan/llm-gw-installer` | lowest friction on Windows |
+| Release binary | `bash install.sh --channel binary` | uses the bundled `llm-gw-installer-<os>-<arch>` |
+| Official one-liner | `bash install.sh --channel maintain` | `curl … \| bash`, always the newest published artifact |
+
+Non-interactive (CI / unattended):
+
+```bash
+bash install.sh --channel source --mode lite --yes
+NO_INTERACTIVE=1 bash install.sh --mode full
+```
+
+Installer subcommands pass straight through, so existing usage keeps working:
+
+```bash
+bash install.sh upgrade       # upgrade an existing instance
+bash install.sh uninstall     # --purge also drops the data
+bash install.sh activate
+bash install.sh heartbeat
+bash install.sh upgrade --action check   # --action is required by `upgrade`
+```
+
+Note that `doctor` and `version` are claimed by the **bootstrap** itself, not passed
+through: they answer "what can this machine install" and "what version do I have and
+how do I get updates", which is the more useful question before you have an installer
+installed at all. An unknown first argument is rejected with a clear error rather than
+being handed to the binary.
 
 ### Option A: Docker Compose (recommended, < 10 minutes)
 

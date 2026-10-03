@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
+import { sortByName } from '../../utils/sortByName'
 import { useI18n } from 'vue-i18n'
 import {
   getCredentialModels, createCredentialModel, clearCredentialModels, refreshCredentialModels,
@@ -18,6 +19,17 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n()
 const priceText = (key: string): string => String(t(`pricingManagement.detail.${key}` as never))
+
+// 2026-10-03：首列是「模型身份」，之前完全按后端返回顺序，找模型只能翻页。
+// 排序键与首列一致：把身份串注入成 `name`（默认候选第一位），不走
+// ModelOffer 自带的 display_name 等字段 —— 那些与首列显示的文本不是一回事。
+const sortedOffers = computed(() => {
+  const rows = offers.value.map((o) => ({
+    ...o,
+    name: o.canonical_name || o.standardized_name || o.raw_model_name || '',
+  }))
+  return sortByName(rows, (a, b) => String(a.id).localeCompare(String(b.id)))
+})
 
 const offers = ref<ModelOffer[]>([])
 const loading = ref(false)
@@ -195,7 +207,7 @@ function thinkingLabel(o: ModelOffer) {
       <tbody>
         <tr v-if="loading"><td colspan="8">加载中…</td></tr>
         <tr
-          v-for="o in offers"
+          v-for="o in sortedOffers"
           :key="o.id"
           class="row-click"
           tabindex="0"

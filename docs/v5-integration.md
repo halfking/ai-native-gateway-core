@@ -1,7 +1,8 @@
 # LLM Gateway · v5 整合对齐文档
 
 > 本文档取代 `v4-融合对齐.md` 成为最高层对齐依据；v4-融合对齐.md 冻结归档（原位保留）。
-> 总方案：`../../docs/2026-09-06-multi-agent-platform-integration/00-总纲-多智能体工作平台整合方案v5.md`（工作区 docs/ 下）
+> 总方案：`../../../docs/2026-09-06-multi-agent-platform-integration/00-总纲-多智能体工作平台整合方案v5.md`（工作区 `ai-native-tools/docs/`）
+> 现行补遗：`../../../docs/2026-09-06-multi-agent-platform-integration/13-方案完善-2026-10-02.md`（2026-10-02；托管任务双入口与过时表述）
 
 ## 本项目在 v5 中的定位
 - LLM 统一网关（canonical：本目录）；一切端到端 LLM 调用必经

@@ -47,7 +47,7 @@ detect_install_root() {
 }
 ```
 
-实现：见 `scripts/local-host-layout-helper.sh:lh_root`、`scripts/user/lib/common.sh:detect_install_root`、`scripts/user/install-host.sh:detect_install_root`。
+实现：见 `scripts/local-host-layout-helper.sh:lh_root`、`scripts/user/install-host.sh:kx_resolve_install_root`（f35823167 起旧 fork `lib/common.sh` 已删除，根解析统一走 SSOT 的 kx_resolve_install_root）。
 
 ## 四、目录布局
 

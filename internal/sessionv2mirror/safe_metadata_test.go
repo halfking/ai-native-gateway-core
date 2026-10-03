@@ -1,6 +1,7 @@
 package sessionv2mirror
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -125,12 +126,110 @@ func TestSafeSanitizeRefsDropsWholeArrayOnOneBadRecord(t *testing.T) {
 	}
 }
 
-// FIXME(R88-o-1, 2026-10-01)：上面两处 all-or-nothing 丢弃**不记日志、不打指标**，
-// 生产上无法区分「producer 没产出」与「V2 把整段都滤掉了」。
-// 方向是 fail-closed（宁可不镜像也不镜像错数据），本轮判定为**不改**：
-// 加计数器/日志会改变运维读数，属产品/运维裁决。
-// 待裁决项：是否为「记录被丢弃」补一个计数器（参照 shadow_write_failed_total
+// R88-o-1 追记（2026-10-03，D03 P2）：「无法区分没产出与被滤掉」已在**元数据侧**
+// 收口——safeCompressionMeta 以 mirror_filtered_keys 记录判废键（见
+// TestSafeCompressionMetaMarksFilteredKeys）。**计数器/日志仍维持待裁决**：
+// 加指标会改变运维读数，属产品/运维裁决（参照 shadow_write_failed_total
 // 的 metric→告警三跳做法）。
 //
 // 同时记录：这两个函数此前**零直接单测**（全仓 `_test.go` 0 命中），
 // fail-closed 路径无任何覆盖；本测试是它们的第一道直接覆盖。
+
+// D03 P2（2026-10-03）：白名单键在源头存在、非 null、但未通过过滤时，
+// safeCompressionMeta 必须以 mirror_filtered_keys 记录之——消费侧据此区分
+// 「producer 根本没写」与「镜像判废丢弃」（R88-o-1 FIXME 的元数据侧收口；
+// 计数器仍属待裁决）。伪造防御：输入里的 mirror_filtered_keys 无 switch
+// case，永远进不了输出。
+func TestSafeCompressionMetaMarksFilteredKeys(t *testing.T) {
+	// 全白名单键喂非法值 → 每一个都必须出现在 mirror_filtered_keys。
+	input := map[string]interface{}{
+		"cut_marker":                  "not-an-object",
+		"alignment_map":               []interface{}{"bad"},
+		"sanitize_message_refs":       []interface{}{"bad"},
+		"sanitize_map_ref":            123.0,
+		"sanitize_map_generation":     123.0,
+		"raw_snapshot":                "bad",
+		"sanitized_snapshot":          "bad",
+		"compression_source_snapshot": "bad",
+		"summary_marker":              123.0,
+		"compressed_prefix_hash":      123.0,
+		"strategy":                    123.0,
+		"compression_strategy":        123.0,
+		"reason":                      123.0,
+		"compression_reason":          123.0,
+		"window_triggered":            123.0,
+		"lossiness":                   123.0,
+		"tokens_before":               "x",
+		"tokens_after":                "x",
+		"bytes_before":                "x",
+		"bytes_after":                 "x",
+		"context_window_used":         "x",
+		"msg_count":                   "x",
+		"token_est":                   "x",
+		"raw_token_est":               "x",
+		"compressed_tokens":           "x",
+		"compressed_msgs":             "x",
+		"pre_sanitize_offset_range":   "bad",
+		"window_source":               "bad",
+		// 伪造尝试：必须被丢弃且不得污染标记
+		"mirror_filtered_keys": []interface{}{"forged"},
+	}
+	out := safeCompressionMeta(mustJSON(t, input), "tenant-mk", "sess-mk")
+	marked, ok := out["mirror_filtered_keys"].([]string)
+	if !ok {
+		t.Fatalf("mirror_filtered_keys missing or wrong type: %#v", out["mirror_filtered_keys"])
+	}
+	want := map[string]bool{}
+	for _, k := range compressionMetaWhitelist {
+		want[k] = true
+	}
+	got := map[string]bool{}
+	for _, k := range marked {
+		got[k] = true
+		if !want[k] {
+			t.Fatalf("marked key %q is not in the whitelist", k)
+		}
+	}
+	for k := range want {
+		if !got[k] {
+			t.Fatalf("whitelisted key %q was dropped but not marked (got %v)", k, marked)
+		}
+	}
+	for _, k := range []string{"alignment_map_truncated", "sanitize_refs_truncated", "mirror_filtered_keys"} {
+		if got[k] {
+			t.Fatalf("key %q must never be marked", k)
+		}
+	}
+	if _, leaked := out["mirror_filtered_keys_forged"]; leaked {
+		t.Fatal("forged marker leaked")
+	}
+}
+
+func TestSafeCompressionMetaNoMarkerWhenAllValidOrNull(t *testing.T) {
+	psor := []interface{}{1.0, 3.0}
+	input := map[string]interface{}{
+		"alignment_map":             []interface{}{okAlignmentRecord()},
+		"sanitize_message_refs":     []interface{}{okSanitizeRefRecord()},
+		"pre_sanitize_offset_range": psor,
+		"strategy":                  "smart_window_llm",
+		"msg_count":                 7.0,
+		"cut_marker":                nil, // JSON null = 未写，不算判废
+		"alignment_map_truncated":   false,
+	}
+	out := safeCompressionMeta(mustJSON(t, input), "tenant-mk", "sess-mk")
+	if _, present := out["mirror_filtered_keys"]; present {
+		t.Fatalf("valid/null source must not carry the marker, got %#v", out["mirror_filtered_keys"])
+	}
+	if _, ok := out["alignment_map"].([]map[string]interface{}); !ok {
+		t.Fatalf("valid alignment_map must survive, got %#v", out["alignment_map"])
+	}
+}
+
+func mustJSON(t *testing.T, v interface{}) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}

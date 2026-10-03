@@ -76,3 +76,15 @@ jobs:
       # 可视性不受影响：`go test` 仍逐包打印 ok/FAIL，定位到包不成问题。
       - name: audit guards
         run: make guards
+
+      # R37 接线：安装入口域两道门。f35823167 落地时声称「接进 maintain 的
+      # static-check」属实，但那只覆盖 maintain 仓侧——本仓 CI 从未执行过
+      # 它们，两道门此前只活在作者本地（「一门没人跑的守卫是文档，不是门」，
+      # 本仓 guards-sync.sh 自己的标准）。两门均无网络依赖；npm 入口探针
+      # 需要 node（runner 自带，脚本内 command -v 已守卫）；Windows 实跑段
+      # 在 Linux 上按 skip 处理。触发面已含 scripts/checks/**。
+      - name: install entrypoints gate
+        run: bash scripts/checks/install-entrypoints-test.sh
+
+      - name: user scripts sync gate
+        run: bash scripts/checks/user-scripts-sync-test.sh

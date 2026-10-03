@@ -1288,6 +1288,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// 会被下面的 if logsWrite 一起关掉（详见 observeSystemFingerprint）。
 	observeSystemFingerprint(entry)
 
+	// 819 落点：记「这个请求开始了」。**必须在 if logsWrite 之外**——
+	// S4 停写后 request_logs 的 in_progress 占位 INSERT 本身就不再产生，
+	// 门控之内的话这个事实会随 v1 退役一起消失（审计 §9.66）。
+	markRequestAbandonedPending(ctx, tx, entry)
+
 	// INSERT directly targets usage_ledger_hot (the canonical write
 	// target per the 2026-07 data-lifecycle architecture). UPDATE-heavy
 	// operations (cost/tokens/latency enrichment after streaming) require
@@ -2076,6 +2081,22 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// 会被下面的 if logsWrite 一起关掉（详见 observeSystemFingerprint）。
 	observeSystemFingerprint(entry)
 
+	// 819 落点的另一半：**终态**到达 ⇒ 删掉「开始了」的标记，于是
+	// request_abandoned 稳态下**就是** abandoned 集合本身。
+	// 同样在 if logsWrite 之外（审计 §9.66）。谓词门（R35 引入，R36 订正为
+	// **正向终态判定**）：只有携带终态证据（success/failure/rate_limited）的
+	// UPDATE 才允许删活标记；中途 enrichment UPDATE（规范化后仍 in_progress）
+	// 不删。负向写法 `!requestIsStartedNotFinished` 会在 status=nil/脏值时放行
+	// clear（方向=承重事实静默丢失）；normalizeRequestStatus 只回填 nil/空、
+	// 不清洗非空脏值（「到达此处的 status 恒为四值」靠全部调用方先经
+	// normalize 且只用 RequestStatus* 常量的纪律维持，非 normalize 的保证），
+	// 当前行为严格等价。正向写法把不变式「终态证据才清账」表达在门本身，
+	// 未来调用方演化时取安全侧（EmitRequestLogUpdate 已预期存在省略终态
+	// 字段的迟到 UPDATE）。
+	if requestLogEntryTerminal(entry) {
+		clearRequestAbandonedPending(ctx, tx, entry.RequestID)
+	}
+
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
 		// UPDATE directly targets usage_ledger_hot — UPDATE-heavy
 		// operations require heap storage with row-level UPDATE support.
@@ -2293,7 +2314,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 				, customer_id = COALESCE($97, customer_id)
 				-- V6-W1.6 R8 (migration 610): request class + due time.
 				--
-				-- $98 必须显式 ::text（2026-10-02 真库取证，审计 §9.65.2）。
+				-- $98 必须显式 ::text（2026-10-02 真库取证，审计 §9.74.2）。
 				-- 裸参数出现在 CASE 的 WHEN 判据里**没有类型上下文**：PG 解析
 				-- WHEN 条件时还不知道 CASE 的结果类型，而 WHEN 条件不属于与
 				-- THEN/ELSE 一起做共同类型归并的那部分，$98 停在 unknown，
@@ -2614,6 +2635,145 @@ var systemFingerprintLastObserved atomic.Value // time.Time
 // markSystemFingerprintObserved records that fingerprint traffic exists.
 func markSystemFingerprintObserved() {
 	systemFingerprintLastObserved.Store(time.Now())
+}
+
+// ============================================================================
+// 「请求开始了却从没有终态」的独立落点（迁移 819，审计 §9.66）
+//
+// 下面两个函数**必须**留在 `if logsWrite {}` 之外，原因与上面
+// observeSystemFingerprint 完全同源：S4 停写的契约是「宽表停写、计费照常」，
+// 门控之内的一切都会随 v1 退役一起消失。§9.66 实测：遗弃率 0.047%
+// （约每天 6–7 条），19/19 带 prompt_tokens 合计 414,168，而 cost_usd 全空
+// ⇒ 丢掉的是**已经真实发生的上游消耗**，且速率永久复现。
+//
+// 不变式：**public.request_abandoned 里有行 ⇔ 该请求开始了且无终态记录。**
+// 终态路径 DELETE 该行（不是置状态位），于是稳态下这张表**就是** abandoned
+// 集合本身，不需要额外的「是否已关闭」状态列。
+//
+// fail-open：写失败只 slog.Warn，**不**回滚 request_logs 主事务。理由是
+// 部署顺序风险——若本表不存在就让整条写入失败，「819 尚未应用」会直接打挂
+// 全部请求日志。同文件的 H3 正文镜像与 session_dim 维度同样是 fail-open。
+// ============================================================================
+
+// requestIsStartedNotFinished is the exact predicate for "this entry is the
+// started-but-not-finished signal". It is deliberately narrow: keyed on
+// request_status = in_progress, NOT on `!entry.Success`.
+//
+// The narrower predicate matters because insertRequestLog is also reached as
+// updateRequestLog's RowsAffected==0 fallback INSERT (migration-era upsert
+// race), and that path carries a **terminal** entry — a `!Success` test would
+// stamp an abandoned marker for a request that in fact finished.
+func requestIsStartedNotFinished(entry *RequestLogEntry) bool {
+	return entry != nil &&
+		entry.RequestStatus != nil &&
+		*entry.RequestStatus == RequestStatusInProgress
+}
+
+// markRequestAbandonedPending durably records "this request started".
+// Called from insertRequestLog inside the request-log transaction, outside the
+// S4 stop-write gate, so the record survives v1 retirement.
+//
+// Only non-terminal (in_progress) entries produce a marker; terminal entries
+// routed through the same INSERT take the no-op branch and are instead
+// removed by clearRequestAbandonedPending.
+//
+// ON CONFLICT DO NOTHING: async retry can reuse a request_id, and a retry's
+// in_progress INSERT must not clobber the original start record (same shape
+// as the request_logs_hot ON CONFLICT comment).
+func markRequestAbandonedPending(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) {
+	if tx == nil || !requestIsStartedNotFinished(entry) {
+		return
+	}
+	startedAt := time.Now()
+	if entry.EventAt != nil {
+		startedAt = *entry.EventAt
+	}
+	var prompt, completion int
+	if entry.PromptTokens != nil {
+		prompt = *entry.PromptTokens
+	}
+	if entry.CompletionTokens != nil {
+		completion = *entry.CompletionTokens
+	}
+	// The savepoint delivers the declared fail-open contract: a statement-level
+	// failure (table missing, column drift 42703, …) would otherwise abort the
+	// whole request_logs transaction — the marker INSERT runs BEFORE the main
+	// write, so every subsequent statement (usage_ledger_hot included) would
+	// fail with 25P02. Same shape as gw_final_success_claim below.
+	//nolint:errcheck // best-effort marker; failure must not fail request logging
+	if _, err := tx.Exec(ctx, `SAVEPOINT gw_req_abandoned_mark`); err != nil {
+		recordRequestAbandonedOp("mark_failed")
+		slog.Warn("request_abandoned: mark savepoint failed, skipping marker (request log write unaffected)",
+			"request_id", entry.RequestID, "error", err)
+		return
+	}
+	//nolint:errcheck // best-effort marker; failure must not fail request logging
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO public.request_abandoned (
+			request_id, tenant_id, gw_session_id, started_at,
+			prompt_tokens, completion_tokens, client_model, outbound_model
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (request_id) DO NOTHING
+	`,
+		entry.RequestID,
+		nonEmpty(entry.TenantID, "default"),
+		stringValue(entry.GwSessionID),
+		startedAt,
+		prompt,
+		completion,
+		stringValue(entry.ClientModel),
+		stringValue(entry.OutboundModel),
+	); err != nil {
+		recordRequestAbandonedOp("mark_failed")
+		slog.Warn("request_abandoned: start marker write failed (request log write unaffected)",
+			"request_id", entry.RequestID, "error", err)
+		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_req_abandoned_mark`)
+		_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_req_abandoned_mark`)
+		return
+	}
+	//nolint:errcheck // best-effort
+	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_req_abandoned_mark`)
+	recordRequestAbandonedOp("mark")
+}
+
+// clearRequestAbandonedPending removes the started-not-finished marker once a
+// terminal record lands. Called from updateRequestLog, also outside the S4
+// gate.
+//
+// This is the DELETE half of the invariant, so it is the load-bearing side:
+// if it regressed, request_abandoned would grow at full traffic rate instead
+// of at the 0.047% abandonment rate, and the table would silently stop meaning
+// "abandoned". migration 819's header says so explicitly.
+func clearRequestAbandonedPending(ctx context.Context, tx pgx.Tx, requestID string) {
+	if tx == nil || requestID == "" {
+		return
+	}
+	// Same savepoint isolation as the mark half (R35 审计 P1 根修配套):
+	// this DELETE runs BEFORE the terminal UPDATE/ledger writes; without a
+	// savepoint a statement failure (table missing) would abort the whole
+	// terminal transaction.
+	//nolint:errcheck // best-effort; a stale marker is far cheaper than failing the terminal write
+	if _, err := tx.Exec(ctx, `SAVEPOINT gw_req_abandoned_clear`); err != nil {
+		recordRequestAbandonedOp("clear_failed")
+		slog.Warn("request_abandoned: clear savepoint failed, skipping cleanup (row stays = reads as abandoned)",
+			"request_id", requestID, "error", err)
+		return
+	}
+	//nolint:errcheck // best-effort; a stale marker is far cheaper than failing the terminal write
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM public.request_abandoned WHERE request_id = $1`,
+		requestID,
+	); err != nil {
+		recordRequestAbandonedOp("clear_failed")
+		slog.Warn("request_abandoned: terminal marker cleanup failed (row stays = reads as abandoned)",
+			"request_id", requestID, "error", err)
+		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_req_abandoned_clear`)
+		_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_req_abandoned_clear`)
+		return
+	}
+	//nolint:errcheck // best-effort
+	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_req_abandoned_clear`)
+	recordRequestAbandonedOp("clear")
 }
 
 // SystemFingerprintObservedSince reports how long ago the last

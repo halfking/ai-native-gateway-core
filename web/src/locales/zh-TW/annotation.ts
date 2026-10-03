@@ -12,6 +12,8 @@ export default {
     endDate: '結束日期',
     taskType: '原始任務類型',
     model: '模型',
+    modelPlaceholder: '全部模型',
+    modelTitle: '選擇模型',
     humanTaskType: '人工任務類型',
     minConfidence: '最小置信度',
     maxConfidence: '最大置信度',

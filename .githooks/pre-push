@@ -150,14 +150,23 @@ else
   while IFS= read -r t; do
     # Ensure executable — some tests are tracked without +x bit.
     chmod +x "$t" 2>/dev/null || true
-    # Per-suite timeout to bound the gate (60s is generous for
-    # the existing shells).
+    # Per-suite timeout to bound the gate. Default 60s remains generous for
+    # the plain shells; heavy fake-host harnesses get their own budget —
+    # deploy_seamless_state_machine_test.sh drives 14 scenarios through the
+    # real deploy-seamless functions and needs ~96s wall (its AC-SM-2
+    # rollback arm switched to the heavier _bluegreen_abort semantics,
+    # 2026-10-03 4c4caa2b1). A flat ceiling here made the gate flap 3
+    # spurious FAILs while every suite was green standalone (R33, 2026-10-03).
     test_name=$(basename "$t")
+    case "$test_name" in
+      deploy_seamless_state_machine_test.sh) suite_timeout=240 ;;
+      *) suite_timeout=60 ;;
+    esac
     echo -n "  $test_name: "
     # 每套独立日志（三十七轮续五）：此前共写 /tmp/test-$$.log，多套同败时
     # 互相覆盖只剩最后一套；失败日志保留供排障，通过即清。
     log_file="/tmp/test-${test_name}-$$.log"
-    if timeout 60 bash "$t" > "$log_file" 2>&1; then
+    if timeout "$suite_timeout" bash "$t" > "$log_file" 2>&1; then
       summary=$(grep -E "summary:" "$log_file" | tail -1)
       [[ -n "$summary" ]] && summary="  $summary"
       echo "PASS${summary}"

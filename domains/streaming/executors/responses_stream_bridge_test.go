@@ -124,6 +124,36 @@ func TestResponsesStreamBridge_TextStream(t *testing.T) {
 	}
 }
 
+// TestResponsesStreamBridge_TerminalFrameCarriesUsage — R32（P2-B 钉测）：
+// usage 曾被解析后直接弃用（`_ = json.Unmarshal`），桥接流记账恒 0。终止帧
+// 必须以 chat 形状透传 usage（StreamChat 从 chunk.Usage 累计记账）。
+func TestResponsesStreamBridge_TerminalFrameCarriesUsage(t *testing.T) {
+	chunks := collectChatChunks(t, vapEURTextStream)
+	var last map[string]any
+	for _, c := range chunks {
+		if u, ok := c["usage"].(map[string]any); ok && u != nil {
+			last = c
+		}
+	}
+	if last == nil {
+		t.Fatal("no terminal frame carries usage — bridged streams bill zero tokens (P2-B regression)")
+	}
+	u := last["usage"].(map[string]any)
+	if u["prompt_tokens"] != float64(8) {
+		t.Fatalf("usage.prompt_tokens = %v, want 8", u["prompt_tokens"])
+	}
+	if u["completion_tokens"] != float64(3) {
+		t.Fatalf("usage.completion_tokens = %v, want 3", u["completion_tokens"])
+	}
+	if u["total_tokens"] != float64(11) {
+		t.Fatalf("usage.total_tokens = %v, want 11", u["total_tokens"])
+	}
+	// 非终止帧不得带 usage（omitempty 生效，形状与 OpenAI 流一致）。
+	if _, ok := chunks[0]["usage"]; ok {
+		t.Fatal("first chunk must not carry usage")
+	}
+}
+
 func TestResponsesStreamBridge_ToolCallStream(t *testing.T) {
 	chunks := collectChatChunks(t, vapEURToolStream)
 

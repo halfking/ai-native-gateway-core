@@ -184,7 +184,7 @@ func TestF04_LiveUnsupportedVerdictPersistsForNextRequest(t *testing.T) {
 		t.Fatalf("first request Chat fallback hits=%d, want one", got)
 	}
 
-	supported, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel)
+	supported, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel, nil)
 	if err != nil {
 		t.Fatalf("read persisted capability: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestF04_LiveUnsupportedVerdictPersistsForNextRequest(t *testing.T) {
 	if got := chatHits.Load(); got != 2 {
 		t.Fatalf("Chat calls=%d after two requests, want two", got)
 	}
-	supported, known, err = fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel)
+	supported, known, err = fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel, nil)
 	if err != nil {
 		t.Fatalf("read capability after Chat fallback: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestF04_LiveSuccessfulResponsesPersistsSupportedVerdict(t *testing.T) {
 	if !redisServer.Exists("llmgw:cred_fp_node:22:gpt-5.6-terra") {
 		t.Fatal("node health key should remain present while capability verdict is expired")
 	}
-	if _, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel); err != nil {
+	if _, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel, nil); err != nil {
 		t.Fatalf("read expired capability verdict: %v", err)
 	} else if known {
 		t.Fatal("expired capability verdict must return to unknown before native retry")
@@ -260,7 +260,7 @@ func TestF04_LiveSuccessfulResponsesPersistsSupportedVerdict(t *testing.T) {
 	if got := responsesHits.Load(); got != 1 {
 		t.Fatalf("Responses hits=%d, want one native success", got)
 	}
-	supported, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel)
+	supported, known, err := fpMgr.GetSupportsResponses(t.Context(), candidate.CredentialID, candidate.RawModel, nil)
 	if err != nil {
 		t.Fatalf("read persisted capability: %v", err)
 	}

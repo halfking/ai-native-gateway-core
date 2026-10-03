@@ -78,7 +78,7 @@ func (cf *credForwarder) leaseRenewLoop(fwdCtx context.Context, stopCh <-chan st
 	// 节拍」中止可保证流永远不会跑在已过期租约上——按首失败起算会让
 	// 中止最晚滑到过期后一个节拍（默认 TTL/3 ≈ 10s），恰好是本接线要
 	// 堵的未记账窗口（R31.1 批判复审修正）。
-	lastArmed := time.Now()
+	lastArmed := cf.nowClock()
 	for {
 		select {
 		case <-stopCh:
@@ -93,7 +93,7 @@ func (cf *credForwarder) leaseRenewLoop(fwdCtx context.Context, stopCh <-chan st
 		err := renewer.Renew(fwdCtx, qr)
 		switch {
 		case err == nil:
-			lastArmed = time.Now()
+			lastArmed = cf.nowClock()
 		case errors.Is(err, ErrLeaseLost):
 			metricGovernorLeaseLost.Inc()
 			slog.Error("dispatch: governor lease lost; aborting stream fail-closed",
@@ -107,7 +107,7 @@ func (cf *credForwarder) leaseRenewLoop(fwdCtx context.Context, stopCh <-chan st
 			// Abort at the first tick at/after lastArmed+TTL — past that
 			// point the lease has necessarily expired and the slot is
 			// unaccounted.
-			if time.Since(lastArmed) >= ttl {
+			if cf.nowClock().Sub(lastArmed) >= ttl {
 				metricGovernorLeaseLost.Inc()
 				slog.Error("dispatch: governor lease renewal degraded past lease TTL; aborting stream fail-closed",
 					"request_id", qr.ID,

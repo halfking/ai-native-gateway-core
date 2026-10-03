@@ -333,14 +333,21 @@ func (api *SessionDetailV2API) querySession(
 	// 暴露 SessionAnalysisView。沿用 session_meta_view.go 的 status='final'
 	// 优先 + updated_at DESC 排序规则，保证 detail 页与列表页读到的同一份
 	// payload 来自同一行。
+	//
+	// 2026-10-03: 本查询的 SELECT 列**必须全部带 s. 限定**。LATERAL 暴露了
+	// status 与 updated_at 两列（见 sessionAnalysisSelectCols），与 public.sessions
+	// 同名 ⇒ 裸列名二义，PostgreSQL 报 SQLSTATE 42702
+	// `column reference "updated_at" is ambiguous`，整个会话详情页 500。
+	// 这个页面此前从未被自动化扫到（ui-sweep 对 :param 路由一刀切跳过），
+	// 所以这个 500 一直没被发现。
 	query := `
 			SELECT
-				id, session_id, tenant_id, created_at, updated_at, closed_at, status,
-				total_turns, total_tokens, total_cost_usd,
-				last_turn_no, last_request_summary, last_response_summary,
-				last_model, last_provider,
-				task_type, client_type, topic, intent,
-				primary_request_id, turn_logs_summary,
+				s.id, s.session_id, s.tenant_id, s.created_at, s.updated_at, s.closed_at, s.status,
+				s.total_turns, s.total_tokens, s.total_cost_usd,
+				s.last_turn_no, s.last_request_summary, s.last_response_summary,
+				s.last_model, s.last_provider,
+				s.task_type, s.client_type, s.topic, s.intent,
+				s.primary_request_id, s.turn_logs_summary,
 				sam.status, sam.schema_version, sam.input_hash,
 				sam.source_task_id, sam.updated_at, sam.payload
 			FROM public.sessions s
