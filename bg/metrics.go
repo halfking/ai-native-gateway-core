@@ -219,6 +219,24 @@ var (
 		},
 		[]string{"table"},
 	)
+	// D8-d（审计 §9.152 / §9.153）：`*_default` 分区里的残留行数。
+	//
+	// 只覆盖「父表另有时间分区」的那一类（默认分区落行 ⇒ 必然存在一个本该有
+	// 专属月/日分区的范围）。父表只有 default 一个分区时（stats_event_inbox、
+	// system_probe_runs）default 是设计上的唯一落点，不算残留，因此不纳入。
+	//
+	// 为什么需要它：写进 `*_default` 的行不会被任何 promote 路径搬走
+	//（promote_* 搬的是 `*_hot` 表），而补建该月分区会撞上
+	// `ERROR: updated partition constraint for default partition ... would be
+	// violated by some row` 且不自愈 ⇒ 一行残留即永久卡死该月分区。
+	// 该 gauge 是这条自锁唯一的发现手段。
+	partitionDefaultResidueRows = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llm_gateway_partition_default_residue_rows",
+			Help: "Rows stranded in a *_default partition whose parent table also has dedicated time partitions. Any value > 0 means the matching monthly/daily partition can no longer be created (self-locking); -1 means the count query failed.",
+		},
+		[]string{"table"},
+	)
 	// R48（§五#3 存储演进二批）：oldest-row-age gauge——每张 hot 表内最旧一行
 	// 距今的秒数（EXTRACT(EPOCH FROM (now() - MIN(<ts_col>)))）。0 = 表为空。
 	// 与 backlog_rows 互补：backlog 看"剩多少"，oldest 看"最旧多久"——
@@ -304,6 +322,13 @@ func recordPromoteSkipped(table string) {
 // recordHotTableBacklog sets the post-drain hot table row count (R47).
 func recordHotTableBacklog(table string, rows int64) {
 	hotTableBacklogRows.WithLabelValues(table).Set(float64(rows))
+}
+
+// recordPartitionDefaultResidue sets the row count stranded in a `*_default`
+// partition (D8-d). rows < 0 means the count query failed — the gauge keeps a
+// -1 sentinel so "could not measure" is never rendered as "empty and healthy".
+func recordPartitionDefaultResidue(table string, rows int64) {
+	partitionDefaultResidueRows.WithLabelValues(table).Set(float64(rows))
 }
 
 // recordHotTableOldestRowAge sets the oldest-row age in seconds (R48 §五#3).
