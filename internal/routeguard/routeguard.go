@@ -10,9 +10,31 @@
 // 于是整个凭据的 14 个绑定里 6 个可路由的**一起出局**。
 //
 // R87-f 核实到：`credentials.circuit_state` / `cooling_until` 是**内存熔断器
-// 的单向观测镜像**（`state_sync.go` 只写不读，全仓无恢复路径），而且
-// **它今天不在路由视图里**。这是对的——熔断是纯内存状态机，DB 里的陈旧值
-// 不得决定摘流。
+// 的镜像**（`state_sync.go` 是唯一把内存迁移写回 DB 的模块），而且
+// **它今天不在路由视图 `is_routable` 的合取里**。这一半是对的——DB 里的陈旧值
+// 不该进那个合取。
+//
+// ⚠️⚠️ R89-EJ（219 号）**订正本段原措辞**：原文写的是「`state_sync.go` 只写不读，
+// **全仓无恢复路径**」。这半句**已被证伪**，不要照着它推理：
+//
+//	circuit_state 有一条**活的读路径**，且在 dispatch 热路径上：
+//	  provider/client.go:1639  candidateQuerySQL 投影 COALESCE(c.circuit_state,'closed')
+//	  provider/client.go:1906  Scan 进 Candidate.CircuitState
+//	  provider/client.go:316   UnavailableReason(): CircuitState=="open" ⇒ 追加 "circuit:open"
+//	  provider/client.go:290   IsAvailable() := UnavailableReason()==""
+//	  executors/executor_dispatch.go:120/170-171  dispatchCandidateAllowed 逐候选准入
+//
+//	即：**DB 里的 circuit_state='open' 会真实摘掉候选**，凭据收不到请求
+//	（唯一例外是 PinCredentialID 的可信探测豁免，executor_dispatch.go:169-171）。
+//
+//	为什么 R87-f 没看见：routeguard 的扫描面**只有 SQL 文件**
+//	（RoutingViewFiles 只 walk *.sql），上面这条读路径全在 Go 里，
+//	**落在它的守卫视野之外** ⇒ 守卫本身是活的，只是覆盖面不含 Go。
+//
+//	⇒ 本守卫的**不变式**（禁止这两列进入 is_routable 合取）依然正确且必须保留；
+//	   但它的**理由**要改成可验证的版本：不是「这列没人读」，
+//	   而是「这列的写入是异步可丢的近似信号（队列满即丢、不重试、last-writer-wins），
+//	   拿它做**合取**会让「近似值」凌驾于「进程内真实熔断状态」之上」。
 //
 // 但这两列**长得就像路由输入**（在 `credentials` 表上、有时间戳、名字里带
 // circuit/cooling）。任何人「顺手」把 `circuit_state = 'open'` 写进那个合取，
@@ -46,9 +68,16 @@ const RoutableMarker = "is_routable"
 
 // ForbiddenColumns 是**不得**出现在路由资格判定里的列。
 //
-// 理由：它们是内存熔断器的单向观测镜像（只写不读、跨进程会陈旧）。
-// 让它们进入 is_routable 的 AND 合取，等于让「陈旧的 DB 值」凌驾于
-// 「进程内真实的熔断状态」之上 —— 而熔断本来就是纯内存的，重启即重置。
+// ⚠️ R89-EJ（219 号）订正理由（不变式本身不变）：
+// 原文写「它们是内存熔断器的单向观测镜像（**只写不读**、跨进程会陈旧）」——
+// 「只写不读」**已被证伪**（读路径见包注释 provider/client.go:1639→:316→
+// executors/executor_dispatch.go:120）。
+// 仍然禁止它们的真正理由是**写入侧的性质**，不是读取侧：
+// state_sync.go 的落库是**异步、可丢、不重试、last-writer-wins** 的近似信号
+// （队列 128 满即丢并计数、失败不重试、drain 预算 30s、多实例共享一库时
+// 取「最近一个实例看到的熔断状态」）。让这样一列进入 is_routable 的 AND 合取，
+// 等于让**近似值**凌驾于「进程内真实的熔断状态」之上 —— 而熔断是纯内存状态机，
+// 重启即重置。**合取**尤其危险：它会把一列的不可靠放大成整行凭据出局。
 var ForbiddenColumns = []string{
 	"circuit_state",
 	"cooling_until",
