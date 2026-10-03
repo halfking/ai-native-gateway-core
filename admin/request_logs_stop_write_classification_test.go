@@ -448,7 +448,18 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"  **只排 actor，完全不看探针** ⇒ 那一半从未被修。\n" +
 			"  同包 `bg/probe_policy.go` 已有两条具名探针谓词（本文件与它同包却一条没用），\n" +
 			"  但两条都要 `quality_flags`，而 `session_turns_hot` 实测 104 列里**没有该列**\n" +
-			"  ⇒ 对会话族分支会 42703，必须分族分叉。**该修正本轮裁决为「分族修」，尚未实施。**",
+			"  ⇒ 对会话族分支会 42703，必须分族分叉。**该修正本轮裁决为「分族修」，尚未实施。**\n\n" +
+			"**⚠⚠ §9.77（2026-10-03，252 实测，独立于档位的新证据）**：`request_logs_hot` " +
+			"是**暂存表**（全部写入方的 INSERT 目标），后台 promoter 每 8 小时把超过 8 小时的行" +
+			"**移动**到分区父表（`promote_request_logs_hot_to_partition` DELETE 源行）。" +
+			"而本读点的 `settleBaselinesSQL` 窗口是 `baselineWindow = 24h`、数据源只有 " +
+			"`request_logs_hot` ⇒ **它问 24 小时的 p95/p75，表里最多只有 8 小时**。" +
+			"24h 窗口实测：完整总体（hot ∪ parent）**13,452** 行，只读 hot **4,665** 行 = " +
+			"**34.7%，缺 65.3%**。\n" +
+			"  ⇒ **§9.74 那次加探针谓词只解决了「总体选错」，没解决「总体被欠采样」**；" +
+			"两条是独立缺陷。样本是「最近 8h」这个非随机切片，基线会随 promoter 排空节奏漂移，" +
+			"而漂移原因与数据无关。§9.44 埋的 cohort_rows gauge **不会报红**——它只报 cohort 为 0，" +
+			"这里是 cohort 偏小。**修法候选与裁决见 §9.77.5，本轮不实施。**",
 	},
 	"bg/ledger_reconciliation.go": {
 		Effect:   effectUnaffected,
@@ -661,8 +672,13 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/memora_handlers.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "FROM request_logs `+where+`",
-		Note:     "两条后果不同的腿：handleSessionMessages(:795-796) 读 710 + LEFT JOIN request_logs_bodies_with_current_month，bodies 腿硬失败 ⇒ 新会话 messages 仍返回（session 臂供行）但 request_body/response_body 是 COALESCE(...::text,'') 的空串、message_count 与 token/cost 汇总照常有值，200；handleMemoraContext(:615-616) 直读裸 request_logs + sessionLogsWhere，新 task 的 requestCount == 0 ⇒ 404 task not found（那条是 errors_out）。按「同一文件取更危险档」取 degraded_content，两条方向都写明。",
+		Evidence: "FROM request_logs_with_current_month `+where+`",
+		Note: "R89-DQ（206 号）**重写了本条的理由**——Effect 不变，但「同一文件取更危险档」这个依据已经不存在了。\n" +
+			"改前两条腿后果不同：handleSessionMessages(:795-796) 读 710 + LEFT JOIN request_logs_bodies_with_current_month，bodies 腿硬失败 ⇒ 仍 200 但 request_body/response_body 变空串（degraded）；handleMemoraContext(:615-616) **直读裸 request_logs**，停写后 requestCount 恒 0 ⇒ 404 task not found（errors_out），文件按「取更危险档」记 degraded_content。\n" +
+			"**改后两条腿都读 710**，第二条腿的 errors_out 消失 ⇒ 本条现在**只由 bodies 那条腿**支撑，degraded_content 这个档位不变但理由必须跟着换。\n" +
+			"**为什么这条腿换视图是对的（不是「让门变绿」）**：sessionLogsWhere 的主谓词是 `gw_task_id = $1 AND ts > …`（admin/session_scope.go:39），gw_task_id 由 734 的 details 层供给（`d.gw_task_id`），**不在** 6 条「会话臂恒 NULL 补位列」里（db/request_logs_view_padded_columns.go：id / test_col / test_tab_indent / provider_model / credits_rate_multiplier），真库 details 行级覆盖 99.9996% ⇒ 换过去不会落进「行级有、谓词级空」。同函数的 client_model 也是 details 供给列，latest_model 子查询同样成立。\n" +
+			"⚠️ **判停写后果必须量近期填充率，不能用全历史均值**（本仓同源教训，已在 discovery/ 与 session_extract.go 两条上各判错一次）：gw_task_id 在 710 视图的全历史 NULL 率是 94.1%，而按天是 09-29 的 4.77% → 09-30 的 37.88% → 10-01 的 97.72% → 10-02 的 98.51% ⇒ details 写入链在 09-30 前后已修好，**近期行带着真值** ⇒ session 臂供数成立。全历史口径会给出「停写后恒 0 行」这个**相反**的档位。\n" +
+			"⚠️ 本条只覆盖**停写（S4）**场景。同一处代码另有一个**互相独立**的根因——裸母表读对最近 8h 结构恒空（`ts > NOW() - INTERVAL '1 hour' * $2` 的 $2 clamp 到 1，≤8h 时窗口 100% 落在 hot 保留期盲区）⇒ 假 404。已由 206 号一并修掉，但**不要**用它来解释本表的档位：那条与停写无关，停写后窗口再宽也照样盲。",
 	},
 	"admin/session_title.go": {
 		Effect:   effectSilentlyDegradedContent,
@@ -1249,6 +1265,11 @@ func currentCanonicalViewMigrationPath(t *testing.T, root string) string {
 // b28ad0c98 把 client_ip 从 db.RequestLogsViewPaddedSessionColumns 里移除——
 // 权威源停在 815 时门红（迁移里有、表里没有），这是对的：权威必须跟着**最新
 // 视图迁移**走，否则又回到「自己比自己」。
+//
+// 第三次（817 落地时）不再手工把权威源从 816 推到 817，而是改为**自动发现**
+// startup 目录里编号最大的那条重建视图的 up 迁移——写死编号本身就是上面那条
+// 失败模式的成因：它要求每次新增视图迁移都记得回来改这里，改漏的表现不是
+// 「门忘了新迁移」而是「门拿旧迁移当权威」。理由见 currentCanonicalViewMigrationPath。
 //
 // 权威源又为什么从写死 815/816 换成**自动发现**（2026-10-02）：816 落地后这张门
 // 红了一轮（写死 815），改成写死 816 又会在 817 落地时**再红一次**——

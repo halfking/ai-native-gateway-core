@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -66,10 +67,8 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// session_list.go / usage.go / session_online.go 已在 R48 §5 双腿化为
 	// request_logs_with_current_month 视图（view 已在白名单 LEGIT），对应
 	// 白名单条目按 self-cleaning 守卫自动清除（TestSQLReadGuardWhitelistCurrent）。
-	"admin/memora_handlers.go":                 "DEBT(R47): 裸母表",
 	"admin/quality_correlations.go":            "DEBT(R47): 裸母表",
 	"admin/provider_models.go":                 "DEBT(R47): 裸母表",
-	"admin/probe_history.go":                   "DEBT(R47): 裸母表",
 	"admin/session_sanitize_matches.go":        "DEBT(R47): 裸母表",
 	"cmd/gateway/output_compliance_control.go": "DEBT(R47): 网关运行时读面裸母表",
 	"cmd/gateway/main_v3_wiring.go":            "DEBT(R47): 接线读面裸母表",
@@ -87,7 +86,7 @@ var sqlReadGuardAllowFiles = map[string]string{
 }
 
 var sqlReadGuardAllowSQLFiles = map[string]string{
-	"sql/objects/views/request_logs_with_current_month.sql":                           "LEGIT: 双腿视图定义本体",
+	"sql/objects/views/request_logs_with_current_month.sql":                           "LEGIT: v1 回退体（两条臂）视图定义体。⚠️ 它**不是**部署形态——部署形态是 db/request_logs_view_schema.go 的三臂会话体（session_turns_hot ∪ session_turns ∪ v1 臂 + 双反连接去重）。别把本文件当该视图的定义引用（203/204 号都栽在这里，205 号更正）；世代由 db/request_logs_view_dump_generation_test.go 钉住",
 	"sql/objects/views/request_logs_bodies_progress.sql":                              "LEGIT: 视图定义体",
 	"sql/objects/views/v_node_switch_analysis.sql":                                    "DEBT(R47): 视图定义裸母表",
 	"sql/objects/views/customer_cost_view.sql":                                        "DEBT(R47): 视图定义裸母表",
@@ -194,6 +193,105 @@ func TestNoBareRequestLogsMotherReads(t *testing.T) {
 // TestSQLReadGuardWhitelistCurrent 检查白名单自清洁：条目对应的文件已无
 // 命中（被删除或已双腿化）时报错，强制从白名单移除——防止"白名单债务
 // 隐身"（conventions.md §3 的机制化延伸）。
+// debtBaseline 是 202 号登记的 DEBT(R47) 基线：白名单里当前**已登记**的
+// 裸 request_logs 母表读文件（Go 15 + SQL 7 = 22 条）。
+//
+// 为什么要有它：TestSQLReadGuardWhitelistCurrent 只实现了棘轮的**一半** ——
+// 它管住「条目不得比需要活得更久」（文件已双腿化就必须移除），但**管不住
+// 「债务可以静默变多」**：给一个新文件加一条 `DEBT(R47):` 白名单，门会一直绿。
+//
+// 这正是本仓自己写下的失效形态（sql/schema/integration_gate_test.go:429-431）：
+// 「一个已知缺口清单只有在**新增缺口是致命的**时才算棘轮。如果 harness 只是
+// 打印失败，那么未来每一个新的缺口都会被吸收进同一次绿色运行里，清单最终变成
+// 没人再读的豁免。」—— `TestGateRatchetsUnlistedStartupGaps` 已经在那边落实了，
+// 本门此前没有。
+//
+// 语义选择：只对**新增**报错，对**移除**自动接受。
+//   - 移除 = 债务被偿还，不需要任何人改本文件；
+//   - 若改成「集合必须逐字相等」，每还一笔债都要来改基线，基线本身变成噪音，
+//     于是大家开始不看它 —— 棘轮就退化成了清单。
+//
+// ⇒ 「删一条加一条」也堵得住：那是新增，会红。
+var debtBaseline = map[string]bool{
+	// Go 读面
+	"admin/quality_correlations.go":                   true,
+	"admin/provider_models.go":                        true,
+	"admin/session_sanitize_matches.go":               true,
+	"cmd/gateway/output_compliance_control.go":        true,
+	"cmd/gateway/main_v3_wiring.go":                   true,
+	"domains/analysis/optimizer.go":                   true,
+	"domains/analysis/request_summary.go":             true,
+	"domains/analysis/projectattr/store.go":           true,
+	"domains/sessionforensics/export.go":              true,
+	"domains/hooks/goal/history_store.go":             true,
+	"domains/hooks/observability/telemetry/client.go": true,
+	"autoroute/recommend_v2.go":                       true,
+	"discovery/discovery.go":                          true,
+	// SQL 读面（视图定义体 / 函数体）
+	"sql/objects/views/v_node_switch_analysis.sql":                                    true,
+	"sql/objects/views/customer_cost_view.sql":                                        true,
+	"sql/objects/views/model_cost_per_task_view.sql":                                  true,
+	"sql/objects/views/v_timeout_effectiveness.sql":                                   true,
+	"sql/objects/views/v_continuation_effectiveness.sql":                              true,
+	"sql/objects/functions/credential_most_used_model_integer_integer.sql":            true,
+	"sql/objects/functions/get_last_successful_request_character_varying_integer.sql": true,
+}
+
+func debtEntries() map[string]bool {
+	out := map[string]bool{}
+	for path, reason := range sqlReadGuardAllowFiles {
+		if strings.Contains(reason, "DEBT") {
+			out[path] = true
+		}
+	}
+	for path, reason := range sqlReadGuardAllowSQLFiles {
+		if strings.Contains(reason, "DEBT") {
+			out[path] = true
+		}
+	}
+	return out
+}
+
+// TestDebtRatchetDoesNotGrow 补上棘轮缺失的那一半。
+func TestDebtRatchetDoesNotGrow(t *testing.T) {
+	debt := debtEntries()
+
+	// 覆盖面下限：先证「抽到东西了」。空集合同样满足「没有新增」，
+	// 抽取逻辑坏掉时这道门会安静通过（201 号 §102 的教训）。
+	if len(debt) < 20 {
+		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 20）：DEBT 识别很可能已失效，"+
+			"此时「没有新增」会与「一条都没抽到」同步为真。抽到的：%v", len(debt), keysSorted(debt))
+	}
+
+	var added []string
+	for p := range debt {
+		if !debtBaseline[p] {
+			added = append(added, p)
+		}
+	}
+	sort.Strings(added)
+	if len(added) > 0 {
+		t.Errorf("DEBT(R47) 盲区债新增了 %d 条（当前 %d 条，基线 %d 条）：\n  %s\n"+
+			"  这道门只拦「存量」的话，新迁移或新读面加一条白名单就会一直绿，直到清单变成没人读的豁免"+
+			"（本仓 sql/schema/integration_gate_test.go:429-431 已写下这条失效形态，"+
+			"TestGateRatchetsUnlistedStartupGaps 也在那边落实了）。\n"+
+			"  要新增必须同时：(1) 更新 debtBaseline；(2) 在理由里写清为何本处不能双腿化；"+
+			"  (3) 确认该读面确实只影响 <8h 窗口。若本条其实不构成债，"+
+			"  请先修代码再登记 —— 优先把理由从 DEBT(R47) 改成 LEGIT 并给出依据。",
+			len(added), len(debt), len(debtBaseline), strings.Join(added, "\n  "))
+	}
+	t.Logf("DEBT(R47) 现状：%d 条（基线 %d），新增 %d 条", len(debt), len(debtBaseline), len(added))
+}
+
+func keysSorted(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestSQLReadGuardWhitelistCurrent(t *testing.T) {
 	root := sqlReadGuardRepoRoot(t)
 	for _, m := range []struct {

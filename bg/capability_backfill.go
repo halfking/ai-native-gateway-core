@@ -48,6 +48,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -193,6 +194,7 @@ func NewCapabilityBackfill(
 	if budget > 0 && budget*2 > ledgerCap {
 		ledgerCap = budget * 2
 	}
+	metrics.SetCapabilityBackfillDailyBudget(budget)
 	return &CapabilityBackfill{
 		db:             db,
 		encKey:         encKey,
@@ -492,9 +494,13 @@ func (b *CapabilityBackfill) chargeProbe(now time.Time) bool {
 	defer b.budgetMu.Unlock()
 	b.pruneProbesLocked(now)
 	if len(b.probes) >= b.dailyBudget {
+		// 被闸门拒绝的行不出网也不记 attempt——计数器让「闸门开始拦人」
+		// 在面板上可见（此前只有每轮一条 Warn 日志）。
+		metrics.RecordCapabilityBackfillProbeBudgetBlocked()
 		return false
 	}
 	b.probes = append(b.probes, now)
+	metrics.RecordCapabilityBackfillProbeCharged()
 	return true
 }
 

@@ -18,7 +18,17 @@ var exemptions = map[string]string{
 	// —— out-of-scope: one-shot developer/ops CLI 的 main 包 ——
 	// 这些不是长驻请求/worker 路径，失败即进程退出，截断不会传播给客户端；
 	// 其语义需单独裁决，R66 不处理。
-	"cmd/gateway/main.go:4552":                                      "one-shot/main package wiring, out of R66 scope",
+	// 4552 -> 4627 -> 4640 是**两次行号漂移**，不是新增债：
+	//   ① 用 `git show 8a6142263:cmd/gateway/main.go` 核对过，登记那行当时正是
+	//      `for rows.Next() {`，同在 func main()；
+	//   ② 4627 这一次是 `93cbce8a3`（并发会话的音频网关）给 main.go 加了 24 行造成的。
+	//      已用 `git show 93cbce8a3^:cmd/gateway/main.go` 复核：第 4627 行当时**正是**
+	//      `for rows.Next() {`（`var models []string` 那段 credential→provider_models 查询），
+	//      现在同一处代码在 **4640**。⇒ 是**同一处漂移**，不是「另找一处顶上」。
+	// 本文件另一条循环（当时 6510、6601、现在 6625）从未登记。
+	// TestExemptionsStillResolve 会把对不上的键报成 stale；
+	// **改键前必须回原提交确认是「同一处漂移」而不是「另找一处顶上」。**
+	"cmd/gateway/main.go:4640":                                      "one-shot/main package wiring, out of R66 scope (line drifted 4552->4627->4640)",
 	"cmd/gateway/main_helpers.go:369":                               "one-shot/main package wiring, out of R66 scope",
 	"cmd/gateway/main_v32_wiring.go:119":                            "one-shot/main package wiring, out of R66 scope",
 	"cmd/fetch-standard-iq/main.go:103":                             "one-shot/main package, out of R66 scope",
@@ -84,7 +94,22 @@ func TestExemptionsStillResolve(t *testing.T) {
 				t.Errorf("exemption %s: line still holds a Next() loop but is missing from the guard's own key set", key)
 				continue
 			}
-			t.Logf("exemption %s is stale (line drift) — remove it", key)
+			// 201 号：这一支从 t.Logf 升为 t.Errorf。
+			//
+			// 失效豁免的代价不是「多一条无用记录」，而是**门对这一处不再有话可说**：
+			// 清单还写着「此处已豁免/已复核」，而下一个人读到的是一个早已不存在的
+			// 行号。非致命时它会静静躺在表里，直到某次误改或 key 构造再次出错才暴露。
+			//
+			// 与上面 :88 那一支的分工是刻意的：
+			//   - 「该行还有 Next() 循环、只是不在门的 key 集里」= **门看不见一个真实站点**
+			//     ⇒ 致命（这是键构造出错的信号，199 号那三个族就是死在这里）；
+			//   - 「该行已经没有 Next() 循环」= **登记项指向了一个不存在的位置**
+			//     ⇒ 同样是门在说谎，同样致命。
+			// 两条都是「门不能自证其覆盖」的情形，没有哪一条该只记日志。
+			t.Errorf("exemption %s is stale (line drift) —— 该行已没有 for X.Next() 循环，"+
+				"这条豁免正在假装有效。应删除该条目；若循环仍在、只是被改过，"+
+				"先用 git log -S '%s' 回原提交确认是「同一处漂移」还是「另找一处顶上」再改键",
+				key, key)
 		}
 	}
 }

@@ -13,6 +13,12 @@ import {
 } from '../../api/usage'
 import KxDatePicker from '../../components/ui/KxDatePicker.vue'
 import { formatNumberLocale } from '../../utils/format'
+import {
+  emptyDegradation,
+  mergeDegradation,
+  type DegradationPayload,
+  type DegradationState,
+} from '../../composables/useDegradationMarker'
 
 // 注册 Chart.js 组件
 Chart.register(...registerables)
@@ -34,6 +40,25 @@ const periodCompareData = ref<PeriodCompareResponse | null>(null)
 
 // 缓存经济学数据
 const cacheEconomicsData = ref<CacheEconomicsResponse | null>(null)
+
+// 降级标记（2026-10-03）
+//
+// 后端在「schema 落后于代码」时返回 200 + 全 0。以前这里照单全收，
+// 于是「本月没花钱」和「本月没数据」在页面上是同一张脸 —— 2026-10-03 实测
+// 2026-09 实际 1139.62 美元被显示成 0。
+//
+// 三态语义与「别把 undefined 当健康」的警告写在 useDegradationMarker.ts 里，
+// 并由 useDegradationMarker.test.ts 守住。**这里不要重写一份内联逻辑** ——
+// 那正是让警告失去牙齿的方式。
+const degradation = ref<DegradationState>(emptyDegradation())
+
+const resetDegradation = () => {
+  degradation.value = emptyDegradation()
+}
+
+const recordDegradation = (source: string, payload: DegradationPayload | null | undefined) => {
+  degradation.value = mergeDegradation(degradation.value, source, payload)
+}
 
 // 图表实例
 let pieChartInstance: Chart | null = null
@@ -99,7 +124,11 @@ const attributionColumnLabel = computed(() => {
 // API 调用
 const fetchCostTrend = async () => {
   try {
-    costTrendData.value = await getCostTrend(attributionDimension.value)
+    const data = await getCostTrend(attributionDimension.value)
+    costTrendData.value = data
+    // 降级时后端给的是空 entries + total_cost 0 ⇒ 一张空饼图。
+    // 不记下来的话，图看起来就是「这段时间没花钱」。
+    recordDegradation(t('dataLifecycle.usageCost.attribution.title'), data)
   } catch (e) {
     console.error('Cost trend fetch error:', e)
     error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.costTrend')
@@ -108,7 +137,10 @@ const fetchCostTrend = async () => {
 
 const fetchPeriodCompare = async () => {
   try {
-    periodCompareData.value = await getPeriodCompare(currentPeriod.value, previousPeriod.value)
+    const data = await getPeriodCompare(currentPeriod.value, previousPeriod.value)
+    periodCompareData.value = data
+    // 只有本次响应明确说 degraded:true 才置位；说 false 或字段缺失都不置。
+    recordDegradation(t('dataLifecycle.usageCost.compare.title'), data)
   } catch (e) {
     console.error('Period compare fetch error:', e)
     error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.periodCompare')
@@ -117,7 +149,9 @@ const fetchPeriodCompare = async () => {
 
 const fetchCacheEconomics = async () => {
   try {
-    cacheEconomicsData.value = await getCacheEconomics()
+    const data = await getCacheEconomics()
+    cacheEconomicsData.value = data
+    recordDegradation(t('dataLifecycle.usageCost.cache.title'), data)
   } catch (e) {
     console.error('Cache economics fetch error:', e)
     error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.cacheEconomics')
@@ -127,6 +161,9 @@ const fetchCacheEconomics = async () => {
 const loadAll = async () => {
   loading.value = true
   error.value = ''
+  // 先清空再重收：本轮若全部降级为 false，旧的那条降级提示必须消失。
+  // 只往 reasons 里追加而不重置的话，提示会永久粘在页面上。
+  resetDegradation()
   try {
     await Promise.all([
       fetchCostTrend(),
@@ -323,6 +360,24 @@ onMounted(() => {
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
+
+    <!--
+      降级提示（2026-10-03）
+      与上面的 error 是**两件不同的事**：error 是「请求失败」，degraded 是
+      「请求成功但服务端算不出来」。后者以前返回 200 + 全 0，页面上和
+      「这段时间真的没花钱」一模一样 —— 2026-10-03 实测 2026-09 的
+      1139.62 美元被显示成 0。
+
+      刻意用 alert-warning 而不是 alert-danger：它不是故障，是「这个数
+      别当结论看」。且必须写清哪些指标不可信，否则用户只会以为整页坏了。
+    -->
+    <div v-if="degradation.active" class="alert alert-warning" role="status">
+      <strong>{{ t('dataLifecycle.usageCost.degraded.title') }}</strong>
+      {{ t('dataLifecycle.usageCost.degraded.hint') }}
+      <ul class="degraded-reasons">
+        <li v-for="r in degradation.reasons" :key="r">{{ r }}</li>
+      </ul>
+    </div>
 
     <!-- 同比环比对比卡片 -->
     <div class="section">

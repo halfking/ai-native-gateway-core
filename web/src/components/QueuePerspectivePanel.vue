@@ -1300,43 +1300,43 @@ function requestTitleTooltip(request: LiveRequest): string {
            用 outOfScopeFilterModels 把「筛了但被范围挡掉」这件事讲清楚。 -->
       <div v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScopeError || outOfScopeFilterModels.length)" class="qp-layer qp-layer--model-groups">
         <div class="qp-layer-header">
-          <span class="qp-layer-name">按模型分组的可用节点</span>
-          <span v-if="hasModelGroups" class="qp-layer-count">{{ filteredModelGroups.length }} 个模型<template v-if="modelGroups.length !== filteredModelGroups.length"> / {{ modelGroups.length }}</template></span>
-          <button type="button" class="qp-retry" :disabled="modelScopeLoading || dragSaving" @click="loadModelScope">{{ dragSaving ? '正在保存…' : (modelScopeLoading ? t('requestJourneys.modelScopeLoading') : `↻ ${t('requestJourneys.refreshScope')}`) }}</button>
+          <span class="qp-layer-name">{{ t('requestJourneys.modelGroupLayerTitle') }}</span>
+          <span v-if="hasModelGroups" class="qp-layer-count">{{ t('requestJourneys.modelGroupCount', { count: filteredModelGroups.length }) }}<template v-if="modelGroups.length !== filteredModelGroups.length"> / {{ modelGroups.length }}</template></span>
+          <button type="button" class="qp-retry" :disabled="modelScopeLoading || dragSaving" @click="loadModelScope">{{ dragSaving ? t('requestJourneys.modelScopeSaving') : (modelScopeLoading ? t('requestJourneys.modelScopeLoading') : `↻ ${t('requestJourneys.refreshScope')}`) }}</button>
         </div>
 
         <p v-if="outOfScopeFilterModels.length" class="qp-scope-miss">
-          {{ outOfScopeFilterModels.join('、') }} 有节点，但不在「特色 / 近 3 天热门」范围内（本面板只展示范围内模型），故未列出分组。
+          {{ t('requestJourneys.outOfScopeModels', { models: outOfScopeFilterModels.join('、') }) }}
         </p>
 
         <!-- 状态过滤多选框：在用 / 降级 / 人工禁用 / 配额耗尽 -->
-        <div v-if="hasModelGroups" class="qp-status-filters" role="group" :aria-label="'状态过滤'">
+        <div v-if="hasModelGroups" class="qp-status-filters" role="group" :aria-label="t('requestJourneys.statusFilterLabel')">
           <label class="qp-status-filter" :class="{ 'is-active': statusFilter.active }">
             <input type="checkbox" :checked="statusFilter.active" @change="toggleStatusFilter('active')" />
             <span class="qp-status-filter-dot qp-dot--ok" aria-hidden="true"></span>
-            <span>在用</span>
+            <span>{{ t('requestJourneys.statusFilterActive') }}</span>
           </label>
           <label class="qp-status-filter" :class="{ 'is-active': statusFilter.degraded }">
             <input type="checkbox" :checked="statusFilter.degraded" @change="toggleStatusFilter('degraded')" />
             <span class="qp-status-filter-dot qp-dot--bad" aria-hidden="true"></span>
-            <span>降级</span>
+            <span>{{ t('requestJourneys.statusFilterDegraded') }}</span>
           </label>
           <label class="qp-status-filter" :class="{ 'is-active': statusFilter.manualDisabled }">
             <input type="checkbox" :checked="statusFilter.manualDisabled" @change="toggleStatusFilter('manualDisabled')" />
             <span class="qp-status-filter-dot qp-status-filter-dot--muted" aria-hidden="true"></span>
-            <span>人工禁用</span>
+            <span>{{ t('requestJourneys.statusFilterManualDisabled') }}</span>
           </label>
           <label class="qp-status-filter" :class="{ 'is-active': statusFilter.exhausted }">
             <input type="checkbox" :checked="statusFilter.exhausted" @change="toggleStatusFilter('exhausted')" />
             <span class="qp-status-filter-dot qp-dot--bad" aria-hidden="true"></span>
-            <span>耗尽</span>
+            <span>{{ t('requestJourneys.statusFilterExhausted') }}</span>
           </label>
           <span v-if="dragError" class="qp-status-filter-error">{{ dragError }}</span>
         </div>
 
         <div v-if="modelScopeLoading" class="qp-model-scope-state">{{ t('requestJourneys.modelScopeLoading') }}</div>
         <div v-else-if="modelScopeError" class="qp-model-scope-state qp-model-scope-state--error">{{ t('requestJourneys.modelScopeError') }}</div>
-        <div v-else-if="!hasFilteredGroups && hasModelGroups" class="qp-model-scope-state">当前过滤条件下没有可用节点。请调整状态过滤多选框。</div>
+        <div v-else-if="!hasFilteredGroups && hasModelGroups" class="qp-model-scope-state">{{ t('requestJourneys.filterEmptyState') }}</div>
         <div v-else-if="!hasModelGroups" class="qp-model-scope-state">{{ t('requestJourneys.noModelNodes') }}</div>
         <div v-else v-for="group in filteredModelGroups" :key="group.model" class="qp-model-group">
           <div class="qp-model-compact">
@@ -1344,15 +1344,15 @@ function requestTitleTooltip(request: LiveRequest): string {
               <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }">▸</span>
               <strong class="qp-model-group-name">{{ group.displayName }}</strong>
             </button>
-            <span v-if="group.featured" class="qp-model-tag">特色</span>
-            <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
-            <span class="qp-pill">{{ group.nodes.length }} 节点</span>
+            <span v-if="group.featured" class="qp-model-tag">{{ t('requestJourneys.featuredTag') }}</span>
+            <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">{{ t('requestJourneys.hotTag', { count: group.hotRequests }) }}</span>
+            <span class="qp-pill">{{ t('requestJourneys.nodesCount', { count: group.nodes.length }) }}</span>
             <!-- 请求图标（缩微版）：右侧显示该模型当前正在处理的请求数；
                  默认折叠状态下仍能直接看到是否在跑流量，无需展开。 -->
             <span
               class="qp-model-rq-icon"
               :class="{ 'qp-model-rq-icon--active': group.requestCount > 0 }"
-              :title="`${group.requestCount} 当前请求`"
+              :title="t('requestJourneys.currentRequestsTitle', { count: group.requestCount })"
               aria-hidden="true"
             >
               <svg viewBox="0 0 16 16" width="12" height="12" focusable="false">
@@ -1362,7 +1362,7 @@ function requestTitleTooltip(request: LiveRequest): string {
               </svg>
               <span class="qp-model-rq-count">{{ group.requestCount }}</span>
             </span>
-            <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
+            <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? t('requestJourneys.reorderEnabled') : t('requestJourneys.reorderDisabled') }}</span>
             <ModelIOStrips v-bind="ioForGroup(group)" />
           </div>
           <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">

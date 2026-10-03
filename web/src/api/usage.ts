@@ -173,7 +173,7 @@ export interface CostTrendEntry {
   percentage: number
 }
 
-export interface CostTrendResponse {
+export interface CostTrendResponse extends DegradationMarker {
   group_by: string
   date_from: string
   date_to: string
@@ -204,7 +204,15 @@ export interface DimChange {
   change_pct: number
 }
 
-export interface PeriodCompareResponse {
+/**
+ * 降级标记（2026-10-03）。契约本体在 composables/useDegradationMarker.ts ——
+ * api/admin.ts 也要用它，定义必须落在更底层模块，否则每加一个降级端点就复制
+ * 一份。这里转出以保持既有 import 路径可用。
+ */
+import type { DegradationMarker } from '../composables/useDegradationMarker'
+export type { DegradationMarker }
+
+export interface PeriodCompareResponse extends DegradationMarker {
   current: PeriodStats
   previous: PeriodStats
   change_pct: number
@@ -214,7 +222,7 @@ export interface PeriodCompareResponse {
   by_dimension: Record<string, DimChange[]>
 }
 
-export interface CacheEconomicsResponse {
+export interface CacheEconomicsResponse extends DegradationMarker {
   date_from: string
   date_to: string
   total_requests: number
