@@ -18,6 +18,11 @@
 **但所有修复都未部署** —— 生产 252 仍是 `2b6d337b2`，落后 `origin/main` **790+ 提交、
 50 个迁移文件**。退役 `request_logs` 的主体工作卡在下面 D1–D3。
 
+⚠️ **2026-10-04 追加：退役还有一个 schema 级硬前置，优先级高于 D1–D3** ——
+`session_*` 的 **RLS 策略在表达式内部引用 `request_logs`** 来判 owner 可见性
+（审计 §9.137）。**不先改写这四条策略，退役会打断会话数据的访问控制。**
+详见 D9 的第二条强制条款。
+
 ---
 
 ## D1　决定 A：会话视图是否加宽到覆盖那 30 列
@@ -250,6 +255,27 @@ PREPARE 验不出来）。且**会话族没有 `credential_id` 索引**。
 ⇒ 另一个推论：**回滚方案不能是"重跑 installer 装回旧版"**。
 如果回滚路径依赖重跑 installer，那它在今天的代码上就**已经被证伪**。
 回滚必须走"部署旧版二进制 + 停写"这类**不重放 schema** 的路径。
+
+### ⚠️⚠️ D9 必须写死的第二条（§9.137 新增，**退役的硬前置**）
+
+> **`session_*` 表族的 RLS 策略在策略表达式内部引用 `request_logs`。**
+
+`sessions` / `session_turns` / `session_turns_hot` / `session_bodies` 上的
+`*_owner_filter`（**RESTRICTIVE**）策略，靠
+`SELECT DISTINCT ON (gw_session_id, tenant_id) ... FROM request_logs_hot UNION ALL request_logs ... ORDER BY ts`
+取**最早那行的 `owner_user`** 来判「这一行归谁可见」。
+
+来源：迁移 **457**（注释原文 `owner_user is a request_logs concept` / `join to public.request_logs`），
+**526** 重建并**加了一道门** `p.qual::TEXT ~ 'request_logs'`（审计 §9.137.2）。
+
+⇒ **删掉 `request_logs` 之前，必须先把这四条 owner 过滤策略改写成不依赖 v1**
+（自己解析 owner，或从 `sessions`/`session_*` 侧另存 owner）。
+⇒ **这是退役的硬前置，不是退役之后可以再看的事。**
+
+⚠️ 失败形态**尚未判定**：跨 owner 可见 / 全部不可见 / 查询直接报错，三种都可能。
+判定只需在任意 scratch 库跑 §9.137.3 给的 6 行实验。
+
+⇒ **所以 D9 的发布清单里必须包含「owner 过滤策略改写」这一项，且它要排在删表之前。**
 
 ---
 
