@@ -1033,6 +1033,11 @@ async function refreshWindowStats() {
       targets.push({ credentialId: node.credential_id, model })
     }
   }
+  // 没有目标就别发请求：服务端对空 items 直接回 400「items required」，
+  // 于是「页面上暂时没有可看的凭据」这种正常状态，会在 /dashboard 和 / 上
+  // 各留下一条 400 + console 错误，然后白跑一次 legacy 回退轮询。
+  // （R38 审计注记：守卫必须在这里——next/nextEntries 快照还没建、
+  //   也没 abort 旧请求；函数下方曾有一份重复的空 targets 块，不可达，已删。）
   if (!targets.length) return
   statsAbort?.abort()
   const controller = new AbortController()
@@ -1045,15 +1050,6 @@ async function refreshWindowStats() {
   }
   const applyEntries = (credentialId: number, model: string, entries: CallEntry[] | undefined) => {
     mergeCardWindowEntries(nextEntries, statsKey(credentialId, model), entries)
-  }
-
-  // 没有目标就别发请求：服务端对空 items 直接回 400「items required」，
-  // 于是「页面上暂时没有可看的凭据」这种正常状态，会在 /dashboard 和 / 上
-  // 各留下一条 400 + console 错误，然后白跑一次 legacy 回退轮询。
-  if (targets.length === 0) {
-    windowStatsByKey.value = next
-    windowEntriesByKey.value = nextEntries
-    return
   }
 
   try {
