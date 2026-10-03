@@ -394,11 +394,20 @@ t0 `insertRequestLog` 同事务写 ledger + v1（凭证 = **A₀**）；
 |---|---|
 | **现状** | 分区由 `bg/partition_manager.go` 后台工调，写链自己不调 |
 | **实测** | 本地真库全新安装的分只有 **07 / 08 / 10**，**缺 09** ⇒ 启动时序窗口真实存在 |
-| **影响** | 启动窗口内写入当月数据会 `23514 no partition of relation` |
+| ~~**影响**~~ | ~~启动窗口内写入当月数据会 `23514 no partition of relation`~~ ⚠️ **已判错（§9.152.1）**：`session_turns` / `request_logs` **都带 `_default` 分区**，缺月写入**不会报错**，而是**静默落进 `_default`** |
+| **真实影响（§9.152）** | 落进 `_default` 的行**无任何出口**（零代码引用）⇒ **该月分区此后永久建不出来**（`ERROR: updated partition constraint … would be violated by some row`），且 `ensure_sessions_v2_partitions` 顺序执行三表、**无 EXCEPTION 子句** ⇒ **`session_bodies` 的分区也被永久截断**。**不丢数据，但静默、永久、且今天没有任何人看它** |
+| **当前状态** | ✅ **未发生**：`session_turns_default` **0 行**，1,687,630 行全部落在月分区 |
 
 - **D8-a**：写链自己 ensure 当月分区（推荐，消除窗口；属**行为变更**，需回归）
 - **D8-b**：保持现状，靠启动任务补齐（窗口存在但短）
 - **D8-c**：写链 ensure + 启动时预建 N 个月
+- ⚠️ **D8-a 的方向要重估**（§9.152.5）：写链自 ensure **躲不过** ——
+  自 ensure 发生在**写入之后**，第一行仍会落进 `_default`，并把自锁**坐实**。
+- **D8-d（本节新增，建议优先）**：**先让 `_default` 非空这件事有人知道** ——
+  加巡检：任一 `*_default` 分区行数 > 0 即**告警**（不静默），
+  并配处置 runbook（把行迁到月分区 / 改 `ts`，再让 ensure 补建）。
+  **成本最低且能消除自锁。** 真正的 D8 前置不是「写链要不要自 ensure」，
+  而是「**`_default` 非空时有没有人知道**」——**今天没有一行代码看它**。
 
 ---
 
