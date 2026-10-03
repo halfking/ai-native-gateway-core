@@ -49,10 +49,22 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    resp.value = await getAutoRouteCorrelations({
+    const data = await getAutoRouteCorrelations({
       days: days.value,
       min_samples: minSamples.value,
     })
+    // 防御：模板多处直接写 `resp.by_model.length`。后端若吐 `null`（Go nil 切片）
+    // 而不是 `[]`，null.length 抛 TypeError ⇒ /correlations 整页白屏。
+    // 后端已在 normalizeCorrelationsResponse 收敛，这里再兜一层，
+    // 让「某个数组字段缺失」只影响那一张表，不决定整页生死。
+    resp.value = {
+      ...data,
+      by_model: Array.isArray(data.by_model) ? data.by_model : [],
+      by_strategy: Array.isArray(data.by_strategy) ? data.by_strategy : [],
+      by_task_type: Array.isArray(data.by_task_type) ? data.by_task_type : [],
+      by_model_task: Array.isArray(data.by_model_task) ? data.by_model_task : [],
+      verdict: Array.isArray(data.verdict) ? data.verdict : [],
+    }
   } catch (e: any) {
     error.value = e?.message ?? String(e)
   } finally {
