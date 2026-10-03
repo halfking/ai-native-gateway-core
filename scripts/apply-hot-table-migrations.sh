@@ -111,7 +111,7 @@ run_integration_tests() {
       log_warning "部分测试失败，日志: $log_file"
     fi
   else
-    log_warning "测试文件不存在: $test_file，跳过"
+    log_warning "测试文件不存在: ${test_file}，跳过"
   fi
 }
 
