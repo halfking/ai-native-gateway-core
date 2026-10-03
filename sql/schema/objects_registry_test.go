@@ -123,8 +123,21 @@ func TestObjectsDirIsNotAppliedAnywhere(t *testing.T) {
 // crashed on the first real run — the same shape as the audit-script
 // ERRFILE bug. Its exit code and report content are what matter.
 func TestReconcileToolSupportsThirdRepresentation(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 不可用；跳过（本跳过不构成该工具可用的证据）")
+	// R89-DT（208 号）：原来这里用 `exec.LookPath("python3")` 判「工具可用」。
+	// 那是**存在性**判据，不是**可用性**判据，而它在 Windows 上恰好最不可靠：
+	// 系统自带 App Execution Alias 桩 `python3.exe` **在磁盘上存在** ⇒
+	// LookPath 成功 ⇒ 不走下面的跳过分支 ⇒ 随后 exec 以 **exit 9009**
+	// （命令未真正安装）失败 ⇒ 本门以「工具坏了」的形态硬红。
+	//
+	// 也就是说：**作者写下的优雅降级（工具不可用就跳过，且明确声明
+	// 「本跳过不构成该工具可用的证据」）在 Windows 上被完全击穿。**
+	// 改成**活性**探针：能跑起来才算可用。判据与被测量对象同源
+	// ——我们要的是「这个工具能执行」，不是「有个叫 python3 的文件」。
+	if err := exec.Command("python3", "-c", "pass").Run(); err != nil {
+		t.Skipf("python3 解析到的东西不可执行（%v）；跳过。"+
+			"⚠️ 这**不是**「三方对账无漂移」的证据 —— 本门在本机从未真正运行过。"+
+			"Windows 上常见成因是 App Execution Alias 桩（磁盘上存在、实际未安装）："+
+			"存在性判据 exec.LookPath 对它无效，必须用活性探针。", err)
 	}
 	tool := "../../scripts/audit/baseline-reconcile.py"
 	if _, err := os.Stat(tool); err != nil {

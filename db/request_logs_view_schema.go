@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/internaltraffic"
 )
 
 // ensureRequestLogsCurrentMonthView mirrors
@@ -933,10 +935,8 @@ func SessionFamilyTurnsForSessionSQL() string {
 const MirrorDriftClassSQL = `
 CASE
   WHEN COALESCE(rl.is_auto_request, false)
-       AND (   TRIM(COALESCE(rl.request_type, '')) IN ('title_gen', 'summary')
-            OR TRIM(COALESCE(rl.origin_actor, '')) IN ('auto-title-generator',
-                                                        'auto-summary-generator',
-                                                        'session-summary')
+       AND (   TRIM(COALESCE(rl.request_type, '')) IN (` + internaltraffic.GeneratorRequestTypesSQLList + `)
+            OR TRIM(COALESCE(rl.origin_actor, '')) IN (` + internaltraffic.GeneratorActorsSQLList + `)
             OR TRIM(COALESCE(rl.task_type, '')) = '')            THEN 'internal_loopback'
   WHEN NOT COALESCE(rl.success, false)
        AND TRIM(COALESCE(rl.request_status, '')) NOT IN ('failure', 'rate_limited')
