@@ -84,7 +84,7 @@ test-short: ## 短模式，跳过 -short=false 的测试
 # 却照样返回 HTTP 200 与「已恢复」语义（待裁决 85）。
 # ⚠️ 同样**必须**登记：guards-sync.sh 按磁盘 `find internal -name '*guard'`
 #   **发现式**枚举 ⇒ 漏登记直接让 CI 转红。
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./sql/schema
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./sql/schema
 
 .PHONY: guards
 guards: ## 运行全部审计守卫（快速、无外部依赖）

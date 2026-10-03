@@ -55,6 +55,10 @@ func TestGuardPackagesAreWiredIntoMakefile(t *testing.T) {
 		// ⚠️ 219 号新增：`healthstateguard` 的恢复入口层覆盖登记表
 		//（9 层逐层表态）。它抓的是「清了 DB 侧就宣称已恢复、却没清进程/Redis 侧」。
 		"./internal/healthstateguard",
+		// ⚠️ 222 号新增：`billguard` 的月分桶键归一登记表
+		//（对账链路上 4 个按月分桶的调用点逐个表态 + 覆盖面自报）。
+		// 它抓的是「date 列拿 timestamptz 参数比 ⇒ 未归一的键静默返回 0 行」。
+		"./internal/billguard",
 	}
 	got := map[string]bool{}
 	for _, p := range registered {
