@@ -44,6 +44,16 @@ type Finding struct {
 	Snippet string
 }
 
+// mustRel keeps a repo-relative path, falling back to the path itself when the
+// walk hands us something outside root.
+func mustRel(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return path
+	}
+	return rel
+}
+
 func (f Finding) String() string {
 	return fmt.Sprintf("%s:%d calls %s discarding its error: %s", f.File, f.Line, f.Callee, f.Snippet)
 }
@@ -99,7 +109,11 @@ func CheckDirCounted(root string) ([]Finding, int, error) {
 		if perr != nil {
 			return nil
 		}
-		rel, _ := filepath.Rel(root, path)
+		// Forward slashes, to match knownCandidates in the test. filepath.Rel
+		// hands back OS-native separators, so on Windows the ratchet matched
+		// nothing in either direction: every known candidate looked "fixed"
+		// and every finding looked "new" — in the same run.
+		rel := filepath.ToSlash(mustRel(root, path))
 		lines := strings.Split(string(src), "\n")
 
 		// 1) 本文件内哪些函数会在迭代终检上返回 error（throwing 表按
