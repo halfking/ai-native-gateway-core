@@ -17,7 +17,21 @@ SELECT 'total = ' || pg_size_pretty(t.tot)
 FROM (
   SELECT coalesce(sum(pg_relation_size(c.oid)), 0) AS tot,
          coalesce(sum(pg_relation_size(c.oid)) FILTER (WHERE c.relkind IN ('r','m')), 0) AS hp,
-         coalesce(sum(pg_relation_size(c.oid)) FILTER (WHERE c.relkind = 'i'), 0)      AS ix,
+         -- R89-DX（211 号）更正：原来第 18 行是
+         --   coalesce(sum(pg_relation_size(c.oid)) FILTER (WHERE c.relkind = 'i'), 0) AS ix
+         -- 而同一子查询的 WHERE 已经限定 `c.relkind IN ('r','m','p')`（**不含 'i'**）
+         -- ⇒ 该 FILTER **结构上永远为假** ⇒ `sum(...)` = NULL。
+         -- 本文件比 minimal 更危险：外面套了 `coalesce(..., 0)` ⇒ 它报的是
+         -- **`index = 0 bytes`** —— 一个**看起来完全正常、实为假的数字**。
+         -- （minimal 同一处没有 coalesce ⇒ 整行塌成 NULL；空行至少还看得出不对，
+         --   **加了保护的那一份反而更像一份真实测量**。）
+         -- 改法：索引体积自己扫一张 relkind='i' 的表。
+         coalesce((
+           SELECT sum(pg_relation_size(i.oid))
+           FROM pg_class i
+           JOIN pg_namespace n2 ON n2.oid = i.relnamespace
+           WHERE n2.nspname = 'public' AND i.relkind = 'i'
+         ), 0)                                                              AS ix,
          coalesce(sum(pg_total_relation_size(coalesce(c.reltoastrelid, 0))), 0)       AS ts,
          count(*)                                                                       AS n
   FROM pg_class c
@@ -111,8 +125,8 @@ SELECT s.relname
      || ' | live_tuples~' || greatest(s.n_live_tup, 0)
      || ' | size = ' || pg_size_pretty(pg_total_relation_size(s.relid))
 FROM pg_stat_user_tables s
-WHERE s.seq_scan > 1000
-ORDER BY s.seq_scan * greatest(s.n_live_tup, 0) DESC
+WHERE s.seq_scan > 0
+ORDER BY s.seq_tup_read DESC
 LIMIT 15;
 
 \echo '===SECTION:UNUSED_INDEXES==='
@@ -142,7 +156,7 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public'
   AND c.relkind IN ('r', 'p')
   AND a.attnum > 0 AND NOT a.attisdropped
-  AND a.attstorage <> 'p'
+  AND a.attstorage = 'x'
 GROUP BY a.attcompression ORDER BY 1;
 
 \echo '===SECTION:NEVER_ANALYZED==='

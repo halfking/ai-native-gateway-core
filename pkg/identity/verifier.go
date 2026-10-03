@@ -59,13 +59,18 @@ const DefaultAudience = "llm-gateway-api"
 
 // Principal is the normalized identity returned by Verify.
 type Principal struct {
-	UserID             int
-	TenantID           string
-	Username           string
-	Role               string
-	Issuer             string
-	Audience           string
-	ExpiresAt          time.Time
+	// UserID and Username are Gateway-local and stay unset for a verified
+	// shared token until its canonical provider link and local account resolve.
+	Subject         string
+	ExternalUserID  string
+	CanonicalUserID string
+	UserID          int
+	TenantID        string
+	Username        string
+	Role            string
+	Issuer          string
+	Audience        string
+	ExpiresAt       time.Time
 	// IssuedAt is the token's iat (legacy path only; multi-issuer tokens
 	// leave it zero). Used by the admin auth middlewares to reject tokens
 	// issued before the user's last password change.
@@ -111,26 +116,31 @@ func Verify(raw string, legacy LegacyVerifier) (*Principal, error) {
 	if issuers, ok := loadMultiIssuerConfig(); ok {
 		aud := expectedAudience()
 		if c, err := token.VerifyMultiIssuer(raw, issuers, aud); err == nil {
-			userID := atoiOrZero(c.UserID)
-			role := firstRole(c.Roles, c.Scope)
-			if role == "" {
-				role = "tenant_admin"
+			role := firstRole(c.Roles)
+			if !supportedRole(role) || !canonicalTenant(c.TenantID) {
+				// A verified shared token with invalid authorization claims
+				// is rejected here. Scope never supplies a role, and legacy
+				// fallback cannot rescue this policy failure.
+				return nil, ErrInvalidToken
 			}
 			return &Principal{
-				UserID:    userID,
-				TenantID:  c.TenantID,
-				Username:  firstNonEmpty(usernameFromExtra(c.Extra), c.Subject),
-				Role:      role,
-				Issuer:    c.Issuer,
-				Audience:  aud,
-				ExpiresAt: time.Unix(c.ExpiresAt, 0),
-				Source:    "multi_issuer",
+				Subject:        c.Subject,
+				ExternalUserID: c.UserID,
+				TenantID:       c.TenantID,
+				Role:           role,
+				Issuer:         c.Issuer,
+				Audience:       aud,
+				ExpiresAt:      time.Unix(c.ExpiresAt, 0),
+				Source:         "multi_issuer",
 			}, nil
 		}
 	}
 
 	if legacy != nil {
 		if c, err := legacy.VerifyLegacy(raw); err == nil && c != nil {
+			if !supportedRole(c.Role) || !canonicalTenant(c.TenantID) {
+				return nil, ErrInvalidToken
+			}
 			return &Principal{
 				UserID:             c.UserID,
 				TenantID:           c.TenantID,
@@ -156,58 +166,34 @@ func expectedAudience() string {
 	return DefaultAudience
 }
 
-func atoiOrZero(s string) int {
-	if s == "" {
-		return 0
-	}
-	n := 0
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0
-		}
-		n = n*10 + int(r-'0')
-	}
-	return n
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
+func firstRole(roles []string) string {
+	if len(roles) > 0 {
+		return roles[0]
 	}
 	return ""
 }
 
-func firstRole(roles []string, scope string) string {
-	for _, r := range roles {
-		if strings.TrimSpace(r) != "" {
-			return r
-		}
+// supportedRole uses exact Gateway roles. admin_key is a legacy context
+// marker, not a role that an authenticated JWT principal can assume.
+func supportedRole(role string) bool {
+	switch role {
+	case "user", "tenant_admin", "super_admin":
+		return true
+	default:
+		return false
 	}
-	if s := strings.TrimSpace(scope); s != "" {
-		parts := strings.Fields(s)
-		if len(parts) > 0 {
-			return parts[0]
-		}
-	}
-	return ""
 }
 
-func usernameFromExtra(extra map[string]any) string {
-	if v, ok := extra["username"]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
+// Missing or padded tenants cannot inherit the legacy default tenant.
+func canonicalTenant(tenant string) bool {
+	return tenant != "" && strings.TrimSpace(tenant) == tenant
 }
 
 var (
-	mu        sync.Mutex
-	issuers   []token.Issuer
-	loaded    bool
-	disabled  bool
+	mu       sync.Mutex
+	issuers  []token.Issuer
+	loaded   bool
+	disabled bool
 )
 
 // ResetForTest clears the cached allowlist + disabled flag so a test that

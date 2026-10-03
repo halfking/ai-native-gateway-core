@@ -33,10 +33,38 @@ import (
 	"testing"
 )
 
-// degradeMarkerWindow 是 IsSchemaBehindError 之后允许标记出现的行数上限。
-// 取 25 是因为三个降级站点都是 `if 判定 { 记日志 → 构造载荷 → 写回 }` 的形状。
+// degradeMarkerWindow 是降级判定之后允许标记出现的行数上限。
+// 取 25 是因为降级站点都是 `if 判定 { 记日志 → 构造载荷 → 写回 }` 的形状。
 // 窗口太大会让「碰巧在别处写了标记」也算通过，太小会误报。
 const degradeMarkerWindow = 25
+
+// degradeHelpers 是会产出「200 + 空载荷」的两个判定族。
+//
+// 42P01（IsMissingRelationError）必须一起扫 —— 上一版门只扫了
+// IsSchemaBehindError，于是漏掉了同文件内 usageCostTrend 的 42P01 降级：
+// 「本轮已修降级载荷」这句话一度对自己文件都不成立。只扫一族而宣称覆盖
+// 两族，是比不扫更坏的一种自欺。
+var degradeHelpers = []string{"IsSchemaBehindError(", "IsMissingRelationError(err)"}
+
+// degradeMarkerOutOfScope 列出**已知未纳入** degraded 契约的文件及理由。
+//
+// 这些是「可选聚合视图未迁移 → 返回 200 + 空」的降级点。它们的降级在语义上
+// 更站得住（真的没有数据源，不是算不出来），但页面上同样与「没有数据」同形。
+// 本轮不动它们：涉及 dashboard board / usage / credits 等多处载荷形状与
+// 多个页面前端，范围远超一次 UI 审计。
+//
+// 关键设计：这里**登记计数而不是登记「已覆盖」**。下一轮从确切数字起步，
+// 而不是从零开始重新搜索 —— 未知边界的范围，比已知的更大。
+var degradeMarkerOutOfScope = map[string]string{
+	"aggregate_read_guard.go":       "内部读守卫，不直接产出页面载荷",
+	"dashboard_board_aux.go":        "看板辅助查询，载荷形状与前端展示未定",
+	"dashboard_board_queries.go":    "看板主查询，需先定看板的降级展示口径",
+	"session_analytics_mv_guard.go": "物化视图守卫，内部",
+	"usage_credits.go":              "积分端点，前端未消费其空列表",
+	"usage_trend_series.go":         "趋势序列，前端未消费其空列表",
+	"usage.go":                      "用量主端点，多个端点共用载荷形状",
+	"dashboard_degrade.go":          "本机制的定义文件本身，不产出任何页面载荷",
+}
 
 // markerPatterns 是「这个载荷带降级标记」的判定。
 // 两种形状都要认：结构体字面量（Degraded: true）与 map 载荷（"degraded": true）。
@@ -47,8 +75,8 @@ var markerPatterns = []string{
 	`"degraded": true`,
 }
 
-// findUnmarkedDegradeSites 返回所有「紧跟 IsSchemaBehindError 却没有带标记」
-// 的降级站点，形如 `file:line`。
+// findUnmarkedDegradeSites 返回所有「紧跟降级判定却没有带标记」的站点，
+// 形如 `file:line`。
 func findUnmarkedDegradeSites(src, file string) []string {
 	lines := strings.Split(src, "\n")
 	var bad []string
@@ -65,7 +93,20 @@ func findUnmarkedDegradeSites(src, file string) []string {
 		if strings.HasPrefix(trimmed, "func ") {
 			continue
 		}
-		if !strings.Contains(ln, "IsSchemaBehindError(") {
+		// `return IsMissingRelationError(err) || IsMissingColumnError(err)` 是
+		// IsSchemaBehindError 的函数体 —— 一个判断表达式，不是降级站点。
+		// 只跳声明行不够：只跳声明行时机制的定义文件被报成了违规。
+		if strings.HasPrefix(trimmed, "return ") {
+			continue
+		}
+		isCall := false
+		for _, helper := range degradeHelpers {
+			if strings.Contains(ln, helper) {
+				isCall = true
+				break
+			}
+		}
+		if !isCall {
 			continue
 		}
 		// 取后续窗口判断标记；本行也算。
@@ -92,6 +133,7 @@ func TestDegradePayloadsCarryMarker(t *testing.T) {
 	}
 
 	var sites, bad []string
+	outOfScopeSeen := map[string]int{}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -101,13 +143,36 @@ func TestDegradePayloadsCarryMarker(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		// 去注释：注释里出现的 IsSchemaBehindError 不是调用点。
+		// 去注释：注释里出现的降级判定不是调用点。
 		code := stripGoCommentsKeepLines(string(raw))
-		if strings.Contains(code, "IsSchemaBehindError(") {
-			sites = append(sites, name)
+		n := 0
+		for _, helper := range degradeHelpers {
+			n += strings.Count(code, helper)
 		}
+		if n == 0 {
+			continue
+		}
+		if _, excused := degradeMarkerOutOfScope[name]; excused {
+			outOfScopeSeen[name] = n
+			continue
+		}
+		sites = append(sites, name)
 		bad = append(bad, findUnmarkedDegradeSites(code, name)...)
 	}
+
+	// 范围表必须与真实情况一致，两边都要卡，否则「边界」只是一段散文：
+	//  · 表里有、代码里已无 → 文件已迁移却没删表项，边界失真
+	//  · 代码里有、表里没有 → 悄悄溜进来的新降级点
+	totalOutOfScope := 0
+	for name := range degradeMarkerOutOfScope {
+		if outOfScopeSeen[name] == 0 {
+			t.Errorf("degradeMarkerOutOfScope 列了 %s，但它已不再有降级判定点 —— "+
+				"要么已迁移（请删表项并补标记），要么该表项是凭印象写的", name)
+			continue
+		}
+		totalOutOfScope += outOfScopeSeen[name]
+	}
+	t.Logf("已登记但未纳入 degraded 契约的降级点：%d 处（%d 个文件）", totalOutOfScope, len(outOfScopeSeen))
 
 	// 反向对照先行：检测器对「没有标记」的合成站点必须报红。
 	// 少这一条，下面「全部有标记」的结论就没有说服力。
