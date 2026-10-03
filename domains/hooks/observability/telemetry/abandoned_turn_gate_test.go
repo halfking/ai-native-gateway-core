@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Gates for the migration-820 landing pad (audit §9.92). These replaced the
+// Gates for the migration-821 landing pad (audit §9.92). These replaced the
 // seven request_abandoned gates that guarded migration 819, which the user
 // overturned on 2026-10-03 in favour of "add a state class inside the session
 // family".
@@ -224,28 +224,28 @@ func TestAbandonedTurnNeverInsertsAPlaceholderRow(t *testing.T) {
 	}
 }
 
-// TestMigration820ExistsOnBothFacesAndIsRegistered guards the five-point sync.
+// TestMigration821ExistsOnBothFacesAndIsRegistered guards the five-point sync.
 //
 // §9.64.10 recorded the shape this prevents: the migration file sits in the
 // canonical tree, every package test is green, and no machine ever runs it —
 // because a running gateway does not apply startup migrations; the installer
 // is the only executor.
-func TestMigration820ExistsOnBothFacesAndIsRegistered(t *testing.T) {
-	const rel = "sql/migrations/startup/820_session_turns_abandoned_marker.sql"
+func TestMigration821ExistsOnBothFacesAndIsRegistered(t *testing.T) {
+	const rel = "sql/migrations/startup/821_session_turns_abandoned_marker.sql"
 	mig := readRepoFile(t, rel)
 
 	// Both faces must be altered in the migration itself, not just mentioned.
 	for _, face := range []string{"public.session_turns\n", "public.session_turns_hot\n"} {
 		if !strings.Contains(mig, "ALTER TABLE "+face) &&
 			!strings.Contains(mig, "ALTER TABLE "+strings.TrimSpace(face)) {
-			t.Fatalf("migration 820 does not ALTER %s — one face would be left without "+
+			t.Fatalf("migration 821 does not ALTER %s — one face would be left without "+
 				"the column and every UPDATE against it would fail 42703", strings.TrimSpace(face))
 		}
 	}
 
 	// The five-point sync, checked against the real files rather than trusted.
 	embedRel := filepath.Join("installer/cmd/llm-gw-installer/embeddata/startup",
-		"820_session_turns_abandoned_marker.sql")
+		"821_session_turns_abandoned_marker.sql")
 	a := readRepoFile(t, rel)
 	b := readRepoFile(t, embedRel)
 	if string(a) != string(b) {
@@ -254,23 +254,23 @@ func TestMigration820ExistsOnBothFacesAndIsRegistered(t *testing.T) {
 	}
 
 	mainGo := readRepoFile(t, "installer/cmd/llm-gw-installer/main.go")
-	if !strings.Contains(mainGo, "//go:embed embeddata/startup/820_session_turns_abandoned_marker.sql") {
-		t.Fatalf("main.go has no //go:embed for migration 820 (five-point sync point 2)")
+	if !strings.Contains(mainGo, "//go:embed embeddata/startup/821_session_turns_abandoned_marker.sql") {
+		t.Fatalf("main.go has no //go:embed for migration 821 (five-point sync point 2)")
 	}
-	if !strings.Contains(mainGo, `"startup/820_session_turns_abandoned_marker.sql"`) {
-		t.Fatalf("main.go has no embeddedSQLFiles entry for migration 820 (point 3)")
+	if !strings.Contains(mainGo, `"startup/821_session_turns_abandoned_marker.sql"`) {
+		t.Fatalf("main.go has no embeddedSQLFiles entry for migration 821 (point 3)")
 	}
 
 	runner := readRepoFile(t, "installer/internal/dbinit/runner.go")
-	if !strings.Contains(runner, `"820_session_turns_abandoned_marker.sql"`) {
-		t.Fatalf("runner.go StartupFiles has no entry for migration 820 (point 4) — " +
+	if !strings.Contains(runner, `"821_session_turns_abandoned_marker.sql"`) {
+		t.Fatalf("runner.go StartupFiles has no entry for migration 821 (point 4) — " +
 			"the installer would never apply it, and a running gateway does not " +
 			"apply startup migrations either (§9.64.10)")
 	}
 
 	tsv := readRepoFile(t, "sql/schema/installed_startup_migrations.tsv")
-	if !strings.Contains(tsv, "820_session_turns_abandoned_marker.sql") {
-		t.Fatalf("installed_startup_migrations.tsv has no entry for migration 820 (point 5)")
+	if !strings.Contains(tsv, "821_session_turns_abandoned_marker.sql") {
+		t.Fatalf("installed_startup_migrations.tsv has no entry for migration 821 (point 5)")
 	}
 }
 

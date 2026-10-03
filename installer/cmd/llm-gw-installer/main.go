@@ -726,7 +726,7 @@ var requestLogsViewClientIPSemanticGuard817 []byte
 //go:embed embeddata/startup/818_ursm_snapshot_typed_columns.sql
 var ursmSnapshotTypedColumnsMigration818 []byte
 
-//go:embed embeddata/startup/820_session_turns_abandoned_marker.sql
+//go:embed embeddata/startup/821_session_turns_abandoned_marker.sql
 var sessionTurnsAbandonedMarker820 []byte
 
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
@@ -945,7 +945,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/816_request_logs_view_client_ip_projection.sql":                         requestLogsViewClientIPProjection816,
 	"startup/817_request_logs_view_client_ip_semantic_guard.sql":                     requestLogsViewClientIPSemanticGuard817,
 	"startup/818_ursm_snapshot_typed_columns.sql":                                    ursmSnapshotTypedColumnsMigration818,
-	"startup/820_session_turns_abandoned_marker.sql":                              sessionTurnsAbandonedMarker820,
+	"startup/821_session_turns_abandoned_marker.sql":                              sessionTurnsAbandonedMarker820,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

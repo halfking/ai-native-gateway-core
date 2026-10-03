@@ -1,6 +1,6 @@
 package telemetry
 
-// abandoned_turn_metrics.go — observability for the migration-820 landing pad
+// abandoned_turn_metrics.go — observability for the migration-821 landing pad
 // ("request started but never reached a terminal record", audit §9.92).
 //
 // # Why a CounterVec and not a gauge of the row count
@@ -50,7 +50,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// abandonedTurnOps counts operations on the migration-820 landing pad.
+// abandonedTurnOps counts operations on the migration-821 landing pad.
 //
 //	op = "mark"         — a turn was flagged is_abandoned = TRUE
 //	op = "mark_failed"  — the flag write failed (fail-open, request logging unaffected)
@@ -59,7 +59,7 @@ import (
 var abandonedTurnOps = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "llm_gateway_abandoned_turn_ops_total",
-		Help: "Ops on the session_turns abandoned landing pad (migration 820). " +
+		Help: "Ops on the session_turns abandoned landing pad (migration 821). " +
 			"A high mark_no_row share means the async outbox race is losing rows and the " +
 			"pad is under-marking (rate(mark_no_row) / rate(all ops)). Process-memory: " +
 			"resets on restart; the authoritative count is the is_abandoned column.",

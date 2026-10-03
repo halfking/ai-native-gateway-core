@@ -1,6 +1,6 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/820_session_turns_abandoned_marker.sql
--- Migration:     820
+-- File:          sql/migrations/startup/821_session_turns_abandoned_marker.sql
+-- Migration:     821
 -- Database:      llm_gateway
 -- Purpose:       在**会话族内**给「请求开始了却从没有终态」补一类状态。
 --
@@ -125,12 +125,12 @@ BEGIN
 
     IF have IS DISTINCT FROM 'boolean' THEN
       RAISE EXCEPTION
-        'migration 820: % 缺列 is_abandoned（或类型不是 boolean，实测为 %）',
+        'migration 821: % 缺列 is_abandoned（或类型不是 boolean，实测为 %）',
         tbl, coalesce(have, '<不存在>');
     END IF;
   END LOOP;
 
-  RAISE NOTICE 'migration 820: is_abandoned ready on both session_turns faces';
+  RAISE NOTICE 'migration 821: is_abandoned ready on both session_turns faces';
 END $$;
 
 COMMENT ON COLUMN public.session_turns_hot.is_abandoned IS
