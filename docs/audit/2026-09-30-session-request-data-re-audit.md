@@ -18780,3 +18780,87 @@ sessions  →  session_turns  →  session_bodies
 >
 > **潜伏缺陷要按「方案会不会主动踩它」排序，而不是按「它今天有没有发生」。**
 > 退役要做的正是 DDL，而这条缺陷的触发条件就是 DDL。
+
+---
+
+## §9.153　全库扫 `*_default`：**自锁在本地库一次都没发生**；同时给 D8-d 一条**今天实测零假红**的判据
+
+§9.152 判出「落进 `_default` ⇒ 该月分区永久建不出来」。本节问两个问题：
+**① 这个机制在本地库里已经发生了吗？② 要检测它，判据准不准？**
+
+### §9.153.0 量具（**这一节我连犯两次错，两次都记**）
+
+⚠️ **错一：常量占位冒充实测。** 第一次查时我在 SELECT 里写了一个固定的连接计数，
+18 张表全返回同一个数 2,175,530 —— 那是 `request_logs` 的行数，不是每张表的。
+⇒ **凡是要「逐表计数」，就不能靠一个表达式在结果里重复出现来充数。**
+
+⚠️ **错二：把 `reltuples = -1` 当成「没查到」。**
+PG 14+ 的 `pg_class.reltuples` 为 **-1 表示该表从未 ANALYZE**，
+**不是「行数为 0」**，也不是「有行」。我据此得出了「只有 2 张表非空」——
+**那个结论当时没有依据。**
+⇒ **精确计数与 `reltuples` 估计是两件事**；本节最终结论一律用**逐表 `count(*)`**。
+
+### §9.153.1 全库实数：`public` 下 18 个 `*_default` 分区，分两类
+
+| 类别 | 张数 | `*_default` 行数 | 是不是误路由 |
+|---|---:|---|---|
+| **A：父表另有时间分区**（`request_logs` / `session_turns` / `sessions` / `session_bodies` / `usage_ledger` / `usage_facts` / `request_wal` / `routing_decision_log` / `dashboard_access_events` / `cache_metrics` / `credential_model_index` / `handoff_logs` / `auto_route_selections` / `session_module_executions` / `model_probe_runs` / `mock_probe_history`） | **16** | **全部 = 0** | — |
+| **B：父表**只有** default 一个分区**（`stats_event_inbox` 50,650 行 / `system_probe_runs` 732 行） | 2 | 非空 | ❌ **不是误路由** —— 这两张表**根本没有时间分区**，default 就是它唯一的分区 |
+
+逐表 `count(*)` 结果（A 类 16 张，**逐行列出**）：
+
+```
+auto_route_selections_default 0    cache_metrics_default 0        credential_model_index_default 0
+dashboard_access_events_default 0  handoff_logs_default 0          mock_probe_history_default 0
+model_probe_runs_default 0         request_logs_default 0           request_wal_default 0
+routing_decision_log_default 0    session_bodies_default 0          session_module_executions_default 0
+session_turns_default 0           sessions_default 0                usage_facts_default 0
+usage_ledger_default 0
+```
+
+⇒ ✅ **§9.152 的自锁在本地库一次都没有发生。** 16/16 为 0。
+⇒ ✅ 同时**独立复核了** §9.152.0 那句「`session_turns_default` 当前 0 行」
+（那次是单表单列，这次是全库逐表 `count(*)`，两条路径结论一致）。
+
+### §9.153.2 「default 有行」**本身不是故障** —— 判据必须是「是否落在本该有分区的范围内」
+
+B 类两张表给了这条判据的必要性：`stats_event_inbox_default` 有 **50,650 行**、
+`system_probe_runs_default` 有 **732 行**，**都不是缺陷** ——
+它们的父表**只有 default 这一个分区**（`pg_inherits` 实测：兄弟专属分区数 = **0**），
+default 是设计上的唯一落点。
+
+⇒ 所以 D8-d 的判据**不能**写成「任一 `*_default` 行数 > 0」。
+✅ **正确判据**（今天实测 **0/16，零假红**）：
+
+> **凡父表另有时间分区的 `*_default` 分区，若行数 > 0，即为异常**
+> —— 因为那些行的 `ts` 必然落在某个「本该有专属月/日分区」的范围内
+> ⇒ 该分区一旦被补建就会撞上 §9.152 实验第 ③ 步那个 `ERROR`，且**自锁不会自愈**。
+
+⚠️ 这条判据**今天返回 0**，所以它**不是一条会假红的门禁** ——
+可以现在就加，不会制造噪声。
+
+### §9.153.3 这一节对退役的意义
+
+- ✅ **爆炸半径已知且有界**：A 类 16 张表，任何一张中招都会自锁；
+  其中 **`session_turns` / `session_bodies` 两张的后果最重**（§9.152.3：连带截断 + 「聊天全挂」注释）。
+- ⚠️ **仍然是潜伏的，且退役会主动踩它**（§9.152.4 条件 3：退役本身就是一串 DDL）。
+- ⇒ **D8-d 从「建议」升级为「有判据、有实测基线、可当天上线」**：
+  **巡检 A 类 16 个分区，行数 > 0 告警**，配处置 runbook。
+  **成本 = 16 次 `count(*)`（或一次 catalog 查询 + 逐表计数），无迁移、不改写链。**
+
+### §9.153.4 教训
+
+> **统计量不是测量。`reltuples`、估算行数、`pg_class` 里的缓存值，
+> 与 `count(*)` 差着一个「能不能当证据」的距离。**
+> 我两次差点把统计量当结论：一次是常量占位，一次是 `reltuples=-1`。
+> ⇒ **「全表都返回同一个数」和「都返回 -1」都是**统计量坏了**的形状，不是**数据整齐**的形状。**
+>
+> **检测一条缺陷的判据，要先在今天的数据上跑一遍看它返回什么。**
+> D8-d 若今天就加，判据返回 0/16 ⇒ 它不制造噪声；
+> 若它返回一堆非零，我就得先分辨哪些是真缺陷、哪些是「default 本来就该有行」
+> —— **像 §9.153.2 的 B 类那样。**
+> ⇒ **门禁上线前先量它的基线，基线非零的门禁要先解释再上。**
+>
+> **「未发生」要给出范围，而不只是给一个例子。**
+> §9.152 只验了 `session_turns_default` 一张；
+> §9.153 把 18 张全扫了，结论才敢写「一次都没发生」。
