@@ -203,7 +203,9 @@ func preferChatAudioBridge(c provider.Candidate) bool {
 var xiaomiASRAudioFormats = map[string]bool{"wav": true, "mp3": true}
 
 // audioFileFormat 从文件名/Content-Type 推断 input_audio.format。
-// 小米仅接受 wav|mp3，其它格式原样透传、由上游错误明示。
+// 白名单之外的扩展名原样透传；chat-audio 桥接形态（小米）会在发送前被
+// 前置校验拦成本地 400（见 transcribeViaChatAudio），multipart 透传形态
+// 则由上游错误明示。
 func audioFileFormat(filename, contentType string) string {
 	ext := strings.ToLower(strings.TrimPrefix(path.Ext(filename), "."))
 	switch ext {
@@ -232,11 +234,11 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 	defer s.releaseAudioSlot()
 	candidates, _, err := s.provider.GetCandidatesByModality(ctx, req.Model, req.Profile, req.TenantID, audioModalityRequest)
 	if err != nil {
-		return nil, fmt.Errorf("resolve candidates: %w", err)
+		return nil, newAudioNoProviderError("resolve candidates: %s", err)
 	}
 	usable := audioCandidateSelection(candidates)
 	if len(usable) == 0 {
-		return nil, fmt.Errorf("no audio provider available for model %q", req.Model)
+		return nil, newAudioNoProviderError("no audio provider available for model %q", req.Model)
 	}
 	format := audioFileFormat(req.Filename, req.ContentType)
 
@@ -368,6 +370,25 @@ func (e *audioClientInputError) Error() string { return e.msg }
 
 func newAudioClientInputError(format string, args ...any) error {
 	return &audioClientInputError{msg: fmt.Sprintf(format, args...)}
+}
+
+// audioNoProviderError 标记「该模型解析不出任何可用音频候选」。它与上游
+// 无关（请求还没出门），语义上既不是调用方参数错误也不是网关故障，所以
+// 单独一类：handler 映射成 503 no_provider（openpocket 的 isNoProvider
+// 识别口径）。
+//
+// 2026-10-04 审计补型：此前 handler 靠 strings.Contains(msg, "no audio
+// provider available") / "resolve candidates" 反推这个语义——错误文本是
+// 我们自己拼的所以今天碰巧成立，但它排在 typed 上游错误检查**之前**，一旦
+// 上游 4xx 错误体（供应商可控文本）恰好含这两个子串，调用方参数错误就会被
+// 误判成 503。与 audioUpstreamStatusError / audioClientInputError 同一原则：
+// 语义判定走类型，不走错误字符串。
+type audioNoProviderError struct{ msg string }
+
+func (e *audioNoProviderError) Error() string { return e.msg }
+
+func newAudioNoProviderError(format string, args ...any) error {
+	return &audioNoProviderError{msg: fmt.Sprintf(format, args...)}
 }
 
 // newAudioUpstreamError 从已限长读取的上游错误体构造 typed 错误。
@@ -628,11 +649,11 @@ func (s *AudioService) Synthesize(ctx context.Context, req SynthesizeRequest) (*
 	defer s.releaseAudioSlot()
 	candidates, _, err := s.provider.GetCandidatesByModality(ctx, req.Model, req.Profile, req.TenantID, audioModalityRequest)
 	if err != nil {
-		return nil, fmt.Errorf("resolve candidates: %w", err)
+		return nil, newAudioNoProviderError("resolve candidates: %s", err)
 	}
 	usable := audioCandidateSelection(candidates)
 	if len(usable) == 0 {
-		return nil, fmt.Errorf("no audio provider available for model %q", req.Model)
+		return nil, newAudioNoProviderError("no audio provider available for model %q", req.Model)
 	}
 
 	var lastErr error
