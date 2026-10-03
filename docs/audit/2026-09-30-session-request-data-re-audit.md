@@ -11728,6 +11728,32 @@ startup migration 820 exists but is missing from the channel files=(...) array
 ⇒ **外部反馈里的行号是定位 ref 的线索**，应当优先用它对齐，
 而不是先在本地重跑然后宣布「快照过期」。
 
+### §9.92.7f 合并预演：冲突面只有 2 个文件，且**都该自动解而非手工解**
+
+让号之后做的只读预演（`git merge-tree --write-tree`，不改动任何东西）：
+
+| 冲突文件 | 性质 | 正确解法 |
+|---|---|---|
+| `sql/schema/installed_startup_migrations.tsv` | **机械重排**：上游新增 9 条登记、我的 1 条，208 个共同文件序号整体偏移 | **不该手工解**。TSV 是 `StartupFiles` 的**派生物**，合并代码后跑 `go test -run TestStartupManifest -update` 一次即可完整重建 |
+| `docs/audit/…-re-audit.md` | 纯文档，双方都追加了节 | 手工保留两侧（都是补账记录，删任何一边都会丢证据） |
+
+**其余全部自动合并**，包括核心实现：
+`telemetry/client.go`、`installer/main.go`、`installer/dbinit/runner.go`、
+`stats_migrations_test.go`、`scripts/apply-db-revision-sequence*.sh`。
+
+⇒ **结论：让号这个决定是有效的**——它让冲突从「两个迁移抢同一个文件名」
+降级为「一份可重建的清单 + 一份纯文档」，而前者根本不该进版本控制仲裁。
+
+⚠ 但有一件事**合并时必须人工处理**，否则会静默出错：
+`origin/main` 的 TSV 里**仍然登记着 `819_request_abandoned.sql`**，
+且**完全没有 `820_audio_modality_backfill.sql`**。
+⇒ 合并后重生成 TSV 时，`820_audio_modality_backfill` 会**被自动写进清单**，
+而它的七点同步仍然是缺的（通道腿 0 / embeddata 副本 0）⇒ **照样 exit 4**。
+**TSV 被自动补上，恰恰会让「缺通道腿」这件事更难被发现**：
+清单看着齐了，而升级序列依然跑不动。
+
+⇒ 合并前的必做项：**给上游那个 820 补通道腿与 embeddata 副本**（本轮未做，见 §9.92.7e）。
+
 ### §9.92.8 本节没有做的 / 遗留
 
 1. **没有部署**。820 未上 252，`storage.request_logs_write_enabled` 仍未 seed。
