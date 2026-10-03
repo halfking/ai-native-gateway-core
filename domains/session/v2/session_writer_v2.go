@@ -291,6 +291,11 @@ type ProcessedRequest struct {
 	T8ResponseStartAt *time.Time
 	T9ResponseEndAt   *time.Time
 
+	// §9.98：session_turns.search_text 列已建、TurnRecord 字段已建、INSERT 已绑定，
+	// 但 ProcessedRequest（Write 的入参）**没有这个字段** ⇒ 镜像侧即使算出来也传不进来。
+	// 这是该列 0% 填充的第三个原因（另两个：entry 无源、Write 里硬写 ""）。
+	SearchText string
+
 	// ── 存储优化方案 v2 S1a（migration 706/707）：request_logs 独有数据补采。
 	// 数据源是 telemetry.RequestLogEntry（mirror bridge
 	// entryToProcessedRequest 逐一拷贝）；四组列全部可空、零值即 NULL。
@@ -611,21 +616,23 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		ClientEndpoint:       req.ClientEndpoint,
 		ClientTimeout:        req.ClientTimeout,
 		EgressProtocol:       req.EgressProtocol,
-		SearchText:           "",
-		RequestPreview:       req.RequestPreview,
-		ResponsePreview:      req.ResponsePreview,
-		TransformSummary:     req.TransformSummary,
-		IdentityHash:         req.IdentityHash,
-		RequestChecksum:      req.RequestChecksum,
-		ResponseChecksum:     req.ResponseChecksum,
-		SystemFingerprint:    req.SystemFingerprint,
-		OriginStage:          req.OriginStage,
-		OriginActor:          req.OriginActor,
-		ClientIP:             req.ClientIP,
-		ClientForwardedFor:   req.ClientForwardedFor,
-		AgentName:            req.AgentName,
-		AgentType:            req.AgentType,
-		VirtualClientID:      req.VirtualClientID,
+		// §9.98：原先硬写 ""，把 req.SearchText 直接丢弃——即使映射补上也不会落库。
+		// 这是「列存在、字段存在、INSERT 已绑定」却仍然 0% 填充的第二个原因。
+		SearchText:         req.SearchText,
+		RequestPreview:     req.RequestPreview,
+		ResponsePreview:    req.ResponsePreview,
+		TransformSummary:   req.TransformSummary,
+		IdentityHash:       req.IdentityHash,
+		RequestChecksum:    req.RequestChecksum,
+		ResponseChecksum:   req.ResponseChecksum,
+		SystemFingerprint:  req.SystemFingerprint,
+		OriginStage:        req.OriginStage,
+		OriginActor:        req.OriginActor,
+		ClientIP:           req.ClientIP,
+		ClientForwardedFor: req.ClientForwardedFor,
+		AgentName:          req.AgentName,
+		AgentType:          req.AgentType,
+		VirtualClientID:    req.VirtualClientID,
 	}
 
 	// S1b 灰度开关①：每轮正文同步进 session_turns（宽表路线第一步）。

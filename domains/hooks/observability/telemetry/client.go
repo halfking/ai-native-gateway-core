@@ -3314,6 +3314,18 @@ func intValue(p *int) int {
 	return *p
 }
 
+// SearchText 是 searchText 的导出包装（§9.98）。
+//
+// 为什么需要它：v1 把这列写在 request_logs.search_text，而
+// session_turns.search_text **列已建、字段已在 ProcessedRequest、INSERT 也已绑定**，
+// 唯独**没有源**——internal/sessionv2mirror 拿不到未导出的 searchText，
+// 于是 s1a_fields.go 那行注释「缺源，保持零值」就一直成立，
+// 252 实测该列 **0% 填充**（v1 侧 100%）。
+//
+// 它是**纯函数**（只读 entry 的 9 个指针字段，无副作用、无 I/O），
+// 所以镜像侧调用它得到的结果与 v1 逐字节相同——这正是「数据一致」需要的性质。
+func SearchText(entry *RequestLogEntry) *string { return searchText(entry) }
+
 func searchText(entry *RequestLogEntry) *string {
 	parts := make([]string, 0, 6)
 	for _, value := range []*string{
