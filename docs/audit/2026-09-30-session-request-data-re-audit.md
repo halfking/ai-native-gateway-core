@@ -13561,3 +13561,82 @@ A 群 = **会话从未被创建**（`in_progress` 58 + `failure` 5 + `rate_limit
 >
 > **「不是 bug」不等于「没有问题」。** 413 个重复完全合规，
 > 但它使「一会话一行」这个隐含假设失效——而**多个上游假设建立在这个假设上**。
+
+---
+
+## §9.113 §9.112 那个基数性质已经**咬到查询层**：会话列表里跨月会话会出现两次，各显示一半状态
+
+§9.112 只证明了「一个 `session_id` 可以有多行」。本节去问下一个问题：
+**哪些读点假设了单行？** 找到一处**用户可见**的。
+
+### §9.113.1 命中点
+
+`admin/turns_sessions.go` 的 `turnsSessionsListSQL()`——这是
+**`GET /api/admin/turns/sessions`（会话列表主查询）**：
+
+```sql
+SELECT s.session_id, s.tenant_id,
+       COALESCE(NULLIF(s.title,''), st.title, ss.title) AS title,
+       …,
+       s.total_turns, s.total_tokens, s.total_cost_usd,
+       s.last_turn_no, s.last_model, s.last_provider, …
+  FROM public.sessions s
+  LEFT JOIN session_dim sd   ON sd.gw_session_id = s.session_id  AND sd.tenant_id = s.tenant_id
+  LEFT JOIN session_summaries ss ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+  LEFT JOIN public.session_title_states tstate ON …
+```
+
+**无 `DISTINCT`、无 `partition_date` 谓词**，选的是 `total_turns` /
+`last_turn_no` / `status` / `created_at` 这些**按分区行存储的状态**。
+
+### §9.113.2 实测（252，只读）：状态真的被拆成两半
+
+`gw_66795636-3db1-4e8d-965e-0df7829a0d45`：
+
+| partition_date | total_turns | last_turn_no | status | created_at |
+|---|---|---|---|---|
+| 2026-09-30 | **287** | 497 | active | 2026-10-01 03:52:22 |
+| 2026-10-01 | **313** | 600 | active | 2026-10-01 08:00:34 |
+
+⇒ 列表查询会把这个会话**吐出两行**：一行说 287 轮 / last_turn_no=497，
+另一行说 313 轮 / last_turn_no=600。**两个都不是全量。**
+
+**影响面**：252 上 **413 个会话**有重复行 ⇒ 列表里最多有 413 个「重影会话」。
+而且因为分页（`LIMIT`）加在这条查询之后，**重影还会横跨分页边界**——
+同一会话可能出现在第 1 页和第 2 页。
+
+### §9.113.3 ★关键对照：**这个问题仓里已经有人知道并局部绕过了**
+
+`internal/titlestore/store.go:271` / `:333` 显式写着：
+
+```sql
+AND partition_date = (SELECT MAX(partition_date) FROM public.sessions
+                      WHERE tenant_id = $1 AND session_id = $2)
+```
+
+⇒ **跨月重复这个性质是已知的**，标题存储那里已经用「取最新分区」绕开。
+但**只有那一处**绕开了；`turns_sessions.go` 这条面向用户的主列表没有。
+
+⇒ 这说明它不是「没人知道」，而是**知道但没有系统性推广**。
+这也提供了一个现成的修法参照（`MAX(partition_date)` 模式），
+但**要不要推广到列表查询、推广到什么口径，是产品决策**——
+「显示最新分区那一行」与「按会话聚合所有分区」是两种不同的产品语义。
+
+### §9.113.4 顺带的范围提醒
+
+同一轮扫描里，**完全不提 `partition_date`** 的会话读点还有：
+`cmd/gateway/turn_logs_aggregator.go`、`bg/lite_retention_worker.go`、
+`admin/session_detail_v2.go`（仅 1 处提及）。
+**本节只验了列表这一处**，其余未逐个验证——不宣称它们也坏。
+
+### §9.113.5 这一节的教训
+
+> **基数性质一旦确立，下一步不是收工，是去问「谁假设了单行」。**
+> §9.112 我停在「413 个重复」这个事实；
+> 这一节顺着问下去，直接落到一个**用户可见的查询缺陷**。
+>
+> **「已经有人局部绕过」是最强的线索。** `titlestore` 里那个
+> `MAX(partition_date)` 说明性质已知——**已知却只修了一处**，
+> 比「完全不知道」更值得警惕，也更容易找到修法参照。
+>
+> **本节只验了一处，剩下的不宣称。** 范围意识比结论漂亮重要。
