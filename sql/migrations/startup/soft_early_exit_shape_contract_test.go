@@ -9,6 +9,12 @@ import (
 	"testing"
 )
 
+// stripSQLComments 让判据只看见**可执行**的 SQL。
+//
+// 这不是洁癖：门自己的 `EXECUTE\s+` 会在注释里命中。给 816/817 写「守卫搬到
+// 重建块内」的说明时，我在注释里写了「实测并发读方持锁时这条 EXECUTE 直接超时」
+// ——`EXECUTE` 出现在注释中，与真 DDL 无法区分。若不剥离，任何人**在注释里提到
+// 一个词**就能让这道门改判。判据必须只对可执行文本生效。
 // TestToRegclassGuardIsNotFooledBySiblingDoBlock — startup 迁移里，
 // `DO $$ … RETURN; $$` **不是脚本级早退**，而 816/817 用它守住了会崩的东西。
 //
@@ -45,6 +51,14 @@ import (
 // 可判定的那一维：**守卫用 to_regclass 测存在性的关系，后续块又硬引用它。**
 // 收窄后全目录 88 个多块迁移只命中 816/817 两条。
 //
+// ── 第三层收窄（816/817 修完之后加的）──────────────────────────────────
+// 改成「每个块守自己要碰的关系」之后，这道门**重新报红**——跨块规则只能看见
+// 「块 1 守了、块 2 直连」，看不见「块 2 也守了」。判据因此再收一层：只看
+// **后续块自己没守**的那些硬引用。真正的缺陷是「A 守了、B 没守却直连」，
+// 不是「A 曾经守过」。
+// 收窄后必须重验它仍能抓到原缺陷：变异 M3 把 817 还原成改前形态 ⇒ 门红；
+// 修复版 ⇒ 绿。**放宽判据后不重验，等于把门调到刚好不报。**
+//
 // 另记一条**形状相同但后果未判**的：330_usage_ledger_partition 块 1 打印
 // "already partitioned, skipping migration" 后 RETURN，块 2 仍 `EXECUTE replace`。
 // 块 2 没有硬引用守卫测过的关系，所以本门不报；但"跳过分区迁移"之后仍重建索引
@@ -60,13 +74,10 @@ import (
 // 时本门会反过来报红，要求删掉登记项——否则这条欠账会在没人再提的时候长期静默。
 // 这与本仓既有登记表门（TestInsertRequestLogPlaceholderAlignment 的「登记项失效
 // 时门反过来报红」）同一范式。
-var knownIneffectiveToRegclassGuards = map[string]string{
-	"816_request_logs_view_client_ip_projection.sql": "已知：块1 to_regclass 测视图链 / 块2 硬 regclass 同一关系并重建。" +
-		"已应用，不在本轮改内容（迁移头注禁止）。链完整时块2 仍无条件重建并取 AccessExclusiveLock。",
-	"817_request_logs_view_client_ip_semantic_guard.sql": "已知：同上。" +
-		"真库已复现链不全时守卫打印 skipping 而块2 崩在 relation does not exist；" +
-		"逐文件事务 ⇒ 整条迁移失败。",
-}
+// 816 与 817 已于 2026-10-03 修成同块形态（守卫与重建同块，RETURN 真的拦得住），
+// 本表现已清空——留在这里只会让下一个写同样形状的人以为「已登记过，没关系」。
+// 这张表的价值在于**反向判据**：条目被修好时门会反过来要求删登记。
+var knownIneffectiveToRegclassGuards = map[string]string{}
 
 // NOT TESTED HERE: 守卫选的关系对不对、重建语义是否正确。逐条真库验收。
 func TestToRegclassGuardIsNotFooledBySiblingDoBlock(t *testing.T) {
@@ -98,7 +109,7 @@ func TestToRegclassGuardIsNotFooledBySiblingDoBlock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		src := string(b)
+		src := stripSQLComments(string(b)) // 包内既有的 helper（migration_602_test.go）
 		locs := doBlock.FindAllStringIndex(src, -1)
 		if len(locs) < 2 {
 			continue
@@ -126,9 +137,17 @@ func TestToRegclassGuardIsNotFooledBySiblingDoBlock(t *testing.T) {
 				for _, m := range hardRef.FindAllStringSubmatch(blocks[j], -1) {
 					later[m[1]] = true
 				}
+				// 关键收窄：**只看后续块自己没守的那些引用**。
+				// 2026-10-03 修完 816/817 后这里曾重新报红——因为块 1 守了、
+				// 块 2 也守（每个块守自己要碰的关系），跨块规则看不见块 2 自守。
+				// 真正的缺陷是「A 块守了、B 块**没守**却直连」，不是「A 守过」。
+				selfGuarded := map[string]bool{}
+				for _, m := range toRegclass.FindAllStringSubmatch(blocks[j], -1) {
+					selfGuarded[m[1]] = true
+				}
 				var common []string
 				for _, g := range guarded {
-					if later[g[1]] {
+					if later[g[1]] && !selfGuarded[g[1]] {
 						common = append(common, g[1])
 					}
 				}
