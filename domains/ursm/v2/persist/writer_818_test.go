@@ -61,8 +61,13 @@ func Test818PayloadStripsKeysThatAlreadyHaveTypedColumns(t *testing.T) {
 		// 7 个重复键：必须从 payload 消失（它们已在 typed 列里）
 		"available": "1", "generation": "43", "source_priority": "20",
 		"fail_streak": "2", "sr_1m": "0.5", "sr_5m": "0.6", "sr_30m": "0.7",
-		// 1 个非重复键：必须留下
-		"last_err": "http_404",
+		// 2026-10-03 修：这里原用 last_err 当「非重复键」样本，但那条断言的前提是错的 ——
+		// writer.go 早就有 assignStr(&row.LastErr, hash["last_err"])，表里也有 last_err 列。
+		// 「last_err 没有 typed 列对应」是**事实错误**，而 payloadDuplicateKeys 当初正是
+		// 照着同一个错误假设只排了 7 个键，导致另外 24 个重复键双双落盘
+		// （生产实测 payload 35 键里 27 键重复，全表多占约 3436 MB）。
+		// 改用真正没有 typed 列的键 —— 2026-10-03 生产 payload 实测存在的 8 个之一。
+		"successes_1m": "7",
 	})
 	got := payloadKeys(t, r)
 
@@ -71,8 +76,8 @@ func Test818PayloadStripsKeysThatAlreadyHaveTypedColumns(t *testing.T) {
 			t.Errorf("payload still carries %q, which already has a typed column", k)
 		}
 	}
-	if _, ok := got["last_err"]; !ok {
-		t.Error("payload dropped last_err, which has no typed column duplicate")
+	if _, ok := got["successes_1m"]; !ok {
+		t.Error("payload dropped successes_1m, which has no typed column duplicate")
 	}
 }
 
@@ -105,7 +110,7 @@ func Test818PayloadKeepsUnknownHashKeysForForwardCompat(t *testing.T) {
 
 func Test818TypedColumnsArePopulatedFromHash(t *testing.T) {
 	r := collectOne(t, map[string]string{
-		"available": "1",
+		"available":              "1",
 		"updated_at_ms":          "1790915622313",
 		"last_probe_at_ms":       "1790915622314",
 		"last_probe_latency_ms":  "401",
