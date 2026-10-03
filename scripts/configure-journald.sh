@@ -297,16 +297,44 @@ do_verify() {
     err "$TARGET 不存在"
     return 1
   fi
-  # 检查主配置 + 所有 drop-in 的合并视图
-  local merged
-  merged="$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null || journalctl --verify 2>&1 || true)"
-  if echo "$merged" | grep -qE '^\s*SystemMaxUse\s*=\s*200M'; then
-    ok "merged config 包含 SystemMaxUse=200M (drop-in 已生效)"
+  # 取出「实际生效的容量上限」。
+  #
+  # ★ 这里原来硬编码 `SystemMaxUse\s*=\s*200M`。那是一个**恒定过期的断言**：
+  #   一旦把上限调大（本仓 2026-10-04 按实测速率改成 3G），
+  #   verify 就会报「drop-in 未生效」，而实际上它生效得好好的。
+  #   判据要问的是「**有没有一个容量上限在生效**」，
+  #   不是「生效的那个值是不是恰好等于当初写死的那个值」。
+  #
+  # ★ 合并视图的取法本身也有坑：154 是 systemd 219，
+  #   `systemd-analyze cat-config` 不存在（返回 1 行），回退的
+  #   `journalctl --verify` 输出里**根本没有 SystemMaxUse 行**。
+  #   ⇒ 在 154 上无论 drop-in 装没装，这个 verify 都必然失败。
+  #   ⇒ 因此主路径改为直接读「主配置 + drop-in 目录」自己算合并结果
+  #     （drop-in 覆盖主配置，drop-in 之间按文件名字典序，后者胜）。
+  local merged effective
+  merged="$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null || true)"
+  if ! printf '%s' "$merged" | grep -qE '^\s*SystemMaxUse\s*='; then
+    merged="$(
+      {
+        [[ -f /etc/systemd/journald.conf ]] && cat /etc/systemd/journald.conf
+        for _d in /etc/systemd/journald.conf.d/*.conf; do
+          [[ -f "$_d" ]] && cat "$_d"
+        done
+      } 2>/dev/null || true
+    )"
+  fi
+  # ★ `|| true` 不能省：脚本是 set -euo pipefail，grep 无匹配返回 1，
+  #   放在命令替换里会**直接掐死整个脚本**，
+  #   走不到下面本该打印的 warn —— 表现是「verify 静默 RC=1，一行诊断都没有」。
+  #   （2026-10-04 实测：把 grep 从 if 条件里挪出来时踩到。）
+  effective="$(printf '%s' "$merged" | grep -E '^\s*SystemMaxUse\s*=' | tail -1 | sed 's/^[^=]*= *//' || true)"
+  if [ -n "$effective" ]; then
+    ok "merged config 的 SystemMaxUse=${effective} (drop-in 已生效)"
     return 0
   fi
-  warn "merged config 未找到 SystemMaxUse=200M, 可能 drop-in 未生效"
+  warn "merged config 未找到 SystemMaxUse, 可能 drop-in 未生效"
   echo "--- merged config (SystemMaxUse/MaxRetentionSec 行) ---"
-  echo "$merged" | grep -E '(SystemMaxUse|MaxRetentionSec|MaxFileSec)' | sed 's/^/    /' | head -10
+  printf '%s\n' "$merged" | grep -E '(SystemMaxUse|MaxRetentionSec|MaxFileSec)' | sed 's/^/    /' | head -10 || true
   return 1
 }
 
