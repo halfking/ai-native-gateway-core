@@ -122,7 +122,7 @@ func TestAdminPrincipalPolicySharedBoundary(t *testing.T) {
 	}
 }
 
-func TestAdminPrincipalPolicyPreservesExplicitTiers(t *testing.T) {
+func TestAdminPrincipalPolicyLegacyTiersAndUnmappedSharedDenial(t *testing.T) {
 	withSharedSecret(t)
 	t.Setenv("LLM_GATEWAY_JWT_SECRET", legacySecret)
 	t.Setenv(identity.EnvExpectedAudience, identity.DefaultAudience)
@@ -137,6 +137,12 @@ func TestAdminPrincipalPolicyPreservesExplicitTiers(t *testing.T) {
 						})
 					}
 					status, calls, p := requestPrincipalPolicy(t, raw, transport)
+					if source == "shared" {
+						if status != http.StatusUnauthorized || calls != 0 {
+							t.Fatal("unmapped shared token must not select a local account")
+						}
+						return
+					}
 					if status != http.StatusOK || calls != 1 || p == nil || p.Role != role || p.UserID != 42 || p.Username != "alice" || p.TenantID != "tenant-a" || !p.IsJWT {
 						t.Fatal("explicit original principal and tier must reach the handler unchanged")
 					}

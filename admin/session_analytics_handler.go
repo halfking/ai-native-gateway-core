@@ -646,15 +646,23 @@ func (h *Handler) buildSessionAnalysisInTx(ctx context.Context, tx pgx.Tx, tenan
 	complianceQuery := `
 		SELECT request_id, detected_at, issue_type, severity, evidence, action_taken
 		FROM (
-			SELECT request_id, detected_at, issue_type, severity, evidence, action_taken, tenant_id
+			SELECT request_id, detected_at, 'prompt_injection'::text AS issue_type,
+			       CASE
+			         WHEN risk_level::text ~ '^(10|[1-9])$' THEN risk_level::text::int
+			         WHEN risk_level::text = 'critical' THEN 10
+			         WHEN risk_level::text = 'high' THEN 8
+			         WHEN risk_level::text = 'medium' THEN 5
+			         ELSE 1
+			       END AS severity,
+			       COALESCE(evidence_text, '') AS evidence, action_taken, tenant_id
 			FROM prompt_injection_detections
 			WHERE session_key = $1
 			UNION ALL
-			SELECT request_id, detected_at, issue_type, severity, evidence, action_taken, tenant_id
+			SELECT request_id, detected_at, issue_type, severity, COALESCE(evidence::text, ''), action_taken, tenant_id
 			FROM output_compliance_audit
 			WHERE session_key = $1
 		) combined
-		WHERE session_key = $1`
+		WHERE TRUE`
 	cArgs := []any{gwSessionID}
 	if tenantID != "" {
 		complianceQuery += " AND tenant_id = $2"

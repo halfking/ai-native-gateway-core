@@ -65,7 +65,7 @@ func TestVerifierPrincipalRolePolicy(t *testing.T) {
 	for _, role := range []string{"user", "tenant_admin", "super_admin"} {
 		t.Run("explicit "+role, func(t *testing.T) {
 			p, err := Verify(policyToken(t, []string{role}, "tenant_admin unrelated:scope", "tenant-a", "42"), nil)
-			if err != nil || p == nil || p.Role != role || p.UserID != 42 || p.Username != "alice" || p.TenantID != "tenant-a" || p.Issuer != "acc" || p.Audience != DefaultAudience {
+			if err != nil || p == nil || p.Role != role || p.UserID != 0 || p.Username != "" || p.Subject != "alice" || p.ExternalUserID != "42" || p.TenantID != "tenant-a" || p.Issuer != "acc" || p.Audience != DefaultAudience {
 				t.Fatal("explicit supported role and original principal must be preserved")
 			}
 		})
@@ -151,31 +151,41 @@ func TestVerifierPrincipalTenantPolicy(t *testing.T) {
 	}
 }
 
-func TestVerifierPrincipalNumericBridge(t *testing.T) {
+func TestVerifierPrincipalExternalIDProvenance(t *testing.T) {
 	withSharedSecret(t)
 	wrapToOne := new(big.Int).Lsh(big.NewInt(1), uint(strconv.IntSize))
 	wrapToOne.Add(wrapToOne, big.NewInt(1))
 	for _, tc := range []struct {
 		name, input string
-		want        int
 	}{
-		{"positive", "42", 42},
-		{"leading zeros", "00042", 42},
-		{"max int", strconv.Itoa(int(^uint(0) >> 1)), int(^uint(0) >> 1)},
-		{"overflow alias", wrapToOne.String(), 0},
-		{"very long overflow", wrapToOne.String() + "00000000000000000000", 0},
-		{"foreign subject", "acc-user-42", 0},
-		{"absent", "", 0},
-		{"zero", "0", 0},
-		{"negative", "-42", 0},
-		{"plus", "+42", 0},
-		{"non ASCII digits", "٤٢", 0},
+		{"positive", "42"},
+		{"leading zeros", "00042"},
+		{"max int", strconv.Itoa(int(^uint(0) >> 1))},
+		{"overflow alias", wrapToOne.String()},
+		{"very long overflow", wrapToOne.String() + "00000000000000000000"},
+		{"foreign subject", "acc-user-42"},
+		{"absent", ""},
+		{"zero", "0"},
+		{"negative", "-42"},
+		{"plus", "+42"},
+		{"non ASCII digits", "٤٢"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := Verify(policyToken(t, []string{"user"}, "", "tenant-a", tc.input), nil)
-			if err != nil || p == nil || p.UserID != tc.want {
-				t.Fatal("numeric bridge must preserve valid IDs and never create a wrapped local identity")
+			if err != nil || p == nil || p.UserID != 0 || p.ExternalUserID != tc.input || p.Subject != "alice" {
+				t.Fatal("external IDs must remain provenance and never select a Gateway account")
 			}
 		})
+	}
+}
+
+func TestVerifySharedIdentityIsNotGatewayAccount(t *testing.T) {
+	withSharedSecret(t)
+	p, err := Verify(policyToken(t, []string{"user"}, "", "tenant-a", "42"), nil)
+	if err != nil || p == nil {
+		t.Fatal("signed shared identity must verify before local account resolution")
+	}
+	if p.UserID != 0 || p.Username != "" {
+		t.Fatal("external numeric ID and username must not become a Gateway account or session owner")
 	}
 }
