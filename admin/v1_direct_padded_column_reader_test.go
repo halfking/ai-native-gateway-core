@@ -1,5 +1,24 @@
-//go:build !integration
-
+// 本文件**必须不带 build tag**（2026-10-02，审计 §9.74）。
+//
+// 它原先带 `//go:build !integration`。该 tag 把整份文件排除出
+// `-tags=integration` 构建，于是两件事同时坏掉：
+//
+//  1. 同包无 tag 的 admin/request_logs_indirect_readers_test.go 引用本文件
+//     定义的 v1DirectTables ⇒ `-tags=integration` 下 admin 包**编译不过**
+//     （2026-10-02 实测：vet: admin/request_logs_indirect_readers_test.go:87:
+//     undefined: v1DirectTables）。
+//  2. 本文件同时是 goFilesUnder 等共享 helper 的**定义处**，而 helper 被
+//     sql/、tests/、domains/ 等多个包的测试引用 ⇒ 一旦加回 tag，那些包
+//     在该配置下一起断。
+//
+// 为什么这个 tag 当初「看起来无害」：门与测试都是**纯静态分析**（go/ast +
+// 文件系统遍历），不连真库，而 goFilesUnder 遍历时排除 _test.go 且**不读
+// build tag**，所以扫描集与 tag 无关 —— tag 对门的行为毫无影响，纯粹只是
+// 把符号从一种构建里拿掉。也就是说：加 tag 不会让门更准，只会让门在
+// 另一种配置下不存在。
+//
+// 回归护栏：scripts/check-build-tags.sh 对**每个** tag 配置编译全部含约束
+// 的包；把本行加回去，那道门会立刻红。
 package admin
 
 import (

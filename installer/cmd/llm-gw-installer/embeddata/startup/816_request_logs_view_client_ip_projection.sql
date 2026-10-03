@@ -48,10 +48,15 @@ BEGIN;
 
 DO $$
 DECLARE
-  v_def       text;
   v_top_has   boolean;
 BEGIN
-  -- ── 0. 守卫：view 链缺一即 no-op（680 事故形态）───────────────────────
+
+  -- 链守卫在本块也要有一份，且必须查**整个链**（三者任一缺失即 680 形态）——
+  -- 我第一版只查了顶层视图，结果在 scratch 库的 680 形态下没拦住，直接撞上
+  -- 下面的硬前置。这是本轮第三次「守卫写窄了」：块 2 的、块 3 的、块 1 的，
+  -- 每次都要真跑一遍才暴露。
+  --
+  -- 本块随后 regclass 了顶层视图取 viewdef，所以它自己必须守着自己要碰的关系。
   IF to_regclass('public.request_logs_with_current_month_without_customer_id') IS NULL
      OR to_regclass('public.request_logs_with_current_month_without_request_class_due_at') IS NULL
      OR to_regclass('public.request_logs_with_current_month') IS NULL THEN
@@ -62,31 +67,6 @@ BEGIN
   IF to_regclass('public.session_turn_details') IS NULL
      OR to_regclass('public.session_turn_details_hot') IS NULL THEN
     RAISE EXCEPTION 'migration 816 requires session_turn_details family (run 733 first)';
-  END IF;
-
-  -- 源必须齐备：session_turns 与 request_logs(_hot) 都要有 client_ip。
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                  WHERE table_schema='public' AND table_name='session_turns'
-                    AND column_name='client_ip') THEN
-    RAISE NOTICE '816: session_turns lacks client_ip; skipping';
-    RETURN;
-  END IF;
-
-  v_def := pg_get_viewdef('public.request_logs_with_current_month'::regclass, true);
-  -- 判据钉在**语义**上（有没有那个 cast）而不是某一版 viewdef 文本：
-  -- pg_get_viewdef 会把 CASE 重新排版，照抄 up 文本的 pattern 必然对不上
-  -- （815 down 文件开头就记了三种渲染差异）。
-  -- 判据钉在**渲染后仍存在**的片段上。实测（真库归一化）pg_get_viewdef 会把
-  -- `CASE WHEN c THEN x END` 重排成 `WHEN c THEN x` + `END`——即**外层 CASE
-  -- 字样消失**（815 down 文件开头记的同款渲染差异）。所以：
-  --   · cast 存在   → 't.client_ip::inet'
-  --   · 守卫也存在   → 'WHEN t.client_ip ~ '
-  -- 两者都在才算已落地；只有 cast 没有守卫 = 半吊子形态（无守卫的 text→inet
-  -- 会打挂整条视图链），必须重建而不是 no-op。
-  IF position('t.client_ip::inet' in v_def) > 0
-     AND position('WHEN t.client_ip ~ ' in v_def) > 0 THEN
-    RAISE NOTICE '816: canonical view already projects client_ip (guarded); nothing to do';
-    RETURN;
   END IF;
 
   v_top_has := (SELECT count(*) = 1 FROM information_schema.columns
@@ -111,7 +91,42 @@ DECLARE
   proj          text;
   names         text;
   v2_ddl        text;
+  v_def         text;
 BEGIN
+    -- 守卫搬到这里（2026-10-03，§9.65.3）。**放在真正要重建的块内**，RETURN
+    -- 才拦得住它 —— 本块原先从块 1 的守卫「继承」了一个它拦不住的早退。
+    --
+    -- 守卫：**整个 view 链**缺一即 no-op（680 事故形态）。不能只查顶层视图 ——
+    -- 本块 regclass 了两个 wrapper 视图并从其中一个取列清单，链不全时它会崩在
+    -- 「relation does not exist」，那不是 no-op 是崩溃。
+    IF to_regclass('public.request_logs_with_current_month_without_customer_id') IS NULL
+       OR to_regclass('public.request_logs_with_current_month_without_request_class_due_at') IS NULL
+       OR to_regclass('public.request_logs_with_current_month') IS NULL THEN
+      RAISE NOTICE '816: view chain incomplete (680-incident shape); skipping — db.ensure rebuilds at startup';
+      RETURN;
+    END IF;
+
+    -- 源必须齐备：session_turns 与 request_logs(_hot) 都要有 client_ip。
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='session_turns'
+                      AND column_name='client_ip') THEN
+      RAISE NOTICE '816: session_turns lacks client_ip; skipping';
+      RETURN;
+    END IF;
+
+    -- 判据钉在**语义**上（有没有那个 cast）而不是某一版 viewdef 文本：
+    -- pg_get_viewdef 会把 CASE 重新排版，照抄 up 文本的 pattern 必然对不上
+    -- （815 down 文件开头记了三种渲染差异）。实测（真库归一化）pg_get_viewdef
+    -- 会把 `CASE WHEN c THEN x END` 重排成 `WHEN c THEN x` + `END`，即**外层
+    -- CASE 字样消失**。所以：cast 存在 → 't.client_ip::inet'，守卫也存在 →
+    -- 'WHEN t.client_ip ~ '。两者都在才算已落地；只有 cast 没有守卫 = 半吊子形态
+    -- （无守卫的 text→inet 会打挂整条视图链），必须重建而不是 no-op。
+    v_def := pg_get_viewdef('public.request_logs_with_current_month'::regclass, true);
+    IF position('t.client_ip::inet' in v_def) > 0
+       AND position('WHEN t.client_ip ~ ' in v_def) > 0 THEN
+      RAISE NOTICE '816: canonical view already projects client_ip (guarded); nothing to do';
+      RETURN;
+    END IF;
     SELECT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_schema='public'
                       AND table_name='request_logs_with_current_month_without_customer_id'
@@ -321,6 +336,15 @@ DECLARE
   cnt     integer;
   v_def   text;
 BEGIN
+  -- 链守卫与块 1/块 2 **同形**（查整个链）。只查顶层视图是不够的：680 形态下
+  -- 顶层视图可能是完好的一个陈旧版本，于是本块会拿它去做 118 列对账并硬失败
+  -- ——而此时块 2 明明已经决定「不重建」，对账的前提根本不存在。
+  IF to_regclass('public.request_logs_with_current_month_without_customer_id') IS NULL
+     OR to_regclass('public.request_logs_with_current_month_without_request_class_due_at') IS NULL
+     OR to_regclass('public.request_logs_with_current_month') IS NULL THEN
+    RAISE NOTICE '816: view chain incomplete; skipping post-rebuild verification';
+    RETURN;
+  END IF;
   SELECT count(*) INTO cnt
     FROM information_schema.columns
    WHERE table_schema='public' AND table_name='request_logs_with_current_month';
