@@ -113,6 +113,9 @@ CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
 # 0.5 对应「双写 2.00×，掉一台即半写」（b2077c204 实测定论）。
 : "${DEGRADED_RATIO:=0.5}"
 
+# 本脚本只读会话的 statement_timeout（应用角色的 30s 不够用，见 de() 注释）
+: "${STMT_TIMEOUT:=180s}"
+
 # 统计粒度。默认 hour，理由见文件头「为什么按小时而不是按分钟」。
 : "${GRANULARITY:=hour}"
 case "$GRANULARITY" in
@@ -140,7 +143,22 @@ log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 de() {
   # 回显走 stderr：`x=$(de ...)` 会把 stdout 收进变量，回显混进去会污染取值。
   if [ -n "${PRINT_SQL:-}" ]; then printf '%s\n' "$1" >&2; printf '0\n'; return 0; fi
-  podman exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c "$1" 2>&1 || true
+  # ★ 每条查询单独放宽 statement_timeout。
+  #   本脚本以应用角色 llm_gateway 连库，而该角色在库上带
+  #   `statement_timeout=30s`（应用侧的保护，正常写链路确实需要）。
+  #   而基线聚合要扫 7 天 ~600 万行，实测单独就要 11s，
+  #   叠加窗口查询在有负载时超过 30s ⇒ 报 `canceling statement due to
+  #   statement timeout`，脚本按设计判 exit 3（量具不可用）。
+  #   ⇒ 「每小时都失败一次的健康巡检」等于没有巡检。
+  #   这里只对本脚本自己的**只读**会话放宽，不改角色默认值，
+  #   应用侧的 30s 保护原样保留。
+  #   ★ 用 PGOPTIONS 而不是 `psql -c "SET ...; <sql>"`：
+  #     SET 会回显自己的命令标签（输出里多一行 `SET`），
+  #     而下游 `x=$(de ...)` 是按「单行取值」解析的，
+  #     多这一行会直接触发「返回多行，无法解析」的 exit 3。
+  #     PGOPTIONS 在连接建立时生效，不产生任何输出。
+  podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-180s}" \
+    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c "$1" 2>&1 || true
 }
 
 # 任一行以 ERROR/FATAL 开头 ⇒ psql 整条挂掉。
