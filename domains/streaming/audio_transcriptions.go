@@ -106,13 +106,14 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 	//     是「收完再转发」的伪流式（客户端语义不变：同样的 SSE 事件序
 	//     列），智谱 30 秒限长的现实下这是 v1 的有意取舍；不做两次调用
 	//     ——那会双倍消耗上游音频秒数。
-	var wroteHeader bool
-	writeTransport := func(transport string) {
-		if !wroteHeader {
-			w.Header().Set("X-Gw-Audio-Transport", transport)
-			wroteHeader = true
-		}
-	}
+	//
+	// 39 轮（P2-1）：X-Gw-Audio-Transport 响应头在本流式路径上从未生效
+	// ——WriteHeader(200) 已在流首发出，之后再 w.Header().Set 进不了已
+	// 发送的响应头（Go net/http 语义；httptest.ResponseRecorder 不快照
+	// 头所以测不出）。transport 信息改走 transcript.transport 事件：
+	// SSE 消费者按事件名分发，未知事件名按规范忽略，openpocket 的
+	// delta/done 消费不受影响。非流式路径的响应头（writeTranscriptionResult
+	// 在 WriteHeader 之前设置）不受影响。
 	res, err := h.svc.Transcribe(r.Context(), *req, func(delta string) {
 		writeEvent("transcript.text.delta", map[string]string{"type": "transcript.text.delta", "delta": delta})
 	})
@@ -122,7 +123,7 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 		flusher.Flush()
 		return
 	}
-	writeTransport(res.Transport)
+	writeEvent("transcript.transport", map[string]string{"type": "transcript.transport", "transport": res.Transport})
 	if res.RelayIsSSE && len(res.RelayBody) > 0 {
 		_, _ = w.Write(res.RelayBody)
 		flusher.Flush()

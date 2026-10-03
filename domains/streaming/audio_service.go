@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -53,6 +54,22 @@ const (
 
 	// audioModalityRequest 是音频端点向候选解析器声明的模态过滤值。
 	audioModalityRequest = "audio"
+
+	// maxAudioRequestDuration 约束单次音频调用（转写/合成）的总时长。
+	// 上游读体没有服务端 deadline（gateway 的 WriteTimeout=0，upstream
+	// client 只有 ResponseHeaderTimeout），一个 trickling 上游可无限期
+	// 钉住 handler 与已缓冲的音频内存；客户端断连能中止（r.Context()
+	// 取消传播到上游请求），但 MCP 客户端常不设超时。10 分钟按
+	// 30s 音频转写 + 慢 TTS 留足余量（39 轮 2026-10-03 审计 P2-3）。
+	maxAudioRequestDuration = 10 * time.Minute
+
+	// maxConcurrentAudioOps 限制同时进行的音频转写/合成调用数。音频路径
+	// 在内存里同时持有原始音频（≤32MiB）+ base64 放大副本（4/3×）+
+	// 重打包体（透传形态再一份），最坏单请求 ~240MiB；限流是 RPM 语义、
+	// 分钟窗内可突发，无闸门时并发突发直接打爆内存（39 轮 P2-2）。
+	// 8 路并发 × 最坏 ~240MiB ≈ 1.9GiB 峰值预算，超出返回 429/503
+	// 由上层映射。探针流量也走这里，容量满时探针红牌是正确语义。
+	maxConcurrentAudioOps = 8
 )
 
 // Transport 表示一次音频请求实际使用的上游传输形态。响应头
@@ -82,10 +99,16 @@ type AudioService struct {
 	upstream    *upstream.Client
 	keyVerifier AudioKeyVerifier
 	rateLimiter ratelimit.RPMLimiter
+	// sem 限制并发音频调用（maxConcurrentAudioOps），构造期一次性建立。
+	sem chan struct{}
 }
 
 func NewAudioService(resolver AudioProviderResolver, upstreamClient *upstream.Client) *AudioService {
-	return &AudioService{provider: resolver, upstream: upstreamClient}
+	return &AudioService{
+		provider: resolver,
+		upstream: upstreamClient,
+		sem:      make(chan struct{}, maxConcurrentAudioOps),
+	}
 }
 
 // SetAuth wires the data-plane key verifier and shared rate limiter.
@@ -189,6 +212,12 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 	if s == nil || s.provider == nil || s.upstream == nil {
 		return nil, fmt.Errorf("audio service not configured")
 	}
+	ctx, cancel := context.WithTimeout(ctx, maxAudioRequestDuration)
+	defer cancel()
+	if err := s.acquireAudioSlot(ctx); err != nil {
+		return nil, err
+	}
+	defer s.releaseAudioSlot()
 	candidates, _, err := s.provider.GetCandidatesByModality(ctx, req.Model, req.Profile, req.TenantID, audioModalityRequest)
 	if err != nil {
 		return nil, fmt.Errorf("resolve candidates: %w", err)
@@ -198,6 +227,18 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 		return nil, fmt.Errorf("no audio provider available for model %q", req.Model)
 	}
 	format := audioFileFormat(req.Filename, req.ContentType)
+
+	// 39 轮（P1-1）：一旦向客户端发出过转写增量，当前候选的流中失败必须
+	// 直接上抛——换候选重跑会让客户端收到两段拼接的增量流，且截断文本
+	// 可能被误当成功结果。emitted 闩锁由包装的 emit 记录。
+	emitted := false
+	emit := emitDelta
+	if emitDelta != nil {
+		emit = func(delta string) {
+			emitted = true
+			emitDelta(delta)
+		}
+	}
 
 	var lastErr error
 	for _, cand := range usable {
@@ -210,14 +251,19 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 			var res *TranscribeResult
 			var err error
 			if transport == AudioTransportChatAudio {
-				res, err = s.transcribeViaChatAudio(ctx, cand, req, format, emitDelta)
+				res, err = s.transcribeViaChatAudio(ctx, cand, req, format, emit)
 			} else {
-				res, err = s.transcribeViaMultipart(ctx, cand, req, emitDelta)
+				res, err = s.transcribeViaMultipart(ctx, cand, req, emit)
 			}
 			if err == nil {
 				return res, nil
 			}
 			lastErr = err
+			if emitted {
+				// 部分增量已交付，重试会产生重复输出；错误交给 handler
+				// 以 SSE error 事件（或 502 envelope）如实透出。
+				return nil, err
+			}
 			if !isAudioTransportFallbackErr(err) {
 				// 非「形态不存在」类错误（429/5xx/网络/内容拒绝）→ 换候选。
 				break
@@ -229,6 +275,29 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 		lastErr = fmt.Errorf("all audio providers failed")
 	}
 	return nil, lastErr
+}
+
+// acquireAudioSlot 占用一个并发音频槽位；ctx 取消（客户端断连/整体
+// deadline）时让位返回错误而不是排队堆积。nil 信号量（零值构造的
+// service，仅测试形态）直接放行。
+func (s *AudioService) acquireAudioSlot(ctx context.Context) error {
+	if s.sem == nil {
+		return nil
+	}
+	select {
+	case s.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("audio capacity wait aborted: %w", ctx.Err())
+	}
+}
+
+// releaseAudioSlot 与 acquireAudioSlot 配对；独立成方法让 defer 释放
+// 不依赖调用方持有同一分支。
+func (s *AudioService) releaseAudioSlot() {
+	if s.sem != nil {
+		<-s.sem
+	}
 }
 
 // isAudioTransportFallbackErr 报告错误是否属于「该端点形态在上游不存在」，
@@ -430,6 +499,12 @@ func (s *AudioService) Synthesize(ctx context.Context, req SynthesizeRequest) (*
 	if strings.TrimSpace(req.Input) == "" {
 		return nil, fmt.Errorf("input must be a non-empty string")
 	}
+	ctx, cancel := context.WithTimeout(ctx, maxAudioRequestDuration)
+	defer cancel()
+	if err := s.acquireAudioSlot(ctx); err != nil {
+		return nil, err
+	}
+	defer s.releaseAudioSlot()
 	candidates, _, err := s.provider.GetCandidatesByModality(ctx, req.Model, req.Profile, req.TenantID, audioModalityRequest)
 	if err != nil {
 		return nil, fmt.Errorf("resolve candidates: %w", err)
@@ -513,7 +588,12 @@ func (s *AudioService) synthesizeViaSpeech(ctx context.Context, cand provider.Ca
 	}
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" || strings.Contains(ct, "application/json") {
+		// 上游没标（或错标 JSON）时按请求格式推断；RIFF 魔数优先——
+		// 实际字节形态比客户端期望值可信（39 轮 P2-4 同款纠偏）。
 		ct = "audio/" + audioTTSEffectiveFormat(req.ResponseFormat)
+		if isWAVBytes(audio) {
+			ct = "audio/wav"
+		}
 	}
 	return &SynthesizeResult{Audio: audio, ContentType: ct, Transport: AudioTransportTranscriptions, UpstreamModel: cand.RawModel}, nil
 }
@@ -528,14 +608,16 @@ var xiaomiVoices = map[string]bool{
 
 // normalizeTTSVoiceForCandidate 把客户端音色归一到候选供应商可接受的值。
 // 空值/未知值 → 该供应商默认（小米 mimo_default）；透传形态下保持原值
-// （空值让上游走默认）。
+// （空值让上游走默认）。命中集合时返回 map 键的规范小写形式——上游若按
+// 大小写敏感匹配，原始大小写（如 "Mia"）仍会 400（39 轮 P3-4）。
 func normalizeTTSVoiceForCandidate(cand provider.Candidate, voice string) string {
 	v := strings.TrimSpace(voice)
 	if preferChatAudioBridge(cand) {
-		if v == "" || !xiaomiVoices[strings.ToLower(v)] {
+		lv := strings.ToLower(v)
+		if v == "" || !xiaomiVoices[lv] {
 			return "mimo_default"
 		}
-		return v
+		return lv
 	}
 	return v
 }
@@ -615,13 +697,27 @@ func (s *AudioService) synthesizeViaChatAudio(ctx context.Context, cand provider
 	if derr != nil {
 		return nil, fmt.Errorf("chat-audio TTS audio payload is not base64: %w", derr)
 	}
+	// 39 轮（P2-4）：桥接实测固定回 24kHz16bit WAV；客户端请求的 format
+	// 若与实际字节不符（上游不认该格式仍回 WAV），Content-Type 按客户端
+	// 期望值标注会让下游按 audio/mp3 等解码失败。按 RIFF 魔数把 WAV 字节
+	// 钉回 audio/wav。
+	ct := "audio/" + format
+	if isWAVBytes(audio) {
+		ct = "audio/wav"
+	}
 	return &SynthesizeResult{
 		Audio:          audio,
-		ContentType:    "audio/" + format,
+		ContentType:    ct,
 		Transport:      AudioTransportChatAudio,
 		UpstreamModel:  cand.RawModel,
 		TranscriptHint: parsed.Choices[0].Message.Audio.Transcript,
 	}, nil
+}
+
+// isWAVBytes 按 RIFF/WAVE 魔数嗅探音频字节（12 字节头：RIFF + 4 字节长度 +
+// WAVE）。只用于 Content-Type 纠偏，不做完整 WAV 校验。
+func isWAVBytes(b []byte) bool {
+	return len(b) >= 12 && string(b[0:4]) == "RIFF" && string(b[8:12]) == "WAVE"
 }
 
 // relayChatAudioSSE reads the upstream chat SSE stream, forwarding each
@@ -643,6 +739,11 @@ func relayChatAudioSSE(ctx context.Context, body io.Reader, emitDelta func(strin
 			break
 		}
 		var chunk struct {
+			Error *struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    string `json:"code"`
+			} `json:"error"`
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
@@ -654,6 +755,23 @@ func relayChatAudioSSE(ctx context.Context, body io.Reader, emitDelta func(strin
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
+		}
+		// 39 轮（P1-1）：上游流中错误帧（data: {"error":{...}}）此前落进
+		// 只声明 Choices/Usage 的结构体——未知字段被忽略、choices 为空、
+		// 整帧静默蒸发，函数把截断文本当成功返回。显式检出并上抛；此时
+		// 部分增量可能已发出，Transcribe 的 emitted 闩锁会阻止换候选重跑。
+		if chunk.Error != nil {
+			detail := chunk.Error.Message
+			if detail == "" {
+				detail = chunk.Error.Type
+			}
+			if detail == "" {
+				detail = chunk.Error.Code
+			}
+			if detail == "" {
+				detail = "unknown upstream stream error frame"
+			}
+			return aggregated.String(), seconds, fmt.Errorf("upstream stream error: %s", detail)
 		}
 		if chunk.Usage.Seconds > 0 {
 			v := chunk.Usage.Seconds
