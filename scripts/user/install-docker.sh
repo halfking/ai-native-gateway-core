@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# SOURCE_OF_TRUTH: ~/workspace/ai-native-tools/llm-gateway/ai-native-maintain/scripts/user/install-docker.sh
-# SYNC_POLICY: 修改本脚本时同步改 maintain 对应位置。本仓库只维护 service identity (image 名 / container 名 / 端口)。
-# ADAPTATIONS: 加 loong64 严格门（CI 默认不发 loong64 artifact）。
-
-# install-docker.sh — 用 Docker Compose 部署最新网关（amd64/arm64 + 可选 pg17+circus/citus）。
 # install-docker.sh — 用 Docker Compose 部署最新网关（amd64/arm64 + 可选 pg17+circus/citus）。
 #
 # Env:
@@ -82,6 +77,259 @@ run_priv() {
   fi
 }
 
+# ─── JSON 读取（不依赖 python3 / jq） ───
+# 客户机不保证有 python3。此前版本用 `python3 -c` 解析每个 API 响应，缺 python3
+# 时它静默输出空串，脚本把"解析失败"当成"没有发布版本"，用户只看到
+# `no published release` —— 与真实原因毫无关系。这里用 awk 实现唯一一份 JSON
+# 文法；install-host.sh 与 install-docker.sh 内嵌的这段必须逐字一致，由
+# scripts/tests/static-check.sh 守护。
+#
+# 兼容性：只使用 POSIX awk（无 gawk 专有的三参数 match / gensub），并在 awk
+# 调用前设置 LC_ALL=C，保证 \u00XX 还原为字节。
+json_flatten() {
+  LC_ALL=C awk '
+    function skipws(   c) {
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") return
+        i++
+      }
+    }
+    function hexval(c) {
+      if (c >= "0" && c <= "9") return c + 0
+      if (c >= "a" && c <= "f") return index("abcdef", c) + 9
+      if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
+      return -1
+    }
+    # 调用时 s[i] 是起始引号。只还原 \uXXXX —— Go 的 encoding/json 会把 & < >
+    # 转义，直链（storage_uri）里很常见。
+    # 其余转义一律保持原样（反斜杠 + 字母）：扁平化协议是"每条记录一行"，
+    # 还原成真实换行/制表符会把一条记录劈成两半，json_get 于是只取到半截值且
+    # 不报错。JSON 字符串本就不允许裸控制字符，所以这样输出永远不会断行。
+    function read_string(   c, esc, j, v, d) {
+      i++
+      out = ""
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") {
+          esc = substr(s, i + 1, 1)
+          if (esc == "u") {
+            v = 0
+            for (j = 1; j <= 4; j++) {
+              d = hexval(substr(s, i + 1 + j, 1))
+              if (d < 0) { v = -1; break }
+              v = v * 16 + d
+            }
+            if (v >= 32 && v < 127) out = out sprintf("%c", v)
+            else out = out substr(s, i, 6)
+            i += 6
+            continue
+          }
+          out = out "\\" esc
+          i += 2
+          continue
+        }
+        if (c == "\"") { i++; return out }
+        out = out c
+        i++
+      }
+      return out
+    }
+    function parse_value(path,   c, j) {
+      skipws()
+      if (i > n) return
+      c = substr(s, i, 1)
+      if (c == "{") { parse_obj(path); return }
+      if (c == "[") { parse_arr(path); return }
+      if (c == "\"") { print path "\t" read_string(); return }
+      j = i
+      while (j <= n && index(",} \t\r\n]", substr(s, j, 1)) == 0) j++
+      if (j > i) print path "\t" substr(s, i, j - i)
+      i = j
+    }
+    function parse_obj(path,   c) {
+      i++
+      skipws()
+      if (substr(s, i, 1) == "}") { i++; return }
+      while (i <= n) {
+        skipws()
+        if (substr(s, i, 1) != "\"") { i++; continue }
+        key = read_string()
+        skipws()
+        if (substr(s, i, 1) == ":") i++
+        parse_value((path == "$") ? "$." key : path "." key)
+        skipws()
+        c = substr(s, i, 1)
+        if (c == ",") { i++; continue }
+        if (c == "}") { i++; return }
+        i++
+      }
+    }
+    function parse_arr(path,   c, idx) {
+      i++
+      skipws()
+      if (substr(s, i, 1) == "]") { i++; return }
+      idx = 0
+      while (i <= n) {
+        parse_value(path "." idx)
+        idx++
+        skipws()
+        c = substr(s, i, 1)
+        if (c == ",") { i++; continue }
+        if (c == "]") { i++; return }
+        i++
+      }
+    }
+    { doc = doc $0 "\n" }
+    END {
+      s = doc
+      n = length(s)
+      i = 1
+      skipws()
+      parse_value("$")
+    }
+  '
+}
+
+# json_get_flat <已扁平化的文本> <路径>，如 $.latest_version
+json_get_flat() {
+  printf '%s\n' "$1" | awk -F'\t' -v p="$2" '$1 == p { print $2; exit }'
+}
+
+# json_get <JSON 原文> <路径>
+json_get() {
+  json_get_flat "$(printf '%s' "$1" | json_flatten)" "$2"
+}
+
+# json_artifact_field <JSON 原文> <字段>：version-check 响应里第一个目标制品。
+# 服务端按 (platform, arch) 过滤 target_artifacts，取 [0] 与既有实现一致。
+json_artifact_field() {
+  json_get "$1" "\$.target_artifacts.0.$2"
+}
+
+# catalog_sha_from_json <JSON 原文> <version> <platform> <arch>
+# 在 versions[].items[] 两层结构里定位制品并打印 sha256（找不到则无输出）。
+# 服务端 CatalogItem.SHA256 带 omitempty，未登记校验和的制品本来就可能缺字段，
+# 因此这里"取不到"必须能安静地表达成空值。
+catalog_sha_from_json() {
+  local flat outer out
+  flat="$(printf '%s' "$1" | json_flatten)"
+  for outer in '$.versions.' '$.items.'; do
+    out="$(printf '%s\n' "$flat" | awk -F'\t' -v outer="$outer" \
+      -v want_v="$2" -v want_p="$3" -v want_a="$4" '
+      { nrec++; path[nrec] = $1; val[nrec] = $2 }
+      END {
+        # 两遍扫描，**不依赖键的先后顺序**。单遍流式匹配要求 version 先于 items
+        # 出现：真实服务端按结构体字段顺序编码恰好满足，但换成 map 序列化
+        # （字母序，version 排在 items 之后）就会静默取不到校验和。
+        # 请求侧也要剥 v：下载页允许 VERSION=v1.2.3，目录里存的是 1.2.3。
+        sub(/^v/, "", want_v)
+        target = ""
+        for (r = 1; r <= nrec; r++) {
+          if (index(path[r], outer) != 1) continue
+          rest = substr(path[r], length(outer) + 1)
+          d = index(rest, ".")
+          if (d == 0 || substr(rest, d + 1) != "version") continue
+          v = val[r]
+          sub(/^v/, "", v)
+          if (v == want_v) { target = substr(rest, 1, d - 1); break }
+        }
+        if (target == "") exit 0
+        for (r = 1; r <= nrec; r++) {
+          if (index(path[r], outer) != 1) continue
+          rest = substr(path[r], length(outer) + 1)
+          d = index(rest, ".")
+          if (d == 0 || substr(rest, 1, d - 1) != target) continue
+          tail_ = substr(rest, d + 1)
+          if (index(tail_, "items.") != 1) continue
+          t2 = substr(tail_, 7)
+          d2 = index(t2, ".")
+          if (d2 == 0) continue
+          iidx = substr(t2, 1, d2 - 1)
+          key = substr(t2, d2 + 1)
+          if (key == "platform") plat[iidx] = val[r]
+          else if (key == "arch") arch[iidx] = val[r]
+          else if (key == "sha256") sum[iidx] = val[r]
+        }
+        for (k = 0; k < 100000; k++) {
+          if ((k in plat) && plat[k] == want_p && arch[k] == want_a) { print sum[k]; exit }
+        }
+      }')"
+    if [[ -n "$out" ]]; then
+      printf '%s' "$out"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# ─── JSON 写入 ───
+# upgrade.sh 需要把任意命令输出（可能带引号/换行/反斜杠）拼成合法 JSON。
+# 以前靠 python3 的 json.dumps；这里用 awk 做等价转义。注意不能用 gsub 做替换：
+# gsub 的替换串里 \ 与 & 都有特殊含义，转义一层就够再转一层才能得到想要的字面量。
+#
+# 写出侧与读入侧**故意不对称**：json_string 产出标准 JSON（服务端 Go 的
+# json.Unmarshal 能正确还原），而 json_flatten 保留 \n \t \\ \" 这些转义的原样
+# 文本。原因见 read_string 的注释 —— 扁平化协议是"每条记录一行"，还原成真实
+# 换行会把记录劈开。实际链路里两者不往返：写出去的只被服务端读，读回来的字段
+# （url / file_name / sha256 / version）都是 ASCII 裸值，不含这些转义。
+json_escape() {
+  printf '%s' "$1" | LC_ALL=C awk '
+    { if (NR > 1) doc = doc "\n"; doc = doc $0 }
+    function esc(s,   i, c, out) {
+      out = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") out = out "\\\\"
+        else if (c == "\"") out = out "\\\""
+        else if (c == "\t") out = out "\\t"
+        else if (c == "\r") out = out "\\r"
+        else if (c == "\n") out = out "\\n"
+        else out = out c
+      }
+      return out
+    }
+    END { printf "%s", esc(doc) }
+  '
+}
+
+# json_string <值> → 带引号的 JSON 字符串字面量
+json_string() { printf '"%s"' "$(json_escape "$1")"; }
+
+# json_object <key> <json-literal> [<key> <json-literal> ...]
+# 值必须已经是 JSON 字面量：字符串用 json_string 包一层，布尔/数字直接写。
+json_object() {
+  local out="{" first=1 k v
+  while [[ $# -ge 2 ]]; do
+    k="$1"; v="$2"; shift 2
+    [[ "$first" -eq 1 ]] || out="$out,"
+    first=0
+    out="$out\"$k\":$v"
+  done
+  printf '%s}' "$out"
+}
+
+# mapfile 的可移植替代：mapfile 是 bash 4.0+，macOS 自带 /bin/bash 是 3.2。
+# 逐行读入调用方的 fields 数组并保留空行，保持与 mapfile -t 一致的下标语义。
+read_into_fields() {
+  local line
+  fields=()
+  while IFS= read -r line; do
+    fields+=("$line")
+  done < <("$@" || true)
+}
+require_tools() {
+  local missing=() t
+  for t in "$@"; do
+    command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+  done
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    echo "[install-docker] 缺少必需命令: ${missing[*]}" >&2
+    echo "[install-docker] 需要 curl(下载) / awk(解析 API 响应) / sha256sum 或 shasum(校验)" >&2
+    exit 1
+  fi
+}
+
 load_config_file
 
 # 在 default 之前用交互补齐——同时供后续 validate 复用。
@@ -110,11 +358,6 @@ else
     *) echo "unsupported arch: $arch" >&2; exit 2 ;;
   esac
 fi
-# loong64 默认严格：未显式 LOONG64_OK=1 时直接退出（CI 默认不发 loong64 artifact）。
-if [[ "$ARCH" == "loong64" && "${LOONG64_OK:-0}" != "1" ]]; then
-  echo "[install-docker] loongarch64 默认不启用（CI 默认不发 loong64 artifact）。如需安装请设 LOONG64_OK=1。" >&2
-  exit 2
-fi
 
 # Validate VERSION (semver + build_seq; same character set as the UI's
 # commandBuilder.ts allowlist). Reject anything that could break the
@@ -135,6 +378,12 @@ POSTGRES_USER="${POSTGRES_USER:-gateway}"
 POSTGRES_DB="${POSTGRES_DB:-gateway}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
 
+require_tools curl awk
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+  echo "[install-docker] 缺少 sha256sum 或 shasum —— 无法校验镜像包，拒绝安装" >&2
+  exit 1
+fi
+
 load_existing_password() {
   local env_file="${COMPOSE_DIR}/.env" line value
   [[ -f "$env_file" ]] || return 0
@@ -148,10 +397,13 @@ load_existing_password() {
 generate_password() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 24
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import secrets; print(secrets.token_hex(24))'
+  elif [[ -r /dev/urandom ]] && command -v od >/dev/null 2>&1; then
+    # /dev/urandom + od 是 POSIX 组合，Linux 与 macOS 都有。刻意不退回 python3：
+    # 这条安装路径的其余部分已经不依赖它了。
+    head -c 256 /dev/urandom | LC_ALL=C od -An -tx1 | tr -d ' \n' | head -c 48
+    echo
   else
-    echo "[install-docker] openssl or python3 is required to generate a database password" >&2
+    echo "[install-docker] 需要 openssl 或 /dev/urandom 之一来生成数据库口令（或手工设置 POSTGRES_PASSWORD）" >&2
     return 1
   fi
 }
@@ -190,7 +442,11 @@ verify_sha256() {
     echo "[install-docker] no sha256 tool (sha256sum/shasum) — cannot verify $file" >&2
     return 1
   fi
-  if [[ "${actual,,}" != "${expected,,}" ]]; then
+  # 用 tr 折叠大小写而不是 ${var,,}：后者是 bash 4.0+ 语法，而 macOS 自带的
+  # /bin/bash 是 3.2。install-docker.sh 虽只装 linux 容器，脚本仍会被同一个
+  # 入口分发执行，不应依赖调用方的 bash 版本。
+  if [[ "$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')" != \
+        "$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')" ]]; then
     echo "[install-docker] checksum MISMATCH $file" >&2
     echo "[install-docker]   expected=$expected" >&2
     echo "[install-docker]   actual  =$actual" >&2
@@ -204,18 +460,9 @@ verify_sha256() {
 api_artifact() {
   local platform="$1" want_arch="$2" json=""
   json="$(curl -fsSL "${MAINTAIN_BASE}/distribution/version-check?channel=${CHANNEL}&current=v0.0.0&platform=${platform}&arch=${want_arch}" 2>/dev/null)" || return 1
-  ART_JSON="$json" python3 - <<'PY'
-import json, os
-try:
-    d = json.loads(os.environ["ART_JSON"])
-except Exception:
-    d = {}
-arts = d.get("target_artifacts") or []
-art = arts[0] if isinstance(arts, list) and arts and isinstance(arts[0], dict) else {}
-print(art.get("artifact_name") or "")
-print(art.get("sha256") or "")
-print(art.get("storage_uri") or "")
-PY
+  json_artifact_field "$json" artifact_name
+  json_artifact_field "$json" sha256
+  json_artifact_field "$json" storage_uri
 }
 
 # catalog/versions 里的 items[] 是 CatalogItem：platform/arch/artifact_name/sha256。
@@ -224,44 +471,18 @@ catalog_sha() {
   local version="$1" platform="$2" want_arch="$3" json=""
   json="$(curl -fsSL "${MAINTAIN_BASE}/distribution/versions?channel=${CHANNEL}" 2>/dev/null)" \
     || json="$(curl -fsSL "${MAINTAIN_BASE}/downloads/catalog" 2>/dev/null)" || return 0
-  LOOKUP_JSON="$json" WANT_VERSION="$version" WANT_PLATFORM="$platform" WANT_ARCH="$want_arch" python3 - <<'PY'
-import json, os
-try:
-    d = json.loads(os.environ["LOOKUP_JSON"])
-except Exception:
-    raise SystemExit(0)
-want_v = os.environ["WANT_VERSION"].lstrip("v")
-want_p = os.environ["WANT_PLATFORM"]
-want_a = os.environ["WANT_ARCH"]
-for v in (d.get("items") or d.get("versions") or []):
-    if not isinstance(v, dict):
-        continue
-    if (v.get("version") or "").lstrip("v") != want_v:
-        continue
-    for a in (v.get("items") or v.get("artifacts") or []):
-        if isinstance(a, dict) and a.get("platform") == want_p and a.get("arch") == want_a:
-            print(a.get("sha256") or "")
-            raise SystemExit(0)
-PY
+  catalog_sha_from_json "$json" "$version" "$platform" "$want_arch"
 }
 
 ticket_download() {
   local version="$1" platform="$2" want_arch="$3" body="" resp=""
-  body="$(TV="$version" TP="$platform" TA="$want_arch" python3 -c '
-import json, os
-print(json.dumps({"version": os.environ["TV"], "platform": os.environ["TP"], "arch": os.environ["TA"]}))
-')" || return 1
+  # 请求体用 printf 拼：version 来自 VERSION/目录，platform 与 arch 都来自上面的
+  # 白名单枚举，三者都不需要 JSON 转义。
+  body="$(printf '{"version":"%s","platform":"%s","arch":"%s"}' "$version" "$platform" "$want_arch")" || return 1
   resp="$(curl -fsSL -X POST "${MAINTAIN_BASE}/downloads/ticket" \
-    -H 'Content-Type: application/json' -d "$body" 2>/dev/null)" || return 1
-  TICKET_JSON="$resp" python3 - <<'PY'
-import json, os
-try:
-    d = json.loads(os.environ["TICKET_JSON"])
-except Exception:
-    d = {}
-print(d.get("url") or "")
-print(d.get("file_name") or "")
-PY
+    -H 'Content-Type: application/json' --data "$body" 2>/dev/null)" || return 1
+  json_get "$resp" '$.url'
+  json_get "$resp" '$.file_name'
 }
 
 # 发现 → 下载 → 校验 → docker load。返回非 0 表示这个镜像没拿到（调用方决定是否致命）。
@@ -270,12 +491,12 @@ fetch_and_load() {
   local name="" sha="" uri="" url=""
   local fields=()
   if [[ -n "${VERSION:-}" ]]; then
-    mapfile -t fields < <(ticket_download "$LATEST_BARE" "$platform" "$want_arch" || true)
+    read_into_fields ticket_download "$LATEST_BARE" "$platform" "$want_arch"
     url="${fields[0]:-}"
     name="${fields[1]:-}"
     sha="$(catalog_sha "$LATEST_BARE" "$platform" "$want_arch" || true)"
   else
-    mapfile -t fields < <(api_artifact "$platform" "$want_arch" || true)
+    read_into_fields api_artifact "$platform" "$want_arch"
     name="${fields[0]:-}"
     sha="${fields[1]:-}"
     uri="${fields[2]:-}"
@@ -285,10 +506,10 @@ fetch_and_load() {
       esac
     fi
     if [[ -z "$url" ]]; then
-      local tfields=()
-      mapfile -t tfields < <(ticket_download "$LATEST_BARE" "$platform" "$want_arch" || true)
-      url="${tfields[0]:-}"
-      [[ -n "${tfields[1]:-}" ]] && name="${tfields[1]}"
+      fields=()
+      read_into_fields ticket_download "$LATEST_BARE" "$platform" "$want_arch"
+      url="${fields[0]:-}"
+      [[ -n "${fields[1]:-}" ]] && name="${fields[1]}"
       if [[ -z "$sha" ]]; then
         sha="$(catalog_sha "$LATEST_BARE" "$platform" "$want_arch" || true)"
       fi
@@ -344,7 +565,7 @@ if [ -n "${VERSION:-}" ]; then
 else
   echo "[install-docker] fetching version-check for linux/${ARCH}"
   CHECK_JSON="$(curl -fsSL "${MAINTAIN_BASE}/distribution/version-check?channel=${CHANNEL}&current=v0.0.0&platform=linux&arch=${ARCH}")"
-  LATEST="$(printf '%s' "$CHECK_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("latest_version",""))')"
+  LATEST="$(json_get "$CHECK_JSON" '$.latest_version')"
   [[ -n "$LATEST" ]] || { echo "no published release" >&2; exit 1; }
   LATEST_BARE="${LATEST#v}"
 fi
@@ -486,8 +707,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 if [[ "$HAVE_DOCKER" != "1" ]]; then
-  echo "[install-docker] docker not found — compose file ready for manual start"
-  exit 0
+  # 编排文件已写好，但一台容器都没起来。安装模式的成功含义是"网关在跑"，
+  # 这里返回 0 会让自动化把一次什么都没做的安装当成成功；而且版本存在性
+  # 校验只发生在"有 docker"分支里，所以指定一个不存在的版本也照样返回 0。
+  # 只想生成文件请显式用 DRY_RUN=1。
+  echo "[install-docker] docker not found — ${COMPOSE_DIR} 已就绪，但没有启动任何容器" >&2
+  echo "[install-docker] 请先安装 Docker Engine；或用 DRY_RUN=1 只生成编排文件" >&2
+  exit 1
 fi
 # compose 失败必须让安装失败：以前这里吞掉了错误并打印"attempted"。
 if ! (cd "$COMPOSE_DIR" && docker compose up -d); then

@@ -37,6 +37,7 @@ export default {
     freeBadgeTooltipNo: '该供应商没有免费模型',
     sortLabel: '排序',
     sortDefault: '默认顺序',
+    sortName: '按名称',
     sortUsage: '24h 请求量',
     sortQuality: '质量分',
     sortAvailability: '可用性分',

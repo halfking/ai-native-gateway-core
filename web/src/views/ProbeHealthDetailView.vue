@@ -50,6 +50,15 @@ watch(modelName, () => {
 async function loadTabData(tab: TabId) {
   loading.value = true
   try {
+    // 2026-10-03：直接访问 /probe-health/detail（没带 ?model=）时 modelName 是空串，
+    // 拼出来的是 `/api/admin/probe/model//nodes` —— 空路径段，后端 400，
+    // console 每次都留一条错。这个页面所有内容都挂在单个模型上，
+    // 没有模型就没什么可取的，直接短路。
+    if (!modelName.value) {
+      nodes.value = []
+      nodeSummary.value = null
+      return
+    }
     switch (tab) {
       case 'nodes': await loadNodes(); break
       case 'routing': await loadRouting(); break
@@ -435,6 +444,21 @@ onMounted(() => {
 
     <div class="tab-content card">
       <EmptyState v-if="loading" text="加载中..." />
+
+      <!--
+        2026-10-03：不带 ?model= 直接访问时，页面上所有内容都无从谈起
+        （每个 tab 的接口都要一个模型名）。原来只显示「暂无节点数据」，
+        看起来像「这个模型没有节点」——实际上根本不知道问的是哪个模型。
+        这里把原因和出路都讲清楚。
+      -->
+      <div v-else-if="!modelName" class="no-model-hint">
+        <p class="no-model-hint__title">未指定模型</p>
+        <p class="no-model-hint__body">
+          这个页面的所有数据（节点、路由、决策、监控、探活、价格）都按单个模型组织，
+          需要从模型列表点进来，或在地址后加上 <code>?model=模型名</code>。
+        </p>
+        <button type="button" class="btn btn-sm" @click="goBack">← 返回模型列表</button>
+      </div>
 
       <div v-else-if="activeTab === 'nodes'">
         <EmptyState v-if="nodes.length === 0" text="暂无节点数据" />
@@ -1025,4 +1049,30 @@ onMounted(() => {
 .small { font-size: 11px; }
 .rate-good { color: var(--success); font-weight: 600; }
 .rate-bad { color: var(--danger); font-weight: 600; }
+
+/* 2026-10-03：未指定模型时的说明块。不用 EmptyState 是因为这里要给出
+   「为什么」和「怎么办」两段话，而 EmptyState 只有一行文案的位置。 */
+.no-model-hint {
+  padding: 32px 24px;
+  text-align: center;
+}
+.no-model-hint__title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text, #1f2937);
+}
+.no-model-hint__body {
+  margin: 0 auto 16px;
+  max-width: 520px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted, #6b7280);
+}
+.no-model-hint__body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.14);
+  font-size: 12px;
+}
 </style>

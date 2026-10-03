@@ -425,8 +425,6 @@ onUnmounted(() => {
 <style scoped>
 .data-lifecycle-view {
   padding: 16px;
-  max-width: 1400px;
-  margin: 0 auto;
 }
 
 .page-header {

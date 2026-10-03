@@ -35,10 +35,18 @@ import (
 	"strings"
 )
 
+// anthropicSummarySeparatorCore is the gateway-namespaced separator that
+// rebuildAnthropicSystemField splices into the top-level system field. It is
+// the recognition anchor for both summary generations: prefix-shaped bodies
+// (empty original system, block arrays) start with it, while the string shape
+// appends it after the original system text (original-first keeps the upstream
+// prompt-cache prefix stable), so recognition there is contains-based.
+const anthropicSummarySeparatorCore = "--- Compressed context (gateway injection; LLM summary of prior turns) ---"
+
 // AnthropicSystemSummaryPrefix marks the gateway-injected summary inside
 // the top-level system field. Mirrors CompressionSummaryPrefix style but
 // adapted for Anthropic (no markdown fences, simple ASCII separator).
-const AnthropicSystemSummaryPrefix = "\n\n--- Compressed context (gateway injection; LLM summary of prior turns) ---\n"
+const AnthropicSystemSummaryPrefix = "\n\n" + anthropicSummarySeparatorCore + "\n"
 
 // rebuildAnthropicSystemField combines the original system prompt with the
 // LLM-generated summary. Returns a single json.RawMessage suitable for the

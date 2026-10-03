@@ -6,6 +6,7 @@
 //   - 模型用量 Top-N + 趋势图表，沿用 TenantDashboardView v2 的可视化
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
+import { sortByName } from '../utils/sortByName'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRouter } from 'vue-router'
@@ -67,6 +68,10 @@ function onRangeApply(range: KxDateRange) {
   void load()
 }
 const summary = ref<MaasUsageSummary | null>(null)
+
+// 2026-10-03：租户看板的「按模型」表首列是模型标识，之前按后端返回的用量序排。
+// 用户要的是便于查找的名称序。只影响这张表，不动上面那两张按模型的统计块。
+const sortedByModel = computed(() => sortByName(summary.value?.by_model ?? [], undefined, ['model']))
 const wallet = ref<MaasWallet | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -545,7 +550,7 @@ onUnmounted(() => {
           </thead>
           <tbody>
             <tr
-              v-for="row in summary.by_model"
+              v-for="row in sortedByModel"
               :key="'tbl-' + row.model"
               class="clickable"
               :class="{ active: selectedModel === row.model }"

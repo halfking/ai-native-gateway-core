@@ -406,7 +406,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.routing-overview-view { max-width: 1200px; }
+.routing-overview-view { max-width: none; }
 
 .top-bar {
   margin-bottom: 8px;

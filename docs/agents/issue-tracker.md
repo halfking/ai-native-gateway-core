@@ -46,6 +46,56 @@ ticket 关闭状态与当前 active 计划。
   时间线 + slog→状态机映射表 + 并发危险/守卫三件套）。
 - **回滚命令**：`docs/changelogs/2026-08-19-stream-state-machine.md` §4。
 
+### LIVE-STREAM-HIDDEN — 页面不可见时静默丢帧，且连接态不说实话
+
+- **状态**：📌 **open**（2026-10-03 开单）
+- **一句话**：`document.hidden` 期间到达的 SSE 帧被**整帧丢弃**，而 UI 的连接态
+  由 `onopen` 单独置位、不反映「一帧都没处理」，于是嵌入式 / headless webview
+  永久空白却看起来一切正常。
+- **根因（两处，都已定位到行）**：
+  - `web/src/composables/liveStreamStore.ts:1329-1339`：`onmessage` 里
+    `if (!visibilityState.isVisible) { missedWhileHidden = true; return }`
+    —— 在 `JSON.parse` 之后、`handleEnvelope(env)` 之前，**整帧丢弃**，
+    连 `initial_data` 首帧也一样。
+  - `web/src/composables/liveStreamStore.ts:1325-1328`：`onopen` 只把
+    `connection` 置 `'open'`。该状态与「是否真的处理过帧」无任何耦合，
+    所以丢帧期间 UI 仍显示已连接。
+- **自愈只在「变可见」时发生，且自身有一个漏洞**：
+  `:302-330` 的 `visibilitychange` 在 `!document.hidden && wasHidden`
+  时，若 `missedWhileHidden` 且 **`refCount > 0`** 才 `closeConnection()` +
+  `openConnection()` 重放。两个后果：
+  1. 嵌入式 / headless / 被遮挡的 webview 里 `document.hidden` 恒为 true，
+     「变可见」永不发生 ⇒ 永久空白且**无任何提示**。
+  2. 即便是真人用户，只要变可见的瞬间 `refCount === 0`（所有订阅方已退订），
+     分支不进，但 `missedWhileHidden = false` 仍被执行（`:324` 在 if 之外）⇒
+     这一次丢帧窗口被**静默抹掉**，重连永远不会发生。这条比第 1 条更隐蔽：
+     它连「等一下变可见就好」这条退路都堵死了。
+- **今天（2026-10-03）的证据与一次订正**：
+  - **内嵌 Browser 的失败不是本缺陷的证据**。用 headless Chromium（Python
+    Playwright 1.63）驱动同一个 `https://llmgateway.internal.example.com/dashboard?tab=stream`，
+    实测 `document.hidden === false`、SSE `● Connected`，面板 **9 秒**即渲染，
+    63 个分组、节点卡齐全、无 pageerror。
+    ⇒ 内嵌 FilePanel 标签的现象（HTTP 200 + `text/event-stream` 但客户端零帧
+    处理、零 `[LiveStream]` 日志）**不能**归因到本单的 `document.hidden`
+    丢弃分支：那条分支会打 `console.debug`（`:1336`），而实测一条没有。
+    收敛为：**该标签的 renderer 被冻结/节流，事件未被派发**——属于验收工具
+    的环境限制，不是本单要修的东西。
+  - **原「阻塞验收」的说法作废**。既然 headless Chromium 能跑通，
+    `dashboard?tab=stream` 的生产 UI 验收**不需要人工前台标签页**，本轮
+    已由自动化闭合（见 changelog）。
+  - 剩下的、与本单真正相关的是代码层那三条（丢帧 + 连接态说谎 +
+    `refCount > 0` 守卫把恢复路径堵死），它们仍未修。
+- **不做的事**：不改 SSE 协议、不动「隐藏时不写 state」这个**对真人用户
+  合理**的省电设计（`:309-325` 的重连自愈就是为它准备的）。要修的是
+  **说谎**的部分：丢帧时连接态必须反映「数据未送达」，以及上面
+  `refCount > 0` 那个把恢复路径堵死的分支。
+- **建议落点**（本单不含实现，仅登记）：① `missedWhileHidden` 为真时
+  连接态显示为「已连接（数据未更新）」之类的**降级态**而非已连接；
+  ② `:320` 的 `refCount > 0` 守卫与 `:324` 的无条件清零必须一起改，
+  否则丢帧窗口仍会被抹掉。
+- **关联**：`docs/changelogs/2026-10-03-stream-model-group-scope-discoverability.md`
+  §遗留（该轮已记录但**未开单**）；`docs/changelogs/2026-08-19-stream-state-machine.md`。
+
 ## §3 SP-01..04 期间的 follow-up 风险
 
 - **pre-stream keepalive 与 session_compressor 串行顺序**：

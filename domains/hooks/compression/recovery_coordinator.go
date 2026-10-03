@@ -285,6 +285,13 @@ func (rc *RecoveryCoordinator) Recover(
 			persistRes.CompressedPrefixHash = report.PrefixHash
 		}
 		state := buildSessionState(prev, rebuilt, persistRes, true, time.Now().Unix())
+		// 对齐 CommitFinal「先清空再算」口径：smart_window 重写了出向 body，
+		// prev 的 CompressedPrefixHash 经 buildSessionState 的空值守卫残留下来
+		// 对新 body 已失效；Stabilize 失败时必须清零而非继承（清零后下一轮
+		// 缓存命中分支见空自愈重算）。
+		if persistRes.CompressedPrefixHash == "" {
+			state.CompressedPrefixHash = ""
+		}
 		hydrateSanitizeInfo(ctx, state)
 		state.SetCutMarker(marker)
 		_ = rc.deps.Cache.Set(ctx, tenantID, gwSessionID, state, rebuilt)

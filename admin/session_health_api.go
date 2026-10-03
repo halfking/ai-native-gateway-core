@@ -553,10 +553,11 @@ func (h *Handler) fetchSessionDim(ctx context.Context, gwSessionID, tenantID str
 // 通过匿名 import 避免循环依赖 sessioninspector 包，这里直接复用 session_health 计算。
 func (h *Handler) runInspectorsForSnapshot(ctx context.Context, dim *sessionDimBrief) []InspectorFindingResponse {
 	if dim == nil {
-		return nil
+		return []InspectorFindingResponse{}
 	}
 	// 1) Token 超限（复现 session_health_api 的逻辑，但只标记 finding）
-	var findings []InspectorFindingResponse
+	// R36：make(…,0) 契约卫生——零发现时序列化 [] 而非 null（R35 nil-slice 批同族）。
+	findings := make([]InspectorFindingResponse, 0)
 
 	// Token limit（从 settings 读阈值，缺省 100000）
 	maxTotal := inspectorReadInt(ctx, "session_inspector.token.max_total", 100000)

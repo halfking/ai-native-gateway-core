@@ -35,7 +35,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: audit-guards-ci-${{ github.ref }}
+  # 必须带 matrix.os：同名组 + cancel-in-progress 会让两个平台互相取消，
+  # 于是第二个平台静默消失 —— 而「一个平台没跑」正是本 job 要防的那类静默失效。
+  group: audit-guards-ci-${{ github.ref }}-${{ matrix.os }}
   cancel-in-progress: true
 
 permissions:
@@ -46,8 +48,29 @@ env:
 
 jobs:
   guards:
-    name: audit guards
-    runs-on: ubuntu-latest
+    name: audit guards (${{ matrix.os }})
+    # R99 补：守卫此前**只在 ubuntu 上被执行过**，而其中三个族（routeguard /
+    # rowsguard / errdiscard）用 filepath.Rel 构造键、人工键表全用正斜杠 ——
+    # Linux 上两者恰好相同，Windows 上永不匹配，于是三个族同时在 Windows 上
+    # 失效（routeguard 覆盖下限数到 0、rowsguard 虚增 11 处违规、errdiscard
+    # 棘轮双向断裂）却长期无人发现。详见
+    # docs/全面审计v3/2026-10-03/199-R89DJ-*.md。
+    #
+    # 「一条路径坏掉时另一条路径是静默的」——补平台不是锦上添花，是让这些门
+    # 在开发机（多为 Windows）上真正成立。fail-fast:false 让两个平台各自
+    # 报告，一个平台的噪声不会掩盖另一个的结果。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # guards-sync / install-entrypoints / user-scripts-sync 都是 bash 脚本；
+        # windows-latest 的默认 shell 是 pwsh，不显式声明会直接找不到 bash。
+        # 这三个脚本内部已有 Windows 感知（install-entrypoints 里的 Windows
+        # 实跑段在 Linux 上按 skip 处理），本 job 让它们在 Windows 上真正跑到。
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -76,3 +99,15 @@ jobs:
       # 可视性不受影响：`go test` 仍逐包打印 ok/FAIL，定位到包不成问题。
       - name: audit guards
         run: make guards
+
+      # R37 接线：安装入口域两道门。f35823167 落地时声称「接进 maintain 的
+      # static-check」属实，但那只覆盖 maintain 仓侧——本仓 CI 从未执行过
+      # 它们，两道门此前只活在作者本地（「一门没人跑的守卫是文档，不是门」，
+      # 本仓 guards-sync.sh 自己的标准）。两门均无网络依赖；npm 入口探针
+      # 需要 node（runner 自带，脚本内 command -v 已守卫）；Windows 实跑段
+      # 在 Linux 上按 skip 处理。触发面已含 scripts/checks/**。
+      - name: install entrypoints gate
+        run: bash scripts/checks/install-entrypoints-test.sh
+
+      - name: user scripts sync gate
+        run: bash scripts/checks/user-scripts-sync-test.sh

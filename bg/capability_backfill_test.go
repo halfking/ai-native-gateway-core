@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -126,6 +127,10 @@ func newBackfillHarness(t *testing.T, handler http.HandlerFunc, protocol string)
 		encKey:  nil,
 		keyring: kr,
 		sink:    sink,
+		// 与生产同参：batchLimit=0 会让探测循环第一行就 break（R33 审计
+		// 教训——补丁后 -run 模式换成 TestBackfill* 才暴露这组假绿）。
+		batchLimit: capabilityBackfillBatchLimit,
+		staleAfter: capabilityBackfillStaleAfter,
 		// 真实探测器：只换 DB 两个触点。
 		probe: real.probe,
 		scan: func(context.Context) ([]dueBinding, error) {
@@ -511,5 +516,240 @@ func TestCapabilityBackfillKillSwitch(t *testing.T) {
 		if got := capabilityBackfillEnabled(); got != tc.want {
 			t.Fatalf("capabilityBackfillEnabled() with %q = %v, want %v", tc.val, got, tc.want)
 		}
+	}
+}
+
+// ─── R33 审计钉桩（2026-10-03）：attempt 退避 / 反饥饿 / 蓝绿单跑 ───
+//
+// 三条不可让步约束之外的两条运行经济性闸门：无证据绑定在进程内退避期内不再
+// 出网（48 探/天 → 至多 24 探/天，且不再把预算吃满饿死健康行）；蓝绿双实例
+// 经 distlock 单跑（Redis 未接线时退化为既有双跑行为）。
+
+// backfillLedgerHarness 与 newBackfillHarness 同形但扫多条绑定、probe 可编程
+// （按 binding 记调用次数），供退避/反饥饿两用例共用。
+type backfillLedgerHarness struct {
+	backfill *CapabilityBackfill
+	probeMu  sync.Mutex
+	probes   map[int64]int
+}
+
+func newLedgerHarness(t *testing.T, n int, result httpProbeResult) *backfillLedgerHarness {
+	t.Helper()
+	h := &backfillLedgerHarness{probes: make(map[int64]int)}
+	// 真实信封：recordAttempt 在 decrypt 之后、probe 之前，行必须能走通
+	// 解密路径（与 newBackfillHarness 同一纪律——不给 decrypt 开后门）。
+	var key [32]byte
+	copy(key[:], "capability-backfill-test-32byte")
+	kr, err := secret.NewKeyring(map[string][32]byte{"k1": key}, "k1")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
+	envelope, err := secret.EncryptAESGCM([]byte("sk-real-test-key"), kr)
+	if err != nil {
+		t.Fatalf("EncryptAESGCM: %v", err)
+	}
+	b := &CapabilityBackfill{
+		keyring:    kr,
+		batchLimit: 10,
+		staleAfter: capabilityBackfillStaleAfter,
+		probe: func(_ context.Context, target probeTarget, _ providercap.Descriptor) httpProbeResult {
+			h.probeMu.Lock()
+			h.probes[int64(target.CredentialID)]++
+			h.probeMu.Unlock()
+			return result
+		},
+		scan: func(context.Context) ([]dueBinding, error) {
+			rows := make([]dueBinding, 0, n)
+			for i := 0; i < n; i++ {
+				rows = append(rows, admitAll(func(d *dueBinding) {
+					d.BindingID = int64(1000 + i)
+					// CredentialID 借作 binding 序号，probe 侧按它计数。
+					d.CredentialID = 1000 + i
+					d.Ciphertext = []byte(envelope)
+					d.Protocol = "openai-responses"
+					// 非空即可：probe 已被换掉，endpoint 解析只需通过空值守门。
+					d.BaseURL = "http://ledger-test.invalid"
+				}))
+			}
+			return rows, nil
+		},
+		persist: func(context.Context, dueBinding, bool, []byte) error { return nil },
+	}
+	h.backfill = b
+	return h
+}
+
+// 用例 1：无证据绑定退避——第二轮不再对同一批出网（此前每 30min 都探一遍，
+// 48 探/天 vs 健康行 4 探/天的成本反转）。
+//
+// 变异验证：删掉 recordAttempt 调用 → 第二轮 probes 仍增长 → 本用例红。
+func TestBackfillAttemptBackoffSkipsRecentProbes(t *testing.T) {
+	h := newLedgerHarness(t, 5, httpProbeResult{status: "network", category: probeCategoryProviderError})
+	ctx := context.Background()
+	if _, err := h.backfill.BackfillOnce(ctx); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	first := h.totalProbes()
+	if first != 5 {
+		t.Fatalf("cycle 1 probes = %d, want 5", first)
+	}
+	if _, err := h.backfill.BackfillOnce(ctx); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if got := h.totalProbes(); got != first {
+		t.Fatalf("cycle 2 added %d probes within backoff window, want 0", got-first)
+	}
+}
+
+// 用例 2：反饥饿——第一批「永远无证据」的绑定在预算内被探过后，第二轮的
+// 预算必须让位给同批后面从未试过的绑定（此前 NULLS FIRST + 窗口=预算使
+// >50 条无证据行永久霸占整批）。
+//
+// 窗口倍数本身由 TestBackfillScanLimitWidensWindow 直钉（本用例的 scan 是
+// 注入接缝，看不见 SQL LIMIT）。
+func TestBackfillLedgerYieldsBudgetToUntriedBindings(t *testing.T) {
+	const total = 30 // 扫描窗口 batchLimit×4=40 ≥ 30，全部可被扫到
+	h := newLedgerHarness(t, total, httpProbeResult{status: "network", category: probeCategoryProviderError})
+	ctx := context.Background()
+	if _, err := h.backfill.BackfillOnce(ctx); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	firstRound := h.probedBindings()
+	if len(firstRound) != 10 {
+		t.Fatalf("cycle 1 probed %d bindings, want budget 10", len(firstRound))
+	}
+	before := h.probedBindings()
+	if _, err := h.backfill.BackfillOnce(ctx); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	// probedBindings 是跨轮累计，第二轮取差分。
+	secondRound := map[int64]int{}
+	for id, c := range h.probedBindings() {
+		if d := c - before[id]; d > 0 {
+			secondRound[id] = d
+		}
+	}
+	if len(secondRound) != 10 {
+		t.Fatalf("cycle 2 probed %d bindings, want 10", len(secondRound))
+	}
+	for id := range firstRound {
+		if secondRound[id] > 0 {
+			t.Fatalf("cycle 2 re-probed binding %d within backoff window (starvation)", id)
+		}
+	}
+	if len(h.probes) != 20 {
+		t.Fatalf("distinct bindings probed = %d, want 20 (10+10 disjoint)", len(h.probes))
+	}
+}
+
+func (h *backfillLedgerHarness) totalProbes() int {
+	h.probeMu.Lock()
+	defer h.probeMu.Unlock()
+	n := 0
+	for _, c := range h.probes {
+		n += c
+	}
+	return n
+}
+
+func (h *backfillLedgerHarness) probedBindings() map[int64]int {
+	h.probeMu.Lock()
+	defer h.probeMu.Unlock()
+	out := make(map[int64]int, len(h.probes))
+	for id, c := range h.probes {
+		out[int64(id)] = c
+	}
+	return out
+}
+
+// 用例 3：蓝绿 follower 跳过——distlock 已被另一实例持有时，本实例整轮跳过
+// （零出网）。
+//
+// 变异验证：删掉 BackfillOnce 的 acquireSweepDistLock 块 → follower 也会探
+// 测 → 本用例红。
+func TestBackfillFollowerSkipsCycle(t *testing.T) {
+	mgr := distlock.NewLocalManager()
+	// 「另一实例」先持有锁。
+	leader, err := mgr.Acquire(context.Background(), distlock.AcquireOpts{
+		Key:  distlock.BuildKey(autoRouteDistLockNamespace, "capability_backfill"),
+		TTL:  capabilityBackfillDistLockTTL,
+		Mode: distlock.ModeWaitFollower, Scope: "capability_backfill",
+	})
+	if err != nil {
+		t.Fatalf("leader acquire: %v", err)
+	}
+	defer leader.Release(context.Background())
+
+	h := newLedgerHarness(t, 3, httpProbeResult{status: "network", category: probeCategoryProviderError})
+	h.backfill.SetDistLock(mgr)
+	n, err := h.backfill.BackfillOnce(context.Background())
+	if err != nil {
+		t.Fatalf("follower cycle: %v", err)
+	}
+	if n != 0 || h.totalProbes() != 0 {
+		t.Fatalf("follower instance probed (%d written, %d probes), want zero outbound", n, h.totalProbes())
+	}
+}
+
+// 用例 4：扫描窗口形状——SQL 窗口必须是预算 × scanFactor。探测接缝测试
+// （用例 2）的 scan 是注入的、看不见 SQL LIMIT，所以窗口倍数在这里直钉。
+//
+// 变异验证：capabilityBackfillScanFactor 改 1 → 本用例红。
+func TestBackfillScanLimitWidensWindow(t *testing.T) {
+	b := &CapabilityBackfill{batchLimit: 50}
+	// 期望值硬编码：引用 capabilityBackfillScanFactor 自身会把变异喂饱
+	//（§9 自证陷阱，首轮变异 factor=1 时确实没红）。
+	if got := b.scanLimit(); got != 200 {
+		t.Fatalf("scanLimit = %d, want 50×4 = 200", got)
+	}
+}
+
+// evidence_json 参数的 SimpleProtocol 语义（2026-10-03 R22 审计根修）。
+//
+// []byte 直传会被 SimpleProtocol 内联为 bytea hex 字面量（'\x7b22…'），PG
+// 拒绝转 jsonb —— R11 FIX-C（providerprofile）同根第四断点，252 生产 18h
+// 窗口 761 次写入全败 invalid input syntax for type json，能力位与 Redis
+// 镜像一并丢失。$4 必须经 capabilityEvidenceParam（非空 string / 空 nil）
+// 进 Exec，不允许裸 []byte。
+//
+// 判据钉在 AST 上不钉在源码子串上：注释里就写着「evidence」，子串门会
+// 被注释自己喂饱。变异验证：把 persistRow 的 $4 改回裸 evidence → 本用例红。
+func TestPersistRowEvidenceParamGuard(t *testing.T) {
+	if got := capabilityEvidenceParam([]byte(`{"k":1}`)); got != `{"k":1}` {
+		t.Fatalf("capabilityEvidenceParam(non-empty) = %T (%v), want string", got, got)
+	}
+	if got := capabilityEvidenceParam(nil); got != nil {
+		t.Fatalf("capabilityEvidenceParam(nil) = %T %v, want nil（SQL NULL）", got, got)
+	}
+	if got := capabilityEvidenceParam([]byte{}); got != nil {
+		t.Fatalf("capabilityEvidenceParam(empty) = %T %v, want nil（空串同样炸 jsonb 解析）", got, got)
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "capability_backfill.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse capability_backfill.go: %v", err)
+	}
+	var offenders []string
+	//nolint:staticcheck // 包内相对路径，bg 包 AST 守卫惯例
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Exec" {
+			return true
+		}
+		for _, arg := range call.Args {
+			if id, ok := arg.(*ast.Ident); ok && id.Name == "evidence" {
+				offenders = append(offenders, fset.Position(arg.Pos()).String())
+			}
+		}
+		return true
+	})
+	if len(offenders) > 0 {
+		t.Fatalf("Exec 直接传裸 []byte evidence 于 %v；必须经 capabilityEvidenceParam "+
+			"（SimpleProtocol 会把 []byte 内联为 bytea hex 字面量，jsonb 解析必炸）", offenders)
 	}
 }

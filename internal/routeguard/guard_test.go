@@ -74,8 +74,13 @@ func TestMigrationCoverageIsNotZero(t *testing.T) {
 		t.Fatalf("enumerate routing view files: %v", err)
 	}
 	migrations := 0
+	// RoutingViewFiles normalises to forward slashes, so build the prefix the
+	// same way. Appending filepath.Separator to a forward-slash constant
+	// produced a string ("sql/migrations\") that can never match, which is why
+	// this test read zero on Windows even though the scan found 19 files.
+	migPrefix := filepath.ToSlash(MigrationsDir) + "/"
 	for _, f := range files {
-		if strings.HasPrefix(f, MigrationsDir+string(filepath.Separator)) {
+		if strings.HasPrefix(f, migPrefix) {
 			migrations++
 		}
 	}

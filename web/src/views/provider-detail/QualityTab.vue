@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { sortByName } from '../../utils/sortByName'
 import { useI18n } from 'vue-i18n'
 import {
   getProviderQualityDetail,
@@ -21,6 +22,10 @@ const qp = (key: string): string => t(`providerDetailPage.quality.${key}`)
 const loading = ref(false)
 const error = ref('')
 const data = ref<ProviderQualityData | null>(null)
+// 2026-10-03：质量表首列是模型标识，之前按后端返回顺序排。
+// 注意 provider 级汇总行 model_name 为空（模板里用 '__provider__' 当 key），
+// sortByName 的「空名称沉底」正好把它甩到最后，不会混在模型行里。
+const sortedModels = computed(() => sortByName(data.value?.models ?? []))
 
 async function loadData() {
   loading.value = true
@@ -172,7 +177,7 @@ function modelLabel(name: string | null | undefined): string {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="m in data.models" :key="m.model_name || '__provider__'">
+            <tr v-for="m in sortedModels" :key="m.model_name || '__provider__'">
               <td>{{ modelLabel(m.model_name) }}</td>
               <td class="num">{{ formatQualityScore(m.quality_score) }}</td>
               <td>

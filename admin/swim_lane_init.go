@@ -116,7 +116,8 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 	}
 	defer rows.Close()
 
-	var requests []SwimLaneRequest
+	// R36：make(…,0)——空窗时序列化 [] 而非 null（R35 nil-slice 批同族）。
+	requests := make([]SwimLaneRequest, 0)
 	stats := SwimLaneStats{
 		VendorStats:   make(map[string]int),
 		ProviderStats: make(map[string]int),
