@@ -28,8 +28,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
+	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"    // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
-	"github.com/kaixuan/llm-gateway-go/domains/reportrollup" // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
@@ -98,11 +98,11 @@ type Handler struct {
 	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
 	// 2026-08-29 代理管理：由 proxyRuntime() 惰性构建（见 admin/proxy.go），
 	// 避免改动所有 Handler 构造点。请求路径不会启动后台 goroutine。
-	proxyOnce  sync.Once
-	proxyMgr   *proxy.Manager
+	proxyOnce sync.Once
+	proxyMgr  *proxy.Manager
 	// liteSessions 为 lite(sqlite) 存储模式的会话读面（R28-S-2）；nil=非 lite 模式。
 	liteSessions LiteSessionsReader
-	proxyStore proxy.Store
+	proxyStore   proxy.Store
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
 	// still registered (URL stays stable across deployments); the
@@ -1080,6 +1080,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		swH.RegisterRoutes(mux, h.admin)
 	}
 
+	// 2026-10-03（审计 §9.73.7）：v1 读源族停更告示。
+	//
+	// 挂在 admin 认证之后（`admin(...)`），因为它报告的是平台级状态；
+	// 挂在**中央** JSON 出口（writeJSON / writeJSONOk），所以新增端点
+	// 自动被覆盖 —— 逐端点挂载会漏，而漏掉的那个恰恰是新的那个。
+	mux.HandleFunc("/api/admin/v1-data-horizon", admin(h.handleV1DataHorizon))
+
 	// 2026-07-07: P2会话分析 - 客户端/任务维度分析
 	mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))
 	mux.HandleFunc("/api/admin/session-analytics/clients/", admin(h.handleClientAnalyticsDetail))
@@ -1472,6 +1479,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 // writeJSON 写 JSON 响应；marshal 失败时记日志并返回 500 兜底体。
 // 薄委托 internal/httpx（2026-09-04 writeJSON 收敛），错误分支语义保留在本地。
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	// v1 停更告示挂在**中央出口**而不是逐端点（v1_freeze_notice.go 文件头）。
+	applyV1FreezeNotice(w)
 	if err := httpx.WriteJSON(w, status, "application/json", v); err != nil {
 		slog.Error("json marshal failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")

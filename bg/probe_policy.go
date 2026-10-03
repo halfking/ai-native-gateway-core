@@ -13,6 +13,8 @@
 // 谓词集中在此，避免各扫描器/调度器口径漂移。
 package bg
 
+import "fmt"
+
 // nodeProbeHealthyParkedSQL renders the healthy-parked predicate (INV-1) for a
 // node_probe_state row aliased by alias. A row is healthy-parked when the last
 // probe round succeeded, no error code is recorded, and no failure counter is
@@ -186,6 +188,69 @@ const probeTrafficExclusionPredicate = "(NOT COALESCE('probe' = ANY(%s.quality_f
 const ProbeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
 	" AND COALESCE(%s.task_type, '') <> 'probe_triggered'" +
 	" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"
+
+// probeTrafficExclusionPredicateSession 是 settle 基线 cohort 在**会话族**上的
+// 探针排除谓词（审计 §9.73.4/§9.73.5，2026-10-03 裁决「分族修」）。
+//
+// # 为什么必须单列一条，而不是复用上面两条中的任何一条
+//
+// 两条现成谓词都引用 `quality_flags`，而**会话族那张表没有这一列**：
+//
+//	迁移 707 给 session_turns / session_turns_hot 加了 origin_stage、origin_actor、
+//	is_auto_request 等 55 列，**没有** quality_flags；
+//	252 生产实测：session_turns 104 列，有 origin_stage / task_type / origin_actor，
+//	无 quality_flags（request_logs_hot 是 156 列，四列俱全）。
+//
+// ⇒ 对会话族用上面任何一条都会 42703，**每一次结算轮询都会失败**。
+// 这不是理论风险：R50 记录的 admin 回归就是同一个坑（`ExcludeSelfTest` 默认值
+// 让物理谓词对视图 42703，每次调用都炸）。
+//
+// # 臂的构成：为什么是这三条
+//
+// 采用 `synthetic_session.go` 自己的探针分类（origin_stage / origin_actor /
+// task_type 含 probe），即上面三条里凡是该族**真的有的列**都取：
+//
+//	origin_stage  ← 物理谓词那条臂（探针网关轮打 node_probe，没有 quality 标记）
+//	task_type     ← 视图谓词那条臂（ActiveProbeWorker 行）
+//	origin_actor  ← 视图谓词那条臂（四个探针 gateway actor，R52 订正后是四个）
+//
+// **不是**「挑几条看起来够用的」，而是「该族有的探针标记全部取」——
+// 少取一条就是一类探针静默进入 cohort，而 cohort 是基线，静默污染它等于
+// 静默改变 reward。
+//
+// ⚠ **诚实标注**：会话族在 252 上 `is_auto_request` 为 0 行（§9.44 实测），
+// 所以这条谓词的**探针分类效果未被生产数据验证过**，被验证的只有
+// 「引用的三列在该族表上确实存在」（迁移 707 + 252 列清单双向核对）。
+// 由 TestProbeTrafficExclusionPredicateColumnsExistOnTheirFamily 钉住后者。
+const probeTrafficExclusionPredicateSession = "(COALESCE(%s.origin_stage, 'business') = 'business'" +
+	" AND COALESCE(%s.task_type, '') <> 'probe_triggered'" +
+	" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"
+
+// probeTrafficExclusionPredicateFor 按数据源族返回探针排除谓词。
+//
+// # 存在的理由
+//
+// settle worker 的三条腿都由 `settleSourceSpec` 驱动（§9.43），而**读点表随 S4
+// 写门在 request_logs_hot ⇄ session_turns_hot 之间切换**。谓词的可用列集
+// 随表而变，所以「用哪条谓词」必须由**同一个**族标签决定，不能各调用点自己判断。
+//
+// 以前没有这个分派，是因为 cohort 那条 SQL **完全不看探针**（审计 §9.73.4：
+// 24h 生产窗口 8,270 行 cohort 里 8,269 行是探针，而 `probe_triggered`
+// 根本不在 selection 的 task_type 词表里 ⇒ 99.99% 的基线服务 0 条结算）。
+//
+// ⚠ 未知族**不静默回落到 v1**：静默回落会让「新增一个族却忘了配谓词」变成
+// 一次 42703 或一次静默污染，而不是一次可定位的错误。unknown 返回空串 + false，
+// 由调用方（与本包的族闭集门）负责暴露。
+func probeTrafficExclusionPredicateFor(family, alias string) (string, bool) {
+	switch family {
+	case settleFamilyV1:
+		return fmt.Sprintf(probeTrafficExclusionPredicate, alias, alias), true
+	case settleFamilySession:
+		return fmt.Sprintf(probeTrafficExclusionPredicateSession, alias, alias, alias), true
+	default:
+		return "", false
+	}
+}
 
 // probeFailureEvidenceWindowSQL is the credential-level failure-evidence
 // window (INV-5): how far back a candidate failure still counts as "this
