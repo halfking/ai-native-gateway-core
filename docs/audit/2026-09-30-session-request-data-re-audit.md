@@ -8169,3 +8169,89 @@ rc=0。
 > **这一轮的共同形状**仍是 §9.64 末尾那句：**「声明在」被当成了「行为在」**。
 > `RETURN` 声明了跳过；门声明了检查；`go test` 声明了通过。三处都要问一句
 > **它覆盖的是哪个形态、谁来跑它、失败时谁会看见**。
+
+### §9.65.8 §9.65.2 那个修复顺带暴露的耦合，我先证明它无害，再决定不动它
+
+§9.65.2 把 `request_class` 的判据改成 `$98::text IS NULL` 之后，同一条 UPDATE
+里紧挨着的 `due_at` 判据仍是 `CASE WHEN $98::text IS NULL THEN due_at ELSE $99 END`
+——**due_at 的判据复用的是 class 的占位符**。这是本轮之前就有的形态，不是我引入的。
+
+要判断它是缺陷还是无害，必须先证一条 Go 侧不变量：
+
+> **`logCtx.RequestClass` 与 `logCtx.DueAt` 严格配对。**
+> `applyRequestClassToLogCtx`（`domains/streaming/dispatch_schedule.go:83`）是唯一
+> 写这两处的地方：dueAt 为零 → 两者都置 immediate/零值；dueAt 非零 → class 置
+> `scheduled` 且 dueAt 落值。它没有第三条出口。
+
+不变量成立 ⇒ 不存在「`$98` 为 NULL 而 `$99` 非 NULL」的 logCtx ⇒ `$98` 复用
+今天不产生任何行为差异。**这不是推理，是要证的**——证完顺手落成一道门
+`domains/streaming/dispatch_due_at_pairing_test.go`：
+
+| 判据 | 形态 | 破坏方式 |
+|---|---|---|
+| ① 调用点配对 | `X := parseDispatchDueAt(...)` 的 X 必须**原样**作为第二实参传给同函数的 `applyRequestClassToLogCtx` | 新协议 handler 忘了 stamp |
+| ② 直写禁令 | 形参类型 `*RequestLogContext` 的函数，只允许在 owner 体内给 `.DueAt` 赋值 | 绕过 stamp 直接写 due_at |
+
+**判据① 按实参身份比，不只比次数**——这是它与「数一下有几个 parse/stamp」的唯一
+区别，也是它多能抓的东西：变异 M3 把 `apply(logCtx, dispatchDueAt)` 改成
+`other := dispatchDueAt.Add(time.Second); apply(logCtx, other)`，调用次数仍是 1:1，
+**按次数的门全绿，按身份的门报红并指出 `handler.go:4382`**。
+
+**危害定性要订正**。我最初在门的注释里写的是「due_at 会被静默丢弃」，这不准确：
+丢了 due_at 只是少一列，**真正的后果是那一行会被记成 immediate**——class 与 dueAt
+双双留零 ⇒ 落库时 `request_class` 取列默认 `'immediate'`，一个实际等到期才发出的
+scheduled 请求在账单和容量统计里被算成即时请求，**不报错、不告警**。门的报错文案
+与本节都按后者写。
+
+**写这道门时我自己犯了三个错，其中一个差点让门变成永远绿的不动点**：
+
+1. **跨次解析比较 `token.Pos`**。第一版先扫一遍收集 owner 的函数体区间，再对同一批
+   文件**重新 `parser.ParseFile`** 去找 `.DueAt` 赋值。两次解析的 base offset 不同，
+   `inside(ownerRng, sel.Pos())` 变成拿 A 次的位置比 B 次的区间——症状是**门恒红**
+   （很难往「解析了两次」上想），不是报假红。**已整条删除**：本版全部改用结构判据
+   （所在函数是不是 owner），不再比较任何位置，这个失效面随之消失。
+2. **判据认错了对象**。第一版禁的是「所有 `.DueAt` 赋值」，把
+   `reqLog.DueAt = requestDueAtPtr(logCtx)` 报成红——那是**从 logCtx 取值写到另一个
+   结构**的正确写法（`handler.go:6709`、`request_log_pipeline.go:1121`）。**判据错了，
+   不是产品错了**。收窄为「接收者标识符是 owner 的形参名 `logCtx`、且该形参类型确为
+   `*RequestLogContext`」。
+3. **`if fn.Recv != nil { continue }` 把三个真实调用点全跳过了**。我照着第一版的
+   「方法不参与本判据」写下来，但三处 `parseDispatchDueAt` 都在 `ChatHandler` 的方法
+   体内（`handler.go:4382` `serveWithExecutor` / `responses.go:715` / `messages.go:726`）。
+   **这次是门自己抓到的**——`parseN == 0` 的空集守卫 `t.Fatalf` 报红，rc=1。
+   若没有空集守卫，这道门会以「ok / PASS」的形式静默通过整个包，而它一条判据都没在跑。
+   记在这里是因为它与 §9.65.3 是同一个形状：**恒定的绿比红更危险**。
+
+变异验证（每次改判据后都重跑，三次全中）：
+
+| 变异 | 手法 | 结果 |
+|---|---|---|
+| M1 | 删掉 `handler.go` 的 stamp 调用 | rc=1，报 `handler.go:4382 serveWithExecutor 的 parseDispatchDueAt 结果 dispatchDueAt 没有原样传给 applyRequestClassToLogCtx` |
+| M2 | 在 `shouldSkipAutoTitleGeneration` 里直写 `logCtx.DueAt` | rc=1，报 `handler.go:6868 绕过 applyRequestClassToLogCtx 直接给 logCtx.DueAt 赋值` |
+| M3 | stamp 传 `dispatchDueAt.Add(time.Second)`（次数仍是 1:1） | rc=1，判据① 抓 |
+
+**M2 顺带证明这道门不是装饰**：`logCtx` 是个普通指针形参，被穿针引线传进
+`emitTelemetry` / `shouldSkipAutoTitleGeneration` / `buildClientDisconnectProbeEntry`
+等一串函数（`handler.go:5858` / `:6867` / `:7092`），**类型层面没有任何东西阻止
+在这些函数里写 `logCtx.DueAt`**，编译器也不会吭声。M2 就是这么改出来的，一路编过。
+所以判据②是这条不变量的**唯一**执行点——去掉它，不变量立刻可破且无任何编译期信号。
+
+**关于把 `due_at` 判据改成 `$99`：本轮做了，又回退了。**
+
+改成 `$99::timestamptz IS NULL` 在今天与 `$98` **行为完全相同**（由上面这条门证），
+而将来任何绕过 stamp 的写法都会被它正确处理——是个纯粹的加固。**回退理由**：
+
+- 它超出本轮授权范围（§9.65 只授权修 `$98` 的类型推断、查红、量 252、修守卫）；
+- 它要改 `request_class_sql_test.go:97` 那个**正在通过**的、按字面量钉 SQL 的门。
+  让一个绿测试转红需要显式决策，不该顺手带上。
+
+实测记录（已回退，`client.go` 现为 `$98::text` 形态，`TestUpdateRequestLogCarriesRequestClass`
+rc=0）：改 `$99` 后该字面量门 rc=1，报
+`UPDATE missing 608 assignment "due_at = CASE WHEN $98::text IS NULL THEN due_at ELSE $99 END"`。
+**留给下一轮拍板。**
+
+**当前工作区终态**：`merge-817-818` 干净，仅新增一个未跟踪文件
+`domains/streaming/dispatch_due_at_pairing_test.go`。
+`go vet ./domains/streaming/` rc=0；新门 rc=0（3 parse / 3 stamp / 2 处 `logCtx.DueAt`
+全在 owner 内）；telemetry 全包离线测试 rc=0。
+
