@@ -5722,3 +5722,80 @@ go test ./internal/sessionv2mirror/ ./domains/session/v2/
 - 等价口径 (i)/(ii)/(iii)
 - `session_v2_mirror_backlog_pending` 告警（252 恒为 1，加即永久 firing）
 - 内部 actor 名单 (a)(b)(c) / cohort 修正 / §9.49.8 扩档 / §9.48 口径
+
+---
+
+## 第五十五轮（§9.104）：★撤回「`01-schema.sql` 三副本无同步门」——门有，而且我差点加的那道是**已被否决的假不变式**
+
+上一轮我列了「补三副本同步门」当待办。这轮去加，**先查了仓里有没有**——
+两次都指向：我错了，而且那道门不该加。
+
+### 一、门是有的，两道，当前都 PASS
+
+- `sql/schema/baseline_drift_test.go` → `TestDerivedBaselineLagIsSuppliedByMigrations`
+  （派生副本相对 canonical 的**世代差**必须由增量迁移补齐）
+- `sql/migrations/startup/baseline_ensure_functions_contract_test.go`
+  （三副本的 **`ensure_*` 函数**必须一致）
+
+我 §9.100.2 的三副本同改**没违反任何一条**。
+
+### 二、★那道门不该加：仓里把它记成「假不变式，不得重新发明」
+
+`baseline_drift_test.go` 开头原话（节选）：
+
+> ── A FALSE INVARIANT, RECORDED SO IT IS NOT RE-INVENTED ──
+> The first version of this file asserted that all three copies create the
+> same object set. It went red, and **the red was correct while the rule was
+> wrong**… That delta is not drift to be closed. It is a **generation offset**.
+
+而且三份副本是**手工维护的孤儿**：`dump-schema.sh` 依赖的
+`scripts/_lib/db-init-lib.sh` **从来不在这个仓里**（路径逃出仓外），
+自 `28d4d8612`（2026-07-05）起就不可运行。
+
+⇒ **我正要写的「三份必须一致」就是那条被试过、被判错、并写明「不要重新发明」的规则。**
+
+### 三、变异界定了既有门的**边界**（不是证明它坏）
+
+只把 canonical 改成引用一张**不存在的表** `candidate_failure_logs_TAMPERED`：
+
+```
+TestBaselineEnsure… → ok   ← 没红
+```
+
+⇒ ensure 门**确实不覆盖非 `ensure_*` 的语句**（我 §9.100.2 改的视图在覆盖之外）。
+**但这不构成加门的理由**：派生副本本来就应该靠迁移补齐世代差，
+「任意语句不一致即红」不是成立的不变式。真要补，得先裁决**哪些差异是合法世代差**。
+
+**本节不改任何门**，只撤回上一轮的待办条目。
+
+### 四、顺带：`sql/schema` 整包在本机红，但与产品无关
+
+`TestFirstLivePythonControls` 失败：PATH 里没有 `python` 这个可执行名（只有 `python3`）。
+**环境前置条件**，不是缺陷，也与本会话改动无关。记下来免得下一轮误判。
+
+### 五、教训
+
+> **写新门前先问「这条方向已有门覆盖吗」，而且要去读那条门留下的注释。**
+> 仓里不仅有门，还把**加这个门**的失败尝试写进了注释，专门防止重蹈。
+>
+> **变异的作用不只是证明「门有效」，也可以界定「门的边界」。**
+> 但**「不覆盖」≠「该加」**——先问这条不变式成不成立，再问有没有门。
+>
+> **重复的门 + 错的范围 = 专门生产假红的机器，比不写更坏。**
+
+### 六、下一轮
+
+**不需要拍板**（清单已缩短一项）：
+- 查 `outbox_events` / `gateway.session_tags` 缺失是否有意（两侧均无）
+- auto-route 自 2026-09-15 断流原因（仍缺 09-08/09-09 日志或 Prometheus 历史）
+- A 群 6 条 / B 群 10 条 / `backlog_pending=1`（五轮未收敛）
+- Makefile 无 gofmt 门（`turn_writer.go` 的格式债因此长期存在）
+
+**待拍板**（与前几轮相同）：
+- 阻塞 #1 读取侧：`session_turns_with_current_month` 加不加 `search_text`
+  + `admin/logs.go` 的 `rl` 何时从 v1 切会话族
+- 阻塞 #2 `is_final_success`：唯一索引 + claim-and-supersede 同批上线
+- 等价口径 (i)/(ii)/(iii)
+- `session_v2_mirror_backlog_pending` 告警（252 恒为 1）
+- 内部 actor 名单 (a)(b)(c) / cohort 修正 / §9.49.8 扩档 / §9.48 口径
+- **新增候选**：写链是否自 ensure 当月分区（消除全新安装启动窗口，行为变更）
