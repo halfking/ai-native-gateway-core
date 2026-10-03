@@ -300,25 +300,39 @@ Tenant ID → Virtual Identity → Upstream Headers
 ### 2.4 协议适配
 
 #### 📦 `adapter/unified`
-**职责**: 多协议统一适配
+**职责**: 多协议统一适配 —— **⚠️ 已废弃，勿当现役适配层使用**
 
-**关键文件**:
-```
-adapter/unified/
-├── openai.go               # OpenAI协议
-├── anthropic.go            # Anthropic协议
-├── gemini.go               # Gemini协议
-├── responses.go            # Responses协议
-└── converter.go            # 协议转换器
-```
-
-**支持协议**:
-| 协议 | 端点 | SSE流式 | 状态 |
-|------|------|---------|------|
-| OpenAI | `/v1/chat/completions` | ✅ | CURRENT |
-| Anthropic | `/v1/messages` | ✅ | CURRENT |
-| Gemini | `/v1/models/*:generateContent` | ✅ | CURRENT |
-| Responses | `/v1/responses` | ✅ | CURRENT |
+> **订正（2026-10-03，审计 229 号）**：本节此前描述失真，已按代码改正。
+>
+> - **本包已于 2026-08-30 声明废弃**（`interface.go:1-13`：「was a **2025 sketch** of a
+>   second, provider-agnostic IR… **Deprecated 2026-08-30: not the canonical IR**」）。
+> - **权威协议面是 `internal/ir` + `domains/transformation`**（`interface.go:6` 原文）。
+>   多协议转换请去那里，不要来这里。
+> - 本包**零生产引用、零测试引用**（全仓 import 计数 = 0）。
+>
+> **实际关键文件（此前此列表含 3 个不存在的文件，已删除）**:
+> ```
+> adapter/unified/
+> ├── interface.go               # 包头废弃声明 + Adapter/StreamAdapter 接口 + Unified IR 类型
+> ├── openai.go                  # OpenAI 协议（仅请求/响应两方向）
+> ├── anthropic.go               # Anthropic 协议（仅请求/响应两方向）
+> ├── registry.go                # Registry + init() 预填 2 项（OpenAI/Anthropic）
+> └── adapter_test.go            # 12 个测试，无 golden/testdata
+> ```
+> ⚠️ `gemini.go` / `responses.go` / `converter.go` **均不存在**（此前被列在「关键文件」里）。
+>
+> **实际支持范围（此前误标为四协议 CURRENT 且全部 SSE ✅）**:
+> | 协议 | 方向 | 流式 | 状态 |
+> |------|------|------|------|
+> | OpenAI | 请求 + 响应 | ❌ **无实现** | DEPRECATED |
+> | Anthropic | 请求 + 响应 | ❌ **无实现** | DEPRECATED |
+> | ~~Gemini~~ | — | — | **本包无此能力**（实现在 `internal/ir/parse_gemini.go` / `serialize_gemini.go`） |
+> | ~~Responses~~ | — | — | **本包无此能力**（实现在 `internal/ir/parse_responses.go` / `serialize_responses.go`） |
+>
+> `StreamAdapter` 接口与 `UnifiedStreamChunk` 等流式类型**已定义但零实现**，
+> `GetStreamAdapter(...)` 运行时必返回 `adapter does not support streaming`（`registry.go:135-138`）。
+> 另注：本包**不 import `internal/ir`，也不 import `domains/transformation`**
+> ⇒ 与现役适配层是**孤立的并列草图**，不是上层/下层，无任何独有能力。
 
 ---
 

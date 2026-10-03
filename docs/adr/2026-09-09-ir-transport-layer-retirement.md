@@ -91,3 +91,54 @@ IR 转换,`main.go:1537`)+ `domains/transformation/anthropic` 桥承担,不经�
 1. 从本 ADR 对应的提交(`bfea15b40`^)恢复 factory.go/layer.go/ir_transport.go/legacy_transport.go 及其测试;
 2. 先在 `internal/ir` 补齐 SerializeAnthropic 三处(golden 用例 `testdata/anthropic_stream_golden` 仍在,可直接 diff 校验)与 InternalResponse 两字段;
 3. 在 executors 流式分支挂工厂调用点——此时应作为独立的、带完整对照测试的专题改造评审,不走灰度开关暗改热路径。
+
+---
+
+## 2026-10-03 补记(审计 229 号):本 ADR 的三处陈述已过期
+
+删除清单**已全部真实执行**,但以下三条**基于本 ADR 的推论已不成立**。逐条以代码核实:
+
+1. **`:83` 的「孤儿清单」已自行过期。** 它点名的 5 个流式函数
+   (`StreamAnthropicPassthrough`/`StreamAnthropicSSEToOpenAI`/`StreamOpenAIToAnthropicSSE`/
+   `StreamWriter`/`DeriveStreamContext`)今天**在本包内已不存在**,被两个后续提交删除:
+   `97aa179ab`(`anthropic_passthrough_stream.go`、`anthropic_to_openai_stream.go`)、
+   `b7c8d6f39`(`anthropic/anthropic_stream.go`)。
+   同理 `:83` 称「必须保留」的 `IsAnthropicStreamEmpty`**全仓已无定义**——
+   `domains/streaming/anthropic_bridge.go:439` 注释自述「retired in the D2/D3」。
+   ⇒ 当时记为「孤儿」的代码,今天已经不存在;**孤儿问题不是被解决,是被顺带删掉了。**
+
+2. **`:82` 承诺的「`TRANSPORT_LAYER_IR_ENABLED` 从配置面消失」未做到。**
+   `docker-compose.yml` 确实已删(见 `docs/audit/2026-09-09-24h-audit-round4.md:130`),
+   但**另外两处仍在,且其中一处是仍在运行的部署脚本**:
+   - `deploy/llm-gateway-go.service:13`、`deploy/llmgo-245.service:15`
+     仍写 `Environment=TRANSPORT_LAYER_IR_ENABLED=true`;
+   - ⚠️ **`scripts/deploy-seamless.sh:764-773` 仍在主动向生产 env 文件注入该变量**
+     (注释写「确保 TRANSPORT_LAYER_IR_ENABLED=true (spec §10.4.1)」,
+      逻辑是 env 里没有就 `sed` 追加一行)。
+   ⇒ 该变量**全仓无任何 Go 代码读取**(命中全在 `docs/`、`deploy/*.service`、`scripts/`),
+   所以**无功能危害**;但它在 spec 里曾是「IR 作为协议转换主路径」的开关,
+   **运维看到它被注入会以为 IR 传输层在生效**(实际已下线)。
+   ⇒ **登记为待裁决 95**(P3,误导性配置,不擅自动手:改部署脚本属运维契约)。
+
+3. **`:20` 的接线行号已漂移**:`main.go:1537` → 今天 `cmd/gateway/main.go:1690`。
+
+### 本轮新发现(未在本 ADR 决策范围内,登记备查)
+
+- **`domains/transformation/lockfree_circuit_breaker.go` 整文件零引用**:
+  `LockFreeCircuitBreaker` / `NewLockFreeCircuitBreaker` / `GetErrorCount` 的全仓命中
+  **全部在本文件内**,无外部、无测试。⚠️ 而
+  `docs/archive/2026-07/CONCURRENCY_OPTIMIZATION.md:460` 仍示范
+  `transformation.NewLockFreeCircuitBreaker(3, time.Minute, time.Minute)` ⇒ **文档仍在教人用一个死代码**。
+- **`anthropic/anthropic_to_chat_request.go`(`ConvertAnthropicRequestToChat`)零外部引用**:
+  13 处命中 = 定义 2 + 测试 11。
+- **`:42` 称随 `metrics.go` 一起删除的 `transport_conversion_*` 指标确已消失**
+  (全仓唯一命中是本 ADR `:42` 自身)。
+- **本 ADR `:21-22` 那句「所有 integration 测试文件都带 `//go:build integration`」不准确**:
+  `tests/integration/` 10 个文件里 **4 个无 tag**
+  (`helpers_test.go`/`dual_mode_test.go`/`benchmark_test.go`/`stream_state_machine_cancel_test.go`,
+  `helpers_test.go:4-7` 注释说明这是刻意的)。
+  断编译已修(`tests/integration/protocol_e2e_test.go` 已由 `ca4c828f4` 删除),
+  且 `sql/schema/integration_gate_test.go:769` 的 `TestIntegrationTaggedTreeCompiles`
+  经 `.github/workflows/audit-guards-ci.yml:100-101` 的 `make guards` **在 CI 生效**
+  (实测 `type-checking 374 packages` PASS)⇒ 本 ADR 的防复发措施**是真的在跑的**。
+  ⚠️ 远端 CI 当前红绿**无法从仓库内证实**(仓内无 badge/状态缓存)。
