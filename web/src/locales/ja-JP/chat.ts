@@ -21,6 +21,7 @@ export default {
     summarizeFailed: '要約失敗',
     sessionForbidden: 'この API キーではこのセッションにアクセスできません。正しいキーを選択してください',
     autoRoute: '自動ルーティング (auto)',
+    modelListFailed: 'モデル一覧を読み込めませんでした。ドロップダウンに「自動ルーティング」しかないのは、ゲートウェイが自動ルーティングしか対応していないという意味ではありません',
     auto: '自動',
     needsKeyTitle: 'API キーを申請してください',
     needsKeyDesc: 'チャットには、有効化された API キーが必要です。現在利用可能なキーがありませんので、申請または作成してください。',

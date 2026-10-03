@@ -3,6 +3,7 @@ export default {
   pageTitle: 'Nutzungstrend-Analyse',
   pageSub: 'Nutzung je Modell über die Zeit; Filter nach Anbieter / Mandant / API-Key / Modell / Metrik',
   loadFailed: 'Laden fehlgeschlagen',
+  degraded: "Trenddaten nicht verfügbar (View {view} ist nicht initialisiert). Die flache Linie bedeutet „nicht berechnet“, nicht null Nutzung.",
   detailTimeoutHint: 'Beim Filtern nach API-Key werden Anfrageprotokolle gescannt, was bei großen Zeiträumen zu einem Timeout führen kann; bitte einen kürzeren Zeitraum (z. B. innerhalb von 7 Tagen) wählen',
   filterProvider: 'Anbieter',
   filterTenant: 'Mandant',
@@ -10,6 +11,8 @@ export default {
   filterModel: 'Modell',
   filterMetric: 'Metrik',
   filterAll: 'Alle',
+  filterProviderKeyFailed: "Anbieter-/Key-Filteroptionen konnten nicht geladen werden – eine leere Auswahl bedeutet nicht, dass es keine gibt",
+  filterTenantFailed: 'Mandanten-Filteroptionen konnten nicht geladen werden',
   shareByMetric: 'Anteil (Metrik)',
   sourceDetail: 'Anforderungsdetail',
   // 2026-10-02 Mehrfachauswahl / Alle löschen / Auto-Aktualisierung

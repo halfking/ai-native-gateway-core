@@ -77,6 +77,9 @@ async function loadTabData(tab: TabId) {
 }
 
 const tabErrors = ref<Record<string, string>>({})
+// 请求监控页签的「部分凭据取不到」提示；与 tabErrors 分开，因为它不是错误字符串，
+// 而是一句范围说明（统计偏小）。
+const monitorError = ref('')
 function setTabError(tab: string, msg: string) {
   tabErrors.value = { ...tabErrors.value, [tab]: msg }
 }
@@ -203,6 +206,13 @@ async function loadMonitor() {
   let totalFailed = 0
   const errorKinds: Record<string, number> = {}
   let hitAny = false
+  // 2026-10-03：原来 `catch { // Skip credentials with no live data }`。
+  // 「没有实时数据」与「这次请求失败」是两件事，被混成一件之后：
+  // 只要有一个凭据成功，stats-row 就照常显示**偏小**的总数，
+  // 而那个数字看上去是全量的 —— 失败率会被算低，运维看不出来源不全。
+  // 现在分别计数，并在页面上说清「有几个凭据没取到」。
+  const failedCreds: string[] = []
+  monitorError.value = ''
 
   for (const node of nodes.value) {
     try {
@@ -215,8 +225,14 @@ async function loadMonitor() {
       for (const [k2, v] of Object.entries(k)) errorKinds[k2] = (errorKinds[k2] || 0) + v
       hitAny = true
     } catch {
-      // Skip credentials with no live data
+      failedCreds.push(String(node.credential_id))
     }
+  }
+  if (failedCreds.length > 0) {
+    monitorError.value = t('probeHealth.monitorPartialFailed', {
+      count: failedCreds.length,
+      ids: failedCreds.slice(0, 3).join('、'),
+    })
   }
   if (hitAny) {
     allEntries.sort((a, b) => b.ts - a.ts)
@@ -594,6 +610,8 @@ onMounted(() => {
             {{ w < 60 ? `${w}分钟` : `${w / 60}小时` }}
           </button>
         </div>
+        <!-- 2026-10-03：部分凭据取不到时，下面的总数是**偏小**的，必须说清 -->
+        <div v-if="monitorError" class="load-error-banner" role="status">{{ monitorError }}</div>
         <div v-if="monitorStats" class="stats-row">
           <div class="stat-mini"><span class="stat-mini-label">请求总数</span><span class="stat-mini-val">{{ monitorStats.total }}</span></div>
           <div class="stat-mini"><span class="stat-mini-label">成功</span><span class="stat-mini-val rate-good">{{ monitorStats.success }}</span></div>
@@ -707,7 +725,14 @@ onMounted(() => {
 
       <div v-else-if="activeTab === 'pricing'">
         <EmptyState v-if="!isAdmin" text="仅超级管理员可查看价格" />
-        <EmptyState v-else-if="tabErrors.pricing" text="{{ tabErrors.pricing }}" />
+        <!--
+          2026-10-03：原来写成 text="{{ tabErrors.pricing }}" —— 花括号在引号里
+          是**字面量**，不参与插值。loadPricing 失败时用户看到的是一串
+          `{{ tabErrors.pricing }}` 而不是「价格数据不可用」。
+          「设了状态」与「用户看得见」之间隔着一个冒号，见
+          scripts/catch-silent-audit.mjs 的 bindingKind。
+        -->
+        <EmptyState v-else-if="tabErrors.pricing" :text="tabErrors.pricing" />
         <EmptyState v-else-if="pricingData.length === 0" text="暂无价格数据" />
         <table v-else class="data-table">
           <thead>
@@ -752,6 +777,15 @@ onMounted(() => {
     </div>
   </div>
 </template>
+
+.load-error-banner {
+  margin: 8px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: var(--warning);
+  font-size: 12px;
+}
 
 <style scoped>
 .detail-container {

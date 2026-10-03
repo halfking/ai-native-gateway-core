@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -76,21 +77,31 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boa
 	}
 
 	return map[string]any{
-		"total_requests":            totalReq,
-		"total_prompt_tokens":       promptTok,
-		"total_completion_tokens":   compTok,
-		"total_tokens":              totalTok,
-		"total_cost_usd":            costUSD,
-		"total_credits_charged":     credits,
-		"success_rate":              successRate,
-		"avg_latency_ms":            avgLatency,
-		"active_api_keys":           activeKeys,
-		"active_models":             activeModels,
-		"providers":                 providers,
+		"total_requests":          totalReq,
+		"total_prompt_tokens":     promptTok,
+		"total_completion_tokens": compTok,
+		"total_tokens":            totalTok,
+		"total_cost_usd":          costUSD,
+		"total_credits_charged":   credits,
+		"success_rate":            successRate,
+		"avg_latency_ms":          avgLatency,
+		"active_api_keys":         activeKeys,
+		"active_models":           activeModels,
+		"providers":               providers,
 	}, true
 }
 
-func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange) map[string]any {
+// fallbackBoardSummary 在 minute 统计不可用时走 request_logs 聚合。
+//
+// ## 2026-10-03：原来这里 `_ = ...Scan(...)` 丢弃错误
+//
+// 后果不是「少了一个降级点」，而是**整屏数字都是 0 且完全无标记**：
+// 请求数 0、Token 0、费用 $0.00。page 上看起来就是「这个时段没有流量」。
+// 同文件的 fallbackBoardPies / fallbackBoardTrends / fallbackErrorDrill
+// 都返回 error，只有这一个把错误吃掉了。
+//
+// 现在返回 (payload, err)；调用方据此打降级标记。
+func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
 	logsTable, alias := boardRequestLogsFromClause()
 	where, args := boardLogsWhere(tr, alias, tenantID)
 
@@ -99,7 +110,7 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr 
 	var costUSD sql.NullFloat64
 	var avgLatency sql.NullFloat64
 	var successRate sql.NullFloat64
-	_ = h.db.QueryRow(ctx, `
+	scanErr := h.db.QueryRow(ctx, `
 		SELECT COUNT(*),
 			COALESCE(SUM(`+alias+`.prompt_tokens), 0),
 			COALESCE(SUM(`+alias+`.completion_tokens), 0),
@@ -110,24 +121,62 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr 
 		WHERE `+where+` AND `+alias+`.request_status IN ('success', 'failure', 'rate_limited')
 	`, args...).Scan(&totalReq, &promptTok, &compTok, &costUSD, &avgLatency, &successRate)
 
-	credits := h.queryTotalCreditsCharged(ctx, tenantID, tr.Days)
+	// 主聚合查询失败 → 整屏数字都不可信。**仍然返回载荷**（保持既有
+	// 「降级也返回 200」的形状），但必须带 degraded 让调用方/前端能区分。
+	// 只有 42P01 归入本契约：那是「可迁移性缺失」；
+	// 其它错误照旧上抛，由上层变成 500 —— 把超时说成「0 请求」是更坏的谎。
+	if scanErr != nil && !IsMissingRelationError(scanErr) {
+		return nil, scanErr
+	}
+
+	// 2026-10-03：回退路径的积分来自 queryTotalCreditsCharged，与主路径的
+	// request_stats_minute.credits_charged 是**两个数据源**。它降级时返回 0，
+	// 而这条路径的载荷没有任何降级标记 —— 看板首屏那个高亮的
+	// 「总积分消耗」卡片会照常显示 0。
+	credits, creditsDegradedView := h.queryTotalCreditsCharged(ctx, tenantID, tr.Days)
 
 	var activeKeys, activeModels, providers int
 	_ = h.queryOverviewCounts(ctx, tenantID, tr, &activeKeys, &activeModels, &providers)
 
-	return map[string]any{
-		"total_requests":            totalReq,
-		"total_prompt_tokens":       promptTok.Int64,
-		"total_completion_tokens":   compTok.Int64,
-		"total_tokens":              promptTok.Int64 + compTok.Int64,
-		"total_cost_usd":            costUSD.Float64,
-		"total_credits_charged":     credits,
-		"success_rate":              successRate.Float64,
-		"avg_latency_ms":            avgLatency.Float64,
-		"active_api_keys":           activeKeys,
-		"active_models":             activeModels,
-		"providers":                 providers,
+	payload := map[string]any{
+		"total_requests":          totalReq,
+		"total_prompt_tokens":     promptTok.Int64,
+		"total_completion_tokens": compTok.Int64,
+		"total_tokens":            promptTok.Int64 + compTok.Int64,
+		"total_cost_usd":          costUSD.Float64,
+		"total_credits_charged":   credits,
+		"success_rate":            successRate.Float64,
+		"avg_latency_ms":          avgLatency.Float64,
+		"active_api_keys":         activeKeys,
+		"active_models":           activeModels,
+		"providers":               providers,
 	}
+	if scanErr != nil {
+		// 42P01：主聚合查询缺表/缺视图，上面所有数字都是 0。
+		// 这个载荷仍然是 200（保持既有降级形状），但必须自报家门。
+		view := ExtractMissingRelationName(scanErr)
+		ReportMissingRelation(slog.Default(), "boardSummaryFallback", scanErr)
+		payload["degraded_summary"] = true
+		payload["summary_missing_view"] = view
+		payload["summary_hint"] = fmt.Sprintf(
+			"数据源 %s 不可用，本页所有汇总数字（请求/Token/费用）均为 0，不可作为结论", view)
+		// ⚠ 不在这里写 payload["degraded"] / payload["degraded_reason"]：
+		// 那两个键在**载荷顶层**属于 board 整体（pies/trends，见
+		// applyBoardDegradation），而这里的 summary 是其中一个子对象。
+		// 2026-10-03 之前的写法让两种作用域共用一对键，于是
+		//   · credits 降级会覆盖掉 summary 的整屏降级原因（后者先写）；
+		//   · 前端 BoardHeroRow 的 creditsDegraded 读 summary.degraded，
+		//     而整屏降级也会把它置 true ⇒ 积分卡显示「不可信」，
+		//     但整屏明明有真实数字可显示。
+		// 作用域不同的标记必须有不同的键，判据才有意义。
+	}
+	if creditsDegradedView != "" {
+		payload["degraded"] = true
+		payload["degraded_reason"] = "credits: " + creditsDegradedView
+		payload["credits_missing_view"] = creditsDegradedView
+		payload["credits_hint"] = missingRelationHint(creditsDegradedView)
+	}
+	return payload, nil
 }
 
 func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
@@ -160,13 +209,18 @@ func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string
 	`, tr.Start, tr.End).Scan(keys, models, providers)
 }
 
-func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
+// resolveBoardPies 解析看板饼图，第二个返回值是降级账本。
+//
+// 2026-10-03：以前只有 (pies, error)。42P01 走日志回退后，回退里每个维度
+// 的失败都被吞成空数组，于是这条路径**永远不返回 error** —— 降级事实
+// 在函数边界上就丢了，handler 无从知道该不该给页面打标记。
+func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, boardPieDegradation, error) {
 	pies, err := h.queryBoardPies(ctx, tenantID, tr)
 	if err != nil {
 		if IsMissingRelationError(err) {
 			return h.fallbackBoardPies(ctx, tenantID, tr)
 		}
-		return nil, err
+		return nil, boardPieDegradation{}, err
 	}
 	// 2026-08-31: only fall back to the slow log-based query when minute
 	// stats have NO data for the range. Previously the code also fired
@@ -177,12 +231,12 @@ func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boar
 	// source for the operational dashboard; the log path is only a
 	// safety net for environments where the minute rollup is missing.
 	if piesEmpty(pies) && h.shouldUseBoardLogsFallback(ctx, tenantID, tr) {
-		fb, fbErr := h.fallbackBoardPies(ctx, tenantID, tr)
+		fb, fbDegraded, fbErr := h.fallbackBoardPies(ctx, tenantID, tr)
 		if fbErr == nil {
-			return fb, nil
+			return fb, fbDegraded, nil
 		}
 	}
-	return pies, nil
+	return pies, boardPieDegradation{}, nil
 }
 
 func piesEmpty(pies map[string]any) bool {
@@ -204,7 +258,7 @@ func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardT
 	// request_logs_hot.agent_name) instead of client_profile (the legacy
 	// device-fingerprint column).
 	types := map[string]string{
-		"clients":         "agent_name",
+		"clients": "agent_name",
 		// R57 B7: client_ips 饼图读真源 client_ip 维度（原 virtual_ips 读
 		// identity 假名 10.x，GeoIP 归类对它不可达）。响应键同步改名。
 		"client_ips":      "client_ip",

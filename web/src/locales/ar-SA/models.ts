@@ -177,6 +177,11 @@ export default {
   },
   error: {
     loadFailed: 'فشل التحميل',
+    filterMetaLoadFailed: 'فشل تحميل خيارات التصفية',
+    providersLoadFailed: 'فشل تحميل قائمة المزوّدين',
+    tagsLoadFailed: 'فشل تحميل قائمة الوسوم',
+    familiesLoadFailed: 'فشل تحميل قائمة عائلات النماذج',
+    discoveryStatusLoadFailed: 'فشل تحميل حالة مهمة الاكتشاف',
     saveFailed: 'فشل الحفظ',
     resetFailed: 'فشلت إعادة التعيين',
     loadDetailFailed: 'فشل تحميل التفاصيل',

@@ -11,6 +11,14 @@ const props = defineProps<{
   models: ModelUsage[]
   days: number
   loading: boolean
+  /**
+   * 降级原因（非空 = 聚合视图缺失）。
+   *
+   * 2026-10-03：后端 hot-keys / by-model 原本降级时返回裸 `[]`，
+   * 抽屉照旧渲染「无数据」。把「不知道」讲成「没有」比不显示更糟，
+   * 所以降级时**刻意不显示**空态，改为显示这一行原因。
+   */
+  degradedReason?: string
 }>()
 
 const isOpen = ref(false)
@@ -76,6 +84,9 @@ defineExpose({ open, close })
               <!-- APIKey排行 -->
               <div v-if="activeTab === 'apikeys'" class="drawer-content">
                 <div v-if="loading" class="drawer-loading">加载中…</div>
+                <div v-else-if="degradedReason" class="drawer-degraded" role="status">
+                  ⚠️ 数据聚合视图未就绪（{{ degradedReason }}），本列表不可作为结论。
+                </div>
                 <table v-else-if="hotKeys.length > 0" class="stats-table">
                   <thead>
                     <tr>
@@ -106,6 +117,9 @@ defineExpose({ open, close })
               <!-- 模型统计 -->
               <div v-if="activeTab === 'models'" class="drawer-content">
                 <div v-if="loading" class="drawer-loading">加载中…</div>
+                <div v-else-if="degradedReason" class="drawer-degraded" role="status">
+                  ⚠️ 数据聚合视图未就绪（{{ degradedReason }}），本列表不可作为结论。
+                </div>
                 <table v-else-if="models.length > 0" class="stats-table">
                   <thead>
                     <tr>
@@ -233,6 +247,17 @@ defineExpose({ open, close })
   padding: 40px 20px;
   text-align: center;
   color: var(--muted);
+}
+
+/* 降级用 warning 而非 danger：不是故障，是「这个列表别当结论看」。 */
+.drawer-degraded {
+  padding: 24px 20px;
+  text-align: center;
+  color: color-mix(in srgb, var(--warning) 80%, var(--text));
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  border-radius: 6px;
+  font-size: 13px;
 }
 
 .drawer-empty {

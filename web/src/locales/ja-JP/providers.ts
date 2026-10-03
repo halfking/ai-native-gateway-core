@@ -297,6 +297,8 @@ export default {
   },
   bgStatus: {
     panelTitle: 'バックグラウンドタスクのステータス',
+    stale: 'バックグラウンドタスクの状態が不明',
+    staleHint: '状態を取得できませんでした。以下は前回の取得値です',
     task: {
       discovery: 'モデル検出',
       discoveryRunning: 'チェック中 {elapsed}',

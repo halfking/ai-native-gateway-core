@@ -104,6 +104,8 @@ export default {
   },
   error: {
     loadStatusFailed: '加载状态失败',
+    loadRegionsFailed: '加载区域统计失败',
+    loadPolicyFailed: '加载选择策略失败',
     loadSubsFailed: '加载订阅列表失败',
     loadNodesFailed: '加载节点列表失败',
     nameUrlRequired: '订阅名称与地址不能为空',

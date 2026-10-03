@@ -318,6 +318,8 @@ export default {
   },
   bgStatus: {
     panelTitle: 'Background task status',
+    stale: 'Background task status unknown',
+    staleHint: 'Could not fetch the status; the values below are from the last successful poll',
     task: {
       discovery: 'Model discovery',
       discoveryRunning: 'Running ({elapsed})',

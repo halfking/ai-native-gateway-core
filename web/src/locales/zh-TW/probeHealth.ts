@@ -1,5 +1,6 @@
 // Auto-synced from en-US (zh-TW)
 export default {
+  monitorPartialFailed: "有 {count} 個憑據的即時資料沒取到（{ids}），下面的統計偏小",
   backLink: '← Routing overview',
   title: 'Probe health',
   autoRefresh: 'Auto refresh (30s)',
