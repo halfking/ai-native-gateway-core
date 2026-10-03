@@ -9712,8 +9712,8 @@ installer/cmd/llm-gw-installer  TestStatsStartupMigrationsMatchCanonicalSources
 | 远端 | `origin/main` = **`0b1eb2cfd`**（与本分支 HEAD 一致） |
 | 本分支 | `merge-817-818` @ `0b1eb2cfd`，工作区 0 脏文件 |
 | 推送 | `d0c1e1f81..0b1eb2cfd  HEAD -> main`，**纯快进，rc=0**（非强推） |
-| 本地 `main` | **`b9365c215`——故意未前移**，落后 `origin/main` 108 个提交 |
-| 主工作区 | `HEAD=b9365c215` / `main=b9365c215` / 29 个脏文件，**全程一字节未碰** |
+| 本地 `main`（2026-10-03 18:4x 快照） | **`b9365c215`——我故意未前移**，当时落后 `origin/main` 108 个提交。**后续由并行会话自己推进**：`main` 已到 `08799f813`、工作区脏文件已清零，**全程不是我碰的** |
+| 主工作区（同一快照） | `HEAD=b9365c215` / `main=b9365c215` / 29 个脏文件，**全程一字节未碰** |
 | 回滚点 | `rollback/pre-merge-1717` = `276ef099b`；`rollback/pre-merge-1838` = `7b7f21737`（**仅本地**，`git ls-remote` 查得 0 个） |
 
 本轮共入站 **165 个提交**，分两轮合：先 148（`c84e48a6f`，4 处冲突），
