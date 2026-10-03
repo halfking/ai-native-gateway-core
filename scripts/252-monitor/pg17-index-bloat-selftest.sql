@@ -29,7 +29,7 @@ DROP TABLE IF EXISTS selftest_av_off;
 DROP TABLE IF EXISTS selftest_av_on;
 
 -- 同一份数据造两份索引，只让「是否重建过」这一个变量不同。
--- autovacuum_enabled 两边都保持默认：实测关掉它也不改变 deleted_pages，
+-- autovacuum_enabled 保持默认：实测关掉它既不改变 deleted_pages 也不修正密度，
 -- 所以变量不是 autovacuum，别再往那个方向排查。
 CREATE TABLE selftest_av_off (id bigint PRIMARY KEY, pad text);
 CREATE TABLE selftest_av_on  (id bigint PRIMARY KEY, pad text);
@@ -43,6 +43,15 @@ VACUUM (ANALYZE) selftest_av_on;
 -- 删掉 90%，制造「每页都还剩几条存活、但没有一页全空」的状态
 DELETE FROM selftest_av_off WHERE id % 10 <> 0;
 DELETE FROM selftest_av_on  WHERE id % 10 <> 0;
+
+-- ★ DELETE 之后必须再 VACUUM 一次，否则测出来的密度会假高一大截（2026-10-03 实测）。
+--   pgstatindex 的 avg_leaf_density 是「页内已用字节占比」，而死元组的行指针
+--   在被 vacuum 之前一直占位、计为已用。同一索引、同样 341 叶页：
+--     before VACUUM  avg_leaf_density=92.26
+--     after  VACUUM  avg_leaf_density=33.94
+--   ⇒ 少了这两行，同一个夹具两次跑会给出完全不同的密度。
+VACUUM (ANALYZE) selftest_av_off;
+VACUUM (ANALYZE) selftest_av_on;
 
 \echo '=== 重建前：两者 deleted_pages 应同为 0，密度应显著不同 ==='
 SELECT 'bloated(未重建)' AS which, s.deleted_pages, s.avg_leaf_density,

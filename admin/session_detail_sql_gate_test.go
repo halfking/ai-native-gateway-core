@@ -42,11 +42,23 @@ func sessionDetailSelectList(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("读 session_detail_v2.go 失败: %v", err)
 	}
-	// query := ` ... `  里、以 SELECT 开头的部分
+	// query := ` ... `  里、以 SELECT 开头的部分。
+	// 2026-10-03 R38：原先取全文件**第一个** `query :=`——session_detail_v2.go
+	// 里现有两处（querySession / queryTurns），谁排在前面取决于函数书写顺序；
+	// 日后在文件更上方新增带 `query :=` 的函数，门会静默改测别人的 SQL
+	//（queryTurns 本就全限定 ⇒ 恒绿假安全）。现在锚定 querySession 函数体。
+	funcIdx := strings.Index(string(src), "func (api *SessionDetailV2API) querySession(")
+	if funcIdx < 0 {
+		t.Fatal("找不到 querySession 函数——函数改名或移走时本门失效，请先修门再动产品代码")
+	}
+	scope := string(src)[funcIdx:]
+	if funcEnd := strings.Index(scope, "\nfunc "); funcEnd >= 0 {
+		scope = scope[:funcEnd]
+	}
 	re := regexp.MustCompile("(?s)query := `(.*?)`")
-	m := re.FindStringSubmatch(string(src))
+	m := re.FindStringSubmatch(scope)
 	if m == nil {
-		t.Fatal("没找到 query := `...`，本门失去判别力（先修门再改产品代码）")
+		t.Fatal("querySession 里没找到 query := `...`，本门失去判别力（先修门再改产品代码）")
 	}
 	body := m[1]
 	selStart := strings.Index(body, "SELECT")
