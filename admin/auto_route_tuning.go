@@ -771,11 +771,11 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 		    task_type,
 		    classifier,
 		    SUM(total)::int AS total,
-		    SUM(avg_quality * total) / NULLIF(SUM(total), 0) AS avg_quality,
-		    SUM(avg_success * total) / NULLIF(SUM(total), 0) AS avg_success,
-		    SUM(avg_latency * total) / NULLIF(SUM(total), 0) AS avg_latency,
-		    SUM(avg_cost * total) / NULLIF(SUM(total), 0) AS avg_cost,
-		    SUM(drift_rate * total) / NULLIF(SUM(total), 0) AS drift_rate
+		    COALESCE(SUM(avg_quality * total) / NULLIF(SUM(total), 0), 0) AS avg_quality,
+		    COALESCE(SUM(avg_success * total) / NULLIF(SUM(total), 0), 0) AS avg_success,
+		    COALESCE(SUM(avg_latency * total) / NULLIF(SUM(total), 0), 0) AS avg_latency,
+		    COALESCE(SUM(avg_cost * total) / NULLIF(SUM(total), 0), 0) AS avg_cost,
+		    COALESCE(SUM(drift_rate * total) / NULLIF(SUM(total), 0), 0) AS drift_rate
 		FROM ` + viewName + `
 		WHERE bucket >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY task_type, classifier
@@ -858,11 +858,11 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 		SELECT
 		    strategy,
 		    COUNT(*) AS total,
-		    AVG(quality_score) AS avg_quality,
-		    AVG(success_score) AS avg_success,
-		    AVG(latency_score) AS avg_latency,
-		    AVG(cost_score) AS avg_cost,
-		    SUM(CASE WHEN drift_flag THEN 1 ELSE 0 END)::float / COUNT(*) AS drift_rate
+		    COALESCE(AVG(quality_score), 0) AS avg_quality,
+		    COALESCE(AVG(success_score), 0) AS avg_success,
+		    COALESCE(AVG(latency_score), 0) AS avg_latency,
+		    COALESCE(AVG(cost_score), 0) AS avg_cost,
+		    COALESCE(SUM(CASE WHEN drift_flag THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0) AS drift_rate
 		FROM tuning_signals
 		WHERE ts >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY strategy
@@ -908,8 +908,8 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 		    COALESCE(strategy, 'pattern_layered') AS strategy,
 		    task_type,
 		    COUNT(*) AS total,
-		    AVG(quality_score) AS avg_quality,
-		    AVG(success_score) AS avg_success
+		    COALESCE(AVG(quality_score), 0) AS avg_quality,
+		    COALESCE(AVG(success_score), 0) AS avg_success
 		FROM tuning_signals
 		WHERE ts >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY strategy, task_type

@@ -35,32 +35,31 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-ts=$(date -Iseconds)
-echo "[$ts] === emergency-cleanup invoked AUTO=$AUTO LEVEL=$LEVEL ===" >> "$LOG"
+echo "[$(date -Iseconds)] === emergency-cleanup invoked AUTO=$AUTO LEVEL=$LEVEL ===" >> "$LOG"
 
 used_pct=$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}')
-echo "[$ts] current disk used=${used_pct}%" >> "$LOG"
+echo "[$(date -Iseconds)] current disk used=${used_pct}%" >> "$LOG"
 
 if [ "$AUTO" = "true" ]; then
   if [ "$used_pct" -lt "$DISK_TRIGGER_PCT" ]; then
-    echo "[$ts] auto + disk < ${DISK_TRIGGER_PCT}%, skip" >> "$LOG"
+    echo "[$(date -Iseconds)] auto + disk < ${DISK_TRIGGER_PCT}%, skip" >> "$LOG"
     exit 0
   fi
   # 自动触发则升级到 L2
   LEVEL="L2"
-  echo "[$ts] auto-triggered, escalate to L2" >> "$LOG"
+  echo "[$(date -Iseconds)] auto-triggered, escalate to L2" >> "$LOG"
   # 先清文件系统层（/tmp 大文件、悬空镜像等），再跑 PG 操作。
   # 2026-09-11 复盘：磁盘 100%（0 可用）时 VACUUM FULL 因无临时空间必然失败，
   # 日志留下 "100% -> 100%" 的空转记录。
   if [ -x /opt/scripts/cleanup-known-junk.sh ]; then
-    echo "[$ts] running filesystem cleanup first to free VACUUM FULL workspace" >> "$LOG"
+    echo "[$(date -Iseconds)] running filesystem cleanup first to free VACUUM FULL workspace" >> "$LOG"
     /opt/scripts/cleanup-known-junk.sh --force-now >> "$LOG" 2>&1 || true
   fi
 fi
 
 if [ "$ASSUME_YES" = "false" ] && [ -t 0 ]; then
   read -p "L1/L2/L3  are progressive; ${LEVEL} 下执行。输入 yes 继续: " ans
-  [ "$ans" = "yes" ] || { echo "[$ts] abort by user" >> "$LOG"; exit 1; }
+  [ "$ans" = "yes" ] || { echo "[$(date -Iseconds)] abort by user" >> "$LOG"; exit 1; }
 fi
 
 docker_exec() { docker exec "$CONTAINER" "$@" 2>/dev/null; }
@@ -77,7 +76,7 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
   ")
   while IFS= read -r tname; do
     [ -z "$tname" ] && continue
-    echo "[$ts] L1 DROP ${tname}" >> "$LOG"
+    echo "[$(date -Iseconds)] L1 DROP ${tname}" >> "$LOG"
     docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "DROP TABLE IF EXISTS $tname" >> "$LOG" 2>&1 || true
   done <<< "$DEAD_TABLES"
 
@@ -95,13 +94,13 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
     # 验证是否真的为 0 行（防止意外删除有数据的默认分区）
     row_count=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT COUNT(*) FROM $child" 2>/dev/null || echo "-1")
     if [ "$row_count" = "0" ]; then
-      echo "[$ts] L1 DROP default partition $child (verified 0 rows)" >> "$LOG"
+      echo "[$(date -Iseconds)] L1 DROP default partition $child (verified 0 rows)" >> "$LOG"
       docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
         ALTER TABLE ${parent} DETACH PARTITION $child;
         DROP TABLE IF EXISTS $child;
       " >> "$LOG" 2>&1 || true
     else
-      echo "[$ts] L1 SKIP default partition $child: has $row_count rows (NOT EMPTY!)" >> "$LOG"
+      echo "[$(date -Iseconds)] L1 SKIP default partition $child: has $row_count rows (NOT EMPTY!)" >> "$LOG"
     fi
   done <<< "$DEFAULT_PARTS"
 fi
@@ -110,8 +109,8 @@ fi
 if [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
   for meta in chunk stripe chunk_group; do
     size=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('columnar_internal.${meta}')/1024/1024" 2>/dev/null || echo 0)
-    [ "${size:-0}" -lt 10 ] && { echo "[$ts] L2 skip columnar_internal.${meta} (small=${size}MB)"; continue; }
-    echo "[$ts] L2 VACUUM FULL columnar_internal.${meta} (${size}MB)" >> "$LOG"
+    [ "${size:-0}" -lt 10 ] && { echo "[$(date -Iseconds)] L2 skip columnar_internal.${meta} (small=${size}MB)"; continue; }
+    echo "[$(date -Iseconds)] L2 VACUUM FULL columnar_internal.${meta} (${size}MB)" >> "$LOG"
     docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
       "SET statement_timeout='30min'; SET lock_timeout='5min'; VACUUM FULL columnar_internal.${meta}" >> "$LOG" 2>&1 || true
   done
@@ -128,7 +127,7 @@ if [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
   ")
   while IFS= read -r tname; do
     [ -z "$tname" ] && continue
-    echo "[$ts] L2 VACUUM FULL ${tname}" >> "$LOG"
+    echo "[$(date -Iseconds)] L2 VACUUM FULL ${tname}" >> "$LOG"
     docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
       "SET statement_timeout='30min'; SET lock_timeout='5min'; VACUUM FULL ${tname}" >> "$LOG" 2>&1 || true
   done <<< "$BLOATS"
@@ -136,11 +135,11 @@ fi
 
 # === L3: TRUNCATE hot 表 + 清零的小清零表 ===
 if [ "$LEVEL" = "L3" ]; then
-  echo "[$ts] L3 DANGER ZONE - 需 --yes 确认" >> "$LOG"
+  echo "[$(date -Iseconds)] L3 DANGER ZONE - 需 --yes 确认" >> "$LOG"
   if [ "$ASSUME_YES" = "false" ] && [ "$AUTO" = "false" ]; then
     # L1/L2 已通过一次确认;L3 这里强制交互
     read -p "L3 will TRUNCATE hot tables (回收 ~数 GB). Continue? (yes): " ans
-    [ "$ans" = "yes" ] || { echo "[$ts] abort L3" >> "$LOG"; exit 1; }
+    [ "$ans" = "yes" ] || { echo "[$(date -Iseconds)] abort L3" >> "$LOG"; exit 1; }
   fi
 
   # 清零的小表（casdoor token/record/session 等）
@@ -152,11 +151,11 @@ if [ "$LEVEL" = "L3" ]; then
     " 2>/dev/null || echo "")
     while IFS= read -r tname; do
       [ -z "$tname" ] && continue
-      echo "[$ts] L3 TRUNCATE $tname (in $db)" >> "$LOG"
+      echo "[$(date -Iseconds)] L3 TRUNCATE $tname (in $db)" >> "$LOG"
       docker_exec psql -U "$PG_USER" -d "$db" -tAc "TRUNCATE TABLE $tname" >> "$LOG" 2>&1 || true
     done <<< "$ZERO_TABLES"
   done
 fi
 
 used_after=$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}')
-echo "[$ts] done. disk: ${used_pct}% -> ${used_after}%" >> "$LOG"
+echo "[$(date -Iseconds)] done. disk: ${used_pct}% -> ${used_after}%" >> "$LOG"

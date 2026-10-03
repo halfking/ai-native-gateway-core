@@ -124,7 +124,7 @@ func TestExecuteOpenAI_DegradedCapabilityReadUsesSQLConclusion(t *testing.T) {
 	e := newDegradedReadExecutor(t)
 
 	// 先自检判据：确认 Redis 读确实报错，否则下面全部是空转。
-	if _, _, err := e.FpSlots.GetSupportsResponses(t.Context(), 126, "gpt-5.6-terra"); err == nil {
+	if _, _, err := e.FpSlots.GetSupportsResponses(t.Context(), 126, "gpt-5.6-terra", nil); err == nil {
 		t.Fatal("判据自检失败：预置的畸形载荷没有让 GetSupportsResponses 报错，本用例测不到降级路径")
 	}
 

@@ -1136,8 +1136,31 @@ func main() {
 		ursmV2Cfg.Mode = ursmv2api.ModeOff
 	}
 	if redisClientForCache != nil {
+		// 2026-10-03: URSM 可用独立 db（URSM_V2_REDIS_DB）。
+		//
+		// 起因是 persist writer 的全键空间 SCAN：它要扫完整个 db 才能找齐
+		// ~1.3K 个 URSM 节点，而共享 db2 意味着要走过 ~158 万个会话键。
+		// 实测完整遍历 12.95s–30.40s（强负载相关），而预算只有 30s
+		// —— 于是快照时好时坏。独立 db 上同一动作实测 ~0.11s。
+		//
+		// 留空（RedisDB == -1）或与网关相同时，沿用共享 client，行为与今天完全一致。
+		ursmRedis := redisClientForCache
+		if ursmV2Cfg.RedisDB >= 0 && ursmV2Cfg.RedisDB != cfg.RedisDB {
+			dedicated := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, ursmV2Cfg.RedisDB)
+			if err := pingRedisWithBootRetry(dedicated,
+				bootRetryBudgetEnv("LLM_GATEWAY_REDIS_BOOT_RETRY_SECONDS", 30*time.Second)); err != nil {
+				// 拿不到连接就不切换：回落到共享 client，行为与配置前一致。
+				// 宁可慢，也不能让 URSM 因为一个新 db 不可达而整体失效。
+				slog.Warn("ursm.v2: dedicated redis db unreachable, falling back to shared client",
+					"db", ursmV2Cfg.RedisDB, "gateway_db", cfg.RedisDB, "error", err)
+			} else {
+				ursmRedis = dedicated
+				slog.Info("ursm.v2: using dedicated redis db",
+					"db", ursmV2Cfg.RedisDB, "gateway_db", cfg.RedisDB)
+			}
+		}
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
-			Redis:  redisClientForCache.Client(),
+			Redis:  ursmRedis.Client(),
 			Config: ursmV2Cfg,
 		})
 		// Shadow and canary cannot reject a route before their own guarded
@@ -3014,6 +3037,7 @@ func main() {
 	// 保证 /api/auth/* 路由全部注册上，DB 相关 handler 在请求时再 503/500。
 	var adminHandler *admin.Handler
 	var promptInjectionHandler *admin.PromptInjectionHandler
+	var outputComplianceHandler *admin.OutputComplianceHandler
 	var scanScheduler *bg.ScanScheduler // R20 §二.6: FreeDiscovery periodic scan worker
 	{
 		var adminDB *pgxpool.Pool
@@ -3102,6 +3126,15 @@ func main() {
 		// 之前 handler 已实现但从未被 wire 到 main mux,导致 SPA 中所有
 		// prompt-injection API 都返回 404 (page is empty)。
 		promptInjectionHandler = admin.NewPromptInjectionHandler(adminDB, cfg.SecretKey)
+
+		// 2026-10-03：output-compliance 与上面 prompt-injection 是同一种病 ——
+		// handler 写好了、RegisterRoutes 也有，但从来没被 wire 到 main mux，
+		// 于是 /admin/output-compliance 页面所有 API 全 404、页面永远空。
+		// 它的单测能过是因为测试自己 new 了一个 handler 直接打，
+		// 覆盖不到「路由到底注册没有」这一层。
+		if adminDB != nil {
+			outputComplianceHandler = admin.NewOutputComplianceHandler(adminDB, cfg.SecretKey)
+		}
 
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
@@ -4487,7 +4520,12 @@ func main() {
 				// cand.SupportsNativeResponses 对每个模型都恒为 false。
 				// 这个任务定期对 openai-responses 绑定跑一次现成的
 				// responses 探测器，把结论写回那张表。
-				go bg.NewCapabilityBackfill(dbConn.Pool(), fernetKey, keyring, fpSlots).Run(context.Background())
+				// 蓝绿单跑选举（R33 审计 #1）：回填是出网成本项，双实例双跑
+				// =上游调用翻倍。Redis 未配置时 Enabled()==false，按既有行为
+				// 双跑（与 settle/affinity 同一降级路径）。
+				capBackfill := bg.NewCapabilityBackfill(dbConn.Pool(), fernetKey, keyring, fpSlots)
+				capBackfill.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
+				go capBackfill.Run(context.Background())
 				slog.Info("CHECKPOINT: capability_backfill started")
 				dailyProbeAudit = bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbeWorker)
 				dailyProbeAudit.Start(context.Background())
@@ -4669,8 +4707,10 @@ func main() {
 			slog.Info("authoritative URSM v2 node_probe_worker started")
 			// capability_backfill: 同一张能力位表在 URSM v2 authoritative
 			// 路径下同样需要有人维护——与上面的 node_probe_worker 装配点
-			// 互斥，两条路径各起一份。
-			go bg.NewCapabilityBackfill(dbConn.Pool(), fernetKey, keyring, fpSlots).Run(context.Background())
+			// 互斥，两条路径各起一份。蓝绿单跑选举同上（R33 审计 #1）。
+			capBackfillV2 := bg.NewCapabilityBackfill(dbConn.Pool(), fernetKey, keyring, fpSlots)
+			capBackfillV2.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
+			go capBackfillV2.Run(context.Background())
 			slog.Info("authoritative URSM v2 capability_backfill started")
 			// 2026-09-11 fix: mirror branch-1's credRecovery wiring. The
 			// authoritative fallback path starts its own nodeProbeWorker but
@@ -6509,6 +6549,11 @@ func main() {
 		if promptInjectionHandler != nil {
 			promptInjectionHandler.RegisterRoutes(mux)
 			slog.Info("prompt-injection API registered")
+		}
+		// /api/admin/output-compliance/* — 策略、关键词、复核队列、反馈、统计。
+		if outputComplianceHandler != nil {
+			outputComplianceHandler.RegisterRoutes(mux)
+			slog.Info("output-compliance API registered")
 		}
 		// Routing health check endpoints (2026-07-10)
 		if dbConn != nil && dbConn.Enabled() {

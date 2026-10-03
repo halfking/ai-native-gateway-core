@@ -79,16 +79,53 @@ const (
 	// 在旧值，是这一列变成空串/NULL/0）。硬塞进任何一档，都会让「bodies 腿到底
 	// 算不算硬失败」这个问题被分类表的沉默吞掉。
 	effectSilentlyDegradedContent = "silently_degraded_content"
+
+	// effectSilentlyDegradedAggregate：2026-10-03 新增（审计 §9.73.6 扩档裁决）。
+	// **行在、reward 在，但 reward 的分项退化**——与上一档的区别是退化发生在
+	// 「聚合的分项」而不是「结果的某一列」。
+	//
+	// 为什么必须单列（§9.49.8 记账、本轮裁决扩档）：settle worker 的
+	// outcome 腿在会话族下仍命中（真库实测对 selection request_id 覆盖 99.3%），
+	// 所以结果集既没空也没冻；退化的是 `baselines[p.taskType]` 取 miss 时
+	// 延迟项与成本项**同时塌成 0.5**（bg/auto_route_settle_baseline_metrics.go:23-30）。
+	// 塞进 silently_degraded_content 会让那一档装上它原本没有的东西：
+	// 该档的语义是「某一**列**内容静默变空」，而这里是「reward 的**分项**退化」。
+	//
+	// ★ **本档刻意不计入「灰度前必须处理的静默档」清单**（70 条保持不变）。
+	// 理由与登记见 silentFormsOutsideGreyList——排除是一个**显式决定**，
+	// 不是遗漏：清单的三个档位各自对应「结果集空 / 某一列空 / 整体冻结」三种
+	// 可用同一句话向排期人解释的形态，而本档的处置方式（重设基线总体，§9.73.4）
+	// 不在这三种里。把它算进 70 会让 70 这个已被订正过两次的对外数字再变一次，
+	// 而排期人无法从数字本身看出多出来的那一类该怎么修。
+	effectSilentlyDegradedAggregate = "silently_degraded_aggregate"
 )
+
+// silentFormsOutsideGreyList 登记「**是静默失效形态、但被显式排除在灰度清单
+// 之外**」的档位。
+//
+// 为什么需要这张表：`countSilentStopWriteEffects`（audit_silent_count_consistency_test.go）
+// 刻意逐个列举三个静默档而**不**取补集。取补集会把新增的静默形态悄悄算进
+// 灰度清单，而不取补集又意味着「新增一个静默档却什么都不说」会得到同样干净的绿。
+// ⇒ 两头都是沉默。这张表把第三种可能显式化：**排除，但写明为什么、且必须真的被用过**。
+//
+// ⚠ 本表**只登记排除决定**，不改变 70 这个数字。若将来决定把某档纳入清单，
+// 必须同时（a）把它加进 countSilentStopWriteEffects 的 switch，
+// （b）从本表删除，（c）改文档里那一句——三处缺一都会让门红。
+var silentFormsOutsideGreyList = map[string]string{
+	effectSilentlyDegradedAggregate: "退化发生在聚合的**分项**（reward 的延迟项/成本项同时塌成 0.5），" +
+		"不是结果的某一列变空；处置方式是重设基线总体（§9.73.4），不在清单三档的处置集合里。" +
+		"排除是 2026-10-03 的显式裁决，不是遗漏。",
+}
 
 // 合法分级集合。新增档位必须同时更新本集合与本文件顶部的说明。
 var stopWriteEffects = map[string]string{
-	effectErrorsOut:               "停写后必然查不到，端点报错或返回空——可接受的失败模式",
-	effectSilentlyEmpty:           "结果集静默变空但接口仍 200——灰度的真正风险",
-	effectSilentlyFrozen:          "结果静默冻结为停写前的常数，无任何错误信号",
-	effectUnaffected:              "读表结构/体量/生命周期，不读流量——停写不改变其语义",
-	effectValidator:               "刻意做 v1↔session 对账，语义由 dual-read 门处理",
-	effectSilentlyDegradedContent: "行还在但某一列内容静默变空/降级（典型：bodies 腿无 session 兜底）",
+	effectErrorsOut:                 "停写后必然查不到，端点报错或返回空——可接受的失败模式",
+	effectSilentlyEmpty:             "结果集静默变空但接口仍 200——灰度的真正风险",
+	effectSilentlyFrozen:            "结果静默冻结为停写前的常数，无任何错误信号",
+	effectUnaffected:                "读表结构/体量/生命周期，不读流量——停写不改变其语义",
+	effectValidator:                 "刻意做 v1↔session 对账，语义由 dual-read 门处理",
+	effectSilentlyDegradedContent:   "行还在但某一列内容静默变空/降级（典型：bodies 腿无 session 兜底）",
+	effectSilentlyDegradedAggregate: "行与 reward 都在但 reward 的分项退化（典型：基线 cohort 取 miss ⇒ 延迟/成本项同时塌成 0.5）",
 }
 
 // stopWriteClassification 是逐文件登记。
@@ -368,7 +405,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Note:     "读点 :103 `FROM request_logs_hot rl`（LEFT JOIN models_canonical/model_families/credentials/providers，非本族）。窗口 `since = time.Now().Add(-hours)`，hours 默认 **1**、上限 24（:54-58）⇒ 最短窗口，停写后 requests 为 nil、stats 的三个计数器为 0、三个 map 为 `{}`，而响应是 `json.NewEncoder(w).Encode(resp)` **未设状态码 ⇒ 恒 200**，字段齐全。错误通道未被吞（Query err → return → writeInternalTextErr :113-116/:63-66）；Scan 失败 continue（:143-145）会静默丢行但不影响本档判定。窗口仅 1~24h ⇒ **empty 不是 frozen**。",
 	},
 	"bg/auto_route_settle_sql.go": {
-		Effect:   effectSilentlyDegradedContent,
+		Effect:   effectSilentlyDegradedAggregate,
 		Evidence: "LEFT JOIN ` + src.TurnsTable + ` rl",
 		Note: "**§9.49 改判**：本条原先登记在 `bg/auto_route_settle_worker.go` 且判 " +
 			"`silently_empty`，两处都已过期——(a) §9.43 把关系名改成 src.TurnsTable，" +
@@ -394,11 +431,24 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"`llmgw_autoroute_settle_baseline_cohort_rows` / `..._baseline_neutral_total` " +
 			"与 `AutoRouteSettleBaselineCohortEmpty` / `...NeutralDominant` 告警让它变响。\n" +
 			"  ③ 0.7% 的 selection 失去 outcome ⇒ 走 abandon 路径。\n\n" +
-			"**⚠ 本条把 `silently_degraded_content` 装进了它原本没有的东西**：该档的既有语义" +
-			"是「行还在，但某一**列**内容静默变空」（bodies 正文腿、provider 归属），" +
-			"而这里是「行与 reward 都在，但 reward 的**分项**退化」。本文件自己的约定是" +
-			"「应扩档而不是把它塞回去」——本轮**没有**扩档（扩档会改动 106 条登记的口径，" +
-			"需要单独裁决），先如实记录。",
+			"**§9.73.6 扩档裁决（2026-10-03）**：本条曾长期把 `silently_degraded_content` 装进" +
+			"它原本没有的东西——该档的既有语义是「行还在，但某一**列**内容静默变空」" +
+			"（bodies 正文腿、provider 归属），而这里是「行与 reward 都在，但 reward 的**分项**退化」。" +
+			"本文件自己的约定是「应扩档而不是把它塞回去」，§9.49.8 记了账、本轮**已扩**：\n" +
+			"  新档 `silently_degraded_aggregate`（见上方常量注释）。\n" +
+			"  ★ **它刻意不计入「灰度前必须处理的静默档」清单，70 保持不变**——\n" +
+			"  排除理由与「必须真的被用过」的判据见 `silentFormsOutsideGreyList`。\n" +
+			"  这是显式裁决，不是遗漏；若将来要纳入，必须同时改 switch / 本表 / 文档三处。\n\n" +
+			"**⚠ 另一条独立于档位、2026-10-03 才查出的问题（§9.73.4，252 生产实测）**：\n" +
+			"  cohort 的**总体定义**本身是错的，与停写无关——24h 生产窗口 8,270 行 cohort 里\n" +
+			"  **8,269 行是探针**（`origin_stage='node_probe'` ∧ `task_type='probe_triggered'`），\n" +
+			"  而 `probe_triggered` **根本不在 selection 的 task_type 词表里**（30 天 selection 只出现\n" +
+			"  chat/creative/code/reasoning/planning/long_context）⇒ cohort 的 99.99% 服务 0 条结算。\n" +
+			"  既有排除 `autoroute.SQLExcludeSyntheticActors`（`dc01a69c5` 2026-10-02 加入）\n" +
+			"  **只排 actor，完全不看探针** ⇒ 那一半从未被修。\n" +
+			"  同包 `bg/probe_policy.go` 已有两条具名探针谓词（本文件与它同包却一条没用），\n" +
+			"  但两条都要 `quality_flags`，而 `session_turns_hot` 实测 104 列里**没有该列**\n" +
+			"  ⇒ 对会话族分支会 42703，必须分族分叉。**该修正本轮裁决为「分族修」，尚未实施。**",
 	},
 	"bg/ledger_reconciliation.go": {
 		Effect:   effectUnaffected,
@@ -1623,10 +1673,18 @@ func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 		// 反向约束（2026-10-02）：纯基表族停写后读点**整体停止**，行都不剩，
 		// 「内容降级」描述的不是它——那是 silently_frozen（冻结在停写前常数）。
 		// 只有「行还在、某一列变空」才是 degraded_content 的形状。
-		if fam == familyBase && c.Effect == effectSilentlyDegradedContent {
-			t.Errorf("%s（族=%s）被判 %q：纯基表族停写后读点整体停止，结果集直接空掉或冻结，"+
-				"不存在「行还在但某列变空」的形状。该判据应改为 %q 或 %q。",
-				file, fam, effectSilentlyDegradedContent, effectSilentlyFrozen, effectSilentlyEmpty)
+		//
+		// 2026-10-03：新增的 silently_degraded_aggregate 适用**同一条**推理——
+		// 「reward 的分项退化」同样要求行还在，纯基表族停写后连行都没有。
+		// 两档一起判，避免新档成为「没有族语义的装饰面」：一个档位若在任何族
+		// 分类器里都没有约束，它与「随便写的字符串」不可区分。
+		for _, degraded := range []string{effectSilentlyDegradedContent, effectSilentlyDegradedAggregate} {
+			if fam == familyBase && c.Effect == degraded {
+				t.Errorf("%s（族=%s）被判 %q：纯基表族停写后读点整体停止，结果集直接空掉或冻结，"+
+					"不存在「行还在但内容退化」的形状（%s 的语义前提是行还在）。"+
+					"该判据应改为 %q 或 %q。",
+					file, fam, degraded, degraded, effectSilentlyFrozen, effectSilentlyEmpty)
+			}
 		}
 	}
 }

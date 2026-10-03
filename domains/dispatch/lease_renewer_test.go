@@ -43,6 +43,7 @@ func (g *fakeLeaseGovernor) Renew(_ context.Context, _ *QueuedRequest) error {
 	g.mu.Lock()
 	g.renewals++
 	call := g.renewals
+	fn := g.renewErr
 	g.mu.Unlock()
 	if g.renewedCh != nil {
 		select {
@@ -50,10 +51,18 @@ func (g *fakeLeaseGovernor) Renew(_ context.Context, _ *QueuedRequest) error {
 		default:
 		}
 	}
-	if g.renewErr == nil {
+	if fn == nil {
 		return nil
 	}
-	return g.renewErr(call)
+	return fn(call)
+}
+
+// setRenewErr 供测试在续约循环运行中途改写行为：renewErr 的读写都必须
+// 在 g.mu 内，否则 -race 下与 Renew 的读构成数据竞争（R33 实跑复现）。
+func (g *fakeLeaseGovernor) setRenewErr(f func(int) error) {
+	g.mu.Lock()
+	g.renewErr = f
+	g.mu.Unlock()
 }
 
 func (g *fakeLeaseGovernor) count() (int, int) {
@@ -75,12 +84,15 @@ func runRenewLoop(t *testing.T, g *fakeLeaseGovernor) (fwdCtx context.Context, a
 	go func() {
 		defer close(stopped)
 		cf.leaseRenewLoop(ctx, stopCh, g, &QueuedRequest{}, 5*time.Millisecond, func() {
+			// cancel 先于信号：context 的 Err 在 CancelFunc 返回前已生效，
+			// 观察到 aborted 关闭的断言方可立即依赖 fwdCtx.Err()（反序在
+			// 两者之间留 TOCTOU 窗，T1 类「abort 必取消」断言会偶发假红）。
+			cancel()
 			select {
 			case <-aborted:
 			default:
 				close(aborted)
 			}
-			cancel()
 		})
 	}()
 	stop = func() {

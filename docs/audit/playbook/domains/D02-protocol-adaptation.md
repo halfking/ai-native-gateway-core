@@ -40,6 +40,8 @@
 - [R36] responses 流式桥 openaiFinishReasonIsError 曾缺 refusal（非流式已映射 incomplete/content_filter）→ refusal-only 流式响应渲染成 completed 成功终态 — 修复本轮回注钉桩 TestOpenaiFinishReasonIsError_IncludesRefusal；新协议接入时同步核对 isError 词表
 - [R37] 同型 typed-nil 修复必须排查孪生副本（executors/sticky.go 修后 routing/sticky.go 死副本仍在，intent cache 第三处）——修一处 grep 全仓同构 SetRedisStore；survival E2E 用例 c 钉 retry_limit_exceeded 依赖 stub 不消耗 UpstreamAttemptBudget，换真耗预算 stub 需同步预期（attempt_limit_exceeded 先判）；测试内 goroutine 与主 goroutine 共享 bytes.Buffer 必须 -race 验证（streamRead 实抓）
 
+- [R33 2026-10-03] Responses 出向对称 loss 矩阵两潜伏漏臂（当前经在役 chat→responses 桥不可达，不宜本轮堵——补臂只增噪声）：① Reasoning.Type 指令词汇（enabled/disabled/adaptive，parse_gemini.go:593-597 可产出）无 loss 事件，"disabled" 被静默丢弃构成语义反转（用户关思考、上游照开）——buildResponsesReasoning 注释称有意丢弃（N21-2 既定决策），与对称上报契约存在张力，Owner 裁决；② Reasoning.MaxReasoningTokens 全仓无 parser 赋值（仅 types.go 定义 + ollama 上报臂引用），buildResponsesReasoning 不渲染也不上报
+
 ## 5. 子代理派发提示词
 
 ```text

@@ -188,8 +188,6 @@ onMounted(load)
 <style scoped>
 .qc-view {
   padding: 24px;
-  max-width: 1200px;
-  margin: 0 auto;
   color: var(--text);
 }
 h1 { margin: 0 0 8px; font-size: 24px; }

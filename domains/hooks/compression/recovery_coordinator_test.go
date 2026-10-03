@@ -399,9 +399,20 @@ func TestRecoveryCoordinator_LLMSummary_EmitsSmmMarker(t *testing.T) {
 	if res.CutMarker.SummaryMarker == "" {
 		t.Fatal("LLM summary branch MUST emit an smm_v1 marker")
 	}
-	want := BuildSummaryMarker(llmSummary)
+	// The marker is derived from the on-wire summary content (the
+	// smartWindowSummaryPrefix line included), matching injectSummaryMarker on
+	// the proactive path, so the persisted state marker and the marker line in
+	// the body are the same string. The constant prefix keeps it stable across
+	// passes with identical summary text — the anti-churn property this pin
+	// guards (154 production bug).
+	want := BuildSummaryMarker(smartWindowSummaryPrefix + llmSummary)
 	if res.CutMarker.SummaryMarker != want {
 		t.Errorf("LLM marker = %q, want %q", res.CutMarker.SummaryMarker, want)
+	}
+	// The marker line must be present in the rebuilt body itself — this is
+	// what the next Prepare's diff anchor keys on.
+	if !bytesContainSummaryMarker(res.NewBody, res.CutMarker.SummaryMarker) {
+		t.Error("rebuilt body does not carry the persisted smm_v1 marker line")
 	}
 }
 

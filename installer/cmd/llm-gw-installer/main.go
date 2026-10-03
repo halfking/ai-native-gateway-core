@@ -726,6 +726,9 @@ var requestLogsViewClientIPSemanticGuard817 []byte
 //go:embed embeddata/startup/818_ursm_snapshot_typed_columns.sql
 var ursmSnapshotTypedColumnsMigration818 []byte
 
+//go:embed embeddata/startup/819_request_abandoned.sql
+var requestAbandonedMigration819 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -941,7 +944,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/815_request_logs_view_stage_band_cff.sql":                               requestLogsViewStageBandCff815,
 	"startup/816_request_logs_view_client_ip_projection.sql":                         requestLogsViewClientIPProjection816,
 	"startup/817_request_logs_view_client_ip_semantic_guard.sql":                     requestLogsViewClientIPSemanticGuard817,
-	"startup/818_ursm_snapshot_typed_columns.sql":                                     ursmSnapshotTypedColumnsMigration818,
+	"startup/818_ursm_snapshot_typed_columns.sql":                                    ursmSnapshotTypedColumnsMigration818,
+	"startup/819_request_abandoned.sql":                                              requestAbandonedMigration819,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

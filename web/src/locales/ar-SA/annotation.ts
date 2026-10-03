@@ -12,6 +12,8 @@ export default {
     endDate: 'تاريخ الانتهاء',
     taskType: 'نوع المهمة الأصلي',
     model: 'النموذج',
+    modelPlaceholder: 'جميع النماذج',
+    modelTitle: 'اختر نموذجًا',
     humanTaskType: 'نوع المهمة اليدوي',
     minConfidence: 'أدنى ثقة',
     maxConfidence: 'أقصى ثقة',

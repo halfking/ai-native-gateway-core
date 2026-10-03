@@ -82,7 +82,7 @@ func TestUpdateRequestLogCarriesRequestClass(t *testing.T) {
 		t.Fatalf("UPDATE statement not found")
 	}
 	seg := src[idx : idx+20000]
-	// 2026-10-02（§9.65.2）：$98 的判据由 `$98 IS NULL` 改为 `$98::text IS NULL`。
+	// 2026-10-02（§9.74.2）：$98 的判据由 `$98 IS NULL` 改为 `$98::text IS NULL`。
 	// 语义完全不变 —— 这个门断言的三件事（$98→request_class、$99→due_at、
 	// 判据为 NULL 时保留旧值）都还在。改动的原因是**类型推断**，不是语义：
 	// 裸参数出现在 CASE 的 WHEN 判据里没有类型上下文，PG 拒绝整条语句

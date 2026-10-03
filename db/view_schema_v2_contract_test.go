@@ -532,11 +532,11 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		     , (901001, 'req-dual', 'sess-dual', now(), 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}', NULL, 'business', 'band-dual-v1', '198.51.100.1');
 		INSERT INTO public.request_logs (request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
 		VALUES ('req-parent-only', NULL, now(), 1, 2, 3, 'immediate', 'm-gamma');
-		INSERT INTO public.session_turns_hot (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
-		VALUES ('sess-dual', 'default', 'req-dual', now(), 1, 'm-beta-live', true, 200, 7, CURRENT_DATE)
-		     , ('sys:probe:cred9:20260914', 'default', 'req-synthetic', now(), 1, 'm-probe', true, 200, 0, CURRENT_DATE);
-		INSERT INTO public.session_turns (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
-		VALUES ('sess-live', 'default', 'req-turn-parent', now(), 1, 'm-live', true, 200, 3, CURRENT_DATE);
+		INSERT INTO public.session_turns_hot (id, session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
+		VALUES (910001, 'sess-dual', 'default', 'req-dual', now(), 1, 'm-beta-live', true, 200, 7, CURRENT_DATE)
+		     , (910002, 'sys:probe:cred9:20260914', 'default', 'req-synthetic', now(), 1, 'm-probe', true, 200, 0, CURRENT_DATE);
+		INSERT INTO public.session_turns (id, session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
+		VALUES (910003, 'sess-live', 'default', 'req-turn-parent', now(), 1, 'm-live', true, 200, 3, CURRENT_DATE);
 		-- 733 特征层：req-dual 的 hot 行带特征；req-turn-parent 走 parent 分支
 		INSERT INTO public.session_turn_details_hot (session_id, tenant_id, request_id, turn_no, ts, partition_date, client_model, quality_flags, request_class)
 		VALUES ('sess-dual', 'default', 'req-dual', 1, now(), CURRENT_DATE, 'cli-beta-client', '{empty_tool_name}', 'immediate');
@@ -692,13 +692,29 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	// 两条会话臂都要查：req-dual 命中 hot 臂、req-turn-parent 命中 cold 臂。
 	// 而 req-dual 的 v1 孪生行带着真 id（901001）却**不能**出现在视图里
 	// （反连接去重只留会话臂那一行）——这才是会话臂必须 NULL 的真正含义。
+	//
+	// 会话臂的源行**已种显式 id**（910001 hot / 910003 cold，见上方 seed）。
+	// 这是 R32 §四#8 的修复：此前 turn 行不写 id、克隆又不带 DEFAULT，源列
+	// 恒 NULL，会话臂的 wantNil 断言成了 NULL 对 NULL——视图哪怕回归成投影
+	// t.id 也探不出来（4624ea5c2 记的坑在自家新门复犯）。种值之后「投影
+	// NULL」才有牙：回归臂会吐出 910001/910003，当场红。
+	// 夹具自证：种下去的 turn id 必须真在源表里（防未来克隆体补 DEFAULT 后
+	// 未显式给 id 的行拿到自动值、本门语义漂移而不自知）。
+	var seededTurnID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM public.session_turns_hot WHERE request_id = 'req-dual'`).Scan(&seededTurnID); err != nil {
+		t.Fatalf("读夹具源 turn id 失败: %v", err)
+	}
+	if seededTurnID != 910001 {
+		t.Fatalf("夹具源 turn id = %d, want 910001 —— turn 行种值漂移,会话臂的 NULL 断言将失去承重来源", seededTurnID)
+	}
 	for _, tc := range []struct {
 		requestID string
 		arm       string
 		wantNil   bool
 	}{
-		{"req-dual", "会话 hot 臂（反连接后由 session_turns_hot 供给；其 v1 孪生 id=901001 不应外泄）", true},
-		{"req-turn-parent", "会话 cold 臂（由 session_turns 供给）", true},
+		{"req-dual", "会话 hot 臂（反连接后由 session_turns_hot 供给；源 turn id=910001、v1 孪生 id=901001 均不应外泄）", true},
+		{"req-turn-parent", "会话 cold 臂（由 session_turns 供给；源 turn id=910003 不应外泄）", true},
 		{"req-v1-only", "v1 臂（必须透传真实 request_logs.id=900001）", false},
 	} {
 		var id *int64

@@ -48,8 +48,10 @@
 # 返回**左侧**的标签集，而左侧无标签 ⇒ 告警**丢掉 instance 归属**，
 # 多实例部署里无法定位是哪台网关。`promtool check rules` **不会**报这个
 # （语法完全合法），只有场景测试的 exp_labels 比对能发现。
-# 已改为显式带出 instance 维度：`sum by (instance)` 配 `0 * max by (instance)`
-# 提供的逐实例零值，再用 `and on(instance)` 对齐。
+# 已改为显式带出 (job, instance) 双维归属：`sum by (job, instance)` 配
+# `0 * max by (job, instance)` 提供的逐实例零值，再用
+# `and on(job, instance)` 对齐（最终形态；早期只带 instance 的中间形态
+# 会丢 job 归属）。
 #
 rule_files:
   - ../rules/auto-route-selection-output.yml

@@ -66,7 +66,8 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 		}
 		defer rows.Close()
 
-		var result []CredentialSuccessRateRow
+		// make 非 nil：无凭据×模型行时编码 [] 而非 null（同族 R34 nil-slice 批）。
+		result := make([]CredentialSuccessRateRow, 0)
 		for rows.Next() {
 			var row CredentialSuccessRateRow
 			var oldestTime *time.Time

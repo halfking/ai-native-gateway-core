@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getUserProfileList, type UserProfileSummary } from '../api/admin'
+import { sortByName } from '../utils/sortByName'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -16,6 +17,12 @@ const total = ref(0)
 const search = ref('')
 const currentPage = ref(1)
 const pageSize = 20
+
+// 2026-10-03：首列就是 owner_user，之前完全按后端返回顺序。
+// ⚠ 限制要说清：本页是**服务端分页**（limit/offset 传给后端），所以这里排的是
+// 「当前这一页」而不是全量。跨页的全局有序要后端加 order_by 才能保证 ——
+// 页内有序 ≠ 全局有序，别把前者当成后者写进任何文档。
+const sortedUsers = computed(() => sortByName(users.value))
 
 onMounted(() => void load())
 
@@ -66,7 +73,7 @@ function onSearch() {
         </div>
       </template>
 
-      <el-table v-loading="loading" :data="users" stripe>
+      <el-table v-loading="loading" :data="sortedUsers" stripe>
         <el-table-column :label="t('sessions.userProfile.ownerUser')" prop="owner_user" min-width="160" />
         <el-table-column :label="t('sessions.userProfile.sessionCount')" prop="session_count" width="100" align="right" />
         <el-table-column :label="t('sessions.userProfile.requestCount')" prop="total_requests" width="100" align="right" />

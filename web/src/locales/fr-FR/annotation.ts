@@ -12,6 +12,8 @@ export default {
     endDate: 'Date de fin',
     taskType: 'Type de tâche original',
     model: 'Modèle',
+    modelPlaceholder: 'Tous les modèles',
+    modelTitle: 'Sélectionner un modèle',
     humanTaskType: 'Type de tâche manuel',
     minConfidence: 'Confiance min',
     maxConfidence: 'Confiance max',

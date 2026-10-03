@@ -45,7 +45,7 @@ func sqlLiteralsOfSettleFile(t *testing.T, path string) []string {
 //
 //  1. **710 视图不是 drop-in**。它在真库上把 citus 父表 request_logs 展开成
 //     7 个叶子分区做 Seq Scan（2026-10-02 实测：request_logs_2026_07 …
-//     request_logs_default）。这个 worker 每 30 秒跑一次、每次 100 行的
+//     request_logs_default）。这个 worker 每 5 分钟跑一次、每次 500 行的
 //     LEFT JOIN，扛不住。文件顶部那段「DO NOT add UNION ALL request_logs」
 //     的注释在实质上是对的——只是它描述的报错（invalid perminfoindex）
 //     在这条查询上**没有复现**，实测到的不是报错而是**更坏的东西：计划**。
@@ -147,8 +147,8 @@ func TestAutoRouteSettleWorkerDoesNotUseThe710View(t *testing.T) {
 		t.Error("auto_route_settle_worker.go 的 SQL 里引用了 request_logs_with_current_month。\n" +
 			"  真库实测（2026-10-02）：该视图的 v1 臂是 citus 父表 request_logs，\n" +
 			"  在 settleBatch 这条 LEFT JOIN 的计划里展开成 7 个叶子分区 Seq Scan\n" +
-			"  （request_logs_2026_07 … request_logs_default）。这个 worker 每 30 秒\n" +
-			"  跑一次、每次 100 行，扛不住。\n" +
+			"  （request_logs_2026_07 … request_logs_default）。这个 worker 每 5 分钟\n" +
+			"  跑一次、每次 500 行，扛不住。\n" +
 			"  改动前请先 EXPLAIN 实测，并把计划代价记进审计文档。")
 	}
 	citusParent := regexp.MustCompile(`(?i)join\s+request_logs\s`)

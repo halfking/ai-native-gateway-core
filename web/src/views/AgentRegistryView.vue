@@ -15,6 +15,7 @@ import {
   type RelationType,
 } from '../api/agents'
 import { isSuperAdmin, isDefaultTenant } from '../store'
+import { sortByName } from '../utils/sortByName'
 
 const { t } = useI18n()
 
@@ -112,7 +113,9 @@ function load() {
             )
           })
         : resp.agents
-      agents.value = filtered
+      // 2026-10-03：按名称排序（老板要求的「有名称的列表按名称排，便于查找」）。
+      // 原来直接用后端返回顺序，跨页翻的时候同一个 Agent 会跳位置。
+      agents.value = sortByName(filtered)
       total.value = search.value.trim() ? filtered.length : resp.total
     })
     .catch((e: unknown) => {

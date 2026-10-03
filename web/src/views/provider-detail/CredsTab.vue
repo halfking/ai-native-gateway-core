@@ -19,6 +19,7 @@ import {
   refreshCredentialBalance, type RefreshBalanceResponse,
 } from '../../api'
 import { isSuperAdmin, isProviderConsoleView } from '../../store'
+import { sortByName } from '../../utils/sortByName'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 import CredentialStatusBar from '../../components/CredentialStatusBar.vue'
 import CredentialKeyField from '../../components/CredentialKeyField.vue'
@@ -38,6 +39,15 @@ const props = defineProps<{
   provider: any
   creds: ProviderCredential[]
 }>()
+
+// 2026-10-03：按名称排序（老板要求的「有名称的列表按名称排，便于查找」）。
+// creds 是 prop，不能就地排序（会改到父组件的数据），所以走派生 computed。
+// 键取 label 优先、name 兜底 —— 跟 KeysView / TenantsView 的口径一致。
+// 刻意不排的相邻 tab：LogsTab / ProbeHistoryTab / ErrorDetailTab 是事件流，
+// 时间倒序才是正确默认，按名称排会把「最近发生了什么」这个线索抹掉。
+const credsByName = computed(() =>
+  sortByName(props.creds, (a, b) => a.id - b.id, ['label', 'name']),
+)
 // 2026-07-03: `refresh` triggers a full parent reload (loading state +
 // component unmount), which silently destroys the open drawer. Use
 // `silentRefresh` for inline edits that must keep the drawer mounted —
@@ -964,9 +974,9 @@ function onTagsInput(ev: Event) {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!creds.length"><td colspan="6">{{ pd('creds.empty') }}</td></tr>
+          <tr v-if="!credsByName.length"><td colspan="6">{{ pd('creds.empty') }}</td></tr>
           <tr
-            v-for="c in creds"
+            v-for="c in credsByName"
             :key="c.id"
             class="cred-row"
             :class="{ 'cred-row--disabled': c.manual_disabled }"

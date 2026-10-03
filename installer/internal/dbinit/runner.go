@@ -645,8 +645,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// the column was never in the contract, so every call raised 42703
 			// and the error was swallowed by slog.Warn — that dashboard cell
 			// has been silently empty. 815 also carries a view-chain guard
-			// (skips when the 680-incident wrapper shape is absent) and its
-			// data precondition was measured against a real 1,515,960-row
+			// that RAISE NOTICEs and RETURNs when the 680-incident wrapper
+			// shape is absent — but the trailing column-count DO block then
+			// runs unconditionally and RAISE EXCEPTIONs (count <> 118), so
+			// every "skip" path actually terminates the migration. The
+			// no-op-plus-self-heal wording (here and in the skip notices) is
+			// therefore false advertising; fail-closed is the real behavior.
+			// R32 registers the contradiction (12h 审计 P2-F); aligning the
+			// two blocks means editing an applied migration's content, which
+			// is a channel-replay decision left to the owner. The data
+			// precondition was measured against a real 1,515,960-row
 			// request_id pairing, not inferred.
 			//
 			// It depends on the view chain only, so it sits after 814 at the
@@ -680,8 +688,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 前向兼容仓并剔除 7 个与已有列重复的键。实测该表 payload 占 heap
 			// 66%（872 MB/天）；该表 22 GB 占库 56%，且运行时零读方。
 			// 刻意不回填：ADD COLUMN nullable 无 DEFAULT 不触发重写，收益随 7 天
-			// 保留期自然滚出。与 813–817 无依赖，故置于 8xx 块末尾。
+			// 保留期自然滚出。
 			"818_ursm_snapshot_typed_columns.sql",
+			// 819：public.request_abandoned ——「请求开始了却从没有终态」的独立
+			// 落点（审计 §9.66）。必须在 S4 停写开关生效**之前**应用：反过来的
+			// 顺序会造出一段「请求开始了但哪都不记」的窗口。
+			// 写方（telemetry client markRequestAbandonedPending /
+			// clearRequestAbandonedPending）刻意在 `if logsWrite {}` 之外，
+			// 所以这张表活过 v1 退役；不变式是「表里有行 ⇔ 开始了且无终态」，
+			// 终态路径 DELETE 该行。
+			"819_request_abandoned.sql",
 		},
 	}
 }

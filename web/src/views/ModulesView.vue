@@ -1112,8 +1112,6 @@ onMounted(() => {
 <style scoped>
 .modules-view {
   padding: 0;
-  max-width: 1400px;
-  margin: 0 auto;
   color: var(--text-primary);
   font-size: 13px;
 }

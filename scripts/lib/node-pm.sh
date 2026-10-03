@@ -65,11 +65,24 @@ pm_install() {
     local dir="${1:-${WEB_DIR:-web}}"
     local pm
     pm="$(pm_resolve)" || return 1
+    [ -n "$pm" ] || { echo "[node-pm] pm_resolve 返回空" >&2; return 1; }
     [ -f "$dir/package.json" ] || {
-        echo "[node-pm] $dir/package.json 不存在" >&2
+        echo "[node-pm] ${dir}/package.json 不存在" >&2
         return 1
     }
-    echo "[node-pm] 安装前端依赖（$pm，目录 $dir）"
+    # 2026-10-03 修：这里原本写 `安装前端依赖（$pm，目录 $dir）`，
+    # 部署在第 2/9 步报「行 72: pm?: 未绑定的变量」。
+    #
+    # 真因**不是** local / 命令替换 / set -u 的交互（那三个都单独复现过，均正常），
+    # 而是：全角左括号 `（` 是多字节字符，紧邻 $pm 时 bash 把它的字节并进了变量名，
+    # 于是 $pm 变成一个不存在的标识符，set -u 报的「pm?」里那个 ? 就是残留字节。
+    # 最小复现：bash -c 'set -u; pm=pnpm; echo "（$pm，x）"' 报同样的错；
+    #           改成 ${pm} 即通过。
+    # 而此时 pm_resolve 其实成功返回了 pnpm —— 诊断信息把方向完全指错了，
+    # 我为此先误判成「local 的未绑定窗口」，又误判成「worktree 缺 node_modules」。
+    #
+    # 规矩：中文标点紧邻的变量引用一律用 ${var} 界定。全仓多处同类写法。
+    echo "[node-pm] 安装前端依赖（${pm}，目录 ${dir}）"
     case "$pm" in
         pnpm)
             (cd "$dir" && pnpm install --frozen-lockfile)

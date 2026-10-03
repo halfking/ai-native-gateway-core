@@ -1,4 +1,4 @@
-// 本文件**必须不带 build tag**（2026-10-02，审计 §9.65）。
+// 本文件**必须不带 build tag**（2026-10-02，审计 §9.74）。
 //
 // 它原先带 `//go:build !integration`。该 tag 把整份文件排除出
 // `-tags=integration` 构建，于是两件事同时坏掉：
@@ -129,13 +129,8 @@ func TestNoVPaddedColumnReaderRemains(t *testing.T) {
 	}
 }
 
-// v1DirectTables 是「绕过视图直读」判定里的 v1 宽族关系名。
-var v1DirectTables = map[string]bool{
-	"request_logs": true, "request_logs_hot": true,
-	"request_logs_bodies": true, "request_logs_bodies_hot": true,
-}
-
-const canonicalView = "request_logs_with_current_month"
+// v1DirectTables / canonicalView 已抽到无标签共享文件
+// request_logs_v1_direct_tables_test.go（R32 P1-2：integration 树编译缝根修）。
 
 func TestNoUnregisteredVPaddedColumnReader(t *testing.T) {
 	files, err := goFilesUnder("..")

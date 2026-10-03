@@ -46,11 +46,34 @@ type Config struct {
 	RecoveryBlockOnMiss bool
 	PersistIntervalSec  int
 	RedisKeyPrefix      string
-	Window1mTTL         time.Duration
-	Window5mTTL         time.Duration
-	Window30mTTL        time.Duration
-	NodeTTL             time.Duration
-	ScoringWeights      ScoringWeights
+	// RedisDB overrides the logical Redis database URSM v2 uses, so its keys
+	// can be isolated from the gateway-wide default (config.go: RedisDB, which
+	// falls back to 2). -1 (the default) means "share the gateway's client,
+	// unchanged" — so leaving URSM_V2_REDIS_DB unset preserves today's
+	// behavior exactly.
+	//
+	// Why this exists (2026-10-03, production measurement): URSM's persist
+	// writer collects every node with `SCAN <prefix>node:* MATCH ...`, and
+	// SCAN must walk the **entire keyspace** of whatever db the client is on —
+	// MATCH filters server-side but the traversal does not. Sharing db2 meant
+	// walking ~1.58M session keys to find ~1.3K URSM nodes. Measured full
+	// traversal: 12.95s–30.40s across samples, strongly load-dependent
+	// (the same instance measured 149 ops/s in one window and 21,891 in
+	// another). The writer's budget is 30s (cmd/gateway/main.go), so it lands
+	// on both sides of the line and the snapshot lands intermittently.
+	//
+	// On an isolated db the same walk is ~0.11s (measured on a 1.6K-key db),
+	// and it stops tracking the unrelated session keyspace as it grows.
+	//
+	// Cost of isolating: the ~1.3K node keys must be moved to the new db.
+	// Prefer doing that with a one-shot copy while the writer is stopped,
+	// not by letting them expire.
+	RedisDB        int
+	Window1mTTL    time.Duration
+	Window5mTTL    time.Duration
+	Window30mTTL   time.Duration
+	NodeTTL        time.Duration
+	ScoringWeights ScoringWeights
 	// LRUMirrorSize is the capacity of the process-local NodeMirror LRU
 	// (M2, spec Decision 2). Default 100000. 0 disables the mirror (every
 	// FilterAndScore reads Redis). The mirror is a read accelerator only;
@@ -117,9 +140,11 @@ func DefaultConfig() Config {
 		RecoveryBlockOnMiss: true,
 		PersistIntervalSec:  60,
 		RedisKeyPrefix:      "ursm:v2:",
-		Window1mTTL:         90 * time.Second,
-		Window5mTTL:         6 * time.Minute,
-		Window30mTTL:        35 * time.Minute,
+		// -1 = share the gateway client (today's behavior, unchanged)
+		RedisDB:      -1,
+		Window1mTTL:  90 * time.Second,
+		Window5mTTL:  6 * time.Minute,
+		Window30mTTL: 35 * time.Minute,
 		// 会话优化 v4 T5 (2026-08-18): NodeTTL 60min → 15min, paired with
 		// CoolSeconds 120 → 30 and BackoffCapSeconds 3600(hard-coded) → 1800.
 		// Spec §5 参数总表 / §14.5 “快恢复” — degraded nodes return to the
@@ -215,6 +240,15 @@ func LoadFromEnv() Config {
 	}
 	if v := strings.TrimSpace(os.Getenv("URSM_V2_REDIS_KEY_PREFIX")); v != "" {
 		c.RedisKeyPrefix = v
+	}
+	// 2026-10-03: URSM 专用 db 号。留空 = 沿用网关的（行为不变）。
+	// 显式设置且与网关不同时，main.go 会为 URSM 单独建一个 client。
+	if v := strings.TrimSpace(os.Getenv("URSM_V2_REDIS_DB")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 15 {
+			c.RedisDB = n
+		} else {
+			c.loadErr = fmt.Errorf("URSM_V2_REDIS_DB must be an integer from 0 to 15")
+		}
 	}
 	if v := os.Getenv("URSM_V2_SHADOW_SAMPLE_RATE"); v != "" {
 		if n, err := strconv.ParseFloat(v, 64); err == nil && n >= 0 && n <= 1 {

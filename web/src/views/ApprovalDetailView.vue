@@ -452,8 +452,6 @@ onBeforeUnmount(() => {
 <style scoped>
 .approval-detail-view {
   padding: 20px;
-  max-width: 1200px;
-  margin: 0 auto;
   color: var(--text-primary);
 }
 

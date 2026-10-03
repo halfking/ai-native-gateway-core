@@ -415,6 +415,10 @@ export default {
       periodCompare: '載入期間對比失敗',
       cacheEconomics: '載入快取經濟學失敗',
     },
+    degraded: {
+      title: '部分指標不可用：',
+      hint: '資料庫結構落後於目前版本，以下數字是「無法計算」的佔位值，不是真實測量值（不等於這段期間沒有資料）。請聯絡管理員執行資料聚合遷移。',
+    },
   },
   confirmDeleteCleanup: '確認刪除 {rows} 行資料？\n預計釋放空間: {size}\n\n此操作不可逆！',
   confirmArchiveCleanup: '確認封存 {rows} 行資料？\n預計釋放空間: {size}\n\n此操作不可逆！',

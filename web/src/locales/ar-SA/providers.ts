@@ -35,6 +35,7 @@ export default {
     freeBadgeTooltipNo: 'هذا المزود ليس لديه نماذج مجانية',
     sortLabel: 'ترتيب',
     sortDefault: 'افتراضي',
+    sortName: 'الاسم',
     sortUsage: 'طلبات 24س',
     sortQuality: 'الجودة',
     sortAvailability: 'التوفر',
