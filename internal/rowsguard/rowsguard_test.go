@@ -88,7 +88,22 @@ func TestExemptionsStillResolve(t *testing.T) {
 				t.Errorf("exemption %s: line still holds a Next() loop but is missing from the guard's own key set", key)
 				continue
 			}
-			t.Logf("exemption %s is stale (line drift) — remove it", key)
+			// 201 号：这一支从 t.Logf 升为 t.Errorf。
+			//
+			// 失效豁免的代价不是「多一条无用记录」，而是**门对这一处不再有话可说**：
+			// 清单还写着「此处已豁免/已复核」，而下一个人读到的是一个早已不存在的
+			// 行号。非致命时它会静静躺在表里，直到某次误改或 key 构造再次出错才暴露。
+			//
+			// 与上面 :88 那一支的分工是刻意的：
+			//   - 「该行还有 Next() 循环、只是不在门的 key 集里」= **门看不见一个真实站点**
+			//     ⇒ 致命（这是键构造出错的信号，199 号那三个族就是死在这里）；
+			//   - 「该行已经没有 Next() 循环」= **登记项指向了一个不存在的位置**
+			//     ⇒ 同样是门在说谎，同样致命。
+			// 两条都是「门不能自证其覆盖」的情形，没有哪一条该只记日志。
+			t.Errorf("exemption %s is stale (line drift) —— 该行已没有 for X.Next() 循环，"+
+				"这条豁免正在假装有效。应删除该条目；若循环仍在、只是被改过，"+
+				"先用 git log -S '%s' 回原提交确认是「同一处漂移」还是「另找一处顶上」再改键",
+				key, key)
 		}
 	}
 }
