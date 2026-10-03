@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
@@ -67,8 +68,11 @@ const (
 	// 在内存里同时持有原始音频（≤32MiB）+ base64 放大副本（4/3×）+
 	// 重打包体（透传形态再一份），最坏单请求 ~240MiB；限流是 RPM 语义、
 	// 分钟窗内可突发，无闸门时并发突发直接打爆内存（39 轮 P2-2）。
-	// 8 路并发 × 最坏 ~240MiB ≈ 1.9GiB 峰值预算，超出返回 429/503
-	// 由上层映射。探针流量也走这里，容量满时探针红牌是正确语义。
+	// 8 路并发 × 最坏 ~240MiB ≈ 1.9GiB 峰值预算；闸满/等待被取消时返回
+	// *audioCapacityError，HTTP 面映射 503 audio_capacity（R40 审计 R2：
+	// 此前是裸 error → 502 upstream_error，把网关自身饱和上报成上游故障，
+	// 正是 67da11864 在修的错误分流问题在自家闸门上的镜像）。探针流量
+	// 也走这里，容量满时探针红牌是正确语义。
 	maxConcurrentAudioOps = 8
 )
 
@@ -101,6 +105,10 @@ type AudioService struct {
 	rateLimiter ratelimit.RPMLimiter
 	// sem 限制并发音频调用（maxConcurrentAudioOps），构造期一次性建立。
 	sem chan struct{}
+	// failureLogger 把逐候选失败喂进共享 candidate_failure_logs 台账
+	// （与 embeddings 同款接线，R40 收口 R39 §七.3 移交项）。可选接线；
+	// nil 时跳过台账写入（默认），所有调用点 nil-safe。
+	failureLogger *executors.CandidateFailureWriter
 }
 
 func NewAudioService(resolver AudioProviderResolver, upstreamClient *upstream.Client) *AudioService {
@@ -117,6 +125,34 @@ func (s *AudioService) SetAuth(keyVerifier *authentication.KeyVerifier, rateLimi
 	s.rateLimiter = rateLimiter
 }
 
+// SetFailureLogger wires the shared candidate-failure ledger writer. Pass nil
+// to disable (default) — every call site is nil-safe.
+func (s *AudioService) SetFailureLogger(writer *executors.CandidateFailureWriter) {
+	s.failureLogger = writer
+}
+
+// logCandidateFailure feeds one abandoned audio candidate into the shared
+// candidate-failure ledger. Kind 走自动分类（*upstream.Error 类型优先，消息
+// 兜底），与 chat executor 的 dispatch 路径同款语义；best-effort、nil-safe。
+func (s *AudioService) logCandidateFailure(requestID, tenantID string, candidate provider.Candidate, attempt int, transport string, execErr error, startedAt time.Time) {
+	if s.failureLogger == nil || execErr == nil {
+		return
+	}
+	perAttemptMs := int(time.Since(startedAt).Milliseconds())
+	s.failureLogger.LogFailure(
+		requestID, tenantID, "",
+		candidate.CredentialID, candidate.ProviderID,
+		candidate.RawModel, attempt,
+		execErr, nil, &perAttemptMs,
+		map[string]any{
+			"supplier":      candidate.CatalogCode,
+			"failure_stage": "upstream",
+			"transport":     transport,
+			"request_plane": "audio",
+		},
+	)
+}
+
 // TranscribeRequest is one transcription call, transport-agnostic.
 type TranscribeRequest struct {
 	Model          string
@@ -129,8 +165,9 @@ type TranscribeRequest struct {
 	Filename       string
 	ContentType    string
 
-	TenantID string
-	Profile  string
+	TenantID  string
+	Profile   string
+	RequestID string
 }
 
 // TranscribeResult carries the normalized outcome of one transcription.
@@ -160,8 +197,9 @@ type SynthesizeRequest struct {
 	ResponseFormat string
 	Speed          string
 
-	TenantID string
-	Profile  string
+	TenantID  string
+	Profile   string
+	RequestID string
 }
 
 // SynthesizeResult is the synthesized audio payload.
@@ -261,12 +299,15 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 	}
 
 	var lastErr error
-	for _, cand := range usable {
+	for candIdx, cand := range usable {
 		// 桥接优先（小米）或透传优先（其余），另一形态按 404/405/415 回落。
 		order := []string{AudioTransportTranscriptions, AudioTransportChatAudio}
 		if preferChatAudioBridge(cand) {
 			order = []string{AudioTransportChatAudio}
 		}
+		candStart := time.Now()
+		var candErr error
+		var candTransport string
 		for _, transport := range order {
 			var res *TranscribeResult
 			var err error
@@ -279,9 +320,12 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 				return res, nil
 			}
 			lastErr = err
+			candErr = err
+			candTransport = transport
 			if emitted {
 				// 部分增量已交付，重试会产生重复输出；错误交给 handler
 				// 以 SSE error 事件（或 502 envelope）如实透出。
+				s.logCandidateFailure(req.RequestID, req.TenantID, cand, candIdx, transport, err, candStart)
 				return nil, err
 			}
 			if !isAudioTransportFallbackErr(err) {
@@ -290,12 +334,30 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 			}
 			// 404/405/415：该候选没有这种端点形态，试下一形态/候选。
 		}
+		// 候选被放弃（真实失败，或两种传输形态都不存在）→ 进共享失败
+		// 台账，保证音频面在 credential quality 视图上与 chat/embeddings
+		// 同等可见（R39 §七.3 移交收口）。
+		s.logCandidateFailure(req.RequestID, req.TenantID, cand, candIdx, candTransport, candErr, candStart)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("all audio providers failed")
 	}
 	return nil, lastErr
 }
+
+// audioCapacityError 表示网关自身音频并发闸已满且等待被取消（ctx 超时/
+// 客户端断连）。这是网关侧容量状态，不是上游故障——HTTP 面据此映射
+// 503 audio_capacity 而不是 502 upstream_error（R40 审计 R2）。
+type audioCapacityError struct{ cause error }
+
+func (e *audioCapacityError) Error() string {
+	if e.cause == nil {
+		return "audio capacity gate full"
+	}
+	return "audio capacity wait aborted: " + e.cause.Error()
+}
+
+func (e *audioCapacityError) Unwrap() error { return e.cause }
 
 // acquireAudioSlot 占用一个并发音频槽位；ctx 取消（客户端断连/整体
 // deadline）时让位返回错误而不是排队堆积。nil 信号量（零值构造的
@@ -308,7 +370,7 @@ func (s *AudioService) acquireAudioSlot(ctx context.Context) error {
 	case s.sem <- struct{}{}:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("audio capacity wait aborted: %w", ctx.Err())
+		return &audioCapacityError{cause: ctx.Err()}
 	}
 }
 
@@ -692,11 +754,14 @@ func (s *AudioService) Synthesize(ctx context.Context, req SynthesizeRequest) (*
 	}
 
 	var lastErr error
-	for _, cand := range usable {
+	for candIdx, cand := range usable {
 		order := []string{AudioTransportTranscriptions, AudioTransportChatAudio}
 		if preferChatAudioBridge(cand) {
 			order = []string{AudioTransportChatAudio}
 		}
+		candStart := time.Now()
+		var candErr error
+		var candTransport string
 		for _, transport := range order {
 			var res *SynthesizeResult
 			var err error
@@ -709,10 +774,14 @@ func (s *AudioService) Synthesize(ctx context.Context, req SynthesizeRequest) (*
 				return res, nil
 			}
 			lastErr = err
+			candErr = err
+			candTransport = transport
 			if !isAudioTransportFallbackErr(err) {
 				break
 			}
 		}
+		// 候选被放弃 → 进共享失败台账（与 Transcribe 同点，R39 §七.3）。
+		s.logCandidateFailure(req.RequestID, req.TenantID, cand, candIdx, candTransport, candErr, candStart)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("all audio providers failed")

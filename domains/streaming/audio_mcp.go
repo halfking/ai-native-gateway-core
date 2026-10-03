@@ -274,6 +274,7 @@ func (h *AudioMCPHandler) toolsCall(r *http.Request, requestID string, req jsonR
 		res, terr := h.svc.Transcribe(r.Context(), TranscribeRequest{
 			Model: args.Model, Language: args.Language,
 			File: audio, Filename: "audio." + format, ContentType: "audio/" + format,
+			RequestID: requestID,
 		}, nil)
 		if terr != nil {
 			return rpcAudioErr(terr)
@@ -305,6 +306,7 @@ func (h *AudioMCPHandler) toolsCall(r *http.Request, requestID string, req jsonR
 		}
 		res, serr := h.svc.Synthesize(r.Context(), SynthesizeRequest{
 			Model: args.Model, Input: args.Text, Voice: args.Voice, ResponseFormat: args.Format,
+			RequestID: requestID,
 		})
 		if serr != nil {
 			return rpcAudioErr(serr)

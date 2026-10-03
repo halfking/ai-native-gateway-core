@@ -136,6 +136,13 @@ func (n *Normalizer) normalizeStreamChunk(data []byte) []byte {
 		if !ok {
 			continue
 		}
+		// 真 null 已是规范形态：直通不置 modified（R40 审计 ⚠️4——此前
+		// isJSONNullOrEmptyString 对 null 也返回 true，导致所有携带
+		// "finish_reason":null 的标准帧被无谓地整帧重序列化：语义等价但
+		// 每帧多一次 Marshal，且帧字节形态（键序/空白）被改变）。
+		if strings.TrimSpace(string(frRaw)) == "null" {
+			continue
+		}
 		// 2026-10-01 Xcode/glm-5.2: an empty string is NOT a legal OpenAI
 		// `finish_reason`. The spec (and every OpenAI-shaped frame) carries
 		// JSON `null` until the stream terminates. Zhipu/GLM — and every
