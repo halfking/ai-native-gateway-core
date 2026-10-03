@@ -98,7 +98,9 @@ func hasAnthropicSystemSummary(body []byte) bool {
 	}
 	var content string
 	if json.Unmarshal(top.System, &content) == nil {
-		return isAnthropicSummaryContent(content)
+		// String shape appends the summary after the original system text, so
+		// the separator contains-check is what recognizes that generation.
+		return isAnthropicSummaryContent(content) || containsAnthropicSummarySeparator(content)
 	}
 	var blocks []struct {
 		Type string `json:"type"`
@@ -108,7 +110,7 @@ func hasAnthropicSystemSummary(body []byte) bool {
 		return false
 	}
 	for _, block := range blocks {
-		if block.Type == "text" && isAnthropicSummaryContent(block.Text) {
+		if block.Type == "text" && (isAnthropicSummaryContent(block.Text) || containsAnthropicSummarySeparator(block.Text)) {
 			return true
 		}
 	}

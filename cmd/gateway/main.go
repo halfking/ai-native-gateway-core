@@ -3133,7 +3133,7 @@ func main() {
 		// 它的单测能过是因为测试自己 new 了一个 handler 直接打，
 		// 覆盖不到「路由到底注册没有」这一层。
 		if adminDB != nil {
-			outputComplianceHandler = admin.NewOutputComplianceHandler(adminDB)
+			outputComplianceHandler = admin.NewOutputComplianceHandler(adminDB, cfg.SecretKey)
 		}
 
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)

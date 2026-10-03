@@ -2313,8 +2313,24 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 				END
 				, customer_id = COALESCE($97, customer_id)
 				-- V6-W1.6 R8 (migration 610): request class + due time.
-				, request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END
-				, due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END
+				--
+				-- $98 必须显式 ::text（2026-10-02 真库取证，审计 §9.74.2）。
+				-- 裸参数出现在 CASE 的 WHEN 判据里**没有类型上下文**：PG 解析
+				-- WHEN 条件时还不知道 CASE 的结果类型，而 WHEN 条件不属于与
+				-- THEN/ELSE 一起做共同类型归并的那部分，$98 停在 unknown，
+				-- 整条语句直接被拒：
+				--     ERROR: could not determine data type of parameter $98
+				-- 同一张表的逐条 PREPARE 对照（不声明参数类型，即 pgx 的真实路径）：
+				--     CASE WHEN $1     IS NULL ...              → ERROR
+				--     CASE WHEN $1::text IS NULL ...              → OK（WHEN 加 cast 即够）
+				--     CASE WHEN $1 IS NULL ... ELSE $1::text     → 仍 ERROR（ELSE 救不了 WHEN）
+				--     COALESCE($1, request_class)                → OK（COALESCE 实参同批定类型）
+				-- 影响面：这是**生产写入路径**。request_class/due_at 一带上，整条
+				-- UPDATE 失败，而失败被 persist 侧记为 WARN 后吞掉——不崩、不告警，
+				-- 只是 scheduled 请求的 class/due_at 永远不落库。
+				-- 发现它的是 TestRequestClassPGRoundTrip（需 TEST_PG_DSN）。
+				, request_class = CASE WHEN $98::text IS NULL THEN request_class ELSE $98 END
+				, due_at = CASE WHEN $98::text IS NULL THEN due_at ELSE $99 END
 				-- Wave 3 B1 (migration 736): peak/off-peak charge multiplier;
 				-- COALESCE keeps the prior value when the update carries none.
 				, credits_rate_multiplier = COALESCE($100, credits_rate_multiplier)
