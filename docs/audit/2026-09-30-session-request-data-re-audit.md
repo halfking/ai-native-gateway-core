@@ -13640,3 +13640,193 @@ AND partition_date = (SELECT MAX(partition_date) FROM public.sessions
 > 比「完全不知道」更值得警惕，也更容易找到修法参照。
 >
 > **本节只验了一处，剩下的不宣称。** 范围意识比结论漂亮重要。
+
+---
+
+## §9.114 顺着 §9.113 去修，撞出三个新的：一个已修、一个是地雷、一个是量表
+
+§9.113 只把跨月重影**定位**到 `admin/turns_sessions.go:164-180`，并把「要不要推广
+`MAX(partition_date)` 口径」标成产品决策。这一轮去修它，结果比预期远：一道真库门
+在修缺陷的过程中**顺手抓出了两个让同一接口 500 的全新安装缺陷**，其中一个底下还埋着一个
+**在任何库上都会失败的地雷迁移**。
+
+### §9.114.1 跨月重影：真库复现 + 修复（这是本节唯一「本来就知道」的那个）
+
+**先复现，再修**。门打的是**真实 handler 路径**（构造 `Handler{db, secret}` 调
+`handleTurnsSessions`），不是自己拼 SQL——否则量的不是被检验对象。
+
+夹具：同一 `(tenant_id, session_id)` 两行，唯一差别是 `partition_date` / `status` /
+`client_type`。这正是 PG 分区规则下唯一键 `UNIQUE (session_id, partition_date)` 允许的形态。
+
+**变异实证**（把 handler 恢复成修复前形态）：
+
+```
+跨月会话在列表里出现 2 次（session_id=xturns-xmonth-…）
+  [{"status":"active", "total_turns":1, "client_type":"MATCH-OLD-ROW"},
+   {"status":"closed", "total_turns":2, "client_type":"no-match-new-row"}]
+```
+
+⇒ §9.113 描述的「重影、各显示一半状态」在真库 + 真实 HTTP 路径上复现，**不是推演**。
+
+**修法**（`turnsSessionsListSQL` 的调用方合成 WHERE）：
+
+```go
+where = turnsSessionsFinalizeWhere(where)   // 无条件前置跨月去重谓词
+```
+
+```sql
+s.partition_date = (SELECT MAX(x.partition_date) FROM public.sessions x
+                    WHERE x.tenant_id = s.tenant_id AND x.session_id = s.session_id)
+```
+
+三个设计选择，都有理由，不是「顺手这么写」：
+
+1. **口径对齐写侧**。`internal/titlestore/store.go` 的 `CommitTitle`/`DeleteTitle`
+   早就在用同一模式。§9.113 说的「显示最新分区那一行 vs 按会话聚合」这个产品决策，
+   在**写侧事实上已经选了前者**——我让读侧跟上一个已经落地的口径，而不是新发明一个。
+2. **用普通 WHERE，不用 `DISTINCT ON` 子查询**。`DISTINCT ON` 放在 FROM 子查询里会成为
+   **优化屏障**，阻断外层谓词下推，外层的分区裁剪与索引选择全废；而且 LIMIT 会作用在
+   去重**之后**，页大小语义跟着变。相关子查询走 `idx_sessions_session_id` 的分区级子索引
+   （实测 8 个父索引 `indisvalid=t`、24 个子索引齐全，谓词是索引查找不是全扫）。
+3. **调用方过滤整体加括号**。`latest AND a OR b OR c` 与 `latest AND (a OR b OR c)`
+   不等价。`buildTurnsSessionWhere` 目前以 AND 拼接且自带括号，但外层再包一层才不依赖那个约定。
+
+**验证**：变异红 → 修复绿，且绿在**真 installer 路径建出来的全新安装库**上
+（`startup: applied=213 failed=0`，`relations=445`，该库有 2 个 `sessions` 分区）。
+`go test ./admin/` 全包 79s 绿。
+
+### §9.114.2 门抓到的第一个 500：`session_title_states` 不存在（42P01）
+
+门第一次跑就红了，红在**完全不相干**的地方：
+
+```
+ERROR: relation "public.session_title_states" does not exist (SQLSTATE 42P01)
+```
+
+⇒ **全新安装上 `GET /api/admin/turns/sessions` 恒 500。**
+
+根因与 §9.101 的 467 **完全同类**，只是漏了另一个文件：迁移
+`550_session_title_states_expand.sql` / `551_session_title_states_indexes.sql`
+自包含、幂等（`CREATE TABLE IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`），
+**却既不在 `embeddata/startup/` 也不在 `StartupFiles`**。
+
+它的严重性比 467 高一档，因为引用面更大——**5 个生产文件**读或写这张表：
+`admin/turns_sessions.go`、`admin/session_meta_view.go`、`admin/session_turns_v2.go`、
+`internal/titlestore/store.go`、`db/db.go`。⇒ 会话列表 500，且 titlestore 的条件式
+标题提交也会失败。
+
+**生产 252 不受影响**（实测 `to_regclass` 非空）——正因为生产有这张表，缺陷才一直隐形。
+
+修法 = §9.101 的五点同步：embeddata 副本（`cmp` 字节一致）+ `//go:embed` 变量 +
+`embeddedSQLFiles` 条目 + `StartupFiles` 登记（插在 548 与 552 之间）+ `tsv` 用
+`-update` 旗标重新生成（**不手改**）。
+
+### §9.114.3 第二个 500，和它底下的地雷：`sessions.summary` 不存在（42703）
+
+补上 550/551 后，门**又**红了，红在下一层：
+
+```
+ERROR: column s.summary does not exist (SQLSTATE 42703)
+```
+
+一次性把列表查询需要的 `s.*` 列全查了一遍，缺的正好三列：
+`summary` / `summary_model` / `summary_generated_at` ⇒ 来自
+`456_session_v2_display_columns.sql`，**同样未登记**。
+
+而 456 未登记是有原因的：**它当前必然失败**。它的后置断言查的是
+
+```sql
+WHERE table_schema='gateway' AND table_name='sessions' AND column_name='last_full_payload_at'
+```
+
+而同一个文件上面的 `ALTER TABLE` 建的是 **`public`**——**文件自相矛盾**。
+`gateway` schema 在**生产 252、权威全新安装库、我本地测试库三处都不存在**
+（`information_schema.schemata` 计数全为 0），所以 `NOT EXISTS` 恒真。实测：
+
+```
+psql -v ON_ERROR_STOP=1 --single-transaction -f 456_….sql
+ERROR:  public.sessions.last_full_payload_at not created
+```
+
+⇒ **这是一个在任何库上都会失败的地雷迁移**。这就是「潜伏缺陷」的标准形态：
+不是「现在坏了」，是「谁一碰它就炸，而没人碰所以没人知道」。
+生产之所以有这三列，是因为**文件在生产应用之后被改过**（`ADD COLUMN IF NOT EXISTS`
+的措辞和 `session_bodies` 那段「430 已经创建过，这里幂等补一遍」的注释都指向后期编辑）。
+
+修法两处：
+1. **迁移自身**：断言 `gateway` → `public`，与它自己的 `ALTER` 对齐。`ALTER` 全是
+   `IF NOT EXISTS`，所以对已应用 456 的库，这个编辑不产生任何 schema 变化。
+2. **登记**：456 插在 471 与 467 之间（与 467 同属「会话展示列」一族）。
+   456 头部写「430 必须先跑」，而 **430 至今未登记**——但 baseline 已经带了 456 要改的三张表，
+   所以 456 在这个位置能干净应用。**这一句是门禁库重建实测的，不是推断的。**
+
+修完实测：干净通过，三列到位；启动链 `applied=213 failed=0 missing=0`。
+
+### §9.114.4 根因量化：这不是三个孤立 bug，是 275 个未登记迁移
+
+上面三个缺陷同源。与其一个个撞，不如**先量基数**（§9.112 的教训：挂了几轮就先去查）。
+
+**量具纪律**：`gw_fresh_test` 是我自己早先搭的，不能直接信。所以用仓内
+`scripts/audit/run-integration-gate.sh` 走**真 installer 路径**建了一个权威库，
+再与生产 252 做 `public` schema 关系集合差：
+
+| 项 | 数 |
+|---|---|
+| 生产 252 关系数（r/p/v/m/S） | 856 |
+| 真 installer 全新安装 | 635（`relations=445` 是它的 populated 口径） |
+| **生产有、全新安装缺** | **238** |
+| 剔除序列 / `bak_*` / 日期后缀分区后的候选基表与视图 | 116 |
+| 其中**被生产 Go 代码（非测试）引用**的 | **106** |
+| 其中**无 `db.go` 自愈覆盖**的 | **102** |
+
+**但必须区分证据等级，不能混着说**：
+
+- **`session_title_states`（42P01）与 `sessions.summary`（42703）是实测**——查询真的报错了。
+- **其余 100 项是结构性候选**，只做了「生产代码引用 + 无自愈覆盖」的静态交叉，
+  **没有逐条跑过各自的代码路径**。§9.114.2/3 的经验恰好说明：
+  静态看着该有的东西，运行时可能 500、也可能被别处兜住。**不宣称它们都坏。**
+
+**而根因本身，仓里早就写明了**——`installer/internal/dbinit/startup_manifest_test.go:32-35`：
+
+> `sql/migrations/startup/` holds 458 migration numbers but only 200 are registered
+
+本轮实测：仓内 **485** 个 startup 迁移，embeddata **292** 个副本，`StartupFiles` 登记 **210**。
+⇒ **275 个迁移文件从未被 installer 应用过。**
+
+⚠️ **差点犯的错**：我第一反应是把它当「本轮新发现的系统性缺陷」写进结论。
+查证后发现它是**已被文档化的已知状态**（那句注释 + `startup_known_gaps.tsv` 的
+「0 known gaps」都指向同一结论）。⇒ 值得报的是它的**代码级后果**（具体哪些接口 500），
+不是「迁移没登记」这个事实本身。**根因已知、后果未量化，这才是新增量。**
+
+### §9.114.5 我自己的量具缺陷（必须记，因为它伪装成产品缺陷）
+
+门第一次绿之前，我连红两次，**两次都是夹具的错，不是产品的错**：
+
+`sessionsPartitionLowerBounds` 没有 `ORDER BY`。`pg_inherits` 的返回顺序与分区月份无关，
+于是 `bounds[0]` / `bounds[1]` 的「最新月 / 次新月」标签**随机反转**——
+我写进夹具的「最新分区那行 status=closed」其实是**旧**分区那行。
+
+后果：A 子场景报「取到的不是最新分区行」，B 子场景报「旧行从 OR 支路漏进来」，
+**两个都长得像产品缺陷**。实际上去重是对的（两个场景都只回了 1 行）。
+
+⇒ 修法是给查询加 `ORDER BY lo DESC`，并把这段踩坑写进夹具注释。
+**判据第一次运行前的「桩件接线自检」，这次是「桩件数据自检」。**
+
+### §9.114.6 教训
+
+> **一道走真实路径的真库门，值一次缺陷挖掘。**
+> 本节三个缺陷里，**只有 §9.114.1 是我去找的**；
+> §9.114.2/3 是门在跑的过程中**顺手撞出来的**。
+> 如果我为了「快点验证去重」而把门写成一条自己拼的 `SELECT count(*)`，
+> 那两个 500 一个都发现不了——它们在同一条 SQL 的不同位置，
+> 而我只会去查我**已经怀疑**的那一处。
+>
+> **「顺手撞出来」的部分往往比「专门找」的更值钱**，
+> 因为它证明的是「这条路径在真实环境下根本跑不通」，
+> 而不只是「我关心的那个性质不成立」。
+>
+> **地雷迁移（§9.114.3）是潜伏缺陷的教科书形态**：
+> 它不会自己爆炸，它等着「有人终于去登记它」的那一刻爆炸——
+> 而那正是修复动作本身。**如果我先登记 456 再测，
+> 结论会是「启动链 failed=1」而不是「这个迁移在任何库上都会失败」，
+> 根因会被误判成我的登记顺序错。** 先复现、再登记，顺序不能反。

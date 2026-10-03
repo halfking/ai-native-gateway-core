@@ -6210,3 +6210,110 @@ v1 侧四条全部正常。
 - 阻塞 #2 `is_final_success`、等价口径 (i)/(ii)/(iii)、`backlog_pending` 告警、
   actor 名单/cohort/§9.49.8/§9.48 口径、写链是否自 ensure 当月分区、
   790 提交的发布窗口与回滚方案
+
+---
+
+## 第六十二轮（§9.114）：去修 §9.113 的重影，撞出两个全新安装 500 + 一个地雷迁移
+
+### 本轮做了什么
+
+§9.113 把跨月重影定位到 `admin/turns_sessions.go:164-180`，但把「要不要推广
+`MAX(partition_date)` 口径」留成产品决策。本轮去修，连带挖出三个缺陷。
+
+**① 跨月重影已修（原本就知道的那个）**
+- 门打**真实 handler 路径**（`Handler{db,secret}` → `handleTurnsSessions`），不自己拼 SQL。
+- 变异实证：修复前同一 `session_id` 回 **2 行**（`active`/1 轮 + `closed`/2 轮），
+  §9.113 的「重影各显示一半状态」真库复现。
+- 修法：`turnsSessionsFinalizeWhere()` 无条件前置
+  `s.partition_date = (SELECT MAX(x.partition_date) …)`，调用方过滤整体加括号。
+- 三个选择都有理由：① 口径对齐**写侧已有的** `titlestore` `MAX(partition_date)`
+  （不是新发明语义）；② 用普通 WHERE 而非 `DISTINCT ON` 子查询——后者是优化屏障，
+  会阻断谓词下推且改变 LIMIT 页大小语义；③ 括号，不依赖 `buildTurnsSessionWhere` 的内部约定。
+- 验证：变异红 → 修复绿，**且绿在真 installer 路径建出的全新安装库上**
+  （`applied=213 failed=0`，`relations=445`，该库 2 个 `sessions` 分区）。`./admin/` 全包 79s 绿。
+
+**② `session_title_states` 缺失 → 全新安装上会话列表恒 500（42P01）**
+- 与 §9.101 的 467 **完全同类**，只是漏了 `550`/`551` 两个文件（自包含幂等，
+  却在 embeddata 与 `StartupFiles` 里都没有）。
+- 引用面比 467 大：**5 个生产文件**（`admin/turns_sessions.go`、`session_meta_view.go`、
+  `session_turns_v2.go`、`internal/titlestore/store.go`、`db/db.go`）。
+- 生产 252 实测**有**这张表 ⇒ 只影响全新安装，也正因如此一直隐形。
+- 修法 = §9.101 五点同步（副本 `cmp` 字节一致 + `//go:embed` + `embeddedSQLFiles`
+  + `StartupFiles` 登记 + `tsv` 用 `-update` 旗标重新生成，不手改）。
+
+**③ `sessions.summary` 三列缺失（42703）+ 它底下的地雷迁移 456**
+- 补完 ② 后门**又**红：`column s.summary does not exist`。缺的正好三列
+  `summary` / `summary_model` / `summary_generated_at`，来自未登记的 `456`。
+- **456 当前必然失败**：它的后置断言查 `table_schema='gateway'`，而同文件上面的
+  `ALTER TABLE` 建在 `public`——文件自相矛盾。`gateway` schema 在**生产、权威全新安装库、
+  本地测试库三处都不存在**，`NOT EXISTS` 恒真。实测
+  `ERROR: public.sessions.last_full_payload_at not created`。
+- ⇒ 这是**地雷迁移**：它不自己爆炸，它等着「有人终于去登记它」的那一刻爆炸，而那正是修复动作本身。
+- 修法：迁移自身断言 `gateway`→`public`（`ALTER` 全是 `IF NOT EXISTS`，对已应用的库零 schema 变化）
+  + 登记在 471 与 467 之间。456 头部说「430 必须先跑」而 430 仍未登记，但 baseline 已带三张表，
+  实测能干净应用——**这句是门禁库重建实测的，不是推断**。
+- ⚠️ 顺序纪律：**先复现 456 会失败，再登记它**。反过来的话结论会变成
+  「启动链 failed=1」，根因被误判成我的登记顺序错。
+
+### 根因量化（本轮新增量）
+
+与生产 252 做 `public` schema 关系集合差（量具用**真 installer 路径**建的权威库，
+不采信我自己早先搭的 `gw_fresh_test`；两者差集**零分歧**，故 `gw_fresh_test` 亦被验证为忠实）：
+
+| 项 | 数 |
+|---|---|
+| 生产 252 关系数 | 856 |
+| 真 installer 全新安装 | 635 |
+| **生产有、全新安装缺** | **238** |
+| 剔除序列/`bak_*`/日期后缀分区后的候选基表与视图 | 116 |
+| 被生产 Go 代码（非测试）引用 | **106** |
+| 无 `db.go` 自愈覆盖 | **102** |
+
+**证据等级必须分开说**：
+- `session_title_states`（42P01）与 `sessions.summary`（42703）= **实测**，查询真报错。
+- 其余 100 项 = **结构性候选**，只做了静态交叉，**没逐条跑过代码路径，不宣称都坏**。
+
+⚠️ **差点犯的错**：我第一反应把「275 个迁移未登记」当新系统性缺陷写进结论。
+查证发现 `installer/internal/dbinit/startup_manifest_test.go:32-35` **早已写明**
+「458 个迁移编号但只登记 200 个」（本轮实测 485 / 292 / 210）。
+⇒ 值得报的是**代码级后果**，不是根因本身。**根因已知、后果未量化，这才是新增量。**
+
+### 我自己的量具缺陷（记下来，因为它两次伪装成产品缺陷）
+
+`sessionsPartitionLowerBounds` 漏了 `ORDER BY`。`pg_inherits` 返回顺序与月份无关，
+`bounds[0]/[1]` 的「最新/次新」标签随机反转 ⇒ 我写进夹具的期望描述的是一条**根本没写的行**。
+A 报「取到的不是最新分区行」、B 报「旧行从 OR 支路漏进来」，**两个都长得像产品缺陷**，
+实际上去重是对的（两场景都只回 1 行）。修法：加 `ORDER BY lo DESC` + 夹具注释记踩坑。
+**判据第一次运行前要自检桩件——这次是「桩件数据自检」。**
+
+### 变更文件
+
+- `admin/turns_sessions.go`（新增 `turnsSessionsLatestPartitionSQL` / `turnsSessionsFinalizeWhere` + handler 接线）
+- `admin/turns_sessions_crossmonth_realdb_test.go`（新增，真库门 A/B 两子场景）
+- `sql/migrations/startup/456_session_v2_display_columns.sql`（断言 `gateway`→`public`）
+- `installer/internal/dbinit/runner.go`（登记 456/550/551，各带理由注释）
+- `installer/cmd/llm-gw-installer/main.go`（3 组 `//go:embed` + 3 条 map）
+- `installer/cmd/llm-gw-installer/embeddata/startup/{456,550,551}*.sql`（副本，`cmp` 字节一致）
+- `sql/schema/installed_startup_migrations.tsv`（`-update` 重新生成，210→213）
+- `docs/audit/2026-09-30-session-request-data-re-audit.md`（§9.114）
+- 本 handoff
+
+### 下一轮提示词
+
+> 1. **本轮已推 `origin/main`**，起点 = 本轮最后一个提交 hash。
+> 2. **待拍板（全部仍未决）**：决定 A（视图加宽 30 列）/ B（16 列语义等价）/ C（25 列归属）、
+>    `credential_id` 修法（`::bigint` cast vs 改入参类型）+ 会话族 `credential_id` 索引、
+>    阻塞 #2 `is_final_success`、等价口径 (i)/(ii)/(iii)、`backlog_pending` 告警、
+>    actor 名单 (a)(b)(c)/cohort/§9.49.8/§9.48、写链是否自 ensure 当月分区、
+>    790 提交 / 50 迁移文件的发布窗口与回滚方案。
+> 3. **本轮新增待拍板**：那 **102 项**「生产有 / 全新安装缺 / 无自愈 / 被生产代码引用」的关系怎么处理。
+>    三条路：(i) 逐个登记对应迁移（要先复现每个是否像 456 一样是地雷）；
+>    (ii) 只修会话族（`session_*` / `request_*`）让核心 API 在全新安装上可跑；
+>    (iii) 承认现状、补文档与告警。**注意 (i) 的成本：275 个未登记迁移里有多少能直接登记是未知的，
+>    456 就是直接登记会炸的例子。**
+> 4. **待查**：auto-route 自 2026-09-15 断流；A 群 6 条 / B 群 10 条 / `backlog_pending=1`。
+> 5. **有意留的缺口**：全新安装无 `session_tags`（未登记 351，因 `GetSessionMetadata` 无生产调用方）——
+>    ⚠️ 但本轮已证明 252 上**有** `session_tags`，而 §9.112 修的 `session_aggregator.go`
+>    现在真的读它了。**这条「有意留的缺口」的前提可能已经不成立，下一轮必须重判。**
+> 6. **工作区纪律不变**：本地 `main` 与 `origin/main` 分叉（合并需人工裁决，不用 rebase）；
+>    共享工作区不跑 `git restore`、不 stash 他人工作。
