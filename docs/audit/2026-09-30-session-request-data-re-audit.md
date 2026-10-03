@@ -13389,3 +13389,27 @@ SELECT count(*) FROM session_turns_with_current_month WHERE credential_id = 42;
 > **注意别把上一轮的教训用反**：§9.102 说「PREPARE 的失败在生产不成立」，
 > 这一轮说「PREPARE 的通过在生产也不成立」。**两个方向都不可单独采信**，
 > 判据必须贴着被测对象的真实执行形态。
+
+---
+
+## §9.110 补 §9.109 的一个决策相关事实：会话侧**根本没有** `credential_id` 索引
+
+§9.109 留了一个前置问题才能定修法：「会话侧是否有 `credential_id` 前导索引」。
+量了（真安装库）：
+
+| 侧 | 结果 |
+|---|---|
+| v1 `request_logs_hot` | `idx_request_logs_hot_credential_model_ts` ON `(credential_id, lower(COALESCE(outbound_model, client_model)), ts DESC)` |
+| 会话 `session_turns` | **无** |
+| 会话 `session_turns_hot` | **无** |
+
+⇒ 两条推论：
+
+1. **§9.109 的 `::bigint` cast 方案不会「丢索引」**——那里本来就没有索引可丢。
+   （但这不代表 cast 是好选择，它只是消除了「丢索引」这个反对理由。）
+2. **更要紧的是：即使把类型修好，会话族上按 `credential_id` 过滤会是全表扫描**，
+   而 v1 侧走的是前导索引。⇒ 读取侧迁移若选 A/B 方案，
+   **还需要为会话族补 `credential_id` 索引**，否则是**性能回退**而非等价替换。
+
+⇒ 这条把「决定 A/B」的工作量又加了一条：**不只是视图加宽 + 类型兼容，
+还包含索引补齐**。三项都不便宜，但**现在都有确切数字了**。
