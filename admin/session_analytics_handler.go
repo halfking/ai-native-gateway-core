@@ -572,6 +572,29 @@ func (h *Handler) HandleSessionAnalyticsExport(w http.ResponseWriter, r *http.Re
 	_, _ = w.Write(result)
 }
 
+const sessionComplianceSQL = `
+		SELECT request_id, detected_at, issue_type, severity, evidence, action_taken
+		FROM (
+			SELECT request_id, detected_at,
+			       COALESCE(NULLIF(category, ''), 'prompt_injection') AS issue_type,
+			       CASE lower(COALESCE(risk_level, ''))
+			         WHEN 'critical' THEN 4
+			         WHEN 'high' THEN 3
+			         WHEN 'medium' THEN 2
+			         WHEN 'low' THEN 1
+			         ELSE 0
+			       END AS severity,
+			       evidence_text AS evidence,
+			       action_taken,
+			       tenant_id
+			FROM prompt_injection_detections
+			WHERE session_key = $1
+			UNION ALL
+			SELECT request_id, detected_at, issue_type, severity, evidence, action_taken, tenant_id
+			FROM output_compliance_audit
+			WHERE session_key = $1
+		) combined`
+
 // buildSessionAnalysisInTx builds the per-session cost/token/model analysis
 // using the timeline already loaded by the caller and queries compliance rows
 // in the same RLS tx. Errors from compliance reads are propagated so the
@@ -643,21 +666,10 @@ func (h *Handler) buildSessionAnalysisInTx(ctx context.Context, tx pgx.Tx, tenan
 		analysis.CompressionSavings = &CompressionSavings{CompressedRequests: compressedCount}
 	}
 
-	complianceQuery := `
-		SELECT request_id, detected_at, issue_type, severity, evidence, action_taken
-		FROM (
-			SELECT request_id, detected_at, issue_type, severity, evidence, action_taken, tenant_id
-			FROM prompt_injection_detections
-			WHERE session_key = $1
-			UNION ALL
-			SELECT request_id, detected_at, issue_type, severity, evidence, action_taken, tenant_id
-			FROM output_compliance_audit
-			WHERE session_key = $1
-		) combined
-		WHERE session_key = $1`
+	complianceQuery := sessionComplianceSQL
 	cArgs := []any{gwSessionID}
 	if tenantID != "" {
-		complianceQuery += " AND tenant_id = $2"
+		complianceQuery += " WHERE combined.tenant_id = $2"
 		cArgs = append(cArgs, tenantID)
 	}
 	complianceQuery += " ORDER BY detected_at DESC LIMIT 20"
