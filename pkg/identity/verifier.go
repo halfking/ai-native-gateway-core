@@ -21,7 +21,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,13 +59,18 @@ const DefaultAudience = "llm-gateway-api"
 
 // Principal is the normalized identity returned by Verify.
 type Principal struct {
-	UserID    int
-	TenantID  string
-	Username  string
-	Role      string
-	Issuer    string
-	Audience  string
-	ExpiresAt time.Time
+	// UserID and Username are Gateway-local and stay unset for a verified
+	// shared token until its canonical provider link and local account resolve.
+	Subject         string
+	ExternalUserID  string
+	CanonicalUserID string
+	UserID          int
+	TenantID        string
+	Username        string
+	Role            string
+	Issuer          string
+	Audience        string
+	ExpiresAt       time.Time
 	// IssuedAt is the token's iat (legacy path only; multi-issuer tokens
 	// leave it zero). Used by the admin auth middlewares to reject tokens
 	// issued before the user's last password change.
@@ -112,7 +116,6 @@ func Verify(raw string, legacy LegacyVerifier) (*Principal, error) {
 	if issuers, ok := loadMultiIssuerConfig(); ok {
 		aud := expectedAudience()
 		if c, err := token.VerifyMultiIssuer(raw, issuers, aud); err == nil {
-			userID := atoiOrZero(c.UserID)
 			role := firstRole(c.Roles)
 			if !supportedRole(role) || !canonicalTenant(c.TenantID) {
 				// A verified shared token with invalid authorization claims
@@ -121,14 +124,14 @@ func Verify(raw string, legacy LegacyVerifier) (*Principal, error) {
 				return nil, ErrInvalidToken
 			}
 			return &Principal{
-				UserID:    userID,
-				TenantID:  c.TenantID,
-				Username:  firstNonEmpty(usernameFromExtra(c.Extra), c.Subject),
-				Role:      role,
-				Issuer:    c.Issuer,
-				Audience:  aud,
-				ExpiresAt: time.Unix(c.ExpiresAt, 0),
-				Source:    "multi_issuer",
+				Subject:        c.Subject,
+				ExternalUserID: c.UserID,
+				TenantID:       c.TenantID,
+				Role:           role,
+				Issuer:         c.Issuer,
+				Audience:       aud,
+				ExpiresAt:      time.Unix(c.ExpiresAt, 0),
+				Source:         "multi_issuer",
 			}, nil
 		}
 	}
@@ -163,31 +166,6 @@ func expectedAudience() string {
 	return DefaultAudience
 }
 
-func atoiOrZero(s string) int {
-	if s == "" {
-		return 0
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0
-		}
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func firstRole(roles []string) string {
 	if len(roles) > 0 {
 		return roles[0]
@@ -209,15 +187,6 @@ func supportedRole(role string) bool {
 // Missing or padded tenants cannot inherit the legacy default tenant.
 func canonicalTenant(tenant string) bool {
 	return tenant != "" && strings.TrimSpace(tenant) == tenant
-}
-
-func usernameFromExtra(extra map[string]any) string {
-	if v, ok := extra["username"]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 var (

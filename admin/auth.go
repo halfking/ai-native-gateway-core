@@ -91,7 +91,11 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			// Normalize both shared and canonical local JWTs once. Verify
 			// already handles the legacy verifier and authorization policy;
 			// retrying VerifyToken here would bypass a policy rejection.
-			if p, err := identity.Verify(tokenStr, legacyAdapter(secretKey)); err == nil && p != nil && p.UserID > 0 {
+			p, err := identity.Verify(tokenStr, legacyAdapter(secretKey))
+			if err == nil && p != nil && p.Source == "multi_issuer" {
+				p, err = resolveSharedPrincipal(r.Context(), db, p)
+			}
+			if err == nil && p != nil && p.UserID > 0 {
 				// B4 (2026-09-22): a token issued before the user's last
 				// password change is revoked. Only local (legacy) tokens —
 				// cross-project principals have foreign user_id semantics.
@@ -99,7 +103,7 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 					writeError(w, http.StatusUnauthorized, "session revoked: password changed")
 					return
 				}
-				if p.Source == "legacy" && p.MustChangePassword {
+				if p.MustChangePassword {
 					if !isPasswordChangeAllowedPath(r.URL.Path) {
 						writeError(w, http.StatusForbidden, errPasswordChangeRequired.Error())
 						return
@@ -112,6 +116,9 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 					Role:               p.Role,
 					IsJWT:              true,
 					MustChangePassword: p.MustChangePassword,
+					Issuer:             p.Issuer,
+					Subject:            p.Subject,
+					CanonicalUserID:    p.CanonicalUserID,
 				})
 				next(w, authReq)
 				return
