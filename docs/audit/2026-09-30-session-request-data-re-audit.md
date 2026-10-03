@@ -15536,3 +15536,132 @@ canonical view lacks request_class'`。它是一次性状态检查：首跑时�
 >
 > **计数器和它的清单是两个独立的东西，可以只对上一个。**
 > 而"只对上"的表现形式恰恰是**看起来一切正常的通过**。
+
+---
+
+<!-- 编号说明：同文档 §9.90–§9.93 来自 feat/820-abandoned-turn，文首「编号冲突横幅」
+     已登记那 4 节待重编号为 §9.120/121/122/123，故已占用。本节从 §9.125 起。 -->
+
+## §9.125　把「11 个文件」拆成 18 条真实缺陷，并证伪我自己的一个推测
+
+§9.124 留了两个尾巴：① 「11 只是文件数，不是缺陷数」，没量；② 我推测
+「非幂等 `CREATE POLICY` 在本仓至少还有别的实例，『351 是最后一个』从未被验证过」。
+本节两条都结清。
+
+### §9.125.1 真实错误数：11 个文件 / 18 条独立错误
+
+在**全新**的 post-pass-1 库上（prereqs + baseline + seed + 217 条链跑完，`ok=217 fail=0`），
+**严格按链序**、每文件用 `ON_ERROR_STOP=0` 重跑一遍，让每个文件把全部错误暴露出来。
+
+| 文件 | 原始 ERROR 行 | 真实独立错误 |
+|---|---:|---:|
+| `614_session_bodies_hot` | 8 | **8** |
+| `568_credential_priority_flag` | 13 | **1** |
+| `session_turns_hot_bootstrap` | 7 | **1** |
+| `738_view_chain_credits_rate_multiplier` | 3 | **1** |
+| `577_request_logs_view_customer_id` | 2 | **1** |
+| `640_session_turns_protocol_fields` | 2 | **1** |
+| `520_durable_task_settlement_intents` | 1 | 1 |
+| `610_request_class_due_at` | 1 | 1 |
+| `625` / `637` / `656` | 各 1 | 各 1 |
+| **合计** | **40** | **18** |
+
+**22 条是级联噪声。** `568`（第 7 行 `BEGIN;`）、`session_turns_hot_bootstrap`（第 6 行）、
+`738`（第 32 行）三个文件**内部有显式 `BEGIN;`** ⇒ 事务里第一条命令失败后，
+PostgreSQL 把整个事务置为 aborted 状态，同事务后续命令全部报
+`25P02 current transaction is aborted, commands ignored until end of transaction block`。
+**这 22 条不代表 22 个缺陷。**
+
+⚠️ **这直接决定了一个操作性事实**：因为这三个文件有显式 `BEGIN`，
+installer（`ON_ERROR_STOP=1`）在它们身上**只看得到第一个错误**，
+后面的都被事务中止吃掉了 —— 而对**没有** `BEGIN` 的 `614`，
+8 条全是真实且互相独立的，**一条都藏不住**。
+
+⇒ **`614` 是这一类里性价比最高的一个**：纯机械（4 个 `CREATE INDEX` 加 `IF NOT EXISTS`，
+3 个 `ADD CONSTRAINT` 换成存在性守卫），一次修掉 8 条，占全部 18 条的 44%。
+
+**按错误形态聚合那 18 条**：
+
+| 条数 | 形态 |
+|---:|---|
+| 5 | `cannot drop columns from view` |
+| 5 | `relation "X" already exists`（`614` 内的约束/索引） |
+| 3 | `relation "X" already exists`（bootstrap、577 的视图、614 剩余） |
+| 1 | `multiple primary keys for table "session_bodies_hot" are not allowed` |
+| 1 | `policy "durable_task_settlement_access" ... already exists` |
+| 1 | `cannot change name of view column "raw_model_name" to "canonical_raw_name"` |
+| 1 | `608: saved pre-extension view already exists while canonical view lacks request_class` |
+| 1 | `column reference "credits_rate_multiplier" is ambiguous` |
+
+### §9.125.2 「非幂等 CREATE POLICY 还有别的实例」——**这个推测被证伪了**
+
+§9.124 我写「推论：非幂等 `CREATE POLICY` 在本仓至少还有别的实例，
+『351 是最后一个』从未被验证过」。本节做了**全量枚举**（不是抽查），结论是**没有别的实例**：
+
+| 判定 | 条数 |
+|---|---:|
+| 全链 `CREATE POLICY` 总数 | **88** |
+| 有同名 `DROP POLICY IF EXISTS` 守卫 | 85 |
+| 有 `pg_policies` 存在性守卫（`547` 的写法） | 2 |
+| **无守卫** | **1** ← 只有 `520` 的 `durable_task_settlement_access` |
+
+⇒ **520 是全链唯一的非幂等 `CREATE POLICY`。** 我的推测是错的，收回。
+但**结论比推测更有用**：它把这一类的规模钉死在 **1 个文件、1 行代码**。
+
+**量具本身也踩了一次坑，得记下来**：我第一版用「文件里有没有 `DROP POLICY`」当判据，
+得到「`547` 无守卫」的假阳性 —— 实际 `547` 用的是
+`IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE ... policyname = '...')` 守卫。
+**判据必须锚「每个 `CREATE POLICY` 的同名守卫」，不能锚「文件里有没有某种守卫」**，
+因为守卫有三种合法形态。（这与我本轮刚修掉的 `sf_failed+=` 裸子串判据是同一个病。）
+
+### §9.125.3 520 的机制不是「无守卫」，是**死守卫**（比 §9.124 更准）
+
+520 的实际内容：
+
+```sql
+DROP POLICY IF EXISTS durable_task_settlement_tenant_isolation  ON durable_task_settlement_intents;
+DROP POLICY IF EXISTS durable_task_settlement_super_admin_bypass ON durable_task_settlement_intents;
+CREATE POLICY durable_task_settlement_access ON durable_task_settlement_intents USING (...);
+```
+
+**它 drop 的两个名字，和它 create 的那个名字，不是同一个。**
+而且全链扫描证实：`durable_task_settlement_tenant_isolation` 和
+`..._super_admin_bypass` 这两个名字，**在 217 条链里没有任何一个文件创建过**
+（只出现在 520 自己这两行里）。
+
+⇒ 精确表述：**两个守卫指向不存在的对象，真正创建的那条 policy 一条守卫都没有。**
+这解释了为什么「看起来有守卫」却仍然不可重跑。
+
+⇒ **修正 §9.124 的说法**：我当时写「520 与 351 是同一机制（裸 `CREATE POLICY`）」。
+错误的 PG 规则层面确实同一（无 `CREATE POLICY IF NOT EXISTS`），
+但**缺陷形态不同、修法也不同**：
+351 是**没写守卫**（§9.115 补了 `DROP POLICY IF EXISTS`），
+520 是**守卫写错了名字**（补对名字即可，不需要新写守卫）。
+**同一个报错、两个不同缺陷 —— 这正是必须按「守卫写了什么」而不是「有没有守卫」分类的原因。**
+
+### §9.125.4 顺带发现：「失败文件集合」本身也是顺序相关的
+
+第一次探针我**乱序**重跑那 11 个文件（577 在 610 之前，与链序一致，但其余乱），
+结果 **`610` 报 0 条错误**；而门里（严格链序）它稳定失败 1 条。
+
+⇒ `610` 的自校验（`RAISE EXCEPTION '608: saved pre-extension view already exists
+while canonical view lacks request_class'`）**依赖它前面那些迁移在第二遍里做了什么**。
+
+⇒ 与 §9.124 的「起始形状决定条数」同源：**「不可重跑」是
+「迁移 × 起始状态 × 同遍内的先后」三者的函数**，不是文件的属性。
+这也说明 ratchet 以**文件**为粒度是稳妥的（文件集合在链序下稳定），
+而任何「错误条数」的口径都必须写明这三样。
+
+### §9.125.5 这一节的教训
+
+> **推测要全量枚举，不要抽查；被证伪就明确收回。**
+> 我 §9.124 写的「至少还有别的实例」听起来很有警示力，实际枚举 88 条 policy 后
+> 只有 1 条。**一个听起来合理的警示如果没被验证，不如没有** —— 它会把读者引向
+> 「系统性遗漏」的误判，而真相是「就一处，一行代码」。
+>
+> **同一个 PG 报错不等于同一个缺陷。**
+> 351 是没写守卫，520 是守卫写错名字。修法一个要新增、一个只要改名。
+>
+> **量具的形态假设必须先问「合法形态有几种」。**
+> 我用「有没有 DROP POLICY」判幂等，漏掉了 `pg_policies` 存在性守卫这一种，
+> 于是把正确的 `547` 报成缺陷。**假阳性会消耗读者的信任，比漏报更贵。**
