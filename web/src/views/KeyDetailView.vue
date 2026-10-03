@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { sortByName } from '../utils/sortByName'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
@@ -31,6 +32,11 @@ const error = ref('')
 
 const keyUsage = ref<KeyUsageSummary | null>(null)
 const keyModels = ref<ModelUsageForKey[]>([])
+
+// 2026-10-03：模型明细表首列就是模型标识，之前按后端返回顺序（=用量高低）
+// 排。用户要「按名称排序便于查找」，用量序在这里是反的。
+// 显式传 ['model']：ModelUsageForKey 还带别的字段，默认候选不该去动它们。
+const sortedKeyModels = computed(() => sortByName(keyModels.value, undefined, ['model']))
 const keyTrend = ref<TrendEntry[]>([])
 const detailLoading = ref(false)
 const detailError = ref('')
@@ -876,7 +882,7 @@ watch(keyId, async () => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="m in keyModels" :key="m.model">
+                <tr v-for="m in sortedKeyModels" :key="m.model">
                   <td><code>{{ m.model }}</code></td>
                   <td>{{ fmtNum(m.request_count) }}</td>
                   <td>{{ fmtNum(m.prompt_tokens) }}</td>

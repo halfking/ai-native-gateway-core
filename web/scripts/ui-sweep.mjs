@@ -113,21 +113,141 @@ async function launchBrowser() {
   )
 }
 
+// ── 动态详情页：把 :param 换成**真实 ID** ──────────────────────────
+//
+// 2026-10-03 的复核缺口：原来这里 `if (path.includes(':')) continue` 一刀切，
+// 于是 13 个详情页（/providers/:id、/tenants/:tenantId、/keys/:id …）**从来没被扫过**。
+// 而详情页恰恰是抽屉和内嵌表格最密的地方 —— 本轮补的八处名称排序有六处就在详情页里。
+// 「扫不到」在报告上和「扫过没问题」长得一样，所以必须补。
+//
+// ID 不写死：写死的 ID 换台环境就全失效。这里**调真实 API 取一个**，
+// 取不到就明确报告「本地无该实体的真实 ID」——不静默丢弃。
+// 每条都注明 ID 来自哪个端点，便于复核。
+const DYNAMIC_ROUTES = [
+  { path: '/providers/:id', comp: 'ProviderDetailView', from: '/api/providers', pick: (j) => j?.[0]?.id },
+  { path: '/routing-v2/work-types/:key', comp: 'WorkTypesView', from: '/api/admin/work-types?include_disabled=true', pick: (j) => j?.[0]?.key },
+  { path: '/tenants/:tenantId', comp: 'TenantDetailView', from: '/api/admin/tenants', pick: (j) => j?.[0]?.code },
+  { path: '/keys/:id', comp: 'KeyDetailView', from: '/api/keys', pick: (j) => j?.[0]?.id },
+  { path: '/request-detail/:requestId', comp: 'RequestDetailFullscreenView', from: '/api/logs?limit=1', pick: (j) => j?.items?.[0]?.request_id },
+  { path: '/admin/request-registry/journey/:requestId', comp: 'RequestJourneyDetailView', from: '/api/logs?limit=1', pick: (j) => j?.items?.[0]?.request_id },
+
+  // ⚠ 分析类的三个详情页，ID 必须取自**它们自己的列表端点**，不能从 request_logs 猜。
+  // 我第一版用 `request_logs.virtual_client_id` 当 client_id，结果详情页稳定 404 ——
+  // 那不是产品缺陷，是**我取的 ID 空间不对**（列表里叫 `claude-opus-4-8` 这种）。
+  // 假阳性比漏报更坏：它会让下轮去查一个不存在的 bug。
+  // 响应键是 `clients` / `tasks` / `users`，**不是** items —— 我第一版按 items 取，
+  // 三个分析页全部「取不到 ID」被跳过。跳过是安全的（不静默丢），但覆盖率白丢。
+  { path: '/admin/session-analytics/clients/:id', comp: 'ClientAnalyticsView', from: '/api/admin/session-analytics/clients?limit=1', pick: (j) => j?.clients?.[0]?.client_id || j?.items?.[0]?.client_id },
+  { path: '/admin/session-analytics/tasks/:id', comp: 'TaskAnalyticsView', from: '/api/admin/session-analytics/tasks?limit=1', pick: (j) => j?.tasks?.[0]?.task_id || j?.items?.[0]?.task_id },
+  { path: '/admin/session-analytics/users/:owner', comp: 'UserProfileView', from: '/api/admin/session-analytics/users?limit=1', pick: (j) => j?.users?.[0]?.owner_user || j?.items?.[0]?.owner_user },
+
+  { path: '/admin/sessions/:id', comp: 'SessionDetailView', from: '/api/logs?limit=1', pick: (j) => j?.items?.map((r) => r.gw_session_id).find(Boolean) },
+  // 凭据没有全局列表端点（/api/credentials/ 是详情路由，直接打会 400
+  // "invalid credential path"），要经 provider 取：/api/providers → 取一个 id
+  // → /api/providers/{id}/credentials。
+  // 下面两条本地大概率取不到 ID（MaaS 订单本地为空、审批队列本地为空），
+  // 但**照样登记**：有数据的环境就能自动扫到，本地取不到会在报告里点名。
+  // 不登记 = 换台环境就静默少扫两个页面。
+  // ⚠ 必须用**租户维度**的列表端点，不能用 /api/admin/maas/orders：
+  // 后者跨租户，页面调的是 /api/maas/orders/{id}（租户内）——
+  // 拿 admin 列表的 ID 去打租户端点，必然 404 **order not found**。
+  // 那是租户隔离的正确行为，不是缺陷；是**我取的 ID 空间不对**。
+  { path: '/tenant/orders/:id', comp: 'MaaSOrderView', from: '/api/maas/orders?limit=1', pick: (j) => j?.items?.[0]?.id },
+  { path: '/admin/approvals/:id', comp: 'ApprovalDetailView', from: '/api/admin/approvals?limit=1', pick: (j) => j?.items?.[0]?.id },
+  { path: '/admin/connection-registry/:credentialId/recovery', comp: 'NodeHealthTimelineView',
+    chain: [
+      { from: '/api/providers', pick: (j) => j?.[0]?.id },
+      { from: (id) => `/api/providers/${id}/credentials`, pick: (j) => j?.[0]?.id },
+    ] },
+]
+
+/** --only 里是否点名了这条动态路由（支持 /providers/:id 这种写法，也支持前缀）。 */
+function wantPath(argv, dynPath) {
+  if (!argv.includes('--only')) return true
+  const want = (argv[argv.indexOf('--only') + 1] || '').split(',').map((s) => s.trim())
+  return want.some((w) => w === dynPath || dynPath.startsWith(w) || w.startsWith(dynPath))
+}
+
+async function resolveDynamicRoutes(base, token) {
+  const out = []
+  const skipped = []
+  const getJSON = async (url) => {
+    const r = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.json()
+  }
+  for (const d of DYNAMIC_ROUTES) {
+    let id = null
+    let why = ''
+    const sources = []
+    try {
+      if (d.chain) {
+        // 链式取 ID：上一步的 ID 拼进下一步的端点（凭据要经 provider 才能拿到）
+        let cur = null
+        for (const step of d.chain) {
+          const url = base + (typeof step.from === 'function' ? step.from(cur) : step.from)
+          sources.push(url.replace(base, ''))
+          const j = await getJSON(url)
+          cur = step.pick(j)
+          if (cur === null || cur === undefined || cur === '') {
+            why = `链式解析在 ${url.replace(base, '')} 处取不到 ID`
+            break
+          }
+        }
+        id = cur
+      } else {
+        const url = base + d.from
+        sources.push(d.from)
+        const j = await getJSON(url)
+        id = d.pick(j)
+        if (id === null || id === undefined || id === '') why = `端点 ${d.from} 里取不到可用 ID（本地无该实体的数据）`
+      }
+    } catch (e) {
+      if (!why) why = `取 ${sources[sources.length - 1] || d.from} 失败：${String(e.message || e).slice(0, 80)}`
+    }
+    if (id) {
+      out.push({
+        path: d.path.replace(/:\w+/, encodeURIComponent(String(id))),
+        comp: d.comp,
+        dynamic: true,
+        sampleId: String(id),
+        from: sources.join(' → '),
+      })
+    } else {
+      skipped.push({ path: d.path, comp: d.comp, why })
+    }
+  }
+  return { out, skipped }
+}
+
 // ── 路由清单：直接从 router.ts 解析 ────────────────────────────────
 function parseRoutes() {
   const src = readFileSync(join(WEB, 'src', 'router.ts'), 'utf8')
   const out = []
+  const dynamic = []
   const re = /\{\s*path:\s*'([^']+)'[^}]*?component:\s*([A-Za-z0-9_]+)/g
   let m
   while ((m = re.exec(src))) {
     let [, path, comp] = m
-    // 跳过重定向（无 component）、公开无关页、以及需要动态参数的详情页
-    if (path.includes(':') || path === '/:pathMatch(.*)*') continue
+    // 动态参数页单独收集：它们要用真实 ID 拼出可访问的 URL（见 DYNAMIC_ROUTES），
+    // 不能像从前那样直接 continue —— 那样 13 个详情页就永远不在报告里。
+    if (path.includes(':') && path !== '/:pathMatch(.*)*') {
+      dynamic.push({ path, comp })
+      continue
+    }
+    if (path === '/:pathMatch(.*)*') continue
     if (/LoginView|ForbiddenView|CustomerUpdateActivateView|CustomerOfflineActivationView|BootstrapWizardView|MaintainUnavailableView|DispatchWaterfallPreview/.test(comp)) continue
     if (path === '/login' || path === '/forbidden' || path === '/bootstrap') continue
     if (path.startsWith('/customer/') || path.startsWith('/maintain') || path.startsWith('/dev/')) continue
     out.push({ path, comp })
   }
+  // router.ts 里出现、但 DYNAMIC_ROUTES 没登记的动态页 → 报告里点名，
+  // 免得下轮以为「表里没有 = 没有这种页」。
+  const known = new Set(DYNAMIC_ROUTES.map((d) => d.path))
+  // /maintain/:pathMatch(.*)* 刻意不登记：它渲染的是 MaintainUnavailableView
+  // ——「maintain 不可用」的占位页，不是业务详情页。上面那个组件过滤也排除了它。
+  const INTENTIONAL = new Set(['/maintain/:pathMatch(.*)*'])
+  out.unresolved = dynamic.filter((d) => !known.has(d.path) && !INTENTIONAL.has(d.path))
   // 带重定向函数的行（如 /catalog → /models）由 re 抓不到，忽略：
   // 它们最终会落到已扫的目标页上。
   return out
@@ -688,9 +808,29 @@ const OVERLAY_CASES = [
     note: 'RouteIncidentDrawer 诊断工作台',
     manual:
       '触发点在 DashboardViewV2 的 LiveRequestStreamV2 里（转发泳道诊断事件），' +
-      '而实时流只推送**进行中**的请求：本地 request_logs 最近一条是 8 小时前，' +
+      '而实时流只推送**进行中**的请求。实测本地 request_logs 最近一条是 8 小时前，' +
       '流里没有行可点。自动化要么持续造流量、要么注入假数据，' +
       '两者都会让这个 case 的判据依赖「我刚造的数据」而不是产品行为。',
+  },
+  {
+    // 复核结论（2026-10-03）：这个弹层**结构上不会裁切**，不是「未验证」。
+    // `.modal` 是 flex column + `max-height: 80vh`，内容区 `.json-block` 带
+    // `overflow: auto; flex: 1` —— 内容再长也是滚 .json-block，不会溢出到看不见。
+    // <style scoped>，`.modal` / `.json-block` 这两个通用类名不会外泄到别的组件。
+    //
+    // 之所以仍是 manual：本地 request_logs 里 has_attachments=true 的行数为 **0**，
+    // 「查看 JSONB」那个按钮根本不会渲染 —— 没有可点的入口。
+    // 要自动覆盖得先造一条带附件的请求，那样判据反映的是数据生成器。
+    // **限制**：上面的结论是静态核对的 CSS 形态，没有在真页面上量过长 JSON 的弹层；
+    // 一旦本地有了附件数据，这条应当转成自动 case 并实测。
+    path: '/admin/data-lifecycle',
+    steps: [{ click: 'a.link' }],
+    kind: 'modal',
+    note: 'AttachmentManager JSONB 弹窗（max-height 80vh + body overflow:auto）',
+    manual:
+      '本地无带附件的请求（request_logs.has_attachments=true 计数为 0），' +
+      '「查看 JSONB」入口不渲染，没有可点的按钮。' +
+      '限高裁切风险已按 CSS 形态静态核对为无（见 case 上方注释），但**未在真页面上量过**。',
   },
 ]
 
@@ -974,10 +1114,28 @@ if (args.includes('--overlays')) {
   process.exit(0)
 }
 
-let routes = parseRoutes()
+const parsedRoutes = parseRoutes()
+const unresolvedDynamic = parsedRoutes.unresolved || []
+let routesList = parsedRoutes.filter((r) => r.path)
 if (args.includes('--only')) {
   const want = new Set(args[args.indexOf('--only') + 1].split(',').map((s) => s.trim()))
-  routes = routes.filter((r) => want.has(r.path))
+  routesList = routesList.filter((r) => want.has(r.path))
+}
+
+// 动态详情页：用真实 API 取 ID 拼 URL。取不到的不静默丢弃，报告里逐条点名。
+let dynSkipped = []
+if (!args.includes('--only') || DYNAMIC_ROUTES.some((d) => wantPath(args, d.path))) {
+  process.stdout.write('解析动态详情页的真实 ID…\n')
+  const r = await resolveDynamicRoutes(BASE, TOKEN)
+  routesList = routesList.concat(r.out)
+  dynSkipped = r.skipped
+  for (const d of r.out) console.log(`  ${d.path} → ${d.path}（ID ${d.sampleId} 来自 ${d.from}）`)
+  for (const s of dynSkipped) console.log(`  ○ ${s.path}（${s.comp}）未纳入：${s.why}`)
+}
+if (unresolvedDynamic.length) {
+  console.log(`\n⚠ router.ts 里有 ${unresolvedDynamic.length} 条动态路由未登记进 DYNAMIC_ROUTES：`)
+  for (const d of unresolvedDynamic) console.log(`    ${d.path} → ${d.comp}`)
+  console.log('  它们不会出现在报告里。补进 DYNAMIC_ROUTES 或写明豁免理由。')
 }
 
 const { browser, from: browserFrom } = await launchBrowser()
@@ -989,7 +1147,7 @@ const ctx = await browser.newContext({
 
 const results = []
 let i = 0
-for (const r of routes) {
+for (const r of routesList) {
   i++
   const page = await ctx.newPage()
   const errors = []
@@ -1053,7 +1211,7 @@ for (const r of routes) {
     badReqs: [...new Set(badReqs)].slice(0, 5), errors: [...new Set(errors)].slice(0, 5),
   })
   const mark = P0.length ? '✗' : P1.length ? '!' : '✓'
-  process.stdout.write(`${mark} [${String(i).padStart(3)}/${routes.length}] ${r.path}  (元素 ${probe?.scanned ?? 0} / 文本 ${probe?.textLen ?? 0} 字)\n`)
+  process.stdout.write(`${mark} [${String(i).padStart(3)}/${routesList.length}] ${r.path}  (元素 ${probe?.scanned ?? 0} / 文本 ${probe?.textLen ?? 0} 字)\n`)
 }
 
 await browser.close()

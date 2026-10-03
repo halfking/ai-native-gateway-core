@@ -579,18 +579,51 @@ const needDate = inventory.filter((r) => !r.hasDate).length
 const needModel = inventory.filter((r) => !r.hasModel).length
 const needNameSort = inventory.filter((r) => r.nameBased && !r.nameSorted)
 console.log(`\n汇总：缺日期控件 ${needDate} / 缺模型控件 ${needModel} / 名称列表未排序 ${needNameSort.length}`)
-for (const r of needNameSort) console.log(`  名称列表未排序：${r.file}`)
+
+// 契约 C 纳入阻断：先减掉**已逐条复核过**的豁免，剩下的任一条都 exit 1。
+//
+// 为什么需要豁免表：契约 C 的「名称列表」是**启发式**判据（见 nameBased 的推导），
+// 它会把「按时间倒序才对」的流水表也报成名称列表 —— 日志流/探测历史/用量流水
+// 按名称排反而更难查。2026-10-03 复核 11 条后确认其中若干属误报。
+//
+// 但「有豁免」不等于「C 不阻断」：豁免表是**具名 + 带理由**的白名单，
+// 新增一个未排的名称列表会直接 exit 1。误报进表前必须写清理由，
+// 让下轮能复核「这条到底该不该豁免」，而不是默默吞掉。
+const NAME_SORT_EXEMPT = {
+  'views/KeyApplicationsView.vue': '首列是「申请时间」，按时间倒序才对（审批流水）',
+  'views/provider-detail/LogsTab.vue': '首列是时间，诊断日志按时间倒序',
+  'views/provider-detail/ProbeHistoryTab.vue': '探测历史流水，按时间倒序；首列凭据只是上下文',
+  'views/provider-detail/DiagTab.vue': '诊断快照按时间倒序，凭据列是次要上下文',
+  'views/provider-detail/ErrorDetailTab.vue': '按错误类型聚合，频次序比名称序更有用',
+  'views/tenant/MaaSAccountView.vue': 'recent_orders / recent_ledger 是「最近」流水',
+  'views/tenant/MaaSUsageView.vue': '用量流水，按时间倒序',
+  'views/UserProfileView.vue': '该页是**单个 owner 的详情**（route.params.owner），表里是这个 owner 的模型分解，不是用户列表 —— 契约 C 的启发式按文件名里的 User 命中，属误报',
+  'views/ModelIntegrityView.vue': '排序发生在 useModelCatalogFilters 内部，会连带改筛选/分组语义 —— 待决策',
+  'views/StandardModelPricingView.vue': '同上：排序键待决策，改了会影响计费页的筛选分组',
+}
+const stillUnsorted = needNameSort.filter((r) => !NAME_SORT_EXEMPT[r.file])
+const exempted = needNameSort.filter((r) => NAME_SORT_EXEMPT[r.file])
+if (exempted.length) {
+  console.log(`  （其中 ${exempted.length} 条已逐条复核豁免）`)
+  for (const r of exempted) console.log(`  ○ ${r.file} — ${NAME_SORT_EXEMPT[r.file]}`)
+}
+if (stillUnsorted.length) {
+  console.log(`\n契约 C 违规（名称列表未排序，未在豁免表内）: ${stillUnsorted.length}`)
+  for (const r of stillUnsorted) console.log(`  ✗ ${r.file}`)
+}
 
 if (args.includes('--json')) {
   const outPath = args[args.indexOf('--json') + 1] || 'reports/ui-audit.json'
   const abs = resolve(WEB, outPath)
   mkdirSync(dirname(abs), { recursive: true })
-  writeFileSync(abs, JSON.stringify({ fullWidth, overlays, inventory }, null, 2))
+  writeFileSync(abs, JSON.stringify({ fullWidth, overlays, inventory, stillUnsorted }, null, 2))
   console.log(`\nJSON 报告：${outPath}`)
 }
 
-if (args.includes('--strict') && (fullWidth.length || overlays.length)) {
-  console.error(`\n✗ UI 契约门未通过（A:${fullWidth.length} B:${overlays.length}），exit 1`)
+if (args.includes('--strict') && (fullWidth.length || overlays.length || stillUnsorted.length)) {
+  console.error(
+    `\n✗ UI 契约门未通过（A:${fullWidth.length} B:${overlays.length} C:${stillUnsorted.length}），exit 1`,
+  )
   process.exit(1)
 }
 if (!args.includes('--strict')) {
