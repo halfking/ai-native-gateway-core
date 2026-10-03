@@ -172,6 +172,40 @@ touch `$D/done
     }
     $sec = (Select-String -Path $outAbs -Pattern '^===SECTION:(.+)===' -ErrorAction SilentlyContinue)
     Write-Host "sections: $($sec.Count)"
+
+    # R89-DX（211 号）新增：把「跑全了吗」变成**会被报出来的事实**。
+    #
+    # 为什么要加：本脚本在 :95 刻意注入 `\set ON_ERROR_STOP off`（:93-94 写明了理由：
+    # 「单条失败不影响其余」）。这个取舍本身是合理的，但它有一个**未被兜住的后果** ——
+    # 某一段炸了之后，报表**看起来依然是完整的**，只是少了那一段。
+    # 而 :95 的注入同时让 psql **以 0 退出**（:160 的 rc），错误只出现在 :167-171 的
+    # diagnostics 里、且只印前 20 行、**不落进报表**。
+    # ⇒ 210 号登记的 A1/A2（STORAGE_MIX 整行塌成 NULL、CHECKPOINTS 列不存在）就是
+    # 这样一路静默到没人发现的。
+    #
+    # 期望值**从源文件自己数**，不写死 38：写死会在有人增删段落时立刻变成一句谎话，
+    # 而谎话比没有更坏 —— 它会把「不完整」重新伪装成「已核对」。
+    $expected = 0
+    $expectedNames = @()
+    if ($SqlFile -and (Test-Path $SqlFile)) {
+      $expectedNames = @(Select-String -Path $SqlFile -Pattern '===SECTION:([A-Za-z0-9_]+)===' -AllMatches -ErrorAction SilentlyContinue |
+                         ForEach-Object { $_.Matches[0].Groups[1].Value })
+      $expected = $expectedNames.Count
+    }
+    if ($expected -gt 0) {
+      Write-Host "expected: $expected (from $(Split-Path $SqlFile -Leaf))"
+      $gotNames = @($sec | ForEach-Object { $_.Matches[0].Groups[1].Value })
+      $missing = @($expectedNames | Where-Object { $gotNames -notcontains $_ })
+      if ($missing.Count -gt 0) {
+        Write-Host "*** INCOMPLETE: 缺 $($missing.Count) 段 -> $($missing -join ', ') ***"
+        Write-Host "*** 这些段的错误只在本机 diagnostics 里，不在报表里；请回查 err 输出。 ***"
+      } else {
+        Write-Host "complete: 全部 $expected 段都在。"
+      }
+    } else {
+      Write-Host "expected: (无法从 '$SqlFile' 数出，跳过完整性校验)"
+    }
+
     if ($sec.Count -gt 0) { $sec | ForEach-Object { Write-Host ("  " + $_.Matches[0].Groups[1].Value) } }
   }
 
