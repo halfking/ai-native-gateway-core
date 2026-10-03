@@ -3,6 +3,11 @@ export default {
   title: '压缩概览',
   refresh: '重新整理',
   loading: '載入中…',
+  load: {
+    statsFailed: '壓縮統計載入失敗',
+    sessionsFailed: '壓縮會話清單載入失敗',
+    configFailed: '壓縮設定載入失敗，下方顯示的是出廠預設值而非目前設定',
+  },
   tabs: {
     h24: '24小時',
     d7: '7天',

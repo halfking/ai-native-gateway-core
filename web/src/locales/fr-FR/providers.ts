@@ -296,6 +296,8 @@ export default {
   },
   bgStatus: {
     panelTitle: 'Statut des tâches en arrière-plan',
+    stale: "État des tâches d'arrière-plan inconnu",
+    staleHint: "Impossible de récupérer l'état ; les valeurs ci-dessous proviennent du dernier relevé réussi",
     task: {
       discovery: 'Découverte de modèles',
       discoveryRunning: 'En cours ({elapsed})',

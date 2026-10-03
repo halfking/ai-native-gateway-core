@@ -19,6 +19,7 @@ export default {
     summarizeFailed: 'Summarize failed',
     sessionForbidden: 'Current API key cannot access this session — please select the correct key',
     autoRoute: 'Auto route (auto)',
+    modelListFailed: 'Model list failed to load — “auto route” being the only option does not mean the gateway only supports auto routing',
     auto: 'Auto',
     needsKeyTitle: 'Apply for an API key first',
     needsKeyDesc: 'Chatting requires an active API key that belongs to you. You currently have none — please apply or create one.',

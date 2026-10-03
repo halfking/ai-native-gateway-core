@@ -3,6 +3,7 @@ export default {
   pageTitle: 'Usage Trend Explorer',
   pageSub: 'Per-model usage over time; filter by provider / tenant / API key / model / metric',
   loadFailed: 'Failed to load',
+  degraded: "Trend data unavailable (view {view} not initialized). The flat line below means “not computed”, not zero usage.",
   detailTimeoutHint: 'Filtering by API key scans raw request logs and can time out on wide ranges; try a shorter time range (e.g. within 7 days)',
   filterProvider: 'Provider',
   filterTenant: 'Tenant',
@@ -10,6 +11,8 @@ export default {
   filterModel: 'Model',
   filterMetric: 'Metric',
   filterAll: 'All',
+  filterProviderKeyFailed: "Provider / key filter options failed to load — an empty dropdown does not mean there are none",
+  filterTenantFailed: 'Tenant filter options failed to load',
   shareByMetric: 'Share (metric)',
   sourceDetail: 'Request detail',
   // 2026-10-02 multi-select / clear-all / auto-refresh round

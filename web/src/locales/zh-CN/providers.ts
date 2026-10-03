@@ -314,6 +314,8 @@ export default {
   },
   bgStatus: {
     panelTitle: '后台任务状态',
+    stale: '后台任务状态',
+    staleHint: '状态取不到，下面显示的是上一次的结果',
     task: {
       discovery: '模型发现',
       discoveryRunning: '检测中 {elapsed}',

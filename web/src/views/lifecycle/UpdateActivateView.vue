@@ -118,12 +118,21 @@ async function loadStatus() {
   }
 }
 
+// 2026-10-03：这两处原来只把值置 null（`catch { }`），而下游卡片会
+// 肯定地说「已是最新」（绿标签 +「当前已是最新版本」+「最新版本」回退成当前版本）。
+// 升级页上的这句话是**安全更新**级别的假话：用户会因此跳过补丁。
+// catalog 取不到时更隐蔽 —— 整块版本区空白，空白读起来就是「没有可安装的版本」。
+const upgradeCheckError = ref('')
+const catalogError = ref('')
+
 async function loadUpgrade() {
   upgrading.value = true
   try {
     upgrade.value = await updateActivateApi.upgradeStatus()
-  } catch {
+    upgradeCheckError.value = ''
+  } catch (e: unknown) {
     upgrade.value = null
+    upgradeCheckError.value = e instanceof Error && e.message ? e.message : '升级检查失败'
   } finally {
     upgrading.value = false
   }
@@ -142,8 +151,10 @@ async function loadCatalog() {
   catalogLoading.value = true
   try {
     catalog.value = await updateActivateApi.downloadsCatalog()
-  } catch {
+    catalogError.value = ''
+  } catch (e: unknown) {
     catalog.value = null
+    catalogError.value = e instanceof Error && e.message ? e.message : '版本目录加载失败'
   } finally {
     catalogLoading.value = false
   }
@@ -391,6 +402,8 @@ onMounted(async () => {
           :loading="catalogLoading"
           :checking="checkingUpgrade"
           :upgrade-status="upgrade"
+          :check-error="upgradeCheckError"
+          :catalog-error="catalogError"
           :current-version="status?.service_version || upgrade?.current_version || ''"
           :activated="isActivated"
           @check="onCheckUpgrade"

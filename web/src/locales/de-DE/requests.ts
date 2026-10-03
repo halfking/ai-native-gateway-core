@@ -63,6 +63,9 @@ export default {
       providerAll: 'Alle Anbieter',
       credentialTitle: 'Zugangsdaten',
       credentialAll: 'Alle Zugangsdaten',
+      loadFailed: 'Anbieter-/Zugangsdaten-Optionen konnten nicht geladen werden – eine leere Auswahl bedeutet nicht, dass es keine gibt',
+      partialLoadFailed: 'Zugangsdaten für {count} Anbieter konnten nicht geladen werden ({names}); die Filterung damit liefert unvollständige Ergebnisse',
+      keysLoadFailed: 'API-Schlüssel-Liste konnte nicht geladen werden — die Filterung nach einem Schlüssel liefert null Ergebnisse',
       timeTitle: 'Zeitbereich',
       timeOptions: {
         h1: '1 Stunde',

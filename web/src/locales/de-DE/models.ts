@@ -177,6 +177,11 @@ export default {
   },
   error: {
     loadFailed: 'Laden fehlgeschlagen',
+    filterMetaLoadFailed: 'Filteroptionen konnten nicht geladen werden',
+    providersLoadFailed: 'Anbieterliste konnte nicht geladen werden',
+    tagsLoadFailed: 'Tag-Liste konnte nicht geladen werden',
+    familiesLoadFailed: 'Modellfamilien konnten nicht geladen werden',
+    discoveryStatusLoadFailed: 'Status des Discovery-Jobs konnte nicht geladen werden',
     saveFailed: 'Speichern fehlgeschlagen',
     resetFailed: 'Zurücksetzen fehlgeschlagen',
     loadDetailFailed: 'Details laden fehlgeschlagen',

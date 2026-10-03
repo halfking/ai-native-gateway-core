@@ -104,6 +104,8 @@ export default {
   },
   error: {
     loadStatusFailed: 'Failed to load status',
+    loadRegionsFailed: 'Failed to load region stats',
+    loadPolicyFailed: 'Failed to load selection policy',
     loadSubsFailed: 'Failed to load subscriptions',
     loadNodesFailed: 'Failed to load nodes',
     nameUrlRequired: 'Subscription name and URL are required',

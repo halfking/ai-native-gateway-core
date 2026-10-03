@@ -64,6 +64,9 @@ export default {
       providerAll: 'すべてのプロバイダー',
       credentialTitle: '認証情報',
       credentialAll: 'すべての認証情報',
+      loadFailed: 'プロバイダー/認証情報の取得に失敗しました。ドロップダウンが空でも、該当なしとは限りません',
+      partialLoadFailed: '{count} 件のプロバイダーの認証情報が取得できませんでした（{names}）。それで絞り込むと結果が不完全になります',
+      keysLoadFailed: 'API キーの一覧を読み込めませんでした。キーで絞り込むと結果が 0 件になります',
       timeTitle: '時間範囲',
       timeOptions: {
         h1: '1時間',

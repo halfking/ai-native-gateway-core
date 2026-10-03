@@ -28,6 +28,7 @@ export default {
     paginationPage: '{current} / {total}',
   },
   userProfile: {
+    loadFailed: '用户画像加载失败',
     title: '用户画像',
     detailTitle: '用户画像详情',
     ownerUser: '用户标识',
