@@ -20,7 +20,7 @@ describe('sortByName', () => {
   })
 
   it('用 localeCompare 而不是码点序 —— 中文必须排对', () => {
-    const rows = [{ name: '默认租户' }, { name: 'Acme Corp' }, { name: '汉狮' }]
+    const rows = [{ name: '默认租户' }, { name: 'acme corp' }, { name: 'Zeta' }, { name: '汉狮' }]
     const got = sortByName(rows).map((r) => r.name)
     // 码点序会把「商/默/汉」按 U+5546/U+9ED8/U+6C49 排，与人类预期不符；
     // 这里钉住的是「等于 localeCompare 算出来的序」，而不是我猜的某个具体顺序。
@@ -28,7 +28,8 @@ describe('sortByName', () => {
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
       .map((r) => r.name)
     expect(got).toEqual(expected)
-    // 鉴别力：码点序必须与它不同，否则这条判据恒绿。
+    // 混合大小写的拉丁名保证中英文默认区域下都与码点序不同。
+    // 仅中文 + 首字母大写英文在 en-US 下可能恰好与码点序相同。
     const codePoint = [...rows].sort((a, b) => (a.name < b.name ? -1 : 1)).map((r) => r.name)
     expect(codePoint).not.toEqual(expected)
   })
@@ -53,15 +54,16 @@ describe('sortByName', () => {
 })
 
 describe('sortByName 的 keys 参数（排序键须与首列显示的主键一致）', () => {
-  // 真实形态取自 UsersView：首列 username，副标题才是中文 display_name
+  // 真实形态取自 UsersView：首列 username，副标题才是 display_name。
+  // 用拉丁副标题固定排序，键选择断言不依赖宿主默认中文拼音序。
   const rows = [
-    { username: 'mavis_local', display_name: '本地验证账号' },
-    { username: 'caiyc', display_name: '蔡寅崇' },
-    { username: 'audit_test1', display_name: '审计测试1' },
+    { username: 'mavis_local', display_name: 'Apple' },
+    { username: 'caiyc', display_name: 'Banana' },
+    { username: 'audit_test1', display_name: 'Cherry' },
   ]
 
-  it('默认顺序按 display_name 排（会落到拼音序，不是用户名序）', () => {
-    // 本(bei) 蔡(cai) 审(shen) —— 这正是「按隐藏中文名排」的坏形态
+  it('默认顺序按 display_name 排，而不是用户名序', () => {
+    // Apple / Banana / Cherry 与用户名顺序不同。
     expect(sortByName(rows).map((r) => r.username)).toEqual(['mavis_local', 'caiyc', 'audit_test1'])
   })
 
