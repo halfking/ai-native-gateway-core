@@ -813,16 +813,19 @@ const OVERLAY_CASES = [
       '两者都会让这个 case 的判据依赖「我刚造的数据」而不是产品行为。',
   },
   {
-    // 复核结论（2026-10-03）：这个弹层**结构上不会裁切**，不是「未验证」。
-    // `.modal` 是 flex column + `max-height: 80vh`，内容区 `.json-block` 带
-    // `overflow: auto; flex: 1` —— 内容再长也是滚 .json-block，不会溢出到看不见。
-    // <style scoped>，`.modal` / `.json-block` 这两个通用类名不会外泄到别的组件。
+    // 裁切风险已由**静态门**判定（不是「未验证」，也不是我读 CSS 读出来的）：
+    // ui-audit 的契约 B 有一条「限高必须在自身子树里存在可滚元素」的结构判据，
+    // 它能把 AttachmentManager 从待确认桶里摘出来（0 项）。
+    // 三态实测：真实代码 → 0；抽掉 .json-block 的 overflow:auto → 1；
+    //           把 .json-block 移出弹层 → 1（证明不是「同组件有 overflow 就算」）。
+    // <style scoped>，`.modal` / `.json-block` 这两个通用类名不会外泄。
     //
     // 之所以仍是 manual：本地 request_logs 里 has_attachments=true 的行数为 **0**，
     // 「查看 JSONB」那个按钮根本不会渲染 —— 没有可点的入口。
     // 要自动覆盖得先造一条带附件的请求，那样判据反映的是数据生成器。
-    // **限制**：上面的结论是静态核对的 CSS 形态，没有在真页面上量过长 JSON 的弹层；
-    // 一旦本地有了附件数据，这条应当转成自动 case 并实测。
+    // **限制**：静态门验的是「存在一条可滚路径」，**没有在真页面上量过**
+    // 长 JSON 的实际滚动行为；本仓待确认桶为 0 也意味着这条规则只有
+    // 「全部正确」一个观测点，误报率未知。
     path: '/admin/data-lifecycle',
     steps: [{ click: 'a.link' }],
     kind: 'modal',
