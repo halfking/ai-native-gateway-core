@@ -56,6 +56,25 @@ type SanitizeInfo struct {
 // SanitizedMessageRef links one message before and after sanitization. Hashes
 // are fingerprints only; raw message content and sensitive values never cross
 // the sanitizer/compression boundary.
+//
+// ⚠️ COORDINATE SPACE (2026-10-03, audit 196号): RawIndex/SanitizedIndex index
+// the **client request body's** message array. Sanitization rewrites bytes in
+// place and never reorders or re-lengths that array, so the two indexes are
+// always the same client-array position (they are assigned from one loop
+// counter in security/sanitize/input_protocols.go:188).
+//
+// They are NOT comparable with AlignmentInfo.OriginalIndex, which indexes the
+// **assembled outbound** array (diff.go:142-144 assembles `lastMsgs ++
+// deltaTail`), and the two differ by a session-state-dependent offset — after a
+// compression the assembled body is shorter than the client's history, so the
+// same message sits at different positions. The hashes are not a fallback
+// either: RawHash/SanitizedHash are MessageFingerprint (full 64-hex sha256 over
+// json.Compact output, key order preserved) while AlignmentInfo.Hash is msgHash
+// (32-hex, sha256 over Unmarshal+Marshal output, Go sorts object keys).
+//
+// Today this costs nothing because MessageRefs has no production consumer
+// (registered as 21号 §四 G2, P3). It is a trap for the first consumer that
+// joins the two. Both facts are pinned by provenance_seam_pin_test.go.
 type SanitizedMessageRef struct {
 	RawIndex         int    `json:"raw_index"`
 	SanitizedIndex   int    `json:"sanitized_index"`
