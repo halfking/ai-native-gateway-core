@@ -125,8 +125,8 @@ SELECT s.relname
      || ' | live_tuples~' || greatest(s.n_live_tup, 0)
      || ' | size = ' || pg_size_pretty(pg_total_relation_size(s.relid))
 FROM pg_stat_user_tables s
-WHERE s.seq_scan > 1000
-ORDER BY s.seq_scan * greatest(s.n_live_tup, 0) DESC
+WHERE s.seq_scan > 0
+ORDER BY s.seq_tup_read DESC
 LIMIT 15;
 
 \echo '===SECTION:UNUSED_INDEXES==='
@@ -156,7 +156,7 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public'
   AND c.relkind IN ('r', 'p')
   AND a.attnum > 0 AND NOT a.attisdropped
-  AND a.attstorage <> 'p'
+  AND a.attstorage = 'x'
 GROUP BY a.attcompression ORDER BY 1;
 
 \echo '===SECTION:NEVER_ANALYZED==='

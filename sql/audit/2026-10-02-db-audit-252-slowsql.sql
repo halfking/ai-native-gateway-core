@@ -163,7 +163,7 @@ FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
-  AND a.attnum > 0 AND NOT a.attisdropped AND a.attstorage <> 'p'
+  AND a.attnum > 0 AND NOT a.attisdropped AND a.attstorage = 'x'
 GROUP BY a.attcompression ORDER BY 1;
 
 \echo '===SECTION:SEQ_SCAN_HOTSPOTS==='
@@ -173,8 +173,8 @@ SELECT s.relname
      || ' | live~' || s.n_live_tup
      || ' | size=' || pg_size_pretty(pg_total_relation_size(s.relid))
 FROM pg_stat_user_tables s
-WHERE s.seq_scan > 500
-ORDER BY s.seq_scan * greatest(s.n_live_tup, 0) DESC
+WHERE s.seq_scan > 0
+ORDER BY s.seq_tup_read DESC
 LIMIT 10;
 
 \echo '===SECTION:END==='
