@@ -11782,6 +11782,42 @@ startup migration 820 exists but is missing from the channel files=(...) array
 ⚠ **演练后演练态已删除**（`git worktree remove --force` + `prune`），
 `main` 与本分支均未被改动。
 
+### §9.92.7h 上游那个 820 的**精确修复坐标**（留给接手者，本轮未实施）
+
+用户已明确本轮不碰上游那个音频迁移（`93cbce8a3`），故这里把坐标写全，
+使它成为**可执行待办**而不是一句「上游有问题」。
+
+`origin/main` @ `4867a62ca` 的实测现状：
+
+| 落点 | 行号 | 现状 |
+|---|---|---|
+| `installer/…/embeddata/startup/820_audio_modality_backfill.sql` | — | **文件不存在** |
+| `installer/cmd/llm-gw-installer/main.go` `//go:embed` | 753 是 819 那一行，往后追加 | **无 820** |
+| 同文件 `embeddedSQLFiles` map | 同上位置 | **无 820** |
+| `installer/internal/dbinit/runner.go` `StartupFiles` | 814 是 819 那一行，往后追加 | **无 820** |
+| `sql/schema/installed_startup_migrations.tsv` | 216 是 819 | **无 820** |
+| `scripts/apply-db-revision-sequence.sh` 通道腿 | 825 是 819 那一行，往后追加 | **无 820** |
+
+**修复顺序有依赖，不能乱**：
+
+1. 补 **embeddata 副本**（`cp sql/migrations/startup/820_….sql installer/…/embeddata/startup/`）
+   —— ⚠ 必须**逐字节一致**，否则
+   `TestStatsStartupMigrationsMatchCanonicalSources` 会红
+   （我在让号时就撞过一次：sed 改漏了一行，副本漂移，门当场抓到）。
+2. 补 `main.go` 的 `//go:embed` **与** `embeddedSQLFiles` map 条目。
+3. 补 `runner.go` 的 `StartupFiles`。
+4. **此时才**跑 TSV 重生成：`cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update`
+   —— 顺序反了会得到一个「不含 820 的清单」，且看起来全绿。
+5. 补通道腿（数组里 819 那行之后）。
+6. 验：`bash scripts/apply-db-revision-sequence_test.sh` ⇒ 期望 rc=0。
+
+⚠ **第 4 步是本节最关键的一步**：TSV 是从 `StartupFiles` 推导的，
+**没先补 ④，重生成不会包含 820**；
+而若先重生成再补 `StartupFiles`，清单与实际会脱节，
+`TestStartupManifestMatchesStartupFiles` 才会红——那时红因指向的是
+「清单过期」而不是「缺通道腿」，**排查方向会被带偏**（我在 §9.92.7f
+就推理错过一次，实测才发现）。
+
 ### §9.92.8 本节没有做的 / 遗留
 
 1. **没有部署**。820 未上 252，`storage.request_logs_write_enabled` 仍未 seed。
