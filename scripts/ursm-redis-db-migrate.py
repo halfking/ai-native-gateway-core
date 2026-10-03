@@ -139,6 +139,8 @@ def main():
     ap.add_argument("-p", dest="prefix", default="ursm:v2:")
     ap.add_argument("-E", dest="env_file", default="/etc/llm-gateway-go/env")
     ap.add_argument("--batch", dest="batch", type=int, default=500)
+    ap.add_argument("--force", action="store_true",
+                    help="允许目标 db 非空（第二遍补复制用；会覆盖同名键）")
     args = ap.parse_args()
 
     if args.plan == args.copy:
@@ -167,29 +169,45 @@ def main():
          (args.addr, args.src_db, src_size, args.dst_db, dst_size))
     info("前缀: %s*" % args.prefix)
 
-    if dst_size != 0:
+    if dst_size != 0 and not args.force:
         die("目标 db%d 非空（%d 键）。拒绝执行：迁移会与既有键混合，"
-            "回滚将无法区分来源。请换一个空 db 或先人工清理。" % (args.dst_db, dst_size))
+            "回滚将无法区分来源。请换一个空 db、先人工清理，"
+            "或加 --force（仅用于第二遍补复制）。" % (args.dst_db, dst_size))
+    if dst_size != 0 and args.force:
+        # --force 只为「两遍复制」的第二遍而存在（2026-10-04 用户选定的路径）：
+        #   ① 在线复制 db2→db14        ② 切 URSM_V2_REDIS_DB=14 并重启
+        #   ③ 再复制一遍补上 ①② 窗口里 db2 侧的变化
+        # RESTORE 本身带 replace=True，所以第 ③ 遍会覆盖同名键。
+        warn("目标 db%d 非空（%d 键）且指定了 --force：本遍会**覆盖**同名键。" % (args.dst_db, dst_size))
+        warn("仅在「第二遍补复制」时使用。第一遍误加了 --force 会让"
+             "既有键与迁移键混杂，回滚时无法区分来源。")
 
     # 目标 db 必须不含任何 ursm 残留（历史踩过的坑：db15 留着陈旧 meta:ready）
-    # 注意：在当前逻辑下这条不可达 —— 任何残留键都会先被上面的 dst_size != 0
-    # 拦下。保留作纵深防御：万一将来放宽「目标可非空」，这条仍在。
+    # 第一遍之后 db14 必然带 meta:ready，所以这条在 --force 下只告警不拦。
     if dst.exists(args.prefix.encode() + b"meta:ready"):
-        die("目标 db%d 已存在 %s meta:ready，拒绝执行" % (args.dst_db, args.prefix))
+        if args.force:
+            warn("目标 db%d 已存在 %s meta:ready（第一遍的产物，符合两遍复制预期）"
+                 % (args.dst_db, args.prefix))
+        else:
+            die("目标 db%d 已存在 %s meta:ready，拒绝执行" % (args.dst_db, args.prefix))
 
     if args.plan:
         info("预检通过。以下为只读信息，未做任何变更：")
         info("  - 目标 db%d 为空，可用作 URSM 专用 db" % args.dst_db)
-        info("  - 复制需要在流量静默窗口执行（请求路径每请求写 node 键）")
+        info("  - 竞态量级（2026-10-04 实测）：键空间 30s 内变 0.3%，复制约 40s")
+        info("    ⇒ 60s 窗口约错过 8 个键的更新；其中 40% 无 TTL，可能长期陈旧")
         info("  - 本次 SCAN 需遍历源 db 全部 %d 键（MATCH 是服务端过滤，躲不掉），"
              "预计数十秒" % src_size)
         info("")
-        info("静默窗口步骤（人工执行，脚本不代劳）：")
-        info("  1) 停止写入方网关，使请求不再落到旧 db")
-        info("  2) python3 $0 --copy %s -s %d -d %d" % (args.addr, args.src_db, args.dst_db))
-        info("  3) 校验通过后设置 URSM_V2_REDIS_DB=%d（留空=沿用共享 client，行为不变）"
-             % args.dst_db)
-        info("  4) 启动网关，确认 persist committed 恢复且 row 数为迁移前量级")
+        info("两遍复制步骤（2026-10-04 用户选定，不停机）：")
+        info("  1) 在线复制（此时网关照常写 db2）：")
+        info("       echo MIGRATE | python3 $0 --copy %s -s %d -d %d" % (args.addr, args.src_db, args.dst_db))
+        info("  2) 校验通过后，两台设 URSM_V2_REDIS_DB=%d 并重启" % args.dst_db)
+        info("     （留空=沿用共享 client，行为不变）")
+        info("  3) 再复制一遍补上第 ② 步窗口内 db2 侧的变化（必须加 --force）：")
+        info("       echo MIGRATE | python3 $0 --copy --force %s -s %d -d %d" % (args.addr, args.src_db, args.dst_db))
+        info("  4) 确认 persist committed 恢复、row 数与迁移前同量级、")
+        info("     且 /opt/scripts/ursm-snapshot-health.sh 连续 2 轮 exit 0")
         info("")
         info("回滚：把 URSM_V2_REDIS_DB 置回未设置并重启即可；旧 db 数据原样保留不动。")
         return 0
