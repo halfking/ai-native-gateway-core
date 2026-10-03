@@ -115,3 +115,81 @@ describe('sortByName 键选择的稳定性', () => {
     ])
   })
 })
+
+describe('sortByName 模型类列表（2026-10-03 追加的 canonical_name / model）', () => {
+  it('只有 canonical_name 时按它排（租户模型表首列形态）', () => {
+    const rows = [{ canonical_name: 'glm-4.6' }, { canonical_name: 'abab-7' }, { canonical_name: 'Zeta' }]
+    // 同上面那条：钉住「等于 localeCompare 算出来的序」，不是我猜的某个顺序。
+    // zh-CN 排序规则里大小写是三级差异，所以 'glm-4.6' 排在 'Zeta' **之前** ——
+    // 我第一版按 ASCII 直觉写成 Zeta 在前，直接红。写死猜的顺序 = 写下假判据。
+    const expected = [...rows]
+      .sort((a, b) => a.canonical_name.localeCompare(b.canonical_name, undefined, { numeric: true, sensitivity: 'base' }))
+      .map((r) => r.canonical_name)
+    expect(sortByName(rows).map((r) => r.canonical_name)).toEqual(expected)
+    // 鉴别力：ASCII 序（Z 在 a 前）必须与它不同，否则这条断言恒绿
+    const ascii = [...rows].sort((a, b) => (a.canonical_name < b.canonical_name ? -1 : 1)).map((r) => r.canonical_name)
+    expect(ascii).not.toEqual(expected)
+  })
+
+  it('只有 model 时按它排（密钥明细的模型表首列形态）', () => {
+    const rows = [{ model: 'qwen-max' }, { model: 'glm-4.6' }]
+    expect(sortByName(rows).map((r) => r.model)).toEqual(['glm-4.6', 'qwen-max'])
+  })
+
+  // ★ 追加这两个键时最怕的事：把已上线六处列表的行序静默改掉。
+  // 这条把「有 name 的行绝不会被新键抢走排序依据」钉死。
+  it('追加 canonical_name 不会改变已有 name 的行的行序（供应商等六处不受影响）', () => {
+    const rows = [
+      { name: 'Zeta', canonical_name: 'aaa-first' },
+      { name: 'Alpha', canonical_name: 'zzz-last' },
+    ]
+    expect(sortByName(rows).map((r) => r.name)).toEqual(['Alpha', 'Zeta'])
+    // 鉴别力：若 canonical_name 被插到 name 前面，会排成 Zeta, Alpha
+    expect(sortByName(rows, undefined, ['canonical_name', 'name']).map((r) => r.name)).toEqual([
+      'Zeta',
+      'Alpha',
+    ])
+  })
+
+  it('name 为空串时回退到 model，而不是沉底', () => {
+    const rows = [{ name: '   ', model: 'beta' }, { model: 'alpha' }]
+    expect(sortByName(rows).map((r) => r.model)).toEqual(['alpha', 'beta'])
+  })
+})
+
+describe('key_alias 与 canonical_name/model 的默认归属', () => {
+  // key_alias 加进 NameLike 是为了租户详情页的密钥表能按别名排，但它**不进**
+  // DEFAULT_KEYS —— 与 label 同理：默认候选顺序已经上线在多处，插进去会
+  // 静默改变那些页面的行序。
+  it('key_alias 不会被默认当作排序键（已上线列表行序不变）', () => {
+    const rows = [
+      { name: 'Zeta', key_alias: 'aaa-first' },
+      { name: 'Alpha', key_alias: 'zzz-last' },
+    ]
+    expect(sortByName(rows).map((r) => r.name)).toEqual(['Alpha', 'Zeta'])
+  })
+
+  it('显式传 key_alias 时按别名排（租户详情页密钥表走这条）', () => {
+    // 用 ASCII 别名而不是中文：中文的 localeCompare 序（测 shè 在 生 shēng 前）
+    // 与 ASCII 直觉不一致，我第一次就按直觉写死顺序直接红了 ——
+    // 那是在测 collator，不是在测「有没有按别名排」。排序机制用无歧义输入验。
+    const rows = [
+      { id: 2, name: 'sk-aaaa', key_alias: 'production' },
+      { id: 1, name: 'sk-zzzz', key_alias: 'staging' },
+    ]
+    expect(sortByName(rows, (a, b) => a.id - b.id, ['key_alias', 'name']).map((r) => r.key_alias)).toEqual([
+      'production',
+      'staging',
+    ])
+  })
+
+  it('鉴别力：不传 keys 时这两个行的顺序与传了 key_alias 时不同', () => {
+    const rows = [
+      { id: 1, name: 'Zeta', key_alias: 'aaa' },
+      { id: 2, name: 'Alpha', key_alias: 'zzz' },
+    ]
+    expect(sortByName(rows).map((r) => r.name)).not.toEqual(
+      sortByName(rows, undefined, ['key_alias']).map((r) => r.name),
+    )
+  })
+})

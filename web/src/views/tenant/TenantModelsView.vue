@@ -11,6 +11,7 @@ import { localeRef } from '../../i18n'
 import { getMaasModels } from '../../api'
 import type { MaasModel } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import { sortByName } from '../../utils/sortByName'
 import PageBackLink from '../../components/PageBackLink.vue'
 
 const { t } = useI18n()
@@ -26,7 +27,7 @@ const filterMultimodal = ref<'all' | 'yes' | 'no'>('all')
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return models.value.filter((m) => {
+  const hits = models.value.filter((m) => {
     if (filterMultimodal.value !== 'all') {
       const isMulti = supportsMultimodal(m.modality)
       if (filterMultimodal.value === 'yes' && !isMulti) return false
@@ -44,6 +45,11 @@ const filtered = computed(() => {
       .toLowerCase()
     return hay.includes(q)
   })
+  // 2026-10-03：老板要「有名称的列表按名称排序」。本表首列就是模型标识，
+  // 之前完全按后端返回顺序 —— 找特定模型只能翻页。
+  // 排序键必须与首列一致：显式传 ['canonical_name']，不要用默认候选
+  // （MaasModel 带 display_name，默认会先按中文显示名排，与首列不一致）。
+  return sortByName(hits, undefined, ['canonical_name'])
 })
 
 function modalityLabel(modality: string) {

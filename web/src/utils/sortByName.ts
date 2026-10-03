@@ -19,12 +19,25 @@ export interface NameLike {
   code?: string | null
   owner_user?: string | null
   key_prefix?: string | null
+  /** 密钥别名（租户详情页的密钥表首列之外、人真正写下的那个名字）。 */
+  key_alias?: string | null
   /**
    * 凭据的展示名（ProviderCredential.label）。**刻意不加入 DEFAULT_KEYS** ——
    * 默认候选顺序已经上线在供应商/租户/用户/密钥四处，改它会静默改变那些页面的
    * 行序。只在需要时由调用方显式传 keys 指定。
    */
   label?: string | null
+  /**
+   * 2026-10-03 补：模型类列表的展示名。租户模型表 / 密钥明细的模型表 /
+   * 凭据可用模型面板的首列都是模型标识，之前这些表一行排序代码都没有。
+   *
+   * 加在 DEFAULT_KEYS **末尾**：只能影响「前面所有候选都取不到值」的行
+   * （原来会沉底，现在按模型名排）。已经在用的六处列表行序**不会**变。
+   */
+  canonical_name?: string | null
+  model?: string | null
+  /** 质量表用的模型名字段（ProviderQualityData.models[].model_name）。 */
+  model_name?: string | null
 }
 
 /** 取一行的可读名称，逐个回退；全空则返回空串（排序时沉底）。 */
@@ -36,8 +49,20 @@ export function nameOf(row: NameLike, keys: (keyof NameLike)[] = DEFAULT_KEYS): 
   return ''
 }
 
-/** 默认候选顺序：先「显式的名字」，再退到各类标识。 */
-const DEFAULT_KEYS: (keyof NameLike)[] = ['name', 'display_name', 'username', 'title', 'code', 'owner_user', 'key_prefix']
+/** 默认候选顺序：先「显式的名字」，再退到各类标识，最后才是模型标识。 */
+const DEFAULT_KEYS: (keyof NameLike)[] = [
+  'name',
+  'display_name',
+  'username',
+  'title',
+  'code',
+  'owner_user',
+  'key_prefix',
+  // 2026-10-03 追加在末尾（见 NameLike 里的说明：只影响原本会沉底的行）
+  'canonical_name',
+  'model',
+  'model_name',
+]
 
 /**
  * 按名称字典序排序（不修改入参）。
