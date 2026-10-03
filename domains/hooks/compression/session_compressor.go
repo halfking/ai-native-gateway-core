@@ -1166,7 +1166,11 @@ func markerizeAnthropicSystem(system json.RawMessage) (string, json.RawMessage, 
 	var content string
 	if json.Unmarshal(system, &content) == nil {
 		marker, baseContent, alreadyMarked := summaryMarkerContent(content)
-		if !isAnthropicSummaryContent(baseContent) {
+		// The string shape appends the summary after the original system text
+		// (original-first for upstream prompt-cache stability), so the
+		// prefix-only check misses the most common production shape; the
+		// gateway-namespaced separator is the fallback identity.
+		if !isAnthropicSummaryContent(baseContent) && !containsAnthropicSummarySeparator(baseContent) {
 			return "", nil, false
 		}
 		if alreadyMarked {
@@ -1236,6 +1240,17 @@ func isAnthropicSummaryContent(content string) bool {
 	decodedPrefix := strings.ReplaceAll(literalPrefix, `\n`, "\n")
 	return strings.HasPrefix(content, literalPrefix) || strings.HasPrefix(content, decodedPrefix) ||
 		strings.HasPrefix(content, literalPrefix[2:]) || strings.HasPrefix(content, decodedPrefix[2:])
+}
+
+// containsAnthropicSummarySeparator reports whether the gateway compression
+// separator appears anywhere inside an Anthropic system text. Prefix-shaped
+// bodies (empty original system, appended gateway block) start with it and are
+// covered by isAnthropicSummaryContent; the string shape appends it after the
+// original system text, so only a contains check recognizes that generation.
+// The separator core is gateway-namespaced (rebuilder_anthropic.go) and cannot
+// appear in a client-authored system prompt.
+func containsAnthropicSummarySeparator(content string) bool {
+	return strings.Contains(content, anthropicSummarySeparatorCore)
 }
 
 func summaryMessageIndex(body []byte, protocol string) int {
