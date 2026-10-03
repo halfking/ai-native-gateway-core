@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -755,8 +756,14 @@ func (h *OutputComplianceHandler) handleStats(w http.ResponseWriter, r *http.Req
 	}
 
 	pendingReviews := 0
-	_ = h.pool.QueryRow(r.Context(),
-		`SELECT COUNT(*) FROM output_compliance_review_queue WHERE tenant_id=$1 AND status='pending'`, tenantID).Scan(&pendingReviews)
+	if err := h.pool.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM output_compliance_review_queue WHERE tenant_id=$1 AND status='pending'`, tenantID).Scan(&pendingReviews); err != nil {
+		// 2026-10-03 R38：stats 是聚合展示，单路失败不应 500 整个面板，
+		// 但也不能静默吞掉——记进日志，面板上该字段回 0 可见异常。
+		slog.Warn("output-compliance stats: pending reviews count failed",
+			"tenant_id", tenantID, "error", err)
+		pendingReviews = 0
+	}
 
 	// 2026-10-03：视图（web/src/views/OutputComplianceView.vue）一直按下面这组
 	// 字段读 stats，之前接口只返回 {total_issues, blocked, pending_reviews}，
@@ -770,13 +777,19 @@ func (h *OutputComplianceHandler) handleStats(w http.ResponseWriter, r *http.Req
 	// 编一个数出来。avg_latency_ms 在审计表里没有对应列，同样返回 0。
 	var piiHits, secretHits, toxicHits int
 	var lastDetected *time.Time
-	_ = h.pool.QueryRow(r.Context(),
+	if err := h.pool.QueryRow(r.Context(),
 		`SELECT COUNT(*) FILTER (WHERE tenant_id=$1 AND issue_type='pii'),
 		        COUNT(*) FILTER (WHERE tenant_id=$1 AND issue_type='secret'),
 		        COUNT(*) FILTER (WHERE tenant_id=$1 AND issue_type='toxic'),
-		        MAX(detected_at)
+		        MAX(detected_at) FILTER (WHERE tenant_id=$1)
 		 FROM output_compliance_audit`, tenantID).
-		Scan(&piiHits, &secretHits, &toxicHits, &lastDetected)
+		Scan(&piiHits, &secretHits, &toxicHits, &lastDetected); err != nil {
+		// 2026-10-03 R38：原实现 `_ =` 丢弃 + MAX(detected_at) 裸跑全表——
+		// last_updated 会拿到**其它租户**最近一次事件时间（admin 裸 pool 不设
+		// RLS GUC，见 model_policies.go 的注记），属跨租户信息泄漏，已加 FILTER。
+		slog.Warn("output-compliance stats: issue breakdown failed",
+			"tenant_id", tenantID, "error", err)
+	}
 
 	lastUpdated := ""
 	if lastDetected != nil {
@@ -789,6 +802,9 @@ func (h *OutputComplianceHandler) handleStats(w http.ResponseWriter, r *http.Req
 		"blocked":         blocked,
 		"pending_reviews": pendingReviews,
 		// 视图契约
+		// total_checks 暂无真实计数源（检查通过不落审计行，policies.total_checks
+		// 列存在但全仓无递增点），先镜像 total_issues 保持字段可用；真实计数
+		// 需在 outputcompliance 检查路径加计数落库，见 R38 审计移交清单。
 		"total_checks":   totalIssues,
 		"pii_hits":       piiHits,
 		"secret_hits":    secretHits,
@@ -915,6 +931,10 @@ func (h *OutputComplianceHandler) handleRecords(w http.ResponseWriter, r *http.R
 
 // ==================== 辅助函数 ====================
 
+// complianceStatsMaxLimit：stats/records 类接口分页上限。/records 暴露后
+// limit 无界会允许一次拉全表（R38 审计）；200 行足够面板预览用。
+const complianceMaxLimit = 200
+
 func parsePagination(r *http.Request, defaultLimit, defaultOffset int) (int, int) {
 	limit := defaultLimit
 	offset := defaultOffset
@@ -922,6 +942,9 @@ func parsePagination(r *http.Request, defaultLimit, defaultOffset int) (int, int
 		if v, err := strconv.Atoi(l); err == nil && v > 0 {
 			limit = v
 		}
+	}
+	if limit > complianceMaxLimit {
+		limit = complianceMaxLimit
 	}
 	if o := r.URL.Query().Get("offset"); o != "" {
 		if v, err := strconv.Atoi(o); err == nil && v >= 0 {

@@ -108,7 +108,7 @@ archive_data() {
   local archive_file="${ARCHIVE_DIR}/request_logs_${date_from}_to_${date_to}.jsonl.gz"
 
   if [[ -f "$archive_file" ]] && [[ "$DRY_RUN" == "false" ]]; then
-    log_warn "归档文件已存在: $archive_file，跳过"
+    log_warn "归档文件已存在: ${archive_file}，跳过"
     return 0
   fi
 

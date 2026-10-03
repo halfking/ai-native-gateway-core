@@ -404,6 +404,7 @@ const OVERLAY_PROBE = () => {
       parentKey,
       cls,
       w: Math.round(r.width), h: Math.round(r.height),
+      x: Math.round(r.left), y: Math.round(r.top),
       isBackdrop: r.width >= vw * 0.95 && r.height >= vh * 0.95,
       textLen: (el.innerText || '').trim().length,
       // 内容放不下时必须有可滚路径，否则底部字段看不到 —— 老板说的「显示内容必须完整」
@@ -416,9 +417,20 @@ const OVERLAY_PROBE = () => {
 // 取**非遮罩候选里最外层**的那个（沿 parentKey 上溯，池内没有祖先者）——
 // 旧探针两次选错对象（量到遮罩、量到 .drawer-body）都是因为用尺寸近似本体。
 // 深度必须在**排除遮罩之后**才算，否则遮罩会把每个后代都压成 depth≥1。
+//
+// 2026-10-03 R38：「新出现」的判定从 key 精确匹配改为**容差匹配**。
+// 非 overlay 滚动条环境（Windows/Linux）里，开弹层常伴随 body 出/收滚动条，
+// 全页 fixed 元素整体位移 ~15px、铺满视口的元素宽 -15px —— 精确 key 会把
+// 点击前就存在的常驻 fixed 全部误判成「新弹层」，探针接着量错对象。
+// 同 class 且 x/y/w/h 四维都在 24px 内 ⇒ 视为同一元素，不算新开。
 export function pickOpenedPanel(before, after) {
-  const seen = new Set(before.map((c) => c.key))
-  const fresh = after.filter((c) => !seen.has(c.key))
+  const sameEl = (a, b) =>
+    a.cls === b.cls
+    && Math.abs((a.x ?? 0) - (b.x ?? 0)) <= 24
+    && Math.abs((a.y ?? 0) - (b.y ?? 0)) <= 24
+    && Math.abs(a.w - b.w) <= 24
+    && Math.abs(a.h - b.h) <= 24
+  const fresh = after.filter((c) => !before.some((b) => sameEl(b, c)))
   if (!fresh.length) return null
   const nonBackdrop = fresh.filter((c) => !c.isBackdrop)
   const pool = nonBackdrop.length ? nonBackdrop : fresh
@@ -505,6 +517,24 @@ const OVERLAY_FIXTURES = [
     before: `<div class="app-nav-drawer" style="position:fixed;left:0;top:0;width:300px;height:100%;background:#eee">常驻导航</div>`,
     after: `<div class="app-nav-drawer" style="position:fixed;left:0;top:0;width:300px;height:100%;background:#eee">常驻导航</div>`,
     expect: { found: null },
+  },
+  {
+    // ★ R38：滚动条形态漂移。开弹层让 body 出滚动条 ⇒ 全页 fixed 元素位移
+    // ~15px、宽度 -15px（非 overlay 滚动条环境）。key 精确匹配会把这种
+    // 常驻元素误判成「新弹层」；容差匹配必须把它当同一元素。
+    name: '反向对照：滚动条出现导致的 15px 位移/缩宽不算「新弹层」',
+    before: `<div class="app-nav-drawer" style="position:fixed;left:0;top:0;width:1440px;height:64px;background:#eee">常驻顶栏</div>`,
+    after: `<div class="app-nav-drawer" style="position:fixed;left:15px;top:0;width:1425px;height:64px;background:#eee">常驻顶栏</div>`,
+    expect: { found: null },
+  },
+  {
+    // 与上条成对：真位移超过容差（弹层把面板从 0 推到 400px）且 class 不同 ⇒
+    // 必须仍被识别为新弹层——容差不能宽到把真弹层也吸掉。
+    name: '正向对照：真·新元素（不同 class）不受容差影响',
+    before: `<div class="app-nav-drawer" style="position:fixed;left:0;top:0;width:300px;height:100%;background:#eee">常驻导航</div>`,
+    after: `<div class="app-nav-drawer" style="position:fixed;left:0;top:0;width:300px;height:100%;background:#eee">常驻导航</div>
+      <div class="drawer-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.4)"><div class="drawer" style="position:absolute;right:0;top:0;width:760px;height:100%;background:#fff">${'行<br>'.repeat(6)}</div></div>`,
+    expect: { found: 'drawer', notBackdrop: true, wideEnough: true },
   },
   {
     name: '反向对照：页面没弹层时不得凭空报一个（差分为空）',
