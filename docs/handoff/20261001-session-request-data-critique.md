@@ -4788,3 +4788,93 @@ typecheck 19 处**既有**错误（本轮一度 20，已修）。
 审计文档 10,797 行（U+FFFD 仍只有既有的 4471/6674，冲突 0）。
 不要 rebase，不要代为处理他人的 cherry-pick。
 ```
+
+---
+
+## 第四十二轮（§9.90）：★查完 §9.59.9 那 6 条 —— 根因是**产品缺陷**：持久化重试面已死 10 天，兜底落进内存缓冲，重启即丢
+
+> 编号说明：本文件存在两套轮次编号（我的「第四十X轮」与并行会话的「第十X轮」）。
+> 本轮用**第四十二轮**以免与并行会话的编号撞车；审计文档侧因并行会话已排到 §9.89，
+> 本节取号 **§9.90**（原写 §9.60，提交前发现已被占用，已改）。
+
+### 结论
+
+§9.59.9 那批「已终态却无孪生」的请求，**不是口径问题，是镜像写链的真实丢失**，
+且**此刻仍在发生**。
+
+### 根因链（每一步都有证据）
+
+1. **规模比 §9.59.9 记的大**：按「会话在 `sessions` 里存不存在」切，
+   未配对的非 auto 行分两群——
+   **A 群（64 条）：会话从未被创建**（`in_progress` 58 按设计 + `failure` 5 + `rate_limited` 1）；
+   **B 群（10 条）：会话存在（2~600 轮）但个别轮缺失**。
+   §9.59.9 只按 `request_status` 切，漏掉了这个更重要的切法。
+2. **四道镜像闸门全放行**：首门（终态）、`IsProbeSyntheticSession`（`gw_session_id` 真实非空）、
+   `IsInternalAutoEntry`（非 auto）、`entryToProcessedRequest`（sessionID 非空）。
+3. **它们没走到写库**：`w.Write` 失败会打 `WARN … request_id=`。
+   `/var/log/messages` 里这类 WARN 有 492 条（Oct 1/2/3 = 161/65/222），
+   **这 6 个 id 命中 0 次**。
+4. **持久化面已死**：`session_mirror_outbox` **147 条全是 `dead`，全部创建于 2026-09-23，
+   10 天没接过任何东西**；失败原因全是 `timeout: context deadline exceeded`。
+   日志实证降级：`Oct 1 05:05:08 outbox registration failed, degrading to in-process backlog`、
+   `Oct 3 07:00:00 outbox registration commit failed, degrading to in-process backlog`。
+5. **兜底是内存**：`EnqueueMirrorFailure` 返回 false ⇒ `appendBacklog`（纯内存）⇒ 重启即丢。
+6. **此刻正在丢**：252 `/metrics` 实测
+   `session_v2_mirror_backlog_pending = 1`、`llm_gateway_shadow_write_failed_total{kind="session_v2"} = 246`。
+
+### ★§9.37 的第三次复现，但这次是升级形态
+
+| 检查 | 结果 |
+|---|---|
+| `shadow_write_failed_total` 有告警 | ✅ `alerts/shadow-write-failures.yaml:51` |
+| 该告警阈值 | `rate(…[5m]) > 10/60` = **>10 次/分钟** |
+| 实际速率 | ≈ **0.06 次/分钟**（246 次 ÷ 2.9 天）⇒ **差约 170 倍** |
+| `session_v2_mirror_backlog_pending` 有告警 | ❌ **无**（全库 grep 无命中） |
+
+⇒ 计数器**被读**，但阈值高三个数量级，等于事实上不读；
+唯一直接回答「有多少行正躺着等死」的 gauge **连告警都没有**。
+**「有没有告警」不是充分检查，「告警会不会响」才是。**
+
+### ⚠️ §9.56 的一条记录已失效（订正）
+
+§9.56 写「journal 最早只到 2026-10-02 16:22」。**本轮实测 journal 最早只到
+2026-10-03 17:05:41（已滚动）**——该条覆盖窗口**已作废**。
+拿 journal 查 10-01/10-02 的请求只会得到 0 条，**那不构成证据**。
+本轮改用 `/var/log/messages`（1.5 GB，归档到 09-27，当前文件覆盖 09-27 至今）才拿到覆盖。
+**交叉数据源 > 缺失证据。**
+
+### 建议修法（**本轮未落**，需拍板）
+
+1. 告警 `session_v2_mirror_backlog_pending > 0 for: 5m`。
+   ⚠️ **在 252 上会立刻响并持续响**（outbox 已死 10 天）——
+   「让它一直响」vs「先修 outbox 再上告警」是**运维决策**。
+2. 降 `shadow_write_failed_total{kind="session_v2"}` 的阈值（现高 170 倍）。
+3. **补 `hook.go:152` 信号量满分支的日志**——它现在**一条都不打**，只记指标。
+   这是本节最直接的可观测性缺口：一行 `slog.Warn` 就能让这类丢失有迹可循，
+   也能让「6 条各走了哪条路」当场可判。
+
+未落原因：① `deploy/prometheus/` 正被并行会话改动，扩大冲突面无益；
+② 告警一上线就在 252 持续 firing，是需要负责人拍板的运维姿态。
+
+### 测试
+
+本节为**生产只读取证 + 文档**，无代码改动、无新增门。
+引用门仍是 §9.59 交付的（`internal/sessionv2mirror/terminal_failure_gate_test.go`、
+`dual_write_value_parity_integration_test.go`），两者已在 `origin/main`。
+
+### 遗留
+
+- 6 条各走了三条**无日志**返回路径中的哪一条，**无法逐条判定**（日志无痕迹）。
+- B 群 10 条（会话存在、个别轮缺失）**未查**。
+- outbox 为何从 2026-09-23 起停止接收（DB 超时？迁移？部署？）**未查明**。
+
+### 下一轮提示词
+
+> ① **需拍板**：`session_v2_mirror_backlog_pending` 告警是否落。
+>    落则 252 立刻持续 firing（这是正确读法——outbox 已死 10 天）。
+> ② **建议直接做**：`hook.go:152` 信号量满分支补一行 `slog.Warn`。
+>    它现在不打任何日志，导致一类镜像丢失完全无迹可寻——这是本轮最硬的缺口。
+> ③ 查 outbox 为何 2026-09-23 起停止接收（147 条 dead 之后），
+>    以及 B 群 10 条「会话存在但个别轮缺失」。
+> ④ §9.37 的判据要升级：检查「指标有没有告警」**不够**，
+>    必须检查**告警阈值与实测发生率的量级差**（本例 170 倍）。

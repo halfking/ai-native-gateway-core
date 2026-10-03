@@ -11632,3 +11632,139 @@ fixture 是我自己写的，它证明不了后端真的吐这个字段。
 - **没有**修 `600_outbound_body_to_bodies_hot.sql` 的登记腐烂（他人/历史范围）。
 - **没有**部署、**没有**改生产（`storage.request_logs_write_enabled` 仍未 seed）。
 - **没有**碰那 99 个提交里的任何文件。
+---
+
+## §9.90 查 §9.59.9 那 6 条「已终态却无孪生」：**根因已成立** —— 持久化重试面已死 10 天，兜底落进内存缓冲，重启即丢
+
+§9.59.9 只做到「未查明」。本节把它查完。**结论是产品缺陷，不是口径问题。**
+
+### §9.90.1 先把规模说准：不是 6 条
+
+§9.59.9 的「已终态却无孪生」按 `request_status` 切，只数到 6 条。
+按「**会话在 `sessions` 表里存不存在**」切，图景完全不同（252，10-03）：
+
+| 群 | 会话是否存在 | 该会话其他轮数 | `request_status` | 行数 |
+|---|---|---|---|---|
+| **A** | **不存在** | 0 | `in_progress` | 58 |
+| **A** | **不存在** | 0 | `failure` | **5** |
+| **A** | **不存在** | 0 | `rate_limited` | **1** |
+| B | 存在 | 2 ~ 600 | `in_progress` / `success` | 10 |
+
+A 群的 58 条 `in_progress` 仍属 §9.59.6 的按设计排除。
+**真正要解释的是 A 群那 6 条终态请求**：它们的会话**从来没被创建过**，
+不是「少了一轮」。
+
+### §9.90.2 逐条排除镜像闸门
+
+| 闸门 | 判据 | 这 6 条 |
+|---|---|---|
+| `hook.go:71` 首门 | `!Success && !isTerminalFailure` | ✅ 放行（`failure`/`rate_limited` 均属终态） |
+| `IsProbeSyntheticSession` | `GwSessionID` 非空即 false（`synthetic_session.go:91`） | ✅ 放行（6 条 `gw_session_id` 全部真实非空） |
+| `IsInternalAutoEntry` | `IsAutoRequest` 非 TRUE 即 false | ✅ 放行 |
+| `entryToProcessedRequest` | `sessionID == ""` 才 nil | ✅ 放行 |
+
+四道门全过 ⇒ **它们本该被镜像**。
+
+### §9.90.3 决定性的一步：它们**没有走到写库那步**
+
+`hook.go:222` 的写库失败会打 WARN 并带 `request_id`：
+
+```
+WARN sessionv2mirror: V2 shadow write failed request_id=… session_id=…
+```
+
+`/var/log/messages`（1.5 GB，归档到 09-27，当前文件覆盖 09-27 至今）里
+这类 WARN 共 **492 条**，按日：Oct 1 = 161、Oct 2 = 65、Oct 3 = 222。
+
+> ⚠️ **§9.56 记的「journal 最早只到 2026-10-02 16:22」已失效**：
+> 本轮实测 journal 最早只到 **2026-10-03 17:05:41**（已滚动）。
+> 拿 journal 查 10-01/10-02 的请求只会得到 0 条，**那不是证据**。
+> 换到 `/var/log/messages` 才拿到覆盖——**交叉数据源 > 缺失证据**。
+
+在这 448 条同期 WARN 密集发生的窗口里，那 6 个 `request_id` **命中 0 次**。
+⇒ 它们**没有走 `w.Write` 失败路径**。
+
+剩下三条**不打任何日志**的返回：
+
+| 位置 | 条件 | 留下的痕迹 |
+|---|---|---|
+| `hook.go:106` | `!shadowWriteEnabled()` | 无 |
+| `hook.go:152` `default:` | 信号量满（8 并发） | 仅 `RecordShadowWriteFailure` 指标 |
+| `appendBacklog` | 内存兜底 | 仅 gauge |
+
+**本节不逐条判定这 6 条各走了哪一条**——日志里没有能区分它们的痕迹。
+但下面这条证据说明**其中至少一条正在实际发生**。
+
+### §9.90.4 根因：`session_mirror_outbox` 已经不是持久化面了
+
+`EnqueueMirrorFailure` 是失败写入的**持久化落点**（migration 712，GAP-2）。
+它返回 false 时才退到 `appendBacklog`（**纯内存**）。
+
+**实测 outbox 状态**：
+
+```
+status | 行数 | 最新创建日 | 最大重试次数
+dead   | 147  | 2026-09-23 | 9
+```
+
+**10 天前就停止接收任何东西了。** 147 条的失败原因全是 DB 超时
+（`timeout: context deadline exceeded`，集中在 advisory lock / `get next turn_no` /
+`insert turn` / `commit tx`）——即 outbox 曾经是能用的，是**之后**失效的。
+
+**日志实证**（`/var/log/messages`）：
+
+```
+Oct  1 05:05:08 WARN sessionv2mirror: outbox registration failed, degrading to in-process backlog
+                     request_id=ada565aa… error="timeout: context deadline exceeded"
+Oct  3 07:00:00 WARN sessionv2mirror: outbox registration commit failed, degrading to in-process backlog
+                     request_id=9d138eb5… error="timeout: context deadline exceeded"
+```
+
+第一条与 A 群 `4a6c5aa12e`/`72798677dc`（10-01 04:56）相隔 9 分钟；
+第二条与 `f1e00e74eb`（10-03 06:40）相隔 20 分钟。**同一天、同一失败原因。**
+
+### §9.90.5 ★而且此刻就有数据躺在内存里
+
+252 网关 `/metrics` 实测：
+
+```
+llm_gateway_shadow_write_failed_total{kind="session_v2"}  246
+session_v2_mirror_backlog_pending                            1
+session_v2_mirror_outbox_pending                            0
+```
+
+**`session_v2_mirror_backlog_pending = 1` —— 此刻有 1 条未持久化的镜像行躺在内存里，
+下次重启就永久消失。** 进程自 10-01 05:19 起已累积 246 次写失败。
+
+### §9.90.6 ★§9.37 的第三次复现，但这次更隐蔽：指标**有人读**，阈值高了三数量级
+
+| 检查 | 结果 |
+|---|---|
+| `llm_gateway_shadow_write_failed_total` 有告警吗 | ✅ 有：`alerts/shadow-write-failures.yaml:51` |
+| 该告警阈值 | `rate(...[5m]) > 10/60` = **> 10 次/分钟** |
+| 实际速率 | 246 次 ÷ 约 2.9 天 ≈ **0.06 次/分钟** |
+| `session_v2_mirror_backlog_pending` 有告警吗 | ❌ **无**（`deploy/prometheus/` 全库 grep 无命中） |
+
+⇒ 计数器**被读**，但阈值比实测速率高约 **170 倍**，等于事实上不读；
+而唯一直接回答「有多少行正躺在内存里等死」的 gauge，**连告警都没有**。
+
+> §9.37 记的是「没有告警读的指标是装饰」。
+> 这一次是它的**升级形态**：**指标有告警，但告警阈值与真实发生率差三个数量级**，
+> 于是它在纸面上「已被监控」，实际上永远沉默。
+> **检查「有没有告警」不够，必须检查「告警会不会响」。**
+
+### §9.90.7 建议修法（本轮**不落**，见下）
+
+1. **告警**：`session_v2_mirror_backlog_pending > 0`，`for: 5m`。
+   ⚠️ **在 252 上它会立刻响并持续响**——因为 outbox 已死 10 天。
+   「让它一直响」还是「先修 outbox 再上告警」是**运维决策，不是我的**。
+2. **降级阈值**：`shadow_write_failed_total{kind="session_v2"}` 的
+   `> 10/60` 与实测速率差 170 倍，应改为「5 分钟窗口内 > 0」或按实测重定。
+3. **补日志**：`hook.go:152` 的 `default:` 分支（信号量满）
+   **一条日志都不打**，只记指标。这是本节最直接的可观测性缺口：
+   一行 `slog.Warn` 就能让这类丢失有迹可循，也让「6 条走了哪条路」当场可判。
+
+**本轮不实施的理由**：① `deploy/prometheus/` 正被并行会话改动
+（`a0da9066d` 已动 `auto-route-settle-baseline`），扩大冲突面无益；
+② 告警一上线就在 252 持续 firing，这是需要负责人拍板的运维姿态。
+**判据与改法已写全，随时可落。**
