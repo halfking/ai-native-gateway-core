@@ -209,6 +209,15 @@ PREPARE 验不出来）。且**会话族没有 `credential_id` 索引**。
 - **选项 E-c**：~~先在 `session_*` 侧补一个终态凭证字段~~　**⚠️ 已不需要**：
   **`session_turns.credential_id` 已经是终态归属**（审计 §9.141.2，判别子集 641/641）。
 
+✅ **机制已判（§9.142）**：`persistRequestLog` 分两条路 ——
+t0 `insertRequestLog` 同事务写 ledger + v1（凭证 = **A₀**）；
+终态 `updateRequestLog` 改 **v1**（`credential_id = COALESCE($4, …)`，`client.go:2168`）而
+**ledger 的 UPDATE 不含该列** ⇒ ledger 留 **A₀**、v1 变 **A₁**；
+镜像 `firePersistedHooks` 在写库之后读 `entry`，是唯一读到 **A₁** 的消费者。
+⇒ **「以 `session_turns.credential_id` 为权威源」= 以终态归属 A₁ 为准**，与成本实算同侧。
+⚠️ 仍有一格未判（§9.142.4）：3,699 行两表凭证都 NULL 而 `session_turns` 有值，
+按本机制应当把 v1 也填上 ⇒ 与实测不符，**不影响上面的结论但需要单独查**。
+
 ✅ **实测给出的答案（§9.141）**：终态归属**已经在会话侧** ——
 `session_turns.credential_id` 与 v1 终态值一致（641/641），
 而且**在凭证归属这一维上会话侧比 v1 更全**：
