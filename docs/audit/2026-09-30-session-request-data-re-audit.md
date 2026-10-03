@@ -12707,3 +12707,91 @@ ERROR: could not determine data type of parameter $2 (42P08)
 > **和 §9.100.3 同族的共性**：`pgx` 不发参数 OID ⇒ **凡是一个参数在语句里
 > 出现在「不提供类型上下文」的位置**（`IS NOT NULL`、`IS NULL`），
 > 都可能触发 42P08。这是一条**可推广的判据**，不是两个孤立 bug。
+
+---
+
+## §9.102 ★撤回 §9.100.3 与 §9.101.3：那两个「P0 / 潜伏部署阻断」**都不是真的**
+
+本节撤回本会话自己两个已被推送的结论。它们的**测量**是对的，**归因**是错的。
+
+### §9.102.1 我错在哪
+
+`db/db.go:72`：
+
+```go
+cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+```
+
+这是 **2026-07-15 的 P0 修复**（禁用预处理缓存，避免长连接持有重命名关系的旧计划），
+属于**生产必需配置**，不是偶然。
+
+`QueryExecModeSimpleProtocol` 下 pgx **把参数在客户端内联成字面量**，
+服务端**从不做参数类型推导**。⇒ **42P08 这类错误在生产根本不可能发生。**
+
+我两轮的真库门都用 `pgxpool.New(dbURL)`（**pgx 默认的扩展协议**）建池，
+与服务端的真实配置不一致。**量具错了，于是读出了两个不存在的缺陷。**
+
+### §9.102.2 双协议对照实验（决定性）
+
+同一条语句、同一张库，只改 exec mode：
+
+| 语句 | 扩展协议（我的探针/我的门） | SimpleProtocol（生产） |
+|---|---|---|
+| `CorrectEstimatedUsage` 的 UPDATE（`$2 IS NOT NULL` 形态） | **FAIL 42P08** could not determine data type of $2 | **OK** |
+| `turn_writer` 的 INSERT（`$3` 形态，无 cast） | **FAIL 42P08** inconsistent types for $3 | **OK** |
+
+⇒ **§9.100.3「下一次部署会丢掉全部 session turn 写入」——撤回。不是真的。**
+⇒ **§9.101.3「`CorrectEstimatedUsage` 从未成功过」——撤回。不是真的。**
+
+生产侧独立佐证：252 的 `request_logs_hot` 上 `usage_source='corrected'`
+的 **max_ts 就是查询当时前几分钟**（01:15:02 vs 当时 01:18:59），
+且 10,023 行里 10,023 行满足 `total_tokens = prompt_tokens + completion_tokens`、
+5,778 行 `cache_read_tokens` 非空，而 `estimated` 行这两项**全为 0**
+—— 正是那条 UPDATE 的指纹。**它在生产一直在跑。**
+
+（这同时解释了我上一轮记成「未解决」的矛盾：矛盾本身是我的量具造成的。）
+
+### §9.102.3 那两个 cast 留不留
+
+`$3::varchar`（turn_writer）与 `$2::int` / `$3::int`（client.go）**保留**：
+
+- 二者都是**语义恒等**的（目标列本就是 `varchar(255)` / `integer`）；
+- 它们让 SQL 在**两种协议下都合法**，即不再依赖连接池的 exec mode；
+- 代价为零（一个字面 cast）。
+
+但**定性必须改**：它们是**健壮性收口**，不是 P0、不是部署阻断、不是「路径从未成功」。
+
+### §9.102.4 真正的修复：真库门的保真度（本轮唯一的行为改动）
+
+`internal/sessionv2mirror/hook_integration_test.go` 的 `setupTestDB` 原用
+`pgxpool.New(dbURL)`，现在改为**照抄 `db/db.go:72`**（ParseConfig + SimpleProtocol），
+并写明「若 `db/db.go` 那行变了，这里也要变」。
+
+**这才是根因层面的修复**：一个用**产品不用的配置**建池的真库门，
+会持续产出「生产会炸」的错误结论。本轮它产出了两个。
+
+**同族**：与记忆里「判据第一次运行前先验桩件接线」同源——
+**桩件的接线方式必须与被验对象一致**，否则门验的是另一个系统。
+
+### §9.102.5 顺带查出的既有测试缺陷（未修，仅记录）
+
+`TestPersistHook_Integration_DBWrite` 在**两种协议下都同样失败**：
+`expected 1 bodies row`（`session_bodies` 0 行）。
+与本轮改动**无关**（改动前后同错）——`writer.Write` 里
+`storage.session_turns_bodies_enabled` 默认为 false，而测试池的
+`settings.Global` 为 nil ⇒ bodies 分支不执行，断言却要求 1 行。
+**它是一道长期红的既有 opt-in 测试**，需要单独修。
+
+### §9.102.6 这一节的教训
+
+> **桩件的接线方式必须与被验对象一致。** 我建真库门时用了 pgx 的默认池，
+> 而产品用 `QueryExecModeSimpleProtocol`。这个差异让两道真库门**一致地**产生
+> 假阳性，并让我把两个「P0」推上了主分支。
+> ⇒ 与 §9.94「观测量全在被检验对象内部的门验不了那个对象」同族，
+> 但这条更靠前：**先问「我的量具和被测对象是同一个系统吗」**。
+>
+> **「修复前先问：这个失败在我的运行配置下、在被测对象的运行配置下，
+> 分别会发生吗」。** 我跳过了这一个问题，于是把量具的缺陷写成了产品的缺陷。
+>
+> **已推送的错误结论必须公开撤回，不能悄悄改小。** §9.100.3 和 §9.101.3
+> 都带着「部署阻断」「从未成功」的措辞进了 main；本节明确撤回。

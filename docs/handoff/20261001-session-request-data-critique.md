@@ -5542,3 +5542,93 @@ DETAIL: text versus character varying
    - `01-schema.sql` 三副本无同步门；Makefile 无 gofmt 门
 3. **部署提醒**：`$3::varchar`（§9.100.3）与 `$2::int`（§9.101.3）两处都未部署，
    部署前确认在构建里。
+
+---
+
+## 第五十三轮（§9.102）：★★撤回我 §9.100.3 与 §9.101.3——那两个「P0」都不是真的
+
+**这是本会话最重要的一次自我更正。两个已被推送的结论作废。**
+
+### 一、错在哪
+
+`db/db.go:72`：
+
+```go
+cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+```
+
+这是 **2026-07-15 的 P0 修复**（禁用预处理缓存，防长连接持有重命名关系的旧计划），
+**生产必需配置**。该模式下 pgx **把参数客户端内联成字面量**，
+服务端**从不做参数类型推导** ⇒ **42P08 在生产根本不可能发生**。
+
+我两轮的真库门都用 `pgxpool.New(dbURL)`（pgx **默认扩展协议**）建池，
+与产品真实配置不一致。**量具错了，于是读出两个不存在的缺陷。**
+
+### 二、双协议对照（决定性）
+
+同一条语句、同一张库，只改 exec mode：
+
+| 语句 | 扩展协议（我的门） | SimpleProtocol（生产） |
+|---|---|---|
+| `CorrectEstimatedUsage` UPDATE | **FAIL 42P08** | **OK** |
+| `turn_writer` INSERT（无 cast） | **FAIL 42P08** | **OK** |
+
+⇒ **撤回 §9.100.3「下次部署会丢全部 session turn 写入」——不是真的。**
+⇒ **撤回 §9.101.3「`CorrectEstimatedUsage` 从未成功过」——不是真的。**
+
+生产独立佐证：252 上 `usage_source='corrected'` 的 max_ts 就是查询前几分钟
+（01:15:02 vs 当时 01:18:59）；10,023 行里 10,023 行满足
+`total_tokens = prompt_tokens + completion_tokens`、5,778 行 `cache_read_tokens`
+非空，而 `estimated` 行这两项**全为 0** —— 正是那条 UPDATE 的指纹。**一直在跑。**
+
+（上一轮记成「未解决」的矛盾，根因就是这个量具错误。）
+
+### 三、两个 cast 保留但改定性
+
+`$3::varchar` 与 `$2::int`/`$3::int` **保留**：语义恒等、两种协议下都合法、
+不再依赖连接池配置、代价为零。但它们是**健壮性收口**，
+**不是 P0、不是部署阻断**。
+
+### 四、本轮唯一的行为改动：真库门保真度
+
+`setupTestDB` 由 `pgxpool.New` 改为照抄 `db/db.go:72`（ParseConfig + SimpleProtocol），
+并注明「`db/db.go` 那行变了这里也要变」。
+
+**这才是根因修复**：用产品不用的配置建池的真库门，会持续产出「生产会炸」的假阳性。
+⇒ 与「判据第一次运行前先验桩件接线」同源：**桩件接线方式必须与被验对象一致**。
+
+### 五、顺带查出的既有测试缺陷（未修）
+
+`TestPersistHook_Integration_DBWrite` 在**两种协议下都同样失败**
+（`expected 1 bodies row`）——与本轮改动无关（前后同错）。
+`storage.session_turns_bodies_enabled` 默认 false + 测试池 `settings.Global` 为 nil
+⇒ bodies 分支不执行，断言却要求 1 行。**长期红的既有 opt-in 测试，需单独修。**
+
+### 六、教训
+
+> **「修复前先问：这个失败在我的运行配置下、在被测对象的运行配置下，
+> 分别会发生吗」。** 我跳过了这一个问题，把量具的缺陷写成了产品的缺陷，
+> 并推上了主分支。
+>
+> **已推送的错误结论必须公开撤回，不能悄悄改小。**
+
+### 下一轮
+
+1. **仍需拍板**（与前几轮相同，未变）：
+   - 阻塞 #1 读取侧：`session_turns_with_current_month` 加不加 `search_text`
+     + `admin/logs.go` 的 `rl` 何时切会话族
+   - 阻塞 #2 `is_final_success`：唯一索引 + claim-and-supersede 同批上线
+   - 等价口径 (i)/(ii)/(iii)
+   - `session_v2_mirror_backlog_pending` 告警（252 恒为 1）
+   - 内部 actor 名单 (a)(b)(c) / cohort 修正 / §9.49.8 扩档 / §9.48 口径
+2. **不需要拍板**：
+   - 修 `TestPersistHook_Integration_DBWrite` 的 bodies 断言（§9.102.5）
+   - 查 `outbox_events` / `gateway.session_tags` 缺失是否有意
+   - 补 `01-schema.sql` 三副本同步门 + Makefile gofmt 门
+   - auto-route 自 2026-09-15 断流原因（仍缺 09-08/09-09 日志）
+   - A 群 6 条 / B 群 10 条 / `backlog_pending=1`（五轮未收敛）
+3. **纪律**：
+   - 建真库门/压测前先确认 exec mode 与 `db/db.go` 一致
+   - 能枚举的 SQL 用 `PREPARE` 扫（不需写权限），但**要按被测对象的协议解读结果**
+   - 潜伏缺陷比现网故障危险（这条仍然成立）
+   - 观测量全来自被检验对象内部的门，多半验不了那个对象
