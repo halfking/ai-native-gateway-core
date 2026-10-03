@@ -14322,3 +14322,108 @@ DELETE FROM public.session_censors_hot h WHERE h.id = i.id AND h.partition_date 
 >
 > **审计型表天生多行，与实体型表的「一行」期望不是一回事。**
 > 拿实体表的判据去套日志表，会产出一个看起来很有说服力的假缺陷。
+
+---
+
+## §9.119 新测出的缺陷类：217 条启动迁移里有 3 条**不可重跑**，而 installer 没有"已装过"守卫
+
+本节起因是 §9.115.4 修 351 时顺手发现的「非幂等」。当时我只把它当成 351 一个文件的属性。
+本轮回头问了一个从没验过的问题：**installer 到底需不需要幂等？** 答案是**需要，而且是硬要求**。
+
+### §9.119.1 `InitSchema` 无条件全量重放，且没有"已装过"探测
+
+`installer/internal/dbinit/runner.go:716`：
+
+```go
+for _, f := range []string{"00-prereqs.sql", "01-schema.sql", "02-seed.sql"} { … }
+for _, name := range r.StartupFiles {          // 217 条
+	if err := r.applySQL(filepath.Join("startup", name)); err != nil {
+		return fmt.Errorf("应用 startup migration %s 失败: %w", name, err)   // 首错即返回
+	}
+}
+```
+
+- **没有任何"这条迁移应用过吗"的判断**；
+- **没有版本追踪表参与这个判断**（`schema_migrations` 只被个别迁移 `INSERT … ON CONFLICT DO NOTHING` 记了一笔，**不参与跳过逻辑**）；
+- 唯一调用点是 `installer/cmd/llm-gw-installer/main.go:1338` 的 `runInstall`，**该函数里也没有"这个库已装过吗"的探测**（按 `already` / `已安装` / `existing` / `to_regclass` / `pg_database` 搜过，全零命中）。
+
+⇒ **对一台已装好的机器再跑一次 `llm-gw-installer install`，会把 217 条从头重放一遍，
+并在第一条失败处中止。** 幂等因此不是"锦上添花"，是这条路径的正确性前提。
+
+### §9.119.2 实测：第二遍有 3 条失败
+
+用真 installer 路径建库，然后**把 217 条再跑一遍**（照抄 `applySQL` 的
+`--single-transaction` / `dbinit:no-transaction` 规则）：
+
+| 遍 | 结果 |
+|---|---|
+| PASS 1 | **ok=217 fail=0** ← 这正是现有门（`run-integration-gate.sh`）覆盖的范围 |
+| PASS 2 | **ok=214 fail=3** |
+
+失败的 3 条与真实报错：
+
+| 迁移 | 报错 |
+|---|---|
+| `625_session_bodies_unified_explicit.sql` | `ERROR: cannot drop columns from view`（文件第 50 行） |
+| `637_session_bodies_unified_today_visible.sql` | 同上（第 67 行） |
+| `656_auto_route_selections_hot.sql` | 同上（第 174 行） |
+
+⇒ **现有门永远发现不了这一类**：它只跑一遍，而"不可重跑"按定义只有第二遍才显形。
+`startup_known_gaps.tsv` 的 ratchet 同样只统计"跑一遍时失败"，覆盖不到这里。
+
+### §9.119.3 机制：`CREATE OR REPLACE VIEW` 不能丢列
+
+两个文件里**都没有 `DROP COLUMN` 字面量**（grep 零命中），所以不是显式删列。
+真因是 **PostgreSQL 对 `CREATE OR REPLACE VIEW` 的硬限制：替换后的定义不得比现存视图少列**。
+
+- 625 建的 `public.session_bodies_unified` 是**显式列清单**（文件头自述：614 号用
+  `SELECT *` 太脆弱，所以改成显式列）；
+- 637 又用 `CREATE OR REPLACE` 把它换成**另一个**显式列清单（实测 PASS 1 结束后该视图 **13 列**）；
+- 于是**第一遍**：625 从 614 的形态改到自己的形态（列数不减，通过），637 再改到 13 列（通过）；
+- **第二遍**：625 试图把 13 列的视图替换成自己那个**更少列**的形态 ⇒
+  `cannot drop columns from view` ⇒ 整文件失败（文件自带 `BEGIN` + `--single-transaction`，
+  失败即整条回滚）。
+
+⇒ **625 只在"视图处于 625 之前形态"的库上成立。** 它的幂等性依赖**链上后续迁移没有把它加宽**——
+这不是文件自己的属性，是链的偶然顺序。一旦单独重放，它就不成立。
+
+⚠️ 顺带一个同族 smell：`applySQL` 会加 `--single-transaction`，而这些文件**自带 `BEGIN;`**，
+于是每次应用都打印 `WARNING: there is already a transaction in progress`。
+只是警告（不影响结果），但它说明这批文件的写法与 `applySQL` 的事务模型是**两套**。
+
+### §9.119.4 为什么这条现在重要：它直接约束 D9
+
+§9.115.4 我修 351 时说过"新登记迁移前必须先复现能否干净应用"。
+本节把这句话升级：**光"第一遍干净"不够，还要"第二遍干净"。**
+
+- 351 是 `CREATE POLICY` 无守卫（PG 无 `CREATE POLICY IF NOT EXISTS`）⇒ 已修（`DROP POLICY IF EXISTS` 前置）；
+- 625/637/656 是 `CREATE OR REPLACE VIEW` 丢列 ⇒ **修法有取舍，未擅自改**（见下）。
+
+⇒ **D9（发布窗口与回滚）必须写明一条**：发布流程**不得包含"对已有库重跑 installer"**。
+在这个缺口补上之前，重跑会在 625 中止。
+
+### §9.119.5 三条可选修法（需拍板，我没有擅自落地）
+
+| 方案 | 做法 | 代价 / 风险 |
+|---|---|---|
+| **E1** | 625/637/656 改成 `DROP VIEW IF EXISTS` + `CREATE VIEW`（可丢列） | 有下游视图/函数依赖该视图时 DROP 会失败；需先枚举依赖。**改动生产迁移** |
+| **E2** | 保留 `CREATE OR REPLACE`，但把 625/637 的定义**改成并集**（取链上最宽的列集） | 语义上 625 的"显式列清单"意图被放弃；且仍要人工保证并集正确 |
+| **E3** | 给 `InitSchema` 加"已初始化"守卫（存在即跳过整个启动链） | 最贴近真实意图（重跑 installer 本就不该重放迁移），但**改变了 installer 的既有行为**，且对"补跑漏掉的迁移"场景失效 |
+
+⚠️ 三条都不是纯机械。其中 E3 最能治本（把"重放"这个前提去掉），
+但它动的是 installer 的行为契约；E1/E2 动的是已应用过的生产迁移。**都需要你选。**
+
+### §9.119.6 这一节的教训
+
+> **「跑一遍绿」不等于「可重入」。**
+> 现有门（`run-integration-gate.sh`）和 `startup_known_gaps.tsv` 的 ratchet 都是
+> 单遍语义，**按定义看不见这一类缺陷**。而 installer 的实际调用方式（无条件全量重放）
+> 让这一类**必然会被触发**。
+>
+> **量具的覆盖范围要与被检验对象的真实用法对齐。**
+> 我一直用"第一遍"当完整性的定义，缺口正来自这个定义本身。
+>
+> **一个样本的修复不等于这一类问题的规模。**
+> 351 让我以为非幂等迁移有个数；实测是 **3 条**，而且**成因与 351 完全不同**
+> （前者是缺 `IF NOT EXISTS`，后者是 `CREATE OR REPLACE VIEW` 不能丢列）。
+> **同类要按机制分组，不按修法相似度归堆。**

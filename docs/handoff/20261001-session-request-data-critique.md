@@ -6707,3 +6707,74 @@ PG **没有 `CREATE POLICY IF NOT EXISTS`**，351 的 **12 条 policy 全无守�
 >    **新增迁移登记前必须先复现能否干净应用**。
 > 3. 若用户未回复，**不要再自行找活干**——已连续三轮确认可自行推进项为空，
 >    继续产出只会制造「看起来还有进展」的假象。
+
+---
+
+## 第六十八轮（§9.119）：新测出一类缺陷——启动链「不可重跑」，且现有门按定义看不见它
+
+上一轮把工作标为受阻后，本轮没有停在报告上，而是回头验了一个**从没验过、
+但决定 217 条迁移安全性**的问题：**installer 到底需不需要幂等？**
+
+### 结论：需要，且是硬要求；而实测有 3 条不满足
+
+**① `InitSchema` 无条件全量重放，无"已装过"探测**
+`installer/internal/dbinit/runner.go:716`：先 00-prereqs/01-schema/02-seed，
+再 for 循环跑完 217 条 `StartupFiles`，首错即返回。**没有"这条应用过吗"的判断**，
+**版本表 `schema_migrations` 不参与跳过逻辑**（个别迁移只是 `INSERT … ON CONFLICT DO NOTHING`
+记一笔），唯一调用点 `main.go:1338 runInstall` 里也**没有"这个库已装过吗"的探测**
+（按 `already`/`已安装`/`existing`/`to_regclass`/`pg_database` 搜过，全零命中）。
+⇒ 对已有库重跑 installer = 全量重放 + 首错中止。
+
+**② 实测两遍**（真 installer 路径建库，照抄 `applySQL` 的
+`--single-transaction` / `dbinit:no-transaction` 规则）：
+
+| 遍 | 结果 |
+|---|---|
+| PASS 1 | **ok=217 fail=0** ← 现有门 `run-integration-gate.sh` 只覆盖这一遍 |
+| PASS 2 | **ok=214 fail=3** |
+
+3 条真实报错均为 `ERROR: cannot drop columns from view`：
+`625_session_bodies_unified_explicit`（文件第 50 行）、
+`637_session_bodies_unified_today_visible`（第 67 行）、
+`656_auto_route_selections_hot`（第 174 行）。
+
+**③ 机制**（查清了，不猜）
+两个文件里**都没有 `DROP COLUMN` 字面量**（grep 零命中）。真因是 PostgreSQL 对
+`CREATE OR REPLACE VIEW` 的硬限制——**替换后的定义不得比现存视图少列**。
+625 建的是显式列清单，637 又用 `REPLACE` 换成另一个（更宽的）清单，
+实测 PASS 1 结束后该视图 **13 列**：第一遍列数不减故通过，第二遍 625 想换回
+自己那个更少的形态 ⇒ 失败（文件自带 `BEGIN` + `--single-transaction` ⇒ 整条回滚）。
+⇒ **625 只在「视图处于 625 之前形态」的库上成立**，它的可重跑性依赖链上后续迁移
+没有把它加宽 —— **是链的偶然顺序，不是文件属性**。
+⚠️ 顺带 smell：`applySQL` 加 `--single-transaction` 而这些文件自带 `BEGIN;`，
+每次应用都打 `WARNING: there is already a transaction in progress`。
+
+**④ 与 351 的关系**（别当同一处）
+351 的非幂等是 `CREATE POLICY` 无守卫（PG 无 `CREATE POLICY IF NOT EXISTS`），
+**已于 §9.115.4 修掉**；这 3 条是 `REPLACE VIEW` 丢列，**成因不同、修法不同**。
+同类要按**机制**分组，不按修法相似度归堆。
+
+**⑤ 现有门为什么永远发现不了这一类**
+`run-integration-gate.sh` 与 `startup_known_gaps.tsv` 的 ratchet 都是**单遍语义**，
+而「不可重跑」按定义只有第二遍才显形。⇒ 量具的覆盖范围与被检验对象的真实用法不对齐。
+
+### 新增决策 D11（已写进决策清单）
+
+三条可选修法，都不是纯机械，**我没有擅自落地**：
+- **E1** 625/637/656 改 `DROP VIEW IF EXISTS` + `CREATE VIEW`（需先枚举下游依赖；改已应用的生产迁移）
+- **E2** 保留 `REPLACE`，把定义改成**并集**（放弃 625「显式列清单」的原始意图）
+- **E3** 给 `InitSchema` 加"已初始化"守卫（**最治本**，去掉"重放"前提；但改 installer 行为契约）
+
+推荐 **E3**。⚠️ 无论选哪个，**D9 都必须写明：发布流程不得包含「对已有库重跑 installer」**。
+
+另附一条**不需决策的量具补强**（用户点头即可做）：把门扩成两遍语义，
+专门守「注册链可重跑」。纯加法，不改产品行为。
+
+### 下一轮提示词
+
+> **可自行推进的工作已清空**（连续第二轮确认）。起点 = `origin/main` 当前提交。
+> 1. 先读 `docs/audit/2026-10-04-session-migration-decision-sheet.md`——**D1–D11 全在那**。
+> 2. **D9 与 D11 建议一起定**：D9 定发布流程，D11 定「能否对已有库重跑 installer」，
+>    而 D9 的流程里恰好要写这一条。
+> 3. 若用户要加「两遍语义门」，那是纯量具补强，直接做即可，无需再问。
+> 4. 若用户不回复，**不要再自行找活干**。
