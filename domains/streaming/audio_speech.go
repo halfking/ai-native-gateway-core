@@ -99,6 +99,12 @@ func (h *AudioSpeechHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", res.ContentType)
 	w.Header().Set("X-Gw-Audio-Transport", res.Transport)
 	w.Header().Set("X-Gw-Upstream-Model", res.UpstreamModel)
+	// 客户端传了但这条上游形态兑现不了的参数要如实回执（当前只有 speed：
+	// 小米 chat 协议无语速旋钮，实测带不带 speed 得到逐字节相同的音频）。
+	// 静默忽略会让调用方以为语速已生效。
+	if len(res.IgnoredParams) > 0 {
+		w.Header().Set("X-Gw-Audio-Ignored-Params", strings.Join(res.IgnoredParams, ","))
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(res.Audio)
 }
