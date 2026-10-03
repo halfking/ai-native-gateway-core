@@ -9929,6 +9929,68 @@ git -C <repo> merge --ff-only origin/main     # 前提：先确认 29 个脏文�
 终态交接、门禁覆盖缺口、两处既有红的定性、改号悬空引用的修复），
 与两个红无关，也不受两个红影响。
 
+### §9.74.14 修掉那处红了 18 小时的 installer 漂移：820 **不该**做五点同步
+
+§9.74.12 记的 installer 红不是别人该管的事——它挂了 **18 小时没人碰**：
+820 引入于 `93cbce8a3`（2026-10-03 **19:32:43**），
+而 `installer/cmd/llm-gw-installer/stats_migrations_test.go` 最后改动是
+**2026-10-03 01:35:35**。先查全，再定性。
+
+**一、查全：≥704 的 82 个权威源迁移里，「五点全缺」的有 11 个，但真问题只有 1 个。**
+
+| 类别 | 数量 | 判定 |
+|---|---|---|
+| `psqlConcurrencyRequired`（CONCURRENTLY 不能进 `--single-transaction`） | 5 | 有意豁免 |
+| `sequenceChannelRepairs`（一次性 legacy 修复） | 3 | 有意豁免 |
+| `operatorGatedCleanup` | 1 | 有意豁免 |
+| `2026-07-13-multimodal-token-fields-hot.sql` | 1 | **我脚本的假阳性**——按 `^\d+` 解析成 2026，而测试的 ≥704 判据根本不看它 |
+| **`820_audio_modality_backfill.sql`** | 1 | **真漂移**：既不在白名单，也没做五点同步 |
+
+> 那个假阳性值得记：我的核对脚本用 `^(\d+)` 取迁移号，把
+> `2026-07-13-…` 判成 2026（≥704）于是报它缺同步，而**测试根本不按数字前缀过滤**
+> （它对非数字开头的文件 `continue` 掉）。**脚本比判据更宽 ⇒ 报出一个不存在的缺口**。
+> 这是「我核对过了」的反面：我的核对比真实判据更激进，于是凭空造出问题。
+
+**二、定性：820 不该做五点同步，做了反而更糟。**
+
+```
+origin/main:db/db.go:631  // ensureAudioModalityBackfill mirrors sql/migrations/startup/820_audio_modality_backfill.sql
+origin/main:db/db.go:624  if err := db.ensureAudioModalityBackfill(migCtx); err != nil {   // ← 流量前
+```
+
+- 820 的效果**已经**由 Go ensure 链在**流量前**应用，且该 ensure 的 SQL 逐字镜像那份 `.sql`；
+- 它带 `WHERE modality = 'text'` 守卫，**幂等、二跑零行**；
+- ⇒ 注册进 `StartupFiles` 只会让每次安装在 ensure 链之前**把同一个回填再跑一遍**。
+  **为消一个红而制造一次重复 DML，是把门修成了更糟的东西。**
+
+**三、根因不是「漏登记」，是「这类没有登记方式」。**
+本文件开头写着「pre-703 的形状或由 **Go ensure 兜底**，故豁免」——但那条豁免
+**是靠 `num < 704` 这道数字判据顺带生效的，从未成为一条可声明的规则**。
+于是 ≥704 的迁移只要是 Go-ensure-backed，就**没有任何合法登记方式**，
+只能落进「真漂移」分支报红。**820 是第一个撞上这条的。**
+
+修法：加**第四个**豁免类别 `goEnsureMirrored`（不塞进
+`sequenceChannelRepairs`——那个名字断言的是「走 revision-sequence 通道」，
+而 820 走的是 Go ensure，塞进去等于给一条不成立的断言盖白条），
+并把**加条目的判据**写进注释：能在 `db` 包的 ensure 链里找到逐字镜像该 `.sql`
+的函数，**且**该函数在流量前被调用。缺任一条就不是本类。
+
+**四、放宽判据后重验它仍能抓到原缺陷**（本轮第三次这么做）：
+
+| 变异 | 结果 |
+|---|---|
+| 基线（加 820 豁免） | rc=0，820 打出 `intentionally go-ensure-mirrored` |
+| M1 删掉 **810 的既有豁免** | **rc=1**，报 `810 … is not registered in dbinit.Runner.StartupFiles` ⇒ 分支链没被我调空 |
+| M2 删掉 **我加的 820 豁免** | **rc=1**，报 `820 … is not registered` ⇒ 转绿确实来自这条豁免，不是别的原因 |
+| 还原 | rc=0 |
+
+`cd installer && go test ./...` **rc=0**（整个独立模块）。`gofmt -l` 归零。
+
+> **★ 顺带记一次我自己差点放过去的假绿**：跑完 `gofmt -l $F` 后我**无条件**接了
+> 一句 `echo "gofmt 干净"`，于是 `gofmt -l` 列出了那个文件（我那行 map 值过长）
+> 这件事被自己的 echo 盖住了。**报「绿」的那行字必须由判据的输出决定，不能由
+> 自己的乐观决定。** 发现后已 `gofmt -w` 并复验归零。
+
 ## §9.82 ③裁决的实施：cohort 分族修正（§9.73.4/§9.73.5）+ 内部流量单一事实源
 
 > ⚠ **本节四项裁决全部来自 2026-10-03 的问卷，其中三项是超时自动采纳**（`automatic_timeout`），
