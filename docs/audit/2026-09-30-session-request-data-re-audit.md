@@ -14232,3 +14232,93 @@ UPDATE 随后把同一份 payload 写进**所有**行。
 > **我自己在这道门上错了三次夹具，三次都长得像产品缺陷。**
 > 枚举值靠查、NULL 可达性靠查写侧、JSON 形状靠读被调方。
 > **门红了先怀疑夹具**——这条我写进门注释里，比写进文档有用。
+
+---
+
+## §9.118 闭合 `session_censors`——跨月读点这条线到此结束
+
+§9.117 结尾留了唯一的尾巴：「`session_censors`（47 个跨月）的唯一键未查，不宣称」。
+本节把它查掉，结论是**不是缺陷**，但过程里有两处必须记下来的判据。
+
+### §9.118.1 先量形状
+
+`session_censors` 的唯一键**只有 PK `(id, partition_date)`**（`id` 是代理键），
+所以自然键要从业务列推。252 实测跨分区重复的元组数：
+
+| 候选自然键 | 跨分区重复的元组数 |
+|---|---|
+| `(tenant_id, request_id)` | **2** |
+| `(tenant_id, session_id, turn_no, placeholder, sensitive_type)` | **9,371** |
+| `(tenant_id, session_id)` 恰好只有 1 行的会话 | 1,381（说明这层键本就不唯一） |
+
+⇒ 表面上**同形**，比 `sessions` 的 413 还多。**但同形不等于有影响。**
+
+### §9.118.2 判据一：有没有消费者
+
+`grep -rnE "(FROM|JOIN)[[:space:]]+(public\.)?session_censors\b"`（排除 `_hot`、排除测试）
+⇒ **Go 侧零命中**；`sql/` 侧（视图 / 迁移）也零命中。
+
+不靠「grep 不到」就下结论（本门的老规矩），到**真库**补查了三处间接依赖：
+
+| 查法 | 结果 |
+|---|---|
+| `pg_get_viewdef` 里含 `session_censors` 的视图/物化视图 | **0** |
+| `prosrc` 里含 `session_censors` 的函数 | 2 个：`ensure_session_family_partitions`、`promote_session_censors_hot_to_partition` |
+| `pg_depend` 里的依赖方 | 只有自身的 `pg_attrdef` / `pg_class` / `pg_constraint` / `pg_policy` / `pg_type` |
+
+⇒ **零数据消费者。** 写侧是 `security/sanitize/db_sink.go` 写
+**`session_censors_hot`**，月表由 `PartitionManager` 提升而来；本表是
+**只写的脱敏审计存储**（`db_sink.go` 头注释自己就说得很清楚：线上未配
+`LLM_GATEWAY_SESSION_CENSOR_KEY`，`count(original_encrypted) = 0`，
+且「全仓没有任何解密读取方」）。
+
+⇒ 审计日志本来就该是「一会话多行」。**没有查询期望「一会话一行」，
+重复就不构成缺陷**——这一条与 §9.117.1 的 `sessions` 恰好相反：
+同样是跨月重复，`sessions` 有消费者所以是缺陷，`session_censors` 没有所以不是。
+
+### §9.118.3 判据二：唯一会碰这些行的机制，按什么键
+
+`promote_session_censors_hot_to_partition` 是唯一「消费」重复的地方，若它假设
+一个逻辑行只有一行，就会在提升时出错。看它的实际语句：
+
+```sql
+INSERT INTO public.session_censors (…) VALUES (…)
+ON CONFLICT (id, partition_date) DO NOTHING
+RETURNING id, partition_date
+…
+DELETE FROM public.session_censors_hot h WHERE h.id = i.id AND h.partition_date = i.partition_date
+```
+
+冲突键与删除条件**都是代理键 `id`** ⇒ 两个不同的脱敏事件有不同的 `id`
+⇒ 跨分区重复对提升既不产生假冲突，也不产生漏删。**幂等且正确。**
+
+### §9.118.4 净结论
+
+**`public.sessions` 的跨月重复问题，到此全量判完**：
+
+| 表 | 跨月 | 同形 | 有消费者 | 结论 |
+|---|---|---|---|---|
+| `sessions` | 413 | ✅ | ✅ | **已修 2 处**：主列表（§9.114）、turn_logs 聚合（§9.117） |
+| `session_turns` | 413 | ❌ 键含 `turn_no` | ✅ | 跨月是不同轮次，非重复 |
+| `session_turn_details` | 413 | ❌ 键含 `turn_no` | ✅ | 同上 |
+| `session_bodies` | 1 | ❌ 键含 `turn_no` | ✅ | 同上 |
+| `session_censors` | 47 | ✅ 键全是代理 | **❌ 零消费者** | **不是缺陷**（本节） |
+| `session_tools` | 0 | — | ✅ | 无风险 |
+
+两个同形的**部分唯一索引**（`uq_session_turns_final_success` 0 行、
+`uq_session_bodies_final_full` 0 例重复）维持 §9.117.1 的定性：
+**结构允许、实测 0 例，只记形状不报缺陷。**
+
+### §9.118.5 这一节的教训
+
+> **「同形」和「有影响」是两个性质。**
+> `sessions` 与 `session_censors` 的唯一键都退化成代理键那一列，
+> 跨月重复都成立——但前者有消费者（列表重影、聚合覆盖），后者**一个消费者都没有**。
+> 判缺陷必须同时问「形状成立吗」和「谁会因此出错」。
+>
+> **零消费者这件事不能靠 grep 断言。**
+> Go 与 `sql/` 两侧都零命中之后，我又到真库查了视图定义、函数体、`pg_depend`
+> 三处，才敢说「零消费者」。**每一层都要单独验，不能用上一层的结论代替下一层。**
+>
+> **审计型表天生多行，与实体型表的「一行」期望不是一回事。**
+> 拿实体表的判据去套日志表，会产出一个看起来很有说服力的假缺陷。
