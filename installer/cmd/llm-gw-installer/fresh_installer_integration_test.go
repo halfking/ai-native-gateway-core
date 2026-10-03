@@ -107,6 +107,34 @@ func TestFreshInstallerSessionTurnsHotBootstrap(t *testing.T) {
 		t.Errorf("fresh installer hot table policies: got %q, want exactly three", got)
 	}
 
+	// 2026-10-04 (§9.101): 467 wired as baseline-gap class. The baseline
+	// CREATE TABLE public.sessions carries neither title nor user_tags and no
+	// other registered migration adds them, so before this was wired a fresh
+	// install could never satisfy SessionAggregator.GetSessionMetadata /
+	// UpdateSessionMetadata — both read and write sessions.title +
+	// sessions.user_tags, and both failed 42703 on every call. Production was
+	// unaffected (it has the columns), which is exactly why it stayed
+	// invisible. Pinned here so the gap cannot reopen silently.
+	for name, query := range map[string]string{
+		"467 sessions.title": `SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='public' AND table_name='sessions' AND column_name='title')`,
+		"467 sessions.user_tags": `SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='public' AND table_name='sessions' AND column_name='user_tags')`,
+		// The two statements that were failing, exercised as statements rather
+		// than as a column check: a column can exist and the SQL still be
+		// unparseable (that is exactly what the turn_writer 42P08 was).
+		"GetSessionMetadata select parses": `SELECT count(*) >= 0 FROM (
+			SELECT COALESCE(task_type,''), COALESCE(client_type,''), COALESCE(topic,''),
+			       COALESCE(intent,''), COALESCE(title,''), COALESCE(user_tags, ARRAY[]::text[])
+			FROM public.sessions WHERE tenant_id = 'x' AND session_id = 'y') q`,
+	} {
+		if got := psqlScalar(t, dsn, query); got != "t" {
+			t.Errorf("fresh install %s check failed: got %q, want \"t\"", name, got)
+		}
+	}
+
 	// 2026-09-07 embeddata sync (632 + 666..681 wired into StartupFiles): a
 	// fresh install must expose every object the runtime expects from those
 	// migrations. 665/661 are intentionally absent (audit ruling: 664 + 681 is

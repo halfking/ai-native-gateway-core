@@ -78,6 +78,9 @@ var sessionDimReconcileMigration805 []byte
 //go:embed embeddata/startup/471_session_summaries_archival.sql
 var sessionSummariesArchivalMigration471 []byte
 
+//go:embed embeddata/startup/467_sessions_title_user_tags.sql
+var sessionsTitleUserTagsMigration467 []byte
+
 //go:embed embeddata/startup/573_drop_request_logs_body_columns.sql
 var dropRequestLogsBodyColumnsMigration573 []byte
 
@@ -740,6 +743,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/392_candidate_failure_logs_monthly_partition.sql":                       candidateFailureLogsMonthlyPartitionMigration392,
 	"startup/805_session_dim_reconcile.sql":                                          sessionDimReconcileMigration805,
 	"startup/471_session_summaries_archival.sql":                                     sessionSummariesArchivalMigration471,
+	"startup/467_sessions_title_user_tags.sql":                                       sessionsTitleUserTagsMigration467,
 	"startup/487_request_logs_add_system_fingerprint.sql":                            requestLogsAddSystemFingerprintMigration487,
 	"startup/388_billing_cancellation_audit.sql":                                     billingCancellationAuditMigration388,
 	"startup/484_request_logs_hot_add_status_code.sql":                               requestLogsHotAddStatusCodeMigration484,

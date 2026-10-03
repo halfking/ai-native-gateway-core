@@ -5448,3 +5448,97 @@ DETAIL: text versus character varying
    Makefile 无 gofmt 门（故 `turn_writer.go` 的格式债能长期存在）。
 5. **部署提醒**：`a87258952` 未部署到任何环境。部署前确认 §9.100.3 的 cast 已在
    该构建里，否则**全部 session turn 写入丢失**。
+
+---
+
+## 第五十二轮（§9.101）：把 42P08 从「撞见的」变成「扫出来的」——80 条 SQL 全量 PREPARE，又抓两个同族缺陷
+
+§9.100 那个 42P08 是跑测试时**撞见**的。撞见 ⇒ 可能还有别的。
+本轮把会话写/读路径每条 SQL 抽出来逐条 `PREPARE`（只解析、不执行、不写行）到真 schema。
+
+### 一、扫描：80 条 → 修前 10 条失败，修后 7 条（4 条是提取假阳性）
+
+范围：`domains/session/v2` + `internal/sessionv2mirror` +
+`domains/hooks/observability/telemetry`（`db.Selectf` 的 `%s` 拼接件跳过，不臆造替换）。
+
+### 二、缺陷 C：★全新安装的会话元数据读写**完全不可用**（已修）
+
+`session_aggregator.go` 两条语句恒 42703：
+- `UpdateSessionMetadata`：`UPDATE public.sessions SET … title=…, user_tags=…`
+- `GetSessionMetadata`：`SELECT … COALESCE(title,''), COALESCE(user_tags,…) FROM public.sessions`
+
+真安装库的 `public.sessions` **既无 `title` 也无 `user_tags`**。
+
+**根因**：`467_sessions_title_user_tags.sql` 存在、幂等、正好加这两列，
+但**既没进 `Runner.StartupFiles` 也没进 embeddata**；基线 `CREATE TABLE public.sessions`
+不含它们，且**没有任何已登记迁移**会加（655 加的是 `session_summaries`）。
+⇒ 正是 runner 注释已描述的 **baseline-gap class**（388/392/471），**只是漏了 467**。
+
+**为什么一直没人发现**：**生产 252 有这两列**，聚合器在生产完全正常；只有全新安装会坏。
+
+**修法**：按既有五点同步接入（embeddata 副本 + `go:embed` 变量 +
+`embeddedSQLFiles` map + `StartupFiles` 条目 + 用门自己的 `-update` 重生成 manifest），
+放在 388/392/471 那个 pre-478 块里。
+
+### 三、缺陷 D：`CorrectEstimatedUsage` 的 UPDATE 同样不可解析（已修，与 §9.100.3 同族）
+
+`client.go:2034` 的 `AND ($2 IS NOT NULL OR $3 IS NOT NULL)`：
+`IS NOT NULL` 对未定型参数**不提供类型信息**，`COALESCE` 给的类型**救不了它**。
+受控实验：只有 COALESCE → 成功；只有 IS NOT NULL → 失败；完整语句 → 失败且报错行正是 `IS NOT NULL`。
+**用本仓真实 pgx 驱动复现**（不只靠 psql）。修法 `$2::int` / `$3::int`（语义恒等，
+`COALESCE` 已定为 integer）。
+
+### 四、★一个我没解决的矛盾（如实记录）
+
+252 上有 **10,023 行** `request_logs.usage_source='corrected'`（hot 2,010），
+跨度与整表相同（09-30→10-03）。若该语句自 2026-08-15 就不可解析，这些行不可能由它写入。
+
+试过五个独立解释，**全部不成立**：
+1. 语句自 `e5d8cdeb9` 起从未改动，`$2::int` 从未存在；
+2. 生产二进制含**同样**的无 cast 文本（`grep -a` 命中 1，无 `::int` 变体）；
+3. 252 上 `PREPARE` 报同样的错，列类型与本地一致（全 `integer`）；
+4. 全仓无第二个把 `usage_source` 写成 `'corrected'` 的地方
+   （`format_anomaly_recorder.go:310` 写的是另一张表 + `UsageSourceLLM`）；
+5. `request_logs` 整表就只覆盖 09-30→10-03（所以「corrected 只在近 4 天」是**保留期**，
+   不是「路径何时生效」——我一开始也误读成后者）。
+
+⇒ **来源未查明**。可能是仓外/不在本树历史中的旧版本，或运维一次性回填。
+**在查明前不得宣称「生产这条路径是坏的」**。我只主张三方独立证实的那一件：
+**当前这棵树里，这条语句无法被解析。**
+
+### 五、门 + 变异
+
+`fresh_installer_integration_test.go` 加三条：`sessions.title` 存在、
+`sessions.user_tags` 存在、**把 `GetSessionMetadata` 那条 SELECT 当语句跑一遍**。
+
+第三条刻意：**列存在 ≠ 语句可解析**——那正是 §9.100.3 的形态。只钉列会漏掉一半。
+
+变异：从 `StartupFiles` 摘掉 467 ⇒ `sessions.title check failed: got "f"` + `user_tags` 同红。
+
+### 六、教训
+
+> **撞见的缺陷只是样本，不是全集。** 一个测试撞见的 42P08，系统扫 80 条又找出
+> 两个同族问题，其中一个让全新安装的会话元数据读写**完全不可用**。
+> ⇒ **能枚举的，就不要靠撞。**
+>
+> **「看起来矛盾」时不要急着选一个能自圆其说的解释。** 缺陷 D 的生产数据与代码
+> 结论互相打架，我试了五个独立解释后把它记成**未解决**，而不是硬挑一个。
+> **把矛盾当矛盾记下来，比编一个解释有用。**
+>
+> **可推广的判据**（不是两个孤立 bug）：`pgx` 不发参数 OID ⇒
+> **凡参数出现在不提供类型上下文的位置**（`IS NOT NULL` / `IS NULL`）都可能 42P08；
+> **同一参数在别处有 COALESCE 也救不了**。
+
+### 下一轮
+
+1. **可丢弃库就绪**：`postgres://llm_gateway:***@127.0.0.1:55432/gw_fresh_test`
+2. **本轮仍未收口**（与上轮相同）：
+   - ★缺陷 D 的 10,023 行 `corrected` 来源未查明（下一轮可查：252 上这批行的
+     `request_id` 是否对应某类可识别的写入模式；或查仓外/旧构建）
+   - 扫描剩余 3 条待查项：`outbox_events`、`gateway.session_tags`
+     （两侧都没有 ⇒ 非新安装特有，但 `gateway` schema 缺失是否有意需确认）
+   - 阻塞 #1 读取侧、阻塞 #2 `is_final_success`、等价口径 (i)/(ii)/(iii)、
+     `backlog_pending` 告警、A/B 群 16 条、auto-route 断流、actor 名单等 —— 均待拍板
+   - `01-schema.sql` 三副本无同步门；Makefile 无 gofmt 门
+3. **部署提醒**：`$3::varchar`（§9.100.3）与 `$2::int`（§9.101.3）两处都未部署，
+   部署前确认在构建里。
