@@ -13041,3 +13041,97 @@ SQL 从头到尾没被解析过。
 > **「修一半」也要查第二半。** 我先把 `gateway.` 改成 `public.`，
 > 立刻又撞上列名错误。若停在第一步，就会留下一个仍 42P01 的语句，
 > 并且注释里写着「已修复」。
+
+---
+
+## §9.106 ★再撤回一条：「Makefile 无 gofmt 门」——门有，而且是 **ratchet 模式**
+
+§9.104 我撤回了「三副本无同步门」。这一轮去查另一条自相矛盾的待办
+「Makefile 无 gofmt 门」（依据是 `grep -n gofmt Makefile` 无命中）。
+**结论：我又错了，而且错得更基础。**
+
+### §9.106.1 门在哪
+
+`.golangci.yml`：
+
+```yaml
+# Formatters (v2): 替代原 v1 中的 gofmt/goimports linter
+# CI 中以 check 模式运行：发现未格式化文件即 fail
+formatters:
+  enable:
+    - gofmt
+    - goimports
+```
+
+`Makefile:178` 的 `make lint` 调 `golangci-lint run`，它跑在
+`.github/workflows/sessionforensics-ci.yml`（工作流名其实是 **`llm-gateway-go-ci`**），
+触发条件是 **push 到 main 与 PR 到 main** —— 就是主 CI。
+
+`grep Makefile 找不到 gofmt` 只是因为**门在 golangci-lint 里，不在 Makefile 文本里**。
+⇒ **「grep 不到」再一次不等于「没有」。**
+
+### §9.106.2 实测：门是真的在响
+
+```
+golangci-lint fmt --diff   →  rc=1，约 341 个文件
+gofmt -l . （排除 vendor）  →  296 个文件
+```
+
+⇒ `origin/main` **当前就在违反自己的格式门**。
+
+### §9.106.3 但这是**被明确容忍的存量债**，不是漏网
+
+CI 里那个 lint step 带 `--new-from-rev=$LINT_RATCHET_BASE`，注释原话
+（AUDIT_24H, 2026-08-17）：
+
+> The repo carries ~224+ legacy lint findings, so a plain `golangci-lint run`
+> is permanently red and **gates nothing**. `--new-from-rev` makes the job fail
+> only on issues introduced by the pushed commits; the legacy stock ratchets
+> down as it gets cleaned.
+
+⇒ 存量 296 个文件是**已知、有意、且有收缩计划的债**；
+门只挡**新增**违规。
+
+**所以本节不格式化那 296 个文件**：那是几百个文件、跨别人的在途工作，
+属项目级决策，不是我能单方面做的。
+
+### §9.106.4 我该做的那部分（做了，并核验过）
+
+ratchet 的实际约束是「**别引入新的**」。逐个核对我这几轮改过的 Go 文件：
+
+| 文件 | gofmt |
+|---|---|
+| `domains/hooks/observability/telemetry/client.go` | clean |
+| `internal/sessionv2mirror/hook_integration_test.go` | clean |
+| `internal/sessionv2mirror/search_text_realdb_integration_test.go` | clean |
+| `installer/internal/dbinit/runner.go` | clean |
+| `installer/cmd/llm-gw-installer/main.go` | clean |
+| `installer/cmd/llm-gw-installer/fresh_installer_integration_test.go` | clean |
+| `domains/session/v2/session_aggregator.go` | clean |
+| `domains/session/v2/turn_writer.go` | **DIRTY（存量）** |
+
+`turn_writer.go` 的 DIRTY 是**我改之前就有的**（§9.100.3 已记录：origin/main 上
+本就不干净，且 Makefile 当时看起来没有 gofmt 门，所以我**没有**替别人还这笔债，
+只手工落功能改动）。
+
+**精确核验是否踩到 ratchet**：
+
+```
+gofmt -d turn_writer.go  →  两个 hunk：@@ -147,21 @@ / @@ -175,36 @@
+我这轮改的两处          →  :347（Go 注释块）、:434（SQL 那行）
+```
+
+⇒ **我的行完全落在两个 hunk 之外**，ratchet 不会因我的提交而红。
+
+### §9.106.5 这一节的教训
+
+> **「grep 不到」不等于「没有」——这是我这一轮连续第二次栽在同一处。**
+> 第一次是 `01-schema.sql` 同步门（§9.104），第二次是 gofmt 门。
+> ⇒ 下断言前，问的是「**这个门可能以什么形式存在**」，而不是「我 grep 的是什么」。
+>
+> **「看起来矛盾」的数据先别急着解释，先把两个量具的口径对齐。**
+> 296 个文件不干净 **且** 门存在，两件事同时为真并不矛盾——
+> 矛盾的是我拿 `Makefile` 一个文件去推断「整个仓没有格式门」。
+>
+> **ratchet 模式改变了「什么算缺陷」**：存量红是**已知且被容忍**的，
+> 新增红才是问题。所以正确动作不是清债，而是**确认自己不新增**。

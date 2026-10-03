@@ -5873,3 +5873,66 @@ TEST_DB_URL=… go test -tags=integration ./internal/sessionv2mirror/  → ok
 - `session_v2_mirror_backlog_pending` 告警（252 恒为 1）
 - 内部 actor 名单 (a)(b)(c) / cohort 修正 / §9.49.8 扩档 / §9.48 口径
 - 写链是否自 ensure 当月分区（消除全新安装启动窗口，行为变更）
+
+---
+
+## 第五十七轮（§9.106）：★再撤回「Makefile 无 gofmt 门」——门有，且是 ratchet 模式
+
+**连续第二次栽在「grep 不到 ≠ 没有」上。**
+
+### 一、门在哪
+
+`.golangci.yml` 的 `formatters: enable: [gofmt, goimports]`，注释写「CI 中以 check
+模式运行：发现未格式化文件即 fail」。`make lint` 调 `golangci-lint run`，
+跑在 `.github/workflows/sessionforensics-ci.yml`（工作流真名 **`llm-gateway-go-ci`**），
+触发条件是 **push/PR 到 main** —— 就是主 CI。
+`grep Makefile 找不到 gofmt`，只因**门在 golangci-lint 里，不在 Makefile 文本里**。
+
+### 二、实测：门在响，但 main 一直在违反它
+
+```
+golangci-lint fmt --diff  → rc=1，约 341 个文件
+gofmt -l .（排除 vendor） → 296 个文件
+```
+
+### 三、但这是**被明确容忍的存量债**
+
+CI 的 lint step 用 `--new-from-rev=$LINT_RATCHET_BASE`，注释原话（AUDIT_24H, 2026-08-17）：
+「The repo carries ~224+ legacy lint findings, so a plain `golangci-lint run` is
+permanently red and **gates nothing**… the legacy stock ratchets down as it gets
+cleaned.」
+
+⇒ **本节不格式化那 296 个文件**：几百个文件、跨别人的在途工作，属项目级决策。
+
+### 四、我该做的那部分（做了并核验）
+
+ratchet 的实际约束是「别引入新的」。我这轮改过的 8 个 Go 文件里 **7 个 clean**，
+唯一 DIRTY 的 `turn_writer.go` 是**我改之前就有**的存量债（§9.100.3 已记录，
+当时我有意没替别人还）。
+
+**精确核验是否踩 ratchet**：
+`gofmt -d turn_writer.go` 的两个 hunk 是 `@@ -147,21 @@` 与 `@@ -175,36 @@`，
+而我改的两处在 **:347 与 :434**，**完全落在 hunk 之外** ⇒ 不会因我的提交而红。
+
+### 五、纪律
+
+> **「grep 不到」不等于「没有」——这一轮连续第二次。**
+> 下断言前要问「**这个门可能以什么形式存在**」，而不是「我 grep 的是什么」。
+>
+> **两个量具口径不对齐时，数据矛盾不是结论。**
+> 296 个文件脏 **且** 门存在，两件事同时为真并不矛盾；
+> 矛盾的是我拿 `Makefile` 一个文件推断「整个仓没有格式门」。
+>
+> **ratchet 模式改变了「什么算缺陷」**：存量红是已知且被容忍的，
+> 新增红才是问题 ⇒ 正确动作是**确认自己不新增**，不是清债。
+
+### 六、下一轮
+
+**不需要拍板**（清单已再缩短一项）：
+- auto-route 自 2026-09-15 断流原因（仍缺 09-08/09-09 日志或 Prometheus 历史）
+- A 群 6 条 / B 群 10 条 / `backlog_pending=1`（五轮未收敛）
+
+**待拍板**（与前几轮相同）：
+- 阻塞 #1 读取侧、阻塞 #2 `is_final_success`、等价口径 (i)/(ii)/(iii)、
+  `backlog_pending` 告警、内部 actor 名单/cohort/§9.49.8/§9.48 口径、
+  写链是否自 ensure 当月分区
