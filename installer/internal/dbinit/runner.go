@@ -55,6 +55,21 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// archival columns/session_summaries index it adds are consumed by 690.
 			// Self-guarded information_schema checks make it directly registrable.
 			"471_session_summaries_archival.sql",
+			// 467 is baseline-gap class (wired 2026-10-04): the baseline
+			// CREATE TABLE public.sessions carries neither `title` nor
+			// `user_tags`, and no registered migration adds them — 467, which
+			// does, was simply never wired. Consequence was that on a fresh
+			// install SessionAggregator.GetSessionMetadata and
+			// UpdateSessionMetadata always failed 42703 "column \"title\" does
+			// not exist" (both statements select/write sessions.title +
+			// sessions.user_tags). Production 252 was unaffected because it
+			// has the columns, which is exactly why the defect stayed
+			// invisible: the class of bug the 388/392/471 entries above
+			// already describe, with one more file missed.
+			//
+			// Self-guarded (IF NOT EXISTS on information_schema.columns), so
+			// this is a no-op on any database that already has the columns.
+			"467_sessions_title_user_tags.sql",
 			// session_turns_hot_bootstrap (installer-only final-state asset,
 			// 526+636 projection) moved here 2026-10-01: it must precede 706/707
 			// — 707 §2 expands session_turns_hot in lock-step with the parent

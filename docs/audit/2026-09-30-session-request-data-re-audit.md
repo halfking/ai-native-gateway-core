@@ -12596,3 +12596,114 @@ v1 一退役，检索即断。这是阻塞 #1 剩下的一半，**不是已完�
 >
 > **潜伏缺陷比现网故障更危险。** 42P08 今天不发作，恰恰因为在跑的构建不含那段 SQL；
 > 「生产写入正常」曾让我差点把它读成「我的复现有问题」。
+
+---
+
+## §9.101 把 §9.100 的 42P08 从「撞见的」变成「扫出来的」，又查出两个同族缺陷
+
+§9.100 那个 42P08 是**跑一个测试时撞见的**。撞见说明可能还有别的。
+本轮把会话写/读路径里每一条 SQL 字面量抽出来，逐条 `PREPARE`（**只解析、不执行、
+不写行**）到真 schema 上——这既是「存储可用性」的直接证据，也不需要任何写权限。
+
+### §9.101.1 扫描结果
+
+`domains/session/v2` + `internal/sessionv2mirror` + `domains/hooks/observability/telemetry`
+三个包，去重后 **80 条** SQL 字面量（`db.Selectf` 的 `%s` 拼接件跳过，不臆造替换）。
+
+| 轮次 | PREPARE 失败 |
+|---|---|
+| 扫描前 | 10 / 80 |
+| 修完本节两处 | **7 / 80** |
+
+失败的 7 条里，**4 条是提取假阳性**（Go 字符串拼接片段，如 `DELETE FROM;`），
+**2 条是本节修掉的真实缺陷**，**1 条是待查的 `outbox_events` / `gateway.session_tags`**（两侧都没有，252 也没有 ⇒ 非新安装特有，另记）。
+
+### §9.101.2 缺陷 C：`sessions.title` / `sessions.user_tags` 在全新安装上不存在
+
+`session_aggregator.go` 两条语句恒 42703：
+
+- `UpdateSessionMetadata`：`UPDATE public.sessions SET … title = …, user_tags = …`
+- `GetSessionMetadata`：`SELECT … COALESCE(title,''), COALESCE(user_tags, …) FROM public.sessions`
+
+真安装库里 `public.sessions` **既无 `title` 也无 `user_tags`**。
+
+**根因**：`467_sessions_title_user_tags.sql` 存在、自身幂等、正好加这两列，
+但**既没进 `Runner.StartupFiles`，也没进 embeddata**。基线的
+`CREATE TABLE public.sessions` 不含它们，而**没有任何已登记迁移**会加
+（655 加的是 `session_summaries`，706/708/730 碰 `sessions` 但不加这两列）。
+⇒ 这正是 runner 注释里已描述的 **baseline-gap class**（388/392/471），**只是漏了一个 467**。
+
+**为什么一直没人发现**：生产 252 的 `sessions` **有**这两列，
+所以聚合器在生产完全正常；只有全新安装会坏。
+
+**修法**：按既有五点同步把 467 接进 installer（embeddata 副本 + `go:embed` 变量 +
+`embeddedSQLFiles` map + `StartupFiles` 条目 + 用门自己的 `-update` 重生成 manifest）。
+放在 388/392/471 那个 pre-478 baseline-gap 块里（`public.sessions` 由基线创建，467 无依赖）。
+
+### §9.101.3 缺陷 D：`CorrectEstimatedUsage` 的 UPDATE 同样不可解析（与 §9.100.3 同族）
+
+```
+ERROR: could not determine data type of parameter $2 (42P08)
+```
+
+`client.go:2034` 的 UPDATE 里有 `AND ($2 IS NOT NULL OR $3 IS NOT NULL)`。
+`IS NOT NULL` 对未定型参数**不提供任何类型信息**，而 `COALESCE($2, prompt_tokens)`
+给出的类型**救不了它**——受控实验：
+
+| 语句 | 结果 |
+|---|---|
+| 只有 `COALESCE($2, prompt_tokens)` | 推导成功 |
+| 只有 `($2 IS NOT NULL OR $3 IS NOT NULL)` | **could not determine data type of $2** |
+| 完整语句 | **失败，报错行正是 `IS NOT NULL` 那一行** |
+
+**用本仓真实 pgx 驱动复现**（不是只靠 psql）：同样报 42P08 ⇒ 不是 psql 特有的。
+**修法**：`$2::int` / `$3::int`。语义恒等——`COALESCE` 已把两者定为 `integer`。
+
+### §9.101.4 ★一个我没能解决的矛盾（如实记录，不编故事）
+
+修之前，252 上有 **10,023 行** `request_logs.usage_source='corrected'`
+（hot 2,010 行），时间跨度与 `request_logs` 整表相同（2026-09-30 → 10-03）。
+若这条语句自 2026-08-15 引入起就不可解析，这些行**不可能**由它写入。
+
+我查了但**没有**找到解释：
+
+- 该语句自首次提交 `e5d8cdeb9` 起从未改动，`$2::int` 从未存在过；
+- 在跑的生产二进制里含**同样**的无 cast 文本（`grep -a` 命中 1，无 `::int` 变体）；
+- 在 252 上 `PREPARE` 同一句**报同样的错**，列类型与本地一致（全 `integer`）；
+- 全仓 grep 无第二个把 `usage_source` 写成 `'corrected'` 的地方
+  （`format_anomaly_recorder.go:310` 写的是**另一张表** `response_format_anomalies`，
+  值是 `UsageSourceLLM`）。
+
+⇒ **这 10,023 行的来源我没有查明**。可能是仓外/已不在本树历史中的旧版本，
+也可能是运维一次性回填。**在查明之前，不得据此宣称「生产这条路径是坏的」**——
+我只主张一件三方独立证实的事：**当前这棵树里，这条语句无法被解析**。
+
+### §9.101.5 新增门 + 变异
+
+`fresh_installer_integration_test.go` 加三条断言：`sessions.title` 存在、
+`sessions.user_tags` 存在、以及**把 `GetSessionMetadata` 那条 SELECT 当语句跑一遍**。
+
+第三条是刻意的：**列存在 ≠ 语句可解析**——这正是 §9.100.3 那个 42P08 的形态。
+只钉列会漏掉「列在、SQL 坏」这一半。
+
+**变异**（确认落盘、只让目标断言红）：
+
+| 变异 | 结果 |
+|---|---|
+| 从 `StartupFiles` 摘掉 467 | `fresh install 467 sessions.title check failed: got "f"` + `user_tags` 同红 |
+
+### §9.101.6 这一节的教训
+
+> **撞见的缺陷只是样本，不是全集。** §9.100 那个 42P08 是跑测试时**撞见**的；
+> 把它变成一次 80 条语句的系统扫描，又找出两个同族问题，其中一个（缺陷 C）
+> 直接让全新安装的会话元数据读写**完全不可用**。
+> ⇒ 能枚举的，就不要靠撞。
+>
+> **「看起来矛盾」时不要急着选一个能自圆其说的解释。** 缺陷 D 的生产数据
+> 与代码结论互相打架时，我至少试了五个独立解释（历史、部署二进制、列类型、
+> 第二个写入方、时间分布）。全部不成立后，我把它记成**未解决**，
+> 而不是硬挑一个。**把矛盾当矛盾记下来，比编一个解释有用。**
+>
+> **和 §9.100.3 同族的共性**：`pgx` 不发参数 OID ⇒ **凡是一个参数在语句里
+> 出现在「不提供类型上下文」的位置**（`IS NOT NULL`、`IS NULL`），
+> 都可能触发 42P08。这是一条**可推广的判据**，不是两个孤立 bug。

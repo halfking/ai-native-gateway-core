@@ -2041,7 +2041,7 @@ func (c *Client) CorrectEstimatedUsage(ctx context.Context, entry *RequestLogEnt
 		       usage_source      = 'corrected'
 		 WHERE request_id = $1
 		   AND usage_source = 'estimated'
-		   AND ($2 IS NOT NULL OR $3 IS NOT NULL)
+		   AND ($2::int IS NOT NULL OR $3::int IS NOT NULL)
 	`,
 		entry.RequestID,
 		entry.PromptTokens,
