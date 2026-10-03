@@ -28,7 +28,7 @@ var exemptions = map[string]string{
 	// 本文件另一条循环（当时 6510、6601、现在 6625）从未登记。
 	// TestExemptionsStillResolve 会把对不上的键报成 stale；
 	// **改键前必须回原提交确认是「同一处漂移」而不是「另找一处顶上」。**
-	"cmd/gateway/main.go:4640":                                      "one-shot/main package wiring, out of R66 scope (line drifted 4552->4627->4640)",
+	"cmd/gateway/main.go:4642":                                      "one-shot/main package wiring, out of R66 scope (line drifted 4552->4627->4640->4642; 4th drift, keep using this file's own procedure: prove the drift is someone else's, then re-key)",
 	"cmd/gateway/main_helpers.go:369":                               "one-shot/main package wiring, out of R66 scope",
 	"cmd/gateway/main_v32_wiring.go:119":                            "one-shot/main package wiring, out of R66 scope",
 	"cmd/fetch-standard-iq/main.go:103":                             "one-shot/main package, out of R66 scope",
