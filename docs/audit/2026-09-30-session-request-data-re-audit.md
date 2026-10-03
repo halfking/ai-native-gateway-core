@@ -11768,3 +11768,110 @@ session_v2_mirror_outbox_pending                            0
 （`a0da9066d` 已动 `auto-route-settle-baseline`），扩大冲突面无益；
 ② 告警一上线就在 252 持续 firing，这是需要负责人拍板的运维姿态。
 **判据与改法已写全，随时可落。**
+
+---
+
+## §9.91 ★★撤回 §9.90.4 的核心结论：「outbox 已死 10 天」是**错的** —— 它工作正常，那 147 条是 R51 修复前的残留
+
+§9.90.4 我写「`session_mirror_outbox` 已经不是持久化面了」「10 天没接过任何东西」，
+并据此把 §9.59.9 那 6 条的根因归给它。**这个结论是错的，本节撤回。**
+
+### §9.91.1 错在哪：把「表是空的」当成了「表不再被写入」
+
+我的推理是：
+
+| 观察 | 我的解读 | 实际 |
+|---|---|---|
+| outbox 表 147 行、全部 `created_at = 2026-09-23` | ⇒ 09-23 后没人再写 | ❌ 重放成功会**删行** |
+| `outbox registration` 日志全库仅 2 条 | ⇒ 几乎没调用过 | ❌ **成功路径是静默的** |
+
+`internal/sessionv2mirror/replay.go:453` —— 重放成功后
+`DELETE FROM public.session_mirror_outbox WHERE id = $1`。
+所以 **outbox 空是正常稳态**：入队 → 重放 → 删除。
+
+`EnqueueMirrorFailure` 成功时 `return true` 且**不打任何日志**（`outbox.go` 全函数无成功日志）。
+⇒ 「日志里只有 2 条」恰恰说明**其余 290 次是成功入队**，不是失败。
+
+### §9.91.2 交叉验证：日志与指标一致，而「只有 2 条」这个前提本身是量具缺陷
+
+| 类别 | `/var/log/messages` 计数 |
+|---|---|
+| `V2 shadow write failed` | 292（其中当前进程 246） |
+| `outbox registration failed/commit failed` | **2** |
+| `outbox payload marshal failed` / `GUC lift failed` | 0 / 0 |
+
+当前进程日志 246 条与 `/metrics` 的
+`llm_gateway_shadow_write_failed_total{kind="session_v2"} = 246` **完全相等**
+⇒ 日志源在这一类上完整无截断（顺带确认了 §9.90.3 的「0 命中」结论可信）。
+
+同时暴露一个**量具缺失**：`mirrorReplayTotal` / `mirrorReplayDeadTotal`
+（`replay.go:529-530`）**根本没有导出到 `/metrics`**。
+⇒ 「重放成功了多少、失败了多少」在监控上**不可见**，
+这才是真正的洞——我上一轮误把「不可见」读成了「没在工作」。
+
+### §9.91.3 那 147 条的真实定性：**R51 那道门生效前的残留**
+
+抽样与全量统计：
+
+```
+request_id LIKE 'probe-%'  = true   → 147/147
+session_id LIKE 'sys:%'    = true   → 147/147
+其中会话族已有该 request_id → 27/147
+全部 attempts = 9，created_at = 2026-09-23，updated_at = 2026-10-01
+```
+
+`syntheticKindOf`（`synthetic_session.go:44-52`）在
+`OriginStage`/`OriginActor`/`TaskType` 含 `probe` 时返回 `"probe"`
+⇒ `IsProbeSyntheticSession` **当前会拦下它们**。
+
+**关键佐证：09-23 之后再没有任何 `sys:probe:*` 行进入过 outbox**（147 条全部 `created_at=09-23`）。
+⇒ R51 那道门**现在有效**，这 147 条是它落地前的残渣，
+不是「门在漏」。
+
+它们当时的死因（`replay.go:526` 的原文）：
+
+```
+ERROR sessionv2mirror: outbox row dead, mirror data lost pending manual reconciliation
+```
+
+失败原因 `get next turn_no: timeout: context deadline exceeded`
+—— 正是 R51 注释里点名的「合成 `sys:probe:*` 会话集中打 advisory lock，
+实测失败噪声 ~115/min」。**R51 就是为了消灭这一类而加的，它成功了。**
+
+### §9.91.4 订正后的图景
+
+| 事项 | §9.90 的说法 | 订正后 |
+|---|---|---|
+| outbox 状态 | 已死 10 天 | **正常工作**（入队→重放→删除） |
+| §9.59.9 那 6 条的根因 | outbox 死 ⇒ 兜底进内存 | **仍未查明**，本节不提供新归因 |
+| 147 条 dead | 「近期仍在丢」 | **09-23 的历史残留**，10-01 判死，探针流量 |
+| `backlog_pending = 1` | 「此刻正在丢」 | 仍存在，但**与上述链条无因果关系**，未查明 |
+| 292 次写失败 | 290 次静默失败 | **290 次静默成功入队**（并被重放删除） |
+
+**仍然成立的 §9.90 结论**：
+- §9.90.1 的**切法**（按「会话在 `sessions` 里存不存在」分 A/B 群）是对的，且比
+  §9.59.9 按 `request_status` 切更贴近要害。
+- §9.90.6「告警阈值高于实测发生率 170 倍」「`session_v2_mirror_backlog_pending` 无告警」
+  **成立**——但它的严重性要下调：backlog 里躺 1 条不等于在持续丢数据。
+- §9.90.3 的日志覆盖订正（journal 已滚动）**成立**。
+
+### §9.91.5 对上一轮建议的修正
+
+§9.90.7 建议加 `session_v2_mirror_backlog_pending > 0` 告警。
+**保留该建议，但理由要换**：它现在不是「outbox 已死」的生命线，
+而是**唯一能暴露「内存兜底正在吃数据」的信号**（该 gauge 无告警、且
+`backlog_pending` 非零时意味着 `EnqueueMirrorFailure` 对这一条返回了 false）。
+
+更值得先做的是**补上重放侧的量具**：`mirrorReplayTotal` / `mirrorReplayDeadTotal`
+已在代码里计数却未导出，**导出它们比加告警更根本**——
+现在「重放成功/失败」在监控上完全不可见，我正是因此把「空表」误读成「没在工作」。
+
+### §9.91.6 这条教训本身
+
+> **「表是空的」有两种读法：没人写，或者写了又被删。**
+> 我默认了前者，因为「表有 147 行、最后一行的日期是 10 天前」在直觉上像「停更了」。
+> **判定「写入停了」之前，必须先确认这张表有没有「成功即删除」的语义。**
+>
+> 同族：§9.60 里「147 条全是 `dead` 所以没再接收」——
+> 同一处证据，我在两节里给出了两个**互相矛盾**的解释，
+> 而且第二个（死路）是在被交叉验证推翻后才发现的。
