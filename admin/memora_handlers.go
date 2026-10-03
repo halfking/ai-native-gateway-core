@@ -609,11 +609,26 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	where, whereArgs := sessionLogsWhere(taskID, sc, r)
 	var requestCount int
 	var latestModel *string
+	// R89-DQ（206 号）：读双腿视图而非裸母表。sessionLogsWhere 的窗口是
+	// `ts > NOW() - INTERVAL '1 hour' * $2`，$2 默认 24、clamp 1..168；
+	// hot 保留期 8h（promote_request_logs_hot_to_partition 的 p_retention
+	// 默认值，且 promoteSpecs 确实注册了它）⇒
+	//   · $2 ≤ 8  ⇒ 窗口 100% 落在盲区，这条腿**结构性地恒 0 行**
+	//     ⇒ requestCount 恒 0 ⇒ :621/:625 抛 404 "task not found"，
+	//       而那个 task 是存在的（只是流量在最近 8h 内）；
+	//   · $2 > 8  ⇒ 只盲最近 8h，量级差 8/24，不是恒空。
+	// 换视图后两条腿都吃同一条 ts 谓词，剪枝不变；视图是部署体的三臂
+	// （session_turns_hot ∪ session_turns ∪ v1 臂，带 v1 臂上的双反连接
+	// 去重），是母表的超集 ⇒ 计数只可能持平或上升。
+	// 谓词安全：gw_task_id 由 734 的 details 层供给（d.gw_task_id），
+	// client_model 同为 details 供给列，二者都不在 6 条「会话臂恒 NULL
+	// 补位列」里（db/request_logs_view_padded_columns.go）⇒ 换过去不会
+	// 落进「行级有、谓词级空」那个坑。
 	err := h.db.QueryRow(ctx, `
 		SELECT
 			COUNT(*),
-			(SELECT client_model FROM request_logs `+where+` ORDER BY ts DESC LIMIT 1)
-		FROM request_logs `+where+`
+			(SELECT client_model FROM request_logs_with_current_month `+where+` ORDER BY ts DESC LIMIT 1)
+		FROM request_logs_with_current_month `+where+`
 	`, whereArgs...).Scan(&requestCount, &latestModel)
 	if err != nil {
 		slog.ErrorContext(ctx, "memora_context: query request_logs failed",

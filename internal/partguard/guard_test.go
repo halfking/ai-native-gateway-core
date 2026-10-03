@@ -202,6 +202,132 @@ func TestParentsAreDeclaredInDDL(t *testing.T) {
 	}
 }
 
+// TestPartitionParentsAreExhaustive 补 TestParentsAreDeclaredInDDL 缺的**反向**判据。
+//
+// 既有那道门只做正向：「清单里的每个名字在 DDL 里确有 PARTITION BY」。它挡得住
+// 拼错与「把不存在的表写进白名单」，但**挡不住新迁移加一个分区父表而没人登记** ——
+// 而 objective 的红线是「**所有**的大数据表是 hot+分区（columnar）表，
+// 更新、删除只能在 hot 表中进行」。一张新分区表若没进清单，它上面的
+// Go 写操作会被本门**完全放过**，且没有任何征兆。
+//
+// 201 号实测：当前树**没有**这个缺口（DDL 侧发现的父表与 32 条清单恰好一致，
+// 多一张少一张都没有）。所以这道门现在守的是**将来**，不是现状 —— 但
+// 「今天恰好没有」和「明天也不会有」之间，差的正是这道判据。
+//
+// 为什么必须自带覆盖下限：本门判据的形式是「集合相等」，而**空集合也相等**。
+// 若抽取逻辑某天坏掉（DDL 形态变了、路径过滤写错、换行解析退化），它会抽出
+// 0 个父表、比对通过、安静下来。所以下限取**贴近实测值的下界**，且把实测值
+// 一起打出来，便于日后校准 —— 一个只会 Logf 的覆盖数字是装饰，不是守卫。
+func TestPartitionParentsAreExhaustive(t *testing.T) {
+	root := repoRoot(t)
+
+	// 锚在 CREATE TABLE 上取名，并**取点分路径的最后一段**。
+	//
+	// 只认 `public.` 前缀是错的：641_local_shared_platform_schema_fixup.sql:41 写的是
+	// `CREATE TABLE IF NOT EXISTS platform.platform_outbox (`，naive 正则会把 **schema 名**
+	// platform 当成表名，于是凭空多出一张「清单里没有的父表」。
+	// 这与基线 :164 的 PL/pgSQL 格式串让 ALTER 变体误抓 schema 名 public 是同一类假阳性，
+	// 两次都是「先把抓到的名字当表名，再怀疑清单」——顺序反了。
+	//
+	// 同时**不要**改用 `ALTER TABLE … ATTACH PARTITION`：实测那个形态贡献 0 个独有父表
+	//（涉及的表都已被 PARTITION BY 收全），只贡献假阳性 —— 零收益的模式要拿掉，不是修补。
+	nameRe := regexp.MustCompile(`(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*(?:\s*\.\s*[a-z_][a-z0-9_]*)*)`)
+
+	found := map[string]string{} // 小写表名 -> 声明它的第一个 .sql
+	sqlFiles := 0
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			switch info.Name() {
+			case ".git", "node_modules", "vendor", "web", "bin", ".build-local":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".sql") {
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return nil
+		}
+		sqlFiles++
+		rel := filepath.ToSlash(p)
+		if abs, e := filepath.Rel(root, p); e == nil {
+			rel = filepath.ToSlash(abs)
+		}
+		for _, s := range strings.Split(commentStripRE.ReplaceAllString(string(b), ""), ";") {
+			up := strings.ToUpper(s)
+			if !strings.Contains(up, "PARTITION BY") {
+				continue
+			}
+			m := nameRe.FindStringSubmatch(s)
+			if m == nil {
+				continue
+			}
+			// 取最后一段：`platform.platform_outbox` → `platform_outbox`。
+			// 清单里是**不带 schema** 的表名，跨 schema 的同名表也据此归一。
+			path := m[1]
+			if i := strings.LastIndex(path, "."); i >= 0 {
+				path = path[i+1:]
+			}
+			name := strings.ToLower(strings.TrimSpace(path))
+			if name == "" {
+				continue
+			}
+			if _, dup := found[name]; !dup {
+				found[name] = rel
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+
+	// 覆盖面下限：先证「扫到东西了」，再谈集合比较。
+	// 199 号教训：下限只能证明「我数到了」，不能证明「我数对了」—— 所以
+	// 阈值贴着实测值取（实测 32 个父表），并在失败时把实际抽到的名字打出来。
+	const minParents = 25 // 实测 33；留 8 的余量给「合法新增父表时同步登记」
+	if len(found) < minParents {
+		t.Fatalf("只从 %d 个 .sql 里抽出 %d 个分区父表（下限 %d）：抽取逻辑很可能已失效，"+
+			"此时「集合相等」会与空集合同步为真而安静通过。抽到的：%v",
+			sqlFiles, len(found), minParents, keysOf(found))
+	}
+
+	known := map[string]bool{}
+	for _, n := range partitionParents {
+		known[n] = true
+	}
+	var missing []string
+	for name, src := range found {
+		if !known[name] {
+			missing = append(missing, fmt.Sprintf("%s <- %s", name, src))
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("DDL 里有 %d 个分区父表不在 partitionParents 清单里（守卫看不见它们上面的写操作）：\n  %s\n"+
+			"  修法：把它们加进 parents.go 清单，并给每张表补 TestNoParentTableDMLBeyondKnown 的登记理由"+
+			"（若该表确无 Go 侧写操作，加进清单即可，登记项可不加）。\n"+
+			"  这道门与 TestParentsAreDeclaredInDDL 是互补的两向：那边查「清单里的都在」，\n"+
+			"  这边查「DDL 里的都在」——只有单向时，父表清单会静默腐化。",
+			len(missing), strings.Join(missing, "\n  "))
+	}
+	t.Logf("从 %d 个 .sql 抽出 %d 个分区父表，清单 %d 条，缺 %d 条", sqlFiles, len(found), len(partitionParents), len(missing))
+}
+
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // 扫描器自身的编译健全性：仓内 Go 源必须能解析。若解析被静默跳过
 // （CollectViolations 里 `parse 失败就 return nil`），扫描范围会在无人
 // 察觉的情况下缩水，门变成恒绿。
