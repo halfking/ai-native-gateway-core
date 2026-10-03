@@ -35,12 +35,14 @@ const drawerState = inject<{
   models: Ref<ModelUsage[]>
   hotKeys: Ref<HotApiKeyEntry[]>
   drawerLoading: Ref<boolean>
+  drawerDegraded?: Ref<string>
   loadDrawerData: () => Promise<void>
 }>('dashboardDrawer')!
 
 const hotKeys = computed(() => drawerState.hotKeys.value)
 const drawerModels = computed(() => drawerState.models.value)
 const drawerLoading = computed(() => drawerState.drawerLoading.value)
+const drawerDegraded = computed(() => drawerState.drawerDegraded?.value ?? '')
 
 const dashboardTab = inject<{
   activeTab: Ref<DashboardTabId>
@@ -207,6 +209,7 @@ async function onRefresh() {
       :models="drawerModels"
       :days="days"
       :loading="drawerLoading"
+      :degraded-reason="drawerDegraded"
     />
 
     <RequestLogDrawer

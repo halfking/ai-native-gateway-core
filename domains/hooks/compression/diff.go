@@ -13,26 +13,36 @@
 //	  1. Detect which messages the client added since the last outbound.
 //	  2. Append only those new messages to the (compressed) last outbound body.
 //
-// Algorithm — message-level LCS fingerprint:
+// Algorithm — delta anchor (R38 两段式重写后的现状；2026-10-04 审计订正：
+// 本头此前描述旧的 message-level LCS fingerprint 算法，与实现不符)：
 //
-//	For each message compute sha256(role + "\x00" + contentKey + "\x00" + toolID)
-//	where contentKey is the first 512 bytes of the string-normalised content.
-//	Walk the client messages from the END looking for the last message whose
-//	hash appears anywhere in the last outbound body. Everything after that
-//	index in the client array is "new". Append to last outbound, done.
+//	Message identity: msgHash = sha256 over the canonical JSON of the whole
+//	message（见 msgHash），不是 role+512 字节 contentKey。不可解析的消息
+//	哈希为 "" 并拒绝锚定（fail-open），不在身份缺口附近猜测。
+//
+//	Branch A（lastOutbound 无网关摘要）: strict prefix —— 客户端体必须以
+//	完整的可比对出站序列开头（sameMessageSequence）。客户端在该前缀之后
+//	追加的内容即 delta。
+//
+//	Branch B（存在网关摘要，即历史已被压缩）: two-segment anchor
+//	（findTwoSegmentAnchor）。可比对出站序列在每个切分点尝试：头段
+//	comparable[:split] 必须等于客户端前缀，尾段 comparable[split:] 必须
+//	在客户端体中恰好命中一段连续 run。尾段不唯一或无合法切分 → fail-open。
 //
 // Summary marker preservation:
 //
 //	Any message in lastOutbound whose "content" string starts with
 //	CompactionMarkerPrefix is a gateway-injected summary. It is kept verbatim
-//	in the rebuilt body and its hash is deliberately excluded from the LCS
-//	index so the diff algo never mistakes it for a client-sent message.
+//	in the rebuilt body and excluded from the comparable set（未盖戳的网关
+//	摘要同理，见 isUnmarkedGatewaySummaryMsg）so the diff algo never
+//	mistakes them for client-sent messages.
 //
 // Edge cases:
 //   - Full new session (no lastOutbound):     return clientBody unchanged.
 //   - No shared message found:                return clientBody (session reset).
 //   - Client unchanged vs last outbound:      return lastOutbound (deduplicated).
-//   - Client added turns after a tool round:  LCS skip past orphaned tool_result.
+//   - Client added turns after a tool round:  two-segment anchor skips past
+//     the compressed gap (the tail-match run spans it).
 
 package compression
 

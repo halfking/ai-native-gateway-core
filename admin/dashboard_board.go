@@ -78,7 +78,14 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	// Custom range or Redis unavailable — query PostgreSQL directly.
 	summary, fromMinute := h.queryBoardSummary(ctx, filterTenant, tr)
 	if !fromMinute {
-		summary = h.fallbackBoardSummary(ctx, filterTenant, tr)
+		// 2026-10-03：回退失败不再被吞掉。原来这里拿到的是一张
+		// 「全 0 且无任何标记」的 summary，页面看起来就是「这个时段没有流量」。
+		fb, fbErr := h.fallbackBoardSummary(ctx, filterTenant, tr)
+		if fbErr != nil {
+			writeInternalErr(w, "board summary fallback failed", fbErr)
+			return
+		}
+		summary = fb
 	}
 
 	if !tr.Custom {
@@ -87,8 +94,24 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pies, _ := h.resolveBoardPies(ctx, filterTenant, tr)
-	trends, _ := h.resolveBoardTrends(ctx, filterTenant, tr, providerID)
+	// 2026-10-03：pies/trends 的错误原来用 `_` 丢掉。
+	// 后果不是「少一块图」，而是**载荷里没有任何痕迹**：pies 变 nil、
+	// trends 变 nil，页面把 nil 当空数组渲染，于是「这个维度没有客户端」
+	// 与「聚合视图没迁移、算不出来」产出同一张页面。现在两者的错误都
+	// 写进载荷的 degraded 字段（见 applyBoardDegradation）。
+	pies, piesDegraded, piesErr := h.resolveBoardPies(ctx, filterTenant, tr)
+	if piesErr != nil {
+		pies = emptyBoardPies()
+		piesDegraded = boardPieDegradation{
+			Keys:        []string{"clients", "client_ips", "identity_hashes", "models", "errors", "tenants", "providers"},
+			MissingView: boardMissingViewName(piesErr),
+		}
+	}
+	trends, trendsErr := h.resolveBoardTrends(ctx, filterTenant, tr, providerID)
+	if trendsErr != nil {
+		// 显式空数组而非 nil：前端 `?? []` 兜底仍生效，但载荷会带 degraded。
+		trends = []boardTrendPoint{}
+	}
 
 	resp := map[string]any{
 		"summary": summary,
@@ -102,6 +125,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 			return "_degraded_no_redis"
 		}(),
 	}
+	applyBoardDegradation(resp, piesDegraded, trendsErr)
 	// 2026-07-25: Add body size stats from Redis tracker
 	if h.bodySizeTracker != nil {
 		if bodyStats, err := h.bodySizeTracker.GetStats(ctx); err == nil {

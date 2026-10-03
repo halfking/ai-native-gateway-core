@@ -21,6 +21,7 @@ export default {
     summarizeFailed: '總結失敗',
     sessionForbidden: '目前 API 金鑰無法存取此會話，請選擇正確的金鑰',
     autoRoute: '自動路由 (auto)',
+    modelListFailed: '模型清單載入失敗，模型下拉裡只有「自動路由」不代表閘道只支援自動路由',
     auto: '自動',
     needsKeyTitle: '請先申請 API 金鑰',
     needsKeyDesc: '對話需要一把屬於您且已啟用的 API 金鑰。您目前沒有可用金鑰，請先申請或建立。',

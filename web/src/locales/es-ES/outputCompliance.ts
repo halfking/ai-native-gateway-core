@@ -42,6 +42,8 @@ export default {
     createdAt: '时间',
   },
   empty: '暂无合规记录',
+  recordsLoadFailed: 'No se pudieron cargar los registros de coincidencias',
+  recordsNotLoaded: 'Registros de coincidencias no cargados: la tabla siguiente no es el resultado de la consulta',
   pagination: {
     previous: '上一页',
     next: '下一页',

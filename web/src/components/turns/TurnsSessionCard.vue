@@ -25,6 +25,14 @@ const props = defineProps<{
   assetMsg?: string
   childOps?: SessionTurnTreeItem[]
   childOpsLoading?: boolean
+  /**
+   * 2026-10-03 新增：子操作（每轮的子请求）取不到时的原因。
+   *
+   * 没有它时，取不到与「这一轮没有子请求」在页面上完全同形 ——
+   * 模板是 `v-if="opsForTurn(turn.turn_no).length"`，取不到就什么都不渲染，
+   * 「什么都不渲染」读起来就是「没有」。
+   */
+  childOpsError?: string
   summaryExpanded?: boolean
 }>()
 
@@ -171,6 +179,10 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
         </div>
       </div>
       <div v-if="session.turns.length > 50" class="ops-hint">轮次较多，完整时间线请进入会话详情查看。</div>
+      <!-- 取不到 ≠ 没有。这一格必须在场，否则「什么都不渲染」就是一句假陈述。 -->
+      <div v-if="childOpsError" class="child-ops-error" role="status">
+        子操作加载失败：{{ childOpsError }}
+      </div>
     </div>
   </div>
 </template>
@@ -231,6 +243,11 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .child-ops { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .ops-chip { background: var(--primary-soft); color: var(--accent); }
 .ops-hint, .empty { text-align: center; color: var(--text-secondary); padding: 12px 16px; font-size: 13px; }
+.child-ops-error {
+  text-align: center; font-size: 12px; padding: 8px 16px;
+  color: var(--warning, var(--text-secondary));
+  background: color-mix(in srgb, var(--warning, #d97706) 8%, transparent);
+}
 @media (max-width: 768px) {
   .turn-row { grid-template-columns: 1fr; gap: 10px; }
   .col + .col { padding-top: 10px; border-left: 0; border-top: 1px dashed var(--border); }

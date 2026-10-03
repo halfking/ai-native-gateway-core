@@ -74,6 +74,7 @@ export default {
   loading: 'Loading…',
   error: {
     loadFailed: 'Failed to load',
+    tenantsLoadFailed: 'No se pudo cargar la lista de inquilinos',
     usernamePasswordRequired: 'Username and password are required',
     createFailed: 'Operation failed',
     deleteFailed: 'Delete failed',

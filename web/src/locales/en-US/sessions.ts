@@ -29,6 +29,7 @@ export default {
     paginationPage: '{current} / {total}',
   },
   userProfile: {
+    loadFailed: 'Failed to load the user profile',
     title: 'User profiles',
     detailTitle: 'User profile detail',
     ownerUser: 'Owner user',

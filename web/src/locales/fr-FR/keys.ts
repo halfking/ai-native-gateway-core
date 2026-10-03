@@ -120,6 +120,7 @@ export default {
       rpm: '默认 RPM（每分钟请求数）',
       concurrent: '默认并发数',
       tpm: '默认 TPM（每分钟 token 数）',
+      loadFailed: "Échec du chargement des limites par défaut ; masquées et verrouillées jusqu'au chargement",
       savedToast: '默认限制已保存，将在 15 秒内生效',
     },
     conflict: {

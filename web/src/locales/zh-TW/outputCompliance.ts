@@ -42,6 +42,8 @@ export default {
     createdAt: '时间',
   },
   empty: '暂无合规记录',
+  recordsLoadFailed: '命中記錄載入失敗',
+  recordsNotLoaded: '命中記錄未載入，下面不是查詢結果',
   pagination: {
     previous: '上一页',
     next: '下一页',

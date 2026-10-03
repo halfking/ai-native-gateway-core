@@ -67,6 +67,8 @@ const routable = ref<{
   routable_ratio: number
 } | null>(null)
 const routableLoading = ref(false)
+// 2026-10-03：摘要卡整块消失会被读成「没有不可路由绑定」，必须单独说。
+const routableError = ref('')
 
 const routingDiag = ref<RoutingBlockedDiagnostic | null>(null)
 const routingDiagLoading = ref(false)
@@ -114,8 +116,15 @@ async function load() {
     routableLoading.value = true
     try {
       routable.value = await getRoutableSummary(props.providerId)
-    } catch {
+      routableError.value = ''
+    } catch (e) {
+      // 2026-10-03：原来 `routable.value = null`，而模板是 `v-if="routable"` ——
+      // 整张「可路由性摘要」卡**整块消失**。这比一句假话更难查：
+      // 卡消失会被读成「没有不可路由绑定」，而真相可能是「取不到」。
+      // 运维正是靠这张卡决定要不要清理陈旧绑定，缺席=安全的推论会出错。
       routable.value = null
+      console.error('Failed to load routable summary:', e)
+      routableError.value = pm('routableLoadFailed')
     } finally {
       routableLoading.value = false
     }
@@ -490,6 +499,7 @@ load()
       </div>
     </div>
 
+    <div v-if="routableError" class="alert alert-warning" role="status">{{ routableError }}</div>
     <div v-if="routable" class="card" style="margin-bottom:12px;background:color-mix(in srgb, var(--accent) 4%, transparent)">
       <h5 style="margin:0 0 8px 0">可路由性摘要 (v_routable_credential_models)</h5>
       <div class="metric-grid" style="grid-template-columns:repeat(4,1fr);gap:8px">

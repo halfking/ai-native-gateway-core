@@ -298,6 +298,8 @@ export default {
   },
   bgStatus: {
     panelTitle: '背景任務狀態',
+    stale: '後台任務狀態',
+    staleHint: '狀態取不到，下面顯示的是上一次的結果',
     task: {
       discovery: '模型發現',
       discoveryRunning: '偵測中 {elapsed}',

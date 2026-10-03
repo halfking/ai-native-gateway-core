@@ -21,6 +21,7 @@ export default {
     summarizeFailed: 'Zusammenfassung fehlgeschlagen',
     sessionForbidden: 'Der aktuelle API-Schlüssel hat keinen Zugriff auf diese Sitzung — bitte wählen Sie den richtigen Schlüssel',
     autoRoute: 'Automatisches Routing (auto)',
+    modelListFailed: 'Modelliste konnte nicht geladen werden — dass „Automatische Routung“ als einzige Option erscheint, heißt nicht, dass das Gateway nur automatisch routet',
     auto: 'Auto',
     needsKeyTitle: 'Fordern Sie zuerst einen API-Schlüssel an',
     needsKeyDesc: 'Zum Chatten wird ein aktiver API-Schlüssel benötigt, der Ihnen gehört. Sie haben derzeit keinen — bitte beantragen oder erstellen Sie einen.',

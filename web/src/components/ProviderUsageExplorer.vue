@@ -32,6 +32,8 @@ const { t } = useI18n()
 
 const loading = ref(false)
 const rows = ref<ProviderUsageRow[]>([])
+/** 降级原因（非空 = 聚合视图缺失，rows 不可当结论）。 */
+const degraded = ref('')
 const search = ref('')
 const selected = ref<ProviderUsageRow | null>(null)
 const summary = ref<ProviderUsageSummary | null>(null)
@@ -88,8 +90,12 @@ function fmtPct(n: number | undefined) {
 
 async function loadList() {
   loading.value = true
+  degraded.value = ''
   try {
-    rows.value = await getUsageByProvider(props.timeQuery, 200)
+    const res = await getUsageByProvider(props.timeQuery, 200)
+    // 2026-10-03: 后端由裸数组改为降级信封。降级时空列表不是「没有数据」。
+    rows.value = res.items
+    degraded.value = res.degraded ? res.reason : ''
   } finally {
     loading.value = false
   }
@@ -280,6 +286,13 @@ watch(() => props.timeQuery, () => {
                         </tr>
                       </tbody>
                     </table>
+                    <!--
+                      降级时**不显示**下面的空态：服务端没算出来时说「暂无数据」
+                      等于把「不知道」讲成「知道」。降级有自己的措辞。
+                    -->
+                    <div v-else-if="degraded" class="pue-empty" role="status">
+                      ⚠️ {{ t('dataLifecycle.usageCost.degraded.title') }}（{{ degraded }}）
+                    </div>
                     <div v-else-if="!loading" class="pue-empty">{{ t('dashboard.board.empty') }}</div>
                   </div>
                 </div>

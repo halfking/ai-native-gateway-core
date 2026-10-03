@@ -2392,10 +2392,14 @@ func main() {
 		// 2026-09-14 audit #8: failed embedding candidates feed the shared
 		// candidate_failure_logs / supplier_errors ledger, same as chat —
 		// keeps credential quality views complete across all data planes.
-		embeddingsHandler.SetFailureLogger(executors.NewCandidateFailureWriter(dbConn.Pool()))
+		candidateFailureLedger := executors.NewCandidateFailureWriter(dbConn.Pool())
+		embeddingsHandler.SetFailureLogger(candidateFailureLedger)
 		// 2026-10-03 音频端点轮：转写/合成/MCP 三个面共享 AudioService。
 		audioService = streaming.NewAudioService(providerClient, upClient)
 		audioService.SetAuth(keyVerifier, slidingRL)
+		// R40（R39 §七.3 移交收口）：音频候选失败与 chat/embeddings 同进
+		// 共享台账——音频面此前在 credential quality 视图上不可见。
+		audioService.SetFailureLogger(candidateFailureLedger)
 		audioTranscriptionsHandler = streaming.NewAudioTranscriptionsHandler(audioService)
 		audioSpeechHandler = streaming.NewAudioSpeechHandler(audioService)
 		audioMCPHandler = streaming.NewAudioMCPHandler(audioService)

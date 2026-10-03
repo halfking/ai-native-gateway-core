@@ -491,7 +491,13 @@ func (e *ActiveProbeExecutor) RunGateway(ctx context.Context, target *ProbeTarge
 			StartedAt: start, CompletedAt: time.Now(), Target: derefTarget(target),
 		}
 	}
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, target.RawModel)
+	// R40（R39 §七.4 移交收口）：与 legacy 直连轮同源走 directProbeBody 的
+	// 形态分发。此前硬编码文本 ping，对音频模型必被上游按内容拒收，每次
+	// 探测写一条 http_400 审计行；同源后音频模型按 chat-audio 桥接形态
+	// 探测（gateway 轮端点固定 /chat/completions，对应 openai-completions
+	// 协议形态的探针体）。gateway 轮仅细化证据不上梯子（probe_service.go
+	// success=direct.ok），此改动不影响可用性判据。
+	body := directProbeBody(target.RawModel, "openai-completions")
 	endpoint := e.gatewayURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {

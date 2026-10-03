@@ -42,6 +42,8 @@ export default {
     createdAt: '时间',
   },
   empty: '暂无合规记录',
+  recordsLoadFailed: 'فشل تحميل سجلات المطابقة',
+  recordsNotLoaded: 'سجلات المطابقة غير محمّلة — الجدول أدناه ليس نتيجة الاستعلام',
   pagination: {
     previous: '上一页',
     next: '下一页',

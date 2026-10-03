@@ -60,6 +60,53 @@ export interface HotApiKeyEntry {
   last_used_at: string | null
 }
 
+/**
+ * 降级列表信封（后端 admin.DegradedListResponse）。
+ *
+ * 这三个端点原本返回裸数组，而 JSON 数组没有位置放降级标记 ——
+ * 42P01 时页面把「聚合视图没迁移」渲染成「这段时间真的没有数据」。
+ * 后端改为 { items, degraded, ... } 后，前端必须解包，
+ * 否则所有消费方会拿到 undefined 并崩。
+ */
+export interface DegradedListEnvelope<T> {
+  items: T[]
+  degraded?: boolean
+  degraded_reason?: string
+  missing_view?: string
+  hint?: string
+}
+
+export class DegradedListResult<T> {
+  readonly items: T[]
+  readonly degraded: boolean
+  readonly reason: string
+
+  constructor(items: T[], degraded: boolean, reason: string) {
+    this.items = items
+    this.degraded = degraded
+    this.reason = reason
+  }
+}
+
+/**
+ * 解包降级列表信封。
+ *
+ * 兼容旧形状：后端若仍是裸数组，直接当作未降级处理。
+ * 这么做不是为了容忍错误，而是让「后端尚未部署」与「后端已部署」在前端
+ * 各自给出正确结果 —— 灰度期间两者会同时存在。
+ */
+export function unwrapDegradedList<T>(payload: DegradedListEnvelope<T> | T[]): DegradedListResult<T> {
+  if (Array.isArray(payload)) {
+    return new DegradedListResult<T>(payload, false, '')
+  }
+  const items = payload?.items ?? []
+  return new DegradedListResult<T>(
+    items,
+    payload?.degraded === true,
+    payload?.degraded_reason ?? payload?.missing_view ?? '',
+  )
+}
+
 export interface ModelUsage {
   model: string
   provider_code: string
@@ -116,11 +163,14 @@ export function getDashboardOverview(days = 7) {
 }
 
 export function getHotApiKeys(days = 7, limit = 10) {
-  return req<HotApiKeyEntry[]>('GET', `/api/usage/hot-keys?days=${days}&limit=${limit}`)
+  return req<DegradedListEnvelope<HotApiKeyEntry> | HotApiKeyEntry[]>(
+    'GET', `/api/usage/hot-keys?days=${days}&limit=${limit}`,
+  ).then(unwrapDegradedList<HotApiKeyEntry>)
 }
 
 export function getUsageByModel(days = 7) {
-  return req<ModelUsage[]>('GET', `/api/usage/by-model?days=${days}`)
+  return req<DegradedListEnvelope<ModelUsage> | ModelUsage[]>('GET', `/api/usage/by-model?days=${days}`)
+    .then(unwrapDegradedList<ModelUsage>)
 }
 
 export function getKeyUsage(keyId: number, params: { days?: number; start?: string; end?: string } = {}) {
@@ -315,7 +365,9 @@ function usageTimeQs(q: BoardTimeQuery & { limit?: number }) {
 
 export function getUsageByProvider(time: BoardTimeQuery, limit = 200) {
   const qs = usageTimeQs({ ...time, limit })
-  return req<ProviderUsageRow[]>('GET', `/api/usage/by-provider?${qs}`)
+  return req<DegradedListEnvelope<ProviderUsageRow> | ProviderUsageRow[]>(
+    'GET', `/api/usage/by-provider?${qs}`,
+  ).then(unwrapDegradedList<ProviderUsageRow>)
 }
 
 export function getProviderUsageSummary(providerId: number, time: BoardTimeQuery) {
@@ -405,6 +457,10 @@ export interface UsageTrendSeriesResponse {
   top: number
   source: string
   series: UsageTrendModelSeries[]
+  degraded?: boolean
+  degraded_reason?: string
+  missing_view?: string
+  hint?: string
 }
 
 export interface UsageTrendModelEntry {
@@ -420,6 +476,10 @@ export interface UsageTrendModelsResponse {
   end: string
   source: string
   models: UsageTrendModelEntry[]
+  degraded?: boolean
+  degraded_reason?: string
+  missing_view?: string
+  hint?: string
 }
 
 export interface UsageTrendFilterQuery {

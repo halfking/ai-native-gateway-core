@@ -3,6 +3,11 @@ export default {
   title: '压缩概览',
   refresh: 'Actualizar',
   loading: 'Cargando…',
+  load: {
+    statsFailed: 'No se pudieron cargar las estadísticas de compresión',
+    sessionsFailed: 'No se pudieron cargar las sesiones de compresión',
+    configFailed: 'No se pudo cargar la configuración de compresión: los valores de abajo son los de fábrica, no la configuración actual',
+  },
   tabs: {
     h24: '24 horas',
     d7: '7 días',
