@@ -11875,3 +11875,112 @@ ERROR sessionv2mirror: outbox row dead, mirror data lost pending manual reconcil
 > 同族：§9.60 里「147 条全是 `dead` 所以没再接收」——
 > 同一处证据，我在两节里给出了两个**互相矛盾**的解释，
 > 而且第二个（死路）是在被交叉验证推翻后才发现的。
+
+---
+
+## §9.92 ★★再撤一次：§9.91 说「重放计数已计数但未导出」也是**错的** —— 指标一直在导出，是我 grep 用了 Go 变量名
+
+§9.91.2 我写「`mirrorReplayTotal` / `mirrorReplayDeadTotal` **已计数、却根本没有导出到
+`/metrics`**」，并把「先导出它们」列为第一优先。**这个结论同样不成立。**
+
+### §9.92.1 错在哪：拿 Go 变量名去 grep 导出的指标名
+
+我当时的命令是：
+
+```
+curl …/metrics | grep -E "^mirror_replay|^session_v2_mirror"
+```
+
+但这两个计数器是 `promauto` 注册的，**导出名与 Go 变量名完全不同**：
+
+| Go 变量 | 实际导出指标名 | 被我的 grep 命中？ |
+|---|---|---|
+| `mirrorReplayTotal` | `session_mirror_outbox_replays_total` | ❌ `^mirror_replay` 不匹配 |
+| `mirrorReplayDeadTotal` | `session_mirror_outbox_dead_total` | ❌ 同上 |
+| `mirrorOutboxPending`（gauge） | `session_v2_mirror_outbox_pending` | ✅ `^session_v2_mirror` |
+
+⇒ 我**用源码标识符去搜运行时产物**，搜不到就断言「没导出」。
+**这不是探针问题，是我把两个命名空间搞混了。**
+
+### §9.92.2 真值（252 `/metrics` 实测）
+
+```
+session_mirror_outbox_replays_total{result="ok"}     2,301
+session_mirror_outbox_replays_total{result="retry"}  1,392
+session_mirror_outbox_replays_total{result="dead"}     112
+session_mirror_outbox_dead_total                      112
+```
+
+⇒ 重放成功 **2,301 次**。**重放面工作得很好**——这比 §9.91 的「不可见」和
+§9.90 的「已死」都更接近事实。
+
+**独立交叉验证**：`dead_total = 112`，与我按日志统计的
+`outbox row dead` ERROR 行数 **112 完全相等** ⇒ 两个独立源互相印证。
+
+### §9.92.3 但真正的洞还在，而且比我原先说的更硬
+
+指标**在**、有值、文档还**点名它是告警主信号**：
+
+| 出处 | 原文 |
+|---|---|
+| `replay.go:105` Help | "…`session_mirror_outbox_dead_total` is …**the alerting-friendly top-level signal**" |
+| `docs/db-changelog.md:751` | "新增 dead-letter 累计事件数…**适合做告警主信号**" |
+| 仓内告警 | ❌ `grep session_mirror_outbox deploy/prometheus/` **零命中** |
+
+**一个被两处文档指定为告警主信号的计数器，从来没有人写那条告警。**
+这是 §9.37 的又一次，且比前两次更刺眼——**意图被写下了、执行没发生**。
+
+**还有一个更隐蔽的坑**：这两个指标**改过名**（去掉 `llmgw_` 前缀）。
+`db-changelog.md:744-746` 记为「改名即断流」，并明确警告：
+
+> 仓内已确认无引用（`grep` 覆盖全仓），但**仓外的 Grafana 面板 / 告警规则 /
+> 采集配置不在该论证范围内**，需运维侧同步改名。
+
+⇒ 「仓内 grep 无引用」**推不出**「没有断流风险」。任何仓外告警都可能已指向
+不存在的指标而**永不触发**。
+
+### §9.92.4 已落（本轮实施）
+
+| 交付物 | 内容 |
+|---|---|
+| `deploy/prometheus/rules/session-mirror-outbox.yml` | `MirrorOutboxDeadLettered`（`increase(dead_total[1h]) > 0 for: 5m`）+ `MirrorOutboxBacklogStuck`（`pending > 0 for: 30m`） |
+| `deploy/prometheus/rules/session_mirror_outbox_rules_test.go` | 2 道门：**从 `replay.go` 的 `Name:` 推导指标名并与规则对账** + 结构完整性 |
+| `docs/db-changelog.md` 未改 | 改名通知已存在，本轮只加仓内告警与防断流门 |
+
+**门为什么必须「从源码推导」而不是把名字写死**：门里写死名字 = 改名时顺手把
+门里的名字也改掉 ⇒ 又回到「两边都记得改」的人肉同步，**而那正是 db-changelog
+警告的失效模式本身**。从源码推导，权威源只有一个。
+
+### §9.92.5 变异验证（3/3 红因即断言）
+
+| 变异 | 结果 |
+|---|---|
+| M1：改 `replay.go` 里的 `Name:`（模拟那次真实改名） | 红：「告警规则里若还写着旧名字，它现在已经断流，且不会有人发现」 |
+| M2：规则里写改名前的 `llmgw_` 前缀 | 红：「该告警指向不存在的指标，永不触发」 |
+| M3：删掉一条规则的 `for:` | 红：「缺 for —— 瞬时抖动会反复 fire/unfire」 |
+
+`promtool check rules`：`session-mirror-outbox.yml` SUCCESS（2 rules），
+全目录 `rules/*.yml` 全部 SUCCESS。
+
+### §9.92.6 仍然没做的那一条（需拍板）
+
+`session_v2_mirror_backlog_pending > 0` 的告警**故意未加**：
+它在 252 恒为 1（进程自 2026-10-01 起已累积 246 次写失败），
+加上就是一条**永久 firing** 的告警。是否落属运维姿态决策。
+本次落地未触及并行会话在 `deploy/prometheus/` 的在途改动
+（`request-abandoned.*` 删除 / `session-turns-abandoned.*` 新增）。
+
+### §9.92.7 这条教训
+
+> **grep 运行时产物（`/metrics`、JSON、HTTP 响应）时，关键词必须取自
+> 「产物里的那个名字」，不能取自源码里的变量名。**
+> Go 变量名 → 指标名要经过一次重命名 + 加前缀的转换，
+> 这个转换**在源码里看得见，在 grep 里看不见**。
+>
+> 我这一节里已经犯过两次同类错误：
+> ① §9.91 用 `^mirror_replay` 搜「没导出」；
+> ② §9.90.6 用 `grep deploy/prometheus/` 搜「有告警」时，
+>    那次是对的方向但结论也错了（真值是「有指标无告警」，方向恰好一致）。
+>
+> **同族**：「grep 不到 ≠ 不存在」——但这次更精确的形态是
+> **「grep 不到 ≠ 你的关键词写对了」**。
