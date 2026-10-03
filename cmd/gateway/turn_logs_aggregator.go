@@ -135,10 +135,30 @@ const (
 	// same (tenant, session) — see the concurrency note on
 	// AggregateAndFlush. Reading the current column value in the same
 	// statement is what makes the Go-side read-modify-write safe.
+	//
+	// 2026-10-04 §9.117: the `partition_date = MAX(...)` restriction is
+	// load-bearing, not a performance tweak. `public.sessions` is PARTITION BY
+	// RANGE (partition_date) and its only unique key is
+	// UNIQUE (session_id, partition_date) — PostgreSQL forbids a unique
+	// constraint on a partitioned table that omits the partition key — so
+	// **one session has one row per month it spans**. Measured on production
+	// 252: 413 of them. Without the restriction this statement matches 2+ rows
+	// for those, and `QueryRow` then silently takes whichever row the plan
+	// happens to return first, while flushUpdateQuery (which has no
+	// partition_date predicate) writes the merged value to *all* of them. The
+	// merge is therefore seeded from one month's accumulated summary and then
+	// overwrites the other months' — silent content loss, and the
+	// read-modify-write invariant documented above quietly stops holding.
+	//
+	// Same projection the write side already uses: internal/titlestore/store.go
+	// and admin's session list (turnsSessionsFinalizeWhere) both take
+	// MAX(partition_date).
 	flushLockQuery = `
 		SELECT turn_logs_summary
 		FROM public.sessions
 		WHERE tenant_id=$1 AND session_id=$2
+		  AND partition_date = (SELECT MAX(x.partition_date) FROM public.sessions x
+		                        WHERE x.tenant_id=$1 AND x.session_id=$2)
 		FOR UPDATE
 	`
 
@@ -152,10 +172,19 @@ const (
 	// Full replacement is correct here because the value written is the
 	// merge of the locked row's current value with this flush's rows —
 	// the merge happens in Go (mergeSummaries), not in SQL.
+	//
+	// 2026-10-04 §9.117: the partition_date restriction must match
+	// flushLockQuery's exactly. Without it this UPDATE hits every row the
+	// session has — one per month it spans (413 sessions on 252) — so a value
+	// seeded from a single month's column clobbers the other months'. Both
+	// statements must agree on which row is "the" row, or the lock and the
+	// write are talking about different rows.
 	flushUpdateQuery = `
 		UPDATE public.sessions
 		SET turn_logs_summary = $1::jsonb
 		WHERE tenant_id=$2 AND session_id=$3
+		  AND partition_date = (SELECT MAX(x.partition_date) FROM public.sessions x
+		                        WHERE x.tenant_id=$2 AND x.session_id=$3)
 	`
 
 	// Delete exactly the read set, by primary key (§17 F-10).
