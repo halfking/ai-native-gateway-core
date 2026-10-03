@@ -44,6 +44,12 @@ type CostTrendResponse struct {
 	Entries    []CostTrendEntry `json:"entries"`     // 分组条目
 	OtherCost  float64          `json:"other_cost"`  // 其他（占比<2%合并）
 	OtherCount int              `json:"other_count"` // 其他条目数量
+
+	// Degraded / DegradedReason 语义见 PeriodCompareResponse。
+	// 这里的降级形状是「可选视图未迁移」⇒ 200 + 空 entries + total_cost 0，
+	// 页面上表现为一张空饼图。若不标记，它与「这段时间真的一分钱没花」同形。
+	Degraded       bool   `json:"degraded"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
 }
 
 // costTrendPlan 是 cost-trend 某个 group_by 的取数方案：基表、基表别名、
@@ -200,7 +206,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		if IsMissingRelationError(err) {
-			ReportMissingRelation(slog.Default(), "usageCostTrend", err)
+			reason := ReportMissingRelation(slog.Default(), "usageCostTrend", err)
 			writeJSON(w, http.StatusOK, CostTrendResponse{
 				GroupBy:    groupBy,
 				DateFrom:   startTime.Format("2006-01-02"),
@@ -208,6 +214,12 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 				Entries:    []CostTrendEntry{},
 				OtherCost:  0,
 				OtherCount: 0,
+				// 同一形状的降级必须同一套标记。上一提交给同文件的
+				// PeriodCompare / CacheEconomics 加了 degraded，却漏了这里 ——
+				// 结果是「本轮已修降级载荷」这句话对自己文件都不成立。
+				// 用户侧看到的是一张空饼图 + total_cost 0。
+				Degraded:       true,
+				DegradedReason: reason,
 			})
 			return
 		}
