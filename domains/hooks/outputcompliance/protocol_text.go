@@ -246,6 +246,15 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 		case "mcp_call":
 			addToolInput(item, "arguments", itemLane+".arguments")
 			add(item, "output", itemLane+".output", false)
+		case "tool_search_call", "mcp_approval_request":
+			// 195 号：e0625c6a5 把这两个载体收进了入向 sanitize 与
+			// native_restore，但输出侧这份第三份枚举漏了它们 ⇒ 模型写进
+			// arguments 的敏感文本直过两道输出闸。与 function_call 同为
+			// `.arguments` 形态，lane 后缀保持一致（isJSONToolArgumentLane
+			// 依赖 `responses.` 前缀 + `.arguments` 后缀），从而沿用
+			// mandatory 闸的 __tool_json 语义。addToolInput 同时覆盖
+			// JSON-string 与结构化两种形态。
+			addToolInput(item, "arguments", itemLane+".arguments")
 		case "web_search_call":
 			if action, ok := item["action"].(map[string]any); ok {
 				add(action, "query", itemLane+".action.query", false)
@@ -412,6 +421,10 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 			case "mcp_call":
 				addToolInput(item, "arguments", initialLane+".arguments")
 				add(item, "output", initialLane+".output", false)
+			case "tool_search_call", "mcp_approval_request":
+				// 195 号：与上面 addOutputItem 同口径镜像，否则 added 帧
+				// 会出现「done 才拦」的半帧缝。
+				addToolInput(item, "arguments", initialLane+".arguments")
 			case "web_search_call":
 				if action, ok := item["action"].(map[string]any); ok {
 					add(action, "query", initialLane+".action.query", false)

@@ -12,8 +12,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
-	"github.com/kaixuan/llm-gateway-go/metrics"
 	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // The checker can load arbitrary tenant regexes. Even its built-in password
