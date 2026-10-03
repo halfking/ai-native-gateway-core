@@ -7244,3 +7244,61 @@ D8-d 是**纯加法、零迁移、只读、不改写链**的实现修复，**本
 >    那是业务决策，仍需你一句话。**你若不反对，我按同一标准推进：`request_status` 落库（纯数据补全，不改口径）。**
 > 2. 仍未决：D1/D2/D4/D5/D6/D7-a~d/D7-e/D9/D10/D11、`RowsAffected==0` 指标。
 > 3. 生产 252 只读逐日 `count(*)`：**仍需显式授权**，我不拿超时采纳当授权。
+
+### §70.18 第七十六轮：**`request_status` 落库已实现**（退役硬前置）+ 我在这条线上犯的两次操作失误
+
+> 起点 `e83fb6211`。本轮是**第二次产品代码改动**（第一次是 D8-d）。
+
+**做了什么**（6 处代码 + 3 处既有测试门禁更新）：
+
+| 文件 | 改动 |
+|---|---|
+| `sql/migrations/startup/823_session_turns_request_status.sql` | **新增**：母表 + hot **对称**加 `request_status TEXT` + 列契约自检 |
+| `installer/internal/dbinit/runner.go` / `main.go` / `embeddata/` / `installed_startup_migrations.tsv` | 四处登记（门禁逐一逼出来的，见下） |
+| `internal/sessionv2mirror/hook.go` | `entryToProcessedRequest` 原样复制 `entry.RequestStatus` |
+| `domains/session/v2/{session_writer_v2,turn_writer}.go` | 字段 + 映射 + INSERT 末尾追加 `$98` |
+| `internal/sessionv2mirror/request_status_pass_through_test.go` | **新增** 4 个测试 |
+
+**为什么不等拍板**：这条**不决定任何成本口径**，只是把网关**已算好**的字段落库。
+D7-f（失败流量算不算钱）仍是业务决策，仍等你。
+**但它是退役的硬前置**：44.6 万行扫描噪声已在会话族内，v1 一删就**永久失去标签**。
+
+#### ★ 三个「我以为我知道、其实不知道」
+
+1. **promote 是目录驱动的** —— 我以为要重写 182 行显式列清单的 plpgsql。
+   707 起它用 `v_cols`（从 `pg_attribute` 派生）**按列名** INSERT
+   ⇒ **对称加列自动流经，不用改函数**，且入口有**列契约检查**（两侧形状不等直接 `RAISE`）。
+   ⇒ **只加一张表会被响亮拒绝，不会静默丢列。**
+
+2. **差集工具坏了，给出「96 列被丢弃」的惊人假结论** —— 那个函数用 `format()` 拼列，
+   我的正则只抽到 1 个 `%s`。
+   我还顺手把 `search_text`（`session_turns` 里 0 行 / hot 里 17 行）当成被丢的证据 ——
+   **也是假的**（该列后加，历史行天然 NULL）。
+   **「已 promote = 0、未 promote = 17」恰恰是「没被丢」的证据。**
+
+3. **验证手段本身要被验证** ——
+   - 我以为**回滚了**：迁移文件自带 `COMMIT`，外层事务被提前结束，
+     `ROLLBACK` 报 `no transaction in process` ⇒ `ALTER TABLE` **真提交了**，promote **真搬了 1000 行**。
+     （不是损坏：列本该加、行本该搬；探针行已删，数据守恒。）
+   - 我以为**变异跑过了**：按注释文本匹配 `old` 串，gofmt 重排对齐后 `AssertionError`，
+     **变异根本没注入**，而紧接的 `ok` 是**未变异的基线**。
+     改用按行号删除后重跑 ⇒ **三个测试同时红**（`RequestStatus = "", want "rate_limited"`）。
+
+#### ★ 三道**既有**门禁先后抓住我（都值得保留）
+
+| 门禁 | 报什么 |
+|---|---|
+| `anyArgs(97)` 参数个数钉死 | `expected 97, but got 98 arguments` |
+| `TestStartupFilesAreAllEmbedded` | 「加到 embeddata、go:embed 变量、embeddedSQLFiles map 三处」 |
+| `TestStartupManifestMatchesStartupFiles` | `manifest 218 / StartupFiles 219` + 直接给出 `-update` 命令 |
+
+⚠️ 我**先查了基线**（`git stash` + 同批测试）确认是**我改坏的**，不是本来就红。
+⇒ **位置参数的 INSERT + 四处登记 + 双向对账门禁，这套组合在本仓库是成熟的。**
+
+#### ⚠️ 最重要的遗留（必须写进 D9）
+
+**历史 1,688,630 行 `request_status` 恒为 NULL，且不可回填**（信号在 v1 里，退役后即消失）。
+⇒ **退役前必须留一个时间窗**：823 上线 → 镜像跑一段时间 → 才能拿到带标签的子集。
+**否则退役当天起，44.6 万行噪声里只有新写的部分带标签。**
+
+**本轮没做**：没改任何成本逻辑（D7-f 口径与实现**仍相反**）、没连生产、没部署。
