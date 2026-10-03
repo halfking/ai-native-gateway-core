@@ -210,63 +210,118 @@ const PAGE_PROBE = () => {
   return out
 }
 
+// 弹层探针。**按几何/定位找，不按 class 名找。**
+//
+// 2026-10-03 踩的坑，正是「判据只覆盖了它认识的名字」：
+//   SessionSummaryDrawer 的根是 `.ssd-backdrop` / `.ssd-panel` ——
+//   **两个 class 都不含 drawer / modal / dialog**。旧探针的选择器是
+//   `[class*="drawer"],[class*="modal"],[class*="dialog"]`，于是这个抽屉
+//   明明被点开了，探针报「未出现弹层」。在报告里它长得和「点击没反应」
+//   一模一样 —— 而真相是判据瞎了。
+//   教训与「页面探针扫 `main *` 而主区是 section」同族：**判据的元素集合
+//   必须先证明覆盖了全集**，否则「没找到」会被写成「不存在」。
+//
+// 所以改成：position 为 fixed/absolute + 尺寸够大 + 可见 ⇒ 候选；
+// 逐个记录 key（class + 矩形），调用方拿「点击前 / 点击后」两份快照做差，
+// **只有新出现的才算这次触发打开的弹层**。这一层差分还顺手挡掉了
+// 「页面上常驻的 fixed 元素（全局导航抽屉等）被误认成弹层」。
+//
+// 每个候选顺带算出 depthInCands（在其它候选里的祖先个数），
+// 便于调用方取最外层 —— 旧探针两次选错对象（量到遮罩、量到 .drawer-body）
+// 都是因为「用尺寸近似弹层本体」。
 const OVERLAY_PROBE = () => {
-  const out = { found: null, width: 0, panelOverflows: false, scrollable: false, textLen: 0, pickedBackdrop: false }
   const vw = window.innerWidth
   const vh = window.innerHeight
-  const visible = (el) => {
+  const sizeOk = (r) => r.width >= 120 && r.height >= 120
+  const shown = (el) => {
     const cs = getComputedStyle(el)
     if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) <= 0.05) return false
-    const r = el.getBoundingClientRect()
-    return r.width > 120 && r.height > 120
+    return sizeOk(el.getBoundingClientRect())
   }
-  const cands = [...document.querySelectorAll('[class*="drawer"],[class*="modal"],[class*="dialog"]')]
-    .filter(visible)
-    .map((el) => ({ el, r: el.getBoundingClientRect() }))
+  const positioned = []
+  for (const el of document.querySelectorAll('body *')) {
+    const cs = getComputedStyle(el)
+    if (cs.position !== 'fixed' && cs.position !== 'absolute') continue
+    if (!shown(el)) continue
+    positioned.push(el)
+  }
+  // 铺满视口的定位层 = 遮罩。**面板本体经常不是定位元素**：
+  // ModelPicker / ChangePasswordDialog 这类居中弹窗是「fixed 遮罩 + flex 居中的
+  // 静态盒子」，盒子本身 position:static。只收定位元素 ⇒ 候选里只剩遮罩，
+  // 于是量出 1440px 的「面板宽度」，恒判绿（本轮第一次改探针就踩了这个）。
+  // 所以再把**铺满层内部**尺寸够大的后代也收进来，真正的面板就在里面。
+  const overlayRoots = positioned.filter((el) => {
+    const r = el.getBoundingClientRect()
+    return r.width >= vw * 0.95 && r.height >= vh * 0.95
+  })
+  const cands = [...positioned]
+  for (const root of overlayRoots) {
+    for (const el of root.querySelectorAll('*')) {
+      if (positioned.includes(el)) continue
+      if (shown(el)) cands.push(el)
+    }
+  }
 
-  // ⚠ 两次选错对象，都是「用尺寸近似弹层本体」：
-  //  ① `.drawer-overlay` 是 position:fixed 铺满视口的背景层，面积最大、class
-  //     里又带 drawer —— 只按面积取最大 ⇒ 永远选中遮罩，量出 1440px 的
-  //     「面板宽度」，滚动检查也打在永不会滚的遮罩上，于是恒判绿。
-  //  ② 排除遮罩后，内容多的面板其 `.drawer-body` 会被内容撑得比 `.drawer`
-  //     更高，面积又反超 —— 仍然选错。
-  // 正确规则是**取最外层**：不是任何其它候选的后代的那个。尺寸只用来过滤噪声。
-  const isBackdrop = (r) => r.width >= vw * 0.95 && r.height >= vh * 0.95
-  const nonBackdrop = cands.filter((c) => !isBackdrop(c.r))
-  const pool = nonBackdrop.length ? nonBackdrop : cands
-  if (!pool.length) return out
+  const cset = new Set(cands)
+  const byEl = new Map(cands.map((el) => [el, `${(typeof el.className === 'string' ? el.className : '').slice(0, 60)}|${Math.round(el.getBoundingClientRect().left)}|${Math.round(el.getBoundingClientRect().top)}|${Math.round(el.getBoundingClientRect().width)}|${Math.round(el.getBoundingClientRect().height)}`]))
+  return cands.map((el) => {
+    const r = el.getBoundingClientRect()
+    const cls = typeof el.className === 'string' ? el.className : ''
+    // 只记**最近的候选祖先**的 key。深度不在这里算 —— 因为「遮罩」本身也是候选，
+    // 若在这里按全集算深度，遮罩的每个后代深度都 ≥1，取最外层时会一个都选不出来
+    // （本轮踩过：.drawer 和 .drawer-body 双双 depth≥1，结果选中了 .drawer-body）。
+    let parentKey = null
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      if (cset.has(p)) { parentKey = byEl.get(p); break }
+    }
+    const panelOverflows = el.scrollHeight > el.clientHeight + 8
+    const scrollers = [el, ...el.querySelectorAll('*')].filter((c) => {
+      const cs = getComputedStyle(c)
+      return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && c.scrollHeight > c.clientHeight + 8
+    })
+    return {
+      key: byEl.get(el),
+      parentKey,
+      cls,
+      w: Math.round(r.width), h: Math.round(r.height),
+      isBackdrop: r.width >= vw * 0.95 && r.height >= vh * 0.95,
+      textLen: (el.innerText || '').trim().length,
+      // 内容放不下时必须有可滚路径，否则底部字段看不到 —— 老板说的「显示内容必须完整」
+      scrollable: scrollers.length > 0 || !panelOverflows,
+    }
+  })
+}
 
-  const poolSet = new Set(pool.map((c) => c.el))
+// 从「点击前 / 点击后」两份快照里挑出这次新打开的弹层面板。
+// 取**非遮罩候选里最外层**的那个（沿 parentKey 上溯，池内没有祖先者）——
+// 旧探针两次选错对象（量到遮罩、量到 .drawer-body）都是因为用尺寸近似本体。
+// 深度必须在**排除遮罩之后**才算，否则遮罩会把每个后代都压成 depth≥1。
+export function pickOpenedPanel(before, after) {
+  const seen = new Set(before.map((c) => c.key))
+  const fresh = after.filter((c) => !seen.has(c.key))
+  if (!fresh.length) return null
+  const nonBackdrop = fresh.filter((c) => !c.isBackdrop)
+  const pool = nonBackdrop.length ? nonBackdrop : fresh
+  const poolKeys = new Set(pool.map((c) => c.key))
   const outermost = pool.filter((c) => {
-    for (let p = c.el.parentElement; p; p = p.parentElement) {
-      if (poolSet.has(p)) return false
+    for (let k = c.parentKey; k; k = pool.find((p) => p.key === k)?.parentKey) {
+      if (poolKeys.has(k)) return false
     }
     return true
   })
-  const { el, r } = (outermost.length ? outermost : pool)[0]
-  out.pickedBackdrop = nonBackdrop.length === 0
-  out.found = (typeof el.className === 'string' ? el.className : '').split(/\s+/).slice(0, 2).join('.')
-  out.width = Math.round(r.width)
-  out.left = Math.round(r.left)
-  out.textLen = (el.innerText || '').trim().length
-
-  // 面板内容比可视高度高吗？高的话必须有一条可滚路径，否则底部字段看不到 ——
-  // 这正是老板说的「显示内容必须完整，减少看不完整」。
-  out.panelOverflows = el.scrollHeight > el.clientHeight + 8
-  const scrollers = [el, ...el.querySelectorAll('*')].filter((c) => {
-    const cs = getComputedStyle(c)
-    return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && c.scrollHeight > c.clientHeight + 8
-  })
-  out.scrollable = scrollers.length > 0 || !out.panelOverflows
-  return out
+  const chosen = (outermost.length ? outermost : pool)
+    .sort((a, b) => b.w * b.h - a.w * a.h)[0]
+  return { ...chosen, pickedBackdrop: nonBackdrop.length === 0 }
 }
 
 // OVERLAY_PROBE 的判别力检查。与页面探针分开跑：两者的失败模式不一样——
 // 页面探针曾经「扫不到元素」而恒绿，弹层探针曾经「选错对象」而恒绿。
+// 夹具都按「点击前 / 点击后」两份快照组织，和真实调用方式一致。
 const OVERLAY_FIXTURES = [
   {
     name: '右侧抽屉：必须量到抽屉本体（800px），不能量铺满视口的遮罩',
-    html: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'抽屉内容行<br>'.repeat(6)}</div></div></div>
+    before: '',
+    after: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'抽屉内容行<br>'.repeat(6)}</div></div></div>
       <style>
         .drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4)}
         .drawer{position:absolute;right:0;top:0;width:800px;height:100%;background:#fff}
@@ -276,7 +331,8 @@ const OVERLAY_FIXTURES = [
   },
   {
     name: '内容超出面板且面板自身不可滚 → 必须判「看不完整」',
-    html: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'很长的一行内容<br>'.repeat(80)}</div></div></div>
+    before: '',
+    after: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'很长的一行内容<br>'.repeat(80)}</div></div></div>
       <style>
         .drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4)}
         .drawer{position:absolute;right:0;top:0;width:800px;height:300px;background:#fff;overflow:hidden}
@@ -286,13 +342,55 @@ const OVERLAY_FIXTURES = [
   },
   {
     name: '内容超出但 body 可滚 → 必须判「可滚」（与上一条成对）',
-    html: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'很长的一行内容<br>'.repeat(80)}</div></div></div>
+    before: '',
+    after: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'很长的一行内容<br>'.repeat(80)}</div></div></div>
       <style>
         .drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4)}
         .drawer{position:absolute;right:0;top:0;width:800px;height:300px;background:#fff;overflow:hidden}
         .drawer-body{padding:12px;height:100%;overflow-y:auto}
       </style>`,
     expect: { found: 'drawer', notBackdrop: true, scrollable: true },
+  },
+  {
+    // ★ 这条是本轮真正的判据缺口：class 里没有 drawer/modal/dialog 三个词，
+    // 旧的按名字选元素的探针对它完全瞎。抽屉**确实被点开了**，旧探针却报
+    // 「未出现弹层」——在报告里和「点击没反应」长得一模一样。
+    name: 'class 名里没有 drawer/modal/dialog 的抽屉（ssd-*）也必须量到',
+    before: '',
+    after: `<div class="ssd-backdrop" style="position:fixed;inset:0;background:rgba(0,0,0,.4)">
+        <aside class="ssd-panel card" style="position:absolute;right:0;top:0;width:900px;height:100%;background:#fff">
+          ${'会话总结正文<br>'.repeat(8)}
+        </aside>
+      </div>`,
+    expect: { found: 'ssd-panel', notBackdrop: true, wideEnough: true },
+  },
+  {
+    // ★ 居中弹窗的常见形态：fixed 遮罩 + **flex 居中的静态盒子**（盒子 position:static）。
+    // 只收「定位元素」的话候选里只剩遮罩 ⇒ 量出 1440px 的面板宽度并恒判绿。
+    // 这是把探针从「按 class 名」改成「按几何」之后**新引入**的盲点，
+    // 由本轮真实 ModelPicker（.mp-overlay + .mp-dialog）撞出来。
+    name: '居中弹窗：面板本体是静态盒子时也要量到盒子（420px）而不是遮罩',
+    before: '',
+    after: `<div class="user-info-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center">
+        <div class="pwd-card" style="width:420px;height:300px;background:#fff;padding:16px">
+          <h3>修改密码</h3>${'表单字段<br>'.repeat(4)}
+        </div>
+      </div>`,
+    expect: { found: 'pwd-card', notBackdrop: true, wideEnough: true },
+  },
+  {
+    // 反向对照：常驻的 fixed 元素在「点击前」就存在，不该被当成本次新开的弹层。
+    // 没有这条差分，任何页面上的全局导航抽屉都会让每个 case 假绿。
+    name: '反向对照：点击前就存在的 fixed 元素不算「新打开的弹层」',
+    before: `<div class="app-nav-drawer" style="position:fixed;left:0;top:0;width:300px;height:100%;background:#eee">常驻导航</div>`,
+    after: `<div class="app-nav-drawer" style="position:fixed;left:0;top:0;width:300px;height:100%;background:#eee">常驻导航</div>`,
+    expect: { found: null },
+  },
+  {
+    name: '反向对照：页面没弹层时不得凭空报一个（差分为空）',
+    before: '',
+    after: `<div class="main-body"><p>普通内容</p></div>`,
+    expect: { found: null },
   },
 ]
 
@@ -302,21 +400,28 @@ async function runOverlaySelftest() {
   let pass = 0
   const fails = []
   for (const fx of OVERLAY_FIXTURES) {
+    // 真实调用方式是「点击前 / 点击后」两份快照，夹具按同一契约组织 ——
+    // 判据的输入形状必须和真实调用一致，否则自检通过也说明不了什么。
     const page = await ctx.newPage()
-    await page.setContent(fx.html)
+    await page.setContent(fx.before)
     await page.waitForTimeout(120)
-    const got = await page.evaluate(OVERLAY_PROBE)
+    const before = await page.evaluate(OVERLAY_PROBE)
+    await page.setContent(fx.after)
+    await page.waitForTimeout(120)
+    const after = await page.evaluate(OVERLAY_PROBE)
+    const picked = pickOpenedPanel(before, after)
     await page.close()
+
     const actual = {
-      found: got.found,
-      notBackdrop: !got.pickedBackdrop,
+      found: picked ? picked.cls.split(/\s+/)[0] : null,
+      notBackdrop: picked ? !picked.pickedBackdrop : null,
       // 面板宽度必须落在「窄于视口」区间：铺满视口就说明选到遮罩了
-      wideEnough: got.width > 120 && got.width < 1440 * 0.95,
-      scrollable: got.scrollable,
+      wideEnough: picked ? picked.w > 120 && picked.w < 1440 * 0.95 : null,
+      scrollable: picked ? picked.scrollable : null,
     }
     for (const k of Object.keys(fx.expect)) {
       if (actual[k] === fx.expect[k]) pass++
-      else fails.push(`${fx.name}\n    判据 ${k}：期望 ${fx.expect[k]}，实测 ${actual[k]}（found=${got.found} width=${got.width}）`)
+      else fails.push(`${fx.name}\n    判据 ${k}：期望 ${JSON.stringify(fx.expect[k])}，实测 ${JSON.stringify(actual[k])}`)
     }
   }
   await browser.close()
@@ -328,6 +433,158 @@ async function runOverlaySelftest() {
     process.exit(1)
   }
   console.log(`✓ ${OVERLAY_FIXTURES.length} 个夹具，正负双向都能区分`)
+}
+
+// 报告里回显步骤：对象步骤要显示成 `fill(sel)=值` 这种可读形态，
+// 直接 JSON.stringify 会把一行撑得很长，反而看不清这条 case 到底点了什么。
+function fmtSteps(steps) {
+  return steps
+    .map((s) => {
+      if (typeof s === 'string') return s
+      if (s.click) return `click ${s.click}`
+      if (s.fill) return `fill ${s.fill[0]}=${s.fill[1]}`
+      if (s.select) return `select ${s.select[0]}=${s.select[1]}`
+      if (s.wait) return `wait ${s.wait}`
+      if (typeof s.waitMs === 'number') return `wait ${s.waitMs}ms`
+      return JSON.stringify(s)
+    })
+    .join(' → ')
+}
+
+// ── 步骤驱动器 ────────────────────────────────────────────────────
+// 2026-10-03：原来只有「按选择器点一下」一种动作，于是 NodeDetailDrawer 被标成
+// manual —— 真因不是「harness 走不到」，而是**驱动器的动作集里没有「选模型」和
+// 「点主按钮」这两类动作**。这类 manual 是驱动器的能力缺口，不是页面的不可测性，
+// 混进报告里会让「没写」看起来像「测不了」。
+//
+// 动作集（每种都在 STEP_FIXTURES 里有正反对照）：
+//   'sel'                     → 等可见 + 点击（历史形态，保持不变）
+//   {click: 'sel'}            → 同上
+//   {fill: ['sel', 'text']}   → 填输入框
+//   {select: ['sel', 'val']}  → 选原生 <select>
+//   {wait: 'sel'}             → 只等可见，不点（等异步渲染出来的表格）
+//   {waitMs: n}               → 纯等待
+// 未知动作类型必须抛错，不能静默跳过 —— 静默跳过会让「清单里写了 4 步」与
+// 「实际只做了 1 步」在报告上长得一样。
+async function runSteps(page, steps, stepGapMs = 600) {
+  for (const [i, step] of steps.entries()) {
+    const at = `第 ${i + 1}/${steps.length} 步`
+    const loc = (sel) => page.locator(sel).first()
+    if (typeof step === 'string') {
+      await loc(step).waitFor({ state: 'visible', timeout: 8000 })
+      await loc(step).click({ timeout: 8000 })
+    } else if (step && typeof step === 'object') {
+      if (step.click) {
+        await loc(step.click).waitFor({ state: 'visible', timeout: 8000 })
+        await loc(step.click).click({ timeout: 8000 })
+      } else if (step.fill) {
+        await loc(step.fill[0]).waitFor({ state: 'visible', timeout: 8000 })
+        await loc(step.fill[0]).fill(step.fill[1], { timeout: 8000 })
+      } else if (step.select) {
+        await loc(step.select[0]).waitFor({ state: 'visible', timeout: 8000 })
+        await loc(step.select[0]).selectOption(step.select[1], { timeout: 8000 })
+      } else if (step.wait) {
+        await loc(step.wait).waitFor({ state: 'visible', timeout: 15000 })
+      } else if (typeof step.waitMs === 'number') {
+        await page.waitForTimeout(step.waitMs)
+      } else {
+        throw new Error(`${at} 动作类型无法识别：${JSON.stringify(step)}`)
+      }
+    } else {
+      throw new Error(`${at} 步骤既不是字符串也不是对象：${JSON.stringify(step)}`)
+    }
+    // 多步之间给下拉/弹层展开留时间
+    await page.waitForTimeout(stepGapMs)
+  }
+}
+
+// 步骤驱动器的判别力检查。**必须有反向对照**：一个永远「成功」的驱动器会让
+// 后面所有 case 的 P0（触发失败）变成永远不会触发的死代码。所以这里显式验证
+// 「选择器写错时驱动器确实会抛」。
+const STEP_FIXTURES = [
+  {
+    name: 'click + fill + select 真的改变了页面状态（不是空跑）',
+    html: `<button class="t-open" onclick="document.getElementById('pnl').style.display='block'">open</button>
+      <div class="pnl" id="pnl" style="display:none;width:300px;height:200px;background:#eee">panel</div>
+      <input class="t-q" oninput="document.getElementById('e1').textContent=this.value" />
+      <select class="t-s" onchange="document.getElementById('e2').textContent=this.value">
+        <option value="">--</option><option value="alpha">alpha</option><option value="beta">beta</option>
+      </select>
+      <span id="e1"></span><span id="e2"></span>`,
+    steps: [
+      '.t-open',
+      { fill: ['.t-q', 'glm-4.6'] },
+      { select: ['.t-s', 'beta'] },
+    ],
+    read: () => ({
+      panelOpen: getComputedStyle(document.getElementById('pnl')).display !== 'none',
+      q: document.getElementById('e1').textContent,
+      s: document.getElementById('e2').textContent,
+    }),
+    expect: { panelOpen: true, q: 'glm-4.6', s: 'beta' },
+  },
+  {
+    name: '反向对照：选择器不存在时驱动器必须抛（否则 P0 是死代码）',
+    html: `<div class="t-open">x</div>`,
+    steps: [{ click: '.t-does-not-exist' }],
+    expectThrow: true,
+  },
+  {
+    name: '反向对照：动作类型无法识别时必须抛（不能静默跳过这步）',
+    html: `<div class="t-open">x</div>`,
+    steps: [{ hover: '.t-open' }],
+    expectThrow: true,
+  },
+  {
+    name: 'wait 只等可见、不点（等异步表格渲染出来）',
+    html: `<div class="t-late" style="display:none;width:200px;height:200px">late</div>
+      <script>setTimeout(function(){document.querySelector('.t-late').style.display='block'},400)</script>`,
+    steps: [{ wait: '.t-late' }],
+    read: () => ({ shown: getComputedStyle(document.querySelector('.t-late')).display === 'block' }),
+    expect: { shown: true },
+  },
+]
+
+async function runStepSelftest() {
+  const { browser } = await launchBrowser()
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const fails = []
+  let pass = 0
+  for (const f of STEP_FIXTURES) {
+    const page = await ctx.newPage()
+    await page.setContent(f.html)
+    let threw = false
+    let got = null
+    try {
+      await runSteps(page, f.steps, 120)
+      if (f.read) got = await page.evaluate(f.read)
+    } catch {
+      threw = true
+    }
+    await page.close()
+    if (f.expectThrow) {
+      if (threw) pass++
+      else fails.push(`${f.name}\n    判据 expectThrow：期望抛错，实际没抛 —— 驱动器会把写错的选择器当成功`)
+      continue
+    }
+    if (threw) {
+      fails.push(`${f.name}\n    判据：步骤执行抛错，期望它跑通（驱动能力不足或选择器写错）`)
+      continue
+    }
+    for (const k of Object.keys(f.expect)) {
+      if (got?.[k] === f.expect[k]) pass++
+      else fails.push(`${f.name}\n    判据 ${k}：期望 ${JSON.stringify(f.expect[k])}，实测 ${JSON.stringify(got?.[k])}`)
+    }
+  }
+  await browser.close()
+  const total = STEP_FIXTURES.reduce((n, f) => n + (f.expectThrow ? 1 : Object.keys(f.expect).length), 0)
+  console.log(`\n══ 步骤驱动器自检 ${pass}/${total} ══`)
+  for (const f of fails) console.log(`  ✗ ${f}`)
+  if (fails.length) {
+    console.error(`\n✗ 步骤驱动器自检未通过：${fails.length}/${total}，先修驱动器再测弹层。`)
+    process.exit(1)
+  }
+  console.log(`✓ ${STEP_FIXTURES.length} 个夹具，动作类型与反向对照都能区分`)
 }
 
 // ── 弹层遍历（--overlays）─────────────────────────────────────────
@@ -355,14 +612,85 @@ const OVERLAY_CASES = [
     note: 'ModelPicker 模型选择弹窗（居中，含热门模型列表）',
   },
   {
-    // 覆盖不到：候选表要「选模型 → 点 Resolve」两步之后才渲染，本 harness 只能点
-    // 可见元素、不能操作下拉选择。标成 manual 让它**出现在报告里**而不是被删掉 ——
-    // 悄悄删掉等于让「没测」和「测过没问题」在报告上长得一样。
+    // 2026-10-03：原来是 manual，理由写的是「harness 只能点可见元素、不能操作
+    // 下拉选择」。复核后这个理由不成立 —— 候选表要的不是原生下拉，而是
+    // 「开 ModelPicker → 点热门模型 → 点解析」三步，驱动器的动作集里没有
+    // 「点弹窗里的条目」而已。补上动作后这里能真跑。
+    // ModelPicker 自己是个居中弹窗，NodeDetailDrawer 叠在它关闭之后才开，
+    // 所以这条 case 顺带验证「弹窗里开弹窗」的层级。
+    path: '/routing-v2?tab=resolve',
+    steps: [
+      '.resolve-picker .mp-trigger',
+      { wait: '.mp-dialog .mp-grid .mp-model' },
+      { click: '.mp-dialog .mp-grid .mp-model' },
+      { wait: '.resolve-controls .btn-primary' },
+      { click: '.resolve-controls .btn-primary' },
+      { wait: '.row-actions .btn-ghost' },
+      { click: '.row-actions .btn-ghost' },
+    ],
+    kind: 'drawer',
+    note: 'NodeDetailDrawer 候选行「明细」（选模型 → 解析 → 点明细）',
+  },
+  {
+    // 2026-10-03 新增：会话总结抽屉。
+    // 入口按钮（`.session-summary-entry`）在**页面上**不在抽屉里，被
+    // canSummarizeSession 门住（gwSessionFilter 非空才渲染）。而
+    // gwSessionFilter 的入口是行内那个 `.trace-link`（点它走 filterByTrace，
+    // 同时带上 session）。所以顺序是：点会话链接 → 等入口出现 → 点入口。
+    //
+    // ★ 这条 case 是本轮判据缺口的发现现场：抽屉**确实被点开了**，但旧探针按
+    // class 名（drawer/modal/dialog）选元素，而 `.ssd-backdrop`/`.ssd-panel`
+    // 两个名字一个都不沾，于是报「未出现弹层」。改成按几何差分后才量到。
+    //
+    // 选择器用 `.request-log-row .trace-link` 而不是「点第 N 行」：这个选择器
+    // **只会匹配到确实带 gw_session_id 的行**。于是「本地没有带会话的行」这种
+    // 情况会诚实地超时报 P0，而不是悄悄点开一个没有会话的空抽屉判绿。
+    path: '/request-logs',
+    steps: [
+      { wait: 'tbody tr.request-log-row .trace-link' },
+      { click: 'tbody tr.request-log-row .trace-link' },
+      { wait: '.session-summary-entry .btn-primary' },
+      { click: '.session-summary-entry .btn-primary' },
+    ],
+    kind: 'drawer',
+    note: 'SessionSummaryDrawer 会话总结（页面上「打开会话总结」入口，需先按会话筛选）',
+    // 本地这个会话只有 1 条日志，服务端会回
+    // 400「日志条数不足，至少需要 2 条同会话记录」。那是**正确的产品行为**，
+    // 但它同时给了本 case 一个额外的正向检查：错误必须被显示出来。
+    // 声明了 expectErrorSurfaced，业务 4xx 就从「P1 噪声」变成
+    // 「错误有没有被正确呈现」的断言 —— 静默吞掉才会判红。
+    expectErrorSurfaced: '.ssd-error',
+  },
+  {
+    // ⚠ 不要把「点请求日志行」写成这里的 case —— 我第一版就是这么写的，判据红了，
+    // 一度以为撞上产品缺陷。回源码才看清：RequestLogsView 的
+    // `showDetail()` 走的是 `openRequestDetailPage(...)`，即**跳全屏详情页**
+    // `/request-detail/:requestId`，不是开抽屉。那个页面由页面遍历覆盖。
+    // 顺带记一笔：该页模板里的 `<RequestLogDrawer :request-id="activeRequestId">`
+    // 里 activeRequestId 全文件只在 closeDetail() 被置回 null，从未被赋成
+    // 真实 id ⇒ 这处绑定恒不渲染。属遗留接线，不是本次审计要修的范围，
+    // 但别让下轮再照着它写 case。
+    path: '/dashboard',
+    steps: ['.live-stream-v2 [class*="row"]'],
+    kind: 'drawer',
+    note: 'RequestLogDrawer 实时流点请求',
+    manual:
+      '唯一入口在 DashboardViewV2 的 LiveRequestStreamV2（onOpenRequest），' +
+      '而实时流只推送**进行中**的请求。实测本地实时流里只有筛选按钮、没有任何请求行' +
+      '（request_logs 最近一条也是已完成的），所以没有可点的行。' +
+      '要自动覆盖就得先造持续流量 —— 那样这个 case 的判据会依赖「我刚造的流量」，' +
+      '通过与否反映的是流量生成器而不是产品。宁可标 manual。',
+  },
+  {
     path: '/routing-v2?tab=resolve',
     steps: ['.row-actions .btn-ghost'],
     kind: 'drawer',
-    note: 'NodeDetailDrawer 候选行「明细」',
-    manual: '需先在模型下拉里选一个模型并点 Resolve，候选表才渲染；纯点击走不到',
+    note: 'RouteIncidentDrawer 诊断工作台',
+    manual:
+      '触发点在 DashboardViewV2 的 LiveRequestStreamV2 里（转发泳道诊断事件），' +
+      '而实时流只推送**进行中**的请求：本地 request_logs 最近一条是 8 小时前，' +
+      '流里没有行可点。自动化要么持续造流量、要么注入假数据，' +
+      '两者都会让这个 case 的判据依赖「我刚造的数据」而不是产品行为。',
   },
 ]
 
@@ -384,10 +712,29 @@ async function runOverlaySweep() {
     }
     const page = await ctx.newPage()
     const errors = []
+    const httpErrs = []
     page.on('console', (m) => {
-      if (m.type() === 'error') errors.push(m.text().slice(0, 200))
+      if (m.type() !== 'error') return
+      const t = m.text()
+      // Chromium 会为**每个**失败请求打一条 "Failed to load resource: … 4xx/5xx"。
+      // 这些已经在下面的 response 监听里按业务/非业务分类过了，留着就是同一条 400
+      // 被数两遍（一次进 notes、一次进 P1），把「错误已按预期呈现」又变成红的。
+      // 只放行非网络来源的 console 错误：Vue 警告、未捕获异常的伴随输出等。
+      if (/^Failed to load resource/i.test(t)) return
+      errors.push(t.slice(0, 200))
     })
     page.on('pageerror', (e) => errors.push(`[pageerror] ${String(e).slice(0, 200)}`))
+    // 业务级 4xx 要和「前端炸了」分开记，见下面 p1 的分类注释
+    page.on('response', async (r) => {
+      if (r.status() < 400) return
+      let detail = ''
+      try {
+        const t = await r.text()
+        const j = JSON.parse(t)
+        detail = j?.error?.detail || j?.detail || ''
+      } catch { /* 非 JSON 错误体，按非业务错误处理 */ }
+      httpErrs.push({ status: r.status(), url: r.url().replace(BASE, '').slice(0, 120), detail: String(detail).slice(0, 120) })
+    })
 
     let probe = null
     let clickErr = null
@@ -395,37 +742,72 @@ async function runOverlaySweep() {
       await page.goto(BASE + c.path, { waitUntil: 'domcontentloaded', timeout: 20000 })
       await page.waitForSelector('.main-body > *', { timeout: 15000 }).catch(() => {})
       await page.waitForTimeout(2500)
-      for (const sel of c.steps) {
-        const el = page.locator(sel).first()
-        await el.waitFor({ state: 'visible', timeout: 8000 })
-        await el.click({ timeout: 8000 })
-        // 多步之间给下拉展开留时间
-        await page.waitForTimeout(600)
-      }
+      // 点击前先拍一张：只有「这次触发新出现的」弹层才算数。
+      // 页面上的常驻 fixed 元素（全局导航抽屉等）否则会被每条 case 都量一遍。
+      const before = await page.evaluate(OVERLAY_PROBE)
+      await runSteps(page, c.steps)
       // 抽屉有滑出动画，等它走完再量
       await page.waitForTimeout(1200)
-      probe = await page.evaluate(OVERLAY_PROBE)
+      const after = await page.evaluate(OVERLAY_PROBE)
+      probe = pickOpenedPanel(before, after)
     } catch (e) {
       clickErr = String(e).split('\n')[0].slice(0, 160)
+    }
+
+    // 必须在 close 之前断言「业务错误有没有被显示出来」——页面关了就问不到了。
+    let surfaced = null
+    if (c.expectErrorSurfaced) {
+      surfaced = await page
+        .locator(c.expectErrorSurfaced).first()
+        .waitFor({ state: 'visible', timeout: 5000 })
+        .then(() => true)
+        .catch(() => false)
     }
     await page.close()
 
     const p0 = []
     const p1 = []
     if (clickErr) p0.push(`触发失败：${clickErr}`)
-    if (!probe?.found) p0.push('点击后未出现弹层（选择器可能已失效，或该入口需要额外前置状态）')
-    if (probe?.found) {
-      if (!probe.scrollable) p1.push(`内容放不下且无可滚路径：面板高 ${probe.width}px，文字 ${probe.textLen} 字`)
+    if (!probe) p0.push('点击后未出现新弹层（选择器可能已失效，或该入口需要额外前置状态）')
+    if (probe) {
+      if (!probe.scrollable) p1.push(`内容放不下且无可滚路径：面板高 ${probe.h}px，文字 ${probe.textLen} 字`)
       if (probe.textLen < 20) p1.push(`弹层几乎无内容（${probe.textLen} 字），疑似打开后未填充数据`)
     }
+
+    // console 错误分三类，**不是一律 P1**：
+    //  ① 未捕获异常（pageerror）→ 一定是前端缺陷，P1。
+    //  ② 5xx / 没有业务错误体的 4xx → 服务端异常或未预期，P1。
+    //  ③ 带 `{"error":{"detail":…}}` 的 4xx → **服务端明确拒绝了这次请求并给了原因**，
+    //     例如会话总结的「日志条数不足，至少需要 2 条同会话记录」。
+    //     这类不是前端缺陷，但**前端必须把它显示出来** —— 静默吞掉才是缺陷。
+    //     所以：case 声明了 expectErrorSurfaced 就断言那个选择器可见（把 400
+    //     变成「错误有没有被正确呈现」的正向检查）；没声明就单列成 note，
+    //     既不判红也不删掉。**限制**：本门只验「错误被显示」，不验「文案对不对」。
+    const business4xx = httpErrs.filter((e) => e.status < 500 && e.detail)
+    const hardHttp = httpErrs.filter((e) => !(e.status < 500 && e.detail))
+    const notes = []
+    if (business4xx.length) {
+      if (c.expectErrorSurfaced) {
+        if (surfaced) notes.push(`业务 4xx ${business4xx.length} 条已按预期呈现（${c.expectErrorSurfaced}）：${business4xx[0].detail}`)
+        else p1.push(`服务端返回了业务错误但界面没显示（${c.expectErrorSurfaced} 不可见）：${business4xx[0].detail}`)
+      } else {
+        notes.push(`业务 4xx ${business4xx.length} 条（服务端明确拒绝，非前端缺陷）：${business4xx[0].url} → ${business4xx[0].detail}`)
+      }
+    }
+    if (hardHttp.length) p1.push(`非业务 HTTP 错误 ${hardHttp.length} 条：${hardHttp[0].status} ${hardHttp[0].url}`)
     if (errors.length) p1.push(`console 错误 ${errors.length} 条：${errors[0].slice(0, 140)}`)
 
-    results.push({ ...c, opened: !!probe?.found, p0, p1, probe, errors: [...new Set(errors)].slice(0, 3) })
+    results.push({
+      ...c, opened: !!probe, p0, p1, notes, probe,
+      errors: [...new Set(errors)].slice(0, 3),
+      httpErrs: httpErrs.slice(0, 5),
+    })
     const mark = p0.length ? '✗' : p1.length ? '!' : '✓'
     process.stdout.write(
-      `${mark} [${i + 1}/${OVERLAY_CASES.length}] ${c.path} [${c.steps.join(' → ')}] → ${c.kind}（${c.note}）` +
-      `${probe?.found ? ` 面板 ${probe?.width}px / ${probe?.textLen} 字` : ' 未打开'}\n`,
+      `${mark} [${i + 1}/${OVERLAY_CASES.length}] ${c.path} [${fmtSteps(c.steps)}] → ${c.kind}（${c.note}）` +
+      `${probe ? ` 面板 .${probe.cls.split(/\s+/)[0]} ${probe.w}px / ${probe.textLen} 字` : ' 未打开'}\n`,
     )
+    for (const n of notes) process.stdout.write(`    · ${n}\n`)
   }
   await browser.close()
 
@@ -438,7 +820,7 @@ async function runOverlaySweep() {
     for (const r of manual) console.log(`  ${r.path} — ${r.note}\n    原因：${r.manual}`)
   }
   for (const r of bad) {
-    console.log(`\n  ${r.path} [${r.steps.join(' → ')}] — ${r.note}`)
+    console.log(`\n  ${r.path} [${fmtSteps(r.steps)}] — ${r.note}`)
     for (const m of [...r.p0, ...r.p1]) console.log(`    · ${m}`)
   }
   if (args.includes('--json')) {
@@ -581,6 +963,7 @@ const args = process.argv.slice(2)
 if (args.includes('--selftest')) {
   await runSelftest()
   await runOverlaySelftest()
+  await runStepSelftest()
   process.exit(0)
 }
 const BASE = (process.env.BASE_URL || 'http://127.0.0.1:5781').replace(/\/$/, '')
