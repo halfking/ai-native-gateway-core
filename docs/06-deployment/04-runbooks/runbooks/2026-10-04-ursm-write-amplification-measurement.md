@@ -19,7 +19,7 @@
 | 稳态容量承诺 | #3：3.6 GB 还是 4~7 GB | 两个都是错的。真值 **5.1 ~ 6.9 GB**（单写 + 7 天），**3.6 GB 低估了 40%~90%**。 |
 | **10-03 那个「25% 缺口」是什么** | ~~昼夜节律~~ | 🔴 **不是昼夜节律。** 是 **10-02 21:00 ~ 10-03 21:00 一次 24 小时的写入批量失败事件**：落库率 **28.3%**，缺口 **2,261,557 行**（约 1.33 GB）。详见 **§5.6**，原 §5.1 已推翻。 |
 | **部署后的慢速失败还在吗** | — | 还在，且横跨三个子系统：154 0.5% / 245 2.5%，`redis TYPE check failed: context deadline exceeded`，URSM persist + availability key counter + pending_sweeper 同时中招 ⇒ 共因是 db2 的 SCAN 成本（**§5.7.3**）。 |
-| **迁键（db2→db14）为什么失败** | ~~复制竞态~~ | 🔴 **不是竞态。** 是 `main.go` 把 `bootstrap.Apply` 接到网关 client（db2）而 manager 校验专用 db —— **写错库**，两者永远对不上（**§5.7.8**，修复 commit `d0a353d53`）。 |
+| **迁键（db2→db14）为什么失败** | ~~复制竞态~~ | 🔴 **不是竞态。** 是 6 处 URSM 组件接错 Redis client —— `bootstrap.Apply` 写网关 db 而 manager 校验专用 db。**其中一处是 persist writer 本身，即迁键的收益来源，所以即使侥幸启动成功也拿不到任何 SCAN relief**（**§5.7.8**，修复 commit `d0a353d53` + 本轮审计修复）。 |
 
 ---
 
@@ -921,7 +921,91 @@ node 键确实带 TTL 且会自然衰减（db2 实测 1,258 个 hash 型 node �
   这是承重耦合，不是「顺便也能过」。任何绕过 `Apply` 直接校验 coverage 的新代码
   路径，都会把衰减误判成故障。
 
-#### 5.7.8.6 db14 现状
+#### 5.7.8.6 ★★ 同一个错误还有另外 5 处，其中一处让整个迁键**本来就没有意义**
+
+§5.7.8.1~5.7.8.5 修的是「响的那一处」。随后做了全仓审计，结论是
+`bootstrap.Apply` 只是**六分之一**。
+
+先确认漂移面有多大：`URSM_V2_REDIS_DB` 是**全仓唯一**能分叉 db 的配置项
+（其余全部走 `cfg.RedisDB`），而 `main.go` 是 URSM 组件的**唯一装配点**，
+所以审计范围是封闭的。逐一核实键前缀（不靠命名猜）：
+
+| 键构造 | 前缀 | 定义处 |
+|---|---|---|
+| `StickyKey` | `ursm:v2:sticky:L%d:%s` | `cache/keys.go:31` |
+| `IntentKey` | `ursm:v2:intent:%s` | `cache/keys.go:36` |
+| `StickyLoadKey` | `ursm:v2:stickyload:%d` | `cache/sticky_load.go:13` |
+| `nodeMirrorKey` | `ursm:v2:node:...` | `cache/keys.go:23` |
+| persist writer | `ursmV2Cfg.RedisKeyPrefix` = `ursm:v2:` | `persist/writer.go:26` |
+
+而这 6 个 URSM 组件**全部**接在网关 client 上：
+
+| main.go | 组件 | 接错的后果 |
+|---|---|---|
+| 1280 | `persist.New` | **全库 SCAN 照旧扫 db2** —— 迁键的全部收益来源 |
+| 3556 | `adapter.withRebuild(rdb:)` | 运行时 coverage 自愈**写进错库**，等于空转 |
+| 1260 | `MigrateFpSlotsNodeStates` | shadow/canary 下 node 键写错库 |
+| 1346 | `NewStickyStore` | `sticky:` 键被劈成两个库 |
+| 1347 | `NewIntentStore` | `intent:` 键被劈成两个库 |
+| 1521 | `NewStickyLoadStore` | `stickyload:` ZSET 被劈成两个库 |
+
+**第 1280 行是整件事最要紧的一处。** `URSM_V2_REDIS_DB` 之所以被引入，
+就是因为 persist writer 的全键空间 SCAN 要走过 db2 的 ~158 万个会话键
+（实测 12.95s~30.40s，预算只有 30s）。**它自己却一直指着 db2** ——
+即使启动校验侥幸通过，这次迁键也**一分钱 SCAN  relief 都拿不到**，
+只是把 sticky / intent / stickyload 状态劈成两半。
+
+> ★ 回头看，§5.7.5 迁移预检里那句「16 个『只在 db2』的键，真实差异只有
+> 6 个 `sticky:` 小键 + 1 个 `stickyload:31` zset」我当成了 SCAN 幻影噪声。
+> **那不是噪声，那正是这条 bug 的指纹** —— 活着的进程一直在往 db2 写
+> `sticky:` / `stickyload:`，而复制出来的快照是旧的。
+
+#### 5.7.8.7 门怎么写的（以及一次「门是空转」的实录）
+
+新增两道门：① 扫 `main.go` 里**所有** URSM 包限定的调用，实参不得出现
+`redisClientForCache`；② persist / rebuild 两处承重点单独点名断言。
+
+**URSM 包清单从 `main.go` 自己的 import 块推导**，不手写名单 ——
+手写名单会静默腐烂：新子系统接进来，门照样绿，漂移照样发版。
+
+**变异验证第一轮 2/6 通过，M8~M10 全部漏掉。** 根因：检测用的
+`callHeadRe` 写成 `\b(\w+)\(`，只捕获 `(` 前**最后一段标识符**，
+于是 `ursmcache.NewStickyStore(` 的 head 是 `NewStickyStore`、不含点、
+`dot < 0` 直接 `continue` —— **带包限定的调用从来没被检查过**。
+门看起来是武装的，实际什么都没查。
+
+修法两条：① 正则改成 `\b(\w+(?:\.\w+)?)\(`；② **给检测器本身加一道
+自证门** —— 喂一个已知违规样例，断言它必须报出来；同时喂一个正确样例，
+断言它必须闭嘴（只会误报的检测器同样有害）。重跑后 **6/6 有牙**。
+累计 11/11。
+
+#### 5.7.8.8 顺带查实：`git stash -u` 在共享工作区不安全
+
+为区分 flaky 而做基线对比时用了 `git stash -u`，
+它会把**其他会话未提交的改动**一起暂存。本次已 `pop` 回来且文件完好，
+但这类操作在并发工作区应当改用 `git worktree`。记录备查。
+
+#### 5.7.8.9 附带发现（与本次改动无关，单独记账）
+
+跑整包时 `TestLiteRequestLogSink_IdempotentUpsert` 偶发红，失败原文：
+
+```
+async file writer: mkdir .../bodies/tenant-a/se: no such file or directory
+```
+
+`writeAtomic` 用的是幂等的 `os.MkdirAll`，报 ENOENT 只能说明**父目录在
+MkdirAll 执行期间被并发删除** —— 在途异步写入与 bodies trimmer / 测试
+cleanup 的竞态，属 lite 存储子系统的**既有问题**。
+
+**判定与本改动无因果关系**，两条机械理由：lite 模式**不执行 `main()`**
+的 Redis 接线；把 guard 从 `redisClientForCache != nil` 改成
+`ursmV2Redis != nil` 是**可证等价的**（`Client()` 仅在 receiver 为 nil 时
+返回 nil，而 `ursmV2Redis` 恰在 `redisClientForCache != nil` 分支内赋值）。
+
+统计上也不支持归因：带改动三轮 `-count=30` 分别 **2 / 0 / 0**，
+无改动基线 **0/12、0/30** —— 失败率随机器负载波动，不可区分。
+
+#### 5.7.8.10 db14 现状
 
 已清空：1,224 个残留键全部删除，`DBSIZE=0`（2026-10-04 04:05）。清空前核实
 db14 的 1,224 个键**全部**是 `ursm:v2:*`，无其他键污染。

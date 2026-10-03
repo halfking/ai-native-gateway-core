@@ -1257,7 +1257,7 @@ func main() {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
-				n, err := ursmcache.MigrateFpSlotsNodeStates(ctx, redisClientForCache.Client())
+				n, err := ursmcache.MigrateFpSlotsNodeStates(ctx, ursmV2Redis)
 				if err != nil {
 					slog.Warn("fpslots node-state migration failed", "error", err)
 					return
@@ -1277,7 +1277,7 @@ func main() {
 		persistEnabled := ursmV2Cfg.Mode != ursmv2api.ModeOff &&
 			(ursmV2Cfg.Mode != ursmv2api.ModeShadow || ursmV2Cfg.ShadowDoubleWrite)
 		if persistEnabled {
-			persistWriter := persist.New(redisClientForCache.Client(), ursmV2Cfg.RedisKeyPrefix, dbConn.Pool())
+			persistWriter := persist.New(ursmV2Redis, ursmV2Cfg.RedisKeyPrefix, dbConn.Pool())
 			persistInterval := time.Duration(ursmV2Cfg.PersistIntervalSec) * time.Second
 			if persistInterval == 0 {
 				persistInterval = 60 * time.Second // default 1 minute
@@ -1342,9 +1342,9 @@ func main() {
 		stickyStore *ursmcache.StickyStore
 		intentStore *ursmcache.IntentStore
 	)
-	if redisClientForCache != nil {
-		stickyStore = ursmcache.NewStickyStore(redisClientForCache.Client(), 100000, time.Hour)
-		intentStore = ursmcache.NewIntentStore(redisClientForCache.Client(), 50000, time.Minute)
+	if ursmV2Redis != nil {
+		stickyStore = ursmcache.NewStickyStore(ursmV2Redis, 100000, time.Hour)
+		intentStore = ursmcache.NewIntentStore(ursmV2Redis, 50000, time.Minute)
 	}
 
 	// V2-P3.2: turn_logs aggregator — flushes 24h-TTL per-stage logs into
@@ -1517,8 +1517,8 @@ func main() {
 		// 无 Redis 部署（252 形态）退化为纯本实例内存窗口。
 		stickyLoadTrackerForShutdown = executors.NewStickyLoadTracker()
 		stickyLoadTracker := stickyLoadTrackerForShutdown
-		if redisClientForCache != nil {
-			stickyLoadTracker.SetStore(ursmcache.NewStickyLoadStore(redisClientForCache.Client()))
+		if ursmV2Redis != nil {
+			stickyLoadTracker.SetStore(ursmcache.NewStickyLoadStore(ursmV2Redis))
 		}
 		router.StickyLoad = stickyLoadTracker
 
@@ -3553,7 +3553,7 @@ func main() {
 					dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
 					adapter.withRebuild(rebuildOptions{
 						pool:        dbConn.Pool(),
-						rdb:         redisClientForCache.Client(),
+						rdb:         ursmV2Redis,
 						keyPrefix:   ursmV2Cfg.RedisKeyPrefix,
 						coolSeconds: ursmV2Cfg.CoolSeconds,
 						schemaMode:  ursmV2Cfg.KeySchemaMode,
