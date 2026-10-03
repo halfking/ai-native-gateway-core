@@ -75,13 +75,28 @@ hits=0
 PATTERN='\$[A-Za-z_][A-Za-z0-9_]*，'
 FILTER=':\s*#|:\s*\*'
 
+# 枚举面 = 已跟踪 ∪ 未跟踪但未忽略。
+# ★ 2026-10-03 补：原先只有 `git ls-files`，于是「新建但还没 git add」的
+#   脚本完全不在门的视野里。写 ursm-redis-db-migrate.sh 时就踩中了：
+#   脚本第 73 行有 `$ENV_FILE，`，门却报「无隐患」——因为文件当时未跟踪。
+#   而这恰恰是风险最高的窗口：新写的脚本最可能还没提交，作者也最可能
+#   手动直接运行它。门要能看见它。
+#   未跟踪项走 --exclude-standard，node_modules / dist 等仍被 gitignore 排除。
+scan_list() {
+  {
+    git ls-files '*.sh'
+    git ls-files --others --exclude-standard '*.sh'
+  } | sort -u
+}
+
 while IFS= read -r f; do
+  [ -f "$f" ] || continue
   while IFS= read -r line; do
     ln="${line%%:*}"; body="${line#*:}"
     printf '  %s:%s\n    %s\n' "$f" "$ln" "$body"
     hits=$((hits + 1))
   done < <(grep -nE "$PATTERN" "$f" 2>/dev/null | grep -vE "$FILTER")
-done < <(git ls-files '*.sh')
+done < <(scan_list)
 
 if [ "$hits" -gt 0 ]; then
   echo ""
