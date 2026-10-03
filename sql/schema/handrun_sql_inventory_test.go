@@ -25,14 +25,43 @@ import (
 	"testing"
 )
 
-// destructiveRes 匹配会改数据/改结构的动作。刻意**不含** CREATE：在「修复脚本」
-// 语境下 CREATE 通常就是修复动作本身，把它算成破坏性会把半份清单变成噪音。
+// destructiveRes 匹配会改数据/改结构的动作。
+//
+// ⚠️ **210 号修：`UPDATE` 的别名盲区。** 原第 4 条是
+// `\bUPDATE\s+[a-z_][a-z0-9_.]*\s+SET\b`，它要求表名与 `SET` **紧邻**。
+// 而 PostgreSQL 允许表别名：`UPDATE model_aliases ma SET …` —— 中间多了一个
+// 标识符 ⇒ **不匹配**。实测：
+//
+//	UPDATE work_type_model_route w SET …   → false
+//	UPDATE model_aliases ma SET …          → false
+//	UPDATE models_canonical mc SET …       → false
+//	UPDATE model_aliases SET …             → true
+//
+// 后果不是「少报一条」而是**整份清单缺失**：`2026-09-21-unmapped-cn-rename.sql`
+// 是本族**唯一**真的去改 `models_canonical` / `model_aliases` 的脚本，而它的两处
+// 写操作**都带别名** ⇒ 判据数出 0 处破坏性动作 ⇒ 脚本**根本没进清单**，
+// 而清单仍然报告「8/8 可中止」并通过下限。
+// ⇒ 这正是 playbook §122/§126 的老形态：**下限被满足了，而下限度量的那个集合
+// 本身是残缺的**。下限钉在**过滤后的**集合上是本轮该被否掉的写法。
+//
+// ⇒ 修法两处：(1) 这里容忍可选别名；(2) **覆盖下限改钉在「含任意 DML 动词」的
+// 宽集合上**（见 hasAnyDML / TestHandRunSqlScriptsInventory 的下限断言），
+// 让「宽集合非空」与「过滤后非空」**不再可能是同一件事**。
 var destructiveRes = mustCompiles(
 	`(?i)\bDROP\s+(TABLE|INDEX|VIEW|SCHEMA|SUBSCRIPTION)`,
 	`(?i)\bTRUNCATE\b`,
 	`(?i)\bDELETE\s+FROM\s+`,
-	`(?i)\bUPDATE\s+[a-z_][a-z0-9_.]*\s+SET\b`,
-	`(?i)\bALTER\s+TABLE\b[^;]*\bDROP\b`,
+	// 容忍可选表别名：`UPDATE [ONLY] tbl [alias] SET`
+	`(?i)\bUPDATE\s+(?:only\s+)?[a-z_][a-z0-9_.]*(?:\s+(?:as\s+)?[a-z_][a-z0-9_]*)?\s+SET\b`,
+	// 210 号扩宽：**任何** `ALTER TABLE` 都算破坏性。原式要求同句内再出现 DROP，
+	// 于是 `ADD CONSTRAINT` / `ATTACH PARTITION` 全被漏掉 —— 而这两类在生产上
+	// 恰恰是最需要「能不能中止」的那类：`ALTER TABLE` 取 **ACCESS EXCLUSIVE**，
+	// `ATTACH PARTITION` 还会逐分区扫全表。实测漏掉的两个脚本：
+	// `fix-request-logs-hot-unique-constraint.sql`（ADD CONSTRAINT）与
+	// `fix-request-logs-bodies-reattach-partitions.sql`（ATTACH PARTITION）。
+	`(?i)\bALTER\s+TABLE\b`,
+	// 非 CONCURRENTLY 的建索引会阻塞写；20M 行表上就是一次分钟级停写。
+	`(?i)\bCREATE\s+(?:UNIQUE\s+)?INDEX\b`,
 )
 
 var (
@@ -42,6 +71,11 @@ var (
 	reDryRunGate     = regexp.MustCompile(`dry[-_ ]?run|apply\s*=\s*'off'`)
 	reInsertIntoTbl  = regexp.MustCompile(`(?i)insert\s+into\s+(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)`)
 	reDeleteFromTbl  = regexp.MustCompile(`(?i)delete\s+from\s+(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)`)
+
+	// reAnyDML 宽集合判据：**只看动词**，不看语法结构。
+	// 它对别名/格式串/EXECUTE 包装统统不敏感 —— 这正是它能当覆盖下限的原因。
+	reAnyDML = regexp.MustCompile(
+		`(?i)\b(insert\s+into|update|delete\s+from|truncate|drop\s+(table|index|view|schema|subscription)|alter\s+table|create\s+(unique\s+)?index)\b`)
 )
 
 func mustCompiles(exprs ...string) []*regexp.Regexp {
@@ -211,7 +245,7 @@ func isWordByte(c byte) bool {
 	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
-func collectScriptFacts(t *testing.T, path string) (scriptFacts, bool) {
+func collectScriptFacts(t *testing.T, path string) (scriptFacts, bool, bool) {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -219,7 +253,11 @@ func collectScriptFacts(t *testing.T, path string) (scriptFacts, bool) {
 	}
 	f := factsFromSQL(strings.ToLower(stripSQLComments(string(b))))
 	f.path = filepath.ToSlash(path)
-	return f, f.destructive > 0
+	// 两个布尔量**刻意分开返回**：
+	//   destructive = 分类器认为「改了数据/结构」；
+	//   hasDML      = 宽集合，只看动词，不看语法。
+	// 把它们合成一个返回值，210 号那个盲区就会以「清单非空」的形式复活。
+	return f, f.destructive > 0, reAnyDML.MatchString(strings.ToLower(stripSQLComments(string(b))))
 }
 
 func containsAnyShim(s string, toks []string) bool {
@@ -252,11 +290,97 @@ func itoaShim(n int) string {
 	return string(buf[i:])
 }
 
+// TestHandRunSqlDestructiveClassifierControls 是「破坏性分类器」的反向对照。
+//
+// 为什么必须单独钉：210 号的整轮结论就是**这个分类器漏了一类形态**，而它漏的
+// 方向是**静默少报**——`UPDATE <表> <别名> SET` 不匹配 ⇒ 整份脚本从清单消失 ⇒
+// 清单仍然非空 ⇒ 覆盖下限仍然通过 ⇒ 门全绿。
+//
+// ⇒ 这里同时钉两个方向：
+//
+//	① **必须认出来**（别名 UPDATE / ADD CONSTRAINT / ATTACH PARTITION / 非并发建索引）；
+//	② **必须不认**（**被注释掉**的 DML —— 那是模板文本，不是会执行的动作）。
+//	   这一条是 ②方向的锚：若把注释也算进去，宽集合的 11 会虚高，覆盖下限
+//	   就会变成一个**用注释喂饱的**数字 —— 那正是 §126「注释不是契约」的变体。
+func TestHandRunSqlDestructiveClassifierControls(t *testing.T) {
+	cases := []struct {
+		name       string
+		sql        string
+		wantDestr  int  // 期望数出的破坏性动作数（0 = 不该进清单）
+		wantInWide bool // 期望是否落在宽集合（含任意 DML 动词）
+	}{
+		{
+			// 210 号那个盲区的最小复现：**带别名**的 UPDATE。
+			// 旧式 `UPDATE\s+表\s+SET` 在这里不匹配 ⇒ 整份脚本被判成「无破坏性动作」。
+			name:      "坏→好：带表别名的 UPDATE 必须被认出来",
+			sql:       `UPDATE model_aliases ma SET status='deprecated' WHERE ma.canonical_id=1;`,
+			wantDestr: 1, wantInWide: true,
+		},
+		{
+			name:      "带 schema 限定 + 别名的 UPDATE",
+			sql:       `UPDATE public.models_canonical mc SET canonical_name='x' WHERE mc.id=1;`,
+			wantDestr: 1, wantInWide: true,
+		},
+		{
+			// 210 号漏掉的第二类：ADD CONSTRAINT 在旧式 `ALTER TABLE … DROP` 下不匹配。
+			name:      "ADD CONSTRAINT 必须算破坏性（ACCESS EXCLUSIVE）",
+			sql:       `ALTER TABLE request_logs_hot ADD CONSTRAINT uq UNIQUE (request_id, ts);`,
+			wantDestr: 1, wantInWide: true,
+		},
+		{
+			name:      "ATTACH PARTITION 必须算破坏性（逐分区扫全表）",
+			sql:       `ALTER TABLE request_logs_bodies ATTACH PARTITION p FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');`,
+			wantDestr: 1, wantInWide: true,
+		},
+		{
+			name:      "非 CONCURRENTLY 建索引必须算破坏性（阻塞写）",
+			sql:       `CREATE UNIQUE INDEX idx_x ON request_logs_hot (request_id, ts);`,
+			wantDestr: 1, wantInWide: true,
+		},
+		{
+			// ② 方向：**被注释掉**的 DML 不是会执行的动作。
+			// 210 号实测 `fix-glm52-alias-drift.sql` 与
+			// `fix-discovery-junk-canonical-rows.sql` 的 DML **全部在注释里**
+			// （两个独立方法：子代理逐行读 + 本门宽集合判据，互相印证）。
+			// 若这里判成「有破坏性动作」，宽集合的 11 就是被注释喂出来的数字。
+			name:      "注释掉的 DML 不得算破坏性（模板文本）",
+			sql:       "-- UPDATE model_aliases ma SET status='deprecated';\n-- DELETE FROM models_canonical;",
+			wantDestr: 0, wantInWide: false,
+		},
+		{
+			name:      "纯 SELECT 采集脚本不得算破坏性",
+			sql:       `SELECT count(*) FROM request_logs WHERE ts > now();`,
+			wantDestr: 0, wantInWide: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stripped := strings.ToLower(stripSQLComments(tc.sql))
+			if got := countDestructive(stripped); got != tc.wantDestr {
+				t.Errorf("破坏性动作数 = %d，期望 %d；输入：%q", got, tc.wantDestr, tc.sql)
+			}
+			if got := reAnyDML.MatchString(stripped); got != tc.wantInWide {
+				t.Errorf("宽集合命中 = %v，期望 %v；输入：%q", got, tc.wantInWide, tc.sql)
+			}
+		})
+	}
+
+	// 负控（顺序敏感）：`UPDATE` 的可选别名段**不能**吃掉 `SET` 自己。
+	// `[a-z_][a-z0-9_]*` 与 `set` 词形相同，若把别名写成 `(?:as\s+)?[a-z_][a-z0-9_]*`
+	// 却**没有**后面的 `\s+SET`，`UPDATE x SET SET` 这类会被误配。显式钉住
+	// 正常写法仍然只数出 1 处（而不是 2 处）。
+	if n := countDestructive(`update public.models_canonical mc set canonical_name='x';`); n != 1 {
+		t.Errorf("正常带别名写法应恰好数出 1 处破坏性动作，实际 %d", n)
+	}
+}
+
 // TestHandRunSqlScriptsInventory 列出所有含破坏性动作的手跑/采集脚本，并断言
 // 它们**都有可中止机制**。这条是族级公分母，对「回收/归并/重定向」都成立。
 func TestHandRunSqlScriptsInventory(t *testing.T) {
 	roots := []string{"../fixes", "../audit"}
 	var facts []scriptFacts
+	dmlCount := 0
 	for _, r := range roots {
 		entries, err := os.ReadDir(r)
 		if err != nil {
@@ -266,7 +390,10 @@ func TestHandRunSqlScriptsInventory(t *testing.T) {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
 				continue
 			}
-			f, destructive := collectScriptFacts(t, filepath.Join(r, e.Name()))
+			f, destructive, hasDML := collectScriptFacts(t, filepath.Join(r, e.Name()))
+			if hasDML {
+				dmlCount++
+			}
 			if destructive {
 				facts = append(facts, f)
 			}
@@ -274,11 +401,53 @@ func TestHandRunSqlScriptsInventory(t *testing.T) {
 	}
 	sort.Slice(facts, func(i, j int) bool { return facts[i].path < facts[j].path })
 
-	// 覆盖下限：清单不得为空（抽取器坏掉时下面会全绿）。
-	if len(facts) < 4 {
-		t.Fatalf("含破坏性动作的手跑脚本只数到 %d 个（下限 4）：抽取器很可能已失效，"+
-			"此时「都有中止机制」会与「一个都没数到」同步为真", len(facts))
+	// 覆盖下限（210 号改钉法）。
+	//
+	// ⚠️ 209 号把下限钉在**过滤后**的 `facts` 上，这是本轮被判掉的写法：
+	// 只要 `destructiveRes` 漏掉某一类动作，那个脚本就**不进 `facts`**，
+	// 而「清单非空」仍然成立 ⇒ **下限被满足，而下限度量的集合本身残缺**。
+	// 实测：`UPDATE <表> <别名> SET` 全家不被识别 ⇒
+	// `2026-09-21-unmapped-cn-rename.sql`（本族唯一真的改
+	// `models_canonical`/`model_aliases` 的脚本）**整份从清单消失**，
+	// 门照样报「8/8 可中止」。
+	//
+	// ⇒ 现在下限钉在**宽集合**（`hasAnyDML`：只看动词，不看语法结构）上。
+	// 宽集合与过滤后集合**不再可能是同一件事**，所以「宽集合非空」这条断言
+	// 才真的在约束覆盖面。宽集合的下限**按实测取值**，不是随手写的整数。
+	// 下限按**实测取值**（210 号逐文件量过），不是随手写的整数：
+	// 18 个脚本里宽集合命中 11 个 —— 7 个未命中的全部是**只读采集脚本**
+	// （5 个 `db-audit-252-*`/`db-audit-collect` + 2 个 DML 全被注释的模板脚本）。
+	// 取紧下限 11 的意义：任一脚本从宽集合里掉出去都会红（10 < 11）。
+	if dmlCount < 11 {
+		t.Fatalf("含任意 DML 动词的手跑脚本只数到 %d 个（下限 11）：宽集合抽取器已失效，"+
+			"此时下面的「都有中止机制」会与「什么都没抽到」同步为真。"+
+			"⚠️ 下限**必须**钉在宽集合上——钉在过滤后的集合上时，"+
+			"判据一漏，整份脚本就从清单里消失，而下限照样通过（210 号的实测）。", dmlCount)
 	}
+	if len(facts) < 10 {
+		t.Fatalf("经破坏性分类后只数到 %d 个脚本（下限 10）：分类器可能又漏了一类动作。"+
+			"宽集合数到 %d 个，两者差 %d 个——差值就是被分类器漏掉的脚本。",
+			len(facts), dmlCount, dmlCount-len(facts))
+	}
+	// **具名锚点**：比裸计数更强的一条 —— 点名「本族唯一真的改 models_canonical /
+	// model_aliases 的脚本必须在清单里」。若将来有人再收窄 destructiveRes，
+	// 这条会先于计数下限报出来，且报的名字是**具体的**。
+	// （210 号实测它就是被漏掉的那个。）
+	anchored := false
+	for _, f := range facts {
+		if strings.HasSuffix(f.path, "2026-09-21-unmapped-cn-rename.sql") {
+			anchored = true
+			break
+		}
+	}
+	if !anchored {
+		t.Errorf("`2026-09-21-unmapped-cn-rename.sql` 不在清单里：它含 " +
+			"`UPDATE model_aliases ma SET …` 与 `UPDATE models_canonical mc SET …`，" +
+			"两处都带**表别名**。210 号实测：旧判据要求表名与 SET 紧邻 ⇒ 全部漏掉 ⇒ " +
+			"这个本族唯一真的改模型名的脚本**整份从清单消失**，而门仍报「全部可中止」。")
+	}
+	t.Logf("覆盖面自报：宽集合(含任意 DML)=%d，经破坏性分类=%d"+
+		"（下限只保证抽取器活着，**不**代表一族逐个审过）", dmlCount, len(facts))
 
 	// 第二条判据的覆盖下限：**必须真的检出过探针写入**。否则
 	// 「没有探针泄漏」会与「探针检测器坏掉」同步为真——①/② 两版正是这么空过的。
