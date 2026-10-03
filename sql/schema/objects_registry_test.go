@@ -26,6 +26,7 @@
 package schema
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,20 +123,138 @@ func TestObjectsDirIsNotAppliedAnywhere(t *testing.T) {
 // path was added late. A text assertion would have passed while the tool
 // crashed on the first real run — the same shape as the audit-script
 // ERRFILE bug. Its exit code and report content are what matter.
+// pythonInterp 是一个**已通过活性探针**的解释器。
+type pythonInterp struct {
+	name string
+	args []string // `py -3` 这类需要前置参数的形式
+}
+
+// pythonCandidates 按优先级排列。`python3` 排第一是为了兼容 Linux/macOS 与
+// 虚拟环境（那里它才是真解释器）；在 Windows 上它通常是 App Execution Alias
+// 桩，会被活性探针否掉并顺延到 `python`。
+var pythonCandidates = []pythonInterp{
+	{name: "python3"},
+	{name: "python"},
+	{name: "py", args: []string{"-3"}},
+}
+
+// firstLivePython 逐个候选做**活性**探针，返回第一个真能执行 `-c pass` 的。
+//
+// 关键点：探针**不查磁盘上有没有这个文件**，只问「能不能跑起来」。
+// 208 号那一版的教训正是这两件事在 Windows 上会分叉（App Execution Alias 桩
+// 两者都满足前者、不满足后者）。
+func firstLivePython(cands []pythonInterp) (pythonInterp, error) {
+	var tried []string
+	for _, c := range cands {
+		argv := append(append([]string{}, c.args...), "-c", "pass")
+		err := exec.Command(c.name, argv...).Run()
+		if err == nil {
+			return c, nil
+		}
+		tried = append(tried, fmt.Sprintf("%s(%v)", c.name, err))
+	}
+	return pythonInterp{}, fmt.Errorf("无一可执行：%v", tried)
+}
+
+// TestFirstLivePythonControls 是上面那道活性判据的反向对照。
+//
+// 为什么要单独钉：判据一旦写错，方向有两个 ——
+//
+//	① **过度跳过**：把活的解释器判成死的 ⇒ 门永远不跑，静默失效（本轮要消灭的正是这个）；
+//	② **过度接受**：把桩/坏命令判成活的 ⇒ 回到 208 号的硬红，且报错形态是
+//	   「工具坏了」，把人引向错误方向。
+//
+// 只测 ② 会让修复看起来有效；只测 ① 会让门自己躺平。两条都要。
+func TestFirstLivePythonControls(t *testing.T) {
+	// 负控 1（过度跳过方向）：候选里**混进**一个必然不存在的命令，
+	// 但只要有一个活的，就必须被选中，而不是因为前面失败就整体放弃。
+	got, err := firstLivePython([]pythonInterp{
+		{name: "definitely-not-a-real-python-xyz"},
+		{name: "python"},
+	})
+	if err != nil {
+		t.Fatalf("候选里明明有可用解释器却整体报错：%v", err)
+	}
+	if got.name != "python" {
+		t.Errorf("选中 %q，期望跳过死候选后选中 python", got.name)
+	}
+
+	// 负控 2（过度接受方向）：全部候选都死 ⇒ 必须返回错误，**不得**返回一个「可用」解释器。
+	// 这条钉住「不存在 / 不可执行的名字绝不能被当成活的」。
+	if _, err := firstLivePython([]pythonInterp{
+		{name: "definitely-not-a-real-python-xyz"},
+		{name: "also-not-real-abc"},
+	}); err == nil {
+		t.Error("全部候选不可执行时却返回了 nil error：会把死命令当成活解释器用")
+	}
+
+	// 负控 3：空候选列表必须报错，不得 panic 也不得返回零值解释器。
+	if _, err := firstLivePython(nil); err == nil {
+		t.Error("空候选列表返回了 nil error")
+	}
+
+	// 负控 4：`py -3` 这类**带前置参数**的形式，探针必须把参数一起带上，
+	// 否则探针自己会因缺参失败、把一个可用解释器误判成死的（就是①）。
+	// 本机 `py` 可用（`py -3 --version` 成功），用它做这条对照。
+	if got, err := firstLivePython([]pythonInterp{{name: "py", args: []string{"-3"}}}); err != nil {
+		t.Logf("本机无 `py -3`，跳过负控 4（不影响前三条）：%v", err)
+	} else if got.name != "py" {
+		t.Errorf("选中 %q，期望 py", got.name)
+	}
+}
+
 func TestReconcileToolSupportsThirdRepresentation(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 不可用；跳过（本跳过不构成该工具可用的证据）")
+	// R89-DT（208 号）：原来这里用 `exec.LookPath("python3")` 判「工具可用」。
+	// 那是**存在性**判据，不是**可用性**判据，而它在 Windows 上恰好最不可靠：
+	// 系统自带 App Execution Alias 桩 `python3.exe` **在磁盘上存在** ⇒
+	// LookPath 成功 ⇒ 不走下面的跳过分支 ⇒ 随后 exec 以 **exit 9009**
+	// （命令未真正安装）失败 ⇒ 本门以「工具坏了」的形态硬红。
+	//
+	// 也就是说：**作者写下的优雅降级（工具不可用就跳过，且明确声明
+	// 「本跳过不构成该工具可用的证据」）在 Windows 上被完全击穿。**
+	//
+	// R89-DV（209 号）再进一步：208 号把硬红改成了跳过，但**只换成了
+	// 一个硬编码的 `python3`**。在本机实测：那个 `python3` 是桩（exit 9009），
+	// 而**真实解释器存在且可用**（`python` = Python 3.13.9）。
+	// ⇒ 208 号那道门在本机与 Windows CI 上是**永久静默跳过**的：
+	// 红变成不红了，但它同时也永远不会绿着跑——比硬红更坏，因为硬红会被人看见。
+	//
+	// 改法：按候选列表逐个做**活性**探针（判据与被测量对象同源 ——
+	// 我们要的是「这个解释器能执行」，不是「有个叫 python3 的文件」），
+	// 取第一个真的能跑起来的。判据与被测量对象同源，也与 CI 的 windows 矩阵对齐。
+	interp, err := firstLivePython(pythonCandidates)
+	if err != nil {
+		t.Skipf("候选 %v 里没有可执行的 Python（%v）；跳过。"+
+			"⚠️ 这**不是**「三方对账无漂移」的证据 —— 本门在本机从未真正运行过。",
+			pythonCandidates, err)
 	}
 	tool := "../../scripts/audit/baseline-reconcile.py"
 	if _, err := os.Stat(tool); err != nil {
 		t.Fatalf("reconcile tool missing: %v", err)
 	}
 
-	out, err := exec.Command("python3", tool,
+	argv := append([]string{interp.name, tool,
 		"--committed", "../../sql/schema/01-schema.sql",
 		"--generated", "../../sql/schema/01-schema.sql", // self-compare: must be a clean zero-drift run
 		"--objects-dir", objectsRoot,
-	).CombinedOutput()
+	}, interp.args...)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	// R89-DV（209 号）：必须钉死子进程 stdout 编码。
+	//
+	// 实测：本工具的中文小节标题（`## 第三份表示：…`）随**区域设置**编码输出 ——
+	// 在中文 Windows 上 stdout 走 cp936(GBK)。而下面的断言是 **UTF-8 字面量**。
+	// ⇒ GBK 字节永远匹配不上 UTF-8 字面量 ⇒ 本门以
+	//    「未输出第三份表示（sql/objects）的对比小节」**硬红**。
+	//
+	// 这个报错形态极具误导性：它把「输出被按 GBK 编码」说成
+	// 「工具根本没统计第三份表示」，于是读者会去查对账逻辑、查 objects 目录，
+	// 而**真实原因只是控制台代码页**。（实际输出里那行标题一直都在。）
+	// ⇒ 这与 208 号 F4 是同一类：**报错形态把人引向错误的根因**。
+	//
+	// 判据必须与环境无关：显式设 PYTHONIOENCODING，不依赖「这台机器的
+	// 默认编码恰好是 UTF-8」。
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("reconcile tool failed: %v\n%s", err, out)
 	}

@@ -48,4 +48,13 @@ export default {
     lightTitle: 'Light mode',
     darkTitle: 'Dark mode',
   },
+  v1DataFrozen: {
+    title: 'Les données de trafic ne sont plus mises à jour : les chiffres de cette page ne reflètent que la période antérieure à l’arrêt des écritures',
+    titleUnconfirmed: 'L’interrupteur d’arrêt d’écriture n’est pas configuré explicitement : impossible de dire si ces chiffres sont obsolètes',
+    titleUnavailable: 'Impossible de confirmer l’état des données de trafic : les chiffres de cette page peuvent être obsolètes',
+    affects: 'Classes de points de lecture affectées',
+    gateKey: 'Paramètre de contrôle',
+    retry: 'Revérifier',
+    failedHint: 'Lecture de l’état des données impossible. Un état non confirmé n’est pas un état sain — traitez les chiffres de cette page comme potentiellement obsolètes.',
+  },
 }
