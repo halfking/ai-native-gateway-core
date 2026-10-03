@@ -5799,3 +5799,77 @@ TestBaselineEnsure… → ok   ← 没红
 - `session_v2_mirror_backlog_pending` 告警（252 恒为 1）
 - 内部 actor 名单 (a)(b)(c) / cohort 修正 / §9.49.8 扩档 / §9.48 口径
 - **新增候选**：写链是否自 ensure 当月分区（消除全新安装启动窗口，行为变更）
+
+---
+
+## 第五十六轮（§9.105）：扫描剩项结案——`outbox_events` 良性，`gateway.session_tags` 真错（两层）
+
+### 一、`outbox_events` 缺失 = **良性，设计如此**
+
+表由 **`deploy/sql/migrations/V357__…`**（Flyway 目录，不在 `sql/migrations/startup/`）创建，
+无任何已登记 startup 迁移建它，252 也没有。看着像缺陷，但守卫链完整
+（`cmd/gateway/main.go:2457-2470`）：只有 `ASM_INTERNAL_ENDPOINT` **且**
+`AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET` 都配置时才 `SetOutboxWriter`，
+否则打 "outbox writer disabled: incomplete ASM configuration"。
+两处 INSERT 都在 `c.outboxWriter != nil` 内 ⇒ **缺表是设计内的良性状态**。
+
+### 二、★`gateway.session_tags` = **两层都错，且从未被解析过**
+
+```sql
+SELECT DISTINCT tag_value
+FROM gateway.session_tags          -- schema 早不存在（表已被统一到 public）
+WHERE tenant_id = $1 AND session_id = $2 AND tag_source = 'auto'
+```
+
+1. **schema**：252 有 `public.session_tags`，`information_schema.schemata` 无 `gateway`
+   （schema 统一时移除；迁移 430 删掉了冗余的 `CREATE SCHEMA gateway`）。
+2. **列名**：真表主键列是 **`gw_session_id`**，不是 `session_id`。
+
+**为何无人发现**：`GetSessionMetadata` **无任何生产调用方**（只有
+`session_metadata_test.go`），而那个单测**驱动 mock**，SQL 从未被解析。
+
+**修法**：`gateway.` → `public.`，`session_id` → `gw_session_id`；
+修后 **252 上 PREPARE 通过**（只解析）。
+
+### 三、有意留下的缺口：全新安装没有 `session_tags`
+
+真安装库无此表；建它的是未登记的 `351_session_analytics_tables.sql`
+（与 §9.101-C 的 467 同类 baseline-gap）。
+**本轮不登记 351**：`GetSessionMetadata` 无调用方，为一条**死读路径**登记迁移
+比留缺口更糟。要不要补取决于这个函数将来是否接线。
+**这是有意留的缺口，不是遗漏。**
+
+### 四、测试
+
+```
+go test ./domains/session/v2/ ./internal/sessionv2mirror/            → 全 ok
+TEST_DB_URL=… go test -tags=integration ./internal/sessionv2mirror/  → ok
+252: PREPARE 新写法 → PREPARE OK（只解析，不执行不写行）
+```
+
+### 五、教训
+
+> **「缺一张表」≠「缺一个缺陷」**：追下去发现整条链都有守卫。
+> **没有守卫的缺失才是缺陷。**
+>
+> **一条从未被解析的 SQL 可以同时错两处而无人知晓**——唯一调用方是 mock 单测。
+> mock 验的是「调用发生了」，不是「SQL 能跑」。
+>
+> **「修一半」也要查第二半**：我先改 schema，立刻又撞列名错误。
+> 停在第一步就会留下一个仍 42P01 的语句，且注释写着「已修复」。
+
+### 六、下一轮
+
+**不需要拍板**（清单已再缩短一项）：
+- auto-route 自 2026-09-15 断流原因（仍缺 09-08/09-09 日志或 Prometheus 历史）
+- A 群 6 条 / B 群 10 条 / `backlog_pending=1`（五轮未收敛）
+- Makefile 无 gofmt 门
+
+**待拍板**（与前几轮相同）：
+- 阻塞 #1 读取侧：`session_turns_with_current_month` 加不加 `search_text`
+  + `admin/logs.go` 的 `rl` 何时从 v1 切会话族
+- 阻塞 #2 `is_final_success`：唯一索引 + claim-and-supersede 同批上线
+- 等价口径 (i)/(ii)/(iii)
+- `session_v2_mirror_backlog_pending` 告警（252 恒为 1）
+- 内部 actor 名单 (a)(b)(c) / cohort 修正 / §9.49.8 扩档 / §9.48 口径
+- 写链是否自 ensure 当月分区（消除全新安装启动窗口，行为变更）
