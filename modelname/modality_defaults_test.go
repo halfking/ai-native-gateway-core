@@ -22,6 +22,20 @@ func TestInferModality(t *testing.T) {
 		{"tts-1", "tts-1", "audio"},
 		{"gpt-4o-audio-preview", "gpt-4o-audio-preview", "audio"},
 
+		// 2026-10-03 音频端点轮：后缀/中缀形态的 ASR/TTS 家族。小米
+		// mimo-v2.5-asr/-tts 此前双双落回 text 默认值，audio 候选过滤
+		// （modality IN ('audio','multimodal')）将其排除 → no_candidate 503。
+		{"xiaomi asr suffix", "mimo-v2.5-asr", "audio"},
+		{"xiaomi tts suffix", "mimo-v2.5-tts", "audio"},
+		{"xiaomi tts voiceclone", "mimo-v2.5-tts-voiceclone", "audio"},
+		{"qwen3 asr infix", "qwen3-asr-0.6b", "audio"},
+		{"qwen3 asr prefix", "qwen3-asr-flash", "audio"},
+		{"gpt-4o-transcribe", "gpt-4o-transcribe", "audio"},
+		{"glm-asr", "glm-asr", "audio"},
+		// 回归护栏：含 asr/tts 子串的正常文本模型不得被误标
+		{"mimo text family unchanged", "mimo-v2.5", "text"},
+		{"mimo pro unchanged", "mimo-v2.5-pro", "text"},
+
 		// OpenAI - Text
 		{"gpt-3.5-turbo", "gpt-3.5-turbo", "text"},
 		{"gpt-3.5-turbo variant", "gpt-3.5-turbo-0125", "text"},
