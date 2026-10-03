@@ -1,0 +1,30 @@
+=== RUN   TestSessionStateV6Fields_ZeroValuesResetPriorAudit
+    session_cache_v6_test.go:92: cold read resurrected previous audit/approval: {SchemaVersion:1 LastOutboundHash: LastCompressedAt:0 MsgCount:0 TokenEstimate:0 SummaryMarker: RecentlyCompressedAt:0 ToolsHash: SystemPrompt: FullSessionHash: LastStripAt:0 StripsApplied:0 CompletedTasks:0 CompressionMode: MessagesAfterStrip:0 TokensAfterStrip:0 HasCutMarker:false CutCreatedAt:0 CutSourceMsgs:0 CutSystemMsgs:0 CutIndex:0 CutStrategy: CutBytesBefore:0 CutBytesAfter:0 CutPreSanitizeStart:0 CutPreSanitizeEnd:0 AuditedAt:1700000000 AuditScore:7 SecurityScore:3 SensitiveDetected:true PIIStripped:true ApprovalStatus:approved ApprovalID:prior-approval OptimizationApplied:strip_tools AlignmentMap:[] RawSnapshot:{Hash: MessageCount:0 TokenEstimate:0} RawTokenEstimate:0 RawMsgCount:0 CompressionSourceSnapshot:{Hash: MessageCount:0 TokenEstimate:0} CompressedSnapshot:{Hash: MessageCount:0 TokenEstimate:0} CompressedTokens:0 CompressedMsgs:0 CompressedPrefixHash: CompressionQuality:{TokenSavingsPercent:0 MessageRetentionRate:0 SemanticFidelity:0 InformationDensity:0 LossinessClass: OverallScore:0} SanitizeMapRef: SanitizeStats:{PlaceholderCount:0 PhoneCount:0 EmailCount:0 IDCardCount:0 CreditCardCount:0 SecretCount:0 OtherCount:0 SanitizedAt:0} SanitizeMessageRefs:[] SanitizedSnapshot:{Hash: MessageCount:0 TokenEstimate:0} SanitizeMapGeneration:}
+--- FAIL: TestSessionStateV6Fields_ZeroValuesResetPriorAudit (0.00s)
+=== RUN   TestStorageAuditRealColdRead
+2026/10/02 11:01:41 INFO feature_switches_snapshot session_compression=true session_cache=true circuit_degradation=true rate_limiter=true fp_slot=true
+    storage_audit_integration_test.go:86: 
+        	Error Trace:	__DEV_HOME__/.codex/worktrees/session-storage-stream-audit/llm-gateway-go-3/domains/hooks/compression/storage_audit_integration_test.go:86
+        	Error:      	Should be false
+        	Test:       	TestStorageAuditRealColdRead
+--- FAIL: TestStorageAuditRealColdRead (0.13s)
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/domains/hooks/compression	8.082s
+=== RUN   TestStorageAuditStreamTerminalCapacity
+=== RUN   TestStorageAuditStreamTerminalCapacity/terminal_at_limit
+=== RUN   TestStorageAuditStreamTerminalCapacity/terminal_over_limit
+    stream_capacity_audit_test.go:91: blocked=false want=true; pending=0 terminal=1048577
+=== RUN   TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_over_limit
+    stream_capacity_audit_test.go:91: blocked=false want=true; pending=512 terminal=1048576
+--- FAIL: TestStorageAuditStreamTerminalCapacity (1.55s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/terminal_at_limit (0.50s)
+    --- FAIL: TestStorageAuditStreamTerminalCapacity/terminal_over_limit (0.59s)
+    --- FAIL: TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_over_limit (0.46s)
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/security/sanitize	10.878s
+=== RUN   TestStorageAuditWriterBlocksCombinedTerminalCapacity
+    storage_stream_audit_test.go:92: combined oversized stream not blocked: <nil>
+--- FAIL: TestStorageAuditWriterBlocksCombinedTerminalCapacity (0.38s)
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/domains/streaming	9.861s
+FAIL
