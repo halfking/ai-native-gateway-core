@@ -619,6 +619,32 @@ CREATE INDEX ursm_node_snapshot_min_ts_idx
 **⇒ 拍板 #7 不再是开放问题。**（评审稿把它列为"删除本身是一个 DDL 动作"
 属于误判——它不是可选项，是审计查询的依赖。）
 
+### 8.7 ★ 拍板 #8 定论：技术面几乎零影响（而且「静默归零」的说法本身不准确）
+
+**先纠正一个流行说法**：分区化后 `pg_stat_user_tables` 里父表
+`ursm_node_snapshot_min` 的 `n_live_tup` 确实会近乎为 0，
+但**分区子表本身就在 `pg_stat_user_tables` 里**（它们是独立普通表，`relkind='r'`），
+所以不按表名过滤的通用看板**不会丢数据**，只会「一张大表变成多行小表」。
+
+**真正要看的是「哪些地方按具体表名过滤」**（全仓实测）：
+
+| 位置 | 性质 | 分区化后是否要改 |
+|---|---|---|
+| `scripts/252-monitor/pg17-index-bloat.sh` | **周日凌晨自动跑** | **不用改** —— 候选查询已带 `AND NOT c.relispartition`，显式排除分区索引；且 `--fix` 只做 `REINDEX INDEX CONCURRENTLY`，**从不 DROP 索引**，不会破坏分区结构 |
+| `scripts/252-monitor/ursm-snapshot-health.sh` | 本会话新增（未上 cron） | **不用改** —— 查父表，分区化后 PG 自动路由到子表 |
+| `.db-audit/sql/{04_slow2,07_dist2,09_final,10_cols,23_crashlog}.sql` | 一次性手工审计脚本 | 不用改 —— 手动触发，且 `count(*)`/`min/max` 对分区父表仍可用 |
+| `sql/fixes/2026-10-0*-*.sql` | 已执行完的历史修复脚本 | 不用改 —— 存档性质 |
+| `deploy/prometheus/rules/` | 告警规则 | **无针对该表的规则**（`routing-credential-state.yml` 里的 `ursmv2` 是 Redis 状态机 reset，与本表无关） |
+
+**⇒ 拍板 #8 不再是开放问题。** 唯一需要在实施文档里写一句的是：
+
+> 看板上看到 `ursm_node_snapshot_min` 父表 0 行 + 若干 `ursm_node_snapshot_min_YYYY_MM_DD`
+> 子表，**是分区化的预期形态，不是故障**。排查时需按 `pg_inherits` 汇总。
+
+**性能提示**：`min(snapshot_ts)` / `max(snapshot_ts)` 在分区化后会扫**每个分区**的索引
+（当前 1 个 → 未来 ~8 个），比现在慢数倍。`.db-audit/sql/07_dist2.sql:45` 依赖它，
+属手工脚本可接受；**但不要把它放进任何高频巡检**。
+
 ---
 
 ## 9. 仍未定论的（不要当结论用）
