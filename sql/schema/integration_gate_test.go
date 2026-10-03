@@ -414,8 +414,23 @@ func TestGateAppliesStartupMigrations(t *testing.T) {
 	// silently. Round 44 turns it into a ratchet. The enforcement itself is
 	// guarded by TestGateRatchetsUnlistedStartupGaps; this only asserts the
 	// collection still happens.
-	if !strings.Contains(act, "sf_failed+=") {
-		t.Error("未收集未应用的启动迁移清单")
+	// Failure collection must reach the caller's array.
+	//
+	// This used to assert the bare substring "sf_failed+=" — which passed for
+	// the right reason only by accident. Once the per-file apply was factored
+	// out (two passes now share one helper) the append became
+	// `eval "$arrvar+=(\"$entry\")"`, the literal disappeared, and the guard
+	// went red on a correct script. A bare substring cannot tell a binding from
+	// a mention, and it silently pins the IMPLEMENTATION rather than the
+	// property. So: assert the call site binds the array, and that the helper
+	// appends through the name it was given.
+	if !strings.Contains(act, `apply_startup_file "$f" "" sf_ok sf_fail sf_missing sf_failed`) {
+		t.Error("第一遍没有把 sf_failed 作为失败数组传给 apply_startup_file；" +
+			"helper 若收集到别处，第一遍的缺口清单就是空的，ratchet 拿空集合当全部已登记")
+	}
+	if !strings.Contains(act, `eval "$arrvar+=`) {
+		t.Error("apply_startup_file 没有通过调用方传入的数组名追加失败；" +
+			"写死某个数组名会让两遍的失败混进同一份清单，分不清哪一遍坏了")
 	}
 	if !strings.Contains(act, "startup_known_gaps.tsv") {
 		t.Error("未把「启动迁移未应用」与已知缺口清单 sql/schema/startup_known_gaps.tsv 对账；" +
@@ -945,4 +960,408 @@ func TestGateSupportsPerPackageFixtureShapes(t *testing.T) {
 		}
 	}
 	t.Logf("形态登记表 %d 行（当前刻意为空，见文件头）", rows)
+}
+
+// ---------------------------------------------------------------------------
+// Re-runnability of the registered startup chain (§9.119, 2026-10-04)
+// ---------------------------------------------------------------------------
+//
+// The ratchet above answers "which migrations fail on a FRESH install". This
+// one answers a different question: "which fail when the chain is applied a
+// SECOND time" — which is what re-running the installer against a machine that
+// already has one actually does, because InitSchema
+// (installer/internal/dbinit/runner.go:716) applies every StartupFiles entry
+// unconditionally, with no per-file skip check, and runInstall has no
+// "already installed?" probe.
+//
+// A single pass cannot see this class by definition. Measured on origin/main
+// 2026-10-04: pass 1 = 217/217, pass 2 = 214 ok / 3 fail.
+//
+// These guards exist so the re-runnability list cannot rot the way an
+// un-annotated one does — and so the harness cannot quietly stop enforcing it.
+
+// TestStartupRerunGapsManifestIsAnnotated guards sql/schema/startup_rerun_known_gaps.tsv.
+//
+// Same three rot vectors the fresh-install manifest has, plus one specific to
+// this list: an entry naming a file that is not registered grants an exemption
+// to whatever later takes that name.
+func TestStartupRerunGapsManifestIsAnnotated(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("startup_rerun_known_gaps.tsv"))
+	if err != nil {
+		t.Fatalf("读不到不可重跑清单：%v", err)
+	}
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+
+	type entry struct{ file, reason string }
+	var entries []entry
+	seen := map[string]bool{}
+	var prev string
+	for i, raw := range lines {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parts := strings.Split(raw, "\t")
+		if len(parts) != 2 {
+			t.Errorf("第 %d 行不是「文件名<TAB>原因」两段：%q", i+1, raw)
+			continue
+		}
+		f, reason := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if f == "" || reason == "" {
+			t.Errorf("第 %d 行有空字段：%q", i+1, raw)
+			continue
+		}
+		if seen[f] {
+			t.Errorf("重复条目：%s", f)
+		}
+		// Sorted by filename, so a new entry goes where a human expects it and
+		// a diff shows movement rather than a reordering.
+		if prev != "" && f < prev {
+			t.Errorf("条目未按文件名排序：%q 出现在 %q 之后", f, prev)
+		}
+		prev = f
+		seen[f] = true
+		entries = append(entries, entry{f, reason})
+	}
+
+	// A re-runnability list with zero entries is a legitimate future state, so
+	// there is no non-empty requirement here (unlike the fresh-install list,
+	// whose non-emptiness was a real invariant). What must always hold is that
+	// the ratchet itself stays armed — see TestGateRatchetsUnlistedRerunFailures.
+
+	registered := map[string]bool{}
+	startupDir := filepath.Join("..", "..", "installer", "cmd", "llm-gw-installer", "embeddata", "startup")
+	runner, err := os.ReadFile(filepath.Join("..", "..", "installer", "internal", "dbinit", "runner.go"))
+	if err != nil {
+		t.Fatalf("读不到 runner.go：%v", err)
+	}
+	for _, m := range regexp.MustCompile(`"[0-9a-zA-Z_]+\.sql"`).FindAllString(string(runner), -1) {
+		registered[strings.Trim(m, `"`)] = true
+	}
+	if len(registered) == 0 {
+		t.Fatal("从 runner.go 解析出 0 条已注册启动迁移；解析失败会让下面的校验全部空转")
+	}
+	for _, e := range entries {
+		if !registered[e.file] {
+			t.Errorf("清单条目 %s 不在 runner.go 的 StartupFiles 里；它根本不会被应用，条目无意义", e.file)
+		}
+		if _, err := os.Stat(filepath.Join(startupDir, e.file)); err != nil {
+			t.Errorf("清单条目 %s 在 embeddata/startup 下不存在：%v", e.file, err)
+		}
+		// A reason has to name a mechanism, not just restate the symptom. The
+		// first version of this file carried reasons like "cannot drop columns
+		// from view", which is the psql error text — it told a reader nothing
+		// about which PG rule was hit or which other files share it. [M1]-style
+		// tags make the grouping auditable instead.
+		if !regexp.MustCompile(`\[M[0-9]+\]`).MatchString(e.reason) {
+			t.Errorf("清单条目 %s 的原因里没有机制标签（如 [M1]）：%q\n"+
+				"只有 psql 错误原文的理由无法回答「这条和别的条是不是同一类」，"+
+				"而按机制分组正是这份清单存在的意义", e.file, e.reason)
+		}
+	}
+}
+
+// TestGateMeasuresBaselineRerunToo guards the stage that the first version of
+// the re-runnability pass was missing entirely.
+//
+// InitSchema applies 00-prereqs / 01-schema / 02-seed BEFORE the 217
+// migrations. Measured on a real database, re-applying 01-schema.sql produces
+// 1665 ERROR lines — it is a bare pg_dump baseline with no IF NOT EXISTS
+// anywhere — so a re-run of the installer dies THERE, long before the chain.
+// The first version of the pass re-applied only the 217 and reported "3 files
+// not re-runnable", which was a property of a synthetic startup-only database,
+// not of the product.
+//
+// A gate that measures the second half of InitSchema's order and not the first
+// half is measuring something the product never does.
+func TestGateMeasuresBaselineRerunToo(t *testing.T) {
+	act := active(gateSource(t))
+
+	// The baseline trio has to be re-applied INSIDE the same second pass, and
+	// the anchor is the loop over the three names — a die() message that merely
+	// names the budget file would satisfy a weaker check. The names carry the
+	// .sql suffix because they are compared against budget entries and against
+	// the reported failure names; the first version of this pass looped over
+	// bare "01-schema" and every comparison silently failed to match.
+	if !strings.Contains(act, "for bf in 00-prereqs.sql 01-schema.sql 02-seed.sql; do") {
+		t.Error("第二遍没有重跑 baseline 三件套；InitSchema 先跑它们再跑链，" +
+			"漏掉它们等于门在测产品从不执行的顺序（重跑 installer 的第一现场是 01-schema.sql）。" +
+			"另：循环变量必须带 .sql 后缀，否则与预算清单、与失败条目的比对全部匹配不上")
+	}
+	if !strings.Contains(act, `BR_BUDGET="$REPO_ROOT/sql/schema/baseline_rerun_budget.tsv"`) {
+		t.Error("harness 未把 BR_BUDGET 绑定到 sql/schema/baseline_rerun_budget.tsv")
+	}
+	// The budget has to be a CEILING, not a membership list. Baseline failures
+	// are 1665 lines of the same "already exists" shape; enumerating them would
+	// be unreadable, and a membership list would be a blanket exemption. The
+	// direction that matters: exceeding the ceiling must be fatal.
+	if !strings.Contains(act, "actual > budget") {
+		t.Error("预算没有上界比较；只有「登记/未登记」而没有上界的话，" +
+			"往 01-schema.sql 里新增任何一条裸 CREATE 都会被吸收进同一个绿跑")
+	}
+	// …and the other direction: a baseline file that newly fails while the
+	// budget only mentions some OTHER file must be fatal. Comparing only the
+	// files the budget lists would pass a brand-new offender.
+	if !strings.Contains(act, "重跑失败但不在预算清单里") {
+		t.Error("没有「失败文件不在预算里」的致命检查；" +
+			"只逐条比较预算里提到的文件，会让新出现的不可重跑文件静默通过")
+	}
+	if !strings.Contains(act, "baseline 的不可重跑规模超出登记预算") {
+		t.Error("超预算时缺少致命退出的诊断文案")
+	}
+	// Deleting the budget file must make baseline re-run failures fatal rather
+	// than permissive, otherwise the whole line can be switched off by removing
+	// one file.
+	if !strings.Contains(act, "但没有错误预算清单 ${BR_BUDGET}") {
+		t.Error("缺少「预算清单不存在即致命」的分支；删掉清单会让这一类缺口变成静默放行")
+	}
+	// The gate and the installer must be reading the same bytes, or the whole
+	// measurement is about a different file. The installer embeds
+	// embeddata/*.sql; the gate reads sql/schema/*.sql. They are byte-identical
+	// today, and TestBaselineFilesAreNotDivergent is what keeps them that way.
+	if !strings.Contains(act, `"$REPO_ROOT/sql/schema/$bf"`) {
+		t.Error("第二遍读的路径不对；应与第一遍同一份 baseline 源")
+	}
+	// The count has to be measured with ON_ERROR_STOP=0. The installer runs
+	// with ON_ERROR_STOP=1 and therefore only ever sees the FIRST error per
+	// file, which makes "1" a constant for every broken baseline — a ceiling
+	// ratcheted on 1 can never fire, however much is added to the dump.
+	if !strings.Contains(act, "-q -v ON_ERROR_STOP=0 < \"$REPO_ROOT/sql/schema/$bf\"") {
+		t.Error("baseline 重跑没有用 ON_ERROR_STOP=0 计数；" +
+			"用 1 的话每个坏掉的 baseline 都只数出 1 条，预算上界永远不可能触发")
+	}
+}
+
+// TestBaselineRerunBudgetIsAnnotated guards sql/schema/baseline_rerun_budget.tsv.
+//
+// Two properties that a count-only file can silently lose:
+//   - every file named must be one InitSchema actually applies,
+//   - the number must be an integer a ratchet can compare against. A
+//     hand-edited "1665 条" or a "same as before" prose would parse as zero
+//     and turn the ceiling into a permanent exemption.
+func TestBaselineRerunBudgetIsAnnotated(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("baseline_rerun_budget.tsv"))
+	if err != nil {
+		t.Fatalf("读不到 baseline 重跑预算清单：%v", err)
+	}
+	// The three files InitSchema applies, per runner.go's own list.
+	applied := map[string]bool{"00-prereqs.sql": true, "01-schema.sql": true, "02-seed.sql": true}
+
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	seen := map[string]bool{}
+	for i, raw := range lines {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parts := strings.Split(raw, "\t")
+		if len(parts) < 2 {
+			t.Errorf("第 %d 行不是「文件名<TAB>预算条数」：%q", i+1, raw)
+			continue
+		}
+		f, budget := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if !applied[f] {
+			t.Errorf("第 %d 行的 %q 不在 InitSchema 应用的三件套里（00-prereqs / 01-schema / 02-seed）", i+1, f)
+		}
+		if seen[f] {
+			t.Errorf("重复条目：%s", f)
+		}
+		seen[f] = true
+		n, err := strconv.Atoi(budget)
+		if err != nil {
+			t.Errorf("条目 %s 的预算 %q 不是整数；比较会退化成 0，整条线变成永久豁免：%v", f, budget, err)
+			continue
+		}
+		if n <= 0 {
+			t.Errorf("条目 %s 的预算为 %d；0 错误不该登记（登记了的话「失败文件不在清单里」这条 die 就再也触发不了）", f, n)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("预算清单里一条数据都没有；实测 01-schema.sql 重跑 1665 条 ERROR，解析失败会让校验全部空转")
+	}
+}
+
+// TestGateRatchetsUnlistedRerunFailures guards the ratchet itself.
+//
+// Anchors on the ASSIGNMENT, not on a mention: the existing fresh-install guard
+// documented that a bare substring cannot tell a binding from a die() message
+// that merely names the variable — renaming GAP_MANIFEST left the old guard
+// green for exactly that reason. Same failure mode would apply here, so the
+// assignment and the reader are asserted separately.
+func TestGateRatchetsUnlistedRerunFailures(t *testing.T) {
+	act := active(gateSource(t))
+
+	if !strings.Contains(act, `RR_MANIFEST="$REPO_ROOT/sql/schema/startup_rerun_known_gaps.tsv"`) {
+		t.Error("harness 未把 RR_MANIFEST 绑定到 sql/schema/startup_rerun_known_gaps.tsv；" +
+			"只检查变量名出现过是不够的——die 消息里提到它就能满足那种判据")
+	}
+	if !strings.Contains(act, `"$RR_MANIFEST" | sort -u`) {
+		t.Error("harness 没有真正用 RR_MANIFEST 读取清单内容；" +
+			"绑定存在但清单没被读，第二遍失败比对会对空集合静默放行")
+	}
+	// The second pass has to be ON by default, or the whole apparatus is dead
+	// weight that only runs for whoever remembers to pass the flag.
+	if !strings.Contains(act, `GATE_APPLY_STARTUP_TWICE="${GATE_APPLY_STARTUP_TWICE:-1}"`) {
+		t.Error("GATE_APPLY_STARTUP_TWICE 未默认开启；第二遍是这一类缺陷唯一能被看见的时机，" +
+			"默认关掉等于门形同虚设")
+	}
+	if !strings.Contains(act, `[[ "$GATE_APPLY_STARTUP_TWICE" == "1" ]]`) {
+		t.Error("第二遍没有独立的开关判据；上面那行默认值将无人读取")
+	}
+	// An UNREGISTERED second-pass failure must be fatal — that is the direction
+	// of the ratchet, and it is enforced here rather than by the manifest.
+	if !strings.Contains(act, "不可重跑且未登记为已知缺口") {
+		t.Error("未登记的「第二遍失败」缺少致命退出的诊断文案；" +
+			"守卫必须锚定这条具体文案，否则窗口内的任意 die 都能满足判据")
+	}
+	// A listed entry that did not fail must be surfaced, so a real fix retires
+	// its entry instead of the list becoming a permanent blanket exemption.
+	if !strings.Contains(act, "rr_stale") {
+		t.Error("没有对「清单里登记了但本轮未复现」的条目做上报；" +
+			"少了这一条，修复之后条目会留在清单里变成永久豁免")
+	}
+	// Both passes must go through the SAME apply helper. The first version of
+	// the re-runnability pass copied the loop and drifted from the original by
+	// the --single-transaction rule — precisely the kind of difference that
+	// makes a harness report a defect that isn't there.
+	if strings.Count(act, "apply_startup_file ") < 2 {
+		t.Errorf("两遍没有共用同一个 apply 函数（出现 %d 次）；"+
+			"复制循环会让两遍在事务规则上漂移，而漂移出来的差异会被当成产品缺陷",
+			strings.Count(act, "apply_startup_file "))
+	}
+	if !strings.Contains(act, "apply_startup_file() {") {
+		t.Error("缺少 apply_startup_file 函数定义")
+	}
+	if !strings.Contains(act, `apply_startup_file "$f" "rerun:"`) {
+		t.Error("第二遍没有给条目打 rerun: 标记；缺了它就无法把两遍的失败清单分开")
+	}
+}
+
+// TestGateRerunPassBumpsItsOwnCounters guards the failure mode that made the
+// first version of the re-runnability pass worthless.
+//
+// The helper hardcoded `sf_*`, the re-runnability ratchet tested `rr_fail`, so
+// rr_fail stayed 0 forever: the run printed "startup rerun: applied=0 failed=0
+// missing=0" and the gate that LOOKED armed could never fire. The static
+// guards could not catch it — they read the script as text, and the text said
+// `rr_fail > 0`.
+//
+// So this one exercises the helper instead: source the function out of the
+// script, run it against a real temp file, and assert the counter the caller
+// NAMED is the one that moves. Two different counter names, two different
+// totals — that is the property the bug broke.
+func TestGateRerunPassBumpsItsOwnCounters(t *testing.T) {
+	src := gateSource(t)
+
+	// Pull out just the function definition.
+	start := strings.Index(src, "apply_startup_file() {")
+	if start < 0 {
+		t.Fatal("脚本里没有 apply_startup_file 函数；两遍共用一个 apply 是防止漂移的关键")
+	}
+	end := strings.Index(src[start:], "\n  }")
+	if end < 0 {
+		t.Fatal("找不到 apply_startup_file 的函数体结尾；解析失败会让本守卫空转")
+	}
+	fnBody := src[start : start+end+len("\n  }")]
+
+	// Give it what it reads from the enclosing scope.
+	harness := `
+SF_DIR="$1"
+sf_failed=()
+rr_failed=()
+sf_ok=0; sf_fail=0; sf_missing=0
+rr_ok=0; rr_fail=0; rr_missing=0
+# The helper reaches psql through "docker exec ... < "$SF_DIR/$f"", i.e. the
+# migration arrives on stdin and its FILENAME IS NEVER PASSED AS AN ARGUMENT.
+# The stub therefore has to decide on the payload, not on "$*" — an earlier
+# version matched *bad.sql* there, never matched, and the fail counter stayed
+# at 0 while the test still looked wired up.
+docker() { local data=""; [[ ! -t 0 ]] && data=$(cat)
+           case "$data" in *SELECT\ bad*) return 1;; esac; return 0; }
+` + fnBody + `
+# Two SEPARATE arrays, on purpose. An earlier version of this harness collected
+# into a hardcoded sf_failed and asserted only on that one array, so it stayed
+# green while the re-runnability pass collected nothing — which is how a real
+# run counted 11 failures, graded an empty list, and exited PASS=7 FAIL=0.
+# Each pass must be visible in ITS OWN list and NOT in the other's.
+apply_startup_file "good.sql"  ""        sf_ok sf_fail sf_missing sf_failed
+apply_startup_file "bad.sql"   ""        sf_ok sf_fail sf_missing sf_failed
+apply_startup_file "absent.sql" "rerun:" rr_ok rr_fail rr_missing rr_failed
+echo "sf=$sf_ok,$sf_fail,$sf_missing rr=$rr_ok,$rr_fail,$rr_missing"
+echo "sfentries=${#sf_failed[@]} rrentries=${#rr_failed[@]}"
+echo "--- sf_failed ---"; for e in "${sf_failed[@]}"; do echo "ENTRY|$e"; done
+echo "--- rr_failed ---"; for e in "${rr_failed[@]}"; do echo "ENTRY|$e"; done
+`
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.sql")
+	if err := os.WriteFile(good, []byte("SELECT 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// bad.sql must EXIST: the helper checks for the file before it calls psql,
+	// so a missing bad.sql would take the missing-file branch instead of the
+	// failure branch, and the fail counter would never move. It is the docker
+	// stub, not this file's content, that decides the outcome.
+	bad := filepath.Join(dir, "bad.sql")
+	if err := os.WriteFile(bad, []byte("SELECT bad;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Note there is no absent.sql on disk: the missing-file branch is one of
+	// the two we need to count, so the file must genuinely not exist.
+	scriptPath := filepath.Join(dir, "harness.sh")
+	if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Only the dir: the file names are baked into the harness, because the
+	// helper is exercised for its counters and its collection, not its args.
+	out, err := exec.Command("bash", scriptPath, dir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("跑取出来的 helper 失败：%v\n%s", err, out)
+	}
+	out_s := string(out)
+	if !strings.Contains(out_s, "sf=1,1,0") || !strings.Contains(out_s, "rr=0,0,1") {
+		t.Fatalf("helper 没有递增调用方指定的计数器：\n%s\n"+
+			"期望 sf=1,1,0（good 成功 / bad 失败）且 rr=0,0,1（第二遍的缺失文件）。"+
+			"若 rr 恒为 0，说明第二遍的 ratchet 永远不会触发——"+
+			"这正是第一版的缺陷：helper 写死 sf_*，而 ratchet 判 rr_fail",
+			out_s)
+	}
+	// THE defect that a real run caught and this test did not: the counters
+	// were caller-named while the failure LIST was not. Each pass must land in
+	// its own array, and the cross-contamination direction matters — a second
+	// pass appending into the first pass's list is how the 2026-10-04 run
+	// counted 11 failures, iterated an empty rr_failed, and passed.
+	if !strings.Contains(out_s, "sfentries=1 rrentries=1") {
+		t.Fatalf("helper 没有把两遍的失败分别收进调用方各自的数组：\n%s\n"+
+			"期望 sfentries=1 rrentries=1。rrentries=0 而 rr_fail>0 正是"+
+			"「计数与清单不同源」的形态：ratchet 拿到空集合会把任何真实失败判成全部已登记。",
+			out_s)
+	}
+	// Split the two sections apart and check each one on its own, so an entry
+	// that ends up in the wrong list is attributed to the wrong pass.
+	var sfEntries, rrEntries []string
+	section := ""
+	for _, line := range strings.Split(out_s, "\n") {
+		switch {
+		case strings.HasPrefix(line, "--- sf_failed ---"):
+			section = "sf"
+		case strings.HasPrefix(line, "--- rr_failed ---"):
+			section = "rr"
+		case strings.HasPrefix(line, "ENTRY|"):
+			entry := strings.TrimPrefix(line, "ENTRY|")
+			if section == "sf" {
+				sfEntries = append(sfEntries, entry)
+			} else if section == "rr" {
+				rrEntries = append(rrEntries, entry)
+			}
+		}
+	}
+	if len(sfEntries) != 1 || !strings.HasPrefix(sfEntries[0], "bad.sql") {
+		t.Errorf("第一遍的清单不对，期望恰好 1 条 bad.sql 失败：%q", sfEntries)
+	}
+	// The label has to survive into the collection, otherwise the two passes'
+	// failures cannot be told apart afterwards — which is the whole reason the
+	// label exists.
+	if len(rrEntries) != 1 || !strings.HasPrefix(rrEntries[0], "rerun:") {
+		t.Errorf("第二遍的清单不对，期望恰好 1 条带 rerun: 标记的缺失文件：%q", rrEntries)
+	}
 }

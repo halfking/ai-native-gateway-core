@@ -1,0 +1,56 @@
+# baseline_rerun_budget.tsv — 错误预算：baseline 三件套「重跑会报多少条 ERROR」
+#
+# 这份清单回答的问题和 startup_rerun_known_gaps.tsv 不同，别混用：
+#
+#   startup_rerun_known_gaps.tsv  按「文件」登记 —— 217 条启动迁移里哪些文件
+#                                  第二遍跑不过。清单是一条一行，因为缺口是离散的。
+#   baseline_rerun_budget.tsv     按「错误行数」登记 —— baseline 三件套重跑
+#                                  会炸出上千条同类错误，逐条登记既没意义
+#                                  也不可维护，所以登记的是规模。
+#
+# 为什么是「预算」而不是「已知缺口」
+#   01-schema.sql 是一份裸 pg_dump baseline：整份文件没有一处 IF NOT EXISTS。
+#   实测（2026-10-04，本机一次性库，先跑完 prereqs+baseline+seed+217 条链，
+#   再单独重跑 baseline 三件套）：
+#
+#     00-prereqs.sql    0 条 ERROR
+#     01-schema.sql     1665 条 ERROR   ← 重跑 installer 的真实中止点
+#     02-seed.sql       0 条 ERROR
+#
+#   1665 条按错误形态聚合：
+#     1130  relation "X" already exists
+#      168  multiple primary keys for table "X" are not allowed
+#      103  function "X" already exists with same argument types
+#       75  cannot attach index "X" as a partition of index "X"
+#       72  policy "X" for table "X" already exists
+#       38  constraint "X" for relation "X" already exists
+#       32  trigger "X" for relation "X" already exists
+#       30  "X" is already a partition
+#        8  relation "X" does not exist          ← 见下，这 8 条不是「已存在」类
+#        3  column "X" does not exist
+#        2  type "X" already exists
+#        1  unique constraint on partitioned table must include all partitioning columns
+#        1  column request_logs.request_body does not exist
+#        1  column request_logs_hot.request_body does not exist
+#        1  column "X" of relation "X" does not exist
+#
+# RATCHET 语义（门里实现的）
+#   * 实际 > 预算  -> 门 die。新增了不可重跑语句，必须先核实是不是新缺陷。
+#   * 实际 < 预算  -> 上报「已改善，请下调预算」，不致命（真修复不该被文书卡住）。
+#   * 登记了却 0 错误 -> 上报「应从清单删除」。
+#   * 失败文件不在清单里 -> 门 die。
+#   ⇒ 删掉整个本文件 = 所有 baseline 不可重跑都变成致命，方向不会被放宽。
+#
+# ⚠ 上面那 8+3+1 条「does not exist」不是幂等问题，而是**顺序依赖**：
+#   baseline 里先 DROP/重建、后引用的对象，在已有库上重跑时前面的语句已经失败，
+#   后面引用到还没建成的对象就报 does not exist。它们是前面 1500+ 条失败的
+#   次生结果，不是独立缺口。这也是为什么这里按「规模」而不是「清单」登记。
+#
+# 怎么加/改条目
+#   一行：<文件名><TAB><允许的最大 ERROR 行数>
+#   只登记**确实重跑不过**的文件。00-prereqs.sql / 02-seed.sql 目前 0 错误，
+#   因此故意不在清单里 —— 它们哪天开始报错，门会直接 die。
+#
+# D9（待拍板）：在这个缺口补上之前，发布流程不得包含「对已有库重跑 installer」。
+# 详见 docs/audit/2026-10-04-session-migration-decision-sheet.md 与审计文档 §9.124。
+01-schema.sql	1665

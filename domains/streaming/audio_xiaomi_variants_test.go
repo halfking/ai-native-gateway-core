@@ -544,3 +544,255 @@ func TestTTSNoCandidatesMapsTo503NoProvider(t *testing.T) {
 		t.Errorf("body should carry no_provider: %s", rec.Body.String())
 	}
 }
+
+// ── 8. 官方文档复核后的修正（2026-10-04 批判审计） ──────────────────────
+//
+// 依据：官方《Speech Synthesis (MiMo-TTS Series) - OpenAI API Compatibility》
+// 的 audio.format 只列 wav / mp3 / pcm / pcm16，比 OpenAI /audio/speech 窄
+// （OpenAI 还收 opus/aac/flac）。此前的归一口径 audioTTSEffectiveFormat 是
+// OpenAI 全量集合，于是客户端按 OpenAI 契约请求 opus 时被原样发给小米，
+// 白跑一轮再换一句上游 400。修复前用 opus 实测确认过这个行为（上游确实
+// 收到 audio.format="opus"）。
+func TestTTSBridgeRejectsOpenAIOnlyFormatsLocally(t *testing.T) {
+	for _, format := range []string{"opus", "aac", "flac"} {
+		t.Run(format, func(t *testing.T) {
+			var hits int32
+			svc := newTTSAudioService(t, "mimo-v2.5-tts", func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&hits, 1)
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"audio":{"data":"UklGRg=="}}}]}`))
+			})
+			h := NewAudioSpeechHandler(svc)
+			payload := fmt.Sprintf(`{"model":"mimo-v2.5-tts","input":"你好","response_format":%q}`, format)
+			req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("format=%s -> gateway %d, want 400 (MiMo does not accept it); body=%s", format, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "invalid_audio_request") {
+				t.Errorf("body should carry invalid_audio_request: %s", rec.Body.String())
+			}
+			if atomic.LoadInt32(&hits) != 0 {
+				t.Errorf("format=%s must be rejected before calling upstream, got %d calls", format, hits)
+			}
+		})
+	}
+}
+
+func TestTTSBridgeAcceptsOfficialFormatsAndPCM16Alias(t *testing.T) {
+	// 官方 pcm 与 pcm16 等价。此前 pcm16 不在归一表里，会被当成乱值
+	// 回落成 wav —— 客户端要裸 PCM、拿到 WAV，且无人告知。
+	cases := map[string]string{"wav": "wav", "mp3": "mp3", "pcm": "pcm", "pcm16": "pcm"}
+	for asked, want := range cases {
+		t.Run(asked, func(t *testing.T) {
+			var sent string
+			svc := newTTSAudioService(t, "mimo-v2.5-tts", func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var p struct {
+					Audio map[string]string `json:"audio"`
+				}
+				_ = json.Unmarshal(body, &p)
+				sent = p.Audio["format"]
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"audio":{"data":"UklGRg=="}}}]}`))
+			})
+			h := NewAudioSpeechHandler(svc)
+			payload := fmt.Sprintf(`{"model":"mimo-v2.5-tts","input":"你好","response_format":%q}`, asked)
+			req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("format=%s -> %d; body=%s", asked, rec.Code, rec.Body.String())
+			}
+			if sent != want {
+				t.Errorf("upstream audio.format = %q, want %q", sent, want)
+			}
+		})
+	}
+}
+
+func TestNonBridgeCandidateStillAcceptsOpus(t *testing.T) {
+	// 反向守卫：opus/aac/flac 在 OpenAI 兼容上游上是合法的，收窄只能作用
+	// 在桥接形态。若这条转红，说明有人把 audioTTSEffectiveFormat 的
+	 // 全量口径改窄了，会打断所有非小米 TTS 供应商。
+	var sent string
+	svc := newTestAudioService(t, "zhipu", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var p struct {
+			ResponseFormat string `json:"response_format"`
+		}
+		_ = json.Unmarshal(body, &p)
+		sent = p.ResponseFormat
+		_, _ = w.Write([]byte("binary-audio"))
+	})
+	h := NewAudioSpeechHandler(svc)
+	payload := `{"model":"some-tts","input":"你好","response_format":"opus"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("passthrough candidate with opus -> %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if sent != "opus" {
+		t.Errorf("passthrough upstream response_format = %q, want opus (OpenAI contract)", sent)
+	}
+}
+
+func TestVoiceCloneRejectsNonWavMP3Sample(t *testing.T) {
+	// 官方：voiceclone 只收 mp3/wav 样本。此前只校验 data: 前缀，m4a 样本
+	// 能过本地校验再被上游 400。
+	var hits int32
+	svc := newTTSAudioService(t, "mimo-v2.5-tts-voiceclone", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"audio":{"data":"UklGRg=="}}}]}`))
+	})
+	h := NewAudioSpeechHandler(svc)
+	payload := `{"model":"mimo-v2.5-tts-voiceclone","input":"你好","voice":"data:audio/m4a;base64,QUJD"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("m4a voice sample -> %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Errorf("unsupported sample format must not reach upstream, got %d calls", hits)
+	}
+}
+
+func TestVoiceCloneAcceptsWavSampleDataURL(t *testing.T) {
+	var hits int32
+	svc := newTTSAudioService(t, "mimo-v2.5-tts-voiceclone", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"audio":{"data":"UklGRg=="}}}]}`))
+	})
+	h := NewAudioSpeechHandler(svc)
+	payload := `{"model":"mimo-v2.5-tts-voiceclone","input":"你好","voice":"data:audio/wav;base64,QUJD"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("wav voice sample -> %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Errorf("wav sample must reach upstream exactly once, got %d", hits)
+	}
+}
+
+func TestTTSVoiceSubstitutionIsDisclosed(t *testing.T) {
+	// 客户端点名 alloy（OpenAI 音色），这条上游没有 → 我们换成 mimo_default。
+	// 拿到的声音与请求的不是同一个人，此前静默替换。
+	svc := newTTSAudioService(t, "mimo-v2.5-tts", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"audio":{"data":"UklGRg=="}}}]}`))
+	})
+	h := NewAudioSpeechHandler(svc)
+	payload := `{"model":"mimo-v2.5-tts","input":"你好","voice":"alloy"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Gw-Audio-Ignored-Params"); !strings.Contains(got, "voice") {
+		t.Errorf("substituted voice must be disclosed, header = %q", got)
+	}
+}
+
+func TestTTSKnownVoiceIsNotReportedAsIgnored(t *testing.T) {
+	svc := newTTSAudioService(t, "mimo-v2.5-tts", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"audio":{"data":"UklGRg=="}}}]}`))
+	})
+	h := NewAudioSpeechHandler(svc)
+	payload := `{"model":"mimo-v2.5-tts","input":"你好","voice":"茉莉"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("X-Gw-Audio-Ignored-Params"); got != "" {
+		t.Errorf("known voice must not be reported as ignored, header = %q", got)
+	}
+}
+
+func TestASRBridgeDisclosesDroppedPromptAndTemperature(t *testing.T) {
+	// prompt 是领域词汇提示，被吞掉时转写结果只是「看起来不准」，调用方
+	// 无从判断是模型能力问题还是提示词没生效。
+	svc := newTestAudioService(t, "xiaomi", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"文本"}}]}`))
+	})
+	h := NewAudioTranscriptionsHandler(svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	buildTranscriptionsMultipartBodyWithFields(t, req, tinyWAVForTest(), "a.wav", "mimo-v2.5-asr", map[string]string{
+		"language": "zh", "prompt": "以下是人名：韩梅梅", "temperature": "0.2",
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	got := rec.Header().Get("X-Gw-Audio-Ignored-Params")
+	for _, want := range []string{"prompt", "temperature"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("header %q must disclose %q", got, want)
+		}
+	}
+	if strings.Contains(got, "language") {
+		t.Errorf("language=zh is mapped into asr_options and must NOT be reported: %q", got)
+	}
+}
+
+func TestASRBridgeDisclosesUnmappableLanguage(t *testing.T) {
+	// language=ja 归一后落空（省略该键回落到上游自动识别）——这是丢弃，
+	// 与「映射成功」要分得开，否则回执本身就是谎。
+	svc := newTestAudioService(t, "xiaomi", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"文本"}}]}`))
+	})
+	h := NewAudioTranscriptionsHandler(svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	buildTranscriptionsMultipartBody(t, req, tinyWAVForTest(), "a.wav", "mimo-v2.5-asr", "ja")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("X-Gw-Audio-Ignored-Params"); !strings.Contains(got, "language") {
+		t.Errorf("unmappable language must be disclosed, header = %q", got)
+	}
+}
+
+func TestASRPassthroughDoesNotDiscloseIgnoredParams(t *testing.T) {
+	// 透传形态三项都按 OpenAI 契约原样上行，没有丢弃可回执。
+	svc := newTestAudioService(t, "zhipu", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/audio/transcriptions") {
+			_, _ = w.Write([]byte(`{"text":"文本"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"文本"}}]}`))
+	})
+	h := NewAudioTranscriptionsHandler(svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	buildTranscriptionsMultipartBodyWithFields(t, req, tinyWAVForTest(), "a.wav", "mimo-v2.5-asr", map[string]string{
+		"language": "ja", "prompt": "术语表", "temperature": "0.2",
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("X-Gw-Audio-Ignored-Params"); got != "" {
+		t.Errorf("passthrough transport drops nothing, header = %q", got)
+	}
+}
+
+func TestASRStreamDisclosesIgnoredParamsViaEvent(t *testing.T) {
+	// 流式路径的响应头已随 WriteHeader(200) 发出，进不去——沿用
+	// transcript.transport 的既有处置，走 SSE 事件。
+	svc := newTestAudioService(t, "xiaomi", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"文本"}}]}`))
+	})
+	h := NewAudioTranscriptionsHandler(svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	buildTranscriptionsMultipartBodyWithFields(t, req, tinyWAVForTest(), "a.wav", "mimo-v2.5-asr", map[string]string{
+		"language": "zh", "prompt": "术语表", "stream": "true",
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "transcript.ignored_params") {
+		t.Fatalf("stream path must disclose ignored params via event; body=%s", body)
+	}
+	if !strings.Contains(body, "prompt") {
+		t.Errorf("event payload must name prompt; body=%s", body)
+	}
+}

@@ -144,6 +144,12 @@ type TranscribeResult struct {
 	RelayBody       []byte
 	RelayIsSSE      bool
 	RelayIsTextOnly bool
+	// IgnoredParams 列出客户端传了、但这条上游形态兑现不了的参数
+	// （chat-audio 桥接下 prompt/temperature 无处安放、language 归一后
+	// 落空）。handler 走 X-Gw-Audio-Ignored-Params 响应头回执，流式走
+	// transcript.ignored_params 事件。静默丢弃会让调用方以为提示词已经
+	// 参与识别——领域词汇提示被吞掉时，转写结果只是「看起来不准」。
+	IgnoredParams []string
 }
 
 // SynthesizeRequest is one TTS call.
@@ -536,6 +542,35 @@ func normalizeASRLanguageForCandidate(cand provider.Candidate, language string) 
 	return ""
 }
 
+// ignoredChatAudioASRParams 报告 chat-audio 桥接形态「收下但没送出去」的
+// 转写参数。三条各自的依据：
+//
+//	prompt      —— 上游拒收 text part（400 "ASR request must not include
+//	              text parts"），官方 ASR 文档的请求体也只有 messages /
+//	              model / asr_options / stream 四个键，没有等价物；
+//	temperature —— 同上，这条上游没有采样温度旋钮；
+//	language    —— 只有「传了但归一后落空」才算丢弃。映射成功的
+//	              （zh-CN→zh）真的进了 asr_options，不该被记成未生效；
+//	              没传也不算。
+//
+// 透传形态（multipart）三项都按 OpenAI 契约原样上行，不产生回执。
+func ignoredChatAudioASRParams(cand provider.Candidate, req TranscribeRequest) []string {
+	if !preferChatAudioBridge(cand) {
+		return nil
+	}
+	var ignored []string
+	if strings.TrimSpace(req.Prompt) != "" {
+		ignored = append(ignored, "prompt")
+	}
+	if strings.TrimSpace(req.Temperature) != "" {
+		ignored = append(ignored, "temperature")
+	}
+	if lang := strings.TrimSpace(req.Language); lang != "" && normalizeASRLanguageForCandidate(cand, lang) == "" {
+		ignored = append(ignored, "language")
+	}
+	return ignored
+}
+
 // transcribeViaChatAudio bridges the audio into a chat/completions call with
 // an input_audio content block (Xiaomi MiMo shape, verified 2026-10-03).
 //
@@ -596,7 +631,7 @@ func (s *AudioService) transcribeViaChatAudio(ctx context.Context, cand provider
 		return nil, newAudioUpstreamError(resp.StatusCode, raw)
 	}
 
-	res := &TranscribeResult{Transport: AudioTransportChatAudio, UpstreamModel: cand.RawModel}
+	res := &TranscribeResult{Transport: AudioTransportChatAudio, UpstreamModel: cand.RawModel, IgnoredParams: ignoredChatAudioASRParams(cand, req)}
 	if streaming {
 		text, seconds, serr := relayChatAudioSSE(ctx, resp.Body, emitDelta)
 		if serr != nil {
@@ -766,6 +801,10 @@ func normalizeTTSVoiceForCandidate(cand provider.Candidate, voice string) string
 
 // audioTTSEffectiveFormat 归一 TTS response_format；默认 wav（小米桥接
 // 返回 24kHz16bit WAV；OpenAI 默认 mp3，但显式 wav 两边都合法）。
+//
+// 这条是**透传形态**（OpenAI 兼容 /audio/speech）的口径，含 OpenAI 全量
+// 容器；chat-audio 桥接形态的更窄口径见 normalizeTTSFormatForCandidate。
+// 两者不能合并：合成 OpenAI 兼容上游时 opus/aac/flac 是合法的。
 func audioTTSEffectiveFormat(f string) string {
 	switch strings.ToLower(strings.TrimSpace(f)) {
 	case "mp3", "opus", "aac", "flac", "wav", "pcm":
@@ -773,6 +812,52 @@ func audioTTSEffectiveFormat(f string) string {
 	default:
 		return "wav"
 	}
+}
+
+// xiaomiTTSFormats 是 MiMo TTS 的 audio.format 合法集合。
+//
+// 官方《Speech Synthesis (MiMo-TTS Series) - OpenAI API Compatibility》
+// （mimo.mi.com → llms.txt → api/audio/tts.md）只列 wav / mp3 / pcm /
+// pcm16，并写明 pcm 与 pcm16 等价（都按 pcm16 处理）。
+//
+// 这比 OpenAI /audio/speech **窄**：OpenAI 还收 opus / aac / flac。
+var xiaomiTTSFormats = map[string]string{
+	"wav": "wav", "mp3": "mp3", "pcm": "pcm", "pcm16": "pcm",
+}
+
+// ttsFormatsOpenAIOnly 是「OpenAI 合法但 MiMo 不收」的三种容器。它们是
+// 客户端按 OpenAI 契约发出的**合法请求**，撞上小米只能失败——本地 400
+// 比白跑一轮再换一句上游 400 更好（与 ASR 侧 m4a 的前置校验同款处置）。
+//
+// 刻意只拦这三个、不拦无法识别的乱值：后者在透传形态下一直是回落 wav
+// 的既有行为，改动它超出「上游不收这个格式」这个问题本身。
+var ttsFormatsOpenAIOnly = map[string]bool{"opus": true, "aac": true, "flac": true}
+
+// normalizeTTSFormatForCandidate 把 response_format 归一到该候选能兑现的
+// 容器。透传形态走 OpenAI 全量口径（audioTTSEffectiveFormat）；桥接形态
+// 额外做两件事——
+//
+//	pcm16 → pcm（官方别名，此前会被当成乱值回落成 wav，输出格式与客户端
+//	         预期不符且无人告知）；
+//	opus/aac/flac → 本地 400（官方清单里没有）。
+func normalizeTTSFormatForCandidate(cand provider.Candidate, format string) (string, error) {
+	eff := audioTTSEffectiveFormat(format)
+	if !preferChatAudioBridge(cand) {
+		return eff, nil
+	}
+	key := strings.ToLower(strings.TrimSpace(format))
+	if key == "" {
+		return "wav", nil
+	}
+	if mapped, ok := xiaomiTTSFormats[key]; ok {
+		return mapped, nil
+	}
+	if ttsFormatsOpenAIOnly[key] {
+		return "", newAudioClientInputError(
+			"response_format %q is valid for OpenAI /audio/speech but not supported by this upstream (supported: wav, mp3, pcm, pcm16)",
+			key)
+	}
+	return eff, nil
 }
 
 // xiaomiTTSMode 分类 MiMo TTS 家族——三个变体要的请求形状互不相同
@@ -814,7 +899,12 @@ const xiaomiDefaultVoiceDesignPrompt = "自然清晰的中性声音，语速适�
 // req.Voice 对 voicedesign 变体被当作**音色设计描述**（OpenAI 的 voice
 // 字段在这条上游上正好可以承载一句自然语言描述），对 voiceclone 变体被
 // 当作样本 DataURL 透传。
-func buildChatAudioTTSPayload(cand provider.Candidate, req SynthesizeRequest, format string) (map[string]any, error) {
+//
+// 第二个返回值是被**替换**掉的客户端参数（音色被换成默认音色）——
+// 调用方要求的是一个音色、拿到的是另一个，这是必须如实回执的静默改写，
+// 与 speed「收下但不生效」同类。mode 在这里判定一次，同时决定载荷形状
+// 与回执内容，避免两处各自算一遍变体而漂移。
+func buildChatAudioTTSPayload(cand provider.Candidate, req SynthesizeRequest, format string) (map[string]any, []string, error) {
 	format = strings.TrimSpace(format)
 	if format == "" {
 		format = "wav"
@@ -823,6 +913,7 @@ func buildChatAudioTTSPayload(cand provider.Candidate, req SynthesizeRequest, fo
 	if preferChatAudioBridge(cand) {
 		mode = xiaomiTTSModeForModel(cand.RawModel)
 	}
+	var ignored []string
 	audio := map[string]string{"format": format}
 	messages := []map[string]string{{"role": "assistant", "content": req.Input}}
 	switch mode {
@@ -838,14 +929,27 @@ func buildChatAudioTTSPayload(cand provider.Candidate, req SynthesizeRequest, fo
 		// 能照着改的说明，而不是让上游回一句 opaque 的 400。
 		sample := strings.TrimSpace(req.Voice)
 		if !strings.HasPrefix(strings.ToLower(sample), "data:") {
-			return nil, newAudioClientInputError(
+			return nil, nil, newAudioClientInputError(
 				"model %q clones a voice from an audio sample: pass the sample as a data URL in voice (e.g. data:audio/wav;base64,...), not a voice name",
 				cand.RawModel)
+		}
+		if mediatype, ok := dataURLMediaType(sample); ok && !voiceCloneSampleFormats[mediatype] {
+			return nil, nil, newAudioClientInputError(
+				"model %q accepts only wav or mp3 voice samples, got media type %q (supported: audio/wav, audio/mpeg, audio/mp3)",
+				cand.RawModel, mediatype)
 		}
 		audio["voice"] = sample
 	default:
 		if v := normalizeTTSVoiceForCandidate(cand, req.Voice); v != "" {
 			audio["voice"] = v
+		}
+		// 客户端点名了音色、我们换成了默认音色 —— 拿到的音频与请求的不是
+		// 一个人，必须回执（此前静默替换：voice=alloy 与 voice=茉莉 拿到
+		// 的是同一个声音，调用方无从分辨）。
+		if asked := strings.TrimSpace(req.Voice); asked != "" {
+			if _, ok := xiaomiVoices[strings.ToLower(asked)]; !ok {
+				ignored = append(ignored, "voice")
+			}
 		}
 	}
 	return map[string]any{
@@ -853,21 +957,54 @@ func buildChatAudioTTSPayload(cand provider.Candidate, req SynthesizeRequest, fo
 		"modalities": []string{"text", "audio"},
 		"audio":      audio,
 		"messages":   messages,
-	}, nil
+	}, ignored, nil
+}
+
+// dataURLMediaType 从 data URL 里取 media type；取不到（无 media type 或
+// 形态异常）时返回 ok=false，交给上游判断而不是本地瞎猜。
+func dataURLMediaType(dataURL string) (string, bool) {
+	rest := dataURL[len("data:"):]
+	idx := strings.IndexByte(rest, ',')
+	if idx < 0 {
+		return "", false
+	}
+	mt := rest[:idx]
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = mt[:i]
+	}
+	mt = strings.ToLower(strings.TrimSpace(mt))
+	if mt == "" {
+		return "", false
+	}
+	return mt, true
+}
+
+// voiceCloneSampleFormats 是 voiceclone 变体接受的样本容器（官方 TTS 文档：
+// 「only supports passing in audio sample files in mp3 and wav formats」）。
+// wav 的标准类型是 audio/wav，实践中 audio/x-wav 也常见。
+var voiceCloneSampleFormats = map[string]bool{
+	"audio/wav": true, "audio/x-wav": true, "audio/wave": true,
+	"audio/mpeg": true, "audio/mp3": true,
 }
 
 // synthesizeViaChatAudio bridges TTS through chat/completions with
-// modalities ["text","audio"]（小米 MiMo 形态，2026-10-03/04 实测）：
+// modalities ["text","audio"]（小米 MiMo 形态，2026-10-03/04 实测 + 官方
+// 文档复核 2026-10-04）：
 //
 //   - 文本必须放 assistant 角色消息（上游 400 "messages must contain an
 //     assistant role for TTS model"）；
+//   - audio.format 只收 wav/mp3/pcm/pcm16（官方清单），比 OpenAI 窄，
+//     见 normalizeTTSFormatForCandidate；
 //   - 内置音色之外的名字先归一到 mimo_default（上游 400 "Unknown voice"，
-//     错误体里自带合法清单）；
+//     错误体里自带合法清单），并回执 voice 被替换；
 //   - voicedesign / voiceclone 两个变体的形状要求不同，见 buildChatAudioTTSPayload；
 //   - 响应 choices[0].message.audio.data 是 base64 音频（WAV 24kHz）。
 func (s *AudioService) synthesizeViaChatAudio(ctx context.Context, cand provider.Candidate, req SynthesizeRequest) (*SynthesizeResult, error) {
-	format := audioTTSEffectiveFormat(req.ResponseFormat)
-	payload, perr := buildChatAudioTTSPayload(cand, req, format)
+	format, ferr := normalizeTTSFormatForCandidate(cand, req.ResponseFormat)
+	if ferr != nil {
+		return nil, ferr
+	}
+	payload, voiceIgnored, perr := buildChatAudioTTSPayload(cand, req, format)
 	if perr != nil {
 		return nil, perr
 	}
@@ -934,15 +1071,22 @@ func (s *AudioService) synthesizeViaChatAudio(ctx context.Context, cand provider
 		Transport:      AudioTransportChatAudio,
 		UpstreamModel:  cand.RawModel,
 		TranscriptHint: parsed.Choices[0].Message.Audio.Transcript,
-		IgnoredParams:  ignoredChatAudioTTSParams(req),
+		IgnoredParams:  ignoredChatAudioTTSParams(req, voiceIgnored),
 	}, nil
 }
 
-// ignoredChatAudioTTSParams 报告 chat-audio 形态收下但兑现不了的参数。
-// 2026-10-04 实测：小米 chat 协议没有语速旋钮，同一文本带不带 speed 得到
-// 逐字节相同的音频（base64 长度一致），所以 speed 只能如实回执「未生效」。
-func ignoredChatAudioTTSParams(req SynthesizeRequest) []string {
-	var ignored []string
+// ignoredChatAudioTTSParams 汇总 chat-audio 形态「收下但没按字面兑现」的
+// 参数。2026-10-04 实测 + 官方文档复核：
+//
+//	speed —— 小米 chat 协议没有语速旋钮，带不带 speed 得到逐字节相同的
+//	         音频（base64 长度一致）；
+//	voice —— 客户端点名了音色而这条上游没有，我们换成 mimo_default。
+//	         拿到的声音与请求的不是同一个人，比 speed 更需要回执。
+//
+// 两个来源分开传进来（speed 来自请求本身，voice 来自载荷拼装），避免
+// 在这里重算一次 TTS 变体——变体判定与载荷形状必须是同一个事实源。
+func ignoredChatAudioTTSParams(req SynthesizeRequest, voiceIgnored []string) []string {
+	ignored := append([]string(nil), voiceIgnored...)
 	if strings.TrimSpace(req.Speed) != "" {
 		ignored = append(ignored, "speed")
 	}
