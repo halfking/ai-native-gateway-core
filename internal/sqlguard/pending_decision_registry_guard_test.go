@@ -82,6 +82,16 @@ type pdForm struct {
 	id   string
 	desc string
 	re   *regexp.Regexp
+	// numGroups lists the capture groups that may hold the item number, in
+	// priority order; the first participating one wins. Most forms use [1].
+	// R9 needs [2,3] because the round reports write the same fact three ways:
+	//
+	//	新增待裁决 1 条（P2，第 88 条）      ← 第 N 条
+	//	新增待裁决 1 条（P3，待裁决 89）    ← 待裁决 N
+	//	新增待裁决 1 条（P2，附 R1 守卫）
+	//
+	// and the leading 1 is a COUNT, not an item number.
+	numGroups []int
 	// carriesNumber records whether the form is DESIGNED to carry an item
 	// number. Whether a given hit actually has one is decided by number > 0,
 	// never by this flag — the two must not be conflated (draft v3 conflated
@@ -89,7 +99,7 @@ type pdForm struct {
 	carriesNumber bool
 }
 
-// pdForms are the eight written forms that register a pending decision.
+// pdForms are the written forms that register a pending decision.
 //
 // R2's and R5's number is an OPTIONAL capture group. Go's RE2 has no negative
 // lookahead, so "carries a number" cannot be expressed as a negative match; it
@@ -99,14 +109,87 @@ type pdForm struct {
 // required number makes the guard toothless on 「新增待裁决：」 — the shape a
 // future round is most likely to write by forgetting the number.
 var pdForms = []pdForm{
-	{"R1", "「待裁决第 N 条」（标题或内联）", regexp.MustCompile(`待裁决第\s*(\d+)\s*条`), true},
-	{"R2", "「新增待裁决 N」（编号可缺）", regexp.MustCompile(`新增\s*\**\s*待裁决\s*(?:第\s*)?(\d+)?`), true},
-	{"R3", "「**【N，某号新增」", regexp.MustCompile(`\*\*【\s*(\d+)\s*[，,][^】]*号新增`), true},
-	{"R4", "「（待裁决 N，」", regexp.MustCompile(`（待裁决\s*(\d+)\s*[，,]`), true},
-	{"R5", "「登记待裁决」/「登记为待裁决」", regexp.MustCompile(`(?:按纪律)?登记(?:为)?待裁决\s*(?:第\s*)?(\d+)?`), false},
-	{"R6", "「登记「需确认是否接线」」", regexp.MustCompile(`登记「需确认是否接线」`), false},
-	{"R7", "「（待裁决，」（设计上无编号）", regexp.MustCompile(`（(?:修法方向|修法|建议|定性与建议|建议修法)?\s*待裁决\s*[，，]`), false},
-	{"R8", "「新增两条产品裁决/建议」", regexp.MustCompile(`新增两条(?:产品裁决|建议|下轮必核)`), false},
+	{"R1", "「待裁决第 N 条」（标题或内联）", regexp.MustCompile(`待裁决第\s*(\d+)\s*条`), []int{1}, true},
+	{"R2", "「新增待裁决 N」（编号可缺）", regexp.MustCompile(`新增\s*\**\s*待裁决\s*(?:第\s*)?(\d+)?`), []int{1}, true},
+	{"R3", "「**【N，某号新增」", regexp.MustCompile(`\*\*【\s*(\d+)\s*[，,][^】]*号新增`), []int{1}, true},
+	{"R4", "「（待裁决 N，」", regexp.MustCompile(`（待裁决\s*(\d+)\s*[，,]`), []int{1}, true},
+	{"R5", "「登记待裁决」/「登记为待裁决」", regexp.MustCompile(`(?:按纪律)?登记(?:为)?待裁决\s*(?:第\s*)?(\d+)?`), []int{1}, false},
+	{"R6", "「登记「需确认是否接线」」", regexp.MustCompile(`登记「需确认是否接线」`), nil, false},
+	{"R7", "「（待裁决，」（设计上无编号）", regexp.MustCompile(`（(?:修法方向|修法|建议|定性与建议|建议修法)?\s*待裁决\s*[，，]`), nil, false},
+	{"R8", "「新增两条产品裁决/建议」", regexp.MustCompile(`新增两条(?:产品裁决|建议|下轮必核)`), nil, false},
+	{"R9", "轮次报告摘要式「第 N 条 / 待裁决 N」", regexp.MustCompile(`新增待裁决\s*\d+\s*条（[^）]*?(?:第\s*(\d+)\s*条|待裁决\s*(\d+))`), []int{2, 3}, true},
+	{"R10", "括号引用型「（待裁决 N）」", regexp.MustCompile(`待裁决\s*(\d+)\s*）`), []int{1}, false},
+	// R11's anchor is load-bearing. Bare 「与 待裁决 N」 cannot tell a
+	// registration (「由此新增 **待裁决 48（P1）** 与 **待裁决 49（P2）**」) from a
+	// cross-reference (「这一条恰与待裁决 52「fail-open 四条」直接相关」, ledger
+	// :534) — the loose version reported item 52 as registered when the
+	// round-232 subagent's independent count had it as reference-only. The
+	// registration verb and its clause must therefore be part of the match.
+	{"R11", "并列登记型「新增 … 与待裁决 N」", regexp.MustCompile(`(?:新增|登记|立为|坐实)[^。；]{0,40}?与\s*\**\s*待裁决\s*(\d+)`), []int{1}, true},
+	// ⚠️ A 13th form was drafted here — an item-position rule for
+	// 「**② 🔴 待裁决 85（P1 按其自身契约）**」 — and then DELETED: it never fired.
+	// The real occurrences are embedded mid-line inside the ledger's
+	// single-line round-summary bullets (`:3507`), where no line-anchored rule
+	// can separate the item label from the surrounding prose. A rule that can
+	// never fire is decoration; loosening it until it fires would be tuning the
+	// ruler to fit the number (§174, §189). The three items it would have
+	// covered — 44, 81, 85 — are reported as a named residual gap instead.
+}
+
+// pdTableHeader recognises the ledger's one tabular registry
+// (§4.1's 「| 编号 | 议题 | 报告 | 我的建议 |」 table), which carries items 28,
+// 30, 35 and 36. No single-line regex can tell a registry row from any other
+// table row, so this form needs the header as context — the reason round 232's
+// enumeration missed four items.
+//
+// ⚠️ The second column is load-bearing. Anchoring on 「编号」 alone swept in a
+// MIGRATION registry in round 182's report and reported migration numbers
+// 336/343/344/346 as pending-decision items — a false positive in the very
+// census this guard exists to make trustworthy. 「议题」 is what distinguishes
+// the decision registry from the migration registry. A numeric ceiling was
+// rejected instead: the item-number space is 1..98 today and will outgrow any
+// constant, which is §174's "the ruler changed" failure wearing a fix's
+// clothes.
+var (
+	pdTableHeader = regexp.MustCompile(`^\|\s*编号\s*\|[^|]*议题`)
+	pdTableRow    = regexp.MustCompile(`^\|\s*(\d{1,3})\s*\|`)
+)
+
+// scanNumberedTableRows returns item numbers from tabular registries, and the
+// line numbers it found them on.
+func scanNumberedTableRows(t *testing.T, text string) ([]pdHit, []int) {
+	t.Helper()
+	var hits []pdHit
+	var nums []int
+	inTable := false
+	lines := strings.Split(text, "\n")
+	for i, raw := range lines {
+		line := strings.TrimSuffix(raw, "\r")
+		if pdTableHeader.MatchString(line) {
+			inTable = true
+			continue
+		}
+		if inTable && !strings.HasPrefix(strings.TrimSpace(line), "|") {
+			inTable = false
+			continue
+		}
+		if !inTable {
+			continue
+		}
+		m := pdTableRow.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		var n int
+		fmt.Sscanf(m[1], "%d", &n)
+		if n == 0 {
+			continue
+		}
+		hits = append(hits, pdHit{formID: "R12", form: "表格「编号」列", number: n, line: i + 1,
+			clause: strings.TrimSpace(line)})
+		nums = append(nums, n)
+	}
+	return hits, nums
 }
 
 // pdNegClause matches the ledger's way of saying "this round registered
@@ -208,7 +291,15 @@ func scanLedger(t *testing.T, text string) []pdHit {
 			for _, loc := range locs {
 				ci := clauseAt(loc[0])
 				num := 0
-				if len(loc) > 2 && loc[2] >= 0 {
+				// First participating group in numGroups wins. Forms with no
+				// numGroups (R6/R7/R8) are numberless by construction.
+				for _, g := range f.numGroups {
+					if 2*g+1 < len(loc) && loc[2*g] >= 0 {
+						fmt.Sscanf(scan[loc[2*g]:loc[2*g+1]], "%d", &num)
+						break
+					}
+				}
+				if num > 0 {
 					// Count rhetoric is not an item number. The ledger says
 					// 「新增待裁决 1 条」 to mean "one item was added" (ledger
 					// L3351/L3356/L3371/L3411/L3416), which R2 would otherwise
@@ -221,12 +312,18 @@ func scanLedger(t *testing.T, text string) []pdHit {
 					// "第 " and HasSuffix(…, "第") is false — which silently
 					// dropped all nine legitimate R1 registrations and made the
 					// enumerable count fall from 51 to 43.
-					before := strings.TrimRight(scan[loc[2]-min(loc[2], 6):loc[2]], " \t")
-					after := strings.TrimLeft(scan[loc[3]:], " \t")
+					gi := 0
+					for _, g := range f.numGroups {
+						if 2*g+1 < len(loc) && loc[2*g] >= 0 {
+							gi = g
+							break
+						}
+					}
+					before := strings.TrimRight(scan[loc[2*gi]-min(loc[2*gi], 6):loc[2*gi]], " \t")
+					after := strings.TrimLeft(scan[loc[2*gi+1]:], " \t")
 					if strings.HasPrefix(after, "条") && !strings.HasSuffix(before, "第") {
 						continue
 					}
-					fmt.Sscanf(scan[loc[2]:loc[3]], "%d", &num)
 				}
 				out = append(out, pdHit{
 					form:    f.desc,
@@ -239,6 +336,180 @@ func scanLedger(t *testing.T, text string) []pdHit {
 			}
 		}
 	}
+	return out
+}
+
+// v3RootRel is the audit documentation root, relative to the repo root.
+const v3RootRel = "docs/\u5168\u9762\u5ba1\u8ba1v3"
+
+// v3MarkdownFiles lists every markdown file under the audit documentation
+// root: the ledger, the README index, and every dated round report.
+//
+// The distinction matters. The LEDGER is the registry of record — it is where
+// an item is supposed to live — so the two red-able assertions are scoped to
+// it alone. The round reports are narrative: they quote registration forms in
+// prose, so enforcing against them would produce false positives at a hundred
+// call sites. But NARRATIVE IS ALSO WHERE 16 OF THE 66 REGISTRATIONS LIVE
+// (round 232's cross-check), which is why the census has to cover both.
+func v3MarkdownFiles(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Join(repoRootForTest(t), filepath.FromSlash(v3RootRel))
+	var out []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		out = append(out, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pdNumberedSet returns every item number registered in the given text, split
+// by how strong the evidence is:
+//
+//	strict — forms that state a registration outright (R1..R9, R11, R12);
+//	paren  — R10 「（待裁决 N）」, which cannot distinguish a registration from a
+//	         bare cross-reference. Kept in its own bucket on purpose: merging it
+//	         would inflate the census with numbers nobody registered.
+func pdNumberedSet(t *testing.T, text string) (strict map[int]bool, paren map[int]bool) {
+	t.Helper()
+	strict = map[int]bool{}
+	paren = map[int]bool{}
+	for _, h := range scanLedger(t, text) {
+		if h.negated || h.number <= 0 {
+			continue
+		}
+		if h.formID == "R10" {
+			paren[h.number] = true
+			continue
+		}
+		strict[h.number] = true
+	}
+	_, tableNums := scanNumberedTableRows(t, text)
+	for _, n := range tableNums {
+		strict[n] = true
+	}
+	return strict, paren
+}
+
+// TestPendingDecisionCensusIsMonotonicAcrossScope asserts the only property
+// that can never be a false positive: widening the scan cannot LOSE items.
+//
+// The ledger is a subset of the whole documentation tree, so every number
+// registered in the ledger must also be registered in the tree. If this turns
+// red, the tree scan has a defect (a form the ledger scan understands but the
+// tree scan mis-handles, or a file that failed to parse) — never a defect in
+// the ledger. The reverse is expected to differ: round 232 measured 50 items in
+// the ledger versus 66 across the tree.
+//
+// Both numbers are PRINTED, because the whole point of round 232 is that a
+// census number without its scope is a claim, not a fact (§192-A).
+func TestPendingDecisionCensusIsMonotonicAcrossScope(t *testing.T) {
+	ledgerText := readLedger(t)
+	ledgerSet, ledgerParen := pdNumberedSet(t, ledgerText)
+	if len(ledgerSet) == 0 {
+		t.Fatal("判据失效：台账里 0 个可枚举编号")
+	}
+
+	files := v3MarkdownFiles(t)
+	treeSet := map[int]bool{}
+	treeParen := map[int]bool{}
+	perFile := 0
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		s, p := pdNumberedSet(t, string(b))
+		before := len(treeSet)
+		for n := range s {
+			treeSet[n] = true
+		}
+		for n := range p {
+			treeParen[n] = true
+		}
+		if len(treeSet) > before {
+			perFile++
+		}
+	}
+
+	ledgerNums := make([]int, 0, len(ledgerSet))
+	for n := range ledgerSet {
+		ledgerNums = append(ledgerNums, n)
+	}
+	sort.Ints(ledgerNums)
+	treeNums := make([]int, 0, len(treeSet))
+	for n := range treeSet {
+		treeNums = append(treeNums, n)
+	}
+	sort.Ints(treeNums)
+
+	// Anti-no-op: if both scopes found the same count, the tree scan added
+	// nothing and the monotonicity check below proves nothing.
+	if len(treeSet) == 0 {
+		t.Fatalf("判据失效：全目录扫描出 0 个编号（扫描面 %d 个文件）", len(files))
+	}
+
+	t.Logf("扫描面：%s 下 %d 个 .md 文件，其中 %d 个至少贡献一个新编号",
+		v3RootRel, len(files), perFile)
+	t.Logf("口径 A 台账正文（登记面，红色断言的作用域）：严格 %d 个 %v ／ 括号引用 %d 个 %v",
+		len(ledgerNums), ledgerNums, len(ledgerParen), sortedKeys(ledgerParen))
+	t.Logf("口径 B 全 v3 目录（含 README 与 %d 份轮次报告）：严格 %d 个 %v",
+		len(files)-2, len(treeNums), treeNums)
+
+	lost := []int{}
+	for _, n := range ledgerNums {
+		if !treeSet[n] {
+			lost = append(lost, n)
+		}
+	}
+	if len(lost) > 0 {
+		t.Errorf("扩大扫描面后丢失了台账里的编号 %v —— 判据单调性被破坏："+
+			"要么全目录扫描有缺陷，要么某个文件读失败。台账是全目录的子集，这个性质不可能被真实数据违反。",
+			lost)
+	}
+	if len(treeSet) > len(ledgerSet) {
+		only := []int{}
+		for _, n := range treeNums {
+			if !ledgerSet[n] {
+				only = append(only, n)
+			}
+		}
+		t.Logf("只在全目录口径里出现的编号（%d 个）：%v —— 这些是「登记在轮次报告里、但没进台账正文」的条目",
+			len(only), only)
+	}
+	// The paren bucket is reported, never merged: 「（待裁决 N）」 alone cannot
+	// tell a registration from a cross-reference, so counting it as a
+	// registration would inflate the queue with numbers nobody filed.
+	onlyParen := []int{}
+	for n := range treeParen {
+		if !treeSet[n] && !ledgerParen[n] {
+			onlyParen = append(onlyParen, n)
+		}
+	}
+	sort.Ints(onlyParen)
+	if len(onlyParen) > 0 {
+		t.Logf("只在括号引用形态里出现、未被任何严格形态登记的编号（%d 个）：%v —— "+
+			"这些**无法判定**是登记还是引用，本门不下结论", len(onlyParen), onlyParen)
+	}
+	t.Logf("⚠️ 已知残差缺口（无法用规则表达，故不猜）：44（登记在轮次报告的表格里，该表表头与 §4.1 不同）、" +
+		"81 与 85（登记文字嵌在台账单行轮次小结的句中，行首锚点够不着；其中 84/87 已由括号档 R10 捕获）")
+}
+
+func sortedKeys(m map[int]bool) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Ints(out)
 	return out
 }
 
