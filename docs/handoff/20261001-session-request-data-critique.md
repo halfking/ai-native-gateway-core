@@ -6081,3 +6081,71 @@ git rev-list --count 2b6d337b2..origin/main  → 790 个提交
 - 阻塞 #2 `is_final_success`、等价口径 (i)/(ii)/(iii)、`backlog_pending` 告警、
   actor 名单/cohort/§9.49.8/§9.48 口径、写链是否自 ensure 当月分区
 - **发布**：790 提交 / 50 迁移文件的窗口与回滚方案
+
+---
+
+## 第六十轮（§9.109）：决定 B 的第 1 列就抓到硬阻断——`credential_id` 类型不兼容，**只在运行时炸**
+
+### 一、16 列类型对账：14 一致，2 不同
+
+| 列 | 会话视图 | v1 |
+|---|---|---|
+| `credential_id` | **text** | **bigint** |
+| `tenant_id` | `character varying` | `text` |
+| `client_protocol` | `text` | `character varying` |
+
+后两个只是 text vs varchar，字符串可比较，**无碍**。
+
+### 二、★`credential_id` 是硬阻断，且 PREPARE 查不出来
+
+`admin/logs.go:531` 用 `queryIntPtr` 传**整数**：
+`addFilter("rl.credential_id = $%d", *v)`
+
+**PREPARE 通过**（`$1` 未定型 → PG 按 texteq 定为 text）：
+```
+PREPARE … WHERE credential_id = $1   → OK
+```
+
+**运行时形态炸**（SimpleProtocol 把整数内联成字面量 `42`）：
+```
+SELECT … FROM session_turns_with_current_month WHERE credential_id = 42;
+  ERROR: operator does not exist: text = integer      ← 42883
+对照 request_logs_hot（bigint）→ 正常
+```
+父表 `session_turns`（视图未投影那层）**同样炸** ⇒ 不是「加宽视图」能解决的，
+是**列类型本身**。
+
+⇒ **只要把 `rl` 切到会话族，credential_id 过滤每个请求都会 42883。**
+
+### 三、修法两种，都要拍板（本节不擅自改——它改变查询形状）
+
+| 方案 | 代价 |
+|---|---|
+| `rl.credential_id::bigint = $1` | 可能丢索引；**会话侧是否有 credential_id 前导索引要先量** |
+| `= $1::text` | 不改索引，但入参语义从数值变字符串 |
+
+### 四、教训
+
+> **PREPARE 通过 ≠ 运行时会过**（客户端内联字面量时）。
+> §9.102 我用「两协议对照」推翻了自己的两个假 P0，根因正是这个内联；
+> 这一轮同一机制又制造了**反向陷阱：PREPARE 给了假的绿灯**。
+> ⇒ 类型不兼容的怀疑，**两种形态都要测**：占位符形态 + 内联字面量形态。
+>
+> **别把上一轮的教训用反**：§9.102 说「PREPARE 的失败在生产不成立」，
+> 这轮说「PREPARE 的通过在生产也不成立」。**两个方向都不可单独采信**。
+>
+> 逐列对账在**第 1 列**就出了硬阻断 ⇒ 这个动作的产出密度比预期高。
+
+### 五、下一轮
+
+**不需要拍板**：
+- 量 `session_turns(_hot)` 上有没有 `credential_id` 前导索引（决定上面选哪个修法）
+- 继续决定 B 的第 2–16 列类型对账
+- auto-route 断流原因、A/B 群 16 条
+
+**待拍板**：
+- 决定 A（视图加宽 30 列）/ B（语义等价）/ C（25 列归属）
+- `credential_id` 的修法（cast vs 改入参类型）
+- 阻塞 #2 `is_final_success`、等价口径 (i)/(ii)/(iii)、`backlog_pending` 告警、
+  actor 名单/cohort/§9.49.8/§9.48 口径、写链是否自 ensure 当月分区、
+  790 提交的发布窗口与回滚方案
