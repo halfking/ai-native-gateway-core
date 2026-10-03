@@ -12879,3 +12879,78 @@ turn 进 hot、bodies 进 hot、sessions 进当月分区。
 >
 > **「查错表」和「等异步」是两个独立故障，可以互相掩护**：
 >  bodies 断言遮住了 sessions 断言。逐条修才逐条暴露。
+
+---
+
+## §9.104 ★撤回我上一轮说的「`01-schema.sql` 三副本无同步门」——门有，而且我差点加的那道是**已被否决的假不变式**
+
+§9.103 结尾我列了「补 `01-schema.sql` 三副本同步门」作为待办。
+本轮去加，**先查了仓里有没有**——结果两次都指向：**我错了，而且那道门不该加。**
+
+### §9.104.1 门是有的，两道
+
+| 门 | 管什么 |
+|---|---|
+| `sql/schema/baseline_drift_test.go` → `TestDerivedBaselineLagIsSuppliedByMigrations` | 派生副本相对 canonical 的**世代差**必须由增量迁移补齐 |
+| `sql/migrations/startup/baseline_ensure_functions_contract_test.go` | 三副本的 **`ensure_*` 函数**定义必须一致 |
+
+两者当前都 **PASS**，我 §9.100.2 的三副本同改**没有违反任何一条**。
+
+### §9.104.2 ★那道门不该加：仓里已经把它记成「假不变式，不得重新发明」
+
+`baseline_drift_test.go` 开头有一整段显式记录：
+
+> ── A FALSE INVARIANT, RECORDED SO IT IS NOT RE-INVENTED ──
+> The first version of this file asserted that all three copies create the
+> same object set. It went red, and **the red was correct while the rule was
+> wrong**. Canonical creates 2612 objects; installer-embeddata and
+> deploy-baseline each create 2603… That delta is not drift to be closed. It is
+> a **generation offset**…
+
+而且三份副本是**手工维护的孤儿**：`dump-schema.sh` 依赖的
+`scripts/_lib/db-init-lib.sh` **从来就不在这个仓里**（脚本的相对路径会逃出仓外），
+自 `28d4d8612`（2026-07-05）起就不可运行。
+
+⇒ **我正要写的「三份必须一致」正是那条被试过、被判错、并明确写下「不要重新发明」的规则。**
+加它＝**专门生产假红的机器**，比不加更坏（人会开始习惯性忽略它）。
+
+### §9.104.3 我做了变异，确认既有门的**边界**（而不是说它坏）
+
+把 canonical 改成引用一张**不存在的表** `candidate_failure_logs_TAMPERED`
+（只改一份，另两份不动）：
+
+```
+TestBaselineEnsure… → ok   ← 没红
+```
+
+⇒ 既有 ensure 门**确实不覆盖非 `ensure_*` 的语句**，我 §9.100.2 改的视图正落在外面。
+
+**但这不构成加门的理由**：派生副本**本来就应该**在 canonical 之后由迁移补齐，
+「任意语句不一致即红」不是一个成立的不变式。真要补，也得先决定**哪些类别的差异
+是合法的世代差**，那是口径裁决，不是机械修复。
+
+⇒ **本节不改任何门**，只撤回我上一轮的待办条目。
+
+### §9.104.4 顺带：`sql/schema` 整包在本机是红的，但与产品无关
+
+`go test ./sql/schema/` → FAIL，失败的是 `TestFirstLivePythonControls`：
+
+```
+候选里明明有可用解释器却整体报错：无一可执行：
+  [definitely-not-a-real-python-xyz … python(exec: "python": executable file not found in $PATH)]
+```
+
+⇒ **本机 PATH 里没有 `python` 这个可执行名**（只有 `python3`），属**环境前置条件**，
+不是产品缺陷，也与本会话任何改动无关。记录下来，免得下一轮把它误当成新缺陷。
+
+### §9.104.5 这一节的教训
+
+> **写新门前先问「这条方向已有门覆盖吗」，而且要去读那条门留下的注释。**
+> 我差点凭「grep 不到就以为没有」再加一道——而仓里不仅有门，
+> 还把**加这个门**的失败尝试写在了注释里，专门防止后来者重蹈。
+>
+> **变异的作用不只是证明「门有效」，也可以界定「门的边界」。**
+> 我变异 canonical 让它引用一张不存在的表，ensure 门没红 ⇒ 它只管 `ensure_*`。
+> 但「不覆盖」≠「该加」——**先问这条不变式成不成立，再问有没有门。**
+>
+> **重复的门 + 错的范围 = 专门生产假红的机器，比不写更坏。**
