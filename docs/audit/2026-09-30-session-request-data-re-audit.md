@@ -9634,10 +9634,11 @@ rc=0）：改 `$99` 后该字面量门 rc=1，报
 `UPDATE missing 608 assignment "due_at = CASE WHEN $98::text IS NULL THEN due_at ELSE $99 END"`。
 **留给下一轮拍板。**
 
-**当前工作区终态**：`merge-817-818` 干净，仅新增一个未跟踪文件
-`domains/streaming/dispatch_due_at_pairing_test.go`。
-`go vet ./domains/streaming/` rc=0；新门 rc=0（3 parse / 3 stamp / 2 处 `logCtx.DueAt`
-全在 owner 内）；telemetry 全包离线测试 rc=0。
+> 写这段时（配对门刚落盘、尚未提交）的工作区状态是：`merge-817-818` 干净，
+> 仅新增一个未跟踪文件 `domains/streaming/dispatch_due_at_pairing_test.go`。
+> `go vet ./domains/streaming/` rc=0；新门 rc=0（3 parse / 3 stamp / 2 处
+> `logCtx.DueAt` 全在 owner 内）；telemetry 全包离线测试 rc=0。
+> **本节后续的终态以 §9.74.10 为准**——这一段记录的是中途快照，不是最终结果。
 
 ### §9.74.9 合入 148 个入站提交时，门抓到我自己漏掉的**第四处同步**
 
@@ -9669,7 +9670,7 @@ installer/cmd/llm-gw-installer  TestStatsStartupMigrationsMatchCanonicalSources
 这次能抓到，靠的是 `TestStatsStartupMigrationsMatchCanonicalSources` 这道**别人写的**
 门做逐字节 `cmp`。**自己的判据覆盖不到的维度，得靠别人的门兜住，不该靠「我核对过了」。**
 
-> 记这一条是因为它和本轮前面几次是同一族：§9.65.3 的 `RETURN`、§9.65.7 的量具、
+> 记这一条是因为它和本轮前面几次是同一族：§9.74.3 的 `RETURN`、§9.74.5 的量具、
 > §9.74.8 的空集守卫，都是**我的检查在原理上覆盖不到的那一类**。
 > **「我核对过了」和「我的核对能看见这一类」是两件事。**
 
@@ -9684,7 +9685,7 @@ installer/cmd/llm-gw-installer  TestStatsStartupMigrationsMatchCanonicalSources
 |---|---|
 | `scripts/check-build-tags.sh`（48 包 × 15 种 tag 配置） | 0 |
 | `go test ./sql/schema/`（manifest + 基线漂移） | 0 |
-| `go test ./sql/migrations/startup/`（§9.65.3 的早退形态门） | 0 |
+| `go test ./sql/migrations/startup/`（§9.74.3 的早退形态门） | 0 |
 | `go test ./domains/hooks/observability/telemetry/` | 0 |
 | `go test ./domains/streaming/ -run TestDispatchDueAt`（§9.74.8 配对门） | 0 |
 | `go test ./admin/` | 0 |
@@ -9696,3 +9697,41 @@ installer/cmd/llm-gw-installer  TestStatsStartupMigrationsMatchCanonicalSources
 且合并后五项全部存活于工作区——**没有重复劳动，也没有被合并覆盖**。
 
 
+### §9.74.10 终态：已推送，以及**本地 main 故意不前移**的交接方式
+
+| 项 | 值 |
+|---|---|
+| 远端 | `origin/main` = **`0b1eb2cfd`**（与本分支 HEAD 一致） |
+| 本分支 | `merge-817-818` @ `0b1eb2cfd`，工作区 0 脏文件 |
+| 推送 | `d0c1e1f81..0b1eb2cfd  HEAD -> main`，**纯快进，rc=0**（非强推） |
+| 本地 `main` | **`b9365c215`——故意未前移**，落后 `origin/main` 108 个提交 |
+| 主工作区 | `HEAD=b9365c215` / `main=b9365c215` / 29 个脏文件，**全程一字节未碰** |
+| 回滚点 | `rollback/pre-merge-1717` = `276ef099b`；`rollback/pre-merge-1838` = `7b7f21737`（**仅本地**，`git ls-remote` 查得 0 个） |
+
+本轮共入站 **165 个提交**，分两轮合：先 148（`c84e48a6f`，4 处冲突），
+推到一半远端又涨 17（`d0c1e1f81`，**零冲突**）。**推送前重新 `fetch` + 判
+`--is-ancestor` 这道预判救了一次**——第一次判完是快进，十分钟后远端已推进，
+若不复查直接推会白推一次。
+
+**门禁两轮共 16 次，全 rc=0**（§9.74.9 那张表 + 第二次合并后重跑同一组 8 条，
+含 `installer` 独立模块 `go build ./...` 与 `go test ./...`）。
+
+**为什么 `main` 不前移，以及后人该怎么处理**：`main` 所在工作区有 29 个**并行会话
+在途的未提交文件**（V1 冻结任务）。脏工作区下移动 `refs/heads/main` 只改 ref、
+不碰工作区与索引，于是那 29 个文件对应的索引与新 HEAD 失配，`git status` 立刻显示
+上百个「已删除/已修改」，而别人会在一个自己没写过的树上做 `git checkout .`——
+**这是最容易毁掉别人在途改动的一步**。本地 main 落后一百多个提交是可逆的、零风险的；
+反过来不是。
+
+待并行会话收工、确认工作区干净后，再由那一方执行：
+
+```bash
+git -C <repo> merge --ff-only origin/main     # 前提：先确认 29 个脏文件已被妥善处理
+```
+
+**一条会影响下次推送的环境事实**：`.githooks/pre-push`（215 行，含 secrets scan +
+11 套 shell 测试 + 可选 Go 门）在树里但**没接线**——`core.hooksPath` 未设，
+`.git/hooks/` 与 worktree 的 hooks 目录都没有它。⇒ **在 linked worktree 里
+`git push` 不会被它把关。** 本轮因此自己补扫了待推的 16 个文件（硬编码凭据 /
+私钥块 / DSN 里的本地 PG 密码），结果全为 0。要么显式接线
+（`git config core.hooksPath .githooks`），要么每次推送自带这层扫描。
