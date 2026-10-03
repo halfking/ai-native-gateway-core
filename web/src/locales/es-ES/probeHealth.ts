@@ -1,5 +1,6 @@
 // Auto-synced from en-US (es-ES)
 export default {
+  monitorPartialFailed: "('No se pudieron obtener los datos en vivo de {count} credenciales ({ids}); las cifras de abajo son inferiores a la realidad',)",
   backLink: '← Routing overview',
   title: 'Probe health',
   autoRefresh: 'Auto refresh (30s)',

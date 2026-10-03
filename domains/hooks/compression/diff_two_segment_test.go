@@ -6,12 +6,15 @@
 // 安全判据（尾段唯一性 / 头段血统证据 / 分解歧义 / 多轮持续性）——这些是
 // 两段式放宽 fail-open 后必须仍然保守的面。
 //
-// 变异靶标注（承重实证用，R38 变异矩阵 M1/M2/M3 对应）：
+// 变异靶标注（承重实证用；2026-10-04 审计订正：原文引用的
+// containsSeqBefore/uniqueContiguousIndex 独立函数在合并 c84e48a6f 取
+// 05e145267 版引擎后已不存在，对应逻辑内联在 findTwoSegmentAnchor 里）：
 //   - M1 删 findTwoSegmentAnchor 调用（relaxed 只留连续）→ 全部 TwoSegment
 //     命中类钉测红；
-//   - M2 删 containsSeqBefore（头段血统证据）→ HeadSegment 钉测红；
-//   - M3 尾段取首个命中而非唯一（uniqueContiguousIndex 改 first-match）→
-//     AmbiguousTail 钉测红。
+//   - M2 切分循环里去掉头段前缀等值判定（equalHashStrings(comparable
+//     [:split], clientHashes[:split])）→ HeadSegment 钉测红；
+//   - M3 尾段 matches>1 不 break、取首个命中而非唯一 → AmbiguousTail
+//     钉测红。
 package compression
 
 import (

@@ -297,6 +297,8 @@ export default {
   },
   bgStatus: {
     panelTitle: 'حالة المهام الخلفية',
+    stale: 'حالة المهام الخلفية غير معروفة',
+    staleHint: 'تعذّر جلب الحالة؛ القيم أدناه من آخر استعلام ناجح',
     task: {
       discovery: 'اكتشاف النماذج',
       discoveryRunning: 'جاري الفحص {elapsed}',

@@ -20,6 +20,7 @@ export default {
     summarizeFailed: 'Error al resumir',
     sessionForbidden: 'La clave API actual no puede acceder a esta sesión; seleccione la clave correcta',
     autoRoute: 'Enrutamiento automático (auto)',
+    modelListFailed: 'No se pudo cargar la lista de modelos: que «enrutado automático» sea la única opción no significa que la pasarela solo enrute automáticamente',
     auto: 'Auto',
     needsKeyTitle: 'Solicite primero una clave API',
     needsKeyDesc: 'El chat requiere una clave API activa que le pertenezca. Actualmente no tiene ninguna; solicite o cree una.',

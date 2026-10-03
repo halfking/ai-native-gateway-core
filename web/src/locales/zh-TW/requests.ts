@@ -64,6 +64,9 @@ export default {
       providerAll: '全部供應商',
       credentialTitle: '憑據',
       credentialAll: '全部憑據',
+      loadFailed: '供應商/憑據選項載入失敗，下拉為空不代表真的沒有',
+      partialLoadFailed: '有 {count} 個供應商的憑據沒載出來（{names}），依它們篩選會得到不完整結果',
+      keysLoadFailed: 'API 金鑰列表載入失敗，依該金鑰篩選會得到零結果',
       timeTitle: '時間範圍',
       timeOptions: {
         h1: '1小時',

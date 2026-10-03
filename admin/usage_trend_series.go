@@ -17,8 +17,10 @@
 //   - provider 档（仅 provider 过滤）：request_stats_minute（自带 provider_id ×
 //     canonical_id）JOIN provider_models 取展示名。不扫明细日志。
 //   - detail 档（带 api_key 过滤）：request_logs_with_current_month_without_customer_id
-     // 唯一含 api_key_id 的读面；无 api_key 索引的旧分区上长窗会慢，前端对超时
-//     给出「缩短时间范围」提示。
+//
+// 唯一含 api_key_id 的读面；无 api_key 索引的旧分区上长窗会慢，前端对超时
+//
+//	给出「缩短时间范围」提示。
 //
 // 折叠：三档统一「单次扫描出 (model,bucket) 组 → Go 侧按窗口总量取 top-N、
 // 其余聚合 '__others__'」。不做 SQL 内 CTE 折叠——detail 档双扫实测 75s，
@@ -28,6 +30,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"time"
@@ -69,6 +72,12 @@ type usageTrendSeriesResponse struct {
 	Top           int                `json:"top"`
 	Source        string             `json:"source"`
 	Series        []usageTrendSeries `json:"series"`
+	// 恒发（无 omitempty）：空序列与「真的没有用量」在图上同形。
+	// 全新安装没迁移 rollup 时返回的是降级，不是零用量。
+	Degraded       bool   `json:"degraded"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
+	MissingView    string `json:"missing_view,omitempty"`
+	Hint           string `json:"hint,omitempty"`
 }
 
 type usageTrendModelEntry struct {
@@ -84,6 +93,11 @@ type usageTrendModelsResponse struct {
 	End    string                 `json:"end"`
 	Source string                 `json:"source"`
 	Models []usageTrendModelEntry `json:"models"`
+	// 恒发（无 omitempty）：模型下拉空列表与「真的没有模型」同形。
+	Degraded       bool   `json:"degraded"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
+	MissingView    string `json:"missing_view,omitempty"`
+	Hint           string `json:"hint,omitempty"`
 }
 
 // usageTrendFilters 是三档查询共享的过滤参数。models 为空 = 不过滤；
@@ -182,13 +196,19 @@ func (h *Handler) usageTrendSeries(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if IsMissingRelationError(err) {
 			// 全新安装可能还没有 rollup 表/当月视图 —— 返回空序列而不是 500。
+			// 2026-10-03: 原为空序列无标记，图上与「这段时间真的零用量」同形。
+			view := ReportMissingRelation(slog.Default(), "usageTrendSeries", err)
 			writeJSON(w, http.StatusOK, usageTrendSeriesResponse{
-				Start:         tr.Start.UTC().Format(time.RFC3339),
-				End:           tr.End.UTC().Format(time.RFC3339),
-				BucketMinutes: tr.trendBucketMinutes(),
-				Top:           f.top,
-				Source:        source,
-				Series:        []usageTrendSeries{},
+				Start:          tr.Start.UTC().Format(time.RFC3339),
+				End:            tr.End.UTC().Format(time.RFC3339),
+				BucketMinutes:  tr.trendBucketMinutes(),
+				Top:            f.top,
+				Source:         source,
+				Series:         []usageTrendSeries{},
+				Degraded:       true,
+				DegradedReason: view,
+				MissingView:    view,
+				Hint:           missingRelationHint(view),
 			})
 			return
 		}
@@ -253,11 +273,16 @@ func (h *Handler) usageTrendModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if IsMissingRelationError(err) {
+			view := ReportMissingRelation(slog.Default(), "usageTrendModels", err)
 			writeJSON(w, http.StatusOK, usageTrendModelsResponse{
-				Start:  tr.Start.UTC().Format(time.RFC3339),
-				End:    tr.End.UTC().Format(time.RFC3339),
-				Source: source,
-				Models: []usageTrendModelEntry{},
+				Start:          tr.Start.UTC().Format(time.RFC3339),
+				End:            tr.End.UTC().Format(time.RFC3339),
+				Source:         source,
+				Models:         []usageTrendModelEntry{},
+				Degraded:       true,
+				DegradedReason: view,
+				MissingView:    view,
+				Hint:           missingRelationHint(view),
 			})
 			return
 		}

@@ -1,0 +1,132 @@
+# startup_rerun_known_gaps.tsv — 已注册启动迁移中「第二遍跑不过」的文件
+#
+# WHAT THIS FILE IS
+#   A RATCHET, not a disclaimer, and it is a SEPARATE list from
+#   sql/schema/startup_known_gaps.tsv on purpose.
+#
+#   startup_known_gaps.tsv answers: "which registered migrations fail on a
+#   FRESH install?" — that is what the installer's own path does.
+#
+#   This file answers a different question: "which of them fail when applied a
+#   SECOND time to an already-migrated database?"
+#
+# ⚠ 这份清单只覆盖「217 条链」，不覆盖 baseline 三件套。
+#   InitSchema (installer/internal/dbinit/runner.go:716) 的真实顺序是
+#   00-prereqs -> 01-schema -> 02-seed -> 217 条链，而重跑 installer 会在
+#   **01-schema.sql** 就中止（1665 条 ERROR，见 baseline_rerun_budget.tsv），
+#   根本走不到链。所以下面 11 条是「假设 baseline 已被修好」之后的阻断点，
+#   不是重跑 installer 的第一现场。这一点在审计文档 §9.124 里被明确写出。
+#
+# WHY IT IS A SEPARATE QUESTION AND NOT A NICER ONE
+#   InitSchema applies every entry of StartupFiles unconditionally:
+#
+#     for _, name := range r.StartupFiles { applySQL(...); return on first error }
+#
+#   There is no per-file "has this already run?" check, and although some
+#   migrations do `INSERT INTO public.schema_migrations … ON CONFLICT DO
+#   NOTHING`, that table takes no part in any skip decision. The only caller,
+#   runInstall (installer/cmd/llm-gw-installer/main.go:1338), likewise has no
+#   "is this database already installed?" probe — verified by searching for
+#   already / 已安装 / existing / to_regclass / pg_database in that path: zero
+#   hits.
+#
+# RATCHET BEHAVIOUR (identical to the fresh-install list)
+#   * a second-pass failure NOT listed here -> the gate dies.
+#   * a listed file that did NOT fail this run -> reported as stale, so a real
+#     fix retires its entry instead of the list quietly becoming a blanket
+#     exemption. (Stale is not fatal: a genuine fix must not be blocked on
+#     paperwork.)
+#   * exemptions are enumerated one per line, so deleting this whole file
+#     turns every gap fatal rather than permissive.
+#
+# HOW TO ADD AN ENTRY
+#   Append one line:  <filename><TAB><one-line reason>
+#   Sorted by filename. No header inside the data, no blank lines, no
+#   duplicate filenames. The reason is mandatory.
+#
+# ---------------------------------------------------------------------------
+# MEASURED 2026-10-04 (§9.124), pass 2 of 217, on a database built by this very
+# script's first pass (prereqs + baseline + seed + 217). 11 files, 206 ok.
+#
+# ⚠ 上一版（本文件的第一版）登记的是 **3** 条，那是我在一个人造的
+#   startup-only 库上量的数 —— 起始库形状不同，数就不同。真实路径先跑
+#   baseline，链在 baseline 已经改变过的库上跑第二遍，失败集因此更大。
+#   「不可重跑的条数」是**链在给定起始形状上的性质**，不是链本身的常数。
+#   门现在按 InitSchema 的真实顺序跑第二遍就是为了不再犯这个错。
+#
+# ⚠ 每条只报**第一个**错误（门用 --single-transaction + ON_ERROR_STOP=1），
+#   所以下面的 ratchet 以**文件**为粒度。真实缺陷数已单独量出（§9.125.1）：
+#
+#     11 个文件 / 18 条真实独立错误
+#     （原始 ERROR 行 40 条，其中 22 条是级联噪声 —— 568 / bootstrap / 738
+#       三个文件内有显式 BEGIN;，首错后同事务后续命令全报 25P02
+#       "current transaction is aborted"。去掉噪声后 614 一个文件占 8 条。）
+#
+#   含义有两层：① 修一条不等于修一个文件（614 就是一条修 8 处）；
+#   ② 门的 ratchet 粒度是文件，所以它**看不到**「某文件内部的错误条数变化」。
+#   这不是缺陷，是 ratchet 选粒度时的取舍，已在此写明。
+#
+# ---- 按机制分组（不是按修法相似度归堆） --------------------------------
+#
+# [M1] CREATE OR REPLACE VIEW 不能丢列 / 不能改列名 —— 5 条
+#   PostgreSQL 硬规则：CREATE OR REPLACE VIEW 的新定义不能减少列集，也不能
+#   改已有列的名字。链上多条迁移反复重写同一个视图，后写的更宽，于是早写的
+#   在重跑时变窄 → 报错。
+#   ⚠ 这不是「同一个原因」，而是**同一个 PG 规则**踩在不同的迁移上。
+#     625 之所以只在「视图仍是 625 之前形状」的库上有效，是链的偶然顺序给的
+#     它一个有效区间，不是它自身可重跑。
+#
+# [M2] 无守卫的 CREATE VIEW / 关系已存在 —— 2 条
+#   PG 没有 CREATE VIEW IF NOT EXISTS，也没有 CREATE TABLE ... 的这种形态被
+#   普遍使用；作者要么忘了守卫，要么假设了「只跑一次」。
+#
+# [M3] 无守卫的 CREATE POLICY —— 1 条（520）
+#   ⚠ 这里要更正本文件第一版的说法。第一版写「351 的机制与本类不同」，
+#     那是把「新建链里的非幂等」和「重跑非幂等」当成了两类。事实是
+#     **520 与 351 是同一个机制**（PG 没有 CREATE POLICY IF NOT EXISTS），
+#     351 已在 §9.115 用 DROP POLICY IF EXISTS 修好，520 没有。
+#     推论：非幂等 CREATE POLICY 在本仓至少还有别的实例，
+#     「351 是最后一个」从未被验证过。
+#
+# [M4] 无守卫的 ADD CONSTRAINT —— 1 条（614）
+#   CREATE TABLE IF NOT EXISTS 是幂等的，但它后面紧跟的
+#   ALTER TABLE … ADD CONSTRAINT / CREATE INDEX 全都没守卫，
+#   于是「建表幂等、约束不幂等」。首个报错是 multiple primary keys。
+#
+# [M5] 迁移自带的幂等守卫自己在重跑时抛异常 —— 1 条（610）
+#   610 里有一处 RAISE EXCEPTION '608: saved pre-extension view already exists
+#   while canonical view lacks request_class'。它是一次性的状态检查：
+#   第一次跑时该状态不存在，检查通过；重跑时状态已变成「已存在」，检查
+#   自己抛错。**这个守卫设计得就不该在重跑时触发** —— 它的谓词只描述
+#   「当前形状」，不描述「我是不是已经做过」。与 M1–M4 都不是一回事。
+#
+# [M6] 视图里列引用歧义 —— 1 条（738）
+#   column reference "credits_rate_multiplier" is ambiguous。
+#   与重跑有关但成因不同：重跑让同名列在视图链里出现两次。
+#
+# DECISION PENDING (§9.119.5 / §9.124.6, not applied here on purpose):
+#   E1  rewrite the view-rewriting files as DROP VIEW IF EXISTS + CREATE VIEW
+#       (needs downstream view/function dependencies enumerated first)
+#   E2  keep CREATE OR REPLACE and widen every rewrite to the union of the
+#       chain's column sets (abandons the explicit-column-list intent)
+#   E3  give InitSchema an "already initialised" guard — removes the replay
+#       premise entirely, so the whole class stops mattering
+#
+# ⚠ E3 现在比第一版评估时更值钱：重跑的第一现场是 baseline（1665 条），
+#   而不是链。E3 是唯一能同时消掉这两处的方案。
+# ⚠ 但 E3 单独也不够 —— 它不修 baseline 自身的不可重跑，只是不再重放它。
+#   真要支持重跑，01-schema.sql 那 1665 条是必须单独处理的。
+#   在任何一个方案落地前，发布 runbook 必须写明：
+#   **发布流程不得包含「对已有库重跑 installer」**。
+# ---------------------------------------------------------------------------
+520_durable_task_settlement_intents.sql	[M3] 死守卫：两条 DROP POLICY IF EXISTS 指向 durable_task_settlement_tenant_isolation / _super_admin_bypass，而全链无任何迁移创建这两个名字；真正创建的 durable_task_settlement_access 一条守卫都没有（§9.125.2 实测：1 条真实错误）
+568_credential_priority_flag.sql	[M1] CREATE OR REPLACE VIEW public.model_offers 把列 raw_model_name 改名为 canonical_raw_name；PG 不允许 CREATE OR REPLACE VIEW 改列名
+577_request_logs_view_customer_id.sql	[M2] 无守卫 CREATE VIEW public.request_logs_with_current_month，重跑时关系已存在
+610_request_class_due_at.sql	[M5] 迁移自带的 RAISE EXCEPTION 幂等守卫在重跑时自己触发（谓词只描述当前形状、不描述是否已执行过）
+614_session_bodies_hot.sql	[M4] CREATE TABLE IF NOT EXISTS 之后紧跟的 ALTER TABLE ADD CONSTRAINT 与 CREATE INDEX 全无守卫；该文件无显式 BEGIN，所以 8 条错误全是独立的、不被级联掩盖：1 multiple primary keys + 5 relation already exists（3 约束 + 4 索引中重复者）+ 1 cannot drop columns from view（§9.125.1 实测）
+625_session_bodies_unified_explicit.sql	[M1] CREATE OR REPLACE VIEW 带显式列清单，比链上后续 637 扩宽后的列集窄；PG 禁止 CREATE OR REPLACE VIEW 丢列
+637_session_bodies_unified_today_visible.sql	[M1] 同一视图第二次重写（更宽）；重跑时报错的是 625 那次更窄的定义，本文件自身是否可重跑取决于链上顺序
+640_session_turns_protocol_fields.sql	[M1] CREATE OR REPLACE VIEW public.session_turns_with_current_month 丢列（与 625/637 同一 PG 规则）
+656_auto_route_selections_hot.sql	[M1] CREATE OR REPLACE VIEW public.auto_route_selections_all 在更宽定义已存在后无法再应用（与 625/637 同一 PG 规则）
+738_view_chain_credits_rate_multiplier.sql	[M6] 视图链重建时 column reference "credits_rate_multiplier" is ambiguous；重跑让同名列在链里出现两次
+session_turns_hot_bootstrap.sql	[M2] 尾部无守卫 CREATE VIEW public.session_turns_with_current_month（另有 4 条无守卫 CREATE POLICY，与 351/520 同机制，被首个错误挡住）

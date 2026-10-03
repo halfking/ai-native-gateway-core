@@ -2,20 +2,39 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
+// queryBoardBackgroundTasks 读看板顶部「后台任务」chip 的数据。
+//
+// ## 2026-10-03：原来三处 `_ = ...Scan(...)` 丢弃错误
+//
+// 后果不是「少一块 chip」，而是**主动宣称健康**：
+// 前端 BoardOpsBar.vue 渲染 `checks_last_10m ?? 0` 与一个 `ops-dot--ok`
+// 绿色状态点。查询失败时页面显示「10 分钟内检查 0 次」+ 绿点 ——
+// 「没查出来」被讲成「一切正常」，这比显示 0 更糟。
+//
+// 现在两处查询各自带 degraded 标记，供前端决定显示什么。
 func (h *Handler) queryBoardBackgroundTasks(ctx context.Context) map[string]any {
 	var discStatus *string
 	var discStarted, discHeartbeat *time.Time
 	var discTrigger *string
-	_ = h.db.QueryRow(ctx, `
+	// 2026-10-03：记录错误而不是丢弃。非 42P01 同样记录 —— 这个 chip 讲的是
+	// 「系统健康吗」，任何查不出来的情况都不该被渲染成绿灯。
+	discErr := h.db.QueryRow(ctx, `
 		SELECT status, started_at, heartbeat_at, trigger
 		FROM model_discovery_runs
 		WHERE tenant_id = 'default'
 		ORDER BY started_at DESC LIMIT 1
 	`).Scan(&discStatus, &discStarted, &discHeartbeat, &discTrigger)
+	if discErr != nil && !errors.Is(discErr, pgx.ErrNoRows) {
+		slog.Warn("board: discovery run status query failed", "error", discErr)
+	}
 
 	running := discStatus != nil && *discStatus == "running"
 	discovery := map[string]any{
@@ -31,15 +50,27 @@ func (h *Handler) queryBoardBackgroundTasks(ctx context.Context) map[string]any 
 	}
 
 	var checksLast10m int
-	_ = h.db.QueryRow(ctx, `
+	checksErr := h.db.QueryRow(ctx, `
 		SELECT COUNT(*) FILTER (WHERE created_at > now() - interval '10 minutes')
 		FROM credential_health_checks
 	`).Scan(&checksLast10m)
+	if checksErr != nil {
+		slog.Warn("board: credential health check count query failed", "error", checksErr)
+	}
 
-	return map[string]any{
+	out := map[string]any{
 		"discovery":  discovery,
 		"probe_loop": map[string]any{"checks_last_10m": checksLast10m},
 	}
+	// 恒发：前端要区分「真的 0 次」与「没查出来」。字段缺失与 0 不可分。
+	out["degraded"] = discErr != nil || checksErr != nil
+	if discErr != nil {
+		out["degraded_reason"] = "discovery status unavailable"
+	}
+	if checksErr != nil {
+		out["probe_degraded"] = true
+	}
+	return out
 }
 
 func (h *Handler) queryBoardSelfCheck(ctx context.Context) map[string]any {
@@ -47,13 +78,19 @@ func (h *Handler) queryBoardSelfCheck(ctx context.Context) map[string]any {
 	var total, success int
 	var lastStatus *string
 	var lastAt *time.Time
-	_ = h.db.QueryRow(ctx, `
+	// 2026-10-03：同 queryBoardBackgroundTasks —— 原来丢弃错误，
+	// 失败时前端显示「成功率 0.0%」+ 绿点，把「没查出来」讲成「全都不健康」
+	// 或者反过来讲成「健康」，取决于用户怎么读那个 0。
+	selfErr := h.db.QueryRow(ctx, `
 		SELECT COUNT(*),
 			COUNT(*) FILTER (WHERE status = 'success'),
 			(SELECT status FROM self_check_runs ORDER BY started_at DESC LIMIT 1),
 			(SELECT started_at FROM self_check_runs ORDER BY started_at DESC LIMIT 1)
 		FROM self_check_runs WHERE started_at >= $1
 	`, since).Scan(&total, &success, &lastStatus, &lastAt)
+	if selfErr != nil {
+		slog.Warn("board: self-check summary query failed", "error", selfErr)
+	}
 
 	rate := 0.0
 	if total > 0 {
@@ -63,6 +100,11 @@ func (h *Handler) queryBoardSelfCheck(ctx context.Context) map[string]any {
 		"total_runs_24h": total,
 		"success_rate":   rate,
 		"last_status":    strPtrVal(lastStatus),
+		// 恒发（无 omitempty）：前端要区分「真的 0 次运行」与「没查出来」。
+		"degraded": selfErr != nil,
+	}
+	if selfErr != nil {
+		out["degraded_reason"] = "self-check summary unavailable"
 	}
 	if lastAt != nil {
 		out["last_run_at"] = lastAt.UTC().Format(time.RFC3339)

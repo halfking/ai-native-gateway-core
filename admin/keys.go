@@ -996,7 +996,17 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 		// 预算闸门必须 fail-closed：查询失败时 spent 保持零值会被下游当成
 		// 「没超预算」放行并回 200——DB 故障的语义是「不知道超没超」，
 		// 不是「没超」（R89-133 缺陷 B）。
-		writeError(w, http.StatusInternalServerError, "usage query failed")
+		//
+		// 第八轮只动「哪一种失败可诊断」，fail-closed 这一条一个字没改。
+		status, code, detail := classifyBudgetSpendErr(err)
+		if code == "" {
+			writeError(w, status, detail)
+			return
+		}
+		// 42P01 额外走服务端日志通道，与 admin 包内其余三门一致
+		// （此前此处只有客户端响应，服务端无痕）。
+		ReportMissingRelation(slog.Default(), "keys budget-check", err)
+		writeErrorWithCode(w, status, code, detail)
 		return
 	}
 
@@ -1013,6 +1023,35 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 		"remaining_usd": remainingUSD,
 		"exceeded":      exceeded,
 	})
+}
+
+// classifyBudgetSpendErr 把「花费查询失败」分类成响应形状。
+//
+// 2026-10-03（第八轮）：此前一切错误统一 500 "usage query failed"，
+// 把两件对处置方式完全不同的事混成一件——usage_ledger 视图压根没初始化
+// （可修复：补迁移 344）与数据库真的挂了。运维从响应无法区分该做什么。
+// 现在沿用 admin 包内既有的三门约定（aggregate_read_guard.go writeAggRowsErr /
+// session_analytics_mv_guard.go writeAnalyticsQueryErr 都是 42P01 → 503）。
+//
+// 刻意做成**纯函数**（不碰 ResponseWriter、不碰 DB）：分类逻辑本身必须能在
+// 没有 LLM_GATEWAY_PG_URL 的环境下被真实验证。集成测试（keys_budget_test.go
+// 靠改名视图触发真 42P01）在没设该环境变量时是 SKIP —— 也就是说**只靠集成
+// 测试，这一层分类等于没人验**。两层都要留着。
+//
+// ⚠ 引导文案**故意不复用** analyticsViewMigrationHint：那个把迁移号写死成 357
+// （session-analytics 族），而本查询缺的是 344。抄过来会给出错的迁移号 ——
+// 那比不给更坏：运维照着 357 跑完，视图仍然缺，下一轮更难查。
+func classifyBudgetSpendErr(err error) (status int, code, detail string) {
+	if IsMissingRelationError(err) {
+		return http.StatusServiceUnavailable, "usage_ledger_view_missing",
+			"usage_ledger 视图 " + ExtractMissingRelationName(err) +
+				" 不存在（迁移 344 未执行），请先应用 344_usage_ledger_hot_independence.sql。" +
+				"注意：本端点 fail-closed（回 503，不产出任何预算数字），" +
+				"但认证面预算闸门在同条件下是 fail-open（请求会被放行、不拦支出），" +
+				"见 domains/authentication/verifier.go"
+	}
+	// 其余（连接断/超时/42703 等）维持 500 原语义。
+	return http.StatusInternalServerError, "", "usage query failed"
 }
 
 func (h *Handler) getKeyDetail(w http.ResponseWriter, r *http.Request, id int) {

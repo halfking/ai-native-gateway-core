@@ -18,6 +18,8 @@ const router = useRouter()
 const owner = computed(() => route.params.owner as string)
 const loading = ref(false)
 const data = ref<UserProfileDetail | null>(null)
+// 加载失败与「没有数据」是两件事：前者说原因，后者才说「暂无」。
+const loadError = ref('')
 const days = ref(30)
 const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
   { days: 7, labelKey: 'dashboard.range.last7d' },
@@ -40,10 +42,16 @@ async function load() {
   loading.value = true
   try {
     data.value = await getUserProfile(owner.value, days.value)
+    loadError.value = ''
     await nextTick()
     renderCostChart()
-  } catch {
+  } catch (e: unknown) {
+    // 2026-10-03：原来 `catch { data.value = null }`，模板随即渲染
+    // `sessions.userProfile.empty` =「暂无用户画像数据」。
+    // 那是一句**肯定的假话**：不是「没有数据」，是「没取到」。
+    // 失败与「真的没有」必须分开说。
     data.value = null
+    loadError.value = e instanceof Error && e.message ? e.message : t('sessions.userProfile.loadFailed')
   } finally {
     loading.value = false
   }
@@ -115,7 +123,9 @@ function healthGradeColor(grade?: string): 'success' | 'primary' | 'warning' | '
     </div>
 
     <div v-loading="loading">
-      <div v-if="!loading && !data" class="empty">{{ t('sessions.userProfile.empty') }}</div>
+      <!-- 失败时不说「暂无数据」 -->
+      <div v-if="!loading && !data && loadError" class="empty" style="color:var(--warning)">{{ loadError }}</div>
+      <div v-else-if="!loading && !data" class="empty">{{ t('sessions.userProfile.empty') }}</div>
 
       <!-- Stat cards -->
       <el-row v-if="data" :gutter="16" class="stat-row">

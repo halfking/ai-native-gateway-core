@@ -56,7 +56,12 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 
 	req, err := parseTranscriptionsMultipart(w, r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, requestID, err.Error(), "invalid_request_error", err.code)
+		status := http.StatusBadRequest
+		if err.code == "request_too_large" {
+			// 与 speech/mcp 两面同口径（R40 审计 R1）。
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeErrorJSON(w, status, requestID, err.Error(), "invalid_request_error", err.code)
 		return
 	}
 	if keyInfo != nil {
@@ -65,6 +70,7 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 			req.Profile = *keyInfo.DefaultClientProfile
 		}
 	}
+	req.RequestID = requestID
 
 	if req.Stream {
 		h.serveStream(w, r, requestID, req)
@@ -125,6 +131,14 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 		return
 	}
 	writeEvent("transcript.transport", map[string]string{"type": "transcript.transport", "transport": res.Transport})
+	// 同 P2-1：流式路径的响应头已随 WriteHeader(200) 发出，IgnoredParams
+	// 只能走事件（与 transport 同理）。未知事件名按 SSE 规范忽略。
+	if len(res.IgnoredParams) > 0 {
+		writeEvent("transcript.ignored_params", map[string]any{
+			"type":    "transcript.ignored_params",
+			"ignored": res.IgnoredParams,
+		})
+	}
 	if res.RelayIsSSE && len(res.RelayBody) > 0 {
 		_, _ = w.Write(res.RelayBody)
 		flusher.Flush()
@@ -142,6 +156,11 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 func writeTranscriptionResult(w http.ResponseWriter, requestID, clientModel string, res *TranscribeResult, responseFormat string) {
 	w.Header().Set("X-Gw-Audio-Transport", res.Transport)
 	w.Header().Set("X-Gw-Upstream-Model", res.UpstreamModel)
+	// 客户端传了但这条上游形态兑现不了的参数（chat-audio 下 prompt/
+	// temperature/language）如实回执。必须在 WriteHeader 之前设置。
+	if len(res.IgnoredParams) > 0 {
+		w.Header().Set("X-Gw-Audio-Ignored-Params", strings.Join(res.IgnoredParams, ","))
+	}
 	if res.DurationSeconds != nil {
 		w.Header().Set("X-Gw-Audio-Seconds", fmt.Sprintf("%g", *res.DurationSeconds))
 	}
@@ -200,7 +219,17 @@ func (e *transcriptionsParseError) Error() string { return e.msg }
 //	temperature     (optional)
 //	stream          (optional)  true → SSE
 func parseTranscriptionsMultipart(w http.ResponseWriter, r *http.Request) (*TranscribeRequest, *transcriptionsParseError) {
+	// R40（审计 R1）：ParseMultipartForm 的参数只是内存阈值不是总量上限
+	// ——超限部分落盘临时文件，总量此前无字节上限（speech/mcp 两面都包了
+	// MaxBytesReader，唯此面漏包，mux 也无全局 body-cap）。先包住再解析；
+	// 上限 = 文件级 32MiB + 1MiB multipart 开销余量，精确的文件大小
+	// 判定仍由下方 LimitReader 检查承担。
+	r.Body = http.MaxBytesReader(w, r.Body, maxAudioUploadBytes+(1<<20))
 	if err := r.ParseMultipartForm(maxAudioUploadBytes); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return nil, &transcriptionsParseError{msg: "Request body too large", code: "request_too_large"}
+		}
 		return nil, &transcriptionsParseError{msg: "invalid multipart form: " + err.Error(), code: "invalid_multipart"}
 	}
 	if r.MultipartForm == nil {
@@ -271,6 +300,14 @@ func writeAudioError(w http.ResponseWriter, requestID string, err error) {
 		return
 	}
 	msg := err.Error()
+	var capErr *audioCapacityError
+	if errors.As(err, &capErr) {
+		// 网关自身音频并发闸满（R40 审计 R2）：503 + audio_capacity，
+		// 不再伪装成上游故障 502 upstream_error。
+		writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+			"Gateway audio capacity reached, retry later", "server_error", "audio_capacity")
+		return
+	}
 	var noProvErr *audioNoProviderError
 	if errors.As(err, &noProvErr) {
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "No audio provider available for model", "server_error", "no_provider")

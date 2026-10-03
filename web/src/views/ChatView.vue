@@ -56,6 +56,12 @@ const {
 } = useChatSessions()
 
 const popularModels = ref<PopularModel[]>([])
+// 2026-10-03：原来 `popularModels.value = []`。模型 <select> 里有一条**硬编码**
+// 的「自动路由 (auto)」选项（ChatComposer.vue:47），所以清空之后下拉不是空的——
+// 它只剩「自动路由」一个选项，读起来就是「网关只提供自动路由」。
+// 真相是「模型清单没加载出来」，而这两件事在页面上完全同形，且后果是
+// 用户以为只能用自动路由，发出去的请求走了完全不同的链路。
+const popularModelsError = ref('')
 const modelDisplayMap = computed(() => {
   const m = new Map<string, string>()
   for (const p of popularModels.value) m.set(p.canonical_name, p.display_name || p.canonical_name)
@@ -101,12 +107,16 @@ watch(pickerModel, (v) => {
 
 async function refreshAvailableModels() {
   const generation = ++availableModelsGeneration
+  popularModelsError.value = ''
   try {
     const data = await getAvailableModels()
     if (generation !== availableModelsGeneration) return
     popularModels.value = projectAvailableModels(data)
-  } catch {
-    if (generation === availableModelsGeneration) popularModels.value = []
+  } catch (e) {
+    if (generation !== availableModelsGeneration) return
+    popularModels.value = []
+    console.error('Failed to load available models:', e)
+    popularModelsError.value = t('chat.page.modelListFailed')
   }
 }
 
@@ -619,6 +629,12 @@ async function runSummarize() {
         </div>
 
         <div v-if="sendError" class="alert alert-danger chat-error">{{ sendError }}</div>
+        <!-- 模型下拉只剩「自动路由」时必须说清是**取不到**，
+             否则用户以为网关只提供自动路由。warning 不是 danger：不是故障，
+             是「这个列表的范围未知」。 -->
+        <div v-if="popularModelsError" class="alert alert-warning chat-error" role="status">
+          {{ popularModelsError }}
+        </div>
 
         <ChatComposer
           v-model="input"

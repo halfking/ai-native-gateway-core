@@ -90,6 +90,7 @@ func (h *AudioSpeechHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.Profile = *keyInfo.DefaultClientProfile
 		}
 	}
+	req.RequestID = requestID
 
 	res, serr := h.svc.Synthesize(r.Context(), req)
 	if serr != nil {

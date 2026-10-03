@@ -1,5 +1,6 @@
 // probeHealth.ts — ProbeHealthView 文案。
 export default {
+  monitorPartialFailed: "有 {count} 个凭据的实时数据没取到（{ids}），下面的统计偏小",
   backLink: '← 路由全景',
   title: '探测健康度',
   autoRefresh: '自动刷新 (30s)',

@@ -42,6 +42,8 @@ export default {
     createdAt: '时间',
   },
   empty: '暂无合规记录',
+  recordsLoadFailed: 'ヒット記録の読み込みに失敗しました',
+  recordsNotLoaded: 'ヒット記録は未読み込みです。下の表はクエリの結果ではありません',
   pagination: {
     previous: '上一页',
     next: '下一页',

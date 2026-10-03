@@ -177,6 +177,11 @@ export default {
   },
   error: {
     loadFailed: 'Échec du chargement',
+    filterMetaLoadFailed: 'Échec du chargement des options de filtre',
+    providersLoadFailed: 'Échec du chargement des fournisseurs',
+    tagsLoadFailed: 'Échec du chargement des étiquettes',
+    familiesLoadFailed: 'Échec du chargement des familles de modèles',
+    discoveryStatusLoadFailed: 'Échec du chargement du statut de la tâche de découverte',
     saveFailed: 'Échec de l\'enregistrement',
     resetFailed: 'Échec de la réinitialisation',
     loadDetailFailed: 'Échec du chargement des détails',

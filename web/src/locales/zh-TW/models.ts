@@ -177,6 +177,11 @@ export default {
   },
   error: {
     loadFailed: '載入失敗',
+    filterMetaLoadFailed: '篩選條件載入失敗',
+    providersLoadFailed: '供應商清單載入失敗',
+    tagsLoadFailed: '標籤清單載入失敗',
+    familiesLoadFailed: '模型家族清單載入失敗',
+    discoveryStatusLoadFailed: '發現任務狀態載入失敗',
     saveFailed: '儲存失敗',
     resetFailed: '重設失敗',
     loadDetailFailed: '載入詳情失敗',

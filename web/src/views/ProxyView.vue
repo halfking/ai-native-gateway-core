@@ -85,15 +85,27 @@ async function loadRegions() {
   try {
     const data = await getProxyRegions()
     regions.value = data.items ?? []
-  } catch { /* ignore */ }
+  } catch (e: unknown) {
+    // 2026-10-03：原来 `catch { }`。区域统计拿不到时页面显示成「没有区域分布」，
+    // 而 loadStatus 成功时 regions 也可能有值 —— 用户分不清「确实没有」
+    // 与「没加载出来」。与同文件其它 loader 一致接到 setError。
+    setError('status', e instanceof Error ? e.message : t('proxy.error.loadRegionsFailed'))
+  }
 }
 
-async function loadPolicy() {
+async function loadPolicy(): Promise<boolean> {
   try {
     const data = await getProxyPolicy()
     policy.value = data.policy
     swapState.value = data.swap_state
-  } catch { /* ignore */ }
+    return true
+  } catch (e: unknown) {
+    // 2026-10-03：原来 `catch { }`。onMounted 会调它，失败时 policy 一直是
+    // null，卡片就永远停在「加载中…」（见模板的 v-else 分支）。
+    // 接上本文件已有的 error 通道，失败原因必须被说出来。
+    setError('status', e instanceof Error ? e.message : t('proxy.error.loadPolicyFailed'))
+    return false
+  }
 }
 
 // ── 批量操作 ──
@@ -149,7 +161,13 @@ async function handleForceSwap() {
 const policyDraft = ref<Partial<ProxySelectionPolicy>>({})
 const showPolicyModal = ref(false)
 async function openPolicyEditor() {
-  if (!policy.value) await loadPolicy()
+  // 2026-10-03：加载失败时不打开编辑器。
+  // ⚠️ 说清楚这条分支现在**是否可达**：编辑按钮在 `v-if="policy"` 里，
+  // policy 为 null 时按钮不渲染，所以「policy 为空还去开编辑器」这条路径
+  // 目前**从 UI 走不到**（我第一版把它写成「空表单覆盖真实策略」的写入风险，
+  // 回源码核对后发现那个后果不在这条控制流上）。
+  // 保留早退是**防御性**的：loadPolicy 一旦被别处复用，这个早退就生效。
+  if (!policy.value && !(await loadPolicy())) return
   policyDraft.value = { ...(policy.value || {}) }
   showPolicyModal.value = true
 }
@@ -533,6 +551,13 @@ const AFFINITY_POLICIES = ['any', 'prefer_same', 'require_same']
               <button class="btn-secondary" @click="openPolicyEditor">{{ t('proxy.policy.edit') }}</button>
             </div>
           </div>
+          <!--
+            2026-10-03：原来 v-else 一律显示「加载中…」。但 onMounted 里
+            loadPolicy() 失败时 policy 永远是 null ⇒ 卡片**永远**停在「加载中…」，
+            用户会一直等一个永远不会来的结果。失败原因由上面的 error-banner
+            给出，这里要把「还在加载」与「加载失败」分开说。
+          -->
+          <div v-else-if="error">{{ error }}</div>
           <div v-else>{{ t('proxy.policy.loading') }}</div>
         </div>
         <div v-if="status.warning" class="warning-banner">

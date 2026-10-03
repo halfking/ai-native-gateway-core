@@ -137,16 +137,33 @@ func TestSearchTextLandsInSessionTurns_RealDB(t *testing.T) {
 		requestID, tenantID).Scan(&hotText)
 	require.NoError(t, err, "expected the mirrored turn in session_turns_hot")
 
-	// The consumer-facing projection is NOT asserted, and that omission is
-	// deliberate and load-bearing: session_turns_with_current_month projects 55
-	// curated columns and does not include search_text at all (verified on both
-	// a fresh install and 252). Search today still runs against the v1 family —
-	// admin/logs.go selects rl.search_text with rl = request_logs_hot — so the
-	// write side being fixed does NOT mean retrieval works on the session side.
-	// Adding a view assertion here would either fail for a reason that has
-	// nothing to do with §9.98, or (worse) pin the gap in as expected behaviour.
-	// The view projection is tracked as the still-open read-side half of the
-	// v1 retirement blocker.
+	// The consumer-facing projection is NOT asserted here, and that omission is
+	// deliberate — but NOT for the reason the note below used to give.
+	//
+	// ⚠️ 2026-10-04 订正：这段注释原先写「session_turns_with_current_month
+	// 投影 55 列且不含 search_text …… 该视图投影是 v1 退役阻断项的读侧半边」。
+	// **前半句是真的**（真库重核：55 列、其中 0 个 search_text），
+	// **后半句的推论是错的，会把人引向不必要的改动。**
+	//
+	// 灰度开关并不读那个视图。admin/logs.go 的 FROM 由
+	// admin/logs_turns_source.go:logsSourceFromSQL() 选出，打开
+	// storage.admin_logs_native_turns_read 时替换成
+	// db.SessionFamilyTurnsSourceSQL() —— 那是对 session_turns_hot /
+	// session_turns 的**内联投影**，不是对 session_turns_with_current_month
+	// 的遍历。该投影由 canonicalColumnOrderV2（115 个名字）经
+	// projectionExprByColumn 渲染，而 canonicalColumnOrderV2[21] ==
+	// "search_text" 对应 "t.search_text"（projectionExprsV2[21]），
+	// **逐位对齐、列存在**。
+	//
+	// 真正阻断搜索迁移的是**行覆盖率**，不是 schema：见
+	// admin/logs_turns_source.go —— 视图里 27.6% 的 request_id 在原生源查不到
+	// （无会话头流量按设计不镜像），而给视图加宽这个视图**一行都补不上**。
+	// 那是关于非会话流量的业务决策，且已按「谓词形态」登记在
+	// admin/session_view_dependency_risk_test.go。
+	//
+	// ⇒ 因此这里既不断言该视图缺 search_text（那会造一条假约束：
+	// 未来合法地加宽该视图会无理由地转红），也不去动它。
+	// 该守的正向性质在 TestSearchTextRoundTripsThroughTheNativeReadSource_RealDB。
 	var viewHasSearchText bool
 	err = db.QueryRow(ctx,
 		`SELECT EXISTS (
@@ -155,7 +172,8 @@ func TestSearchTextLandsInSessionTurns_RealDB(t *testing.T) {
 			  AND table_name   = 'session_turns_with_current_month'
 			  AND column_name  = 'search_text')`).Scan(&viewHasSearchText)
 	require.NoError(t, err)
-	t.Logf("session_turns_with_current_month exposes search_text: %v (read-side migration still open)", viewHasSearchText)
+	t.Logf("session_turns_with_current_month exposes search_text: %v "+
+		"(informational only — 该视图不在灰度开关的读路径上，见上方订正)", viewHasSearchText)
 
 	for _, s := range []struct{ surface, value string }{
 		{"session_turns_hot", hotText},
