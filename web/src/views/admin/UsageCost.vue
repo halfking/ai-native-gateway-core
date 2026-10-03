@@ -124,7 +124,11 @@ const attributionColumnLabel = computed(() => {
 // API 调用
 const fetchCostTrend = async () => {
   try {
-    costTrendData.value = await getCostTrend(attributionDimension.value)
+    const data = await getCostTrend(attributionDimension.value)
+    costTrendData.value = data
+    // 降级时后端给的是空 entries + total_cost 0 ⇒ 一张空饼图。
+    // 不记下来的话，图看起来就是「这段时间没花钱」。
+    recordDegradation(t('dataLifecycle.usageCost.attribution.title'), data)
   } catch (e) {
     console.error('Cost trend fetch error:', e)
     error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.costTrend')

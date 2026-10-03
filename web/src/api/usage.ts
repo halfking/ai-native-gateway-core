@@ -173,7 +173,7 @@ export interface CostTrendEntry {
   percentage: number
 }
 
-export interface CostTrendResponse {
+export interface CostTrendResponse extends DegradationMarker {
   group_by: string
   date_from: string
   date_to: string
@@ -205,20 +205,12 @@ export interface DimChange {
 }
 
 /**
- * 降级标记（2026-10-03）。
- *
- * 后端在「schema 落后于代码」时会返回 200 + 全 0，与「这段时间真的没数据」
- * 在页面上完全同形 —— 2026-10-03 实测 period-compare 把 2026-09 的
- * 1139.62 美元显示成 0。现在后端恒发 degraded，false 表示「服务端确认过
- * 它是好的」，字段缺失才是「不知道」。
- *
- * 注意不要用 `degraded?: boolean`：可选字段在 JSON 里缺失时读到 undefined，
- * 与 false 同形 —— 那等于把这个标记自己又废掉了一半。
+ * 降级标记（2026-10-03）。契约本体在 composables/useDegradationMarker.ts ——
+ * api/admin.ts 也要用它，定义必须落在更底层模块，否则每加一个降级端点就复制
+ * 一份。这里转出以保持既有 import 路径可用。
  */
-export interface DegradationMarker {
-  degraded: boolean
-  degraded_reason?: string
-}
+import type { DegradationMarker } from '../composables/useDegradationMarker'
+export type { DegradationMarker }
 
 export interface PeriodCompareResponse extends DegradationMarker {
   current: PeriodStats
