@@ -637,14 +637,16 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 		%s
 	`, whereClause)
 
-	// compression_strategy 的原生归属是 request_logs。走 request_logs 单表而不是
+	// compression_strategy 的原生归属是 request_logs。走 request_logs 而不是
 	// join 回 ledger：ledger→request_logs 是 2M×2M 嵌套循环，30 天窗口实测 28s，
-	// 而 request_logs 按月分区自带 ts 剪枝，同窗口实测 1.7s（2026-10-03 实测）。
-	// 两表 cost 口径经核对一致（同窗口均 150.15 美元），因此这里只是换张表，
-	// 不引入新的计费口径。
+	// 而按 ts 过滤的单表读同窗口实测 1.7s（2026-10-03 实测）。两表 cost 口径经
+	// 核对一致（同窗口均 150.15 美元），因此这里只是换张表，不引入新的计费口径。
+	// 读的是 hot∪母表双腿视图而非裸母表：最近 8h 的行只在 request_logs_hot
+	//（hot 默认仅保留 8h），裸母表读对当月面板是真实盲区（sqlreadguard 读面
+	// 纪律）；视图两腿都吃 ts 谓词下推，剪枝收益不丢。
 	compressedQuery := `
 		SELECT COUNT(*)
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		WHERE rl.ts >= $1 AND rl.ts < $2
 		  AND rl.compression_strategy IS NOT NULL
 		  AND rl.compression_strategy <> ''
