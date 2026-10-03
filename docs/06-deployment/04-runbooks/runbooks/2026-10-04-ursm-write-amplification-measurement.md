@@ -298,7 +298,82 @@ SELECT count(*) FROM (SELECT DISTINCT tenant_id, credential_id, raw_model_name
 
 ---
 
-## 8. 仍未定论的（不要当结论用）
+## 8. ★★ 追加：DEFAULT 分区拍板项的仓库级定论（2026-10-03 22:20）
+
+评审稿 §10 拍板 #4 建议「**不建** DEFAULT 分区，理由是黑洞 + ATTACH 变慢 +
+静默丢数优于响亮失败」。**这条建议与本仓库既定模式相悖，应予推翻。**
+
+### 8.1 仓库既有模式就是「预建 + DEFAULT 兜底」
+
+全仓已有 6 张表采用 DEFAULT 分区（`sql/migrations/` 实测）：
+
+| 表 | 出处 |
+|---|---|
+| `platform_outbox` | `local/641_...` |
+| `request_wal` | `startup/332_...` |
+| `routing_decision_log` | `startup/333_...` |
+| `stats_event_inbox` | `startup/536_...` |
+| `usage_facts` | `startup/537_...` |
+| `auto_route_selections` | `startup/478_...` |
+
+且 `startup/473_partition_precreate_2026_09_10.sql` 的预建循环第三步注释写的是：
+
+```sql
+-- 3. Add default partition if missing (rule 33 §2 兜底)
+IF NOT has_default THEN
+    EXECUTE format('CREATE TABLE public.%I PARTITION OF public.%I DEFAULT', ...);
+```
+
+**⇒ DEFAULT 分区是仓库规范（rule 33 §2）要求的兜底，不是可选项。**
+
+### 8.2 而且按日分区已有现成机制，不必新写
+
+`bg/partition_manager.go` 的 `archiveSpec.partitionUnit` 字段：
+
+```go
+// partitionUnit controls how ensureNextMonthPartitions derives the ...;
+// "day" → AddDate(0,0,offset) (daily partitions, R68 迁移 750 usage_facts 按日分区接入)
+partitionUnit string
+```
+
+`usage_facts` 已用 `partitionUnit="day"` 接入按日分区并跑了几个月。
+**⇒ `ursm_node_snapshot_min` 只需在 spec 里加一条 + `partitionUnit="day"`，
+不需要另建 ensure 函数**（评审稿改动清单 #1 的「新增迁移建 ensure 函数」
+与 #4 的「加 spec 条目」可以合并成后者）。
+
+### 8.3 ★ 切换顺序有一条硬约束（踩坑史就在仓库里）
+
+`750_usage_facts_daily_partition.sql` 的注释记录：
+
+> **PG 对「父表挂 DEFAULT 分区时新建具体分区」会先校验 DEFAULT 内无落入
+> 区间内的行**。存量数据环境（252 共享 PG 的 telemetry 持续写入 DEFAULT）
+> **首启必踩**。
+
+修法是六步：移走 DEFAULT 内的界内行 → 建空表 → `ALTER TABLE ... ATTACH`。
+
+**⇒ 对本改造的直接影响（且是个好消息）**：
+`ursm_node_snapshot_min` 现在是**普通表**（`relkind='r'`，0 分区），
+**没有 DEFAULT 分区**，切换时 DEFAULT 天然为空 ⇒ **不存在这个校验陷阱**，
+比 `usage_facts` 的切换简单一整级。但**顺序仍必须遵守**：
+挂 DEFAULT 与建首个具体分区不能反着来。
+
+### 8.4 订正后的拍板 #4
+
+| | 评审稿建议 | 订正 |
+|---|---|---|
+| DEFAULT 分区 | 不建 | **建**（仓库既定模式 + rule 33 §2 兜底） |
+| 越界/未来数据 | 响亮失败 | 落 DEFAULT catch-all（与 `usage_facts` 一致） |
+| 监控 | 需另设「有行即报警」 | 复用 `usage_facts` 的既有约定即可 |
+
+代价是评审稿原先列的三条确实存在（黑洞、ATTACH 校验、需监控），
+但它们是**本仓库已经付过的代价**，不是本次新增的风险。
+真正的新增风险只有一条：**§8.3 的挂载顺序**。
+
+**⇒ 拍板 #4 不再是开放问题，按仓库惯例即可定。**
+
+---
+
+## 9. 仍未定论的（不要当结论用）
 
 - **§5.2 那 100 分钟空洞（10-03 10:20~12:00）的成因无法定位** ——
   两个日志源都已被轮转删除（§5.3 附表）。**不下结论。**
