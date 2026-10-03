@@ -1136,8 +1136,31 @@ func main() {
 		ursmV2Cfg.Mode = ursmv2api.ModeOff
 	}
 	if redisClientForCache != nil {
+		// 2026-10-03: URSM 可用独立 db（URSM_V2_REDIS_DB）。
+		//
+		// 起因是 persist writer 的全键空间 SCAN：它要扫完整个 db 才能找齐
+		// ~1.3K 个 URSM 节点，而共享 db2 意味着要走过 ~158 万个会话键。
+		// 实测完整遍历 12.95s–30.40s（强负载相关），而预算只有 30s
+		// —— 于是快照时好时坏。独立 db 上同一动作实测 ~0.11s。
+		//
+		// 留空（RedisDB == -1）或与网关相同时，沿用共享 client，行为与今天完全一致。
+		ursmRedis := redisClientForCache
+		if ursmV2Cfg.RedisDB >= 0 && ursmV2Cfg.RedisDB != cfg.RedisDB {
+			dedicated := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, ursmV2Cfg.RedisDB)
+			if err := pingRedisWithBootRetry(dedicated,
+				bootRetryBudgetEnv("LLM_GATEWAY_REDIS_BOOT_RETRY_SECONDS", 30*time.Second)); err != nil {
+				// 拿不到连接就不切换：回落到共享 client，行为与配置前一致。
+				// 宁可慢，也不能让 URSM 因为一个新 db 不可达而整体失效。
+				slog.Warn("ursm.v2: dedicated redis db unreachable, falling back to shared client",
+					"db", ursmV2Cfg.RedisDB, "gateway_db", cfg.RedisDB, "error", err)
+			} else {
+				ursmRedis = dedicated
+				slog.Info("ursm.v2: using dedicated redis db",
+					"db", ursmV2Cfg.RedisDB, "gateway_db", cfg.RedisDB)
+			}
+		}
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
-			Redis:  redisClientForCache.Client(),
+			Redis:  ursmRedis.Client(),
 			Config: ursmV2Cfg,
 		})
 		// Shadow and canary cannot reject a route before their own guarded
