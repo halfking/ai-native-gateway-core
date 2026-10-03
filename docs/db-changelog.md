@@ -833,7 +833,9 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 809 | `809_instance_release_status_nullable_release_id.sql` | `2497d0d4915bef28e3665515b624896f67c8f2f1160574a85c68361ef6073b01` | applied+verified |
 | 815 | `815_request_logs_view_stage_band_cff.sql` | `895fe8fd74178c48784ae7ee1efc8de26eee84e0b668d6a0b706d95325e045b3` | applied+verified |
 | 816 | `816_request_logs_view_client_ip_projection.sql` | `e6f41a1f334886bd1d657c8fc5801f40aaf0a5bebdf427028d9541ce7140938a` | applied+verified |
+| 816 | `816_request_logs_view_client_ip_projection.sql` | `ad50833591f299c2b131b891d316931f13b1c9bfe7053e916c10d844dac375da` | applied+verified（R29 追认：`cc60291bf` 判 816 的 client_ip 守卫是**假守卫**（一行脏数据会打挂整条 canonical 视图），`e125a6e7f` 把软守卫搬进各自要碰关系的块、680 形态下由崩溃变 no-op。⚠️ **这是语义变更、不是注释变更** ⇒ 已应用库跑的是旧语义；原登记行保留供已应用库按旧字节核对，任一命中即过（`scripts/verify-migration-checksums.sh:94-103`）。环境间行为分叉**未**由此消除（待裁决 87）） |
 | 817 | `817_request_logs_view_client_ip_semantic_guard.sql` | `e101a6887e3c3922232198fcaece765b26435bbbba025b7d72a145de5f496cb9` | applied+verified |
+| 817 | `817_request_logs_view_client_ip_semantic_guard.sql` | `48bfe9df0bcecc19efc4e2e48e5ad6234304c91dab031e8a1334ee41b327db32` | applied+verified（R29 追认：同 816 姊妹篇——`e125a6e7f` 把软守卫搬进要碰关系的块，680 形态下由崩溃变 no-op。⚠️ **语义变更、不是注释变更**；原登记行保留，任一命中即过（`scripts/verify-migration-checksums.sh:94-103`）。环境间行为分叉**未**由此消除（待裁决 87）） |
 
 ## 2026-10-02T21:23:48Z — deploy 154 build_seq 2408 (1a213f4c)
 
