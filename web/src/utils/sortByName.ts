@@ -19,6 +19,12 @@ export interface NameLike {
   code?: string | null
   owner_user?: string | null
   key_prefix?: string | null
+  /**
+   * 凭据的展示名（ProviderCredential.label）。**刻意不加入 DEFAULT_KEYS** ——
+   * 默认候选顺序已经上线在供应商/租户/用户/密钥四处，改它会静默改变那些页面的
+   * 行序。只在需要时由调用方显式传 keys 指定。
+   */
+  label?: string | null
 }
 
 /** 取一行的可读名称，逐个回退；全空则返回空串（排序时沉底）。 */
