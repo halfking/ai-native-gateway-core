@@ -52,6 +52,9 @@ func TestGuardPackagesAreWiredIntoMakefile(t *testing.T) {
 		// 配额闸/限流声明）。它替代「把 domains/streaming 整体登记」的做法——
 		// 那个包全量 106.471s，对着 -timeout=120s 只剩 13.5s 余量。
 		"./internal/ingressguard",
+		// ⚠️ 219 号新增：`healthstateguard` 的恢复入口层覆盖登记表
+		//（9 层逐层表态）。它抓的是「清了 DB 侧就宣称已恢复、却没清进程/Redis 侧」。
+		"./internal/healthstateguard",
 	}
 	got := map[string]bool{}
 	for _, p := range registered {

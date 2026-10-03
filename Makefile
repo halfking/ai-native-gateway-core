@@ -77,7 +77,14 @@ test-short: ## 短模式，跳过 -short=false 的测试
 # ingressguard 刻意**不导入** domains/streaming，只做静态文本判据，实测 0.4~0.7s。
 # ⚠️ 本条**必须**登记：guards-sync.sh 是按磁盘上 `find internal -name '*guard'`
 #   **发现式**枚举的（CI 的 audit-guards-ci.yml 第 87 步会跑它）⇒ 漏登记直接让 CI 转红。
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./sql/schema
+# R89-EJ（219 号）：补登记 ./internal/healthstateguard。
+# 它钉住「admin 恢复入口的状态层覆盖」：DB 四张表 + 路由缓存 + key 缓存 +
+# key rotator + 进程内熔断器/fpslot + URSM v2，共 9 层，逐层必须表态。
+# 存在理由：219 号查出「按供应商批量修复」入口只清 DB 侧、不清进程/Redis 侧，
+# 却照样返回 HTTP 200 与「已恢复」语义（待裁决 85）。
+# ⚠️ 同样**必须**登记：guards-sync.sh 按磁盘 `find internal -name '*guard'`
+#   **发现式**枚举 ⇒ 漏登记直接让 CI 转红。
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./sql/schema
 
 .PHONY: guards
 guards: ## 运行全部审计守卫（快速、无外部依赖）
