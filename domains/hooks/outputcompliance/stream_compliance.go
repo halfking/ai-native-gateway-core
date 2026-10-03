@@ -113,6 +113,13 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 		// Gateway-owned fixed transport bytes contain no provider output.
 		return nil, nil
 	}
+	// Terminal events can contain a complete model output snapshot. Bound
+	// them together with held frames, before JSON parsing allocates copies or
+	// the terminal path releases the pending output.
+	if len(frame) > maxCompliancePendingBytes-state.bytes {
+		state.clear()
+		return &response.ChunkResult{ShouldBlock: true}, nil
+	}
 	checked, err := it.inspectSSEFrame(state.checkCtx, frame, meta, state.redact)
 	if err != nil {
 		state.clear()

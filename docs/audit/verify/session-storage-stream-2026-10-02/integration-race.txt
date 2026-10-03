@@ -1,0 +1,65 @@
+Session storage audit: disposable Redis/PG, coherence gate=0
+OBSERVATION tests measure remaining gaps; PASS does not certify coherence.
+=== RUN   TestStorageAuditSanitizeProcesses
+    storage_real_integration_test.go:59: worker 1: === RUN   TestStorageAuditSanitizeWorker
+        2026/10/02 11:07:49 WARN sanitize_middleware: sanitize failed component=sanitize_middleware error="acquire sanitize offsets: sanitize offsets lock busy" session_id=audit-1790910469244788000
+            storage_real_integration_test.go:115: accepted=16 fail_closed_admission_retries=1
+        --- PASS: TestStorageAuditSanitizeWorker (0.65s)
+        PASS
+    storage_real_integration_test.go:59: worker 0: === RUN   TestStorageAuditSanitizeWorker
+        2026/10/02 11:07:49 WARN sanitize_middleware: sanitize failed component=sanitize_middleware error="acquire sanitize offsets: sanitize offsets lock busy" session_id=audit-1790910469244788000
+        2026/10/02 11:07:49 WARN sanitize_middleware: sanitize failed component=sanitize_middleware error="acquire sanitize offsets: sanitize offsets lock busy" session_id=audit-1790910469244788000
+        2026/10/02 11:07:49 WARN sanitize_middleware: sanitize failed component=sanitize_middleware error="acquire sanitize offsets: sanitize offsets lock busy" session_id=audit-1790910469244788000
+            storage_real_integration_test.go:115: accepted=16 fail_closed_admission_retries=3
+        --- PASS: TestStorageAuditSanitizeWorker (0.88s)
+        PASS
+    storage_real_integration_test.go:79: two independent processes: 32 unique values, 32 mappings, high-water 32
+--- PASS: TestStorageAuditSanitizeProcesses (2.09s)
+=== RUN   TestStorageAuditSanitizeWorker
+    storage_real_integration_test.go:85: parent test starts this helper in a separate process
+--- SKIP: TestStorageAuditSanitizeWorker (0.00s)
+=== RUN   TestStorageAuditRealRedisLeaseLoss
+2026/10/02 11:07:51 WARN sanitize_middleware: sanitize failed component=sanitize_middleware error="persist sanitize mapping: sanitize offsets lease lost" session_id=audit-1790910471398733000
+--- PASS: TestStorageAuditRealRedisLeaseLoss (0.16s)
+=== RUN   TestStorageAuditStreamTerminalCapacity
+=== RUN   TestStorageAuditStreamTerminalCapacity/terminal_at_limit
+=== RUN   TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_at_limit
+=== RUN   TestStorageAuditStreamTerminalCapacity/terminal_over_limit
+=== RUN   TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_over_limit
+--- PASS: TestStorageAuditStreamTerminalCapacity (23.09s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/terminal_at_limit (11.55s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_at_limit (11.49s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/terminal_over_limit (0.02s)
+    --- PASS: TestStorageAuditStreamTerminalCapacity/pending_plus_terminal_over_limit (0.02s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/security/sanitize	27.089s
+=== RUN   TestStorageAuditRealColdRead
+2026/10/02 11:07:49 INFO feature_switches_snapshot session_compression=true session_cache=true circuit_degradation=true rate_limiter=true fp_slot=true
+    storage_audit_integration_test.go:92: real cold Redis + PG TurnReader: fields reset; ttl=30m0s
+--- PASS: TestStorageAuditRealColdRead (0.37s)
+=== RUN   TestStorageAuditObserveCrossInstanceState
+    storage_audit_integration_test.go:112: OBSERVATION warm_generation=old cold_generation=new coherent=false
+    storage_audit_integration_test.go:137: OBSERVATION cross_instance_updates=2 persisted_count=1 coherent=false
+--- PASS: TestStorageAuditObserveCrossInstanceState (0.17s)
+=== RUN   TestStorageAuditObserveV2MetadataBodyMismatch
+    storage_audit_integration_test.go:160: OBSERVATION redis_msg_count=1 pg_msg_count=2 old_hash_with_new_body=true coherent=false
+--- PASS: TestStorageAuditObserveV2MetadataBodyMismatch (0.18s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression	3.011s
+=== RUN   TestStorageAuditGovernanceRealRedis
+    storage_redis_audit_integration_test.go:47: two Redis clients: zero-value replacement and WRONGTYPE checked
+--- PASS: TestStorageAuditGovernanceRealRedis (0.03s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/domains/session/v2	1.544s
+=== RUN   TestStorageAuditSSEVisibleTextLatency
+=== RUN   TestStorageAuditSSEVisibleTextLatency/terminal
+    storage_stream_audit_test.go:77: production SSE writer + mandatory guard: heartbeat=9.775666ms visible_text=163.082333ms synthetic_tail=150ms
+=== RUN   TestStorageAuditSSEVisibleTextLatency/EOF
+    storage_stream_audit_test.go:77: production SSE writer + mandatory guard: heartbeat=5.214833ms visible_text=161.724833ms synthetic_tail=150ms
+--- PASS: TestStorageAuditSSEVisibleTextLatency (0.33s)
+    --- PASS: TestStorageAuditSSEVisibleTextLatency/terminal (0.17s)
+    --- PASS: TestStorageAuditSSEVisibleTextLatency/EOF (0.16s)
+=== RUN   TestStorageAuditWriterBlocksCombinedTerminalCapacity
+--- PASS: TestStorageAuditWriterBlocksCombinedTerminalCapacity (6.62s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming	9.154s
