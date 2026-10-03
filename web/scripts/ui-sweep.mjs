@@ -192,30 +192,217 @@ const PAGE_PROBE = () => {
 }
 
 const OVERLAY_PROBE = () => {
-  const out = { found: null, scrollable: null, widest: 0 }
-  // 已打开的弹层：右侧抽屉 / 居中弹窗
-  const cands = [...document.querySelectorAll('[class*="drawer"],[class*="modal"]')]
-    .filter((el) => {
-      const r = el.getBoundingClientRect()
-      return r.width > 120 && r.height > 120 && cs_visible(el)
-    })
+  const out = { found: null, width: 0, panelOverflows: false, scrollable: false, textLen: 0, pickedBackdrop: false }
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const visible = (el) => {
+    const cs = getComputedStyle(el)
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) <= 0.05) return false
+    const r = el.getBoundingClientRect()
+    return r.width > 120 && r.height > 120
+  }
+  const cands = [...document.querySelectorAll('[class*="drawer"],[class*="modal"],[class*="dialog"]')]
+    .filter(visible)
     .map((el) => ({ el, r: el.getBoundingClientRect() }))
-    // 取最外层（面积最大者）
-    .sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height)
-  if (!cands.length) return out
-  const { el, r } = cands[0]
+
+  // ⚠ 两次选错对象，都是「用尺寸近似弹层本体」：
+  //  ① `.drawer-overlay` 是 position:fixed 铺满视口的背景层，面积最大、class
+  //     里又带 drawer —— 只按面积取最大 ⇒ 永远选中遮罩，量出 1440px 的
+  //     「面板宽度」，滚动检查也打在永不会滚的遮罩上，于是恒判绿。
+  //  ② 排除遮罩后，内容多的面板其 `.drawer-body` 会被内容撑得比 `.drawer`
+  //     更高，面积又反超 —— 仍然选错。
+  // 正确规则是**取最外层**：不是任何其它候选的后代的那个。尺寸只用来过滤噪声。
+  const isBackdrop = (r) => r.width >= vw * 0.95 && r.height >= vh * 0.95
+  const nonBackdrop = cands.filter((c) => !isBackdrop(c.r))
+  const pool = nonBackdrop.length ? nonBackdrop : cands
+  if (!pool.length) return out
+
+  const poolSet = new Set(pool.map((c) => c.el))
+  const outermost = pool.filter((c) => {
+    for (let p = c.el.parentElement; p; p = p.parentElement) {
+      if (poolSet.has(p)) return false
+    }
+    return true
+  })
+  const { el, r } = (outermost.length ? outermost : pool)[0]
+  out.pickedBackdrop = nonBackdrop.length === 0
   out.found = (typeof el.className === 'string' ? el.className : '').split(/\s+/).slice(0, 2).join('.')
-  out.widest = Math.round(r.width)
-  // 内容区是否可滚
-  const scrollers = [...el.querySelectorAll('*')].filter((c) => {
+  out.width = Math.round(r.width)
+  out.left = Math.round(r.left)
+  out.textLen = (el.innerText || '').trim().length
+
+  // 面板内容比可视高度高吗？高的话必须有一条可滚路径，否则底部字段看不到 ——
+  // 这正是老板说的「显示内容必须完整，减少看不完整」。
+  out.panelOverflows = el.scrollHeight > el.clientHeight + 8
+  const scrollers = [el, ...el.querySelectorAll('*')].filter((c) => {
     const cs = getComputedStyle(c)
     return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && c.scrollHeight > c.clientHeight + 8
   })
-  out.scrollable = scrollers.length > 0 || el.scrollHeight <= el.clientHeight + 8
+  out.scrollable = scrollers.length > 0 || !out.panelOverflows
   return out
-  function cs_visible(el) {
-    const cs = getComputedStyle(el)
-    return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05
+}
+
+// OVERLAY_PROBE 的判别力检查。与页面探针分开跑：两者的失败模式不一样——
+// 页面探针曾经「扫不到元素」而恒绿，弹层探针曾经「选错对象」而恒绿。
+const OVERLAY_FIXTURES = [
+  {
+    name: '右侧抽屉：必须量到抽屉本体（800px），不能量铺满视口的遮罩',
+    html: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'抽屉内容行<br>'.repeat(6)}</div></div></div>
+      <style>
+        .drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4)}
+        .drawer{position:absolute;right:0;top:0;width:800px;height:100%;background:#fff}
+        .drawer-body{padding:12px}
+      </style>`,
+    expect: { found: 'drawer', notBackdrop: true, wideEnough: true },
+  },
+  {
+    name: '内容超出面板且面板自身不可滚 → 必须判「看不完整」',
+    html: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'很长的一行内容<br>'.repeat(80)}</div></div></div>
+      <style>
+        .drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4)}
+        .drawer{position:absolute;right:0;top:0;width:800px;height:300px;background:#fff;overflow:hidden}
+        .drawer-body{padding:12px}
+      </style>`,
+    expect: { found: 'drawer', notBackdrop: true, scrollable: false },
+  },
+  {
+    name: '内容超出但 body 可滚 → 必须判「可滚」（与上一条成对）',
+    html: `<div class="drawer-overlay"><div class="drawer"><div class="drawer-body">${'很长的一行内容<br>'.repeat(80)}</div></div></div>
+      <style>
+        .drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4)}
+        .drawer{position:absolute;right:0;top:0;width:800px;height:300px;background:#fff;overflow:hidden}
+        .drawer-body{padding:12px;height:100%;overflow-y:auto}
+      </style>`,
+    expect: { found: 'drawer', notBackdrop: true, scrollable: true },
+  },
+]
+
+async function runOverlaySelftest() {
+  const { browser } = await launchBrowser()
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  let pass = 0
+  const fails = []
+  for (const fx of OVERLAY_FIXTURES) {
+    const page = await ctx.newPage()
+    await page.setContent(fx.html)
+    await page.waitForTimeout(120)
+    const got = await page.evaluate(OVERLAY_PROBE)
+    await page.close()
+    const actual = {
+      found: got.found,
+      notBackdrop: !got.pickedBackdrop,
+      // 面板宽度必须落在「窄于视口」区间：铺满视口就说明选到遮罩了
+      wideEnough: got.width > 120 && got.width < 1440 * 0.95,
+      scrollable: got.scrollable,
+    }
+    for (const k of Object.keys(fx.expect)) {
+      if (actual[k] === fx.expect[k]) pass++
+      else fails.push(`${fx.name}\n    判据 ${k}：期望 ${fx.expect[k]}，实测 ${actual[k]}（found=${got.found} width=${got.width}）`)
+    }
+  }
+  await browser.close()
+  const total = OVERLAY_FIXTURES.reduce((n, f) => n + Object.keys(f.expect).length, 0)
+  console.log(`\n══ 弹层探针自检 ${pass}/${total} ══`)
+  for (const f of fails) console.log(`  ✗ ${f}`)
+  if (fails.length) {
+    console.error(`\n✗ 弹层探针自检未通过：${fails.length}/${total}，先修判据再测弹层。`)
+    process.exit(1)
+  }
+  console.log(`✓ ${OVERLAY_FIXTURES.length} 个夹具，正负双向都能区分`)
+}
+
+// ── 弹层遍历（--overlays）─────────────────────────────────────────
+// 弹层不开就不可能被静态门判出来：不点开就量不到「内容看不完整」。
+// 触发点用**显式清单**而不是「找看起来像按钮的东西去点」——
+// 启发式点击会点出一堆无关的浮层，报告里全是噪声，而且没有鉴别力。
+// 每条 case 都写死 route + 已核实的触发选择器，测不到就是真测不到。
+//
+// steps 支持多步（很多入口藏在下拉菜单里：先开菜单再点菜单项）。
+const OVERLAY_CASES = [
+  { path: '/dashboard', steps: ['.quick-btn'], kind: 'drawer', note: 'StatsDrawer 快捷入口' },
+  { path: '/users', steps: ['tbody tr.row-click'], kind: 'drawer', note: 'UserDetailDrawer 点行打开' },
+  {
+    path: '/dashboard',
+    steps: ['.user-menu__trigger', '.user-menu__dropdown .user-menu__item:nth-child(2)'],
+    kind: 'modal',
+    note: 'ChangePasswordDialog 用户菜单 → 修改密码（居中弹窗）',
+  },
+]
+
+async function runOverlaySweep() {
+  const { browser, from } = await launchBrowser()
+  console.log(`浏览器：${from}\n目标：${BASE}\n`)
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    extraHTTPHeaders: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
+  })
+
+  const results = []
+  for (const [i, c] of OVERLAY_CASES.entries()) {
+    const page = await ctx.newPage()
+    const errors = []
+    page.on('console', (m) => {
+      if (m.type() === 'error') errors.push(m.text().slice(0, 200))
+    })
+    page.on('pageerror', (e) => errors.push(`[pageerror] ${String(e).slice(0, 200)}`))
+
+    let probe = null
+    let clickErr = null
+    try {
+      await page.goto(BASE + c.path, { waitUntil: 'domcontentloaded', timeout: 20000 })
+      await page.waitForSelector('.main-body > *', { timeout: 15000 }).catch(() => {})
+      await page.waitForTimeout(2500)
+      for (const sel of c.steps) {
+        const el = page.locator(sel).first()
+        await el.waitFor({ state: 'visible', timeout: 8000 })
+        await el.click({ timeout: 8000 })
+        // 多步之间给下拉展开留时间
+        await page.waitForTimeout(600)
+      }
+      // 抽屉有滑出动画，等它走完再量
+      await page.waitForTimeout(1200)
+      probe = await page.evaluate(OVERLAY_PROBE)
+    } catch (e) {
+      clickErr = String(e).split('\n')[0].slice(0, 160)
+    }
+    await page.close()
+
+    const p0 = []
+    const p1 = []
+    if (clickErr) p0.push(`触发失败：${clickErr}`)
+    if (!probe?.found) p0.push('点击后未出现弹层（选择器可能已失效，或该入口需要额外前置状态）')
+    if (probe?.found) {
+      if (!probe.scrollable) p1.push(`内容放不下且无可滚路径：面板高 ${probe.width}px，文字 ${probe.textLen} 字`)
+      if (probe.textLen < 20) p1.push(`弹层几乎无内容（${probe.textLen} 字），疑似打开后未填充数据`)
+    }
+    if (errors.length) p1.push(`console 错误 ${errors.length} 条：${errors[0].slice(0, 140)}`)
+
+    results.push({ ...c, opened: !!probe?.found, p0, p1, probe, errors: [...new Set(errors)].slice(0, 3) })
+    const mark = p0.length ? '✗' : p1.length ? '!' : '✓'
+    process.stdout.write(
+      `${mark} [${i + 1}/${OVERLAY_CASES.length}] ${c.path} [${c.steps.join(' → ')}] → ${c.kind}（${c.note}）` +
+      `${probe?.found ? ` 面板 ${probe?.width}px / ${probe?.textLen} 字` : ' 未打开'}\n`,
+    )
+  }
+  await browser.close()
+
+  const bad = results.filter((r) => r.p0.length || r.p1.length)
+  console.log(`\n══ 弹层遍历（${results.length} 个触发点）══`)
+  console.log(`✓ 合格：${results.length - bad.length}    有问题：${bad.length}`)
+  for (const r of bad) {
+    console.log(`\n  ${r.path} [${r.steps.join(' → ')}] — ${r.note}`)
+    for (const m of [...r.p0, ...r.p1]) console.log(`    · ${m}`)
+  }
+  if (args.includes('--json')) {
+    const outPath = args[args.indexOf('--json') + 1] || 'reports/ui-overlay.json'
+    const abs = resolve(WEB, outPath)
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), results }, null, 2))
+    console.log(`\nJSON：${outPath}`)
+  }
+  if (STRICT && bad.length) {
+    console.error(`\n✗ 弹层遍历未通过（${bad.length}/${results.length}）`)
+    process.exit(1)
   }
 }
 
@@ -345,11 +532,16 @@ async function runSelftest() {
 const args = process.argv.slice(2)
 if (args.includes('--selftest')) {
   await runSelftest()
+  await runOverlaySelftest()
   process.exit(0)
 }
 const BASE = (process.env.BASE_URL || 'http://127.0.0.1:5781').replace(/\/$/, '')
 const TOKEN = process.env.GATEWAY_DEV_AUTH_TOKEN || ''
 const STRICT = args.includes('--strict')
+if (args.includes('--overlays')) {
+  await runOverlaySweep()
+  process.exit(0)
+}
 
 let routes = parseRoutes()
 if (args.includes('--only')) {
