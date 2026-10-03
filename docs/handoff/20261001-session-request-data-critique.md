@@ -6317,3 +6317,99 @@ A 报「取到的不是最新分区行」、B 报「旧行从 OR 支路漏进来
 >    现在真的读它了。**这条「有意留的缺口」的前提可能已经不成立，下一轮必须重判。**
 > 6. **工作区纪律不变**：本地 `main` 与 `origin/main` 分叉（合并需人工裁决，不用 rebase）；
 >    共享工作区不跑 `git restore`、不 stash 他人工作。
+
+---
+
+## 第六十三轮（§9.115）：推翻我自己写进注释的一条结论——`session_tags` 不是「有意留的缺口」
+
+### 本轮做了什么
+
+两件不依赖拍板的收尾。其中一件**推翻了我自己此前写进代码注释和审计文档的结论**。
+
+**① 先重判我上一轮自己提的怀疑——它站不住**
+上一轮我在结论里写「`session_tags` 那条『有意留的缺口』的前提可能已不成立」。
+这轮查了 `GetSessionMetadata`（§9.105 修的那条**读**路径）的全部引用：
+只有 `session_metadata_test.go` ×4 + 我自己加的 PREPARE 门。**确实无生产调用方**，
+§9.105 结论成立。
+
+⚠️ 而我上一轮确实犯了个错：看到 `grep session_tags` 命中一堆生产文件
+（`state_projector.go`/`tagger.go`/`cache_update_hook.go`/`approval_integration.go`）
+就提了怀疑——**那些是写入方，不是这个读函数的调用方**。
+**验证「某函数无生产调用方」必须把函数的引用和表的引用分开数。**
+
+**② 但顺着写入方查，撞出一个真的问题（已修）**
+
+```
+cmd/gateway/approval_integration.go:137  proj := NewSessionStateProjector(...); SetStateProjector(proj)
+domains/hooks/sessionaudit/cache_update_hook.go:126  if h.stateProjector != nil { … Project(ctx, proj) }
+domains/analysis/state_projector.go:59   INSERT INTO session_tags …
+```
+
+全新安装上 `session_tags` 不存在 ⇒ INSERT 是 42P01 ⇒ `Project()` 返回 error
+⇒ **hook 按设计吞掉**（best-effort）。⇒ 缺陷形态**不是 500，是静默能力丢失**：
+v6 审计状态投影不进统一打标层，只有日志里一条 `WARN`，无告警。
+
+**实测**（拿掉表后直接调 `Project()`）：`state_projector: failed 2/2 tags`。
+**门必须打 `Project()` 而不是打 hook**——hook 吞掉错误，观测不到。
+
+**③ 一个未登记文件 = 六张表**
+351 建 `session_tags` / `session_request_summaries` / `session_embeddings` /
+`session_clusters` / `session_cluster_members` / **`session_optimization_suggestions`**
+（**6 张，数出来的**；我第一版写 5，还把这个错数字写进了注释和测试，已同步更正）。
+⇒ §9.114.4 那 102 项里 **6 项来自这一个文件**。
+**给「逐个登记 vs 只修会话族」这个待拍板项的量级信息：缺失不是 102 个独立问题，
+而是若干文件各带一批。**
+
+**④ 351 不可重跑——我刚把它变成活的，就顺手修了**
+PG **没有 `CREATE POLICY IF NOT EXISTS`**，351 的 **12 条 policy 全无守卫**，
+且整个文件在一个事务里 ⇒ 重跑时第二条起全部作废（我是**恢复测试库**时撞到的，
+「恢复步骤也是测试」）。全新安装无害、installer 只应用一次也不受影响，
+但既然我把它登记进链，这个性质就从潜伏变活了。修法：每条 `CREATE POLICY` 前置
+`DROP POLICY IF EXISTS`（首次运行行为完全不变）。**验证=把文件连跑两次，两次都无错。**
+
+### 门的设计教训
+
+第一版把「6 张表都在」和「Project() 能写」写进**同一个函数**、用 `t.Fatalf`，
+变异时红在表不存在那条——**`Project()` 的断言一次都没跑到**。
+拆成两个独立测试后，变异时**两条一起红**：
+`TestMigration351TablesExistOnRealDB` + `TestSessionStateProjectorWritesOnRealDB`。
+⇒ `Fatalf` 短路掉了更要紧的那条断言。**「报了一个红」≠「只有一个问题」。**
+
+### 变更文件
+
+- `sql/migrations/startup/351_session_analytics_tables.sql`（12 条 policy 幂等守卫）
+- `installer/cmd/llm-gw-installer/embeddata/startup/351_session_analytics_tables.sql`（副本，cmp 一致）
+- `installer/internal/dbinit/runner.go`（登记 351 + 理由注释，含推翻 §9.105 的说明）
+- `installer/cmd/llm-gw-installer/main.go`（`//go:embed` + map）
+- `sql/schema/installed_startup_migrations.tsv`（`-update`，213→214）
+- `domains/analysis/session_tags_realdb_test.go`（新增，两个测试）
+- 审计文档 §9.115、本 handoff
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 启动链（真 installer 路径） | `applied=214 failed=0 missing=0`、`relations=451`（445→**451**，正好 +6） |
+| 两个真库门 @ 权威全新安装库 | 全绿 |
+| 变异（拿掉 `session_tags`） | **两条一起红** |
+| 351 连跑两次 | 两次均无错误 |
+| `installer` 全包 | 绿 |
+
+### 下一轮提示词
+
+> 1. **本轮已推 `origin/main`**，起点 = 本轮最后一个提交 hash。
+> 2. **待拍板（新增，量级已变清晰）**：§9.114.4 那 102 项怎么处理。
+>    现在知道它们**不是 102 个独立问题**，而是若干未登记文件各带一批
+>    （351 一个就带 6 张，且已修）。建议下一步**按文件聚合**这 102 项
+>    （找出还有哪些迁移文件能一次补一批），而不是逐表处理。
+>    ⚠️ **登记前必须先复现每个文件能否干净应用**——456 就是直接登记会炸的。
+> 3. **待拍板**（全部仍未决）：决定 A/B/C、`credential_id` 修法 + 索引、
+>    `is_final_success`、等价口径 (i)/(ii)(iii)、`backlog_pending` 告警、
+>    actor 名单/cohort/§9.49.8/§9.48、写链是否自 ensure 当月分区、
+>    790 提交的发布窗口与回滚方案。
+> 4. **待查**：按文件聚合扫描其余未登记迁移（485 文件 / 214 登记）。
+> 5. **待查**：`public.sessions` 其余读点（`turn_logs_aggregator.go`、
+>    `lite_retention_worker.go`、`session_detail_v2.go`）是否同一跨月未去重缺陷。
+> 6. **待查**：auto-route 断流；A 群 6 条 / B 群 10 条 / `backlog_pending=1`。
+> 7. **工作区纪律不变**：共享工作区不跑 `git restore`、不 stash 他人工作；
+>    本地 `main` 与 `origin/main` 分叉，合并需人工裁决（不用 rebase）。

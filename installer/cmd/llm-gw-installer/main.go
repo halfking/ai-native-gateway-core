@@ -84,6 +84,9 @@ var sessionV2DisplayColumnsMigration456 []byte
 //go:embed embeddata/startup/467_sessions_title_user_tags.sql
 var sessionsTitleUserTagsMigration467 []byte
 
+//go:embed embeddata/startup/351_session_analytics_tables.sql
+var sessionAnalyticsTablesMigration351 []byte
+
 //go:embed embeddata/startup/573_drop_request_logs_body_columns.sql
 var dropRequestLogsBodyColumnsMigration573 []byte
 
@@ -754,6 +757,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/471_session_summaries_archival.sql":                                     sessionSummariesArchivalMigration471,
 	"startup/456_session_v2_display_columns.sql":                                     sessionV2DisplayColumnsMigration456,
 	"startup/467_sessions_title_user_tags.sql":                                       sessionsTitleUserTagsMigration467,
+	"startup/351_session_analytics_tables.sql":                                       sessionAnalyticsTablesMigration351,
 	"startup/487_request_logs_add_system_fingerprint.sql":                            requestLogsAddSystemFingerprintMigration487,
 	"startup/388_billing_cancellation_audit.sql":                                     billingCancellationAuditMigration388,
 	"startup/484_request_logs_hot_add_status_code.sql":                               requestLogsHotAddStatusCodeMigration484,

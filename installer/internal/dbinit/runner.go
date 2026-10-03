@@ -88,6 +88,46 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// Self-guarded (IF NOT EXISTS on information_schema.columns), so
 			// this is a no-op on any database that already has the columns.
 			"467_sessions_title_user_tags.sql",
+			// 351 wired 2026-10-04 (§9.115). This supersedes a conclusion I
+			// recorded in §9.105 and in session_aggregator.go's comment, which
+			// said registering 351 was deliberately left out "because nothing
+			// calls it". That was true of ONE half and false of the other:
+			//
+			//   - the READ path (SessionAggregator.GetSessionMetadata) really
+			//     has no production caller — only tests, and they drive a mock,
+			//     so its SQL is never parsed. That half of the claim stands.
+			//   - the WRITE path is live. cmd/gateway/approval_integration.go
+			//     constructs analysis.NewSessionStateProjector and injects it
+			//     via CacheUpdateHook.SetStateProjector, and
+			//     domains/hooks/sessionaudit/cache_update_hook.go calls
+			//     Project() on every audit update. Project() INSERTs into
+			//     session_tags. On a fresh install that statement is 42P01,
+			//     and the hook treats the failure as best-effort — so the
+			//     projection is silently lost rather than reported.
+			//
+			// 351 creates SIX tables, not one: session_tags,
+			// session_request_summaries, session_embeddings, session_clusters,
+			// session_cluster_members, session_optimization_suggestions. The
+			// other five also have production readers (domains/analysis/
+			// clusterer.go, request_summary.go, optimizer.go,
+			// admin/session_clusters_handler.go, admin/session_panorama_
+			// handler.go), so one unregistered file accounted for six of the
+			// missing relations measured in §9.114.4. I first wrote "five"
+			// here and in the test; the count is measured, not assumed.
+			//
+			// Unlike 456 (§9.114.3) this file had no information_schema
+			// post-condition block and referenced nothing it did not create,
+			// so it applies cleanly to a real fresh install — all six tables,
+			// no error. But it was NOT re-runnable: PostgreSQL has no
+			// `CREATE POLICY IF NOT EXISTS`, and all 12 of this file's
+			// policies were unguarded, so a second run died on
+			// `policy "…" for table … already exists` and, being inside one
+			// transaction, took the rest of the script with it. Fixed by
+			// guarding each policy with DROP POLICY IF EXISTS, matching the
+			// IF NOT EXISTS the same file already used on its indexes;
+			// first-run behaviour is unchanged. Verified by applying the file
+			// twice in a row with no error.
+			"351_session_analytics_tables.sql",
 			// session_turns_hot_bootstrap (installer-only final-state asset,
 			// 526+636 projection) moved here 2026-10-01: it must precede 706/707
 			// — 707 §2 expands session_turns_hot in lock-step with the parent
