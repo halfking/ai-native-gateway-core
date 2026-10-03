@@ -55,12 +55,23 @@ func waitForPluginReady(ctx context.Context, socketPath string, manifest *plugin
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	}}
-	client := &http.Client{Transport: transport, Timeout: timeout}
-	if _, err := pluginruntime.HandshakeContext(deadlineCtx, client, "http://unix", manifest.Runtime.HandshakePath, manifest); err != nil {
-		return err
+	client := &http.Client{Transport: transport, Timeout: time.Second}
+	var last error
+	for {
+		if _, err := pluginruntime.HandshakeContext(deadlineCtx, client, "http://unix", manifest.Runtime.HandshakePath, manifest); err != nil {
+			last = err
+		} else if err := pluginruntime.PreciseHealthCheck(socketPath, manifest.Runtime.HealthPath, time.Second)(); err != nil {
+			last = err
+		} else {
+			return nil
+		}
+		select {
+		case <-deadlineCtx.Done():
+			if last != nil {
+				return last
+			}
+			return deadlineCtx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
-	if err := pluginruntime.PreciseHealthCheck(socketPath, manifest.Runtime.HealthPath, timeout)(); err != nil {
-		return err
-	}
-	return nil
 }

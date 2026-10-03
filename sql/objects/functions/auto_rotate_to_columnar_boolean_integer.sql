@@ -22,10 +22,18 @@ BEGIN
     partition_age := age_days || ' days';
     
     FOR partition_rec IN
-        SELECT 
-            parent.relname as parent_table,
-            child.relname as child_table,
-            am.amname as access_method,
+        -- relname/amname are catalog type `name`; the RETURNS TABLE columns are
+        -- `text`. Without the cast, RETURN QUERY raises
+        -- "structure of query does not match function result type
+        --  … Returned type name does not match expected type text in column 2"
+        -- on the FIRST row, so this function could never return a row at all
+        -- (measured on 252 2026-10-01: every invocation failed, including
+        -- dry_run := true). Cast at the source so both RETURN QUERY arms are
+        -- well-typed.
+        SELECT
+            parent.relname::text as parent_table,
+            child.relname::text as child_table,
+            am.amname::text as access_method,
             pg_total_relation_size(child.oid) as size_bytes,
             (SELECT pg_get_expr(c.relpartbound, c.oid) 
              FROM pg_class c WHERE c.oid = child.oid) as partition_bounds

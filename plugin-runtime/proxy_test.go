@@ -65,6 +65,27 @@ func TestPluginStaticHandler_RejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestPluginStaticHandler_SPARouteFallsBackToIndex(t *testing.T) {
+	dir := t.TempDir()
+	webDir := filepath.Join(dir, "ai-session-manager", "web")
+	os.MkdirAll(webDir, 0755)
+	os.WriteFile(filepath.Join(webDir, "index.html"), []byte("spa"), 0644)
+
+	h := PluginStaticHandler(dir)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/plugins/ai-session-manager/aggregations", nil)
+	req.SetPathValue("pluginId", "ai-session-manager")
+	req.SetPathValue("rest", "aggregations")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body, _ := io.ReadAll(rec.Body)
+	if string(body) != "spa" {
+		t.Fatalf("body = %s", body)
+	}
+}
+
 func TestPluginStaticHandler_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	h := PluginStaticHandler(dir)
