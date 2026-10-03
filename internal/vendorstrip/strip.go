@@ -17,6 +17,15 @@ const (
 	VendorDeepSeek = "deepseek"
 	VendorDoubao   = "doubao"
 	VendorErnie    = "ernie"
+	// VendorSensenova is SenseNova (token.sensenova.cn), an OpenAI-compatible
+	// reseller whose glm-* models are Zhipu-backed. It forwards Zhipu's chunk
+	// payload verbatim, so it needs Zhipu's private-field policy PLUS the bare
+	// `request_id` tag that Zhipu emits (and that the Zhipu list does not own).
+	VendorSensenova = "sensenova"
+	// VendorZhipuStreamChunk is the streaming-chunk counterpart of
+	// VendorZhipu. Same vendor, different surface, one different field; see
+	// zhipuStreamChunkPrivateFields.
+	VendorZhipuStreamChunk = "zhipu-stream-chunk"
 )
 
 // Signal is a vendor error encoded in an otherwise successful HTTP response.
@@ -44,12 +53,15 @@ type Registry struct {
 func NewRegistry() *Registry {
 	passthrough := NewPassthroughStripper()
 	return &Registry{strippers: map[string]Stripper{
-		VendorMiniMax:  NewMinimaxStripper(),
-		VendorZhipu:    NewZhipuStripper(),
-		VendorDeepSeek: NewDeepSeekStripper(),
-		VendorDoubao:   NewDoubaoStripper(),
-		VendorErnie:    passthrough,
-		"baidu":        passthrough,
+		VendorMiniMax:   NewMinimaxStripper(),
+		VendorZhipu:     NewZhipuStripper(),
+		VendorDeepSeek:  NewDeepSeekStripper(),
+		VendorDoubao:    NewDoubaoStripper(),
+		VendorSensenova: NewSensenovaStripper(),
+		// Not a real catalog code — a policy selector for the stream surface.
+		VendorZhipuStreamChunk: NewZhipuStreamChunkStripper(),
+		VendorErnie:            passthrough,
+		"baidu":                passthrough,
 	}}
 }
 
@@ -74,6 +86,21 @@ func NewDeepSeekStripper() Stripper {
 // NewDoubaoStripper returns the Doubao field policy.
 func NewDoubaoStripper() Stripper {
 	return fieldsStripper{fields: doubaoPrivateFields, logName: "strip_doubao"}
+}
+
+// NewSensenovaStripper returns the SenseNova streaming-chunk field policy:
+// Zhipu's chunk set plus the bare `request_id` tag, because SenseNova proxies
+// Zhipu payloads without re-encoding them. Applied to stream chunks only — a
+// Zhipu *response* body's `request_id` stays public (strip_realworld_test.go).
+func NewSensenovaStripper() Stripper {
+	return fieldsStripper{fields: sensenovaPrivateFields, logName: "strip_sensenova"}
+}
+
+// NewZhipuStreamChunkStripper returns the Zhipu policy for streaming chunks.
+// It differs from NewZhipuStripper in exactly one field; see
+// zhipuStreamChunkPrivateFields for why the two surfaces must diverge.
+func NewZhipuStreamChunkStripper() Stripper {
+	return fieldsStripper{fields: zhipuStreamChunkPrivateFields, logName: "strip_zhipu_chunk"}
 }
 
 // NewPassthroughStripper returns a policy that preserves body bytes unchanged.
@@ -142,6 +169,11 @@ func (r *Registry) Resolve(body []byte, vendor string) (string, Stripper) {
 		return VendorDeepSeek, r.strippers[VendorDeepSeek]
 	case fields["doubao_request_id"] != nil || fields["seeddance_request_id"] != nil:
 		return VendorDoubao, r.strippers[VendorDoubao]
+	case fields["request_id"] != nil:
+		// A bare `request_id` on an OpenAI chat chunk is the Zhipu-family
+		// completion tag. It is checked last so a Doubao/DeepSeek payload
+		// (which carries its own *vendor*_request_id) keeps its own policy.
+		return VendorZhipu, r.strippers[VendorZhipu]
 	default:
 		return "", nil
 	}
@@ -259,6 +291,12 @@ func stripTopLevelFields(body []byte, fields []string, logName string) []byte {
 	return out
 }
 
+// zhipuPrivateFields is the Zhipu/GLM response-level private field set.
+//
+// `request_id` is deliberately NOT here. strip_realworld_test.go pins the
+// existing contract that a Zhipu *response* body's `request_id` is public and
+// must survive sanitization while `zhipu_request_id` does not. Streaming
+// chunks are a different surface — see zhipuStreamChunkPrivateFields.
 var zhipuPrivateFields = []string{
 	"zhipu_request_id",
 	"web_search_results",
@@ -266,6 +304,21 @@ var zhipuPrivateFields = []string{
 	"model_version",
 	"sensitive_word_check",
 }
+
+// zhipuStreamChunkPrivateFields is zhipuPrivateFields plus the bare
+// `request_id`.
+//
+// The bare form is the Zhipu-family *streaming* completion tag, and it is the
+// only vendor marker such a frame carries: the direct endpoint uses
+// `zhipu_request_id`, so a chunk forwarded by a reseller (SenseNova and its
+// per-account provider rows) matches no stripper at all. Unlike the response
+// body, `chat.completion.chunk` has no spec-defined top-level `request_id`, so
+// there is no public-field contract to preserve — Xcode's Coding Assistant
+// failed the whole event on the 2026-10-01 sensenova/glm-5.2 route.
+var zhipuStreamChunkPrivateFields = append(
+	append([]string{}, zhipuPrivateFields...),
+	"request_id",
+)
 
 var deepSeekPrivateFields = []string{
 	"deepseek_request_id",
@@ -285,3 +338,10 @@ var doubaoPrivateFields = []string{
 	"internal_model_version",
 	"sensitive_check",
 }
+
+// sensenovaPrivateFields is the streaming-chunk set: Zhipu's chunk policy.
+// SenseNova relays the Zhipu payload as-is, so it emits the bare
+// `request_id` rather than `zhipu_request_id`; since 2026-10-01 that tag lives
+// in zhipuStreamChunkPrivateFields, so the reseller policy is the same set
+// rather than a second, drifting copy.
+var sensenovaPrivateFields = zhipuStreamChunkPrivateFields

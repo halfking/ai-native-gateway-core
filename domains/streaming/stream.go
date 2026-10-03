@@ -1838,6 +1838,15 @@ func resolveStreamVendor(payload, vendorCode string, stripFn func([]byte) []byte
 		return "deepseek", StripDeepSeekFieldsBody
 	case fields["doubao_request_id"] != nil || fields["seeddance_request_id"] != nil:
 		return "doubao", StripDoubaoFieldsBody
+	case fields["request_id"] != nil:
+		// Bare `request_id` is the Zhipu-family *streaming* completion tag
+		// (Zhipu itself uses `zhipu_request_id`; resellers such as SenseNova
+		// relay the Zhipu payload verbatim and so use the bare form). This is
+		// the only marker such a frame carries, so without this case the frame
+		// reaches the client untouched. Checked last so a Doubao payload keeps
+		// its own policy. Uses the chunk policy, not the response policy — a
+		// Zhipu response body's request_id is public (strip_realworld_test.go).
+		return "zhipu", StripZhipuStreamChunkFieldsBody
 	default:
 		return "", stripFn
 	}

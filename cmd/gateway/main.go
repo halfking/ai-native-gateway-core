@@ -1622,6 +1622,8 @@ func main() {
 					stripFn = streaming.StripMinimaxFieldsBody
 				case "zhipu", "glm":
 					stripFn = streaming.StripZhipuFieldsBody
+				case "sensenova":
+					stripFn = streaming.StripSensenovaFieldsBody
 				case "deepseek":
 					stripFn = streaming.StripDeepSeekFieldsBody
 				}
