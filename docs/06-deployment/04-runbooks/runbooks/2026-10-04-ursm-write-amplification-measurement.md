@@ -207,17 +207,71 @@ WHERE snapshot_ts > now() - interval '1 hour';     -- 2430.4 行/分（145825 �
 
 | 假设 | 状态 | 依据 |
 |---|---|---|
-| 网关停机 / 未部署 | **排除** | `request_logs` 全时段有请求，且 systemd 无该时段失败记录 |
+| 网关停机 / 未部署 | **排除** | `request_logs` 全时段有请求 |
 | PG 不可写 / 连接中断 | **排除** | 同一张 PG 上 `request_logs` 正常写入 |
 | 整库/表被误删 | **排除** | 前后数据完整，仅中间整段空缺；`n_tup_del` 净删 4.0M 与 2.4 万行的空洞量级差 160 倍 |
-| **persist writer 自身未提交** | **锁定** | 154 该时段 263 次 `snapshot from dimension queues built` 但 0 次提交 |
+| **persist writer 未提交** | **锁定** | 两条失败路径都能导致零提交（见 §5.3.1） |
 
-**⇒ 成因范围锁定在 persist writer 内部。** 结合已知症状
-（`ursm.v2: persist collect failed: redis scan failed: context deadline exceeded`，
-SCAN 全库实测 12.95~30.40s 顶着 writer 的 30s 预算），方向指向 collect 阶段
-超时或提交前中断。
+**⇒ 成因范围锁定在 persist writer 内部。**
 
-**但这仍是推断，不是证据** —— 该时段的 error 原文已随日志轮转丢失（§5.4）。
+### 5.3.1 ★★ 静态读代码：两条失败路径，范围比原估计更宽
+
+`cmd/gateway/main.go:1282-1295` 的实际结构：
+
+```go
+ctx, timeoutCancel := context.WithTimeout(persistCtx, 30*time.Second)
+rows, err := persistWriter.Collect(ctx)
+if err != nil {
+    slog.Warn("ursm.v2: persist collect failed", "error", err)
+    timeoutCancel()
+    continue                     // ← 路径 A：整轮跳过，零提交
+}
+if err := persistWriter.Flush(ctx, rows); err != nil {
+    slog.Warn("ursm.v2: persist flush failed", "error", err)   // ← 路径 B：事务回滚，零提交
+}
+```
+
+**关键结构问题：Collect 与 Flush 共用同一个 30s `ctx`，没有各自独立的预算。**
+
+而 `writer.go:318-320` 显示 Collect 的最坏路径就是全库 SCAN
+（实测 12.95~30.40s，**已经贴着甚至超过 30s 预算**）。于是：
+
+- **路径 A**：`Collect` 超时 → `continue` → 本轮完全不做 → 零提交
+- **路径 B**：`Collect` 花了 28s → `Flush` 只剩 2s → 1,242 行 INSERT 加
+  索引维护做不完 → 事务回滚 → 零提交
+
+**两条路径都会产生同样的表象（整段零行），而路径 B 此前根本不在怀疑列表里。**
+`Flush` 内部是单事务（`writer.go:421` `tx.Commit`），回滚干净，不会留半截数据 ——
+这与「空缺是整齐的整段」相符。
+
+**⇒ 不能只按「collect 超时」排查。必须同时看 `persist flush failed` 的计数。**
+
+#### ★★ 一条必须订正的误判
+
+我原先用 154 该时段「263 次 `snapshot from dimension queues built`」推断
+「persist 采集成功、只是没提交」。**这个推断是错的**，因为：
+
+```
+admin/live_stream_redis_store_snapshot_fix.go:196  → "snapshot from dimension queues built"
+domains/ursm/v2/persist/writer.go:426               → "ursm.v2: persist committed"
+```
+
+**前者属于 admin 的 live_stream redis store 修复子系统，与 persist writer
+毫无关系。** 拿它当 persist 的采集证据，等于把两个子系统的日志混为一谈。
+
+订正后，§5.2 里「快照在采集（263 次）却零提交」这句**依据不成立**，
+采集侧没有任何有效证据。成立的只有「零提交」本身。
+
+> 教训与 §5.4 那条同源：**证据的归属要先确认，再看它说了什么。**
+> 消息名里带 `snapshot` 不足以证明它属于 persist writer。
+
+#### ★ 迁键价值的第三条独立佐证
+
+若路径 B（Flush 预算被挤占）成立，则迁键同样能解决它 ——
+SCAN 迁到独立 db 后实测 **0.11s**，`Collect` 几乎不耗时，
+`Flush` 自然拿回完整的 30s 预算。**迁键不只治"collect 超时"，还治"flush 没预算"。**
+
+**⇒ 验收项再加一条**：迁键后统计 `persist flush failed` 是否归零。
 
 **★ 顺带一个独立推论**：如果空洞确由 SCAN 超时导致，那它恰好是**迁键价值的
 独立佐证** —— 迁到独立 db 后 SCAN 只遍历约 1.3K 键（实测 0.11s），
