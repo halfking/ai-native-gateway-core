@@ -12795,3 +12795,87 @@ cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 >
 > **已推送的错误结论必须公开撤回，不能悄悄改小。** §9.100.3 和 §9.101.3
 > 都带着「部署阻断」「从未成功」的措辞进了 main；本节明确撤回。
+
+---
+
+## §9.103 让一道**长期红**的真库门变绿：它红的原因有两个，都不是写链坏了
+
+§9.102.5 记下 `TestPersistHook_Integration_DBWrite` 长期红。修它不是为了变绿好看——
+**它红着，就意味着「会话写链在真库上可用」这件事从来没被验证过**，
+而这正是你要求确认的存储可用性。
+
+### §9.103.1 失败一：断言查错了表（必然 0，不是偶发）
+
+```
+expected 1 bodies row   →  actual: 0
+```
+
+`SessionBodiesWriter.WriteBodiesInTx`（`bodies_writer.go`）写的是
+**`session_bodies_hot`**，注释原话：
+
+> Write to session_bodies_hot (8-hour window), not directly to partitioned table
+> PartitionManager promotes rows to session_bodies monthly partitions after 8h
+
+而断言查的是 `public.session_bodies`。**刚写进去的行在 `_hot` 里，分区表里必然没有。**
+⇒ 这条断言从写下那天起就不可能通过，与写链无关。
+
+（与我在 §9.100 主动从自己测试里删掉的 `session_turns` 父表断言是同一类错误：
+把**周期搬运**编码成了**写链的期望**。我犯了，仓里早就有一处同样的。）
+
+### §9.103.2 失败二：全新安装没有**当月**分区（真缺陷，但是启动窗口）
+
+bodies 断言改对后，露出下一个：
+
+```
+ERROR: no partition of relation "sessions" found for row (SQLSTATE 23514)
+update session snapshot failed after retries
+```
+
+真安装库的 `sessions` 分区只有 `sessions_2026_07` 与 `sessions_2026_08`——
+**没有当月的 `sessions_2026_10`**（今天是 10-04）。schema 是建库当时的月份形状，
+没人负责往后铺。
+
+仓里有现成的修复函数（迁移 430 的 `ensure_sessions_v2_partitions`），
+但**只有 `bg/partition_manager.go` 的后台工在调它**；写链自己不调。
+
+**实测**：手动执行 `SELECT public.ensure_sessions_v2_partitions(current_date)`
+→ 立刻创建出 `sessions_2026_10`。函数是好的，只是没被调到。
+
+**准确定性**：这是**启动时序窗口**，不是永久缺陷。
+生产的 partition_manager 持续运行，窗口很窄；全新安装在它首跑之前，
+新建会话会被 23514 拒掉。
+
+**为什么不能写成「产品缺陷」**：让写链自己 ensure 是行为变更（每请求一次函数调用），
+属需拍板的取舍，不是我该替产品定的。**本轮只做测试侧对齐**。
+
+### §9.103.3 改完之后
+
+```
+--- PASS: TestPersistHook_Integration_DBWrite
+    Integration test passed: session=intg_test_… turn=1 bodies=1 sessions=1
+```
+
+这行的三个 1 是**第一次**同时为真：
+turn 进 hot、bodies 进 hot、sessions 进当月分区。
+
+⇒ **「会话写链在全新安装上可用」现在有了真库证据**，
+而不是「没人跑过所以不知道」。
+
+### §9.103.4 顺带确认：`_hot` 与父表的关系我又核了一次
+
+`sessions_2026_10` 是 `sessions` 的**分区**（`pg_inherits`），
+而 `session_bodies_hot` / `session_turns_hot` 是**独立存储面**。
+这两个概念在 §9.59 已经分过，这里再次被同一组断言同时用到——
+**分区父表（异步搬运）与独立热表（直接写）不能混为一谈**。
+
+### §9.103.5 这一节的教训
+
+> **一道长期红的门，等于一段没被验证过的代码。** 我一直把它当噪音记着，
+> 修它才暴露出：**「存储可用」这件事，我此前从未真正验过**，
+> 因为唯一的真库门从写下来那天就没通过。
+>
+> **红着的门要先问「它红是因为被测对象坏，还是因为门自己写错了」。**
+> 这次两个原因都是后者。**先修门，再谈被测对象。**
+>
+> **「查错表」和「等异步」是两个独立故障，可以互相掩护**：
+>  bodies 断言遮住了 sessions 断言。逐条修才逐条暴露。
