@@ -16988,3 +16988,126 @@ ON CONFLICT (request_id) DO UPDATE SET
 > 大小写敏感（⑦）、只搜 `A 和 B 一起出现`（④ 的列与实参）、
 > 朴素 split 遇注释（③）—— 三次都是**工具的局限**伪装成**事实的否定**。
 > ⇒ 「查不到」必须先问**我的查询条件是不是太窄**，再问「它是不是真不存在」。
+
+---
+
+## §9.137　**退役阻断项**：`session_*` 的 RLS 策略**内部依赖 `request_logs`**，退役 v1 会打断 owner 可见性
+
+§9.136.3 顺手记了一句「`request_logs` 上 RLS 开启且强制，`session_*` 侧是否有等价 RLS 本轮未查」。
+本节查了，结论比那句严重得多，而且**方向和我原本的猜测相反**。
+
+### §9.137.1 先收回我自己的猜测
+
+我猜的是「`session_*` 没有 RLS，退役会丢边界」。**错的**：生产上
+`sessions` / `session_turns` / `session_turns_hot` / `session_bodies` / `session_censors` /
+`session_memora` / `session_tags` / `sessions` 等 **26 个父表全部 `relrowsecurity = true`**，
+各带 2–3 条策略（`tenant_isolation` + `super_admin_bypass`，`session_turns*` 另加一条
+**RESTRICTIVE** 的 `owner_filter`）。
+
+⇒ **不是「没有边界」，而是「边界长在 `request_logs` 上」。**
+
+### §9.137.2 关键事实：owner 过滤策略去读 `request_logs`
+
+生产 `pg_policies.polqual` 的原文（`session_turns` / `session_turns_hot` 的
+`session_turns*_owner_filter`）里有这样的子查询：
+
+```sql
+EXISTS (SELECT 1 FROM (
+    SELECT DISTINCT ON (gw_session_id, tenant_id) gw_session_id, tenant_id, owner_user
+    FROM (  SELECT gw_session_id, tenant_id, owner_user, ts FROM request_logs_hot WHERE gw_session_id IS NOT NULL
+          UNION ALL
+          SELECT gw_session_id, tenant_id, owner_user, ts FROM request_logs     WHERE gw_session_id IS NOT NULL)
+    ORDER BY gw_session_id, tenant_id, ts) first_rl
+  WHERE first_rl.gw_session_id = session_turns.session_id
+    AND first_rl.tenant_id = session_turns.tenant_id
+    AND first_rl.owner_user = current_setting('app.current_user', true))
+```
+
+⇒ **会话行的「谁可见」是通过查 `request_logs` / `request_logs_hot` 最早那行的 `owner_user` 算出来的。**
+
+仓里的来源是迁移 **`457_session_v2_owner_filter.sql`**，它自己的注释就写着：
+
+> `owner_user` **is a request_logs concept**. To resolve owner_user we **join to public.request_logs** …
+
+迁移 **`526_session_turns_hot.sql`** 重建了同一条策略（同时读 hot 与父表），
+并在末尾加了一道门（第 705–706 行）：
+
+```sql
+AND p.qual::TEXT ~ 'request_logs_hot'
+AND p.qual::TEXT ~ 'request_logs([^_[:alnum:]]|$)'
+```
+
+⇒ **仓里早就有一道门在钉「这条策略必须继续引用 `request_logs`」。**
+
+### §9.137.3 对退役的直接后果
+
+`owner_filter` 是 **RESTRICTIVE** 策略 —— PostgreSQL 的规则是
+「至少一条 PERMISSIVE 通过 **且** 所有 RESTRICTIVE 都通过」才可见。
+⇒ 一旦 `request_logs` 不再可解析：
+
+| 受影响的表 | 后果 |
+|---|---|
+| `sessions` | owner 过滤失效 ⇒ **跨 owner 可见**（安全侧放宽），或**全部不可见**（可用性侧归零），或**查询直接报错** |
+| `session_turns` / `session_turns_hot` | 同上 |
+| `session_bodies` | 同上 |
+
+⚠️ **三种后果哪一种，我不猜。**
+我查了 `pg_depend`，想用「PostgreSQL 是否登记了这条依赖 ⇒ DROP 会不会被拦」来定，
+但**那条查询我没约束 `deptype` / `refobjsubid`，返回的 35 不可解释** ⇒ 不用它下结论。
+（我又试了本地 scratch 库做最小实验，本地凭据不对；权威文档检索也没命中这个问题。）
+
+⇒ **可确证的是依赖本身**（两处独立证据：迁移源码 + 生产 `pg_policies.polqual` 文本），
+**不可确证的是失败形态**。判定失败形态只需在任意一个 scratch 库跑 6 行：
+
+```sql
+create table t_probe(id int, tenant_id text, owner_user text);
+create table t_dep(id int, owner_user text);
+alter table t_probe enable row level security;
+create policy p on t_probe for all using (
+  exists (select 1 from t_dep d where d.owner_user = t_probe.owner_user));
+drop table t_dep;          -- 观察是否被拒
+set role <非 owner 角色>;  -- select * from t_probe;  观察报错还是空集
+```
+
+⇒ **这条必须进 D9 的前置清单**：它是**退役的硬前置**，不是「退役之后可以再看」的事。
+
+### §9.137.4 另外两处差异（都不是回归，但要记）
+
+| | `request_logs` | `session_*` 父表 | 两个家族的分区 |
+|---|---|---|---|
+| RLS 开启 | ✅ | ✅ | ❌ **全部关闭，0 策略** |
+| **FORCE**（owner 也受约束） | ✅ **开** | ❌ **关** | — |
+| 策略条数 | 2（PERMISSIVE ×2） | 2–3（含 1 条 RESTRICTIVE） | 0 |
+
+⚠️ 两个独立事实，方向相反：
+
+1. **`session_*` 缺 FORCE** ⇒ 表 owner 绕过 RLS。生产网关用什么角色连库**本轮未查**；
+   若它是 owner，则这些 RLS 对它**本来就不生效** —— 那这条依赖的实际影响就要重新评估。
+2. **两个家族的所有分区都关着 RLS** ⇒ 直接查分区（`session_turns_2026_10`）**绕过全部策略**。
+   这一条对**两个家族一样**，所以**不是退役带来的回归**；
+   但它是现状里一个独立的、可绕过的边界缺口，值得单独立项。
+
+### §9.137.5 依赖广度
+
+`sql/migrations/startup/` 下 **257 个迁移文件**引用了 `request_logs`
+（含视图、策略、触发器、SQL 字符串常量）。
+⇒ 「退役 `request_logs`」不是一个删表动作，而是**一次跨 257 个迁移定义的依赖清扫**。
+⇒ 这也解释了为什么之前每一轮我都在发现新的依赖面（视图 542 条 rewrite 依赖、
+策略、触发器、代码里的 SQL 文本常量）。
+
+### §9.137.6 教训
+
+> **「有没有这层边界」和「这层边界长在谁身上」是两个问题。**
+> 我先问的是前者（`session_*` 有没有 RLS），答案是「有」；
+> 而**真正决定退役可行性的，是后者** —— 它长在被退役的那张表上。
+> ⇒ 审计依赖时，**要一路查到「它引用谁」**，停在「它有策略」等于没查。
+>
+> **「DROP 会不会被数据库拦住」不要靠推理。**
+> 我想用 `pg_depend` 定这件事，查询本身没约束好 ⇒ 数字不可解释。
+> 与其用一条不可解释的查询给出一个听起来确定的结论，
+> 不如**写下 6 行可复现的实验**交给能跑的人 —— 这一格宁可不判，也不该判错。
+>
+> **仓里已有的门就是线索。**
+> 526 迁移末尾那道 `p.qual::TEXT ~ 'request_logs'` 的门，
+> 说明**「策略必须继续引用 v1」是当初就写下来的约束**。
+> ⇒ 遇到一个决策时，先搜「仓里有没有门在钉这件事」—— 门的存在本身就是历史意图。
