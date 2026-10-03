@@ -18548,6 +18548,10 @@ func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {
   ⇒ **原文从未以完好形态进过 git，字节已在提交前丢失**，`git log -L` 无法恢复。
 - ⇒ **我没有猜字**。按本项目自己的规矩（§9.131.7：不确定就标未知，不让推测污染结论），
   这里**保留损坏原样并登记位置** —— 猜一个读得通的词塞进审计结论，比留着两个方块危险得多。
+- ⚠️ **2026-10-04 追加**：我做别处的一次批量坏字清理时，**误把这 4 个标记本身也删掉了**
+  （那两行会变成「…标记要，改响应契约」「…只有第 5 个是他们。」，语法不通）。
+  已**原样还原为坏字标记** —— 本节的全部价值就在于「这两行确实是坏的」；
+  把标记删掉会让这张登记表指向不存在的东西，比留着两个方块更糟。
 - ⇒ **引用这两行的人请注意**：4471 那句是 §9.35 拍板项 ③ 的原文，
   6674 那句是 §9.49.2 归属判定的结论句；**语义可从各自小节标题与上下文确认，字面不可引用**。
 
@@ -19284,3 +19288,116 @@ SELECT request_status FROM session_turns WHERE request_id='d8d-probe-req-1';
 > 按我自己在别处的结论：**复发到第 3 次就该改结构，而不是记「下次注意」**。
 > 本次的结构性修法写在这里，**下一轮起照做**：
 > **凡要断言「链 A 断了」，先输出链 A 的文件清单，再逐个读；清单里不得只放我 grep 过的那一个。**
+
+---
+
+## §9.158　**存量回填作业已实现并接线**；并**修正我自己的两个数字**
+
+§9.156 判出「90.04% 可零猜测回填、不能放迁移、必须是后台作业」。
+本节把这个作业落地。**子代理实现，我逐条独立复核**（未直接采信其报告）。
+
+### §9.158.1 改动（4 文件）
+
+| 文件 | 改动 |
+|---|---|
+| `domains/session/v2/session_request_status_backfill.go` | **新增**（549 行）：批量 + 限速 + 幂等 + 游标分页的 `request_status` 回填 |
+| `domains/session/v2/session_request_status_backfill_test.go` | **新增**（738 行，17 个测试） |
+| `cmd/gateway/session_v2_init.go` | start/stop + `SESSIONS_V2_REQUEST_STATUS_BACKFILL_{ENABLED,RATE,BATCH}` |
+| `cmd/gateway/main.go` | **三处生命周期接线**（声明 / 启动 / 排空）——见 §9.158.3 |
+
+### §9.158.2 我**独立复核**的结果（不是子代理的自述）
+
+| 复核项 | 结果 |
+|---|---|
+| `go build ./...` / `go vet` / `gofmt` | ✅ 干净 |
+| `-run TestSessionRequestStatusBackfill` 实跑条数 | **17 / 17 全 PASS**（含真库门禁，我给了 DSN） |
+| 全量回归 `domains/session/…` `sessionv2mirror` `cmd/gateway` `db` | ✅ 全 `ok` |
+| **变异 1**（抽掉 UPDATE 的 `AND t.request_status IS NULL`） | ✅ **红**（`UpdateSQLContract/guard_and_join`）——**我自己注入的** |
+| **变异 2**（join 键 `request_id` → `id`） | ✅ **红**——**我自己注入的** |
+| 夹具泄漏 | `rsbfix*` 残留库 = **0** |
+
+⚠️ **子代理贴的变异输出我没有采信**，两次变异都由我在干净 worktree 上重注并用 `-count=1` 复跑
+（第一次注入还**失败**了——锚点写错且输出是 `cached`，我把它作废重做）。
+
+**它报的数字我逐条实测核对，全部一致**：
+
+| 数字 | 它报的 | 我实测 |
+|---|---:|---:|
+| 孪生且标签非空 | 1,520,630 | **1,520,630** ✅ |
+| v1 侧 `request_status IS NULL` | 46 | **46** ✅ |
+| hot 侧 NULL 行有 v1 孪生 | 0 | **0** ✅ |
+| `session_turns_hot` 是否为 `session_turns` 的分区 | 否（独立表） | **否** ✅ |
+
+### §9.158.3 它**主动标出**的阻断，我补掉了（**这正是不能只看「任务完成」的原因**）
+
+子代理正确地指出：`main.go` 不在它的文件所有权内，所以
+**`startSessionRequestStatusBackfill` 定义了但无人调用 ⇒ 作业永远不会启动。**
+⇒ 若我只按「子代理说完成了」收工，会推上一个**永不运行**的作业。
+⇒ 我补了三处生命周期接线（声明 / `startSession…` / `stopSession…`，紧邻 digest 的同款位置）。
+
+### §9.158.4 两个**有价值的设计细节**（我核实后保留）
+
+1. **`AND l.request_status IS NOT NULL` 不是冗余，是防死循环。**
+   v1 侧有 **46 行** `request_status IS NULL`。若不排除它们，
+   候选游标会**永远重选同一批行、每批更新 0 行、作业永不推进**。
+   ⇒ 这条守卫把「源侧为空」与「已回填」区分开。
+2. **退役后的终止条件**：作业在每批 drain 前探测
+   `to_regclass('public.request_logs') IS NOT NULL` + 823 列是否在；
+   源表消失 ⇒ 记一条 Info、推进 `retired` 计数、**直接返回**（不重试、不刷 ERROR 噪声）。
+   ⚠️ 实现过程中真库门禁抓到一个 **pgxmock 抓不到的真 bug**：
+   源表被 DROP 后，错误是在 `rows.Err()` / 迭代期浮现，**不是**在 `Query()` 期返回。
+   ⇒ **只有真库门禁能发现这一类**，mock 全绿是假象。
+
+### §9.158.5 ⚠️ **我自己的两个数字要更正**（子代理纠正，我核实后采纳）
+
+| 我写的（§9.156.2） | 实测 | 说明 |
+|---|---|---|
+| 「20,000 行 = 26.3 秒 ⇒ 全量 **≈33 分钟**」 | 该值成立，但**推论错了** | 33 分钟是**单条无限制 UPDATE** 的外推；**作业默认限速 100 rows/s ⇒ 1.52M 行 ≈ 4.2 小时** |
+| 「用 `request_status IS NULL` 走部分索引」 | **该列没有部分索引** | 与 digest 不同（digest 有 `idx_session_turns_digest_null`）⇒ 必须**游标式分页**，否则会反复扫 169 万行 |
+
+⇒ **第一处是我把「单条 SQL 的耗时」当成了「作业的耗时」** ——
+限速作业的墙钟时间由**速率**决定，不由单批 SQL 决定。
+⇒ **第二处说明「A 方案有索引 ⇒ 可以这么写」不能照搬到 B 方案**，
+必须逐个确认目标列上是否真有那个索引。
+
+### §9.158.6 遗留（如实记）
+
+- ⚠️ **未部署**；且 **823 必须先于本作业上线**，否则列不存在（作业会安静不动，不是打挂）。
+- ⚠️ **多副本并发**未测：两实例同时跑，守卫保证幂等，但会产生重复行版本。
+- ⚠️ **与 `promote_session_turns_hot_to_partition` 竞争**未测（守卫使其安全，但未量化）。
+- ⚠️ 默认速率下 **≈4.2 小时**；若要压缩时间需调 `…_RATE`，但那会提高对 6.79 GB 表的写压。
+
+### §9.158.7 顺带发现一个**既有的红门**（不是我的改动，未擅自修改）
+
+跑全量回归时 `cmd/gateway` 在**给了 `TEST_DATABASE_URL`** 时稳定红：
+
+```
+--- FAIL: TestAggregateAndFlush_CrossMonthSessionWritesOnlyNewestPartitionRow
+    turn_logs_aggregator_crossmonth_realdb_test.go:94:
+    scan partition lower bound: can't scan into dest[0] (col: lo): cannot scan NULL into *time.Time
+```
+
+**先查基线**：`git checkout origin/main` 后同一测试、同一 DSN ⇒ **同样失败、同样报错**
+⇒ **与本轮改动无关，是 `origin/main` 上就有的**。
+
+**根因（实测到具体一行）**：该测试用正则从 `pg_get_expr(relpartbound)` 里抠月份下界
+（`turn_logs_aggregator_crossmonth_realdb_test.go:65-70`），但**没有排除 DEFAULT 分区**：
+
+| 分区 | `pg_get_expr(relpartbound)` | 正则是否匹配 |
+|---|---|---|
+| `sessions_2026_09` | `FOR VALUES FROM ('2026-09-01') TO ('2026-10-01')` | ✅ |
+| **`sessions_default`** | **`DEFAULT`** | ❌ ⇒ `regexp_match` 返回 **NULL** |
+
+⇒ NULL 扫进 `*time.Time` 即报错。**只要 `sessions_default` 存在，这个门就必红**
+（测试里的 `len(bounds) < 2 → Skip` 保护在扫描**之后**，救不了）。
+
+⚠️ **我没有改它** —— 它属于另一个子系统（turn_logs 聚合器）、是别人写的测试，
+且失败点在**测试自身**而非产品代码。**擅自改一个我不拥有的门，可能掩盖真实问题。**
+⇒ **修法只需一行**：在该查询加
+`AND c.relpartbound IS NOT NULL AND c.relname NOT LIKE '%\_default'`
+（或直接过滤 `pg_get_expr(...) <> 'DEFAULT'`）。
+
+⚠️ **为什么这条值得单独记**：它意味着
+**`cmd/gateway` 的真库门禁在 `main` 上是红的、且可能已经红了一段时间** ——
+即这条覆盖率**低于它看起来的样子**。⚠️ 注意：它**只在带 DSN 时红**，
+所以 CI 若不设 `TEST_DATABASE_URL` 就完全看不到。

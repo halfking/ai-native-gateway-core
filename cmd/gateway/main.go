@@ -933,6 +933,14 @@ func main() {
 	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
 	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
 	var sessionDigestBackfillForShutdown any
+	// sessionRequestStatusBackfillForShutdown — request_status 存量回填
+	// (migration 823, 2026-10-04, 审计 §9.155/§9.156)：把
+	// request_logs.request_status 批量复制进 session_turns.request_status。
+	// 退役 request_logs 之后源表不复存在，存量标签就此定格，所以「回填
+	// 完成」是退役的前置条件（决策表 D9 第四条）。
+	// 作业在 request_logs 消失时安静停摆（不再重试、不刷 ERROR）。
+	// 与 digest 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空。
+	var sessionRequestStatusBackfillForShutdown any
 	// sessionMirrorOutboxReaperForShutdown — spec §12 GAP 2 closure (migration
 	// 712, 2026-09-15): durable replay for failed sessionv2mirror shadow
 	// writes. Same lifecycle as the aggregate outbox reaper.
@@ -2741,6 +2749,11 @@ func main() {
 		// 守卫）、空闲指数退避；可通过 SESSIONS_V2_DIGEST_BACKFILL_ENABLED=false
 		// 关闭。与 reaper 同样绑定网关生命周期。
 		sessionDigestBackfillForShutdown = startSessionDigestBackfill(context.Background(), dbConn.Pool())
+		// request_status 存量回填：限速默认 100 rows/s、幂等
+		// （AND request_status IS NULL 守卫）、游标式分页；可通过
+		// SESSIONS_V2_REQUEST_STATUS_BACKFILL_ENABLED=false 关闭。
+		// 源表被删后自动安静停摆。
+		sessionRequestStatusBackfillForShutdown = startSessionRequestStatusBackfill(context.Background(), dbConn.Pool())
 	}
 
 	// v3 (2026-06-19) session-level intelligent compression.
@@ -7795,6 +7808,9 @@ func main() {
 		// turn-digest 第二阶段: 排空回填批。同样必须在 pools.CloseAll 之前，
 		// 让 in-flight 批的事务还能到达数据库。
 		stopSessionDigestBackfill(sessionDigestBackfillForShutdown)
+		// request_status 回填：同样必须在 pools.CloseAll 之前排空
+		// in-flight 批，让其事务还能到达数据库。
+		stopSessionRequestStatusBackfill(sessionRequestStatusBackfillForShutdown)
 		// P2.2 Track B: 排空异步路由反馈批量队列。必须在 pools.CloseAll 之前
 		// （批量 INSERT 要还能到达 DB）；约 5s 超时防慢库拖住退出——队列本身
 		// 满时丢弃计数，Flush 失败只会在 routingopt 内部 slog，绝不阻塞退出。
