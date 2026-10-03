@@ -343,6 +343,33 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	// search+integrity). All nullable; empty Go values persist as SQL NULL via
 	// the nilIf* helpers so fill-rate acceptance SQL (plan §8-B) measures real
 	// collection, not zero-value noise.
+	//
+	// §9.100 — why the anti-join below casts $3 to varchar explicitly.
+	//
+	// Without the cast this statement fails to even PARSE:
+	//
+	//	ERROR: inconsistent types deduced for parameter $3
+	//	DETAIL: text versus character varying
+	//
+	// $3 (tenant_id) is used twice. In the INSERT target list it is deduced from
+	// session_turns_hot.tenant_id, which is varchar(255). In the anti-join it is
+	// deduced from `tenant_id = $3`, and operator resolution for a varchar
+	// column against an unknown parameter lands on texteq(text,text) — text is
+	// the preferred type of the string category, varchar is not. One parameter,
+	// two deduced types, statement rejected at Parse time. pgx sends no
+	// parameter OIDs, so server-side deduction is the only thing that decides
+	// this and the ambiguity has to be removed in the SQL itself.
+	//
+	// Verified by PREPARE (parse only, no rows touched) against BOTH a fresh
+	// install built from embeddata and production 252 — both type
+	// session_turns_hot.tenant_id as varchar(255), so this is not a
+	// fresh-install-only artifact.
+	//
+	// Why 252 still writes today: the running 2026-10-01 build predates this
+	// anti-join (verified by grepping the deployed binary, which has no
+	// "NOT EXISTS (... session_turns_with_current_month" statement at all).
+	// Any deploy of the current tree without this cast loses every session turn
+	// write, so this is a latent deploy blocker, not a cosmetic fix.
 	result, err := tx.Exec(ctx, `
 			INSERT INTO public.session_turns_hot (
 				session_id, turn_no, tenant_id, request_id, ts,
@@ -404,7 +431,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM public.session_turns_with_current_month
-				WHERE tenant_id = $3 AND request_id = $4
+				WHERE tenant_id = $3::varchar AND request_id = $4
 			)
 			ON CONFLICT (tenant_id, request_id, partition_date) DO NOTHING
 		`,

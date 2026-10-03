@@ -12454,3 +12454,145 @@ v1 侧不是「给每行打标」，而是**每个 `gw_session_id` 恰好一行*
 >
 > ⇒ 与 §9.92 / §9.96 同族：**先读，再断言**。
 > 尤其是「难不难」这种判断——它最容易被**想象**替代**阅读**。
+
+---
+
+## §9.100 真库验证缺库 → 自建可丢弃库，连带查出两个此前无人发现的缺陷
+
+§9.98 的三道门只证明**链路**（映射 → 字段 → INSERT 绑定），不证明**落库**。
+上一轮结论是「阻塞 #1 已修，等一个带当前 schema 的库验效果」。
+
+### §9.100.1 缺的不是授权，是「可丢弃库」这个约定
+
+仓内对真库测试的约定本来就写在注释里（`migration_711_test.go`、`hook_integration_test.go`）：
+`TEST_PG_URL` / `TEST_DB_URL` 必须指向**一次性可丢弃库**。
+上一轮我按「需要生产授权」处理，方向就错了——**该要的是一个空库，不是一份写权限**。
+
+本机 `llm-gateway-pg-amd64`（`registry.internal.example.com/kx-citus-pg17:13.3.0-vector-amd64`，
+127.0.0.1:55432）是一个**空库 + 我是 superuser** 的 citus 容器，正是这个约定要的东西。
+（另：必须用 `kx-citus-pg17` 系镜像，裸 `postgres:17-alpine` 会让 `~/kaixuan/postgres`
+的 citus 目录残留把任何 DROP POLICY/INDEX/CONSTRAINT 打崩——见记忆条目。）
+
+### §9.100.2 缺陷 A：全新安装在 01-schema.sql 就断（真门 FAIL → 修后 PASS）
+
+用仓内自己的 opt-in 真门裁决，不自己复刻安装流程：
+
+```bash
+cd installer   # 独立 Go module
+TEST_INSTALLER_FRESH_DB_URL='postgres://…@127.0.0.1:55432/gw_fresh_test' \
+  go test -tags=integration -run TestFreshInstallerSessionTurnsHotBootstrap \
+  ./cmd/llm-gw-installer/ -count=1
+```
+
+- **修前**：`FAIL … 01-schema.sql:18535: ERROR: relation "public.candidate_failure_logs_hot" does not exist`
+- **修后**：`ok … 61.382s`
+
+**根因**：`01-schema.sql` 是**从已跑过迁移的生产库重新 dump** 的，于是把
+`v_adaptive_probe_targets` 的子查询改指 `candidate_failure_logs_hot`；
+但该表由 `392` 创建，而 `392` 在 `StartupFiles[1]`——**排在基线之后**。
+基线自己从不建这张表（全文件仅 `:5913` 建父表 `candidate_failure_logs`）。
+提交：`199c65747`（R21，814 探针视图死列修复）。
+
+**依赖环**：基线要 392 的表才能 CREATE VIEW；814 只有 `CREATE OR REPLACE`，
+视图缺席时它也建不出来。⇒ 全新安装无解，与生产无关（生产三样都在）。
+
+**修法（一行，三份副本同改）**：基线视图子查询改回读自建的父表 `candidate_failure_logs`，
+由 `814` 在 `392` 之后改指 `_hot`。终态与生产一致，只让全新安装的**瞬时**基线态不同。
+
+> 副本纪律：`deploy/sql/schemas/baseline/`、`installer/…/embeddata/`、`sql/schema/`
+> 三份 `01-schema.sql` **md5 相同**，改后仍相同（`40742fd6…`）。只改一份＝静默分叉。
+
+### §9.100.3 缺陷 B：origin/main 的 session turn 写入 SQL 连解析都过不去（潜伏部署阻断）
+
+修好 A 之后跑 §9.98 端到端，立刻撞上：
+
+```
+write turn: insert turn: ERROR: inconsistent types deduced for parameter $3 (SQLSTATE 42P08)
+```
+
+**差分对照**（不猜归因）：在 §9.98 之前的 `383ef8d03` 上跑**既有的**
+`TestPersistHook_Integration_DBWrite`，同库同错 ⇒ **不是 §9.98 引入的**。
+`turn_writer.go` 在两树间 `git diff` 为空 ⇒ 对照干净。
+
+**机制**（`PREPARE` 复现，只解析不执行）：
+
+```
+ERROR: inconsistent types deduced for parameter $3
+DETAIL: text versus character varying
+```
+
+`$3`（`tenant_id`）被用两次：
+- INSERT 目标列 `session_turns_hot.tenant_id` = `varchar(255)` ⇒ 推成 **varchar**
+- 反连接里 `tenant_id = $3` ⇒ 算子决议落到 `texteq(text,text)`（string 类
+  preferred type 是 `text`，`varchar` 不是）⇒ 推成 **text**
+
+**pgx 不发参数 OID**，全靠服务端推导 ⇒ 同一个 `$3` 两种类型，语句在 Parse 阶段就被拒。
+实测 `PREPARE SELECT 1 FROM session_turns_with_current_month WHERE tenant_id = $1`
+推出的正是 `{text}`。
+
+**关键：这不是全新安装的假象。** 生产 252 的 `session_turns.tenant_id` /
+`session_turns_hot.tenant_id` / 视图同名列**也都是 `varchar(255)`**，
+在 252 上 `PREPARE` 同一段 SQL **报完全相同的错**。
+
+**为什么线上今天还写得动**：在跑的 2026-10-01 构建（`/opt/llm-gateway-go/bin/gateway`，
+05:17 构建 / 05:19 起服）**不含这段反连接**——`grep -a 'NOT EXISTS (SELECT 1 FROM
+public.session_turns_with_current_month'` 命中 0，而 `session_turns_hot` 最新 ts
+就在查询当时（`2026-10-04 00:44:55`），生产日志 `inconsistent types deduced` 计数 0。
+
+⇒ **这是潜伏的部署阻断缺陷，不是现网故障**：
+今天不炸是因为在跑的旧构建绕开了它；**下一次部署 origin/main 就会丢掉全部 session turn 写入**。
+
+**修法（一行 SQL）**：`WHERE tenant_id = $3::varchar`。修后 `PREPARE` 在
+**本地全新安装库与生产 252 双双通过**。
+
+### §9.100.4 §9.98 的结论要再收一次：写入修好了，**读取面根本没开始迁**
+
+新真库门第一次跑就撞上 `column "search_text" does not exist (42703)`。
+
+`session_turns_with_current_month` 只投影 **55 列**，**不含 `search_text`**
+（`pg_attribute` 与 `information_schema` 两个独立来源一致）。
+
+而检索今天**仍在 v1 上**：`admin/logs.go:185` 选 `rl.search_text`、
+`:537` 用 `rl.search_text ILIKE $N`，`rl` = `request_logs_hot`。
+
+⇒ 我 §9.98「阻塞 #1 已修」的说法**只覆盖了写入**。
+准确表述是：写入侧已修并经真库证明；**读取侧迁移尚未开始**，
+v1 一退役，检索即断。这是阻塞 #1 剩下的一半，**不是已完成的项**。
+
+> 我第一轮读 `information_schema` 时把某一行误读成了视图的 `search_text`，
+> 与随后 42703 冲突。**两个量具打架时要去查第三个**——这次是 `pg_attribute`。
+
+### §9.100.5 新增真库门（opt-in，`TEST_DB_URL`）
+
+`internal/sessionv2mirror/search_text_realdb_integration_test.go`：
+写入 → 从 `session_turns_hot` 读回 → 断言 9 个特征 token 全部在列 + 与 v1 纯函数逐字节相同。
+
+**刻意避开恒等式**：最容易写的断言是 `stored == *telemetry.SearchText(entry)`，
+而这在**两侧都为空时恒真**——那正是 §9.98 之前的世界。
+所以先钉住「纯函数产出了真实内容」，再逐 token 断言落库值。
+
+**变异 2/2**（都确认落盘、只让目标断言红）：
+
+| 变异 | 红的断言 |
+|---|---|
+| 断 `s1a_fields.go` 映射 | `mirror-side mapping must reproduce the v1 pure function byte for byte` |
+| 映射保持正确、writer 写回 `""` | `session_turns_hot.search_text is empty` |
+
+第二个变异证明**落库断言独立于映射断言**——反空转成立。
+
+**断言面刻意不含 `session_turns` 父表**：镜像只写 hot，父表由异步 promotion 搬运
+（252 父表最新 ts 比 hot 落后 8 小时）。断言父表会把「周期任务」编码成「§9.98 的期望」。
+视图则**只记录不断言**（`t.Logf`），因为给缺口加断言等于把缺陷钉成预期行为。
+
+### §9.100.6 这一节的教训
+
+> **「缺一个库」和「缺一份授权」是两件事。** 我把前者当后者，等了一轮。
+> 仓内注释早就写明真库测试要指向可丢弃库——**先读约定，再提需求**。
+>
+> **门只证明它覆盖的那一层。** §9.98 三道门全绿，而真库一跑就同时爆出
+> 「全新安装断链」和「写入 SQL 不可解析」两个它们结构上碰不到的缺陷。
+> §9.59 那条恒等式恒真的教训在这里第三次复现：**观测量全来自被检验对象内部时，
+> 门验不了那个对象**。
+>
+> **潜伏缺陷比现网故障更危险。** 42P08 今天不发作，恰恰因为在跑的构建不含那段 SQL；
+> 「生产写入正常」曾让我差点把它读成「我的复现有问题」。
