@@ -10101,6 +10101,58 @@ git rev-list --count HEAD ^c3d8a5e0d          → 238（区间内新增提交总
    正确做法是**按短 SHA 逐个剔除我自己的提交**。**用提交形态（是否 merge）去分
    「谁写的」，在入站也大量 merge 的仓库里根本不成立。**
 
+### §9.74.16 验伪「Go ensure 启动重建覆盖了迁移产物」这条假设，并把 111 列的来源讲清
+
+外部复核提出一条**因果假设**：「疑似 Go 侧 `db.ensure*` 启动重建覆盖了迁移产物」。
+这条**不管 111/118 谁对都值得查**——若成立，意味着迁移的产物在运行实例上根本不是
+最终形态，§9.64 换掉的守卫在生产上是空转。**我验了，它不成立**，两条独立证据：
+
+**证据一：Go ensure 在「视图健康」时零 DDL，早返回。**
+`db/request_logs_view_schema.go:47 ensureRequestLogsCurrentMonthView` 的健康判据是
+
+```sql
+canonicalExists AND ( viewdef LIKE '%session_turns%' [AND viewdef LIKE '%session_turn_details%'] )
+```
+
+252 实测 canonical = **118 列且 viewdef 含 `session_turns`** ⇒ 两个条件都真
+⇒ 函数在此 `return nil`，**不执行任何 DDL**。迁移产物原样保留，没被覆盖。
+
+**证据二：即使真的触发重建，重建 SQL 也带着守卫——新机被保护，不是被绕过。**
+`CREATE OR REPLACE VIEW public.request_logs_with_current_month`（同文件 `:801`）由
+`fmt.Sprintf` 拼成，投影表达式来自 `projectionExprsV2`（`:363` 起），其中 `:507` 是：
+
+```go
+"(CASE WHEN pg_input_is_valid(t.client_ip, 'inet') THEN t.client_ip::inet END)",
+```
+
+且该常量被 `:575-584` 的 `projectionExprByColumn` 按名索引后喂进 801 那条语句。
+注释里还完整复述了 §9.64 的判据翻转（816 字符类正则挡不住 `192.168.1`）。
+⇒ **视图缺失时 Go 自愈出来的是带 `pg_input_is_valid` 的视图**，与迁移产物同形。
+
+**「111 列」的真正来源，以及它为什么本来就不该有守卫**
+
+111 列的视图是链上的 `request_logs_with_current_month_without_request_class_due_at`。
+**它没有 `pg_input_is_valid`——这是对的，不是缺陷。** 252 实测（20:57:12）：
+
+| 对象 | `client_ip` 类型 | 需要 cast？ | 守卫 |
+|---|---|---|---|
+| `request_logs` | `inet` | 否（原生） | — |
+| `request_logs_hot` | `inet` | 否（原生） | — |
+| `..._without_customer_id`（110 列） | `inet` | 否（透传） | — |
+| `..._without_request_class_due_at`（**111 列**） | `inet` | 否（`v.client_ip` 透传） | — |
+| `session_turns` | **`text`** | **是** | — |
+| **`request_logs_with_current_month`（118 列）** | `inet` | 仅 session 两臂 | **2 处**，分别在 `FROM session_turns_hot`（viewdef 行 140）与 `FROM session_turns`（行 288） |
+
+⇒ **链上唯一的 `text` 源是 `session_turns.client_ip`；canonical 里对它 `::inet` 的转换
+恰好两处，两处都被 `pg_input_is_valid` 守住；v1 腿那一臂从中间视图透传 `inet`，
+不 cast 因而不可能抛。** 设计与实测自洽，**111 列那个视图里没有守卫不是遗漏**。
+
+**顺带记一条耦合，供后人留意**：Go ensure 的 v1 分支有一处**写死的列数契约**
+`{113, 115}`，且注释明写「118 列只会出现在会话体上，而会话体早在 bodyIsV2 分支就
+返回了，所以集合不必含 118」。这条推理**今天成立**（会话体恒 118），但它把
+「813 追加三列」这个事实硬编码进了控制流——若将来 813 的三列有增减，这个 `{113,115}`
+需要同步改，且**它不会自己报错**，只会让该分支永远走「保留现状、交给视图契约修复流程」。
+
 ## §9.82 ③裁决的实施：cohort 分族修正（§9.73.4/§9.73.5）+ 内部流量单一事实源
 
 > ⚠ **本节四项裁决全部来自 2026-10-03 的问卷，其中三项是超时自动采纳**（`automatic_timeout`），
