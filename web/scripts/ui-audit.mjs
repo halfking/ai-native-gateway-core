@@ -709,8 +709,8 @@ const NAME_SORT_EXEMPT = {
   'views/tenant/MaaSAccountView.vue': 'recent_orders / recent_ledger 是「最近」流水',
   'views/tenant/MaaSUsageView.vue': '用量流水，按时间倒序',
   'views/UserProfileView.vue': '该页是**单个 owner 的详情**（route.params.owner），表里是这个 owner 的模型分解，不是用户列表 —— 契约 C 的启发式按文件名里的 User 命中，属误报',
-  'views/ModelIntegrityView.vue': '排序发生在 useModelCatalogFilters 内部，会连带改筛选/分组语义 —— 待决策',
-  'views/StandardModelPricingView.vue': '同上：排序键待决策，改了会影响计费页的筛选分组',
+  'views/ModelIntegrityView.vue': '首列是「检测时间」，异常事件流水按时间倒序才对（复核更正：原写的'
+    + '「排序会连带改筛选分组语义」不成立 —— 该表行源是 events，不走 useModelCatalogFilters）',
 }
 const stillUnsorted = needNameSort.filter((r) => !NAME_SORT_EXEMPT[r.file])
 const exempted = needNameSort.filter((r) => NAME_SORT_EXEMPT[r.file])

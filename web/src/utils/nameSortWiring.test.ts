@@ -57,6 +57,7 @@ const CASES: Case[] = [
   { view: 'views/KeyDetailView.vue', sorted: 'sortedKeyModels', raw: 'keyModels', firstCol: 'model' },
   { view: 'views/TenantDashboardView.vue', sorted: 'sortedByModel', raw: 'by_model', firstCol: 'model' },
   { view: 'views/provider-detail/QualityTab.vue', sorted: 'sortedModels', raw: 'data.models', firstCol: 'model_name' },
+  { view: 'views/StandardModelPricingView.vue', sorted: 'sortedFiltered', raw: 'filtered', firstCol: 'display_name' },
 ]
 
 describe('名称排序接到了模板上（第二轮补的八处）', () => {
