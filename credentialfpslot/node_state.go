@@ -277,13 +277,28 @@ func nodeKey(credentialID int, model string) string {
 // GetNodeState reads node health state from Redis.
 // Returns a zero-value state (never nil) when no key exists.
 func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model string) (*NodeState, error) {
+	// One stamp for the whole read, mirroring GetNodeStatesBatch: every value
+	// returned below was observed at this instant. The two early exits are
+	// included on purpose — a zero state carries no verdict, but leaving its
+	// read stamp zero makes this path's shape differ from the batch path for
+	// no reason. Today that difference is harmless (the capability gate
+	// returns early on !SupportsResponsesKnown and never reaches the age
+	// guard), which is exactly why it needs a criterion rather than a
+	// comment: if that early return ever moves, the zero state starts
+	// counting as reason="unstamped" and the metric stops meaning
+	// "a construction site bypassed the read path".
+	readAt := time.Now()
 	if m.client == nil {
-		return newZeroNodeState(credentialID, model), nil
+		state := newZeroNodeState(credentialID, model)
+		state.SnapshotReadAt = readAt
+		return state, nil
 	}
 	key := nodeKey(credentialID, model)
 	data, err := m.client.Get(ctx, key).Result()
 	if err == redis.Nil {
-		return newZeroNodeState(credentialID, model), nil
+		state := newZeroNodeState(credentialID, model)
+		state.SnapshotReadAt = readAt
+		return state, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get node state: %w", err)
@@ -306,7 +321,7 @@ func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model stri
 		return nil, fmt.Errorf("node state identity mismatch: key=(%d,%s) payload=(%d,%s)",
 			credentialID, model, state.CredentialID, state.Model)
 	}
-	state.SnapshotReadAt = time.Now()
+	state.SnapshotReadAt = readAt
 	return &state, nil
 }
 
