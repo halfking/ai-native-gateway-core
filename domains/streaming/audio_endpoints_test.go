@@ -362,7 +362,17 @@ func TestMCPEarlyErrorsUseJsonRPCEnvelope(t *testing.T) {
 			if env.Type != "" || env.Code != "" {
 				t.Errorf("OpenAI envelope fields leaked: type=%q code=%q (should be absent in JSON-RPC envelope)", env.Type, env.Code)
 			}
-			t.Logf("228 号 守卫命中: %s 当前实现违反 MCP streamable HTTP 2025-06-18 协议契约（HTTP %d + OpenAI envelope）；需切换为 HTTP 200 + JSON-RPC envelope {code:%d}", tc.name, rec.Code, tc.wantCode)
+			// 2026-10-04：本守卫原为**无条件** t.Log，措辞断言「当前实现违反
+			// 协议契约」——修好之后它照样打印同样的话，变成一条会误导人的
+			// 绿测日志。改为只在真违反时说话。
+			if rec.Code != tc.wantHTTP {
+				t.Logf("228 号 守卫命中: %s 当前实现违反 MCP streamable HTTP 2025-06-18 协议契约"+
+					"（HTTP %d + 非 JSON-RPC envelope）；需切换为 HTTP 200 + JSON-RPC envelope {code:%d}",
+					tc.name, rec.Code, tc.wantCode)
+			} else {
+				t.Logf("228 号 守卫: %s 已符合协议契约（HTTP 200 + JSON-RPC envelope {code:%d}）",
+					tc.name, tc.wantCode)
+			}
 		})
 	}
 }

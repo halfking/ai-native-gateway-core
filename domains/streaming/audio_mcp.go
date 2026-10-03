@@ -23,6 +23,7 @@ package streaming
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -72,6 +73,21 @@ const (
 	mcpErrInternal  = -32603
 )
 
+// writeJSONRPCError 按 JSON-RPC 2.0 规范回**协议级**错误：HTTP 200 +
+// {"jsonrpc":"2.0","id":<id|null>,"error":{"code":...,"message":...}}。
+//
+// id 传 nil 时序列化成 null（规范要求：无法确定 id 的解析错误用 null，
+// 而不是省略——省略会让客户端把响应当成非错误帧丢弃）。
+func writeJSONRPCError(w http.ResponseWriter, code int, message string, id json.RawMessage) {
+	if id == nil {
+		id = json.RawMessage("null")
+	}
+	resp := jsonRPCResponse{JSONRPC: "2.0", ID: id, Error: &jsonRPCError{Code: code, Message: message}}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 func (h *AudioMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := r.Header.Get("X-Request-Id")
 	if requestID == "" {
@@ -108,17 +124,26 @@ func (h *AudioMCPHandler) servePost(w http.ResponseWriter, r *http.Request, requ
 	}
 	body = bytesTrimBOM(body)
 	trimmed := strings.TrimSpace(string(body))
+	// JSON-RPC 2.0 规范：**协议级**错误（解析失败、非法 Request）仍然用
+	// JSON-RPC 错误信封回，且传输层是 HTTP 200 —— 200 表示「JSON-RPC
+	// 往返成功，错误在信封里」。此前这三条早失败路径回的是 OpenAI 形态
+	// 错误信封 + HTTP 400，MCP 客户端按规范解析会拿不到 error.code
+	// （TestMCPEarlyErrorsUseJsonRPCEnvelope 自 2026-10-03 起就是红的，
+	// 其失败信息本身在描述当时的行为）。
+	//
+	// 鉴权/服务不可用/体积超限不属于协议级错误：它们发生在协议成立之前，
+	// 保持传输层 4xx（客户端连信封都还没资格收）。
 	if trimmed == "" {
-		writeErrorJSON(w, http.StatusBadRequest, requestID, "Empty JSON-RPC body", "invalid_request_error", "invalid_json")
+		writeJSONRPCError(w, mcpErrParse, "Empty JSON-RPC body", nil)
 		return
 	}
 	if trimmed[0] == '[' {
-		writeErrorJSON(w, http.StatusBadRequest, requestID, "JSON-RPC batch requests are not supported", "invalid_request_error", "invalid_json")
+		writeJSONRPCError(w, mcpErrInvalidRq, "JSON-RPC batch requests are not supported", nil)
 		return
 	}
 	var req jsonRPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, requestID, "Invalid JSON-RPC body", "invalid_request_error", "invalid_json")
+		writeJSONRPCError(w, mcpErrParse, "Invalid JSON-RPC body", nil)
 		return
 	}
 
@@ -174,7 +199,7 @@ func mcpAudioTools() []map[string]any {
 					"audio_base64": map[string]any{"type": "string", "description": "音频文件内容的 base64（标准编码）"},
 					"format":       map[string]any{"type": "string", "description": "音频容器格式：wav / mp3 / webm / m4a 等；小米上游仅支持 wav 与 mp3", "default": "wav"},
 					"model":        map[string]any{"type": "string", "description": "网关音频模型名，如 mimo-v2.5-asr"},
-					"language":     map[string]any{"type": "string", "description": "ISO-639-1 语种提示（如 zh）；chat-audio 桥接形态下部分上游会忽略"},
+					"language":     map[string]any{"type": "string", "description": "ISO-639-1 语种提示（如 zh）；chat-audio 桥接形态下映射为上游 asr_options.language（小米只认 zh/en/auto，无法映射时按自动识别处理）"},
 				},
 				"required": []string{"audio_base64", "model"},
 			},
@@ -187,7 +212,7 @@ func mcpAudioTools() []map[string]any {
 				"properties": map[string]any{
 					"text":   map[string]any{"type": "string", "description": "要合成的文本"},
 					"model":  map[string]any{"type": "string", "description": "网关 TTS 模型名，如 mimo-v2.5-tts"},
-					"voice":  map[string]any{"type": "string", "description": "音色；小米：mimo_default/冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean，非法值自动归一默认音色"},
+					"voice":  map[string]any{"type": "string", "description": "音色；小米 mimo-v2.5-tts：mimo_default/冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean，非法值自动归一默认音色。mimo-v2.5-tts-voicedesign：这里传音色设计描述（如「温柔清亮的女声」）。mimo-v2.5-tts-voiceclone：这里传样本 DataURL（data:audio/wav;base64,...）"},
 					"format": map[string]any{"type": "string", "description": "期望音频格式：wav（默认）/mp3/opus/aac/flac/pcm", "default": "wav"},
 				},
 				"required": []string{"text", "model"},
@@ -209,6 +234,19 @@ func (h *AudioMCPHandler) toolsCall(r *http.Request, requestID string, req jsonR
 
 	rpcErr := func(code int, msg string) jsonRPCResponse {
 		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &jsonRPCError{Code: code, Message: msg}}
+	}
+	// rpcAudioErr 按与 HTTP 面 writeAudioError 相同的口径分流：调用方参数
+	// 问题回 -32602（Invalid params），其余回 -32603。否则客户端会把
+	// 「格式不支持」「voiceclone 没给样本」当成网关内部故障去重试。
+	rpcAudioErr := func(err error) jsonRPCResponse {
+		if isAudioClientInputErr(err) {
+			return rpcErr(mcpErrParams, sanitizeAudioErrorMessage(err.Error()))
+		}
+		var upErr *audioUpstreamStatusError
+		if errors.As(err, &upErr) && upErr.clientFault() {
+			return rpcErr(mcpErrParams, sanitizeAudioErrorMessage(upErr.Error()))
+		}
+		return rpcErr(mcpErrInternal, sanitizeAudioErrorMessage(err.Error()))
 	}
 
 	switch params.Name {
@@ -238,7 +276,7 @@ func (h *AudioMCPHandler) toolsCall(r *http.Request, requestID string, req jsonR
 			File: audio, Filename: "audio." + format, ContentType: "audio/" + format,
 		}, nil)
 		if terr != nil {
-			return rpcErr(mcpErrInternal, sanitizeAudioErrorMessage(terr.Error()))
+			return rpcAudioErr(terr)
 		}
 		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
 			"content": []map[string]any{{
@@ -269,7 +307,7 @@ func (h *AudioMCPHandler) toolsCall(r *http.Request, requestID string, req jsonR
 			Model: args.Model, Input: args.Text, Voice: args.Voice, ResponseFormat: args.Format,
 		})
 		if serr != nil {
-			return rpcErr(mcpErrInternal, sanitizeAudioErrorMessage(serr.Error()))
+			return rpcAudioErr(serr)
 		}
 		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
 			"content": []map[string]any{{
