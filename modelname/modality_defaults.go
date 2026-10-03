@@ -44,6 +44,12 @@ var modalityRules = []modalityRule{
 	// OpenAI - Audio (specific, must come before gpt-4o-*)
 	{"gpt-4o-audio-", "audio", 1},    // gpt-4o-audio-preview (10 chars before *)
 	{"gpt-4o-realtime-", "audio", 1}, // gpt-4o-realtime-* (14 chars)
+	// 2026-10-03 音频端点轮：transcribe 家族是 ASR，不是 vision。前缀
+	// gpt-4o-（vision）更长于它们的名字前缀，必须显式覆盖，否则
+	// gpt-4o-transcribe 会被错标 vision、从 audio 候选中漏掉。
+	{"gpt-4o-transcribe", "audio", 1},
+	{"gpt-4o-mini-transcribe", "audio", 1},
+	{"gpt-transcribe", "audio", 1},
 
 	// OpenAI - Vision (after audio to avoid conflict)
 	{"gpt-4o-", "vision", 1}, // gpt-4o-2024-08-06 (6 chars)
@@ -274,6 +280,13 @@ var modalityRules = []modalityRule{
 	{"-vision", "vision", 2}, // catches ernie-4.0-vision, grok-vision, etc.
 	{"-audio-preview", "audio", 2},
 	{"-audio", "audio", 2},
+	// 2026-10-03 音频端点轮：ASR/TTS 家族的后缀形态。此前只有前缀 asr-/
+	// tts- 与包含 -asr-/-tts- 的规则，于是 mimo-v2.5-asr（后缀 -asr）与
+	// mimo-v2.5-tts（后缀 -tts）双双落回 text 默认值。modality=text 的行
+	// 会被 audio 请求的候选过滤（modality IN ('audio','multimodal'))排除，
+	// 表现为 no_candidate 503——小米上游实测完全可用，纯粹是标注错误。
+	{"-asr", "audio", 2},
+	{"-tts", "audio", 2},
 	{"-nemo", "text", 2},
 
 	// ========== Priority 3: Contains matches (pattern has * on both sides) ==========
@@ -283,6 +296,10 @@ var modalityRules = []modalityRule{
 	{"whisper", "audio", 3},
 	{"-tts-", "audio", 3},
 	{"-stt-", "audio", 3},
+	// 2026-10-03：qwen3-asr-0.6b 这类中缀形态（前缀 asr- 与后缀 -asr 都
+	// 覆盖不到）。与后缀规则同轮引入，见 Priority 2 注释。
+	{"-asr-", "audio", 3},
+	{"-transcri", "audio", 3}, // gpt-4o-transcribe / *-transcribe-*
 	{"embedding", "embedding", 3},
 	{"-embed-", "embedding", 3},
 	{"-multimodal-", "multimodal", 3},

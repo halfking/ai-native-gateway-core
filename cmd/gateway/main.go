@@ -866,6 +866,13 @@ func main() {
 	responsesHandler := streaming.NewResponsesHandler(chatHandler)
 	// EmbeddingsHandler 在 providerClient 就绪后初始化（见 ~SetAuth 区）。
 	var embeddingsHandler *streaming.EmbeddingsHandler
+	// 2026-10-03 音频端点轮：/v1/audio/transcriptions、/v1/audio/speech 与
+	// /v1/mcp 共享一个 AudioService（候选解析 + 上游适配 + 鉴权）。同
+	// embeddings，在 providerClient + upClient 就绪后初始化。
+	var audioService *streaming.AudioService
+	var audioTranscriptionsHandler *streaming.AudioTranscriptionsHandler
+	var audioSpeechHandler *streaming.AudioSpeechHandler
+	var audioMCPHandler *streaming.AudioMCPHandler
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ─────────────────
 	// Single Checkerr singleton shared by streaming.ChatHandler (hot
@@ -2377,6 +2384,12 @@ func main() {
 		// candidate_failure_logs / supplier_errors ledger, same as chat —
 		// keeps credential quality views complete across all data planes.
 		embeddingsHandler.SetFailureLogger(executors.NewCandidateFailureWriter(dbConn.Pool()))
+		// 2026-10-03 音频端点轮：转写/合成/MCP 三个面共享 AudioService。
+		audioService = streaming.NewAudioService(providerClient, upClient)
+		audioService.SetAuth(keyVerifier, slidingRL)
+		audioTranscriptionsHandler = streaming.NewAudioTranscriptionsHandler(audioService)
+		audioSpeechHandler = streaming.NewAudioSpeechHandler(audioService)
+		audioMCPHandler = streaming.NewAudioMCPHandler(audioService)
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else if cfg.SecretKey != "" {
 		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
@@ -6353,6 +6366,17 @@ func main() {
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
 	if embeddingsHandler != nil {
 		mux.Handle("/v1/embeddings", embeddingsHandler)
+	}
+	// 2026-10-03 音频端点轮：OpenAI 兼容转写/合成 + MCP 面板。handler 仅在
+	// 数据面鉴权可用（keyVerifier.Enabled）时构造，与 embeddings 同款门槛。
+	if audioTranscriptionsHandler != nil {
+		mux.Handle("/v1/audio/transcriptions", audioTranscriptionsHandler)
+	}
+	if audioSpeechHandler != nil {
+		mux.Handle("/v1/audio/speech", audioSpeechHandler)
+	}
+	if audioMCPHandler != nil {
+		mux.Handle("/v1/mcp", audioMCPHandler)
 	}
 	mux.Handle("/v1/models", modelsHandler)
 

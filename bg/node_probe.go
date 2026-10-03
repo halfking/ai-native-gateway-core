@@ -59,6 +59,7 @@ package bg
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -79,6 +80,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/prometheus/client_golang/prometheus"
@@ -3211,12 +3213,109 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 // 2026-09-25：改用 probeDescriptorFor（归一 + providercap.Resolve）统一入口，
 // openai-responses 凭据（vapeur/hxt-local）走原生 /v1/responses
 // {"input","max_output_tokens"}——其 chat 端点对小 max_tokens 探针 400。
+//
+// 2026-10-03 音频端点轮：音频模型的探针形态分发。小米实测（token-plan-cn
+// 上游）两条硬事实决定了纯文本 "ping" 对音频模型必然 400：
+//
+//	mimo-v2.5-asr（ASR）  → 400 "ASR request requires a user message with
+//	                         input_audio content"
+//	mimo-v2.5-tts（TTS）  → 400 "messages must contain an assistant role
+//	                         for TTS model"
+//
+// 探针把任何非 2xx 判失败，URSM 随即将 (cred, model) 标红，路由面永久
+// no_candidate——上游完全健康也会被探死。所以 audio 模型的探针必须换形态：
+//   - ASR：user 消息只带一段 400ms 的极小 WAV（input_audio）。实测小米
+//     200。注意不能带 text part（小米 400 "must not include text parts"）。
+//   - TTS：assistant 消息带短文本 + modalities ["text","audio"]，不带
+//     voice（小米实测免 voice 200，走默认音色；带 provider 无效音色名
+//     反而 400）。TTS 输出会多耗一次合成，用 3 个字把成本压到最小。
+//   - audio-chat（gpt-4o-audio 系）：ASR 形态（input_audio）同样是其
+//     原生输入，统一走 ASR 分支。
 func directProbeEndpoint(baseURL, protocol string) string {
 	return upstreamurl.Build(baseURL, probeDescriptorFor(protocol).ChatProbeEndpoint)
 }
 
+// probeTinyWAVB64 是 400ms 8kHz 8bit 单声道静音 WAV 的 base64（约 560B）。
+// 静音而非单音：部分供应商对纯音/静音会走不同的解码路径，静音是最不
+// 触发内容侧分支的形态；探针只判定「端点收不收音频」，不判定转写质量。
+var probeTinyWAVB64 = func() string {
+	const sampleRate, durationMS = 8000, 400
+	n := sampleRate * durationMS / 1000
+	header := make([]byte, 44)
+	copy(header[0:4], "RIFF")
+	le32(header[4:], uint32(36+n))
+	copy(header[8:12], "WAVE")
+	copy(header[12:16], "fmt ")
+	le32(header[16:], 16)
+	le16(header[20:], 1) // PCM
+	le16(header[22:], 1) // mono
+	le32(header[24:], sampleRate)
+	le32(header[28:], sampleRate) // byte rate
+	le16(header[32:], 1)          // block align
+	le16(header[34:], 8)          // bits
+	copy(header[36:40], "data")
+	le32(header[40:], uint32(n))
+	combined := append(header, make([]byte, n)...)
+	return base64.StdEncoding.EncodeToString(combined)
+}()
+
+func le32(b []byte, v uint32) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
+}
+
+func le16(b []byte, v uint16) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+}
+
+// ttsProbeShapeName 报告模型名是否是 TTS/语音合成形态（区别于 ASR/audio-chat）。
+// 与 streaming 包的语音端点判定、openpocket 的 ttsNameRe 保持同一口径：
+// 合成模型收 assistant 文本。
+func ttsProbeShapeName(model string) bool {
+	m := strings.ToLower(model)
+	for _, frag := range []string{
+		"tts", "voiceclon", "voicedesign", "voice-clon", "voice-design", "voice-id",
+		"text-to-speech", "text_to_speech", "speech-synth", "speak",
+		"cosyvoice", "fish-speech", "fishspeech", "f5-tts", "xtts",
+	} {
+		if strings.Contains(m, frag) {
+			return true
+		}
+	}
+	return false
+}
+
 func directProbeBody(model, protocol string) string {
 	desc := probeDescriptorFor(protocol)
+	// 音频模型探针形态仅在 chat 探针端点上分发；responses 端点的探针
+	// 形态（{"input"}）对音频模型同样成立，维持原状。
+	if desc.ChatProbeEndpoint == upstreamurl.EpChatCompletions && modelname.InferModality(model) == "audio" {
+		if ttsProbeShapeName(model) {
+			body, _ := json.Marshal(map[string]any{
+				"model":      model,
+				"modalities": []string{"text", "audio"},
+				"messages":   []map[string]any{{"role": "assistant", "content": "你好"}},
+				"max_tokens": 32,
+				"stream":     false,
+			})
+			return string(body)
+		}
+		body, _ := json.Marshal(map[string]any{
+			"model": model,
+			"messages": []map[string]any{{
+				"role": "user",
+				"content": []map[string]any{{
+					"type":        "input_audio",
+					"input_audio": map[string]string{"data": probeTinyWAVB64, "format": "wav"},
+				}},
+			}},
+			"max_tokens": 32,
+		})
+		return string(body)
+	}
 	switch desc.ChatProbeEndpoint {
 	case upstreamurl.EpMessages:
 		body, _ := json.Marshal(map[string]any{
@@ -3419,7 +3518,13 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 			annotateRootCause(&r)
 		}
 	}()
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, model)
+	// 2026-10-03 音频端点轮：gateway 轮的 body 与 direct 轮同源分发。
+	// 此前固定发纯文本 "ping"——对 ASR/TTS 模型，网关会把 ping 转给上游
+	// 拿 400（甚至 no_candidate 503），gateway 轮连带失败并写入
+	// node_probe_state（last_err_code=http_5xx），与 direct 轮一起把节点
+	// 压进冷却。复用 directProbeBody（openai-completions 形态 = 网关面）
+	// 后，audio 模型自动换成 input_audio / assistant 消息形态。
+	body := directProbeBody(model, "openai-completions")
 	endpoint := w.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
