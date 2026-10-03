@@ -695,7 +695,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 会让另一张上的同名列不存在，UPDATE 直接报 42703。
 			// 写方（telemetry markAbandonedTurn）在 updateRequestLog 的
 			// upsert 竞态回落分支上，fail-open，故本迁移未应用时只是标记缺失。
-			"820_session_turns_abandoned_marker.sql",
+			"821_session_turns_abandoned_marker.sql",
 		},
 	}
 }

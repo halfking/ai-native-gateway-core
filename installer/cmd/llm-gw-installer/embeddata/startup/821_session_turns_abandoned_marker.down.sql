@@ -1,6 +1,6 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/820_session_turns_abandoned_marker.down.sql
--- Migration:     820 (down)
+-- File:          sql/migrations/startup/821_session_turns_abandoned_marker.down.sql
+-- Migration:     821 (down)
 -- Database:      llm_gateway
 --
 -- 回滚顺序与 up 相反：先删索引（它们是部分索引，删列会级联但显式更清楚），
@@ -35,11 +35,11 @@ BEGIN
        AND column_name  = 'is_abandoned';
 
     IF still IS NOT NULL THEN
-      RAISE EXCEPTION 'migration 820 down: % 上 is_abandoned 仍然存在', tbl;
+      RAISE EXCEPTION 'migration 821 down: % 上 is_abandoned 仍然存在', tbl;
     END IF;
   END LOOP;
 
-  RAISE NOTICE 'migration 820 down: is_abandoned removed from both session_turns faces';
+  RAISE NOTICE 'migration 821 down: is_abandoned removed from both session_turns faces';
 END $$;
 
 COMMIT;

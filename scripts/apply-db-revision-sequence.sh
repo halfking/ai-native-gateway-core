@@ -823,7 +823,7 @@ files=(
   # 不变式：is_abandoned=TRUE ⇔ 这是终态 turn，而其请求在 v1 侧无 t0。
   # 写方（telemetry markAbandonedTurn）fail-open，故本迁移未应用时只是标记缺失。
   # 幂等（ADD COLUMN IF NOT EXISTS + 列集守卫）；母表与 hot 两面都要有。
-  "$ROOT_DIR/sql/migrations/startup/820_session_turns_abandoned_marker.sql"
+  "$ROOT_DIR/sql/migrations/startup/821_session_turns_abandoned_marker.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

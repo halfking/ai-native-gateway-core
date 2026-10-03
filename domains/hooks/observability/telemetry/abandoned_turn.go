@@ -1,5 +1,5 @@
 // ============================================================================
-// 「请求开始了却从没有终态」在**会话族内**的落点（迁移 820，审计 §9.92）
+// 「请求开始了却从没有终态」在**会话族内**的落点（迁移 821，审计 §9.92）
 //
 // # 为什么是「会话族补一类状态」而不是另建小表
 //
@@ -65,7 +65,7 @@ import (
 //
 // fail-open（理由与 819 同源，但这次更轻）：失败只 slog.Warn + 计指标，
 // **绝不回滚 request_logs 主事务**。它跑在 `tx.Rollback(ctx)` 之后的
-// 回落路径上；这里若因 820 未应用而让语句失败，整条请求日志就废了，
+// 回落路径上；这里若因 821 未应用而让语句失败，整条请求日志就废了，
 // 而丢的只是一个诊断标记。
 func markAbandonedTurn(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) {
 	if tx == nil || entry == nil || entry.RequestID == "" {
@@ -77,7 +77,7 @@ func markAbandonedTurn(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) {
 		return
 	}
 
-	// 820 未应用时的 fail-open：savepoint 保住外层事务。
+	// 821 未应用时的 fail-open：savepoint 保住外层事务。
 	//nolint:errcheck // best-effort marker; failure must not fail request logging
 	if _, err := tx.Exec(ctx, `SAVEPOINT gw_abandoned_turn_mark`); err != nil {
 		recordAbandonedTurnOp("mark_failed")

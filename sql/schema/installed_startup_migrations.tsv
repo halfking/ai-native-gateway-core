@@ -223,4 +223,4 @@
 205	816_request_logs_view_client_ip_projection.sql
 206	817_request_logs_view_client_ip_semantic_guard.sql
 207	818_ursm_snapshot_typed_columns.sql
-208	820_session_turns_abandoned_marker.sql
+208	821_session_turns_abandoned_marker.sql
