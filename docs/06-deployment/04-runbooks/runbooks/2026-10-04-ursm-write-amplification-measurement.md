@@ -133,10 +133,60 @@ WHERE snapshot_ts > now() - interval '1 hour';     -- 2430.4 行/分（145825 �
 - 实测存活折半：只有 `18,719,448 ÷ 2 = 9,359,724` 行
 - **缺口 3,159,636 行（25%）**
 
-缺口本身尚未定位（候选：节点数在增长导致历史批更小、留存按整点删除导致边界
-不精确、保留期实际不足 7 天）。**但无论缺口来自哪里，区间 [5.1, 6.9] GB
-都是上界**，因为它由「当前实际占用的体积」和「当前实际写入速率」两个
-独立实测量各自推出。
+### 5.1 缺口定位：昼夜节律，不是保留期也不是节点数（2026-10-03 22:15 补测）
+
+保留期实测 `min=2026-09-26 21:37:28` → `max=2026-10-03 22:06:47`，
+**跨度 7.020 天 / 10,109 分钟**，与契约一致 ⇒ 「保留期不足 7 天」被排除。
+
+最近 24 小时逐小时落库量（走 `_ts_idx`，有界，耗时 6.7s）：
+
+```
+10-02 22:00 |  33,221 |   554 行/分
+10-03 00:00 |  14,354 |   239
+10-03 06:00 |   2,518 |    42   ← 谷
+10-03 08:00 |   3,654 |    61
+10-03 11:00 |  (整行缺失，见 §5.2)
+10-03 13:00 |  40,397 |   673
+10-03 16:00 |  71,665 |  1194
+10-03 19:00 | 139,861 |  2331
+10-03 21:00 | 145,872 |  2431   ← 峰
+```
+
+**谷 42 行/分 vs 峰 2431 行/分，差 58 倍。** 7 天平均
+`18,719,448 ÷ 10,109 = 1851 行/分` 之所以远低于当前峰值，正是被凌晨时段
+拉低的。**缺口主因是昼夜节律**，不是节点数增长（活跃节点 1,276，
+距摘要记录的 1,292 上限只剩 4%）。
+
+**⇒ 容量不是稳态量，是随时段波动的量。** 这恰好是分区化最该解决的场景：
+每天 DROP 旧分区，空间随写入速率波动自动伸缩，而不是让 7 天窗口里的
+低速率时段永久占着位置。
+
+### 5.2 ★ 附带发现：10-03 10:20~12:00 有约 100 分钟写入空洞
+
+`date_bin('10 minutes')` 粒度下：
+
+```
+10:00 | 2406      10:20 | 2398
+12:00 | 2400      12:30 | 2385
+```
+
+**10:20 到 12:00 之间整段无数据**，前后速率正常（240 行/分）。
+同窗口 154 日志该时段 400 行消息，全部是
+`snapshot from dimension queues built`（263）与 `auto index refreshed`（137），
+**没有一条 `persist committed`**。
+
+两点必须分清：
+
+- **日志里没有 `persist committed`，不能当作空洞的原因** —— 154 的
+  `releases/2427-b7f371e5` 是 16:29 才部署的，空洞发生在上午，
+  那时跑的旧版本根本不打印这条日志。
+- 快照在采集（`snapshot ... built` 跑了 263 次）却零提交，方向上指向
+  **persist collect 失败**（已知症状：`redis scan failed: context deadline
+  exceeded`，SCAN 全库实测 12.95~30.40s 顶着 writer 的 30s 预算）。
+  **这只是方向，不是结论** —— 本篇没有拿到该时段的 error 原文。
+
+这个空洞只占 25% 缺口的约 4%（约 2.4 万行），**不是缺口主因**，
+但它是一个独立的、至今未定位的生产异常，**建议单独立项排查**。
 
 **⇒ 对外承诺建议写「约 5~7 GB」，不要写 3.6 GB，也不要只写 7.2 GB。**
 若评审要求单值，取 **6 GB**（区间上偏保守，且含索引）。
@@ -175,7 +225,36 @@ SELECT relname, n_tup_ins, n_tup_upd, n_tup_del,
        (SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
         WHERE c.relname LIKE 'ursm\_node\_snapshot\_min%') AS idx_cnt
 FROM pg_stat_user_tables WHERE relname LIKE 'ursm\_node\_snapshot\_min%';
+
+-- 保留期实际跨度（min/max 走索引，O(1)）
+SELECT min(snapshot_ts), max(snapshot_ts),
+       round(EXTRACT(epoch FROM (max(snapshot_ts)-min(snapshot_ts)))/86400.0,3)
+FROM ursm_node_snapshot_min;
+
+-- 昼夜节律曲线（24h 有界，实测 6.7s）
+SELECT date_trunc('hour', snapshot_ts) AS hr, count(*)
+FROM ursm_node_snapshot_min
+WHERE snapshot_ts > now() - interval '24 hours' GROUP BY 1 ORDER BY 1;
+
+-- 定位写入空洞（10 分钟粒度；注意 date_trunc 不认 'ten_min'，要用 date_bin）
+SELECT date_bin('10 minutes', snapshot_ts, '2000-01-01 00:00+08'), count(*)
+FROM ursm_node_snapshot_min
+WHERE snapshot_ts >= '2026-10-03 10:00+08' AND snapshot_ts < '2026-10-03 12:40+08'
+GROUP BY 1 ORDER BY 1;
+
+-- 活跃节点数（1h 有界）
+SELECT count(*) FROM (SELECT DISTINCT tenant_id, credential_id, raw_model_name
+  FROM ursm_node_snapshot_min WHERE snapshot_ts > now() - interval '1 hour') t;
 ```
+
+> ⚠️ 两个我在本篇踩到的换算坑（都写在这里免得下次照抄）：
+>
+> 1. **速率**：用 `n_tup_ins / (now() - stats_reset)` 时，时间单位极易搞错。
+>    我第一次多除了一个 60，得到「27.2 行/分」。正确是 **1,639 行/分**
+>    （stats_reset = `2026-09-23 06:56:38`，即 255.11 小时 / 10.63 天）。
+> 2. **批大小**：`count(*)` 是「窗口内总行数」，要除以**批数**而不是 1440。
+>    批数 = 窗口秒数 ÷ 批间隔（当前每 30s 一批）。除以 1440 会得到
+>    「101.2 行/批」这种明显不可能的数。
 
 > ⚠️ 累计计数要配 `pg_stat_database.stats_reset` 解读
 > （本窗口实测 `2026-09-23 06:56:38`，即 255.11 小时 / 10.63 天）。
@@ -187,6 +266,10 @@ FROM pg_stat_user_tables WHERE relname LIKE 'ursm\_node\_snapshot\_min%';
 
 ## 8. 仍未定论的（不要当结论用）
 
-- §7 那个 **25% 缺口**（3,159,636 行）去了哪里 —— 三个候选假设都未验证。
+- **§5.2 那 100 分钟空洞（10-03 10:20~12:00）的成因** —— 快照在采集
+  （`snapshot ... built` 263 次）却零提交，方向指向 persist collect 失败，
+  但没拿到该时段 error 原文，不下定论。**建议单独立项。**
+- 空洞仅占 25% 缺口的约 4%，**缺口主因已定位为昼夜节律**（§5.1），
+  这一条不再是开放问题。
 - Finding D 里「1.83×」这个旧数字的来源已无从追溯；本篇只确立**当前实测是 2.00×**。
 - 245 退出 shadow 后的**实际**稳态体积仍需实测确认，本篇是折算值不是实测值。
