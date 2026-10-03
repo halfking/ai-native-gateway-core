@@ -15366,3 +15366,146 @@ merge-base            §9.89   （8cd202ad5）
    `COMMENT ON COLUMN … IS '<新文本>'` 把已落库的那份覆盖掉。
 4. 改完跑：`go test ./internal/sessionv2mirror/ ./deploy/prometheus/rules/`
    与 `bash scripts/apply-db-revision-sequence_test.sh`。
+
+## §9.124 ★821 落点的**第一次端到端验证**（真实请求）——以及它顺带挖出的一个 33 秒查询
+
+> 本节只**新增**，不改动任何既有编号（编号冲突的处置见 §9.93.10，仍待文档属主拍板）。
+> 起因是 §9.93 结尾自己写下的那句话：「**没有端到端跑过一次真实请求**」——
+> 落点正确性当时只由「单条 UPDATE 实测 + 15 条变异 + 18 道门」支撑。
+> 本节把它从「未验证」变成「已验证」，并记下**验证过程中撞见的、与 821 无关的两个真实缺陷**。
+
+### §9.124.1 怎么验的：侧载一个含新代码的实例，不动在跑的那个
+
+`docker ps` 显示 `llm-gateway-local-8782` 跑的是 `2.5.8.2436`，
+`strings` 里 **`abandoned_turn` 出现 0 次** ⇒ 那个容器里**根本没有 821 的代码**，
+拿它测等于什么都没测。
+
+`./deploy-local.sh` 是整套蓝绿（重建镜像 + 迁移检查 + 切流），
+对一个只读验证来说太重，且会把在跑的环境换掉。改用侧载：
+
+```
+go build -o /tmp/821e2e/gateway ./cmd/gateway      # rc=0，91 MB
+strings /tmp/821e2e/gateway | grep -c abandoned_turn   # 6 条日志全在
+```
+用 **Python `subprocess` 直传 env dict** 启在 `:8783`，8782 全程不动。
+⚠ 踩坑：`set -a; . env` 这种 shell 加载会被 env 值里的 `&` 截断
+（本机 `LLM_GATEWAY_ADMIN_PASSWORD=__REDACTED_ADMIN_PASSWORD__` ⇒ 变量只剩 `Veritrans`，
+`9527` 被当成命令）。**非 shell 解析才是对的**——同一份 env 用两种方式加载，
+`admin_pw_len` 从 14 变成 7，肉眼看不见。
+
+### §9.124.2 第一次跑：2/2 请求 HTTP 200，但 t1 一条都没落库
+
+判据本身没跑起来——`updateRequestLog` 根本没被走到：
+
+```
+telemetry request db persist failed; fallback written  op=update  error=conn closed
+```
+v1 侧那两行永远停在 `request_status='in_progress'`。
+**这不是 821 的问题**：821 的判据在 `updateRequestLog` 内部，
+它没被调用 ⇒ 落点无从谈起。**先分清「被检验对象没跑」与「跑失败了」**。
+
+### §9.124.3 ★顺带挖出的真缺陷：`final-success claim` 每次请求多花 **33 秒**
+
+顺着 `conn closed` 往上游查，发现真正超预算的是每次请求都要跑的那条
+`is_final_success` 抢占（`client.go:2891` 起）。单测它自己那条 SQL：
+
+```
+EXPLAIN (ANALYZE, BUFFERS) SELECT gw_session_id FROM ONLY request_logs_2026_09
+  WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> '';
+→ Index Only Scan … actual rows=107794
+  Heap Fetches: 9891          Buffers: shared hit=82689 read=8181
+  Execution Time: 33376.656 ms        ← 33 秒
+```
+
+`request_logs_2026_09` 是 **5007 MB / 2,154,498 行**，而
+`pg_stat_user_tables` 说它 **`last_autovacuum = never`**、`n_dead_tup = 9626`
+⇒ visibility map 从没被更新 ⇒ **9,891 次 heap 回表**把 Index Only Scan 拖成 33 秒。
+本地 VACUUM 后，同一条语句：
+
+```
+Heap Fetches: 77            Execution Time: 87.317 ms      ← 383×
+```
+
+⇒ **这不是 821 的缺陷，也不是本次引入的**：它是「`request_logs` 的月分区没有
+autovacuum 策略」+「claim 的 promoted 臂要扫全部分区」两件事相乘。
+它会**独立地**把 t1 挤出 deadline，而 t1 落不了库就意味着
+**§9.66 说的那类「开始了却没有终态」的请求被凭空制造出来**——
+换句话说，**它自己就是 821 要抓的那个现象的一个成因**。
+⚠ 本节**只诊断、不落地修法**（是否给 `request_logs` 月分区补
+`autovacuum_vacuum_scale_factor`、或把 promoted 臂改成按分区裁剪，属另一轮决策）。
+
+### §9.124.4 ★VACUUM 之后：判据在真实流量上跑起来了，且抓到一条我没造的
+
+| 臂 | 做法 | `session_turns.is_abandoned` |
+|---|---|---|
+| **A** | 请求在飞时把它的 t0 行 `DELETE` 掉 | **`true`** |
+| **B** | 同样请求，**不删** t0（负对照） | **`NULL`** |
+| **有机** | 什么都没做，它自己出现的 | **`true`** |
+
+- A 臂：t0 删掉后 t1 的 `UPDATE` 命中 0 行、且 `EXISTS` 为 false ⇒
+  判据正向置位 ⇒ turn 写成后立刻打标 ⇒ `is_abandoned=true`，
+  指标 `llm_gateway_abandoned_turn_ops_total{op="mark"} 2`。
+- **B 臂是这套实验里最关键的一格**：没有它，「恒为 TRUE」也能让 A 臂看起来对。
+  B 臂实测 `NULL` ⇒ **判据是选择性的，不是无脑标**。
+- 「有机」那条是 `no_candidate` 失败（`request_id=2da655c3…`），
+  **全程没有人工干预**——它是本节最硬的一条证据，因为整条链路
+  （判据 → mirror → 打标）都在无人操作下自己走完了。
+- 另有反向佐证：近 3 小时 `no_candidate` 类失败共 **241** 条，
+  只有 **1** 条被打标 ⇒ 打标没有退化成「凡是终态失败就标」。
+
+**为什么删 t0 是忠实的复现**：生产上该状态的两条成因
+（t0 落库前进程就死 / 这条路径从不发 t0）在 t1 时刻**可观测状态完全相同**，
+而判据只读这个状态。⇒ 删掉在飞的 t0 复现的是**前置条件**，
+标志、mirror、打标三段全是真跑的，没有一处伪造。
+
+### §9.124.5 ★④ RLS 那一半：本地 e2e **单独证伪不了**，必须换角色补一刀
+
+网关连的是 `llm_gateway`，而它是 `rolsuper=t` **且** `rolbypassrls=t`
+⇒ **RLS 对它永不生效**。所以上面那个绿色 e2e **无法证伪 RLS 那一半**。
+补做对照实验：拿 `ht711_probe`（`super=f`、`bypass=f`、可登录、持有 UPDATE 授权）
+在 **e2e 真正产生的那一行**（`a7c9e1eb…`）上跑四种形态：
+
+| 形态 | GUC | `UPDATE` 命中 |
+|---|---|---|
+| 对照（先写 `FALSE`，证明这行可见可写） | bypass + tenant | **1** |
+| A 裸 UPDATE | 无 | **0** |
+| B 只补 tenant | `app.current_tenant` | **0** |
+| **C 生产形态** | bypass + tenant | **1** |
+| D 重复 C（幂等） | bypass + tenant | **0** |
+
+⇒ **0 / 0 / 1 / 0**，与 §9.93 记的结论一致，且这次是在**真实流量产生的行**上。
+另在 `session_turns` 母表的一个**真实已 promote 行**
+（`session_turns_2026_10` 分区）上用同一形态跑，**UPDATE 1** ⇒ 两面都成立。
+
+⚠⚠ **我第一版这组实验是错的，而且错法值得记**：
+我直接复用了生产谓词 `AND is_abandoned IS NOT TRUE`。
+而 e2e 已经把那行标成 TRUE ⇒ **这个谓词永远匹配不上** ⇒
+C 形态返回 0，看起来像「RLS 挂了」，**其实是我的 WHERE 自己把答案挡住了**。
+**判据的谓词里带了被检验的那个条件 ⇒ 判据恒不成立。**
+改成与列无关的谓词后才拿到上表。
+⇒ 这是本轮第二次被同一族问题咬到（上次是子串检查被包装函数绕过）：
+**量具的输入里不能含它要检验的那个状态。**
+
+### §9.124.6 顺带确认的几件事
+
+- `session_turns_hot` **不是**分区表，新行留在 hot ⇒ e2e 后母表 0 行是**正确行为**
+  （还没有行被 promote），不是漏标。母表那一面改用**真实已 promote 行**验（上表）。
+- 821 迁移**幂等**：真库重跑 rc=0，4 条 NOTICE 全是 `already exists, skipping`，
+  守卫 `is_abandoned ready on both session_turns faces` 照常打出，
+  已标的 2 行**一条没丢**。
+- 本机 8782 那个旧镜像**仍然没有 821 代码**（`strings` 计数 0）。
+  ⇒ 上面所有结论只在 8783 侧载实例上成立；**821 至今未部署到任何长期运行的环境**。
+
+### §9.124.7 这一节的教训
+
+> **「门全绿」与「跑过一次真实流量」是两个不同的性质，而后者几乎总能挖出前者看不见的东西。**
+> 本节 18 道门 + 15 条变异全绿的情况下，端到端第一次跑就撞上
+> ① t1 根本没落库（差点被我误读成「落点无效」）、
+> ② 一个 33 秒的 `final-success claim`（与 821 无关、且**它自己就是 821 要抓的现象的成因**）。
+>
+> **更要记的是判据自身也会错**：§9.124.5 第一版实验因为谓词里带了
+> `is_abandoned IS NOT TRUE`，在「行已被标成 TRUE」这个**恰恰是成功**的状态下返回 0，
+> 把「RLS 正常」误报成「RLS 失效」。
+> ⇒ **构造判据时，谓词必须与被检验的状态无关**；
+>   且任何一次「结果异常」都先怀疑**判据的构造**，再怀疑被检验对象——
+>   我这次是先怀疑了 821，方向错了。
