@@ -125,6 +125,14 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 		return
 	}
 	writeEvent("transcript.transport", map[string]string{"type": "transcript.transport", "transport": res.Transport})
+	// 同 P2-1：流式路径的响应头已随 WriteHeader(200) 发出，IgnoredParams
+	// 只能走事件（与 transport 同理）。未知事件名按 SSE 规范忽略。
+	if len(res.IgnoredParams) > 0 {
+		writeEvent("transcript.ignored_params", map[string]any{
+			"type":    "transcript.ignored_params",
+			"ignored": res.IgnoredParams,
+		})
+	}
 	if res.RelayIsSSE && len(res.RelayBody) > 0 {
 		_, _ = w.Write(res.RelayBody)
 		flusher.Flush()
@@ -142,6 +150,11 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 func writeTranscriptionResult(w http.ResponseWriter, requestID, clientModel string, res *TranscribeResult, responseFormat string) {
 	w.Header().Set("X-Gw-Audio-Transport", res.Transport)
 	w.Header().Set("X-Gw-Upstream-Model", res.UpstreamModel)
+	// 客户端传了但这条上游形态兑现不了的参数（chat-audio 下 prompt/
+	// temperature/language）如实回执。必须在 WriteHeader 之前设置。
+	if len(res.IgnoredParams) > 0 {
+		w.Header().Set("X-Gw-Audio-Ignored-Params", strings.Join(res.IgnoredParams, ","))
+	}
 	if res.DurationSeconds != nil {
 		w.Header().Set("X-Gw-Audio-Seconds", fmt.Sprintf("%g", *res.DurationSeconds))
 	}
