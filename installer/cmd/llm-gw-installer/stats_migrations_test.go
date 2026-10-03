@@ -308,21 +308,42 @@ var operatorGatedCleanup = map[string]string{
 // the revision-sequence channel only (files array, registered 2026-10-02).
 //
 // 豁免的真实理由（第三十轮订正——原注释两处失实）：
-//   1. 它们是存量缺陷的一次性修复 + 755 同型的操作员门性质，installer 的
-//      fresh-install 链没有"升级库存量"可修，注册进 StartupFiles 只会
-//      让全新装空跑一遍 DETACH/重建（810/812）或边界重写（811）。
-//   2. "显式 BEGIN/COMMIT 不能进 --single-transaction" 不是机制障碍——
-//      psql 对内层 BEGIN/COMMIT 仅产生 WARNING 且 rc=0（全链 129 个
-//      embedded 文件带显式事务、一直这么骑）。真正的问题是嵌套事务下
-//      DETACH/ATTACH 回退与 SET LOCAL 的语义不再成立。
-//      （另注：fresh 基线并非完全无遗产——sql/schema/01-schema.sql 仍烤有
-//      473 型 08:00 边界与列存 probe-run 分区，见第三十轮登记项；这些
-//      遗产全部在过去时间窗内、有 808 default 分区兜底、且 810-812 在
-//      序列通道首跑即自愈。）
+//  1. 它们是存量缺陷的一次性修复 + 755 同型的操作员门性质，installer 的
+//     fresh-install 链没有"升级库存量"可修，注册进 StartupFiles 只会
+//     让全新装空跑一遍 DETACH/重建（810/812）或边界重写（811）。
+//  2. "显式 BEGIN/COMMIT 不能进 --single-transaction" 不是机制障碍——
+//     psql 对内层 BEGIN/COMMIT 仅产生 WARNING 且 rc=0（全链 129 个
+//     embedded 文件带显式事务、一直这么骑）。真正的问题是嵌套事务下
+//     DETACH/ATTACH 回退与 SET LOCAL 的语义不再成立。
+//     （另注：fresh 基线并非完全无遗产——sql/schema/01-schema.sql 仍烤有
+//     473 型 08:00 边界与列存 probe-run 分区，见第三十轮登记项；这些
+//     遗产全部在过去时间窗内、有 808 default 分区兜底、且 810-812 在
+//     序列通道首跑即自愈。）
 var sequenceChannelRepairs = map[string]string{
 	"810_heap_partitions_toastless_heal.sql":            "one-shot legacy repair (DETACH/ATTACH rollback needs its own transaction); fresh installs have no toastless-heap legacy",
 	"811_partition_bounds_shanghai_midnight_repair.sql": "one-shot legacy repair (SET LOCAL TIME ZONE + bound rebuild); fresh installs self-heal via sequence channel",
 	"812_model_probe_runs_partitions_heap.sql":          "one-shot legacy repair (to_regclass guard + DETACH/ATTACH); fresh installs self-heal via sequence channel",
+}
+
+// goEnsureMirrored 覆盖「**同一段 SQL 有一个 Go ensure 镜像在跑**」这一类。
+//
+// 本文件开头写「pre-703 的形状或由 Go ensure 兜底，故豁免」——但那条豁免是
+// **靠 num < 704 这道数字判据顺带生效的，从未成为一条可声明的规则**。
+// 于是 ≥704 的迁移只要是 Go-ensure-backed，就**没有任何合法的登记方式**，
+// 只能落进「真漂移」分支报红。820 就是第一个撞上这条的。
+//
+// 为什么这**不是**漂移，也不该做五点同步：
+//   - 820 的效果由 `db.ensureAudioModalityBackfill`（db/db.go:631）应用，
+//     且调用点在**流量前**的 ensure 链里（db/db.go:624），注释自述
+//     「mirrors sql/migrations/startup/820_audio_modality_backfill.sql」。
+//   - 该 ensure 的 SQL 带 `WHERE modality = 'text'` 守卫，**幂等、二跑零行**。
+//   - 注册进 StartupFiles 只会让每次安装在 ensure 链之前**把同一个回填再跑一遍**，
+//     即为了消一个红而制造一次重复 DML。
+//
+// 登记项的判据（加新条目前请照此核）：能在 `db` 包的 ensure 链里找到
+// 逐字镜像该 .sql 的函数，且该函数在流量前被调用。缺任一条就不是本类。
+var goEnsureMirrored = map[string]string{
+	"820_audio_modality_backfill.sql": "mirrored by db.ensureAudioModalityBackfill (db/db.go:631, called at db/db.go:624 before traffic); idempotent (WHERE modality='text'); registering it in StartupFiles would run the same backfill twice",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
@@ -375,6 +396,10 @@ func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
 		}
 		if reason, exempt := sequenceChannelRepairs[name]; exempt {
 			t.Logf("canonical startup migration %q intentionally sequence-channel-only: %s", name, reason)
+			continue
+		}
+		if reason, exempt := goEnsureMirrored[name]; exempt {
+			t.Logf("canonical startup migration %q intentionally go-ensure-mirrored: %s", name, reason)
 			continue
 		}
 		if _, ok := registered[name]; !ok {
