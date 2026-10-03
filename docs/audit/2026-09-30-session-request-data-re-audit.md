@@ -13830,3 +13830,146 @@ ERROR:  public.sessions.last_full_payload_at not created
 > 而那正是修复动作本身。**如果我先登记 456 再测，
 > 结论会是「启动链 failed=1」而不是「这个迁移在任何库上都会失败」，
 > 根因会被误判成我的登记顺序错。** 先复现、再登记，顺序不能反。
+
+---
+
+## §9.115 推翻我自己在 §9.105 记下的一条结论：`session_tags` 不是「有意留的缺口」
+
+上一轮 §9.114.4 量化出「102 项：生产有 / 全新安装缺 / 被生产代码引用 / 无自愈覆盖」，
+但我没动它们——那需要你拍板。本轮先做两件**不依赖拍板**的收尾，
+其中一件**推翻了我自己此前写进代码注释和审计文档的一条结论**。
+
+### §9.115.1 先重判：我上一轮自己提出的怀疑，站不住
+
+上一轮我在结论里留了一句：
+
+> 一条旧结论需重判：我此前"全新安装无 `session_tags` 是有意留的缺口（因无生产调用方）"，
+> 但 252 实测**有**这张表……**前提可能已不成立**。
+
+这轮先查这条怀疑本身。`GetSessionMetadata`（§9.105 修的那条**读**路径）的全部引用：
+
+```
+domains/session/v2/session_metadata_test.go  ×4
+domains/session/v2/session_aggregator.go    （声明 + 注释）
+installer/.../fresh_installer_integration_test.go（我的门，只 PREPARE）
+```
+
+⇒ **确实只有测试调用方**，§9.105 的结论成立。
+
+⚠️ 而我上一轮确实犯了一个错，只是当时没意识到：
+我看到 `grep session_tags` 命中一堆生产文件（`state_projector.go`、`tagger.go`、
+`cache_update_hook.go`、`approval_integration.go`），就把怀疑提出来了。
+**那些是写入方，不是这个读函数的调用方。**「表有生产写入方」不能推出
+「`GetSessionMetadata` 有生产调用方」。
+
+⇒ 记录一条方法论：**验证「某个函数没有生产调用方」时，必须把该函数的引用和
+该表的引用分开数。** 两者都叫 `session_tags`，指向的却是两件事。
+
+### §9.115.2 但顺着写入方查下去，撞出一个**真的**问题
+
+虽然读路径的结论站得住，写路径却有一条**活的生产链**，而它在全新安装上是断的：
+
+```
+cmd/gateway/approval_integration.go:137
+    proj := analysis.NewSessionStateProjector(analysis.NewPoolDB(deps.Pool), nil)
+    cacheUpdateHook.SetStateProjector(proj)          ← 注入，非 nil
+domains/hooks/sessionaudit/cache_update_hook.go:126
+    if h.stateProjector != nil { … h.stateProjector.Project(ctx, proj) }
+domains/analysis/state_projector.go:59
+    INSERT INTO session_tags (gw_session_id, tenant_id, tag_key, tag_value, …)
+```
+
+⇒ 全新安装上 `session_tags` 不存在 ⇒ 这条 INSERT 是 **42P01** ⇒
+`Project()` 返回 error ⇒ **hook 把它当 best-effort 吞掉**（「不阻断热路径」）。
+
+**所以缺陷形态不是 500，是静默能力丢失**：v6 审计状态投影不进统一打标层，
+日志里只有一条 `WARN state_projector: failed N/M tags`，没有任何告警。
+
+**实测**（不是读代码推断）：把 `session_tags` 从一次性测试库拿掉后直接调
+`Project()`：
+
+```
+state_projector: failed 2/2 tags for xtags-xtags-1791052472063782000
+```
+
+⇒ `Project()` 在 `failed > 0` 时**返回** error。这正是本轮的门能观测到它的原因：
+**hook 吞掉错误，所以门必须打 `Project()` 而不是打 hook。**
+
+### §9.115.3 一个未登记的文件 = 六张表
+
+351 建的不是一张表，是**六张**（数出来的，不是我以为的）：
+
+| 表 | 生产读写方 |
+|---|---|
+| `session_tags` | `analysis/state_projector.go`、`analysis/tagger.go`（写） |
+| `session_request_summaries` | `analysis/request_summary.go`、`admin/session_panorama_handler.go` |
+| `session_embeddings` | `analysis/clusterer.go` |
+| `session_clusters` | 同上 + `admin/session_clusters_handler.go` |
+| `session_cluster_members` | 同上 |
+| `session_optimization_suggestions` | `analysis/optimizer.go`、`admin/session_panorama_handler.go` |
+
+⇒ §9.114.4 那 102 项里，**6 项来自这一个未登记文件**。
+这给「逐个登记还是只修会话族」这个待拍板项提供了一个重要量级信息：
+**缺失不是 102 个独立问题，而是若干个文件各带一批。**
+
+⚠️ **我第一版把 6 写成 5，并且把这个数字写进了代码注释和测试**——
+测试里的表清单少一张就会**静默少检查一处**（这是我自己的门会犯的错，见 §9.115.5）。
+改成从文件里数出来的 6 张后，注释与门同步更正。
+
+### §9.115.4 351 本身不是地雷，但它**不可重跑**——而我刚把它变成活的
+
+与 456（§9.114.3，恒失败）不同，351 没有 `information_schema` 后置断言、
+不引用任何自己没建的对象，实测在真全新安装上**干净应用**。
+
+但我为了恢复测试库而**重跑**它时，撞到：
+
+```
+ERROR: policy "session_request_summaries_tenant_isolation" for table … already exists
+```
+
+⇒ PostgreSQL **没有 `CREATE POLICY IF NOT EXISTS`**，而 351 的 **12 条 policy 全部无守卫**。
+又因为整个文件在**一个事务里**，第二条起的语句全部作废。
+
+性质要说准：**全新安装上无害**（表本就不存在），installer 每次只应用一次也不受影响。
+但它**不能**叠加到已有这些表的库上——而我这一轮刚把它登记进启动链，
+等于把「不可重跑」这个性质从**潜伏**变成**活的**（比如给一个已损坏的全新安装
+做补救时，直接应用会失败）。
+
+修法与 551 同族风格一致：每条 `CREATE POLICY` 前置 `DROP POLICY IF EXISTS`。
+首次运行行为**完全不变**（policy 本就不存在），后续运行为 no-op。
+**验证方式是把文件连跑两次**——两次都无错误，6 张表与 policy 都在。
+
+### §9.115.5 门的设计：把两个失败拆开，别让前提检查短路掉真问题
+
+这道门第一版把「6 张表都在」和「Project() 能写」写在**同一个测试函数**里，
+用 `t.Fatalf`。变异时它红在第 81 行（表不存在）——**`Project()` 那条断言
+一次都没跑到**。
+
+⇒ 这就是「报了一个红 ≠ 只有一个问题」的另一个形态：
+`Fatalf` 短路掉了后面那条**更要紧**的断言（表不存在只是症状，
+`Project()` 会不会报错才是要害）。
+
+拆成两个独立测试后，变异时**两条一起红**：
+
+```
+--- FAIL: TestMigration351TablesExistOnRealDB       public.session_tags 不存在
+--- FAIL: TestSessionStateProjectorWritesOnRealDB   Project() 失败 … failed 2/2 tags
+```
+
+⇒ 门自己的「表存在」断言不再能掩盖「写入链」断言。
+
+### §9.115.6 这一节的教训
+
+> **推翻自己写进代码注释的结论，和发现新缺陷同样重要。**
+> §9.105 那句「不登记 351 是有意的，因为没有调用方」我写得很有把握，
+> 还放进了 `session_aggregator.go` 的注释里长期指导后人。
+> 它**对读路径成立，对写路径完全没提**——而写路径是活的。
+>
+> **注释里那些「有道理」的判断，会因为没有人复核而变成事实。**
+> 本轮推翻它靠的不是重读代码，是**去数引用**——
+> 而且第一次还数错了（把表的引用当成了函数的引用）。
+>
+> **「静默失败」比 500 更需要门。** §9.114 的两个 500 会自己喊出来；
+> 这里的 42P01 被 hook 的 best-effort 设计**按设计吞掉**，
+> 所以唯一能观测它的位置是 `Project()` 的返回值——
+> **门必须打在错误被吞掉之前的那个边界上。**
