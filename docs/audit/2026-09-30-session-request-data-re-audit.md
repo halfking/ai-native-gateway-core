@@ -13413,3 +13413,74 @@ SELECT count(*) FROM session_turns_with_current_month WHERE credential_id = 42;
 
 ⇒ 这条把「决定 A/B」的工作量又加了一条：**不只是视图加宽 + 类型兼容，
 还包含索引补齐**。三项都不便宜，但**现在都有确切数字了**。
+
+---
+
+## §9.111 把读取侧的**过滤面**整体过一遍：14 条谓词，**4 条整数过滤在会话侧 4/4 全断**
+
+§9.109 只查了 `credential_id` 一列就抓到硬阻断。**同类问题必须一次问完**：
+`admin/logs.go` 的过滤是按「参数类型 × 列类型」配对的，凡是**整数参数 × 文本列**
+都会在运行时 42883（本会话已坐实 SimpleProtocol 会把整数内联成字面量）。
+
+### §9.111.1 14 条谓词里，4 条传整数
+
+```
+rl.api_key_id = $%d       ← queryIntPtr
+rl.canonical_id = $%d     ← queryIntPtr
+rl.credential_id = $%d    ← queryIntPtr
+rl.provider_id = $%d      ← queryIntPtr
+```
+
+其余 10 条（`error_kind` / `gw_session_id` / `gw_task_id` / `identity_hash` /
+`request_class` / `request_id` / `search_text ILIKE` / `tenant_id` / `usage_source` /
+`api_key_owner_user`）传字符串，**与列类型天然匹配，不构成同类风险**。
+
+### §9.111.2 实测（运行时形态：整数字面量 `= 1`）
+
+| 列 | 会话**视图** | 会话**父表** | v1 `request_logs_hot` |
+|---|---|---|---|
+| `api_key_id` | ✗ `column does not exist` | ✗ `text = integer` | ✓ OK |
+| `canonical_id` | ✗ `column does not exist` | **✓ OK** | ✓ OK |
+| `credential_id` | ✗ `text = integer` | ✗ `text = integer` | ✓ OK |
+| `provider_id` | ✗ `column does not exist` | ✗ `column does not exist` | ✓ OK |
+
+（列类型：视图 `api_key_id`/`canonical_id`/`provider_id` **根本没投影**；
+父表 `api_key_id`/`credential_id` 是 **text**、`canonical_id` 是 **bigint**、
+`provider_id` **不存在**；v1 四者全是 **bigint**。）
+
+⇒ **在当前视图上 4/4 全断；即使下沉到父表，也只有 `canonical_id` 一条能用。**
+⇒ 而 v1 侧四条全部正常。
+
+### §9.111.3 三条不同的失败形态，修法也不同
+
+| 形态 | 涉及列 | 修法 |
+|---|---|---|
+| **42703 列不存在**（视图未投影） | `api_key_id`、`canonical_id`、`provider_id`（前两者父表有，`provider_id` 父表也没有） | 加宽视图可解 2 条；`provider_id` 需另找来源（父表只有 `provider`） |
+| **42883 类型不兼容** | `credential_id`、`api_key_id`（父表层） | 需类型对齐，见 §9.109 |
+| **列本身缺失** | `provider_id` | 会话侧无等价列 ⇒ 归入 §9.108 的「25 列无来源」，属决定 C |
+
+⇒ **`credential_id` 是唯一「两条路都断」的列**：视图有但类型不对，父表有但类型也不对。
+
+### §9.111.4 与 §9.108 的数字合起来看
+
+§9.108 说「65% 只差视图投影」，那**只对 SELECT 成立**。
+把**过滤面**算进来后：
+
+- SELECT 面：71 列 → 16 已有 / 30 加宽可覆盖 / 25 无来源
+- 过滤面：14 条 → **10 条天然安全**（字符串）/ **4 条全断**
+
+⇒ **迁移的过滤面比投影面更窄也更脆**：投影面缺列是「少几个字段」，
+过滤面断掉是「**请求直接报错**」。
+⇒ 这把决定 A 的必要性从「补全数据」升级为「**不补就不能切**」。
+
+### §9.111.5 这一节的教训
+
+> **同类问题必须一次问完。** §9.109 我逐列做，第 1 列就撞上；
+> §9.111 我改成先按「参数类型 × 列类型」分组，一次把 4 条整数过滤全查完——
+> 成本几乎相同，覆盖面从 1 列变成整个过滤面。
+> ⇒ 与 §9.101「能枚举的，就不要靠撞」同源，但这里更具体：
+> **先按「失败模式」分组，再逐组查**，而不是按对象逐个查。
+>
+> **「投影面 65% 可覆盖」这种乐观数字有个陷阱**：它只统计了 SELECT，
+> 漏了过滤。**能力面和错误面不是同一面**——
+> 少投影几列只是「少几个字段」，过滤断掉是「请求直接报错」。
