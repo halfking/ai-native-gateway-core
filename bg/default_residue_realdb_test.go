@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -46,10 +47,33 @@ func TestDefaultResidueTargets_RealDB(t *testing.T) {
 	if _, err := pool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
+	// Cleanup runs AFTER the deferred pool.Close() — t.Cleanup callbacks are
+	// invoked after the test function returns, i.e. after its defers. Using the
+	// pool here silently no-ops ("connection closed") and leaves the fixture
+	// schema behind on the real database. Open a dedicated connection instead,
+	// and fail loudly if the drop does not take effect.
 	t.Cleanup(func() {
-		bg, off := context.WithTimeout(context.Background(), 30*time.Second)
-		defer off()
-		_, _ = pool.Exec(bg, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		conn, cerr := pgx.Connect(cctx, dsn)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to drop schema %s: %v", schema, cerr)
+			return
+		}
+		defer conn.Close(cctx)
+		if _, derr := conn.Exec(cctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); derr != nil {
+			t.Errorf("cleanup: drop schema %s: %v", schema, derr)
+			return
+		}
+		var left int
+		if qerr := conn.QueryRow(cctx,
+			"SELECT count(*) FROM pg_namespace WHERE nspname = $1", schema).Scan(&left); qerr != nil {
+			t.Errorf("cleanup: verify drop: %v", qerr)
+			return
+		}
+		if left != 0 {
+			t.Errorf("cleanup: schema %s still exists after DROP", schema)
+		}
 	})
 
 	// (1) suspect: parent with a dedicated monthly sibling + a default.
