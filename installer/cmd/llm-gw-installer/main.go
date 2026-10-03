@@ -708,9 +708,6 @@ var adaptiveProbeTargetsHotSubquery814 []byte
 //go:embed embeddata/startup/815_request_logs_view_stage_band_cff.sql
 var requestLogsViewStageBandCff815 []byte
 
-//go:embed embeddata/startup/818_ursm_snapshot_typed_columns.sql
-var ursmSnapshotTypedColumnsMigration818 []byte
-
 //go:embed embeddata/startup/816_request_logs_view_client_ip_projection.sql
 var requestLogsViewClientIPProjection816 []byte
 
@@ -721,6 +718,13 @@ var requestLogsViewClientIPProjection816 []byte
 //
 //go:embed embeddata/startup/817_request_logs_view_client_ip_semantic_guard.sql
 var requestLogsViewClientIPSemanticGuard817 []byte
+
+// 818 (2026-10-02, 存储优化 v2): ursm_node_snapshot_min 的 payload 字段拆分。
+// 与 813–817 互不依赖（不碰 canonical 视图链、不碰 supplier_errors/adaptive
+// probe 族），故排在 8xx 块末尾。
+//
+//go:embed embeddata/startup/818_ursm_snapshot_typed_columns.sql
+var ursmSnapshotTypedColumnsMigration818 []byte
 
 //go:embed embeddata/startup/819_request_abandoned.sql
 var requestAbandonedMigration819 []byte

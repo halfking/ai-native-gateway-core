@@ -49,6 +49,12 @@ echo "[verify] privacy compliance tests"
 echo "[verify] Go vet"
 go vet ./...
 
+echo "[verify] build-tag compile matrix (every tag configuration)"
+# 上面那条 go vet 不带 tag ⇒ 只在某个 tag 下才参与编译的文件**无人编译**。
+# 2026-10-02 实测：admin 包在 -tags=integration 下编译不过（undefined:
+# v1DirectTables），而默认配置与主干 CI 全绿。详见脚本文件头。
+./scripts/check-build-tags.sh
+
 echo "[verify] gateway build"
 go build ./cmd/gateway
 
