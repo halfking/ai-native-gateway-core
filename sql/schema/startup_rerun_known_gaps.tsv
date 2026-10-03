@@ -54,10 +54,17 @@
 #   「不可重跑的条数」是**链在给定起始形状上的性质**，不是链本身的常数。
 #   门现在按 InitSchema 的真实顺序跑第二遍就是为了不再犯这个错。
 #
-# ⚠ 每条只报**第一个**错误（门用 --single-transaction + ON_ERROR_STOP=1）。
-#   614 一个文件里就有 4 条无守卫的 ADD CONSTRAINT 和 4 条无守卫的
-#   CREATE INDEX，但只暴露了第一个。所以 11 是「文件数」，不是「缺陷数」，
-#   真实缺陷数更多。
+# ⚠ 每条只报**第一个**错误（门用 --single-transaction + ON_ERROR_STOP=1），
+#   所以下面的 ratchet 以**文件**为粒度。真实缺陷数已单独量出（§9.125.1）：
+#
+#     11 个文件 / 18 条真实独立错误
+#     （原始 ERROR 行 40 条，其中 22 条是级联噪声 —— 568 / bootstrap / 738
+#       三个文件内有显式 BEGIN;，首错后同事务后续命令全报 25P02
+#       "current transaction is aborted"。去掉噪声后 614 一个文件占 8 条。）
+#
+#   含义有两层：① 修一条不等于修一个文件（614 就是一条修 8 处）；
+#   ② 门的 ratchet 粒度是文件，所以它**看不到**「某文件内部的错误条数变化」。
+#   这不是缺陷，是 ratchet 选粒度时的取舍，已在此写明。
 #
 # ---- 按机制分组（不是按修法相似度归堆） --------------------------------
 #
@@ -112,11 +119,11 @@
 #   在任何一个方案落地前，发布 runbook 必须写明：
 #   **发布流程不得包含「对已有库重跑 installer」**。
 # ---------------------------------------------------------------------------
-520_durable_task_settlement_intents.sql	[M3] 无守卫 CREATE POLICY durable_task_settlement_access（与 §9.115 修好的 351 同一机制，PG 无 CREATE POLICY IF NOT EXISTS）
+520_durable_task_settlement_intents.sql	[M3] 死守卫：两条 DROP POLICY IF EXISTS 指向 durable_task_settlement_tenant_isolation / _super_admin_bypass，而全链无任何迁移创建这两个名字；真正创建的 durable_task_settlement_access 一条守卫都没有（§9.125.2 实测：1 条真实错误）
 568_credential_priority_flag.sql	[M1] CREATE OR REPLACE VIEW public.model_offers 把列 raw_model_name 改名为 canonical_raw_name；PG 不允许 CREATE OR REPLACE VIEW 改列名
 577_request_logs_view_customer_id.sql	[M2] 无守卫 CREATE VIEW public.request_logs_with_current_month，重跑时关系已存在
 610_request_class_due_at.sql	[M5] 迁移自带的 RAISE EXCEPTION 幂等守卫在重跑时自己触发（谓词只描述当前形状、不描述是否已执行过）
-614_session_bodies_hot.sql	[M4] CREATE TABLE IF NOT EXISTS 之后紧跟的 ALTER TABLE ADD CONSTRAINT 全无守卫；首个报错 multiple primary keys（该文件另有 3 条 ADD CONSTRAINT + 4 条 CREATE INDEX 同样无守卫，被首个错误挡住）
+614_session_bodies_hot.sql	[M4] CREATE TABLE IF NOT EXISTS 之后紧跟的 ALTER TABLE ADD CONSTRAINT 与 CREATE INDEX 全无守卫；该文件无显式 BEGIN，所以 8 条错误全是独立的、不被级联掩盖：1 multiple primary keys + 5 relation already exists（3 约束 + 4 索引中重复者）+ 1 cannot drop columns from view（§9.125.1 实测）
 625_session_bodies_unified_explicit.sql	[M1] CREATE OR REPLACE VIEW 带显式列清单，比链上后续 637 扩宽后的列集窄；PG 禁止 CREATE OR REPLACE VIEW 丢列
 637_session_bodies_unified_today_visible.sql	[M1] 同一视图第二次重写（更宽）；重跑时报错的是 625 那次更窄的定义，本文件自身是否可重跑取决于链上顺序
 640_session_turns_protocol_fields.sql	[M1] CREATE OR REPLACE VIEW public.session_turns_with_current_month 丢列（与 625/637 同一 PG 规则）
