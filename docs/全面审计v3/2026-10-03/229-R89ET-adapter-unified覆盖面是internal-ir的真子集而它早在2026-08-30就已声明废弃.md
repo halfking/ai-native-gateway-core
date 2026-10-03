@@ -162,7 +162,9 @@
 - `domains/transformation/lockfree_circuit_breaker.go`：`LockFreeCircuitBreaker` /
   `NewLockFreeCircuitBreaker` / `GetErrorCount` 的全仓命中**全部在本文件内**，
   **无外部、无测试**（本人不截断 grep 复核）。
-- ⚠️ `docs/archive/2026-07/CONCURRENCY_OPTIMIZER.md:460` 仍示范
+- ⚠️ `docs/archive/2026-07/CONCURRENCY_OPTIMIZATION.md:460` 仍示范
+  （⚠️ **文件名订正，234 号**：本行原写作 `CONCURRENCY_OPTIMIZER.md`，**少 "ATI"**；
+  真实文件名是 `CONCURRENCY_OPTIMIZATION.md` —— 与本报告 `:230` 处一致）
   `transformation.NewLockFreeCircuitBreaker(3, time.Minute, time.Minute)`
   ⇒ **文档仍在教人调用一个死代码**（同 225 号族）。
 - 同类：`anthropic/anthropic_to_chat_request.go`（`ConvertAnthropicRequestToChat`）
