@@ -51,6 +51,15 @@ type Message struct {
 //     都指向摘要消息在压缩输出中的位置。
 //   - 被机械裁剪丢弃的消息：IsCompressed=true，CompressedIndex / CompressedInto=-1
 //     （没有单一替代消息）。
+//
+// COORDINATE SPACE (2026-10-03, audit 196号): OriginalIndex indexes the
+// **assembled outbound** message array — the body produced by
+// BuildOutboundMessages (diff.go:142-144, `lastMsgs ++ deltaTail`), i.e. it
+// includes cached history the client did not re-send. It is NOT comparable with
+// SanitizedMessageRef.SanitizedIndex, which indexes the client's request array,
+// and the two Hash fields come from different fingerprint functions (msgHash
+// 32-hex over canonical JSON vs MessageFingerprint 64-hex over compacted JSON).
+// See SanitizedMessageRef's doc comment and provenance_seam_pin_test.go.
 type AlignmentInfo struct {
 	// OriginalIndex 原始（压缩前）消息数组中的下标。
 	OriginalIndex int `json:"original_index"`

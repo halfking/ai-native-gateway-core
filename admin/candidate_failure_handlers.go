@@ -321,7 +321,9 @@ func (h *candidateFailureHandlers) listRecentAlerts(w http.ResponseWriter, r *ht
 	h.alertsMu.RLock()
 	getter := h.alertsGetter
 	h.alertsMu.RUnlock()
-	var out []bg.CandidateFailureAlert
+	// make 非 nil：空窗返回 [] 而非 null（同文件其余三处同款，R33 审计补齐
+	// 这最后一处）。
+	out := make([]bg.CandidateFailureAlert, 0)
 	if getter != nil {
 		out = getter()
 	}

@@ -810,6 +810,19 @@ files=(
   # 整条视图每读方（恰是 816 声称要防的事故形态）。写侧 ParseIP 门只保新行。
   # 幂等；三基线+installer 同步（817 又漏登本通道=第五次同类遗漏，本轮补齐）。
   "$ROOT_DIR/sql/migrations/startup/817_request_logs_view_client_ip_semantic_guard.sql"
+
+  # 2026-10-02（818）：ursm_node_snapshot_min payload 字段拆分——31 个 hash 键
+  # 提升为 typed 列（编号 817→818 避让并行会话迁移撞车，见 7fc0fb879）。幂等
+  # 守卫形态；installer 五点已同步（597f65032）但通道腿漏登=第六次同类遗漏
+  # （R35 审计 B-F1 实证：本通道数组止于 817，已升级库永远收不到 818/819）。
+  "$ROOT_DIR/sql/migrations/startup/818_ursm_snapshot_typed_columns.sql"
+
+  # 2026-10-03（819）：request_abandoned 独立落点——「开始了却没终态」的
+  # 逐请求记账（审计 §9.66/§9.67；252 实测遗弃率 0.047%/天，丢的是已发生的
+  # 上游消耗）。不变式：表里有行 ⇔ 开始且无终态。写路径不受 S4 停写门控，
+  # 必须先于 S4 开关生效。幂等（CREATE TABLE IF NOT EXISTS + 列集守卫）；
+  # installer 五点已同步（54a63d0e5）但通道腿漏登，与 818 同轮补齐。
+  "$ROOT_DIR/sql/migrations/startup/819_request_abandoned.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

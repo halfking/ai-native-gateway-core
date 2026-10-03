@@ -162,7 +162,16 @@ groups:
           (
             sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="mark"}[30m]))
             -
-            sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="clear"}[30m]))
+            (
+              sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="clear"}[30m]))
+              or
+              # 空向量减法陷阱（本文件头部为 ① 论证的同一原理，R35 审计 P2
+              # 根修）：clear 序列「从未存在」（DELETE 半边整体死亡/接线被拆）
+              # 时，减法右侧为空向量 ⇒ 整个比较结果为空 ⇒ 本条静默——而这
+              # 恰是本条唯一要抓的极端形态。mark 存在时 0*mark 提供带
+              # (job,instance) 标签的零值替补。
+              (0 * sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="mark"}[30m])))
+            )
           )
           >
           0.5 * sum by (job, instance) (rate(llm_gateway_request_abandoned_marker_ops_total{op="mark"}[30m]))

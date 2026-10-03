@@ -34,6 +34,7 @@ export default {
     freeBadgeTooltipNo: 'Dieser Anbieter hat keine kostenlosen Modelle',
     sortLabel: 'Sortierung',
     sortDefault: 'Standard',
+    sortName: 'Name',
     sortUsage: '24h Anfragen',
     sortQuality: 'Qualität',
     sortAvailability: 'Verfügbarkeit',

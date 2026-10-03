@@ -6,6 +6,7 @@
 // 与对账快照同源）；无用量账号显示 —，列表加载不被用量失败阻塞。
 import { useI18n } from 'vue-i18n'
 import { fmtDateTime24h } from '../i18n/useFormat'
+import { sortByName } from '../utils/sortByName'
 import { ref, computed, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin, getUserUsageSummary } from '../api'
 import type { Tenant, UserUsageSummaryItem } from '../api'
@@ -191,7 +192,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    users.value = await getUsers()
+    // 2026-10-03：按名称排序（老板要求的查找性排序）。
+    // ★ 显式指定 ['username']：首列显示的是 username，display_name 是副标题。
+    //   用默认候选顺序会先命中 display_name，于是按隐藏的中文名排 ——
+    //   mavis_local 会落到「本」(b)，想找 mavis_local 反而找不到。
+    //   与租户页那个「按 code 排、首列显示 name」是同一类毛病。
+    users.value = sortByName(await getUsers(), undefined, ['username'])
     // 用量统计独立拉取：失败不阻塞列表（列显示 —）。
     try {
       const summary = await getUserUsageSummary(usageDays)

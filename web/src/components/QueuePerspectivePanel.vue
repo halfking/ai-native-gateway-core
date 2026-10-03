@@ -872,6 +872,10 @@ const hasReportedRawModels = computed(() => nodes.value.some(node => Array.isArr
 // 时出现，避免把「压根没有节点」也归到范围问题上去。
 const outOfScopeFilterModels = computed<string[]>(() => {
   if (props.modelFilter.size === 0) return []
+  // 范围未就绪或加载失败时 scope 是「未知」而非「不在范围内」——此时提示
+  // 会把加载窗口读成范围排除（modelFilter 持久化于 localStorage，挂载即
+  // 非空，scope 解析需秒级），失败态还与「模型范围暂不可用」文案同屏矛盾。
+  if (modelScopeLoading.value || modelScopeError.value) return []
   const withNodes = new Set<string>()
   for (const node of nodes.value) {
     if (!Array.isArray(node.raw_models)) continue
@@ -1029,6 +1033,11 @@ async function refreshWindowStats() {
       targets.push({ credentialId: node.credential_id, model })
     }
   }
+  // 没有目标就别发请求：服务端对空 items 直接回 400「items required」，
+  // 于是「页面上暂时没有可看的凭据」这种正常状态，会在 /dashboard 和 / 上
+  // 各留下一条 400 + console 错误，然后白跑一次 legacy 回退轮询。
+  // （R38 审计注记：守卫必须在这里——next/nextEntries 快照还没建、
+  //   也没 abort 旧请求；函数下方曾有一份重复的空 targets 块，不可达，已删。）
   if (!targets.length) return
   statsAbort?.abort()
   const controller = new AbortController()

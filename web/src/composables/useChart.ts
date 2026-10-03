@@ -5,7 +5,7 @@ import {
   DefaultDataPoint,
   registerables
 } from 'chart.js'
-import { onMounted, onUnmounted, ref, Ref } from 'vue'
+import { onMounted, onUnmounted, ref, shallowRef, Ref } from 'vue'
 
 // 注册 Chart.js 所有组件
 Chart.register(...registerables)
@@ -111,7 +111,18 @@ export function useChart<
   canvasRef: Ref<HTMLCanvasElement | null>,
   config: Ref<ChartConfiguration<TType, TData, TLabel>>
 ) {
-  const chartInstance = ref<Chart<TType, TData, TLabel> | null>(null)
+  // shallowRef 不是偷懒，是**正确性要求**（2026-10-03 修复）。
+  //
+  // 用 ref 时 Vue 会把整个 Chart 实例包成深层响应式代理。而 Chart.js 在初始化时
+  // 会把 chart 引用**回写进 options**（插件上下文 option.chart），于是配置对象图里
+  // 出现了指向自身的环。chart.update() 解析 option scope（resolveObjectKey →
+  // getScope → addScopes）时走进这个响应式代理，代理 get 又把读取记成依赖，
+  // 递归到 `RangeError: Maximum call stack size exceeded`；旧实例在 update 中途
+  // 被拆掉，紧跟着抛 `Cannot set properties of undefined (setting 'fullSize')`
+  // —— 后者是前者的后果，不是独立缺陷。
+  //
+  // shallowRef 只追踪引用替换，Chart.js 内部状态不进响应式系统，环也就断了。
+  const chartInstance = shallowRef<Chart<TType, TData, TLabel> | null>(null)
   const loading = ref(true)
   const error = ref<string | null>(null)
   let disposed = false

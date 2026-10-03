@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# SOURCE_OF_TRUTH: ~/workspace/ai-native-tools/llm-gateway/ai-native-maintain/scripts/user/client-deploy.sh
-# SYNC_POLICY: 修改本脚本时同步改 maintain 对应位置。service identity 由本仓库维护。
-# ADAPTATIONS: 加 loong64 严格门；INSTALL_ROOT 默认智能探测；新增 --install-mode flag（host|docker|auto），host 模式委托 install-host.sh。
-
 # client-deploy.sh — 客户端一键自动化部署编排器（Linux / macOS）。
 #
 # 串联完整部署生命周期（Windows 见同目录 client-deploy.ps1）：
@@ -59,24 +55,7 @@ set -euo pipefail
 MAINTAIN_BASE="${MAINTAIN_BASE:-https://llmgateway.internal.example.com/maintain-api}"
 CHANNEL="${CHANNEL:-stable}"
 VERSION="${VERSION:-}"
-# BUNDLE_DIR 仅在离线模式（OFFLINE_BUNDLE 提供）时由 init_offline_bundle 赋值；在线/docker 流程必须先 declare 才能被 set -u 容忍引用。
-BUNDLE_DIR="${BUNDLE_DIR:-}"
-# INSTALL_ROOT 默认值用 uname 直接探测（detect_platform 函数在下面定义，OS_KERNEL 是 local 变量）。
-# host mode：直接调 install-host.sh。docker mode：下面 compose 路径。
-INSTALL_MODE="${INSTALL_MODE:-auto}"
-# auto 探测规则：INSTALL_ROOT/docker-compose.yml 存在 → docker，否则 host。
-_uname_s="$(uname -s)"
-case "$_uname_s" in
-  Darwin*) default_root="$HOME/kaixuan/llm-gateway-go" ;;
-  Linux*)  default_root=/opt/kaixuan/llm-gateway-go ;;
-  *) default_root="$HOME/kaixuan/llm-gateway-go" ;;
-esac
-if [[ -z "${INSTALL_ROOT:-}" && -d /opt/llm-gateway ]]; then
-  default_root=/opt/llm-gateway
-elif [[ -z "${INSTALL_ROOT:-}" && -d "$HOME/Downloads/llm-gateway-files" ]]; then
-  default_root="$HOME/Downloads/llm-gateway-files"
-fi
-INSTALL_ROOT="${INSTALL_ROOT:-$default_root}"
+INSTALL_ROOT="${INSTALL_ROOT:-/opt/llm-gateway}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 POSTGRES_USER="${POSTGRES_USER:-llm_user}"
 POSTGRES_DB="${POSTGRES_DB:-llm_gateway}"
@@ -99,20 +78,8 @@ GATEWAY_CORS_ORIGINS="${GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${GATEWAY_PORT},h
 # 离线包模式：指向离线包目录或 .tar.gz，检测到即不连 maintain API、从 bundle 本地 load 镜像。
 OFFLINE_BUNDLE="${OFFLINE_BUNDLE:-}"
 CMD="${1:-deploy}"
-# 解析 --install-mode host|docker|auto（仅影响 deploy 子命令）。auto = 看 INSTALL_ROOT/docker-compose.yml 是否存在。
-shift || true
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --install-mode) INSTALL_MODE="$2"; shift 2 ;;
-    --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) show_help; exit 0 ;;
-    *) echo "[client-deploy] unknown flag: $1" >&2; exit 2 ;;
-  esac
-done
-case "$INSTALL_MODE" in
-  auto|host|docker) ;;
-  *) echo "[client-deploy] invalid INSTALL_MODE=$INSTALL_MODE (auto|host|docker)" >&2; exit 2 ;;
-esac
+# 离线包解压后的根目录（OFFLINE_BUNDLE_INIT 在入口处填充）。
+BUNDLE_DIR=""
 
 # 版本字符白名单（与 install-docker.sh / commandBuilder.ts 对齐）。
 if [ -n "${VERSION:-}" ]; then
@@ -135,6 +102,248 @@ PG_CONTAINER="llm-gateway-pg"
 GATEWAY_CONTAINER="llm-gateway"
 
 # ─── 平台探测（阶段 0）──────────────────────────────────────────────────────
+# ─── JSON 读取（不依赖 python3 / jq） ───
+# 客户机不保证有 python3。此前版本用 `python3 -c` 解析每个 API 响应，缺 python3
+# 时它静默输出空串，脚本把"解析失败"当成"没有发布版本"，用户只看到
+# `no published release` —— 与真实原因毫无关系。这里用 awk 实现唯一一份 JSON
+# 文法；install-host.sh 与 install-docker.sh 内嵌的这段必须逐字一致，由
+# scripts/tests/static-check.sh 守护。
+#
+# 兼容性：只使用 POSIX awk（无 gawk 专有的三参数 match / gensub），并在 awk
+# 调用前设置 LC_ALL=C，保证 \u00XX 还原为字节。
+json_flatten() {
+  LC_ALL=C awk '
+    function skipws(   c) {
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") return
+        i++
+      }
+    }
+    function hexval(c) {
+      if (c >= "0" && c <= "9") return c + 0
+      if (c >= "a" && c <= "f") return index("abcdef", c) + 9
+      if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
+      return -1
+    }
+    # 调用时 s[i] 是起始引号。只还原 \uXXXX —— Go 的 encoding/json 会把 & < >
+    # 转义，直链（storage_uri）里很常见。
+    # 其余转义一律保持原样（反斜杠 + 字母）：扁平化协议是"每条记录一行"，
+    # 还原成真实换行/制表符会把一条记录劈成两半，json_get 于是只取到半截值且
+    # 不报错。JSON 字符串本就不允许裸控制字符，所以这样输出永远不会断行。
+    function read_string(   c, esc, j, v, d) {
+      i++
+      out = ""
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") {
+          esc = substr(s, i + 1, 1)
+          if (esc == "u") {
+            v = 0
+            for (j = 1; j <= 4; j++) {
+              d = hexval(substr(s, i + 1 + j, 1))
+              if (d < 0) { v = -1; break }
+              v = v * 16 + d
+            }
+            if (v >= 32 && v < 127) out = out sprintf("%c", v)
+            else out = out substr(s, i, 6)
+            i += 6
+            continue
+          }
+          out = out "\\" esc
+          i += 2
+          continue
+        }
+        if (c == "\"") { i++; return out }
+        out = out c
+        i++
+      }
+      return out
+    }
+    function parse_value(path,   c, j) {
+      skipws()
+      if (i > n) return
+      c = substr(s, i, 1)
+      if (c == "{") { parse_obj(path); return }
+      if (c == "[") { parse_arr(path); return }
+      if (c == "\"") { print path "\t" read_string(); return }
+      j = i
+      while (j <= n && index(",} \t\r\n]", substr(s, j, 1)) == 0) j++
+      if (j > i) print path "\t" substr(s, i, j - i)
+      i = j
+    }
+    function parse_obj(path,   c) {
+      i++
+      skipws()
+      if (substr(s, i, 1) == "}") { i++; return }
+      while (i <= n) {
+        skipws()
+        if (substr(s, i, 1) != "\"") { i++; continue }
+        key = read_string()
+        skipws()
+        if (substr(s, i, 1) == ":") i++
+        parse_value((path == "$") ? "$." key : path "." key)
+        skipws()
+        c = substr(s, i, 1)
+        if (c == ",") { i++; continue }
+        if (c == "}") { i++; return }
+        i++
+      }
+    }
+    function parse_arr(path,   c, idx) {
+      i++
+      skipws()
+      if (substr(s, i, 1) == "]") { i++; return }
+      idx = 0
+      while (i <= n) {
+        parse_value(path "." idx)
+        idx++
+        skipws()
+        c = substr(s, i, 1)
+        if (c == ",") { i++; continue }
+        if (c == "]") { i++; return }
+        i++
+      }
+    }
+    { doc = doc $0 "\n" }
+    END {
+      s = doc
+      n = length(s)
+      i = 1
+      skipws()
+      parse_value("$")
+    }
+  '
+}
+
+# json_get_flat <已扁平化的文本> <路径>，如 $.latest_version
+json_get_flat() {
+  printf '%s\n' "$1" | awk -F'\t' -v p="$2" '$1 == p { print $2; exit }'
+}
+
+# json_get <JSON 原文> <路径>
+json_get() {
+  json_get_flat "$(printf '%s' "$1" | json_flatten)" "$2"
+}
+
+# json_artifact_field <JSON 原文> <字段>：version-check 响应里第一个目标制品。
+# 服务端按 (platform, arch) 过滤 target_artifacts，取 [0] 与既有实现一致。
+json_artifact_field() {
+  json_get "$1" "\$.target_artifacts.0.$2"
+}
+
+# catalog_sha_from_json <JSON 原文> <version> <platform> <arch>
+# 在 versions[].items[] 两层结构里定位制品并打印 sha256（找不到则无输出）。
+# 服务端 CatalogItem.SHA256 带 omitempty，未登记校验和的制品本来就可能缺字段，
+# 因此这里"取不到"必须能安静地表达成空值。
+catalog_sha_from_json() {
+  local flat outer out
+  flat="$(printf '%s' "$1" | json_flatten)"
+  for outer in '$.versions.' '$.items.'; do
+    out="$(printf '%s\n' "$flat" | awk -F'\t' -v outer="$outer" \
+      -v want_v="$2" -v want_p="$3" -v want_a="$4" '
+      { nrec++; path[nrec] = $1; val[nrec] = $2 }
+      END {
+        # 两遍扫描，**不依赖键的先后顺序**。单遍流式匹配要求 version 先于 items
+        # 出现：真实服务端按结构体字段顺序编码恰好满足，但换成 map 序列化
+        # （字母序，version 排在 items 之后）就会静默取不到校验和。
+        # 请求侧也要剥 v：下载页允许 VERSION=v1.2.3，目录里存的是 1.2.3。
+        sub(/^v/, "", want_v)
+        target = ""
+        for (r = 1; r <= nrec; r++) {
+          if (index(path[r], outer) != 1) continue
+          rest = substr(path[r], length(outer) + 1)
+          d = index(rest, ".")
+          if (d == 0 || substr(rest, d + 1) != "version") continue
+          v = val[r]
+          sub(/^v/, "", v)
+          if (v == want_v) { target = substr(rest, 1, d - 1); break }
+        }
+        if (target == "") exit 0
+        for (r = 1; r <= nrec; r++) {
+          if (index(path[r], outer) != 1) continue
+          rest = substr(path[r], length(outer) + 1)
+          d = index(rest, ".")
+          if (d == 0 || substr(rest, 1, d - 1) != target) continue
+          tail_ = substr(rest, d + 1)
+          if (index(tail_, "items.") != 1) continue
+          t2 = substr(tail_, 7)
+          d2 = index(t2, ".")
+          if (d2 == 0) continue
+          iidx = substr(t2, 1, d2 - 1)
+          key = substr(t2, d2 + 1)
+          if (key == "platform") plat[iidx] = val[r]
+          else if (key == "arch") arch[iidx] = val[r]
+          else if (key == "sha256") sum[iidx] = val[r]
+        }
+        for (k = 0; k < 100000; k++) {
+          if ((k in plat) && plat[k] == want_p && arch[k] == want_a) { print sum[k]; exit }
+        }
+      }')"
+    if [[ -n "$out" ]]; then
+      printf '%s' "$out"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# ─── JSON 写入 ───
+# upgrade.sh 需要把任意命令输出（可能带引号/换行/反斜杠）拼成合法 JSON。
+# 以前靠 python3 的 json.dumps；这里用 awk 做等价转义。注意不能用 gsub 做替换：
+# gsub 的替换串里 \ 与 & 都有特殊含义，转义一层就够再转一层才能得到想要的字面量。
+#
+# 写出侧与读入侧**故意不对称**：json_string 产出标准 JSON（服务端 Go 的
+# json.Unmarshal 能正确还原），而 json_flatten 保留 \n \t \\ \" 这些转义的原样
+# 文本。原因见 read_string 的注释 —— 扁平化协议是"每条记录一行"，还原成真实
+# 换行会把记录劈开。实际链路里两者不往返：写出去的只被服务端读，读回来的字段
+# （url / file_name / sha256 / version）都是 ASCII 裸值，不含这些转义。
+json_escape() {
+  printf '%s' "$1" | LC_ALL=C awk '
+    { if (NR > 1) doc = doc "\n"; doc = doc $0 }
+    function esc(s,   i, c, out) {
+      out = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") out = out "\\\\"
+        else if (c == "\"") out = out "\\\""
+        else if (c == "\t") out = out "\\t"
+        else if (c == "\r") out = out "\\r"
+        else if (c == "\n") out = out "\\n"
+        else out = out c
+      }
+      return out
+    }
+    END { printf "%s", esc(doc) }
+  '
+}
+
+# json_string <值> → 带引号的 JSON 字符串字面量
+json_string() { printf '"%s"' "$(json_escape "$1")"; }
+
+# json_object <key> <json-literal> [<key> <json-literal> ...]
+# 值必须已经是 JSON 字面量：字符串用 json_string 包一层，布尔/数字直接写。
+json_object() {
+  local out="{" first=1 k v
+  while [[ $# -ge 2 ]]; do
+    k="$1"; v="$2"; shift 2
+    [[ "$first" -eq 1 ]] || out="$out,"
+    first=0
+    out="$out\"$k\":$v"
+  done
+  printf '%s}' "$out"
+}
+
+# mapfile 的可移植替代：mapfile 是 bash 4.0+，macOS 自带 /bin/bash 是 3.2。
+# 逐行读入调用方的 fields 数组并保留空行，保持与 mapfile -t 一致的下标语义。
+read_into_fields() {
+  local line
+  fields=()
+  while IFS= read -r line; do
+    fields+=("$line")
+  done < <("$@" || true)
+}
+
 detect_platform() {
   OS_KERNEL="$(uname -s 2>/dev/null || echo Unknown)"
   case "$OS_KERNEL" in
@@ -142,35 +351,16 @@ detect_platform() {
     Darwin*) OS="darwin" ;;
     *) echo "[client-deploy] unsupported kernel: $OS_KERNEL (Windows 请用 client-deploy.ps1)" >&2; exit 2 ;;
   esac
-  arch="${ARCH:-$(uname -m)}"
+  arch="$(uname -m)"
   case "$arch" in
     x86_64|amd64) ARCH=amd64 ;;
     aarch64|arm64) ARCH=arm64 ;;
     loongarch64|loong64) ARCH=loong64 ;;
     *) echo "[client-deploy] unsupported arch: $arch" >&2; exit 2 ;;
   esac
-  # loong64 默认严格：未显式 LOONG64_OK=1 时直接退出（CI 默认不发 loong64 artifact）。
-  if [[ "$ARCH" == "loong64" && "${LOONG64_OK:-0}" != "1" ]]; then
-    echo "[client-deploy] loongarch64 默认不启用（CI 默认不发 loong64 artifact）。如需安装请设 LOONG64_OK=1。" >&2
-    exit 2
-  fi
   # docker 镜像 tar 是 Linux 镜像，按 OS+arch 目录保存：
   # {version}/docker/linux-amd64/ 或 {version}/docker/linux-arm64/。
   DOCKER_SUBDIR="linux-${ARCH}"
-}
-
-# ─── INSTALL_MODE auto 探测 ──────────────────────────────────────────────────
-# auto：INSTALL_ROOT 下存在 docker-compose.yml → docker，否则 host。
-resolve_install_mode() {
-  if [[ "$INSTALL_MODE" != "auto" ]]; then
-    echo "$INSTALL_MODE"
-    return 0
-  fi
-  if [[ -f "${INSTALL_ROOT}/docker-compose.yml" ]] && command -v docker >/dev/null 2>&1; then
-    echo "docker"
-  else
-    echo "host"
-  fi
 }
 
 # ─── 权限封装（与 upgrade.sh 同语义）──────────────────────────────────────────
@@ -234,7 +424,9 @@ verify_sha256() {
   if ! actual="$(sha256_of "$file")"; then
     echo "[client-deploy] no sha256 tool — cannot verify $file" >&2; return 1
   fi
-  if [[ "${actual,,}" != "${expected,,}" ]]; then
+  # 用 tr 折叠大小写而不是 ${var,,}（bash 4.0+，macOS 自带 bash 3.2 跑不了）。
+  if [[ "$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')" != \
+        "$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')" ]]; then
     echo "[client-deploy] checksum MISMATCH $file (expected=$expected actual=$actual)" >&2
     return 1
   fi
@@ -246,51 +438,26 @@ catalog_sha() {
   local version="$1" platform="$2" want_arch="$3" json=""
   json="$(curl -fsSL "${MAINTAIN_BASE}/distribution/versions?channel=${CHANNEL}" 2>/dev/null)" \
     || json="$(curl -fsSL "${MAINTAIN_BASE}/downloads/catalog" 2>/dev/null)" || return 0
-  LOOKUP_JSON="$json" WANT_VERSION="$version" WANT_PLATFORM="$platform" WANT_ARCH="$want_arch" python3 - <<'PY'
-import json, os
-try:
-    d = json.loads(os.environ["LOOKUP_JSON"])
-except Exception:
-    raise SystemExit(0)
-want_v = os.environ["WANT_VERSION"].lstrip("v")
-want_p = os.environ["WANT_PLATFORM"]
-want_a = os.environ["WANT_ARCH"]
-for v in (d.get("items") or d.get("versions") or []):
-    if not isinstance(v, dict):
-        continue
-    if (v.get("version") or "").lstrip("v") != want_v:
-        continue
-    for a in (v.get("items") or v.get("artifacts") or []):
-        if isinstance(a, dict) and a.get("platform") == want_p and a.get("arch") == want_a:
-            print(a.get("sha256") or "")
-            raise SystemExit(0)
-PY
+  catalog_sha_from_json "$json" "$version" "$platform" "$want_arch"
 }
 
 # ticket：返回 url / file_name 两行
 ticket_download() {
   local version="$1" platform="$2" want_arch="$3" body="" resp=""
-  body="$(TV="$version" TP="$platform" TA="$want_arch" python3 -c '
-import json, os
-print(json.dumps({"version": os.environ["TV"], "platform": os.environ["TP"], "arch": os.environ["TA"]}))
-')" || return 1
+  # version 来自 VERSION 白名单或 catalog，platform/arch 来自枚举，三者都不需要
+  # JSON 转义，直接 printf 拼请求体即可。
+  body="$(printf '{"version":"%s","platform":"%s","arch":"%s"}' "$version" "$platform" "$want_arch")" || return 1
   resp="$(curl -fsSL -X POST "${MAINTAIN_BASE}/downloads/ticket" \
-    -H 'Content-Type: application/json' -d "$body" 2>/dev/null)" || return 1
-  TICKET_JSON="$resp" python3 - <<'PY'
-import json, os
-try:
-    d = json.loads(os.environ["TICKET_JSON"])
-except Exception:
-    d = {}
-print(d.get("url") or "")
-print(d.get("file_name") or "")
-PY
+    -H 'Content-Type: application/json' --data "$body" 2>/dev/null)" || return 1
+  json_get "$resp" '$.url'
+  json_get "$resp" '$.file_name'
 }
 
 # version-check 取最新版本号
 latest_version() {
-  curl -fsSL "${MAINTAIN_BASE}/distribution/version-check?channel=${CHANNEL}&current=v0.0.0&platform=docker&arch=${ARCH}" 2>/dev/null \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("latest_version",""))' 2>/dev/null || true
+  local json=""
+  json="$(curl -fsSL "${MAINTAIN_BASE}/distribution/version-check?channel=${CHANNEL}&current=v0.0.0&platform=docker&arch=${ARCH}" 2>/dev/null)" || return 0
+  json_get "$json" '$.latest_version'
 }
 
 # ─── 离线包（air-gapped）支持 ────────────────────────────────────────────────
@@ -302,15 +469,11 @@ latest_version() {
 manifest_field() {
   local key="$1"
   [[ -n "$BUNDLE_DIR" && -f "$BUNDLE_DIR/MANIFEST.json" ]] || return 0
-  MANIFEST_PATH="$BUNDLE_DIR/MANIFEST.json" WANT_KEY="$key" python3 - <<'PY' 2>/dev/null || true
-import json, os
-try:
-    d = json.load(open(os.environ["MANIFEST_PATH"], encoding="utf-8"))
-except Exception:
-    raise SystemExit(0)
-v = d.get(os.environ["WANT_KEY"])
-print("" if v is None else v)
-PY
+  local manifest="$BUNDLE_DIR/MANIFEST.json"
+  [[ -f "$manifest" ]] || return 0
+  local content=""
+  content="$(cat "$manifest" 2>/dev/null)" || return 0
+  json_get "$content" "\$.$key"
 }
 
 init_offline_bundle() {
@@ -375,7 +538,7 @@ load_bundle_image() {
 fetch_and_load() {
   local what="$1" want_arch="$2" ver="$3" name="" sha="" url=""
   local fields=()
-  mapfile -t fields < <(ticket_download "$ver" "docker" "$want_arch" || true)
+  read_into_fields ticket_download "$ver" "docker" "$want_arch"
   url="${fields[0]:-}"; name="${fields[1]:-}"
   sha="$(catalog_sha "$ver" "docker" "$want_arch" || true)"
   if [[ -z "$url" || -z "$name" ]]; then
@@ -751,7 +914,9 @@ rotate_versions() {
   [[ -d "$VERSIONS_DIR" ]] || return 0
   local keep="${KEEP_VERSIONS}" removed=0
   # 版本序排序（sort -V 不可用时回退 awk 分段），否则字典序会把 1.10.0 排在 1.2.0 前。
-  mapfile -t all < <(ls -1d "${VERSIONS_DIR}"/*/ 2>/dev/null | version_sort)
+  # 逐行读入而不是 mapfile：mapfile 是 bash 4.0+，macOS 自带 /bin/bash 是 3.2。
+  local all=() _ln
+  while IFS= read -r _ln; do all+=("$_ln"); done < <(ls -1d "${VERSIONS_DIR}"/*/ 2>/dev/null | version_sort)
   local total=${#all[@]}
   [[ "$total" -le "$keep" ]] && return 0
   local idx=0 remove=$((total - keep))
@@ -856,7 +1021,8 @@ snapshot_release() {
   fi
   # 保留最新 KEEP_RELEASES 份（version_sort 去掉 -ts 后缀按版本序）
   local keep="${KEEP_RELEASES}" removed=0
-  mapfile -t all < <(ls -1d "${RELEASES_DIR}"/*/ 2>/dev/null | version_sort)
+  local all=() _ln
+  while IFS= read -r _ln; do all+=("$_ln"); done < <(ls -1d "${RELEASES_DIR}"/*/ 2>/dev/null | version_sort)
   local total=${#all[@]}
   [[ "$total" -le "$keep" ]] && return 0
   local idx=0 remove=$((total - keep))
@@ -974,7 +1140,8 @@ fi
 docker cp "${PG_CONTAINER}:/tmp/_bkup.dump" "$out"
 docker exec "$PG_CONTAINER" rm -f /tmp/_bkup.dump
 log "备份完成: ${out} ($(du -h "$out" | cut -f1))"
-mapfile -t files < <(ls -1 "${BACKUP_DIR}"/${POSTGRES_DB}-*.dump 2>/dev/null | sort)
+local files=() _ln
+while IFS= read -r _ln; do files+=("$_ln"); done < <(ls -1 "${BACKUP_DIR}"/${POSTGRES_DB}-*.dump 2>/dev/null | sort)
 total=${#files[@]}
 if [[ "$total" -gt "$DB_BACKUP_KEEP" ]]; then
   remove=$((total - DB_BACKUP_KEEP))
@@ -1038,7 +1205,8 @@ version_sort() { sort -V "\$@" 2>/dev/null || awk -F/ '{s=\$NF;sub(/-.*\$/,"",s)
 rotate_dir() {
   local dir="\$1" keep="\$2" what="\$3"
   [[ -d "\$dir" ]] || return 0
-  mapfile -t all < <(ls -1d "\$dir"/*/ 2>/dev/null | version_sort)
+  all=()
+  while IFS= read -r _ln; do all+=("\$_ln"); done < <(ls -1d "\$dir"/*/ 2>/dev/null | version_sort)
   local total=\${#all[@]}
   [[ "\$total" -gt "\$keep" ]] || return 0
   local idx=0 remove=\$((total - keep)) removed=0
@@ -1142,7 +1310,7 @@ stage_setup_cron() {
   log "阶段 5 完成：DB 备份 + 日志清理 + 版本轮转 已注册"
 }
 
-# 生成密码：openssl > /dev/urandom > python3 secrets。绝不返回弱默认。
+# 生成密码：openssl > /dev/urandom。绝不返回弱默认，也不依赖 python3。
 gen_password() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -base64 18 2>/dev/null | tr -d '/+=' | cut -c1-24 && return
@@ -1150,8 +1318,11 @@ gen_password() {
   if [[ -r /dev/urandom ]]; then
     tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 24 && return
   fi
-  python3 -c 'import secrets,string;print("".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(24)))' 2>/dev/null && return
-  die "无法生成随机密码（缺 openssl/urandom/python3）"
+  # 刻意不回退 python3：这条安装路径的其余部分已经不再依赖它，而客户机不保证
+  # 有 python3（Windows 的 WindowsApps python3 是 0 字节存根，退出码 49）。
+  # /dev/urandom + tr 在 Linux 与 macOS 上都存在；真都没有时必须硬失败，
+  # 绝不返回弱默认口令。
+  die "无法生成随机密码（缺 openssl 或 /dev/urandom）"
 }
 
 # 在任何使用 POSTGRES_PASSWORD 的阶段之前确定密码。
@@ -1195,8 +1366,8 @@ gen_token() {
   if [[ -r /dev/urandom ]]; then
     head -c "$len" /dev/urandom | base64 | tr -d '\n' && return
   fi
-  python3 -c "import secrets,base64;print(base64.b64encode(secrets.token_bytes($len)).decode())" 2>/dev/null && return
-  die "无法生成随机 token（缺 openssl/urandom/python3）"
+  # 同 gen_password：不回退 python3，缺工具时硬失败。
+  die "无法生成随机 token（缺 openssl 或 /dev/urandom）"
 }
 
 # 从 .env 读某 key 的值（不存在返回空）。
@@ -1354,7 +1525,8 @@ cmd_rotate() {
   # releases/ 轮转：复用 snapshot_release 的保留逻辑，但不创建新快照。
   if [[ -d "$RELEASES_DIR" ]]; then
     local keep="${KEEP_RELEASES}"
-      mapfile -t all < <(ls -1d "${RELEASES_DIR}"/*/ 2>/dev/null | version_sort)
+      all=()
+      while IFS= read -r _ln; do all+=("$_ln"); done < <(ls -1d "${RELEASES_DIR}"/*/ 2>/dev/null | version_sort)
       local total=${#all[@]} removed=0
       if [[ "$total" -gt "$keep" ]]; then
         local idx=0 remove=$((total - keep))
@@ -1395,32 +1567,8 @@ show_help() { sed -n '2,40p' "$0"; }
 # ─── 入口 ─────────────────────────────────────────────────────────────────────
 detect_platform
 init_offline_bundle
-
-# host mode：委托 install-host.sh（包内 install.sh 走 lifecycle/install-service.sh 注册服务）。
-# docker mode：原 compose 路径（cmd_deploy）。
-cmd_deploy_host() {
-  local script_dir host_script
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  host_script="${script_dir}/install-host.sh"
-  if [[ ! -x "$host_script" ]]; then
-    echo "[client-deploy] host mode 需要 $host_script (请确认 scripts/user/install-host.sh 存在)" >&2
-    exit 1
-  fi
-  log "host mode: 委托 install-host.sh (INSTALL_ROOT=$INSTALL_ROOT)"
-  INSTALL_ROOT="$INSTALL_ROOT" MAINTAIN_BASE="$MAINTAIN_BASE" CHANNEL="$CHANNEL" VERSION="$VERSION" \
-  ARCH="$ARCH" PLATFORM="$OS" DRY_RUN="$DRY_RUN" NO_INTERACTIVE="${NO_INTERACTIVE:-1}" \
-    bash "$host_script"
-}
-
 case "$CMD" in
-  deploy|run|full|"")
-    mode="$(resolve_install_mode)"
-    log "install-mode=$mode (auto from INSTALL_ROOT=$INSTALL_ROOT)"
-    if [[ "$mode" == "host" ]]; then
-      cmd_deploy_host
-    else
-      cmd_deploy
-    fi ;;
+  deploy|run|full|"") cmd_deploy ;;
   docker)            ensure_root_dir; stage_docker ;;
   db)                ensure_root_dir; resolve_target_version; ensure_password; stage_db ;;
   gateway)           ensure_root_dir; resolve_target_version; ensure_password; ensure_secrets; stage_gateway; stage_verify ;;

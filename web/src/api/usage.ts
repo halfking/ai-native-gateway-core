@@ -190,7 +190,11 @@ export interface PeriodStats {
   total_tokens: number
   avg_cost_per_req: number
   unique_models: number
-  unique_sessions: number
+  // unique_sessions 已随 PeriodStats 一并移除（2026-10-03）：它需要
+  // COUNT(DISTINCT gw_session_id)，而 usage_ledger 是计费宽表不含会话维度，
+  // 换源后在交互预算内也算不出来（request_logs 实测 30 天窗口 72s）。
+  // 该字段全库无渲染点，故删除而非返回 0 —— 见
+  // admin/usage_enhanced.go 的 PeriodStats 注释。
 }
 
 export interface DimChange {

@@ -933,7 +933,7 @@ watch(activeTab, (tab) => {
 </template>
 
 <style scoped>
-.work-types-view { max-width: 1200px; }
+.work-types-view { max-width: none; }
 .work-types-view--detail { max-width: min(1400px, 96vw); }
 
 .top-bar {

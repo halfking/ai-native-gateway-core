@@ -211,8 +211,6 @@ onBeforeUnmount(() => {
 }
 .list {
   padding: 16px 24px;
-  max-width: 1400px;
-  margin: 0 auto;
 }
 .error {
   color: var(--kx-danger, var(--danger));
