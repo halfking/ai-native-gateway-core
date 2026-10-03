@@ -327,6 +327,16 @@ const OVERLAY_CASES = [
     kind: 'modal',
     note: 'ChangePasswordDialog 用户菜单 → 修改密码（居中弹窗）',
   },
+  {
+    // 覆盖不到：候选表要「选模型 → 点 Resolve」两步之后才渲染，本 harness 只能点
+    // 可见元素、不能操作下拉选择。标成 manual 让它**出现在报告里**而不是被删掉 ——
+    // 悄悄删掉等于让「没测」和「测过没问题」在报告上长得一样。
+    path: '/routing-v2?tab=resolve',
+    steps: ['.row-actions .btn-ghost'],
+    kind: 'drawer',
+    note: 'NodeDetailDrawer 候选行「明细」',
+    manual: '需先在模型下拉里选一个模型并点 Resolve，候选表才渲染；纯点击走不到',
+  },
 ]
 
 async function runOverlaySweep() {
@@ -339,6 +349,12 @@ async function runOverlaySweep() {
 
   const results = []
   for (const [i, c] of OVERLAY_CASES.entries()) {
+    // manual 的 case 仍然记进结果，但不尝试点击、不参与合格/不合格判定。
+    if (c.manual) {
+      results.push({ ...c, opened: null, p0: [], p1: [], skipped: true })
+      process.stdout.write(`○ [${i + 1}/${OVERLAY_CASES.length}] ${c.path} → ${c.kind}（${c.note}）\n    自动化覆盖不到：${c.manual}\n`)
+      continue
+    }
     const page = await ctx.newPage()
     const errors = []
     page.on('console', (m) => {
@@ -387,8 +403,13 @@ async function runOverlaySweep() {
   await browser.close()
 
   const bad = results.filter((r) => r.p0.length || r.p1.length)
-  console.log(`\n══ 弹层遍历（${results.length} 个触发点）══`)
-  console.log(`✓ 合格：${results.length - bad.length}    有问题：${bad.length}`)
+  const manual = results.filter((r) => r.skipped)
+  console.log(`\n══ 弹层遍历（${results.length} 个清单项：${results.length - manual.length} 个自动 + ${manual.length} 个待人工）══`)
+  console.log(`✓ 合格：${results.length - bad.length - manual.length}    有问题：${bad.length}    待人工：${manual.length}`)
+  if (manual.length) {
+    console.log('\n── ○ 自动化覆盖不到（不算合格也不算不合格，需人工交互）──')
+    for (const r of manual) console.log(`  ${r.path} — ${r.note}\n    原因：${r.manual}`)
+  }
   for (const r of bad) {
     console.log(`\n  ${r.path} [${r.steps.join(' → ')}] — ${r.note}`)
     for (const m of [...r.p0, ...r.p1]) console.log(`    · ${m}`)
