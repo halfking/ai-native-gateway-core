@@ -795,11 +795,15 @@ const OVERLAY_CASES = [
     kind: 'drawer',
     note: 'RequestLogDrawer 实时流点请求',
     manual:
-      '唯一入口在 DashboardViewV2 的 LiveRequestStreamV2（onOpenRequest），' +
-      '而实时流只推送**进行中**的请求。实测本地实时流里只有筛选按钮、没有任何请求行' +
-      '（request_logs 最近一条也是已完成的），所以没有可点的行。' +
-      '要自动覆盖就得先造持续流量 —— 那样这个 case 的判据会依赖「我刚造的流量」，' +
-      '通过与否反映的是流量生成器而不是产品。宁可标 manual。',
+      '唯一入口在 DashboardViewV2 的 LiveRequestStreamV2（onOpenRequest → SwimLane 的 tile-click），' +
+      '实时流只推送**进行中**的请求，泳道里没有 tile 就点不出来。\n' +
+      '本地造不出这个前置状态，三条路都实测堵死：\n' +
+      '  ① 业务请求：/api/keys 只回 key_prefix（sk-xxx****），拿不到明文 key；\n' +
+      '  ② 供应商探测：POST /api/providers/2/probe-url 返回 200 但 reachable:false' +
+      '（base_url 在本机不可达），**不产生 request_logs 行**；\n' +
+      '  ③ 周期自检 worker：request_logs 里确有它的行，但最近一条也是数小时前的**已完成**请求。\n' +
+      '所以这是「环境造不出前置状态」，不是「驱动器的动作不够」—— 两者要分清。\n' +
+      '人工覆盖：给网关灌一次慢速 streaming 请求，趁它在飞时点泳道 tile。',
   },
   {
     path: '/routing-v2?tab=resolve',
@@ -807,10 +811,10 @@ const OVERLAY_CASES = [
     kind: 'drawer',
     note: 'RouteIncidentDrawer 诊断工作台',
     manual:
-      '触发点在 DashboardViewV2 的 LiveRequestStreamV2 里（转发泳道诊断事件），' +
-      '而实时流只推送**进行中**的请求。实测本地 request_logs 最近一条是 8 小时前，' +
-      '流里没有行可点。自动化要么持续造流量、要么注入假数据，' +
-      '两者都会让这个 case 的判据依赖「我刚造的数据」而不是产品行为。',
+      '触发点在 DashboardViewV2 的 LiveRequestStreamV2 里（SwimLane 的 @diagnose 事件），' +
+      '与 RequestLogDrawer 同一个前置状态：实时流只推**进行中**的请求，' +
+      '本地造不出（无明文 key + base_url 不可达，详见上一条的实测记录）。\n' +
+      '人工覆盖：给网关灌一次慢速 streaming 请求，趁它在飞时点泳道里的诊断入口。',
   },
   {
     // 裁切风险已由**静态门**判定（不是「未验证」，也不是我读 CSS 读出来的）：
