@@ -204,7 +204,23 @@ export interface DimChange {
   change_pct: number
 }
 
-export interface PeriodCompareResponse {
+/**
+ * 降级标记（2026-10-03）。
+ *
+ * 后端在「schema 落后于代码」时会返回 200 + 全 0，与「这段时间真的没数据」
+ * 在页面上完全同形 —— 2026-10-03 实测 period-compare 把 2026-09 的
+ * 1139.62 美元显示成 0。现在后端恒发 degraded，false 表示「服务端确认过
+ * 它是好的」，字段缺失才是「不知道」。
+ *
+ * 注意不要用 `degraded?: boolean`：可选字段在 JSON 里缺失时读到 undefined，
+ * 与 false 同形 —— 那等于把这个标记自己又废掉了一半。
+ */
+export interface DegradationMarker {
+  degraded: boolean
+  degraded_reason?: string
+}
+
+export interface PeriodCompareResponse extends DegradationMarker {
   current: PeriodStats
   previous: PeriodStats
   change_pct: number
@@ -214,7 +230,7 @@ export interface PeriodCompareResponse {
   by_dimension: Record<string, DimChange[]>
 }
 
-export interface CacheEconomicsResponse {
+export interface CacheEconomicsResponse extends DegradationMarker {
   date_from: string
   date_to: string
   total_requests: number
