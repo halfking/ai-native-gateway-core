@@ -16711,6 +16711,12 @@ PostgreSQL 的 `now()` 返回**事务开始时间**，同一事务内所有语�
 
 ### §9.134.2 机制：v1 会被第二次写覆盖，ledger 不会
 
+> ⚠️ **本节说的「第二次写」是 `insertRequestLog` 的 UPSERT —— 那个落点说错了**（同事务内全新 id
+> 不触发冲突）。**正确的落点是 `updateRequestLog` 里的**
+> `UPDATE request_logs_hot SET credential_id = COALESCE($4, credential_id)`（`client.go:2168`），
+> **该语句的 SET 清单不含 `ts`**。完整机制见 **§9.142.2**。
+> ⇒ **本节的结论方向是对的，机制是错的。**
+
 `request_logs_hot` 的主键是 `request_id`（migration 455），
 写入语句是 **UPSERT**（`client.go:1512`）：
 
@@ -16927,7 +16933,7 @@ ON CONFLICT (request_id) DO UPDATE SET
 
 | # | 候选解释 | 检验方式 | 结果 |
 |---|---|---|---|
-| ① | 两次不同事务 | 两表 `ts` 差值 | **全 40,402 行为 0.0 秒**；`now()` 取事务开始时间 ⇒ **同事务** |
+| ① | 两次不同事务 | 两表 `ts` 差值 | ⚠️ **本行判据无效，已被 §9.142.1 推翻**：`ts` 相等只说明后一次写**没改 `ts`**，不能说明没发生第二次写 |
 | ② | 第二次写触发 `DO UPDATE` 覆盖 | 同事务内全新 `request_id` 不可能与自身冲突 | **不可能触发** |
 | ③ | v1 的列与实参错位一格 | ①数据：`v1.credential_id` 全部是合法凭证 id、`= ledger.provider_id` 的行数 **0**；②代码：列清单第 10 列 = `credential_id` | **无错位**（我的怀疑来自**列清单内嵌 `--` 注释**被朴素 split 当成列） |
 | ④ | v1 的 `credential_id` 绑的不是 `entry.CredentialID` | 逐行读实参表：`$9 entry.CredentialID` ↔ 第 10 列 | **完全对齐** |
@@ -16950,6 +16956,9 @@ ON CONFLICT (request_id) DO UPDATE SET
 
 ⇒ **要么我的测量错了，要么生产跑着一段我没找到的代码路径。**
 这两个都不是「机制还没想清楚」，而是**矛盾定位**。
+
+✅ **已判（§9.142）**：机制 = `updateRequestLog` 的 v1 UPDATE 会改 `credential_id` 且不改 `ts`。
+⇒ 上面「同事务 ⇒ 必然相等」那条**证明**不成立（其前提已失效），矛盾已消解。
 
 ⚠️ 我不知道是哪一侧。**如实写下来，不选边。**
 
@@ -17495,3 +17504,102 @@ ledger 侧那个同样合法、但**不是终态**的归属。
 > 直到这次按**列**去看，才发现 `sessions.owner_user` 与 `session_turns.credential_id` 都在。
 > ⇒ **丢数据的方向是假设，不是默认。** 每个「会丢 X」的结论，都该配一句
 > 「目标侧现在有没有 X」。
+
+---
+
+## §9.142　**机制判掉了**，同时收回 §9.136.1 的一条错误推论 —— §9.134 的结论其实基本正确
+
+§9.136 我把「同一事务」当成**已证**，用它在 §9.135/§9.136 里否掉了「第二次写」。
+本节证明**那个推论本身是错的**，因而我否掉的东西又活了。
+
+### §9.142.1 错的推论：「`ts` 相等 ⇒ 同一事务」
+
+我的原话（§9.136.1①）：
+
+> 两表 `ts` 差值全 40,402 行为 0.0 秒；`now()` 取事务开始时间 ⇒ **同事务**
+
+**这一步不成立。** `ts` 相等只能说明「**后一次写没有改 `ts`**」，
+不能说明「后一次写没发生」。一条 `UPDATE` 只要**不把 `ts` 放进 SET 清单**，
+就会让行看起来仍属于原来那次 INSERT。
+⇒ **我用「行没变」去证明「没发生过第二次写」，而「没变」正是第二次写的结果。**
+
+### §9.142.2 真正的落点：`updateRequestLog` 会改 v1 的凭证，**且不动 `ts`**
+
+`persistRequestLog`（`client.go:1174-1179`）按 `entry.Op` 分两条路：
+
+```go
+} else if entry.Op == RequestLogUpdate {
+    err = c.updateRequestLog(entry)   // 终态：UPDATE
+} else {
+    err = c.insertRequestLog(entry)   // t0：INSERT（ledger + v1 同事务）
+}
+if err == nil { c.firePersistedHooks(entry) }   // 镜像在写库之后读 entry
+```
+
+而 `updateRequestLog` 里的 v1 语句（`client.go:2168`）是：
+
+```sql
+UPDATE request_logs_hot
+   SET client_model  = COALESCE($2, client_model),
+       outbound_model= COALESCE($3, outbound_model),
+       credential_id = COALESCE($4, credential_id),   -- ← 会改
+       provider_id   = COALESCE($5, provider_id),     -- ← 会改
+       ...
+-- ⚠️ SET 清单里没有 ts
+```
+
+⇒ **完整机制**：
+
+| 阶段 | `usage_ledger.credential_id` | `request_logs.credential_id` | `ts` | 镜像读到的 `entry` |
+|---|---|---|---|---|
+| t0（`insertRequestLog`） | INSERT = **A₀** | INSERT = **A₀** | = `now()` | A₀ |
+| 终态（`updateRequestLog`） | UPDATE **不含该列** ⇒ 留 **A₀** | `COALESCE($4, …)` ⇒ 变 **A₁** | **不动** | **A₁** |
+
+⇒ 这一条同时解释了此前所有观测：
+- v1 ≠ ledger（A₁ ≠ A₀ 时）；**641 / 3,221 行** ✔
+- `ts` 全部相同（v1 的 `ts` 冻结在 t0 的 INSERT 上）✔
+- 两侧归属**都合法**（A₀ 与 A₁ 都是真实的候选凭证）✔（§9.140.3）
+- `session_turns.credential_id` = **A₁**（镜像是唯一在**终态时刻**读 entry 的消费者）✔
+  （§9.141.2 的 641/641 现在有了机制解释，不再只是经验相关）
+
+### §9.142.3 于是 §9.134 的结论基本正确，只是**落点说错了**
+
+§9.134.2 我说的是「v1 的 UPSERT `DO UPDATE SET credential_id = EXCLUDED…` 会覆盖」——
+**那个落点是错的**（同事务内全新 id 不会触发 UPSERT 冲突，这点 §9.135 否定得对）。
+
+**但结论方向是对的**：v1 确实会被**第二次写覆盖凭证**，ledger 确实不会。
+⇒ 正确的机制是 **`updateRequestLog` 的 v1 UPDATE**，不是 `insertRequestLog` 的 UPSERT。
+
+⇒ **我在这件事上绕了一整圈**：先推对了（§9.134）→ 用一条错误推论否掉（§9.136）
+→ 现在又回到同一个结论，只是带着正确的机制。
+**代价是两节文档 + 一次错误的严重性定级（把「阻断项」说出去）。**
+
+### §9.142.4 **仍未解释**的那一格（不能因为机制判掉就一起带走）
+
+§9.141.3 的 **3,699 行**：`request_logs` 与 `usage_ledger` 凭证**都是 NULL**，
+而 `session_turns.credential_id` **有值**。
+
+按 §9.142.2 的机制，这些行要求 **A₀ = NULL 且 A₁ 有值**；
+那么 v1 的 UPDATE `credential_id = COALESCE(A₁, NULL)` **应当把 v1 填成 A₁**，而不是留 NULL。
+⇒ **实测与机制在这 3,699 行上不符。**
+
+可能的原因（**都未验证**）：v1 的 UPDATE 未命中（`logsWrite` 关闭 / `WHERE` 未匹配）、
+这批行走了 `admin/telemetry.go` 那条 ingest、或镜像的写入发生在 v1 UPDATE 之前。
+⇒ **这一格仍然开着**，不因为机制判掉而关闭。
+
+### §9.142.5 教训
+
+> **「行没变」不能证明「事件没发生」——它常常正是事件的结果。**
+> 我用 `ts` 相等推出「同事务」，再用「同事务」否掉「第二次写」；
+> 而真实情况是：**第二次写发生了，只是它没改 `ts`。**
+> ⇒ 任何「观测没变 ⇒ 某事没发生」的推理，都要先问：
+> **那次写入本来会不会改这个可观测量？** 不会改，它就没资格当证据。
+>
+> **否证一条结论时，要检查自己用的那条证据是否真的能区分两种可能。**
+> §9.135/§9.136 我逐条列了八个候选（那一节本身有价值，保留），
+> 但 ① 的**判据**选错了 —— 八个里有七个是有效的，① 是无效的，
+> 而**结论恰好建立在那一个无效判据上**。
+> ⇒ **否证表也要审计判据本身**，否则「划掉八个」会给人「已经排除干净」的错觉。
+>
+> **结论对了、机制错了、中间还绕了一圈，代价是让别人（和未来的我）按错的严重性排期。**
+> 本节把三处都改正：§9.136.1 加失效标注、§9.134.2 换正确落点、决策表 D9/D7-e 复核结论是否仍成立。
