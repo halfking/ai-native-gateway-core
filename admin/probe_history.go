@@ -427,9 +427,13 @@ func (h *Handler) handleProviderProbeStates(w http.ResponseWriter, r *http.Reque
 // （R89-DO）：hot 默认仅保留 8h，而本 CTE 的窗口是 `ts > NOW() - INTERVAL
 // '6 hours'`，**完全落在 hot 的保留期内** ⇒ 裸母表读对最近 6h 的真实流量
 // 失败恒为 0 腿，模型发现页「近期失败」徽标在最近 8h 内系统性漏计。两条腿
-// 都吃同一条 ts 谓词，剪枝不受影响；两腿在任一快照上互斥（promote 是单条
-// 数据修改 CTE 且无 ON CONFLICT，冲突时整体回滚），故 UNION ALL 不会把同一
-// 行数两遍（202 号 §107 的写入侧不变式四步）。
+// 都吃同一条 ts 谓词，剪枝不受影响。
+//
+// 计数只可能持平或上升、不会下降，但**理由不是「两腿互斥」**（R89-DP 更正）：
+// 部署形态是三臂（session_turns_hot ∪ session_turns ∪ v1 臂），去重靠 v1 臂
+// 上的双 NOT EXISTS 反连接（按 request_id 保留会话臂、丢弃 v1 孪生行），
+// 见 db/request_logs_view_schema.go 的 canonicalV2DDL。会话臂与 v1 臂**本来
+// 就会**同时存在同一逻辑请求，正是那条反连接让它们只出一行。
 func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")

@@ -87,7 +87,7 @@ var sqlReadGuardAllowFiles = map[string]string{
 }
 
 var sqlReadGuardAllowSQLFiles = map[string]string{
-	"sql/objects/views/request_logs_with_current_month.sql":                           "LEGIT: 双腿视图定义本体",
+	"sql/objects/views/request_logs_with_current_month.sql":                           "LEGIT: v1 回退体（两条臂）视图定义体。⚠️ 它**不是**部署形态——部署形态是 db/request_logs_view_schema.go 的三臂会话体（session_turns_hot ∪ session_turns ∪ v1 臂 + 双反连接去重）。别把本文件当该视图的定义引用（203/204 号都栽在这里，205 号更正）；世代由 db/request_logs_view_dump_generation_test.go 钉住",
 	"sql/objects/views/request_logs_bodies_progress.sql":                              "LEGIT: 视图定义体",
 	"sql/objects/views/v_node_switch_analysis.sql":                                    "DEBT(R47): 视图定义裸母表",
 	"sql/objects/views/customer_cost_view.sql":                                        "DEBT(R47): 视图定义裸母表",
