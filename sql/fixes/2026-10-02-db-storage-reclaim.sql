@@ -16,12 +16,28 @@
 --   1. usage_facts_default 是 **兜底分区**。DROP 掉它，时间越界的写入会直接
 --      报 `no partition of relation found`。因此它只做 TRUNCATE，不做 DROP。
 --      实测 0 行 / 534 MB 全是死索引页，TRUNCATE 同样能回收，且不破坏分区路由。
+--      ⚠️ 2026-10-03（R89-DS）补：TRUNCATE 原本**没有任何非空门禁**，而同文件
+--      另外两个动作都有。兜底分区恰恰是「越界写入的落点」⇒ 一旦有行落进去
+--      （例如 20261003 之后未预建分区时的时间戳），本脚本会静默删掉真实数据。
+--      现已与 bak_* 共用同一个 force_nonempty 门禁。
 --   2. usage_facts_20261001 / 20261002 有数据（1,910 / 2,481 行），不碰。
 --      usage_facts_20261003 虽为 0 行但是**预建的未来分区**，保留。
+--      ⚠️ 2026-10-03（R89-DS）更正：原守卫写的是 `c.relname < 'usage_facts_default'`，
+--      想表达「只碰过去的日期分区」。**它是空操作**——字典序下
+--      `usage_facts_2026xxxx` 第 13 个字符是数字（'2' = 0x32），而
+--      `usage_facts_default` 是字母（'d' = 0x64）⇒ **所有**日期分区（含明确要
+--      保留的 20261003）都排在 default **之前**，谓词恒为真、什么也护不住。
+--      已改为按**分区名里的真实日期**比 `part_date < current_date`。同样的 bug
+--      也在第 1 步的报表里：它会把 20261003 标成 DROP，与本段注释直接矛盾。
 --   3. usage_facts_20260926..20260930 都是**过去的日期分区**，不会再有写入，
 --      DROP 安全；项目的 ensure 函数可按需重建。
 --   4. 默认是 dry-run。只有把 storage_reclaim.apply 置为 'on' 才会真正执行。
 --   5. 非空表默认拒删。要强删需额外置 storage_reclaim.force_nonempty = 'on'。
+--   6. ⚠️ 2026-10-03（R89-DS）补：「空表」判据原本是 `c.reltuples = 0`，而
+--      reltuples 是**统计估算**不是事实（PG14+ 从未 ANALYZE 过时甚至是 -1）。
+--      本脚本自己在下方 [可选 1] 写着「625 张表自 stats_reset 起从未 ANALYZE」，
+--      即它已认定该字段不可信，却拿它当**删表门禁**。已改为对每个目标分区做
+--      真实的 `EXISTS (SELECT 1 … LIMIT 1)` 探针。
 --
 -- 用法
 --   -- dry-run（只看报表，不动数据）
@@ -46,8 +62,20 @@
 --   若用其他驱动执行，请把 SET 语句粘到脚本顶部一起发。
 --
 -- 回收量对照（34 侧 2026-10-02 实测）
---   保守档（默认）              ≈ 596 MB   零数据风险
+--   保守档（默认）              ≈ 596 MB
 --   加上 force_nonempty='on'    ≈ 4,500 MB 需先留档
+--
+-- ⚠️ 2026-10-03（R89-DS）更正：原文在保守档那一行写的是「零数据风险」。
+--   那是**错的**，而且错在守卫上而非数据上：保守档当时
+--   ① 会 TRUNCATE 一个**无任何非空门禁**的兜底分区（越界写入的落点）；
+--   ② 会 DROP 掉明确声明要保留的 usage_facts_20261003（谓词是空操作）；
+--   ③ 判「空」用的是统计估算而非事实。
+--   三处已修（见「重要设计约束」1/2/6）。现在保守档的真实验收条件是：
+--   **只删「分区名里的日期 < 今天 且 真实探针确认 0 行」的分区**，
+--   其余一律 SKIP 并打 WARNING。仍建议先按下面的命令留档。
+--
+-- 本脚本会在库里留下一个辅助函数 `public.storage_reclaim_table_is_empty`
+-- （CREATE OR REPLACE，幂等）。确认不再需要时可 `DROP FUNCTION`。
 --
 -- 执行前建议先异地留档（脚本不代做，因为 bak_* 本身就是别人留的档）：
 --   pg_dump -d llm_gateway -t 'bak_*' -Fc -f /secure/bak_20261002.dump
@@ -71,7 +99,45 @@ SET storage_reclaim.force_nonempty = 'off';
 \echo '=== 2026-10-02 storage reclaim start (dry-run unless apply=on) ==='
 
 -- ---------------------------------------------------------------------------
--- 第 1 步：前置报表（始终执行，dry-run 下这就是全部输出）
+-- R89-DS 辅助：分区**真实**空表探针
+--
+-- 为什么不用 pg_class.reltuples：它是规划器的**估算**，不是事实。
+--   · PG14+ 从未 ANALYZE/VACUUM 过的表是 -1（不是 0），老版本是 0；
+--   · 表在「空」的时候被 ANALYZE 过、之后又写入了行，在下一次 ANALYZE 之前
+--     它仍然报 0 —— 此时 `reltuples = 0` 会**放行一次有数据的删表**。
+-- 本脚本自己的 [可选 1] 就写着「625 张表自 stats_reset 起从未 ANALYZE」，
+-- 即它已经认定这个字段不可信；拿它当删表门禁是自相矛盾。
+--
+-- 探针对**不存在的表**返回 true（调用方随后 DROP 会失败并整体回滚，
+-- 与「已不存在的对象被跳过」的幂等承诺一致）。表名一律走 format('%I') 引用，
+-- 不做字符串拼接。分区名要到运行期才知道，故必须用 EXECUTE 动态取行。
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.storage_reclaim_table_is_empty(p_relname text)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $probe$
+DECLARE
+  v_oid     regclass;
+  v_has_row boolean;
+BEGIN
+  v_oid := to_regclass(format('public.%I', p_relname));
+  IF v_oid IS NULL THEN
+    RETURN true;
+  END IF;
+  EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.%I LIMIT 1)', p_relname)
+    INTO v_has_row;
+  RETURN NOT v_has_row;
+END
+$probe$;
+
+-- ---------------------------------------------------------------------------
+-- 第 1 步：前置报表（始终执行）
+-- ⚠️ 2026-10-03（R89-DS）更正：原文写「dry-run 下这就是全部输出」，**不准确**。
+--    dry-run 的早退是 `$reclaim$` 块内的 `RETURN`，而**块内 RETURN 只结束本块**
+--    （本仓 816/817 事故的同一形态，见 fd3cb7d7d 钉的那道门）⇒ **第 3 步的核验
+--    仍会照常执行**。它们全是只读（`\set ON_ERROR_STOP on` 下 `$verify$` 的
+--    RAISE EXCEPTION 仍会中止脚本），所以「dry-run 不动数据」成立，但
+--    「全部输出」不成立 —— 别把它读成脚本在第 1 步之后就停了。
 -- ---------------------------------------------------------------------------
 \echo ''
 \echo '--- [1] 回收前：public schema 容量 ---'
@@ -112,9 +178,15 @@ SELECT c.relname,
        greatest(c.reltuples, 0)::bigint AS approx_rows,
        pg_size_pretty(pg_total_relation_size(c.oid)) AS size,
        CASE
-         WHEN c.relname = 'usage_facts_default' THEN 'TRUNCATE  (兜底分区，必须保留)'
-         WHEN c.reltuples = 0 AND c.relname < 'usage_facts_default' THEN 'DROP      (过去的空日期分区)'
-         ELSE 'SKIP      (有数据或是预建的未来分区)'
+         WHEN c.relname = 'usage_facts_default' THEN 'TRUNCATE (兜底分区，必须保留；非空则跳过)'
+         -- R89-DS：`IS NOT NULL` 必须在前 —— 名字不是 usage_facts_<8位日期> 的分区
+         --（本清单 LIKE 'usage_facts%' 会把它们一起捞出来）会让 `::date` 直接抛
+         -- `invalid input syntax for type date`，报表整个查不出来。
+         WHEN substring(c.relname from '^usage_facts_(\d{8})$') IS NOT NULL
+              AND substring(c.relname from '^usage_facts_(\d{8})$')::date < current_date
+              AND public.storage_reclaim_table_is_empty(c.relname)
+           THEN 'DROP     (过去的空日期分区)'
+         ELSE 'SKIP      (未来分区 / 预建 / 非空 / 名字不是日期分区)'
        END AS action
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -142,13 +214,31 @@ BEGIN
   END IF;
 
   -- ---- 2a. usage_facts_default：只 TRUNCATE，绝不 DROP ----
+  --
+  -- R89-DS：原来这里是**唯一没有非空门禁**的破坏性动作。兜底分区正是
+  -- 「时间越界写入」的落点，最容易积累真实行；534 MB 的死索引页是 34 侧
+  -- 2026-10-02 的实测值，不是对 252 / 本机的保证。现与 bak_* 共用同一门禁。
   IF to_regclass('public.usage_facts_default') IS NOT NULL THEN
-    EXECUTE 'TRUNCATE TABLE public.usage_facts_default';
-    v_trunc := v_trunc + 1;
-    RAISE NOTICE 'TRUNCATE public.usage_facts_default （兜底分区保留，仅回收死索引页）';
+    IF NOT public.storage_reclaim_table_is_empty('usage_facts_default')
+       AND v_force IS DISTINCT FROM 'on' THEN
+      RAISE WARNING 'SKIP public.usage_facts_default：非空（越界写入的落点，' ||
+                    '可能是真实数据），需 storage_reclaim.force_nonempty=''on'' 才清空';
+      v_skipped := v_skipped + 1;
+    ELSE
+      EXECUTE 'TRUNCATE TABLE public.usage_facts_default';
+      v_trunc := v_trunc + 1;
+      RAISE NOTICE 'TRUNCATE public.usage_facts_default （兜底分区保留，仅回收死索引页）';
+    END IF;
   END IF;
 
   -- ---- 2b. usage_facts 过去的空日期分区：DROP ----
+  --
+  -- R89-DS 两处更正：
+  --   ① 「过去」用**分区名里的真实日期**判，不再用 `relname < 'usage_facts_default'`
+  --      —— 那个字典序比较对所有日期分区恒为真（数字 < 字母），是空操作，
+  --      会连明确要保留的 usage_facts_20261003 一起删掉。
+  --   ② 「空」用**真实探针**，不再用 `reltuples = 0`（统计估算，曾 ANALYZE
+  --      过的空表之后写入的行不会让它变成非 0）。
   FOR r IN
     SELECT c.relname, greatest(c.reltuples, 0)::bigint AS approx_rows,
            pg_total_relation_size(c.oid) AS bytes
@@ -157,13 +247,14 @@ BEGIN
     WHERE n.nspname = 'public' AND c.relkind = 'r'
       AND c.relname LIKE 'usage_facts\_%'
       AND c.relname <> 'usage_facts_default'
-      AND c.reltuples = 0
-      AND c.relname < 'usage_facts_default'   -- 只碰过去的日期分区
+      AND substring(c.relname from '^usage_facts_(\d{8})$') IS NOT NULL
+      AND substring(c.relname from '^usage_facts_(\d{8})$')::date < current_date
+      AND public.storage_reclaim_table_is_empty(c.relname)
   LOOP
     EXECUTE format('DROP TABLE public.%I', r.relname);
     v_dropped := v_dropped + 1;
     v_bytes := v_bytes + r.bytes;
-    RAISE NOTICE 'DROP public.% (空的过去日期分区，% 字节)', r.relname, r.bytes;
+    RAISE NOTICE 'DROP public.% （空的过去日期分区，% 字节）', r.relname, r.bytes;
   END LOOP;
 
   -- ---- 2c. bak_* 备份表：DROP（非空需 force）----
@@ -175,8 +266,12 @@ BEGIN
     WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname LIKE 'bak\_%'
     ORDER BY pg_total_relation_size(c.oid) DESC
   LOOP
-    IF r.approx_rows > 0 AND v_force IS DISTINCT FROM 'on' THEN
-      RAISE WARNING 'SKIP public.%：非空（约 % 行），需 storage_reclaim.force_nonempty=''on'' 才删',
+    -- R89-DS：原来判「非空」用的是 approx_rows（来自 reltuples 统计估算）。
+    -- 改成真实探针——否则「曾被 ANALYZE 过、之后又写入行」的备份表会被
+    -- 当成空表删掉，而那正是 force_nonempty 这道人工闸要拦的情况。
+    IF NOT public.storage_reclaim_table_is_empty(r.relname)
+       AND v_force IS DISTINCT FROM 'on' THEN
+      RAISE WARNING 'SKIP public.%：非空（统计估算约 % 行），需 storage_reclaim.force_nonempty=''on'' 才删',
         r.relname, r.approx_rows;
       v_skipped := v_skipped + 1;
       CONTINUE;
