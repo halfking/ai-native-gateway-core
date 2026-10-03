@@ -18525,7 +18525,7 @@ CREATE VIEW public.v_adaptive_probe_targets AS
     mps.next_retry_at,
     EXTRACT(epoch FROM (now() - COALESCE(mps.last_attempt_at, (now() - '01:00:00'::interval)))) AS age_secs,
     ( SELECT count(*) AS count
-           FROM public.candidate_failure_logs_hot cfl
+           FROM public.candidate_failure_logs cfl
           WHERE ((cfl.credential_id = cmb.credential_id) AND (cfl.raw_model_name = pm.raw_model_name) AND (cfl.ts > (now() - '00:05:00'::interval)))) AS recent_passive_failures
    FROM ((((public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)))
