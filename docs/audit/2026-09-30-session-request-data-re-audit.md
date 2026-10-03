@@ -7958,3 +7958,214 @@ StartupFiles entry, parity map here)
 > 形态错位——一次是守卫（字符类 vs 语义），一次是权威源（815 vs 816 vs 817），
 > 一次是**执行通道**（文件在树里 vs 有没有人跑它）。三次的共同形状都是
 > **「文件/声明在」被当成了「行为在」**。
+
+---
+
+## §9.65 解封轮：合并、两处既有红、816/817 的早退失效、build tag 覆盖缺口
+
+本轮起点是上一轮遗留的五件事。结论先给：
+
+| # | 事项 | 结论 |
+|---|---|---|
+| 1 | merge origin/main ↔ main | 完成（分支 `merge-817-818`）。**main 未前移**——14 个重叠文件里 11 个有并行会话在途内容 |
+| 2 | `-tags=integration` 编译断裂 | 已修（`ac5aff510`）；**并行会话 `830f2f221` 同期独立修了同一处** |
+| 3 | 红1 `telemetry/TestRequestClassPGRoundTrip` | **根因定位并修复**（`1809168ba`），真库前后对照 |
+| 3 | 红2 `sql/schema/TestDerivedBaselineLag` | 已定性；**并行会话 `7d55159b4` 已按同一口径翻转** |
+| 4 | 252 上量 | 实测：252 处于 **814 形态**；804,317 行 / 19,422 非空 / **语义非法 0** ⇒ 装 815→816→817 不丢数据 |
+| 5 | 817「已达标仍重建一次」 | **确证，且失败方式比我上轮说的更重**（见 §9.65.3） |
+
+### §9.65.1 合并：rebase 丢的不只是冲突
+
+分叉 14 落后 / 10 领先，5 处冲突，形态是**并集**而非二选一：本地有 818（payload
+拆列），origin 有 816/817。安装器两处解法是把 813–817 全保留、末尾补 818，
+并按门的要求用 `-update` 重生成 `installed_startup_migrations.tsv`
+（224→225 行，**纯追加一行**，非重排）。
+
+真正扎手的是**没有冲突的那部分**。本地那次 rebase 删掉了 4 个 embeddata 副本：
+
+```
+517_handoff_pending_confirmations.sql
+527_handoff_durable_goal_state.sql
+813_supplier_errors_partitions_heap.sql
+814_adaptive_probe_targets_hot_subquery.sql
+```
+
+git **不报冲突**——一侧删除、另一侧相对基线未改动，删除静默胜出。813/814 更
+难一层：origin/main 已在 `embeddedSQLFiles` 与 `StartupFiles` 里**登记**了它们，
+副本一缺就是「登记存在、文件不存在」，`go:embed` 直接编译失败。
+⇒ **本地 main 在我介入前本身就编译不过**（`pattern embeddata/.../517_…: no matching files found`）。
+
+修完 `main.go` 213 条 `//go:embed` 声明做了全量存在性核对：0 缺失。
+
+> **教训**：「git 没报冲突」不等于「两边一致」。rebase 丢掉的东西会以「删除」
+> 的形态落在树上，而删除与未改动之间没有冲突可言。合并之后要问的不是"解完了
+> 吗"，而是**"两侧各自新增/删除了什么"**——前者看 `git diff --diff-filter=U`，
+> 后者要自己算交集。
+
+### §9.65.2 红1：`CASE` 的 `WHEN` 判据里裸占位符没有类型上下文
+
+`request_class`/`due_at` 一带上，`updateRequestLog` 的 UPDATE 报
+`could not determine data type of parameter $98`（SQLSTATE 42P08）。
+**这是生产写入路径**：失败被 persist 侧记为 WARN 后吞掉——不崩、不告警，
+只是 scheduled 请求的 class/due_at 永远不落库。
+
+定位链条值得记：报错只给 `character 9430`，先把它映射回源码才落到那一行。
+**中途的假设是错的**——我以为 `$98` 被 `due_at` 那行复用导致类型冲突，
+用最小复现把它证伪后才换方向：
+
+```
+CASE WHEN $1     IS NULL THEN request_class ELSE $1      → ERROR
+CASE WHEN $1::text IS NULL THEN request_class ELSE $1      → OK
+CASE WHEN $1 IS NULL THEN request_class ELSE $1::text     → ERROR   ← ELSE 救不了 WHEN
+COALESCE($1, request_class)                               → OK
+```
+
+同一张表、逐条 PREPARE、**不声明参数类型**（即 pgx 的真实路径）。两条结论都
+承重：cast 必须落在 `WHEN` 判据里那个 `$N` 上；`COALESCE`/`GREATEST`/`LEAST`/
+`NULLIF` 的实参则安全，因为它们按共同类型同批解析。修法是给两处判据加
+`$98::text`，**语义完全不变**——只是让语句能解析。`due_at` 判据复用 `$98`
+（class 为 NULL 时 due_at 也不写）这个既有耦合**本轮刻意未动**，理由写进注释
+并在既有门里按字面量钉住。
+
+真库：修前 FAIL（10s 轮询超时后 `no rows in result set`），修后 PASS（1.22s）。
+
+新增离线门 `TestCaseWhenPlaceholderHasTypeContext`。**为什么要离线门**：
+发现它的 `TestRequestClassPGRoundTrip` 没有 `TEST_PG_DSN` 就 skip，而同文件
+早已写明「结构性沉睡的门仍以 ok 的形式出现在报告里」。
+变异 M1（撤两处 cast）红、变异 M2（只在 ELSE 加 cast，即那个被证伪的错误
+修法）同样红。误报已排除：`COALESCE` 内的 `$37` 与已带 `::text` 的
+`$94`/`$96` 正确判为 ok。
+
+### §9.65.3 816/817 的「早退」是假的——`DO … RETURN` 只结束本块
+
+上轮我记的是「已达标形态仍重建一次、多取一次锁」。本轮真库复现后发现**失败
+方式更重**。
+
+PostgreSQL 的每个 `DO $$ … $$;` 是独立语句，块内 `RETURN` 只结束**该块**。
+最小验证（一条命令）：
+
+```sql
+DO $$ BEGIN RAISE NOTICE '块1'; RETURN; END $$;   → NOTICE: 块1
+DO $$ BEGIN RAISE NOTICE '块2'; END $$;           → NOTICE: 块2   ← 没被拦住
+```
+
+816/817 的结构正是「块 1 守卫 + RETURN / 块 2 重建」，而**块 2 对守卫刚测过的
+那个关系硬写 `::regclass`**。真库复现（事务已回滚，链已验证恢复）：
+
+```
+NOTICE: 817: view chain incomplete (680-incident shape); skipping — db.ensure rebuilds at startup
+ERROR:  relation "public.request_logs_with_current_month_without_request_class_due_at" does not exist
+```
+
+守卫打印 skipping，紧接着就在它声称要防的那个形状上崩。安装器逐文件跑
+`psql --single-transaction`，所以**不是「少做一次重建」，是整条迁移失败 ⇒
+安装/升级中止**。
+
+另一面（链完整时）实测：已是 817 形态，迁移自己打印 `nothing to do`，
+视图**仍被重建**（`xmin` 194880267→194880270；`CREATE OR REPLACE VIEW` 复用
+pg_class 条目，**OID 不变 ⇒ OID 不是有效探针**），并且并发读方持锁时超时
+正落在 `EXECUTE v2_ddl` 那行。安装器**每次部署无条件重跑整条链**（无
+`schema_migrations` 跳过），所以这条路径每次部署都走。
+
+**新增门** `TestToRegclassGuardIsNotFooledBySiblingDoBlock`。判据收窄到
+可判定的那一维：**守卫用 `to_regclass` 测存在性的关系，后续块又硬引用它**。
+第一版粗判据（「软早退后面还有块带 DDL」）红过 **6 条假阳性**——765/644/330/
+341/616/678 的形态是**守卫与动作同块**（实测 765 的 `RETURN@342` 就在同块
+`DDL@696` 之前），`RETURN` 在块内确实拦得住。收窄后全目录 811 个迁移
+（88 个多块）只命中 816/817 两条。
+
+这两条按**已知欠账登记**处理，不判红：816/817 已在本机与部分环境应用并
+登记进 `schema_migrations`，而迁移头注明写「不直接改已应用迁移，否则
+『已跑过』与『文件内容』分叉」。登记是**双向承重**的——变异 M2 删掉 817 的
+守卫块后，门反过来要求删登记项，否则欠账会在没人再提的时候长期静默。
+
+> **一条形状相同、后果未判的**：`330_usage_ledger_partition` 块 1 打印
+> "already partitioned, skipping migration" 后 RETURN，块 2 仍 `EXECUTE replace`。
+> 块 2 没有硬引用守卫测过的关系，本门不报；但「跳过分区迁移」之后仍重建索引
+> 是否越权，要逐条读语义才能定。**记下来，不并进「已确认缺陷」。**
+
+### §9.65.4 build tag 编译矩阵：5452 个 .go 文件从未被带 tag 编译过
+
+`-tags=integration` 下 admin 编译不过（`undefined: v1DirectTables`），而默认
+配置全绿、主干 CI 全绿。原因不在 admin，在**没人编译那个形态**：
+
+- `verify.sh` 的 `go test ./...` 与 `go vet ./...` **都不带 tag**；
+- `integration-testcontainers-ci.yml` 的 `paths:` 过滤**不含 `admin/**`**，
+  实测漏覆盖 **5452 个 .go 文件**（排除 vendor 仍有 457 个）；
+- 引入断链的 `32aa86eeb` 只动 `admin/**` ⇒ 从未触发过任何带 tag 的编译。
+
+新增 `scripts/check-build-tags.sh`（已接进 `verify.sh`）：tag 词表**从源码
+推导**不写死，48 个含约束包 × 15 种配置，约 25s。变异 M1（把 `//go:build
+!integration` 加回原处）⇒ 门立刻红 `undefined: v1DirectTables`，rc=1；撤销后
+rc=0。
+
+**这道门自己踩了三个坑，都写进文件头**：
+
+1. 裸目录名 `admin` 会被 `go vet` 当标准库路径 ⇒ 假红 `is not in std`。
+2. module 归属必须从**文件所在目录**向上找 `go.mod`；从仓库根开始会把所有包
+   算进主 module，门全绿而 `installer` 根本没被检。
+3. **最贵的一个**：`build constraints exclude all Go files` **不是良性输出**。
+   `go vet` 只要有一个包 load 失败就**不再 type-check 其余任何包**，admin 里
+   真实的 `undefined` 被完全吞掉——第一版把它当良性过滤掉，于是门在自己的
+   目标缺陷上是**绿的**。必须**先按配置剔除不存在的包再 vet**，不是事后过滤输出。
+
+> **判据次序会吃掉你想测的那条**：检查器自己的失败/警告会截断后续检查。
+> 事后过滤输出等于把这条检查摘掉，而报告看上去完全正常。
+
+### §9.65.5 252 生产实测：它是 814 形态，且装 817 不会丢数据
+
+经 `env-injector inject aliyun-edge-252` + SSH 只读查询 `pg-252-pg17`（PG 17.10）：
+
+| 项 | 实测 |
+|---|---|
+| canonical `client_ip` | `NULL::inet` 补位（既无 `pg_input_is_valid`，也无 `client_ip ~ `） |
+| canonical 列数 | **115**（818 契约是 118） |
+| 已登记 81x | `810, 811, 812, 813, 814` —— **815/816/817 均未装** |
+
+⇒ 252 **既不是 815 形态也不是 816 形态，是 814**。
+
+数据侧（决定「修了崩溃但丢了数据」这个担心成不成立）：
+
+| 窗口 | 行数 | `client_ip` 非空 | 语义非法（817 会转 NULL） | 字符类非法（816 守卫会挡） |
+|---|---|---|---|---|
+| `session_turns` 全量（27 天） | 804,317 | 19,422 | **0** | **0** |
+
+⇒ 装 815→816→817 **不丢任何数据**，净效果是 +2.4% 覆盖率；
+且 §9.64 那场崩溃在 252 是**潜在风险而非已发生事故**（27 天全量 0 条）。
+
+**量具纠错两处，都要记**：
+
+1. 我最初量的是 `session_turns_hot`（2261 行、`min_ts` 是 9 小时前刚提升），
+   四个时间窗数字**完全相同**才发现总体在父表 804,202 行。局部量具不成立。
+2. 我先查了 `request_logs_hot.client_ip`（`inet`），差点得出「脏值根本进不来、
+   §9.64 不成立」的相反结论。816/817 的源列是 **`session_turns.client_ip`
+   （`text`）**——写侧对 v1 族是 `inet` 兜底，对会话族才是自由文本。
+   **查错列会得到完全相反的结论。**
+
+### §9.65.6 两条既有红的归属订正
+
+- **红2** 已在 `199c65747` 绿、从 `777db9858`（contract-test 的一次基线重 dump，
+  +341/−153）起红。我的独立取证结论：三份基线副本已全部同代（两两差集 0），
+  Round-43 门断言的「代差」在仓里已不存在；且供给方 566/608/609 **全部幂等**，
+  所以门红时点名的「同一对象被基线与迁移各建一次」并不成立。
+  并行会话 `7d55159b4` 正是按「收敛态合法」翻转的口径——与我取证一致。
+  我本机两套 PG 都没有 `columnar` TAM（基线应用在 5892 行即失败，两变体同样），
+  **fresh-install A/B 未做**，这一条我不声称已验证。
+- **红1** 已在 §9.65.2 修复，`origin/main` 上**仍缺**（`$98::text` 计数 0）。
+
+### §9.65.7 本轮我自己的三次错，全部记下
+
+1. **假设被自己的最小复现证伪**：先认定 `$98` 复用导致类型冲突，改用 cast 后
+   仍是同一个错。若当时不测就改，会把一个错误归因写进注释。
+2. **扫描判据假阳性**：粗判据把 6 条「守卫与动作同块」的正确写法报成缺陷。
+   报出去之前逐条核了 `RETURN` 与 `DDL` 在块内的先后，才收窄判据。
+3. **量具挑错总体/挑错列**（§9.65.5 两处）。
+
+外加一条环境事实：Go build cache 涨到 **36GB**、磁盘 99% 满，导致
+`could not import X (open …go-build/…: no such file or directory)` 的构建
+失败——**它与本次任何改动无关**，分诊方式是换一个无关包复现同样报错。
+`go clean -cache` 后可用空间 54Gi→100Gi。
+
+> **这一轮的共同形状**仍是 §9.64 末尾那句：**「声明在」被当成了「行为在」**。
+> `RETURN` 声明了跳过；门声明了检查；`go test` 声明了通过。三处都要问一句
+> **它覆盖的是哪个形态、谁来跑它、失败时谁会看见**。
