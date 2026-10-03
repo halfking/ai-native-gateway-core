@@ -11,6 +11,11 @@ import UserInfoDialog from './components/UserInfoDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import AppTopbar from './components/shell/AppTopbar.vue'
+// 2026-10-03 审计 §9.73.7（③-4 裁决「接受冻结 + UI 标注」）：
+// silently_frozen 读点没有任何错误信号，所以告示必须是全局的，
+// 且取不到时也要显示（见 composable 的三态说明）。
+import V1DataFrozenBanner from './components/shell/V1DataFrozenBanner.vue'
+import { refreshV1DataHorizon } from './composables/useV1DataHorizon'
 // 2026-09-13 方案 §4.4：移动端抽屉导航，与 AppTopbar 汉堡按钮共享开关状态
 import AppNavDrawer from './components/ui/AppNavDrawer.vue'
 import { useBreakpoint } from './composables/useBreakpoint'
@@ -42,6 +47,9 @@ const logoObserver = typeof MutationObserver !== 'undefined'
 let stopMaintainAvailabilityWatch: (() => void) | null = null
 
 onMounted(async () => {
+  // 拉一次「v1 数据地平线」告示。失败**不**阻塞挂载：横幅自己会显示
+  // 「无法确认状态」而不是消失 —— 未确认不等于正常。
+  void refreshV1DataHorizon()
   brandLogo.value = logoSrc(detectTheme())
   logoObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
@@ -215,6 +223,7 @@ async function handleChangePasswordSuccess() {
       @change-password="openChangePassword"
       @logout="logout"
     />
+    <V1DataFrozenBanner />
     <main class="main-content">
       <div v-if="passwordSuccessMessage" class="main-banner">
         <div class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>

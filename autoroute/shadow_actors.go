@@ -2,7 +2,8 @@ package autoroute
 
 import (
 	"context"
-	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/internaltraffic"
 )
 
 // R37 (2026-09-17) — R35-R2 灰度口径: gateway-synthetic rounds are excluded
@@ -17,29 +18,22 @@ import (
 // auditability (doc 18: 打标不排除，过滤权在查询侧) — only the aggregate
 // faces skip them.
 
-// goalShadowActorPrefix prefixes every goal follow-up actor
-// (response_interceptor_helpers.followUpSourceActor).
-const goalShadowActorPrefix = "goal-"
+// ⚠ 2026-10-03（审计 §9.73）：本文件原先**自己**硬编码了三个生成器 actor 名
+// 与 `goal-` 前缀，而 `telemetry/internal_loopback.go` 与
+// `db/request_logs_view_schema.go` 各有一份**一模一样**的拷贝，三者之间
+// 没有任何依赖边 ⇒ 「改了一处、忘了另两处」在编译期完全等价。
+// 现在三处都从 `internal/internaltraffic` 取，那里有唯一一份。
+// 本文件保留导出 API（调用点遍布 bg / admin / autoroute 内部），只把**事实**委托出去。
+// 谓词的**臂集不变**（actor ∪ goal-%，刻意不含 taskless 臂——理由见该包文档）。
 
-// internalLoopbackActors are the X-Gw-Is-Auto loopback emitters
-// (telemetry.IsInternalAutoEntry's actor set).
-var internalLoopbackActors = map[string]struct{}{
-	"auto-title-generator":   {},
-	"auto-summary-generator": {},
-	"session-summary":        {},
-}
+// goalShadowActorPrefix 已移入 internal/internaltraffic.GoalShadowActorPrefix。
+// 保留这个常量是为了让本文件里**仍然引用它的地方**编译通过；不要在此处再加新的
+// 字面量——那正是本轮要消灭的东西。
 
 // IsSyntheticActor reports whether origin_actor denotes a gateway-synthetic
 // round. Empty actor (ordinary user traffic) is never synthetic.
 func IsSyntheticActor(originActor string) bool {
-	a := strings.TrimSpace(originActor)
-	if a == "" {
-		return false
-	}
-	if _, ok := internalLoopbackActors[a]; ok {
-		return true
-	}
-	return strings.HasPrefix(a, goalShadowActorPrefix)
+	return internaltraffic.IsSyntheticActor(originActor)
 }
 
 // SQLExcludeSyntheticActors returns the SQL predicate (safe to append inside
@@ -60,8 +54,8 @@ func SQLExcludeSyntheticActors(alias string) string {
 	// writer). Loopback actors are additionally code constants. If another
 	// writer ever touches origin_actor, trim there too; do not "fix" just
 	// one side of this pair.
-	return " AND COALESCE(" + col + ", '') NOT LIKE 'goal-%'" +
-		" AND COALESCE(" + col + ", '') NOT IN ('auto-title-generator','auto-summary-generator','session-summary')"
+	_ = col
+	return internaltraffic.SQLExcludeSyntheticActors(alias)
 }
 
 // originActorContextKey carries the request's origin actor into the Decider

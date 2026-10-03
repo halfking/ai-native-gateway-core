@@ -47,4 +47,13 @@ export default {
     tenant: '租户',
     close: '关闭',
   },
+  v1DataFrozen: {
+    title: '流量数据已停更：本页数字只反映停写之前',
+    titleUnconfirmed: '停写开关未显式配置：无法判断本页数字是否已过期',
+    titleUnavailable: '无法确认流量数据状态：本页数字可能已过期',
+    affects: '受影响读点档位',
+    gateKey: '控制开关',
+    retry: '重新检查',
+    failedHint: '读取数据状态失败。未确认状态不等于状态正常——本页数字请按「可能已过期」对待。',
+  },
 }
