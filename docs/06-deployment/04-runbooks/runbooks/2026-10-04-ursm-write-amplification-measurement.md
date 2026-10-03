@@ -278,6 +278,59 @@ SCAN 迁到独立 db 后实测 **0.11s**，`Collect` 几乎不耗时，
 不再与 30s 预算同量级。若迁键后此类空洞消失，即构成闭环证据。
 **建议把「空洞是否消失」列为迁键后的验收项之一。**
 
+### 5.3.2 ★★★ 两条路径都被 error 原文实测坐实（2026-10-03 23:28）
+
+上一版把「Collect 挤占 Flush 预算」写成"若成立"。**现在拿到证据了。**
+`journalctl` 最早只到 20:07（154）/ 21:08（245），该窗口内的 WARN 原文尚在。
+
+| | committed | collect failed | flush failed | 失败率 |
+|---|---|---|---|---|
+| **154** | 193 | **3** | **3** | **3.0%** |
+| **245** | 141 | 0 | 0 | **0%** |
+
+失败时间点 —— 间隔正好 60s，即每个 tick 一轮：
+
+```
+T20:09:47 collect failed      T21:14:47 flush failed
+T20:10:47 collect failed      T21:15:47 flush failed
+T20:11:47 collect failed      T21:16:47 flush failed
+```
+
+**路径 A 的 error 原文**（collect 超时）：
+
+```
+"persist collect failed","error":"redis scan failed: context deadline exceeded"
+"persist collect failed","error":"ursm.v2.persist: read node hash:
+    redis HGETALL failed after TYPE check: context deadline exceeded"
+```
+
+**路径 B 的 error 原文**（Flush 无预算）：
+
+```
+"persist flush failed","error":"insert row cid=37 model=gpt-5.6-terra:
+    timeout: context deadline exceeded"
+"persist flush failed","error":"insert row cid=63 model=claude-opus-5:
+    timeout: context already done: context deadline exceeded"
+```
+
+**★ `timeout: context already done` 是最关键的一条** —— 字面含义是
+**ctx 在 `Flush` 刚开始执行时就已经到期**。这与 §5.3.1 从代码读出的
+「Collect 与 Flush 共用 30s，Collect 吃满后 Flush 无预算」**完全吻合，不是巧合。**
+
+#### 三条由实测导出的新结论
+
+1. **这是持续性缺陷，不是一次性事故。** 3.0% 失败率意味着
+   **每天约 43 分钟的快照空洞**（0.03 × 1440）。今天 3 小时只发生 2 段 × 3 分钟，
+   而 100 分钟那个空洞对应失败率约 **7%** —— 负载高时显著恶化。
+2. **154 失败、245 零失败。** 同一批 Redis、同一套代码，只有 154 命中
+   ⇒ 失败与**单实例状态**相关（连接/负载/调度），不是全局性问题。
+3. **每段失败都是连续 3 个 tick**（20:09/10/11、21:14/15/16），
+   说明不是随机抖动，而是**持续一段时间的慢** —— 这正好解释长空洞的形成方式。
+
+**⇒ 迁键的收益从"预计"变成"已验证机制"**：SCAN 全库 12.95~30.40s 是
+路径 A 的直接成因；迁到独立 db 后实测 0.11s，路径 A 消失；
+Collect 不再吃满预算，路径 B 一并消失。**两台都会受益。**
+
 ### 5.4 ★ 根因无法最终定位：证据已被轮转删除
 
 追查了两个可能的日志源，**都已不可得**：
