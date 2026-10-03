@@ -1,0 +1,216 @@
+# session_turns abandoned 落点的可观测性（迁移 820，审计 §9.92）
+#
+# 指标来源：domains/hooks/observability/telemetry/abandoned_turn_metrics.go
+#   llm_gateway_abandoned_turn_ops_total{op}
+#     op = "mark"         — 一行终态 turn 被打上 is_abandoned = TRUE
+#     op = "mark_failed"  — 打标写失败（fail-open，请求日志不受影响）
+#     op = "mark_no_row"  — 打标命中 0 行
+#
+# # 落点是什么（先说清，因为告警要守的是它的失效形态）
+#
+# 820 取代了 819 的独立表方案（2026-10-03 用户拍板）。不变式是**单列**的：
+#
+#   is_abandoned = TRUE ⇔ 这是一行**终态** turn，而它的请求在 v1 侧
+#                            从来没有过 t0 记录。
+#
+# 判据（telemetry client.go 的 updateRequestLog 竞态回落分支）：
+#   UPDATE 命中 0 行 **且** `SELECT EXISTS(… request_id = $1)` 为 false。
+# request_logs_hot 上 request_id 是唯一键、每 id 恒 1 行（真库实测），
+# 所以「不存在」= t0 从未落库，而不是「已落但被覆盖」。
+#
+# # 两种坏法，以及为什么 `mark_no_row` 必须单列一条
+#
+# ① 从没写过   —— 二进制没部署 / 820 迁移没上 / 接线被拆
+# ② 写了但失败 —— fail-open 分支（设计如此）
+#
+# ③ **写了但命中 0 行** —— 这一种与 819 时代不同，是 820 **特有**的：
+#
+#   落点跑在 updateRequestLog 里，而终态 turn 是**异步** mirror 写进来的
+#   （outbox 事件）。两者没有顺序保证，于是 UPDATE 常常**先于**终态行存在。
+#   这是**常态而非异常**，`mark_no_row` 在健康系统里也会持续出现。
+#
+#   但它的比例是唯一能回答「这个落点是否可信」的信号：
+#   比例高 ⇒ 系统性地漏标 ⇒ 列看起来权威而实际不可信，
+#   **那比没有这个落点更糟**。所以判据是**比例**而不是绝对值。
+#
+# ⚠ 本轮**没有**修这个竞态（消除它需要让 mirror 与 t1 事件同事务或加延迟
+#   重试，属于另一个量级）。这里只做到**把它变成可见的**：§9.92.4 把它记为
+#   已知缺口，本告警负责让它不再静默。
+#
+# # 为什么 ① 用 `unless` 而不是 `rate(...) == 0`
+#
+# 这是 promtool 场景 D 逼出来的**真实修正**，不是风格选择（审计 §9.92.7）：
+#
+#   `{op="mark"}` 是带标签的 CounterVec，首次 Inc() 之前 Prometheus **不导出**
+#   任何时间序列 ⇒ `sum(rate(...))` 得到**空向量**而不是 0。
+#   于是最自然的 `... == 0` 在「从未写入」时左边是空向量、不满足任何触发
+#   条件 ⇒ **告警永不响，而这正是它唯一要抓的场景**。
+#
+#   `or (0 * …)` 能把空标签集变成 0（auto-route-selection-output.yml 记录过这个
+#   陷阱），**但它解决不了本条真正要区分的那一对**：
+#
+#       「mark 序列不存在」          ← 该报警（写路径没跑）
+#       「mark 序列存在、增量为 0」  ← 不该报（写路径在跑，只是这一小时没遗弃）
+#
+#   `rate(...) == 0` 对这两者**都**成立；`0 * …` 也一样，它只造零值、造不出「缺席」。
+#   ⇒ 场景 A（无序列 ⇒ 必须报）与场景 D（有序列零增量 ⇒ 不得报）**同时成立**，
+#     才算这个区分做对了；只让 A 通过的写法会连 D 一起误报。
+#
+# ⚠ 两个实测出来的 PromQL 细节（各自由 promtool 抓出来，不是查文档得来的）：
+#
+#   1. `absent()` **不支持 `by` 子句** —— 写了直接 parse error
+#      （`unexpected <by>`）。
+#   2. 更要紧的：`absent()` 返回的标签集是**空的**，所以
+#      `absent(...) and on(job,instance) (up == 1)` **永远匹配不上**
+#      ——场景 A 实测 `got=[]`。`absent` 回答「有没有」，
+#      不回答「**在哪些** job/instance 上没有」。
+#
+#   ⇒ 正确写法是 `unless`：左侧 up 提供 (job, instance) 标签，
+#     右侧「有 mark 序列的那些」把它们排除掉，剩下的即「该在却在零」。
+#
+# `up == 1` 那一臂不可省：进程挂掉时 mark 序列当然不存在，
+# 但那是另一件事。没有它，告警会在「网关根本没在跑」时报「落点没接线」。
+#
+# 聚合维度是 **(job, instance)**：只 by (instance) 会把 job 消掉、丢掉集群归属。
+#
+# # 阈值
+#
+# ③ 用比例而不是绝对条数：正常路径下 `mark_no_row` 占比高（异步竞态），
+# 绝对值随部署规模变化，比例与规模解耦。门限取 **0.9**：绝大多数打标尝试
+# 都打空，意味着终态行几乎总是还没落库，落点形同虚设。
+#
+# ⚠ 这个门限是**按设计推的，没有生产实测支撑**（820 尚未部署到 252）。
+#   首次部署后必须用真实 `mark` / `mark_no_row` 比例回归校准，
+#   否则这条告警要么永远响、要么永远不响。记在 §9.92 的遗留里。
+#
+# # 已知局限（如实登记）
+#
+# 1. **只在有 Prometheus 的环境生效。** 252 实测**没有** Prometheus
+#    （审计 §9.56），所以在 252 上这三条**一条都不会响**。
+# 2. **计数器是进程内存的，重启清零。** 短窗口比例不受影响（清零的是绝对量，
+#    不是正在发生的漏标），但 ① 因此在「部署二进制、忘上迁移」时可能不响：
+#    那种情况下 op 会走 `mark_failed` 而不是彻底静默（见告警 ②）。
+# 3. **权威计数是数据库列，不是计数器。**
+#        SELECT count(*) FROM session_turns_hot WHERE is_abandoned IS TRUE
+#    跨重启的累计量只有它能回答，这也是本文件不设累计计数器的原因。
+# 4. **不覆盖「只有 t0、之后彻底静默」那一类。** 那是落点的能力边界
+#    （见迁移 820 头注释与 §9.92.4），不是告警能补的。
+#
+groups:
+  - name: session_turns_abandoned
+    interval: 30s
+    rules:
+      # ── ① 从没写过 ──────────────────────────────────────────────────
+      - alert: AbandonedTurnPadNeverWritten
+        expr: |
+          max by (job, instance) (up{job=~"llm-gateway.*"}) == 1
+          unless on(job, instance)
+          max by (job, instance) (
+            llm_gateway_abandoned_turn_ops_total{op="mark"}
+          )
+        for: 2h
+        labels:
+          severity: warning
+          component: session-abandoned
+        annotations:
+          summary: "session_turns abandoned 落点从未被打标（写路径没跑）"
+          description: |
+            1 小时内 `op="mark"` 速率恒为 0，且已持续 2 小时。
+
+            这不是「没有请求遗弃」——**没有请求遗弃时判据也不会触发**
+            （只有 t0 缺失的请求才进这条分支）。`mark` 恒为 0 意味着
+            **写路径压根没跑**，三种可能：
+
+              ① 二进制没有 820 的接线（`markAbandonedTurn` 未被调用）
+              ② 820 迁移没应用 ⇒ 打标语句报错 ⇒ 走 fail-open ⇒ 这种情况
+                 应当同时看到 `op="mark_failed"` 增长（见 `AbandonedTurnPadWritesFailing`）
+              ③ 请求根本没进到 `updateRequestLog` 的竞态回落分支
+
+            先跑这一句区分 ① 和 ②：
+
+                curl -s :8780/metrics | grep abandoned_turn_ops
+
+            - 完全没有这个指标 ⇒ 情况 ①：二进制里没有这段代码
+            - 有 `{op="mark_failed"}` ⇒ 情况 ②：**820 迁移没上**
+          runbook: |
+            1. 确认二进制含 820 接线（`grep -c markAbandonedTurn` 于
+               domains/hooks/observability/telemetry/）。
+            2. 确认 820 已应用：
+               `SELECT count(*) FROM information_schema.columns
+                 WHERE table_name IN ('session_turns','session_turns_hot')
+                   AND column_name='is_abandoned'`
+               应为 2；为 0 则先跑迁移再重启。
+            3. **不要**因为「一条遗弃都没有」就判定落点正常——空与「没接线」
+               在值上不可区分，这正是本告警存在的理由。
+
+      # ── ② 写了但失败 ────────────────────────────────────────────────
+      - alert: AbandonedTurnPadWritesFailing
+        expr: |
+          sum by (job, instance) (increase(llm_gateway_abandoned_turn_ops_total{op="mark_failed"}[30m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: session-abandoned
+        annotations:
+          summary: "abandoned 落点打标在持续失败（fail-open 分支）"
+          description: |
+            30 分钟内 `mark_failed` 有增长。
+
+            打标是**刻意 fail-open** 的：失败只 slog.Warn，**不回滚**请求日志
+            主事务（理由：820 未应用时不应打挂全部请求日志）。代价是
+            **失败在请求侧完全不可见**，只有这条告警能发现。
+
+            两种可能的含义：
+
+            - `relation "session_turns_hot" does not exist` ⇒ 820 迁移没应用
+            - `column "is_abandoned" does not exist` ⇒ 表结构漂移
+              （820 自带列集守卫，迁移时会报 missing column）
+            - 超时/连接错误 ⇒ 数据库侧问题
+          runbook: |
+            1. 看 slog 的 `abandoned_turn: mark failed` 行确认 error 形态。
+            2. 迁移未应用 ⇒ 跑 820 后重启；列集漂移 ⇒ 820 守卫会直接报出
+               缺哪张表的哪一列。
+            3. 恢复后确认漏标是否可补：`mark` 是幂等 UPDATE，可对
+               历史终态行重跑（判据：t0 缺失的请求在 v1 侧无从查证，
+               所以**历史漏标不可追补**——这是本落点的固有限制）。
+
+      # ── ③ 打标但几乎全打空（异步竞态在系统性漏标）──────────────────
+      - alert: AbandonedTurnPadMostlyMissingItsRows
+        expr: |
+          (
+            sum by (job, instance) (rate(llm_gateway_abandoned_turn_ops_total{op="mark_no_row"}[1h]))
+          )
+          >
+          0.9 * (
+            sum by (job, instance) (rate(llm_gateway_abandoned_turn_ops_total{op=~"mark|mark_no_row"}[1h]))
+            or
+            (0 * max by (job, instance) (up{job=~"llm-gateway.*"}))
+          )
+          and on(job, instance)
+          (max by (job, instance) (up{job=~"llm-gateway.*"}) == 1)
+        for: 3h
+        labels:
+          severity: critical
+          component: session-abandoned
+        annotations:
+          summary: "abandoned 落点超过 90% 的打标尝试没命中任何行（竞态在系统性漏标）"
+          description: |
+            1 小时窗口内，**超过九成**的打标尝试结果是 `mark_no_row`。
+
+            `mark_no_row` 本身**不是故障**：终态 turn 是**异步** mirror 写进来的
+            （outbox 事件），而打标跑在同步的 `updateRequestLog` 里，两者无顺序
+            保证，所以打标**经常**先于终态行存在。健康系统里这个比例也不会是 0。
+
+            但它到 0.9 意味着：**绝大多数遗弃请求根本没被打上标记**，
+            而 `is_abandoned` 列**看起来仍然权威**。
+            **那比没有这个落点更糟**——没有落点时你知道你不知道。
+
+            ⇒ 本告警响的时候，请把 `is_abandoned = TRUE` 的计数当作
+              **下界**而不是全集。
+          runbook: |
+            1. 确认不是两条面都漏：`mark` 若也为 0，那是 ①/②，不是本条。
+            2. 根因是 mirror 的异步落行晚于打标。临时缓解：把打标改为
+               在 outbox 消费者侧执行（那里终态行必然已存在）。
+               本轮**未实施**（见审计 §9.92.4 的遗留）。
+            3. 阈值 0.9 是**按设计推的、未经生产实测**（820 尚未上 252）。
+               首次部署后必须用真实比例回归校准，否则这条要么永远响要么永不响。
