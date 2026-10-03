@@ -358,6 +358,13 @@ function checkOverlayBlock(file, src, kind, review) {
     const fams = new Set(r.classes.map(familyOf))
     const sameFamily = flexScrollChildren.some((c) => c.classes.some((cc) => fams.has(familyOf(cc))))
     if (sameFamily) continue
+    // ★ 锚点是**这条限高规则自己的类**，不是模板根、也不是 containers。
+    //   实测踩过：AttachmentManager.vue 的模板根是 .attachment-manager，
+    //   弹层是页面里嵌的 div，containers 因此为空 → 判据直接放弃，
+    //   真实存在的 .json-block 滚动路径看不见。
+    //   问的问题应该只有一个：「带着这个 max-height 的元素，其子树里有没有
+    //   声明了 overflow 的元素」。
+    if (descendantHasScrollable(src, css, r.classes)) continue
     review.push({
       file,
       line: r.line,
@@ -365,6 +372,73 @@ function checkOverlayBlock(file, src, kind, review) {
     })
   }
   return problems
+}
+
+/**
+ * 带 anchorClasses 的那个元素，其**模板子树**里是否存在声明了
+ * overflow(-y): auto|scroll 的元素。
+ *
+ * 只认后代：模板里该元素之外、但同一文件里的滚动元素不算数。
+ * 判别力来自结构而不是命名 —— 页面上别处有 overflow 也不会误豁免。
+ */
+function descendantHasScrollable(src, css, anchorClasses) {
+  const anchors = new Set((anchorClasses || []).map((c) => c.toLowerCase()))
+  if (!anchors.size) return false
+
+  const tpl = src.match(/<template>([\s\S]*)<\/template>/)
+  if (!tpl) return false
+  const body = tpl[1].replace(/<!--[\s\S]*?-->/g, '')
+
+  // CSS 里带 overflow 的类
+  const scrollableClasses = new Set()
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/(?:^|;)\s*overflow(-y)?\s*:\s*(auto|scroll)/.test(m[2])) continue
+    for (const c of m[1].matchAll(/\.([a-z0-9_-]+)/gi)) scrollableClasses.add(c[1].toLowerCase())
+  }
+  if (!scrollableClasses.size) return false
+
+  const classesOf = (attrText) =>
+    ((attrText || '').match(/\bclass="([^"]*)"/) || [, ''])[1]
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((c) => c.toLowerCase())
+
+  const tagRe = /<([a-zA-Z][\w-]*)((?:[^>"']|"[^"]*"|'[^']*')*)\/?>/g
+  let m
+  while ((m = tagRe.exec(body))) {
+    const tag = m[1]
+    const cls = classesOf(m[2])
+    if (!cls.some((c) => anchors.has(c))) continue
+    if (cls.some((c) => scrollableClasses.has(c))) return true
+    // 从这个开标签起，按同名标签配对找出**它的闭合位置**，再把这中间的整段
+    // （含所有不同名的后代标签）扫一遍。
+    // ⚠ 只扫「同名标签的 class」是不够的：
+    //   <div class="modal"><pre class="json-block">…</pre></div>
+    // 配对时遇到的是 </div>，中间的 <pre> 会被整段跳过 ⇒ 又变成「看不出来」。
+    let depth = 1
+    let cursor = tagRe.lastIndex
+    let end = body.length
+    const step = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'g')
+    step.lastIndex = cursor
+    let cm
+    while ((cm = step.exec(body))) {
+      if (cm[1]) {
+        depth--
+        if (depth === 0) { end = cm.index; break }
+      } else {
+        depth++
+      }
+      cursor = step.lastIndex
+    }
+    const inner = body.slice(tagRe.lastIndex, end)
+    for (const c of inner.matchAll(/\bclass="([^"]*)"/g)) {
+      for (const one of c[1].split(/\s+/)) {
+        if (scrollableClasses.has(one.toLowerCase())) return true
+      }
+    }
+    return false // 只看第一处弹层根
+  }
+  return false
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -418,6 +492,28 @@ function selftest() {
   const goodOverlay = `<template><div class="modal__panel"></div></template>
 <style scoped>
 .modal__panel { width: 720px; max-height: 400px; overflow-y: auto; }
+</style>`
+
+  // ★ 第四种滚动来源「模板结构上的后代」（2026-10-03）。
+  // 真实形态取自 AttachmentManager.vue：滚动的类名与弹层毫无关系，
+  // 前三种按名字找的规则都看不出来，于是被降级成「待人工确认」——
+  // 而降级后有个更糟的后果：把 overflow:auto 抽掉，报告**一字不变**。
+  // 下面两条把「结构判据」钉死，且第 2 条是**反向对照**：
+  // 滚动元素在弹层**外面**时不得豁免（否则「同组件有 overflow」就退化成恒绿）。
+  const scrollableDescendantModal = `<template>
+  <div class="modal"><pre class="json-block">{{ body }}</pre></div>
+</template>
+<style scoped>
+.modal { width: 800px; max-height: 80vh; display: flex; flex-direction: column; }
+.json-block { flex: 1; overflow: auto; }
+</style>`
+  const scrollableOutsideModal = `<template>
+  <div class="page-scroller"><div class="modal"><pre class="body">{{ body }}</pre></div></div>
+</template>
+<style scoped>
+.modal { width: 800px; max-height: 80vh; display: flex; flex-direction: column; }
+.body { flex: 1; }
+.page-scroller { overflow: auto; height: 400px; }
 </style>`
   // 逐字折行 bug 的真实样本（2026-10-03 供应商表实测形态）
   const badZeroWidth = `<template><table><tr><td>x</td></tr></table></template>
@@ -491,6 +587,21 @@ function open(o) {
   r.push(['弹层：容器真的没定宽 → 仍判红（修复未把鉴别力一起修掉）', f('b5.vue', containerUnsized, checkOverlays).length > 0])
   r.push(['弹层：连字符写法 .drawer-body-scroll 继承容器宽度 → 判绿', f('g6.vue', hyphenBody, checkOverlays).length === 0])
   r.push(['弹层：<script> 里的 JS 代码块不得被当成 CSS 容器', f('g7.vue', jsBlockNotCss, checkOverlays).length === 0])
+
+  // 第四种滚动来源（模板结构后代）—— 两条都走 REVIEW_ITEMS，因为「限高但
+  // 无可证滚动路径」是待确认项而非硬门。断言的是**进不进待确认桶**。
+  {
+    REVIEW_ITEMS.length = 0
+    f('g8.vue', scrollableDescendantModal, checkOverlays)
+    r.push(['弹层：滚动元素是弹层的模板后代（名字无关）→ 不进待确认桶', REVIEW_ITEMS.length === 0])
+    REVIEW_ITEMS.length = 0
+  }
+  {
+    REVIEW_ITEMS.length = 0
+    f('b8.vue', scrollableOutsideModal, checkOverlays)
+    r.push(['弹层：滚动元素在弹层**外面** → 必须进待确认桶（防同组件恒绿）', REVIEW_ITEMS.length > 0])
+    REVIEW_ITEMS.length = 0
+  }
   r.push(['弹层：限高在壳、滚动在 flex:1 子项 → 判绿（误报家族①）', f('g8.vue', shellLimitsBodyScrolls, checkOverlays).length === 0])
   r.push(['弹层：限高且全族无滚动来源 → 进「待确认」桶（不再冒充硬门定罪）', (() => {
     REVIEW_ITEMS.length = 0
