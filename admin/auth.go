@@ -88,11 +88,14 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 
 		// ── JWT auth (Bearer header or session cookie) ──
 		if tokenStr, ok := extractBearerOrCookieToken(r); ok {
-			// 1) Multi-issuer path (cross-project trust via identity-go).
-			//    When IDENTITY_SHARED_SECRET is set, this accepts tokens
-			//    signed by pocket / memora / redclaw / acc / llm-gateway as
-			//    long as aud=llm-gateway-api.
-			if p, err := identity.Verify(tokenStr, legacyAdapter(secretKey)); err == nil && p != nil && p.UserID > 0 {
+			// Normalize both shared and canonical local JWTs once. Verify
+			// already handles the legacy verifier and authorization policy;
+			// retrying VerifyToken here would bypass a policy rejection.
+			p, err := identity.Verify(tokenStr, legacyAdapter(secretKey))
+			if err == nil && p != nil && p.Source == "multi_issuer" {
+				p, err = resolveSharedPrincipal(r.Context(), db, p)
+			}
+			if err == nil && p != nil && p.UserID > 0 {
 				// B4 (2026-09-22): a token issued before the user's last
 				// password change is revoked. Only local (legacy) tokens —
 				// cross-project principals have foreign user_id semantics.
@@ -100,7 +103,7 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 					writeError(w, http.StatusUnauthorized, "session revoked: password changed")
 					return
 				}
-				if p.Source == "legacy" && p.MustChangePassword {
+				if p.MustChangePassword {
 					if !isPasswordChangeAllowedPath(r.URL.Path) {
 						writeError(w, http.StatusForbidden, errPasswordChangeRequired.Error())
 						return
@@ -113,35 +116,10 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 					Role:               p.Role,
 					IsJWT:              true,
 					MustChangePassword: p.MustChangePassword,
+					Issuer:             p.Issuer,
+					Subject:            p.Subject,
+					CanonicalUserID:    p.CanonicalUserID,
 				})
-				next(w, authReq)
-				return
-			}
-
-			// 2) Legacy single-secret path (always available, backward compat).
-			claims, err := VerifyToken(tokenStr, secretKey)
-			if err == nil && claims.UserID > 0 {
-				// B4 (2026-09-22): same password-change revocation gate as
-				// the identity path above.
-				issuedAt := time.Time{}
-				if claims.IssuedAt != nil {
-					issuedAt = claims.IssuedAt.Time
-				}
-				if authRevocationProbe(r.Context(), db, claims.UserID, issuedAt) {
-					writeError(w, http.StatusUnauthorized, "session revoked: password changed")
-					return
-				}
-				authReq := SetAuthContext(r, &AuthContext{
-					UserID:             claims.UserID,
-					TenantID:           claims.TenantID,
-					Username:           claims.Username,
-					Role:               claims.Role,
-					IsJWT:              true,
-					MustChangePassword: claims.MustChangePassword,
-				})
-				if enforceMustChangePassword(w, r, claims) {
-					return
-				}
 				next(w, authReq)
 				return
 			}
