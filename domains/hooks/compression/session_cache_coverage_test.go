@@ -561,15 +561,15 @@ func TestEncodeSessionStateFields_OmitsEmptyOptionalFields(t *testing.T) {
 		v, _ := fields[i+1].(string)
 		raw[k] = v
 	}
-	// Optional fields should not appear when zero.
+	// Non-audit optional fields retain their historical encoding.
 	if _, ok := raw["th"]; ok {
 		t.Error("encodeSessionStateFields: ToolsHash should be omitted when empty")
 	}
-	if _, ok := raw["aud_at"]; ok {
-		t.Error("encodeSessionStateFields: AuditedAt should be omitted when zero")
+	if value, ok := raw["aud_at"]; !ok || value != "0" {
+		t.Error("encodeSessionStateFields: AuditedAt must explicitly reset to zero")
 	}
-	if _, ok := raw["app_st"]; ok {
-		t.Error("encodeSessionStateFields: ApprovalStatus should be omitted when empty")
+	if value, ok := raw["app_st"]; !ok || value != "" {
+		t.Error("encodeSessionStateFields: ApprovalStatus must explicitly reset to empty")
 	}
 }
 

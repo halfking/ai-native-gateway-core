@@ -72,9 +72,39 @@ type SanitizeInfo struct {
 // json.Compact output, key order preserved) while AlignmentInfo.Hash is msgHash
 // (32-hex, sha256 over Unmarshal+Marshal output, Go sorts object keys).
 //
-// Today this costs nothing because MessageRefs has no production consumer
-// (registered as 21号 §四 G2, P3). It is a trap for the first consumer that
-// joins the two. Both facts are pinned by provenance_seam_pin_test.go.
+// ⚠️ CORRECTION (2026-10-03, audit 216号): the sentence that used to stand
+// here read "Today this costs nothing because MessageRefs has no production
+// consumer". **That was wrong, and wrong in the dangerous direction.**
+// MessageRefs DOES have a production consumer and is persisted on every
+// request: buildOutboundProvenance (domains/streaming/request_log_pipeline.go:1498)
+// reads SanitizeInfo.MessageRefs and emits `sanitize_message_refs`, called from
+// handler.go:4017 (chat, with AlignmentMap), responses.go:272 and
+// messages.go:262 (both pass alignment=nil). The product lands in
+// request_logs.compression_meta, and sessions_v2 reads it back at
+// domains/session/v2/cache_v2.go:803.
+//
+// What is actually missing is narrower and must be stated exactly:
+// **both sides are persisted, but nothing JOINS them.** The trap is the first
+// consumer that tries to join, not a consumer's absence — the data is in the
+// database today and will stay there.
+//
+// Why the old wording mattered: "no production consumer" invites the reading
+// "the provenance data is never persisted, so the seam cannot hurt anyone".
+// The truth is the reverse — the data is persisted, so the seam is reachable by
+// anyone who writes the join later, and it will then silently answer "where did
+// original message N go?" from the wrong row.
+//
+// One more correction, about this very edit: 216号's first draft of this comment
+// said the old sentence had "already drifted once", implying it was once true
+// and went stale. That was wrong too. 196号 wrote the sentence on 2026-10-03;
+// 80号's producer/consumer verification was published 2026-10-01. **Both sit in
+// the same docs/全面审计v3 tree, and the sentence contradicted a conclusion
+// that was already on disk when it was written.** It was wrong at birth, not
+// stale. (80号 verified the chain; 216号 re-verified it on current HEAD.)
+//
+// Both coordinate/hash facts above are pinned by provenance_seam_pin_test.go,
+// which 216号 also re-verified still fails when diff.go's assembly order is
+// inverted — i.e. the pin has real discriminating power.
 type SanitizedMessageRef struct {
 	RawIndex         int    `json:"raw_index"`
 	SanitizedIndex   int    `json:"sanitized_index"`

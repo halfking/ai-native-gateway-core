@@ -609,9 +609,9 @@ BEGIN
     
     FOR partition_rec IN
         SELECT 
-            parent.relname as parent_table,
-            child.relname as child_table,
-            am.amname as access_method,
+            parent.relname::text as parent_table,
+            child.relname::text as child_table,
+            am.amname::text as access_method,
             pg_total_relation_size(child.oid) as size_bytes,
             (SELECT pg_get_expr(c.relpartbound, c.oid) 
              FROM pg_class c WHERE c.oid = child.oid) as partition_bounds
@@ -972,7 +972,18 @@ CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, pa
             columnar_insert_only_parents() AS should_be_columnar,
             ARRAY['request_logs','request_wal','usage_ledger',
                   'request_logs_archive','request_wal_archive',
-                  'usage_ledger_archive']::text[] AS should_be_heap
+                  'usage_ledger_archive',
+                  -- R17 rolled-back families (20): before 2026-10-01 these fell
+                  -- through to expected='unknown', so the detector for the
+                  -- outage that actually happened was blind to them.
+                  'sessions','session_turns','session_turn_details',
+                  'session_bodies','usage_facts','stats_event_inbox',
+                  'credential_model_index','auto_route_selections',
+                  'session_memora','session_censors','system_probe_runs',
+                  'credit_ledger','tool_usage_stats','session_tools',
+                  'session_module_executions','cache_metrics',
+                  'dashboard_access_events','model_probe_runs','handoff_logs',
+                  'supplier_errors']::text[] AS should_be_heap
     ), partitions AS (
         SELECT
             p.relname AS parent_name,
@@ -987,6 +998,8 @@ CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, pa
         JOIN pg_class c ON c.oid = i.inhrelid
         JOIN pg_namespace n ON n.oid = p.relnamespace
         WHERE n.nspname = 'public'
+          AND p.relkind = 'p'
+          AND c.relkind = 'r'
     )
     SELECT
         par.parent_name,
@@ -995,6 +1008,11 @@ CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, pa
         CASE
             WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
             WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
+            -- 'unknown' is a legitimate third state, not just a gap: some
+            -- families are columnarised per-partition by policy
+            -- (request_logs_bodies, routing_decision_log_archive) and must
+            -- stay out of BOTH lists -- widening should_be_columnar means
+            -- editing the pinned columnar_insert_only_parents() SSOT.
             ELSE 'unknown'
         END::text AS expected,
         (par.storage = CASE

@@ -22,7 +22,8 @@ func entitlementGateEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("LLM_GATEWAY_PLUGIN_ENTITLEMENT_GATE")), "true")
 }
 
-// registerPluginAPIProxy mounts GET /plugins/{pluginId}/api/{rest...}, admin-auth-gated.
+// registerPluginAPIProxy mounts /plugins/{pluginId}/api/{rest...} for the
+// methods the session plugin uses, admin-auth-gated.
 // The {rest...} tail makes it unambiguously more specific than the static-file route
 // GET /plugins/{pluginId}/{rest...} (Go ServeMux picks the more specific pattern, no
 // conflict). After auth, the verified tenant from AuthContext is injected as
@@ -45,7 +46,12 @@ func registerPluginAPIProxyWithCapabilities(mux *http.ServeMux, secret []byte, p
 		auth := admin.GetAuthContext(r)
 		if capabilities != nil {
 			path := r.URL.Path
-			if i := strings.Index(path, "/api"); i >= 0 { path = path[i+len("/api"):]; if path == "" { path = "/" } }
+			if i := strings.Index(path, "/api"); i >= 0 {
+				path = path[i+len("/api"):]
+				if path == "" {
+					path = "/"
+				}
+			}
 			if capability := capabilities.Required(r.Method, path); capability != "" && !capabilities.Allows(pluginID, capability) {
 				pluginruntime.CapabilityDenied(w, capability)
 				return
@@ -76,5 +82,9 @@ func registerPluginAPIProxyWithCapabilities(mux *http.ServeMux, secret []byte, p
 		}
 		pluginruntime.PluginAPIProxy(base, secret).ServeHTTP(w, r)
 	})
-	mux.Handle("GET /plugins/{pluginId}/api/{rest...}", admin.AdminMiddleware(handler, pool, adminSecret))
+	// Session analysis writes annotations, tags and skill status. The proxy
+	// used to mount GET only, so those plugin pages could render but not save.
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		mux.Handle(method+" /plugins/{pluginId}/api/{rest...}", admin.AdminMiddleware(handler, pool, adminSecret))
+	}
 }
