@@ -91,7 +91,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"        //nolint:depguard // URSM v2 wiring (T20)
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api" //nolint:depguard // URSM v2 ModeOff constant (Task 8)
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/bootstrap"
 	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"         //nolint:depguard // URSM v2 persist writer
 	ursmstore "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store" //nolint:depguard // Lua script preload (2026-08-27 P1)
@@ -1142,6 +1141,18 @@ func main() {
 		)
 		ursmV2Cfg.Mode = ursmv2api.ModeOff
 	}
+	// ursmV2Redis is the exact client the v2 manager was constructed on, and
+	// the exact client the coverage bootstrap must use.
+	//
+	// 2026-10-04 (db14 migration incident): bootstrap.Apply used to be handed
+	// redisClientForCache — the *gateway* client. As soon as URSM_V2_REDIS_DB
+	// pointed at a dedicated db, Apply wrote every node hash and the coverage
+	// manifest into the gateway db while the manager validated coverage in the
+	// dedicated one, so authoritative startup could never converge and always
+	// degraded to ModeOff. Reads and writes of one subsystem must not be able
+	// to drift onto two different databases, so the client is captured here and
+	// both consumers are wired from this single value.
+	var ursmV2Redis *redis.Client
 	if redisClientForCache != nil {
 		// 2026-10-03: URSM 可用独立 db（URSM_V2_REDIS_DB）。
 		//
@@ -1166,8 +1177,9 @@ func main() {
 					"db", ursmV2Cfg.RedisDB, "gateway_db", cfg.RedisDB)
 			}
 		}
+		ursmV2Redis = ursmRedis.Client()
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
-			Redis:  ursmRedis.Client(),
+			Redis:  ursmV2Redis,
 			Config: ursmV2Cfg,
 		})
 		// Shadow and canary cannot reject a route before their own guarded
@@ -1202,27 +1214,24 @@ func main() {
 	// begin accepting traffic.
 	if redisClientForCache != nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
 		if ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			result, bootstrapErr := bootstrap.Apply(ctx, bootstrap.Options{
-				Pool:        dbConn.Pool(),
-				Redis:       redisClientForCache.Client(),
-				KeyPrefix:   ursmV2Cfg.RedisKeyPrefix,
-				CoolSeconds: ursmV2Cfg.CoolSeconds,
-				SchemaMode:  ursmV2Cfg.KeySchemaMode,
-			})
+			// ursmV2Redis is non-nil whenever ursmV2Mgr is; the two are
+			// constructed together above. Passing the manager's own client is
+			// what keeps bootstrap writes and coverage validation on one db.
+			result, bootstrapErr := applyBootstrapWithRetry(dbConn.Pool(), ursmV2Redis, ursmV2Cfg)
 			if bootstrapErr != nil {
-				cancel()
 				if ursmStrictDeps {
 					slog.Error("ursm.v2: authoritative startup refused; legacy bootstrap failed", "error", bootstrapErr)
 					return
 				}
 				slog.Error("ursm.v2: authoritative bootstrap failed, degrading to ModeOff and continuing on legacy routing",
 					"error", bootstrapErr,
+					"attempts", bootstrapAttempts,
 					"hint", "set URSM_V2_STRICT_DEPS=true to fail fast instead of serving degraded",
 				)
 				ursmV2Cfg.Mode = ursmv2api.ModeOff
 				ursmV2Mgr = nil
 			} else {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				count, warmupErr := ursmV2Mgr.WarmupFromCoverage(ctx)
 				cancel()
 				if warmupErr != nil {
