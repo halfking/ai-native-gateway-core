@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
+import { sortByName } from '../utils/sortByName'
 import { localeRef } from '../i18n'
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -28,7 +29,11 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    tenants.value = await getTenantsAdmin(filterStatus.value || undefined)
+    // 2026-10-03：按名称排序（老板要求的查找性排序）。原先直接用后端返回顺序，
+    // 实际是按 tenant code 排的（acme/chenb/debug/…），而列表首列显示的是
+    // 租户名 —— 看到什么顺序就找不到什么，得先在脑子里把名字翻译成 code。
+    const rows = await getTenantsAdmin(filterStatus.value || undefined)
+    tenants.value = sortByName(rows)
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('tenants.list.loadFailed')
   } finally {

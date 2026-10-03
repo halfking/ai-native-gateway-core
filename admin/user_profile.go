@@ -143,6 +143,20 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 
 	rows, err := h.db.Query(ctx, listSQL, args...)
 	if err != nil {
+		// 2026-10-03：session_owners 属于可选聚合表（安装器迁移 563/683 建），
+		// 目标库没应用时这里原本直接 500，页面 /admin/session-analytics/users
+		// 每次打开都报 console 错误。与 usage_* 的降级口径保持一致：
+		// schema 落后于代码时返回空列表 + 200，并把原因记进服务端日志。
+		if IsSchemaBehindError(err) {
+			ReportSchemaBehind(slog.Default(), "userProfile.list", err)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"users":  []UserProfileSummary{},
+				"total":  0,
+				"limit":  limit,
+				"offset": offset,
+			})
+			return
+		}
 		writeInternalErr(w, "query failed", err)
 		return
 	}

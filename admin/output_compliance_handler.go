@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ func (h *OutputComplianceHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/output-compliance/feedback", h.handleFeedback)
 
 	mux.HandleFunc("/api/admin/output-compliance/stats", h.handleStats)
+	mux.HandleFunc("/api/admin/output-compliance/records", h.handleRecords)
 }
 
 // ==================== 数据模型 ====================
@@ -742,18 +744,185 @@ func (h *OutputComplianceHandler) handleStats(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var pendingReviews int
-	_ = h.pool.QueryRow(r.Context(),
-		`SELECT COUNT(*) FROM output_compliance_review_queue WHERE tenant_id=$1 AND status='pending'`, tenantID).Scan(&pendingReviews)
+	pendingReviews := 0
+	if err := h.pool.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM output_compliance_review_queue WHERE tenant_id=$1 AND status='pending'`, tenantID).Scan(&pendingReviews); err != nil {
+		// 2026-10-03 R38：stats 是聚合展示，单路失败不应 500 整个面板，
+		// 但也不能静默吞掉——记进日志，面板上该字段回 0 可见异常。
+		slog.Warn("output-compliance stats: pending reviews count failed",
+			"tenant_id", tenantID, "error", err)
+		pendingReviews = 0
+	}
+
+	// 2026-10-03：视图（web/src/views/OutputComplianceView.vue）一直按下面这组
+	// 字段读 stats，之前接口只返回 {total_issues, blocked, pending_reviews}，
+	// 字段对不上 → 模板对 undefined 调 toLocaleString → 整页白屏。
+	//
+	// issue_type 的取值域是**核实过的**，不是猜的：写库处只有
+	// domains/outputcompliance/checker.go 的五处 Type 字面量
+	// pii / toxic / secret / internal_ip / bias。
+	// 视图里的 toxicity_hits 对应库里的 toxic；jailbreak_hits 对应的检查
+	// 本仓根本不存在（无 jailbreak 检测器），恒为 0，这里显式写 0 而不是
+	// 编一个数出来。avg_latency_ms 在审计表里没有对应列，同样返回 0。
+	var piiHits, secretHits, toxicHits int
+	var lastDetected *time.Time
+	if err := h.pool.QueryRow(r.Context(),
+		`SELECT COUNT(*) FILTER (WHERE tenant_id=$1 AND issue_type='pii'),
+		        COUNT(*) FILTER (WHERE tenant_id=$1 AND issue_type='secret'),
+		        COUNT(*) FILTER (WHERE tenant_id=$1 AND issue_type='toxic'),
+		        MAX(detected_at) FILTER (WHERE tenant_id=$1)
+		 FROM output_compliance_audit`, tenantID).
+		Scan(&piiHits, &secretHits, &toxicHits, &lastDetected); err != nil {
+		// 2026-10-03 R38：原实现 `_ =` 丢弃 + MAX(detected_at) 裸跑全表——
+		// last_updated 会拿到**其它租户**最近一次事件时间（admin 裸 pool 不设
+		// RLS GUC，见 model_policies.go 的注记），属跨租户信息泄漏，已加 FILTER。
+		slog.Warn("output-compliance stats: issue breakdown failed",
+			"tenant_id", tenantID, "error", err)
+	}
+
+	lastUpdated := ""
+	if lastDetected != nil {
+		lastUpdated = lastDetected.UTC().Format(time.RFC3339)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
+		// 原有字段保持不变（可能有别的调用方）
 		"total_issues":    totalIssues,
 		"blocked":         blocked,
 		"pending_reviews": pendingReviews,
+		// 视图契约
+		// total_checks 暂无真实计数源（检查通过不落审计行，policies.total_checks
+		// 列存在但全仓无递增点），先镜像 total_issues 保持字段可用；真实计数
+		// 需在 outputcompliance 检查路径加计数落库，见 R38 审计移交清单。
+		"total_checks":   totalIssues,
+		"pii_hits":       piiHits,
+		"secret_hits":    secretHits,
+		"toxicity_hits":  toxicHits,
+		"jailbreak_hits": 0, // 本仓无 jailbreak 检测器，诚实报 0
+		"avg_latency_ms": 0, // 审计表无此列
+		"last_updated":   lastUpdated,
+	})
+}
+
+// complianceRecordPreviewLimit 命中记录里预览文本的最大长度。
+// 预览只在引擎已脱敏的行上出现（见 handleRecords），这里只管截断长度。
+const complianceRecordPreviewLimit = 120
+
+// handleRecords: GET /api/admin/output-compliance/records
+//
+// 2026-10-03 新增。视图的「命中记录」表一直在调这个端点，而后端从未实现
+// （RegisterRoutes 里也没有），于是该 tab 永远 404。
+//
+// 取值映射（全部来自 output_compliance_audit 的现有列，无新表）：
+//
+//	session_key → session_id
+//	issue_type  → check_type     （pii / toxic / secret / internal_ip / bias）
+//	issue_subtype → hit_type
+//	detected_at → created_at
+//	redacted    → redacted
+//	content_preview ← redacted_output，且**仅在 redacted=true 时取**
+//
+// 最后一条是安全约束，不是风格选择：compliance 引擎判定某处需要脱敏时会把
+// 原文替换掉，并把 redacted 置 true；evidence 列存的是命中的原始片段。
+// 这里只回显引擎自己脱敏后的 redacted_output，未脱敏的行一律返回空预览——
+// 否则这个列表就成了一条「把 PII/密钥原文摊平给人看」的通道，
+// 与合规模块存在的目的正好相反。
+func (h *OutputComplianceHandler) handleRecords(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		return
+	}
+	tenantID := GetTenantID(r)
+	limit, offset := parsePagination(r, 50, 0)
+
+	where := []string{"tenant_id = $1"}
+	args := []interface{}{tenantID}
+	if ct := strings.TrimSpace(r.URL.Query().Get("check_type")); ct != "" {
+		args = append(args, ct)
+		where = append(where, fmt.Sprintf("issue_type = $%d", len(args)))
+	}
+	if ht := strings.TrimSpace(r.URL.Query().Get("hit_type")); ht != "" {
+		args = append(args, ht)
+		where = append(where, fmt.Sprintf("issue_subtype = $%d", len(args)))
+	}
+	cond := strings.Join(where, " AND ")
+
+	var total int
+	if err := h.pool.QueryRow(r.Context(),
+		fmt.Sprintf(`SELECT COUNT(*) FROM output_compliance_audit WHERE %s`, cond), args...).
+		Scan(&total); err != nil {
+		writeInternalErrStr(w, "Failed to count compliance records", err)
+		return
+	}
+
+	args = append(args, limit, offset)
+	// 占位符：args = [过滤条件…, limit, offset]
+	//   len(args)-1 → limit 的序号，len(args) → offset 的序号
+	// 截断长度用编译期常量直接内联（不是用户输入，内联安全），
+	// 绝不能占一个 $n —— 那样会跟 limit/offset 的序号抢位。
+	rows, err := h.pool.Query(r.Context(), fmt.Sprintf(`
+		SELECT id, COALESCE(session_key, ''), issue_type, COALESCE(issue_subtype, ''),
+		       COALESCE(severity, 0), COALESCE(redacted, false),
+		       CASE WHEN COALESCE(redacted, false)
+		            THEN left(COALESCE(redacted_output, ''), %d)
+		            ELSE '' END,
+		       detected_at
+		FROM output_compliance_audit
+		WHERE %s
+		ORDER BY detected_at DESC, id DESC
+		LIMIT $%d OFFSET $%d
+	`, complianceRecordPreviewLimit, cond, len(args)-1, len(args)), args...)
+	if err != nil {
+		writeInternalErrStr(w, "Failed to list compliance records", err)
+		return
+	}
+	defer rows.Close()
+
+	records := []map[string]interface{}{}
+	for rows.Next() {
+		var (
+			id                             int64
+			sessionKey, checkType, hitType string
+			severity                       int
+			redacted                       bool
+			preview                        string
+			createdAt                      time.Time
+		)
+		if err := rows.Scan(&id, &sessionKey, &checkType, &hitType,
+			&severity, &redacted, &preview, &createdAt); err != nil {
+			warnRowSkip("outputCompliance.records", err)
+			continue
+		}
+		records = append(records, map[string]interface{}{
+			"id":              id,
+			"session_id":      sessionKey,
+			"tenant_id":       tenantID,
+			"check_type":      checkType,
+			"hit_type":        hitType,
+			"severity":        severity,
+			"redacted":        redacted,
+			"content_preview": preview,
+			"created_at":      createdAt.UTC().Format(time.RFC3339),
+		})
+	}
+	if rerr := rows.Err(); rerr != nil {
+		writeInternalErrStr(w, "Failed to iterate compliance records", rerr)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"records": records,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
 	})
 }
 
 // ==================== 辅助函数 ====================
+
+// complianceStatsMaxLimit：stats/records 类接口分页上限。/records 暴露后
+// limit 无界会允许一次拉全表（R38 审计）；200 行足够面板预览用。
+const complianceMaxLimit = 200
 
 func parsePagination(r *http.Request, defaultLimit, defaultOffset int) (int, int) {
 	limit := defaultLimit
@@ -762,6 +931,9 @@ func parsePagination(r *http.Request, defaultLimit, defaultOffset int) (int, int
 		if v, err := strconv.Atoi(l); err == nil && v > 0 {
 			limit = v
 		}
+	}
+	if limit > complianceMaxLimit {
+		limit = complianceMaxLimit
 	}
 	if o := r.URL.Query().Get("offset"); o != "" {
 		if v, err := strconv.Atoi(o); err == nil && v >= 0 {

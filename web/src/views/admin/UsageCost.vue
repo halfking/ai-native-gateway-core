@@ -495,8 +495,6 @@ onMounted(() => {
 <style scoped>
 .usage-cost-view {
   padding: 20px;
-  max-width: 1400px;
-  margin: 0 auto;
 }
 
 .page-header {

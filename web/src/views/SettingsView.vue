@@ -462,8 +462,6 @@ onMounted(() => {
 /* === Dark theme — consistent with rest of app === */
 .settings-view {
   padding: 16px;
-  max-width: 1400px;
-  margin: 0 auto;
   color: var(--text-primary);
   font-size: 13px;
 }

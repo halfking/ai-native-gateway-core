@@ -46,6 +46,74 @@ type CostTrendResponse struct {
 	OtherCount int              `json:"other_count"` // 其他条目数量
 }
 
+// costTrendPlan 是 cost-trend 某个 group_by 的取数方案：基表、基表别名、
+// 分组列表达式、以及为该维度额外需要的 JOIN。
+//
+// 把它抽成纯函数（而不是让 handler 内联拼装）的唯一理由是可测：回归门直接
+// 断言每个维度的归属，而不是用正则去猜 handler 源码里写了什么。维度与基表
+// 的对应关系就是契约，一旦有人把 work_type 挪回计费宽表，门立刻红。
+type costTrendPlan struct {
+	GroupBy     string
+	BaseTable   string
+	BaseAlias   string
+	GroupColumn string
+	JoinClause  string
+	RequestSide bool
+}
+
+// planCostTrend 返回某个 group_by 的取数方案；维度未知时 ok=false。
+//
+// work_type / intent 是「请求侧」维度：原生归属是 request_logs。usage_ledger
+// 是计费宽表，只有 20 列（2026-10-03 实测 information_schema），从未投影
+// work_type / gw_session_id —— 在它上面引用必然 42703。
+//
+// 两个都不可接受的旧修法：
+//
+//	A. 从 ledger LEFT JOIN request_logs 补列 —— 2M×2M 嵌套循环，30 天窗口
+//	   实测 28s，超过本端点 15s 预算，且随窗口线性劣化；
+//	B. 继续报错让 IsSchemaBehindError 降级 —— 得到 200 + 全 0，而 intent 是
+//	   UsageCost.vue 下拉框里的可选项，用户一点就中招。
+//
+// 采用：这两个维度以 request_logs 为基表。它按月分区、自带 ts 剪枝，30 天
+// 窗口实测 2.4s（work_type）/ 4.1s（intent，含 session_summaries 连接）。
+// 两表 cost 口径经核对一致（同窗口均 150.15 美元），故换基表不引入新的计费口径。
+func planCostTrend(groupBy string) (costTrendPlan, bool) {
+	// 列前缀写死而非从别名拼：ul. = 计费宽表，rl. = 请求表，
+	// 一眼可辨某个维度读的是哪张表。
+	ledgerSide := map[string]struct {
+		groupColumn string
+		joinClause  string
+	}{
+		"model":    {"ul.raw_model_name", ""},
+		"provider": {"p.code", " LEFT JOIN providers p ON p.id = ul.provider_id"},
+		"api_key":  {"ak.key_prefix", " LEFT JOIN api_keys ak ON ak.id = ul.api_key_id"},
+	}
+	requestSide := map[string]struct {
+		groupColumn string
+		joinClause  string
+	}{
+		// 只有 intent 需要连 session_summaries 取 user_intent；work_type 是
+		// request_logs 自己的列，连一次 34 万行的表纯属白花 1.7s。
+		"work_type": {"rl.work_type", ""},
+		"intent":    {"ss.user_intent", " LEFT JOIN session_summaries ss ON ss.session_key = rl.gw_session_id"},
+	}
+
+	if e, ok := ledgerSide[groupBy]; ok {
+		return costTrendPlan{
+			GroupBy: groupBy, BaseTable: "usage_ledger_with_current_month ul",
+			BaseAlias: "ul", GroupColumn: e.groupColumn, JoinClause: e.joinClause,
+		}, true
+	}
+	if e, ok := requestSide[groupBy]; ok {
+		return costTrendPlan{
+			GroupBy: groupBy, BaseTable: "request_logs rl",
+			BaseAlias: "rl", GroupColumn: e.groupColumn, JoinClause: e.joinClause,
+			RequestSide: true,
+		}, true
+	}
+	return costTrendPlan{}, false
+}
+
 func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -58,20 +126,12 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 		groupBy = "model" // 默认按模型分组
 	}
 
-	// 验证 group_by 参数
-	validGroupBy := map[string]string{
-		"model":     "ul.raw_model_name",
-		"provider":  "p.code",
-		"intent":    "ss.user_intent",
-		"work_type": "ul.work_type",
-		"api_key":   "ak.key_prefix",
-	}
-
-	groupColumn, ok := validGroupBy[groupBy]
+	plan, ok := planCostTrend(groupBy)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid group_by parameter, must be one of: model, provider, intent, work_type, api_key")
 		return
 	}
+	baseTable, baseAlias, groupColumn := plan.BaseTable, plan.BaseAlias, plan.GroupColumn
 
 	// 解析时间范围（使用 resolveUsageTimeRange）
 	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 7)
@@ -93,39 +153,29 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 	// 根据 group_by 构建不同的查询
 	selectClause := fmt.Sprintf("COALESCE(%s, 'unknown') AS dimension_value", groupColumn)
 
-	// 基础 FROM 子句
-	fromClause := "FROM usage_ledger_with_current_month ul"
+	// 基础 FROM 子句：基表按维度归属选定 + 该维度需要的 JOIN
+	fromClause := "FROM " + baseTable + plan.JoinClause
 
-	// 根据 group_by 添加必要的 JOIN
-	switch groupBy {
-	case "provider":
-		fromClause += " LEFT JOIN providers p ON p.id = ul.provider_id"
-	case "intent", "work_type":
-		fromClause += " LEFT JOIN session_summaries ss ON ss.session_key = ul.gw_session_id"
-	case "api_key":
-		fromClause += " LEFT JOIN api_keys ak ON ak.id = ul.api_key_id"
-	}
-
-	whereClause := "WHERE ul.ts >= $1 AND ul.ts < $2"
+	whereClause := fmt.Sprintf("WHERE %s.ts >= $1 AND %s.ts < $2", baseAlias, baseAlias)
 	if tid != "" {
-		whereClause += " AND ul.tenant_id = $3"
+		whereClause += fmt.Sprintf(" AND %s.tenant_id = $3", baseAlias)
 		args = append(args, tid)
 	}
 
 	query = fmt.Sprintf(`
 		WITH aggregated AS (
 			SELECT
-				%s,
+				%[1]s,
 				COUNT(*) AS request_count,
-				COALESCE(SUM(ul.cost_usd), 0.0) AS total_cost_usd,
-				COALESCE(SUM(ul.cost_usd * ul.prompt_tokens::float / NULLIF(ul.total_tokens, 0)), 0.0) AS input_cost_usd,
-				COALESCE(SUM(ul.cost_usd * ul.completion_tokens::float / NULLIF(ul.total_tokens, 0)), 0.0) AS output_cost_usd,
-				COALESCE(SUM(ul.prompt_tokens), 0) AS prompt_tokens,
-				COALESCE(SUM(ul.completion_tokens), 0) AS completion_tokens,
-				COALESCE(AVG(ul.latency_ms), 0.0) AS avg_latency_ms,
-				COALESCE(1.0 - AVG(CASE WHEN ul.success THEN 1 ELSE 0 END), 0.0) AS error_rate
-			%s
-			%s
+				COALESCE(SUM(%[4]s.cost_usd), 0.0) AS total_cost_usd,
+				COALESCE(SUM(%[4]s.cost_usd * %[4]s.prompt_tokens::float / NULLIF(%[4]s.total_tokens, 0)), 0.0) AS input_cost_usd,
+				COALESCE(SUM(%[4]s.cost_usd * %[4]s.completion_tokens::float / NULLIF(%[4]s.total_tokens, 0)), 0.0) AS output_cost_usd,
+				COALESCE(SUM(%[4]s.prompt_tokens), 0) AS prompt_tokens,
+				COALESCE(SUM(%[4]s.completion_tokens), 0) AS completion_tokens,
+				COALESCE(AVG(%[4]s.latency_ms), 0.0) AS avg_latency_ms,
+				COALESCE(1.0 - AVG(CASE WHEN %[4]s.success THEN 1 ELSE 0 END), 0.0) AS error_rate
+			%[2]s
+			%[3]s
 			GROUP BY dimension_value
 		),
 		total AS (
@@ -145,7 +195,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 		FROM aggregated a
 		CROSS JOIN total t
 		ORDER BY a.total_cost_usd DESC
-	`, selectClause, fromClause, whereClause)
+	`, selectClause, fromClause, whereClause, baseAlias)
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -223,13 +273,26 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 
 // PeriodStats 周期统计
 type PeriodStats struct {
-	Period         string  `json:"period"`           // 周期标识（如 "2026-07"）
-	TotalCostUSD   float64 `json:"total_cost_usd"`   // 总成本
-	TotalRequests  int64   `json:"total_requests"`   // 总请求数
-	TotalTokens    int64   `json:"total_tokens"`     // 总 token 数
-	AvgCostPerReq  float64 `json:"avg_cost_per_req"` // 平均每请求成本
-	UniqueModels   int     `json:"unique_models"`    // 使用的模型数
-	UniqueSessions int     `json:"unique_sessions"`  // 会话数
+	Period        string  `json:"period"`           // 周期标识（如 "2026-07"）
+	TotalCostUSD  float64 `json:"total_cost_usd"`   // 总成本
+	TotalRequests int64   `json:"total_requests"`   // 总请求数
+	TotalTokens   int64   `json:"total_tokens"`     // 总 token 数
+	AvgCostPerReq float64 `json:"avg_cost_per_req"` // 平均每请求成本
+	UniqueModels  int     `json:"unique_models"`    // 使用的模型数
+	// UniqueSessions 曾在这里。它已于 2026-10-03 移除，理由三条，缺一不可：
+	//
+	//  1. usage_ledger 没有 gw_session_id（会话维度是 request_logs 的属性，
+	//     从未投影进这张计费宽表）。原实现 COUNT(DISTINCT ul.gw_session_id)
+	//     必然 42703，被 IsSchemaBehindError 吞掉 —— 于是 period-compare 整个
+	//     查询失败却返回 200 + 全 0，把「本月花了 1139 美元」显示成「本月没花钱」。
+	//  2. 换源修复它也救不回来：COUNT(DISTINCT gw_session_id) 在 request_logs
+	//     上实测 30 天窗口 72s，经 ledger join 174s。交互式页面给不出这个预算。
+	//  3. 它没有任何消费方（web/src 全库无渲染点；dashboard.ts 的同名字段是
+	//     另一个结构）。
+	//
+	// 所以选择删字段而不是返回 0：一个无消费者的指标算不出来时，返回 0 与
+	// 「真的是 0」在报告上无法区分，而那正是本轮要消灭的缺陷本身。
+	// 真要会话数，请走 /api/admin/sessions 的既有聚合。
 }
 
 // PeriodCompareResponse 同比环比响应
@@ -287,8 +350,8 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	// 查询当前周期统计
 	currentStats, err := h.queryPeriodStats(ctx, tid, currentStart, currentEnd, currentPeriod)
 	if err != nil {
-		if IsMissingRelationError(err) {
-			ReportMissingRelation(slog.Default(), "usagePeriodCompare:current", err)
+		if IsSchemaBehindError(err) {
+			ReportSchemaBehind(slog.Default(), "usagePeriodCompare:current", err)
 			writeJSON(w, http.StatusOK, PeriodCompareResponse{
 				Current:     PeriodStats{Period: currentPeriod},
 				Previous:    PeriodStats{Period: previousPeriod},
@@ -303,8 +366,8 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	// 查询对比周期统计
 	previousStats, err := h.queryPeriodStats(ctx, tid, previousStart, previousEnd, previousPeriod)
 	if err != nil {
-		if IsMissingRelationError(err) {
-			ReportMissingRelation(slog.Default(), "usagePeriodCompare:previous", err)
+		if IsSchemaBehindError(err) {
+			ReportSchemaBehind(slog.Default(), "usagePeriodCompare:previous", err)
 			writeJSON(w, http.StatusOK, PeriodCompareResponse{
 				Current:     PeriodStats{Period: currentPeriod},
 				Previous:    PeriodStats{Period: previousPeriod},
@@ -391,18 +454,20 @@ func (h *Handler) queryPeriodStats(ctx context.Context, tenantID string, start, 
 			COALESCE(SUM(ul.cost_usd), 0.0) AS total_cost_usd,
 			COUNT(*) AS total_requests,
 			COALESCE(SUM(ul.total_tokens), 0) AS total_tokens,
-			COUNT(DISTINCT ul.raw_model_name) AS unique_models,
-			COUNT(DISTINCT ul.gw_session_id) AS unique_sessions
+			COUNT(DISTINCT ul.raw_model_name) AS unique_models
 		FROM usage_ledger_with_current_month ul
 		%s
 	`, whereClause)
 
+	// 只 SELECT 四个真实可算的指标。usage_ledger 是计费宽表，不含任何会话维度
+	// 列（gw_session_id 只在 request_logs 上）；在这里引用它会让整条查询 42703，
+	// 而 IsSchemaBehindError 会把失败降级成 200 + 全 0 —— 那不是降级，那是撒谎。
+	// usage_ledger_sourceless_columns_test.go 把这条约束钉成回归门。
 	err := h.db.QueryRow(ctx, query, args...).Scan(
 		&stats.TotalCostUSD,
 		&stats.TotalRequests,
 		&stats.TotalTokens,
 		&stats.UniqueModels,
-		&stats.UniqueSessions,
 	)
 
 	if err != nil {
@@ -499,7 +564,7 @@ type CacheEconomicsResponse struct {
 	DollarsSaved       float64 `json:"dollars_saved"`        // 节省金额（缓存）
 	DollarsSpent       float64 `json:"dollars_spent"`        // 实际花费
 	EffectiveCostRatio float64 `json:"effective_cost_ratio"` // 实际成本占比
-	CompressedRequests int     `json:"compressed_requests"`  // 压缩请求数
+	CompressedRequests int64   `json:"compressed_requests"`  // 压缩请求数
 	CompressionSaved   float64 `json:"compression_saved"`    // 压缩节省（估算）
 	TotalSaved         float64 `json:"total_saved"`          // 总节省
 	SavingsRate        float64 `json:"savings_rate"`         // 综合节省率
@@ -531,35 +596,65 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 		args = append(args, tid)
 	}
 
+	// 主聚合只碰 usage_ledger 真实拥有的四列。
+	// 压缩请求数不在这里算：compression_strategy 只存在于 request_logs，
+	// 在这里 FILTER 它必然 42703 → 整条查询失败 → IsSchemaBehindError 降级成
+	// 200 + 全 0，而 UsageCost.vue 的缓存经济卡片 6 个指标全渲染 0。
+	// 拿不到就降级整页，比拿错数字更糟：用户看到的是「本月没花钱」。
 	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) AS total_requests,
 			COALESCE(SUM(ul.cache_read_tokens), 0) AS cache_read_tokens,
 			COALESCE(SUM(ul.prompt_tokens), 0) AS prompt_tokens,
-			COALESCE(SUM(ul.cost_usd), 0.0) AS dollars_spent,
-			COUNT(*) FILTER (WHERE ul.compression_strategy IS NOT NULL AND ul.compression_strategy <> '') AS compressed_requests
+			COALESCE(SUM(ul.cost_usd), 0.0) AS dollars_spent
 		FROM usage_ledger_with_current_month ul
 		%s
 	`, whereClause)
+
+	// compression_strategy 的原生归属是 request_logs。走 request_logs 单表而不是
+	// join 回 ledger：ledger→request_logs 是 2M×2M 嵌套循环，30 天窗口实测 28s，
+	// 而 request_logs 按月分区自带 ts 剪枝，同窗口实测 1.7s（2026-10-03 实测）。
+	// 两表 cost 口径经核对一致（同窗口均 150.15 美元），因此这里只是换张表，
+	// 不引入新的计费口径。
+	compressedQuery := `
+		SELECT COUNT(*)
+		FROM request_logs rl
+		WHERE rl.ts >= $1 AND rl.ts < $2
+		  AND rl.compression_strategy IS NOT NULL
+		  AND rl.compression_strategy <> ''
+	`
+	compressedArgs := []any{startTime, endTime}
+	if tid != "" {
+		compressedQuery += " AND rl.tenant_id = $3"
+		compressedArgs = append(compressedArgs, tid)
+	}
 
 	var resp CacheEconomicsResponse
 	var totalRequests int64
 	var cacheReadTokens int64
 	var promptTokens int64
 	var dollarsSpent float64
-	var compressedRequests int
+	var compressedRequests int64
 
 	err := h.db.QueryRow(ctx, query, args...).Scan(
 		&totalRequests,
 		&cacheReadTokens,
 		&promptTokens,
 		&dollarsSpent,
-		&compressedRequests,
 	)
 
+	// 压缩计数是附加信息，不参与主聚合。主聚合成功后才取；它失败不该让
+	// dollars_spent / cache_hit_ratio 这些已经算对的指标一起作废。
+	if err == nil {
+		if cerr := h.db.QueryRow(ctx, compressedQuery, compressedArgs...).Scan(&compressedRequests); cerr != nil {
+			slog.Warn("cache-economics: compressed request count unavailable",
+				"tenant", tid, "err", cerr)
+		}
+	}
+
 	if err != nil {
-		if IsMissingRelationError(err) {
-			ReportMissingRelation(slog.Default(), "usageCacheEconomics", err)
+		if IsSchemaBehindError(err) {
+			ReportSchemaBehind(slog.Default(), "usageCacheEconomics", err)
 			resp := CacheEconomicsResponse{
 				DateFrom: startTime.Format("2006-01-02"),
 				DateTo:   endTime.Format("2006-01-02"),

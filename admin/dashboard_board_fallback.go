@@ -84,7 +84,8 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr b
 	}
 	defer rows.Close()
 
-	var points []boardTrendPoint
+	// R36：make(…,0)——空窗时序列化 [] 而非 null（R35 nil-slice 批同族，前端另有 ?? [] 兜底）。
+	points := make([]boardTrendPoint, 0)
 	for rows.Next() {
 		var p boardTrendPoint
 		var bucket time.Time
@@ -158,7 +159,7 @@ func (h *Handler) fallbackDimPie(ctx context.Context, tenantID string, tr boardT
 	}
 	defer rows.Close()
 
-	var items []boardPieItem
+	items := make([]boardPieItem, 0)
 	for rows.Next() {
 		var item boardPieItem
 		if err := rows.Scan(&item.Key, &item.Requests, &item.Tokens, &item.Credits, &item.CostUSD); err != nil {
@@ -247,7 +248,7 @@ func (h *Handler) fallbackErrorDrill(
 	}
 	defer rows.Close()
 
-	var items []boardPieItem
+	items := make([]boardPieItem, 0)
 	for rows.Next() {
 		var item boardPieItem
 		if err := rows.Scan(&item.Key, &item.Requests, &item.Tokens, &item.Credits, &item.CostUSD); err != nil {

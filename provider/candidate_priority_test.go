@@ -74,6 +74,8 @@ func TestCandidateNativeResponsesCapabilityDBRead(t *testing.T) {
 		"cmcap.credential_model_binding_id = mo.id",
 		"cmcap.capability = 'native_responses_nonstream'",
 		"COALESCE(cmcap.supported, FALSE) AS supports_native_responses",
+		// 三态 known 投影（R33 审计 #5）：SELECT 列序错位此前无门可拦。
+		"(cmcap.id IS NOT NULL) AS supports_native_responses_known",
 		"LEFT JOIN credential_model_capabilities cmstream",
 		"cmstream.capability = 'native_responses_stream'",
 		"COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream",
@@ -86,6 +88,11 @@ func TestCandidateNativeResponsesCapabilityDBRead(t *testing.T) {
 	cacheAt := strings.Index(src, "&cand.CacheMode")
 	if supportsAt < 0 || cacheAt < 0 || supportsAt > cacheAt {
 		t.Fatal("candidate row scan must bind native Responses capability before cache mode")
+	}
+	// known 紧跟其后绑定（列序 = Scan 序）。
+	knownAt := strings.Index(src, "&cand.SupportsNativeResponsesKnown")
+	if knownAt < 0 || knownAt < supportsAt {
+		t.Fatal("candidate row scan must bind supports_native_responses_known right after supports_native_responses")
 	}
 }
 

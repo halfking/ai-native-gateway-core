@@ -220,6 +220,16 @@ func isModelPoliciesSubResource(sub string) bool {
 // ── listTenants: GET /api/admin/tenants ──────────────────────────
 
 func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
+	// 2026-10-03：列表主查询和 7 天用量富化**必须用不同的预算**。
+	//
+	// 原来两者共用同一个 5s ctx，而 attachTenantUsage7d 那条聚合在真实数据量下
+	// 要 20s+（request_logs_with_current_month 7 天 32 万行）。于是每次打开
+	// /api/admin/tenants 都先白等满 5 秒，富化再被 ctx 掐断、用量列永远为空 ——
+	// 代价全付了，收益一点没拿到（实测 duration_ms=5001，HTTP 仍 200）。
+	//
+	// 主查询保持 5s（它本身 12ms，预算只是兜底）；富化单独给 1.5s 且**不阻塞**
+	// 列表返回：查不到就按 0 渲染，并在服务端留痕。页面对运营的价值来自租户名单，
+	// 7 天用量是锦上添花，不该拖住前者。
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -273,7 +283,11 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 	if tenants == nil {
 		tenants = []tenantInfo{}
 	}
-	h.attachTenantUsage7d(ctx, tenants)
+	// 富化用独立且更短的预算：不占用列表主查询的 5s，也不把整页拖到超时。
+	// 派生自 r.Context() 而非 ctx，这样列表主查询的 cancel() 不会连带掐掉它。
+	usageCtx, usageCancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+	defer usageCancel()
+	h.attachTenantUsage7d(usageCtx, tenants)
 	writeJSON(w, http.StatusOK, tenants)
 }
 
@@ -300,6 +314,10 @@ func (h *Handler) attachTenantUsage7d(ctx context.Context, tenants []tenantInfo)
 		GROUP BY tenant_id
 	`, codes)
 	if err != nil {
+		// 静默 return 会让「超时降级」和「这个租户确实没用量」长得一模一样。
+		// 这里必须留痕：调用方只差一个 0 值，看不出来源。
+		slog.Warn("tenants 7d usage enrichment failed; fields left at zero",
+			"error", err)
 		return
 	}
 	defer rows.Close()
