@@ -88,6 +88,14 @@ WHITELIST_PATTERNS=(
   # backtick escape before ':'). Both user AND password segments must be
   # $-interpolations to suppress — a literal password still blocks.
   '://\$\{?[A-Za-z_][A-Za-z0-9_]*\}?`?\:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?@'
+  # R38 (2026-10-03): i18n key self-mappings and Vue event bindings.
+  # `redact_password: 'output_compliance.redact_password'` — the value is a
+  # dotted lowercase i18n key (the cred-shaped word is a feature name, the
+  # value self-references it); `@reset-password="onDrawerResetPassword"` —
+  # a Vue template event handler reference. Both carry non-credential VALUES;
+  # a literal secret value (no dots / not an @event= binding) still blocks.
+  "[\"'][a-z0-9_]+(\.[a-z0-9_]+)+[\"']"
+  '@[a-z-]+="'
 )
 
 # PUBLIC_DOMAINS: domains that are flagged by INTERNAL_DOMAIN rules but are

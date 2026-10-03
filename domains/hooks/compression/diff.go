@@ -13,20 +13,32 @@
 //	  1. Detect which messages the client added since the last outbound.
 //	  2. Append only those new messages to the (compressed) last outbound body.
 //
-// Algorithm — message-level LCS fingerprint:
+// Algorithm — ordered lineage anchor:
 //
-//	For each message compute sha256(role + "\x00" + contentKey + "\x00" + toolID)
-//	where contentKey is the first 512 bytes of the string-normalised content.
-//	Walk the client messages from the END looking for the last message whose
-//	hash appears anywhere in the last outbound body. Everything after that
-//	index in the client array is "new". Append to last outbound, done.
+//	For each message compute a sha256 fingerprint of the canonical JSON.
+//	Uncompressed sessions require the complete prior sequence to be the
+//	client's prefix. Compressed sessions retain a gateway summary marker plus
+//	a retained block of the client history; that block must anchor to exactly
+//	one client range. Two retained shapes are recognised:
+//	  1. contiguous: the whole retained block is one contiguous client range
+//	     (pure recent-tail retention);
+//	  2. two-segment (B-track rebuild layout): first-user head + recent tail
+//	     are two non-adjacent client segments — the head pins lineage, the
+//	     unique contiguous tail occurrence anchors the delta. Both lanes
+//	     (openai rebuilder / anthropic rebuilder) produce this shape.
+//	Any ambiguity fails open to a full resend rather than risking a wrong
+//	anchor silently dropping client messages.
 //
 // Summary marker preservation:
 //
 //	Any message in lastOutbound whose "content" string starts with
-//	CompactionMarkerPrefix is a gateway-injected summary. It is kept verbatim
-//	in the rebuilt body and its hash is deliberately excluded from the LCS
-//	index so the diff algo never mistakes it for a client-sent message.
+//	CompactionMarkerPrefix ([smm_v1:) or one of the rebuilders' summary
+//	prefixes (CompressionSummaryPrefix / smartWindowSummaryPrefix) is a
+//	gateway-injected summary. It is kept verbatim in the rebuilt body and its
+//	hash is deliberately excluded from the anchor index so the diff algo
+//	never mistakes it for a client-sent message. Anthropic summaries live in
+//	the top-level system field instead; BuildOutboundMessages detects that
+//	shape separately.
 //
 // Edge cases:
 //   - Full new session (no lastOutbound):     return clientBody unchanged.
@@ -114,11 +126,15 @@ func BuildOutboundMessages(
 
 	// ── Establish one unambiguous ordered lineage anchor ─────────────────
 	// Uncompressed sessions require the complete prior sequence to be the
-	// client's prefix. Compressed sessions retain gateway-only summary markers;
-	// for those, match the non-summary outbound suffix against one unique client
-	// range. Ambiguous duplicate occurrences fail open rather than dropping a
-	// client message by choosing the wrong anchor.
-	anchorEnd, ok := findDeltaAnchor(clientMsgs, lastMsgs)
+	// client's prefix. Compressed sessions retain gateway-only summary markers
+	// (messages[] markers on the OpenAI lane, the top-level system field on
+	// the Anthropic lane); for those, match the non-summary retained block
+	// against one unique client range, falling back to the two-segment B-track
+	// layout when the block is not contiguous in the client history. Ambiguous
+	// duplicate occurrences fail open rather than dropping a client message by
+	// choosing the wrong anchor.
+	anthropicSystemSummary := protocol == "anthropic-messages" && hasAnthropicSystemSummary(lastOutboundBody)
+	anchorEnd, ok := findDeltaAnchor(clientMsgs, lastMsgs, anthropicSystemSummary)
 	if !ok {
 		return newSessionResult(clientBody, clientMsgs), nil
 	}
@@ -192,9 +208,9 @@ func newSessionResult(body []byte, messages []rawMsg) *OutboundResult {
 	}
 }
 
-func findDeltaAnchor(clientMsgs, lastMsgs []rawMsg) (int, bool) {
+func findDeltaAnchor(clientMsgs, lastMsgs []rawMsg, anthropicSystemSummary bool) (int, bool) {
 	lastComparable := make([]rawMsg, 0, len(lastMsgs))
-	hasGatewaySummary := false
+	hasGatewaySummary := anthropicSystemSummary
 	for _, message := range lastMsgs {
 		if isSummaryMarkerMsg(message) {
 			hasGatewaySummary = true
@@ -206,33 +222,112 @@ func findDeltaAnchor(clientMsgs, lastMsgs []rawMsg) (int, bool) {
 		return 0, false
 	}
 
+	// Precompute fingerprints once: the anchor walk compares every retained
+	// window against every client offset, and re-hashing per comparison made
+	// that quadratic in JSON bytes instead of in string compares.
+	clientHashes := hashAll(clientMsgs)
+	lastHashes := hashAll(lastComparable)
+
 	if !hasGatewaySummary {
-		if len(clientMsgs) < len(lastComparable) || !sameMessageSequence(clientMsgs[:len(lastComparable)], lastComparable) {
+		if len(clientMsgs) < len(lastComparable) || !hashSeqEqual(clientHashes[:len(lastComparable)], lastHashes) {
 			return 0, false
 		}
 		return len(lastComparable), true
 	}
 
-	// A compressed outbound contains only a retained suffix from the original
-	// client history. Require the whole retained suffix to occur exactly once.
+	// A compressed outbound contains only a retained block of the original
+	// client history. Preferred shape: the whole block occurs exactly once
+	// contiguously in the client history.
 	matches := 0
 	end := 0
 	for start := 0; start+len(lastComparable) <= len(clientMsgs); start++ {
-		if sameMessageSequence(clientMsgs[start:start+len(lastComparable)], lastComparable) {
+		if hashSeqEqual(clientHashes[start:start+len(lastComparable)], lastHashes) {
 			matches++
 			end = start + len(lastComparable)
 		}
 	}
-	return end, matches == 1
+	if matches == 1 {
+		return end, true
+	}
+
+	// Fallback shape (B-track rebuild layout): the retained block is two
+	// non-adjacent client segments — first-user head + recent tail — because
+	// the compressed middle was dropped between them.
+	return findTwoSegmentAnchor(clientHashes, lastHashes)
 }
 
-func sameMessageSequence(a, b []rawMsg) bool {
+// findTwoSegmentAnchor matches the B-track rebuild layout. For every split
+// point the tail is the retained suffix lastHashes[split+1:] and the head is
+// lastHashes[:split+1]. A split is valid when the tail occurs exactly once
+// contiguously in the client history and the head occurs contiguously
+// somewhere entirely before that tail occurrence (lineage evidence). Splits
+// that agree on the same anchor produce the identical outbound body, so the
+// ambiguity that must fail open is disagreement on the anchor itself.
+func findTwoSegmentAnchor(clientHashes, lastHashes []string) (int, bool) {
+	if len(lastHashes) < 2 {
+		return 0, false
+	}
+	anchorEnd := 0
+	seen := make(map[int]bool)
+	for split := 0; split+1 < len(lastHashes); split++ {
+		tail := lastHashes[split+1:]
+		tailStart, tailMatches := uniqueContiguousIndex(clientHashes, tail)
+		if tailMatches != 1 {
+			continue
+		}
+		if containsSeqBefore(clientHashes, lastHashes[:split+1], tailStart) {
+			end := tailStart + len(tail)
+			seen[end] = true
+			anchorEnd = end
+		}
+	}
+	if len(seen) != 1 {
+		return 0, false
+	}
+	return anchorEnd, true
+}
+
+// uniqueContiguousIndex returns the start of needle's contiguous occurrences
+// in haystack plus how many there were (last occurrence start on match).
+func uniqueContiguousIndex(haystack, needle []string) (start, matches int) {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if hashSeqEqual(haystack[i:i+len(needle)], needle) {
+			matches++
+			start = i
+		}
+	}
+	return start, matches
+}
+
+// containsSeqBefore reports whether needle occurs contiguously in haystack
+// with its whole window ending at or before the given boundary.
+func containsSeqBefore(haystack, needle []string, before int) bool {
+	limit := before
+	if limit > len(haystack) {
+		limit = len(haystack)
+	}
+	for i := 0; i+len(needle) <= limit; i++ {
+		if hashSeqEqual(haystack[i:i+len(needle)], needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func hashAll(msgs []rawMsg) []string {
+	out := make([]string, len(msgs))
+	for i, m := range msgs {
+		out[i] = msgHash(m)
+	}
+	return out
+}
+
+func hashSeqEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		left, right := msgHash(a[i]), msgHash(b[i])
-		if left == "" || right == "" || left != right {
+		if a[i] == "" || b[i] == "" || a[i] != b[i] {
 			return false
 		}
 	}
@@ -363,7 +458,13 @@ func min512(n int) int {
 }
 
 // isSummaryMarkerMsg returns true when the message is a gateway-injected
-// compaction summary (content starts with CompactionMarkerPrefix).
+// compaction summary. Two generations of injection must both be recognised:
+// the marked form (content starts with CompactionMarkerPrefix, emitted by
+// injectSummaryMarker) and the unmarked rebuilders' output (content starts
+// with CompressionSummaryPrefix or smartWindowSummaryPrefix — a rebuilt body
+// that has not been through injectSummaryMarker yet). Both are non-client
+// lineage: the anchor walk, the B-track first-user pin, and the rebuild tail
+// filter all rely on excluding them.
 func isSummaryMarkerMsg(raw rawMsg) bool {
 	var m struct {
 		Content json.RawMessage `json:"content"`
@@ -373,7 +474,7 @@ func isSummaryMarkerMsg(raw rawMsg) bool {
 	}
 	var s string
 	if json.Unmarshal(m.Content, &s) == nil {
-		return strings.HasPrefix(s, CompactionMarkerPrefix)
+		return isMarkedOrSummaryContent(s)
 	}
 	// Array content: check the first text part.
 	var parts []struct {
@@ -383,11 +484,18 @@ func isSummaryMarkerMsg(raw rawMsg) bool {
 	if json.Unmarshal(m.Content, &parts) == nil {
 		for _, p := range parts {
 			if p.Type == "text" {
-				return strings.HasPrefix(p.Text, CompactionMarkerPrefix)
+				return isMarkedOrSummaryContent(p.Text)
 			}
 		}
 	}
 	return false
+}
+
+func isMarkedOrSummaryContent(content string) bool {
+	if strings.HasPrefix(content, CompactionMarkerPrefix) {
+		return true
+	}
+	return isGatewaySummaryContent(content)
 }
 
 // computeHashes returns the MsgHash slice for a messages array.

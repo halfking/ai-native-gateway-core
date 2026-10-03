@@ -98,7 +98,7 @@ func hasAnthropicSystemSummary(body []byte) bool {
 	}
 	var content string
 	if json.Unmarshal(top.System, &content) == nil {
-		return isAnthropicSummaryContent(content)
+		return anthropicSystemHasSummaryContent(content)
 	}
 	var blocks []struct {
 		Type string `json:"type"`
@@ -108,11 +108,25 @@ func hasAnthropicSystemSummary(body []byte) bool {
 		return false
 	}
 	for _, block := range blocks {
-		if block.Type == "text" && isAnthropicSummaryContent(block.Text) {
+		if block.Type == "text" && anthropicSystemHasSummaryContent(block.Text) {
 			return true
 		}
 	}
 	return false
+}
+
+// anthropicSystemHasSummaryContent reports gateway-summary presence in an
+// Anthropic system text. Beyond the prefix position, the string-shape rebuild
+// concatenates orig + prefix + summary (rebuildAnthropicSystemField), so the
+// summary typically sits mid-string; and the marked form carries a [smm_v1:]
+// line in front of the summary prefix. Both must be detected as compressed
+// lineage by the diff anchor and the alignment map alike.
+func anthropicSystemHasSummaryContent(content string) bool {
+	_, base, marked := summaryMarkerContent(content)
+	if marked {
+		return true
+	}
+	return anthropicSummaryIndex(base) >= 0
 }
 
 // body, or -1 when none exists. Mirrors the lookup used by

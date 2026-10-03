@@ -32,7 +32,7 @@ func setupOutputComplianceHandler(t *testing.T) *OutputComplianceHandler {
 		t.Fatalf("failed to connect: %v", err)
 	}
 	t.Cleanup(func() { pool.Close() })
-	return NewOutputComplianceHandler(pool)
+	return NewOutputComplianceHandler(pool, "test-secret")
 }
 
 func outputComplianceSetupSchema(t *testing.T, pool *pgxpool.Pool) {
@@ -202,5 +202,39 @@ func TestOutputComplianceHandler_Keywords_CRUD(t *testing.T) {
 	h.handleKeywordSubrouter(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestOutputCompliance_RoutesRequireAuth pins the R38 P1 fix: every route this
+// handler registers must sit behind AdminMiddleware, so an unauthenticated
+// request gets 401 before any handler logic runs. Before the fix the routes
+// were mounted bare while the global auth middleware deliberately bypasses
+// /api/ (middleware/auth_mw.go), leaving records readable and policy writable
+// without credentials.
+//
+// No database is needed: the no-credentials path is rejected inside the
+// middleware before any DB probe. The mutation target is the wrap() in
+// RegisterRoutes — removing it turns these 401s into handler responses (200 /
+// 4xx / panic on nil pool), which fails this test.
+func TestOutputCompliance_RoutesRequireAuth(t *testing.T) {
+	h := NewOutputComplianceHandler(nil, "test-secret")
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	for _, path := range []string{
+		"/api/admin/output-compliance/policy",
+		"/api/admin/output-compliance/keywords",
+		"/api/admin/output-compliance/review-queue",
+		"/api/admin/output-compliance/feedback",
+		"/api/admin/output-compliance/stats",
+		"/api/admin/output-compliance/records",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodPut} {
+			req := httptest.NewRequest(method, path, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s: unauthenticated request got %d, want 401 (R38 P1: routes must sit behind AdminMiddleware)", method, path, rec.Code)
+			}
+		}
 	}
 }

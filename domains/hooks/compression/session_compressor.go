@@ -1165,18 +1165,43 @@ func injectAnthropicSummaryMarker(body []byte) (string, []byte) {
 func markerizeAnthropicSystem(system json.RawMessage) (string, json.RawMessage, bool) {
 	var content string
 	if json.Unmarshal(system, &content) == nil {
-		marker, baseContent, alreadyMarked := summaryMarkerContent(content)
-		if !isAnthropicSummaryContent(baseContent) {
+		// String shape: rebuildAnthropicSystemField concatenated orig + prefix +
+		// summary, so the summary sits mid-string — a prefix-only check here is
+		// what made injectSummaryMarker a silent no-op on the most common
+		// production shape. Find the summary, then normalise to block shape:
+		// the marker line must be the first thing on the summary text for
+		// summaryMarkerContent to strip it on the next pass (idempotency), and
+		// the original prompt keeps its position ahead of the summary, so the
+		// model sees the same content in the same order.
+		idx := anthropicSummaryIndex(content)
+		if idx < 0 {
 			return "", nil, false
 		}
+		marker, _, alreadyMarked := summaryMarkerContent(content)
 		if alreadyMarked {
 			return marker, system, true
 		}
-		marker = BuildSummaryMarker(content)
+		marker = BuildSummaryMarker(content[idx:])
 		if marker == "" {
 			return "", nil, false
 		}
-		updated, err := json.Marshal(marker + "\n" + content)
+		markedBlock, err := json.Marshal(map[string]any{
+			"type": "text",
+			"text": marker + "\n" + content[idx:],
+		})
+		if err != nil {
+			return "", nil, false
+		}
+		var blocks []json.RawMessage
+		if strings.TrimSpace(content[:idx]) != "" {
+			origBlock, err := json.Marshal(map[string]any{"type": "text", "text": content[:idx]})
+			if err != nil {
+				return "", nil, false
+			}
+			blocks = append(blocks, origBlock)
+		}
+		blocks = append(blocks, markedBlock)
+		updated, err := json.Marshal(blocks)
 		return marker, updated, err == nil
 	}
 
@@ -1189,9 +1214,14 @@ func markerizeAnthropicSystem(system json.RawMessage) (string, json.RawMessage, 
 			Type string `json:"type"`
 			Text string `json:"text"`
 		}
-		if json.Unmarshal(raw, &block) != nil || block.Type != "text" || !isAnthropicSummaryContent(block.Text) {
+		if json.Unmarshal(raw, &block) != nil || block.Type != "text" {
 			continue
 		}
+		// Strip a leading marker line before matching the summary prefix: a
+		// block marked by an earlier pass (or by the string-shape
+		// normalisation above) carries the marker line in front, so a
+		// prefix-only check on the raw text would skip it and re-marking
+		// would report no-op instead of the idempotent same-marker result.
 		marker, baseContent, alreadyMarked := summaryMarkerContent(block.Text)
 		if !isAnthropicSummaryContent(baseContent) {
 			continue
@@ -1236,6 +1266,31 @@ func isAnthropicSummaryContent(content string) bool {
 	decodedPrefix := strings.ReplaceAll(literalPrefix, `\n`, "\n")
 	return strings.HasPrefix(content, literalPrefix) || strings.HasPrefix(content, decodedPrefix) ||
 		strings.HasPrefix(content, literalPrefix[2:]) || strings.HasPrefix(content, decodedPrefix[2:])
+}
+
+// anthropicSummaryIndex returns the byte offset of the earliest gateway
+// summary prefix occurrence in content, or -1 when none exists. Unlike
+// isAnthropicSummaryContent it also matches non-prefix positions, because the
+// string-shape rebuild appends the summary after the original prompt.
+func anthropicSummaryIndex(content string) int {
+	best := -1
+	for _, prefix := range anthropicSummaryPrefixVariants() {
+		if idx := strings.Index(content, prefix); idx >= 0 && (best < 0 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
+// anthropicSummaryPrefixVariants lists the historical spellings of the
+// Anthropic system summary prefix: the Go literal (real newlines), a
+// JSON-escaped form (`\n` as two characters) seen in double-escaped bodies,
+// and both with the leading blank line stripped (the empty-original-system
+// rebuild shape).
+func anthropicSummaryPrefixVariants() []string {
+	literal := AnthropicSystemSummaryPrefix
+	decoded := strings.ReplaceAll(literal, `\n`, "\n")
+	return []string{literal, decoded, literal[2:], decoded[2:]}
 }
 
 func summaryMessageIndex(body []byte, protocol string) int {
