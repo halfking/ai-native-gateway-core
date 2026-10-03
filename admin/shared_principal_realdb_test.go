@@ -3,11 +3,14 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,21 +34,69 @@ type canonicalFixture struct {
 	requests                               int
 }
 
+// canonicalFixtureConfig validates the local fixture connection before any SQL.
+func canonicalFixtureConfig(dsn string) (*pgxpool.Config, *url.URL, error) {
+	u, err := url.Parse(dsn)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		return nil, nil, errors.New("fixture connection must be loopback")
+	}
+	// Both pgx and lib/pq accept parameters that can override the URL's
+	// destination. Keep only transport options, before parsing either driver.
+	for key := range u.Query() {
+		switch key {
+		case "sslmode", "connect_timeout", "application_name":
+		default:
+			return nil, nil, errors.New("fixture connection overrides forbidden")
+		}
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, nil, errors.New("invalid fixture configuration")
+	}
+	loopback := func(host string) (string, bool) {
+		if host == "localhost" {
+			host = "127.0.0.1"
+		}
+		ip := net.ParseIP(host)
+		return host, ip != nil && ip.IsLoopback()
+	}
+	if host, ok := loopback(cfg.ConnConfig.Host); ok {
+		cfg.ConnConfig.Host = host
+	} else {
+		return nil, nil, errors.New("effective fixture host must be loopback")
+	}
+	for _, fallback := range cfg.ConnConfig.Fallbacks {
+		if fallback == nil {
+			return nil, nil, errors.New("invalid fixture fallback")
+		}
+		if host, ok := loopback(fallback.Host); ok {
+			fallback.Host = host
+		} else {
+			return nil, nil, errors.New("fixture fallback must be loopback")
+		}
+	}
+	// The shadow driver receives the same validated destination and account,
+	// rather than reinterpreting the original URL or environment defaults.
+	u.Host = net.JoinHostPort(cfg.ConnConfig.Host, strconv.Itoa(int(cfg.ConnConfig.Port)))
+	u.Path = "/" + cfg.ConnConfig.Database
+	u.User = url.UserPassword(cfg.ConnConfig.User, cfg.ConnConfig.Password)
+	cfg.MaxConns = 2
+	return cfg, u, nil
+}
+
 func newCanonicalFixture(t *testing.T) *canonicalFixture {
 	t.Helper()
 	dsn := os.Getenv("GATEWAY_CANONICAL_TEST_DSN")
 	if dsn == "" {
 		t.Skip("requires an existing local Gateway/identity_shadow database")
 	}
-	u, err := url.Parse(dsn)
-	if err != nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" && u.Hostname() != "::1") || os.Getenv("GATEWAY_CANONICAL_TEST_LOCAL_ONLY") != "yes" {
+	if os.Getenv("GATEWAY_CANONICAL_TEST_LOCAL_ONLY") != "yes" {
 		t.Fatal("real fixture requires explicit loopback-only authorization")
 	}
-	cfg, err := pgxpool.ParseConfig(dsn)
+	cfg, u, err := canonicalFixtureConfig(dsn)
 	if err != nil {
 		t.Fatal("invalid local database configuration")
 	}
-	cfg.MaxConns = 2
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	f := &canonicalFixture{schema: "goal_auth_" + strings.ReplaceAll(uuid.NewString(), "-", ""), sessionA: uuid.NewString(), sessionB: uuid.NewString(), sessionOtherTenant: uuid.NewString(), canonicalA: uuid.NewString(), shadowA: uuid.NewString()}
@@ -74,23 +125,32 @@ func newCanonicalFixture(t *testing.T) *canonicalFixture {
 		// Cleanup never discovers or drops someone else's objects.
 		cleanup, stop := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stop()
+		verified := true
 		for _, p := range []*pgxpool.Pool{f.admin, f.shadowAdmin} {
 			if _, err := p.Exec(cleanup, "DROP SCHEMA IF EXISTS "+name+" CASCADE"); err != nil {
+				verified = false
 				t.Error("owned schema cleanup failed")
 			}
 			var n int
 			if err := p.QueryRow(cleanup, "SELECT count(*) FROM pg_namespace WHERE nspname=$1", f.schema).Scan(&n); err != nil || n != 0 {
+				verified = false
 				t.Error("owned schema cleanup not verified")
 			}
 		}
 		if _, err := f.admin.Exec(cleanup, "DROP ROLE "+name); err != nil {
+			verified = false
 			t.Error("owned role cleanup failed")
 		}
 		var n int
 		if err := f.admin.QueryRow(cleanup, "SELECT count(*) FROM pg_roles WHERE rolname=$1", f.role).Scan(&n); err != nil || n != 0 {
+			verified = false
 			t.Error("owned role cleanup not verified")
 		}
-		t.Log("fixture_cleanup: schemas=0 roles=0; existing public data untouched")
+		if verified {
+			t.Log("fixture_cleanup: schemas=0 roles=0; existing public data untouched")
+		} else {
+			t.Log("fixture_cleanup: failed_or_unverified; see test failures")
+		}
 	})
 	for _, p := range []*pgxpool.Pool{f.admin, f.shadowAdmin} {
 		f.exec(t, p, "CREATE SCHEMA "+name)
@@ -482,4 +542,18 @@ func TestCanonicalSharedSessionRealDB(t *testing.T) {
 		}
 	})
 	t.Logf("real_http_requests=%d; resource-handler requests plus one auth-only whitelist/principal projection", f.requests)
+}
+
+func TestCanonicalFixtureRejectsConnectionOverrides(t *testing.T) {
+	for key, value := range map[string]string{"host": "remote.invalid", "hostaddr": "192.0.2.1", "port": "55432", "dbname": "other", "service": "remote", "options": "-c search_path=public"} {
+		t.Run(key, func(t *testing.T) {
+			u := url.URL{Scheme: "postgres", Host: "127.0.0.1:5432", Path: "/llm_gateway", User: url.UserPassword("fixture", "fixture-password")}
+			q := u.Query()
+			q.Set(key, value)
+			u.RawQuery = q.Encode()
+			if _, _, err := canonicalFixtureConfig(u.String()); err == nil {
+				t.Fatal("connection overrides must reject before network or DDL")
+			}
+		})
+	}
 }
