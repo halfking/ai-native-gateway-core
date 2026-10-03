@@ -1,5 +1,18 @@
 # 203 号 · R89-DN —— 先验 202 号登记的**假阻塞**：`UNION ALL` 双腿视图**不会重复计数**（四步静态证明），并附一份**已知不完整**的还债三角化
 
+> ⚠️ **205 号（R89-DP）更正本文的一处范围错误——结论未变，描述变了。**
+> 本文把 `sql/objects/views/request_logs_with_current_month.sql` 当成「该视图的定义」，
+> 而它是 **v1 回退体**（两条臂 `request_logs_hot ∪ request_logs`）。
+> **部署形态是三臂**（`session_turns_hot ∪ session_turns ∪ v1 臂`，带 **v1 臂上的双 `NOT EXISTS` 反连接**去重，
+> 见 `db/request_logs_view_schema.go:799-822`）。
+> ⇒ 四步证明本身**仍然有效**，但它的正确范围是「**部署体 v1 臂内部**那条 hot/mother 子结构」
+> （`:811-817` 的 lateral），不是「整个视图的两条腿」。
+> ⚠️ 语义更要紧：部署体里**会话臂与 v1 臂本来就会同时存在同一逻辑请求** ——
+> 那条反连接存在的全部理由就是消掉这种重复。若把本文的「两腿互斥」当作
+> 「视图天然不会双计」引用，会得出一个**比真相更强、方向相反**的结论。
+> 另：本文 §四 把 `admin/memora_handlers.go:615` 标注为「`ORDER BY … LIMIT` 跨 UNION 需合并排序」形态，
+> **该标注不成立**（`ORDER BY` 在标量子查询内部，外层无 `ORDER BY`）⇒ 见 205 号 §七·2。
+
 > 结论先行：202 号把 21 条 `DEBT(R47)` 债登记为「需真库验证成本口径」。本轮先验这个前提本身 ——
 > **结论是那个前提过强**。`request_logs_with_current_month` 是 `hot UNION ALL mother` 且**无 `EXCEPT`**，
 > 所以「同一行会不会同时在两腿」是个真问题；而答案是**不会**，且**四步全部静态可证**。
