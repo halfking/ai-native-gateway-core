@@ -78,6 +78,15 @@ var sessionDimReconcileMigration805 []byte
 //go:embed embeddata/startup/471_session_summaries_archival.sql
 var sessionSummariesArchivalMigration471 []byte
 
+//go:embed embeddata/startup/426_task_type_centroids.sql
+var taskTypeCentroidsMigration426 []byte
+
+//go:embed embeddata/startup/470_cache_metrics.sql
+var cacheMetricsMigration470 []byte
+
+//go:embed embeddata/startup/472_cache_metrics_partitions.sql
+var cacheMetricsPartitionsMigration472 []byte
+
 //go:embed embeddata/startup/456_session_v2_display_columns.sql
 var sessionV2DisplayColumnsMigration456 []byte
 
@@ -755,6 +764,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/392_candidate_failure_logs_monthly_partition.sql":                       candidateFailureLogsMonthlyPartitionMigration392,
 	"startup/805_session_dim_reconcile.sql":                                          sessionDimReconcileMigration805,
 	"startup/471_session_summaries_archival.sql":                                     sessionSummariesArchivalMigration471,
+	"startup/426_task_type_centroids.sql":                                            taskTypeCentroidsMigration426,
+	"startup/470_cache_metrics.sql":                                                  cacheMetricsMigration470,
+	"startup/472_cache_metrics_partitions.sql":                                       cacheMetricsPartitionsMigration472,
 	"startup/456_session_v2_display_columns.sql":                                     sessionV2DisplayColumnsMigration456,
 	"startup/467_sessions_title_user_tags.sql":                                       sessionsTitleUserTagsMigration467,
 	"startup/351_session_analytics_tables.sql":                                       sessionAnalyticsTablesMigration351,

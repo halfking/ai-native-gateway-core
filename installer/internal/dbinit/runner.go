@@ -55,6 +55,26 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// archival columns/session_summaries index it adds are consumed by 690.
 			// Self-guarded information_schema checks make it directly registrable.
 			"471_session_summaries_archival.sql",
+			// 426/470/472 wired 2026-10-04 (§9.116). These are the LAST three
+			// relations that are genuinely this repo's responsibility and were
+			// still missing on a fresh install; §9.116 re-derived that set from
+			// 116 candidates down to 3.
+			//
+			//   426 → task_type_centroids      (read by autoroute/embedding_classifier.go)
+			//   470 → cache_metrics            (read by domains/cachemetrics/recorder.go,
+			//                                    admin/cache_metrics_handler.go,
+			//                                    internal/partguard/parents.go)
+			//   472 → cache_metrics_default    (the DEFAULT partition 470 needs for
+			//                                    rows that fall outside any month)
+			//
+			// All three applied cleanly to a real fresh-install database, and
+			// none of them has an information_schema post-condition block, so
+			// unlike 456 (§9.114.3) they are not landmines. 472 only references
+			// cache_metrics (which 470 creates) plus pg_inherits/pg_tables, so
+			// 470 must precede 472 — that is why they are adjacent here.
+			"426_task_type_centroids.sql",
+			"470_cache_metrics.sql",
+			"472_cache_metrics_partitions.sql",
 			// 456 wired 2026-10-04 (§9.114), immediately before 467 because the
 			// two are the same family: display/summary columns the session list
 			// query projects. Without 456 the fresh install was missing
