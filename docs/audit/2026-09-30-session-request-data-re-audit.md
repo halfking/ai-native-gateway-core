@@ -15665,3 +15665,126 @@ while canonical view lacks request_class'`）**依赖它前面那些迁移在第
 > **量具的形态假设必须先问「合法形态有几种」。**
 > 我用「有没有 DROP POLICY」判幂等，漏掉了 `pg_policies` 存在性守卫这一种，
 > 于是把正确的 `547` 报成缺陷。**假阳性会消耗读者的信任，比漏报更贵。**
+
+---
+
+<!-- 编号：§9.120–§9.123 已被 feat/820-abandoned-turn 的待重编号 4 节占用（见文首横幅），本节从 §9.126 起。 -->
+
+## §9.126　搜索的读侧不是 schema 缺口：一条会误导人的注释，及其真库证据
+
+本节回到 v1 退役主线。起因是 `search_text_realdb_integration_test.go` 结尾的一段注释，
+它自称是「v1 退役阻断项的读侧半边」。**前半句为真，后半句的推论是错的。**
+
+### §9.126.1 那段注释说了什么
+
+> `session_turns_with_current_month` projects 55 curated columns and does not
+> include search_text at all … Search today still runs against the v1 family —
+> `admin/logs.go` selects `rl.search_text` with `rl = request_logs_hot` — so
+> the write side being fixed does NOT mean retrieval works on the session side.
+> The view projection is tracked as the still-open read-side half of the
+> v1 retirement blocker.
+
+**事实部分：真。** 真库重核（`sr_probe`，全新安装，链 217/217 干净）：
+
+| 查 | 结果 |
+|---|---|
+| `session_turns_with_current_month` 视图列数 | **55** |
+| 其中名为 `search_text` 的 | **0** |
+| `session_turns_hot` 表里 `search_text` 列 | **存在** |
+
+### §9.126.2 推论错在哪：它把**两个不同的对象**当成一个
+
+灰度开关**不读那个视图**。`admin/logs.go` 的 FROM 由
+`admin/logs_turns_source.go:logsSourceFromSQL()` 选出：
+
+```go
+if settings.GetPlatformBool(nativeTurnsReadSetting, false) {
+    return db.SessionFamilyTurnsSourceSQL() + " rl"   // ← 打开开关时
+}
+return "request_logs_with_current_month rl"          // ← 默认
+```
+
+而 `db.SessionFamilyTurnsSourceSQL()` 是对 `session_turns_hot` / `session_turns`
+的**内联投影**（`hot ∪ parent` + `session_turn_details_hot` LEFT JOIN），
+**不是**对 `session_turns_with_current_month` 的遍历。
+
+该投影由 `canonicalColumnOrderV2`（115 个名字）经 `projectionExprByColumn`
+渲染，而：
+
+- `canonicalColumnOrderV2[21] == "search_text"`
+- `projectionExprsV2[21] == "t.search_text"`
+
+**逐位对齐、列存在。** 也就是说：打开灰度开关后，日志列表里那条
+`rl.search_text ILIKE $n`（`admin/logs.go:537`）**不会** 42703。
+
+⚠️ 顺带纠正注释里的另一个事实错误：它写 `rl = request_logs_hot`。
+`logsFrom` 的默认值是 `request_logs_with_current_month`（**视图**），
+不是 `_hot`。这说明这段注释写于某个中间状态，之后没跟上。
+
+### §9.126.3 那么真正阻断搜索迁移的是什么
+
+**行覆盖率，不是 schema。** `admin/logs_turns_source.go` 已经把这件事测完了：
+
+- 视图里 **2,321,464** 个 `request_id` 中，**641,452（27.6%）** 在原生源查不到；
+- 原因是**无会话头流量按设计不镜像**（探针/自检、`in_progress` 占位、
+  标题与摘要生成器回环），不是漏写；
+- 该文件同时给出判据：**带 `gw_session_id` 的会话内读可迁**；
+  **按 `request_id` / `client_request_id` / `parent_request_id` 反查、
+  或全量时间窗聚合，禁止迁**。搜索属后者（它是全量列表过滤，不带会话谓词）。
+
+⇒ **给 `session_turns_with_current_month` 加宽这个视图，一行都补不上那 27.6%。**
+那是关于非会话流量的**业务决策**（D3 的近亲），不是缺一次 DDL。
+
+### §9.126.4 真库往返证据（新增门）
+
+`TestSearchTextRoundTripsThroughTheNativeReadSource_RealDB`
+（`internal/sessionv2mirror/search_readback_realdb_integration_test.go`）：
+
+- **写**：生产写入器 `v2.NewSessionWriterV2(...).Write(ctx, req)`，不用裸 SQL；
+- **读**：生产原生源 `db.SessionFamilyTurnsSourceSQL()` + 与 `admin/logs.go`
+  同形的 `search_text ILIKE $n` 过滤；
+- **断言**：读回值与写入值**逐字节相等**，且用本轮唯一的 needle 防串行；
+- **再断一次**带 `gw_session_id` 的会话内谓词形态（审计已判定可迁的那一种）。
+
+实测通过：121 字节原样往返。
+
+**抗空洞**：先断言纯函数产出了非空内容，再断言读回非空，最后才比相等。
+「读回 == 写入」在两边都空时是恒真式 —— 而那正是 §9.98 之前的失败世界。
+
+**刻意不断言的**：`session_turns_with_current_month` **不得**有 `search_text`。
+断言一个「不存在」会造一条**假约束**：未来合法地加宽该视图（就是 D1 那个问题）
+会无理由地转红。澄清放注释，守卫只守正向性质。
+
+### §9.126.5 这道门的鉴别力（两轮变异，第一轮不算证据）
+
+| 变异 | 结果 | 算证据吗 |
+|---|---|---|
+| 只从 `projectionExprsV2` 摘 `search_text` | `panic: projectionExprsV2 shorter than canonicalColumnOrderV2`（**包 init 自检**） | ❌ **不算**。init panic 只证明那张自检表在工作，不证明本门有牙 |
+| **两份列表同时摘**（索引仍对齐 ⇒ 包仍能编译、仍能初始化） | `FAIL: ERROR: column "search_text" does not exist (SQLSTATE 42703)` | ✅ 算。且报错正是灰度开关在最热管理端会产生的那个 |
+
+⇒ 第一轮的教训与本轮早先那次一致：**编译失败 / 初始化 panic 不是变异证据**。
+必须把变异改成「包仍能跑、只有目标断言转红」才计入。
+
+### §9.126.6 顺带修掉一条会误导人的注释
+
+`search_text_realdb_integration_test.go` 结尾那段已订正为：
+事实（视图 55 列、0 个 `search_text`）保留，
+推论（读侧半边被视图投影阻断）**明确标为错误并说明原因**，
+并把 `viewHasSearchText` 的 `t.Logf` 从「read-side migration still open」
+改成 informational，指向本文 §9.126.2。
+
+**留着一段错误的推论，比没有注释更贵** —— 它会把下一个人引向
+「给视图加一列」这种既不解决问题、又会与 D1 冲突的改动。
+
+### §9.126.7 这一节的教训
+
+> **注释里的事实与推论要分开核实。** 那段注释的**每一个事实都是真的**，
+> 而它的**推论是错的** —— 而且错得很有说服力（「写侧修好不等于读侧能用」）。
+> 只做事实核查会放过它。
+>
+> **「某个对象缺 X」不等于「链路缺 X」。** 结论必须落在**实际被使用的那条路径**上。
+> 这里真正被使用的是内联投影，不是那个 55 列的视图。
+>
+> **断言「不存在」会造假约束。** 该守的性质是正向的
+> （原生源**有** `search_text` 且往返一致），
+> 视图的列集是会合法变动的，把它的当前形状钉成守卫只会制造未来的假红。
