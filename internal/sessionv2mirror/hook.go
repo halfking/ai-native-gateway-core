@@ -219,7 +219,16 @@ func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.Reque
 		}
 	}
 
-	if err := w.Write(ctx, req); err != nil {
+	err := w.Write(ctx, req)
+	if err == nil && entry.T0Missing {
+		// The turn now exists and is committed, in this goroutine — the only
+		// point at which the landing pad can be applied without racing the
+		// insert. See abandoned_turn.go for why this is not done from the
+		// telemetry side, and why tenantID is req.TenantID verbatim.
+		markAbandonedTurnIfT0Missing(ctx, mirrorOutbox.Load(), entry.RequestID,
+			req.TenantID, req.SessionID)
+	}
+	if err != nil {
 		slog.Warn("sessionv2mirror: V2 shadow write failed",
 			"request_id", entry.RequestID,
 			"session_id", req.SessionID,

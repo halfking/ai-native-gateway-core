@@ -1,14 +1,15 @@
-# session_turns abandoned 落点的可观测性（迁移 820，审计 §9.92）
+# session_turns abandoned 落点的可观测性（迁移 821，审计 §9.92/§9.93）
 #
-# 指标来源：domains/hooks/observability/telemetry/abandoned_turn_metrics.go
+# 指标来源：internal/sessionv2mirror/abandoned_turn.go
 #   llm_gateway_abandoned_turn_ops_total{op}
 #     op = "mark"         — 一行终态 turn 被打上 is_abandoned = TRUE
-#     op = "mark_failed"  — 打标写失败（fail-open，请求日志不受影响）
+#     op = "mark_failed"  — 打标写失败（fail-open；turn 行完好）
 #     op = "mark_no_row"  — 打标命中 0 行
+#     op = "mark_no_pool" — mirror outbox 连接池未初始化，连尝试都没有
 #
 # # 落点是什么（先说清，因为告警要守的是它的失效形态）
 #
-# 820 取代了 819 的独立表方案（2026-10-03 用户拍板）。不变式是**单列**的：
+# 821 取代了 819 的独立表方案（2026-10-03 用户拍板）。不变式是**单列**的：
 #
 #   is_abandoned = TRUE ⇔ 这是一行**终态** turn，而它的请求在 v1 侧
 #                            从来没有过 t0 记录。
@@ -18,24 +19,38 @@
 # request_logs_hot 上 request_id 是唯一键、每 id 恒 1 行（真库实测），
 # 所以「不存在」= t0 从未落库，而不是「已落但被覆盖」。
 #
-# # 两种坏法，以及为什么 `mark_no_row` 必须单列一条
+# # ★ 打标在**哪里**执行（821 首版写错过，这一版是修正后的形态）
 #
-# ① 从没写过   —— 二进制没部署 / 820 迁移没上 / 接线被拆
-# ② 写了但失败 —— fail-open 分支（设计如此）
+# 打标**不在** telemetry 的同步路径上，而在 sessionv2mirror 的
+# `runShadowWrite` 里、**紧接在 `w.Write` 返回之后**：
 #
-# ③ **写了但命中 0 行** —— 这一种与 819 时代不同，是 820 **特有**的：
+#   w.Write(ctx, req)            ← 终态 turn 在此提交（session_writer_v2.go:762）
+#   if err == nil && entry.T0Missing {
+#       markAbandonedTurnIfT0Missing(...)   ← 同一 goroutine，行必然已存在
+#   }
 #
-#   落点跑在 updateRequestLog 里，而终态 turn 是**异步** mirror 写进来的
-#   （outbox 事件）。两者没有顺序保证，于是 UPDATE 常常**先于**终态行存在。
-#   这是**常态而非异常**，`mark_no_row` 在健康系统里也会持续出现。
+# 首版把 UPDATE 挂在 telemetry 的同步路径上，而终态 turn 由有界 goroutine 池
+# 异步写入（`shadowWriteDispatchAsync` 默认 true）⇒ 打标**必然早于**落库，
+# 每次都命中 0 行。这不是「有界的漏标」，是**恒不生效**。
 #
-#   但它的比例是唯一能回答「这个落点是否可信」的信号：
-#   比例高 ⇒ 系统性地漏标 ⇒ 列看起来权威而实际不可信，
-#   **那比没有这个落点更糟**。所以判据是**比例**而不是绝对值。
+# # ⚠ `mark_no_row` 的语义在 821 里**反转**了
 #
-# ⚠ 本轮**没有**修这个竞态（消除它需要让 mirror 与 t1 事件同事务或加延迟
-#   重试，属于另一个量级）。这里只做到**把它变成可见的**：§9.92.4 把它记为
-#   已知缺口，本告警负责让它不再静默。
+# 首版：mark_no_row 是**常态**（异步竞态），比例高属正常，所以 ③ 用 0.9 门限。
+# 本版：打标与落库在**同一 goroutine、同一超时预算**内前后相接，
+#        `w.Write` 成功即已提交 ⇒ mark_no_row 应当**接近 0**。
+#        它一旦成规模出现，说明落点在**系统性打空**，列看起来权威而实际不是。
+#
+# 实测（llm-gateway-pg，用非超级用户 rls_probe 经 SET ROLE，见 §9.93）：
+#   裸 pool.Exec（无 GUC）            → UPDATE 0
+#   仅 set app.current_tenant          → UPDATE 0   ← RESTRICTIVE owner_filter 仍挡
+#   setBypassGUCs + tenant（本版形态）  → UPDATE 1
+#   再跑一次（幂等）                   → UPDATE 0
+# ⇒ 门限因此从 0.9 **降到 0.5**：它现在要抓的不是「异步竞态漏了一点」，
+#   而是「打标整体没生效」——那正是首版的形态，0.9 抓不到（0.99 才报）。
+#
+# ⚠ 0.5 仍然是**未经生产实测**的（821 尚未部署到 252）。它由「健康值应当 ≈0」
+#   这个结构性事实推出，不是由观测推出的。首次部署后必须用真实
+#   mark / mark_no_row 比例回归校准。
 #
 # # 为什么 ① 用 `unless` 而不是 `rate(...) == 0`
 #
@@ -73,16 +88,6 @@
 #
 # 聚合维度是 **(job, instance)**：只 by (instance) 会把 job 消掉、丢掉集群归属。
 #
-# # 阈值
-#
-# ③ 用比例而不是绝对条数：正常路径下 `mark_no_row` 占比高（异步竞态），
-# 绝对值随部署规模变化，比例与规模解耦。门限取 **0.9**：绝大多数打标尝试
-# 都打空，意味着终态行几乎总是还没落库，落点形同虚设。
-#
-# ⚠ 这个门限是**按设计推的，没有生产实测支撑**（820 尚未部署到 252）。
-#   首次部署后必须用真实 `mark` / `mark_no_row` 比例回归校准，
-#   否则这条告警要么永远响、要么永远不响。记在 §9.92 的遗留里。
-#
 # # 已知局限（如实登记）
 #
 # 1. **只在有 Prometheus 的环境生效。** 252 实测**没有** Prometheus
@@ -94,8 +99,11 @@
 #        SELECT count(*) FROM session_turns_hot WHERE is_abandoned IS TRUE
 #    跨重启的累计量只有它能回答，这也是本文件不设累计计数器的原因。
 # 4. **不覆盖「只有 t0、之后彻底静默」那一类。** 那是落点的能力边界
-#    （见迁移 820 头注释与 §9.92.4），不是告警能补的。
-#
+#    （见迁移 821 头注释与 §9.92.4），不是告警能补的。
+# 5. **RLS 会让打标静默失效。** 两张面都开着 RLS，且其中一条策略是
+#    RESTRICTIVE。裸 `pool.Exec` 命中 0 行（实测）。这正是 ③ 在 821 修好
+#    接线之后**仍然必须存在**的理由——它抓的就是这一类。
+
 groups:
   - name: session_turns_abandoned
     interval: 30s
@@ -119,69 +127,75 @@ groups:
 
             这不是「没有请求遗弃」——**没有请求遗弃时判据也不会触发**
             （只有 t0 缺失的请求才进这条分支）。`mark` 恒为 0 意味着
-            **写路径压根没跑**，三种可能：
+            **写路径压根没跑**，四种可能：
 
-              ① 二进制没有 820 的接线（`markAbandonedTurn` 未被调用）
-              ② 820 迁移没应用 ⇒ 打标语句报错 ⇒ 走 fail-open ⇒ 这种情况
+              ① 二进制没有 821 的接线（`markAbandonedTurnIfT0Missing` 未被调用）
+              ② 821 迁移没应用 ⇒ 打标语句报错 ⇒ 走 fail-open ⇒ 这种情况
                  应当同时看到 `op="mark_failed"` 增长（见 `AbandonedTurnPadWritesFailing`）
-              ③ 请求根本没进到 `updateRequestLog` 的竞态回落分支
+              ③ mirror outbox 连接池未初始化 ⇒ 走 `op="mark_no_pool"`，
+                 **根本没尝试**（既没有 mark 也没有 mark_failed）
+              ④ 请求根本没进到 `updateRequestLog` 的竞态回落分支
 
-            先跑这一句区分 ① 和 ②：
+            先跑这一句区分它们：
 
                 curl -s :8780/metrics | grep abandoned_turn_ops
 
             - 完全没有这个指标 ⇒ 情况 ①：二进制里没有这段代码
-            - 有 `{op="mark_failed"}` ⇒ 情况 ②：**820 迁移没上**
+            - 有 `{op="mark_no_pool"}` ⇒ 情况 ③：连接池没初始化
+            - 有 `{op="mark_failed"}` ⇒ 情况 ②：**821 迁移没上**
           runbook: |
-            1. 确认二进制含 820 接线（`grep -c markAbandonedTurn` 于
-               domains/hooks/observability/telemetry/）。
-            2. 确认 820 已应用：
+            1. 确认二进制含 821 接线（`grep -c markAbandonedTurnIfT0Missing` 于
+               internal/sessionv2mirror/）。
+            2. 确认 821 已应用：
                `SELECT count(*) FROM information_schema.columns
                  WHERE table_name IN ('session_turns','session_turns_hot')
                    AND column_name='is_abandoned'`
                应为 2；为 0 则先跑迁移再重启。
-            3. **不要**因为「一条遗弃都没有」就判定落点正常——空与「没接线」
+            3. 确认 mirror outbox 池已初始化（无 `mark_no_pool` 增长）。
+            4. **不要**因为「一条遗弃都没有」就判定落点正常——空与「没接线」
                在值上不可区分，这正是本告警存在的理由。
 
-      # ── ② 写了但失败 ────────────────────────────────────────────────
+      # ── ② 写了但没落地 ──────────────────────────────────────────────
       - alert: AbandonedTurnPadWritesFailing
         expr: |
-          sum by (job, instance) (increase(llm_gateway_abandoned_turn_ops_total{op="mark_failed"}[30m])) > 0
+          sum by (job, instance) (increase(llm_gateway_abandoned_turn_ops_total{op=~"mark_failed|mark_no_pool"}[30m])) > 0
         for: 10m
         labels:
           severity: warning
           component: session-abandoned
         annotations:
-          summary: "abandoned 落点打标在持续失败（fail-open 分支）"
+          summary: "abandoned 落点打标没有落地（fail-open 分支）"
           description: |
-            30 分钟内 `mark_failed` 有增长。
+            30 分钟内 `mark_failed` 或 `mark_no_pool` 有增长。
 
-            打标是**刻意 fail-open** 的：失败只 slog.Warn，**不回滚**请求日志
-            主事务（理由：820 未应用时不应打挂全部请求日志）。代价是
+            打标是**刻意 fail-open** 的：失败只 slog.Warn，**不回滚**已提交的
+            终态 turn（理由：821 未应用时不应打挂镜像写链）。代价是
             **失败在请求侧完全不可见**，只有这条告警能发现。
 
-            两种可能的含义：
-
-            - `relation "session_turns_hot" does not exist` ⇒ 820 迁移没应用
-            - `column "is_abandoned" does not exist` ⇒ 表结构漂移
-              （820 自带列集守卫，迁移时会报 missing column）
+            三种可能的含义：
+            - `mark_failed` + `column "is_abandoned" does not exist`
+              ⇒ 821 迁移没应用
+            - `mark_failed` + `relation "session_turns_hot" does not exist`
+              ⇒ 表结构漂移
+            - `mark_no_pool` ⇒ mirror outbox 连接池未初始化，**一次都没尝试**
             - 超时/连接错误 ⇒ 数据库侧问题
           runbook: |
-            1. 看 slog 的 `abandoned_turn: mark failed` 行确认 error 形态。
-            2. 迁移未应用 ⇒ 跑 820 后重启；列集漂移 ⇒ 820 守卫会直接报出
+            1. 看 slog 的 `sessionv2mirror: abandoned_turn ... failed` 行确认
+               error 形态（`mark_no_pool` 对应 `skipped, mirror outbox pool`）。
+            2. 迁移未应用 ⇒ 跑 821 后重启；列集漂移 ⇒ 821 守卫会直接报出
                缺哪张表的哪一列。
             3. 恢复后确认漏标是否可补：`mark` 是幂等 UPDATE，可对
                历史终态行重跑（判据：t0 缺失的请求在 v1 侧无从查证，
                所以**历史漏标不可追补**——这是本落点的固有限制）。
 
-      # ── ③ 打标但几乎全打空（异步竞态在系统性漏标）──────────────────
+      # ── ③ 打标但几乎全打空（落点在系统性失效）──────────────────────
       - alert: AbandonedTurnPadMostlyMissingItsRows
         expr: |
           (
             sum by (job, instance) (rate(llm_gateway_abandoned_turn_ops_total{op="mark_no_row"}[1h]))
           )
           >
-          0.9 * (
+          0.5 * (
             sum by (job, instance) (rate(llm_gateway_abandoned_turn_ops_total{op=~"mark|mark_no_row"}[1h]))
             or
             (0 * max by (job, instance) (up{job=~"llm-gateway.*"}))
@@ -193,24 +207,37 @@ groups:
           severity: critical
           component: session-abandoned
         annotations:
-          summary: "abandoned 落点超过 90% 的打标尝试没命中任何行（竞态在系统性漏标）"
+          summary: "abandoned 落点超过一半的打标尝试没命中任何行（落点在系统性打空）"
           description: |
-            1 小时窗口内，**超过九成**的打标尝试结果是 `mark_no_row`。
+            1 小时窗口内，**超过一半**的打标尝试结果是 `mark_no_row`。
 
-            `mark_no_row` 本身**不是故障**：终态 turn 是**异步** mirror 写进来的
-            （outbox 事件），而打标跑在同步的 `updateRequestLog` 里，两者无顺序
-            保证，所以打标**经常**先于终态行存在。健康系统里这个比例也不会是 0。
+            打标跑在 `runShadowWrite` 里、**紧接在 `w.Write` 返回之后**，
+            同一 goroutine、同一超时预算，而 `w.Write` 成功即已提交
+            ⇒ **`mark_no_row` 的健康值应当接近 0**。它成规模出现只有一个解释：
+            行不在我们看的地方。
 
-            但它到 0.9 意味着：**绝大多数遗弃请求根本没被打上标记**，
-            而 `is_abandoned` 列**看起来仍然权威**。
-            **那比没有这个落点更糟**——没有落点时你知道你不知道。
+            最可能的原因，按可能性排序：
+
+            ① **RLS 把行挡了。** 两张面都开着 RLS，其中
+               `session_turns_hot_owner_filter` 是 **RESTRICTIVE** 策略
+               （PostgreSQL 先 OR 全部 PERMISSIVE，再 AND 全部 RESTRICTIVE）。
+               裸 `pool.Exec` 在没有 GUC 的连接上**看不到任何行** ⇒ 恒 0。
+               实测：仅 `app.current_tenant` **不够**，必须同时
+               `app.current_role=super_admin` + `app.bypass_rls=true`
+               （即本包 replay.go 的 `setBypassGUCs`）。
+            ② **tenant 取错了。** UPDATE 用的 tenant 必须等于 turn 行实写的值
+               （`req.TenantID`，含空串）。若代入了约定的 `default`，
+               空租户流量**永远**打不中。
+            ③ 行落在了既非 hot 也非母表可及的位置。
 
             ⇒ 本告警响的时候，请把 `is_abandoned = TRUE` 的计数当作
-              **下界**而不是全集。
+              **下界**而不是全集——**那比没有这个落点更糟**，
+              没有落点时你知道你不知道。
           runbook: |
             1. 确认不是两条面都漏：`mark` 若也为 0，那是 ①/②，不是本条。
-            2. 根因是 mirror 的异步落行晚于打标。临时缓解：把打标改为
-               在 outbox 消费者侧执行（那里终态行必然已存在）。
-               本轮**未实施**（见审计 §9.92.4 的遗留）。
-            3. 阈值 0.9 是**按设计推的、未经生产实测**（820 尚未上 252）。
+            2. 核对 ①：`internal/sessionv2mirror/abandoned_turn.go` 是否在
+               自己的事务里调了 `setBypassGUCs` 并设了 `app.current_tenant`。
+               这是**已实测证实**的失效形态（无 GUC ⇒ UPDATE 0）。
+            3. 核对 ②：调用点传的是 `req.TenantID`，不是任何带默认值的替身。
+            4. 阈值 0.5 是**按「健康值≈0」推的、未经生产实测**（821 尚未上 252）。
                首次部署后必须用真实比例回归校准，否则这条要么永远响要么永不响。
