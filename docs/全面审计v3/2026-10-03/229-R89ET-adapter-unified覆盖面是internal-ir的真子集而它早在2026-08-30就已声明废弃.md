@@ -278,3 +278,59 @@
   这不是偶发，是结构性的——**订正必然要提到被订正的错误**。
 ⇒ 与 §181（会误报正确代码的门比没有门更坏）同源，
   这条给出**最容易触发该失效的场景**：**自证式修改 + 立刻建门**。
+
+---
+
+## 十二、⚠️ 收回 228 号的一条订正：`session_writer_v2.go:297` 的注释是**对的**，是我比错了对象
+
+228 号登记了一条「注释订正」：
+
+> `domains/session/v2/session_writer_v2.go:297` 把 `RequestChecksum` 列入「缺源字段」
+> **与实测（3 个生产调用方）不符**。
+
+**本轮核实后收回。** 那条注释的原文（`:294-299`）是：
+
+> 「── 存储优化方案 v2 S1a（migration 706/707）：request_logs 独有数据补采。
+> 数据源是 **`telemetry.RequestLogEntry`**（mirror bridge `entryToProcessedRequest` 逐一拷贝）；
+> 四组列全部可空、零值即 NULL。
+> **缺源字段（TraceEvents/SearchText/RequestChecksum/RawModelName 在
+> `RequestLogEntry` 上不存在）**保留列位、暂为 NULL」
+
+⇒ 注释断言的是「**`telemetry.RequestLogEntry` 上没有 `RequestChecksum`**」，
+而我 228 号拿「**`audit.Event` 上有 `RequestChecksum`**（`audit.go:40`，
+三个协议 handler 生产调用）」去反驳它。
+**这两句可以同时为真**——它们说的是链路上**两个不同结构体**。
+
+**实测**（`domains/hooks/observability/telemetry/client.go`）：
+
+| | `RequestLogEntry`（`:253-525`，271 行 / 121 字段） | `audit.Event`（`audit.go:40`） |
+|---|---|---|
+| `IdentityHash` | ✅ `:309` | ✅ |
+| `ResponseChecksum` | ✅ `:325` | ✅ |
+| **`RequestChecksum`** | ❌ **该文件内 0 命中** | ✅ |
+
+⇒ **注释完全正确**，而且它描述的正是**中间那一跳断了**：
+`audit.Event.RequestChecksum` 被正确计算并落进 `request_logs`，
+但 **mirror bridge 的源结构 `RequestLogEntry` 没有这个字段** ⇒ 拷不到
+⇒ `session_turns.request_checksum` **确实很可能在 live turn 上恒 NULL**。
+
+⇒ 这**加强**而非削弱 228 号的核心结论（`response_checksum` 语义分叉），
+并把 228 号留在诚实边界里的那句「`request_checksum` 在真实 live turn 上的填充率未测」
+从「也许没事」提升为「**代码路径上已经断了一截，填充率很可能为 0**」。
+⇒ ⚠️ 但**仍需真库 fill-rate 才能坐实**（未起真进程）⇒ 结论保持 P3 登记，不升级。
+
+### 判别式（本轮第四次「拿错误的对照物下结论」）
+
+**「X 在 A 上存在」不能推翻「X 在 B 上不存在」，当待判结论涉及的是 A→B 的传递链。**
+本轮四个错误里，这是第四个形态：
+
+| 轮次 | 我拿来当证据的 | 真正该比的 | 失效名 |
+|---|---|---|---|
+| 228 | `audit.Event` 有 `RequestChecksum` | `telemetry.RequestLogEntry` 有没有 | **比错了对象** |
+| 228 | `ComputeRequestChecksum` 名字含 `RequestChecksum` | 两个是不同函数 | 名字包含 |
+| 229 | `cmd/gateway` import 了 `domains/integration` | `BuildFullPipeline` 有没有调用方 | 包可达 ≠ 函数可达 |
+| 229 | 子代理：「Transformer 管线在主二进制不可达」 | 同上 | 同上 |
+
+⇒ 链条型断言（值从 A 传到 B）必须**逐跳检查**，
+  而「某一跳的源有该字段」**不蕴含**「该字段会到达终点」。
+⇒ 与 §185（否定结论要附命中数与归类）互补：那管单跳，这管**跳与跳之间**。
