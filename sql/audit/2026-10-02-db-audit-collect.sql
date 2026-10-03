@@ -294,12 +294,53 @@ HAVING NOT bool_or(c.relname LIKE '%\_default')
 ORDER BY p.relname;
 
 \echo '===SECTION:EMPTY_PARTITIONS==='
-SELECT c.relname || ' | parent=' || p.relname || ' | ' || pg_size_pretty(pg_total_relation_size(c.oid))
+-- R89-ED（214 号）更正。原写法是：
+--     WHERE n.nspname='public' AND c.relkind='r' AND c.reltuples=0
+--       AND pg_total_relation_size(c.oid) > 1048576
+-- 即「reltuples=0 **且** 体积 > 1MB」就列为"空分区"。
+--
+-- 三个问题，逐条：
+--
+--   ① **`reltuples` 是规划器估算，是"上一次统计时刻的快照"，不是事实。**
+--      `reltuples = 0` 的真实含义是「**上次 ANALYZE/VACUUM 时为空**」，
+--      而本仓是 hot+分区架构，热分区持续被写入 ⇒ 只要 autoanalyze 还没追上，
+--      一个**已经写进几百万行**的分区照样报 0，被列进"空分区"。
+--      （⚠️ 边界要说清：PG14+ 从未统计的表报 **-1** 而不是 0，见 PG 官方
+--      pg_class 文档与 commit 3d351d916b ⇒ "从未统计"那一类本来就被
+--      `= 0` 排除在外，**原写法并没有漏掉它**，这里也不额外加条件。）
+--   ② 与**本脚本自己**矛盾：`:168` 的 NEVER_ANALYZED 段专门统计
+--      `last_analyze IS NULL AND last_autoanalyze IS NULL` 的表数，
+--      说明作者**知道**统计可能缺失，却在另一处拿 `reltuples` 当"空"的判据。
+--      （这正是 playbook §121「在同一个文件里找它自己怎么说这个字段不可信」。）
+--   ③ 段名与内容自相矛盾：体积 > 1MB 的表**本来就不可能真的空** ——
+--      未回收的死元组、TOAST、索引页都会撑起体积。所以这一段列出的
+--      其实是「**膨胀/未回收**的分区」，不是"空分区"。
+--
+-- 改法：判据仍然只用 reltuples（**不依赖 pg_stat_* 视图**），但把
+--   n_live_tup / n_dead_tup / last_analyze / last_autoanalyze 带出来，
+--   让读的人能区分「真的空」「估算停留在旧值」「只是有死元组」。
+--   真正的"空"要靠 EXISTS 探针，报表脚本（default_transaction_read_only=on）里不做。
+--
+-- ⚠️ 刻意**不**把 pg_stat_user_tables 的存在与否写进 WHERE：
+--   pg_stat_user_tables 只收录当前角色有权限的关系；一旦把它做成
+--   LEFT JOIN 后又在 WHERE 里要求 `last_analyze IS NOT NULL`，
+--   缺统计行的分区会被**静默过滤掉**（漏报比误报更难发现 —— 这段
+--   本来就是"少列一个分区"，加了这条只会让缺失更难被看到）。
+--   所以判据留在 pg_class，诊断字段用 coalesce 显式标 NO_ROW。
+SELECT c.relname || ' | parent=' || p.relname
+       || ' | size=' || pg_size_pretty(pg_total_relation_size(c.oid))
+       || ' | est_rows=' || c.reltuples          -- 估算快照，不是事实
+       || ' | n_live_tup=' || coalesce(s.n_live_tup::text,  'NO_ROW')
+       || ' | n_dead_tup=' || coalesce(s.n_dead_tup::text,  'NO_ROW')
+       || ' | last_analyze=' || coalesce(s.last_analyze::text, 'NO_ROW')
+       || ' | last_autoanalyze=' || coalesce(s.last_autoanalyze::text, 'NO_ROW')
 FROM pg_class c
 JOIN pg_namespace n ON n.oid=c.relnamespace
 JOIN pg_inherits i ON i.inhrelid=c.oid
 JOIN pg_class p ON p.oid=i.inhparent
-WHERE n.nspname='public' AND c.relkind='r' AND c.reltuples=0
+LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+WHERE n.nspname='public' AND c.relkind='r'
+  AND c.reltuples = 0        -- 含义仅为「上次统计时为空」，不是「现在为空」
   AND pg_total_relation_size(c.oid) > 1048576
 ORDER BY pg_total_relation_size(c.oid) DESC;
 

@@ -159,7 +159,7 @@ FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
-  AND a.attnum > 0 AND NOT a.attisdropped AND a.attstorage <> 'p'
+  AND a.attnum > 0 AND NOT a.attisdropped AND a.attstorage = 'x'
 GROUP BY a.attcompression ORDER BY 1;
 
 \echo '===SECTION:DML_CHURN==='

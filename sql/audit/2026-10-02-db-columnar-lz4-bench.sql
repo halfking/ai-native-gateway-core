@@ -165,14 +165,14 @@ SELECT a.attcompression AS compression,
          WHERE n2.nspname='public' AND a2.attname = a.attname
            AND a2.attcompression = a.attcompression
            AND a2.attnum > 0 AND NOT a2.attisdropped
-           AND a2.attstorage <> 'p') AS example_columns
+           AND a2.attstorage = 'x') AS example_columns
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public'
   AND c.relkind IN ('r','p')
   AND a.attnum > 0 AND NOT a.attisdropped
-  AND a.attstorage <> 'p'
+  AND a.attstorage = 'x'
   AND a.attcompression IS NOT NULL
 GROUP BY a.attcompression
 ORDER BY 1;
