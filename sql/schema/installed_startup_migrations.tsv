@@ -233,3 +233,4 @@
 215	818_ursm_snapshot_typed_columns.sql
 216	821_session_turns_abandoned_marker.sql
 217	822_session_summaries_health_pending_index.sql
+218	823_session_turns_request_status.sql
