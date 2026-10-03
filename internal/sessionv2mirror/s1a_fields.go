@@ -128,7 +128,14 @@ func applyStorageS1AFields(req *v2.ProcessedRequest, entry *telemetry.RequestLog
 	}
 	req.EgressProtocol = strVal(entry.EgressProtocol)
 
-	// 检索/完整性组（SearchText/RequestChecksum 缺源，保持零值）
+	// 检索/完整性组（§9.98：SearchText 的源已接上，RequestChecksum 仍缺源）
+	//
+	// SearchText 此前「缺源，保持零值」⇒ session_turns.search_text 252 实测 0% 填充，
+	// 而 v1 侧 100% ⇒ **退役 v1 会静默杀掉全文检索**（§9.97 阻塞 #1）。
+	// searchText(entry) 是纯函数，两侧结果逐字节相同。
+	if st := telemetry.SearchText(entry); st != nil {
+		req.SearchText = *st
+	}
 	req.RequestPreview = strVal(entry.RequestPreview)
 	req.ResponsePreview = strVal(entry.ResponsePreview)
 	req.TransformSummary = strVal(entry.TransformSummary)
