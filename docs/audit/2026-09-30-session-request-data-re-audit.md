@@ -12386,3 +12386,71 @@ cmd/tools/validate_sessions_v2/loader.go
 - 视图列数也量不到（视图投影 ≠ 存储）。
 
 ⇒ 与 §9.59 的教训同源：**「存在」与「有值」是两件事，而这里差着一个数量级。**
+
+---
+
+## §9.99 阻塞 #2（`is_final_success`）：★先撤回我 §9.98 的说法，再给出真正的理由
+
+§9.98 我写「`is_final_success` 是**语义变更、需拍板**，不是搬运」。**这句话不准确。**
+本节去读了 `shouldClaimFinalSuccess` 本体，然后给出**经过验证的**结论。
+
+### §9.99.1 撤回：「计算布尔值」这一步是机械的
+
+`client.go:2688`：
+
+```go
+func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
+    return entry != nil &&
+        entry.Success &&
+        entry.GwSessionID != nil && *entry.GwSessionID != "" &&
+        !IsInternalAutoEntry(entry)
+}
+```
+
+**纯函数**：无 I/O、无副作用，只读 entry 的 4 个字段 + 一个谓词。
+⇒ 与 `searchText(entry)` 同一形状，**镜像侧调用它会得到与 v1 逐位相同的结果**。
+⇒ 我 §9.98 说「不是搬运」是错的。**我又一次在没读函数本体的情况下就断言了难度。**
+
+### §9.99.2 真正的阻塞：**每会话唯一性这个不变量，会话侧根本不存在**
+
+v1 侧不是「给每行打标」，而是**每个 `gw_session_id` 恰好一行**为 TRUE：
+
+| 面 | 机制 | 出处 |
+|---|---|---|
+| **v1** | `UNIQUE INDEX uq_request_logs_final_success_session ON request_logs_hot (gw_session_id) WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` | 迁移 `532_request_logs_final_success.sql:101/146` |
+| **v1** | claim 走 `UPDATE … SET is_final_success = TRUE`；撞 `23505`（唯一冲突=输掉竞争）**降级为 superseded**，历史不回改 | `client.go:2864/2885` |
+| **会话** | `session_turns` 上 `is_final_success` **连唯一索引都没有** | 实测 `sql/migrations/startup/` 零命中 |
+
+⇒ **只把布尔值搬过去是危险的**：会话里**每个**成功轮次都会是 TRUE，
+而 v1 是**每会话恰好一个**。
+
+> **这比 0% 填充更坏。** 0% 是「什么都不写」，一眼能看出坏了；
+> 「每行都 TRUE」是一个**看起来完全正常**的答案，
+> 而它会让 GLOBAL_G2 对账**把每个成功轮都当 final success**，
+> 正是 `internal_loopback.go:19-22` 警告过的那类永久性虚高。
+
+### §9.99.3 真正的修法（三步，缺一不可）
+
+1. **`session_turns` 上建等价唯一索引**：
+   `(session_id) WHERE is_final_success`（会话侧键是 `session_id` 而非 `gw_session_id`）。
+   **没有它，第 2 步的竞争语义无处依附。**
+2. **把 claim-and-supersede 搬进会话写链**：镜像侧在写 turn 后执行同样的
+   `SET is_final_success = TRUE`，撞 23505 即降级为 superseded。
+3. **门**：`session_turns` 里 `is_final_success` 为 TRUE 的行数 **≤ 会话轮数**，
+   且每个 `session_id` 至多一条——这才是「不变量被守住」的可证形式。
+
+⇒ **第 1 步是 schema 变更**（新迁移 + 唯一索引），且必须与第 2 步同批上线，
+否则唯一索引会让并发 claim 直接失败、反而造成**写入被拒**。
+
+**本节不实施**：这是一个 schema + 写链的成对变更，收益是让 GLOBAL_G2 对账在退役后
+仍然成立，代价是一次迁移与一次并发语义改写。**属需负责人拍板的变更，不是机械修复。**
+
+### §9.99.4 这一节的教训
+
+> **「这个修复是机械的还是语义的」——不读函数本体就答不了。**
+> 我 §9.98 凭「它由 `shouldClaimFinalSuccess` 推导」判成语义变更，**理由是猜的**；
+> 读完之后结论反了一半：布尔值是机械的，但**不变量**不在函数里、**不在列上**，
+> 而在**v1 独有的唯一索引**里。
+>
+> ⇒ 与 §9.92 / §9.96 同族：**先读，再断言**。
+> 尤其是「难不难」这种判断——它最容易被**想象**替代**阅读**。

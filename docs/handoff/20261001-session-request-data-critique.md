@@ -5268,3 +5268,57 @@ M4 第一版 `sed` 也**没跑成**（`|` 分隔符冲突）——没生效的�
 只比「列是否存在」会得出「全部齐备、可以退役」——**完全相反**。
 填充率只能在生产库上测：本地库量不到（§9.53 有先例），视图列数也量不到。
 ⇒ 与 §9.59 同源：**「存在」与「有值」差着一个数量级。**
+
+---
+
+## 第五十轮（§9.99）：阻塞 #2（`is_final_success`）——★先撤回我 §9.98 的说法，再给真正的理由
+
+### 撤回
+
+§9.98 我写「`is_final_success` 是语义变更、需拍板，**不是搬运**」。**不准确。**
+读 `client.go:2688` 本体后发现：
+
+```go
+func shouldClaimFinalSuccess(entry) bool {
+    return entry != nil && entry.Success &&
+        entry.GwSessionID != nil && *entry.GwSessionID != "" &&
+        !IsInternalAutoEntry(entry)
+}
+```
+
+**纯函数**，与 `searchText(entry)` 同一形状 ⇒ **布尔值这一半是机械的**。
+我上一轮「不是搬运」是**凭想象下的难度判断，没读函数**。
+
+### 真正的阻塞：每会话唯一性这个不变量，会话侧根本不存在
+
+| 面 | 机制 |
+|---|---|
+| **v1** | 迁移 532 建 `UNIQUE INDEX … (gw_session_id) WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''`；claim 走 `SET is_final_success = TRUE`，撞 23505 降级 superseded，历史不回改 |
+| **会话** | `session_turns` 上 `is_final_success` **连唯一索引都没有** |
+
+⇒ **只搬布尔值是危险的**：会话里**每个**成功轮次都会是 TRUE，
+而 v1 是**每会话恰好一个**。
+**这比 0% 更坏**——0% 一眼看出坏了；「每行都 TRUE」是**看起来完全正常**的答案，
+会让 GLOBAL_G2 把每个成功轮都当 final success，正是 `internal_loopback.go:19-22`
+警告过的那类永久性虚高。
+
+### 真正的修法（三步，缺一不可）
+
+1. `session_turns` 上建等价唯一索引 `(session_id) WHERE is_final_success`
+   ——**没有它，第 2 步的竞争语义无处依附**；
+2. 把 claim-and-supersede 搬进会话写链（撞 23505 降级 superseded）；
+3. 门：每个 `session_id` 至多一条 `is_final_success = TRUE`。
+
+⚠ **1 是 schema 变更，且必须与 2 同批上线**——
+否则唯一索引会让并发 claim 直接失败、反而造成**写入被拒**。
+
+**本轮不实施**：schema + 写链的成对变更，属需负责人拍板，不是机械修复。
+
+### 教训
+
+> **「这个修复是机械的还是语义的」——不读函数本体就答不了。**
+> 我凭「它由某个函数推导」判成语义变更，**理由是猜的**；
+> 读完之后结论反了一半：布尔值机械，但**不变量**不在函数里、也不在列上，
+> 而在**v1 独有的唯一索引**里。
+> ⇒ 与 §9.92 / §9.96 同族：**先读，再断言**。
+> 尤其是「难不难」这种判断——它最容易被**想象**替代**阅读**。
