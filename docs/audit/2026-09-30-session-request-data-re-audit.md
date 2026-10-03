@@ -17059,7 +17059,12 @@ AND p.qual::TEXT ~ 'request_logs([^_[:alnum:]]|$)'
 | `session_turns` / `session_turns_hot` | 同上 |
 | `session_bodies` | 同上 |
 
-⚠️ **三种后果哪一种，我不猜。**
+✅ **已判（§9.139 实测）**：结果是**第一种之外的一个确定答案** ——
+`DROP TABLE` **会被 PostgreSQL 直接拒绝**，报
+`cannot drop table … because other objects depend on it` /
+`DETAIL: policy … depends on table …` ⇒ **失败得很响亮，不会静默损坏。**
+
+⚠️ 以下是当时的原始记录（结论已被 §9.139 取代，保留以示判据演进的轨迹）：
 我查了 `pg_depend`，想用「PostgreSQL 是否登记了这条依赖 ⇒ DROP 会不会被拦」来定，
 但**那条查询我没约束 `deptype` / `refobjsubid`，返回的 35 不可解释** ⇒ 不用它下结论。
 （我又试了本地 scratch 库做最小实验，本地凭据不对；权威文档检索也没命中这个问题。）
@@ -17210,3 +17215,101 @@ select grantee, table_name from information_schema.table_privileges
 
 ⇒ 落地动作：以后审计任何「A 依赖 B」的结论，都要附一行
 「**当前有哪些角色会真的走这条路径**」的实测。
+
+---
+
+## §9.139　把 §9.137.3 那个 6 行实验真跑了：退役会**响亮地失败**（安全），但 RLS 对非特权角色**根本不可用**（不安全）
+
+§9.137.3 我留了「三种失败形态、判不了、给个 6 行实验」。
+本节在本地 scratch 库把它跑完了（三个独立 scratch 库 + 两个探针角色，**跑完全部删除**）。
+**§9.137.3 的「三种可能」被实测替换成确定结论。**
+
+### §9.139.1 实验形态（与生产同形）
+
+- `t_dep` ≡ `request_logs`；`t_probe` ≡ `session_turns`
+- `t_probe` 开 RLS，**一条 PERMISSIVE 租户隔离 + 一条 RESTRICTIVE owner 过滤**
+  —— 与生产 `session_turns` 的策略组合一致
+- 探针角色 `r2`：`rolsuper=f`、`bypassrls=f`、有 `t_probe` 的 SELECT、**没有 `t_dep` 的 SELECT**
+  —— 与生产「非特权角色对 `request_logs` 零授权」一致（§9.138.2）
+
+### §9.139.2 结果（四条全部确定）
+
+| # | 操作 | 结果 |
+|---|---|---|
+| ① | 读者查 `t_probe`（`t_dep` 无授权） | **`ERROR: permission denied for table t_dep`** —— 查询**直接失败** |
+| ② | 补上 `t_dep` 的 SELECT 后重查（**对照组在此变活**） | 恰好 **1 行（alice）** —— owner 过滤**按设计工作** |
+| ③ | `DROP TABLE t_dep`（策略仍在） | **`ERROR: cannot drop table t_dep because other objects depend on it`** / `DETAIL: policy p_owner on table p_probe depends on table t_dep` ⇒ **DROP 被 PostgreSQL 拦下** |
+| ④ | 先 `DROP POLICY` 再 `DROP TABLE` | 成功；读者此后看到 **2 行**（无 owner 过滤） |
+
+⚠️ **对照组失败过一次，这本身是结果。**
+第一版我只建了一条 RESTRICTIVE 策略，读者看到 **0 行** ——
+若不查就汇报，会把「0 行」当成退役的失败形态。
+实际原因是 PostgreSQL 的规则：**非 bypass 角色至少需要一条 PERMISSIVE 策略**，
+只有 RESTRICTIVE 时是默认拒绝。
+⇒ **真实 `session_turns` 恰好有 PERMISSIVE 策略**，所以第一版的形态**不真实**；
+补齐后才拿到 ② 这条活对照。**「对照组失败」先于「结论」出现，才没把假象当结论。**
+
+### §9.139.3 结论一：退役会**响亮地失败**，不是静默损坏
+
+③ 证明 PostgreSQL **会**登记策略表达式对被引用表的依赖，并**拒绝 DROP**：
+
+> `ERROR: cannot drop table … because other objects depend on it`
+> `DETAIL: policy … depends on table …`
+
+⇒ **`DROP TABLE request_logs` 会在 DDL 步骤直接被拒**，报出可操作的信息，
+**不会**出现「表没了、查询才炸」那种最难查的形态。
+⇒ **§9.137.3 的三种可能收敛为一种：失败，且失败得很响亮。**
+⇒ 对 D9 的实际含义：**发布脚本里这一步会当场停下，不会带着半截状态跑下去** ——
+**但前提是发布流程会检查 DDL 的退出码**（D9 已经要求发布流程不得依赖重跑 installer，
+这一条同源）。
+
+### §9.139.4 结论二（更严重）：这套 owner 隔离**对任何非特权角色都不可用**
+
+把 ① 与 §9.138 的两条实测合起来：
+
+| 角色类型 | 结果 |
+|---|---|
+| 特权（`llm_gateway`：`rolsuper=t` + `bypassrls=t`） | RLS **永不求值** ⇒ owner 过滤形同虚设 |
+| 非特权（其余 17 个角色） | 对 `request_logs` **零授权** ⇒ 一旦给它们 `session_turns` 的权限，**每次查询报 `permission denied`** |
+
+⇒ **在这个库里，今天不存在任何一个角色，能让这套 owner 隔离真正生效。**
+不是「没启用」，是**两条路都走不通**：特权角色绕过、非特权角色报错。
+⇒ 而生产现状恰好停在「非特权角色零授权」，所以这个缺陷**一直没被触发**。
+
+⚠️ 这条比 §9.137 的「潜伏依赖」更进一步：
+**它是一个已经存在、但因为没人走到那条路上而一直没暴露的设计缺陷。**
+⇒ 一旦有人「顺手给某个报表角色开个 `session_turns` 的只读权限」，
+**报表会立刻全线报错**，而排查方向很容易被带到「RLS 配错了」而不是
+「这套隔离依赖一张即将退役的表」。
+
+### §9.139.5 对退役方案的影响（把 §9.137.3 的整改路径变成可执行的）
+
+④ 证明了整改路径可行且**代价明确**：
+
+> **先 `DROP POLICY` 改写 owner 过滤（不再引用 v1），再 `DROP TABLE request_logs`。**
+
+⚠️ 但 ④ 也量化了代价：策略一删，**owner 过滤就没有了**（读者从 1 行变成 2 行）。
+⇒ 所以整改**不是「删掉策略」，而是「把 owner 换一种方式存下来」**：
+在 `session_*` 侧（或 `sessions` 侧）**自己持有 `owner_user`**，
+让策略不再需要回查 v1。
+⇒ 这条应进 D9 第二条，把「改写」具体化为「**先让 session 侧自己存 owner，再换策略，最后删表**」。
+
+### §9.139.6 教训
+
+> **「对照组失败」不是实验失败，是实验在告诉你量具不对。**
+> 第一版只建 RESTRICTIVE 策略，读者看到 0 行 ——
+> 若直接汇报，就是把「量具没活」报成「结论」。
+> ⇒ **先问「对照组为什么是 0」，再问「结论是什么」**——
+> 这一次 0 行的真因（缺 PERMISSIVE ⇒ 默认拒绝）与我要回答的问题**毫无关系**。
+>
+> **「表 A 引用表 B」这件事本身可以回答三个不同的问题，别混成一个：**
+> ① 依赖存在吗？（查 `pg_policies` / 迁移源码）
+> ② **删 A 会被拦吗？**（③：会，且报得很响）
+> ③ **依赖今天生效吗？**（①：非特权角色直接报错；特权角色绕过 ⇒ 都不生效）
+> 我前面只答了 ①，把它的严重性当成了 ③ 的答案。
+> ⇒ **三个问题分别要三处证据**，缺一处定性就会错。
+>
+> **本地 scratch 库是这类问题的正确战场。**
+> 我前一轮因为「本地凭据不对」就放弃了 —— 正确做法是**读 SSOT**
+> （`envs/common/database.yaml` 里 `COMMON_PG_SUPERUSER=llm_gateway`），
+> 而不是猜凭据或就此作罢。**一轮就能跑完的实验，不该留成一个待办。**
