@@ -43,6 +43,7 @@
 - 影响：包 doc（doc.go）描述的「三层 offset 一致性校验」从不执行；三层各自有字段与写入，但无运行时回归检测（如 compressed tokens > raw tokens 这类回归只能靠该包，而它未接线）。属「仅测试/库代码」。
 
 ### F4（低）sanitize offset 锁为 best-effort，三条降级路径重新打开跨进程 race；锁内做全 body sanitize，5s TTL 偏紧
+> ⚠️ **「三条降级路径 unlocked 继续跑」已被证伪，见文末「订正 2」（审计 237 号）**；本条剩余的「5s TTL 偏紧 / 超时后撞号」仍然成立。
 - 证据：`smart_sani_guard.go:346-351`（token rand 失败→unlocked）、`:362-368`（Redis 错误→unlocked）、`:376-378`（竞争 3 次超时→unlocked），降级均为 Warn；临界区 `sanitizeRequestBody`（:229-304）在锁内对所有消息跑检测+替换，大 body（数 MB）可能超 5s 租约，租约过期后另一副本可进入 → last-writer-wins 撞号窗口重现（即 R35 P0-2 描述的事故形态，概率低但存在）。
 - 说明：代码注释明确这是有意取舍（不阻塞热路径），非未完成项；登记为已知风险。
 
@@ -118,3 +119,54 @@ F3 的**影响描述有一半仍然成立**，但原因变了：
 本文件 1b 行称 `SanitizedMessageRef` 是「hash-only 消息级映射」且「无 occurrence 字段」——
 该描述与 196 号的 F2（两条哈希空间永不相等：`MessageFingerprint` 64-hex vs `msgHash` 32-hex）
 是**互补而非冲突**，此处无需订正，仅提示读者两处都要看。
+
+---
+
+## 订正 2（2026-10-04，审计 237 号）—— F4「三条降级路径 unlocked 继续跑」已过期
+
+### 结论
+
+**sanitize offset 锁现在是 fail-closed 的。** r59 记录的「token rand 失败 / Redis 错误 /
+竞争超时三条路径都会 unlocked 继续跑，只记 Warn」**在当前工作树不成立**。
+
+### 证据（逐条亲验）
+
+| 场景 | 当前行为 | 落点 |
+|---|---|---|
+| 锁获取失败 | `fmt.Errorf("acquire sanitize offsets: %w", err)` ⇒ 上抛 ⇒ 503 | `security/sanitize/smart_sani_guard.go:308-311` |
+| offsets 加载失败 | `fmt.Errorf("load sanitize offsets: %w", err)` | 同文件 `:313-316` |
+| 提交失败（含租约丢失） | `fmt.Errorf("persist sanitize mapping: %w", err)` | 同文件 `:383-385` |
+| 租约 token 生成失败 | `return sanitizeOffsetLease{}, err` | 同文件 `:422-424` |
+| 唯一的「无租约」情形 | `redis == nil \|\| sessionID == ""` ⇒ 此时 `:382` 根本不写 Redis，映射只活在同请求 ctx | 同文件 `:417-419`、`:255-256` |
+
+**代码里的注释与当前行为一致，不是残留**：`smart_sani_guard.go:414-415` 写的是
+「Redis-backed sessions **never proceed unlocked**; the commit script verifies this lease before writing」。
+
+### 时序，不是方法
+
+- 本文件日期 **2026-09-23**；
+- 「Redis-backed sessions never proceed unlocked」的实现随 2026-09-30 一带的
+  修订审计轮次落地（同一批轮次也接线了 `threetier`，见**订正 1**）；
+- 两轮修复都把 r59 的负面结论推翻了，**而 r59 文档从未被回头订正**。
+
+### 残留的真实风险（订正后仍然成立的部分）
+
+**F4 标题里的另外两个论点没有被推翻**：
+
+1. **锁内做全 body sanitize，5s 租约偏紧** ——
+   `sanitizeRequestBody` 在临界区内对所有消息跑检测+替换，大 body（数 MB）可能超过租约。
+   本轮**未复核**这一条（它不依赖上面那个 fail-closed 判断）。
+2. **租约过期后另一副本可进入的 last-writer-wins 撞号窗口** ——
+   fail-closed 消除的是「无租约也提交」，**没有**消除「租约超时后另一副本进入」这一形态；
+   Lua 提交脚本会校验租约归属（`:549-551`），所以撞号会被**拒绝**而非静默写坏，
+   但拒绝之后的行为（重试/503）本轮**未追**。
+
+⇒ 正确的现状表述是：
+**「写入侧已改为租约必需的 fail-closed；F4 剩余的风险是租约时长与超时后的拒绝路径，而非『无租约也提交』。」**
+
+### 顺带
+
+本文件 1c / F3 的订正见**订正 1**（审计 235 号）。
+本文件 F1（`sanitize_map_ref` 读侧有写侧无）**早已修复**
+（`domains/streaming/request_log_pipeline.go:1537`、`domains/hooks/compression/session_compressor.go:966`，
+并已由 80 号核实 V2 白名单），故不需订正。
