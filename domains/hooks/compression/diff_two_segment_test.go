@@ -253,10 +253,12 @@ func TestFindDeltaAnchor_AnthropicStringSystemSummaryDetected(t *testing.T) {
 	}
 }
 
-// TestFindDeltaMarkerRecognition_UnmarkedDynCtxIsMarker: the widened
-// isSummaryMarkerMsg must treat the rebuilders' unmarked summary prefixes as
-// gateway lineage (not client messages) in every consumer: anchor filter,
-// B-track first-user pin, rebuild tail filter.
+// TestFindDeltaMarkerRecognition_UnmarkedDynCtxIsMarker pins the recognition
+// split: isSummaryMarkerMsg keeps its marked-only contract (smm_v1 prefix —
+// marker_idempotency Scenario C and the retain pin depend on it), while the
+// anchor walk separately recognises the rebuilders' unmarked summary
+// prefixes via isUnmarkedGatewaySummaryMsg. Both generations must be excluded
+// from the comparable retained block.
 func TestFindDeltaMarkerRecognition_UnmarkedDynCtxIsMarker(t *testing.T) {
 	// The prefixes carry real newlines, so the messages must be built via
 	// Marshal — splicing them into a JSON string literal produces invalid JSON.
@@ -268,15 +270,18 @@ func TestFindDeltaMarkerRecognition_UnmarkedDynCtxIsMarker(t *testing.T) {
 		return json.RawMessage(b)
 	}
 	dynCtx := mustMsg(CompressionSummaryPrefix + "summary body")
-	if !isSummaryMarkerMsg(dynCtx) {
-		t.Fatal("unmarked CompressionSummaryPrefix content must be recognised as gateway summary")
+	if isSummaryMarkerMsg(dynCtx) {
+		t.Fatal("isSummaryMarkerMsg contract is marked-only; unmarked content must stay false (Scenario C / retain pin depend on it)")
+	}
+	if !isUnmarkedGatewaySummaryMsg(dynCtx) {
+		t.Fatal("unmarked CompressionSummaryPrefix content must be recognised by isUnmarkedGatewaySummaryMsg for the anchor walk")
 	}
 	smart := mustMsg(smartWindowSummaryPrefix + "summary body")
-	if !isSummaryMarkerMsg(smart) {
-		t.Fatal("unmarked smartWindowSummaryPrefix content must be recognised as gateway summary")
+	if !isUnmarkedGatewaySummaryMsg(smart) {
+		t.Fatal("unmarked smartWindowSummaryPrefix content must be recognised by isUnmarkedGatewaySummaryMsg")
 	}
 	marked := mustMsg("[smm_v1:abcdef]\n" + CompressionSummaryPrefix + "summary body")
 	if !isSummaryMarkerMsg(marked) {
-		t.Fatal("marked summary content must stay recognised")
+		t.Fatal("marked summary content must stay recognised by isSummaryMarkerMsg")
 	}
 }

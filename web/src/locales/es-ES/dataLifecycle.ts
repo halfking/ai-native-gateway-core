@@ -415,6 +415,10 @@ export default {
       periodCompare: 'Error al cargar comparación de periodos',
       cacheEconomics: 'Error al cargar economía de caché',
     },
+    degraded: {
+      title: 'Algunas métricas no están disponibles:',
+      hint: 'El esquema de la base de datos está por detrás de esta versión, así que las cifras siguientes son marcadores de «no se pudo calcular», no mediciones (lo cual no es lo mismo que no haber datos en este periodo). Pide a un administrador que ejecute la migración de agregación de datos.',
+    },
   },
   confirmDeleteCleanup: '¿Eliminar {rows} filas?\nEspacio liberado estimado: {size}\n\n¡Esta acción es irreversible!',
   confirmArchiveCleanup: '¿Archivar {rows} filas?\nEspacio liberado estimado: {size}\n\n¡Esta acción es irreversible!',
