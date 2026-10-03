@@ -6506,3 +6506,204 @@ PG **没有 `CREATE POLICY IF NOT EXISTS`**，351 的 **12 条 policy 全无守�
 >    ④ 「生产有的，全新安装就该有」这个前提本身要先验证。
 > 7. **工作区纪律不变**：共享工作区不跑 `git restore`、不 stash 他人工作；
 >    本地 `main` 与 `origin/main` 分叉，合并需人工裁决（不用 rebase）。
+
+---
+
+## 第六十五轮（§9.117）：把 §9.113.4 欠的账还掉——`public.sessions` 读点逐个判完
+
+### 本轮做了什么
+
+§9.113.4 点名了三个"不提 `partition_date`"的读点并声明"未逐个验证、不宣称它们也坏"。
+本节把那笔账还掉，方法是**枚举式**（24 处 `FROM public.sessions` 全判）而不是抽查。
+
+**① 先划清问题域：不是"分区表"，是"同一逻辑实体被按月复制"**
+`public` 下有 30 张分区表，但判据不在"分不分区"，在**唯一键除 `partition_date` 之外
+还剩什么**。252 实测跨月实体数 + 唯一键：
+
+| 表 | 跨月 | 唯一键（去 partition_date） | 判定 |
+|---|---|---|---|
+| `sessions` | 413 | `(session_id)` | ⚠️ **同形**，§9.114 已修 |
+| `session_turns` | 413 | `(tenant_id,session_id,turn_no)`/`(tenant_id,request_id)` | ✅ 跨月只是不同轮次 |
+| `session_turn_details` | 413 | `(session_id,turn_no)` | ✅ |
+| `session_bodies` | 1 | `(…,turn_no)` | ✅ |
+| `session_censors` | 47 | 未查 | **未查，不宣称** |
+| `session_tools` | 0 | — | 无风险 |
+
+另两个同形的**部分唯一索引**：`uq_session_turns_final_success (tenant_id,session_id) WHERE is_final_success`
+—— 252 **0 行**（与阻塞 #2 一致）；`uq_session_bodies_final_full (…,session_id) WHERE kind='final_full'`
+—— 29 行 / **0 会话重复**。⇒ **结构允许、实测 0 例，不报缺陷。**
+
+**② 主动收回一：`bg/lite_retention_worker.go` 不适用（我推错了）**
+我读到它三处 `DELETE … WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.id = session_turn_details.session_id …)`，
+而 `sessions.id` 每月一个新值 ⇒ 判它有"过度删除跨月会话近期数据"的风险。
+**错在**：`session_turn_details.session_id` 是 **text** 不是 `sessions.id`；而且那三处用
+`?` 占位符 + `tx.ExecContext` ⇒ 那是 **SQLite**。**我在 PG 的分区性质上推了一整套故事。**
+⇒ 记一条：**判读点风险前先确认它连的是哪个库。**
+
+**③ 真正的潜伏缺陷（已修）：`AggregateAndFlush` 读改写前提失效**
+`cmd/gateway/turn_logs_aggregator.go` 两条语句都**没有 `partition_date` 谓词**：
+- `flushLockQuery … FOR UPDATE` 匹配 2+ 行，`QueryRow` 静默取其中一行当 merge 种子；
+- `flushUpdateQuery` 把同一份 payload 写进**所有**行。
+⇒ 用一行的累积值合并、覆盖其他行 = 静默内容丢失。设计注释里那条
+"re-reads the column value the first one committed" 的不变量**假设了一个 (tenant,session) 只有一行**。
+
+修法：两条**都**限定 `partition_date = (SELECT MAX(partition_date) …)`，与写侧 `titlestore`
+和 `turnsSessionsFinalizeWhere` 同口径。**必须一起改**——只改其一会让读种子行与写目标行不一致。
+
+**④ 诚实定性：潜伏，不是现网事故**
+`session_turn_logs` **0 行**（聚合器输入）、`turn_logs_summary` 在 **177500/177500** 个会话里
+**全 NULL**、413 个跨月会话里非空的行 **0**、两行摘要冲突的 **0**。
+⇒ 门是**构造场景**，不是追认现网损失（已写进门头注释）。
+⚠️ 这与阻塞 #2 的 `is_final_success`（0 行）是同一形态：**特性一直休眠**。
+
+### 门（`cmd/gateway/turn_logs_aggregator_crossmonth_realdb_test.go`）
+
+夹具：同一 `(tenant,session)` 两行且**两行摘要刻意不同**（若相同，写错行看不出来）+ 一条 turn 2 stage 行。
+**变异实证**（去掉两处谓词）两条断言都报：
+- 「最新分区行合并时丢了它自己的累积值：`turn_1.stages=[routing]`（期望 compression）」= 读种子取错行
+- 「旧分区行被写入了 `turn_2`」= 写落到所有行
+
+**我在这道门上错了四次夹具，每次都长得像产品缺陷**：
+1. `stage='request'` 被 CHECK 拒（合法值只有 `routing|compression|injection_check|llm_call|output_check|response|cache_update`）——**枚举值要查，别猜**。
+2. 漏给 `latency_ms` ⇒ `cannot scan NULL into *int`。查写侧 `turn_logs_writer.go:136` 确认它
+   **恒计算 latencyMs、从不写 NULL** ⇒ **不是缺陷**，是夹具错。（schema 可空 + 扫描非指针确实脆，但生产写侧不可达。）
+3. `oldSummary` 用了非法 `LogSummary` 形状 ⇒ `mergeSummaries` 解析失败 ⇒ **整份 existing 被丢弃**
+   （已文档化的容错路径），门红在"丢了累积值"上。
+4. 断言二原写"旧行**逐字节**不变" ⇒ 第一次就红：`turn_logs_summary` 是 `jsonb`，
+   PG 存取规范化空白（`"a":1`→`"a": 1`），**没被改动的行也会红**。改成 flush 前后**语义**比较
+   + 另加锐判据（旧行不得出现 `turn_2`）。
+并把断言从 `Fatalf` 改成 `Errorf`：`Fatalf` 会短路掉第二条——这正是 §9.115.5 刚写进
+351 那道门的教训，**隔一天撞上第二次**。
+
+### 变更文件
+
+- `cmd/gateway/turn_logs_aggregator.go`（两条 flush 语句加 `MAX(partition_date)` 限定 + 理由注释）
+- `cmd/gateway/turn_logs_aggregator_crossmonth_realdb_test.go`（新增真库门）
+- 审计文档 §9.117、本 handoff
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 跨月门（真库 + 真实 `AggregateAndFlush`） | 绿 |
+| 变异（去掉两处谓词） | 红，**两条断言都报** |
+| `go test ./cmd/gateway/` 全包 | 绿 3.8s（含既有 pgxmock SQL 形态门） |
+
+### 下一轮提示词
+
+> 1. **本轮已推 `origin/main`**，起点 = 本轮最后一个提交 hash。
+> 2. **`public.sessions` 读点这条线到此闭合**：24 处全判完，已修 2 处
+>    （主列表 §9.114、聚合器 §9.117）、已自守 2 处、不适用 1 处、其余安全。
+>    `session_censors`（47 跨月）的唯一键**仍未查**，是这条线唯一的尾巴。
+> 3. **待拍板（全部仍未决）**：决定 A/B/C、`credential_id` 修法 + 索引、
+>    阻塞 #2 `is_final_success`、等价口径 (i)/(ii)(iii)、`backlog_pending` 告警、
+>    actor 名单/cohort/§9.49.8/§9.48、写链是否自 ensure 当月分区、
+>    **790 提交 / 50 迁移文件的发布窗口与回滚方案**。
+> 4. **待查**：auto-route 断流；A 群 6 条 / B 群 10 条 / `backlog_pending=1`。
+> 5. **方法论留档**：① 判跨月重复要看**唯一键**，不能看跨月计数
+>    （`session_turns` 413 跨月但每行是不同轮次）；② 判读点风险前先确认
+>    **连的是哪个库**（我在 SQLite 上推了整套 PG 故事）；③ 潜伏缺陷与现网事故
+>    分开定性（输入 0 行就别写成"数据丢失"）；④ 门红了先怀疑夹具。
+> 6. **工作区纪律不变**：共享工作区不跑 `git restore`、不 stash 他人工作；
+>    本地 `main` 与 `origin/main` 分叉，合并需人工裁决（不用 rebase）。
+
+---
+
+## 第六十六轮（§9.118）：闭合 `session_censors`——跨月读点这条线结束
+
+无代码改动，纯闭合记录。
+
+### 结论
+
+`session_censors` 表面**同形**（唯一键只有 PK `(id, partition_date)`，代理键），
+252 实测跨分区重复元组：`(tenant,request_id)` **2** 个、
+`(tenant,session,turn_no,placeholder,sensitive_type)` **9,371** 个（比 `sessions` 的 413 还多）。
+
+**但不是缺陷**，两条判据：
+
+1. **零消费者**。Go 侧 `FROM/JOIN session_censors`（排除 `_hot`、排除测试）零命中，
+   `sql/` 侧零命中。但**不靠 grep 就下结论**——真库补查三处间接依赖：
+   视图定义含它的 **0** 个；函数体含它的 2 个（`ensure_session_family_partitions`、
+   `promote_session_censors_hot_to_partition`）；`pg_depend` 依赖方只有它自身的
+   attrdef/class/constraint/policy/type。⇒ **本表是只写的脱敏审计存储**
+   （`db_sink.go` 头注释自述：线上未配 `LLM_GATEWAY_SESSION_CENSOR_KEY`、
+   `count(original_encrypted)=0`、全仓无解密读取方）。
+2. **唯一会碰这些行的机制按代理键走**。`promote_session_censors_hot_to_partition` 的
+   `ON CONFLICT (id, partition_date) DO NOTHING` 与 `DELETE … WHERE h.id = i.id`
+   都用代理键 ⇒ 跨月重复既不产生假冲突也不产生漏删，幂等且正确。
+
+⇒ 与 `sessions` 恰好相反：同样同形，`sessions` **有消费者**所以是缺陷，
+`session_censors` **零消费者**所以不是。
+
+### `public.sessions` 跨月重复全表判定（此线结束）
+
+| 表 | 跨月 | 同形 | 有消费者 | 结论 |
+|---|---|---|---|---|
+| `sessions` | 413 | ✅ | ✅ | **已修 2 处**（§9.114 列表、§9.117 聚合） |
+| `session_turns` | 413 | ❌ 键含 `turn_no` | ✅ | 不同轮次，非重复 |
+| `session_turn_details` | 413 | ❌ 键含 `turn_no` | ✅ | 同上 |
+| `session_bodies` | 1 | ❌ 键含 `turn_no` | ✅ | 同上 |
+| `session_censors` | 47 | ✅ 键全是代理 | **❌ 零消费者** | **不是缺陷** |
+| `session_tools` | 0 | — | ✅ | 无风险 |
+
+两个同形部分唯一索引维持 §9.117.1 定性：结构允许、实测 0 例，只记形状不报缺陷。
+
+### 下一轮提示词
+
+> 1. **本轮已推 `origin/main`**（文档闭合，无代码改动），起点 = 本轮最后一个提交 hash。
+> 2. **「跨月重复 / 一会话一行」这条线到此全量结束**（§9.112→§9.118，六轮）。
+>    下轮不必再从 `public.sessions` 读点重新起头。
+> 3. **待拍板（全部仍未决，且已无本会话可自行推进的项）**：
+>    决定 A（视图加宽 30 列）/ B（16 列语义等价）/ C（25 列归属）、
+>    `credential_id` 修法（`::bigint` cast vs 改入参类型）+ 会话族 `credential_id` 索引、
+>    阻塞 #2 `is_final_success`（252 实测 0 行、特性休眠）、
+>    等价口径 (i)/(ii)/(iii)、`backlog_pending` 告警、
+>    actor 名单 (a)(b)(c)/cohort/§9.49.8/§9.48、
+>    写链是否自 ensure 当月分区、
+>    **790 提交 / 50 迁移文件的发布窗口与回滚方案**（所有修复均未部署）。
+> 4. **待查**：auto-route 自 2026-09-15 断流；A 群 6 条 / B 群 10 条 / `backlog_pending=1`。
+> 5. **方法论留档**：① 判跨月重复要看**唯一键**且必须同时问**消费者**——
+>    `sessions` 与 `session_censors` 同形，一个有消费者一个没有，结论相反；
+>    ② 「零消费者」不能靠 grep 断言，视图定义 / 函数体 / `pg_depend` 三层各验一次；
+>    ③ 审计型表天生多行，实体表的「一行」判据不能套用。
+> 6. **工作区纪律不变**：共享工作区不跑 `git restore`、不 stash 他人工作；
+>    本地 `main` 与 `origin/main` 分叉，合并需人工裁决（不用 rebase）。
+
+---
+
+## 第六十七轮：把待办里三条「待查」结清，并产出一张决策清单
+
+### 本轮做了什么
+
+1. **结清三条挂了五轮以上的「待查」** —— 它们不是没查，是**标签已失效**：
+   - 「A 群 6 条 / B 群 10 条」这两个标签**在仓内根本不存在**（`docs/` 与 handoff 全零命中）。
+     实际所指：6 条 = §9.65 的 WARN 行，§9.65.7 已写明**证据被重启+轮转销毁、按构造不可归因**，
+     真正遗留是它暴露的「这类缺失不可检测」；10 条 = §9.28 的 10 个 bodies 腿读点，
+     依赖「正文来源」裁决 ⇒ 归入决定 C，不是调查项。
+   - `backlog_pending=1`：同进程实测 `backlog_pending=0`、`mirrorBacklogCap=10000`、
+     同期失败仅 90 ⇒ **FIFO 淘汰不可能发生**，那几行不在 backlog 里。
+     真正的问题是「该 gauge 无告警规则」⇒ 转为决策 D6。
+   - auto-route 断流：§9.70.5 **已完整归因**（断点 09-09、host 154、蓝绿降级后长驻进程
+     traffic-only ⇒ decider 未装配、09-15 00:12 补丁 00:17 自愈）。**无需再查。**
+
+   ⇒ **教训**：一条待办挂到第五轮时，该问的不是「怎么查」而是「**它指的是什么**」。
+   指代物在文档里找不到，说明标签本身已腐烂；继续挂着只会假装还有事可做。
+
+2. **产出决策清单** `docs/audit/2026-10-04-session-migration-decision-sheet.md`：
+   D1–D10，每项含选项 / 证据 / 影响 / **推荐**，可一次性回「全按推荐」。
+
+### 当前状态
+
+`origin/main` = 本轮最后一个提交，双向 0 差。本仓责任内、全新安装上真正缺失的 schema 已
+从 102 项收敛到 0（§9.116）；跨月重复这条线全量判完、已修 2 处（§9.114/§9.117）。
+**所有修复均未部署**（生产 252 = `2b6d337b2`，落后 790+ 提交 / 50 个迁移文件）。
+
+### 下一轮提示词
+
+> **可自行推进的工作已清空。** 起点 = `origin/main` 当前提交。
+> 1. 先读 `docs/audit/2026-10-04-session-migration-decision-sheet.md`——**所有待决项都在那**。
+> 2. 用户回复后按 D1–D10 逐项落地。**D9（790 提交 / 50 迁移文件的发布窗口与回滚）建议优先**，
+>    它决定 D1–D4 怎么上线；且 456 那次「直接登记就炸」的地雷先例说明
+>    **新增迁移登记前必须先复现能否干净应用**。
+> 3. 若用户未回复，**不要再自行找活干**——已连续三轮确认可自行推进项为空，
+>    继续产出只会制造「看起来还有进展」的假象。
