@@ -9641,10 +9641,11 @@ rc=0）：改 `$99` 后该字面量门 rc=1，报
 `UPDATE missing 608 assignment "due_at = CASE WHEN $98::text IS NULL THEN due_at ELSE $99 END"`。
 **留给下一轮拍板。**
 
-**当前工作区终态**：`merge-817-818` 干净，仅新增一个未跟踪文件
-`domains/streaming/dispatch_due_at_pairing_test.go`。
-`go vet ./domains/streaming/` rc=0；新门 rc=0（3 parse / 3 stamp / 2 处 `logCtx.DueAt`
-全在 owner 内）；telemetry 全包离线测试 rc=0。
+> 写这段时（配对门刚落盘、尚未提交）的工作区状态是：`merge-817-818` 干净，
+> 仅新增一个未跟踪文件 `domains/streaming/dispatch_due_at_pairing_test.go`。
+> `go vet ./domains/streaming/` rc=0；新门 rc=0（3 parse / 3 stamp / 2 处
+> `logCtx.DueAt` 全在 owner 内）；telemetry 全包离线测试 rc=0。
+> **本节后续的终态以 §9.74.10 为准**——这一段记录的是中途快照，不是最终结果。
 
 ### §9.74.9 合入 148 个入站提交时，门抓到我自己漏掉的**第四处同步**
 
@@ -9676,7 +9677,7 @@ installer/cmd/llm-gw-installer  TestStatsStartupMigrationsMatchCanonicalSources
 这次能抓到，靠的是 `TestStatsStartupMigrationsMatchCanonicalSources` 这道**别人写的**
 门做逐字节 `cmp`。**自己的判据覆盖不到的维度，得靠别人的门兜住，不该靠「我核对过了」。**
 
-> 记这一条是因为它和本轮前面几次是同一族：§9.65.3 的 `RETURN`、§9.65.7 的量具、
+> 记这一条是因为它和本轮前面几次是同一族：§9.74.3 的 `RETURN`、§9.74.5 的量具、
 > §9.74.8 的空集守卫，都是**我的检查在原理上覆盖不到的那一类**。
 > **「我核对过了」和「我的核对能看见这一类」是两件事。**
 
@@ -9691,7 +9692,7 @@ installer/cmd/llm-gw-installer  TestStatsStartupMigrationsMatchCanonicalSources
 |---|---|
 | `scripts/check-build-tags.sh`（48 包 × 15 种 tag 配置） | 0 |
 | `go test ./sql/schema/`（manifest + 基线漂移） | 0 |
-| `go test ./sql/migrations/startup/`（§9.65.3 的早退形态门） | 0 |
+| `go test ./sql/migrations/startup/`（§9.74.3 的早退形态门） | 0 |
 | `go test ./domains/hooks/observability/telemetry/` | 0 |
 | `go test ./domains/streaming/ -run TestDispatchDueAt`（§9.74.8 配对门） | 0 |
 | `go test ./admin/` | 0 |
@@ -9704,7 +9705,229 @@ installer/cmd/llm-gw-installer  TestStatsStartupMigrationsMatchCanonicalSources
 
 ---
 
+### §9.74.10 终态：已推送，以及**本地 main 故意不前移**的交接方式
+
+| 项 | 值 |
+|---|---|
+| 远端 | `origin/main` = **`0b1eb2cfd`**（与本分支 HEAD 一致） |
+| 本分支 | `merge-817-818` @ `0b1eb2cfd`，工作区 0 脏文件 |
+| 推送 | `d0c1e1f81..0b1eb2cfd  HEAD -> main`，**纯快进，rc=0**（非强推） |
+| 本地 `main`（2026-10-03 18:4x 快照） | **`b9365c215`——我故意未前移**，当时落后 `origin/main` 108 个提交。**后续由并行会话自己推进**：`main` 已到 `08799f813`、工作区脏文件已清零，**全程不是我碰的** |
+| 主工作区（同一快照） | `HEAD=b9365c215` / `main=b9365c215` / 29 个脏文件，**全程一字节未碰** |
+| 回滚点 | `rollback/pre-merge-1717` = `276ef099b`；`rollback/pre-merge-1838` = `7b7f21737`（**仅本地**，`git ls-remote` 查得 0 个） |
+
+本轮共入站 **165 个提交**，分两轮合：先 148（`c84e48a6f`，4 处冲突），
+推到一半远端又涨 17（`d0c1e1f81`，**零冲突**）。**推送前重新 `fetch` + 判
+`--is-ancestor` 这道预判救了一次**——第一次判完是快进，十分钟后远端已推进，
+若不复查直接推会白推一次。
+
+**门禁两轮共 16 次，全 rc=0**（§9.74.9 那张表 + 第二次合并后重跑同一组 8 条，
+含 `installer` 独立模块 `go build ./...` 与 `go test ./...`）。
+
+**为什么 `main` 不前移，以及后人该怎么处理**：`main` 所在工作区有 29 个**并行会话
+在途的未提交文件**（V1 冻结任务）。脏工作区下移动 `refs/heads/main` 只改 ref、
+不碰工作区与索引，于是那 29 个文件对应的索引与新 HEAD 失配，`git status` 立刻显示
+上百个「已删除/已修改」，而别人会在一个自己没写过的树上做 `git checkout .`——
+**这是最容易毁掉别人在途改动的一步**。本地 main 落后一百多个提交是可逆的、零风险的；
+反过来不是。
+
+待并行会话收工、确认工作区干净后，再由那一方执行：
+
+```bash
+git -C <repo> merge --ff-only origin/main     # 前提：先确认 29 个脏文件已被妥善处理
+```
+
+**一条会影响下次推送的环境事实**：`.githooks/pre-push`（215 行，含 secrets scan +
+11 套 shell 测试 + 可选 Go 门）在树里但**没接线**——`core.hooksPath` 未设，
+`.git/hooks/` 与 worktree 的 hooks 目录都没有它。⇒ **在 linked worktree 里
+`git push` 不会被它把关。** 本轮因此自己补扫了待推的 16 个文件（硬编码凭据 /
+私钥块 / DSN 里的本地 PG 密码），结果全为 0。要么显式接线
+（`git config core.hooksPath .githooks`），要么每次推送自带这层扫描。
+### §9.74.11 推送后复核：门禁**覆盖**有个真缺口，补跑 5 门全绿
+
+推送落地不等于「验过了」。回头核两件事：入站后到的那 17 个提交有没有抢修本轮 5 项，
+以及**我的门禁清单有没有覆盖它们新到的测试**。第二件是缺口。
+
+**一、本轮 5 项在最终 `origin/main` 上全部在位且形态未变**（`0b1eb2cfd` 实测）：
+
+| 项 | 期望 | 实测 |
+|---|---|---|
+| `dispatch_due_at_pairing_test.go` | 在 | 在 |
+| `soft_early_exit_shape_contract_test.go` | 在 | 在 |
+| `check-build-tags.sh` | 在 | 在 |
+| `case_when_param_type_context_test.go` | 在 | 在 |
+| `client.go` 的 `$98::text` | 2 | 2 |
+| 816 的 `RETURN;` 数（本轮每块自守形态） | 5 | 5 |
+| 817 的 `RETURN;` 数 | 4 | 4 |
+
+**二、门禁覆盖缺口**。入站 17 提交新到 8 个测试文件，其中
+`db/request_logs_view_dump_generation_test.go`（236 行，钉 `request_logs_with_current_month`
+视图 dump 的世代，并判定 `sql/objects/views/request_logs_with_current_month.sql` 是
+**v1 回退体、不是部署形态**）**正落在我 816/317 造出来的视图上**——
+而我 §9.74.9 那张门禁表**一个 `db/` 包都没跑**，四个守卫族
+（`partguard` / `routeguard` / `rowsguard` / `sqlreadguard`）也没跑。补跑：
+
+| 补跑 | rc |
+|---|---|
+| `go test ./db/`（236 行视图世代门） | 0 |
+| `go test ./internal/partguard/` | 0 |
+| `go test ./internal/routeguard/` | 0 |
+| `go test ./internal/rowsguard/` | 0 |
+| `go test ./internal/sqlreadguard/` | 0 |
+
+**本轮门禁累计 21 次，全 rc=0。**
+
+**三、与入站 17 提交的唯一文件重叠**：`admin/request_logs_stop_write_classification_test.go`
+（入站 `0129767dc` 把它的 `Evidence` 从 `FROM request_logs` 改成 `FROM request_logs_with_current_month`
+并重写了 R89-DQ 理由）。无冲突自动合并，实测**入站那侧确实进来了**：
+两父各 1736 行 → 合并后 1741 行，且含入站新增的 `R89-DQ` 串、合并结果与我这一侧
+不逐字节相同；`go test ./admin/` rc=0（78s）。
+
+> **★ 这一节里我自己把量具用错了三次，三次症状都不是「量具报错」，而是「量具给了一个
+> 看起来很正常的数」**——记下来是因为它们和前面几次是同一族：
+>
+> 1. **拿错了总体**：`HEAD~9..HEAD~1` 取到的其实是**入站 17 个提交**的文件，
+>    我又拿它去和「入站 17 个提交的文件」比，于是 97 个文件全部报「重叠」——
+>    **自比恒真**。第一次的「97 个重叠」里没有一个是真的。
+> 2. **grep 命中了散文**：`grep '//go:build'` 在那两个 admin 文件里匹配到的是
+>    **文档注释中引用的历史文本**（注释里写着「它原先带 `//go:build !integration`」），
+>    不是构建约束。判据必须是 `package` 子句之前的裸约束行——三份文件其实**都没有**约束。
+> 3. **拓扑用错**：`HEAD^2` 作用在非合并提交上（`HEAD` 是文档提交，不是那个合并），
+>    输出 0 行，看着像「入站侧把这个文件删了」。
+>
+> 再加一条**数字本身错的**：「本轮 7 提交涉及 126 个文件」——那个 diff 的起点取了
+> 第一次合并之前，于是**把第一次合并带进来的入站内容也算成了我的**。本轮** authored
+> 的准确集合是 16 个文件**（推前那次 `git diff origin/main...HEAD`，此时
+> `origin/main` 已被我合入，故 merge-base 干净），我在 §9.74.10 引用的是 16，对的。
+>
+> **「我量过了」和「我量的就是我以为的那个量」是两件事。**
+
 ---
+
+### §9.74.12 第三次合入：两处**新红**都定性为 origin/main 既有，不是我引入的
+
+入站又推进到 `73ac03782`（19 个提交，音频网关 93cbce8a3、211/212/213 号三条 SQL 修复等）。
+合并**仅一处冲突**（审计文档），且这次要判顺序：冲突两侧分别是
+「§9.74.10 / §9.74.11」与「§9.82–§9.89 顶层节」。
+**必须「我在前」**——§9.74.10/.11 是 §9.74 的**子节**，紧跟 §9.74.9，
+排到 §9.82 之后就断了父子关系。
+
+**并行会话整体吸收了我的 §9.74**（`08799f813`「并入 origin/main 108 个提交，审计文档
+§9.74 节号撞车已解」），**沿用了我改号后的编号，没有二次撞号**；我那 5 处代码引用
+（`client.go` / `request_class_sql_test.go` / 两个 admin 测试 / `check-build-tags.sh`）
+在入站侧全部仍然有效。
+
+**关于 `fd3cb7d7d` 的准确说法**。入站 `3f12db918`（208 号 F5）把
+`sql/fixes/2026-10-02-db-storage-reclaim.sql` 头注释「dry-run 下这就是全部输出」
+订正为「早退只结束 `$reclaim$` 块，第 3 步核验仍执行」，并写明「由并发会话的入站提交
+直接点亮」。**但我的门并没有自动抓到那个文件**——它 `filepath.Glob("*.sql")` 只扫
+`sql/migrations/startup/` 自己那一个目录。对方是**读了我的提交、把同一推理用在自己
+脚本上**才找到的。这个区别要说清，否则会把「作者自己修的」记成「门抓到的」。
+
+不过覆盖边界本身值得量，已量：带 `to_regclass` 守卫 + `RETURN` 形态的文件分布为
+
+| 目录 | `.sql` | 含 `RETURN;` | 门覆盖 |
+|---|---|---|---|
+| `sql/migrations/startup/` | 815 | 60 | ✔ |
+| `sql/fixes/` | 11 | 4 | ✘ |
+| `sql/audit/` | 7 | 1 | ✘ |
+
+用**本门原逻辑**（临时副本改 Glob，跑完即删）扫那 5 个门外的文件：
+扫描 5 个、其中 3 个含多 DO 块、**零命中**。
+⇒ **覆盖缺口是真的，但当下里面没有实际缺陷**；风险是将来那 5 个文件里若出现
+「A 块守存在性就 RETURN、B 块又硬写同一关系」，我的门看不见。
+是否把门扩到 `sql/fixes/` + `sql/audit/` 属**扩范围**，留给拍板。
+
+**两处新红，均定性为 origin/main 既有**（都不是我引入，按纪律建了对照组）：
+
+1. **`installer/cmd/llm-gw-installer` rc=1** ——
+   `canonical startup migration "820_audio_modality_backfill.sql" (>=704) is not
+   registered in dbinit.Runner.StartupFiles`。**直接查 `origin/main` 证实**：
+   权威源有 820，而五处同步（embeddata 副本 / `go:embed` / `embeddedSQLFiles` map /
+   `StartupFiles` / TSV）**计数全为 0**。引入者 `93cbce8a3`（音频网关）。
+   ⇒ 正是 §9.74.9 那道**别人写的五点同步门**抓到的，跟我那次的 816/817 同族。
+2. **`sql/schema` rc=1** —— `TestFirstLivePythonControls` 报
+   「候选里明明有可用解释器却整体报错：… `python(exec: "python": executable file
+   not found in $PATH)`」。**用纯 `origin/main` 检出的对照 worktree 跑同一测试，
+   同样报文、同样 rc=1** ⇒ 与我的合并无关。根因是该负控**硬编码
+   `{name: "python"}` 当"活解释器"**，而产品侧真实候选表是
+   `python3` / `python` / `py -3`（`objects_registry_test.go:135`），本机只有
+   `python3` 没有 `python`。⇒ 这是入站测试的**环境假设**，不是产品缺陷。
+   修法两种：负控改用 `python3`，或直接从 `pythonCandidates` 取第一个活的当负控。
+
+**订正我自己在 §9.74.11 写的「本轮门禁累计 21 次，全 rc=0」**：那句话成立的前提是
+**当时那 19 个提交尚未到达**。这第三次合入后重跑同一组 13 条，结果是
+**11 绿 2 红**，两个红都归因到入站。**不要把旧轮次的门禁结果当现状引用。**
+
+> **★ 本节自己又踩了一次同族错，写本节时当场被自己的复核抓到。** 我先用
+> `cat >>` 把 §9.74.12 追加到**文件末尾**——于是它落在了 §9.89 之后，
+> **把 §9.74 的父子链从中间切断**。而我**在同一次合并里刚特意判过这个顺序**
+> （§9.74.10/.11 必须排在 §9.82 之前）。**同一次工作里，前脚防住、后脚自己犯。**
+> 抓它的是一条结构复核：`grep -nE '^(## §9\.74 |### §9\.74\.(10|11|12) |## §9\.82 )'`
+> 把子节与顶层节按行号并排打出来，一眼就能看出 §9.74.12 的行号大于 §9.82。
+>
+> **根因与上面那 3 处悬空引用完全一样**：§9.74 的**整体改号/重排是一次性批量变换**，
+> 而我在它**之后**新写的、**用 `cat >>` 追加的**内容不在那次变换的覆盖范围内。
+> 凡是「先批量搬动一批章节、再增量追加内容」，**追加物必须单独再做一次结构复核**——
+> 批量变换不会替我照顾后写的东西。
+
+第三次合入后的门禁全表：
+
+| 门 | rc |
+|---|---|
+| `check-build-tags.sh` | 0 |
+| `sql/schema/` | **1**（入站既有，环境依赖） |
+| `sql/migrations/startup/` | 0 |
+| `db/` | 0 |
+| `telemetry` | 0 |
+| `streaming` 配对门 | 0 |
+| `admin/` | 0 |
+| `partguard` / `routeguard` / `rowsguard` / `sqlreadguard` | 0 / 0 / 0 / 0 |
+| `installer build` | 0 |
+| `installer test` | **1**（入站既有，820 五点未同步） |
+
+
+### §9.74.13 第四次合入，以及一个**不会自己收敛**的推送循环
+
+合入 `4f85ef08a`（再 24 个提交，**零冲突**）。本轮 authored 的文件全部在位；
+§9.74 十二个子节干净无撞号；全仓 17 处 `§9.74.x` 引用**逐一验过、无一悬空**。
+
+聚焦门禁（本轮 authored 的覆盖面 + 两个既有红的现状）：
+
+| 门 | rc |
+|---|---|
+| `sql/migrations/startup/`（我的早退形态门） | 0 |
+| `streaming` 配对门（我的） | 0 |
+| `telemetry`（我的 `$98`） | 0 |
+| `db/`（入站的视图世代门） | 0 |
+| `sql/schema/` | **1**（既有，环境依赖，未变） |
+| `installer` `cmd/llm-gw-installer` | **1**（既有，820 五点未同步，未变） |
+
+两个红在这 24 个提交里**都没被修**（相关文件无提交，820 仍是 5 处计数全 0）。
+
+**★ 但本节真正要记的是那个循环本身，它是操作事实，不是审计结论。**
+
+| 时刻 | 预判时 origin/main | 推送时 origin/main | 结果 |
+|---|---|---|---|
+| 第 1 次 | 落后 0 | 落后 0 | ✔ 推出 `0b1eb2cfd` |
+| 第 2 次 | 落后 17 | — | ✘ 已被推走 → 增量合并 + 16 门 → 再推成功 |
+| 第 3 次 | 落后 0 | **落后 24** | ✘ 又被推走 → 零冲突合并 + 6 门 |
+| 第 4 次 | 待推 | — | 见下 |
+
+**入站约每 15–30 分钟推一次，而我一轮「增量合并 + 门禁」要 20–30 分钟
+（13 门里 `check-build-tags.sh` 冷缓存、`installer go test ./...`、
+`admin` 各要 1–13 分钟）。⇒ 预判与推送之间那个窗口，几乎总是小于一个完整周期。**
+
+**这不是运气问题，是节奏问题，而它有一个明确的操作判据**：
+推送前那次 `git fetch` + `git merge-base --is-ancestor origin/main HEAD`
+**四次里救了三次**。若没有它，第 2、3 次都会白推一次（远端已分叉，非强推必被拒），
+而且会误判成「我的提交有问题」。**在共享仓库里，这个预判不是可选的礼节，
+它是推送动作的一部分**——把它省掉的那一次，就是把「远端在动」误报成「我错了」。
+
+**推不动的正确处置不是继续循环**，而是：分支停在本地、把「落后 N 个提交」如实报出去，
+让下一轮接手时一次合并到位。本轮已落地的内容是**纯文档**（§9.74.10–.12：
+终态交接、门禁覆盖缺口、两处既有红的定性、改号悬空引用的修复），
+与两个红无关，也不受两个红影响。
 
 ## §9.82 ③裁决的实施：cohort 分族修正（§9.73.4/§9.73.5）+ 内部流量单一事实源
 
