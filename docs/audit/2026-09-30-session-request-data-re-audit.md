@@ -14079,3 +14079,246 @@ db/db.go:388   applyMigrationsOnce() 里调用它
 > **上一轮的修复往往给下一轮提供线索，但也会同时提供错觉。**
 > 351 补了 6 张表，让我顺理成章地以为「102 项也是这样一个文件带一批」——
 > 实际只有 6 项是。**一个样本支持的归纳，要标记成假设而不是结论。**
+
+---
+
+## §9.117 把 §9.113.4 欠的账还掉：把「其余读点」逐个判完（枚举式，不是抽查）
+
+§9.113.4 点名了三个"完全不提 `partition_date`"的读点，说"本节只验了列表这一处，
+其余未逐个验证——不宣称它们也坏"。本节把那笔账还掉。
+
+### §9.117.1 先划清问题域：不是"分区表"，是"同一逻辑实体被按月复制"
+
+`public` schema 下有 **30 张分区表**，但"分区"本身不是缺陷。危险形态是
+**同一个逻辑实体被按月复制成多行**。判据落在唯一键上：
+**除 `partition_date` 之外的那部分键，是否不足以区分实体。**
+
+生产 252 实测（`session_id` 跨 `partition_date` 的实体数）：
+
+| 表 | 跨月实体数 | 唯一键（去 `partition_date`） | 判定 |
+|---|---|---|---|
+| `sessions` | **413** | `(session_id)` | ⚠️ **同形** ⇒ §9.114 已修 |
+| `session_turns` | 413 | `(tenant_id, session_id, turn_no)` / `(tenant_id, request_id)` | ✅ 跨月只是不同轮次，**不是重复** |
+| `session_turn_details` | 413 | `(session_id, turn_no)` / `(tenant_id, request_id)` | ✅ 同上 |
+| `session_bodies` | 1 | `(tenant_id, session_id, turn_no)` / `(tenant_id, request_id)` | ✅ 同上 |
+| `session_censors` | 47 | — | 未查唯一键，见 §9.117.5 |
+| `session_tools` | 0 | — | 无风险 |
+
+⇒ **只有 `sessions` 一张是同形的。** 用"session_id 跨月"当判据会误伤
+`session_turns`（413 跨月但每一行都是不同轮次）——**这个区分必须靠唯一键，不能靠跨月计数。**
+
+另有两个**部分唯一索引**与 `sessions` 同形，值得单独量：
+
+| 索引 | 键 | 252 实测 |
+|---|---|---|
+| `uq_session_turns_final_success` | `(tenant_id, session_id) WHERE is_final_success` | **0 行**（特性一直休眠，与阻塞 #2 一致） |
+| `uq_session_bodies_final_full` | `(tenant_id, session_id) WHERE kind='final_full'` | 29 行 / **0 个会话重复** |
+
+⇒ **结构上允许、实测 0 例。** 不作为缺陷上报，只记为「一旦该特性启用即成立」的形状。
+
+### §9.117.2 读点逐个判定（含一处我推错了、主动收回）
+
+24 处 `FROM public.sessions`（非测试）。判完：
+
+| 读点 | 判定 |
+|---|---|
+| `admin/turns_sessions.go`（主列表） | **已修**（§9.114） |
+| `admin/session_detail_v2.go:353` | **已自守**：`ORDER BY s.partition_date DESC LIMIT 1` |
+| `admin/session_detail_v2.go:532` | 安全：探存在性，投影的 `session_id` 各行相同，`LIMIT 1` 无害 |
+| `admin/session_detail_v2.go:553` | 安全：`SELECT DISTINCT` 折叠跨月重复 |
+| `internal/titlestore/store.go` | 已用 `MAX(partition_date)`（§9.113 已知） |
+| `domains/session/v2/session_aggregator.go` | 安全：`QueryRow` 取的是各行同值的列 |
+| **`bg/lite_retention_worker.go`** | **不适用 —— 我推错了** |
+| **`cmd/gateway/turn_logs_aggregator.go`** | **潜伏缺陷，本节已修** |
+
+**主动收回一：`bg/lite_retention_worker.go` 不在这个问题域内。**
+我读到它有三处 `DELETE … WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.id = session_turn_details.session_id …)`，
+而 `sessions.id` 每月一个新值（PK 是 `(id, partition_date)`），于是判定它有"过度删除跨月会话近期数据"的风险。
+
+**错的**：`session_turn_details.session_id` 是 **text**，不是 `sessions.id`；
+而且那三处用的是 `?` 占位符与 `tx.ExecContext` ⇒ 那是 **SQLite**，根本不是 PG。
+**`s.id = <text>` 在 PG 里连类型都不成立，我却在 PG 的分区性质上推了一整套故事。**
+⇒ 记一条：**判一个读点的风险前，先确认它连的是哪个库。**
+
+### §9.117.3 真正的潜伏缺陷：`AggregateAndFlush` 的读改写前提失效
+
+`cmd/gateway/turn_logs_aggregator.go` 的设计注释把这个不变量写得很清楚：
+
+> The whole flush runs in one transaction with a `FOR UPDATE` lock on the sessions row…
+> the second one re-reads the column value the first one committed — a concurrent
+> read-modify-write cannot drop the other's payload.
+
+**这个不变量假设了一个 `(tenant, session)` 只有一行**——而跨月会话有 2+ 行（413 个）。具体：
+
+```sql
+flushLockQuery    SELECT turn_logs_summary … WHERE tenant_id=$1 AND session_id=$2 FOR UPDATE   -- 无 partition_date 谓词
+flushUpdateQuery  UPDATE … SET turn_logs_summary=$1 WHERE tenant_id=$2 AND session_id=$3        -- 无 partition_date 谓词
+```
+
+⇒ 锁语句匹配 2+ 行；`QueryRow` **静默取其中一行**当 merge 种子（无 `ORDER BY`，取哪行由执行计划决定）；
+UPDATE 随后把同一份 payload 写进**所有**行。
+⇒ **用一行的累积值合并，写进所有行**，另一行的内容被静默覆盖。
+
+修法：两条语句都限定 `partition_date = (SELECT MAX(partition_date) … WHERE tenant_id=… AND session_id=…)`，
+与写侧 `titlestore` 和 `turnsSessionsFinalizeWhere` 同一口径。
+**两条必须一起改**：只改其一会让"读的种子行"和"写的目标行"不是同一行。
+
+### §9.117.4 门：两处我自己把夹具写错、两次都长得像产品缺陷
+
+`cmd/gateway/turn_logs_aggregator_crossmonth_realdb_test.go`，打真库 + 真实 `AggregateAndFlush`。
+夹具：同一 `(tenant, session)` 两行、**两行摘要刻意不同**（若相同，写错行也看不出来），
+加一条待聚合 stage 行（turn 2）。
+
+**变异实证**（去掉两处 `partition_date` 谓词），两条断言**都**报出：
+
+```
+最新分区行合并时丢了它自己的累积值：turn_1.stages=[{Stage:routing}]（期望 compression）
+旧分区行被这次 flush 写入了 turn_2 —— merged payload 落到了不该落的行上
+  读回={"turn_1":{…routing…},"turn_2":{…}}
+```
+
+⇒ 第一条正是"读种子取错行"，第二条正是"写落到所有行"。
+
+**我在这道门上错了三次，每次都长得像产品缺陷**：
+
+1. `stage='request'` 被 CHECK 约束拒（23514）——查了约束定义才发现合法值是
+   `routing|compression|injection_check|llm_call|output_check|response|cache_update`。**别猜枚举值。**
+2. 夹具没给 `latency_ms` ⇒ flush 报 `cannot scan NULL into *int`。
+   看着像产品 bug，查写侧 `turn_logs_writer.go:136` 才确认它**恒计算 latencyMs（负值归 0），从不写 NULL**
+   ⇒ **不是缺陷**，是夹具错。（schema 允许 NULL + 扫描用非指针，这组合确实脆，但生产写侧不可达。）
+3. `oldSummary` 我写成 `{"turn_1":{"request":…},"__marker":"older-month"}` ⇒
+   `mergeSummaries` 反序列化成 `map[string]LogSummary` 失败 ⇒ **整份 existing 被丢弃**（已文档化的容错路径），
+   门红在"丢了累积值"上。改用合法 `LogSummary` 形状后正常。
+   顺带发现：`__marker` 那个顶层键**即使合法也会被保留**（`merged = prev` 后只覆盖 `turn_N`），
+   但形状不对时是**整份丢**——这个容错粒度比我原先以为的粗。
+
+第四个夹具错也记一笔：断言二最初写"旧行必须**逐字节**不变"，结果第一次就红——
+`turn_logs_summary` 是 `jsonb`，PG 存取规范化空白（`"a":1` → `"a": 1`），
+**根本没被改动的行也会红**。改成 flush 前后**语义**比较，并另加一条更锐的判据（不得出现 `turn_2`）。
+
+**并且**把断言从 `Fatalf` 改成 `Errorf`：变异时两条都要能报，
+`Fatalf` 会短路掉第二条——这正是我在 §9.115.5 刚写进 351 那道门的教训，隔一天就撞上第二次。
+
+### §9.117.5 诚实的定性：这是**潜伏**缺陷，不是现网事故
+
+`AggregateAndFlush` 在生产**从未跑过**：
+
+| 观测量 | 值 |
+|---|---|
+| `session_turn_logs` 行数（聚合器输入） | **0** |
+| `sessions` 总数 / 其中 `turn_logs_summary` 非空 | 177,500 / **0** |
+| 跨月会话中 `turn_logs_summary` 非空的行 | **0**（413 个里一个都没有） |
+| 跨月会话两行摘要**冲突**的 | **0** |
+
+⇒ 门是**构造出来的场景**，不是对现网损失的追认。门头注释里写明了这一点，
+否则下一个人会以为它在证明一起真实事故。
+
+`session_censors`（47 个跨月）**本节未查唯一键**，不宣称。
+
+### §9.117.6 这一节的教训
+
+> **判据要看唯一键，不能看跨月计数。**
+> `session_turns` 有 413 个跨月会话，看起来和 `sessions` 一样严重——
+> 但它的唯一键含 `turn_no`，跨月只是不同轮次。**基数相同的两个东西可以完全不同质。**
+>
+> **判一个读点的风险前，先确认它连的是哪个库。**
+> 我在一个 **SQLite** 文件上推了一整套 PG 分区表的故事，理由是"用了 sessions 表"。
+> 连的是哪个库，是所有风险判断的前提，却是我最后一个想到要查的。
+>
+> **潜伏缺陷要与现网事故分开定性。** 这一处结构上确实成立、影响面 413 个会话，
+> 但输入表 0 行、输出列 177500 行全 NULL ⇒ **从未触发**。
+> 把它写成"数据丢失"会是虚假告警，写成"从未触发但一旦启用即成立"才是事实。
+>
+> **我自己在这道门上错了三次夹具，三次都长得像产品缺陷。**
+> 枚举值靠查、NULL 可达性靠查写侧、JSON 形状靠读被调方。
+> **门红了先怀疑夹具**——这条我写进门注释里，比写进文档有用。
+
+---
+
+## §9.118 闭合 `session_censors`——跨月读点这条线到此结束
+
+§9.117 结尾留了唯一的尾巴：「`session_censors`（47 个跨月）的唯一键未查，不宣称」。
+本节把它查掉，结论是**不是缺陷**，但过程里有两处必须记下来的判据。
+
+### §9.118.1 先量形状
+
+`session_censors` 的唯一键**只有 PK `(id, partition_date)`**（`id` 是代理键），
+所以自然键要从业务列推。252 实测跨分区重复的元组数：
+
+| 候选自然键 | 跨分区重复的元组数 |
+|---|---|
+| `(tenant_id, request_id)` | **2** |
+| `(tenant_id, session_id, turn_no, placeholder, sensitive_type)` | **9,371** |
+| `(tenant_id, session_id)` 恰好只有 1 行的会话 | 1,381（说明这层键本就不唯一） |
+
+⇒ 表面上**同形**，比 `sessions` 的 413 还多。**但同形不等于有影响。**
+
+### §9.118.2 判据一：有没有消费者
+
+`grep -rnE "(FROM|JOIN)[[:space:]]+(public\.)?session_censors\b"`（排除 `_hot`、排除测试）
+⇒ **Go 侧零命中**；`sql/` 侧（视图 / 迁移）也零命中。
+
+不靠「grep 不到」就下结论（本门的老规矩），到**真库**补查了三处间接依赖：
+
+| 查法 | 结果 |
+|---|---|
+| `pg_get_viewdef` 里含 `session_censors` 的视图/物化视图 | **0** |
+| `prosrc` 里含 `session_censors` 的函数 | 2 个：`ensure_session_family_partitions`、`promote_session_censors_hot_to_partition` |
+| `pg_depend` 里的依赖方 | 只有自身的 `pg_attrdef` / `pg_class` / `pg_constraint` / `pg_policy` / `pg_type` |
+
+⇒ **零数据消费者。** 写侧是 `security/sanitize/db_sink.go` 写
+**`session_censors_hot`**，月表由 `PartitionManager` 提升而来；本表是
+**只写的脱敏审计存储**（`db_sink.go` 头注释自己就说得很清楚：线上未配
+`LLM_GATEWAY_SESSION_CENSOR_KEY`，`count(original_encrypted) = 0`，
+且「全仓没有任何解密读取方」）。
+
+⇒ 审计日志本来就该是「一会话多行」。**没有查询期望「一会话一行」，
+重复就不构成缺陷**——这一条与 §9.117.1 的 `sessions` 恰好相反：
+同样是跨月重复，`sessions` 有消费者所以是缺陷，`session_censors` 没有所以不是。
+
+### §9.118.3 判据二：唯一会碰这些行的机制，按什么键
+
+`promote_session_censors_hot_to_partition` 是唯一「消费」重复的地方，若它假设
+一个逻辑行只有一行，就会在提升时出错。看它的实际语句：
+
+```sql
+INSERT INTO public.session_censors (…) VALUES (…)
+ON CONFLICT (id, partition_date) DO NOTHING
+RETURNING id, partition_date
+…
+DELETE FROM public.session_censors_hot h WHERE h.id = i.id AND h.partition_date = i.partition_date
+```
+
+冲突键与删除条件**都是代理键 `id`** ⇒ 两个不同的脱敏事件有不同的 `id`
+⇒ 跨分区重复对提升既不产生假冲突，也不产生漏删。**幂等且正确。**
+
+### §9.118.4 净结论
+
+**`public.sessions` 的跨月重复问题，到此全量判完**：
+
+| 表 | 跨月 | 同形 | 有消费者 | 结论 |
+|---|---|---|---|---|
+| `sessions` | 413 | ✅ | ✅ | **已修 2 处**：主列表（§9.114）、turn_logs 聚合（§9.117） |
+| `session_turns` | 413 | ❌ 键含 `turn_no` | ✅ | 跨月是不同轮次，非重复 |
+| `session_turn_details` | 413 | ❌ 键含 `turn_no` | ✅ | 同上 |
+| `session_bodies` | 1 | ❌ 键含 `turn_no` | ✅ | 同上 |
+| `session_censors` | 47 | ✅ 键全是代理 | **❌ 零消费者** | **不是缺陷**（本节） |
+| `session_tools` | 0 | — | ✅ | 无风险 |
+
+两个同形的**部分唯一索引**（`uq_session_turns_final_success` 0 行、
+`uq_session_bodies_final_full` 0 例重复）维持 §9.117.1 的定性：
+**结构允许、实测 0 例，只记形状不报缺陷。**
+
+### §9.118.5 这一节的教训
+
+> **「同形」和「有影响」是两个性质。**
+> `sessions` 与 `session_censors` 的唯一键都退化成代理键那一列，
+> 跨月重复都成立——但前者有消费者（列表重影、聚合覆盖），后者**一个消费者都没有**。
+> 判缺陷必须同时问「形状成立吗」和「谁会因此出错」。
+>
+> **零消费者这件事不能靠 grep 断言。**
+> Go 与 `sql/` 两侧都零命中之后，我又到真库查了视图定义、函数体、`pg_depend`
+> 三处，才敢说「零消费者」。**每一层都要单独验，不能用上一层的结论代替下一层。**
+>
+> **审计型表天生多行，与实体型表的「一行」期望不是一回事。**
+> 拿实体表的判据去套日志表，会产出一个看起来很有说服力的假缺陷。
