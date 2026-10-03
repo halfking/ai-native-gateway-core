@@ -817,12 +817,13 @@ files=(
   # （R35 审计 B-F1 实证：本通道数组止于 817，已升级库永远收不到 818/819）。
   "$ROOT_DIR/sql/migrations/startup/818_ursm_snapshot_typed_columns.sql"
 
-  # 2026-10-03（819）：request_abandoned 独立落点——「开始了却没终态」的
-  # 逐请求记账（审计 §9.66/§9.67；252 实测遗弃率 0.047%/天，丢的是已发生的
-  # 上游消耗）。不变式：表里有行 ⇔ 开始且无终态。写路径不受 S4 停写门控，
-  # 必须先于 S4 开关生效。幂等（CREATE TABLE IF NOT EXISTS + 列集守卫）；
-  # installer 五点已同步（54a63d0e5）但通道腿漏登，与 818 同轮补齐。
-  "$ROOT_DIR/sql/migrations/startup/819_request_abandoned.sql"
+  # 2026-10-03（820）：session_turns 补 is_abandoned 标记列——「开始了却没终态」
+  # 在**会话族内**的落点（审计 §9.92，取代被推翻的 819 独立表方案）。
+  # 252 实测遗弃率 0.047%/天，丢的是已发生的上游消耗。
+  # 不变式：is_abandoned=TRUE ⇔ 这是终态 turn，而其请求在 v1 侧无 t0。
+  # 写方（telemetry markAbandonedTurn）fail-open，故本迁移未应用时只是标记缺失。
+  # 幂等（ADD COLUMN IF NOT EXISTS + 列集守卫）；母表与 hot 两面都要有。
+  "$ROOT_DIR/sql/migrations/startup/821_session_turns_abandoned_marker.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

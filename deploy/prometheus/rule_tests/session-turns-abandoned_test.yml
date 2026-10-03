@@ -1,0 +1,299 @@
+# promtool 单元测试 —— session_turns abandoned 告警族的**求值语义**
+# （审计 §9.92.7 建立，§9.93 随打标位置修正而重写）
+#
+# 为什么要这份文件：Go 侧那 6 道门只能证明「文本里有 or vector(0)」「阈值是比例」。
+# **求值语义只能由这里证** —— 与 auto-route-selection-output_test.yml 正典同款。
+#
+# ★ 本轮最重要的变化：`mark_no_row` 的语义**反转**了。
+#   首版：打标在同步的 updateRequestLog 里、终态 turn 由异步 outbox 落库
+#         ⇒ mark_no_row 是**常态**，③ 用 0.9 门限。
+#   本版：打标紧接在 `w.Write` 返回之后、同一 goroutine ⇒ 健康值应当 **≈0**，
+#         ③ 门限因此降到 0.5。
+#   ⚠ 所以场景 C 现在的含义也变了：它不再是「竞态在漏标」，
+#     而是「**落点根本没生效**」——那正是首版的形态，而 0.9 抓不到（要 0.99 才报）。
+#
+# 各场景的承重意义：
+#   A — ①「从未写过」：输入里**完全没有** mark 序列（CounterVec 首次 Inc() 前
+#       不导出任何时间序列 ⇒ 求和得到**空向量**而不是 0 ⇒ 空向量 `== 0` 仍
+#       是空向量 ⇒ 告警永不响，而这正是它唯一要抓的场景）。
+#   D — mark_no_row 有序列但**增量恒 0**，且 up=1。D 不触发 ③。
+#       D 与 A 同时成立 ⇒ ① 靠的是 `unless` 而不是任何别的巧合。
+#   E — up=0（进程挂了）**不得**报「落点没接线」。必须是独立输入。
+#   B — ②「写失败」：mark_failed 有增量。
+#   F — ②「一次都没尝试」：mark_no_pool 有增量（连接池未初始化）。
+#   C — ③「打标几乎全打空」：mark_no_row 占绝大多数。
+#   G — ③ 的**反向**：mark_no_row 占比 0.4 < 0.5 ⇒ **不得**响。
+#       ★ G 是本轮新增的。C 单独存在时，③ 可能是「有 mark_no_row 就响」的退化
+#       写法（0.9 门限下 C 与 G 的区别要靠阈值本身才体现）；把 G 钉住，
+#       才证明 ③ 判的是**比例**而不是**存在性**。
+#
+# ⚠ 场景 C/G 的 0.5 阈值是**按「健康值≈0」推的、未经生产实测**（821 未上 252）。
+#   这份场景文件只证明**表达式语义正确**，不证明阈值选得好不好——
+#   后者是部署后的校准项，已由 Go 门 TestRulesStateTheUncalibratedThreshold 钉住。
+#
+# 运行：
+#   docker run --rm -v "$PWD/deploy/prometheus:/p" --entrypoint promtool \
+#     prom/prometheus test rules /p/rule_tests/session-turns-abandoned_test.yml
+
+rule_files:
+  - ../rules/session-turns-abandoned.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ── A：① 从未写过（CounterVec 空向量陷阱）─────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'up{job="llm-gateway", instance="gw1"}'
+        values: '1+0x200'
+    alert_rule_test:
+      - eval_time: 2h10m
+        alertname: AbandonedTurnPadNeverWritten
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: session-abandoned
+              job: llm-gateway
+              instance: gw1
+            exp_annotations:
+              summary: "session_turns abandoned 落点从未被打标（写路径没跑）"
+              description: |
+                1 小时内 `op="mark"` 速率恒为 0，且已持续 2 小时。
+
+                这不是「没有请求遗弃」——**没有请求遗弃时判据也不会触发**
+                （只有 t0 缺失的请求才进这条分支）。`mark` 恒为 0 意味着
+                **写路径压根没跑**，四种可能：
+
+                  ① 二进制没有 821 的接线（`markAbandonedTurnIfT0Missing` 未被调用）
+                  ② 821 迁移没应用 ⇒ 打标语句报错 ⇒ 走 fail-open ⇒ 这种情况
+                     应当同时看到 `op="mark_failed"` 增长（见 `AbandonedTurnPadWritesFailing`）
+                  ③ mirror outbox 连接池未初始化 ⇒ 走 `op="mark_no_pool"`，
+                     **根本没尝试**（既没有 mark 也没有 mark_failed）
+                  ④ 请求根本没进到 `updateRequestLog` 的竞态回落分支
+
+                先跑这一句区分它们：
+
+                    curl -s :8780/metrics | grep abandoned_turn_ops
+
+                - 完全没有这个指标 ⇒ 情况 ①：二进制里没有这段代码
+                - 有 `{op="mark_no_pool"}` ⇒ 情况 ③：连接池没初始化
+                - 有 `{op="mark_failed"}` ⇒ 情况 ②：**821 迁移没上**
+              runbook: |
+                1. 确认二进制含 821 接线（`grep -c markAbandonedTurnIfT0Missing` 于
+                   internal/sessionv2mirror/）。
+                2. 确认 821 已应用：
+                   `SELECT count(*) FROM information_schema.columns
+                     WHERE table_name IN ('session_turns','session_turns_hot')
+                       AND column_name='is_abandoned'`
+                   应为 2；为 0 则先跑迁移再重启。
+                3. 确认 mirror outbox 池已初始化（无 `mark_no_pool` 增长）。
+                4. **不要**因为「一条遗弃都没有」就判定落点正常——空与「没接线」
+                   在值上不可区分，这正是本告警存在的理由。
+      # ③ 的分母为 0（本场景无任何 abandoned 计数器）⇒ 不得触发。
+      - eval_time: 2h10m
+        alertname: AbandonedTurnPadMostlyMissingItsRows
+        exp_alerts: []
+
+  # ── E：进程挂了（up=0）**不得**报「落点没接线」────────────────────
+  #
+  # 这一条曾经被错放在场景 A 里当姊妹断言，但 A 的 gw1 是 up=1 且没有 mark
+  # 序列 —— 那是**应该**响的场景，放在那里等于自己和自己矛盾。
+  # 「进程没在跑」必须有自己的输入（up=0），否则断言不成立。
+  - interval: 1m
+    input_series:
+      - series: 'up{job="llm-gateway", instance="gw5"}'
+        values: '0+0x200'
+    alert_rule_test:
+      - eval_time: 2h10m
+        alertname: AbandonedTurnPadNeverWritten
+        exp_alerts: []
+      - eval_time: 2h10m
+        alertname: AbandonedTurnPadMostlyMissingItsRows
+        exp_alerts: []
+
+  # ── D：① 有序列但增量为 0（证明 A 不是「有序列就响」）────────────
+  - interval: 1m
+    input_series:
+      - series: 'up{job="llm-gateway", instance="gw2"}'
+        values: '1+0x200'
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw2", op="mark"}'
+        values: '0+0x200'
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw2", op="mark_no_row"}'
+        values: '0+0x200'
+    alert_rule_test:
+      # mark 存在 ⇒ 不触发 ①（否则告警会在健康系统上常亮）。
+      - eval_time: 2h10m
+        alertname: AbandonedTurnPadNeverWritten
+        exp_alerts: []
+      # ③ 的分母为 0 ⇒ 不触发。
+      - eval_time: 2h10m
+        alertname: AbandonedTurnPadMostlyMissingItsRows
+        exp_alerts: []
+
+  # ── B：② 写失败 ─────────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'up{job="llm-gateway", instance="gw3"}'
+        values: '1+0x200'
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw3", op="mark"}'
+        values: '0+100x120'
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw3", op="mark_failed"}'
+        values: '0+7x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AbandonedTurnPadWritesFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: session-abandoned
+              job: llm-gateway
+              instance: gw3
+            exp_annotations:
+              summary: "abandoned 落点打标没有落地（fail-open 分支）"
+              description: |
+                30 分钟内 `mark_failed` 或 `mark_no_pool` 有增长。
+
+                打标是**刻意 fail-open** 的：失败只 slog.Warn，**不回滚**已提交的
+                终态 turn（理由：821 未应用时不应打挂镜像写链）。代价是
+                **失败在请求侧完全不可见**，只有这条告警能发现。
+
+                三种可能的含义：
+                - `mark_failed` + `column "is_abandoned" does not exist`
+                  ⇒ 821 迁移没应用
+                - `mark_failed` + `relation "session_turns_hot" does not exist`
+                  ⇒ 表结构漂移
+                - `mark_no_pool` ⇒ mirror outbox 连接池未初始化，**一次都没尝试**
+                - 超时/连接错误 ⇒ 数据库侧问题
+              runbook: |
+                1. 看 slog 的 `sessionv2mirror: abandoned_turn ... failed` 行确认
+                   error 形态（`mark_no_pool` 对应 `skipped, mirror outbox pool`）。
+                2. 迁移未应用 ⇒ 跑 821 后重启；列集漂移 ⇒ 821 守卫会直接报出
+                   缺哪张表的哪一列。
+                3. 恢复后确认漏标是否可补：`mark` 是幂等 UPDATE，可对
+                   历史终态行重跑（判据：t0 缺失的请求在 v1 侧无从查证，
+                   所以**历史漏标不可追补**——这是本落点的固有限制）。
+
+  # ── F：② 连接池未初始化（mark_no_pool）──────────────────────────
+  #
+  # ★ 本轮新增。这个 op 在首版不存在（首版没有「连尝试都没做」这个状态），
+  #   它是搬动打标位置之后才必须区分出来的：池为 nil 时既没有 mark 也没有
+  #   mark_failed，①② 都不会响，运维会看到「指标很干净」的假象。
+  - interval: 1m
+    input_series:
+      - series: 'up{job="llm-gateway", instance="gw6"}'
+        values: '1+0x200'
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw6", op="mark"}'
+        values: '0+100x120'
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw6", op="mark_no_pool"}'
+        values: '0+5x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AbandonedTurnPadWritesFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: session-abandoned
+              job: llm-gateway
+              instance: gw6
+            exp_annotations:
+              summary: "abandoned 落点打标没有落地（fail-open 分支）"
+              description: |
+                30 分钟内 `mark_failed` 或 `mark_no_pool` 有增长。
+
+                打标是**刻意 fail-open** 的：失败只 slog.Warn，**不回滚**已提交的
+                终态 turn（理由：821 未应用时不应打挂镜像写链）。代价是
+                **失败在请求侧完全不可见**，只有这条告警能发现。
+
+                三种可能的含义：
+                - `mark_failed` + `column "is_abandoned" does not exist`
+                  ⇒ 821 迁移没应用
+                - `mark_failed` + `relation "session_turns_hot" does not exist`
+                  ⇒ 表结构漂移
+                - `mark_no_pool` ⇒ mirror outbox 连接池未初始化，**一次都没尝试**
+                - 超时/连接错误 ⇒ 数据库侧问题
+              runbook: |
+                1. 看 slog 的 `sessionv2mirror: abandoned_turn ... failed` 行确认
+                   error 形态（`mark_no_pool` 对应 `skipped, mirror outbox pool`）。
+                2. 迁移未应用 ⇒ 跑 821 后重启；列集漂移 ⇒ 821 守卫会直接报出
+                   缺哪张表的哪一列。
+                3. 恢复后确认漏标是否可补：`mark` 是幂等 UPDATE，可对
+                   历史终态行重跑（判据：t0 缺失的请求在 v1 侧无从查证，
+                   所以**历史漏标不可追补**——这是本落点的固有限制）。
+
+  # ── C：③ 打标几乎全打空（比例判据，本轮语义已反转）──────────────
+  - interval: 1m
+    input_series:
+      - series: 'up{job="llm-gateway", instance="gw4"}'
+        values: '1+0x260'
+      # mark_no_row 压倒性多数 ⇒ 比例 ≈ 0.99 > 0.5
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw4", op="mark_no_row"}'
+        values: '0+99x260'
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw4", op="mark"}'
+        values: '0+1x260'
+    alert_rule_test:
+      - eval_time: 3h10m
+        alertname: AbandonedTurnPadMostlyMissingItsRows
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: session-abandoned
+              job: llm-gateway
+              instance: gw4
+            exp_annotations:
+              summary: "abandoned 落点超过一半的打标尝试没命中任何行（落点在系统性打空）"
+              description: |
+                1 小时窗口内，**超过一半**的打标尝试结果是 `mark_no_row`。
+
+                打标跑在 `runShadowWrite` 里、**紧接在 `w.Write` 返回之后**，
+                同一 goroutine、同一超时预算，而 `w.Write` 成功即已提交
+                ⇒ **`mark_no_row` 的健康值应当接近 0**。它成规模出现只有一个解释：
+                行不在我们看的地方。
+
+                最可能的原因，按可能性排序：
+
+                ① **RLS 把行挡了。** 两张面都开着 RLS，其中
+                   `session_turns_hot_owner_filter` 是 **RESTRICTIVE** 策略
+                   （PostgreSQL 先 OR 全部 PERMISSIVE，再 AND 全部 RESTRICTIVE）。
+                   裸 `pool.Exec` 在没有 GUC 的连接上**看不到任何行** ⇒ 恒 0。
+                   实测：仅 `app.current_tenant` **不够**，必须同时
+                   `app.current_role=super_admin` + `app.bypass_rls=true`
+                   （即本包 replay.go 的 `setBypassGUCs`）。
+                ② **tenant 取错了。** UPDATE 用的 tenant 必须等于 turn 行实写的值
+                   （`req.TenantID`，含空串）。若代入了约定的 `default`，
+                   空租户流量**永远**打不中。
+                ③ 行落在了既非 hot 也非母表可及的位置。
+
+                ⇒ 本告警响的时候，请把 `is_abandoned = TRUE` 的计数当作
+                  **下界**而不是全集——**那比没有这个落点更糟**，
+                  没有落点时你知道你不知道。
+              runbook: |
+                1. 确认不是两条面都漏：`mark` 若也为 0，那是 ①/②，不是本条。
+                2. 核对 ①：`internal/sessionv2mirror/abandoned_turn.go` 是否在
+                   自己的事务里调了 `setBypassGUCs` 并设了 `app.current_tenant`。
+                   这是**已实测证实**的失效形态（无 GUC ⇒ UPDATE 0）。
+                3. 核对 ②：调用点传的是 `req.TenantID`，不是任何带默认值的替身。
+                4. 阈值 0.5 是**按「健康值≈0」推的、未经生产实测**（821 尚未上 252）。
+                   首次部署后必须用真实比例回归校准，否则这条要么永远响要么永不响。
+
+  # ── G：③ 的反向——mark_no_row 有但占比 0.4 < 0.5 ⇒ **不得**响 ─────
+  #
+  # ★ 本轮新增。这道门挡的是「③ 退化成『有 mark_no_row 就响』」。
+  #   在首版的 0.9 门限下，C 与 G 的区别完全依赖阈值常量本身；把 G 单列成
+  #   一个场景，③ 判的是**比例**这件事才成为被断言的性质，而不是副产品。
+  - interval: 1m
+    input_series:
+      - series: 'up{job="llm-gateway", instance="gw7"}'
+        values: '1+0x260'
+      # 40 : 60 ⇒ 比例 ≈ 0.4，低于 0.5 门限
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw7", op="mark_no_row"}'
+        values: '0+40x260'
+      - series: 'llm_gateway_abandoned_turn_ops_total{job="llm-gateway", instance="gw7", op="mark"}'
+        values: '0+60x260'
+    alert_rule_test:
+      - eval_time: 3h10m
+        alertname: AbandonedTurnPadMostlyMissingItsRows
+        exp_alerts: []
+      # mark 有增量 ⇒ ① 同样不得响。
+      - eval_time: 2h10m
+        alertname: AbandonedTurnPadNeverWritten
+        exp_alerts: []

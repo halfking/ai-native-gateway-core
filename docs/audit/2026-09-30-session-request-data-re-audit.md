@@ -7902,6 +7902,14 @@ cohort 分析、可能还有别的审计脚本）都会把 3,166 条内部生成
 ⇒ 我**不代为裁决**。但 §9.54.3 那条「停写前阻塞项」必须**撤回**：
 它建立在一个已被证伪的前提上。
 
+> ✅ **已于 2026-10-03 裁决（§9.91）**：**不选 (a)、(c)；(b) 已由 §9.82.4 完成。**
+> 裁决依据与上面三个选项的原文都**要按 §9.91.1 的证据重读**：
+> 本节把两份名单当成「同一份名单的两个拷贝」，**而它们判的不是同一个维度**
+> ——`origin_mw.go` 判 `owner_user`（谁持凭据），`IsInternalAutoEntry` 判
+> `origin_actor`（这次调用自称是谁）。⇒ 交集为空是**正确行为**，不是缺口。
+> ⚠ 本节担心的「(a) 会让 3,166 条历史行重放变值」也不成立：
+> 真做 (a) 的第一后果是**它根本不匹配**（生成器用租户业务 key，不是 actor 名）。
+
 ### §9.64.9 顺带修掉一个**早于本轮**的红灯：写死编号的权威源
 
 `admin` 包里 `TestSessionArmNullPaddedColumnsMatchMigration` 报
@@ -8466,9 +8474,18 @@ S4 一停写，这个落点连同事实一起消失。
 ## §9.67 按 ② 的裁决实施：`request_abandoned` 落点（迁移 819）
 
 > **裁决来源**：② 的问卷在超时后自动采纳了我标记的推荐项 **(c) 另建小表**，
-> **不是用户的显式回复**。若要改选（会话族补状态 / 接受丢失 / 只留聚合计数），
-> 说一声即可——本节实施的是 (c)。
-> ⚠️ 与 §9.65/§9.66 同属本地 `main` 分支，未提交，合并裁决后再并入 origin/main。
+> **不是用户的显式回复**。
+>
+> 🚨 **本节的 (c) 已被用户显式推翻（2026-10-03，审计 §9.92）。**
+> 用户改选 **(a) 会话族补一类状态**，理由是那是拍板权所在、不该由超时默认。
+> ⇒ **本节描述的 819 方案（迁移 + 独立表 + 写路径 + 7 道门 + 3 条告警）
+> 已全部删除**，替代实现见 **§9.92**。
+> ⚠️ 本节的价值因此变成**反面记录**：它是一个「按设计推得很干净、但方向选错」
+> 的完整样本——独立表的不变式（表里有行 ⇔ 开始了且无终态）非常漂亮，
+> 而**漂亮的不变式不等于对的方向**。
+>
+> ⚠️ 保留本节原文不删：下一轮若要理解为什么 `is_abandoned` 是**单列**
+> 而不是一张表，本节的删除理由比 §9.92 的实施细节更直接。
 
 ### §9.67.1 设计：一张表本身就是 abandoned 集合
 
@@ -9641,6 +9658,12 @@ rc=0）：改 `$99` 后该字面量门 rc=1，报
 `UPDATE missing 608 assignment "due_at = CASE WHEN $98::text IS NULL THEN due_at ELSE $99 END"`。
 **留给下一轮拍板。**
 
+> ✅ **已于 2026-10-03 裁决并实施**（用户显式选 A：解耦判据 + 同步改门），
+> 实施记录与三个变异见 **§9.90.1**。
+> ⚠ §9.74.8 当时的顾虑「让一个绿测试转红需要显式决策」**正是这次决策的标的**，
+> 而 §9.90.1 顺带指出：只把门里的字面量换成 `$99` 是**假完成**——
+> 它会在有人把两列判据重新绑回去时再次变绿，故门改为钉「各自判据」这个语义。
+>
 > 写这段时（配对门刚落盘、尚未提交）的工作区状态是：`merge-817-818` 干净，
 > 仅新增一个未跟踪文件 `domains/streaming/dispatch_due_at_pairing_test.go`。
 > `go vet ./domains/streaming/` rc=0；新门 rc=0（3 parse / 3 stamp / 2 处
@@ -10182,6 +10205,20 @@ canonicalExists AND ( viewdef LIKE '%session_turns%' [AND viewdef LIKE '%session
 
 > ⚠ **本节四项裁决全部来自 2026-10-03 的问卷，其中三项是超时自动采纳**（`automatic_timeout`），
 > 只有「静默档 70 → 69」是用户显式回复。已按 ② 的先例采纳推荐项并在此标注，可推翻。
+>
+> ✅ **用户已知悉并确认保留（2026-10-03 23:4x 问卷，Q1 选「全部按现有实施保留」）**。
+> 逐项来源如下——**不笼统写「已确认」，因为四项的来源不同**：
+>
+> | 裁决 | 原始来源 | 现状 |
+> |---|---|---|
+> | 静默档 70 → 69 | **用户显式回复**（本节即首处） | 保留 |
+> | cohort 分族修正 | 超时自动采纳 → **用户已知悉保留** | 保留（`bg/probe_policy.go` 分族谓词 + `internal/internaltraffic` SSOT，4+5 变异） |
+> | 内部流量单一事实源 | 超时自动采纳 → **用户已知悉保留** | 保留（同上包） |
+> | §9.48 口径（70 那个数机器核对） | 超时自动采纳 → **用户已知悉保留** | 保留（`audit_silent_count_consistency_test.go` 三道门） |
+>
+> ⚠ **同批的 ②「开始了却没结束」不走这条**：那一项用户**单独改选了**
+> （推翻本轮 (c) 另建小表 → 改选「会话族补一类状态」），实施见 **§9.92**。
+> ⇒ 「Q1 说全部保留」与「Q2 说推翻 819」并存时，按**具体的优先**：② 改，其余保留。
 >
 > ⚠ **实施期间工作区进入了他人的进行中 cherry-pick**（`CHERRY_PICK_HEAD=2c611a6d7`，
 > 6 路径未合并，含我方 2 个文件：`installer/cmd/llm-gw-installer/main.go` 与
@@ -14427,3 +14464,905 @@ for _, name := range r.StartupFiles {          // 217 条
 > 351 让我以为非幂等迁移有个数；实测是 **3 条**，而且**成因与 351 完全不同**
 > （前者是缺 `IF NOT EXISTS`，后者是 `CREATE OR REPLACE VIEW` 不能丢列）。
 > **同类要按机制分组，不按修法相似度归堆。**
+
+---
+
+<!-- ══════════════════════════════════════════════════════════════════════
+  ★★ 编号冲突横幅（2026-10-04，821 合并时产生，**未擅自重编号**）
+
+  下面这 4 节来自 feat/820-abandoned-turn（迁移 821 落点），编号 §9.90–§9.93。
+  但同一份文档里**已经有** §9.90–§9.119，来自 origin/main 的另一条线。
+  两侧的 merge-base 都停在 §9.89，因此**各自从 §9.90 开始编号**。
+
+  ⇒ §9.90 / §9.91 / §9.92 / §9.93 各有两处不同内容。**引用这些编号时必须
+    带上分支名**，否则定位到的是哪一节取决于你读到文件的哪一半。
+
+  为什么不在这里重编号（§9.120 起）：那要动 **13 个文件、约 117 处引用**，
+  其中包括
+    · sql/migrations/startup/821_*.sql —— 它的头注释会变成**数据库 COMMENT**；
+    · scripts/apply-db-revision-sequence.sh；
+    · 13 个文件里有若干**两侧都改过**，无差别 sed 会把 main 侧指向它自己
+      §9.9x 的引用一起改掉。
+  这是本审计文档结构上的决策，留给文档属主。坐标见下方 §9.93.10。
+  ══════════════════════════════════════════════════════════════════════ -->
+
+
+## §9.90 收口轮：解耦 `due_at` 判据（§9.74.8 记账的唯一待拍板项）+ 合并后状态核实
+
+> 日期：2026-10-03 20:2x–21:4x。裁决来源：**用户显式回复**（问卷三选一，选 A）。
+> 本节是接手核实 + 一项实施，不复用 §9.89 的任何测试结果（§9.89.0 的纪律）。
+
+### §9.90.0 先做状态核实：合并 108 个上游提交后，上一轮声称完成的改动是否还最新
+
+`08799f813` 是 fast-forward 并入 origin/main 108 提交。§9.89.0 的判据是
+**「文件还在」不等于「改动是最新的」**，所以逐项重验：
+
+| 核实项 | 结果 |
+|---|---|
+| `go build ./...` | **通过**（EXIT=0） |
+| `make guards`（10 道） | **全绿**（rowsguard/errdiscard/dbrows/jsoncol/paramguard/sqlguard/sqlreadguard/metricguard/partguard/routeguard） |
+| `admin`（含 7 道 v1 冻结三态门 + 7 道 §9.48 静默档门） | **全绿**，单包 83.7s |
+| `telemetry`（含 7 道 AbandonedMarker 门 + 2 道 request_class 门） | **全绿** |
+| `bg`（cohort 分族 + 分族门）、`internal/internaltraffic`（SSOT）、`db`（parity） | **全绿** |
+| 819 五点同步（源 + embeddata ×2 + embed + map + StartupFiles + TSV） | **在位** |
+| `v1FreezeNoticeFor` 缺省 = `V1GateSourceDefault`（§9.89.1 的修法） | **在位** |
+| 与 origin/main 关系 | `0 17`（本地领先 0、落后 17） |
+
+⚠ 诚实记账：这 17 个入站提交里**有人碰过** `telemetry/client.go` 与 `sessionv2mirror/`
+（`fd5f36a30` 819 事务毒化、`1809168ba` CASE 判据类型修复合并等），所以「全绿」是
+**本次实测**，不是「上游没碰过所以必然绿」。
+
+### §9.90.1 实施：`due_at` 判据与 `request_class` 解耦
+
+**改前**（608 迁移的历史遗留，两列判据绑在同一个参数上）：
+
+```sql
+, request_class = CASE WHEN $98::text IS NULL THEN request_class ELSE $98 END
+, due_at         = CASE WHEN $98::text IS NULL THEN due_at         ELSE $99 END
+```
+
+⇒ **`request_class` 为 NULL 时 `due_at` 也不写**。一个带 `due_at` 而不带
+`request_class` 的 scheduled 请求，`due_at` 永远不落库。
+
+**改后**：
+
+```sql
+, request_class = CASE WHEN $98::text        IS NULL THEN request_class ELSE $98 END
+, due_at         = CASE WHEN $99::timestamptz IS NULL THEN due_at         ELSE $99 END
+```
+
+★ **判据那一步与类型上下文是同族的**：裸 `$99` 出现在 CASE 的 WHEN 里会被 PG 拒绝
+（`42P08 could not determine data type of parameter $99`）——这正是 §9.74.2 修 `$98` 的
+同一个坑。**只解耦不加 cast ⇒ 整条生产 UPDATE 失败，而失败被 persist 侧记为 WARN
+吞掉**（不崩、不告警、只是不落库）。所以 `::timestamptz` 不是可选的润色。
+
+#### 同族三处一起改（⑤ 的纪律）
+
+| # | 文件 | 改什么 | 不改会怎样 |
+|---|---|---|---|
+| 1 | `telemetry/client.go:2343` | 生产 SQL 判据 + 注释写明裁决与耦合史 | — |
+| 2 | `telemetry/request_class_sql_test.go` | **按字面量钉的门改成钉「各自判据」语义** | 门红（红因形状与旧耦合完全一样） |
+| 3 | `streaming/dispatch_due_at_pairing_test.go:20-31` | 注释的前提（旧耦合是「今天不构成缺陷」的理由）已被推翻 | 留下一份**前提已死**的说明，误导下一轮 |
+
+第 3 处是 grep 同族时抓到的，它自陈「今天这不构成缺陷——正因这条不变量让
+`$98 IS NULL AND $99 IS NOT NULL` 不可达」——**那条兜底已经不存在了**。
+修正后的记法：判据 ①/② 仍必要，但理由从「SQL 会兜底」变成
+「**SQL 不再兜底，且这让矛盾记录第一次在库里可见**」
+（class='immediate' 却带 due_at 的行，比之前更难被发现）。
+
+#### ★ 为什么门不能只换成新字面量
+
+把门里的 `due_at = ... $98 ...` 改成 `$99` 就收工，**是一个看起来完成的门**：
+将来谁把两列判据绑回去，重新钉一次字面量它又绿了。
+
+⇒ 门改成断言**语义**：「每列的判据必须用它自己那个占位符」。
+
+```go
+// 判据形如 <col> = CASE WHEN $n::type IS NULL THEN <col> ELSE $m END
+// 要求 n == m，且 $98/$99 的归属钉死
+```
+
+| 变异 | 落盘确认 | 结果 | 红因 |
+|---|---|---|---|
+| M1 判据改回耦合（`$99::timestamptz` → `$98::text`） | ✅ grep=1 | **红** | `due_at: 判据用 $98 而写入值用 $99 —— 两列的判据必须各自用自己的占位符；共用一个是 608 迁移的历史耦合，已于 §9.90.1 裁决解耦` |
+| M2 `due_at` 换 `$104/$104`（编号漂移） | ✅ grep=1 | **红** | `due_at 占位符 = [104 104], want [99 99]` |
+| M3 删掉 `due_at` 那行赋值 | ✅ grep=0 | **红** | `UPDATE missing 608 assignment for due_at` |
+| 恢复 | `cmp` 逐字节 | **绿** | 两个文件与备份 **IDENTICAL**（不是「看着绿就算」） |
+
+★ **M1 的红因必须精确到那一列**。若门只报一句「形状不匹配」，它与「SQL 被人随便改过」
+不可区分，接手的人得自己再查一遍才知道是不是回归。
+
+#### 这道门的第一稿自己写错了（与 §9.82.5 同族）
+
+我先写了 `THEN \1` 想用反向引用锁定列名，**第一次跑直接 panic**：
+`regexp: invalid escape sequence: \1` —— **Go 的 RE2 不支持反向引用**。
+
+⇒ 改成 THEN 分支也捕获一次、在 Go 里比对 `m[1] != m[4]`。
+**这是门写错，不是产品错**；判据是红因指向门自己的 `Compile` 而不是指向产品行。
+（§9.89.1 同一条判据的反向用法：门红先看红因在测谁。）
+
+#### 交叉验证：通用形状门仍独立有效
+
+`TestCaseWhenPlaceholderHasTypeContext`（§9.74.2 加的**通用**门，与本次解耦无关）
+对新写法天然满足。变异：把 `::timestamptz` 去掉 ⇒ 该门**红**，报 42P08。
+⇒ **两道门各自有牙齿、互不代偿**，不是同一件事被测两遍。
+
+### §9.90.2 本节没有做的
+
+- **没有**部署、**没有**改生产。`storage.request_logs_write_enabled` 仍未 seed，
+  819 未上 252。
+- **没有**碰 `600_outbound_body_to_bodies_hot.sql` 的登记腐烂（§9.89.7 已记，与本轮无关）。
+- **没有**回填任何历史 `request_class`/`due_at`。
+- **没有**处理本地落后 origin/main 的 **17 个提交**——那需要先与并发会话核对，
+  本轮全程只做只读核实 + 本地改动，未 push。
+
+## §9.91 ③ 的 (a)(b)(c) 收口：**「两份名单互不相认」是一个类别错误**——它们不在同一个维度上
+
+> 日期：2026-10-03 21:4x。§9.58.3 记下三个选项并明写「我不代为裁决」。
+> 本节**代为裁决**，因为继续记账的代价已经超过裁决本身。
+
+### §9.91.0 结论先行
+
+**不选 (a)，(b) 已由 §9.82.4 完成，(c) 不需要。**
+理由不是「风险小」，而是**§9.58.3 那个「互不相认」的框架本身错了**：
+
+> `origin_mw.go` 的三份名单判的是 **`owner_user`（谁持凭据）**；
+> `IsInternalAutoEntry` 的名单判的是 **`origin_actor`（这次调用自称是谁）**。
+> **这是两个正交维度，不是同一份名单的两个拷贝。**
+
+⇒ 交集为空**是正确行为，不是缺口**。把生成器 actor 补进 `trustedOriginOwners`
+不是「让两份名单一致」，是**把一个业务用户顶成系统 worker**。
+
+### §9.91.1 证据（代码，不是推断）
+
+**(1) 两份名单判的东西不同。**
+
+`resolveOrigin`（`middleware/origin_mw.go:318`）的信任判据是：
+
+```go
+owner := authOwnerUser(r.Context())
+if _, ok := trustedOriginOwners[owner]; !ok {
+    return stage, actor, strip   // 非系统 owner → 剥头，stage=business
+}
+```
+
+它读的是 **ctx 上的 owner_user**，与请求自称的 actor 无关。
+`systemOwnerFallbackStage`（:400）同理，键全是 worker 名。
+
+**(2) 生成器根本不在这条路径上——它用的是租户的业务 key。**
+
+`admin/auto_title_generator.go:1173`：
+
+```sql
+SELECT ak.id, ak.key_ciphertext
+  FROM api_keys ak
+ WHERE ak.tenant_id = $1 AND ak.enabled = TRUE
+   AND COALESCE(ak.status,'active') = 'active'
+   ...
+```
+
+⚠ **没有 `is_system` 条件** ⇒ 取到的是**普通业务 key**，其 `owner_user`
+是真实业务用户，**不在** `trustedOriginOwners` 的 7 个键里。
+（该表有 `is_system` 列，同文件 :22/:394 引用了它——**这个列存在且被 origin 侧用于别的判断**，
+所以「不是没考虑到系统 key」是有据的，不是遗漏。）
+
+**(3) 生成器也不发 `X-LLM-Origin-*` 头。**
+
+它发的是 **`X-Gw-Source-Actor`**（`:892` 注释原文），
+由 `domains/streaming/request_context.go:270` 读取并流入 `origin_actor`。
+这是**另一条独立的头**，与 `origin_mw.go` 剥离/信任的那对头无关。
+
+**(4) 名单交集实测为空。**
+
+`trustedOriginOwners` 7 个键全量列出：
+`global-auth-passed` / `credential-selfcheck-worker` / `node-probe-worker` /
+`system-health-worker` / `legacy-probe-worker` / `model-quality-worker` / `self-check-worker`。
+
+与三个生成器 actor 的交集：**空**（脚本取 map 全量键后求交，不是抽样）。
+
+### §9.91.2 (a) 为什么有害，而不只是「没必要」
+
+若按 (a) 把 `auto-title-generator` 补进 `trustedOriginOwners`：
+
+- 那 3 个键进的是 `map[owner_user]`，而生成器请求的 owner_user **是业务用户**，
+  不是 `auto-title-generator` ⇒ **补进去也永远匹配不上**（纯粹的无效代码）；
+- 若为了让它「能匹配」而改成判 actor，那就是**把 actor 声明当成身份凭证**——
+  而 `X-Gw-Source-Actor` 恰好是**客户端可伪造**的（`requestid_mw.go:66`
+  已在防 `goal-%` 伪造污染）。
+  ⇒ **(a) 要生效就必须引入一个可伪造的信任判据**，这正是 R64 收紧的同一件事。
+
+⚠ §9.58.3 当时担心的是 (a) 会「让 3,166 条历史行的 `origin_stage` 重放时变值」。
+**这个担心也落空了**：真做 (a) 的第一后果是它根本不生效，第二后果才是安全问题。
+**担心的量级和方向都不对**，所以不能拿「风险小」当不做的理由——
+**不做的理由是「它的目标状态不存在」。**
+
+### §9.91.3 (b) 已完成，但覆盖范围要写准
+
+§9.82.4 建的 `internal/internaltraffic` 统一了**同一维度内的三份拷贝**：
+
+| 原位置 | 形态 |
+|---|---|
+| `telemetry/internal_loopback.go` | Go，4 臂 |
+| `autoroute/shadow_actors.go` | Go + SQL，2 臂 |
+| `db/request_logs_view_schema.go` | SQL，4 臂 |
+
+⚠ **这三份都不是 `origin_mw.go`**。全仓引用 `internaltraffic` 的生产文件：
+`telemetry` / `autoroute` / `db` 三处 + 叶子包自身 + 一个 `db` 侧门。
+**`middleware/origin_mw.go` 未引用**（已 grep 确认）。
+
+⇒ 这不是遗漏：按 §9.91.1，它**不该**引用——
+把「内部 actor 名单」注入「凭据信任名单」正是 §9.91.2 说的那个错误。
+
+### §9.91.4 (c) 不需要
+
+(c) 是「加一道门把两份名单的差异钉出来，默认红」，
+目的是**逼迫后续裁决**。现在裁决已下，且差异**不是缺陷**。
+
+⇒ 加这道门会造出一个**恒红的门**（正是 §9.58.3 担心的 CI 阻塞），
+去守一个**应当为空的交集**。**不实施。**
+
+### §9.91.5 那么「互不相认」这个真问题去哪了
+
+它没有消失，只是**换了坐标**：真问题不是「两份名单没合并」，
+而是**「同一个 actor 概念在两套坐标系里各有一份拼写，且没有交叉校验」**——
+这是 §9.73.5「现成谓词手抄」的同族问题（那里是 SQL 拼写，这里是维度语义）。
+
+⚠ **但两者不能合并**，理由是它们的**生命周期不同**：
+`origin_actor` 是数据面写入的事实（要能被业务查询），
+`owner_user` 是安全边界（要能被信任链单点修改）。
+把它们放进同一份 SSOT 会让「改信任名单」变成「改历史数据口径」，
+正是 §9.58.3 担心的那种行为变更——**只是发生在更坏的地方。**
+
+⇒ 记账：若将来要防的是「拼写漂移」，正确形态是
+**`origin_mw.go` 增加一道门，断言「`trustedOriginOwners` 不含任何生成器 actor」**
+——把「**必须为空**」钉成不变式，而不是把「必须相等」钉成不变式。
+**本轮不实施**（需要新的门 + 变异，超出本轮授权）。
+
+### §9.91.6 本节没有做的
+
+- **没有**改 `middleware/origin_mw.go` 任何一行。
+- **没有**加 §9.91.5 那道「交集必须为空」的门（记账如上）。
+- **没有**回填任何历史 `origin_stage`（也不需要——结论是历史值本来就对）。
+
+## §9.92 ② 的裁决改选：推翻 819 独立表，改为**会话族补一类状态**（迁移 820）
+
+> 日期：2026-10-03 23:0x–23:5x。裁决来源：**用户显式回复**。
+> §9.67 实施的是 (c)「另建小表」，**本节把它推翻**，实施 (a)「会话族补一类状态」。
+> ⚠ 我在 §9.90.1 / §9.91 里写下的「全绿」结论**不覆盖**本节的新改动。
+
+### §9.92.0 结果先行
+
+| 项 | 结果 |
+|---|---|
+| 819 全套删除 | 迁移 ×2 + embeddata ×2 + go:embed + map + StartupFiles + TSV + 写路径（2 函数 + 2 调用点）+ 7 道门 + metrics + 3 条告警 + 告警门 |
+| 820 新增 | 迁移 **真库实跑** up / down / 幂等全通过；母表 + hot 两面加列 |
+| 写路径 | `markAbandonedTurn`，判据挂在 `updateRequestLog` 竞态回落分支（**零新增 INSERT**） |
+| 新门 | 4 道（telemetry）+ 6 道（告警），**8 个变异全红** |
+| 全量 | `go build ./...` + 10 道 guards + telemetry / bg / installer / rules 全绿 |
+
+### §9.92.1 推翻 819 的代价与收益
+
+**819 的形态**：新建 `public.request_abandoned`，t0 INSERT 一行、终态 DELETE。
+不变式「表里有行 ⇔ 开始了且无终态」很干净，**但**它要求每请求多一条语句，
+且是一张与主事实分离的表。
+
+**820 的形态**：给 `session_turns` 加 `is_abandoned BOOLEAN`，
+由**终态时的一次 UPDATE** 置位。收益是**零新增写放大**（不加任何 INSERT）。
+
+⚠ **代价必须写全**：820 只覆盖「**有终态事件、但 v1 侧无 t0**」这个子集，
+**覆盖不到**「只有 t0、之后彻底静默」——而那正是 §9.66 实测 19 条的主要形态。
+理由是结构性的（见 §9.92.2），不是偷懒。
+
+### §9.92.2 ★为什么不能「插 t0 占位行、终态再更新」
+
+`session_turns` 按 `(tenant_id, request_id, partition_date)` 幂等，
+`turn_writer.go:257-265` 的注释自陈：`ON CONFLICT DO NOTHING` +
+`RowsAffected==0` 事后回读 ⇒ **首次插入后不可更新**。
+
+⇒ 占位行写进去后，终态那次 UPDATE 会被 DO NOTHING 静默吞掉，
+那行**永久**停在 `success=false` 上，并吞掉后续全部富化。
+
+这**正是** mirror hook 首道门 `if !entry.Success && !isTerminalFailure(entry)`
+存在的理由（`hook.go:68-72` 注释自陈同一件事）。
+⇒ 换句话说：**819 那种「集合语义」在 turns 上做不出来**，
+除非先让 turns 支持 UPDATE（另一个量级的改动）。
+
+### §9.92.3 判据：用一个**本来就在跑**的查询
+
+判据挂在 `updateRequestLog` 的 upsert 竞态回落分支：
+
+```
+UPDATE … RowsAffected() == 0
+  → SELECT EXISTS (… WHERE request_id = $1)     ← 本来就在跑
+  → exists == false ⇒ markAbandonedTurn(...)
+```
+
+★ **`exists == false` 为什么等价于「t0 从未落库」**——这条我原本想当然，
+真库实测推翻了直觉：`request_logs_hot` 上 `request_id` 是**唯一键**
+（`request_logs_hot_pkey USING btree (request_id)`），
+且实测 `SELECT n, count(*) FROM (… GROUP BY request_id)` **全是 n=1**。
+⇒ 「不存在」只可能意味着「从来没插过」，**不是**「已落但被覆盖」。
+
+⇒ 这个判据**免费**（查询本来就在跑），且**正向**：
+写成 `if exists` 会把每一次正常完成都标成遗弃，比例约 100%，
+不会触发任何阈值告警，只会安静地污染整张表。
+
+### §9.92.4 ★真库实测推翻的一个设计前提
+
+我原本设计「进程内有界集合记 t0」，因为以为能查 v1 侧。
+**真库说不能**：`request_logs_hot` 每 id 恒 1 行，t1 到达时 t0 已被 upsert 覆盖，
+**「见过 t0」在 t1 时刻无法从 v1 侧区分**。⇒ 只能用上面那个零成本的竞态分支信号。
+
+### §9.92.5 ★真库还揭示了一件读代码看不出来的事
+
+`public.session_turns` 是**分区父表**（`pg_class.relkind='p'`），
+底下 5 个月分区 + 1 个 default。实测：
+
+| 事实 | 后果 |
+|---|---|
+| 对父表 `ADD COLUMN` **自动传播**到所有现存分区（实测 8 个 relation 全部带上） | 迁移**不需要**逐分区 ALTER |
+| 父表上 `CREATE INDEX` **带 `ON ONLY`**，分区上不自动建同名索引 | 必须显式建 hot 与 parent 两条 |
+
+⇒ 已写进迁移 820 的注释。⚠ **新分区会不会带上这一列未验证**——
+取决于 `partition_manager` 建分区时用模板分区还是裸 `PARTITION OF`，
+需要真建出新分区才能测，记在遗留里，**不假装覆盖**。
+
+### §9.92.6 ★★新门第一稿有**三个洞**，全靠变异抓出来
+
+这一节的教训比实现本身更值钱：**我第一稿的 4 道门里，有 3 道在变异下是绿的。**
+
+| # | 门的第一稿 | 变异 | 结果 | 洞的性质 |
+|---|---|---|---|---|
+| G1 | 比较 `guard < markCall` 的**下标** | 把 mark 移进 `if exists { … }` **块内** | ❌ **绿** | 位置比较抓不到「在块内」。⇒ 改成**花括号深度**判定（去注释视图下算 net depth） |
+| G2 | `strings.Contains(src, "public.session_turns")` | 只写 hot 一张 | ❌ **绿** ×2 | ① 文件头**注释**里大量提到该表名；② `"public.session_turns"` 是 `"…_hot"` 的**子串**。⇒ 改成去注释 + 要求两个名字作为**独立字面量**出现在同一个 `[]string{…}` |
+| G3 | `Contains(src, "INSERT INTO public.session_turns")` | 插 t0 占位行 | ❌ **绿** | 表名是**拼接**的（`` `+tbl+` ``），字面量匹配不到。⇒ 改成正则 `INSERT\s+INTO\s+` + `(\+tbl\+\|public\.session_turns)` |
+
+★ **G1 最值得记**：那条「mark 必须在 guard 之后」的检查，我写成了
+`strings.Index(seg, anchor) > strings.Index(seg, guard)`，
+而 `seg = s[probe:mark]` **不包含 anchor 本身** ⇒ 那个 Index 恒为 -1 ⇒
+**整条断言恒真**。这就是 §9.59.7「装饰门」的同一种病：
+**一道在自己该拦的场景里永远不会响的门，比没有门更坏。**
+
+### §9.92.7 告警：`mark_no_row` 为什么必须单列一条
+
+820 有一个 819 没有的失效形态：落点跑在**同步**的 `updateRequestLog`，
+而终态 turn 是**异步** mirror（outbox 事件）写进来的 ⇒
+**打标经常先于终态行存在**。
+
+⇒ `mark_no_row` 在健康系统里也会**持续出现**，它是**常态而非故障**。
+
+但它的比例是唯一能回答「这个落点是否可信」的信号。比例高 ⇒ 系统性漏标 ⇒
+`is_abandoned` 列**看起来仍权威而实际不可信**，
+**那比没有落点更糟**（没有落点时你知道你不知道）。
+
+⇒ 三条告警 + 6 道门（其中 N1/N2/N3 三个变异验证 `or vector(0)` 兜底、
+比例阈值、以及「阈值未校准」的诚实声明都不可被静默删掉）。
+
+### §9.92.7b ★promtool 真跑推翻了我自己写的那条告警（而 Go 门是绿的）
+
+`deploy/prometheus/rule_tests/session-turns-abandoned_test.yml` 是照
+`auto-route-selection-output_test.yml` 正典补的场景文件（819 时代**漏删了**，
+本轮做同族扫描才发现——又一次「同族只改一半」）。真跑立刻抓到三件事：
+
+| # | 我写的 | promtool 实测 | 真相 |
+|---|---|---|---|
+| P1 | ① 用 `rate(...) == 0` + `or (0 * up)`（本仓 819 时代用过的标准解法） | 场景 D（**mark 序列存在、增量恒 0**）**误报** | `rate==0` 对「序列不存在」与「序列存在但零增量」**不可区分**；`0 * …` 只造零值、造不出「缺席」 |
+| P2 | 改用 `absent(...)` | `parse error: unexpected <by>`；去掉 `by` 后场景 A `got=[]` | `absent()` **不支持 by**；更要紧的是它返回**空标签集**，`and on(job,instance)` 永远匹配不上 |
+| P3 | 改用 `unless`（最小复现证明它对） | **SUCCESS** | ⇒ 只有 `unless` 能表达「在**哪些** job/instance 上缺席」 |
+
+⇒ **6 道 Go 门当时全绿**，因为它们只能证明「文本里有 `or` / 有 `0.9 *`」。
+**求值语义只能由 promtool 证。** 这是本轮第二次同族教训
+（第一次是 §9.92.6 那三道装饰门）。
+
+**场景 A 还有一个自相矛盾**：我原本把「进程挂了不得报警」写成场景 A 里的姊妹断言，
+而 A 的 gw1 是 `up=1` 且无 mark 序列——那是**应该**响的场景。
+⇒ 拆成独立的**场景 E**（`up=0`）才成立。
+
+两个 promtool 变异（都先确认落盘）：摘掉 `up == 1` 守卫 ⇒ 场景 E 红；
+③ 的 `0.9` 改 `0.999` ⇒ 场景 C 红。恢复后 `cmp` 逐字节 IDENTICAL。
+
+### §9.92.7c `.DS_Store` 让 installer 一道门间歇性变红（真因 + 真修）
+
+`TestStartupFilesAreAllEmbedded` 报
+`embeddata/startup file ".DS_Store" is not registered in dbinit.Runner.StartupFiles`。
+
+第一次遇到时我 `git stash` 回 HEAD 验证了「**早于本轮改动**」，然后删掉文件。
+**它几分钟后又回来了** ⇒ 「删文件」不是修法。
+
+真因：这道门读的是**文件系统**（`os.ReadDir`）而不是 git，
+而 `.DS_Store` 虽已在 `.gitignore`（未跟踪）却照样被它看见；
+macOS 会在任何被 Finder 浏览过的目录里重新生成它。
+⇒ 症状是**间歇、且与本机相关**，看起来像别人的改动引入了回归。
+
+修法：门里跳过操作系统/编辑器垃圾（`isOSDroppings`），并写明理由。
+**不是绕过**：这些名字永远不该被登记为迁移，跳过它们盖不住真正的五点同步缺口。
+变异双向验证：放一个真迁移副本（`821_stray_probe.sql`）而不登记 ⇒ **仍红**；
+放 `.DS_Store` ⇒ **绿**。
+
+### §9.92.7d ★★同族扫描漏掉的**第 8 处**，而且它会**打挂生产部署**
+
+前面 §9.92.6 记了「同族扫描抓到 3 处遗漏」，我据此以为同族已经扫干净。
+**它没有。**
+
+`scripts/apply-db-revision-sequence.sh:825` 仍写着
+`"$ROOT_DIR/sql/migrations/startup/819_request_abandoned.sql"`，
+而同一个脚本 `:1000` 是：
+
+```bash
+for file in "${files[@]}"; do
+  [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
+```
+
+⇒ **819 文件已被我删除 ⇒ 252/154 跑升级序列时会在这一行硬失败 `exit 4`。**
+这不是「门会红」，是**部署直接跑不起来**。
+
+★ **为什么我前三次同族扫描都没抓到**：我扫的是
+`request_abandoned` / `requestAbandoned` / `819_request_abandoned` 这些**标识符**，
+而通道腿里写的是**纯路径字符串** `"$ROOT_DIR/…/819_request_abandoned.sql"`——
+它在 `for file in "${files[@]}"` 的数组里，是一个**数据项而不是一个调用**。
+「没有函数调用它」不等于「没有地方引用它」。
+
+⇒ 纪律补一条：**同族扫描要按「引用形态」分三轮**——
+① 标识符（函数/变量/类型）② 路径字符串 ③ 编号字面量。
+本轮前两轮只做了 ①。
+
+★ **这次是外部验证抓出来的，不是我自己抓的**（`apply-db-revision-sequence_test.sh`
+rc=1）。诚实地记：**前三次扫描我都在自己的覆盖面里打转，
+而覆盖面本身才是缺陷**。
+
+**这条不是我自己抓到的**：完成审计的外部验证跑了
+`bash scripts/apply-db-revision-sequence_test.sh` → **rc=1**，本会话的
+`go build` / `make guards` / 包测试**全绿**，只有这条挂了。
+⇒ 前三次同族扫描都只扫了**标识符**（`request_abandoned` 等），
+而通道腿里是**纯路径字符串**，是数组里的一个**数据项而不是一个调用**。
+「没有函数调用它」与「有地方引用它」在标识符视角下完全同形。
+
+**⇒ 纪律补一条：同族扫描要按「引用形态」分三轮**——
+① 标识符 ② **路径字符串** ③ 编号字面量。
+本轮前两轮只做了 ①。
+
+**修法**：通道腿换成 820，并保留原有的解释性注释风格。
+**两个变异都先确认落盘**：
+
+| 变异 | 落盘 | 结果 |
+|---|---|---|
+| R1 删掉 820 的通道腿 | grep=0 | **红**：`startup migration 820 exists but is missing from the channel files=(...) array` |
+| R2 回退成引用已删除的 819（复现原缺陷） | grep=1 | **红**（同一条红因） |
+| 恢复 | `cmp` | **IDENTICAL** + `contract passed` |
+
+⇒ 契约测试**确实在守这条**（不是恒绿），且红因直接指出「哪个迁移漏登了」。
+
+#### 复核：那条 rc=1 的反馈是**修复前**的快照
+
+完成审计在修复**之后**又回了一条同样的 `rc=1`。按「用当前状态而非自己的记账」，
+重跑 + **反向复现**：
+
+| 动作 | 结果 |
+|---|---|
+| 直接重跑契约测试 | **rc=0**，`apply-db-revision-sequence contract passed` |
+| 通道腿改回 819（复现原缺陷） | **rc=1**，红因 `startup migration 820 exists but is missing from the channel files=(...) array` |
+| `cmp` 恢复 | **IDENTICAL**，复跑 **rc=0** |
+| 查有无 skip 路径 | 无：脚本结尾直出 `contract passed`，中间没有 `exit 0` 的早退 |
+
+⇒ 「绿」不是跳过的绿，而是**能红的绿**。
+⇒ 这条也说明：**外部反馈本身可能过期**，处理方式是拿当前状态重跑，
+并用一次反向复现证明判据仍有牙齿——而不是因为「上次报过」就再改一遍。
+
+#### 为此加的常驻门：反向方向（`exit 4` 的那条）
+
+既有 `apply-db-revision-sequence_test.sh` 的通道检查只看**最大编号**
+（`tail -1`）⇒ 它能抓「新迁移没登记」，**抓不到反向的「登记指向了已删除的文件」**。
+
+**同族扫描的第三次形态教训**：修完 819→820 后我试图再补一条「全覆盖」检查，
+结果它连报两个**假红**：
+
+| 我写的 | 报的 | 真相 |
+|---|---|---|
+| 提取数组里的路径字符串 | `666_llm_hourly_stats_direct_trigger.sql` 缺失 | 该行 2026-09-06 **已被注释掉**（放弃改用 667，文件同时删除）。提取把注释当活登记 |
+| 从 000 起做全覆盖 | `000_base_tables.sql` 缺失 | 通道数组从 **534** 起（已升级库的补账通道），000–533 是基线历史 |
+| 改用数组自身起点 534 | `535_candidate_failure_logs_atomic_promote.sql` 缺失 | 535 走**另一条通道**（`db.go ensure`），且既有检查本就把范围限定在 `>= 690`（691/692/747/748/759 都在 `channel_gap_allowlist` 上） |
+
+⇒ 第三条暴露了关键事实：**那个方向既有门已经覆盖了**
+（`canonical_files` 循环接受 sequence ∪ ensure ∪ gap 三个集合）。
+我那条是**重复的门 + 更窄的范围理解** ⇒ 报 fiction，已删。
+
+**只保留真正缺的那一条**：数组里引用的每个路径必须真实存在。
+两个变异（先确认落盘）：
+
+| 变异 | 落盘 | 结果 |
+|---|---|---|
+| S1 通道腿指向 `820_session_turns_ghost.sql` | grep=1 | **红**：`references a migration that does not exist: …/820_session_turns_ghost.sql` + 提示 `exit 4` 会打挂每次升级 |
+| S2 注释掉 820 的通道腿 | 行首变 `#` | 我的检查**正确地没报**（注释行不是活登记）；红来自**既有**的全覆盖检查——那是正确的，注释掉确实让 820 没有升级路径 |
+| 恢复 | `cmp` | **IDENTICAL** + `contract passed` |
+
+
+### §9.92.7e ★★撞号：上游已占用 820，而**上游自己就会 `exit 4`**
+
+这一节的发现过程值得原样记下来，因为**我前面三轮的判断都是错的**。
+
+**现象**：完成审计连续五轮报 `apply-db-revision-sequence_test.sh → rc=1`。
+我上一轮把它判成「修复前的过期快照」，理由是工作树和 HEAD 都 rc=0。
+**那个判断没有证据支撑**——我只是没找到 `rc=1` 的来源。
+
+**真相（靠行号对齐找到的）**：反馈里说 `exit 4` 在 **999-1000** 行。
+而这个行号属于 `main` / `origin/main`（**1000**），
+我的分支是 **1001**（我多加了一行注释）⇒ **反馈一直在说 main，不是在说我的分支。**
+
+于是我用 worktree 拉出 `origin/main` 实跑 ⇒ **rc=1**，红因：
+
+```
+startup migration 820 exists but is missing from the channel files=(...) array
+```
+
+⇒ `origin/main` 上有一个 **`820_audio_modality_backfill.sql`**
+（`93cbce8a3` 录音转写网关 / 音频面），而它的**七点同步一个都没做**：
+
+| 落点 | origin/main 上的登记数 |
+|---|---|
+| 通道腿 | **0** |
+| StartupFiles | **0** |
+| embeddata 副本 | **0** |
+
+⇒ **上游现在跑升级序列就会 `exit 4`**，与我在 §9.92.7d 修的那个缺陷**同源**。
+
+**两个后果**：
+
+1. **我的迁移必须让号**：上游已占用 810–820，我原用的 819/820 全部撞区间。
+   ⇒ 用户拍板让号到 **821**，同族 9 文件 15 处引用一并改
+   （文件名 ×4、TSV、通道腿、embed、map、StartupFiles、门的函数名、审计文本）。
+2. **上游那个 820 的缺失同步，本轮不实施**（不在我的授权范围，且是另一个会话的提交）。
+
+⚠ **「我这边全绿」曾让我差点归因到错误的仓库状态**：
+行号（1000 vs 1001）比任何一条内容断言都更快地指出了「反馈在说哪个 ref」。
+⇒ **外部反馈里的行号是定位 ref 的线索**，应当优先用它对齐，
+而不是先在本地重跑然后宣布「快照过期」。
+
+### §9.92.7f 合并预演：冲突面只有 2 个文件，且**都该自动解而非手工解**
+
+让号之后做的只读预演（`git merge-tree --write-tree`，不改动任何东西）：
+
+| 冲突文件 | 性质 | 正确解法 |
+|---|---|---|
+| `sql/schema/installed_startup_migrations.tsv` | **机械重排**：上游新增 9 条登记、我的 1 条，208 个共同文件序号整体偏移 | **不该手工解**。TSV 是 `StartupFiles` 的**派生物**，合并代码后跑 `go test -run TestStartupManifest -update` 一次即可完整重建 |
+| `docs/audit/…-re-audit.md` | 纯文档，双方都追加了节 | 手工保留两侧（都是补账记录，删任何一边都会丢证据） |
+
+**其余全部自动合并**，包括核心实现：
+`telemetry/client.go`、`installer/main.go`、`installer/dbinit/runner.go`、
+`stats_migrations_test.go`、`scripts/apply-db-revision-sequence*.sh`。
+
+⇒ **结论：让号这个决定是有效的**——它让冲突从「两个迁移抢同一个文件名」
+降级为「一份可重建的清单 + 一份纯文档」，而前者根本不该进版本控制仲裁。
+
+⚠ 合并**不会**自动修好上游那个 820，原因与机制已实测：
+`installed_startup_migrations.tsv` 是从 **`dbinit.Runner.StartupFiles`** 推导的
+（`startup_manifest_test.go` 的 `regenerate()`），而 `820_audio_modality_backfill`
+**不在 StartupFiles 里** ⇒ 它不会被写进清单。
+
+⚠ **订正我上一轮的一个推断**（当时是推理，没有实测）：
+我写过「TSV 重建会把 820 自动补进清单，反而更难发现」——**这是错的**。
+实测合并后态：TSV 里 `820_audio_modality` 的行数是 **0**。
+⇒ 重生成**不会**掩盖它；恰恰是 `TestStartupManifestMatchesCanonicalSources`
+这条更完整的检查在报：
+
+| 阶段 | 红因 |
+|---|---|
+| 合并前 `origin/main` | `startup migration 820 exists but is missing from the channel files=(...) array`（`tail -1` 那条旧检查） |
+| 合并后 | `canonical startup migration 820_audio_modality_backfill.sql has no approved delivery path; register it in StartupFiles, the revision sequence, or the reviewed Go-ensure allowlist` |
+
+⇒ 合并后红因**更具体**（点名了文件名与三条可选登记位置），
+这是**好消息**：不是变得更隐蔽，而是既有门给出的诊断更准了。
+
+⇒ 仍然成立的那一条：**给上游那个 820 补通道腿 + StartupFiles + embeddata 副本**
+（本轮未做，不在授权范围，见 §9.92.7e）。
+
+### §9.92.7g 合并演练的完整结果（只读，未改动任何本地状态）
+
+在临时 worktree 里基于 `origin/main` 实跑了一次完整合并
+（`--no-commit --no-ff`），处理完冲突后测：
+
+| 项 | 结果 |
+|---|---|
+| 冲突文件 | 2 个，与预演一致：审计文档 + TSV |
+| TSV 解法 | **不手工解**，用 `-update` 重建（它是 StartupFiles 的派生物） |
+| 合并后 TSV 尾部 | `215 818_ursm…` / `216 821_session_turns_abandoned_marker.sql` ← 我的 821 正确登记 |
+| `go build ./...` | **EXIT=0** |
+| 契约测试 | **EXIT=1**，红因是上游 820（见上表） |
+
+⚠ **演练后演练态已删除**（`git worktree remove --force` + `prune`），
+`main` 与本分支均未被改动。
+
+### §9.92.7h 上游那个 820 的**精确修复坐标**（留给接手者，本轮未实施）
+
+用户已明确本轮不碰上游那个音频迁移（`93cbce8a3`），故这里把坐标写全，
+使它成为**可执行待办**而不是一句「上游有问题」。
+
+`origin/main` @ `4867a62ca` 的实测现状：
+
+| 落点 | 行号 | 现状 |
+|---|---|---|
+| `installer/…/embeddata/startup/820_audio_modality_backfill.sql` | — | **文件不存在** |
+| `installer/cmd/llm-gw-installer/main.go` `//go:embed` | 753 是 819 那一行，往后追加 | **无 820** |
+| 同文件 `embeddedSQLFiles` map | 同上位置 | **无 820** |
+| `installer/internal/dbinit/runner.go` `StartupFiles` | 814 是 819 那一行，往后追加 | **无 820** |
+| `sql/schema/installed_startup_migrations.tsv` | 216 是 819 | **无 820** |
+| `scripts/apply-db-revision-sequence.sh` 通道腿 | 825 是 819 那一行，往后追加 | **无 820** |
+
+**修复顺序有依赖，不能乱**：
+
+1. 补 **embeddata 副本**（`cp sql/migrations/startup/820_….sql installer/…/embeddata/startup/`）
+   —— ⚠ 必须**逐字节一致**，否则
+   `TestStatsStartupMigrationsMatchCanonicalSources` 会红
+   （我在让号时就撞过一次：sed 改漏了一行，副本漂移，门当场抓到）。
+2. 补 `main.go` 的 `//go:embed` **与** `embeddedSQLFiles` map 条目。
+3. 补 `runner.go` 的 `StartupFiles`。
+4. **此时才**跑 TSV 重生成：`cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update`
+   —— 顺序反了会得到一个「不含 820 的清单」，且看起来全绿。
+5. 补通道腿（数组里 819 那行之后）。
+6. 验：`bash scripts/apply-db-revision-sequence_test.sh` ⇒ 期望 rc=0。
+
+⚠ **第 4 步是本节最关键的一步**：TSV 是从 `StartupFiles` 推导的，
+**没先补 ④，重生成不会包含 820**；
+而若先重生成再补 `StartupFiles`，清单与实际会脱节，
+`TestStartupManifestMatchesStartupFiles` 才会红——那时红因指向的是
+「清单过期」而不是「缺通道腿」，**排查方向会被带偏**（我在 §9.92.7f
+就推理错过一次，实测才发现）。
+
+### §9.92.8 本节没有做的 / 遗留
+
+1. **没有部署**。820 未上 252，`storage.request_logs_write_enabled` 仍未 seed。
+2. **没有修异步竞态**（`mark_no_row` 的根因）。消除它需要把打标移到
+   outbox 消费者侧或加延迟重试，**属于另一个量级**。本轮只做到**让它可见**。
+3. **没有验证新分区是否继承 `is_abandoned`**（§9.92.5），需真建新分区才能测。
+4. **阈值 0.9 未经生产实测**，是按设计推的。首次部署后必须用真实比例回归校准，
+   否则那条告警要么永远响要么永远不响（已写成门，`TestRulesStateTheUncalibratedThreshold`）。
+5. **历史漏标不可追补**：t0 缺失的判据在 v1 侧无从事后查证。
+6. 顺带清掉一个**与本轮无关**的既有红：`embeddata/startup/.DS_Store`（未跟踪的
+   macOS 垃圾文件）会让 `TestStartupFilesAreAllEmbedded` 报红。
+   已用 `git stash` 回 HEAD 验证该门**在改动前就红**，确认与 820 无关。
+
+## §9.93 ★★★批判式复审：§9.92 的第一版实现**是恒不生效的**，而且我差点在它上面盖章
+
+2026-10-04。用户要求对 §9.92 做批判式复审。结论先行：
+
+> **§9.92 交付的第一版落点，一个请求都记不到。**不是「漏标了一点」，
+> 是结构性恒不生效。而且它在编译、测试、门全绿的情况下交付了。
+> 本节记录 8 个缺陷、一次决定性实测、一个被变异抓出来的**门本身的洞**，
+> 以及一条差点让我把「没跑」当成「通过」的过程失误。
+
+### §9.93.1 根因：打标挂在**同步**路径上，而终态 turn 由**异步**写入
+
+`§9.92` 的判据挂在 telemetry `client.go` 的 `updateRequestLog` 竞态回落分支上
+（那里 `SELECT EXISTS` 本来就在跑 ⇒ 判据零成本，这个设计是对的，保留）。
+
+但**执行打标的地方**选错了。终态 turn 由 `internal/sessionv2mirror/hook.go`
+的 `runShadowWrite` 写入，而它被派发到**有界 goroutine 池**：
+
+```go
+// hook.go:189
+var shadowWriteDispatchAsync = true     // ← 默认
+select { case sema <- struct{}{}: go func(){ runShadowWrite(...) }() }
+```
+
+⇒ 在同步路径上发 `UPDATE session_turns` 时，那一行**几乎必然还不存在**。
+`mark_no_row` 会接近 100%，`is_abandoned` 列**永远是 NULL**。
+
+这比「有界的漏标」严重得多：§9.92.4 把它记成「已知缺口」，
+而缺口意味着「大部分能记到」。实际是**记不到**。
+**一个恒不生效的落点比没有落点更糟**——列看起来权威而实际是空的。
+
+### §9.93.2 修正：把「事实」挂到 entry 上，在 `w.Write` 之后打标
+
+```
+telemetry  updateRequestLog 竞态回落分支
+            └─ entry.T0Missing = true          ← 只置事实，不写库
+                  ↓（同一指针，firePersistedHooks(entry) 在其后调用）
+sessionv2mirror PersistHook → runShadowWrite
+            ├─ err := w.Write(ctx, req)        ← 终态 turn 在此提交
+            └─ if err == nil && entry.T0Missing { markAbandonedTurnIfT0Missing(...) }
+```
+
+`Write` 在 `session_writer_v2.go:762` 提交后才返回 ⇒ 同一 goroutine、同一超时预算、
+**行必然已存在**。无竞态，且热路径上没多一句 SQL。
+
+### §9.93.3 ★★决定性实测：RLS 会让打标**静默恒为 0 行**——这是读代码看不出来的
+
+搬对位置之后我差点又交付一个恒不生效的版本。`pool.Exec` 在**没有 GUC 的连接**上跑，
+而两张面都开着 RLS。用 `llm-gateway-pg` 容器实测（`SET ROLE rls_probe`，
+该角色 `rolsuper=f` **且** `rolbypassrls=f`，但对两张表有全权）：
+
+| 形态 | 结果 |
+|---|---|
+| 裸 `pool.Exec`（无 GUC） | `UPDATE 0` |
+| 仅 `set app.current_tenant` | **`UPDATE 0`** ← 关键 |
+| `setBypassGUCs` + tenant（本轮形态） | **`UPDATE 1`** |
+| 再跑一次（幂等） | `UPDATE 0` |
+
+**中间那行是本节最值钱的一条**：只补 `app.current_tenant`（也就是 `Write` 自己设的那个）
+**不够**。原因是策略不止一条：
+
+```
+public.session_turns_hot:
+  session_turns_hot_tenant_isolation   PERMISSIVE  tenant_id = current_setting('app.current_tenant', true)
+  session_turns_hot_super_admin_bypass PERMISSIVE  app.current_role='super_admin' OR app.bypass_rls='true'
+  session_turns_hot_owner_filter       RESTRICTIVE  ← 还要 request_logs 里有同会话同属主的行
+```
+
+PostgreSQL 先 OR 全部 PERMISSIVE，再 AND 全部 RESTRICTIVE。
+`owner_filter` 是 **RESTRICTIVE**，它不看 tenant，只看
+`request_logs`/`request_logs_hot` 里有没有匹配的 `owner_user` ⇒ 与 tenant GUC 无关地挡死。
+
+⇒ 结论不是「补一个 GUC」，而是「**打标必须和写行处在同一个 RLS 上下文**」。
+`w.Write` 在**另一条连接**上、**另一个事务**里自建 GUC 上下文，
+所以打标语句**不能假定**自己看得见刚写的行。修法是本包**自己的既有配方**：
+`replay.go:128` 的 `setBypassGUCs`（`app.current_role=super_admin` + `app.bypass_rls=true`），
+外加 `app.current_tenant` 说明这条语句打的是哪个租户的行。
+
+> **这一条同时是 §9.53「本地量具量不出真问题」最锋利的一次实例**：
+> 本机对 `session_turns_hot` 有全权的角色是 `llm_gateway`，而它
+> `rolsuper=t` **且** `rolbypassrls=t` ⇒ **RLS 对它永不生效**。
+> 任何用这个角色做的本地端到端测试都会在缺陷版本上**通过**。
+> 判别必须换一个非超级、非 bypass、但有授权的角色。
+
+### §9.93.4 八个缺陷（全部是我自己上一轮写的）
+
+| # | 缺陷 | 后果 | 严重度 |
+|---|---|---|---|
+| D1 | `nonEmptyStr` 全仓不存在 | **编译不过** | 高 |
+| D2 | telemetry 与 sessionv2mirror 两处 `promauto` 注册**同名**指标 | `cmd/gateway/main.go` 同时链接两侧 ⇒ **启动 init panic** | 高 |
+| D3 | 标志设在 `fallback`（`*entry` 的**副本**）上，消费者读 `entry` | 编译通过、门全绿、**落点恒不触发** | 高 |
+| D4 | UPDATE 的 tenant 用 `nonEmpty(..., "default")` | turn 行实写 `entry.TenantID`（**含空串**）⇒ 空租户流量**永久打空** | 高 |
+| D5 | `settleAbandonedTurn` 是**空实现**且有调用点 | 审计里点名过的「死代码换个名字」：承重判据没有单点，只有一具被命名过的空壳 | 中 |
+| D6 | `markAbandonedTurn` 搬迁后成孤儿 | 重复实现 | 中 |
+| D7 | UPDATE 无 RLS GUC | **静默恒 0 行** | 高 |
+| D8 | 注释自陈「本包有自己的 go.mod」 | **该 go.mod 不存在**；一个错误的自我说明比没有说明更坏 | 低 |
+
+D1/D2 是**编译期与启动期**的硬伤——它们说明 §9.92 交付时**根本没有编译过、
+也没有启动过**。D3 是最隐蔽的一个：它让「修好了」这件事在每一个可观测维度上
+都表现为成功。
+
+### §9.93.5 ★变异抓出了**门自己的洞**——不是产品有洞
+
+15 条变异全部先**证实落盘**（断言原文本消失且新文本出现）再跑门，恢复后 `cmp`
+逐字节比对。15/15 门转红。其中一条**第一版跑出来是 GATE-GREEN**：
+
+> 变异：把调用点改成 `tenantOr(req.TenantID)`（一个补 `default` 的包装函数）。
+> 门的两条检查是「参数里含 `req.TenantID`」与「参数里含 `nonEmpty` 或 `"default"`」。
+> `tenantOr(req.TenantID)` **同时满足两条**——`req.TenantID` 是子串，
+> 而 `"default"` 字面量在函数体内、不在调用里。**门绿了，而代码永久错误。**
+
+⇒ 修法不是再加一条子串检查，而是**断言参数结构**：必须存在一个**恰好等于**
+`req.TenantID` 的参数，且没有任何参数带默认值（`callArgs` 按顶层逗号切分，
+跳过嵌套括号与字符串）。
+
+另外三条变异第一版是 **BUILD-BROKEN**，我**没有**把它们算作证据——
+「编译失败」只证明编译器看见了，不证明门有牙。修的是变异本身
+（把插入点挪进循环体内、给包装函数补定义），直到包仍能编译、只有门转红。
+
+### §9.93.6 ★差点把「没跑」当成「通过」
+
+告警门我用 `-run Abandoned` 过滤，报告了「全绿」。实际上有 4 道门
+（`TestWritesFailingAlertCoversTheNoPoolState`、
+`TestRunbookDoesNotPointAtTheDeletedTelemetryPad`、
+`TestRulesUseTheCurrentMigrationNumber`、
+`TestRulesStateTheUncalibratedThreshold`）**名字里没有 `Abandoned`，一条都没跑**。
+其中一道的 lookbehind 语法（RE2 不支持）在**全量跑**时才炸出来。
+
+⇒ **过滤后的「全绿」必须同时报出「跑了 N 条 / 共 M 条」**，
+否则它与「没跑」在输出上不可区分。这与 §9.54 那条「门绿只说明两个集合相等，
+而它们可以同时少一个而仍然相等」是同族：**计数与内容必须分别断言**。
+
+### §9.93.7 `mark_no_row` 的语义**反转**了，连带改了三件事
+
+| | 首版（同步路径打标） | 本版（`w.Write` 之后打标） |
+|---|---|---|
+| `mark_no_row` 的含义 | **常态**（异步竞态） | **异常**（行不在我们看的地方） |
+| 健康值 | 比例高属正常 | ≈ 0 |
+| ③ 告警门限 | 0.9 | **0.5** |
+| 0.9 为什么抓不到首版 | — | 首版实际比例 ≈0.99，要 0.99 才报 |
+
+0.9 是**按「异步竞态是常态」推的**；语义反转后它成了**按错误的模型算出来的门限**。
+降到 0.5 的理由是结构性的（健康值 ≈0 ⇒ 一半打空就明确是坏了），
+**不是**观测出来的——仍然未经生产实测，门与文档都照旧标注。
+
+新增 op `mark_no_pool`（连接池未初始化 ⇒ **一次都没尝试**）：搬迁之后才可能出现这个状态，
+此时既没有 `mark` 也没有 `mark_failed`，①② 都不响，**运维会看到「指标很干净」的假象**。
+② 因此改为读 `op=~"mark_failed|mark_no_pool"`。
+
+promtool 场景从 5 条加到 **7 条**：新增 F（`mark_no_pool`）与
+G（`mark_no_row` 占 0.4 < 0.5 ⇒ **不得**响）。G 的作用是把「③ 判的是**比例**
+而不是**存在性**」从阈值的副产品变成被断言的性质。
+
+### §9.93.8 顺带清掉的陈旧引用
+
+- `runner.go` 注释仍写「写方（telemetry markAbandonedTurn）」⇒ 改为新位置。
+- 告警文件全文 `820` ⇒ `821`（820 已被上游 `93cbce8a3` 的音频回填占用）。
+- runbook 的 `grep -c markAbandonedTurn 于 …/telemetry/` 指向**已删除的文件**。
+  grep 会 exit 1，看起来像「接线缺失」——**与事实相反**。已加门钉住。
+- 门文件的 `repoRoot` 说明（见 D8）。
+
+### §9.93.9 本节没有做的 / 仍然成立的风险
+
+1. **没有部署**。821 未上 252，`storage.request_logs_write_enabled` 仍未 seed。
+   因此 §9.92.8 遗留的第 1 条依然成立。
+2. **没有端到端跑过一次真实请求**。本轮的落点正确性由
+   「单条 UPDATE 的实测（A/B/C/D 四形态）+ 15 条变异 + 9+9 道门」支撑，
+   **不是**由「观察线上 `is_abandoned` 计数上涨」支撑。这是本节最大的未验证项。
+3. **0.5 门限未经生产实测**（理由同 §9.92.8 第 4 条，门限值变了但性质没变）。
+4. **新分区是否继承 `is_abandoned` 仍未验证**（§9.92.5 遗留，需真建新分区）。
+   本轮**新查到**一条相关事实：`promote_session_turns_hot_to_partition`（迁移 526）
+   的列清单是**运行时从 `pg_attribute` 取的**，所以**已提升**的行会自动带上该列；
+   且该函数在两面列集不一致时会 `RAISE EXCEPTION`——真库实测两面列集**仍然一致**
+   （`shapes_identical = t`），821 没有破坏这个契约。
+5. **能力边界不变**：仍**不覆盖**「只有 t0、之后彻底静默」那一类（§9.92.4）。
+6. **历史漏标不可追补**：t0 缺失在 v1 侧无从事后查证。
+7. **上游 820 音频迁移的七点同步仍未修**（§9.92.7h 的坐标仍然有效）。
+   本轮实测：该迁移在 `origin/main` 上**仍然存在**且最大号仍是 820 ⇒ **821 未被占用**，
+   让号决策依然正确。
+
+### §9.93.10 编号冲突：为什么本轮**没有**自动重编号（附精确坐标）
+
+合并 `feat/820-abandoned-turn` 进 `origin/main` 时，审计文档产生两处冲突：
+
+| 冲突块 | 行数 | 性质 | 本轮解法 |
+|---|---|---|---|
+| §9.74.8 的工作区状态注记 | 17 | 两侧**都真且互补**（main 加了「终态以 §9.74.10 为准」，我这边加了 2026-10-03 的裁决记录） | 并集，重复段落保留一次 |
+| 文档尾部的追加区 | 3609 | 两侧各自从 §9.90 开始编号，**编号相同、内容不同** | 两侧全留 + 显式冲突横幅 |
+
+**冲突的成因**（可复算）：
+
+```
+merge-base            §9.89   （8cd202ad5）
+  ├─ origin/main      +29 个 ## 段 ⇒ §9.90 … §9.119
+  └─ feat/820-…       +4 个 ## 段 ⇒ §9.90 … §9.93
+```
+
+两边都从 §9.89 之后各自编号，**必然撞号**。这不是任何一方的失误，
+是两条并行审计线共用一个追加式日志的固有结果。
+
+**为什么不在本轮重编号**——实测成本：
+
+```
+文档内部互引                                   69 处
+文档外部引用（13 个文件）                       48 处
+  domains/hooks/observability/telemetry/client.go
+  domains/hooks/observability/telemetry/request_class_sql_test.go
+  domains/streaming/dispatch_due_at_pairing_test.go
+  internal/sessionv2mirror/abandoned_turn.go
+  internal/sessionv2mirror/abandoned_turn_gate_test.go
+  deploy/prometheus/rules/session-turns-abandoned.yml
+  deploy/prometheus/rules/session_turns_abandoned_test.go
+  deploy/prometheus/rule_tests/session-turns-abandoned_test.yml
+  scripts/apply-db-revision-sequence.sh
+  scripts/apply-db-revision-sequence_test.sh
+  sql/migrations/startup/821_session_turns_abandoned_marker.sql
+  installer/cmd/llm-gw-installer/embeddata/startup/821_….sql
+  installer/internal/dbinit/runner.go
+```
+
+三条**具体的**风险，不是「改起来麻烦」这种泛泛之词：
+
+1. `sql/migrations/startup/821_*.sql` 的头注释会被 installer 写进
+   `COMMENT ON COLUMN` ⇒ 改错会**永久留在数据库元数据里**，
+   后续再改文件不会覆盖已落库的那份。
+2. 上面 13 个文件里**至少 `client.go` / `runner.go` 是两侧都改过的**。
+   合并后无差别 `sed 's/§9\.92/§9.122/g'` 会把 main 侧指向**它自己** §9.92 的
+   引用一起改掉——而 main 的 §9.92 讲的是「重放计数已导出」，
+   与我的「推翻 819」毫无关系。**这是静默的引用错指**，比撞号更难查。
+3. 重编号会让 §9.92.7a–§9.92.7h 这批**子节**也需要一并处理，
+   而它们在两侧的父节不同，机械替换无法判断该跟哪个父节。
+
+⇒ 因此本轮的做法是：**内容一条不丢地合并，把冲突显式标出来**（文档内横幅），
+把重编号作为**文档属主的决策**留下。横幅里写明了「引用 §9.9x 必须带分支名」。
+
+**若决定重编号，建议的顺序**（每步都要跑门，不能合并到最后再验）：
+
+1. 先只改**文档内部**的 69 处互引，把我的 4 节改成 §9.120/121/122/123，
+   并在原 §9.90–§9.93 位置留 4 行「本节已移至 §9.12x」的转条，
+   **不要删**——删掉就丢掉了「这里曾经有过什么」这条线索。
+2. 再改 13 个文件里**只由我写的**那些引用（可用
+   `git show origin/main:<file> | grep '§9.9[0-3]'` 逐个确认该文件在 main 上
+   没有同名引用，再决定是否无差别替换）。
+3. `821_*.sql` 的 COMMENT 文本单独处理，并在真库上执行一次
+   `COMMENT ON COLUMN … IS '<新文本>'` 把已落库的那份覆盖掉。
+4. 改完跑：`go test ./internal/sessionv2mirror/ ./deploy/prometheus/rules/`
+   与 `bash scripts/apply-db-revision-sequence_test.sh`。
