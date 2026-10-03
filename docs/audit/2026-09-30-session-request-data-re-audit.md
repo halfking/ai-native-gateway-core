@@ -17587,6 +17587,11 @@ UPDATE request_logs_hot
 这批行走了 `admin/telemetry.go` 那条 ingest、或镜像的写入发生在 v1 UPDATE 之前。
 ⇒ **这一格仍然开着**，不因为机制判掉而关闭。
 
+✅ **已推进（§9.143）**：先否掉「`updateRequestLog` 跳过失败行」（它的 WHERE 只有 `request_id = $1`），
+再给出强支持解释：这批行**全部是 `failure` 且 provider 也为 NULL、但 token 非零**，
+而 `insertRequestLog` 的 UPSERT 守卫**拒绝更新已判失败的行** ⇒ 终态的凭证/上游从未落进 v1；
+镜像因 `err == nil` 照常触发 ⇒ 会话侧拿到了终态值。
+
 ### §9.142.5 教训
 
 > **「行没变」不能证明「事件没发生」——它常常正是事件的结果。**
@@ -17603,3 +17608,105 @@ UPDATE request_logs_hot
 >
 > **结论对了、机制错了、中间还绕了一圈，代价是让别人（和未来的我）按错的严重性排期。**
 > 本节把三处都改正：§9.136.1 加失效标注、§9.134.2 换正确落点、决策表 D9/D7-e 复核结论是否仍成立。
+
+---
+
+## §9.143　那 3,699 行：v1 侧是 `failure` 行，而 **UPSERT 守卫拒绝更新已判失败的行** ⇒ 终态数据被静默丢弃
+
+§9.142.4 留的那一格（`request_logs` 与 `usage_ledger` 凭证都 NULL、`session_turns` 有值）
+本节推进了一步：**排掉一个假设，并给出一个有代码引用的解释**（解释本身标注为**强支持假设**，非已证）。
+
+### §9.143.1 先否掉一个假设：v1 的 UPDATE 没有任何守卫
+
+我猜「失败行被跳过」，理由是 `updateRequestLog` 的 v1 UPDATE 可能带守卫。
+**读代码否掉了**：`client.go:2351` 的 WHERE 是
+
+```sql
+WHERE request_id = $1
+```
+
+**没有 `success` / `request_status` 条件** ⇒ 失败行照样会被 UPDATE。
+⇒ 「`updateRequestLog` 跳过了失败行」**不成立**。
+
+### §9.143.2 那 3,699 行的指纹非常干净
+
+| 判据 | 结果 |
+|---|---|
+| 行数 | **3,699** |
+| `request_logs.credential_id` NULL | 3,699（**100%**） |
+| `request_logs.provider_id` **也** NULL | **3,699（100%）** |
+| `success = false` | **3,699（100%）** |
+| `total_tokens = 0` | **0**（**全都产生了 token**） |
+| `latency_ms` 非空 | 3,699 |
+
+⇒ **它们全部是失败请求；凭证与上游都空；但用量是真的。**
+而镜像那侧拿到了一个**非空**的凭证。
+
+### §9.143.3 关键：UPSERT 的 `DO UPDATE ... WHERE` 会**拒绝更新已判失败的行**
+
+`insertRequestLog` 的 UPSERT（`client.go:1660-1676`）带一个守卫：
+
+```sql
+ON CONFLICT (request_id) DO UPDATE SET ...
+WHERE NOT (
+    request_logs_hot.request_status = 'failure'
+    OR ( (request_logs_hot.success = TRUE OR request_logs_hot.request_status = 'success')
+         AND NOT (EXCLUDED.success = TRUE AND EXCLUDED.request_status = 'success') )
+)
+```
+
+**这一段的语义是：**
+- 若现存行**已经是 `failure`** ⇒ **拒绝更新**（无论新行带来什么）；
+- 若现存行是成功、而新行不是终态成功 ⇒ 也拒绝。
+
+⚠️ 注释写明这是**有意的**：「a disconnect probe must never upgrade a failure」。
+
+⇒ **强支持假设**：这 3,699 行的终态写入走的是**这条被守卫的 UPSERT 路径**（`Op = Insert`），
+而它们的 v1 行已经是 `failure` ⇒ **更新被整条拒绝** ⇒
+`credential_id` 留在 NULL，`provider_id` 留在 NULL。
+
+### §9.143.4 而镜像不受影响 —— 这就解释了「会话侧比 v1 更全」
+
+`persistRequestLog` 的顺序是：
+
+```go
+err = ... insertRequestLog / updateRequestLog ...
+if err == nil { c.firePersistedHooks(entry) }   // ← 无条件触发
+```
+
+⇒ **不管那次写入是被守卫拒绝、还是命中 0 行，只要 `err == nil`，镜像照常跑。**
+⇒ 于是：**v1 侧停在 t0 的空值，会话侧拿到了终态的 A₁。**
+
+⇒ §9.141.3 那句「会话侧在凭证归属这一维上比 v1 更全」，
+**现在有了一个具体成因**（而不只是「字段不同」）：
+**不是会话侧多采集了什么，是 v1 侧有一道守卫把终态数据挡在了门外。**
+
+⚠️ 同时要注意方向：**这一次「更全」不能被当成优点。**
+它意味着 **v1 里那些行的终态信息（凭证、上游）从未落库** ——
+对 v1 的分析者来说，这些行的归属是**真的缺失**，不是「换个表也能查到」。
+
+### §9.143.5 由此浮出的一个更值得查的风险（本轮未验证）
+
+那道守卫的语义是：**一条 v1 行一旦被标成 `failure`，任何走 UPSERT 路径的后续写入都无法再丰富它。**
+若某条**合法的终态写入**恰好以 `Op = Insert` 发出（而不是 `Op = Update`），
+它的 **tokens / cost / 凭证 / 上游会全部被静默丢弃**，且**不留任何痕迹**
+（语句返回 0 行、无告警）。
+
+⚠️ 这正是审计文档里反复出现的那一类形态（「**丢了但没人知道**」）。
+本轮**没有验证它是否真的发生过** —— 需要的是：
+把 `emitTelemetry` 在各终态分支上发的 `Op` 枚举一遍，
+看有多少分支在「已有 failure 行」的情况下仍发 `Insert`。
+
+⇒ **这一格建议单独立项**，它与退役无关，属于 v1 面自身的数据完整性问题。
+
+### §9.143.6 教训
+
+> **「守卫」是有意为之的时候，最该做的是问「它挡住了什么」，不是「它挡住了谁」。**
+> 我看到 `disconnect probe must never upgrade a failure` 时，
+> 只想到「失败行不会被升级」，没想到**同一道守卫也会挡住携带真实 token 的终态写入**。
+> ⇒ 守卫的正确性取决于**它面对的输入分布**，而不只是它的意图。
+>
+> **「写入被拒绝」不会让事务失败，所以它没有声音。**
+> `UPDATE`/`UPSERT` 命中 0 行时 `err` 仍是 nil ⇒ 后面所有「写成功了」的下游动作照常发生
+> （包括镜像）⇒ **数据缺失与镜像成功同时出现**，从外面看一切正常。
+> ⇒ 这类路径**必须靠判据守，不能靠错误码**：`RowsAffected() == 0` 目前没有人在看。
