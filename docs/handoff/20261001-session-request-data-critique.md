@@ -6606,3 +6606,65 @@ PG **没有 `CREATE POLICY IF NOT EXISTS`**，351 的 **12 条 policy 全无守�
 >    分开定性（输入 0 行就别写成"数据丢失"）；④ 门红了先怀疑夹具。
 > 6. **工作区纪律不变**：共享工作区不跑 `git restore`、不 stash 他人工作；
 >    本地 `main` 与 `origin/main` 分叉，合并需人工裁决（不用 rebase）。
+
+---
+
+## 第六十六轮（§9.118）：闭合 `session_censors`——跨月读点这条线结束
+
+无代码改动，纯闭合记录。
+
+### 结论
+
+`session_censors` 表面**同形**（唯一键只有 PK `(id, partition_date)`，代理键），
+252 实测跨分区重复元组：`(tenant,request_id)` **2** 个、
+`(tenant,session,turn_no,placeholder,sensitive_type)` **9,371** 个（比 `sessions` 的 413 还多）。
+
+**但不是缺陷**，两条判据：
+
+1. **零消费者**。Go 侧 `FROM/JOIN session_censors`（排除 `_hot`、排除测试）零命中，
+   `sql/` 侧零命中。但**不靠 grep 就下结论**——真库补查三处间接依赖：
+   视图定义含它的 **0** 个；函数体含它的 2 个（`ensure_session_family_partitions`、
+   `promote_session_censors_hot_to_partition`）；`pg_depend` 依赖方只有它自身的
+   attrdef/class/constraint/policy/type。⇒ **本表是只写的脱敏审计存储**
+   （`db_sink.go` 头注释自述：线上未配 `LLM_GATEWAY_SESSION_CENSOR_KEY`、
+   `count(original_encrypted)=0`、全仓无解密读取方）。
+2. **唯一会碰这些行的机制按代理键走**。`promote_session_censors_hot_to_partition` 的
+   `ON CONFLICT (id, partition_date) DO NOTHING` 与 `DELETE … WHERE h.id = i.id`
+   都用代理键 ⇒ 跨月重复既不产生假冲突也不产生漏删，幂等且正确。
+
+⇒ 与 `sessions` 恰好相反：同样同形，`sessions` **有消费者**所以是缺陷，
+`session_censors` **零消费者**所以不是。
+
+### `public.sessions` 跨月重复全表判定（此线结束）
+
+| 表 | 跨月 | 同形 | 有消费者 | 结论 |
+|---|---|---|---|---|
+| `sessions` | 413 | ✅ | ✅ | **已修 2 处**（§9.114 列表、§9.117 聚合） |
+| `session_turns` | 413 | ❌ 键含 `turn_no` | ✅ | 不同轮次，非重复 |
+| `session_turn_details` | 413 | ❌ 键含 `turn_no` | ✅ | 同上 |
+| `session_bodies` | 1 | ❌ 键含 `turn_no` | ✅ | 同上 |
+| `session_censors` | 47 | ✅ 键全是代理 | **❌ 零消费者** | **不是缺陷** |
+| `session_tools` | 0 | — | ✅ | 无风险 |
+
+两个同形部分唯一索引维持 §9.117.1 定性：结构允许、实测 0 例，只记形状不报缺陷。
+
+### 下一轮提示词
+
+> 1. **本轮已推 `origin/main`**（文档闭合，无代码改动），起点 = 本轮最后一个提交 hash。
+> 2. **「跨月重复 / 一会话一行」这条线到此全量结束**（§9.112→§9.118，六轮）。
+>    下轮不必再从 `public.sessions` 读点重新起头。
+> 3. **待拍板（全部仍未决，且已无本会话可自行推进的项）**：
+>    决定 A（视图加宽 30 列）/ B（16 列语义等价）/ C（25 列归属）、
+>    `credential_id` 修法（`::bigint` cast vs 改入参类型）+ 会话族 `credential_id` 索引、
+>    阻塞 #2 `is_final_success`（252 实测 0 行、特性休眠）、
+>    等价口径 (i)/(ii)/(iii)、`backlog_pending` 告警、
+>    actor 名单 (a)(b)(c)/cohort/§9.49.8/§9.48、
+>    写链是否自 ensure 当月分区、
+>    **790 提交 / 50 迁移文件的发布窗口与回滚方案**（所有修复均未部署）。
+> 4. **待查**：auto-route 自 2026-09-15 断流；A 群 6 条 / B 群 10 条 / `backlog_pending=1`。
+> 5. **方法论留档**：① 判跨月重复要看**唯一键**且必须同时问**消费者**——
+>    `sessions` 与 `session_censors` 同形，一个有消费者一个没有，结论相反；
+>    ② 「零消费者」不能靠 grep 断言，视图定义 / 函数体 / `pg_depend` 三层各验一次；
+>    ③ 审计型表天生多行，实体表的「一行」判据不能套用。
+> 6. **工作区纪律不变**：共享工作区不跑 `git restore`、不 stash 他人工作；
+>    本地 `main` 与 `origin/main` 分叉，合并需人工裁决（不用 rebase）。
