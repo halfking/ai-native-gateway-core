@@ -58,7 +58,20 @@ FROM pg_database WHERE datname = current_database();
 \echo '===SECTION:STORAGE_MIX==='
 SELECT 'total = ' || pg_size_pretty(sum(pg_total_relation_size(c.oid)))
      || ' | heap = ' || pg_size_pretty(sum(pg_relation_size(c.oid)) FILTER (WHERE c.relkind IN ('r','m')))
-     || ' | index = ' || pg_size_pretty(sum(pg_relation_size(c.oid)) FILTER (WHERE c.relkind='i'))
+     -- R89-DX（211 号）更正：原来是
+     --   ... FILTER (WHERE c.relkind='i') ...
+     -- 而同一语句的 WHERE 已经限定 `c.relkind IN ('r','m','t','p')`（**不含 'i'**）
+     -- ⇒ 该 FILTER **结构上永远为假** ⇒ `sum(...)` = NULL ⇒ `pg_size_pretty(NULL)` = NULL
+     -- ⇒ `' | index = ' || NULL` = NULL ⇒ **`||` 链把整行塌成 NULL**，输出一个空行，
+     --    且**与「这张表没有数据」不可区分**。
+     -- 仓库自己的复盘 docs/database/2026-10-02-db-audit-34pg17-and-optimization.md:710
+     -- 记过这个现象（「index 容量一度被报成 0」），round3 头部也写了已修 —— **但没回补本文件**。
+     -- 改法：索引体积必须**自己扫一张 relkind='i' 的表**，不能在已过滤的集合上再 FILTER。
+     || ' | index = ' || pg_size_pretty((
+          SELECT sum(pg_relation_size(i.oid))
+          FROM pg_class i
+          JOIN pg_namespace n2 ON n2.oid = i.relnamespace
+          WHERE n2.nspname = 'public' AND i.relkind = 'i'))
      || ' | toast = ' || pg_size_pretty(sum(pg_total_relation_size(c.reltoastrelid)) FILTER (WHERE c.reltoastrelid <> 0))
      || ' | relations = ' || count(*)
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -118,7 +131,7 @@ SELECT 'num_timed = ' || num_timed
      || ' | restartpoints_req = ' || restartpoints_req
      || ' | write_time_ms = ' || write_time
      || ' | sync_time_ms = ' || sync_time
-     || ' | buffers_checkpoint = ' || buffers_checkpoint
+     || ' | buffers_written = ' || buffers_written
      || ' | stats_reset = ' || stats_reset
 FROM pg_stat_checkpointer;
 

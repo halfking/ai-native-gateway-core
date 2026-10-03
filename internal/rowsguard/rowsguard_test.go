@@ -18,11 +18,17 @@ var exemptions = map[string]string{
 	// —— out-of-scope: one-shot developer/ops CLI 的 main 包 ——
 	// 这些不是长驻请求/worker 路径，失败即进程退出，截断不会传播给客户端；
 	// 其语义需单独裁决，R66 不处理。
-	// 4552 -> 4627 是行号漂移，不是新增债：用 git show 8a6142263:cmd/gateway/main.go
-	// 核对过，登记那行当时正是 `for rows.Next() {`，同在 func main()，而本文件另一条
-	// 循环（当时 6510、现在 6601）从未登记。TestExemptionsStillResolve 会把对不上的
-	// 键报成 stale；改键前必须回原提交确认是「同一处漂移」而不是「另找一处顶上」。
-	"cmd/gateway/main.go:4627":                                      "one-shot/main package wiring, out of R66 scope (line drifted from 4552)",
+	// 4552 -> 4627 -> 4640 是**两次行号漂移**，不是新增债：
+	//   ① 用 `git show 8a6142263:cmd/gateway/main.go` 核对过，登记那行当时正是
+	//      `for rows.Next() {`，同在 func main()；
+	//   ② 4627 这一次是 `93cbce8a3`（并发会话的音频网关）给 main.go 加了 24 行造成的。
+	//      已用 `git show 93cbce8a3^:cmd/gateway/main.go` 复核：第 4627 行当时**正是**
+	//      `for rows.Next() {`（`var models []string` 那段 credential→provider_models 查询），
+	//      现在同一处代码在 **4640**。⇒ 是**同一处漂移**，不是「另找一处顶上」。
+	// 本文件另一条循环（当时 6510、6601、现在 6625）从未登记。
+	// TestExemptionsStillResolve 会把对不上的键报成 stale；
+	// **改键前必须回原提交确认是「同一处漂移」而不是「另找一处顶上」。**
+	"cmd/gateway/main.go:4640":                                      "one-shot/main package wiring, out of R66 scope (line drifted 4552->4627->4640)",
 	"cmd/gateway/main_helpers.go:369":                               "one-shot/main package wiring, out of R66 scope",
 	"cmd/gateway/main_v32_wiring.go:119":                            "one-shot/main package wiring, out of R66 scope",
 	"cmd/fetch-standard-iq/main.go:103":                             "one-shot/main package, out of R66 scope",

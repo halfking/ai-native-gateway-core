@@ -55,7 +55,22 @@ test-short: ## 短模式，跳过 -short=false 的测试
 # 门会检查有没有漏登记——否则「加了个守卫但没人跑」会再次悄悄发生。
 # 单行定义：scripts/checks/guards-sync.sh 用 sed 取这一行，多行续行会让它
 # 只读到前半段（这正是本脚本第一次跑就误报的��因）。
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard
+# R89-DY（211 号）：补登记 ./sql/schema。
+#
+# 为什么要补：这个包里的门（208 号 storage_reclaim_guard_test.go、209/210 号
+# handrun_sql_inventory_test.go、objects_registry_test.go）在**任何 CI job 里都不会跑** ——
+#   ① `make guards` 只跑本行登记的包，而本行原先只有 ./internal/*；
+#   ② 仓库里**没有**任何 workflow 跑裸 `go test ./...`；
+#   ③ 唯一跑全仓的是 integration job 的 `go test -tags=integration ./...`，而它的
+#      包清单是用「有 integration-tagged 测试文件」做集合差**推导**出来的
+#      （integration-testcontainers-ci.yml:210-218 写明了推导规则）⇒ 按构造就排除了
+#      没有 integration 标签的 ./sql/schema。
+# ⇒ 四个门只在本机 `go test ./sql/schema` 时才跑过；**兜底机制存在却不在任何流水线上**。
+# 本机实测（含 -count=1 -timeout=120s，与 make guards 同一预算）：sql/schema 25.3s、
+# 全 11 包墙钟 27s ⇒ `-timeout` 是**每个测试二进制**各自计时，25s 远低于 120s。
+# ⚠️ scripts/checks/guards-sync.sh 用 `grep '^\./internal/'` 过滤已登记项，
+#   所以加这一条**不会**让 guards-sync 误判。
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./sql/schema
 
 .PHONY: guards
 guards: ## 运行全部审计守卫（快速、无外部依赖）

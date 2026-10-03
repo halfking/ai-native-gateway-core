@@ -47,4 +47,13 @@ export default {
     tenant: 'Tenant',
     close: 'Close',
   },
+  v1DataFrozen: {
+    title: 'Traffic data has stopped updating: figures on this page reflect only the period before stop-write',
+    titleUnconfirmed: 'Stop-write switch is not explicitly configured: cannot tell whether these figures are stale',
+    titleUnavailable: 'Unable to confirm traffic data state: figures on this page may be stale',
+    affects: 'Affected read-point classes',
+    gateKey: 'Controlling setting',
+    retry: 'Re-check',
+    failedHint: 'Could not read the data state. An unconfirmed state is not a healthy state — treat figures on this page as possibly stale.',
+  },
 }
