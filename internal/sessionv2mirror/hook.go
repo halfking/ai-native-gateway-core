@@ -55,6 +55,16 @@ import (
 // also best-effort, never blocking the primary INSERT.
 func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.RequestLogEntry) {
 	if writer == nil {
+		// ★§9.93：一个 nil writer 几乎总是**初始化失败**，不是「有意关闭镜像」。
+		// 此前它返回一个空函数，**与「影子写开关关掉了」在可观测性上完全等价**——
+		// 两者都是「一个字节都不写、一行日志都不打」。
+		// §9.59–§9.92 连续四轮追一批「v1 有、会话族无孪生」的请求时，
+		// 这条路径是无法从任何证据里区分出来的候选之一。
+		// ⇒ 构造期就喊出来：镜像静默失效必须是**启动日志里的一件事**，
+		//   而不是「查三个月数据查不出来的一件事」。
+		slog.Error("sessionv2mirror: PersistHook constructed with nil writer — "+
+			"V2 mirror writes are SILENTLY disabled for the whole process lifetime",
+			"hint", "session_v2 init likely failed; this is NOT the same as the shadow_write flag being off")
 		return func(*telemetry.RequestLogEntry) {}
 	}
 
@@ -113,6 +123,17 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 		// Convert the telemetry entry to a V2 ProcessedRequest
 		req := entryToProcessedRequest(entry, sessionID)
 		if req == nil {
+			// ★§9.93：此前这是一次**逐条**丢弃且**零痕迹**——
+			// 没有日志、没有指标、没有 outbox 行。
+			// 当前 entryToProcessedRequest 只在 entry==nil || sessionID=="" 时返回 nil，
+			// 走到这里通常意味着 sessionID 被算成了空串，即合成路径算不出会话 id。
+			// 判据若不加这条日志，将来有人把入口条件改宽了，
+			// 这里会从「几乎不可能」变成「静默丢一大片」而无人知晓。
+			slog.Warn("sessionv2mirror: entryToProcessedRequest returned nil — "+
+				"this request will NOT be mirrored",
+				"request_id", entry.RequestID,
+				"session_id", sessionID,
+				"synthetic", synthetic)
 			return
 		}
 		if synthetic {
