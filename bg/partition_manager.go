@@ -237,6 +237,9 @@ func (pm *PartitionManager) run(ctx context.Context) {
 	if pm.db != nil {
 		pm.ensureNextMonthPartitions(ctx)
 		pm.archiveOldPartitionsIfNeeded(ctx)
+		// D8-d: read-only scan for rows stranded in a `*_default` partition.
+		// A hit means that month's partition can no longer be created (§9.152).
+		pm.checkDefaultPartitionResidue(ctx)
 	}
 	close(pm.ready)
 
@@ -251,6 +254,7 @@ func (pm *PartitionManager) run(ctx context.Context) {
 			if pm.db != nil {
 				pm.ensureNextMonthPartitions(ctx)
 				pm.archiveOldPartitionsIfNeeded(ctx)
+				pm.checkDefaultPartitionResidue(ctx)
 			}
 		}
 	}
@@ -392,6 +396,124 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 				"unit", unit, "date", dateLabel)
 		}
 	}
+}
+
+// checkDefaultPartitionResidue surfaces rows stranded in a `*_default`
+// partition (D8-d, audit §9.152 / §9.153).
+//
+// Why this exists. Both `session_turns` and `request_logs` carry a DEFAULT
+// partition, so a write whose month has no dedicated partition does NOT fail
+// with 23514 — PostgreSQL silently routes the row into `*_default`
+// (measured: `INSERT 0 1`, row lands in t_default). Nothing ever moves it
+// back out: `promote_*_hot_to_partition` drains the `*_hot` tables, and no
+// code, SQL or Go, references the `*_default` partitions. The row is therefore
+// kept, but the month's dedicated partition can no longer be created —
+// `CREATE TABLE ... PARTITION OF ...` fails with
+//
+//	ERROR: updated partition constraint for default partition "..." would be violated by some row
+//
+// and nothing retries it into a recovery. That is a self-lock, not a delay.
+//
+// It also propagates: ensure_sessions_v2_partitions creates sessions /
+// session_turns / session_bodies sequentially inside one plpgsql block with
+// no EXCEPTION clause, so a failure on session_turns means session_bodies
+// never gets its partition either.
+//
+// Scope. Only partitions whose parent ALSO has dedicated (non-default)
+// children are reported. A table whose sole partition is its default
+// (stats_event_inbox, system_probe_runs) uses that default by design —
+// reporting it would be a false positive on healthy data.
+//
+// This check is read-only and must never fail the maintenance tick: every
+// error path logs and returns.
+func (pm *PartitionManager) checkDefaultPartitionResidue(ctx context.Context) {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	tables, err := defaultResidueTargets(queryCtx, pm.db)
+	if err != nil {
+		slog.Warn("partition_manager: default-residue scan failed", "error", err)
+		return
+	}
+
+	for _, t := range tables {
+		// count(*) is safe here: in the healthy state these partitions are
+		// empty, and a non-empty one is exactly the condition we must report.
+		// Timeout mirrors the convention used by hotTableBacklogRows.
+		cCtx, cCancel := context.WithTimeout(ctx, 30*time.Second)
+		var n int64
+		err := pm.db.QueryRow(cCtx,
+			"SELECT count(*) FROM "+pgxIdent("public", t)).Scan(&n)
+		cCancel()
+		if err != nil {
+			// -1 keeps "could not measure" distinguishable from "empty".
+			recordPartitionDefaultResidue(t, -1)
+			slog.Warn("partition_manager: default-residue count failed",
+				"table", t, "error", err)
+			continue
+		}
+		recordPartitionDefaultResidue(t, n)
+		if n > 0 {
+			slog.Error("partition_manager: rows stranded in a default partition",
+				"table", t, "rows", n,
+				"impact", "the matching monthly/daily partition can no longer be created; ensure_ functions for this table will fail on every tick until the rows are relocated",
+				"remediation", "relocate the rows (or shift their ts) out of the default partition, then let ensure_sessions_v2_partitions rebuild it — see audit §9.152")
+		}
+	}
+}
+
+// defaultResidueTargets lists the `*_default` partitions that are worth
+// counting, i.e. the ones where a non-zero row count is an anomaly.
+//
+// A default partition is only suspicious when its parent ALSO has dedicated
+// non-default children. stats_event_inbox and system_probe_runs are partitioned
+// with default as their sole partition — there, default is the design, and
+// counting them would report healthy data as residue.
+//
+// Kept separate from the counting loop so the selector itself can be tested
+// against a real catalog (bg/default_residue_realdb_test.go).
+func defaultResidueTargets(ctx context.Context, db *pgxpool.Pool) ([]string, error) {
+	return defaultResidueTargetsInSchema(ctx, db, "public")
+}
+
+func defaultResidueTargetsInSchema(ctx context.Context, db *pgxpool.Pool, schema string) ([]string, error) {
+	rows, err := db.Query(ctx, `
+		SELECT d.relname
+		FROM pg_class d
+		JOIN pg_namespace dn ON dn.oid = d.relnamespace AND dn.nspname = $1
+		JOIN pg_inherits hi ON hi.inhrelid = d.oid
+		JOIN pg_class p ON p.oid = hi.inhparent
+		WHERE d.relispartition
+		  AND d.relkind = 'r'
+		  AND d.relname LIKE '%\_default'
+		  AND EXISTS (
+		      SELECT 1 FROM pg_inherits i2
+		      WHERE i2.inhparent = p.oid AND i2.inhrelid <> d.oid
+		  )
+		ORDER BY d.relname`, schema)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// pgxIdent quotes a schema/table pair for safe interpolation into a statement.
+// pgx does not accept a parameter in a FROM position, so the identifier has to
+// be quoted here; the caller must pass catalog-derived names only.
+func pgxIdent(schema, table string) string {
+	return pgx.Identifier{schema, table}.Sanitize()
 }
 
 // archiveOldPartitionsIfNeeded archives 2-months-old partition to columnar
