@@ -323,10 +323,22 @@ def main():
     # ------------------------------------------------------------------
     # 校验：逐键比对存在性 + TTL。计数相等只证明总数对，不证明成员对。
     # ------------------------------------------------------------------
+    # ★ 只有**实际入队过**的键才该被校验存在。
+    #   扫描与 DUMP 之间会自然过期一批键（payload is None 那一支被 continue 跳过）。
+    #   2026-10-04 实测：2,006 键里 4 个在这段时间过期，RESTORE 0 失败，
+    #   但校验拿「扫描时的名单」去比对目标，于是报「4 个键在目标不存在」并 die。
+    #   那 4 个键**在源 db2 里也已经没有了**（实测 exists=0/0），
+    #   是**假警**，不是复制失败。
+    #   ⇒ 判据必须只覆盖真的搬过的东西，否则一次成功的迁移会被自己判死。
+    moved = [k for k in keys if payloads.get(k) is not None]
+    expired_midway = len(keys) - len(moved)
+    if expired_midway:
+        info("扫描与 DUMP 之间自然过期 %d 个键（未入队，不参与存在性校验）" % expired_midway)
+
     missing = []
     ttl_bad = []
-    for i in range(0, len(keys), args.batch):
-        chunk = keys[i:i + args.batch]
+    for i in range(0, len(moved), args.batch):
+        chunk = moved[i:i + args.batch]
         pipe = dst.pipeline(transaction=False)
         for k in chunk:
             pipe.pttl(k)
@@ -343,17 +355,32 @@ def main():
                 if pttl <= 0 or abs(pttl - want) > 5000:
                     ttl_bad.append("%s: 源 %dms, 目标 %dms" % (k.decode("utf-8", "replace"), want, pttl))
 
-    info("校验: 目标前缀键 %d 个" % dst.dbsize())
+    info("校验: 目标前缀键 %d 个（入队 %d）" % (dst.dbsize(), len(moved)))
     if missing:
         for m in missing[:10]:
             warn("  目标缺失: %s" % m)
-        die("校验失败：%d 个键在目标不存在。不要设置 URSM_V2_REDIS_DB，保持现状并排查。" % len(missing))
+        # ★ 二次确认：目标没有、源也没有 ⇒ 该键是在复制窗口里自然过期的，不是复制失败。
+        #   只有「源还在、目标没有」才是真失败。那种必须 die。
+        pipe = src.pipeline(transaction=False)
+        for m in missing:
+            pipe.exists(m.encode("utf-8"))
+        still_in_src = [m for m, ex in zip(missing, pipe.execute()) if ex]
+        benign = len(missing) - len(still_in_src)
+        if benign:
+            info("其中 %d 个在源 db%d 也已不存在 ⇒ 判定为复制窗口内自然过期，不算失败"
+                 % (benign, args.src_db))
+        if still_in_src:
+            for m in still_in_src[:10]:
+                warn("  源仍在、目标丢失: %s" % m)
+            die("校验失败：%d 个键在源存在但目标丢失。不要设置 URSM_V2_REDIS_DB，保持现状并排查。"
+                % len(still_in_src))
     if ttl_bad:
         for t in ttl_bad[:10]:
             warn("  TTL 不符: %s" % t)
         die("校验失败：%d 个键的 TTL 与源不符。不要设置 URSM_V2_REDIS_DB，保持现状并排查。" % len(ttl_bad))
 
-    info("校验通过：%d 个键全部存在且 TTL 一致。" % copied)
+    info("校验通过：%d 个键全部存在且 TTL 一致（扫描到 %d，中间自然过期 %d）。"
+         % (copied, len(keys), expired_midway))
     info("源 db%d 仍保留全部原键（未做任何 DEL），回滚安全。" % args.src_db)
     return 0
 
