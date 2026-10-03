@@ -70,7 +70,14 @@ test-short: ## 短模式，跳过 -short=false 的测试
 # 全 11 包墙钟 27s ⇒ `-timeout` 是**每个测试二进制**各自计时，25s 远低于 120s。
 # ⚠️ scripts/checks/guards-sync.sh 用 `grep '^\./internal/'` 过滤已登记项，
 #   所以加这一条**不会**让 guards-sync 误判。
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./sql/schema
+# R89-EH（218 号）：补登记 ./internal/ingressguard。
+# 为什么不直接给 domains/streaming 加门：它全量测试实测 ok 106.471s（墙钟 110s），
+# 而本 target 是 -timeout=120s ⇒ 余量只有 13.5s，而 sql/schema 同机已在 25s~83s
+# 之间波动（216 号）⇒ 登记它等于给 CI 埋一个「只在慢机器上炸」的雷。
+# ingressguard 刻意**不导入** domains/streaming，只做静态文本判据，实测 0.4~0.7s。
+# ⚠️ 本条**必须**登记：guards-sync.sh 是按磁盘上 `find internal -name '*guard'`
+#   **发现式**枚举的（CI 的 audit-guards-ci.yml 第 87 步会跑它）⇒ 漏登记直接让 CI 转红。
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./sql/schema
 
 .PHONY: guards
 guards: ## 运行全部审计守卫（快速、无外部依赖）

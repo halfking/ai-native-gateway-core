@@ -48,6 +48,10 @@ func TestGuardPackagesAreWiredIntoMakefile(t *testing.T) {
 		"./internal/routeguard",
 		// ⚠️ 211 号新增：`sql/schema` 里的门（208/209/210 三轮）此前不在任何 CI 路径上。
 		"./sql/schema",
+		// ⚠️ 218 号新增：`ingressguard` 的覆盖面登记表（入站 21 条 /v1 路由的
+		// 配额闸/限流声明）。它替代「把 domains/streaming 整体登记」的做法——
+		// 那个包全量 106.471s，对着 -timeout=120s 只剩 13.5s 余量。
+		"./internal/ingressguard",
 	}
 	got := map[string]bool{}
 	for _, p := range registered {
