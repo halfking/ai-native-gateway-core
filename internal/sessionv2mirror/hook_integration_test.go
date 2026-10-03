@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
@@ -27,7 +28,27 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Skip("TEST_DB_URL not set")
 	}
 	ctx := context.Background()
-	db, err := pgxpool.New(ctx, dbURL)
+	// §9.102: build the pool the way db/db.go builds the gateway's, not the
+	// way pgx defaults. db/db.go:72 sets
+	//
+	//	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	//
+	// (a 2026-07-15 P0 fix that disables the prepared-statement cache, because
+	// long-lived connections kept serving plans for relations that had since
+	// been renamed). Under SimpleProtocol pgx inlines arguments as literals, so
+	// the server never performs parameter type deduction.
+	//
+	// This is not a cosmetic detail. A pool built with pgx defaults runs the
+	// extended protocol, where the server DOES deduce, and two statements that
+	// work in production fail there with 42P08 — see §9.102. A real-DB gate
+	// that used a different exec mode from the product was therefore
+	// validating a configuration nobody runs, and reported two phantom
+	// "production-breaking" defects that were really defects of the harness.
+	// Keep this in sync with db/db.go; if that line changes, change it here.
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	require.NoError(t, err)
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	db, err := pgxpool.NewWithConfig(ctx, cfg)
 	require.NoError(t, err)
 	require.NoError(t, db.Ping(ctx))
 	// Enable the V2 schema — defer settings init will pick up the feature flags
