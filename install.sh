@@ -331,9 +331,16 @@ install_via_npm() {
 
 # maintain 通道自己就把装完了，不需要再解析出本地二进制。
 install_via_maintain() {
-  log "转交官方一键脚本（它会再问一次规模）"
+  # 转交时把 --mode/--yes 一并转发（npm unixFallback 的 bash -s -- 同款口径）。
+  # 45fbb0c75 删掉 export NO_INTERACTIVE 后这里只剩 MAINTAIN_BASE，而官方脚本是
+  # curl 管道（非 tty）→ confirm_mode 静默默认 lite：日志宣布 full、实际装 lite。
+  local fwd=()
+  [[ -n "$MODE" ]] && fwd+=(--mode "$MODE")
+  [[ "$ASSUME_YES" == "1" ]] && fwd+=(--yes)
+  log "转交官方一键脚本（规模=${MODE}）"
   run env MAINTAIN_BASE="$MAINTAIN_BASE" \
-    bash -c 'curl -fsSL "$MAINTAIN_BASE/distribution/install-scripts/install" | bash' \
+    bash -c 'curl -fsSL "$MAINTAIN_BASE/distribution/install-scripts/install" | bash -s -- "$@"' \
+      install.sh ${fwd[@]+"${fwd[@]}"} \
     || die "官方一键脚本执行失败"
   RESOLVED_BINARY=""
 }

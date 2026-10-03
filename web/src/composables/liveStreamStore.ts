@@ -285,6 +285,11 @@ export const LANE_VISIBLE_LIMIT = 50
 
 let actionsTotal = 0
 let childrenTotal = 0
+// Test-only observation point: how many times the visibility handler decided to
+// reconnect (openConnection is inert without an EventSource, so jsdom tests
+// cannot tell "reconnected" from "declined" without counting the calls —
+// including the inert early-return ones, which is the point).
+let openConnectionTotal = 0
 
 // Page visibility state
 const visibilityState = reactive({
@@ -1287,6 +1292,7 @@ function mergeLegendsByKey(existing: LiveStreamLegendItem[], incoming: LiveStrea
 }
 
 function openConnection() {
+  openConnectionTotal++
   if (es || refCount <= 0) return
   if (typeof EventSource === 'undefined') {
     liveStreamState.connection = 'unsupported'
@@ -1500,6 +1506,7 @@ export const __testing = {
   clearRequestCredentialIndex,
   resetStream,
   refCount: () => refCount,
+  openConnectionTotal: () => openConnectionTotal,
   // Test-only: force the module back to its initial state between cases.
   // resetStream() deliberately leaves refCount alone (production never needs
   // that), so a case that fails mid-way would leak a ref into the next one and

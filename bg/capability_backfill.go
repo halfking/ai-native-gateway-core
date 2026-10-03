@@ -110,9 +110,11 @@ const (
 	// 自然日边界会让「23:59 用满 2400，00:01 再来一轮」的账单在两天里各出现
 	// 一次，实际上是 4800/天。滚动窗口让「每 24 小时最多 2400」这句话字面为真。
 	capabilityBackfillDailyBudgetWindow = 24 * time.Hour
-	// capabilityBackfillProbeTimestampsMax 是出网时刻台账的容量上限。
-	// 2400/天的预算下 24h 窗口最多积累 2400 条，取 2 倍余量；触顶说明
-	// 预算被绕过（不该发生），此时整体重置并记一条 Warn。
+	// capabilityBackfillProbeTimestampsMax 是出网时刻台账容量上限的**默认底数**。
+	// 实例上限在构造时按 2 × max(env 预算, 默认预算) 放大（见 probeLedgerCap）：
+	// 若 env 把预算调到默认之上而上限仍钉死本值，台账会在预算触顶**之前**先撞
+	// 上限，预算闸门静默失效（R37 P2）。触顶说明记账量超常（绕过 chargeProbe），
+	// 截断最旧记录并记一条 Warn。
 	capabilityBackfillProbeTimestampsMax = capabilityBackfillDefaultDailyBudget * 2
 )
 
@@ -163,6 +165,12 @@ type CapabilityBackfill struct {
 	// dailyBudget 是每 24h 的出网探测上限；<=0 表示不设预算。
 	dailyBudget int
 
+	// probeLedgerCap 是出网台账的容量上限：构造时按 2 × max(env 预算, 默认
+	// 预算) 定尺寸（0 值 = 未初始化，pruneProbesLocked 里回落到包级默认底数，
+	// 结构体字面量构造的测试不受影响）。必须是预算的函数而非固定常量：
+	// cap < budget 时台账先于预算触顶并被截断，闸门等效失效（fail-open）。
+	probeLedgerCap int
+
 	// probe 缺省走 singleResponsesPing。测试可以换掉它，但换掉之后测的就不再
 	// 是「真实上游帧 → 真实判定」这条链。
 	probe   func(ctx context.Context, target probeTarget, desc providercap.Descriptor) httpProbeResult
@@ -178,15 +186,23 @@ func NewCapabilityBackfill(
 	keyring *secret.Keyring,
 	sink ResponsesCapabilitySink,
 ) *CapabilityBackfill {
+	// 台账上限必须跟着配置预算走：预算 5000 而上限钉死默认×2=4800 时，台账
+	// 会在第 4801 次被截断、剩余额度重新回满，闸门永远到不了 5000（R37 P2）。
+	budget := capabilityBackfillDailyBudget()
+	ledgerCap := capabilityBackfillProbeTimestampsMax
+	if budget > 0 && budget*2 > ledgerCap {
+		ledgerCap = budget * 2
+	}
 	return &CapabilityBackfill{
-		db:          db,
-		encKey:      encKey,
-		keyring:     keyring,
-		sink:        sink,
-		interval:    capabilityBackfillInterval,
-		staleAfter:  capabilityBackfillStaleAfter,
-		batchLimit:  capabilityBackfillBatchLimit,
-		dailyBudget: capabilityBackfillDailyBudget(),
+		db:             db,
+		encKey:         encKey,
+		keyring:        keyring,
+		sink:           sink,
+		interval:       capabilityBackfillInterval,
+		staleAfter:     capabilityBackfillStaleAfter,
+		batchLimit:     capabilityBackfillBatchLimit,
+		dailyBudget:    budget,
+		probeLedgerCap: ledgerCap,
 		probe: func(ctx context.Context, target probeTarget, desc providercap.Descriptor) httpProbeResult {
 			endpoint := resolveProbeEndpoint(target, desc, ProbeModeResponses)
 			if endpoint == "" {
@@ -492,12 +508,20 @@ func (b *CapabilityBackfill) pruneProbesLocked(now time.Time) {
 		}
 	}
 	b.probes = keep
-	// 触顶说明记账量超过了预算上限（配置被调小过，或有别处绕过了 chargeProbe）。
-	// 整体重置并留一条 Warn：宁可重新计满，也不能让台账无界增长。
-	if len(b.probes) > capabilityBackfillProbeTimestampsMax {
-		slog.Warn("capability_backfill: probe ledger exceeded cap, resetting",
-			"size", len(b.probes), "cap", capabilityBackfillProbeTimestampsMax)
-		b.probes = make([]time.Time, 0, capabilityBackfillProbeTimestampsMax)
+	// 触顶说明记账量超过了容量上限（绕过 chargeProbe 的旁路，或预算被调小后
+	// 未重启的残留）。截掉**最旧**的超出部分，不整体清零：清零等于给预算闸门
+	// 「失忆」，账单从零重新起算（fail-open 方向）；截断只丢最旧的可滚动记录，
+	// 剩余额度只会被低估，方向保守。
+	cap := b.probeLedgerCap
+	if cap <= 0 {
+		cap = capabilityBackfillProbeTimestampsMax
+	}
+	if len(b.probes) > cap {
+		drop := len(b.probes) - cap
+		slog.Warn("capability_backfill: probe ledger exceeded cap, trimming oldest",
+			"size", len(b.probes), "cap", cap)
+		copy(b.probes, b.probes[drop:])
+		b.probes = b.probes[:cap]
 	}
 }
 

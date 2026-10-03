@@ -487,13 +487,15 @@ func (m *Manager) SetSupportsResponses(ctx context.Context, credentialID int, mo
 // read (a Lua script returning TIME + the states in one shot), which changes
 // GetNodeStatesBatch's contract and is deliberately NOT done here.
 //
-// ⚠️ SNAPSHOT AGE (2026-10-03 审计补充) — `prefetched` can be arbitrarily old.
-// Measured, not assumed: the router's MGET and this gate are normally ~6ms
-// apart, but the request then goes through dispatchPipeline.Submit, which
-// BLOCKS on qr.ResultCh while the request waits in the totalQueue behind other
-// in-flight traffic. That wait has no upper bound in code — it is whatever the
-// queue depth and upstream latency make it. Measured staleness is therefore
-// unbounded even though the common case is milliseconds.
+// ⚠️ SNAPSHOT AGE (2026-10-03 审计补充；同日根修后按校准实况订正) —
+// `prefetched` can be arbitrarily old. Measured, not assumed: the batch read
+// stamps the whole MGET batch once, and by the time the request reaches this
+// gate it has been through the routing/selection segments — that is where the
+// seconds live in the 168-request calibration (T2→T5); the queue segments are
+// milliseconds. (An earlier revision of this note blamed the totalQueue wait;
+// the calibration disproved that attribution.) The gap has no upper bound in
+// code — it is whatever routing and upstream latency make it. Measured
+// staleness is therefore unbounded even though the common case is milliseconds.
 //
 // What is still safe without an age guard: EXPIRY. The deadline check below
 // samples Redis TIME, so a prefetched verdict whose 3600s TTL elapsed is still
@@ -514,9 +516,16 @@ func (m *Manager) SetSupportsResponses(ctx context.Context, credentialID int, mo
 // fast path (queue waits are the exception, not the rule) while capping the
 // divergence from a fresh read to a window no operator would call a lie.
 //
-// The age is measured with Redis TIME — the same clock as the deadline — NOT
-// local time. Comparing a prefetched-at marker across clocks would reintroduce
-// exactly the skew problem the TIME decision above exists to avoid.
+// The age is a LOCAL monotonic duration — time.Since(prefetched.SnapshotReadAt)
+// — never a cross-clock comparison of absolute stamps. The deadline check above
+// still samples Redis TIME, because the deadline itself is a Redis-clock
+// absolute stamp written by Lua TIME; but snapshot age is an *elapsed* time,
+// and elapsed time is exactly what the local monotonic clock is for (time.Time
+// carries the monotonic reading; NTP steps cannot touch time.Since). An
+// earlier revision of this guard measured the age with Redis TIME against the
+// verdict's CapabilityUpdatedAt — two wall-clock stamps on different scales —
+// which made nearly every fresh snapshot look stale and re-read on the hot
+// path; the clock-domain split above is the fix (2026-10-03).
 //
 // ⚠️ ORDERING IS LOAD-BEARING — Redis TIME MUST be sampled AFTER the state is
 // in hand, not before. Sampling it first (to share one round trip between the
