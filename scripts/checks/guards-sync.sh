@@ -23,8 +23,21 @@ if [[ ! -f Makefile ]]; then
 fi
 
 # 从 Makefile 的 GUARD_PACKAGES 里取出已登记的包目录名
-registered="$(sed -n 's/^GUARD_PACKAGES[[:space:]]*:*=//p' Makefile \
-  | tr -d '\\' | tr ' ' '\n' | sed 's|^\\$||' | grep '^\./internal/' || true)"
+#
+# ⚠️ 两条清单，缺一不可（240 号修）：
+# 审计发现旧版本只用 `grep '^\./internal/'` 过滤出**一份**清单，
+# 于是**所有非 ./internal/ 条目对三条检查全部不可见** —— 而 GUARD_PACKAGES 里
+# 一直有非 internal 条目（`./sql/schema`）。后果：把 `./domains/hooks/nonexistent`
+# 写进 GUARD_PACKAGES，脚本依然打印「✅ …双向一致」并 exit 0。
+# 这正是本脚本要防的那类失效（漏登记/登记错了却没人发现），却发生在自己身上。
+#   registered_all —— 全部条目，**存在性反向检查必须用它**（覆盖脚本自述的
+#                     「已登记的条目必须真的存在于磁盘上」，R88 补，原文无限定词）
+#   registered     —— 仅 internal 条目，供「*guard 命名」告警使用
+#                     （命名约定只对 internal 生效；非 internal 条目不以 guard
+#                     结尾是正常的，不该刷无意义的告警）
+registered_all="$(sed -n 's/^GUARD_PACKAGES[[:space:]]*:*=//p' Makefile \
+  | tr -d '\\' | tr ' ' '\n' | sed 's|^\\$||' | grep '^\./' || true)"
+registered="$(printf '%s\n' "$registered_all" | grep '^\./internal/' || true)"
 
 # 实际存在的守卫包（目录名以 guard 结尾）
 declare -a on_disk=()
@@ -46,9 +59,19 @@ for pkg in "${on_disk[@]}"; do
   fi
 done
 
-# 反方向（R88 补）：已登记的条目必须真的存在于磁盘上。
+# 反方向（R88 补，240 号修作用域）：已登记的条目必须真的存在于磁盘上。
 # 原来只查 on_disk ⊆ registered，不查反向 ⇒ 一条过期/拼错的登记项
 # 不会被发现，只会等到 `go test ./internal/<不存在>` 时才以另一种方式炸。
+#
+# ⚠️ 240 号实测：R88 补的反向检查当时**只遍历 internal 条目**（`registered` 已
+# 被 `grep '^\./internal/'` 过滤过），所以对 `./sql/schema` 这类**早就在表里**的
+# 非 internal 条目同样不可见。双臂对照（每次只改一个变量）：
+#   ARM1 `./internal/TYPO_nonexistent_guard_dir`  → ❌ 被抓，exit 1
+#   ARM2 `./domains/hooks/TYPO_nonexistent_pkg`   → ✅ **静默放过**，exit 0，
+#         且照样打印「✅ …GUARD_PACKAGES 的 13 项双向一致」（此时表里 15 项）
+# ⇒ 脚本要防的「登记错了却没人发现」，发生在脚本自己身上。
+# 修法：反向检查改遍历 `registered_all`（全部条目）。本条自述无限定词，
+# 所以这是**恢复它自己写下的契约**，不是新增要求。
 while IFS= read -r entry; do
   [[ -n "$entry" ]] || continue
   dir="$repo_root/${entry#./}"
@@ -56,7 +79,7 @@ while IFS= read -r entry; do
     echo "❌ GUARD_PACKAGES 登记了不存在的目录: ${entry#./}" >&2
     missing=1
   fi
-done <<<"$registered"
+done <<<"$registered_all"
 
 # 命名一致性（R88 补，**告警不拦**）：登记的包应��以 guard 结尾。
 #
@@ -90,8 +113,16 @@ if [[ $non_guard_named -gt 0 ]]; then
   echo "   （${non_guard_named} 个登记项不以 guard 结尾，已由反向检查逐条校验存在性）" >&2
 fi
 
-registered_count=$(grep -c . <<<"$registered" || true)
-echo "✅ ${#on_disk[@]} 个 *guard 目录与 GUARD_PACKAGES 的 ${registered_count} 项双向一致"
+internal_count=$(grep -c . <<<"$registered" || true)
+total_count=$(grep -c . <<<"$registered_all" || true)
+other_count=$((total_count - internal_count))
+echo "✅ ${#on_disk[@]} 个 *guard 目录与 GUARD_PACKAGES 的 ${internal_count} 个 internal 条目双向一致"
+# 240 号：原消息只报 internal 子集、却写成「GUARD_PACKAGES 的 N 项」，
+# 读起来像是覆盖了整张表 —— 而 ARM2 实测证明非 internal 条目当时完全不可见。
+# 改成分开报，让「哪一部分被哪条检查覆盖」在输出里就是白纸黑字。
+if [[ $other_count -gt 0 ]]; then
+  echo "✅ 另有 ${other_count} 个非 internal 条目已逐一校验存在性（命名约定不适用于它们，故不告警）"
+fi
 
 # ── 第二跳：CI 不得硬编码守卫包清单（R88 补）────────────────────────
 #
