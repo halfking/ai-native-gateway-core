@@ -21,6 +21,15 @@
  *
  * 鉴权：走 extraHTTPHeaders 注入 Authorization，**不碰 cookie / localStorage**。
  * 路由清单从 src/router.ts 直接解析，不另维护一份（避免清单漂移）。
+ *
+ * ⚠ 跑之前先把工作树和进程都稳住，别在这期间干别的事。两次间歇性
+ * `/api/auth/me` 404 都是在「扫描期间改了工作树」或「同时开了第二个浏览器」
+ * 时出现的，受控复现 15/15 全绿：
+ *   - 改工作树 → vite 触发 HMR 重载，页面正在 bootstrap 时模块被换掉，
+ *     请求可能落到半路；
+ *   - 两个 Playwright 打同一个 dev server + 同一个后端，互相挤。
+ * 这类干扰出来的失败与产品缺陷在报告上长得一模一样（都是一条 console 错误），
+ * 所以**发现孤立的单页 4xx 时，先在无干扰条件下单独复跑该页再下结论**。
  */
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
