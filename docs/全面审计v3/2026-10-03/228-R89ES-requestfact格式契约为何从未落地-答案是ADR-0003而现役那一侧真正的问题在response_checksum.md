@@ -7,6 +7,14 @@
 - **本轮新增待裁决 1 条（P2，待裁决 94）** + **守卫新增 3 条测试**
 - **零生产代码改动**（含一次负控探针，已回收并复核 `git diff` 为空）
 
+> ⚠️ **并发编号提示**：本轮与另一并发会话**撞了轮次号**——对方也提交了
+> 「228 号 / R89-ES」，主题为 `feat(audio)` 的 MCP 端点错误码
+> （`2026-10-03/228-R89ES-feat-audio的MCP端点混淆HTTPtransport错误与JSONRPC错误-定义了两个码却从未用上.md`，
+> commit `0a9f081dc`）。**双方文件名不同、零冲突合并。**
+> 本轮**不重编号**（重编号会与已推送的历史链条制造更多不一致），
+> 但**台账编号 4.142 与 README 索引仅本轮占用**，对方的文档未进两处索引。
+> ⇒ **台账里「228 号」目前指向两份不同文档**，以文件名与主题区分。
+
 ---
 
 ## 一、问题的答案在 115/116 号从未打开过的那个文件里
@@ -255,7 +263,9 @@ sc.checksum = sha256.Sum256(append(sc.checksum[:], []byte(payload)...))
   `json.RawMessage` 等可导致 marshal 失败的字段）⇒ **登记为 P3 可达性待查，本轮不下结论**。
 - **未核** `durable_projection.go:14` 的第 5 个版本常量 `DurableProjectionInputVersionV1`
   为何**无任何 gate**（子代理 B 发现，本轮未展开）。
-- `go test ./...` 全量未跑；`core.hooksPath` 未设 ⇒ 未经 pre-push 门；**CI 从未运行**。
+- `go test ./...` 全量未跑；**但已抽查 `domains/streaming` 的 `Audio|MCP` 子集，发现并发会话
+  新推的 `TestMCPEarlyErrorsUseJsonRPCEnvelope` 3 个子用例红**（详见 §十二）；
+  `core.hooksPath` 未设 ⇒ 未经 pre-push 门；**CI 从未运行**。
 - 本轮**未改任何生产代码**。
 
 ---
@@ -323,3 +333,51 @@ sc.checksum = sha256.Sum256(append(sc.checksum[:], []byte(payload)...))
 ⇒ 与 §171（验证尺子的断言不得复用尺子的返回值）配套：
   §171 禁止「用尺子的输出验证尺子」；
   这条禁止「用**改尺子**的方式验证尺子的另一条分支」。
+
+---
+
+## 十二、⚠️ 并发会话合并记录：轮次号撞车 + main 上有一颗红的测试
+
+### 12.1 轮次号撞车
+
+提交前 `git fetch` 发现 origin/main 前进一个提交，**对方也自称「228 号 / R89-ES」**，
+主题是 `feat(audio)` 的 MCP 端点错误码（commit `0a9f081dc`）。
+
+- **文件名不冲突**（`228-R89ES-feat-audio…md` vs 本轮 `228-R89ES-requestfact…md`），
+  `git merge origin/main` **零冲突**合并（未强推）。
+- **台账编号不冲突**：`4.140`（226）、`4.141`（227）、`4.142`（本轮）连续；
+  **对方的文档没有进台账，也没有进 README 索引**。
+- ⚠️ **本轮不重编号**：重编号会与已推送的历史链条制造更多不一致。
+  但**台账里「228 号」目前指向两份不同文档**，已在报告头部与台账登记提示，
+  引用时**必须带主题/文件名，不能只写「228 号」**。
+
+### 12.2 main 上当前有一颗红的测试（来自并发会话）
+
+`domains/streaming/audio_endpoints_test.go`（对方新增 82 行）的
+`TestMCPEarlyErrorsUseJsonRPCEnvelope` **3 个子用例红**：
+
+```
+audio_endpoints_test.go:336  status = 400, want 200
+audio_endpoints_test.go:351  response not valid JSON-RPC envelope:
+      json: cannot unmarshal string into Go struct field .error.code of type int
+```
+
+即该测试断言「MCP 早期错误应是 transport 200 + JSON-RPC envelope（`-32700` / `-32600`）」，
+而生产实测返回 **400 + `{"error":{"code":"invalid_json",…}}`**（HTTP 风格错误信封）。
+
+**已排除是我的合并所致**：`git diff 6750caa01..HEAD --stat -- domains/streaming/`
+**只有该测试文件新增 82 行，非测试文件改动为空**。
+
+⚠️ **本代理不擅自动手**：该文件属并发会话的在制品（其文档标题即「定义了两个码却从未用上」，
+像是刚登记的待裁决项），改它会与对方会话的进行中工作撞车。
+
+⚠️ **影响面已量化**：该包**不在 `GUARD_PACKAGES` 内**
+⇒ **`make guards`（14 包）仍全绿**；但 `go test ./...` 会红。
+
+### 12.3 合并后复验（零冲突 ≠ 结论不变）
+
+| | 结果 |
+|---|---|
+| 14 包守卫（`-timeout=300s`） | **全绿**，`sqlguard` 21.6s、`sql/schema` 43.8s |
+| 本轮守卫的三个数字 | **12 / 5 / 0**，与合并前完全一致 |
+| `domains/streaming` `Audio\|MCP` 子集 | ❌ 红（见 §12.2，非本轮引入） |
