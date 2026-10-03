@@ -296,6 +296,27 @@ PREPARE 验不出来）。且**会话族没有 `credential_id` 索引**。
 只由应用代码保证**（与 821 审计「绿色 e2e 对 RLS 零信息量」同一根因）。
 收紧它会立刻触发上面这条依赖，所以**两者捆绑**。
 
+#### ✅ §9.137.3 的失败形态已实测判定（§9.139，本地 scratch 库跑完，已清理）
+
+| 操作 | 实测结果 |
+|---|---|
+| `DROP TABLE request_logs`（策略仍在） | **`ERROR: cannot drop table … because other objects depend on it`** / `DETAIL: policy … depends on table …` ⇒ **被 PostgreSQL 拦下** |
+| 先 `DROP POLICY` 再 `DROP TABLE` | **成功**；此后 owner 过滤消失（实验里读者从 1 行变 2 行） |
+| 非特权角色查 `session_turns`（对 `request_logs` 零授权） | **`ERROR: permission denied for table request_logs`** ⇒ 查询直接失败 |
+
+⇒ **好消息**：退役会**响亮地失败**，不会「表没了、查询才炸」。
+⚠️ **前提**：发布脚本**必须检查 DDL 的退出码**（与 D9 第一条同源要求）。
+⇒ **坏消息**：**这个库里不存在任何能让 owner 隔离真正生效的角色** ——
+特权角色 bypass（过滤形同虚设），非特权角色零授权（查询直接报错）。
+一旦有人给某个报表角色开 `session_turns` 只读权限，**报表会立刻全线报错**。
+
+⇒ **整改路径（三步，顺序不能换）**：
+1. **先让 `session_*` 侧自己持有 `owner_user`**（写入侧补字段 + 回填）；
+2. **再把四条 `*_owner_filter` 策略改写成不引用 `request_logs`**；
+3. **最后才 `DROP TABLE request_logs`**。
+
+⚠️ 只做第 3 步会被数据库拒绝；只做 2+3 步会把 owner 过滤**直接删掉**（不是迁移，是丢失）。
+
 ---
 
 ## D10　本地 `main` 与 `origin/main` 分叉
