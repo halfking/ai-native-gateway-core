@@ -18,15 +18,14 @@ LOG=/var/log/pg17-vacuum-bloat.log
 TABLE_TIMEOUT_MIN=30   # 单表 VACUUM FULL 上限（分钟）
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-ts=$(date -Iseconds)
-echo "[$ts] start vacuum-bloat weekly cleanup" >> "$LOG"
+echo "[$(date -Iseconds)] start vacuum-bloat weekly cleanup" >> "$LOG"
 
 # === 列存元数据表（最需要 VACUUM FULL，DROP 列存表后必有大量 dead tuple）===
 META_TABLES=("chunk" "stripe" "chunk_group")
 for meta in "${META_TABLES[@]}"; do
   size=$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
     "SELECT pg_total_relation_size('columnar_internal.${meta}')/1024/1024" 2>/dev/null || echo "0")
-  echo "[$ts]   columnar_internal.${meta} size=${size}MB - start VACUUM FULL" >> "$LOG"
+  echo "[$(date -Iseconds)]   columnar_internal.${meta} size=${size}MB - start VACUUM FULL" >> "$LOG"
   # 2026-10-03 修复：原写法把 SET 与 VACUUM FULL 放在同一个 -c 里，psql 会把它们
   # 包进一个隐式事务块，VACUUM 恒报 "cannot run inside a transaction block" ——
   # 自 2026-07-15 上线起每一个周日 100% 失败（已核对 /var/log/pg17-vacuum-bloat.log）。
@@ -35,10 +34,10 @@ for meta in "${META_TABLES[@]}"; do
   docker exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
     "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
     -c "VACUUM FULL columnar_internal.${meta}" >> "$LOG" 2>&1 \
-    || echo "[$ts]   VACUUM FULL columnar_internal.${meta} FAILED" >> "$LOG"
+    || echo "[$(date -Iseconds)]   VACUUM FULL columnar_internal.${meta} FAILED" >> "$LOG"
   new_size=$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
     "SELECT pg_total_relation_size('columnar_internal.${meta}')/1024/1024" 2>/dev/null || echo "0")
-  echo "[$ts]   columnar_internal.${meta} size=${size}MB -> ${new_size}MB" >> "$LOG"
+  echo "[$(date -Iseconds)]   columnar_internal.${meta} size=${size}MB -> ${new_size}MB" >> "$LOG"
 done
 
 # === 业务表 bloat 检测 ===
@@ -64,19 +63,19 @@ LIMIT 20;
 
 TARGETS=$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc "$BLOAT_SQL" 2>/dev/null || echo "")
 if [ -z "$TARGETS" ]; then
-  echo "[$ts] no business tables need VACUUM FULL (no bloat > 30% with size >= 256MB)" >> "$LOG"
+  echo "[$(date -Iseconds)] no business tables need VACUUM FULL (no bloat > 30% with size >= 256MB)" >> "$LOG"
 else
-  echo "[$ts] bloat targets:" >> "$LOG"
+  echo "[$(date -Iseconds)] bloat targets:" >> "$LOG"
   echo "$TARGETS" >> "$LOG"
   while IFS='|' read -r tname size dead_pct; do
     [ -z "$tname" ] && continue
-    echo "[$ts]   VACUUM FULL ${tname} (size=${size} bytes, dead_pct=${dead_pct}%)" >> "$LOG"
+    echo "[$(date -Iseconds)]   VACUUM FULL ${tname} (size=${size} bytes, dead_pct=${dead_pct}%)" >> "$LOG"
     # 2026-10-03 同上修复（事务块问题）
     docker exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
       "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
       -c "VACUUM FULL ${tname}" >> "$LOG" 2>&1 \
-      || echo "[$ts]   VACUUM FULL ${tname} FAILED" >> "$LOG"
+      || echo "[$(date -Iseconds)]   VACUUM FULL ${tname} FAILED" >> "$LOG"
   done <<< "$TARGETS"
 fi
 
-echo "[$ts] done" >> "$LOG"
+echo "[$(date -Iseconds)] done" >> "$LOG"

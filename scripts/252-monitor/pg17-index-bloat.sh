@@ -79,6 +79,8 @@ MIN_DEAD_PAGES=${MIN_DEAD_PAGES:-2000}     # 批量删除型：死页下限（20
 MIN_LEAF_DENSITY=${MIN_LEAF_DENSITY:-60}   # 零散 churn 型：叶页密度下限（%）
 MIN_RECLAIM_MB=${MIN_RECLAIM_MB:-32}       # 重建后至少能回收这么多才值得动手
 MAX_FIX_PER_RUN=${MAX_FIX_PER_RUN:-10}     # 单次运行最多重建几个，避免 cron 跑成长任务
+DENSITY_TOLERANCE=${DENSITY_TOLERANCE:-2}  # 当前密度高于「上次重建后密度」这么多点以内，视为已在自然填充率
+STATE=${STATE:-/var/lib/pg17-index-bloat/seen-density.tsv}  # index<TAB>重建后密度，自校准基线
 PROBE_TIMEOUT=${PROBE_TIMEOUT:-180}        # 单个索引 pgstatindex 超时（秒）
 REINDEX_TIMEOUT_MIN=${REINDEX_TIMEOUT_MIN:-30}
 LOCK_TIMEOUT=${LOCK_TIMEOUT:-5min}
@@ -95,7 +97,12 @@ done
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 ts=$(date -Iseconds)
-log() { echo "[$ts] $*" >> "$LOG"; }
+# 每行取一次当前时间。早先写成 log(){ echo "[$ts] ..."; } 而 $ts 在脚本开头
+# 取一次就整轮复用 —— 结果整轮日志的时间戳全是「启动那一刻」，
+# 排查时看不出单次探测花了多久、失败发生在什么时刻。
+# 这正是 pg17-vacuum-bloat.sh 静默失败两个月而无法从日志定位的同款问题：
+# 日志本身不可用于诊断。
+log() { echo "[$(date -Iseconds)] $*" >> "$LOG"; }
 
 log "start index-bloat mode=$MODE min_index=${MIN_INDEX_MB}MB min_dead_pages=${MIN_DEAD_PAGES} min_leaf_density=${MIN_LEAF_DENSITY}"
 
@@ -151,6 +158,38 @@ if [ "${candidates:0:5}" = "ERROR" ]; then
 fi
 cand_count=$(printf '%s' "$candidates" | grep -c . || true)
 log "candidates(>=${MIN_INDEX_MB}MB btree, valid, public): $cand_count"
+
+# === INVALID 索引：与膨胀是不同的病，必须单独报 =====================
+# 2026-10-03 补：候选查询带 `AND i.indisvalid`，INVALID 索引因此**静默消失** ——
+# 既不在候选里，也不在 measured/unmeasured 任何计数里。这是本脚本自己的
+# 「没有」与「没测到」混淆：量具因为「测不了这个对象」而报出「没有问题」。
+#
+# 为什么要单独报而不是顺手放进候选：INVALID 索引是**正确性**问题而非空间问题。
+# PostgreSQL 会跳过它做查询规划，REINDEX CONCURRENTLY 之外还需确认业务查询
+# 是否正依赖它（若是，索引失效期间等价于该查询全表扫）。处置路径不同。
+invalid_idx=$(de "SELECT c.oid::regclass::text
+                  FROM pg_index i
+                  JOIN pg_class c  ON c.oid = i.indexrelid
+                  JOIN pg_am am    ON am.oid = c.relam AND am.amname = 'btree'
+                  JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+                 WHERE c.relkind = 'i'
+                   AND NOT c.relispartition
+                   AND NOT i.indisvalid
+                 ORDER BY pg_relation_size(c.oid) DESC;")
+if [ "${invalid_idx:0:5}" = "ERROR" ]; then
+  log "ABORT: invalid-index query failed: ${invalid_idx//$'\n'/ }"
+  echo "ABORT: INVALID 索引查询失败：${invalid_idx//$'\n'/ }" >&2
+  exit 2
+fi
+invalid_count=$(printf '%s' "$invalid_idx" | grep -c . || true)
+if [ "$invalid_count" -gt 0 ]; then
+  log "INVALID $invalid_count 个索引未被测量（indisvalid=false，需 REINDEX/VALIDATE，非膨胀问题）:"
+  while IFS= read -r bad; do
+    [ -z "$bad" ] && continue
+    bad_mb=$(de "SELECT pg_relation_size('$bad')/1024/1024;" | tr -d '[:space:]')
+    log "INVALID  $bad size=${bad_mb}MB indisvalid=false"
+  done <<< "$invalid_idx"
+fi
 
 measured=0; unmeasured=0; flagged=0; cand_mb=0
 flag_list=""
@@ -209,6 +248,25 @@ while IFS= read -r idx; do
   # 这种读不出所以然的行，--fix 的日志同样带不出来。补一个兜底说明。
   [ -z "$reason" ] && reason="aggregate(leaf_pages=${leaf_pages}×${density}%空隙)"
 
+  # === 自校准：已达自然填充率的索引不再重复重建 =====================
+  # 问题（2026-10-03 生产实测）：ursm_node_snapshot_min_pkey 重建后密度 90.20%，
+  # 仍按公式估出 115MB，于是每轮都被选中，每次只回收 40-50MB。
+  # 根因：B-tree 的自然填充率由键序与页大小决定，**不等于 100%**。
+  # 对 1987 万行、按时间滚动删除的表，键序与插入序天然错位，
+  # REINDEX 也只能合并相邻键范围的页 —— 重建后的 90.20% 就是它的自然填充率，
+  # 剩下 9.8% 不是「浪费」，永远收不回来。
+  #
+  # 为什么不设绝对阈值：曾用「密度>=88 视为已达上限」，该阈值建立在
+  # avg_leaf_density 语义误读之上，已撤除（见文件头）。绝对阈值要靠猜。
+  # 这里改成**相对判据**：拿该索引自己上一次重建后的密度当基线。
+  # 基线是实测出来的，不是猜的；且随该索引自身的数据分布自动校准。
+  baseline=$(awk -F'\t' -v k="$idx" '$1==k{print $2; exit}' "$STATE" 2>/dev/null || true)
+  if [ -n "$baseline" ] && awk -v y="$density" -v b="$baseline" -v t="$DENSITY_TOLERANCE" \
+       'BEGIN{exit !(y >= b - t)}'; then
+    log "ok        $idx size=${size_mb}MB density=${density}% >= 自身重建后基线 ${baseline}% -${DENSITY_TOLERANCE}（已达自然填充率，再重建无收益）"
+    continue
+  fi
+
   if [ "$headroom_mb" -ge "$MIN_RECLAIM_MB" ]; then
     flagged=$((flagged + 1))
     cand_mb=$((cand_mb + headroom_mb))
@@ -219,7 +277,7 @@ while IFS= read -r idx; do
   fi
 done <<< "$candidates"
 
-log "summary: measured=$measured unmeasured=$unmeasured flagged=$flagged headroom≈${cand_mb}MB"
+log "summary: measured=$measured unmeasured=$unmeasured flagged=$flagged headroom≈${cand_mb}MB invalid_skipped=$invalid_count"
 
 # === 汇总必须能区分「没有」与「没测到」==============================
 if [ "$measured" -eq 0 ]; then
@@ -229,6 +287,11 @@ if [ "$measured" -eq 0 ]; then
 fi
 if [ "$flagged" -eq 0 ] && [ "$unmeasured" -gt 0 ]; then
   log "no candidate among $measured measured, but $unmeasured unmeasured — 结论仅覆盖已测部分"
+fi
+# 「无候选」与「无问题」不是一回事：INVALID 索引从未被测量。
+if [ "$flagged" -eq 0 ] && [ "$invalid_count" -gt 0 ]; then
+  log "no bloat candidate, but $invalid_count INVALID index(es) exist — 本轮「无膨胀」不覆盖它们"
+  echo "注意：$invalid_count 个 INVALID 索引未被测量（indisvalid=false），需另行 REINDEX/VALIDATE" >&2
 fi
 
 # === --fix：REINDEX CONCURRENTLY ====================================
@@ -258,6 +321,22 @@ if [ "$MODE" = "fix" ] && [ "$flagged" -gt 0 ]; then
         done_count=$((done_count + 1))
         reclaimed_mb=$(( reclaimed_mb + (before - after) / 1024 / 1024 ))
         log "REINDEX OK $idx : $((before/1024/1024))MB -> $((after/1024/1024))MB"
+        # 记下重建后的密度作为该索引的自然填充率基线（见候选循环里的自校准段）。
+        # 必须在重建后测，且取重建后的值 —— 重建前的密度是被膨胀污染过的。
+        post_d=$(podman exec -e PGOPTIONS="-c statement_timeout=${PROBE_TIMEOUT}s" \
+                   "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c \
+                   "SELECT avg_leaf_density FROM pgstatindex('$idx');" 2>&1 \
+                 | head -1 | tr -d '[:space:]')
+        if [[ "$post_d" =~ ^(NaN|[0-9.]+)$ ]]; then
+          mkdir -p "$(dirname "$STATE")"
+          tmp_state="${STATE}.tmp.$$"
+          { [ -f "$STATE" ] && grep -v "^${idx}[[:space:]]" "$STATE" || true; \
+            printf '%s\t%s\n' "$idx" "$post_d"; } > "$tmp_state"
+          mv "$tmp_state" "$STATE"
+          log "baseline  $idx : post-reindex density=${post_d}% 记入 $STATE"
+        else
+          log "baseline  $idx : 重建后密度读取失败（${post_d}），基线未更新"
+        fi
       else
         log "REINDEX NO-GAIN $idx : $((before/1024/1024))MB -> $((after/1024/1024))MB（阈值判据有偏差，需复核）"
       fi
@@ -269,9 +348,13 @@ if [ "$MODE" = "fix" ] && [ "$flagged" -gt 0 ]; then
 fi
 
 # === 告警 ===========================================================
-if [ "$cand_mb" -ge "$ALERT_CANDIDATE_MB" ] && [ -x "$NOTIFY" ]; then
-  "$NOTIFY" "252 索引膨胀告警：$flagged 个索引候选，潜在回收约 ${cand_mb}MB（已测 $measured / 未测 $unmeasured）" \
-    >> "$LOG" 2>&1 || log "notify failed"
+if [ -x "$NOTIFY" ]; then
+  # INVALID 索引数常态为 0，出现即异常，故与膨胀阈值同级告警；
+  # 不会造成刷屏（除非真有大量索引失效，那本身就值得知道）。
+  if [ "$cand_mb" -ge "$ALERT_CANDIDATE_MB" ] || [ "$invalid_count" -gt 0 ]; then
+    "$NOTIFY" "252 索引巡检：膨胀候选 $flagged 个（约 ${cand_mb}MB，已测 $measured / 未测 $unmeasured）；INVALID 未测 $invalid_count 个" \
+      >> "$LOG" 2>&1 || log "notify failed"
+  fi
 fi
 
 log "done mode=$MODE"
