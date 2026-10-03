@@ -1,0 +1,370 @@
+go test ./... -count=1 -timeout=300s
+ok  	github.com/kaixuan/llm-gateway-go/adapter/unified	0.441s
+ok  	github.com/kaixuan/llm-gateway-go/admin	68.755s
+ok  	github.com/kaixuan/llm-gateway-go/admin/dashboardapi	1.072s
+ok  	github.com/kaixuan/llm-gateway-go/admin/dashboarddegrade	1.216s
+ok  	github.com/kaixuan/llm-gateway-go/admin/distlock	1.581s
+?   	github.com/kaixuan/llm-gateway-go/admin/logsearch	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/annotation	0.510s
+ok  	github.com/kaixuan/llm-gateway-go/api	0.631s
+ok  	github.com/kaixuan/llm-gateway-go/api/webhooks	0.526s
+ok  	github.com/kaixuan/llm-gateway-go/apihub	0.552s
+ok  	github.com/kaixuan/llm-gateway-go/autoroute	3.751s
+ok  	github.com/kaixuan/llm-gateway-go/autoroute/internal/legacyflags	0.490s
+ok  	github.com/kaixuan/llm-gateway-go/autoupdate	0.495s
+ok  	github.com/kaixuan/llm-gateway-go/bg	25.375s
+ok  	github.com/kaixuan/llm-gateway-go/bg/freequotacleanup	0.414s
+ok  	github.com/kaixuan/llm-gateway-go/bg/freequotareset	0.412s
+ok  	github.com/kaixuan/llm-gateway-go/bg/systemmonitor	0.598s
+ok  	github.com/kaixuan/llm-gateway-go/cache/prefix	0.453s
+ok  	github.com/kaixuan/llm-gateway-go/catalog	0.453s
+ok  	github.com/kaixuan/llm-gateway-go/center	0.545s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/auto-testbench	0.473s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/autoclass-bench	0.524s
+?   	github.com/kaixuan/llm-gateway-go/cmd/autoroute-e2e-audit	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/bleve-backfill	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/calc_quality	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/cfg_dump	0.413s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/check-credentials	0.418s
+?   	github.com/kaixuan/llm-gateway-go/cmd/compression-bench	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/compression-benchmark	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/env-injector	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/fetch-standard-iq	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway	1.556s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway/webhooks	0.520s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway-v2	4.892s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/k2-migrate-ursm	0.537s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/license-authority	0.678s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/license-authority/middleware	2.140s
+?   	github.com/kaixuan/llm-gateway-go/cmd/llm-gw-annotator	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/llm-gw-exporter	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/migrate-ursm-v2	0.571s
+?   	github.com/kaixuan/llm-gateway-go/cmd/probe-cred	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/quality-monitor	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/quality-service	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/regen-credentials	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/routing-test-client	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/scenario_driver	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/seed-free-resources	0.404s
+?   	github.com/kaixuan/llm-gateway-go/cmd/sessionforensics	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/sessionmeta-bench	0.420s
+?   	github.com/kaixuan/llm-gateway-go/cmd/test_quality_api	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/test_sql	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/aggregate-profile	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/backfill-modality	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/backfill_session_bodies	0.473s
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/backfill_sessions_v2_v2	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/fix-selfcheck-keyhash	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/migration-456-test	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/outbox-dlq-replay	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/validate_sessions_v2	0.491s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/traffic-replay	0.553s
+?   	github.com/kaixuan/llm-gateway-go/cmd/tuning-backtest	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/ursm-k2-preflight	0.965s
+?   	github.com/kaixuan/llm-gateway-go/cmd/verify-model-fetch	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/config	0.692s
+ok  	github.com/kaixuan/llm-gateway-go/control/routing	0.592s
+ok  	github.com/kaixuan/llm-gateway-go/credentialfpslot	6.396s
+ok  	github.com/kaixuan/llm-gateway-go/credentialhealth	1.420s
+ok  	github.com/kaixuan/llm-gateway-go/db	0.515s
+ok  	github.com/kaixuan/llm-gateway-go/db/dbxmanifest	0.414s
+ok  	github.com/kaixuan/llm-gateway-go/deploy/grafana	0.443s
+ok  	github.com/kaixuan/llm-gateway-go/deploy/prometheus/rules	0.430s
+ok  	github.com/kaixuan/llm-gateway-go/deploy/sql/verify	0.696s
+ok  	github.com/kaixuan/llm-gateway-go/discovery	1.086s
+ok  	github.com/kaixuan/llm-gateway-go/disguise	0.812s
+ok  	github.com/kaixuan/llm-gateway-go/domain	0.402s
+ok  	github.com/kaixuan/llm-gateway-go/domain/analysis	0.558s
+ok  	github.com/kaixuan/llm-gateway-go/domain/governance	0.689s
+ok  	github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem	0.639s
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis	0.573s
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/bus	1.027s
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/projectattr	1.058s
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta	0.607s
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/workers	0.610s
+ok  	github.com/kaixuan/llm-gateway-go/domains/approval	0.699s
+ok  	github.com/kaixuan/llm-gateway-go/domains/assets	0.787s
+ok  	github.com/kaixuan/llm-gateway-go/domains/attachments	0.740s
+ok  	github.com/kaixuan/llm-gateway-go/domains/authentication	0.852s
+ok  	github.com/kaixuan/llm-gateway-go/domains/autocombo	0.543s
+ok  	github.com/kaixuan/llm-gateway-go/domains/cachemetrics	0.701s
+ok  	github.com/kaixuan/llm-gateway-go/domains/clientprofile	0.955s
+ok  	github.com/kaixuan/llm-gateway-go/domains/credential	14.657s
+ok  	github.com/kaixuan/llm-gateway-go/domains/credentialquota	2.366s
+ok  	github.com/kaixuan/llm-gateway-go/domains/credentialstate	0.753s
+ok  	github.com/kaixuan/llm-gateway-go/domains/dbdegradation	1.997s
+ok  	github.com/kaixuan/llm-gateway-go/domains/dispatch	28.359s
+ok  	github.com/kaixuan/llm-gateway-go/domains/events	0.417s
+ok  	github.com/kaixuan/llm-gateway-go/domains/feishubot	0.598s
+ok  	github.com/kaixuan/llm-gateway-go/domains/freediscovery	2.492s
+ok  	github.com/kaixuan/llm-gateway-go/domains/freeresource	0.449s
+ok  	github.com/kaixuan/llm-gateway-go/domains/goal	0.397s
+ok  	github.com/kaixuan/llm-gateway-go/domains/goalintegration	0.438s
+ok  	github.com/kaixuan/llm-gateway-go/domains/goalrun	0.720s
+ok  	github.com/kaixuan/llm-gateway-go/domains/health	74.917s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks	9.891s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/audit	1.390s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/cache	0.432s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression	0.744s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/caveman	0.516s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/lite	0.455s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/strategy	0.420s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/summary	0.742s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/threetier	0.553s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/toolfocused	0.457s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/goal	0.507s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/handoff	0.560s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/intentanalysis	0.421s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/memoraauto	2.102s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/observability	0.425s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry	0.862s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance	0.430s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/promptinjection	0.451s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/promptoptimization	1.344s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/response	0.471s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/security	0.517s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector	0.466s
+?   	github.com/kaixuan/llm-gateway-go/domains/hooks/sessionanalysis	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit	0.538s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/toolexecution	0.444s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/tools	0.481s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hostedtask	0.574s
+ok  	github.com/kaixuan/llm-gateway-go/domains/identity	0.463s
+ok  	github.com/kaixuan/llm-gateway-go/domains/integration	0.703s
+ok  	github.com/kaixuan/llm-gateway-go/domains/intentconfig	0.446s
+ok  	github.com/kaixuan/llm-gateway-go/domains/interception	0.424s
+?   	github.com/kaixuan/llm-gateway-go/domains/memory	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/domains/memory/client	0.516s
+ok  	github.com/kaixuan/llm-gateway-go/domains/modelmapping	0.418s
+ok  	github.com/kaixuan/llm-gateway-go/domains/modelquality	3.765s
+ok  	github.com/kaixuan/llm-gateway-go/domains/moduleexec	1.640s
+?   	github.com/kaixuan/llm-gateway-go/domains/moduleregistry	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/domains/nodehealth	0.570s
+ok  	github.com/kaixuan/llm-gateway-go/domains/nodestatecache	0.896s
+ok  	github.com/kaixuan/llm-gateway-go/domains/notification	1.076s
+ok  	github.com/kaixuan/llm-gateway-go/domains/orchestration/observ	0.537s
+ok  	github.com/kaixuan/llm-gateway-go/domains/outputcompliance	0.442s
+ok  	github.com/kaixuan/llm-gateway-go/domains/pipeline	0.746s
+?   	github.com/kaixuan/llm-gateway-go/domains/promptinjection	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/domains/promptinjection/enhanced	0.498s
+ok  	github.com/kaixuan/llm-gateway-go/domains/provider	0.715s
+ok  	github.com/kaixuan/llm-gateway-go/domains/providerprofile	0.592s
+ok  	github.com/kaixuan/llm-gateway-go/domains/quotafetcher	0.910s
+ok  	github.com/kaixuan/llm-gateway-go/domains/remotecontrol	0.503s
+ok  	github.com/kaixuan/llm-gateway-go/domains/reportrollup	0.476s
+ok  	github.com/kaixuan/llm-gateway-go/domains/requestdetail	0.664s
+ok  	github.com/kaixuan/llm-gateway-go/domains/requestjourney	1.879s
+ok  	github.com/kaixuan/llm-gateway-go/domains/routeincident	8.502s
+ok  	github.com/kaixuan/llm-gateway-go/domains/routing	7.294s
+ok  	github.com/kaixuan/llm-gateway-go/domains/routingstate	0.478s
+ok  	github.com/kaixuan/llm-gateway-go/domains/secretmask	0.862s
+ok  	github.com/kaixuan/llm-gateway-go/domains/security	0.633s
+ok  	github.com/kaixuan/llm-gateway-go/domains/security/plugins	0.832s
+ok  	github.com/kaixuan/llm-gateway-go/domains/session	1.785s
+ok  	github.com/kaixuan/llm-gateway-go/domains/session/preprocess	1.204s
+ok  	github.com/kaixuan/llm-gateway-go/domains/session/v2	1.721s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionarchive	1.098s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionaudit	0.564s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessiondigest	0.506s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionforensics	0.661s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionstate	0.859s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionsummary	0.678s
+ok  	github.com/kaixuan/llm-gateway-go/domains/stats	0.534s
+ok  	github.com/kaixuan/llm-gateway-go/domains/stats/boardcache	0.678s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming	89.404s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/executors	34.066s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/executors/webcookie	0.470s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/integrity	0.660s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/state	0.450s
+ok  	github.com/kaixuan/llm-gateway-go/domains/summary	0.479s
+ok  	github.com/kaixuan/llm-gateway-go/domains/tenant	0.800s
+ok  	github.com/kaixuan/llm-gateway-go/domains/tokenest	0.447s
+ok  	github.com/kaixuan/llm-gateway-go/domains/toolexecution	0.638s
+ok  	github.com/kaixuan/llm-gateway-go/domains/transformation	1.183s
+ok  	github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic	0.508s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2	4.972s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api	0.442s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/bootstrap	0.512s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache	0.624s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/index	0.612s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/integration	0.608s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/migration	2.820s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist	0.538s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/recovery	2.272s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/resource	0.396s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/rollout	0.405s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow	0.851s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource	0.598s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store	0.580s
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/sync	0.510s
+ok  	github.com/kaixuan/llm-gateway-go/durable	1.045s
+ok  	github.com/kaixuan/llm-gateway-go/envinjector	0.560s
+ok  	github.com/kaixuan/llm-gateway-go/errorsx	0.420s
+ok  	github.com/kaixuan/llm-gateway-go/eventbus	1.095s
+?   	github.com/kaixuan/llm-gateway-go/examples/intent_analysis_demo	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/exporter	0.489s
+?   	github.com/kaixuan/llm-gateway-go/fault	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/hotconfig	0.424s
+ok  	github.com/kaixuan/llm-gateway-go/i18n	0.546s
+?   	github.com/kaixuan/llm-gateway-go/internal/agent/wsclient	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/atomicrename	0.496s
+ok  	github.com/kaixuan/llm-gateway-go/internal/attachmentmirror	0.477s
+ok  	github.com/kaixuan/llm-gateway-go/internal/auth	0.518s
+ok  	github.com/kaixuan/llm-gateway-go/internal/capabilityscore	0.448s
+ok  	github.com/kaixuan/llm-gateway-go/internal/centeragent	0.430s
+ok  	github.com/kaixuan/llm-gateway-go/internal/clienttype	0.396s
+ok  	github.com/kaixuan/llm-gateway-go/internal/collector	0.424s
+ok  	github.com/kaixuan/llm-gateway-go/internal/ctxpool	0.457s
+ok  	github.com/kaixuan/llm-gateway-go/internal/dbrows	0.425s
+ok  	github.com/kaixuan/llm-gateway-go/internal/dbx	1.650s
+ok  	github.com/kaixuan/llm-gateway-go/internal/emptyoutcome	0.434s
+ok  	github.com/kaixuan/llm-gateway-go/internal/endpointselect	0.421s
+ok  	github.com/kaixuan/llm-gateway-go/internal/errdiscard	1.953s
+ok  	github.com/kaixuan/llm-gateway-go/internal/fsstore	7.956s
+ok  	github.com/kaixuan/llm-gateway-go/internal/handlers	0.472s
+ok  	github.com/kaixuan/llm-gateway-go/internal/hostedcallback	0.570s
+ok  	github.com/kaixuan/llm-gateway-go/internal/httpx	0.449s
+ok  	github.com/kaixuan/llm-gateway-go/internal/ir	0.678s
+?   	github.com/kaixuan/llm-gateway-go/internal/irconv	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsonbody	0.766s
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsoncol	0.511s
+ok  	github.com/kaixuan/llm-gateway-go/internal/liveactions	4.887s
+ok  	github.com/kaixuan/llm-gateway-go/internal/logging	11.984s
+ok  	github.com/kaixuan/llm-gateway-go/internal/loopback	0.483s
+ok  	github.com/kaixuan/llm-gateway-go/internal/metricguard	1.834s
+ok  	github.com/kaixuan/llm-gateway-go/internal/mockprobe	12.197s
+ok  	github.com/kaixuan/llm-gateway-go/internal/modelpolicy	0.549s
+ok  	github.com/kaixuan/llm-gateway-go/internal/modelresponse	0.427s
+ok  	github.com/kaixuan/llm-gateway-go/internal/observability	0.529s
+ok  	github.com/kaixuan/llm-gateway-go/internal/opsreporter	0.835s
+ok  	github.com/kaixuan/llm-gateway-go/internal/orchestration	0.490s
+ok  	github.com/kaixuan/llm-gateway-go/internal/outbox	1.024s
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramguard	0.487s
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramledger	0.697s
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramreg	0.750s
+ok  	github.com/kaixuan/llm-gateway-go/internal/partguard	3.243s
+?   	github.com/kaixuan/llm-gateway-go/internal/probe	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/probemode	0.913s
+ok  	github.com/kaixuan/llm-gateway-go/internal/probeutil	0.548s
+ok  	github.com/kaixuan/llm-gateway-go/internal/providercap	0.475s
+ok  	github.com/kaixuan/llm-gateway-go/internal/providers/mock	3.172s
+ok  	github.com/kaixuan/llm-gateway-go/internal/quality	0.942s
+ok  	github.com/kaixuan/llm-gateway-go/internal/reasoncap	0.403s
+ok  	github.com/kaixuan/llm-gateway-go/internal/reasonnorm	0.529s
+ok  	github.com/kaixuan/llm-gateway-go/internal/redis	0.555s
+ok  	github.com/kaixuan/llm-gateway-go/internal/reqprobe	0.539s
+ok  	github.com/kaixuan/llm-gateway-go/internal/requestarchive	2.223s
+ok  	github.com/kaixuan/llm-gateway-go/internal/requestfact	0.564s
+ok  	github.com/kaixuan/llm-gateway-go/internal/requestflow	0.403s
+ok  	github.com/kaixuan/llm-gateway-go/internal/retryowner	0.429s
+ok  	github.com/kaixuan/llm-gateway-go/internal/routeguard	0.529s
+ok  	github.com/kaixuan/llm-gateway-go/internal/routingtest	0.769s
+ok  	github.com/kaixuan/llm-gateway-go/internal/rowsguard	2.138s
+?   	github.com/kaixuan/llm-gateway-go/internal/runctx	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/safehttpclient	20.604s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror	0.523s
+ok  	github.com/kaixuan/llm-gateway-go/internal/shutdown	0.443s
+ok  	github.com/kaixuan/llm-gateway-go/internal/smartretry	1.234s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	1.237s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlreadguard	1.511s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sse	0.425s
+ok  	github.com/kaixuan/llm-gateway-go/internal/streamretry	1.200s
+ok  	github.com/kaixuan/llm-gateway-go/internal/summarystore	0.426s
+?   	github.com/kaixuan/llm-gateway-go/internal/testdb	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/internal/testschema	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/textsplit	0.460s
+ok  	github.com/kaixuan/llm-gateway-go/internal/titlestore	0.444s
+ok  	github.com/kaixuan/llm-gateway-go/internal/trace	0.902s
+ok  	github.com/kaixuan/llm-gateway-go/internal/upstreamurl	0.475s
+ok  	github.com/kaixuan/llm-gateway-go/internal/vendorstrip	0.418s
+ok  	github.com/kaixuan/llm-gateway-go/licensing	22.477s
+ok  	github.com/kaixuan/llm-gateway-go/maas	0.491s
+ok  	github.com/kaixuan/llm-gateway-go/metatools	0.517s
+ok  	github.com/kaixuan/llm-gateway-go/metrics	0.458s
+ok  	github.com/kaixuan/llm-gateway-go/middleware	0.988s
+ok  	github.com/kaixuan/llm-gateway-go/modelbinding	0.417s
+ok  	github.com/kaixuan/llm-gateway-go/modelcatalog	0.537s
+?   	github.com/kaixuan/llm-gateway-go/modeliqdata	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/modelname	0.428s
+ok  	github.com/kaixuan/llm-gateway-go/monitoring	0.414s
+ok  	github.com/kaixuan/llm-gateway-go/pending	0.605s
+ok  	github.com/kaixuan/llm-gateway-go/pkg/georesolve	0.413s
+ok  	github.com/kaixuan/llm-gateway-go/pkg/httputil	0.422s
+ok  	github.com/kaixuan/llm-gateway-go/pkg/identity	0.418s
+ok  	github.com/kaixuan/llm-gateway-go/pkg/identity/shadow	0.438s
+ok  	github.com/kaixuan/llm-gateway-go/pkg/identity/token	1.026s
+?   	github.com/kaixuan/llm-gateway-go/pkg/identity-migrate	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/pkg/logger	0.428s
+ok  	github.com/kaixuan/llm-gateway-go/pkg/monitor	5.464s
+ok  	github.com/kaixuan/llm-gateway-go/plugin-runtime	8.408s
+ok  	github.com/kaixuan/llm-gateway-go/pool	1.179s
+ok  	github.com/kaixuan/llm-gateway-go/pool/scheduler	0.610s
+ok  	github.com/kaixuan/llm-gateway-go/provider	1.181s
+ok  	github.com/kaixuan/llm-gateway-go/provider/catalog	0.849s
+ok  	github.com/kaixuan/llm-gateway-go/proxy	6.193s
+ok  	github.com/kaixuan/llm-gateway-go/query/routing	6.007s
+ok  	github.com/kaixuan/llm-gateway-go/ratelimit	8.692s
+ok  	github.com/kaixuan/llm-gateway-go/recentmodels	9.020s
+ok  	github.com/kaixuan/llm-gateway-go/registry	9.254s
+ok  	github.com/kaixuan/llm-gateway-go/resolve	9.329s
+ok  	github.com/kaixuan/llm-gateway-go/routingopt	0.754s
+?   	github.com/kaixuan/llm-gateway-go/scripts/audit-ir-e2e	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/scripts/gen-env-ref	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/scripts/govern-junk-canonical	0.940s
+ok  	github.com/kaixuan/llm-gateway-go/secret	0.630s
+ok  	github.com/kaixuan/llm-gateway-go/security/armor	0.863s
+ok  	github.com/kaixuan/llm-gateway-go/security/guardian	0.928s
+?   	github.com/kaixuan/llm-gateway-go/security/ipblocklist	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/security/sanitize	4.837s
+ok  	github.com/kaixuan/llm-gateway-go/security/sensitive	1.118s
+ok  	github.com/kaixuan/llm-gateway-go/settings	0.421s
+ok  	github.com/kaixuan/llm-gateway-go/sql/migrations/domain	0.858s
+ok  	github.com/kaixuan/llm-gateway-go/sql/migrations/startup	0.614s
+ok  	github.com/kaixuan/llm-gateway-go/sql/schema	15.907s
+ok  	github.com/kaixuan/llm-gateway-go/storage	0.640s
+ok  	github.com/kaixuan/llm-gateway-go/storage/factory	0.773s
+ok  	github.com/kaixuan/llm-gateway-go/storage/file	13.750s
+ok  	github.com/kaixuan/llm-gateway-go/storage/lite	0.693s
+ok  	github.com/kaixuan/llm-gateway-go/storage/sqlite	0.759s
+ok  	github.com/kaixuan/llm-gateway-go/taskprofile	0.976s
+ok  	github.com/kaixuan/llm-gateway-go/telemetry	0.714s
+ok  	github.com/kaixuan/llm-gateway-go/tenantops	0.599s
+ok  	github.com/kaixuan/llm-gateway-go/test/events/contract	0.572s
+ok  	github.com/kaixuan/llm-gateway-go/test/mock/asm	0.734s
+?   	github.com/kaixuan/llm-gateway-go/tests	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/business	0.672s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/data	1.250s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/safety	1.276s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/stress	0.734s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D02-protocol-adaptation/business	0.768s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D02-protocol-adaptation/safety	0.730s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D07-hot-columnar/data	1.767s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D07-hot-columnar/stress	0.826s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/business	0.881s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/data	0.806s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/safety	0.928s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/stress	0.991s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D17-code-hygiene/hygiene	6.750s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/gates	0.664s
+ok  	github.com/kaixuan/llm-gateway-go/tests/contract	0.668s
+ok  	github.com/kaixuan/llm-gateway-go/tests/e2e	0.438s
+ok  	github.com/kaixuan/llm-gateway-go/tests/integration	3.496s
+?   	github.com/kaixuan/llm-gateway-go/tests/local/gateway	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/local/mocks	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tests/regression	0.749s
+ok  	github.com/kaixuan/llm-gateway-go/tests/security_engine	14.692s
+?   	github.com/kaixuan/llm-gateway-go/tests/session_audit	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tests/session_identity_contract	0.759s
+ok  	github.com/kaixuan/llm-gateway-go/tests/session_replay	0.563s
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/client	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/gateway	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/mocks	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/scripts	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/scripts/memprofile	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/testutil	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tools/benchreport	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tools/specboost	2.492s
+?   	github.com/kaixuan/llm-gateway-go/tools/specboost/cmd/poc_benchmark	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tools/specboost/source	0.416s
+ok  	github.com/kaixuan/llm-gateway-go/upstream	17.753s
+?   	github.com/kaixuan/llm-gateway-go/vibecoding	[no test files]

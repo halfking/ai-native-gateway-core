@@ -37,6 +37,19 @@ func PluginStaticHandler(pluginsDir string) http.Handler {
 		}
 		f, err := os.Open(target)
 		if err != nil {
+			// Plugin pages such as aggregations are Vue routes, not files.
+			// Serve the SPA shell for extension-less paths so the host nav
+			// can open them; missing assets still 404.
+			if os.IsNotExist(err) && !strings.Contains(filepath.Base(rest), ".") {
+				index := filepath.Join(webDir, "index.html")
+				if idx, ierr := os.Open(index); ierr == nil {
+					defer idx.Close()
+					if st, serr := idx.Stat(); serr == nil && !st.IsDir() {
+						http.ServeContent(w, r, "index.html", st.ModTime(), idx)
+						return
+					}
+				}
+			}
 			http.NotFound(w, r)
 			return
 		}

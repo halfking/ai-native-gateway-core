@@ -38,8 +38,13 @@ func HandshakeContext(ctx context.Context, client *http.Client, base, handshakeP
 	if err := json.NewDecoder(resp.Body).Decode(&hs); err != nil {
 		return nil, fmt.Errorf("decode handshake: %w", err)
 	}
-	if hs.APIContract != SupportedAPIContract {
+	switch hs.APIContract {
+	case SupportedAPIContract, SupportedAPIContractV2:
+	default:
 		return nil, fmt.Errorf("api_contract mismatch: %q", hs.APIContract)
+	}
+	if want := expected.GatewayCompatibility.APIContract; want != "" && hs.APIContract != want {
+		return nil, fmt.Errorf("api_contract mismatch: got %q want %q", hs.APIContract, want)
 	}
 	if hs.PluginID != expected.PluginID {
 		return nil, fmt.Errorf("plugin_id mismatch: got %q want %q", hs.PluginID, expected.PluginID)
