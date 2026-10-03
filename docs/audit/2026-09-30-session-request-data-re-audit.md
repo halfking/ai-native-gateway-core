@@ -9735,3 +9735,61 @@ git -C <repo> merge --ff-only origin/main     # 前提：先确认 29 个脏文�
 `git push` 不会被它把关。** 本轮因此自己补扫了待推的 16 个文件（硬编码凭据 /
 私钥块 / DSN 里的本地 PG 密码），结果全为 0。要么显式接线
 （`git config core.hooksPath .githooks`），要么每次推送自带这层扫描。
+### §9.74.11 推送后复核：门禁**覆盖**有个真缺口，补跑 5 门全绿
+
+推送落地不等于「验过了」。回头核两件事：入站后到的那 17 个提交有没有抢修本轮 5 项，
+以及**我的门禁清单有没有覆盖它们新到的测试**。第二件是缺口。
+
+**一、本轮 5 项在最终 `origin/main` 上全部在位且形态未变**（`0b1eb2cfd` 实测）：
+
+| 项 | 期望 | 实测 |
+|---|---|---|
+| `dispatch_due_at_pairing_test.go` | 在 | 在 |
+| `soft_early_exit_shape_contract_test.go` | 在 | 在 |
+| `check-build-tags.sh` | 在 | 在 |
+| `case_when_param_type_context_test.go` | 在 | 在 |
+| `client.go` 的 `$98::text` | 2 | 2 |
+| 816 的 `RETURN;` 数（本轮每块自守形态） | 5 | 5 |
+| 817 的 `RETURN;` 数 | 4 | 4 |
+
+**二、门禁覆盖缺口**。入站 17 提交新到 8 个测试文件，其中
+`db/request_logs_view_dump_generation_test.go`（236 行，钉 `request_logs_with_current_month`
+视图 dump 的世代，并判定 `sql/objects/views/request_logs_with_current_month.sql` 是
+**v1 回退体、不是部署形态**）**正落在我 816/317 造出来的视图上**——
+而我 §9.74.9 那张门禁表**一个 `db/` 包都没跑**，四个守卫族
+（`partguard` / `routeguard` / `rowsguard` / `sqlreadguard`）也没跑。补跑：
+
+| 补跑 | rc |
+|---|---|
+| `go test ./db/`（236 行视图世代门） | 0 |
+| `go test ./internal/partguard/` | 0 |
+| `go test ./internal/routeguard/` | 0 |
+| `go test ./internal/rowsguard/` | 0 |
+| `go test ./internal/sqlreadguard/` | 0 |
+
+**本轮门禁累计 21 次，全 rc=0。**
+
+**三、与入站 17 提交的唯一文件重叠**：`admin/request_logs_stop_write_classification_test.go`
+（入站 `0129767dc` 把它的 `Evidence` 从 `FROM request_logs` 改成 `FROM request_logs_with_current_month`
+并重写了 R89-DQ 理由）。无冲突自动合并，实测**入站那侧确实进来了**：
+两父各 1736 行 → 合并后 1741 行，且含入站新增的 `R89-DQ` 串、合并结果与我这一侧
+不逐字节相同；`go test ./admin/` rc=0（78s）。
+
+> **★ 这一节里我自己把量具用错了三次，三次症状都不是「量具报错」，而是「量具给了一个
+> 看起来很正常的数」**——记下来是因为它们和前面几次是同一族：
+>
+> 1. **拿错了总体**：`HEAD~9..HEAD~1` 取到的其实是**入站 17 个提交**的文件，
+>    我又拿它去和「入站 17 个提交的文件」比，于是 97 个文件全部报「重叠」——
+>    **自比恒真**。第一次的「97 个重叠」里没有一个是真的。
+> 2. **grep 命中了散文**：`grep '//go:build'` 在那两个 admin 文件里匹配到的是
+>    **文档注释中引用的历史文本**（注释里写着「它原先带 `//go:build !integration`」），
+>    不是构建约束。判据必须是 `package` 子句之前的裸约束行——三份文件其实**都没有**约束。
+> 3. **拓扑用错**：`HEAD^2` 作用在非合并提交上（`HEAD` 是文档提交，不是那个合并），
+>    输出 0 行，看着像「入站侧把这个文件删了」。
+>
+> 再加一条**数字本身错的**：「本轮 7 提交涉及 126 个文件」——那个 diff 的起点取了
+> 第一次合并之前，于是**把第一次合并带进来的入站内容也算成了我的**。本轮** authored
+> 的准确集合是 16 个文件**（推前那次 `git diff origin/main...HEAD`，此时
+> `origin/main` 已被我合入，故 merge-base 干净），我在 §9.74.10 引用的是 16，对的。
+>
+> **「我量过了」和「我量的就是我以为的那个量」是两件事。**
