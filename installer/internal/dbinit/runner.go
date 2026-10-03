@@ -55,6 +55,24 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// archival columns/session_summaries index it adds are consumed by 690.
 			// Self-guarded information_schema checks make it directly registrable.
 			"471_session_summaries_archival.sql",
+			// 456 wired 2026-10-04 (§9.114), immediately before 467 because the
+			// two are the same family: display/summary columns the session list
+			// query projects. Without 456 the fresh install was missing
+			// sessions.summary / summary_model / summary_generated_at, so
+			// GET /api/admin/turns/sessions failed 42703 "column s.summary does
+			// not exist" — a second 500 on the same endpoint, right behind the
+			// session_title_states 42P01 that 550/551 fix.
+			//
+			// 456 was never registered because it could not pass: its
+			// post-condition block queried information_schema for
+			// table_schema='gateway' while its own ALTERs create the columns in
+			// `public`, and no `gateway` schema exists anywhere. The assertion
+			// therefore raised unconditionally. That is fixed in the migration
+			// itself (gateway -> public); 430, which 456's header names as its
+			// up-stream, is still unregistered, but the baseline already carries
+			// the three tables 456 alters, so 456 applies cleanly at this
+			// position — verified by rebuilding the gate database, not assumed.
+			"456_session_v2_display_columns.sql",
 			// 467 is baseline-gap class (wired 2026-10-04): the baseline
 			// CREATE TABLE public.sessions carries neither `title` nor
 			// `user_tags`, and no registered migration adds them — 467, which
@@ -207,6 +225,27 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"546_stats_reconciliation_diffs_unique.sql",
 			"547_session_project_attribution.sql",
 			"548_stats_reconciliation_diffs_identity.sql",
+			// session_title_states wired 2026-10-04 (§9.114). Same class as
+			// 467 one line above: a self-contained, additive, idempotent
+			// migration that was simply never registered, so the table did
+			// not exist on a fresh install. It is not cosmetic — five
+			// production files read or write it (admin/turns_sessions.go,
+			// admin/session_meta_view.go, admin/session_turns_v2.go,
+			// internal/titlestore/store.go, db/db.go), which made
+			// GET /api/admin/turns/sessions answer 500
+			// (42P01 relation "public.session_title_states" does not exist)
+			// on every fresh install, and made titlestore's conditional
+			// title commit fail. Production 252 was unaffected because it
+			// has the table, which is exactly why the defect stayed
+			// invisible.
+			//
+			// Both files are self-contained: 550 creates the table with
+			// CREATE TABLE IF NOT EXISTS and only alters that same table;
+			// 551 adds constraints and indexes on it. Neither references any
+			// object created by a later migration, so placing them here
+			// (after 548, before 552) is safe.
+			"550_session_title_states_expand.sql",
+			"551_session_title_states_indexes.sql",
 			"552_request_journey_durable_outbox.sql",
 			"553_approval_resume_claim.sql",
 			"554_goal_runs.sql",

@@ -78,6 +78,9 @@ var sessionDimReconcileMigration805 []byte
 //go:embed embeddata/startup/471_session_summaries_archival.sql
 var sessionSummariesArchivalMigration471 []byte
 
+//go:embed embeddata/startup/456_session_v2_display_columns.sql
+var sessionV2DisplayColumnsMigration456 []byte
+
 //go:embed embeddata/startup/467_sessions_title_user_tags.sql
 var sessionsTitleUserTagsMigration467 []byte
 
@@ -187,6 +190,12 @@ var statsMigration547 []byte
 
 //go:embed embeddata/startup/548_stats_reconciliation_diffs_identity.sql
 var statsMigration548 []byte
+
+//go:embed embeddata/startup/550_session_title_states_expand.sql
+var sessionTitleStatesMigration550 []byte
+
+//go:embed embeddata/startup/551_session_title_states_indexes.sql
+var sessionTitleStatesMigration551 []byte
 
 //go:embed embeddata/startup/552_request_journey_durable_outbox.sql
 var requestJourneyMigration552 []byte
@@ -743,6 +752,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/392_candidate_failure_logs_monthly_partition.sql":                       candidateFailureLogsMonthlyPartitionMigration392,
 	"startup/805_session_dim_reconcile.sql":                                          sessionDimReconcileMigration805,
 	"startup/471_session_summaries_archival.sql":                                     sessionSummariesArchivalMigration471,
+	"startup/456_session_v2_display_columns.sql":                                     sessionV2DisplayColumnsMigration456,
 	"startup/467_sessions_title_user_tags.sql":                                       sessionsTitleUserTagsMigration467,
 	"startup/487_request_logs_add_system_fingerprint.sql":                            requestLogsAddSystemFingerprintMigration487,
 	"startup/388_billing_cancellation_audit.sql":                                     billingCancellationAuditMigration388,
@@ -778,6 +788,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/546_stats_reconciliation_diffs_unique.sql":                              statsMigration546,
 	"startup/547_session_project_attribution.sql":                                    statsMigration547,
 	"startup/548_stats_reconciliation_diffs_identity.sql":                            statsMigration548,
+	"startup/550_session_title_states_expand.sql":                                    sessionTitleStatesMigration550,
+	"startup/551_session_title_states_indexes.sql":                                   sessionTitleStatesMigration551,
 	"startup/552_request_journey_durable_outbox.sql":                                 requestJourneyMigration552,
 	"startup/553_approval_resume_claim.sql":                                          approvalResumeMigration553,
 	"startup/554_goal_runs.sql":                                                      goalRunsMigration554,

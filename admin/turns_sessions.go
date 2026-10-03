@@ -177,6 +177,41 @@ func turnsSessionsListSQL() string {
 		sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"))
 }
 
+// turnsSessionsLatestPartitionSQL 返回「每个 (tenant_id, session_id) 只取最新分区行」
+// 的谓词。
+//
+// 为什么必须去重（2026-10-04 §9.112/§9.113/§9.114）：`public.sessions` 是
+// PARTITION BY RANGE (partition_date)，而 PostgreSQL 硬规则要求分区表的唯一约束
+// 必须包含分区键，所以唯一键只能是 UNIQUE (session_id, partition_date)。
+// **「一会话一行」在这个表上不成立**：跨月会话每月各有一行，252 上 413 个
+// (session_id, tenant_id) 组合多行、全部跨 partition_date。
+//
+// 口径依据：写侧 titlestore 的 CommitTitle / DeleteTitle 早就用
+// `partition_date = (SELECT MAX(partition_date) ...)` 只投影最新行
+// （internal/titlestore/store.go）。本谓词让读侧与写侧一致。
+//
+// 性能：子查询按 (tenant_id, session_id) 走 idx_sessions_session_id 的分区级子索引，
+// 不产生全表扫；谓词是普通 WHERE 而非子查询 FROM，故外层的分区裁剪与索引选择
+// 不受影响（不用 DISTINCT ON 子查询正是为此——那会成为优化屏障并阻断谓词下推）。
+func turnsSessionsLatestPartitionSQL() string {
+	return `s.partition_date = (SELECT MAX(x.partition_date) FROM public.sessions x
+		WHERE x.tenant_id = s.tenant_id AND x.session_id = s.session_id)`
+}
+
+// turnsSessionsFinalizeWhere 把跨月去重谓词与调用方过滤条件合成最终 WHERE 内容。
+//
+// 去重谓词无条件前置：这是"一会话一行"这个契约的落点，只在有过滤条件时才生效
+// 等于没有。filter 整体加括号——buildTurnsSessionWhere 内部以 AND 拼接且自带括号，
+// 但外层再包一层才不依赖那个约定（`a AND b OR c` 与 `a AND (b OR c)` 不等价）。
+func turnsSessionsFinalizeWhere(filter string) string {
+	latest := turnsSessionsLatestPartitionSQL()
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return latest
+	}
+	return latest + " AND (" + filter + ")"
+}
+
 // resolveTurnsSessionsTenant 解析 turns 列表的租户范围。
 // tenant_admin 仅看本租户；super_admin 默认全租户（EffectiveTenantIDAll），
 // 可通过 ?tenant= 显式收窄。
@@ -244,16 +279,13 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	// 构造会话 WHERE（含 project/task/search/tags/client/owner 过滤）
 	where, args, argIdx := buildTurnsSessionWhere(r, tenantID, tsFrom, tsTo, beforeTS, beforeSessionID, 1)
 
-	// 会话查询
-	queryClause := ""
-	if where != "" {
-		queryClause = "WHERE " + where
-	}
+	// 会话查询。WHERE 恒存在：turnsSessionsFinalizeWhere 无条件前置跨月去重谓词。
+	where = turnsSessionsFinalizeWhere(where)
 	query := fmt.Sprintf(`%s
-		%s
+		WHERE %s
 		ORDER BY s.updated_at DESC, s.session_id DESC
 		LIMIT $%d
-		`, turnsSessionsListSQL(), queryClause, argIdx)
+		`, turnsSessionsListSQL(), where, argIdx)
 	args = append(args, limit+1)
 
 	rows, err := h.db.Query(ctx, query, args...)
