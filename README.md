@@ -239,7 +239,7 @@ bash install.sh upgrade       # upgrade an existing instance
 bash install.sh uninstall     # --purge also drops the data
 bash install.sh activate
 bash install.sh heartbeat
-bash install.sh upgrade check --target 1.2.3
+bash install.sh upgrade --action check   # --action is required by `upgrade`
 ```
 
 Note that `doctor` and `version` are claimed by the **bootstrap** itself, not passed

@@ -2087,10 +2087,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// **正向终态判定**）：只有携带终态证据（success/failure/rate_limited）的
 	// UPDATE 才允许删活标记；中途 enrichment UPDATE（规范化后仍 in_progress）
 	// 不删。负向写法 `!requestIsStartedNotFinished` 会在 status=nil/脏值时放行
-	// clear（方向=承重事实静默丢失）；normalizeRequestStatus 虽已保证到达此处
-	// 的 status 必为四值之一（当前行为等价），正向写法把不变式「终态证据才
-	// 清账」表达在门本身，未来调用方演化时取安全侧（EmitRequestLogUpdate 已
-	// 预期存在省略终态字段的迟到 UPDATE）。
+	// clear（方向=承重事实静默丢失）；normalizeRequestStatus 只回填 nil/空、
+	// 不清洗非空脏值（「到达此处的 status 恒为四值」靠全部调用方先经
+	// normalize 且只用 RequestStatus* 常量的纪律维持，非 normalize 的保证），
+	// 当前行为严格等价。正向写法把不变式「终态证据才清账」表达在门本身，
+	// 未来调用方演化时取安全侧（EmitRequestLogUpdate 已预期存在省略终态
+	// 字段的迟到 UPDATE）。
 	if requestLogEntryTerminal(entry) {
 		clearRequestAbandonedPending(ctx, tx, entry.RequestID)
 	}

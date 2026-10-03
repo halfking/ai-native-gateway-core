@@ -17,8 +17,9 @@
 #   .\install.ps1 doctor                     # 只看本机具备哪些安装条件
 #   .\install.ps1 build                      # 只编译
 #   .\install.ps1 version                    # 只查版本与可获取的更新
-#   .\install.ps1 upgrade|uninstall|activate|doctor|heartbeat
-#                                          # 透传给 llm-gw-installer
+#   .\install.ps1 upgrade|uninstall|activate|heartbeat|completion
+#                                          # 透传给 llm-gw-installer（doctor/
+#                                          # version 是上面的内置动作，不透传）
 #
 # 参数：
 #   -Channel source|npm|binary|maintain|goinstall
@@ -36,13 +37,24 @@
 # 也不支持 && / || 短路与三元表达式。全部分支写成 if/else。
 # param 块必须是脚本的第一条语句（注释之后），否则 PowerShell 直接报语法错。
 param(
-    [ValidateSet('install', 'build', 'doctor', 'version', 'help')]
+    # $Action 显式占 Position=0：一旦任何参数声明了 Position，未声明 Position 的
+    # 参数就只能具名传入。此前 $Channel 也是位置参数，`.\install.ps1 install
+    # upgrade` 里的 upgrade 会被绑进 $Channel（switch default → Die「未知安装
+    # 方式」）；而 $Action 上的 ValidateSet 更是让 `.\install.ps1 upgrade` 在参数
+    # 绑定阶段直接报错——Windows 子命令透传整条不可达（R37 P1）。
+    [Parameter(Position = 0)]
     [string]$Action = 'install',
+    [Parameter()]
+    [ValidateSet('source', 'npm', 'binary', 'maintain', 'goinstall')]
     [string]$Channel = '',
+    [Parameter()]
     [ValidateSet('lite', 'full')]
     [string]$Mode = '',
+    [Parameter()]
     [string]$Dir = '',
+    [Parameter()]
     [switch]$Yes,
+    [Parameter()]
     [switch]$DryRun,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Rest
@@ -144,6 +156,10 @@ function Show-Doctor {
 
 # ── 交互 ────────────────────────────────────────────────────────────
 function Test-Interactive {
+    # -Yes 曾经是死参数：param 里声明了 $Yes，但这里只读 NO_INTERACTIVE/DryRun，
+    # 帮助承诺的「全部用默认值，不再提问」从未兑现（与 45fbb0c75 修掉的
+    # install.sh ASSUME_YES 同类）。
+    if ($Yes) { return $false }
     if ($env:NO_INTERACTIVE -eq '1') { return $false }
     if ($DryRun) { return $false }
     try { return [Console]::IsInputRedirected -eq $false } catch { return $false }
@@ -281,7 +297,21 @@ if ($Action -eq 'build') {
     exit 0
 }
 
-# 未识别的首个参数当作 llm-gw-installer 自己的子命令透传，保持旧用法可用。
+# 未识别的首个参数当作 llm-gw-installer 自己的子命令透传，保持旧用法可用
+# （与 install.sh 的 KNOWN_SUBCOMMANDS 同语义：放行前先对照已知集合，未知的
+# 报错点名，不塞给二进制）。
+$builtinActions = @('install', 'build', 'doctor', 'version', 'help')
+if ($builtinActions -notcontains $Action) {
+    if ($subcommands -notcontains $Action) {
+        Die "未知子命令 '$Action'。本脚本的用法：$($subcommands -join ' ') 或 install|build|doctor|version|help（-h 看细节）"
+    }
+    $local = Get-LocalBinary
+    if (-not $local) { Die '找不到 llm-gw-installer（先跑 .\install.ps1 -Channel source）' }
+    $passArgs = @($Action) + @($Rest)
+    & $local @passArgs
+    exit $LASTEXITCODE
+}
+
 if ($Action -eq 'install' -and $Rest -and $Rest.Count -gt 0 -and $subcommands -contains $Rest[0]) {
     $local = Get-LocalBinary
     if (-not $local) { Die '找不到 llm-gw-installer（先跑 .\install.ps1 -Channel source）' }

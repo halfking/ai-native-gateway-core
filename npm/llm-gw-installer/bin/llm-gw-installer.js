@@ -22,11 +22,13 @@
 //        unix    curl -fsSL "$MAINTAIN_BASE/distribution/install-scripts/install" | bash
 //        windows irm "$MAINTAIN_BASE/distribution/install-scripts/install" | iex
 //
-// Everything after the `--` is forwarded verbatim, so the Go installer's own
+// doctor / version / --help are answered by this launcher itself (see main())
+// — they are NOT forwarded, because the resolved binary may not exist yet and
+// these must work right after `npm i -g`. Every other invocation is forwarded
+// verbatim to the resolved installer binary, so the Go installer's own
 // subcommands keep working:
-//   llm-gw-installer doctor
 //   llm-gw-installer install --dir ~/llm-gateway --mode lite
-//   llm-gw-installer version
+//   llm-gw-installer upgrade --action check
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');

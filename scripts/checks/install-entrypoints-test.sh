@@ -243,13 +243,20 @@ TESTDIR="$(mktemp -d)"
 trap 'rm -rf "$TESTDIR"' EXIT
 FAKE_HOME="$TESTDIR/fakehome"
 mkdir -p "$FAKE_HOME/bin"
-cat >"$FAKE_HOME/bin/llm-gw-installer.exe" <<'FAKEEOF'
+# install.sh 的 local_binary() 只在 windows 给 BIN_SUFFIX 加 .exe，unix 找的是
+# 不带后缀的名字。假二进制名必须按平台拼——否则本门在 macOS/Linux 上必红，
+# 「只在作者的 Windows 机上绿」正是这个域要消灭的形态。
+case "$(uname -s)" in
+  Darwin*|Linux*) FAKE_BIN='llm-gw-installer' ;;
+  *)              FAKE_BIN='llm-gw-installer.exe' ;;
+esac
+cat >"$FAKE_HOME/bin/$FAKE_BIN" <<'FAKEEOF'
 #!/usr/bin/env bash
 printf 'FAKE_ARGS:'
 for a in "$@"; do printf ' [%s]' "$a"; done
 printf '\n'
 FAKEEOF
-chmod +x "$FAKE_HOME/bin/llm-gw-installer.exe"
+chmod +x "$FAKE_HOME/bin/$FAKE_BIN"
 
 PT="$(LLM_GATEWAY_HOME="$FAKE_HOME" bash "$ROOT/install.sh" upgrade --target 1.2.3 2>&1)"
 check "透传子命令退出码" "$?" "0"
@@ -270,6 +277,31 @@ contains "未知子命令报错点名" "$BAD_SUB" "frobnicate"
 # --yes 必须真的不再提问（曾经只赋值、从未被读）。
 PT4="$(LLM_GATEWAY_HOME="$FAKE_HOME" bash "$ROOT/install.sh" --yes upgrade 2>&1)"
 contains "--yes 不影响子命令透传" "$PT4" "FAKE_ARGS: [upgrade]"
+
+# ── 6.5 maintain 通道语义转发（源形状门）────────────────────────────
+# 45fbb0c75 删掉 export NO_INTERACTIVE 后，maintain 通道只剩 MAINTAIN_BASE 可传，
+# 官方脚本是 curl 管道（非 tty）→ confirm_mode 静默默认 lite：日志宣布 full、
+# 实际装 lite。本门不做网络 mock，只钉住「转发行必须把 --mode/--yes 带上」。
+MAINTAIN_FN="$(sed -n '/^install_via_maintain()/,/^}/p' "$ROOT/install.sh")"
+contains "maintain 通道转发 --mode" "$MAINTAIN_FN" '--mode "$MODE"'
+contains "maintain 通道转发 --yes" "$MAINTAIN_FN" '--yes'
+contains "maintain 转发用 bash -s --（stdin 脚本收参数）" "$MAINTAIN_FN" 'bash -s -- "$@"'
+
+# install.ps1 的 -Yes 不能是死参数（与 install.sh 的 ASSUME_YES 同族坑：
+# param 里声明、Test-Interactive 不读 = 帮助承诺的「不再提问」从未兑现）。
+PS1_SRC="$(cat "$ROOT/install.ps1")"
+contains "install.ps1 Test-Interactive 读取 \$Yes" "$PS1_SRC" 'if ($Yes) { return $false }'
+# $Action 的 ValidateSet 会让 `install.ps1 upgrade` 在参数绑定阶段直接报错，
+# 整条 Windows 子命令透传不可达（R37 P1）——$Action 参数行不得再套笼子。
+ACTION_LINE="$(printf '%s\n' "$PS1_SRC" | grep -F '[string]$Action')"
+if [ -z "$ACTION_LINE" ]; then
+  bad "install.ps1 里找不到 \$Action 参数声明（参数块被改坏了？）"
+elif printf '%s' "$ACTION_LINE" | grep -q 'ValidateSet'; then
+  bad "install.ps1 的 \$Action 又被 ValidateSet 拴住了——透传子命令会绑定报错"
+else
+  ok "install.ps1 的 \$Action 无 ValidateSet（运行时校验，透传可达）"
+fi
+contains "install.ps1 Action 占 Position=0" "$PS1_SRC" '[Parameter(Position = 0)]'
 
 # ── 6. doctor 真的能跑（仅在 Windows 上有 PowerShell 时）──────────────
 if [[ "${OS:-}" == "Windows_NT" ]] && command -v powershell >/dev/null 2>&1; then

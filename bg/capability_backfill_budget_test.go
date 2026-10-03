@@ -344,13 +344,43 @@ func TestBudget_IsSeparateFromAttemptLedger(t *testing.T) {
 func TestBudget_ProbeTimestampsMaxIsAboveTheCeiling(t *testing.T) {
 	if capabilityBackfillProbeTimestampsMax <= capabilityBackfillDefaultDailyBudget {
 		t.Fatalf("台账上限 %d 必须大于默认预算 %d，否则台账会比预算先触顶，"+
-			"重置后预算实际失效。",
+			"截断后预算实际失效。",
 			capabilityBackfillProbeTimestampsMax, capabilityBackfillDefaultDailyBudget)
 	}
 	// 环境变量名必须是合法 shell 标识符，否则运维按文档 export 出来会静默无效。
 	if !envNamePattern.MatchString(capabilityBackfillDailyBudgetEnv) {
 		t.Fatalf("预算环境变量名 %q 不合法：运维照文档 export 会无效且无任何提示。",
 			capabilityBackfillDailyBudgetEnv)
+	}
+}
+
+// TestBudget_LedgerCapScalesWithConfiguredBudget pins the R37-P2 regression:
+// the ledger cap must scale with the configured budget. With the cap pinned at
+// default×2 (4800) while the env asks for 5000, the ledger hits the cap BEFORE
+// the budget does, gets reset, and the gate silently fails open — 5001st,
+// 5002nd, … probes all pass, only a Warn scrolls by.
+func TestBudget_LedgerCapScalesWithConfiguredBudget(t *testing.T) {
+	t.Setenv(capabilityBackfillDailyBudgetEnv, "5000")
+	b := NewCapabilityBackfill(nil, nil, nil, nil)
+	if b.dailyBudget != 5000 {
+		t.Fatalf("budget=%d, want 5000", b.dailyBudget)
+	}
+	if b.probeLedgerCap < b.dailyBudget*2 {
+		t.Fatalf("台账上限 %d 必须 ≥ 预算×2=%d：cap < budget 时台账先于预算触顶，"+
+			"截断后剩余额度回满，闸门静默失效（fail-open）。",
+			b.probeLedgerCap, b.dailyBudget*2)
+	}
+	now := time.Now()
+	for i := 0; i < b.dailyBudget; i++ {
+		if !b.chargeProbe(now) {
+			t.Fatalf("第 %d 次出网被拒，但预算是 %d（台账不应先于预算触顶）",
+				i+1, b.dailyBudget)
+		}
+	}
+	if b.chargeProbe(now) {
+		t.Fatalf("第 %d 次应被预算拒绝：预算 %d 必须真实封顶。"+
+			"（修复前形态：cap=4800 在第 4801 次截断台账 → 剩余回满 → 永远到不了 5000）",
+			b.dailyBudget+1, b.dailyBudget)
 	}
 }
 

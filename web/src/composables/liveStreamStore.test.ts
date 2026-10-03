@@ -716,12 +716,14 @@ describe('liveStreamStore visibility listener lifecycle', () => {
 //            ⇒ 判据能区分「兑现了恢复」与「只是把 flag 留着不动」。
 //
 //   变异 B —— 无条件清债（`if (true || missedWhileHidden)`，任何情况下都复位）
-//              本块：**31 全绿**  ❌ 抓不到
-//            ⇒ **负面结果，如实记录**：本块**抓不到**「无订阅者时静默清债」
-//              这一形态。原因见下「已知不覆盖」——该场景在生产里 handler
-//              已被卸载（closeConnection → removeVisibilityListener），
-//              分支根本不执行，所以这个变异在真实时序里**不可观测**。
-//              不要因为本块全绿就认为那一族已经守住。
+//            落地当轮：**31 全绿**  ❌ 抓不到；2026-10-03 R37 复审订正根因并收口。
+//              当轮的负面结果如实，但归因错了：不是「refCount=0 时 listener 已
+//              卸载、分支不可观测」——refCount=1 且无债的场景（负控制用例 3）
+//              里分支**会**执行，只是当时的负控制只断言 flag，而无条件复位与
+//              守卫复位两种实现的 flag 断言同样全绿——又是「判据不在被测性质
+//              上」（与 48f810117 归因的那族同病）。R37 给 openConnection 加了
+//              测试计数，负控制改为同时断言「可见转换前后 opens 不变」，变异 B
+//              现在判红。真正仍不可观测的是下述 refCount === 0 形态。
 //
 // 已知不覆盖：`refCount === 0` 时发生的那次 hidden→visible 转换。
 // 那条路径上 `closeConnection()` 已把 listener 摘掉，没有任何代码在跑，
@@ -764,6 +766,7 @@ describe('liveStreamStore missed-while-hidden recovery intent', () => {
     // mounted. The handler must reconnect and settle the debt.
     const release = __testing.acquireForTest()
     expect(__testing.refCount()).toBe(1)
+    const opensBefore = __testing.openConnectionTotal()
 
     __testing.fireVisibilityChange(true)
     __testing.dropFrameWhileHidden()
@@ -771,6 +774,9 @@ describe('liveStreamStore missed-while-hidden recovery intent', () => {
 
     __testing.fireVisibilityChange(false)
     expect(__testing.missedWhileHidden()).toBe(false)
+    // 「兑现了债务」必须以真重连为证：flag 复位 alone 两种实现都做得到
+    //（兑现代价连 vs 白白复位），只有 openConnection 真被调过才算前者。
+    expect(__testing.openConnectionTotal()).toBe(opensBefore + 1)
 
     release()
   })
@@ -780,12 +786,18 @@ describe('liveStreamStore missed-while-hidden recovery intent', () => {
     // every hidden→visible transition — ignoring the debt entirely — would
     // satisfy the test above just as well as one that honours it.
     const release = __testing.acquireForTest()
+    const opensBefore = __testing.openConnectionTotal()
 
     __testing.fireVisibilityChange(true)
     expect(__testing.missedWhileHidden()).toBe(false)
 
     __testing.fireVisibilityChange(false)
     expect(__testing.missedWhileHidden()).toBe(false)
+    // 「没有重连」必须被直接观测，而不是由 flag=false 顺带推出：无条件重连
+    // 的实现在上面两条 flag 断言下同样全绿——判据不在被测性质上（同
+    // 48f810117 归因的那一族）。openConnectionTotal 在可见转换前后不变，
+    // 无条件重连（变异 B）才第一次判红。
+    expect(__testing.openConnectionTotal()).toBe(opensBefore)
 
     release()
   })
