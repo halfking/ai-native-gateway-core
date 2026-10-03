@@ -67,7 +67,6 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// session_list.go / usage.go / session_online.go 已在 R48 §5 双腿化为
 	// request_logs_with_current_month 视图（view 已在白名单 LEGIT），对应
 	// 白名单条目按 self-cleaning 守卫自动清除（TestSQLReadGuardWhitelistCurrent）。
-	"admin/memora_handlers.go":                 "DEBT(R47): 裸母表",
 	"admin/quality_correlations.go":            "DEBT(R47): 裸母表",
 	"admin/provider_models.go":                 "DEBT(R47): 裸母表",
 	"admin/session_sanitize_matches.go":        "DEBT(R47): 裸母表",
@@ -215,7 +214,6 @@ func TestNoBareRequestLogsMotherReads(t *testing.T) {
 // ⇒ 「删一条加一条」也堵得住：那是新增，会红。
 var debtBaseline = map[string]bool{
 	// Go 读面
-	"admin/memora_handlers.go":                        true,
 	"admin/quality_correlations.go":                   true,
 	"admin/provider_models.go":                        true,
 	"admin/session_sanitize_matches.go":               true,
