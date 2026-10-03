@@ -1,5 +1,6 @@
 import { req } from './_core'
 import type { UserInfo } from './_core'
+import type { DegradationMarker } from '../composables/useDegradationMarker'
 
 // admin.ts — v6.0 audit T12 (2026-06-22)
 // Super-admin surfaces: user CRUD, audit log, tenant management +
@@ -227,7 +228,13 @@ export function getUserProfileList(params?: { limit?: number; offset?: number; s
   if (params?.limit) q.set('limit', String(params.limit))
   if (params?.offset) q.set('offset', String(params.offset))
   if (params?.search) q.set('search', params.search)
-  return req<{ users: UserProfileSummary[]; total: number; limit: number; offset: number }>('GET', `/api/admin/session-analytics/users?${q}`)
+  // degraded / degraded_reason（2026-10-03）：后端在「schema 落后于代码」时
+  // 返回 200 + 空列表（session_owners 属可选聚合表，本地库根本没建）。
+  // 修复前该响应用户看到的和「真的没有用户」一模一样 —— 页面无从区分。
+  return req<{ users: UserProfileSummary[]; total: number; limit: number; offset: number } & DegradationMarker>(
+    'GET',
+    `/api/admin/session-analytics/users?${q}`,
+  )
 }
 
 export function getUserProfile(owner: string, days = 30) {

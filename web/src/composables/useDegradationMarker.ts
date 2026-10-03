@@ -24,6 +24,16 @@ export interface DegradationPayload {
   degraded_reason?: string
 }
 
+/**
+ * DegradationMarker 是后端在**每一个**会降级的响应上恒发的契约字段。
+ * 放在本模块而不是某个 api 文件里：api/admin.ts 与 api/usage.ts 都要用它，
+ * 契约的归属地应当是最底层的那个模块，否则每加一个降级端点就要复制一份。
+ */
+export interface DegradationMarker {
+  degraded: boolean
+  degraded_reason?: string
+}
+
 export interface DegradationState {
   /** 是否有任一数据源处于降级态。 */
   active: boolean
