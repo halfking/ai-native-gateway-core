@@ -1,0 +1,16 @@
+export PGPAGER=cat
+export TERM=dumb
+PSQL="psql -U llm_gateway -d llm_gateway -A -F| -t -P pager=off -v ON_ERROR_STOP=0"
+echo "===== BAK TABLE LIST (name | rows_exact | size) ====="
+$PSQL -c "SELECT c.relname||' | approx_rows='||greatest(c.reltuples,0)::bigint||' | size='||pg_size_pretty(pg_total_relation_size(c.oid))||' | has_idx='||(pg_indexes_size(c.oid)>0)::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relname LIKE 'bak\_%' ORDER BY pg_total_relation_size(c.oid) DESC;"
+echo "===== EMPTY usage_facts PARTITIONS ====="
+$PSQL -c "SELECT c.relname||' | approx_rows='||greatest(c.reltuples,0)::bigint||' | size='||pg_size_pretty(pg_total_relation_size(c.oid))||' | idx='||pg_size_pretty(pg_indexes_size(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relname LIKE 'usage_facts%' ORDER BY c.relname;"
+echo "===== other empty (0-row) partitions across all parents ====="
+$PSQL -c "SELECT c.relname||' | parent='||p.relname||' | size='||pg_size_pretty(pg_total_relation_size(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_inherits i ON i.inhrelid=c.oid JOIN pg_class p ON p.oid=i.inhparent WHERE n.nspname='public' AND c.relkind='r' AND c.reltuples=0 AND pg_total_relation_size(c.oid)>1024*1024 ORDER BY pg_total_relation_size(c.oid) DESC;"
+echo "===== do any bak_* tables have FK dependents? ====="
+$PSQL -c "SELECT DISTINCT conrelid::regclass::text||' -> '||confrelid::regclass::text FROM pg_constraint WHERE contype='f' AND (conrelid::regclass::text LIKE 'bak\_%' OR confrelid::regclass::text LIKE 'bak\_%');"
+echo "===== views/matviews depending on bak_* ====="
+$PSQL -c "SELECT DISTINCT c.relname||' ('||c.relkind::text||')' FROM pg_depend d JOIN pg_rewrite r ON r.oid=d.objid JOIN pg_class c ON c.oid=r.ev_class WHERE d.refobjid IN (SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname LIKE 'bak\_%') AND c.relkind IN ('v','m');"
+echo "===== replication slots / publications referencing these ====="
+$PSQL -c "SELECT count(*) AS slots FROM pg_replication_slots;"
+$PSQL -c "SELECT count(*) AS publications FROM pg_publication;"

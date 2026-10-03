@@ -100,7 +100,11 @@ func RoutingViewFiles(root string) ([]string, error) {
 			if relErr != nil {
 				return relErr
 			}
-			files = append(files, rel)
+			// ToSlash so a caller comparing against a forward-slash constant
+			// (MigrationsDir) can match. Native separators made the coverage
+			// test count zero migrations on Windows while the scan itself
+			// worked fine — a loud guard reporting a false alarm.
+			files = append(files, filepath.ToSlash(rel))
 		}
 		return nil
 	})

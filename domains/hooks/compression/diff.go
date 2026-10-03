@@ -114,11 +114,14 @@ func BuildOutboundMessages(
 
 	// ── Establish one unambiguous ordered lineage anchor ─────────────────
 	// Uncompressed sessions require the complete prior sequence to be the
-	// client's prefix. Compressed sessions retain gateway-only summary markers;
-	// for those, match the non-summary outbound suffix against one unique client
-	// range. Ambiguous duplicate occurrences fail open rather than dropping a
+	// client's prefix. Compressed sessions retain gateway-only summary content
+	// (stamped [smm_v1:] markers, unstamped rebuilder dynCtx messages, or the
+	// Anthropic top-level system field); for those, the retained layout is the
+	// two-segment [first-user head][contiguous recent tail], matched against a
+	// unique client range. Ambiguous matches fail open rather than dropping a
 	// client message by choosing the wrong anchor.
-	anchorEnd, ok := findDeltaAnchor(clientMsgs, lastMsgs)
+	anchorEnd, ok := findDeltaAnchor(clientMsgs, lastMsgs,
+		protocol == "anthropic-messages" && hasAnthropicSystemSummary(lastOutboundBody))
 	if !ok {
 		return newSessionResult(clientBody, clientMsgs), nil
 	}
@@ -192,11 +195,30 @@ func newSessionResult(body []byte, messages []rawMsg) *OutboundResult {
 	}
 }
 
-func findDeltaAnchor(clientMsgs, lastMsgs []rawMsg) (int, bool) {
+// findDeltaAnchor locates the exclusive end index of the client-history range
+// that the last outbound body already carries.
+//
+// Uncompressed outbound (no gateway summary anywhere): the whole prior
+// sequence must be the client's exact prefix.
+//
+// Compressed outbound: the rebuilders retain a two-segment layout — the
+// B-track first user (plus any preceding reminders) and a contiguous recent
+// tail, separated by the summarized gap (rebuilder_anthropic.go /
+// rebuilder_openai.go splitSystemAndTail). That layout is never a contiguous
+// subsequence of the client history, so a single contiguous match cannot
+// anchor (the structural fail-open pinned by anthropic_failopen_repro_test.go
+// before the two-segment fix). Instead every head/tail split point is tried:
+// the head must equal the client prefix and the tail must occur exactly once
+// from there on. All valid splits provably agree on the anchor end (a longer
+// head is the shorter head extended by messages that match the client prefix,
+// which shifts the unique tail occurrence by exactly the head growth), and a
+// tail that occurs more than once refuses to anchor — the same conservative
+// contract as a duplicated contiguous suffix.
+func findDeltaAnchor(clientMsgs, lastMsgs []rawMsg, summaryInSystem bool) (int, bool) {
 	lastComparable := make([]rawMsg, 0, len(lastMsgs))
-	hasGatewaySummary := false
+	hasGatewaySummary := summaryInSystem
 	for _, message := range lastMsgs {
-		if isSummaryMarkerMsg(message) {
+		if isSummaryMarkerMsg(message) || isUnmarkedGatewaySummaryMsg(message) {
 			hasGatewaySummary = true
 			continue
 		}
@@ -212,18 +234,100 @@ func findDeltaAnchor(clientMsgs, lastMsgs []rawMsg) (int, bool) {
 		}
 		return len(lastComparable), true
 	}
+	return findTwoSegmentAnchor(clientMsgs, lastComparable)
+}
 
-	// A compressed outbound contains only a retained suffix from the original
-	// client history. Require the whole retained suffix to occur exactly once.
-	matches := 0
-	end := 0
-	for start := 0; start+len(lastComparable) <= len(clientMsgs); start++ {
-		if sameMessageSequence(clientMsgs[start:start+len(lastComparable)], lastComparable) {
-			matches++
-			end = start + len(lastComparable)
+// findTwoSegmentAnchor matches comparable[:split] against the client prefix
+// and comparable[split:] against one unique client run for every split point.
+// Message identity is established once via msgHash, so the scan is string
+// equality; an unhashable (unparseable) message on either side refuses to
+// anchor rather than guessing around the gap in identity.
+func findTwoSegmentAnchor(clientMsgs, lastComparable []rawMsg) (int, bool) {
+	clientHashes := make([]string, len(clientMsgs))
+	for i, m := range clientMsgs {
+		clientHashes[i] = msgHash(m)
+		if clientHashes[i] == "" {
+			return 0, false
 		}
 	}
-	return end, matches == 1
+	comparableHashes := make([]string, len(lastComparable))
+	for i, m := range lastComparable {
+		comparableHashes[i] = msgHash(m)
+		if comparableHashes[i] == "" {
+			return 0, false
+		}
+	}
+
+	for split := 0; split < len(comparableHashes); split++ {
+		if split > len(clientHashes) || !equalHashStrings(comparableHashes[:split], clientHashes[:split]) {
+			continue
+		}
+		tail := comparableHashes[split:]
+		matches := 0
+		end := 0
+		for start := split; start+len(tail) <= len(clientHashes); start++ {
+			if equalHashStrings(tail, clientHashes[start:start+len(tail)]) {
+				matches++
+				if matches > 1 {
+					break
+				}
+				end = start + len(tail)
+			}
+		}
+		if matches != 1 {
+			continue
+		}
+		// Valid splits cannot disagree (see findDeltaAnchor): return the first.
+		return end, true
+	}
+	return 0, false
+}
+
+func equalHashStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// isUnmarkedGatewaySummaryMsg reports whether a message is a gateway-built
+// summary that injectSummaryMarker never stamped with [smm_v1:] — the OpenAI
+// rebuilder's dynCtx message (CompressionSummaryPrefix) and the smart-window
+// summary prefix generation. Such messages never exist in a client-authored
+// history, so they are excluded from lineage matching exactly like stamped
+// markers; leaving them in the comparable set would force the strict prefix
+// branch and fail every unstamped compressed body open.
+func isUnmarkedGatewaySummaryMsg(raw rawMsg) bool {
+	if isSummaryMarkerMsg(raw) {
+		return false
+	}
+	var m struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	var s string
+	if json.Unmarshal(m.Content, &s) == nil {
+		return isGatewaySummaryContent(s)
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(m.Content, &parts) == nil {
+		for _, p := range parts {
+			if p.Type == "text" {
+				return isGatewaySummaryContent(p.Text)
+			}
+		}
+	}
+	return false
 }
 
 func sameMessageSequence(a, b []rawMsg) bool {
