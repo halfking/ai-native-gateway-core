@@ -80,9 +80,14 @@ type costTrendPlan struct {
 //	B. 继续报错让 IsSchemaBehindError 降级 —— 得到 200 + 全 0，而 intent 是
 //	   UsageCost.vue 下拉框里的可选项，用户一点就中招。
 //
-// 采用：这两个维度以 request_logs 为基表。它按月分区、自带 ts 剪枝，30 天
-// 窗口实测 2.4s（work_type）/ 4.1s（intent，含 session_summaries 连接）。
-// 两表 cost 口径经核对一致（同窗口均 150.15 美元），故换基表不引入新的计费口径。
+// 采用：这两个维度以 request_logs_with_current_month 双腿视图为基表（39 轮
+// 2026-10-03 改，原为裸 request_logs）。裸母表读不到 hot 腿里尚未 promote 的
+// 最近 ≤8h 行——与 memora_context（206 号）/probe_history（204 号）同族的
+// 「近期流量盲区」。换视图后两条腿都吃同一条 ts 谓词，月分区剪枝不变
+// （204 号已验证同形换法）；视图列含 work_type / gw_session_id（两腿均有）。
+// 精度取舍：30 天窗口实测以裸母表为 2.4s（work_type）/ 4.1s（intent，含
+// session_summaries 连接），双腿视图只多扫一张 ≤8h 的 hot 小表。两表 cost
+// 口径经核对一致（同窗口均 150.15 美元），故换基表不引入新的计费口径。
 func planCostTrend(groupBy string) (costTrendPlan, bool) {
 	// 列前缀写死而非从别名拼：ul. = 计费宽表，rl. = 请求表，
 	// 一眼可辨某个维度读的是哪张表。
@@ -112,7 +117,7 @@ func planCostTrend(groupBy string) (costTrendPlan, bool) {
 	}
 	if e, ok := requestSide[groupBy]; ok {
 		return costTrendPlan{
-			GroupBy: groupBy, BaseTable: "request_logs rl",
+			GroupBy: groupBy, BaseTable: "request_logs_with_current_month rl",
 			BaseAlias: "rl", GroupColumn: e.groupColumn, JoinClause: e.joinClause,
 			RequestSide: true,
 		}, true

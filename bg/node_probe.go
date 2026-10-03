@@ -3235,7 +3235,9 @@ func directProbeEndpoint(baseURL, protocol string) string {
 	return upstreamurl.Build(baseURL, probeDescriptorFor(protocol).ChatProbeEndpoint)
 }
 
-// probeTinyWAVB64 是 400ms 8kHz 8bit 单声道静音 WAV 的 base64（约 560B）。
+// probeTinyWAVB64 是 400ms 8kHz 8bit 单声道静音 WAV 的 base64：44 字节头 +
+// 3200 字节数据 = 3244 字节，base64 后约 4.3KB（39 轮订正：原注释「约
+// 560B」算错了一个数量级——那只是 WAV 头的大小）。
 // 静音而非单音：部分供应商对纯音/静音会走不同的解码路径，静音是最不
 // 触发内容侧分支的形态；探针只判定「端点收不收音频」，不判定转写质量。
 var probeTinyWAVB64 = func() string {

@@ -42,3 +42,23 @@ UPDATE models_canonical
  WHERE modality = 'text'
    AND status = 'active'
    AND canonical_name ~ 'whisper';
+
+-- transcribe 家族（39 轮 2026-10-03 补，InferModality 的 -transcri 包含规则
+-- 与 gpt-4o-transcribe 前缀规则对应存量）。谓词此前漏了这一族：新规则
+-- 只影响新播种行，存量 text 行不会被自愈。
+UPDATE models_canonical
+   SET modality = 'audio',
+       updated_at = now()
+ WHERE modality = 'text'
+   AND status = 'active'
+   AND canonical_name ~ '-transcri';
+
+-- vision 错标定向纠正（39 轮补）：旧规则下 gpt-4o-transcribe 被 gpt-4o-
+-- 前缀抢先标成 vision（不是 text），上面三条只升 text 行 ⇒ 这批行永远
+-- 停在 vision、被候选过滤排除。白名单式定向纠正，不碰真 vision 模型。
+UPDATE models_canonical
+   SET modality = 'audio',
+       updated_at = now()
+ WHERE modality = 'vision'
+   AND status = 'active'
+   AND canonical_name ~ '^(gpt-4o(-mini)?|gpt)-transcribe';

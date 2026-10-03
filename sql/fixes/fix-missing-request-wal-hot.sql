@@ -106,7 +106,13 @@ CREATE TABLE IF NOT EXISTS request_wal_hot (
     error text,
     compression_strategy character varying(50),
     compression_meta jsonb,
-    CONSTRAINT request_wal_hot_pkey PRIMARY KEY (request_id, created_at)
+    -- 39 轮（2026-10-03 12h 审计）：主键从 (request_id, created_at) 对齐到
+    -- 权威定义 (request_id)（sql/schema/01-schema.sql:21925 ALTER 形式）。
+    -- 运行时 request_logger.go upsertInitial 的 ON CONFLICT (request_id)
+    -- 只接受 request_id 单列唯一约束；按旧定义建出的表会让每次写入都以
+    -- "no unique or exclusion constraint matching the ON CONFLICT
+    -- specification" 失败。213 号已登记此分叉，本行收口。
+    CONSTRAINT request_wal_hot_pkey PRIMARY KEY (request_id)
 ) WITH (fillfactor=90,
         autovacuum_enabled=true,
         autovacuum_vacuum_scale_factor=0.05,

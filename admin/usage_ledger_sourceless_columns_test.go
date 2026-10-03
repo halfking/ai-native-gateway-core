@@ -103,8 +103,10 @@ func TestPlanCostTrend_DimensionProvenance(t *testing.T) {
 		"model":     {"usage_ledger_with_current_month ul", "ul", false},
 		"provider":  {"usage_ledger_with_current_month ul", "ul", false},
 		"api_key":   {"usage_ledger_with_current_month ul", "ul", false},
-		"work_type": {"request_logs rl", "rl", true},
-		"intent":    {"request_logs rl", "rl", true},
+		// 39 轮（2026-10-03）：request 侧基表从裸 request_logs 换成双腿视图
+		// —— 裸母表读不到 hot 腿未 promote 的最近 ≤8h（204/206 号同族盲区）。
+		"work_type": {"request_logs_with_current_month rl", "rl", true},
+		"intent":    {"request_logs_with_current_month rl", "rl", true},
 	}
 
 	for dim, exp := range want {
