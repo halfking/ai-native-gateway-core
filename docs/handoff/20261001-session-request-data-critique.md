@@ -5322,3 +5322,129 @@ func shouldClaimFinalSuccess(entry) bool {
 > 而在**v1 独有的唯一索引**里。
 > ⇒ 与 §9.92 / §9.96 同族：**先读，再断言**。
 > 尤其是「难不难」这种判断——它最容易被**想象**替代**阅读**。
+
+---
+
+## 第五十一轮（§9.100）：★把 §9.98 的「只证明链路」升级为「真库证明落库」—— 顺手查出两个此前无人发现的缺陷
+
+上一轮我把 §9.98 的三道门当成「阻塞 #1 已修」，只差一个库验效果。
+本轮把库的问题解决了（**不需要任何新授权**），然后真库一跑就炸出两件事。
+
+### 一、缺的是「可丢弃库」，不是「生产写权限」
+
+我上一轮把这件事当生产授权问题处理，方向就错了。
+仓内对真库测试的约定本来就写在注释里：`TEST_PG_URL` / `TEST_DB_URL`
+**必须指向一次性可丢弃库**（`migration_711_test.go`、`hook_integration_test.go`）。
+
+本机现成有：`llm-gateway-pg-amd64`（`registry.kxpms.cn/kx-citus-pg17:13.3.0-vector-amd64`，
+127.0.0.1:55432，superuser `llm_gateway`，初始 0 张表）。
+⚠ 必须用 `kx-citus-pg17` 系镜像，裸 `postgres:17-alpine` 会让 `~/kaixuan/postgres`
+的 citus 残留把任何 DROP POLICY/INDEX/CONSTRAINT 打崩。
+
+### 二、缺陷 A：全新安装在 01-schema.sql 就断（真门 FAIL → 修后 PASS）
+
+用仓内自己的 opt-in 真门裁决（**不自己复刻安装流程**）：
+`cd installer && TEST_INSTALLER_FRESH_DB_URL=… go test -tags=integration -run TestFreshInstallerSessionTurnsHotBootstrap ./cmd/llm-gw-installer/`
+
+- 修前 `FAIL`：01-schema.sql 报 `relation "public.candidate_failure_logs_hot" does not exist`
+- 修后 `ok … 61.382s`
+
+**根因**：`01-schema.sql` 是从**已跑过迁移的生产库**重新 dump 的，把
+`v_adaptive_probe_targets` 子查询改指 `_hot`；而该表由 `392` 创建，
+`392` 在 `StartupFiles[1]`——**排在基线之后**。基线只建父表（`:5913`）。
+`814` 只有 `CREATE OR REPLACE`，视图缺席时也建不出来 ⇒ **依赖环，全新安装无解**。
+引入提交 `199c65747`。
+
+**修法**：基线视图子查询改回读自建父表，由 `814` 在 `392` 之后改指 `_hot`。
+三份 `01-schema.sql` 副本（`deploy/sql/schemas/baseline/`、embeddata、`sql/schema/`）
+md5 相同，**同改后仍相同**。
+
+### 三、缺陷 B：★origin/main 的 session turn 写入 SQL 连解析都过不去（潜伏部署阻断）
+
+```
+write turn: insert turn: ERROR: inconsistent types deduced for parameter $3 (42P08)
+DETAIL: text versus character varying
+```
+
+**差分对照**（不猜归因）：在 §9.98 之前的 `383ef8d03` 上跑**既有的**集成测试，
+**同库同错** ⇒ 非 §9.98 引入；`turn_writer.go` 两树 diff 为空 ⇒ 对照干净。
+
+**机制**：`$3`(tenant_id) 用两次——INSERT 目标列 `varchar(255)` 推成 varchar；
+反连接 `tenant_id = $3` 经算子决议落到 `texteq(text,text)`（string 类 preferred type
+是 `text`）推成 text。**pgx 不发参数 OID**，全靠服务端推导 ⇒ 同一 $3 两种类型，Parse 即拒。
+
+**不是全新安装的假象**：252 三处 `tenant_id` 同为 `varchar(255)`，
+在 252 上 `PREPARE` 同一段 SQL **报完全相同的错**。
+
+**为什么今天还写得动**：在跑的 2026-10-01 构建**不含这段反连接**
+（`grep -a 'NOT EXISTS (SELECT 1 FROM public.session_turns_with_current_month'` 命中 0），
+且 `session_turns_hot` 最新 ts 就在查询当时，生产日志该错计数 0。
+⇒ **潜伏部署阻断**：下次部署 origin/main 会丢掉**全部** session turn 写入。
+
+**修法**：`WHERE tenant_id = $3::varchar`。修后 `PREPARE` 在本地库与 252 **双双通过**。
+
+### 四、§9.98 的结论再收一次：写入修好了，**读取面根本没开始迁**
+
+新真库门第一次跑撞 `column "search_text" does not exist (42703)`：
+`session_turns_with_current_month` 只投影 **55 列，不含 `search_text`**。
+而检索**今天仍在 v1**（`admin/logs.go:185/:537`，`rl` = `request_logs_hot`）。
+
+⇒ **阻塞 #1 只修了一半**。v1 一退役，检索即断。读取侧迁移**尚未开始**。
+
+### 五、新增真库门（opt-in `TEST_DB_URL`）
+
+`internal/sessionv2mirror/search_text_realdb_integration_test.go`
+写入 → 从 `session_turns_hot` 读回 → 断言 9 个特征 token 全在列 + 与 v1 纯函数逐字节相同。
+
+**刻意避开恒等式**：`stored == *telemetry.SearchText(entry)` 在**两侧都空时恒真**，
+而那正是修复前的世界。故先钉住纯函数产出真实内容，再逐 token 断言。
+
+**变异 2/2**：
+
+| 变异 | 红的断言 |
+|---|---|
+| 断 `s1a_fields.go` 映射 | `mirror-side mapping must reproduce the v1 pure function byte for byte` |
+| 映射正确、writer 写回 `""` | `session_turns_hot.search_text is empty` |
+
+第二个证明**落库断言独立于映射断言**（反空转成立）。
+
+**断言面不含 `session_turns` 父表**：镜像只写 hot，父表由异步 promotion 搬运
+（252 父表比 hot 落后 8 小时）——断言父表等于把周期任务编码成 §9.98 的期望。
+视图**只 `t.Logf` 不断言**：给缺口加断言＝把缺陷钉成预期行为。
+
+### 教训
+
+> **「缺一个库」和「缺一份授权」是两件事。** 仓内注释早就写明真库测试要指向
+> 可丢弃库——**先读约定，再提需求**。我为这个等了一整轮。
+>
+> **门只证明它覆盖的那一层。** §9.98 三道门全绿，真库一跑同时爆出
+> 「全新安装断链」和「写入 SQL 不可解析」两个它们**结构上碰不到**的缺陷。
+> §9.59 恒等式恒真那条教训第三次复现：**观测量全来自被检验对象内部时，
+> 门验不了那个对象**。
+>
+> **潜伏缺陷比现网故障更危险。** 42P08 今天不发作，恰恰因为在跑的构建不含那段 SQL；
+> 「生产写入正常」曾让我差点把它读成「我的复现有问题」。
+>
+> **副本纪律**：三份 `01-schema.sql` md5 相同，只改一份＝静默分叉。
+> 同族的还有：`turn_writer.go` 在 origin/main 上**本来就不是 gofmt 干净的**，
+> `gofmt -w` 会顺手重排 100 行——P0 提交不该混入别人的格式债，我还原了。
+
+### 下一轮从哪开始（不要重做）
+
+1. **可丢弃库已就绪**：`postgres://llm_gateway:***@127.0.0.1:55432/gw_fresh_test`
+   （schema 由修好的 installer e2e 灌好，442 张表，会话族齐全）。
+2. **两条真库门的复现命令**见上面各节。
+3. **仍未收口**（与上轮相同，未因本轮而消解）：
+   - 阻塞 #1 **读取侧**：`session_turns_with_current_month` 要不要加 `search_text`
+     + `admin/logs.go` 的 `rl` 何时从 v1 切到会话族（**需拍板**）。
+   - 阻塞 #2 `is_final_success`：schema + 写链成对变更（**需拍板**）。
+   - 等价口径 (i)直接 SQL /(ii)能力等价 /(iii)兜底顺序（**需裁决**）。
+   - `session_v2_mirror_backlog_pending` 告警（252 恒为 1，加即永久 firing）。
+   - A 群 6 条 / B 群 10 条 / `backlog_pending=1`——五轮未收敛。
+   - auto-route 自 2026-09-15 不产出 selection 的原因。
+   - 内部 actor 名单 (a)(b)(c)、cohort 修正、§9.49.8 扩档、§9.48 口径、
+     「开始了却没结束」要不要留落点。
+4. **本轮新发现的待办**：`01-schema.sql` 副本无同步门（三份靠人工保持一致）；
+   Makefile 无 gofmt 门（故 `turn_writer.go` 的格式债能长期存在）。
+5. **部署提醒**：`a87258952` 未部署到任何环境。部署前确认 §9.100.3 的 cast 已在
+   该构建里，否则**全部 session turn 写入丢失**。
