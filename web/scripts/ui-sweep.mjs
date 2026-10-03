@@ -30,6 +30,16 @@
  *   - 两个 Playwright 打同一个 dev server + 同一个后端，互相挤。
  * 这类干扰出来的失败与产品缺陷在报告上长得一模一样（都是一条 console 错误），
  * 所以**发现孤立的单页 4xx 时，先在无干扰条件下单独复跑该页再下结论**。
+ *
+ * ⚠ 前置条件：**网关和 ai-native-maintain 都必须在跑**。
+ * AppNavDrawer 是全局组件，挂在它上面的 `/maintain-api/healthz` 与
+ * `/maintain-api/menu/ops` 一旦代理不到（maintain 没起 → ECONNREFUSED → 500），
+ * **每一页**都会带上两条 console 错误，整个报告变成 4/4 全红 —— 看起来像
+ * 回归，其实是被我停掉了一个依赖服务。2026-10-03 踩过：清理环境时顺手
+ * pkill 了 maintain，下一轮弹层遍历四个用例齐红。
+ * 本地起法（密钥必须与网关一致，否则 maintain 拒收网关 token → 401）：
+ *   MAINTAIN_JWT_SECRET=<网关的 LLM_GATEWAY_JWT_SECRET 回退 LLM_GATEWAY_SECRET_KEY> \
+ *   MAINTAIN_LISTEN_ADDR=127.0.0.1:8082 go run ./cmd/maintain
  */
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
@@ -335,6 +345,14 @@ const OVERLAY_CASES = [
     steps: ['.user-menu__trigger', '.user-menu__dropdown .user-menu__item:nth-child(2)'],
     kind: 'modal',
     note: 'ChangePasswordDialog 用户菜单 → 修改密码（居中弹窗）',
+  },
+  {
+    // ModelPicker 被多个页面复用（路由看板、模型管理、创建密钥…），自己就是
+    // 一个居中弹窗，且带 200+ 项的热门模型列表 —— 内容能不能看全最值得量。
+    path: '/routing-v2?tab=resolve',
+    steps: ['.resolve-picker .mp-trigger'],
+    kind: 'modal',
+    note: 'ModelPicker 模型选择弹窗（居中，含热门模型列表）',
   },
   {
     // 覆盖不到：候选表要「选模型 → 点 Resolve」两步之后才渲染，本 harness 只能点
