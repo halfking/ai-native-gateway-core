@@ -616,7 +616,41 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureCandidateFailureLogsHeapPartitions(cflCtx); err != nil {
 		return err
 	}
+	// 2026-10-03 migration 820: 存量音频模型（ASR/TTS 家族）modality 回填。
+	// mirrors sql/migrations/startup/820_audio_modality_backfill.sql。必须
+	// 先于流量：audio 请求的候选过滤只放行 modality IN ('audio','multimodal')，
+	// mimo-v2.5-asr/-tts 等后缀形态被旧 InferModality 标成 text，不回填则
+	// /v1/audio/* 端点与 chat+input_audio 双双 no_candidate。
+	if err := db.ensureAudioModalityBackfill(migCtx); err != nil {
+		return err
+	}
 	db.ensureProbeHealthDashboardViews(migCtx)
+	return nil
+}
+
+// ensureAudioModalityBackfill mirrors sql/migrations/startup/820_audio_modality_backfill.sql
+// (migration 820, 2026-10-03 音频端点轮)。旧 InferModality 规则表缺后缀
+// 形态（-asr/-tts），discovery 播种的 mimo-v2.5-asr / mimo-v2.5-tts 等纯
+// 音频模型被标成 text，audio 候选过滤（modality IN ('audio','multimodal')）
+// 会把它们整体排除 → no_candidate 503（上游实测健康）。
+//
+// 幂等性：UPDATE 带 modality='text' 守卫，二跑零行。只升级 text→audio，
+// 不触碰 audio/multimodal/vision 等已有标注（含管理员手工覆盖）。
+func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
+	if db == nil || db.pool == nil {
+		return nil
+	}
+	const stmt = `
+		UPDATE models_canonical
+		   SET modality = 'audio', updated_at = now()
+		 WHERE modality = 'text'
+		   AND status = 'active'
+		   AND (canonical_name ~ '-asr$' OR canonical_name ~ '-tts$'
+		        OR canonical_name ~ '-asr-' OR canonical_name ~ '-tts-'
+		        OR canonical_name ~ '-stt-' OR canonical_name ~ 'whisper')`
+	if _, err := db.pool.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("ensure audio modality backfill: %w", err)
+	}
 	return nil
 }
 
@@ -641,8 +675,7 @@ const candidateFailureLogsHeapPartitionsBudget = 5 * time.Minute
 
 // sessionSummariesArchival backfill bounds: 2000-row chunks keep per-statement// row-lock windows in the milliseconds range (far below the shared PG's 30s
 // statement_timeout), and the per-boot wall-clock slice means a leftover
-// backfill simply resumes on the next boot — NULL last_accessed_at is
-// archival-safe (predicates treat it as "not accessed recently"), so boot
+// backfill simply resumes on the next boot — NULL last_accessed_at is// archival-safe (predicates treat it as "not accessed recently"), so boot
 // never waits on convergence.
 const (
 	sessionSummariesBackfillBatch = 2000
