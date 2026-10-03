@@ -90,6 +90,25 @@ var requestStatusBackfillDuration = promauto.NewHistogram(
 	},
 )
 
+// requestStatusBackfillRemaining 报告「还剩多少行没回填」——
+// 即仍有 v1 孪生且 v1 侧标签非空、但 session_turns.request_status 仍为 NULL 的行数。
+//
+// 为什么必须有它（D9 第四条，审计 §9.156/§9.158.9）：退役前置条件是
+// 「回填完成」，而「完成」必须是**可查询的**状态，而不是一个时间赌注。
+// counter{result="filled"} 只能给出「本进程填了多少」，无法回答「还剩多少」，
+// 且多副本 / 重启会让累计值与总量对不上。
+//
+// 只在一轮 drain **抽不出候选**（idle）时精确统计一次，而不是每 tick 都算：
+// 该 COUNT 需要扫 session_turns 全表（实测 169 万行），每 tick 跑会把
+// 空闲巡检变成固定开销；而 idle 本身就是「到尽头了」这个唯一值得测量的时刻。
+// 两次 idle 之间 gauge 保持上一次的值 —— 它是 gauge（当前状态），不是 counter。
+var requestStatusBackfillRemaining = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "llmgw_session_turn_request_status_backfill_remaining_rows",
+		Help: "Session turns still awaiting request_status backfill (NULL locally, joinable v1 twin with a non-NULL label). Sampled when a drain finds no candidates; -1 when the count query failed. Retirement precondition per decision sheet D9 clause 4: this must reach 0 (or an explicitly accepted floor) before request_logs is dropped.",
+	},
+)
+
 const (
 	sessionRequestStatusBackfillDefaultInterval = 30 * time.Second
 	sessionRequestStatusBackfillDefaultBatch    = 100
@@ -97,6 +116,11 @@ const (
 	// sessionRequestStatusBackfillMaxIdle caps the exponential idle backoff so
 	// a late-arriving v1 twin is still picked up within 30 minutes.
 	sessionRequestStatusBackfillMaxIdle = 30 * time.Minute
+	// sessionRequestStatusRemainingTimeout bounds the idle-path remaining count.
+	// It scans session_turns in full (measured 1.69M rows), so it gets a wider
+	// budget than one batch but must still be bounded — a hung count would
+	// otherwise stall the drain loop that called it.
+	sessionRequestStatusRemainingTimeout = 60 * time.Second
 	// sessionRequestStatusBackfillBatchTimeout bounds one batch transaction so
 	// a stuck DB cannot wedge the goroutine past Stop's doneCh wait.
 	sessionRequestStatusBackfillBatchTimeout = 5 * time.Minute
@@ -115,6 +139,11 @@ var errRequestStatusSourceRetired = errors.New("request_status backfill source r
 // digestBackfillDB).
 type requestStatusBackfillDB interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
+	// QueryRow backs the idle-path remaining count. It is on the interface
+	// (rather than type-asserted) so the seam stays honest, but a failure is
+	// non-fatal by design: the gauge reports -1 and the release check stays
+	// conservative instead of the job refusing to drain.
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // requestStatusBackfillRow is one candidate turn: the id/partition_date pair
@@ -331,10 +360,55 @@ func (b *sessionRequestStatusBackfill) drain(ctx context.Context) (int, error) {
 		// A short batch means the joinable candidate set is drained. Rows with
 		// no v1 twin are never candidates, so they never keep the loop alive.
 		if selected < b.batchSize {
+			// "Candidates exhausted" is the only moment worth paying for an
+			// exact remaining count — it is what turns D9 clause 4 from a
+			// calendar guess into a queryable state. Counting on every tick
+			// would scan all 1.69M rows for no new information.
+			b.sampleRemaining(ctx)
 			return total, nil
 		}
 	}
 }
+
+// sampleRemaining refreshes the remaining-rows gauge. A count failure is
+// reported as -1 rather than 0: rendering "could not measure" as "done" would
+// tell the release gate to proceed on a value nobody verified.
+func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
+	if b == nil || b.db == nil {
+		return
+	}
+	qCtx, cancel := context.WithTimeout(ctx, sessionRequestStatusRemainingTimeout)
+	defer cancel()
+	var n int64
+	if err := b.db.QueryRow(qCtx, sessionRequestStatusRemainingSQL).Scan(&n); err != nil {
+		// Retirement is the benign explanation; anything else is worth a Warn.
+		// Both leave the gauge at -1 so the release check stays honest.
+		if !errors.Is(err, errRequestStatusSourceRetired) {
+			slog.Warn("session_turns request_status backfill: remaining count failed",
+				"error", err)
+		}
+		requestStatusBackfillRemaining.Set(-1)
+		return
+	}
+	requestStatusBackfillRemaining.Set(float64(n))
+	slog.Debug("session_turns request_status backfill: candidates exhausted",
+		"remaining_rows", n)
+}
+
+// sessionRequestStatusRemainingSQL counts what is still backfillable. It is the
+// executable form of the D9 clause-4 release precondition — an operator should
+// be able to paste it and read the answer without knowing anything about the
+// job's internals.
+//
+// The v1-side IS NOT NULL mirrors the candidate query: rows whose v1 label is
+// NULL can never be filled, so counting them would leave the gauge permanently
+// above zero and make "done" unreachable.
+const sessionRequestStatusRemainingSQL = `
+	SELECT count(*)
+	FROM public.session_turns t
+	JOIN public.request_logs l ON l.request_id = t.request_id
+	WHERE t.request_status IS NULL
+	  AND l.request_status IS NOT NULL`
 
 // sessionRequestStatusSourceProbeSQL checks both ends of the copy. to_regclass
 // yields NULL for an absent relation instead of raising, which is what turns

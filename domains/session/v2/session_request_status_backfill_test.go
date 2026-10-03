@@ -2,6 +2,7 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -735,4 +736,162 @@ INSERT INTO public.session_turns (id, partition_date, tenant_id, request_id, req
 	dropped = true
 	admin.Close()
 	pool.Close()
+}
+
+// ── D9 clause 4: the remaining-rows gauge ────────────────────────────────────
+//
+// The release precondition for retiring request_logs is "the backfill is
+// done" (decision sheet D9 clause 4, audit §9.156/§9.158.9). A counter of how
+// many rows THIS process filled cannot answer that — restarts and multiple
+// replicas break the arithmetic, and nothing distinguishes "0 filled because
+// nothing is left" from "0 filled because nothing ran". The gauge exists so the
+// precondition is a number an operator can read.
+
+// expectIdleBatch programs one drain iteration that finds no candidates: a
+// short batch is what marks the candidate set exhausted, and that is the only
+// moment the remaining count is worth paying for.
+func expectIdleBatch(mock pgxmock.PgxPoolIface) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("WHERE t\\.id > \\$1").
+		WithArgs(int64(0), 100).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "partition_date", "tenant_id", "request_id"}))
+	mock.ExpectRollback()
+}
+
+// expectIdleBatchAt is expectIdleBatch for an explicit (cursor, batchSize).
+// The cursor must be the previous batch's last id — the drain advances the
+// keyset watermark, so a hardcoded 0 only works for the first batch.
+func expectIdleBatchAt(mock pgxmock.PgxPoolIface, cursor int64, batchSize int) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("WHERE t\\.id > \\$1").
+		WithArgs(cursor, batchSize).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "partition_date", "tenant_id", "request_id"}))
+	mock.ExpectRollback()
+}
+
+func TestSessionRequestStatusBackfill_RemainingGaugeReportsIdle(t *testing.T) {
+	mock := newStatusBackfillMock(t)
+	expectIdleBatch(mock)
+	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(int64(0)))
+
+	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
+	if _, err := b.drain(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := testutil.ToFloat64(requestStatusBackfillRemaining); got != 0 {
+		t.Errorf("remaining gauge = %v, want 0 when the count reports none left", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// A non-zero count must reach the gauge verbatim — this is the number the
+// release check reads, so a scaled or clamped value would silently pass a
+// half-finished backfill.
+func TestSessionRequestStatusBackfill_RemainingGaugeIsVerbatim(t *testing.T) {
+	mock := newStatusBackfillMock(t)
+	expectIdleBatch(mock)
+	const want int64 = 1520530
+	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(want))
+
+	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
+	if _, err := b.drain(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := testutil.ToFloat64(requestStatusBackfillRemaining); got != float64(want) {
+		t.Errorf("remaining gauge = %v, want %d verbatim", got, want)
+	}
+}
+
+// The single most important property: an unmeasurable count must NOT read as
+// zero. Reporting 0 tells the release gate "backfill complete" on a value
+// nobody verified — the exact failure mode this gauge was added to prevent.
+func TestSessionRequestStatusBackfill_RemainingGaugeFailureIsNotZero(t *testing.T) {
+	mock := newStatusBackfillMock(t)
+	expectIdleBatch(mock)
+	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
+		WillReturnError(errors.New("connection reset by peer"))
+
+	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
+	// Telemetry must never block the job.
+	if _, err := b.drain(context.Background()); err != nil {
+		t.Fatalf("drain returned an error because the gauge count failed: %v", err)
+	}
+	if got := testutil.ToFloat64(requestStatusBackfillRemaining); got != -1 {
+		t.Errorf("remaining gauge = %v, want -1 on a failed count — 0 would tell "+
+			"the D9 release gate to proceed on an unverified number", got)
+	}
+}
+
+// The remaining count must be paid for EXACTLY ONCE per drain, at the end —
+// not per batch. It scans all 1.69M rows, so a per-batch sample would turn a
+// rate-limited backfill into a full-table scan loop.
+//
+// batchSize is 1 here so that a single returned row is a FULL batch (the loop
+// only continues when selected == batchSize). With batchSize 100 one row would
+// be a short batch and the drain would end immediately.
+//
+// The assertion is indirect on purpose: exactly one remaining-count expectation
+// is programmed. A second (unprogrammed) call would fail and write the -1
+// sentinel, so "gauge == 0" proves the count was asked exactly once.
+func TestSessionRequestStatusBackfill_RemainingSampledOncePerDrain(t *testing.T) {
+	mock := newStatusBackfillMock(t)
+	// Batch 1: FULL (1 == batchSize) -> loop continues.
+	expectStatusTxPrefix(mock, 0, 1)
+	mock.ExpectExec("UPDATE public\\.session_turns t SET request_status = l\\.request_status").
+		WithArgs(int64(42), statusFixedDate(), "req_42").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+	// Batch 2: short (0 rows) -> drain ends.
+	expectIdleBatchAt(mock, 42, 1)
+	// Exactly ONE count query for the whole drain.
+	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(int64(0)))
+
+	b := newSessionRequestStatusBackfillForTest(mock, 0, 1, 0)
+	if _, err := b.drain(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := testutil.ToFloat64(requestStatusBackfillRemaining); got != 0 {
+		t.Errorf("remaining gauge = %v, want 0 — a second, unprogrammed sample "+
+			"would have failed and written the -1 sentinel, so != 0 means the "+
+			"1.69M-row count was paid for more than once per drain", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// The executable release precondition, pinned as SQL. If someone rewrites the
+// remaining query the v1-side IS NOT NULL filter must survive: without it the
+// 46 NULL-label v1 rows keep the number permanently above zero and "done"
+// becomes unreachable.
+func TestSessionRequestStatusBackfill_RemainingSQLContract(t *testing.T) {
+	q := sessionRequestStatusRemainingSQL
+	for _, want := range []string{
+		"FROM public.session_turns t",
+		"JOIN public.request_logs l ON l.request_id = t.request_id",
+		"t.request_status IS NULL",
+		"l.request_status IS NOT NULL",
+	} {
+		if !strings.Contains(q, want) {
+			t.Errorf("remaining SQL missing %q", want)
+		}
+	}
+	// A LIMIT would report a sample, not a total.
+	if strings.Contains(strings.ToUpper(q), "LIMIT") {
+		t.Error("remaining SQL must count all remaining rows; a LIMIT would let the " +
+			"release gate report done while work is left")
+	}
 }

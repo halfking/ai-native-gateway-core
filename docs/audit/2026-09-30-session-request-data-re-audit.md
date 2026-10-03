@@ -19401,3 +19401,80 @@ SELECT request_status FROM session_turns WHERE request_id='d8d-probe-req-1';
 **`cmd/gateway` 的真库门禁在 `main` 上是红的、且可能已经红了一段时间** ——
 即这条覆盖率**低于它看起来的样子**。⚠️ 注意：它**只在带 DSN 时红**，
 所以 CI 若不设 `TEST_DATABASE_URL` 就完全看不到。
+
+---
+
+## §9.159　**把 D9 第四条的「可查询」做出来**：新增 `..._backfill_remaining_rows` gauge
+
+§9.156 写死了「退役前置 = **回填完成度**，不是时间窗」。
+§9.158 落地了回填作业。**但那两条之间还差一环**：作业只暴露了
+counter（`..._backfill_total{result}`）和耗时直方图，
+**没有任何一个指标能回答「还剩多少行没回填」**。
+
+⇒ 没有它，「回填完成」仍然只能靠人去跑 SQL 或盯着累计 counter 猜 ——
+**D9 第四条的「可查询」是句空话。** 本节补上。
+
+### §9.159.1 为什么 counter 回答不了「还剩多少」
+
+| 方案 | 为什么不够 |
+|---|---|
+| `sum(rate(..._total{result="filled"}))` | 只给「本进程填了多少」；**重启 / 多副本**会让累计值与总量对不上 |
+| 「counter 不再增长 ⇒ 完成」 | **区分不了**「没有剩余」与「压根没在跑」——两者 counter 都是平的 |
+| 每 tick 跑一次精确 COUNT | 该 COUNT 需扫 `session_turns` 全表（**169 万行**）⇒ 把限速作业变成固定全表扫 |
+
+⇒ **只在「一轮 drain 抽不出候选」时精确量一次** —— 那既是**唯一值得付这个代价的时刻**
+（idle 本身就是「到尽头了」的定义），成本又只付在退避间隔上（上限 30 分钟一次）。
+
+### §9.159.2 实现（`domains/session/v2/session_request_status_backfill.go`）
+
+- 新增 gauge `llmgw_session_turn_request_status_backfill_remaining_rows`；
+- 新增常量 SQL `sessionRequestStatusRemainingSQL`（**D9 发布前置检查的可执行形式**，
+  运维可以直接粘去跑，不必了解作业内部）；
+- `drain` 在短批收尾处调 `sampleRemaining(ctx)`；
+- `requestStatusBackfillDB` 接口新增 `QueryRow`（`pgxmock` 已实现，**17 个既有测试未受影响**）。
+
+**三个设计决定**：
+
+1. **计数失败写 `-1`，不写 `0`。**
+   写 0 等于告诉发布门「回填完成」——**用一个没人验证过的数放行退役**。
+   这与 §9.152 的 D8-d 同一个约定（测不到 ≠ 干净）。
+2. **计数失败不得让作业失败**（`drain` 仍返回成功）。
+   遥测永远不能阻断主流程。
+3. **保留 v1 侧 `IS NOT NULL` 过滤**：否则那 **46 行** NULL 标签会让数字**永远大于 0**，
+   「完成」变得不可达 —— 这条由 `RemainingSQLContract` 钉住。
+
+### §9.159.3 门禁与变异证据（**全部我自己注入**，22/22 全绿）
+
+新增 5 个测试；**17 个既有测试未受影响**（已复跑确认）。
+
+| 变异 | 结果 |
+|---|---|
+| **A：计数失败时写 `0`**（D9 发布门最危险的错法） | ✅ **红** —— `remaining gauge = 0, want -1 on a failed count — 0 would tell the D9 release gate to proceed on an unverified number` |
+| **B：移除 drain 末尾的采样调用** | ✅ **红** —— 4 个测试同时失败 |
+
+⚠️ **写这 5 个测试我错了三次**（都记下来，因为错法有代表性）：
+
+| 错误 | 真相 |
+|---|---|
+| ① 在 `drain` 测试里编了 source probe | **`drain` 不调 probe**（probe 在 `run` 里） |
+| ② 以为「返回 1 行 + batchSize 100」是满批 | 那是**短批**，drain 立刻结束 |
+| ③ 短批的游标写死 `0` | 游标是**上一批的末 id**（42），keyset 分页会推进 |
+
+⇒ **「满批 / 短批」这条语义只有读 `drain` 的 `selected < b.batchSize` 才知道**，
+而我是在测试红了几轮之后才回去读的。
+⇒ **三次都不是「断言写错了」，是「我没先读被测循环的终止条件」。**
+
+### §9.159.4 验证
+
+- `go build ./...` / `go vet` / `gofmt` ✅ 干净
+- `-run TestSessionRequestStatusBackfill`：**22 / 22 PASS**（含真库门禁，给了 DSN）
+- 全量回归 `domains/session/…` `sessionv2mirror` `cmd/gateway` `db` ✅ 全 `ok`
+- 夹具：`rsbfix*` 残留库 = **0**
+
+### §9.159.5 遗留
+
+- ⚠️ **未部署**；且 **823 必须先于本作业上线**（否则列不存在，作业安静不动、不打挂）。
+- ⚠️ **gauge 两次 idle 之间保持旧值** —— 它是 gauge 不是 counter；
+  极端情况下「已回填完」到「下次 idle」之间会有一段滞后。**发布检查以直跑 SQL 为准。**
+- ⚠️ 多副本并发下 gauge 会被**最后一个 idle 的副本**覆盖；守卫保证正确性，但 gauge 不是全局唯一真值。
+- ⚠️ 「完成」的判定仍需你定：**接受 0，还是接受一个明确下限**（§9.156.3 的 9.96% 结构性无解部分）。
