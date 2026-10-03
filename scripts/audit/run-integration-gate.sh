@@ -70,6 +70,25 @@ ALLOW_VACUOUS="${ALLOW_VACUOUS:-0}"
 # baseline + startup = 421, matching the real installer path.
 GATE_APPLY_STARTUP="${GATE_APPLY_STARTUP:-1}"
 
+# GATE_APPLY_STARTUP_TWICE — re-apply the whole registered chain a second time
+# and report which files are not re-runnable. DEFAULT ON, because "applies
+# cleanly" and "can be applied again" are different properties and the gate was
+# only measuring the first one.
+#
+# It has to measure the second: InitSchema (installer/internal/dbinit/runner.go:716)
+# applies every startup migration unconditionally, with no per-file "has this
+# run?" check and with schema_migrations taking no part in the skip decision;
+# its only caller runInstall has no "is this DB already installed?" probe. So
+# re-running the installer replays all 217 files and aborts at the first error.
+# Measured 2026-10-04 on origin/main: pass 1 = 217/217, pass 2 = 214 ok /
+# 3 fail (all "cannot drop columns from view", 625 / 637 / 656).
+#
+# Known failures are a ratchet in sql/schema/startup_rerun_known_gaps.tsv, same
+# discipline as startup_known_gaps.tsv: unlisted -> die; listed but not
+# reproduced -> reported stale. Set to 0 to skip the pass (it roughly doubles
+# the time this stage takes).
+GATE_APPLY_STARTUP_TWICE="${GATE_APPLY_STARTUP_TWICE:-1}"
+
 # GATE_DB_SHAPE — which of the mutually-exclusive fixture families this run
 # serves. Round 44 §7 measured that the 68 integration-only files split into
 # families that cannot share one database, so a single harness shape was the
@@ -287,13 +306,42 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
   SF_DIR="$REPO_ROOT/installer/cmd/llm-gw-installer/embeddata/startup"
   sf_ok=0; sf_fail=0; sf_missing=0
   declare -a sf_failed=()
-  while read -r f; do
-    [[ -n "$f" ]] || continue
-    p="$SF_DIR/$f"
+  # 2026-10-04: the per-file apply is factored out because the chain is now run
+  # TWICE (see the re-runnability pass below) and copying the loop would let the
+  # two copies drift — the first version of that pass differed from this one by
+  # the --single-transaction rule, which is exactly the kind of difference that
+  # makes a harness report a product defect that isn't there.
+  #
+  # EVERY piece of caller-specific state is NAMED BY THE CALLER: the three
+  # counters ($3/$4/$5) and the failure list ($6). This was arrived at twice.
+  #
+  #   1st version: hardcoded sf_*. The helper bumped sf_fail while the
+  #   re-runnability ratchet tested rr_fail, so rr_fail stayed 0 forever, the run
+  #   printed "startup rerun: applied=0 failed=0 missing=0", and a gate that
+  #   LOOKED armed could never fire.
+  #
+  #   2nd version: counters named by the caller, but the failure list still
+  #   appended to a hardcoded sf_failed. That is one level down the same hole and
+  #   it is WORSE, because the counters were right: a real run printed
+  #   "failed=11", the ratchet then iterated an EMPTY rr_failed, classified
+  #   nothing as unlisted, found the 3 listed entries "stale", and exited
+  #   PASS=7 FAIL=0. A gate that measured 11 failures and passed.
+  #
+  # Neither static guard test could see it: they assert on script text, not on
+  # which variable actually moves. The counter defect was caught only by
+  # executing the helper (TestGateRerunPassBumpsItsOwnCounters); the list defect
+  # was caught only by RUNNING THE GATE. Static guards cannot substitute for
+  # either.
+  #
+  # bash 3.2 (macOS) has no namerefs, so the append goes through eval.
+  apply_startup_file() { # $1=file $2=label $3=ok var $4=fail var $5=missing var $6=failures array var
+    local f="$1" label="$2" okvar="$3" failvar="$4" missvar="$5" arrvar="$6"
+    local p="$SF_DIR/$1" args reason entry
     if [[ ! -f "$p" ]]; then
-      sf_missing=$((sf_missing+1))
-      sf_failed+=("$f (no embeddata file)")
-      continue
+      printf -v "$missvar" '%d' $(( ${!missvar} + 1 ))
+      entry="$label$f (no embeddata file)"
+      eval "$arrvar+=(\"\$entry\")"
+      return
     fi
     args=(-q -v ON_ERROR_STOP=1)
     # Same rule as dbinit.requiresNoTransaction: marker in a comment line.
@@ -302,13 +350,18 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
     fi
     if docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" \
          "${args[@]}" < "$p" >/dev/null 2>/tmp/itgate-sf.err; then
-      sf_ok=$((sf_ok+1))
+      printf -v "$okvar" '%d' $(( ${!okvar} + 1 ))
     else
-      sf_fail=$((sf_fail+1))
+      printf -v "$failvar" '%d' $(( ${!failvar} + 1 ))
       reason=$(grep -i '^ERROR' /tmp/itgate-sf.err | head -1 | cut -c1-140)
-      [[ -z "$reason" ]] && reason=$(head -1 /tmp/itgate-sf.err | cut -c1-140)
-      sf_failed+=("$f :: $reason")
+      [[ -z "$reason" ]] && [[ -s /tmp/itgate-sf.err ]] && reason=$(head -1 /tmp/itgate-sf.err | cut -c1-140)
+      entry="$label$f :: $reason"
+      eval "$arrvar+=(\"\$entry\")"
     fi
+  }
+  while read -r f; do
+    [[ -n "$f" ]] || continue
+    apply_startup_file "$f" "" sf_ok sf_fail sf_missing sf_failed
   done < <(sed -n '/StartupFiles: \[\]string{/,/^\t}/p' \
              "$REPO_ROOT/installer/internal/dbinit/runner.go" \
            | grep -oE '"[0-9a-zA-Z_]+\.sql"' | tr -d '"')
@@ -405,6 +458,187 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
     if (( ${#gap_stale[@]} > 0 )); then
       echo "  ⚠ 已知缺口清单里有 ${#gap_stale[@]} 条本轮未复现（可能已修复），请从清单中删除："
       printf '    - %s\n' "${gap_stale[@]}"
+    fi
+  fi
+
+  # ---- second pass: is the chain RE-RUNNABLE? ------------------------------
+  #
+  # Why this exists (2026-10-04, §9.119): InitSchema
+  # (installer/internal/dbinit/runner.go:716) applies every registered startup
+  # migration unconditionally — no "has this run?" check, and schema_migrations
+  # takes no part in the skip decision — and its only caller, runInstall, has no
+  # "is this DB already installed?" probe either. So re-running the installer
+  # against an existing database replays all 217 files and aborts at the first
+  # error. Idempotency is therefore a correctness requirement of that path, not
+  # a nicety.
+  #
+  # A single pass cannot see this class by definition: "cannot be re-applied"
+  # only becomes true on the second run.
+  #
+  # ORDER MATTERS, and getting it wrong is how the first version of this pass
+  # measured the wrong thing. The first version re-applied ONLY the 217
+  # migrations and reported 3 non-re-runnable files. But InitSchema applies the
+  # baseline trio BEFORE the chain, and on the real database the baseline is
+  # where a re-run actually dies:
+  #
+  #   00-prereqs.sql   0 errors
+  #   01-schema.sql    1665 errors   <-- the real abort point
+  #   02-seed.sql      0 errors
+  #   the 217          11 files
+  #
+  # 01-schema.sql is a plain pg_dump baseline: bare CREATE statements with no
+  # IF NOT EXISTS anywhere, so every one of its ~1100 tables, ~100 functions and
+  # ~72 policies is a replay error. "3" was a property of my measurement setup
+  # (a synthetic startup-only database), not of the product.
+  #
+  # So this pass now walks InitSchema's own order. Both stages are measured, and
+  # the summary says which one is the abort point, because a reader who sees
+  # "11 files not re-runnable" and concludes the chain is the blocker would be
+  # wrong about the order.
+  #
+  # RATCHET discipline, same as startup_known_gaps.tsv: a list that is merely
+  # printed is neither a gate nor a record. Unlisted failure -> die. Listed but
+  # not reproduced -> reported stale, so a real fix retires its entry instead of
+  # the list quietly becoming a blanket exemption.
+  if [[ "$GATE_APPLY_STARTUP_TWICE" == "1" ]]; then
+    echo "  ── re-applying in InitSchema's order: prereqs, baseline, seed, then the chain ──"
+
+    # --- stage 1: the baseline trio, which is where a re-run really dies ----
+    #
+    # ON_ERROR_STOP=0 on purpose, and this is a measurement decision, not a
+    # shortcut. The installer runs with ON_ERROR_STOP=1, so IT only ever sees
+    # the first error per file — which makes "1" a useless unit: any baseline
+    # that breaks at all breaks with the same measured count, so a ceiling
+    # ratcheted on 1 can never fire. Counting the whole file gives a number
+    # that actually moves when a bare CREATE statement is added to the dump.
+    # The abort behaviour is not lost by measuring it this way: errors > 0 IS
+    # the abort, and the first error is reported alongside the total.
+    br_files_failed=0
+    br_err_lines=0
+    declare -a br_failed=()
+    for bf in 00-prereqs.sql 01-schema.sql 02-seed.sql; do
+      docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$GATE_DB" \
+        -q -v ON_ERROR_STOP=0 < "$REPO_ROOT/sql/schema/$bf" >/dev/null 2>/tmp/itgate-br.err
+      n=$(grep -ci '^ERROR' /tmp/itgate-br.err || true)
+      [[ -z "$n" || "$n" -eq 0 ]] && continue
+      br_files_failed=$((br_files_failed + 1))
+      br_err_lines=$((br_err_lines + n))
+      br_failed+=("$bf ($n 条 ERROR；首条：$(grep -i '^ERROR' /tmp/itgate-br.err | head -1 | cut -c1-110))")
+    done
+    echo "  rerun baseline: 失败文件=$br_files_failed 错误行=$br_err_lines"
+
+    BR_BUDGET="$REPO_ROOT/sql/schema/baseline_rerun_budget.tsv"
+    if (( br_files_failed > 0 )); then
+      if [[ ! -f "$BR_BUDGET" ]]; then
+        die "baseline 重跑有 ${br_files_failed} 个文件失败，但没有错误预算清单 ${BR_BUDGET}。" \
+"缺清单时无法区分「已知的裸 dump 不可重跑」与「新增回归」，而放行等于把后者当前者吞掉。"
+      fi
+      declare -a br_unlisted=() br_over=() br_under=() br_absent=()
+      # Names the budget actually exempts, read once so the "failed but not
+      # listed" check below does not re-parse the file per failure.
+      mapfile -t br_listed < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                                 -e 's/[[:space:]].*$//' "$BR_BUDGET")
+      while IFS=$'\t' read -r bf budget _; do
+        [[ -z "$bf" || "$bf" == \#* ]] && continue
+        actual=0
+        matched=0
+        for e in "${br_failed[@]}"; do
+          if [[ "$e" == "$bf "* ]]; then
+            matched=1
+            actual="${e#*\(}"; actual="${actual%% *}"
+          fi
+        done
+        if (( matched == 0 )); then
+          br_absent+=("${bf}（登记在预算里但本轮 0 错误，请从清单删除）")
+        elif (( actual > budget )); then
+          br_over+=("${bf}: 实际 ${actual} > 预算 ${budget}（新增了不可重跑语句）")
+        elif (( actual < budget )); then
+          br_under+=("${bf}: 实际 ${actual} < 预算 ${budget}（已改善，请下调预算）")
+        fi
+      done < "$BR_BUDGET"
+      # A file that fails but is NOT in the budget is the direction that matters:
+      # a newly non-re-runnable baseline file has to be fatal. The loop above on
+      # its own would pass a brand-new offender, because it only ever looks at
+      # the files the budget mentions.
+      for e in "${br_failed[@]}"; do
+        f="${e%% *}"
+        printf '%s\n' "${br_listed[@]}" | grep -qxF "$f" \
+          || br_unlisted+=("${f}（重跑失败但不在预算清单里）")
+      done
+      echo "  rerun baseline: 错误预算见 sql/schema/baseline_rerun_budget.tsv"
+      for e in "${br_failed[@]}"; do echo "    - $e"; done
+      if (( ${#br_over[@]} > 0 || ${#br_unlisted[@]} > 0 || ${#br_absent[@]} > 0 )); then
+        for e in "${br_over[@]}" "${br_unlisted[@]}" "${br_absent[@]}"; do echo "    ✗ $e"; done
+        die "baseline 的不可重跑规模超出登记预算。重跑 installer 会在 01-schema.sql 就中止，" \
+"早于任何一条启动迁移；新增的部分请核实是不是新缺陷，再决定是修 01-schema.sql 还是上调预算。"
+      fi
+      if (( ${#br_under[@]} > 0 )); then
+        for e in "${br_under[@]}"; do echo "    ⚠ $e"; done
+      fi
+    elif [[ -f "$BR_BUDGET" ]]; then
+      echo "  ⚠ baseline 本轮重跑 0 错误，但预算清单仍存在；若已修复请删除 ${BR_BUDGET}"
+    fi
+
+    echo "  ── re-applying the whole chain (re-runnability) ──"
+    rr_ok=0; rr_fail=0; rr_missing=0
+    declare -a rr_failed=()
+    while read -r f; do
+      [[ -n "$f" ]] || continue
+      apply_startup_file "$f" "rerun:" rr_ok rr_fail rr_missing rr_failed
+    done < <(sed -n '/StartupFiles: \[\]string{/,/^\t}/p' \
+               "$REPO_ROOT/installer/internal/dbinit/runner.go" \
+             | grep -oE '"[0-9a-zA-Z_]+\.sql"' | tr -d '"')
+    echo "  startup rerun: applied=$rr_ok failed=$rr_fail missing=$rr_missing"
+
+    # Self-check on the harness, not on the product. The 2nd version of this
+    # pass counted 11 failures correctly and then iterated an EMPTY failure
+    # list, so the ratchet below had nothing to classify, found nothing
+    # unlisted, and the gate exited PASS=7 FAIL=0. A counter and its list can
+    # disagree, and "the list is empty" is exactly what that looks like from
+    # here — indistinguishable from "nothing failed" if the count is not
+    # cross-checked. Die rather than grade an empty list.
+    if (( rr_fail > 0 && ${#rr_failed[@]} == 0 )); then
+      die "harness 自身不一致：rr_fail=$rr_fail 但失败清单为空。计数与清单不同源时，" \
+"ratchet 拿空集合比对等于什么都没查——这正是 2026-10-04 那次假绿的成因（计数 11、通过）。" \
+"请检查 apply_startup_file 是否把失败写进了调用方传入的数组。"
+    fi
+
+    RR_MANIFEST="$REPO_ROOT/sql/schema/startup_rerun_known_gaps.tsv"
+    if (( rr_fail > 0 )); then
+      if [[ ! -f "$RR_MANIFEST" ]]; then
+        die "有 ${rr_fail} 条启动迁移在**第二遍**（重跑 installer 的真实语义）失败，" \
+"但找不到已知缺口清单 ${RR_MANIFEST}。缺清单时无法区分「已知不可重跑」与「新回归」，" \
+"而放行等于把新回归当已知缺口吞掉。"
+      fi
+      mapfile -t rr_known < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                               -e 's/[[:space:]].*$//' "$RR_MANIFEST" | sort -u)
+      declare -a rr_unlisted=() rr_hit=()
+      for entry in "${rr_failed[@]}"; do
+        f="${entry#rerun:}"; f="${f%% :: *}"
+        if printf '%s\n' "${rr_known[@]}" | grep -qxF "$f"; then
+          rr_hit+=("$entry")
+        else
+          rr_unlisted+=("$entry")
+        fi
+      done
+      echo "  startup rerun: ${#rr_hit[@]} 条已知不可重跑（见 sql/schema/startup_rerun_known_gaps.tsv）"
+      printf '    - %s\n' "${rr_hit[@]}"
+      if (( ${#rr_unlisted[@]} > 0 )); then
+        echo "  ✗ 新增未登记的「第二遍失败」（${#rr_unlisted[@]} 条）："
+        printf '    - %s\n' "${rr_unlisted[@]}"
+        die "有 ${#rr_unlisted[@]} 条注册迁移不可重跑且未登记为已知缺口。重跑 installer 会在" \
+"第一条失败处中止，所以这不只是噪音。确认是真实缺口后，把文件与原因补进 " \
+"sql/schema/startup_rerun_known_gaps.tsv 再重跑；不要为了让门禁变绿而放宽这里的判据。"
+      fi
+      declare -a rr_stale=()
+      mapfile -t rr_actual < <(for e in "${rr_failed[@]}"; do echo "${e#rerun:}" | cut -d' ' -f1; done | sort -u)
+      for known in "${rr_known[@]}"; do
+        printf '%s\n' "${rr_actual[@]}" | grep -qxF "$known" || rr_stale+=("$known")
+      done
+      if (( ${#rr_stale[@]} > 0 )); then
+        echo "  ⚠ 不可重跑清单里有 ${#rr_stale[@]} 条本轮未复现（可能已修复），请从清单中删除："
+        printf '    - %s\n' "${rr_stale[@]}"
+      fi
     fi
   fi
 fi

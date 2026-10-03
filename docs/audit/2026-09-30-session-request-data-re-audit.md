@@ -15366,3 +15366,173 @@ merge-base            §9.89   （8cd202ad5）
    `COMMENT ON COLUMN … IS '<新文本>'` 把已落库的那份覆盖掉。
 4. 改完跑：`go test ./internal/sessionv2mirror/ ./deploy/prometheus/rules/`
    与 `bash scripts/apply-db-revision-sequence_test.sh`。
+
+---
+
+<!-- 编号说明（§9.124 起）：同一份文档的 §9.90–§9.93 来自 feat/820-abandoned-turn，
+  已在文首「编号冲突横幅」与本节之前登记：**那 4 节待重编号为 §9.120/121/122/123**
+  （见本文 14480 行与 15359 行）。因此本节从 §9.124 起，避免第三次撞号。
+  引用时请直接写 §9.124，不要按「最大编号 + 1」推算。 -->
+
+## §9.124　把「可重跑」这条线从 3 条修正到 1665 + 11，并给它配上门
+
+§9.119 我测出「217 条链里 3 条不可重跑」并新增 D11。**本节推翻那组数字的两个部分。**
+不是产品变了，是我的**量具**和**前提**都错了。
+
+### §9.124.1 结论先行
+
+| | §9.119 的说法 | §9.124 实测 |
+|---|---|---|
+| 重跑 installer 的**第一现场** | 625（链里的第 100 多条） | **`01-schema.sql`**，链一条都没跑到 |
+| baseline 三件套重跑 | 未测 | **`01-schema.sql` 1665 条 ERROR** |
+| 217 条链重跑 | **3 个文件** | **11 个文件**（206 ok） |
+
+⇒ **「重跑 installer」今天根本不可能成功，且与链是否修好无关。**
+把链的 11 条全部修好，重跑照样炸在 `01-schema.sql`。
+
+### §9.124.2 前提错在哪：「重跑会重放 217 条文件」是我编的
+
+我读的是 `InitSchema`（`installer/internal/dbinit/runner.go:716`）**启动迁移那个循环**：
+
+```go
+for _, f := range files { applySQL(f.name) }        // 00-prereqs / 01-schema / 02-seed
+for _, name := range r.StartupFiles { applySQL(...) } // 217 条
+```
+
+循环上方那三行 baseline 我**当成了背景**没读进去。于是我的前提是
+「重跑 = 重放 217 条」，而真实语义是「重跑 = 先重放三件套，再重放 217 条」。
+
+**这是本轮最贵的教训**：我给这个结论找了机制解释、写了注释、建了清单，
+每一步都自洽 —— 但**最上面那层前提从没被验证过**。
+中间层（PG 规则、链上顺序）核得再细，也救不了一个错的前提。
+
+**为什么第一版会量出 3 条**：我当时在一个人造的 **startup-only 库**上跑第二遍
+（不先跑 baseline）。链在两种起始形状上跑出不同的失败集：
+`CREATE OR REPLACE VIEW` 能不能重跑，取决于**第二遍开始时那个视图有几种形状**。
+⇒ **「不可重跑的条数」是链在给定起始形状上的性质，不是链本身的常数。**
+一个只跑了链的库，和一个先跑了 baseline 的库，是两个不同的问题。
+
+### §9.124.3 实测数据（真 installer 顺序，本机一次性库）
+
+安装：prereqs + `01-schema` + `02-seed` + 217 条链 → 全绿（217/217）。
+重跑：按同一顺序。
+
+| 阶段 | 结果 |
+|---|---|
+| `00-prereqs.sql` | ok |
+| **`01-schema.sql`** | **1665 条 ERROR** ← 中止点 |
+| `02-seed.sql` | ok |
+| 217 条链 | ok=206 fail=11 |
+
+**门与 installer 读的是同一份字节**（`sql/schema/0*.sql` vs
+`installer/cmd/llm-gw-installer/embeddata/0*.sql`，三份 shasum 逐一相同），
+所以这个数不是「门在测另一份文件」。
+
+**1665 条按形态聚合**：
+
+| 条数 | 形态 |
+|---:|---|
+| 1130 | `relation "X" already exists` |
+| 168 | `multiple primary keys for table "X" are not allowed` |
+| 103 | `function "X" already exists with same argument types` |
+| 75 | `cannot attach index "X" as a partition of index "X"` |
+| 72 | `policy "X" for table "X" already exists` |
+| 38 | `constraint "X" for relation "X" already exists` |
+| 32 | `trigger "X" for relation "X" already exists` |
+| 30 | `"X" is already a partition` |
+| 17 | 其余（`does not exist` 等，见下） |
+
+⚠️ 那 17 条 `does not exist` **不是独立缺口**，是前 1600+ 条失败的次生结果
+（前面的语句已经失败，后面的对象没建成就被引用）。把它们当"另一类问题"会是误判。
+
+`01-schema.sql` 是一份**裸 `pg_dump` baseline**：整份文件没有一处 `IF NOT EXISTS`。
+这是它的**设计形态**，不是疏漏 —— dump 本来就假设目标库是空的。
+
+### §9.124.4 链上 11 条，按机制分组
+
+| 机制 | 条数 | 文件 |
+|---|---|---|
+| **[M1]** `CREATE OR REPLACE VIEW` 不能丢列 / 不能改列名 | 5 | 568、625、637、640、656 |
+| **[M2]** 无守卫 `CREATE VIEW` | 2 | 577、`session_turns_hot_bootstrap` |
+| **[M3]** 无守卫 `CREATE POLICY` | 1 | **520** |
+| **[M4]** `ADD CONSTRAINT` 无守卫 | 1 | 614 |
+| **[M5]** 迁移自带守卫在重跑时自己抛异常 | 1 | 610 |
+| **[M6]** 视图链列引用歧义 | 1 | 738 |
+
+**两条要单独说的**：
+
+**[M3] 520 与 351 是同一机制 —— 这更正了我 §9.119 的说法。**
+我 §9.119 写「351 的机制与这 3 条成因不同」，那是把「新建链里的非幂等」和
+「重跑非幂等」当成了两类。事实：`520` 和 `351` 都是裸 `CREATE POLICY`
+（PG 没有 `CREATE POLICY IF NOT EXISTS`），351 已在 §9.115 修好、520 没有。
+⇒ **推论：非幂等 `CREATE POLICY` 在本仓至少还有别的实例，
+「351 是最后一个」这个判断从未被验证过。**
+
+**[M5] 610 的守卫设计得就不该在重跑时触发。**
+610 里有 `RAISE EXCEPTION '608: saved pre-extension view already exists while
+canonical view lacks request_class'`。它是一次性状态检查：首跑时该状态不存在所以通过；
+重跑时状态已变成「已存在」，守卫自己抛错。
+**它的谓词只描述「当前形状」，不描述「我是不是已经做过」。**
+这与 M1–M4 都不是一回事 —— 前四类是「没写守卫」，这一类是「守卫写错了维度」。
+
+⚠️ **11 是文件数，不是缺陷数**：门用 `--single-transaction + ON_ERROR_STOP=1`，
+每个文件只报第一个错误。`614` 一个文件里就有 4 条无守卫 `ADD CONSTRAINT`
++ 4 条无守卫 `CREATE INDEX`，只暴露了第一条。
+
+### §9.124.5 门怎么改的（`run-integration-gate.sh`）
+
+新增 `GATE_APPLY_STARTUP_TWICE`，**默认 1**（关掉就没意义）。第二遍**按 `InitSchema`
+的真实顺序**走：prereqs → baseline → seed → 链。两段各有独立 ratchet：
+
+- `sql/schema/startup_rerun_known_gaps.tsv` —— 链上 11 条，**未登记即 die**；
+  登记了却没复现 → 上报 stale（真修复要能退休条目）。
+- `sql/schema/baseline_rerun_budget.tsv` —— baseline 的**错误行数上界**（当前 1665）。
+  为什么用「预算」而不是「清单」：1665 条是同一形态的重复，逐条登记既不可读也不可维护；
+  而**上界**仍能抓住"往 dump 里新增裸 CREATE"这个方向 —— 超预算即 die。
+  **新增失败文件不在预算里**也 die（只看预算提到的文件会放过新 offender）。
+
+**baseline 那段用 `ON_ERROR_STOP=0` 计数，这是刻意的**：installer 用 `1`，
+它每个文件只看得到**第一个**错误，于是"1"对任何坏掉的 baseline 都是常数 ——
+**按 1 立的上界永远不会触发**。用 0 数全量，数字才会随 dump 变化。
+中止行为没有丢：`错误数 > 0` 就是中止，另外把首条错误一起打出来。
+
+### §9.124.6 这一节里我自己犯的三个错（都被门抓到）
+
+**① 计数器对了、清单没对 —— 比全错更危险。**
+第一版把计数器改成调用方传名，但失败清单仍 append 到写死的 `sf_failed`。
+真跑结果：`failed=11` → ratchet 遍历**空数组** → 未登记 0 条 → 3 条"已登记但没复现" →
+**`exit=0 PASS=7 FAIL=0`**。**一个数出 11 个失败然后放行的门。**
+我的单元测试当时是绿的，因为它也只断言那个写死的数组。
+
+⇒ 修法两条：helper 的**全部** caller-specific 状态（3 个计数器 + 1 个数组）
+都由调用方传名；再加一条 harness 自检 `rr_fail > 0 && ${#rr_failed[@]} == 0 → die`，
+因为"清单为空"和"没有失败"在计数器不参与时**长得一模一样**。
+测试也升级成断言**两个数组各自增长**（旧版在同样变异下会通过）。
+
+**② 变异没落盘，我却读了它的结果当证据。**
+第一次做变异自测时 python 替换没匹配上（`\$entry` vs `$entry`），
+`grep -c 'printf -v'` 返回 0 我没看懂，测试"通过"了 —— 其实测的是没变异的文件。
+**变异后必须先确认变异确实落盘，再看测试结果。** 这次是靠 `grep -c` 抓到的。
+
+**③ 裸子串判据把自己的正确重构判成红。**
+既有守卫 `strings.Contains(act, "sf_failed+=")` 在我抽出 helper 后转红 ——
+它锚的是**实现字面量**。这不是它对，是它一直在锚实现而不是锚性质。
+改成锚**绑定**（调用点是否把 `sf_failed` 作为数组参数传下去、helper 是否通过
+`eval "$arrvar+="` 追加）。
+⇒ **一个裸子串判据既会漏真缺陷，也会误报真修复；两种都要收。**
+
+### §9.124.7 这一节的教训
+
+> **"读到了代码"不等于"读到了语义"。**
+> 我读了 `InitSchema` 的启动迁移循环，得出"重跑会重放 217 条"，
+> 漏掉了它上面那三行 baseline。而那三行才是第一现场。
+>
+> **量具必须和被验对象跑同一条路径。**
+> 门第二遍只重跑链、不跑 baseline —— 于是它精确地测量了产品**从不**执行的那一半。
+>
+> **"不可重跑的条数"这类数不是常数，是「对象 × 起始状态」的函数。**
+> 3 和 11 的差别不是产品变了，是我换了个库。凡是给出这种数而不说起始状态的，
+> 都要当成未验证。
+>
+> **计数器和它的清单是两个独立的东西，可以只对上一个。**
+> 而"只对上"的表现形式恰恰是**看起来一切正常的通过**。

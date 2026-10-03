@@ -119,12 +119,27 @@ response_format/temperature/stream）
 - **音频格式前置校验**（2026-10-04 修）：chat-audio 形态下本地拦掉非
   wav/mp3 的输入并回 400，不再先 base64 膨胀 4/3 传完整音频才换上游一句
   400。multipart 透传形态不拦（上游可能收 webm/m4a）。
+- **被丢弃参数的回执**（2026-10-04 审计补）：chat-audio 形态下 `prompt` 与
+  `temperature` 无处安放（上游拒收 text part，官方 ASR 请求体也只有
+  messages/model/asr_options/stream 四个键）、`language` 归一后可能落空，
+  这三种情况此前**完全静默**。现在非流式走响应头
+  `X-Gw-Audio-Ignored-Params`、流式走 `transcript.ignored_params` 事件
+  （流式的响应头已随 WriteHeader(200) 发出，进不去——与 transport 同处置）。
+  判据：`language` 只有「传了但归一落空」才算丢弃，映射成功的（zh-CN→zh）
+  不算——否则回执本身就是谎。透传形态三项都原样上行，不产生回执。
 
 `POST /v1/audio/speech`（JSON：model/input/voice/response_format/speed）
 - 响应 audio/* 二进制（小米 24kHz WAV）；voice 归一如上。
 - **speed 回执**（2026-10-04 修）：小米 chat 协议无语速旋钮（§2 实测），
   客户端传了 speed 时响应头带 `X-Gw-Audio-Ignored-Params: speed`，如实
   告知未生效，而不是静默忽略。
+- **voice 替换回执**（2026-10-04 审计补）：客户端点名了这条上游没有的音色
+  （OpenAI 的 `alloy`/`nova` 等）时我们换成 `mimo_default`——拿到的声音与
+  请求的不是同一个人，此前同样静默。现在并入同一个回执头。
+- **response_format 的上游差异**（2026-10-04 审计补，见 §4.6）：MiMo 的
+  `audio.format` 只收 `wav/mp3/pcm/pcm16`，比 OpenAI `/audio/speech` **窄**
+  （OpenAI 还收 opus/aac/flac）。此前网关用的是 OpenAI 全量口径，客户端按
+  OpenAI 契约请求 opus 时被原样发给小米。
 - **三个 TTS 变体的请求形状不同**（2026-10-04 修，见 §4.4）。
 
 ### 4.4 MiMo TTS 三变体（2026-10-04）
@@ -150,6 +165,43 @@ DataURL** 透传（给音色名时本地 400 + 可照改的说明，不打上游
   （2025-06-18 spec）。
 - 与 HTTP 端点同一 AudioService 执行路径、同一鉴权（Bearer sk-*，
   KeyVerifier + 限流 + 预算）。
+- 工具 schema 只声明各形态真能兑现的字段：`transcribe_audio` 不声明
+  `prompt`/`temperature`（chat-audio 下无处安放），`synthesize_speech` 不声明
+  `speed`（小米无语速旋钮）。客户端按 schema 就传不出这些参数，也就不需要
+  在 MCP 面上再回执一次。
+
+### 4.6 上游契约的官方文档复核（2026-10-04 批判审计）
+
+§2 的实测矩阵是「我们打了什么、上游答了什么」，它**不能发现我们没打的
+参数**。这轮把官方文档当作独立信源复核了一遍（`mimo.mi.com/llms.txt` →
+`static/docs/api/audio/Speech-Recognition.md` 与 `.../tts.md`），结论：
+
+**被证实的**（实测与文档一致，代码无需改）：
+
+| 契约 | 文档 | 实测 |
+|---|---|---|
+| ASR 入口是 `POST /v1/chat/completions` | ✅ 文档的 Request Address 就是它 | ✅ token-plan 上 `/audio/transcriptions` 404 |
+| `asr_options` 只有 `language` 一个子键 | ✅（auto/zh/en，默认 auto） | ✅ 严格白名单 |
+| ASR 输入只收 mp3 / wav | ✅ | ✅ m4a 400 |
+| TTS 三个变体 + voicedesign 需 user 消息、voiceclone 需样本 | ✅ | ✅ |
+| 内置音色 9 个（mimo_default/冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean） | ✅ | ✅ 与错误体清单一致 |
+
+**新查出来的**（实测没覆盖到，文档与代码冲突 → 已修）：
+
+- **TTS `audio.format` 只有 `wav/mp3/pcm/pcm16`**，且 `pcm` 与 `pcm16`
+  等价。比 OpenAI `/audio/speech` **窄**——OpenAI 还收 `opus/aac/flac`。
+  此前网关的归一口径是 OpenAI 全量集合，于是客户端按 OpenAI 契约请求
+  `opus` 时被原样发给小米。修法见 `normalizeTTSFormatForCandidate`：
+  桥接形态按官方白名单（`pcm16`→`pcm`），`opus/aac/flac` 本地 400；
+  **透传形态不动**（对 OpenAI 兼容上游这三个仍合法）。
+- **voiceclone 样本只收 mp3/wav**。此前只校验 `data:` 前缀，m4a 样本能过
+  本地校验再被上游 400——与 ASR 侧已做的格式前置校验不对称。
+- ASR 的 `input_audio.data` 官方措辞是「data URL」，但同一段又写明「只给
+  base64 时 `format` 必填」，两种形态都合法；网关发的是后者，实测 200。
+
+**方法论教训**：22 项实测矩阵与 12 项端到端全部「绿」，仍然漏掉了
+`response_format` 这条——因为**没有一条用例会去请求 opus**。覆盖矩阵按
+「我们测过的」开，不按「上游声明的」开。复核信源要独立于实现。
 
 ### 4.3 与 chat 面的关系
 
@@ -238,7 +290,7 @@ openpocket 现状（本轮勘察）：本地 sherpa-onnx Paraformer（移动端�
 | 网关 m4a 输入 | **修复前** 502（上游 400）；**修复后** 本地 400，不打上游 |
 | 网关 TTS 茉莉/默认/mp3/voice=alloy | 全 200（voice 归一生效） |
 | 网关 TTS `speed=1.5` | 200 + `X-Gw-Audio-Ignored-Params: speed` |
-| 新增单测 | `audio_xiaomi_variants_test.go`：17 个 Test，覆盖映射表穷举/三变体形状/400-vs-502/speed 回执/MCP 错误码 |
+| 新增单测 | `audio_xiaomi_variants_test.go`：§7.2 写入时 20 个 Test，§7.3 审计后 34 个（数字以 `grep -c '^func Test' ` 为准；此前此处写「17 个」是从没数过的估值） |
 | 新增实网单测 | `audio_xiaomi_live_test.go`：7 个 opt-in Test（`LLM_GATEWAY_LIVE_XIAOMI_KEY` 才跑，默认 SKIP），含 asr_options 的**差分对照** |
 | `TestMCPEarlyErrorsUseJsonRPCEnvelope` | 复测发现它在 main 上**本来就是红的**（其失败信息在描述当时行为）——顺手修掉（见 §4.5） |
 
@@ -265,20 +317,68 @@ HTTP 200**（200 表示「往返成功，错误在信封里」）。MCP 客户�
 4xx。顺带把该测试里一条无条件打印「当前实现违反协议契约」的 `t.Log` 改成
 只在真违反时说话：修好之后它照样原话打印，是会误导人的绿测日志。
 
+### 7.3 批判式审计（2026-10-04 第三轮）
+
+对 §7.2 的成果做「假设它没做对」的一轮复核。三类查法：
+
+**① 找原则没有贯彻到底的地方。** §7.2 建立了「客户端传了但兑现不了的参数
+要回执」这条原则，却只用在 TTS `speed` 上。ASR 侧同一形态的 `prompt`、
+`temperature`、`language`（归一落空时）仍然是**完全静默**的丢弃，而且
+`TranscribeResult` 连 `IgnoredParams` 字段都没有。`prompt` 是领域词汇提示，
+被吞掉时转写结果只是「看起来不准」，调用方无从判断是模型能力问题还是提示
+词没生效。voice 替换同理：`voice=alloy` 与 `voice=茉莉` 拿到的是同一个声
+音，此前静默。→ 已修（§4.2），非流式走响应头、流式走 SSE 事件。
+
+**② 拿独立信源复核前提。** §7.2 自己写了「桩测试抓不到错误的前提」，却没
+再去动前提。§4.6 用官方文档复核，证实 5 条、推翻 0 条、**新查出 3 条**——
+其中 `response_format` 这条是真缺陷（已用 opus 实测证明上游确实会收到
+`audio.format="opus"`）。
+
+**③ 查自己的数字。** §7.2 写「新增单测 17 个」，实际当时 20 个、现在 34 个。
+17 这个数从没数过。这类数字腐烂在本仓反复出现，所以本轮把它标成「以
+`grep -c` 为准」而不是再写一个新值。
+
+**判据有牙的证明**（光「新测试全绿」不算证据）：5 条变异逐个撤掉修复，每条
+都要求「包仍能编译、只有门转红」，跑完 `cmp` 逐字节还原源文件：
+
+| 变异 | 结果 |
+|---|---|
+| 撤销 opus/aac/flac 本地拦截 | ✓ 转红（3 个子用例） |
+| 撤销 `pcm16`→`pcm` 别名 | ✓ 转红 |
+| 撤销 voice 替换回执 | ✓ 转红 |
+| 撤销 ASR 三项回执 | ✓ 转红（2 个用例） |
+| 撤销 voiceclone 样本格式校验 | ✓ 转红 |
+
+反向守卫也补了一条：`TestNonBridgeCandidateStillAcceptsOpus`——若有人把
+`audioTTSEffectiveFormat` 的 OpenAI 全量口径改窄，会打断所有非小米 TTS
+供应商，这条会红。
+
+**仍未验证的**：这些修正的实网效果没重打（`tp-` key 未在本轮使用）。判据
+是「我们不再发出上游不收的格式」+「回执如实」，不是「实网 200」。需要
+实网复验时：`LLM_GATEWAY_LIVE_XIAOMI_KEY=<tp- key> go test ./domains/streaming/
+-run TestLiveXiaomi`。
+
 ## 8. 已知边界与后续候选
 
-- 小米 ASR 的 **prompt** 仍无法透传（拒收 text part）；`language` 已可透传
-  （走 `asr_options`，无法映射时按自动识别处理）。流式语种由模型自判。
+- 小米 ASR 的 **prompt** 仍无法透传（拒收 text part，官方请求体也没有等价
+  字段）；`temperature` 同理。两者现在会进 `X-Gw-Audio-Ignored-Params` 回执，
+  调用方至少知道自己传的东西没生效。`language` 已可透传（走 `asr_options`，
+  无法映射时按自动识别处理，且此时也回执）。流式语种由模型自判。
 - 小米 ASR 仅 wav/mp3；客户端负责转码（openpocket 采集链路已是 PCM）。
   网关在 chat-audio 形态下本地校验并回 400（不再白跑一轮）。
 - 小米 TTS 无语速旋钮，`speed` 如实回执为未生效；要真语速需在网关做
   重采样（会动音质，倾向不做，让调用方自己在客户端变速）。
+- 小米 TTS 的 `audio.format` 比 OpenAI 窄（只收 wav/mp3/pcm/pcm16，见
+  §4.6）。客户端按 OpenAI 契约请求 opus/aac/flac 现在会被本地 400 拦下——
+  **这是行为变化**：这类请求原先会打到上游（必然 400，此前还回 502）。
+  有客户端依赖「请求 opus 拿回 wav」的话会开始报错，那本来也不是契约。
 - 小米 TTS **流式**回单行裸 JSON（无 `data: ` 前缀），非规范 SSE。网关
   TTS 端点当前不流式（与 OpenAI `/audio/speech` 一致），故未适配；若要
-  开放流式 TTS，需要同时兼容这形状。
+  开放流式 TTS，需要同时兼容这形状。官方还有 `optimize_text_preview`
+  （voicedesign 专用的播报文本润色，未接入）。
 - `voiceclone` 变体只能经 `/audio/speech` 的 `voice` 字段传样本 DataURL，
   与 OpenAI「voice 是音色名」的契约不同名同实；已在端点与 MCP 工具描述里
-  写明。
+  写明。样本容器只收 wav/mp3（官方文档），本地已前置校验。
 - 透传形态的流式是「收完再转发」的伪流式（智谱 30s 限长下可接受）；
   真流式透传需要 handler 级 io.Pipe，列为后续候选。
 - MiniMax asr-1.0 的非标路径 /v1/speech_to_text 与事件形状未适配
