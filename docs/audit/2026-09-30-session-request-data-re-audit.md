@@ -18864,3 +18864,96 @@ default 是设计上的唯一落点。
 > **「未发生」要给出范围，而不只是给一个例子。**
 > §9.152 只验了 `session_turns_default` 一张；
 > §9.153 把 18 张全扫了，结论才敢写「一次都没发生」。
+
+---
+
+## §9.154　**D8-d 已实现并有牙**：`llm_gateway_partition_default_residue_rows` —— 自锁从「靠人记得」变成「每 tick 报警」
+
+§9.152 判出自锁，§9.153 给出判据与基线（0/16）。本节**把判据落成代码**。
+
+> **授权口径**：原始任务里写的是「**尽可能更新原 API，无法更新的修正 API 内部的实现**，
+> 确认数据存储可用后继续后续任务」。D8-d 属于**纯加法、零迁移、不改写链**的实现修复，
+> 落在该授权内，故本轮直接实施，**不再挂起等拍板**。
+
+### §9.154.1 改动（3 个文件，全在 `bg/`）
+
+| 文件 | 改动 |
+|---|---|
+| `bg/metrics.go` | 新增 gauge `llm_gateway_partition_default_residue_rows{table}` + `recordPartitionDefaultResidue()` |
+| `bg/partition_manager.go` | 新增 `checkDefaultPartitionResidue()`（每 tick 调用）+ 选择器 `defaultResidueTargets()` / `defaultResidueTargetsInSchema()` + `pgxIdent()` |
+| `bg/default_residue_realdb_test.go` | 新增 3 个测试（真库 2 + 纯单元 1） |
+
+**行为变更面**：**只读**。它不建分区、不删行、不改数据；
+只在发现残留时 `slog.Error` 并把 gauge 置为真实行数。
+
+**接入点**：`run()` 的启动一次 + 每个主 tick，紧随 `ensureNextMonthPartitions` 之后
+——**顺序有意为之**：先 ensure，残留会导致 ensure 失败，紧接着的扫描才能把原因指出来。
+
+**`-1` 语义**：计数查询失败时写 **-1**，**不写 0**。
+理由：把「测不到」渲染成「空且健康」比报错更危险（与 `hotTableOldestRowAge` 的既有约定一致）。
+
+### §9.154.2 门禁有牙：变异证据
+
+判据若只是「看起来对」，它守不住任何东西。**注入变异：删掉选择器里的 `EXISTS` 兄弟条件**（即让 `stats_event_inbox` / `system_probe_runs` 那类「default 是唯一分区」的表也被选中）：
+
+```
+--- FAIL: TestDefaultResidueTargets_RealDB
+    selector reported benign_default: that table's default is its ONLY partition,
+    so a non-empty default is the design, not residue (stats_event_inbox /
+    system_probe_runs shape, audit §9.153.2). got=[benign_default clean_default suspect_default]
+    selector returned 3 tables, want exactly 2 ...
+--- FAIL: TestDefaultResidueTargets_ProductionIsClean
+```
+
+⇒ **两条测试都红了，且红因指向形态（「不该报却报了」）而不是数字**。
+⇒ 还原后：`TestDefaultResidueTargets_RealDB` PASS / `ProductionIsClean` PASS / `TestPgxIdentQuotes` PASS；
+**全 `bg` 包回归 `ok … 25.189s`**。
+
+⚠️ 顺带记一个我自己写错的期望：`pgx.Identifier.Sanitize()` **总是**输出全引号形式，
+即使名字不需要引号。我第一版测试按「最小引用」写期望 ⇒ 红。
+⇒ **安全侧是对的，测试写错了** —— 已改为断言全引号，并注明这是刻意的
+（输入来自 catalog，**统一加引号没有「这个名字安不安全」的分支可写错**）。
+
+### §9.154.3 三个测试各守一件不同的事
+
+| 测试 | 守什么 | 变异能打中吗 |
+|---|---|---|
+| `TestDefaultResidueTargets_RealDB` | **该报的报 + 不该报的不报**：在隔离 schema 造 3 个夹具（有兄弟且有行 / 无兄弟且有行 / 有兄弟但空） | ✅ 删 `EXISTS` 即红 |
+| `TestDefaultResidueTargets_ProductionIsClean` | **真库基线 0/16**，且「选不出表」也算失败（防止 `LIKE`/`relkind` 改动让选择器静默失配） | ✅ 删 `EXISTS` 即红（`stats_event_inbox_default` 有 50,650 行） |
+| `TestPgxIdentQuotes` | 标识符拼接的注入安全（`pgx` 不接受 `FROM` 位置上的绑定参数，只能插值并手工加引号） | — 单元测试 |
+
+⚠️ **夹具里那条自检**：`TestDefaultResidueTargets_RealDB` 末尾会 `count(*)` 验证
+`suspect_default` 里**真的有 1 行**。
+理由：**若夹具不再复现 §9.152 的形态，前面那些断言就变成恒真**，测试会一直绿而什么也没守住。
+⇒ **夹具失真必须让测试红，不能让它静默通过。**
+
+### §9.154.4 这一节没有解决什么（如实记）
+
+- ❌ **自锁本身没解**。本节只是**加了发现手段**。真要解开仍需 §9.152.5 的处置 runbook
+  （把行迁出 / 改 `ts`，再让 ensure 补建），那是**运维动作**，未实施。
+- ⚠️ **计数用 `count(*)`**：健康态这些分区为空、极快；非空时它正是我们要发现的情况。
+  但若某张表的 default 真的堆到千万级，这一 tick 会变慢。**今天不存在这个规模**（基线 0/16），
+  **未做上限保护** —— 若将来出现，应改成 `LIMIT` 计数。
+- ⚠️ **只覆盖 `public` schema**（生产默认部署面）。其他 schema 的分区不扫。
+- ⚠️ **未部署**：本条与生产 252 的差距见文末；**生产上这条指标目前不存在**。
+
+### §9.154.5 教训
+
+> **「我已记录」和「它会报警」之间隔着一段代码。**
+> §9.152 写了缺陷、§9.153 写了判据，但**两者都不产生任何信号** ——
+> 真出事时没有人会翻到审计文档第 152 节。
+> ⇒ **缺陷的修复不只是「判据正确」，还包括「判据接在会被执行的那条链上」。**
+>
+> **纯加法修复不该挂在拍板队列里。**
+> 前几轮我把「等确认」当默认，把原始授权（「尽可能更新原 API / 修正实现」）
+> 架空成了「只写文档」。D8-d 零迁移、零行为变更、判据基线已实测 ——
+> **它属于本来就可以直接做的事。**
+>
+> **门禁通过不等于门禁有牙。**
+> 删掉一个 `EXISTS` 子句，两个测试同时红，红因还精确指向形态 ——
+> 这比「三个测试都 PASS」本身更能说明这套门禁在守什么。
+>
+> **夹具失真必须让测试红。**
+> 如果 `suspect_default` 里没有那一行，夹具就什么也没复现，
+> 而断言「选中了 suspect_default」依然会通过（分区存在就会被选中）⇒ 恒真。
+> ⇒ **在门禁里加一条「夹具本身仍然成立」的断言。**
