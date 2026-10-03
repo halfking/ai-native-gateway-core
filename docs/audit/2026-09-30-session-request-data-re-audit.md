@@ -12954,3 +12954,90 @@ TestBaselineEnsure… → ok   ← 没红
 > 但「不覆盖」≠「该加」——**先问这条不变式成不成立，再问有没有门。**
 >
 > **重复的门 + 错的范围 = 专门生产假红的机器，比不写更坏。**
+
+---
+
+## §9.105 收掉扫描里剩下的两项：`outbox_events` 是良性的，`gateway.session_tags` 是**真的错了**
+
+§9.101 扫描后剩 3 条待查。本节结掉其中两条，各有明确结论。
+
+### §9.105.1 `outbox_events` 缺失 —— **良性，设计如此**
+
+`client.go:1917` / `:1947` 两处直接 `INSERT INTO outbox_events`。表由
+**`deploy/sql/migrations/V357__create_outbox_events_table.sql`** 创建——
+那是 **Flyway 目录**，不在 `sql/migrations/startup/` 里，**任何已登记的 startup
+迁移都不建它**，252 也没有。
+
+看起来像缺陷，但守卫链是完整的（`cmd/gateway/main.go:2457-2470`）：
+
+```go
+// Only when both ASM_INTERNAL_ENDPOINT and
+// AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET are configured.
+asmEndpoint := …; hmacSecret := …
+if asmEndpoint != "" && hmacSecret != "" {
+    telemetryClient.SetOutboxWriter(&outboxWriterStub{})
+} else {
+    slog.Info("outbox writer disabled: incomplete ASM configuration", …)
+}
+```
+
+两处 INSERT 都在 `c.outboxWriter != nil` 内；ASM 未配置时 writer 为 nil，
+路径根本不走。⇒ **缺表是设计内的良性状态，不是缺陷。**
+
+（顺带：`outboxWriterStub.Write` 本身是 `return nil` 空实现，
+真正的事件写入是 client.go 里直接 `tx.Exec`——stub 只当特征开关用。）
+
+### §9.105.2 ★`gateway.session_tags` —— **两处都错，且从未被解析过**
+
+`session_aggregator.go` 的 `GetSessionMetadata(mergeAutoTags=true)` 分支：
+
+```sql
+SELECT DISTINCT tag_value
+FROM gateway.session_tags          -- schema 不存在
+WHERE tenant_id = $1 AND session_id = $2 AND tag_source = 'auto'
+```
+
+**两层错误**：
+
+1. **schema**：`gateway` 早已不存在。schema 统一时被移除
+   （迁移 430 删掉了冗余的 `CREATE SCHEMA IF NOT EXISTS gateway`；
+   513 的 down 脚本是它最后一次出现），表被移到 `public`。
+   252 实测：`public.session_tags` 存在，`information_schema.schemata`
+   里**没有** `gateway`。
+2. **列名**：真表的主键列是 **`gw_session_id`**，不是 `session_id`。
+   252 的真实列：`id, gw_session_id, tenant_id, tag_key, tag_value,
+   tag_source, confidence, created_by, created_at`。
+
+**为什么一直没人发现**：`GetSessionMetadata` **没有任何生产调用方**
+（全仓只有 `session_metadata_test.go` 调它），而那个单测**驱动 mock**，
+SQL 从头到尾没被解析过。
+
+**修法**：`gateway.` → `public.`，`session_id` → `gw_session_id`。
+修后 **252 上 `PREPARE` 通过**（只解析，不执行、不写行）。
+
+### §9.105.3 剩下的那个缺口：**全新安装根本没有 `session_tags` 表**
+
+真安装库里 `session_tags` 一个都没有；建它的是
+`sql/migrations/startup/351_session_analytics_tables.sql`——
+**未登记**在 `StartupFiles`（与 §9.101-C 的 467 同一类 baseline-gap）。
+
+**本节不登记 351**，理由是明确的：
+`GetSessionMetadata` 没有任何调用方，为一条**死读路径**登记一个迁移，
+比留着缺口更糟（会把一个没人踩的坑变成一条长期需要维护的迁移）。
+
+⇒ 这是我**有意留下的缺口**，不是遗漏。要不要补，取决于这个函数将来是否接线。
+
+### §9.105.4 这一节的教训
+
+> **「缺一张表」不等于「缺一个缺陷」。** `outbox_events` 缺表看着刺眼，
+> 追下去发现整条链都有守卫（env 双开关 + nil 检查 + 明确的 disabled 日志）。
+> **没有守卫的缺失才是缺陷**。
+>
+> **一条从未被解析的 SQL 可以同时错两处而无人知晓。** `gateway.` 与 `session_id`
+> 都在那儿很久了，唯一的调用方是 mock 单测。
+> ⇒ 与 §9.94/§9.102 同族：**观测量全来自被检验对象内部的门验不了那个对象**
+> —— mock 验的是「调用发生了」，不是「SQL 能跑」。
+>
+> **「修一半」也要查第二半。** 我先把 `gateway.` 改成 `public.`，
+> 立刻又撞上列名错误。若停在第一步，就会留下一个仍 42P01 的语句，
+> 并且注释里写着「已修复」。

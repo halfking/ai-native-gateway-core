@@ -508,13 +508,34 @@ func (a *SessionAggregator) GetSessionMetadata(ctx context.Context, tenantID, se
 
 	meta.UserTags = userTags
 
-	// M3: merge auto tags from session_tags if requested
+	// M3: merge auto tags from session_tags if requested.
+	//
+	// §9.105: this read `gateway.session_tags` with `session_id`. Both halves
+	// were wrong, and the whole statement had never been parsed:
+	//
+	//   - schema: `gateway` no longer exists. The schema unification removed it
+	//     (migration 430 dropped the redundant `CREATE SCHEMA IF NOT EXISTS
+	//     gateway`; 513's down script is the last place it appears) and moved
+	//     the table to public. Production 252: public.session_tags exists,
+	//     information_schema.schemata has no row for gateway.
+	//   - column: the real key is `gw_session_id`, not `session_id`
+	//     (verified against information_schema.columns on 252).
+	//
+	// It stayed invisible because GetSessionMetadata has no production caller —
+	// only session_metadata_test.go reaches it, and that test drives a mock, so
+	// the SQL is never parsed. Do not revert either change.
+	//
+	// Fresh installs still have no session_tags at all (created by unregistered
+	// migration 351), so this path would still 42P01 there. That is not wired
+	// on purpose: nothing calls the function, and registering 351 for a dead
+	// read path is a bigger decision than this fix. Recorded in
+	// docs/audit/2026-09-30-session-request-data-re-audit.md §9.105.
 	if mergeAutoTags {
 		var autoTags []string
 		rows, err := a.db.Query(ctx, `
 			SELECT DISTINCT tag_value
-			FROM gateway.session_tags
-			WHERE tenant_id = $1 AND session_id = $2 AND tag_source = 'auto'
+			FROM public.session_tags
+			WHERE tenant_id = $1 AND gw_session_id = $2 AND tag_source = 'auto'
 			ORDER BY tag_value
 		`, tenantID, sessionID)
 		if err != nil {
