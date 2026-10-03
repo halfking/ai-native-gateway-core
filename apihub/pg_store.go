@@ -25,7 +25,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -383,13 +382,15 @@ func (s *pgStore) Neighbors(ctx context.Context, tenantID string, k Kind, refID 
 // Routes through s.q when present (test seam); otherwise uses s.pool.
 // In production NewPGStore sets only pool, so s.q is always nil.
 //
-// 2026-07-16: RESET app.current_tenant before returning the connection
-// to the pool to prevent GUC pollution across transactions when pgxpool
-// reuses the same underlying PG connection. Without this, a connection
-// that previously ran `SET LOCAL app.current_tenant='tenant_a'` inside
-// a transaction will retain 'tenant_a' at session level after commit,
-// causing subsequent transactions on that connection to inherit the
-// stale tenant context even when set_config(..., true) is called again.
+// 2026-07-16 曾在此处加 `RESET app.current_tenant`，理由是「防止 GUC 跨事务
+// 污染连接池」。2026-10-03 移除：该理由基于一个**不成立的前提** —— 它假定
+// 写入用的是 `SET LOCAL`（会话级残留）。但 setTenantGUC 用的是
+// `set_config('app.current_tenant', $1, true)`，第三个参数 true 即事务级作用域，
+// PostgreSQL 在提交/回滚时自动撤销，**根本不会残留在连接上**。
+//
+// 保留它反而有害：defer 在 `return tx.Commit(ctx)` 之后执行，事务已关闭，
+// `tx.Exec` 必返 ErrTxClosed，于是每次成功调用都打一条 WARN。
+// 252 实测 3 小时 200,897 条（≈18.5 行/秒），/var/log/messages 1.2G、约 6 MB/h。
 func (s *pgStore) withTenantTx(ctx context.Context, tenantID string, fn func(pgx.Tx) error) error {
 	if s.pool == nil && s.q == nil {
 		return ErrNoDB
@@ -403,12 +404,20 @@ func (s *pgStore) withTenantTx(ctx context.Context, tenantID string, fn func(pgx
 		return fmt.Errorf("apihub: begin tx: %w", err)
 	}
 	defer func() {
-		// Clean up session-level GUC before returning conn to pool.
-		// RESET 失败时 rollback 兜底（GUC 随事务回滚失效），这里留痕
-		// 不上抛——defer 里无法安全改变已定的返回值（12h 审计 P3）。
-		if _, err := tx.Exec(ctx, "RESET app.current_tenant"); err != nil {
-			slog.Warn("apihub: reset tenant GUC failed; rollback will discard it", "error", err)
-		}
+		// 2026-10-03：删掉这里的 `tx.Exec(ctx, "RESET app.current_tenant")`。
+		//
+		// 它有两个问题，第二个更严重：
+		//  1) 本来就多余 —— setTenantGUC 用的是
+		//     `set_config('app.current_tenant', $1, true)`，第三个参数 true 即
+		//     **事务级作用域**，提交/回滚时该设置自动消失，不可能泄漏到连接池。
+		//     下方 rollback 本就足以覆盖全部路径。
+		//  2) 成功路径上必然报错 —— defer 在 `return tx.Commit(ctx)` 之后执行，
+		//     此时事务已关闭，`tx.Exec` 返回 pgx.ErrTxClosed（"tx is closed"）。
+		//     于是**每次成功调用都打一条 WARN**：252 实测 3 小时 200,897 条
+		//     （≈18.5 行/秒），/var/log/messages 涨到 1.2G、约 6 MB/h。
+		//
+		// 这不是偶发错误而是恒定噪声，却以 WARN 形态出现，看起来像持续故障。
+		// 原注释「RESET 失败时 rollback 兜底」其实已经承认了 rollback 才是兜底。
 		_ = tx.Rollback(ctx) // rollback is idempotent after commit
 	}()
 
@@ -424,8 +433,7 @@ func (s *pgStore) withTenantTx(ctx context.Context, tenantID string, fn func(pgx
 // withTenantReadOnlyTx is the read-only variant. We use READ ONLY for
 // planner hints and to make accidental writes fail loudly.
 //
-// 2026-07-16: RESET app.current_tenant before returning the connection
-// to the pool (same reasoning as withTenantTx).
+// 2026-10-03: 同 withTenantTx —— 事务级 GUC 不残留，无需 RESET（理由见上）。
 func (s *pgStore) withTenantReadOnlyTx(ctx context.Context, tenantID string, fn func(pgx.Tx) error) error {
 	if s.pool == nil && s.q == nil {
 		return ErrNoDB
@@ -439,9 +447,8 @@ func (s *pgStore) withTenantReadOnlyTx(ctx context.Context, tenantID string, fn 
 		return fmt.Errorf("apihub: begin read tx: %w", err)
 	}
 	defer func() {
-		if _, err := tx.Exec(ctx, "RESET app.current_tenant"); err != nil {
-			slog.Warn("apihub: reset tenant GUC failed; rollback will discard it", "error", err)
-		}
+		// 2026-10-03：同 withTenantTx —— 删掉事务级 GUC 的冗余 RESET。
+		// 理由与实测见上；此处原本是第二份同款拷贝。
 		_ = tx.Rollback(ctx)
 	}()
 

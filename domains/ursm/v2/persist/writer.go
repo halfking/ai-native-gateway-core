@@ -90,12 +90,25 @@ type Row struct {
 }
 
 // payloadDuplicateKeys 是已在 typed 列中存在、不应再进 payload 的 hash 键。
-// 2026-10-02 实测：7 个键合计 70.8 B/行 = payload 的 24%，且全部是
-// 已有同名列以 JSON 字符串再存一遍（"generation":"43" 而列是 bigint）。
+//
+// 2026-10-02 初版只列了 7 个键，而同一次 818 迁移实际把 **31 个** hash 键
+// 提升为 typed 列 —— 漏掉的 24 个既进了 typed 列、又被原样抄进 payload，
+// 同一个值存了两份。2026-10-03 生产实测：payload 35 个键里 27 个重复；
+// 逐值比对 3797 行样本 8 个字段 3797/3797 完全一致。
+//
+// 实测收益（ursm_node_snapshot_min，19,877,268 行 / 10 GB）：
+//
+//	payload 215 -> 34 B/行，整行 402 -> 220 B（-45.1%），全表约省 3436 MB。
 //
 // 这是一张**白名单式的排除表**：hash 里新出现的键默认**保留**在 payload 中，
 // 只有明确列在此处的键才被剔除。方向不能反 —— 反了会在 hash 演进时静默丢字段。
+//
+// ★ 清单靠人维护就会漂（7 vs 31 就是这么来的）。TestPayloadDuplicateKeysCoverAllTypedHashKeys
+//
+//	会把 writer.go 里每一处 hash["..."] 读取都与本表比对，漏一个就红。
+//	新增 typed 列时若忘了加进来，那条测试就是提醒。
 var payloadDuplicateKeys = [...]string{
+	// —— 818 之前就已存在的 7 个 ——
 	"available",       // -> Row.Available      (boolean 列)
 	"generation",      // -> Row.Generation     (bigint  列)
 	"source_priority", // -> Row.SourcePriority (int     列)
@@ -103,6 +116,43 @@ var payloadDuplicateKeys = [...]string{
 	"sr_1m",           // -> Row.SR1m           (real    列)
 	"sr_5m",           // -> Row.SR5m           (real    列)
 	"sr_30m",          // -> Row.SR30m          (real    列)
+
+	// —— 818 提升但当初漏排的 24 个 ——
+	"canonical",                // -> Row.CanonicalName  (text)
+	"tenant_id",                // -> Row.TenantID       (text)
+	"provider_id",              // -> Row.ProviderID     (integer)
+	"health",                   // -> Row.HealthStatus   (text)
+	"score",                    // -> Row.Score          (real)
+	"lat_p50_ms",               // -> Row.LatP50Ms       (integer)
+	"updated_at_ms",            // -> Row.UpdatedAtMS    (bigint)
+	"last_probe_at_ms",         // -> Row.LastProbeAtMS  (bigint)
+	"last_probe_latency_ms",    // -> Row.LastProbeLatencyMS
+	"last_attempt_ms",          // -> Row.LastAttemptMS  (bigint)
+	"last_ok_ms",               // -> Row.LastOKMS       (bigint)
+	"last_request_at_ms",       // -> Row.LastRequestAtMS
+	"last_request_error_at_ms", // -> Row.LastRequestErrorAtMS
+	"manual_at_ms",             // -> Row.ManualAtMS     (bigint)
+	"cool_until_ms",            // -> Row.CoolUntilMS    (bigint)
+	"event_seq",                // -> Row.EventSeq       (bigint)
+	"disabled",                 // -> Row.Disabled       (boolean)
+	"last_direct_ok",           // -> Row.LastDirectOK   (boolean)
+	"manual_hold",              // -> Row.ManualHold     (boolean)
+	"success_count",            // -> Row.SuccessCount   (integer)
+	"failure_count",            // -> Row.FailureCount   (integer)
+	"disable_count",            // -> Row.DisableCount   (integer)
+	"lat_ewma_ms",              // -> Row.LatEWMAMS      (real)
+	"empty_response_rate_1m",   // -> Row.EmptyResponseRate1m
+	"empty_response_rate_30m",  // -> Row.EmptyResponseRate30m
+	"last_err",                 // -> Row.LastErr        (text)
+	"manual_reason",            // -> Row.ManualReason   (text)
+	"manual_actor",             // -> Row.ManualActor    (text)
+	"disabled_reason",          // -> Row.DisabledReason (text)
+	"cool_reason",              // -> Row.CoolReason     (text)
+
+	// —— 窗口采样字段，writer 在更早处映射，同样是 typed 列 ——
+	"samples_1m",  // -> Row.Samples1m
+	"samples_5m",  // -> Row.Samples5m
+	"samples_30m", // -> Row.Samples30m
 }
 
 func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
