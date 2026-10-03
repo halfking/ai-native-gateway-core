@@ -1,6 +1,8 @@
 package bg
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -616,4 +618,85 @@ func TestPumpDueStatesOnlyUpdatesNextRetryAtOnSuccess(t *testing.T) {
 		t.Fatalf("pumpDueStatesToQueue must order: error check → continue → UPDATE (found positions: err=%d, continue=%d, update=%d)",
 			errCheckPos, continuePos, updatePos)
 	}
+}
+
+// 2026-10-03 音频端点轮：音频模型的探针形态分发。纯文本 "ping" 对
+// ASR/TTS 模型必 400（小米实测），探针会把健康上游标红 → URSM 红牌
+// → no_candidate。三个测试锁住形态选择的判定。
+func TestDirectProbeBodyASRShape(t *testing.T) {
+	body := directProbeBody("mimo-v2.5-asr", "openai-completions")
+	if !strings.Contains(body, `"type":"input_audio"`) {
+		t.Fatalf("ASR probe must carry input_audio, got: %s", truncateProbePreview(body))
+	}
+	if strings.Contains(body, `"content":"ping"`) {
+		t.Fatalf("ASR probe must not carry text-only ping (xiaomi 400s on text parts)")
+	}
+	if !strings.Contains(body, `"format":"wav"`) {
+		t.Fatalf("ASR probe wav format missing: %s", truncateProbePreview(body))
+	}
+	// base64 payload 必须是合法 WAV（RIFF 头）
+	var parsed struct {
+		Messages []struct {
+			Content []struct {
+				InputAudio struct {
+					Data   string `json:"data"`
+					Format string `json:"format"`
+				} `json:"input_audio"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("ASR probe body not JSON: %v", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(parsed.Messages[0].Content[0].InputAudio.Data)
+	if err != nil {
+		t.Fatalf("input_audio data not base64: %v", err)
+	}
+	if len(raw) < 44 || string(raw[0:4]) != "RIFF" {
+		t.Fatalf("probe wav payload invalid: %d bytes, head=%q", len(raw), string(raw[0:4]))
+	}
+}
+
+func TestDirectProbeBodyTTSShape(t *testing.T) {
+	body := directProbeBody("mimo-v2.5-tts", "openai-completions")
+	if !strings.Contains(body, `"role":"assistant"`) {
+		t.Fatalf("TTS probe must use an assistant message (xiaomi 400s otherwise): %s", truncateProbePreview(body))
+	}
+	if !strings.Contains(body, `"modalities"`) {
+		t.Fatalf("TTS probe must request audio modality: %s", truncateProbePreview(body))
+	}
+	// 不带 voice：provider 无效音色名会 400，免 voice 走默认（小米实测 200）
+	if strings.Contains(body, `"voice"`) {
+		t.Fatalf("TTS probe must omit voice: %s", truncateProbePreview(body))
+	}
+}
+
+func TestDirectProbeBodyTextModelUnchanged(t *testing.T) {
+	body := directProbeBody("mimo-v2.5", "openai-completions")
+	if !strings.Contains(body, `"content":"ping"`) {
+		t.Fatalf("text model probe must stay ping-shaped: %s", body)
+	}
+	if strings.Contains(body, "input_audio") {
+		t.Fatalf("text model probe must not carry audio")
+	}
+}
+
+func TestTTSProbeShapeName(t *testing.T) {
+	for _, m := range []string{"mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone", "cosyvoice-v2", "fish-speech-1", "xtts-v2"} {
+		if !ttsProbeShapeName(m) {
+			t.Errorf("%s should classify as TTS", m)
+		}
+	}
+	for _, m := range []string{"mimo-v2.5-asr", "whisper-1", "gpt-4o-audio-preview", "glm-asr"} {
+		if ttsProbeShapeName(m) {
+			t.Errorf("%s should NOT classify as TTS", m)
+		}
+	}
+}
+
+func truncateProbePreview(s string) string {
+	if len(s) > 200 {
+		return s[:200] + "…"
+	}
+	return s
 }
