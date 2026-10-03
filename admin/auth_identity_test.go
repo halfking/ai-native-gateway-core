@@ -110,7 +110,7 @@ func TestIdentity_AcceptsForeignIssuer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if p.Issuer != "pocket" || p.UserID != 999 || p.TenantID != "tenant-pocket" || p.Username != "carol" {
+	if p.Issuer != "pocket" || p.UserID != 0 || p.TenantID != "tenant-pocket" || p.Username != "" || p.Subject != "u-pocket" || p.ExternalUserID != "999" {
 		t.Fatalf("unexpected foreign: %+v", p)
 	}
 	if p.Source != "multi_issuer" {

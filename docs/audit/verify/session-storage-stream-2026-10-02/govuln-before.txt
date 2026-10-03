@@ -1,0 +1,153 @@
+=== Symbol Results ===
+
+Vulnerability #1: GO-2026-6505
+    OpenTelemetry-Go: Exporter config logging may leak endpoint URLs in info
+    logs in go.opentelemetry.io/otel/exporters/otlp/otlptrace
+  More info: https://pkg.go.dev/vuln/GO-2026-6505
+  Module: go.opentelemetry.io/otel/exporters/otlp/otlptrace
+    Found in: go.opentelemetry.io/otel/exporters/otlp/otlptrace@v1.44.0
+    Fixed in: go.opentelemetry.io/otel/exporters/otlp/otlptrace@v1.45.0
+    Example traces found:
+      #1: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls otlptrace.Exporter.ExportSpans
+      #2: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls otlptrace.Exporter.Shutdown
+      #3: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which calls otlptrace.New
+      #4: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls otlptrace.Shutdown
+      #5: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls otlptrace.Start
+      #6: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which calls otlptrace.init
+      #7: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls tracetransform.Spans
+      #8: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which eventually calls tracetransform.init
+
+  Module: go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+    Found in: go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.44.0
+    Fixed in: go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.45.0
+    Example traces found:
+      #1: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls counter.NextExporterID
+      #2: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which calls counter.init
+      #3: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls envconfig.EnvOptionsReader.Apply
+      #4: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls envconfig.WithBool
+      #5: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls envconfig.WithCertPool
+      #6: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls envconfig.WithClientCert
+      #7: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls envconfig.WithDuration
+      #8: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls envconfig.WithHeaders
+      #9: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls envconfig.WithURL
+      #10: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which eventually calls envconfig.init
+      #11: db/db.go:2834:14: db.IsSchemaMismatchError calls errors.As, which eventually calls internal.PartialSuccess.As
+      #12: domains/streaming/handler.go:7903:38: streaming.HealthHandler.ServeHTTP calls internal.PartialSuccess.Error
+      #13: bg/node_probe.go:1951:15: bg.NodeProbeWorker.ProbeSync calls errors.Is, which eventually calls internal.PartialSuccess.Is
+      #14: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls internal.TracePartialSuccessError
+      #15: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which calls internal.init
+      #16: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls observ.ExportOp.End
+      #17: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls observ.Instrumentation.ExportSpans
+      #18: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls observ.NewInstrumentation
+      #19: domains/routing/minheap_topk.go:217:19: routing.AcquireTopK calls sync.Pool.Get, which calls observ.init
+      #20: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which calls observ.init
+      #21: domains/routing/minheap_topk.go:217:19: routing.AcquireTopK calls sync.Pool.Get, which calls observ.init
+      #22: domains/routing/minheap_topk.go:217:19: routing.AcquireTopK calls sync.Pool.Get, which calls observ.init
+      #23: domains/routing/minheap_topk.go:217:19: routing.AcquireTopK calls sync.Pool.Get, which calls observ.init
+      #24: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls otlpconfig.NewHTTPConfig
+      #25: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls otlpconfig.NewHTTPOption
+      #26: internal/observability/tracer.go:78:29: observability.InitTracer calls otlptracehttp.WithEndpoint, which calls otlpconfig.WithEndpoint
+      #27: internal/observability/tracer.go:79:29: observability.InitTracer calls otlptracehttp.WithInsecure, which calls otlpconfig.WithInsecure
+      #28: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which calls otlpconfig.init
+      #29: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New
+      #30: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls otlptracehttp.Stop
+      #31: internal/observability/tracer.go:78:29: observability.InitTracer calls otlptracehttp.WithEndpoint
+      #32: internal/observability/tracer.go:79:29: observability.InitTracer calls otlptracehttp.WithInsecure
+      #33: upstream/client.go:301:29: upstream.Client.doWithClient calls otlptracehttp.bodyReaderErr
+      #34: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls otlptracehttp.client.Start
+      #35: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls otlptracehttp.client.Stop
+      #36: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls otlptracehttp.client.UploadTraces
+      #37: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init
+      #38: domains/routing/minheap_topk.go:217:19: routing.AcquireTopK calls sync.Pool.Get, which calls otlptracehttp.init
+      #39: db/db.go:2834:14: db.IsSchemaMismatchError calls errors.As, which eventually calls otlptracehttp.retryableError.As
+      #40: domains/streaming/handler.go:7903:38: streaming.HealthHandler.ServeHTTP calls otlptracehttp.retryableError.Error
+      #41: internal/streamretry/wrapper.go:313:37: streamretry.ExtractHTTPStatus calls otlptracehttp.retryableError.Unwrap
+      #42: internal/observability/tracer.go:77:36: observability.InitTracer calls otlptracehttp.New, which eventually calls retry.Config.RequestFunc
+      #43: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls retry.RequestFunc
+      #44: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls retry.RequestFunc
+      #45: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which calls retry.init
+      #46: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls x.Feature[string].Enabled
+      #47: internal/observability/tracer.go:47:2: observability.init calls otlptracehttp.init, which eventually calls x.init
+
+  Module: go.opentelemetry.io/otel/sdk
+    Found in: go.opentelemetry.io/otel/sdk@v1.44.0
+    Fixed in: go.opentelemetry.io/otel/sdk@v1.45.0
+    Example traces found:
+      #1: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls env.BatchSpanProcessorExportTimeout
+      #2: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls env.BatchSpanProcessorMaxExportBatchSize
+      #3: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls env.BatchSpanProcessorMaxQueueSize
+      #4: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls env.BatchSpanProcessorScheduleDelay
+      #5: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider, which eventually calls env.SpanAttributeCount
+      #6: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider, which eventually calls env.SpanAttributeValueLength
+      #7: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider, which eventually calls env.SpanEventAttributeCount
+      #8: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider, which eventually calls env.SpanEventCount
+      #9: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider, which eventually calls env.SpanLinkAttributeCount
+      #10: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider, which eventually calls env.SpanLinkCount
+      #11: internal/observability/tracer.go:50:2: observability.init calls trace.init, which calls env.init
+      #12: internal/observability/tracer.go:50:2: observability.init calls trace.init, which calls instrumentation.init
+      #13: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls observ.BSP.Processed
+      #14: middleware/tracing.go:32:3: middleware.Wrap calls trace.recordingSpan.End, which eventually calls observ.BSP.ProcessedQueueFull
+      #15: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls observ.BSP.Shutdown
+      #16: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls observ.NewBSP
+      #17: middleware/tracing.go:28:23: middleware.TracingMiddleware.Wrap calls otel.Tracer, which eventually calls observ.NewTracer
+      #18: middleware/tracing.go:31:28: middleware.Wrap calls trace.tracer.Start, which calls observ.Tracer.Enabled
+      #19: middleware/tracing.go:32:3: middleware.Wrap calls trace.recordingSpan.End, which calls observ.Tracer.SpanEnded
+      #20: middleware/tracing.go:31:28: middleware.Wrap calls trace.tracer.Start, which eventually calls observ.Tracer.SpanLive
+      #21: middleware/tracing.go:31:28: middleware.Wrap calls trace.tracer.Start, which calls observ.Tracer.SpanStarted
+      #22: internal/observability/tracer.go:50:2: observability.init calls trace.init, which calls observ.init
+      #23: domains/routing/minheap_topk.go:217:19: routing.AcquireTopK calls sync.Pool.Get, which calls observ.init
+      #24: internal/observability/tracer.go:99:25: observability.InitTracer calls resource.Default
+      #25: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls resource.DefaultWithContext
+      #26: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider, which eventually calls resource.Environment
+      #27: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider, which eventually calls resource.Merge
+      #28: internal/observability/tracer.go:88:26: observability.InitTracer calls resource.New
+      #29: internal/observability/tracer.go:50:2: observability.init calls trace.init, which eventually calls resource.NewSchemaless
+      #30: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls resource.Resource.Equivalent
+      #31: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls resource.Resource.Iter
+      #32: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls resource.Resource.SchemaURL
+      #33: internal/observability/tracer.go:89:26: observability.InitTracer calls resource.WithAttributes
+      #34: internal/observability/tracer.go:95:20: observability.InitTracer calls resource.WithHost
+      #35: internal/observability/tracer.go:94:23: observability.InitTracer calls resource.WithProcess
+      #36: internal/observability/tracer.go:49:2: observability.init calls resource.init
+      #37: internal/testdb/testdb.go:113:33: testdb.Create calls pgconn.ParseConfig, which eventually calls resource.read
+      #38: internal/observability/tracer.go:50:2: observability.init calls trace.init, which eventually calls sdk.Version
+      #39: internal/observability/tracer.go:49:2: observability.init calls resource.init, which calls sdk.init
+      #40: internal/observability/tracer.go:109:45: observability.InitTracer calls trace.AlwaysSample
+      #41: cmd/compression-bench/main.go:447:27: compression.pgxbatch.flush calls pgxpool.Pool.CopyFrom, which eventually calls trace.NewBatchSpanProcessor
+      #42: internal/observability/tracer.go:103:34: observability.InitTracer calls trace.NewTracerProvider
+      #43: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls trace.Shutdown
+      #44: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls trace.Shutdown
+      #45: internal/observability/tracer.go:126:24: observability.InitTracer calls trace.TracerProvider.Shutdown
+      #46: middleware/tracing.go:28:23: middleware.TracingMiddleware.Wrap calls otel.Tracer, which calls trace.TracerProvider.Tracer
+      #47: internal/observability/tracer.go:105:29: observability.InitTracer calls trace.WithBatchTimeout
+      #48: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher
+      #49: internal/observability/tracer.go:106:35: observability.InitTracer calls trace.WithMaxExportBatchSize
+      #50: internal/observability/tracer.go:108:24: observability.InitTracer calls trace.WithResource
+      #51: internal/observability/tracer.go:109:23: observability.InitTracer calls trace.WithSampler
+      #52: domains/streaming/handler.go:7903:38: streaming.HealthHandler.ServeHTTP calls trace.errUnsupportedSampler.Error
+      #53: internal/observability/tracer.go:50:2: observability.init calls trace.init
+      #54: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls trace.init
+      #55: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls trace.logDropped
+      #56: db/db.go:3777:19: db.DB.Stdlib calls sync.Once.Do, which eventually calls trace.logDropped
+      #57: middleware/tracing.go:32:3: middleware.Wrap calls trace.nonRecordingSpan.End
+      #58: middleware/tracing.go:31:28: middleware.Wrap calls noop.Tracer.Start, which calls trace.nonRecordingSpan.IsRecording
+      #59: internal/observability/tenant.go:80:20: observability.SetTenantAttrs calls trace.nonRecordingSpan.SetAttributes
+      #60: middleware/tracing.go:48:18: middleware.Wrap calls trace.nonRecordingSpan.SetStatus
+      #61: domains/orchestration/observ/trace.go:40:40: observ.TraceIDFromContext calls trace.SpanContextFromContext, which calls trace.nonRecordingSpan.SpanContext
+      #62: middleware/tracing.go:32:3: middleware.Wrap calls trace.recordingSpan.End
+      #63: middleware/tracing.go:31:28: middleware.Wrap calls noop.Tracer.Start, which calls trace.recordingSpan.IsRecording
+      #64: internal/observability/tenant.go:80:20: observability.SetTenantAttrs calls trace.recordingSpan.SetAttributes
+      #65: middleware/tracing.go:48:18: middleware.Wrap calls trace.recordingSpan.SetStatus
+      #66: domains/orchestration/observ/trace.go:40:40: observ.TraceIDFromContext calls trace.SpanContextFromContext, which calls trace.recordingSpan.SpanContext
+      #67: domains/streaming/handler.go:7903:38: streaming.HealthHandler.ServeHTTP calls trace.samplerArgParseError.Error
+      #68: internal/streamretry/wrapper.go:313:37: streamretry.ExtractHTTPStatus calls trace.samplerArgParseError.Unwrap
+      #69: middleware/tracing.go:31:28: middleware.Wrap calls trace.tracer.Start
+      #70: internal/logging/bleve_fanout.go:401:55: logging.BleveFanoutHandler.WithAttrs calls logr.slogHandler.WithAttrs, which eventually calls trace.tracerProviderConfig.MarshalLog
+      #71: internal/observability/tracer.go:104:23: observability.InitTracer calls trace.WithBatcher, which eventually calls x.Feature[string].Enabled
+      #72: internal/observability/tracer.go:49:2: observability.init calls resource.init, which calls x.init
+
+Your code is affected by 1 vulnerability from 1 module.
+This scan also found 1 vulnerability in packages you import and 5
+vulnerabilities in modules you require, but your code doesn't appear to call
+these vulnerabilities.
+Use '-show verbose' for more details.

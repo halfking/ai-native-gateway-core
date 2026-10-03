@@ -1,0 +1,9 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/kaixuan/llm-gateway-go/security/sanitize
+cpu: Apple M4 Max
+BenchmarkStorageAuditStreamCapacity/128-16         	       1	 635439625 ns/op	   1.65 MB/s	      8191 frames/op	56555712 B/op	  606562 allocs/op
+BenchmarkStorageAuditStreamCapacity/8192-16        	       1	 942216708 ns/op	   1.10 MB/s	       127.0 frames/op	19341328 B/op	   10507 allocs/op
+BenchmarkStorageAuditStreamCapacity/1048576-16     	       1	 589204250 ns/op	   1.78 MB/s	         1.000 frames/op	 7371080 B/op	     158 allocs/op
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/security/sanitize	3.358s
