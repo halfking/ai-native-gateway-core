@@ -18957,3 +18957,139 @@ default 是设计上的唯一落点。
 > 如果 `suspect_default` 里没有那一行，夹具就什么也没复现，
 > 而断言「选中了 suspect_default」依然会通过（分区存在就会被选中）⇒ 恒真。
 > ⇒ **在门禁里加一条「夹具本身仍然成立」的断言。**
+
+---
+
+## §9.155　`request_status` 落库已实现：把「信号被丢弃」这条**退役硬前置**补上（含我自己的两次操作失误）
+
+§9.150.4 判出「判别信号在内存里存在、落库时被丢弃」。本节把它修掉。
+
+> **为什么这次不等拍板**：这条**不决定任何成本口径**。
+> 它只是把网关**已经算好**的一个字段落进会话族。D7-f（失败流量算不算钱）是业务决策，仍等你；
+> **本节是退役的前置条件**：394,614 行（连停写窗口 ≈446,819）扫描噪声已在会话族内，
+> `request_logs` 一删，这些行将**永久失去可识别标签**，而会话族现有列筛不出来（误报 41.2%）。
+
+### §9.155.1 改动（6 个文件）
+
+| 文件 | 改动 |
+|---|---|
+| `sql/migrations/startup/823_session_turns_request_status.sql` | **新增**：`session_turns` + `session_turns_hot` **对称**加 `request_status TEXT`，含列契约自检 |
+| `installer/internal/dbinit/runner.go` | 注册 823 到 `Runner.StartupFiles` |
+| `internal/sessionv2mirror/hook.go` | `entryToProcessedRequest` **原样复制** `entry.RequestStatus` |
+| `domains/session/v2/session_writer_v2.go` | `ProcessedRequest.RequestStatus` 字段 + 映射到 `TurnRecord` |
+| `domains/session/v2/turn_writer.go` | `TurnRecord.RequestStatus` 字段 + INSERT **末尾追加 `$98`** |
+| `internal/sessionv2mirror/request_status_pass_through_test.go` | **新增** 4 个测试 |
+| 3 个既有测试文件 | 参数数门禁 `anyArgs(97) → anyArgs(98)`（见 §9.155.4） |
+
+**无回填**，且这是有意的：判定所需信号（v1 的 `request_status`）在退役后不存在，
+回填只会是猜测。⇒ **规则是「迁移 823 之后写入的行 100% 正确」，历史行恒为 NULL。**
+
+### §9.155.2 一个关键发现：promote 是**目录驱动**的，**不需要改函数**
+
+我原以为必须重写 182 行 `promote_session_turns_hot_to_partition`（它有显式列清单）。
+读 707 版后发现**不是**：
+
+```sql
+-- 707：显式列名清单取自 hot 的目录（attnum 序）
+SELECT string_agg(quote_ident(attname), ',' ORDER BY attnum) INTO v_cols
+  FROM pg_attribute WHERE attrelid = 'public.session_turns_hot'::regclass ...
+```
+
+⇒ **任何对称加列自动流经 promote，无需改函数**；
+且函数入口有一道**列契约检查**（父表与 hot 的 `列名:类型:非空` 集合必须全等，
+否则 `RAISE EXCEPTION`）⇒ **只加一张表会被响亮拒绝，不会静默丢列。**
+
+⚠️ 顺带**收回一个我差点报成缺陷的假发现**：
+我先用机械差集算出「promote 只搬 1 列，Go 写 97 列，96 列被丢」——
+**那个提取器坏了**（函数用 `format()` 动态拼列清单，我的正则只抽到 1 个 `%s`）。
+改读原文后真相是：列**按名映射、全部自动流经**。
+⇒ 我还顺手怀疑 `search_text` 被丢（`session_turns` 里 **0 行**有值，hot 里有 **17** 行）——
+**这也是假的**：该列是后加的，1,688,630 行历史数据天然为 NULL，
+而 `hot` 那 17 行是最近 1,076 行里的新数据。**「已 promote = 0、未 promote = 17」
+恰恰是「没被丢」的证据，不是不对称的证据。**
+
+### §9.155.3 真库端到端验证（**且我没有按计划回滚，见 §9.155.4**）
+
+```
+BEGIN;
+\i 823_session_turns_request_status.sql     -- 契约自检 NOTICE 通过
+INSERT INTO session_turns_hot (..., request_status) VALUES (..., 'rate_limited');
+SELECT promote_session_turns_hot_to_partition('1 second', 1000);   -- moved = 1000
+SELECT request_status FROM session_turns WHERE request_id='d8d-probe-req-1';
+   → session_turns 中该行 request_status=rate_limited     ✅ 值穿透成功
+```
+
+⇒ **目录驱动的 promote 确实把新列带过去了，无需改函数。**
+⚠️ 收尾已核对：数据守恒（1,688,630 + 92 = 1,688,722，比测试前多 16 行是库仍在写入，
+**无丢失**）；**我的探针行已删除**（`DELETE 1` → 残留 0）。
+
+### §9.155.4 我在这条线上犯的两个操作失误（如实记，不藏）
+
+**失误 1：以为回滚了，其实没有。**
+我用 `BEGIN; \i 迁移文件; …; ROLLBACK;` 想把验证完全隔离。
+但**迁移文件自带 `BEGIN; … COMMIT;`**，把外层事务提前结束 ⇒
+`ROLLBACK` 报 `WARNING: there is no transaction in process` ⇒
+**`ALTER TABLE` 被真实提交到本地库，promote 也真搬了 1000 行。**
+⇒ 不是数据损坏（列本就该加、行本就该搬），但**我的「隔离验证」根本没隔离**。
+⇒ **教训：带 `COMMIT` 的迁移文件不能放进外层事务做验证**。
+正确做法是 `--single-transaction` 或在独立 schema/库上演练。
+
+**失误 2：第一次变异注入静默作废，我差点把「基线绿」读成「变异通过」。**
+我按一段注释文本做 `old` 串匹配，**gofmt 重排了对齐后匹配失败**，
+脚本 `AssertionError` 退出 ⇒ **变异根本没注入**，
+而紧接着的 `go test` 输出 `ok` —— 那是**未变异的基线**。
+我差点据此记「门禁有牙」。
+⇒ 改用按行号删除后重跑，**三个测试同时红**：
+
+```
+--- FAIL: TestEntryToProcessedRequest_CarriesRequestStatus
+    RequestStatus = "", want "rate_limited" — the mirror dropped the label …
+--- FAIL: TestEntryToProcessedRequest_CarriesEveryRequestStatus   （四个状态全空）
+--- FAIL: TestIsTerminalFailure_AgreesWithRequestStatusField
+```
+
+⇒ 还原后：`domains/session/...`、`internal/sessionv2mirror/`、`db/` **全绿**。
+
+### §9.155.5 一个**既有门禁**抓住了我（这条设计值得表扬）
+
+我加到 98 个参数后，`domains/session/v2` **大面积转红**，
+报错是 `insert turn: expected 97, but got 98 arguments` ——
+仓库里有一道门**把 turn INSERT 的参数个数钉死在 97**（`anyArgs(97)`）。
+
+- ⚠️ 我**先查了基线**：`git checkout origin/main -- …` 后同一批测试 **`ok`** ⇒
+  确认是**我改坏的**，不是本来就红。
+- ⇒ 更新 `anyArgs(97) → anyArgs(98)`（3 个文件 12 处）+ 1 处 `anyN(97)` + 1 处精确 `WithArgs`。
+
+⇒ **这道门阻止了一次「参数错位」**：位置参数下，少传或多传一个都会静默把值写进**错误的列**。
+⇒ **凡是位置参数的 INSERT，都该有这道门。**
+
+### §9.155.6 遗留
+
+- ⚠️ **未部署**。生产 252 上 `request_status` 列不存在，会话族**仍无法**区分限流与失败。
+- ⚠️ **历史 1,688,630 行仍为 NULL**，且**不可回填**（信号在 v1 里，退役后即消失）。
+  ⇒ **退役前必须有第二个时间窗**：在 823 上线之后、`request_logs` 退役之前，
+  让镜像跑一段时间，才能拿到一个「带标签」的子集。
+  **否则退役当天起，44.6 万行噪声里只有新写的部分带标签** —— 这是一个**必须写进 D9 的时间约束**。
+- ⚠️ 我**没有**改任何成本逻辑（D7-f 的口径与 `AssignRequestCost` 的行为**仍相反**，见 §9.155.1 引用）。
+
+### §9.155.7 教训
+
+> **「列能被查到」不等于「列的契约被读过」。**
+> 我以为要重写 promote，读完才发现它是目录驱动的 + 带契约自检 ——
+> **一个刻意的设计把「对称加列」变成了一件安全的事。**
+> ⇒ **在动手改一个复杂函数之前，先确认它是不是已经解决了你要防的问题。**
+>
+> **差集工具坏了的时候，它会给出一个「惊人」的答案。**
+> 「96 列被丢弃」看起来像重大缺陷，实际是提取器没看懂 `format()`。
+> ⇒ **结论越惊人，越要先验提取器**；尤其当数字大到足以改变优先级时。
+>
+> **「已 promote 的行某列为 0、未 promote 的行有值」有两种读法。**
+> 可以读成「被丢了」，也可以读成「这列是后加的」。**区分它们要问：这列是什么时候加的。**
+>
+> **一道钉住参数个数的门，值一次迁移。**
+> 位置参数下多一个少一个都会静默错列，而这类错误在数据上**长期看不出来**。
+>
+> **验证手段本身要被验证。**
+> 「回滚了」是我以为的（实际没有 COMMIT 边界之外的事）；
+> 「变异跑过了」是我以为的（实际脚本匹配失败、变异没注入）。
+> ⇒ **两次都是「以为」在替我做断言。**

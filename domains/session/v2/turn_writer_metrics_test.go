@@ -111,7 +111,7 @@ func TestTurnWriter_WritesSessionsV2Metrics(t *testing.T) {
 			WithArgs(rec.TenantID, rec.SessionID).
 			WillReturnRows(pgxmock.NewRows([]string{"next"}).AddRow(1))
 		mock.ExpectExec("INSERT INTO public\\.session_turns_hot").
-			WithArgs(anyN(97)...). // $1..$97 全 storage-plan-v2 S1a 组
+			WithArgs(anyN(98)...). // $1..$98 全 storage-plan-v2 S1a 组
 			WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 		mock.ExpectExec("t0_arrived_at").
 			WithArgs(anyN(26)...). // 成功后的 enrich UPDATE

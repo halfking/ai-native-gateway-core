@@ -818,6 +818,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// Sort，252 真库实测 25.8-29.4s/次（>1s 慢日志 24h 28 条）。
 			// 带 dbinit:no-transaction 标记，走非事务通道。
 			"822_session_summaries_health_pending_index.sql",
+			// 823 (2026-10-04, 会话族退役审计 §9.155): session_turns.request_status
+			// —— 落网关已算好的四态标签 (success|failure|rate_limited|in_progress)。
+			// 该标签此前只存在于 telemetry entry，镜像链把它丢了（hook.go 的
+			// entryToProcessedRequest 没复制），而 ResolveRequestStatus 永远不产
+			// 出 rate_limited ⇒ 会话族无法区分「限流拒绝」与「真实上游失败」。
+			// 退役 request_logs 前必须补：394,614 行（连停写窗口 ≈446,819）扫描
+			// 噪声已在会话族内，v1 一删即永久失去标签，且 session_* 现有列筛不出
+			// 来（最优代理误报 41.2%）。纯加法、无回填。
+			// 母表 + hot 两侧必须对称加列 —— promote（707 起）入口强制
+			// (列名:类型:非空) 全等契约，不对称会直接 RAISE EXCEPTION。
+			"823_session_turns_request_status.sql",
 		},
 	}
 }
