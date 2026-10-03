@@ -18661,3 +18661,122 @@ func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {
 > **量具被另一个写者占用时，正确动作是停下并记录，不是绕过去或硬挤。**
 > 本节的阻断是一行 `git status` 的事实，不需要任何推理 ——
 > **在动手前先看工作区脏不脏、脏在谁手上。**
+
+---
+
+## §9.152　**一个会自锁的分区缺陷**：`session_turns_default` 里落进一行 ⇒ 该月分区**永久建不出来**，且**连带 `session_bodies` 也建不出**
+
+本节查 D8（写链是否自 ensure 当月分区）。**决策表 D8 记的那句「会 23514」是错的**，
+真实形态比它难得多，而且**方向相反**：不是写不进去，是**写进去了、然后再也出不来**。
+
+### §9.152.0 量具
+
+- **代码**：`sql/migrations/startup/430_sessions_v2_schema.sql:287`（`ensure_sessions_v2_partitions`）、
+  `bg/partition_manager.go:1261`（调用点）、`:51`（`DefaultRetentionWindow = 8h`）、
+  `:379-391`（失败隔离）。
+- **实验**：本地库 `llm_gateway` 上用**独立 schema `partprobe`** 复现，做完 `DROP SCHEMA … CASCADE`，
+  **未改动任何业务表**。
+- **观测**：`session_turns` 现有分区 `2026_07 / 08 / 09 / 10 / 11 / default`；
+  行数分布 **1,680,768 / 0 / 0 / 6,862 / 0** ⇒ `session_turns_default` **当前 0 行**。
+
+### §9.152.1 决定性实验：缺月写入**不报错**，而是静默进 `_default`
+
+```sql
+CREATE TABLE partprobe.t (id bigserial, ts timestamptz NOT NULL) PARTITION BY RANGE (ts);
+CREATE TABLE partprobe.t_default PARTITION OF partprobe.t DEFAULT;
+INSERT INTO partprobe.t(ts) VALUES ('2026-03-15 10:00+08');   -- 无 2026_03 专属分区
+SELECT tableoid::regclass FROM partprobe.t;                   -- → partprobe.t_default
+```
+
+| 步骤 | 实测结果 |
+|---|---|
+| ① 写入无专属月分区的月份 | **`INSERT 0 1`（成功，没有 23514）** |
+| ② 行落点 | **`t_default`** |
+| ③ 之后 `CREATE TABLE t_2026_03 PARTITION OF t FOR VALUES …` | **`ERROR: updated partition constraint for default partition "t_default" would be violated by some row`** |
+| ④ 建分区失败后行仍在 | 仍留在 `t_default` |
+
+⇒ **决策表 D8 的「影响」行（`23514 no partition of relation`）不成立** ——
+`session_turns` 与 `request_logs` **都带 `_default` 分区**，所以缺月写入**不会失败**。
+⇒ 真实失效形态是**静默落错地方 + 自锁**。
+
+### §9.152.2 为什么会自锁：`_default` 里的行**没有任何出口**
+
+```bash
+grep -rn "session_turns_default" sql/ bg/ --include=*.sql --include=*.go
+# → 除 810 迁移的一句注释外，零命中
+```
+
+⇒ **没有任何 SQL 函数、没有一行 Go 代码引用 `session_turns_default`**：
+
+| 谁 | 管什么 | 会不会动 `_default` |
+|---|---|---|
+| `promote_session_turns_hot_to_partition`（526/640） | 从 **`session_turns_hot`**（普通表）搬行进月分区 | ❌ **不碰 `_default`** |
+| `DefaultRetentionWindow = 8h`（`partition_manager.go:51`） | **`*_hot` 表**的保留窗口（688 迁移已对齐） | ❌ 与 `_default` 无关 |
+| 各 TTL / 归档路径 | 按表名逐个处理 | ❌ 无一命中 |
+
+⇒ **落进 `_default` 的行既不会被搬走、也不会被清掉** ——
+它**不丢数据**，但**那个月的专属分区从此永远建不出来**（实验第 ③ 步）。
+⚠️ 且没有任何自动恢复路径：这是一个**自锁**，不是「等一会儿就好」。
+
+### §9.152.3 连带面：一次调用管三张表，顺序执行、**无异常处理**
+
+`ensure_sessions_v2_partitions`（`430_sessions_v2_schema.sql:287-317`）在一个 plpgsql 块里
+**顺序**执行三条 `CREATE TABLE IF NOT EXISTS`，**没有 `EXCEPTION` 子句**：
+
+```
+sessions  →  session_turns  →  session_bodies
+```
+
+⇒ **一旦 `session_turns` 那条因自锁失败，第 3 条 `session_bodies` 永远不会执行。**
+⇒ 而调用点注释自己写着：**「这三张表是 V2 会话主链路的写入目标，缺分区等于聊天全挂」**
+（`bg/partition_manager.go:1258-1261`）。
+⇒ **一行被误路由的行 ⇒ `session_turns` 与 `session_bodies` 的月分区双双从此刻起停止预建。**
+
+⚠️ 失败隔离的准确边界（不要夸大）：`partition_manager.go:379-391` 是
+`slog.Error(...)` + `continue` ⇒ **别的 spec 不受影响**，
+**爆炸半径就是这一个函数覆盖的三张表**。
+
+### §9.152.4 什么时候会被触发（我只能给出条件，**不给概率**）
+
+已核实**当前未发生**（`session_turns_default` 0 行，1,687,630 行全部落在月分区里）。
+能构成触发条件的有：
+
+1. **月分区被删而 ensure 尚未补回**：迁移 810 用的就是 `DETACH + DROP + 按原边界重建`
+   （`810_heap_partitions_toastless_heal.sql`）；该窗口内若 `session_turns` 有写入即落进 `_default`。
+2. **新建库 / 恢复库**时 §9.124 已证 installer **不可对已有库重跑**（baseline 1665 条 ERROR）
+   ⇒ 分区只能靠后台工补，而后台工是 tick 驱动的 ⇒ **存在窗口**。
+3. ⚠️ **退役方案本身**：D9 要做的正是「停写 + 改写策略 + 删表」这一串 **DDL**，
+   而 DDL 与分区增删是同一类操作 ⇒ **这条潜伏缺陷会在退役期间被主动踩到**。
+
+⇒ **我不能断言「生产已经中过」** —— 那需要生产只读查询（未授权）。
+**我能断言的是：这条缺陷一旦发生，会静默地、永久地、且不丢数据地卡住会话主链路两个月分区。**
+
+### §9.152.5 对 D8 的结论（**D8 的选项需要重写，不是加一条**）
+
+| 原 D8 选项 | 现状 |
+|---|---|
+| D8-a 写链自 ensure | ⚠️ **方向反了**：写链自 ensure **也躲不过** —— 自 ensure 发生在**写入之后**，第一行仍会落进 `_default` 并把自锁坐实 |
+| D8-b 保持现状 | ❌ 窗口仍在，且**失效形态被 D8 记错了**（不是 23514） |
+| **D8-d（新增，本节提出）** | **先解开 `_default` 里的行再谈 ensure**：加一道**巡检**——若任一 `*_default` 分区行数 > 0 则**告警**（不是静默），并配一条**处置 runbook**（把行迁到月分区或改 `ts`，再让 ensure 补建）。**这是成本最低且能消除自锁的一条** |
+
+⇒ **D8 的真正前置不是「写链要不要自 ensure」，是「`_default` 非空时有没有人知道」** ——
+**今天没有任何人知道**，因为没有一行代码看它。
+
+### §9.152.6 教训
+
+> **「写不进去」和「写进去了出不来」是两个完全不同的缺陷，而门通常只测第一个。**
+> 我照着决策表去找 `23514`，若不是真去建一次分区，会一直以为这条是「启动窗口会丢数据」。
+> ⇒ **判据的失败形态要按「对象实际会怎样」测，不要按「文档说会怎样」测。**
+>
+> **`_default` 分区的真实语义必须单独确认。**
+> 本项目里 `DefaultRetentionWindow = 8h` 这个名字**强烈暗示**「default 是短命暂存」，
+> 但它管的是 **`*_hot` 表**；`*_default` 分区是**另一回事**，且**零代码引用**。
+> ⇒ **同名概念（`*_default` vs `*_hot`）必须各自量，不能互相推断。**
+>
+> **「一个 SQL 函数管三张表」是一条没有被记录的耦合。**
+> 第三张表能不能建，取决于第二张表有没有被一行数据卡住 ——
+> 这在任何单表视角下都不可见。
+> ⇒ **看到 plpgsql 里连续多条 DDL，先问「哪一条失败会截断后面的」。**
+>
+> **潜伏缺陷要按「方案会不会主动踩它」排序，而不是按「它今天有没有发生」。**
+> 退役要做的正是 DDL，而这条缺陷的触发条件就是 DDL。

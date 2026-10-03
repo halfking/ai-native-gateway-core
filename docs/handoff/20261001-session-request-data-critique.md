@@ -7139,3 +7139,37 @@ PG **没有 `CREATE POLICY IF NOT EXISTS`**，351 的 **12 条 policy 全无守�
 
 **下一轮第一件事**：先 `git status` 看那三个文件是否已提交/清空；
 清空了就做 D7-f/D7-g 的迁移（823+），没清空就继续只做只读测量。
+
+### §70.15 第七十三轮补记：查 D8 挖出一个**自锁型分区缺陷**（零代码改动、零生产访问）
+
+> 起点 `f00e304fb`。**共享工作区仍脏**（他人在把 822 接进 installer）⇒ 迁移继续不做。
+
+**§9.152 的产出**：`session_turns_default` 里落进一行 ⇒ **该月分区永久建不出来**，
+且 `ensure_sessions_v2_partitions` 顺序执行三表、**无 `EXCEPTION` 子句** ⇒
+**`session_bodies` 的分区也被永久截断**（该函数注释自称「缺分区等于聊天全挂」）。
+
+实测三步（独立 schema `partprobe`，做完 `DROP SCHEMA CASCADE`，**未碰业务表**）：
+
+| 步骤 | 实测 |
+|---|---|
+| ① 写入无专属月分区的月份 | **`INSERT 0 1` 成功，没有 23514** |
+| ② 行落点 | **`t_default`** |
+| ③ 之后建该月分区 | **`ERROR: updated partition constraint for default partition "t_default" would be violated by some row`** |
+
+⇒ **决策表 D8 记的「会 23514」是错的**（两表都带 `_default`），已就地改写。
+⇒ `_default` **零代码引用**（`promote_*` 搬的是 `*_hot` 表；`DefaultRetentionWindow=8h` 管的也是 `*_hot`）
+⇒ **落进去的行不会被搬走、也不会被清掉** —— **不丢数据，但永久卡住分区**。
+⇒ **当前未发生**（`_default` 0 行，1,687,630 行全在月分区）。
+
+**失败隔离的准确边界**（不夸大）：`partition_manager.go:379-391` 是 `slog.Error` + `continue`
+⇒ 别的 spec 不受影响，**爆炸半径 = 该一个函数覆盖的三张表**。
+
+**为什么现在查它**：退役方案本身就是一串 DDL（停写 / 改策略 / 删表），
+而这条缺陷的触发条件**正是 DDL**（810 迁移就是 `DETACH + DROP + 重建`）。
+⇒ **潜伏缺陷按「方案会不会主动踩它」排序，而不是按「今天有没有发生」排序。**
+
+**D8 的选项已重写**：D8-a（写链自 ensure）**方向反了**——它发生在写入之后，
+第一行仍会落进 `_default` 并坐实自锁。新增 **D8-d：先让 `_default` 非空有人知道**（巡检 + 告警 + runbook）。
+**真正的 D8 前置不是「写链要不要自 ensure」，是「`_default` 非空时有没有人知道」——今天没有一行代码看它。**
+
+**本轮没做的事**：零产品代码改动、零生产访问、没加迁移（撞他人 822）。
