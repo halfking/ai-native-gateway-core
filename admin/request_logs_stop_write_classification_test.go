@@ -661,8 +661,13 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/memora_handlers.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "FROM request_logs `+where+`",
-		Note:     "两条后果不同的腿：handleSessionMessages(:795-796) 读 710 + LEFT JOIN request_logs_bodies_with_current_month，bodies 腿硬失败 ⇒ 新会话 messages 仍返回（session 臂供行）但 request_body/response_body 是 COALESCE(...::text,'') 的空串、message_count 与 token/cost 汇总照常有值，200；handleMemoraContext(:615-616) 直读裸 request_logs + sessionLogsWhere，新 task 的 requestCount == 0 ⇒ 404 task not found（那条是 errors_out）。按「同一文件取更危险档」取 degraded_content，两条方向都写明。",
+		Evidence: "FROM request_logs_with_current_month `+where+`",
+		Note: "R89-DQ（206 号）**重写了本条的理由**——Effect 不变，但「同一文件取更危险档」这个依据已经不存在了。\n" +
+			"改前两条腿后果不同：handleSessionMessages(:795-796) 读 710 + LEFT JOIN request_logs_bodies_with_current_month，bodies 腿硬失败 ⇒ 仍 200 但 request_body/response_body 变空串（degraded）；handleMemoraContext(:615-616) **直读裸 request_logs**，停写后 requestCount 恒 0 ⇒ 404 task not found（errors_out），文件按「取更危险档」记 degraded_content。\n" +
+			"**改后两条腿都读 710**，第二条腿的 errors_out 消失 ⇒ 本条现在**只由 bodies 那条腿**支撑，degraded_content 这个档位不变但理由必须跟着换。\n" +
+			"**为什么这条腿换视图是对的（不是「让门变绿」）**：sessionLogsWhere 的主谓词是 `gw_task_id = $1 AND ts > …`（admin/session_scope.go:39），gw_task_id 由 734 的 details 层供给（`d.gw_task_id`），**不在** 6 条「会话臂恒 NULL 补位列」里（db/request_logs_view_padded_columns.go：id / test_col / test_tab_indent / provider_model / credits_rate_multiplier），真库 details 行级覆盖 99.9996% ⇒ 换过去不会落进「行级有、谓词级空」。同函数的 client_model 也是 details 供给列，latest_model 子查询同样成立。\n" +
+			"⚠️ **判停写后果必须量近期填充率，不能用全历史均值**（本仓同源教训，已在 discovery/ 与 session_extract.go 两条上各判错一次）：gw_task_id 在 710 视图的全历史 NULL 率是 94.1%，而按天是 09-29 的 4.77% → 09-30 的 37.88% → 10-01 的 97.72% → 10-02 的 98.51% ⇒ details 写入链在 09-30 前后已修好，**近期行带着真值** ⇒ session 臂供数成立。全历史口径会给出「停写后恒 0 行」这个**相反**的档位。\n" +
+			"⚠️ 本条只覆盖**停写（S4）**场景。同一处代码另有一个**互相独立**的根因——裸母表读对最近 8h 结构恒空（`ts > NOW() - INTERVAL '1 hour' * $2` 的 $2 clamp 到 1，≤8h 时窗口 100% 落在 hot 保留期盲区）⇒ 假 404。已由 206 号一并修掉，但**不要**用它来解释本表的档位：那条与停写无关，停写后窗口再宽也照样盲。",
 	},
 	"admin/session_title.go": {
 		Effect:   effectSilentlyDegradedContent,

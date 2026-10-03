@@ -43,4 +43,16 @@ var partitionParents = []string{
 	"tool_usage_stats",
 	"usage_facts",
 	"usage_ledger",
+	// 201 号由 TestPartitionParentsAreExhaustive 反向抓出：`sql/migrations/local/
+	// 641_local_shared_platform_schema_fixup.sql:41` 声明了
+	// `CREATE TABLE IF NOT EXISTS platform.platform_outbox ( … ) PARTITION BY RANGE
+	// (created_at)`，此前**不在**本清单里 ⇒ 守卫看不见它上面的写操作。
+	//
+	// 定 P3 而非缺陷：**实测全仓 Go 代码零处写它**（只有本门测试与一个既有审计
+	// 测试提到名字），所以今天没有违规；补进来是为了让清单与 DDL 一致，并让
+	// 将来任何一处新增写都被本门接住。
+	//
+	// 注意它属 `platform` schema（与 workflow / integration 同属 local 迁移那套
+	// 本地 schema），与 public 下的同名语义无关；清单按**不带 schema** 的表名登记。
+	"platform_outbox",
 }

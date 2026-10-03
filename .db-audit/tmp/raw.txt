@@ -1,0 +1,22 @@
+===== 0. 环境基线 =====
+virtiofs0       1.9T  1.7T  118G  94% /var/lib/postgresql/data
+storage backend: virtiofs
+WARNING: terminal is not fully functional
+Press RETURN to continue 
+===== 1. Citus columnar 压缩比：request_logs 真实数据 20k 行 =====
+（注意：本机数据盘是 virtiofs 网络盘，列存转换很慢，故用小样本）
+psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  the database system is in recovery mode
+test1_exit=2
+
+===== 2. TOAST pglz vs lz4：outbound_body 真实数据 5000 条 =====
+psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  the database system is in recovery mode
+test2_exit=2
+
+===== 3. 应用层 zstd 对照：同一批 body 在 PG 层压一次再存 =====
+psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  the database system is in recovery mode
+test3_exit=2
+
+===== 4. 清理确认 =====
+psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  the database system is in recovery mode
+psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  the database system is in recovery mode
+virtiofs0       1.9T  1.8T  113G  94% /var/lib/postgresql/data

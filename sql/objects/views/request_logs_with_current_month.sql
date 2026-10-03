@@ -1,3 +1,19 @@
+-- ⚠️ R89-DP（205 号）：**本文件不是部署形态的视图定义**，它是 v1 回退体
+-- （两条臂：request_logs_hot ∪ request_logs，无反连接），只在 session_turns
+-- 族缺表的极简/陈旧库上成立。
+--
+-- 部署形态（v3，734 details 在场）是**三条臂** session_turns_hot ∪
+-- session_turns ∪ (v1 臂)，且 v1 臂带双反连接去重
+-- （NOT EXISTS … session_turns_hot / session_turns，按 request_id）。
+-- 权威定义在 db/request_logs_view_schema.go（composer）+
+-- sql/migrations/startup/734_request_logs_view_details_join.sql，
+-- 二者等价性由 db/view_schema_v2_contract_test.go 守着。
+--
+-- 为什么要写这段：203 号与 204 号都把本文件当「该视图的定义」引用，204 号
+-- 甚至从它逐列核对了 6 个列号——而那套论证描述的是**回退体**，不是任何
+-- 正常部署库里会跑的结构。**注释不是契约**；真正的契约是
+-- db/request_logs_view_dump_generation_test.go（它会因本文件被换成三臂体而
+-- 变红，也会在 composer 删掉 v1 分支时变红）。
 --
 -- Name: request_logs_with_current_month; Type: VIEW; Schema: public; Owner: -
 --
