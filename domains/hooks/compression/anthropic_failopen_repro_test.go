@@ -1,38 +1,27 @@
 package compression
 
-// R35 复现钉测（R34 §四#1 / D03 域文档 2026-10-03 回注）：压缩车道结构性
-// fail-open 的可执行复现。本文件钉的是【当前缺陷行为】——期望值刻意
-// 断言现状（fail-open / no-op），作为 diff 引擎专项修复的翻转靶：专项落地时
-// 应把断言翻转为 delta 命中 / marker 注入，并改写本注记。修复落地前，这三个
-// 钉测守住「症状可复现、不被无意改动」。
+// diff 引擎专项落地后的行为钉测（R38，翻转自 R35 复现钉测）。
+// R35/R36 时期本文件钉的是【缺陷行为】（结构性 fail-open / 打标 no-op）
+// 作为专项翻转靶；R38 专项落地（diff.go 两段式锚点 + isSummaryMarkerMsg
+// 认未打标摘要前缀 + Anthropic system 摘要检测 + markerize string 形态
+// blocks 规范化）后断言已翻转，本文件现在守住【修复后行为】：
+// 压缩车道下一轮 delta 命中（IsNewSess=false）+ string 形态打标成功。
+// 函数名保留 R35 复现史（_R35 后缀）以维持审计锚定。
 //
-// 病灶①（结构性 fail-open，两车道同构，R36 对照臂订正）：压缩保留布局
-// （首条 user 原样 + 尾部 turn 对，中间隔着被压缩的历史）不是客户端完整
-// 历史的连续子序列 ⇒ findDeltaAnchor 的「唯一连续后缀匹配」恒失配 ⇒ 压缩
-// 后每轮 fail-open 全量重发+重压缩，delta 增益在两条车道都结构性拿不到
-// （成本问题，无数据丢失）。OpenAI 车道实证见 Repro-① 对照臂 A/B。
+// 病灶①（结构性 fail-open，两车道同构，R36 对照臂订正）的修复分两层：
+//   - 布局层（findTwoSegmentAnchor）：保留布局是【两段非相邻片段】（首条
+//     user 头段 + 连续尾部段，中间被压缩），连续唯一匹配恒失配。修=锚点
+//     回退两段式：尾段连续唯一命中定锚，头段在锚前连续出现作血统证据；
+//     分解点歧义或尾段非唯一仍 fail-open（与连续分支同款唯一性纪律）。
+//   - 可见性层（isSummaryMarkerMsg 加宽 + hasAnthropicSystemSummary 深检）：
+//     未打标的 dynCtx 摘要（CompressionSummaryPrefix）与 Anthropic 顶层
+//     system 摘要（含 string 形态中部驻留、已打标 [smm_v1: 前缀形态）现在
+//     都被识别为压缩血统，进 relaxed 分支。
 //
-// 病灶①的两层叠加（订正 R35 初版「失配系 Anthropic 摘要驻位特异」的结论）：
-//   - 布局层（两车道共同根因，充分条件）：保留布局非连续 ⇒ 即使 marker 完全
-//     可见且被识别（对照臂 B），relaxed 分支照样失配。
-//   - 可见性层（车道特异）：Anthropic 摘要驻顶层 system 字段而
-//     hasGatewaySummary 只扫 messages[]；OpenAI 重建体的 dynCtx 摘要消息虽在
-//     messages[]，但其前缀是 CompressionSummaryPrefix（"[Gateway compacted
-//     conversation summary…"），而 isSummaryMarkerMsg 只认 CompactionMarkerPrefix
-//     （"[smm_v1:"）——未经 injectSummaryMarker 打标前同样不被识别为 marker
-//     （对照臂 A 走严格前缀分支）。打标（smm_v1）只解决识别，不解决布局。
-//
-// 病灶②（打标 no-op）：rebuildAnthropicSystemField 对非空 string 形态 system
-// 产出 "<orig><prefix><summary>"（追加在原文之后），而
-// markerizeAnthropicSystem→isAnthropicSummaryContent 只认「以前缀开头」⇒
-// injectSummaryMarker 静默 no-op，病灶①的可见性缺口永远补不上。
-//
-// 附加观察（R35 新增，R36 推广到两车道，回注 D03）：病灶①单独修「marker
-// 可见性」仍拿不到锚点——保留布局是【两段非相邻片段】（首条 user 与尾部
-// turn 对中间隔着被压缩的历史，OpenAI 车道同款，见 rebuilder_openai.go
-// splitSystemAndTail），不是客户端历史的连续子序列，唯一连续后缀匹配仍失配
-// （对照臂 B 实证）。专项须处理两段式锚点（首条 user 例外 + 连续尾部后缀），
-// 或改两车道保留布局为纯连续尾部——两车道须同修，非 Anthropic 专项。
+// 病灶②（打标 no-op）的修复：markerizeAnthropicSystem string 分支改用
+// anthropicSummaryIndex 找中部摘要，并规范化为 blocks 形态产出
+// （orig 块 + marker 行打头的摘要块）——marker 行必须是摘要文本的第一
+// 行，summaryMarkerContent 下次才能剥它（幂等），且原提示词顺序不变。
 
 import (
 	"encoding/json"
@@ -71,19 +60,16 @@ func quoteJSON(t *testing.T, s string) string {
 }
 
 // Repro-①：真实 RebuildAnthropicAfterSummary 产出的压缩体，下一轮全量重发
-// +新增一条消息时 delta 引擎 fail-open。三个对照臂（R36 订正 R35 初版结论：
-// 初版对照臂手工构造了产线不存在的 [summary,u3,a3] 连续布局并断言「OpenAI
-// 命中锚点」，把失配误归因于「Anthropic 摘要驻位的结构性问题」——真实 OpenAI
-// 重建体（保留 B-track 首条 user，rebuilder_openai.go splitSystemAndTail）同构
-// fail-open，实证见对照臂 A/B）：
-//   - A：OpenAI 车道产线重建体（未打标）——dynCtx 摘要前缀不被
-//     isSummaryMarkerMsg 识别 ⇒ 严格前缀分支 + 布局非连续 ⇒ fail-open；
-//   - B：A + smm_v1 打标（injectSummaryMarker）——marker 被识别 ⇒ relaxed
-//     分支，但保留段 [u1,u3,a3] 非连续 ⇒ 仍 fail-open。隔离「布局非连续」
-//     为充分条件：只修可见性拿不到 delta 增益；
-//   - C：人工连续布局（[smm_v1 summary, u3, a3]，非产线形态）——锚点命中，
-//     证明 delta 引擎本身在连续布局下工作正常，专项修法方向=布局连续化或
-//     两段式锚点。
+// +新增一条消息时 delta 引擎命中（R38 翻转）。三个对照臂（R36 订正 R35 初版
+// 结论后定型，R38 全部翻转）：
+//   - A：OpenAI 车道产线重建体（未打标）——dynCtx 摘要以
+//     CompressionSummaryPrefix 打头，isSummaryMarkerMsg 加宽后识别 ⇒ relaxed
+//     分支 + 两段式锚点 ⇒ delta 命中（可见性层修复的承重臂）；
+//   - B：A + smm_v1 打标（injectSummaryMarker）——marker 被识别（原有语义）
+//     ⇒ relaxed 分支 + 两段式 ⇒ delta 命中（布局层修复的承重臂：B 单独
+//     翻转证明两段式锚点在「marker 可见但布局非连续」下拿回增益）；
+//   - C：人工连续布局（[smm_v1 summary, u3, a3]，非产线形态）——连续唯一
+//     命中（原有语义），证明两段式分支没有吸收连续形态的行为。
 func TestRepro_AnthropicCompressedDeltaFailsOpen_R35(t *testing.T) {
 	const summary = "prior turns: user greeted, assistant answered twice"
 	body := anthroBody(t, "You are Claude.", []string{
@@ -118,17 +104,17 @@ func TestRepro_AnthropicCompressedDeltaFailsOpen_R35(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 当前行为（病灶①复现）：IsNewSess=true —— 每轮 fail-open 全量重发+重压缩。
-	// diff 引擎专项落地后此断言应翻转为：IsNewSess=false 且 DeltaCount=1。
-	if !res.IsNewSess {
-		t.Fatalf("R35 repro: expected structural fail-open (IsNewSess=true) for Anthropic compressed lane, got delta result DeltaCount=%d — if the diff-engine project landed, flip this assertion and update the note", res.DeltaCount)
+	// 修复后行为（R38 翻转）：Anthropic system 摘要被识别（可见性层）+
+	// 两段式锚点命中 ⇒ IsNewSess=false 且 DeltaCount=1。
+	if res.IsNewSess || res.DeltaCount != 1 {
+		t.Fatalf("R38 anchor: expected two-segment anchor hit (IsNewSess=false, DeltaCount=1) for Anthropic compressed lane, got IsNewSess=%v DeltaCount=%d — the Anthropic system-summary visibility or the two-segment anchor regressed", res.IsNewSess, res.DeltaCount)
 	}
 
 	// 对照臂 A（OpenAI 车道，产线重建体未打标）：RebuildOpenAIAfterSummary
 	// 同样保留 B-track 首条 user ⇒ [dynCtx summary, u1, u3, a3]。dynCtx 前缀
-	// （CompressionSummaryPrefix）不被 isSummaryMarkerMsg（只认 [smm_v1:）识别
-	// ⇒ hasGatewaySummary=false 走严格前缀分支 ⇒ 与客户端历史前缀失配。
-	// 当前行为：fail-open。专项落地后此断言应翻转为 IsNewSess=false。
+	// （CompressionSummaryPrefix）被加宽后的 isSummaryMarkerMsg 识别 ⇒
+	// hasGatewaySummary=true 走 relaxed 分支 ⇒ 两段式锚点命中。
+	// 修复后行为（R38 翻转）：delta 命中。
 	openAIBody := makeBody([]map[string]string{
 		userMsg("u1 hello"), assistantMsg("a1 hi"),
 		userMsg("u2 how are you"), assistantMsg("a2 fine"),
@@ -163,13 +149,14 @@ func TestRepro_AnthropicCompressedDeltaFailsOpen_R35(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contrastA.IsNewSess {
-		t.Fatalf("contrast A: production OpenAI compressed lane must fail-open too (IsNewSess=true), got DeltaCount=%d — layout discontinuity is lane-agnostic; if the diff-engine project landed, flip this assertion", contrastA.DeltaCount)
+	if contrastA.IsNewSess || contrastA.DeltaCount != 1 {
+		t.Fatalf("contrast A: unmarked dynCtx summary must be recognised and anchor (IsNewSess=false, DeltaCount=1), got IsNewSess=%v DeltaCount=%d — the isSummaryMarkerMsg widening for CompressionSummaryPrefix regressed", contrastA.IsNewSess, contrastA.DeltaCount)
 	}
 
-	// 对照臂 B（A + smm_v1 打标）：marker 被识别（relaxed 分支），但保留段
-	// [u1,u3,a3] 在客户端历史中非连续 ⇒ 唯一连续匹配数=0 ⇒ 仍 fail-open。
-	// 隔离「布局非连续」单独充分——修 marker 可见性拿不到增益。
+	// 对照臂 B（A + smm_v1 打标）：marker 被识别（原有语义），保留段
+	// [u1,u3,a3] 非连续 ⇒ 两段式锚点。修复后行为（R38 翻转）：delta 命中。
+	// B 与 A 同时命中隔离两层修复各自承重：删可见性加宽则 A 红而 B 绿，
+	// 删两段式分支则 B 红而（连续形态的）C 绿。
 	markerO, markedOpenAI := injectSummaryMarker(rebuiltOpenAI, "openai")
 	if markerO == "" || markedOpenAI == nil {
 		t.Fatal("contrast B precondition: injectSummaryMarker must mark the production openai rebuild (dynCtx msg is gateway-summary content)")
@@ -178,13 +165,13 @@ func TestRepro_AnthropicCompressedDeltaFailsOpen_R35(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contrastB.IsNewSess {
-		t.Fatalf("contrast B: marker-recognized but non-contiguous layout must still fail-open (IsNewSess=true), got DeltaCount=%d — visibility fix alone gains nothing; flip when the diff-engine project lands", contrastB.DeltaCount)
+	if contrastB.IsNewSess || contrastB.DeltaCount != 1 {
+		t.Fatalf("contrast B: marked but non-contiguous layout must anchor via the two-segment path (IsNewSess=false, DeltaCount=1), got IsNewSess=%v DeltaCount=%d — findTwoSegmentAnchor regressed", contrastB.IsNewSess, contrastB.DeltaCount)
 	}
 
 	// 对照臂 C（人工连续布局，非产线形态）：保留段恰为客户端历史的连续后缀
-	// 时 relaxed 分支唯一命中 ⇒ 锚点命中。证明引擎本身工作正常——失配的
-	// 决定变量是布局连续性，不是摘要驻位或压缩语义。
+	// 时 relaxed 分支唯一命中 ⇒ 锚点命中（保绿锚，R38 未翻转——证明两段式
+	// 分支没有改变连续形态的行为路径）。
 	lastOpenAI := makeBody([]map[string]string{
 		summaryMsg("prior turns"),
 		userMsg("u3 and now"),
@@ -217,10 +204,12 @@ func TestRepro_BuildSessionStateInheritsPrevPrefixHashOnEmpty_R35(t *testing.T) 
 	}
 }
 
-// Repro-②：非空 string 形态 system 的压缩体，injectSummaryMarker 静默 no-op
-// （摘要追加在原文之后，isAnthropicSummaryContent 只认前缀开头）。对照臂：
-// blocks 形态（新增 gateway block 以前缀开头）打标成功——证明 no-op 是
-// string 形态追加位置的结构性问题。
+// Repro-②：非空 string 形态 system 的压缩体，injectSummaryMarker 打标
+// 成功（R38 翻转）。修复=markerizeAnthropicSystem string 分支用
+// anthropicSummaryIndex 找中部摘要，规范化为 blocks 产出（orig 块 +
+// marker 行打头的摘要块），marker 行在摘要文本第一行保幂等。对照臂
+// blocks 形态（新增 gateway block 以前缀开头）打标成功——R35 时期证明
+// no-op 是 string 形态追加位置的结构性问题。
 func TestRepro_AnthropicInjectSummaryMarkerStringShapeNoOp_R35(t *testing.T) {
 	// string 形态（原文非空，最常见生产形态）。
 	bodyStr := anthroBody(t, "You are Claude.", []string{"u1 hello", "a1 hi", "u2 q"})
@@ -233,10 +222,34 @@ func TestRepro_AnthropicInjectSummaryMarkerStringShapeNoOp_R35(t *testing.T) {
 		t.Fatal("rebuild (string system) must succeed")
 	}
 	marker, marked := injectSummaryMarker(rebuiltStr, "anthropic-messages")
-	// 当前行为（病灶②复现）：no-op——marker 为空、body 原样丢弃。
-	// 专项落地后应翻转为 marker!="" && marked!=nil。
-	if marker != "" || marked != nil {
-		t.Fatalf("R35 repro: expected silent no-op for non-empty string system, got marker=%q marked=%v — if the diff-engine project landed, flip this assertion and update the note", marker, marked != nil)
+	// 修复后行为（R38 翻转）：打标成功——marker 非空、body 为 blocks 规范
+	// 形态。幂等钉：再次打标返回相同 marker 且不再变形。
+	if marker == "" || marked == nil {
+		t.Fatalf("R38 markerize: expected successful marking for non-empty string system, got marker=%q marked=%v — the string-shape normalisation regressed", marker, marked != nil)
+	}
+	marker2, marked2 := injectSummaryMarker(marked, "anthropic-messages")
+	if marker2 != marker || marked2 == nil {
+		t.Fatalf("R38 markerize idempotency: re-marking must return the same marker, got first=%q second=%q", marker, marker2)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(marked, &top); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(top["system"], &blocks); err != nil {
+		t.Fatalf("R38 markerize: marked system must be block shape, got %s", top["system"])
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("R38 markerize: expected [orig, marked summary] blocks, got %d: %+v", len(blocks), blocks)
+	}
+	if !strings.Contains(blocks[0].Text, "You are Claude.") {
+		t.Fatalf("R38 markerize: first block must carry the original prompt, got %q", blocks[0].Text)
+	}
+	if !strings.HasPrefix(blocks[1].Text, marker) || !strings.Contains(blocks[1].Text, "summary text") {
+		t.Fatalf("R38 markerize: second block must start with the marker line and carry the summary, got %q", blocks[1].Text)
 	}
 
 	// 对照臂（blocks 形态）：新增 gateway block 的文本以前缀开头 → 打标成功。

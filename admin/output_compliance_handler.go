@@ -18,29 +18,40 @@ import (
 // OutputComplianceHandler 输出合规管理 API
 // 提供策略配置、自定义敏感词、复核队列、反馈等管理端点。
 type OutputComplianceHandler struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	secret string
 }
 
 // NewOutputComplianceHandler 创建 Handler
-func NewOutputComplianceHandler(pool *pgxpool.Pool) *OutputComplianceHandler {
-	return &OutputComplianceHandler{pool: pool}
+func NewOutputComplianceHandler(pool *pgxpool.Pool, secret string) *OutputComplianceHandler {
+	return &OutputComplianceHandler{pool: pool, secret: secret}
 }
 
 // RegisterRoutes 注册 /api/admin/output-compliance/* 路由。
+// 所有路由统一套用 AdminMiddleware（JWT/管理 Key 认证），与 prompt-injection
+// 等其他 admin handler 同一套鉴权链路。
+//
+// 2026-10-03 P1 根修（R38 窗口复审 WP-B 发现）：此前 8 个端点裸挂 mux，
+// 而全局 auth 中间件对 /api/ 前缀显式旁路（middleware/auth_mw.go 自证的
+// 不变式），等于未认证可读 default 租户合规记录、policy 可未认证写。
 func (h *OutputComplianceHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/admin/output-compliance/policy", h.handlePolicy)
-	mux.HandleFunc("/api/admin/output-compliance/policy/", h.handlePolicy)
+	wrap := func(fn http.HandlerFunc) http.HandlerFunc {
+		return AdminMiddleware(fn, h.pool, h.secret)
+	}
 
-	mux.HandleFunc("/api/admin/output-compliance/keywords", h.handleKeywords)
-	mux.HandleFunc("/api/admin/output-compliance/keywords/", h.handleKeywordSubrouter)
+	mux.HandleFunc("/api/admin/output-compliance/policy", wrap(h.handlePolicy))
+	mux.HandleFunc("/api/admin/output-compliance/policy/", wrap(h.handlePolicy))
 
-	mux.HandleFunc("/api/admin/output-compliance/review-queue", h.handleReviewQueue)
-	mux.HandleFunc("/api/admin/output-compliance/review-queue/", h.handleReviewQueueSubrouter)
+	mux.HandleFunc("/api/admin/output-compliance/keywords", wrap(h.handleKeywords))
+	mux.HandleFunc("/api/admin/output-compliance/keywords/", wrap(h.handleKeywordSubrouter))
 
-	mux.HandleFunc("/api/admin/output-compliance/feedback", h.handleFeedback)
+	mux.HandleFunc("/api/admin/output-compliance/review-queue", wrap(h.handleReviewQueue))
+	mux.HandleFunc("/api/admin/output-compliance/review-queue/", wrap(h.handleReviewQueueSubrouter))
 
-	mux.HandleFunc("/api/admin/output-compliance/stats", h.handleStats)
-	mux.HandleFunc("/api/admin/output-compliance/records", h.handleRecords)
+	mux.HandleFunc("/api/admin/output-compliance/feedback", wrap(h.handleFeedback))
+
+	mux.HandleFunc("/api/admin/output-compliance/stats", wrap(h.handleStats))
+	mux.HandleFunc("/api/admin/output-compliance/records", wrap(h.handleRecords))
 }
 
 // ==================== 数据模型 ====================
