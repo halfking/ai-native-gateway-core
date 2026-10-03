@@ -48,4 +48,13 @@ export default {
     lightTitle: '浅色模式',
     darkTitle: '深色模式',
   },
+  v1DataFrozen: {
+    title: '流量資料已停更：本頁數字只反映停寫之前',
+    titleUnconfirmed: '停寫開關未明確設定：無法判斷本頁數字是否已過期',
+    titleUnavailable: '無法確認流量資料狀態：本頁數字可能已過期',
+    affects: '受影響讀點檔位',
+    gateKey: '控制開關',
+    retry: '重新檢查',
+    failedHint: '讀取資料狀態失敗。未確認狀態不等於狀態正常——本頁數字請按「可能已過期」對待。',
+  },
 }
