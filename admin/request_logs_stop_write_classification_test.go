@@ -448,7 +448,18 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"  **只排 actor，完全不看探针** ⇒ 那一半从未被修。\n" +
 			"  同包 `bg/probe_policy.go` 已有两条具名探针谓词（本文件与它同包却一条没用），\n" +
 			"  但两条都要 `quality_flags`，而 `session_turns_hot` 实测 104 列里**没有该列**\n" +
-			"  ⇒ 对会话族分支会 42703，必须分族分叉。**该修正本轮裁决为「分族修」，尚未实施。**",
+			"  ⇒ 对会话族分支会 42703，必须分族分叉。**该修正本轮裁决为「分族修」，尚未实施。**\n\n" +
+			"**⚠⚠ §9.77（2026-10-03，252 实测，独立于档位的新证据）**：`request_logs_hot` " +
+			"是**暂存表**（全部写入方的 INSERT 目标），后台 promoter 每 8 小时把超过 8 小时的行" +
+			"**移动**到分区父表（`promote_request_logs_hot_to_partition` DELETE 源行）。" +
+			"而本读点的 `settleBaselinesSQL` 窗口是 `baselineWindow = 24h`、数据源只有 " +
+			"`request_logs_hot` ⇒ **它问 24 小时的 p95/p75，表里最多只有 8 小时**。" +
+			"24h 窗口实测：完整总体（hot ∪ parent）**13,452** 行，只读 hot **4,665** 行 = " +
+			"**34.7%，缺 65.3%**。\n" +
+			"  ⇒ **§9.74 那次加探针谓词只解决了「总体选错」，没解决「总体被欠采样」**；" +
+			"两条是独立缺陷。样本是「最近 8h」这个非随机切片，基线会随 promoter 排空节奏漂移，" +
+			"而漂移原因与数据无关。§9.44 埋的 cohort_rows gauge **不会报红**——它只报 cohort 为 0，" +
+			"这里是 cohort 偏小。**修法候选与裁决见 §9.77.5，本轮不实施。**",
 	},
 	"bg/ledger_reconciliation.go": {
 		Effect:   effectUnaffected,
