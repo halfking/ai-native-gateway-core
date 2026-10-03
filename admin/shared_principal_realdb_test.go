@@ -518,19 +518,19 @@ func TestCanonicalSharedSessionRealDB(t *testing.T) {
 		}
 		start := time.Now()
 		raw := mint("acc", "acc-alice", "tenant-a", "user")
-		status, _ := f.request(t, raw, f.sessionA, "bearer")
+		deniedStatus, _ := f.request(t, raw, f.sessionA, "bearer")
 		elapsed := time.Since(start)
-		if status != 401 || elapsed > 8*time.Second {
-			t.Errorf("bounded lookup should deny within 8s got %d %v", status, elapsed)
+		if deniedStatus != 401 || elapsed > 8*time.Second {
+			t.Errorf("bounded lookup should deny within 8s got %d %v", deniedStatus, elapsed)
 		}
 		if err := tx.Rollback(ctx); err != nil {
 			t.Fatal("owned fault rollback failed")
 		}
-		status, _ = f.request(t, raw, f.sessionA, "bearer")
-		if status != 200 {
-			t.Errorf("database recovery got %d", status)
+		recoveredStatus, _ := f.request(t, raw, f.sessionA, "bearer")
+		if recoveredStatus != 200 {
+			t.Errorf("database recovery got %d", recoveredStatus)
 		}
-		t.Logf("lookup_failure_recovery: denied=%d bounded_duration_ms=%d recovered=200", 401, elapsed.Milliseconds())
+		t.Logf("lookup_failure_recovery: denied=%d bounded_duration_ms=%d recovered=%d", deniedStatus, elapsed.Milliseconds(), recoveredStatus)
 	})
 	t.Run("shadow store unavailable denies", func(t *testing.T) {
 		if err := identity.ShadowDatabase().Close(); err != nil {
