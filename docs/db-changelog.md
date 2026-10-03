@@ -844,3 +844,10 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 818 | `818_ursm_snapshot_typed_columns.sql` | `bb2493af5a160a8fd6df860c4117c8aeeb68212843394d74b1923ff8a30988b3` | applied+verified |
 | 819 | `819_request_abandoned.sql` | `08cf64b15be12f88e7e513449490df8eda136839663f052186a740ddb9b4b43a` | applied+verified |
 
+## 2026-10-03T22:50:46Z — deploy 245 build_seq 2442 (25a86439)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 820 | `820_audio_modality_backfill.sql` | `866f110ddb196e33fa111437f94982eed83ccea1ac90f004711c1dae6e5cb721` | applied+verified |
+| 821 | `821_session_turns_abandoned_marker.sql` | `dd72e3b91c98a6984744b477dc60b029ac892d0ccea927a18f2cb5a83af01529` | applied+verified |
+
