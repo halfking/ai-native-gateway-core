@@ -1103,7 +1103,11 @@ D16 说「12 个 `repoint-gap-only` 只差把 `id` 关联换成 `request_id`」�
   升级成探活口径的差异。
 - **D19-b**：`admin/swim_lane_init.go` / `bg/today_success_probe.go` 是否改读？
   这两个的后果较轻（展示 / 少 4 个分组），但**同样不是零变化**。
-- **D19-c**：§9.164 / §9.165 / §9.166 三节中**涉及 `request_logs_hot` 读方的列级结论
-  需要重算**——是否授权我下一轮把 matcher 扩到 118 列全契约后重出判定表？
-  （§9.162 的文件清单不受影响，它数的是字面量不是列。）
+- ~~**D19-c**~~ **已执行（2026-10-06，审计 §9.168）**：matcher 已扩到 **118 列全契约**
+  （exposure 33 / contract 118），判定输入的覆盖面补齐。
+  **结果**：`repoint-value-divergent` **8 → 9**、`repoint-degraded` **3 → 2**、
+  **`repoint-safe` 仍为 0**、**阻断的 5 个不变**。
+  移动的是 `admin/probe_history.go`，促成列 `outbound_model`（旧集合下它只抽到
+  `credential_id`）。
+  ⇒ **D19-a / D19-b 的答案不受影响**：`repoint-safe` 依然是 0。
 - **D19-d**：252 只读授权（D15-c）——真实分歧率必须在那里复测，本地数字是快照。

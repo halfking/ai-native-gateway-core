@@ -20487,3 +20487,88 @@ AND (pm.raw_model_name = rl.client_model
 - 分歧率是**本地快照**（§9.163.2）。下限登记是为了不被漂移带红，**不是**把数字说成定论；
   真实分歧率须在 252 复测（D19）。
 - `ts` 未纳入比较（它是 join 路径本身，比较它没有信息量）。
+
+## §9.168　D19-c：判定输入扩到 **118 列全契约**，覆盖度从 33 变 118
+
+§9.167.10 留了一条未做的边界：「抽取器的 matcher 仍只从三张非 baseline 表建，
+只用 baseline 列的读方仍可能抽出很少的列」。本节补上。
+
+### §9.168.1 问题：两个问题共用了一个**过滤后**的集合
+
+抽取器原来的 matcher 只从三张非 baseline 表建（structural-gap / unservable /
+degraded）。这对**暴露报告**是对的——baseline 列在那里是噪音，没人为 `ts` 开工作项。
+
+但**判定**问的是另一个问题：「改读这个读方会发生什么」。它必须知道读方碰到的**每一个**列：
+`latency_ms` 决定 safe，`work_type` 决定 empty，而一个**只用 baseline 列**的读方
+也必须产出非空输入。
+
+实测规模：exposure matcher **33** 列 / contract **118** 列。
+
+### §9.168.2 拆成两个集合，**判定读全契约那个**
+
+| 集合 | 覆盖 | 谁读 | 为什么 |
+|---|---:|---|---|
+| `exposureMatchers` | 33 | 暴露报告 | baseline 列在报告里是噪音 |
+| `contractMatchers` | **118** | **改读判定** | 判定必须看到读方碰到的每一个列 |
+
+实现上让**全契约那一遍先跑、exposure 那一遍从它的结果里过滤**，而不是两遍各自跑——
+两遍独立跑迟早会漂，而漂的方向正好是「少看到列」。
+
+⚠️ 这正是 §9.167 那个错误判定的**结构性来源**：判定被喂了报告的过滤集，
+所以别名 bug 下一丢就成空集，空集又被判成 `repoint-safe`。
+
+### §9.168.3 重出的判定表
+
+| 判定 | §9.167 | §9.168 | 变化 |
+|---|---:|---:|---|
+| **`repoint-safe`** | **0** | **0** | 不变 |
+| `repoint-value-divergent` | 8 | **9** | **+1** |
+| `repoint-degraded` | 3 | **2** | −1 |
+| `repoint-empty` | 4 | 4 | 不变 |
+| `repoint-gap-only` | 1 | 1 | 不变 |
+
+移动的那一个是 **`admin/probe_history.go`**，促成它的列是 **`outbound_model`**：
+旧集合下它只抽到 `credential_id`（degraded）⇒ degraded；全契约下 `outbound_model`
+（value-divergent）被看到 ⇒ 升为 value-divergent。
+
+`repoint-degraded` 现在只剩两个，都不含分歧列：
+`admin/providers.go [provider_id request_status success ts]`、
+`bg/today_success_probe.go [credential_id success ts]`。
+
+**结论方向不变**：`repoint-safe` 仍是 **0**，`work_types` / `telemetry` / `db.go` /
+`dual_read_validator` / `logs.go` **仍是阻断的 5 个**（它们靠别的列阻断）。
+
+### §9.168.4 覆盖度本身是一个声明，所以它有门
+
+「已扩到全契约」这句话如果没人守，下次重构收窄了也不会有人发现——而且**丢失的恰好是
+那些能决定 safe 比 safe 更糟的列**，表现为**安静的过度乐观**而不是失败。
+
+⇒ 断言 `len(contractMatchers) == len(db.CanonicalContractColumns())`（实测 118 = 118），
+外加一条：每个已登记的 `value-divergent` 列必须在 exposure 集里，
+否则「工作清单」和「判定」会对「哪些列是已知问题」产生分歧。
+
+**变异 MV**（把 contract 收窄回 exposure 集）⇒ 红：
+`covers 33 columns but the canonical contract has 118`。
+
+### §9.168.5 我在这轮犯的错（这一条与方法论同等重要）
+
+我用 `python` 做字符串手术重排函数，删除区间的起点用 `s.index('// value-divergent …')`
+定位。**那个注释串在两个函数里都出现**，`s.index` 命中了前一个，于是删除区间一路吃到
+下一个标记，**把 `exposureColumnMatchers` / `contractColumnMatchers` /
+`extractV1ReadingLiterals` 三个函数一起抹掉了**，而脚本在 `open(p,'w')` **之前**就抛异常，
+所以文件没被写坏——纯属运气。
+
+**恢复办法**：`git checkout --` 回 `origin/main`，改用 `edit` 工具逐处精确匹配重做
+（它匹配失败会**响亮**地失败，而不是静默删掉邻接内容）。
+
+⇒ **教训**：`s.index` 取的是**第一次**出现，注释是重复度最高的东西。
+**同一个标记出现两次时，`index` 选中的那个几乎永远不是你以为的那个。**
+`str.replace(a,b,1)` 至少只改一处；**区间删除没有这个保护**。
+
+### §9.168.6 诚实边界
+
+- 本节**只扩大了判定输入的覆盖面**，没有新增任何测量；所有数字仍来自本地库快照。
+- 118 列的 matcher 是**词法**的：`\b列名\b` + 限定符判定。它认不出
+  `SELECT *`、动态列名、或把列名拼进字符串的写法（§9.49 的盲区，D14-c 仍挂）。
+- 归类仍会把**同名不同义**的列混为一谈（`mc.client_model` 之类），这类需要逐点读。
+- `value-divergent` 的**分歧率下限**仍是本地快照，252 复测前不是定论（D19-d）。
