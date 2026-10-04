@@ -38,5 +38,8 @@
 
 ## 待办（154 侧）
 
-154 生产域 llmgateway.internal.example.com 若有同款 apex 产品决策，需同口径补丁；部署
-154 前先 `nginx -T` 核对其 `location = /` 形状。
+~~154 生产域 llmgateway.internal.example.com 若有同款 apex 产品决策，需同口径补丁~~
+已于同日完成：`llm-154.kxpms-cn.conf`（upstream 名为 `llm_local`，其余
+与 245 同构；服务器备份 `llm-kxpms-cn.conf.pre-unified-entry-20261004`）。
+154 seq2451 首次携带移动端，deploy-seamless 预绑软链后**免重启**直接
+挂载 /m（245 seq2450 无预绑，靠手动 restart 激活——正是该坑的对照组）。
