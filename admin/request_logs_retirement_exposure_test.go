@@ -479,8 +479,9 @@ func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 		byVerdict[string(v)] = append(byVerdict[string(v)], rel+"  ["+strings.Join(names, " ")+"]")
 	}
 	for _, v := range []db.RetirementRepointVerdict{
-		db.RepointNoSuchColumn, db.RepointEmpty, db.RepointGapOnly,
-		db.RepointDegraded, db.UnknownColumn, db.RepointSafe,
+		db.RepointNoColumnsMeasured, db.RepointNoSuchColumn, db.RepointValueDivergent,
+		db.RepointEmpty, db.RepointGapOnly, db.RepointDegraded, db.UnknownColumn,
+		db.RepointSafe,
 	} {
 		list := byVerdict[string(v)]
 		if len(list) == 0 {
@@ -491,6 +492,49 @@ func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 		for _, l := range list {
 			t.Logf("   %s", l)
 		}
+	}
+	// One column per class, pinned. Rule **order** is load-bearing and nothing
+	// else in this file can see it: `client_model` is simultaneously in
+	// RetirementDegradedColumns and registered in RetirementSessionLegDivergence,
+	// so whichever arm is reached first decides. Moving value-divergent below
+	// degraded empties its bucket and sends eight files back to
+	// `repoint-degraded` — and the rest of this test stays green while it
+	// happens (mutation-verified §9.167). This table is what makes that visible.
+	for _, tc := range []struct {
+		cols []string
+		want db.RetirementRepointVerdict
+		why  string
+	}{
+		{[]string{"client_model"}, db.RepointValueDivergent,
+			"in the degraded list by fill rate and registered as value-divergent; the value rule must win"},
+		{[]string{"outbound_model"}, db.RepointValueDivergent,
+			"same overlap, different column"},
+		{[]string{"credential_id"}, db.RepointDegraded,
+			"populated but emptier than v1, and faithful on both legs"},
+		{[]string{"work_type"}, db.RepointEmpty,
+			"0% on the session side while v1 holds values"},
+		{[]string{"upstream_endpoint"}, db.RepointNoSuchColumn,
+			"a real request_logs column that the view does not project"},
+		{nil, db.RepointNoColumnsMeasured,
+			"no columns is an absence of measurement, never a clean bill of health"},
+		{[]string{"latency_ms"}, db.RepointSafe,
+			"at v1 parity and not registered as divergent — the one honest safe case"},
+	} {
+		if got := db.RetirementRepointVerdictFor(tc.cols); got != tc.want {
+			t.Errorf("RetirementRepointVerdictFor(%v) = %q, want %q — %s",
+				tc.cols, got, tc.want, tc.why)
+		}
+	}
+
+	// A file that contributes no columns is not a finding about that file — it is
+	// the instrument failing on it. §9.167 shipped three such files graded
+	// `repoint-safe` because the alias regex dropped the `rl` qualifier for
+	// `request_logs_hot`, and nothing in this test could tell that apart from a
+	// genuinely clean reader. So it is an error, not a log line.
+	if n := len(byVerdict[string(db.RepointNoColumnsMeasured)]); n > 0 {
+		t.Errorf("%d assessed file(s) contributed no columns, so their verdict is an absence "+
+			"of measurement rather than a measurement — see db.RetirementRepointVerdictFor's "+
+			"RepointNoColumnsMeasured: %v", n, byVerdict[string(db.RepointNoColumnsMeasured)])
 	}
 	// The point of the test: a blanket repoint is not available. If every breaker
 	// ever came out `repoint-safe`, D14-a would have a trivially correct answer;
@@ -523,7 +567,30 @@ func countsBySeverity(exposures []fileExposure) map[string]int {
 // v1AliasRe captures the alias bound to a v1 relation: `FROM request_logs_hot rl`
 // binds rl, while `FROM request_logs` with no alias leaves the table name itself
 // as the only valid qualifier.
-var v1AliasRe = regexp.MustCompile(`(?i)\b(?:from|join)\s+(request_logs|request_logs_hot|request_logs_bodies|request_logs_bodies_hot)(?:\s+(\w+))?`)
+// The alternatives are ordered **longest first** and the table name is
+// `\b`-anchored on both sides. Both parts are load-bearing, and getting either
+// wrong is silent rather than loud.
+//
+// Go's regexp alternation is leftmost-first, not longest-match, so
+// `(request_logs|request_logs_hot|…)` matches the *prefix* `request_logs` of
+// `FROM request_logs_hot rl`. The optional alias group then has nothing to match
+// (the next character is `_`, not whitespace), so **the alias is dropped**:
+// v1al came out as `{request_logs: true}` with no `rl`.
+//
+// Downstream that is not a degraded measurement, it is an **absent** one:
+// columnAttribution sees `rl.client_model`, finds `rl` is not a known v1
+// qualifier, and returns attrNone. Every column of every `request_logs_hot`
+// reader was therefore reported as depending on nothing, and
+// `RetirementRepointVerdictFor([])` — whose loop body never executes — returns
+// its zero value, `RepointSafe`.
+//
+// That is how `admin/swim_lane_init.go`, `bg/model_probe.go` and
+// `bg/today_success_probe.go` were graded `repoint-safe` in §9.165 and §9.166:
+// **with no column evidence at all.** §9.165's `columnAttribution` fix removed
+// the `id` false positives and, in the same stroke, removed every real
+// dependency of every hot-table reader. A correction that fixes one false
+// positive while creating a silent false negative is worse than the bug.
+var v1AliasRe = regexp.MustCompile(`(?i)\b(?:from|join)\s+(request_logs_bodies_hot|request_logs_bodies|request_logs_hot|request_logs)\b(?:\s+(\w+))?`)
 
 // relationRe counts distinct relations named in FROM/JOIN, so a literal that
 // reads exactly one relation can be attributed with certainty.

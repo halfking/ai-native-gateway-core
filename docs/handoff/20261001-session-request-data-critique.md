@@ -7538,3 +7538,85 @@ hot ∪ parent ⇒ **时间覆盖是超集**。
 ⚠️ **D18-a / D18-b 待拍板**：3 个 `repoint-safe` 是否现在改读？
 依据已升级，但**保真门只在 24h 窗口、只在本地库、只在这 5 列上测过**；
 `bg/model_probe.go` 的窗口是 **3 天**，**长窗口未测**。
+
+---
+
+### §70.22 第八十轮：**撤回上一轮的结论**——三个读方的 `repoint-safe` 从来没有列支撑
+
+#### ① 怎么发现的：不是门红了，是**另一条路**给出矛盾数字
+
+`bg/today_success_probe.go` 的 `GROUP BY credential_id, COALESCE(outbound_model, client_model)`
+做组数对比（**没经过保真门**）：**4 个分组在 v1 存在、在视图里消失**。
+而 §9.166 的门报「`outbound_model` 不符 **0**」。
+
+逐个读：`MiniMax-M3`→`minimax-m3`、`deepseek-v4-1-flash`→`deepseek-v4.1-flash`。
+**视图不按原样返回模型名。**
+
+#### ② 两层根因
+
+**第一层（保真门）**：`session_turns` **没有** `client_model` / `outbound_model`
+（它有 `model` / `raw_model_name` / `canonical_model`，106 列）。LATERAL 里限定名
+查不到内层就**回退外层作用域**，于是取到了 `v1` 自己的值 ⇒ 门在做 `v1 IS DISTINCT FROM v1`。
+同一条问句写成**非 LATERAL** 形式**立刻报错** ⇒ 错的形状是「一种写法静默、另一种报错」。
+
+**第二层（更深，判定地基）**：`v1AliasRe` 的交替是
+`(request_logs|request_logs_hot|…)`，Go 正则**从左到短名优先**，
+`FROM request_logs_hot rl` 只匹配到前缀 `request_logs`、**别名 `rl` 从未登记**
+⇒ `columnAttribution` 判 `attrNone` ⇒ **凡读 `request_logs_hot` 的读方抽取列恒为空**
+⇒ `RetirementRepointVerdictFor([])` 循环不执行、返回初值 `RepointSafe`。
+
+⚠️ **§9.165 那次修正消除了 `id` 假阳性，同时消除了每个热表读方的全部真实依赖。**
+修掉一个假阳性、造出一个静默假阴性，比原 bug 更坏。
+
+#### ③ 修完之后的真值（24h；72h 相同）
+
+| 路径 | 行数 | client_model 不符 | outbound_model 不符 | credential_id | success |
+|---|---:|---:|---:|---:|---:|
+| 无孪生（v1 腿） | 418 | **0** | **0** | 0 | 0 |
+| 有孪生（会话腿） | 295 | **153（51.9%）** | **92（31.2%）** | 0 | 0 |
+
+**v1 腿确实原样透传**（§9.166 那句保留）；**会话腿不复现 v1 的模型名**。
+
+判定分布：`repoint-safe` **3 → 0**、`repoint-value-divergent` **8**、degraded 3、
+empty 4、gap-only 1。**仍未阻断的 5 个不变。**
+
+#### ④ 四条承重的东西，缺一不可
+
+1. 正则**最长优先 + 两侧 `\b`**。
+2. **零证据守卫**：`len(cols)==0` ⇒ `RepointNoColumnsMeasured`（最差）。
+   ⚠️ 变异 MQ 下正则退回时 `repoint-safe` 仍是 0——**守卫独立兜住了**，两层都必要。
+3. **阳性对照**：同一条 join 故意错配，必须报非零（实测 192），否则全部 0 是「没测」。
+4. `value-divergent` 必须**排在 `degraded` 之前**（`client_model` 本来就在 degraded 表里）。
+   变异 MS 把桶清空、8 个文件退回 degraded，**而其余测试全绿** ⇒ 补了「每类取一列」判定表。
+
+#### ⑤ 影响不是报表漂移，是**探活行为**
+
+`bg/model_probe.go` 的 `EXISTS` 用**精确字符串相等**，改读后约 **1/5 的行不再匹配**
+⇒ 一些绑定不再被判定为「本凭证上有真实流量」⇒ **少发深探针**。
+
+#### ⑥ 附带：`ORDER BY … LIMIT` 的无差异成立，但依据换了
+
+1/6/24/72h 实测 newest-500 **完全相同**。但**不是我以为的写入者滞后**：
+两侧最新 `ts` 相差 **0.00 小时**。真因是会话侧有 **4,475 条 v1 侧不存在的行**
+（占视图 56%），因**时间戳更旧**（最新 `01:14` vs v1 第 500 新的 `09:06`）
+而落在 top-500 之外，余量只有 **7.9 小时**。
+⇒ 「改读视图 = 换数据源」不只是少几行，是**多出一大块**。
+
+#### ⑦ 我在这轮犯的错
+
+1. **先写结论再找根因**：我第一版 §9.167 写的是「LATERAL 回退是根因」，写完才挖到
+   **正则那层**。而正则那层才是 `repoint-safe: 3` 的真正地基。
+   ⇒ **根因要挖到「为什么这个结论会被发布出去」，不是停在「哪个查询写错了」。**
+2. **用 §9.163.2 的旧结论去解释新现象**：我以为 top-500 相同是「写入者滞后 8.7 小时」，
+   实测滞后 **0.00 小时**。**引用旧结论前先复测它是否还成立。**
+
+#### ⑧ 交付物
+
+`admin/request_logs_retirement_exposure_test.go`（正则修正 + 零证据判红 + 判定表）、
+`db/retirement_column_exposure.go`（`RetirementSessionLegDivergence` / `value-divergent` /
+`repoint-value-divergent` / `repoint-no-columns-measured`）、
+`db/repoint_value_fidelity_realdb_test.go`（重写：直读视图 + 按腿拆 + 阳性对照）、
+审计 §9.167、决策表 **D19**（**撤回 D18 与 D17-a**）。
+
+⚠️ **D19-c 未做**：抽取器 matcher 仍只从三张非 baseline 表建，只用 baseline 列的读方
+仍可能抽出很少的列（零证据守卫会显式判红，但**不等于覆盖完整**）。
