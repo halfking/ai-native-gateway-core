@@ -23867,3 +23867,166 @@ public.supplier_errors_unified.source
 ⇒ **四次假零/假阳**（`EXCEPTION` 误配、只收分区名、`WITH` 要求、手写族名单），
 四次都是同一个错误的不同变体：**先造量具，再让结论跑在量具上**。
 两次是靠阳性对照抓到的，一次是靠「分母非零」抓到的，一次是靠真库对照臂抓到的。
+
+---
+
+## §9.199 D29-a：关系宇宙接上之后，**总体混叠**才暴露出来
+
+### §9.199.1 改了什么
+
+`admin/request_logs_retirement_exposure_test.go` 的 `v1TableRe` / `v1AliasRe`
+原先**只写死 4 张裸表**。710 视图族（`request_logs_with_current_month` 及其包装视图）
+不在名单里 ⇒ 入口过滤不通过 ⇒ 只经视图读 v1 的文件**一个字面量都产不出来**。
+
+改动：两个匹配器改为从 **§9.172 的同一份 SSOT** 推导
+（`v1BaseTableNames` 5 张 + `viewChainNames(t)` 4 个视图链成员 = 9 个关系名）。
+**不另抄第三份名单。**
+
+### §9.199.2 新旧数字并列
+
+| 指标 | 改前 | 改后 |
+|---|---|---|
+| 盲区（读 v1 族但提取器产出 0 字面量） | **63** | **0** |
+| 扫描的生产文件 / 引用 v1 族的文件 | 2275 / — | 2275 / **148** |
+| `Exposure` breaks | 4 | 4 |
+| `Exposure` breaks-possibly | 1 | 9 |
+| `Exposure` undercounts | 27 | 27 |
+| `Exposure` undercounts-possibly | 4 | 24 |
+| `Exposure` clean | 70 | **42** |
+| `RepointVerdict` 分布 | empty=5 / value-divergent=26 | empty=6 / value-divergent=27 |
+| 静态引用契约列合计 | 540 | 568 |
+| `ReaderPopulationGroundTruth` | 106 读方 / v1=106 视图=118 / 判定分布 | **完全不变** |
+
+`TestReaderPopulationGroundTruth` 一行未动是**预期**的：它用自己那对
+`v1BaseTableRe` / `viewRelationRe` 统计两族，改动不碰它。
+⇒ 两份工具**测的不是同一件事**，所以一个动一个不动是正确结果，不是漏改。
+
+### §9.199.3 改完之后立刻暴露的**真问题**：两个总体被混成了一个
+
+关系宇宙一放宽，`BreakersRegistryIsConsistent` 门立刻报
+「8 个文件读了会话族供不上的列却不在册」。逐个查证后发现：
+
+**这 8 个全部是经 710 视图读 v1 的，也就是已经 repoint 完的读方。**
+
+它们的依赖在**视图的 v1 臂**上，而那正是 `DROP request_logs` 时要拆掉的东西——
+所以它们**不是 breaker**。breaker 的定义是「这个文件必须在 DROP 之前改掉」，
+而视图读方是**切换时的迁移问题**。两者混在一张登记表里，
+会写出 `reads request_logs.work_type directly` 这种**不属实**的条目：
+比缺一条登记更糟，因为它会误导下一个复核的人。
+
+⇒ 改动：给 `v1ReadingLiteral` 加 `viaBaseTable` / `viaCanonicalView` 两个标记，
+门按「怎么读到的」分成两个总体。
+
+### §9.199.4 顺带修掉的第二个分类缺陷：`sessionFamilyRe` 认不出包装视图
+
+它只写死 3 个名字，视图只认 `request_logs_with_current_month` **整词**；
+而视图链里还有 `request_logs_with_current_month_without_customer_id`，
+`\b` 在 `month` 之后遇到 `_` 不成立 ⇒ 认不出。
+后果实测到了：`admin/auto_route.go` 因此被算成 **definite**（= 只可能来自 v1），
+而它读的是包装视图——**已 repoint 的读方被当成未 repoint 的**。
+
+`viewRelationRe`（§9.172）早就带上了 `_without_[a-z_]+`。
+⇒ 同一处缺陷的另一个副本。已一并从 SSOT 推导。
+修完 `auto_route.go` 从 `breaks` 正确降为 `breaks-possibly`。
+
+### §9.199.5 新增门 `TestEveryV1ReaderIsAnalyzedByExtractor`
+
+守住「凡读 v1 族者必被分析」。**探针挡不住这条**——探针永不判红，
+所以「盲区从 0 涨回 63」在它那里只是一行日志，而回归的表现恰恰是
+「报告里的 clean 桶悄悄变大」。
+
+期望值 0 是**正确值**，不是把已知坏值冻进断言：任何非零都意味着
+有文件读了 v1 却被算成 clean。
+
+### §9.199.6 这次改动自身的四次错（都是门自己抓到的）
+
+1. **两总体写成二选一**（`if viaBase {…} else {…}`）⇒ **混合读方**从视图桶消失，
+   且它的视图侧暴露在底表桶里被丢掉。实测抓到：`domains/sessionforensics/export.go`
+   在报告里是 `breaks-possibly`，两个桶里却都找不到它——
+   因为它 `:416 FROM request_logs` **又**读视图。
+   ⇒ 混合读方**两个桶都要进**。
+2. **桶的过滤条件写错**：`measured` 分支上多加了 `inView` 条件，
+   于是「只读底表、不碰视图」的字面量被整段跳过
+   ⇒ 5 个已登记 breaker 一夜之间变成 stale。
+   方向是**少报**，而少报在这个门上表现为「有人修好了、该销账了」——
+   一个看起来无害、实则错误的红。
+3. 同一次改动里另有一处 `t.Fatalf` 用的 `%` 未转义（`0%`）导致 vet 失败。
+4. 第一次以为「8 个都要登记」，核到第 7 个才发现是视图读方——
+   **差点写下一批不属实的登记**。
+
+⇒ 第 1、2 条的共同点：都是**分总体时把「并集」写成了「二选一」或叠加了多余条件**。
+它们都不会编译失败、都不会让测试变绿，只是**安静地少报**。
+
+### §9.199.7 边界
+
+- **本轮只改测试分析，未改任何生产代码。**
+- `retirementBreakers` 登记表**未新增条目**（5 条原样，且无 stale）。
+- 视图臂读方**不进**登记表，改为门内显式日志（10 个）。
+  **处置属属主决定** ⇒ 决策表新增 **D29-d**。
+
+---
+
+## §9.200 D30-d 的负结果 + 一个更大的发现：这个视图**不可从仓库复现**
+
+### §9.200.1 授权的修法**实测无效**
+
+D30-d 选定的修法是「把 `'hot'::text AS source` 换成**基于基表列**的表达式」。
+在真库上用事务内 `CREATE VIEW` + `ROLLBACK` 实测（不留痕）：
+
+| 变体 | 结果 |
+|---|---|
+| `CASE WHEN <rel>.id IS NOT NULL THEN 'hot' ELSE 'historical' END::text AS source` | ❌ 仍报 `cache lookup failed for attribute source of relation 12964345` |
+| `tenant_id AS source`（纯改名，源列真实存在） | ❌ 同样报错 |
+| 两条腿各包一层 CTE | ❌ 换成**另一种**失败：`invalid perminfoindex 0 in RTE with relid 0`（集合算子 + 列存） |
+| **去掉 `source` 列** | ✅ 正常返回行 |
+| `SELECT * FROM supplier_errors_unified`（含 source 但不点名） | ✅ 正常 |
+| `SELECT id, source FROM …` / `SELECT source, id FROM …` | ❌ 两种顺序都失败 |
+
+⇒ **触发条件不是「合成常量」，而是「视图输出列不是基表列的直接 Var」**。
+只要外层查询**点名**要第 1 列，列存 RTE 就解析不出这个属性；
+`SELECT *` 之所以能过，是因为 planner 把用不到的视图列裁掉了。
+
+⇒ 唯一实测可行的修法是**删掉 `source` 列**，那是**视图契约变更**，
+超出「把合成列换成基表列表达式」的授权范围，**本轮未执行**。
+
+### §9.200.2 更大的发现：这个视图在仓库里**不存在**
+
+| 查了什么 | 结果 |
+|---|---|
+| `sql/schema/01-schema.sql` | **0** 处 |
+| `deploy/sql/schemas/baseline/01-schema.sql` | **0** 处 |
+| `installer/cmd/llm-gw-installer/embeddata/01-schema.sql` | **0** 处 |
+| `sql/migrations/startup/**` | **0** 处 |
+| `installer/.../embeddata/startup/**` | **0** 处 |
+| 唯一定义处 `deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql:222` | 1 处 |
+| `schema_migrations` 里 `V371` | **count = 0**（最高只到 V359） |
+
+而视图**确实存在于本机库**，且无任何依赖视图（`pg_depend` 查询 0 行，可安全 DROP+CREATE）。
+
+⇒ **这个视图不是从仓库可复现的。** 一个全新安装/重建的库不会有它，
+而 admin 的读端（`admin/errors_trend.go:12`、`admin/provider_credential.go:1243`、
+`admin/handler.go:134`）都查它。
+⇒ 这也解释了 §9.198 的仓库 SQL 普查为什么一条都没命中它——它压根不在仓库里。
+
+⚠ **这比 §9.197.5 的列存投影问题更基础**：即便把 `source` 修好，
+视图**本身**仍然不可复现。处置是**两件事**，不能当成一件。
+
+### §9.200.3 D30-a 的真实规模（本地实测，2026-10-05）
+
+「倾向回滚列存转换」落地前必须知道的四件事：
+
+1. **回滚 765 不足以止血**。765 的 A 段把 `ensure_request_logs_bodies_partition`
+   重定义为「有 `citus_columnar` 就用 columnar 建月分区」——
+   只要这个函数还在，**新分区会继续被建成列存**。
+2. **现有 `.down.sql` 根本不转分区**，它自己写着：
+   「columnar 分区一旦承接数据即**不可无损回转**（heap 列存互转需重写全表，
+   且 columnar 无 UPDATE/DELETE 路径）。本 down 不触碰分区，
+   仅供回滚演练，**不要在生产执行**。」
+3. **代价（本机实测）**：7 个族的列存分区合计 **3,359 MB**，
+   其中 `request_logs_bodies_2026_09` 一个就 **3,026 MB**。
+   转回 heap = 全表重写，需要维护窗口。
+4. **另外 6 个族不由 765 管**（`routing_decision_log` 268 MB、
+   `credential_model_index` 30 MB 等各有自己的迁移历史）。
+   「回滚列存转换」若按字面执行，范围远大于 765。
+
+⇒ 决策表 D30-a 需要把「回滚」的范围写清楚，否则它不是一个可执行的选项。
