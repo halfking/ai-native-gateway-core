@@ -344,7 +344,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
    两者的视觉权重必须不同，否则用户读到的是同一个结论。 */
 .dist-card__degraded {
   font-size: 12px;
-  color: var(--warning, #e6a23c);
+  color: var(--warning);
   padding: 10px 0;
   line-height: 1.5;
 }
@@ -400,7 +400,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
    与「查不出来」必须一眼可分。role="alert" 让读屏也会播报。 */
 .drill-panel__error {
   font-size: 12px;
-  color: var(--danger, #f56c6c);
+  color: var(--danger);
   padding: 8px 0;
   line-height: 1.5;
 }

@@ -179,9 +179,9 @@ function fmtTokensCompact(n: number | undefined) {
   grid-column: 1 / -1;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--warning, #e6a23c);
+  color: var(--warning);
   padding: 8px 10px;
-  border: 1px solid var(--warning, #e6a23c);
+  border: 1px solid var(--warning);
   border-radius: 6px;
 }
 .hero-card {

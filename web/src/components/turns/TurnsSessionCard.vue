@@ -246,7 +246,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .child-ops-error {
   text-align: center; font-size: 12px; padding: 8px 16px;
   color: var(--warning, var(--text-secondary));
-  background: color-mix(in srgb, var(--warning, #d97706) 8%, transparent);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
 }
 @media (max-width: 768px) {
   .turn-row { grid-template-columns: 1fr; gap: 10px; }
