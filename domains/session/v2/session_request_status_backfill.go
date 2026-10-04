@@ -403,20 +403,48 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 // The v1-side IS NOT NULL mirrors the candidate query: rows whose v1 label is
 // NULL can never be filled, so counting them would leave the gauge permanently
 // above zero and make "done" unreachable.
+//
+// It covers BOTH storage surfaces on purpose. The session family has two
+// (domains/session/v2 writes only session_turns_hot; promote later rotates cold
+// rows into the partitioned parent), and this gauge answers "is request_logs
+// retirable yet?" — a question about **every row that will still exist after
+// retirement**, not just the ones that have already been rotated. A gauge scoped
+// to the parent alone reads 0 while session_turns_hot is full of NULL labels,
+// which is a green light on a retirement that then loses them. That failure mode
+// is not hypothetical: any gateway process still running a pre-823 binary writes
+// NULL labels into _hot, and the parent-only gauge cannot see them.
+//
+// The candidate query below deliberately does NOT cover _hot — see its own
+// comment. Backfill scope and gauge scope are different questions; making them
+// the same scope is what created the blind spot.
 const sessionRequestStatusRemainingSQL = `
-	SELECT count(*)
-	FROM public.session_turns t
-	JOIN public.request_logs l ON l.request_id = t.request_id
-	WHERE t.request_status IS NULL
-	  AND l.request_status IS NOT NULL`
+	SELECT (SELECT count(*)
+	          FROM public.session_turns t
+	          JOIN public.request_logs l ON l.request_id = t.request_id
+	         WHERE t.request_status IS NULL
+	           AND l.request_status IS NOT NULL)
+	     + (SELECT count(*)
+	          FROM public.session_turns_hot t
+	          JOIN public.request_logs l ON l.request_id = t.request_id
+	         WHERE t.request_status IS NULL
+	           AND l.request_status IS NOT NULL)`
 
 // sessionRequestStatusSourceProbeSQL checks both ends of the copy. to_regclass
 // yields NULL for an absent relation instead of raising, which is what turns
 // retirement into a quiet exit rather than an ERROR per tick.
+//
+// The request_status column is checked on **both** session surfaces: 823 adds it
+// symmetrically, but the gauge selects from session_turns_hot too, and a
+// half-applied 823 (parent only) would make the gauge raise "column does not
+// exist" on every tick instead of degrading quietly.
 const sessionRequestStatusSourceProbeSQL = `
 	SELECT to_regclass('public.request_logs') IS NOT NULL,
 	       EXISTS (SELECT 1 FROM pg_attribute
 	                WHERE attrelid = to_regclass('public.session_turns')
+	                  AND attname = 'request_status'
+	                  AND NOT attisdropped)
+	       AND EXISTS (SELECT 1 FROM pg_attribute
+	                WHERE attrelid = to_regclass('public.session_turns_hot')
 	                  AND attname = 'request_status'
 	                  AND NOT attisdropped)`
 
@@ -431,6 +459,25 @@ const sessionRequestStatusSourceProbeSQL = `
 // IS NOT NULL on the source side keeps the 46 NULL-label v1 rows out of the
 // candidate set (writing NULL would be a no-op that never satisfies the guard
 // and would spin the cursor forever).
+//
+// Scope: the **parent only**, and that is deliberate rather than an oversight
+// (this file is a named exception in admin/session_family_two_surface_test.go —
+// read that registry entry before "fixing" this).
+//
+//   - Rows still in session_turns_hot were written through the 823 write path
+//     (internal/sessionv2mirror → TurnRecord.RequestStatus), so they already
+//     carry the label; the backfill has nothing to add to them.
+//   - A hot row that somehow lacks it (an old binary still writing _hot) is not
+//     lost — it is picked up after promote rotates it into the parent, which
+//     this query does cover.
+//   - Covering _hot would also mean the batch UPDATE has to know which surface
+//     each keyset row lives on, turning a single-table keyset into a two-table
+//     one, for a window (the hot retention horizon) that closes on its own.
+//
+// The *gauge* deliberately does cover both surfaces — see
+// sessionRequestStatusRemainingSQL. "Rows this job can still fix" and "rows
+// that would be lost at retirement" are different questions, and only the
+// second one may be used as a release gate.
 const sessionRequestStatusCandidateSQL = `
 	SELECT t.id, t.partition_date, t.tenant_id, t.request_id
 	FROM public.session_turns t

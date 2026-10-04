@@ -829,6 +829,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 母表 + hot 两侧必须对称加列 —— promote（707 起）入口强制
 			// (列名:类型:非空) 全等契约，不对称会直接 RAISE EXCEPTION。
 			"823_session_turns_request_status.sql",
+			// 824 (2026-10-04, 会话族退役审计 §9.160): 修 canonical 视图会话腿
+			// 的 request_status 分类**从未生效**。那条表达式靠
+			// `status_code = 429` 认限流，而 session_turns 全表 1,688,629 行里
+			// 429 是 **0 行**（真限流在会话侧记 500）⇒ 437,402 条真限流被报成
+			// 普通 failure，视图把 failure 高估 32%、rate_limited 报 0。
+			// 改走 `error_kind = 'rate_limit_exceeded'`：与 v1 权威标签在
+			// 394,614 组孪生行上双向零反例。纯读侧表达式改写，118 列不变，
+			// 不碰任何行。注：823 那条 request_status 列**没有**被本迁移引用
+			// ——引用它会给「823 未跑的库」引入 undefined column 失败。
+			"824_request_status_rate_limited_projection.sql",
 		},
 	}
 }

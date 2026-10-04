@@ -7364,3 +7364,111 @@ D7-f（失败流量算不算钱）仍是业务决策，仍等你。
   815~**822 全都不在**，**823 是我手工 `\i` 应用的**（带外）。
 - ⚠️ **不要把本地库当「installer 干净安装后的状态」**。
 - §9.155 的验证仍成立，因其前提是「823 已应用」，与账本无关。
+
+---
+
+### §70.20 第七十八轮：**发现并修掉一个「今天就是错的」分类缺陷**，外加两个我自己留下的既有缺陷
+
+本轮起点是补上一轮遗留的 `admin/session_management_api.go`，半路撞上一个比它大得多的问题。
+
+#### ① 主发现：`rate_limited` 在 canonical 视图里**从未生效过**（§9.160）
+
+`request_logs_with_current_month` 会话腿的 `request_status` 靠
+`status_code = 429` 认限流，而 `session_turns` 全表 1,688,629 行里 **429 是 0 行**
+（真限流在会话侧记 500）。那个分支是**死代码**：
+
+| 标签 | 修正前 | 修正后 |
+|---|---:|---:|
+| `failure` | 1,358,245 | 920,843（**−32.2%**） |
+| `rate_limited` | **0** | **437,402** |
+
+**这与退役无关，今天就是错的。** 视图整体可见的 `rate_limited` 修正前只有 8,417 条，
+且全部来自 v1 冻结腿；`request_logs` 一删，全系统归零。
+
+信号没丢：`error_kind='rate_limit_exceeded'` 在 394,614 组孪生行上与 v1 权威标签
+**双向零反例**。改判据即修复。
+
+> **下一轮务必知道的三件事**：
+> 1. **只改 Go 镜像体对存量库无效** —— `db.ensure` 的自愈条件是
+>    `canonicalExists && bodyIsV2` 就 return，现网已是 v2 体。**必须落迁移。**
+> 2. **幂等判据只能单向**：新式是旧式的**严格超集**，「旧式是否已消失」没有可测形式。
+>    824 里**故意没写**那条恒真的反向检查，并在注释里写明了为什么。
+> 3. **投影改动的连带面比想象大**：`sessionFamilyProjection` 被两个原生源复用，
+>    连带 `session_list` / `session_turns_tree` / `session_online` /
+>    `session_compare` / `session_export` / `session_title` / `turns_sessions` /
+>    `logs_turns_source` 一起改。
+
+#### ② 顺带更正一条既有数字：结构性无解量 **168,106 → 125,211**
+
+§9.155 记的「无孪生 = 168,106 行全部结构性无解」**不准确**：其中 42,788 行带
+`error_kind='rate_limit_exceeded'`，限流标签在无孪生行上同样可恢复。
+⇒ 决策表新增 **D12**，D9 第四条的剩余量口径随之改写。
+
+⚠️ **由此产生一个必须由你拍板的口径问题（D12-a）**：若 D9 第四条把阈值定成 0，
+**gauge 永远到不了 0**（那 125,211 永远不会被回填），放行门形同虚设。
+我建议写成「两个面 `有孪生且未回填` 归零」，125,211 作为**已知且接受**的常量
+记进发布单。
+
+#### ③ 我自己留下的两个既有缺陷（本轮修掉）
+
+**（a）`TestNoBareParentSessionFamilyRead` 在 `origin/main` 上就是红的。**
+报错文件是**我上一轮（`6833df7a3`）加的回填作业**——上一轮没跑 `admin` 包全量
+测试，漏了。已用干净 `origin/main` 副本确认基线同样红，不是本轮引入的。
+处置走门自己给的路径：登记进具名例外表并写明为什么父表-only 在那里是对的。
+
+> **教训**：上一轮新增了一个文件到 `domains/session/v2`，却只跑了
+> `./domains/session/v2/` 的测试。**跨包门禁会因新文件而红，而我只跑了被改的包。**
+> ⇒ 结构性修法：**任何一轮只要新增/移动了文件，就必须跑「引用该文件的所有包」的
+> 门禁**，而不是「被改的包」的测试。
+
+**（b）D9 退役门是假绿。** `sessionRequestStatusRemainingSQL` 与候选 SQL 都只查
+父表。父表落后 hot 约 8.7 小时 ⇒ `_hot` 满是 NULL 时 **gauge 仍报 0**。
+已改成两面都查并**求和**（不是 `UNION ALL`——那会返回两行，单值 `Scan` 每 tick
+报错）；source probe 也改为两面都查 `request_status` 列。
+
+> **这一条是 ③(a) 撞出来的** —— 门禁的报错把我引到那个文件，读它才看见 gauge
+> 的范围问题。**红门不只是一个错误，它是通往下一个缺陷的路标。**
+
+#### ④ 本轮新增门禁（4 条变异全部由我注入，均验证变红）
+
+- `db/request_status_projection_realdb_test.go`：离线钉分支序与字面量；
+  **真库把要上线的那条表达式原文**喂给真实 PG 验 5 个行形态；钉住迁移与 Go 镜像体逐字同文。
+- `registeredExpressionOverrides`（改 `view_schema_v2_contract_test.go`）：734 是已跑遍
+  所有部署的历史迁移，**不重写它**，改为登记「frozen → current」一对，两侧各钉一个。
+  位置靠 `AS <col>` 后缀解析，**不靠下标加减**。
+- `RemainingSQLCoversBothSurfaces` / `SourceProbeCoversBothSurfaces`。
+- `admin/session_request_brief_scan_test.go`：把扫描逻辑抽成
+  `scanSessionRequestBrief`（接口只含 `Scan`），**测的是真代码而不是副本**。
+
+| 变异 | 表现 |
+|---|---|
+| M1 抽掉 `error_kind` 臂 | 真库门红，报 `got "failure", want "rate_limited"`（**原样复现缺陷**） |
+| M2 gauge 缩回父表 | 5 条子判据同时红 |
+| M3 `success` 退回裸 `bool` | 红：`converting NULL to bool is unsupported` |
+| M4 抽掉查询里的 `request_status` | 红 |
+
+端到端：`TestRequestLogsViewV2EnsureMatchesMigration` 绿 —— 克隆真库目录 → scratch
+DB → 重放整条链（含 824）→ **Go ensure 与迁移链产出的 viewdef 逐字节相同**。
+
+#### ⑤ 我在本轮犯的三个操作失误（都已修，写下来给下轮）
+
+1. **判据扫整节，被文档自己击败**：824 的头注**故意引用了旧表达式**来说明缺陷，
+   而我那条「旧式必须消失」的检查扫了整个文件 ⇒ 恒红。改成只判 `$proj$` 块。
+2. **子串陷阱**：我先写的是「`WHEN t.status_code = 429 THEN 'rate_limited' ELSE
+   'failure' END` 消失」，而**新表达式恰好以这句话结尾** ⇒ 这条判据在结构上
+   **永远不可能变红**。换成比对**完整**旧式（中间插了 `error_kind` 臂，就不是子串了）。
+   ⇒ **写「某段文本必须消失」之前，先问新文本是不是它的超集。**
+3. **登记表比对忘了剥别名**：我拿带 ` AS request_status` 的整条去比裸表达式。
+
+#### ⑥ 交付物
+
+- 迁移 **824**（+`.down.sql`，基准取 **817 的 up 文件本体**，避免顺带把 `client_ip`
+  守卫退回 816 弱形态）+ embeddata 镜像 + `runner.go` / `main.go` 两处 + TSV 第 219 行。
+- `db/request_logs_view_schema.go`：`sessionRequestStatusExpr` 抽出为常量，
+  **故意不引用 823 的 `request_status` 列**（会给 823 未跑的库引入
+  `undefined column` 硬失败）。
+- `admin/session_management_api.go`：`SessionRequestBrief` 加 `RequestStatus *string`
+  （纯加法 + `omitempty`，旧客户端不受影响）；`success` 改 `sql.NullBool`
+  ——裸 `bool` 遇 NULL 会让 `rows.Scan` 失败 → `warnRowSkip` → **整行请求从 200
+  响应里静默消失**。
+- 文档：审计 §9.160（8 小节）、决策表 D12。
