@@ -10,6 +10,9 @@
  *   · static-card  该 settle（已渲染完、但不是列表 —— 就是 Home/Usage 的形状）
  *   · slow-stream  **不该** settle（每 400ms 增长；防「稳定」判据把数据流吞成终态）
  *   · blank        **不该** settle（否则会把白屏吞掉，near-blank 就再也报不出来）
+ *   · cjk-login    该 settle（**回归护栏**：34 节点但只有 28 个可见字符。
+ *                  旧判据按字符数 <40 判，把中文登录页误报成 near-blank 且永不 settle；
+ *                  同一 DOM 在 en-US 下 77 字符就过了 —— 判据跟着 i18n 走）
  *   · skeleton     **不该** settle（永久骨架屏）
  *   · list-rows    该 settle（老路径别被我改坏）
  *   · error-view   该 settle（错误态）
@@ -31,15 +34,29 @@ const CAP = 5000
 
 const LOREM = '本页用于验证终态判定：内容已渲染完成且不再变化，因此应当被判为稳定终态。'
 
+/**
+ * fixture 必须长得像**真页面**，否则门槛值既证不实也证不伪。
+ * 实测线上 /m 的节点数（模拟器 API 36，本轮 emu-verify2 报告）：
+ *     /login 34 · / 134 · /usage 80 · /nodes 69 · /alerts 81
+ *     /models 1040 · /keys 2151 · 真空白页 6
+ * ⇒ STRUCT_FLOOR=20 落在「空白 6」与「最稀疏的真页面 34」之间，两侧都有余量。
+ * 下面每个 fixture 都套了 app 外壳（#app + header + main + nav），
+ * 就是为了让节点数落在真实区间，而不是为了让断言通过。
+ */
+const SHELL_OPEN = `<body><div id="hyper-app-root"><header class="topbar"><span class="topbar__title">LLM Gateway</span></header>`
+const SHELL_CLOSE = `<nav class="bottomnav"><a class="bottomnav__item" href="/">首页</a><a class="bottomnav__item" href="/keys">密钥</a></nav></div></body>`
+
 const FIXTURES = {
   // ① 已渲染完、但不是列表：没有骨架、没有 .state-view、没有列表行。
   //    这正是 HomeView（.data-card）/ UsageView（.table）/ LoginView（form）的形状。
   'static-card': {
     want: { settled: true, state: 'stable' },
-    html: `<body><main class="page"><h1>68,059</h1><p>${LOREM}</p>
-      <div class="data-card"><div class="card-row">68,059 请求</div>
-      <div class="card-row">764,300,408 tokens</div>
-      <div class="card-row">$251.12</div></div></main></body>`,
+    html: `${SHELL_OPEN}<main class="page home__page"><h2 class="page__section-title">统计周期</h2>
+      <div class="data-card home__status"><div class="card-row"><span class="home__status-label">请求</span><span class="num">68,059</span></div>
+      <div class="card-row"><span class="home__status-label">tokens</span><span class="num">764,300,408</span></div>
+      <div class="card-row"><span class="home__status-label">费用</span><span class="num">$251.12</span></div></div>
+      <div class="home__grid"><div class="data-card"><p>${LOREM}</p></div>
+      <div class="data-card"><p>${LOREM}</p></div></div></main>${SHELL_CLOSE}`,
   },
   // ② 内容还在缓慢增长 → 绝不能判终态（否则会把「还在加载」读成「已加载完」）
   'slow-stream': {
@@ -50,6 +67,20 @@ const FIXTURES = {
   },
   // ③ 空页 → 绝不能判终态（要留给 ⑨ near-blank 去报）
   blank: { want: { settled: false }, html: `<body><div>err</div></body>` },
+  // ③' **回归护栏**：中文登录页。34 节点但只有 28 个可见字符。
+  //     旧判据按字符数（<40）判 ⇒ 这一页被误报成 near-blank 且永远 pending。
+  //     同一个 DOM 在 en-US 下是 77 字符就通过了 —— 判据跟着 i18n 走。
+  'cjk-login': {
+    want: { settled: true, state: 'stable' },
+    html: `${SHELL_OPEN}<main class="login"><div class="login__card"><div class="login__brand">
+      <i class="login__logo"></i><h1 class="login__title">登录网关</h1>
+      <p class="login__hint">使用网关管理员账号登录</p></div>
+      <form class="login__form"><label class="login__field">
+      <span class="login__label">用户名</span><input type="text"></label>
+      <label class="login__field"><span class="login__label">密码</span>
+      <input type="password"></label>
+      <button type="submit" class="btn btn--primary">登录</button></form></div></main>${SHELL_CLOSE}`,
+  },
   // ④ 永久骨架屏 → 绝不能判终态
   skeleton: {
     want: { settled: false, state: 'initialLoading' },
@@ -142,6 +173,8 @@ async function main() {
       returnByValue: true, awaitPromise: true, expression: `(${SETTLE_SRC})(${CAP})`,
     })
     const got = r.result?.value || { settled: null, state: 'probe-failed' }
+    const n = await cdp.send('Runtime.evaluate', { returnByValue: true, expression: 'document.querySelectorAll("*").length' })
+    got.nodes = n.result.value
     const problems = []
     if (got.settled !== f.want.settled) problems.push(`settled=${got.settled} 期望 ${f.want.settled}`)
     if (f.want.state && got.state !== f.want.state) problems.push(`state="${got.state}" 期望 "${f.want.state}"`)
@@ -154,7 +187,7 @@ async function main() {
   for (const r of results) {
     const ok = r.problems.length === 0
     if (!ok) fail++
-    console.log(`  ${ok ? '✓' : '✗'} ${r.name.padEnd(12)} settled=${String(r.got.settled).padEnd(5)} state="${r.got.state}" waited=${r.got.waitedMs}ms${ok ? '' : '   ← ' + r.problems.join('; ')}`)
+    console.log(`  ${ok ? '✓' : '✗'} ${r.name.padEnd(12)} settled=${String(r.got.settled).padEnd(5)} state="${String(r.got.state).slice(0, 22).padEnd(22)}" 节点=${String(r.got.nodes).padStart(4)}  waited=${r.got.waitedMs}ms${ok ? '' : '   ← ' + r.problems.join('; ')}`)
   }
   console.log(`\n▸ ${results.length} 个前提 / ${results.length - fail} 通过 / ${fail} 失败`)
   process.exit(fail ? 1 : 0)
