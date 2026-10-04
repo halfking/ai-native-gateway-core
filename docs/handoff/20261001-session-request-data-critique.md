@@ -7675,3 +7675,48 @@ empty 4、gap-only 1。**仍未阻断的 5 个不变。**
 覆盖度断言 + `value-divergent` 进报告集）、
 `db/retirement_column_exposure.go`（`CanonicalContractColumns()` 访问器）、
 审计 §9.168、决策表 D19-c 就地标记为已执行。
+
+---
+
+### §70.24 第八十二轮：**D19-a 成本判定——我原先的建议瞄错了层**，且差一步清空 168 万行
+
+#### ① 追源
+
+视图 `outbound_model` ← **`t.model`**；`client_model` ← **`d.client_model`**（details LEFT JOIN）。
+逐行取值发现：**`session_turns.raw_model_name` 存的就是原样值**
+（`t.model=minimax-m3` 而 `t.raw_model_name=MiniMax-M3`，v1 侧是后者）。
+
+| 存储面 | 孪生行 | `t.model` 对齐 | **`t.raw_model_name` 对齐** | details 存在 |
+|---|---:|---:|---:|---:|
+| hot | 167 | 77.2% | **100%** | 100% |
+| 父 | 121 | 59.5% | **100%** | **0%** |
+
+#### ② `client_model` 的分歧是 **details 层滞后约 4 小时**（父表 details 最大 ts 02:14
+vs turns 06:20），**会自愈，不需要改**。
+
+#### ③ ⚠️ 那个「一行修复」会清空 **1,688,218 行**
+
+`raw_model_name`：hot **100%**（676/676）、父表 **0.44%**（7,411/1,688,629），
+且这 7,411 行**全部 ≥ 2026-10-01 07:25**——那一列那时才刚开始写。
+我 24h 样本里「从不为空」是真的，但**那个窗口的每行都来自只有 676 行的 hot 面**。
+
+**⇒ 一个只碰到单个存储面的窗口，不能替另一个存储面说话。**
+
+#### ④ 迁移 710 的 `outbound_model←model` **当时是对的**（头注明文「派生映射」），
+`raw_model_name` 当时还不存在。**不是笔误，不是数据质量缺陷。**
+
+#### ⑤ 推荐修法（待批）
+
+会话腿 `outbound_model` ← **`COALESCE(t.raw_model_name, t.model)`** + **迁移 825**
+（现网已是 v2 体，`db.ensure` 不自愈）。`t.model` 两面 100% 非空，兜底免费。
+门 `db/session_model_name_sources_realdb_test.go`，**承重断言就是「`t.model` 两面
+必须 100% 非空」**——正是能抓住 ③ 那个错建议的检查。变异 MP2 红。
+
+#### ⑥ 我犯的错（三条，同一个形状：拿一个窗口/一次查询替全部说话）
+
+1. **24h 样本 ⇒ 全表结论**，差一步清空 168 万行。
+2. **把「我的查询错了」当「产品有缺陷」**：先怀疑 details 停写，
+   实际是我只查了父表 + 单键 join；按三列键、两个存储面重测后自己推翻。
+3. **把 skip 记成 pass**：跑变异 MP 时忘 `export TEST_DATABASE_URL`，
+   测试 `t.Skip` 打印 `ok` + **0.579s**（真跑 4.7s）。**是耗时不对看出来的。**
+   ⇒ **真库变异必须同时看 `-v` 的 SKIP 行和耗时**；`ok` 在「通过」与「跳过」间不可区分。
