@@ -23061,3 +23061,155 @@ M3 是在**未评估清单已归零之后**跑的 ⇒ 直接证明 §9.191.8 的
   针对的是 baseline-metric 那一类形状；**本条的形状不同**（维度取值集合塌缩成单值）。
   **排除决定是否覆盖本条属属主决定**（决策表 **D27-a**），本轮不自行改档、
   也不自行改动 70 这个对外数字。
+
+---
+
+## §9.192 S4 硬前置从「未达成」到「已达成」，并因此挖出**一个今天就已存在**的缺口
+
+### §9.192.1 先结掉上一轮的前置条件
+
+§9.191 把 107 个读点全部评估完之后，两道 `s4audit` 硬条件门**从红转绿**：
+
+| 门 | 结果 |
+|---|---|
+| `TestRequestLogsStopWriteNothingLeftUnclassified` | **PASS**（读端 104/104） |
+| `TestRequestLogsControlPlaneNothingLeftUnreviewed` | **PASS**（控制面轴） |
+
+⇒ **S4 灰度的第一条前置条件（逐点评估完成）已达成且机器可验。**
+同时复核：对外数字「灰度前必须处理的静默档 **70** 条」仍成立
+（`TestAuditDocSilentClaimMatchesRegistry` 从登记表实时计算，PASS）——
+本轮新增的 1 条登记落在被显式排除的档上，**没有**把 70 改掉。
+
+### §9.192.2 但 S4 还没到能关开关的时候：第二个前置条件是红的
+
+我把 `db.RetirementUnservableColumns`（§9.161 测出来的 SSOT）变成一条会红的门
+（`admin/s4_session_family_unservable_realdb_test.go`，`s4audit` tag）。
+真库 24h 窗口实测：
+
+```
+视图 session 臂 3,449 行 / v1 臂 6,329 行
+  client_protocol     session=0    v1=38
+  is_final_success    session=0    v1=6,329
+  work_type           session=0    v1=3
+```
+
+⇒ **这三列在 session 臂上一行都供不出，而 v1 臂仍有值。**
+
+### §9.192.3 逐列普查：24 列 session 臂 0 供给，其中只有 3 列 v1 侧有值
+
+7 天窗口、118 个投影列全量普查（视图层，按臂分别计数）：
+
+- session 臂 0 供给：**24 列**；其中 **20 列 v1 侧也是 0**（两侧皆空，**无信号，不算缺口**）；
+  **3 列 v1 侧有值**（`is_final_success` / `client_protocol` / `work_type`）
+  + `id`/`test_col`（结构缺口，已在 `RetirementStructuralGapColumns`）。
+- session 臂 <1% 的 8 列中，7 列 v1 侧有值
+  （`canonical_id` 1、`egress_protocol` 1、`quality_fix_actions` 2、`request_type` 2、
+  `quality_flags` 4、`search_text` 17、`attachments` 90）。
+
+⚠ **这一整节的框架必须写清楚，否则会被读成「停写会丢这些列」——那是错的。**
+视图按 `request_id` 去重（v1 臂带 `NOT EXISTS(session_turns*)`）：
+**业务行的值今天就来自 session 臂**，所以「session 臂不供某列」对业务行是
+**既有事实，不是停写造成的回归**。停写造成的回归是**行**的消失：
+v1 臂 6,329 行（24h）整体不再出现，§9.190/§9.191 已分解过（探针流量 + 内部回环）。
+
+### §9.192.4 独立复核：与 §9.161 的既有结论一致
+
+我这次是**独立**做的逐列普查，结论与 `db/retirement_column_exposure.go`
+（§9.161/§9.162，今天写的）**逐列吻合**：`RetirementUnservableColumns` =
+`is_final_success` / `client_protocol` / `work_type`，与我的 A 组完全一致。
+⇒ **我差点把 §9.161 重做一遍**。记在这里，因为「重复劳动」本身是有信息量的：
+它说明这张登记表**可以被独立测量复现**，也就是说它不是注释而是事实
+（该文件头注释正是这么写的：「可被推翻的清单才是事实」）。
+
+### §9.192.5 真正的发现：`is_final_success` 的**读迁移前后不一致**
+
+`is_final_success` 不只是「停写后会少一列」。7 天窗口：
+
+| 源 | 行数 | `is_final_success` 非空 |
+|---|---|---|
+| `session_turns` ∪ `session_turns_hot` | 31,274 | **0** |
+| `request_logs` | 73,264 | **9,614** |
+
+`admin/session_online.go:446` 的 `querySessionTimeline` 直读 session 族原生表
+（`db.SessionFamilyTurnsForSessionSQL()`），取 `COALESCE(rl.is_final_success, FALSE)`
+⇒ **该值恒为 FALSE**。
+
+用户可见后果（逐行走 `deriveTurnOutcome`，:284）：
+
+- `outcome: "final_success"` **永远不会出现**；
+- `sessionHasFinalSuccess` 恒 false ⇒ 每个成功轮次都判成 `outcome: "success"`，
+  **`superseded_success` 也永远不会出现**。
+
+⇒ **自读迁移到 session 原生源之后，这个端点就再也没标出过最终成功轮次。**
+迁移注释（:425）写的是「修正展示语义，不是丢数据」——**这一项确实是丢了**。
+
+### §9.192.6 根因定位：**写侧**从来没有 session 族的等价写方
+
+- 读路**是好的**：`TestSessionTimelineFinalSuccessReadPathIsSound` 在一次性事务里
+  种一行 `TRUE`、一行 `FALSE`，用**生产 SQL** 读回，两个方向都对
+  ⇒ 排除了「投影坏了」这个解释（否则会去改 710，而 710 是忠实的）。
+- 写侧：`claimSessionFinalSuccess`（`domains/hooks/observability/telemetry/client.go:2711` 起）
+  只 `UPDATE request_logs_hot`（注释说明为何选 hot：Citus Columnar 不支持 UPDATE/CTID）。
+  **session 族没有任何等价写方**；`turn_writer.go:462` 虽有
+  `boolOrNil(rec.IsFinalSuccess)`，但 `rec.IsFinalSuccess` 从未被置真
+  ⇒ `session_turns.is_final_success` 7 天 0/31,274。
+
+⇒ **这是「读迁移引入的前后不一致」，不是停写造成的。** 而且更要紧的是：
+**停写不会修好它，只会让它变成永久。** v1 的标记来自 v1 的写方；
+v1 停写后，连 v1 侧那 9,614 个标记也会消失。
+
+### §9.192.7 我这一轮自己犯的错（三个「我的错」+ 一次「差点重做已有工作」）
+
+1. **把逐列测量的框架起错名字。** 我最初把 A 组叫「停写即消失」，
+   差点把「session 臂今天就不供的列」写成「停写造成的损失」。
+   **视图的去重结构决定了这是两件事。** 差一步就会发出一条方向完全相反的结论。
+2. **变异「没打红」的第一反应必须是「变异没做」。** 对读路门做变异时连输两次
+   缩进不匹配导致 `replace` 未命中（第二次 Python `assert` 直接把「锚点没找到」
+   报出来，我才去看缩进）。**在断言替换之前先断言锚点存在**，
+   否则「没打红」会被误读成「判据没牙」。
+3. **`validIdent` 的分支顺序让首位数字通过。** 把「数字」放进通用分支后，
+   `"1abc"` 会通过检查（第一 case 先命中，`i==0` 那条永远到不了）。
+   ⇒ **判据的分支顺序本身就是判据的一部分。**
+4. **差点重做 §9.161。** 逐列普查做完之后才发现已有
+   `db/retirement_column_exposure.go`。**先 grep 既有机制再动手**——
+   这次的代价是几分钟，但结论本身证明了那张表可被独立复现（见 §9.192.4）。
+
+### §9.192.8 本轮新增的门与变异验证
+
+| 文件 | tag | 基线 |
+|---|---|---|
+| `admin/session_final_success_readpath_realdb_test.go` | 无（常跑） | **PASS**（探针库与真库均绿） |
+| `admin/s4_session_family_unservable_realdb_test.go` | `s4audit` | **FAIL**（真库，红因精确） |
+
+变异：
+
+- **读路门**：把断言侧期望反过来 ⇒ 红，且**两个方向各报一条**
+  （证明投影没把任一值写死）。
+- **S4 门 M-A**：把「未供给」判据改成「两侧都空」⇒ **转绿**
+  ⇒ 门**不是结构上必红**，它按实测数据判别。
+- **S4 门 M-B**：把最小样本量抬到 1000 万 ⇒ 真库上**指名 SKIP**
+  ⇒ 零样本护栏承重，不是装饰。
+- **零样本护栏已在无数据的探针库上实地生效**（`session 臂 0 行` ⇒ 指名 Skip，
+  而不是 `0==0` 假绿）。
+
+### §9.192.9 诚实边界
+
+- **未改任何产品代码、配置、视图或迁移。** 本节新增**两条测试**。
+- **补 `session_turns.is_final_success` 的写方是改生产行为**（写侧 + 认领语义 +
+  历史回填），属主决定（决策表 **D28**）。本轮只刻画 + 钉住读路 + 把前置变红。
+- **未连接生产。** §9.192.2/§9.192.5 的数字是这一套本地库；
+  但「写侧从来没有等价写方」是**代码事实**（`claimSessionFinalSuccess` 只 UPDATE
+  `request_logs_hot`），与库无关——**这一条可以直接外推到生产。**
+
+### §9.192.10 顺带核实：`client_protocol` **全仓无人读取**
+
+对 D28-c 做的核实（grep 全仓非测试代码）：`client_protocol` 的全部出现都是
+**写侧**——`telemetry/context_attrs.go:162`（写进 entry）、`:192`（写进列）、
+若干 executors 塞进 log fields——加上 710 的投影
+`t.client_protocol::character varying(50)`。
+**没有任何 SELECT 读它。**
+
+⇒ 它在 `RetirementUnservableColumns` 里，但**没有任何读方会因为它断掉**。
+⚠ 这是一个**二阶事实**：把无人消费的列留在「会断的列」清单里会让这张风险清单虚高。
+核实方式（grep `SELECT` 侧引用）**可以推广到整张清单**——
+本轮只核了这一列（属主决定，见 D28-c）。
