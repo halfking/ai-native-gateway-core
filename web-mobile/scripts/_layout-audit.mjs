@@ -336,19 +336,46 @@ export async function waitForSettle(timeoutMs) {
     return el ? (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80) : ''
   }
   const rows = () => document.querySelectorAll('.hyper-list__row, .card-list > *').length
+  // 「还在加载吗」必须**与组件无关**。AppStateView 的三种终态（AppStateView.vue:23-47）：
+  //   loading → .state-view[aria-busy=true] + skeleton；error/empty → .state-view--center；
+  //   content → **裸 <slot>，连 .state-view 都不渲染**。
+  // ⇒ 「没有 .state-view」不等于「还在加载」，它也可能是**已经渲染完内容了**。
+  const busy = () =>
+    isSkeleton() || !!document.querySelector('.state-view[aria-busy="true"]')
+  // 「不再变化」的指纹：文字长度 + 节点数 + 开头 40 字（只比长度会被等长替换骗过）。
+  const sig = () => {
+    const t = (document.body.innerText || '').replace(/\s+/g, ' ').trim()
+    return `${t.length}:${document.querySelectorAll('*').length}:${t.slice(0, 40)}`
+  }
+  const chars = () => (document.body.innerText || '').replace(/\s+/g, ' ').trim().length
+
   const probe = () => {
-    if (isSkeleton()) return { settled: false, state: 'initialLoading', rows: 0 }
+    if (isSkeleton()) return { settled: false, state: 'initialLoading', rows: 0, sig: sig() }
     const sv = stateView()
-    if (sv) return { settled: true, state: sv, rows: rows() }
-    if (rows() > 0) return { settled: true, state: 'content', rows: rows() }
-    return { settled: false, state: 'pending', rows: 0 }
+    if (sv) return { settled: true, state: sv, rows: rows(), sig: sig() }
+    if (rows() > 0) return { settled: true, state: 'content', rows: rows(), sig: sig() }
+    // 无骨架、无状态视图、无列表行 —— 可能是「已渲染完但不是列表」（Home 的
+    // .data-card / Usage 的 .table / 登录的 form 都是这种形状），也可能是真的挂住。
+    // 这里**只报告指纹，不自己下结论**：终态由下面的连续采样计数决定。
+    return { settled: false, state: 'pending', rows: 0, sig: sig() }
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   let last = probe()
+  let prevSig = null
+  let hits = 0
   while (Date.now() - t0 < cap) {
     if (last.settled) break
     await sleep(700)
+    const s = sig()
+    hits = prevSig != null && prevSig === s ? hits + 1 : 0
+    prevSig = s
     last = probe()
+    // 终态 = 连续 3 个采样指纹一致（hits>=2）+ 页面不在忙态 + 不是空页。
+    // 「不是空页」保证真正挂住的空白页继续 pending，由 ⑨ near-blank 报而不是被这里吞掉。
+    if (!last.settled && hits >= 2 && !busy() && chars() >= 40) {
+      last = { settled: true, state: 'stable', rows: rows(), sig: s }
+      break
+    }
   }
   return { settled: last.settled, waitedMs: Date.now() - t0, state: last.state, rows: last.rows }
 }
