@@ -47,6 +47,17 @@ type AutoRouteHandlers struct {
 		RefreshOnce(ctx context.Context) error
 	}
 
+	// statusRefresher 是 indexRefresher 的跳过感知形态（2026-10-05 P2，
+	// R44 移交 §R44/移交.2）。SetIndexRefresher 的参数接口保持
+	// RefreshOnce(ctx) error 不变 —— admin/handler.go 以该静态类型持有
+	// bg.AutoIndexRefresher 并在 RegisterAutoRouteRoutes 里转手注入，
+	// 改参数接口会把不可动的装配点拉进编译；改为注入时运行时断言：
+	// 底层实现若提供 RefreshOnceStatus（生产装配的 *bg.AutoIndexRefresher
+	// 必然提供），/refresh 即可区分「执行 / 跳过」，对跳过返回诚实语义。
+	statusRefresher interface {
+		RefreshOnceStatus(ctx context.Context) (skipped bool, err error)
+	}
+
 	// feedbackAnalyzer is optional. When set, the tuning/admin
 	// endpoints can trigger on-demand analyzer runs.
 	// v2.1 — wired from cmd/gateway/main.go when in full mode.
@@ -66,6 +77,13 @@ func (h *AutoRouteHandlers) SetIndexRefresher(r interface {
 	RefreshOnce(ctx context.Context) error
 }) {
 	h.indexRefresher = r
+	// 缺陷 1（R44 移交 §R44/移交.2）：注入时探测跳过感知形态。只实现
+	// RefreshOnce 的 stub（旧测试形态）保持旧路径不变。
+	if sr, ok := r.(interface {
+		RefreshOnceStatus(ctx context.Context) (skipped bool, err error)
+	}); ok {
+		h.statusRefresher = sr
+	}
 }
 
 // SetFeedbackAnalyzer wires the daily analyzer so the tuning endpoints
@@ -796,6 +814,31 @@ func (h *AutoRouteHandlers) handleRefresh(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	// 2026-10-05 P2（R44 移交 §R44/移交.2）：singleflight / 同 bucket 合并
+	// 会「跳过」本次触发（已有刷新在跑 / 同 bucket 重复触发）—— 跳过不是
+	// 错误，但也不是执行。旧代码对跳过照样返回 {"refreshed": true} 假成功，
+	// 运维会以为新配置已生效。此处对 skipped 返回诚实语义；被合并的变更由
+	// refresher 的忙跳过欠账补执行 / bucket 滚动 + ticker 兜底落地。
+	if h.statusRefresher != nil {
+		skipped, err := h.statusRefresher.RefreshOnceStatus(ctx)
+		if err != nil {
+			writeAutoRouteInternalErr(w, err)
+			return
+		}
+		if skipped {
+			writeJSONOk(w, map[string]interface{}{
+				"refreshed": false,
+				"skipped":   true,
+				"reason":    "a refresh is already in flight or coalesced into the current 5-min bucket; the change lands via the deferred retry / next bucket",
+			})
+			return
+		}
+		writeJSONOk(w, map[string]interface{}{
+			"refreshed":    true,
+			"refreshed_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
 	if err := h.indexRefresher.RefreshOnce(ctx); err != nil {
 		writeAutoRouteInternalErr(w, err)
 		return

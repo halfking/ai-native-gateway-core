@@ -86,8 +86,45 @@ type AutoIndexRefresher struct {
 	// ★ 为什么这不构成契约变更：返回值语义不变（跳过返回 nil = 没有错误），
 	//   数据新鲜度不降低（正在跑的那次会以更晚的时刻重算同一个 bucket），
 	//   消除的是**并发交错**这个已发生过真实故障的缺陷。
+	//
+	// 2026-10-05 P2（R44 移交 §R44/移交.2）对上一段声明的两条订正：
+	//   1. 「返回值语义不变」正是缺陷 1 的病根 —— 跳过返回 nil error 后，
+	//      LISTEN 监听器把「没执行」当成「已处理」清掉 pending，该 NOTIFY
+	//      永不再重试；而跑着的那次 rollup 的 SELECT 早于该 NOTIFY 对应的
+	//      提交 ⇒ 内存索引丢一次路由配置直到下个 ticker。跳过必须以
+	//      skipped 语义上浮（RefreshOnceStatus），让调用方区分执行/跳过。
+	//   2. 「数据新鲜度不降低」不成立 —— 见上条。且 4315a598c 只加了互斥
+	//      没加节流：若 rollup 耗时 < 触发间隔，34 倍触发会**串行全部执行**，
+	//      DELETE 次数不降。本结构体现在同时做同 bucket 触发合并（缺陷 2）。
 	refreshMu sync.Mutex
 	inFlight  bool
+
+	// lastBucket：最近一次**成功**执行的 bucket（同 bucket 合并节流的记忆，
+	// 2026-10-05 P2 缺陷 2）。失败**不**记账 —— 失败后的下一次触发必须重试
+	// （与既有失败重试语义一致），不能被同 bucket 合并挡住。
+	lastBucket time.Time
+
+	// busyDeferred：有触发因 singleflight 忙被推迟、尚未被任何一次执行覆盖。
+	// 在跑那次的 SELECT 早于该触发的数据提交，属其盲区；若把它与同 bucket
+	// 重复触发一样合并掉，缺陷 1 的「丢一次路由配置直到下个 bucket」会借
+	// 合并节流借尸还魂。下一次 tryBeginRefresh 消费它并在本 bucket 内补执行。
+	busyDeferred bool
+
+	// CoalesceWindow 是同 bucket 触发合并的窗口。默认与 RefreshInterval 一致
+	// （5 分钟 bucket）—— 同一 bucket 内的重复触发算的是同一份 bucket 键，
+	// 串行执行只是重复 DELETE+INSERT（实测 34 倍）。独立成字段是为了可调与
+	// 可测：离线测试把窗口调小即可验证合并与兜底，不必等真 5 分钟。
+	// 最终一致性：bucket 滚动后的下一次触发必然放行（5 分钟 ticker 的 run
+	// 循环就是这个必然到来的触发），空闲后必有执行兜底。
+	CoalesceWindow time.Duration
+
+	// nowFn 时钟缝：默认 time.Now。离线测试用它确定性地推进 bucket
+	// （不引入真实等待）。
+	nowFn func() time.Time
+
+	// executeFn 执行体缝：默认 nil 走真 rollup（需要真库）。离线测试注入
+	// 假执行体，端到端计数「N 次触发合并为几次执行」。
+	executeFn func(ctx context.Context, bucket time.Time) error
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -102,6 +139,8 @@ func NewAutoIndexRefresher(db *pgxpool.Pool, idx *autoroute.Index) *AutoIndexRef
 		idx:             idx,
 		RefreshInterval: defaultRefreshInterval,
 		RefreshTimeout:  defaultRefreshTimeout,
+		CoalesceWindow:  defaultRefreshInterval,
+		nowFn:           time.Now,
 		done:            make(chan struct{}),
 	}
 }
@@ -169,36 +208,135 @@ func (r *AutoIndexRefresher) endRefresh() {
 	r.refreshMu.Unlock()
 }
 
+// coalesceWindow 返回同 bucket 合并窗口。零值结构体（测试直接构造）回退到
+// RefreshInterval / 默认值，避免 Truncate(0) panic。
+func (r *AutoIndexRefresher) coalesceWindow() time.Duration {
+	if r.CoalesceWindow > 0 {
+		return r.CoalesceWindow
+	}
+	if r.RefreshInterval > 0 {
+		return r.RefreshInterval
+	}
+	return defaultRefreshInterval
+}
+
+// rollupInterval 返回 rollup bucket 的截断粒度（SQL 语义：DELETE WHERE
+// bucket = $1 的粒度）。与 coalesceWindow 分开：前者是数据形态、后者是
+// 触发节奏，生产配置下两者同为 RefreshInterval（5 分钟）。
+func (r *AutoIndexRefresher) rollupInterval() time.Duration {
+	if r.RefreshInterval > 0 {
+		return r.RefreshInterval
+	}
+	return defaultRefreshInterval
+}
+
+// tryBeginRefresh 是 RefreshOnceStatus 的准入闸门，原子地合并三个判定：
+//
+//  1. singleflight 互斥（4315a598c 原语义）：已有刷新在跑 ⇒ 跳过，但置
+//     busyDeferred 欠账。这是缺陷 1 的修法的一半：跑着那次的 SELECT 早于
+//     本次触发的数据提交，本次触发是它的盲区，必须在它结束后补一次执行，
+//     而不是当成「已处理」。
+//  2. 同 bucket 触发合并（2026-10-05 P2 缺陷 2）：lastBucket == 当前
+//     bucket 的重复触发直接跳过 —— 它们算的是同一份 bucket 键，串行执行
+//     只是重复 DELETE+INSERT（实测同 bucket 被反复重写约 34 遍）。
+//  3. busyDeferred 消费：同 bucket 但带着忙跳过欠账的触发放行并清账 ——
+//     合并节流不得吞掉缺陷 1 的补执行。
+//
+// 返回 false 表示本次触发被跳过（没有执行），调用方必须以 skipped 语义上报，
+// 不得当作「已处理」。最终一致性由两处兜底：bucket 滚动后的下一次触发必然
+// 放行（5 分钟 ticker 的 run 循环必然到来），以及 LISTEN 监听器对 skipped
+// 保持 pending 逐窗重试。
+func (r *AutoIndexRefresher) tryBeginRefresh(bucket time.Time) bool {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+	if r.inFlight {
+		r.busyDeferred = true
+		return false
+	}
+	if !r.lastBucket.IsZero() && bucket.Equal(r.lastBucket) && !r.busyDeferred {
+		return false
+	}
+	r.busyDeferred = false
+	r.inFlight = true
+	return true
+}
+
 // RefreshOnce runs one refresh cycle: credential_model_index rollup,
 // then model_task_index rollup, then in-memory Index refresh.
 //
 // Returns the first error encountered. The In-memory Index is updated
 // even if downstream rollups fail (so a degraded model_task_index
 // doesn't lock out routing decisions).
+//
+// 2026-10-05 P2：本方法保留 error 单返回值形态 —— admin/handler.go 以
+// `RefreshOnce(ctx) error` 的结构接口静态持有本类型并转手注入
+// （SetAutoIndexRefresher → SetIndexRefresher），改签名会把不可动的装配点
+// 拉进编译。需要区分「执行 / 跳过」的调用方（LISTEN 监听器、admin /refresh）
+// 改用 RefreshOnceStatus；ticker 的 run 循环语义不变（跳过 = 等下一个 tick，
+// 天然是兜底位）。
+func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
+	_, err := r.RefreshOnceStatus(ctx)
+	return err
+}
+
+// RefreshOnceStatus 是 RefreshOnce 的跳过感知形态：skipped=true 表示本次
+// 触发**没有执行**（singleflight 忙 / 同 bucket 重复触发被合并），此时
+// err 必为 nil —— 跳过不是错误，但也绝不是「已处理」。
+//
 // 2026-10-04: 新增 singleflight 互斥。三个并发触发源（5 分钟 ticker、
 // auto_route_refresh 的 LISTEN 监听、admin 手动接口 admin/auto_route.go:799）
 // 在实测中产生每 8.8 秒一次的调用，是设计间隔的 34 倍；而 DELETE+INSERT
 // **非原子**，交错会撞 duplicate key（2026-09-10 04:18 真实发生过）。
-// 已有刷新在跑时直接跳过 —— 详见 AutoIndexRefresher.refreshMu 的注释。
-func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
+// 2026-10-05 P2（R44 移交 §R44/移交.2、.3）：在互斥之上加两件事 ——
+// 跳过以上浮的 skipped 语义上报（不再伪装成成功），以及同 bucket 触发合并
+// （互斥只消除交错、不减少执行次数，rollup 快于触发间隔时 34 倍触发会
+// 串行全部执行）。准入判定见 tryBeginRefresh。
+func (r *AutoIndexRefresher) RefreshOnceStatus(ctx context.Context) (skipped bool, err error) {
 	if r == nil {
-		return nil
+		return false, nil
 	}
-	if !r.beginRefresh() {
-		slog.Debug("auto index refresh: 已有刷新在跑，跳过本次并发触发",
-			"interval", r.RefreshInterval.String())
-		return nil
+
+	now := time.Now
+	if r.nowFn != nil {
+		now = r.nowFn
+	}
+	gateBucket := now().UTC().Truncate(r.coalesceWindow())
+	if !r.tryBeginRefresh(gateBucket) {
+		slog.Debug("auto index refresh: 触发被合并跳过（已有刷新在跑 / 同 bucket 重复触发）",
+			"coalesce_window", r.coalesceWindow().String())
+		return true, nil
 	}
 	defer r.endRefresh()
+	// 只有成功才记账 lastBucket：失败后的下一次触发必须重试，不能被同
+	// bucket 合并挡住（与既有失败重试语义一致）。
+	defer func() {
+		if err == nil {
+			r.refreshMu.Lock()
+			r.lastBucket = gateBucket
+			r.refreshMu.Unlock()
+		}
+	}()
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, r.RefreshTimeout)
 	defer cancel()
 
-	bucket := time.Now().UTC().Truncate(r.RefreshInterval)
+	bucket := now().UTC().Truncate(r.rollupInterval())
+
+	// 测试缝：注入假执行体时走这里，让离线环境（无真库）也能端到端
+	// 计数「N 次触发合并为几次执行」。
+	if r.executeFn != nil {
+		if err := r.executeFn(timeoutCtx, bucket); err != nil {
+			return false, err
+		}
+		if r.OnRollupComplete != nil {
+			r.OnRollupComplete(bucket, 0, 0)
+		}
+		return false, nil
+	}
 
 	credRows, err := r.rollupCredentialModelIndex(timeoutCtx, bucket)
 	if err != nil {
-		return fmt.Errorf("rollup credential_model_index: %w", err)
+		return false, fmt.Errorf("rollup credential_model_index: %w", err)
 	}
 
 	taskRows, err := r.rollupModelTaskIndex(timeoutCtx, bucket)
@@ -209,7 +347,7 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 
 	// Refresh the in-memory index after the DB rollups succeed.
 	if err := r.idx.Refresh(timeoutCtx); err != nil {
-		return fmt.Errorf("in-memory index refresh: %w", err)
+		return false, fmt.Errorf("in-memory index refresh: %w", err)
 	}
 
 	slog.Info("auto index refreshed",
@@ -221,7 +359,7 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 	if r.OnRollupComplete != nil {
 		r.OnRollupComplete(bucket, credRows, taskRows)
 	}
-	return nil
+	return false, nil
 }
 
 // rollupCredentialModelIndex inserts the latest per-credential × per-model
