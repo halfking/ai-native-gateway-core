@@ -1,4 +1,4 @@
--- 825: ursm_node_snapshot_min 改为按日 RANGE 分区表 + DROP 型留存的分区底座
+-- 830: ursm_node_snapshot_min 改为按日 RANGE 分区表 + DROP 型留存的分区底座
 --
 -- ★★★ 手工执行迁移，**不在 installer 自动启动序列里** ★★★
 --     本文件刻意**没有**注册到：
@@ -244,7 +244,7 @@ BEGIN
             '分区名 % 已被占用，但它不是 public.ursm_node_snapshot_min 的子分区。'
             '若直接跳过，新建的父表将没有任何分区，之后每次写入都会报 '
             'no partition of relation found，而迁移仍会报成功。'
-            '请先 DROP 或改名该对象（常见来源：825.down 保留的 _post825）。',
+            '请先 DROP 或改名该对象（常见来源：830.down 保留的 _post825）。',
             pname;
     END IF;
 
@@ -262,9 +262,9 @@ ALTER FUNCTION public.ensure_ursm_node_snapshot_min_daily_partition(DATE)
     SET timezone = 'Asia/Shanghai';
 
 COMMENT ON FUNCTION public.ensure_ursm_node_snapshot_min_daily_partition(DATE) IS
-    '按日分区 ensure（825）。照 750_usage_facts_daily_partition 范式 + 751 时区钉扎。
+    '按日分区 ensure（830）。照 750_usage_facts_daily_partition 范式 + 751 时区钉扎。
 由 db.go boot ensure 与 bg/partition_manager.go ensureSpecs 24h tick 双通道调用。
-★ 825 是手工迁移，不在 installer 自动序列里 —— 该函数可能长期不存在，
+★ 830 是手工迁移，不在 installer 自动序列里 —— 该函数可能长期不存在，
   两个调用方都必须容忍 undefined_function（42883）。';
 
 -- 1e) 预建当日 / 次日 / 后日。

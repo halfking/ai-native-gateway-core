@@ -1,13 +1,13 @@
--- 825 down: 回滚 ursm_node_snapshot_min 的分区化（手工执行）
+-- 830 down: 回滚 ursm_node_snapshot_min 的分区化（手工执行）
 --
--- ★ 与 825 up 一样是**手工迁移**，不在 installer 自动启动序列里。
+-- ★ 与 830 up 一样是**手工迁移**，不在 installer 自动启动序列里。
 --
 -- 何时需要走这个：
---   825 up 已执行、观察期内出现无法当场修复的问题（写入失败、分区边界错位、
+--   830 up 已执行、观察期内出现无法当场修复的问题（写入失败、分区边界错位、
 --   某个下游 SQL 未适配分区语义等），且需要立刻回到「非分区表」形态。
 --
--- ★★ 硬警告：回滚会**丢掉 825 up 之后写入新表的所有行** ★★
---   825 up 走的是「改名 + 新建空父表」而不是「搬数据」，所以执行 up 之后
+-- ★★ 硬警告：回滚会**丢掉 830 up 之后写入新表的所有行** ★★
+--   830 up 走的是「改名 + 新建空父表」而不是「搬数据」，所以执行 up 之后
 --   写入的行全部在新表 `ursm_node_snapshot_min` 里，与 `_legacy` 无交集。
 --   本脚本的默认动作是 **RENAME 交换**（新表回到 `_post825` 名字保住其数据，
 --   `_legacy` 换回原名），而不是直接丢弃。
@@ -16,9 +16,9 @@
 -- 前置条件（全部满足才允许回滚）：
 --   1. 已确认问题无法在分区形态下当场修复（不是某个分区缺了 —— 那应该
 --      调 ensure，而不是回滚）；
---   2. 已确认 _legacy 仍在（825 的步骤 3 DROP 还没执行）；若已 DROP，
+--   2. 已确认 _legacy 仍在（830 的步骤 3 DROP 还没执行）；若已 DROP，
 --      本脚本直接 RAISE —— 那时已经没有可回滚的历史了；
---   3. 已通知运维：回滚后新表数据不再有写入方，直到再次执行 825。
+--   3. 已通知运维：回滚后新表数据不再有写入方，直到再次执行 830。
 
 DO $$
 DECLARE
@@ -27,15 +27,15 @@ DECLARE
 BEGIN
     IF to_regclass('public.ursm_node_snapshot_min') IS NULL THEN
         RAISE EXCEPTION
-            'public.ursm_node_snapshot_min 不存在 —— 825 up 似乎没执行过，无需回滚。';
+            'public.ursm_node_snapshot_min 不存在 —— 830 up 似乎没执行过，无需回滚。';
     END IF;
 
     legacy_ok := to_regclass('public.ursm_node_snapshot_min_legacy') IS NOT NULL;
     IF NOT legacy_ok THEN
         RAISE EXCEPTION
-            'public.ursm_node_snapshot_min_legacy 不存在 —— 825 的步骤 3 已执行、'
+            'public.ursm_node_snapshot_min_legacy 不存在 —— 830 的步骤 3 已执行、'
             '历史数据已被 DROP，没有可回滚的目标。回滚会永久丢失 %s。',
-            '825 up 之后写入新表的数据';
+            '830 up 之后写入新表的数据';
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_class
@@ -46,7 +46,7 @@ BEGIN
 
     -- 把新表当前行数打出来，供人工决策（回滚会把它挪到 _post825，不丢）。
     SELECT count(*) INTO new_rows FROM public.ursm_node_snapshot_min;
-    RAISE NOTICE '825 回滚：分区表当前 % 行，将保留为 ursm_node_snapshot_min_post825。', new_rows;
+    RAISE NOTICE '830 回滚：分区表当前 % 行，将保留为 ursm_node_snapshot_min_post825。', new_rows;
 END $$;
 
 BEGIN;
@@ -57,7 +57,7 @@ ALTER TABLE public.ursm_node_snapshot_min RENAME TO ursm_node_snapshot_min_post8
 
 -- 1b) ★ 它的 PK 约束**不跟着改名表改名字**，仍叫
 --     `ursm_node_snapshot_min_pkey`，于是 canonical 名字被 `_post825` 占着。
---     不让出来的话，重新执行 825 up 时新父表建同名 PK 会报
+--     不让出来的话，重新执行 830 up 时新父表建同名 PK 会报
 --     `relation "ursm_node_snapshot_min_pkey" already exists`
 --     （本地 PG 17.11 往返实测踩到）⇒ 回滚后再也上不了迁移。
 --     条件式执行，容忍「约束已被别处改名 / 本次 up 未走到建 PK」的形态。
@@ -85,7 +85,7 @@ ALTER TABLE public.ursm_node_snapshot_min_legacy RENAME TO ursm_node_snapshot_mi
 
 -- 2b) 把 PK 约束名也换回 canonical。
 --    ★ 不换的后果（本地 PG 17.11 往返实测）：表名回来了但约束还叫
---      `ursm_node_snapshot_min_legacy_pkey`，再执行 825 up 时它的
+--      `ursm_node_snapshot_min_legacy_pkey`，再执行 830 up 时它的
 --      「让出 canonical 名」那一步会报 does not exist ⇒ 无法重新上迁移。
 --      回滚必须把名字一起还原，才算真的回到 up 之前的状态。
 DO $$
@@ -118,7 +118,7 @@ COMMIT;
 --    非分区父表执行 CREATE TABLE ... PARTITION OF ⇒ 报错冒到 db.Open ⇒
 --    进程进 no-DB 模式。
 --    **该洞已修**：db.ensureURSMNodeSnapshotMinDailyPartition 现在先判父表
---    relkind='p'，非分区就整个跳过（这同时覆盖了「825 未执行」和「825 已回滚」
+--    relkind='p'，非分区就整个跳过（这同时覆盖了「830 未执行」和「830 已回滚」
 --    两种正常态）。门：bg/partition_825_contract_test.go 的
 --    Test825BootEnsureIsWired，变异 M35。
 --    ⇒ 所以执行回滚后**不必**为了 boot 安全而删函数；删它只是为了不留

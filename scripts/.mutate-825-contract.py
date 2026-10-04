@@ -13,8 +13,8 @@ import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SQL = os.path.join(REPO, "sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.sql")
-SQL_DOWN = os.path.join(REPO, "sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.down.sql")
+SQL = os.path.join(REPO, "sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql")
+SQL_DOWN = os.path.join(REPO, "sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.down.sql")
 PM = os.path.join(REPO, "bg/partition_manager.go")
 DB = os.path.join(REPO, "db/db.go")
 RUNNER = os.path.join(REPO, "installer/internal/dbinit/runner.go")
@@ -53,7 +53,7 @@ MUTATIONS = [
 
     ("M31", RUNNER,
      '\t\t\t"750_usage_facts_daily_partition.sql",',
-     '\t\t\t"750_usage_facts_daily_partition.sql",\n\t\t\t"825_ursm_node_snapshot_min_partitioned.sql",',
+     '\t\t\t"750_usage_facts_daily_partition.sql",\n\t\t\t"830_ursm_node_snapshot_min_partitioned.sql",',
      "Test825IsDeliberatelyNotInTheAutoStartupSequence",
      "把 825 注册进 installer 启动序列 ⇒ 无人值守升级会 RENAME 10 GB 活表"),
 

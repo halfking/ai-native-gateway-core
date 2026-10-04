@@ -315,12 +315,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureUsageFactsDailyPartition(migCtx); err != nil {
 		return err
 	}
-	// 2026-10-04 migration 825 (ursm snapshot partitioning): once 825 is
+	// 2026-10-04 migration 830 (ursm snapshot partitioning): once 830 is
 	// applied, ursm_node_snapshot_min becomes a daily RANGE partitioned
 	// table with NO default partition — so a missing current-day partition
 	// means every snapshot write fails outright rather than degrading. The
 	// 24h tick in bg/partition_manager.go pre-builds the steady state; this
-	// boot ensure covers the start-between-ticks window. 825 is manual and
+	// boot ensure covers the start-between-ticks window. 830 is manual and
 	// intentionally unregistered, so this tolerates the function not
 	// existing yet instead of failing db.Open (see the func's doc comment).
 	if err := db.ensureURSMNodeSnapshotMinDailyPartition(migCtx); err != nil {
@@ -1628,35 +1628,35 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 }
 
 // ensureURSMNodeSnapshotMinDailyPartition mirrors the executable body of
-// sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.sql — the
+// sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql — the
 // post-migration half only. The RENAME + CREATE PARENT TABLE half is manual
 // and stays manual (see the migration header).
 //
 // ★ Deliberately unlike ensureUsageFactsDailyPartition: this one TOLERATES
 //
-//	the ensure function being absent and returns nil. 825 is a manual
+//	the ensure function being absent and returns nil. 830 is a manual
 //	migration that is intentionally not in the installer startup sequence, so
 //	for an unbounded time after this binary ships the function may simply not
 //	exist yet. Mirroring 750 (which returns the error) would mean the error
 //	propagates out of db.Open, the process falls into no-DB mode and the
 //	deployment auto-rollbacks — i.e. deploying the binary *before* running
-//	825 would take the gateway down. Probing instead of erroring makes the
+//	830 would take the gateway down. Probing instead of erroring makes the
 //	two steps order-independent. bg/partition_manager.go's 24h tick already
 //	logs-and-continues on a missing function; this makes boot agree with it.
 //
 // Nothing else is swallowed: a timeout or a constraint failure must
 // propagate, because its consequence is "today's partition missing ⇒ every
 // snapshot write fails" — there is no DEFAULT partition to absorb the rows
-// (see the 825 header, hard constraint 2).
+// (see the 830 header, hard constraint 2).
 func (d *DB) ensureURSMNodeSnapshotMinDailyPartition(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
 	// 0) Probe the parent table's shape FIRST, and only then the function.
 	//
-	//    Order matters and the reason was found while writing 825's down
+	//    Order matters and the reason was found while writing 830's down
 	//    script: probing only "does the function exist" leaves a hole in the
-	//    rollback direction. After 825.down the parent is a plain table again
+	//    rollback direction. After 830.down the parent is a plain table again
 	//    but the ensure function may still be there — and calling it would
 	//    attempt CREATE TABLE ... PARTITION OF against a non-partitioned
 	//    parent, which errors, bubbles out of db.Open and drops the process
@@ -1674,30 +1674,30 @@ func (d *DB) ensureURSMNodeSnapshotMinDailyPartition(ctx context.Context) error 
 		              AND c.relkind = 'p'),
 		       to_regprocedure('public.ensure_ursm_node_snapshot_min_daily_partition(date)') IS NOT NULL
 	`).Scan(&partitioned, &hasFn); err != nil {
-		return fmt.Errorf("probe ursm_node_snapshot_min partition state (825): %w", err)
+		return fmt.Errorf("probe ursm_node_snapshot_min partition state (830): %w", err)
 	}
 	if !partitioned {
-		// Covers both normal states: 825 not applied yet, and 825 rolled back.
-		slog.Info("ursm_node_snapshot_min is not a partitioned table — 825 not applied (or rolled back); " +
+		// Covers both normal states: 830 not applied yet, and 830 rolled back.
+		slog.Info("ursm_node_snapshot_min is not a partitioned table — 830 not applied (or rolled back); " +
 			"skipping daily-partition ensure")
 		return nil
 	}
 	if !hasFn {
-		// A half-applied 825. 825's own DDL is one transaction so it cannot
+		// A half-applied 830. 830's own DDL is one transaction so it cannot
 		// produce this, but if something else did, staying quiet means every
 		// snapshot write starts failing with no partition of relation found.
 		return fmt.Errorf("ursm_node_snapshot_min is partitioned but %s is missing — "+
-			"half-applied 825; today's partition may be missing and every snapshot write will fail",
+			"half-applied 830; today's partition may be missing and every snapshot write will fail",
 			"ensure_ursm_node_snapshot_min_daily_partition")
 	}
-	// 1) Pin the timezone (825's 751-style pin, idempotent ALTER).
+	// 1) Pin the timezone (830's 751-style pin, idempotent ALTER).
 	if _, err := d.pool.Exec(ctx, `
 		ALTER FUNCTION public.ensure_ursm_node_snapshot_min_daily_partition(DATE)
 		    SET timezone = 'Asia/Shanghai';
 	`); err != nil {
-		return fmt.Errorf("pin ensure_ursm_node_snapshot_min_daily_partition timezone (825): %w", err)
+		return fmt.Errorf("pin ensure_ursm_node_snapshot_min_daily_partition timezone (830): %w", err)
 	}
-	// 2) Create today's + tomorrow's partitions (825 pre-builds 3 days; the
+	// 2) Create today's + tomorrow's partitions (830 pre-builds 3 days; the
 	//    24h tick owns the steady state). Dates derived from the explicit
 	//    Shanghai calendar, same source as partition_manager's partitionTZ —
 	//    deriving them from current_date would follow the session timezone.
@@ -1711,17 +1711,23 @@ func (d *DB) ensureURSMNodeSnapshotMinDailyPartition(ctx context.Context) error 
 	); err != nil {
 		return fmt.Errorf("ensure_ursm_node_snapshot_min_daily_partition(shanghai tomorrow): %w", err)
 	}
-	// 3) Stamp 825 — only after the function really existed and ensure
+	// 3) Stamp 830 — only after the function really existed and ensure
 	//    succeeded, so the stamp stays an honest record rather than being
 	//    written by a binary whose target migration was never applied.
+	//
+	// ★ R44 改号 830→830：原写法与 :764 的 ensureModalityGradedVerification
+	//   **抢同一个主键**（schema_migrations.version），两处都是
+	//   `ON CONFLICT (version) DO NOTHING` ⇒ 先跑的那条赢，另一条静默丢弃，
+	//   830 的描述取决于哪条 ensure 先跑。这是真实的数据完整性缺陷，
+	//   不是标签冲突。详见 docs/12小时内修订审计-20261005-0034.md §五。
 	if _, err := d.pool.Exec(ctx, `
 		INSERT INTO public.schema_migrations (version, description)
-		VALUES ('825', 'ursm_node_snapshot_min converted to daily RANGE partitions + DROP-based retention; MANUAL migration, not in the installer startup sequence')
+		VALUES ('830', 'ursm_node_snapshot_min converted to daily RANGE partitions + DROP-based retention; MANUAL migration, not in the installer startup sequence')
 		ON CONFLICT (version) DO NOTHING;
 	`); err != nil {
-		return fmt.Errorf("stamp 825: %w", err)
+		return fmt.Errorf("stamp 830: %w", err)
 	}
-	slog.Info("ursm_node_snapshot_min daily partitions ensured (825)")
+	slog.Info("ursm_node_snapshot_min daily partitions ensured (830)")
 	return nil
 }
 

@@ -24,7 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const migration825SQL = "../sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.sql"
+const migration825SQL = "../sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql"
 
 func connect825(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -365,7 +365,7 @@ func Test825UpDownRoundTripRealDB(t *testing.T) {
 	t.Cleanup(func() { dropAll825Objects(t, pool) })
 	ctx := context.Background()
 	downPath := filepath.Join("..", "sql", "migrations", "startup",
-		"825_ursm_node_snapshot_min_partitioned.down.sql")
+		"830_ursm_node_snapshot_min_partitioned.down.sql")
 
 	runDown := func() {
 		t.Helper()

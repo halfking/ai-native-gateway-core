@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	migration825Path = "../sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.sql"
+	migration825Path = "../sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql"
 	ensureURSMFunc   = "ensure_ursm_node_snapshot_min_daily_partition"
 )
 
@@ -134,7 +134,7 @@ func Test825IsDeliberatelyNotInTheAutoStartupSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read runner.go: %v", err)
 	}
-	if strings.Contains(string(runner), "825_ursm_node_snapshot_min_partitioned.sql") {
+	if strings.Contains(string(runner), "830_ursm_node_snapshot_min_partitioned.sql") {
 		t.Fatal("825 is registered in the installer startup sequence. It was a deliberate " +
 			"manual-only migration: registering it makes any unattended installer upgrade " +
 			"RENAME a 10 GB live table with no human confirmation point. If this is now " +
@@ -144,7 +144,7 @@ func Test825IsDeliberatelyNotInTheAutoStartupSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read installer main.go: %v", err)
 	}
-	if strings.Contains(string(install), "825_ursm_node_snapshot_min_partitioned.sql") {
+	if strings.Contains(string(install), "830_ursm_node_snapshot_min_partitioned.sql") {
 		t.Fatal("825 is embedded in the installer's embeddedSQLFiles map — same reasoning as above")
 	}
 }

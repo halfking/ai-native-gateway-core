@@ -877,7 +877,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 825 | `825_modality_graded_verification.sql` | `3af1b1801c36e015a5849bde261125c378129c46f5bdad703c186b85cc0b0eab` | pending deploy（245/154/252 未应用；本地 8782 已由启动自愈 ensureModalityGradedVerification 等价应用并 stamp） |
-| 825 | `825_ursm_node_snapshot_min_partitioned.sql` | `24d0befc257034df4575623a1a70d646fe25445b1cd3e82d36a879ebeb75cf6b` | pending deploy（**手工执行**；`.down.sql` sha `b125cc0700a30a8868e335b140af64c04ee1641c5e4c9e05b544b3e93f58d7a0`）。R44 补登记。⚠️ **与上一行的 825 撞号**：`825_modality`（b992c01b3，10-04 14:05）在先、本迁移（32d592f97，10-04 14:25）在后，按 R22「后提交方让号」规则本应改号，但 R44 复核后**决定不改**，理由见下行注 |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | pending deploy（**手工执行**；`.down.sql` sha `ea378dac9f08ec1269504a562a470a7d1c647d25d8f89399fe377f6765f66ce7`）。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红） |
 
 > **R44 复核：为什么 `825_ursm` 不改号（登记了撞号，但保留双 825）**
 >
