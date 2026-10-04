@@ -13,14 +13,26 @@
   --app-surface-muted: #eef2f8;
   --app-text: #152033;
   --app-text-secondary: #5b6b82;
-  --app-text-muted: #8b9bb0;
+  /* 2026-10-04 实测改色：原 #8b9bb0 在白底只有 2.83:1、在 --app-bg 上 2.62:1，
+     远低于 WCAG AA 正文 4.5:1（模拟器 + Chrome 双证，见
+     web-mobile/reports/triage-v2/report.json 的 low-contrast 项）。
+     → #5f7089 = 白底 5.04:1 / app-bg 4.66:1，且仍是同一支蓝灰，色相不变。 */
+  --app-text-muted: #5f7089;
   --app-border: #dce3ee;
   --app-border-subtle: #e8edf4;
-  --app-success: #16845b;
+  /* 徽标是「文字压在 soft 填充上」，门槛按 AA 正文 4.5:1 算，不是按大字 3:1：
+     原 #16845b on #e6f7ef = 4.22、#4a6ee0 on #eaf0ff = 4.00，都差一点。 */
+  --app-success: #116149;
   --app-warning: #b7791f;
   --app-danger: #c2413b;
-  --app-info: #4a6ee0;
+  --app-info: #3455c4;
   --app-focus: var(--app-primary);
+
+  /* 主色上的前景色 —— 2026-10-04 新增。
+     为什么不能继续写死 #fff：暗色下 --app-primary 是浅蓝 #5b8cff，
+     白字压上去只有 3.16:1（实测），暗色模式的主按钮等于半个瞎。
+     浅色保持白字（#1e4fd6 上白字 6.68:1），暗色改用近黑前景（#5b8cff 上 5.84:1）。 */
+  --app-on-primary: #ffffff;
 
   /* 品牌主色 ramp（浅色 NBJL 蓝 #1e4fd6） */
   --app-primary: #1e4fd6;
@@ -100,7 +112,10 @@ html.dark {
   --app-surface-muted: #121820;
   --app-text: #e8eef7;
   --app-text-secondary: #8b9bb0;
-  --app-text-muted: #6b7a90;
+  /* 2026-10-04 实测改色：原 #6b7a90 在 --app-surface #1a222d 上只有 3.67:1。
+     → #8a9ab0 = 5.59:1。暗色下 muted 必须**比 secondary 亮**才成立，
+     原值比 secondary 还暗，等于「越次要的字越看不见」。 */
+  --app-text-muted: #8a9ab0;
   --app-border: #2a3544;
   --app-border-subtle: #243040;
   --app-header-bg: rgba(26, 34, 45, 0.92);
@@ -113,6 +128,8 @@ html.dark {
   --app-warning-soft: rgb(224 165 58 / 14%);
   --app-danger-soft: rgb(240 113 103 / 14%);
   --app-info-soft: rgb(91 140 255 / 16%);
+  /* 暗色主色是浅蓝，前景必须反过来用近黑（白字只有 3.16:1）。 */
+  --app-on-primary: #0f141c;
   /* 暗色整条 ramp 反向（nbjl-3 同源） */
   --app-primary: #5b8cff;
   --app-primary-strong: #7aa3ff;

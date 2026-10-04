@@ -156,6 +156,12 @@ function versionMeta(v: AvailableVersion): string[] {
   color: var(--app-text);
   font-size: var(--app-font-input);
   min-width: 0;
+  /* 2026-10-04 实测改：容器 48px 但 input 自身只有 20px 高（实测 309×20）。
+     容器是 div 不是 label，**点容器的 padding 不会聚焦 input**，
+     所以真实可点区域就是那 20px —— 外框看起来很大，手指能落的地方却是一条。
+     让 input 自己撑满整行，行内任意一点都能唤起键盘。 */
+  height: 100%;
+  align-self: stretch;
 }
 
 .models__search input:focus {

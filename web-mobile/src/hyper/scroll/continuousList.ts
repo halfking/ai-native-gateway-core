@@ -34,6 +34,15 @@ export class ContinuousListController<T> {
   private _total: number | undefined
   private _page = 0
   private _revision = 0
+  /**
+   * 最近一次失败的原始错误。
+   *
+   * 2026-10-04 新增。此前 catch 里只置状态、**把 err 丢掉**，于是视图层拿不到
+   * 失败原因，只能对所有失败显示同一句 `common.errorHint`（"请检查网络后重试"）。
+   * 实测后果：/nodes 的 500 来自服务端查询超时（admin/credential_monitor.go:657，
+   * 15s context deadline），页面却让用户去查自己的网络 —— **把排查方向指错了**。
+   */
+  private _error: unknown = null
   private aborter: AbortController | null = null
   private flightKey: string | null = null
   private listeners = new Set<() => void>()
@@ -54,6 +63,11 @@ export class ContinuousListController<T> {
 
   get loadedCount(): number {
     return this._items.length
+  }
+
+  /** 最近一次失败原因；成功或未失败时为 null。视图据此区分「网络」与「服务端」。 */
+  get error(): unknown {
+    return this._error
   }
 
   /** 视图刷新钩子（Vue 侧用 tick ref 触发重渲）。 */
@@ -77,6 +91,7 @@ export class ContinuousListController<T> {
     this._items = []
     this._total = undefined
     this._page = 0
+    this._error = null
     this._state = 'initialLoading'
     this.emit()
     void this.fetch('initial', 1)
@@ -189,12 +204,14 @@ export class ContinuousListController<T> {
         result.items.length === 0 ||
         (this._total !== undefined && this._items.length >= this._total)
       this._state = noMore ? 'exhausted' : 'idle'
+      this._error = null
       this.emit()
     } catch (err) {
       if (revision !== this._revision) return
       if (isAbortError(err)) return
       // 失败保留已加载行与分页状态（13 §3）
       this._state = kind === 'next' ? 'loadMoreFailed' : 'loadFailed'
+      this._error = err
       this.emit()
     } finally {
       if (this.flightKey === key) {
