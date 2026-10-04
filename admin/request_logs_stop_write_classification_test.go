@@ -908,6 +908,59 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"API 层有「数据不足」横幅，但那只在真为空时出现，此处不出现。" +
 			"残余风险：横幅文案无法提示「数字已停止更新」。",
 	},
+	// ── §9.191：2026-10-04 补完最后一个未评估读点 ────────────────────────
+	"admin/usage_enhanced.go": {
+		Effect:   effectSilentlyDegradedAggregate,
+		Evidence: "GroupBy: groupBy, BaseTable: \"request_logs_with_current_month rl\",",
+		// 本条是 107 个读点里最后一个 unclassified（§9.190 实测进度 106/107）。
+		// 下面是**逐条读码 + 真库测量**的结论，不是推断。四个读点的判定各不相同：
+		//
+		// ① cost-trend group_by=work_type（:120 的 requestSide 分支）—— **退化**。
+		//    视图 GROUP BY COALESCE(rl.work_type,'unknown')。真库 7 天实测：
+		//      视图 77,600 行里 work_type 非空只有 4,357 行，**全部落在 v1 臂**；
+		//      session 臂 31,223 行 work_type **100% 为 NULL**。
+		//    独立复核到源头表：session_turns 29,620 + session_turns_hot 1,603 行，
+		//    work_type 同样全 NULL ⇒ 710 把 work_type 登记为「直映 t.work_type」
+		//    是**忠实实现**，是写方从不填 session_turns.work_type。
+		//    为什么本地全 NULL：work_type 来自 X-Gw-Work-Type 请求头
+		//    （domains/analysis/projectattr/attributor.go:65），本地无客户端发送。
+		//    这 4,357 行是谁：origin_actor ∈ {auto-title-generator,
+		//    auto-summary-generator}、is_auto_request=TRUE、task_type 为空 ⇒ 命中
+		//    internaltraffic.ClassifyInternalLoopback 的 **actor 臂**
+		//    （internal/internaltraffic/internal_traffic.go:170-184 是三臂**或**关系，
+		//    不是与；本轮第一版读成「与」差点误报成镜像漏写），它们**按设计**不进
+		//    session_turns。⇒ 停写后 work_type 维度塌成只剩 'unknown' 一组，
+		//    接口 200、字段齐全、无任何错误信号。
+		//
+		// ② cost-trend group_by=intent（:109）—— **不受影响**。它 JOIN
+		//    session_summaries ss ON ss.session_key = rl.gw_session_id，而 session 臂
+		//    的 gw_session_id 实测 0 NULL（710 登记为派生映射
+		//    `CASE WHEN session_id LIKE 'sys:%' THEN NULL ELSE session_id END`），
+		//    session_summaries 本身 7 天内更新 3,852 行、持续增长。
+		//
+		// ③ cache-economics 压缩请求数（:666 compressedQuery）—— **不受影响**，
+		//    且方向与直觉相反：真库 7 天实测 compression_strategy 非空的
+		//    v1 臂 **0 / 46,398 行**，session 臂 **4,796 / 31,223 行**。
+		//    这个计数今天就**只由 session 臂供数**，停写不掉反得。
+		//
+		// ④ 退化幅度：停写后视图少掉的 4,359 行内部回环占 7 天 **5.6% 行 /
+		//    4.20% token**（business 95.80%）。本地 cost_usd ≈ 0，**美元占比无法在
+		//    本机测**，这是本条读数的一个明确缺口。
+		//
+		// ⚠ 本档被 silentFormsOutsideGreyList **显式排除**在「灰度前必须处理的静默档」
+		//   清单之外，但那条排除的登记理由写的是「退化发生在 reward 的分项
+		//   （基线 cohort 取 miss ⇒ 延迟/成本项同时塌成 0.5）」——针对的是
+		//   baseline-metric 那一类形状。**这里的形状不同**（维度取值集合塌缩成
+		//   单值），排除决定是否覆盖它属主决定，已登记为 D27-a，本轮不自行改档也不
+		//   自行把 70 这个对外数字改掉。
+		Note: "唯一真退化点是 cost-trend 的 work_type 维度：视图里 work_type 非空的" +
+			"4,357 行**全在 v1 臂**（session 臂 7 天 31,223 行 100% NULL，已到源头表" +
+			"session_turns/_hot 复核），且这批行是 origin_actor 命中的内部回环" +
+			"（标题/摘要生成器），按设计不镜像 ⇒ 停写后 work_type 只剩 'unknown' 一组，" +
+			"200/字段齐全/无错误。intent 维度与压缩计数不受影响（压缩计数今天就只由" +
+			"session 臂供数：v1 臂 0/46,398 vs session 臂 4,796/31,223）。" +
+			"幅度：内部回环占 7 天 5.6% 行 / 4.20% token；美元占比本地测不了。",
+	},
 }
 
 // measurementCaveat 适用于本文件里所有**幅度**数字，必须与结构性事实分开读。

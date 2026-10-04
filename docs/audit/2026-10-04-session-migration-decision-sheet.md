@@ -1891,3 +1891,78 @@ M3（`agent_role` 去掉精化保护）FAIL=1、基线与还原均 PASS=6。
   本门相应子测试会红——**那是预期的**，届时按新契约更新期望值即可。
   是否接受这种「先刻画、后改契约」的两步走？我的建议：**接受**——
   它保证了「改之前的行为」有实测记录，而不是靠回忆。
+
+---
+
+## D27：`work_type` 维度在停写后会塌成单值，而它所在的档被排除在灰度清单之外
+
+### 现象（真库 7 天实测 + 逐条读码，非推断）
+
+`admin/usage_enhanced.go` 的 `cost-trend` 以
+`request_logs_with_current_month` 为基表、`GROUP BY COALESCE(rl.work_type,'unknown')`。
+停写（`storage.request_logs_write_enabled = false`）之后：
+
+- 视图里 `work_type` 非空的 **4,357 行全部在 v1 臂**；
+  **session 臂 31,222 行 `work_type` 100% 为 NULL**；
+- 复核到源头表：`session_turns` 29,620 + `session_turns_hot` 1,603 行同样全 NULL。
+  ⇒ 710 把 `work_type` 登记为「直映 `t.work_type`」是**忠实实现**，
+  缺的是**写方从不填 `session_turns.work_type`**（本地 `work_type` 来自
+  `X-Gw-Work-Type` 请求头，无客户端发送）；
+- 那 4,357 行是 `origin_actor` 命中的**内部回环**（标题/摘要生成器），
+  按 `ClassifyInternalLoopback` 的 actor 臂**设计上不镜像**；
+- ⇒ 停写后 `work_type` 维度**塌成只剩 `unknown` 一组**：
+  接口 200、字段齐全、无任何错误信号。
+
+同文件另两个读点**不受影响**：`intent`（`session_summaries` 仍增长、
+session 臂 `gw_session_id` 0 NULL）、压缩请求数（`compression_strategy`
+v1 臂 **0/46,398** vs session 臂 **4,796/31,223** ⇒ 今天就只由 session 臂供数，停写不掉反得）。
+
+### 幅度（能测的与测不了的必须分开）
+
+视图 7 天分段：**business 73,279 行 / 95.80% token**，
+**internal_loopback 4,359 行 / 4.20% token**。
+停写后少掉的即这 4.20%。⚠ 本地 `cost_usd ≈ 0` ⇒ **美元占比本机测不了**。
+
+### 为什么这条不能顺手塞进已有档就完事
+
+本条已登记为 `effectSilentlyDegradedAggregate`，而该档被
+`silentFormsOutsideGreyList` **显式排除**在「灰度前必须处理的静默档」
+（70 条）之外。那条排除的登记理由逐字是
+「退化发生在聚合的**分项**（reward 的延迟项/成本项同时塌成 0.5）……
+处置方式是重设基线总体（§9.73.4），不在清单三档的处置集合里」。
+
+本条的形状是**维度取值集合塌缩成单值**，处置方式既不是「重设基线总体」，
+也不落在清单三档（结果集空 / 某一列空 / 整体冻结）任何一档的措辞里。
+⇒ **照搬那条排除会把一个真实退化静默降级。** 我没有自行改档，也没有自行改 70。
+
+### 已交付（不含任何行为改动）
+
+- `admin/usage_enhanced.go` 完成逐点分类（107/107，未评估 **0**），
+  `Evidence` 锚在 `:120` 的 `BaseTable` 那一行（逐字存在，门会核）。
+- `admin/request_logs_stop_write_interlock_test.go`（新增）：
+  把「先补完评估，才允许关停开关」从约定变成不变量。
+  3/3 PASS；变异 M3（恒真化）红因正确。
+- 本条判 `silently_degraded_aggregate` 后，**互锁门第 3 条读到的未评估数变 0**，
+  互锁转为「新增读点未分类 + 开关已关」时才响——**这正是它该有的行为**。
+
+### 请拍板
+
+- **D27-a**：`silently_degraded_aggregate` 的**灰度清单排除**是否覆盖
+  「维度取值集合塌缩成单值」这一形状？
+  * 三选一：① 扩档并纳入清单（会改 70 这个对外数字）；
+    ② 保留排除，但在 `silentFormsOutsideGreyList` 里**逐形状**登记
+    （本条与 baseline-cohort 那条分开写，理由分开）；
+    ③ 保留排除且不登记（本条即被静默降级）。
+  * 我的建议：**②**。理由：那个排除决定是针对 baseline-metric 形状做的，
+    把它当成对**整档**的排除是一次范围外的推广；而 ① 要动一个已被订正过两次的
+    对外数字，③ 则会让本条消失。**这三条都属主决定，本轮不自行选择。**
+- **D27-b**：本条的**生产真值**未知。本地「session 侧 `work_type` 无供给」
+  的成因是**本地无客户端发 `X-Gw-Work-Type`**，不能外推。
+  是否把「生产 `session_turns.work_type` 填充率 + 生产业务流量是否带
+  `X-Gw-Work-Type`」列入 252 只读清单？
+  * 我的建议：**列入**，与 **D24-d-3**（§9.182.4 三条清单）合并同一次申请，
+    因为两者都是「停写前必须知道的生产真值」。
+- **D27-c**：若生产确认 `work_type` 由客户端头驱动，那么**停写本身不是正确修法**——
+  正确修法是让 `session_turns` 侧也落 `work_type`（写入侧改造）。
+  是否把「session 族补齐 `work_type` 写入」列为 S4 的**硬前置**，
+  而不是把本条的降级接受掉？属主决定。

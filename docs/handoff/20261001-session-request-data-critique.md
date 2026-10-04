@@ -8981,3 +8981,78 @@ project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), public.sessions.project_i
 **D26-b**（建议：接受「先刻画、后改契约」的两步走）。
 沿用未决：**D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c / D19-a-3-1 / D19-a-3-2 /
 D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
+
+---
+
+## §70.45 退役进度实测 + 互锁门 + 补完最后一个读点（107/107）
+
+### ① 退役进行到哪一步：**仍在双写**
+
+两个活的生产写方（`domains/hooks/observability/telemetry/client.go`、
+`admin/telemetry.go` 写 `request_logs_hot`），`request_logs_hot` 的 `max_ts`
+距测量时刻 **86 秒**。停写开关 `storage.request_logs_write_enabled`
+`Default: true`、HotReload、覆盖很全（15 个测试文件引用），
+但**真库 `settings_kv` 该键行数 = 0 ⇒ 取默认 true**。
+
+### ② 逐点评估：106/107 → **107/107**（未评估 0）
+
+`admin/usage_enhanced.go` 是最后一个。判 `effectSilentlyDegradedAggregate`。
+
+### ③ 它的四个读点，三个不受影响、一个真退化
+
+- **① `work_type` 维度：退化。** 视图里 `work_type` 非空的 4,357 行**全在 v1 臂**，
+  **session 臂 31,222 行 100% NULL**；复核到源头表 `session_turns` 29,620 +
+  `session_turns_hot` 1,603 行同样全 NULL ⇒ 710 的「直映」是忠实实现，
+  **缺的是写方从不填 `session_turns.work_type`**。停写后该维度塌成只剩 `unknown`。
+- **② `intent`：不受影响。** `session_summaries` 仍增长（7 天更新 3,852 行），
+  session 臂 `gw_session_id` 实测 0 NULL。
+- **③ 压缩请求数：不受影响，方向与直觉相反。** `compression_strategy`
+  v1 臂 **0 / 46,398** vs session 臂 **4,796 / 31,223** ⇒ 今天就只由 session 臂供数。
+- 幅度：停写少掉的 4,359 行 = **5.6% 行 / 4.20% token**。
+  ⚠ 本地 `cost_usd ≈ 0`，**美元占比本机测不了**。
+
+### ④ 独立佐证
+
+把本条改判 `effectUnaffected` 立刻被族门判红，族 =
+`reads_view_with_null_padded_predicate` ⇒ **机械分类器不靠我的读码
+也已把 `work_type` 算进 session 臂 NULL 补位列集合**。
+
+### ⑤ ⚠️ 我这一轮自己犯的三个错（都是我的前提/读数错，不是代码问题）
+
+1. **把「NULL 计数 = 总行数」读成「填充率 100%」**——那一列恰恰是一列都没填。
+2. **算出「47% 的计费成功请求没有 session 镜像」**——口径含探针流量，
+   而**探针带 token**；789 条里 **784 条是 `probe_triggered`**。
+   2026-10-02 已写在 `measurementCaveat` 里的结论是对的，我差点用错数字推翻它。
+3. **把 `ClassifyInternalLoopback` 读成「四臂与」，实际是「三臂或」**
+   （首个命中臂即 return）⇒ 差点把**按设计排除的内部回环**报成「镜像漏写」并开 P0。
+
+### ⑥ 互锁门，以及它自己一个真实缺陷
+
+新增 `admin/request_logs_stop_write_interlock_test.go`：把
+「先补完评估才允许关停」从约定变成不变量（纯函数判定 + 接线阳性对照 + 真实库不变量）。
+基线 3/3 PASS，变异 M3（恒真化）红因正确。
+
+⚠ **第一版的逻辑自检有个真缺陷**：前提用
+`todo := unclassifiedStopWriteReaders(); if len(todo)==0 { Skip }`。
+**§9.191 把最后一个读点评估完之后，这条自检会永久 Skip**——
+而它恰是唯一能证明互锁没退化成恒真门的那条。
+⇒ 互锁会在**它刚开始变得重要的那一刻静默作废，且毫无信号**。
+修法：自检**自带合成前提**（编造假读点名），恒定可构造。
+**判据的有效性不能挂在「被检验对象当前恰好处于某个状态」上。**
+M3 就是在未评估清单归零**之后**跑的，直接证明修复有效。
+
+### ⑦ 回归与边界
+
+`admin` 包回归 FAIL 名单与基线逐名相同（D21 两条 + §9.184 存储面可读性一条），
+**未新增**；`admin/dashboardapi|dashboarddegrade|distlock` ok。
+**未改任何产品代码/配置/视图/迁移**；**未连接生产**。
+本地 `cost_usd ≈ 0`、无客户端发 `X-Gw-Work-Type` ⇒
+**「session 侧 `work_type` 无供给」本地为真、生产未知**。
+
+### ⑧ 待拍板
+
+**D27-a**（`silently_degraded_aggregate` 的灰度清单排除是否覆盖「维度取值集合塌缩成单值」这一形状；三选一，建议 ② 逐形状登记）/
+**D27-b**（把生产 `session_turns.work_type` 填充率列入 252 只读清单，建议与 D24-d-3 合并）/
+**D27-c**（若生产确认由客户端头驱动，是否把「session 族补齐 `work_type` 写入」列为 S4 硬前置）。
+沿用未决：**D26-a / D26-b / D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c /
+D19-a-3-1 / D19-a-3-2 / D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
