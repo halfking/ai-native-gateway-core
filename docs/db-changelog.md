@@ -842,7 +842,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 818 | `818_ursm_snapshot_typed_columns.sql` | `bb2493af5a160a8fd6df860c4117c8aeeb68212843394d74b1923ff8a30988b3` | applied+verified |
-| 819 | `819_request_abandoned.sql` | `08cf64b15be12f88e7e513449490df8eda136839663f052186a740ddb9b4b43a` | applied+verified |
+| 819 | `819_request_abandoned.sql` | bb271e8c1876e24c09b44795eb01145a25839b9a8ea0b369923a539bd7fc9bae | applied+verified（R43 恢复注记 §R43/L8：Go 写路径已随 820/821 线删除、生产零引用，文件仅为 checksum 完整性档案保留） |
 
 ## 2026-10-03T22:50:46Z — deploy 245 build_seq 2442 (25a86439)
 
@@ -859,7 +859,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 |-----------|------|---------|--------|
 | 822 | `822_session_summaries_health_pending_index.sql` | `504d181155fcf05dc67edd7eb213a0d628c983033c315a120308a9117c541b90` | pending deploy（本地库已带外应用，实测索引在位）⚠ 恢复口径订正（R41 F7）：CONCURRENTLY 中断留 INVALID 时复跑**不会**清掉，须先 `DROP INDEX CONCURRENTLY IF EXISTS idx_session_summaries_health_pending` 再重放 |
 | 823 | `823_session_turns_request_status.sql` | `334765edc40e44cfe9a48334127649eaa930f8fb81add3ed595ee4d8e6e67441` | pending deploy（本地库已带外应用，session_turns/_hot 两侧 request_status 列在位；R41 补对称 down 文件） |
-| 824 | `824_request_status_rate_limited_projection.sql` | `bb5a76be01cfa69ae6ffbfd510c3cc728d7605c702eec11ad337883b6f80c666` | pending deploy（未应用于任何库；R41 冻结前订正判定臂为 IN 集，Go 镜像 db/request_logs_view_schema.go 同步，离线门钉死） |
+| 824 | `824_request_status_rate_limited_projection.sql` | `a7f6d00b20f7f6a0c603f31ba77394c63a0db4f1120028effaa35021839780df` | pending deploy（未应用于任何库；R41 冻结前订正判定臂为 IN 集，Go 镜像 db/request_logs_view_schema.go 同步，离线门钉死；R43 §R43/L5 幂等判据由 rate_limit_exceeded 单字面量强化为 key_throttled——仅 IN 集形态含此字面量，已应用过单值形态的库重放可正确拿到修正；注：0c7236170 自述 823-827 已于 2026-10-04 18:46 随部署上远端 252，重放按新判据 no-op） |
 
 
 

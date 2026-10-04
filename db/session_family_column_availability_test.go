@@ -451,72 +451,81 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 	if err := recRows.Err(); err != nil {
 		t.Fatalf("recent-window iterate: %v", err)
 	}
-	if recTotal == 0 {
-		// Named SKIP, never a silent 0% — a 0/0 window would otherwise classify
+	hasRecentWindow := recTotal > 0
+	if !hasRecentWindow {
+		// Named, never a silent 0% — a 0/0 window would otherwise classify
 		// every column as "recently dropped", which is the exact false alarm this
-		// section exists to remove.
-		t.Skipf("SKIP recent-window report: no session_turns rows in the last "+recentWindow+" on either face "+
-			"(lifetime total is %d) — a 0-row window has no rate to report", sessTotal)
+		// section exists to remove. Only the recent-window REPORT is conditional:
+		// the registry gates further down (assertSameSet ×3 and the
+		// RetirementColumnFill drift gate) run on lifetime data, and an empty
+		// recent window is exactly the state in which the mirror chain may have
+		// just stopped — silencing them here would turn a stopped chain into a
+		// permanent green (audit 2026-10-04 §9.214/L1).
+		t.Logf("recent-window report skipped: no session_turns rows in the last %s on either face "+
+			"(lifetime total is %d) — a 0-row window has no rate to report; "+
+			"the registry gates below still run on lifetime data", recentWindow, sessTotal)
 	}
 
-	// The buckets must **partition** the measurable columns. This is the part
-	// with teeth: a column that is silently left out of all three (the failure
-	// mode this file's own header calls the worst way to lose a finding) or
-	// filed under two (a double count that inflates the report) both turn it red.
-	// Unlike a set-equality check against a registered list, it cannot flap —
-	// it only depends on the classification, not on the traffic.
-	const (
-		bucketNewlyActive   = "newly active writer (recent≥50%, lifetime<2%)"
-		bucketRecentDropped = "recent drop (recent < lifetime−20pp) — CANDIDATE, cross-check the traffic mix"
-		bucketSteady        = "steady"
-	)
-	var newlyActive, recentDropped, steady []string
-	measurable := 0
-	for i, name := range canonicalColumnOrderV2 {
-		if isLiteralNullPlaceholder(exprs[i]) {
-			continue
+	if hasRecentWindow {
+		// The buckets must **partition** the measurable columns. This is the part
+		// with teeth: a column that is silently left out of all three (the failure
+		// mode this file's own header calls the worst way to lose a finding) or
+		// filed under two (a double count that inflates the report) both turn it red.
+		// Unlike a set-equality check against a registered list, it cannot flap —
+		// it only depends on the classification, not on the traffic.
+		const (
+			bucketNewlyActive   = "newly active writer (recent≥50%, lifetime<2%)"
+			bucketRecentDropped = "recent drop (recent < lifetime−20pp) — CANDIDATE, cross-check the traffic mix"
+			bucketSteady        = "steady"
+		)
+		var newlyActive, recentDropped, steady []string
+		measurable := 0
+		for i, name := range canonicalColumnOrderV2 {
+			if isLiteralNullPlaceholder(exprs[i]) {
+				continue
+			}
+			measurable++
+			rp := pct(recNonNull[name], recTotal)
+			lp := measured[name].SessionPct
+			switch {
+			case rp >= 50 && lp < 2:
+				newlyActive = append(newlyActive, name)
+			case rp+20 < lp:
+				recentDropped = append(recentDropped, name)
+			default:
+				steady = append(steady, name)
+			}
 		}
-		measurable++
-		rp := pct(recNonNull[name], recTotal)
-		lp := measured[name].SessionPct
-		switch {
-		case rp >= 50 && lp < 2:
-			newlyActive = append(newlyActive, name)
-		case rp+20 < lp:
-			recentDropped = append(recentDropped, name)
-		default:
-			steady = append(steady, name)
+		if got, want := len(newlyActive)+len(recentDropped)+len(steady), measurable; got != want {
+			t.Errorf("bucket partition broken: %d+%d+%d = %d classified, but %d columns have a "+
+				"session-side source. A column is being dropped from the report (or filed twice).",
+				len(newlyActive), len(recentDropped), len(steady), got, want)
 		}
-	}
-	if got, want := len(newlyActive)+len(recentDropped)+len(steady), measurable; got != want {
-		t.Errorf("bucket partition broken: %d+%d+%d = %d classified, but %d columns have a "+
-			"session-side source. A column is being dropped from the report (or filed twice).",
-			len(newlyActive), len(recentDropped), len(steady), got, want)
-	}
-	t.Logf("recent window: %d rows in the last %s (lifetime %d)", recTotal, recentWindow, sessTotal)
-	for _, b := range []struct {
-		label string
-		names []string
-	}{
-		{bucketNewlyActive, newlyActive},
-		{bucketRecentDropped, recentDropped},
-		{bucketSteady, steady},
-	} {
-		detail := make([]string, 0, len(b.names))
-		for _, n := range b.names {
-			detail = append(detail, fmt.Sprintf("%s(lifetime %.2f%% → recent %.1f%%)", n, measured[n].SessionPct, pct(recNonNull[n], recTotal)))
+		t.Logf("recent window: %d rows in the last %s (lifetime %d)", recTotal, recentWindow, sessTotal)
+		for _, b := range []struct {
+			label string
+			names []string
+		}{
+			{bucketNewlyActive, newlyActive},
+			{bucketRecentDropped, recentDropped},
+			{bucketSteady, steady},
+		} {
+			detail := make([]string, 0, len(b.names))
+			for _, n := range b.names {
+				detail = append(detail, fmt.Sprintf("%s(lifetime %.2f%% → recent %.1f%%)", n, measured[n].SessionPct, pct(recNonNull[n], recTotal)))
+			}
+			t.Logf("  %s (%d): %s", b.label, len(b.names), strings.Join(detail, ", "))
 		}
-		t.Logf("  %s (%d): %s", b.label, len(b.names), strings.Join(detail, ", "))
-	}
-	if len(newlyActive) > 0 {
-		t.Logf("  ⇒ a column in \"%s\" is NOT a live data-loss defect: its writer works and only the "+
-			"history is empty. Do not repoint or retire its readers on the strength of the lifetime number.",
-			bucketNewlyActive)
-	}
-	if len(recentDropped) > 0 {
-		t.Logf("  ⇒ a column in \"%s\" is a CANDIDATE only. Check the hourly series before calling it a "+
-			"regression: a traffic-mix change produces the same shape as a broken writer, and on this "+
-			"database the mix does change (audit §9.157 unidentified active writer).", bucketRecentDropped)
+		if len(newlyActive) > 0 {
+			t.Logf("  ⇒ a column in \"%s\" is NOT a live data-loss defect: its writer works and only the "+
+				"history is empty. Do not repoint or retire its readers on the strength of the lifetime number.",
+				bucketNewlyActive)
+		}
+		if len(recentDropped) > 0 {
+			t.Logf("  ⇒ a column in \"%s\" is a CANDIDATE only. Check the hourly series before calling it a "+
+				"regression: a traffic-mix change produces the same shape as a broken writer, and on this "+
+				"database the mix does change (audit §9.157 unidentified active writer).", bucketRecentDropped)
+		}
 	}
 
 	// The measurement contradicts the registered lists, or the lists are

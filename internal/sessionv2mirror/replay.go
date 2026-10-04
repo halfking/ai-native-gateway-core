@@ -466,8 +466,18 @@ func (r *MirrorOutboxReaper) replayOne(ctx context.Context, row claimRow) {
 	// 放在 Write 之后、与 live hook 同一位置: 行已存在且已提交, 不与插入竞态。
 	if entry.FinalSuccessClaimed {
 		markCtx, markCancel := context.WithTimeout(ctx, mirrorReplayWriteBudgetMs*time.Millisecond)
-		markTurnFinalSuccess(markCtx, r.pool, row.requestID, req.TenantID, sessionID)
+		marked := markTurnFinalSuccess(markCtx, r.pool, row.requestID, req.TenantID, sessionID)
 		markCancel()
+		if !marked {
+			// §R43/L3: an infrastructure failure on the mark must not burn
+			// the compensation row. The turn write above already committed and
+			// is idempotent (ON CONFLICT DO NOTHING), so the retry costs one
+			// no-op write and retries exactly the part that failed. The live
+			// path has the v1 claim row as its own retry carrier; this row is
+			// the replay path's only one.
+			r.requeue(ctx, row, fmt.Errorf("final_success mark failed (turn intact, compensation row kept)"))
+			return
+		}
 	}
 	if _, err := execBypass(ctx, r.db, `DELETE FROM public.session_mirror_outbox WHERE id = $1`, row.id); err != nil {
 		// The turn is written (idempotent on request_id); a leftover row

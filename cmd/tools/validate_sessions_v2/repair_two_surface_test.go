@@ -146,6 +146,10 @@ func TestExecuteRepairDeletesBodiesFromBothSurfaces(t *testing.T) {
 		{"public.session_bodies"},
 		{"public.session_turns_hot"},
 		{"public.session_turns"},
+		// §R43/L4：details 族同样是 hot/父表双面，且重建不写 details ——
+		// 只删一面会留下键指向已删 turns 的孤儿行。
+		{"public.session_turn_details_hot"},
+		{"public.session_turn_details"},
 	} {
 		found := false
 		for _, s := range stmts {
@@ -208,7 +212,7 @@ func TestExecuteRepairCountsBothSurfaces(t *testing.T) {
 	// 找 `result.DeletedRows["session_bodies"] = <expr>`，要求 expr 是
 	// 形如 a + b 的 BinaryExpr（两面 RowsAffected 相加）。
 	// R42 扩展：bodies 与 turns 两个键都要求两面相加（同上 P3）。
-	for _, key := range []string{"session_bodies", "session_turns"} {
+	for _, key := range []string{"session_bodies", "session_turns", "session_turn_details"} {
 		found, isSum := false, false
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			as, ok := n.(*ast.AssignStmt)
