@@ -54,6 +54,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,6 +96,49 @@ CREATE TABLE public.session_turns_hot (
 	request_id           TEXT    NOT NULL,
 	aggregate_applied_at TIMESTAMPTZ
 );
+
+-- 聚合快照表。列取自 upsertSessionSnapshot 的 INSERT 臂；
+-- ON CONFLICT (session_id, partition_date) ⇒ 必须有这条唯一约束。
+CREATE TABLE public.sessions (
+	session_id             TEXT    NOT NULL,
+	tenant_id              TEXT    NOT NULL,
+	created_at             TIMESTAMPTZ,
+	updated_at             TIMESTAMPTZ,
+	status                 TEXT,
+	total_turns            INTEGER NOT NULL DEFAULT 0,
+	total_tokens           INTEGER NOT NULL DEFAULT 0,
+	total_cost_usd         NUMERIC NOT NULL DEFAULT 0,
+	last_turn_no           INTEGER,
+	last_request_summary  TEXT,
+	last_response_summary TEXT,
+	last_model             TEXT,
+	last_provider          TEXT,
+	client_type            TEXT,
+	project_id             TEXT,
+	api_key_id             TEXT,
+	application_id         TEXT,
+	end_user_id            TEXT,
+	owner_user             TEXT,
+	client_ip              TEXT,
+	agent_name             TEXT,
+	agent_role             TEXT    NOT NULL DEFAULT 'main',
+	parent_session_id      TEXT,
+	parent_task_id         TEXT,
+	partition_date         DATE    NOT NULL,
+	primary_request_id     TEXT,
+	UNIQUE (session_id, partition_date)
+);
+
+-- 写方 / 聚合 / repair / promote **共用**这一个锁键函数
+-- （turn_writer.go:245、session_aggregator.go:130、repair.go、迁移 688）。
+-- 逐字取自生产库的 pg_get_functiondef。
+CREATE OR REPLACE FUNCTION public.session_turns_advisory_lock_key(p_tenant_id text, p_session_id text)
+ RETURNS bigint
+ LANGUAGE sql
+ IMMUTABLE PARALLEL SAFE STRICT
+AS $function$
+    SELECT hashtextextended(p_tenant_id || ':' || p_session_id, 0)
+$function$;
 `
 
 // claimTestDB 建一个一次性数据库并返回连接到它的池 + 库名。
@@ -331,4 +375,243 @@ func TestClaimAggregateTurn_TwoSurface_ParentFirst(t *testing.T) {
 			t.Error("claimAggregateTurn = true，应为 false：hot 行已被认领过")
 		}
 	})
+}
+
+// ── 并发：两道机制不是冗余的，承重的是 B ──────────────────────────────────
+//
+// 阻止「同一轮 turn 被聚合两次」的机制有**两道**：
+//
+//	A. `UpdateSession` 在同一事务里先取 `sessionAdvisoryLockSQL`
+//	   （session_aggregator.go:130）⇒ 同一 (tenant, session) 的并发调用被**串行化**。
+//	B. `claimAggregateTurn` 里的 `WHERE aggregate_applied_at IS NULL`
+//	   ⇒ 已被认领过的行**再次认领是 no-op**（幂等）。
+//
+// 锁键函数 `public.session_turns_advisory_lock_key` 全仓**共用**（写方
+// turn_writer.go:245、聚合 :130、repair.go、迁移 688 的 promote），已逐处核实。
+//
+// ★ **我一开始把这两道当成「冗余防御」，并按那个前提写了「T1 区分不了 A/B、
+//   需要两条判据分别钉」的注释。那是错的，被实测推翻。** 变异矩阵：
+//
+//	| 变异                     | T1（端到端） | T2（并行无锁） |
+//	|--------------------------|-------------|---------------|
+//	| 基线（两道都在）          | 绿          | 绿            |
+//	| A 完好 / **B 破**        | **红**      | **红**        |
+//	| **A 破** / B 完好        | 绿          | 绿            |
+//	| A 破 / B 破              | 红          | 红            |
+//	| 还原                      | 绿          | 绿            |
+//
+//	⇒ **B 才是承重的**：锁只**串行化**，不阻止**顺序重复认领**——
+//	  第 2..6 个调用者照样依次各认领一次、依次各 +1。删掉 B 之后，
+//	  有锁也照样重复计数。
+//	⇒ **A 对「计数恰好一次」这个性质是冗余的**（删掉 A 两条判据仍全绿）。
+//	  它的作用是**延迟/隔离**（让同一会话的写入不互相踩），不是正确性。
+//
+// ★ 那 T2 还有什么独立价值？**它到达 T1 结构性到不了的场景**：
+//	  T1 里 advisory lock 把事务**串行化**了 ⇒ 那 6 条 UPDATE **从不重叠**，
+//	  T1 因此**没有真正测到行级竞争**。
+//	  T2 不取锁、6 个事务真并行，测的才是「PG 的 UPDATE 拿到行锁后
+//	  会重新检查谓词」这个真正的原子性保证。
+//
+// # 断言为什么不会 flake
+//
+// 两条都只断**最终库状态**（`total_turns == 1` / 「恰好一个 true」），
+// **不断任何时序**、不断「谁先谁后」。正确实现下**每一种交错**都给出同一个
+// 结果 ⇒ 这不是概率性断言，不存在偶发失败（实测 3 次连跑全绿）。
+
+// TestUpdateSession_ConcurrentSameTurn_AggregatedExactlyOnce 走真实入口。
+func TestUpdateSession_ConcurrentSameTurn_AggregatedExactlyOnce(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping real-database gate")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("admin pgxpool.New: %v", err)
+	}
+	if err := admin.Ping(ctx); err != nil {
+		admin.Close()
+		t.Skipf("TEST_DATABASE_URL unreachable, skipping: %v", err)
+	}
+	pool, name := claimTestDB(t, dsn)
+	dropped := false
+	defer func() {
+		pool.Close()
+		if !dropped {
+			if _, e := admin.Exec(context.Background(),
+				"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name); e != nil {
+				t.Errorf("FATAL: could not terminate fixture backends for %s: %v", name, e)
+			}
+			if _, e := admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name); e != nil {
+				t.Errorf("FATAL: fixture database %s not dropped: %v", name, e)
+			}
+		}
+		admin.Close()
+	}()
+
+	const (
+		tenant   = "conc_tenant"
+		session  = "conc_session"
+		requestI = "conc_request_1"
+		workers  = 6
+	)
+	partDate := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+
+	// 先落一行待认领的 turn（只在父表；hot 不需要——认领成功即可）。
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO public.session_turns
+			(tenant_id, session_id, turn_no, request_id, partition_date)
+		VALUES ($1,$2,1,$3,$4::date)`, tenant, session, requestI, "2026-10-15"); err != nil {
+		t.Fatalf("seed turn: %v", err)
+	}
+	// 阳性对照：turn 真的在父表里，否则下面「恰好聚合一次」是恒真断言。
+	var seeded int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM public.session_turns WHERE request_id = $1", requestI).Scan(&seeded); err != nil {
+		t.Fatalf("positive control: %v", err)
+	}
+	if seeded != 1 {
+		t.Fatalf("阳性对照失败：待认领 turn 应恰有 1 行，实测 %d", seeded)
+	}
+
+	agg := NewSessionAggregator(pool)
+	upd := SessionUpdate{
+		SessionID: session, TenantID: tenant, RequestID: requestI,
+		LastTurnNo: 1, TurnIncrement: 1, TokensIncrement: 7, CostIncrement: 0.5,
+		UpdatedAt: partDate,
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // 闸门：尽量让它们真正撞在一起
+			errs[i] = agg.UpdateSession(ctx, upd)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, e := range errs {
+		if e != nil {
+			t.Errorf("worker[%d] UpdateSession: %v", i, e)
+		}
+	}
+
+	var totalTurns, totalTokens int
+	if err := pool.QueryRow(ctx, `
+		SELECT total_turns, total_tokens FROM public.sessions
+		WHERE session_id = $1`, session).Scan(&totalTurns, &totalTokens); err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	// ★ 终态断言，不断时序：正确实现下任何交错都必须是 1。
+	if totalTurns != 1 {
+		t.Errorf("sessions.total_turns = %d，%d 路并发下必须恰好为 1 —— "+
+			"同一轮 turn 被聚合了多次（advisory lock 与 WHERE ... IS NULL 两道都失效了）",
+			totalTurns, workers)
+	}
+	if totalTokens != 7 {
+		t.Errorf("sessions.total_tokens = %d，应为 7（与 total_turns 同一道防线，"+
+			"必须一起是 7×1 而不是 7×N）", totalTokens)
+	}
+}
+
+// TestClaimAggregateTurn_ConcurrentWithoutAdvisoryLock_IsolatesSecondLine
+// 直接并发调 claimAggregateTurn、**绕开 advisory lock** ⇒ 只剩第二道防线。
+func TestClaimAggregateTurn_ConcurrentWithoutAdvisoryLock_IsolatesSecondLine(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping real-database gate")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("admin pgxpool.New: %v", err)
+	}
+	if err := admin.Ping(ctx); err != nil {
+		admin.Close()
+		t.Skipf("TEST_DATABASE_URL unreachable, skipping: %v", err)
+	}
+	pool, name := claimTestDB(t, dsn)
+	dropped := false
+	defer func() {
+		pool.Close()
+		if !dropped {
+			if _, e := admin.Exec(context.Background(),
+				"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name); e != nil {
+				t.Errorf("FATAL: could not terminate fixture backends for %s: %v", name, e)
+			}
+			if _, e := admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name); e != nil {
+				t.Errorf("FATAL: fixture database %s not dropped: %v", name, e)
+			}
+		}
+		admin.Close()
+	}()
+
+	const (
+		tenant   = "race_tenant"
+		session  = "race_session"
+		requestI = "race_request_1"
+		workers  = 6
+	)
+	partDate := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO public.session_turns
+			(tenant_id, session_id, turn_no, request_id, partition_date)
+		VALUES ($1,$2,1,$3,$4::date)`, tenant, session, requestI, "2026-10-15"); err != nil {
+		t.Fatalf("seed turn: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	claimed := make([]bool, workers)
+	errs := make([]error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			// **刻意不取 advisory lock** —— 这正是把第二道防线单独暴露出来的输入。
+			got, err := claimAggregateTurn(ctx, tx, SessionUpdate{
+				SessionID: session, TenantID: tenant, RequestID: requestI,
+			}, partDate)
+			if err != nil {
+				tx.Rollback(ctx)
+				errs[i] = err
+				return
+			}
+			if err := tx.Commit(ctx); err != nil {
+				errs[i] = err
+				return
+			}
+			claimed[i] = got
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, e := range errs {
+		if e != nil {
+			t.Fatalf("worker[%d]: %v", i, e)
+		}
+	}
+	n := 0
+	for _, c := range claimed {
+		if c {
+			n++
+		}
+	}
+	// ★ 终态断言：无论交错，恰好一个赢家。
+	if n != 1 {
+		t.Errorf("%d 个调用返回 claimed=true，应恰好 1 个 —— "+
+			"没有 advisory lock 兜底时，单条 UPDATE 的 WHERE ... IS NULL "+
+			"必须独立地挡住重复认领（这是纵深防御，别删这道门）", n)
+	}
 }
