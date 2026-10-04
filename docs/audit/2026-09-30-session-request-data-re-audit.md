@@ -26608,3 +26608,99 @@ migration `765_bodies_columnar_storage` 在生产的实际形态：
 - 147 条死信与 4 条成功丢单 turn 的成因**仍未查**（无生产日志采集）。
 - `pg17-proactive-empty-table-cleanup.sh` 通用分支无白名单这一条，
   **是读脚本文本得出的**，**未实测它是否会真的删到会话族**（今天靠体量躲过）。
+
+---
+
+## §9.222 校验器会**对着一个它看不见的窗口报平**——而且生产的窗口比策略短得多
+
+§9.221.1 查到 v1 是 2 个月滚动之后，本轮去看**仓库里执行对账的工具**
+（`cmd/tools/validate_sessions_v2`）有没有把这个约束用上。**没有**，而且查出了两个问题。
+
+### §9.222.1 生产 v1 的**实际**窗口只有 **4 天**（策略说 2 个月）
+
+只读实测 252（带会话头的 v1 行）：
+
+| 面 | 最早 | 最晚 | 跨度 |
+|---|---|---|---|
+| `request_logs`（v1） | **2026-09-30 18:54:28** | 2026-10-04 15:53:32 | **4 天** |
+| `session_turns` | **2026-09-06 11:03:50** | 2026-10-04 15:53:33 | **28 天** |
+
+⇒ **`session_turns` 比 v1 早 24 天。** 存在一段 **24 天**的区间
+**只有会话数据、没有任何 v1 可对照**。
+⇒ 而 §9.221.1 的「2 个月」是**策略上限**，**不是可用的数据量**；
+**实际只有 4 天**。**把「2 个月」当可用窗口写进任何脚本，都是错的。**
+
+★ 这条同时说明了为什么这道门必须**实测**而不能比常量：
+**任何常量在这里都是错的**——2 个月（策略）会放过一个 24 天窗口，
+而 v1 只装了其中 4 天。
+
+### §9.222.2 缺陷 ①：`-start-date` 单独给 ⇒ **静默查出 0 行**
+
+`main.go` 的 `isBatch := *startDate != "" || *endDate != ""` 允许只给一个日期。
+只给 `-start-date` 时 `end` 保持**零值时间**（公元 1 年），
+而查询是 `ts < $3` ⇒ **匹配不到任何行**。
+⇒ 工具打印 `No settled sessions found in the specified range`，
+把操作者指向**数据**，而真正的原因是**参数**。
+
+退出码确实靠 `minimumSessions = 100` 兜住了（fail-closed），
+**但归因是错的** ⇒ 操作者会去查数据、查不到、然后怀疑工具。
+
+**修**：`LoadSessionsInRange` 现在对零值 `endDate` 直接返回**指名错误**：
+
+> end of the validation window is unset: pass -end-date (YYYY-MM-DD);
+> a zero end bound silently matches zero rows rather than reporting an error
+
+（只给 `-end-date` 仍然是合法的「往回全部」，`start` 零值 = 无下界，**不拦**。）
+
+### §9.222.3 缺陷 ②：窗口被**静默截断**而报告读起来完全正常
+
+`request_logs` 不是永久存储。请求的窗口一旦宽于实际存在的数据，
+**既不报错也不返回空，而是返回被截断的那一段**；
+而**被截断的窗口照样可能加载出 ≥100 个会话**，
+于是 parity 报告读起来**与对真实窗口跑出来的报告一模一样**。
+
+⚠ **这个失败模式是不对称的**：它**正是**那份会被用来论证「可以退役源表」的报告。
+
+**修**：新增 `LoadV1TimeRange`（量 v1 真实的 min/max/行数）与
+`WindowExceedsV1Data`（纯判定），`validateBatch` **先打印两侧跨度，再 fail-closed**：
+
+```
+v1 data actually present for this tenant: 31496 rows spanning 2026-09-30T18:54:28Z .. 2026-10-04T15:53:32Z
+validation window requested:               2026-09-01T00:00:00Z .. 2026-10-05T00:00:00Z
+FATAL: the requested window is wider than the v1 data that exists
+       (requested start 2026-09-01T00:00:00Z precedes the oldest v1 row 2026-09-30T18:54:28Z …)
+       Re-run with a window inside the span above; a report over a truncated window is
+       indistinguishable from one over the real window, and it is exactly the report that
+       would be used to justify retiring the source table.
+```
+
+### §9.222.4 判据配了**双向对照**（6 例）
+
+`TestWindowExceedsV1Data` 用**生产实测数字**作夹具：
+
+| 用例 | 期望 | 作用 |
+|---|---|---|
+| start 早于最老行 | **拦** | 2 个月留存陷阱（阳性对照） |
+| end 晚于最新行、start 在数据内 | **拦** | 隔离 end 分支（阳性对照） |
+| 窗口在数据内 | 不拦 | 阴性对照 |
+| 只给 `-end-date`（start 零值） | 不拦 | 阴性对照 |
+| 租户无 v1 行 | 不拦 | 阴性对照（那是零候选路径的职责） |
+| **窗口恰好等于数据跨度** | 不拦 | 阴性对照（**off-by-one**：最常见的输入正落在边界） |
+
+6/6 通过。
+
+⚠ **其中一个用例第一版是错的**：end 分支那个用例的 start 也落在数据之前，
+于是 start 分支先命中、end 分支**从未被执行**。
+**红的是夹具不是判据** —— 但如果我没追那句 `does not mention "is after the newest v1 row"`，
+就会把「end 分支已覆盖」当成事实记下来。**负向断言的信息量不亚于正向断言。**
+
+### §9.222.5 边界
+
+- 本轮改的是**产品代码**：`cmd/tools/validate_sessions_v2/loader.go` 与 `main.go`。
+  依据是任务开头「**修正发现的问题**」与「**确保数据在更改前后一致**」——
+  一个会对着看不见的窗口报平的校验器，**正是这条要求本身要防的东西**。
+- **未对生产做任何写入**，也**未在生产上跑这个工具**（那会产生真实负载，属主决定）。
+- 门的「会响」是**用生产实测数字作夹具证明**的，
+  **不是在生产上实跑触发的** —— 两者不是一回事，如实标注。
+- `session_turns` 比 v1 早 24 天这件事**只说明那段区间无法用 v1 对账**，
+  **不说明那段数据有问题** —— 会话族在 v1 缺失期里的正确性**未验证**。
