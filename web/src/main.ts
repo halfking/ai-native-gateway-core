@@ -11,6 +11,9 @@ import './styles/element-dark.css'
 import './styles/pill-chip.css'
 import './styles/confirm-dialog.css'
 import './styles/responsive-base.css'
+// 2026-10-04 Hyper 移动端壳层（docs/UI规范/00 §5.2）。放在 responsive-base 之后：
+// 它的规则更具体（compact 档内分支），需要后加载才能覆盖兜底。
+import './styles/hyper.css'
 import './styles/foldable.css'
 import { initErrorReporter, createVueErrorHandler } from './utils/errorReporter'
 

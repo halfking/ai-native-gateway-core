@@ -212,6 +212,8 @@ export default {
     recentDaysSub: "Sur les {n} derniers jours",
     statAvailableSub: "Abonnement {a} · accordés {b} · achetés {c}",
     myAccountLink: "Mon compte",
+    degradedFallback: "La vue de données « {view} » n'est pas encore initialisée. Exécutez d'abord la migration d'agrégation des données",
+    degradedViewLabel: "Vue : {view}",
     chartModelTitle: "Top modèles par requêtes",
     chartModelHint: "Cliquez sur une barre pour les détails",
     chartModelEmpty: "Aucune donnée de requêtes par modèle",

@@ -793,6 +793,12 @@ ensure_release_available() {
 stage_release() {
   local binary="$1" bundle="$BIN_DIR/$RELEASE_VERSION"
   ensure_release_available "$bundle"
+  # 2026-10-04 审计轮：web-mobile/dist 缺失时 dl_stage_release 会静默建空目录
+  # （网关侧 /m 与入口分流随之不注册）。--no-frontend 或脏检出行都可能踩到，
+  # 必须在 staging 前点名，不能让移动端无声消失。
+  if [[ ! -d "$PROJECT_ROOT/web-mobile/dist" ]]; then
+    warn "web-mobile/dist 缺失——本发布不含移动端（/m 与统一入口分流将不注册）；--no-frontend 复用检出产物时请先确认 web-mobile/dist 存在"
+  fi
   # dl_stage_release 的失败路径会主动 rm -f SHA256SUMS（2026-09-05
   # 陈旧二进制事故的 set -e 怪癖防御）。一旦失败，必须 fail closed 且
   # 给出明确错误，让后续 dl_verify_release 不会撞上 bash 自带的

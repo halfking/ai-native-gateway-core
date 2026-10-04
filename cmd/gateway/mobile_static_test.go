@@ -134,6 +134,11 @@ func TestMobileEntryRedirect(t *testing.T) {
 		{"api never redirects", http.MethodGet, "/api/auth/token", iphoneUA, http.StatusTeapot, ""},
 		{"POST never redirects", http.MethodPost, "/", iphoneUA, http.StatusTeapot, ""},
 		{"desktop=1 opts out", http.MethodGet, "/?desktop=1", iphoneUA, http.StatusTeapot, ""},
+		// 逃生口语义 = 参数存在即停（Query().Has），与 entry-switch.js 的
+		// /[?&]desktop(?:=|&|$)/ 对齐——两条腿在同一份查询串上必须同判。
+		{"desktop=0 also opts out", http.MethodGet, "/?desktop=0", iphoneUA, http.StatusTeapot, ""},
+		{"bare desktop param opts out", http.MethodGet, "/?desktop", iphoneUA, http.StatusTeapot, ""},
+		{"unrelated param does not opt out", http.MethodGet, "/?nodesktop=1", iphoneUA, http.StatusFound, "/m/?nodesktop=1"},
 	}
 
 	for _, tc := range cases {

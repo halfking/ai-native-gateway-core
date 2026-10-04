@@ -82,10 +82,14 @@ func (h *Handler) updateModelModality(w http.ResponseWriter, r *http.Request, id
 	}
 
 	// Update modality. RETURNING gives us the new value without a second round-trip.
+	// R42（825 Layer 3 盖章）：manual 是迁移 825 定义的权威层，但此前
+	// 无人写入 modality_source='manual'——所有守卫的 manual 臂空转，且
+	// 手工设回 'text' 时 discovery 下一个 tick 按名字推断翻回。覆盖必须
+	// 盖章；semantic/manual 的既有值同样由本端点显式覆盖（操作者行为）。
 	var newModality string
 	err = h.db.QueryRow(ctx,
 		`UPDATE models_canonical
-		 SET modality = $1
+		 SET modality = $1, modality_source = 'manual', modality_verified_at = NULL
 		 WHERE id = $2
 		 RETURNING modality`, req.Modality, id).Scan(&newModality)
 	if err != nil {

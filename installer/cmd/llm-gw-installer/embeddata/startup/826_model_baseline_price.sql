@@ -189,9 +189,36 @@ FROM credential_model_bindings cmb
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
 JOIN credentials c      ON c.id = cmb.credential_id
 LEFT JOIN providers p   ON p.id = c.provider_id
-LEFT JOIN models_canonical mc
-       ON mc.id = pm.canonical_id
-      OR lower(mc.canonical_name) = lower(pm.canonical_raw_name);
+-- ★ 这个 JOIN 原来写成 `ON mc.id = pm.canonical_id OR lower(mc.canonical_name) =
+--   lower(pm.canonical_raw_name)`，**真库实测会把一条供应商绑定变成三行**。
+--
+-- 成因：OR 两侧可以各自命中**不同的** canonical 行。provider_models 的
+-- canonical_id 与 canonical_raw_name 由**不同代码路径**写入，不一致是完全
+-- 可能的状态；一旦 canonical_id 指向 claude-opus-4-8 而 canonical_raw_name
+-- 是 claude-opus-4.8，JOIN 同时命中两行。而仓里 modelname/normalize.go 明确
+-- 声明**不做** claude-opus-4-8 ↔ claude-opus-4.8 的跨形态归一，于是
+-- models_canonical 里这两个写法可以并存。
+--
+-- 后果不是「多几行」那么轻：**同一个供应商价被同时报成比基准贵 20% 和
+-- 比基准便宜 40%**（基准 5.00 → 1.20，基准 9.99 → 0.60）。运维拿到这两个数
+-- 无从裁决；要是对这些行求和，成本就被计了两遍。这是「准确控制成本」这条
+-- 目标上最直接的错价。
+--
+-- 修法：名字匹配那条路**只在 canonical_id 为空时**才走（canonical_id 是
+-- 权威，名字是兜底），再用 ORDER BY + LIMIT 1 保证恰好命中一行。
+-- models_canonical.canonical_name 上有 UNIQUE 约束（models_canonical_
+-- canonical_name_key），所以兜底那条路至多一行。
+LEFT JOIN LATERAL (
+    SELECT mc.id, mc.canonical_name, mc.baseline_price_currency,
+           mc.baseline_input_price_per_1m, mc.baseline_output_price_per_1m,
+           mc.baseline_price_fetched_at
+      FROM public.models_canonical mc
+     WHERE mc.id = pm.canonical_id
+        OR (pm.canonical_id IS NULL
+            AND lower(mc.canonical_name) = lower(pm.canonical_raw_name))
+     ORDER BY (pm.canonical_id IS NOT NULL AND mc.id = pm.canonical_id) DESC
+     LIMIT 1
+) mc ON true;
 
 COMMENT ON VIEW public.v_supplier_price_vs_baseline IS
     'Per (credential, model) supplier price against the vendor baseline. Ratios are NULL unless the currencies match and the baseline is set — a CNY supplier price divided by a USD baseline produces a number that looks like a deviation but is pure noise, so currency_comparable is exposed rather than folded into the ratio.';

@@ -68,6 +68,15 @@ export default {
     disable: 'Disable',
     enable: 'Enable',
   },
+  modelIdentity: {
+    client: "Client",
+    canonical: "Canonical",
+    outbound: "Outbound",
+    titleClient: "Name requested by the client",
+    titleCanonical: "Canonical name",
+    titleOutbound: "Outbound / upstream raw name",
+    titleRaw: "Raw name: {model}"
+  },
   chip: {
     status: 'Status: {value}',
     vendor: 'Vendor: {value}',

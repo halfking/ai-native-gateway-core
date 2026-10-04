@@ -301,6 +301,48 @@ func TestReplayOne_CorruptPayloadMarksDead(t *testing.T) {
 
 // TestReplayOne_WriteFailRequeuesThenDead pins the retry state machine:
 // first failure re-queues with backoff; a row already at max attempts dies.
+// TestReplayOne_FinalSuccessMarkFailKeepsCompensationRow pins the §R43/L3
+// contract: when the entry carries a v1 final-success claim but the landing-pad
+// mark cannot be applied (nil pool here stands for every mark infrastructure
+// failure — see markTurnFinalSuccess's bool contract), the compensation row
+// must NOT be deleted. The turn write already committed and is idempotent, so
+// the retry costs one no-op write and retries exactly the failed part. The
+// pre-L3 code deleted the row unconditionally and a transient DB blip on the
+// mark permanently lost the flag.
+func TestReplayOne_FinalSuccessMarkFailKeepsCompensationRow(t *testing.T) {
+	db := &recordingDB{}
+	r := newTestReaper(db, &capturingWriter{})
+
+	entry := terminalEntry("req_mark_fail")
+	entry.FinalSuccessClaimed = true
+	payload := mustPayload(t, entry)
+
+	r.replayOne(context.Background(), claimRow{
+		id: 9, requestID: entry.RequestID, sessionID: *entry.GwSessionID,
+		payload: payload, attempts: 0,
+	})
+	joined := strings.Join(db.statements(), "\n")
+	if strings.Contains(joined, "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("mark failure must keep the compensation row, got delete: %v", db.statements())
+	}
+	if !strings.Contains(joined, "status = 'pending'") || !strings.Contains(joined, "next_retry_at") {
+		t.Fatalf("mark failure must requeue the row for retry, got %v", db.statements())
+	}
+
+	// 反向对照：同一个 claim 行，标记可落地（无 FinalSuccessClaimed 的载荷）
+	// 走正常的删除路径 —— 证明上面的保留不是「删除整个坏了」。
+	db2 := &recordingDB{}
+	r2 := newTestReaper(db2, &capturingWriter{})
+	entry2 := terminalEntry("req_mark_ok")
+	r2.replayOne(context.Background(), claimRow{
+		id: 10, requestID: entry2.RequestID, sessionID: *entry2.GwSessionID,
+		payload: mustPayload(t, entry2), attempts: 0,
+	})
+	if !strings.Contains(strings.Join(db2.statements(), "\n"), "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("unclaimed entry must still delete after replay, got %v", db2.statements())
+	}
+}
+
 func TestReplayOne_WriteFailRequeuesThenDead(t *testing.T) {
 	db := &recordingDB{}
 	writer := &capturingWriter{err: errors.New("simulated db down")}

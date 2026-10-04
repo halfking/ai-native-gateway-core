@@ -88,21 +88,32 @@ func TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface(t *testing.T) {
 
 	// ---- 前置探针：这套库能不能读 V1 源（v1BodyQuery 的形状）----
 	//
-	// 与 loader.go:115 逐字同形。跑不通就指名跳到 §9.184 那条会报红的门。
-	pre := `SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb) FROM (
-		SELECT request_id, ts, request_body, response_body, 0 AS source_priority
-		FROM public.request_logs_bodies_hot
-		UNION ALL
-		SELECT request_id, ts, request_body, response_body, 1 AS source_priority
-		FROM public.request_logs_bodies
-	) AS bodies WHERE request_id = $1 AND ts = $2 ORDER BY source_priority LIMIT 1`
-	if err := pool.QueryRow(ctx, pre, "zz-preflight-no-such-id", time.Now().UTC()).
-		Scan(new([]byte), new([]byte)); err != nil && !strings.Contains(err.Error(), "no rows") {
-		t.Skipf("这套库读不了 V1 body 存储（%v）⇒ ExecuteRepair 在其上不可能执行。"+
+	// 跑不通就指名跳到 §9.184 那条会报红的门。
+	//
+	// ⚠ 2026-10-04（审计 §9.196）：本探针原先逐字复制了**旧**形状
+	//（「子查询内 UNION ALL」），而那条形状在 bodies 分区是 Citus `columnar` 时
+	// 必然失败。**修好 loader.go 却留着旧探针，等于让修复被自己的测试遮住**
+	// ——这正是本探针存在的目的（它本该是 loader 的可执行前提）。
+	// 现改为**直接引用 loader 的两个常量**，从根上杜绝再次漂移：
+	// 探针与被检验对象**同源**，形状一改两边一起改。
+	//
+	// 判定口径也变了：两条腿都跑一遍，**两条都**因非「no rows」失败才算环境坏。
+	// 只跑 hot 腿会漏判「hot 通、母表不通」——而母表才是 columnar 的那一张。
+	preErrs := []string{}
+	for _, q := range []string{v1BodyQuery, v1BodyQueryParent} {
+		if err := pool.QueryRow(ctx, q, "zz-preflight-no-such-id", time.Now().UTC()).
+			Scan(new([]byte), new([]byte)); err != nil && !strings.Contains(err.Error(), "no rows") {
+			preErrs = append(preErrs, err.Error())
+		}
+	}
+	if len(preErrs) > 0 {
+		t.Skipf("这套库读不了 V1 body 存储（%s）⇒ ExecuteRepair 在其上不可能执行。"+
 			"\n  本门在此跳过**不是通过**。同一条件下"+
 			"\n  admin.TestSessionFamilyTwoSurfaceUnionShapeIsExecutable 会**报红**"+
 			"（§9.184），环境缺陷在那里持续可见。\n"+
-			"  参见审计 §9.184/§9.185：成因是该库的 catalog 状态，与 D25-a 同源。", err)
+			"  参见审计 §9.196：成因是 request_logs_bodies 的 RANGE 分区被 migration 765"+
+			"\n  转成了 Citus `columnar`，与 D25-a「重建库」的结论**相反**——重建不会让它复发。",
+			strings.Join(preErrs, " | "))
 	}
 
 	// 合成身份：绝不复用任何真实租户/会话，清理只按这两个值删。

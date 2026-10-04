@@ -333,6 +333,18 @@ type ProcessedRequest struct {
 	AgentType          string
 	VirtualClientID    string
 
+	// ClientProtocol is the client protocol vocabulary
+	// (openai-chat / anthropic-messages / gemini-generate, …) that telemetry
+	// infers from the request path. It travels with AgentName/AgentType as part
+	// of the same client-identity group.
+	//
+	// 2026-10-05 审计 §9.208: it was missing here even though the column exists
+	// in session_turns and the admin logs list projects it — so the field was
+	// always empty there. ⚠ NOT to be confused with ExecParams.ClientProtocol /
+	// IR's protocol vocabulary (the same Go field name in other packages means a
+	// different thing); this one is the persisted column.
+	ClientProtocol string
+
 	// 730 会话角色归因三列（R50 F15 写入方）：agent_role 取
 	// ResolveAgentRoleFromHeaders 的已解析值（""=未声明，SQL 侧落 'main'
 	// 列默认）；parent_session_id 来自 X-Gw-Parent-Session-Id；parent_task_id
@@ -655,6 +667,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		AgentName:          req.AgentName,
 		AgentType:          req.AgentType,
 		VirtualClientID:    req.VirtualClientID,
+		ClientProtocol:     req.ClientProtocol,
 	}
 
 	// S1b 灰度开关①：每轮正文同步进 session_turns（宽表路线第一步）。

@@ -224,6 +224,8 @@ export default {
     recentDaysSub: '近 {n} 天',
     statAvailableSub: '订阅 {a} · 信用 {b} · 充值 {c}',
     myAccountLink: '我的账户',
+    degradedFallback: '数据视图 {view} 尚未初始化，请先执行数据聚合迁移',
+    degradedViewLabel: '视图：{view}',
     chartModelTitle: '模型请求排行',
     chartModelHint: '点击柱子查看明细',
     chartModelEmpty: '暂无模型请求数据',

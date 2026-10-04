@@ -125,7 +125,16 @@ type TurnRecord struct {
 	Summary string
 
 	// DigestJSON is the versioned, administrator-safe digest envelope persisted
-	// with the turn. It is nil for rows that cannot produce a useful digest.
+	// with the turn.
+	//
+	// ⚠ 2026-10-05 修正一句**会误导人的**旧注释（审计 §9.208）：原文写
+	// 「It is nil for rows that cannot produce a useful digest」——**不对**。
+	// `AppendTurn` 把它按 `string(rec.DigestJSON)` 传给 `digest`（jsonb），
+	// 所以 nil 会变成 `''`，`''::jsonb` 直接 **22P02**。
+	// 生产侧不会踩到：唯一赋值点 `session_writer_v2.go` 的 digestJSON 来自
+	// `sessiondigest.Marshal`，出错即 return，永不为 nil。
+	// ⇒ **零值 TurnRecord 直接调 AppendTurn 会失败**，必须自带合法 JSON。
+	// （本轮就是照旧注释构造零值记录、被 22P02 打回来的。）
 	DigestJSON []byte
 
 	// V3.1 dispatch 9-stage (10 timestamps) queue timestamps (migration 513).
@@ -210,6 +219,12 @@ type TurnRecord struct {
 	AgentName          string
 	AgentType          string
 	VirtualClientID    string
+	// ClientProtocol is the client protocol vocabulary (openai-chat /
+	// anthropic-messages / gemini-generate, …). Added 2026-10-05 (audit
+	// §9.208): the column existed and the admin logs list projects it, but no
+	// writer ever populated it, so `session_turns.client_protocol` was
+	// permanently NULL. Travels with AgentName/AgentType.
+	ClientProtocol string
 }
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
@@ -406,7 +421,8 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				identity_hash, request_checksum, response_checksum, system_fingerprint,
 				origin_stage, origin_actor, client_ip, client_forwarded_for,
 				agent_name, agent_type, virtual_client_id,
-				request_status
+				request_status,
+				client_protocol
 			) SELECT
 				$1, $2, $3, $4, $5,
 				$6, $7, $8, $9,
@@ -434,7 +450,9 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				$87, $88, $89, $90,
 				$91, $92, $93, $94,
 				$95, $96, $97,
-				$98
+				$98,
+				-- §9.208: client_protocol appended last so no existing $N shifts.
+				$99
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM public.session_turns_with_current_month
@@ -473,6 +491,12 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		nilIfEmpty(rec.OriginStage), nilIfEmpty(rec.OriginActor), nilIfEmpty(rec.ClientIP), nilIfEmpty(rec.ClientForwardedFor),
 		nilIfEmpty(rec.AgentName), nilIfEmpty(rec.AgentType), nilIfEmpty(rec.VirtualClientID),
 		nilIfEmpty(rec.RequestStatus),
+		// $99 — appended at the END on purpose (audit §9.208). The parameter
+		// list is positional, so inserting `client_protocol` next to its
+		// siblings would renumber every parameter after it; a missed one is
+		// exactly the "mismatched param and argument count" incident this
+		// INSERT is guarded against (TestRequestLogInsertParamCount).
+		nilIfEmpty(rec.ClientProtocol),
 	)
 
 	if err != nil {

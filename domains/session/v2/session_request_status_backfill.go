@@ -23,8 +23,9 @@
 //	所以 join 是 1:1。**不要**再加 ts 之类的冗余条件——那只会让本可命中的行
 //	落空。实测 1,520,630 / 1,688,629（90.04%）行在 request_logs 里有孪生行。
 //
-// 剩下 ~168,106 行没有 v1 孪生（v1 停写窗口的产物），结构性无法回填，只能靠
-// 前向写入路径覆盖。本 job 不试图为它们编造标签——把 NULL 猜成 'success' 比
+// 剩下 ~167,999 行没有 v1 孪生（v1 停写窗口的产物；R41 审计 R-11 订正：
+// 早期注释写 168,106，与精确值差 107），结构性无法回填，只能靠前向写入
+// 路径覆盖。本 job 不试图为它们编造标签——把 NULL 猜成 'success' 比
 // 留着 NULL 更危险（NULL 可被审计识别为「未知」，错值不可）。
 //
 // 正确性模型：
@@ -392,6 +393,7 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 	// 0 (= release-gate PASS) instead of failing loudly.
 	tx, err := b.db.Begin(ctx)
 	if err != nil {
+		requestStatusBackfillTotal.WithLabelValues("error").Inc()
 		slog.Warn("session_turns request_status backfill: remaining count begin failed",
 			"error", err)
 		requestStatusBackfillRemaining.Set(-1)

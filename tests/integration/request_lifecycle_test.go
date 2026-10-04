@@ -265,9 +265,23 @@ func TestRequestBodies_Storage(t *testing.T) {
 
 	// Write both the main WAL row and body row through the production logger path.
 	reqID := "test-body-" + time.Now().Format("20060102150405.000000")
+	// R42 修正：t.Cleanup 晚于 defer cancel()/pool.Close() 执行，原写法的
+	// ctx 与 pool 双死、静默漏行——独立连接 + 失败变红（e83fb6211 同形态）。
 	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM request_wal_bodies WHERE request_id = $1`, reqID)
-		_, _ = pool.Exec(ctx, `DELETE FROM request_wal_hot WHERE request_id = $1`, reqID)
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		conn, cerr := pgx.Connect(cctx, pgURL)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to delete %s: %v", reqID, cerr)
+			return
+		}
+		defer conn.Close(cctx)
+		if _, derr := conn.Exec(cctx, `DELETE FROM request_wal_bodies WHERE request_id = $1`, reqID); derr != nil {
+			t.Errorf("cleanup: delete request_wal_bodies: %v", derr)
+		}
+		if _, derr := conn.Exec(cctx, `DELETE FROM request_wal_hot WHERE request_id = $1`, reqID); derr != nil {
+			t.Errorf("cleanup: delete request_wal_hot: %v", derr)
+		}
 	})
 	if err := rl.CreateInitial(ctx, &telemetry.InitialRequest{
 		RequestID:   reqID,

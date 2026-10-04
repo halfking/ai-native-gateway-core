@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -171,6 +172,10 @@ func TestRepointValueFidelity(t *testing.T) {
 		sessLegClientMM, sessLegOutboundMM int64
 		sessLegCredMM, sessLegSuccessMM    int64
 		controlClientMM                    int64
+		controlClientMMSessLeg             int64
+		v1LegClientNull                    int64
+		viewLegClientNull                  int64
+		bothLegClientNonNull               int64
 	)
 	if err := pool.QueryRow(ctx, `
 		WITH v1 AS (
@@ -202,13 +207,29 @@ func TestRepointValueFidelity(t *testing.T) {
 		    count(*) FILTER (WHERE has_twin AND matched IS NOT NULL AND v_outbound IS DISTINCT FROM outbound_model),
 		    count(*) FILTER (WHERE has_twin AND matched IS NOT NULL AND v_cred IS DISTINCT FROM credential_id),
 		    count(*) FILTER (WHERE has_twin AND matched IS NOT NULL AND v_success IS DISTINCT FROM success),
-		    count(*) FILTER (WHERE v_client IS DISTINCT FROM outbound_model)
+		    count(*) FILTER (WHERE v_client IS DISTINCT FROM outbound_model),
+		    -- ⚠ The positive control above is measured over the **whole** window,
+		    -- so it says nothing about the session leg in particular. A comparator
+		    -- that is live on the v1 leg and dead on the session leg would pass it
+		    -- and then report every session-leg divergence count as 0. This is the
+		    -- same leg as the counts above, so it is the control that actually
+		    -- guards them.
+		    count(*) FILTER (WHERE has_twin AND v_client IS DISTINCT FROM outbound_model),
+		    -- ⚠ IS DISTINCT FROM treats NULL as equal to NULL, so a divergence
+		    -- count of 0 is also what "both sides are NULL" looks like. These three
+		    -- make the difference visible: a leg whose compared values are all NULL
+		    -- has **not** been shown to agree, it has been shown to be blank.
+		    count(*) FILTER (WHERE has_twin AND client_model IS NULL),
+		    count(*) FILTER (WHERE has_twin AND v_client IS NULL),
+		    count(*) FILTER (WHERE has_twin AND client_model IS NOT NULL AND v_client IS NOT NULL)
 		FROM j`, window).Scan(
 		&v1Rows, &found, &absent,
 		&v1LegRows, &sessLegRows,
 		&v1LegClientMM, &v1LegOutboundMM, &v1LegCredMM, &v1LegSuccessMM,
 		&sessLegClientMM, &sessLegOutboundMM, &sessLegCredMM, &sessLegSuccessMM,
 		&controlClientMM,
+		&controlClientMMSessLeg,
+		&v1LegClientNull, &viewLegClientNull, &bothLegClientNonNull,
 	); err != nil {
 		t.Fatalf("value fidelity: %v", err)
 	}
@@ -234,6 +255,22 @@ func TestRepointValueFidelity(t *testing.T) {
 			"the zero counts above mean nothing")
 	}
 	t.Logf("positive control (client_model vs outbound_model) = %d divergences — detector works", controlClientMM)
+
+	// The same control **restricted to the session leg**. Without it, a
+	// comparator that works on the v1 leg and is dead on the session leg would
+	// pass the check above and then report every session-leg count as 0 — which
+	// is indistinguishable from "the session leg agrees". The whole floor
+	// mechanism below lives or dies on that distinction.
+	if controlClientMMSessLeg == 0 {
+		t.Fatalf("POSITIVE CONTROL FAILED ON THE SESSION LEG: on the %d twin rows, comparing "+
+			"client_model against outbound_model reported 0 divergences, so the session-leg "+
+			"counts above (%d/%d/%d/%d) are the absence of a measurement, not agreement",
+			sessLegRows, sessLegClientMM, sessLegOutboundMM, sessLegCredMM, sessLegSuccessMM)
+	}
+	t.Logf("positive control, session leg only = %d divergences — session-leg detector works", controlClientMMSessLeg)
+	t.Logf("session-leg client_model value profile: v1 side NULL=%d, view side NULL=%d, both non-NULL=%d "+
+		"(IS DISTINCT FROM counts NULL==NULL as agreement, so this profile is what makes a 0 above mean something)",
+		v1LegClientNull, viewLegClientNull, bothLegClientNonNull)
 
 	// ---- coverage ---------------------------------------------------------
 	if absent != 0 {
@@ -298,9 +335,42 @@ func TestRepointValueFidelity(t *testing.T) {
 		t.Logf("session leg %-14s diverges %d/%d = %.1f%% (floor %.0f%%)",
 			d.Column, n, sessLegRows, rate*100, d.MinRate*100)
 		if rate < d.MinRate {
-			t.Errorf("session leg: %s diverges on %.1f%% of twin rows, registered floor is %.0f%% — "+
-				"either the normalisation was fixed (drop the registration) or it regressed",
-				d.Column, rate*100, d.MinRate*100)
+			// ⚠ The original message here was "either the normalisation was fixed
+			// (drop the registration) or it regressed" — which names two opposite
+			// conclusions and hands the reader nothing to choose between them.
+			// Three facts are now in scope that make the choice decidable, and the
+			// message states all three instead of asserting a cause:
+			//
+			//	 - the session-leg positive control (logged above) proves the
+			//	  comparator is live on exactly these rows, so a 0 is not a
+			//	  dead measurement;
+			//	 - the value profile (also logged above) rules out the other way a
+			//	  0 arises — both sides being NULL, which IS DISTINCT FROM calls
+			//	  agreement. ⚠ That profile is measured for **client_model only**,
+			//	  so it is cited only when client_model is the column that failed;
+			//	  quoting it for another column would be a false citation, which in
+			//	  a gate whose whole job is to be trustworthy is worse than saying
+			//	  nothing.
+			//	 - ⚠ what none of this can settle is whether the same holds on
+			//	  **production**. This is a 24-hour window on whichever database
+			//	  TEST_DATABASE_URL points at, and a floor registered against a
+			//	  production defect claim is not discharged by a local run.
+			//
+			// So the gate stays red until a human decides, and the decision it is
+			// asking for is "is this claim still true where it was made?" — not
+			// "did a number move?".
+			profile := ""
+			if d.Column == "client_model" {
+				profile = fmt.Sprintf(", and client_model is non-NULL on both sides for %d of them, "+
+					"so this is real agreement and not a blank comparison", bothLegClientNonNull)
+			}
+			t.Errorf("session leg: %s diverges on %.1f%% of %d twin rows, below its registered "+
+				"floor of %.0f%%. The measurement is sound — the session-leg positive control "+
+				"reported %d divergences on these same rows%s. "+
+				"That discharges the claim **on this database** and no more: this is a %s window, "+
+				"and the floor was registered against a production claim. Retiring it is a "+
+				"deliberate call about production, not a consequence of this run.",
+				d.Column, rate*100, sessLegRows, d.MinRate*100, controlClientMMSessLeg, profile, window)
 		}
 	}
 	for col, n := range measured {

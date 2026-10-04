@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -452,7 +453,30 @@ func TestRequestFailureThrottlePredicateSQL(t *testing.T) {
 	)`); err != nil {
 		t.Fatalf("create node_probe_state: %v", err)
 	}
-	t.Cleanup(func() { pool.Exec(context.Background(), `DROP TABLE IF EXISTS node_probe_state`) })
+	// t.Cleanup 晚于 defer pool.Close 执行（e83fb6211 同形态）：清理必须走
+	// 独立连接并失败变红，否则在已关池上静默 no-op，夹具表遗留在一次性库。
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		conn, cerr := pgx.Connect(cctx, url)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to drop node_probe_state: %v", cerr)
+			return
+		}
+		defer conn.Close(cctx)
+		if _, derr := conn.Exec(cctx, `DROP TABLE IF EXISTS node_probe_state`); derr != nil {
+			t.Errorf("cleanup: drop node_probe_state: %v", derr)
+			return
+		}
+		var left bool
+		if qerr := conn.QueryRow(cctx, `SELECT to_regclass('node_probe_state') IS NOT NULL`).Scan(&left); qerr != nil {
+			t.Errorf("cleanup: verify drop: %v", qerr)
+			return
+		}
+		if left {
+			t.Errorf("cleanup: node_probe_state still exists after DROP")
+		}
+	})
 
 	fixtures := []struct {
 		model    string
