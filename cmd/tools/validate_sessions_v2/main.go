@@ -237,22 +237,37 @@ func validateBatch(
 		log.Printf("FATAL: cannot measure the v1 data window: %v", rangeErr)
 		return 1
 	}
+	// §R44/移交.1 — measure the end boundary before trusting the window.
+	// -end-date is applied as that day's 00:00:00Z and the load is half-open
+	// (ts < end), so the rows inside the day the operator named are invisible
+	// to the report. Probe the source for family rows in [end, end-of-day) and
+	// fail closed when the window silently drops them. The probe runs after the
+	// candidate load and reuses the loader's connection and family filters.
+	endDayHasRows := false
+	if !endDate.IsZero() {
+		var probeErr error
+		endDayHasRows, probeErr = loader.HasV1RowsInRange(ctx, tenantID, endDate, endDayCutoff(endDate))
+		if probeErr != nil {
+			log.Printf("FATAL: cannot probe the end boundary of the validation window: %v", probeErr)
+			return 1
+		}
+	}
 	requested := startDate
 	if requested.IsZero() {
 		requested = v1range.MinTS
 	}
-	truncated, why := WindowExceedsV1Data(startDate, endDate, v1range)
+	truncated, why := WindowExceedsV1Data(startDate, endDate, v1range, endDayHasRows)
 	log.Printf("v1 data actually present for this tenant: %d rows spanning %s .. %s",
 		v1range.Rows, v1range.MinTS.Format(time.RFC3339), v1range.MaxTS.Format(time.RFC3339))
 	log.Printf("validation window requested:               %s .. %s",
 		requested.Format(time.RFC3339), endDate.Format(time.RFC3339))
 	if truncated {
-		log.Printf("FATAL: the requested window is wider than the v1 data that exists (%s). "+
+		log.Printf("FATAL: refusing to validate this window: %s. "+
 			"request_logs is not a permanent store — on 252 the monthly "+
 			"pg17-drop-old-columnar-partitions.sh drops partitions older than 2 months, "+
-			"while session_turns is on no rotation list. Re-run with a window inside the span "+
-			"above; a report over a truncated window is indistinguishable from one over the real "+
-			"window, and it is exactly the report that would be used to justify retiring the "+
+			"while session_turns is on no rotation list. A parity report over a window that "+
+			"does not match the data that exists is indistinguishable from one that does, "+
+			"and it is exactly the report that would be used to justify retiring the "+
 			"source table.", why)
 		return 1
 	}
