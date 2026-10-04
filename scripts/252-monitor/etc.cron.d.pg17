@@ -9,12 +9,22 @@
 #        去掉后 5 条任务都会在缺环境下失败。
 #   改本文件后，务必 diff 服务器现网版本复核（见 README「cron 同步」一节）。
 #
+#   2026-10-04 复核发现第三处漂移，同样会直接删掉生产任务：
+#     3) 本模板缺 `17 * * * * ursm-snapshot-health.sh`（每小时快照写入健康巡检，
+#        服务器上一直在跑，带 2026-10-04 的注释）。按上面的整文件覆盖契约，
+#        **下一次部署就会把这条每小时巡检从生产删掉**。已回填。
+#   ⇒ 这不是"模板忘了更新"这么轻：契约是**整文件覆盖**，漏一条＝删一条。
+#     门：scripts/ursmcheck/cron_registration_test.go 断言本目录下每个
+#     巡检脚本都有对应 cron 行（473 同族：建了却忘了接线）。
+#
 # 触发频率（运行成本可控）：
 #   - pg17-disk-watch.sh    每 10 分钟  采样 + 告警推送
 #   - pg17-emergency.sh     每 15 分钟  disk>=90% 自动 L2
 #   - pg17-vacuum-bloat.sh  周日 03:15  VACUUM FULL 防患于未然
 #   - pg17-index-bloat.sh   周日 04:40  只读巡检 + 超阈值告警（--report）
 #   - pg17-drop-columnar.sh 每月 1 号 02:30  DROP 老分区 + VACUUM FULL 元数据
+#   - ursm-snapshot-health.sh   每小时 :17  快照写入健康三态判据
+#   - ursm-snapshot-payload-bloat.sh 每小时 :23  payload 膨胀（818 收益的回归防护）
 #
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -41,3 +51,18 @@ MAILTO=""
 
 # === 预防性空表清理（2026-09-06 新增）===
 0 2 * * * root llmgw-source /opt/scripts/pg17-proactive-empty-table-cleanup.sh >/dev/null 2>&1
+
+# === 每小时 URSM 快照写入健康巡检（只读三态判据，2026-10-04 新增）===
+# 错开 17 分：避开整点、避开 */10 的 disk-watch 与 */15 的 emergency-cleanup。
+# ★ 不能写成 >/dev/null 2>&1：脚本的告警走 stderr，退出码 0/1/2/3 分级
+#   （1=降级 2=真空洞 3=量具不可用），全丢进 /dev/null 等于没巡检。
+# 保留最近 7 天巡检日志（每小时约 2 KB，可忽略）。
+17 * * * * root llmgw-source /opt/scripts/ursm-snapshot-health.sh 2>&1 | tee -a /var/log/ursm-snapshot-health.log; find /var/log -maxdepth 1 -name "ursm-snapshot-health.log.*" -mtime +7 -delete
+
+# === 每小时 URSM payload 膨胀巡检（818 收益的回归防护，2026-10-04 新增）===
+# 错开 23 分：与上面的 :17 分开，且仍避开 :00/:10/:15 那几个高频点。
+# ★ 这道巡检必须放在**二进制之外**：一旦回滚到 pre-818 的旧二进制，跑的就是
+#   那个不带检查的旧进程，把判据写进新二进制它自己永远不会被触发。
+#   818 当初就是无声发生的——06:50:48 上线，直到逐 5 分钟统计 payload 才被发现。
+# ★ 退出码同样分级（0 健康 / 1 膨胀 / 3 没有结论），所以同样不能 >/dev/null。
+23 * * * * root llmgw-source /opt/scripts/ursm-snapshot-payload-bloat.sh 2>&1 | tee -a /var/log/ursm-snapshot-payload-bloat.log; find /var/log -maxdepth 1 -name "ursm-snapshot-payload-bloat.log.*" -mtime +7 -delete
