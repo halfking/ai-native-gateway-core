@@ -1966,3 +1966,94 @@ v1 臂 **0/46,398** vs session 臂 **4,796/31,223** ⇒ 今天就只由 session 
   正确修法是让 `session_turns` 侧也落 `work_type`（写入侧改造）。
   是否把「session 族补齐 `work_type` 写入」列为 S4 的**硬前置**，
   而不是把本条的降级接受掉？属主决定。
+
+---
+
+## D28：`is_final_success` 在 session 族**从未被写过**——读迁移已造成前后不一致，停写会让它变永久
+
+### 现象（真库 7 天实测 + 代码定位，非推断）
+
+| 源 | 行数 | `is_final_success` 非空 |
+|---|---|---|
+| `session_turns` ∪ `session_turns_hot` | 31,274 | **0** |
+| `request_logs` | 73,264 | **9,614** |
+
+`admin/session_online.go:446` 的 `querySessionTimeline` 直读 session 族原生表
+（`db.SessionFamilyTurnsForSessionSQL()`）并取 `COALESCE(rl.is_final_success, FALSE)`
+⇒ **恒为 FALSE**。
+
+**用户可见后果**（`deriveTurnOutcome`, :284 逐分支走过）：
+
+- `outcome: "final_success"` **永不出现**；
+- `sessionHasFinalSuccess` 恒 false ⇒ 每个成功轮次都判成 `outcome: "success"`，
+  `superseded_success` 也**永不出现**。
+
+⇒ 自读迁移到 session 原生源之后，`GET /api/admin/sessions/{id}/timeline`
+**再也没标出过最终成功轮次**。同文件 :425 的迁移注释写「修正展示语义，不是丢数据」，
+**这一项确实丢了**。
+
+### 根因：写侧从来没有 session 族的等价写方
+
+- **读路是好的**：`TestSessionTimelineFinalSuccessReadPathIsSound` 在一次性事务里
+  种 `TRUE` / `FALSE` 两行、用**生产 SQL** 读回、双向都对
+  ⇒ 排除「710 投影坏了」这个解释（710 把 `is_final_success` 登记为直映 `t.is_final_success`，
+  是**忠实**的）。
+- **写侧**：`claimSessionFinalSuccess`
+  (`domains/hooks/observability/telemetry/client.go:2711` 起) 只
+  `UPDATE request_logs_hot`（注释说明选 hot 的原因：Citus Columnar 不支持
+  UPDATE/CTID 扫描）。**session 族无等价写方**；
+  `turn_writer.go:462` 虽写了 `boolOrNil(rec.IsFinalSuccess)`，
+  但 `rec.IsFinalSuccess` 从未被置真。
+
+⚠ 这一条是**代码事实**，不依赖任何库——**可直接外推到生产。**
+
+### 为什么它比「少一列」严重：停写不修它，只让它变永久
+
+v1 的标记来自 v1 的写方。**一旦 S4 停写，连 v1 侧那 9,614 个标记也消失**，
+而 session 族补不上 ⇒ `final_success` 这个语义在系统里**彻底不可表示**。
+⇒ 这不是「停写的一个副作用」，是**停写的一个前置条件**。
+
+### 已交付（不含任何行为改动）
+
+- `admin/s4_session_family_unservable_realdb_test.go`（`s4audit` tag）：
+  把 `db.RetirementUnservableColumns` 变成会红的 S4 硬前置。
+  真库 24h 实测红：`client_protocol`(s=0/v=38)、`is_final_success`(s=0/v=6329)、
+  `work_type`(s=0/v=3)。**零样本时指名 Skip，绝不因 `0==0` 假绿。**
+- `admin/session_final_success_readpath_realdb_test.go`（常跑）：读路阳性对照，
+  双向验证 + 全程单事务 ROLLBACK（结构上不可能污染共享库）。
+- 变异：M-A「两侧都空」⇒ **转绿**（证明非结构必红）；M-B「最小样本量抬到 1000 万」
+  ⇒ **指名 SKIP**（护栏承重）；读路门反断言 ⇒ 双向各报一条红。
+
+### 请拍板
+
+- **D28-a**：给 `session_turns` 补 `is_final_success` 写方，怎么做？
+  * 选项 ①：把 `claimSessionFinalSuccess` 抽成**双写**（v1 hot + session_turns），
+    认领语义（含并发唯一性、superseded 规则）必须**两侧同时**保证，
+    现有 `uq_request_logs_hot_final_success_session` 只保护 v1 侧
+    ⇒ 需要 session 侧的唯一性约束，否则会同时标出两个 final_success。
+  * 选项 ②：只在 session 侧认领，v1 侧标记改为**读时派生**（不写库）
+    ——改动面更大但避免双写不一致。
+  * 选项 ③：**接受现状**，把时间线端点的 `final_success`/`superseded_success`
+    两个 outcome 显式下线（返回 `success` + 一个说明字段），
+    并把 `is_final_success` 从 `RetirementUnservableColumns` 移到
+    「已知不供给、无人消费」清单。
+  * 我的建议：**①**，但**必须连带 session 侧唯一性约束**一起做；
+    ③ 是唯一不需要改写侧的选项，代价是承认能力回退。
+- **D28-b**：历史数据怎么办？`request_logs` 里已有 9,614 个标记（7 天），
+  而 session 族 0。**要不要回填**？
+  * 我的建议：**不要单独做回填**。回填是一次性动作，而 D28-a 的写方是长期机制；
+    先把写方做对，再决定是否需要一次性回填（且回填会撞上「同一会话多轮都被标」的
+    择一问题，与 v1 侧 `superseded` 规则必须一致）。
+- **D28-c**：`client_protocol`（v1 24h 有 38 行）与 `work_type`（3 行）同在这张
+  unservable 清单里。**它们是否也要补 session 族供给**？
+  * `client_protocol` 这一条**已核实**（本轮 grep 全仓非测试代码）：
+    **没有任何 SELECT 读它**。全部出现都是写侧
+    （`telemetry/context_attrs.go:162` 写进 entry、`:192` 写进列、
+    若干 executors 塞进 log fields）加 710 的投影
+    `t.client_protocol::character varying(50)`。
+    ⇒ 它是**纯写侧列**：v1 侧 24h 有 38 行，**没有任何读方消费**。
+  * 我的建议：`work_type` 见 D27-c（客户端头驱动，量大、且影响一个 API 维度）；
+    `client_protocol` 建议与 ③ 同处置——**移出 unservable 清单并写明「无读方」**，
+    **而不是为 38 行去改 schema**。
+    ⚠ 顺带一个二阶事实：把一个**无人读取**的列留在「会断的列」清单里，
+    会让这张风险清单虚高。D28-c 的核实方式（grep SELECT）可以推广到整张清单。

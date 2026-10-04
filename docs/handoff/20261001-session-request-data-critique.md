@@ -9056,3 +9056,112 @@ M3 就是在未评估清单归零**之后**跑的，直接证明修复有效。
 **D27-c**（若生产确认由客户端头驱动，是否把「session 族补齐 `work_type` 写入」列为 S4 硬前置）。
 沿用未决：**D26-a / D26-b / D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c /
 D19-a-3-1 / D19-a-3-2 / D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
+
+---
+
+## §70.46 S4 前置条件一达成、前置条件二转红，并挖出一个**今天就已存在**的读迁移不一致
+
+### ① 前置条件一（逐点评估）**已达成且机器可验**
+
+`go test -tags s4audit ./admin/ -run 'TestRequestLogsStopWriteNothingLeftUnclassified|TestRequestLogsControlPlaneNothingLeftUnreviewed'`
+⇒ **两道硬门全 PASS**（读端 104/104 + 控制面轴）。
+对外数字「静默档 **70** 条」仍成立（本轮新增的 1 条登记落在被显式排除的档上）。
+
+### ② 前置条件二**是红的**：`db.RetirementUnservableColumns` 在 session 臂 0 供给
+
+真库 24h：视图 session 臂 3,449 行 / v1 臂 6,329 行；
+`client_protocol` s=0/v=38、**`is_final_success` s=0/v=6,329**、`work_type` s=0/v=3。
+
+7 天全量逐列普查（118 投影列）：session 臂 0 供给 24 列，其中 **20 列 v1 侧也 0
+（无信号）**、3 列 v1 侧有值（+ `id`/`test_col` 结构缺口）。
+
+⚠ **框架别读反**：视图按 `request_id` 去重（v1 臂带 `NOT EXISTS(session_turns*)`），
+**业务行的值今天就来自 session 臂** ⇒「session 臂不供某列」是**既有事实，不是停写回归**；
+停写回归是**行**的消失。
+
+### ③ 独立复核：与 §9.161 既有结论**逐列吻合**
+
+`db/retirement_column_exposure.go`（今天写的）已登记同样三列
+⇒ **我差点把 §9.161 重做一遍**。这次重复反而证明那张表**可被独立测量复现**
+（它不是注释，是可被推翻的事实）。
+
+### ④ 真正的发现：`is_final_success` 的**读迁移前后不一致**
+
+| 源 | 行数 | 非空 |
+|---|---|---|
+| `session_turns` ∪ `session_turns_hot` | 31,274 | **0** |
+| `request_logs` | 73,264 | **9,614** |
+
+`admin/session_online.go:446` 直读 session 族原生表取
+`COALESCE(rl.is_final_success, FALSE)` ⇒ **恒 FALSE** ⇒
+`deriveTurnOutcome` 里 `final_success` 与 `superseded_success` **永不出现**。
+⇒ 自读迁移之后，`GET /api/admin/sessions/{id}/timeline` **再没标出过最终成功轮次**。
+
+**根因是写侧**：`claimSessionFinalSuccess`
+(`domains/hooks/observability/telemetry/client.go:2711` 起) 只 `UPDATE request_logs_hot`，
+**session 族无等价写方**。读路已由新门证明是好的（排除投影缺陷）。
+⚠ 这是**代码事实**，不依赖任何库，**可直接外推到生产**。
+
+**停写不修它，只让它变永久**：v1 停写后连 v1 侧那 9,614 个标记也没了，
+而 session 族补不上 ⇒ `final_success` 在系统里**彻底不可表示**。
+
+### ⑤ 顺带核实：`client_protocol` **全仓无人读取**
+
+grep 全仓非测试代码：全部出现都是**写侧**（`telemetry/context_attrs.go:162/:192`、
+若干 executors 的 log fields）+ 710 投影 `t.client_protocol::character varying(50)`，
+**没有任何 SELECT 读它**。⇒ 它在 unservable 清单里但**不会让任何读方断掉**。
+⚠ 二阶事实：无人消费的列留在「会断的列」清单里会让风险清单虚高。
+
+### ⑥ 我这一轮自己犯的错
+
+1. **把逐列测量的框架起错名字**（「停写即消失」）⇒ 差一步发出方向相反的结论。
+2. **变异「没打红」的第一反应必须是「变异没做」**。读路门连输两次缩进不匹配；
+   第二次 Python `assert` 把「锚点没找到」报出来才去看缩进
+   ⇒ **替换之前先断言锚点存在**。
+3. **`validIdent` 分支顺序让首位数字通过**（`"1abc"` 过关）
+   ⇒ **判据的分支顺序本身就是判据的一部分**。
+4. **差点重做 §9.161** ⇒ 先 grep 既有机制再动手。
+
+### ⑦ 门与变异
+
+| 文件 | tag | 基线 |
+|---|---|---|
+| `admin/session_final_success_readpath_realdb_test.go` | 无（常跑） | **PASS** |
+| `admin/s4_session_family_unservable_realdb_test.go` | `s4audit` | **FAIL**（红因精确） |
+
+读路门：一次性事务种 `TRUE`/`FALSE` 双向、用**生产 SQL** 读回、全程 ROLLBACK
+（结构上不可能污染库；已核探针库 `session_turns` 仍 0 行）。
+变异：反断言 ⇒ **双向各报一条红**（证明投影没写死任一值）。
+S4 门：**M-A**「两侧都空」⇒ **转绿**（非结构必红）；**M-B** 最小样本量抬到 1000 万
+⇒ **指名 SKIP**（零样本护栏承重）。护栏已在无数据的探针库**实地生效**。
+
+### ⑧ 回归与边界
+
+`admin` 回归 FAIL 名单**与基线逐名相同**（3 条），**本轮零新增**；`go build ./...` OK；
+gofmt 干净；U+FFFD 三基线守住（4/0/0）。
+**未改任何产品代码/配置/视图/迁移**；**未连接生产**。
+补 `session_turns.is_final_success` 写方 = 改生产行为（决策表 **D28**），本轮未做。
+
+### ⑨ 待拍板
+
+**D28-a**（双写 / 只在 session 侧认领 / 接受现状并下线两个 outcome——建议 ①，
+但**必须连带 session 侧唯一性约束**，否则会同时标出两个 final_success）/
+**D28-b**（历史回填：建议**不单独做**，先做对写方再定）/
+**D28-c**（`work_type` 见 D27-c；`client_protocol` 已核实无人读，建议移出清单并写明理由）。
+沿用未决：**D27-a / D27-b / D27-c / D26-a / D26-b / D25-a / D25-b / D25-c / D24-d-3 /
+D24 / D24-c / D19-a-3-1 / D19-a-3-2 / D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b /
+D20-a / D20-c**。
+
+### ⑩ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`（当前 `8a7e90c94`）；
+   `git worktree add --detach /tmp/<新> origin/main`。
+2. 跑 `go test -tags s4audit ./admin/ -run 'TestRequestLogsStopWriteNothingLeftUnclassified|TestRequestLogsControlPlaneNothingLeftUnreviewed|TestS4SessionFamilyCanServeUnservableColumns'`
+   ⇒ 前两条应绿、第三条应红（真库）。**若第三条变绿，先怀疑 `llm_gateway` 是否被重建过**。
+3. 回归基线：`admin` 带真库 FAIL = 3（`TestReportRollup_HTTPContract` /
+   `TestDimensionNamesQueriesRunAgainstRealSchema` / `TestProjectTasksSkipsNullTaskID`），
+   **在同一环境 before/after 比对**，只看差集。
+4. D28 的三个选项都需要属主拍板；**在拍板前不要动写侧**。
+5. 若属主要 D28-c 推广：把「grep SELECT 侧引用」跑遍
+   `db.RetirementUnservableColumns` + `RetirementDegradedColumns`，
+   找出**没有读方消费**的列，单独立一张「写侧但无人读」清单。
