@@ -7,6 +7,7 @@ package admin
 
 import (
 	"context"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"log/slog"
 	"net/http"
 	"time"
@@ -43,10 +44,10 @@ type hourBucket struct {
 // was never populated). The ::text restores the intended chars/4 estimate
 // for non-envelope rows.
 // ⚠ **2026-10-05：这里是 `var` 不是 `const`**（§9.232）。
-// bodies 腿改走 `sessionBodiesFromSQL()` 之后，这个 SQL 不再是编译期常量
+// bodies 腿改走 `dbpkg.SessionBodiesSourceSQL()` 之后，这个 SQL 不再是编译期常量
 // ——**函数调用不能出现在 const 声明里**（编译器报 “is not constant”）。
 // 值本身没变（默认臂返回的字面量与原来逐字相同），但**它从此每次读都是运行时求值**。
-// ⚠ 若有人后来把 `sessionBodiesFromSQL()` 改成一个 `const` 表达式
+// ⚠ 若有人后来把 `dbpkg.SessionBodiesSourceSQL()` 改成一个 `const` 表达式
 // （例如把两臂写成常量字符串 + 常量布尔量的三元），这处**可以**改回 const；
 // 在那之前不要试图「优化」成常量。
 var compressionStatsEstimatedOrigSQL = `
@@ -59,7 +60,7 @@ var compressionStatsEstimatedOrigSQL = `
 				END / 4.0)), 0)::bigint,
 				COALESCE(SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END), 0)::bigint
 		FROM request_logs_with_current_month rl
-		LEFT JOIN ` + sessionBodiesFromSQL() + `
+		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + `
 		  ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`
@@ -148,7 +149,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			SUM(COALESCE(rl.outbound_token_est, 0))::bigint AS total_tok_after,
 			SUM(CASE WHEN rb.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
 		FROM request_logs_with_current_month rl
-		LEFT JOIN `+sessionBodiesFromSQL()+` ON rb.request_id = rl.request_id
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY strategy
@@ -269,7 +270,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			COUNT(*) AS total,
 			COUNT(rb.outbound_body)::int AS compressed
 		FROM request_logs_with_current_month rl
-		LEFT JOIN `+sessionBodiesFromSQL()+` ON rb.request_id = rl.request_id
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY bucket

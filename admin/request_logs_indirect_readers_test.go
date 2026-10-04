@@ -43,6 +43,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -80,20 +81,25 @@ type indirectReader struct {
 }
 
 var indirectRequestLogsReaders = map[string]indirectReader{
-	"admin/session_bodies_source.go": {
+	"db/request_logs_view_schema.go": {
 		Family:     familyBodies,
 		ResolvesTo: "request_logs_bodies",
-		SwitchFunc: "sessionBodiesFromSQL",
-		Reason: "会话导出/对比的 bodies 腿灰度开关（审计 §9.230）。" +
-			"`sessionBodiesFromSQL()` 有两臂：默认返回字面量 " +
-			"`request_logs_bodies_with_current_month rb`（v1 bodies 视图，" +
-			"挂在 request_logs_bodies 的 monthly 视图上），" +
-			"开关打开才返回 `db.SessionFamilyBodiesSourceSQL() + \" rb\"`（会话族）。" +
-			"⇒ **默认支是 v1**，与 bg/auto_route_settle_sql.go 同形：条件性读 v1。" +
-			"ResolvesTo 写基表名 request_logs_bodies 而不是视图名，" +
-			"因为本表用 v1DirectTables 核对，而那个集合只收基表。" +
-			"消费点是 admin/session_export.go:227 与 admin/session_compare.go:903 —— " +
-			"它们源码里**不再有** v1 关系名字面量，所以也不在 requestLogsReadInventory 里。",
+		SwitchFunc: "SessionBodiesSourceSQL",
+		Reason: "★ bodies 读端灰度切换层的**唯一**所在地（§9.233）。" +
+			"`SessionBodiesSourceSQL()` 有两臂：默认返回字面量 " +
+			"`request_logs_bodies_with_current_month`（v1 bodies 视图），" +
+			"开关打开才返回 `SessionFamilyBodiesSourceSQL()`（会话族 hot ∪ 父表）。" +
+			"⇒ **默认支是 v1**，与 bg/auto_route_settle_sql.go 同形：条件性读 v1。\n" +
+			"⚠ **本条目在 §9.230→§9.233 之间搬过两次家**，两次都是同一个原因：" +
+			"切换层住错包，前一批消费点能迁、后一批迁不了。" +
+			"  ① §9.230 住在 admin/session_bodies_source.go（当时只有 2 个消费点，都在 admin 包）；\n" +
+			"  ② §9.232 迁了 7 个 admin 包读方，仍够用；\n" +
+			"  ③ §9.233 要迁 domains/ 与 bg/ 的 4 个 ⇒ 跨包看不见未导出符号，" +
+			"**实测把它们从 bodies 总体里静默挤掉了 4 个**（27→23）——" +
+			"而那道门本来就故意红，不会有任何信号。\n" +
+			"⇒ 搬到 db（与 SessionFamilyTurnsSourceSQL 等同族 helper 同处）。\n" +
+			"消费点共 14 个（admin 11 + domains/sessionforensics 1 + domains/sessionsummary 2 + bg 1），" +
+			"由 indirectSourceConsumers 机器识别。",
 	},
 	"bg/auto_route_settle_sql.go": {
 		Family:     familyBase,
@@ -210,30 +216,72 @@ func productionGoFiles(t *testing.T, root string) []string {
 // 定义所在的那个文件自己有 `func fn(`，必须排除，否则切换层会把自己
 // 也算成自己的消费点 —— 而它已经被 indirectRequestLogsReaders 登记过一次，
 // 算两次会让「切��层 vs 消费点」这个区分彻底失效。
+// ⚠ 这个函数**很贵**：一次调用 = 一次全仓 WalkDir + 重读全部生产 .go。
+// 而 `isSwitchConsumerFile` 是**逐文件**调它的（族分类器 6 个调用点 ×
+// ~110 个已分类文件 ⇒ ~660 次全仓 walk）。实测没有缓存时全量 admin 门
+// 从 509s 涨到 25 分钟以上。⇒ 每进程算一次。
+//
+// 判据的**结论不变**（同一批文件），只是不再重复算。
+// 缓存的失效条件是「本轮测试期间源码被改」—— `go test` 不会在运行中改源码，
+// 所以按进程缓存是安全的。
+var (
+	consumersOnce  sync.Once
+	consumersCache map[string]bool
+)
+
 func indirectSourceConsumers(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	consumersOnce.Do(func() { consumersCache = computeIndirectSourceConsumers(t, root) })
+	return consumersCache
+}
+
+func computeIndirectSourceConsumers(t *testing.T, root string) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
 	for file, e := range indirectRequestLogsReaders {
 		if e.SwitchFunc == "" {
 			continue
 		}
-		// 只在本包内解析：切换层是包内函数。跨包调用解析不到（本工具的
-		// 设计边界，与 cmd/tools/sql_source_indirection_audit 同一处置）。
+		// ⚠ **§9.233 修：第一版只在切换层所在包内解析，于是跨包消费点全部丢失。**
+		//
+		// 实测：把 4 个 A 类读方（domains/sessionforensics、
+		// domains/sessionsummary ×2、bg）改走 `db.SessionBodiesSourceSQL()` 之后，
+		// bodies 总体从 **27 掉到 23** —— 4 个文件**静默消失**。
+		// 而 bodies 退役门**本来就故意红** ⇒ 少 4 个不改退出码。
+		// 这就是 §9.230.3 那个失效模式的**跨包形态**。
+		//
+		// ⇒ 判据按「符号是否导出」分流：
+		//   首字母大写（导出）⇒ **全仓**解析 `pkg.Func(` 与裸 `Func(`；
+		//   首字母小写（包内）⇒ 只在本包内解析裸名。
+		// 分流的依据不是「严不严」，是**它本来能被谁看见**：未导出符号
+		// 跨包不可见，全仓扫它只会把同名的别的函数算进来。
+		exported := e.SwitchFunc[0] >= 'A' && e.SwitchFunc[0] <= 'Z'
 		dir := filepath.Dir(filepath.Join(root, file))
+		needle := e.SwitchFunc + "("
+		qualified := "." + needle
 		for _, rel := range productionGoFiles(t, root) {
-			if filepath.Dir(filepath.Join(root, rel)) != dir {
+			if !exported && filepath.Dir(filepath.Join(root, rel)) != dir {
 				continue
 			}
 			raw, err := os.ReadFile(filepath.Join(root, rel))
 			if err != nil {
 				t.Fatalf("read %s: %v", rel, err)
 			}
-			src := string(raw)
+			// ⚠ **必须先剥注释。** 实测：我自己写的一句注释
+			// 「全部调用点直接调 `dbpkg.SessionBodiesSourceSQL()`」里含有
+			// `SessionBodiesSourceSQL(`，于是**定义文件自己被判成自己的消费点** ——
+			// 报错是 `总体里 "db/request_logs_view_schema.go" 出现两次`。
+			//
+			// ⇒ **注释不是调用。** 这与 §9.233 里 Evidence 门被迫改判据是同一件事
+			// （那里是「注释里提到旧 key 被当成残留」），两次都是同一个错误形状：
+			// 在源码文本里找标识符，却不先排除注释。
+			src := stripGoCommentsKeepLines(string(raw))
 			if rel == file {
 				// 去掉 func 定义那一行再找调用点。
 				src = strings.Replace(src, "func "+e.SwitchFunc+"(", "func __def__(", 1)
 			}
-			if strings.Contains(src, e.SwitchFunc+"(") {
+			if strings.Contains(src, needle) ||
+				(exported && strings.Contains(src, qualified)) {
 				out[rel] = true
 			}
 		}

@@ -12,6 +12,7 @@ import (
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 )
 
@@ -224,7 +225,7 @@ func (h *Handler) loadOutboundBodySnippet(ctx context.Context, requestID string)
 	_ = h.db.QueryRow(ctx, `
 		SELECT COALESCE(rb.outbound_body, rb.request_body)
 		  FROM request_logs_with_current_month rl
-		  LEFT JOIN `+sessionBodiesFromSQL()+` ON rb.request_id = rl.request_id
+		  LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` ON rb.request_id = rl.request_id
 		  WHERE rl.request_id = $1 LIMIT 1`, requestID).Scan(&body)
 	if body == nil {
 		return ""

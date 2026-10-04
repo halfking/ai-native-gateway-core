@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/internaltraffic"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ensureRequestLogsCurrentMonthView mirrors
@@ -1022,6 +1023,48 @@ func SessionFamilyBodiesSourceSQL() string {
 // 加上它会把一个解析期错误换成一个**静默的行数变化**。响亮失败优于静默改行。
 var sessionBodiesSourceProjection = "sb.request_id, sb.request_delta AS request_body, " +
 	"sb.response_delta AS response_body, sb.outbound_body"
+
+// SessionBodiesSourceSQL returns the aliased bodies FROM-source for **any
+// package**, gated by the shared read-side switch.
+//
+// # 为什么它必须在 db 而不是 admin（§9.233）
+//
+// §9.232 把 7 个 bodies 读方改走 `admin.sessionBodiesFromSQL()`，但另外 4 个
+// A 类读方在 `domains/sessionsummary`、`domains/sessionforensics`、`bg` ——
+// 它们**看不见** admin 包里的未导出函数，于是「能换但换不了」。
+//
+// 而 db 才是同族 helper 的所在地：`SessionFamilyTurnsSourceSQL`、
+// `SessionFamilyTurnsForSessionSQL`、`SessionFamilyBodiesSourceSQL` 都在这里。
+// ⇒ 切换层与被切换的源放在一起，是唯一说得通的位置。
+//
+// # 无 import 环（已核实 2026-10-05）
+//
+// db 此前**不** import settings，settings 也**不** import db ⇒ 本次引入
+// `settings` 依赖不成环。若将来 settings 反向依赖 db，这里会立刻编译失败——
+// 那正是应该失败的时候（不要为了让它编过而在这里复制一份配置读取）。
+//
+// # 与 admin 那份的关系：那份**已被删掉**（§9.233）
+//
+// 第一版让它留在 admin 并**委托**给本函数。实测那层薄包装是**有害**的：
+// 门与 v1 关系名字面量之间又隔了一层，而 `indirectSourceConsumers`
+// 是按「谁调用了切换层」识别的 —— 一个只做 `+ " rb"` 的包装函数会让
+// **9 个 admin 消费点在一次全仓解析里全部消失**（实测 5 个 vs 应有的 14 个）。
+// ⇒ 删除包装，全部调用点直接调 `dbpkg.SessionBodiesSourceSQL()`。
+// 代价是 5 个文件要新增 db import，收益是**单一切换层、单一探测路径**。
+func SessionBodiesSourceSQL() string {
+	if settings.GetPlatformBool(SessionBodiesNativeReadSetting, false) {
+		return SessionFamilyBodiesSourceSQL()
+	}
+	return "request_logs_bodies_with_current_month"
+}
+
+// SessionBodiesNativeReadSetting 是 bodies 读端灰度开关的 key。
+//
+// 名字**以源命名、不以界面命名**：§9.230 它只服务会话导出/对比，
+// §9.232 起服务 9 个消费点，§9.233 起还有跨包的。
+// 若继续叫 `admin_session_bodies_native_read`，下一个读方会以为
+// 「非 admin 的读方就不受这个开关管」——而事实正相反。
+const SessionBodiesNativeReadSetting = "storage.session_bodies_native_read"
 
 // SessionFamilyBodiesSourceColumns 是 SessionFamilyBodiesSourceSQL 对外暴露的
 // **全部**列名（已去掉 `sb.` 前缀与 `AS` 别名）。

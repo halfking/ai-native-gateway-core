@@ -38,6 +38,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
@@ -305,7 +306,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"domains/sessionsummary/system_prompt_prefix.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "JOIN request_logs_bodies_with_current_month rb",
+		Evidence: "dbpkg.SessionBodiesSourceSQL()",
 		Note:     "pgRequestLogsSource 是**默认** MessageSource（summarizer.go:127 NewSummarizer 直接 &pgRequestLogsSource{}），bodies 无 session 兜底 ⇒ 停写后 JOIN 恒 0 行 ⇒ err 被 systemPromptPrefix(:52) 吞掉返回 \"\" ⇒ 会话总结照常生成、200、summary 字段齐全，只是永远缺系统提示词前缀。仅当 SetMessageSource 换成 v2SessionBodiesSource（读 session_bodies_unified）时才免疫。",
 	},
 	// ── batch5：2026-10-02 §9.35 新增（1 条）────────────────────────────────
@@ -356,7 +357,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/no_topic_session.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN `+sessionBodiesFromSQL()+",
+		Evidence: "dbpkg.SessionBodiesSourceSQL()",
 		// ⚠ 2026-10-05（§9.232）：两处 bodies 腿改走切换层，Evidence 随之改写
 		// （原锚点 `LEFT JOIN request_logs_bodies_with_current_month rb` 已不存在）。
 		// 分级**不变，性质变了**：停写后果现在**取决于开关**——默认臂读 v1 ⇒
@@ -672,7 +673,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/compression_stats.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN `+sessionBodiesFromSQL()+` ON rb.request_id = rl.request_id",
+		Evidence: "dbpkg.SessionBodiesSourceSQL()",
 		// ⚠ 2026-10-05（§9.232）：3 处 bodies 腿改走切换层，Evidence 随之改写。
 		// 分级**不变但性质变了**：停写后果现在**取决于开关**——
 		// 默认臂（开）读 v1 ⇒ 后果与原来完全一致；
@@ -845,7 +846,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"domains/sessionsummary/summarizer.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb",
+		Evidence: "dbpkg.SessionBodiesSourceSQL()",
 		Note:     "pgRequestLogsSource.getSessionMessagesQuery / GetMessagesSince 的轮次腿读 710 视图（session 臂继续供数、停写后仍返回行），但 bodies 腿无 session 兜底 ⇒ 停写后新会话每行 COALESCE(rb.request_body->>'role','user') 退化成 role='user'、content='' ，**消息数非零故不触发 no messages found 报错** ⇒ GenerateSummary 拿着 20 条空正文去调 LLM 生成空摘要并落库。（控制面轴判 live：它 UPDATE session_summaries。）",
 	},
 	"admin/session_bodies_batch.go": {
@@ -1130,35 +1131,102 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 		// 拼接点，而那个 `fn` **没有**被登记为切换层。
 		// 那种情况下「停写后会退化」的分级**没有任何事实基础**，
 		// 而第一版会安静放行。变异 M34 的配套阴性对照实测确认了这一点。
-		for _, fn := range evidenceSwitchCalls(c.Evidence) {
-			if !isRegisteredSwitchFunc(fn) {
-				t.Errorf("%s: Evidence 里的 `join/from` + %q 拼接点，"+
-					"但 %q **不是已登记的切换层**（indirectRequestLogsReaders 里没有它的 SwitchFunc）。\n"+
-					"  Evidence: %q\n"+
-					"  ⇒ 「停写后会退化」这个分级没有事实基础：v1 关系名到底在哪、"+
-					"默认臂读什么，都无从核对。", file, fn, fn, c.Evidence)
-			}
+		// ★ 两跳的第二跳按**文件**判，不按 Evidence 判（§9.233）。
+		//
+		// 第一版从 Evidence 里抽 `join/from` + `fn()`，而 Evidence 锚在
+		// `` `+fn()+` `` 这种**拼接形态**上 —— gofmt 会在
+		// `` `+fn()+` `` 与 `` ` + fn() + ` `` 之间**随机**切换
+		// （实测同一批文件里两种拼写同时存在），于是这个抽取必然在某些文件上失配。
+		//
+		// 第二版按「所有 `*SourceSQL(` 都是切换层」来判，**过宽**：
+		// `admin/session_timeline_query.go` 调 `SessionFamilyTurnsSourceSQL()` ——
+		// 那是**会话族 raw helper**，永远返回会话族，根本不是切换层、不需要登记。
+		// 实测它被判红。⇒ 一个必然误报的判据，比没有判据更糟（会被绕过或被禁用）。
+		//
+		// ⇒ 第三版：**只有既不在 db 包里定义、又没登记的** `*SourceSQL(` 才算悬挂。
+		// 「在 db 里定义」是机械判定（扫 db/*.go 有没有 `func <name>(`），
+		// 不需要任何手维护名单，因而不会漂移。
+		for _, fn := range danglingSourceSQLCalls(t, string(raw)) {
+			t.Errorf("%s: 调用了 %q，但它既**不在 db 包里定义**"+
+				"（那是会话族 raw helper 的位置），也**不在 indirectRequestLogsReaders 里登记**"+
+				"（那是切换层的位置）。\n"+
+				"  ⇒ 本文件的停写分级（%s）缺一个可核的来源：v1 关系名在哪、"+
+				"默认臂读什么，都无从核对。\n"+
+				"  要么把它挪到 db 包（成为 raw helper），要么在 indirectRequestLogsReaders 登记它。",
+				file, fn, c.Effect)
 		}
 	}
 }
 
-// evidenceSwitchCalls 从一段 Evidence 里取出「拼在 from/join 之后的函数调用」名。
+// danglingSourceSQLCalls 报告一段源码里调用了哪些**悬挂**的 `*SourceSQL(`：
+// 既不在 db 包里定义，也没在 indirectRequestLogsReaders 登记。
 //
-// 判据：`join`/`from` + 空白 + `标识符(`。这是切换层拼接点在代码里的**最短形态**
-// （`LEFT JOIN ` + sessionBodiesFromSQL() + ` `），也是能把它与「拼在 join 之后的
-// 表名字面量」区分开的唯一位置标记。
-func evidenceSwitchCalls(evidence string) []string {
-	re := regexp.MustCompile(`(?i)\b(?:from|join)\s+` + "`" + `\s*\+\s*` + "`" + `(\w+)\s*\(`)
-	var out []string
+// `*SourceSQL(` 是本仓「返回关系名的拼接层」的命名签名。合法的两类：
+//
+//	db 包里的 raw helper（SessionFamilyTurnsSourceSQL / SessionFamilyBodiesSourceSQL …）
+//	  —— 它们**永远**返回会话族，与开关无关，不需要登记；
+//	登记过的切换层（SwitchFunc）—— 它按开关在 v1 与会话族之间二选一。
+//
+// 第三类（两个都不是）就是悬挂：读法不可核。判据用「db 包里有没有 `func <name>(`」
+// 这种**机械**判定，而不是手维护名单 —— 手名单会漂，且漂移方向是漏报。
+func danglingSourceSQLCalls(t *testing.T, src string) []string {
+	t.Helper()
+	re := regexp.MustCompile(`\b(\w*SourceSQL)\s*\(`)
 	seen := map[string]bool{}
-	for _, m := range re.FindAllStringSubmatch(evidence, -1) {
-		if !seen[m[1]] {
-			seen[m[1]] = true
-			out = append(out, m[1])
+	var out []string
+	for _, m := range re.FindAllStringSubmatch(src, -1) {
+		fn := m[1]
+		if seen[fn] || isRegisteredSwitchFunc(fn) {
+			continue
+		}
+		seen[fn] = true
+		if !definedInDBPackage(t, fn) {
+			out = append(out, fn)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// dbDefinedFuncs 是 db 包里定义的全部函数名，**每个测试进程只算一次**。
+//
+// ⚠ 第一版没有这个缓存：每问一个 `fn` 就重做一次**全仓 WalkDir** + 重读
+// db 下全部文件。而判据是对**每个已分类文件**、**每个调用到的 `*SourceSQL(`**
+// 各问一次 —— 实测全量 admin 门从 509s 涨到 25 分钟以上。
+//
+// ⇒ 成本从 O(分类文件数 × 函数名数 × 全仓大小) 降到 O(全仓大小) 一次。
+// 判据的**结论不变**（同一批函数名），只是不再重复算。
+var (
+	dbDefinedOnce sync.Once
+	dbDefinedSet  map[string]bool
+)
+
+func dbDefinedFuncs(t *testing.T) map[string]bool {
+	t.Helper()
+	dbDefinedOnce.Do(func() {
+		dbDefinedSet = map[string]bool{}
+		root := repoRootFromCaller(t)
+		funcDefRE := regexp.MustCompile(`(?m)^func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(`)
+		for _, rel := range productionGoFiles(t, root) {
+			if !strings.HasPrefix(rel, "db/") {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(root, rel))
+			if err != nil {
+				t.Fatalf("read %s: %v", rel, err)
+			}
+			for _, m := range funcDefRE.FindAllStringSubmatch(string(raw), -1) {
+				dbDefinedSet[m[1]] = true
+			}
+		}
+	})
+	return dbDefinedSet
+}
+
+// definedInDBPackage 报告 db 包里是否定义了名为 fn 的函数。
+func definedInDBPackage(t *testing.T, fn string) bool {
+	t.Helper()
+	return dbDefinedFuncs(t)[fn]
 }
 
 // isRegisteredSwitchFunc 报告 fn 是否是某个已登记切换层返回关系名的函数。
@@ -1619,7 +1687,7 @@ func nullPaddedPredicateHit(raw string) (hit bool, via string) {
 // sourceFamilyOf 按源码文本判定 v1 读法族。
 //
 // readsVBodies 用于**切换层消费点**（§9.232）：消费点的 bodies 腿走
-// `sessionBodiesFromSQL()`，源码里**没有 bodies 关系名字面量**，
+// `db.SessionBodiesSourceSQL()`，源码里**没有 bodies 关系名字面量**，
 // 而它的默认臂读的是 v1 ⇒ `familyBodiesRE` 匹配不到 ⇒ 它会被判成
 // 「只读视图 / 只读基表」，**而这不属实**（它的 bodies 腿仍是 v1）。
 //

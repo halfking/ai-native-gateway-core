@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/credential" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
@@ -179,7 +180,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    MIN(rl.ts), NOW(),
 		    LEFT(COALESCE(MAX(COALESCE(rb.response_body::text, '')), ''), 200)
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` rb ON rb.request_id = rl.request_id
 		LEFT JOIN passive_probe_state pps
 		    ON pps.credential_id = rl.credential_id
 		    AND pps.raw_model_name = COALESCE(rl.outbound_model, rl.client_model)

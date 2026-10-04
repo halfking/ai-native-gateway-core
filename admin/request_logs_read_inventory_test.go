@@ -89,7 +89,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/session_detail_v2.go":            2,
 	// 同上：只剩 JOIN 不 FROM。
 	// ⚠ §9.230 起**会话导出/对比那两个**（原 session_compare.go / session_export.go）
-	// 已不在本表：它们的 bodies 腿改走 sessionBodiesFromSQL()，源码里不再有
+	// 已不在本表：它们的 bodies 腿改走 db.SessionBodiesSourceSQL()，源码里不再有
 	// v1 关系名字面量。v1 那一臂的登记在 indirectRequestLogsReaders
 	// （admin/session_bodies_source.go）。
 	"admin/session_extract.go":        3,
@@ -142,7 +142,7 @@ var requestLogsReadInventory = map[string]int{
 	"bg/lite_retention_worker.go":               2,
 	"bg/model_probe.go":                         3,
 	"bg/model_tier.go":                          1,
-	"bg/passive_probe_listener.go":              5,
+	"bg/passive_probe_listener.go":              4,
 	"bg/shared_pick.go":                         1,
 	"bg/stats_minute_rollup.go":                 3,
 	"bg/stats_minute_rollup_retire.go":          3,
@@ -172,9 +172,9 @@ var requestLogsReadInventory = map[string]int{
 	"domains/hooks/observability/telemetry/client.go": 5,
 	"domains/providerprofile/adapters.go":             4,
 	"domains/routeincident/store.go":                  1,
-	"domains/sessionforensics/export.go":              5,
-	"domains/sessionsummary/summarizer.go":            5,
-	"domains/sessionsummary/system_prompt_prefix.go":  2,
+	"domains/sessionforensics/export.go":              3,
+	"domains/sessionsummary/summarizer.go":            3,
+	"domains/sessionsummary/system_prompt_prefix.go":  1,
 	"domains/streaming/anomaly_harvester.go":          1,
 	"domains/streaming/model_alternatives.go":         1,
 	"internal/collector/gateway_adapters.go":          3,
@@ -279,7 +279,7 @@ func sumInventory() int {
 // # 2026-10-05：同一批里的两个文件在本表**退场**（审计 §9.230）
 //
 // 上面那张名单里的 `admin/session_compare.go` / `admin/session_export.go`
-// 在本轮被改成经 `sessionBodiesFromSQL()` 取 bodies 源，于是它们源码里
+// 在本轮被改成经 `db.SessionBodiesSourceSQL()` 取 bodies 源，于是它们源码里
 // **不再有** v1 关系名的字面量 ⇒ 本表（按行正则扫字面量）测到 0 处。
 //
 // ⚠ **「本表测到 0」不等于「它不读 v1」**——开关默认那一臂就是

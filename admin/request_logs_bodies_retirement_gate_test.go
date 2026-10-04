@@ -25,7 +25,7 @@ import (
 //	… COALESCE(rb.request_body, '{}'::jsonb) AS request_body …
 //
 // ⚠ **上面这两行是 §9.226 当时的源码。§9.230 之后不是了**：bodies 腿改成经
-// `sessionBodiesFromSQL()` 取源 ⇒ 该文件源码里**一个 bodies 关系名字面量都没有**。
+// `db.SessionBodiesSourceSQL()` 取源 ⇒ 该文件源码里**一个 bodies 关系名字面量都没有**。
 // ⇒ 引用这一段当现状会误导下一个人，必须连着看 scanV1BodiesReaders 末尾
 // 那段「间接读方并入总体」的注释（本轮新增，否则总体会静悄悄少两个人）。
 //

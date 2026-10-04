@@ -143,29 +143,35 @@ func StorageSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
-			// bodies 读端灰度（审计 §9.230，纯代码无 DDL）。
+			// bodies 读端灰度（审计 §9.230 建立 / §9.233 改名并扩面，纯代码无 DDL）。
 			//
-			// 开启后会话导出/对比的 bodies 腿改读 session_bodies
-			//（经 db.SessionFamilyBodiesSourceSQL()，该层已把
-			// request_delta/response_delta 映射成 v1 的
-			// request_body/response_body 列名，调用点 SELECT 不用改）。
+			// 开启后**全部** bodies 读方改读会话族：会话导出/对比、压缩统计、
+			// 日志摘要、无主题会话、标题、清洗匹配、自动标题、会话取证导出、
+			// 会话摘要/系统提示词前缀、探针监听器 —— 共 14 个消费点。
+			// 列名经 db.SessionFamilyBodiesSourceSQL 映射为 v1 同名，调用点投影不变。
+			//
+			// ⚠⚠ **key 由 `storage.admin_session_bodies_native_read` 改名而来**（§9.233）。
+			// 改名是刻意的：它已不只服务 admin 包（domains/、bg/ 也在用）。
+			// 旧 key **没有**保留兼容项 —— 保留会变成僵尸配置项：
+			// 界面上看得见、拨了什么都不发生。已退役 key 的残留由
+			// admin/session_bodies_source_test.go 的 TestBodiesSwitchKeyIsSingleSourced 拦。
 			//
 			// ⚠ **默认关闭，且理由是数据**：本地已实测 would_be_lost = 0
 			//（session_bodies 覆盖 session_turns 的 100.00%）；
 			// 而生产 252 实测仍有 **1,113 条**缺失，**全部落在 2026-09-30**
 			//（session_bodies 覆盖起点前一天），10-01 起为 0。
-			// ⇒ 生产上打开会让那一天的会话导出出现 `{}` 正文，
-			// 而 API 仍 200。补完那一天之前不得开。
+			// ⇒ 生产上打开会让那一天的会话导出出现 `{}` 正文，而 API 仍 200。
+			// 补完那一天之前不得开。
 			//
 			// 另注：列名不同（request_body vs request_delta），
-			// 所以这不是机械替换；映射必须经那一层 helper。
-			Key:             "storage.admin_session_bodies_native_read",
+			// 所以这不是机械替换；映射必须经 db 那一层。
+			Key:             "storage.session_bodies_native_read",
 			Type:            TypeBool,
 			Scope:           ScopePlatform,
 			Category:        CategoryStorage,
 			Default:         false,
-			Description:     "会话导出/对比的 bodies 读 session_bodies（§9.230）",
-			DescriptionLong: "开启后 /api/session/{id}/export 与会话对比摘要的 bodies 腿改读 session_bodies（hot∪parent），列名经 db.SessionFamilyBodiesSourceSQL 映射为 v1 同名，调用点投影不变。默认关闭：生产 252 实测 2026-09-30 一天仍有 1,113 条 turn 有 v1 正文而无 session_bodies 行，打开会让当天导出的正文变成 `{}` 且接口不报错。补齐该日缺口后方可灰度开启。",
+			Description:     "bodies 读方读 session_bodies（§9.233，14 个消费点）",
+			DescriptionLong: "开启后全部 v1 bodies 读方（会话导出/对比、压缩统计、日志摘要、标题、取证导出、会话摘要、探针监听器等 14 个消费点）改读 session_bodies（hot∪parent），列名经 db.SessionFamilyBodiesSourceSQL 映射为 v1 同名，调用点投影不变。默认关闭：生产 252 实测 2026-09-30 一天仍有 1,113 条 turn 有 v1 正文而无 session_bodies 行，打开会让当天导出的正文变成 `{}` 且接口不报错。补齐该日缺口后方可灰度开启。",
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},

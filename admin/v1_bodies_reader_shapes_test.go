@@ -75,7 +75,7 @@ const (
 	//
 	// ⚠ 为什么消费点归这一档而不是继续当 A 类「helper-compatible」：
 	// A 类的正向声明会被机器核对「绑了 bodies 别名 / 没用到 ts」。
-	// 消费点**没有可解析的别名**（它调的是 `sessionBodiesFromSQL()`）⇒
+	// 消费点**没有可解析的别名**（它调的是 `db.SessionBodiesSourceSQL()`）⇒
 	// 机器无法核对 ⇒ 声明 A 类等于让它「白拿一个正向声明」，
 	// 那正是 §9.231 写明要拒绝的状态。
 	shapeAlreadySwitched = "already-switched"
@@ -90,18 +90,10 @@ type bodyReaderShape struct {
 }
 
 var v1BodiesReaderShapes = map[string]bodyReaderShape{
-	"admin/session_bodies_source.go": {
-		Shape: shapeAlreadySwitched,
-		Reason: "§9.230 建的 bodies 读端开关。v1 依赖是 `sessionBodiesFromSQL()` 的" +
-			"**默认那一臂**（`request_logs_bodies_with_current_month`），不是字面量 JOIN。" +
-			"消费点 admin/session_export.go:227 / admin/session_compare.go:903。" +
-			"退役含义：这一条**必须最后退役**，因为它是切换的入口；" +
-			"它的默认臂反转之日就是 bodies 退役之日。",
-	},
 
 	"admin/session_export.go": {
 		Shape:  shapeAlreadySwitched,
-		Reason: "§9.230 已迁。bodies 腿经 `sessionBodiesFromSQL()`，默认臂 = v1 ⇒ 停写/退役后果不变。",
+		Reason: "§9.230 已迁。bodies 腿经 `db.SessionBodiesSourceSQL()`，默认臂 = v1 ⇒ 停写/退役后果不变。",
 	},
 	"admin/session_compare.go": {
 		Shape:  shapeAlreadySwitched,
@@ -134,6 +126,37 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 	"admin/auto_title_generator.go": {
 		Shape:  shapeAlreadySwitched,
 		Reason: "§9.232 已迁（1 处）。",
+	},
+
+	"db/request_logs_view_schema.go": {
+		Shape: shapeAlreadySwitched,
+		Reason: "★ bodies 读端灰度切换层的**唯一**所在地（§9.233）。" +
+			"`SessionBodiesSourceSQL()` 默认返回 `request_logs_bodies_with_current_month`（v1），" +
+			"开关打开才返回 `SessionFamilyBodiesSourceSQL()`。⇒ **默认支是 v1**。" +
+			"⚠ 它在 §9.230→§9.233 之间搬过两次家，每次都是同一个原因：" +
+			"切换层住错包，前一批消费点能迁、后一批迁不了。" +
+			"消费点 13 个（admin 9 + domains/sessionforensics 1 + domains/sessionsummary 2 + bg 1），" +
+			"由 indirectSourceConsumers 机器识别。",
+	},
+	"domains/sessionforensics/export.go": {
+		Shape: shapeAlreadySwitched,
+		Reason: "§9.233 已迁（2 处）→ dbpkg.SessionBodiesSourceSQL()。 ⚠ 它在 domains/ 与 bg/ 包 —— **这正是 §9.232 迁不了的那 4 个**：" +
+			"admin 包的薄包装函数它们看不见，而「谁调用了切换层」的识别当时也只在包内解析。",
+	},
+	"domains/sessionsummary/summarizer.go": {
+		Shape: shapeAlreadySwitched,
+		Reason: "§9.233 已迁（2 处）→ dbpkg.SessionBodiesSourceSQL()。 ⚠ 它在 domains/ 与 bg/ 包 —— **这正是 §9.232 迁不了的那 4 个**：" +
+			"admin 包的薄包装函数它们看不见，而「谁调用了切换层」的识别当时也只在包内解析。",
+	},
+	"domains/sessionsummary/system_prompt_prefix.go": {
+		Shape: shapeAlreadySwitched,
+		Reason: "§9.233 已迁（1 处，INNER JOIN）→ dbpkg.SessionBodiesSourceSQL()。 ⚠ 它在 domains/ 与 bg/ 包 —— **这正是 §9.232 迁不了的那 4 个**：" +
+			"admin 包的薄包装函数它们看不见，而「谁调用了切换层」的识别当时也只在包内解析。",
+	},
+	"bg/passive_probe_listener.go": {
+		Shape: shapeAlreadySwitched,
+		Reason: "§9.233 已迁（1 处）→ dbpkg.SessionBodiesSourceSQL()。 ⚠ 它在 domains/ 与 bg/ 包 —— **这正是 §9.232 迁不了的那 4 个**：" +
+			"admin 包的薄包装函数它们看不见，而「谁调用了切换层」的识别当时也只在包内解析。",
 	},
 
 	// ── B 类：ts 等值，换不了 ────────────────────────────────────────────
@@ -247,33 +270,9 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"⇒ 换源会**改变这个指标的口径**（从「探针流量」变成「会话流量」）。" +
 			"这不是空指针问题，是分子定义变了；必须显式决定。",
 	},
-	"domains/sessionforensics/export.go": {
-		Shape:  shapeHelperCompatible,
-		Reason: "`:52/:72` 两处单键 LEFT JOIN，无 ts。取证导出，改源后正文缺失会体现在导出包里。",
-	},
 	"domains/hooks/goal/history_store.go": {
 		Shape:  shapeHelperCompatible,
 		Reason: "`:85` `LEFT JOIN request_logs_bodies rb`（基表），无 ts。",
-	},
-	"bg/passive_probe_listener.go": {
-		Shape: shapeHelperCompatible,
-		Reason: "`:182` 单键 LEFT JOIN，无 ts。探针监听器 —— 同样落在 " +
-			"`is_auto_request` 那批流量上，口径问题同 quality_correlations。",
-	},
-	"domains/sessionsummary/summarizer.go": {
-		Shape: shapeHelperCompatible,
-		Reason: "`:651/:694` 两处单键 LEFT JOIN，无 ts。⚠ **它的会话族替身已经存在**：" +
-			"`SetMessageSource(v2SessionBodiesSource)`（停写分类表 §9.35 记着）。" +
-			"⇒ 这一条不是「能不能换」，是「**为什么默认还是 pgRequestLogsSource**」——" +
-			"summarizer.go:127 `NewSummarizer` 直接 `&pgRequestLogsSource{}`。" +
-			"换源 = 改那个默认构造，是一行的事，但会改**所有**会话摘要的语料来源。",
-	},
-	"domains/sessionsummary/system_prompt_prefix.go": {
-		Shape: shapeHelperCompatible,
-		Reason: "`:177` `JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id`" +
-			"（INNER JOIN，无 ts），取 `rb.request_body::text`。" +
-			"⚠ 它是**同族**文件：注释写着「先落 request_logs_bodies_hot，直接读父表会错过」——" +
-			"⇒ 它刻意读 view（hot ∪ 父表）而不是 hot。helper 同样是 hot ∪ 父表，**形状对得上**。",
 	},
 }
 
@@ -556,7 +555,7 @@ func keysOf(m map[string]bool) []string {
 //
 // # 这道门是补 §9.230 的漏，不是新增要求
 //
-// §9.230 把 bodies 腿改成经 `sessionBodiesFromSQL()` 取源之后，
+// §9.230 把 bodies 腿改成经 `db.SessionBodiesSourceSQL()` 取源之后，
 // `admin/session_export.go` 与 `admin/session_compare.go` 的源码里
 // **不再有 bodies 关系名字面量** ⇒ 它们从 bodies 退役门的总体里消失了。
 // 当时的修复只把**切换层自己**（admin/session_bodies_source.go）加回去，
@@ -610,13 +609,13 @@ func TestV1BodiesScanIncludesSwitchConsumers(t *testing.T) {
 // 我构造的那条变异——给迁移后的行加一个尾部注释
 // `/* request_logs_bodies_with_current_month rb */`——**判据不响**：
 // `v1BodiesReadPattern` 要求 `join` 后**紧跟**关系名，而该行 `JOIN` 后面是
-// “ `+sessionBodiesFromSQL()+` “。⇒ 「同一行」这个限定太窄：
+// “ `+db.SessionBodiesSourceSQL()+` “。⇒ 「同一行」这个限定太窄：
 // **半迁移的真实形态是分处两行**，漏掉它的判据等于没有判据。
 //
 // ⇒ 判据改为：**消费点文件里不得存在任何匹配 v1 bodies 模式的非注释行**。
 // 同一行的情形是它的子集，一并覆盖。
 //
-// 这道门防的是**部分迁移**：把一个文件加了 `sessionBodiesFromSQL()` ，
+// 这道门防的是**部分迁移**：把一个文件加了 `db.SessionBodiesSourceSQL()` ，
 // 却忘了把另一处 `LEFT JOIN request_logs_bodies…` 换掉。
 //
 // 失败形态很具体：那个文件在**切换层**这条路上被算成读方（通过消费点并入），
