@@ -11769,3 +11769,97 @@ M5（不设 `TEST_DATABASE_URL`）**SKIP 而非绿** ✓。
 4. `maas/credit_buckets.go` 桶覆盖不可逆（§70.64）。
 5. `admin/logs.go` / `admin/usage_enhanced.go` 两个「视图 v1 臂」并入 D29-d 复核。
 6. `autoroute/metrics.go` 的 Help 文本假阳性。
+
+---
+
+## §70.67 bodies 读端灰度开关已就位（默认关），以及它造出并已修掉的假绿
+
+### 做了什么
+
+- `db.SessionFamilyBodiesSourceSQL()`：会话族 bodies 源（hot ∪ parent），
+  在**这一层**把 `request_delta`/`response_delta` 映射成 v1 的
+  `request_body`/`response_body`，调用点投影一个字不用改。
+- `admin/sessionBodiesFromSQL()` + `storage.admin_session_bodies_native_read`
+  （spec 登记，`Default: false`），消费点 `admin/session_export.go:227`、
+  `admin/session_compare.go:903`。
+- 4 道新门：db 侧列名/类型对等（真库）、db 侧真实 JOIN 不放大（真库）、
+  admin 侧默认关闭、admin 侧两个消费点都走开关。
+- 1 道自证门：`TestV1BodiesScanIncludesRegisteredIndirectReaders`。
+
+### ★ 本轮真正值得记的一条
+
+**把一个 v1 读方改成间接读法，会让它从「按字面量扫」的几道门里静默消失。**
+本轮实测四道门的后果，其中一道最险：
+
+| 门 | 后果 | 有没有信号 |
+|---|---|---|
+| `TestRequestLogsReadInventoryIsComplete` | 109/271 → **107/269** | 红（抓到了） |
+| `TestV1BodiesReadersAreAssessed` | 26/44 → **24/42** | **仍红，本来就故意红** |
+| exposure（`measureV1ReadingLiterals`） | 两个文件不再被评估 | **无** |
+| indirection audit | unresolved 34 → **36** 处 | 绿（文件早就在清单里） |
+
+第 2 行是重点：总体少了两个**最要紧**的读方，而退出码**一模一样**。
+M8 变异（删掉修复）实测确认：故意红的那道门**照样红**。
+⇒ 「总体静缩」在现有门矩阵里完全没有信号，必须自己写一条判据守它，
+且判据必须是**集合关系**（登记的间接 bodies 读方必须逐个出现在实测总体里），
+**不能**钉死「总体数 ≥ 25」这种会漂的数字。
+
+处置没有新造机制，走的是本仓既有两张表的分工
+（与 `bg/auto_route_settle_sql.go` 同形）：字面量读方归
+`requestLogsReadInventory`，间接读方归 `indirectRequestLogsReaders`。
+
+### 变异验证
+
+**10 条全部转红**（M1–M9 + M11，见审计 §9.230.5 表），M10 阴性对照确认并入计数确为 1。
+
+★ 第一轮有 3 条「没被抓住」，**逐条查下来没有一条是门的问题**：
+两条是 perl 锚点没匹配上（变异根本没写进去），
+一条是我把 `ResolvesTo` 从 `request_logs_bodies` 改成 `request_logs`
+——那仍是 `v1DirectTables` 里的合法表，门判绿是对的。
+**门绿时先确认变异改到了东西、路径真的经过。**
+
+### ★ 同一个坑在下一层又踩了一次（exposure 门）
+
+我第一次改 exposure 总体时**只改了报告循环、忘了测量循环**，
+然后跑反向变异（把总体退回字面量表）——**没有任何一道门变红**。
+viewArm 桶没有登记表、报告内容也没有门在核。
+⇒ 那个「修复」**什么都没改变**，只是看起来像修了。
+
+实测确认量具本身没问题：`extractV1ReadingLiterals` 对
+`admin/session_bodies_source.go` 能产出 1 个字面量、判为 `viewArm`；
+而 `admin/session_export.go` 现在产出 0 个。**是总体选错了，不是量具不行。**
+
+处置：总体提成单一 SSOT `retirementExposurePopulation()` + 集合相等判据，
+反向变异 M11 转红并指名两个文件。
+★ 顺带补上一个**此前就存在**的缺口：`bg/auto_route_settle_sql.go`
+从 §9.43 起就是间接读法，却**从来不在 exposure 总体里**。
+
+### 顺带修掉的一处自欺
+
+`db/session_bodies_source_test.go` 的 v1 侧对等检查只查了 `request_body` 一列，
+注释却写「必须同形」；调用点实际用三列（`request_body`/`response_body`/`request_id`）。
+已改为三列逐列比类型。
+
+### 门结果
+
+见本节末尾「本轮全量门结果」。
+
+### 状态：**开关是关的，行为零变化**
+
+- 默认臂字符串与改造前**逐字相同**，两个读方的 SQL 一字未改。
+- `request_logs` **仍然不能 DROP**（本地与生产都不行）：
+  `maas/*` + `admin/usage_credits.go` 默认读 `request_logs_hot`（§70.64），
+  `is_final_success` / `client_protocol` 两个回填未跑。
+- 生产 2026-09-30 那 1,113 条**仍未补**——属主未批准，本会话**零写入**。
+
+### 下一轮第一件事
+
+1. ★ **先跑 `is_final_success` / `client_protocol` 两个回填再谈 DROP v1**
+   （后跑则 33,623 条永久丢失）——需属主批准。
+2. ★ 生产补 2026-09-30 一天的 bodies（1,113 条）——需属主批准；
+   补完之后 `storage.admin_session_bodies_native_read` 才可以灰度开。
+3. ★ `is_auto_request = t` 的探针/自动流量要不要保留可审计记录（属主决定，**至今无门**）。
+4. 部署 `e6193ea92` 到 252；给 `pg17-proactive-empty-table-cleanup.sh` 补会话族白名单。
+5. S4 门口径与开启时点；D32 + D29-d 切换时点。
+6. `session_bodies` 父表 57 行重复 `request_id`（37 个 id）今天不发作，
+   开关**打开前**应先处置（源里 `DISTINCT ON` 或加唯一约束）。

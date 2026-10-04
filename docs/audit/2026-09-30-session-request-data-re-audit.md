@@ -27597,3 +27597,204 @@ LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.reques
    逐日分布（证明是边界日）、`session_turns` 侧 100% 覆盖
    （证明写入路径没问题）、`is_auto` 拆分（证明缺口是探针流量）。
    **本地数字本来会把我引向错误的结论。**
+
+---
+
+## §9.230 bodies 读端灰度开关，以及**它自己造出来的那个洞**
+
+> 本节记录两件事：一件是按 §70.66「下一轮第一件事」第 2 条补的
+> `db.SessionFamilyBodiesSourceSQL()` + 一个默认关闭的灰度开关；
+> 另一件是**上一轮那个改造在落地时撞出来的、必须当场修掉的假绿**。
+
+### §9.230.0 起点：为什么不是「直接改读方」
+
+§9.229.2 实测（252 只读 SELECT）：
+
+| 环境 | `session_turns` | 有 v1 正文 | 有 `session_bodies` | 切换会丢 |
+|---|---|---|---|---|
+| 本地 | 1,690,869 | — | **100.00%** | **0** |
+| 生产 252 | 817,674 | 24,191 | 23,145 | **1,113（0.136%）** |
+
+生产那 1,113 条**全部落在 2026-09-30 一天**（`session_bodies.min_ts` = 10-01），
+10-01→10-04 逐日为 0。
+
+⇒ 直接把两个读方的 `LEFT JOIN` 改指会话族，**本地可以、生产不行**：
+生产当天那批会话的导出正文会变成 `{}`，而接口仍 200。
+⇒ 需要一个**默认关**的开关，让切换成为一个**可回滚的动作**而不是一次提交。
+
+### §9.230.1 列名不同：所以必须有那一层映射
+
+两侧 bodies 列名实测（`information_schema`，2026-10-05）：
+
+| | `request_id` | 请求正文 | 响应正文 |
+|---|---|---|---|
+| v1 `request_logs_bodies` | `text NOT NULL` | `request_body jsonb` | `response_body jsonb` |
+| 会话 `session_bodies` | `text NOT NULL` | `request_delta jsonb` | `response_delta jsonb` |
+
+语义相同、**名字不同** ⇒ 「把 `LEFT JOIN request_logs_bodies_with_current_month`
+换成 `session_bodies`」这种机械替换会让调用点的
+`COALESCE(rb.request_body, '{}'::jsonb)` 直接 **42703**。
+
+`db.SessionFamilyBodiesSourceSQL()` 把映射收在这一层（`request_delta AS request_body`），
+调用点的 SELECT 投影一个字都不用改。类型逐列核对过：两侧 bodies 列都是 jsonb、
+`request_id` 都是 text ⇒ **纯改名，不需要 cast**。
+
+形状取 hot ∪ parent 两条腿（`session_bodies_hot` + 分区父表 `session_bodies`），
+理由与 `SessionFamilyTurnsSourceSQL` 相同：只读其一会漏掉另一侧的行。
+实测本地 hot 2,651 / parent 1,779,621，两侧 `request_id` **交集为 0**（promote 会排空 hot）。
+
+### §9.230.2 开关
+
+`admin/session_bodies_source.go`：
+
+```go
+const sessionBodiesNativeReadSetting = "storage.admin_session_bodies_native_read"
+
+func sessionBodiesFromSQL() string {
+	if settings.GetPlatformBool(sessionBodiesNativeReadSetting, false) {
+		return dbpkg.SessionFamilyBodiesSourceSQL() + " rb"
+	}
+	return "request_logs_bodies_with_current_month rb"
+}
+```
+
+已登记进 `settings/spec_storage.go`（`Default: false`、`DangerLevel: Warning`、HotReload）。
+消费点两处：`admin/session_export.go:227`、`admin/session_compare.go:903`。
+
+**默认关闭，且默认关闭本身是被检查的事实**，三处都查：
+spec 的 `Default`、调用点的 `GetPlatformBool` 第三个参数、精确默认臂字符串。
+
+> ⚠ 第一版我在这里把断言写成了 `GetPlatformBool(key, true)` 然后断言它为 false。
+> 那是**反的**：`GetPlatformBool` 在 key 不存在时返回 fallback，
+> 所以无设置的测试环境里它必然返回我传的 `true` ⇒ 门恒红。
+> 更要紧的是它**根本无法区分**「key 存在且为 true」与「key 不存在」，
+> 用它做这个断言在语义上就不成立。能查的只有**调用点传了什么字面量**。
+
+### §9.230.3 ★★ 真正的发现：这个改造**自己造了一个假绿**
+
+两个消费点改成 `sessionBodiesFromSQL()` 之后，它们源码里**一个 v1 关系名字面量都没有了**。
+四道门立刻出现四类后果，其中三类是**信息减少**而不是**工作变少**：
+
+| 门 | 后果 | 方向 |
+|---|---|---|
+| `TestRequestLogsReadInventoryIsComplete` | 两个文件从 109 文件/271 调用点 掉到 **107/269**，整个文件退场 | 门**红**（抓到了） |
+| `TestV1BodiesReadersAreAssessed` | bodies 总体从 26 文件/44 调用点 缩到 **24/42** | 门**仍红**（本来就是故意红） |
+| `measureV1ReadingLiterals`（exposure） | 两个文件**不再被评估**，退役清单上不再出现 | 无信号 |
+| indirection audit | 两个文件**新增** unresolved 拼接点（34→36 处） | 门绿（文件已在清单里） |
+
+★ **第二行是本节最要紧的一条。** 那道 bodies 门本来就故意红，
+24 个还是 25 个**都不改变退出码** ⇒ 「总体静悄悄少了两个最要紧的读方」
+这件事**没有任何门会告诉你**。它离假绿只差一步：再有几个读方迁完，
+总体归零，`TestV1BodiesGateIsNotSilentlyVacuous` 的地板断言才会响。
+
+处置按**本仓既有的两张表分工**，不新造第三套机制
+（与 `bg/auto_route_settle_sql.go` 完全同形——那个文件同样因为关系名在 Go
+标识符里而不字面量表）：
+
+1. `requestLogsReadInventory` 删掉这两条（109→107，**不是读方变少了**）。
+2. `indirectRequestLogsReaders` 新增 `admin/session_bodies_source.go`
+   （`Family: familyBodies`、`ResolvesTo: request_logs_bodies`）。
+3. `scanV1BodiesReaders` 末尾把**登记为间接 bodies 读方**的文件并入总体（24/42 → **25/43**）。
+4. manifest 里 `admin/session_compare.go` / `admin/session_export.go` 两条
+   `Via`/`Consequence` 就地改写——原文写的是「bodies 腿是 v1（字面量）」，
+   改完后机制已经不同，**留着就是错的**。
+
+### §9.230.4 修复本身也需要一道门
+
+第 3 步那段「并入总体」是**修复**。把**修复**删掉会怎样？
+`TestV1BodiesReadersAreAssessed` **照样红** ⇒ 这个修复是**未经证实的**。
+
+⇒ 新增 `TestV1BodiesScanIncludesRegisteredIndirectReaders`，判据是**集合关系**
+而不是数量：凡登记为间接 bodies 读方的文件，必须逐个出现在实测总体里。
+**不能**写成「总体数 ≥ 25」——那是把一个会随别的读方增减而漂的数钉死，
+下一个改 bodies 读方的人会为了过门去调门槛。
+
+### §9.230.5 变异验证
+
+**10 条有效变异，全部转红**：
+
+| # | 变异 | 被哪道门抓住 |
+|---|---|---|
+| M1 | helper 去掉 `AS request_body` 别名 | db 列名/类型对等门（真库） |
+| M2 | 默认臂去掉别名 `rb` | 默认关闭门 |
+| M3 | `GetPlatformBool` fallback 翻成 `true` | 默认关闭门 |
+| M4 | spec `Default` 翻成 `true` | 默认关闭门 |
+| M5 | `session_compare` 退回直写 v1 关系名 | 消费点接线门 |
+| M6 | `session_export` 投影删掉 `rb.response_body` | 消费点接线门 |
+| M7 | 间接登记 `ResolvesTo` 写成不存在的表 | 间接读点登记成色门 |
+| **M8** | **删掉「间接读方并入总体」那段** | **并入总体的自证门** |
+| M9 | 把消费点塞回 `requestLogsReadInventory` | inventory 覆盖门 |
+| **M11** | **exposure 总体退回字面量表** | **exposure 总体集合判据** |
+
+★ **M8 的对照才是重点**：同一个变异下，故意红的
+`TestV1BodiesReadersAreAssessed` **也还是红**（我实测确认了）。
+一个红对红 ⇒ 「总体静缩」在现有门矩阵里**完全没有信号**，
+这正是 §9.230.4 那道门存在的理由。
+
+另有 M10 阴性对照：把并入判据从 `== 0` 改成 `!= 1`，仍绿
+⇒ 并入的计数确为 1，判据不是靠碰巧过的。
+
+**第一轮里有 3 条变异「没被抓住」，逐条查下来没有一条是门的问题**：
+M5/M9 的锚点没匹配上（脚本没打出「变异已写入」），
+M7 把 `request_logs_bodies` 改成 `request_logs`——**那仍然是一张合法的
+`v1DirectTables` 表**，门判绿是对的，是我选的变异本身没意义。
+改成 `request_logs_legacy` 后正常变红。
+★ 这三条印证了那条纪律：**门绿时先确认变异真的改到了东西、以及代码路径真的经过**。
+
+### §9.230.6 顺带修掉的一处自欺
+
+`db/session_bodies_source_test.go` 的 v1 侧对等检查**第一版只查了
+`request_body` 一列**，注释却写「必须同形」。而调用点投影的是
+`request_body` **和** `response_body`、ON 子句用的是 `request_id`
+⇒ 少查两列，v1 侧若改了名这道门照样绿，而默认支在运行期 42703。
+已改为三列逐列比类型（v1 是真实关系，catalog 查法成立且不怕空表）。
+
+会话侧则**不能**用 catalog 查：它是个 `(SELECT … UNION ALL …)` 子查询，
+`pg_attribute` 里没有它这个关系。⇒ 用**消费点的真实访问方式**
+`SELECT pg_typeof(rb.<col>)::text FROM <helper> rb LIMIT 1`：
+列不存在在**解析期**就 42P01/42703，错误信息直接指名那个列名。
+
+### §9.230.6b 同一个坑在**下一层**又踩了一次：exposure 门
+
+`measureV1ReadingExposure`（退役清单的证据来源）的总体也是字面量表。
+我第一次改的时候**只改了报告循环、忘了测量循环**，然后跑反向变异
+（把总体退回字面量表）——
+
+> **没有任何一道门变红。**
+
+原因：viewArm 桶**没有登记表**，报告打印的内容也**没有门在核**。
+⇒ 改完之后它**看起来是个修复，其实什么都没改变**，
+和 §9.230.4 那条一模一样，只是深了一层。
+
+实测确认（不是推断）：`extractV1ReadingLiterals` 对
+`admin/session_bodies_source.go` **是能产出字面量的**——1 个，
+`"request_logs_bodies_with_current_month rb"`，判为 `viewArm`
+（`viaBaseTable=false, viaCanonicalView=true`）；而
+`admin/session_export.go` 现在产出 **0 个**。
+⇒ 「测不到」纯粹是总体选错了，**不是量具不行**。
+
+处置：总体提成单一 SSOT `retirementExposurePopulation()`，
+测量循环与报告循环都用它，再加
+`TestRetirementExposurePopulationIsEveryKnownReader`（判**集合相等**）。
+反向变异 M11 实测转红，并指名两个文件：
+
+```
+这些已知 v1 读方不在 exposure 总体里：[admin/session_bodies_source.go bg/auto_route_settle_sql.go]
+```
+
+★ 顺带暴露一个**此前就存在**的缺口：`bg/auto_route_settle_sql.go`
+（§9.43 就已是间接读法）**从来就没进过 exposure 总体**。本轮一并补上。
+
+### §9.230.7 这一轮**没有**做到的事
+
+- **开关仍然是关的。** 本轮不改变任何线上行为：默认臂返回的字符串与改造前**逐字相同**
+  （`request_logs_bodies_with_current_month rb`），两个读方的 SQL 一字未变。
+  这不是「保守」，是**数据不允许**：生产 09-30 缺 1,113 条（§9.229.2）。
+- **`request_logs` 仍然不能 DROP**，本地与生产都不行。理由与上轮相同：
+  `maas/*` + `admin/usage_credits.go` 默认读 `request_logs_hot`（§9.227），
+  `is_final_success` / `client_protocol` 两个回填未跑（§70.66）。
+- `session_bodies` 父表内部 57 行重复 `request_id`（37 个 id）**今天**不发作
+  （实测都不在 `session_turns` 里），但**「今天不」不是保证**。
+  `TestSessionFamilyBodiesSourceDoesNotDuplicateTurns` 把它变成被检查的事实，
+  并在报错里写明处置方向（源里加 `DISTINCT ON` 或给 `session_bodies` 加唯一约束）。
+- **生产 09-30 那一天仍未补。** 属主未批准，本会话对此**零写入**。

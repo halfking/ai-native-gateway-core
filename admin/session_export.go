@@ -224,7 +224,7 @@ func sessionExportMessagesSQL() string {
 			COALESCE(rb.request_body, '{}'::jsonb) AS request_body,
 			COALESCE(rb.response_body, '{}'::jsonb) AS response_body
 		FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		LEFT JOIN ` + sessionBodiesFromSQL() + ` ON rb.request_id = rl.request_id
 		WHERE 1 = 1
 		ORDER BY rl.ts ASC
 	`

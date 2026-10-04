@@ -900,7 +900,7 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 			       COALESCE(rb.response_body) AS response_body,
 			       rl.ts
 			FROM `+db.SessionFamilyTurnsForSessionSQL()+` rl
-			LEFT JOIN request_logs_bodies_with_current_month rb
+			LEFT JOIN `+sessionBodiesFromSQL()+`
 			  ON rb.request_id = rl.request_id
 			WHERE rl.tenant_id = $2
 			ORDER BY rl.ts DESC

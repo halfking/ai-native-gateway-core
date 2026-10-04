@@ -83,13 +83,15 @@ var requestLogsReadInventory = map[string]int{
 	"admin/routing.go":                      1,
 	// 2026-10-05：只 JOIN 不 FROM，此前对本门**完全不可见**（假零）。
 	// 会话对比 API 的 bodies 腿；turn 腿早已走会话族。
-	"admin/session_compare.go":              1,
 	"admin/session_analytics_breakdown.go":  2,
 	"admin/session_analytics_timeseries.go": 3,
 	"admin/session_bodies_batch.go":         2,
 	"admin/session_detail_v2.go":            2,
-	// 同上：会话导出 API 的 bodies 腿。
-	"admin/session_export.go":         1,
+	// 同上：只剩 JOIN 不 FROM。
+	// ⚠ §9.230 起**会话导出/对比那两个**（原 session_compare.go / session_export.go）
+	// 已不在本表：它们的 bodies 腿改走 sessionBodiesFromSQL()，源码里不再有
+	// v1 关系名字面量。v1 那一臂的登记在 indirectRequestLogsReaders
+	// （admin/session_bodies_source.go）。
 	"admin/session_extract.go":        3,
 	"admin/session_management_api.go": 1,
 	// 同上：`JOIN request_logs_with_current_month rl ON rl.id = slr.last_request_id`，
@@ -273,6 +275,24 @@ func sumInventory() int {
 // ⇒ 模式扩成 `from|join`。**不是**加一条「已知例外」清单——那只是把同一个洞
 // 从扫描器搬到登记表，而登记表需要人记得更新；JOIN 到 v1 关系**按定义**就是
 // 一个 v1 读点，没有误报空间。
+//
+// # 2026-10-05：同一批里的两个文件在本表**退场**（审计 §9.230）
+//
+// 上面那张名单里的 `admin/session_compare.go` / `admin/session_export.go`
+// 在本轮被改成经 `sessionBodiesFromSQL()` 取 bodies 源，于是它们源码里
+// **不再有** v1 关系名的字面量 ⇒ 本表（按行正则扫字面量）测到 0 处。
+//
+// ⚠ **「本表测到 0」不等于「它不读 v1」**——开关默认那一臂就是
+// `return "request_logs_bodies_with_current_month rb"`。把这两条从本表删掉
+// 之前必须先确认它们在别处有家，否则就是 §9.45「把不知道报成安全」的同一次复发。
+// ⇒ 处置按本仓**已有**的两张表分工，不新造第三套：
+//
+//	字面量读方 → requestLogsReadInventory（本表）
+//	间接读方   → indirectRequestLogsReaders（§9.49 建的那张）
+//	两者并集   → allKnownRequestLogsReaderFiles()
+//
+// 与 `bg/auto_route_settle_sql.go` 完全同形：那个文件同样因为关系名在 Go
+// 标识符里而不在本表，登记在间接表。⇒ 本表从 109 降到 107，**不是读方变少了**。
 var requestLogsReadPattern = regexp.MustCompile(`(?i)(from|join)\s+request_logs(_[a-z_]+)?\b`)
 
 func scanRequestLogsReaders(t *testing.T, root string) map[string]int {
