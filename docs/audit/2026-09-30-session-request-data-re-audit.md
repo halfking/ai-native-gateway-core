@@ -23201,9 +23201,23 @@ v1 停写后，连 v1 侧那 9,614 个标记也会消失。
   但「写侧从来没有等价写方」是**代码事实**（`claimSessionFinalSuccess` 只 UPDATE
   `request_logs_hot`），与库无关——**这一条可以直接外推到生产。**
 
-### §9.192.10 顺带核实：`client_protocol` **全仓无人读取**
+### §9.192.10 ⚠️ 本节已被 §9.193 **推翻并更正**：`client_protocol` **有读方**
 
-对 D28-c 做的核实（grep 全仓非测试代码）：`client_protocol` 的全部出现都是
+> **更正声明（2026-10-04，§9.193）**：本节原先断言
+> 「`client_protocol` **全仓无人 SELECT 读**」，并据此在决策表 D28-c 里建议
+> 把它移出退役清单。**该结论是错的。**
+> 错因：我用的是**逐行** `grep "SELECT" | grep client_protocol`，
+> 而 `admin/logs.go:204` 的 `rl.client_protocol` 位于**跨行**的 SQL 字面量里
+> ——那条查询由 `requestLogsListCols`（投影）+ `requestLogsJoins`（FROM/JOIN）
+> + `requestLogStatusExpr` 三段常量拼接而成。**逐行 grep 必然漏掉它。**
+> 已核实的事实：`client_protocol` **有读方**，`admin/logs.go` 的主日志列表
+> （走 710 视图）SELECT 它并下发到 JSON 字段。
+> ⇒ 它**应当留在**退役清单里；D28-c 已改写。
+>
+> 下面保留原文（含其推理），因为**它是本项目最值得记住的一类错误的样本**：
+> 一个方向明确、语气笃定、且与既有事实不冲突的错误结论。
+
+（原文）我当时的核实是 grep 全仓非测试代码：`client_protocol` 的全部出现都是
 **写侧**——`telemetry/context_attrs.go:162`（写进 entry）、`:192`（写进列）、
 若干 executors 塞进 log fields——加上 710 的投影
 `t.client_protocol::character varying(50)`。
@@ -23213,3 +23227,91 @@ v1 停写后，连 v1 侧那 9,614 个标记也会消失。
 ⚠ 这是一个**二阶事实**：把无人消费的列留在「会断的列」清单里会让这张风险清单虚高。
 核实方式（grep `SELECT` 侧引用）**可以推广到整张清单**——
 本轮只核了这一列（属主决定，见 D28-c）。
+
+
+---
+
+## §9.193 退役清单的读方普查：新门 + 推翻共享提取器的「只多报不少报」声明
+
+### §9.193.1 为什么要问「这一列有人在读吗」
+
+S4 退役风险清单有三张表（`db/retirement_column_exposure.go`）：
+`RetirementUnservableColumns`（3 列）、`RetirementDegradedColumns`（24 列）、
+`RetirementStructuralGapColumns`（5 列）。它们回答的是
+**「这一列退役后会怎样」**。
+
+没人问的是后半个问题：**「这一列有人在读吗」**。
+一列无人读取时，它归哪一档都不会伤害任何人；把它留在「会断的列」里
+只会让整张清单虚高，而**虚高的清单会被整体折扣**——
+真正会断的那几列于是跟着一起被忽略。
+
+### §9.193.2 顺带发现：共享提取器在「多段拼接的查询」上**漏报**，方向与其自述相反
+
+`request_logs_retirement_exposure_test.go` 头注释写着「这是**上界**：
+它会多报，不会漏报」。**在拼接式查询上这个方向是反的。**
+
+`extractV1ReadingLiterals` 按**单个字符串字面量**建别名表（`aliasesIn`）。
+`admin/logs.go` 的主日志查询由三段常量拼接（:152 状态表达式、
+:174 **投影清单含 `rl.client_protocol`**、:250 FROM/JOIN），
+含列名的那段**自己不带 FROM** ⇒ 别名表为空 ⇒ `columnAttribution` 返回
+`attrNone` ⇒ **该列从未被归因**。
+实测后果：该文件在暴露报告里 `definite` 只有 2 列
+（`canonical_id` / `client_model`），缺的正是这整段投影。
+
+⇒ **少报的方向恰好是「让读点看起来安全」**——最不该保留误差的方向。
+修它会改动 §9.161/§9.162 已公布的数字 ⇒ **属主决定（决策表 D29-a）**，
+本轮**不动共享提取器**。
+
+### §9.193.3 我为写这道门迭代了 **4 版判据**，每一版都被实测打掉
+
+| 版 | 判据 | 实测结果 |
+|---|---|---|
+| v1 | 逐行 `grep SELECT` | **漏** `client_protocol`（SQL 字面量跨行） |
+| v2 | 字面量必须含 `SELECT` | **漏**（投影段本身没有 `SELECT`） |
+| v3 | 字面量含 `SELECT`、不排除 INSERT | **多报** `client_forwarded_for`（`turn_writer.go:378` 是同时含 INSERT 与 SELECT 的巨型字面量） |
+| v4 | 整文件字面量**合并**后判读 | 造出「假语句」：真实查询的 `;` 不在字面量里，`WHERE … $` 读区一路吞到合并文本末尾，把裸列名常量读成读方 |
+
+最终形态：**逐字面量 + 读区（`SELECT…FROM` / `WHERE` / `GROUP BY` / `ORDER BY`）
++ 写语句整条跳过 + 「投影段形状」兜底**。
+兜底的三条判据（≥3 逗号项、含 `AS` 或点号限定、不含任何结构关键词）
+能认出 `requestLogsListCols`，
+又因为 `canonicalColumnOrderV2` 的每个元素是**单个**裸名（逗号不在字面量里）而被排除。
+
+★ **同族**：判据的失败形态不对称时，要把偏向放在**更响的一侧**。
+这里「漏认读方」会让门误报（吵），「多认读方」会让门沉默（安静）⇒ 偏向认得出。
+
+### §9.193.4 新门与结果
+
+`admin/request_logs_retirement_column_reader_gate_test.go`（常跑）问的是
+**另一个问题**——「这一列有没有被任何生产 SQL 读过」——
+它不需要知道列来自哪条腿，因此可以绕开别名归因那一环。
+默认拒绝 + 具名登记（沿用 `bodiesUnaffectedJustification` 范式）；
+**登记过期（扫到读方）也会红**，逼人回来销账。
+
+清单 32 列 ⇒ **5 列确无生产 SQL 读方**，全部具名登记：
+
+| 列 | 机制 |
+|---|---|
+| `test_col` / `test_tab_indent` | 测试占位列，只出现在 710 的投影列表 |
+| `stream_chunks_sent` | 只有写方；`handler.go:6255` 读的是**内存 map** `m["stream_chunks_sent"]`，不是 SQL |
+| `client_forwarded_for` | 只有写方（`context_attrs.go:159/190`、`turn_writer.go` 写列） |
+| `quality_fix_actions` | 只出现在 `db/db.go` 的 **DDL**（`SET storage` 列名清单 :2056、`ADD COLUMN` :2158） |
+
+⚠ **自我更正**：上一轮 §9.192.10 说「`client_protocol` 无人读、建议移出清单」——
+**错**，已更正（见该节的更正声明）。它有读方（`admin/logs.go` 主日志列表）。
+⇒ **移出清单这条建议作废**；D28-c 已改写为「两列都留在清单里」。
+
+### §9.193.5 变异验证
+
+- **M1**：删掉 `stream_chunks_sent` 的登记 ⇒ 红，点名该列
+  （同时连带删掉了相邻的 `quality_fix_actions`，两列都点出来——如实的报法）。
+- **M2**：把 `test_col` 的理由清空 ⇒ 红，指名「登记必须写清机制」。
+
+### §9.193.6 诚实边界
+
+- **未改任何产品代码与共享提取器。** 本节新增**一条测试** + 修正两处文档结论。
+- 5 条具名登记是**「没有 SELECT 读方」**这个机械判据的结论；
+  不排除消费方在 Go 结构体/JSON 之外的形态（如 910 `m["stream_chunks_sent"]`），
+  那种形态不受停写影响。
+- **未连接生产。** 但「`admin/logs.go` 的投影段没有被归因」与
+  「`client_protocol` 在该查询里被 SELECT」都是**代码事实**，可直接外推。

@@ -2034,9 +2034,8 @@ v1 的标记来自 v1 的写方。**一旦 S4 停写，连 v1 侧那 9,614 个�
   * 选项 ②：只在 session 侧认领，v1 侧标记改为**读时派生**（不写库）
     ——改动面更大但避免双写不一致。
   * 选项 ③：**接受现状**，把时间线端点的 `final_success`/`superseded_success`
-    两个 outcome 显式下线（返回 `success` + 一个说明字段），
-    并把 `is_final_success` 从 `RetirementUnservableColumns` 移到
-    「已知不供给、无人消费」清单。
+    两个 outcome 显式下线，并把它从 `RetirementUnservableColumns` 的
+    「会断」叙述中单列（不是移出清单——它**有**读方，见下）。
   * 我的建议：**①**，但**必须连带 session 侧唯一性约束**一起做；
     ③ 是唯一不需要改写侧的选项，代价是承认能力回退。
 - **D28-b**：历史数据怎么办？`request_logs` 里已有 9,614 个标记（7 天），
@@ -2045,15 +2044,90 @@ v1 的标记来自 v1 的写方。**一旦 S4 停写，连 v1 侧那 9,614 个�
     先把写方做对，再决定是否需要一次性回填（且回填会撞上「同一会话多轮都被标」的
     择一问题，与 v1 侧 `superseded` 规则必须一致）。
 - **D28-c**：`client_protocol`（v1 24h 有 38 行）与 `work_type`（3 行）同在这张
-  unservable 清单里。**它们是否也要补 session 族供给**？
-  * `client_protocol` 这一条**已核实**（本轮 grep 全仓非测试代码）：
-    **没有任何 SELECT 读它**。全部出现都是写侧
-    （`telemetry/context_attrs.go:162` 写进 entry、`:192` 写进列、
-    若干 executors 塞进 log fields）加 710 的投影
-    `t.client_protocol::character varying(50)`。
-    ⇒ 它是**纯写侧列**：v1 侧 24h 有 38 行，**没有任何读方消费**。
-  * 我的建议：`work_type` 见 D27-c（客户端头驱动，量大、且影响一个 API 维度）；
-    `client_protocol` 建议与 ③ 同处置——**移出 unservable 清单并写明「无读方」**，
-    **而不是为 38 行去改 schema**。
-    ⚠ 顺带一个二阶事实：把一个**无人读取**的列留在「会断的列」清单里，
-    会让这张风险清单虚高。D28-c 的核实方式（grep SELECT）可以推广到整张清单。
+  unservable 清单里，怎么处置？
+  * ⚠ **本条已在 §9.193 被我自己推翻并更正。** 我原先写「`client_protocol`
+    全仓无任何 SELECT 读它，建议移出清单」——**那是错的**，而且错法值得记：
+    我用的是**逐行** `grep "SELECT" | grep client_protocol`，而
+    `admin/logs.go:204` 的 `rl.client_protocol` 在**跨行**的 SQL 字面量里
+    （该查询由 `requestLogsListCols` + `requestLogsJoins` +
+    `requestLogStatusExpr` 三段常量拼接），逐行 grep 必然漏掉。
+  * 已核实的事实：`client_protocol` **有读方** —— `admin/logs.go` 的主日志列表
+    （走 710 视图）SELECT 它并下发到 JSON 字段 `client_protocol`。
+    ⇒ 它**应当留在** unservable 清单里。
+    且由于视图按 `request_id` 去重、业务行走 session 臂，
+    **主日志列表今天对每条业务请求就已经返回空的 `client_protocol`** ——
+    与 `work_type` 同形的**既有**降级（不是停写回归，见 §9.192.3 的框架澄清）。
+  * `work_type` 仍见 D27-c（客户端头驱动、量大、影响一个 API 维度）。
+  * 我的建议：两列都**留在清单里**，把「主日志列表的 `client_protocol` 今天就是空的」
+    记为已知既有降级（与 D27 的 `work_type` 一起排期），**不要**用移出清单来「消掉」它。
+
+---
+
+## D29：退役暴露分析的提取器在「多段拼接的查询」上会**漏报**，与其自述的方向相反
+
+### 现象（可复现）
+
+`admin/request_logs_retirement_exposure_test.go` 的头注释写着：
+
+> 这是一个**上界**：它会多报，不会漏报。……一个假阳性只花掉「再看一眼一个文件」，
+> 假阴性则会悄悄放行一个什么都没返回的读点。
+
+**在多段拼接的查询上，这个方向是反的。**
+
+`extractV1ReadingLiterals` 按**单个字符串字面量**建别名表
+（`aliasesIn(clean)`）。`admin/logs.go` 的主日志查询由三段常量拼接：
+
+| 常量 | 行 | 内容 |
+|---|---|---|
+| `requestLogStatusExpr` | 152 | 状态表达式 |
+| `requestLogsListCols` | 174 | **投影清单**（含 `rl.client_protocol`） |
+| `requestLogsJoins` | 250 | FROM / JOIN |
+
+含列名的那一段**自己不带 FROM** ⇒ `aliasesIn()` 得到空别名表 ⇒
+`columnAttribution` 返回 `attrNone` ⇒ 该列**从未被归因**。
+实测后果：`admin/logs.go` 在暴露报告里 `definite` 只有 2 列
+（`canonical_id` / `client_model`），缺的正是这整段投影。
+
+⇒ **该分析在一整类查询上少报**，而少报的方向恰好是「让读点看起来安全」。
+
+### 我为此付出的代价（本轮共 4 次判据迭代，全部记录）
+
+1. 逐行 grep ⇒ 漏 `client_protocol`（跨行）。
+2. 按字面量要求含 `SELECT` ⇒ 同样漏（投影段没有 SELECT）。
+3. 按字面量要求含 `SELECT`、不排除 INSERT ⇒ **多报** `client_forwarded_for`
+   （`turn_writer.go:378` 是一个同时含 INSERT 列表与别处 SELECT 的巨型字面量）。
+4. 把整个文件的字面量**合并**后判读 ⇒ 造出「假语句」
+   （真实查询的 `;` 不在字面量里，`WHERE … $` 读区一路吞到合并文本末尾），
+   把裸列名常量也读成读方。
+
+最终形态：**逐字面量 + 读区（`SELECT…FROM` / `WHERE` / `GROUP BY` / `ORDER BY`）
++ 写语句整条跳过 + 「投影段形状」兜底**（≥3 逗号项、含 `AS` 或点号限定、
+不含任何结构关键词）。后者能认出 `requestLogsListCols`，
+又因为 `canonicalColumnOrderV2` 的每个元素是**单个**裸名（逗号不在字面量里）而被排除。
+
+### 已交付（不改共享提取器）
+
+`admin/request_logs_retirement_column_reader_gate_test.go`（常跑）问的是
+**另一个问题**——「这一列有没有被任何生产 SQL 读过」——
+它不需要知道列来自哪条腿，因此可以绕开别名归因那一环。
+清单 32 列 → **5 列确无生产 SQL 读方**（`test_col` / `test_tab_indent` /
+`stream_chunks_sent` / `client_forwarded_for` / `quality_fix_actions`），
+全部具名登记并写明机制；门绿。
+另：`quality_fix_actions` 只出现在 `db/db.go` 的 **DDL** 里
+（`SET storage` 列名清单、`ADD COLUMN`），不是 SELECT。
+
+### 请拍板
+
+- **D29-a**：是否修 `extractV1ReadingLiterals` 的作用域（别名表改为**文件级**并集）？
+  * 影响面：会改变 §9.161/§9.162 已公布的暴露报告数字（**只会变多**）。
+  * 我的建议：**修**，并在改动的同一个 commit 里重跑
+    `TestRequestLogsRetirementExposure` / `…BreakersRegistryIsConsistent` /
+    `…RepointVerdict` 三道门，把新旧数字并列写进审计。
+    理由：现在这份报告在「拼接式查询」上少报，而少报的方向是**让读点显得安全**——
+    这是最不该保留误差的方向。**但改共享提取器 = 改既有已发布结论，属主决定。**
+- **D29-b**：`admin/logs.go` 这类「多段拼接」查询在仓里有几处？
+  是否值得做一次专项普查（按「SQL 常量被 `+` 拼接」grep），
+  把受影响文件逐个核一遍？* 我的建议：**做**，可与 D29-a 同一个 commit。
+- **D29-c**：本轮新门「清单列必须有读方」的 5 条具名登记要不要复核？
+  * 我的建议：不需要人工复核，门已把机制逐条写死，且空理由会红；
+    但**若有人新增读方，登记必须回来销账**（那会让门红，这是故意的）。
