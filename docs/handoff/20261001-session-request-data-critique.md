@@ -10386,3 +10386,113 @@ D21-a/b、D20-a/c、D19-b、`RetirementColumnFill` 是否应作为仓库内活�
 ⚠ **未验证**：这批流量是什么工具、何时跑的、还会不会再跑，本轮没查
 （`storage` 侧无变更史，同 §9.202 的 `admin_logs_native_turns_read`）。
 **不据此改任何结论。**
+
+---
+
+## §70.52 顶层总闸「S4 能不能开」= **不能**；而它的措辞原本在替人说「正在恢复」（§9.211）
+
+### ① 回到目标本身：`request_logs` 现在能不能 DROP？
+
+前面几节都在查部件。这一节问总闸。答案：**不能**，卡在两处，顺序不能颠倒。
+
+**① S4（停写）尚未开启 —— 这是先决条件。**
+
+实测最近 2 小时写入量：
+
+| 面 | 行数 | 最新一行 |
+|---|---|---|
+| `request_logs_hot` | **1,136** | 21:39:59 |
+| `session_turns_hot` | 418 | 21:39:59 |
+
+⇒ **v1 仍在写，且比 session 臂多。** 登记表里那个
+`telemetry/client.go`「v1 writer」**不是历史遗留，是当前活跃的**。
+DROP `request_logs` 前它必须被移除或改指向，否则 INSERT 直接报错。
+
+⚠ 顺带一个事实（**未查原因，不据此下结论**）：
+`request_logs`（**月度面**）最近 2h 新增 **0** 行、最新一行停在 **13:30:41**，
+而热面 21:39 仍在写 ⇒ 热→月搬迁看起来滞后/停了。
+
+**② 5 个已登记 breaker**（`TestRequestLogsRetirementBreakersRegistryIsConsistent` **PASS**，
+登记与实测一致、无漂移）：`admin/work_types.go`、`db/db.go`、
+`telemetry/client.go`、`domains/streaming/model_alternatives.go`、
+`cmd/gateway/dual_read_validator.go`。
+
+### ② S4 度量门的数，和它**说错的一句话**
+
+`TestS4GateMeasurement`（仓库已有的总闸）实测：
+
+| 窗口 | internal_loopback | non_terminal | genuine_loss | s4_ready |
+|---|---|---|---|---|
+| 1h | 0 | 0 | 0 | **true** |
+| 24h | 1 | 20 | **4** | false |
+| 7d | 3,004 | 205 | **10** | false |
+| 30d | 32,880 | 1,628 | 10 | false |
+
+**门的总结行写的是**「historical … none in the last hour — **decaying**」。
+
+⚠ **这句话是错的**：10 次里有 **4 次在最近 24 小时内**。今天还在丢，
+而这句话读起来像「已恢复、可以开了」。
+
+### ③ 根因：判据**从不看 24h**，只覆盖了三种状态里的两种
+
+原代码是 `if 1h>0 && 30d>0 {ONGOING} else if 30d > 1h {decaying}`。
+「1h=0、24h=4、30d=10」落进第二分支。
+★ 与 §9.209/§9.210 同一类：**措辞像一个结论，判据只覆盖部分状态。**
+
+改成**四态全划分**（仍是报告、不是断言——「S4 能不能开」是发布决定，属决策表）：
+`ONGOING` / **`RECENT, NOT YET HISTORICAL`**（1h 干净但 24h 仍有 ⇒
+「每天发作几次的丢行机制，在两次事件之间长得一模一样」）/
+`historical … decaying` / `clean`。
+
+外加一条**有牙**的断言：四个窗口是同一行源 + 同一谓词 + 逐渐放宽的 `ts` 边界
+⇒ 计数**必须单调不减**；任何窗口被改 scope 都会立刻报红，
+因为那意味着这些数字来自**两个不同的总体**。
+
+### ④ 变异验证（先 diff 确认落地再读结果）
+
+| 变异 | 结果 |
+|---|---|
+| 打乱窗口顺序（模拟某窗口被错误缩小） | 红：`window 1h … but the wider 30d window reports genuine_loss=10 … one of them is scoped differently` |
+| 拿掉 24h 分支（退回旧的二分支判据） | 绿，但输出变成 **`historical: all 10 genuine losses are older than 24h — decaying`** —— 而 4 次就在 24h 内。**这就是缺陷本身** |
+
+### ⑤ ⚠ 我这一轮差点报出一个**来自另一份测量**的数
+
+为给「v1 还在写」配分母，我手写 SQL 数「v1 成功行里没有 session 双生行的」，
+得 **519/932（56%）**。⚠ **这个数不能用**：S4 门把漂移分成
+`internal_loopback` / `non_terminal` / `genuine_loss` 三类，
+大量「无双生行」是**合法不镜像**的（内部回环、非终态轮次）。
+
+⇒ 与 §9.211.3 同一根因的另一面：**同一件事只能有一份测量**。
+`genuine_loss` 的口径由生产代码 `mirrorDriftClassSQL` 定义，
+手写一条「看起来等价」的 SQL 就会得到一个**大 100 倍**的数。
+**已弃用该数，改用门自己的输出。**
+
+### ⑥ 给属主的一句话
+
+`request_logs` **现在不能退役**：① S4 未开（7d `genuine_loss=10`，
+**24h 窗口仍有 4，今天还在丢**）；② 5 个已登记 breaker。
+⇒ **在 ① 变绿之前讨论 ② 的切换时点（D29-d）没有意义。**
+
+### ⑦ 待拍板
+
+- ⚠ **S4 开启时点**（本轮新增，且是所有退役事项的前置）；
+- ⚠ **D30-b（252 只读凭据）** —— 本机测得的 `genuine_loss` 只能说明本机，
+  生产是否同样在丢**无法回答**；
+- D32 回填 + D29-d 切换时点（须在 `request_logs` DROP 之前）；
+- `client_model` 值分歧登记是否删除；`outbound_model` 20% 下限复核；
+- `RetirementColumnFill` 是否继续作为仓库内活库快照。
+沿用未决：D28-a/b、D27-a/b/c、D26-a/b、D25-a/b/c、D24 系列、D23 系列、
+D21-a/b、D20-a/c、D19-b。
+
+### ⑧ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
+2. **所有编辑只在 worktree 里做**；共享主工作区处于未解决合并冲突。
+3. `export GOCACHE=/tmp/gocache-<worktree名>`；
+   **真库门必须同时导出 `TEST_DATABASE_URL`**，否则真库测试是 **skip 而不是 fail**，
+   全绿具有误导性（本轮已踩：`go test ./cmd/gateway/` 1.67s 返回 ok，实际全 skip）。
+4. ⚠ 报任何「缺失/漂移」比例前，先确认口径与生产代码里的分类器一致
+   （`mirrorDriftClassSQL`），**不要手写一条看起来等价的 SQL**。
+5. ⚠ SQL 在 Go raw string 里，注释中不能出现反引号。
+6. ⚠ 真库跑在**共享的、持续被写入的库**上；跨运行的数字会变，
+   before/after 必须**同一次运行**内取两个数。

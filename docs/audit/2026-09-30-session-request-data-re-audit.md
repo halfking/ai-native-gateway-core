@@ -25031,3 +25031,107 @@ Direction 2 接管（`measured` 里未登记的列必须为 0），把恒等式�
 ⚠ **未验证**：这批 `probe-direct-*` 是什么工具、什么时候跑的、还会不会再跑，
 本轮没有查（`storage` 侧无变更史，与 §9.202 的 `admin_logs_native_turns_read`
 同类问题）。**不据此改任何结论。**
+
+## §9.211 顶层总闸「S4 能不能开」：**不能**，而且它的措辞原本在替人说「正在恢复」
+
+前面几节都在查部件。这一节去回答目标本身：
+**`request_logs` 现在到底能不能 DROP。**
+
+### §9.211.1 顶层答案是「不能」，且原因有两层
+
+**(1) 已登记的 5 个 breaker 仍然在**
+`TestRequestLogsRetirementBreakersRegistryIsConsistent` **PASS** ——
+登记与实测一致、无漂移。5 个文件：`admin/work_types.go`、`db/db.go`、
+`telemetry/client.go`（**v1 写方**）、`domains/streaming/model_alternatives.go`、
+`cmd/gateway/dual_read_validator.go`。
+
+**(2) 但真正的先决条件在它们之前：S4（停写）尚未开启**
+
+实测 v1 与 session 的写入量（最近 2 小时）：
+
+| 面 | 行数 | 最新一行 |
+|---|---|---|
+| `request_logs_hot` | **1,136** | 21:39:59 |
+| `session_turns_hot` | 418 | 21:39:59 |
+
+⇒ **v1 仍在写，且写得比 session 臂多。** 双写在进行中，
+`telemetry/client.go` 那个「v1 writer」不是历史遗留，是**当前活跃**的。
+在 v1 写方移除之前 DROP `request_logs`，INSERT 会直接报错
+（登记表原文：*must be removed or repointed, not tolerated*）。
+
+⚠ 顺带一个事实：`request_logs`（**月度面**）最近 2h 新增 0 行，
+最新一行停在 **13:30:41**，而热面 21:39 仍在写。
+⇒ 热→月的搬迁看起来滞后/停了。**本轮未查原因，不据此下结论。**
+
+### §9.211.2 S4 度量门给出的数，以及它**说错的一句话**
+
+`TestS4GateMeasurement` 是仓库里已有的总闸（「Can S4 be opened? 是 request_logs
+退役前的第一道门」）。实测：
+
+| 窗口 | internal_loopback | non_terminal | genuine_loss | s4_ready |
+|---|---|---|---|---|
+| 1h | 0 | 0 | 0 | **true** |
+| 24h | 1 | 20 | **4** | false |
+| 7d | 3,004 | 205 | **10** | false |
+| 30d | 32,880 | 1,628 | 10 | false |
+
+⇒ **`s4_ready = false`**。但**门的总结行写的是**：
+
+> historical: genuine losses exist in 30d (10) but none in the last hour — **decaying**
+
+⚠ **这句话是错的。** 10 次里有 **4 次在最近 24 小时内**。
+读起来像「镜像已经恢复、可以开了」，而实际上今天还在丢。
+
+### §9.211.3 根因：判据**从不看 24h**，只覆盖了三种状态里的两种
+
+原代码是两个分支，键只有 1h 与 30d：
+
+```go
+if one.genuine > 0 && results["30d"].genuine > 0 {      // ONGOING
+} else if results["30d"].genuine > one.genuine {        // historical / decaying
+}
+```
+
+⇒ 「1h=0、24h=4、30d=10」这种状态落进第二个分支，被说成 decaying。
+**一个只覆盖两种状态的三态分类**，中间那态（最近安静、但今天仍丢）被误判为「历史」。
+
+★ 这与 §9.209/§9.210 是同一类：**措辞读起来像一个结论，而它的判据只覆盖了部分状态。**
+
+修法（**仍然是报告，不是断言**——「S4 能不能开」是发布决定，属决策表）：
+
+| 状态 | 输出 |
+|---|---|
+| 1h > 0 | `ONGOING` — 此刻就在丢 |
+| 1h = 0 且 **24h > 0** | `RECENT, NOT YET HISTORICAL` — 一小时的安静不是恢复的证据；每天只发作几次的丢行机制，在两次事件之间**长得一模一样** |
+| 24h = 0 且 30d > 0 | `historical … decaying` |
+| 全 0 | `clean` |
+
+外加一条**有牙**的断言：四个窗口是**同一行源 + 同一谓词 + 逐渐放宽的 `ts` 边界**
+⇒ 计数**必须单调不减**。任何窗口被改 scope 都会立刻报红，
+因为那意味着这些数字来自**两个不同的总体**。
+
+### §9.211.4 变异验证（先 `diff` 确认落地再读结果）
+
+| 变异 | 结果 |
+|---|---|
+| 打乱窗口顺序（模拟某窗口被错误缩小） | 红：`window 1h reports genuine_loss=0 total=0, but the wider 30d window reports genuine_loss=10 … one of them is scoped differently` |
+| 拿掉 24h 分支（= 退回旧的二分支判据） | 绿，但输出变成 **`historical: all 10 genuine losses are older than 24h — decaying`** —— 而 4 次就在最近 24h 内。**这就是缺陷本身**，新分支正是修掉它的那一处 |
+
+### §9.211.5 ⚠ 我这一轮自己差点犯的错：差点报出一个**来自另一份测量**的数
+
+我为了给「v1 还在写」配一个分母，手写了一条 SQL 数「v1 成功行里没有 session 双生行的」，
+得到 **519 / 932（56%）**。⚠ **这个数不能用**：S4 门自己把漂移分成
+`internal_loopback` / `non_terminal` / `genuine_loss` 三类，
+大量「无双生行」是**合法不镜像**的（内部回环、非终态轮次）。
+
+⇒ 与 §9.211.3 同一根因的另一个面：**同一件事只能有一份测量**。
+`genuine_loss` 的口径由 `mirrorDriftClassSQL`（生产代码）定义，
+手写一条「看起来等价」的 SQL 就会得到一个**大 100 倍**的数。
+**本轮已弃用该数，改用门自己的输出。**
+
+### §9.211.6 给属主的一句话现状
+
+`request_logs` **现在不能退役**，卡在两处，顺序不能颠倒：
+① **S4 未开**（7d `genuine_loss=10`，且 **24h 窗口仍有 4**，今天还在丢）；
+② 5 个已登记 breaker（其中 `telemetry/client.go` 是**当前活跃**的 v1 写方）。
+⇒ 在 ① 变绿之前讨论 ② 的切换时点（D29-d）没有意义。
