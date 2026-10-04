@@ -236,6 +236,56 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "维度归因报表（用量趋势的成本拆分）会少掉 v1 臂的行。" +
 			"与 logs.go 同属切换清单项。",
 	},
+	// ── §9.232：bodies 腿改走切换层的消费点（7 文件 / 10 处）──────────────
+	"admin/auto_title_generator.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + sessionBodiesFromSQL() + ` `（1 处，§9.232 从字面量 v1 bodies 改走切换层）。" +
+			"同包函数调用 ⇒ 工具判 unresolved（`resolve` 的 CallExpr 只查 env.funcs，" +
+			"而 sessionBodiesFromSQL 的一臂是跨包 db.SessionFamilyBodiesSourceSQL()）。" +
+			"**默认支读 v1**（request_logs_bodies_with_current_month）⇒ 条件性读 v1。" +
+			"消费点由 admin 侧 indirectSourceConsumers 机器识别；切换层登记在" +
+			"admin/request_logs_indirect_readers_test.go（admin/session_bodies_source.go）。",
+		Consequence: "停写/DROP 后 bodies 腿静默变空、接口仍 200，与迁移前完全一致——" +
+			"开关默认关。开关打开后本条免疫，但 bodies 退役门仍红 ⇒ 开关开不了。",
+	},
+	"admin/compression_stats.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + sessionBodiesFromSQL() + ` `（2 处，§9.232；第 3 处在 " +
+			"compressionStatsEstimatedOrigSQL 里，该常量**因此由 const 改成 var**——" +
+			"函数调用不能出现在 const 声明中）。" +
+			"**默认支读 v1** ⇒ 条件性读 v1。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "停写后 with_outbound / compressed / estimated_original_tokens / " +
+			"summary_mode_rows 静默归 0（压缩率与省 token 数变 0%，而 total 与 strategy " +
+			"分布仍有数、接口 200）——停写分类表把本文件记为 silently_degraded_content。" +
+			"⚠ 换源时要连分项一起看，只看 total 会被骗过去。",
+	},
+	"admin/logs_summary.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + sessionBodiesFromSQL() + ` `（2 处，§9.232）。" +
+			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "同 compression_stats：正文两列静默变空、计数类仍有数。",
+	},
+	"admin/memora_handlers.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + sessionBodiesFromSQL() + ` `（1 处，§9.232）。" +
+			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "停写分类表记 degraded_content，且该条目历史上因「同一文件取更危险档」" +
+			"被改判过一次（§9.35）——改它之前先读那条 Note。",
+	},
+	"admin/no_topic_session.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + sessionBodiesFromSQL() + ` `（2 处，§9.232）。" +
+			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "降级的是**正文两列、不是行数**：bodies 无 session 臂时新会话的 " +
+			"request_body/response_body 恒为空串，而 message_count 仍非零、接口 200、" +
+			"消息列表结构齐全 ⇒ 消费方拿到「有轮次、无正文」的会话。",
+	},
+	"admin/session_sanitize_matches.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + sessionBodiesFromSQL() + ` `（1 处，§9.232）。" +
+			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "bodies 腿取不到时匹配依据变空 ⇒ 结果变少但不报错。",
+	},
 	"admin/session_compare.go": {
 		Verdict: verdictNonV1ByInspection,
 		Via: "221/902 行 `FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
@@ -278,9 +328,17 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关。",
 	},
 	"admin/session_title.go": {
-		Verdict:     verdictNonV1ByInspection,
-		Via:         "323 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` t`，会话族。",
-		Consequence: "与 v1 无关。",
+		Verdict: verdictUnresolvedTool,
+		Via: "**两个拼接点，一句话说不清所以必须写全**：\n" +
+			"  ① 323 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` t` → 会话族，与 v1 无关；\n" +
+			"  ② 189 行 `LEFT JOIN ` + sessionBodiesFromSQL() + ` ` → **条件性读 v1**（§9.232 从字面量迁移过来）。\n" +
+			"⚠ 原条目只写了 ①、结论是「与 v1 无关」——迁移前那**确实成立**（bodies 腿是字面量，\n" +
+			"由 exposure / bodies 退役门管，不在本清单范围）。\n" +
+			"迁移后 ② 进了本工具的 unresolved 桶，而**若仍沿用「与 v1 无关」就会让清单说谎**。\n" +
+			"⇒ 本条目已由 verdictNonV1ByInspection 改为 verdictUnresolvedTool。",
+		Consequence: "① 会话族腿不受影响。② 停写/DROP 后 bodies 腿静默变空、接口仍 200 —— " +
+			"语料从全文降级为 preview 片段（request_preview/response_preview 兜底），" +
+			"语料短到 40 rune 以下才显式 400。开关默认关 ⇒ 与迁移前完全一致。",
 	},
 	"admin/session_turns_tree.go": {
 		Verdict:     verdictNonV1ByInspection,

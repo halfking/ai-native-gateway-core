@@ -149,13 +149,14 @@ func newStopWriteFixtureDB(t *testing.T, adminDSN string) (*pgxpool.Pool, string
 // unclassifiedStopWriteReaders 返回尚未逐点评估的读点清单。
 // 与 TestRequestLogsStopWriteClassificationProgress 用**完全相同**的口径
 // （直接表 ∪ 间接表的全集，减去已评估的），不自建另一套清单。
-func unclassifiedStopWriteReaders() []string {
+func unclassifiedStopWriteReaders(t *testing.T) []string {
+	t.Helper()
 	known := map[string]bool{}
-	for _, f := range allKnownRequestLogsReaderFiles() {
+	for _, f := range allKnownRequestLogsReaderFiles(t) {
 		known[f] = true
 	}
 	var todo []string
-	for _, f := range allKnownRequestLogsReaderFiles() {
+	for _, f := range allKnownRequestLogsReaderFiles(t) {
 		if c, ok := requestLogsStopWriteClassification[f]; !ok || c.Effect == effectUnclassified {
 			todo = append(todo, f)
 		}
@@ -246,7 +247,7 @@ func TestStopWriteInterlock_UnclassifiedReadersKeepTheFlagOn(t *testing.T) {
 	// 一样的失效形态），那真实不变量那条也一并作废。
 	//
 	// ★ 第二版改成**自带危险状态**，不再用真实未评估清单当前提。
-	// 第一版写的是 `todo := unclassifiedStopWriteReaders(); if len(todo)==0 { Skip }`
+	// 第一版写的是 `todo := unclassifiedStopWriteReaders(t); if len(todo)==0 { Skip }`
 	// —— 于是 §9.191 把最后一个读点评估完之后，本自检**永久 Skip**，
 	// 而它恰恰是唯一能证明互锁没退化成恒真门的那一条。
 	// 判据的有效性不能挂在「被检验对象当前恰好处于某个状态」上：
@@ -292,7 +293,7 @@ func TestStopWriteInterlock_UnclassifiedReadersKeepTheFlagOn(t *testing.T) {
 		restoreReal := wireSettingsTo(t, real)
 		defer restoreReal()
 
-		todo := unclassifiedStopWriteReaders()
+		todo := unclassifiedStopWriteReaders(t)
 		t.Logf("未评估读方 %d 个：%v", len(todo), todo)
 		enabled := settings.RequestLogsWriteEnabled() // 真实 store，缺行 ⇒ 默认 true
 		t.Logf("真实开关 storage.request_logs_write_enabled = %v（缺行时取默认 true = 维持双写）", enabled)

@@ -35,7 +35,7 @@ package admin
 //
 // # 口径
 //
-// 分母 = `allKnownRequestLogsReaderFiles()`（现有分析的覆盖范围）。
+// 分母 = `allKnownRequestLogsReaderFiles(t)`（现有分析的覆盖范围）。
 // 分子 = 「出现在无 FROM 的 SQL 片段里、但 `extractV1ReadingLiterals`
 // 没有归因」的退役清单列。`id` 单列——提取器自己的注释写着
 // 「This is the case that makes `id` a false positive」，它常以派生名
@@ -87,7 +87,7 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 			return nil
 		}
 		inInventory := false
-		for _, f := range allKnownRequestLogsReaderFiles() {
+		for _, f := range allKnownRequestLogsReaderFiles(t) {
 			if f == rel {
 				inInventory = true
 				break
@@ -159,11 +159,11 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 	if scanned == 0 {
 		t.Fatalf("探针自检失败：分母（读方清单）里一个文件都没扫到。" +
 			"这**不是**「漏归因为 0」的结论，是探针读错了对象。" +
-			"请先查 allKnownRequestLogsReaderFiles() / repoRootFromCaller。")
+			"请先查 allKnownRequestLogsReaderFiles(t) / repoRootFromCaller。")
 	}
-	if len(allKnownRequestLogsReaderFiles()) < 50 {
+	if len(allKnownRequestLogsReaderFiles(t)) < 50 {
 		t.Fatalf("探针自检失败：读方清单只有 %d 个文件，低于 50 的地板 —— "+
-			"分母被悄悄换掉了", len(allKnownRequestLogsReaderFiles()))
+			"分母被悄悄换掉了", len(allKnownRequestLogsReaderFiles(t)))
 	}
 
 	filesA, pairsA, uniqA := 0, 0, map[string]bool{}

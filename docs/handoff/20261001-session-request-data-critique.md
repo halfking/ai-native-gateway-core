@@ -11941,3 +11941,68 @@ viewArm 桶没有登记表、报告内容也没有门在核。
 6. C 类 2 个重做延迟分层，**必须带前后延迟读数**。
 7. `is_auto_request = t` 的可审计性要不要保留（属主决定，至今无门）。
 8. 部署 `e6193ea92`；`pg17-proactive-empty-table-cleanup.sh` 补会话族白名单。
+
+---
+
+## §70.69 A 类 7 个读方已迁（开关默认关）；并修掉 §70.67 那个**不完整**的修复
+
+### 做了什么
+
+- **消费者识别机制**：`indirectReader.SwitchFunc` + `indirectSourceConsumers`，
+  并入三处总体（退役清单证据 / bodies 门总体 / 族分类器 `sourceFamilyOf`）。
+- **迁移 7 个文件 / 11 处** bodies 腿走 `sessionBodiesFromSQL()`。
+- 2 道新门 + Evidence 门两跳校验。
+- 一处 `const` → `var`（函数调用不能出现在 const 声明里）。
+
+### ★ §70.67 的修复是不完整的（本轮实测发现）
+
+把机制建好、还没迁任何文件时，bodies 总体从 **25 变成 27** ——
+多的正是 `admin/session_compare.go` 与 `admin/session_export.go`。
+
+⇒ §70.67 只把**切换层自己**加回了总体，**没加它的两个消费点** ⇒
+**全表最要紧的两个 v1 bodies 读方从退役证据里消失了**，
+而当时那道自证门**只检查登记条目本身**，所以它是绿的。
+
+★ 新变体，单独记：「修复本身也需要门」—— 而**第一版那道门比缺陷窄**，
+于是漏掉了缺陷的一半。门必须覆盖消费点，且消费点必须**机器可算**。
+
+### 迁了 7 个，没迁 6 个
+
+- **读基表的 2 个刻意不迁**：`request_logs_bodies`（基表）⊂ 视图（hot ∪ 父表），
+  换过去会**扩大覆盖** ⇒ 行为变更不是等价替换。
+  `quality_correlations.go` 还带 `WHERE is_auto_request = TRUE` ⇒ 换源同时改口径。
+- **跨包 4 个**：`sessionBodiesFromSQL` 在 `admin` 包，domains/bg 看不见
+  ⇒ 处置是把开关下沉到 `db` 包，**下一步**。
+- `system_prompt_prefix.go` 是 INNER JOIN，同样待下沉后处理。
+
+### 门
+
+`TestV1BodiesScanIncludesSwitchConsumers`（带地板断言：消费点为 0 即 Fatal）、
+`TestV1BodiesSwitchConsumersHaveNoLeftoverLiteral`（抓半迁移）、
+Evidence 门两跳校验。
+
+★ **本轮返工两处，都是变异抓出来的**：
+1. 半迁移判据第一版只查「同一行」⇒ 实测抓不住 ⇒ 放宽为「消费点文件里
+   不得有任何匹配 v1 bodies 模式的非注释行」，三种形态现在全红。
+2. ★ **两跳校验第一版极性写反、几乎恒真**：它遍历的是**已登记的**切换层，
+   能报的唯一情形已被另一道门禁掉 ⇒ 那段代码等价于注释。
+   是 M34 的**阴性对照**抓到的（把 Evidence 指向 `sessionBodiesFromSQLUnregistered()`
+   门仍绿）。判据已改为「Evidence 里的 `from/join` + `fn()` 必须是已登记切换层」。
+
+变异：8 条（M30–M35，含 3 种半迁移形态）全部转红。
+其中 M33″ 的第一次尝试**锚点没匹配上、变异根本没写进去**，
+而那个「仍绿」一度看着像真实的门失效。
+
+### 下一轮第一件事（更新）
+
+1. ★ **先跑 `is_final_success` / `client_protocol` 两个回填**（需批准）。
+2. ★ 生产补 2026-09-30 bodies（1,113 条）——需批准。
+3. ★ 把开关**下沉到 `db` 包**（`SessionBodiesSourceSQL()`），
+   让 domains/bg 的 4 个 A 类读方也能迁。
+4. ★ 决定读基表的 2 个（`quality_correlations.go` / `goal/history_store.go`）：
+   迁（扩大覆盖，需接受）还是保持（基表退役时才有问题）。
+5. 定义「回填完成」：含 `backfill_session_bodies` 与 `validate_sessions_v2` 的处置。
+6. B 类 4 个先定口径；C 类 2 个重做延迟分层并带前后读数。
+7. `is_auto_request = t` 的可审计性要不要保留（属主决定，至今无门）。
+8. `admin/zz_tmp_crosstab_test.go` 是已提交的临时调试文件（改 `sourceFamilyOf`
+   签名时必须连带修）—— 是否清理，属主决定。

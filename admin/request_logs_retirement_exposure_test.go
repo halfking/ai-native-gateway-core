@@ -516,7 +516,7 @@ func TestRequestLogsRetirementExposure(t *testing.T) {
 	// 退役清单上直接没有它们。实测 admin/session_bodies_source.go 在抽取器里
 	// **是看得见的**（产出 1 个字面量、判为 viewArm），
 	// 所以「测不到」纯粹是总体选错了，不是量具不行。
-	files := retirementExposurePopulation()
+	files := retirementExposurePopulation(t)
 	sort.Strings(files)
 
 	bySeverity := map[string][]string{}
@@ -674,8 +674,13 @@ var retirementReattributed = map[string]string{
 // 于是「修复」只落在会打印的那一半上。**实测反向变异：把总体退回字面量表，
 // 没有任何一道门变红** —— 因为 viewArm 没有登记表、报告内容也没有门在核。
 // ⇒ 提成 SSOT，再加一道判据钉住它等于「直接表 ∪ 间接表」。
-func retirementExposurePopulation() []string {
-	files := allKnownRequestLogsReaderFiles()
+func retirementExposurePopulation(t *testing.T) []string {
+	t.Helper()
+	// allKnownRequestLogsReaderFiles 已经排好序（§9.232 起它内部 sort），
+	// 这里再排一次是**冗余**——但保留它，因为「本函数返回一个有序切片」
+	// 曾经是隐含约定，而排序成本为零。删掉它的收益小于「有人依赖有序」
+	// 而无人察觉的概率。
+	files := allKnownRequestLogsReaderFiles(t)
 	sort.Strings(files)
 	return files
 }
@@ -687,14 +692,14 @@ func retirementExposurePopulation() []string {
 // 所以必须有一条**显式**的集合判据在这里等着。
 func TestRetirementExposurePopulationIsEveryKnownReader(t *testing.T) {
 	got := map[string]bool{}
-	for _, f := range retirementExposurePopulation() {
+	for _, f := range retirementExposurePopulation(t) {
 		if got[f] {
 			t.Errorf("总体里 %q 出现两次", f)
 		}
 		got[f] = true
 	}
 	var missing, extra []string
-	for _, f := range allKnownRequestLogsReaderFiles() {
+	for _, f := range allKnownRequestLogsReaderFiles(t) {
 		if !got[f] {
 			missing = append(missing, f)
 		}
@@ -724,7 +729,7 @@ func measureV1ReadingExposure(t *testing.T, root string) (measured, viewArm map[
 	t.Helper()
 	measured = map[string]string{} // file -> severity（**仅限直读 v1 底表**的读方）
 	viewArm = map[string]string{}  // file -> severity（经 canonical 视图读 v1 臂的读方）
-	for _, f := range retirementExposurePopulation() {
+	for _, f := range retirementExposurePopulation(t) {
 		// ⚠ 总体必须按「怎么读到的」分开（审计 §9.199）。
 		// 关系宇宙放宽前，经视图读的文件一个字面量都产不出来，
 		// 于是「已 repoint 的读方」和「从未被分析的文件」混在同一个 clean 桶里。

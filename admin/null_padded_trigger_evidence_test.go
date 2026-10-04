@@ -110,7 +110,7 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 		parseOK  bool
 	}
 	var rows []row
-	for _, file := range allKnownRequestLogsReaderFiles() {
+	for _, file := range allKnownRequestLogsReaderFiles(t) {
 		raw, err := os.ReadFile(filepath.Join(root, file))
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
@@ -120,7 +120,7 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 		if !hit {
 			continue
 		}
-		fam := sourceFamilyOf(src)
+		fam := sourceFamilyOf(src, isSwitchConsumerFile(t, root, file))
 		if ind, ok := indirectRequestLogsReaders[file]; ok && ind.Family != "" {
 			fam = ind.Family
 		}

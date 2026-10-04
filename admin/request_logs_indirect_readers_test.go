@@ -41,6 +41,7 @@ package admin
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -57,12 +58,32 @@ type indirectReader struct {
 
 	// Reason 说明间接机制（哪一层切换、表名怎么进来）。必填非空。
 	Reason string
+
+	// SwitchFunc 是**返回关系名的那个 Go 函数名**（如 `sessionBodiesFromSQL`）。
+	// 非空时，本文件被认作一个「切换层」，其**调用点**也是 v1 读方。
+	//
+	// # 为什么需要它（§9.232）
+	//
+	// §9.230 只有一个切换层（bodies 腿），2 个消费点。那时「把消费点列进
+	// 登记���」还负担得起。§9.231 判定 A 类 13 个读方可换之后，
+	// 消费点变成 15 个 —— 而它们**每一个**都会从
+	// `scanV1BodiesReaders`（bodies 退役门总体）里消失。
+	//
+	// ⇒ 必须让「消费点」成为**机器可算**的量，而不是每加一个手填一行。
+	// 逐个手填的失败形态已经实测过一次（§9.230.3）：忘了填 ⇒ 总体静缩
+	// 15 次，而那道 bodies 门**本来就故意红**，所以 15 次都没有信号。
+	//
+	// ⚠ 消费点**不是**各自登记的间接读方 —— 它们是**已登记切换层的下游**。
+	// 混进 indirectRequestLogsReaders 会让那张表同时装「切换层」和「调用方」
+	// 两种东西，ResolvesTo 也会开始出现重复登记。
+	SwitchFunc string
 }
 
 var indirectRequestLogsReaders = map[string]indirectReader{
 	"admin/session_bodies_source.go": {
 		Family:     familyBodies,
 		ResolvesTo: "request_logs_bodies",
+		SwitchFunc: "sessionBodiesFromSQL",
 		Reason: "会话导出/对比的 bodies 腿灰度开关（审计 §9.230）。" +
 			"`sessionBodiesFromSQL()` 有两臂：默认返回字面量 " +
 			"`request_logs_bodies_with_current_month rb`（v1 bodies 视图，" +
@@ -143,11 +164,99 @@ func TestIndirectRequestLogsReadersAreStillIndirect(t *testing.T) {
 	}
 }
 
-// allKnownRequestLogsReaderFiles 是「直接表 ∪ 间接表」的全集。
+// productionGoFiles 列出仓库里全部非 _test.go 的生产 .go 文件（仓库根相对路径）。
+//
+// ⚠ 与 scanRequestLogsReaders / scanV1BodiesReaders 各自那份 WalkDir **共用**
+// 同一套跳过目录（.git/docs/node_modules/vendor）。三份各写一遍的代价不是
+// 「重复」，而是**将来某一份加了 vendor 跳过、另一份没加**，
+// 于是「某个目录里的读方在一道门里存在、在另一道门里不存在」——
+// 又是一次无声的总体漂移。
+var nonSourceDirs = map[string]bool{
+	".git": true, "docs": true, "node_modules": true, "vendor": true,
+}
+
+func productionGoFiles(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if nonSourceDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".go") && !strings.HasSuffix(d.Name(), "_test.go") {
+			rel, rerr := filepath.Rel(root, path)
+			if rerr != nil {
+				return rerr
+			}
+			out = append(out, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk repo: %v", err)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// indirectSourceConsumers 返回「已登记切换层的调用点」文件集合（仓库根相对）。
+//
+// ⚠ 判据是**函数调用**（`fn(`），不是函数**定义**。
+// 定义所在的那个文件自己有 `func fn(`，必须排除，否则切换层会把自己
+// 也算成自己的消费点 —— 而它已经被 indirectRequestLogsReaders 登记过一次，
+// 算两次会让「切��层 vs 消费点」这个区分彻底失效。
+func indirectSourceConsumers(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for file, e := range indirectRequestLogsReaders {
+		if e.SwitchFunc == "" {
+			continue
+		}
+		// 只在本包内解析：切换层是包内函数。跨包调用解析不到（本工具的
+		// 设计边界，与 cmd/tools/sql_source_indirection_audit 同一处置）。
+		dir := filepath.Dir(filepath.Join(root, file))
+		for _, rel := range productionGoFiles(t, root) {
+			if filepath.Dir(filepath.Join(root, rel)) != dir {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(root, rel))
+			if err != nil {
+				t.Fatalf("read %s: %v", rel, err)
+			}
+			src := string(raw)
+			if rel == file {
+				// 去掉 func 定义那一行再找调用点。
+				src = strings.Replace(src, "func "+e.SwitchFunc+"(", "func __def__(", 1)
+			}
+			if strings.Contains(src, e.SwitchFunc+"(") {
+				out[rel] = true
+			}
+		}
+	}
+	return out
+}
+
+// allKnownRequestLogsReaderFiles 是「直接表 ∪ 间接表 ∪ 切换层消费点」的全集。
 //
 // 族分类器与任何需要「v1 读点全集」的消费者都应遍历它，而不是只遍历直接表——
 // 只遍历直接表正是 §9.49 那三道门变红的直接原因（它们从未看到过这个文件）。
-func allKnownRequestLogsReaderFiles() []string {
+// isSwitchConsumerFile 报告 rel 是否是某个已登记切换层的消费点。
+//
+// 它只是 `indirectSourceConsumers` 的单文件版本 —— 两边**必须**同源：
+// 若这里另写一份「看起来像」的判定，消费点总体与族分类就会在**某一轮**分叉，
+// 而分叉的方向恰好是「少算 bodies 读方」（§9.232 记的同一失效方向）。
+func isSwitchConsumerFile(t *testing.T, root, rel string) bool {
+	t.Helper()
+	return indirectSourceConsumers(t, root)[rel]
+}
+
+func allKnownRequestLogsReaderFiles(t *testing.T) []string {
+	t.Helper()
 	seen := map[string]bool{}
 	var out []string
 	for f := range requestLogsReadInventory {
@@ -159,5 +268,14 @@ func allKnownRequestLogsReaderFiles() []string {
 			out = append(out, f)
 		}
 	}
+	// ⚠ 消费点必须并进来（§9.232）。它们是 v1 读方（切换层默认臂=v1），
+	// 但自己**不**在两张表里的任何一张 —— 漏掉它们 = 退役清单少 15 行。
+	for f := range indirectSourceConsumers(t, repoRootFromCaller(t)) {
+		if !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	sort.Strings(out)
 	return out
 }

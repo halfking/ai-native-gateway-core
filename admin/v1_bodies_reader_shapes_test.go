@@ -70,7 +70,14 @@ const (
 	shapeSizeNotContent = "size-not-content"
 	// shapeMustStayOnV1：读 v1 就是这个文件的工作本身（迁移源 / 对拍器）。
 	shapeMustStayOnV1 = "must-stay-on-v1"
-	// shapeAlreadySwitched：§9.230 已建的开关，v1 依赖在默认臂里。
+	// shapeAlreadySwitched：v1 依赖**在切换层默认臂里**——切换层自己，
+	// 以及它的全部消费点（§9.232 起消费点也归这一档）。
+	//
+	// ⚠ 为什么消费点归这一档而不是继续当 A 类「helper-compatible」：
+	// A 类的正向声明会被机器核对「绑了 bodies 别名 / 没用到 ts」。
+	// 消费点**没有可解析的别名**（它调的是 `sessionBodiesFromSQL()`）⇒
+	// 机器无法核对 ⇒ 声明 A 类等于让它「白拿一个正向声明」，
+	// 那正是 §9.231 写明要拒绝的状态。
 	shapeAlreadySwitched = "already-switched"
 )
 
@@ -90,6 +97,43 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"消费点 admin/session_export.go:227 / admin/session_compare.go:903。" +
 			"退役含义：这一条**必须最后退役**，因为它是切换的入口；" +
 			"它的默认臂反转之日就是 bodies 退役之日。",
+	},
+
+	"admin/session_export.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.230 已迁。bodies 腿经 `sessionBodiesFromSQL()`，默认臂 = v1 ⇒ 停写/退役后果不变。",
+	},
+	"admin/session_compare.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.230 已迁。同上。",
+	},
+	"admin/compression_stats.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.232 已迁（3 处）。⚠ 其中 `compressionStatsEstimatedOrigSQL` 由 **const 改成 var** —— 函数调用不能出现在 const 声明里。值未变（默认臂逐字相同），但不再是编译期常量。",
+	},
+	"admin/logs_summary.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.232 已迁（2 处）。",
+	},
+	"admin/memora_handlers.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.232 已迁（1 处）。停写分级仍是 degraded_content，理由见该条 Note。",
+	},
+	"admin/no_topic_session.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.232 已迁（2 处）。降级的是正文两列、不是行数（分级 Note 未变）。",
+	},
+	"admin/session_sanitize_matches.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.232 已迁（1 处）。",
+	},
+	"admin/session_title.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.232 已迁（1 处）。语料降级为 preview 兜底那一档未变。",
+	},
+	"admin/auto_title_generator.go": {
+		Shape:  shapeAlreadySwitched,
+		Reason: "§9.232 已迁（1 处）。",
 	},
 
 	// ── B 类：ts 等值，换不了 ────────────────────────────────────────────
@@ -182,14 +226,6 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 	},
 
 	// ── A 类：单键 JOIN + 列全在合同内 ────────────────────────────────────
-	"admin/compression_stats.go": {
-		Shape: shapeHelperCompatible,
-		Reason: "3 处 `LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id`" +
-			"（:55/:144/:265），用 `rb.request_body` / `rb.response_body` / `rb.outbound_body`，" +
-			"**无 ts 条件**。⇒ 可直接换 `db.SessionFamilyBodiesSourceSQL()`。" +
-			"⚠ 停写后果已登记为 silently_degraded_content（§9.35 分类表）：" +
-			"换源后 total/strategy 分布仍有数而压缩率分项会塌 —— 换的时候要一起看分项。",
-	},
 	"admin/session_bodies_batch.go": {
 		Shape: shapeJoinsOnTs,
 		Reason: "★ **本轮被自己的门改判的一条。** 起初我按文件名把它归为可迁移 —— " +
@@ -203,23 +239,6 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"⚠ 影响面比文件本身大：`sessionBodiesByRequestIDSQL` 的消费点有 " +
 			"admin/session_summary_v2.go 与 admin/session_compare.go，改它要连消费点一起数。",
 	},
-	"admin/session_title.go": {
-		Shape: shapeHelperCompatible,
-		Reason: "`:192` `LEFT JOIN request_logs_bodies_with_current_month rb`，无 ts 条件。" +
-			"换源后 bodies 腿取不到时语料降级为 preview 兜底（该文件已有 40 rune 以下的 400 分支）。",
-	},
-	"admin/session_sanitize_matches.go": {
-		Shape:  shapeHelperCompatible,
-		Reason: "`:227` 单键 LEFT JOIN，无 ts。",
-	},
-	"admin/no_topic_session.go": {
-		Shape:  shapeHelperCompatible,
-		Reason: "`:146/:321` 两处单键 LEFT JOIN，无 ts。",
-	},
-	"admin/logs_summary.go": {
-		Shape:  shapeHelperCompatible,
-		Reason: "`:201/:263` 两处单键 LEFT JOIN，无 ts。",
-	},
 	"admin/quality_correlations.go": {
 		Shape: shapeHelperCompatible,
 		Reason: "`:229` `LEFT JOIN request_logs_bodies rb ON rb.request_id = rl.request_id`，无 ts。" +
@@ -227,15 +246,6 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"**这 29,691 条探针流量正是 §9.229 判定「不进会话族、按设计」的那批**。" +
 			"⇒ 换源会**改变这个指标的口径**（从「探针流量」变成「会话流量」）。" +
 			"这不是空指针问题，是分子定义变了；必须显式决定。",
-	},
-	"admin/memora_handlers.go": {
-		Shape: shapeHelperCompatible,
-		Reason: "`:811` 单键 LEFT JOIN，无 ts。⚠ 该文件在停写分类表里记的是 " +
-			"degraded_content，且历史上因「同一文件取更危险档」被改判过一次 —— 改它前先读那条 Note。",
-	},
-	"admin/auto_title_generator.go": {
-		Shape:  shapeHelperCompatible,
-		Reason: "`:840` 单键 LEFT JOIN，无 ts。",
 	},
 	"domains/sessionforensics/export.go": {
 		Shape:  shapeHelperCompatible,
@@ -540,4 +550,105 @@ func keysOf(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestV1BodiesScanIncludesSwitchConsumers 钉住「切换层的**消费点**也在总体里」。
+//
+// # 这道门是补 §9.230 的漏，不是新增要求
+//
+// §9.230 把 bodies 腿改成经 `sessionBodiesFromSQL()` 取源之后，
+// `admin/session_export.go` 与 `admin/session_compare.go` 的源码里
+// **不再有 bodies 关系名字面量** ⇒ 它们从 bodies 退役门的总体里消失了。
+// 当时的修复只把**切换层自己**（admin/session_bodies_source.go）加回去，
+// 消费点没加 ⇒ 总体是 25，而**最要紧的两个读方不在里面**。
+//
+// 而当时的自证门 `TestV1BodiesScanIncludesRegisteredIndirectReaders`
+// **只检查登记条目本身** ⇒ 它是绿的。门绿着，而两个目标不在被检查的集合里。
+//
+// ★ 这是本项目反复出现的那个形状的一个新变体：
+// 「修复本身也需要门」——而第一版那道门**比缺陷窄**，于是漏掉了缺陷的一半。
+// ⇒ 判据必须覆盖**消费点**，且消费点是机器算的（indirectSourceConsumers），
+// 不是手填的 —— 手填就会重演「忘了填 ⇒ 无声」。
+func TestV1BodiesScanIncludesSwitchConsumers(t *testing.T) {
+	root := repoRootFromCaller(t)
+	measured := scanV1BodiesReaders(t, root)
+	consumers := indirectSourceConsumers(t, root)
+
+	if len(consumers) == 0 {
+		t.Fatal("切换层没有任何消费点 —— " +
+			"要么 admin/session_bodies_source.go 的 SwitchFunc 字段被删了，" +
+			"要么消费点检测（`fn(` 文本匹配）失效。" +
+			"两种情况下 bodies 总体都会静悄悄少掉全部消费点，而本门**仍绿**。")
+	}
+	var missing []string
+	for c := range consumers {
+		if measured[c] == 0 {
+			missing = append(missing, c)
+		}
+	}
+	sort.Strings(missing)
+	got := make([]string, 0, len(consumers))
+	for c := range consumers {
+		got = append(got, c)
+	}
+	sort.Strings(got)
+	t.Logf("切换层消费点 %d 个：%v", len(got), got)
+	if len(missing) > 0 {
+		t.Errorf("这些消费点不在 v1 bodies 实测总体里：%v\n"+
+			"⇒ 它们的 bodies 腿已改走切换层（默认臂=v1），却从退役证据里消失了。\n"+
+			"  scanV1BodiesReaders 末尾的「消费点并入总体」被删掉或失效了。\n"+
+			"  ⚠ 本门**本来故意红**，所以少 2 个还是少 15 个都不改退出码 —— "+
+			"这正是这道门存在的理由。", missing)
+	}
+}
+
+// TestV1BodiesSwitchConsumersHaveNoLeftoverLiteral 钉住「消费点没有残留的字面量读法」。
+//
+// # 判据演进：第一版只查「同一行」，实测**抓不住**（§9.232 变异 M33）
+//
+// 第一版要求「同一行里既有切换层调用、又匹配 v1 bodies 模式」。
+// 我构造的那条变异——给迁移后的行加一个尾部注释
+// `/* request_logs_bodies_with_current_month rb */`——**判据不响**：
+// `v1BodiesReadPattern` 要求 `join` 后**紧跟**关系名，而该行 `JOIN` 后面是
+// “ `+sessionBodiesFromSQL()+` “。⇒ 「同一行」这个限定太窄：
+// **半迁移的真实形态是分处两行**，漏掉它的判据等于没有判据。
+//
+// ⇒ 判据改为：**消费点文件里不得存在任何匹配 v1 bodies 模式的非注释行**。
+// 同一行的情形是它的子集，一并覆盖。
+//
+// 这道门防的是**部分迁移**：把一个文件加了 `sessionBodiesFromSQL()` ，
+// 却忘了把另一处 `LEFT JOIN request_logs_bodies…` 换掉。
+//
+// 失败形态很具体：那个文件在**切换层**这条路上被算成读方（通过消费点并入），
+// 同时它的残留字面量让 `scanV1BodiesReaders` 也数到它 ⇒ 总体上「有它」，
+// 而实际上**一半**的 bodies 读法还在 v1。切过去之后那一半会静默变空。
+//
+// ⚠ 只对**已经被认定为消费点**的文件生效：一个既直读 v1 又调用切换层的文件，
+// 「还没迁完」是正常状态，不该在这里判红 —— 它由 §9.231 的形状登记表管。
+// 这里只抓**同一个别名在同一个文件里既被切换层用、又被字面量用**这种
+// 「改到一半、而且改在同一处 JOIN 上」的形态。
+func TestV1BodiesSwitchConsumersHaveNoLeftoverLiteral(t *testing.T) {
+	root := repoRootFromCaller(t)
+	pat := v1BodiesReadPattern(t)
+	for c := range indirectSourceConsumers(t, root) {
+		raw, err := os.ReadFile(filepath.Join(root, c))
+		if err != nil {
+			t.Fatalf("read %s: %v", c, err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") ||
+				strings.HasPrefix(trimmed, "/*") {
+				continue
+			}
+			if !pat.MatchString(line) {
+				continue
+			}
+			t.Errorf("%s:%d 消费点里仍有一行直写 v1 bodies：\n  %s\n"+
+				"  ⇒ 这是「改到一半」（bodies 腿只迁了一部分）。\n"+
+				"  切过去之后直写那一侧会静默变空，而门与接口都不报错。\n"+
+				"  ⚠ 若这一行只是**注释里**提到旧关系名，删掉注释即可；若是真 JOIN，说明漏了一处。",
+				c, i+1, trimmed)
+		}
+	}
 }
