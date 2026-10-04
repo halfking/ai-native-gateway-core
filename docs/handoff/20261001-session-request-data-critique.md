@@ -11863,3 +11863,22 @@ viewArm 桶没有登记表、报告内容也没有门在核。
 5. S4 门口径与开启时点；D32 + D29-d 切换时点。
 6. `session_bodies` 父表 57 行重复 `request_id`（37 个 id）今天不发作，
    开关**打开前**应先处置（源里 `DISTINCT ON` 或加唯一约束）。
+
+### ★ 跑门时的一条操作隐患（实测，本轮踩到）
+
+本地 `llm-gateway-pg` 里会留下**孤儿 backend**：某些 admin 真库测试发的
+`WITH agg AS (… FROM request_logs WHERE ts >= now() - interval '30 days' …)`
+聚合查询，在**测试进程已经退出之后**仍然继续跑（本轮实测跑了 **26 分钟**和
+**20 分钟**），把之后每一轮门验证拖慢一个数量级（admin 全量 599s → 706s →
+部分子集直接顶到超时）。
+
+症状：Go 侧进程 CPU 几乎是 0（`0:00.11`）却迟迟不出结果，
+`pg_stat_activity` 里能看到几条 `state=active` 的长查询，其中后面的几条
+`wait_event_type=Lock`（`LWLock`）—— 是在**排队等前一条**，不是各自慢。
+
+处置（**只动本地库，未碰生产**）：
+`SELECT pg_terminate_backend(<pid>);` 清掉，活动查询归零后耗时立刻回到正常。
+
+⚠ 我**没能**定位到是哪个测试发的（按 `AS pt FROM request_logs` 反查无命中，
+那两个 SQL 形态像是运行时拼出来的）。**下次再遇到先查 `pg_stat_activity`
+而不是先怀疑代码变慢了** —— 那两次 26 分钟里我一度以为是自己改动引入了 hang。
