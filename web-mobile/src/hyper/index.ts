@@ -1,0 +1,22 @@
+// Hyper facade — 单例运行时（UI规范 06 §8：Hyper.present/dismiss/snapshot/
+// back/forward/restore/registerRefresh 家族的 web-mobile 首轮子集）。
+export { Hyper, initHyper, resetHyperForTests } from './singleton'
+
+export { HyperRuntime, nextHyperId } from './runtime'
+export type { HyperRuntimeOptions } from './runtime'
+export * from './types'
+export { TitleResolver, clipTitle } from './navigation/titleResolver'
+export type { ResolvedTitle, TitleSnapshot, PageTitleRegistration, OverlayTitleRegistration } from './navigation/titleResolver'
+export { NavigationStore, MAX_ENTRIES, MAX_OPERATIONS, sanitizeFullPath } from './navigation/context'
+export { BackDispatcher } from './navigation/backDispatcher'
+export { ScrollHostRegistry, snapshotElement, SCROLL_RESTORE_BUDGET_MS } from './scroll/scrollHost'
+export { PullToRefreshMachine, PTR_CONFIG, isVerticalPull } from './scroll/pullToRefresh'
+export { ContinuousListController, SENTINEL_MARGIN_PX, AUTO_FILL_MAX_PAGES, isAbortError } from './scroll/continuousList'
+export { computeEffectiveTop, computeTableTop, hasResidualViewport } from './scroll/dock'
+export { FocusMachine } from './focus/focusRuntime'
+export { lockScroll } from './focus/scrollLock'
+export { resolveCapabilities, webCapabilities } from './capabilities'
+export { useHyperPage } from './useHyperPage'
+export type { UseHyperPage, UseHyperPageOptions } from './useHyperPage'
+export { useHyperOverlay } from './useHyperOverlay'
+export type { UseHyperOverlay, UseHyperOverlayOptions } from './useHyperOverlay'

@@ -520,7 +520,7 @@ _bluegreen_abort() {
   err "$reason — restoring previous upstream"
   zd_switch_upstream "$SSH_CMD" "$upstream_fragment" "$old_port" || true
   if [[ -n "$old_version" ]]; then
-    remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\\n' '$old_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\\n' '$old_service' > '$REMOTE_ROOT/run/active-service'" || true
+    remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\\n' '$old_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\\n' '$old_service' > '$REMOTE_ROOT/run/active-service'" || true
   fi
   zd_stop_candidate "$SSH_CMD" "$candidate_service"
   remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
@@ -723,6 +723,8 @@ upload_release() {
 # carry_forward_web_remote <new_version>
 # --no-frontend 语义修正（2026-09-22）：把刚上传 release 的 web/ 用线上
 # current 发布的 web 原样顶替，避免把检出陈旧 web/dist 发布上线。
+# 2026-10-04：web-mobile 同语义跟进——current 有就顶替，没有（首次带
+# 移动端之前的旧发布）就保留 staged web-mobile。
 # 返回 0=已顶替；1=无法顶替（无 current / current 即新版本 / current 无
 # web / 远端拷贝失败），调用方降级保留 staged web 并 warn。
 carry_forward_web_remote() {
@@ -733,9 +735,9 @@ carry_forward_web_remote() {
     return 1
   fi
   local cur_rel=${probe#OK:}
-  remote_ssh "set -e; rm -rf '$REMOTE_ROOT/releases/$new_version/web'; cp -a '$cur_rel/web' '$REMOTE_ROOT/releases/$new_version/web'; chown -R root:root '$REMOTE_ROOT/releases/$new_version/web'" \
+  remote_ssh "set -e; rm -rf '$REMOTE_ROOT/releases/$new_version/web'; cp -a '$cur_rel/web' '$REMOTE_ROOT/releases/$new_version/web'; chown -R root:root '$REMOTE_ROOT/releases/$new_version/web'; if [ -d '$cur_rel/web-mobile' ]; then rm -rf '$REMOTE_ROOT/releases/$new_version/web-mobile'; cp -a '$cur_rel/web-mobile' '$REMOTE_ROOT/releases/$new_version/web-mobile'; chown -R root:root '$REMOTE_ROOT/releases/$new_version/web-mobile'; fi" \
     || return 1
-  log "[carry-forward] web ← $cur_rel"
+  log "[carry-forward] web(+web-mobile) ← $cur_rel"
   return 0
 }
 
@@ -843,6 +845,15 @@ do_deploy() {
     fi
     pm_run build web 2>&1 | tail -5
     ok "web/dist 已生成"
+    # 2026-10-04 统一入口轮：web-mobile（Hyper 移动前端）与 web 同链路构建。
+    # 构建失败 die 而不是 warn —— 静默发布一个没有 /m 的版本等于把手机用户
+    # 扔回 PC 页面（入口 302 与 /m 挂载一起消失）。
+    if [[ ! -d web-mobile/node_modules ]]; then
+      log "web-mobile/node_modules 缺失，按 lockfile 安装依赖"
+      pm_install web-mobile
+    fi
+    pm_run build web-mobile 2>&1 | tail -5 || { err "web-mobile 构建失败; refusing to deploy without the mobile surface"; exit 1; }
+    ok "web-mobile/dist 已生成"
   else
     warn "跳过前端构建 (--no-frontend)：web 不取检出的 web/dist，上传后用线上 current 发布原样顶替"
   fi
@@ -929,6 +940,18 @@ do_deploy() {
     host_stage_release "$bundle_dir" "$tmpbin" "web/dist" 2>&1 | sed 's/^/    /'; then
     err "stage release bundle 失败"
     exit 1
+  fi
+  # 2026-10-04 统一入口轮：web-mobile 直装 bundle/web-mobile/（dist 内容平铺，
+  # 与 web/ 同形；远端 cwd 探测第二候选命中）。host_stage_release 在共享
+  # deploy-lib（多项目共用）不动，staging 在本仓补腿。SHA256SUMS 与 web 一样
+  # 不覆盖 web-mobile（manifest 只保二进制/version/configs 的身份校验）。
+  # 空目录兜底：docker/local 的 COPY 与远端软链形态稳定，缺构建时网关侧
+  # NewMobileStaticHandler 返回 nil（/m 与入口分流静默不注册）。
+  mkdir -p "$bundle_dir/web-mobile"
+  if [[ -d web-mobile/dist ]]; then
+    cp -R web-mobile/dist/. "$bundle_dir/web-mobile/" || { err "stage web-mobile 失败"; exit 1; }
+  else
+    warn "web-mobile/dist 缺失——本发布不携带移动端（/m 与统一入口分流将不注册）"
   fi
   ok "bundle: $bundle_dir"
   local expected_release_version expected_release_seq expected_release_sha expected_release_date
@@ -1267,7 +1290,7 @@ do_deploy() {
     # Restore current to the old release so the active (which also follows
     # current/) keeps serving the previously verified binary.
     if [[ -n "$old_version" ]]; then
-      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
+      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
     fi
     err "候选实例未通过 ${probe_failed}: ${probe_detail}，旧实例保持服务"
     if printf '%s' "$probe_fail_tail" | grep -q "gateway listen failed"; then
@@ -1287,7 +1310,7 @@ do_deploy() {
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
     remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
     if [[ -n "$old_version" ]]; then
-      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
+      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
     fi
     err "Nginx 切流失败，旧 upstream 已恢复"
     exit 1
@@ -1298,7 +1321,7 @@ do_deploy() {
     _bluegreen_abort "切流后 Nginx 版本探针失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
-  remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\\n' '$candidate_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\\n' '$candidate_service' > '$REMOTE_ROOT/run/active-service'"
+  remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\\n' '$candidate_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\\n' '$candidate_service' > '$REMOTE_ROOT/run/active-service'"
   switch_end_ns=$(zd_now_ns)
   switch_elapsed_ms=$(( (switch_end_ns - switch_start_ns) / 1000000 ))
   local switch_elapsed=$(( (switch_elapsed_ms + 999) / 1000 ))
@@ -1593,7 +1616,7 @@ do_rollback() {
       err "回滚 upstream 切换失败，保持现有 canary 流量"
       exit 1
     fi
-    if ! $SSH_CMD "set -e; ln -sfn '$REMOTE_ROOT/releases/$target_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\n' '$canonical_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\n' '$rollback_service' > '$REMOTE_ROOT/run/active-service'; if [ -n '$current_active_service' -a '$current_active_service' != '$rollback_service' ]; then systemctl stop '$current_active_service' >/dev/null 2>&1 || true; fi; if [ '$current_active_port' != '$canonical_port' ]; then rm -f '$REMOTE_ROOT/slots/$current_active_port'; fi"; then
+    if ! $SSH_CMD "set -e; ln -sfn '$REMOTE_ROOT/releases/$target_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\n' '$canonical_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\n' '$rollback_service' > '$REMOTE_ROOT/run/active-service'; if [ -n '$current_active_service' -a '$current_active_service' != '$rollback_service' ]; then systemctl stop '$current_active_service' >/dev/null 2>&1 || true; fi; if [ '$current_active_port' != '$canonical_port' ]; then rm -f '$REMOTE_ROOT/slots/$current_active_port'; fi"; then
       err "回滚状态指针更新失败；请检查 Nginx 与 systemd"
       exit 1
     fi

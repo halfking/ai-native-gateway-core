@@ -841,6 +841,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 不碰任何行。注：823 那条 request_status 列**没有**被本迁移引用
 			// ——引用它会给「823 未跑的库」引入 undefined column 失败。
 			"824_request_status_rate_limited_projection.sql",
+			"825_modality_graded_verification.sql",
+			"826_model_baseline_price.sql",
 		},
 	}
 }

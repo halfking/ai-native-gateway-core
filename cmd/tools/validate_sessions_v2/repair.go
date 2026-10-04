@@ -170,7 +170,24 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 	}
 	result.DeletedRows["session_turn_logs"] = int(tag.RowsAffected())
 
-	// Delete bodies
+	// Delete bodies from both stores — same two-surface rule as turns below.
+	//
+	// 2026-10-05（§9.183）：此前只删了分区父表，漏掉 session_bodies_hot。
+	// 三处证据说明这是疏漏而非设计：(1) 同一函数里 turns 的删除明确注释
+	// 「Delete turns from both stores」并把两面 RowsAffected 相加，bodies
+	// 却是单面；(2) PlanRepair 的计数走 loader.LoadV2Bodies，后者读的是
+	// **合并视图 session_bodies_unified（两面）** ⇒ 计划数的是两面、删的
+	// 是一面，差额静默留下；(3) 紧接着的重建 INSERT 只写父表，于是残留的
+	// hot 行与新插入的父表行经 session_bodies_unified 读出来是重复的。
+	// 会话最近一次写入 8 小时内必然还在 hot 面上，正是修复最常命中的区间。
+	hotBodiesTag, err := tx.Exec(ctx, `
+		DELETE FROM public.session_bodies_hot
+		WHERE tenant_id = $1 AND session_id = $2
+	`, tenantID, sessionID)
+	if err != nil {
+		result.Error = fmt.Errorf("delete hot bodies: %w", err)
+		return result, result.Error
+	}
 	tag, err = tx.Exec(ctx, `
 		DELETE FROM public.session_bodies
 		WHERE tenant_id = $1 AND session_id = $2
@@ -179,7 +196,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		result.Error = fmt.Errorf("delete bodies: %w", err)
 		return result, result.Error
 	}
-	result.DeletedRows["session_bodies"] = int(tag.RowsAffected())
+	result.DeletedRows["session_bodies"] = int(hotBodiesTag.RowsAffected() + tag.RowsAffected())
 
 	// Delete turns from both stores. Historical repair writes the partitioned
 	// table directly, while live traffic uses session_turns_hot.

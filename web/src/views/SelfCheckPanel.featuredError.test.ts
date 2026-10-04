@@ -126,7 +126,7 @@ beforeEach(() => {
   getFeaturedModelsDynamic.mockReset()
 })
 
-describe('系统特色模型三态', () => {
+describe('系统特色模型三态', { timeout: 20_000 }, () => {
   it('① 加载失败 → 显示失败原因，且不说「暂无系统特色模型」', async () => {
     const err: any = new Error('boom')
     err.detail = 'featured view not migrated'

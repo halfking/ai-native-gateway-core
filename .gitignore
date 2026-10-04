@@ -307,6 +307,10 @@ gui-test-screenshots/
 # local benchmark build artifacts (cmd/autoclass-bench output)
 /autoclass-bench
 
+# cmd/tools/propose-baseline-prices 的本地构建产物（go build ./cmd/tools/propose-baseline-prices
+# 会在仓库根留下无扩展名的可执行文件）。源码在 cmd/tools/ 下，这里只排根目录那个产物。
+/propose-baseline-prices
+
 # 2026-09-05: benchmark 每次运行的原始输出与容量采集报告（机器本地归档，不入仓；
 # 只提交 docs/perf/bench-baseline.txt 基线文件与整理后的容量基线文档）
 docs/perf/bench-history/
@@ -336,6 +340,12 @@ scripts/capacity-baseline/reports/
 # NAS 同步残片文件
 .!*
 data/
+# bg/data/ 是被 go:embed 进二进制的模型基准价 SSOT（bg/pricing_baseline_sync.go），
+# 不是缓存/残片目录。漏掉它会让别人的 clone 直接编译失败（embed 找不到文件），
+# 而本机因为文件在磁盘上察觉不到。modeliqdata/data/standard_iq.json 同理，
+# 此前是靠 force-add 混进来的——那条路把坑藏起来了，所以这里写成显式例外。
+!bg/data/
+!bg/data/**
 # 但 tests/48h-audit/DXX-*/data/ 是分类测试目录，必须纳入版本控制
 !tests/48h-audit/*/data/
 !tests/48h-audit/*/data/**

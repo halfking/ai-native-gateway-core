@@ -1,0 +1,140 @@
+/* web-mobile 主题 token — 复刻 nbjl-3 theme.css token 体系（UI规范 01 §5、17 §1）。
+   与 nbjl-3 的差异：不引入 Element Plus，因此 --el-color-primary 的引用改为
+   直接定义 --app-primary 品牌 ramp；--kx-* 别名层保留（与 llm-gateway 风格对齐）。
+   数值与 nbjl-3 frontend/src/styles/theme.css 保持同源：浅色主色 #1e4fd6 / 暗色 #5b8cff。 */
+
+:root {
+  color-scheme: light;
+
+  /* 语义表面 */
+  --app-bg: #f4f6f9;
+  --app-surface: #ffffff;
+  --app-surface-raised: #ffffff;
+  --app-surface-muted: #eef2f8;
+  --app-text: #152033;
+  --app-text-secondary: #5b6b82;
+  --app-text-muted: #8b9bb0;
+  --app-border: #dce3ee;
+  --app-border-subtle: #e8edf4;
+  --app-success: #16845b;
+  --app-warning: #b7791f;
+  --app-danger: #c2413b;
+  --app-info: #4a6ee0;
+  --app-focus: var(--app-primary);
+
+  /* 品牌主色 ramp（浅色 NBJL 蓝 #1e4fd6） */
+  --app-primary: #1e4fd6;
+  --app-primary-strong: #1841b3;
+  --app-primary-soft: #eaf0ff;
+  --app-primary-softer: #f4f7fe;
+  --app-primary-border: #c2cff4;
+
+  /* 状态 soft 填充（chip/徽标——永不只用颜色区分语义） */
+  --app-success-soft: #e6f7ef;
+  --app-warning-soft: #fff7e8;
+  --app-danger-soft: #fff1f1;
+  --app-info-soft: #eaf0ff;
+
+  /* App 框架 */
+  --app-header-bg: rgba(255, 255, 255, 0.88);
+  --app-header-border: var(--app-border);
+  --app-bottomnav-bg: rgba(255, 255, 255, 0.94);
+  --app-bottomnav-border: var(--app-border-subtle);
+
+  /* 海拔与形状 */
+  --app-shadow-card: 0 1px 3px rgb(30 55 100 / 6%);
+  --app-shadow-dialog: 0 16px 40px rgb(30 50 90 / 12%);
+  --app-shadow-drawer: 0 8px 32px rgb(30 50 90 / 10%);
+  --app-radius-sm: 4px;
+  --app-radius: 8px;
+  --app-radius-lg: 12px;
+  --app-radius-pill: 999px;
+
+  /* 间距、框架尺寸、层级 */
+  --app-space-1: 0.25rem;
+  --app-space-2: 0.5rem;
+  --app-space-3: 0.75rem;
+  --app-space-4: 1rem;
+  --app-space-5: 1.25rem;
+  --app-space-6: 1.5rem;
+  --app-space-content-x: 1rem;
+  --app-space-content-y: 0.65rem;
+  --app-header-height: 48px;
+  --app-bottomnav-height: 52px;
+  --app-z-header: 10;
+  --app-z-overlay: 1000;
+  --app-transition: 200ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* 窗口四档断点（多端适配 SSOT；CSS media query 无法引用 var()，此 token
+     为文档化单一来源，数值由 composables/useWindowClass.ts 镜像消费——
+     两处必须同步改，useWindowClass.spec.ts 钉源文件断言防漂移）。 */
+  --app-bp-medium: 600px;
+  --app-bp-expanded: 960px;
+  --app-bp-large: 1280px;
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-left: env(safe-area-inset-left, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+
+  /* 字号 */
+  --app-font-body: 0.875rem;
+  --app-font-input: 1rem; /* 16px：iOS 聚焦防缩放（UI规范 11 §1） */
+  --app-page-title-size: 1.125rem;
+  --app-section-title-size: 0.9375rem;
+
+  /* 中式表格语言（宽表专注模式用） */
+  --cn-table-border: #dce3ee;
+  --cn-table-head-bg: #eef3fb;
+  --cn-table-zebra: #fafbfc;
+}
+
+html.dark {
+  /* 断点 token 与主题无关，暗色块按约定显式重申（与 :root 同步改）。 */
+  --app-bp-medium: 600px;
+  --app-bp-expanded: 960px;
+  --app-bp-large: 1280px;
+  color-scheme: dark;
+  --app-bg: #0f141c;
+  --app-surface: #1a222d;
+  --app-surface-raised: #1f2836;
+  --app-surface-muted: #121820;
+  --app-text: #e8eef7;
+  --app-text-secondary: #8b9bb0;
+  --app-text-muted: #6b7a90;
+  --app-border: #2a3544;
+  --app-border-subtle: #243040;
+  --app-header-bg: rgba(26, 34, 45, 0.92);
+  --app-bottomnav-bg: rgba(20, 26, 35, 0.94);
+  --app-success: #3ecf8e;
+  --app-warning: #e0a53a;
+  --app-danger: #f07167;
+  --app-info: #7aa3ff;
+  --app-success-soft: rgb(62 207 142 / 14%);
+  --app-warning-soft: rgb(224 165 58 / 14%);
+  --app-danger-soft: rgb(240 113 103 / 14%);
+  --app-info-soft: rgb(91 140 255 / 16%);
+  /* 暗色整条 ramp 反向（nbjl-3 同源） */
+  --app-primary: #5b8cff;
+  --app-primary-strong: #7aa3ff;
+  --app-primary-soft: rgb(91 140 255 / 16%);
+  --app-primary-softer: rgb(91 140 255 / 10%);
+  --app-primary-border: #2d4180;
+  --cn-table-head-bg: #1c2736;
+  --cn-table-zebra: rgb(255 255 255 / 2.5%);
+  --app-shadow-card: 0 1px 4px rgb(0 0 0 / 30%);
+  --app-shadow-dialog: 0 16px 40px rgb(0 0 0 / 52%);
+  --app-shadow-drawer: 0 8px 32px rgb(0 0 0 / 45%);
+}
+
+/* ---- kx 设计 token（llm-gateway 风格别名层） ---- */
+
+:root {
+  --kx-bg: var(--app-bg);
+  --kx-surface: var(--app-surface);
+  --kx-surface-soft: var(--app-header-bg);
+  --kx-text: var(--app-text);
+  --kx-muted: var(--app-text-secondary);
+  --kx-border: var(--app-border);
+  --kx-primary: var(--app-primary);
+  --kx-primary-soft: var(--app-primary-soft);
+}
