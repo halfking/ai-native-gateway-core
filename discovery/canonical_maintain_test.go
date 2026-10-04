@@ -20,11 +20,19 @@ import (
 // maintUpdateSQL pins the guarded-UPDATE shape: it must target the matched
 // row by id ($1) and admit it only via one of the three maintenance
 // conditions, so healthy rows stay write-free on every discovery pass.
+//
+// 2026-10-04 (migration 825): the modality arm of both the SET and the WHERE
+// gained a modality_source guard that exempts semantic and manual sources.
+// Pinning it here is the point: without that gate a semantic downgrade
+// (vision -> text) is reverted by the very next provider tick, so the probe
+// worker and the discovery feed make mutually exclusive demands on the same
+// column. If someone drops the gate, this regexp stops matching.
 const maintUpdateSQL = `(?s)UPDATE models_canonical\s+SET family = CASE` +
 	`.*WHERE id = \$1` +
 	`.*\(family = \$2 AND NOT tags @> ARRAY\['family:' \|\| \$2\]\)` +
 	`.*OR family = ANY\(\$3::text\[\]\)` +
-	`.*OR \(modality = 'text' AND \$4 <> 'text'\)`
+	`.*OR \(modality = 'text' AND \$4 <> 'text'` +
+	`\s*AND COALESCE\(modality_source, ''\) NOT IN \('semantic', 'manual'\)\)`
 
 // The helper must derive $2 from the canonical name via InferFamily and $4
 // from the RAW provider name via InferModality — using the raw (not the

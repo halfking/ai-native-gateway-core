@@ -862,3 +862,33 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 824 | `824_request_status_rate_limited_projection.sql` | `bb5a76be01cfa69ae6ffbfd510c3cc728d7605c702eec11ad337883b6f80c666` | pending deploy（未应用于任何库；R41 冻结前订正判定臂为 IN 集，Go 镜像 db/request_logs_view_schema.go 同步，离线门钉死） |
 
 
+
+## 2026-10-04 — 多模态能力分级核实（迁移 825）
+
+登记时点：多模态标注 + 基准价/供应商计价改造（见 docs/12小时内修订审计-20261004-0445.md 后续批次）。825 **未应用于任何库**，仅完成字节冻结与五点同步（embeddata 拷贝 / go:embed + embeddedSQLFiles / dbinit.Runner.StartupFiles / parity sweep），安装器测试包除既存的 819 未登记外全绿。
+
+本迁移给「模型多模态能力」补上分级判据与出处：
+- `model_modality_verification`：每 (凭证, 原始模型名, 模态) 一行，`carry_level`（结构级「可承载」）与 `read_level`（语义级「真能读」）**分列**，外加两胜/两负的连续命中计数。
+- `models_canonical.modality_source / modality_verified_at / modality_evidence`：标注出处与核实时间。存量全表置 `inferred`（这些行确实全部由 Layer 1 规则表播种）。
+- `v_model_modality_verdict`：模型级判词视图，verdict ∈ confirmed/negative/unknown，unknown 不得当 negative 用。
+
+配套 Go 改动：`bg/modality_challenge.go`（随机色块挑战图生成 + 判读）、`bg/modality_semantic_probe.go`（两级探测）、`bg/modality_verification.go`（定时核实 worker，含 text → 多模态升级发现）、`provider/client.go` 候选闸门 + 严格模式开关 `LLM_GATEWAY_MODALITY_ROUTING_STRICT`、`discovery` 三处 upsert 的出处守卫。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 825 | `825_modality_graded_verification.sql` | `d6eda2b84fc239db8954ee07a058551b0b737437f766d4a7470e23e4144fbdad` | pending deploy（未应用于任何库；字节已冻结） |
+
+## 2026-10-04 — 模型基准价（原厂标准价）与供应商价差对账（迁移 826）
+
+登记时点：同 825 一批。826 **未应用于任何库**，字节已冻结并完成五点同步。
+
+本迁移补上成本体系里**原本不存在的那根标尺**：
+- `models_canonical.baseline_*` 九列：USD/百万 token（与 `credential_model_bindings.unit_price_*_per_1m` **同量纲**），附 `baseline_price_vendor / _source / _source_url / _fetched_at` 出处四件套——形状照抄 `standard_iq` 既有范式。NULL = 未设定，0 = 原厂确认免费，CHECK 保证两者不被压成同一个值。
+- `model_baseline_price_reconciliation`：逐次对账台账。**只记账不改价**——观察源是第三方数据，让它自动改价等于让机器替运营决定「我们按这个价卖」。
+- `v_supplier_price_vs_baseline`：供应商实付 / 原厂标准的倍率。取价口径与 `provider/client.go:1643` 的 COALESCE 一致；币种不一致时倍率给 NULL 并单独暴露 `currency_comparable`，因为拿 CNY 比 USD 出来的偏差在报表里长得和真偏差一样。
+
+配套 Go：`bg/pricing_baseline_sync.go`（清单校验 / 入库 / 判词 / 周期任务）、`bg/data/model_baseline_prices.json`（SSOT，**刻意为空**——不放未经原厂页面核实的数字）、`cmd/gateway/main.go` 接线。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 826 | `826_model_baseline_price.sql` | `8c6f2b54745f2e6ae9f4b04f6180050904d55167fbd35c29cb047d06b24f1f84` | pending deploy（未应用于任何库；字节已冻结） |

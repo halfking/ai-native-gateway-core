@@ -235,3 +235,5 @@
 217	822_session_summaries_health_pending_index.sql
 218	823_session_turns_request_status.sql
 219	824_request_status_rate_limited_projection.sql
+220	825_modality_graded_verification.sql
+221	826_model_baseline_price.sql
