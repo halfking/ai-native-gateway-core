@@ -8981,3 +8981,365 @@ project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), public.sessions.project_i
 **D26-b**（建议：接受「先刻画、后改契约」的两步走）。
 沿用未决：**D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c / D19-a-3-1 / D19-a-3-2 /
 D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
+
+---
+
+## §70.45 退役进度实测 + 互锁门 + 补完最后一个读点（107/107）
+
+### ① 退役进行到哪一步：**仍在双写**
+
+两个活的生产写方（`domains/hooks/observability/telemetry/client.go`、
+`admin/telemetry.go` 写 `request_logs_hot`），`request_logs_hot` 的 `max_ts`
+距测量时刻 **86 秒**。停写开关 `storage.request_logs_write_enabled`
+`Default: true`、HotReload、覆盖很全（15 个测试文件引用），
+但**真库 `settings_kv` 该键行数 = 0 ⇒ 取默认 true**。
+
+### ② 逐点评估：106/107 → **107/107**（未评估 0）
+
+`admin/usage_enhanced.go` 是最后一个。判 `effectSilentlyDegradedAggregate`。
+
+### ③ 它的四个读点，三个不受影响、一个真退化
+
+- **① `work_type` 维度：退化。** 视图里 `work_type` 非空的 4,357 行**全在 v1 臂**，
+  **session 臂 31,222 行 100% NULL**；复核到源头表 `session_turns` 29,620 +
+  `session_turns_hot` 1,603 行同样全 NULL ⇒ 710 的「直映」是忠实实现，
+  **缺的是写方从不填 `session_turns.work_type`**。停写后该维度塌成只剩 `unknown`。
+- **② `intent`：不受影响。** `session_summaries` 仍增长（7 天更新 3,852 行），
+  session 臂 `gw_session_id` 实测 0 NULL。
+- **③ 压缩请求数：不受影响，方向与直觉相反。** `compression_strategy`
+  v1 臂 **0 / 46,398** vs session 臂 **4,796 / 31,223** ⇒ 今天就只由 session 臂供数。
+- 幅度：停写少掉的 4,359 行 = **5.6% 行 / 4.20% token**。
+  ⚠ 本地 `cost_usd ≈ 0`，**美元占比本机测不了**。
+
+### ④ 独立佐证
+
+把本条改判 `effectUnaffected` 立刻被族门判红，族 =
+`reads_view_with_null_padded_predicate` ⇒ **机械分类器不靠我的读码
+也已把 `work_type` 算进 session 臂 NULL 补位列集合**。
+
+### ⑤ ⚠️ 我这一轮自己犯的三个错（都是我的前提/读数错，不是代码问题）
+
+1. **把「NULL 计数 = 总行数」读成「填充率 100%」**——那一列恰恰是一列都没填。
+2. **算出「47% 的计费成功请求没有 session 镜像」**——口径含探针流量，
+   而**探针带 token**；789 条里 **784 条是 `probe_triggered`**。
+   2026-10-02 已写在 `measurementCaveat` 里的结论是对的，我差点用错数字推翻它。
+3. **把 `ClassifyInternalLoopback` 读成「四臂与」，实际是「三臂或」**
+   （首个命中臂即 return）⇒ 差点把**按设计排除的内部回环**报成「镜像漏写」并开 P0。
+
+### ⑥ 互锁门，以及它自己一个真实缺陷
+
+新增 `admin/request_logs_stop_write_interlock_test.go`：把
+「先补完评估才允许关停」从约定变成不变量（纯函数判定 + 接线阳性对照 + 真实库不变量）。
+基线 3/3 PASS，变异 M3（恒真化）红因正确。
+
+⚠ **第一版的逻辑自检有个真缺陷**：前提用
+`todo := unclassifiedStopWriteReaders(); if len(todo)==0 { Skip }`。
+**§9.191 把最后一个读点评估完之后，这条自检会永久 Skip**——
+而它恰是唯一能证明互锁没退化成恒真门的那条。
+⇒ 互锁会在**它刚开始变得重要的那一刻静默作废，且毫无信号**。
+修法：自检**自带合成前提**（编造假读点名），恒定可构造。
+**判据的有效性不能挂在「被检验对象当前恰好处于某个状态」上。**
+M3 就是在未评估清单归零**之后**跑的，直接证明修复有效。
+
+### ⑦ 回归与边界
+
+`admin` 包回归 FAIL 名单与基线逐名相同（D21 两条 + §9.184 存储面可读性一条），
+**未新增**；`admin/dashboardapi|dashboarddegrade|distlock` ok。
+**未改任何产品代码/配置/视图/迁移**；**未连接生产**。
+本地 `cost_usd ≈ 0`、无客户端发 `X-Gw-Work-Type` ⇒
+**「session 侧 `work_type` 无供给」本地为真、生产未知**。
+
+### ⑧ 待拍板
+
+**D27-a**（`silently_degraded_aggregate` 的灰度清单排除是否覆盖「维度取值集合塌缩成单值」这一形状；三选一，建议 ② 逐形状登记）/
+**D27-b**（把生产 `session_turns.work_type` 填充率列入 252 只读清单，建议与 D24-d-3 合并）/
+**D27-c**（若生产确认由客户端头驱动，是否把「session 族补齐 `work_type` 写入」列为 S4 硬前置）。
+沿用未决：**D26-a / D26-b / D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c /
+D19-a-3-1 / D19-a-3-2 / D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
+
+---
+
+## §70.46 S4 前置条件一达成、前置条件二转红，并挖出一个**今天就已存在**的读迁移不一致
+
+### ① 前置条件一（逐点评估）**已达成且机器可验**
+
+`go test -tags s4audit ./admin/ -run 'TestRequestLogsStopWriteNothingLeftUnclassified|TestRequestLogsControlPlaneNothingLeftUnreviewed'`
+⇒ **两道硬门全 PASS**（读端 104/104 + 控制面轴）。
+对外数字「静默档 **70** 条」仍成立（本轮新增的 1 条登记落在被显式排除的档上）。
+
+### ② 前置条件二**是红的**：`db.RetirementUnservableColumns` 在 session 臂 0 供给
+
+真库 24h：视图 session 臂 3,449 行 / v1 臂 6,329 行；
+`client_protocol` s=0/v=38、**`is_final_success` s=0/v=6,329**、`work_type` s=0/v=3。
+
+7 天全量逐列普查（118 投影列）：session 臂 0 供给 24 列，其中 **20 列 v1 侧也 0
+（无信号）**、3 列 v1 侧有值（+ `id`/`test_col` 结构缺口）。
+
+⚠ **框架别读反**：视图按 `request_id` 去重（v1 臂带 `NOT EXISTS(session_turns*)`），
+**业务行的值今天就来自 session 臂** ⇒「session 臂不供某列」是**既有事实，不是停写回归**；
+停写回归是**行**的消失。
+
+### ③ 独立复核：与 §9.161 既有结论**逐列吻合**
+
+`db/retirement_column_exposure.go`（今天写的）已登记同样三列
+⇒ **我差点把 §9.161 重做一遍**。这次重复反而证明那张表**可被独立测量复现**
+（它不是注释，是可被推翻的事实）。
+
+### ④ 真正的发现：`is_final_success` 的**读迁移前后不一致**
+
+| 源 | 行数 | 非空 |
+|---|---|---|
+| `session_turns` ∪ `session_turns_hot` | 31,274 | **0** |
+| `request_logs` | 73,264 | **9,614** |
+
+`admin/session_online.go:446` 直读 session 族原生表取
+`COALESCE(rl.is_final_success, FALSE)` ⇒ **恒 FALSE** ⇒
+`deriveTurnOutcome` 里 `final_success` 与 `superseded_success` **永不出现**。
+⇒ 自读迁移之后，`GET /api/admin/sessions/{id}/timeline` **再没标出过最终成功轮次**。
+
+**根因是写侧**：`claimSessionFinalSuccess`
+(`domains/hooks/observability/telemetry/client.go:2711` 起) 只 `UPDATE request_logs_hot`，
+**session 族无等价写方**。读路已由新门证明是好的（排除投影缺陷）。
+⚠ 这是**代码事实**，不依赖任何库，**可直接外推到生产**。
+
+**停写不修它，只让它变永久**：v1 停写后连 v1 侧那 9,614 个标记也没了，
+而 session 族补不上 ⇒ `final_success` 在系统里**彻底不可表示**。
+
+### ⑤ 顺带核实：`client_protocol` **全仓无人读取**
+
+grep 全仓非测试代码：全部出现都是**写侧**（`telemetry/context_attrs.go:162/:192`、
+若干 executors 的 log fields）+ 710 投影 `t.client_protocol::character varying(50)`，
+**没有任何 SELECT 读它**。⇒ 它在 unservable 清单里但**不会让任何读方断掉**。
+⚠ 二阶事实：无人消费的列留在「会断的列」清单里会让风险清单虚高。
+
+### ⑥ 我这一轮自己犯的错
+
+1. **把逐列测量的框架起错名字**（「停写即消失」）⇒ 差一步发出方向相反的结论。
+2. **变异「没打红」的第一反应必须是「变异没做」**。读路门连输两次缩进不匹配；
+   第二次 Python `assert` 把「锚点没找到」报出来才去看缩进
+   ⇒ **替换之前先断言锚点存在**。
+3. **`validIdent` 分支顺序让首位数字通过**（`"1abc"` 过关）
+   ⇒ **判据的分支顺序本身就是判据的一部分**。
+4. **差点重做 §9.161** ⇒ 先 grep 既有机制再动手。
+
+### ⑦ 门与变异
+
+| 文件 | tag | 基线 |
+|---|---|---|
+| `admin/session_final_success_readpath_realdb_test.go` | 无（常跑） | **PASS** |
+| `admin/s4_session_family_unservable_realdb_test.go` | `s4audit` | **FAIL**（红因精确） |
+
+读路门：一次性事务种 `TRUE`/`FALSE` 双向、用**生产 SQL** 读回、全程 ROLLBACK
+（结构上不可能污染库；已核探针库 `session_turns` 仍 0 行）。
+变异：反断言 ⇒ **双向各报一条红**（证明投影没写死任一值）。
+S4 门：**M-A**「两侧都空」⇒ **转绿**（非结构必红）；**M-B** 最小样本量抬到 1000 万
+⇒ **指名 SKIP**（零样本护栏承重）。护栏已在无数据的探针库**实地生效**。
+
+### ⑧ 回归与边界
+
+`admin` 回归 FAIL 名单**与基线逐名相同**（3 条），**本轮零新增**；`go build ./...` OK；
+gofmt 干净；U+FFFD 三基线守住（4/0/0）。
+**未改任何产品代码/配置/视图/迁移**；**未连接生产**。
+补 `session_turns.is_final_success` 写方 = 改生产行为（决策表 **D28**），本轮未做。
+
+### ⑨ 待拍板
+
+**D28-a**（双写 / 只在 session 侧认领 / 接受现状并下线两个 outcome——建议 ①，
+但**必须连带 session 侧唯一性约束**，否则会同时标出两个 final_success）/
+**D28-b**（历史回填：建议**不单独做**，先做对写方再定）/
+**D28-c**（`work_type` 见 D27-c；`client_protocol` 已核实无人读，建议移出清单并写明理由）。
+沿用未决：**D27-a / D27-b / D27-c / D26-a / D26-b / D25-a / D25-b / D25-c / D24-d-3 /
+D24 / D24-c / D19-a-3-1 / D19-a-3-2 / D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b /
+D20-a / D20-c**。
+
+### ⑩ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`（当前 `8a7e90c94`）；
+   `git worktree add --detach /tmp/<新> origin/main`。
+2. 跑 `go test -tags s4audit ./admin/ -run 'TestRequestLogsStopWriteNothingLeftUnclassified|TestRequestLogsControlPlaneNothingLeftUnreviewed|TestS4SessionFamilyCanServeUnservableColumns'`
+   ⇒ 前两条应绿、第三条应红（真库）。**若第三条变绿，先怀疑 `llm_gateway` 是否被重建过**。
+3. 回归基线：`admin` 带真库 FAIL = 3（`TestReportRollup_HTTPContract` /
+   `TestDimensionNamesQueriesRunAgainstRealSchema` / `TestProjectTasksSkipsNullTaskID`），
+   **在同一环境 before/after 比对**，只看差集。
+4. D28 的三个选项都需要属主拍板；**在拍板前不要动写侧**。
+5. 若属主要 D28-c 推广：把「grep SELECT 侧引用」跑遍
+   `db.RetirementUnservableColumns` + `RetirementDegradedColumns`，
+   找出**没有读方消费**的列，单独立一张「写侧但无人读」清单。
+
+---
+
+## §70.47 退役清单的读方普查：新增 1 门，**推翻**我上一轮的一个结论 + 推翻共享提取器的自述
+
+### ① 本轮做了什么
+
+给 S4 退役三张清单（unservable 3 / degraded 24 / structural 5，合计 32 列）
+补上后半个问题：**「这一列有人在读吗」**。原本只回答「退役后会怎样」。
+理由：无人读取的列归哪一档都不伤害任何人，留在「会断的列」清单里只会让清单虚高，
+而**虚高的清单会被整体折扣**。
+
+### ② ⚠️ 推翻我上一轮的结论：`client_protocol` **有读方**
+
+上一轮（§9.192.10 / D28-c）我写「全仓无任何 SELECT 读它，建议移出清单」——**错**。
+错因：用**逐行** `grep "SELECT" | grep client_protocol`，
+而 `admin/logs.go:204` 的 `rl.client_protocol` 在**跨行**的 SQL 字面量里
+（查询由 `requestLogsListCols` + `requestLogsJoins` + `requestLogStatusExpr`
+三段常量拼接）。已核实：该文件主日志列表走 710 视图 SELECT 它并下发到 JSON 字段。
+⇒ **移出清单的建议作废**；D28-c 改为「两列都留在清单里」，
+并把「主日志列表今天对业务请求就返回空 `client_protocol`」记为已知既有降级。
+
+### ③ ⚠️ 顺带推翻共享提取器的自述：「只会多报，不会漏报」**不成立**
+
+`extractV1ReadingLiterals` 按**单个字符串字面量**建别名表。
+拼接查询里含列名的那段（投影清单）**自己不带 FROM** ⇒ 别名表为空 ⇒
+`columnAttribution` 返回 `attrNone` ⇒ **该列从未被归因**。
+实测：`admin/logs.go` 在暴露报告里 `definite` 只有 2 列，缺的正是这整段投影。
+⇒ **少报的方向恰好是「让读点看起来安全」。** 修它会改已公布数字 ⇒ **D29-a**（属主决定），
+本轮**不动**共享提取器。
+
+### ④ 我为写这道门迭代了 **4 版判据**，每一版都被实测打掉
+
+| 版 | 判据 | 实测 |
+|---|---|---|
+| v1 | 逐行 `grep SELECT` | **漏** `client_protocol`（跨行字面量） |
+| v2 | 字面量含 `SELECT` | **漏**（投影段没有 SELECT） |
+| v3 | 含 `SELECT`、不排除 INSERT | **多报** `client_forwarded_for`（巨型字面量同含 INSERT 与 SELECT） |
+| v4 | 整文件字面量**合并**后判读 | 造出「假语句」——真实 `;` 不在字面量里，`WHERE … $` 读区吞到合并文本末尾 |
+
+最终：**逐字面量 + 读区（SELECT…FROM / WHERE / GROUP BY / ORDER BY）
++ 写语句整条跳过 + 「投影段形状」兜底**（≥3 逗号项、含 `AS` 或点号、
+不含结构关键词）。后者能认出 `requestLogsListCols`，
+又因 `canonicalColumnOrderV2` 每元素是**单个**裸名（逗号不在字面量里）而被排除。
+★ 失败形态不对称 ⇒ 偏向「认得出读方」（门的失败形态是误报，不是漏报）。
+
+### ⑤ 新门与结果
+
+`admin/request_logs_retirement_column_reader_gate_test.go`（常跑）
+默认拒绝 + 具名登记；**登记过期也会红**（逼人销账）。
+32 列 ⇒ **5 列确无生产 SQL 读方**：
+`test_col` / `test_tab_indent`（测试占位）、`stream_chunks_sent`（只有写方；
+`handler.go:6255` 读的是内存 map）、`client_forwarded_for`（只有写方）、
+`quality_fix_actions`（只出现在 `db/db.go` 的 **DDL**：`SET storage` 清单 :2056、
+`ADD COLUMN` :2158）。
+变异 **M1** 删登记 ⇒ 红并点名；**M2** 清空理由 ⇒ 红并指名「登记必须写机制」。
+
+### ⑥ 我这一轮自己犯的错（4 个）
+
+1. **逐行 grep 下结论**（②）。SQL 字面量常跨行 ⇒ 逐行 grep 对「某列是否被读」不可用。
+2. **先动手后 grep**：自建了 `goStringLiterals`，编译报错才发现本包已有同名 AST 版。
+   ⇒ 复用既有 helper 这条规矩本轮又被我违反一次。
+3. **合并文本制造假语句**（v4）。拼接的正确解法不是合并文本，是识别「投影段」形状。
+4. **判据分支/终止条件的副作用**：`WHERE … $` 的终止于文末在合并文本里跨界 ⇒
+   静默多报。**终止条件本身是判据的一部分。**
+
+### ⑦ 回归与边界
+
+待补（见本轮提交信息）。**未改任何产品代码与共享提取器**；**未连接生产**。
+但「`admin/logs.go` 投影段未被归因」与「`client_protocol` 在该查询里被 SELECT」
+都是**代码事实**，可直接外推。
+
+### ⑧ 待拍板
+
+**D29-a**（是否把 `extractV1ReadingLiterals` 的别名表改成文件级并集——
+会改 §9.161/§9.162 已公布数字，只会变多；建议修，并在同一 commit 重跑三道门、
+新旧数字并列写进审计）/
+**D29-b**（是否专项普查「SQL 常量被 `+` 拼接」的查询有多少处，建议与 D29-a 同 commit）/
+**D29-c**（5 条具名登记是否需人工复核：建议不需，门已把机制写死且空理由会红）。
+沿用未决：**D28-a / D28-b / D28-c（已改写） / D27-a / D27-b / D27-c /
+D26-a / D26-b / D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c /
+D19-a-3-1 / D19-a-3-2 / D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b /
+D20-a / D20-c**。
+
+### ⑨ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
+2. 跑 `go test ./admin/ -run TestRetirementListedColumnsHaveAProductionReader`（应绿）。
+3. `s4audit` 三条门：前二绿、第三红（真库）。
+4. 回归基线：`admin` 带真库 FAIL = 3，**只看差集**。
+5. **若决定做 D29-a**：先量「拼接式查询」有几处（grep SQL 常量的 `+` 拼接），
+   再改别名作用域，然后在**同一个 commit** 里重跑
+   `TestRequestLogsRetirementExposure` / `…BreakersRegistryIsConsistent` /
+   `…RepointVerdict`，把新旧数字并列写进审计。
+6. **D28 拍板前不要动写侧。**
+
+---
+
+## §70.48 D29-b 专项普查：把「可能少报」变成确切数字
+
+### ① 目标
+
+§9.193 证明了提取器在拼接式查询上漏归因，但只给了一个样本。
+D29-b 要的是**范围**——好让属主用数字拍板 D29-a。
+
+### ② 我先试了做成门，**失败了**（这个失败比结论更值得记）
+
+「默认拒绝 + 具名登记」的门，判据三轮：
+
+| 版 | 判据 | 命中 |
+|---|---|---|
+| v1 | 片段须含 SQL 关键词 | 12（**却漏掉 `admin/logs.go` 的 `client_protocol`**） |
+| v2 | 放宽到「含列名即可」 | 276（绝大多数是结构体 tag） |
+| v3 | 收紧为「像查询的一部分」 | 171 |
+
+⚠ **v1 第一次运行就复现了它自己要记录的失效形状**：
+`requestLogsListCols` 是纯投影清单、**一个 SQL 关键词都没有**，
+被「须含 SQL 关键词」滤掉 ⇒ 判据与缺陷是同一种病。
+
+**171 条登记不能要**：没人会维护；没人维护的清单等于没有清单，
+还会给人「已经管过了」的错觉。**正确做法是修掉整类，不是枚举它。**
+
+### ③ 改为探针（不判红，但敢在自己坏时红）
+
+`admin/retirement_exposure_attribution_gap_probe_test.go`
+唯一红条件：**探针自己坏了**（扫到 0 个读方文件 / 分母 < 50）。
+理由：漏归因的正确值是 0，把已知坏值写成期望值**等于把缺陷冻进断言**。
+变异 **M1**（扫不到文件）⇒ Fatal；**M2**（分母地板抬到 1000）⇒ Fatal。
+
+### ④ 普查结果（分母 = 读方清单 107）
+
+| 口径 | 文件 | 「列×文件」对 | 不同列 |
+|---|---|---|---|
+| A（含 `id`） | **29** | **66** | 20 |
+| B（剔除 `id`） | **21** | **49** | 19 |
+
+`admin/logs.go` **一个人漏 13 列**（暴露报告里它 `definite` 只有 2 列）。
+`id` 必须单列：提取器自陈它是「假阳性磁铁」，常以 `AS id` 派生名出现。
+
+⇒ §9.161/§9.162 的暴露报告**在这 21 个文件上少报 49 对**，
+且方向是「让读点显得安全」。
+
+### ⑤ 本轮我自己的错
+
+1. **判据第一次运行就复现了它要记录的那个缺陷**（见 ② v1）。
+2. **把 171 条登记当成方案**，直到想清楚「没人维护的清单等于没有清单」才放弃。
+3. 探针初版有 `hitA` 未使用（编译期才发现）——小，但说明我跳过了 `go vet` 的第一遍。
+
+### ⑥ 回归与边界
+
+见提交信息。**未改共享提取器、未改已公布数字**；**未连接生产**。
+但「哪些文件的查询是拼接的」是**代码事实**，可直接外推。
+
+### ⑦ 待拍板
+
+**D29-a**（是否把别名表改成文件级并集；影响面 = 21 文件 / 49 对，**只会变多**；
+建议**修**，且修完后 §9.194 的探针分子应降到 0，可当验证器用；
+**修法不要用「合并全文文本」**——本轮实测 v4 那样会造出假语句）/
+**D29-b**（**本轮已回答**：107 个读方里 21 个有漏归因面，处置随 D29-a，无需逐个登记）/
+**D29-c**（5 条具名登记不需人工复核，但新增读方必须回来销账）。
+沿用未决：**D28-a / D28-b / D28-c / D27-a / D27-b / D27-c / D26-a / D26-b /
+D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c / D19-a-3-1 / D19-a-3-2 /
+D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
+
+### ⑧ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`（当前 `29b2aebd0`）；
+   `git worktree add --detach /tmp/<新> origin/main`。
+2. 若决定做 D29-a：
+   - **先**跑 `go test ./admin/ -run TestProbeRetirementExposureAttributionGap -v`
+     记下基线数字（21 文件 / 49 对）；
+   - 改法 = `extractV1ReadingLiterals` 里先收集**全文件**别名并集，
+     再逐字面量 `columnAttribution`。**不要**把文件内字面量合并成一段文本；
+   - 改完**同一个 commit** 里跑：探针（分子应降）、`TestRequestLogsRetirementExposure`、
+     `…BreakersRegistryIsConsistent`、`…RepointVerdict`、
+     `TestAuditDocSilentClaimMatchesRegistry`，**新旧数字并列**写进审计。
+3. 回归基线：`admin` 带真库 FAIL = 3，**只看差集**。
+4. **D28 拍板前不要动写侧。**
