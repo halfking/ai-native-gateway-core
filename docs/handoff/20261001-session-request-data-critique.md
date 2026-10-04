@@ -9707,11 +9707,54 @@ clean **70 → 42** / breaks-possibly **1 → 9** / undercounts-possibly **4 →
 ### ㉒ 下一轮提示词
 
 1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
-2. 回归基线：带真库 `admin` FAIL = **5**（`TestProjectTasksSkipsNullTaskID` /
+2. 回归基线：带真库 `admin` FAIL = **4**（`TestProjectTasksSkipsNullTaskID` /
    `TestReportRollup_HTTPContract` / `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable`
-   / `TestColumnarParentTwoSurfaceSetopShape_RealDB` /
-   `TestDeployedViewOverColumnarIsServable_RealDB`），**只看差集**。
+   / `TestColumnarParentTwoSurfaceSetopShape_RealDB`），**只看差集**。
+   ⚠ 曾是 5：第 5 条 `TestDeployedViewOverColumnarIsServable_RealDB` 已于 828 **真绿**
+   （视图 21→20 列，真库逐列验证 0/146），不是被跳过、也不是被放宽。
+   ⚠ **829 若在生产跑了，这两条会一起转绿**——那是生产形态真的变了，
+   不是本机形态漂移。届时必须重跑 D30-b 的只读清单确认生产已不是列存。
 3. ⚠ **本机 Go 构建缓存近期被并发会话搞坏过**（`cannot open file .../go-build/...`）。
    建议 `export GOCACHE=/tmp/gocache-<worktree名>` 隔离，否则会误判成代码坏了。
 4. D29-a 已完成，**不要**再改 `v1TableRe` 的族名来源——
    它现在从 `v1BaseTableNames` + `viewChainNames(t)` 推导，是唯一真相源。
+
+### ㉓ §70.56 D30-d 已落地（828）+ D30-a 正确形态（829，本机不应用）
+
+**828**（新增 startup 迁移 + down + embeddata 镜像）：
+视图 21 → **20** 列、`security_invoker` 保留、行数 **2031 前后不变**。
+`TestDeployedViewOverColumnarIsServable_RealDB` **FAIL 1/147 → PASS 0/146**（真绿）。
+`schema_migrations` 已登记 828。
+
+**829**（新增 startup 迁移 + down + embeddata 镜像）：**3 GB 重写不需要做。**
+- `drop_old_request_logs_bodies_partitions()` 对列存分区是**裸 `DROP TABLE`**
+  （实测函数体，无数据搬迁）；
+- TTL 默认 7 天、`bg/partition_manager.go:1232` 周期调用；
+- `2026_09` 月末 2026-10-01 ⇒ **自 2026-10-08 起自动 DROP**；
+- 765 作者当初的「仅转空分区（数据安全阀）……非空分区按 TTL 退役」姿态被沿用。
+
+三段：① 重定义 ensure 函数为**恒 heap**（止血）；② **只转空分区**；
+③ NOTICE 列出仍列存且有数据的分区与总 MB。实测 NOTICE：
+`2026_09/2026_10 has rows, keep as-is` + `converted empty 2026_11` + `3048 MB ... left`。
+
+⚠ **829 本机故意不应用**：应用后本机不再是生产形态，
+两道红门会**假绿**——它们红的意义正是「这个库的形态与生产不一致」（D25-a 同款）。
+
+### ㉔ ⚠ 我在验证 829 时真的把它应用了，已完整回退
+
+为「验证但不改状态」，我外层包了 `BEGIN; … ROLLBACK;`。
+**错在迁移文件自带 `COMMIT;`**——文件里的 COMMIT 真提交了，外层 ROLLBACK 无对象可回
+（psql 打出两行 WARNING，是证据）。
+
+回退时又踩两个自己的坑：
+1. `docker exec -i psql -c <<EOF` ⇒ **静默无效果**
+   （`psql -c` 不读 stdin，缺 `-f -`）——「没报错」= 「没执行」；
+2. 改用 `-f -` ⇒ `ERROR: LOCK TABLE can only be used in transaction blocks` ⇒ 补 `BEGIN/COMMIT` 成功。
+
+回退后逐项核对与实验前一致：3 个 bodies 分区**全 columnar**、`bodies_total` = **2,244,772**、
+ensure 函数含 `USING columnar`、`schema_migrations` **只有 828 没有 829**。
+
+**教训**：「想验证但不想改状态」**不能靠外层包事务**——
+被验证对象自带 COMMIT 时外层事务就是摆设。要么用**不含 COMMIT 的副本**，要么在一次性库上跑。
+
+⇒ 带真库 `admin` FAIL 集合 **5 → 4**，减少的那条是**真绿**。
