@@ -1168,11 +1168,17 @@ do_deploy() {
   # behavior), so this is safe to do before the candidate proves itself.
   remote_ssh "set -e; mkdir -p '$REMOTE_ROOT/run' '$REMOTE_ROOT/slots'; systemctl stop '$candidate_service' >/dev/null 2>&1 || true; deadline=\$((\$(date +%s)+45)); while systemctl is-active --quiet '$candidate_service'; do if [ \"\$(date +%s)\" -ge \"\$deadline\" ]; then echo 'candidate stop timed out after 45s' >&2; systemctl status '$candidate_service' --no-pager >&2 || true; journalctl -u '$candidate_service' -n 30 --no-pager >&2 || true; exit 1; fi; sleep 1; done; if ss -ltn | grep -q ':${candidate_port} '; then echo 'candidate port remains occupied after stop' >&2; ss -ltnp | grep ':${candidate_port} ' >&2 || true; exit 1; fi; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$candidate_port'; if [ -d '$REMOTE_ROOT/releases/$version/web-mobile' ]; then ln -sfn '$REMOTE_ROOT/releases/$version/web-mobile' '$REMOTE_ROOT/web-mobile'; fi; printf '%s\n' '$candidate_port' > '$REMOTE_ROOT/run/candidate-port'; printf '%s\n' '$candidate_service' > '$REMOTE_ROOT/run/candidate-service'; systemctl daemon-reload"
   if ! remote_ssh "systemctl start '$candidate_service'"; then
+    # §R43/L7: 预绑的顶层 web-mobile 还指着这个失败的 release。正在服务的
+    # 旧实例按请求穿过顶层软链读文件（WorkingDirectory=REMOTE_ROOT + 相对
+    # 路径解析），失败 release 后续被清理时它会变悬空——把软链还给 current，
+    # 与 :523 的回滚语义一致（目标不存在则悬空＝探测 nil，等同无移动端）。
+    remote_ssh "if [ -d '$REMOTE_ROOT/current/web-mobile' ]; then ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; fi" || true
     err "候选实例启动失败，旧实例保持服务"
     exit 1
   fi
   if ! remote_ssh "systemctl is-active --quiet '$candidate_service'"; then
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
+    remote_ssh "if [ -d '$REMOTE_ROOT/current/web-mobile' ]; then ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; fi" || true
     err "候选 unit 未保持 active，旧实例继续服务"
     exit 1
   fi
