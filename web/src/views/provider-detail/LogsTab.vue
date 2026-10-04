@@ -1,17 +1,30 @@
 <script setup lang="ts">
 import ModelIdentityChip from '../../components/model/ModelIdentityChip.vue'
-import { ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getProviderLogs, getProviderCredentials, type ProviderLogEntry, type ProviderCredential } from '../../api'
 import ModelPicker from '../../components/ModelPicker.vue'
 import { useFormat } from '../../i18n/useFormat'
+// 2026-10-04 H6 第二条切片：呈现形态与加载方式是**两个独立维度**（规范 03 §1）。
+//   桌面 → 表格 + 页码（既有逻辑逐字保留）
+//   compact → 卡片 + 连续加载
+import { useWindowClass } from '../../composables/useWindowClass'
+import { createHyperPages } from '../../lib/shell/hyper/hyperPages'
+import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
+import HyperLoadMore from '../../components/ui/HyperLoadMore.vue'
+import type { CardField } from '../../components/ui/CardList.vue'
 
 const props = defineProps<{ providerId: number }>()
 const router = useRouter()
 const { t: td } = useI18n()
 const pl = (k: string, params?: Record<string, unknown>): string => td(`providerDetail.logs.${k}` as never, params as never)
+/** 模型身份三段术语的真源在 ModelIdentityChip 的词条里，这里复用而不是另写一份。 */
+const mi = (k: string): string => td(`models.modelIdentity.${k}` as never) as string
 const { fmtDateTime, fmtNumber } = useFormat()
+const { isCompact } = useWindowClass()
+
+const PAGE_SIZE = 50
 
 const logs = ref<ProviderLogEntry[]>([])
 const credentials = ref<ProviderCredential[]>([])
@@ -36,20 +49,41 @@ function timeRange() {
   return { from_ts: start.toISOString(), to_ts: end.toISOString() }
 }
 
+/**
+ * 筛选条件的**唯一真源**。两条加载路径都从这里取参数 ——
+ * 各写一份的话，改一个筛选器漏改另一条路径，症状是
+ * 「桌面筛了，compact 没筛」这类幽灵 bug。
+ */
+function filterBody() {
+  const range = timeRange()
+  return {
+    model: modelFilter.value.trim() || undefined,
+    credential_id: credentialId.value === '' ? undefined : Number(credentialId.value),
+    success: successFilter.value === 'all' ? undefined : successFilter.value === 'true',
+    error_kind: errorKindFilter.value.trim() || undefined,
+    from_ts: range.from_ts,
+    to_ts: range.to_ts,
+  }
+}
+
+/**
+ * 稳定行 id。`request_id` 可为 null，此时用字段组合兜底。
+ * **不能用数组下标** —— 连续加载的第 2 页下标 0 是另一行，
+ * 去重会把它当成与第 1 页的第 0 行相同（或反之），表现为「行随机消失」。
+ */
+function logRowKey(l: ProviderLogEntry): string {
+  if (l.request_id) return l.request_id
+  return [l.ts, l.client_model, l.credential_id, l.prompt_tokens, l.completion_tokens, l.latency_ms].join('|')
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const range = timeRange()
     const resp = await getProviderLogs(props.providerId, {
-      model: modelFilter.value.trim() || undefined,
-      credential_id: credentialId.value === '' ? undefined : Number(credentialId.value),
-      success: successFilter.value === 'all' ? undefined : successFilter.value === 'true',
-      error_kind: errorKindFilter.value.trim() || undefined,
-      from_ts: range.from_ts,
-      to_ts: range.to_ts,
+      ...filterBody(),
       page: page.value,
-      page_size: 50,
+      page_size: PAGE_SIZE,
     })
     logs.value = resp.items
     total.value = resp.total
@@ -60,6 +94,26 @@ async function load() {
   }
 }
 
+// ── compact 连续加载 ──────────────────────────────────────────────────────
+// 独立于上面的页码状态机：两者不共享 ref、不互相写。
+// 见规范 13 §1「布局模式与数据加载方式是两个独立维度」。
+const continuous = createHyperPages<ProviderLogEntry>({
+  pageSize: PAGE_SIZE,
+  rowKey: logRowKey,
+  // API 字段是 items，`createHyperPages` 约定是 rows —— 在这里映射，
+  // 不要为了对齐而改 api 层的返回形状（那会影响全部调用方）。
+  fetchPage: async (p) => {
+    const resp = await getProviderLogs(props.providerId, { ...filterBody(), page: p, page_size: PAGE_SIZE })
+    return { rows: resp.items, total: resp.total }
+  },
+})
+
+/** 实际展示的行：按档位二选一。 */
+const rows = computed<ProviderLogEntry[]>(() => (isCompact.value ? continuous.rows.value : logs.value))
+
+/** 尾部控件要显示的状态。桌面为 paged，不参与连续加载语义。 */
+const continuousState = computed(() => continuous.state.value)
+
 async function loadCredentials() {
   try {
     credentials.value = await getProviderCredentials(props.providerId)
@@ -68,19 +122,32 @@ async function loadCredentials() {
   }
 }
 
+/**
+ * 触发一次查询。两条路径都要处理，且**顺序不能反**：
+ * 先 `invalidate()`（作废所有在途结果）再 `loadFirst()`，
+ * 否则旧请求可能在新请求之后落地。
+ */
+function runQuery() {
+  if (isCompact.value) {
+    continuous.invalidate()
+    void continuous.loadFirst()
+    return
+  }
+  page.value = 1
+  void load()
+}
+
 function resetFilters() {
   modelFilter.value = ''
   credentialId.value = ''
   successFilter.value = 'all'
   errorKindFilter.value = ''
   hours.value = 24
-  page.value = 1
-  load()
+  runQuery()
 }
 
 function search() {
-  page.value = 1
-  load()
+  runQuery()
 }
 
 function credLabel(l: ProviderLogEntry) {
@@ -90,8 +157,61 @@ function credLabel(l: ProviderLogEntry) {
 
 function fmtTs(ts: string | null) { return ts ? fmtDateTime(ts) : '—' }
 function token(v: number | null | undefined) { return v == null ? '—' : fmtNumber(v) }
+function fmtCost(v: number | null) { return v != null ? '$' + Number(v).toFixed(4) : null }
+function fmtLatency(v: number | null) { return v != null ? v + 'ms' : null }
 
-onMounted(() => { loadCredentials(); load() })
+const totalPages = computed(() => Math.ceil(total.value / PAGE_SIZE))
+const showPager = computed(() => !isCompact.value && total.value > PAGE_SIZE)
+
+/**
+ * 「模型」列表头 = chip 内部那三段（客户端 / 标准 / 出站）。
+ * 原先是模板里的硬编码中文 `… / 标准 / 出站`（HEAD 遗留），
+ * 现与 chip 共用 `models.modelIdentity`，避免表头与行内标签各说各话。
+ * 分隔符用「 / 」：它是对称标点，RTL 语种同样成立，不进词条。
+ */
+const identityHeader = computed(() => [mi('client'), mi('canonical'), mi('outbound')].join(' / '))
+
+// ── compact 卡片字段 ──────────────────────────────────────────────────────
+const cardFields = computed<CardField[]>(() => [
+  {
+    key: 'success',
+    label: pl('table.result'),
+    type: 'badge',
+    format: (v) => (v == null ? null : v ? pl('resultOk') : pl('resultFail')),
+  },
+  {
+    key: 'client_model',
+    label: pl('table.clientModel'),
+    format: (v) => (v == null ? null : String(v)),
+  },
+  { key: 'credential_id', label: pl('table.credential'), format: (v) => credLabel({ credential_id: v as number | null } as ProviderLogEntry) },
+  { key: 'error_kind', label: pl('table.errorKind') },
+  {
+    key: 'prompt_tokens',
+    label: pl('table.tokens'),
+    type: 'metric',
+    align: 'end',
+    format: (v, row) => `${token(v as number | null)} / ${token(row.completion_tokens as number | null)}`,
+  },
+  { key: 'cost_usd', label: pl('table.cost'), type: 'metric', align: 'end', format: (v) => fmtCost(v as number | null) },
+  { key: 'latency_ms', label: pl('table.latency'), type: 'metric', align: 'end', format: (v) => fmtLatency(v as number | null) },
+  { key: 'ts', label: pl('table.time'), format: (v) => fmtTs(v == null ? null : String(v)) },
+])
+
+/**
+ * 卡头：时间必须本地化。
+ * `titleKey` 本身不给格式化钩子，卡头会直接渲染 `ts` 的原始值 ——
+ * 那是一条裸 ISO 串 `2026-10-05T01:15:30.000Z`。2026-10-05 H6 第四条切片补上
+ * `CardList.titleFormat` 后一并修掉（见 CardList 同名 prop 的说明）。
+ *
+ * 形参用 `Record<string, unknown>`：组件契约是那个形状，写成 `ProviderLogEntry`
+ * 会被逆变检查拒掉。
+ */
+function cardTitle(row: Record<string, unknown>): string {
+  return fmtTs(row.ts == null ? null : String(row.ts))
+}
+
+onMounted(() => { loadCredentials(); search() })
 watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
 </script>
 
@@ -137,19 +257,40 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
-    <div v-if="total > 50" class="pager">
+    <!--
+      页码条：仅桌面。compact 走连续加载，由底部 HyperLoadMore 承担，
+      两条路径**不同时出现** —— 屏幕上不该有两个「加载更多」语义。
+    -->
+    <div v-if="showPager" class="pager">
       <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="page--; load()">{{ pl('pagerPrev') }}</button>
-      <span class="cf-meta">{{ page }} / {{ Math.ceil(total / 50) }}</span>
-      <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / 50)" @click="page++; load()">{{ pl('pagerNext') }}</button>
+      <span class="cf-meta">{{ page }} / {{ totalPages }}</span>
+      <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="page++; load()">{{ pl('pagerNext') }}</button>
     </div>
 
+    <!--
+      2026-10-04 H6：双模板 + 双加载方式。
+      · 桌面 → 表格（表头/表体/ModelIdentityChip/徽章逐字未改）+ 页码
+      · compact → 卡片 + 连续加载 + 底部 sentinel
+      两态由容器统一裁定，桌面表格密度不受影响。
+    -->
+    <ResponsiveDataView
+      :rows="rows"
+      title-key="ts"
+      :title-format="cardTitle"
+      :fields="cardFields"
+      table-min-width="900px"
+      :loading="loading && !isCompact"
+      :empty="rows.length === 0 && !loading"
+      :empty-text="pl('empty')"
+    >
+      <template #table>
     <div class="card" style="overflow-x:auto">
       <table v-if="logs.length" class="data-table logs-table">
         <thead>
           <tr>
             <th>{{ pl('table.time') }}</th>
             <th>{{ pl('table.credential') }}</th>
-            <th>{{ pl('table.clientModel') }} / 标准 / 出站</th>
+            <th>{{ identityHeader }}</th>
             <th>{{ pl('table.result') }}</th>
             <th>{{ pl('table.errorKind') }}</th>
             <th>{{ pl('table.tokens') }}</th>
@@ -182,11 +323,23 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
       </table>
       <div v-if="!loading && logs.length === 0" class="empty-hint">{{ pl('empty') }}</div>
     </div>
+      </template>
+    </ResponsiveDataView>
 
-    <div v-if="total > 50" class="pager">
+    <!-- 连续加载尾部：仅 compact -->
+    <HyperLoadMore
+      v-if="isCompact"
+      :state="continuousState"
+      :has-more="continuous.hasMore.value"
+      :loaded-count="continuous.loadedCount.value"
+      @load-more="continuous.loadNext()"
+      @retry="continuous.retry()"
+    />
+
+    <div v-if="showPager" class="pager">
       <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="page--; load()">{{ pl('pagerPrev') }}</button>
-      <span class="cf-meta">{{ page }} / {{ Math.ceil(total / 50) }}</span>
-      <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / 50)" @click="page++; load()">{{ pl('pagerNext') }}</button>
+      <span class="cf-meta">{{ page }} / {{ totalPages }}</span>
+      <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="page++; load()">{{ pl('pagerNext') }}</button>
     </div>
   </div>
 </template>

@@ -69,6 +69,15 @@ export default {
     disable: '停用',
     enable: '啟用',
   },
+  modelIdentity: {
+    client: '用戶端',
+    canonical: '標準',
+    outbound: '出站',
+    titleClient: '用戶端請求名',
+    titleCanonical: '標準名',
+    titleOutbound: '出站 / 上游原名',
+    titleRaw: '原名：{model}'
+  },
   chip: {
     status: '狀態: {value}',
     vendor: '廠商: {value}',

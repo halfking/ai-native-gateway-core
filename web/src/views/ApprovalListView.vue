@@ -8,11 +8,18 @@ import { isSuperAdmin } from '../store'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { formatDateTime, formatRelativeTime } from '../utils/datetime'
 import { useActionMessage } from '../composables/useActionMessage'
-import AppSpinner from '../components/AppSpinner.vue'
-import EmptyState from '../components/EmptyState.vue'
+// 2026-10-04 H6 第三条切片：呈现形态与加载方式是**两个独立维度**（规范 03 §1 / 13 §1）。
+//   桌面 → 表格 + 页码（既有逻辑与 DOM 逐字保留）
+//   compact → 卡片 + 连续加载
+import { useWindowClass } from '../composables/useWindowClass'
+import { createHyperPages } from '../lib/shell/hyper/hyperPages'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
+import type { CardField } from '../components/ui/CardList.vue'
 
 const { t } = useI18n()
 const router = useRouter()
+const { isCompact } = useWindowClass()
 
 // State
 const loading = ref(false)
@@ -57,20 +64,36 @@ const riskLevelOptions = computed(() => [
   { value: 'CRITICAL', label: t('approval.list.risk.CRITICAL') },
 ])
 
-const filteredApprovals = computed(() => {
-  let list = approvals.value
+/**
+ * 搜索是**当前结果集内**的客户端过滤（既有行为，服务端不分页搜索）。
+ * 抽成函数是为了让页码路径与连续加载路径共用同一套语义 ——
+ * 各写一份的话，改搜索条件会漏改其中一条路径。
+ */
+function applySearch(list: ApprovalItem[]): ApprovalItem[] {
+  const query = searchQuery.value.toLowerCase().trim()
+  if (!query) return list
+  return list.filter(
+    (item) => item.session_id.toLowerCase().includes(query) || item.request_id.toLowerCase().includes(query),
+  )
+}
 
-  // Search by session_id or request_id
-  if (searchQuery.value) {
-    const query = searchQuery.value.toLowerCase().trim()
-    list = list.filter(item =>
-      item.session_id.toLowerCase().includes(query) ||
-      item.request_id.toLowerCase().includes(query)
-    )
+const filteredApprovals = computed(() => applySearch(approvals.value))
+
+/**
+ * 筛选条件的**唯一真源**。页码路径与连续加载路径都从这里取 ——
+ * 各写一份必然漂移，症状是「桌面筛了，compact 没筛」。
+ * 不含 page / page_size：那是加载方式，不是筛选条件。
+ */
+function filterBody() {
+  return {
+    status: statusFilter.value || undefined,
+    risk_level: riskLevelFilter.value || undefined,
+    sort_by: sortBy.value,
+    sort_order: sortOrder.value,
+    created_after: dateRangeStart.value || undefined,
+    created_before: dateRangeEnd.value || undefined,
   }
-
-  return list
-})
+}
 
 function getRiskLevelColor(level: string): string {
   switch (level?.toUpperCase()) {
@@ -137,23 +160,17 @@ function formatCost(cost?: number): string {
   return `¥${cost.toFixed(4)}`
 }
 
+/** 桌面页码路径。表格与分页条的既有行为逐字保留。 */
 async function loadApprovals() {
   loading.value = true
   clearError()
 
   try {
-    const params = {
-      status: statusFilter.value || undefined,
-      risk_level: riskLevelFilter.value || undefined,
+    const response = await getApprovalList({
+      ...filterBody(),
       page: currentPage.value,
       page_size: pageSize.value,
-      sort_by: sortBy.value,
-      sort_order: sortOrder.value,
-      created_after: dateRangeStart.value || undefined,
-      created_before: dateRangeEnd.value || undefined,
-    }
-
-    const response = await getApprovalList(params)
+    })
     approvals.value = response.items || []
     totalItems.value = response.total
     totalPages.value = response.total_pages
@@ -163,6 +180,79 @@ async function loadApprovals() {
   } finally {
     loading.value = false
   }
+}
+
+// ── compact 连续加载 ──────────────────────────────────────────────────────
+// 独立于上面的页码状态机：两者不共享 ref、不互相写。
+const continuous = createHyperPages<ApprovalItem>({
+  pageSize: 20,
+  // id 是后端主键且稳定。**不能用数组下标** —— 连续加载第 2 页的下标 0
+  // 是另一行，去重会把它当成与第 1 页第 0 行相同，表现为「行随机消失」。
+  rowKey: (item) => item.id,
+  fetchPage: async (p) => {
+    const response = await getApprovalList({ ...filterBody(), page: p, page_size: 20 })
+    return { rows: response.items || [], total: response.total }
+  },
+})
+
+/** 实际展示的行：按档位二选一，再套同一套客户端搜索。 */
+const rows = computed<ApprovalItem[]>(() =>
+  isCompact.value ? applySearch(continuous.rows.value) : filteredApprovals.value,
+)
+
+/**
+ * compact 卡片的字段定义。**没有 `format` 就只能渲染原始字符串** ——
+ * 风险等级/状态是枚举代码、费用要千分位与货币号、时间要本地化，
+ * 所以这里必须逐个接格式化钩子，不能直接把 `item` 丢给 CardList。
+ */
+const cardFields = computed<CardField[]>(() => [
+  {
+    key: 'risk_level',
+    label: t('approval.list.table.riskLevel'),
+    type: 'badge',
+    format: (v) => (v == null ? null : getRiskLevelLabel(String(v))),
+  },
+  {
+    key: 'status',
+    label: t('approval.list.table.status'),
+    type: 'badge',
+    format: (v) => (v == null ? null : getStatusLabel(String(v))),
+  },
+  { key: 'trigger_type', label: t('approval.list.table.trigger'), format: (v) => (v == null ? null : String(v)) },
+  {
+    key: 'session_id',
+    label: t('approval.list.table.sessionId'),
+    format: (v) => (v == null ? null : `${String(v).slice(0, 12)}...`),
+  },
+  {
+    key: 'cost',
+    label: t('approval.list.table.cost'),
+    type: 'metric',
+    align: 'end',
+    // 费用在 detect_result.cost_estimation 上，不在行顶层 —— 用整行取。
+    format: (_v, row) => formatCost((row.detect_result as { cost_estimation?: number } | undefined)?.cost_estimation),
+  },
+  {
+    key: 'created_at',
+    label: t('approval.list.table.createdAt'),
+    format: (v) => (v == null ? null : formatDate(String(v))),
+  },
+])
+
+/** 页码条：仅桌面。compact 走连续加载，两条路径不同时出现在屏幕上。 */
+const showPager = computed(() => !isCompact.value && totalPages.value > 1)
+
+/** 重新取数：按档位分派到两条路径，且 compact 下先作废在途结果再重取。 */
+async function reload() {
+  if (isCompact.value) {
+    // 顺序不能反：先 invalidate（作废在途结果并提 revision），再 loadFirst，
+    // 否则旧请求可能在新请求之后落地。
+    continuous.invalidate()
+    await continuous.loadFirst()
+    return
+  }
+  currentPage.value = 1
+  await loadApprovals()
 }
 
 async function loadStats() {
@@ -181,7 +271,7 @@ async function quickApprove(item: ApprovalItem) {
   try {
     await approveApproval(item.request_id)
     notifySuccess(t('approval.list.success.approved'))
-    await loadApprovals()
+    await reload()
     await loadStats()
   } catch (e: any) {
     notifyError(e.message || t('approval.list.errors.approveFailed'))
@@ -197,7 +287,7 @@ async function quickReject(item: ApprovalItem) {
   try {
     await rejectApproval(item.request_id, reason)
     notifySuccess(t('approval.list.success.rejected'))
-    await loadApprovals()
+    await reload()
     await loadStats()
   } catch (e: any) {
     notifyError(e.message || t('approval.list.errors.rejectFailed'))
@@ -214,8 +304,7 @@ function resetFilters() {
   searchQuery.value = ''
   dateRangeStart.value = ''
   dateRangeEnd.value = ''
-  currentPage.value = 1
-  loadApprovals()
+  void reload()
 }
 
 function changePage(page: number) {
@@ -226,7 +315,7 @@ function changePage(page: number) {
 function startAutoRefresh() {
   refreshInterval = window.setInterval(() => {
     if (statusFilter.value === 'pending') {
-      loadApprovals()
+      void reload()
       loadStats()
     }
   }, 30000) // Refresh every 30 seconds
@@ -240,7 +329,7 @@ function stopAutoRefresh() {
 }
 
 onMounted(() => {
-  loadApprovals()
+  void reload()
   loadStats()
   startAutoRefresh()
 })
@@ -251,8 +340,9 @@ onBeforeUnmount(() => {
 
 // Watch filters
 watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
-  currentPage.value = 1
-  loadApprovals()
+  // 筛选变化必须**从第 1 页重来**（compact 下同理：invalidate + loadFirst），
+  // 否则页码会停在旧值上，筛完直接看到空白。
+  void reload()
 })
 </script>
 
@@ -350,15 +440,27 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
       </div>
     </div>
 
-    <!-- Table -->
+    <!--
+      2026-10-04 H6：双模板 + 双加载方式。
+      · 桌面 → 表格（表头/表体/徽章/行内按钮逐字未改）+ 页码
+      · compact → 卡片 + 连续加载 + 底部 sentinel
+      loading / empty 由 `ResponsiveDataView` 统一裁定，所以原模板里的
+      AppSpinner 与 EmptyState 移出 table slot（否则 compact 下它们是死代码）。
+      `emptyPadding="64px"` 保住桌面空态原有的 64px 内边距 —— 桌面像素不变。
+    -->
+    <ResponsiveDataView
+      :rows="rows"
+      title-key="request_id"
+      :fields="cardFields"
+      table-min-width="960px"
+      :loading="loading && !isCompact"
+      :empty="rows.length === 0 && !loading"
+      :empty-text="t('approval.list.empty')"
+      empty-padding="64px"
+    >
+      <template #table>
     <div class="table-container">
-      <AppSpinner v-if="loading && approvals.length === 0" :label="t('approval.list.loading')" />
-
-      <EmptyState v-else-if="filteredApprovals.length === 0" padding="64px">
-        <p>{{ t('approval.list.empty') }}</p>
-      </EmptyState>
-
-      <table v-else class="data-table">
+      <table class="data-table">
         <thead>
           <tr>
             <th>{{ t('approval.list.table.requestId') }}</th>
@@ -436,9 +538,21 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
         </tbody>
       </table>
     </div>
+      </template>
+    </ResponsiveDataView>
+
+    <!-- 连续加载尾部：仅 compact。屏幕上不会同时出现两个「加载更多」语义。 -->
+    <HyperLoadMore
+      v-if="isCompact"
+      :state="continuous.state.value"
+      :has-more="continuous.hasMore.value"
+      :loaded-count="continuous.loadedCount.value"
+      @load-more="continuous.loadNext()"
+      @retry="continuous.retry()"
+    />
 
     <!-- Pagination -->
-    <div v-if="totalPages > 1" class="pagination">
+    <div v-if="showPager" class="pagination">
       <button
         class="btn btn-secondary btn-sm"
         @click="changePage(currentPage - 1)"

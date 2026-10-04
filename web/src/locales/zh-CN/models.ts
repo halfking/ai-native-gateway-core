@@ -68,6 +68,15 @@ export default {
     disable: '禁用',
     enable: '启用',
   },
+  modelIdentity: {
+    client: '客户端',
+    canonical: '标准',
+    outbound: '出站',
+    titleClient: '客户端请求名',
+    titleCanonical: '标准名',
+    titleOutbound: '出站 / 上游原名',
+    titleRaw: '原名：{model}'
+  },
   chip: {
     status: '状态: {value}',
     vendor: '厂商: {value}',

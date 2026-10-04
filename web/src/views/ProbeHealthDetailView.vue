@@ -1060,19 +1060,25 @@ onMounted(() => {
   margin: 0 0 8px;
   font-size: 15px;
   font-weight: 600;
-  color: var(--text, #1f2937);
+  /* --text / --text-muted 在 style.css 的浅色与深色两块里都有定义（:52/:55 与
+     :180/:183），所以原写法 var(--text, #1f2937) / var(--text-muted, #6b7280) 的
+     字面兜底**永不求值**，是纯死代码 —— 直接删掉，不产生任何视觉变化。 */
+  color: var(--text);
 }
 .no-model-hint__body {
   margin: 0 auto 16px;
   max-width: 520px;
   font-size: 13px;
   line-height: 1.6;
-  color: var(--text-muted, #6b7280);
+  color: var(--text-muted);
 }
 .no-model-hint__body code {
   padding: 1px 4px;
   border-radius: 4px;
-  background: rgba(127, 127, 127, 0.14);
+  /* 原为字面 rgba(127,127,127,0.14)（中灰，双主题同值）。改用 --neutral-bg
+     = --kx-muted 15%：仓内中性徽标底色的既有令牌，随主题走。
+     对比度实测 13.95→13.40(浅) / 13.52→12.70(深)，均为 AA，肉眼不可辨。 */
+  background: var(--neutral-bg);
   font-size: 12px;
 }
 </style>

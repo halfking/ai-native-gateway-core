@@ -1,0 +1,67 @@
+/*
+ * hyper.css — Hyper 移动端壳层样式（docs/UI规范/00 §5.2 · H2）。
+ *
+ * 红线：只做**新增**规则与档位内分支，不改写桌面既有样式。
+ * 断点一律用 `max-width: 767.98px`（= compact 上界，见 config/window-class.ts），
+ * 不使用范围语法（width <= X），也不新增白名单外的断点值。
+ */
+
+/*
+ * compact 底栏占位。
+ *
+ * 底栏是 `position: sticky; bottom: 0`，它会**占据文档流**（sticky 不是 fixed），
+ * 所以正常情况下不会遮挡内容。这里仍加一层保险：内容区底部留出
+ * 「底栏高 + safe-area」的高度，原因是底栏容器可能因 flex 布局被移出常规流，
+ * 或页面用 `position: absolute/fixed` 子元素时产生叠压。
+ * 两层保险不会导致重复留白 —— sticky 在流内不额外占位，此处只预留上界。
+ */
+@media (max-width: 767.98px) {
+  .app-layout--topbar .main-content {
+    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/*
+ * compact 顶栏瘦身。
+ *
+ * 规范 02 §4：compact 顶栏只保留「汉堡 / 当前上下文 / 账户入口」，
+ * 禁止并排语言 + 主题 + 用户 + 帮助。
+ *
+ * 实现方式：在 compact 档**隐藏** AppTopbar 里的系统设置控件，
+ * 它们在 AppAccountSheet 里有一份等价入口。桌面档完全不受影响 ——
+ * 这条规则整体位于 max-width 媒体查询内。
+ *
+ * 选择用隐藏而不是重写 DOM：AppTopbar 是桌面专业壳，条件渲染会让
+ * 「桌面 DOM 不变」这条红线难以用测试断言；隐藏在 compact 档是纯增量。
+ */
+@media (max-width: 767.98px) {
+  /*
+   * 类名取自各组件**真实的根类名**（AppTopbar 的 actions 区直接渲染这三个
+   * 子组件，没有自己的包装类）：
+   *   ThemeToggle       → .theme-toggle
+   *   LanguageSelector  → .language-selector
+   *   UserMenuDropdown  → .user-menu
+   * 早先一版写的是 .app-topbar__lang/__theme/__user —— AppTopbar 里**不存在**
+   * 这些类，规则完全打空（写了没接线）。改用真实类名后此规则才真正生效。
+   */
+  .app-layout--topbar .theme-toggle,
+  .app-layout--topbar .language-selector,
+  .app-layout--topbar .user-menu {
+    display: none;
+  }
+}
+
+/*
+ * 减少动态效果。
+ *
+ * 手势、抽屉、Sheet 在用户开启系统「移除动画」时不应再有位移/缩放。
+ * 只关视觉，不影响功能可用性。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .app-bottom-nav,
+  .account-sheet,
+  .account-sheet__panel {
+    transition: none !important;
+    animation: none !important;
+  }
+}

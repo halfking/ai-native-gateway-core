@@ -13,9 +13,13 @@ import {
   type ConnectionSnapshot,
 } from '../api/connection-registry'
 import { fmtDateTime24h } from '../i18n/useFormat'
+import { useWindowClass } from '../composables/useWindowClass'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../components/ui/CardList.vue'
 
 const router = useRouter()
 const { t, locale } = useI18n()
+const { isCompact } = useWindowClass()
 const POLL_MS = 15_000
 
 const live = ref<ConnectionSnapshot[]>([])
@@ -148,6 +152,86 @@ onUnmounted(() => {
   stopTick()
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
+
+/**
+ * ── H6 第十二条切片（2026-10-06）：两张连接表接 compact 卡片形态 ───────────────
+ *
+ * ## 无分页 API ⇒ 只改呈现形态
+ *
+ * `fetchConnectionRegistry` 一次返回 live + closed 两段，**没有 offset/limit/page**
+ * ⇒ 与第七~十那几页同源，**不引入连续加载**（门禁断「页面里不存在 `HyperLoadMore` /
+ * `createHyperPages`」）。
+ *
+ * ## 三态归属：**第一种形态（表内三态）**的变体 —— 判据仍是「空态时那块东西在不在」
+ *
+ * 每节的空态是 `<div v-if="filteredX.length" class="cr-table-wrap">` + `<div v-else class="cr-empty">`
+ * —— 空态时**整块表格被撤掉**、换上一段空文案。
+ * ⇒ 容器挂在同一个 `v-if` 分支上（**不传 `:empty` / `:loading`**），
+ * 两档共用页面自己的 `.cr-empty` 与 `.cr-skeleton`。
+ *
+ * ## 删掉 `.cr-table-wrap`（它自带 `overflow-x: auto`）
+ *
+ * 容器已经有 `.responsive-data-view__table { overflow-x: auto }`，
+ * 两个横滚容器嵌套会出现**双横向滚动条**。同切片九。
+ *
+ * `table-min-width="0px"`：本页 `.cr-table` 只有 `width:100%`、**没有** `min-width`
+ * —— 传默认 720px 会给窄内容凭空加一条横向滚动条。
+ *
+ * ## 卡头就是 `request_id`：键与脸同源，不用 `titleFormat`
+ *
+ * `request_id` 既是这一行的唯一身份，也是桌面上那个跳转按钮的文案。
+ * `CardList` 的 `:key` 取自 `titleKey`、卡头取原始值 —— 这里两者**恰好都是它**，
+ * 所以不需要 `titleFormat`（前几条切片需要，是因为卡头要与键不同）。
+ *
+ * ## `frames_written` 缺值出 `0` 而不是破折号 —— 与表格**故意保持一致**
+ *
+ * 桌面就是 `c.frames_written ?? 0`。「字段缺失」与「真的是 0 帧」在页面上被当成同一件事，
+ * 严格说是个小口径问题（切片九的 M20 就为它红过一次）。
+ * 本切片**不动桌面**，卡片也照抄 —— 表格与卡片共用同一份口径是硬规则，
+ * 宁可两边一起不完美，也不要两边不一致。
+ *
+ * ⚠️ 本页也命中 §4.6 的 D1：`fmtDateTime24h(c.registered_at)` 只有日期没有时分
+ * （那张表是 closed 历史，「注册于」只有日期确实不好用）。此处**沿用现状不改**。
+ */
+
+/** live 表卡片字段。标签全部复用 `connectionRegistry.columns.*` ⇒ 0 新增 i18n 键。 */
+const liveCardFields = computed<CardField[]>(() => [
+  { key: 'protocol', label: t('connectionRegistry.columns.protocol') },
+  { key: 'client_type', label: t('connectionRegistry.columns.client') },
+  {
+    key: 'frames_written',
+    label: t('connectionRegistry.columns.frames'),
+    type: 'metric',
+    align: 'end',
+    // 与桌面同一个回落口径：缺失按 0（见上方注释）
+    format: (v) => String(v ?? 0),
+  },
+  {
+    key: 'last_frame_at',
+    label: t('connectionRegistry.columns.lastFrame'),
+    // ★ 复用同一个 elapsedOf（相对时间由 1s tick 的 nowMs 驱动）——
+    //   写第二份就会与桌面漂移，而且**断言会变成依赖墙上时钟的时间炸弹**。
+    format: (v) => elapsedOf(v == null ? undefined : String(v)),
+  },
+])
+
+/** closed 表卡片字段。 */
+const closedCardFields = computed<CardField[]>(() => [
+  { key: 'protocol', label: t('connectionRegistry.columns.protocol') },
+  { key: 'close_reason', label: t('connectionRegistry.columns.closeReason') },
+  {
+    key: 'frames_written',
+    label: t('connectionRegistry.columns.frames'),
+    type: 'metric',
+    align: 'end',
+    format: (v) => String(v ?? 0),
+  },
+  {
+    key: 'registered_at',
+    label: t('connectionRegistry.columns.registeredAt'),
+    format: (v) => fmtDateTime24h(v == null ? undefined : String(v)),
+  },
+])
 </script>
 
 <template>
@@ -217,7 +301,14 @@ onUnmounted(() => {
             <h3>{{ t('connectionRegistry.sections.live') }}</h3>
             <span class="cr-count">{{ filteredLive.length }}</span>
           </header>
-          <div v-if="filteredLive.length" class="cr-table-wrap">
+          <ResponsiveDataView
+            v-if="filteredLive.length"
+            :rows="filteredLive"
+            title-key="request_id"
+            :fields="liveCardFields"
+            table-min-width="0px"
+          >
+            <template #table>
             <table class="cr-table">
               <thead>
                 <tr>
@@ -240,7 +331,13 @@ onUnmounted(() => {
                 </tr>
               </tbody>
             </table>
-          </div>
+            </template>
+            <template #actions="{ row }">
+              <button type="button" class="cr-link cr-action" @click="openJourney(String(row.request_id))">
+                {{ t('connectionRegistry.openJourney') }}
+              </button>
+            </template>
+          </ResponsiveDataView>
           <div v-else class="cr-empty">{{ t('connectionRegistry.empty.live') }}</div>
         </section>
 
@@ -249,7 +346,14 @@ onUnmounted(() => {
             <h3>{{ t('connectionRegistry.sections.closed') }}</h3>
             <span class="cr-count">{{ filteredClosed.length }}</span>
           </header>
-          <div v-if="filteredClosed.length" class="cr-table-wrap">
+          <ResponsiveDataView
+            v-if="filteredClosed.length"
+            :rows="filteredClosed"
+            title-key="request_id"
+            :fields="closedCardFields"
+            table-min-width="0px"
+          >
+            <template #table>
             <table class="cr-table">
               <thead>
                 <tr>
@@ -272,7 +376,13 @@ onUnmounted(() => {
                 </tr>
               </tbody>
             </table>
-          </div>
+            </template>
+            <template #actions="{ row }">
+              <button type="button" class="cr-link cr-action" @click="openJourney(String(row.request_id))">
+                {{ t('connectionRegistry.openJourney') }}
+              </button>
+            </template>
+          </ResponsiveDataView>
           <div v-else class="cr-empty">{{ t('connectionRegistry.empty.closed') }}</div>
         </section>
       </template>
@@ -388,8 +498,6 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.cr-table-wrap { overflow-x: auto; }
-
 .cr-table {
   width: 100%;
   border-collapse: collapse;
@@ -408,6 +516,21 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
+/*
+ * 卡片里的跳转钮：桌面 `.cr-link` 是行内小字，按钮化后必须抬到 48px 触控下限。
+ * 只在这条路径上加，桌面像素不动。
+ * ★ 续行写成 `*` 开头是**计数器的口径要求**：它只跳过 trim 后以 `//` / `*` / `/*`
+ *   开头的整行，续行不以 `*` 开头就会被计进硬编码中文（本段实测 +2）。
+ *   这与「把注释改写成英文骗计数」是两回事 —— 这里是按常规块注释格式书写。
+ */
+.cr-action {
+  min-height: 48px;
+  padding: 0 10px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+}
 .cr-link {
   border: 0;
   background: transparent;

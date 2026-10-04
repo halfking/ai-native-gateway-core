@@ -1,6 +1,6 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, enableAutoUnmount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
@@ -12,6 +12,22 @@ import { clearCredentialLabels, loadCredentialLabels } from '../composables/useC
 import { i18n as appI18n } from '../i18n'
 import { getCredentialMonitorSummary } from '../api/credential-monitor'
 import { getRequestLogTopModels } from '../api/logs'
+
+// 2026-10-06 flaky 病灶根因（确定性取证，非推测）：本文件 40+ 次 mountPanel()
+// 全部没有 unmount，每个实例在 onMounted 里留下两个**真实**定时器：
+//   ① FIRST_SCOPE_RETRY_MS(3s) 重试 —— 回调在 QueuePerspectivePanel.vue:421
+//      调 loadModelScope() → getFeatured()
+//   ② startStatsPoll() 的 setInterval（STATS_REFRESH_MS）
+// 泄漏的活实例会在**后续测试进行中**触发，而 getFeatured/resolveRouting 是
+// 文件级共享 mock —— 于是「下一个测试断言 getFeatured 被调 1 次」会偶发红成 2 次，
+// 且假时钟明明没推进（触发者是 node 真实定时器，不是 fake timer）。
+// 取证：临时用例 A 留一个空 scope 面板，用例 B 一个面板都不 mount，
+// 睡 3.1s 后 getFeatured 仍被调 1 次，栈为
+//   loadModelScope(vue:277) ← Timeout._onTimeout(vue:421) ← listOnTimeout(node:internal/timers)
+// ⇒ enableAutoUnmount(afterEach) 是正解：卸载即 clearTimeout + abort + clearInterval。
+// 卸载安全：loadModelScope 全程 Promise.allSettled + resolveOne try/catch + abort 检查，
+// refreshWindowStats 亦然（vue:1055-1089），不会产生卸载后的未捕获拒绝。
+enableAutoUnmount(afterEach)
 
 const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, isAuthenticatedMock, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
@@ -1394,7 +1410,13 @@ describe('QueuePerspectivePanel', () => {
     // 自动补一次加载。
     vi.useFakeTimers()
     try {
-      getFeatured.mockReset().mockRejectedValueOnce(new Error('auth not ready'))
+      // ★ 每次调用都要有兜底：只排 `Once` 的话，**第 2 次调用返回 undefined**，
+      //   组件在 `featured.value.featured_models` 处直接抛 TypeError 并变成
+      //   unhandled rejection（全量跑时抓到的就是这个）。真实 API 不会返回 undefined，
+      //   是 fixture 太脆。base 实现让多余调用无害。
+      getFeatured.mockReset()
+        .mockRejectedValueOnce(new Error('auth not ready'))
+        .mockResolvedValue({ featured_models: [] })
       vi.mocked(getRequestLogTopModels).mockReset()
         .mockRejectedValueOnce(new Error('auth not ready'))
         .mockResolvedValue({ items: [] })
@@ -1404,16 +1426,45 @@ describe('QueuePerspectivePanel', () => {
       ]
 
       const wrapper = mountPanel()
-      await flushPromises()
+      // ★ 断言「首轮只调了 1 次」之前，**绝不能用 flushPromises()**：
+      //   它在假定时器下会把假时间推过 3s，于是 onMounted 里那个重试定时器
+      //   提前响过 → `toHaveBeenCalledTimes(1)` 变 2（全量跑时抓到的就是这个）。
+      //   `advanceTimersByTimeAsync(0)` 只排微任务、**不动假时间**，是确定性的。
+      // ★ 2026-10-06 实测抓到的第三个病灶：全量跑偶发红，失败断言是
+      //   `getFeatured` 被调 2 次（期望 1 次）。诊断信息显示那一刻
+      //   `wrapper.text()` 是「0 可用 / 无排队请求」的**正常空态**，
+      //   从未出现「模型范围暂不可用」，且假时钟**没有被推进**（mockTime == realNow）
+      //   ⇒ 3s 重试定时器并没有响。
+      //
+      //   也就是说：**上一行的有界轮询是耗尽上限退出的**（条件自始至终为假），
+      //   而它的退出**没有被校验** —— 于是下一行的调用次数断言在一个
+      //   「面板还没进错误态」的半成品状态上跑，红的表象（2 次调用）与
+      //   真正的问题（等错了东西）**不同形**。
+      //   第二次的调用从哪来**我没有隔离出来**，不写成根因。
+      //   这里只做两件确定的事：把上限放宽到 50，并把「条件确实成立」提成
+      //   **排在调用次数之前的断言** —— 状态没到位时它先喊，而不是伪装成次数错。
+      for (let i = 0; i < 50 && !wrapper.text().includes('模型范围暂不可用'); i++) {
+        await vi.advanceTimersByTimeAsync(0)
+      }
+      // 双双失败 → 面板给出错误态而不是空白（先断它：没到位就别谈次数）
+      expect(wrapper.text(), '错误态没渲染出来 —— 下面的调用次数断言没有意义').toContain('模型范围暂不可用')
       expect(getFeatured).toHaveBeenCalledTimes(1)
-      // 双双失败 → 面板给出错误态而不是空白
-      expect(wrapper.text()).toContain('模型范围暂不可用')
 
       // 登录态就绪后重试成功
       getFeatured.mockResolvedValue({ featured_models: ['m-1'] })
       await vi.advanceTimersByTimeAsync(3000)
-      await flushPromises()
+      // ★ 假定时器下的等待不能靠「固定次数的 flushPromises」：
+      //   3s 定时器回调里 `void loadModelScope()` 发起的 promise 链有几跳 await
+      //   取决于内部实现。隔离跑 5/5 绿、全量跑偶发红（本仓实测 2026-10-05）。
+      //   ⇒ 改成「推进 0ms 直到断言成立」的有界轮询：确定性，且**不削弱任何断言**。
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 2; i++) {
+        await vi.advanceTimersByTimeAsync(0)
+      }
       expect(getFeatured).toHaveBeenCalledTimes(2)
+      // DOM 断言同样要等渲染落地（Vue 的渲染也是微任务 + nextTick）
+      for (let i = 0; i < 5 && !wrapper.text().includes('m-1'); i++) {
+        await vi.advanceTimersByTimeAsync(0)
+      }
       expect(wrapper.text()).toContain('m-1')
       expect(wrapper.text()).not.toContain('模型范围暂不可用')
     } finally {

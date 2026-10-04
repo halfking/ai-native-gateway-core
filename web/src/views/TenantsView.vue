@@ -3,7 +3,7 @@ import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import { sortByName } from '../utils/sortByName'
 import { localeRef } from '../i18n'
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_COLORS } from '../api'
 import type { Tenant } from '../api'
@@ -13,7 +13,10 @@ import { isPlatformOpsView } from '../store'
 import { useTenantStatusLabel } from '../composables/useTenantStatusLabel'
 // 2026-09-13 P3：页头收敛到 ui/PageHeader；表格容器收敛到 ui/DataTable（方案 §4.5.2/§4.5.5）
 import PageHeader from '../components/ui/PageHeader.vue'
-import DataTable from '../components/ui/DataTable.vue'
+// 2026-10-04 H6：桌面端保留 DataTable 包裹；compact 端由 ResponsiveDataView 提供卡片形态。
+//   桌面表格结构**逐字未改**（桌面零回归红线），只换外层容器。
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../components/ui/CardList.vue'
 
 const { t } = useI18n()
 const { tenantStatusLabel } = useTenantStatusLabel()
@@ -61,8 +64,67 @@ function fmtNum(n?: number) {
 
 const showCost = isPlatformOpsView()
 
+/**
+ * 桌面表格的最小列宽。沿用改造前 `DataTable min-width="760px"` 的同一数值。
+ * 必须在脚本里声明是因为模板插槽与 prop 都要用，且它**只有一个真源**。
+ */
+const TABLE_MIN_WIDTH = '760px'
+
 function goDetail(t: Tenant) {
   router.push(`/tenants/${t.code}`)
+}
+
+// ── compact 卡片形态的字段描述 ────────────────────────────────────────────
+// 与桌面表格读**同一份** `tenants` 数组，只是换了呈现。切换形态不重新打接口。
+//
+// 每个字段都带 `format`：`CardList` 默认只做 String(row[key])，
+// 没有格式化钩子就渲染不出千分位、本地化日期与状态译名。
+const cardFields = computed<CardField[]>(() => [
+  {
+    key: 'status',
+    label: t('tenants.list.colStatus'),
+    type: 'badge',
+    format: (v) => (v == null ? null : statusLabel(String(v))),
+  },
+  {
+    key: 'user_count',
+    label: t('tenants.list.colUsers'),
+    type: 'metric',
+    align: 'end',
+    format: (v) => fmtNum(v as number | undefined),
+  },
+  {
+    key: 'api_key_count',
+    label: t('tenants.list.colKeys'),
+    type: 'metric',
+    align: 'end',
+    format: (v) => fmtNum(v as number | undefined),
+  },
+  {
+    key: 'total_requests',
+    label: t('tenants.list.colRequests'),
+    type: 'metric',
+    align: 'end',
+    format: (v) => fmtNum(v as number | undefined),
+  },
+  {
+    key: 'contact_email',
+    label: t('tenants.list.colContact'),
+    format: (v) => (v == null ? null : String(v)),
+  },
+  {
+    key: 'created_at',
+    label: t('tenants.list.colCreated'),
+    format: (v) => fmtTime(v == null ? '' : String(v)),
+  },
+])
+
+/** 卡片副标题用 code：它是进入详情后要用的标识，比状态更适合当第二识别物。 */
+const cardSubtitleKeys = ['code']
+
+/** 整卡可点 = 进入详情，与表格行点击同一意图。 */
+function onCardClick(tenant: Tenant) {
+  goDetail(tenant)
 }
 
 onMounted(load)
@@ -88,7 +150,31 @@ onMounted(load)
 
     <div v-if="loading" class="loading">{{ t('tenants.list.loading') }}</div>
 
-    <DataTable v-else min-width="760px">
+    <!--
+      2026-10-04 H6：双模板容器。
+      · compact  → 自动出卡片（切换钮不渲染，见 03 §2.1）
+      · 桌面     → 出下面的表格，**表头/表体/行样式逐字未改**（桌面零回归红线）
+      · 三态（loading/empty）由容器统一裁定，不会出现「表格有骨架、卡片空白」
+
+      ★ 唯一一处桌面可见变化，如实记录：空态由「表格内的一行居中文字」
+        换成了共享的 `<EmptyState>`（同文案、同 40px padding、同 muted 色，
+        差别仅是显式 13px 字号）。这是「两套空态体系并存」的历史欠账，
+        本次顺带收敛一处；**不是**表格密度或列宽的变化。
+    -->
+    <ResponsiveDataView
+      v-else
+      :rows="tenants"
+      title-key="name"
+      :subtitle-keys="cardSubtitleKeys"
+      :fields="cardFields"
+      :table-min-width="TABLE_MIN_WIDTH"
+      :clickable="true"
+      :clickable-label="t('tenants.list.colName')"
+      :empty="tenants.length === 0"
+      :empty-text="t('tenants.list.empty')"
+      @row-click="onCardClick"
+    >
+      <template #table>
     <table class="table tenants-table" style="width:100%">
       <thead>
         <tr>
@@ -128,12 +214,10 @@ onMounted(load)
           <td>{{ tenant.contact_email || '-' }}</td>
           <td class="mono">{{ fmtTime(tenant.created_at) }}</td>
         </tr>
-        <tr v-if="tenants.length === 0">
-          <td colspan="9" style="text-align:center; color: var(--muted); padding: 40px">{{ t('tenants.list.empty') }}</td>
-        </tr>
       </tbody>
     </table>
-    </DataTable>
+      </template>
+    </ResponsiveDataView>
 
     <TenantCreateDialog v-if="showCreate" @close="showCreate = false" @created="load" />
   </div>

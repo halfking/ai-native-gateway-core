@@ -4,12 +4,16 @@ import { useI18n } from 'vue-i18n'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import { useWindowClass } from '../composables/useWindowClass'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../components/ui/CardList.vue'
 import {
   getQualityCorrelations,
   type QualityCorrelationResponse,
 } from '../api'
 
 const { t } = useI18n()
+const { isCompact } = useWindowClass()
 
 const resp = ref<QualityCorrelationResponse | null>(null)
 const loading = ref(false)
@@ -68,6 +72,61 @@ function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(2)}s`
 }
 
+/** 样本数千分位。表格原先内联 `x.toLocaleString()`，搬出来给卡片共用同一份。 */
+function fmtCount(n: number): string {
+  return n.toLocaleString()
+}
+
+/** 成本：美元四位小数。表格原先内联 `$${x.toFixed(4)}`。 */
+function fmtUsd(n: number): string {
+  return `$${n.toFixed(4)}`
+}
+
+/**
+ * 质量档位 → 卡片 tone。与 `qualityColor` 的 5 档色阶是**同一组阈值**，
+ * 但收敛成 3 档（`CardField.tone` 只有 4 个取值）。
+ * ⇒ 精确档位不丢：那一格的**数值**（如 `85.0%`）本来就在卡片上，
+ * 颜色只承担「好 / 中 / 差」的粗信号。这是**有意的再编码**，不是漏。
+ */
+function qualityTone(v: number): 'good' | 'warn' | 'danger' {
+  if (v >= 0.7) return 'good'
+  if (v >= 0.4) return 'warn'
+  return 'danger'
+}
+
+/**
+ * ── H6 第八条切片（2026-10-06）：breakdown 表接 compact 卡片形态 ────────────
+ * 本页**没有分页 API**（`getQualityCorrelations({days, by})` 一次取回整段），
+ * 所以只改**呈现形态**，不引入连续加载。
+ * `insights` 那一段是 `<ol>` 排名列表、自带序号与相关系数配色，**不是数据表** ——
+ * 套 `CardList` 会丢掉序号与配色，所以不纳入本切片。
+ *
+ * 两处取舍（与切片七同源）：
+ * 1. `#table` 槽内**保留 `v-if`**：桌面空态时原本整张表都不渲染，提到容器外
+ *    会多出一个带边框的空表壳。
+ * 2. **不传 `:loading`**：本段由 `v-if="resp"` 门控，`resp` 为空时整个 section
+ *    都不渲染，传了就是死代码。
+ */
+const breakdownCardFields = computed<CardField[]>(() => [
+  { key: 'samples', label: t('qualityCorrelations.breakdown.headers.samples'), format: (v) => fmtCount(Number(v)) },
+  {
+    key: 'success_rate',
+    label: t('qualityCorrelations.breakdown.headers.success'),
+    type: 'badge',
+    tone: (row) => qualityTone(Number(row.success_rate)),
+    format: (v) => fmtPct(Number(v)),
+  },
+  { key: 'avg_latency_ms', label: t('qualityCorrelations.breakdown.headers.latency'), format: (v) => fmtMs(Number(v)) },
+  {
+    key: 'avg_quality',
+    label: t('qualityCorrelations.breakdown.headers.quality'),
+    type: 'badge',
+    tone: (row) => qualityTone(Number(row.avg_quality)),
+    format: (v) => fmtPct(Number(v)),
+  },
+  { key: 'avg_cost_usd', label: t('qualityCorrelations.breakdown.headers.cost'), format: (v) => fmtUsd(Number(v)) },
+])
+
 function byLabel(b: string): string {
   const key = `qualityCorrelations.filter.by.${b}` as 'qualityCorrelations.filter.by.prompt_length'
   if (b === 'prompt_length' || b === 'tools' || b === 'images' || b === 'code_block') {
@@ -124,33 +183,44 @@ onMounted(load)
 
       <section class="card">
         <h2>{{ t('qualityCorrelations.breakdown.title', { by: byLabel(by) }) }}</h2>
-        <table v-if="resp.breakdown.length > 0" class="qc-table">
-          <thead>
-            <tr>
-              <th>{{ t('qualityCorrelations.breakdown.headers.bucket') }}</th>
-              <th>{{ t('qualityCorrelations.breakdown.headers.samples') }}</th>
-              <th>{{ t('qualityCorrelations.breakdown.headers.success') }}</th>
-              <th>{{ t('qualityCorrelations.breakdown.headers.latency') }}</th>
-              <th>{{ t('qualityCorrelations.breakdown.headers.quality') }}</th>
-              <th>{{ t('qualityCorrelations.breakdown.headers.cost') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in resp.breakdown" :key="r.bucket">
-              <td><span class="tag tag-bucket">{{ r.bucket }}</span></td>
-              <td>{{ r.samples.toLocaleString() }}</td>
-              <td :style="{ color: qualityColor(r.success_rate), fontWeight: 600 }">
-                {{ fmtPct(r.success_rate) }}
-              </td>
-              <td>{{ fmtMs(r.avg_latency_ms) }}</td>
-              <td :style="{ color: qualityColor(r.avg_quality), fontWeight: 600 }">
-                {{ fmtPct(r.avg_quality) }}
-              </td>
-              <td>${{ r.avg_cost_usd.toFixed(4) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-else class="empty">{{ t('qualityCorrelations.breakdown.empty') }}</p>
+        <ResponsiveDataView
+          :rows="resp.breakdown"
+          title-key="bucket"
+          :fields="breakdownCardFields"
+          table-min-width="0px"
+          :empty="isCompact && resp.breakdown.length === 0"
+          :empty-text="t('qualityCorrelations.breakdown.empty')"
+        >
+          <template #table>
+            <table v-if="resp.breakdown.length > 0" class="qc-table">
+              <thead>
+                <tr>
+                  <th>{{ t('qualityCorrelations.breakdown.headers.bucket') }}</th>
+                  <th>{{ t('qualityCorrelations.breakdown.headers.samples') }}</th>
+                  <th>{{ t('qualityCorrelations.breakdown.headers.success') }}</th>
+                  <th>{{ t('qualityCorrelations.breakdown.headers.latency') }}</th>
+                  <th>{{ t('qualityCorrelations.breakdown.headers.quality') }}</th>
+                  <th>{{ t('qualityCorrelations.breakdown.headers.cost') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in resp.breakdown" :key="r.bucket">
+                  <td><span class="tag tag-bucket">{{ r.bucket }}</span></td>
+                  <td>{{ fmtCount(r.samples) }}</td>
+                  <td :style="{ color: qualityColor(r.success_rate), fontWeight: 600 }">
+                    {{ fmtPct(r.success_rate) }}
+                  </td>
+                  <td>{{ fmtMs(r.avg_latency_ms) }}</td>
+                  <td :style="{ color: qualityColor(r.avg_quality), fontWeight: 600 }">
+                    {{ fmtPct(r.avg_quality) }}
+                  </td>
+                  <td>{{ fmtUsd(r.avg_cost_usd) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+        </ResponsiveDataView>
+        <p v-if="!isCompact && !resp.breakdown.length" class="empty">{{ t('qualityCorrelations.breakdown.empty') }}</p>
       </section>
 
       <section class="card insights-card">
