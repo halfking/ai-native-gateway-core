@@ -22883,3 +22883,181 @@ ON CONFLICT 的冲突臂在跨租户场景下**根本进不去**。
 - 本门**只刻画现状**，不表达「应该怎样」；若属主决定改语义，
   本门的相应子测试会红，那是**预期的**（届时按新契约更新期望值）。
 - **未连接生产。** §9.189.3 的暴露度是**这一套库**的数字。
+
+---
+
+## §9.190 退役到底进行到哪一步：实测 + 把「先补评估再关停」做成可执行不变量
+
+### §9.190.1 活着的写方还有两个，**仍在双写**
+
+`request_logs` 的退役不是「表还在」的问题，而是「还有谁在写」。本轮实测：
+
+| 写方 | 位置 | 状态 |
+|---|---|---|
+| `domains/hooks/observability/telemetry/client.go` | 请求生命周期埋点 | 活 |
+| `admin/telemetry.go` | 写 `request_logs_hot` | 活 |
+
+`request_logs_hot` 的 `max_ts` 距测量时刻 **86 秒** ⇒ 双写**此刻仍在进行**。
+`request_logs` 族不是历史遗留，是**活读活写的在线面**。
+
+停写开关 `settings.storage.request_logs_write_enabled`
+（`settings/key_request_logs_write_enabled.go`，`Default: true`、HotReload、
+与 Lite sink 同键）的 spec 注释已写明关停后计费 / `api_keys` / outbox 照常，
+session 六表族成为唯一事实源。覆盖面很全（15 个测试文件引用它）。
+**但真库 `settings_kv` 里该键的行数 = 0 ⇒ 取默认 `true`。**
+
+### §9.190.2 逐点评估的进度：106/107
+
+`TestRequestLogsStopWriteClassificationProgress` **PASS**（该文件头注释写的
+「门现在就红」已过期——那道门按设计只报进度、不判红，硬条件在 `s4audit` build tag 下）。
+日志给出 **106/107 已评估、未评估 1 个** ⇒ **S4 灰度前置条件未达成**。
+
+### §9.190.3 为什么「进度条」不够，要一个互锁
+
+进度门只在有人**去看日志**时有用。真正的风险时点是**有人把开关关掉的那一刻**——
+他不会先去读另一道门的日志。所以本轮把「先补完评估，才允许关停」
+从一条**约定**改成一条**不变量**：`admin/request_logs_stop_write_interlock_test.go`。
+
+判据是纯函数 `stopWriteInterlockViolation(unclassified, flagEnabled)`：
+`flag == false && len(unclassified) > 0` ⇒ 报违规。
+
+新门三个子测试，**基线全绿**：
+
+1. **接线阳性对照**（证明不是恒真）：在一次性库里往 `settings_kv` 种
+   `false` ⇒ 必须读到 `false`；删掉 ⇒ 必须读回默认 `true`。
+   走 `settings.Global` → `NewRegistry` → `StorageSpecs()` →
+   `RegisterBackend(ScopePlatform, NewStoreDB(pool))` 接**生产函数**
+   `settings.RequestLogsWriteEnabled()`。
+2. **逻辑自检**（证明互锁会响）：用编造的未评估清单 + `flag=false` ⇒ 必须报违规；
+   `flag=true` ⇒ 不得报；无未评估 + `flag=false`（退役完成态）⇒ 不得报。
+3. **真实库不变量**：`TEST_DATABASE_URL` 上 `flag=false` 且有未评估读方 ⇒ 红。
+
+**牙齿已验**：在探针库 `llmgw_probe_9186` 的 `settings_kv` 种 `false`，
+第 3 条转红且红因**精确点名**未评估读方；DELETE 后恢复全绿。
+
+⚠ **互锁不是状态灯**：当前为绿，只在「前置条件未达成却关掉开关」那一刻转红——
+不制造噪音。
+
+---
+
+## §9.191 补完最后一个读点：`admin/usage_enhanced.go`
+
+### §9.191.1 结论先行
+
+107/107 已评估。`admin/usage_enhanced.go` 判 **`effectSilentlyDegradedAggregate`**：
+它的**四个读点判定各不相同**，其中**只有一个真的退化**。以下全部是
+逐条读码 + 真库 7 天实测，**不是推断**。
+
+### §9.191.2 ① cost-trend `group_by=work_type`：**退化**
+
+视图 `GROUP BY COALESCE(rl.work_type,'unknown')`。真库 7 天实测：
+
+- 视图 77,600 行里 `work_type` 非空只有 **4,357 行**，**全部落在 v1 臂**；
+- **session 臂 31,222 行 `work_type` 100% 为 NULL**。
+
+独立复核到**源头表**：`session_turns` 29,620 + `session_turns_hot` 1,603 行，
+`work_type` 同样**全 NULL**。⇒ migration 710 把 `work_type` 登记为
+「直映 `t.work_type`」是**忠实实现**；缺的是**写方从不填 `session_turns.work_type`**。
+
+为什么本地全 NULL：`work_type` 来自 `X-Gw-Work-Type` 请求头
+（`domains/analysis/projectattr/attributor.go:65`），本地无客户端发送它。
+**这使「session 侧无供给」成为本地性质，生产是否同样为 NULL 未知**（需 252 只读）。
+
+⇒ 停写后 `work_type` 维度**塌成只剩 `unknown` 一组**，接口 200、字段齐全、无错误。
+
+### §9.191.3 那 4,357 行是谁：**设计内的内部回环**，不是镜像漏写
+
+`origin_actor ∈ {auto-title-generator, auto-summary-generator}`、
+`is_auto_request=TRUE`、`task_type` 为空 ⇒ 命中
+`internaltraffic.ClassifyInternalLoopback` 的 **actor 臂**
+⇒ 按设计**不进 `session_turns`**。⇒ 停写后这批行从视图整体消失。
+
+### §9.191.4 ② intent：不受影响 ③ 压缩计数：不受影响，且方向与直觉相反
+
+- **② `group_by=intent`**（:109）`JOIN session_summaries ss ON ss.session_key = rl.gw_session_id`。
+  session 臂 `gw_session_id` 实测 **0 NULL**（710 登记为派生映射
+  `CASE WHEN session_id LIKE 'sys:%' THEN NULL ELSE session_id END`），
+  `session_summaries` 7 天内更新 3,852 行、持续增长 ⇒ **不受影响**。
+- **③ 压缩请求数**（:666 `compressedQuery`）真库 7 天实测
+  `compression_strategy` 非空的 **v1 臂 0 / 46,398 行**，
+  **session 臂 4,796 / 31,223 行**。⇒ 这个计数**今天就只由 session 臂供数**，
+  停写**不掉反得**。
+
+### §9.191.5 退化幅度（能测的与测不了的，分开写）
+
+视图 7 天按 `origin_actor` 分段：
+
+| 段 | 行 | token | 占比 |
+|---|---|---|---|
+| business | 73,279 | 315,482,283 | 95.80% |
+| internal_loopback | 4,359 | 13,845,574 | **4.20%** |
+
+停写后视图少掉的 4,359 行 = **5.6% 行 / 4.20% token**。
+⚠ 本地 `cost_usd ≈ 0`，**美元占比在本机测不了**——这是本条读数的明确缺口。
+
+### §9.191.6 独立佐证：机械族分类器早就知道这个文件用了补位列
+
+把本条改判 `effectUnaffected` 会立刻被
+`TestStopWriteEffectAgreesWithSourceFamily` 判红，族 =
+`reads_view_with_null_padded_predicate`。即：**不靠我的读码，
+机械分类器也已把 `work_type` 算进 session 臂 NULL 补位列集合。**
+
+### §9.191.7 我这一轮自己犯的三个错（都是我的前提/读数错，不是代码问题）
+
+1. **把「NULL 计数 = 总行数」读成「填充率 100%」。**
+   我先跑出 `session 臂 31,192 行 / work_type NULL 31,192 行`，
+   却在结论里写成「work_type 100% 有值」。**NULL 计数恰好等于行数，
+   正是「一列都没填」的特征**——我却把它当成最好的消息汇报。
+   与「一个 0 必须配阳性对照」同族：**读到 0 / 读到满，要靠对照分，不能靠印象。**
+2. **算出一个「47% 的计费成功请求没有 session 镜像」的结论。**
+   口径是 `success AND (prompt_tokens>0 OR completion_tokens>0)`，而
+   **探针流量带 token**。拆开看：789 条未镜像里 **784 条是
+   `task_type='probe_triggered'`** ⇒ 真正的业务未镜像只有 5 条。
+   2026-10-02 已写在 `measurementCaveat` 里的结论（「v1 独有行里约 99.8% 是
+   探针流量」）**是对的**，我差点用一条错数字把它推翻。
+   ⇒ **量具的总体选错，得到的会是一个方向明确、量级吓人、且与既有事实矛盾的数。**
+3. **把 `ClassifyInternalLoopback` 读成「四臂与」，实际是「三臂或」**
+   （`internal/internaltraffic/internal_traffic.go:170-184` 是顺序 return 的
+   首个命中臂）。读错的后果很具体：我差点把**按设计排除的内部回环**
+   报成「镜像漏写」，并据此开一条 P0。**注释里的编号 + 「otherwise」
+   会让人读成合取**，而代码是析取。
+
+### §9.191.8 互锁门自身的一个真实缺陷：判据的有效性挂在被检对象状态上
+
+第一版互锁的「逻辑自检」写的是
+`todo := unclassifiedStopWriteReaders(); if len(todo) == 0 { t.Skip(...) }`。
+**§9.191 把最后一个读点评估完之后，这条自检会永久 Skip**——
+而它恰恰是唯一能证明互锁**没退化成恒真门**的那条。
+即：互锁会在**它刚开始变得重要的那一刻**静默作废，且**毫无信号**。
+
+修法：自检改为**自带合成前提**（构造一个假读点名），恒定可构造。
+⇒ 判据的有效性不能挂在「被检验对象当前恰好处于某个状态」上。
+
+### §9.191.9 本轮新增的门与变异验证
+
+`admin/request_logs_stop_write_interlock_test.go`（新增）+ 分类表 1 条登记。
+基线：`TestStopWriteInterlock_*` **3/3 PASS**；
+`TestRequestLogsStopWriteClassificationProgress` **107/107**（未评估 **0**）。
+
+三条变异**各自按正确红因转红**：
+
+| 变异 | 红在哪 | 红因是否正确 |
+|---|---|---|
+| M3：把 `stopWriteInterlockViolation` 恒真化 | 逻辑自检 | ✅「互锁是恒真的、作废」 |
+| M1：把新登记的 `Evidence` 改成非逐字 | `…EvidenceIsReal` | ✅ 指名该文件 |
+| M2：把本条改判 `effectUnaffected` | `…AgreesWithSourceFamily` | ✅ 指出族含补位列 |
+
+M3 是在**未评估清单已归零之后**跑的 ⇒ 直接证明 §9.191.8 的修复有效。
+
+### §9.191.10 诚实边界
+
+- **未改任何产品代码、配置、视图或迁移。** 本节新增**一条测试 + 一条分类登记**。
+- **未连接生产。** §9.191.2/§9.191.5 的全部数字是**这一套本地库**的，
+  且本地 `cost_usd ≈ 0`、无客户端发 `X-Gw-Work-Type` ⇒
+  **「session 侧 `work_type` 无供给」这一条本地为真，生产未知**。
+- 本条判 `effectSilentlyDegradedAggregate`，而该档被
+  `silentFormsOutsideGreyList` **显式排除**在「灰度前必须处理的静默档」清单外。
+  那条排除的登记理由写的是「退化发生在 reward 的分项（基线 cohort 取 miss）」，
+  针对的是 baseline-metric 那一类形状；**本条的形状不同**（维度取值集合塌缩成单值）。
+  **排除决定是否覆盖本条属属主决定**（决策表 **D27-a**），本轮不自行改档、
+  也不自行改动 70 这个对外数字。
