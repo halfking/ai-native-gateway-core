@@ -186,7 +186,7 @@ async function main() {
       report.pages.push({ theme, route, url: ORIGIN + BASE + route, screenshot: file, settle: settleInfo, audit, consoleErrors: errs })
 
       const bad = audit.issues?.length || 0
-      console.log(`  ${bad || errs.length ? '✗' : '✓'} [${theme}] ${route.padEnd(8)} ${String(bad).padStart(2)} 显示问题  ${errs.length} 控制台  settle=${settleInfo.state}@${Math.round((settleInfo.waitedMs||0)/1000)}s`)
+      console.log(`  ${bad ? '✗' : '✓'} [${theme}] ${route.padEnd(8)} ${String(bad).padStart(2)} 显示问题  ${errs.length} 控制台  settle=${settleInfo.state}@${Math.round((settleInfo.waitedMs||0)/1000)}s`)
       for (const i of (audit.issues || [])) {
         console.log(`      · ${i.sev} ${i.kind}: ${i.detail}`)
         for (const o of (i.offenders || i.items || []).slice(0, 4)) {
@@ -198,11 +198,20 @@ async function main() {
   }
 
   cdp.close(); cleanup()
-  const total = report.pages.reduce((n, p) => n + (p.audit?.issues?.length || 0) + p.consoleErrors.length, 0)
-  report.summary = { pages: report.pages.length, issues: total }
+  const displayIssues = report.pages.reduce((n, p) => n + (p.audit?.issues?.length || 0), 0)
+  const consoleErrorCount = report.pages.reduce((n, p) => n + p.consoleErrors.length, 0)
+  const unsettled = report.pages.filter((p) => !p.settle?.settled)
+  report.summary = {
+    pages: report.pages.length,
+    displayIssues,
+    consoleErrors: consoleErrorCount,
+    verifiedPages: report.pages.length - unsettled.length,
+    unsettledPages: unsettled.map((p) => `${p.theme} ${p.route}`),
+  }
   writeFileSync(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2))
   console.log(`\n▸ 报告 ${path.join(OUT, 'report.json')}`)
-  console.log(`▸ ${report.pages.length} 个页面态 / ${total} 个问题`)
+  console.log(`▸ 页面态 ${report.pages.length} / 已进入终态 ${report.summary.verifiedPages} / 显示问题 ${displayIssues} / 控制台报错 ${consoleErrorCount}`)
+  if (unsettled.length) console.log(`⚠ 未进入终态（未检验）：${unsettled.map((p) => `${p.theme} ${p.route}`).join(', ')}`)
 }
 
 main().catch((e) => { console.error('✗ ' + (e.stack || e.message)); process.exit(2) })

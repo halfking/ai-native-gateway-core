@@ -254,7 +254,9 @@ async function main() {
 
       const bad = a.issues?.length || 0
       const cerr = errs.length
-      console.log(`  ${bad || cerr ? '✗' : '✓'} [${theme}] ${route.padEnd(8)} ${String(bad).padStart(2)} 显示问题  ${cerr} 控制台  settle=${settleInfo.state}@${Math.round((settleInfo.waitedMs||0)/1000)}s  共${page.ms}ms`)
+      // ✗ 只代表**显示问题**。控制台报错另计 —— 两者混在一个符号里会让人
+      // 把「后端 500」读成「这一页显示坏了」（/nodes 就是这样被误读过的）。
+      console.log(`  ${bad ? '✗' : '✓'} [${theme}] ${route.padEnd(8)} ${String(bad).padStart(2)} 显示问题  ${cerr} 控制台  settle=${settleInfo.state}@${Math.round((settleInfo.waitedMs||0)/1000)}s  共${page.ms}ms`)
       for (const i of (a.issues || [])) console.log(`      · ${i.sev} ${i.kind}: ${i.detail}`)
       for (const e of errs.slice(0, 3)) console.log(`      · console.${e.type}: ${e.text}`)
     }
@@ -265,12 +267,23 @@ async function main() {
 
   report.finishedAt = new Date().toISOString()
   writeFileSync(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2))
-  const total = report.pages.reduce((n, p) => n + (p.audit?.issues?.length || 0) + p.consoleErrors.length, 0)
-  report.summary = { pages: report.pages.length, issues: total }
+  // 三个口径必须分开，否则「显示问题 0」会被读成「什么都是绿的」：
+  // 未进入终态的页面**根本没被检验**，它是「没测到」，不是「没问题」。
+  const displayIssues = report.pages.reduce((n, p) => n + (p.audit?.issues?.length || 0), 0)
+  const consoleErrorCount = report.pages.reduce((n, p) => n + p.consoleErrors.length, 0)
+  const unsettled = report.pages.filter((p) => !p.settle?.settled)
+  report.summary = {
+    pages: report.pages.length,
+    displayIssues,
+    consoleErrors: consoleErrorCount,
+    verifiedPages: report.pages.length - unsettled.length,
+    unsettledPages: unsettled.map((p) => `${p.theme} ${p.route}`),
+  }
   writeFileSync(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2))
   console.log(`\n▸ 报告 ${path.join(OUT, 'report.json')}`)
   console.log(`▸ 截图 ${shots}`)
-  console.log(`▸ 合计 ${report.pages.length} 个页面态 / ${total} 个问题（显示 + 控制台）`)
+  console.log(`▸ 页面态 ${report.pages.length} / 已进入终态 ${report.summary.verifiedPages} / 显示问题 ${displayIssues} / 控制台报错 ${consoleErrorCount}`)
+  if (unsettled.length) console.log(`⚠ 未进入终态（未检验）：${unsettled.map((p) => `${p.theme} ${p.route}`).join(', ')}`)
   if (!loggedIn) console.log('⚠ 登录未成功，鉴权页之后的页面可能只是登录重定向 —— 报告里逐页看 url 字段')
 }
 
