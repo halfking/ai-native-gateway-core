@@ -82,7 +82,7 @@ func sessionsMonthBounds(t *testing.T, pool *pgxpool.Pool) []time.Time {
 		WHERE i.inhparent = 'public.sessions'::regclass
 		  AND c.relpartbound IS NOT NULL
 		  AND pg_get_expr(c.relpartbound, c.oid) <> 'DEFAULT'
-		ORDER BY lo DESC`)
+		ORDER BY lo DESC NULLS LAST`)
 	if err != nil {
 		t.Fatalf("probe sessions partitions: %v", err)
 	}

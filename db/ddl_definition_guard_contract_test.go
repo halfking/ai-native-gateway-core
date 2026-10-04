@@ -91,11 +91,30 @@ func TestDDLSkipGuardsAgainstRealPostgres(t *testing.T) {
 		t.Fatalf("expected to be on scratch db %s, got %q (err=%v)", scratch, dbname, err)
 	}
 	probe.Close()
+	// R42 修正：t.Cleanup 晚于 defer admin.Close() 执行，原写法打在已关池上
+	// 且仅 t.Logf——scratch 库静默泄漏累积。独立连接 + 失败变红 + 回查
+	// （e83fb6211 同形态）。
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if _, err := admin.Exec(cleanupCtx, "DROP DATABASE IF EXISTS "+scratch); err != nil {
-			t.Logf("cleanup: drop scratch db %s: %v", scratch, err)
+		conn, cerr := pgx.Connect(cleanupCtx, dsn)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to drop scratch db %s: %v", scratch, cerr)
+			return
+		}
+		defer conn.Close(cleanupCtx)
+		if _, derr := conn.Exec(cleanupCtx, "DROP DATABASE IF EXISTS "+scratch); derr != nil {
+			t.Errorf("cleanup: drop scratch db %s: %v", scratch, derr)
+			return
+		}
+		var left int
+		if qerr := conn.QueryRow(cleanupCtx,
+			`SELECT count(*) FROM pg_database WHERE datname = $1`, scratch).Scan(&left); qerr != nil {
+			t.Errorf("cleanup: verify drop: %v", qerr)
+			return
+		}
+		if left != 0 {
+			t.Errorf("cleanup: scratch db %s still exists after DROP", scratch)
 		}
 	})
 

@@ -30,11 +30,12 @@ import (
 //     set does not. Audit 244's table pinned to one of them described a system
 //     that may not be the one running.
 //
-// This test asserts NOTHING about policy. It reports whether the shipped
-// deployment artifacts put the config where the relative path can reach it,
-// because a silent fallback is indistinguishable from a working one at
-// runtime: no error, no test failure, and every rule that only exists in the
-// yaml simply never fires.
+// R42: this test now BITES on state changes. It pins the audited current
+// state ("all containerized paths fall back to the built-in rule set") and
+// fails loudly if that state changes — because a silent fallback is
+// indistinguishable from a working one at runtime, the only safe direction
+// for a gate is "conclusion expired -> revisit decision 107". While 107 is
+// pending, MISSING/UNREACHABLE are the expected (green) readings.
 func Test245DeploymentShipsThePatternConfig(t *testing.T) {
 	root := repoRoot(t)
 
@@ -43,11 +44,18 @@ func Test245DeploymentShipsThePatternConfig(t *testing.T) {
 	if runtime == "" {
 		t.Log("  (could not locate a runtime stage; nothing asserted)")
 	} else if ok, how := runtimeCopiesConfigs(runtime); ok {
-		t.Logf("  OK: %s", how)
+		// R42 加牙：审计 245 的结论是「容器化路径全部落到 fallback」。这
+		// 个状态一旦被打破（R-E1 类部署修复落地），结论与挂起的 107 号
+		// 裁决前提同时过期——必须红下来要求重审，而不是静默变绿。
+		t.Fatalf("audit 245 conclusion expired: the Dockerfile runtime stage now ships "+
+			"configs/ (%s) — the 「all containerized paths fall back to the built-in "+
+			"rule set」 claim no longer holds; revisit pending decision 107 and flip "+
+			"this gate together with the fix", how)
 	} else {
-		t.Logf("  MISSING: the runtime stage never copies configs/ — the image ships no "+
-			"configs/sensitive_patterns.yaml, so newSanitizePatternDetector() takes its "+
-			"fallback branch for the whole life of the container")
+		t.Log("  MISSING (as audited, decision 107 pending): the runtime stage never copies "+
+			"configs/ — the image ships no configs/sensitive_patterns.yaml, so "+
+			"newSanitizePatternDetector() takes its fallback branch for the whole life "+
+			"of the container")
 	}
 
 	t.Log("--- compose files: is configs/ mounted where the relative path can reach it? ---")
@@ -62,9 +70,12 @@ func Test245DeploymentShipsThePatternConfig(t *testing.T) {
 			continue
 		}
 		if ok, detail := composeMountReachesRelativePath(text); ok {
-			t.Logf("  %-38s OK: %s", name, detail)
+			// R42 加牙：同上——挂载一旦变得可达，245 号结论过期，需重审 107。
+			t.Fatalf("audit 245 conclusion expired: %s now mounts configs/ where the "+
+				"relative path reaches it (%s) — the fallback claim no longer holds for "+
+				"this layout; revisit pending decision 107 and flip this gate", name, detail)
 		} else {
-			t.Logf("  %-38s UNREACHABLE: %s", name, detail)
+			t.Logf("  %-38s UNREACHABLE (as audited, decision 107 pending): %s", name, detail)
 		}
 	}
 }

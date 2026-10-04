@@ -143,9 +143,20 @@ func TestMigration532FinalSuccessUniqueness(t *testing.T) {
 
 	// fixture + 清理（见 fixtureCleanup532 注释：TEST_PG_URL 必须指向一次性库）。
 	execScript(fixtureCleanup532)
+	// R42 修正：t.Cleanup 晚于 defer scriptConn.Close(ctx) 执行，原写法打在
+	// 已关连接上静默漏夹具——独立连接 + 失败变红（e83fb6211 同形态）。
 	t.Cleanup(func() {
-		//nolint:errcheck // best-effort cleanup
-		_, _ = scriptConn.Exec(context.Background(), fixtureCleanup532)
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		conn, cerr := pgx.ConnectConfig(cctx, cfg)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to run fixtureCleanup532: %v", cerr)
+			return
+		}
+		defer conn.Close(cctx)
+		if _, derr := conn.Exec(cctx, fixtureCleanup532); derr != nil {
+			t.Errorf("cleanup: fixtureCleanup532: %v", derr)
+		}
 	})
 	execScript(fixtureDDL532)
 

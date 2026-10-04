@@ -159,13 +159,24 @@ func (t *TaxonomySync) upsertCanonical(ctx context.Context, familyID string, ver
 		contextWindow = 8192
 	}
 
+	// 825 守卫闭环（R42）：taxonomy YAML 是规则侧写方（Layer 1，同
+	// discovery 的推断），而 modality_source='semantic'/'manual' 的标注是
+	// 权威值（迁移 825 的分层定义）。语义降级原本活不过本 worker 的 6h
+	// tick——与 discovery 的 provider tick 互踢，正是 825 在 discovery 三处
+	// upsert 堵掉的「两条规则对同一列提出互斥要求」的漏网第四写点。
+	// 冲突臂豁免 semantic/manual；插臂盖 'inferred'（规则播种的真值，
+	// 与 825 的存量口径一致）。
 	_, err := t.db.Exec(ctx, `
-		INSERT INTO models_canonical (canonical_name, family, display_name, modality, context_window, parameters_b, source, status)
-		VALUES ($1, $2, $3, $4, $5, $6, 'taxonomy-yaml', 'active')
+		INSERT INTO models_canonical (canonical_name, family, display_name, modality, modality_source, context_window, parameters_b, source, status)
+		VALUES ($1, $2, $3, $4, 'inferred', $5, $6, 'taxonomy-yaml', 'active')
 		ON CONFLICT (canonical_name) DO UPDATE SET
 			family = EXCLUDED.family,
 			display_name = EXCLUDED.display_name,
-			modality = EXCLUDED.modality,
+			modality = CASE
+				WHEN COALESCE(models_canonical.modality_source, '') IN ('semantic', 'manual')
+				THEN models_canonical.modality
+				ELSE EXCLUDED.modality
+			END,
 			context_window = EXCLUDED.context_window,
 			parameters_b = EXCLUDED.parameters_b,
 			source = 'taxonomy-yaml'

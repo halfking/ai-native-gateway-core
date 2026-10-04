@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -147,10 +148,22 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 		t.Fatalf("persistRequestLog: %v", err)
 	}
 
+	// R42 修正：t.Cleanup 晚于 defer cancel()/pool.Close() 执行，原写法 ctx
+	// 与池双死、三表静默漏行——独立连接 + 失败变红（e83fb6211 同形态）。
 	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM request_logs_bodies_hot WHERE request_id = $1`, entry.RequestID)
-		_, _ = pool.Exec(ctx, `DELETE FROM request_logs_hot WHERE request_id = $1`, entry.RequestID)
-		_, _ = pool.Exec(ctx, `DELETE FROM usage_ledger_hot WHERE request_id = $1`, entry.RequestID)
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		conn, cerr := pgx.Connect(cctx, dsn)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to delete %s: %v", entry.RequestID, cerr)
+			return
+		}
+		defer conn.Close(cctx)
+		for _, table := range []string{"request_logs_bodies_hot", "request_logs_hot", "usage_ledger_hot"} {
+			if _, derr := conn.Exec(cctx, `DELETE FROM `+table+` WHERE request_id = $1`, entry.RequestID); derr != nil {
+				t.Errorf("cleanup: delete %s: %v", table, derr)
+			}
+		}
 	})
 
 	var (
