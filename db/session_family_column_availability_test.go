@@ -318,6 +318,98 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 	t.Logf("STRUCTURAL GAPS (%d): %s", len(structural), strings.Join(structural, ", "))
 	t.Logf("GO EMPTY ON THE SESSION SIDE (%d): %s", len(goEmpty), strings.Join(goEmpty, ", "))
 	t.Logf("session >5pp emptier than v1 (%d): %s", len(muchEmptier), strings.Join(muchEmptier, ", "))
+
+	// The measurement contradicts the registered lists, or the lists are
+	// wrong. This is what keeps db/retirement_column_exposure.go a fact rather
+	// than a comment: a reviewer can trust that "unservable" means "measured
+	// empty on this database", because the moment the database says otherwise
+	// this test goes red.
+	//
+	// Compared as **sets in both directions**. A subset check would let a column
+	// silently leave the list (the measurement no longer reports it, the list
+	// keeps claiming it) and the exposure analysis would keep flagging readers
+	// of a column that is actually fine — a false alarm that trains people to
+	// ignore the alarm.
+	assertSameSet(t, "unservable", goEmpty, RetirementUnservableColumns)
+	assertSameSet(t, "degraded", muchEmptier, RetirementDegradedColumns)
+	assertSameSet(t, "structural gap", structural, RetirementStructuralGapColumns)
+}
+
+// assertSameSet fails unless the two column sets are identical, naming both
+// sides so a drift report says which way it moved.
+func assertSameSet(t *testing.T, label string, measured, registered []string) {
+	t.Helper()
+	m := map[string]bool{}
+	for _, c := range measured {
+		m[c] = true
+	}
+	var missing, extra []string
+	for _, c := range registered {
+		if !m[c] {
+			missing = append(missing, c)
+		}
+	}
+	for _, c := range measured {
+		if !retiredColumnSet(registered)[c] {
+			extra = append(extra, c)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	if len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("%s: the registered list in db/retirement_column_exposure.go no longer matches "+
+			"the measurement on this database.\n  registered but not measured: %v\n"+
+			"  measured but not registered: %v\n"+
+			"Re-derive the list from this run and update it deliberately — the read-side exposure "+
+			"analysis trusts it.",
+			label, missing, extra)
+	}
+}
+
+// TestRetirementColumnExposureIsTotalAndDisjoint checks the classification is a
+// partition of the canonical contract: every column lands in exactly one class,
+// and the three non-baseline lists do not overlap.
+//
+// Total + disjoint is the property that makes "every reader was classified" a
+// statement you can verify. Without it, a column in two lists would be resolved
+// by whatever branch happens to come first, and a column in none would look
+// identical to a column that was checked and found fine.
+func TestRetirementColumnExposureIsTotalAndDisjoint(t *testing.T) {
+	seen := map[string]int{}
+	counts := map[string]int{}
+	for _, col := range canonicalColumnOrderV2 {
+		class := RetirementExposureClassify(col)
+		counts[class]++
+		seen[col]++
+	}
+	for col, n := range seen {
+		if n != 1 {
+			t.Errorf("column %q appears %d times in the canonical contract — the classification "+
+				"cannot be a partition of a contract with duplicates", col, n)
+		}
+	}
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	if total != len(canonicalColumnOrderV2) {
+		t.Errorf("classification covered %d columns, contract has %d", total, len(canonicalColumnOrderV2))
+	}
+	// The three named lists must be pairwise disjoint.
+	lists := map[string][]string{
+		"structural-gap": RetirementStructuralGapColumns,
+		"unservable":     RetirementUnservableColumns,
+		"degraded":       RetirementDegradedColumns,
+	}
+	for name, cols := range lists {
+		for _, c := range cols {
+			if !containsStr(canonicalColumnOrderV2, c) {
+				t.Errorf("%s list names %q, which is not in the canonical contract — a typo here "+
+					"would silently make that column unclassifiable", name, c)
+			}
+		}
+	}
+	t.Logf("exposure classes: %v", counts)
 }
 
 // existingV1Columns returns the subset of the canonical column names that the
