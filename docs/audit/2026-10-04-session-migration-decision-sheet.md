@@ -2088,7 +2088,13 @@ v1 的标记来自 v1 的写方。**一旦 S4 停写，连 v1 侧那 9,614 个�
     `domains/session/v2/client_protocol_realdb_test.go` 覆盖
     阳性（值落地）+ 阴性对照（空值必须落 `NULL`），已过 2 方向变异。
     ⇒ `client_protocol` 与 `work_type` **关闭路径不同**：
-    前者是**纯实现缺口，已闭合**；后者仍卡 D27-c 的客户端头驱动，需要属主拍板。
+    前者是**纯实现缺口，增量已闭合**；后者仍卡 D27-c 的客户端头驱动，需要属主拍板。
+    * ⚠ **R43 订正（2026-10-04，§R43/L2）**：「已闭合」只对**增量**成立。
+      历史行的值只活在 v1 臂（710 视图该列 35,185/2,278,971 由 v1 侧填充），
+      v1 退役时视图臂与原生臂同时失去，且当时**没有任何回填脚本**——与
+      D32（is_final_success）同病异治。现补 `sql/scripts/backfill_client_protocol.sql`
+      （幂等 `IS NULL` 守卫、按分区配对、hot 面单独处理，形态同 D32 脚本），
+      **必须与 D32 同一部署窗口、在 request_logs DROP 之前执行**。
   * 连带一条**判据口径**修正：`admin/request_logs_retirement_column_reader_gate_test.go:25`
     那条「无人 SELECT 读」的断言是 2026-10-04 用**逐行** grep 做的，
     它 PASS 并不与本条冲突 —— 那一行只是常量名，不含列名字面量。

@@ -128,7 +128,12 @@ func recordFinalSuccessTurnOp(op string) {
 // Best-effort for the same reason the turn write is: a failure here means the
 // mark was not recorded, never that the turn was lost. The turn row is
 // already committed and this statement cannot un-commit it.
-func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, tenantID, sessionID string) {
+// It reports whether the mark reached a definitive state: true for a
+// committed mark, an idempotent no-op, a superseded claim, or a payload that
+// can never be marked; false only for infrastructure failures (begin/GUC/
+// exec/commit), where a retry can still change the outcome. Callers that own
+// a compensation row must keep the row on false (audit 2026-10-04 §R43/L3).
+func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, tenantID, sessionID string) bool {
 	if pool == nil {
 		// Degraded config (InitMirrorOutbox(nil)). Not a failure of the write,
 		// but the pad genuinely did not run, and saying nothing would make it
@@ -136,10 +141,11 @@ func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, te
 		recordFinalSuccessTurnOp("mark_no_pool")
 		slog.Warn("sessionv2mirror: final_success pad skipped, mirror outbox pool is not initialised",
 			"request_id", requestID, "session_id", sessionID)
-		return
+		return false
 	}
 	if requestID == "" || sessionID == "" {
-		return
+		// Not retryable: the payload will never carry these ids.
+		return true
 	}
 
 	// One transaction so the RLS GUCs apply to every statement below. The db
@@ -150,7 +156,7 @@ func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, te
 		recordFinalSuccessTurnOp("mark_failed")
 		slog.Warn("sessionv2mirror: final_success pad begin failed (turn is intact)",
 			"request_id", requestID, "session_id", sessionID, "error", err)
-		return
+		return false
 	}
 	//nolint:errcheck // best-effort marker; a rollback failure here changes nothing
 	defer tx.Rollback(ctx)
@@ -162,13 +168,13 @@ func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, te
 		recordFinalSuccessTurnOp("mark_failed")
 		slog.Warn("sessionv2mirror: final_success pad RLS GUC failed (turn is intact)",
 			"request_id", requestID, "session_id", sessionID, "error", err)
-		return
+		return false
 	}
 	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true)`, tenantID); err != nil {
 		recordFinalSuccessTurnOp("mark_failed")
 		slog.Warn("sessionv2mirror: final_success pad tenant GUC failed (turn is intact)",
 			"request_id", requestID, "session_id", sessionID, "error", err)
-		return
+		return false
 	}
 
 	var marked int64
@@ -187,7 +193,9 @@ func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, te
 			// buried in mark_failed: it means the two families disagree about
 			// who won, and the first mark stands.
 			var pgErr *pgconn.PgError
+			superseded := false
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				superseded = true
 				recordFinalSuccessTurnOp("mark_superseded")
 				slog.Warn("sessionv2mirror: final_success pad rejected by session-side unique index "+
 					"(another turn of this session already holds the mark; v1 should not have granted two)",
@@ -197,7 +205,11 @@ func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, te
 				slog.Warn("sessionv2mirror: final_success pad write failed (turn is intact)",
 					"request_id", requestID, "session_id", sessionID, "table", tbl, "error", err)
 			}
-			return
+			if superseded {
+				// Definitive: the first mark stands, a retry cannot change it.
+				return true
+			}
+			return false
 		}
 		marked += tag.RowsAffected()
 	}
@@ -219,19 +231,21 @@ func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, te
 			recordFinalSuccessTurnOp("mark_no_row")
 			slog.Warn("sessionv2mirror: final_success pad could not confirm the turn after a 0-row mark",
 				"request_id", requestID, "session_id", sessionID, "tenant_id", tenantID, "error", err)
-			return
+			return false
 		}
 		if exists > 0 {
 			// 幂等重跑：行在且已标记。正常，不告警。
 			recordFinalSuccessTurnOp("mark_noop")
 			slog.Debug("sessionv2mirror: final_success pad was a no-op, the turn already holds the mark",
 				"request_id", requestID, "session_id", sessionID, "tenant_id", tenantID)
-			return
+			return true
 		}
 		recordFinalSuccessTurnOp("mark_no_row")
 		slog.Warn("sessionv2mirror: v1 granted the final-success claim but the turn was not found on either face",
 			"request_id", requestID, "session_id", sessionID, "tenant_id", tenantID)
-		return
+		// Definitive for this row: with the turn committed by the caller's
+		// Write, a retry would still find nothing to mark.
+		return true
 	}
 	recordFinalSuccessTurnOp("mark")
 
@@ -242,5 +256,7 @@ func markTurnFinalSuccess(ctx context.Context, pool *pgxpool.Pool, requestID, te
 		recordFinalSuccessTurnOp("mark_failed")
 		slog.Warn("sessionv2mirror: final_success pad commit failed (outcome unknown)",
 			"request_id", requestID, "session_id", sessionID, "marked", marked, "error", err)
+		return false
 	}
+	return true
 }
