@@ -1197,3 +1197,35 @@ v1 读方中已判定=15 未判定=47
   （`admin/usage.go`、`admin/session_detail_v2.go`、`bg/ledger_reconciliation.go`、
   `cmd/gateway/waterfall_db.go` 等，见审计 §9.171.2 / §9.172.2）
   ⚠️ 基数从 37 变 47 是**分母修正**（53 → 62 真实 v1 读方数），**不是发现了新问题**。
+
+---
+
+## D21　**本地库是「部分迁移」实例**：两道门红在环境，不在代码（2026-10-06，审计 §9.173）
+
+### 已确证
+
+`origin/main` 上 6 个既有红门（admin 4 / bg 1 / cmd/gateway 1）逐个查完：
+
+- **4 个是量具/夹具问题，已修**（零生产代码改动）。其中 `cmd/gateway` 与 `admin` 的
+  「跨月分区下界」助手因 `sessions_default`（`relpartbound='DEFAULT'`）抽不出月下界
+  ⇒ NULL 扫描崩溃，**这两道门此前从未真正执行过断言**。
+  另含 `ORDER BY lo DESC` 默认 **NULLS FIRST** 的静默选错分区隐患。
+- **2 个是环境缺口，故意保持红**。
+
+本地库迁移状态（实测）：`schema_migrations` 288 行，**含 `762%` 的 0 行**，
+最大连号 817（仓库已到 824）；`schema_migration_audit` 76x/82x 无记录；
+`session_dim` 上无 762 的触发器，函数 `sync_session_project_attr` 不存在。
+⇒ **762 是从未应用，不是回滚过。**
+
+### 请拍板
+
+- **D21-a**：是否在本地库应用 **迁移 762**（`762_session_project_backfill_chain.sql`）？
+  它自述幂等（OR REPLACE / IF NOT EXISTS / DROP-then-CREATE），有 `.down.sql`，
+  且不在 `startup_rerun_known_gaps.tsv` 里。
+  ⚠️ **不应用 ⇒ `TestProjectTasksSkipsNullTaskID` 永远红。**
+  ⚠️ **更值得注意**：缺迁移是**双向风险**——既可能让门永远红，也可能让某些缺陷永远测不到。
+  818+ 同样未应用。
+- **D21-b**：`TestReportRollup_HTTPContract` 需要有日聚合结果的库
+  （`report_snapshots` 实测 **0 行**）。
+  **本轮明确没有把它改成 skip**——把如实报红的门改成永不执行的门，
+  与 §9.171 撤掉「清单全覆盖」门是同一类错误。是否接受它长期红，或改用有数据的库？
