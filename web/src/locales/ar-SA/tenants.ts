@@ -212,6 +212,8 @@ export default {
     recentDaysSub: "آخر {n} يوم",
     statAvailableSub: "اشتراك {a} · ائتمان {b} · شحن {c}",
     myAccountLink: "حسابي",
+    degradedFallback: "لم يتم تهيئة عرض البيانات «{view}» بعد. يرجى تشغيل ترحيل تجميع البيانات أولاً",
+    degradedViewLabel: "العرض: {view}",
     chartModelTitle: "ترتيب طلبات النماذج",
     chartModelHint: "انقر فوق العمود لعرض التفاصيل",
     chartModelEmpty: "لا توجد بيانات طلبات نموذج",

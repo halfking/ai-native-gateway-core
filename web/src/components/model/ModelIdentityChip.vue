@@ -2,7 +2,14 @@
 /**
  * Unified model identity chip: client → canonical → outbound/raw.
  * Used in request logs, node detail, and model tables.
+ *
+ * 2026-10-04：三个身份标签改为 i18n（原先是模板里的硬编码中文，
+ * 英文/日文界面会直接露出「客户端 / 标准 / 出站」）。
+ * 词条是这三个术语的**唯一真源** —— LogsTab 的表头也从这里取，
+ * 两处各写一份必然漂移（表头写「标准」而 chip 里写「Standard」）。
  */
+import { useI18n } from 'vue-i18n'
+
 defineProps<{
   clientModel?: string | null
   canonicalName?: string | null
@@ -15,28 +22,35 @@ const emit = defineEmits<{
   clickCanonical: []
   clickOutbound: []
 }>()
+
+const { t } = useI18n()
+const mi = (k: string): string => t(`models.modelIdentity.${k}` as never) as string
 </script>
 
 <template>
   <div class="mic" :class="{ 'mic--compact': compact }">
-    <span v-if="clientModel" class="mic-part" title="客户端请求名">
-      <span class="mic-label">客户端</span>
+    <span v-if="clientModel" class="mic-part" :title="mi('titleClient')">
+      <span class="mic-label">{{ mi('client') }}</span>
       <code>{{ clientModel }}</code>
     </span>
-    <span v-if="canonicalName" class="mic-part mic-part--link" title="标准名" @click.stop="emit('clickCanonical')">
-      <span class="mic-label">标准</span>
+    <span v-if="canonicalName" class="mic-part mic-part--link" :title="mi('titleCanonical')" @click.stop="emit('clickCanonical')">
+      <span class="mic-label">{{ mi('canonical') }}</span>
       <code>{{ canonicalName }}</code>
     </span>
     <span
       v-if="outboundModel || rawModel"
       class="mic-part"
       :class="{ 'mic-part--link': !!outboundModel || !!rawModel }"
-      title="出站 / 上游原名"
+      :title="mi('titleOutbound')"
       @click.stop="emit('clickOutbound')"
     >
-      <span class="mic-label">出站</span>
+      <span class="mic-label">{{ mi('outbound') }}</span>
       <code>{{ outboundModel || rawModel }}</code>
-      <span v-if="outboundModel && rawModel && outboundModel !== rawModel" class="mic-raw" :title="'原名: ' + rawModel">≠raw</span>
+      <span
+        v-if="outboundModel && rawModel && outboundModel !== rawModel"
+        class="mic-raw"
+        :title="mi('titleRaw')"
+      >≠raw</span>
     </span>
     <span v-if="!clientModel && !canonicalName && !outboundModel && !rawModel" class="mic-empty">—</span>
   </div>

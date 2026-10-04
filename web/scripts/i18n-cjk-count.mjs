@@ -30,7 +30,17 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2))
   const mod = pathToFileURL(join(ROOT, 'src', 'i18n', 'hardcodedCjk.ts')).href
   const code = `
-    import { countAll, readBaseline, writeBaseline } from ${JSON.stringify(mod)}
+    import { countAll, readBaseline, writeBaseline, selfCheckCounting } from ${JSON.stringify(mod)}
+    // ⚠️ 口径自证在 CLI 侧也要跑：**CLI 是写 baseline 的那个出口**，
+    //   一个数错目标的量具正是从这儿把错的数字固化进 baseline 的。
+    const failedSelfCheck = selfCheckCounting().filter((c) => !c.ok)
+    if (failedSelfCheck.length) {
+      process.stderr.write('FATAL: counter self-check failed — refusing to report or write a baseline:\\n')
+      for (const c of failedSelfCheck) {
+        process.stderr.write('  ' + c.id + ' ' + c.desc + ' — expected=' + c.expected + ' actual=' + c.actual + '\\n')
+      }
+      process.exit(2)
+    }
     const { count, files } = countAll()
     if (process.argv.includes('--update-baseline')) {
       const b = writeBaseline(count)

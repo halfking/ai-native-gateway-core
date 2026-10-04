@@ -225,6 +225,8 @@ export default {
     recentDaysSub: 'Last {n} days',
     statAvailableSub: 'Subscription {a} · granted {b} · purchased {c}',
     myAccountLink: 'My account',
+    degradedFallback: 'Data view "{view}" is not initialized yet. Run the data aggregation migration first',
+    degradedViewLabel: 'View: {view}',
     chartModelTitle: 'Top models by request',
     chartModelHint: 'Click a bar for details',
     chartModelEmpty: 'No model request data',

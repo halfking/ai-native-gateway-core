@@ -11,10 +11,14 @@ import { localeRef } from '../../i18n'
 import { getMaasModels } from '../../api'
 import type { MaasModel } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import { useWindowClass } from '../../composables/useWindowClass'
+import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../../components/ui/CardList.vue'
 import { sortByName } from '../../utils/sortByName'
 import PageBackLink from '../../components/PageBackLink.vue'
 
 const { t } = useI18n()
+const { isCompact } = useWindowClass()
 const { tenantLabel, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() => ctxPageTitle(t('tenantModels.page.title')))
 const backLink = computed(() => maasBackLink('models'))
@@ -93,6 +97,55 @@ function clearFilters() {
   filterMultimodal.value = 'all'
 }
 
+/**
+ * ── H6 第九条切片（2026-10-06）：模型目录表接 compact 卡片形态 ──────────────
+ * 与切片七/八同源（无分页 API，只改呈现形态），但**三态归属是第三种形态**：
+ *
+ * 本页桌面空态是 `v-else-if="!filtered.length"` —— 整个 `.card.model-card`
+ * （连标题带）都被撤掉，**不是「表在、空文案在」**。
+ * ⇒ 容器挂在 `v-else` 分支里，**无数据时根本不挂载**，
+ * 所以既不需要 `:empty` 也不需要 `:loading`：两档共用本页自己的 `.empty`。
+ * （切片四~八是「桌面三态在页面里、容器只裁 compact」；这一页是「桌面三态把整块撤掉、
+ * 容器压根不出现」。**两种都合法，判据是「空态时那块东西在不在」。**）
+ *
+ * `table-min-width` 这里传 **720px 而不是 0px**：本页 `.table` 自带 `min-width: 720px`，
+ * 传 0px 会用容器的 CSS 变量把它**改小** —— 那是对桌面的真实变更。
+ * 同理删掉 `.table-wrap`：容器自带 `overflow-x`，两个横滚容器嵌套会出双滚动条。
+ */
+/**
+ * 副标题键：家族名。**只有在确实存在带家族的模型时才挂** ——
+ * `CardList` 对缺值渲染 `—`，无家族时整页挂一个 `family_display_name` 就是一行破折号。
+ */
+const familyKeys = computed<string[]>(() =>
+  filtered.value.some((m) => m.family_display_name) ? ['family_display_name'] : [],
+)
+
+const modelCardFields = computed<CardField[]>(() => [  { key: 'canonical_name', label: t('tenantModels.columns.model') },
+  { key: 'context_window', label: t('tenantModels.columns.contextWindow'), format: (v) => fmtContext(v as number | null) },
+  {
+    // 桌面那一格是「是/否 徽章 + 模态标签」两段；卡片合进一个字段，两段信息都不丢
+    key: 'modality',
+    label: t('tenantModels.columns.multimodal'),
+    type: 'badge',
+    tone: (row) => (supportsMultimodal(String(row.modality ?? '')) ? 'good' : 'neutral'),
+    format: (v) =>
+      supportsMultimodal(String(v)) ? `${t('tenantModels.multimodal.yes')} · ${modalityLabel(String(v))}` : t('tenantModels.multimodal.no'),
+  },
+  { key: 'billing_mode', label: t('tenantModels.columns.billingMode'), format: (v) => billingLabel(String(v)) },
+  { key: 'credits_per_1m_in', label: t('tenantModels.columns.inPrice'), format: (v) => fmtCredits(Number(v)) },
+  { key: 'credits_per_1m_out', label: t('tenantModels.columns.outPrice'), format: (v) => fmtCredits(Number(v)) },
+  {
+    key: 'credits_per_1m_cache_in',
+    label: t('tenantModels.columns.cacheIn'),
+    format: (v, row) => fmtCredits(Number(v ?? row.credits_per_1m_in ?? 0)),
+  },
+  {
+    key: 'credits_per_1m_cache_out',
+    label: t('tenantModels.columns.cacheOut'),
+    format: (v, row) => fmtCredits(Number(v ?? row.credits_per_1m_out ?? 0)),
+  },
+])
+
 onMounted(load)
 </script>
 
@@ -151,48 +204,56 @@ onMounted(load)
         {{ t('tenantModels.page.vendorSectionTitle') }}
         <span class="hint">{{ t('tenantModels.page.modelCount', { n: filtered.length }) }}</span>
       </div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>{{ t('tenantModels.columns.model') }}</th>
-              <th>{{ t('tenantModels.columns.contextWindow') }}</th>
-              <th>{{ t('tenantModels.columns.multimodal') }}</th>
-              <th>{{ t('tenantModels.columns.billingMode') }}</th>
-              <th class="num-col">{{ t('tenantModels.columns.inPrice') }}</th>
-              <th class="num-col">{{ t('tenantModels.columns.outPrice') }}</th>
-              <th class="num-col">{{ t('tenantModels.columns.cacheIn') }}</th>
-              <th class="num-col">{{ t('tenantModels.columns.cacheOut') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="m in filtered" :key="m.canonical_name">
-              <td>
-                <div class="model-name">{{ m.display_name }}</div>
-                <code class="model-code">{{ m.canonical_name }}</code>
-                <div v-if="m.family_display_name" class="model-family">
-                  {{ m.family_display_name }}
-                </div>
-              </td>
-              <td>{{ fmtContext(m.context_window) }}</td>
-              <td>
-                <span
-                  class="badge"
-                  :class="supportsMultimodal(m.modality) ? 'badge-yes' : 'badge-no'"
-                >
-                  {{ supportsMultimodal(m.modality) ? t('tenantModels.multimodal.yes') : t('tenantModels.multimodal.no') }}
-                </span>
-                <span class="modality-tag">{{ modalityLabel(m.modality) }}</span>
-              </td>
-              <td>{{ billingLabel(m.billing_mode) }}</td>
-              <td class="num">{{ fmtCredits(m.credits_per_1m_in) }}</td>
-              <td class="num">{{ fmtCredits(m.credits_per_1m_out) }}</td>
-              <td class="num">{{ fmtCredits(m.credits_per_1m_cache_in ?? m.credits_per_1m_in) }}</td>
-              <td class="num">{{ fmtCredits(m.credits_per_1m_cache_out ?? m.credits_per_1m_out) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <ResponsiveDataView
+        :rows="filtered"
+        title-key="display_name"
+        :subtitle-keys="familyKeys"
+        :fields="modelCardFields"
+        table-min-width="720px"
+      >
+        <template #table>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>{{ t('tenantModels.columns.model') }}</th>
+                <th>{{ t('tenantModels.columns.contextWindow') }}</th>
+                <th>{{ t('tenantModels.columns.multimodal') }}</th>
+                <th>{{ t('tenantModels.columns.billingMode') }}</th>
+                <th class="num-col">{{ t('tenantModels.columns.inPrice') }}</th>
+                <th class="num-col">{{ t('tenantModels.columns.outPrice') }}</th>
+                <th class="num-col">{{ t('tenantModels.columns.cacheIn') }}</th>
+                <th class="num-col">{{ t('tenantModels.columns.cacheOut') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in filtered" :key="m.canonical_name">
+                <td>
+                  <div class="model-name">{{ m.display_name }}</div>
+                  <code class="model-code">{{ m.canonical_name }}</code>
+                  <div v-if="m.family_display_name" class="model-family">
+                    {{ m.family_display_name }}
+                  </div>
+                </td>
+                <td>{{ fmtContext(m.context_window) }}</td>
+                <td>
+                  <span
+                    class="badge"
+                    :class="supportsMultimodal(m.modality) ? 'badge-yes' : 'badge-no'"
+                  >
+                    {{ supportsMultimodal(m.modality) ? t('tenantModels.multimodal.yes') : t('tenantModels.multimodal.no') }}
+                  </span>
+                  <span class="modality-tag">{{ modalityLabel(m.modality) }}</span>
+                </td>
+                <td>{{ billingLabel(m.billing_mode) }}</td>
+                <td class="num">{{ fmtCredits(m.credits_per_1m_in) }}</td>
+                <td class="num">{{ fmtCredits(m.credits_per_1m_out) }}</td>
+                <td class="num">{{ fmtCredits(m.credits_per_1m_cache_in ?? m.credits_per_1m_in) }}</td>
+                <td class="num">{{ fmtCredits(m.credits_per_1m_cache_out ?? m.credits_per_1m_out) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </ResponsiveDataView>
     </div>
   </div>
 </template>

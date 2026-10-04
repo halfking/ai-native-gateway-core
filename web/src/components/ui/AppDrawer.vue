@@ -16,7 +16,13 @@ import { useI18n } from 'vue-i18n'
 import { useBreakpoint } from '../../composables/useBreakpoint'
 import { useFocusTrap } from '../../composables/useFocusTrap'
 import { lockBodyScroll, unlockBodyScroll } from '../../composables/useScrollLock'
-import { isTopmostOverlayLayer, nextOverlayLayerId, popOverlayLayer, pushOverlayLayer } from '../../composables/useOverlayStack'
+import {
+  isTopmostOverlayLayer,
+  nextOverlayLayerId,
+  popOverlayLayer,
+  pushOverlayLayer,
+  setOverlayLayerClose,
+} from '../../composables/useOverlayStack'
 
 const props = withDefaults(
   defineProps<{
@@ -90,6 +96,9 @@ watch(
     if (typeof document === 'undefined') return
     if (open) {
       pushOverlayLayer(overlayId)
+      // Hyper 返回仲裁需要**真实**关闭动作；不登记的话 Android 系统返回
+      // 会消费返回但层还在（假成功）。见 composables/useOverlayStack 头注。
+      setOverlayLayerClose(overlayId, requestClose)
       lockBodyScroll()
       document.addEventListener('keydown', onDocumentKeydown)
       // immediate 首跑时 v-if 的面板尚未渲染，nextTick 后再圈焦

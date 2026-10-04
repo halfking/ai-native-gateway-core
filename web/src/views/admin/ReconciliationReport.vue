@@ -164,7 +164,7 @@ const {
   background: var(--card);
   min-width: 0;
 }
-@media (max-width: 960px) {
+@media (max-width: 768px) {
   .dist-grid { grid-template-columns: 1fr; }
 }
 </style>

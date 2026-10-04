@@ -69,6 +69,15 @@ export default {
     disable: 'Deaktivieren',
     enable: 'Aktivieren',
   },
+  modelIdentity: {
+    client: "Client",
+    canonical: "Standard",
+    outbound: "Ausgehend",
+    titleClient: "Vom Client angefragter Name",
+    titleCanonical: "Standardname",
+    titleOutbound: "Ausgehend / Rohname vom Upstream",
+    titleRaw: "Rohname: {model}"
+  },
   chip: {
     status: 'Status: {value}',
     vendor: 'Anbieter: {value}',

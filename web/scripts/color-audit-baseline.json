@@ -1,6 +1,26 @@
 {
   "violations": [
     {
+      "file": "components/board/BoardDistGrid.vue",
+      "value": "#e6a23c"
+    },
+    {
+      "file": "components/board/BoardDistGrid.vue",
+      "value": "#f56c6c"
+    },
+    {
+      "file": "components/board/BoardHeroRow.vue",
+      "value": "#e6a23c"
+    },
+    {
+      "file": "components/board/BoardModelDist.vue",
+      "value": "#e6a23c"
+    },
+    {
+      "file": "components/board/BoardUsageTrendSection.vue",
+      "value": "#e6a23c"
+    },
+    {
       "file": "components/credential-monitor/CredentialDetailDrawer.vue",
       "value": "rgba(139, 148, 158, 0.28)"
     },
@@ -57,20 +77,8 @@
       "value": "rgba(0, 0, 0, 0.16)"
     },
     {
-      "file": "views/AnnotationStatsView.vue",
-      "value": "rgba(0, 0, 0, 0.1)"
-    },
-    {
-      "file": "views/AnnotationView.vue",
-      "value": "rgba(0, 0, 0, 0.15)"
-    },
-    {
-      "file": "views/AnnotationView.vue",
-      "value": "rgba(0, 0, 0, 0.2)"
-    },
-    {
-      "file": "views/AnnotationView.vue",
-      "value": "rgba(0, 0, 0, 0.5)"
+      "file": "components/turns/TurnsSessionCard.vue",
+      "value": "#d97706"
     },
     {
       "file": "views/ApprovalDetailView.vue",

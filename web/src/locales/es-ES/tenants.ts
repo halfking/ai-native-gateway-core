@@ -212,6 +212,8 @@ export default {
     recentDaysSub: "Últimos {n} días",
     statAvailableSub: "Suscripción {a} · concedidos {b} · comprados {c}",
     myAccountLink: "Mi cuenta",
+    degradedFallback: "La vista de datos «{view}» aún no está inicializada. Ejecute primero la migración de agregación de datos",
+    degradedViewLabel: "Vista: {view}",
     chartModelTitle: "Modelos principales por solicitudes",
     chartModelHint: "Clic en una barra para ver detalles",
     chartModelEmpty: "Sin datos de solicitudes de modelos",

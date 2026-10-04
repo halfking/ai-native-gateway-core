@@ -10,6 +10,11 @@ import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { computed, onMounted, ref } from 'vue'
+import { useWindowClass } from '../composables/useWindowClass'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
+import { createHyperPages } from '../lib/shell/hyper/hyperPages'
+import type { CardField, CardTone } from '../components/ui/CardList.vue'
 import {
   getModelIntegrityEvents,
   getModelIntegritySummary,
@@ -24,6 +29,7 @@ import ProviderPicker from '../components/ProviderPicker.vue'
 import AnomalyTypePicker, { type AnomalyTypeOption } from '../components/AnomalyTypePicker.vue'
 
 const { t } = useI18n()
+const { isCompact } = useWindowClass()
 
 type Tab = 'events' | 'drift'
 const tab = ref<Tab>('events')
@@ -94,6 +100,76 @@ const totalEvents = computed(() => summaries.value.reduce((sum, s) => sum + s.an
 const unresolvedEvents = computed(() => summaries.value.reduce((sum, s) => sum + (s.anomaly_count - s.resolved_count), 0))
 const criticalEvents = computed(() => summaries.value.filter((s) => s.severity === 'critical').reduce((sum, s) => sum + s.anomaly_count, 0))
 
+/**
+ * ── H6 第十八条切片（2026-10-06）：两张原生表接 compact 卡片 + **首条按 13 §7 走连续加载** ──
+ *
+ * 两个 Tab（`events` / `drift`）互斥，各一张原生表：
+ * **T1 events 8 列 · 桌面分页（`limit` + `offset` 真进请求）**，
+ * T2 drift 6 列 · **不分页**（`loadDrift` 没有 limit/offset）。
+ * ⇒ **只有 T1 需要连续加载**，T2 与切片十七同形（只改呈现形态）。
+ *
+ * ## `loadFirst()` 与 `refresh()` 是两回事，不要合并
+ *
+ * `applyFilters`（查询条件变了）⇒ `loadFirst()`，它会 `resetInternal()` 清空累积行
+ * —— 否则**不匹配新条件的旧行会留在屏幕上**。
+ * `refreshAll`（用户点刷新）⇒ `refresh()`，它是**保旧刷新**：旧内容留到新数据就绪，
+ * 手机上不会白一下。这个区别不是洁癖，是两个场景的诉求本来就不同。
+ *
+ * ## `pageSize` 同源（13 §7）
+ *
+ * `pageSize = ref(50)` 且**全文没有任何写入方**（实测：只有初始化 + 三处读）
+ * ⇒ `COMPACT_PAGE_SIZE = 50` 与它同源。若哪天本页加了「每页条数」选择器，
+ * 两条路径就会发出不同的 `limit` ⇒ 短页判据读的是配置里那个 ⇒ **长列表静默截断**。
+ * 门禁断「`pageSize` 没有 `.value =` 写入」+「两处字面量都是 50」。
+ *
+ * ## ★ `.table-wrap` 只能**摘掉 overflow**，不能整类删（本切片与切片十七的差异）
+ *
+ * 本页 `.table-wrap` 是 `overflow: auto` **+ `border` + `border-radius` + `background`**
+ * —— 它同时是**视觉框**。切片十七那 5 处 `.table-wrap` 只有 `overflow-x: auto`，
+ * 所以能整类删；这里整类删会把桌面的圆角边框一起删掉 = 桌面视觉变更。
+ * ⇒ **只摘 `overflow`**，框与圆角留在原地，横滚交给容器。
+ * 这是「删掉自带 overflow-x 的包裹 div」这条规则的**必要修正**：
+ * 判据不是「有没有 overflow」，是「除 overflow 外它还带不带别的东西」。
+ *
+ * ## ★ 本页**不传** `table-min-width` —— 传了是空操作（同 D12，但成因不同）
+ *
+ * 容器规则是 `.responsive-data-view__table > :slotted(table)`，命中要求 `<table>` 是
+ * **直接子元素**。本页为了让视觉框留在原地，`.table-wrap` 那个 div 仍在
+ * ⇒ 直接子元素是 `div.table-wrap`，**`:slotted(table)` 不命中**。
+ * D12 那条是「el-table 的根元素是 div」，这里是「我们自己保留了一个 div」——
+ * **同一个后果、两个不同成因**。⇒ 与其传一个不生效的值再注释「已设」，
+ * 这里**不传**并把成因写清楚。窄屏列宽下限归内容（`.table` 是 `width: 100%`、无 min-width）。
+ *
+ * ## 徽章 → tone：仍然从 `<style>` 的实际色值反查（同切片十七）
+ *
+ * | 类 | CSS | tone |
+ * | --- | --- | --- |
+ * | `badge-critical` | `--danger-bd` | danger |
+ * | `badge-high` | `--warning-bd` | warn |
+ * | `badge-medium` | `--warning-bd` | warn |
+ * | `badge-low` | `--accent-h`（= primary） | neutral |
+ * | `status-ok` | `--success` | good |
+ * | `status-warn` | `--warning` | warn |
+ *
+ * ★ **`badge-high` 与 `badge-medium` 收敛成同一档** —— 它们在桌面上
+ * **只差背景**（`--warning-bd` vs `--warning-bg`），文字色是同一个。
+ * ⇒ 卡片侧只能给 warn。**精确等级不丢**：等级字面量（critical/high/medium/low）
+ * 本身就在卡片上，色只是第二层信息。
+ * `badge-low` 落在 `--accent-h`（primary）⇒ `CardTone` 无 primary 档 ⇒ neutral，不新造。
+ *
+ * ## 卡头出**完整 `request_id`**，不跟桌面一起截断到 18 字符
+ *
+ * 同切片十五的 `session_id`：桌面的 `truncate(request_id, 18)` 是为**窄列**做的，
+ * 卡片头承担「唯一句柄」职责。而且 `request_id` **可选**（缺值时桌面出 `—`），
+ * 拿它当 `:key` 会退化到下标。⇒ 键用 `id`（后端主键，非可选），脸用完整 `request_id`。
+ * `actual_value` 的 20 字符截断**保留**（它不是身份，是普通字段，截断与桌面同口径）。
+ *
+ * ## `:loading` 带 `isCompact` 前置（本页两张表桌面都有 tbody 内的加载行）
+ *
+ * 桌面 T1 有 `<tr v-if="loading"><td colspan="8" class="empty">`，
+ * T2 有 `driftLoading` 的同类行 ⇒ 不带前置的 `:loading` 会把桌面整张表换成骨架。
+ * `:empty` 同理要带 `isCompact &&`，并**排除 busy 与 failed**（13 §7「失败态不显示空态」）。
+ */
 function severityClass(severity: string) {
   switch (severity) {
     case 'critical':
@@ -122,9 +198,77 @@ function fmtTime(value?: string) {
   })
 }
 
+/** CSS 类名 → 卡片 tone。按 `<style>` 里每类的 `color` 反查，非按类名猜。 */
+const TONE_BY_BADGE_CLASS: Record<string, CardTone> = {
+  'badge-critical': 'danger',
+  'badge-high': 'warn',
+  'badge-medium': 'warn',
+  'badge-low': 'neutral',
+  'status-ok': 'good',
+  'status-warn': 'warn',
+}
+
+function badgeTone(cls: string): CardTone {
+  return TONE_BY_BADGE_CLASS[cls] ?? 'neutral'
+}
+
+/** 桌面这一列是 `<code>{{ truncate(request_id, 18) }}</code>`；卡头给完整值（见上方说明）。 */
+const recordTitle = (row: Record<string, unknown>) =>
+  row.request_id == null || row.request_id === '' ? undefined : String(row.request_id)
+
+/** T1 events 表。8 列 − request_id(卡头) − 操作列 = 6 个字段。 */
+const eventFields = computed<CardField[]>(() => [
+  { key: 'detected_at', label: t('modelIntegrityView.table.detectedAt'), format: (v) => fmtTime(v == null ? undefined : String(v)) },
+  {
+    key: 'severity', label: t('modelIntegrityView.table.severity'), type: 'badge',
+    format: (v) => (severityLabels[String(v ?? '')] || String(v ?? '')),
+    tone: (row) => badgeTone(severityClass(String(row.severity ?? ''))),
+  },
+  { key: 'anomaly_type', label: t('modelIntegrityView.table.anomalyType'), format: (v) => (anomalyTypeLabels[String(v ?? '')] || String(v ?? '')) },
+  { key: 'provider_code', label: t('modelIntegrityView.table.providerModel') },
+  { key: 'actual_value', label: t('modelIntegrityView.table.actual'), format: (v) => (v == null || v === '' ? undefined : truncate(String(v), 20)) },
+  {
+    // ★ `type: 'badge'` 不是装饰：`CardList.fieldTone` 只在 `metric` / `badge` 时读 `tone`，
+    //   漏了它 `tone` 会被**静默丢弃**（`data-tone` 属性整个不渲染）。
+    //   桌面上这一列是带 `status-ok` / `status-warn` 色的 span，卡片侧必须同口径。
+    key: 'resolved', label: t('modelIntegrityView.table.status'), type: 'badge',
+    format: (_v, row) => (row.resolved ? t('modelIntegrityView.status.resolved') : t('modelIntegrityView.status.unresolved')),
+    tone: (row) => badgeTone(row.resolved ? 'status-ok' : 'status-warn'),
+  },
+])
+
+/** T2 drift 表。6 列 − request_id(卡头) − 操作列 = 4 个字段。 */
+const driftFields = computed<CardField[]>(() => [
+  { key: 'detected_at', label: t('modelIntegrityView.table.detectedAt'), format: (v) => fmtTime(v == null ? undefined : String(v)) },
+  {
+    key: 'severity', label: t('modelIntegrityView.table.severity'), type: 'badge',
+    format: (v) => (severityLabels[String(v ?? '')] || String(v ?? '')),
+    tone: (row) => badgeTone(severityClass(String(row.severity ?? ''))),
+  },
+  { key: 'provider_code', label: t('modelIntegrityView.table.providerModel') },
+  // ★ 24 不是 20：桌面 T2 这一列是 `truncate(item.actual_value, 24)`。
+  //   写成 20 会让同一页的两张表对**同一个字段名**给出两个不同的截断口径，
+  //   而卡片与桌面同口径是硬规则（T1 那边是 20，两张表本来就不同，别抄串）。
+  { key: 'actual_value', label: t('modelIntegrityView.table.actual'), format: (v) => (v == null || v === '' ? undefined : truncate(String(v), 24)) },
+])
+
 function truncate(value: string | undefined, n: number) {
   if (!value) return '—'
   return value.length > n ? value.slice(0, n) + '...' : value
+}
+
+/**
+ * 查询条件的**唯一真源**。桌面分页与 compact 连续加载共用它 ——
+ * 写两遍的话，改了筛选口径只有一边生效，且不会报错。
+ */
+function filterBody(): Record<string, unknown> {
+  return {
+    provider: providerFilter.value || undefined,
+    model: modelFilter.value || undefined,
+    anomaly_type: anomalyTypeFilter.value || undefined,
+    severity: severityFilter.value || undefined,
+    unresolved_only: unresolvedOnly.value,
+  }
 }
 
 async function load() {
@@ -132,13 +276,9 @@ async function load() {
   error.value = null
   try {
     const resp = await getModelIntegrityEvents({
+      ...filterBody(),
       limit: pageSize.value,
       offset: offset.value,
-      provider: providerFilter.value || undefined,
-      model: modelFilter.value || undefined,
-      anomaly_type: anomalyTypeFilter.value || undefined,
-      severity: severityFilter.value || undefined,
-      unresolved_only: unresolvedOnly.value,
     })
     events.value = resp.events
     total.value = resp.count
@@ -148,6 +288,52 @@ async function load() {
     loading.value = false
   }
 }
+
+/**
+ * compact 的连续加载。`pageSize` **必须与 `fetchPage` 里发出的 `limit` 同值**
+ * （13 §7：短页判据 `result.rows.length < opts.pageSize` 读的是**配置里那个**，
+ * 两者不一致时长列表会被**静默截断**）。
+ * 本页的 `pageSize` 是 `ref(50)` 且**全文没有任何写入方**（已实测：只有初始化 + 三处读），
+ * 所以 `COMPACT_PAGE_SIZE = 50` 与它是同源的。门禁断「`pageSize` 没有 `.value =` 写入」
+ * 与「两处字面量都是 50」—— 哪天有人加了「每页条数」选择器，这条会红。
+ */
+const COMPACT_PAGE_SIZE = 50
+
+const continuous = createHyperPages<ModelIntegrityRecord>({
+  pageSize: COMPACT_PAGE_SIZE,
+  // `id` 是后端主键。★ 不能用 `request_id`：它可选、且桌面截断到 18 字符，必然撞。
+  rowKey: (r) => r.id,
+  fetchPage: async (p) => {
+    try {
+      const resp = await getModelIntegrityEvents({
+        ...filterBody(),
+        limit: COMPACT_PAGE_SIZE,
+        offset: (p - 1) * COMPACT_PAGE_SIZE,
+      })
+      total.value = resp.count
+      return { rows: resp.events || [], total: resp.count }
+    } catch (err: unknown) {
+      error.value = err instanceof Error ? err.message : t('modelIntegrityView.error.loadFailed')
+      // 必须继续抛出：`createHyperPages` 靠它把 state 置成 failed，
+      // 而 `:empty` 的判据要靠 failed 挡（13 §7「失败态不显示空态」）。吞掉的话 state 停在 idle，UI 会撒谎。
+      throw err
+    }
+  },
+})
+
+/** 两条路径共用的显示行。桌面上 `isCompact` 为假 ⇒ 与 `events` 同值，桌面渲染不变。 */
+const displayEvents = computed<ModelIntegrityRecord[]>(() =>
+  isCompact.value ? continuous.rows.value : events.value,
+)
+
+/** compact 下「正在取第 1 页」。只认 `refreshing` —— `loadingNext` 不该把刷新钮按成忙碌态。 */
+const compactBusy = computed(() => continuous.state.value === 'refreshing')
+
+/** compact 侧失败态。**桌面走的是自己的 `error` 横幅**，两者不互相污染。 */
+const compactFailed = computed(() => continuous.state.value === 'failed')
+
+/** 页码条仅桌面。compact 走连续加载，两条路径不同时出现在屏幕上。 */
+const showPager = computed(() => !isCompact.value && total.value > 0)
 
 async function loadSummary() {
   summaryLoading.value = true
@@ -175,6 +361,16 @@ async function loadDrift() {
 }
 
 async function refreshAll() {
+  // ★ 用户主动点「刷新」⇒ 用 `refresh()`（保旧刷新：旧内容留到新数据就绪），
+  //   与 `applyFilters` 的 `loadFirst()` 是两回事，**不要**合并成一个 helper。
+  if (isCompact.value) {
+    await Promise.all([
+      continuous.refresh(),
+      loadSummary(),
+      tab.value === 'drift' ? loadDrift() : Promise.resolve(),
+    ])
+    return
+  }
   await Promise.all([load(), loadSummary(), tab.value === 'drift' ? loadDrift() : Promise.resolve()])
 }
 
@@ -204,6 +400,12 @@ async function markResolved() {
 
 function applyFilters() {
   page.value = 1
+  // ★ 查询条件变了 ⇒ 已加载的那些页**全部作废**。用 `loadFirst()`（会 `resetInternal`）
+  //   而不是 `refresh()`（保旧刷新）—— 后者会把不匹配新条件的旧行留在屏幕上。
+  if (isCompact.value) {
+    void continuous.loadFirst()
+    return
+  }
   load()
 }
 
@@ -231,7 +433,13 @@ onMounted(async () => {
     error.value = t('modelIntegrityView.error.needSuperAdmin')
     return
   }
-  await Promise.all([load(), loadSummary()])
+  // ★ compact 必须在这里**启动连续加载**：`displayEvents` 读的是 `continuous.rows`，
+  //   而它初始为空 —— 只调 `load()` 的话，compact 首屏会一直停在空态，
+  //   直到用户手动点「查询」。**门禁（首屏 4 张卡）就是抓这个的。**
+  await Promise.all([
+    isCompact.value ? continuous.loadFirst() : load(),
+    loadSummary(),
+  ])
 })
 </script>
 
@@ -301,55 +509,86 @@ onMounted(async () => {
 
       <div v-if="error" class="error-banner">{{ error }}</div>
 
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>{{ t('modelIntegrityView.table.detectedAt') }}</th>
-              <th>{{ t('modelIntegrityView.table.severity') }}</th>
-              <th>{{ t('modelIntegrityView.table.anomalyType') }}</th>
-              <th>{{ t('modelIntegrityView.table.providerModel') }}</th>
-              <th>{{ t('modelIntegrityView.table.requestId') }}</th>
-              <th>{{ t('modelIntegrityView.table.actual') }}</th>
-              <th>{{ t('modelIntegrityView.table.status') }}</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="loading">
-              <td colspan="8" class="empty">{{ t('modelIntegrityView.table.loading') }}</td>
-            </tr>
-            <tr v-else-if="events.length === 0">
-              <td colspan="8" class="empty">{{ t('modelIntegrityView.table.noData') }}</td>
-            </tr>
-            <tr v-for="item in events" :key="item.id">
-              <td>{{ fmtTime(item.detected_at) }}</td>
-              <td><span class="badge" :class="severityClass(item.severity)">{{ severityLabels[item.severity] || item.severity }}</span></td>
-              <td>{{ anomalyTypeLabels[item.anomaly_type] || item.anomaly_type }}</td>
-              <td>
-                <div class="stacked">
-                  <span>{{ item.provider_code || '—' }}</span>
-                  <span class="muted">{{ item.raw_model_name || item.client_model || '—' }}</span>
-                </div>
-              </td>
-              <td><code>{{ truncate(item.request_id, 18) }}</code></td>
-              <td><code>{{ truncate(item.actual_value, 20) }}</code></td>
-              <td>
-                <span :class="item.resolved ? 'status-ok' : 'status-warn'">
-                  {{ item.resolved ? t('modelIntegrityView.status.resolved') : t('modelIntegrityView.status.unresolved') }}
-                </span>
-              </td>
-              <td><button class="btn btn-link" @click="openDetail(item)">{{ t('modelIntegrityView.table.viewDetail') }}</button></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+        <ResponsiveDataView data-testid="mi-events"
+          :rows="displayEvents"
+          title-key="id"
+          :title-format="recordTitle"
+          :fields="eventFields"
+          :loading="isCompact && compactBusy"
+          :empty="isCompact && !compactBusy && !compactFailed && displayEvents.length === 0"
+          :empty-text="t('modelIntegrityView.table.noData')"
+        >
+          <template #table>
+          <div class="table-wrap">
+            <table class="table">
+                        <thead>
+                          <tr>
+                            <th>{{ t('modelIntegrityView.table.detectedAt') }}</th>
+                            <th>{{ t('modelIntegrityView.table.severity') }}</th>
+                            <th>{{ t('modelIntegrityView.table.anomalyType') }}</th>
+                            <th>{{ t('modelIntegrityView.table.providerModel') }}</th>
+                            <th>{{ t('modelIntegrityView.table.requestId') }}</th>
+                            <th>{{ t('modelIntegrityView.table.actual') }}</th>
+                            <th>{{ t('modelIntegrityView.table.status') }}</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-if="loading">
+                            <td colspan="8" class="empty">{{ t('modelIntegrityView.table.loading') }}</td>
+                          </tr>
+                          <tr v-else-if="events.length === 0">
+                            <td colspan="8" class="empty">{{ t('modelIntegrityView.table.noData') }}</td>
+                          </tr>
+                          <tr v-for="item in events" :key="item.id">
+                            <td>{{ fmtTime(item.detected_at) }}</td>
+                            <td><span class="badge" :class="severityClass(item.severity)">{{ severityLabels[item.severity] || item.severity }}</span></td>
+                            <td>{{ anomalyTypeLabels[item.anomaly_type] || item.anomaly_type }}</td>
+                            <td>
+                              <div class="stacked">
+                                <span>{{ item.provider_code || '—' }}</span>
+                                <span class="muted">{{ item.raw_model_name || item.client_model || '—' }}</span>
+                              </div>
+                            </td>
+                            <td><code>{{ truncate(item.request_id, 18) }}</code></td>
+                            <td><code>{{ truncate(item.actual_value, 20) }}</code></td>
+                            <td>
+                              <span :class="item.resolved ? 'status-ok' : 'status-warn'">
+                                {{ item.resolved ? t('modelIntegrityView.status.resolved') : t('modelIntegrityView.status.unresolved') }}
+                              </span>
+                            </td>
+                            <td><button class="btn btn-link" @click="openDetail(item)">{{ t('modelIntegrityView.table.viewDetail') }}</button></td>
+                          </tr>
+                        </tbody>
+                      </table>
+          </div>
+          </template>
+          <template #actions="{ row }">
+            <button class="btn btn-link" @click="openDetail(row as unknown as ModelIntegrityRecord)">
+              {{ t('modelIntegrityView.table.viewDetail') }}
+            </button>
+          </template>
+        </ResponsiveDataView>
 
-      <div class="pager">
+      <!-- ★ 页码条**仅桌面**（`showPager`）。compact 走连续加载，两条路径不同时出现在屏幕上。
+           让它显示却不用（`nextPage` 在 compact 下改的是 `page.value`，而列表读的是
+           `continuous.rows`）= 点「下一页」页面纹丝不动 —— 比藏起来更糟的谎。 -->
+      <div v-if="showPager" class="pager">
         <button class="btn" @click="prevPage" :disabled="page <= 1 || loading">{{ t('modelIntegrityView.pager.prev') }}</button>
         <span>{{ t('modelIntegrityView.pager.summary', { page, totalPages, total }) }}</span>
         <button class="btn" @click="nextPage" :disabled="page >= totalPages || loading">{{ t('modelIntegrityView.pager.next') }}</button>
       </div>
+
+      <!-- ★ compact 的「继续加载」。桌面不渲染（`v-if="isCompact"`），
+           免得两条加载机制同时出现在一个屏幕上。 -->
+      <HyperLoadMore
+        v-if="isCompact"
+        :state="continuous.state.value"
+        :has-more="continuous.hasMore.value"
+        :loaded-count="continuous.loadedCount.value"
+        @load-more="continuous.loadNext()"
+        @retry="continuous.retry()"
+      />
     </template>
 
     <template v-else>
@@ -361,41 +600,58 @@ onMounted(async () => {
 
       <div v-if="error" class="error-banner">{{ error }}</div>
 
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>{{ t('modelIntegrityView.table.detectedAt') }}</th>
-              <th>{{ t('modelIntegrityView.table.severity') }}</th>
-              <th>{{ t('modelIntegrityView.table.providerModel') }}</th>
-              <th>{{ t('modelIntegrityView.table.actual') }}</th>
-              <th>{{ t('modelIntegrityView.table.requestId') }}</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="driftLoading">
-              <td colspan="6" class="empty">{{ t('modelIntegrityView.table.loading') }}</td>
-            </tr>
-            <tr v-else-if="driftEvents.length === 0">
-              <td colspan="6" class="empty">{{ t('modelIntegrityView.drift.noData') }}</td>
-            </tr>
-            <tr v-for="item in driftEvents" :key="item.id">
-              <td>{{ fmtTime(item.detected_at) }}</td>
-              <td><span class="badge" :class="severityClass(item.severity)">{{ severityLabels[item.severity] || item.severity }}</span></td>
-              <td>
-                <div class="stacked">
-                  <span>{{ item.provider_code || '—' }}</span>
-                  <span class="muted">{{ item.raw_model_name || item.client_model || '—' }}</span>
-                </div>
-              </td>
-              <td><code>{{ truncate(item.actual_value, 24) }}</code></td>
-              <td><code>{{ truncate(item.request_id, 18) }}</code></td>
-              <td><button class="btn btn-link" @click="openDetail(item)">{{ t('modelIntegrityView.table.viewDetail') }}</button></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+        <ResponsiveDataView data-testid="mi-drift"
+          :rows="driftEvents"
+          title-key="id"
+          :title-format="recordTitle"
+          :fields="driftFields"
+          :loading="isCompact && driftLoading"
+          :empty="isCompact && !driftLoading && driftEvents.length === 0"
+          :empty-text="t('modelIntegrityView.drift.noData')"
+        >
+          <template #table>
+          <div class="table-wrap">
+            <table class="table">
+                        <thead>
+                          <tr>
+                            <th>{{ t('modelIntegrityView.table.detectedAt') }}</th>
+                            <th>{{ t('modelIntegrityView.table.severity') }}</th>
+                            <th>{{ t('modelIntegrityView.table.providerModel') }}</th>
+                            <th>{{ t('modelIntegrityView.table.actual') }}</th>
+                            <th>{{ t('modelIntegrityView.table.requestId') }}</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-if="driftLoading">
+                            <td colspan="6" class="empty">{{ t('modelIntegrityView.table.loading') }}</td>
+                          </tr>
+                          <tr v-else-if="driftEvents.length === 0">
+                            <td colspan="6" class="empty">{{ t('modelIntegrityView.drift.noData') }}</td>
+                          </tr>
+                          <tr v-for="item in driftEvents" :key="item.id">
+                            <td>{{ fmtTime(item.detected_at) }}</td>
+                            <td><span class="badge" :class="severityClass(item.severity)">{{ severityLabels[item.severity] || item.severity }}</span></td>
+                            <td>
+                              <div class="stacked">
+                                <span>{{ item.provider_code || '—' }}</span>
+                                <span class="muted">{{ item.raw_model_name || item.client_model || '—' }}</span>
+                              </div>
+                            </td>
+                            <td><code>{{ truncate(item.actual_value, 24) }}</code></td>
+                            <td><code>{{ truncate(item.request_id, 18) }}</code></td>
+                            <td><button class="btn btn-link" @click="openDetail(item)">{{ t('modelIntegrityView.table.viewDetail') }}</button></td>
+                          </tr>
+                        </tbody>
+                      </table>
+          </div>
+          </template>
+          <template #actions="{ row }">
+            <button class="btn btn-link" @click="openDetail(row as unknown as ModelIntegrityRecord)">
+              {{ t('modelIntegrityView.table.viewDetail') }}
+            </button>
+          </template>
+        </ResponsiveDataView>
     </template>
 
     <div v-if="selected" class="modal-mask" @click="closeDetail">
@@ -620,8 +876,15 @@ textarea {
   color: var(--danger-bd);
   border: 1px solid var(--danger-bd);
 }
+/*
+ * ★ 本页的 `.table-wrap` 与切片十七那 5 处**不是同一种东西**：
+ *   那边只有 `overflow-x: auto`，所以能整类删；
+ *   这边它同时是**视觉框**（border + radius + background），
+ *   整类删会把桌面的圆角边框一起删掉 = 桌面视觉变更。
+ *   ⇒ **只摘 `overflow`**，框与圆角留在原地，横向滚动交给
+ *   `.responsive-data-view__table`（否则两个 overflow 容器嵌套 = 双横向滚动条）。
+ */
 .table-wrap {
-  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--card);

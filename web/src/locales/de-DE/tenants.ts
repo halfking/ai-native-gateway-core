@@ -212,6 +212,8 @@ export default {
     recentDaysSub: "Letzte {n} Tage",
     statAvailableSub: "Abonnement {a} · gewährt {b} · gekauft {c}",
     myAccountLink: "Mein Konto",
+    degradedFallback: "Datenansicht „{view}“ ist noch nicht initialisiert. Führen Sie zuerst die Datenaggregationsmigration aus",
+    degradedViewLabel: "Ansicht: {view}",
     chartModelTitle: "Top-Modelle nach Anfragen",
     chartModelHint: "Auf einen Balken klicken für Details",
     chartModelEmpty: "Keine Modellanfragedaten",
