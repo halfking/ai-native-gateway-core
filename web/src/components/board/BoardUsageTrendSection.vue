@@ -168,7 +168,7 @@ onMounted(() => void loadSeries(false))
    刻意区别于 err（请求失败）——两者的排查方向完全不同。 */
 .trend-sec__degraded {
   font-size: 11px;
-  color: var(--warning, #e6a23c);
+  color: var(--warning);
   line-height: 1.5;
 }
 </style>
