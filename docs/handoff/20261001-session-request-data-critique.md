@@ -11649,3 +11649,58 @@ func requestLogsSource(days int) (string, string) {
 3. 给 `AuditRepo` 的 `canonical-only` 里那 2 个「视图 v1 臂」条目
    （`admin/logs.go` / `admin/usage_enhanced.go`）并入 D29-d 切换清单的复核。
 4. `autoroute/metrics.go` 的 Help 文本假阳性（见上）。
+
+---
+
+## §70.65 bodies 切换的**数据级**判据：两表部分不相交，收益上界 22 / 损失上界 1,365（§9.228）
+
+### 结论先行
+
+- ★ **`session_bodies` 现在**不能**替代 `request_logs_bodies`。缺口 **29,691** 条。
+- ⚠ **「session 覆盖 95.26%」是错误读法**：两表**不是包含关系，是部分不相交**。
+  `session_bodies` 命中**更多**（770,209 > 742,472），但切换是**换了一批消息**：
+  丢 29,691 条、另 27,737 条从空变有。
+- ⚠ **会话级尾部才是决定性的**：11,783 个会话（1.59%）会至少丢一条，
+  而**单会话最多丢 1,365 条、最多只「得救」22 条**。
+  ⇒ **收益上界 22，损失上界 1,365。** 无灰度直切风险与收益完全不成比例。
+- ★ **不是机械替换**：v1 是 `request_body`/`response_body`，
+  会话侧是 **`request_delta`/`response_delta`**；且 db 包**没有** bodies 源 helper。
+
+### 新增门（`db/bodies_cutover_gap_test.go`，**故意红**）
+
+判据只有一条：**`v1 有而 session_bodies 没有` 必须为 0**。
+命中率与百分比**都不作为判据**——§9.228.1 已证明它们会导出错误结论。
+
+与 admin 侧那道 bodies 门（§9.226.4）**不是重复**：
+
+| | 问 | 何时可能变绿 |
+|---|---|---|
+| `admin/request_logs_bodies_retirement_gate_test.go` | 谁读过、评估登记了吗（**流程**） | 永远不会先变绿（26 文件未登记） |
+| `db/bodies_cutover_gap_test.go` | 切过去会不会丢正文（**数据**） | 回填补齐后**可能**变绿 |
+
+### 判据自证：这条门第一版有个洞，是变异验证逼出来的
+
+M1/M2/M3/M4 四种削弱**全部让门变绿** ⇒ 判据、阈值、SQL 口径、纯函数都在承重。
+M5（不设 `TEST_DATABASE_URL`）**SKIP 而非绿** ✓。
+
+★ **M6′ 最有价值**：我把总体改成 0 行去找漏洞，发现第一版只有
+`WouldBeLost > 0` 一条判据 ⇒ **总体被改窄会让门变绿**，
+而它一次都没量过东西。真库门最容易被改坏的就是总体口径。
+已加 `V1Turns == 0 ⇒ 阻塞`（排在缺口判据**之前**），M7 验证转红。
+
+⚠ **M6′ 第一版是无效演示**：我写出了双 `WHERE`，0.01s 就失败。
+**运行时 0.01s 是「SQL 语法错」而不是「量到 0」的信号。**
+
+### 边界
+
+- 数字**只对本地库成立**；生产 bodies 覆盖与回填状态**未知**且无自动门。
+  据此排生产切换前需在 252 只读复测。
+- 无产品行为改动；只读 SELECT；未连 252。
+
+### 下一轮第一件事（已更新）
+
+1. ★ `maas/credit_buckets.go` 的桶覆盖**不可逆**（§70.64），与回填顺序一起排期。
+2. ★ bodies 三件事按 D33 顺序：回填 → 门转绿 → 补 `SessionFamilyBodiesSourceSQL()`（带列映射）。
+3. 在 **252 上只读复测** bodies 缺口（本地数字不能外推）。
+4. `admin/logs.go` / `admin/usage_enhanced.go` 两个「视图 v1 臂」并入 D29-d 复核。
+5. `autoroute/metrics.go` 的 Help 文本假阳性。
