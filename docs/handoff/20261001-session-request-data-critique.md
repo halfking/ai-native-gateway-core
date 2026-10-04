@@ -9519,3 +9519,83 @@ D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
 4. `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` **应仍然红**——
    若它变绿，先查 bodies 分区的 `relam`（`columnar` 变 `heap` 了）。
 5. 回归基线：`admin` 带真库 FAIL = 4（D21 两条 + 本条 + 既有第三条），**只看差集**。
+
+---
+
+## §70.51 D30-c 普查完成：故障面比 bodies 宽得多，还多出一类
+
+### ⑪ 结论先行
+
+1. **§9.196 的根因成立，但范围被低估了。** 不是 `request_logs_bodies` 一张表有问题——
+   库里 **7 个带 `_hot` 孪生的母表**都有列存分区，两腿 `UNION ALL` 形状 **7/7 全挂**；
+   堆对照臂 `request_logs` 同形状正常返回 **2,184,300** 行。
+2. **触发条件是「列存 + 子查询内的 `UNION ALL`」，不是「子查询不能包列存表」。**
+   顶层 `UNION ALL`、CTE、普通/嵌套子查询、子查询内 JOIN/LEFT JOIN、
+   子查询内 `UNION`（去重）与 `EXCEPT` **全部实测通过**。失败发生在**计划期**。
+3. **新发现第二类独立故障**：视图 targetlist 里的**合成输出列**
+   （`SELECT 'hot'::text AS source`）在列存关系上**不可投影**。
+   8 视图 147 列里只有 `supplier_errors_unified.source` 一列挂。**潜伏**，现网读法碰不到。
+4. **生产代码当前没有踩坑**：89 条提到列存关系的 SQL 字面量里，
+   命中危险形状的候选只有 1 条（`bg/supplier_error_stats_aggregator.go:64`），
+   **真库裁决：可计划**——它两条腿都带分区键谓词。
+   ⚠ **但它只是恰好躲过**：三臂对照证明「只给 hot 腿加谓词」照样炸。
+   谁把列存腿那个 `WHERE` 删了，聚合器当场炸。
+5. **本轮未改任何产品代码**。改的都是文档 + 一道新门。
+
+### ⑫ 改了哪些文件
+
+- **新增** `admin/columnar_surface_servable_realdb_test.go`（5 个子测试）
+  - `TestColumnarUniverseFromCatalog` —— **量具自证**（全集非空 + 必须认得 bodies）。PASS
+  - `TestColumnarParentTwoSurfaceSetopShape_RealDB` —— 7 个列存母表跑两腿形状。**FAIL 7/7（真实故障）**
+  - `TestDeployedViewOverColumnarIsServable_RealDB` —— 8 视图 147 列逐列 EXPLAIN。**FAIL 1/147（真实故障）**
+  - `TestColumnarSetopSubqueryIsTheNarrowTrigger_RealDB` —— 13 个**安全**形状必须通过。PASS
+  - `TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB` —— 静态找候选 + **真库裁决**。PASS
+- 文档：审计 `§9.197.1–§9.197.10`；决策表 D30-a 改写 + D30-c 标记完成 + **新增 D30-d**；本节。
+
+⚠ **两道红是故意保留的**。不要用重建库/回滚 765 弄绿（理由同 D25-a）。
+
+### ⑬ 本轮判据自身的四次修正（都是被自证抓到的，不是事后补的）
+
+1. `LIKE '%except%'` 匹配到 plpgsql 的 **`EXCEPTION WHEN`** ⇒ 2 条假命中。改词边界正则。
+2. 列存集合只收**分区名**、没收**母表名** ⇒ 报「0 命中」的**假零**。
+   与 D29-a「关系宇宙漏掉视图」同类，本轮第二次踩。
+3. `oid::regclass::text` 在 search_path 下**不返回 schema 前缀** ⇒ 我的正对照全部落空，
+   一个子测试误报、另一个误 Skip。
+4. 形状矩阵里 `JOIN ... ON true` = **笛卡尔积**，单条跑 7 分半未完，
+   差点被读成「形状很慢」而不是「判据写错了」。
+
+⇒ 这四条印证了既有纪律：**量具自证不是形式**。第 2、3 条如果不自证，
+本轮会交出「0 命中」「形状安全」两份**格式正确、全错**的报告。
+
+### ⑭ 待拍板（顺序即优先级）
+
+1. **D30-d**（新）：`supplier_errors_unified.source` 怎么修。改视图定义代价最低。
+2. **D30-a**（已改写）：回滚列存转换，还是立「列存腿必须自带分区键谓词」的约定。
+   ⚠ 倾向回滚或立约定，因为该约定**静态门判不了**。
+3. **D30-b**（升级）：252 只读确认生产是否同形态。范围从「bodies」扩到
+   **7 个族 + 视图合成列**。并入 D24-d-3 的同一次申请。
+4. 其余：D29-a / D29-c、D28-a/b/c、D27-a/b/c、D26-a/b、D25-b/c、
+   D24-d-3 / D24 / D24-c、D19-a-3-1/2、D23-c-1/3、D21-a/b、D19-b、D20-a、D20-c。
+
+### ⑮ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
+2. **回归基线（已用同 base 的 before/after 实测，勿凭记忆）**：
+   - before（把本轮新门文件移走、在 `e6193ea92` 上跑）= **3**：
+     `TestProjectTasksSkipsNullTaskID`、`TestReportRollup_HTTPContract`、
+     `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable`（§9.196 起就是红的）。
+   - after = **5**，＝上面 3 条 **+ 本轮新增的 2 条**
+     （`TestColumnarParentTwoSurfaceSetopShape_RealDB`、
+     `TestDeployedViewOverColumnarIsServable_RealDB`）。
+   ⇒ **精确新增 2 条，都是本轮故意保留的真故障红。**
+   ⚠ 此前交接里写的「基线 3 = ReportRollup / DimensionNames / ProjectTasks」**组成是错的**：
+   实测第三条是 `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable`，
+   而 `TestDimensionNamesQueriesRunAgainstRealSchema` 本轮两次跑都**没有**失败。
+   这类「凭记忆的基线组成」不可信，只能 before/after 实测。
+3. `TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB` 应 PASS，
+   候选仍是 1 条（`bg/supplier_error_stats_aggregator.go:64`）且裁决为「可计划」。
+   候选数变化**不是**故障，但要在报告里写清变了还是没变。
+4. ⚠ **D28/D30 拍板前不要**：改写侧、不要改 migration 765、不要改视图定义。
+5. 若要继续 D30-c 的延伸（可选）：把同样的「静态找候选 + 真库裁决」
+   套到 `deploy/sql/migrations/*.sql` 的视图/函数定义上——本轮只扫了
+   已部署对象与生产 Go，**没扫仓库里的迁移 SQL 文本**。

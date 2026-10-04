@@ -23629,3 +23629,199 @@ C **逐字保留**「hot 优先、母表兜底」的择一规则，与原
 - **未连接生产**。但「765 把 bodies 分区转成 columnar」与
   「未命名子查询 + columnar 必炸」都是**代码/迁移事实**，可直接外推；
   **生产是否已受影响需要只读确认（D30-b）**。
+
+---
+
+## §9.197 D30-c 普查：故障不是 `request_logs_bodies` 专属，还多出一类
+
+### §9.197.1 这一轮要回答什么
+
+§9.196 定位到根因是 Citus `columnar`，但那个结论有两处**没有推广**：
+
+1. 只在 `request_logs_bodies` 一张表上验证过 ⇒「是不是只有这张表有问题」未知；
+2. 只发现了一种故障形态 ⇒「还有没有别的形态」未知。
+
+D30-c 的问题正是这两个。**本轮没有改任何产品代码**——普查的结论是
+「生产读路径当前没有踩坑」，唯一踩坑的那处（`loader.go`）在 §9.196 已修。
+
+### §9.197.2 形状矩阵：触发条件是「列存 + 子查询内的 `UNION ALL`」
+
+在真库上实测 18 种查询形状（`SET statement_timeout='60s'`，全部 `EXPLAIN`/执行双跑）：
+
+| # | 形状 | 结果 |
+|---|---|---|
+| S01 | 直读列存母表 | ✅ 2,244,272 |
+| S02 | 普通子查询（无集合算子） | ✅ |
+| **S03** | **子查询内 `UNION ALL`** | ❌ perminfoindex |
+| S04 | **顶层** `UNION ALL` | ✅ |
+| S05 | 顶层 JOIN | ✅（计划含 `Custom Scan (ColumnarScan)`） |
+| S06 | 子查询内 JOIN | ✅（同上，列存腿确实被执行） |
+| S07 | CTE | ✅ |
+| S08 | 相关 EXISTS | ✅ |
+| S09 | 子查询内带 LIMIT | ✅ |
+| S10 | 子查询 + 顶层集合算子 | ✅ |
+| S11 | 子查询内 LEFT JOIN | ✅ 4,759 |
+| S12 | `IN (子查询)` | ✅ |
+| **S13** | 子查询内 `UNION ALL`（两腿都是母表） | ❌ |
+| S14 | 顶层三关系 `UNION ALL` | ✅ |
+| S15 | 嵌套子查询 | ✅ |
+| S16 | 已部署两腿视图（顶层 `UNION ALL`） | ✅ 2,249,043 |
+| S17 | 顶层 LEFT JOIN | ✅ |
+| **S18** | 子查询内 `UNION ALL`（热腿在前） | ❌ |
+| Z2a | 子查询内 `UNION`（**去重**） | ✅ 2,249,138 |
+| Z2b | 子查询内 `EXCEPT` | ✅ 4,868 |
+| **Z2c/Z2d** | 子查询内 `UNION ALL` + 外层 JOIN/LEFT JOIN | ❌ |
+
+**三个必须记准的点**：
+
+1. **失败发生在计划期**。`EXPLAIN (COSTS OFF)` 本身就报错，不必执行。
+   ⇒ 这给了门一个便宜、无副作用的探测器。
+2. **不是「子查询不能包列存表」**。CTE、普通/嵌套子查询、子查询内 JOIN、
+   子查询内 `UNION`（去重）与 `EXCEPT` **全部实测通过**。
+   记错这一点会导致把好好的两段式查询也改掉。
+3. **零样本必须指名**。S05/S06/S08/S12 首次读数全是 **0 行**，
+   差点被读成「通过」。用 `EXPLAIN` 复核计划里确实有
+   `Custom Scan (ColumnarScan) on request_logs_bodies_2026_09/10/11`
+   之后才敢认定它们是真阳性。V3（`handoff_logs_with_current_month`）整视图 0 行，
+   已指名为**零样本**而非「通过」。
+
+### §9.197.3 自我更正之二：普查量具自己有两个 bug
+
+**其一**：`WHERE lower(def) LIKE '%except%'` 把 plpgsql 的
+**`EXCEPTION WHEN OTHERS`** 当成了 SQL 的 `EXCEPT`，一次普查报出两条命中，
+两条全是假的（`promote_routing_decision_log_default_batch`、
+`promote_credential_model_index_default_batch`——它们通篇没有集合算子）。
+改用词边界正则 `\m(union|intersect|except)\M` 后归零，并加了三臂自证
+（认得 `UNION ALL` ✓ / 拒绝 `EXCEPTION` ✓ / 认得 `EXCEPT` ✓）。
+
+**其二（更严重）**：列存集合最初只按 `relam='columnar'` 收，
+收到的全是**分区名**（`request_logs_bodies_2026_10` …），
+而业务查询读的是**母表名**（`request_logs_bodies`）⇒ 一条都匹配不上
+⇒ **报出「0 命中」，读起来像「没有问题」**。
+加了阳性对照（`request_logs_bodies_with_current_month` 必须命中）后立刻暴露，
+补上「母表」这一跳后才是 8 条真命中。
+⇒ **这与 D29-a 的「关系宇宙漏掉视图」是同一类错误**，本轮第二次踩。
+
+### §9.197.4 自我更正之三：故障面比 bodies 宽得多
+
+从 catalog 推导的列存关系全集（本机 **34 个**，含母表）：
+
+`request_logs_bodies` / `routing_decision_log` / `handoff_logs` /
+`supplier_errors` / `credential_model_index` / `usage_ledger` / `request_wal`
+（7 个有列存分区的母表）+ 4 张独立列存表（`model_offer_events`、
+`price_change_events`、`provider_events`、`tool_call_events`）
++ 2 张实验遗留（`candidate_failure_logs_columnar_old`、`test_columnar_new`）。
+
+**7 个带 `_hot` 孪生的列存母表，两腿 `UNION ALL` 形状 7/7 全挂**：
+
+```
+credential_model_index / handoff_logs / request_logs_bodies / request_wal
+routing_decision_log / supplier_errors / usage_ledger
+```
+
+**堆对照臂通过**：同样是两面子查询 `UNION ALL`，`request_logs`（全 heap）
+返回 **2,184,300** 行。
+⇒ **故障是 `columnar` 的性质，不是某张表的毛病。**
+
+§9.196 的门 `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 只列了 5 对
+session 族，**看不到**上面这 5 个族。
+
+### §9.197.5 新发现：第二类、独立的故障——视图的「合成输出列」
+
+逐列 `EXPLAIN` 8 个建在列存关系之上的视图、**147 个输出列**，只有 **1 列**失败：
+
+```
+public.supplier_errors_unified.source
+  ⇒ ERROR: cache lookup failed for attribute source of relation 12964345
+```
+
+12964345 = 列存分区 `supplier_errors_2026_09`。
+
+`supplier_errors_unified` 是顶层 `UNION ALL`（安全形状），它的第 1 列
+`source` 是 `SELECT 'hot'::text AS source` 这种**算出来的**列，不是基表列。
+
+三臂对照（同库、同分区）：
+
+| 查询 | 结果 |
+|---|---|
+| `SELECT 'x'::text AS source, id FROM supplier_errors_2026_10 LIMIT 1` | ✅ |
+| `SELECT id FROM supplier_errors_2026_10 LIMIT 1` | ✅ |
+| `SELECT count(*) FROM (SELECT 'x'::text AS source, id FROM supplier_errors_2026_10) y` | ✅ |
+| `SELECT id FROM supplier_errors_unified LIMIT 1` | ✅ |
+| `SELECT count(*) FROM supplier_errors_unified` | ✅ |
+| **`SELECT source FROM supplier_errors_unified LIMIT 1`** | ❌ |
+
+⇒ **分区本身健康**，问题特定于「视图 targetlist 里的合成列」。
+只测 `SELECT *` 或 `count(*)` 会**整个漏过去**。
+
+⚠ **现网读法暂时不碰它**：`admin/errors_trend.go:239` 把视图包进子查询
+且只选基表列，该形状实测正常。所以这是**潜伏**故障，不是正在冒烟的故障。
+
+### §9.197.6 自我更正之四：静态规则比实测粗 ⇒ 门必须让真库当裁判
+
+门的第一版是纯静态的（见到「列存关系 + 子查询内集合算子」就报红），
+报出了 `bg/supplier_error_stats_aggregator.go:64`。**手工复核发现那条是好的**：
+它的两条腿都带分区键谓词，真库 `EXPLAIN` 通过。
+
+三臂对照把判别条件钉死了（同一张 `supplier_errors`）：
+
+| 形状 | 结果 |
+|---|---|
+| 两条腿都无谓词 | ❌ perminfoindex |
+| 只在 **hot 腿**加谓词（列存腿仍裸读） | ❌ perminfoindex |
+| **两条腿都加谓词**（= 聚合器现状） | ✅ 计划出现 `Columnar Chunk Group Filters` |
+
+⇒ 真正的判别是「**列存腿自己**有没有谓词」。静态正则看不见这件事——
+它得知道哪个关系是列存的、哪条腿是列存腿、谓词落在哪条腿上。
+
+⇒ 门的分工改成：**静态只找候选，真库裁决**。
+`TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB` 把 `$n` 换成 `NULL`
+后逐条 `EXPLAIN`，只有 `invalid perminfoindex` / `cache lookup failed for attribute`
+两类报错算违规；**其余任何报错归入「不可判定」并指名列出**，绝不静默判过。
+
+### §9.197.7 普查结论（生产代码侧）
+
+| 面 | 结论 |
+|---|---|
+| 生产 Go SQL 字面量 | 提到列存关系的有 **89 条**；命中「子查询内集合算子」的**候选 1 条**（`bg/supplier_error_stats_aggregator.go:64`），**真库裁决：可计划** |
+| §9.196 修掉的 `loader.go` | 已改两段式，**当前无违规** |
+| 另 5 个列存族 | 生产 Go 里唯一的命中是 `db/db.go:7209` 的 DDL 表名清单（`apply_llm_gateway_autovacuum_settings`），**不是读路径** |
+| 已部署视图 | 8 个 / 147 列 / **1 列不可服务**（`supplier_errors_unified.source`） |
+| 已部署函数 | 8 个提到 bodies 的函数，**无一个含真集合算子**（首轮那两条命中是 `EXCEPTION` 误配） |
+
+⇒ **D30-a 的选型依据变了**：不是「只有 loader 一处」那么简单。
+代码侧确实只剩这一处，但**库的形态让 7 个族中的每一个都处在同一颗雷上**，
+且已有生产查询（聚合器）只是**恰好**靠谓词躲开。
+
+### §9.197.8 交付物
+
+`admin/columnar_surface_servable_realdb_test.go`（5 个子测试）：
+
+| 子测试 | 作用 | 本机结果 |
+|---|---|---|
+| `TestColumnarUniverseFromCatalog` | **量具自证**：全集非空 + 必须认得 `request_logs_bodies` | ✅ PASS |
+| `TestColumnarParentTwoSurfaceSetopShape_RealDB` | 7 个列存母表跑两腿形状 | ❌ **FAIL 7/7**（真实故障） |
+| `TestDeployedViewOverColumnarIsServable_RealDB` | 8 视图 147 列逐列 `EXPLAIN` | ❌ **FAIL 1/147**（真实故障） |
+| `TestColumnarSetopSubqueryIsTheNarrowTrigger_RealDB` | 13 个**安全**形状必须通过，防止结论被记错后误改好代码 | ✅ PASS |
+| `TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB` | 静态找候选 + 真库裁决 + 候选数下界断言 | ✅ PASS（候选 1，安全 1） |
+
+**两道红是真故障，不是判据太严**。⚠ **不要用重建库/回滚 765 把它们弄绿**
+（理由同 D25-a：那是把生产形态换成非生产形态）。
+
+### §9.197.9 判据自身的三次修正（留档）
+
+1. `oid::regclass::text` 在 search_path 下**不返回 schema 前缀** ⇒
+   我按 `public.xxx` 写的正对照全部落空，`TestColumnarUniverseFromCatalog`
+   与形状边界门先后误报/误 Skip。改成显式 `n.nspname || '.' || c.relname`。
+   （这两次误报/误 Skip 是**被自证抓住的**，不是事后补的。）
+2. 形状矩阵里的「子查询内 JOIN」第一版写成 `ON true` ⇒ 4.7k × 224 万的
+   **笛卡尔积**，单条跑掉 7 分半未完。差点被读成「这个形状很慢」而不是
+   「我的判据写错了」。改成打在 `request_id` 上。
+3. 静态规则误报 `bg/supplier_error_stats_aggregator.go:64`（见 §9.197.6）。
+
+### §9.197.10 边界
+
+- **本轮未改任何产品代码**：普查结论是「生产读路径当前没有踩坑」。
+- **未改 migration 765、未改任何视图定义**：均属属主决定（D30-a / D30-d）。
+- **未连接生产**。所有结论均为**本机库**实测。生产是否同形态仍需
+  252 只读确认（**D30-b**，本轮把它从「bodies 一张表」扩展到「7 个族 + 视图合成列」）。
