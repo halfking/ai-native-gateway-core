@@ -26,6 +26,13 @@ package admin
 // （审计 §9.184：普查脚本的 `PGPASSWORD` 从未赋值，12 次连接失败全被
 // 默认判 OK，整张矩阵作废）。**探针必须能说出「我这次真的量到了东西」。**
 //
+// # 双口径对比（2026-10-04 §9.195 追加）
+//
+// 提取器已被参数化为 `extractV1ReadingLiteralsScoped(t, path, fileScope)`：
+// **默认口径（false）与改动前逐字等价**，文件级口径（true）是 D29-a 的候选。
+// 本探针的分子现在取**两个口径都没归因**的列 ⇒
+// **修完之后它应当降到 0**，届时这道探针就是 D29-a 的验证器。
+//
 // # 口径
 //
 // 分母 = `allKnownRequestLogsReaderFiles()`（现有分析的覆盖范围）。
@@ -97,6 +104,21 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 				attributed[c] = true
 			}
 		}
+		attributedScoped := map[string]bool{}
+		for _, lit := range extractV1ReadingLiteralsScoped(t, path, true) {
+			for c := range lit.allColumns {
+				attributedScoped[c] = true
+			}
+		}
+		// 收窄的只在「文件级口径找到了、默认口径没找到」时才记，
+		// 并显式排除**反向**（默认有、文件级没有）——那不该发生，
+		// 发生了说明并集实现写反了，必须看得见。
+		for c := range attributed {
+			if !attributedScoped[c] {
+				t.Errorf("%s：列 %s 在默认口径被归因、在文件级口径却没有。"+
+					"文件级作用域是**更宽**的并集，不可能更窄 —— 除非实现写反了。", rel, c)
+			}
+		}
 		missed := map[string]bool{}
 		hasSelectFrom := false
 		for _, lit := range goStringLiterals(t, path) {
@@ -113,7 +135,7 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 				continue
 			}
 			for i, re := range anchored {
-				if re.MatchString(lit) && !attributed[cols[i]] {
+				if re.MatchString(lit) && !attributed[cols[i]] && !attributedScoped[cols[i]] {
 					missed[cols[i]] = true
 				}
 			}
@@ -186,4 +208,89 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 		filesB, pairsB, len(uniqB))
 	t.Logf("汇总B 涉及列: %s", names(uniqB))
 	t.Logf("读方清单分母 = %d 个文件（本探针已扫）", scanned)
+}
+
+// probeV1BaseTableRe 是 4 张 v1 裸表的名字，**独立抄写**，
+// **刻意不复用** `request_logs_reader_population_test.go` 里的 `v1BaseTableRe`。
+//
+// 理由有两层，都值得记：
+//
+//  1. 同名撞车（`v1BaseTableRe redeclared`）——我又一次先动手后 grep。
+//     本轮第三次。
+//  2. 更要紧的：**被检验对象本身就是错的**，量具就不能与它同源。
+//     「量具与被检验对象必须同源」是对的，但那句话的前提是两者都对；
+//     当要量的正是「它哪里错了」，共用常量会让量具跟着一起错。
+//     本探针要断言的恰恰是
+//     「`request_logs_retirement_exposure_test.go` 的 `v1TableRe`
+//     **不认** `_with_current_month` 视图」——若共用，那条断言就是恒真的。
+var probeV1BaseTableRe = regexp.MustCompile(
+	`\b(request_logs|request_logs_hot|request_logs_bodies|request_logs_bodies_hot)\b`)
+
+// currentMonthViewRe 认 `*_with_current_month` 视图族。
+var currentMonthViewRe = regexp.MustCompile(`\b[a-z_]*_with_current_month\b`)
+
+// TestProbeRetirementExposureBlindSpotFiles 量**另一个**、更大的盲区：
+// 有多少文件只经由 `_with_current_month` 视图读 v1，
+// 而 `extractV1ReadingLiterals` 对它们**一个字面量都产不出来**
+// （它要求字面量里出现 4 张裸表之一，视图名不在名单里）。
+//
+// ⇒ 这些文件在 `TestRequestLogsRetirementExposure` 的报告里落在
+// **「clean」**桶、且 `literals=0` —— 它们不是「查过了没问题」，
+// 而是**「从来没被看过」**。两者在报告里长得一模一样。
+//
+// 同样是探针（不判红），同样带自检：扫到 0 个文件 ⇒ Fatal。
+func TestProbeRetirementExposureBlindSpotFiles(t *testing.T) {
+	root := repoRootFromCaller(t)
+	scanned := 0
+	blind := []string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules", "web":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		scanned++
+		// 逐字面量判（而不是整文件 grep）：注释里提到视图名不算读它。
+		viaView, viaBase := false, false
+		for _, lit := range goStringLiterals(t, path) {
+			lit = sqlBlockCommentRe.ReplaceAllString(lit, " ")
+			lit = sqlLineCommentRe.ReplaceAllString(lit, " ")
+			if !selectRe.MatchString(lit) {
+				continue
+			}
+			if currentMonthViewRe.MatchString(lit) {
+				viaView = true
+			}
+			if probeV1BaseTableRe.MatchString(lit) {
+				viaBase = true
+			}
+		}
+		if viaView && !viaBase {
+			blind = append(blind, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("扫描生产源码失败: %v", err)
+	}
+	if scanned == 0 {
+		t.Fatalf("探针自检失败：扫到 0 个生产文件 —— 探针读错了对象，不是「盲区为 0」。")
+	}
+	sort.Strings(blind)
+	t.Logf("扫描 %d 个生产文件", scanned)
+	t.Logf("=== 只经由 *_with_current_month 视图读 v1、分析一个字面量都产不出的文件：%d 个 ===",
+		len(blind))
+	for _, b := range blind {
+		t.Logf("  %s", b)
+	}
 }
