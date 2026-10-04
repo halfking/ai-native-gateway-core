@@ -22556,3 +22556,110 @@ request_logs=6  session_bodies=6  session_bodies_hot=1  sessions=3  session_turn
   与 `llm_gateway` 无任何数据关联。
 - §9.186.5 的残留（6/6/1/3/6 行）**已全部清除**并复测为 0。
 - 端到端门**仍不覆盖** `session_turns` 腿的两端读法（§9.186.6）。
+
+---
+
+## §9.187 补上 §9.186 自己标的缺口：`session_turns` 腿的两端读法
+
+### §9.187.1 缺口是什么
+
+§9.186 补上了 `ExecuteRepair` 的端到端断言，并在诚实边界里写明：
+**该门不覆盖 `session_turns` 腿的两端读法**——即
+`claimAggregateTurn`（`session_aggregator.go:160`）的「父表优先 + hot 回退」。
+
+这条路径决定「这一轮 turn 算没算被会话快照消费过」，**是去重语义的承重处**：
+判据顺序是 先认领父表 → 父表在但已被认领 ⇒ **直接返回 false、根本不碰 hot** →
+父表压根没这行 ⇒ 才回退去认领 hot。
+
+### §9.187.2 先核实那个「不对称」到底是不是缺陷
+
+第 3 步的 `parentExists` 判据是 `(tenant_id, request_id, partition_date)`，
+**漏了 `session_id`**，而认领 UPDATE 带了 `session_id`。
+这个不对称**今天不是缺陷**，因为父表上有一条硬契约：
+
+```
+UNIQUE (tenant_id, request_id, partition_date)   ← session_turns_tenant_request_partition_key
+```
+
+`parentExists` 用的恰好就是这条唯一键。本机实测：
+**1,688,629 行 / 1,688,629 个不同 `request_id`，完全唯一**。
+
+⇒ **核实结论：代码是对的**，且「为什么对」是可引用的（那条唯一约束），
+不是碰巧。**本门把这个前提一并锁住**：若有人删掉那个唯一约束、
+或改变 `request_id` 的唯一性假设，用例 4 会先红。
+
+### §9.187.3 新增门：5 种形状，夹具用**一次性数据库**
+
+`domains/session/v2/claim_two_surface_realdb_test.go`：
+
+| 用例 | 形状 | 期望 |
+| --- | --- | --- |
+| 1 | 只在父表 | 认领**父表** |
+| 2 | 只在 hot | 回退认领 **hot** |
+| 3 | **两个面都有** | 认领**父表**，**hot 保持未认领** |
+| 4 | 两个面都有、**父表已认领** | `false`，**仍不碰 hot** |
+| 5 | hot 侧已认领 | `false`（幂等） |
+
+**基线：5/5 PASS。**
+
+**变异 M1**（删掉 `parentExists` 守卫，即父表优先失效）：
+
+```
+用例 4 → FAIL：「hot 行被认领了 ⇒ 父表已认领时不得回退到 hot（会重复计入）」
+用例 1/2/3/5 → 仍 PASS
+```
+
+★ **用例 3 在该变异下仍 PASS**（父表认领成功时根本走不到 hot），
+**用例 4 才红**。⇒ **两个用例抓的是不同的坏法，不是同一件事的两个写法。**
+
+### §9.187.4 夹具：本包**已有**一次性数据库的做法，我差点又重造一遍
+
+本包 `session_request_status_backfill_test.go` 早就有
+`statusBackfillFixtureDB`（建一个 throwaway database 跑**逐字相同**的生产 SQL），
+而且它的注释里**已经写着我 §9.186 踩的那个坑**：
+
+> 「t.Cleanup callbacks run AFTER deferred functions in the same test, so a
+> cleanup that reuses a pool closed by `defer pool.Close()` fails SILENTLY and
+> leaves the fixture behind in the real database — **a trap this project has
+> already hit once**」
+
+⇒ **我又一次踩了它**，因为我手工搭夹具而**没先在同仓找现成工具**。
+这正是本会话早先记下的那条：「报『无法验证』之前先 ls 一遍同仓的 `cmd/`、
+`scripts/`、`testdata/`」——推广到夹具就是「**先找现成的 fixture helper**」。
+**本门直接沿用既有做法**，把「不留残留」从根上消掉而不是靠清理。
+
+⇒ 顺带修正 §9.186 那条门的一处**做法**（功能已等价）：
+它必须读生产那套完整 schema（`request_logs` + `session_turns` + `session_bodies`
++ 两个合并视图 + advisory lock 函数），塞不进本门这种「最小内联 DDL」形状，
+所以**只能**在共享库里跑、靠清理兜底。**它的注释已补上对既有做法的引证。**
+
+### §9.187.5 我这一轮的两个错
+
+**错 1（抄做法时位置拼错）**：把 drop 的 `defer` 放进了 `claimTestDB` **helper 里**。
+`defer` 属于它所在的函数 ⇒ **helper 一返回就把库删了**，而调用方还握着池：
+
+```
+seed req_parent_only: FATAL: database "claimtwo_..." does not exist
+```
+
+既有 helper 只做 `defer admin.Close()`，**drop 留在测试里**；
+我把两半拼到了一起。⇒ **抄既有做法时，要抄它的「为什么在这个位置」，不只是抄代码。**
+
+**错 2（判据自相矛盾）**：`runClaim` 在事务里认领后 `defer tx.Rollback`，
+「让每个用例从干净状态起步」——但我同时**在事后读库断言效果已置位**。
+回滚把效果撤销了 ⇒ 三个子测试红在「`aggregate_applied_at` 未被置位」。
+
+⇒ **那是我判据自己跟自己矛盾，不是被测对象的问题。**
+改为**提交**；隔离靠**每个子测试各自的 `request_id`**，而整座库结束时被 drop，
+残留本来就不可能。⇒ **判据红了先怀疑判据**——这次它确实该被怀疑。
+
+### §9.187.6 诚实边界
+
+- **未改任何产品代码、配置、视图或迁移。** 本节新增的**只有一条测试**。
+- 本门**不覆盖** `claimAggregateTurn` 的并发行为（两个调用者同时认领同一行）——
+  那要并发夹具，是独立一轮工作。
+- 本门**不覆盖** `aggregate_applied_at` 之后的**聚合数值**是否正确
+  （`upsertSessionSnapshot` 的算术），只覆盖「认领落在哪一面」。
+- **未连接生产。**
+- §9.186 那条 `ExecuteRepair` 端到端门**仍在共享库上跑、仍靠清理**；
+  本节只是**记录了这个权衡**并补上引证，**没有**把它改造成一次性库。

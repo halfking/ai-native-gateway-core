@@ -11,6 +11,24 @@ package main
 // §9.184 试图跨它，撞上本机库的 catalog 异常（`v1BodyQuery` 恒失败），
 // **两次都没跨过**。本门在**一套 schema 相同的新库**上跨过去了（§9.186）。
 //
+// # 夹具为什么**没有**沿用本仓的一次性数据库做法
+//
+// `domains/session/v2/session_request_status_backfill_test.go` 里早就有
+// `statusBackfillFixtureDB`（建 throwaway database 跑逐字相同的生产 SQL），
+// 且它的注释**已经记着我下面那个 `defer` / `t.Cleanup` 坑**
+// （「a trap this project has already hit once」）。
+// **那正是本门踩的坑之一**——先手工搭夹具、没先找现成 helper，教训见审计 §9.187.4。
+//
+// 本门**仍然**在共享库上跑、靠清理兜底，理由只有一个：
+// `ExecuteRepair` 需要**生产那套完整 schema**——`request_logs`、
+// `session_turns{,_hot}`、`session_bodies{,_hot}`、`sessions`、`session_turn_logs`、
+// 两个合并视图（`session_bodies_unified` / `session_turns_with_current_month`）、
+// 以及 `session_turns_advisory_lock_key` 函数。塞不进「最小内联 DDL」的形状。
+// 对照：`domains/session/v2` 的 claim 门只要两张表，**已经**改用一次性数据库，
+// 残留从「靠清理」变成「结构上不可能」（审计 §9.187）。
+//
+// ⇒ 若将来本门要求的表变少，**应当改造成一次性数据库**，而不是继续依赖清理。
+//
 // # 为什么必须有前置探针，而不是直接跑
 //
 // 本门依赖 `LoadV1Turns` → `v1BodyQuery`（`loader.go:115`）读 V1 源。
