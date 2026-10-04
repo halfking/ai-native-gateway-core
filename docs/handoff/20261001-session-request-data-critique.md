@@ -7620,3 +7620,58 @@ empty 4、gap-only 1。**仍未阻断的 5 个不变。**
 
 ⚠️ **D19-c 未做**：抽取器 matcher 仍只从三张非 baseline 表建，只用 baseline 列的读方
 仍可能抽出很少的列（零证据守卫会显式判红，但**不等于覆盖完整**）。
+
+---
+
+### §70.23 第八十一轮：**D19-c 已执行**——判定输入扩到 118 列全契约
+
+#### ① 补的是 §9.167.10 自己留的洞
+
+抽取器 matcher 只从三张非 baseline 表建（**33** 列）。那对**暴露报告**是对的，
+但**判定**问的是「改读会发生什么」，必须看到读方碰到的**每一个**列：
+`latency_ms` 决定 safe、`work_type` 决定 empty，只用 baseline 列的读方也必须产出非空输入。
+
+拆成两个集合：`exposureMatchers`（33，报告读）/ `contractMatchers`（**118**，判定读）。
+实现上**全契约那遍先跑、exposure 那遍从结果里过滤**——两遍独立跑迟早漂，
+而漂的方向正好是「少看到列」。
+
+#### ② 重出的判定表
+
+| 判定 | §9.167 | §9.168 |
+|---|---:|---:|
+| **`repoint-safe`** | **0** | **0** |
+| `repoint-value-divergent` | 8 | **9** |
+| `repoint-degraded` | 3 | **2** |
+| `repoint-empty` / `gap-only` | 4 / 1 | 4 / 1 |
+
+移动的是 **`admin/probe_history.go`**，促成列 **`outbound_model`**（旧集合下只抽到
+`credential_id`）。`repoint-degraded` 现在只剩 `admin/providers.go` 与
+`bg/today_success_probe.go`。**阻断的 5 个不变。D19-a / D19-b 的答案不受影响。**
+
+#### ③ 覆盖度本身有门
+
+`len(contractMatchers) == len(db.CanonicalContractColumns())`（118 = 118），
+外加「每个已登记的 `value-divergent` 列必须在 exposure 集里」。
+**变异 MV**（把 contract 收窄回 exposure 集）⇒ 红
+（`covers 33 columns but the canonical contract has 118`）。
+
+#### ④ 我在这轮犯的错：字符串手术抹掉了三个函数
+
+用 `python` 重排函数时，删除区间起点用 `s.index('// value-disergent …')` 定位。
+**该注释串在两个函数里都出现**，`s.index` 命中前一个，区间一路吃到下一个标记，
+把 `exposureColumnMatchers` / `contractColumnMatchers` / `extractV1ReadingLiterals`
+**三个函数一起抹掉**。脚本在 `open(p,'w')` **之前**抛异常才没写坏文件——纯属运气。
+
+恢复：`git checkout --` 回 `origin/main`，改用 `edit` 逐处精确匹配重做
+（它匹配失败会**响亮**失败，不静默删邻接内容）。
+
+⚠️ **教训**：`s.index` 取**第一次**出现，而注释是重复度最高的东西；
+`str.replace(a,b,1)` 至少只改一处，**区间删除没有这个保护**。
+⇒ **同一标记出现两次时，`index` 选中的那个几乎永远不是你以为的那个。**
+
+#### ⑤ 交付物
+
+`admin/request_logs_retirement_exposure_test.go`（`allColumns` 字段 + 两个 matcher 集 +
+覆盖度断言 + `value-divergent` 进报告集）、
+`db/retirement_column_exposure.go`（`CanonicalContractColumns()` 访问器）、
+审计 §9.168、决策表 D19-c 就地标记为已执行。

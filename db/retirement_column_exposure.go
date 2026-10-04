@@ -67,6 +67,20 @@ func retiredColumnSet(cols []string) map[string]bool {
 	return out
 }
 
+// CanonicalContractColumns returns the canonical view's column contract, in
+// contract order.
+//
+// Exported because consumers outside this package — the read-side exposure
+// analysis in admin — need the same list this classifier decides on. A second,
+// hand-written copy of these 118 names would be a second thing to drift, and a
+// drifted copy is the one a reviewer trusts because it sits next to the code
+// being reviewed.
+func CanonicalContractColumns() []string {
+	out := make([]string, len(canonicalColumnOrderV2))
+	copy(out, canonicalColumnOrderV2)
+	return out
+}
+
 // retirementContractSet is canonicalColumnOrderV2 as a lookup, built once.
 var retirementContractSet = func() map[string]bool {
 	m := make(map[string]bool, len(canonicalColumnOrderV2))

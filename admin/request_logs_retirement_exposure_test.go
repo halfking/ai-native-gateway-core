@@ -97,6 +97,24 @@ type v1ReadingLiteral struct {
 	// treating them as v1 dependencies is what made §9.162/§9.164 report `id`
 	// as the blocker for eleven files that never touch request_logs.id.
 	columns map[string]string // column -> class
+	// allColumns is every canonical contract column this literal names, with the
+	// same attribution rule but **not** restricted to the non-baseline classes.
+	//
+	// Two different questions need two different sets, and §9.167 showed what
+	// happens when one is used for both:
+	//
+	//   - `columns` answers "which exposure column does this reader depend on",
+	//     which is what the exposure report is for. Baseline columns are noise
+	//     there — nobody needs a work item for `ts`.
+	//   - `allColumns` answers "what would repointing this reader do to it",
+	//     which is what the repoint verdict is computed from. Restricted to the
+	//     non-baseline classes, a reader that touches only baseline columns
+	//     extracts nothing at all — and an empty input used to come out
+	//     `repoint-safe` (§9.167.3).
+	//
+	// The verdict reads `allColumns`; the report reads `columns`. They are not
+	// interchangeable.
+	allColumns map[string]string // column -> class
 }
 
 // Attribution strengths, weakest to strongest. attrNone means "every occurrence
@@ -108,6 +126,64 @@ const (
 	attrSoleRel
 	attrQualified
 )
+
+// exposureColumnMatchers compiles one word-boundary-anchored matcher per column
+// in the non-baseline exposure classes.
+//
+// Two matcher sets exist because two questions are being asked:
+//
+//   - the exposure set covers the non-baseline classes only. It drives the
+//     report, where a baseline column is noise — nobody needs a work item for
+//     `ts`.
+//   - the contract set (contractColumnMatchers) covers **every** canonical
+//     column. It drives the repoint verdict, which has to know every column a
+//     reader touches: `latency_ms` decides safe, `work_type` decides empty, and
+//     a reader that uses only baseline columns still has to produce a non-empty
+//     input.
+//
+// Merging them is how §9.167's published `repoint-safe` happened: the verdict
+// was fed the report's filtered set, so a reader whose only matches were lost
+// to the alias bug arrived with nothing at all and was graded on no evidence.
+func exposureColumnMatchers() map[string]*regexp.Regexp {
+	// value-divergent is not a list this package exports the way the other three
+	// are — it is keyed off RetirementSessionLegDivergence, so it is derived.
+	// It belongs here because a reader depending on a column whose *value* the
+	// session leg does not reproduce is exactly the work item §9.167 created the
+	// class for.
+	var valueDivergent []string
+	for _, d := range db.RetirementSessionLegDivergence {
+		valueDivergent = append(valueDivergent, d.Column)
+	}
+	sort.Strings(valueDivergent)
+
+	out := map[string]*regexp.Regexp{}
+	for _, cols := range [][]string{
+		db.RetirementStructuralGapColumns,
+		db.RetirementUnservableColumns,
+		db.RetirementDegradedColumns,
+		valueDivergent,
+	} {
+		for _, c := range cols {
+			out[c] = regexp.MustCompile(`\b` + regexp.QuoteMeta(c) + `\b`)
+		}
+	}
+	return out
+}
+
+// contractColumnMatchers covers the whole canonical contract, reusing the
+// exposure matchers where they exist.
+func contractColumnMatchers(exposure map[string]*regexp.Regexp) map[string]*regexp.Regexp {
+	contract := db.CanonicalContractColumns()
+	out := make(map[string]*regexp.Regexp, len(contract))
+	for _, c := range contract {
+		if m, ok := exposure[c]; ok {
+			out[c] = m
+			continue
+		}
+		out[c] = regexp.MustCompile(`\b` + regexp.QuoteMeta(c) + `\b`)
+	}
+	return out
+}
 
 // extractV1ReadingLiterals returns every SQL string literal in a Go file that
 // references the v1 family, together with the exposure classes of the canonical
@@ -127,20 +203,11 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 		t.Fatalf("parse %s: %v", path, err)
 	}
 
-	byClass := map[string][]string{
-		"structural-gap": db.RetirementStructuralGapColumns,
-		"unservable":     db.RetirementUnservableColumns,
-		"degraded":       db.RetirementDegradedColumns,
-	}
 	// One compiled matcher per column, anchored on word boundaries, so that
 	// `rl.is_final_success` and a bare `is_final_success` both hit and
 	// `is_final_success_v2` does not. Built once for the whole run.
-	matchers := map[string]*regexp.Regexp{}
-	for _, cols := range byClass {
-		for _, c := range cols {
-			matchers[c] = regexp.MustCompile(`\b` + regexp.QuoteMeta(c) + `\b`)
-		}
-	}
+	exposureMatchers := exposureColumnMatchers()
+	contractMatchers := contractColumnMatchers(exposureMatchers)
 
 	var out []v1ReadingLiteral
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -164,21 +231,25 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 			text:              clean,
 			alsoSessionFamily: sessionFamilyRe.MatchString(clean),
 			columns:           map[string]string{},
+			allColumns:        map[string]string{},
 		}
 		v1al, allAl := aliasesIn(clean)
 		relCount := countRelations(clean)
-		for col := range matchers {
-			switch columnAttribution(clean, col, v1al, allAl, relCount) {
-			case attrNone:
+		// The contract pass runs first and the exposure pass filters it down, so
+		// the two can never drift apart.
+		for col := range contractMatchers {
+			attr := columnAttribution(clean, col, v1al, allAl, relCount)
+			if attr == attrNone {
 				// Every occurrence is qualified by a relation that is not the v1
 				// family — a dimension table's primary key, or a JSONB key
 				// access. **This is the case that makes `id` a false positive**
 				// for readers that join providers/credentials/models_canonical.
 				continue
-			case attrQualified:
-				l.columns[col] = db.RetirementExposureClassify(col)
-			case attrSoleRel, attrAmbiguous:
-				l.columns[col] = db.RetirementExposureClassify(col)
+			}
+			class := db.RetirementExposureClassify(col)
+			l.allColumns[col] = class
+			if _, isExposure := exposureMatchers[col]; isExposure {
+				l.columns[col] = class
 			}
 		}
 		out = append(out, l)
@@ -466,7 +537,9 @@ func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 	for _, rel := range files {
 		cols := map[string]bool{}
 		for _, l := range extractV1ReadingLiterals(t, filepath.Join(root, rel)) {
-			for c := range l.columns {
+			// The verdict reads `allColumns`, not `columns` — see the field's doc
+			// for why the two must not be merged.
+			for c := range l.allColumns {
 				cols[c] = true
 			}
 		}
@@ -523,6 +596,33 @@ func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 		if got := db.RetirementRepointVerdictFor(tc.cols); got != tc.want {
 			t.Errorf("RetirementRepointVerdictFor(%v) = %q, want %q — %s",
 				tc.cols, got, tc.want, tc.why)
+		}
+	}
+
+	// Coverage is a claim, so it gets a check.
+	//
+	// The verdict's input set is built from **every** canonical contract column.
+	// If a refactor narrows it back to the non-baseline classes, the report keeps
+	// working, `repoint-safe` stays 0, and the only thing lost is the columns that
+	// decide safe-vs-worse — a quiet over-optimism rather than a failure. §9.167
+	// is what makes it worth asserting: an earlier extractor handed three files an
+	// empty set and the verdict function graded that `repoint-safe`.
+	exposureMatchers, contractMatchers := exposureColumnMatchers(), contractColumnMatchers(exposureColumnMatchers())
+	t.Logf("exposure matcher columns=%d, contract matcher columns=%d (contract should be %d)",
+		len(exposureMatchers), len(contractMatchers), len(db.CanonicalContractColumns()))
+	if len(contractMatchers) != len(db.CanonicalContractColumns()) {
+		t.Errorf("repoint verdict's matcher set covers %d columns but the canonical contract has "+
+			"%d — a reader depending only on a column outside the exposure classes would "+
+			"extract nothing and be graded on no evidence",
+			len(contractMatchers), len(db.CanonicalContractColumns()))
+	}
+	// Every column that can push a verdict *above* safe must also be in the
+	// report's set, so the work list and the verdict can never disagree about
+	// which columns are known problems.
+	for _, d := range db.RetirementSessionLegDivergence {
+		if _, ok := exposureMatchers[d.Column]; !ok {
+			t.Errorf("registered value-divergent column %q is missing from the exposure matcher "+
+				"set, so a reader depending on it never appears on the work list", d.Column)
 		}
 	}
 
