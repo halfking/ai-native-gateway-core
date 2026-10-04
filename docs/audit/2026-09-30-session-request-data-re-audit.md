@@ -26937,3 +26937,270 @@ not copies. Dropping request_logs now makes these permanently unfillable.
 - 该块**不做决策、不影响退出码**；它只让 `s4_ready` 不能被单独读。
 - 本机真库实跑确认它打印了 `NOT MET`（`session_turns` 1,690,576 行、
   两条列均低于阈值）——**不是只在纸面上存在**。
+
+---
+
+## §9.226 「全面性」有三层，每层都各有一个洞——本轮把三层都验了一遍
+
+上一轮我在交接里把 exposure 门记成「**只数不断言**（this gate counts, it does not judge）」。
+**这句话是错的**，而且错在它让我跳过了这一层检查。改正：
+
+`admin/request_logs_retirement_exposure_test.go` 有具名登记表
+`retirementBreakers`（5 条）+ `retirementReattributed`（12 条）和**双向门**
+（实测判 breaking 却没登记 ⇒ 红；登记了却不再 breaking ⇒ 红）。
+它**既数也判**。那句英文是它引用的**上游** `requestLogsReadInventory`
+的自述，被我顺手安到了它头上。
+
+那么真正的 API 面问题不在「判不判」，而在**更上游的两件事**：这张表的
+**总体**是怎么来的，以及**总体之外**还有什么。两者本轮各有一个洞。
+
+### §9.226.1 先说一条我自己的：**§9.222 把 `TestRequestLogsReadInventoryIsComplete` 弄红了，而我没发现**
+
+`origin/main` 上这道门此刻就是红的：
+
+```
+request_logs readers: 106 files / 240 call sites (table: 106 files / 239 call sites)
+  cmd/tools/validate_sessions_v2/loader.go: table says 4, code has 5
+```
+
+第 5 处是 §9.222（`fe5003034`）自己加的 `LoadV1TimeRange`。实测该文件的
+门口径计数：`fe5003034^` = 4，`fe5003034` = 5。
+
+**为什么没发现**：§9.222 那一轮我核过 `cmd/gateway`、`cmd/tools/validate_sessions_v2`、
+`db`，**没把 `./admin/` 当包跑过**。交接记录里写的「门状态」是**我跑过的那几个**，
+读起来却像全仓。这与「一个门绿了不等于所有门绿了」是同一件事的另一个方向：
+**不是漏了一个红的门，是漏了一整个没跑的包。**
+
+⇒ 表已改为 5，并在注释里写明这一处的来历。**本轮起，`admin` 包进入固定核验清单。**
+
+### §9.226.2 洞一：`from` 独占 ⇒ **三个活着的 API 读方对门完全不可见**
+
+`requestLogsReadPattern` 原本是 `from\s+request_logs(_[a-z_]+)?\b` ——
+**只有 FROM 算读点**。一段 SQL 只要不写 FROM、只写 JOIN，
+它在本门眼里就是**零读点**：不是「少算了一个」，是**整个文件不进总体**。
+
+实测（两把独立量具互证：Go 门 + 一份独立重写的 Python 扫描，逐字一致）：
+
+| 文件 | 行 | 语句 | 性质 |
+|---|---|---|---|
+| `admin/session_online.go` | 112 | `JOIN request_logs_with_current_month rl ON rl.id = slr.last_request_id` | 在线会话列表 |
+| `admin/session_compare.go` | 903 | `LEFT JOIN request_logs_bodies_with_current_month rb` | 会话对比 API |
+| `admin/session_export.go` | 227 | `LEFT JOIN request_logs_bodies_with_current_month rb` | 会话导出 API |
+
+三条都是**活的查询**，逐行读过，不是注释、不是死代码。
+
+**后两条是本轮最该记的一条**：它们的 turn 腿**早已**走会话族
+（`FROM ` + `db.SessionFamilyTurnsForSessionSQL()`），
+**剩下没迁移的就是 bodies 那一腿**。⇒ 「会话导出/对比还挂在 v1 上」这个
+事实，**在改之前没有任何一道门看得见**，因为看不见它们。
+
+修正：模式扩为 `from|join`。**没有**改成「加一条已知例外清单」——
+那只是把同一个洞从扫描器搬进登记表，而登记表要靠人记得更新。
+JOIN 到 v1 关系**按定义**就是 v1 读点，没有误报空间。
+
+⚠ **扩总体立刻在另一张登记表上炸出一条真发现**（这一条是本轮最像「修对了」的证据）：
+`TestViewArmCutoverReadersRegistryIsConsistent` 当场红，
+报「1 个文件经 canonical 视图读 v1 臂、且读了会话族供不上的列，
+但**不在** `viewArmCutoverReaders` 里」——那个文件就是
+**`admin/session_online.go`**（`cols=[id tenant_id]`，verdict=repoint-gap-only）。
+
+同 base、同库、同时刻的 before/after（`git worktree add --detach /tmp/wt-base origin/main`）：
+
+| 门 | origin/main | 本轮 HEAD |
+|---|---|---|
+| `TestRequestLogsReadInventoryIsComplete` | **FAIL**（§9.222 弄红） | **PASS** ✅ |
+| `TestViewArmCutoverReadersRegistryIsConsistent` | PASS | FAIL → 登记后 PASS ✅ |
+| `TestV1BodiesReadersAreAssessed` | 不存在 | FAIL（**故意红**） |
+
+⇒ 「扩总体 ⇒ 更多文件进入评估 ⇒ 漏登记被暴露」这条链**是真的跑通了**，
+不是推理。`admin/session_online.go` 已登记进 `viewArmCutoverReaders`，
+并写明它与其它条目**不同类的后果**：v1 臂消失后那个 JOIN 取不到 `id`，
+在线会话列表**整页为空**——不是缺一列，是连不上行，比 `repoint-empty` 更靠前一步。
+
+| | 修正前 | 修正后 |
+|---|---|---|
+| 总体 | 106 文件 / 240 调用点 | **109 文件 / 271 调用点** |
+| 完全不可见的文件 | — | 3（上表） |
+| 已登记文件被低估 | — | 20 个，共 +31 处 |
+
+20 个已登记文件的增量**逐行看过**：全是 `LEFT JOIN request_logs_bodies_*` 这类
+与已计入的 FROM 腿配对的 bodies 腿，无注释、无死代码。
+表已按实测重导，`TestRequestLogsReadInventoryIsComplete` 绿。
+
+⚠ **未关闭的盲区（如实记）**：`admin/usage_enhanced.go:120` 的
+`BaseTable: "request_logs_with_current_month rl"` 是**裸表名字符串**，
+本模式看不见（原注释已登记为已知缺口，本轮未动——扩到「裸表名」会把
+列注册表、配置键、分区管理一并扫进来，是 §8.5 明令要先评估的口径变更）。
+
+### §9.226.3 洞二：间接读点审计工具把 `admin/tenants.go` 判成「**退役安全**」
+
+`cmd/tools/sql_source_indirection_audit` 是仓库里**唯一**能发现
+「关系名以 Go 字符串拼进 SQL」的器眼（§9.49 建的登记表里只有 1 条登记，
+文件头明说新读点「仍需靠本工具**人工**发现」）。所以它的输出错了，
+下一个复核的人就会照着它改**正确的**代码。
+
+原输出：
+
+```
+== 解析到 canonical 视图 / 会话族（退役安全）: 18 处 ==
+  admin/tenants.go:798  操作数=logsTable  → (SELECT … FROM request_logs_hot
+                                          UNION ALL SELECT … FROM request_logs) …
+  admin/tenants.go:826 / 873 / 916  （同）
+```
+
+`admin/tenants.go:770` 把 `logsTable` 定义成一段 **UNION 子查询**，
+读 `request_logs_hot` 与 `request_logs` **两张 v1 底表**，
+用于租户统计的 credits / tokens / latency 聚合。
+`isV1Relation` 取「第一个 token」拿到的是 `(select` ⇒ 不在 `v1Tables` ⇒
+**判成 canonical ⇒ 输出「退役安全」**。
+
+**这与 §9.45 记的「把『不知道』报成安全」不是同一件事。** 那一类是
+不可判定被当成安全，输出里还留着「不可静态解析」的标签，人能看出来。
+这一类是**解析成功了、却解析错了**，而且错得**自信**：字符串非空、
+形状规整、报告读起来完全正常，**没有任何视觉信号提示它是错的**。
+只写「不许把未知报成安全」的门，挡不住它。
+
+同一轮实测到的第二个输出缺陷：`_test.go` 里的**断言消息**被当成关系名。
+
+```
+admin/request_logs_read_inventory_test.go:211
+  操作数=*ast.BasicLit → requestLogsReadInventory — S4 would silently stop feeding them: %s
+```
+
+落进「退役安全」桶。那不是噪声，是**一句英文断言被当成了一张表名**。
+本工具的输出是退役清单的输入，凭空出现的表名会让人以为某文件读过 v1，
+或反过来以为它安全。已按与 `requestLogsReadInventory` / exposure 抽取器
+**同一口径**排除 `_test.go`（总体＝非测试的生产文件）。
+
+修正后实测：`admin/tenants.go` 的 4 处从「退役安全」移到
+「解析到 v1 宽族」；全仓「退役安全」18 → 5 处。
+
+⚠ 仍然残留：`autoroute/metrics.go:382` 落进「退役安全」的那条，
+操作数仍是一句英文散文（`"the feature is off" (0) — …`）。
+它在**安全的**方向上（不影响退役判断），但说明散文本消息仍会漏进输出。
+**本轮未修**，记为已知残留。
+
+⚠ **`AuditRepo` 至今没有被任何门跑过全仓**：`resolve_test.go` 只对着
+临时夹具目录调它，`grep` 全仓无第二个调用点。所以它既能算错，又不会被拦。
+本轮修了算错，**没**建那道门——建它需要一份「哪些间接读点已评估」的登记，
+工作量与本轮不成比例。**这是本轮最大的未闭合项。**
+
+### §9.226.4 洞三：bodies 腿从未被评估，而 exposure 门把它读成「clean」
+
+`TestRequestLogsRetirementExposure` 判 `clean` 的依据是
+「该文件的 v1 SQL 里没出现 canonical 合同列」。而：
+
+```
+admin/session_export.go  literals=1 definite=[] possible=[]     → clean
+admin/session_compare.go literals=3 definite=[] possible=[]     → clean
+```
+
+它俩读的 `request_body` / `response_body` **不在 canonical 合同里** ——
+合同是 `request_logs` 自己的 118 列，bodies 是**另一张表**。
+⇒ 「没命中暴露列」在这里的含义是**本量具不测 bodies**，不是「退役后照常工作」。
+
+这与 §9.167 同型（那里三个文件因别名正则丢了限定符、拿到空列集合后被判
+`repoint-safe`）：**没有证据被当成了通过**。照抄那条处置——零证据即错误。
+
+**为什么这必须红而不是记一条日志**：`admin/session_export.go:225` 写的是
+
+```sql
+COALESCE(rb.request_body, '{}'::jsonb) AS request_body
+```
+
+DROP 之后这些 JOIN **不报错、不返回空、照常导出一个完整的会话包**，
+只是每条消息的正文都是 `{}`。本文件族反复写下的那句
+（「返回 18% 数据的查询和正常工作的查询看起来一样」）在这里还要更糟一档。
+
+新增 `admin/request_logs_bodies_retirement_gate_test.go`（**故意红**）：
+实测 **26 文件 / 44 调用点**读 v1 bodies 腿，登记表 `v1BodiesReaders` 为空 ⇒ 全红。
+关系名**从 SSOT 推导**（`v1BaseTableNames` + `viewChainNames` 里含 `bodies` 的），
+不手抄第三份名单。
+
+⚠ **新门自己也有一个洞，是写完才想到的**：`indirectReader` 的三个字段
+**没有一个是编译器要求填的** —— 加一条 `"admin/session_export.go": indirectReader{}`
+就让这道门**变绿**，而实际评估量为零。
+旁边的 `TestIndirectRequestLogsReadersAreDeclaredWell` 正是防这个的，
+但它**只校验 `indirectRequestLogsReaders` 那张表** ⇒ 复用同一个结构体就必须自己再写一道。
+已补 `TestV1BodiesReadersAreDeclaredWell`（校验 Reason / ResolvesTo / Family 非空，
+且 `ResolvesTo` 必须在 **bodies** 关系名集合里——拿 turns 的 `v1DirectTables` 去校它，
+这张表会变成一张「查不到任何东西」的表）。
+变异验证：塞一条空登记 ⇒ **红**。
+
+**教训**：「我加了登记表和双向门」不等于「这张表有约束力」。
+登记表本身也是量具，它的量具是**登记项的形状**。
+
+**处置方向（已写进门的错误信息，可执行）**：会话族有 `session_bodies` 表
+（promote 函数 `db/db.go:3267`，回填工具 `cmd/tools/backfill_session_bodies`），
+但 **db 包没有 bodies 源的 SQL helper** —— turns 侧有
+`SessionFamilyTurnsSourceSQL` / `SessionFamilyTurnsForSessionSQL`，bodies 侧没有。
+⇒ 先补那个 helper，再逐个改指，然后登记（含替代来源与充分性理由）。
+
+### §9.226.5 判据自证：三条变异，两个是我自己写的**恒真门**
+
+这一轮我先写了三道门，然后逐个做变异验证。**结果必须写出来，因为其中两道是废的**：
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| A 删掉子查询扫描 | 红 | ✅ 红（2 道门） |
+| C 去掉 `_test.go` 过滤 | 红 | ✅ 红 |
+| D `firstRelationToken` 不剥引号 | 红 | ❌ **绿**（后补正例后转红，见下） |
+| B 不剥 SQL 行注释 | 红 | ❌ **绿** |
+
+**变异 B 暴露的是我的错，不是工具的错。** 我为「剥 SQL 行注释」配了一道门，
+夹具写成 `-- 历史实现读 request_logs，已改`。逐字 diff 全仓输出：
+**剥与不剥，输出完全相同** —— 仓库里唯一挂在解析结果上的注释是 tenants.go
+那句 `sqlreadguard:allow …`，它里面有 `UNION ALL` 但**没有** `from`/`join` 加标识符，
+扫不到。⇒ 那道门在测一个**仓库里不存在的场景**，且它测不到任何东西。
+**已删该门**，只留那一行归一化，并把「全仓实测零影响」写进注释，
+免得下一个复核的人再拿它当「必须有门」的理由。
+
+**变异 D 的第一次尝试也是绿的**，原因是我把 `"request_logs_hot"` 放进了
+「期望 false」那张表——它是**期望 true**。修正分类后仍绿，
+因为 `firstRelationToken` 的剥引号在 `fromRelationRE` 之外另有一条路径；
+补了对照组 B（带双引号的 v1 关系名必须判 true）后才转红。
+
+**两条方法论，都是本轮新学的**：
+
+1. **「判据红了」不等于「判据在拦」。** `TestV1BodiesReadersAreAssessed`
+   的判据是「登记表覆盖全部 bodies 读方」。若有人把扫描模式收窄回 `from`，
+   实测 26 个文件变 23 个，**门照样红**——红得像在正常工作。
+   ⇒ 补 `TestV1BodiesScanSeesJoinOnlyReaders`：总体里必须存在
+   **只靠 JOIN 才被看见**的 bodies 读方，不依赖红绿独立判红。
+   **同一个坑在两个门上各踩了一次**（§9.226.2 与此处）。
+2. **夹具必须能失败。** D 那道门连续两轮绿，第一轮是我的期望值写错、
+   第二轮是夹具走的路径根本不经过被测代码。⇒ 补对照组之前，
+   先问「这道门在变异下真的会红吗」，而不是「它看起来在测什么」。
+
+### §9.226.5.1 一次**假红**，以及它为什么不是「玄学」
+
+跑全量 `admin` 时我看到一条新的 FAIL：`TestEveryV1ReaderIsAnalyzedByExtractor`。
+它在 origin/main 上是绿的，在改动前的 HEAD 上也是绿的 ⇒ 第一反应是「我弄坏的」。
+
+**不是。** 那次全量跑**还没结束**，我就在同一个工作树上执行了
+`git rebase origin/main`（他人推进了 main，无文件重叠所以 rebase 干净）。
+而这一族门**在运行时读磁盘**：它扫 2,277 个生产文件、比对提取器覆盖率。
+rebase 把工作树换掉 ⇒ 跑到一半的文件集与编译时的不一致 ⇒ **假红**。
+
+在 rebase 后的干净树上单跑：`PASS（扫描 2277 个生产文件，149 个引用 v1 族，
+全部被分析到，盲区 0）`。
+
+⇒ 写进这一节的理由不是「我犯了个错」，而是它和本轮其余发现同族：
+**观测发生在被观测对象变化的过程中**。与 §9.216「运行中的二进制不是 HEAD」、
+本轮「rebase 后必须在新 main 上复验门」是同一条纪律的第三种形态 ——
+前两条说「别在活动的东西上取读数」，这一条说「**别在活动的东西上跑一整轮测量**」。
+
+⚠ 我因此**丢弃了那一轮全量结果**（而不是「取其中没受影响的部分」）——
+被污染的批次里，**任何一条绿都不能当证据**，因为无法逐条区分真假。
+
+### §9.226.6 边界
+
+- 本轮**没有改任何产品行为**：改动是 2 个测试文件
+  （`request_logs_read_inventory_test.go`、新增 bodies 门）+
+  1 个审计工具的实现（`cmd/tools/sql_source_indirection_audit/resolve.go`，
+  **不在任何请求路径上**）+ 1 个工具测试。
+- **零生产写入**：本轮没有连 252，也没有对本地库做任何写操作。
+- 新增的 bodies 门是**故意红**的负向判据，与 S4 门、回填门同一形态；
+  输出里带 `【预期红】` 标记，避免被读成回归。
+- `admin` 包的整体门状态本轮**未全量跑**（只跑了受影响的 6 道 + 新的 3 道）；
+  全量跑留给下一轮，并在交接里列为第一件事。

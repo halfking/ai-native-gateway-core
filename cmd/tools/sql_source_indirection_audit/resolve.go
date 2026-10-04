@@ -49,6 +49,29 @@ var v1Tables = map[string]bool{
 // 只有 `FROM ` 后面还要拼东西时，关系名才不可知。
 var fragmentTailRE = regexp.MustCompile(`(?i)\b(from|join)\s+$`)
 
+// fromRelationRE 匹配「解析出的字符串里，某个 FROM/JOIN 后面跟着的关系名」。
+//
+// # 为什么需要它：isV1Relation 的「取第一个 token」在**子查询**上给错答案，
+// 而那个方向正是本工具自称的最坏失效方向（见 isV1Relation 的注释）。
+var fromRelationRE = regexp.MustCompile(`(?i)\b(?:from|join)\s+("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*)`)
+
+// sqlLineCommentRE 剥掉解析结果里的 SQL 行注释。
+//
+// ⚠ **它今天不改变任何一条真实判定，别把它当门来依赖。**
+// 实测（2026-10-05，逐字 diff 全仓输出）：剥与不剥，输出**完全相同**。
+// 原因是仓库里唯一挂在解析结果上的 SQL 注释是 tenants.go 那句
+// `-- sqlreadguard:allow …（hot 腿同查询内联；… UNION ALL）`——它里面有
+// "UNION ALL" 但**没有** `from`/`join` 加标识符，所以扫不到。
+//
+// 留着它只有一个理由，且必须写明：它**只可能减少误报、不可能制造漏报**
+// （剥掉一段注释只会让可扫的关系名变少，而少的那部分本来就不是查询）。
+// 曾经为它写过一道门，夹具是
+// `-- 历史实现读 request_logs，已改`——**仓库里不存在这种注释**，
+// 于是那道门在「删掉剥注释」这个变异下依然绿：一个为虚构场景写的判据，
+// 测不出任何东西。⇒ 门已删，只留这一行归一化，并把这个测量结果记在这里，
+// 免得下一个人再拿它当「必须有门」的理由。
+var sqlLineCommentRE = regexp.MustCompile(`--[^\n]*`)
+
 // Site 是一个「关系名不是字面量」的 SQL 拼接点。
 type Site struct {
 	File     string
@@ -92,9 +115,34 @@ func (s Site) String() string {
 
 // isV1Relation 判断一个解析出的字符串是否指向 v1 宽族**基表**。
 //
-// 两个必须容忍的形态：
+// 三个必须容忍的形态：
 //   - 带别名的 FROM 子句：切换层返回的是 "request_logs_hot AS r"，取第一个 token。
 //   - 换行与缩进：拼接点后面常跟着另一个拼接的 alias。
+//   - **整个解析结果是一段子查询 / UNION**，关系名不止一个。
+//
+// # 「取第一个 token」曾经把一段真·v1 读法判成「退役安全」（2026-10-05 实测）
+//
+// `admin/tenants.go:770` 把 logsTable 定义成
+//
+//	(SELECT … FROM request_logs_hot
+//	 UNION ALL
+//	 SELECT … FROM request_logs) -- sqlreadguard:allow …
+//
+// 然后 `FROM ` + logsTable + ` WHERE tenant_id = $1` 查租户统计。
+// 第一个 token 是 `(select` ⇒ 不在 v1Tables ⇒ 本函数返回 false ⇒
+// Classification 返回 ClassReadsCanonical ⇒ 工具输出把 tenants.go 列进
+// **「解析到 canonical 视图 / 会话族（退役安全）」**。
+//
+// 它读的是**两张 v1 底表**，而报告说它退役安全。
+//
+// 这与 §9.45 记的「把『不知道』报成安全」**不是同一件事**：那一条是不可判定
+// 被当成安全，输出里还留着「不可静态解析」的标签；这一条是**已经解析出内容、
+// 却解析错了**，而且错得**自信**——字符串非空、形状规整、报告读起来完全正常。
+// 同一族的失效方向，但更隐蔽，因为「自信的错」在输出里没有任何视觉信号。
+//
+// ⇒ 解析结果里**多于一个关系名**时，必须逐个 FROM/JOIN 扫过去，一个都不许漏。
+// 多扫的代价是可能把一段只是提到 v1 的子查询算成 v1 读点；对退役清单而言
+// 多报是安全方向。这里有答案可查，所以不该退化成「不可判定」。
 //
 // ⚠ **不要加「排除 canonical 视图」的前缀或正则判断**（§9.45 变异验证 A/B）：
 // 视图名 request_logs_with_current_month* 根本不在 v1Tables 里，精确相等已经
@@ -103,15 +151,37 @@ func (s Site) String() string {
 // 是「看起来在防、实际测不出」的缺口。视图名之所以不会被误判，是因为**它不在
 // 那个集合里**，仅此而已。
 func isV1Relation(name string) bool {
-	t := strings.TrimSpace(strings.ToLower(name))
-	if t == "" {
+	raw := strings.TrimSpace(name)
+	if raw == "" {
 		return false
+	}
+	// 老口径：纯关系名 / 带别名的关系名都走这一支。
+	if v1Tables[firstRelationToken(raw)] {
+		return true
+	}
+	// 子查询形态：剥掉 SQL 行注释后逐个 FROM/JOIN 取关系名。
+	stripped := sqlLineCommentRE.ReplaceAllString(raw, " ")
+	for _, m := range fromRelationRE.FindAllStringSubmatch(stripped, -1) {
+		if v1Tables[firstRelationToken(m[1])] {
+			return true
+		}
+	}
+	return false
+}
+
+// firstRelationToken 从一段 SQL 片段里取出**第一个**关系名 token。
+//
+// 只取 token、不在这里判断它是不是关系名——判断留给调用方的集合查表。
+// 这样 `(SELECT …` 与 `"request_logs_hot"` 两种起手都落到同一处逻辑上。
+func firstRelationToken(s string) string {
+	t := strings.TrimSpace(strings.ToLower(s))
+	if t == "" {
+		return ""
 	}
 	if i := strings.IndexAny(t, " \t\n("); i >= 0 {
 		t = t[:i]
 	}
-	t = strings.Trim(t, `"`)
-	return v1Tables[t]
+	return strings.Trim(t, `"`)
 }
 
 // AuditRepo 扫描整个仓库，返回所有关系名不是字面量的 SQL 拼接点。
@@ -128,7 +198,24 @@ func AuditRepo(root string) ([]Site, error) {
 			}
 			return nil
 		}
-		if strings.HasSuffix(p, ".go") {
+		// ⚠ `_test.go` 必须排除，理由不是「测试不算生产代码」这句套话，
+		// 而是**测试文件会把断言消息当成关系名**（2026-10-05 实测）。
+		//
+		// `TestRequestLogsReadInventoryIsComplete` 的报错文本里有
+		// `"… read request_logs but are absent from …:\n  %s"`，它以
+		// `from ` 结尾、被 fragmentTailRE 认成拼接点，于是
+		// `操作数=*ast.BasicLit → requestLogsReadInventory — S4 would silently
+		// stop feeding them:` 进了**「退役安全」**桶。
+		//
+		// 这不是噪声，是**内容错误的关系名**：输出把一句英文断言当成了一张表。
+		// 它和本文件其余口径也一致——requestLogsReadInventory、exposure 抽取器
+		// 都按「非 _test.go 的生产文件」为总体。
+		//
+		// ⚠ 代价要说清楚：真库测试里确实有直读 v1 的 SQL
+		// （db/repoint_value_fidelity_realdb_test.go 读 canonical 视图），
+		// 排除后本工具**不再**覆盖它们。那是有意的——它们是测试的对照源，
+		// 不是会被 S4 停写的读方；真要盘点它们，另一道门按自己的口径管。
+		if strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, "_test.go") {
 			files = append(files, p)
 		}
 		return nil
