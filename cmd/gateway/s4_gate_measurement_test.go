@@ -170,22 +170,37 @@ func TestS4GateMeasurement(t *testing.T) {
 	// ---- did any failure path get a chance to record these? -----------------
 	//
 	// `genuine_loss` says a v1 row has no session twin. It does **not** say the
-	// mirror noticed. There are exactly two places that persist a failed mirror
-	// attempt — `EnqueueMirrorFailure(..., "semaphore_full")` when the bounded
-	// pool is full, and `EnqueueMirrorFailure(..., "write_failed")` when the
-	// write errors (hook.go:180 and hook.go:279) — and both land in
-	// `session_mirror_outbox`, which the replay reaper drains.
+	// mirror noticed it. Two places persist a failed mirror attempt —
+	// `EnqueueMirrorFailure(..., "semaphore_full")` when the bounded pool is full
+	// and `EnqueueMirrorFailure(..., "write_failed")` when the write errors
+	// (hook.go:180 / hook.go:279) — and both land in `session_mirror_outbox`,
+	// which the replay reaper drains.
 	//
-	// So a genuine_loss row **with** an outbox row is a known, retryable loss:
-	// the mechanism saw it. A genuine_loss row **without** one was lost before
-	// any failure-recording path ran, and no amount of reaper debugging will find
-	// it. Those need a different investigation, and mixing the two makes both
-	// look like the same problem.
+	// ⚠️ **This section used to make an inference the data does not support, and
+	// the correction is the point of it.** The first version reported "10 of 10
+	// blockers have no failure-path record" and concluded that every blocker
+	// "bypassed both EnqueueMirrorFailure call sites". That came from reading the
+	// table's **live row count**, which is 0 — but 0 live rows does not mean 0
+	// rows ever existed:
 	//
-	// Measured on this database 2026-10-04: the outbox held **0 rows in total**,
-	// so every one of the 10 genuine_loss rows belongs to the second class.
+	//	· measured here, `n_tup_ins = 2494` and `n_tup_del = 2490`: the outbox
+	//	  is written to constantly and drained just as fast;
+	//	· the reaper's skip branches call `deleteRow` (replay.go:419/427/433), so
+	//	  a drained row is **removed** rather than dead-lettered — `markDead` is an
+	//	  UPDATE that keeps `status='dead'` (replay.go:522), so dead rows would
+	//	  still be counted. Those 2490 deletes are skips, not dead letters.
+	//
+	// So a live count of 0 cannot separate "never enqueued" from "enqueued and
+	// then skipped-and-deleted", and the per-request trace that would separate
+	// them is a log line, not a table.
+	//
+	// What the level *can* support is narrower and still worth having: a blocker
+	// with a **surviving** outbox row is a loss the mechanism still holds —
+	// pending or dead — and that is actionable without logs. Everything else is
+	// "not currently held", which is not a diagnosis.
+	//
 	// The defining window for s4_ready is the validator's own default (7d), so
-	// the attribution is done over that same window — read from the same table
+	// the attribution runs over that same window — read from the same table
 	// rather than re-spelled, so widening s4Windows cannot leave this behind.
 	defDur := time.Hour
 	for _, w := range s4Windows {
@@ -193,7 +208,7 @@ func TestS4GateMeasurement(t *testing.T) {
 			defDur = w.dur
 		}
 	}
-	var unexplained int64
+	var held int64
 	if err := conn.QueryRow(ctx, `
 		SELECT count(*)
 		FROM (`+s4ScopeBody+`) rl
@@ -201,25 +216,35 @@ func TestS4GateMeasurement(t *testing.T) {
 		  AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
 		  AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
 		  AND `+mirrorDriftClassSQL+` = 'genuine_loss'
-		  AND NOT EXISTS (
+		  AND EXISTS (
 		      SELECT 1 FROM public.session_mirror_outbox o WHERE o.request_id = rl.request_id)`,
-		"", time.Now().Add(-defDur)).Scan(&unexplained); err != nil {
+		"", time.Now().Add(-defDur)).Scan(&held); err != nil {
 		t.Fatalf("outbox attribution: %v", err)
 	}
-	var outboxRows int64
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.session_mirror_outbox`).Scan(&outboxRows); err != nil {
-		t.Fatalf("outbox row count: %v", err)
+	var outboxLive, outboxIns, outboxDel int64
+	if err := conn.QueryRow(ctx, `SELECT n_live_tup, n_tup_ins, n_tup_del
+	                              FROM pg_stat_user_tables
+	                              WHERE relname = 'session_mirror_outbox'`).
+		Scan(&outboxLive, &outboxIns, &outboxDel); err != nil {
+		t.Fatalf("outbox counters: %v", err)
 	}
-	t.Logf("7d blockers with no failure-path record: %d of %d (session_mirror_outbox holds %d row(s) in total)",
-		unexplained, def.genuine, outboxRows)
-	if def.genuine > 0 && unexplained == def.genuine {
-		t.Logf("  ⇒ **every** blocker bypassed both EnqueueMirrorFailure call sites. The mirror " +
-			"never attempted these writes as far as any durable record shows, so the reaper, its " +
-			"lease, and the outbox are all innocent here — look upstream at which code path " +
-			"emits the v1 row and whether it invokes the hook at all.")
+	t.Logf("7d blockers currently HELD by the outbox (pending or dead): %d of %d "+
+		"(outbox live=%d, inserted=%d, deleted=%d since stats reset)",
+		held, def.genuine, outboxLive, outboxIns, outboxDel)
+	switch {
+	case held > 0:
+		t.Logf("  ⇒ %d blocker(s) are in the outbox right now: the failure path recorded them and "+
+			"they are either awaiting replay or dead-lettered. Start with status/attempts/"+
+			"last_error on those rows.", held)
+	case def.genuine > 0:
+		t.Logf("  ⇒ none is held. That does **not** mean none was ever enqueued: this outbox is "+
+			"drained by deleting its rows (%d inserts / %d deletes), so a live count of %d is the "+
+			"expected steady state and says nothing about whether these blockers passed through it. "+
+			"Answering that needs the reaper's log lines, not this table.",
+			outboxIns, outboxDel, outboxLive)
 	}
 
-	//
+	// ---- is the loss ongoing, recent, or confined to history? --------------
 	// A freshness observation, reported rather than asserted: "is it safe to open
 	// S4" is a release decision that belongs in the decision sheet, not a
 	// threshold hidden in a test.
