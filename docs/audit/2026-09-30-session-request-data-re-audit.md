@@ -25234,3 +25234,54 @@ return syntheticKindOf(entry) == "probe"
 - **不是**回环误分类（回环臂工作正常），**不是**业务轮次丢失的证据 ——
   但**也不能**说它们「不算丢失」：按 hook 的谓词，它们**本该**被镜像。
 ⇒ 要让 S4 转绿，需要回答的是**这 9 行为什么没被镜像**，而不是调整分类器。
+
+### §9.212.8 把「所有有记录的失败路径」都排除掉了，并给总闸加了一个新判据
+
+§9.212.6 说「查不到」。本轮继续用代码把它收窄了一大截 —— **数据侧 + 代码侧**逐条排除：
+
+| 可能的路径 | 判定 | 依据 |
+|---|---|---|
+| `!entry.Success && !isTerminalFailure(entry)` | **排除** | `request_status='failure'`，而 Go 常量 `RequestStatusFailure = "failure"`（`client.go:249`）与库里的字面值**逐字相同** ⇒ `isTerminalFailure` 返回 true |
+| `IsProbeSyntheticSession(entry)` | **排除** | 有 `gw_session_id` ⇒ 第一行就 `return false` |
+| `IsInternalAutoEntry(entry)` | **排除** | 需 `IsAutoRequest != nil && *IsAutoRequest`；这 9 行是 **NULL** |
+| `!shadowWriteEnabled()` | **排除** | `settings_kv.sessions_v2.shadow_write = true`（2026-07-21 起未变） |
+| `EnqueueMirrorFailure(..., "semaphore_full")` | **排除** | `session_mirror_outbox` **总行数 = 0** |
+| `EnqueueMirrorFailure(..., "write_failed")` | **排除** | 同上；这 9 个 request_id 一个都不在 outbox |
+| replay 侧三道门 | **排除** | `replay.go:418/426/432` 与 hook 同样三道，且 replay 对跳过行是**删除**——若被跳过，outbox 会是「被删空」，而重放成功则会有 turn。两者都不是观察到的状态 |
+| 部分写 | **排除** | `session_turns` / `session_turn_details` 按 `request_id` 与按 `gw_session_id` 全部为 0 |
+
+⇒ **hook 里有记录的每一条失败路径都不成立。** 剩下的解释只剩一类：
+**这些 entry 压根没走到 hook 的写入尝试**（某个产出 v1 行的上游路径没有调用 hook），
+或者存在一条我还没找到的、没有日志也没有指标的早退。
+
+⚠ 注意：**hook 的 8 个入口里，只有 2 个会留痕**
+（`entryToProcessedRequest` 返回 nil、以及写失败时的 `slog.Warn`）。
+其余早退全部是**静默 return**。⇒ 「上游没调用 hook」这一类**天生不可观测**，
+这正是它能活到今天的原因。
+
+### §9.212.9 因此给总闸加了一个判据：阻塞行**有没有被任何失败机制记录过**
+
+`s4_ready` 原来只说「有 v1 行没有 session 双生行」，**不说镜像有没有注意到它**。
+而全仓只有两处会把失败的镜像尝试持久化（`hook.go:180` 的 `semaphore_full`、
+`hook.go:279` 的 `write_failed`），都落进 `session_mirror_outbox` 交给 replay reaper。
+
+⇒ 所以：**有** outbox 行 = 已知、可重试的丢（机制看见了它）；
+**没有** outbox 行 = 丢在任何失败记录机制**之前**，**调 reaper、查 lease 都找不到**。
+把两者混为一谈，会让两边看起来像同一个问题。
+
+实测（2026-10-04）：outbox **总行数 0**，10 个阻塞行**全部**属于第二类。
+⇒ 输出：
+
+```
+7d blockers with no failure-path record: 10 of 10 (session_mirror_outbox holds 0 row(s) in total)
+  ⇒ **every** blocker bypassed both EnqueueMirrorFailure call sites. …
+```
+
+窗口从 `s4Windows` 表里读，不重拼字符串，这样将来加窗口不会把它落下。
+
+**变异验证**：把 outbox 的 `NOT EXISTS` 反转成 `EXISTS`（模拟「每个阻塞行都被记录过」）
+⇒ 计数变成 `0 of 10`，且那行 `⇒` **不再打印** ⇒ 条件是承重的，
+且消息只在「全部无记录」时才响。
+
+⚠ 这**没有**定位到机制，只是把「丢在哪里」从四种可能收窄成一类，
+并让这一类**每次运行都被测量**而不是靠一次人工排查。

@@ -10594,3 +10594,49 @@ D21-a/b、D20-a/c、D19-b。
 6. ⚠ SQL 在 Go raw string 里，注释中不能出现反引号。
 7. ⚠ 真库跑在**共享的、持续被写入的库**上；跨运行数字会变，
    before/after 必须**同一次运行**内取两个数。
+
+### ⑪ 把「所有有记录的失败路径」都排除了，并给总闸加了「阻塞行有没有被失败机制记录过」（§9.212.8–9）
+
+§9.212.6 说「查不到」。本轮用**数据 + 代码**把它收窄了一大截。逐条排除：
+
+| 路径 | 判定 | 依据 |
+|---|---|---|
+| `!Success && !isTerminalFailure` | 排除 | `request_status='failure'`，Go 常量 `RequestStatusFailure = "failure"`（`client.go:249`）与库中字面**逐字相同** ⇒ 返回 true |
+| `IsProbeSyntheticSession` | 排除 | 有 `gw_session_id` ⇒ 第一行 `return false` |
+| `IsInternalAutoEntry` | 排除 | 需 `IsAutoRequest != nil && *IsAutoRequest`，这 9 行是 **NULL** |
+| `!shadowWriteEnabled()` | 排除 | `settings_kv.sessions_v2.shadow_write = true`（2026-07-21 起未变） |
+| `EnqueueMirrorFailure("semaphore_full")` | 排除 | `session_mirror_outbox` **总行数 = 0** |
+| `EnqueueMirrorFailure("write_failed")` | 排除 | 同上，9 个 request_id 一个都不在 |
+| replay 三道门 | 排除 | `replay.go:418/426/432` 同三道；跳过会**删除**行、重放成功会有 turn，两者都不是观察到的状态 |
+| 部分写 | 排除 | turn / details 按 `request_id` 与 `gw_session_id` 全部为 0 |
+
+⇒ **hook 里每一条有记录的失败路径都不成立。** 只剩一类解释：
+**entry 压根没走到 hook 的写入尝试**（上游某条产出 v1 行的路径没调用 hook），
+或存在一条我没找到的、**无日志无指标**的早退。
+
+⚠ **hook 的 8 个入口里只有 2 个留痕**（`entryToProcessedRequest` 返回 nil、
+写失败的 `slog.Warn`），其余早退全是**静默 return** ⇒
+「上游没调用 hook」这一类**天生不可观测**，这正是它活到今天的原因。
+
+**新增判据**（`TestS4GateMeasurement`）：阻塞行**有没有被任何失败机制记录过**。
+全仓只有两处持久化失败的镜像尝试（`hook.go:180` / `hook.go:279`），都落进 outbox。
+⇒ **有** outbox 行 = 已知可重试的丢；**没有** = 丢在失败记录机制**之前**，
+**调 reaper、查 lease 都找不到**。混为一谈会让两边看起来像同一个问题。
+
+实测：outbox **总行数 0**，10 个阻塞行**全部**属第二类。
+窗口从 `s4Windows` 表读，不重拼字符串。
+**变异**：反转 outbox 的 `NOT EXISTS` ⇒ `0 of 10` 且 `⇒` 行消失 ⇒ 条件承重。
+
+⚠ 这**没有**定位到机制，只是把「丢在哪里」从四种收窄成一类，
+并让这一类**每次运行都被测量**，不再靠一次人工排查。
+
+### ⑫ 待拍板（更新）
+
+- ⚠ **这 9 行为什么没进 hook** —— 需 gateway 日志 / 写入来源确认。
+  本轮已把「有记录的路径」全部排除，剩下的**不可从数据库观测**（早退全静默）。
+- ⚠ **D30-b（252 只读凭据）**：本机这 9/10 是本机探针，生产无法回答。
+- S4 开启时点（其余事项的前置）；D32 + D29-d 切换时点；
+  `client_model` 登记是否删除；`outbound_model` 20% 下限复核；
+  `RetirementColumnFill` 是否继续作为仓库内活库快照。
+沿用未决：D28-a/b、D27-a/b/c、D26-a/b、D25-a/b/c、D24 系列、D23 系列、
+D21-a/b、D20-a/c、D19-b。
