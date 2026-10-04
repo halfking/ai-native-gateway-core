@@ -1809,7 +1809,9 @@ DeletedRows["session_bodies"] = 1，应为 2
 
 ### 请拍板
 
-- **D25-a**：本机库**重建**（用同一份 `pg_dump` 重建法），
+- **D25-a**：⚠ **本条已被 D30 推翻：重建是「掩盖」而不是「修复」。**
+  （以下为当时的原始建议，保留以记录判断的演变。）
+  原建议：本机库**重建**（用同一份 `pg_dump` 重建法），
   还是把 **`llmgw_probe_9186` 扶正为常驻测试库**？
   ⚠️ **它没有数据**——绝大多数真库门在它上面会因「查无此行」而红或跳过，
   它**只适合跑需要干净 schema 的结构性门**（本门即此类）。
@@ -2182,3 +2184,71 @@ v1 的标记来自 v1 的写方。**一旦 S4 停写，连 v1 侧那 9,614 个�
   里 5 条「无生产 SQL 读方」的具名登记要不要复核？
   * 我的建议：不需要人工复核，门已把机制逐条写死，空理由会红，
     登记过期（扫到读方）也会红。**但若有人新增读方，登记必须回来销账。**
+
+---
+
+## D30：`request_logs_bodies` 的 columnar 分区 + 未命名子查询 = 执行器直接失败（**因果已确证**）
+
+### 根因（不是「本机 catalog 异常」，也不是「重建能修」）
+
+migration **`765_bodies_columnar_storage`** 把 `request_logs_bodies` 的 RANGE 分区
+转成了 **Citus `columnar`** 访问方法。列存分区一旦出现在**未命名子查询**
+（relid=0 的 RTE）里参与 `UNION ALL`，执行器初始化就抛
+`invalid perminfoindex 0 in RTE with relid 0`。
+
+**正面复现**（干净库上，**0 行的分区**即可）：
+
+```sql
+ALTER TABLE public.request_logs_bodies_2026_11 SET ACCESS METHOD columnar;
+SELECT count(*) FROM (SELECT request_id FROM request_logs_bodies_hot
+                      UNION ALL SELECT request_id FROM request_logs_bodies) x;
+-- ERROR:  invalid perminfoindex 0 in RTE with relid 0
+```
+
+逐项排除（全部实测）：行数（2,501,007 行仍正常）、数据内容、并行度、
+统计信息（`ANALYZE` 后仍失败）、`attcompression`（两库完全相同）、
+DDL/分区树/约束/索引（§9.185）。
+
+### ⚠️ 推翻 D25-a：「重建 `llm_gateway`」是**掩盖**，不是修复
+
+重建得到的库是全 heap 的，故障消失——但**下一次部署 migration 765 就复发**，
+且复发前的库已不是生产形态。**重建只会让这个缺陷更难被看见。**
+
+### 已交付（不含迁移改动）
+
+- `cmd/tools/validate_sessions_v2/loader.go`：`v1BodyQuery` 拆成
+  `v1BodyQuery`（hot）+ `v1BodyQueryParent`（母表），调用点顺序执行。
+  **语义不变**（「hot 优先、母表兜底」与原 `ORDER BY source_priority LIMIT 1` 一致），
+  **代价写明**：1 次往返变最多 2 次。
+  ⇒ **`TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface` 在真库首次真正执行并 PASS（103s）**，
+  此前必然 Skip。目标里「确认数据的存储可用」这一条在本机达成。
+- `cmd/tools/validate_sessions_v2/repair_e2e_realdb_test.go`：
+  前置探针原先**硬编码旧形状**——修好 loader 却留着它，**等于让修复被自己的测试遮住**。
+  已改为**直接引用 loader 的两个常量**（同源，形状一改两边一起改），
+  判定口径从「只跑 hot 腿」改成**两条腿都跑**（母表才是 columnar 那一张）。
+- `admin/session_family_surface_readable_realdb_test.go`：**仍然红**（表确实还是列存），
+  但失败文案已改正——原文把人指向「重建」，现在写明根因与两条真出路。
+
+### 请拍板
+
+- **D30-a**：bodies 的列存转换怎么办？
+  * 选项 ①：**回滚 765**（`SET ACCESS METHOD heap` + `SET COMPRESSION default`，
+    仓库里已有 `765_bodies_columnar_storage.down.sql`）。
+    代价：bodies 存储变回堆表，压缩/列存收益归零。
+  * 选项 ②：**保留列存**，把列存分区移出未命名子查询。
+    本轮已改 `validate_sessions_v2/loader.go` 一处；**需要全仓普查还有谁这么读**
+    （见 D30-c）。
+  * 我的建议：**先做 D30-c 的普查再选**。若只有 loader 一处 ⇒ 选 ②，保留存储收益；
+    若还有多处 ⇒ 选 ①，否则每次新增读法都会再踩一次同一个坑。
+- **D30-b**：生产是否已受影响？`765` 是**生产迁移**，所以生产很可能也是列存，
+  ⇒ `LoadV1Turns` 在生产**同样跑不起来**、`ExecuteRepair` **同样从未成功执行过**。
+  这需要 252 **只读**确认（可并入 D24-d-3 申请）。
+  * 我的建议：并入同一次只读申请，**这是本次 D30 里最该先确认的一条**——
+    它决定 D19-a-3-1（唯一最有把握的生产改动）是否也踩在这个坑上。
+- **D30-c**：全仓普查「还有谁在未命名子查询里 UNION ALL 读 bodies」。
+  判据可复用本轮那条：`SELECT count(*) FROM (SELECT <col> FROM <parent> UNION ALL
+  SELECT <col> FROM <parent>_hot) x` 对每个 bodies 相关的两表配对执行。
+  * 我的建议：**做**，并把结果落成一道常驻门（形如
+    `TestNoColumnarPartitionInUnnamedSubquery`），
+    否则这个坑会在下一个新增读法处复发，而它复发时的表现是**执行器报错**——
+    至少是响的那一侧，比静默好，但不能只靠人记得。

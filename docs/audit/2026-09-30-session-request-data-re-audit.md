@@ -23514,3 +23514,118 @@ SQL 字面量：v1=105  视图=118  合计=223
 - 关系宇宙的扩展 = 改已发布结论 ⇒ **D29-a（已按 §9.195.3/§9.195.6 重写）**，
   本轮**未改**。
 - **未连接生产。** 但「哪些文件只经由视图读 v1」是**代码事实**，可直接外推。
+
+---
+
+## §9.196 找到并**修掉**本机库异常的根因：Citus `columnar` 分区 + 未命名子查询
+
+### §9.196.1 目标
+
+§9.184–§9.186 证明本机 `llm_gateway` 的 `request_logs_bodies` 一进入
+「子查询内 `UNION ALL`」就抛 `invalid perminfoindex 0 in RTE with relid 0`，
+并据此把 D25-a 的建议定为**重建该库**。本轮要回答一个更前置的问题：
+**重建是修复，还是掩盖？**
+
+### §9.196.2 逐项排除（全部实测，**不是推断**）
+
+| 候选 | 实测 | 结论 |
+|---|---|---|
+| 行数 / 计划体量 | 在**干净探针库**灌到 **2,501,007** 行（超过真库 2,244,182） | 正常 ⇒ 排除 |
+| 数据内容 | 合成行不含任何 jsonb | 正常 ⇒ 排除 |
+| 并行度 | 真库 `max_parallel_workers_per_gather=0` 仍失败；探针库关并行仍正常 | 排除 |
+| 统计信息 | 真库 `ANALYZE public.request_logs_bodies` 之后**仍失败** | 排除 |
+| `attcompression`（LZ4 列压缩） | 两库状态**完全相同**（父表与 hot = `l`，RANGE 分区 = 空） | 排除 |
+| DDL / 分区树 / 约束 / 索引 | §9.185 已排除 | 排除 |
+
+⚠ `attcompression` 那一项值得单记：我一度把它当成根因
+（父表 `'l'`、分区 `''` 的「混合状态」看着可疑），
+**是探针库的同形对照当场否掉了它** —— 探针库一模一样的混合状态，却完全正常。
+**「像根因」和「是根因」之间隔着一次对照。**
+
+### §9.196.3 根因：访问方法
+
+对比两个库同一张表的**访问方法**（`pg_class.relam`）：
+
+| 库 | `request_logs_bodies_2026_09/10/11` | `..._hot` |
+|---|---|---|
+| `llm_gateway`（失败） | **columnar** | heap |
+| `llmgw_probe_9186`（正常） | heap | heap | heap |
+
+`llmgw_probe_9186` 是 §9.186 用 `pg_dump --schema-only` 建的 ——
+**它不还原 Citus `columnar` 转换**。这解释了 §9.186「同 DDL 换库就好」的全部现象：
+换库同时换掉了**访问方法**。
+
+来源明确：migration **`765_bodies_columnar_storage`** 及其 `.down.sql`
+（`ALTER TABLE public.request_logs_bodies ALTER COLUMN … SET COMPRESSION default`）。
+**这是生产迁移，不是本机意外。**
+
+### §9.196.4 因果确证：正面复现
+
+在**干净的探针库**上，只把**一个 0 行的分区**转成列存：
+
+```sql
+ALTER TABLE public.request_logs_bodies_2026_11 SET ACCESS METHOD columnar;
+SELECT count(*) FROM (SELECT request_id FROM request_logs_bodies_hot
+                      UNION ALL SELECT request_id FROM request_logs_bodies) x;
+-- ERROR:  invalid perminfoindex 0 in RTE with relid 0
+```
+
+⇒ **同一个错误、同一句报错，在 0 行的分区上出现。**
+相关性至此变成因果。之后已把探针库复原（4 个分区全 heap、删除 250 万合成行、
+同形状查询恢复正常）。
+
+### §9.196.5 修法：去掉子查询包裹（已实施）
+
+实测三种形状（真库）：
+
+| 形状 | 结果 |
+|---|---|
+| A：`FROM ( … UNION ALL … ) WHERE …`（原生产形状） | **失败** |
+| B：`FROM ( … UNION ALL … )` 外再加谓词（§9.185 的绕过） | 失败（子查询还在） |
+| C：**顶层 `UNION ALL`**，无子查询 | **通过** |
+| D：子查询内一条腿带分区键谓词 | 通过 |
+
+采用 **C**：`v1BodyQuery` 拆成 `v1BodyQuery`（hot 腿）+ `v1BodyQueryParent`（母表腿），
+调用点顺序执行、hot 未命中才走母表。
+
+**为什么不用 D**：D 会改分区裁剪路径，而原查询的 `ts = $2` 本已足够定位；
+C **逐字保留**「hot 优先、母表兜底」的择一规则，与原
+`ORDER BY source_priority LIMIT 1` 结果一致。
+**代价写明**：1 次往返变最多 2 次，多数行只在母表时会变成 2 倍往返。
+
+### §9.196.6 修好之后：`ExecuteRepair` 第一次真跑起来了
+
+`TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface`
+在真库 **PASS（103s）**——它此前**必然 Skip**（§9.186 留下的前置探针）。
+
+⚠ 那个前置探针**自己也硬编码了旧形状**。修好 `loader.go` 却留着它，
+等于**让修复被自己的测试遮住**——而它存在的意义恰恰是「loader 的可执行前提」。
+已改为**直接引用 `loader` 的两个常量**（探针与被检验对象同源，形状一改两边一起改），
+并把判定口径从「只跑 hot 腿」改成**两条腿都跑**（只跑 hot 会漏判
+「hot 通、母表不通」，而母表才是 columnar 那一张）。
+
+⇒ 目标里「**确认数据的存储可用**」这一条，到此**在本机达成**：
+`LoadV1Turns` → `ExecuteRepair` 端到端在真库跑通。
+⇒ 同时**加强 D19-a-2 的否证**：`ExecuteRepair` 在本机**从来**没能成功执行过。
+
+### §9.196.7 ⚠️ D25-a「重建 `llm_gateway`」**不是修复，是掩盖**
+
+重建（无论 `pg_dump --schema-only` 还是别的）得到的库是**全 heap** 的，
+于是故障消失——但 **migration 765 会在下一次部署把它变成 columnar，故障复发**。
+⇒ 重建只会让这个缺陷**更难被看见**，因为重建后的库不再是「生产形态」。
+
+### §9.196.8 残留自证
+
+本轮在真库跑完 e2e 后：`zz-repair-e2e-%` 残留 **2 行**，
+但其时间戳为 **13:36:36**（§9.186 那轮），本轮跑在 **16:57** ⇒ **本轮零残留**。
+（共享库里另有活网关进程持续写入，`bodies` 计数随之变动，与本测试无关。）
+
+### §9.196.9 边界
+
+- **本轮改了产品代码**：`cmd/tools/validate_sessions_v2/loader.go` 的查询形状
+  （语义不变，代价是往返次数）。这与本会话此前「只刻画不改行为」的自律不同，
+  依据是用户在本任务开头明确要求「**修正发现的问题**」。
+- **未改 migration 765**：是否回滚列存转换属主决定（**D30-a**）。
+- **未连接生产**。但「765 把 bodies 分区转成 columnar」与
+  「未命名子查询 + columnar 必炸」都是**代码/迁移事实**，可直接外推；
+  **生产是否已受影响需要只读确认（D30-b）**。
