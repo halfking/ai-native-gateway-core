@@ -348,17 +348,25 @@ var sequenceChannelRepairs = map[string]string{
 // 只能落进「真漂移」分支报红。820 就是第一个撞上这条的。
 //
 // 为什么这**不是**漂移，也不该做五点同步：
-//   - 820 的效果由 `db.ensureAudioModalityBackfill`（db/db.go:631）应用，
+//   - 820 的效果由 `db.ensureAudioModalityBackfill`（db/db.go:641）应用，
 //     且调用点在**流量前**的 ensure 链里（db/db.go:624），注释自述
 //     「mirrors sql/migrations/startup/820_audio_modality_backfill.sql」。
-//   - 该 ensure 的 SQL 带 `WHERE modality = 'text'` 守卫，**幂等、二跑零行**。
+//   - 该 ensure 的 SQL 带 `WHERE modality = 'text'` / `'vision'` 守卫，
+//     **幂等、二跑零行**。
 //   - 注册进 StartupFiles 只会让每次安装在 ensure 链之前**把同一个回填再跑一遍**，
 //     即为了消一个红而制造一次重复 DML。
+//
+// ⚠ 与 shell 侧是**同一个决定的两个副本**，改一处必须同步另一处：
+// 本表是 Go 侧的登记判据，`scripts/apply-db-revision-sequence_test.sh` 的
+// `ensure_allowlist` 是通道侧的登记判据。2026-10-04 实测：只补其中一侧时，
+// 另一侧那条门（canonical_delivery_path_check）照样报红——它的报错文案
+// 自己就写着「or the reviewed Go-ensure allowlist」。
+// ⇒ 「已豁免」这个状态**必须两边同时成立**，单边绿不算绿。
 //
 // 登记项的判据（加新条目前请照此核）：能在 `db` 包的 ensure 链里找到
 // 逐字镜像该 .sql 的函数，且该函数在流量前被调用。缺任一条就不是本类。
 var goEnsureMirrored = map[string]string{
-	"820_audio_modality_backfill.sql": "mirrored by db.ensureAudioModalityBackfill (db/db.go:631, called at db/db.go:624 before traffic); idempotent (WHERE modality='text'); registering it in StartupFiles would run the same backfill twice",
+	"820_audio_modality_backfill.sql": "mirrored by db.ensureAudioModalityBackfill (db/db.go:641, called at db/db.go:624 before traffic); idempotent (WHERE modality='text'/'vision'); registering it in StartupFiles would run the same backfill twice; the same decision is registered in scripts/apply-db-revision-sequence_test.sh ensure_allowlist — both sides must list it",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
