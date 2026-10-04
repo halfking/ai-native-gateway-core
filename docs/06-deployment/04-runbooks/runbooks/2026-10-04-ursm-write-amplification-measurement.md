@@ -2984,3 +2984,173 @@ func (a *Archiver) GetStats(ctx context.Context) (*ArchiveStats, error)
 ★ 我这条错误的成因值得记：**我先看到「887MB + 63.5% 可归档 + 归档器从未运行」，
   三条都指向同一方向，就直接写了「无界增长」而没先量速率。**
   「无界」是对**趋势**的断言，而趋势需要两个时点的量，不是累计值。
+
+---
+
+### 10.26 ✅ `assets` 上还有**第二条没修的写路径**：`MarkHealth` 每轮 835 次空写（A 方案只修了心跳那一条）
+
+#### 1. 起点：一个 8 窗口测量里的**单个离群窗口**
+
+§10.24 取了 6 个窗口。这一轮补到 8 个（`assets` 表 `n_tup_upd` 增量，
+窗口长度用**实际经过秒数**算 —— 采样脚本每次 sleep 300 后还要做一次 ssh，
+实测窗口是 302~307 秒，用 300 归一会引入 2.3% 系统偏差）：
+
+```
+时刻     累计 n_tup_upd     Δ        实际窗口   upd/s
+03:19:40   64,364,849        —          —        —
+03:24:47   64,366,161      +1312       307s     4.274
+03:29:49   64,367,619      +1458       302s     4.828
+03:34:56   64,368,926      +1307       307s     4.258
+03:39:58   64,370,234      +1308       302s     4.331   ← 窗口起点
+03:45:00   64,372,376      +2142       302s     7.093 ★ 离群 +63%
+03:50:04   64,373,709      +1333       304s     4.385
+03:55:06   64,375,023      +1314       302s     4.351
+```
+
+除第 5 个窗口外全部落在 4.258~4.828，**第 5 个是 7.093**。
+心跳基线是 1,306 行/5 分钟 = 4.353/s，而
+
+```
+Δ2142 − 1306 = 836
+```
+
+多出来的量与心跳基线无关 ⇒ **有第二条写路径在那个 5 分钟里发了约 835 次写**。
+
+#### 2. 定位到具体调用点：154 的 probe 日志
+
+```
+10月 05 03:42:50  154  {"msg":"asset health probe: cycle complete",
+                        "tenants":4,"degraded":439,"removed":396,"duration_ms":2728}
+```
+
+`03:42:50` 正落在 03:39:58~03:45:00 这个窗口里，且
+
+```
+439 + 396 = 835        ← 与上面多出来的 836 吻合（差 1 是心跳行跨边界）
+```
+
+再核对库内当前的三个桶：
+
+| health_state | 行数 | last_seen_at 范围 |
+|---|---:|---|
+| unknown | 1,306 | 2026-10-05（全部活） |
+| degraded | **439** | 2026-07-16 ~ 2026-10-01 |
+| down | **396** | 2026-06-26 ~ 2026-10-01 |
+| 合计 | 2,141 | |
+
+**439 / 396 与日志里的 `degraded` / `removed` 逐位对上。** 三方独立数据
+（窗口增量、进程日志、库内桶计数）互相吻合，可以定案。
+
+#### 3. 根因：调用方没有判「值已经是目标态」
+
+`bg/asset_health_probe.go` 的 `probeOneTenant` 有两步，两步都无条件发写：
+
+```go
+// Step 1
+for _, a := range stale {
+    if a.HealthState == apihub.HealthDown { continue }   // ← 只挡终态
+    p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDegraded)
+}
+// Step 2
+for _, a := range batch {
+    if !liveLookup[key] {
+        p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDown)  // ← 完全不判
+    }
+}
+```
+
+* 439 个**已经是 Degraded** 的活资产，每轮被重新标一次 Degraded；
+* 396 个**已经是 Down** 的非活资产，每轮被重新标一次 Down。
+
+⇒ **每轮 835 次 UPDATE 全部是写同一个值。** 探针的 tick 是 1 小时
+（`NewAssetHealthProbe`，`tick: 1 * time.Hour`），两台各跑各的、**没有跨实例互斥**
+（与 §10.19 的 analyze 同一类缺陷）：
+
+```
+835 × 24 轮/天 × 2 台 = 40,080 次/天纯空写
+```
+
+占 §10.24 之后剩余写量（4.341/s ≈ 375,110 次/天）的 **10.7%**。
+注意：空写对 `SELECT` 侧**完全不可见**，只查表状态永远发现不了 ——
+这也是它能长期存在的原因（`bg/` 下原本**没有任何** `asset_health_probe` 的测试）。
+
+#### 4. 为什么门控放在 Go 侧而不是 SQL 的 `IS DISTINCT FROM`
+
+直觉上该照抄 A 方案的 SQL 守卫，但**这里不能**：
+
+```go
+// apihub/pg_store.go markHealthSQL
+UPDATE public.assets SET health_state = $4
+ WHERE tenant_id = $1 AND kind = $2 AND ref_id = $3
+RETURNING 1
+```
+
+`Store.MarkHealth` 用 `QueryRow(...).Scan(&found)`，并把 `pgx.ErrNoRows`
+一律映射成 `ErrNotFound`。一旦加 `AND health_state IS DISTINCT FROM $4`，
+**`ErrNoRows` 同时表示「行不存在」和「值本来就对」** —— 对外语义从
+「查无此行」变成二义，API 调用方的错误处理会静默改变。
+
+而调用方手里**已经有当前值**：`listStaleSQL`（`:760`）与
+`listAssetsSQL`（`:251`）都 SELECT 了 `health_state` 并扫进 `a.HealthState`。
+在 Go 侧比一个字符串比较，零成本、零往返、不动任何对外语义。
+
+#### 5. 门：数**调用次数**，不是数行数
+
+`bg/asset_health_probe_nowrite_gate_test.go`（新增，4 条）用一个按调用计数的
+`apihub.Store` 假实现：
+
+| 门 | 钉住什么 | 抓什么回归 |
+|---|---|---|
+| `TestProbeSteadyStateIssuesZeroMarkHealthCalls` | 全部已达目标态时 **0 次**调用 | §10.26 本体 |
+| `TestProbeNeverWritesTheSameValueTwice` | 每次调用都断言 `old != new` | 混合场景里混入单次空写 |
+| `TestProbeNeverDowngradesDownToDegraded` | Down 不被降级回 Degraded | 扩大 Step 1 条件时的副作用 |
+| `TestProbeFirstRunStillMarksUnseenAssets` | Unknown 仍会被正常标记 | 门控把功能整体关掉 |
+
+★ 为什么不写文本门：文本门只能证明条件**存在**，不能证明它**对**
+（这与 A 方案 M62 的教训同源）。这里量的对象是「探针有没有发请求」，
+因为空写在任何表状态读数上都不可见。
+
+**变异验证**（两条各撤一次）：
+
+| 变异 | 改动 | 编译 | 4 条门结果 |
+|---|---|---|---|
+| M1 | Step 1 条件退回 `== HealthDown` | ✅ 通过 | 2 PASS / **2 FAIL** |
+| M2 | 删掉 Step 2 的判等 | ✅ 通过 | 2 PASS / **2 FAIL** |
+
+两次都**仍能编译**（`BUILD-BROKEN` 不算证据），两次都用 `cp` 字节级还原，
+`md5 = bcf449371857db058a79be98505ab6dc` 前后一致，还原本体后 4 条全绿。
+`go test ./bg/` 全包 **955 PASS / 0 FAIL**，`./apihub/` 全绿。
+
+★ **写门的时候我第一次就把夹具画错了**：我把 439 个 degraded 也放到了
+`liveLookup` 之外，门立刻红并报 `ref_id=3 "degraded" -> "down"`。
+那是**正确的**行为转换 —— 那些资产确实该被推到 Down。
+真实生产形态是：degraded 439 **是活的**（源表里还有、只是心跳停了），
+所以它们在 `liveLookup` 里、Step 2 根本不碰；down 396 才是不在 `liveLookup`。
+**门红了先怀疑夹具**，这条已经是本轮第三次了。
+
+#### 6. 🔴 顺带发现、本轮**没有**修的 bug：Step 2 的「分页」是假的，只扫了 500/2141 行
+
+`probeOneTenant` Step 2 的注释写着 `// Fetch all assets with pagination
+(1000 per batch)`，但：
+
+1. `apihub.Service.List` → `pgStore.List` 在 `apihub/pg_store.go:272`
+   有 `if limit > 500 { limit = 500 }`，而 Step 2 要的是 `batchSize = 1000`；
+2. `listAssetsSQL`（`:248~259`）**只有 `LIMIT $4`，没有 `OFFSET`**；
+3. 于是 `offset`（`:137` / `:159`）是个**从未被传进 SQL 的死变量**，
+   `len(batch) = 500 < 1000` 触发 `:156` 的 `break` —— 循环只跑一轮。
+
+生产实测：`count(*) = 2141`，`ORDER BY kind, ref_id LIMIT 500` 恰好返回 500。
+
+⇒ **Step 2 每轮只检查按 `(kind, ref_id)` 排序的前 500 行，
+   剩下约 1,641 行（76.6%）从来没有被检查过是否已从源表移除。**
+`removed=396` 全部来自那 500 行之内。
+
+**本轮不修**，原因：修它会把约 1,641 行从未受检转为受检，
+其中命中「不在 liveLookup」的那些会被标成 Down —— 这是**可观测的行为变更**
+（UI 的健康度统计卡片会变），不是写放大优化，且需要你确认这些资产是否
+真的已经从源表消失。已登记待你拍板。
+
+★ 顺带一个只做了代码阅读、**没有实测**的观察：`Step 2` 只会写 Down，
+  没有任何路径把一个重新变活的资产写回 healthy/unknown（它在
+  `liveLookup` 里所以 Step 2 不碰；只有 Step 1 能在它心跳超 6h 时
+  把它从 Down 拉到 Degraded）。这一条**未实测**，仅供拍板 500 上限时参考。
