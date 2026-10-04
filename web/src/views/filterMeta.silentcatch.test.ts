@@ -1,10 +1,19 @@
 // 2026-10-04：本文件此前**整文件没有任何 timeout 声明**，是 *.silentcatch.test.ts 一族里
-// 唯一漏掉 { timeout: 20_000 } 的成员（对照 absentVsFailed / turnsResummarizeStale /
-// wizardStatusUnknownVsNotActivated 等兄弟文件）。后果不是断言红，而是：
-// `Error: Test timed out in 5000ms` —— 全量 187 文件并发时 jsdom 冷启动 +
-// transform 把首个 mount 用例推过 vitest 的 5s 默认值；单跑本文件 7/7 全过（4.22s）。
+// 唯一漏掉 `{ timeout: 20_000 }` 的成员（对照 absentVsFailed / turnsResummarizeStale /
+// wizardStatusUnknownVsNotActivated 等兄弟文件），现补上。
 //
-// 按第五轮 §30.3 的处方：**只放宽 timeout，判据本身不放宽** —— 三态断言一个字没改。
+// 观察到过的翻车形态是 `Error: Test timed out in 5000ms`，不是断言红；
+// 隔离跑本文件 7/7 全过、7.37s（2026-10-04T05:14Z 实测）。
+//
+// **但「缺 5s 声明」这个归因并没有被证实**，如实记下来免得后人当成已定论：
+// 补声明之后，全量跑翻车的是 `requestFilterOptions.silentcatch.test.ts` ——
+// 它不在本次改动里，且**在 HEAD 原始版本就已经有两处 `{ timeout: 20_000 }`**，
+// 照样 `Test timed out in 20000ms`（实耗 20176ms）。⇒ 病根不是「哪个文件漏了声明」，
+// 而是全量并发把 mount 实耗放大 >2.5×。所以真正收口的是 `vite.config.ts` 里的全局
+// `testTimeout: 20_000`（兜住其余 67 个无声明文件与未来新文件），本处声明只为对齐
+// 既有 32 处的风格。
+//
+// 按第五轮 §30.3 的处方：**只放宽 timeout，判据本身不放宽** —— 下面三态断言一个字没改。
 // filterMeta.silentcatch.test.ts —— 筛选元数据加载失败必须自报家门
 //
 // ## 挡住的是什么
