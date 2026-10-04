@@ -68,6 +68,24 @@ func newPGStoreWithQuerier(q pgxQuerier) *pgStore { //nolint:unused
 
 // --- Upsert ---
 
+// assetHeartbeatRefreshInterval 是 last_seen_at 的最小刷新间隔。
+//
+// 为什么需要它（2026-10-04 实测，runbook §10.2）：
+//
+//	upsertAssetSQL 的 ON CONFLICT 分支带 `last_seen_at = now()`，而 PostgreSQL
+//	的 DO UPDATE **不比较新旧值**，无条件写新行版本。实测生产上 3 个实例、
+//	每 60 秒把全部 2141 个资产全量同步一遍 ⇒ 每天 924.9 万次行重写 × 187 B
+//	≈ 1.73 GB/天，而这张表总共只有 2141 行、66 MB（其中 98.39% 已是空洞）。
+//
+//	而 last_seen_at 的唯一用途是 listStaleSQL 的「超过 6 小时未见」
+//	（staleThreshold 默认 6h）⇒ **60 秒的心跳精度对 6 小时的判据过剩 360 倍**。
+//
+//	5 分钟的刷新窗口把这 360 倍压到 72 倍，stale 判定的最大误差 5 分钟
+//	（相对 6 小时阈值 1.4%），写量降 12 倍。
+//	★ 选 5 分钟而不是更长的理由：这是个**判定精度**而不是纯性能旋钮，
+//	  在没有实测「stale 误判的代价」之前，不该把窗口开得比必要的大。
+const assetHeartbeatRefreshInterval = 5 * time.Minute
+
 const upsertAssetSQL = `
 INSERT INTO public.assets (
     kind, ref_id, tenant_id, name, owner, team, cost_center,
@@ -87,7 +105,29 @@ ON CONFLICT (kind, ref_id) DO UPDATE SET
     version      = EXCLUDED.version,
     last_seen_at = now(),
     metadata     = EXCLUDED.metadata
+WHERE public.assets.last_seen_at < now() - ($12 * interval '1 second')
+   OR (public.assets.tenant_id,    public.assets.name,        public.assets.owner,
+       public.assets.team,         public.assets.cost_center, public.assets.tags,
+       public.assets.health_state, public.assets.version,     public.assets.metadata)
+      IS DISTINCT FROM
+       (EXCLUDED.tenant_id,       EXCLUDED.name,        EXCLUDED.owner,
+        EXCLUDED.team,            EXCLUDED.cost_center, EXCLUDED.tags,
+        EXCLUDED.health_state,    EXCLUDED.version,     EXCLUDED.metadata)
 `
+
+// ★ 这个 WHERE 条件有两半，缺一不可，且方向相反：
+//
+//	① 业务字段真的变了 ⇒ 必须立刻落库（否则改动要等到心跳窗口才可见）
+//	② 心跳已超过刷新窗口 ⇒ 需要刷新（否则 last_seen_at 永远停在旧值，
+//	   stale 判定会在 6h + 5min 处误判为「消失」）
+//
+//	两半都假时**不重写**——这正是省掉那 924.9 万次/天中绝大部分的关键。
+//
+//	用 IS DISTINCT FROM 而不是 `<>`：owner/team/cost_center 都可能为 NULL，
+//	而 `NULL <> 'x'` 求值为 NULL（不是 true）⇒ 会让本该落库的变更被吞掉。
+//
+//	不命中时 PostgreSQL **不报错**，只是不更新；Upsert 用的是 tx.Exec
+//	（不看 RETURNING），所以 Go 侧不需要任何改动。
 
 // Upsert writes an asset row, replacing any existing row with the same
 // (kind, ref_id) composite key. RLS is enforced via SET LOCAL.
@@ -131,6 +171,7 @@ func (s *pgStore) Upsert(ctx context.Context, a Asset) error {
 			string(health),         // 9
 			version,                // 10
 			string(metadataJSON),   // 11 — text protocol
+			assetHeartbeatRefreshInterval.Seconds(), // 12
 		)
 		return err
 	})
