@@ -109,8 +109,19 @@ func (p *AssetHealthProbe) probeOneTenant(ctx context.Context, tenant string) (d
 	if err != nil {
 		slog.Warn("asset health: list stale failed", "tenant", tenant, "error", err)
 	}
+	// 2026-10-05（runbook §10.26）：下面这个 `continue` 原本只挡 HealthDown，
+	// 于是**已经是 Degraded 的资产每轮都被重新标一次 Degraded**。实测每轮
+	// 439 次全部是写同一个值 —— 纯空写，却照样产生 n_tup_upd 与堆脏页。
+	// 门控放在 Go 侧而不是 markHealthSQL 的 `IS DISTINCT FROM` 守卫：
+	// markHealthSQL 带 `RETURNING 1` 且调用方用 QueryRow().Scan()，
+	// 加守卫后 ErrNoRows 会同时表示「行不存在」和「值本来就对」，
+	// 而 Store.MarkHealth 把 ErrNoRows 一律映射成 ErrNotFound
+	// —— 那会改掉 MarkHealth 的对外语义。调用方手里已有当前值
+	// （listStaleSQL 选了 health_state），在这里判等号零成本。
 	for _, a := range stale {
-		if a.HealthState == apihub.HealthDown {
+		// 已经是目标态（Degraded）或终态（Down）就不再写。
+		// 两者都保持原语义：Down 的资产不会被降级回 Degraded。
+		if a.HealthState == apihub.HealthDegraded || a.HealthState == apihub.HealthDown {
 			continue
 		}
 		if e := p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDegraded); e != nil {
@@ -147,6 +158,13 @@ func (p *AssetHealthProbe) probeOneTenant(ctx context.Context, tenant string) (d
 		for _, a := range batch {
 			key := string(a.Kind) + "|" + a.TenantID + "|" + itoa64(a.RefID)
 			if !liveLookup[key] {
+				// 2026-10-05（runbook §10.26）：实测每轮 396 次调用全部是
+				// 把**已经是 Down** 的行再写一遍 Down。与上面 Step 1 同源。
+				// 门控理由与取舍见 Step 1 的注释（不能放 SQL 侧，
+				// 否则 ErrNoRows 的含义会从「行不存在」变成二义）。
+				if a.HealthState == apihub.HealthDown {
+					continue
+				}
 				if e := p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDown); e != nil {
 					continue
 				}
