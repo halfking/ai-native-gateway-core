@@ -270,9 +270,17 @@ export function layoutAudit() {
     }
     return false
   }
+  // ⚠️ 必须**向上看祖先**：实测底栏里 `nav.bottomnav > a.bottomnav__item` 自身是
+  // position:static，fixed 挂在父级 nav.bottomnav 上。
+  // 只看元素自身 ⇒ 这类（最常见的）固定栏永远判不出来，假阳性就一直报。
   const isFixedBar = (el) => {
-    const s = getComputedStyle(el)
-    return s.position === 'fixed' || s.position === 'sticky'
+    let n = el, d = 0
+    while (n && n.nodeType === 1 && d < 6) {
+      const s = getComputedStyle(n)
+      if (s.position === 'fixed' || s.position === 'sticky') return true
+      n = n.parentElement; d++
+    }
+    return false
   }
   const taps = Array.from(document.querySelectorAll('button,a,[role="button"]'))
     .filter(vis)
