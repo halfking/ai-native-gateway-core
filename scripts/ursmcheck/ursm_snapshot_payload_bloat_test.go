@@ -51,7 +51,7 @@ func runBloat(t *testing.T, stub string, env ...string) (int, string, string) {
 
 func TestBloatScriptHealthyExitsZero(t *testing.T) {
 	// n=1000, age=120s, avg=24, p95=25
-	code, out, _ := runBloat(t, `echo "1000|120|24|25"`)
+	code, out, _ := runBloat(t, `echo "1000|120|24|25|10.26"`)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (healthy)\n%s", code, out)
 	}
@@ -63,7 +63,7 @@ func TestBloatScriptHealthyExitsZero(t *testing.T) {
 func TestBloatScriptZeroRowsIsNoConclusionNotHealthy(t *testing.T) {
 	// ★ 这条是本文件的核心：样本 0 行必须 exit 3，绝不能 exit 0。
 	// 「查不到」≠「没问题」——记成跳过并报成功是反复出现的事故形态。
-	code, out, errOut := runBloat(t, `echo "0||0|0"`)
+	code, out, errOut := runBloat(t, `echo "0||0|0|0"`)
 	if code != 3 {
 		t.Fatalf("exit = %d, want 3 (no conclusion), got:\n%s", code, out)
 	}
@@ -74,7 +74,7 @@ func TestBloatScriptZeroRowsIsNoConclusionNotHealthy(t *testing.T) {
 
 func TestBloatScriptStaleSampleIsNoConclusion(t *testing.T) {
 	// 快照写入停了 → 最新行越来越旧 → 此时报告的是历史值，不能当现状。
-	code, out, _ := runBloat(t, `echo "1000|999999|24|25"`)
+	code, out, _ := runBloat(t, `echo "1000|999999|24|25|10.26"`)
 	if code != 3 {
 		t.Fatalf("exit = %d, want 3 (stale sample), got:\n%s", code, out)
 	}
@@ -82,20 +82,23 @@ func TestBloatScriptStaleSampleIsNoConclusion(t *testing.T) {
 
 func TestBloatScriptThinSampleIsNoConclusion(t *testing.T) {
 	// 只取到 3/1000 行：样本不具代表性。
-	code, out, _ := runBloat(t, `echo "3|120|24|25"`)
+	code, out, _ := runBloat(t, `echo "3|120|24|25|10.26"`)
 	if code != 3 {
 		t.Fatalf("exit = %d, want 3 (thin sample), got:\n%s", code, out)
 	}
 }
 
 func TestBloatScriptBloatExitsOne(t *testing.T) {
-	// p95 超过阈值 ⇒ exit 1，且必须给出键级诊断。
+	// ★ 判定量是「超阈行占比」，不是 p95（脚本 SQL 注释里有实测依据）。
+	//   81.7% 是 818 那次真实回归的形态，务必能抓住；
+	//   p95 刻意给成 213（= 第二个峰）但占比不高 ⇒ **不该**报膨胀。
+	//   这条断言同时钉住「判定量换对了」：只把 p95 调小的话它会误报。
 	code, out, _ := runBloat(t, `
 if [ "${2#*LIMIT}" = "" ]; then :; fi
 case "$1" in
-  *percentile_cont*) echo "1000|120|180|205" ;;
+  *percentile_cont*) echo "1000|120|180|213|81.7" ;;
   *jsonb_each*)      echo "updated_at_ms | 800 | 15 | 9.8 kB" ;;
-  *)                echo "1000|120|180|205" ;;
+  *)                echo "1000|120|180|213|81.7" ;;
 esac`)
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1 (bloat detected), got:\n%s", code, out)
@@ -107,7 +110,10 @@ esac`)
 
 func TestBloatScriptWrongFieldCountAborts(t *testing.T) {
 	// 字段数不对必须 abort：下游解析会把缺失字段当 0，于是「全部报 0 ⇒ 报 OK」。
-	code, out, _ := runBloat(t, `echo "1000|120|24"`)
+	// ★ 2026-10-05 这条一度被我自己改坏：批量替换夹具时把它从「4 列（少一列）」
+	//   一起改成了正确的 5 列，于是它测的不再是「字段数不对」而是「一切正常」
+	//   —— 门还在，但它测的东西没了。改夹具必须逐条对着意图改，不能批量刷。
+	code, out, _ := runBloat(t, `echo "1000|120|24|25"`)
 	if code != 3 {
 		t.Fatalf("exit = %d, want 3 (field count mismatch), got:\n%s", code, out)
 	}
@@ -136,7 +142,7 @@ func TestBloatScriptVerdictDoesNotDependOnKeyNames(t *testing.T) {
 		t.Fatalf("read script: %v", err)
 	}
 	s := string(src)
-	verdictStart := strings.Index(s, "if [ \"$p95_b\" -le \"$BLOAT_BYTES\" ]")
+	verdictStart := strings.Index(s, "if awk -v a=\"$pct_over\" -v b=\"$BLOAT_PCT\"")
 	if verdictStart < 0 {
 		t.Fatal("verdict block not found — the script changed shape; re-check this gate")
 	}
