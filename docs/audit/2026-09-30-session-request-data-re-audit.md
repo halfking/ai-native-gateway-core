@@ -25135,3 +25135,102 @@ if one.genuine > 0 && results["30d"].genuine > 0 {      // ONGOING
 ① **S4 未开**（7d `genuine_loss=10`，且 **24h 窗口仍有 4**，今天还在丢）；
 ② 5 个已登记 breaker（其中 `telemetry/client.go` 是**当前活跃**的 v1 写方）。
 ⇒ 在 ① 变绿之前讨论 ② 的切换时点（D29-d）没有意义。
+
+## §9.212 那 10 次「真实丢行」的构成：9 次是**带会话头的探针**，且是 2026-10-02 起的新现象
+
+§9.211 给出 `s4_ready=false`（7d `genuine_loss=10`）。本节去查这 10 行到底是什么。
+
+### §9.212.1 用**生产分类器原样**分类（不自己近似）
+
+⚠ 我第一次用**手写预筛**跑，得到「30 天里 11,693 行终态失败」，与门报的 10 差 1000 倍。
+因为分类器先排掉 `internal_loopback`（探针回环），而我的预筛没有。
+⇒ 这正是 §9.211.5 自己写下的教训，隔一轮就又踩了一次预筛。
+**改用 `db.MirrorDriftClassSQL` 的三条分支逐字复刻**，得 30d `genuine_loss` = **10 行**：
+
+| origin_actor | request_status | error_kind | 行数 | 首见 → 末见 |
+|---|---|---|---|---|
+| `probe-service` | failure | `no_candidate` | 7 | 10-02 → 10-04 |
+| `probe-service` | failure | `routing_schema_error` | 1 | 10-04 |
+| `probe-service` | failure | `no_candidates` | 1 | 10-03 |
+| (null) | failure | `session_unavailable` | 1 | 10-03 |
+
+⇒ **9/10 是 `probe-service`**，全部 `is_auto_request` 为 NULL、`work_type` 为 NULL、
+**全部始于 2026-10-02**（此前 30 天一天都没有）。
+
+### §9.212.2 ⚠⚠ 我先提了一个假设，**它被真实谓词推翻了**
+
+`hook.go:91` 有一条早就在的探针门，注释写着「**无会话头**的探针产出不进 mirror
+……实测失败噪声 ~115/min（99.6% 为该类）」。
+而 `MirrorDriftClassSQL` 的注释又警告：*「hook 故意跳过但这个表达式判成
+genuine_loss 的行，会让 s4_ready 永远为假、挡住本来安全的切换」*。
+
+⇒ 我据此形成的假设是：**SQL 与 Go 门不同步，缺第三条臂**。
+
+⚠ **错的。** `IsProbeSyntheticSession` 的第一行就是：
+
+```go
+if entry.GwSessionID != nil && *entry.GwSessionID != "" {
+    return false          // 有会话头 ⇒ 不跳过
+}
+return syntheticKindOf(entry) == "probe"
+```
+
+**有会话头的行不会被跳过。** 而这 9 行全部带 `gw_session_id`
+（漂移口径本身就要求 `gw_session_id IS NOT NULL AND <> ''`）
+⇒ **hook 本该镜像它们 ⇒ 它们是真丢行，不是分类器漏了一条臂。**
+
+★★ 注释与代码方向相反：注释说「**无**会话头的探针被排除」，
+真实谓词是「**有**会话头就 return false（不排除）」。
+**只读注释就动手，会做出一个把真实丢行藏起来的「修复」。**
+
+### §9.212.3 异常的具体形状：探针轮次**获得了真实会话 id**
+
+实测对照：
+
+| | 会话 id 形态 | 落点 |
+|---|---|---|
+| 正常探针流量（`probe-direct-*`，753,425 行） | **无** `gw_session_id` | 合成 `sys:probe*` 会话，**有 turn** |
+| 这 9 行 | **有** `gw_<uuid>` 形态 | 该 session_id 下 **0 turn** |
+
+⇒ 异常不在「探针要不要镜像」，而在「**这批探针轮次为什么会带会话头**」。
+`hook.go` 走非合成分支后会用 `sessionID = *entry.GwSessionID` 落 turn，
+而实测那里**一个 turn 都没有**。
+
+### §9.212.4 排除「部分写」：连 details 层都是空的
+
+| 检查 | 结果 |
+|---|---|
+| `session_turns` / `session_turns_hot` 按 `request_id` | 0 |
+| 同上按 `gw_session_id` | 0 |
+| `session_turn_details` / `session_turn_details_hot` 按 `request_id` | 0 |
+
+⇒ **不是写了一半**，是**什么都没写**。
+
+### §9.212.5 我**没有**改分类器，理由
+
+给 `MirrorDriftClassSQL` 加一条探针排除臂可以让 `s4_ready` 转绿 ——
+⚠ 但那正是「放宽到刚好不红」，而且按 §9.212.2，**这些行本来就该被镜像**，
+排除它们等于**把真实丢行藏起来**。
+
+⚠ 顺带记一条既有事实：30 天里 `auto-title-generator` / `auto-summary-generator`
+的 11,000+ 行**全部**落进 `internal_loopback`（`is_auto_request=TRUE` +
+`request_type ∈ {title_gen, summary}` + `task_type` 空）⇒ **回环臂工作正常**。
+不正常的只有「带会话头的探针」这一类。
+
+### §9.212.6 我**查不到**的部分（不猜）
+
+无法判断是 **hook 根本没被调用**，还是 **调用了但写失败**：
+本机**没有网关进程**在跑（写入来自别处），我没有这些请求的日志。
+⇒ **不据此下结论。** 需要属主提供 gateway 日志或确认写入来源。
+
+### §9.212.7 给属主的现状（修正 §9.211.6 的一半措辞）
+
+§9.211.6 写「24h 窗口仍有 4，今天还在丢」。**测量本身准确**，
+但「丢」这个字容易被读成「丢的是业务轮次」。**现在可以精确说**：
+
+- 卡住 S4 的 10 行里，**9 行是 2026-10-02 起新出现的「带会话头的探针」**，
+  全部在选型阶段失败（`no_candidate` / `routing_schema_error`），**没有任何 turn 或 details**；
+- 另 1 行是 `(null)` / `session_unavailable`（10-03）；
+- **不是**回环误分类（回环臂工作正常），**不是**业务轮次丢失的证据 ——
+  但**也不能**说它们「不算丢失」：按 hook 的谓词，它们**本该**被镜像。
+⇒ 要让 S4 转绿，需要回答的是**这 9 行为什么没被镜像**，而不是调整分类器。
