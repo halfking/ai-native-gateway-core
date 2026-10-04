@@ -24504,3 +24504,85 @@ FROM request_logs_hot
 结构断言指向主表真实存在的列 ⇒ 精确报红；
 preview 期望值改错 ⇒ 精确报红。测试自清理经核对（三张表 0 残留），
 无 DSN 时正常 Skip 而非红。
+
+---
+
+## §9.206 D29-d：那 10 个读方从「一句日志」变成**登记表 + 双向一致性门**
+
+### §9.206.1 之前的状态：这不是守卫
+
+D29-a（§9.199）把读方分成两个总体：直读 v1 底表的（= breaker，DROP 之前必须改）
+与经 canonical 视图读 v1 臂的（= **切换时的迁移问题**）。后一组当时只有门里一句
+`t.Logf`。
+
+**`t.Logf` 不是守卫。** 新增一个经视图读 v1 臂的读方，不会让任何东西变红，
+而「没人提」和「没问题」长得一模一样。这与 §9.204 修掉的
+`is_final_success` 空列是**同一族洞**：事实存在，但没人消费。
+
+### §9.206.2 语义必须跟着变，否则登记就是假的
+
+两组的**处置时点不同**：
+
+| | 触发时机 | 失败形态 |
+|---|---|---|
+| 直读底表 | `DROP request_logs` **之前** | 报错（表没了） |
+| 经视图读 v1 臂 | `DROP request_logs` **那一刻** | **静默返回空结果**（接口 200、错误日志无痕） |
+
+静默降级比缺表更危险：缺表至少会喊。
+所以登记条目的措辞纪律是：**不能写 `reads request_logs.X directly`** ——
+它们不直读底表。**不实陈述比缺一条登记更糟**，因为它会误导下一个复核的人。
+
+### §9.206.3 实测清单（`work_type` 是主要风险面）
+
+10 个实测依赖中，**7 个点名 `work_type`**；而 `work_type` 在 session 臂上
+**实测 0.00%**（2% 采样，2,440 万级行）⇒ 切换后按它过滤的页面直接返回空集。
+
+| 文件 | verdict | 关键列 |
+|---|---|---|
+| `admin/auto_route.go` | repoint-empty | work_type + 13 列 |
+| `admin/memora_handlers.go` | repoint-empty | work_type + preview 列（session 臂约 39%） |
+| `admin/no_topic_session.go` | repoint-empty | work_type + preview 列 |
+| `admin/session_timeline_query.go` | repoint-empty | work_type + preview 列 |
+| `admin/session_extract.go` | repoint-empty | 依赖面最窄（6 列）但含 work_type |
+| `domains/sessionforensics/export.go` | repoint-empty | **混合读方**，两桶都收 |
+| `admin/credential_monitor.go` | repoint-gap-only | error_kind |
+| `domains/sessionsummary/summarizer.go` | repoint-gap-only | ⚠ 后果最隐蔽：摘要输入变空**不失败**，会生成「看起来正常」的错摘要 |
+
+### §9.206.4 ⚠⚠ 我第一版写了一条**假不变式**，被真数据当场否掉
+
+第一版的门断言「两个登记表**必须不相交**」。真库实测立刻报红：
+`db/db.go` 与 `domains/hooks/observability/telemetry/client.go` 同时在两个表里。
+
+**这次是我错了，不是数据错了。** 这两个文件本来就该留在 `retirementBreakers`
+（前者是 **canonical 投影的定义者**、退役 = 换掉整段投影体；后者是 **v1 writer**、
+退役 = 停止写入），它们出现在 view-arm 扫描里仅仅因为**提到了那些关系名**。
+⇒ 那条「不变式」把**角色不同**当成了**登记重复**。**判据红了先怀疑判据。**
+
+真正的不变式有两条，方向相反：
+
+1. `viewArmCutoverReaders ∩ retirementBreakers = ∅`
+   —— 声称「自己是切换清单里的读方」与「自己是 blocker」不能同时成立。
+2. `viewArm ⊆ viewArmCutoverReaders ∪ retirementBreakers`
+   —— 每个实测依赖**必须被解释**；落在并集之外的那个才是真正的洞。
+   被 breaker 解释的那些**打出来但不失败**（可见 ≠ 洞）。
+
+### §9.206.5 顺带把「测量只能有一份」变成结构约束
+
+两个总体各有自己的登记表门，而测量逻辑原本内联在 `TestRequestLogsRetirementBreakersRegistryIsConsistent`
+里。若新门再写一份，**两处各算一次 = 迟早不一致，而不一致的那天没人知道该信谁**。
+⇒ 抽出 `measureV1ReadingExposure(t, root)`，两个门共用。重构**行为等价**
+（原两个测试仍 PASS，变异验证过）。
+
+### §9.206.6 门状态与变异验证
+
+`TestViewArmCutoverReadersRegistryIsConsistent` 全绿，且**三个方向都经变异验证有牙**：
+
+| 变异 | 结果 |
+|---|---|
+| 从登记表删掉一个条目 | 红：「1 个文件…不在 viewArmCutoverReaders 里」 |
+| 登记一个不存在的文件 | 红：「不要再自动销账…先修提取器」 |
+| 把一个 breaker 也放进切换清单 | 红：「同时登记在…处置时点不同，择一」 |
+
+⚠ stale 分支**故意不自动销账**：实测不到可能是「它被修好了」，
+也可能是「依赖被重构成另一种形状、提取器看不见了」——
+后者意味着这道门正在对真实依赖**失明**，而「门还绿着」会被读成「没问题」。
