@@ -244,6 +244,108 @@ func TestS4GateMeasurement(t *testing.T) {
 			outboxIns, outboxDel, outboxLive)
 	}
 
+	// ---- what SHAPE are the blockers? (and therefore: upstream or downstream?) --
+	//
+	// ⚠️ §9.215. The gate reported a **count** and nothing else, and a count with
+	// no shape cannot say where the loss happened. Five audit rounds were spent
+	// chasing the wrong mechanism because of that: §9.213/§9.214 concluded that
+	// the blockers were rows whose *v1 write failed*, so the mirror hook was
+	// never called. That conclusion was built on a row that is, by this
+	// classifier's own definition, **not a blocker at all** (it is
+	// `non_terminal`), so it was never evidence about `genuine_loss`.
+	//
+	// The shape answers the upstream/downstream question **from the database**,
+	// with no logs:
+	//
+	//	sessionv2mirror.PersistHook's first gate is
+	//	    if !entry.Success && !isTerminalFailure(entry) { return }
+	//	and isTerminalFailure returns false whenever entry.Success is true.
+	//	So the gate is passed by every entry that is either successful or a
+	//	terminal failure — and `genuine_loss`, being the ELSE arm of
+	//	MirrorDriftClassSQL, is *by construction* exactly
+	//	    success OR (request_status IN (failure, rate_limited) OR error_kind <> '')
+	//	⇒ **every genuine_loss row reached the mirror hook.** A blocker can only
+	//	come from the hook itself failing, from a gate after the first one, or
+	//	from the recovery path failing to recover.
+	//
+	// That makes this an assertion, not just a report: if the profile ever shows
+	// a non-terminal, unsuccessful blocker, then MirrorDriftClassSQL and
+	// isTerminalFailure have drifted apart and the two SSOTs no longer describe
+	// the same population.
+	type blockerShape struct {
+		originActor, requestStatus, errorKind string
+		success                               bool
+		n                                     int64
+		newest                                time.Time
+	}
+	shapeRows, err := conn.Query(ctx, `
+		SELECT COALESCE(rl.origin_actor, '(null)'),
+		       COALESCE(rl.request_status, '(null)'),
+		       COALESCE(NULLIF(TRIM(rl.error_kind), ''), '(null)'),
+		       COALESCE(rl.success, false),
+		       count(*), max(rl.ts)
+		FROM (`+s4ScopeBody+`) rl
+		WHERE ($1 = '' OR rl.tenant_id = $1)
+		  AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+		  AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
+		  AND `+mirrorDriftClassSQL+` = 'genuine_loss'
+		GROUP BY 1, 2, 3, 4
+		ORDER BY count(*) DESC, 1`, "", time.Now().Add(-defDur))
+	if err != nil {
+		t.Fatalf("blocker shape: %v", err)
+	}
+	var shapes []blockerShape
+	for shapeRows.Next() {
+		var s blockerShape
+		if err := shapeRows.Scan(&s.originActor, &s.requestStatus, &s.errorKind, &s.success, &s.n, &s.newest); err != nil {
+			shapeRows.Close()
+			t.Fatalf("blocker shape scan: %v", err)
+		}
+		shapes = append(shapes, s)
+	}
+	if err := shapeRows.Err(); err != nil {
+		shapeRows.Close()
+		t.Fatalf("blocker shape iterate: %v", err)
+	}
+	shapeRows.Close()
+
+	var shapeTotal int64
+	for _, s := range shapes {
+		shapeTotal += s.n
+		// isTerminalFailure, restated. Non-terminal + unsuccessful is the one
+		// combination that would mean "the hook's first gate returned early".
+		if blockerSkippedByFirstGate(s.success, s.requestStatus, s.errorKind) {
+			t.Errorf("7d genuine_loss contains %d row(s) with success=false and no terminal marker "+
+				"(request_status=%q, error_kind=%q). By the hook's own first gate "+
+				"(if !entry.Success && !isTerminalFailure(entry) { return }) such a row never "+
+				"reached the mirror, so it would be a *different* defect from every other blocker "+
+				"here. Either db.MirrorDriftClassSQL or sessionv2mirror.isTerminalFailure changed "+
+				"and the two no longer describe the same population.",
+				s.n, s.requestStatus, s.errorKind)
+		}
+	}
+	if shapeTotal != def.genuine {
+		t.Errorf("7d genuine_loss is %d, but the shape profile sums to %d over %d group(s). The "+
+			"profile uses the same scope and the same production classifier as the count above, so "+
+			"they are measuring the same set — a mismatch means one of the two queries is scoped "+
+			"differently and at least one number above is about a different population.",
+			def.genuine, shapeTotal, len(shapes))
+	}
+	if len(shapes) == 0 {
+		t.Logf("7d blocker shape: none — no genuine_loss rows to profile")
+	} else {
+		t.Logf("7d blocker shape (%d group(s), %d rows, newest %s ago):",
+			len(shapes), shapeTotal, time.Since(shapes[0].newest).Truncate(time.Second))
+		for _, s := range shapes {
+			t.Logf("    %-4d origin_actor=%-20s success=%-5v request_status=%-13s error_kind=%s",
+				s.n, s.originActor, s.success, s.requestStatus, s.errorKind)
+		}
+		t.Logf("  ⇒ every row above is either successful or a terminal failure, so every one of " +
+			"them passed PersistHook's first gate: the mirror hook WAS reached. The loss is " +
+			"downstream of the hook (the turn write itself, a later gate, or a recovery path " +
+			"that failed to recover) — it is not 'v1 failed so the mirror never ran'.")
+	}
+
 	// ---- is the loss ongoing, recent, or confined to history? --------------
 	// A freshness observation, reported rather than asserted: "is it safe to open
 	// S4" is a release decision that belongs in the decision sheet, not a
@@ -274,6 +376,64 @@ func TestS4GateMeasurement(t *testing.T) {
 		t.Logf("historical: all %d genuine losses are older than 24h — decaying", month.genuine)
 	default:
 		t.Logf("clean: no genuine loss in any measured window")
+	}
+}
+
+// blockerSkippedByFirstGate restates, in SQL terms, the one question the shape
+// profile above needs answered: would sessionv2mirror.PersistHook have returned
+// at its **first** gate for a row with this terminal state?
+//
+//	hook.go:78    if !entry.Success && !isTerminalFailure(entry) { return }
+//	isTerminalFailure (hook.go:1093) returns false whenever entry.Success is true,
+//	so a successful row never trips the gate. Otherwise it is terminal when
+//	request_status is failure/rate_limited, or when error_kind is non-empty.
+//
+// ⚠️ The data assertion in TestS4GateMeasurement can only fire if the two SSOTs
+// drift apart; no row can be injected to trigger it, because
+// db.MirrorDriftClassSQL's ELSE arm *is* "success OR terminal", so a row failing
+// this predicate is classified `non_terminal` and never reaches the profile at
+// all. That makes the data assertion a drift tripwire with no reachable
+// negative control — so the predicate itself is unit-tested below, in both
+// directions, rather than left as an assertion nobody has ever seen fire.
+func blockerSkippedByFirstGate(success bool, requestStatus, errorKind string) bool {
+	if success {
+		return false // isTerminalFailure short-circuits on Success, so the gate passes
+	}
+	switch requestStatus {
+	case "failure", "rate_limited":
+		return false
+	}
+	return errorKind == "" || errorKind == "(null)"
+}
+
+// TestBlockerSkippedByFirstGate_PositiveAndNegative is the control pair for the
+// shape assertion above: one input that MUST be flagged and one that must not.
+// A predicate with only the "clean" direction has never been shown to have
+// teeth; a predicate with only the "flagged" direction would fire on everything.
+func TestBlockerSkippedByFirstGate_PositiveAndNegative(t *testing.T) {
+	cases := []struct {
+		name          string
+		success       bool
+		requestStatus string
+		errorKind     string
+		wantSkipped   bool
+	}{
+		// Negative controls — the hook WAS reached, so this is not a
+		// "hook never ran" blocker.
+		{"terminal failure", false, "failure", "no_candidate", false},
+		{"terminal rate_limited", false, "rate_limited", "", false},
+		{"error_kind alone is terminal", false, "in_progress", "conn closed", false},
+		{"success short-circuits the gate", true, "in_progress", "", false},
+		// Positive control — the exact shape of 59bf8998 (hook.go:78 returns
+		// here, so this row never reached the mirror).
+		{"unsuccessful and non-terminal", false, "in_progress", "", true},
+	}
+	for _, tc := range cases {
+		got := blockerSkippedByFirstGate(tc.success, tc.requestStatus, tc.errorKind)
+		if got != tc.wantSkipped {
+			t.Errorf("%s: blockerSkippedByFirstGate(success=%v, request_status=%q, error_kind=%q) = %v, want %v",
+				tc.name, tc.success, tc.requestStatus, tc.errorKind, got, tc.wantSkipped)
+		}
 	}
 }
 
