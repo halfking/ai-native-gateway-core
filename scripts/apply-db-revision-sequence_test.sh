@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+printf 'apply-db-revision-sequence contract passed\n'
+
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -83,6 +86,35 @@ for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 656 659 660 
   }
 done
 
+# 691/692: R16-documented installer-only window ("687-692 intentional sequence
+# gaps"). 747/748/759: same installer-only class — existing databases received
+# them out-of-band / via their own runtime ensure; kept exact so the next
+# member of the class is a decision, not a recurrence.
+#
+# 830 (R44): **manual-by-design**, and NOT the same class as 747/748/759.
+# Those three were received out-of-band; 830 is a migration that *cannot* be
+# automated at all — its RENAME + CREATE PARENT TABLE half renames a live
+# 10GB+ table instead of copying rows, so an unattended upgrade must not run it.
+# db.ensureURSMNodeSnapshotMinDailyPartition mirrors only the post-migration
+# half and probes (to_regprocedure) rather than erroring, keeping the two steps
+# order-independent. The no-registration decision is pinned by
+# bg/partition_825_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence.
+# ⚠ This is the **channel-side copy** of the same decision; the Go-side copy is
+printf 'apply-db-revision-sequence contract passed\n'
+#!/usr/bin/env bash
+printf 'apply-db-revision-sequence contract passed\n'
+#   manualByDesign in installer/cmd/llm-gw-installer/stats_migrations_test.go.
+#   Editing one without the other leaves the other gate red — "已豁免" must hold
+#   on both sides at once (single-side green is not green).
+channel_gap_allowlist=$(cat <<'EOF'
+691_proxy_region_policy.sql
+692_session_summaries_user_intent_widen.sql
+747_session_mirror_outbox_source_claim.sql
+748_selfcheck_system_key_tier.sql
+759_report_snapshots_grain_dims.sql
+830_ursm_node_snapshot_min_partitioned.sql
+EOF
+)
 # Directory-driven channel invariant (2026-09-14 audit F-P2-1): the highest-
 # numbered startup migration file MUST be present in the channel files=(
 # ...) array. The trailing-sequence guard in migration_700_test.go is a
@@ -90,8 +122,27 @@ done
 # land 704_NNN.sql with full installer sync but never register the channel
 # entry — the exact 693/699/701/703 recurrence shape — and every gate stays
 # green while upgraded databases never reach 704.
+#
+# ★ R44 修正：这条判据**默认「最高编号必然走通道」**，而 channel_gap_allowlist
+#   里的迁移是**按设计就不该进通道**的（installer-only / manual-by-design）。
+#   于是 830 一落地，「最高编号」变成 830，而 830 有意不在 sequence 里
+#   ⇒ 本门**永久红**，且红得毫无信息量（它想说的是「有个新迁移忘了登记」，
+#   实际发生的是「有个新迁移被正确地登记为不登记」）。
+#   这与本仓 224 号那次的教训同型：**判据把「不被检查的对象」也算进去**。
+#
+#   修法：算 top 时**排除 channel_gap_allowlist 成员**——「最高编号」应当是
+#   **本该被登记的那批里的最高编号**。豁免名单因此从"给穷举检查用"升格为
+#   "参与定义检查范围"，它已在上面（为了单一事实源）前移到本检查之前。
+#   判别力不变：对任何**未**豁免的新迁移，本门照样会在它成为最高编号时报红。
 top_startup=$(ls "$ROOT_DIR"/sql/migrations/startup/*.sql 2>/dev/null \
   | grep -v '\.down\.sql$' \
+  | while IFS= read -r f; do
+      b=$(basename "$f")
+      if printf '%s\n' "$channel_gap_allowlist" | grep -Fxq "$b"; then
+        continue   # 按设计不进通道，不参与「最高编号」评选
+      fi
+      printf '%s\n' "$f"
+    done \
   | sed -E 's#.*/([0-9]{3})_.*#\1#' | sort -n | tail -1)
 if [[ -n "$top_startup" ]]; then
   grep -q "${top_startup}_" <<<"$sequence" || {
@@ -210,18 +261,6 @@ canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_fil
 # installer-only migration now demands a deliberate, commented edit here —
 # the sixth recurrence of the class fails pre-commit even when it is no
 # longer the top of the track.
-channel_gap_allowlist=$(cat <<'EOF'
-691_proxy_region_policy.sql
-692_session_summaries_user_intent_widen.sql
-747_session_mirror_outbox_source_claim.sql
-748_selfcheck_system_key_tier.sql
-759_report_snapshots_grain_dims.sql
-EOF
-)
-# 691/692: R16-documented installer-only window ("687-692 intentional sequence
-# gaps"). 747/748/759: same installer-only class — existing databases received
-# them out-of-band / via their own runtime ensure; kept exact so the next
-# member of the class is a decision, not a recurrence.
 while IFS= read -r name; do
   [[ "$name" == *.down.sql ]] && continue
   [[ "$name" =~ ^[0-9]{3}_.*\.sql$ ]] || continue

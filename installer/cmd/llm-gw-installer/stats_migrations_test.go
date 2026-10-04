@@ -388,6 +388,26 @@ var supersededLedgerOnly = map[string]string{
 	"819_request_abandoned.sql": "superseded by 821_session_turns_abandoned_marker (856628bac) before any deploy; files restored byte-for-byte in 251fc9a7a only to keep verify-migration-checksums green; no Go writer remains, so registering it would create an orphan table on every fresh install",
 }
 
+// manualByDesign 覆盖「**迁移的前半段必须人工执行，故整条都不进安装链**」这一类。
+//
+// 判据（加新条目前请照此核，三条缺一不可）：
+//  1. 迁移含**不可无人值守**的 DDL（RENAME 活表 / CREATE PARENT TABLE 换骨架），
+//     自动执行会造成停机或丢数据；
+//  2. Go 侧只镜像了**迁移的后半段**（幂等的 ensure 函数），且该镜像**显式容忍**
+//     前半段尚未执行（探针而非报错）——否则先发二进制会把网关带进 no-DB 模式；
+//  3. 「不注册」这个决定本身**被另一道门钉住**，不是没人想过就漏了。
+//
+// 830 是第一个成员：它把 ursm_node_snapshot_min 从普通表换成按日 RANGE 分区表，
+// 走的是「改名 + 新建空父表」而不是「搬数据」。注册进 StartupFiles ⇒ 无人值守
+// 升级会在安装时 RENAME 一张活表。
+//
+// ⚠ 与 shell 侧是**同一个决定的两个副本**（同 goEnsureMirrored 的告诫）：
+// `scripts/apply-db-revision-sequence_test.sh` 的 `channel_gap_allowlist` 是通道侧
+// 的登记判据，改一处必须同步另一处——单边绿不算绿。
+var manualByDesign = map[string]string{
+	"830_ursm_node_snapshot_min_partitioned.sql": "manual by design: the RENAME + CREATE PARENT TABLE half cannot run unattended (it renames a live 10GB+ table instead of copying rows), so registering it in StartupFiles would RENAME a live table during an unattended upgrade; db.ensureURSMNodeSnapshotMinDailyPartition mirrors only the post-migration half and *probes* (to_regprocedure) instead of erroring so the two steps stay order-independent — bg/partition_825_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence pins the no-registration decision; the same decision is registered in scripts/apply-db-revision-sequence_test.sh channel_gap_allowlist — both sides must list it",
+}
+
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
 // audit) closes the drift direction no test covered: a canonical migration
 // that never reached the installer (704/705/709/710 drifted out — R30
@@ -446,6 +466,10 @@ func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
 		}
 		if reason, exempt := supersededLedgerOnly[name]; exempt {
 			t.Logf("canonical startup migration %q intentionally superseded-ledger-only: %s", name, reason)
+			continue
+		}
+		if reason, exempt := manualByDesign[name]; exempt {
+			t.Logf("canonical startup migration %q intentionally manual-by-design: %s", name, reason)
 			continue
 		}
 		if _, ok := registered[name]; !ok {
