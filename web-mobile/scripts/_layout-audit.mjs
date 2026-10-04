@@ -244,12 +244,36 @@ export function layoutAudit() {
   // ── ⑨ 近白屏 ───────────────────────────────────────────────
   I.stats.textChars = (document.body.innerText || '').trim().length
   I.stats.domNodes = document.querySelectorAll('*').length
-  if (I.stats.textChars < 40) {
+  // 「文字少」有两种完全不同的成因，只有一种是缺陷：
+  //   · 终态视图（空态 / 错误态）本来就只有一句话 —— /alerts 的「暂无数据 | 近期无告警」实测 35 字符；
+  //   · 骨架屏 / 挂起 —— 那才是白屏。
+  // ⇒ 存在 .state-view（且不在 loading 态）时**不报** near-blank。
+  const terminal = document.querySelector('.state-view:not([aria-busy="true"])')
+  I.stats.terminalState = terminal ? (terminal.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60) : null
+  if (I.stats.textChars < 40 && !terminal) {
     I.issues.push({ kind: 'near-blank', sev: 'high',
       detail: '整页可见文字仅 ' + I.stats.textChars + ' 字符 / ' + I.stats.domNodes + ' 个节点（疑似白屏或挂起）' })
   }
 
   // ── ⑩ 触控目标重叠（点 A 意外点到 B）────────────────────────
+  // 判「点不到」而不是「矩形相交」——这两件事在滚动容器上完全不同。
+  // 实测：/keys 滚到底时最后一张卡 bottom=746、底栏 top=799，可点元素在栏上方的有 0 个；
+  // 而滚到顶部时列表内容从半透明底栏下方经过，矩形相交 33–49%。
+  // ⇒ 「滚动内容 × 固定底栏」一律不算重叠：**能不能点到底**由下面的
+  //   covered-by-fixed（按 scrollHeight/clientHeight 判）单独回答，不在这里重复报。
+  const inScroller = (el) => {
+    let n = el.parentElement
+    while (n && n !== document.body) {
+      const s = getComputedStyle(n)
+      if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && n.scrollHeight > n.clientHeight + 4) return true
+      n = n.parentElement
+    }
+    return false
+  }
+  const isFixedBar = (el) => {
+    const s = getComputedStyle(el)
+    return s.position === 'fixed' || s.position === 'sticky'
+  }
   const taps = Array.from(document.querySelectorAll('button,a,[role="button"]'))
     .filter(vis)
     .map((el) => ({ el, r: el.getBoundingClientRect() }))
@@ -262,6 +286,8 @@ export function layoutAudit() {
       const ox = Math.min(A.r.right, B.r.right) - Math.max(A.r.left, B.r.left)
       const oy = Math.min(A.r.bottom, B.r.bottom) - Math.max(A.r.top, B.r.top)
       if (ox > 2 && oy > 2) {
+        // 滚动内容 × 固定栏 = 正常的「从下方经过」，不是遮挡（理由见上）
+        if ((isFixedBar(A.el) && inScroller(B.el)) || (isFixedBar(B.el) && inScroller(A.el))) continue
         const area = ox * oy
         const min = Math.min(A.r.width * A.r.height, B.r.width * B.r.height)
         if (area / min > 0.3) {

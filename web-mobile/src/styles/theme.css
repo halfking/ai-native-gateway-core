@@ -16,8 +16,11 @@
   /* 2026-10-04 实测改色：原 #8b9bb0 在白底只有 2.83:1、在 --app-bg 上 2.62:1，
      远低于 WCAG AA 正文 4.5:1（模拟器 + Chrome 双证，见
      web-mobile/reports/triage-v2/report.json 的 low-contrast 项）。
-     → #5f7089 = 白底 5.04:1 / app-bg 4.66:1，且仍是同一支蓝灰，色相不变。 */
-  --app-text-muted: #5f7089;
+     ⚠️ 门槛要按**这个令牌实际出现过的最差底色**定，不是按白色：
+       第一版取 #5f7089，在白底 5.04 达标，可 /keys 的密钥前缀 chip 落在
+       --app-surface-muted #eef2f8 上只有 4.49 —— 差 0.01 仍然判不合格（实测 122 处）。
+     → #5a6c83：白底 5.37 / app-bg 4.96 / surface-muted 4.78，三处全过且留了余量。 */
+  --app-text-muted: #5a6c83;
   --app-border: #dce3ee;
   --app-border-subtle: #e8edf4;
   /* 徽标是「文字压在 soft 填充上」，门槛按 AA 正文 4.5:1 算，不是按大字 3:1：
