@@ -69,14 +69,35 @@ rc=$?
 # 量具自身的三种失效，都要报「没有结论」而不是「健康」：
 #   · 扩展没装（pgstattuple_approx 不存在）
 #   · 连不上库
-#   · 一行都没读出来（权限 / schema 不存在 / 名字写错）
-if echo "$OUT" | grep -qiE 'pg_stat_statements|pgstattuple|does not exist|connection|refused|permission denied'; then
-  log "ABORT: 空洞巡检查询失败: ${OUT//$'\n'/ }"
+#   · 一行都没读出来（权限 / schema 不写对 / 名字写错）
+#
+# ⚠️ R44 修正：原实现只用「嗅输出」判失效，`rc` 抓了却从不使用，于是
+# 「查询成功且**结果为空**」与「查询失败」被压成同一个 exit 3。
+# 而 SQL 自带三道阈值过滤（大小/空闲量/空闲率），库里没有超阈表时输出
+# **本就应该为空** ⇒ 空洞治理完成之后，这个巡检每天 05:07 都会打
+# 「ABORT: 量具不可用」，把「一切正常」报成「量具坏了」。
+# 换句话说：这个脚本自己破坏了自己要区分的 0/3 语义。
+#
+# 判据改为**先看退出码、再看输出形状**：
+#   rc≠0 或输出里有 psql 报错特征 ⇒ 量具失效（exit 3）
+#   rc=0 且输出解析不出记录      ⇒ 分两种：全空 = 没有超阈表（exit 0）；
+#                                  有内容但一行都解析不出 = 格式漂移（exit 3）
+if [ "$rc" -ne 0 ] || printf '%s' "$OUT" | grep -qiE 'pg_stat_statements|pgstattuple|does not exist|connection|refused|permission denied'; then
+  log "ABORT: 空洞巡检查询失败(rc=$rc): ${OUT//$'\n'/ }"
   exit 3
 fi
 
 LINES=$(printf '%s' "$OUT" | grep -cE '^[^|]+\|[0-9]+\|[0-9]+\|[0-9.]+$' || true)
-[ "$LINES" -gt 0 ] || { log "ABORT: 一行结果都没解析出来（量具不可用）"; exit 3; }
+# 「成功但零行」= 没有表超过阈值 = 巡检通过，这是本脚本最常见的正常结局。
+# 只有「有输出却一行都解析不出」才是格式漂移（量具失效）。
+if [ "$LINES" -eq 0 ]; then
+  if [ -z "$(printf '%s' "$OUT" | tr -d '[:space:]')" ]; then
+    log "OK: 没有表空闲率 > ${BLOAT_PCT}%（阈值内，量具正常）"
+    exit 0
+  fi
+  log "ABORT: 查询成功但一行结果都解析不出来（量具不可用）: ${OUT//$'\n'/ }"
+  exit 3
+fi
 
 printf '总大小 | 空闲 | 空闲率 | 表\n'
 TOTAL=0
@@ -108,5 +129,7 @@ cat <<'NOTE'
     要精确数字再单独对目标表跑 pgstattuple（记得它会全表扫）。
 NOTE
 
-[ "$LINES" -eq 0 ] && exit 0
+# 走到这里必有 LINES>0（零行已在上面分流：全空→exit 0 / 不可解析→exit 3）。
+# 所以这里**只**表达「检出空洞」，不再需要兜底的 `-eq 0 && exit 0`
+# ——R44 删掉了它：它被上面的 exit 3 抢先，是一段永不可达的死代码。
 exit 1

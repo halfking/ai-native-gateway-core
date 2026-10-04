@@ -28,7 +28,7 @@ var exemptions = map[string]string{
 	// 本文件另一条循环（当时 6510、6601、现在 6625）从未登记。
 	// TestExemptionsStillResolve 会把对不上的键报成 stale；
 	// **改键前必须回原提交确认是「同一处漂移」而不是「另找一处顶上」。**
-	"cmd/gateway/main.go:4642":                                      "one-shot/main package wiring, out of R66 scope (line drifted 4552->4627->4640->4642; 4th drift, keep using this file's own procedure: prove the drift is someone else's, then re-key)",
+	"cmd/gateway/main.go:4708":                                      "one-shot/main package wiring, out of R66 scope。R44 改键 4642→4708，并**撤回旧理由里的漂移叙事**：那条「4552→4627→4640→4642, 4th drift」不可信——回原提交 8a6142263 看，main.go:4642 当时逐字是 `nodeProbeWorker.Submit(credID, model, \"default\", \"expired-binding-recovery\")`，**从来就不是循环行**。也就是说这条豁免在登记当天就键歪了，守卫直到本轮才报（它报的是「键指向的行没有 for X.Next()」）。4708 是该装配块内**唯一**的 `for rows.Next()`（credential_model_bindings→provider_models 的 DISTINCT 扫描），与本条声称的范围一致；未验证：无法证明它就是当年被豁免的那一处（线索已断），故此处的代价是「豁免可能比原意宽/窄一处的循环」，登记在案",
 	"cmd/gateway/main_helpers.go:369":                               "one-shot/main package wiring, out of R66 scope",
 	"cmd/gateway/main_v32_wiring.go:119":                            "one-shot/main package wiring, out of R66 scope",
 	"cmd/fetch-standard-iq/main.go:103":                             "one-shot/main package, out of R66 scope",
@@ -40,7 +40,7 @@ var exemptions = map[string]string{
 	"tests/session_audit/cmd/audit-test/main.go:210":                "test harness main package, out of R66 scope",
 	"tests/test_popularity_tracker.go:121":                          "test helper (non _test.go), out of R66 scope",
 	"scripts/injection-test/test-prompt-injection-detection.go:393": "scripts/ manual injection probe, out of R66 scope",
-	"cmd/tools/validate_sessions_v2/loader.go:167":                  "one-shot validator main package, out of R66 scope",
+	"cmd/tools/validate_sessions_v2/loader.go:205":                  "one-shot validator main package, out of R66 scope。R44 改键 167→205：按本文件自己的程序查过——豁免登记时（8a6142263）loader.go:167 逐字是 `var turns []V1Turn` + `for rows.Next() {`（LoadV1Turns 的 v1 turn 迭代），今天的 204-205 与之**逐字相同**，所以是「同一处漂移」而不是「另找一处顶上」；漂移由 e6193ea92 / fe5003034 两笔窗口内提交造成",
 }
 
 // TestEveryRowsLoopIsGuarded 是 R66 的站位级主门。

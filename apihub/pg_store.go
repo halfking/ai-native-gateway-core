@@ -105,7 +105,8 @@ ON CONFLICT (kind, ref_id) DO UPDATE SET
     version      = EXCLUDED.version,
     last_seen_at = now(),
     metadata     = EXCLUDED.metadata
-WHERE public.assets.last_seen_at < now() - ($12 * interval '1 second')
+WHERE COALESCE(public.assets.last_seen_at, '-infinity'::timestamptz)
+         < now() - ($12 * interval '1 second')
    OR (public.assets.tenant_id,    public.assets.name,        public.assets.owner,
        public.assets.team,         public.assets.cost_center, public.assets.tags,
        public.assets.health_state, public.assets.version,     public.assets.metadata)
@@ -128,6 +129,23 @@ WHERE public.assets.last_seen_at < now() - ($12 * interval '1 second')
 //
 //	不命中时 PostgreSQL **不报错**，只是不更新；Upsert 用的是 tx.Exec
 //	（不看 RETURNING），所以 Go 侧不需要任何改动。
+//
+// ★ R44 修正：② 这一半原先写作 `last_seen_at < now() - …`，而该列在
+//
+//	deploy/sql/schemas/baseline/01-schema.sql:5673 是**可空、无 DEFAULT、
+//	无 NOT NULL**（`timestamp with time zone`，裸声明）。于是对任何
+//	last_seen_at IS NULL 的行：
+//	   · 半② `NULL < x` 求值为 NULL（不是 true）⇒ 不成立；
+//	   · 半① 在业务字段未变时为 false ⇒ 不成立；
+//	两半都不成立 ⇒ **这行永远不会被更新**，last_seen_at 永远停在 NULL。
+//	而读方（:746）用 `COALESCE(last_seen_at, registered_at)` 判 stale
+//	⇒ 一个活着的资产会因 registered_at 已超 6h 被 bg/asset_health_probe
+//	判成 degraded。
+//	这就是「省掉无效重写」被省过头的样子：NULL 行不是「无需重写」，
+//	而是「永远写不进去」。COALESCE 到 '-infinity' 让半②对 NULL 恒真，
+//	第一跳就把它从 NULL 救出来；此后走正常的 5 分钟窗口。
+//	（生产是否真有 NULL 行本轮未能核验——无库访问；本行是防御性收口，
+//	  代价为每行一次 COALESCE，恒定开销。）
 
 // Upsert writes an asset row, replacing any existing row with the same
 // (kind, ref_id) composite key. RLS is enforced via SET LOCAL.

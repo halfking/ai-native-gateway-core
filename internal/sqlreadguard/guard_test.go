@@ -45,6 +45,11 @@ var sqlReadGuardAllowFiles = map[string]string{
 	"admin/session_detail_v2.go":       "LEGIT: resolveSessionID 反向臂 hot∪母表双腿之母表腿（R71，hot 腿同查询内联）",
 	"internal/trace/trace.go":          "LEGIT: hot∪母表双腿",
 	"bg/auto_route_affinity_worker.go": "LEGIT: NOT EXISTS 探测之母表腿（R46 F4 裁决落地形态）",
+	"domains/session/v2/session_request_status_backfill.go": "LEGIT: request_status 回填的**候选集分母**（:457-467 的 remaining 量表、:521 源探针、:677 回写 VALUES 臂）。" +
+		"为什么母表单腿是对的：① 目标侧已经是双腿——`session_turns` 与 `session_turns_hot` 两臂在同一条 SQL 里相加，" +
+		"若只回填 hot 单窗，分母与写入面错位，「已回填比例」会恒为 0（这正是 R43 §R43/L1 修掉的同类假绿）；" +
+		"② 源侧 `request_logs` 只有母表有 `request_status`（823 只给 session_turns/_hot 落标签），母表腿不是可选项。" +
+		"③ 对最近 8h 的盲区在此**方向是保守的**：那批行由在线路径直接落标签、本就不该进回填集，漏读只会让 remaining 略被低估，不会虚报进度。",
 
 	// ---- LEGIT：引擎/DDL/维护/工具 ----
 	"bg/lite_retention_worker.go":               "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
