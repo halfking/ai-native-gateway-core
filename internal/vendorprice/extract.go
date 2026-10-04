@@ -34,6 +34,7 @@ package vendorprice
 
 import (
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -100,7 +101,39 @@ type Candidate struct {
 	Unit string `json:"unit,omitempty"`
 	// Description 是模型名后面粘着的说明文字（"Text, Image → Image"）。
 	// 它不进任何计算，但人核对提案时靠它分清「这个价是哪个产品的」。
-	Description string   `json:"description,omitempty"`
+	Description string `json:"description,omitempty"`
+	// Tier 是这一行的价格属于哪个**列内计费维度**（"Short context" / "Long
+	// context" / "Modality" …）。空串表示这一行与维度分档无关。
+	//
+	// 它存在的理由是**让被拒绝的价格仍然可见**：改造之前，OpenAI 与 xAI 的
+	// 分档表只能产出「列数 8 对不上表头的 4」，数字一个都没有——看提案的人
+	// 既看不到数，也看不出这是「有条件价」还是「页面变了」。现在数字带着它
+	// 所属的维度一起出现，而 Confidence 仍然是 unusable、永远进不了 SSOT。
+	//
+	// 取哪一档当基准价是运营决策，解析器不替人做；但**把两套都摆出来让人
+	// 裁决**，是解析器该做的。
+	Tier string `json:"tier,omitempty"`
+	// ProductTier 是**这张表所属的产品档位**，已归一成关键词（standard /
+	// batch / flex / fast / ultrafast / priority …）。空串表示表上方没有档位
+	// 标签。
+	//
+	// 它必须与 Tier **分开**成一个字段，原因是实测出来的：
+	// OpenAI 一页五张同形状的表（Standard / Batch / Flex / Fast / Ultrafast），
+	// 五张表的**列内维度全都是 "Short context"**。只留 Tier 时，
+	// gpt-6-astra 的 5 个价——10/50、5/25、5/25、20/100、60/300——在结构化
+	// 字段上**完全无法区分**（跨 12 倍），而产品档位只以一句 warning 字符串
+	// 存在。谁要是照 Tier 挑「基准价」，挑中 60/300 就是 6 倍高估、挑中
+	// 5/25 就是 2 倍低估——正好打在「准确控制模型实际成本」这个目标上。
+	//
+	// ⇒ Tier 与 ProductTier 合起来构成一条价格的**完整条件**，让人一眼
+	// 看出这个数属于哪个产品、因而该判它拒绍。
+	//
+	// ★ 它们**不是要存进 SSOT 的维度**。SSOT 按「一个模型一个价」建模
+	//   （2026-10-04 决策）：原厂把分档做成**不同的模型名**时，那本来就
+	//   该是两条 models 行，而不是一条模型的多个价。剩下同名同行的分档
+	//   （gpt-6-astra 那 5 行）一律拒绍——SSOT 的键是 canonical_name，
+	//   5 行会撞进同一个键互相覆盖。
+	ProductTier string   `json:"product_tier,omitempty"`
 	SourceURL   string   `json:"source_url"`
 	Confidence  string   `json:"confidence"`
 	Warnings    []string `json:"warnings,omitempty"`
@@ -173,7 +206,19 @@ var dimensionRE = regexp.MustCompile(`(?i)(batch|fast[\s-]?mode|\bflex\b|\bprior
 // ——而且拦得对：那张表的每一行都同时给出短上下文与长上下文两套价，而
 // SSOT 的键只有 canonical 名一个，装不下两套价。**即使把双层表头猜对了，
 // 取哪一套也是运营决策，不是解析器该替人做的选择。**
-var headerDimensionRE = regexp.MustCompile(`(?i)(batch|fast[\s-]?mode|\bflex\b|\bpriority\b|regional|premium|short[\s-]?context|long[\s-]?context|\btier(s|ed|ing)?\b|standard processing)`)
+var headerDimensionRE = regexp.MustCompile(`(?i)(batch|fast[\s-]?mode|\bflex\b|\bpriority\b|regional|premium|short[\s-]?context|long[\s-]?context|\btier(s|ed|ing)?\b|standard processing|\bmodality\b|\bper\s+modality\b)`)
+
+// productTierRE 匹配「产品档位标签」这种独立成行的短文本。
+//
+// 只在长度很短（≤40 字符）且不含货币符号时才认：页面上随便一行散文都可能被
+// 误认成档位，而把一句正文报成档位只会污染警告。
+// proseWindow 是「表前散文」保留的行数上限。
+const proseWindow = 6
+
+// headingRE 匹配 markdown 标题行。
+var headingRE = regexp.MustCompile(`^#{1,6}\s`)
+
+var productTierRE = regexp.MustCompile(`(?i)^\s*(standard|batch|flex|priority|fast|ultrafast|premium|on-?demand|pay-?as-?you-?go|paygo|base|list)\b`)
 
 // perMillionRE 匹配「每 1M token」的单位声明（页眉或单元格里都算）。
 var perMillionRE = regexp.MustCompile(`(?i)(per\s*1m|/\s*mtok|per\s*m\s*token|1m\s*(input|output|token)|每\s*1\s*[mM]|元\s*/\s*[mM])`)
@@ -374,6 +419,12 @@ type tableBlock struct {
 	headerLine  int // 1-based
 	rows        []rawRow
 	prose       string
+	// label 是紧贴在这张表**上方**的那一行散文。
+	//
+	// 实测 OpenAI 定价页：同一页有四张形状完全一样的表，原厂把产品档位写成
+	// 紧贴表格上方的一行裸文本——"Standard"、"Batch"、"Flex"、"Fast"。
+	// 没有它，四张表在提案里长得一模一样，人只能自己回去数这是第几张。
+	label string
 }
 
 // Extract 从一份原厂页面 markdown 快照里提出候选。
@@ -404,18 +455,49 @@ func Extract(vendor, sourceURL string, markdown []byte) []Candidate {
 	// prose 累积「上一张表结束到本行之间」的非表格文本。维度措辞
 	//（"Fast mode pricing" / "with a 50% discount"）几乎总是写在表前的散文里
 	// 而不是表头里。
-	var prose strings.Builder
+	//
+	// **必须有界。** 实测 OpenAI 定价页的第一张表在第 1029 行，而它前面
+	// 一行表格都没有 ⇒ 「表前的散文」是整整 1028 行导航栏。于是侧边栏里的
+	// 一个链接 `[Fast mode](…/fast-mode)` 成了「Standard 档那张表」被判不可用
+	// 的理由之一。这与本包 2026-10-04 已经修过的两次误伤同族（tier 匹配
+	// frontier、tool use 匹配能力罗列），但更糟：**它不是一条散文，是一整页**。
+	//
+	// 三道收窄，缺一不可：
+	//   - 只留最近 proseWindow 行（维度措辞总在表前 1–3 行内）；
+	//   - 遇到 markdown 标题就清空（新章节的表与上一章节的散文无关）；
+	//   - 遇到独立的档位标签行就清空（见下方 productTierRE 的用途）。
+	var prose []string
+	// lastLine 记住最近一行非空散文，作为下一张表的 label。
+	lastLine := ""
 
 	i := 0
 	for i < len(lines) {
 		line := lines[i]
 		if !markdownRowRE.MatchString(line) {
 			// 非表格行：如果它自己声明了「每 1M」，那是单位上下文更新。
+			// 注意：这个分支里**不能**用 continue——i++ 在分支之后，
+			// 跳过去就是死循环（本包 2026-10-04 真的挂过一次）。
 			if perMillionRE.MatchString(line) {
 				pageUnit = UnitPer1M
-			} else if strings.TrimSpace(line) != "" {
-				prose.WriteString(line)
-				prose.WriteString(" ")
+			} else if t := strings.TrimSpace(line); t != "" {
+				lastLine = t
+				switch {
+				// markdown 标题 = 新章节起点，上一章节的散文与本表无关。
+				case headingRE.MatchString(t):
+					prose = prose[:0]
+				// 独立的档位标签（"Standard" / "Batch" / "Flex"）之前的内容是
+				// UI 残留：OpenAI 的页面上是标签条 "Standard Batch Flex Fast
+				// Ultrafast" 加一个孤立的 "Standard" 表示当前选中项。标签条
+				// 里的 Batch/Flex 会把**每张**表都染上「维度」警告，而它们只是
+				// 导航。标签行本身已经是权威的档位标识，所以把标签之前清掉。
+				case isProductTierLabel(t):
+					prose = append(prose[:0], t)
+				default:
+					prose = append(prose, t)
+					if len(prose) > proseWindow {
+						prose = prose[len(prose)-proseWindow:]
+					}
+				}
 			}
 			i++
 			continue
@@ -428,9 +510,11 @@ func Extract(vendor, sourceURL string, markdown []byte) []Candidate {
 				headerRaw:   line,
 				headerCells: splitTableRow(line),
 				headerLine:  i + 1,
-				prose:       prose.String(),
+				prose:       strings.Join(prose, " "),
+				label:       lastLine,
 			}
-			prose.Reset()
+			prose = prose[:0]
+			lastLine = ""
 			i += 2
 			for i < len(lines) && markdownRowRE.MatchString(lines[i]) {
 				if !separatorRowRE.MatchString(lines[i]) {
@@ -542,14 +626,144 @@ func looksLikeSubHeader(row rawRow) bool {
 	if len(cells) == 0 {
 		return false
 	}
-	priced := 0
+	priced, modelCol := 0, 0
 	for _, c := range cells {
 		switch RoleFromHeader(cleanCell(c)) {
 		case RoleInput, RoleOutput, RoleCacheRead, RoleCacheWrite:
 			priced++
+		case RoleModel:
+			modelCol++
+		default:
+			// 出现任何既不是维度名也不是 "Model" 的格子 ⇒ 这是数据行。
+			// 数据行的首格是模型**名**（"gpt-6-astra"），它不是维度名，
+			// 会被上面这条 default 挡掉。
+			return false
 		}
 	}
-	return priced == len(cells)
+	return priced > 0 && modelCol <= 1
+}
+
+// isTierHeader 判断第一层表头的一个单元格是不是**档位分组名**。
+//
+// 判据是两个条件同时成立：它带一个计费维度词（headerDimensionRE），且它
+// **不给列义**（不是 Input/Output/Cached…）。xAI 的 "Short context"、
+// OpenAI 的 "Long context" 都过；而同层的 "Model" / "Context" 都不过。
+func isTierHeader(cell string) bool {
+	return headerDimensionRE.MatchString(cleanCell(cell)) && headerRole(cell) == RoleOther
+}
+
+// effectiveHeader 是把两层表头拼成一条之后的列语义。
+type effectiveHeader struct {
+	roles []ColumnRole
+	cells []string
+	// tiers 与 roles 等长；只有价格列有值，其余是空串。
+	tiers []string
+}
+
+// buildEffectiveHeader 把「档位分组表头 + 维度表头」两层拼成一条可用的列语义。
+//
+// markdown 没有 colspan，所以第一层表头的一个格子到底盖住几列，从语法上看
+// 不出来。实测两家的写法是同一套语义，于是拼法也是同一套：
+//
+//	xAI   | Model | Context | Short context | Long context |      4 格
+//	      | --- | --- | --- | --- |
+//	      | Input | Cached | Output | Input | Cached | Output |     6 格 ← 维度
+//	      | [grok-4.7](…) | 500k | $2.00 | $0.50 | $6.00 | …        8 格 ← 数据
+//
+//	OpenAI |  | Short context | Long context |                          3 格
+//	       | --- | --- | --- |
+//	       | Model | Input | Cached input | Cache writes | Output | …   9 格 ← 维度
+//	       | gpt-6-astra | $10.00 | $1.00 | $12.50 | $50.00 | …       9 格 ← 数据
+//
+// 拼法：**第一层的非档位格子各占一列（空的左上角占位格不算），剩下的价格列
+// 平分给各档位分组**。两例都自洽——xAI 2 个非档位列 + 2 组×3 = 8；
+// OpenAI 0 个非档位列（Model 写在了第二层里）+ 2 组×4 = 9。
+//
+// **任何一步不整除就放弃**，退回「列数对不上」的旧行为。宁可少拼，不可拼错：
+// 拼错的后果是把长上下文价挂到短上下文上，而 SSOT 的键装不下两套价。
+func buildEffectiveHeader(headerCells, sub []string, dataCols int) (effectiveHeader, bool) {
+	var zero effectiveHeader
+	var tierIdx []int
+	for j, c := range headerCells {
+		if isTierHeader(c) {
+			tierIdx = append(tierIdx, j)
+		}
+	}
+	if len(tierIdx) == 0 || len(sub) == 0 || dataCols <= 0 {
+		return zero, false
+	}
+
+	// 第二层自己带了一个 Model 列时，第一层的非档位列就不该再拼一次。
+	subHasModel := len(sub) > 0 && RoleFromHeader(cleanCell(sub[0])) == RoleModel
+
+	var prefixCells []string
+	if !subHasModel {
+		for j, c := range headerCells {
+			if inTier(tierIdx, j) {
+				continue
+			}
+			if cleanCell(c) == "" {
+				continue // 左上角占位格
+			}
+			prefixCells = append(prefixCells, c)
+		}
+	}
+
+	eff := append([]string{}, prefixCells...)
+	eff = append(eff, sub...)
+	if len(eff) != dataCols {
+		return zero, false
+	}
+
+	h := effectiveHeader{roles: make([]ColumnRole, len(eff)), cells: eff, tiers: make([]string, len(eff))}
+	for j, c := range eff {
+		h.roles[j] = headerRole(c)
+	}
+	priceCols := 0
+	for _, r := range h.roles {
+		switch r {
+		case RoleInput, RoleOutput, RoleCacheRead, RoleCacheWrite:
+			priceCols++
+		}
+	}
+	if priceCols == 0 || priceCols%len(tierIdx) != 0 {
+		return zero, false
+	}
+	per := priceCols / len(tierIdx)
+	seen := 0
+	for _, j := range tierIdx {
+		label := cleanCell(headerCells[j])
+		for k := 0; k < per; k++ {
+			h.tiers[priceColsSeen(h.roles, seen)] = label
+			seen++
+		}
+	}
+	return h, true
+}
+
+// inTier 判断下标是否在档位下标集合里。
+func inTier(idx []int, j int) bool {
+	for _, v := range idx {
+		if v == j {
+			return true
+		}
+	}
+	return false
+}
+
+// priceColsSeen 返回 roles 里第 n 个价格列的下标。
+func priceColsSeen(roles []ColumnRole, n int) int {
+	c := 0
+	for j, r := range roles {
+		switch r {
+		case RoleInput, RoleOutput, RoleCacheRead, RoleCacheWrite:
+			if c == n {
+				return j
+			}
+			c++
+		}
+	}
+	return -1
 }
 
 // extractBlock 判定一张表的形态并逐行提出候选。
@@ -568,24 +782,45 @@ func extractBlock(vendor, sourceURL string, b tableBlock, pageUnit string) []Can
 	}
 	headerDim := headerDimensionRE.FindString(b.headerRaw)
 
-	// 第二层表头检测：第一行数据若是「整行都是维度名」，它就是第二层表头，
-	// 本提取器不建模这种版式。先把它单独报出来，让人一眼看出「这里是两层
-	// 表头」而不是「这里的列数对不上」。
+	// 第二层表头：数据区第一行若是「整行都是维度名」，它就是第二层表头。
+	//
+	// 拼得起来就**照拼**（把两套分档价都提出来，各自带 Tier 标签），因为
+	// 「看不到数」和「看到数但标明它有条件」对人的用处差着量级；拼不起来
+	// （列数不整除、第二层认不出）就退回「列数对不上」并把原因说清。
 	subHeaderLine := 0
+	var eff effectiveHeader
+	aligned := false
 	if len(b.rows) > 0 && len(splitTableRow(b.rows[0].raw)) != len(roles) && looksLikeSubHeader(b.rows[0]) {
 		subHeaderLine = b.rows[0].lineNo
+		sub := splitTableRow(b.rows[0].raw)
+		for _, r := range b.rows[1:] {
+			if n := len(splitTableRow(r.raw)); n > 0 {
+				eff, aligned = buildEffectiveHeader(b.headerCells, sub, n)
+				break
+			}
+		}
 		out = append(out, Candidate{
 			Vendor: vendor, SourceURL: sourceURL, LineNo: b.rows[0].lineNo, Row: b.rows[0].raw,
 			Confidence: ConfidenceUnusable,
 			Warnings: []string{"this row is a second header row: every cell is a price " +
-				"dimension, so the real column semantics live across two header rows — " +
-				"a multi-level header this extractor deliberately does not guess at"},
+				"dimension, so the real column semantics live across two header rows"},
 		})
+		if aligned {
+			out[len(out)-1].Warnings = append(out[len(out)-1].Warnings,
+				"the two header rows were aligned (tier groups span equal column runs) and the "+
+					"prices below were read — but they are TIERED, not a flat list price: "+
+					"each candidate carries the tier it belongs to and must not be stored as-is")
+		} else {
+			out[len(out)-1].Warnings = append(out[len(out)-1].Warnings,
+				"the two header rows could NOT be aligned unambiguously, so the prices below "+
+					"are left unread rather than guessed at")
+		}
 		if headerDim != "" {
 			out[len(out)-1].Warnings = append(out[len(out)-1].Warnings,
 				"and the top header groups those columns by billing dimension ("+
 					strings.TrimSpace(headerDim)+"), so the prices are conditional, not a flat list price")
 		}
+		out[len(out)-1].Warnings = append(out[len(out)-1].Warnings, tierLabelWarning(b.label)...)
 	}
 
 	for _, r := range b.rows {
@@ -593,9 +828,22 @@ func extractBlock(vendor, sourceURL string, b tableBlock, pageUnit string) []Can
 			continue
 		}
 		cells := splitTableRow(r.raw)
-		if len(cells) != len(roles) {
+		rowRoles, rowTiers := roles, []string(nil)
+		if aligned {
+			if len(cells) != len(eff.roles) {
+				out = append(out, Candidate{
+					Vendor: vendor, SourceURL: sourceURL, LineNo: r.lineNo, Row: r.raw,
+					Confidence: ConfidenceUnusable,
+					Warnings: []string{"column count " + strconv.Itoa(len(cells)) +
+						" does not match the assembled two-row header's " + strconv.Itoa(len(eff.roles))},
+				})
+				continue
+			}
+			rowRoles, rowTiers = eff.roles, eff.tiers
+		} else if len(cells) != len(roles) {
 			w := []string{"column count " + strconv.Itoa(len(cells)) +
 				" does not match the header's " + strconv.Itoa(len(roles))}
+			w = append(w, tierLabelWarning(b.label)...)
 			if subHeaderLine > 0 {
 				w = append(w,
 					"this table has a second header row at line "+strconv.Itoa(subHeaderLine)+
@@ -612,8 +860,8 @@ func extractBlock(vendor, sourceURL string, b tableBlock, pageUnit string) []Can
 			})
 			continue
 		}
-		out = append(out, buildCandidate(vendor, sourceURL, r.raw, r.lineNo, cells, roles,
-			pageUnit, b.headerLine, b.prose, headerDim))
+		out = append(out, buildCandidate(vendor, sourceURL, r.raw, r.lineNo, cells, rowRoles,
+			pageUnit, b.headerLine, b.prose, headerDim, b.label, rowTiers))
 	}
 	return out
 }
@@ -639,14 +887,14 @@ func extractColumnOriented(vendor, sourceURL string, b tableBlock, pageUnit stri
 				continue
 			}
 			out = append(out, buildColumnCandidate(vendor, sourceURL, r.raw, r.lineNo,
-				names[j], cell, pageUnit, b.headerLine, b.prose, headerDimensionRE.FindString(b.headerRaw)))
+				names[j], cell, pageUnit, b.headerLine, b.prose, headerDimensionRE.FindString(b.headerRaw), b.label))
 		}
 	}
 	return out
 }
 
 // buildColumnCandidate 从一个自带标签的单元格里造候选。
-func buildColumnCandidate(vendor, sourceURL, rawRowText string, lineNo int, model, cell, pageUnit string, headerLine int, sectionProse, headerDim string) Candidate {
+func buildColumnCandidate(vendor, sourceURL, rawRowText string, lineNo int, model, cell, pageUnit string, headerLine int, sectionProse, headerDim, label string) Candidate {
 	c := Candidate{
 		Vendor: vendor, SourceURL: sourceURL, LineNo: lineNo, Row: rawRowText,
 		Model: model, Currency: currencyOf(cell), Unit: cellUnit(cell),
@@ -712,7 +960,7 @@ func buildColumnCandidate(vendor, sourceURL, rawRowText string, lineNo int, mode
 				leftover.String()+") — attributing only part of a cell would hide the rest")
 	}
 
-	markUnusable(&c, cell, pageUnit, headerLine, sectionProse, headerDim)
+	markUnusable(&c, cell, pageUnit, headerLine, sectionProse, headerDim, label)
 
 	if c.Confidence == "" {
 		if c.Input == nil && c.Output == nil {
@@ -727,13 +975,13 @@ func buildColumnCandidate(vendor, sourceURL, rawRowText string, lineNo int, mode
 }
 
 // buildCandidate 把一行数据行变成候选，并按失效原因定级。
-func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, header []ColumnRole, pageUnit string, headerLine int, sectionProse, headerDim string) Candidate {
+func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, header []ColumnRole, pageUnit string, headerLine int, sectionProse, headerDim, label string, tiers []string) Candidate {
 	c := Candidate{
 		Vendor: vendor, SourceURL: sourceURL, LineNo: lineNo, Row: line,
 		Currency: currencyOf(line), Unit: UnitUnknown,
 	}
 
-	markUnusable(&c, line, pageUnit, headerLine, sectionProse, headerDim)
+	markUnusable(&c, line, pageUnit, headerLine, sectionProse, headerDim, label)
 
 	// 表头里必须有明确的 input 与 output 列，否则这一行不能定位到
 	// 「某模型的输入价/输出价」——这是最根本的可归属性要求。
@@ -753,7 +1001,15 @@ func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, 
 				strconv.Itoa(headerLine)+")")
 	}
 
-	if len(cells) > 0 {
+	// 模型名取自**表头标明 Model 的那一列**，不是「第一列」。
+	//
+	// 实测（live-openai-pricing.md:1190）：`| Category | Model | Input | … |`
+	// —— 第一列是产品分类（ChatGPT / Codex / Life Sciences）。按位置取名会得到
+	// 一个叫 "ChatGPT" 的模型，而它的价其实是 chat-latest 的。
+	// 表头没有 Model 列时才退回第一列（OpenAI 旧表、xAI 旧表都是 Model 打头）。
+	if idx := modelColumnIndex(header); idx >= 0 && idx < len(cells) {
+		c.Model, c.Description = splitIdent(cells[idx])
+	} else if len(cells) > 0 {
 		c.Model, c.Description = splitIdent(cells[0])
 	}
 	if c.Model == "" {
@@ -762,6 +1018,7 @@ func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, 
 	}
 
 	extra := 0
+	seenTiers := map[string]bool{}
 	for j, role := range header {
 		if j >= len(cells) {
 			break
@@ -799,7 +1056,17 @@ func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, 
 		}
 		if countPrices(&c) == before {
 			extra++
+			continue
 		}
+		// 只记**被取走的那一列**所属的档位。若把整行出现过的档位都记上，
+		// Tier 会写成 "Long context | Short context" 而数字其实只来自短上下文
+		// 那一组——标签比数字宽，正是最容易被误读成「两档都一样」的地方。
+		if j < len(tiers) && tiers[j] != "" {
+			seenTiers[tiers[j]] = true
+		}
+	}
+	if len(seenTiers) > 0 {
+		c.Tier = strings.Join(sortedKeys(seenTiers), " | ")
 	}
 	if extra > 0 {
 		// anthropic 的表里同时有 "5m Cache Writes" 与 "1h Cache Writes"，
@@ -827,6 +1094,28 @@ func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, 
 	return c
 }
 
+// sortedKeys 让 Tier 字段的顺序稳定——同一行里档位按列序出现，
+// 但 map 无序；不排序的话同一份快照两次跑出两个不同的 JSON，
+// 人就没法用 diff 看出「除了档位顺序什么都没变」。
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// modelColumnIndex 找出表头里标着 Model 的那一列；没有则返回 -1。
+func modelColumnIndex(header []ColumnRole) int {
+	for j, r := range header {
+		if r == RoleModel {
+			return j
+		}
+	}
+	return -1
+}
+
 func countPrices(c *Candidate) int {
 	n := 0
 	for _, p := range []*float64{c.Input, c.Output, c.CacheRead, c.CacheWrit} {
@@ -837,9 +1126,89 @@ func countPrices(c *Candidate) int {
 	return n
 }
 
+// tierLabelWarning 报出一张表的产品档位标签（没有就返回空）。
+//
+// 实测 OpenAI 定价页：同一页有四张形状**完全一样**的表，原厂把档位写成紧贴
+// 表格上方的一行裸文本——"Standard"、"Batch"、"Flex"、"Fast"。不报出来，
+// 人在提案里分不清哪张是哪张，只能自己回去数。
+//
+// 只在短行、无货币符号、且以档位词开头时才认：页面上随便一行散文都可能被
+// 误认成档位，而把一句正文报成档位只会污染警告。
+func isProductTierLabel(line string) bool {
+	if line == "" || len(line) > 40 || currencySymbolRE.MatchString(line) {
+		return false
+	}
+	return productTierRE.MatchString(line)
+}
+
+// isPremiumTierLabel 判断档位标签是不是**非标准档**（Batch / Flex / Fast /
+// Priority / Regional / Premium）。它们都是**别的产品**的定价。
+//
+// 与 productTierRE 的分工：那个认「这行是不是档位标签」，这个只认「它是不是
+// 打折/加价档」。判据是**否定式**的（列出非标准档），因为"标准"这个词在各家
+// 页面里写法太多（Standard / Standard processing / On-demand / Pay as you go
+// / Base / List），认成白名单会漏；认成非标准档则漏不到会影响正确性的那一侧
+// ——真漏了也只是这张表退回保守，代价是覆盖率，不是错价。
+var premiumTierRE = regexp.MustCompile(`(?i)^\s*(batch|flex|priority|fast|ultrafast|premium|regional)\b`)
+
+func isPremiumTierLabel(label string) bool {
+	if !isProductTierLabel(label) {
+		return false
+	}
+	return premiumTierRE.MatchString(label)
+}
+
+// productTierKeyword 把一个档位标签**归一**成它的关键词，认不出时返回空串。
+//
+// 为什么必须归一，而不是把标签原文塞进 ProductTier：productTierRE 是
+// `^\s*(standard|batch|…)\b` 这种**前缀**匹配，所以它同样接受
+// "Batch API reference" 这种小标题。早先把原文直接存进 ProductTier，
+// 于是同一档位的两种写法会占两个不同的键（"batch" 与 "Batch API reference"），
+// 按键分组、按键去重、拿键当条件全部失准——而这正是这个字段存在的理由。
+//
+// **只做词内归一（小写 + 去掉连字符与空格），不合并不同关键词。**
+// 刻意的：`paygo` 与 `pay-as-you-go` 是同义的两个词，合并它们很诱人，但一旦
+// 原厂在两处用了这两种写法、且两处的价其实不同（分档细则不同），合并就会
+// 把两个价压进一个键，触发「一个条件键对应两个价」这种最坏形状。
+// 不合并的失败方向是安全的：同价分裂成两行，人看得见；而合并的失败方向是
+// 静默取其一。宁可多报一行，不可悄悄少一个条件。
+// 原文仍保留在 warnings 里（见 tierLabelWarning），人核对时看得到全称。
+func productTierKeyword(label string) string {
+	m := productTierRE.FindStringSubmatch(label)
+	if m == nil {
+		return ""
+	}
+	k := strings.ToLower(m[1])
+	k = strings.ReplaceAll(k, "-", "")
+	k = strings.ReplaceAll(k, " ", "")
+	return k
+}
+
+func tierLabelWarning(label string) []string {
+	if !isProductTierLabel(label) {
+		return nil
+	}
+	// **只陈述，不裁决。** 定级由 isPremiumTierLabel 那一条单独负责。
+	// 早先把「陈述」和「裁决」写在同一句话里，结果 Standard 档那张表也被
+	// 警告「必须来自标准档」——一句对着一张好表说「你得是标准档」的话，
+	// 只会让人怀疑判据本身。警告要么说事实，要么下判断，不混着说。
+	return []string{"this table's product tier is labelled \"" + label + "\" directly above it"}
+}
+
 // markUnusable 打上所有与列义无关的失效原因：删除线、计费维度、上下文分档、
 // 单位不是每 1M token。
-func markUnusable(c *Candidate, text, pageUnit string, headerLine int, sectionProse, headerDim string) {
+func markUnusable(c *Candidate, text, pageUnit string, headerLine int, sectionProse, headerDim, label string) {
+	// 产品档位**结构化落字段**，不只是报一句 warning。
+	//
+	// 这里必须在 markUnusable 里做，因为它是 label 的唯一收口：列向表格
+	// （模型在表头）与行向表格（价格在一行）两条路径都经过它。早先只在
+	// warning 里报，结果就是「档位已识别但结构化字段丢失」——
+	// gpt-6-astra 的 5 个价跨 12 倍却长得一模一样。
+	//
+	// **只填字段，不在这里定级**：定级仍归 isPremiumTierLabel 那一条。
+	if kw := productTierKeyword(label); kw != "" {
+		c.ProductTier = kw
+	}
 	if struckRE.MatchString(text) {
 		c.Confidence = ConfidenceUnusable
 		c.Warnings = append(c.Warnings,
@@ -865,6 +1234,19 @@ func markUnusable(c *Candidate, text, pageUnit string, headerLine int, sectionPr
 			"the prose above this table names a non-standard billing dimension ("+
 				strings.TrimSpace(m)+") — not the model's flat list price")
 	}
+	// 报出这张表的产品档位标签。OpenAI 一页四张同形状的表，原厂把档位写在
+	// 紧贴表格上方的一行裸文本里；不报出来，人在提案里分不清哪张是哪张。
+	// 档位标签不只是要**报出来**，还要**定级**：OpenAI 的 "Fast" 档下面那张表
+	// 与 Standard 档形状一模一样、价更高，label 也确实写着 Fast。只报不定级
+	// 的话，Fast 档的 Codex 会被当成挂牌价收进提案——而 SSOT 的键只有
+	// canonical 名一个，它会与 Standard 档那一条互相覆盖或取其一。
+	if isPremiumTierLabel(label) {
+		c.Confidence = ConfidenceUnusable
+		c.Warnings = append(c.Warnings,
+			"this table is the vendor's \""+label+"\" tier, not its standard list-price tier — "+
+				"a baseline price must come from the standard tier")
+	}
+	c.Warnings = append(c.Warnings, tierLabelWarning(label)...)
 	if tierQualifierRE.MatchString(text) {
 		c.Confidence = ConfidenceUnusable
 		c.Warnings = append(c.Warnings,
