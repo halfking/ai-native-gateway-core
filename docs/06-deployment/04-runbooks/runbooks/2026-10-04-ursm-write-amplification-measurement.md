@@ -1291,6 +1291,88 @@ INSERT 尝试可从 4,680 万降到 ~2,721 万（**-42%**），
 
 ---
 
+## 5.11 把「245 退 shadow」拆成两个独立问题，并给出解法（2026-10-04 13:00~13:40）
+
+「245 退出 shadow」这个说法把两件无关的事捆在了一起，捆法本身就是问题。
+
+### 5.11.1 两台的真实配置（实测，不是推测）
+
+| | 配置 |
+|---|---|
+| **154** | 无 `URSM_V2_MODE` ⇒ 默认 **`authoritative`** |
+| **245** | `URSM_V2_MODE=shadow` + **`URSM_V2_SHADOW_DOUBLE_WRITE=1`** |
+
+⇒ §5.10.2 的 42% 空转来自 **245 的 shadow 双写**，不是「两台都 authoritative」。
+
+### 5.11.2 ★ 冲突：一个开关同时控制着「证据」和「成本」
+
+`rollout/controller.go:16-28` 写明 `ShadowDoubleWrite` 是 **record-only**、
+「traffic behavior is unchanged」，它的用途是：
+
+> Operators diff legacy credentialstate write counts against URSMv2Shadow counts
+> **after a 7-day shadow run to confirm < 1% drift before cutover**（审计 §7.1 R-7.1）
+
+但 `cmd/gateway/main.go` 用**同一个 flag** 还门控了 persist writer。于是：
+
+| | 被门控的东西 | 作用 | 成本 |
+|---|---|---|---|
+| ① | sidecar `RecordRequest` → Redis + 指标 | **cutover 比对证据** | 低（Redis） |
+| ② | persist writer → `ursm_node_snapshot_min` | 快照 | **4,680 万次 INSERT，占库 45%** |
+
+**关掉双写能省 42% 的写，但同时毁掉 cutover 的前置证据。**
+⇒ 这不是「要不要退 shadow」的取舍，是**一个开关承担了两件互斥的事**。
+
+### 5.11.3 ★ 解法：把开关拆开（commit 见本节末尾）
+
+证据来自 ①，成本几乎全在 ②，**两者本就独立**（① 写 Redis 逐请求，
+② 每 60s 从 Redis 快照到 PG）。因此新增 `URSM_V2_SHADOW_PERSIST`，
+**只门控 ②**：
+
+| `SHADOW_DOUBLE_WRITE` | `SHADOW_PERSIST` | sidecar（证据） | persist writer（成本） |
+|---|---|---|---|
+| 1 | 未设 | 开 | 开（**与今天完全一致**） |
+| **1** | **0** | **开（证据保住）** | **关（42% 省掉）** |
+| 0 | 未设 | 关 | 关 |
+| 0 | 1 | 关 | 开 |
+
+设计上的三条保守约束：
+1. **默认行为逐字节不变** —— `ResolvePersistEnabled()` 在 `SHADOW_PERSIST` 未设时
+   严格等于 2026-10-04 之前那个内联表达式（有专门的门拿旧表达式做对照）。
+2. **只认显式否定** —— 只有 `0/false/no` 会关掉写入；
+   `maybe` 这类拼错的值按「开」处理，**一个 typo 不会静默停掉快照**。
+3. **不动 Mode、不动 sidecar 开关** —— 路由决策与比对证据都不受影响。
+
+### 5.11.4 判据与变异（累计 17 条）
+
+新增 4 条门：解耦方向 7 个用例、back-compat 与旧表达式逐项对照、
+env 解析 9 个用例、以及 **main.go 调用点**的行内断言。
+
+变异 **M15/M16/M17 全部有牙**。其中 **M16 首轮无牙，且是个真缺口**：
+把 `main.go` 退回旧的内联表达式后，`domains/ursm/v2` 里的单测**全绿** ——
+它们测的是 `ResolvePersistEnabled()` 这个函数，**看不到 main.go 的调用点**。
+与 §5.7.8 里 bootstrap 接线同一类缺口，补了行内断言后 M16 转红。
+
+> ★★ **`-run` 匹配 0 条 vs 全绿，本轮第三次踩**。M16 连续两轮报「无牙」，
+> 真相是脚本让 `go test ./cmd/gateway/ -run` 去匹配**只存在于
+> `domains/ursm/v2` 的测试名** ⇒ 匹配 0 条 ⇒ 退出码 0。
+> 我上一版脚本已经统计了「实际跑了 N 条」，**却只在成功分支打印，
+> 失败分支没判** ⇒ 统计存在但没被消费。
+> 修法不是「记得打印」，是**跑了 0 条直接判为脚本错误**。
+
+### 5.11.5 上生产需要什么（未执行）
+
+245 的 `/opt/llm-gateway-go/.env` 增加一行 `URSM_V2_SHADOW_PERSIST=0`，
+蓝绿重启。**属生产配置变更，需单独授权。**
+预期效果：245 不再启动 persist writer ⇒ INSERT 尝试从 4,680 万降到 ~2,721 万（**-42%**），
+`ursm_node_snapshot_min` 日增从 ~2.9M 降到 ~1.45M 行。
+
+★ **前提未核实**：`/metrics` 返回 **HTTP 401**，我**无法确认** 7 天比对数据
+是否已采集。指标实名 `llm_gateway_ursm_v2_shadow_records_total{result=...}`。
+本方案**不依赖**那个前提（证据照采），但若比对窗口尚未走完，
+应等窗口结束再切，否则 42% 的收益拿不到、证据却已中断。
+
+---
+
 ## 6. 这对 §10 改造的实际影响
 
 1. **容量收益要按「单写」承诺，不能按「双写」。** 245 退出 shadow 是
