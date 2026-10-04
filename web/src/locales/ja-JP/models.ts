@@ -69,6 +69,15 @@ export default {
     disable: '無効化',
     enable: '有効化',
   },
+  modelIdentity: {
+    client: "クライアント",
+    canonical: "標準",
+    outbound: "送信先",
+    titleClient: "クライアントが送信したモデル名",
+    titleCanonical: "標準名",
+    titleOutbound: "送信先 / 上流の元の名前",
+    titleRaw: "元の名前：{model}"
+  },
   chip: {
     status: 'ステータス: {value}',
     vendor: 'ベンダー: {value}',

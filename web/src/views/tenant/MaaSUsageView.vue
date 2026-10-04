@@ -19,9 +19,13 @@ import PageBackLink from '../../components/PageBackLink.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
 import { useSpanDaysRange } from '../../composables/useSpanDaysRange'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
+import { useWindowClass } from '../../composables/useWindowClass'
+import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../../components/ui/CardList.vue'
 import FeeCostCell from '../../components/FeeCostCell.vue'
 
 const { t } = useI18n()
+const { isCompact } = useWindowClass()
 
 const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() =>
@@ -129,6 +133,93 @@ async function load() {
 }
 
 onMounted(load)
+
+/**
+ * ── H6 第十四条切片（2026-10-06）：账本科表接 compact 卡片形态 ───────────────────
+ *
+ * ## 无分页 API ⇒ 只改呈现形态
+ *
+ * `getMaasLedger(limit)` 一次取回整段（`limit` 是「取多少条」的下拉，不是分页器，
+ * 没有 offset）⇒ 与第七/八/十/十二/十三同源，**不引入连续加载**。
+ *
+ * ## 三态归属：**表壳不能空**（切片七同源），但本页是它的**反身**
+ *
+ * 桌面是 `<table>` **恒渲染** + 空态做成 `<tbody>` 里的一行
+ * （`<tr v-if="!loading && ledger.length === 0"><td colspan="6">`）。
+ * 切片七/十三的 `#table` 槽内保留 `v-if` 是为了**别多出空表壳**；
+ * 本页反过来 —— 空态**就在壳里面**，所以：
+ * - `#table` 槽里**不加** `v-if`（加了就把桌面空态行一起删掉）；
+ * - compact 的空态只能来自容器的 `:empty`，且必须带 `!loading` 前置，
+ *   否则**加载中**（桌面此刻不出空态行）会凭空多出一个空态 —— 13 §7「失败态不显示空态」
+ *   的同族病灶。
+ *
+ * ## 卡头用 `titleFormat` 出 typeLabel，键仍是 `id`
+ *
+ * `entry_type` 只有 3 个取值，**拿它当 `titleKey` 必然撞键**（同一类型多行）⇒
+ * `title-key="id"`（后端主键，逐行唯一），卡头文本走 `titleFormat`。
+ * 前几条切片不需要 `titleFormat` 是因为卡头与键同源；这里是**键与脸必须不同**的那种。
+ *
+ * ## 卡片的**唯一取舍**：桌面 type 徽章的颜色不出现在卡片上
+ *
+ * 桌面有两处独立的颜色：type 徽章（`badge-red/green/blue`，按 `entry_type`）
+ * 与金额符号（`amount-neg` → `--danger` / `amount-pos` → `--success`，按 `amount` 符号）。
+ * 卡片保留**后者**（`tone` 按金额符号逐行求值），前者只留文本。
+ * 理由：消费（红）与充值（绿）在账本里金额符号与 type 同向，颜色信息没丢；
+ * 代价是第三种 type 的蓝色不出来了。**这是有界的取舍，不是漏**，
+ * 门禁断桌面两处颜色都还在（零回归），并断卡片 tone 逐行。
+ *
+ * ## 空态的 CTA 不降级
+ *
+ * 桌面空态那一格里还有「去购买额度」的 `RouterLink`。`emptyText` 只能装纯文本
+ * ⇒ 把它降成一句话就是**删掉该屏唯一的 CTA**。因此用 `ResponsiveDataView` 的
+ * `#empty` 透传口（本次为该组件新加的插槽，见组件注释）。
+ *
+ * ## 表格与卡片共用同一份格式化函数
+ *
+ * `fmtTime` / `fmtCredits` / `fmtNum` / `typeLabel` 桌面原本就在用，抽成卡片字段的
+ * `format` 复用即可，**不写第二份**。
+ */
+
+/**
+ * 卡头文本 = 类型标签。`:key` 仍是 `id`（`entry_type` 只有 5 个取值，
+ * 拿它当 `titleKey` 必然撞键 —— fixture 里 consume 有两行）。
+ * 未知类型回落 `typeLabel` 自己的 `|| entryType`（桌面表格同一个口径）。
+ */
+function ledgerTitle(row: Record<string, unknown>): string {
+  return typeLabel(String(row.entry_type ?? ''))
+}
+
+/** 账本卡片字段。5 个：时间 / 变动 / 余额 / 关联 / 备注（type 走卡头，不重复）。 */
+const ledgerCardFields = computed<CardField[]>(() => [
+  { key: 'created_at', label: t('tenants.usage.colTime'), format: (v) => fmtTime(v == null ? '' : String(v)) },
+  {
+    key: 'amount',
+    label: t('tenants.usage.colDelta'),
+    type: 'metric',
+    align: 'end',
+    // 与桌面的 `amount-neg` / `amount-pos` 同一判据：按**金额符号**，不是按 type
+    tone: (row) => {
+      const n = Number(row.amount)
+      if (n < 0) return 'danger'
+      if (n > 0) return 'good'
+      return undefined
+    },
+    format: (v) => fmtCredits(Number(v)),
+  },
+  { key: 'balance_after', label: t('tenants.usage.colBalance'), align: 'end', format: (v) => fmtNum(v == null ? undefined : Number(v)) },
+  {
+    key: 'ref_type',
+    label: t('tenants.usage.colRef'),
+    // 桌面是一格里两个 span（`ref_type` + `ref_id`），卡片 `dd` 只能给一个字符串
+    format: (v, row) => {
+      const type = v == null ? '' : String(v)
+      const id = row.ref_id == null ? '' : String(row.ref_id)
+      if (!type && !id) return '—'
+      return [type, id].filter(Boolean).join(' ')
+    },
+  },
+  { key: 'note', label: t('tenants.usage.colNote'), format: (v) => (v ? String(v) : '—') },
+])
 </script>
 
 <template>
@@ -260,6 +351,20 @@ onMounted(load)
 
     <div class="card table-card">
       <h3 class="table-title">{{ t('tenants.usage.ledgerTitle') }}</h3>
+      <ResponsiveDataView
+        :rows="ledger"
+        title-key="id"
+        :title-format="ledgerTitle"
+        :fields="ledgerCardFields"
+        table-min-width="0px"
+        :empty="isCompact && !loading && ledger.length === 0"
+        :empty-text="t('tenants.usage.emptyLedger')"
+      >
+        <template #empty>
+          {{ t('tenants.usage.emptyLedger') }}
+          <RouterLink v-if="!isAdminTenantView" :to="pricingLink">{{ t('tenants.usage.goBuyCredits') }}</RouterLink>
+        </template>
+        <template #table>
       <table class="table" style="width:100%">
         <thead>
           <tr>
@@ -296,6 +401,8 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
+        </template>
+      </ResponsiveDataView>
     </div>
   </div>
 </template>

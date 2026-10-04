@@ -121,3 +121,88 @@ describe('App.vue 接了横幅（读源文件）', () => {
     expect(appVue).toMatch(/refreshV1DataHorizon\(\)/)
   })
 })
+
+// D21（2026-10-06）的钉。缺陷形态是：**令牌不存在 ⇒ 靠字面兜底 ⇒ 暗色漏白**。
+// 原写法 `var(--kx-warning-surface, #fff8e1)` 里那四个令牌全仓从未定义，
+// 兜底于是在**两个主题下都生效**，暗色主题拿到浅奶油底配浅字，
+// 实测对比度 1.10:1（失败态 1.02:1，WCAG AA 要 4.5:1）——横幅等于隐形，
+// 而它承载的恰恰是「这些数字不可信」这句话。
+//
+// 为什么 color:check 挡不住这一类：它只断「有没有字面色」。
+// 有人把令牌名改错、或顺手把兜底删了，颜色门照样全绿，背景直接消失。
+// ⇒ 这里断的是**另一个失效形态**：本组件引用的每个令牌，
+// 都必须在浅色块与深色块里**各自**有定义（只在浅色块里定义 ⇒ 暗色漏白重现）。
+describe('D21 钉：横幅的颜色令牌在两个主题里都必须有定义', () => {
+  const __dirname = dirname(fileURLToPath(import.meta.url))
+  const bannerSrc = readFileSync(join(__dirname, 'V1DataFrozenBanner.vue'), 'utf8')
+  const styleCss = readFileSync(join(__dirname, '..', '..', 'style.css'), 'utf8')
+
+  /**
+   * 取 `选择器 {` 起、括号配平的整块文本。
+   *
+   * ⚠ 选择器必须用 **行首锚定的正则** 匹配，不能用裸 `indexOf`。
+   * style.css 第 5 行的注释里同时提到了两个主题名（`… html[data-theme='light'] /
+   * html[data-theme='dark'] 切换…`），裸 `indexOf` 会落进那句注释，
+   * 于是 light 和 dark **取到同一个块**，`dark` 集合恒等于 `light`，
+   * `missingDark` 永远不可能非空 —— 断言恒真且看着一直绿。
+   * 这是本条判据自己的第一版，变异 M-C（删掉深色块的 `--warning-bg`）rc=0 才暴露出来。
+   */
+  function blockStartingAt(css: string, selector: RegExp): string {
+    const m = selector.exec(css)
+    if (!m) throw new Error(`style.css 里找不到选择器 ${selector}`)
+    let depth = 0
+    for (let i = css.indexOf('{', m.index); i < css.length; i++) {
+      if (css[i] === '{') depth++
+      else if (css[i] === '}' && --depth === 0) return css.slice(m.index, i + 1)
+    }
+    throw new Error(`选择器 ${selector} 的花括号没配平`)
+  }
+
+  function tokenDefs(block: string): Set<string> {
+    // 只认「定义」：`--name:`。`var(--name, …)` 后面跟的是逗号不是冒号，不会命中。
+    return new Set([...block.matchAll(/(--[A-Za-z0-9-]+)\s*:/g)].map((m) => m[1]))
+  }
+
+  const lightBlock = blockStartingAt(styleCss, /^html\[data-theme='light'\]\s*\{/m)
+  const darkBlock = blockStartingAt(styleCss, /^html\[data-theme='dark'\]\s*\{/m)
+  const light = tokenDefs(lightBlock)
+  const dark = tokenDefs(darkBlock)
+
+  const styleBlock = bannerSrc.slice(bannerSrc.indexOf('<style'))
+  // ⚠ 判据口径必须与 `color:check` 一致：**先剥注释再扫**（color-token-audit.mjs:124）。
+  // 这不是放水 —— 注释是文档，取证原文（`var(--kx-warning-surface, #fff8e1)`）
+  // 本来就该出现在注释里。第一版判据没剥，于是它先抓到了我自己写的 D21 说明。
+  const declarations = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '')
+
+  it('量具自证：两个主题块真的取自**不同的**地方（否则下面那条恒真）', () => {
+    // 浅色块以 color-scheme: light 收尾、深色块以 dark 收尾（style.css:147 / :272）。
+    expect(lightBlock).toContain('color-scheme: light')
+    expect(darkBlock).toContain('color-scheme: dark')
+    expect(darkBlock).not.toContain('color-scheme: light')
+    // 并且两个块的令牌集合确实不是同一份。
+    expect([...dark].sort()).not.toEqual([...light].sort())
+  })
+
+  // 量具自证：这条断言必须真的读到了横幅的样式块，否则「全都已定义」是恒真的。
+  it('量具自证：真的读到了横幅的 <style> 块，且剥注释后仍留着颜色声明', () => {
+    expect(styleBlock).toContain('<style')
+    expect(declarations).toMatch(/var\(--[A-Za-z0-9-]+\)/)
+    // 剥掉的确实是注释本体（下面这行只在注释里出现过）。
+    expect(styleBlock).toContain('#fff8e1')
+    expect(declarations).not.toContain('#fff8e1')
+  })
+
+  it('横幅引用的每个令牌，在浅色与深色块里都各有定义', () => {
+    const used = [...new Set([...declarations.matchAll(/var\((--[A-Za-z0-9-]+)/g)].map((m) => m[1]))]
+    expect(used.length).toBeGreaterThan(0)
+    const missingLight = used.filter((t) => !light.has(t))
+    const missingDark = used.filter((t) => !dark.has(t))
+    // 两个主题分别报：只在深色块缺 = 暗色漏白；只在浅色块缺 = 亮色漏白。
+    expect({ missingLight, missingDark }).toEqual({ missingLight: [], missingDark: [] })
+  })
+
+  it('横幅的 <style> 里不再有字面颜色（color:check 的本地副本，失败信息更近）', () => {
+    expect(declarations).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(declarations).not.toMatch(/rgba?\s*\(/)
+  })
+})

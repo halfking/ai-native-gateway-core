@@ -69,6 +69,15 @@ export default {
     disable: 'تعطيل',
     enable: 'تفعيل',
   },
+  modelIdentity: {
+    client: "العميل",
+    canonical: "المعياري",
+    outbound: "الصادر",
+    titleClient: "الاسم الذي طلبه العميل",
+    titleCanonical: "الاسم المعياري",
+    titleOutbound: "الصادر / الاسم الأصلي من المنبع",
+    titleRaw: "الاسم الأصلي: {model}"
+  },
   chip: {
     status: 'الحالة: {value}',
     vendor: 'المُصنّع: {value}',

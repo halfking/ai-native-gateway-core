@@ -212,6 +212,8 @@ export default {
     recentDaysSub: "直近 {n} 日",
     statAvailableSub: "サブスク {a} · クレジット {b} · チャージ {c}",
     myAccountLink: "マイアカウント",
+    degradedFallback: "データビュー「{view}」はまだ初期化されていません。先にデータ集約マイグレーションを実行してください",
+    degradedViewLabel: "ビュー：{view}",
     chartModelTitle: "モデルリクエストランキング",
     chartModelHint: "バーをクリックして詳細を表示",
     chartModelEmpty: "モデルリクエストデータがありません",

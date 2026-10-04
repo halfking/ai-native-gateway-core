@@ -8,6 +8,8 @@ import {
   getRoutingAudit,
   type RoutingAuditEntry,
 } from '../api'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import type { CardField, CardTone } from '../components/ui/CardList.vue'
 
 const { t } = useI18n()
 
@@ -72,6 +74,123 @@ const summary = computed(() => {
     delete: entries.value.filter(e => e.action === 'delete').length,
   }
 })
+
+/**
+ * ── H6 第十条切片（2026-10-06）：路由覆盖审计表接 compact 卡片形态 ────────────
+ * 与切片七/八/九同源：`getRoutingAudit` 只有 `limit`（上限 1000）、**没有分页**，
+ * 所以只改呈现形态，**不引入连续加载**。
+ *
+ * ## 三态归属：**第一种形态**（表内三态）—— 判据是「空态时那块东西在不在」
+ *
+ * 桌面是 `<p v-if="!loading && !entries.length" class="empty">` + `<table v-else>`。
+ * 逐档推演（★ 我第一版把它读成了第四种形态，门禁当场把错读抓了出来）：
+ *   ① 空态（!loading 且无行） → 出 `.empty`，**表壳被撤掉**
+ *   ② 首载中（loading 且无行） → `v-if` 为假 ⇒ 走 `v-else` ⇒ **出空表壳**（表头在、无行）
+ *   ③ 刷新中（loading 但有旧行）→ 表照旧，旧数据留在屏上
+ * ⇒ 这正是「桌面三态在页面里、容器跟着 v-else 裁」的那一种：
+ * 容器挂在 `v-else` 上，**两档共用页面自己的 `.empty` 与空表壳**，
+ * **不传 `:empty` / `:loading`** —— 传了就是死代码，且会给桌面凭空加一个空态块。
+ * ②这一档 compact 侧就是「0 张卡」的卡片列表：与桌面的空表壳同形，不是加载动画。
+ *
+ * ## title-key 必须唯一：不要照抄 AuditLogView 的 `title-key="action"`
+ *
+ * `CardList` 的 `:key` 取自 `titleKey`（`keyOf`）。`action` 只有 insert/update/delete
+ * 三个取值 —— 拿它当键，同一列表里**所有行都是重复键**，Vue 会告警且复用整片 DOM。
+ * 这里用后端主键 `id` 当 `titleKey`，显示文本交给 `titleFormat`：
+ * **键用主键、脸用句柄**，两件事分开。
+ *
+ * ## 卡头为什么不是时间（`fmtDateTime24h` 的坑，2026-10-06 实测撞上）
+ *
+ * 我第一版拿时间当卡头，门禁立刻报「6 张卡的卡头全是 `10/5/2026`」。
+ * 根因在共享 helper：`new Intl.DateTimeFormat(locale, { hour12: false })`
+ * **没有任何日期/时间选项 ⇒ 按规范默认只输出「年/月/日」，根本没有时分**。
+ * 函数名写着 `DateTime24h`，行为是 `DateOnly`。
+ * 同一审计行 6 条全在同一天 ⇒ 卡头 6 个全同，compact 直接不可用。
+ * **该 helper 有 27 个真实调用点、跨 10 个页面**（VibeCoding / UsersView /
+ * RequestRegistry / UserDetailDrawer / …）⇒ 改它是**一次独立立项**，
+ * 不塞进这条切片。已登记为存量缺陷（见审计台账）。
+ * ⇒ 本切片只改自己的卡头选择：**覆盖 ID（`#42`）就是这一行的唯一句柄**，
+ * 没有覆盖 ID 的行退回动作译名。同时把「覆盖」字段撤掉 —— 否则卡头与字段重复。
+ *
+ * `table-min-width="0px"`：本页 `.audit-table` 只有 `width:100%`、**没有** `min-width`
+ * —— 传默认值 720px 会给窄内容凭空加一条横向滚动条。
+ *
+ * ## `#actions` 里放什么，以及为什么复用了一个死键
+ *
+ * 桌面这两样分处两地：「覆盖」格里的 `router-link`，和最后一列的展开钮。
+ * 卡片没有列的概念，于是收进 `#actions`（≤2 个，符合 `CardList` 的动作上限）。
+ * 链接标签用 `routingAudit.table.details` —— 该键 8 语言齐全但在页面上**从未被引用**
+ * ⇒ 本次切片 **0 新增 i18n 键**。
+ * ★ 这段说明原本写在模板的 `<!-- -->` 里，**搬到了这里**：
+ *   硬编码中文计数器只跳过 trim 后以 `//` / `*` / `/*` 开头的整行，
+ *   模板注释**会被计入**（实测这段 5 行贡献 17 个计数，HEAD 该文件是 0）。
+ *   处置归属见审计台账：真硬编码才改实现、注释放错地方才搬位置、
+ *   改计数器口径才动脚本（后者需拍板）。**没有把注释改写成英文去压计数。**
+ */
+function cardTitle(row: Record<string, unknown>): string {
+  const id = row.override_id
+  if (id != null) return `#${id}`
+  return actionLabel(String(row.action ?? ''))
+}
+
+/** 动作 → 卡片 tone。与桌面 `.action-insert/.action-update/.action-delete` 配色同源。 */
+function actionTone(a: string): CardTone {
+  if (a === 'insert') return 'good'
+  if (a === 'delete') return 'danger'
+  return 'neutral'
+}
+
+/** 任务类型 / Profile / 模式：桌面是同一格里的三个标签，卡片合成一个字段。 */
+function taskProfileModeText(row: Record<string, unknown>): string | null {
+  const parts = [row.task_type, row.profile, row.mode]
+    .map((x) => (x == null || String(x).trim() === '' ? '' : String(x).trim()))
+    .filter((x) => x !== '')
+  return parts.length ? parts.join(' · ') : null
+}
+
+/**
+ * compact 卡片字段。**标签全部复用 `routingAudit.table.headers.*`** ——
+ * 卡片字段与表头本来就是同一批信息，不另立词条（本次切片 0 新增 i18n 键）。
+ *
+ * 「覆盖」**不在这里**：它已经是卡头（`#42`），再列一遍就是同一行字出现两次。
+ * 桌面上那格还是链接；卡片侧由 `#actions` 的「详情」链接承担同一意图。
+ *
+ * 动作做成 `badge` + 逐行 tone：桌面那层「新增绿 / 删除红」在卡片上不能只剩文字。
+ */
+const cardFields = computed<CardField[]>(() => [
+  {
+    key: 'action',
+    label: t('routingAudit.table.headers.action'),
+    type: 'badge',
+    tone: (row) => actionTone(String(row.action ?? '')),
+    format: (v) => actionLabel(String(v ?? '')) || null,
+  },
+  {
+    key: 'ts',
+    label: t('routingAudit.table.headers.when'),
+    format: (v) => (v == null ? null : fmtDateTime24h(String(v))),
+  },
+  {
+    key: 'task_type',
+    label: t('routingAudit.table.headers.taskProfileMode'),
+    format: (_v, row) => taskProfileModeText(row),
+  },
+  {
+    key: 'model_chosen',
+    label: t('routingAudit.table.headers.model'),
+    format: (v) => shortModel(v == null ? undefined : String(v)),
+  },
+  {
+    key: 'reason',
+    label: t('routingAudit.table.headers.reason'),
+    format: (v) => (v == null || v === '' ? null : String(v)),
+  },
+  {
+    key: 'actor',
+    label: t('routingAudit.table.headers.actor'),
+    format: (v) => (v == null || v === '' ? null : String(v)),
+  },
+])
 
 onMounted(load)
 </script>
@@ -147,7 +266,16 @@ onMounted(load)
         {{ t('routingAudit.table.empty') }}
       </p>
 
-      <table v-else class="audit-table">
+      <ResponsiveDataView
+        v-else
+        :rows="entries"
+        title-key="id"
+        :title-format="cardTitle"
+        :fields="cardFields"
+        table-min-width="0px"
+      >
+        <template #table>
+      <table class="audit-table">
         <thead>
           <tr>
             <th>{{ t('routingAudit.table.headers.when') }}</th>
@@ -211,6 +339,38 @@ onMounted(load)
           </template>
         </tbody>
       </table>
+        </template>
+
+        <template #actions="{ row }">
+          <router-link
+            v-if="row.override_id"
+            class="card-link"
+            :to="`/routing/overrides#${row.override_id}`"
+          >
+            {{ t('routingAudit.table.details') }}
+          </router-link>
+          <button
+            v-if="row.expires_at || row.old_expires_at"
+            class="btn-expand"
+            @click="expandedId = expandedId === row.id ? null : row.id"
+          >
+            {{ expandedId === row.id ? '−' : '+' }}
+          </button>
+          <div v-if="expandedId === row.id" class="diff">
+            <div v-if="row.old_expires_at" class="diff-field">
+              <span class="diff-label">{{ t('routingAudit.expand.oldExpires') }}:</span>
+              <code>{{ row.old_expires_at }}</code>
+            </div>
+            <div v-if="row.expires_at" class="diff-field">
+              <span class="diff-label">{{ t('routingAudit.expand.newExpires') }}:</span>
+              <code>{{ row.expires_at }}</code>
+            </div>
+            <div v-if="!row.old_expires_at && !row.expires_at" class="text-muted">
+              {{ t('routingAudit.expand.noDiff') }}
+            </div>
+          </div>
+        </template>
+      </ResponsiveDataView>
     </section>
   </div>
 </template>
@@ -381,6 +541,18 @@ h2 {
   justify-content: center;
 }
 .btn-expand:hover { background: var(--kx-text); }
+/*
+ * compact 卡片里「详情」链接的触控目标。桌面 `.btn-expand` 是 24×24 的小方钮
+ * （贴着表格行），**直接搬到卡片上不够 48px** —— Android 控件基线要求 ≥48px。
+ * 只在卡片这条路径上抬到 48，桌面像素不动。
+ */
+.card-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  font-size: 13px;
+  color: var(--accent-h);
+}
 .expand-row {
   background: var(--bg-subtle);
 }

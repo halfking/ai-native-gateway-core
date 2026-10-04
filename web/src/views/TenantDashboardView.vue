@@ -27,9 +27,20 @@ import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
+// 2026-10-05 H6 第六条切片：呈现形态与加载方式是**两个独立维度**（规范 03 §1 / 13 §1）。
+//   桌面 → 表格 + 只取第 1 页（既有行为逐字保留）
+//   compact → 卡片 + 连续加载（顺带补上「>50 条就看不到后面」这个既有功能缺口）
+//   详细的取舍理由见下面「明细下钻」一节的注释（**不在模板里写**：CJK 计数器把
+//   `<!-- -->` 里的中文按硬编码中文计，口径是已知的偏严一侧，改注释位置而不是改门禁）。
+import { useWindowClass } from '../composables/useWindowClass'
+import { createHyperPages } from '../lib/shell/hyper/hyperPages'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
+import type { CardField } from '../components/ui/CardList.vue'
 
 const { t } = useI18n()
 const router = useRouter()
+const { isCompact } = useWindowClass()
 
 const LEGACY_STORAGE_KEY_DAYS = 'tenant_dashboard_days'
 const MAX_SPAN_DAYS = 30
@@ -108,7 +119,8 @@ const activeModels = computed(() => summary.value?.by_model?.length ?? 0)
 const degradedHint = computed(() => {
   if (summary.value?.degraded) {
     const view = summary.value.missing_view || 'data view'
-    return summary.value.hint || `数据视图 ${view} 尚未初始化，请先执行数据聚合迁移`
+    // 2026-10-05：原先这里是**硬编码中文**模板字符串，英文界面会直接露中文。
+    return summary.value.hint || t('tenants.dashboard.degradedFallback', { view })
   }
   return null
 })
@@ -153,7 +165,7 @@ async function load() {
   error.value = ''
   selectedModel.value = null
   selectedDate.value = null
-  detailRows.value = []
+  clearDetailRows()
   try {
     const [s, w] = await Promise.all([
       getMaasUsageSummary(days.value, 10),
@@ -175,25 +187,47 @@ function dateRangeForDay(day: string): { from: string; to: string } {
   return { from: start.toISOString(), to: end.toISOString() }
 }
 
-async function showModelDetail(model: string) {
-  if (selectedModel.value === model) {
-    selectedModel.value = null
-    detailRows.value = []
-    return
-  }
-  selectedModel.value = model
-  selectedDate.value = null
-  detailTitle.value = t('tenants.dashboard.detailTitleModel', { model })
-  detailLoading.value = true
-  try {
+/**
+ * ── 明细下钻（2026-10-05 H6 切片六）───────────────────────────────────────
+ * 双模板 + 双加载方式，**只作用于这张下钻表**（页面其余是 KPI/图表/实时流，不是列表）。
+ *
+ * 三处桌面取舍，理由都在这里而不是模板里：
+ * 1. 桌面**仍只取第 1 页 50 条、没有页码条** —— 既有行为逐字保留。补桌面页码条属
+ *    **新增 UI**，不在本次零回归范围内，已登记为已知边界。原先这张表取完 50 条就
+ *    再无入口，超出的明细后面根本看不到；compact 侧的连续加载顺带补上了这件事。
+ * 2. 桌面三态**仍由本页自己出**（模板里 `detailLoading` / `detailEmpty` 两个 `.empty`
+ *    div），所以容器的 `:loading` / `:empty` 都带 `isCompact` 前置 —— 桌面刷新时表格在不在。
+ * 3. `table-min-width="0px"`：本页原本**没有**表级 min-width；`.table-wrap` 也删了，
+ *    容器自带 `overflow-x`，嵌套会出双滚动条。
+ *
+ * 表格里的模型列 / 状态徽章改走 `modelCellText` / `statusText`：渲染结果逐字相同，
+ * 但去掉了那处 `|| '限流'` 的硬编码中文兜底（`t()` 找不到 key 时返回 key 本身（非空），
+ * 那个 `||` 本就是死代码）。
+ */
+
+/** 明细每页条数。原先是 `showModelDetail` / `showDateDetail` 两处各写死的 50。 */
+const DETAIL_PAGE_SIZE = 50
+
+/**
+ * 明细下钻的**筛选真源**。两个入口（点模型柱子 / 点某天）只写 `selectedModel` /
+ * `selectedDate`，请求参数从这里推导 —— 原先是两份各写一份，改时间窗要改两处。
+ * 不含 page / page_size：那是加载方式，不是筛选条件。
+ */
+function detailQuery(): { model?: string; from?: string; to?: string } {
+  if (selectedDate.value) return dateRangeForDay(selectedDate.value)
+  if (selectedModel.value) {
     const since = new Date()
     since.setUTCDate(since.getUTCDate() - days.value)
-    const res = await getRequestLogs({
-      model,
-      from: since.toISOString(),
-      page: 1,
-      page_size: 50,
-    })
+    return { model: selectedModel.value, from: since.toISOString() }
+  }
+  return {}
+}
+
+/** 桌面路径：只取第 1 页（既有行为逐字保留，桌面不新增页码条）。 */
+async function loadDetail() {
+  detailLoading.value = true
+  try {
+    const res = await getRequestLogs({ ...detailQuery(), page: 1, page_size: DETAIL_PAGE_SIZE })
     detailRows.value = res.items ?? []
   } catch (e: unknown) {
     detailRows.value = []
@@ -203,26 +237,134 @@ async function showModelDetail(model: string) {
   }
 }
 
-async function showDateDetail(day: string) {
+// ── compact 连续加载 ──────────────────────────────────────────────────────
+// 独立于上面的页码状态机：两者不共享 ref、不互相写。
+/** 服务端 count。页码路径不消费它（本页桌面没有页码条），保留是为了卡片形态可自查。 */
+const detailCount = ref(0)
+
+const detailPages = createHyperPages<RequestLogRow>({
+  pageSize: DETAIL_PAGE_SIZE,
+  // request_id 是后端主键且稳定。**不能用数组下标** —— 连续加载第 2 页的下标 0
+  // 是另一行，去重会把它当成与第 1 页第 0 行相同，表现为「行随机消失」。
+  rowKey: (r) => r.request_id,
+  fetchPage: async (p) => {
+    // ★ 这里**不**吞异常：不抛的话 `createHyperPages` 收不到，
+    // 状态停在 refreshing，尾部控件永远显示「加载中」而不会转成可重试。
+    const res = await getRequestLogs({ ...detailQuery(), page: p, page_size: DETAIL_PAGE_SIZE })
+    detailCount.value = res.count ?? 0
+    return { rows: res.items ?? [], total: res.count ?? 0 }
+  },
+})
+
+/** 实际展示的行：按档位二选一。 */
+const detailRowsForView = computed<RequestLogRow[]>(() =>
+  isCompact.value ? detailPages.rows.value : detailRows.value,
+)
+
+/** compact 下的「正在取第 1 页」。只认 refreshing —— loadingNext 是滚动加载更多。 */
+const detailBusy = computed(() => detailPages.state.value === 'refreshing')
+
+/**
+ * 重新取明细：按档位分派，且 compact 下先作废在途结果再重取。
+ * 顺序不能反：先 invalidate（作废在途并提 revision），再 loadFirst，
+ * 否则旧请求可能在新请求之后落地。
+ */
+async function reloadDetail() {
+  if (isCompact.value) {
+    detailPages.invalidate()
+    await detailPages.loadFirst()
+    return
+  }
+  await loadDetail()
+}
+
+/** 关掉下钻时把两条路径的累积行一起清掉，否则 compact 会留着上一段明细。 */
+function clearDetailRows() {
+  detailRows.value = []
+  // `_reset` 名义上是「测试与登出用」，这里用它是因为**只有它会清 rows** ——
+  // `invalidate()` 只提 revision 不清累积。不用它的话 compact 会显示上一段明细。
+  detailPages._reset()
+}
+
+/** 模型列文本。表格与卡片共用，不做第二份。 */
+function modelCellText(r: RequestLogRow): string {
+  return r.client_model || r.outbound_model || '—'
+}
+
+/** 状态徽章文本。三支都要有，缺一支徽章就变空。 */
+function statusText(r: RequestLogRow): string {
+  if (r.request_status === 'rate_limited') return t('requests.list.filter.resultRateLimited')
+  return r.success ? t('tenants.dashboard.statusOk') : t('tenants.dashboard.statusFail')
+}
+
+/** 状态徽章配色。与表格原表达式逐字一致（搬出来只是为了让表格/卡片读同一份）。 */
+function statusBadgeClass(r: RequestLogRow): string {
+  return r.request_status === 'rate_limited' ? 'badge-amber' : r.success ? 'badge-green' : 'badge-red'
+}
+
+/**
+ * 明细卡头：请求 id 截断到 8 位 + 省略号 —— 与表格那一格**同一套规则**，不做第二份。
+ * 形参用 `Record<string, unknown>`：组件契约是那个形状（泛型组件无法把 `T`
+ * 传进 prop 的函数类型），写成 `RequestLogRow` 会被逆变检查拒掉。
+ */
+function detailCardTitle(row: Record<string, unknown>): string {
+  return String(row.request_id ?? '').slice(0, 8) + '…'
+}
+
+/**
+ * compact 卡片的字段定义。**没有 `format` 就只能渲染原始值** ——
+ * 时间要本地化、模型是 client_model||outbound_model 两列拼的、
+ * 状态是三支枚举、积分要千分位，所以这里必须逐个接格式化钩子。
+ */
+const detailCardFields = computed<CardField[]>(() => [
+  { key: 'ts', label: t('tenants.dashboard.detailColTime'), format: (v) => (v == null ? null : fmtTime(String(v))) },
+  {
+    key: 'client_model',
+    label: t('tenants.dashboard.detailColModel'),
+    format: (_v, row) => modelCellText(row as unknown as RequestLogRow),
+  },
+  {
+    key: 'request_status',
+    label: t('tenants.dashboard.detailColStatus'),
+    type: 'badge',
+    format: (_v, row) => statusText(row as unknown as RequestLogRow),
+  },
+  {
+    key: 'credits_charged',
+    label: t('tenants.dashboard.detailColCredits'),
+    type: 'metric',
+    align: 'end',
+    format: (v) => creditsDisplay(v as number | null | undefined),
+  },
+])
+
+/** 卡片整卡点击：与表格里那格「请求 ID → 跳请求日志」同一意图。 */
+function onDetailRowClick(r: RequestLogRow) {
+  void router.push({ path: '/request-logs', query: { q: r.request_id } })
+}
+
+function showModelDetail(model: string) {
+  if (selectedModel.value === model) {
+    selectedModel.value = null
+    clearDetailRows()
+    return
+  }
+  selectedModel.value = model
+  selectedDate.value = null
+  detailTitle.value = t('tenants.dashboard.detailTitleModel', { model })
+  void reloadDetail()
+}
+
+function showDateDetail(day: string) {
   if (selectedDate.value === day) {
     selectedDate.value = null
-    detailRows.value = []
+    clearDetailRows()
     return
   }
   selectedDate.value = day
   selectedModel.value = null
   detailTitle.value = t('tenants.dashboard.detailTitleDay', { day })
-  detailLoading.value = true
-  try {
-    const { from, to } = dateRangeForDay(day)
-    const res = await getRequestLogs({ from, to, page: 1, page_size: 50 })
-    detailRows.value = res.items ?? []
-  } catch (e: unknown) {
-    detailRows.value = []
-    error.value = e instanceof Error ? e.message : t('tenants.dashboard.detailLoadFailed')
-  } finally {
-    detailLoading.value = false
-  }
+  void reloadDetail()
 }
 
 // 实时请求流：点击详情新开页
@@ -339,7 +481,7 @@ onUnmounted(() => {
     >
       <span class="alert-icon" aria-hidden="true">ℹ️</span>
       <span class="alert-text">{{ degradedHint }}</span>
-      <span v-if="degradedView" class="alert-meta">视图：{{ degradedView }}</span>
+      <span v-if="degradedView" class="alert-meta">{{ t('tenants.dashboard.degradedViewLabel', { view: degradedView }) }}</span>
     </div>
 
     <!-- 错误态：带重试按钮的友好提示 -->
@@ -569,36 +711,65 @@ onUnmounted(() => {
     <!-- 详情 -->
     <div v-if="detailTitle" class="card detail-card">
       <div class="card-title">{{ detailTitle }}</div>
-      <div v-if="detailLoading" class="empty">{{ t('tenants.dashboard.detailLoading') }}</div>
-      <table v-else-if="detailRows.length" class="detail-table">
-        <thead>
-          <tr>
-            <th>{{ t('tenants.dashboard.detailColTime') }}</th>
-            <th>{{ t('tenants.dashboard.detailColModel') }}</th>
-            <th>{{ t('tenants.dashboard.detailColStatus') }}</th>
-            <th style="text-align:right">{{ t('tenants.dashboard.detailColCredits') }}</th>
-            <th>{{ t('tenants.dashboard.detailColRequestId') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="r in detailRows" :key="r.request_id">
-            <td class="mono">{{ fmtTime(r.ts) }}</td>
-            <td><code>{{ r.client_model || r.outbound_model || '—' }}</code></td>
-            <td>
-              <span class="badge" :class="r.request_status === 'rate_limited' ? 'badge-amber' : r.success ? 'badge-green' : 'badge-red'">
-                {{ r.request_status === 'rate_limited' ? t('requests.list.filter.resultRateLimited') || '限流' : r.success ? t('tenants.dashboard.statusOk') : t('tenants.dashboard.statusFail') }}
-              </span>
-            </td>
-            <td class="num credits">{{ creditsDisplay(r.credits_charged) }}</td>
-            <td class="mono">
-              <RouterLink :to="{ path: '/request-logs', query: { q: r.request_id } }">
-                {{ r.request_id.slice(0, 8) }}…
-              </RouterLink>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="empty">{{ t('tenants.dashboard.detailEmpty') }}</div>
+      <div v-if="detailLoading && !isCompact" class="empty">{{ t('tenants.dashboard.detailLoading') }}</div>
+      <div v-else-if="!isCompact && !detailRows.length" class="empty">{{ t('tenants.dashboard.detailEmpty') }}</div>
+      <ResponsiveDataView
+        v-else
+        :rows="detailRowsForView"
+        title-key="request_id"
+        :title-format="detailCardTitle"
+        :fields="detailCardFields"
+        table-min-width="0px"
+        :loading="isCompact && detailBusy"
+        :empty="isCompact && !detailBusy && detailRowsForView.length === 0"
+        :empty-text="t('tenants.dashboard.detailEmpty')"
+        :clickable="true"
+        :clickable-label="t('tenants.dashboard.detailColRequestId')"
+        @row-click="onDetailRowClick"
+      >
+        <template #table>
+        <table class="detail-table">
+          <thead>
+            <tr>
+              <th>{{ t('tenants.dashboard.detailColTime') }}</th>
+              <th>{{ t('tenants.dashboard.detailColModel') }}</th>
+              <th>{{ t('tenants.dashboard.detailColStatus') }}</th>
+              <th style="text-align:right">{{ t('tenants.dashboard.detailColCredits') }}</th>
+              <th>{{ t('tenants.dashboard.detailColRequestId') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in detailRows" :key="r.request_id">
+              <td class="mono">{{ fmtTime(r.ts) }}</td>
+              <td><code>{{ modelCellText(r) }}</code></td>
+              <td>
+                <span class="badge" :class="statusBadgeClass(r)">
+                  {{ statusText(r) }}
+                </span>
+              </td>
+              <td class="num credits">{{ creditsDisplay(r.credits_charged) }}</td>
+              <td class="mono">
+                <RouterLink :to="{ path: '/request-logs', query: { q: r.request_id } }">
+                  {{ r.request_id.slice(0, 8) }}…
+                </RouterLink>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        </template>
+      </ResponsiveDataView>
+
+      <!-- 连续加载尾部：仅 compact。屏幕上不会同时出现两个「加载更多」语义。
+           理由写在 <script> 的「明细下钻」一节。 -->
+      <HyperLoadMore
+        v-if="isCompact"
+        :state="detailPages.state.value"
+        :has-more="detailPages.hasMore.value"
+        :loaded-count="detailPages.loadedCount.value"
+        @load-more="detailPages.loadNext()"
+        @retry="detailPages.retry()"
+      />
+
       <div class="detail-footer">
         <RouterLink :to="'/request-logs'" class="link-sm">{{ t('tenants.dashboard.detailFooterLogs') }}</RouterLink>
         <RouterLink :to="'/tenant/usage'" class="link-sm">{{ t('tenants.dashboard.detailFooterUsage') }}</RouterLink>
