@@ -9796,3 +9796,111 @@ ensure 函数含 `USING columnar`、`schema_migrations` **只有 828 没有 829*
 ⇒ 共同形状永远是同一句：**量具能跑完、能出数、看不出异常，而它量的不是那件事。**
 
 ⇒ 正确口径已写进审计 §9.202.3，下一轮**照抄，别重写**。
+
+---
+
+### ㉗ `session_turns.is_final_success` **从来没有被任何代码写过**（§9.203）
+
+**这是本轮找到的最严重的一个，性质是「API 改对了，数据没跟上」。**
+
+真库实测（2026-10-05）：
+
+| 面 | 口径 | 结果 |
+|---|---|---|
+| v1 `request_logs_hot` | 近 7 天 `is_final_success = TRUE` | **463** / 4,532 行 |
+| v2 `session_turns` | 全表 `is_final_success IS NOT NULL` | **0** / **1,689,308** 行 |
+
+⚠ 是 **NOT NULL** 为 0，不是 TRUE 为 0 ⇒ **这一列从未被写入过**。
+
+而 schema 侧**全部齐备**：列存在、`turn_writer.go:396` 的 INSERT 列清单**已经包含**它、
+`uq_session_turns_hot_final_success` / `uq_session_turns_final_success` / 各月分区
+各一张 `(tenant_id, session_id, partition_date) WHERE is_final_success` **全部存在**。
+⇒ **唯一性约束一直在对一个永远为空的集合生效。**
+
+**用户可见后果**：`admin/session_online.go` 的会话时间线 2026-09-30 迁到 session 族
+原生源后，`deriveTurnOutcome` 的前两个分支（`final_success` / `superseded_success`）
+**双双不可达** ⇒ 每一个成功轮次都被标成普通 `success`。
+**独立旁证**：`db/session_family_column_availability_test.go` 早就报
+`GO EMPTY ON THE SESSION SIDE (2): client_protocol, is_final_success`，一直亮着没人去读它指向哪。
+
+**已修（写侧）**：新增 `internal/sessionv2mirror/final_success_turn.go`，
+落点与 `is_abandoned`（migration 821）**完全同款**——因为机械原因一样：
+v1 认领在 telemetry 事务里，session turn 在镜像 hook 之后**异步**写，
+从 telemetry 侧发标记必然与插入竞态。
+- telemetry：认领成功才置 `entry.FinalSuccessClaimed`；
+  `updateRequestLog` 的 `fallback := *entry` 分支**把标志回拷**（不拷就丢，T0Missing 踩过）。
+- 落点：自带事务 + `setBypassGUCs` + tenant GUC + **两张脸** + 幂等 + 指标。
+- live hook 与 outbox 回放**两条路径**都在 `w.Write` 之后打标。
+- ⚠ 标志**必须序列化**（`json:"final_success_claimed,omitempty"`），与 `T0Missing` 的 `json:"-"` 不同：
+  outbox 是在认领成功的**同一事务**里登记的，正是「认领了但镜像行没落地」那个洞的修补路径。
+- **session 侧不自己认领，只镜像 v1 的裁决**：v1 已 race-proof，每会话至多一个授予 ⇒
+  不可能违反 session 侧唯一索引。万一真有两个，`mark_superseded` 单独记（说明两族对「谁赢了」有分歧）。
+
+**配 4 个门全绿**（`internal/sessionv2mirror/`）：3 个静态接线 +
+1 个真库（种行 → 标记 → 回读 + 幂等 + 2 条阴性对照 + 残留复核）。
+
+**⚠ 遗留**：**历史数据未回填**（→ 决策表 **D32**）。可回填量已实测：
+`request_logs_2026_09` 的 107,794 个 v1 winner 中 **107,756** 能命中（99.96%），
+`2026_10` 另有 2,425 个；`matched == distinct` ⇒ 无重复行，唯一索引可满足。
+连接耗时 5.1s。**UPDATE 耗时未实测**，所以 D32 的选项 1/2/3 还没定。
+⚠ 不回填的后果：写侧修复只对**新请求**生效；已存在的会话**永远**显示不出最终成功轮，
+而 v1 退役后这份信息**再也无法恢复**。
+
+### ㉘ ⚠ 这一节我把量具写坏了**三次**，外加揪出一个**生产代码**的假警报
+
+| # | 错法 | 报出来的现象 | 真因 |
+|---|---|---|---|
+| 1 | 回读只查 `session_turns` 母表 | hot 行明明标上了却报「仍非 TRUE」 | **`session_turns_hot` 不是 `session_turns` 的分区**（hot 是独立表，月度分区才是母表子表） |
+| 2 | 给两张脸种**不同 request_id** 却只调一次标记，然后要求两次回读都真 | 父表腿报「没生效」 | 标记按 request_id 定位；一张行要么在 hot 要么已 promote，**不会同时在两处**。量具建模错了 |
+| 3 | 阴性对照 B：wrong-tenant 行种在 hot，回读只查母表 | 「通过」 | **这条对照是恒真的**——母表里永远查不到那行 |
+| 4 | 清理只删母表 | 门自己的残留复核抓到 1 行 | 同 #1，两张脸要一起删 |
+| 5 | **阴性对照 B 复用了阳性行的 `session_id`** | 变异把 tenant 谓词换成恒真表达式，**门仍然 PASS** | 标记 wrong-tenant 行时撞上 `uq_session_turns_hot_final_success`（阳性行已持标记）⇒ 23505 ⇒ 走 `mark_superseded` **提前返回，根本没执行到 tenant 谓词** |
+
+⇒ 本次任务里**第 7 次**「量具读错了对象」。
+⇒ **#3 与 #5 是新变种：对照本身恒真。** 前 6 次是量具读错对象，这两次是
+量具/对照**根本没在被检验的对象上**却仍然报绿。恒真的判据不会变红，
+所以它连「判据红了先怀疑判据」这条自救路径都用不上——
+**这比读错对象更危险，因为它连报警的机会都不给。**
+
+★ **#5 是本轮最实用的一条方法论，也是唯一一条靠变异测试才发现的。**
+前三项在写门时被自己的断言抓住，#4 被门自带的残留复核抓住；
+#5 是在「验证这道门到底有没有牙」时才暴露的——
+**把 tenant 谓词换成恒真表达式，门照样绿。**
+⇒ **阴性对照必须与阳性行解耦到不可能互相短路。**
+凡是要靠「唯一索引 / 唯一键 / 排斥约束」判定成败的对照，
+它的种子行必须避开阳性行触发该约束所需的**同一组键**；
+否则对照测的是「约束有没有挡住」，不是「谓词有没有生效」。
+⇒ 另一条同源教训：**变异没生效时，「测试通过」什么都不能证明。**
+本轮第一次跑变异 2 时 `perl` 正则没匹配上、文件其实没变，
+而门照样「通过」——**先验证变异落地（diff 备份），再读测试结果。**
+
+★ **#4 还牵出一个生产代码的真缺陷**（不是门的问题）：第一版把「0 行」
+一律记成 `mark_no_row` + WARN，于是**幂等重跑会打出一条
+「v1 认领了但 turn 不在两张脸上」的假警**——而那正是这条告警要抓的真故障。
+**告警一旦会说假话就等于没有告警。**
+已改为：0 行时先探测行是否存在，行在且已标记 ⇒ `mark_noop`（Debug 不告警），
+行不在 ⇒ `mark_no_row`（Warn）。
+
+### ㉙ 回归基线（同 base 实测，不凭记忆）
+
+| 包 | 本轮 | origin/main 同 base | 判定 |
+|---|---|---|---|
+| `internal/sessionv2mirror` | ok | — | 新增 4 门全绿 |
+| `domains/hooks/observability/telemetry` | ok | — | 无回归 |
+| `domains/session/...` | ok | — | 无回归 |
+| `admin` | **FAIL 4** | 见下 | **与基线同 4 条** |
+| `db` | FAIL | **FAIL（逐位相同）** | 既有失败，非本轮引入 |
+| `installer`（独立 module） | ok 全绿 | — | 无回归 |
+| `internal/sqlguard` | ok | — | 无回归 |
+
+⚠ **`db` 的 FAIL 是既有的**：`work_type` unservable + 7 个 `RetirementColumnFill` 漂移
++ 5 个 structural gaps。在 **origin_main（`909b4b047`，无我任何改动）** 上以
+**完全相同**的断言 FAIL，7 个漂移数值**逐位相同**
+（12.28/18.80、90.12/100.00、46.91/64.80、54.73/100.00、53.35/100.00、39.78/100.00）
+⇒ **本轮零新增 FAIL**。
+★ 顺带：这一轮**先怀疑了判据**——我的真库门要往正在被别的真库门测量的库写探针行，
+所以我怀疑是污染，跑去 origin/main 单跑了一遍基线才发现数字完全一致。判据没红，疑对了方向。
+
+⚠ **`go test ./installer/...` 会报 `[setup failed]`**，那**不是回归**：
+`installer` 是独立 Go module，根模块的 `./...` 模式覆盖不到它。
+要在 `installer/` 目录里跑 `go test ./...`。

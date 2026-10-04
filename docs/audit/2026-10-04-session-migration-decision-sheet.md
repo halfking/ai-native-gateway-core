@@ -2375,3 +2375,68 @@ DDL/分区树/约束/索引（§9.185）。
     视图 21 → 20 列、`security_invoker` 保留、行数 **2031 前后不变**（零丢失）。
     `TestDeployedViewOverColumnarIsServable_RealDB` 由 **FAIL 1/147 转 PASS 0/146**。
     `schema_migrations` 已登记 828。
+
+### 🆕 D32（2026-10-05 新增，§9.203）：`session_turns.is_final_success` 从未被写过 —— **写侧已修，历史数据待拍板**
+
+- **事实**（真库实测，`llm-gateway-pg` / `llm_gateway`）：
+  * v1 `request_logs_hot` 近 7 天 `is_final_success = TRUE`：**463** / 4,532 行；
+  * v2 `session_turns` 全表 `is_final_success IS NOT NULL`：**0** / **1,689,308** 行
+    （是 NOT NULL 为 0，不是 TRUE 为 0 ⇒ **这一列从未被写入**）。
+  * 而 schema 侧**全部齐备**：列存在、`turn_writer.go:396` 的 INSERT 列清单已含该列、
+    `uq_session_turns_hot_final_success` / `uq_session_turns_final_success` /
+    各月分区各一张 `(tenant_id, session_id, partition_date) WHERE is_final_success`
+    部分唯一索引**全部存在**。
+  * ⇒ **唯一性约束一直在对一个永远为空的集合生效。**
+- **用户可见后果**：`admin/session_online.go` 的会话时间线 2026-09-30 迁到 session 族
+  原生源后，`deriveTurnOutcome` 的前两个分支（`final_success` / `superseded_success`）
+  **双双不可达** ⇒ 每一个成功轮次都被标成普通 `success`。
+  **API 改对了，数据没跟上**——这正是 goal 里「确保数据在更改前后一致」撞上的点。
+- **独立旁证**：`db/session_family_column_availability_test.go` 早就报
+  `GO EMPTY ON THE SESSION SIDE (2): client_protocol, is_final_success`，
+  一直亮着没人去读它指向哪里。
+- ✅ **写侧已修（属主授权「修正发现的问题」）**：新增
+  `internal/sessionv2mirror/final_success_turn.go`，落点与 `is_abandoned`（migration 821）同款；
+  telemetry 在认领成功时置 `entry.FinalSuccessClaimed`，live hook 与 outbox 回放
+  **两条路径都在 `w.Write` 之后**打标。session 侧**不自己认领**，只镜像 v1 的裁决
+  （v1 已是 race-proof，每会话至多一个授予 ⇒ 不可能违反 session 侧唯一索引）。
+  配 4 个门（3 静态接线 + 1 真库带 2 条阴性对照与残留复核），全绿。
+- ⚠ **历史数据未回填**，需要拍板：
+  * 可回填量已实测：`request_logs_2026_09` 的 **107,794** 个 v1 winner 中
+    **107,756** 能在 `session_turns_2026_09` 按 `request_id` 命中（**99.96%**），
+    `2026_10` 另有 2,425 个 v1 winner。且 `matched == distinct` ⇒ 无重复行，
+    部分唯一索引可满足。连接本身耗时 **5.1s**（107,794 次索引查找）。
+  * **不做的后果**：写侧修复只对**新请求**生效；已存在的会话时间线**永远**显示不出
+    最终成功轮。而 v1 退役后这份信息**再也无法恢复**。
+  * **选项**：
+    1. **受追踪的 startup 迁移 830**（与 828/829 同款五点同步）：自动、可复现、
+       新装库上是 no-op。代价：约 11 万行 UPDATE 的启动时间成本（**尚未实测**，
+       需先量；5.1s 只是连接成本，UPDATE 含索引维护会明显更久）。
+    2. **operator 脚本**（与 `scripts/audit/mirror_outbox_backfill.sql` 同款先例）：
+       显式、可评审、无启动成本；代价是「记得跑」，且不受 `schema_migrations` 追踪
+       （与 D31-a 同类问题，但数据回填幂等可重跑，危害小于 DDL 缺口）。
+    3. **不回填**：只修写侧，接受历史会话时间线永远缺 `final_success`。
+  * **我的建议**：**选项 1**，但**必须先实测 UPDATE 的真实耗时**再定；
+    若超过可接受的启动预算就退到选项 2。**这是属主决定**——
+    启动期成本与「历史可见性」之间的取舍不该由我单方面拍。
+  * ⚠ 本轮**未做**：我只实测了连接成本与命中量，**没有实测 UPDATE 耗时**，
+    也没有应用任何回填。
+
+### 🆕 D33（2026-10-05 新增，顺带发现）：`TestRequestLogInsertParamCount` 在真库上**恒红**，且平时看不见
+
+- **现象**：`domains/hooks/observability/telemetry` 的 `TestRequestLogInsertParamCount`
+  **只在设了 `TEST_DATABASE_URL` 时才运行**；不设时它 `Skip` 并报 PASS。
+  一旦连上真库，稳定失败：
+  `verify: ERROR: column "request_body" does not exist (SQLSTATE 42703)`。
+- **根因**（`client_live_test.go:174-178`）：验证语句写的是
+  `SELECT upstream_finish_reason, request_body::text, response_body::text FROM request_logs_hot`，
+  但这两列早已随 bodies **面拆分**迁到 `request_logs_bodies_hot`，主表上不再存在。
+  ⇒ **测试断言的是拆分前的 schema。**
+- ⚠ **既有缺陷，非本轮引入**：在 **origin/main（`909b4b047`，无我任何改动）**
+  上以**完全相同的错误**失败（同 base 实测，不是推理）。
+- ⚠ **它一直被「Skip 即绿」掩盖**：任何不带 DSN 的 `go test ./...` 都看不到它。
+  这与「零行不是绿」「`ok` 不可区分通过/跳过」是同一族问题。
+- **本轮未修**：修它要先确认 bodies 面拆分后的正确契约
+  （`request_logs_bodies_hot` 里是否压缩、列名与语义是否仍对应、
+  原本「主表不保留完整 body」这条断言该怎么表达），属于 bodies 拆分那条线
+  （与 D30-a / 829 同一区域）的决策，不该在本轮顺手改。
+  ⇒ **请拍板**：单独排一轮修这条测试，还是并进 bodies 面拆分的收口。
