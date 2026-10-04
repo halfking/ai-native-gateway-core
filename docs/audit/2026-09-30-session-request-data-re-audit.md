@@ -23963,3 +23963,70 @@ public.supplier_errors_unified.source
 - `retirementBreakers` 登记表**未新增条目**（5 条原样，且无 stale）。
 - 视图臂读方**不进**登记表，改为门内显式日志（10 个）。
   **处置属属主决定** ⇒ 决策表新增 **D29-d**。
+
+---
+
+## §9.200 D30-d 的负结果 + 一个更大的发现：这个视图**不可从仓库复现**
+
+### §9.200.1 授权的修法**实测无效**
+
+D30-d 选定的修法是「把 `'hot'::text AS source` 换成**基于基表列**的表达式」。
+在真库上用事务内 `CREATE VIEW` + `ROLLBACK` 实测（不留痕）：
+
+| 变体 | 结果 |
+|---|---|
+| `CASE WHEN <rel>.id IS NOT NULL THEN 'hot' ELSE 'historical' END::text AS source` | ❌ 仍报 `cache lookup failed for attribute source of relation 12964345` |
+| `tenant_id AS source`（纯改名，源列真实存在） | ❌ 同样报错 |
+| 两条腿各包一层 CTE | ❌ 换成**另一种**失败：`invalid perminfoindex 0 in RTE with relid 0`（集合算子 + 列存） |
+| **去掉 `source` 列** | ✅ 正常返回行 |
+| `SELECT * FROM supplier_errors_unified`（含 source 但不点名） | ✅ 正常 |
+| `SELECT id, source FROM …` / `SELECT source, id FROM …` | ❌ 两种顺序都失败 |
+
+⇒ **触发条件不是「合成常量」，而是「视图输出列不是基表列的直接 Var」**。
+只要外层查询**点名**要第 1 列，列存 RTE 就解析不出这个属性；
+`SELECT *` 之所以能过，是因为 planner 把用不到的视图列裁掉了。
+
+⇒ 唯一实测可行的修法是**删掉 `source` 列**，那是**视图契约变更**，
+超出「把合成列换成基表列表达式」的授权范围，**本轮未执行**。
+
+### §9.200.2 更大的发现：这个视图在仓库里**不存在**
+
+| 查了什么 | 结果 |
+|---|---|
+| `sql/schema/01-schema.sql` | **0** 处 |
+| `deploy/sql/schemas/baseline/01-schema.sql` | **0** 处 |
+| `installer/cmd/llm-gw-installer/embeddata/01-schema.sql` | **0** 处 |
+| `sql/migrations/startup/**` | **0** 处 |
+| `installer/.../embeddata/startup/**` | **0** 处 |
+| 唯一定义处 `deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql:222` | 1 处 |
+| `schema_migrations` 里 `V371` | **count = 0**（最高只到 V359） |
+
+而视图**确实存在于本机库**，且无任何依赖视图（`pg_depend` 查询 0 行，可安全 DROP+CREATE）。
+
+⇒ **这个视图不是从仓库可复现的。** 一个全新安装/重建的库不会有它，
+而 admin 的读端（`admin/errors_trend.go:12`、`admin/provider_credential.go:1243`、
+`admin/handler.go:134`）都查它。
+⇒ 这也解释了 §9.198 的仓库 SQL 普查为什么一条都没命中它——它压根不在仓库里。
+
+⚠ **这比 §9.197.5 的列存投影问题更基础**：即便把 `source` 修好，
+视图**本身**仍然不可复现。处置是**两件事**，不能当成一件。
+
+### §9.200.3 D30-a 的真实规模（本地实测，2026-10-05）
+
+「倾向回滚列存转换」落地前必须知道的四件事：
+
+1. **回滚 765 不足以止血**。765 的 A 段把 `ensure_request_logs_bodies_partition`
+   重定义为「有 `citus_columnar` 就用 columnar 建月分区」——
+   只要这个函数还在，**新分区会继续被建成列存**。
+2. **现有 `.down.sql` 根本不转分区**，它自己写着：
+   「columnar 分区一旦承接数据即**不可无损回转**（heap 列存互转需重写全表，
+   且 columnar 无 UPDATE/DELETE 路径）。本 down 不触碰分区，
+   仅供回滚演练，**不要在生产执行**。」
+3. **代价（本机实测）**：7 个族的列存分区合计 **3,359 MB**，
+   其中 `request_logs_bodies_2026_09` 一个就 **3,026 MB**。
+   转回 heap = 全表重写，需要维护窗口。
+4. **另外 6 个族不由 765 管**（`routing_decision_log` 268 MB、
+   `credential_model_index` 30 MB 等各有自己的迁移历史）。
+   「回滚列存转换」若按字面执行，范围远大于 765。
+
+⇒ 决策表 D30-a 需要把「回滚」的范围写清楚，否则它不是一个可执行的选项。
