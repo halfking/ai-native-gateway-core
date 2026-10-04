@@ -24433,3 +24433,74 @@ race-proof 的（部分唯一索引 + savepoint 吸收 23505），每个会话�
 `session_family_column_availability_test.go` 早就在信息行里报了
 `is_final_success` 是空的，但那是 `t.Log`，不是断言 —— 于是没人读它指向哪里，
 这一空就是 **6 天**。
+
+---
+
+## §9.205 D33：一条**从来没跑通过**的测试，里面藏着**两层**缺陷
+
+上一轮记下 `TestRequestLogInsertParamCount` 在真库上恒红、被「Skip 即绿」掩盖，
+判定为「按 bodies 面拆分之前的 schema 断言」。本节把它修掉，
+结论比那一句严重：**它从来没有跑到过终点。**
+
+### §9.205.1 第一层：验证语句停留在拆分前的 schema
+
+它对主表做的是：
+
+```sql
+SELECT upstream_finish_reason, request_body::text, response_body::text
+FROM request_logs_hot
+```
+
+而 bodies 面拆分之后，`request_body` / `response_body` **已不在主表上**
+（实测：`request_logs_hot` 与 710 视图 `request_logs_with_current_month`
+都只剩 `request_preview` / `response_preview`）⇒ `42703`。
+
+⚠ 这条测试是**部分迁移**的：后面的第 3–5 段**已经**改用
+`request_logs_bodies_hot`，只有**第一段**留在旧 schema。
+改的人改了一半 —— 而「改了一半」恰好是最难发现的形态，因为
+**读代码时每一段单独看都合理**。
+
+### §9.205.2 关键判断：那条不变式不能靠「断言为 NULL」来守
+
+原断言是 `if gotRequestBody != nil { t.Fatal("主表不得保留完整 body") }`。
+拆分之后这**两列根本不存在** ⇒ 这条不变式已经变成**结构保证**。
+如果只是把 SELECT 改掉，测试会绿，但那条不变式从此**只是碰巧成立** ——
+哪天有人把列加回来，它静默失效，而且没有任何东西会发现。
+
+⇒ 所以改成把它**显式钉住**：`request_body` / `response_body`
+必须**不存在**于 `request_logs_hot`（不是「存在但为 NULL」）。
+主表承载的是**截断 preview**，所以同时断言 preview 哨兵值真的落库
+（entry 里 `RequestPreview="hello"` 与完整 body 不同，能分辨「写进去的是 preview」
+而不是「body 被顺手搬回了主表」）。
+
+### §9.205.3 第二层：**被上一层的失败挡住的空指针 panic**
+
+修好第一层后再跑，立刻 panic 在 `require.JSONEq(t, *entry.RequestBody, ...)`：
+`persistRequestLog` 成功后调 `releaseBodies()`，把 entry 上的三件套正文**置 nil**
+（`client.go:1221`）。
+
+⇒ **这条测试从来没有执行到过这一行。** 上层先炸，它就没机会。
+这是「修好一层，下一层缺陷才现形」的教科书案例，
+也说明**「测试存在」与「测试跑通过终点」是两件事** ——
+后者才是它有没有在守任何东西的前提。
+
+修法：写入**之前**把哨兵正文取成局部量，断言对照副本，绝不解引用 `entry`。
+
+### §9.205.4 顺带暴露：失败信息打的是**指针地址**
+
+变异测试时 `%v` 一个 `*string` 印出的是 `request_preview = 0x62fddf94b980`。
+**信息量为零的失败信息，等于让人从头再查一遍。**
+已改为解引用后打值（nil 显式打成 `<nil>`）。
+
+### §9.205.5 同类清扫
+
+对全仓 `*_test.go` 扫 `request_body` / `response_body`：
+其余引用**全部**已走 `request_logs_bodies_*`（拆分后的正确路径）或自建隔离 schema。
+⇒ `TestRequestLogInsertParamCount` 是**最后一个**还在主表脸上选 body 列的测试。
+
+### §9.205.6 门状态
+
+`telemetry` 包由 **FAIL 1 → ok**。变异验证两条新断言有牙：
+结构断言指向主表真实存在的列 ⇒ 精确报红；
+preview 期望值改错 ⇒ 精确报红。测试自清理经核对（三张表 0 残留），
+无 DSN 时正常 Skip 而非红。
