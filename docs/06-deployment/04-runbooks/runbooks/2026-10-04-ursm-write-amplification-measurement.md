@@ -2745,3 +2745,412 @@ A 方案的门控条件是 `last_seen_at < now() - 5min`。`last_seen_at` 是
 `substr($0,1,16)` 漏了 JSON 的 `{"time":"` 前缀导致时间窗一行没滤掉；
 awk 把**匹配行数**当总行数导致打出「100% 含该串」（实际 0.64%）；
 `grep -c` 整个文件却标「近 30 分钟」。已写进记忆。
+### 10.23 ★★★ `URSM_V2_REDIS_DB=14` 在 **shadow 模式下是不完整的**（2026-10-05 03:00 实测，已回滚）
+
+§5.7.8 定位过迁键失败的根因（bootstrap 写 db2 / manager 校验 db14），
+`d0a353d53` 已修。2026-10-05 按授权在 245 上重新加 `URSM_V2_REDIS_DB=14` 并部署，
+**启动干净，但仍不可用**：
+
+```
+ursm.v2: using dedicated redis db   db=14  gateway_db=2
+ursm.v2 manager constructed         mode=shadow ready=true
+ursm.v2: persist writer started     interval_sec=60
+ursm.v2: persist collect empty      pattern=ursm:v2:node:* recovery_epoch=0   ← 每分钟一次
+```
+
+**没有 `gate opened after bootstrap and coverage validation` 那一行。**
+
+#### 根因：bootstrap 只在 `ModeAuthoritative` 下跑（`cmd/gateway/main.go:1225`）
+
+```go
+if ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
+    result, bootstrapErr := applyBootstrapWithRetry(dbConn.Pool(), ursmV2Redis, ursmV2Cfg)
+    ...
+} else {
+    go func() { /* 异步 legacy 兼容迁移 */ }()
+}
+```
+
+245 的 `URSM_V2_MODE=shadow` ⇒ 走 else 分支 ⇒ **bootstrap 一次都不跑**。
+db14 起初是空的 ⇒ `persist collect empty`。
+
+#### 实测后果
+
+| | 改之前 | 加上 db14 之后 |
+|---|---|---|
+| `persist committed` | 每分钟 ~1,315 行 | **0** |
+| `persist collect empty` | 0 | **每分钟 1 次** |
+| db14 键数 | — | **1**（只有 `ursm:v2:meta:ready`） |
+
+PG 侧快照仍在写（`ursm_node_snapshot_min` 最新快照仅滞后 41 秒），
+因为 154 还在 db2 上正常供数 ⇒ **不是故障，是 245 的 v2 写入变成空操作**（降级）。
+
+#### 处置：已回滚并验证恢复
+
+移除该行 → 重新部署 → `persist committed rows=1263/1262` 恢复，
+`collect empty` 归零，且启动日志不再声明 dedicated db。
+
+#### ⇒ 迁键要真正成立，必须补上其中一样
+
+1. **切 authoritative 模式**（`URSM_V2_MODE=authoritative`）：bootstrap 会跑并把
+   node hash 写进 db14。这是**完整的切换**，代价与风险都远大于「加一行 env」。
+2. **先做 db2→db14 的键复制**：让 db14 先有数据，shadow 模式下的 writer
+   才有东西可收。竞态窗口与回退方案见 §5.7.5/§5.7.7。
+
+★ **教训**：上一轮我把这次失败归因为「变量被回滚了」，那是**表象**。
+  变量 23:52 确实被回滚过，但**即使不���滚，它也不会工作** ——
+  缺的不是那行 env，是 authoritative 模式或一份数据。
+  ⇒ 「上一轮失败的原因」和「这次一定会成功」是两件事，别把前者当后者的保证。
+
+#### 顺带一条：`shadow` 是不是正确的模式，本身要重新拍板
+
+`shadow_double_write=1`、`shadow_sample_rate=0.01` 意味着 v2 只以 1% 采样写影子，
+而**权威路径仍是 legacy**。既然 §10.19/§10.20 已把 monthly ANALYZE 的成本定位清楚，
+「URSM 到底在不在关键路径上」这个问题值得单独答一次，而不是默认沿用 shadow。
+### 10.24 ✅ A 方案机队完整生效后的实测：**4.88× 降幅**（21.56 → 4.42 upd/s）
+
+§10.21 测到「收益是零」，根因是 245 跑着不含该修复的二进制。
+2026-10-05 03:00 重新部署 245（`2458/2459-0978171a`），
+**两台现均含该修复**（用代码验证，不靠 SHA）：
+`git show <commit>:apihub/pg_store.go | grep -c assetHeartbeatRefreshInterval` 两边都是 **3**。
+
+#### 1. 40 分钟窗口（每 300s 一个采样）
+
+| 窗口 | Δ | 速率 |
+|---|---|---|
+| 03:19:40→03:24:47 | 1,312 / 307s | 4.27 |
+| 03:24:47→03:29:49 | 1,458 / 302s | 4.83 |
+| 03:29:49→03:34:56 | 1,307 / 307s | 4.26 |
+| 03:34:56→03:39:58 | 1,308 / 302s | 4.33 |
+| 03:39:58→03:45:00 | 2,142 / 302s | **7.09** ← 唯一离群窗，跨了 2 个突发 |
+| 03:45:00→03:50:04 | 1,333 / 304s | 4.38 |
+| **整段（30 分钟）** | **8,860 / 1,824s** | **4.86** |
+
+6 个窗口：**中位数 4.36**、均值 4.86、σ=1.02（σ 全由那个 7.09 贡献）。
+**取中位数 4.36 作代表值**，理由见下：写入是每 5 分钟一次的尖峰
+（§4），300 秒窗口随相位落点而抖动，一个窗跨到 2 个尖峰就会偏高。
+
+| | 速率 | 每天行重写 |
+|---|---|---|
+| 修复前（§10.21，机队不完整） | 21.56 | 1,862,784 |
+| **修复后（中位数）** | **4.36** | **376,704** |
+| 修复后（整段均值） | 4.86 | 419,684 |
+| 降幅 | **4.44× ~ 4.94×（−77% ~ −80%）** | — |
+
+#### 2. ★★ 实测比模型好一倍，因为门控是**先到先得**的
+
+模型预期 2 实例各自 5 分钟刷一次 = 2×1306/300 = 8.71/s。
+实测中位数 4.36/s = 1306/300 = 4.35 的 **1.002 倍**，即**恰好一个实例的量**。
+
+机制：门控条件读的是 `last_seen_at` —— **共享的行状态**。
+A 实例 tick 完就把 1306 行的 `last_seen_at` 刷成 now，
+B 实例在同一分钟 tick 时看到「不到 5 分钟」⇒ **全部跳过**。
+
+⇒ **收益与实例数无关**：N 个实例仍然每 5 分钟只写 1306 行。
+  这既是好事（横向扩容不再放大写放大），也是 §10.21 那条
+  「一个旧实例会让所有新实例收益归零」的反面 —— **一个实例即可撑起全局门控**。
+  ⇒ **上线顺序要求：任意一台打上补丁就立刻开始省；要省满就得全打上。**
+
+#### 3. ✅ 正确性核验：门控没有让任何一行变陈旧
+
+```
+lt5m = lt6m = lt10m = lt30m = lt1h = 1306
+```
+
+**全部 1,306 个活资产在 5 分钟内都被刷新过**（三个时刻采样一致），
+远低于 6 小时 stale 阈值 ⇒ 门控的判定精度代价可接受（最大滞后 5 分钟，
+相对 6 小时是 1.4%，与 `assetHeartbeatRefreshInterval` 的设计意图一致）。
+
+`worst_stale_min = 145411`（≈101 天）来自那 **835 个孤儿行**，
+它们的 `last_seen_at` 停在 2026-06-26，**与门控无关**（§10.11 已登记）。
+
+#### 4. 突发形态：写入是每 5 分钟一次的尖峰，不是连续流
+
+`touched_1min` 采样：`8 → 3`（两次都在突发之间）。
+⇒ **任何 300 秒窗口都会随相位落点而抖动**；§10.21 记的「窗口不能跨越状态变更」
+现在要多加一条：**窗口还必须跨过完整的门控周期，否则读到的是相位噪声**。
+本节 4 个窗口之所以稳（4.26~4.83），是因为窗口 >= 1 个门控周期且机队状态未变。
+
+#### 5. 订正 commit 标题
+
+`2a0aac3bd` 标题的「1/12」**仍不成立**（§10.21 已查其来源是 2141 这个错数）。
+实测的诚实表述：**机队完整打补丁后 ≈ 4.9×**（−79%），约 38.2 万次/天
+（原 186.3 万次/天）。
+### 10.25 ★★ `session_summaries` 无界增长的根因：归档器**从来没有自动运行过**
+
+§10.13 巡检报出 `session_summaries` 887 MB / 空闲 194 MB，是绝对值最大的一处空洞。
+本节查清了成因，**不是**写放大，也**不是**空洞回收策略问题。
+
+#### 1. 实测：链条的两端都是空转
+
+```
+n_live_tup=592693  n_dead_tup=46786  n_tup_ins=93754
+n_tup_upd=524417   n_tup_del=0        ← 从来没有过删除
+```
+
+```
+total     | archived | oldest_archived | due_90d
+591,893   | 0        | (null)          | 0
+```
+
+`n_tup_del = 0` **且** `archived = 0` ⇒ 裁剪器从来没删过任何一行。
+
+#### 2. 但有 376,028 行**现在就该被归档**
+
+```
+total   | last_req_gt30d | last_req_gt7d | no_accessed_at | accessed_gt30d | oldest_req
+591,893 | 376,028        | 551,425       | 87,935         | 376,028        | 2026-08-06
+```
+
+归档器阈值是**双 30 天**（`domains/sessionarchive/archiver.go:29-30`
+`inactivityThreshold` / `sessionEndThreshold`），而
+`last_request_at < now()-30d` 的有 **376,028 行**（占 63.5%），
+其中 `last_accessed_at` 同样超 30 天的也是 376,028 行。
+⇒ **UPDATE 的 WHERE 有 37 万行可标记，但实际标记了 0 行。**
+
+#### 3. 根因：归档器没有调度器，只能被手动 HTTP 触发
+
+```go
+// domains/sessionarchive/archiver.go —— 只有 Archive(ctx)，没有 Start/ticker
+func (a *Archiver) Archive(ctx context.Context) (*ArchiveResult, error)
+func (a *Archiver) GetStats(ctx context.Context) (*ArchiveStats, error)
+```
+
+全仓 `Archive(` 的生产调用点**只有一个**：
+`admin/session_archive_handler.go:42`，即
+`POST /api/admin/session-archive/trigger`。`cmd/gateway/main.go:7188`
+只是 `NewArchiver` + 注册路由，**没有任何定时调用**。
+
+#### 4. ★ 这正是「两步链条只自动化了第二步」
+
+`main.go:5632-5637` 的注释已经写明问题与对策：
+
+> 471 起归档但从不删除，表无界增长；**每日分批 DELETE**（单批 ≤5000），
+> 索引自迁移 690 idx_session_summaries_archived。
+
+⇒ 裁剪器（第二步）**确实**被装配并每日跑（`bg/session_summaries_trimmer.go:122`），
+但**第一步（打 `archived_at` 标记）从未自动发生** ⇒
+裁剪器每天扫一遍、每天都空跑。
+
+★ 这与「已实现 ≠ 已接线」同族，但更精确：**不是某个组件没接线，而是
+  生产者（archiver）只有手动入口，消费者（trimmer）却按自动组件来假设。**
+  两者各自单看都「绿」：trimmer 的门验证的是删除逻辑，archiver 的门验证的是
+  UPDATE 逻辑 —— **没有任何一道门检查「上游会不会真的产出数据」**。
+
+#### 5. ⚠️ 现在补跑归档**不会**回收那 194 MB，反而会先增空洞
+
+`Archive()` 本身就是一次覆盖 37 万行的 `UPDATE archived_at = NOW()`
+⇒ 产生 37 万个死元组。而裁剪器的 TTL 是 `lifecycle.session_summaries_ttl_days`
+（默认 90 天），**打上标记后还要再等 90 天才可能被删**。
+且本表最老的会话也只有 60 天（2026-08-06）。
+
+⇒ **两件事要分开决策**：
+  · **立即回收 194 MB** ⇒ 只能靠 `VACUUM FULL`（ACCESS EXCLUSIVE，需窗口）或
+    `pg_repack`；这与归档链修不修无关。
+  · **止住无界增长** ⇒ 给归档器加调度（或让裁剪器先归档再删）。
+    但在补调度之前，先评估「今天标记 37 万行」要付的空洞成本。
+
+#### 6. 顺带：写入侧不是浪费
+
+`internal/summarystore/store.go:181` 的 `ON CONFLICT DO UPDATE` 每次
+`summary_version = COALESCE(...)+1`，行内容真的变了 ⇒ 与 `assets` 那种
+「无变化全表重写」**不同型**，`n_tup_upd`（524,417）是对 `n_tup_ins`（93,754）的
+5.6 倍属正常内容churn。**不要照搬 assets 的门控方案。**
+
+#### 7. 🔴 订正：§10.25 的**紧迫性**被我写高了（累计量 ≠ 当前速率）
+
+写完本节后补测了 301 秒增量窗口：
+
+```
+03:42:29  n_tup_upd=524518  n_tup_ins=93755  n_dead_tup=46887  n_live_tup=592694
+03:47:30  n_tup_upd=524523  n_tup_ins=93760  n_dead_tup=46892  n_live_tup=592699
+           Δ upd=+5   Δ ins=+5   Δ dead=+5   Δ live=+5
+```
+
+⇒ **当前只有约 1,435 次更新/天、1,435 行/天**；表按 1,569 B/行折算
+**年增约 2 MB**。`n_dead_tup` 几乎不动（autovacuum 跟得上）。
+
+★ **所以 887 MB 绝大部分是历史存量，不是现在的写放大。**
+  这与 §10.17（assets 空洞也是历史的，当前 upd 5,472/天 vs 历史 46,000/天）
+  是**同一条教训**：累计计数不能判断现状。
+
+⇒ 优先级应当重排：
+  · **「归档器没跑」是真缺陷**（没有回收路径），但**当前速率下不紧急**；
+  · **194 MB 是一次性回收问题**（VACUUM FULL / pg_repack，需窗口），
+    与归档链修不修**无关**；
+  · **不要**因为「表在无界增长」就把它当成当前的头号存储问题 ——
+    真正在持续放大的写放大已经由 §10.24 的 A 方案压掉了 4.88×。
+
+★ 我这条错误的成因值得记：**我先看到「887MB + 63.5% 可归档 + 归档器从未运行」，
+  三条都指向同一方向，就直接写了「无界增长」而没先量速率。**
+  「无界」是对**趋势**的断言，而趋势需要两个时点的量，不是累计值。
+
+---
+
+### 10.26 ✅ `assets` 上还有**第二条没修的写路径**：`MarkHealth` 每轮 835 次空写（A 方案只修了心跳那一条）
+
+#### 1. 起点：一个 8 窗口测量里的**单个离群窗口**
+
+§10.24 取了 6 个窗口。这一轮补到 8 个（`assets` 表 `n_tup_upd` 增量，
+窗口长度用**实际经过秒数**算 —— 采样脚本每次 sleep 300 后还要做一次 ssh，
+实测窗口是 302~307 秒，用 300 归一会引入 2.3% 系统偏差）：
+
+```
+时刻     累计 n_tup_upd     Δ        实际窗口   upd/s
+03:19:40   64,364,849        —          —        —
+03:24:47   64,366,161      +1312       307s     4.274
+03:29:49   64,367,619      +1458       302s     4.828
+03:34:56   64,368,926      +1307       307s     4.258
+03:39:58   64,370,234      +1308       302s     4.331   ← 窗口起点
+03:45:00   64,372,376      +2142       302s     7.093 ★ 离群 +63%
+03:50:04   64,373,709      +1333       304s     4.385
+03:55:06   64,375,023      +1314       302s     4.351
+```
+
+除第 5 个窗口外全部落在 4.258~4.828，**第 5 个是 7.093**。
+心跳基线是 1,306 行/5 分钟 = 4.353/s，而
+
+```
+Δ2142 − 1306 = 836
+```
+
+多出来的量与心跳基线无关 ⇒ **有第二条写路径在那个 5 分钟里发了约 835 次写**。
+
+#### 2. 定位到具体调用点：154 的 probe 日志
+
+```
+10月 05 03:42:50  154  {"msg":"asset health probe: cycle complete",
+                        "tenants":4,"degraded":439,"removed":396,"duration_ms":2728}
+```
+
+`03:42:50` 正落在 03:39:58~03:45:00 这个窗口里，且
+
+```
+439 + 396 = 835        ← 与上面多出来的 836 吻合（差 1 是心跳行跨边界）
+```
+
+再核对库内当前的三个桶：
+
+| health_state | 行数 | last_seen_at 范围 |
+|---|---:|---|
+| unknown | 1,306 | 2026-10-05（全部活） |
+| degraded | **439** | 2026-07-16 ~ 2026-10-01 |
+| down | **396** | 2026-06-26 ~ 2026-10-01 |
+| 合计 | 2,141 | |
+
+**439 / 396 与日志里的 `degraded` / `removed` 逐位对上。** 三方独立数据
+（窗口增量、进程日志、库内桶计数）互相吻合，可以定案。
+
+#### 3. 根因：调用方没有判「值已经是目标态」
+
+`bg/asset_health_probe.go` 的 `probeOneTenant` 有两步，两步都无条件发写：
+
+```go
+// Step 1
+for _, a := range stale {
+    if a.HealthState == apihub.HealthDown { continue }   // ← 只挡终态
+    p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDegraded)
+}
+// Step 2
+for _, a := range batch {
+    if !liveLookup[key] {
+        p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDown)  // ← 完全不判
+    }
+}
+```
+
+* 439 个**已经是 Degraded** 的活资产，每轮被重新标一次 Degraded；
+* 396 个**已经是 Down** 的非活资产，每轮被重新标一次 Down。
+
+⇒ **每轮 835 次 UPDATE 全部是写同一个值。** 探针的 tick 是 1 小时
+（`NewAssetHealthProbe`，`tick: 1 * time.Hour`），两台各跑各的、**没有跨实例互斥**
+（与 §10.19 的 analyze 同一类缺陷）：
+
+```
+835 × 24 轮/天 × 2 台 = 40,080 次/天纯空写
+```
+
+占 §10.24 之后剩余写量（4.341/s ≈ 375,110 次/天）的 **10.7%**。
+注意：空写对 `SELECT` 侧**完全不可见**，只查表状态永远发现不了 ——
+这也是它能长期存在的原因（`bg/` 下原本**没有任何** `asset_health_probe` 的测试）。
+
+#### 4. 为什么门控放在 Go 侧而不是 SQL 的 `IS DISTINCT FROM`
+
+直觉上该照抄 A 方案的 SQL 守卫，但**这里不能**：
+
+```go
+// apihub/pg_store.go markHealthSQL
+UPDATE public.assets SET health_state = $4
+ WHERE tenant_id = $1 AND kind = $2 AND ref_id = $3
+RETURNING 1
+```
+
+`Store.MarkHealth` 用 `QueryRow(...).Scan(&found)`，并把 `pgx.ErrNoRows`
+一律映射成 `ErrNotFound`。一旦加 `AND health_state IS DISTINCT FROM $4`，
+**`ErrNoRows` 同时表示「行不存在」和「值本来就对」** —— 对外语义从
+「查无此行」变成二义，API 调用方的错误处理会静默改变。
+
+而调用方手里**已经有当前值**：`listStaleSQL`（`:760`）与
+`listAssetsSQL`（`:251`）都 SELECT 了 `health_state` 并扫进 `a.HealthState`。
+在 Go 侧比一个字符串比较，零成本、零往返、不动任何对外语义。
+
+#### 5. 门：数**调用次数**，不是数行数
+
+`bg/asset_health_probe_nowrite_gate_test.go`（新增，4 条）用一个按调用计数的
+`apihub.Store` 假实现：
+
+| 门 | 钉住什么 | 抓什么回归 |
+|---|---|---|
+| `TestProbeSteadyStateIssuesZeroMarkHealthCalls` | 全部已达目标态时 **0 次**调用 | §10.26 本体 |
+| `TestProbeNeverWritesTheSameValueTwice` | 每次调用都断言 `old != new` | 混合场景里混入单次空写 |
+| `TestProbeNeverDowngradesDownToDegraded` | Down 不被降级回 Degraded | 扩大 Step 1 条件时的副作用 |
+| `TestProbeFirstRunStillMarksUnseenAssets` | Unknown 仍会被正常标记 | 门控把功能整体关掉 |
+
+★ 为什么不写文本门：文本门只能证明条件**存在**，不能证明它**对**
+（这与 A 方案 M62 的教训同源）。这里量的对象是「探针有没有发请求」，
+因为空写在任何表状态读数上都不可见。
+
+**变异验证**（两条各撤一次）：
+
+| 变异 | 改动 | 编译 | 4 条门结果 |
+|---|---|---|---|
+| M1 | Step 1 条件退回 `== HealthDown` | ✅ 通过 | 2 PASS / **2 FAIL** |
+| M2 | 删掉 Step 2 的判等 | ✅ 通过 | 2 PASS / **2 FAIL** |
+
+两次都**仍能编译**（`BUILD-BROKEN` 不算证据），两次都用 `cp` 字节级还原，
+`md5 = bcf449371857db058a79be98505ab6dc` 前后一致，还原本体后 4 条全绿。
+`go test ./bg/` 全包 **955 PASS / 0 FAIL**，`./apihub/` 全绿。
+
+★ **写门的时候我第一次就把夹具画错了**：我把 439 个 degraded 也放到了
+`liveLookup` 之外，门立刻红并报 `ref_id=3 "degraded" -> "down"`。
+那是**正确的**行为转换 —— 那些资产确实该被推到 Down。
+真实生产形态是：degraded 439 **是活的**（源表里还有、只是心跳停了），
+所以它们在 `liveLookup` 里、Step 2 根本不碰；down 396 才是不在 `liveLookup`。
+**门红了先怀疑夹具**，这条已经是本轮第三次了。
+
+#### 6. 🔴 顺带发现、本轮**没有**修的 bug：Step 2 的「分页」是假的，只扫了 500/2141 行
+
+`probeOneTenant` Step 2 的注释写着 `// Fetch all assets with pagination
+(1000 per batch)`，但：
+
+1. `apihub.Service.List` → `pgStore.List` 在 `apihub/pg_store.go:272`
+   有 `if limit > 500 { limit = 500 }`，而 Step 2 要的是 `batchSize = 1000`；
+2. `listAssetsSQL`（`:248~259`）**只有 `LIMIT $4`，没有 `OFFSET`**；
+3. 于是 `offset`（`:137` / `:159`）是个**从未被传进 SQL 的死变量**，
+   `len(batch) = 500 < 1000` 触发 `:156` 的 `break` —— 循环只跑一轮。
+
+生产实测：`count(*) = 2141`，`ORDER BY kind, ref_id LIMIT 500` 恰好返回 500。
+
+⇒ **Step 2 每轮只检查按 `(kind, ref_id)` 排序的前 500 行，
+   剩下约 1,641 行（76.6%）从来没有被检查过是否已从源表移除。**
+`removed=396` 全部来自那 500 行之内。
+
+**本轮不修**，原因：修它会把约 1,641 行从未受检转为受检，
+其中命中「不在 liveLookup」的那些会被标成 Down —— 这是**可观测的行为变更**
+（UI 的健康度统计卡片会变），不是写放大优化，且需要你确认这些资产是否
+真的已经从源表消失。已登记待你拍板。
+
+★ 顺带一个只做了代码阅读、**没有实测**的观察：`Step 2` 只会写 Down，
+  没有任何路径把一个重新变活的资产写回 healthy/unknown（它在
+  `liveLookup` 里所以 Step 2 不碰；只有 Step 1 能在它心跳超 6h 时
+  把它从 Down 拉到 Degraded）。这一条**未实测**，仅供拍板 500 上限时参考。

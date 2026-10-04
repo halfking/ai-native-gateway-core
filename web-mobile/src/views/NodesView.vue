@@ -236,6 +236,10 @@ const detailTitle = computed(() => detail.value ? `${detail.value.provider_name}
   color: var(--app-text);
   font-size: var(--app-font-input);
   min-width: 0;
+  /* 2026-10-04：与 ModelsView 同一处缺陷。容器 48px 但 input 自身只有 20px 高，
+     而容器是 div 不是 label —— 点容器的 padding 不会聚焦，真实热区就是那 20px。 */
+  height: 100%;
+  align-self: stretch;
 }
 
 .nodes__search input:focus {

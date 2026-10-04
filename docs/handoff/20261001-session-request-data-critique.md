@@ -11576,3 +11576,196 @@ not copies. Dropping request_logs now makes these permanently unfillable.
 **全量跑 `admin` 包**（本轮只跑了受影响的 6 道 + 新的 3 道）。
 在 §9.226.1 已确认「漏了一整个没跑的包」这个失效模式之后，
 再写一句「门状态」而不注明覆盖范围，就是同型复发。
+
+---
+
+## §70.64 间接读点审计成了门，它叫出了 4 个**计费路径**读方（§9.227）
+
+### 结论先行
+
+- ★ **`maas/usage.go` / `maas/consumption_detail.go` / `maas/credit_buckets.go` /
+  `admin/usage_credits.go` 读 v1，而它们在四张登记表里一处都没有。**
+  默认支就是 v1 底表（`ClampUsageDays` 对 `days<1` 返回 1）。
+- ★ **`maas/credit_buckets.go` 与其它几条不同类**：它 `ON CONFLICT DO UPDATE`
+  **写**小时级 credit 桶 ⇒ DROP 后已有小时桶被**覆盖成 0**，**不可逆**。
+- ★ `admin/tenants.go` 与 `maas/usage.go` 叠加时，两条路径都把「读不到」
+  变成 0 ⇒ **「这个租户从没调用过」会被当成事实**。这是本会话至今
+  最接近「静默财务错误」的一条。
+
+### 为什么四道门全都看不见它（两道各自的原因都实测过）
+
+1. `requestLogsReadInventory` 按行扫 `from request_logs`。`maas/usage.go` 里唯一的
+   这串文本在**第 27 行的注释里**（`// … aggregates … from request_logs.`），
+   注释被剔除 ⇒ 计数 0 ⇒ 不进总体。
+2. exposure 门按 AST 抽 **SQL 字面量里的 canonical 合同列**。这里关系名是
+   **Go 变量**（`FROM ` + logsTable），字面量里一个 v1 关系名都没有 ⇒ 零证据。
+
+机制是切换层（`maas/usage.go:66` / `admin/usage_credits.go:120`）：
+
+```go
+func requestLogsSource(days int) (string, string) {
+	if days <= 7 { return "request_logs_hot AS r", "r" }          // ← 默认支，v1 底表
+	return "request_logs_with_current_month AS r", "r"
+}
+```
+
+### 门的设计要点
+
+不是「把工具输出冻结成表」——那正是 §9.37 记的静默腐烂路径。
+清单由人读源码写，与工具分类**双向交叉核对**（8 条变异全部转红）。
+其中最关键的一条：
+
+> ★ **把 §9.226.3 的分类器修法撤掉 ⇒ 门转红。**
+> 单向抄表的话，撤掉修法会让清单跟着改成 canonical-only ⇒ **两边一起绿**，
+> 而 `admin/tenants.go` 会重新变成「读两张 v1 底表却报退役安全」。
+
+另加一道 ratchet：`still-unknown` 必须为空 ⇒「先填上以后再说」从结构上堵死。
+判定结果：**26 条 / 实测 26 文件，still-unknown = 0**
+（工具判 unresolved 的 16 文件 / 34 处全部已由人读源码定级，跨包调用为主）。
+
+### 顺带修掉工具自己的一个假阳性
+
+`"balance_usd IS DISTINCT FROM " + balArg` 被 `fragmentTailRE` 当成 FROM 子句
+（它分不清 `LEFT JOIN ` + 表 与 `IS DISTINCT FROM ` + 值）。全仓 35→34 处、27→26 文件。
+
+⚠ **这一版我第一版写反了，而且是静默失效**：先按长度切尾部关键词的话，
+`"… FROM "` 的末 4 个字符是 `"ROM "` 而不是 `"FROM"` ⇒ 等值比较永不成立
+⇒ 过滤从未生效。**变异验证时才发现。**
+⇒ 一个恒假的过滤器看起来和一个正确的过滤器一模一样。
+
+### 边界
+
+- 无产品行为改动（审计工具，不在请求路径上）；零生产写入，未连 252。
+- 15 条 `nonv1-by-inspection` 的依据是**读源码**，依据本身写进 `Via` 字段可复核。
+- ⚠ `autoroute/metrics.go` 那条**仍不是读点**（Prometheus Help 文本里恰好有 `from `）。
+  本轮修了同族的 `IS DISTINCT FROM`，**没修这一条**——需要「拼接里有没有关系名形状」
+  的判据，是另一个更大的改动。
+
+### 下一轮第一件事（已更新）
+
+1. ★ **`maas/credit_buckets.go` 的桶覆盖不可逆**——它是本清单里唯一
+   「DROP 会**改写已有数据**」的一条，应与回填顺序放在一起排期。
+2. `SessionFamilyBodiesSourceSQL()`（bodies 侧至今没有这个 helper，§9.226.4）。
+3. 给 `AuditRepo` 的 `canonical-only` 里那 2 个「视图 v1 臂」条目
+   （`admin/logs.go` / `admin/usage_enhanced.go`）并入 D29-d 切换清单的复核。
+4. `autoroute/metrics.go` 的 Help 文本假阳性（见上）。
+
+---
+
+## §70.65 bodies 切换的**数据级**判据：两表部分不相交，收益上界 22 / 损失上界 1,365（§9.228）
+
+### 结论先行
+
+- ★ **`session_bodies` 现在**不能**替代 `request_logs_bodies`。缺口 **29,691** 条。
+- ⚠ **「session 覆盖 95.26%」是错误读法**：两表**不是包含关系，是部分不相交**。
+  `session_bodies` 命中**更多**（770,209 > 742,472），但切换是**换了一批消息**：
+  丢 29,691 条、另 27,737 条从空变有。
+- ⚠ **会话级尾部才是决定性的**：11,783 个会话（1.59%）会至少丢一条，
+  而**单会话最多丢 1,365 条、最多只「得救」22 条**。
+  ⇒ **收益上界 22，损失上界 1,365。** 无灰度直切风险与收益完全不成比例。
+- ★ **不是机械替换**：v1 是 `request_body`/`response_body`，
+  会话侧是 **`request_delta`/`response_delta`**；且 db 包**没有** bodies 源 helper。
+
+### 新增门（`db/bodies_cutover_gap_test.go`，**故意红**）
+
+判据只有一条：**`v1 有而 session_bodies 没有` 必须为 0**。
+命中率与百分比**都不作为判据**——§9.228.1 已证明它们会导出错误结论。
+
+与 admin 侧那道 bodies 门（§9.226.4）**不是重复**：
+
+| | 问 | 何时可能变绿 |
+|---|---|---|
+| `admin/request_logs_bodies_retirement_gate_test.go` | 谁读过、评估登记了吗（**流程**） | 永远不会先变绿（26 文件未登记） |
+| `db/bodies_cutover_gap_test.go` | 切过去会不会丢正文（**数据**） | 回填补齐后**可能**变绿 |
+
+### 判据自证：这条门第一版有个洞，是变异验证逼出来的
+
+M1/M2/M3/M4 四种削弱**全部让门变绿** ⇒ 判据、阈值、SQL 口径、纯函数都在承重。
+M5（不设 `TEST_DATABASE_URL`）**SKIP 而非绿** ✓。
+
+★ **M6′ 最有价值**：我把总体改成 0 行去找漏洞，发现第一版只有
+`WouldBeLost > 0` 一条判据 ⇒ **总体被改窄会让门变绿**，
+而它一次都没量过东西。真库门最容易被改坏的就是总体口径。
+已加 `V1Turns == 0 ⇒ 阻塞`（排在缺口判据**之前**），M7 验证转红。
+
+⚠ **M6′ 第一版是无效演示**：我写出了双 `WHERE`，0.01s 就失败。
+**运行时 0.01s 是「SQL 语法错」而不是「量到 0」的信号。**
+
+### 边界
+
+- 数字**只对本地库成立**；生产 bodies 覆盖与回填状态**未知**且无自动门。
+  据此排生产切换前需在 252 只读复测。
+- 无产品行为改动；只读 SELECT；未连 252。
+
+### 下一轮第一件事（已更新）
+
+1. ★ `maas/credit_buckets.go` 的桶覆盖**不可逆**（§70.64），与回填顺序一起排期。
+2. ★ bodies 三件事按 D33 顺序：回填 → 门转绿 → 补 `SessionFamilyBodiesSourceSQL()`（带列映射）。
+3. 在 **252 上只读复测** bodies 缺口（本地数字不能外推）。
+4. `admin/logs.go` / `admin/usage_enhanced.go` 两个「视图 v1 臂」并入 D29-d 复核。
+5. `autoroute/metrics.go` 的 Help 文本假阳性。
+
+---
+
+## §70.66 ★撤回 §70.65 / §9.228 的全部 bodies 数字——**总体选错了**（§9.229）
+
+### 结论先行（这一轮把上一轮的结论推翻了）
+
+- ★ **本地：bodies 切换一条都不丢（`would_be_lost = 0`）**，不是 29,691。
+  `session_bodies` 覆盖 `session_turns` 的 **100.00%**。
+- ★ **生产 252：缺口 1,113 条，且全部落在 2026-09-30 一天**；
+  10-01→10-04 逐日为 **0**。695 个会话（0.38%），单会话最多 152。
+  ⇒ 是**一个回填边界日**，不是写入路径缺陷。处置从「查路径」缩到「补一天」。
+- ⚠ **那 29,691 到底是什么**：96% 是 `is_auto_request = t` 的探针/自动流量，
+  **按设计**不进会话族（§9.215）。它们**切不切 bodies 都从未被导出/对比 API 看到**，
+  所以**不是切换损失**。
+- ⚠ 退役 v1 的**真实代价**不是数据不一致，而是**失去探针/自动流量的可审计性**。
+  那是**属主决定**，且**至今没有任何门覆盖它**。
+
+### 错在哪一维（可复用的那一条）
+
+`admin/session_export.go:227` 的 FROM 是 `dbpkg.SessionFamilyTurnsForSessionSQL()`。
+⇒ 「切过去会不会丢正文」的总体**必须是 `session_turns`**。
+
+而 §9.228 按「**哪张表要退役**」选了总体（`request_logs`），
+不是按「**被影响的那段 SQL 的 FROM 读哪张表**」。
+
+⇒ 于是把「**镜像没捕获的 turn**」量成了「**切换会丢的正文**」。
+两个量都真实，但问的不是同一件事，混成一个数就等于
+**把一个设计决定报成了数据缺陷**，并据此给出了一条**过度的处置建议**。
+
+### 门的状态变化：从「永远红」变成「真守卫」
+
+`db/bodies_cutover_gap_test.go` 已换成正确总体（`session_turns`），
+并新增：
+- `v1OnlyTurnsSQL` —— 明确标注**不是切换损失**的另一个量（本地 38,348，
+  其中 36,717 = 95.7% 是 auto）
+- `lossByDaySQL` —— 把「系统性缺口」与「一个回填边界日」分开
+  （两者的处置完全不同：查路径 vs 补一天）
+
+**本地现在绿了。** 它不再只是提醒人的判据，而是真的回归守卫：
+会话侧 bodies 写入路径一旦被改坏，它会红。生产上它会红（1,113），那正是它该说的话。
+
+### 生产只读复测是这一轮的关键动作
+
+所有修正都来自 252 上三条 SELECT（**零写入**）：
+逐日分布（证明是边界日）、`session_turns` 侧 100% 覆盖（证明写入路径没问题）、
+`is_auto` 拆分（证明缺口是探针流量）。
+⇒ **本地数字本来会把我引向错误的结论。**
+
+### 仍然未闭合
+
+- ⚠ **生产无自动门**（§9.223 同一缺口），只能人工只读复测。
+- ⚠ `is_auto_request = t` 的可审计性**没有门**。
+- 列名不同不变（`request_body`/`response_body` vs `request_delta`/`response_delta`），
+  db 包**仍没有** bodies 源 helper ⇒ 那是**改读方**时的事，与数据够不够无关。
+
+### 下一轮第一件事（已更新）
+
+1. ★ **生产只需补 2026-09-30 一天**（1,113 条）—— **需属主批准**（属生产数据变更）。
+2. ★ 补 `SessionFamilyBodiesSourceSQL()`（带显式列映射），然后才谈改 bodies 腿。
+3. ★ **`is_auto_request = t` 的可审计性**要不要保留 ⇒ **属主决定**，需先想清楚
+   「自动流量是否需要可审计记录」，再决定是加门还是记档。
+4. `maas/credit_buckets.go` 桶覆盖不可逆（§70.64）。
+5. `admin/logs.go` / `admin/usage_enhanced.go` 两个「视图 v1 臂」并入 D29-d 复核。
+6. `autoroute/metrics.go` 的 Help 文本假阳性。

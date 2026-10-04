@@ -101,7 +101,9 @@ button {
 .btn--primary {
   border-color: var(--app-primary);
   background: var(--app-primary);
-  color: #fff;
+  /* 2026-10-04：不再写死 #fff。暗色主色是浅蓝 #5b8cff，白字只有 3.16:1；
+     前景色改由 --app-on-primary 按主题给（浅色白 / 暗色近黑）。 */
+  color: var(--app-on-primary);
 }
 
 .btn--primary:active {
@@ -123,7 +125,10 @@ button {
 }
 
 .btn--sm {
-  min-height: 36px;
+  /* 2026-10-04 实测改：36px 在真机上低于触控基线（/keys 页一把 242 个
+     btn--sm 被判定 < 44px，模拟器与 Chrome 双证）。小尺寸只缩 padding 与字号，
+     **不缩高度** —— 高度就是手指能落到的面积，缩它等于把可点区域拿走。 */
+  min-height: 44px;
   padding: 0 var(--app-space-3);
   font-size: 0.8125rem;
 }

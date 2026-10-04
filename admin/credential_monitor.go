@@ -119,6 +119,25 @@ type CredentialMonitorHandlers struct {
 	h           *Handler
 	recorder    *credentialhealth.Recorder
 	redisClient *redis.Client
+
+	// summaryDB is the querier handleMonitorSummary runs its SQL against.
+	// It defaults to h.db; tests point it at a pgxmock pool.
+	//
+	// 为什么需要它：`Handler.db` 是具体类型 *pgxpool.Pool，注不进 pgxmock，
+	// 所以 runMonitorSummary 当初被抽成 pgxQueryer 参数化的纯执行体。
+	// 但 handleMonitorSummary **自己**仍是不可测的 —— 于是它算出来的
+	// `server_duration_ms` 一直是错的也没人发现（见 handler 里的注释）。
+	// ⇒ 加这一个字段，整条 handler 才能被真判据盖住。
+	summaryDB pgxQueryer
+}
+
+// summaryQuerier returns the querier for the monitor-summary SQL, falling back
+// to h.db in production. Kept as a method so the fallback lives in one place.
+func (m *CredentialMonitorHandlers) summaryQuerier() pgxQueryer {
+	if m.summaryDB != nil {
+		return m.summaryDB
+	}
+	return m.h.db
 }
 
 // NewCredentialMonitorHandlers creates monitor handlers.
@@ -625,7 +644,6 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	if IsTenantAdmin(r) {
 		params.TenantID = GetTenantID(r)
 	}
-	startedAt := time.Now()
 
 	// 30s cache: the page auto-refreshes every 10-60s and the per-model
 	// LATERAL success-rate join is the heaviest part. Cache key includes the
@@ -652,7 +670,14 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		}
 	}
 
-	queryStart, summaries, qerr := runMonitorSummary(ctx, m.h.db, params)
+	// ⚠️ 2026-10-05 修正：原来写的是 `queryStart.Sub(startedAt)` —— 那是
+	// 「查询开始时刻 − handler 开始时刻」，两个都是**起点**，相减恒为 0 或负数。
+	// 它本来要报的是「这条 SQL 跑了多久」，而那个字段的唯一用途就是让人看见
+	// 「查询花了 15s」（web/src/components/credential-monitor/helpers.ts:65
+	// 直接把它渲染成「服务端 {n}ms」）。实测线上冷查询 5.59–12.13s，
+	// 响应里的 server_duration_ms 却一直是 0 —— 排查这个超时时它是瞎的。
+	// 正确算法是「从查询开跑到现在过了多久」。
+	queryStart, summaries, qerr := runMonitorSummary(ctx, m.summaryQuerier(), params)
 	if qerr != nil {
 		writeInternalErr(w, "internal error (see server logs)", qerr)
 		return
@@ -664,7 +689,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	}
 	generatedAt := time.Now()
 	expiresAt := generatedAt.Add(monitorSummaryCache.ttl)
-	resp["meta"] = monitorSummaryMeta(generatedAt, expiresAt, false, queryStart.Sub(startedAt))
+	resp["meta"] = monitorSummaryMeta(generatedAt, expiresAt, false, time.Since(queryStart))
 	monitorSummaryCache.set(cacheKey, resp, generatedAt)
 	writeJSON(w, http.StatusOK, resp)
 }
