@@ -2175,7 +2175,27 @@ v1 的标记来自 v1 的写方。**一旦 S4 停写，连 v1 侧那 9,614 个�
     + `TestRequestLogsRetirementExposure` / `…BreakersRegistryIsConsistent` /
     `…RepointVerdict` / `TestAuditDocSilentClaimMatchesRegistry`，
     **新旧数字并列**写进审计。
-  * **改共享分析 = 改 §9.161/§9.162 已公布结论，仍属主决定**（本轮未改）。
+  * **改共享分析 = 改 §9.161/§9.162 已公布结论，仍属主决定**
+    → ⚠ **2026-10-05 已获属主授权并完成（§9.199）**。
+    盲区 **63 → 0**；`Exposure` clean 桶 **70 → 42**；
+    breaks-possibly 1→9 / undercounts-possibly 4→24；
+    判定分布 empty 5→6 / value-divergent 26→27；契约列合计 540→568。
+    `TestReaderPopulationGroundTruth` 一行未动（它用自己那对正则统计两族，测的不是同一件事）。
+- **D29-d**（2026-10-05 新增，§9.199.3）：**经 canonical 视图读 v1 臂的 10 个读方**怎么处置？
+  * 事实：这 10 个（含 2 个混合读方 `db/db.go` / `telemetry/client.go`，
+    它们既直读底表又读视图）在 `Exposure` 报告里是 `breaks` / `breaks-possibly`，
+    但它们**不是 breaker**——依赖在**视图的 v1 臂**上，
+    那是 `DROP request_logs` 时要拆掉的东西。
+  * 已做的：门内**显式日志**列出全部 10 个（不点名 = 从视线里删掉），
+    且**不进** `retirementBreakers`（进去就得写「reads request_logs.X directly」
+    这种**不属实**的条目）。
+  * 请拍板：
+    * 选项 ①：单独建一张「切换迁移清单」登记表 + 一道门保证它与实测同步；
+    * 选项 ②：与 breaker 合表，但给条目加 `via=view` 字段区分两类；
+    * 选项 ③：只留日志，不进任何登记表（当前状态）。
+  * 我的建议：①。② 会在同一张表里混两种**处置完全不同**的依赖
+    （「改文件」vs「改视图迁移」），而这张表是给下一个人看的；
+    ③ 是当前状态，但日志不是登记——没人会去看日志。
 - **D29-b**：拼接式查询有几处？—— **本轮已回答**（§9.194）。
   分母 107 个读方文件里 **21 个**存在漏归因面（剔除 `id` 后）；
   但 §9.195 证明其中**大部分的真正成因是关系宇宙**（见 D29-a），

@@ -23867,3 +23867,99 @@ public.supplier_errors_unified.source
 ⇒ **四次假零/假阳**（`EXCEPTION` 误配、只收分区名、`WITH` 要求、手写族名单），
 四次都是同一个错误的不同变体：**先造量具，再让结论跑在量具上**。
 两次是靠阳性对照抓到的，一次是靠「分母非零」抓到的，一次是靠真库对照臂抓到的。
+
+---
+
+## §9.199 D29-a：关系宇宙接上之后，**总体混叠**才暴露出来
+
+### §9.199.1 改了什么
+
+`admin/request_logs_retirement_exposure_test.go` 的 `v1TableRe` / `v1AliasRe`
+原先**只写死 4 张裸表**。710 视图族（`request_logs_with_current_month` 及其包装视图）
+不在名单里 ⇒ 入口过滤不通过 ⇒ 只经视图读 v1 的文件**一个字面量都产不出来**。
+
+改动：两个匹配器改为从 **§9.172 的同一份 SSOT** 推导
+（`v1BaseTableNames` 5 张 + `viewChainNames(t)` 4 个视图链成员 = 9 个关系名）。
+**不另抄第三份名单。**
+
+### §9.199.2 新旧数字并列
+
+| 指标 | 改前 | 改后 |
+|---|---|---|
+| 盲区（读 v1 族但提取器产出 0 字面量） | **63** | **0** |
+| 扫描的生产文件 / 引用 v1 族的文件 | 2275 / — | 2275 / **148** |
+| `Exposure` breaks | 4 | 4 |
+| `Exposure` breaks-possibly | 1 | 9 |
+| `Exposure` undercounts | 27 | 27 |
+| `Exposure` undercounts-possibly | 4 | 24 |
+| `Exposure` clean | 70 | **42** |
+| `RepointVerdict` 分布 | empty=5 / value-divergent=26 | empty=6 / value-divergent=27 |
+| 静态引用契约列合计 | 540 | 568 |
+| `ReaderPopulationGroundTruth` | 106 读方 / v1=106 视图=118 / 判定分布 | **完全不变** |
+
+`TestReaderPopulationGroundTruth` 一行未动是**预期**的：它用自己那对
+`v1BaseTableRe` / `viewRelationRe` 统计两族，改动不碰它。
+⇒ 两份工具**测的不是同一件事**，所以一个动一个不动是正确结果，不是漏改。
+
+### §9.199.3 改完之后立刻暴露的**真问题**：两个总体被混成了一个
+
+关系宇宙一放宽，`BreakersRegistryIsConsistent` 门立刻报
+「8 个文件读了会话族供不上的列却不在册」。逐个查证后发现：
+
+**这 8 个全部是经 710 视图读 v1 的，也就是已经 repoint 完的读方。**
+
+它们的依赖在**视图的 v1 臂**上，而那正是 `DROP request_logs` 时要拆掉的东西——
+所以它们**不是 breaker**。breaker 的定义是「这个文件必须在 DROP 之前改掉」，
+而视图读方是**切换时的迁移问题**。两者混在一张登记表里，
+会写出 `reads request_logs.work_type directly` 这种**不属实**的条目：
+比缺一条登记更糟，因为它会误导下一个复核的人。
+
+⇒ 改动：给 `v1ReadingLiteral` 加 `viaBaseTable` / `viaCanonicalView` 两个标记，
+门按「怎么读到的」分成两个总体。
+
+### §9.199.4 顺带修掉的第二个分类缺陷：`sessionFamilyRe` 认不出包装视图
+
+它只写死 3 个名字，视图只认 `request_logs_with_current_month` **整词**；
+而视图链里还有 `request_logs_with_current_month_without_customer_id`，
+`\b` 在 `month` 之后遇到 `_` 不成立 ⇒ 认不出。
+后果实测到了：`admin/auto_route.go` 因此被算成 **definite**（= 只可能来自 v1），
+而它读的是包装视图——**已 repoint 的读方被当成未 repoint 的**。
+
+`viewRelationRe`（§9.172）早就带上了 `_without_[a-z_]+`。
+⇒ 同一处缺陷的另一个副本。已一并从 SSOT 推导。
+修完 `auto_route.go` 从 `breaks` 正确降为 `breaks-possibly`。
+
+### §9.199.5 新增门 `TestEveryV1ReaderIsAnalyzedByExtractor`
+
+守住「凡读 v1 族者必被分析」。**探针挡不住这条**——探针永不判红，
+所以「盲区从 0 涨回 63」在它那里只是一行日志，而回归的表现恰恰是
+「报告里的 clean 桶悄悄变大」。
+
+期望值 0 是**正确值**，不是把已知坏值冻进断言：任何非零都意味着
+有文件读了 v1 却被算成 clean。
+
+### §9.199.6 这次改动自身的四次错（都是门自己抓到的）
+
+1. **两总体写成二选一**（`if viaBase {…} else {…}`）⇒ **混合读方**从视图桶消失，
+   且它的视图侧暴露在底表桶里被丢掉。实测抓到：`domains/sessionforensics/export.go`
+   在报告里是 `breaks-possibly`，两个桶里却都找不到它——
+   因为它 `:416 FROM request_logs` **又**读视图。
+   ⇒ 混合读方**两个桶都要进**。
+2. **桶的过滤条件写错**：`measured` 分支上多加了 `inView` 条件，
+   于是「只读底表、不碰视图」的字面量被整段跳过
+   ⇒ 5 个已登记 breaker 一夜之间变成 stale。
+   方向是**少报**，而少报在这个门上表现为「有人修好了、该销账了」——
+   一个看起来无害、实则错误的红。
+3. 同一次改动里另有一处 `t.Fatalf` 用的 `%` 未转义（`0%`）导致 vet 失败。
+4. 第一次以为「8 个都要登记」，核到第 7 个才发现是视图读方——
+   **差点写下一批不属实的登记**。
+
+⇒ 第 1、2 条的共同点：都是**分总体时把「并集」写成了「二选一」或叠加了多余条件**。
+它们都不会编译失败、都不会让测试变绿，只是**安静地少报**。
+
+### §9.199.7 边界
+
+- **本轮只改测试分析，未改任何生产代码。**
+- `retirementBreakers` 登记表**未新增条目**（5 条原样，且无 stale）。
+- 视图臂读方**不进**登记表，改为门内显式日志（10 个）。
+  **处置属属主决定** ⇒ 决策表新增 **D29-d**。
