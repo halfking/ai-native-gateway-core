@@ -24686,3 +24686,97 @@ walk 若解析到空目录，每张表都会「零调用方」，门会**恒绿*
 不能只看「名字在别的服务清单里没有」。本次任务里
 **同一个库、同一份扫描**（§9.202.1）已经列出了 memora 是共用库里的外部服务，
 却没有把那 5 个函数与那份清单对照 —— 两条结论挨在一起却没交叉。
+
+---
+
+## §9.208 `session_turns.client_protocol` 同样**从来没有被写过** —— 而它有**活的消费者**
+
+§9.203 修完 `is_final_success` 之后，`db/session_family_column_availability_test.go`
+的 `GO EMPTY ON THE SESSION SIDE` 还剩一个成员：`client_protocol`。本节查它。
+
+### §9.208.1 实测：与 `is_final_success` 同款，但**这次有人读**
+
+| 面 | 口径 | 结果 |
+|---|---|---|
+| `session_turns` | 近 30 天 `client_protocol` 非空 | **0** / **1,659,271** 行 |
+| `request_logs_hot` | 近 30 天非空 | **1,455** / 4,081 行 |
+| `session_turns_hot` | `agent_name` / `agent_type`（同族对照） | **1,455** / 1,473（**98.8%**） |
+
+⇒ 列在 `session_turns` 上存在（`text` 可空），但**三处都没有它**：
+`turn_writer` 的 INSERT 列清单、`ProcessedRequest`、`entryToProcessedRequest`。
+**与 `is_final_success` 的区别是**：`is_final_success` 至少**在 INSERT 列清单里**，
+只是没人置位；`client_protocol` 连管道都没接。
+
+### §9.208.2 后果是**用户可见的**，因为本机已经切到原生投影
+
+`storage.admin_logs_native_turns_read = **true**`（本机实测）⇒
+`admin/logs.go` 的请求日志列表经 `logsSourceFromSQL()`（`admin/logs_turns_source.go:62`）
+直读 `db.SessionFamilyTurnsSourceSQL()`，即 `session_turns_hot UNION ALL session_turns`。
+而该查询在 `admin/logs.go:204` 选 `rl.client_protocol`
+（投影列在 `db/request_logs_view_schema.go:457`，是纯列引用 `t.client_protocol::varchar(50)`）。
+
+⇒ **admin 请求日志列表里的「客户端协议」这一列，现在恒为空。**
+接口 200、页面正常、**错误日志无痕**。这与 `work_type`（D29-d 里那 8 个读方）
+是同一类静默降级，只是这一次命中的是**主列表**。
+
+⚠ 710 视图本身给这一列的填充是 35,185 / 2,278,971（视图的 v1 臂有值），
+所以**从视图读是好的、从原生投影读才是空的** —— 这也是它此前没被发现的原因：
+任何只测视图的核对都看不出问题。
+
+### §9.208.3 ⚠ D28-c 的前提是错的
+
+D28-c 写的是「`client_protocol` **全仓无人 SELECT 读**」，
+且 `admin/request_logs_retirement_column_reader_gate_test.go:25` 记着这条断言是
+2026-10-04 用**逐行 grep** 做的。
+
+**`admin/logs.go:204` 就在读它。** 断言用的是逐行 grep ——
+而 `rl.client_protocol,    -- 2026-07-27: openai-chat/...` 这一行**确实含该列名**，
+逐行 grep 本该命中 ⇒ 说明当时的断言口径比「逐行 grep」更窄（多半只扫了
+v1 底表字面量，而这条 SQL 的来源是拼接的 `logsFrom`）。
+⇒ **「没人读」这个结论是量具错了，不是事实如此。**
+
+★ 这与 §9.202 的教训同族：**被测对象经过拼接时，静态字面量扫描会漏**。
+
+### §9.208.4 修法：照 `agent_name` 的四处走，`$99` **追加在末尾**
+
+| 环节 | 文件 | 改动 |
+|---|---|---|
+| bridge | `internal/sessionv2mirror/s1a_fields.go` | `req.ClientProtocol = strVal(entry.ClientProtocol)` |
+| 载体 | `domains/session/v2/session_writer_v2.go` | `ProcessedRequest.ClientProtocol`；映射进 `TurnRecord` |
+| 记录 | `domains/session/v2/turn_writer.go` | `TurnRecord.ClientProtocol`；INSERT 列清单 + 实参 |
+| 桩 | 4 个 `*_test.go` | 期望参数 98 → 99 |
+
+⚠ **刻意追加在末尾**（`$99`）而不是插在 `agent_name` 旁边：
+参数列表是**位置编号**，插中间会重排其后每一个 `$N`，
+而漏一个就是 `mismatched param and argument count` ——
+那正是本 INSERT 被 `TestRequestLogInsertParamCount` 守着的那类事故。
+
+★ **我第一版真的漏了 `$99`**（列清单加了、实参加了、SELECT 段忘了），
+是本轮临时写的一次参数计数检查抓到的，**不是任何既有门**。
+⇒ 于是把「真跑一次」变成常规动作：新门 `TestTurnWriterWritesClientProtocol_RealDB`。
+桩（pgxmock）只要参数个数对就放行，**只有真库会炸**。
+
+### §9.208.5 顺带修一句**会误导人的过期注释**
+
+`TurnRecord.DigestJSON` 的注释原文写「It is nil for rows that cannot produce a
+useful digest」——**不对**。`AppendTurn` 把它按 `string(rec.DigestJSON)` 传给
+`digest`（jsonb），nil ⇒ `''` ⇒ `''::jsonb` ⇒ **22P02**。
+本轮就是照这句注释构造零值 `TurnRecord`、被 22P02 打回来的。
+
+生产侧不踩：唯一赋值点的 `digestJSON` 来自 `sessiondigest.Marshal`，出错即 return。
+⇒ 不是生产缺陷，但注释会**主动**把人送进坑，已改写并说明零值记录会失败。
+
+### §9.208.6 门状态与变异验证
+
+`TestTurnWriterWritesClientProtocol_RealDB`（真库）绿。两个变异都精确报红：
+
+| 变异 | 结果 |
+|---|---|
+| SELECT 段删掉 `$99`（本轮亲手犯的错） | 红：`syntax error at or near "WHERE"` |
+| 映射写成常量 `nilIfEmpty("MUTATION-CONSTANT")` | 红（阴性对照抓的） |
+
+阴性对照是那道门的意义所在：没有「空值必须落 NULL」这一段，
+一个把这一列写死的实现也能对有值用例报绿。
+
+回归：`domains/session/...`、`internal/sessionv2mirror`、`telemetry` 全绿；
+`go build ./...` 通过；gofmt 干净。

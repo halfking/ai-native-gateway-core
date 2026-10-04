@@ -37,6 +37,14 @@ func applyStorageS1AFields(req *v2.ProcessedRequest, entry *telemetry.RequestLog
 	req.AgentName = strVal(entry.AgentName)
 	req.AgentType = strVal(entry.AgentType)
 	req.VirtualClientID = strVal(entry.VirtualClientID)
+	// 2026-10-05 审计 §9.208: client_protocol 与 agent_name/agent_type 是同一组
+	// 「客户端身份」列，但**只有它**没被带过来 ⇒ session_turns.client_protocol
+	// 实测 30 天 0/1,659,271 非空，而它的两个同族列是 98.8%。
+	// 后果不是「少一列数据」而是**用户可见的**：
+	// storage.admin_logs_native_turns_read=true 时 admin 请求日志列表直读
+	// session 族原生投影（admin/logs.go:204 选 rl.client_protocol），
+	// 而该投影来自这批行 ⇒ 列表里这个字段**恒为空**。
+	req.ClientProtocol = strVal(entry.ClientProtocol)
 
 	// 730 会话角色归因三列（R50 F15 写入方）：role/父会话是 Mirror-only
 	// 传输字段；父任务复用 GwTaskID 关联头。空串零值由 upsert 的
