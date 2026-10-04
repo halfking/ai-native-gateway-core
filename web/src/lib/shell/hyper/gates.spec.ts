@@ -13,8 +13,9 @@
  * 所以这里做**跨文件**校验：hyper.css 里出现的每个类选择器，必须能在
  * src/ 下真实存在。
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import vm from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { MEDIA_QUERY_WHITELIST } from '../../../config/breakpoints'
 import { WEB_CAPABILITIES } from './capabilities'
@@ -227,6 +228,164 @@ describe('单列收拢断点：900 / 960 已并入 768（2026-10-04）', () => {
         '\n当前登记（改动时请一并更新 LEGACY_OUTSIDE_WHITELIST）：\n' +
         LEGACY_OUTSIDE_WHITELIST.map((l) => `  ${l.file}: ${l.value}px`).join('\n'),
     ).toEqual(LEGACY_OUTSIDE_WHITELIST.map((l) => `${l.file}:${l.value}px`))
+  })
+})
+
+/**
+ * ## 跨语言契约：插件 manifest 的 `label_key` 必须在 8 个 locale 里都存在
+ *
+ * 存在理由：一个**当前没有任何门覆盖**的方向。
+ *
+ * `plugin-runtime/nav_validate.go:94-101` 强制每个插件导航页声明一个合法点分
+ * i18n key（`nav.label_key required` + 正则），前端 `remoteNavToNavItems`
+ * 把 `label_key` 交给 `t()` 运行期解析。
+ * ⇒ **契约两端各有一道门，唯独中间那句「这个 key 在 locale 里存在吗」没人管**：
+ * 插件作者改一个 key 名，Go 侧校验照过、`manifest_test.go` 照过，
+ * UI 侧静默渲染成裸 key 或回落英文，**全链路无一处变红**。
+ *
+ * `i18n/parity.test.ts` 覆盖的是「locale 之间互为超集」与「src/ 里引用的 key 存在」，
+ * **不含 manifest 来源的 key**——静态抽取器在原理上看不到它们（§4.6.8）。
+ *
+ * ### 真源从哪来（这一条决定了门是否恒真）
+ *
+ * 键集从 **`plugin-runtime/testdata/*.json` 的 `label_key`** 推导，
+ * **不是**从 Go 源码里 grep `nav.*` 字面量。
+ * 差别是实测过的：Go 侧还有 `registry_test.go:10` 的 `nav.item.x`、
+ * `nav_validate_test.go:17` 的 `nav.plugin.title` —— 那是**单测脚手架**，
+ * 本来就不该在 locale 里存在，按字面量推导会得到一道**永久红**的门。
+ * manifest JSON 才是插件真正发布的那份契约。
+ *
+ * ### 与 `i18n/parity.test.ts` 的重叠（实测，别当成完全互补）
+ *
+ * 逐条变异对照（每条单独施加、单独跑两道门、单独还原并验字节一致）：
+ *
+ * | 变异 | parity | 本门 | 判定 |
+ * | --- | --- | --- | --- |
+ * | 只把 `de-DE` 的 `sessionPlugin` 改名 | rc=1 | rc=1 | **两门都抓**（parity 断言每语种 ⊇ zh-CN） |
+ * | 只把 `de-DE` 的 `sessionPluginSettings` 改名 | rc=1 | rc=1 | **两门都抓** |
+ * | manifest 指向一个**所有语种都没有**的键 | **rc=0** | rc=1 | **只有本门抓到** |
+ * | manifest 新增页面 + 全新 `label_key` | **rc=0** | rc=1 | **只有本门抓到** |
+ *
+ * ⇒ **本门唯一不可替代的覆盖是「键来自 manifest 侧」这个方向**。
+ * 前两行是冗余的（冗余不是坏事：parity 的口径若变，这一段仍有人接），
+ * 但**不能拿它们当本门的立功证据**。后两行才是：parity 比的是语种之间、
+ * 扫的是 `src/` 里的字面量，而一个**所有语种都没有**的键对它天然不可见。
+ *
+ * ### 为什么不 import `parity.test.ts` 的 `collectLeafKeys`
+ *
+ * 它确实 `export` 了。但 import 一个 `.test.ts` 会让它的 `describe` 块在**本文件
+ * 的上下文里二次注册** ⇒ 那些用例在一次运行里被数两遍，测试总数虚高、失败信息
+ * 归属错乱。宁可复制一份 loader 技术，也不去动那道成熟门禁的注册语义。
+ * ⚠️ 复制的只是**手法**（`vm` 求值 + 递归收集叶子键），不是真源：
+ * 两边读的仍是同一批 locale 文件。
+ */
+describe('跨语言契约：manifest label_key → 8 locale', () => {
+  const REPO_ROOT = resolve(SRC, '..', '..')
+  const TESTDATA = resolve(REPO_ROOT, 'plugin-runtime', 'testdata')
+  const LOCALES_DIR = resolve(SRC, 'locales')
+  const LOCALES = ['ar-SA', 'de-DE', 'en-US', 'es-ES', 'fr-FR', 'ja-JP', 'zh-CN', 'zh-TW']
+
+  // ---- locale 侧：vm 求值 + 递归收集叶子键（手法同 i18n/parity.test.ts） ----
+  function evalAsCjs(code: string, absPath: string): Record<string, unknown> {
+    const moduleObj: { exports: Record<string, unknown> } = { exports: {} }
+    const sandbox = { module: moduleObj }
+    vm.createContext(sandbox)
+    vm.runInContext(code, sandbox, { filename: absPath })
+    return moduleObj.exports
+  }
+  function loadModuleFile(locale: string, moduleName: string): Record<string, unknown> {
+    const absPath = join(LOCALES_DIR, locale, `${moduleName}.ts`)
+    const code = readFileSync(absPath, 'utf8').replace(/^export default /m, 'module.exports = ')
+    return evalAsCjs(code, absPath)
+  }
+  function loadLocale(locale: string): Record<string, unknown> {
+    const src = readFileSync(join(LOCALES_DIR, locale, 'index.ts'), 'utf8')
+    const importRe = /^\s*import\s+(\w+)\s+from\s+['"]\.\/(\w+)['"]\s*$/gm
+    const merged: Record<string, unknown> = {}
+    let m: RegExpExecArray | null
+    while ((m = importRe.exec(src)) !== null) merged[m[1]] = loadModuleFile(locale, m[2])
+    return merged
+  }
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v)
+  function collectLeafKeys(obj: unknown, prefix = ''): Set<string> {
+    const keys = new Set<string>()
+    if (!isPlainObject(obj)) return keys
+    for (const [k, v] of Object.entries(obj)) {
+      const path = prefix ? `${prefix}.${k}` : k
+      if (Array.isArray(v)) continue
+      if (isPlainObject(v)) collectLeafKeys(v, path).forEach((nk) => keys.add(nk))
+      else if (v !== null && v !== undefined) keys.add(path)
+    }
+    return keys
+  }
+
+  // ---- manifest 侧：递归捞出任何 `label_key` 字符串 ----
+  const manifestFiles = existsSync(TESTDATA)
+    ? readdirSync(TESTDATA).filter((f) => f.endsWith('.json')).sort()
+    : []
+  const manifestLabelKeys = ((): string[] => {
+    const out: string[] = []
+    const walk = (node: unknown) => {
+      if (Array.isArray(node)) return node.forEach(walk)
+      if (!isPlainObject(node)) return
+      for (const [k, v] of Object.entries(node)) {
+        if (k === 'label_key' && typeof v === 'string') out.push(v)
+        else walk(v)
+      }
+    }
+    for (const f of manifestFiles) walk(JSON.parse(readFileSync(join(TESTDATA, f), 'utf8')))
+    return [...new Set(out)].sort()
+  })()
+
+  /** 每个 locale 的全部叶子键（含 namespace 前缀，如 `nav.item.sessionPlugin`）。 */
+  const localeKeys = new Map<string, Set<string>>(
+    LOCALES.map((l) => [l, collectLeafKeys(loadLocale(l))]),
+  )
+
+  it('量具自证：testdata 目录存在且有 manifest（防目录改名后判据恒真）', () => {
+    expect(manifestFiles.length, `${TESTDATA} 下没有 *.json manifest`).toBeGreaterThan(0)
+  })
+
+  it('量具自证：确实从 manifest 里捞出了 label_key（防 JSON 形状变化后空集恒真）', () => {
+    expect(
+      manifestLabelKeys.length,
+      '一份 manifest 都没解析出 label_key —— 要么 manifest 形状变了，' +
+        '要么键名不再叫 label_key。两种都得改这道门，而不是让它悄悄通过。',
+    ).toBeGreaterThanOrEqual(2)
+  })
+
+  it('量具自证：每个 locale 都真的求值出了键集，且都含 nav 命名空间', () => {
+    for (const [locale, keys] of localeKeys) {
+      expect(keys.size, `${locale} 叶子键为空，vm loader 或 index.ts 装配坏了`).toBeGreaterThan(100)
+      const navLeaves = [...keys].filter((k) => k.startsWith('nav.')).length
+      expect(navLeaves, `${locale} 没有任何 nav.* 叶子键，nav 模块没被装配进来`).toBeGreaterThan(0)
+    }
+  })
+
+  it('每个 manifest label_key 在 8 个 locale 里都存在', () => {
+    const missing: string[] = []
+    for (const key of manifestLabelKeys) {
+      for (const locale of LOCALES) {
+        if (!localeKeys.get(locale)!.has(key)) missing.push(`${key} 缺于 ${locale}`)
+      }
+    }
+    expect(
+      missing,
+      '插件 manifest 声明的 label_key 在 locale 里不存在 ⇒ UI 会静默渲染成裸 key。\n' +
+        `缺失明细（${missing.length} 条）：\n` + missing.map((m) => `  ${m}`).join('\n') +
+        '\n修法：在 src/locales/<8 个语种>/ 对应模块里补上该键。' +
+        '若该键确实该废弃，请改 manifest 让两端一致，不要单边删 locale。',
+    ).toEqual([])
+  })
+
+  it('manifest label_key 全部落在 nav.* 命名空间内（与 nav_validate.go 的形状要求一致）', () => {
+    const strays = manifestLabelKeys.filter((k) => !k.startsWith('nav.'))
+    expect(
+      strays,
+      '这些 label_key 不在 nav.* 下。可能是合法的其他命名空间，' +
+        '但请先确认前端 t() 能解析到——本门只覆盖 nav.* 以外的形状不报错。',
+    ).toEqual([])
   })
 })
 
