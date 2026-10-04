@@ -26269,3 +26269,140 @@ entry 自身字段的 VALUES 兜底**。0 行被显式处理了。
 
 ⇒ 通则：**多条查询 + 「它们应当互相吻合」的断言 + 会变的总体 = 迟早的假红。**
 要么一个快照，要么不断言相等，要么断言「差值在漂移容忍内」并把容忍量写出来。
+
+---
+
+## §9.219 ★**D30-b 已解：252 生产实测**——而生产的 blocker 与本地**不是同一个**
+
+§9.217（另一条链）记载 252 上 `/opt/llm-gateway-go/.env.dev` 可用。
+本轮核实：**`ssh 252` 直连可用**，`psql` 在该主机上可用，
+PG 监听内网 `172.16.2.210:5432`。**D30-b 不再是硬阻塞。**
+
+⚠ **本节全部是只读 SELECT**（`pg_stat_user_tables` / `pg_stat_activity` /
+`session_mirror_outbox` / `request_logs*` / `session_turns*` / `session_dim`），
+**未对生产做任何写入**。
+
+### §9.219.1 生产形态与本地**根本不同**
+
+| 表 | 252 生产 | 本地 |
+|---|---|---|
+| `request_logs`（父表） | **0 行 / 0 字节** | 1.5M+ |
+| `request_logs_hot` | 6,165 / 55 MB | 1,517 / 2h 仍在写 |
+| `session_turns`（父表） | **0 行** | 1.69M |
+| `session_turns_hot` | **1,733** / 52 MB | 活跃 |
+| `session_dim` | **646,550** / 294 MB | 少 |
+| `session_mirror_outbox` | **147 行** | 0 |
+
+⚠ 生产的会话族**几乎只有 `session_dim` 有量**，`session_turns` 只有 1,733 行。
+**这是「数据在更改前后一致」这个目标最该先回答的问题，而本地数据回答不了。**
+
+### §9.219.2 生产 `genuine_loss = 10`，但形状与本地**完全不同**
+
+| 口径 | 252 生产 | 本地 |
+|---|---|---|
+| 带会话头的 v1 行 | 8,078 | — |
+| `internal_loopback` | **8,001** | 32,015 |
+| `non_terminal` | **67** | 1,628 |
+| **`genuine_loss`** | **10** | 10–11 |
+
+生产那 10 行逐条：
+
+| request_id | actor | status | error_kind | 会话 | ts |
+|---|---|---|---|---|---|
+| `235ea9165ab7b8` | (null) | **success** | (null) | `gw_c3574332…` | 09-30 20:59 |
+| `2c2d07b913e782` | (null) | **success** | (null) | `gw_45dc8b7c…` | 09-30 20:59 |
+| `72798677dc744e` | (null) | failure | `provider_error` | `gw_1e11d385…` | 10-01 04:56 |
+| `4a6c5aa12e8b8d` | (null) | failure | `routing_database_error` | `gw_dee6306b…` | 10-01 04:56 |
+| `3c0292ce048e9b` | (null) | **success** | (null) | `gw_66795636…` | 10-01 05:31 |
+| `f0756a3304a55e` | (null) | failure | `provider_error` | `gw_4ee18464…` | 10-01 06:58 |
+| `d381fede0cae86` | `node-probe-worker` | failure | `transient` | `gw_17a564b7…` | 10-03 01:10 |
+| `e27e8399ad0f9a` | (null) | **success** | (null) | `gw_7adb3713…` | 10-03 02:49 |
+| `d7a94eae91dafd` | (null) | failure | `provider_error` | `gw_e362bf73…` | 10-03 04:33 |
+| `f1e00e74eb753c` | (null) | rate_limited | `rate_limit_exceeded` | `gw_a8dd192b…` | 10-03 06:40 |
+
+⇒ **3 行是 `success`**、会话**全是 `gw_*` 真实会话**、`error_kind` 是
+`provider_error` / `routing_database_error` / `transient` / `rate_limit_exceeded`。
+
+★ **本地那套叙事一条都不迁移**：本地的 blocker 是
+「`probe-service` + `no_candidate` 的单请求探针会话」，
+**生产没有一行是那样的**。
+⇒ §9.216.5 的「排除覆盖缺口」结论**对本机成立、对生产不成立**。
+⚠ **本地数据不足以代表生产，这一节就是证据**——
+在此之前我每一节都写着「生产完全未验证」，那句话是对的；
+现在它**不再是对的**，而**我此前的机制结论全部只对本地成立**。
+
+生产同一刀切分（与门里那条断言同形）：
+
+| 切分 | 行数 | 其中有 `session_dim` 行 | 其中 `success` |
+|---|---:|---:|---:|
+| 会话整体从未被镜像 | **6** | 1 | 0 |
+| 健康会话里丢了 1 个 turn | **4** | **4** | **4** |
+
+⇒ 与本地的 9/1 **完全不同**；且生产的 4 条「丢单 turn」**全部是成功请求**，
+它们的会话**有 `session_dim` 行** ⇒ **hook 跑过、turn 写没成**。
+**那才是生产上最该先查的一类。**
+
+### §9.219.3 生产有 **147 条 `dead` 死信**（本地 0），但**不在增长**
+
+```
+status 分布：pending=1  dead=147
+147 条全部：source=hook  fail_reason=write_failed  attempts=9
+session_id 形态：sys:probe:* (synthetic) —— 147/147，无一例外
+集中在 2 个会话：sys:probe:cred35:… ×135   sys:probe:cred63:… ×12
+时间窗：created 2026-09-23 09:11 → 16:46，updated 最晚 2026-09-24 01:37
+```
+
+错误构成（`last_error`）：
+
+| 次数 | 错误 |
+|---:|---|
+| **98** | `write turn: get next turn_no: timeout: context deadline exceeded` |
+| 19 | `acquire advisory lock: timeout: context deadline exceeded` |
+| 7 | `write turn: acquire request advisory lock: conn closed` |
+| 5 | `write details: …` / 3 `write bodies` / 3 `write turn: insert turn` / 3 `commit tx` / 2 `enqueue session aggregate outbox` |
+
+⚠ **`get next turn_no` 占 67%** —— 这**与我在 §9.215.4 的撤回直接冲突**。
+但**不能因此翻回去**，理由有两条，必须一起说：
+
+1. `acquire advisory lock` 是事务的**第一条**语句，它自己就超时了 19 次。
+   在 2000ms 预算被锁等待耗尽之后，**下一条语句报的是「context already done /
+   deadline exceeded」**。⇒ **错误名只说明「预算耗尽时正在跑哪条语句」，
+   不说明「哪条语句慢」**。`get next turn_no` 之所以占 67%，很可能只是因为它
+   **紧跟在锁之后、经常是第一条撞上过期的那条**。
+2. 生产 `session_turns_hot` 的每会话 turn 数是 **p50=p90=p99=1、max=8**，
+   **没有任何 `sys:probe:*` 会话出现在 turns 表里** ⇒ 那两个合成会话
+   在 turns 表里是空的，`MAX(turn_no)` 对空集是瞬时的。
+
+⇒ **真正被证据支持的是「锁护航」**：135 次失败集中在**同一个** `sys:probe:cred35:*`
+合成会话上。R51 的注释早已写明这个形状（探针合成 `sys:probe:*` 系统会话后
+**集中打 advisory lock**，实测失败噪声 ~115/min），而 hook 里的探针门
+（`IsProbeSyntheticSession`）**只挡「无会话头」的探针**，
+**挡不住已经合成出 `sys:probe:*` 的那一支** —— 这与 §9.216.5 在本地发现的
+排除缺口是**同一个洞的两端**。
+
+⚠ 但这 147 条**是一次 09-23 的事件，不是当前稳态**
+（最后更新 09-24 01:37，之后无新增）⇒ **它不是生产 `genuine_loss=10` 的成因**。
+
+### §9.219.4 对目标问题的当前答案（分环境，不合并）
+
+| 问题 | 本地 | 252 生产 |
+|---|---|---|
+| `request_logs` 能否 DROP | **不能**（`s4_ready=false`，`genuine_loss` 10–11） | **不能**（`genuine_loss=10`，形状不同） |
+| 丢行主体 | 探针单请求会话（`no_candidate`） | **成功请求 + `provider_error`/`routing_database_error`** |
+| 会话族数据是否可用 | 可用（`session_turns` 1.69M） | ⚠ **`session_turns` 仅 1,733 行而 `session_dim` 646,550 行 —— 比例失衡，原因未查** |
+| 镜像失败恢复 | 生效（入队的都被救回，`dead=0`） | 生效（147 条走完 9 次重试后死信，符合设计） |
+
+⚠ **最重要的一条新事实**：生产的 `request_logs` **父表 0 行**，
+`session_turns` **父表也 0 行**，只有 hot 面有量。
+⇒ 在动 DROP 之前，必须先回答「生产的 v1 与 turns 历史是否已被清空/轮转」——
+**这正是「确保数据在更改前后一致」的核心问题，而我在本地查不到**。
+
+### §9.219.5 诚实的边界
+
+- 本节只做**只读观测**，未改生产一字。
+- 生产的 `genuine_loss=10` **成因未查**：没有生产日志（未采集），
+  `session_dim` 有行的 4 条只能推出「hook 跑过、turn 写没成」。
+- 「`session_turns` 仅 1,733 行」是**计数**不是**结论**：
+  可能是刚清空/轮转、可能是 hot 面按设计很小、也可能镜像整体没跑起来。
+  **我没有分母也没有时间序列，不下判断。**
+- §9.215–§9.218 的全部机制结论**只对本地成立**，本节给出了它们不迁移的证据。
