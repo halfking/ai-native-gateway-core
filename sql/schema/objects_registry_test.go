@@ -168,15 +168,28 @@ func firstLivePython(cands []pythonInterp) (pythonInterp, error) {
 func TestFirstLivePythonControls(t *testing.T) {
 	// 负控 1（过度跳过方向）：候选里**混进**一个必然不存在的命令，
 	// 但只要有一个活的，就必须被选中，而不是因为前面失败就整体放弃。
+	//
+	// 正样本**不能硬编码名字**：最初写死的是 `python`，它在作者机
+	// （Windows，`python` = 真解释器 3.13.9）上是活的，但在只有 `python3`
+	// 的 macOS/Linux 上不存在 ⇒ 这条对照在那类机器上是**永久硬红**，
+	// 红得只能被当环境噪音忽略——正是 R89-DV 批判过的「把门变成噪音」。
+	// 活样本改由生产候选清单现场探针取得（与 TestReconcileToolSupports
+	// ThirdRepresentation 同一判据源）：本机一个活解释器都没有时响亮跳过，
+	// 并声明该跳过不构成任何「firstLivePython 正确」的证据。
+	live, err := firstLivePython(pythonCandidates)
+	if err != nil {
+		t.Skipf("本机没有任何可执行的 Python（%v）——负控 1 需要一个活解释器当正样本。"+
+			"⚠️ 该跳过**不是**「死候选不毒化列表」已获验证的证据。", err)
+	}
 	got, err := firstLivePython([]pythonInterp{
 		{name: "definitely-not-a-real-python-xyz"},
-		{name: "python"},
+		live,
 	})
 	if err != nil {
 		t.Fatalf("候选里明明有可用解释器却整体报错：%v", err)
 	}
-	if got.name != "python" {
-		t.Errorf("选中 %q，期望跳过死候选后选中 python", got.name)
+	if got.name != live.name {
+		t.Errorf("选中 %q，期望跳过死候选后选中 %q", got.name, live.name)
 	}
 
 	// 负控 2（过度接受方向）：全部候选都死 ⇒ 必须返回错误，**不得**返回一个「可用」解释器。
