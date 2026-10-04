@@ -9434,3 +9434,88 @@ D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
      **新旧数字并列**写进审计。
 4. 回归基线：`admin` 带真库 FAIL = 3，**只看差集**。
 5. **D28 拍板前不要动写侧。**
+
+---
+
+## §70.50 找到并**修掉**本机库异常根因：columnar + 未命名子查询（D30）
+
+### ① 目标
+
+§9.184–§9.186 证明本机 `llm_gateway` 的 `request_logs_bodies` 一进「子查询内
+`UNION ALL`」就炸，并据此把 D25-a 定为**重建该库**。本轮问一个更前置的问题：
+**重建是修复，还是掩盖？**
+
+### ② 逐项排除（全部实测）
+
+行数（干净库灌到 **2,501,007** 行仍正常）· 数据内容 · 并行度 ·
+统计信息（`ANALYZE` 后**仍失败**）· `attcompression`（两库完全相同）· DDL/分区树/约束/索引。
+
+⚠ `attcompression` 我一度当成根因（父表 `'l'`、分区 `''` 的「混合状态」），
+**被探针库的同形对照当场否掉**——它一模一样却完全正常。
+**「像根因」和「是根因」之间隔着一次对照。**
+
+### ③ 根因：访问方法
+
+| 库 | bodies 的 RANGE 分区 | hot |
+|---|---|---|
+| `llm_gateway`（失败） | **columnar** | heap |
+| 探针库（正常） | heap | heap | heap |
+
+探针库是 `pg_dump --schema-only` 建的，**不还原 Citus `columnar` 转换**
+⇒ §9.186「同 DDL 换库就好」同时换掉了访问方法。来源是**生产迁移 `765_bodies_columnar_storage`**。
+
+### ④ 因果确证
+
+干净库上把**一个 0 行的分区** `SET ACCESS METHOD columnar` ⇒ **同一句报错**。
+之后已复原探针库（4 分区全 heap、删 250 万合成行、查询恢复正常）。
+
+### ⑤ 修法：去掉子查询包裹（已实施，语义不变）
+
+`v1BodyQuery` 拆成 hot 腿 + 母表腿，顺序执行。
+不用「补分区键谓词」那条绕过，因为**它会改分区裁剪**；
+逐字保留「hot 优先、母表兜底」。**代价**：1 次往返变最多 2 次（写明，不藏）。
+
+⇒ **`TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface` 在真库首次真正执行并
+PASS（103s）**，此前必然 Skip。**目标里「确认数据的存储可用」这一条在本机达成。**
+⇒ 顺带**加强 D19-a-2 的否证**：`ExecuteRepair` 在本机从来没能成功执行过。
+
+### ⑥ 两个「自己的测试遮住修复」
+
+1. e2e 测试的**前置探针硬编码了旧形状**——修好 loader 却留着它，
+   等于让修复被自己的测试遮住。已改为**直接引用 loader 的两个常量**（同源），
+   判定口径从「只跑 hot 腿」改成**两条腿都跑**（母表才是 columnar 那一张）。
+2. `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 的失败文案把处置指向
+   「重建」。已改正为写明根因与两条真出路。**门保持红**（表确实还是列存）——
+   它提醒的正是「这个库的存储形态与生产不一致」，而重建恰恰会掩盖这一点。
+
+### ⑦ ⚠️ 推翻 D25-a
+
+**重建是掩盖不是修复**：重建得到全 heap 的库，故障消失，
+但**下次部署 migration 765 就复发**，且复发前的库已不是生产形态。
+
+### ⑧ 残留自证
+
+跑完 e2e 后 `zz-repair-e2e-%` 残留 2 行，但时间戳 **13:36:36**（§9.186 那轮），
+本轮在 **16:57** ⇒ **本轮零残留**。共享库另有活网关进程持续写入，与本测试无关。
+
+### ⑨ 待拍板
+
+**D30-a**（回滚 765 vs 保留列存+修读法；**建议先做 D30-c 普查再选**）/
+**D30-b**（**生产是否已受影响需 252 只读确认**，可并入 D24-d-3——最该先确认的一条，
+它决定 D19-a-3-1 是否也踩这个坑）/
+**D30-c**（全仓普查还有谁在未命名子查询里 UNION ALL 读 bodies，并落成常驻门）。
+沿用未决：**D29-a / D29-c / D28-a / D28-b / D28-c / D27-a / D27-b / D27-c /
+D26-a / D26-b / D25-b / D25-c / D24-d-3 / D24 / D24-c / D19-a-3-1 / D19-a-3-2 /
+D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
+**D25-a 已由 D30 取代。**
+
+### ⑩ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
+2. 跑 D30-c 普查：bodies 两表配对 × 未命名子查询形状；
+   生产形态（columnar）下测，heap 形态下做**阳性对照**。
+3. `go test ./cmd/tools/validate_sessions_v2/ -run TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface`
+   应 PASS；跑完核 `zz-repair-e2e-%` 残留为 **0**。
+4. `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` **应仍然红**——
+   若它变绿，先查 bodies 分区的 `relam`（`columnar` 变 `heap` 了）。
+5. 回归基线：`admin` 带真库 FAIL = 4（D21 两条 + 本条 + 既有第三条），**只看差集**。

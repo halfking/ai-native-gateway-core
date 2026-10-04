@@ -112,19 +112,56 @@ type sessionDB interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+// v1BodyQuery / v1BodyQueryParent 取代了原先那条「子查询内 UNION ALL」的查询。
+//
+// # 为什么必须改（审计 §9.196，因果已确证）
+//
+// migration 765 `bodies_columnar_storage` 把 `request_logs_bodies` 的
+// RANGE 分区转成了 **Citus `columnar`** 访问方法。**只要**该分区出现在
+// 一个**未命名子查询**（relid=0 的 RTE）里并参与 `UNION ALL`，
+// 执行器初始化就抛：
+//
+//	invalid perminfoindex 0 in RTE with relid 0
+//
+// 复现（干净库上，**0 行的分区**即可，审计 §9.196.4）：
+//
+//	ALTER TABLE request_logs_bodies_2026_11 SET ACCESS METHOD columnar;
+//	SELECT count(*) FROM (SELECT request_id FROM request_logs_bodies_hot
+//	                      UNION ALL SELECT request_id FROM request_logs_bodies) x;
+//	⇒ ERROR: invalid perminfoindex 0 in RTE with relid 0
+//
+// 它与行数、数据内容、统计信息、DDL 全部无关（已逐项实测排除）。
+//
+// # 为什么拆成两条，而不是给子查询补一个分区键谓词
+//
+// 两种改法都实测能通过。选前者是因为**补谓词会改语义**：谓词下推改变
+// 分区裁剪路径，而原查询的 `ts = $2` 本已足够定位；用两条顺序查询则
+// **逐字保留**「hot 优先、母表兜底」的择一规则，与原
+// `ORDER BY source_priority LIMIT 1` 的结果**完全一致**。
+//
+// # 代价（写明，不藏）
+//
+// 原本 1 次往返变成最多 2 次。`LoadV1Turns` 对每个轮次调用一次，
+// 命中率低时（多数行只在母表）**会变成 2 倍往返**。
+// 这是真实代价；但在「一条都查不出来」与「慢一倍」之间，前者不可接受。
+
+// v1BodyQuery 先查 hot 腿（原 source_priority=0）。
+// 未命名子查询的形状已实测会触发 perminfoindex 错误，
+// 因此这里**不**使用 `FROM ( ... UNION ALL ... )`。
 const v1BodyQuery = `
-		SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
-		FROM (
-			SELECT request_id, ts, request_body, response_body, 0 AS source_priority
-			FROM request_logs_bodies_hot
-			UNION ALL
-			SELECT request_id, ts, request_body, response_body, 1 AS source_priority
-			FROM request_logs_bodies
-		) AS bodies
-		WHERE request_id = $1 AND ts = $2
-		ORDER BY source_priority
-		LIMIT 1
-	`
+	SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
+	FROM request_logs_bodies_hot
+	WHERE request_id = $1 AND ts = $2
+	LIMIT 1
+`
+
+// v1BodyQueryParent 是 hot 未命中时的兜底腿（原 source_priority=1）。
+const v1BodyQueryParent = `
+	SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
+	FROM request_logs_bodies
+	WHERE request_id = $1 AND ts = $2
+	LIMIT 1
+`
 
 // NewSessionLoader creates a new session loader
 func NewSessionLoader(db sessionDB) *SessionLoader {
@@ -212,9 +249,19 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	// Bodies may still be in the hot table or already promoted to partitions. The
 	// timestamp is part of the body table key and prevents a reused request ID from
 	// receiving another turn's body.
+	//
+	// 两条腿**顺序**执行（审计 §9.196）：原来那条「子查询内 UNION ALL」的查询在
+	// `request_logs_bodies` 的 RANGE 分区是 Citus `columnar` 时会让执行器初始化
+	// 直接失败（invalid perminfoindex 0 in RTE with relid 0），而 migration 765
+	// `bodies_columnar_storage` 正是干这件事的。拆成两条后语义不变：hot 优先、
+	// 母表兜底，与原 `ORDER BY source_priority LIMIT 1` 一致。
 	for i := range turns {
 		var requestBody, responseBody json.RawMessage
 		err := l.db.QueryRow(ctx, v1BodyQuery, turns[i].RequestID, turns[i].Ts).Scan(&requestBody, &responseBody)
+		if err == pgx.ErrNoRows {
+			// hot 未命中 → 走已 promote 的母表分区。
+			err = l.db.QueryRow(ctx, v1BodyQueryParent, turns[i].RequestID, turns[i].Ts).Scan(&requestBody, &responseBody)
+		}
 		if err == pgx.ErrNoRows {
 			// No bodies for this request - keep empty defaults
 			continue
