@@ -976,3 +976,13 @@ teeth（一次性 PG17 逐项实测）：去 `LIMIT 1` → 判据红（4 绑定 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 827 | `827_modality_verification_progress_view.sql` | `ba68e1b7fa292fe9d8dddf0bc86a769510fbdaa97655a50b52c0415053bdad09` | pending deploy（未应用于任何库；字节已冻结） |
+## 2026-10-04T10:36:20Z — deploy 245 build_seq 2450 (92c5ca04)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 823 | `823_session_turns_request_status.sql` | `334765edc40e44cfe9a48334127649eaa930f8fb81add3ed595ee4d8e6e67441` | applied+verified |
+| 824 | `824_request_status_rate_limited_projection.sql` | `bb5a76be01cfa69ae6ffbfd510c3cc728d7605c702eec11ad337883b6f80c666` | applied+verified |
+| 825 | `825_modality_graded_verification.sql` | `3af1b1801c36e015a5849bde261125c378129c46f5bdad703c186b85cc0b0eab` | applied+verified |
+| 826 | `826_model_baseline_price.sql` | `4d2248de7a280cb6e0ff658880bd66dd136eb4cc84620dd77a63ff5bbc58ebdc` | applied+verified |
+| 827 | `827_modality_verification_progress_view.sql` | `ba68e1b7fa292fe9d8dddf0bc86a769510fbdaa97655a50b52c0415053bdad09` | applied+verified |
+
