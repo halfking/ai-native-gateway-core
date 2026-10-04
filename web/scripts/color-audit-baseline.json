@@ -1,26 +1,6 @@
 {
   "violations": [
     {
-      "file": "components/board/BoardDistGrid.vue",
-      "value": "#e6a23c"
-    },
-    {
-      "file": "components/board/BoardDistGrid.vue",
-      "value": "#f56c6c"
-    },
-    {
-      "file": "components/board/BoardHeroRow.vue",
-      "value": "#e6a23c"
-    },
-    {
-      "file": "components/board/BoardModelDist.vue",
-      "value": "#e6a23c"
-    },
-    {
-      "file": "components/board/BoardUsageTrendSection.vue",
-      "value": "#e6a23c"
-    },
-    {
       "file": "components/credential-monitor/CredentialDetailDrawer.vue",
       "value": "rgba(139, 148, 158, 0.28)"
     },
@@ -75,10 +55,6 @@
     {
       "file": "components/routing/SmartRoutingConfigDrawer.vue",
       "value": "rgba(0, 0, 0, 0.16)"
-    },
-    {
-      "file": "components/turns/TurnsSessionCard.vue",
-      "value": "#d97706"
     },
     {
       "file": "views/ApprovalDetailView.vue",

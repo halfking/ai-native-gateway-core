@@ -195,7 +195,7 @@ function fmtCompact(n: number | undefined) {
 /* 降级态与空态必须视觉可分：前者是「不知道」，后者是「确实没有」。 */
 .mdist__degraded {
   font-size: 12px;
-  color: var(--warning, #e6a23c);
+  color: var(--warning);
   text-align: center;
   padding: 16px 0;
   line-height: 1.5;

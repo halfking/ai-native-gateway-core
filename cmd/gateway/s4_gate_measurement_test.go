@@ -60,6 +60,31 @@ func TestS4GateMeasurement(t *testing.T) {
 	}
 	defer conn.Close(ctx)
 
+	// ⚠️ Everything below runs in **one REPEATABLE READ transaction**, and that
+	// is load-bearing, not style. This test issues five separate queries over
+	// the same scope and then asserts they agree: the 4 window counts, the
+	// shape profile, the session-wide split, and the mirror-reach split must
+	// all partition the same set. Under READ COMMITTED each query gets its own
+	// snapshot, and this population is **live** — new drifting v1 rows land
+	// continuously, and a replay draining one out of the outbox removes another.
+	// So a row that arrives between query 1 and query 3 makes the two
+	// partitions legitimately disagree, and the assertion reports "one of these
+	// queries is scoped differently" when in fact all of them are correct and
+	// the *population moved*.
+	//
+	// That failure mode is indistinguishable from a real scope drift, which is
+	// the worst property a gate can have: it trains you to distrust the
+	// instrument. A single snapshot removes the possibility.
+	//
+	// (Observed once as an unexplained package FAIL before this change; the
+	// three-partition assertions added in §9.215/§9.216 are the ones that can
+	// trip, and they were the newest thing in the file at the time.)
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatalf("begin repeatable-read tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // read-only: rollback is the commit
+
 	// ⚠️ The validator's scope is used **verbatim** — including its two
 	// NOT EXISTS anti-joins. My first cut inlined a copy of the row source and
 	// kept only the tenant predicate; that dropped the anti-join, so it counted
@@ -94,7 +119,7 @@ func TestS4GateMeasurement(t *testing.T) {
 	results := map[string]windowResult{}
 
 	for _, w := range s4Windows {
-		rows, err := conn.Query(ctx, q, "", time.Now().Add(-w.dur))
+		rows, err := tx.Query(ctx, q, "", time.Now().Add(-w.dur))
 		if err != nil {
 			t.Fatalf("%s: query: %v", w.label, err)
 		}
@@ -209,7 +234,7 @@ func TestS4GateMeasurement(t *testing.T) {
 		}
 	}
 	var held int64
-	if err := conn.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		SELECT count(*)
 		FROM (`+s4ScopeBody+`) rl
 		WHERE ($1 = '' OR rl.tenant_id = $1)
@@ -222,7 +247,7 @@ func TestS4GateMeasurement(t *testing.T) {
 		t.Fatalf("outbox attribution: %v", err)
 	}
 	var outboxLive, outboxIns, outboxDel int64
-	if err := conn.QueryRow(ctx, `SELECT n_live_tup, n_tup_ins, n_tup_del
+	if err := tx.QueryRow(ctx, `SELECT n_live_tup, n_tup_ins, n_tup_del
 	                              FROM pg_stat_user_tables
 	                              WHERE relname = 'session_mirror_outbox'`).
 		Scan(&outboxLive, &outboxIns, &outboxDel); err != nil {
@@ -278,7 +303,7 @@ func TestS4GateMeasurement(t *testing.T) {
 		n                                     int64
 		newest                                time.Time
 	}
-	shapeRows, err := conn.Query(ctx, `
+	shapeRows, err := tx.Query(ctx, `
 		SELECT COALESCE(rl.origin_actor, '(null)'),
 		       COALESCE(rl.request_status, '(null)'),
 		       COALESCE(NULLIF(TRIM(rl.error_kind), ''), '(null)'),
@@ -370,7 +395,7 @@ func TestS4GateMeasurement(t *testing.T) {
 	// the window count — otherwise this is a third number about a fourth
 	// population.
 	var sessionWideUnmirrored, singleTurnLost int64
-	if err := conn.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE session_turns = 0),
 		       count(*) FILTER (WHERE session_turns > 0)
 		FROM (
@@ -403,6 +428,59 @@ func TestS4GateMeasurement(t *testing.T) {
 				"more reliable would NOT clear this population; the question is whether these " +
 				"sessions should be mirrored at all (see the exclusion notes in hook.go and " +
 				"db.MirrorDriftClassSQL — both key on attributes these rows do not have).")
+		}
+
+		// ---- did the mirror run at all, for the session-wide group? ----------
+		//
+		// "session never mirrored" does not say *why*, and the two candidates
+		// need different fixes. runShadowWrite writes session_dim **before** the
+		// V2 turn write (hook.go:228-241), and the dim writer has an
+		// entry-fields fallback for the case where request_context_attrs has not
+		// landed yet (session_dim.go: `if err == nil && tag.RowsAffected() > 0`
+		// — a zero-row INSERT...SELECT is NOT swallowed, it falls through). So:
+		//
+		//	dim row present  ⇒ the hook definitely ran; the V2 write is what failed
+		//	dim row absent   ⇒ either the hook never ran, or dim *and* V2 both
+		//	                  failed; the local database cannot separate those two
+		//
+		// Both are reported, and the "cannot separate" half is stated rather than
+		// guessed — §9.216.4 previously wrote these rows off as unreadable, which
+		// is a statement about the instrument, not about the data.
+		type hookReach struct {
+			inDim, noDimButCtxPresent, noTraceAnywhere int64
+		}
+		var reach hookReach
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FILTER (WHERE in_dim),
+			       count(*) FILTER (WHERE NOT in_dim AND in_ctx_attrs),
+			       count(*) FILTER (WHERE NOT in_dim AND NOT in_ctx_attrs)
+			FROM (
+			  SELECT EXISTS (SELECT 1 FROM session_dim d
+			                WHERE d.gw_session_id = rl.gw_session_id) AS in_dim,
+			         EXISTS (SELECT 1 FROM request_context_attrs c
+			                WHERE c.gw_session_id = rl.gw_session_id) AS in_ctx_attrs
+			  FROM (`+s4ScopeBody+`) rl
+			  WHERE ($1 = '' OR rl.tenant_id = $1)
+			    AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+			    AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
+			    AND `+mirrorDriftClassSQL+` = 'genuine_loss'
+			) s`, "", time.Now().Add(-defDur)).
+			Scan(&reach.inDim, &reach.noDimButCtxPresent, &reach.noTraceAnywhere); err != nil {
+			t.Logf("  (mirror-reach probe failed, reporting the split above only: %v)", err)
+		} else {
+			t.Logf("7d mirror reach over the same %d blocker(s):", def.genuine)
+			t.Logf("    %-4d session_dim row present  ⇒ the hook ran; the V2 turn write is what failed",
+				reach.inDim)
+			t.Logf("    %-4d no session_dim, but request_context_attrs present ⇒ either the hook never "+
+				"ran, or dim *and* V2 both failed — **this database cannot separate those two**",
+				reach.noDimButCtxPresent)
+			t.Logf("    %-4d neither present ⇒ the v1 side-table never ran for this session either, "+
+				"which is a different story from a mirror failure", reach.noTraceAnywhere)
+			if reach.noDimButCtxPresent > 0 {
+				t.Logf("  ⚠ Do not read 'no session_dim row' as 'the mirror was never called' — it is " +
+					"also what 'every mirror write failed' looks like once rows are deleted. " +
+					"Answering it needs the gateway log line for that request_id.")
+			}
 		}
 	}
 

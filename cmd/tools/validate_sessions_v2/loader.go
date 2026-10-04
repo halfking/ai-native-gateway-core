@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -492,8 +493,78 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 	return &session, nil
 }
 
+// V1TimeRange is the span of v1 rows that actually exist for a tenant.
+type V1TimeRange struct {
+	MinTS, MaxTS time.Time
+	Rows         int64
+}
+
+// LoadV1TimeRange reports the real span of v1 data for a tenant.
+//
+// §9.222: batch validation is advertised as "compare v1 against v2 over a
+// window", but request_logs is **not** a permanent store. On 252 the monthly
+// job `pg17-drop-old-columnar-partitions.sh` (RETAIN_MONTHS=2) DETACHes and
+// DROPs every request_logs partition older than two months, while
+// session_turns is on no rotation list at all. So a window wider than two
+// months does not come back empty and does not error — it comes back
+// **silently truncated**, and a parity report over a truncated window reads
+// exactly like a parity report over the window that was asked for.
+//
+// The caller cannot detect that from the candidate count alone, because a
+// truncated window can still yield ≥100 sessions. This is the only place the
+// tool can tell the truth about it, so the range is measured here and
+// surfaced rather than inferred.
+func (l *SessionLoader) LoadV1TimeRange(ctx context.Context, tenantID string) (V1TimeRange, error) {
+	var r V1TimeRange
+	err := l.db.QueryRow(ctx, `
+		SELECT min(ts), max(ts), count(*)
+		FROM request_logs
+		WHERE tenant_id = $1
+		  AND gw_session_id IS NOT NULL
+		  AND gw_session_id <> ''
+	`, tenantID).Scan(&r.MinTS, &r.MaxTS, &r.Rows)
+	if err != nil {
+		return r, fmt.Errorf("query v1 time range: %w", err)
+	}
+	return r, nil
+}
+
+// WindowExceedsV1Data reports whether the window the operator asked for reaches
+// past the v1 rows that actually exist, and why.
+//
+// The check is deliberately split out from validateBatch so it can be tested in
+// both directions without a database: a guard that has only ever been observed
+// not firing is indistinguishable from a guard that cannot fire.
+//
+// A zero requestedStart means "unbounded below", which is what `-end-date`
+// alone produces; that case is never truncation.
+func WindowExceedsV1Data(requestedStart, requestedEnd time.Time, actual V1TimeRange) (bool, string) {
+	if actual.Rows == 0 {
+		// No v1 rows at all: reported as truncation would be wrong wording, and
+		// the zero-candidate path already fails the gate closed.
+		return false, ""
+	}
+	if !requestedStart.IsZero() && actual.MinTS.After(requestedStart) {
+		return true, fmt.Sprintf("requested start %s precedes the oldest v1 row %s (%d rows)",
+			requestedStart.Format(time.RFC3339), actual.MinTS.Format(time.RFC3339), actual.Rows)
+	}
+	if !requestedEnd.IsZero() && actual.MaxTS.Before(requestedEnd) {
+		return true, fmt.Sprintf("requested end %s is after the newest v1 row %s (%d rows)",
+			requestedEnd.Format(time.RFC3339), actual.MaxTS.Format(time.RFC3339), actual.Rows)
+	}
+	return false, ""
+}
+
 // LoadSessionsInRange loads session IDs within a date range for batch validation
 func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
+	if endDate.IsZero() {
+		// ts < $3 with a zero time is `ts < year 1`: the query matches nothing
+		// and the tool reports "no settled sessions found", which points the
+		// operator at their data instead of at their flags. This used to be
+		// reachable by passing -start-date without -end-date.
+		return nil, errors.New("end of the validation window is unset: pass -end-date (YYYY-MM-DD); " +
+			"a zero end bound silently matches zero rows rather than reporting an error")
+	}
 	settleThreshold := time.Now().Add(-settleWindow)
 
 	query := `
