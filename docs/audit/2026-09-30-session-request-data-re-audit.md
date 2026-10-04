@@ -23469,13 +23469,2566 @@ S4 退役风险清单有三张表（`db/retirement_column_exposure.go`）：
   仍可能把非查询片段算进来。反过来它**不会**漏掉真正的拼接失效形状——
   三轮迭代已把已知的那个样本（`client_protocol`）纳进来了。
 - **未连接生产。** 但「哪些文件的查询是拼接的」是**代码事实**，可直接外推。
-## §9.195 ★821 **已经在 252 生产上跑着**，而且它选中的总体与 §9.66 的目标**零重叠**
+
+<!-- ================= MERGE 2026-10-04 23:4x · 第二轮编号撞车处置 =================
+与本文件 22:xx 那次同一形态：两个并发写入者共用 §9.x 编号空间，各自往前推，
+git 只能报成内容冲突。
+
+本轮（冲突区 23472-26155）：
+  - 公共区 1-23471，尾部到 §9.194
+  - 对端（origin/main）侧 §9.195 ~ §9.216，2,532 行 —— 独立专题序列
+  - 本地侧 §9.195，149 行（★821 已在 252 生产跑）
+
+处置：**以对端为基底**（其 §9.195~§9.216 内部交叉引用一字未改），
+本地那 149 行作为独有内容接在末尾，换号 **§9.195 → §9.217**
+（§9.217.1 ~ §9.217.6），块内 7 处自引用同步更新。
+
+⚠️ **遗留歧义（与上一轮同源，未擅自消解）**：合并后同时存在两个 §9.170
+—— 本地的「821 落点的第一次端到端验证」与对端的「D19-a-2 的可行性」。
+§9.217 块内那 6 处「§9.170」指**前者**。
+另：文件里 §9.90~§9.93、§9.124、§9.195 等历史重号在 merge-base 里即已存在，
+与本次合并无关。
+======================================================================= -->
+
+
+---
+
+## §9.195 把 D29-a 变成一步操作，并**推翻我上一轮对它的建议**
+
+### §9.195.1 目的与做法
+
+D29-a 是「要不要修 `extractV1ReadingLiterals` 的作用域」。上一轮我给的建议是
+「把别名表改成文件级并集」。本轮把它**参数化**（默认口径逐字不变），
+好让「翻默认值」成为一步可做、结果可核对的操作，而不是一次全量改写。
+
+改动：`extractV1ReadingLiterals` 变成薄封装，新增
+`extractV1ReadingLiteralsScoped(t, path, fileScope bool)`。
+
+**默认口径未变的证明**：暴露报告的五个桶**逐字不变**
+（`breaks 4 / breaks-possibly 1 / undercounts 27 / undercounts-possibly 4 / clean 70`），
+三道相关门（`…Exposure` / `…BreakersRegistryIsConsistent` / `…RepointVerdict`）全 PASS。
+
+### §9.195.2 ⚠️ 我上一轮的建议**基本没用**
+
+把探针的分子改成「两个口径都没归因」，即「修完该降到 0」：
+
+| 口径 | 文件 | 「列×文件」对 |
+|---|---|---|
+| 默认（改动前） | 21 | **49** |
+| 文件级并集（我上轮的建议） | 21 | **47** |
+
+⇒ **只解决 2 对（4%）。** 若属主照上一轮的建议拍板，
+会为 4% 的改善付出一次决策 + 一次对已发布数字的改动。
+**这是本轮最重要的一条：把「可能」变成数字，直接推翻了我自己的建议。**
+
+### §9.195.3 真正的原因是**关系宇宙**，不是别名作用域
+
+追查 `client_protocol` 为什么在文件级并集下仍不被归因，发现：
+
+```go
+var v1TableRe  = regexp.MustCompile(`\b(request_logs|request_logs_hot|request_logs_bodies|request_logs_bodies_hot)\b`)
+var v1AliasRe  = regexp.MustCompile(`(?i)\b(?:from|join)\s+(request_logs_bodies_hot|request_logs_bodies|request_logs_hot|request_logs)\b(?:\s+(\w+))?`)
+```
+
+两个正则**只认 4 张 v1 裸表**。`request_logs_with_current_month`（710 视图）
+**不在名单里** ⇒ `extractV1ReadingLiterals` 的入口过滤
+`v1TableRe.MatchString(raw)` 就不通过 ⇒
+`admin/logs.go` 的主日志查询**一个字面量都产不出来**。
+别名并集无从谈起——**它根本没走到归因那一步。**
+
+### §9.195.4 权威数字（不是我数出来的，是 §9.172 已经数过的）
+
+`TestReaderPopulationGroundTruth`（§9.172，settle D20-b）**早就分开统计了**：
+
+```
+inventory=106 | v1底表读方=62 (仅v1=52 兼读=10) | 仅视图读方=44 | 未归类=0
+SQL 字面量：v1=105  视图=118  合计=223
+```
+
+⇒ **44 个文件只经由视图链读 v1，118 条视图字面量**；
+而暴露报告只处理那 **105** 条 v1 字面量。
+
+⚠ **我上一轮把这件事说成「没人看见」是不对的**——§9.172 的地面真值扫描器
+从 D20-b 起就刻意区分基表/视图，并有 `viewRelationRe` 与 unclassified 网兜着
+（它的注释甚至写明「`\b` 之后把 `request_logs_with_current_month` 排除在本族之外
+——那正是 §9.167 别名 bug 藏身之处」）。
+**准确的表述是：两个扫描器、两个宇宙，而 §9.162 的暴露报告从未采纳后者。**
+
+### §9.195.5 后果：报告的「clean」桶混了两种东西
+
+`TestRequestLogsRetirementExposure` 的 `clean (70 files)` 桶里，
+「查过了、没暴露」与「**从来没被看过**」在报告里**长得一模一样**。
+本轮探针在**全仓 2,273 个生产文件**上量到 **63 个**文件落进后者
+（限定在读方清单内是 §9.172 的 **44** 个；两个数的分母不同，都如实记下）。
+
+⚠ 其中包含**停写分类表已判为退化**的文件，例如
+`admin/usage_enhanced.go`（§9.191 实测的 `work_type` 维度塌缩）、
+`admin/compression_sessions.go` / `admin/logs_summary.go` /
+`domains/attachments/handler.go`（bodies 腿退化）、
+`admin/model_status.go`、`domains/sessionsummary/system_prompt_prefix.go`。
+
+⇒ **两套机制互相矛盾，而更可靠的是逐点评估的那一套**
+（它要求 `Evidence` 在文件里逐字存在、且带真库测量）。
+
+### §9.195.6 正确的修法已被变异证实
+
+把探针的裸表匹配改成**也认视图** ⇒ 盲区文件数 **63 → 0**。
+
+⇒ D29-a 的修法是**扩关系宇宙**（用 §9.172 已推导的 9 个关系名：
+5 底表 + 4 视图链），**不是**别名作用域。文件级并集作为附带的小修可以保留
+（它另解决 2 对），但**不是主要杠杆**。
+
+### §9.195.7 探针的变异验证
+
+- 盲区探针：把裸表正则改成也认视图 ⇒ 盲区 **63 → 0**
+  （证明这条判据是承重的，不是恒定的数字）。
+- 两个探针都带自检：扫到 0 个文件 ⇒ Fatal。
+
+### §9.195.8 本轮我自己的错（三条）
+
+1. **上一轮给 D29-a 的建议是错的**（只解决 4%），且我在写那份建议时
+   手里**已经有**能推翻它的证据形态（拼接形状），却没去量它。
+   ⇒ **给「修法」建议之前，先把修法实现出来量一下。**
+2. **又一次先动手后 grep**：自建 `v1BaseTableRe`，编译报错才发现
+   `request_logs_reader_population_test.go` 已有同名常量。
+   **本轮第三次。**
+3. 量具与被检验对象**不能同源**这件事，我以前记成「必须同源」——
+   本轮才想清楚前提：**两者都对时才同源；要量的正是「它哪里错了」时必须独立抄写**。
+   否则断言会恒真。
+
+### §9.195.9 诚实边界
+
+- **默认口径逐字未变**（已用报告五个桶 + 三道门证明）；已发布数字未动。
+- 关系宇宙的扩展 = 改已发布结论 ⇒ **D29-a（已按 §9.195.3/§9.195.6 重写）**，
+  本轮**未改**。
+- **未连接生产。** 但「哪些文件只经由视图读 v1」是**代码事实**，可直接外推。
+
+---
+
+## §9.196 找到并**修掉**本机库异常的根因：Citus `columnar` 分区 + 未命名子查询
+
+### §9.196.1 目标
+
+§9.184–§9.186 证明本机 `llm_gateway` 的 `request_logs_bodies` 一进入
+「子查询内 `UNION ALL`」就抛 `invalid perminfoindex 0 in RTE with relid 0`，
+并据此把 D25-a 的建议定为**重建该库**。本轮要回答一个更前置的问题：
+**重建是修复，还是掩盖？**
+
+### §9.196.2 逐项排除（全部实测，**不是推断**）
+
+| 候选 | 实测 | 结论 |
+|---|---|---|
+| 行数 / 计划体量 | 在**干净探针库**灌到 **2,501,007** 行（超过真库 2,244,182） | 正常 ⇒ 排除 |
+| 数据内容 | 合成行不含任何 jsonb | 正常 ⇒ 排除 |
+| 并行度 | 真库 `max_parallel_workers_per_gather=0` 仍失败；探针库关并行仍正常 | 排除 |
+| 统计信息 | 真库 `ANALYZE public.request_logs_bodies` 之后**仍失败** | 排除 |
+| `attcompression`（LZ4 列压缩） | 两库状态**完全相同**（父表与 hot = `l`，RANGE 分区 = 空） | 排除 |
+| DDL / 分区树 / 约束 / 索引 | §9.185 已排除 | 排除 |
+
+⚠ `attcompression` 那一项值得单记：我一度把它当成根因
+（父表 `'l'`、分区 `''` 的「混合状态」看着可疑），
+**是探针库的同形对照当场否掉了它** —— 探针库一模一样的混合状态，却完全正常。
+**「像根因」和「是根因」之间隔着一次对照。**
+
+### §9.196.3 根因：访问方法
+
+对比两个库同一张表的**访问方法**（`pg_class.relam`）：
+
+| 库 | `request_logs_bodies_2026_09/10/11` | `..._hot` |
+|---|---|---|
+| `llm_gateway`（失败） | **columnar** | heap |
+| `llmgw_probe_9186`（正常） | heap | heap | heap |
+
+`llmgw_probe_9186` 是 §9.186 用 `pg_dump --schema-only` 建的 ——
+**它不还原 Citus `columnar` 转换**。这解释了 §9.186「同 DDL 换库就好」的全部现象：
+换库同时换掉了**访问方法**。
+
+来源明确：migration **`765_bodies_columnar_storage`** 及其 `.down.sql`
+（`ALTER TABLE public.request_logs_bodies ALTER COLUMN … SET COMPRESSION default`）。
+**这是生产迁移，不是本机意外。**
+
+### §9.196.4 因果确证：正面复现
+
+在**干净的探针库**上，只把**一个 0 行的分区**转成列存：
+
+```sql
+ALTER TABLE public.request_logs_bodies_2026_11 SET ACCESS METHOD columnar;
+SELECT count(*) FROM (SELECT request_id FROM request_logs_bodies_hot
+                      UNION ALL SELECT request_id FROM request_logs_bodies) x;
+-- ERROR:  invalid perminfoindex 0 in RTE with relid 0
+```
+
+⇒ **同一个错误、同一句报错，在 0 行的分区上出现。**
+相关性至此变成因果。之后已把探针库复原（4 个分区全 heap、删除 250 万合成行、
+同形状查询恢复正常）。
+
+### §9.196.5 修法：去掉子查询包裹（已实施）
+
+实测三种形状（真库）：
+
+| 形状 | 结果 |
+|---|---|
+| A：`FROM ( … UNION ALL … ) WHERE …`（原生产形状） | **失败** |
+| B：`FROM ( … UNION ALL … )` 外再加谓词（§9.185 的绕过） | 失败（子查询还在） |
+| C：**顶层 `UNION ALL`**，无子查询 | **通过** |
+| D：子查询内一条腿带分区键谓词 | 通过 |
+
+采用 **C**：`v1BodyQuery` 拆成 `v1BodyQuery`（hot 腿）+ `v1BodyQueryParent`（母表腿），
+调用点顺序执行、hot 未命中才走母表。
+
+**为什么不用 D**：D 会改分区裁剪路径，而原查询的 `ts = $2` 本已足够定位；
+C **逐字保留**「hot 优先、母表兜底」的择一规则，与原
+`ORDER BY source_priority LIMIT 1` 结果一致。
+**代价写明**：1 次往返变最多 2 次，多数行只在母表时会变成 2 倍往返。
+
+### §9.196.6 修好之后：`ExecuteRepair` 第一次真跑起来了
+
+`TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface`
+在真库 **PASS（103s）**——它此前**必然 Skip**（§9.186 留下的前置探针）。
+
+⚠ 那个前置探针**自己也硬编码了旧形状**。修好 `loader.go` 却留着它，
+等于**让修复被自己的测试遮住**——而它存在的意义恰恰是「loader 的可执行前提」。
+已改为**直接引用 `loader` 的两个常量**（探针与被检验对象同源，形状一改两边一起改），
+并把判定口径从「只跑 hot 腿」改成**两条腿都跑**（只跑 hot 会漏判
+「hot 通、母表不通」，而母表才是 columnar 那一张）。
+
+⇒ 目标里「**确认数据的存储可用**」这一条，到此**在本机达成**：
+`LoadV1Turns` → `ExecuteRepair` 端到端在真库跑通。
+⇒ 同时**加强 D19-a-2 的否证**：`ExecuteRepair` 在本机**从来**没能成功执行过。
+
+### §9.196.7 ⚠️ D25-a「重建 `llm_gateway`」**不是修复，是掩盖**
+
+重建（无论 `pg_dump --schema-only` 还是别的）得到的库是**全 heap** 的，
+于是故障消失——但 **migration 765 会在下一次部署把它变成 columnar，故障复发**。
+⇒ 重建只会让这个缺陷**更难被看见**，因为重建后的库不再是「生产形态」。
+
+### §9.196.8 残留自证
+
+本轮在真库跑完 e2e 后：`zz-repair-e2e-%` 残留 **2 行**，
+但其时间戳为 **13:36:36**（§9.186 那轮），本轮跑在 **16:57** ⇒ **本轮零残留**。
+（共享库里另有活网关进程持续写入，`bodies` 计数随之变动，与本测试无关。）
+
+### §9.196.9 边界
+
+- **本轮改了产品代码**：`cmd/tools/validate_sessions_v2/loader.go` 的查询形状
+  （语义不变，代价是往返次数）。这与本会话此前「只刻画不改行为」的自律不同，
+  依据是用户在本任务开头明确要求「**修正发现的问题**」。
+- **未改 migration 765**：是否回滚列存转换属主决定（**D30-a**）。
+- **未连接生产**。但「765 把 bodies 分区转成 columnar」与
+  「未命名子查询 + columnar 必炸」都是**代码/迁移事实**，可直接外推；
+  **生产是否已受影响需要只读确认（D30-b）**。
+
+---
+
+## §9.197 D30-c 普查：故障不是 `request_logs_bodies` 专属，还多出一类
+
+### §9.197.1 这一轮要回答什么
+
+§9.196 定位到根因是 Citus `columnar`，但那个结论有两处**没有推广**：
+
+1. 只在 `request_logs_bodies` 一张表上验证过 ⇒「是不是只有这张表有问题」未知；
+2. 只发现了一种故障形态 ⇒「还有没有别的形态」未知。
+
+D30-c 的问题正是这两个。**本轮没有改任何产品代码**——普查的结论是
+「生产读路径当前没有踩坑」，唯一踩坑的那处（`loader.go`）在 §9.196 已修。
+
+### §9.197.2 形状矩阵：触发条件是「列存 + 子查询内的 `UNION ALL`」
+
+在真库上实测 18 种查询形状（`SET statement_timeout='60s'`，全部 `EXPLAIN`/执行双跑）：
+
+| # | 形状 | 结果 |
+|---|---|---|
+| S01 | 直读列存母表 | ✅ 2,244,272 |
+| S02 | 普通子查询（无集合算子） | ✅ |
+| **S03** | **子查询内 `UNION ALL`** | ❌ perminfoindex |
+| S04 | **顶层** `UNION ALL` | ✅ |
+| S05 | 顶层 JOIN | ✅（计划含 `Custom Scan (ColumnarScan)`） |
+| S06 | 子查询内 JOIN | ✅（同上，列存腿确实被执行） |
+| S07 | CTE | ✅ |
+| S08 | 相关 EXISTS | ✅ |
+| S09 | 子查询内带 LIMIT | ✅ |
+| S10 | 子查询 + 顶层集合算子 | ✅ |
+| S11 | 子查询内 LEFT JOIN | ✅ 4,759 |
+| S12 | `IN (子查询)` | ✅ |
+| **S13** | 子查询内 `UNION ALL`（两腿都是母表） | ❌ |
+| S14 | 顶层三关系 `UNION ALL` | ✅ |
+| S15 | 嵌套子查询 | ✅ |
+| S16 | 已部署两腿视图（顶层 `UNION ALL`） | ✅ 2,249,043 |
+| S17 | 顶层 LEFT JOIN | ✅ |
+| **S18** | 子查询内 `UNION ALL`（热腿在前） | ❌ |
+| Z2a | 子查询内 `UNION`（**去重**） | ✅ 2,249,138 |
+| Z2b | 子查询内 `EXCEPT` | ✅ 4,868 |
+| **Z2c/Z2d** | 子查询内 `UNION ALL` + 外层 JOIN/LEFT JOIN | ❌ |
+
+**三个必须记准的点**：
+
+1. **失败发生在计划期**。`EXPLAIN (COSTS OFF)` 本身就报错，不必执行。
+   ⇒ 这给了门一个便宜、无副作用的探测器。
+2. **不是「子查询不能包列存表」**。CTE、普通/嵌套子查询、子查询内 JOIN、
+   子查询内 `UNION`（去重）与 `EXCEPT` **全部实测通过**。
+   记错这一点会导致把好好的两段式查询也改掉。
+3. **零样本必须指名**。S05/S06/S08/S12 首次读数全是 **0 行**，
+   差点被读成「通过」。用 `EXPLAIN` 复核计划里确实有
+   `Custom Scan (ColumnarScan) on request_logs_bodies_2026_09/10/11`
+   之后才敢认定它们是真阳性。V3（`handoff_logs_with_current_month`）整视图 0 行，
+   已指名为**零样本**而非「通过」。
+
+### §9.197.3 自我更正之二：普查量具自己有两个 bug
+
+**其一**：`WHERE lower(def) LIKE '%except%'` 把 plpgsql 的
+**`EXCEPTION WHEN OTHERS`** 当成了 SQL 的 `EXCEPT`，一次普查报出两条命中，
+两条全是假的（`promote_routing_decision_log_default_batch`、
+`promote_credential_model_index_default_batch`——它们通篇没有集合算子）。
+改用词边界正则 `\m(union|intersect|except)\M` 后归零，并加了三臂自证
+（认得 `UNION ALL` ✓ / 拒绝 `EXCEPTION` ✓ / 认得 `EXCEPT` ✓）。
+
+**其二（更严重）**：列存集合最初只按 `relam='columnar'` 收，
+收到的全是**分区名**（`request_logs_bodies_2026_10` …），
+而业务查询读的是**母表名**（`request_logs_bodies`）⇒ 一条都匹配不上
+⇒ **报出「0 命中」，读起来像「没有问题」**。
+加了阳性对照（`request_logs_bodies_with_current_month` 必须命中）后立刻暴露，
+补上「母表」这一跳后才是 8 条真命中。
+⇒ **这与 D29-a 的「关系宇宙漏掉视图」是同一类错误**，本轮第二次踩。
+
+### §9.197.4 自我更正之三：故障面比 bodies 宽得多
+
+从 catalog 推导的列存关系全集（本机 **34 个**，含母表）：
+
+`request_logs_bodies` / `routing_decision_log` / `handoff_logs` /
+`supplier_errors` / `credential_model_index` / `usage_ledger` / `request_wal`
+（7 个有列存分区的母表）+ 4 张独立列存表（`model_offer_events`、
+`price_change_events`、`provider_events`、`tool_call_events`）
++ 2 张实验遗留（`candidate_failure_logs_columnar_old`、`test_columnar_new`）。
+
+**7 个带 `_hot` 孪生的列存母表，两腿 `UNION ALL` 形状 7/7 全挂**：
+
+```
+credential_model_index / handoff_logs / request_logs_bodies / request_wal
+routing_decision_log / supplier_errors / usage_ledger
+```
+
+**堆对照臂通过**：同样是两面子查询 `UNION ALL`，`request_logs`（全 heap）
+返回 **2,184,300** 行。
+⇒ **故障是 `columnar` 的性质，不是某张表的毛病。**
+
+§9.196 的门 `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 只列了 5 对
+session 族，**看不到**上面这 5 个族。
+
+### §9.197.5 新发现：第二类、独立的故障——视图的「合成输出列」
+
+逐列 `EXPLAIN` 8 个建在列存关系之上的视图、**147 个输出列**，只有 **1 列**失败：
+
+```
+public.supplier_errors_unified.source
+  ⇒ ERROR: cache lookup failed for attribute source of relation 12964345
+```
+
+12964345 = 列存分区 `supplier_errors_2026_09`。
+
+`supplier_errors_unified` 是顶层 `UNION ALL`（安全形状），它的第 1 列
+`source` 是 `SELECT 'hot'::text AS source` 这种**算出来的**列，不是基表列。
+
+三臂对照（同库、同分区）：
+
+| 查询 | 结果 |
+|---|---|
+| `SELECT 'x'::text AS source, id FROM supplier_errors_2026_10 LIMIT 1` | ✅ |
+| `SELECT id FROM supplier_errors_2026_10 LIMIT 1` | ✅ |
+| `SELECT count(*) FROM (SELECT 'x'::text AS source, id FROM supplier_errors_2026_10) y` | ✅ |
+| `SELECT id FROM supplier_errors_unified LIMIT 1` | ✅ |
+| `SELECT count(*) FROM supplier_errors_unified` | ✅ |
+| **`SELECT source FROM supplier_errors_unified LIMIT 1`** | ❌ |
+
+⇒ **分区本身健康**，问题特定于「视图 targetlist 里的合成列」。
+只测 `SELECT *` 或 `count(*)` 会**整个漏过去**。
+
+⚠ **现网读法暂时不碰它**：`admin/errors_trend.go:239` 把视图包进子查询
+且只选基表列，该形状实测正常。所以这是**潜伏**故障，不是正在冒烟的故障。
+
+### §9.197.6 自我更正之四：静态规则比实测粗 ⇒ 门必须让真库当裁判
+
+门的第一版是纯静态的（见到「列存关系 + 子查询内集合算子」就报红），
+报出了 `bg/supplier_error_stats_aggregator.go:64`。**手工复核发现那条是好的**：
+它的两条腿都带分区键谓词，真库 `EXPLAIN` 通过。
+
+三臂对照把判别条件钉死了（同一张 `supplier_errors`）：
+
+| 形状 | 结果 |
+|---|---|
+| 两条腿都无谓词 | ❌ perminfoindex |
+| 只在 **hot 腿**加谓词（列存腿仍裸读） | ❌ perminfoindex |
+| **两条腿都加谓词**（= 聚合器现状） | ✅ 计划出现 `Columnar Chunk Group Filters` |
+
+⇒ 真正的判别是「**列存腿自己**有没有谓词」。静态正则看不见这件事——
+它得知道哪个关系是列存的、哪条腿是列存腿、谓词落在哪条腿上。
+
+⇒ 门的分工改成：**静态只找候选，真库裁决**。
+`TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB` 把 `$n` 换成 `NULL`
+后逐条 `EXPLAIN`，只有 `invalid perminfoindex` / `cache lookup failed for attribute`
+两类报错算违规；**其余任何报错归入「不可判定」并指名列出**，绝不静默判过。
+
+### §9.197.7 普查结论（生产代码侧）
+
+| 面 | 结论 |
+|---|---|
+| 生产 Go SQL 字面量 | 提到列存关系的有 **89 条**；命中「子查询内集合算子」的**候选 1 条**（`bg/supplier_error_stats_aggregator.go:64`），**真库裁决：可计划** |
+| §9.196 修掉的 `loader.go` | 已改两段式，**当前无违规** |
+| 另 5 个列存族 | 生产 Go 里唯一的命中是 `db/db.go:7209` 的 DDL 表名清单（`apply_llm_gateway_autovacuum_settings`），**不是读路径** |
+| 已部署视图 | 8 个 / 147 列 / **1 列不可服务**（`supplier_errors_unified.source`） |
+| 已部署函数 | 8 个提到 bodies 的函数，**无一个含真集合算子**（首轮那两条命中是 `EXCEPTION` 误配） |
+
+⇒ **D30-a 的选型依据变了**：不是「只有 loader 一处」那么简单。
+代码侧确实只剩这一处，但**库的形态让 7 个族中的每一个都处在同一颗雷上**，
+且已有生产查询（聚合器）只是**恰好**靠谓词躲开。
+
+### §9.197.8 交付物
+
+`admin/columnar_surface_servable_realdb_test.go`（5 个子测试）：
+
+| 子测试 | 作用 | 本机结果 |
+|---|---|---|
+| `TestColumnarUniverseFromCatalog` | **量具自证**：全集非空 + 必须认得 `request_logs_bodies` | ✅ PASS |
+| `TestColumnarParentTwoSurfaceSetopShape_RealDB` | 7 个列存母表跑两腿形状 | ❌ **FAIL 7/7**（真实故障） |
+| `TestDeployedViewOverColumnarIsServable_RealDB` | 8 视图 147 列逐列 `EXPLAIN` | ❌ **FAIL 1/147**（真实故障） |
+| `TestColumnarSetopSubqueryIsTheNarrowTrigger_RealDB` | 13 个**安全**形状必须通过，防止结论被记错后误改好代码 | ✅ PASS |
+| `TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB` | 静态找候选 + 真库裁决 + 候选数下界断言 | ✅ PASS（候选 1，安全 1） |
+
+**两道红是真故障，不是判据太严**。⚠ **不要用重建库/回滚 765 把它们弄绿**
+（理由同 D25-a：那是把生产形态换成非生产形态）。
+
+### §9.197.9 判据自身的三次修正（留档）
+
+1. `oid::regclass::text` 在 search_path 下**不返回 schema 前缀** ⇒
+   我按 `public.xxx` 写的正对照全部落空，`TestColumnarUniverseFromCatalog`
+   与形状边界门先后误报/误 Skip。改成显式 `n.nspname || '.' || c.relname`。
+   （这两次误报/误 Skip 是**被自证抓住的**，不是事后补的。）
+2. 形状矩阵里的「子查询内 JOIN」第一版写成 `ON true` ⇒ 4.7k × 224 万的
+   **笛卡尔积**，单条跑掉 7 分半未完。差点被读成「这个形状很慢」而不是
+   「我的判据写错了」。改成打在 `request_id` 上。
+3. 静态规则误报 `bg/supplier_error_stats_aggregator.go:64`（见 §9.197.6）。
+
+### §9.197.10 边界
+
+- **本轮未改任何产品代码**：普查结论是「生产读路径当前没有踩坑」。
+- **未改 migration 765、未改任何视图定义**：均属属主决定（D30-a / D30-d）。
+- **未连接生产**。所有结论均为**本机库**实测。生产是否同形态仍需
+  252 只读确认（**D30-b**，本轮把它从「bodies 一张表」扩展到「7 个族 + 视图合成列」）。
+
+---
+
+## §9.198 D30-c 的第三面：仓库里的迁移 / 视图 SQL 文本
+
+§9.197 扫的是**已部署对象**（真库 catalog）与**生产 Go**。
+第三面——**仓库里尚未部署 / 已部署但文本另存一份的 `.sql`**——本轮补上。
+
+### §9.198.1 结论
+
+| 面 | 提到列存关系的定义 | 其中含 setop | **括号内含 setop** |
+|---|---|---|---|
+| 仓库 `.sql`（3,475 个文件） | **65** | **43** | **0** |
+
+⇒ 与已部署对象、生产 Go 三面合起来看，**列存 + 子查询内 `UNION ALL``
+这个组合在代码库里不存在**（唯一候选 `bg/supplier_error_stats_aggregator.go:64`
+真库裁决为可计划）。
+
+这个零是**非空洞的**：同一份语料里扫描器**数出了 43 个 setop**，
+它不是「什么都没看见所以报零」。
+
+### §9.198.2 这次的两次假零（与 §9.197.3 同族，第三、第四次）
+
+**其一**：关系宇宙又是**手写**的——我把 `request_logs` 也当成列存族根，
+于是扫出 **36 条** `request_logs_with_current_month` 的视图定义。
+但 `request_logs` 及其全部分区**都是 heap**（§9.197.4 的堆对照臂就是它，
+同形状正常返回 2,184,300 行）⇒ **36 条全是假阳性**。
+改成像 §9.197 那样**从真库 catalog 推导**（含母表）后，正确的族根是 13 个：
+`request_logs_bodies` / `credential_model_index` / `handoff_logs` /
+`request_wal` / `routing_decision_log` / `routing_decision_log_archive` /
+`supplier_errors` / `usage_ledger` + 4 张独立列存表 + 2 张实验遗留。
+
+**其二（更严重）**：语句抽取器要求定义体里含 `WITH` 子句、且以
+`$tag$;` 或文件末尾收尾。**多数视图两样都不满足**
+（`sql/objects/views/request_logs_bodies_with_current_month.sql` 就是裸的
+`CREATE VIEW … AS SELECT … ;`）⇒ 抽出来的 61 条里 setop 数**全是 0**。
+第一次「0 命中」就是这么来的。改掉终止条件后，
+阳性对照立刻数出该文件的 1 个顶层 `UNION ALL`、括号内 0。
+
+⇒ **四次假零/假阳**（`EXCEPTION` 误配、只收分区名、`WITH` 要求、手写族名单），
+四次都是同一个错误的不同变体：**先造量具，再让结论跑在量具上**。
+两次是靠阳性对照抓到的，一次是靠「分母非零」抓到的，一次是靠真库对照臂抓到的。
+
+---
+
+## §9.199 D29-a：关系宇宙接上之后，**总体混叠**才暴露出来
+
+### §9.199.1 改了什么
+
+`admin/request_logs_retirement_exposure_test.go` 的 `v1TableRe` / `v1AliasRe`
+原先**只写死 4 张裸表**。710 视图族（`request_logs_with_current_month` 及其包装视图）
+不在名单里 ⇒ 入口过滤不通过 ⇒ 只经视图读 v1 的文件**一个字面量都产不出来**。
+
+改动：两个匹配器改为从 **§9.172 的同一份 SSOT** 推导
+（`v1BaseTableNames` 5 张 + `viewChainNames(t)` 4 个视图链成员 = 9 个关系名）。
+**不另抄第三份名单。**
+
+### §9.199.2 新旧数字并列
+
+| 指标 | 改前 | 改后 |
+|---|---|---|
+| 盲区（读 v1 族但提取器产出 0 字面量） | **63** | **0** |
+| 扫描的生产文件 / 引用 v1 族的文件 | 2275 / — | 2275 / **148** |
+| `Exposure` breaks | 4 | 4 |
+| `Exposure` breaks-possibly | 1 | 9 |
+| `Exposure` undercounts | 27 | 27 |
+| `Exposure` undercounts-possibly | 4 | 24 |
+| `Exposure` clean | 70 | **42** |
+| `RepointVerdict` 分布 | empty=5 / value-divergent=26 | empty=6 / value-divergent=27 |
+| 静态引用契约列合计 | 540 | 568 |
+| `ReaderPopulationGroundTruth` | 106 读方 / v1=106 视图=118 / 判定分布 | **完全不变** |
+
+`TestReaderPopulationGroundTruth` 一行未动是**预期**的：它用自己那对
+`v1BaseTableRe` / `viewRelationRe` 统计两族，改动不碰它。
+⇒ 两份工具**测的不是同一件事**，所以一个动一个不动是正确结果，不是漏改。
+
+### §9.199.3 改完之后立刻暴露的**真问题**：两个总体被混成了一个
+
+关系宇宙一放宽，`BreakersRegistryIsConsistent` 门立刻报
+「8 个文件读了会话族供不上的列却不在册」。逐个查证后发现：
+
+**这 8 个全部是经 710 视图读 v1 的，也就是已经 repoint 完的读方。**
+
+它们的依赖在**视图的 v1 臂**上，而那正是 `DROP request_logs` 时要拆掉的东西——
+所以它们**不是 breaker**。breaker 的定义是「这个文件必须在 DROP 之前改掉」，
+而视图读方是**切换时的迁移问题**。两者混在一张登记表里，
+会写出 `reads request_logs.work_type directly` 这种**不属实**的条目：
+比缺一条登记更糟，因为它会误导下一个复核的人。
+
+⇒ 改动：给 `v1ReadingLiteral` 加 `viaBaseTable` / `viaCanonicalView` 两个标记，
+门按「怎么读到的」分成两个总体。
+
+### §9.199.4 顺带修掉的第二个分类缺陷：`sessionFamilyRe` 认不出包装视图
+
+它只写死 3 个名字，视图只认 `request_logs_with_current_month` **整词**；
+而视图链里还有 `request_logs_with_current_month_without_customer_id`，
+`\b` 在 `month` 之后遇到 `_` 不成立 ⇒ 认不出。
+后果实测到了：`admin/auto_route.go` 因此被算成 **definite**（= 只可能来自 v1），
+而它读的是包装视图——**已 repoint 的读方被当成未 repoint 的**。
+
+`viewRelationRe`（§9.172）早就带上了 `_without_[a-z_]+`。
+⇒ 同一处缺陷的另一个副本。已一并从 SSOT 推导。
+修完 `auto_route.go` 从 `breaks` 正确降为 `breaks-possibly`。
+
+### §9.199.5 新增门 `TestEveryV1ReaderIsAnalyzedByExtractor`
+
+守住「凡读 v1 族者必被分析」。**探针挡不住这条**——探针永不判红，
+所以「盲区从 0 涨回 63」在它那里只是一行日志，而回归的表现恰恰是
+「报告里的 clean 桶悄悄变大」。
+
+期望值 0 是**正确值**，不是把已知坏值冻进断言：任何非零都意味着
+有文件读了 v1 却被算成 clean。
+
+### §9.199.6 这次改动自身的四次错（都是门自己抓到的）
+
+1. **两总体写成二选一**（`if viaBase {…} else {…}`）⇒ **混合读方**从视图桶消失，
+   且它的视图侧暴露在底表桶里被丢掉。实测抓到：`domains/sessionforensics/export.go`
+   在报告里是 `breaks-possibly`，两个桶里却都找不到它——
+   因为它 `:416 FROM request_logs` **又**读视图。
+   ⇒ 混合读方**两个桶都要进**。
+2. **桶的过滤条件写错**：`measured` 分支上多加了 `inView` 条件，
+   于是「只读底表、不碰视图」的字面量被整段跳过
+   ⇒ 5 个已登记 breaker 一夜之间变成 stale。
+   方向是**少报**，而少报在这个门上表现为「有人修好了、该销账了」——
+   一个看起来无害、实则错误的红。
+3. 同一次改动里另有一处 `t.Fatalf` 用的 `%` 未转义（`0%`）导致 vet 失败。
+4. 第一次以为「8 个都要登记」，核到第 7 个才发现是视图读方——
+   **差点写下一批不属实的登记**。
+
+⇒ 第 1、2 条的共同点：都是**分总体时把「并集」写成了「二选一」或叠加了多余条件**。
+它们都不会编译失败、都不会让测试变绿，只是**安静地少报**。
+
+### §9.199.7 边界
+
+- **本轮只改测试分析，未改任何生产代码。**
+- `retirementBreakers` 登记表**未新增条目**（5 条原样，且无 stale）。
+- 视图臂读方**不进**登记表，改为门内显式日志（10 个）。
+  **处置属属主决定** ⇒ 决策表新增 **D29-d**。
+
+---
+
+## §9.200 D30-d 的负结果 + 一个更大的发现：这个视图**不可从仓库复现**
+
+### §9.200.1 授权的修法**实测无效**
+
+D30-d 选定的修法是「把 `'hot'::text AS source` 换成**基于基表列**的表达式」。
+在真库上用事务内 `CREATE VIEW` + `ROLLBACK` 实测（不留痕）：
+
+| 变体 | 结果 |
+|---|---|
+| `CASE WHEN <rel>.id IS NOT NULL THEN 'hot' ELSE 'historical' END::text AS source` | ❌ 仍报 `cache lookup failed for attribute source of relation 12964345` |
+| `tenant_id AS source`（纯改名，源列真实存在） | ❌ 同样报错 |
+| 两条腿各包一层 CTE | ❌ 换成**另一种**失败：`invalid perminfoindex 0 in RTE with relid 0`（集合算子 + 列存） |
+| **去掉 `source` 列** | ✅ 正常返回行 |
+| `SELECT * FROM supplier_errors_unified`（含 source 但不点名） | ✅ 正常 |
+| `SELECT id, source FROM …` / `SELECT source, id FROM …` | ❌ 两种顺序都失败 |
+
+⇒ **触发条件不是「合成常量」，而是「视图输出列不是基表列的直接 Var」**。
+只要外层查询**点名**要第 1 列，列存 RTE 就解析不出这个属性；
+`SELECT *` 之所以能过，是因为 planner 把用不到的视图列裁掉了。
+
+⇒ 唯一实测可行的修法是**删掉 `source` 列**，那是**视图契约变更**，
+超出「把合成列换成基表列表达式」的授权范围，**本轮未执行**。
+
+### §9.200.2 更大的发现：这个视图在仓库里**不存在**
+
+| 查了什么 | 结果 |
+|---|---|
+| `sql/schema/01-schema.sql` | **0** 处 |
+| `deploy/sql/schemas/baseline/01-schema.sql` | **0** 处 |
+| `installer/cmd/llm-gw-installer/embeddata/01-schema.sql` | **0** 处 |
+| `sql/migrations/startup/**` | **0** 处 |
+| `installer/.../embeddata/startup/**` | **0** 处 |
+| 唯一定义处 `deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql:222` | 1 处 |
+| `schema_migrations` 里 `V371` | **count = 0**（最高只到 V359） |
+
+而视图**确实存在于本机库**，且无任何依赖视图（`pg_depend` 查询 0 行，可安全 DROP+CREATE）。
+
+⇒ **这个视图不是从仓库可复现的。** 一个全新安装/重建的库不会有它，
+而 admin 的读端（`admin/errors_trend.go:12`、`admin/provider_credential.go:1243`、
+`admin/handler.go:134`）都查它。
+⇒ 这也解释了 §9.198 的仓库 SQL 普查为什么一条都没命中它——它压根不在仓库里。
+
+⚠ **这比 §9.197.5 的列存投影问题更基础**：即便把 `source` 修好，
+视图**本身**仍然不可复现。处置是**两件事**，不能当成一件。
+
+### §9.200.3 D30-a 的真实规模（本地实测，2026-10-05）
+
+「倾向回滚列存转换」落地前必须知道的四件事：
+
+1. **回滚 765 不足以止血**。765 的 A 段把 `ensure_request_logs_bodies_partition`
+   重定义为「有 `citus_columnar` 就用 columnar 建月分区」——
+   只要这个函数还在，**新分区会继续被建成列存**。
+2. **现有 `.down.sql` 根本不转分区**，它自己写着：
+   「columnar 分区一旦承接数据即**不可无损回转**（heap 列存互转需重写全表，
+   且 columnar 无 UPDATE/DELETE 路径）。本 down 不触碰分区，
+   仅供回滚演练，**不要在生产执行**。」
+3. **代价（本机实测）**：7 个族的列存分区合计 **3,359 MB**，
+   其中 `request_logs_bodies_2026_09` 一个就 **3,026 MB**。
+   转回 heap = 全表重写，需要维护窗口。
+4. **另外 6 个族不由 765 管**（`routing_decision_log` 268 MB、
+   `credential_model_index` 30 MB 等各有自己的迁移历史）。
+   「回滚列存转换」若按字面执行，范围远大于 765。
+
+⇒ 决策表 D30-a 需要把「回滚」的范围写清楚，否则它不是一个可执行的选项。
+
+---
+
+## §9.201 D30-d 落地（828）+ D30-a 的正确形态（829，**本机故意不应用**）
+
+### §9.201.1 828：`supplier_errors_unified` 进受追踪链，并删掉 `source`
+
+新增 `sql/migrations/startup/828_supplier_errors_unified_tracked.sql`（+ `.down`，+ embeddata 镜像）。
+实测结果：
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 视图输出列 | 21 | **20** |
+| `TestDeployedViewOverColumnarIsServable_RealDB` | ❌ FAIL 1/147 | ✅ **PASS 0/146** |
+| 视图行数 | 2031 | **2031（零丢失）** |
+| `security_invoker` | true | true |
+| 现网真实形状（`errors_trend` 子查询包视图） | 正常 | 正常 |
+
+用 `DROP VIEW IF EXISTS` 而非 `CREATE OR REPLACE`（后者不能删列）；
+**不加 CASCADE**——实测无依赖视图，万一有没查到的，让它失败回滚而不是悄悄级联。
+
+`schema_migrations` 已登记 `828`（本机是手工应用的，runner 不应重复应用）。
+
+### §9.201.2 D30-a 的**正确形态**比「回滚」便宜得多
+
+属主拍板「只回 765 管的 bodies」。但按 §9.200.3 的事实重新推导后，
+**3 GB 全表重写根本不需要做**：
+
+1. `drop_old_request_logs_bodies_partitions()` 的函数体实测是**裸 `DROP TABLE`**，
+   对列存分区**无数据搬迁**（也不需要 UPDATE/DELETE 路径）。
+2. `lifecycle.request_logs_bodies_ttl_days` 默认 **7 天**（`settings/spec_lifecycle.go`，HotReload），
+   由 `bg/partition_manager.go:1232` 周期调用。
+3. `request_logs_bodies_2026_09` 月末 = 2026-10-01 ⇒ **自 2026-10-08 起自动 DROP**。
+4. 765 的作者当初就写了「仅转空分区（数据安全阀）……非空分区不动，
+   按 TTL 整分区 DROP 退役」。**本迁移沿用同一姿态**，不是新发明。
+
+⇒ 829 的三段：
+1. **重定义 `ensure_request_logs_bodies_partition` 为恒 heap**（这才是止血；
+   否则 765 的 A 段会继续新建列存分区）；
+2. **只转空分区**（本机 `2026_11`，0 行，零代价）；
+3. `RAISE NOTICE` 列出仍列存且有数据的分区与总 MB，不做任何重写。
+
+**本机实测行数**：`2026_09` = 2,219,097（3,026 MB）、`2026_10` = 25,675（23 MB）、
+`2026_11` = 0 ⇒ 829 的 NOTICE 实测输出：
+`2026_09/2026_10 has rows, keep as-is` + `converted empty 2026_11` +
+`3048 MB of columnar partitions left, all data-bearing`。
+
+### §9.201.3 ⚠ 我在验证 829 时**真的把它应用了**，已回退
+
+为了验证 829 而**不**动本机形态（动了会让两道红门**假绿**、毁掉它们的存在意义），
+我用 `{ echo BEGIN; cat 迁移文件; echo ROLLBACK; }` 包一层跑。
+**错在迁移文件自带 `BEGIN; … COMMIT;`**——文件里的 COMMIT **真的提交了**，
+外层 ROLLBACK 无对象可回（psql 打出 `there is already a transaction in progress`
+与 `there is no transaction in progress` 两行 WARNING，是证据）。
+
+⇒ `request_logs_bodies_2026_11` 被永久转成 heap，
+`ensure_request_logs_bodies_partition` 也被永久重定义。
+
+**回退过程**（含两次自己的操作错误）：
+1. 用 829 的 `.down.sql` 恢复 ensure 函数 ✅
+2. `docker exec -i psql -c <<EOF` 重跑分区恢复 ⇒ **静默无效果**
+   （`psql -c` 不读 stdin，缺 `-f -`）——**这一次「没报错」等于「没执行」**；
+3. 改用 `-f -` ⇒ `ERROR: LOCK TABLE can only be used in transaction blocks`
+   ⇒ 补 `BEGIN; … COMMIT;` ⇒ 成功。
+
+**回退后逐项核对**（必须与实验前一致）：
+- 3 个 bodies 分区**全 columnar** ✅
+- `bodies_total` = **2,244,772**（与实验前逐字一致）✅
+- ensure 函数 `prosrc LIKE '%USING columnar%'` = true ✅
+- `schema_migrations` 只有 `828`，**没有 `829`** ✅
+
+⇒ 本机回到生产形态，两道红门的信号保住了。
+
+**教训**：「想验证但不想改状态」时，**不能靠外层包事务**——
+被验证对象自带 `COMMIT` 时外层事务就是摆设。
+要么用**不含 COMMIT 的副本**跑，要么在**一次性库**上跑。
+⚠ 而 `psql -c` 配合 heredoc **静默失败**（无输出、无错误、也没执行）这件事
+单独就值得记：它和 §9.198 的「WITH 子句要求导致假零」是同一族——
+**一个没执行的操作，看起来和一个成功的操作一模一样**。
+
+### §9.201.4 本轮的门状态
+
+| 门 | 状态 |
+|---|---|
+| `TestDeployedViewOverColumnarIsServable_RealDB` | ✅ **PASS**（828 修掉了真缺陷，真库验证） |
+| `TestColumnarParentTwoSurfaceSetopShape_RealDB` | ❌ FAIL 7/7（**真故障**，等生产跑 829） |
+| `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` | ❌ FAIL 1/5（§9.196 起就是红的） |
+| `TestColumnarSetopSubqueryIsTheNarrowTrigger_RealDB` | ✅ PASS |
+| `TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB` | ✅ PASS |
+| `TestColumnarUniverseFromCatalog` | ✅ PASS |
+
+⇒ 带真库 `admin` FAIL 集合 **5 → 4**，减少的那一条是**真绿**。
+
+---
+
+## §9.202 「V371 从未被记录」是个例还是系统性缺陷？——**是个例**，但我为回答它写坏过四次量具
+
+### §9.202.1 结论
+
+`supplier_errors_unified` 在库里存在、`V371` 却从未进 `schema_migrations`（§9.200.2）。
+那是不是存在**一整条不可见的应用通道**？本节实测：**不是。**
+
+| 口径 | 分子/分母 | 查无此名 |
+|---|---|---|
+| 视图（排除 `citus_*` / `pg_stat*`） | 76 | **0**（828 之后） |
+| 应用自有函数（排除扩展成员） | 187 | **5** |
+| 应用自有基表（排除扩展 / `bak_*` / `_old_backup`） | 420 | **15** |
+
+15 张表的构成（**大部分不是本仓的**）：
+- 11 张属于**别的服务**：`agent_gateways` / `agent_migration_log` / `gateway_run_bindings` /
+  `industry_registry` / `mcp_registry` / `mcp_tools` / `orchestration_sessions` /
+  `task_assigner_agents` / `task_assigner_assignments` / `kxmemory_migration_ownership` /
+  `memora_schema_migrations`。
+  ⇒ 本库**多项目共用**（`kxmemory_migration_ownership` 21 行、`memora_schema_migrations` 1 行
+  是它们的台账），这些表不该由本仓负责复现。
+- 2 张是已 detach 的旧分区（`request_logs_archive_2026_07/08`，母表在链内）。
+- 1 张是**测试残留**：`pg_test_t`。
+- 1 张 legacy：`wiki_pages_legacy_v1`。
+
+⇒ **视图这一面现在是干净的**：`supplier_errors_unified` 是唯一一个真缺口，828 已补。
+
+### §9.202.2 真正值得跟进的：5 个函数
+
+| 函数 | 挂在哪 | 目标表行数 |
+|---|---|---|
+| `update_conversation_updated_at` | `conversation_history` trigger | — |
+| `llm_hourly_stats_normalize_hour_trigger` | `llm_hourly_stats` trigger | `reltuples = -1`（空） |
+| `update_memora_session_summaries_updated_at` | `memora_session_summaries` trigger | `reltuples = -1`（空） |
+| `update_session_summaries_updated_at` | `memora_session_summaries_orphan` trigger | 该表在链内 |
+| `ensure_handoff_logs_partitions` | （ensure 函数，无 trigger） | — |
+
+**全仓 `.sql` 与生产 `.go` 里都搜不到这 5 个名字。**
+
+⚠ **后果是静默的**：全新安装会有那些表（表本身在链内），
+但**不会**有这 4 个 `updated_at` trigger ⇒ `updated_at` 停止被自动维护，
+而**没有任何门会报**。这比「表缺了」更难发现：查询照常成功，只是时间戳不再更新。
+
+⇒ **处置建议（属主决定）**：把这 4 个 trigger 与 `ensure_handoff_logs_partitions`
+补进受追踪的 startup 迁移，与 828 同款做法。
+⚠ 本轮**未做**——它们挂着的三张表当前都是空的，优先级低于视图，
+但「静默行为差异」这个性质比「表缺了」更值得排期。
+
+### §9.202.3 ⚠ 我为回答这个问题，**把量具写坏了四次**
+
+这一节的价值可能高于结论本身。四次都是同一个错误：**扫错了对象**。
+
+| # | 错法 | 假结论 | 怎么暴露的 |
+|---|---|---|---|
+| 1 | 只并 `sql/migrations/startup/*.sql`，**漏了旧的扁平链** `sql/migrations/*.sql`（22 个文件） | 「视图有 1 个查无此名」 | 手工去查 `v_free_resource_summary` → 它在 `sql/migrations/075-omnifree-schema.sql` |
+| 2 | 只并 `sql/schema/01-schema.sql` **一个文件**，漏了同目录另外 2 个 | 5 个函数「查无此名」 | 逐个定位函数定义处 → 全仓 `.sql` 搜不到，才确认口径确实漏了 |
+| 3 | 函数表**没排除扩展成员** | 「383 个函数不可复现」 | 那 383 个里绝大多数是 `gbt_*` / `vector_*` / `pgp_*` / `pgstat*`——pg_trgm / pgvector / pgcrypto / pgstattuple |
+| 4 | `AND c.relispartition IS NOT TRUE` —— **保留的是分区、丢掉的是基表**，口径整个反了 | 基数与名单都错 | 分母 420 与「基表」这个标签对不上（988 个分区在库里） |
+
+⇒ 正确口径的最终定义（留给下一轮，别再重写）：
+- **可复现来源** = `sql/migrations/startup/*.sql` + `sql/migrations/*.sql` +
+  `sql/migrations/domain/*.sql` + `sql/schema/*.sql`（3 个文件全部）+
+  `deploy/sql/schemas/baseline/01-schema.sql` + `deploy/sql/migrations/*.sql` +
+  embeddata 快照 + **全部生产 `.go`（本项目有 Go 侧 schema 自举）**；
+- **对象口径** = 排除 `pg_depend.deptype='e'` 的扩展成员；表只看 `relispartition = false`；
+  视图排掉 `citus_*` / `pg_stat*`。
+
+⇒ 这是本次任务里**第 6 次**「量具读错了对象」（前 5 次：`EXCEPTION` 误配 `EXCEPT`、
+只收分区名致假零、`WITH` 子句要求致假零、仓库 SQL 普查手写族名单、
+「验证不改状态」靠外层包事务）。
+⇒ 共同的形状永远是同一句：**量具能跑完、能出数、看不出异常，而它量的不是那件事。**
+
+---
+
+## §9.203 `session_turns.is_final_success` **从来没有被任何代码写过** —— 时间线的两个 outcome 已经死了 6 天
+
+### §9.203.1 结论
+
+本轮接着 §9.192（「`session_turns` 近 7 天 28,398 行中 `is_final_success` 为 0」）往下挖，
+结论比「读路好、写路没写」更具体，也更难看：
+
+**这不是「忘了加列」，是「整条 schema 都为它建好了，却没有任何写方」。**
+
+真库实测（`llm-gateway-pg` / `llm_gateway`，2026-10-05）：
+
+| 面 | 口径 | 结果 |
+|---|---|---|
+| v1 `request_logs_hot` | 近 7 天 `is_final_success = TRUE` | **463** / 4,532 行 |
+| v2 `session_turns` | 全表 `is_final_success IS NOT NULL` | **0** / **1,689,308** 行 |
+
+⚠ 注意第二个口径是 **NOT NULL** 而不是 TRUE：不是「写了 false」，是**这一列从未被写入过**。
+
+而 schema 侧该有的全有：
+
+| 对象 | 状态 |
+|---|---|
+| `session_turns.is_final_success` | 列存在，**可空，无默认值** |
+| `turn_writer.go:396` INSERT 列清单 | **已经包含** `is_final_success` |
+| `uq_session_turns_hot_final_success` | `UNIQUE (tenant_id, session_id, partition_date) WHERE is_final_success` ✅ |
+| `uq_session_turns_final_success` | 同款，**ONLY 母表**（声明式分区索引）✅ |
+| 各月分区 / default 分区 | 每张脸各一个同款部分唯一索引 ✅ |
+
+⇒ **唯一性约束一直在对一个永远为空的集合生效。** `boolOrNil(false)` 返回 `nil`，
+所以连一行 `false` 都没有。整条链上「列 → 唯一索引 → 写入点」只缺最后一项，
+而缺的恰好是**唯一**会产生数据的那一项。
+
+### §9.203.2 为什么这在 09-30 之前不显眼，之后致命
+
+`admin/session_online.go` 的会话时间线在 **2026-09-30 迁到了 session 族原生源**
+（`querySessionTimeline` → `dbpkg.SessionFamilyTurnsForSessionSQL()`）。它取
+`COALESCE(rl.is_final_success, FALSE)` 喂给 `deriveTurnOutcome`，而该函数的前两个分支是：
+
+```go
+case isFinalSuccess:  return "final_success", ""
+case status == "success":
+    if sessionHasFinalSuccess: return "superseded_success", "superseded_by_final_success"
+```
+
+⇒ 列恒为 NULL ⇒ `isFinalSuccess` 恒 false ⇒ **`sessionHasFinalSuccess` 恒 false**
+⇒ **`final_success` 与 `superseded_success` 两个 outcome 双双不可达**。
+
+用户可见后果：从 09-30 起，会话时间线里**每一个成功轮次都被标成普通的 `success`**，
+既没有「哪一轮是本会话的最终成功」，也没有「哪一轮被取代」。迁移本身是对的
+（原生源、零 unexplained 丢失，§querySessionTimeline 注释里的复核），但它读的
+那份数据从来没被生产出来过。**API 改对了，数据没跟上。**
+
+这与 goal 里那句「确保数据在更改前后一致」正面撞上：不是改后不一致，
+是**改之前就不一致，改完把这个不一致暴露成了用户可见的行为差异**。
+
+### §9.203.3 独立的旁证
+
+`db/session_family_column_availability_test.go` 早就把这件事记下来了，
+在 §9.203 之前就一直报：
+
+```
+GO EMPTY ON THE SESSION SIDE (2): client_protocol, is_final_success
+```
+
+⇒ 这不是新发现的新东西，是**一条一直亮着、但没人去读它指向哪里的告警**。
+（该测试整体在 origin/main 上就是 FAIL 的，见 §9.203.6。）
+
+### §9.203.4 修法：**镜像 v1 的裁决，绝不自己认领**
+
+落点与 `is_abandoned` 完全同款（`abandoned_turn.go`，migration 821），因为**机械原因一模一样**：
+v1 的认领是 telemetry 事务里的 SQL UPDATE，而 session 的 turn 是**镜像 hook 之后
+异步写的** ⇒ 从 telemetry 侧发标记必然与插入竞态，几乎每次都命中 0 行。
+
+所以：事实挂到 entry 上，标记在 `w.Write` 返回之后、同一 goroutine 里落。
+
+| 环节 | 文件 | 行为 |
+|---|---|---|
+| 认领成功才置标志 | `telemetry/client.go` | `RowsAffected() > 0` ⇒ `entry.FinalSuccessClaimed = true` |
+| 副本分支回拷 | `telemetry/client.go` | `updateRequestLog` 的 `fallback := *entry` 分支把标志同步回调用方 entry |
+| 镜像落点 | `sessionv2mirror/final_success_turn.go` | 新文件，与 `abandoned_turn.go` 同结构：自带事务 + `setBypassGUCs` + tenant GUC + 两张脸 + 幂等 + 指标 |
+| live hook | `sessionv2mirror/hook.go` | `w.Write` 之后，**与 `T0Missing` 分支并列**（不是 else-if） |
+| 补偿回放 | `sessionv2mirror/replay.go` | `replayOne` 在 `Write` 之后同样打标 |
+| 序列化 | `RequestLogEntry.FinalSuccessClaimed` | `json:"final_success_claimed,omitempty"` —— **与 `T0Missing` 的 `json:"-"` 不同** |
+
+**为什么必须序列化**（`T0Missing` 是 `json:"-"`）：outbox 是在认领成功的**同一事务**里
+登记的（`registerFinalSuccessClaimOutbox`），而 outbox 正是「认领了但镜像行从未落地」
+那个洞的修补路径。载荷不带这个字段，回放就永远不知道自己补写的这一行本该是最终成功。
+
+**为什么 session 侧不自己认领**：认领只有一个裁决者才谈得上一致。v1 的认领已经是
+race-proof 的（部分唯一索引 + savepoint 吸收 23505），每个会话至多一个 request_id
+能拿到授予 ⇒ session 侧不可能被这个标记违反唯一索引。反向也成立：万一真出现
+两个授予，`uq_session_turns_hot_final_success` 会挡下，落点函数把 23505 记成
+`mark_superseded` 而不是「瞬时故障」——因为那意味着两族对「谁赢了」有分歧。
+
+### §9.203.5 ⚠ 我把自己的门写坏了三次，外加一次假警报
+
+这一节比结论本身更值钱，因为三次全部是**同一族错误的不同变种**。
+
+| # | 错法 | 报出来的现象 | 真因 |
+|---|---|---|---|
+| 1 | 回读只查 `session_turns` 母表 | hot 行明明标上了，却报「仍非 TRUE」 | **`session_turns_hot` 不是 `session_turns` 的分区**（hot 是独立表，月度分区才是母表的子表）。量具读错了对象。 |
+| 2 | 给两张脸种**不同的 request_id** 却只调用一次标记，然后要求两次回读都真 | 父表腿报「没生效」 | 标记按 request_id 定位；一张行要么在 hot 要么已 promote，**不会同时在两处**。是我把量具建模错了。 |
+| 3 | 阴性对照 B：wrong-tenant 行种在 hot，回读只查母表 | 「通过」 | **这条对照是恒真的**——母表里永远查不到那行，于是无论 tenant 谓词多离谱都「通过」。**恒真的对照比没有对照更坏**：它让人以为这层被考核过。 |
+| 4 | 清理只删母表 | 门自己的残留复核抓到 1 行 | 同 #1 的根因，两张脸要一起删。 |
+| 5 | **阴性对照 B 复用了阳性行的 `session_id`** | 变异把 tenant 谓词换成恒真表达式，**本门仍然 PASS** | 标记 wrong-tenant 行时撞上 `uq_session_turns_hot_final_success`（阳性行已持有标记）⇒ 23505 ⇒ 函数走 `mark_superseded` **提前返回，根本没执行到 tenant 谓词**。**这是唯一一条靠变异测试才发现的缺陷**：肉眼读代码、跑测试、看残留，全部看不出来。 |
+
+第 4 项还牵出一个**生产代码的真缺陷**（不是门的问题）：第一版把「0 行」
+一律记成 `mark_no_row` + WARN，于是**幂等重跑会打出一条「v1 认领了但 turn 不在两张脸上」
+的假警**——而那正是这条告警要抓的真故障。告警一旦会说假话就等于没有告警。
+已改为：0 行时先探测行是否存在，行在且已标记 ⇒ `mark_noop`（Debug，不告警），
+行不在 ⇒ `mark_no_row`（Warn）。
+
+⇒ 这是本次任务里**第 7 次**「量具读错了对象」。
+⇒ 新变种值得单记：**#3 与 #5 是「对照本身恒真」**——前 6 次是量具读错对象，
+这两次是量具/对照**根本没在被检验的对象上**却仍然报绿。恒真的判据不会变红，
+所以它连「判据红了先怀疑判据」这条自救路径都用不上。
+
+★ **#5 补充一条方法论**：它是**唯一一条靠变异测试才发现**的。
+前三项在写门的过程中就被自己的断言抓住，#4 被门自带的残留复核抓住，
+而 #5 是在「验证这道门到底有没有牙」时才暴露的——
+**把 tenant 谓词换成恒真表达式，门照样绿。**
+⇒ 由此得到本轮最实用的一条：**阴性对照必须与阳性行解耦到不可能互相短路**。
+凡是需要「唯一索引 / 唯一键 / 排斥约束」来判定成败的对照，
+它的种子行必须避开阳性行触发该约束所需的**同一组键**，
+否则对照测的是「约束有没有挡住」，不是「谓词有没有生效」。
+
+### §9.203.6 门状态与回归基线
+
+新增 4 个测试（`internal/sessionv2mirror/`）：
+
+| 门 | 类型 | 结果 |
+|---|---|---|
+| `TestFinalSuccessFlagIsSetOnTheCallersEntry` | 静态接线 | PASS |
+| `TestFinalSuccessPadIsNotAnElseOfTheAbandonedPad` | 静态接线（含「必须在 `w.Write` 之后」） | PASS |
+| `TestFinalSuccessPadRunsOnTheReplayPath` | 静态接线（含「标志必须被序列化」） | PASS |
+| `TestFinalSuccessMarkLandsOnRealDB` | **真库**（种行 → 标记 → 回读 + 幂等 + 2 条阴性对照 + 残留复核） | PASS |
+
+⚠ 真库门的两点诚实边界：
+- **RLS 在本门连接下没有被考核**——本机 `llm_gateway` 是 `rolsuper` 且 `rolbypassrls`，
+  标记函数里那套 GUC 是否真的必要，本门证明不了（`abandoned_turn.go` 表头已实测过这一点）。
+  tenant 谓词仍被考核（阴性对照 B），因为那是 `WHERE` 子句，与角色无关。
+- 门的探针行会**短暂**写进正在被别的真库门测量的库。已实测未造成污染：
+  `db` 包在**有我的改动**与 **origin/main 干净基线**两次运行中，
+  `RetirementColumnFill` 的 7 个漂移数值**逐位相同**（12.28/18.80、90.12/100.00、
+  46.91/64.80、54.73/100.00、53.35/100.00、39.78/100.00）。
+
+**回归基线（同 base 实测，不凭记忆）**：`db` 包在 origin/main（`909b4b047`，无我的任何改动）
+上以**完全相同**的断言 FAIL（`work_type` unservable + 7 个 fill 漂移 + 5 个 structural gaps）。
+⇒ **本轮零新增 FAIL**。`installer` / `sqlguard` / `sessionv2mirror` / `telemetry` / `session` 全绿。
+
+---
+
+## §9.204 D32 的实测与工具就绪：回填**必须发生**，但**不该挂在启动路径上**
+
+§9.203 修好了写侧，留下一笔历史欠账。上一轮我把它挂在「等属主拍板 + 先实测耗时」上，
+本节把那个测量做掉 —— **数字改变了结论**。
+
+### §9.204.1 实测（事务内 + `ROLLBACK`，逐面核对全部回到 0）
+
+| 面 | 行数 | 耗时 | 单行 |
+|---|---|---|---|
+| `session_turns_2026_09` | 107,756 | **76.4s** | 0.71 ms |
+| `session_turns_2026_10` | 2,328 | 0.50s | 0.21 ms |
+| `session_turns_hot` | 395 | 0.08s | 0.20 ms |
+| **脚本整体（含两条核对查询）** | **110,479** | **89.0s** | — |
+
+两条实测结论：
+
+1. **成本随 v1 的 winner 数增长，不随 `session_turns` 体量增长。** 全新安装零工作量。
+2. 成本集中在**索引维护**：`is_final_success` 出现在部分唯一索引的**谓词**里
+   ⇒ 每行都是非 HOT 更新，要重写该表**所有**索引。这解释了大分区（0.71 ms/行）
+   与小面（~0.20 ms/行）之间那 3.5 倍的差 —— 不是「大表更慢」，
+   是「大表的索引更多、要重写的页更多」。
+
+⚠ 上一轮记的 5.1s 只是**连接**成本（107,794 次索引查找的 SELECT），
+与 UPDATE 差 **17 倍**。**把 SELECT 的耗时当 UPDATE 的耗时是量具读错了对象的老形态**，
+只不过这次错的是「同一个操作的两个阶段」而不是「两个对象」。
+
+### §9.204.2 为什么不放进 startup 迁移
+
+启动迁移链是 **installer 逐文件串行同步执行**、每文件 `--single-transaction`
+全量原子、**无超时上限**（`installer/internal/dbinit/runner.go:883-890`）。
+
+把一个 89s、且**生产体量我从未测过**（D30-b 仍卡凭据）的数据 UPDATE 放进升级路径，
+等于拿一个没量过的环境去赌启动预算。而这件事**必须发生**
+（v1 退役后信息永久不可恢复）—— 所以正确的做法是**换载体，不是换时机**。
+
+⇒ 形态定为 **`sql/scripts/backfill_*.sql`**，这与仓库既有回填完全一致
+（`backfill_sessions_v2.sql` / `backfill_sessions_v2_v2.sql` /
+`scripts/audit/mirror_outbox_backfill.sql`），**不是**我发明的。
+
+### §9.204.3 两个实测到的陷阱（已写进脚本头）
+
+1. **本库有第二个 schema**：`gateway.session_turns_2026_07/08/09` 是
+   **空的**同名克隆（`reltuples = -1`，从未 analyze）。
+   `search_path = public, llm_gateway` ⇒ 未限定名恰好解析到 `public`，踩不到；
+   但一个要上生产的脚本**不能依赖 search_path**。脚本里每个标识符都显式限定。
+   ⚠ 这是靠 `pg_class` + `pg_namespace` 联查才看见的 —— 只查 `relname` 会看到
+   「同名两份」而不知道它们在不同 schema。
+2. **`request_logs_hot` / `session_turns_hot` 不是母表的分区**，是独立表。
+   忘了单独处理就**静默漏掉最后 8 小时**的流量，而且不会报错。
+
+### §9.204.4 脚本已端到端实跑验证
+
+不是「读一遍觉得对」：把**同一份文件内容**外包一层 `BEGIN;` / `ROLLBACK;`
+喂给 `psql -f`（脚本内部不 `COMMIT`，所以外层有效），实跑后逐面核对回到 0。
+
+脚本自带的 3 条核对，全部实测有结果：
+
+| 核对 | 期望 | 实测 |
+|---|---|---|
+| 逐会话唯一性（同会话两枚标记） | 0 | **0** ✅ |
+| 残余缺口（v1 winner 无 v2 turn） | 几十行 | **221**（属镜像按设计排除，**不算失败**） |
+| 回滚后各面标记数 | 0 | **0** ✅ |
+
+⚠ 残余缺口**故意不计入判据**：那些是 `internal_loopback` / 非终态占位行，
+`hook.go:71/102` 按设计不镜像。把它算进判据会造一个**永远红**的门，
+而永远红的门等于没有门。
+
+### §9.204.5 欠账变成会红的线
+
+`admin/session_final_success_backlog_realdb_test.go`：
+形如「v1 有 **110,084** 个 winner 在 v2 有对应 turn，v2 只有 **0** 行带标记」，
+失败信息里直接给出修复命令。
+
+⚠ **它现在就是红的，这是设计如此**（与 D30-a 那两道故意红的门同款）。
+⇒ **回填执行后它转绿，那是预期，不是「被改绿」。**
+
+三种零样本**指名 Skip** 而非 Pass：未设 DSN / **v1 已退役**（回填窗口已关闭，
+信息永久不可恢复 —— 恰恰是最该报警的状态之一）/ v1 无 winner。
+
+⇒ 这道门补的是本审计反复遇到的那一类洞：**「事实存在但没人消费，就不是守卫」**。
+`session_family_column_availability_test.go` 早就在信息行里报了
+`is_final_success` 是空的，但那是 `t.Log`，不是断言 —— 于是没人读它指向哪里，
+这一空就是 **6 天**。
+
+---
+
+## §9.205 D33：一条**从来没跑通过**的测试，里面藏着**两层**缺陷
+
+上一轮记下 `TestRequestLogInsertParamCount` 在真库上恒红、被「Skip 即绿」掩盖，
+判定为「按 bodies 面拆分之前的 schema 断言」。本节把它修掉，
+结论比那一句严重：**它从来没有跑到过终点。**
+
+### §9.205.1 第一层：验证语句停留在拆分前的 schema
+
+它对主表做的是：
+
+```sql
+SELECT upstream_finish_reason, request_body::text, response_body::text
+FROM request_logs_hot
+```
+
+而 bodies 面拆分之后，`request_body` / `response_body` **已不在主表上**
+（实测：`request_logs_hot` 与 710 视图 `request_logs_with_current_month`
+都只剩 `request_preview` / `response_preview`）⇒ `42703`。
+
+⚠ 这条测试是**部分迁移**的：后面的第 3–5 段**已经**改用
+`request_logs_bodies_hot`，只有**第一段**留在旧 schema。
+改的人改了一半 —— 而「改了一半」恰好是最难发现的形态，因为
+**读代码时每一段单独看都合理**。
+
+### §9.205.2 关键判断：那条不变式不能靠「断言为 NULL」来守
+
+原断言是 `if gotRequestBody != nil { t.Fatal("主表不得保留完整 body") }`。
+拆分之后这**两列根本不存在** ⇒ 这条不变式已经变成**结构保证**。
+如果只是把 SELECT 改掉，测试会绿，但那条不变式从此**只是碰巧成立** ——
+哪天有人把列加回来，它静默失效，而且没有任何东西会发现。
+
+⇒ 所以改成把它**显式钉住**：`request_body` / `response_body`
+必须**不存在**于 `request_logs_hot`（不是「存在但为 NULL」）。
+主表承载的是**截断 preview**，所以同时断言 preview 哨兵值真的落库
+（entry 里 `RequestPreview="hello"` 与完整 body 不同，能分辨「写进去的是 preview」
+而不是「body 被顺手搬回了主表」）。
+
+### §9.205.3 第二层：**被上一层的失败挡住的空指针 panic**
+
+修好第一层后再跑，立刻 panic 在 `require.JSONEq(t, *entry.RequestBody, ...)`：
+`persistRequestLog` 成功后调 `releaseBodies()`，把 entry 上的三件套正文**置 nil**
+（`client.go:1221`）。
+
+⇒ **这条测试从来没有执行到过这一行。** 上层先炸，它就没机会。
+这是「修好一层，下一层缺陷才现形」的教科书案例，
+也说明**「测试存在」与「测试跑通过终点」是两件事** ——
+后者才是它有没有在守任何东西的前提。
+
+修法：写入**之前**把哨兵正文取成局部量，断言对照副本，绝不解引用 `entry`。
+
+### §9.205.4 顺带暴露：失败信息打的是**指针地址**
+
+变异测试时 `%v` 一个 `*string` 印出的是 `request_preview = 0x62fddf94b980`。
+**信息量为零的失败信息，等于让人从头再查一遍。**
+已改为解引用后打值（nil 显式打成 `<nil>`）。
+
+### §9.205.5 同类清扫
+
+对全仓 `*_test.go` 扫 `request_body` / `response_body`：
+其余引用**全部**已走 `request_logs_bodies_*`（拆分后的正确路径）或自建隔离 schema。
+⇒ `TestRequestLogInsertParamCount` 是**最后一个**还在主表脸上选 body 列的测试。
+
+### §9.205.6 门状态
+
+`telemetry` 包由 **FAIL 1 → ok**。变异验证两条新断言有牙：
+结构断言指向主表真实存在的列 ⇒ 精确报红；
+preview 期望值改错 ⇒ 精确报红。测试自清理经核对（三张表 0 残留），
+无 DSN 时正常 Skip 而非红。
+
+---
+
+## §9.206 D29-d：那 10 个读方从「一句日志」变成**登记表 + 双向一致性门**
+
+### §9.206.1 之前的状态：这不是守卫
+
+D29-a（§9.199）把读方分成两个总体：直读 v1 底表的（= breaker，DROP 之前必须改）
+与经 canonical 视图读 v1 臂的（= **切换时的迁移问题**）。后一组当时只有门里一句
+`t.Logf`。
+
+**`t.Logf` 不是守卫。** 新增一个经视图读 v1 臂的读方，不会让任何东西变红，
+而「没人提」和「没问题」长得一模一样。这与 §9.204 修掉的
+`is_final_success` 空列是**同一族洞**：事实存在，但没人消费。
+
+### §9.206.2 语义必须跟着变，否则登记就是假的
+
+两组的**处置时点不同**：
+
+| | 触发时机 | 失败形态 |
+|---|---|---|
+| 直读底表 | `DROP request_logs` **之前** | 报错（表没了） |
+| 经视图读 v1 臂 | `DROP request_logs` **那一刻** | **静默返回空结果**（接口 200、错误日志无痕） |
+
+静默降级比缺表更危险：缺表至少会喊。
+所以登记条目的措辞纪律是：**不能写 `reads request_logs.X directly`** ——
+它们不直读底表。**不实陈述比缺一条登记更糟**，因为它会误导下一个复核的人。
+
+### §9.206.3 实测清单（`work_type` 是主要风险面）
+
+10 个实测依赖中，**7 个点名 `work_type`**；而 `work_type` 在 session 臂上
+**实测 0.00%**（2% 采样，2,440 万级行）⇒ 切换后按它过滤的页面直接返回空集。
+
+| 文件 | verdict | 关键列 |
+|---|---|---|
+| `admin/auto_route.go` | repoint-empty | work_type + 13 列 |
+| `admin/memora_handlers.go` | repoint-empty | work_type + preview 列（session 臂约 39%） |
+| `admin/no_topic_session.go` | repoint-empty | work_type + preview 列 |
+| `admin/session_timeline_query.go` | repoint-empty | work_type + preview 列 |
+| `admin/session_extract.go` | repoint-empty | 依赖面最窄（6 列）但含 work_type |
+| `domains/sessionforensics/export.go` | repoint-empty | **混合读方**，两桶都收 |
+| `admin/credential_monitor.go` | repoint-gap-only | error_kind |
+| `domains/sessionsummary/summarizer.go` | repoint-gap-only | ⚠ 后果最隐蔽：摘要输入变空**不失败**，会生成「看起来正常」的错摘要 |
+
+### §9.206.4 ⚠⚠ 我第一版写了一条**假不变式**，被真数据当场否掉
+
+第一版的门断言「两个登记表**必须不相交**」。真库实测立刻报红：
+`db/db.go` 与 `domains/hooks/observability/telemetry/client.go` 同时在两个表里。
+
+**这次是我错了，不是数据错了。** 这两个文件本来就该留在 `retirementBreakers`
+（前者是 **canonical 投影的定义者**、退役 = 换掉整段投影体；后者是 **v1 writer**、
+退役 = 停止写入），它们出现在 view-arm 扫描里仅仅因为**提到了那些关系名**。
+⇒ 那条「不变式」把**角色不同**当成了**登记重复**。**判据红了先怀疑判据。**
+
+真正的不变式有两条，方向相反：
+
+1. `viewArmCutoverReaders ∩ retirementBreakers = ∅`
+   —— 声称「自己是切换清单里的读方」与「自己是 blocker」不能同时成立。
+2. `viewArm ⊆ viewArmCutoverReaders ∪ retirementBreakers`
+   —— 每个实测依赖**必须被解释**；落在并集之外的那个才是真正的洞。
+   被 breaker 解释的那些**打出来但不失败**（可见 ≠ 洞）。
+
+### §9.206.5 顺带把「测量只能有一份」变成结构约束
+
+两个总体各有自己的登记表门，而测量逻辑原本内联在 `TestRequestLogsRetirementBreakersRegistryIsConsistent`
+里。若新门再写一份，**两处各算一次 = 迟早不一致，而不一致的那天没人知道该信谁**。
+⇒ 抽出 `measureV1ReadingExposure(t, root)`，两个门共用。重构**行为等价**
+（原两个测试仍 PASS，变异验证过）。
+
+### §9.206.6 门状态与变异验证
+
+`TestViewArmCutoverReadersRegistryIsConsistent` 全绿，且**三个方向都经变异验证有牙**：
+
+| 变异 | 结果 |
+|---|---|
+| 从登记表删掉一个条目 | 红：「1 个文件…不在 viewArmCutoverReaders 里」 |
+| 登记一个不存在的文件 | 红：「不要再自动销账…先修提取器」 |
+| 把一个 breaker 也放进切换清单 | 红：「同时登记在…处置时点不同，择一」 |
+
+⚠ stale 分支**故意不自动销账**：实测不到可能是「它被修好了」，
+也可能是「依赖被重构成另一种形状、提取器看不见了」——
+后者意味着这道门正在对真实依赖**失明**，而「门还绿着」会被读成「没问题」。
+
+---
+
+## §9.207 D31-a：查完之后**结论翻转** —— 5 个函数里**一个缺口都没有**
+
+§9.202.2 报了「5 个函数在本库存在、全仓 `.sql` 与生产 `.go` 都搜不到」，
+并建议补进受追踪迁移，理由是「后果静默：全新安装有表但没 trigger，
+`updated_at` 停止维护，而没有任何门会报」。
+
+**本节逐个查证，那个推断有两处是错的。**
+
+### §9.207.1 逐个对象的三分类（2026-10-05 重测，5 个都还在）
+
+| 对象 | 挂载 | 归属判定 |
+|---|---|---|
+| `update_memora_session_summaries_updated_at` + trigger | `memora_session_summaries` | **另一个服务（memora）**。本库有 `memora_schema_migrations` 作为它的台账（§9.202.1 已把 memora 列为共用库里的外部服务） |
+| `update_session_summaries_updated_at` + trigger | `memora_session_summaries_orphan` | 同上 |
+| `update_conversation_updated_at` + trigger | `conversation_history` | 表**与** trigger **都不在链内**，也不在任何非测试 Go 代码里 ⇒ **一致缺席** |
+| `llm_hourly_stats_normalize_hour_trigger` + trigger | `llm_hourly_stats` | 表**在链内**（666/667），trigger 不在 |
+| `ensure_handoff_logs_partitions`（复数） | 无 trigger | **刻意排除**，见下 |
+
+### §9.207.2 复数版 `ensure_handoff_logs_partitions`：**刻意的，不是缺口**
+
+`sql/migrations/startup/baseline_ensure_functions_contract_test.go:88` 原文：
+
+> `ensure_handoff_logs_partition` is the authoritative NOOP body (R15 §6 #4);
+> **the plural `ensure_handoff_logs_partitions` (columnar, unpinned) is not wired to
+> any active caller and is deliberately NOT in the baseline.**
+
+实测确认：**零个非测试 Go 文件调用它**。⇒ §9.202 把它列为「缺口」是把
+**刻意的排除**读成了**遗漏**。
+
+⚠ 顺带查清一件更要紧的事：**单数版** `ensure_handoff_logs_partition`
+在 baseline 里是 `RAISE NOTICE 'noop'` 的**退化体**，而活库上是真实的
+上海时区 + 列存强制实现。**那个真实实现在仓库里**
+（`714_partition_timezone_pin_remaining.sql` / `534_handoff_logs_hot_columnar.sql`），
+所以它**不是缺口**，只是 baseline 文件与迁移链的分歧，且该分歧已被
+`baselineEnsureFunctionsUnpinned` 显式登记为「待 ≥702 的刻意迁移」。
+
+### §9.207.3 唯一「像缺口」的那个：链内**已有另一种解法**
+
+`llm_hourly_stats` 的 BEFORE INSERT OR UPDATE normalize trigger 在链内没有对应物。
+但 667 / 668 **已经在链内解决了同一个问题**：
+
+- `upsert_llm_hourly_stats(...)` —— 接受灵活 hour 格式的安全 upsert；
+- `llm_hourly_stats_flexible` 可写视图 + `llm_hourly_stats_flexible_insert()`
+  INSTEAD OF trigger；
+- 依赖的 `normalize_hour_timestamp` 也在 667 / 668 里。
+
+⇒ 活库那个 trigger 是**同问题的第二种、带外解法**，不是链的缺口。
+（两条路径在活库上并存且结果一致：视图的 INSTEAD OF trigger 落回基表的 INSERT
+仍会触发 BEFORE normalize，两者都做归一化。）
+
+### §9.207.4 决定性的一查：这 4 张表**本仓零引用**
+
+缺 trigger 之所以有后果，前提是**有人依赖那个 trigger 的行为**。
+而 `conversation_history` / `llm_hourly_stats` / `memora_session_summaries` /
+`memora_session_summaries_orphan` 在**全部非测试 `.go` 代码里零命中**
+（`upsert_llm_hourly_stats` 也只被一个 fresh-install 集成测试断言其存在）。
+`llm_hourly_stats` 活库有 3 行，时间戳已是规整的 timestamptz。
+
+⇒ **trigger 缺不缺，没有可观测后果。**
+
+### §9.207.5 处置：**不补**，并把它变成一道绊线
+
+把 5 个函数抄进迁移链是**错的处置**：那会把**死代码**（2 个别的服务的 +
+1 个链内已有解法的 + 1 个一致缺席的）引进全新安装，而死代码不会被任何门抓到，
+只会让下一个读 baseline 的人多一份困惑。
+
+⇒ 改为 `admin/live_only_object_ownership_gate_test.go`，钉住那个**前提**：
+「这 4 张表本仓没有非测试调用方」。哪天有人加了调用方，门变红，
+并在失败信息里指出**必须同时**补 trigger —— 因为到那时
+「缺 trigger」才**第一次**成为真缺口。
+
+判据细节：字面量匹配 `.go`、排除 `_test.go` 与 vendor；
+**先剥掉迁移文件名**再判，否则 667/668 的文件名（`go:embed` 指令与
+StartupFiles 清单，实测 6 处）会被误判成表访问。
+`TestGitRepoIsReachable` 单独守这道门自己的前提 ——
+walk 若解析到空目录，每张表都会「零调用方」，门会**恒绿**。
+
+### §9.207.6 ⚠⚠ 我第一版把门**写瞎了**，变异测试当场抓住
+
+`stripMigrationFilename` 处理**非文件名**出现时，用 `"\x00"` 就地替换，
+于是下一次 `strings.Index` 找不到该名字，函数返回一个**不再含该名字**的字符串。
+⇒ 它抹掉的是**全部**出现，不止文件名那一种。
+**结果：加一条 `SELECT … FROM conversation_history` 的真实访问，门仍然 PASS。**
+
+⇒ 这是本次任务里又一次「恒真的门」，但形态是新的：
+**不是读错对象，是判据把自己的信号删了。**
+它能跑完、能出数（报「0 个调用方」）、看不出异常 ——
+而它量的根本不是那件事。
+
+⇒ 修法：逐个 token 扫描，**只**删文件名那一种，裸出现原样保留。
+两个方向都经变异验证：真实 SQL 引用 ⇒ 红（精确到 `file:line`）、
+迁移文件名 ⇒ 绿。
+
+⇒ **方法论补丁**：「应用自有对象」这个判定**必须交叉核对归属** ——
+不能只看「名字在别的服务清单里没有」。本次任务里
+**同一个库、同一份扫描**（§9.202.1）已经列出了 memora 是共用库里的外部服务，
+却没有把那 5 个函数与那份清单对照 —— 两条结论挨在一起却没交叉。
+
+---
+
+## §9.208 `session_turns.client_protocol` 同样**从来没有被写过** —— 而它有**活的消费者**
+
+§9.203 修完 `is_final_success` 之后，`db/session_family_column_availability_test.go`
+的 `GO EMPTY ON THE SESSION SIDE` 还剩一个成员：`client_protocol`。本节查它。
+
+### §9.208.1 实测：与 `is_final_success` 同款，但**这次有人读**
+
+| 面 | 口径 | 结果 |
+|---|---|---|
+| `session_turns` | 近 30 天 `client_protocol` 非空 | **0** / **1,659,271** 行 |
+| `request_logs_hot` | 近 30 天非空 | **1,455** / 4,081 行 |
+| `session_turns_hot` | `agent_name` / `agent_type`（同族对照） | **1,455** / 1,473（**98.8%**） |
+
+⇒ 列在 `session_turns` 上存在（`text` 可空），但**三处都没有它**：
+`turn_writer` 的 INSERT 列清单、`ProcessedRequest`、`entryToProcessedRequest`。
+**与 `is_final_success` 的区别是**：`is_final_success` 至少**在 INSERT 列清单里**，
+只是没人置位；`client_protocol` 连管道都没接。
+
+### §9.208.2 后果是**用户可见的**，因为本机已经切到原生投影
+
+`storage.admin_logs_native_turns_read = **true**`（本机实测）⇒
+`admin/logs.go` 的请求日志列表经 `logsSourceFromSQL()`（`admin/logs_turns_source.go:62`）
+直读 `db.SessionFamilyTurnsSourceSQL()`，即 `session_turns_hot UNION ALL session_turns`。
+而该查询在 `admin/logs.go:204` 选 `rl.client_protocol`
+（投影列在 `db/request_logs_view_schema.go:457`，是纯列引用 `t.client_protocol::varchar(50)`）。
+
+⇒ **admin 请求日志列表里的「客户端协议」这一列，现在恒为空。**
+接口 200、页面正常、**错误日志无痕**。这与 `work_type`（D29-d 里那 8 个读方）
+是同一类静默降级，只是这一次命中的是**主列表**。
+
+⚠ 710 视图本身给这一列的填充是 35,185 / 2,278,971（视图的 v1 臂有值），
+所以**从视图读是好的、从原生投影读才是空的** —— 这也是它此前没被发现的原因：
+任何只测视图的核对都看不出问题。
+
+### §9.208.3 ⚠ D28-c 的前提是错的
+
+D28-c 写的是「`client_protocol` **全仓无人 SELECT 读**」，
+且 `admin/request_logs_retirement_column_reader_gate_test.go:25` 记着这条断言是
+2026-10-04 用**逐行 grep** 做的。
+
+**`admin/logs.go:204` 就在读它。** 断言用的是逐行 grep ——
+而 `rl.client_protocol,    -- 2026-07-27: openai-chat/...` 这一行**确实含该列名**，
+逐行 grep 本该命中 ⇒ 说明当时的断言口径比「逐行 grep」更窄（多半只扫了
+v1 底表字面量，而这条 SQL 的来源是拼接的 `logsFrom`）。
+⇒ **「没人读」这个结论是量具错了，不是事实如此。**
+
+★ 这与 §9.202 的教训同族：**被测对象经过拼接时，静态字面量扫描会漏**。
+
+### §9.208.4 修法：照 `agent_name` 的四处走，`$99` **追加在末尾**
+
+| 环节 | 文件 | 改动 |
+|---|---|---|
+| bridge | `internal/sessionv2mirror/s1a_fields.go` | `req.ClientProtocol = strVal(entry.ClientProtocol)` |
+| 载体 | `domains/session/v2/session_writer_v2.go` | `ProcessedRequest.ClientProtocol`；映射进 `TurnRecord` |
+| 记录 | `domains/session/v2/turn_writer.go` | `TurnRecord.ClientProtocol`；INSERT 列清单 + 实参 |
+| 桩 | 4 个 `*_test.go` | 期望参数 98 → 99 |
+
+⚠ **刻意追加在末尾**（`$99`）而不是插在 `agent_name` 旁边：
+参数列表是**位置编号**，插中间会重排其后每一个 `$N`，
+而漏一个就是 `mismatched param and argument count` ——
+那正是本 INSERT 被 `TestRequestLogInsertParamCount` 守着的那类事故。
+
+★ **我第一版真的漏了 `$99`**（列清单加了、实参加了、SELECT 段忘了），
+是本轮临时写的一次参数计数检查抓到的，**不是任何既有门**。
+⇒ 于是把「真跑一次」变成常规动作：新门 `TestTurnWriterWritesClientProtocol_RealDB`。
+桩（pgxmock）只要参数个数对就放行，**只有真库会炸**。
+
+### §9.208.5 顺带修一句**会误导人的过期注释**
+
+`TurnRecord.DigestJSON` 的注释原文写「It is nil for rows that cannot produce a
+useful digest」——**不对**。`AppendTurn` 把它按 `string(rec.DigestJSON)` 传给
+`digest`（jsonb），nil ⇒ `''` ⇒ `''::jsonb` ⇒ **22P02**。
+本轮就是照这句注释构造零值 `TurnRecord`、被 22P02 打回来的。
+
+生产侧不踩：唯一赋值点的 `digestJSON` 来自 `sessiondigest.Marshal`，出错即 return。
+⇒ 不是生产缺陷，但注释会**主动**把人送进坑，已改写并说明零值记录会失败。
+
+### §9.208.6 门状态与变异验证
+
+`TestTurnWriterWritesClientProtocol_RealDB`（真库）绿。两个变异都精确报红：
+
+| 变异 | 结果 |
+|---|---|
+| SELECT 段删掉 `$99`（本轮亲手犯的错） | 红：`syntax error at or near "WHERE"` |
+| 映射写成常量 `nilIfEmpty("MUTATION-CONSTANT")` | 红（阴性对照抓的） |
+
+阴性对照是那道门的意义所在：没有「空值必须落 NULL」这一段，
+一个把这一列写死的实现也能对有值用例报绿。
+
+回归：`domains/session/...`、`internal/sessionv2mirror`、`telemetry` 全绿；
+`go build ./...` 通过；gofmt 干净。
+
+## §9.209 退役可行性仪表把**三种完全不同的状态**读成同一个「空」，其中一种还判错了
+
+§9.208 修完 `client_protocol` 之后，`db/session_family_column_availability_test.go`
+的 `GO EMPTY ON THE SESSION SIDE` 只剩 2 个成员。本节去查它还剩什么，
+顺带查清一件我一直当作「既有、与我无关」的事：`db` 包长期报红。
+
+### §9.209.1 先答标题那个问题：名单**已穷尽**，零新增成员
+
+| 成员 | 处置 | 本节新增结论 |
+|---|---|---|
+| `is_final_success` | §9.203 已补写方 | 仍 0% 是因为 D32 回填**还没跑** |
+| `client_protocol` | §9.208 已补写方 | 仍 0% 是因为修复**还没部署**（近期窗口实测 0.0%） |
+
+⇒ 没有第三个「写方从未存在」的列。**但这个「答案」本身是有问题的**，
+因为我是靠**读写侧代码**得出的，不是靠这道仪表 —— 下面就是原因。
+
+### §9.209.2 ⚠ 终身填充率无法区分三种状态，而三种里只有一种是缺陷
+
+仪表只有**一个窗口**：全生命周期。实测把下面三种情况压成同一个读数：
+
+| 状态 | 例子 | 终身读数 | 近期读数 | 是缺陷吗 |
+|---|---|---|---|---|
+| A. 写方**从未存在** | `client_protocol`（§9.208 之前） | 0.00% | 0.0% | **是** |
+| B. 写方**已修好**，历史是欠账 | `search_text`（今天 16:00 起） | 0.04% | **100.0%** | **否** |
+| B' 同上 | `raw_model_name` | 0.59% | **100.0%** | **否** |
+| C. 流量构成变了 | `auto_decision` | 44.63% | 5.0% | **否** |
+
+★ A 和 B 从终身读数上**不可区分**，而 §9.203 与 §9.208 两次都只能**回头去读写侧代码**
+才能分辨。这就是为什么这道仪表一直在替人说一件它没有能力说的事。
+
+C 类尤其危险：它和「写方在某个时刻坏了」形状**完全一样**。我第一版把
+`auto_decision`(44.7%→1.2%)、`client_request_id`(15.7%→0.7%) 判成「写方疑似刚坏」，
+**是我的判据错了**：按小时拉序列后发现两者在最近 **26 个整点都是 0%**，
+12:31 那个 hot/moon 分界处**没有阶跃**，44.7% 全部来自旧的历史自动路由流量。
+⇒ 与 §9.157「本机有未识别的活跃写方」一致。
+
+### §9.209.3 补一个第二窗口，并说清它**为什么只报告不断言**
+
+`db/session_family_column_availability_test.go` 新增一段：同一套投影表达式、
+同一对存储面，再测一个**近期窗口**，把每列归入三个桶之一
+（新写方已激活 / 近期下跌候选 / 平稳）。
+
+- 近期窗口取 **2 小时**，不是 24。⚠ 这不是调参：**横跨变更点的窗口会把修复稀释成不可见**。
+  用 24h 窗口实测 `search_text` 得 **18.2%**（半个窗口在 16:00 部署之前），
+  于是它落进「平稳」桶 —— **一个主动否认写方刚启动的标签**。同一列在 2h 窗口读 100%。
+- 空窗口 ⇒ **指名 SKIP**，绝不静默算 0%。0 行窗口会把每一列都判成「近期下跌」，
+  正好制造出这一节要消除的那种假警报。
+- 三个桶**必须划分**测得了源的列：漏掉一列（正是本文件开头警告的「最糟的丢发现方式」）
+  或一列进两个桶，都会报红。这条**有牙**，且不随流量抖动。
+- 近期速率**只报告、不注册成集合**：它每小时都在动，做成集合断言就是一个会自己
+  翻红、进而训练人忽略门的门。
+
+实测：2h 窗口 342 行；新写方已激活 2 列（`search_text`、`raw_model_name`）；
+近期下跌候选 4 列；其余平稳。**`client_protocol` 落在「平稳」且两端都是 0% ——
+这正是「代码已修、尚未部署」的样子**，也是终身读数给不出的信息。
+
+### §9.209.4 ⚠⚠ 查出一个**判据自身不自洽**的缺陷：`db` 包长期报红的真因
+
+`db` 包我前几轮一直记作「既有 FAIL」。这次去查为什么，两条红各有原因：
+
+**(1) `unservable` 集合断言 —— 这是判据的错，注册表是对的。**
+
+红字是 `registered but not measured: [work_type]`。但同一轮打印的表里
+`work_type` 是 **session 0.00% / v1 1.93%**，看着就该进 goEmpty。加探针打出真值：
+
+```
+name=work_type sessNonNull=19 sessTotal=1691251 sp=0.0011234287518529183
+                 v1NonNull=41993 v1Rows=2181404 vp=1.9250446043007163 hasV1=true
+```
+
+⇒ 分类判据写的是 `sp == 0`（**精确浮点等于零**），
+而报表用 `%.2f%%` 打印，也就是**小于 0.005% 一律显示 0.00%**。
+19 行 / 1,691,251 = 0.0011% ⇒ **打印是「0.00%」、note 列为空、分类是「没空」**，
+**同一行自相矛盾**，而三行之外的汇总说只有 2 列。
+
+注册表 `RetirementUnservableColumns` 三条注释都写「0.00% session」，
+即注册表的语义是**「按显示精度算空」**，判据的语义是**「精确等于零」**。
+两者只在「极小但非零」时分歧 —— 而 `work_type` 今天正好落在这里（写方刚被接上，19 行）。
+
+★★ **这条红在教我做错事。** 错误信息原文是
+「Re-derive the list from this run and update it deliberately」。
+照做会把 `work_type` **从注册表删掉**，等于宣告它的读方已可服务 ——
+而实际上那些读方在 99.999% 的行上仍然读到 NULL。
+**注册表是对的，仪表是错的。** 这是本轮最重要的一条。
+
+修法：引入 `effectivelyEmptyPP = 0.005`（= 显示精度的半个末位），
+分类与说明文字共用它；非零但低于阈值的列**显式写出**
+`non-zero: 19 row(s) = 0.0011%, below the 0.005% threshold`，
+不让任何一行能同时显示「0.00%」又表现得像没事。改后 `unservable` 断言转绿（3 = 3）。
+
+**(2) `RetirementColumnFill` 漂移断言 —— 门被行数绊倒，容差两轮都不够。**
+
+该门容差是 0.01，上一轮已提到 0.05，注释写的正是「门被行数绊倒、
+报红与任何人的工作无关」。但它**今天仍然红**：10 列漂移 0.06–0.11pp。
+⇒ 同一个病，只是挪了位置：**任何固定容差都跑不过一个仍在被多个进程写入的活库。**
+
+改成 1.0pp，阈值**从「要抓的缺陷」倒推**，而不是从「现在谁在吱吱叫」顺推：
+真实缺陷（当初 6 列写成**猜的** 0）最小错 9.7pp（`canonical_id` 0.07 vs 记的 0.00）、
+最大约 100pp；实测活库噪声 ≤0.11pp。1.0pp 处在噪声上方约 9 倍、
+真实缺陷下方约 10 倍，两种失败模式各自留在正确的一侧。
+⚠ 决定曝光类别的**集合断言完全不受影响**，它们仍然是精确的。
+
+### §9.209.5 我这一轮自己的错
+
+1. **把 24h 窗口当成「近期」**，于是 `search_text` 落进「平稳」桶 ——
+   **一个会主动说谎的标签**。窗口必须短到不横跨被测的变更。
+2. **把流量构成变化读成写方回归**（`auto_decision` / `client_request_id`），
+   被按小时序列当场打掉。**两窗口差值这个启发式本身就会制造假阳性**，
+   所以落桶标签写的是「候选，需交叉核对流量构成」，不是「回归」。
+3. **前几轮把 `db` 包长期报红当作「既有」带过**。既有 ≠ 已知 ≠ 不是缺陷 ——
+   它既是一个真缺陷（判据不自洽），也是一个坏门（容差低于噪声）。
+
+### §9.209.6 遗留
+
+- `work_type` 近期约 4.9%、终身 0.0011%：**写方已被接上**（本会话之外的改动）。
+  它仍在 unservable 清单里是对的（历史仍空），但**清单注释已过期**，
+  需要在 D27-c 拍板时一并处理。**我没有改注册表** —— 那是属主的政策决定。
+- `RetirementColumnFill` 是**活库的快照**。容差放宽到 1.0pp 后能撑一段时间，
+  但这张表迟早还会漂。⚠ 根本问题（一张提交进仓库的活库快照该不该存在）
+  需要属主定，我没有单方面动它。
+- 投影腿（`SessionFamilyTurnsSourceSQL`）仍**不在**本门考核范围内，同 §9.208。
+
+## §9.210 `client_model` 的「值分歧」下限已过期，但**撤销它需要生产证据**，而我没有
+
+`db` 包剩下的那条红：`TestRepointValueFidelity` 报
+`session leg client_model diverges 0/457 = 0.0% (floor 30%)`。
+本节查清它**是什么**，并且**不**单方面消掉它。
+
+### §9.210.1 先确认这个测量**本身有意义**（我一度判断错了）
+
+测试把 v1 行按「有没有 session 双生行」分成两腿，比较
+`request_logs_with_current_month` 视图的取值与 `request_logs_hot` 的取值。
+
+⚠ 我看到视图定义末尾是
+`WHERE NOT EXISTS(session_turns_hot …) AND NOT EXISTS(session_turns …)`，
+一时以为**视图把所有双生行都排除了** ⇒ 以为 session 腿在结构上恒为 0，
+即「一条恒真的测量」。**这是错的。** 该视图是**三分支 UNION ALL**：
+
+| 分支 | 源 | 适用范围 |
+|---|---|---|
+| 1 | `session_turns_hot` LEFT JOIN details | session 臂（热面） |
+| 2 | `session_turns` LEFT JOIN details | session 臂（月度面） |
+| 3 | `request_logs_hot` | **仅**无双生行的行（v1 回退） |
+
+⇒ 排除条件只作用在第 3 个（v1 回退）分支上。
+session 腿比较的确实是**session 臂 vs v1 臂**，测量有意义。
+
+★ 教训同 §9.209：**看定义只看尾部，就会把一个三分支 UNION 读成单表。**
+
+### §9.210.2 那 0.0% 是**真一致**，不是「两侧都是 NULL」
+
+⚠ `IS DISTINCT FROM` 认为 **NULL = NULL**，所以「0 分歧」也是「两侧全空」的样子。
+实测 24h 窗口、457 个 session 腿成功行：
+
+| 指标 | 值 |
+|---|---|
+| v1 侧 `client_model` 为 NULL | **0** |
+| 视图侧 `client_model` 为 NULL | **0** |
+| 两侧都非 NULL | **457 / 457** |
+| 在这 457 行上分歧 | **0** |
+
+⇒ 逐行真实相等，**不是空白比较**。
+
+### §9.210.3 ⚠ 但门**无法**自己区分「已修好」与「测量失明」，我补上了
+
+原错误信息是：
+
+> either the normalisation was fixed (drop the registration) or it regressed
+
+**它点了两个相反的结论，却没给读者任何用来二选一的依据。**
+真正的第三种可能——「比较器失明」——**根本没被提及**。两处缺口：
+
+1. **正向控制是整窗口算的**
+   （`count(*) FILTER (WHERE v_client IS DISTINCT FROM outbound_model)`，不限腿）。
+   ⇒ 一个在 v1 腿上活着、在 session 腿上死掉的比较器**能通过它**，
+   然后把 session 腿的全部分歧计数报成 0——与「session 腿一致」**不可区分**。
+   而整个下限机制就活在这个区分上。
+2. **没有 NULL 剖面**，所以 0 分歧无法与「两侧全空」区分。
+
+两处都补上（分腿控制为 0 直接 `Fatal`；NULL 剖面随行打印），
+并把错误信息改成**说清它证明了什么、没证明什么**。
+
+### §9.210.4 我**没有**撤销那条登记，理由
+
+实测证明**在本机** 24h 窗口上，`client_model` 的值分歧确已归零。
+但那条登记是一条**关于生产的缺陷声明**（原注：52.8% 的双生行不同，
+会打断 `bg/model_probe.go` 里的 `pm.raw_model_name = rl.client_model`）。
+
+⚠ **本机 24h 窗口无法为生产结论背书** —— 这正是 §9.157 反复强调的边界，
+也是本轮 §9.209 刚吃过的亏（`search_text` 的终身读数也只说明历史欠账）。
+我手上**没有生产只读凭据**（D30-b 仍阻塞），所以：
+
+- **不**改 `RetirementSessionLegDivergence`；
+- 让门**继续红**，但红得**可判读**——它现在问的是
+  「这条声明在它被提出的那个地方还成立吗」，而不是「有个数字动了」。
+
+★ 顺带说清两种撤销方式的差别（我用变异实测过）：
+把 `MinRate` 改成 `0.0` 也能让门转绿，但那是**空条件**（"至少 0% 分歧"），
+并不保证它以后仍然是 0；而**从登记里删除**会让
+Direction 2 接管（`measured` 里未登记的列必须为 0），把恒等式守死。
+⇒ **真要撤销，删除比置零强。**
+
+### §9.210.5 变异验证（先 `diff` 确认落地再读结果）
+
+| 变异 | 结果 |
+|---|---|
+| 分腿正向控制改成恒等比较（模拟 session 腿失明） | **Fatal**：`POSITIVE CONTROL FAILED ON THE SESSION LEG … the session-leg counts above (0/102/0/0) are the absence of a measurement, not agreement` |
+| `client_model` 下限临时置 0（模拟「移除登记」） | **ok**，全绿 ⇒ 证明那条红**仅**由过期下限造成，且撤销路径是通的 |
+
+### §9.210.6 本轮我自己的错
+
+**我一度判定这个测量是恒真的**（以为视图排除了所有双生行 ⇒ 计数结构上恒为 0）。
+读到视图是三分支 UNION 才推翻。**一个差点被写进结论的「发现」**，
+依据是对视图定义只看尾部。
+⇒ 与 §9.209 同一根：**判据可疑时先去看它的定义本体，别看片段。**
+
+### §9.210.7 遗留
+
+- ⚠ **`client_model` 的值分歧登记待撤销，但需生产核对**（卡在 D30-b）。
+  撤销时应**删除条目**而非置零，理由见 §9.210.4。
+- ⚠ `outbound_model` 下限 20% 仍成立（实测 22.3%），但**已贴近下限**。
+  同一条正常化逻辑的另一面，若也修好会同样触发这条红。
+- ⚠ 错误信息里引用的 NULL 剖面**只对 `client_model` 测量**，
+  所以代码里做了保护：仅当失败列就是 `client_model` 时才引用，
+  避免**虚假引用**（在一道以可信为职责的门里，虚假引用比不说更糟）。
+  若将来失败的列不是它，该列的剖面需要另行补测。
+
+### §9.210.8 补一条 §9.209 当时**没算进去**的理由：终身总体有 44.6% 是合成流量
+
+清理探针残留时顺带发现：`request_id LIKE 'probe-direct-%'` 有 **753,425** 行，
+占 `session_turns` 全表的 **44.6%**，且**全部落在 2026-09 分区，2026-10 为 0**。
+从命名看（`probe-direct-c11-mdoub…`、`c126-mgem…`、`c31-mclau…`、`c71-mgpt-…`）
+是模型基线压测流量，名字里直接编码了被探测的模型。
+
+⚠ 这给 §9.209 那个「近期窗口」补上了一条**当时没想到的、独立的**理由：
+
+1. 我当时给的理由是「窗口要短到不横跨变更」；
+2. 但还有一条更硬的：**终身总体里 44.6% 是一批**已经不再产生**的合成流量**。
+   它的列特征（直连模型 ⇒ `client_model` / `outbound_model` / `agent_name` 等
+   的取值与填充形态都和真实业务流量不同）会把终身速率拉成一个
+   **描述一个已不存在的总体的数字**。
+
+⇒ 近期窗口不只是「更及时」，它还**天然排除了这批合成行**。
+这同时也给 §9.209 留给属主的那个问题
+（`RetirementColumnFill` 这张**活库快照**该不该继续存在）添了一条论据：
+它测的是一个 45% 由压测流量构成的总体。
+
+⚠ **未验证**：这批 `probe-direct-*` 是什么工具、什么时候跑的、还会不会再跑，
+本轮没有查（`storage` 侧无变更史，与 §9.202 的 `admin_logs_native_turns_read`
+同类问题）。**不据此改任何结论。**
+
+## §9.211 顶层总闸「S4 能不能开」：**不能**，而且它的措辞原本在替人说「正在恢复」
+
+前面几节都在查部件。这一节去回答目标本身：
+**`request_logs` 现在到底能不能 DROP。**
+
+### §9.211.1 顶层答案是「不能」，且原因有两层
+
+**(1) 已登记的 5 个 breaker 仍然在**
+`TestRequestLogsRetirementBreakersRegistryIsConsistent` **PASS** ——
+登记与实测一致、无漂移。5 个文件：`admin/work_types.go`、`db/db.go`、
+`telemetry/client.go`（**v1 写方**）、`domains/streaming/model_alternatives.go`、
+`cmd/gateway/dual_read_validator.go`。
+
+**(2) 但真正的先决条件在它们之前：S4（停写）尚未开启**
+
+实测 v1 与 session 的写入量（最近 2 小时）：
+
+| 面 | 行数 | 最新一行 |
+|---|---|---|
+| `request_logs_hot` | **1,136** | 21:39:59 |
+| `session_turns_hot` | 418 | 21:39:59 |
+
+⇒ **v1 仍在写，且写得比 session 臂多。** 双写在进行中，
+`telemetry/client.go` 那个「v1 writer」不是历史遗留，是**当前活跃**的。
+在 v1 写方移除之前 DROP `request_logs`，INSERT 会直接报错
+（登记表原文：*must be removed or repointed, not tolerated*）。
+
+⚠ 顺带一个事实：`request_logs`（**月度面**）最近 2h 新增 0 行，
+最新一行停在 **13:30:41**，而热面 21:39 仍在写。
+⇒ 热→月的搬迁看起来滞后/停了。**本轮未查原因，不据此下结论。**
+
+### §9.211.2 S4 度量门给出的数，以及它**说错的一句话**
+
+`TestS4GateMeasurement` 是仓库里已有的总闸（「Can S4 be opened? 是 request_logs
+退役前的第一道门」）。实测：
+
+| 窗口 | internal_loopback | non_terminal | genuine_loss | s4_ready |
+|---|---|---|---|---|
+| 1h | 0 | 0 | 0 | **true** |
+| 24h | 1 | 20 | **4** | false |
+| 7d | 3,004 | 205 | **10** | false |
+| 30d | 32,880 | 1,628 | 10 | false |
+
+⇒ **`s4_ready = false`**。但**门的总结行写的是**：
+
+> historical: genuine losses exist in 30d (10) but none in the last hour — **decaying**
+
+⚠ **这句话是错的。** 10 次里有 **4 次在最近 24 小时内**。
+读起来像「镜像已经恢复、可以开了」，而实际上今天还在丢。
+
+### §9.211.3 根因：判据**从不看 24h**，只覆盖了三种状态里的两种
+
+原代码是两个分支，键只有 1h 与 30d：
+
+```go
+if one.genuine > 0 && results["30d"].genuine > 0 {      // ONGOING
+} else if results["30d"].genuine > one.genuine {        // historical / decaying
+}
+```
+
+⇒ 「1h=0、24h=4、30d=10」这种状态落进第二个分支，被说成 decaying。
+**一个只覆盖两种状态的三态分类**，中间那态（最近安静、但今天仍丢）被误判为「历史」。
+
+★ 这与 §9.209/§9.210 是同一类：**措辞读起来像一个结论，而它的判据只覆盖了部分状态。**
+
+修法（**仍然是报告，不是断言**——「S4 能不能开」是发布决定，属决策表）：
+
+| 状态 | 输出 |
+|---|---|
+| 1h > 0 | `ONGOING` — 此刻就在丢 |
+| 1h = 0 且 **24h > 0** | `RECENT, NOT YET HISTORICAL` — 一小时的安静不是恢复的证据；每天只发作几次的丢行机制，在两次事件之间**长得一模一样** |
+| 24h = 0 且 30d > 0 | `historical … decaying` |
+| 全 0 | `clean` |
+
+外加一条**有牙**的断言：四个窗口是**同一行源 + 同一谓词 + 逐渐放宽的 `ts` 边界**
+⇒ 计数**必须单调不减**。任何窗口被改 scope 都会立刻报红，
+因为那意味着这些数字来自**两个不同的总体**。
+
+### §9.211.4 变异验证（先 `diff` 确认落地再读结果）
+
+| 变异 | 结果 |
+|---|---|
+| 打乱窗口顺序（模拟某窗口被错误缩小） | 红：`window 1h reports genuine_loss=0 total=0, but the wider 30d window reports genuine_loss=10 … one of them is scoped differently` |
+| 拿掉 24h 分支（= 退回旧的二分支判据） | 绿，但输出变成 **`historical: all 10 genuine losses are older than 24h — decaying`** —— 而 4 次就在最近 24h 内。**这就是缺陷本身**，新分支正是修掉它的那一处 |
+
+### §9.211.5 ⚠ 我这一轮自己差点犯的错：差点报出一个**来自另一份测量**的数
+
+我为了给「v1 还在写」配一个分母，手写了一条 SQL 数「v1 成功行里没有 session 双生行的」，
+得到 **519 / 932（56%）**。⚠ **这个数不能用**：S4 门自己把漂移分成
+`internal_loopback` / `non_terminal` / `genuine_loss` 三类，
+大量「无双生行」是**合法不镜像**的（内部回环、非终态轮次）。
+
+⇒ 与 §9.211.3 同一根因的另一个面：**同一件事只能有一份测量**。
+`genuine_loss` 的口径由 `mirrorDriftClassSQL`（生产代码）定义，
+手写一条「看起来等价」的 SQL 就会得到一个**大 100 倍**的数。
+**本轮已弃用该数，改用门自己的输出。**
+
+### §9.211.6 给属主的一句话现状
+
+`request_logs` **现在不能退役**，卡在两处，顺序不能颠倒：
+① **S4 未开**（7d `genuine_loss=10`，且 **24h 窗口仍有 4**，今天还在丢）；
+② 5 个已登记 breaker（其中 `telemetry/client.go` 是**当前活跃**的 v1 写方）。
+⇒ 在 ① 变绿之前讨论 ② 的切换时点（D29-d）没有意义。
+
+## §9.212 那 10 次「真实丢行」的构成：9 次是**带会话头的探针**，且是 2026-10-02 起的新现象
+
+§9.211 给出 `s4_ready=false`（7d `genuine_loss=10`）。本节去查这 10 行到底是什么。
+
+### §9.212.1 用**生产分类器原样**分类（不自己近似）
+
+⚠ 我第一次用**手写预筛**跑，得到「30 天里 11,693 行终态失败」，与门报的 10 差 1000 倍。
+因为分类器先排掉 `internal_loopback`（探针回环），而我的预筛没有。
+⇒ 这正是 §9.211.5 自己写下的教训，隔一轮就又踩了一次预筛。
+**改用 `db.MirrorDriftClassSQL` 的三条分支逐字复刻**，得 30d `genuine_loss` = **10 行**：
+
+| origin_actor | request_status | error_kind | 行数 | 首见 → 末见 |
+|---|---|---|---|---|
+| `probe-service` | failure | `no_candidate` | 7 | 10-02 → 10-04 |
+| `probe-service` | failure | `routing_schema_error` | 1 | 10-04 |
+| `probe-service` | failure | `no_candidates` | 1 | 10-03 |
+| (null) | failure | `session_unavailable` | 1 | 10-03 |
+
+⇒ **9/10 是 `probe-service`**，全部 `is_auto_request` 为 NULL、`work_type` 为 NULL、
+**全部始于 2026-10-02**（此前 30 天一天都没有）。
+
+### §9.212.2 ⚠⚠ 我先提了一个假设，**它被真实谓词推翻了**
+
+`hook.go:91` 有一条早就在的探针门，注释写着「**无会话头**的探针产出不进 mirror
+……实测失败噪声 ~115/min（99.6% 为该类）」。
+而 `MirrorDriftClassSQL` 的注释又警告：*「hook 故意跳过但这个表达式判成
+genuine_loss 的行，会让 s4_ready 永远为假、挡住本来安全的切换」*。
+
+⇒ 我据此形成的假设是：**SQL 与 Go 门不同步，缺第三条臂**。
+
+⚠ **错的。** `IsProbeSyntheticSession` 的第一行就是：
+
+```go
+if entry.GwSessionID != nil && *entry.GwSessionID != "" {
+    return false          // 有会话头 ⇒ 不跳过
+}
+return syntheticKindOf(entry) == "probe"
+```
+
+**有会话头的行不会被跳过。** 而这 9 行全部带 `gw_session_id`
+（漂移口径本身就要求 `gw_session_id IS NOT NULL AND <> ''`）
+⇒ **hook 本该镜像它们 ⇒ 它们是真丢行，不是分类器漏了一条臂。**
+
+★★ 注释与代码方向相反：注释说「**无**会话头的探针被排除」，
+真实谓词是「**有**会话头就 return false（不排除）」。
+**只读注释就动手，会做出一个把真实丢行藏起来的「修复」。**
+
+### §9.212.3 异常的具体形状：探针轮次**获得了真实会话 id**
+
+实测对照：
+
+| | 会话 id 形态 | 落点 |
+|---|---|---|
+| 正常探针流量（`probe-direct-*`，753,425 行） | **无** `gw_session_id` | 合成 `sys:probe*` 会话，**有 turn** |
+| 这 9 行 | **有** `gw_<uuid>` 形态 | 该 session_id 下 **0 turn** |
+
+⇒ 异常不在「探针要不要镜像」，而在「**这批探针轮次为什么会带会话头**」。
+`hook.go` 走非合成分支后会用 `sessionID = *entry.GwSessionID` 落 turn，
+而实测那里**一个 turn 都没有**。
+
+### §9.212.4 排除「部分写」：连 details 层都是空的
+
+| 检查 | 结果 |
+|---|---|
+| `session_turns` / `session_turns_hot` 按 `request_id` | 0 |
+| 同上按 `gw_session_id` | 0 |
+| `session_turn_details` / `session_turn_details_hot` 按 `request_id` | 0 |
+
+⇒ **不是写了一半**，是**什么都没写**。
+
+### §9.212.5 我**没有**改分类器，理由
+
+给 `MirrorDriftClassSQL` 加一条探针排除臂可以让 `s4_ready` 转绿 ——
+⚠ 但那正是「放宽到刚好不红」，而且按 §9.212.2，**这些行本来就该被镜像**，
+排除它们等于**把真实丢行藏起来**。
+
+⚠ 顺带记一条既有事实：30 天里 `auto-title-generator` / `auto-summary-generator`
+的 11,000+ 行**全部**落进 `internal_loopback`（`is_auto_request=TRUE` +
+`request_type ∈ {title_gen, summary}` + `task_type` 空）⇒ **回环臂工作正常**。
+不正常的只有「带会话头的探针」这一类。
+
+### §9.212.6 我**查不到**的部分（不猜）
+
+无法判断是 **hook 根本没被调用**，还是 **调用了但写失败**：
+本机**没有网关进程**在跑（写入来自别处），我没有这些请求的日志。
+⇒ **不据此下结论。** 需要属主提供 gateway 日志或确认写入来源。
+
+### §9.212.7 给属主的现状（修正 §9.211.6 的一半措辞）
+
+§9.211.6 写「24h 窗口仍有 4，今天还在丢」。**测量本身准确**，
+但「丢」这个字容易被读成「丢的是业务轮次」。**现在可以精确说**：
+
+- 卡住 S4 的 10 行里，**9 行是 2026-10-02 起新出现的「带会话头的探针」**，
+  全部在选型阶段失败（`no_candidate` / `routing_schema_error`），**没有任何 turn 或 details**；
+- 另 1 行是 `(null)` / `session_unavailable`（10-03）；
+- **不是**回环误分类（回环臂工作正常），**不是**业务轮次丢失的证据 ——
+  但**也不能**说它们「不算丢失」：按 hook 的谓词，它们**本该**被镜像。
+⇒ 要让 S4 转绿，需要回答的是**这 9 行为什么没被镜像**，而不是调整分类器。
+
+### §9.212.8 把「所有有记录的失败路径」都排除掉了，并给总闸加了一个新判据
+
+§9.212.6 说「查不到」。本轮继续用代码把它收窄了一大截 —— **数据侧 + 代码侧**逐条排除：
+
+| 可能的路径 | 判定 | 依据 |
+|---|---|---|
+| `!entry.Success && !isTerminalFailure(entry)` | **排除** | `request_status='failure'`，而 Go 常量 `RequestStatusFailure = "failure"`（`client.go:249`）与库里的字面值**逐字相同** ⇒ `isTerminalFailure` 返回 true |
+| `IsProbeSyntheticSession(entry)` | **排除** | 有 `gw_session_id` ⇒ 第一行就 `return false` |
+| `IsInternalAutoEntry(entry)` | **排除** | 需 `IsAutoRequest != nil && *IsAutoRequest`；这 9 行是 **NULL** |
+| `!shadowWriteEnabled()` | **排除** | `settings_kv.sessions_v2.shadow_write = true`（2026-07-21 起未变） |
+| `EnqueueMirrorFailure(..., "semaphore_full")` | **排除** | `session_mirror_outbox` **总行数 = 0** |
+| `EnqueueMirrorFailure(..., "write_failed")` | **排除** | 同上；这 9 个 request_id 一个都不在 outbox |
+| replay 侧三道门 | **排除** | `replay.go:418/426/432` 与 hook 同样三道，且 replay 对跳过行是**删除**——若被跳过，outbox 会是「被删空」，而重放成功则会有 turn。两者都不是观察到的状态 |
+| 部分写 | **排除** | `session_turns` / `session_turn_details` 按 `request_id` 与按 `gw_session_id` 全部为 0 |
+
+⇒ **hook 里有记录的每一条失败路径都不成立。** 剩下的解释只剩一类：
+**这些 entry 压根没走到 hook 的写入尝试**（某个产出 v1 行的上游路径没有调用 hook），
+或者存在一条我还没找到的、没有日志也没有指标的早退。
+
+⚠ 注意：**hook 的 8 个入口里，只有 2 个会留痕**
+（`entryToProcessedRequest` 返回 nil、以及写失败时的 `slog.Warn`）。
+其余早退全部是**静默 return**。⇒ 「上游没调用 hook」这一类**天生不可观测**，
+这正是它能活到今天的原因。
+
+### §9.212.9 因此给总闸加了一个判据：阻塞行**有没有被任何失败机制记录过**
+
+`s4_ready` 原来只说「有 v1 行没有 session 双生行」，**不说镜像有没有注意到它**。
+而全仓只有两处会把失败的镜像尝试持久化（`hook.go:180` 的 `semaphore_full`、
+`hook.go:279` 的 `write_failed`），都落进 `session_mirror_outbox` 交给 replay reaper。
+
+⇒ 所以：**有** outbox 行 = 已知、可重试的丢（机制看见了它）；
+**没有** outbox 行 = 丢在任何失败记录机制**之前**，**调 reaper、查 lease 都找不到**。
+把两者混为一谈，会让两边看起来像同一个问题。
+
+实测（2026-10-04）：outbox **总行数 0**，10 个阻塞行**全部**属于第二类。
+⇒ 输出：
+
+```
+7d blockers with no failure-path record: 10 of 10 (session_mirror_outbox holds 0 row(s) in total)
+  ⇒ **every** blocker bypassed both EnqueueMirrorFailure call sites. …
+```
+
+窗口从 `s4Windows` 表里读，不重拼字符串，这样将来加窗口不会把它落下。
+
+**变异验证**：把 outbox 的 `NOT EXISTS` 反转成 `EXISTS`（模拟「每个阻塞行都被记录过」）
+⇒ 计数变成 `0 of 10`，且那行 `⇒` **不再打印** ⇒ 条件是承重的，
+且消息只在「全部无记录」时才响。
+
+⚠ 这**没有**定位到机制，只是把「丢在哪里」从四种可能收窄成一类，
+并让这一类**每次运行都被测量**而不是靠一次人工排查。
+
+### §9.212.10 ⚠⚠ 撤回 §9.212.9 的结论：它把一个**会被排空的队列**当成了**从未被填过**
+
+§9.212.9 报告「10/10 的阻塞行没有失败路径记录」，并据此断言
+**「每一个阻塞行都绕过了两个 `EnqueueMirrorFailure` 调用点」**。
+**这个断言不成立，本节撤回它。**
+
+**错在量纲。** 我读的是 `session_mirror_outbox` 的**活行数**（0），
+把它当成了「是否曾被写入」的证据。但：
+
+| 计数器 | 值 | 含义 |
+|---|---|---|
+| `n_live_tup` | 0 / 1 | **水平**——两次运行之间就从 0 变成过 1 |
+| `n_tup_ins` | **2,502** | 它被**持续写入** |
+| `n_tup_del` | **2,498** | 它被**持续清空** |
+
+⇒ 活行数 0 是**稳态**，不是「从未发生过」。
+
+而且被清空的行是**删除**而非死信：replay 的三条 skip 分支调用
+`deleteRow`（`replay.go:419/427/433`），而 `markDead` 是
+`UPDATE … SET status='dead'`（`replay.go:522`）、**保留行**。
+⇒ 死信行仍会计入活行数，所以那 2,498 次删除**全是 skip，不是死信**。
+
+⇒ **活行数 0 无法区分「从未入队」与「入队后被跳过并删除」。**
+能把两者分开的是 reaper 的**日志行**，不是这张表。
+
+⚠ 自我演示：同一段代码两次运行分别打印 `live=0` 与 `live=1`，
+**同一份事实、同一时刻范围，活行数就变了** —— 这就是「水平读数不是发生过的证据」的直接演示。
+
+#### 修正后的判据只声称它能支撑的那件事
+
+一个阻塞行若**当前仍在 outbox 里**（pending 或 dead），说明失败机制**还持有**它，
+这是**不查日志也能行动**的。其它一切只是「**当前没被持有**」，
+**那不是诊断**。输出改为三分支，并常驻打印三个计数器，
+让读者看见「水平」与「速率」的区别。
+
+**变异验证**：去掉 outbox 的 `EXISTS` 守卫 ⇒ `10 of 10 HELD`，
+消息切到「failure path recorded them」那一支 ⇒ 分支是承重的。
+
+⇒ **净结论**：§9.212.8 那张「八条路径逐条排除」的表**仍然有效**
+（那些是**代码 + 数据库**上的静态排除），但**它排除的是「有记录的失败路径」**，
+而 §9.212.9 误以为还能进一步排除「入队后被跳过删除」——
+**它不能**。所以「这 9 行为什么没被镜像」**重新回到需要日志的状态**，
+只是现在我们知道**该找什么**：reaper 的 `skipped:` 删除行，
+以及 `semaphore_full` / `write_failed` 两条入队路径。
+## §9.213 破案：失败**记录**的那条路自己没有活过它要记录的那次失败
+
+§9.212.6 / §9.212.10 说「需要日志」而我当时拿不到。
+⚠ 那个说法是错的：**日志一直在我手上**——`docker logs llm-gateway-local-8782`。
+我只是先去找「哪台机器在写」，查到写入方是容器之后没有回头看容器日志。
+（写入方确认：`pg_stat_activity` 客户端全是 `172.18.0.x`；
+容器 `llm-gateway-local-8782` 跑镜像 `kx-llm-gateway-local:2.5.8.2449`，
+`StartedAt = 2026-10-04T09:29:10Z`。）
+
+### §9.213.1 九行里有一行落在当前容器日志的覆盖范围内
+
+容器启动 `09:29:10Z`；九行的 UTC 时刻里，**只有 `59bf8998…`（10:35:28Z）在它之后**
+（其余 8 行是 06:12–09:24Z，由**上一个**容器实例处理，日志已随容器销毁）。
+⇒ 只有这一行能拿到逐条日志。⚠ 下面第 1–3 节是**这一行的直接证据**，
+第 4 节起是**由它推出、并在代码与计数器上独立佐证**的结论。
+
+### §9.213.2 那一行的完整日志（无删减）
+
+```
+10:35:23  INFO  candidates_resolved        request_id=59bf8998…  candidates_count=16  err=null
+10:35:23  INFO  routing_resolve            client_model=deepseek-v4-flash  candidates_count=16
+10:35:28  INFO  session_compressor_prepare_done  has_session_id=true  ctx_window=131072
+10:35:29  INFO  upstream_call_starting     url=https://api.vapeur.ai/v1/chat/completions
+10:35:31  INFO  upstream_http_attempt      upstream_status=200
+10:35:35  WARN  auto_title: first-turn check unavailable; skipping title generation
+                error="timeout: context deadline exceeded"
+10:35:35  INFO  audit: request completed    success=true  latency_ms=2010
+10:35:35  INFO  http_request               status=200  duration_ms=16222
+10:35:38  WARN  final-success claim degraded (non-fatal)
+                error="timeout: context deadline exceeded"
+10:35:38  WARN  final-success claim: rollback to savepoint failed
+                error="conn closed"
+10:35:38  WARN  telemetry request db persist failed; fallback written
+                op="update"  error="conn closed"
+```
+
+⇒ **决定性的两行是最后两条。** `op="update"` 说明**终态**那一笔 UPDATE
+（把 `in_progress` 翻成 success/failure）**失败了**，所以库里那一行至今是
+`request_status='in_progress'` / `success=false`——**与实测一致**。
+而 `error="conn closed"` 说明**连接已经死了**。
+
+⚠ 顺带一个可疑的数：`latency_ms=2010`，而 `defaultShadowWriteTimeoutMs = 2000`
+（`hook.go`）。请求耗时刚好压着镜像写的预算线。
+
+### §9.213.3 镜像侧：写确实在失败，而且失败得很频繁
+
+当前容器日志全量（`09:29:10Z → 14:06:16Z`，约 **4.6 小时**）：
+
+| 模式 | 次数 |
+|---|---|
+| `V2 shadow write failed` | **53** |
+| `context deadline exceeded` | 132 |
+| `conn closed` | 13 |
+| `outbox row dead` | **0** |
+| `outbox skip-delete failed` | 0 |
+
+⇒ 镜像写**平均每小时失败约 11.5 次**；`outbox row dead = 0` 说明这些都**没有**
+耗尽重试次数——即 **replay 把它们捞回来了**。这与
+`session_mirror_outbox` 的 `n_tup_ins=2502 / n_tup_del=2498`（入出 1:1）吻合：
+被删掉的那 2,498 行是 replay 的 **skip-and-delete** 分支。
+
+### §9.213.4 ★ 断链的那一环：**记录失败的那条路，用的是同一条已死的连接**
+
+`hook.go:279` 的兜底是：
+
+```go
+if !EnqueueMirrorFailure(entry, req.SessionID, "write_failed") {
+    appendBacklog(BacklogItem{…})
+}
+```
+
+而 `EnqueueMirrorFailure` 往 `session_mirror_outbox` **INSERT**——
+⚠ **在连接已经 `conn closed` 的这一刻，这个 INSERT 必然也失败。**
+
+于是落到 `appendBacklog`。而 `appendBacklog`（`backlog.go:100`）是：
+
+- **进程内**的有界 slice；满了就 `backlog = backlog[1:]` **丢最老的**；
+- 注释自己写着「drain via `DrainBacklog` or a future background replayer
+  (spec §12 GAP 2)」——**排空器是还没建的未来功能**。
+
+⚠ **全仓核实**：`DrainBacklog(` 的调用者**只有 `backlog_test.go`**
+（4 处），**生产代码零调用**。⇒ **进程内存里的失败队列永远不会被重放。**
+
+### §9.213.5 于是这 9 行为什么「什么都没留下」——完整因果链
+
+| # | 环节 | 证据 |
+|---|---|---|
+| 1 | DB 连接死掉或超时 | `conn closed` / `context deadline exceeded` |
+| 2 | 镜像写失败 | `V2 shadow write failed`（4.6h 内 53 次） |
+| 3 | 记录失败要写库，而**连接已死** ⇒ 也失败 | `EnqueueMirrorFailure` 用同一池的连接 |
+| 4 | 退到**进程内**有界 backlog | `appendBacklog`，满了丢最老 |
+| 5 | **无人排空** | `DrainBacklog` 生产零调用（注释自认是 GAP 2） |
+| 6 | 进程重启（容器 17:29 重建；连接史始于 **10-02**）⇒ 内存队列消失 | `docker inspect StartedAt` |
+| 7 | ⇒ **无 turn、无 details、无 outbox 行** | 实测三项全 0 |
+
+⇒ 这**同时解释**了 2026-10-02 这个起点：**那天有一次进程重启**，
+把当时积在内存里的失败条目一次性清零。
+⚠ 也解释了为什么 outbox 里一条都没有：**它们从来没能在连接活着的时候被记下来。**
+
+⚠ **不是逻辑缺陷，是耐久性缺陷**：镜像的失败恢复依赖一条**必须先成功**的写路径，
+而它要记录的正是「写路径刚刚失败」这件事。
+
+### §9.213.6 我这轮的错，以及它为什么值得单独记
+
+§9.212.6 我写的是「本机**没有网关进程**在跑……我没有这些请求的日志」。
+前半句对（宿主机上没有），**后半句错**——写入方是**容器**，日志就在
+`docker logs` 里，一行命令。
+
+⚠ **错误的形状很典型**：我在**数据库**这条路上找证据找得很深
+（逐条排除 8 个分支、查 outbox 计数），却**没有先问一句「这个进程在哪儿、它的日志在哪儿」**。
+⇒ 通则：**当你说「我拿不到 X」之前，先确认 X 的载体是什么。**
+在数据库里找不到，不等于不存在；它可能在**进程边界之外**。
+
+⚠ 另一个更贵的点：我上一轮**把这个错误结论推了 main**
+（`591eaca20`），正文写得很确定。这轮的修正（`b451bd298`）只撤回了其中一条断言，
+**没有**指出「日志一直在手上」这一层——**回应的对象错了**。
+
+### §9.213.7 诚实的边界
+
+- 第 1–3 节：**逐条日志直接证据**，仅对 `59bf8998` 一行。
+- 其余 8 行：日志随上一个容器实例销毁 ⇒ **没有逐条证据**。
+  本节对它们给的是「由同一机制推出、且与库中观测一致的解释」，
+  **不是**逐行证明。若要坐实，需要在日志保留期内复现同类失败并抓日志。
+- 生产（252）**完全未验证**（D30-b 仍阻塞）。
+
+## §9.214 ⚠ 第二次修正 §9.213：丢行发生在**镜像上游**，镜像的失败恢复从未介入
+
+§9.213.4–9.213.5 说：镜像写失败后，记录失败也要写库（同样失败）
+⇒ 退到进程内 backlog ⇒ **无人排空** ⇒ 重启归零。
+**这条链在第 3–4 步是错的。**
+
+### §9.214.1 两条硬证据
+
+**(1) 入队降级路径从未被走过。**
+容器全量日志里 `degrading to in-process backlog` = **0** 次。
+⇒ 那 53 次 `V2 shadow write failed`，**每一次的 `EnqueueMirrorFailure` 都成功了** ——
+与 `outbox row dead = 0`、`n_tup_ins≈n_tup_del`（入出 1:1）完全一致。
+**「记录失败也要写库」这一步从未发生。**
+
+**(2) `59bf8998…` 自己没有 `V2 shadow write failed` 行。**
+10:35:31.77 那条属于**另一个** request（`384a9caa…`，
+`error: "write turn: acquire request advisory lock: conn closed"`），
+时间上与 `59bf8998` 的 `conn closed`（10:35:38）相邻，但**不是它**。
+
+⇒ 镜像写对 `59bf8998` **既没成功、也没报失败** ⇒ **它压根没被尝试。**
+
+### §9.214.2 读代码本体：`onPersisted` 只在成功时触发
+
+`domains/hooks/observability/telemetry/client.go`：
+
+```go
+} else if entry.Op == RequestLogUpdate {
+    err = c.updateRequestLog(entry)
+} else {
+    err = c.insertRequestLog(entry)
+}
+if err == nil {
+    c.firePersistedHooks(entry)      // ← 只在成功时
+    …
+}
+```
+
+而 **session v2 turn 镜像就是 `onPersisted`**（`main_v2_pipeline.go`：
+V2 write owner 由 telemetry 的 `onPersisted` 承担）。
+`firePersistedHooks` 全仓只有两处调用（client.go:783 / :1202），
+**两处都在成功路径**；fallback 路径（:1053–1057）与 degraded 路径（:1182–1187）
+都**直接 return，不触发**。
+
+⚠ 容易看错的一处：`persistRequestLog` 开头那条注释说
+「H3 请求侧镜像……**PG 不可用时镜像仍写入**」。⚠ **那不是 session turn 镜像**，
+是 `c.mirrorRequestBodies(entry)`——**正文**（bodies）家族，目标是
+`request_logs_bodies_*`。两者名字都叫「镜像」，很容易混。
+
+### §9.214.3 所以真正的因果链（比 §9.213 更短、也更上游）
+
+| # | 环节 | 证据 |
+|---|---|---|
+| 1 | DB 连接在终态 UPDATE 时死掉 | `error="conn closed"` |
+| 2 | v1 持久化失败，写 fallback | `telemetry request db persist failed; fallback written  op="update"` |
+| 3 | `err != nil` ⇒ **`onPersisted` 不触发** | `client.go:1202` 的 `if err == nil` |
+| 4 | ⇒ **session turn 镜像从未被调用** | 无 `V2 shadow write failed`、无 outbox 行 |
+| 5 | ⇒ 无 turn、无 details、v1 停在 `in_progress` | 实测三项全 0，与日志一致 |
+
+⇒ **丢行发生在镜像的上游**：v1 自己没写进去，于是「v1 有、session 没有」。
+镜像的失败恢复（outbox + replay）在设计上只覆盖
+「**v1 写成功了、镜像写失败**」这一种情况；
+**v1 自己写失败**这个类别**根本不在它的覆盖范围内**。
+
+⚠ 这与 §9.211 的 `s4_ready` 口径是一致的 —— 它量的正是
+「有 `gw_session_id` 的 v1 行没有 session 孪生行」，
+而这一类的成因**不在镜像内**，所以镜像自己的仪表**结构上看不见**。
+
+### §9.214.4 什么仍然成立、什么撤回
+
+**仍然成立：**
+- v1 终态 UPDATE 因 `conn closed` 失败、写了 fallback（**逐条日志直接证据**）
+- v1 那一行至今停在 `in_progress` / `success=false`（**库中实测一致**）
+- 无 turn、无 details、无 outbox 行（**库中实测一致**）
+- 10-02 这个起点与一次进程重启重合（`pg_stat_activity` 最老连接 10-02；
+  当前容器 17:29 重建）
+- 53 次 `V2 shadow write failed` **全部**被 outbox+replay 捞回
+
+**撤回：**
+- ❌「记录失败也要写库（同样失败）」—— 入队降级路径**一次都没走过**
+- ❌「退到进程内 backlog ⇒ 无人排空 ⇒ 重启归零」作为这 9 行的成因
+
+⚠ `appendBacklog` / `DrainBacklog` 生产零调用**仍然是一个真实的潜在缺口**
+（`backlog.go:108` 那句「counter 已经记录了每次丢弃」也不准确 ——
+记的是**失败**不是**丢弃**），但它**不是这 9 行的原因**。
+⇒ 我在 `40dfa7546` 里把两件事**混为一谈了**，这里分开。
+
+### §9.214.5 我这一轮第三次在同一条链上改结论——记下来
+
+三次分别是：
+① 「需要日志」而日志一直在我手上（§9.213.6）；
+② 「记录失败也要写库」而入队从未失败（本节）；
+③ 两次都是**在同一条链上把相邻的两个环节当成一个**。
+
+⇒ 通则：**因果链上每一步都要有独立的观测**，
+不能因为 A 和 B 相邻且时间接近就当作同一个事件。
+本轮 `59bf8998`（10:35:38 的 `conn closed`）与
+`384a9caa…`（10:35:31 的 shadow write failed）**只差 7 秒**，
+我第一反应就是把后者算成前者的一部分 —— **它们是两个不同的 request**。
+
+### §9.214.6 诚实的边界（与 §9.213.7 相同，不因修正而放宽）
+
+- 逐条日志直接证据：仅 `59bf8998` 一行；其余 8 行日志随上个容器销毁。
+- 生产（252）完全未验证（D30-b 阻塞）。
+- ⚠ **「v1 持久化失败 ⇒ 镜像不被调用」这条机制**现在有代码 + 日志双向支撑；
+  但**它是否就是其余 8 行的原因**，没有逐行证据。
+
+---
+
+## §9.215 撤回：§9.213/§9.214 挂错了总体，而且方向是反的
+
+本节做三件事：① 撤回 §9.213/§9.214 对 `genuine_loss` 的适用范围声明；
+② 用**活体**证据给出 `genuine_loss` 的真实机制（与前两轮方向相反）；
+③ 补一条**判据**，让门以后不只报数、还报形状。
+
+### §9.215.1 撤回的到底是什么
+
+§9.213/§9.214 的整条因果链是围绕 `59bf8998` 建立的，结论是
+「**v1 持久化失败 ⇒ `err != nil` ⇒ `onPersisted` 不触发 ⇒ 镜像从未被调用 ⇒ 丢行**」。
+
+**这一条对 `genuine_loss` 不成立**，而且不是「缺证据」，是**方向相反**：
+
+| | `59bf8998` | `genuine_loss` 的 11 行 |
+|---|---|---|
+| 生产分类器判定 | **`non_terminal`** | `genuine_loss` |
+| `success` | false | 10 行 false / 1 行 true |
+| `request_status` | `in_progress` | 全部 `failure` |
+| `error_kind` | 空 | 全部非空（`no_candidate` ×7 等） |
+| v1 写是否落库 | **否**（终态 UPDATE 挂在 `conn closed`） | **是**（终态字段齐全） |
+
+被并掉/挂错的那一环是：**`59bf8998` 根本不是 blocker**。
+它按 `MirrorDriftClassSQL` 属于 `non_terminal` —— 而 `non_terminal`
+**按设计就不计入 S4 的丢行**（30d 共 1,631 行，全部被门排除在外）。
+⇒ 我用一条**门本来就不管的行**，去解释**门正在管的丢行**。
+
+⚠ 顺带更正我自己的一个数：我此前在交接里记的「30d `genuine_loss` = 14，
+含 `node-probe-worker` 4」是**错的**。逐字照抄生产分类器实测 = **11**
+（`probe-service` 10 + `(null)` 1；`node-probe-worker` 那 4 行是
+`non_terminal`）。**同一个量只能有一份测量**：那份 14 出自我手写的预筛 SQL，
+它漏了 `internal_loopback` 那条臂（详见 §9.215.5，这是本轮第二次犯同一个错）。
+
+### §9.215.2 代码层就已否证：blocker 必然通过了 hook 的第一道门
+
+`internal/sessionv2mirror/hook.go` 的第一道门是
+
+```go
+if !entry.Success && !isTerminalFailure(entry) { return }
+```
+
+而 `isTerminalFailure`（hook.go:1093）**在 `entry.Success` 为真时直接返回 false**：
+
+```go
+func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {
+	if entry == nil || entry.Success { return false }
+	...
+}
+```
+
+⇒ **成功行直接通过这道门**（`!Success` 为假，不 return）。
+
+再看 `db.MirrorDriftClassSQL` 的 `ELSE` 臂 —— `genuine_loss` 按构造就是
+「非 internal_loopback **且**（`success` **或** 终态失败）」。
+
+⇒ 两条 SSOT 合起来给出一个**不需要任何日志**的结论：
+
+> **每一行 `genuine_loss` 都必然触发了 `PersistHook`。**
+> 丢行只可能发生在 hook **之后**：turn 写本身失败、后一道门拦下、
+> 或恢复路径没能恢复。**不可能**是「v1 写失败所以镜像没跑」。
+
+这就是 §9.213/§9.214 误挂的**结构性原因**：门只报 `genuine_loss` 的**计数**，
+不报**形状**，所以「上游还是下游」这个问题在库里根本无法回答 ——
+我只能拿手边唯一有日志的一行去倒推，而那一行不在这个总体里。
+
+### §9.215.3 活体证据：真实机制是 turn 写超时，且兜底与主路径共享同一个失败
+
+本轮查询时总体正在**继续增长**（30 分钟前 10 行 → 11 行），
+于是抓到一行**带完整日志**的 blocker `7204907f9c5f…`（ts 14:28:29Z，
+在当前容器 09:29:10Z 启动之后）：
+
+```
+14:28:29  candidates_resolved  candidates_count=2
+14:28:30  upstream_http_attempt upstream_status=200
+14:28:31  audit: request completed  success=true
+14:28:32  WARN sessionv2mirror: V2 shadow write failed
+          session_id=gw_e0ca0076-…  synthetic=false
+          error="write turn: insert turn: timeout: context deadline exceeded"
+```
+
+链条（**每一环都有独立观测**，这是 §9.214.5 通则的第一次正向应用）：
+
+1. **v1 写成功** —— `request_logs_hot` 里该行 `success=true`，
+   且 upstream 200。三个 fallback 后端
+   （`FileWriter` / `RingBuffer` / `MultiBackupWriter`）**全部只写文件与环形缓冲，
+   没有一个写 PG** ⇒ PG 里有这行 ⇒ 主路径 `err == nil` ⇒ `firePersistedHooks` 已触发。
+2. **hook 被调用且未被门拦下** —— `synthetic=false`、有会话头、`is_auto_request` 为 NULL。
+3. **turn 写超时** —— `write turn: insert turn: context deadline exceeded`。
+4. **恢复路径确实入队了**（这一环**成立**，与 §9.213 的猜测相反）：
+   `session_mirror_outbox` 里 `7b475e9e…` `status=pending` / `attempts=2` /
+   `last_error` 是**同一个超时**，`created 22:33:02` → `updated 22:34:22`。
+   ⇒ reaper 在重试，**但重试仍然超时**。
+
+当前容器 5 小时内 `V2 shadow write failed` 共 **82** 次，错误构成：
+
+| 次数 | 错误 |
+|---|---|
+| 19 | `write turn: acquire request advisory lock: conn closed` |
+| 17 | `write turn: get next turn_no: context deadline exceeded` |
+| 10 | `write bodies: insert bodies: context deadline exceeded` |
+| 9 | `write turn: insert turn: context deadline exceeded` |
+| 5+5+4+4+1 | `context deadline exceeded` / `context already done`（details / outbox 入队 / memora / bodies / final_full） |
+
+⇒ **S4 卡住的原因是一条正在超时的会话写路径，不是镜像逻辑。**
+特别是第 5 行那条：`enqueue session aggregate outbox: context deadline exceeded`
+—— **兜底入队与主路径写 turn 抢的是同一个正在超时的资源**。
+这是「兜底路径必须能活过它要兜的那个失败」这条通则的**第四次**独立印证。
+
+### §9.215.4 串行化热点：`turn_no` 用 `MAX()` 从分区视图算
+
+`domains/session/v2/turn_writer.go:340`：
+
+```sql
+SELECT COALESCE(MAX(turn_no), 0) + 1
+FROM public.session_turns_with_current_month
+WHERE tenant_id = $1 AND session_id = $2
+```
+
+它在**持有 `request:<id>` advisory lock 的那个事务内**执行 ——
+而该锁是**按 request** 的，**并不串行化同一 session 的并发请求**。
+
+实测（EXPLAIN ANALYZE，最热 session，`tenant_id='default'`）：
+**231 ms**，`Merge Append` 跨 `session_turns_hot` + `session_turns_2026_10`，
+`Sort Method: top-N heapsort`，`Buffers: shared hit=275 read=508`。
+
+⚠ 好消息：并发拿到同一个 `turn_no` **不会静默重复** ——
+`UNIQUE (tenant_id, session_id, turn_no, partition_date)` 在每个分区上都存在。
+代价是并发会**报错**而不是排队。
+
+⚠ **本节不宣称这就是超时的根因。** 已测的是「这条语句单次 231ms 且在写事务内」，
+未测的是「并发下它的分布」与「镜像写事务的 deadline 值」。
+把 231ms 说成超时根因，就是又一次用水平读数冒充因果。
+**这是下一轮的活。**
+
+### §9.215.5 判据：门现在报形状，并且断言 blocker 必然到过 hook
+
+`cmd/gateway/s4_gate_measurement_test.go` 新增一段 **blocker 形状剖面**：
+
+- 用**同一个** `s4ScopeBody` + **同一个** `mirrorDriftClassSQL`（生产分类器，
+  不是重抄的）按 `origin_actor × request_status × error_kind × success` 分组；
+- **断言 1**：形状剖面求和必须等于上面报的 `genuine_loss` 计数
+  （两个查询共用 scope 与分类器，不等就说明其中一个的 scope 漂了）；
+- **断言 2**（有牙的那条）：剖面里不允许出现
+  `success=false 且无终态标记` 的行 —— 那种行按 hook 第一道门**根本没到过镜像**，
+  与其它 blocker 是**不同的缺陷**。它一旦出现，说明
+  `db.MirrorDriftClassSQL` 与 `sessionv2mirror.isTerminalFailure` 漂了。
+- **报告**：形状 + 最新一行距今多久 + 一句「全部到过 hook，丢行在下游」。
+
+本机实测（`TEST_DATABASE_URL` 已导出，真库）：
+
+```
+7d window: genuine_loss is 11. s4_ready would be false.
+7d blockers currently HELD by the outbox: 1 of 11 (outbox live=1, inserted=2578, deleted=2573)
+7d blocker shape (5 group(s), 11 rows, newest 7h8m31s ago):
+    7  origin_actor=probe-service  success=false request_status=failure error_kind=no_candidate
+    1  origin_actor=(null)         success=false request_status=failure error_kind=session_unavailable
+    1  origin_actor=probe-service  success=false request_status=failure error_kind=no_candidates
+    1  origin_actor=probe-service  success=false request_status=failure error_kind=routing_schema_error
+    1  origin_actor=probe-service  success=false request_status=failure error_kind=transient
+  ⇒ every row above is either successful or a terminal failure, so every one of
+    them passed PersistHook's first gate …
+ONGOING: 1 genuine loss(es) in the last hour
+```
+
+⚠ **断言 ② 在数据上不可证伪，这一点必须写清楚。**
+`MirrorDriftClassSQL` 的 `ELSE` 臂**本身就是**「success **或** 终态」，
+所以一个能让断言 ② 触发的行（`success=false` + 非终态）会被分类成
+`non_terminal`，**根本进不了 `genuine_loss` 剖面** ——
+**注入数据永远打不响它**。它是一条**漂移绊线**，不是数据探测器。
+
+⇒ 正解同 §9.209：把判据的**判别本体**抽成可测谓词
+`blockerSkippedByFirstGate(success, requestStatus, errorKind)`，
+用 `TestBlockerSkippedByFirstGate_PositiveAndNegative` 打**双向**对照：
+
+| 用例 | success | request_status | error_kind | 期望 | 作用 |
+|---|---|---|---|---|---|
+| 终态失败 | false | `failure` | `no_candidate` | 不拦 | 阴性对照 |
+| 终态限流 | false | `rate_limited` | `` | 不拦 | 阴性对照 |
+| 仅 error_kind | false | `in_progress` | `conn closed` | 不拦 | 阴性对照 |
+| 成功短路 | true | `in_progress` | `` | 不拦 | 阴性对照（`isTerminalFailure` 在 Success 上短路） |
+| **非终态失败** | false | `in_progress` | `` | **拦** | **阳性对照 = `59bf8998` 的形状** |
+
+⇒ 只写「干净」方向的判据是**从没被证明有牙**；
+只写「该拦」方向的判据会对一切触发。两条都要。
+本机实测 `go test -run TestBlockerSkippedByFirstGate -v` 5/5 通过。
+
+### §9.215.6 诚实的边界
+
+- 30d `genuine_loss` = **11**，且**在增长**（本轮 30 分钟内 +1）。
+  我上一轮交接里写的 14 是错的，已在 §9.215.1 更正。
+- 11 行里只有 `7204907f9c5f…` 有完整日志；其余 10 行的容器日志已随重建销毁，
+  **判别证据永久不可得**。它们的形状与 `7204907f9c5f…` 同族
+  （终态失败 + 非空 `error_kind`），但**同族不等于同因**。
+- §9.213/§9.214 的机制**本身没有被推翻**：它对 `59bf8998`（`non_terminal`）
+  仍然成立。它只是**不适用于** `genuine_loss`，而后者才是 S4 的门在管的总体。
+- 生产（252）完全未验证（D30-b 阻塞）。
+- `get next turn_no` 的 231ms **是水平读数**，不是超时根因（§9.215.4）。
+
+### §9.215.7 补记（rebase 后复验时抓到）：恢复路径**是有效的**，永久丢行另有其人
+
+上面 §9.215.3 说「replay 在重试但仍然超时」，那只是**一个时刻**的快照。
+rebase 到新 main 后复验门，数字从 11 变成 **10**，我去查了差掉的那一行
+`7b475e9e…`：
+
+| 观测 | 值 |
+|---|---|
+| `session_turns_hot` 命中 | **1** |
+| `session_turns`（父表）命中 | 0 |
+| `session_mirror_outbox` 命中 | **0**（已清空） |
+
+⇒ **replay 后续重试成功了**：turn 落库、outbox 行被删除，该请求不再是无孪生行。
+
+再看 outbox 全局：`live=0 / pending=0 / **dead=0**`，
+`n_tup_ins=2616 / n_tup_del=2612`。
+
+⇒ **一条死信都没有。** 自统计重置以来，**凡入队的行最终都被救回**。
+而 `markDead`（`replay.go:522`）是保留行的 `UPDATE` —— 若真死过，表现在不该是 0。
+
+⇒ 于是剩下那 10 行的性质被**反推**钉死了：它们**从未入队**。
+机制在日志里有直接对应物：`enqueue session aggregate outbox: context
+deadline exceeded`（当前容器 5 次）。
+
+⇒ **完整链条（本节是本轮唯一一条每一环都有独立观测的链）**：
+
+1. v1 写**成功** ⇒ `firePersistedHooks` 触发（代码 + 三个 fallback 后端只写文件双重坐实）；
+2. hook 通过全部前置门（§9.215.2，代码层必然）；
+3. `write turn` **超时**；
+4. 恢复路径**能工作** —— 入队 + replay 重试 + 最终成功（`7b475e9e` 实证）；
+5. **但入队调用与主路径写 turn 抢同一个正在超时的资源** ⇒
+   入队失败时**零痕迹**：无 outbox 行、无死信、无日志之外的任何记录。
+
+⇒ **永久丢行 = 「turn 写超时」且「入队也超时」的那一批交集。**
+⇒ 「兜底路径必须能活过它要兜的那个失败；若兜底依赖与主路径同一个资源，
+兜底等于没有」—— 这是这条通则的**第四次**独立印证，
+而这一次它有了一个**可测量的后果**（10 行永久丢行）。
+
+⚠ 仍**未**回答：为什么 turn 写会超时。§9.215.4 测到 `MAX(turn_no)` 跨分区视图
+231ms 且在写事务内，但**并发分布与 deadline 值未测**。这是下一轮的活。
+
+---
+
+## §9.216 第二次改判：S4 的 blocker 主体**不是写超时**，而是「整个会话从未被镜像」
+
+§9.215.7 写的是「永久丢行 = turn 写超时 ∩ 入队也超时」。
+本节用**总体层的分布**把它改掉，并**撤回 §9.215.4 的串行化主张**。
+
+### §9.216.1 撤回 §9.215.4：`MAX(turn_no)` 231ms 不是根因
+
+§9.215.4 拿 EXPLAIN 实测的最热 session（231ms）当作候选根因。
+本轮补测了**分布**（`session_turns_with_current_month` 按 session 分组，840,977 个会话）：
+
+| 分位 | 每会话 turn 数 |
+|---|---|
+| p50 | **1** |
+| p90 | **1** |
+| p99 | **1** |
+| max | 53,851 |
+
+⇒ 我测的是 **53,851 turns 的那个会话**，即 **0.0001% 的离群点**。
+对 p99 的会话（1 turn），`MAX(turn_no)` 是一次索引查找，微秒级。
+
+⇒ **撤回「`MAX(turn_no)` 是 S4 阻塞项的候选根因」。**
+它是一个**真实的性能缺陷**（跨分区视图 `Merge Append` + top-N heapsort，
+在写事务内），但它**解释不了 99% 的会话**。
+⚠ 这与 §9.215.1 那个「14 vs 10」是**同一族错误**：
+**拿一个测量点（最热会话）当总体（全部会话）**。
+上一轮我把它写成了「已测**未**测并发分布」，措辞上留了口子，
+但读者仍会把它当根因候选 —— **留口子不等于没有误导**。
+
+### §9.216.2 撤回 §9.215.7 的「写超时」定性：那条被追踪的行**被救回了**
+
+§9.215.3 逐行追踪的 `7204907f9c5f`（`success=true`，
+`write turn: insert turn: context deadline exceeded`）**不在当前 10 行里**。
+它就是从 11 变 10 时消失的那一行 —— **被 replay 救回**。
+
+⇒ **「写超时」这一类确实会发生，但它是可恢复的，不构成 S4 的常驻阻塞。**
+把一个**会自愈的瞬时失败**写成 S4 的阻塞机制，是又一次「把偶发当常态」。
+
+### §9.216.3 真正的形状：这是 **10-02 才出现的新现象**，且此前 11 天精确为 0
+
+按天（14 天，生产分类器逐字照抄）：
+
+| 日期 | genuine_loss | v1 总行数 | 占比 |
+|---|---:|---:|---:|
+| 09-21 … 10-01（**连续 11 天**） | **0** | 逐日 2.4k–151.8k，合计 **>70 万** | **0%** |
+| 10-02 | 3 | 3,192 | 0.094% |
+| 10-03 | 3 | 2,318 | 0.129% |
+| 10-04 | 4 | 3,803 | 0.105% |
+
+⚠ 此前我只报过**计数**（`genuine_loss = 10`）。
+**没有分母的计数无法判断严重性** —— 10 行可以是 70 万里的 10 行（噪声），
+也可以是 30 行里的 10 行（系统性问题）。分母在这里是 **~0.1%，且此前 11 天为 0**。
+
+⇒ **两个读数缺一不可**：计数说「在增长」，分母说「比例稳定在千分之一、
+且是全新出现的」。**不衰减**。
+
+### §9.216.4 blocker 总体内部是两个总体，处置方向相反
+
+对当前 10 行逐个查它**所在会话**的镜像状况（不是只查这一行）：
+
+| 切分 | 行数 | 含义 | 该怎么修 |
+|---|---:|---|---|
+| 所在会话 `session_turns = 0` | **9** | **整个会话从未被镜像** | 分类/排除问题，**提速无用** |
+| 所在会话有 turn（314） | **1** | 健康会话里丢了 1 个 turn | 写路径时序问题 |
+
+那 9 行的进一步事实：**每个会话在整个 `request_logs` 里只有 1 行**，
+且那唯一的一行是失败：`no_candidate` ×7、`no_candidates` ×1、
+`routing_schema_error` ×1。
+
+⇒ 形状是「**单请求会话，其唯一请求在路由层被拒、从未派发上游**」。
+`origin_mw.go:418` 的注释正好记着这类早期退出：
+「early exits (gw_rpm_exceeded / no_candidate) that **never reached the initial INSERT**」。
+
+再按「hook 跑过没有」细分（`runShadowWrite` **先写 `session_dim` 再写 V2**，
+所以 `session_dim` 有行 ⇒ hook 跑过）：
+
+| 子类 | 行数 | 判据 |
+|---|---:|---|
+| `session_dim=1`, `ctx_attrs=1`, turns=0 | 5 | hook 跑过，**V2 turn 写没成** |
+| `session_dim=0`, `ctx_attrs=1`, turns=0 | 4 | hook **可能**没跑 —— **无法区分**（无日志覆盖） |
+
+⚠ 后 4 行**不可判读**：能产生 `dim=0` 的两个原因（hook 未被调用 / dim upsert
+失败）在本机**没有日志能分开**，且它们的容器日志已随重建销毁。
+**不说它们是哪种。**
+
+### §9.216.5 为什么两个既有排除都看不见这批行（**这才是根因的形状**）
+
+| 排除 | 判据 | 这 10 行 |
+|---|---|---|
+| `sessionv2mirror.IsProbeSyntheticSession` | **没有** `gw_session_id` | **有** gw_session_id ⇒ 不算探针 |
+| `db.MirrorDriftClassSQL` 的 `internal_loopback` 臂 | `is_auto_request = TRUE` **且** request_type/actor/taskless 命中 | **`is_auto_request IS NULL`** ⇒ 不命中 |
+
+⇒ **两个排除键在不同属性上，而这批行两样都不具备**：
+它既不是「无会话头的探针」（它有会话头），也不是「内部回环」（它没有 auto 标志）。
+`origin_actor = 'probe-service'` 说明它**语义上是探针流量**，
+但没有任何一个排除项**按 actor 判探针**。
+
+⇒ **所以 S4 的常驻 blocker 主体是一个「排除覆盖缺口」**，
+不是容量问题。这也解释了为什么 09-21…10-01 精确为 0：
+**这批探针流量是 10-02 前后才开始带会话头落库的**。
+
+### §9.216.6 一条方法论护栏：运行中的二进制不是 HEAD
+
+本轮发现容器跑的是 `kx-llm-gateway-local:2.5.8.2449`，
+`version.json` 写着 **`git_sha = 57d69f9c`** —— 是 `origin/main` 的**祖先**，
+**不是** HEAD（`ef1717cba`）。
+
+⇒ **我前几轮一直在拿 HEAD 的源码解释一个 `57d69f9c` 的二进制。**
+本轮已核对关键常量在 `57d69f9c` 处**一致**（`defaultShadowWriteTimeoutMs=2000`、
+`shadowWriteConcurrency=8`、`EnqueueMirrorFailure` 两个调用点、`MAX(turn_no)` 同形），
+所以已发表的结论**未被这一条推翻**。
+
+⇒ 但**这必须成为护栏**：任何关于「机制」的断言，要么在**运行的那个 commit** 上核对，
+要么显式标注「读的是 HEAD」。二者混用时，源码与行为可以无声地分叉。
+
+⚠ 顺带排掉一个假线索：`sessions_v2.write_timeout_ms` 我先查了 `settings_kv`（unset），
+差点得出「默认 2000」；`scripts/enable_sessions_v2.sql` 把它写进 **`platform_settings`**，
+而**本库根本没有这张表**（该脚本从未在此跑过）。
+⇒ unset 结论碰巧是对的，但**是查对了表才对的** ——
+**「用某个口径量出 0」不等于「不存在」**，这张表差点让我把口径错当成事实。
+
+### §9.216.7 诚实的边界
+
+- 9 行「会话整体未镜像」的成因**未闭环**：5 行可归因到 V2 写没成，
+  4 行不可判读。**没有一行有日志覆盖**（10-02 起的容器已全部重建）。
+- 「应该镜像吗」是**语义决定，属主拍板**：一个在路由层就被拒、
+  从未派发上游的探针请求，要不要成为一条 session turn？
+  现有代码在「无会话头探针」上已经选择**不**镜像（`hook.go:71` 注释 + R51 教训），
+  而这批行只是**恰好有会话头**就绕过了那个决定。
+- 门现在**报告**这个切分并**断言**两段之和 == `genuine_loss` 计数；
+  断言是防 scope 漂移的，不是判「哪种成因」。
+- 生产（252）完全未验证（D30-b 阻塞）；以上全部只对本机库成立。
+## §9.217 ★821 **已经在 252 生产上跑着**，而且它选中的总体与 §9.66 的目标**零重叠**
 
 > §9.170 是在本地侧载实例上验的，落点机制成立。本节是**生产实测**，
 > 起于核对 §9.170 结论时顺手查的一件事：交接文档写着「821 未部署到 252」——
 > **这句话现在不成立**。于是去 252 看了真数据，结论比预期重要得多。
 
-### §9.195.1 ④ 的前提被证伪：252 的应用角色**就是** `llm_gateway`，而且同样超级 + 绕过 RLS
+### §9.217.1 ④ 的前提被证伪：252 的应用角色**就是** `llm_gateway`，而且同样超级 + 绕过 RLS
 
 /opt/llm-gateway-go/.env.dev 的 `LLM_GATEWAY_DATABASE_URL` 里那个角色，
 名字与本地完全一样；真库上查属性：
@@ -23493,7 +26046,7 @@ relrowsecurity_hot          = true        （策略确实开着，3 条）
 ③ 反过来说：本地那个「超级用户测等于没测 RLS」的坑，**生产上是一个恒成立的坑**，
 不是本地独有。
 
-### §9.195.2 821 已经上线，而且打得很勤
+### §9.217.2 821 已经上线，而且打得很勤
 
 ```
 version.json  2.5.8-383ef8d0-20261003-2436
@@ -23504,7 +26057,7 @@ strings /opt/llm-gateway-go/bin/gateway | grep -c abandoned_turn   → 6
 
 进程 uptime 9h44m / 6h19m，覆盖整个标记窗口 ⇒ 是**在跑的这份代码**打的。
 
-### §9.195.3 ★★但它选中的总体，**与 821 想解决的问题零重叠**
+### §9.217.3 ★★但它选中的总体，**与 821 想解决的问题零重叠**
 
 窗口内 turn 总数 1383，标记 174 ⇒ **标记率 12.6%**。
 而 §9.66 实测的遗弃率是 0.047%（19/40,585）—— 差 **268 倍**。
@@ -23547,7 +26100,7 @@ empty_response / stream_error）被标记数全是 0。**
 - **但它选中的总体没有可回收价值**。按字面判据这些是真阳性，
   按立线动机它们是噪声。
 
-### §9.195.4 一个很像「量具指纹」的旁证
+### §9.217.4 一个很像「量具指纹」的旁证
 
 `no_candidate`（82 条，75 被标）与 `no_candidates`（50 条，**0 被标**）
 名字极像、却是**两个不同的 error_kind**，且行为完全相反。
@@ -23555,7 +26108,7 @@ empty_response / stream_error）被标记数全是 0。**
 ⇒ 若要继续推进这条线，**先分清这两条路径各自在哪儿发 t0**，
 比调判据本身更能解释这 174 条的来路。
 
-### §9.195.5 这一节的教训
+### §9.217.5 这一节的教训
 
 > **「交接文档说它没部署」是一句会过期的断言，必须现查。**
 > 上一轮把它当既成事实写进交接，本轮顺手一查就是假的——
@@ -23569,7 +26122,7 @@ empty_response / stream_error）被标记数全是 0。**
 > §9.170 证明了机制，本节证明了总体选错；两条合起来才是完整结论。
 
 
-### §9.195.6 ★订正我自己在 820 那个 commit 里写的门证据（它不成立）
+### §9.217.6 ★订正我自己在 820 那个 commit 里写的门证据（它不成立）
 
 上一节之外，我在 `6f286f492` 的提交信息里写过两句门证据。**复核后两句都不成立，
 这里逐句订正**，因为下一个读者会照着它去复核：

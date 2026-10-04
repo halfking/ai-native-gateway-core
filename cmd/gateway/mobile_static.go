@@ -14,8 +14,9 @@ package main
 // device picks the surface. Deep links keep their surface on purpose (a
 // mobile hit on a PC route still renders the PC SPA); only the bare entry
 // switches. web/index.html adds a client-side coarse-pointer guard for the
-// inverse gap (iPadOS desktop-class UA). MOBILE_WEB_ENTRY_REDIRECT=false|0|off
-// disables the redirect while keeping /m mounted.
+// inverse gap (iPadOS desktop-class UA); its ?desktop escape must match this
+// side's "param present = stay on PC" reading. MOBILE_WEB_ENTRY_REDIRECT=
+// false|0|off disables the redirect while keeping /m mounted.
 //
 // Configuration: MOBILE_WEB_DIST env wins; when unset we probe
 // web-mobile/dist then web-mobile next to the process cwd (same two-candidate

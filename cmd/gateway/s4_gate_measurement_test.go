@@ -146,17 +146,354 @@ func TestS4GateMeasurement(t *testing.T) {
 	def := results["7d"]
 	t.Logf("7d window: genuine_loss is %d. s4_ready would be %v.", def.genuine, def.genuine == 0)
 
-	// A freshness observation, reported rather than asserted: if the 1h window
-	// has genuine losses while the 30d window does not, the loss is ongoing; if
-	// 30d has more than 1h, it is decaying. Both are informative to whoever
-	// reads this, and neither is a threshold this test should own.
-	one := results["1h"]
-	if one.genuine > 0 && results["30d"].genuine > 0 {
-		t.Logf("ONGOING: genuine losses in the last hour (%d) — the mirror is losing terminal "+
+	// ---- the windows are nested, so the counts must be monotonic -----------
+	//
+	// All four windows are the same row source with the same predicate and a
+	// widening `ts` bound, so every row counted in 1h is also counted in 24h.
+	// A count that **decreased** as the window widened would mean a window is
+	// scoped differently from its neighbours, and every number derived from the
+	// set would then be about a different population than the one it claims.
+	// This is cheap and it is the property the rest of this block relies on.
+	ordered := []string{"1h", "24h", "7d", "30d"}
+	for i := 1; i < len(ordered); i++ {
+		prev, cur := results[ordered[i-1]], results[ordered[i]]
+		if cur.genuine < prev.genuine || cur.total < prev.total {
+			t.Errorf("window %s reports genuine_loss=%d total=%d, but the wider %s window reports "+
+				"genuine_loss=%d total=%d. These windows are nested (%s ⊂ %s), so the wider one "+
+				"cannot count fewer rows — one of them is scoped differently and the comparison "+
+				"below would be about two different populations",
+				ordered[i], cur.genuine, cur.total, ordered[i-1], prev.genuine, prev.total,
+				ordered[i-1], ordered[i])
+		}
+	}
+
+	// ---- did any failure path get a chance to record these? -----------------
+	//
+	// `genuine_loss` says a v1 row has no session twin. It does **not** say the
+	// mirror noticed it. Two places persist a failed mirror attempt —
+	// `EnqueueMirrorFailure(..., "semaphore_full")` when the bounded pool is full
+	// and `EnqueueMirrorFailure(..., "write_failed")` when the write errors
+	// (hook.go:180 / hook.go:279) — and both land in `session_mirror_outbox`,
+	// which the replay reaper drains.
+	//
+	// ⚠️ **This section used to make an inference the data does not support, and
+	// the correction is the point of it.** The first version reported "10 of 10
+	// blockers have no failure-path record" and concluded that every blocker
+	// "bypassed both EnqueueMirrorFailure call sites". That came from reading the
+	// table's **live row count**, which is 0 — but 0 live rows does not mean 0
+	// rows ever existed:
+	//
+	//	· measured here, `n_tup_ins = 2494` and `n_tup_del = 2490`: the outbox
+	//	  is written to constantly and drained just as fast;
+	//	· the reaper's skip branches call `deleteRow` (replay.go:419/427/433), so
+	//	  a drained row is **removed** rather than dead-lettered — `markDead` is an
+	//	  UPDATE that keeps `status='dead'` (replay.go:522), so dead rows would
+	//	  still be counted. Those 2490 deletes are skips, not dead letters.
+	//
+	// So a live count of 0 cannot separate "never enqueued" from "enqueued and
+	// then skipped-and-deleted", and the per-request trace that would separate
+	// them is a log line, not a table.
+	//
+	// What the level *can* support is narrower and still worth having: a blocker
+	// with a **surviving** outbox row is a loss the mechanism still holds —
+	// pending or dead — and that is actionable without logs. Everything else is
+	// "not currently held", which is not a diagnosis.
+	//
+	// The defining window for s4_ready is the validator's own default (7d), so
+	// the attribution runs over that same window — read from the same table
+	// rather than re-spelled, so widening s4Windows cannot leave this behind.
+	defDur := time.Hour
+	for _, w := range s4Windows {
+		if w.label == "7d" {
+			defDur = w.dur
+		}
+	}
+	var held int64
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*)
+		FROM (`+s4ScopeBody+`) rl
+		WHERE ($1 = '' OR rl.tenant_id = $1)
+		  AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+		  AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
+		  AND `+mirrorDriftClassSQL+` = 'genuine_loss'
+		  AND EXISTS (
+		      SELECT 1 FROM public.session_mirror_outbox o WHERE o.request_id = rl.request_id)`,
+		"", time.Now().Add(-defDur)).Scan(&held); err != nil {
+		t.Fatalf("outbox attribution: %v", err)
+	}
+	var outboxLive, outboxIns, outboxDel int64
+	if err := conn.QueryRow(ctx, `SELECT n_live_tup, n_tup_ins, n_tup_del
+	                              FROM pg_stat_user_tables
+	                              WHERE relname = 'session_mirror_outbox'`).
+		Scan(&outboxLive, &outboxIns, &outboxDel); err != nil {
+		t.Fatalf("outbox counters: %v", err)
+	}
+	t.Logf("7d blockers currently HELD by the outbox (pending or dead): %d of %d "+
+		"(outbox live=%d, inserted=%d, deleted=%d since stats reset)",
+		held, def.genuine, outboxLive, outboxIns, outboxDel)
+	switch {
+	case held > 0:
+		t.Logf("  ⇒ %d blocker(s) are in the outbox right now: the failure path recorded them and "+
+			"they are either awaiting replay or dead-lettered. Start with status/attempts/"+
+			"last_error on those rows.", held)
+	case def.genuine > 0:
+		t.Logf("  ⇒ none is held. That does **not** mean none was ever enqueued: this outbox is "+
+			"drained by deleting its rows (%d inserts / %d deletes), so a live count of %d is the "+
+			"expected steady state and says nothing about whether these blockers passed through it. "+
+			"Answering that needs the reaper's log lines, not this table.",
+			outboxIns, outboxDel, outboxLive)
+	}
+
+	// ---- what SHAPE are the blockers? (and therefore: upstream or downstream?) --
+	//
+	// ⚠️ §9.215. The gate reported a **count** and nothing else, and a count with
+	// no shape cannot say where the loss happened. Five audit rounds were spent
+	// chasing the wrong mechanism because of that: §9.213/§9.214 concluded that
+	// the blockers were rows whose *v1 write failed*, so the mirror hook was
+	// never called. That conclusion was built on a row that is, by this
+	// classifier's own definition, **not a blocker at all** (it is
+	// `non_terminal`), so it was never evidence about `genuine_loss`.
+	//
+	// The shape answers the upstream/downstream question **from the database**,
+	// with no logs:
+	//
+	//	sessionv2mirror.PersistHook's first gate is
+	//	    if !entry.Success && !isTerminalFailure(entry) { return }
+	//	and isTerminalFailure returns false whenever entry.Success is true.
+	//	So the gate is passed by every entry that is either successful or a
+	//	terminal failure — and `genuine_loss`, being the ELSE arm of
+	//	MirrorDriftClassSQL, is *by construction* exactly
+	//	    success OR (request_status IN (failure, rate_limited) OR error_kind <> '')
+	//	⇒ **every genuine_loss row reached the mirror hook.** A blocker can only
+	//	come from the hook itself failing, from a gate after the first one, or
+	//	from the recovery path failing to recover.
+	//
+	// That makes this an assertion, not just a report: if the profile ever shows
+	// a non-terminal, unsuccessful blocker, then MirrorDriftClassSQL and
+	// isTerminalFailure have drifted apart and the two SSOTs no longer describe
+	// the same population.
+	type blockerShape struct {
+		originActor, requestStatus, errorKind string
+		success                               bool
+		n                                     int64
+		newest                                time.Time
+	}
+	shapeRows, err := conn.Query(ctx, `
+		SELECT COALESCE(rl.origin_actor, '(null)'),
+		       COALESCE(rl.request_status, '(null)'),
+		       COALESCE(NULLIF(TRIM(rl.error_kind), ''), '(null)'),
+		       COALESCE(rl.success, false),
+		       count(*), max(rl.ts)
+		FROM (`+s4ScopeBody+`) rl
+		WHERE ($1 = '' OR rl.tenant_id = $1)
+		  AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+		  AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
+		  AND `+mirrorDriftClassSQL+` = 'genuine_loss'
+		GROUP BY 1, 2, 3, 4
+		ORDER BY count(*) DESC, 1`, "", time.Now().Add(-defDur))
+	if err != nil {
+		t.Fatalf("blocker shape: %v", err)
+	}
+	var shapes []blockerShape
+	for shapeRows.Next() {
+		var s blockerShape
+		if err := shapeRows.Scan(&s.originActor, &s.requestStatus, &s.errorKind, &s.success, &s.n, &s.newest); err != nil {
+			shapeRows.Close()
+			t.Fatalf("blocker shape scan: %v", err)
+		}
+		shapes = append(shapes, s)
+	}
+	if err := shapeRows.Err(); err != nil {
+		shapeRows.Close()
+		t.Fatalf("blocker shape iterate: %v", err)
+	}
+	shapeRows.Close()
+
+	var shapeTotal int64
+	for _, s := range shapes {
+		shapeTotal += s.n
+		// isTerminalFailure, restated. Non-terminal + unsuccessful is the one
+		// combination that would mean "the hook's first gate returned early".
+		if blockerSkippedByFirstGate(s.success, s.requestStatus, s.errorKind) {
+			t.Errorf("7d genuine_loss contains %d row(s) with success=false and no terminal marker "+
+				"(request_status=%q, error_kind=%q). By the hook's own first gate "+
+				"(if !entry.Success && !isTerminalFailure(entry) { return }) such a row never "+
+				"reached the mirror, so it would be a *different* defect from every other blocker "+
+				"here. Either db.MirrorDriftClassSQL or sessionv2mirror.isTerminalFailure changed "+
+				"and the two no longer describe the same population.",
+				s.n, s.requestStatus, s.errorKind)
+		}
+	}
+	if shapeTotal != def.genuine {
+		t.Errorf("7d genuine_loss is %d, but the shape profile sums to %d over %d group(s). The "+
+			"profile uses the same scope and the same production classifier as the count above, so "+
+			"they are measuring the same set — a mismatch means one of the two queries is scoped "+
+			"differently and at least one number above is about a different population.",
+			def.genuine, shapeTotal, len(shapes))
+	}
+	if len(shapes) == 0 {
+		t.Logf("7d blocker shape: none — no genuine_loss rows to profile")
+	} else {
+		t.Logf("7d blocker shape (%d group(s), %d rows, newest %s ago):",
+			len(shapes), shapeTotal, time.Since(shapes[0].newest).Truncate(time.Second))
+		for _, s := range shapes {
+			t.Logf("    %-4d origin_actor=%-20s success=%-5v request_status=%-13s error_kind=%s",
+				s.n, s.originActor, s.success, s.requestStatus, s.errorKind)
+		}
+		t.Logf("  ⇒ every row above is either successful or a terminal failure, so every one of " +
+			"them passed PersistHook's first gate: the mirror hook WAS reached. The loss is " +
+			"downstream of the hook (the turn write itself, a later gate, or a recovery path " +
+			"that failed to recover) — it is not 'v1 failed so the mirror never ran'.")
+	}
+
+	// ---- is the whole SESSION unmirrored, or just this one turn? ------------
+	//
+	// ⚠️ §9.216. The shape above groups by error_kind, and that is not the cut
+	// that matters for remediation. Two blockers with the same error_kind can
+	// need opposite fixes:
+	//
+	//   · a blocker whose **session has other turns** = one turn lost inside a
+	//     session that otherwise mirrors fine ⇒ a write-path / timing problem;
+	//   · a blocker whose **session has zero turns** = the session was never
+	//     mirrored at all, typically a single-request session whose only
+	//     request was rejected before dispatch ⇒ an exclusion/classification
+	//     question, not a capacity problem.
+	//
+	// Measured 2026-10-04 (30d, production classifier verbatim): 9 of 10
+	// blockers sat in sessions with **zero** turns — 7 of them
+	// error_kind=no_candidate with exactly one v1 row in the whole session.
+	// So the S4 blocker population is dominated by "the session was never
+	// mirrored", and hardening the turn write would not have cleared it.
+	//
+	// The discriminator is a **count over the same blocker set**, so it must
+	// reconcile with the profile above exactly as that profile reconciles with
+	// the window count — otherwise this is a third number about a fourth
+	// population.
+	var sessionWideUnmirrored, singleTurnLost int64
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE session_turns = 0),
+		       count(*) FILTER (WHERE session_turns > 0)
+		FROM (
+		  SELECT rl.gw_session_id,
+		         (SELECT count(*) FROM session_turns_hot th WHERE th.session_id = rl.gw_session_id)
+		       + (SELECT count(*) FROM session_turns     tp WHERE tp.session_id = rl.gw_session_id)
+		         AS session_turns
+		  FROM (`+s4ScopeBody+`) rl
+		  WHERE ($1 = '' OR rl.tenant_id = $1)
+		    AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+		    AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
+		    AND `+mirrorDriftClassSQL+` = 'genuine_loss'
+		) s`, "", time.Now().Add(-defDur)).
+		Scan(&sessionWideUnmirrored, &singleTurnLost); err != nil {
+		t.Fatalf("session-wide attribution: %v", err)
+	}
+	if got := sessionWideUnmirrored + singleTurnLost; got != def.genuine {
+		t.Errorf("7d genuine_loss is %d, but the session-wide split sums to %d "+
+			"(%d session-wide unmirrored + %d single turn lost in a live session). Same scope and "+
+			"same production classifier as the count above — a mismatch means one of these queries "+
+			"is scoped differently, and the split below would be about a different population than "+
+			"the number it is explaining", def.genuine, got, sessionWideUnmirrored, singleTurnLost)
+	}
+	if def.genuine > 0 {
+		t.Logf("7d blocker attribution: %d in a session with **zero** turns (session never mirrored) "+
+			"vs %d in a session that has turns (a single turn lost inside a healthy session)",
+			sessionWideUnmirrored, singleTurnLost)
+		if sessionWideUnmirrored > singleTurnLost {
+			t.Logf("  ⇒ dominated by session-wide non-mirroring. Making the turn write faster or " +
+				"more reliable would NOT clear this population; the question is whether these " +
+				"sessions should be mirrored at all (see the exclusion notes in hook.go and " +
+				"db.MirrorDriftClassSQL — both key on attributes these rows do not have).")
+		}
+	}
+
+	// ---- is the loss ongoing, recent, or confined to history? --------------
+	// A freshness observation, reported rather than asserted: "is it safe to open
+	// S4" is a release decision that belongs in the decision sheet, not a
+	// threshold hidden in a test.
+	//
+	// ⚠ This used to be two branches keyed on the 1h and 30d windows only, and it
+	// **never looked at 24h**. So the state "no loss in the last hour, 4 in the
+	// last 24h" was reported as `historical … decaying` — which reads as "the
+	// mirror has recovered, go ahead", while 4 of the losses were inside the day.
+	// A single quiet hour is not evidence of decay. Measured on this database
+	// 2026-10-04: 1h=0, 24h=4, 7d=10, 30d=10, and the old wording still said
+	// "decaying".
+	//
+	// The three states are now all named, so the classification is **total** over
+	// the windows this test already measures.
+	one, day, month := results["1h"], results["24h"], results["30d"]
+	switch {
+	case one.genuine > 0:
+		t.Logf("ONGOING: %d genuine loss(es) in the last hour — the mirror is losing terminal "+
 			"failures right now, not just historically", one.genuine)
-	} else if results["30d"].genuine > one.genuine {
-		t.Logf("historical: genuine losses exist in 30d (%d) but none in the last hour — decaying",
-			results["30d"].genuine)
+	case day.genuine > 0:
+		t.Logf("RECENT, NOT YET HISTORICAL: no genuine loss in the last hour, but %d within the "+
+			"last 24h (30d total %d). One clean hour is not evidence that the mirror has "+
+			"recovered — a loss mechanism that fires a few times a day looks exactly like this "+
+			"between events. Treat s4_ready as blocked until the 24h window is also clean.",
+			day.genuine, month.genuine)
+	case month.genuine > 0:
+		t.Logf("historical: all %d genuine losses are older than 24h — decaying", month.genuine)
+	default:
+		t.Logf("clean: no genuine loss in any measured window")
+	}
+}
+
+// blockerSkippedByFirstGate restates, in SQL terms, the one question the shape
+// profile above needs answered: would sessionv2mirror.PersistHook have returned
+// at its **first** gate for a row with this terminal state?
+//
+//	hook.go:78    if !entry.Success && !isTerminalFailure(entry) { return }
+//	isTerminalFailure (hook.go:1093) returns false whenever entry.Success is true,
+//	so a successful row never trips the gate. Otherwise it is terminal when
+//	request_status is failure/rate_limited, or when error_kind is non-empty.
+//
+// ⚠️ The data assertion in TestS4GateMeasurement can only fire if the two SSOTs
+// drift apart; no row can be injected to trigger it, because
+// db.MirrorDriftClassSQL's ELSE arm *is* "success OR terminal", so a row failing
+// this predicate is classified `non_terminal` and never reaches the profile at
+// all. That makes the data assertion a drift tripwire with no reachable
+// negative control — so the predicate itself is unit-tested below, in both
+// directions, rather than left as an assertion nobody has ever seen fire.
+func blockerSkippedByFirstGate(success bool, requestStatus, errorKind string) bool {
+	if success {
+		return false // isTerminalFailure short-circuits on Success, so the gate passes
+	}
+	switch requestStatus {
+	case "failure", "rate_limited":
+		return false
+	}
+	return errorKind == "" || errorKind == "(null)"
+}
+
+// TestBlockerSkippedByFirstGate_PositiveAndNegative is the control pair for the
+// shape assertion above: one input that MUST be flagged and one that must not.
+// A predicate with only the "clean" direction has never been shown to have
+// teeth; a predicate with only the "flagged" direction would fire on everything.
+func TestBlockerSkippedByFirstGate_PositiveAndNegative(t *testing.T) {
+	cases := []struct {
+		name          string
+		success       bool
+		requestStatus string
+		errorKind     string
+		wantSkipped   bool
+	}{
+		// Negative controls — the hook WAS reached, so this is not a
+		// "hook never ran" blocker.
+		{"terminal failure", false, "failure", "no_candidate", false},
+		{"terminal rate_limited", false, "rate_limited", "", false},
+		{"error_kind alone is terminal", false, "in_progress", "conn closed", false},
+		{"success short-circuits the gate", true, "in_progress", "", false},
+		// Positive control — the exact shape of 59bf8998 (hook.go:78 returns
+		// here, so this row never reached the mirror).
+		{"unsuccessful and non-terminal", false, "in_progress", "", true},
+	}
+	for _, tc := range cases {
+		got := blockerSkippedByFirstGate(tc.success, tc.requestStatus, tc.errorKind)
+		if got != tc.wantSkipped {
+			t.Errorf("%s: blockerSkippedByFirstGate(success=%v, request_status=%q, error_kind=%q) = %v, want %v",
+				tc.name, tc.success, tc.requestStatus, tc.errorKind, got, tc.wantSkipped)
+		}
 	}
 }
 

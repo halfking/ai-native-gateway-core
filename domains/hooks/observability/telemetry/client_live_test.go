@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -69,6 +70,15 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	floatPtr := func(v float64) *float64 { return &v }
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	upstream := "stop"
+	// ⚠ persistRequestLog 成功后调 releaseBodies()，把 entry 上的三件套正文
+	// 置为 nil（client.go:1221）。所以下面的断言必须对照**写入前**取下的副本，
+	// 绝不能解引用 entry.RequestBody —— 那是空指针 panic。
+	//
+	// 这个 panic 之前被更早的失败挡住了（那时 SELECT request_body 先报 42703），
+	// 所以这条测试**从来没有跑到过这一行**。修好上一层才暴露出来：
+	// 一个被上层错误掩盖的下层缺陷，只有真的把它跑通才会现形。
+	wantRequestBody := `{"messages":[]}`
+	wantResponseBody := `{"choices":[{"message":{"content":"world"}}]}`
 	entry := &RequestLogEntry{
 		Op:                   RequestLogInsert,
 		RequestID:            "telemetry-paramcount-" + now.Format("20060102T150405.000"),
@@ -104,8 +114,8 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 		RequestPreview:       strPtr("hello"),
 		TransformSummary:     strPtr("noop"),
 		ResponsePreview:      strPtr("world"),
-		RequestBody:          strPtr(`{"messages":[]}`),
-		ResponseBody:         strPtr(`{"choices":[{"message":{"content":"world"}}]}`),
+		RequestBody:          strPtr(wantRequestBody),
+		ResponseBody:         strPtr(wantResponseBody),
 		StreamFirstChunkMs:   intPtr(50),
 		StreamChunkCount:     intPtr(5),
 		StreamDoneReceived:   func() *bool { b := true; return &b }(),
@@ -147,22 +157,55 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 		t.Fatalf("persistRequestLog: %v", err)
 	}
 
+	// R42 修正：t.Cleanup 晚于 defer cancel()/pool.Close() 执行，原写法 ctx
+	// 与池双死、三表静默漏行——独立连接 + 失败变红（e83fb6211 同形态）。
 	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM request_logs_bodies_hot WHERE request_id = $1`, entry.RequestID)
-		_, _ = pool.Exec(ctx, `DELETE FROM request_logs_hot WHERE request_id = $1`, entry.RequestID)
-		_, _ = pool.Exec(ctx, `DELETE FROM usage_ledger_hot WHERE request_id = $1`, entry.RequestID)
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		conn, cerr := pgx.Connect(cctx, dsn)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to delete %s: %v", entry.RequestID, cerr)
+			return
+		}
+		defer conn.Close(cctx)
+		for _, table := range []string{"request_logs_bodies_hot", "request_logs_hot", "usage_ledger_hot"} {
+			if _, derr := conn.Exec(cctx, `DELETE FROM `+table+` WHERE request_id = $1`, entry.RequestID); derr != nil {
+				t.Errorf("cleanup: delete %s: %v", table, derr)
+			}
+		}
 	})
 
+	// 「主表不得保留完整 body」这条不变式，在 bodies 面拆分（request_logs_bodies）
+	// 之后**已经变成结构保证**：`request_body` / `response_body` 两列
+	// 根本不在 request_logs_hot 上。所以不能再 SELECT 它们来「断言为 NULL」——
+	// 那样这条不变式只是碰巧成立（列没了），一旦有人把列加回来就静默失效。
+	// 这里把不变式本身显式钉住：两列必须**不存在**于主表。
+	var bodyColsOnMain int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'request_logs_hot'
+		  AND column_name IN ('request_body', 'response_body')
+	`).Scan(&bodyColsOnMain); err != nil {
+		t.Fatalf("body-column presence check: %v", err)
+	}
+	if bodyColsOnMain != 0 {
+		t.Fatalf("request_logs_hot 上有 %d 个完整 body 列（request_body/response_body）—— "+
+			"bodies 面拆分被回退了；完整正文必须留在 request_logs_bodies_hot", bodyColsOnMain)
+	}
+
+	// 主表在拆分后承载的是**截断 preview**，不是完整正文。entry 里的
+	// RequestPreview/ResponsePreview 哨兵值与完整 body 不同，所以这里能真正
+	// 分辨「写进去的是 preview」而不是「body 被顺手搬回了主表」。
 	var (
-		gotUpstream     *string
-		gotRequestBody  *string
-		gotResponseBody *string
+		gotUpstream        *string
+		gotRequestPreview  *string
+		gotResponsePreview *string
 	)
 	err = pool.QueryRow(ctx, `
-		SELECT upstream_finish_reason, request_body::text, response_body::text
+		SELECT upstream_finish_reason, request_preview, response_preview
 		FROM request_logs_hot
 		WHERE request_id = $1
-	`, entry.RequestID).Scan(&gotUpstream, &gotRequestBody, &gotResponseBody)
+	`, entry.RequestID).Scan(&gotUpstream, &gotRequestPreview, &gotResponsePreview)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -172,8 +215,22 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	if *gotUpstream != "stop" {
 		t.Fatalf("upstream_finish_reason = %q, want \"stop\"", *gotUpstream)
 	}
-	if gotRequestBody != nil || gotResponseBody != nil {
-		t.Fatal("request_logs_hot must not retain complete request or response bodies")
+	// ⚠ 失败信息必须打**值**。直接 `%v` 一个 *string 只会印出指针地址
+	// （实测：`request_preview = 0x62fddf94b980`），对下一个人零信息量 ——
+	// 而「信息量为零的失败信息」等于让人重新查一遍。
+	deref := func(p *string) string {
+		if p == nil {
+			return "<nil>"
+		}
+		return *p
+	}
+	if gotRequestPreview == nil || *gotRequestPreview != "hello" {
+		t.Fatalf("request_preview = %q, want %q（主表只应承载截断 preview）",
+			deref(gotRequestPreview), "hello")
+	}
+	if gotResponsePreview == nil || *gotResponsePreview != "world" {
+		t.Fatalf("response_preview = %q, want %q（主表只应承载截断 preview）",
+			deref(gotResponsePreview), "world")
 	}
 
 	var gotBodies struct {
@@ -188,8 +245,8 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify bodies: %v", err)
 	}
-	require.JSONEq(t, *entry.RequestBody, gotBodies.RequestBody)
-	require.JSONEq(t, *entry.ResponseBody, gotBodies.ResponseBody)
+	require.JSONEq(t, wantRequestBody, gotBodies.RequestBody)
+	require.JSONEq(t, wantResponseBody, gotBodies.ResponseBody)
 
 	var joinedRequestBody string
 	err = pool.QueryRow(ctx, `
@@ -202,7 +259,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify metadata/body join: %v", err)
 	}
-	require.JSONEq(t, *entry.RequestBody, joinedRequestBody)
+	require.JSONEq(t, wantRequestBody, joinedRequestBody)
 
 	updatedRequestBody := `{"messages":[{"role":"user","content":"updated"}]}`
 	updatedResponseBody := `{"choices":[{"message":{"content":"updated"}}]}`

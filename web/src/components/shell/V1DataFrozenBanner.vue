@@ -97,17 +97,26 @@ function onDismissRefresh() {
   align-items: flex-start;
   gap: 12px;
   padding: 10px clamp(16px, 3vw, 32px);
-  background: var(--kx-warning-surface, #fff8e1);
-  border-bottom: 1px solid var(--kx-warning-border, #f0c36d);
-  color: var(--kx-text, var(--text));
+  /* D21：此处原为 var(--kx-warning-surface, #fff8e1) / (--kx-warning-border, #f0c36d)。
+     这两个令牌全仓从未定义过 ⇒ 兜底字面值在**两个主题下都生效**，于是暗色主题拿到
+     浅奶油底 #fff8e1 去配浅字 --kx-text #e8eef7，实测对比度 1.10:1
+     （失败态 #fdecea 更低，1.02:1；WCAG AA 普通文本要 4.5:1）——横幅等于隐形，
+     而它承载的正是「这些数字不可信」这句话。
+
+     改用仓内既有的 alert 约定（底 --*-bg / 边 --*-bd / 字 --kx-text，
+     见 TenantDetailView .alert-danger、TaskProfileView），两主题自动适配，
+     也不再需要字面兜底：dark 升到 13.09:1，light 由 15.37 微降到 14.29，均为 AA。 */
+  background: var(--warning-bg);
+  border-bottom: 1px solid var(--warning-bd);
+  color: var(--kx-text);
   width: 100%;
 }
 
 /* 取失败态用更强的色：它比「已停更」更不可信 ——
    连「是不是停更」都不知道时，页面上的每个数字都该被怀疑。 */
 .v1-frozen-banner--failed {
-  background: var(--kx-danger-surface, #fdecea);
-  border-bottom-color: var(--kx-danger-border, #e57373);
+  background: var(--danger-bg);
+  border-bottom-color: var(--danger-bd);
 }
 
 .v1-frozen-banner__body { flex: 1 1 auto; min-width: 0; }

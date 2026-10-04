@@ -66,6 +66,25 @@ BEGIN;
 -- ---------------------------------------------------------------------------
 -- (b) models_canonical：标注出处
 -- ---------------------------------------------------------------------------
+-- 前置自愈（2026-10-04）：下面 model_modality_verification.canonical_id 的
+-- REFERENCES models_canonical(id) 要求 id 上有唯一约束，但 01-schema 的
+-- SSOT 从未给 models_canonical 声明主键（只有 canonical_name 唯一键）——
+-- 按 SSOT 全新安装的库（本地 pg17 实测、以及任何 fresh install）在本迁移
+-- 的 FK 处 42830。id 为 bigint NOT NULL + 序列默认、无空无重（实测 960 行
+-- 0/0），补主键安全且与 provider_models.canonical_id 的"FK to
+-- models_canonical.id"注释语义一致。幂等：已存在 pkey 时 DO 块短路。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'public.models_canonical'::regclass
+           AND conname = 'models_canonical_pkey'
+    ) THEN
+        ALTER TABLE public.models_canonical
+            ADD CONSTRAINT models_canonical_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
+
 ALTER TABLE public.models_canonical
     ADD COLUMN IF NOT EXISTS modality_source text,
     ADD COLUMN IF NOT EXISTS modality_verified_at timestamptz,

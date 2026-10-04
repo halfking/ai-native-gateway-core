@@ -361,7 +361,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
-@media (max-width: 900px) { .udd-grid2 { grid-template-columns: 1fr; } }
+@media (max-width: 768px) { .udd-grid2 { grid-template-columns: 1fr; } }
 .udd-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .udd-table th {
   text-align: left;

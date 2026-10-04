@@ -605,7 +605,7 @@ export default { name: 'UsageTrendExplorer' }
 :deep(.ute__others-row) {
   color: var(--text-muted);
 }
-@media (max-width: 900px) {
+@media (max-width: 768px) {
   .ute {
     padding: 12px;
     overflow: auto;

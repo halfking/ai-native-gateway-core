@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -59,13 +60,141 @@ import (
 // into the exposure set. Comments are stripped here, and SQL inside Go string
 // literals is read via the AST rather than scraped from raw lines.
 
-// v1TableRe matches a reference to any relation in the v1 request_logs family.
-var v1TableRe = regexp.MustCompile(`\b(request_logs|request_logs_hot|request_logs_bodies|request_logs_bodies_hot)\b`)
+// v1TableRe / v1AliasRe 现在由 **§9.172 的同一份 SSOT** 推导（审计 §9.199，D29-a）。
+//
+// # 原来错在哪
+//
+// 两者都只写死了 **4 张裸表**。`request_logs_with_current_month`（710 视图）
+// 及其包装视图**不在名单里** ⇒ `extractV1ReadingLiterals` 的入口过滤就不通过
+// ⇒ 只经由视图读 v1 的文件**一个字面量都产不出来**，
+// 在 `TestRequestLogsRetirementExposure` 的报告里落进 **「clean」** 桶、
+// 且 `literals=0` —— 那不是「查过了没问题」，是**「从来没被看过」**。
+// 实测盲区 **63 个文件**。
+//
+// # 为什么从 SSOT 取，而不是再抄一份
+//
+// 名单已有两个来源：`v1BaseTableNames`（5 张底表）与 `viewChainNames(t)`
+// （4 个视图链成员，推导自视图 schema + 前向迁移重放）。
+// 视图链是**推导**出来的，会随部署漂移；再手抄第三份，
+// 就是「两份工具各写一份分类 ⇒ 迟早分叉」那条教训的重演。
+//
+// # 与 §9.172 的关系
+//
+// `request_logs_reader_population_test.go` 的 `v1BaseTableRe`（要求 `FROM `）
+// 与 `viewRelationRe` 断言**两族互斥且覆盖 9 个关系名**——那份分区仍然有效。
+// 本文件要的是**并集**（一份字面量只要碰到族里任一关系名就算 v1 读），
+// 所以这里把两族的来源合起来构一个 alternation，而不是改 §9.172 的分区。
+var (
+	v1TableRe     *regexp.Regexp
+	v1AliasRe     *regexp.Regexp
+	v1ViewChainRe *regexp.Regexp
+
+	v1RelationUniverseOnce sync.Once
+	v1RelationUniverse     []string
+)
+
+// v1RelationNames 返回 v1 族的全部关系名：5 张底表 + 视图链。
+// **不另抄名单**——第三个真相源会让自己漂移。
+func v1RelationNames(t *testing.T) []string {
+	t.Helper()
+	v1RelationUniverseOnce.Do(func() {
+		seen := map[string]bool{}
+		var out []string
+		for _, n := range append(append([]string{}, v1BaseTableNames...), viewChainNames(t)...) {
+			n = strings.ToLower(n)
+			if n == "" || seen[n] {
+				continue
+			}
+			seen[n] = true
+			out = append(out, n)
+		}
+		sort.Strings(out)
+		// 地板断言：推导为空或明显偏小 ⇒ 上游推导坏了，不是「族里就这么点」。
+		// 本项目已经栽过同族错误（§9.197.3：只收分区名导致假零）。
+		if len(out) < 9 {
+			t.Fatalf("v1 关系名全集只推导出 %d 个（期望 ≥9）：%v —— "+
+				"这不是「族里就这么点」，是上游推导坏了", len(out), out)
+		}
+		v1RelationUniverse = out
+	})
+	if len(v1RelationUniverse) == 0 {
+		t.Fatal("v1 关系名全集为空 —— 上面的地板断言没生效？")
+	}
+	return v1RelationUniverse
+}
+
+// ensureV1RelationMatchers 重建两个包级匹配器。
+//
+// 在**入口**（extractV1ReadingLiterals）里调用，而不是在每个测试里，
+// 这样「忘了初始化」这件事不可能发生——入口是唯一的必经之路。
+// 没有 t.Parallel 的测试依赖：这里的 once + 包级写是安全的。
+func ensureV1RelationMatchers(t *testing.T) {
+	t.Helper()
+	names := v1RelationNames(t)
+	alt := make([]string, len(names))
+	for i, n := range names {
+		alt[i] = regexp.QuoteMeta(n)
+	}
+	// ⚠ **最长在前**：Go 的 alternation 是 leftmost-first，**不是** longest-match。
+	// 写成 (request_logs|request_logs_hot|…) 时，它会先匹配前缀 `request_logs`，
+	// 后面的可选别名组因为下一个字符是 `_` 而匹配不上 ⇒ **别名被丢掉**。
+	// 那不是降级测量，是**完全没有测量**（§9.165 的教训，已写在该文件 v1AliasRe 注释里）。
+	sort.Slice(alt, func(i, j int) bool { return len(alt[i]) > len(alt[j]) })
+	joined := strings.Join(alt, "|")
+	// 视图链单独一个匹配器：判断「经视图读」还是「直读底表」需要它。
+	// ⚠ 不能用 `v1TableRe` 减法得到——交替的捕获组拿不到「命中了哪一支」，
+	// 而这恰恰是要判的量。
+	chain := viewChainNames(t)
+	chainAlt := make([]string, len(chain))
+	for i, n := range chain {
+		chainAlt[i] = regexp.QuoteMeta(strings.ToLower(n))
+	}
+	sort.Slice(chainAlt, func(i, j int) bool { return len(chainAlt[i]) > len(chainAlt[j]) })
+	if len(chainAlt) == 0 {
+		t.Fatal("视图链推导为空 —— 「经视图读」这一支会恒为 false，" +
+			"于是全部被算成直读底表（§9.197.3 的假零同族）")
+	}
+	v1ViewChainRe = regexp.MustCompile(`(?i)\b(` + strings.Join(chainAlt, "|") + `)\b`)
+
+	v1TableRe = regexp.MustCompile(`(?i)\b(` + joined + `)\b`)
+	v1AliasRe = regexp.MustCompile(`(?i)\b(?:from|join)\s+(` + joined + `)\b(?:\s+(\w+))?`)
+}
 
 // sessionFamilyRe matches a reference to the session family or the canonical
 // view. Its presence in the same literal is what makes a column attribution
 // ambiguous, and its absence is what makes it definite.
-var sessionFamilyRe = regexp.MustCompile(`\b(session_turns|request_logs_with_current_month|session_bodies)\b`)
+// 原先只写死 3 个名字，其中视图只认 `request_logs_with_current_month` **整词**。
+// 而视图链里还有包装视图 `request_logs_with_current_month_without_customer_id`
+// 之类：`\b` 在 `month` 之后遇到 `_` 不成立 ⇒ 认不出。
+// 后果实测到了：`admin/auto_route.go` 因此被算成 **definite**（= 只可能来自 v1），
+// 而它其实读的是包装视图——**已 repoint 的读方被当成未 repoint 的**。
+// §9.172 的 `viewRelationRe` 早就带上了 `_without_[a-z_]+`，这里是同一处缺陷的另一个副本。
+// ⇒ 与 v1TableRe 一样，从**同一份 SSOT**（viewChainNames）推导。
+var (
+	sessionFamilyRe         *regexp.Regexp
+	sessionFamilyReUniverse = []string{"session_turns", "session_bodies", "sessions"}
+)
+
+func ensureSessionFamilyMatcher(t *testing.T) {
+	t.Helper()
+	names := append(append([]string{}, sessionFamilyReUniverse...), viewChainNames(t)...)
+	seen := map[string]bool{}
+	var out []string
+	for _, n := range names {
+		n = strings.ToLower(n)
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, regexp.QuoteMeta(n))
+	}
+	if len(out) < 5 {
+		t.Fatalf("session 族名只推导出 %d 个（期望 ≥5）：%v", len(out), out)
+	}
+	// 最长在前：leftmost-first，不是 longest-match（见 v1AliasRe 的注释）
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	sessionFamilyRe = regexp.MustCompile(`(?i)\b(` + strings.Join(out, "|") + `)\b`)
+}
 
 // sqlLineCommentRe / sqlBlockCommentRe strip SQL comments from a literal so that
 // prose inside a query string cannot contribute column names.
@@ -82,6 +211,18 @@ type v1ReadingLiteral struct {
 	// session family or the canonical view. When true, a column name in this
 	// literal cannot be attributed to v1 alone.
 	alsoSessionFamily bool
+	// viaBaseTable / viaCanonicalView record **how** the literal reaches v1
+	// (审计 §9.199）。
+	//
+	// 在 D29-a 之前这两者**不可区分**：视图不在族名里，经视图读的���件一个字面量都
+	// 产不出来，所以「从未被分析」与「已 repoint 完」长得一模一样。
+	// 关系宇宙一放宽，两者混进同一个桶，暴露出一个真实的分类缺陷：
+	// **已经走视图的读方不是 breaker**。它的依赖在「视图的 v1 臂」上，
+	// 那属于**切换时的迁移问题**（DROP request_logs 时视图要改成 session-only），
+	// 不是「这个文件必须在 DROP 之前改掉」。把它写进 retirementBreakers 会留下一条
+	// 「reads request_logs.work_type directly」这种**不属实**的登记。
+	viaBaseTable     bool
+	viaCanonicalView bool
 	// columns are the exposure-class columns named in this literal, with each
 	// column carrying the strongest attribution the literal supports:
 	//
@@ -188,8 +329,46 @@ func contractColumnMatchers(exposure map[string]*regexp.Regexp) map[string]*rege
 // extractV1ReadingLiterals returns every SQL string literal in a Go file that
 // references the v1 family, together with the exposure classes of the canonical
 // columns it names.
+// extractV1ReadingLiterals 是**默认口径**：别名表按单个字面量建立。
+// 保持它作为薄封装，是为了让「翻默认值」成为一步操作（决策表 D29-a），
+// 而不是一次全量改写——后者会让「哪些数字变了」这件事无法核对。
 func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 	t.Helper()
+	return extractV1ReadingLiteralsScoped(t, path, false)
+}
+
+// extractV1ReadingLiteralsScoped 是参数化版本（2026-10-04，审计 §9.195）。
+//
+// # fileScope=false（**默认，与改动前逐字等价**）
+//
+// 别名表按**单个字面量**建立。这是已发布口径（§9.161/§9.162）。
+//
+// # fileScope=true（D29-a 的候选口径）
+//
+// 别名表按**整个文件**建立：先扫该文件全部 SQL 字面量，把 `v1al` / `allAl`
+// 取**并集**，再逐字面量做 `columnAttribution`。
+//
+// 它针对的失效形状（审计 §9.193.2）：`admin/logs.go` 的主日志查询由三段常量
+// 拼接，含列名的投影段（`requestLogsListCols`）**自己不带 FROM** ⇒ 默认口径下
+// 别名表为空 ⇒ 该列**从未被归因**。
+//
+// # 为什么默认口径没有被改掉
+//
+// 改默认值 = 改 §9.161/§9.162 已公布的数字 ⇒ 属主决定（D29-a）。
+// 但「翻默认值」必须**一步可做、且结果可核对**，否则这个决定会被推迟成
+// 「以后有时间再说」。参数化让两个口径同时可测，差值由
+// `retirement_exposure_attribution_gap_probe_test.go` 直接给出。
+//
+// # ⚠ 修法**不是**「把文件内字面量合并成一段文本」
+//
+// 合并会造出**假语句**：真实查询的 `;` 不在字面量里，于是按 `;` 切出的
+// 「语句」里，读区的终止条件会跨字面量吞到末尾。
+// 那是本轮实测打掉过的判据（审计 §9.193.3 的 v4）。
+func extractV1ReadingLiteralsScoped(t *testing.T, path string, fileScope bool) []v1ReadingLiteral {
+	t.Helper()
+	// 匹配器必须在**入口**建好（见 ensureV1RelationMatchers 的注释）。
+	ensureV1RelationMatchers(t)
+	ensureSessionFamilyMatcher(t)
 	src, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -208,6 +387,30 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 	// `is_final_success_v2` does not. Built once for the whole run.
 	exposureMatchers := exposureColumnMatchers()
 	contractMatchers := contractColumnMatchers(exposureMatchers)
+
+	// fileScope 预扫：把整个文件的别名与关系数先并起来。
+	var fileV1al, fileAllAl map[string]bool
+	fileRelCount := 0
+	if fileScope {
+		fileV1al, fileAllAl = map[string]bool{}, map[string]bool{}
+		for _, raw := range goStringLiterals(t, path) {
+			if !v1TableRe.MatchString(raw) {
+				continue
+			}
+			clean := sqlBlockCommentRe.ReplaceAllString(raw, " ")
+			clean = sqlLineCommentRe.ReplaceAllString(clean, " ")
+			v1al, allAl := aliasesIn(clean)
+			for k := range v1al {
+				fileV1al[k] = true
+			}
+			for k := range allAl {
+				fileAllAl[k] = true
+			}
+			if n := countRelations(clean); n > fileRelCount {
+				fileRelCount = n
+			}
+		}
+	}
 
 	var out []v1ReadingLiteral
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -230,11 +433,26 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 		l := v1ReadingLiteral{
 			text:              clean,
 			alsoSessionFamily: sessionFamilyRe.MatchString(clean),
+			viaBaseTable:      v1BaseTableRe.MatchString(clean),
+			viaCanonicalView:  v1ViewChainRe.MatchString(clean),
 			columns:           map[string]string{},
 			allColumns:        map[string]string{},
 		}
 		v1al, allAl := aliasesIn(clean)
 		relCount := countRelations(clean)
+		if fileScope {
+			// 并集覆盖本段自己的解析结果：文件级作用域是**更宽**的，
+			// 只会让归因变多、不会变少（与 D29-a 的方向一致）。
+			for k := range fileV1al {
+				v1al[k] = true
+			}
+			for k := range fileAllAl {
+				allAl[k] = true
+			}
+			if fileRelCount > relCount {
+				relCount = fileRelCount
+			}
+		}
 		// The contract pass runs first and the exposure pass filters it down, so
 		// the two can never drift apart.
 		for col := range contractMatchers {
@@ -446,29 +664,85 @@ var retirementReattributed = map[string]string{
 //   - a registered file the measurement no longer calls broken → somebody fixed
 //     it and left the entry, so every future reviewer re-investigates a solved
 //     problem.
-func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
-	root := repoRootFromCaller(t)
-
-	measured := map[string]string{} // file -> severity
+func measureV1ReadingExposure(t *testing.T, root string) (measured, viewArm map[string]string) {
+	t.Helper()
+	measured = map[string]string{} // file -> severity（**仅限直读 v1 底表**的读方）
+	viewArm = map[string]string{}  // file -> severity（经 canonical 视图读 v1 臂的读方）
 	for f := range requestLogsReadInventory {
-		fe := fileExposure{
-			file:     f,
-			definite: map[string][]string{},
-			possible: map[string][]string{},
+		// ⚠ 总体必须按「怎么读到的」分开（审计 §9.199）。
+		// 关系宇宙放宽前，经视图读的文件一个字面量都产不出来，
+		// 于是「已 repoint 的读方」和「从未被分析的文件」混在同一个 clean 桶里。
+		// 放宽之后它们混进 breaks 桶——而它们**不是 breaker**：
+		// 直读底表的读方必须在 DROP 之前改；经视图读的读方是
+		// **切换时的迁移问题**（视图要改成 session-only）。
+		// 把两者塞进同一张登记表，会写出「reads request_logs.work_type directly」
+		// 这种**不属实**的条目——比缺一条登记更糟，因为它会误导下一个复核的人。
+		// 逐字面量分投，**两个桶都算**，不是二选一。
+		//
+		// ⚠ 曾经写成「文件只要碰到一个底表字面量，就整篇按底表读方算」——
+		// 那会让**混合读方**（既读视图又直读底表）从视图桶里消失，
+		// 同时它的视图侧暴露在底表桶里被丢掉。实测抓到的例子是
+		// `domains/sessionforensics/export.go`：报告说它 breaks-possibly，
+		// 两个桶里却都找不到它。二选一在这里就是一个**静默的洞**。
+		//
+		// 混合读方在退役时确实有**两份**互不相干的依赖，所以两个桶都该收它。
+		//
+		// ⚠ 谓词必须**各写各的**。第一版在 measured 分支上多加了 `inView` 条件，
+		// 于是「只读底表、不碰视图」的字面量被整段跳过 ⇒ 5 个已登记 breaker
+		// 一夜之间变成 stale。方向是**少报**，而少报在这个门上表现为
+		// 「有人修好了、该销账了」——一个看起来无害、实则错误的红。
+		inBaseBucket := func(l v1ReadingLiteral) bool { return l.viaBaseTable }
+		inViewBucket := func(l v1ReadingLiteral) bool { return l.viaCanonicalView || !l.viaBaseTable }
+
+		lits := extractV1ReadingLiterals(t, filepath.Join(root, f))
+		type bucketDef struct {
+			target *map[string]string
+			in     func(v1ReadingLiteral) bool
 		}
-		for _, l := range extractV1ReadingLiterals(t, filepath.Join(root, f)) {
-			bucket := fe.possible
-			if !l.alsoSessionFamily {
-				bucket = fe.definite
-			}
-			for col, class := range l.columns {
-				bucket[class] = append(bucket[class], col)
+		defs := []bucketDef{{&measured, inBaseBucket}, {&viewArm, inViewBucket}}
+		feFor := map[*map[string]string]*fileExposure{}
+		for _, def := range defs {
+			for _, l := range lits {
+				if def.in(l) {
+					feFor[def.target] = &fileExposure{
+						file: f, definite: map[string][]string{}, possible: map[string][]string{},
+					}
+					break
+				}
 			}
 		}
-		if sev := fe.severity(); sev == "breaks" || sev == "breaks-possibly" {
-			measured[f] = sev
+		// 累计：上面只建了桶，列还没进。分两段写是为了让「建桶」与「累计」
+		// 各自一眼可读——合并过一次，结果把过滤条件写错了。
+		for _, def := range defs {
+			feAcc, ok := feFor[def.target]
+			if !ok {
+				continue
+			}
+			feAcc.definite = map[string][]string{}
+			feAcc.possible = map[string][]string{}
+			for _, l := range lits {
+				if !def.in(l) {
+					continue
+				}
+				bucket := feAcc.possible
+				if !l.alsoSessionFamily {
+					bucket = feAcc.definite
+				}
+				for col, class := range l.columns {
+					bucket[class] = append(bucket[class], col)
+				}
+			}
+			if sev := feAcc.severity(); sev == "breaks" || sev == "breaks-possibly" {
+				(*def.target)[f] = sev
+			}
 		}
 	}
+	return measured, viewArm
+}
+
+func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
+	root := repoRootFromCaller(t)
+	measured, viewArm := measureV1ReadingExposure(t, root)
 
 	var unregistered, stale []string
 	for f := range measured {
@@ -485,9 +759,28 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 	sort.Strings(stale)
 
 	if len(unregistered) > 0 {
-		t.Errorf("%d file(s) now read a column the session family cannot serve but are absent "+
-			"from retirementBreakers — request_logs cannot be dropped while this is true:\n  %s",
-			len(unregistered), strings.Join(unregistered, "\n  "))
+		t.Errorf("%d file(s) 直读 v1 底表、且读了会话族供不上的列，但不在 retirementBreakers 里 —— "+
+			"在这些文件改掉之前 request_logs 不能删：\n  %s", len(unregistered), strings.Join(unregistered, "\n  "))
+	}
+
+	// 经视图读的读方**不进** retirementBreakers（理由见上面那段注释），
+	// 但它们**必须被看见**：它们依赖的是视图的 v1 臂，而那正是 DROP 时要拆的东西。
+	// 不指名 ⇒ 等于把它们从视线里删掉，而「没人提」和「没问题」长得一样。
+	if len(viewArm) > 0 {
+		var names []string
+		for f := range viewArm {
+			names = append(names, f+" ("+viewArm[f]+")")
+		}
+		sort.Strings(names)
+		t.Logf("=== 经 canonical 视图读 v1 臂、且读了会话族供不上的列：%d 个（不进 retirementBreakers） ===",
+			len(viewArm))
+		for _, n := range names {
+			t.Logf("  %s", n)
+		}
+		t.Logf("这一组不是「DUMP 之前必须改掉的文件」，而是**切换时的迁移清单**：\n" +
+			"DROP request_logs 时 request_logs_with_current_month 的 v1 臂消失，\n" +
+			"这些文件会拿到空结果（典型是 work_type，session 臂上 0%%）。\n" +
+			"处置属属主决定（决策表新增 D29-d），本门只负责让它**可见**。")
 	}
 	if len(stale) > 0 {
 		t.Errorf("%d registered retirementBreaker(s) are no longer detected as breaking — if "+
@@ -690,7 +983,7 @@ func countsBySeverity(exposures []fileExposure) map[string]int {
 // the `id` false positives and, in the same stroke, removed every real
 // dependency of every hot-table reader. A correction that fixes one false
 // positive while creating a silent false negative is worse than the bug.
-var v1AliasRe = regexp.MustCompile(`(?i)\b(?:from|join)\s+(request_logs_bodies_hot|request_logs_bodies|request_logs_hot|request_logs)\b(?:\s+(\w+))?`)
+// v1AliasRe 的构建见本文件上方 `ensureV1RelationMatchers`（审计 §9.199）。
 
 // relationRe counts distinct relations named in FROM/JOIN, so a literal that
 // reads exactly one relation can be attributed with certainty.

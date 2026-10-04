@@ -212,6 +212,8 @@ export default {
     recentDaysSub: "近 {n} 天",
     statAvailableSub: "訂閱 {a} · 信用 {b} · 儲值 {c}",
     myAccountLink: "我的帳號",
+    degradedFallback: "資料檢視 {view} 尚未初始化，請先執行資料彙整遷移",
+    degradedViewLabel: "檢視：{view}",
     chartModelTitle: "模型請求排行",
     chartModelHint: "點擊柱子查看明細",
     chartModelEmpty: "暫無模型請求資料",

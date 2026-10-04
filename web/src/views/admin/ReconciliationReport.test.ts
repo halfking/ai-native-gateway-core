@@ -194,10 +194,20 @@ describe('ReconciliationReport', () => {
     const wrapper = await mountView()
     const callsBefore = getReportSummaryMock.mock.calls.length
     routeState.query = { view: 'provider' }
-    await flushPromises()
+    // ★ 触发异步链（watcher → 取数 → 重渲染）之后，**单次 `flushPromises()`
+    //   不足以保证链路走完**：隔离 6/6 绿、全量跑偶发红（本仓实测 2026-10-05）。
+    //   改成有界轮询，断言一条不动。
+    for (let i = 0; i < 5 && getReportSummaryMock.mock.calls.length <= callsBefore; i++) {
+      await flushPromises()
+    }
     const last = getReportSummaryMock.mock.calls.at(-1)?.[0] as { provider_id?: number }
     expect(getReportSummaryMock.mock.calls.length).toBeGreaterThan(callsBefore)
     expect(last.provider_id).toBeUndefined()
+    // ★ 渲染落地单独等：取数完成 ≠ DOM 已更新（Vue 的渲染在 nextTick 排空）。
+    //   这里**不编一个「新内容」当等待条件** —— 编出来的条件要么永远不成立
+    //   （白等 5 轮），要么一开始就不成立（一次都不等），两种都是假等待。
+    //   所以取数条件轮询到之后，再固定补几轮让它渲染。
+    for (let i = 0; i < 3; i++) await flushPromises()
     expect(wrapper.get('[data-testid="primary-dist"]').text()).toContain('prov-alpha')
   })
 

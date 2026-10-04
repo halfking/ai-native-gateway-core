@@ -19,6 +19,11 @@ import { refreshV1DataHorizon } from './composables/useV1DataHorizon'
 // 2026-09-13 方案 §4.4：移动端抽屉导航，与 AppTopbar 汉堡按钮共享开关状态
 import AppNavDrawer from './components/ui/AppNavDrawer.vue'
 import { useBreakpoint } from './composables/useBreakpoint'
+// 2026-10-04 Hyper 移动端（docs/UI规范/00 §5.2 · H2）：compact 档的底栏与账户面板。
+import AppBottomNav from './components/shell/AppBottomNav.vue'
+import AppAccountSheet from './components/shell/AppAccountSheet.vue'
+import { useWindowClass, getWindowClass } from './composables/useWindowClass'
+import { installHyper, navigation, type NavigationScope } from './lib/shell/hyper'
 import { navDrawerOpen } from './composables/useAppNav'
 import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
@@ -29,6 +34,9 @@ import { loadCredentialLabels, clearCredentialLabels } from './composables/useCr
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const { isCompact } = useWindowClass()
+const accountSheetOpen = ref(false)
+const shellHealth = ref<'ok' | 'down' | 'unknown'>('unknown')
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
 const showChangePassword = ref(false)
 const showUserInfo = ref(false)
@@ -47,6 +55,36 @@ const logoObserver = typeof MutationObserver !== 'undefined'
 let stopMaintainAvailabilityWatch: (() => void) | null = null
 
 onMounted(async () => {
+  // Hyper 运行时装配（docs/UI规范/00 §5.2）。
+  //
+  // hyperActive 只在「壳内或 compact」为真：**桌面必须传 false** ——
+  // 桌面走浏览器原生历史与现状顶栏，Hyper 的 entry 链与 Esc 仲裁都不该介入，
+  // 那是桌面零回归红线（installHyper 内部据此不挂路由适配器与持久化）。
+  //
+  // scope 用于导航历史隔离：换账号/换服务端会清空历史，避免看到上一个人的
+  // 标题与筛选。此处暂用稳定的部署标识占位，接入真实 serverId 是 H6 的事。
+  const scope: NavigationScope = {
+    serverId: window.location.origin,
+    accountId: String(store.userInfo?.id ?? 'anonymous'),
+  }
+  const install = () =>
+    installHyper(router, {
+      scope,
+      // 每次按当前档重算：窗口从桌面缩到 compact（分屏 / 折叠展开 / 旋转）时
+      // 要能补上 Hyper。installHyper 内部的 routerHookInstalled 守卫保证
+      // 重复调用不会重复注册路由钩子。
+      hyperActive: isCompact.value,
+      getWindowClass: () => getWindowClass(),
+      translate: (key) => t(key),
+    }).catch(() => {
+      // Hyper 是增强层，装配失败不得让控制台打不开
+    })
+  void install()
+  // 已知限制（本轮不实现）：compact → 桌面时**不拆卸**路由适配器，
+  // 只停止新的 Hyper 行为。拆卸需要重放/合并 entry 链，收益低于风险。
+  // 影响仅是桌面下仍会记录导航条目（sessionStorage），不改变任何可见行为。
+  watch(isCompact, () => { void install() })
+
   // 拉一次「v1 数据地平线」告示。失败**不**阻塞挂载：横幅自己会显示
   // 「无法确认状态」而不是消失 —— 未确认不等于正常。
   void refreshV1DataHorizon()
@@ -234,6 +272,29 @@ async function handleChangePasswordSuccess() {
     </main>
     <!-- 移动导航抽屉挂载点（Teleport 到 body；遮罩 z-index 对齐既有弹层约定） -->
     <AppNavDrawer />
+
+    <!--
+      Hyper compact 壳（docs/UI规范/02 §3–§5）。
+      AppBottomNav 内部 v-if="isCompact"，medium 及以上不渲染 —— 桌面 DOM 零变化。
+      它的「更多」复用既有 navDrawerOpen，与 AppTopbar 汉堡同语义。
+    -->
+    <AppBottomNav
+      @navigate="(item) => router.push(item.path)"
+      @more="navDrawerOpen = true"
+    />
+
+    <!--
+      账户面板：compact 上的系统设置唯一入口。
+      桌面不渲染它 —— 桌面继续用 AppTopbar 的专业下拉（规范 02 §5 末句）。
+    -->
+    <AppAccountSheet
+      v-if="isCompact"
+      v-model="accountSheetOpen"
+      :health="shellHealth"
+      @logout="logout"
+      @help="router.push('/examples')"
+      @open-admin="router.push('/admin/users')"
+    />
   </div>
   <div v-else class="guest-layout">
     <header class="guest-header">
