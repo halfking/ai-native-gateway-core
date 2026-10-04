@@ -8364,3 +8364,120 @@ D21-a / D21-b / **D19-d（252 只读授权，优先级已显著上升）** / D20
 **D24-d-3**（按清单申请 252 只读验证——我的建议：是）/
 **D24**（建议冻结 D24-a 与 D24-b'）+ D24-c / D19-a-3-1 / D19-a-3-2 / D23-c-1 / D23-c-3 /
 D21-a / D21-b / D19-b / D20-a / D20-c。
+
+---
+
+## §70.38 §9.183：两面门上有一个**以错误理由排除**的目录，里面藏着真的漏读
+
+### ① 结论
+
+初筛「只读 `session_turns` 父表、不带 `_hot`」的 14 个非测试 Go 文件，
+**13 个是假阳性，1 个是真缺陷**。但本轮的价值不在那个缺陷，
+**在于初筛撞出了 `admin/session_family_two_surface_test.go` 的一个洞**：
+
+```go
+var sessionFamilySQLiteDirs = []string{"storage/sqlite", "tests", "installer", "cmd/tools"}
+```
+
+**`cmd/tools` 不是 SQLite 目录。** 该目录引用 `session_turns` 的 6 个非测试文件，
+`sqlite` 出现次数**全为 0**，`pgx` 2/5/5/2/2/0，`public.session*` 1/10/0/5/1/1。
+⇒ **一个完整的 PostgreSQL 目录不在两面门的覆盖内。**
+
+收窄排除（只去掉 `"cmd/tools"`，其余不动）后，门立刻报 4 处，全在
+`cmd/tools/validate_sessions_v2/repair.go`。
+
+### ② 缺陷本体
+
+`ExecuteRepair` 删 bodies 时：
+
+```go
+// Delete bodies
+tag, err = tx.Exec(ctx, `DELETE FROM public.session_bodies WHERE tenant_id=$1 AND session_id=$2`)
+result.DeletedRows["session_bodies"] = int(tag.RowsAffected())   // 单面
+```
+
+而 `session_bodies` **有 `_hot` 孪生面**（`bodies_writer.go:310/368` 写的就是它），
+本机实测该表 **1990 行**。三条证据说明是**疏漏不是设计**：
+
+1. **同一函数内不对称** —— turns 的删除注释「Delete turns from both stores」并把两面
+   `RowsAffected` 相加；bodies 单面。相邻 20 行、同一批兄弟表，两种写法。
+2. **计数与动作用了不同的面** —— `PlanRepair` 的计数走 `LoadV2Bodies`，
+   读的是合并视图 `session_bodies_unified`（两面）⇒ **计划数两面、删一面**，
+   差额静默留下。修完才第一次口径一致。
+3. **紧接的重建只写父表** ⇒ 残留 hot 行 + 新插入父表行，经合并视图读出来是**重复的**。
+
+**命中区间正是修复最常发生的区间**：会话最近一次写入 8h 内，其 bodies 必然还在 hot 面上。
+
+### ③ 一个结构问题：登记不是那道修复的守卫
+
+`sessionFamilyBareParentReaders` 是**按文件**索引的。`repair.go` 因剩余 3 个形状
+（turns 的 DELETE 父表腿，hot 对偶在**紧邻上一条语句**，跨语句配对逐串判看不见；
+两处 INSERT 是**写**方选择直落父表、非漏读）而整文件登记。
+⇒ **§9.183.4 那条 bodies 修复修完之后无人看守**：删掉 hot 腿、计数改回单项，
+`TestNoBareParentSessionFamilyRead` 依然全绿。
+
+⇒ 补 `cmd/tools/validate_sessions_v2/repair_two_surface_test.go`，逐条断两件事：
+两条 DELETE 各自的面覆盖 + 计数是**相加**表达式。**登记项的注释里已写明
+「此处登记不得被当成那道修复的守卫」，并指明守卫在哪个文件。**
+
+### ④ 判据自己踩了三个坑（都是红得没有意义的红，值得单列）
+
+- **坑 1**：`pgx.Exec(ctx, sql, args...)` 的 SQL 在 **args[1]**，我写成 args[0] ⇒
+  一条 SQL 都取不到（取到的全是 `fmt.Errorf` 格式串）。门红了，但红在**判据失效**。
+  **是那条「一条都没取到 ⇒ Fatal」喊出来的**——「观察不到任何东西 ⇒ 无命中」
+  是最危险的一种绿。
+- **坑 2**：SQL 大写后 `HasPrefix` 小写关系名 ⇒ 两个面都报「缺」，
+  **一条完全正确的删除被报成两条缺失**。误报方向是「全红」不是「全绿」，方向安全。
+- **坑 3**：`containsBinaryExpr` 无脑穿透所有 `CallExpr` ⇒ 在
+  `int(tag.RowsAffected())` 上下降进零参 `RowsAffected()` 并 **panic**。
+  也就是说**「删除退回单面」这个恰恰要抓的变异，是崩溃呈现的**——
+  崩溃也是红，但红不出「哪条性质被破坏」，会把人引去修判据而不是修代码。
+  修法：只穿透**类型转换**（`Fun` 是 Ident 且恰一实参）。
+
+### ⑤ 变异与回归
+
+| 变异 | 结果 |
+| --- | --- |
+| M1 删掉 `session_bodies_hot` 那条 DELETE | **红，两条断言各自报出正确红因**，无 panic |
+| M2 删除仍两面、仅计数改回单项（补 `_ =` 保证可编译） | **红，且只有计数那条红** ⇒ 两条断言可区分 |
+
+M2 **第一次尝试是编译失败**（`declared and not used`）——编译失败也是红，
+但门根本没运行，那个红不作数，故重做到可编译才采信。
+
+回归（带真库，`llm_gateway` 库）：
+
+| 状态 | `admin` FAIL | `cmd/tools/...` |
+| --- | --- | --- |
+| 带本轮改动 | **2**：`TestReportRollup_HTTPContract`、`TestProjectTasksSkipsNullTaskID` | 全绿 |
+| `git stash` 后**同环境**基线 | **2**：**逐名相同** | — |
+
+⇒ **零回归**；两条红都是已登记的 D21 环境缺口（迁移 762 未应用 /
+`report_snapshots` 0 行），与本轮无关。
+
+### ⑥ 环境事实（第二次被凭证骗，记下来）
+
+本机测试库角色是 **`llm_gateway`**，密码取
+`envs/common/database.yaml` 的 `COMMON_PG_SUPERUSER_PASS`。
+**不是 `postgres`**，**不是 `kxuser`**（后两者均认证失败）。
+用错角色会得到 **46 条 `password authentication failed`**，
+看着像大面积回归，**其实一条代码都没跑**。
+上一次是连接串漏密码。⇒ **验回归前先确认连接串能连通，再看 FAIL 数。**
+
+### ⑦ 诚实边界
+
+- **本轮没有跑过一次真实的 `ExecuteRepair`。** 守卫是**静态源码判据**，
+  守的是「这段 SQL 被写出来了」，**不是**「运行时删干净了」。
+  端到端断言（同会话 bodies 在两个面上都不重）**没有做**。
+- **爆炸半径未量**：§9.182 测得父表 `source_kind` 的 `backfill` = **0**，
+  提示本工具在本机可能从未运行过 ⇒ **缺陷是真的，本机无受害数据**；
+  生产是否跑过、跑过多少次，**未验证**。
+- `cmd/tools` 其余文件本轮只做了「是否 PG」的分类，**未逐条审 SQL 语义**。
+  收窄后门绿 ⇒ 门看得见的形状都合法；**看不见的形状（拼装、裸名、跨语句配对）
+  仍在盲区**，其中跨语句配对已知 1 处（turns 的 hot 对偶），已具名登记。
+- **本轮未连接生产。** 全部读数来自本地。
+
+### ⑧ 待拍板（沿用，未新增）
+
+**D24-d-3**（按 §9.182.4 清单申请 252 只读验证——建议：是）/
+**D24**（建议冻结 D24-a 与 D24-b'）+ D24-c / D19-a-3-1 / D19-a-3-2 /
+D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c。
