@@ -12,6 +12,9 @@
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import { ref, computed, onMounted } from 'vue'
+import { useWindowClass } from '../composables/useWindowClass'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import type { CardField, CardTone } from '../components/ui/CardList.vue'
 import {
   listFreeDiscoveryTemplates,
   createFreeDiscoveryTemplate,
@@ -32,6 +35,7 @@ import {
 } from '../api'
 
 const { t } = useI18n()
+const { isCompact } = useWindowClass()
 
 type TabId = 'templates' | 'tasks' | 'history'
 const activeTab = ref<TabId>('templates')
@@ -394,6 +398,156 @@ function fmtNum(n: number): string {
   return String(n)
 }
 
+/**
+ * ── H6 第十七条切片（2026-10-06）：5 张原生表接 compact 卡片形态 ──────────────────
+ *
+ * 三 Tab（`templates` / `tasks` / `history`）互斥渲染，5 张表分布：
+ * T1 模板（8 列）、T2 任务（10 列）、T3 扫描结果（8 列，**下钻**，`v-if="selectedTask"`）、
+ * T4 导入历史（8 列）、T5 导入明细（4 列，**下钻 + 自己的 `historyLoading`**）。
+ * 无分页（`pageSize` / `offset` 一次都不出现 —— 全文只有 `cursor: pointer` 的 CSS 命中）⇒ 只改呈现形态。
+ * 两处 `setTimeout` 是 `flash` / `fail` 的**提示自动消失**（6s / 8s），**不是轮询**。
+ *
+ * ## 删掉 5 处 `.table-wrap`（它自带 `overflow-x: auto`）
+ *
+ * 容器已有 `.responsive-data-view__table { overflow-x: auto }`，
+ * 两个横滚容器嵌套 = **双横向滚动条**。`.table-wrap` 在本页只用来包这 5 张表
+ * （实测 5 处出现全部是表包装）⇒ 整类删掉，横滚交给容器。
+ *
+ * ## `table-min-width="0px"`
+ *
+ * `.data-table` 只有 `width: 100%`、**没有 `min-width`**（已查 `<style>`）⇒
+ * 传默认 720px 会给窄内容凭空加一条横向滚动条。**这是「首条真正用上
+ * `table-min-width` 的切片」** —— 前面那些 el-table 切片传它都是空操作（D12）。
+ *
+ * ## 徽章 → tone：**从 CSS 里的实际颜色推出来的，不是从类名猜的**
+ *
+ * 三个 `*Class()` 函数只吐 CSS 类名，不带语义。本表按 `<style>` 里每类的
+ * `color: var(--x)` 反查 tone：
+ * `--success`→good / `--warning`→warn / `--danger`→danger / `--text-secondary`→neutral。
+ * ★ 两个反直觉的：**`st-pending` 是 `--warning`（warn，不是 neutral）** ——
+ * 「待处理」在桌面上本来就是黄底黄字；**`st-running` 是 `--primary`**，
+ * 而 `CardTone` 只有 4 档、没有 primary ⇒ 落 neutral（不猜、不新造一档）。
+ * 表是**按类名**建的、判定仍由 `*Class()` 决定（`badgeTone(tosClass(v))`），
+ * 所以三个类函数仍是唯一真源，这张表只做「类名 → 色调」的翻译。
+ *
+ * ## 五张表的空态：四种归属形态各出现了两次
+ *
+ * T1–T4 是**表内三态**（`<tr v-if="…length === 0"><td colspan="N" class="empty-cell">`），
+ * T5 **根本没有空态行**（`v-for="r in historyDetail || []"` 裸渲染）⇒
+ * 五张表的 `:empty` **一律带 `isCompact` 前置**，否则桌面会把它们自己的空态
+ * 换成 `EmptyState`（那是桌面变更）。槽内那些 `v-if` 空态行**原样留着**。
+ * T5 的空态文案复用本页既有的 `freeDiscovery.common.empty` ⇒ **0 新增 i18n 键**。
+ *
+ * ## 列 → 字段的两处「不是一对一」的处理
+ *
+ * 1. **T1 的 `enabled` 列是 toggle 按钮**（`@click="toggleTemplate(tpl)"`），
+ *    桌面那一列**就是**这个按钮 ⇒ 卡片也不出该字段，改放进 `#actions`（连同扫描/删除共 3 枚）。
+ *    否则卡片上同一句话会出现两次（字段一次、按钮标签一次）。
+ * 2. **T3 的第 1 列是全选 checkbox**，不是数据列 ⇒ 逐行 checkbox 进 `#actions`；
+ *    **表头那枚「全选」在卡片形态没有对应物** —— 但它与下方 `importAllPending`
+ *    按钮（`runImport(false)`，对全部 pending 生效）**功能等价**，
+ *    所以 compact 下不是缺口。**这一条是读码得出的，已写进门禁**（见门禁用例）。
+ *
+ * ## 卡头：5 张表键都用 `id`，脸各不相同
+ *
+ * T2/T4 的首列 `#` 就是 `id` 本身（不是数据列，是行号）⇒ 键取 `id`、脸取 `provider_code`；
+ * T1 的名字格里是「显示名 + 供应商代码」两行 ⇒ 卡头出显示名、`provider_code` 走**卡头副标题**；
+ * T3/T5 脸取 `model_id`。**没有一张表的卡头字段是唯一的** ⇒ 键脸必须分开。
+ *
+ * ## 一处**必须显式 format** 的地方
+ *
+ * `CardList.text()` 只把 `null` / `undefined` 渲染成 `—`，**空串 `''` 会渲染成空白**。
+ * 而桌面这 4 列写的是 `x || '—'`（`api_key_env` / `error_message` /
+ * `display_name` / `free_type`）⇒ 卡片这 4 个字段必须带 `format` 把空串也变成缺值，
+ * 否则「空串」在 compact 下会渲染成**空白**（桌面是 `—`）。
+ * 这与切片十五/十六的「桌面空白 vs 卡片 `—`」是**反方向**的差异，别套用那边的结论。
+ */
+
+/** CSS 类名 → 卡片 tone。按 `<style>` 里每类的 `color: var(--x)` 反查，非按类名猜。 */
+const TONE_BY_BADGE_CLASS: Record<string, CardTone> = {
+  'tos-ok': 'good',
+  'st-success': 'good',
+  'tos-caution': 'warn',
+  'st-warning': 'warn',
+  'st-pending': 'warn',
+  'tos-avoid': 'danger',
+  'st-failed': 'danger',
+  'tos-ambiguous': 'neutral',
+  'st-muted': 'neutral',
+  'st-running': 'neutral',
+}
+
+function badgeTone(cls: string): CardTone {
+  return TONE_BY_BADGE_CLASS[cls] ?? 'neutral'
+}
+
+/** 空串也要变成「无值」—— `CardList.text()` 只认 null/undefined，不认 `''`。 */
+function orDash(v: unknown): string | undefined {
+  return v ? String(v) : undefined
+}
+
+const templateTitle = (row: Record<string, unknown>) => orDash(row.display_name) ?? orDash(row.provider_code)
+const taskTitle = (row: Record<string, unknown>) => orDash(row.provider_code)
+const resultTitle = (row: Record<string, unknown>) => orDash(row.model_id)
+
+/** T1 模板表。8 列 − 卡头(名称) − 操作列(切换/扫描/删除) = 5 个字段。 */
+const templateFields = computed<CardField[]>(() => [
+  { key: 'base_url', label: t('freeDiscovery.tpl.baseUrl') },
+  { key: 'api_type', label: t('freeDiscovery.tpl.apiType') },
+  { key: 'api_key_env', label: t('freeDiscovery.tpl.keyEnv'), format: (v) => orDash(v) },
+  { key: 'tos_verdict', label: t('freeDiscovery.tpl.tos'), type: 'badge', tone: (row) => badgeTone(tosClass(String(row.tos_verdict ?? ''))) },
+  { key: 'created_at', label: t('freeDiscovery.tpl.createdAt'), format: (v) => fmtTime(v == null ? null : String(v)) },
+])
+
+/** T2 任务表。10 列 − `#`(键) − 供应商(卡头) − 操作列 = 7 个字段。 */
+const taskFields = computed<CardField[]>(() => [
+  {
+    key: 'status', label: t('freeDiscovery.task.status'), type: 'badge',
+    format: (v) => t(taskStatusKey(String(v ?? ''))),
+    tone: (row) => badgeTone(taskStatusClass(String(row.status ?? ''))),
+  },
+  { key: 'trigger_type', label: t('freeDiscovery.task.trigger'), format: (v) => t(triggerKey(String(v ?? ''))) },
+  { key: 'models_found', label: t('freeDiscovery.task.found'), type: 'metric', align: 'end', format: (v) => fmtNum(v as number) },
+  { key: 'models_imported', label: t('freeDiscovery.task.imported'), type: 'metric', align: 'end', format: (v) => fmtNum(v as number) },
+  { key: 'triggered_by', label: t('freeDiscovery.task.by') },
+  { key: 'created_at', label: t('freeDiscovery.task.time'), format: (v) => fmtTime(v == null ? null : String(v)) },
+  { key: 'error_message', label: t('freeDiscovery.task.error'), format: (v) => orDash(v) },
+])
+
+/** T3 扫描结果表（下钻）。8 列 − 全选(进 #actions) − 模型(卡头) = 6 个字段。 */
+const resultFields = computed<CardField[]>(() => [
+  { key: 'display_name', label: t('freeDiscovery.res.displayName'), format: (v) => orDash(v) },
+  { key: 'free_type', label: t('freeDiscovery.res.freeType'), format: (v) => orDash(v) },
+  { key: 'monthly_tokens', label: t('freeDiscovery.res.monthly'), type: 'metric', align: 'end', format: (v) => fmtNum(v as number) },
+  { key: 'daily_tokens', label: t('freeDiscovery.res.daily'), type: 'metric', align: 'end', format: (v) => fmtNum(v as number) },
+  { key: 'tos_verdict', label: t('freeDiscovery.res.tos'), type: 'badge', tone: (row) => badgeTone(tosClass(String(row.tos_verdict ?? ''))) },
+  {
+    key: 'import_status', label: t('freeDiscovery.res.importStatus'), type: 'badge',
+    format: (v) => t(importStatusKey(String(v ?? ''))),
+    tone: (row) => badgeTone(importStatusClass(String(row.import_status ?? ''))),
+  },
+])
+
+/** T4 导入历史表。8 列 − `#`(键) − 供应商(卡头) − 操作列 = 5 个字段。 */
+const historyFields = computed<CardField[]>(() => [
+  { key: 'models_imported', label: t('freeDiscovery.task.imported'), type: 'metric', align: 'end', format: (v) => fmtNum(v as number) },
+  { key: 'models_found', label: t('freeDiscovery.task.found'), type: 'metric', align: 'end', format: (v) => fmtNum(v as number) },
+  { key: 'trigger_type', label: t('freeDiscovery.task.trigger'), format: (v) => t(triggerKey(String(v ?? ''))) },
+  { key: 'triggered_by', label: t('freeDiscovery.task.by') },
+  { key: 'completed_at', label: t('freeDiscovery.hist.completed'), format: (v) => fmtTime(v == null ? null : String(v)) },
+])
+
+/** T5 导入明细表（下钻 + 自己的 loading）。4 列 − 模型(卡头) = 3 个字段。 */
+const historyDetailFields = computed<CardField[]>(() => [
+  { key: 'tos_verdict', label: t('freeDiscovery.res.tos'), type: 'badge', tone: (row) => badgeTone(tosClass(String(row.tos_verdict ?? ''))) },
+  {
+    key: 'import_status', label: t('freeDiscovery.res.importStatus'), type: 'badge',
+    format: (v) => t(importStatusKey(String(v ?? ''))),
+    tone: (row) => badgeTone(importStatusClass(String(row.import_status ?? ''))),
+  },
+  { key: 'imported_at', label: t('freeDiscovery.hist.importedAt'), format: (v) => fmtTime(v == null ? null : String(v)) },
+])
+
 // R34: hover hint for the enabled toggle — explains auto-disables from the
 // scan scheduler health feedback (3 consecutive failures, 99e77a587).
 function autoDisabledHint(tpl: FreeDiscoveryTemplate): string {
@@ -544,8 +698,18 @@ onMounted(loadAll)
           </div>
         </div>
 
-        <div class="table-wrap">
-          <table class="data-table">
+        <ResponsiveDataView data-testid="fd-templates"
+          :rows="templates"
+          title-key="id"
+          :title-format="templateTitle"
+          :subtitle-keys="['provider_code']"
+          :fields="templateFields"
+          table-min-width="0px"
+          :empty="isCompact && templates.length === 0"
+          :empty-text="t('freeDiscovery.common.empty')"
+        >
+          <template #table>
+        <table class="data-table">
             <thead>
               <tr>
                 <th>{{ t('freeDiscovery.tpl.name') }}</th>
@@ -601,7 +765,29 @@ onMounted(loadAll)
               </tr>
             </tbody>
           </table>
-        </div>
+          </template>
+          <template #actions="{ row }">
+            <button
+              class="toggle"
+              :class="{ on: row.enabled }"
+              :title="autoDisabledHint(row as unknown as FreeDiscoveryTemplate)"
+              @click="toggleTemplate(row as unknown as FreeDiscoveryTemplate)"
+            >
+              {{ row.enabled ? t('freeDiscovery.common.enabled') : t('freeDiscovery.common.disabled') }}
+            </button>
+            <button
+              class="btn btn-sm btn-ghost"
+              :disabled="!row.enabled || scanning"
+              :title="!row.enabled ? t('freeDiscovery.tpl.disabledScanHint') : ''"
+              @click="scanTemplateId = row.id as number; startScan()"
+            >
+              {{ t('freeDiscovery.tpl.scan') }}
+            </button>
+            <button class="btn btn-sm btn-ghost danger" @click="removeTemplate(row as unknown as FreeDiscoveryTemplate)">
+              {{ t('freeDiscovery.tpl.delete') }}
+            </button>
+          </template>
+        </ResponsiveDataView>
       </div>
     </div>
 
@@ -628,8 +814,17 @@ onMounted(loadAll)
 
       <div class="card">
         <div class="card-title">{{ t('freeDiscovery.task.listTitle', { n: tasks.length }) }}</div>
-        <div class="table-wrap">
-          <table class="data-table">
+        <ResponsiveDataView data-testid="fd-tasks"
+          :rows="tasks"
+          title-key="id"
+          :title-format="taskTitle"
+          :fields="taskFields"
+          table-min-width="0px"
+          :empty="isCompact && tasks.length === 0"
+          :empty-text="t('freeDiscovery.common.empty')"
+        >
+          <template #table>
+        <table class="data-table">
             <thead>
               <tr>
                 <th>#</th>
@@ -674,7 +869,13 @@ onMounted(loadAll)
               </tr>
             </tbody>
           </table>
-        </div>
+          </template>
+          <template #actions="{ row }">
+            <button class="btn btn-sm btn-ghost" @click="selectTask(row as unknown as FreeDiscoveryTask)">
+              {{ t('freeDiscovery.task.review') }}
+            </button>
+          </template>
+        </ResponsiveDataView>
       </div>
 
       <div v-if="selectedTask" class="card">
@@ -703,8 +904,17 @@ onMounted(loadAll)
           </div>
         </div>
 
-        <div class="table-wrap">
-          <table class="data-table">
+        <ResponsiveDataView data-testid="fd-results"
+          :rows="results"
+          title-key="id"
+          :title-format="resultTitle"
+          :fields="resultFields"
+          table-min-width="0px"
+          :empty="isCompact && results.length === 0"
+          :empty-text="t('freeDiscovery.res.none')"
+        >
+          <template #table>
+        <table class="data-table">
             <thead>
               <tr>
                 <th>
@@ -753,7 +963,16 @@ onMounted(loadAll)
               </tr>
             </tbody>
           </table>
-        </div>
+          </template>
+          <template #actions="{ row }">
+            <input
+              type="checkbox"
+              :checked="selectedResultIds.has(row.id as number)"
+              :disabled="row.import_status !== 'pending'"
+              @change="toggleResult(row.id as number)"
+            />
+          </template>
+        </ResponsiveDataView>
 
         <div class="import-bar">
           <label class="policy-label">
@@ -797,8 +1016,17 @@ onMounted(loadAll)
       <div class="card">
         <div class="card-title">{{ t('freeDiscovery.hist.title', { n: historyTasks.length }) }}</div>
         <p class="page-desc">{{ t('freeDiscovery.hist.desc') }}</p>
-        <div class="table-wrap">
-          <table class="data-table">
+        <ResponsiveDataView data-testid="fd-history"
+          :rows="historyTasks"
+          title-key="id"
+          :title-format="taskTitle"
+          :fields="historyFields"
+          table-min-width="0px"
+          :empty="isCompact && historyTasks.length === 0"
+          :empty-text="t('freeDiscovery.hist.none')"
+        >
+          <template #table>
+        <table class="data-table">
             <thead>
               <tr>
                 <th>#</th>
@@ -831,7 +1059,13 @@ onMounted(loadAll)
               </tr>
             </tbody>
           </table>
-        </div>
+          </template>
+          <template #actions="{ row }">
+            <button class="btn btn-sm btn-ghost" @click="showHistoryDetail(row as unknown as FreeDiscoveryTask)">
+              {{ t('freeDiscovery.hist.detail') }}
+            </button>
+          </template>
+        </ResponsiveDataView>
       </div>
 
       <div v-if="historyDetailTask" class="card">
@@ -846,8 +1080,17 @@ onMounted(loadAll)
             <span class="badge st-muted">{{ t('freeDiscovery.status.skipped') }}: {{ historyDetailCounts.skipped }}</span>
             <span class="badge st-pending">{{ t('freeDiscovery.status.review') }}: {{ historyDetailCounts.pending }}</span>
           </div>
-          <div class="table-wrap">
-            <table class="data-table">
+          <ResponsiveDataView data-testid="fd-history-detail"
+            :rows="historyDetail || []"
+            title-key="id"
+            :title-format="resultTitle"
+            :fields="historyDetailFields"
+            table-min-width="0px"
+            :empty="isCompact && (historyDetail?.length ?? 0) === 0"
+            :empty-text="t('freeDiscovery.common.empty')"
+          >
+            <template #table>
+          <table class="data-table">
               <thead>
                 <tr>
                   <th>{{ t('freeDiscovery.res.model') }}</th>
@@ -869,7 +1112,8 @@ onMounted(loadAll)
                 </tr>
               </tbody>
             </table>
-          </div>
+            </template>
+          </ResponsiveDataView>
         </template>
       </div>
     </div>
@@ -1124,9 +1368,6 @@ onMounted(loadAll)
 }
 
 /* Table */
-.table-wrap {
-  overflow-x: auto;
-}
 .data-table {
   width: 100%;
   border-collapse: collapse;

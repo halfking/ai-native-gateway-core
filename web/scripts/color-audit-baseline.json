@@ -57,22 +57,6 @@
       "value": "rgba(0, 0, 0, 0.16)"
     },
     {
-      "file": "views/AnnotationStatsView.vue",
-      "value": "rgba(0, 0, 0, 0.1)"
-    },
-    {
-      "file": "views/AnnotationView.vue",
-      "value": "rgba(0, 0, 0, 0.15)"
-    },
-    {
-      "file": "views/AnnotationView.vue",
-      "value": "rgba(0, 0, 0, 0.2)"
-    },
-    {
-      "file": "views/AnnotationView.vue",
-      "value": "rgba(0, 0, 0, 0.5)"
-    },
-    {
       "file": "views/ApprovalDetailView.vue",
       "value": "rgba(52, 211, 153, 0.2)"
     },

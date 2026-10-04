@@ -16,6 +16,9 @@ import {
 } from '../../api/ops'
 
 import { useEnumLabel } from '../../composables/useEnumLabel'
+import { useWindowClass } from '../../composables/useWindowClass'
+import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
+import type { CardField, CardTone } from '../../components/ui/CardList.vue'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -23,6 +26,7 @@ import { ElBadge, ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElDivide
 // 2026-09-13：弹层壳由 el-dialog 收敛到 ui/AppModal（EP 表单/表格体保留）
 import AppModal from '../../components/ui/AppModal.vue'
 const { t } = useI18n()
+const { isCompact } = useWindowClass()
 const enumLabel = useEnumLabel()
 const vibeStatusLabel = (value?: string | null) => enumLabel('ops.vibecoding.status', value)
 
@@ -169,6 +173,138 @@ function severityType(severity: string) {
   return map[severity] || 'info'
 }
 
+/**
+ * ── H6 第十六条切片（2026-10-06）：3 张 el-table 接 compact 卡片形态 ─────────────
+ *
+ * 三张表都是**单请求、无分页、无定时器**：一次 `Promise.all` 取回 projects/sessions/reviews
+ * 三份数据，级联筛选（项目 → 会话）纯粹是本地 `computed` ⇒ 只改呈现形态，不引入连续加载。
+ *
+ * ## `title-key` 统一 `id`，脸各不相同 —— `task_type` 与 `file_path` 都不唯一
+ *
+ * `CardList` 的 `:key` 取 `titleKey` 的**原始值**。三张表都带 `id: number` ⇒ 键取 `id`，
+ * 卡头另用 `titleFormat` 出脸。**不能图省事把 `title-key` 写成 `task_type`**：
+ * 同一项目下多个会话可以共用一个 `task_type`，`file_path` 也会在同一会话里重复
+ * ⇒ 撞键会让 Vue 复用错行，症状是「卡片内容串行」。这与切片十三第 4 张表的
+ * 复合身份是同一个坑的两面（那边要**拼**派生键，这边**已有**主键可用）。
+ *
+ * ## 两处 tone 映射都是**从桌面函数派生的**，不是另写一张表
+ *
+ * 桌面 `statusType` 出 2 档 Element 类型（success/info），`getScoreColor` 出 3 档
+ * （success/warning/danger）⇒ 分别映射成 2 档 / 3 档卡片 tone，**判读线共用**：
+ * 桌面把 `statusType` 改一档，卡片这层跟着变，不会两套标准各说各话。
+ *
+ * ## 三张表**都不传 `:loading`** —— 与桌面「保留旧行」一致，且三张表口径统一
+ *
+ * 桌面 projects 表自带 `v-loading="loading"`，但那是**覆盖层**：`el-table` 仍在 DOM 里、
+ * 旧行照常渲染。而 `ResponsiveDataView` 的 `loading` 分支是 `v-if="loading"` / `v-else` 才轮到
+ * 表与卡 ⇒ 传 `:loading` 会让**桌面在每次刷新时把整张 el-table 换成 spinner**，
+ * 那是桌面 DOM 变更（首次加载时 Element 的 "No Data" 也会整个消失）。
+ * sessions/reviews 桌面**根本没有** loading 指示 ⇒ 三张表统一不传，
+ * 页面级的延迟反馈继续由 `v-loading` 承担。门禁断「三张都不出现 `:loading`」。
+ *
+ * ## 三态：compact 的空态只能来自容器，桌面留给 Element
+ *
+ * 三张 el-table 桌面**都没有自己的空态行**，0 行时是 Element 自带的 "No Data"
+ * ⇒ `:empty` **必须带 `isCompact` 前置**（否则桌面会把 Element 的空态换成我们的
+ * `EmptyState`，那是桌面变更）。文案复用既有的 `hyper.list.empty` ⇒ **0 新增 i18n 键**。
+ * sessions/reviews 的谓词用**筛选后**的数组（`filteredSessions` / `filteredReviews`），
+ * 不用原始数组 —— 否则「选了项目但该项目下没有会话」时会空态缺席。
+ *
+ * ## 计数两列（issues / suggestions）：行对象上**没有**这两个键
+ *
+ * 桌面的这两列是纯插槽（无 `prop`），从 `review_result` 里数出来。
+ * 卡片仍用列名作 `key`（`CardList` 只用它取标签与身份），值由 `format(_, row)` 算。
+ * `el-badge` 的 `showZero` 在 Element Plus 2.14.3 **默认 `true`**（已实测）⇒
+ * 桌面 0 个问题照样出「success 徽章 0」，卡片出 `good` 色调的 `0` ⇒ 两边都在，
+ * 不是口径差异。若哪天有人给桌面加 `show-zero` 之外的隐藏逻辑，这里要跟着复核。
+ *
+ * ## 一处**已知且有界**的口径差异（不是漏）
+ *
+ * `score` 缺值时桌面 el-table 渲染**空白**，卡片出 `—`。
+ * `CardList` 没有「空白」这个状态（`null`/`undefined`/`''` 一律出 `—`），
+ * 而 `—` 就是本仓统一的「无值」记号。**卡片不能渲染空白**，改桌面又越过红线。
+ * 与切片十五的 `avg_health` 同源。
+ */
+
+/** 状态标签色 → 卡片 tone。判读线从 `statusType` 派生，不另写映射表。 */
+function statusTone(status: unknown): CardTone {
+  return statusType(status == null ? '' : String(status)) === 'success' ? 'good' : 'neutral'
+}
+
+/** 评分色 → 卡片 tone。三档一一对应，判读线从 `getScoreColor` 派生。 */
+function scoreTone(score: unknown): CardTone {
+  const color = getScoreColor(Number(score))
+  if (color === 'success') return 'good'
+  if (color === 'warning') return 'warn'
+  return 'danger'
+}
+
+const projectTitle = (row: Record<string, unknown>) => (row.name == null ? undefined : String(row.name))
+const sessionTitle = (row: Record<string, unknown>) => (row.task_type == null ? undefined : String(row.task_type))
+const reviewTitle = (row: Record<string, unknown>) => (row.file_path == null ? undefined : String(row.file_path))
+
+/** 项目表卡片字段。6 列里除 `name`（卡头）与操作列外的那 4 个。 */
+const projectFields = computed<CardField[]>(() => [
+  { key: 'language', label: t('ops.vibecoding.language') },
+  { key: 'framework', label: t('ops.vibecoding.framework') },
+  {
+    key: 'status',
+    label: t('common.table.status'),
+    type: 'badge',
+    format: (v) => vibeStatusLabel(v == null ? null : String(v)),
+    tone: (row) => statusTone(row.status),
+  },
+  { key: 'created_at', label: t('common.createdAt'), format: (v) => fmtDateTime24h(v == null ? null : String(v)) },
+])
+
+/** 会话表卡片字段。6 列里除 `task_type`（卡头）与操作列外的那 4 个。 */
+const sessionFields = computed<CardField[]>(() => [
+  { key: 'project_id', label: t('ops.vibecoding.projectId'), type: 'metric', align: 'end' },
+  {
+    key: 'status',
+    label: t('common.table.status'),
+    type: 'badge',
+    format: (v) => vibeStatusLabel(v == null ? null : String(v)),
+    tone: (row) => statusTone(row.status),
+  },
+  { key: 'created_at', label: t('ops.vibecoding.startedAt'), format: (v) => fmtDateTime24h(v == null ? null : String(v)) },
+  {
+    key: 'completed_at',
+    label: t('ops.vibecoding.endedAt'),
+    // 桌面这一列是显式三元 `completed_at ? fmt : '—'`，卡片照抄同一口径。
+    format: (v) => (v ? fmtDateTime24h(String(v)) : undefined),
+  },
+])
+
+/** 评审表卡片字段。7 列里除 `file_path`（卡头）与操作列外的那 5 个。 */
+const reviewFields = computed<CardField[]>(() => [
+  { key: 'language', label: t('ops.vibecoding.language') },
+  {
+    key: 'score',
+    label: t('ops.vibecoding.score'),
+    type: 'badge',
+    align: 'end',
+    format: (v) => (v == null ? undefined : String(v)),
+    tone: (row) => scoreTone(row.score),
+  },
+  {
+    key: 'issues',
+    label: t('ops.vibecoding.issues'),
+    type: 'metric',
+    align: 'end',
+    format: (_v, row) => String(reviewIssues(row as unknown as CodeReview).length),
+    tone: (row) => (reviewIssues(row as unknown as CodeReview).length > 0 ? 'danger' : 'good'),
+  },
+  {
+    key: 'suggestions',
+    label: t('ops.vibecoding.suggestions'),
+    type: 'metric',
+    align: 'end',
+    format: (_v, row) => String(reviewSuggestions(row as unknown as CodeReview).length),
+  },
+  { key: 'created_at', label: t('ops.vibecoding.reviewedAt'), format: (v) => fmtDateTime24h(v == null ? null : String(v)) },
+])
+
 onMounted(load)
 </script>
 
@@ -182,10 +318,19 @@ onMounted(load)
     </div>
 
     <!-- Projects -->
-    <el-card class="section-card" shadow="never">
+    <el-card class="section-card" shadow="never" data-testid="vc-projects">
       <template #header>
         <span>{{ t('ops.vibecoding.projects') }}</span>
       </template>
+      <ResponsiveDataView
+        :rows="projects"
+        title-key="id"
+        :title-format="projectTitle"
+        :fields="projectFields"
+        :empty="isCompact && projects.length === 0"
+        :empty-text="t('hyper.list.empty')"
+      >
+        <template #table>
       <el-table v-loading="loading" :data="projects">
         <el-table-column prop="name" :label="t('ops.vibecoding.projectName')" width="200" />
         <el-table-column prop="language" :label="t('ops.vibecoding.language')" width="120" />
@@ -211,10 +356,20 @@ onMounted(load)
           </template>
         </el-table-column>
       </el-table>
+        </template>
+        <template #actions="{ row }">
+          <el-button type="primary" size="small" @click="openSessionDialog(row as VibeCodingProject)">
+            {{ t('ops.vibecoding.newSession') }}
+          </el-button>
+          <el-button size="small" @click="selectedProjectId = row.id">
+            {{ t('ops.vibecoding.viewSessions') }}
+          </el-button>
+        </template>
+      </ResponsiveDataView>
     </el-card>
 
     <!-- Sessions -->
-    <el-card class="section-card" shadow="never">
+    <el-card class="section-card" shadow="never" data-testid="vc-sessions">
       <template #header>
         <div class="card-header">
           <span>{{ t('ops.vibecoding.sessions') }}</span>
@@ -223,6 +378,15 @@ onMounted(load)
           </el-button>
         </div>
       </template>
+      <ResponsiveDataView
+        :rows="filteredSessions"
+        title-key="id"
+        :title-format="sessionTitle"
+        :fields="sessionFields"
+        :empty="isCompact && filteredSessions.length === 0"
+        :empty-text="t('hyper.list.empty')"
+      >
+        <template #table>
       <el-table :data="filteredSessions" size="small">
         <el-table-column prop="task_type" :label="t('ops.vibecoding.sessionName')" width="200" />
         <el-table-column prop="project_id" :label="t('ops.vibecoding.projectId')" width="100" />
@@ -247,10 +411,17 @@ onMounted(load)
           </template>
         </el-table-column>
       </el-table>
+        </template>
+        <template #actions="{ row }">
+          <el-button size="small" @click="selectedSessionId = row.id">
+            {{ t('ops.vibecoding.viewReviews') }}
+          </el-button>
+        </template>
+      </ResponsiveDataView>
     </el-card>
 
     <!-- Code Reviews -->
-    <el-card class="section-card" shadow="never">
+    <el-card class="section-card" shadow="never" data-testid="vc-reviews">
       <template #header>
         <div class="card-header">
           <span>{{ t('ops.vibecoding.codeReviews') }}</span>
@@ -259,6 +430,15 @@ onMounted(load)
           </el-button>
         </div>
       </template>
+      <ResponsiveDataView
+        :rows="filteredReviews"
+        title-key="id"
+        :title-format="reviewTitle"
+        :fields="reviewFields"
+        :empty="isCompact && filteredReviews.length === 0"
+        :empty-text="t('hyper.list.empty')"
+      >
+        <template #table>
       <el-table :data="filteredReviews" size="small">
         <el-table-column prop="language" :label="t('ops.vibecoding.language')" width="100" />
         <el-table-column prop="file_path" :label="t('ops.vibecoding.filePath')" min-width="250" show-overflow-tooltip />
@@ -290,6 +470,13 @@ onMounted(load)
           </template>
         </el-table-column>
       </el-table>
+        </template>
+        <template #actions="{ row }">
+          <el-button size="small" @click="viewReviewDetail(row as unknown as CodeReview)">
+            {{ t('common.detail') }}
+          </el-button>
+        </template>
+      </ResponsiveDataView>
     </el-card>
 
     <!-- Create Project Dialog -->

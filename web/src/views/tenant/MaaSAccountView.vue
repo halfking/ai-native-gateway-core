@@ -15,9 +15,13 @@ import {
   MAAS_ORDER_STATUS_LABELS,
 } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import { useWindowClass } from '../../composables/useWindowClass'
+import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../../components/ui/CardList.vue'
 import PageBackLink from '../../components/PageBackLink.vue'
 
 const { t } = useI18n()
+const { isCompact } = useWindowClass()
 
 const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() =>
@@ -100,6 +104,69 @@ async function load() {
   }
 }
 
+/**
+ * ── H6 第七条切片（2026-10-06）：两张表接 compact 卡片形态 ──────────────────
+ * 本页**没有分页 API**：两张表都随 `getMaasAccount()` 一次取回
+ * （`recent_orders` / `recent_ledger`），所以这里只改**呈现形态**，
+ * 不引入连续加载 —— 呈现形态与加载方式本来就是两个独立维度（规范 03 §1）。
+ *
+ * 两处与既有切片不同的取舍：
+ * 1. **桌面空态仍在本页**（两个 `.empty` div），所以容器的 `:empty` 带
+ *    `isCompact` 前置（03 §4 例外条款：桌面刷新时表格在不在）。
+ * 2. **`#table` 槽内保留 `v-if`**。空态时桌面原本**整张表都不渲染**；
+ *    若把 `v-if` 提到容器外，空态下容器仍会渲染一个带边框的空表壳
+ *    —— 那是桌面观感的静默变化。
+ * 3. **不传 `:loading`**：两张表没有独立加载态（整页一次取），传了就是死代码，
+ *    而且刷新时会让 compact 闪一个转圈、桌面却仍显示旧行。
+ */
+
+/** 订单金额：分 → ¥ 两位小数。与表格那一格共用，不写第二份。 */
+function orderAmountText(cents: number): string {
+  return `¥${fmtPrice(cents)}`
+}
+
+/** 台账变动额：正数带 `+`（表格与卡片同一套规则）。 */
+function ledgerAmountText(amount: number): string {
+  return `${amount > 0 ? '+' : ''}${fmtCredits(amount)}`
+}
+
+/** 订单状态 → 卡片 tone。桌面是四支 class，卡片是四支强调色，同一份映射。 */
+function orderStatusTone(s: string): 'neutral' | 'good' | 'warn' | 'danger' {
+  if (s === 'paid') return 'good'
+  if (s === 'pending') return 'warn'
+  if (s === 'expired') return 'danger'
+  return 'neutral'
+}
+
+const orderCardFields = computed<CardField[]>(() => [
+  { key: 'order_type', label: t('tenants.account.orderType'), format: (v) => orderTypeLabel(String(v)) },
+  { key: 'amount_cents', label: t('tenants.account.orderAmount'), format: (v) => orderAmountText(Number(v)) },
+  { key: 'credits', label: t('tenants.account.orderCredits'), format: (v) => fmtCredits(Number(v)) },
+  {
+    key: 'status',
+    label: t('tenants.account.orderStatus'),
+    type: 'badge',
+    // ★ 逐行求值：状态色是**每行**的（待支付/已支付/已取消可同页共存），
+    //   字段级常量会把整列表按第一行的状态上色。
+    tone: (row) => orderStatusTone(String(row.status ?? '')),
+    format: (v) => orderStatusLabel(String(v)),
+  },
+  { key: 'created_at', label: t('tenants.account.orderTime'), format: (v) => fmtTime(String(v)) },
+])
+
+const ledgerCardFields = computed<CardField[]>(() => [
+  { key: 'created_at', label: t('tenants.account.ledgerTime'), format: (v) => fmtTime(String(v)) },
+  { key: 'pool', label: t('tenants.account.ledgerPool'), format: (v) => poolLabel(v as string | null | undefined) },
+  { key: 'amount', label: t('tenants.account.ledgerDelta'), align: 'end', format: (v) => ledgerAmountText(Number(v)) },
+  { key: 'balance_after', label: t('tenants.account.ledgerBalance'), align: 'end', format: (v) => fmtCredits(Number(v)) },
+  { key: 'note', label: t('tenants.account.ledgerNote'), format: (v) => (v ? String(v) : '—') },
+])
+
+/** 台账没有天然标题，用类型作卡头（原始 `entry_type` 是机器码，出卡头不合适）。 */
+function ledgerCardTitle(row: Record<string, unknown>): string {
+  return ledgerTypeLabel(String(row.entry_type ?? ''))
+}
+
 onMounted(load)
 </script>
 
@@ -156,35 +223,55 @@ onMounted(load)
         <h3>{{ t('tenants.account.recentOrders') }}</h3>
         <RouterLink v-if="!isAdminTenantView" :to="pricingLink" class="link-sm">{{ t('tenants.account.goBuy') }}</RouterLink>
       </div>
-      <table v-if="account.recent_orders.length" class="table">
-        <thead>
-          <tr>
-            <th>{{ t('tenants.account.orderNo') }}</th>
-            <th>{{ t('tenants.account.orderType') }}</th>
-            <th>{{ t('tenants.account.orderAmount') }}</th>
-            <th>{{ t('tenants.account.orderCredits') }}</th>
-            <th>{{ t('tenants.account.orderStatus') }}</th>
-            <th>{{ t('tenants.account.orderTime') }}</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="o in account.recent_orders" :key="o.id">
-            <td class="mono">{{ o.order_no }}</td>
-            <td>{{ orderTypeLabel(o.order_type) }}</td>
-            <td>¥{{ fmtPrice(o.amount_cents) }}</td>
-            <td>{{ fmtCredits(o.credits) }}</td>
-            <td><span class="badge" :class="orderStatusClass(o.status)">{{ orderStatusLabel(o.status) }}</span></td>
-            <td class="mono">{{ fmtTime(o.created_at) }}</td>
-            <td>
-              <RouterLink v-if="o.status === 'pending'" :to="`/tenant/orders/${o.id}`" class="link-sm">
-                {{ t('tenants.account.orderPayLink') }}
-              </RouterLink>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="empty">{{ t('tenants.account.emptyOrders') }}</div>
+      <ResponsiveDataView
+        :rows="account.recent_orders"
+        title-key="order_no"
+        :fields="orderCardFields"
+        table-min-width="0px"
+        :empty="isCompact && account.recent_orders.length === 0"
+        :empty-text="t('tenants.account.emptyOrders')"
+      >
+        <template #table>
+          <table v-if="account.recent_orders.length" class="table">
+            <thead>
+              <tr>
+                <th>{{ t('tenants.account.orderNo') }}</th>
+                <th>{{ t('tenants.account.orderType') }}</th>
+                <th>{{ t('tenants.account.orderAmount') }}</th>
+                <th>{{ t('tenants.account.orderCredits') }}</th>
+                <th>{{ t('tenants.account.orderStatus') }}</th>
+                <th>{{ t('tenants.account.orderTime') }}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="o in account.recent_orders" :key="o.id">
+                <td class="mono">{{ o.order_no }}</td>
+                <td>{{ orderTypeLabel(o.order_type) }}</td>
+                <td>¥{{ fmtPrice(o.amount_cents) }}</td>
+                <td>{{ fmtCredits(o.credits) }}</td>
+                <td><span class="badge" :class="orderStatusClass(o.status)">{{ orderStatusLabel(o.status) }}</span></td>
+                <td class="mono">{{ fmtTime(o.created_at) }}</td>
+                <td>
+                  <RouterLink v-if="o.status === 'pending'" :to="`/tenant/orders/${o.id}`" class="link-sm">
+                    {{ t('tenants.account.orderPayLink') }}
+                  </RouterLink>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+        <template #actions="{ row }">
+          <RouterLink
+            v-if="row.status === 'pending'"
+            :to="`/tenant/orders/${row.id}`"
+            class="link-sm"
+          >
+            {{ t('tenants.account.orderPayLink') }}
+          </RouterLink>
+        </template>
+      </ResponsiveDataView>
+      <div v-if="!isCompact && !account.recent_orders.length" class="empty">{{ t('tenants.account.emptyOrders') }}</div>
     </div>
 
     <div v-if="account" class="section card">
@@ -192,29 +279,41 @@ onMounted(load)
         <h3>{{ t('tenants.account.recentLedger') }}</h3>
         <RouterLink :to="usageLink" class="link-sm">{{ t('tenants.account.consumptionStats') }}</RouterLink>
       </div>
-      <table v-if="account.recent_ledger.length" class="table">
-        <thead>
-          <tr>
-            <th>{{ t('tenants.account.ledgerTime') }}</th>
-            <th>{{ t('tenants.account.ledgerType') }}</th>
-            <th>{{ t('tenants.account.ledgerPool') }}</th>
-            <th style="text-align:right">{{ t('tenants.account.ledgerDelta') }}</th>
-            <th style="text-align:right">{{ t('tenants.account.ledgerBalance') }}</th>
-            <th>{{ t('tenants.account.ledgerNote') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="e in account.recent_ledger" :key="e.id">
-            <td class="mono">{{ fmtTime(e.created_at) }}</td>
-            <td>{{ ledgerTypeLabel(e.entry_type) }}</td>
-            <td>{{ poolLabel(e.pool) }}</td>
-            <td class="mono" style="text-align:right">{{ e.amount > 0 ? '+' : '' }}{{ fmtCredits(e.amount) }}</td>
-            <td class="mono" style="text-align:right">{{ fmtCredits(e.balance_after) }}</td>
-            <td>{{ e.note || '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="empty">{{ t('tenants.account.emptyLedger') }}</div>
+      <ResponsiveDataView
+        :rows="account.recent_ledger"
+        title-key="entry_type"
+        :title-format="ledgerCardTitle"
+        :fields="ledgerCardFields"
+        table-min-width="0px"
+        :empty="isCompact && account.recent_ledger.length === 0"
+        :empty-text="t('tenants.account.emptyLedger')"
+      >
+        <template #table>
+          <table v-if="account.recent_ledger.length" class="table">
+            <thead>
+              <tr>
+                <th>{{ t('tenants.account.ledgerTime') }}</th>
+                <th>{{ t('tenants.account.ledgerType') }}</th>
+                <th>{{ t('tenants.account.ledgerPool') }}</th>
+                <th style="text-align:right">{{ t('tenants.account.ledgerDelta') }}</th>
+                <th style="text-align:right">{{ t('tenants.account.ledgerBalance') }}</th>
+                <th>{{ t('tenants.account.ledgerNote') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="e in account.recent_ledger" :key="e.id">
+                <td class="mono">{{ fmtTime(e.created_at) }}</td>
+                <td>{{ ledgerTypeLabel(e.entry_type) }}</td>
+                <td>{{ poolLabel(e.pool) }}</td>
+                <td class="mono" style="text-align:right">{{ e.amount > 0 ? '+' : '' }}{{ fmtCredits(e.amount) }}</td>
+                <td class="mono" style="text-align:right">{{ fmtCredits(e.balance_after) }}</td>
+                <td>{{ e.note || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </ResponsiveDataView>
+      <div v-if="!isCompact && !account.recent_ledger.length" class="empty">{{ t('tenants.account.emptyLedger') }}</div>
     </div>
 
     <div v-else-if="!loading && !error" class="section card empty">

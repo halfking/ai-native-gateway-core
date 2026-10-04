@@ -77,8 +77,10 @@ import proxy from './proxy'
 import requestDetail from './requestDetail'
 import reports from './reports'
 import usageTrend from './usageTrend'
+import hyper from './hyper'
 
 export default {
+  hyper,
   usageTrend,
   common,
   nav,

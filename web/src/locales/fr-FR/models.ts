@@ -69,6 +69,15 @@ export default {
     disable: 'Désactiver',
     enable: 'Activer',
   },
+  modelIdentity: {
+    client: "Client",
+    canonical: "Canonique",
+    outbound: "Sortant",
+    titleClient: "Nom demandé par le client",
+    titleCanonical: "Nom canonique",
+    titleOutbound: "Sortant / nom d'origine de l'amont",
+    titleRaw: "Nom d'origine : {model}"
+  },
   chip: {
     status: 'Statut : {value}',
     vendor: 'Fournisseur : {value}',
