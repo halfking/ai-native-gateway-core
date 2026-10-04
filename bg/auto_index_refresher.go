@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -60,6 +61,33 @@ type AutoIndexRefresher struct {
 	// OnRollupComplete is an optional callback invoked after each
 	// successful rollup. Used by tests and admin metrics endpoints.
 	OnRollupComplete func(bucket time.Time, credentialRows, taskRows int)
+
+	// 2026-10-04 新增：singleflight 互斥。
+	//
+	// 为什么需要（本文件 2026-09-10 那条注释已经点出了病根，只是当时选择绕过）：
+	// RefreshOnce 有**三个并发触发源** —— 5 分钟 ticker、auto_route_refresh 的
+	// LISTEN 监听、以及 admin 手动接口（admin/auto_route.go:799）。实测生产上
+	// 触发频率是**每 8.8 秒一次**，而设计间隔是 5 分钟 ⇒ **约 34 倍**。
+	// 而 DELETE+INSERT 这一对**不是原子的**（注释已记录：两个交错的 run 会变成
+	// DELETE(A) → DELETE(B) → INSERT(A) → INSERT(B)，第二次 INSERT 撞
+	// duplicate key，2026-09-10 04:18 真实发生过）。
+	//
+	// 当时的修法是给 INSERT 加 ON CONFLICT —— 那是**让交错变得无害**，
+	// 没有减少交错的次数。现在实测的 409 万次删除/11.35 天就是这 34 倍的后果：
+	// 同一个 5 分钟 bucket 在 5 分钟内被反复 DELETE+INSERT 约 34 遍。
+	//
+	// 这里加的是**源头**治理：同一时刻只允许一个 rollup 在跑。
+	//
+	// ★ 为什么是「跳过」而不是「排队」：调用方是**事件触发**（路由配置变了、
+	//  有人点了刷新），不是作业队列。排队意味着把积压的 N-1 次过期触发
+	//  挨个执行一遍 —— 而它们算的是**同一个 bucket**，结果只会覆盖成一样的东西。
+	//  跳过时数据本来就是新的（正在跑的那次会以更晚的时刻重算同一个 bucket）。
+	//
+	// ★ 为什么这不构成契约变更：返回值语义不变（跳过返回 nil = 没有错误），
+	//   数据新鲜度不降低（正在跑的那次会以更晚的时刻重算同一个 bucket），
+	//   消除的是**并发交错**这个已发生过真实故障的缺陷。
+	refreshMu sync.Mutex
+	inFlight  bool
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -121,13 +149,48 @@ func (r *AutoIndexRefresher) run(ctx context.Context) {
 	}
 }
 
+// beginRefresh 尝试占住刷新槽。返回 false 表示已有人在跑。
+//
+// 用非阻塞的「占-放」而不是排队锁：调用方是事件触发而不是作业队列，
+// 排队只会让积压的 N-1 次过期触发挨个跑一遍，而它们算的是同一个 bucket。
+func (r *AutoIndexRefresher) beginRefresh() bool {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+	if r.inFlight {
+		return false
+	}
+	r.inFlight = true
+	return true
+}
+
+func (r *AutoIndexRefresher) endRefresh() {
+	r.refreshMu.Lock()
+	r.inFlight = false
+	r.refreshMu.Unlock()
+}
+
 // RefreshOnce runs one refresh cycle: credential_model_index rollup,
 // then model_task_index rollup, then in-memory Index refresh.
 //
 // Returns the first error encountered. The In-memory Index is updated
 // even if downstream rollups fail (so a degraded model_task_index
 // doesn't lock out routing decisions).
+// 2026-10-04: 新增 singleflight 互斥。三个并发触发源（5 分钟 ticker、
+// auto_route_refresh 的 LISTEN 监听、admin 手动接口 admin/auto_route.go:799）
+// 在实测中产生每 8.8 秒一次的调用，是设计间隔的 34 倍；而 DELETE+INSERT
+// **非原子**，交错会撞 duplicate key（2026-09-10 04:18 真实发生过）。
+// 已有刷新在跑时直接跳过 —— 详见 AutoIndexRefresher.refreshMu 的注释。
 func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if !r.beginRefresh() {
+		slog.Debug("auto index refresh: 已有刷新在跑，跳过本次并发触发",
+			"interval", r.RefreshInterval.String())
+		return nil
+	}
+	defer r.endRefresh()
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, r.RefreshTimeout)
 	defer cancel()
 
