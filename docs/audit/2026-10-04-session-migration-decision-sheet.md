@@ -687,3 +687,63 @@ already exists while canonical view lacks request_class'`。它是**一次性的
   `session_censors` 虽同形但**零消费者**故不是缺陷。**这条线结束。**
 - **「第一遍绿」** → §9.119/§9.124：这只是**现有门的覆盖范围**，不等于可重跑。
   真实路径下是 baseline **1665 条 ERROR** + 链 **11 个文件** ⇒ 见 D11。
+
+---
+
+## ⚠️⚠️ D12（§9.160 新增）：**限流分类在视图里从未生效**——`rate_limited` 残余量从 168,106 降到 **125,211**
+
+**这一条修正 D9 第四条的剩余量口径。** 起点是 823 把 `request_status` 落进会话族。
+
+**实测**（本地库 `session_turns` 全表 1,688,629 行）：
+
+| 量 | 值 |
+|---|---:|
+| `status_code = 429` 的行 | **0** |
+| 视图会话腿 `rate_limited` 产出 | **0**（该臂是死代码） |
+| 真限流轮次（`error_kind='rate_limit_exceeded'`） | **437,402** |
+| 　├ 有 v1 孪生 | 394,614（v1 标签直接可用） |
+| 　└ **无 v1 孪生** | **42,788**（`error_kind` 仍可判定） |
+
+**关键更正**：D9 第四条记的「无孪生 = 168,106 行**全部**结构性无解」**不准确**。
+那 168,106 行里 42,788 行带 `error_kind='rate_limit_exceeded'`，限流标签在无孪生行上
+**同样可恢复**。只有「非限流标签」那部分是真无解：
+
+> **结构性无解量：168,106 → 125,211**（−25.5%）
+
+**D9 第四条的发布前置检查随之改写**（两条都查，缺一即假绿）：
+
+```sql
+SELECT (SELECT count(*) FROM public.session_turns t
+          JOIN public.request_logs l ON l.request_id = t.request_id
+         WHERE t.request_status IS NULL AND l.request_status IS NOT NULL)
+     + (SELECT count(*) FROM public.session_turns_hot t     -- ← 两个存储面都要查
+          JOIN public.request_logs l ON l.request_id = t.request_id
+         WHERE t.request_status IS NULL AND l.request_status IS NOT NULL);
+```
+
+⚠️ **两个存储面都必须查**（§9.160.7）：会话族写方只写 `_hot`，promote 才把冷行
+转到父表，父表落后 hot 约 8.7 小时。**只查父表的 gauge 会在 `_hot` 满是 NULL 时
+报 0**——那是对一次会丢数据的退役发绿灯。该 gauge 已在
+`sessionRequestStatusRemainingSQL` 修正并加了门禁。
+
+**已实施（不需你决策，属实现修复）**：824 迁移把视图会话腿的 `rate_limited`
+判据从 `status_code = 429` 改成 `error_kind = 'rate_limit_exceeded'`
+（与 v1 权威标签在 394,614 组孪生行上**双向零反例**）。
+副作用是 `failure` 从 1,358,245 降到 920,843（−32.2%），
+`upstreamFailed` / `failure_count` / 各处 `error_count` 同步下降——**方向都是
+「限流不再被当成上游失败」，语义上是修对了**，详见审计 §9.160.6 影响面表。
+
+### ⚠️ 仍需你拍板的口径（比 D9 第四条的「0 还是 9.96%」更精确了）
+
+- **D12-a**：D9 第四条的放行阈值定为 **0**（要求两个面都归零），还是
+  **接受 125,211 的结构性下限**？
+  ⚠️ 注意这 125,211 **不是**「还没回填的行」——它们**永远不会被本作业回填**
+  （无 v1 孪生），所以阈值若定 0，gauge **永远到不了 0**，放行门形同虚设。
+  ⇒ 我建议显式写成「两个面 `有孪生且未回填` 归零」，把 125,211 作为**已知且
+  接受**的常量记录在发布单里，而不是设成一个够不到的 0。
+- **D12-b**：`status_code=500` 占位是否要修（改写路径）？本地数据只能证明
+  「限流时 session 侧记 500」，**证不出**是上游真回 500 还是本地限流被合成为 500。
+  这是独立议题，824 没碰任何数据。
+- **D12-c**：`in_progress` 保真度（v1 有 1,633 条，视图推导链产不出）。补它需要
+  视图改读 823 那条 `request_status` 列，即给视图加上对 823 的硬依赖——
+  **823 未跑的库上会 `undefined column` 失败**。所以我**没做**，留给 D9 裁决。

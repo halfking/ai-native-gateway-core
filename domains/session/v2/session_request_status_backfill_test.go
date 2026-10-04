@@ -895,3 +895,56 @@ func TestSessionRequestStatusBackfill_RemainingSQLContract(t *testing.T) {
 			"release gate report done while work is left")
 	}
 }
+
+// TestSessionRequestStatusBackfill_RemainingSQLCoversBothSurfaces pins the
+// gauge to BOTH storage surfaces of the session family.
+//
+// Why this is a guard and not a comment: the candidate query is
+// parent-only **on purpose**, so the two SQL constants sit in the same file with
+// deliberately different scopes. That asymmetry is exactly the kind of thing a
+// later reader "helpfully" normalizes — and normalizing it in the wrong
+// direction produces a green release gate over data that would be lost at
+// retirement, which is the one thing the gauge exists to prevent (audit §9.160).
+func TestSessionRequestStatusBackfill_RemainingSQLCoversBothSurfaces(t *testing.T) {
+	q := sessionRequestStatusRemainingSQL
+	for _, surface := range []string{"public.session_turns t", "public.session_turns_hot t"} {
+		if !strings.Contains(q, surface) {
+			t.Errorf("remaining SQL does not cover %q — the gauge is the D9 clause-4 release gate, "+
+				"so it must answer for every row that will still exist after retirement, not just "+
+				"the ones promote has already rotated into the parent", surface)
+		}
+	}
+	// Both halves must carry the same predicate. A half that dropped the
+	// v1-side IS NOT NULL guard would count the 46 structurally unfillable
+	// rows and pin the gauge above zero forever, so the two subqueries have to
+	// be symmetric rather than merely both present.
+	if n := strings.Count(q, "t.request_status IS NULL"); n != 2 {
+		t.Errorf("remaining SQL: expected the NULL-label predicate on both surfaces, found %d", n)
+	}
+	if n := strings.Count(q, "l.request_status IS NOT NULL"); n != 2 {
+		t.Errorf("remaining SQL: expected the v1-side NOT NULL guard on both surfaces, found %d", n)
+	}
+	if n := strings.Count(q, "JOIN public.request_logs l ON l.request_id = t.request_id"); n != 2 {
+		t.Errorf("remaining SQL: expected the request_id join on both surfaces, found %d", n)
+	}
+	// The two halves are summed, not UNION-ed. A UNION ALL would emit two rows
+	// and Scan into a single int would fail at runtime.
+	if !strings.Contains(q, "+ (SELECT count(*)") {
+		t.Error("remaining SQL must SUM the two per-surface counts; UNION ALL would return two rows " +
+			"and the single-int Scan in requestStatusBackfillRemaining would error every tick")
+	}
+}
+
+// TestSessionRequestStatusBackfill_SourceProbeCoversBothSurfaces: the gauge
+// selects from session_turns_hot, so a probe that only checks the parent's
+// column lets a half-applied 823 turn every gauge tick into an ERROR instead of
+// a quiet degradation.
+func TestSessionRequestStatusBackfill_SourceProbeCoversBothSurfaces(t *testing.T) {
+	p := sessionRequestStatusSourceProbeSQL
+	for _, rel := range []string{"to_regclass('public.session_turns')", "to_regclass('public.session_turns_hot')"} {
+		if !strings.Contains(p, rel) {
+			t.Errorf("source probe does not check request_status on %s; a half-applied 823 would "+
+				"make the remaining gauge raise instead of exiting quietly", rel)
+		}
+	}
+}

@@ -19478,3 +19478,190 @@ counter（`..._backfill_total{result}`）和耗时直方图，
   极端情况下「已回填完」到「下次 idle」之间会有一段滞后。**发布检查以直跑 SQL 为准。**
 - ⚠️ 多副本并发下 gauge 会被**最后一个 idle 的副本**覆盖；守卫保证正确性，但 gauge 不是全局唯一真值。
 - ⚠️ 「完成」的判定仍需你定：**接受 0，还是接受一个明确下限**（§9.156.3 的 9.96% 结构性无解部分）。
+
+---
+
+## §9.160　**canonical 视图的 `rate_limited` 分类从未生效过**：437,402 条真限流被报成普通 `failure`
+
+本节是本轮**唯一一个「今天就是错的」**的发现。它不是退役才暴露的隐患，也不是
+「删表之后会坏」：在 `request_logs` 完好无损的时候，视图就已经把四分之一的限流
+流量算进了失败。
+
+### §9.160.1 缺陷
+
+`request_logs_with_current_month` 的会话腿（`session_turns_hot` ∪
+`session_turns`）把 `request_status` 投影成：
+
+```sql
+CASE WHEN t.success IS NULL THEN NULL
+     WHEN t.success             THEN 'success'
+     WHEN t.status_code = 429   THEN 'rate_limited'
+     ELSE 'failure' END
+```
+
+`rate_limited` 那一臂的唯一依据是 `status_code = 429`。而本地真库
+（`session_turns` 全表，2026-09/10）：
+
+| 读数 | 值 |
+| --- | --- |
+| `session_turns` 总行数 | 1,688,629 |
+| 其中 `status_code = 429` | **0** |
+| 其中 `status_code IS NULL` | **0** |
+| 真限流轮次在会话侧记的 `status_code` | **500**（437,402/437,402） |
+
+⇒ 那个分支在会话腿上是**死代码，永远不会触发**。
+
+### §9.160.2 后果（量化）
+
+旧推导 vs 新推导，同一张表、同一个 CASE 链，只差一个 `error_kind` 臂：
+
+| 标签 | 旧推导 | 新推导 | 变化 |
+| --- | --- | --- | --- |
+| `failure` | 1,358,245 | 920,843 | **−437,402（−32.2%）** |
+| `success` | 330,384 | 330,384 | 0 |
+| `rate_limited` | **0** | **437,402** | +437,402 |
+
+视图整体能看到的 `rate_limited` 修正前是 8,417 条，**全部来自 v1 冻结腿**
+（会话腿贡献 0）。修正后应为 437,402 + 8,417 = **445,819**。
+
+§9.150 曾用「双空象限召回率」间接估出限流真实规模 ≈446,819；现在直接数是
+445,819，两个独立路径在 0.2% 内吻合。
+
+### §9.160.3 为什么 `error_kind` 是权威判据（穷尽交叉表，不是抽样）
+
+信号在镜像里**没有丢**——`error_kind` 被完整镜像了。双向交叉表：
+
+| 判据 | 行数 | 结果 |
+| --- | --- | --- |
+| A：v1 `request_status='rate_limited'` 而 `error_kind ≠ 'rate_limit_exceeded'` | 0 | **零反例** |
+| B：`error_kind='rate_limit_exceeded'` 而 v1 `request_status ≠ 'rate_limited'` | 0 | **零反例** |
+| C：`error_kind='rate_limit_exceeded'` 且 `success = true` 的行 | 0 | 分支序安全 |
+
+交叉核对：`error_kind='rate_limit_exceeded'` 全表 437,402 行 = 394,614（有 v1
+孪生）+ 42,788（无孪生），与 §9.150 的 394,614 完全对上。
+
+**副产品**：§9.155 记的「剩余 168,106 行（9.96%）结构性无解」需要修正。
+那批行里 **42,788 行带 `error_kind='rate_limit_exceeded'`**，也就是说限流标签
+在无孪生行上**同样是可恢复的**。真正无解的是「非限流标签」那部分，
+量级从 168,106 降到 **125,211**（详见决策表 D12）。
+
+### §9.160.4 修复
+
+**读侧投影**（`db/request_logs_view_schema.go`，常量 `sessionRequestStatusExpr`）：
+
+```
+CASE WHEN t.success IS NULL                        THEN NULL
+     WHEN t.success                                 THEN 'success'
+     WHEN t.error_kind = 'rate_limit_exceeded'      THEN 'rate_limited'   ← 新增
+     WHEN t.status_code = 429                       THEN 'rate_limited'
+     ELSE 'failure' END
+```
+
+两个决定，都是被约束逼出来的而不是偏好：
+
+1. **不读 823 那条 `request_status` 列。** 读了会给「823 未跑的库」引入
+   `undefined column` 硬失败——视图重建是启动自愈路径，不能依赖另一条迁移
+   一定先跑。`error_kind` 在冻结 113 列契约里，恒在。823 那条留给回填完成后的
+   D9 裁决。
+2. **保留 429 臂。** 它今天无数据，但它是未来上游真回 429 时的形状；删掉会让
+   表达式比它替换掉的更窄。保留它零成本，只可能多出正确的行。
+
+**为什么必须落迁移**：`db.ensure` 的自愈条件是
+`canonicalExists && bodyIsV2` 就直接 `return`（`db/request_logs_view_schema.go:80`），
+而 `bodyIsV2` 只看 viewdef 里有没有 `session_turns`。现网已经是 v2 体，所以
+**只改 Go 镜像体对存量库完全无效**——只有迁移能把新表达式刷上去。
+
+**824 迁移**（`sql/migrations/startup/824_request_status_rate_limited_projection.sql`）
+沿用 817 的全量 `proj` 块只换一行；`.down.sql` 的基准是 **817 的 up 文件本体**
+而不是 817 的 down——后者会顺带把 `client_ip` 守卫退回 816 的已知弱形态
+（§9.64），那是另一场事故，不属于这次回滚。两份文件的 `proj` 块**逐行只差
+第 50 行**（已实测）。
+
+**幂等判据只能单向**：824 引入的 `rate_limit_exceeded` 字面量在之前的任何形态里
+都不存在（现网 viewdef 实测 0 次），而 `pg_get_viewdef` 对字面量逐字保留。反方向
+不成立——新式是旧式的**严格超集**，「旧式是否已消失」没有任何可测形式。
+**这里故意没有写一条恒真的反向检查。**
+
+### §9.160.5 门禁与变异证据（**全部我自己注入**）
+
+新增 `db/request_status_projection_realdb_test.go`：离线钉表达式形态（分支序 +
+字面量精确），真库把**要上线的那条表达式原文**喂给真实 PG，验五个行形态，
+并钉住「迁移与 Go 镜像体必须逐字同文」。夹具在独立 schema，清理走**独立连接**
+且删完复验不存在（2026-10-04 教训：`t.Cleanup` 复用已关闭 pool 会静默失败并把
+schema 留在真库）。
+
+`db/view_schema_v2_contract_test.go` 的离线门原本把 Go 投影的前 113 列**逐字**
+钉在 734 的 `$proj$` 块上。改 734 会让它不再描述自己实际做过的事（它已跑遍
+所有部署并登记进 `schema_migrations`），所以新增
+`registeredExpressionOverrides` 登记表：文件侧必须仍是 frozen，Go 侧必须已是
+current，**两侧各钉一个**。位置靠 `AS <col>` 后缀解析，不靠下标加减。
+
+| 变异 | 门禁表现 |
+| --- | --- |
+| M1 抽掉 `error_kind` 臂 | `TestRequestStatusProjection_RealDB` 红，报 `got "failure", want "rate_limited"`（**原样复现本节缺陷**）；另两条离线门同时红 |
+| M2 gauge 缩回父表-only | `RemainingSQLCoversBothSurfaces` 红，5 条子判据同时报 |
+| M3 `success` 退回裸 `bool` | `KeepsRowsWithNullSuccess` 红，报 `converting NULL to bool is unsupported` |
+| M4 从 SELECT 去掉 `request_status` | `SessionDetailQuerySelectsRequestStatus` 红 |
+
+每条变异都**单独复跑基线**确认还原后为绿，不拿紧邻的 `ok` 当变异结果。
+
+端到端：`TestRequestLogsViewV2EnsureMatchesMigration`（克隆真库目录 → scratch
+DB → 重放 710/734/738/740/815/816/817/**824** → Go ensure 冷建）通过，
+**Go ensure 与迁移链产出的 viewdef 逐字节相同**。
+
+### §9.160.6 影响面：哪些读方的数字会变
+
+| 读方 | 方向 | 量级 |
+| --- | --- | --- |
+| `admin/usage.go:814` `upstreamFailed` | **降** | 净减 ≈39.4 万。语义上是**修对了**：该计数的谓词显式排除 `rate_limited`（「限流不算上游失败」），之前这批行因被误标成 `failure` 而被错误计入 |
+| `bg/stats_minute_rollup.go:194` `failure_count` | 降 ≈39.4 万 | 而 `:202` 终态白名单本就含 `rate_limited`，分母不变 ⇒ 错误率单向下降 |
+| `bg/stats_minute_rollup.go:251` `error_kind` 维度 | 整维减少 | `request_status='failure'` 不再成立，这批行离开该维度桶 |
+| `bg/stats_minute_rollup.go:278` 错误下钻表 | 减 ≈39.4 万行 | 正是 §9.155 注释所述「区分模型目录扫描流量与真失败」的目的 |
+| `admin/memora_handlers.go:532/554` `rate_limited_count` | **8,417 → ≈44.5 万** | `fail_count` 等量下降 |
+| dashboard / session 分析的 `error_count`（多处） | 降 | 同一口径 |
+| `admin/logs*` 等展示类 | 文案变化 | 状态标签 `failure` → `rate_limited` |
+| `dual_read_validator.go` / `swim_lane_init.go` / `request_trace.go` / `lite_telemetry_sink.go` / 全部写侧 | **不变** | 读底表或在内存里，不经视图 |
+
+**一个被低估的连带面**：`sessionFamilyProjection` 被
+`SessionFamilyTurnsSourceSQL` / `SessionFamilyTurnsForSessionSQL` 复用，而这两个
+原生源被 `session_list` / `session_turns_tree` / `session_online` /
+`session_compare` / `session_export` / `session_title` / `turns_sessions` /
+`logs_turns_source` 使用。**投影一改，这些原生读方一起改**（它们不读
+`request_status` 的那几处只影响行集，不影响字段语义）。这条不是从清单里读出来
+的，是从 `sessionFamilyProjection` 的复用关系推的——两者都核过。
+
+### §9.160.7 顺带修掉的两个既有缺陷（都是我的，且其中一条是 `origin/main` 上的红门）
+
+**（a）`TestNoBareParentSessionFamilyRead` 在 `origin/main` 上就是红的。**
+报错文件是 `domains/session/v2/session_request_status_backfill.go`——**我上一轮
+（`6833df7a3`）加的回填作业**，上一轮没跑 `admin` 包全量测试，漏了。已确认基线
+（干净 `origin/main` 副本）同样红，不是这轮引入的。
+
+处置走门自己给的路径：登记进 `sessionFamilyBareParentReaders`，并写明为什么
+父表-only 在这里是**对的**——hot 里的行本就由 823 写路径带标签，漏标的会在
+promote 之后被本作业扫到，且要覆盖 `_hot` 就得让批量 UPDATE 知道每个 keyset 行
+落在哪个面上。
+
+**（b）由此暴露的真问题：gauge 只查父表 ⇒ D9 退役门是假绿。**
+`sessionRequestStatusRemainingSQL` 与候选 SQL 都只 `FROM public.session_turns`。
+父表落后 hot 约 8.7 小时（§9.29 实测），所以 `_hot` 里堆着 NULL 标签时，
+**gauge 仍然报 0**——而这个 gauge 就是 D9 第四条的退役放行判据。
+
+> 候选查询与 gauge 范围**不同**不是不一致，是两个不同的问题：
+> 「本作业还能修哪些」vs「退役后还会存在的每一行」。只有后者能当放行门。
+> 把 gauge 也缩到父表才是缺陷。已改：gauge 覆盖两面并**求和**（不是 `UNION ALL`——
+> 那会返回两行，单值 `Scan` 每个 tick 都报错）；source probe 也改为两面都查
+> `request_status` 列（半应用的 823 会让 gauge 抛错而不是安静退化）。
+
+### §9.160.8 诚实边界
+
+1. **本节全部数据来自本地库**。§9.157 已坐实本地库有来源不明的活跃写入者，
+   所以本节成立的是**数据形状类结论**（429 为 0 行、500 占位、双射关系），
+   不成立的是**代码行为类结论**。252 生产库未连、未授权，未验证。
+2. **投影改动的收益在生产上的量级未测**。本地 437,402 行的构成可能与 252 不同
+   （§9.150 记 252 侧 ≈446,819，含停写窗口），方向一致但绝对值待授权后复测。
+3. **`status_code=500` 是否该改**属另一件事，本迁移没碰。本地数据只能证明
+   「限流时 session 侧记 500」，证不出「上游确实回了 500」还是「本地限流被
+   合成为 500」——这需要读限流写路径，不是数据能回答的。留作独立议题。
+4. **`in_progress` 保真度未提升**。视图的推导链仍然产不出 `in_progress`
+   （v1 有 1,633 条）。要补需要读 823 那条列，即 D9 裁决的事。
