@@ -1149,6 +1149,117 @@ WHERE i.inhparent='ursm_node_snapshot_min'::regclass
    所有按表名过滤的看板/告警会**静默归零**——这是分区化的经典副作用，
    且不报错。需要确认由谁负责把这些查询改成按 `pg_inherits` 汇总。
 
+## 11. 附：改动清单速查
+
+| # | 文件 | 动作 | 依据 |
+|---|---|---|---|
+| 1 | 新增迁移 `82x__ursm_snapshot_min_partition.sql` | 建 ensure 函数 + 预建当日/次日/后日分区 | §3.5 |
+| 2 | 新增迁移（下一步） | `RENAME` + 建父表 + 首个分区（单事务） | §5.2 |
+| 3 | `domains/ursm/v2/persist/retention.go` + **新增** `retention_partition.go` | 双模留存：探测 `relkind` ⇒ 分区走 DROP / heap 走既有批 DELETE；DROP 失败退回 DELETE。7 处与伪代码的偏离见 §4.2.1 | §4.2 / §4.2.1 |
+| 3b | `domains/ursm/v2/persist/retention_test.go` | 新增 8 条（边界 `day_end==cutoff` / 契约守卫 / 探测失败 / DROP 失败回退 / 墙钟上限 / 不编造行数） | §4.2.1 |
+| 3c | `scripts/.mutate-retention-partition.py` | 8 条变异 M18~M25，全部有牙且逐字节还原 | §4.2.1 |
+| 4 | `bg/partition_manager.go`（`ensureSpecs()`，`:1227`） | 加 `ursm_node_snapshot_min (daily)` 条目 | §4.4 |
+| 5 | `db/db.go` | boot 期 ensure 兜底 + `ALTER FUNCTION SET timezone` | §4.4 |
+| 6 | `deploy/sql/schemas/baseline/01-schema.sql` | `:18198` 建表改 `PARTITION BY RANGE (snapshot_ts)` 并补 818 的 24 列；`:22635` PK 保留；`:27486` 索引删除 | Finding A / §3.6 |
+| 7 | `installer/cmd/llm-gw-installer/embeddata/01-schema.sql` | 同上（两份 md5 相同，必须同步） | Finding A |
+| 8 | `domains/ursm/v2/persist/writer.go` | **不改** | §4.1 |
+| 9 | `cmd/gateway/main.go` | **不改**（门控与 schema 无关） | §4.3 |
+| 10 | `.db-audit/sql/{04_slow2,07_dist2,09_final,10_cols,23_crashlog}.sql`、`sql/fixes/2026-10-02-db-storage-reclaim.sql:269` | 适配分区表查询口径 | §5.1 / 风险 8 |
+| 11 | 部署清单 | 固化 `URSM_SNAPSHOT_RETENTION_DAYS` | 风险 2 |
+| 12 | ~~字段拆分（热/冷列分离）~~ | **不做** —— 已实测否证（净收益 ~19% / 21 处读路径 / 治不了病） | §4.5 |
+| 13 | `sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.sql` | **已写，刻意不注册**（手工执行） | §12.1 |
+| 14 | `...825_...down.sql` | 已写，回滚（含 1b/2b 两个让名步骤） | §12.2 |
+| 15 | `bg/partition_manager.go` `ensureSpecs()` | 已接 `ursm_node_snapshot_min (daily)` | §4.4 / §12.1 |
+| 16 | `db/db.go` | 已接 `ensureURSMNodeSnapshotMinDailyPartition`（先判 relkind 再判函数） | §12.1 |
+| 17 | `bg/partition_825_contract_test.go` | 6 条跨文件契约门（反 473） | §12.5 |
+| 18 | `bg/ursm_825_realdb_test.go` | 3 条真库行为回归（`TEST_DATABASE_URL` 门控） | §12.5 |
+| 19 | `scripts/.mutate-825-contract.py` | 13 条变异 M26~M38 | §12.5 |
+
+---
+
+## 12. ★ 落地状态与本地实跑结果（2026-10-04）
+
+### 12.1 落地形态：**手工迁移，不进自动启动序列**
+
+| 组件 | 文件 | 状态 |
+|---|---|---|
+| up | `sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.sql` | 已写，**刻意未注册** |
+| down | `...825_...down.sql` | 已写，手工 |
+| 24h tick 接线 | `bg/partition_manager.go` `ensureSpecs()` | 已接（函数不存在时 log-and-continue） |
+| boot ensure | `db/db.go` `ensureURSMNodeSnapshotMinDailyPartition` | 已接（**容忍缺失**） |
+| DROP 型留存 | `domains/ursm/v2/persist/retention_partition.go` | 已接（按 `relkind` 自适应） |
+
+**为什么手工化**：步骤 1 会对一张 10 GB 活表做 `RENAME`。放进 installer
+自动序列意味着 154/245 任何一次无人值守升级都会在**无人工确认点**的情况下执行它。
+`Test825IsDeliberatelyNotInTheAutoStartupSequence` 把这个决定钉成显式不变量。
+
+**两个接线可以先于 825 上线**（顺序无关）：
+
+- tick：函数不存在时 `slog.Error` + `continue`，每天记一条，不打断进程；
+- boot ensure：**先判父表 `relkind='p'`**，非分区就整个跳过。
+  ★ 这里刻意不同于 750（750 直接 `return err`，会让错误冒到 `db.Open`、
+  进程进 no-DB 模式并触发部署自动回滚）。若照抄 750，"先部署二进制、
+  后跑 825"就会直接把网关弄挂。
+
+### 12.2 ★ 本地 PG 17.11 实跑抓到的 3 个缺陷
+
+**没执行过的迁移文件只是一个断言。** 三个缺陷全部只在真跑时暴露，
+其中两个只在 **up→down→up 往返**上现形。
+
+| # | 缺陷 | 症状 | 修法 |
+|---|---|---|---|
+| 1 | RENAME 时**约束不跟着表改名** | `_legacy` 仍占着 `ursm_node_snapshot_min_pkey`，新父表建同名 PK 报 `relation ... already exists` | 1a-2 步 `RENAME CONSTRAINT` 让出 canonical 名。**改名而非删除** —— 删了 `_legacy` 就失去 PK，回滚那天 writer 的 `ON CONFLICT` 才爆 |
+| 2 | down 不把旧 PK 名换回 canonical | 重新 up 时 `RENAME CONSTRAINT` 报 `does not exist` ⇒ **回滚后再也上不了迁移** | down 加 2b 步还原。★「只能退不能进的回滚是假回滚」 |
+| 3 | down 保留的 `_post825` 仍占着 canonical PK 名 | 同上，重新 up 建 PK 撞名 | down 加 1b 步让名 |
+
+### 12.3 ★★ 静默且致命的一条：ensure 的短路条件
+
+`§3.5` 的 ensure 函数原本第二次短路写的是
+`IF to_regclass('public.' || pname) IS NOT NULL THEN RETURN`，即**按名字**判断。
+
+`up→down→up` 往返时，同名的 `ursm_node_snapshot_min_YYYYMMDD` 仍挂在
+`_post825` 下 ⇒ 短路命中 ⇒ **新建的父表一个分区都没有**。此后每次写入：
+
+```
+ERROR:  no partition of relation "ursm_node_snapshot_min" found for row
+DETAIL:  Partition key of the failing row contains (snapshot_ts) = (2026-10-04 14:14:36+08).
+```
+
+而**迁移返回 RC=0、ensure 返回成功、日志无任何异常**。跑 grep 门永远抓不到它。
+
+**修法**：短路条件改为「已挂在**本父表**下」（`pg_inherits` + `relname`），
+且同名对象挂在别的父表下时**明确 `RAISE EXCEPTION`** 并指名常见来源（`_post825`）。
+**宁可吵，也不要安静地留一个零分区的分区父表。**
+
+### 12.4 实跑通过项（本地 PG 17.11，canonical 文件本身）
+
+| 项 | 期望 | 实测 |
+|---|---|---|
+| 迁移执行 | RC=0 | ✅ |
+| 旧表保留 | 49/12963 行一行不少 | ✅ |
+| 新父表 | `relkind='p'` + 3 个分区 | ✅ |
+| DEFAULT 分区 | 0 | ✅ |
+| 分区边界 | `+08`（**不是 `Z`**） | ✅ |
+| 列数 / ts 单列索引 | 56 / 0 | ✅ |
+| writer 的 `ON CONFLICT` | 连续两条只落 1 行 | ✅ |
+| ensure 幂等 | 连调 3 次仍是 3 个分区 | ✅ |
+| 重放 | 被 fail-closed 守卫挡住 | ✅ |
+| up→down | 回非分区表、历史不少、PK 名归位 | ✅ |
+| down→up（`_post825` 在） | **大声报错**，非静默 | ✅ |
+| 清掉 `_post825` 后 up | 3 分区 + 边界 +08 | ✅ |
+
+> ★ 顺带验证了 §5.2 的「单事务原子切换」主张：第一次实跑在 PK 撞名处失败后，
+> 整笔事务**整体回滚**（`relkind` 仍 `'r'`、无 `_legacy`），不留半成品。
+
+### 12.5 门
+
+- `bg/partition_825_contract_test.go` —— 6 条**跨文件契约**门（反 473 本体、
+  粒度、`::date`、boot 接线、刻意未注册、分区名契约、无 DEFAULT）
+- `bg/ursm_825_realdb_test.go` —— 3 条**真库行为**回归（门控 `TEST_DATABASE_URL`），
+  专打"grep 门抓不到、只有执行才暴露"的那类缺陷
+- `scripts/.mutate-825-contract.py` —— 13 条变异 `M26~M38`，全部有牙且逐字节还原
+
+
 ### 12.6 ★★ 818 的 payload 剥离实测生效，以及一次被我推翻的自造结论
 
 #### 先说推翻的那条
@@ -1310,115 +1421,4 @@ typed 化键只排了 7 个」**。这正是 §4.5 引用的"7 vs 31"那个漂�
 > 旧 release 不在机器上了（245 的 `/opt/llm-gateway-go/slots/8781` 已不存在）。
 
 ---
-
-## 11. 附：改动清单速查
-
-| # | 文件 | 动作 | 依据 |
-|---|---|---|---|
-| 1 | 新增迁移 `82x__ursm_snapshot_min_partition.sql` | 建 ensure 函数 + 预建当日/次日/后日分区 | §3.5 |
-| 2 | 新增迁移（下一步） | `RENAME` + 建父表 + 首个分区（单事务） | §5.2 |
-| 3 | `domains/ursm/v2/persist/retention.go` + **新增** `retention_partition.go` | 双模留存：探测 `relkind` ⇒ 分区走 DROP / heap 走既有批 DELETE；DROP 失败退回 DELETE。7 处与伪代码的偏离见 §4.2.1 | §4.2 / §4.2.1 |
-| 3b | `domains/ursm/v2/persist/retention_test.go` | 新增 8 条（边界 `day_end==cutoff` / 契约守卫 / 探测失败 / DROP 失败回退 / 墙钟上限 / 不编造行数） | §4.2.1 |
-| 3c | `scripts/.mutate-retention-partition.py` | 8 条变异 M18~M25，全部有牙且逐字节还原 | §4.2.1 |
-| 4 | `bg/partition_manager.go`（`ensureSpecs()`，`:1227`） | 加 `ursm_node_snapshot_min (daily)` 条目 | §4.4 |
-| 5 | `db/db.go` | boot 期 ensure 兜底 + `ALTER FUNCTION SET timezone` | §4.4 |
-| 6 | `deploy/sql/schemas/baseline/01-schema.sql` | `:18198` 建表改 `PARTITION BY RANGE (snapshot_ts)` 并补 818 的 24 列；`:22635` PK 保留；`:27486` 索引删除 | Finding A / §3.6 |
-| 7 | `installer/cmd/llm-gw-installer/embeddata/01-schema.sql` | 同上（两份 md5 相同，必须同步） | Finding A |
-| 8 | `domains/ursm/v2/persist/writer.go` | **不改** | §4.1 |
-| 9 | `cmd/gateway/main.go` | **不改**（门控与 schema 无关） | §4.3 |
-| 10 | `.db-audit/sql/{04_slow2,07_dist2,09_final,10_cols,23_crashlog}.sql`、`sql/fixes/2026-10-02-db-storage-reclaim.sql:269` | 适配分区表查询口径 | §5.1 / 风险 8 |
-| 11 | 部署清单 | 固化 `URSM_SNAPSHOT_RETENTION_DAYS` | 风险 2 |
-| 12 | ~~字段拆分（热/冷列分离）~~ | **不做** —— 已实测否证（净收益 ~19% / 21 处读路径 / 治不了病） | §4.5 |
-| 13 | `sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.sql` | **已写，刻意不注册**（手工执行） | §12.1 |
-| 14 | `...825_...down.sql` | 已写，回滚（含 1b/2b 两个让名步骤） | §12.2 |
-| 15 | `bg/partition_manager.go` `ensureSpecs()` | 已接 `ursm_node_snapshot_min (daily)` | §4.4 / §12.1 |
-| 16 | `db/db.go` | 已接 `ensureURSMNodeSnapshotMinDailyPartition`（先判 relkind 再判函数） | §12.1 |
-| 17 | `bg/partition_825_contract_test.go` | 6 条跨文件契约门（反 473） | §12.5 |
-| 18 | `bg/ursm_825_realdb_test.go` | 3 条真库行为回归（`TEST_DATABASE_URL` 门控） | §12.5 |
-| 19 | `scripts/.mutate-825-contract.py` | 13 条变异 M26~M38 | §12.5 |
-
----
-
-## 12. ★ 落地状态与本地实跑结果（2026-10-04）
-
-### 12.1 落地形态：**手工迁移，不进自动启动序列**
-
-| 组件 | 文件 | 状态 |
-|---|---|---|
-| up | `sql/migrations/startup/825_ursm_node_snapshot_min_partitioned.sql` | 已写，**刻意未注册** |
-| down | `...825_...down.sql` | 已写，手工 |
-| 24h tick 接线 | `bg/partition_manager.go` `ensureSpecs()` | 已接（函数不存在时 log-and-continue） |
-| boot ensure | `db/db.go` `ensureURSMNodeSnapshotMinDailyPartition` | 已接（**容忍缺失**） |
-| DROP 型留存 | `domains/ursm/v2/persist/retention_partition.go` | 已接（按 `relkind` 自适应） |
-
-**为什么手工化**：步骤 1 会对一张 10 GB 活表做 `RENAME`。放进 installer
-自动序列意味着 154/245 任何一次无人值守升级都会在**无人工确认点**的情况下执行它。
-`Test825IsDeliberatelyNotInTheAutoStartupSequence` 把这个决定钉成显式不变量。
-
-**两个接线可以先于 825 上线**（顺序无关）：
-
-- tick：函数不存在时 `slog.Error` + `continue`，每天记一条，不打断进程；
-- boot ensure：**先判父表 `relkind='p'`**，非分区就整个跳过。
-  ★ 这里刻意不同于 750（750 直接 `return err`，会让错误冒到 `db.Open`、
-  进程进 no-DB 模式并触发部署自动回滚）。若照抄 750，"先部署二进制、
-  后跑 825"就会直接把网关弄挂。
-
-### 12.2 ★ 本地 PG 17.11 实跑抓到的 3 个缺陷
-
-**没执行过的迁移文件只是一个断言。** 三个缺陷全部只在真跑时暴露，
-其中两个只在 **up→down→up 往返**上现形。
-
-| # | 缺陷 | 症状 | 修法 |
-|---|---|---|---|
-| 1 | RENAME 时**约束不跟着表改名** | `_legacy` 仍占着 `ursm_node_snapshot_min_pkey`，新父表建同名 PK 报 `relation ... already exists` | 1a-2 步 `RENAME CONSTRAINT` 让出 canonical 名。**改名而非删除** —— 删了 `_legacy` 就失去 PK，回滚那天 writer 的 `ON CONFLICT` 才爆 |
-| 2 | down 不把旧 PK 名换回 canonical | 重新 up 时 `RENAME CONSTRAINT` 报 `does not exist` ⇒ **回滚后再也上不了迁移** | down 加 2b 步还原。★「只能退不能进的回滚是假回滚」 |
-| 3 | down 保留的 `_post825` 仍占着 canonical PK 名 | 同上，重新 up 建 PK 撞名 | down 加 1b 步让名 |
-
-### 12.3 ★★ 静默且致命的一条：ensure 的短路条件
-
-`§3.5` 的 ensure 函数原本第二次短路写的是
-`IF to_regclass('public.' || pname) IS NOT NULL THEN RETURN`，即**按名字**判断。
-
-`up→down→up` 往返时，同名的 `ursm_node_snapshot_min_YYYYMMDD` 仍挂在
-`_post825` 下 ⇒ 短路命中 ⇒ **新建的父表一个分区都没有**。此后每次写入：
-
-```
-ERROR:  no partition of relation "ursm_node_snapshot_min" found for row
-DETAIL:  Partition key of the failing row contains (snapshot_ts) = (2026-10-04 14:14:36+08).
-```
-
-而**迁移返回 RC=0、ensure 返回成功、日志无任何异常**。跑 grep 门永远抓不到它。
-
-**修法**：短路条件改为「已挂在**本父表**下」（`pg_inherits` + `relname`），
-且同名对象挂在别的父表下时**明确 `RAISE EXCEPTION`** 并指名常见来源（`_post825`）。
-**宁可吵，也不要安静地留一个零分区的分区父表。**
-
-### 12.4 实跑通过项（本地 PG 17.11，canonical 文件本身）
-
-| 项 | 期望 | 实测 |
-|---|---|---|
-| 迁移执行 | RC=0 | ✅ |
-| 旧表保留 | 49/12963 行一行不少 | ✅ |
-| 新父表 | `relkind='p'` + 3 个分区 | ✅ |
-| DEFAULT 分区 | 0 | ✅ |
-| 分区边界 | `+08`（**不是 `Z`**） | ✅ |
-| 列数 / ts 单列索引 | 56 / 0 | ✅ |
-| writer 的 `ON CONFLICT` | 连续两条只落 1 行 | ✅ |
-| ensure 幂等 | 连调 3 次仍是 3 个分区 | ✅ |
-| 重放 | 被 fail-closed 守卫挡住 | ✅ |
-| up→down | 回非分区表、历史不少、PK 名归位 | ✅ |
-| down→up（`_post825` 在） | **大声报错**，非静默 | ✅ |
-| 清掉 `_post825` 后 up | 3 分区 + 边界 +08 | ✅ |
-
-> ★ 顺带验证了 §5.2 的「单事务原子切换」主张：第一次实跑在 PK 撞名处失败后，
-> 整笔事务**整体回滚**（`relkind` 仍 `'r'`、无 `_legacy`），不留半成品。
-
-### 12.5 门
-
-- `bg/partition_825_contract_test.go` —— 6 条**跨文件契约**门（反 473 本体、
-  粒度、`::date`、boot 接线、刻意未注册、分区名契约、无 DEFAULT）
-- `bg/ursm_825_realdb_test.go` —— 3 条**真库行为**回归（门控 `TEST_DATABASE_URL`），
-  专打"grep 门抓不到、只有执行才暴露"的那类缺陷
-- `scripts/.mutate-825-contract.py` —— 13 条变异 `M26~M38`，全部有牙且逐字节还原
-
 ---
