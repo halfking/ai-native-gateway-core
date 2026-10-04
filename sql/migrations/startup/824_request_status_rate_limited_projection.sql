@@ -124,15 +124,17 @@ BEGIN
     -- 每个读方冲突。实测并发读方持锁时这条 EXECUTE 直接超时，而本迁移刚打印过
     -- "nothing to do"。安装器**每次部署都重跑整条链**（applySQL 没有
     -- schema_migrations 跳过），所以不早退等于每次部署都无谓抢一次锁。
-    -- 幂等判据只能是**单向**的：824 引入的 `rate_limit_exceeded` 字面量在
-    -- 824 之前的任何形态里都不存在（本地真库实测现网 viewdef 出现 0 次），
-    -- 而 pg_get_viewdef 对字面量是逐字保留的（只重排 CASE 的 WHEN/END 排版），
-    -- 所以它是稳定判据。反方向不成立：新式是旧式的**严格超集**（保留了
-    -- `WHEN t.status_code = 429 THEN 'rate_limited'` 那臂），旧式是它的子串，
-    -- 「旧式是否消失」没有任何可测形式。这里不写一条恒真的假检查。
+    -- 幂等判据（2026-10-04 §R43/L5 强化）：锚 `key_throttled`，而不是
+    -- `rate_limit_exceeded`。两者都在 824 之前的任何形态里不存在（本地真库
+    -- 实测现网 viewdef 出现 0 次），且 pg_get_viewdef 对字面量逐字保留（只
+    -- 重排 CASE 的 WHEN/END 排版），所以都是稳定锚。但 R41 曾把判定臂从
+    -- 单值 `= 'rate_limit_exceeded'` 订正为 IN 集两种字面量——锚前者时，
+    -- 已应用过**单值形态**的库重放修正版会被误判 no-op，IN 集修正对它
+    -- 永远不可达；锚 `key_throttled` 则三种形态（pre-824 / 单值 824 /
+    -- IN 集 824）只有目标形态命中，判据在两个方向上都单向可判。
     v_def := pg_get_viewdef('public.request_logs_with_current_month'::regclass, true);
-    IF position('rate_limit_exceeded' in v_def) > 0 THEN
-      RAISE NOTICE '824: canonical view already projects rate_limited from error_kind; nothing to do';
+    IF position('key_throttled' in v_def) > 0 THEN
+      RAISE NOTICE '824: canonical view already projects rate_limited from the IN-set (rate_limit_exceeded + key_throttled); nothing to do';
       RETURN;
     END IF;
     SELECT EXISTS (SELECT 1 FROM information_schema.columns

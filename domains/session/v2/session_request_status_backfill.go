@@ -393,6 +393,7 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 	// 0 (= release-gate PASS) instead of failing loudly.
 	tx, err := b.db.Begin(ctx)
 	if err != nil {
+		requestStatusBackfillTotal.WithLabelValues("error").Inc()
 		slog.Warn("session_turns request_status backfill: remaining count begin failed",
 			"error", err)
 		requestStatusBackfillRemaining.Set(-1)
