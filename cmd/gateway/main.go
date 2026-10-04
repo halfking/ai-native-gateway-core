@@ -6030,6 +6030,14 @@ func main() {
 		slog.Info("maintain-web static handler configured", "dir", os.Getenv("MAINTAIN_WEB_DIST"))
 	}
 
+	// web-mobile（Hyper 移动前端）SPA + assets。MOBILE_WEB_DIST 优先；
+	// 未设置时探测 ./web-mobile/dist（repo 根运行自动挂载本地构建，
+	// 容器镜像不带该目录 → 不注册，零行为变化）。
+	mobileStatic := NewMobileStaticHandler(os.Getenv("MOBILE_WEB_DIST"))
+	if mobileStatic != nil {
+		slog.Info("mobile-web static handler configured", "dir", mobileStatic.distDir)
+	}
+
 	slog.Info("CHECKPOINT: before router init")
 
 	// ── Router ────────────────────────────────────────────────────────────
@@ -7365,6 +7373,8 @@ func main() {
 	// pass-through, preserving the pre-migration rollback path. This call
 	// was previously missing — the proxy existed but was never mounted.
 	finalHandler := newMaintainGatewayHandler(handler, maintainStatic)
+	// /m 与 /m-assets 由 mobile 静态挂载持有，其余透传（未配置时 no-op）。
+	finalHandler = newMobileGatewayHandler(finalHandler, mobileStatic)
 
 	// 2026-08-11 (479): 构建 V2 多层队列调度 Pipeline 并注入 executor。
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，

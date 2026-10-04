@@ -1,0 +1,36 @@
+// 导航 SSOT（UI规范 02 §4 + 17 §2 席位映射）。
+import type { IconName } from '@/components/common/AppIcon.vue'
+
+export interface NavItem {
+  key: string
+  to: string
+  icon: IconName
+  titleKey: string
+  exact?: boolean
+}
+
+/** 底栏 4 席直达 + 「更多」固定席（≤5 席约束）。 */
+export const BOTTOM_NAV: readonly NavItem[] = [
+  { key: 'home', to: '/', icon: 'home', titleKey: 'nav.home', exact: true },
+  { key: 'nodes', to: '/nodes', icon: 'server', titleKey: 'nav.nodes' },
+  { key: 'models', to: '/models', icon: 'cube', titleKey: 'nav.models' },
+  { key: 'keys', to: '/keys', icon: 'key', titleKey: 'nav.keys' },
+] as const
+
+/** 抽屉二级导航。 */
+export const DRAWER_NAV: readonly NavItem[] = [
+  { key: 'alerts', to: '/alerts', icon: 'alert', titleKey: 'nav.alerts' },
+  { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
+] as const
+
+const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
+
+/** 根级页面（返回钮不出现，06 §7「返回/根级导航」切换）。 */
+export function isRootRoute(path: string): boolean {
+  return ROOT_PATHS.has(path)
+}
+
+export function isNavItemActive(item: NavItem, path: string): boolean {
+  if (item.exact) return path === item.to
+  return path === item.to || path.startsWith(item.to + '/')
+}
