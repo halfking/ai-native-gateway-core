@@ -590,6 +590,30 @@ slog.Info("ursm.v2: snapshot retention dropped expired partitions",
 > **那是列存专有的**（DROP 列存表会在列存元数据表留死元组）。本目标是 **heap** 表，
 > **不需要**这段，照抄反而是给 heap 表跑一次 60 分钟的 VACUUM FULL。
 
+#### 4.2.1 ★ 已落地形态（2026-10-04 提交）—— 与上面伪代码的 7 处偏离
+
+上面 §4.2 的伪代码是评审用的形态，**实际实现与它有 7 处刻意偏离**。
+逐条记在这里，是为了防止后来人照伪代码改回去。
+
+| # | 伪代码 | 实际实现 | 为什么 |
+|---|---|---|---|
+| 1 | 隐含"迁移后就是分区表" | 每轮探测 `pg_class.relkind='p'`，分区 ⇒ DROP、heap ⇒ 既有批 DELETE | **形态由数据库自己回答，不由开关回答。** 若用配置开关，就会出现"代码已部署、开关忘翻 ⇒ DROP 打到了非分区表"这一状态。与 `Config.ResolvePersistEnabled()` 同源思路 |
+| 2 | 在 SQL 里用 `now() - $1::interval` 过滤完再返回名字 | SQL 只返回 `name` / `day_end` / `bytes`，过滤在 Go 侧 | 让「边界判据」能被单测精确钉住（见下）。代价是返回行数变多，仍是 O(分区数) ≈ 10 行 |
+| 3 | 日期换算隐含用会话时区 | `AT TIME ZONE 'Asia/Shanghai'` 显式钉在 SQL 里 | 换算留在 SQL，**Go 侧不需要第二份时区常量**。`bg/partition_manager.go:33` 的 `partitionTZ` 已是同一份日历语义的另一副本；两处漂移会把 DROP 判据挪 8 小时 ⇒ 提前删掉最多 8 小时存活数据 |
+| 4 | 未规定失败语义 | DROP 失败 ⇒ 退回批 DELETE，并置 `Degraded=true` + warn | 留存停摆的表现是磁盘单调增长，**且没有任何告警**。分区表上 DELETE 依然语义正确（跨分区逐行删），只是慢、不立即归还磁盘。宁可慢也不能停 |
+| 5 | `DROP TABLE IF EXISTS %s` 裸拼 | `pgx.Identifier{"public", name}.Sanitize()` | 分区名来自系统目录，但仍不该裸拼。变异 M24 验证：不转义则门红 |
+| 6 | 未规定行数口径 | DROP 模式**不报行数**，`RowsDeleted` 恒 0 | 逐分区 `reltuples` 相加只是估算，报成"删了 N 行"是撒谎。两个模式各报各的量纲，不合并成一个数 |
+| 7 | `SET lock_timeout; DROP ...` 写在一条语句里 | `SET LOCAL lock_timeout` 与 `DROP` 分两条 Exec、同一事务 | pgx 默认扩展协议下多语句会失败；`SET LOCAL` 随事务自动回滚，比 `SET` 少一次连接状态残留 |
+
+**另有一处接口层的取舍**：`Query` 加在 `SnapshotRetentionDB` 而非 `SnapshotRetentionTx` 上 ——
+分区形态探测与目录查询都是单条只读语句，不该占用事务槽。若放进 Tx，每轮清理会多开一次
+`Begin`，而既有测试正是按 `Begin` 次数断言批次边界的（`TestSnapshotRetentionBatchLoopStopsOnPartialBatch`）。
+
+**门与变异**：`domains/ursm/v2/persist/retention_test.go` 新增 8 条，
+`scripts/.mutate-retention-partition.py` 对应 8 条变异（M18~M25）全部有牙且逐字节还原。
+其中 M18 专门钉住"`day_end` 恰好等于 cutoff"这条边界 —— 判据是 `!After` 不是 `After`；
+为此给 worker 加了可注入时钟缝 `w.now`，否则这条边界只能测到"差不多相等"。
+
 ### 4.3 `cmd/gateway/main.go` —— **门控不受影响** 【源码】
 
 `main.go:1259-1263` 的 persist writer 门控：
@@ -633,6 +657,54 @@ slog.Info("ursm.v2: snapshot retention dropped expired partitions",
    `CREATE TABLE PARTITION OF`，因为 `schema_migrations` 在事务内看不到 autocommit DDL。
    本设计用的是 plpgsql 函数 + `EXECUTE`（在函数内是 autocommit 语义），
    与 750 走的是同一条路，**不受该限制**；但**盖章（stamp）那一步必须在事务外单独执行**。
+
+### 4.5 ★ 字段拆分（热/冷列分离）—— **已实测，结论是不做** 【实测 2026-10-04】
+
+提案与需求里都提到"把不同的数据与字段按行拆分"。这里给出**否证**，附实测口径。
+把它写进来而不是略过，是因为"听起来很合理的重构"如果没有数字，会在下一轮
+被重新提出来。
+
+**取数**：2026-10-04 在 252 上取最近一个 10 分钟窗口（健康日，约 2.2 万行，限 2 万行采样），
+逐列测 `pg_column_size`。**口径警告**：`avg()` 会忽略 NULL，所以单看
+`avg(pg_column_size(col))` 得到的是"非空行里的平均长度"，不是每行成本。
+必须乘非空率才是摊销值 —— 本节两个数都给了。
+
+| 列组 | 非空率 | 非空时均值 | **每行摊销** |
+|---|---|---|---|
+| `payload jsonb` | 100% | 23.2 B | **23.2 B** |
+| `raw_model_name` | 100% | 20.8 B | **20.8 B** |
+| `cool_reason` | 23.0% | 33.0 B | 7.6 B |
+| `manual_reason` / `manual_actor` | 15.7% | 24.8 B | 3.9 B ×2 |
+| `last_err` | 27.3% | 9.7 B | 2.7 B |
+| `disabled_reason` | 0.9% | 16.5 B | 0.1 B |
+| `canonical_name` / `health_status` | 100% | ~1 B | ~2.3 B |
+| **变长文本+jsonb 合计** | | | **≈ 64.5 B** |
+
+`avg(pg_column_size(整行))` = **212 B**（**仅数据部分**，不含 24 B tuple header、
+null bitmap 与对齐——与 §5.9 按代实测的 288 B/行不是同一口径，不要混用）。
+
+**结论：定长列占 70%，不是变长大列。** 212 B 里变宽部分只有 ~64 B；
+剩下 ~148 B 是 56 个定长列，其中 10 个 `*_ms` bigint + `event_seq` 就占 **88 B**。
+这是 PostgreSQL 的关键性质：**定长列即使全为 NULL 也照样占槽位**，
+所以"把稀疏的诊断字段挪走"确实能缩行 —— 但靶子不是 `payload`。
+
+**但仍然不做，三条理由**：
+
+1. **冷侧不稀疏。** 至少带一个诊断字段（`last_err` / `cool_reason` / `manual_reason` /
+   `disabled_reason` / `last_attempt_ms` / `last_request_error_at_ms` / `manual_at_ms` /
+   `disabled`）的行占 **54.6%**。冷表要装一半以上的行，还要自带一套四列 PK 索引。
+   按 22.5M 行 / heap 9129 MB 折算，净收益约 **19%**，不是数量级差异。
+2. **读路径代价覆盖不到。** 这些列名散在 **21 个 Go 文件**里
+   （`admin/credential_monitor.go`、`bg/credential_probe_v2.go`、
+   `domains/ursm/v2/store/probe_evidence.go`、`domains/hostedtask/*` 等）。
+   拆分要么给每个读方加 JOIN，要么把 21 处读路径全改。
+3. **它治不了真正的病。** 这张表的病是**DELETE 型留存让磁盘单调增长**（§1.3），
+   不是行宽。分区化 + DROP 留存一次性解决归还问题；字段拆分解决不了任何一条。
+
+> ★ **口径订正（与 §5.9 同族）**：上表是**单窗口、单代**的数据。
+> 818 之前的行宽是 437 B、之后 288 B —— 用哪个口径做结论会得出不同的收益倍数。
+> 上面用的是 818 后的形态（与稳态一致），但**行宽本身会随代变化**，
+> 真正稳定的结论是第 1 条的 54.6%（非空率，不受体宽口径影响）。
 
 ---
 
@@ -1054,7 +1126,9 @@ WHERE i.inhparent='ursm_node_snapshot_min'::regclass
 |---|---|---|---|
 | 1 | 新增迁移 `82x__ursm_snapshot_min_partition.sql` | 建 ensure 函数 + 预建当日/次日/后日分区 | §3.5 |
 | 2 | 新增迁移（下一步） | `RENAME` + 建父表 + 首个分区（单事务） | §5.2 |
-| 3 | `domains/ursm/v2/persist/retention.go` | `deleteBatch` → `dropExpiredPartitions`；删游标/退出条件；`BatchSize` 标 deprecated；日志改 `partitions_dropped` + `bytes_reclaimed` | §4.2 |
+| 3 | `domains/ursm/v2/persist/retention.go` + **新增** `retention_partition.go` | 双模留存：探测 `relkind` ⇒ 分区走 DROP / heap 走既有批 DELETE；DROP 失败退回 DELETE。7 处与伪代码的偏离见 §4.2.1 | §4.2 / §4.2.1 |
+| 3b | `domains/ursm/v2/persist/retention_test.go` | 新增 8 条（边界 `day_end==cutoff` / 契约守卫 / 探测失败 / DROP 失败回退 / 墙钟上限 / 不编造行数） | §4.2.1 |
+| 3c | `scripts/.mutate-retention-partition.py` | 8 条变异 M18~M25，全部有牙且逐字节还原 | §4.2.1 |
 | 4 | `bg/partition_manager.go`（`ensureSpecs()`，`:1227`） | 加 `ursm_node_snapshot_min (daily)` 条目 | §4.4 |
 | 5 | `db/db.go` | boot 期 ensure 兜底 + `ALTER FUNCTION SET timezone` | §4.4 |
 | 6 | `deploy/sql/schemas/baseline/01-schema.sql` | `:18198` 建表改 `PARTITION BY RANGE (snapshot_ts)` 并补 818 的 24 列；`:22635` PK 保留；`:27486` 索引删除 | Finding A / §3.6 |
@@ -1063,3 +1137,4 @@ WHERE i.inhparent='ursm_node_snapshot_min'::regclass
 | 9 | `cmd/gateway/main.go` | **不改**（门控与 schema 无关） | §4.3 |
 | 10 | `.db-audit/sql/{04_slow2,07_dist2,09_final,10_cols,23_crashlog}.sql`、`sql/fixes/2026-10-02-db-storage-reclaim.sql:269` | 适配分区表查询口径 | §5.1 / 风险 8 |
 | 11 | 部署清单 | 固化 `URSM_SNAPSHOT_RETENTION_DAYS` | 风险 2 |
+| 12 | ~~字段拆分（热/冷列分离）~~ | **不做** —— 已实测否证（净收益 ~19% / 21 处读路径 / 治不了病） | §4.5 |

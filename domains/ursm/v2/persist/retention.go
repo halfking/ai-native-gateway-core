@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,14 +63,20 @@ func SnapshotRetentionConfigFromEnv() SnapshotRetentionConfig {
 
 // SnapshotRetentionTx / SnapshotRetentionDB 把清理逻辑与 pgx 连接池解耦，
 // 测试可注入假实现（每批一个事务，Begin 会被多次调用）。
+//
+// Query 加在 DB 而非 Tx 上：分区形态探测与分区目录查询都是单条只读语句，
+// 不需要事务，也不该占用一个事务槽。若放进 Tx，探测会给每轮清理多开一次
+// Begin，而既有测试正是按 Begin 次数断言批次边界的。
 type SnapshotRetentionTx interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Commit(ctx context.Context) error
 	Rollback(ctx context.Context) error
 }
 
 type SnapshotRetentionDB interface {
 	Begin(ctx context.Context) (SnapshotRetentionTx, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 type snapshotRetentionPool struct {
@@ -78,6 +85,10 @@ type snapshotRetentionPool struct {
 
 func (p snapshotRetentionPool) Begin(ctx context.Context) (SnapshotRetentionTx, error) {
 	return p.pool.Begin(ctx)
+}
+
+func (p snapshotRetentionPool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return p.pool.Query(ctx, sql, args...)
 }
 
 // SnapshotRetentionWorker 周期分批删除超过保留期的 ursm_node_snapshot_min 行
@@ -89,10 +100,24 @@ type SnapshotRetentionWorker struct {
 	db  SnapshotRetentionDB
 	cfg SnapshotRetentionConfig
 
+	// now 是时钟缝。生产恒为 time.Now；测试注入固定时刻以精确断言
+	// 「分区右开边界恰好等于 cutoff」这条边界 —— 用真实时钟只能测到
+	// "差不多相等"，那样的断言没有牙（未来任何一次把 !After 改成 After
+	// 的改动都能从缝里溜过去）。nil 时回落到 time.Now。
+	now func() time.Time
+
 	started  atomic.Bool
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	done     chan struct{}
+}
+
+// nowTime 取当前时刻，优先用注入的时钟。
+func (w *SnapshotRetentionWorker) nowTime() time.Time {
+	if w != nil && w.now != nil {
+		return w.now()
+	}
+	return time.Now()
 }
 
 // NewSnapshotRetentionWorker 构造清理 worker。db 为 nil 时 Start 变为 no-op
@@ -153,22 +178,76 @@ func (w *SnapshotRetentionWorker) run() {
 	}
 }
 
-// CleanupOnce 删除超过保留期的快照行，失败只记 warn，不返回中断。
+// CleanupOnce 删除超过保留期的快照，失败只记 warn，不返回中断。
+//
+// 日志按模式分流：DROP 型留存报分区数与字节数，DELETE 型报行数。
+// ★ 注意本仓**没有**对应的 Prometheus 指标（全仓 grep 无）——
+//
+//	留存可观测性目前只靠这一行 slog，所以 mode 字段必须带上：
+//	它是事后从日志反查"当时走的是哪条路径"的唯一线索。
 func (w *SnapshotRetentionWorker) CleanupOnce(ctx context.Context) {
 	if w.Disabled() || w.db == nil {
 		return
 	}
-	deleted, err := w.CleanupExpired(ctx)
+	res, err := w.CleanupWithStats(ctx)
 	switch {
 	case err != nil:
-		slog.Warn("ursm.v2: snapshot retention cleanup failed (non-fatal)", "error", err)
-	case deleted > 0:
+		slog.Warn("ursm.v2: snapshot retention cleanup failed (non-fatal)",
+			"error", err, "mode", res.Mode)
+	case res.PartitionsDropped > 0:
+		slog.Info("ursm.v2: snapshot retention dropped expired partitions",
+			"mode", res.Mode, "partitions_dropped", res.PartitionsDropped,
+			"bytes_reclaimed", res.BytesReclaimed, "retention", w.cfg.Retention.String())
+	case res.RowsDeleted > 0:
 		slog.Info("ursm.v2: snapshot retention removed expired snapshots",
-			"deleted", deleted, "retention", w.cfg.Retention.String())
+			"mode", res.Mode, "deleted", res.RowsDeleted, "retention", w.cfg.Retention.String())
 	}
 }
 
-// CleanupExpired 分批删除 snapshot_ts 早于保留期的行。每批独立事务：
+// CleanupWithStats 按数据库当前的表形态选择留存策略，并返回结构化结果。
+//
+// 分派完全由 pg_class.relkind 决定（见 retention_partition.go）：
+// 分区父表 ⇒ DROP 分区；普通 heap ⇒ 既有批 DELETE。
+//
+// DROP 失败时**退回批 DELETE 而不是放弃本轮**：分区表上 DELETE 依然语义正确
+// （会跨分区逐行删），只是慢、不立即归还磁盘。宁可慢也不能让留存静默停摆 ——
+// 停摆的表现是磁盘单调增长，而没有任何告警。
+func (w *SnapshotRetentionWorker) CleanupWithStats(ctx context.Context) (RetentionResult, error) {
+	if w.Disabled() || w.db == nil {
+		return RetentionResult{Mode: RetentionModeDisabled}, nil
+	}
+
+	if w.isSnapshotPartitioned(ctx) {
+		res, err := w.cleanupPartitioned(ctx)
+		if err == nil {
+			return res, nil
+		}
+		slog.Warn("ursm.v2: snapshot partition drop failed; degrading to row delete for this round",
+			"error", err, "partitions_dropped", res.PartitionsDropped, "candidates", res.Candidates)
+		deleted, derr := w.cleanupRows(ctx)
+		return RetentionResult{
+			Mode:              RetentionModeRowDelete,
+			RowsDeleted:       deleted,
+			PartitionsDropped: res.PartitionsDropped,
+			BytesReclaimed:    res.BytesReclaimed,
+			Candidates:        res.Candidates,
+			Degraded:          true,
+		}, derr
+	}
+
+	deleted, err := w.cleanupRows(ctx)
+	return RetentionResult{Mode: RetentionModeRowDelete, RowsDeleted: deleted}, err
+}
+
+// CleanupExpired 保留旧签名：返回删除行数。DROP 模式下不数行（逐分区
+// reltuples 相加只是估算，报成"删了 N 行"是撒谎），故返回 0 —— 需要
+// 分区数/字节数请用 CleanupWithStats。
+func (w *SnapshotRetentionWorker) CleanupExpired(ctx context.Context) (int64, error) {
+	res, err := w.CleanupWithStats(ctx)
+	return res.RowsDeleted, err
+}
+
+// cleanupRows 分批删除 snapshot_ts 早于保留期的行。每批独立事务：
 // 单批失败即停止并返回已删数量与错误；批次循环直到删空或超过
 // MaxCleanupWindow 墙钟上限（剩余量由下一个 tick 续删）。
 //
@@ -181,11 +260,11 @@ func (w *SnapshotRetentionWorker) CleanupOnce(ctx context.Context) {
 // ursm_node_snapshot_min_pkey（snapshot_ts 是首列），每批都从最老死条目起步。
 // 下界取 `>=`（含）而非 `>`：同一 snapshot_ts 上约有 1,008 行（一次 flush
 // 全量落盘全部组合），含边界只会让下一批重扫这一个时间戳，绝不会跳过任何行。
-func (w *SnapshotRetentionWorker) CleanupExpired(ctx context.Context) (int64, error) {
+func (w *SnapshotRetentionWorker) cleanupRows(ctx context.Context) (int64, error) {
 	if w.Disabled() || w.db == nil {
 		return 0, nil
 	}
-	deadline := time.Now().Add(w.cfg.MaxCleanupWindow)
+	deadline := w.nowTime().Add(w.cfg.MaxCleanupWindow)
 	var total int64
 	// floor 初始为零值时刻：等价于"无下界"，从保留期边界内的最老行开始。
 	var floor time.Time
@@ -202,7 +281,7 @@ func (w *SnapshotRetentionWorker) CleanupExpired(ctx context.Context) (int64, er
 			return total, nil
 		}
 		floor = nextFloor
-		if time.Now().After(deadline) {
+		if w.nowTime().After(deadline) {
 			return total, nil
 		}
 	}
