@@ -107,6 +107,53 @@ func TestSessionModelNameSources(t *testing.T) {
 		}
 	}
 
+	// Backfill eligibility, sampled.
+	//
+	// The exact count is a 1.69M × 2.15M semi-join and it exceeded a 280 s
+	// statement timeout, so this reports a **deterministic sample** and says so.
+	//
+	// The predicate is `substr(md5(request_id),1,2) = '00'`, not a threshold like
+	// `md5(x) < '0.02'`: that reads as a decimal comparison but is a *string*
+	// comparison, and since the smallest hex digit ('0', 0x30) sorts after '.'
+	// (0x2E), it matches **zero rows** — a sampling predicate that silently
+	// selects nothing is the worst kind, because the report still prints.
+	// Equality against a real hex pair cannot fail that way.
+	//
+	// The scaling factor is **256**, not 64: two hex characters give 16×16 pairs.
+	// I first wrote `*64`, which under-reported the population fourfold, and the
+	// sentence still read plausibly — a wrong multiplier in a log line is
+	// indistinguishable from a right one until someone reconciles it against the
+	// exact figure. The cross-check that catches it is here and is cheap:
+	// (rows lacking raw_model_name) / 256 must land on the sample size.
+	//
+	// Reported, never asserted: this is the number a backfill would move, and
+	// pinning it would turn the gate into a tripwire on a data job's progress.
+	var sampTotal, sampEligible int64
+	if err := pool.QueryRow(ctx, `
+		WITH samp AS (
+		    SELECT t.request_id
+		    FROM public.session_turns t
+		    WHERE t.raw_model_name IS NULL
+		      AND substr(md5(t.request_id), 1, 2) = '00'
+		)
+		SELECT count(*),
+		       count(*) FILTER (WHERE EXISTS (
+		           SELECT 1 FROM public.request_logs r WHERE r.request_id = samp.request_id))
+		FROM samp`).Scan(&sampTotal, &sampEligible); err != nil {
+		t.Logf("backfill eligibility not measurable (%v)", err)
+	} else if sampTotal == 0 {
+		t.Logf("backfill eligibility: sample matched 0 rows — check the sampling predicate " +
+			"before reading anything into this number")
+	} else {
+		t.Logf("backfill eligibility: measured %d rows of a 1/256 deterministic sample, so the "+
+			"parent rows lacking raw_model_name are estimated at %d. Of the measured rows, "+
+			"%d = %.1f%% have a v1 twin, so a reverse backfill of outbound_model from "+
+			"request_logs is feasible for about that share — the rest have no v1 source and are "+
+			"a permanent historical gap, not a job that was missed",
+			sampTotal, sampTotal*256, sampEligible,
+			100*float64(sampEligible)/float64(sampTotal))
+	}
+
 	// The view must still be projecting the column §9.169 measured, or every
 	// number above is describing a view that no longer exists.
 	var proj string
