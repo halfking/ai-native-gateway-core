@@ -22136,3 +22136,172 @@ result.DeletedRows["session_turns"] = int(hotTag.RowsAffected() + tag.RowsAffect
   跨语句配对）仍在盲区里**，其中跨语句配对本轮已知存在 1 处（turns 的 hot 对偶），
   已具名登记。
 - **本节未连接生产。** 全部读数来自本地 `127.0.0.1:5432/llm_gateway`。
+
+---
+
+## §9.184 一套库执行不了产品自己在用的那个查询形状
+
+### §9.184.1 起因：要把 §9.183 的静态守卫换成端到端实测
+
+§9.183 修完 `repair.go` 的 bodies 漏 `_hot` 腿，配的是**静态源码判据**
+（`repair_two_surface_test.go`），并明确留了一条边界：**没跑过真实的
+`ExecuteRepair`**，端到端断言未做。
+
+本节就是去跨那条边界。做法是照 §9.183 的判据**反过来**造夹具：造一个
+「bodies 劈在两个面各一行」的会话（父表 1 行 + hot 1 行），跑一次
+`ExecuteRepair`，量修复前后的行。**先断言两个面都真的有行**再继续——
+否则「hot 侧删干净」在单面夹具下是恒真断言。
+
+夹具在 `request_logs` 插入两行 V1 源时，撞上一个与被测对象无关的硬错误：
+
+```
+seed request_logs[0]: ERROR: invalid input syntax for type bigint: "p-probe" (SQLSTATE 22P02)
+```
+
+⇒ `provider_id` 是 bigint，**夹具写错，不是产品缺陷**。改成数字后继续。
+
+下一个错就不是夹具的了：
+
+```
+ExecuteRepair: load V1 turns: query request_logs_bodies for request_id=...:
+  ERROR: invalid perminfoindex 0 in RTE with relid 0 (SQLSTATE XX000)
+```
+
+### §9.184.2 纯 psql 复现：Go 完全不参与
+
+`LoadV1Turns` 必经 `loader.go:115` 的 `v1BodyQuery`（子查询内 UNION ALL
+`request_logs_bodies_hot` 与 `request_logs_bodies`）。把它逐字贴进 psql：
+
+```
+PREPARE q(text, timestamptz) AS SELECT ... FROM ( ... UNION ALL ... ) AS bodies ...;
+EXECUTE q('nope', now());
+ERROR:  invalid perminfoindex 0 in RTE with relid 0
+```
+
+**`PREPARE` 成功、`EXECUTE` 失败。** 再去掉 `PREPARE` 直接跑（简单协议）
+——**同样失败**。⇒ **不是协议/预编译问题，这条查询在这个库上本身跑不通。**
+`EXPLAIN` 同样失败 ⇒ 炸在**执行器初始化**，不是执行阶段。
+
+### §9.184.3 触发条件（逐项实测，12/12 确定性失败）
+
+| 变体 | 结果 |
+| --- | --- |
+| 父表 `request_logs_bodies` 在**子查询内 UNION ALL** | **FAIL** |
+| 同样两条腿，**顶层 UNION ALL**（不包子查询） | OK |
+| 换成它的**具体分区**（`..._2026_10` / `..._2026_09`） | OK |
+| 父表**单查**（不参与任何 union） | OK（2,241,580 行） |
+| text 列 / jsonb 列 | **都失败**（与列类型无关） |
+| 12 次独立连接重跑 | **12 FAIL / 0 OK**（确定性，非间歇） |
+
+⇒ 触发条件 = **「这张分区父表」× 「子查询内的 UNION ALL」**。
+
+### §9.184.4 两次量具失实，以及它们各自造出的错误结论
+
+这一节是本节最该被记住的部分。**我出过两次错，两次都造出了一个看起来很干净的错误结论。**
+
+**错 1：分类器没有默认分支。** 写普查脚本时用
+`case "$r" in *perminfoindex*) FAIL ;; *) OK ;; esac`。
+连接失败（密码没导出）**不匹配** `perminfoindex` ⇒ 被判 **OK**。
+结果是一整张 8 行的矩阵「全部 OK」，据此我写下：
+「只有 UNION ALL 子查询 + 分区表才触发」「Citus 元凶」「`session_turns` 正常」。
+
+**这三句全部作废。** 真相是那次 `/tmp/matrix.sh` 里
+`PGPASSWORD="$PW"` 的 `PW` **从未被赋值**（我在脚本跑完**之后**才导出它），
+12 次查询**全是连接失败**，被分类器默认判成了 OK。
+⇒ 与本会话早先那条「分类器不允许有默认分支」是**同一条规则、同一个坑**，
+而我**在知道这条规则的情况下又踩了一次**。
+
+**错 2：探针形状与失败形状不一致。** 第二版普查用
+`SELECT count(request_id) FROM (... UNION ALL ...) s`，而我判失败的那条
+用的是 `SELECT count(*) FROM (... UNION ALL ...) s`。两者列不同。
+于是同一张表先被判 FAIL、后被判 OK，两次「实测」互相矛盾。
+**矛盾出现时应当先怀疑量具，而不是急着找解释**（比如我当时一度归因成
+「间歇性故障」——那是第三个错误结论，同样建立在坏读数上）。
+
+两条合起来的代价：**我一度准备把 `v1BodyQuery` 改成两次独立查询**
+（两次独立查询实测确实能跑通）。若照做，就是拿一个**本机 catalog 异常**
+去改产品代码——**为一个当前库产生不了的观测付真实成本**，正是 D24 冻结的理由。
+
+### §9.184.5 定性：是**这套库**的 catalog 异常，不是产品缺陷
+
+三条决定性对照，全部在**同一形状**下实测：
+
+| 父表 + `_hot`（子查询内 UNION ALL） | 结果 |
+| --- | --- |
+| **`request_logs_bodies`** + `_hot` | **FAIL-perminfo** |
+| `request_logs` + `_hot` | OK（2,181,914） |
+| `session_turns` + `_hot` | OK（1,689,885） |
+| `session_turn_details` + `_hot` | OK（1,689,879） |
+| `session_bodies` + `_hot` | OK（1,778,292） |
+
+⇒ **只有一张表受影响。** `session_turns` 那条是生产热路径
+（`annotation_handler.go:680` 等每请求都在跑），`request_logs` 是整个项目的核心表，
+**同样形状在它们上面完全正常** ⇒ **形状没问题，是这张表的 catalog 有问题。**
+
+已排除的解释（逐条实测，不是推断）：
+
+- **不是 Citus 分片**：`pg_dist_partition` 对这些表 **0 行** ⇒ 本库没有任何分片表。
+- **不是分区裁剪**：`SET enable_partition_pruning = off` 后仍失败。
+- **不是分区树坏了**：`pg_partition_tree('request_logs_bodies')` 结构完整
+  （父 + 3 个叶子），`pg_inherits` 3 行全部可解析，无 `DEFAULT` 分区。
+- **不是 TOAST 缺失**：`request_logs_bodies` 无 TOAST 属实，但 `request_logs`
+  （162 列含 jsonb）同样无 TOAST 且一切正常 ⇒ 「无 TOAST」不是充分条件。
+- **不是 jsonb / 列类型**：text 列同样失败。
+- **不是协议**：`PREPARE`、简单协议、`EXPLAIN` 三条路径全失败。
+
+⇒ 归因到「本机这套库的 `request_logs_bodies` catalog 状态异常」，
+**具体机理未定位**，需要 catalog 级排查（`pg_partition_root` / 依赖项 /
+历史 DDL）。**本节不猜机理。**
+
+### §9.184.6 后果一：`validate_sessions_v2` 在本机从来跑不起来
+
+`LoadV1Turns` 必经 `v1BodyQuery`（`loader.go:115`），而该查询在本机 12/12 失败
+⇒ **`ExecuteRepair` 在本机不可能成功执行过。**
+
+这**加强**了 §9.182 的结论，且是**独立、更强**的解释：当时测得父表
+`source_kind` 的 `backfill` 行数为 0，我据此**否证**了「repair 是那批数据的来源」。
+现在有了一个更硬的机制说明——**不是「跑过但没写 backfill」，是它压根跑不通**。
+
+同时把 §9.183 的爆炸半径判断从「可能从未运行过」升级为
+**「在本机不可能运行过」**（生产是否跑过仍**未验证**）。
+
+### §9.184.7 后果二：§9.172–§9.183 的读数**不受影响**
+
+已逐表实测（§9.184.5 那张表）：本审计用到的 `session_turns`、
+`request_logs`、`session_turn_details`、`session_bodies` 在生产同款形状下
+**全部正常**，各自读出的行数与前几节一致（百万量级，未受污染）。
+
+⇒ **本节的发现不推翻前几节任何数字。** 受影响的只有
+`request_logs_bodies`（V1 body 存储）这一条读路径。
+
+### §9.184.8 交付：一条会报警的门，而不是一条会安静的测试
+
+新增 `admin/session_family_surface_readable_realdb_test.go`：
+对每一对存储面**真的执行一次生产同款形状**（子查询内 UNION ALL + count），
+任一执行不了就报红，并**按表的实际报错分类**
+（`perminfoindex` / 缺表 / 权限 / 其它），**没有「默认判过」的分支**——
+这是 §9.184.4 错 1 的直接补救，注释里也写明了来由。
+开头先 `Ping`，**连不上直接 `t.Fatalf`**，绝不让它落进「形状可执行」。
+
+**变异（证明门有牙、且不是恒红）**：
+
+| 变异 | 结果 |
+| --- | --- |
+| 从配对表里移除 `request_logs_bodies` 那一对 | **转绿**（`ok`）⇒ 不是恒红 |
+| 把 `session_bodies` 换成一张不存在的表 | 红，且分类为 **`MISSING RELATION`**（与 `perminfoindex` 分属不同的桶）⇒ 分类器可区分 |
+| 还原 | 红，且**只红** `request_logs_bodies` 那一对 |
+
+### §9.184.9 诚实边界
+
+- **本节新增了第三条常驻红门**（前两条是 D21 的
+  `TestReportRollup_HTTPContract` / `TestProjectTasksSkipsNullTaskID`）。
+  这是**有意的**：这条门报告的是一个**经实测确认的真实现象**。
+  不提交它的替代方案（只在文档里写）会让一个真缺陷静默——**我选择让它响**。
+  是否修复/换库，属主决定（见决策表 D25）。
+- **§9.183 的端到端断言仍未做成**，且本轮**再次确认它被同一个 catalog 异常挡住**
+  （`LoadV1Turns` 在本机不可用）。**两次尝试都未跨过**，
+  门头注释里 §9.183 声明的「端到端未验」边界**依然有效**，本节不撤销它。
+- **未改任何产品代码、配置、视图或迁移。** 特别地：
+  **没有把 `v1BodyQuery` 改成两次独立查询**——尽管那在本机确实能跑通。
+- **未连接生产。** 全部读数来自本地 `127.0.0.1:5432/llm_gateway`。
+  「生产是否也有此异常」**未验证**，不能由本节推断。
