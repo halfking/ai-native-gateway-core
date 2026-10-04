@@ -654,10 +654,23 @@ func (d *DB) middleWrapperCols(ctx context.Context) (string, error) {
 // preserving it keeps the change provably scoped to the rate_limited arm.
 // (The admin session-detail reader had the matching latent hole — it scanned
 // `success` into a bare bool and dropped the whole row on NULL; fixed there.)
+//
+// ── Why the IN-set, not just 'rate_limit_exceeded' (R41 audit F1) ──────────
+//
+// The historical cross-tab above proved the single-value form only on
+// pre-823 data, where mirrors never recorded request_status at all. The
+// write side emits RequestStatusRateLimited with exactly two error_kind
+// literals: 'rate_limit_exceeded' (gateway RPM/concurrent rejections,
+// handler.go:3244 / messages.go:433 / responses.go) and 'key_throttled'
+// (handler.go:2376, api-key anomalous-usage throttle). Post-823 mirrors
+// carry the rate_limited label while keeping error_kind='key_throttled';
+// a single-value arm would file every such row under 'failure' forever —
+// and the view's session leg wins over the v1 leg, so nothing downstream
+// could correct it.
 const sessionRequestStatusExpr = `(CASE ` +
 	`WHEN t.success IS NULL THEN NULL ` +
 	`WHEN t.success THEN 'success' ` +
-	`WHEN t.error_kind = 'rate_limit_exceeded' THEN 'rate_limited' ` +
+	`WHEN t.error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited' ` +
 	`WHEN t.status_code = 429 THEN 'rate_limited' ` +
 	`ELSE 'failure' END)`
 

@@ -267,6 +267,14 @@ func (b *sessionRequestStatusBackfill) run(ctx context.Context) {
 		return
 	}
 
+	// Sample once BEFORE the first drain. Without this the gauge keeps its
+	// Prometheus zero-value for the entire active backfill (default ≈4.2h at
+	// 100 rows/s over 1.52M rows) because sampleRemaining otherwise fires only
+	// on candidate exhaustion — and 0 is the release-gate PASS value for D9
+	// clause 4, so an unsampled gauge reads as "safe to retire" while the
+	// backlog is still draining.
+	b.sampleRemaining(ctx)
+
 	wait := b.interval
 	for {
 		// Probe before every drain: this is what makes the retirement terminal
@@ -377,10 +385,37 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 	if b == nil || b.db == nil {
 		return
 	}
+	// Same GUC prologue as the batch path. The count walks session_turns and
+	// request_logs — both RLS-protected today only because the gateway role is
+	// superuser/BYPASSRLS (§9.138). D9 clause 2 bundles retirement with
+	// tightening the app role, and a bare-pool count would then silently read
+	// 0 (= release-gate PASS) instead of failing loudly.
+	tx, err := b.db.Begin(ctx)
+	if err != nil {
+		slog.Warn("session_turns request_status backfill: remaining count begin failed",
+			"error", err)
+		requestStatusBackfillRemaining.Set(-1)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true)"); err != nil {
+		requestStatusBackfillTotal.WithLabelValues("error").Inc()
+		slog.Warn("session_turns request_status backfill: remaining count GUC failed",
+			"error", err)
+		requestStatusBackfillRemaining.Set(-1)
+		return
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		requestStatusBackfillTotal.WithLabelValues("error").Inc()
+		slog.Warn("session_turns request_status backfill: remaining count GUC failed",
+			"error", err)
+		requestStatusBackfillRemaining.Set(-1)
+		return
+	}
 	qCtx, cancel := context.WithTimeout(ctx, sessionRequestStatusRemainingTimeout)
 	defer cancel()
 	var n int64
-	if err := b.db.QueryRow(qCtx, sessionRequestStatusRemainingSQL).Scan(&n); err != nil {
+	if err := tx.QueryRow(qCtx, sessionRequestStatusRemainingSQL).Scan(&n); err != nil {
 		// Retirement is the benign explanation; anything else is worth a Warn.
 		// Both leave the gauge at -1 so the release check stays honest.
 		if !errors.Is(err, errRequestStatusSourceRetired) {

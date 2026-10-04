@@ -358,9 +358,13 @@ func TestSessionRequestStatusBackfill_SourceProbeDetectsRetirement(t *testing.T)
 // exactly once and RETURNS — no drain attempt, no per-tick ERROR spam.
 func TestSessionRequestStatusBackfill_RetiredStopsWithoutErrorNoise(t *testing.T) {
 	mock := newStatusBackfillMock(t)
+	// The startup gauge sample fires BEFORE the first probe, so it sees the
+	// retired world too: its count fails (relation gone) and the gauge takes
+	// the -1 sentinel — honest "unmeasurable", never 0.
+	expectStatusRemainingErr(mock, errors.New(`relation "public.request_logs" does not exist`))
 	expectStatusProbe(mock, false, true) // retired
-	// NOTE: no ExpectBegin/SELECT/UPDATE programmed. pgxmock fails the test on
-	// any UNEXPECTED call, so if the job tried to drain, this goes red.
+	// NOTE: no batch ExpectBegin/SELECT/UPDATE programmed. pgxmock fails the
+	// test on any UNEXPECTED call, so if the job tried to drain, this goes red.
 
 	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
 	delta := statusCounterDelta(t, "retired", func() {
@@ -777,11 +781,63 @@ func expectIdleBatchAt(mock pgxmock.PgxPoolIface, cursor int64, batchSize int) {
 	mock.ExpectRollback()
 }
 
+// expectStatusRemaining programs the tx-scoped remaining-count sample: BEGIN,
+// the two RLS bypass GUCs (the SAME prologue as the batch path — the count
+// walks RLS-protected tables), the count itself, ROLLBACK. Programming the
+// Begin is itself the pin: a regression to a bare pool.QueryRow would consume
+// no Begin and fail these expectations.
+func expectStatusRemaining(mock pgxmock.PgxPoolIface, n int64) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(n))
+	mock.ExpectRollback()
+}
+
+// expectStatusRemainingErr is expectStatusRemaining with a failing count.
+func expectStatusRemainingErr(mock pgxmock.PgxPoolIface, err error) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
+		WillReturnError(err)
+	mock.ExpectRollback()
+}
+
+// TestSessionRequestStatusBackfill_GaugeSampledBeforeFirstDrain pins the
+// startup sample: without it the gauge holds its Prometheus zero for the whole
+// active backfill (≈4.2h at defaults), and zero is the release-gate PASS value
+// — an operator querying mid-backfill would read "safe to retire" while
+// 1.5M rows are still draining. Here the probe then reports the source
+// retired, so run() returns without ever draining; the gauge must still carry
+// the startup number, proving the sample fired before the first drain.
+func TestSessionRequestStatusBackfill_GaugeSampledBeforeFirstDrain(t *testing.T) {
+	mock := newStatusBackfillMock(t)
+	const startupRemaining int64 = 1520530
+	expectStatusRemaining(mock, startupRemaining)
+	expectStatusProbe(mock, false, false)
+
+	b := newSessionRequestStatusBackfillForTest(mock, time.Millisecond, 100, 0)
+	b.run(context.Background())
+	if got := testutil.ToFloat64(requestStatusBackfillRemaining); got != float64(startupRemaining) {
+		t.Errorf("remaining gauge = %v after startup, want %d — if this reads 0 the "+
+			"pre-drain sample was dropped and the D9 release gate can false-green "+
+			"during the entire active backfill window", got, startupRemaining)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestSessionRequestStatusBackfill_RemainingGaugeReportsIdle(t *testing.T) {
 	mock := newStatusBackfillMock(t)
 	expectIdleBatch(mock)
-	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(int64(0)))
+	expectStatusRemaining(mock, 0)
 
 	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
 	if _, err := b.drain(context.Background()); err != nil {
@@ -802,8 +858,7 @@ func TestSessionRequestStatusBackfill_RemainingGaugeIsVerbatim(t *testing.T) {
 	mock := newStatusBackfillMock(t)
 	expectIdleBatch(mock)
 	const want int64 = 1520530
-	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(want))
+	expectStatusRemaining(mock, want)
 
 	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
 	if _, err := b.drain(context.Background()); err != nil {
@@ -820,8 +875,7 @@ func TestSessionRequestStatusBackfill_RemainingGaugeIsVerbatim(t *testing.T) {
 func TestSessionRequestStatusBackfill_RemainingGaugeFailureIsNotZero(t *testing.T) {
 	mock := newStatusBackfillMock(t)
 	expectIdleBatch(mock)
-	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
-		WillReturnError(errors.New("connection reset by peer"))
+	expectStatusRemainingErr(mock, errors.New("connection reset by peer"))
 
 	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
 	// Telemetry must never block the job.
@@ -856,8 +910,7 @@ func TestSessionRequestStatusBackfill_RemainingSampledOncePerDrain(t *testing.T)
 	// Batch 2: short (0 rows) -> drain ends.
 	expectIdleBatchAt(mock, 42, 1)
 	// Exactly ONE count query for the whole drain.
-	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(int64(0)))
+	expectStatusRemaining(mock, 0)
 
 	b := newSessionRequestStatusBackfillForTest(mock, 0, 1, 0)
 	if _, err := b.drain(context.Background()); err != nil {
