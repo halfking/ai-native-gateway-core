@@ -8901,3 +8901,83 @@ T1 里锁把事务**串行化** ⇒ 那 6 条 UPDATE **从不重叠**
 
 **D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c / D19-a-3-1 / D19-a-3-2 /
 D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
+
+---
+
+## §70.44 §9.189：7 个归因列的 SQL 与它自己的注释相反（D26）
+
+### ① 现象（逐列比对，非推断）
+
+Go 字段注释（`session_aggregator.go:80-87`）对 **7 列**
+（`ProjectID`/`APIKeyID`/`ApplicationID`/`EndUserID`/`OwnerUser`/`ClientIP`/`AgentName`）
+写的是「**首值优先…后续轮不覆盖**」，而冲突臂是
+
+```sql
+project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), public.sessions.project_id)
+```
+
+⇒ **EXCLUDED 优先 = 最后一个非空值胜，与注释正好相反。**
+
+### ② 为什么是「改到一半」而不是「注释过时」
+
+**同一种形态作者已认定错误并修好两处**：
+`AgentRole` 用 `CASE WHEN 存量='main' THEN EXCLUDED ELSE 存量 END`，
+注释写「不能用 `COALESCE(NULLIF(EXCLUDED...))` 形态学一致」；
+`PrimaryRequestID` 用 `COALESCE(存量, NULLIF(EXCLUDED,''))`，注释写
+「R69 初版…EXCLUDED 优先即 last-write-wins…**翻转为存量优先**」。
+**那 7 列没一起改。**
+
+### ③ 本机暴露度（实测）
+
+`public.sessions` **839,661** 行：`project_id` 非空 **1**、`agent_role<>'main'` **0**、
+`primary_request_id` 非空 30,789 ⇒ **本地几乎零暴露**。
+⚠️ **不能外推到生产。**
+
+### ④ 成本漂移：实测**没有**（排除项）
+
+`total_cost_usd` 是 NUMERIC、`CostIncrement` 是 float64，但 PG 的
+`float8→numeric` 走**最短往返文本**（`0.1`→`0.1`、`0.1+0.2`→`0.3`）
+⇒ **聚合层无漂移面**；真实漂移在上游调用方。
+
+### ⑤ ⚠️ 改的时候的坑：只翻冲突臂会把这 7 列**冻成永远为空**
+
+变异 M1 实测：改成真首值优先后值是 **`""` 而非首个值**。
+原因：`VALUES` 首写臂存 `$13` ⇒ **空串不是 NULL**；
+冲突臂 `COALESCE(存量, ...)` 判 **NULL** ⇒ 之后任何轮都过不了「存量为空」这关。
+⇒ **冲突臂 + 首写臂 `''`→`NULL` 归一化必须同一次做。**
+症状会从「归因错」变成「归因查不到」——**更隐蔽**。
+
+### ⑥ 门：**如实刻画**，刻意不判红
+
+`TestUpsertSessionSnapshot_ArithmeticAndPrecedence_Characterization` 6 子测试：
+计数与成本累加 / `project_id` 被后轮覆盖（⚠️ 与注释相反）/ 空串保留旧值 /
+`agent_role` 精化且不被降级 / `primary_request_id` 存量优先 / 租户隔离。
+
+**刻意不把分歧写成会红的断言**——那等于替属主改行为。
+变异：M1 FAIL=2、M2 FAIL=2、M3 FAIL=1；基线与还原 PASS=6。
+
+### ⑦ 租户隔离：第二道防线在正常路径上**不可达**
+
+原用例前提不成立：`sessions` 的唯一约束是
+**`UNIQUE (session_id, partition_date)`，不含 `tenant_id`**
+⇒ 跨租户复用 `session_id` 被数据库**直接拒绝**（SQLSTATE 23505）。
+⇒ 冲突臂末尾 `WHERE tenant_id = EXCLUDED.tenant_id` 是**纵深防御**，
+正常路径走不到。**我原以为它在防「他租户混写」，实测第一层就拦住了。**
+
+### ⑧ 我这一轮两个错（都是我的前提/计数错）
+
+① 租户用例的前提被唯一约束拒绝；② `total_turns` 断言写 9、实际 8 轮。
+两处都是**先怀疑判据**才对的。
+
+### ⑨ 回归与边界
+
+包级 `ok`；`go build ./...` OK；残留一次性库 **0**；3 次连跑全绿。
+**未改任何产品代码/配置/视图/迁移**；分歧**只记录未修复**（属主决定）。
+**未连接生产**；暴露度是这一套库的数字。
+
+### ⑩ 待拍板
+
+**D26-a**（建议：先取生产只读看真实填充率再定；改则冲突臂+首写臂同一次做）/
+**D26-b**（建议：接受「先刻画、后改契约」的两步走）。
+沿用未决：**D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c / D19-a-3-1 / D19-a-3-2 /
+D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。

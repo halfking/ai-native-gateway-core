@@ -615,3 +615,213 @@ func TestClaimAggregateTurn_ConcurrentWithoutAdvisoryLock_IsolatesSecondLine(t *
 			"必须独立地挡住重复认领（这是纵深防御，别删这道门）", n)
 	}
 }
+
+// ── 聚合算术与「首值优先」实际语义：如实刻画 ──────────────────────────────
+//
+// # 这道门测什么、不测什么
+//
+// §9.187 的诚实边界点名「`upsertSessionSnapshot` 的聚合算术未覆盖」。
+// 本门覆盖它，但**是「刻画现状」而不是「断言应有行为」**——理由见下面的
+// ⚠️ 分歧段。**刻意不把分歧写成会红的断言**：那等于替属主把行为改成首值优先，
+// 而「改生产行为」是属主的决定，不是本门的。
+//
+// # ⚠️ 实测出的分歧（**必须随门一起读**）
+//
+// `SessionUpdate` 的 Go 字段注释（session_aggregator.go:80-87）对
+// ProjectID / APIKeyID / ApplicationID / EndUserID / OwnerUser / ClientIP /
+// AgentName **7 列**写的是：
+//
+//	「首值优先：取首个非空请求的值固化；后续轮不覆盖」
+//
+// 而 ON CONFLICT 冲突臂里这 7 列是：
+//
+//	project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), public.sessions.project_id)
+//
+// ⇒ **EXCLUDED 优先 = 最后一个非空值胜**，与注释**正好相反**。
+//
+// ★ 这正是作者**已经认定错误并修好**的同一个形态：
+//   `agent_role` 的注释原文是「不能用 `COALESCE(NULLIF(EXCLUDED...))`
+//   形态学一致」，`primary_request_id` 的注释原文是
+//   「R69 初版把冲突臂写成 COALESCE(NULLIF(EXCLUDED…), sessions…)——
+//   EXCLUDED 优先即 last-write-wins…翻转为存量优先」。
+//   两者都已改成真正的首值优先；**这 7 列没有一起改**。
+//
+// ⇒ 本门对它们**只刻画实测行为**（`project_id` 在后轮给不同值时会被覆盖），
+// 并在此注明分歧。**要不要把它改成首值优先 = 属主决定**（决策表 D26）。
+//
+// # 本机暴露度（实测，供属主判断优先级）
+//
+// `sessions` 共 839,661 行：`project_id` 非空 **1 行**；
+// `agent_role <> 'main'` **0 行**；`primary_request_id` 非空 30,789 行。
+// ⇒ **本地几乎零暴露**。但这是**这一套库**的数字，不能外推到生产。
+
+// TestUpsertSessionSnapshot_ArithmeticAndPrecedence_Characterization
+// 如实刻画聚合算术与各列的优先级语义（含上面那 7 列的分歧）。
+func TestUpsertSessionSnapshot_ArithmeticAndPrecedence_Characterization(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping real-database gate")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("admin pgxpool.New: %v", err)
+	}
+	if err := admin.Ping(ctx); err != nil {
+		admin.Close()
+		t.Skipf("TEST_DATABASE_URL unreachable, skipping: %v", err)
+	}
+	pool, name := claimTestDB(t, dsn)
+	dropped := false
+	defer func() {
+		pool.Close()
+		if !dropped {
+			if _, e := admin.Exec(context.Background(),
+				"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name); e != nil {
+				t.Errorf("FATAL: could not terminate fixture backends for %s: %v", name, e)
+			}
+			if _, e := admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name); e != nil {
+				t.Errorf("FATAL: fixture database %s not dropped: %v", name, e)
+			}
+		}
+		admin.Close()
+	}()
+
+	const (
+		tenant  = "agg_tenant"
+		session = "agg_session"
+	)
+	partDate := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	agg := NewSessionAggregator(pool)
+
+	// apply 走真实入口：先落一行待认领的 turn，再 UpdateSession。
+	apply := func(turnNo int, requestID string, u SessionUpdate) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO public.session_turns
+				(tenant_id, session_id, turn_no, request_id, partition_date)
+			VALUES ($1,$2,$3,$4,$5::date)`, tenant, session, turnNo, requestID, "2026-10-15"); err != nil {
+			t.Fatalf("seed turn %d: %v", turnNo, err)
+		}
+		u.SessionID, u.TenantID, u.RequestID, u.UpdatedAt = session, tenant, requestID, partDate
+		if err := agg.UpdateSession(ctx, u); err != nil {
+			t.Fatalf("UpdateSession(turn %d): %v", turnNo, err)
+		}
+	}
+	read := func(col string) string {
+		t.Helper()
+		var v *string
+		q := "SELECT " + col + "::text FROM public.sessions WHERE session_id = $1"
+		if err := pool.QueryRow(ctx, q, session).Scan(&v); err != nil {
+			t.Fatalf("read %s: %v", col, err)
+		}
+		if v == nil {
+			return ""
+		}
+		return *v
+	}
+
+	t.Run("计数与成本逐轮累加", func(t *testing.T) {
+		// 0.1 + 0.2 在 float64 里是 0.30000000000000004。
+		// PG 的 float8→numeric 走**最短往返文本**（实测 0.1→0.1、0.1+0.2→0.3），
+		// 所以这里断言的是**实测值**，不是"数学值"——
+		// 目的是把转换边界的行为钉住，将来 PG 改了才有人看见。
+		apply(1, "agg_r1", SessionUpdate{TurnIncrement: 1, TokensIncrement: 10, CostIncrement: 0.1})
+		apply(2, "agg_r2", SessionUpdate{TurnIncrement: 1, TokensIncrement: 20, CostIncrement: 0.2})
+		apply(3, "agg_r3", SessionUpdate{TurnIncrement: 1, TokensIncrement: 30, CostIncrement: 0.3})
+
+		if got := read("total_turns"); got != "3" {
+			t.Errorf("total_turns = %s，应为 3", got)
+		}
+		if got := read("total_tokens"); got != "60" {
+			t.Errorf("total_tokens = %s，应为 60（10+20+30）", got)
+		}
+		if got := read("total_cost_usd"); got != "0.6" {
+			t.Errorf("total_cost_usd = %s，实测值应为 0.6（0.1+0.2+0.3 经 NUMERIC 累加）", got)
+		}
+	})
+
+	t.Run("project_id：后轮给不同值会被覆盖（⚠️ 与 Go 注释相反，如实刻画）", func(t *testing.T) {
+		// 上面三轮都没带 ProjectID，这里补两轮带不同值的。
+		apply(4, "agg_r4", SessionUpdate{TurnIncrement: 1, ProjectID: "proj_first"})
+		apply(5, "agg_r5", SessionUpdate{TurnIncrement: 1, ProjectID: "proj_second"})
+		got := read("project_id")
+		// 实测：EXCLUDED 优先 ⇒ 最后一个非空值胜 ⇒ "proj_second"。
+		// 若这里变成 "proj_first"，说明有人把冲突臂改成了真首值优先（那是 D26 的决定）。
+		if got != "proj_second" {
+			t.Errorf("project_id = %q，当前实现的实测值是 %q（后轮覆盖前轮）", got, "proj_second")
+		}
+	})
+
+	t.Run("project_id：后轮给空串则保留旧值（NULLIF 路径）", func(t *testing.T) {
+		apply(6, "agg_r6", SessionUpdate{TurnIncrement: 1, ProjectID: ""})
+		if got := read("project_id"); got != "proj_second" {
+			t.Errorf("project_id = %q，空串应保留原值 %q", got, "proj_second")
+		}
+	})
+
+	t.Run("agent_role：默认 main，可被精化，且不被后轮降级", func(t *testing.T) {
+		// 现状已是真首值/精化语义（作者修过）。本用例**钉住**这个已修好的行为。
+		if got := read("agent_role"); got != "main" {
+			t.Fatalf("前几轮未声明 AgentRole，应落 main，实测 %q", got)
+		}
+		apply(7, "agg_r7", SessionUpdate{TurnIncrement: 1, AgentRole: "researcher"})
+		if got := read("agent_role"); got != "researcher" {
+			t.Fatalf("agent_role = %q，声明 researcher 后应被精化", got)
+		}
+		apply(8, "agg_r8", SessionUpdate{TurnIncrement: 1, AgentRole: ""})
+		if got := read("agent_role"); got != "researcher" {
+			t.Errorf("agent_role = %q，后续未声明的轮**不得**把已固化的 researcher 降级回 main", got)
+		}
+	})
+
+	t.Run("primary_request_id：存量优先（首个非空固化，后续不改写）", func(t *testing.T) {
+		// 这个会话的首轮是 agg_r1 ⇒ 应恒为 agg_r1。
+		if got := read("primary_request_id"); got != "agg_r1" {
+			t.Errorf("primary_request_id = %q，应恒为首个非空 RequestID %q", got, "agg_r1")
+		}
+	})
+
+	t.Run("租户隔离：第一层唯一约束就挡住了跨租户复用 session_id", func(t *testing.T) {
+		// 第一版这条用例想测「另一个租户用同一个 session_id 会不会改写本行」，
+		// 实测**前提不成立**：
+		//
+		//	ERROR: duplicate key value violates unique constraint
+		//	       "sessions_session_id_partition_date_key" (SQLSTATE 23505)
+		//
+		// 因为生产 `sessions` 的唯一约束是
+		//	UNIQUE (session_id, partition_date)   ← **不含 tenant_id**
+		// ⇒ 两个租户**根本无法**拥有同一个 session_id，
+		// ON CONFLICT 的冲突臂在跨租户场景下**根本进不去**。
+		//
+		// ★ 因此冲突臂末尾那句
+		//	WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
+		// 在**正常路径上不可达**——它是一道**纵深防御**：
+		// 只有当库里已经存在「同一 (session_id, partition_date) 却不同 tenant_id」
+		// 的脏数据（例如有人 drop 过那条约束）时，它才起作用。
+		//
+		// ⇒ 这里如实刻画**第一层**（真正起作用的那层），并把第二层的
+		// 「不可达」写成事实，而不是假装它守住了什么。
+		_, err := pool.Exec(ctx, `
+			INSERT INTO public.sessions
+				(session_id, tenant_id, created_at, updated_at, status,
+				 total_turns, total_tokens, total_cost_usd, partition_date, agent_role)
+			VALUES ($1, 'other_tenant', NOW(), NOW(), 'active', 999, 0, 0, '2026-10-15', 'main')`,
+			session)
+		if err == nil {
+			t.Error("另一个租户竟然能插入同一 session_id —— " +
+				"sessions 的唯一约束若不再包含 (session_id, partition_date)，" +
+				"跨租户混写就真的能发生了（D26 的前提，需重新评估）")
+		} else if !strings.Contains(err.Error(), "sessions_session_id_partition_date_key") &&
+			!strings.Contains(err.Error(), "duplicate key") {
+			t.Errorf("跨租户插入失败，但红因不是唯一约束：%v —— "+
+				"判据与实际防护不符，必须重新核实", err)
+		}
+		// 本行计数未被动过（守卫/约束任一生效都应如此）。
+		// 前面子测试一共 apply 了 8 轮（r1..r8），各 +1。
+		// 第一版这里写的是 9 —— **我把轮数数错了**（不是代码问题）。
+		if got := read("total_turns"); got != "8" {
+			t.Errorf("total_turns = %s，应仍为 8（8 轮 apply 各 +1）", got)
+		}
+	})
+}

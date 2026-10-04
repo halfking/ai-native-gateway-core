@@ -1815,3 +1815,79 @@ DeletedRows["session_bodies"] = 1，应为 2
   库重建后它会自动转绿。
 - **D25-c**（生产是否也跑一遍）**未变**：可并入 D19-d / D24-d-3 的 252 只读申请。
   ⚠️ §9.186 证明的是**本机这套库的状态问题**，**不能外推**到生产。
+
+---
+
+## D26：7 个会话归因列的 SQL 与它自己的注释相反（**代码上真实，本地几乎零暴露**）
+
+### 现象（逐列比对，非推断）
+
+`SessionUpdate` 的 Go 字段注释（`domains/session/v2/session_aggregator.go:80-87`）对
+**7 列**写的是：
+
+> 「首值优先：取首个非空请求的值固化；**后续轮不覆盖**」
+
+而 ON CONFLICT 冲突臂里这 7 列是：
+
+```sql
+project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), public.sessions.project_id)
+```
+
+⇒ **EXCLUDED 优先 = 最后一个非空值胜**，与注释**正好相反**。
+
+**涉及的 7 列**：`ProjectID`、`APIKeyID`、`ApplicationID`、`EndUserID`、
+`OwnerUser`、`ClientIP`、`AgentName`。
+
+### 为什么说这是「漏改」而不是「注释过时」
+
+**同一种形态，作者已经认定错误并修好了两处**：
+
+- `AgentRole`：冲突臂是 `CASE WHEN 存量='main' THEN EXCLUDED ELSE 存量 END` ✅
+  其注释原文：「不能用 `COALESCE(NULLIF(EXCLUDED...))` 形态学一致」
+- `PrimaryRequestID`：冲突臂是 `COALESCE(存量, NULLIF(EXCLUDED,''))` ✅
+  其注释原文：「R69 初版把冲突臂写成 `COALESCE(NULLIF(EXCLUDED…), sessions…)`——
+  EXCLUDED 优先即 last-write-wins…**翻转为存量优先**」
+
+⇒ 那 7 列**没有一起改**。这不是「没意识到」，是**改到一半**。
+
+### 本机暴露度（实测，供排优先级）
+
+`public.sessions` 共 **839,661** 行：`project_id` 非空 **1** 行；
+`agent_role <> 'main'` **0** 行；`primary_request_id` 非空 30,789 行。
+
+⇒ **本地几乎零暴露**。⚠️ 这是**这一套库**的数字，**不能外推到生产**。
+
+### ⚠️ 改的时候有个坑：只翻冲突臂会把这 7 列**冻成永远为空**
+
+实测（§9.189.6 变异 M1）：把 `project_id` 改成真首值优先后，测出来的值是
+**`""` 而不是首个值**。原因：
+
+- `VALUES` **首写臂**存的是 `project_id = $13` ⇒ **空串，不是 NULL**；
+- 冲突臂的 `COALESCE(存量, NULLIF(EXCLUDED,''))` 判的是 **NULL**
+  ⇒ 首轮没声明时存量是 `''`，之后**任何一轮都过不了「存量为空」这一关**。
+
+⇒ **改冲突臂必须同时把首写臂的 `''`→`NULL` 归一化**，
+否则这 7 列会从「被后轮覆盖」变成「**永远为空**」——
+**两者都不符合作者写在注释里的契约，但后者更隐蔽**（症状是「归因查不到」而不是「归因错」）。
+
+### 已交付（不含任何行为改动）
+
+`domains/session/v2/claim_two_surface_realdb_test.go` 新增
+`TestUpsertSessionSnapshot_ArithmeticAndPrecedence_Characterization`：
+**如实刻画现状**，6 个子测试。**刻意不把这个分歧写成会红的断言**——
+那等于替属主把行为改掉。
+
+变异证明它钉得住：M1（改首值优先）FAIL=2、M2（计数改覆盖）FAIL=2、
+M3（`agent_role` 去掉精化保护）FAIL=1、基线与还原均 PASS=6。
+
+### 请拍板
+
+- **D26-a**：这 7 列**改**成真首值优先（对齐注释与 `agent_role`／`primary_request_id`），
+  还是**接受现状**、只把 Go 注释改成「后轮可覆盖（末值优先）」？
+  * 我的建议：**先取生产只读**看这 7 列的真实填充率再定——本地 1/839,661
+    的样本量不足以支撑任何一侧的结论。**（可并入 D19-d / D24-d-3 的 252 只读申请。）**
+  * 若决定改：**冲突臂 + 首写臂 `''`→`NULL` 归一化必须同一次做**（见上）。
+- **D26-b**：本门是「如实刻画」形态。若 D26-a 决定改语义，
+  本门相应子测试会红——**那是预期的**，届时按新契约更新期望值即可。
+  是否接受这种「先刻画、后改契约」的两步走？我的建议：**接受**——
+  它保证了「改之前的行为」有实测记录，而不是靠回忆。
