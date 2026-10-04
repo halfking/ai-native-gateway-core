@@ -143,6 +143,33 @@ func StorageSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
+			// bodies 读端灰度（审计 §9.230，纯代码无 DDL）。
+			//
+			// 开启后会话导出/对比的 bodies 腿改读 session_bodies
+			//（经 db.SessionFamilyBodiesSourceSQL()，该层已把
+			// request_delta/response_delta 映射成 v1 的
+			// request_body/response_body 列名，调用点 SELECT 不用改）。
+			//
+			// ⚠ **默认关闭，且理由是数据**：本地已实测 would_be_lost = 0
+			//（session_bodies 覆盖 session_turns 的 100.00%）；
+			// 而生产 252 实测仍有 **1,113 条**缺失，**全部落在 2026-09-30**
+			//（session_bodies 覆盖起点前一天），10-01 起为 0。
+			// ⇒ 生产上打开会让那一天的会话导出出现 `{}` 正文，
+			// 而 API 仍 200。补完那一天之前不得开。
+			//
+			// 另注：列名不同（request_body vs request_delta），
+			// 所以这不是机械替换；映射必须经那一层 helper。
+			Key:             "storage.admin_session_bodies_native_read",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Default:         false,
+			Description:     "会话导出/对比的 bodies 读 session_bodies（§9.230）",
+			DescriptionLong: "开启后 /api/session/{id}/export 与会话对比摘要的 bodies 腿改读 session_bodies（hot∪parent），列名经 db.SessionFamilyBodiesSourceSQL 映射为 v1 同名，调用点投影不变。默认关闭：生产 252 实测 2026-09-30 一天仍有 1,113 条 turn 有 v1 正文而无 session_bodies 行，打开会让当天导出的正文变成 `{}` 且接口不报错。补齐该日缺口后方可灰度开启。",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
 			Key:             "log.delete_days",
 			Type:            TypeInt,
 			Scope:           ScopePlatform,

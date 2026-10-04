@@ -60,6 +60,20 @@ type indirectReader struct {
 }
 
 var indirectRequestLogsReaders = map[string]indirectReader{
+	"admin/session_bodies_source.go": {
+		Family:     familyBodies,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "会话导出/对比的 bodies 腿灰度开关（审计 §9.230）。" +
+			"`sessionBodiesFromSQL()` 有两臂：默认返回字面量 " +
+			"`request_logs_bodies_with_current_month rb`（v1 bodies 视图，" +
+			"挂在 request_logs_bodies 的 monthly 视图上），" +
+			"开关打开才返回 `db.SessionFamilyBodiesSourceSQL() + \" rb\"`（会话族）。" +
+			"⇒ **默认支是 v1**，与 bg/auto_route_settle_sql.go 同形：条件性读 v1。" +
+			"ResolvesTo 写基表名 request_logs_bodies 而不是视图名，" +
+			"因为本表用 v1DirectTables 核对，而那个集合只收基表。" +
+			"消费点是 admin/session_export.go:227 与 admin/session_compare.go:903 —— " +
+			"它们源码里**不再有** v1 关系名字面量，所以也不在 requestLogsReadInventory 里。",
+	},
 	"bg/auto_route_settle_sql.go": {
 		Family:     familyBase,
 		ResolvesTo: "request_logs_hot",

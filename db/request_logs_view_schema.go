@@ -966,6 +966,44 @@ func SessionFamilyTurnsForSessionSQL() string {
 		" WHERE t.session_id = $1)"
 }
 
+// SessionFamilyBodiesSourceSQL returns a FROM source over the session-family
+// bodies tables that exposes the **v1 column names** (`request_body` /
+// `response_body`), so a caller can swap the relation name without touching
+// its projection list.
+//
+// # 为什么必须有它（而不是「直接 JOIN session_bodies」）
+//
+// 两侧的**列名不同**（实测 information_schema，2026-10-05）：
+//
+//	v1   request_logs_bodies : request_id text NOT NULL, request_body jsonb, response_body jsonb
+//	会话  session_bodies      : request_id text NOT NULL, request_delta jsonb, response_delta jsonb
+//
+// 语义相同（都是 JSONB），**名字不同**。所以「把 LEFT JOIN
+// request_logs_bodies_with_current_month 换成 session_bodies」这种机械替换
+// 会让调用点的 `COALESCE(rb.request_body, '{}'::jsonb)` 直接 42703。
+// ⇒ 映射必须落在**这一层**，而不是散在每个调用点的 SELECT 里。
+//
+// 类型逐列核对过：两侧 bodies 列**都是 jsonb**，`request_id` **都是 text NOT NULL**
+// ⇒ 纯改名，**不需要 cast**。（若将来一侧变成 text，这里必须加 `::jsonb`。
+// 由 admin 侧的列名/类型对等门守着，见 admin/session_bodies_source_test.go。）
+//
+// # hot ∪ parent 两条腿，理由与 SessionFamilyTurnsSourceSQL 相同
+//
+// `session_bodies_hot`（近期热窗）与 `session_bodies`（月度分区父表）是两张表，
+// 只读其一会漏掉另一侧的行。实测本地：hot 2,651 / parent 1,779,621，
+// **两侧 request_id 交集为 0**（promote 会排空 hot），所以 UNION ALL 不会重复。
+// ⚠ 但 `session_bodies` 父表内部有 57 行重复 request_id（37 个 id）——
+// 实测**这 37 个都不在 session_turns 里**，所以今天不会让导出多出重复消息。
+// 那个「今天不会」不是保证，由 admin 侧「bodies 源不得让 turn 重复」的门钉住。
+//
+// The returned source carries no alias — callers append one (e.g. `rb`).
+func SessionFamilyBodiesSourceSQL() string {
+	projection := "sb.request_id, sb.request_delta AS request_body, " +
+		"sb.response_delta AS response_body, sb.outbound_body"
+	return "(SELECT " + projection + " FROM public.session_bodies_hot sb" +
+		" UNION ALL SELECT " + projection + " FROM public.session_bodies sb)"
+}
+
 // MirrorDriftClassSQL classifies a V1 request_logs row into the three buckets
 // the session mirror hook cares about. Kept as one expression so the aggregate
 // and the breakdown cannot disagree — and so every consumer that needs to

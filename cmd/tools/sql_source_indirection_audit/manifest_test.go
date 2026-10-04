@@ -238,10 +238,17 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"admin/session_compare.go": {
 		Verdict: verdictNonV1ByInspection,
-		Via: "221/902 行 `FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`。" +
-			"跨包调用 ⇒ 工具判 unresolved；读源码确认是会话族。",
-		Consequence: "与 v1 无关。⚠ 但同文件的 **bodies 腿**仍是 v1（见" +
-			"admin/request_logs_bodies_retirement_gate_test.go）。",
+		Via: "221/902 行 `FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
+			"跨包调用 ⇒ 工具判 unresolved；读源码确认是会话族。" +
+			"⚠ §9.230 起 **902 行那条 bodies 拼接点也进了 unresolved 桶**：",
+		Consequence: "turn 腿与 v1 无关。⚠ 但 **bodies 腿仍条件性读 v1**——" +
+			"§9.230 把它改成经 `sessionBodiesFromSQL()` 取源，工具解析不出那个函数" +
+			"（它的一臂是跨包调用 `db.SessionFamilyBodiesSourceSQL() + \" rb\"`，" +
+			"`resolve` 对 *ast.SelectorExpr 返回 nil ⇒ 整个函数不进 env.funcs），" +
+			"所以是 unresolved 而非 reads-v1。" +
+			"**默认支是 v1**（`request_logs_bodies_with_current_month`）。" +
+			"已登记在 admin/request_logs_indirect_readers_test.go" +
+			"（admin/session_bodies_source.go）与 admin/request_logs_bodies_retirement_gate_test.go。",
 	},
 	"admin/session_list.go": {
 		Verdict: verdictNonV1ByInspection,
@@ -251,12 +258,16 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"admin/session_export.go": {
 		Verdict: verdictNonV1ByInspection,
-		Via: "227 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl` + " +
-			"`LEFT JOIN request_logs_bodies_with_current_month rb`（turn 腿是会话族）。" +
-			"跨包调用 ⇒ 工具判 unresolved。",
-		Consequence: "⚠ turn 腿与 v1 无关，但**bodies 腿是 v1**，且写法是 " +
-			"COALESCE(rb.request_body,'{}') ⇒ DROP 后**导出的会话包每条正文都是 {}**，" +
-			"而且**不报错**。已登记在 admin/request_logs_bodies_retirement_gate_test.go。",
+		Via: "227 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
+			"跨包调用 ⇒ 工具判 unresolved。" +
+			"⚠ §9.230 起同一行的 bodies 拼接点也进 unresolved 桶：",
+		Consequence: "turn 腿与 v1 无关。⚠ **bodies 腿仍条件性读 v1**——" +
+			"§9.230 把它改成经 `sessionBodiesFromSQL()` 取源（默认支 = " +
+			"`request_logs_bodies_with_current_month`）。" +
+			"⚠ 写法是 COALESCE(rb.request_body,'{}') ⇒ 默认支下 DROP 后" +
+			"**导出的会话包每条正文都是 {}**，而且**不报错**。" +
+			"已登记在 admin/request_logs_indirect_readers_test.go" +
+			"与 admin/request_logs_bodies_retirement_gate_test.go。",
 	},
 	"admin/session_online.go": {
 		Verdict: verdictNonV1ByInspection,

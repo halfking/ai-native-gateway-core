@@ -24,6 +24,11 @@ import (
 //	LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 //	… COALESCE(rb.request_body, '{}'::jsonb) AS request_body …
 //
+// ⚠ **上面这两行是 §9.226 当时的源码。§9.230 之后不是了**：bodies 腿改成经
+// `sessionBodiesFromSQL()` 取源 ⇒ 该文件源码里**一个 bodies 关系名字面量都没有**。
+// ⇒ 引用这一段当现状会误导下一个人，必须连着看 scanV1BodiesReaders 末尾
+// 那段「间接读方并入总体」的注释（本轮新增，否则总体会静悄悄少两个人）。
+//
 // 但它读的 `request_body` / `response_body` **不在 canonical 合同里**——
 // 合同是 `request_logs` 自己的 118 列，而 bodies 是**另一张表**。
 // ⇒ 「没有命中暴露列」在这里的含义是**本量具不测 bodies**，
@@ -134,6 +139,32 @@ func scanV1BodiesReaders(t *testing.T, root string) map[string]int {
 	if err != nil {
 		t.Fatalf("walk repo: %v", err)
 	}
+	// 间接 bodies 读方并入总体（审计 §9.230）。
+	//
+	// ⚠ **不加这一段就是一次假绿的前奏。** `admin/session_bodies_source.go`
+	// 的 v1 那一臂是一行 `return "request_logs_bodies_with_current_month rb"` ——
+	// 它**没有** FROM/JOIN 关键字，所以按行扫描测到 0 处、整个文件不进总体。
+	// 而它的两个消费点（session_export.go / session_compare.go）在改成经这个
+	// 开关取 bodies 源之后，源码里也不再有任何 bodies 关系名字面量。
+	// ⇒ 三处一起从总体里消失，总体从 26 文件/44 调用点缩到 24/42，
+	// 而**一个 bodies 依赖都没被评估过**。这是本文件头注释警告的那种
+	// 「扫描器扫不到 ⇒ 门全绿」的前半段，只是这次门仍然红，只是红得**少了两个人**。
+	//
+	// 处置与 §9.49 的两张表分工一致：字面量读方按行扫，间接读方由
+	// indirectRequestLogsReaders 登记并在这里并入。判据是 `ResolvesTo`
+	// 落在 v1 bodies 关系名集合里 —— 不是「文件名叫 session_bodies 就收」。
+	for file, e := range indirectRequestLogsReaders {
+		if out[file] > 0 {
+			continue // 字面量已计入，不重复
+		}
+		rel := strings.ToLower(e.ResolvesTo)
+		for _, n := range v1BodiesRelations(t) {
+			if rel == n || rel+"_with_current_month" == n || rel+"_hot" == n {
+				out[file] = 1
+				break
+			}
+		}
+	}
 	return out
 }
 
@@ -228,6 +259,55 @@ func TestV1BodiesGateIsNotSilentlyVacuous(t *testing.T) {
 	}
 	if len(v1BodiesRelations(t)) == 0 {
 		t.Fatal("v1 bodies 关系名集合为空（地板断言本该拦住，见 v1BodiesRelations）")
+	}
+}
+
+// TestV1BodiesScanIncludesRegisteredIndirectReaders 钉住「间接读方并入总体」本身。
+//
+// # 为什么这道门不能省
+//
+// scanV1BodiesReaders 末尾那段「把 indirectRequestLogsReaders 里 ResolvesTo 落在
+// v1 bodies 的文件并进总体」是 §9.230 加的。把**它**删掉，总体从 25 文件/43 调用点
+// 悄悄缩回 24/42，而 `TestV1BodiesReadersAreAssessed` **照样红**——
+// 它本来就是故意红的，24 个和 25 个都不改变退出码。
+// ⇒ 删掉修复之后没有任何门变绿或变红，这个修复就是**未经证实的**。
+//
+// 判据不能写成「总体数 ≥ 25」：那是把一个会随别的读方增减而漂的数钉死，
+// 下一个改 bodies 读方的人会为了过门去调门槛。⇒ 判据是**集合关系**：
+// 凡登记为间接 bodies 读方的文件，必须逐个出现在实测总体里。
+func TestV1BodiesScanIncludesRegisteredIndirectReaders(t *testing.T) {
+	root := repoRootFromCaller(t)
+	measured := scanV1BodiesReaders(t, root)
+	rels := map[string]bool{}
+	for _, n := range v1BodiesRelations(t) {
+		rels[n] = true
+	}
+
+	var want, missing []string
+	for file, e := range indirectRequestLogsReaders {
+		rel := strings.ToLower(e.ResolvesTo)
+		isBodies := rels[rel] || rels[rel+"_with_current_month"] || rels[rel+"_hot"]
+		if !isBodies {
+			continue // 读的是 turns 族，与本门总体无关
+		}
+		want = append(want, file)
+		if measured[file] == 0 {
+			missing = append(missing, file)
+		}
+	}
+	sort.Strings(want)
+	sort.Strings(missing)
+	t.Logf("登记为间接 bodies 读方的文件 %d 个：%v", len(want), want)
+	if len(want) == 0 {
+		t.Fatal("没有任何文件被登记为间接 bodies 读方 —— " +
+			"要么 indirectRequestLogsReaders 的 bodies 登记被删了（本该有一项），" +
+			"要么 v1BodiesRelations 推不出 bodies 关系名。两种都让这道门失去意义。")
+	}
+	if len(missing) > 0 {
+		t.Errorf("这些文件登记为间接 v1 bodies 读方，但没出现在实测总体里：%v\n"+
+			"⇒ scanV1BodiesReaders 末尾的「间接读方并入总体」被删掉或失效了。"+
+			"它们的 v1 bodies 依赖会从退役证据里消失，而门**仍然红**"+
+			"（本来就红，25 个还是 24 个都不改退出码）。", missing)
 	}
 }
 
