@@ -11352,3 +11352,64 @@ emergency-cleanup），其父表白名单**同样不含 `session_turns`**。
 - 「从未执行过」依据是**目标侧 0 行非 NULL**，属**间接（结果侧）证据**；
   实测为 0 所以依据成立，但**不是**「我确认过没人跑过脚本」。
 - 本轮**无代码变更**（上一轮的校验器改动已推 `fe5003034`）。
+
+---
+
+## §70.61 「先跑回填再 DROP」只存在于一句 SQL 注释——补上一道**故意红**的门（§9.224）
+
+### 㭎 已有判据**拦不住**（它是注册表一致性检查）
+
+`db/session_family_column_availability_test.go` 早就把两条列报进
+`GO EMPTY ON THE SESSION SIDE`（D32 备注：「一直亮着没人去读它指向哪里」）。
+但它断言的是 `assertSameSet(t, "unservable", goEmpty, RetirementUnservableColumns)`
+⇒ **列变空它照样通过**。
+「现在能不能 DROP 源表」是另一个问题，此前**在仓库里没有家**。
+
+⚠ 与已记的那条同源：**只报不拦的信号，和没有这个信号，在决策链上等价。**
+
+### 㭏 新门（`db/retirement_backfill_gate_test.go`）
+
+- 纯谓词 `BackfillBlocksRetirement(...)`（不依赖库，可测两向）
+- 真库应用 `TestRetirementBlockedByUnrunBackfills`
+- 报错**指名可执行命令**（`Run sql/scripts/backfill_final_success_marks.sql before retiring v1`）
+
+本机真库实跑**确实响了**（不是装饰）：
+
+```
+request_logs still present: true   session_turns rows: 1690372
+is_final_success         0.0000%  (0/1690372 rows)
+client_protocol          0.0000%  (0/1690372 rows)
+```
+
+### 㭐 双向对照 7 例（7/7）
+
+拦：未跑 + 源表还在（两条列各一例）、阈值下侧（0.00049%）。
+不拦：**已跑但只覆盖 1.2%**、**源表已退役**、会话族 0 行、阈值上侧（0.00502%）。
+
+★ **两条关键阴性对照**：「已跑但只覆盖 1.2%」**必须放过**，
+否则它永远清不掉、训练所有人忽略；
+「源表已退役」**必须放过**，否则它在最该拦的时刻之前就无解。
+⇒ 与「一条永不可能绿的门，红着红着就被无视，那比没有更糟」一致。
+
+⚠ 阈值 `0.005` 与 §9.209 同源：**分类精度 == 显示精度**，
+否则「4 行 = 0.00049%」会同时读成「0.00%」与「没空」。
+
+### 㭑 `db` 包基线从 FAIL 1 变 FAIL 2（**不是回归**）
+
+| 红 | 性质 |
+|---|---|
+| `TestRepointValueFidelity` | 既有，§9.210 刻意留红 |
+| **`TestRetirementBlockedByUnrunBackfills`** | **新增，刻意红** |
+
+⇒ 它陈述一个**尚未满足的前置条件**，不是靠改代码能消掉的失败。
+⇒ 要转绿只有一条路：**在 DROP 源表之前把两个回填跑掉**（属主决定）。
+
+### 㭒 边界
+
+- 门**只在 `TEST_DATABASE_URL` 存在时运行**，否则 `t.Skip`
+  ⇒ **全绿具有误导性**；本轮实跑已确认它响了。
+- `work_type` **刻意不在**列表里：v1 侧自身只有 1.93%，
+  拷贝只动 ~2% 行，且该列已在注册表里标为 unservable
+  ⇒ 列入会产生**没人能行动的红**。
+- 门**只管本地/测试库**，**不会**在 252 上自动运行；
+  生产的同一判断目前只存在于本文档的只读实测里。
