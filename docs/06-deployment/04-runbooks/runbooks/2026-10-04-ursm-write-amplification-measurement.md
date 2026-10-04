@@ -2223,3 +2223,54 @@ CREATE INDEX ursm_node_snapshot_min_ts_idx
      ★ 写反了**不报错**，只会让输出错位 —— 而「有输出」看起来像「跑通了」，
      最难被发现。判据是肉眼比对第一行的数字量级（`886MB` 出现在本该是表名的列）。
 
+### 10.14 ★★ `*_hot` 表的共同形态：每轮「删整个 bucket + 重插」
+
+`del/ins` 比在 96~111% ⇒ 这些表**插多少删多少**，活行只剩几千：
+
+| 表 | 插入 | 删除 | 活行 | 空闲率 |
+|---|---|---|---|---|
+| `credential_model_index_hot` | **4,035,368** | **4,042,057** | 3,204 | 42.7% |
+| `request_logs_hot` | 794,076 | 882,563 | 7,802 | 32.5% |
+| `session_turns_hot` | 271,216 | 274,303 | 2,282 | 39.7% |
+| `session_turn_details_hot` | 251,429 | 269,785 | 2,035 | 38.4% |
+| `routing_decision_log_hot` | 133,108 | 133,851 | 2,006 | 58.4% |
+| `session_bodies_hot` | 256,140 | 263,204 | 2,035 | 54.3% |
+
+**promote 机制本身是健康的**（这一步是证伪，不是发现）：
+- 库里 31 个 `promote_*_hot_to_partition` 函数，**20 个被实际调用**；
+  唯一没跑的 `model_probe_runs` 是**有意为之**（`settings/spec_lifecycle.go` 写明
+  「2026-07-14 起改为纯 hot 表 + DELETE TTL 策略，不再 promote」）；
+- 分区侧确实有数据流入：`usage_ledger` 753 MB、`session_turn_details` 614 MB、
+  `request_logs_bodies` 60 MB。
+
+★ 顺带纠正一次**我自己的错误结论**：我 grep 字面量 `promote_.*_hot_to_partition`
+搜不到调用，判成「没有任何代码在调用它」。错的 —— `bg/partition_manager.go` 的
+`promoteSpecs()` 用**动态函数名**驱动，grep 字面量搜不到。
+⇒ 「我没搜到」≠「不存在」，同 [[查询无结果不等于事件未发生]]。
+
+**真正的病灶是 `credential_model_index_hot`**（`bg/auto_index_refresher.go`）：
+
+```sql
+DELETE FROM credential_model_index_hot WHERE bucket = $1
+INSERT INTO credential_model_index_hot (...) SELECT ... ON CONFLICT DO UPDATE
+```
+
+- 每约 **8.8 秒** 删掉整个 bucket 再重插一遍；活行 3,204 ⇒
+  **每行 11.35 天内被删了 1,261 次**
+- ★ **关键矛盾**：`INSERT` 里**已经带了 `ON CONFLICT DO UPDATE`**（2026-09-10 加的），
+  那么 `DELETE 整个 bucket` 唯一还成立的用途只是「删掉新集合里已不存在的旧行」
+  （2026-09-25 优化时写明）。
+  可这些是 `success_rate` / `p95_latency_ms` / `active_sessions` 等**指标**，
+  集合几乎不变时 DELETE 只是在删刚插回去的相同行 ⇒ **纯空转**。
+- 与 `assets`（§10.2）**完全同构**：都是「为保证数据新鲜而无条件重写」，
+  只是这张表用更贵的 DELETE+INSERT（索引项删了要重建，WAL 更大）。
+
+**候选修法（未实施，需拍板）**：在 DELETE+INSERT 之前算一个**集合指纹**
+（对排序后的 `(bucket, credential_id, raw_model)` 取 hash），指纹未变则整段跳过。
+成本是算一次 hash，远低于删+插；且不触碰那段被两次事故打磨过的并发逻辑
+（2026-09-10 的 21000 冲突、2026-09-25 的重查询）。
+
+★ 不建议直接删掉 DELETE —— 它承担着清理「新集合已不含的旧行」这个职责。
+★ 也不建议改回 IN(子查询) 形态：那是 2026-09-25 明确优化掉的（每轮把
+  数据面最重的查询跑两遍）。
+
