@@ -7472,3 +7472,69 @@ DB → 重放整条链（含 824）→ **Go ensure 与迁移链产出的 viewdef
   ——裸 `bool` 遇 NULL 会让 `rows.Scan` 失败 → `warnRowSkip` → **整行请求从 200
   响应里静默消失**。
 - 文档：审计 §9.160（8 小节）、决策表 D12。
+
+---
+
+### §70.21 第七十九轮：**D17-a 的依据从「填充率没问题」升级为「逐值复现」**，外加三个洞
+
+#### ① 收口上一轮没量完的读点
+
+`bg/model_probe.go` 三处 `request_logs_hot`：`:425`（`usage` CTE，取 Top-N 排名）、
+`:517`（`demoteAgedHealthyBindings` 的 `NOT EXISTS`）、`:905`（`featuredCycle` 的
+`EXISTS`）。三处都按 `(credential_id, raw_model)` 存在性/去重判定，**不求和**。
+
+#### ② 一个我原本猜错、量完才发现方向反了的假设
+
+我以为 `request_logs_hot`（热面，有保留期）改读 canonical 视图会在**月界丢行**。
+量完发现：视图**没有时间过滤**（名字里的 `current_month` 是历史遗留），v1 腿读
+hot ∪ parent ⇒ **时间覆盖是超集**。
+
+⚠️ 但**行级不是超集**：反连接去重，有孪生的 v1 行由会话腿顶替。
+**时间超集 + 行级去重必须一起说**，只说前者会得出「只会多不会少」的错误结论。
+
+#### ③ 判定函数问错了问题（本轮的主要产出）
+
+`repoint-safe` 依据的是**列填充率**——那答的是「列在不在」，不是「值一不一样」。
+而视图对有孪生的 v1 行**不输出 v1 那行**，改出**会话腿的值**。
+
+真库实测（24h 窗口）：v1 成功行 **641** → 视图中存在 **641**、只存在于 v1 的 **0**；
+其中 **267** 条有孪生，`credential_id` / `client_model` / `outbound_model` / `success`
+**四项不符全为 0**；转换风险（非数字 `credential_id` 会被视图的
+`^[0-9]+$ THEN ::bigint` 静默落 NULL）**0**。
+
+门：`db/repoint_value_fidelity_realdb_test.go`（可复测，任意库含 252）。
+
+#### ④ 三个洞
+
+1. **判定函数对视图里根本没有的列说「安全」**。`request_logs` **157** 列 vs 视图
+   **118** 列 ⇒ **39 列在契约外**；原判定落 `default: baseline` ⇒ 报 `repoint-safe`。
+   已加 `not-in-contract` 分类（所有分支之前）+ `repoint-no-such-column` 判定（最差）。
+   **今天 0 个文件被误判，§9.165 的 3/8/1/4 数字不变**——修的是闸，不是账。
+2. **保真门在只测一半时依然全绿**。所有一致性断言读 `twins`，而**空集满足它们**。
+   加 EXISTS 异路径复算。**变异 MK**：删 LATERAL 的 hot 臂 ⇒ `twins` 267→153，
+   **四个一致性计数全部仍是 0**，只有交叉校验把它变红。
+3. **一条把行数漂移当回归的门**（既有红门，非本轮引入，**在干净 `origin/main`
+   2a908b76d 上同样复现**）。漂移容差 0.01pp 对一个**仍在被写入的表**的两位小数快照
+   ⇒ 多一行就动。`stream_chunks_sent` 53.25→53.26。放宽到 **0.05pp**（仍比该门要抓的
+   最小真实误差 9.7pp 小两个数量级）。**变异 ML**：记成 40.00 ⇒ 红。
+
+#### ⑤ 我在这轮犯的错
+
+1. **raw string 插值写反了顺序**：`` …+window+'` `` 应为 `` …+window+`' ``。
+   后续被吞成 rune 字面量，编译器报了一屏**下游**错。我先怀疑 Go 规则、再怀疑坏字节
+   （`od` 验过是对的）、还做了两轮**被自身括号平衡污染的二分**（坏量具）。
+   最后靠**逐列打印报错列**定位。**教训：新写 Go 先 `gofmt` 再编译。**
+2. **grep 报命中就当命中**：我把 `h`/`p`/`v` 也当别名，3 处命中逐条读完全部化解。
+
+#### ⑥ 交付物
+
+`db/retirement_column_exposure.go`（not-in-contract 分类 + no-such-column 判定）、
+`db/retirement_contract_membership_test.go`（新，离线 + 真库两道）、
+`db/repoint_value_fidelity_realdb_test.go`（新，保真门 + 列集防漂移）、
+`db/session_family_column_availability_test.go`（漂移容差 0.05pp）、
+`admin/request_logs_retirement_exposure_test.go`（报告列出新判定）、
+审计 §9.166、决策表 **D18**。
+
+⚠️ **D18-a / D18-b 待拍板**：3 个 `repoint-safe` 是否现在改读？
+依据已升级，但**保真门只在 24h 窗口、只在本地库、只在这 5 列上测过**；
+`bg/model_probe.go` 的窗口是 **3 天**，**长窗口未测**。

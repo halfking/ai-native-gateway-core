@@ -67,13 +67,33 @@ func retiredColumnSet(cols []string) map[string]bool {
 	return out
 }
 
+// retirementContractSet is canonicalColumnOrderV2 as a lookup, built once.
+var retirementContractSet = func() map[string]bool {
+	m := make(map[string]bool, len(canonicalColumnOrderV2))
+	for _, c := range canonicalColumnOrderV2 {
+		m[c] = true
+	}
+	return m
+}()
+
 // RetirementExposureClassify returns the exposure class of a canonical column.
 //
 // The classes are mutually exclusive and total over the contract, which is what
 // makes "every column was classified" a checkable statement rather than an
-// assertion. Order matters: structural gap first (the column can never be
-// served), then unservable (it has a source but currently carries nothing), then
-// degraded, then baseline.
+// assertion. Order matters: **not-in-contract first**, then structural gap (the
+// column can never be served), then unservable (it has a source but currently
+// carries nothing), then degraded, then baseline.
+//
+// not-in-contract is checked first and exists because of a measurement
+// (audit §9.166): `request_logs` carries **157** columns, the canonical view
+// projects **118**. So a reader can name a column that is perfectly real on the
+// table being retired and completely absent from the view that is supposed to
+// replace it. Before this arm, such a column fell through every branch to
+// `default: baseline` — i.e. the function reported `repoint-safe` about a column
+// the view does not have, which is precisely the "a drifted safe entry is worse
+// than no entry" failure this file's own header warns about, committed by the
+// same file. Measured on the local database 2026-10-04; the 39 extra v1 columns
+// are enumerated in TestRetirementExposureRejectsColumnsOutsideTheContract.
 //
 // There is deliberately **no hand-maintained "safe" list**. A 118-name list kept
 // by hand is a second thing to drift, and a drifted "safe" entry is worse than no
@@ -85,6 +105,8 @@ func retiredColumnSet(cols []string) map[string]bool {
 // non-baseline lists still match a live measurement.
 func RetirementExposureClassify(col string) string {
 	switch {
+	case !retirementContractSet[col]:
+		return "not-in-contract"
 	case retiredColumnSet(RetirementStructuralGapColumns)[col]:
 		return "structural-gap"
 	case retiredColumnSet(RetirementUnservableColumns)[col]:
@@ -171,6 +193,13 @@ const (
 	// than assumed — a column nobody measured is not a column anybody may claim
 	// is safe.
 	UnknownColumn RetirementRepointVerdict = "unknown-column"
+	// RepointNoSuchColumn: a needed column is not in the canonical view contract
+	// at all, so repointing does not degrade the reader — it stops it running
+	// (`column … does not exist`). Kept separate from UnknownColumn because the
+	// two call for different responses: an unmeasured column needs measuring, a
+	// nonexistent one needs the reader rewritten against a different source.
+	// Loud beats silent, but only if you know which kind of loud you are buying.
+	RepointNoSuchColumn RetirementRepointVerdict = "repoint-no-such-column"
 )
 
 // RetirementRepointVerdictFor computes what repointing to the canonical view
@@ -184,11 +213,16 @@ func RetirementRepointVerdictFor(cols []string) RetirementRepointVerdict {
 	worst := RepointSafe
 	rank := map[RetirementRepointVerdict]int{
 		RepointSafe: 0, RepointDegraded: 1, RepointGapOnly: 2,
-		UnknownColumn: 3, RepointEmpty: 4,
+		UnknownColumn: 3, RepointEmpty: 4, RepointNoSuchColumn: 5,
 	}
 	for _, c := range cols {
 		v := RepointSafe
 		switch class := RetirementExposureClassify(c); class {
+		case "not-in-contract":
+			// The view cannot serve this column under any data state, so this
+			// outranks even `repoint-empty`: empty returns nothing, this fails
+			// to parse.
+			v = RepointNoSuchColumn
 		case "baseline":
 			// Already at or above v1 parity by definition, so it needs no
 			// recorded rate. Without this arm, every parity column (latency_ms,
