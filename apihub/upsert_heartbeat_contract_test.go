@@ -63,9 +63,28 @@ func TestUpsertSQLHeartbeatWindowGuard(t *testing.T) {
 
 	// 第二半：心跳已过期 ⇒ 必须刷新，否则 last_seen_at 永远停在旧值，
 	// stale 判定会在 6h+窗口 处误判为「消失」。
-	if !strings.Contains(q, "public.assets.last_seen_at < now()") {
-		t.Fatalf("缺少「心跳已过期」这一半 ⇒ 加上 WHERE 之后 last_seen_at 再也不会前进，"+
-			"6 小时后全部资产会被误判为已消失")
+	//
+	// ★ R44 起这一半**必须**是 COALESCE 形态，不能是裸比较。理由：
+	// assets.last_seen_at 在 baseline 01-schema.sql:5673 是可空、无 DEFAULT、
+	// 无 NOT NULL 的裸声明。裸写 `last_seen_at < now() - …` 时，对任何
+	// last_seen_at IS NULL 的行：这一半是 `NULL < x` = NULL（不是 true），
+	// 而「业务字段真变了」那一半在稳态下是 false ⇒ 两半都不成立 ⇒
+	// **该行永远不会被更新**，last_seen_at 永远停在 NULL；读方
+	// COALESCE(last_seen_at, registered_at) 判 stale ⇒ 活着的资产被判
+	// degraded（bg/asset_health_probe）。省掉无效重写省过头了。
+	//
+	// 门从「含有裸比较」升格为「含有 COALESCE 到 -infinity 的比较」：
+	// 判据仍锚在 last_seen_at 与 now() 的比较上（意图未变），
+	// 同时把 NULL 这条逃逸路径钉死。
+	if !strings.Contains(q, "COALESCE(public.assets.last_seen_at, '-infinity'::timestamptz)") {
+		t.Fatalf("「心跳已过期」这一半没有用 COALESCE(public.assets.last_seen_at, '-infinity'::timestamptz)\n"+
+			"⇒ 加上 WHERE 之后 last_seen_at 不会前进；且对 last_seen_at IS NULL 的行\n"+
+			"  裸比较求值为 NULL，该行**永远写不进去**，读方 COALESCE 回落 registered_at\n"+
+			"  会把活着的资产判成 stale/degraded。实际 SQL：\n%s", q)
+	}
+	if !strings.Contains(q, "< now() - ($12 * interval '1 second')") {
+		t.Fatalf("心跳过期这一半没有与刷新窗口比较 ⇒ 加了 WHERE 之后 last_seen_at 再也不会前进，"+
+			"6 小时后全部资产会被误判为已消失。实际 SQL：\n%s", q)
 	}
 	if !strings.Contains(q, "interval '1 second'") {
 		t.Fatalf("心跳窗口没有用 $12 * interval '1 second' 表达 ⇒ "+

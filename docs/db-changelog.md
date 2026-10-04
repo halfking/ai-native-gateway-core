@@ -842,7 +842,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 818 | `818_ursm_snapshot_typed_columns.sql` | `bb2493af5a160a8fd6df860c4117c8aeeb68212843394d74b1923ff8a30988b3` | applied+verified |
-| 819 | `819_request_abandoned.sql` | bb271e8c1876e24c09b44795eb01145a25839b9a8ea0b369923a539bd7fc9bae | applied+verified（R43 恢复注记 §R43/L8：Go 写路径已随 820/821 线删除、生产零引用，文件仅为 checksum 完整性档案保留） |
+| 819 | `819_request_abandoned.sql` | `bb271e8c1876e24c09b44795eb01145a25839b9a8ea0b369923a539bd7fc9bae` | applied+verified（R43 恢复注记 §R43/L8：Go 写路径已随 820/821 线删除、生产零引用，文件仅为 checksum 完整性档案保留。**R44 补记：R43 写这一行时漏了 sha 的反引号**，而 `verify-migration-checksums.sh:53` 与 `internal/sqlguard/migration_registry_continuity_test.go:90` 的判据正则都要求 sha 被反引号包住 ⇒ 该行对两处判据**同时隐形**，`make guards` 在 main tip 上一直红。判据没坏，是行的形状坏了） |
 
 ## 2026-10-03T22:50:46Z — deploy 245 build_seq 2442 (25a86439)
 
@@ -877,6 +877,27 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 825 | `825_modality_graded_verification.sql` | `3af1b1801c36e015a5849bde261125c378129c46f5bdad703c186b85cc0b0eab` | pending deploy（245/154/252 未应用；本地 8782 已由启动自愈 ensureModalityGradedVerification 等价应用并 stamp） |
+| 825 | `825_ursm_node_snapshot_min_partitioned.sql` | `24d0befc257034df4575623a1a70d646fe25445b1cd3e82d36a879ebeb75cf6b` | pending deploy（**手工执行**；`.down.sql` sha `b125cc0700a30a8868e335b140af64c04ee1641c5e4c9e05b544b3e93f58d7a0`）。R44 补登记。⚠️ **与上一行的 825 撞号**：`825_modality`（b992c01b3，10-04 14:05）在先、本迁移（32d592f97，10-04 14:25）在后，按 R22「后提交方让号」规则本应改号，但 R44 复核后**决定不改**，理由见下行注 |
+
+> **R44 复核：为什么 `825_ursm` 不改号（登记了撞号，但保留双 825）**
+>
+> R22「后提交方让号」（759→801、657/658）的前提是**编号是应用顺序键**。R44 实测该前提
+> **在当前架构下已不成立**：
+>   · `installer/internal/dbinit/runner.go:31` 的 `StartupFiles` 是**显式有序字面量清单**，
+>     不是 glob 后按数字前缀排序；
+>   · `scripts/apply-db-revision-sequence.sh` 同为显式路径清单；
+>   · 全仓 `git grep 'sort\.|%03d|strconv.Atoi'` 在这两处**零命中** ⇒ 没有任何代码从数字
+>     前缀派生执行顺序。
+>
+> 因此改号带来的是**零运行时收益**，代价却是：重命名两个 SQL 文件 + 改 `bg/` 契约门的
+> `migration825Path` 等 3 处路径常量 + 改 `scripts/.mutate-825-contract.py` 的 9 个变异靶点
+> 与用例名（`Test825*`）——而那道门（`bg/partition_825_contract_test.go` + 变异脚本 M26–M34）
+> 恰恰是本仓少见的**有判别力的门**（逐字节还原、变异必须让目标门转红）。为一个纯标签冲突去
+> 动它，风险大于收益。
+>
+> **代价照付并显式登记**：撞号事实写进本行状态列，任何按「825」检索的人都会看到两个文件，
+> 而不是静默撞上。**若将来引入「按编号区间/字典序自动发现迁移」的机制，本行必须先改号**——
+> 那一刻编号才重新变成顺序键。
 
 > **2026-10-04 字节解冻与重冻结（统一入口审计轮）**：825 原字节从未成功应用于任何库——
 > `model_modality_verification.canonical_id REFERENCES models_canonical(id)` 在 SSOT 01-schema
