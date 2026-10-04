@@ -141,23 +141,35 @@ URL="${FEISHU_URL}?timestamp=${ts}&sign=${sign}"
 
 ## 7. cron 配置
 
-`/etc/cron.d/pg17`（已部署）：
+正典文件：`scripts/252-monitor/etc.cron.d.pg17` ⇒ 服务器 `/etc/cron.d/pg17`。
 
-```cron
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-MAILTO=""
+> ★ **部署是整文件覆盖，不是合并。** 模板少一条 = 下次部署把那条生产任务删掉。
+> 改模板后**必须** diff 服务器现网复核：
+>
+> ```bash
+> diff <(ssh 252 'cat /etc/cron.d/pg17') scripts/252-monitor/etc.cron.d.pg17
+> ```
+>
+> 门 `scripts/ursmcheck/cron_registration_test.go` 只能守仓库侧
+> （新增巡检脚本忘了在模板里注册）；「模板有、服务器没有」那一半抓不到，
+> 只能靠上面这条人工 diff。2026-10-03 与 2026-10-04 各违反过一次。
 
-# === 高频监控 ===
-*/10 * * * * root llmgw-source /opt/scripts/pg17-disk-watch.sh >/dev/null 2>&1
-*/15 * * * * root llmgw-source /opt/scripts/pg17-emergency-cleanup.sh --auto >/dev/null 2>&1
+当前 7 条任务（`## 7` 这段曾长期停留在 4 条的老版本，2026-10-04 才跟上）：
 
-# === 周级 bloat 清理 ===
-15 3 * * 0 root llmgw-source /opt/scripts/pg17-vacuum-bloat.sh >/dev/null 2>&1
+| 频率 | 任务 | 说明 |
+|---|---|---|
+| `*/10` | `pg17-disk-watch.sh` | 磁盘采样 + 告警推送 |
+| `*/15` | `pg17-emergency-cleanup.sh --auto` | disk≥90% 自动 L2 |
+| 周日 03:15 | `pg17-vacuum-bloat.sh` | VACUUM FULL 防 dead tuple 堆积 |
+| 周日 04:40 | `pg17-index-bloat.sh --report` | 索引死页只读巡检 |
+| 每月 1 号 02:30 | `pg17-drop-old-columnar-partitions.sh` | DROP 老列存分区 |
+| 每日 02:00 | `pg17-proactive-empty-table-cleanup.sh` | 预防性清空表 |
+| 每小时 :17 | `ursm-snapshot-health.sh` | 快照写入健康三态判据（0/1/2/3） |
+| 每小时 :23 | `ursm-snapshot-payload-bloat.sh` | payload 膨胀，818 收益的回归防护（0/1/3） |
 
-# === 月度列存分区清理 ===
-30 2 1 * * root llmgw-source /opt/scripts/pg17-drop-old-columnar-partitions.sh >/dev/null 2>&1
-```
+★ 两条 URSM 巡检**不能**写成 `>/dev/null 2>&1`：它们靠退出码分级报警，
+全部丢弃等于没巡检。同理 `llmgw-source` 包装不能去掉（cron 不加载 `/etc/profile`）。
+门 `TestCronFileActuallyHasTaskLines` 钉住这两点。
 
 ## 8. 验证步骤（已执行）
 
