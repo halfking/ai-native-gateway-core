@@ -53,7 +53,7 @@ func TestApplyStorageS1AFieldsRawModelName(t *testing.T) {
 			outboundModel: ptr(""),
 			clientModel:   ptr("glm-5.3"),
 			want:          "glm-5.3",
-			why: "空串与 nil 是两种不同的「没有值」形态，只判 nil 会在空串上写出空列。",
+			why:           "空串与 nil 是两种不同的「没有值」形态，只判 nil 会在空串上写出空列。",
 		},
 		{
 			name:          "两个都空 → 空（由 turn_writer 的 nilIfEmpty 转 SQL NULL）",
@@ -68,7 +68,7 @@ func TestApplyStorageS1AFieldsRawModelName(t *testing.T) {
 			outboundModel: ptr("glm-5.3-flash"),
 			clientModel:   nil,
 			want:          "glm-5.3-flash",
-			why: "反向也要成立：不能因为 client_model 缺失就丢掉已解析出的上游名。",
+			why:           "反向也要成立：不能因为 client_model 缺失就丢掉已解析出的上游名。",
 		},
 	}
 
@@ -96,11 +96,11 @@ func TestApplyStorageS1AFieldsRawModelName(t *testing.T) {
 // 看似合理结论**的假信号，比现在明确不修更难拆。
 func TestApplyStorageS1AFieldsRawModelNameNeverFallsBackToModel(t *testing.T) {
 	entry := &telemetry.RequestLogEntry{
-		RequestID:       "req-1",
-		TenantID:        "default",
-		ClientModel:     ptr("minimax-m3"),
-		CanonicalModel:  ptr("minimax-m3"),
-		OutboundModel:   nil,
+		RequestID:      "req-1",
+		TenantID:       "default",
+		ClientModel:    ptr("minimax-m3"),
+		CanonicalModel: ptr("minimax-m3"),
+		OutboundModel:  nil,
 	}
 	req := &v2.ProcessedRequest{SessionID: "s", TenantID: "default", RequestID: "req-1"}
 
