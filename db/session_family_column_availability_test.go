@@ -142,6 +142,21 @@ func pct(nonNull, total int64) float64 {
 
 func quoteIdentLocal(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
+// effectivelyEmptyPP is the session-side fill rate below which a column counts
+// as "goes empty", in percentage points.
+//
+// ⚠ It is defined as **half the last digit the report prints** (0.005, against
+// a `%.2f%%` column) so that the classification and the printed number can never
+// disagree. The report is what a reviewer reads; a verdict the report contradicts
+// is worse than no verdict, because the row still looks plausible.
+//
+// It replaced an exact `sp == 0`, which meant "empty" at a precision far finer
+// than anything displayed or actionable: `work_type` at 0.0011% (19 of 1,691,251
+// rows) was classified as *not* empty while printing as "0.00%". See the
+// classification site for the full account and for why the resulting red was
+// pointing at the wrong fix.
+const effectivelyEmptyPP = 0.005
+
 // TestSessionFamilyColumnAvailability_FillRates measures every column that has
 // a session-side source and prints the session-vs-v1 comparison.
 //
@@ -307,10 +322,37 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 		if !hasV1 {
 			note = "v1 base column absent — no comparison possible"
 		}
-		if hasV1 && sp == 0 && vp > 0 {
+		// ⚠ The emptiness test is a **threshold**, not `sp == 0`, and the two must
+		// agree with the number printed on the same line. They used not to, and
+		// the disagreement was the whole failure (audit §9.209):
+		//
+		// The line below prints `sp` with **two** decimals, so anything under
+		// 0.005% renders as "0.00%". The classifier asked for exact zero. A
+		// column holding 19 rows out of 1,691,251 — `work_type`, at 0.0011% —
+		// therefore printed "0.00%" with an **empty note column**, while the
+		// registered list said it was unservable. The row contradicted the
+		// summary printed three lines below it, and `assertSameSet` reported
+		// "registered but not measured: [work_type]".
+		//
+		// That red is a trap, because the error message tells you to fix it by
+		// re-deriving the registered list from this run. Doing that would have
+		// **deleted** `work_type` from RetirementUnservableColumns — declaring
+		// its readers servable — when in truth they still read NULL for 99.999%
+		// of the rows. The list was right and the instrument was wrong.
+		//
+		// So: one constant, used by both the classifier and the note, and the
+		// printed precision is the one that defines it. A column that is not
+		// exactly zero but is below the threshold is labelled explicitly instead
+		// of being allowed to read as a clean, unremarkable zero.
+		switch {
+		case hasV1 && sp < effectivelyEmptyPP && vp > 0:
 			goEmpty = append(goEmpty, name)
 			note = strings.TrimSpace(note + " GOES EMPTY on the session side")
-		} else if hasV1 && sp+5 < vp {
+			if sp > 0 {
+				note += fmt.Sprintf(" (non-zero: %d row(s) = %.4f%%, below the %.3f%% threshold)",
+					sessNonNull[name], sp, effectivelyEmptyPP)
+			}
+		case hasV1 && sp+5 < vp:
 			muchEmptier = append(muchEmptier, name)
 			note = strings.TrimSpace(note + " SESSION MUCH EMPTIER — a reader of this column needs repointing or retiring")
 		}
@@ -323,6 +365,159 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 	t.Logf("STRUCTURAL GAPS (%d): %s", len(structural), strings.Join(structural, ", "))
 	t.Logf("GO EMPTY ON THE SESSION SIDE (%d): %s", len(goEmpty), strings.Join(goEmpty, ", "))
 	t.Logf("session >5pp emptier than v1 (%d): %s", len(muchEmptier), strings.Join(muchEmptier, ", "))
+
+	// ---- second window: is the lifetime number still true of *today*? -------
+	//
+	// Everything above is a **lifetime** rate over every row the session family
+	// has ever held. That one number reads identically for three different
+	// situations, and only one of them is a defect:
+	//
+	//	A. the writer never existed           — client_protocol before §9.208
+	//	B. the writer works, history is the gap — search_text, 0% before 16:00 on
+	//	                                       2026-10-04 and 100% in every whole
+	//	                                       hour after it; is_final_success
+	//	                                       once the D32 backfill runs
+	//	C. the traffic mix changed            — auto_decision sits at 44.7%
+	//	                                       lifetime and 0% for the last 26
+	//	                                       hours; the history is old
+	//	                                       auto-routed traffic, not a writer
+	//	                                       that broke at some hour
+	//
+	// A and B are indistinguishable from the lifetime rate alone — and both
+	// §9.203 and §9.208 had to fall back to reading the write path by hand to
+	// tell them apart. So measure a second, recent window and say which bucket
+	// each column is in. This is the number that answers "are we still losing
+	// data on this column **today**", which is the question the retirement work
+	// actually turns on.
+	//
+	// ⚠ The recent rate is **reported, not registered as a set.** It moves every
+	// hour as rows age in and out of the window, so a set-equality assertion here
+	// would go red for reasons unrelated to any defect — and a gate that flaps
+	// trains people to ignore gates. What *is* asserted is that the buckets
+	// **partition** the measurable columns: see the check below.
+	//
+	// ⚠ The window is **2 hours, not 24**, and that is not a tuning choice. A
+	// window that straddles a writer fix **dilutes the fix into invisibility**:
+	// measured with a 24h window on 2026-10-04, `search_text` came out at 18.2%
+	// — half the window predates its 16:00 deploy — and therefore landed in the
+	// "steady" bucket, under a label that actively denies the writer had just
+	// started. The same column reads ~100% in a 2h window. The cost is a higher
+	// chance of an empty window on a quiet database, which is why the empty case
+	// below is a named SKIP rather than a silent 0%.
+	const recentWindow = `2 hours`
+	recAgg := "count(*)"
+	for _, e := range exprs {
+		recAgg += ", count(" + e + ")"
+	}
+	recSQL := `
+		SELECT ` + recAgg + ` FROM public.session_turns_hot t
+		LEFT JOIN public.session_turn_details_hot d
+		  ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id
+		 AND d.partition_date = t.partition_date
+		WHERE t.ts > now() - interval '` + recentWindow + `'
+		UNION ALL
+		SELECT ` + recAgg + ` FROM public.session_turns t
+		LEFT JOIN public.session_turn_details d
+		  ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id
+		 AND d.partition_date = t.partition_date
+		WHERE t.ts > now() - interval '` + recentWindow + `'`
+
+	recRows, err := pool.Query(ctx, recSQL)
+	if err != nil {
+		t.Fatalf("recent-window aggregate: %v", err)
+	}
+	defer recRows.Close()
+	recTotal := int64(0)
+	recNonNull := map[string]int64{}
+	recFields := recRows.FieldDescriptions()
+	for recRows.Next() {
+		vals, err := recRows.Values()
+		if err != nil {
+			t.Fatalf("recent-window scan: %v", err)
+		}
+		if len(vals) != len(recFields) {
+			t.Fatalf("recent-window row has %d values, description has %d fields", len(vals), len(recFields))
+		}
+		total, _ := vals[0].(int64)
+		recTotal += total
+		for i, name := range canonicalColumnOrderV2 {
+			if isLiteralNullPlaceholder(exprs[i]) {
+				continue
+			}
+			n, _ := vals[i+1].(int64)
+			recNonNull[name] += n
+		}
+	}
+	if err := recRows.Err(); err != nil {
+		t.Fatalf("recent-window iterate: %v", err)
+	}
+	if recTotal == 0 {
+		// Named SKIP, never a silent 0% — a 0/0 window would otherwise classify
+		// every column as "recently dropped", which is the exact false alarm this
+		// section exists to remove.
+		t.Skipf("SKIP recent-window report: no session_turns rows in the last "+recentWindow+" on either face "+
+			"(lifetime total is %d) — a 0-row window has no rate to report", sessTotal)
+	}
+
+	// The buckets must **partition** the measurable columns. This is the part
+	// with teeth: a column that is silently left out of all three (the failure
+	// mode this file's own header calls the worst way to lose a finding) or
+	// filed under two (a double count that inflates the report) both turn it red.
+	// Unlike a set-equality check against a registered list, it cannot flap —
+	// it only depends on the classification, not on the traffic.
+	const (
+		bucketNewlyActive   = "newly active writer (recent≥50%, lifetime<2%)"
+		bucketRecentDropped = "recent drop (recent < lifetime−20pp) — CANDIDATE, cross-check the traffic mix"
+		bucketSteady        = "steady"
+	)
+	var newlyActive, recentDropped, steady []string
+	measurable := 0
+	for i, name := range canonicalColumnOrderV2 {
+		if isLiteralNullPlaceholder(exprs[i]) {
+			continue
+		}
+		measurable++
+		rp := pct(recNonNull[name], recTotal)
+		lp := measured[name].SessionPct
+		switch {
+		case rp >= 50 && lp < 2:
+			newlyActive = append(newlyActive, name)
+		case rp+20 < lp:
+			recentDropped = append(recentDropped, name)
+		default:
+			steady = append(steady, name)
+		}
+	}
+	if got, want := len(newlyActive)+len(recentDropped)+len(steady), measurable; got != want {
+		t.Errorf("bucket partition broken: %d+%d+%d = %d classified, but %d columns have a "+
+			"session-side source. A column is being dropped from the report (or filed twice).",
+			len(newlyActive), len(recentDropped), len(steady), got, want)
+	}
+	t.Logf("recent window: %d rows in the last %s (lifetime %d)", recTotal, recentWindow, sessTotal)
+	for _, b := range []struct {
+		label string
+		names []string
+	}{
+		{bucketNewlyActive, newlyActive},
+		{bucketRecentDropped, recentDropped},
+		{bucketSteady, steady},
+	} {
+		detail := make([]string, 0, len(b.names))
+		for _, n := range b.names {
+			detail = append(detail, fmt.Sprintf("%s(lifetime %.2f%% → recent %.1f%%)", n, measured[n].SessionPct, pct(recNonNull[n], recTotal)))
+		}
+		t.Logf("  %s (%d): %s", b.label, len(b.names), strings.Join(detail, ", "))
+	}
+	if len(newlyActive) > 0 {
+		t.Logf("  ⇒ a column in \"%s\" is NOT a live data-loss defect: its writer works and only the "+
+			"history is empty. Do not repoint or retire its readers on the strength of the lifetime number.",
+			bucketNewlyActive)
+	}
+	if len(recentDropped) > 0 {
+		t.Logf("  ⇒ a column in \"%s\" is a CANDIDATE only. Check the hourly series before calling it a "+
+			"regression: a traffic-mix change produces the same shape as a broken writer, and on this "+
+			"database the mix does change (audit §9.157 unidentified active writer).", bucketRecentDropped)
+	}
 
 	// The measurement contradicts the registered lists, or the lists are
 	// wrong. This is what keeps db/retirement_column_exposure.go a fact rather
@@ -406,22 +601,29 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 // fillRateDriftTolerancePP is how far a recorded rate may sit from a live
 // re-measurement before this file calls it drift, in percentage points.
 //
-// It was 0.01 — one unit in the last recorded digit — and that made the gate a
-// tripwire on **row count** rather than on correctness. The registered rates are
-// two-decimal percentages of a table that is still being written, so a single
-// extra row moves them; `stream_chunks_sent` went 53.25 → 53.26 on
-// 2026-10-06 and took the gate down with it, on pristine `origin/main`
-// (2a908b76d) as well as on the branch — i.e. a red that said nothing about
-// anyone's work.
+// It has been 0.01, then 0.05, and both were below the noise floor of the thing
+// being measured. The registered rates are two-decimal percentages of tables
+// that are still being written **by several processes at once on this machine**,
+// so the rates move continuously: `stream_chunks_sent` went 53.25 → 53.26 on
+// 2026-10-06 and took the gate down on pristine `origin/main` (2a908b76d) as
+// well as on the branch — a red that said nothing about anyone's work. Raising
+// 0.01 → 0.05 did not fix that, it only bought a few days: by 2026-10-04 ten
+// columns had drifted 0.06–0.11pp and the gate was red again.
 //
-// 0.05 keeps the gate honest about the failure it was built for. The defect that
-// motivated the table was six columns written with **guessed** zeros, and the
-// guesses were wrong by 9.7pp at the smallest (canonical_id 0.07 vs a recorded
-// 0.00) and ~100pp at the largest. Every one of those is two orders of magnitude
-// above this tolerance, so nothing the table exists to catch slips through it —
-// and the *set* equality assertions above, which are what actually decide the
-// exposure classes, are unaffected by any of this.
-const fillRateDriftTolerancePP = 0.05
+// ⚠ **A fixed tolerance cannot outrun a live database forever** — it can only be
+// chosen so that the drift it still catches is worth catching. So it is set from
+// the failure the table exists to prevent, not from whatever currently squeaks:
+//
+//   - the defect that motivated the table was six columns written with **guessed**
+//     zeros, wrong by 9.7pp at the smallest (canonical_id 0.07 vs a recorded
+//     0.00) and ~100pp at the largest;
+//   - the observed noise from concurrent writers is ≤0.11pp.
+//
+// 1.0pp sits ~9× above the noise and ~10× below the smallest real defect, so
+// both failure modes stay on the correct side of the line. The *set* equality
+// assertions — which are what actually decide the exposure classes — are
+// unaffected by any of this and stay exact.
+const fillRateDriftTolerancePP = 1.0
 
 // findFill looks a column's measured rates up in the per-column map the
 // fill-rate test builds.
