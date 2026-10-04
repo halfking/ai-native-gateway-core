@@ -747,3 +747,51 @@ SELECT (SELECT count(*) FROM public.session_turns t
 - **D12-c**：`in_progress` 保真度（v1 有 1,633 条，视图推导链产不出）。补它需要
   视图改读 823 那条 `request_status` 列，即给视图加上对 823 的硬依赖——
   **823 未跑的库上会 `undefined column` 失败**。所以我**没做**，留给 D9 裁决。
+
+---
+
+## ⚠️ D13（§9.161 新增）：**退役后「哪些数据会没有」已经量出来了——3 列归零、24 列显著变空**
+
+退役方案不必再靠「逐个读 104 个文件人工评估」。118 列规范契约里每列的会话侧来源
+**本来就写在代码里**（`projectionExprByColumn` / `detailsProjectionColumns`），
+把它们拿去真库跑 `count(expr)` 就得到答案。仪器：
+`db/session_family_column_availability_test.go`（离线钉结构缺口 + 真库量填充率）。
+
+**本地库实测**（会话族两面合计 1,688,890 行 vs `request_logs` 2,176,211 行）：
+
+| 类别 | 数量 | 列 |
+|---|---:|---|
+| **结构缺口**（会话族永远供不上） | **5** | `id`（v1 请求行 id ≠ turn id，配对命中 0 次）、`test_col`、`test_tab_indent`、`provider_model`、`credits_rate_multiplier` |
+| **退役后彻底归零** | **3** | `is_final_success`（0% vs 100%）、`client_protocol`（0% vs 37.02%）、`work_type`（0% vs 1.93%） |
+| **显著更空**（>5 个百分点） | **24** | `total_tokens` 58.36/100、`client_model` 90.06/100、`request_type` 18.15/100、`attachments` 18.19/100、`quality_flags` 54.80/100、`request_class` 60.43/100、`usage_source` 39.71/100、`stream_chunks_sent` 53.25/100、`client_request_id` 15.73/65.65、`application_id` 3.51/37.00、`client_ip` 12.21/18.77、`origin_stage` 56.82/81.75 等 |
+
+### ⚠️⚠️ 一条**推翻默认假设**的读数：镜像不是 v1 的劣化版
+
+会话侧**反而更满**的列：`cost_usd` **100.00% vs 0.87%**、`error_kind` **100.00% vs 85.36%**。
+
+⇒ **两族各有对方没有的东西。** 退役方案**不能**按「v1 有的会话都有」设计，
+反过来也不能按「会话是 v1 的子集」评估数据损失。任何单向假设都会算错。
+
+### ⚠️ `total_tokens` 那一列要单独说明
+
+58.36% **不是丢字段**：该列在会话腿是
+`NULLIF(COALESCE(prompt,0)+COALESCE(completion,0), 0)`，会话侧 41.6% 的行
+**两个 token 列都是 NULL**（很可能是探针轮次），v1 侧则总有值。
+**是数据形状差异**——但任何按 `total_tokens` 求和的读方在退役后会少算 41.6%。
+
+### 需要你拍板
+
+- **D13-a**：这 3 列归零的**读方**（`is_final_success` / `client_protocol` /
+  `work_type`）是「重算/改口径」还是「随功能退役」？前者要排期，后者要确认没人用。
+  ⚠️ 本节只量到**列级**可供给性；把 104 文件 / 237 调用点映射到受影响列，
+  仍是 `requestLogsReadInventory` 那道门自己声明**未完成**的那件事。
+- **D13-b**：5 个结构缺口是否确认随 `request_logs` 一起退役？
+  `id` 那个尤其要注意：**它是 v1 与 turn 的主键语义差**，不是缺失；
+  若有任何读方靠 `request_logs.id` 做关联，退役前必须先改。
+
+### 诚实边界
+
+填充率是**数据形状**结论，成立；产品行为结论不成立（§9.157：本地库有来源不明的
+活跃写入者）。`search_text` 会话侧 0% / v1 100% **不要当缺陷**——§9.157 已查实
+写方是设它的，0% 更可能来自本地那个不明写入者；**本节只报读数，不重开 §9.157 的归因**。
+252 的填充率未测（需授权），`request_class` / `origin_stage` 这类由网关版本决定的列尤其。
