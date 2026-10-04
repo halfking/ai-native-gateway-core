@@ -42,6 +42,27 @@ const total = computed(() => {
   return props.controller.total
 })
 
+/**
+ * 失败提示按**失败来源**分文案（2026-10-04）。
+ *
+ * 为什么不能所有失败都显示 `common.errorHint`（"请检查网络后重试"）：
+ *   实测 /nodes 的失败是服务端 500（admin/credential_monitor.go:657 查询超时 15s），
+ *   页面却让用户去查手机网络 —— 用户会照着错误方向排查半天，而真正的故障在服务器。
+ *
+ * 判据用 `status`：`_core.ts` 的 ApiError 对网络层失败给 status 0，
+ * 对 HTTP 失败给真实状态码。0 = 用户侧，其余（≥500）= 服务端。
+ * 拿不到 status（不认识的对象）时退回中性文案，不猜。
+ */
+const errorText = computed(() => {
+  void tick.value
+  const err = props.controller.error as { status?: unknown; message?: unknown } | null
+  const status = typeof err?.status === 'number' ? err.status : null
+  if (status === null) return t('common.loadFailedTapRetry')
+  if (status === 0) return t('common.errorHint')
+  if (status >= 500) return t('common.errorHintServer')
+  return t('common.loadFailedTapRetry')
+})
+
 const gesture = usePullToRefreshGesture({
   onRefresh: async () => {
     if (props.onRefresh) await props.onRefresh()
@@ -130,7 +151,7 @@ const hasContent = computed(() => loadedCount.value > 0)
     </div>
 
     <AppStateView v-if="state === 'initialLoading' && !hasContent" :loading="true" :skeleton-rows="6" />
-    <AppStateView v-else-if="state === 'loadFailed' && !hasContent" :error="t('common.errorHint')" @retry="controller.retry()" />
+    <AppStateView v-else-if="state === 'loadFailed' && !hasContent" :error="errorText" @retry="controller.retry()" />
     <AppStateView v-else-if="showEmpty" :empty="true">
       <template #empty-hint>
         <span class="hyper-list__empty-hint">{{ emptyHint }}</span>

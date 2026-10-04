@@ -27,6 +27,8 @@ export const enUS = {
     empty: 'No data',
     error: 'Failed to load',
     errorHint: 'Check the network and retry',
+    /** 2026-10-04: a 5xx must not send the user to debug their own network. */
+    errorHintServer: 'Server temporarily unavailable — retry shortly',
     logout: 'Log out',
     refresh: 'Refresh',
     refreshFailed: 'Refresh failed — showing last update',
