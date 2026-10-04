@@ -3,8 +3,10 @@
 // Listens to PostgreSQL LISTEN/NOTIFY channel 'auto_route_refresh'.
 // When a trigger fires (credential_model_bindings change, credentials
 // health change, api_keys limit change), this listener debounces 5s and
-// calls AutoIndexRefresher.RefreshOnce to bring the in-memory index
-// in sync.
+// calls AutoIndexRefresher.RefreshOnceStatus to bring the in-memory index
+// in sync. A skipped refresh (concurrent run in flight / coalesced into
+// the current bucket) is NOT treated as processed: pending is kept and
+// the refresh retries once per debounce window.
 //
 // Why: v2.0 original 5-min interval was too coarse for new credentials
 // or rate-limit changes. With NOTIFY we get sub-second response time
@@ -36,8 +38,17 @@ import (
 // indexRefresher is the consumer seam for the debounced refresh. It exists
 // so listener lifecycle/debounce tests can inject a fake without a real
 // PostgreSQL-backed AutoIndexRefresher.
+//
+// 2026-10-05 P2（R44 移交 §R44/移交.2）：seam 从 RefreshOnce(ctx) error 升级
+// 为 RefreshOnceStatus —— 旧形态只看 error，而 singleflight / 同 bucket 合并
+// 「跳过」时返回 nil error，监听器把「没执行」当成「已处理」清掉 pending，
+// 该 NOTIFY 永不再重试；跑着的那次 rollup 的 SELECT 早于该 NOTIFY 对应的
+// 提交 ⇒ 内存索引丢一次路由配置直到下个 ticker。skipped 语义必须上浮到本层。
 type indexRefresher interface {
-	RefreshOnce(ctx context.Context) error
+	// RefreshOnceStatus 执行一次刷新。skipped=true 表示本次触发**没有执行**
+	// （已有刷新在跑 / 同 bucket 触发被合并），此时 err 必为 nil —— 跳过不是
+	// 错误，但也绝不是「已处理」，调用方必须保持 pending 重试。
+	RefreshOnceStatus(ctx context.Context) (skipped bool, err error)
 }
 
 // AutoRouteRealtimeListener wraps a pgxpool.Conn LISTEN loop and
@@ -228,9 +239,10 @@ func (l *AutoRouteRealtimeListener) serveOne(ctx context.Context) connOutcome {
 
 // debounceLoop owns the single trailing-edge debounce timer. Every
 // notification resets the timer; the refresh runs debounceWindow after
-// the last event of a burst. A failed refresh keeps the pending flag set
-// and rearms the timer so the burst retries once per window instead of
-// being silently dropped.
+// the last event of a burst. A failed OR SKIPPED refresh keeps the pending
+// flag set and rearms the timer so the burst retries once per window
+// instead of being silently dropped (2026-10-05 P2：跳过的 NOTIFY 若被记成
+// 已处理，内存索引会丢一次路由配置直到下个 ticker —— 缺陷 1).
 func (l *AutoRouteRealtimeListener) debounceLoop(ctx context.Context) {
 	timer := time.NewTimer(l.debounceWindow)
 	// Start stopped: only an actual notification arms the first cycle.
@@ -283,9 +295,15 @@ func (l *AutoRouteRealtimeListener) debounceLoop(ctx context.Context) {
 	}
 }
 
-// refresh performs one bounded RefreshOnce on the listener lifecycle
-// context. It reports whether the refresh completed successfully; a
-// context cancellation reports false without a warning.
+// refresh performs one bounded RefreshOnceStatus on the listener lifecycle
+// context. It reports whether the pending NOTIFY has been **covered by a
+// completed execution**:
+//   - executed（skipped=false, err=nil）→ true，调用方可清 pending；
+//   - skipped（singleflight 忙 / 同 bucket 合并）→ false：本次触发尚未落地，
+//     pending 保持，下一轮 debounce 窗口重试 —— 跳过 ≠ 处理完成（缺陷 1 的
+//     修法）。重试要么执行、要么继续等；最终一致性由 refresher 的 bucket
+//     滚动放行 + 5 分钟 ticker 兜底；
+//   - error（含 ctx 取消）→ false；取消不打警告。
 func (l *AutoRouteRealtimeListener) refresh(ctx context.Context) bool {
 	if l.refresher == nil {
 		slog.Debug("auto route listener: no refresher wired; skipping")
@@ -293,10 +311,15 @@ func (l *AutoRouteRealtimeListener) refresh(ctx context.Context) bool {
 	}
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := l.refresher.RefreshOnce(rctx); err != nil {
+	skipped, err := l.refresher.RefreshOnceStatus(rctx)
+	if err != nil {
 		if rctx.Err() == nil {
 			slog.Warn("auto route listener: refresh failed", "error", err)
 		}
+		return false
+	}
+	if skipped {
+		slog.Debug("auto route listener: refresh skipped (concurrent run in flight / coalesced into current bucket); pending kept for retry")
 		return false
 	}
 	slog.Info("auto route listener: index refreshed in response to NOTIFY")
