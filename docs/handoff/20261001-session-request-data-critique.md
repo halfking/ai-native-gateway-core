@@ -9165,3 +9165,98 @@ D20-a / D20-c**。
 5. 若属主要 D28-c 推广：把「grep SELECT 侧引用」跑遍
    `db.RetirementUnservableColumns` + `RetirementDegradedColumns`，
    找出**没有读方消费**的列，单独立一张「写侧但无人读」清单。
+
+---
+
+## §70.47 退役清单的读方普查：新增 1 门，**推翻**我上一轮的一个结论 + 推翻共享提取器的自述
+
+### ① 本轮做了什么
+
+给 S4 退役三张清单（unservable 3 / degraded 24 / structural 5，合计 32 列）
+补上后半个问题：**「这一列有人在读吗」**。原本只回答「退役后会怎样」。
+理由：无人读取的列归哪一档都不伤害任何人，留在「会断的列」清单里只会让清单虚高，
+而**虚高的清单会被整体折扣**。
+
+### ② ⚠️ 推翻我上一轮的结论：`client_protocol` **有读方**
+
+上一轮（§9.192.10 / D28-c）我写「全仓无任何 SELECT 读它，建议移出清单」——**错**。
+错因：用**逐行** `grep "SELECT" | grep client_protocol`，
+而 `admin/logs.go:204` 的 `rl.client_protocol` 在**跨行**的 SQL 字面量里
+（查询由 `requestLogsListCols` + `requestLogsJoins` + `requestLogStatusExpr`
+三段常量拼接）。已核实：该文件主日志列表走 710 视图 SELECT 它并下发到 JSON 字段。
+⇒ **移出清单的建议作废**；D28-c 改为「两列都留在清单里」，
+并把「主日志列表今天对业务请求就返回空 `client_protocol`」记为已知既有降级。
+
+### ③ ⚠️ 顺带推翻共享提取器的自述：「只会多报，不会漏报」**不成立**
+
+`extractV1ReadingLiterals` 按**单个字符串字面量**建别名表。
+拼接查询里含列名的那段（投影清单）**自己不带 FROM** ⇒ 别名表为空 ⇒
+`columnAttribution` 返回 `attrNone` ⇒ **该列从未被归因**。
+实测：`admin/logs.go` 在暴露报告里 `definite` 只有 2 列，缺的正是这整段投影。
+⇒ **少报的方向恰好是「让读点看起来安全」。** 修它会改已公布数字 ⇒ **D29-a**（属主决定），
+本轮**不动**共享提取器。
+
+### ④ 我为写这道门迭代了 **4 版判据**，每一版都被实测打掉
+
+| 版 | 判据 | 实测 |
+|---|---|---|
+| v1 | 逐行 `grep SELECT` | **漏** `client_protocol`（跨行字面量） |
+| v2 | 字面量含 `SELECT` | **漏**（投影段没有 SELECT） |
+| v3 | 含 `SELECT`、不排除 INSERT | **多报** `client_forwarded_for`（巨型字面量同含 INSERT 与 SELECT） |
+| v4 | 整文件字面量**合并**后判读 | 造出「假语句」——真实 `;` 不在字面量里，`WHERE … $` 读区吞到合并文本末尾 |
+
+最终：**逐字面量 + 读区（SELECT…FROM / WHERE / GROUP BY / ORDER BY）
++ 写语句整条跳过 + 「投影段形状」兜底**（≥3 逗号项、含 `AS` 或点号、
+不含结构关键词）。后者能认出 `requestLogsListCols`，
+又因 `canonicalColumnOrderV2` 每元素是**单个**裸名（逗号不在字面量里）而被排除。
+★ 失败形态不对称 ⇒ 偏向「认得出读方」（门的失败形态是误报，不是漏报）。
+
+### ⑤ 新门与结果
+
+`admin/request_logs_retirement_column_reader_gate_test.go`（常跑）
+默认拒绝 + 具名登记；**登记过期也会红**（逼人销账）。
+32 列 ⇒ **5 列确无生产 SQL 读方**：
+`test_col` / `test_tab_indent`（测试占位）、`stream_chunks_sent`（只有写方；
+`handler.go:6255` 读的是内存 map）、`client_forwarded_for`（只有写方）、
+`quality_fix_actions`（只出现在 `db/db.go` 的 **DDL**：`SET storage` 清单 :2056、
+`ADD COLUMN` :2158）。
+变异 **M1** 删登记 ⇒ 红并点名；**M2** 清空理由 ⇒ 红并指名「登记必须写机制」。
+
+### ⑥ 我这一轮自己犯的错（4 个）
+
+1. **逐行 grep 下结论**（②）。SQL 字面量常跨行 ⇒ 逐行 grep 对「某列是否被读」不可用。
+2. **先动手后 grep**：自建了 `goStringLiterals`，编译报错才发现本包已有同名 AST 版。
+   ⇒ 复用既有 helper 这条规矩本轮又被我违反一次。
+3. **合并文本制造假语句**（v4）。拼接的正确解法不是合并文本，是识别「投影段」形状。
+4. **判据分支/终止条件的副作用**：`WHERE … $` 的终止于文末在合并文本里跨界 ⇒
+   静默多报。**终止条件本身是判据的一部分。**
+
+### ⑦ 回归与边界
+
+待补（见本轮提交信息）。**未改任何产品代码与共享提取器**；**未连接生产**。
+但「`admin/logs.go` 投影段未被归因」与「`client_protocol` 在该查询里被 SELECT」
+都是**代码事实**，可直接外推。
+
+### ⑧ 待拍板
+
+**D29-a**（是否把 `extractV1ReadingLiterals` 的别名表改成文件级并集——
+会改 §9.161/§9.162 已公布数字，只会变多；建议修，并在同一 commit 重跑三道门、
+新旧数字并列写进审计）/
+**D29-b**（是否专项普查「SQL 常量被 `+` 拼接」的查询有多少处，建议与 D29-a 同 commit）/
+**D29-c**（5 条具名登记是否需人工复核：建议不需，门已把机制写死且空理由会红）。
+沿用未决：**D28-a / D28-b / D28-c（已改写） / D27-a / D27-b / D27-c /
+D26-a / D26-b / D25-a / D25-b / D25-c / D24-d-3 / D24 / D24-c /
+D19-a-3-1 / D19-a-3-2 / D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b /
+D20-a / D20-c**。
+
+### ⑨ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
+2. 跑 `go test ./admin/ -run TestRetirementListedColumnsHaveAProductionReader`（应绿）。
+3. `s4audit` 三条门：前二绿、第三红（真库）。
+4. 回归基线：`admin` 带真库 FAIL = 3，**只看差集**。
+5. **若决定做 D29-a**：先量「拼接式查询」有几处（grep SQL 常量的 `+` 拼接），
+   再改别名作用域，然后在**同一个 commit** 里重跑
+   `TestRequestLogsRetirementExposure` / `…BreakersRegistryIsConsistent` /
+   `…RepointVerdict`，把新旧数字并列写进审计。
+6. **D28 拍板前不要动写侧。**
