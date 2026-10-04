@@ -598,7 +598,7 @@ watch(activeTab, () => { void reload() })
       -->
       <div v-if="sessionsLoading && !isCompact" class="loading-hint">{{ t('compression.loading') }}</div>
       <!-- 降级时**不说「没有会话」**——那是「不知道」被讲成「知道」；compact 也命中此分支，避免容器把错误裁成空态 -->
-      <div v-else-if="sessionsError" class="empty-hint load-error-hint">{{ sessionsError }}</div>
+      <div v-else-if="sessionsError || continuousFailed" class="empty-hint load-error-hint">{{ sessionsErrorText }}</div>
       <div v-else-if="!isCompact && !sessions.length" class="empty-hint">{{ t('compression.table.empty') }}</div>
       <ResponsiveDataView
         v-else
@@ -608,7 +608,7 @@ watch(activeTab, () => { void reload() })
         :fields="cardFields"
         table-min-width="0px"
         :loading="isCompact && compactBusy"
-        :empty="isCompact && !compactBusy && rows.length === 0 && !continuousFailed"
+        :empty="isCompact && !compactBusy && rows.length === 0"
         :empty-text="t('compression.table.empty')"
         :clickable="true"
         :clickable-label="t('compression.table.sessionId')"
