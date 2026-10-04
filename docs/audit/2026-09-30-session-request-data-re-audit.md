@@ -15073,6 +15073,26 @@ startup migration 820 exists but is missing from the channel files=(...) array
 
 ### §9.92.7h 上游那个 820 的**精确修复坐标**（留给接手者，本轮未实施）
 
+> 🔴 **2026-10-04 订正：本节的坐标与修复顺序是错的，动手前先读这个框。**
+>
+> **真因只有一行**：`scripts/apply-db-revision-sequence_test.sh` 的
+> `ensure_allowlist` 里**漏了 820**。补上那一行即可，**不需要**本节列的七点同步。
+>
+> 依据（都实测过）：
+> - Go 侧 `installer/cmd/llm-gw-installer/stats_migrations_test.go` 的
+>   `goEnsureMirrored` **早已有**一条针对 820 的**评审过的豁免**，
+>   理由：效果由 `db.ensureAudioModalityBackfill`（db/db.go:641，流量前调用）应用，
+>   SQL 带 `WHERE modality` 守卫**幂等**；注册进 `StartupFiles` 只会让每次安装
+>   **把同一个回填再跑一遍**。
+> - 实测该 ensure 确实在跑：`models_canonical` 9 行 audio、0 行 straggler。
+> - 报错文案**自己就写着**第三条路：
+>   `…register it in StartupFiles, the revision sequence, or the reviewed Go-ensure allowlist`。
+>
+> ⇒ **「已豁免」这个状态是两处副本**（Go 侧 map + shell 侧 allowlist），
+> 只补了一边，另一边那条门照样红——820 当初就是这么漏的。**改必须成对改。**
+>
+> ⚠ 另：**七点同步是有害的**，不是无害的冗余——它会真的把回填再跑一遍。
+
 用户已明确本轮不碰上游那个音频迁移（`93cbce8a3`），故这里把坐标写全，
 使它成为**可执行待办**而不是一句「上游有问题」。
 
@@ -15295,9 +15315,10 @@ G（`mark_no_row` 占 0.4 < 0.5 ⇒ **不得**响）。G 的作用是把「③ �
    （`shapes_identical = t`），821 没有破坏这个契约。
 5. **能力边界不变**：仍**不覆盖**「只有 t0、之后彻底静默」那一类（§9.92.4）。
 6. **历史漏标不可追补**：t0 缺失在 v1 侧无从事后查证。
-7. **上游 820 音频迁移的七点同步仍未修**（§9.92.7h 的坐标仍然有效）。
-   本轮实测：该迁移在 `origin/main` 上**仍然存在**且最大号仍是 820 ⇒ **821 未被占用**，
-   让号决策依然正确。
+7. ~~**上游 820 音频迁移的七点同步仍未修**（§9.92.7h 的坐标仍然有效）~~
+   **⇒ 2026-10-04 已订正，见下方「§9.92.7h 订正」框：七点同步是错方向，
+   不要按本节坐标动手。** 本轮实测：该迁移在 `origin/main` 上**仍然存在**
+   且最大号仍是 820 ⇒ **821 未被占用**，让号决策依然正确（这句仍然有效）。
 
 ### §9.93.10 编号冲突：为什么本轮**没有**自动重编号（附精确坐标）
 
@@ -20790,5 +20811,54 @@ empty_response / stream_error）被标记数全是 0。**
 >
 > **别把「机制成立」与「目标达成」混成一句。**
 > §9.170 证明了机制，本节证明了总体选错；两条合起来才是完整结论。
+
+
+### §9.171.6 ★订正我自己在 820 那个 commit 里写的门证据（它不成立）
+
+上一节之外，我在 `6f286f492` 的提交信息里写过两句门证据。**复核后两句都不成立，
+这里逐句订正**，因为下一个读者会照着它去复核：
+
+| 我写的 | 复核结果 |
+|---|---|
+| 「`apply-db-revision-sequence_test.sh`：820 由红转绿（**已实测 rc=0 + contract passed**）」 | **不可复现**。那次 rc=0 是 **04:31** 测的，当时 **819 的 .sql 还不在磁盘上**（被 `856628bac` 删掉了）；并发会话的 `251fc9a7a`（**10:39**）为满足 `verify-migration-checksums.sh` 把 819 **按字节恢复**回来之后，这条门就永远先撞上 819 了 |
+| 「installer `TestCanonical…AreRegistered`：820 由红转绿」 | **假的**。把 `stats_migrations_test.go` 换回我改之前的版本重跑，820 **仍然**输出「intentionally go-ensure-mirrored」——**820 在 Go 侧从来就没红过**，我只改了一段注释和一个行号 |
+
+**为什么第一条现在测不出来**（这是本节最值得记的机制）：
+`canonical_delivery_path_check` 的循环体在**第一个未覆盖文件上就 `return 1`**
+（`apply-db-revision-sequence_test.sh:31`），而 `canonical_files` 是 `sort` 过的
+字典序 ⇒ **819 排在 820 前面**。于是
+
+> **820 的红绿在这条门下不可观测**：819 一旦未覆盖，820 根本没被检查到。
+> 实测证据——带我的改动跑与不带我的改动跑，输出**逐字节相同**（md5 一致），
+> **前后对比为空**。⇒ 「整条门 rc=0」曾是我唯一的正向证据，而它已经不存在了。
+
+⇒ 教训：**我用过一次「整条门转绿」当证据，却没有先确认那条门能不能看见我改的那一项。**
+  门是**短路**的（first-failure），**它的绿只覆盖它走到的那个文件**。
+
+#### 能复现的证据：逐文件覆盖度（带负对照）
+
+整条门被 819 遮住时，改用**同一份真实清单、同一个 grep 匹配**，
+但**逐文件**报覆盖度，让一个未覆盖文件遮不住下一个
+（`scripts/.coverage-820-probe.sh`）：
+
+```
+819_request_abandoned.sql              -> *** UNCOVERED ***
+820_audio_modality_backfill.sql        -> ensure_allowlist        ← 我的那一行
+821_session_turns_abandoned_marker.sql -> StartupFiles
+
+A/B 负对照（把 820 那一行从 allowlist 去掉）：
+820_audio_modality_backfill.sql        -> *** UNCOVERED ***        ← 必须变红
+```
+
+清单非空自证：`startup_files=219`、`sequence_files=134`、`ensure=5`
+（**空清单会让上表恒为 UNCOVERED，量具就没在量东西**）。
+负对照变红 ⇒ 上面的正向结果不是恒真。
+
+⇒ 结论要分三层说，别混：
+1. **820 的修复是对的**（逐文件证据 + 负对照，可复现）。
+2. **整条门仍然是红的**，红点是 **819**，且这条红**先于我的改动存在**
+   （`git stash` 复跑，前后输出逐字节相同）。
+3. **② 那句「exit 4 的部署通道红」并没有被消除**，只是被重新界定到了 819 上。
+   彻底收口要动 819，而 819 与 checksum 门互斥，属跨门取舍。
 
 **本节只做观测，未做任何生产变更。**
