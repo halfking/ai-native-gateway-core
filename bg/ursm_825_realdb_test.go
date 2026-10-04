@@ -260,7 +260,7 @@ func Test825MigrationRealDB(t *testing.T) {
 // Test825EnsureRejectsForeignPartitionSquatting — ★ 本文件的核心用例。
 //
 // 构造 up→down→up 的前置形态：同名分区已存在，但挂在**别的**父表下
-// （真实来源是 825.down 保留的 _post825）。要求 ensure **明确报错**，
+// （真实来源是 830.down 保留的 _post825）。要求 ensure **明确报错**，
 // 而不是静默返回 —— 静默返回的后果是新父表零分区、所有写入失败，
 // 而迁移报成功。
 func Test825EnsureRejectsForeignPartitionSquatting(t *testing.T) {
@@ -275,7 +275,7 @@ func Test825EnsureRejectsForeignPartitionSquatting(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// 把父表与它的分区整体挪到 _post825 名下（等价于 825.down 的第 1 步）。
+	// 把父表与它的分区整体挪到 _post825 名下（等价于 830.down 的第 1 步）。
 	if _, err := pool.Exec(ctx,
 		`ALTER TABLE public.ursm_node_snapshot_min RENAME TO ursm_node_snapshot_min_post825`); err != nil {
 		t.Fatalf("rename parent: %v", err)

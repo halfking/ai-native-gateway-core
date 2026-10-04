@@ -224,6 +224,32 @@ func TestMigration817DownRevertsWithWeaknessWarning(t *testing.T) {
 	}
 }
 
+// TestMigration830DownDeletesLedgerRowSymmetricTo817 — 830 的对称性断言。
+//
+// 817 的 ④ 门要求 down 必须条件删除自己的台账行；830 与它同构：'830' 的
+// schema_migrations 戳记由 db.ensureURSMNodeSnapshotMinDailyPartition 在 ensure
+// 成功后写入（830 up 是手工迁移，本身不写台账），而 830.down 会把分区父表
+// RENAME 走——回滚后台账仍留着 applied 记录无人清理，账本从此声称「830 已应用」
+// 而真实 schema 已经退回普通表。本门跟随 TestMigration817DownRevertsWithWeakness
+// Warning ④ 的同一判据：down 必须含条件 DELETE，且删除必须被
+// 「回滚未收敛 ⇒ 保留 ledger 行」的守卫包住。
+func TestMigration830DownDeletesLedgerRowSymmetricTo817(t *testing.T) {
+	b, err := os.ReadFile("830_ursm_node_snapshot_min_partitioned.down.sql")
+	if err != nil {
+		t.Fatalf("读 830 down 失败：%v", err)
+	}
+	raw := string(b)
+	if !strings.Contains(stripSQLLineComments816(raw), "DELETE FROM public.schema_migrations WHERE version = '830'") {
+		t.Errorf("830 down 没有删除 ledger 行 —— 回滚后 schema_migrations 会残留一条已撤销的" +
+			"applied 记录（戳记来自 db.ensureURSMNodeSnapshotMinDailyPartition），账本与真实 schema 分叉")
+	}
+	if !regexp.MustCompile(`(?s)keeping the ledger row`).MatchString(raw) {
+		t.Errorf("830 down 的 ledger 删除没有被守卫。\n" +
+			"回滚未收敛（父表仍是分区表）时必须保留 ledger 行并 NOTICE —— " +
+			"无条件 DELETE 会把「已应用」与「文件内容」朝另一个方向分叉。")
+	}
+}
+
 // TestMigration817HostileClientIPValuesDoNotBreakCanonicalView 行为门。
 //
 // 这是本文件里**唯一有牙**的那道：它不查文本，它往真库插敌意值再读视图。
