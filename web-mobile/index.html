@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#1e4fd6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d1424" media="(prefers-color-scheme: dark)" />
+    <title>网关运维</title>
+    <!-- 外部脚本（CSP script-src 'self' 禁 inline，桌面端 theme-init.js 同款先例）：
+         entry-switch 负责 ① 主题首帧（防 FOUC）② 统一入口 large→/ 自动切换。 -->
+    <script src="/m/entry-switch.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

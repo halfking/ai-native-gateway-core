@@ -8,6 +8,8 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <!-- 2026-08-25: 拆出 inline script，避免被 CSP script-src 'self' 'unsafe-eval' 拦截 -->
     <script src="/theme-init.js"></script>
+    <!-- 统一入口：compact（<600px）根入口自动切到移动端 /m（外部脚本，CSP 同上） -->
+    <script src="/entry-switch.js"></script>
   </head>
   <body>
     <div id="app"></div>

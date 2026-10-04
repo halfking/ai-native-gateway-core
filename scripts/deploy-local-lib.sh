@@ -644,6 +644,9 @@ dl_load_env_file() {
 
 dl_stage_release() {
   local bundle="$1" binary="$2" web="$3" version_json="$4" version_file="$5" name="$6"
+  # 可选第 7 参：web-mobile dist（Hyper 移动端，挂 /m）。空/缺省=本 bundle
+  # 不含移动端（历史调用方零改动），gateway 侧 /m/* 路由不注册。
+  local web_mobile="${7:-}"
   # 本函数经 deploy-local.sh 的 var=$(stage_release ...) 赋值语境调用：
   # 该语境下 bash 不因函数内失败命令中断（2026-09-05 陈旧二进制事故的
   # set -e 怪癖），必须逐项显式检查。SHA256SUMS 放在最后生成——任一关键
@@ -669,6 +672,15 @@ dl_stage_release() {
     cp -R "$web" "$bundle/web" || return 1
   else
     mkdir -p "$bundle/web" || return 1
+  fi
+  # web-mobile 与桌面端同门：dist 内容平铺进 $bundle/web-mobile（运行侧
+  # NewMobileStaticHandler 的探测路径之一），一并纳入 SHA256SUMS。未提供时
+  # 建空目录——runtime 镜像的 `COPY web-mobile …` 对旧调用方依旧成立，
+  # gateway 探测不到 index.html 即不注册 /m/* 路由（行为与引入前一致）。
+  if [[ -n "$web_mobile" && -d "$web_mobile" ]]; then
+    cp -R "$web_mobile" "$bundle/web-mobile" || return 1
+  else
+    mkdir -p "$bundle/web-mobile" || return 1
   fi
   cp "$version_json" "$bundle/version.json" || return 1
   cp "$version_file" "$bundle/VERSION" 2>/dev/null || true

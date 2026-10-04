@@ -1,0 +1,442 @@
+/* base.css — compact 布局基线（UI 规范 17 §1 + 01 §1/§4/§6）。
+   要点：
+   - 触控目标 ≥48px（R1：新增控件一律 48，44 是存量下限）
+   - 输入字号 16px（iOS 聚焦不缩放）
+   - 每页恰一个页面标题（顶栏）；区块用分组标签，杜绝多重标题
+   - 安全区：顶栏/底栏/全屏层各消费一次 inset
+   - 触控分区 touch-action：滚动区 pan-y，横滚表 pan-x，其余 auto */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--app-text);
+  background: var(--app-bg);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+#app {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  font-size: 16px; /* iOS 聚焦缩放下限（11 §1） */
+  color: var(--app-text);
+}
+
+a {
+  color: var(--app-primary);
+  text-decoration: none;
+}
+
+/* 数字右对齐（中式表格语言，01 §5） */
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ── App 框架：顶栏 + 内容滚动宿主 + 底栏 ─────────────────────────── */
+
+.m-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
+
+.m-topbar {
+  position: relative;
+  z-index: var(--app-z-header);
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-1);
+  height: calc(var(--app-topbar-height) + var(--app-safe-top));
+  padding: var(--app-safe-top) var(--app-space-2) 0;
+  background: var(--app-header-bg);
+  border-bottom: 1px solid var(--app-header-border);
+  backdrop-filter: saturate(1.4) blur(10px);
+  flex: none;
+}
+
+/* 顶栏三席：返回/菜单（48px 目标）· 标题（唯一标题，居中弹性）· 动作 */
+.m-topbar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  height: 48px;
+  color: var(--app-text-secondary);
+  touch-action: manipulation;
+}
+
+.m-topbar__btn:active {
+  color: var(--app-primary);
+}
+
+.m-topbar__title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.m-topbar__side {
+  min-width: 48px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 内容滚动宿主：唯一滚动层（07 §1 统一滚动宿主） */
+.m-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+
+.m-page {
+  padding: var(--app-space-3) var(--app-space-content-x)
+    calc(var(--app-space-4) + var(--app-safe-bottom));
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* ── 底栏 ≤5 席（02 §4）────────────────────────────────────────── */
+
+.m-tabbar {
+  position: relative;
+  z-index: var(--app-z-header);
+  display: flex;
+  background: var(--app-surface);
+  border-top: 1px solid var(--app-border);
+  padding-bottom: var(--app-safe-bottom);
+  flex: none;
+}
+
+.m-tabbar__item {
+  flex: 1;
+  min-height: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 0.6875rem;
+  color: var(--app-text-muted);
+  touch-action: manipulation;
+}
+
+.m-tabbar__item.is-active {
+  color: var(--app-primary);
+  font-weight: 600;
+}
+
+.m-tabbar__item svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ── 卡片与分组（compact 强制卡片，01 §2）───────────────────────── */
+
+.m-card {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-card);
+  padding: var(--app-space-3);
+  margin-bottom: var(--app-space-3);
+}
+
+.m-card__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--app-space-2);
+}
+
+/* 分组标签（代替区块标题：整页仍只有顶栏一个标题） */
+.m-group-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--app-text-secondary);
+  padding: var(--app-space-3) var(--app-space-1) var(--app-space-2);
+}
+
+/* label/value 有序列表（紧凑、易扫读） */
+.m-kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--app-space-2);
+  padding: 0.4rem 0;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--app-border-subtle);
+}
+
+.m-kv:last-child {
+  border-bottom: none;
+}
+
+.m-kv__k {
+  color: var(--app-text-secondary);
+  flex: none;
+}
+
+.m-kv__v {
+  color: var(--app-text);
+  text-align: right;
+  word-break: break-all;
+}
+
+/* 汇总卡 2×2 栅格 */
+.m-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-space-2);
+}
+
+.m-metric {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--app-radius);
+  padding: var(--app-space-2) var(--app-space-3);
+}
+
+.m-metric__k {
+  font-size: 0.75rem;
+  color: var(--app-text-muted);
+}
+
+.m-metric__v {
+  font-size: 1.125rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text);
+}
+
+/* 状态点（soft 底色 + 点 + 文案，绝不只靠色相，13 §1） */
+.m-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: var(--app-radius-pill);
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--app-info-soft);
+  color: var(--app-info);
+  white-space: nowrap;
+}
+
+.m-chip--success {
+  background: var(--app-success-soft);
+  color: var(--app-success);
+}
+
+.m-chip--warning {
+  background: var(--app-warning-soft);
+  color: var(--app-warning);
+}
+
+.m-chip--danger {
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+
+/* 主按钮（≥48px 触控目标） */
+.m-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 var(--app-space-4);
+  border-radius: var(--app-radius);
+  font-size: 1rem;
+  font-weight: 600;
+  background: var(--app-primary);
+  color: var(--app-on-primary);
+  touch-action: manipulation;
+}
+
+.m-btn:active {
+  filter: brightness(0.92);
+}
+
+.m-btn:disabled {
+  opacity: 0.5;
+}
+
+.m-btn--ghost {
+  background: var(--app-surface);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+}
+
+.m-btn--danger {
+  background: var(--app-danger);
+  color: #fff;
+}
+
+/* 表单 */
+.m-field {
+  display: block;
+  margin-bottom: var(--app-space-3);
+}
+
+.m-field__label {
+  display: block;
+  font-size: 0.8125rem;
+  color: var(--app-text-secondary);
+  margin-bottom: 6px;
+}
+
+.m-input {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 var(--app-space-3);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  font-size: 16px;
+}
+
+.m-input:focus {
+  outline: 2px solid var(--app-focus);
+  outline-offset: -1px;
+}
+
+/* 搜索框 */
+.m-search {
+  position: relative;
+  margin-bottom: var(--app-space-3);
+}
+
+.m-search input {
+  padding-left: 40px;
+}
+
+.m-search svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  color: var(--app-text-muted);
+}
+
+/* 中式全边框表格（专注层/Sheet 内宽表） */
+.m-table-wrap {
+  overflow-x: auto;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.m-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.m-table th,
+.m-table td {
+  border: 1px solid var(--cn-table-border);
+  padding: 0.4rem 0.55rem;
+  text-align: left;
+}
+
+.m-table th {
+  background: var(--cn-table-head-bg);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.m-table tbody tr:nth-child(even) {
+  background: var(--cn-table-zebra);
+}
+
+/* 骨架屏（13 §1） */
+.m-skeleton {
+  border-radius: var(--app-radius);
+  background: linear-gradient(
+    90deg,
+    var(--app-surface-muted) 25%,
+    var(--app-border-subtle) 50%,
+    var(--app-surface-muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: m-skeleton-wave 1.2s ease-in-out infinite;
+  min-height: 1em;
+}
+
+@keyframes m-skeleton-wave {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 空态 / 错误重试（13 §2/§3） */
+.m-state {
+  padding: var(--app-space-6) var(--app-space-4);
+  text-align: center;
+  color: var(--app-text-muted);
+  font-size: 0.875rem;
+}
+
+/* reduced-motion：动画取消、文案保留（12 §5） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
