@@ -1,3 +1,10 @@
+// 2026-10-04：本文件此前**整文件没有任何 timeout 声明**，是 *.silentcatch.test.ts 一族里
+// 唯一漏掉 { timeout: 20_000 } 的成员（对照 absentVsFailed / turnsResummarizeStale /
+// wizardStatusUnknownVsNotActivated 等兄弟文件）。后果不是断言红，而是：
+// `Error: Test timed out in 5000ms` —— 全量 187 文件并发时 jsdom 冷启动 +
+// transform 把首个 mount 用例推过 vitest 的 5s 默认值；单跑本文件 7/7 全过（4.22s）。
+//
+// 按第五轮 §30.3 的处方：**只放宽 timeout，判据本身不放宽** —— 三态断言一个字没改。
 // filterMeta.silentcatch.test.ts —— 筛选元数据加载失败必须自报家门
 //
 // ## 挡住的是什么
@@ -114,7 +121,7 @@ async function renderModels() {
   return w
 }
 
-describe('UsersView 租户下拉：三态可区分', () => {
+describe('UsersView 租户下拉：三态可区分', { timeout: 20_000 }, () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -143,7 +150,7 @@ describe('UsersView 租户下拉：三态可区分', () => {
   })
 })
 
-describe('ModelsView 筛选元数据：三态可区分', () => {
+describe('ModelsView 筛选元数据：三态可区分', { timeout: 20_000 }, () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})

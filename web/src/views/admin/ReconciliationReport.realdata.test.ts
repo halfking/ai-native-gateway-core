@@ -89,7 +89,7 @@ async function mountPage() {
   return w
 }
 
-describe('ReconciliationReport 真实数据渲染', () => {
+describe('ReconciliationReport 真实数据渲染', { timeout: 20_000 }, () => {
   beforeEach(() => {
     getReportSummaryMock.mockReset().mockResolvedValue(summary)
     getReportDimensionsMock.mockReset().mockResolvedValue(dimensions)

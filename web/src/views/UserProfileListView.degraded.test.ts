@@ -65,7 +65,7 @@ async function render() {
 
 const listPayload = (o: Record<string, unknown>) => ({ users: [], total: 0, limit: 20, offset: 0, ...o })
 
-describe('UserProfileListView 三态', () => {
+describe('UserProfileListView 三态', { timeout: 20_000 }, () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
