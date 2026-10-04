@@ -2869,3 +2869,83 @@ lt5m = lt6m = lt10m = lt30m = lt1h = 1306
 `2a0aac3bd` 标题的「1/12」**仍不成立**（§10.21 已查其来源是 2141 这个错数）。
 实测的诚实表述：**机队完整打补丁后 ≈ 4.9×**（−79%），约 38.2 万次/天
 （原 186.3 万次/天）。
+### 10.25 ★★ `session_summaries` 无界增长的根因：归档器**从来没有自动运行过**
+
+§10.13 巡检报出 `session_summaries` 887 MB / 空闲 194 MB，是绝对值最大的一处空洞。
+本节查清了成因，**不是**写放大，也**不是**空洞回收策略问题。
+
+#### 1. 实测：链条的两端都是空转
+
+```
+n_live_tup=592693  n_dead_tup=46786  n_tup_ins=93754
+n_tup_upd=524417   n_tup_del=0        ← 从来没有过删除
+```
+
+```
+total     | archived | oldest_archived | due_90d
+591,893   | 0        | (null)          | 0
+```
+
+`n_tup_del = 0` **且** `archived = 0` ⇒ 裁剪器从来没删过任何一行。
+
+#### 2. 但有 376,028 行**现在就该被归档**
+
+```
+total   | last_req_gt30d | last_req_gt7d | no_accessed_at | accessed_gt30d | oldest_req
+591,893 | 376,028        | 551,425       | 87,935         | 376,028        | 2026-08-06
+```
+
+归档器阈值是**双 30 天**（`domains/sessionarchive/archiver.go:29-30`
+`inactivityThreshold` / `sessionEndThreshold`），而
+`last_request_at < now()-30d` 的有 **376,028 行**（占 63.5%），
+其中 `last_accessed_at` 同样超 30 天的也是 376,028 行。
+⇒ **UPDATE 的 WHERE 有 37 万行可标记，但实际标记了 0 行。**
+
+#### 3. 根因：归档器没有调度器，只能被手动 HTTP 触发
+
+```go
+// domains/sessionarchive/archiver.go —— 只有 Archive(ctx)，没有 Start/ticker
+func (a *Archiver) Archive(ctx context.Context) (*ArchiveResult, error)
+func (a *Archiver) GetStats(ctx context.Context) (*ArchiveStats, error)
+```
+
+全仓 `Archive(` 的生产调用点**只有一个**：
+`admin/session_archive_handler.go:42`，即
+`POST /api/admin/session-archive/trigger`。`cmd/gateway/main.go:7188`
+只是 `NewArchiver` + 注册路由，**没有任何定时调用**。
+
+#### 4. ★ 这正是「两步链条只自动化了第二步」
+
+`main.go:5632-5637` 的注释已经写明问题与对策：
+
+> 471 起归档但从不删除，表无界增长；**每日分批 DELETE**（单批 ≤5000），
+> 索引自迁移 690 idx_session_summaries_archived。
+
+⇒ 裁剪器（第二步）**确实**被装配并每日跑（`bg/session_summaries_trimmer.go:122`），
+但**第一步（打 `archived_at` 标记）从未自动发生** ⇒
+裁剪器每天扫一遍、每天都空跑。
+
+★ 这与「已实现 ≠ 已接线」同族，但更精确：**不是某个组件没接线，而是
+  生产者（archiver）只有手动入口，消费者（trimmer）却按自动组件来假设。**
+  两者各自单看都「绿」：trimmer 的门验证的是删除逻辑，archiver 的门验证的是
+  UPDATE 逻辑 —— **没有任何一道门检查「上游会不会真的产出数据」**。
+
+#### 5. ⚠️ 现在补跑归档**不会**回收那 194 MB，反而会先增空洞
+
+`Archive()` 本身就是一次覆盖 37 万行的 `UPDATE archived_at = NOW()`
+⇒ 产生 37 万个死元组。而裁剪器的 TTL 是 `lifecycle.session_summaries_ttl_days`
+（默认 90 天），**打上标记后还要再等 90 天才可能被删**。
+且本表最老的会话也只有 60 天（2026-08-06）。
+
+⇒ **两件事要分开决策**：
+  · **立即回收 194 MB** ⇒ 只能靠 `VACUUM FULL`（ACCESS EXCLUSIVE，需窗口）或
+    `pg_repack`；这与归档链修不修无关。
+  · **止住无界增长** ⇒ 给归档器加调度（或让裁剪器先归档再删）。
+    但在补调度之前，先评估「今天标记 37 万行」要付的空洞成本。
+
+#### 6. 顺带：写入侧不是浪费
+
+`internal/summarystore/store.go:181` 的 `ON CONFLICT DO UPDATE` 每次
+`summary_version = COALESCE(...)+1`，行内容真的变了 ⇒ 与 `assets` 那种
+「无变化全表重写」**不同型**，`n_tup_upd`（524,417）是对 `n_tup_ins`（93,754）的
+5.6 倍属正常内容churn。**不要照搬 assets 的门控方案。**
