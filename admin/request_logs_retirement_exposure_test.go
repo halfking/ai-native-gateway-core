@@ -664,11 +664,10 @@ var retirementReattributed = map[string]string{
 //   - a registered file the measurement no longer calls broken → somebody fixed
 //     it and left the entry, so every future reviewer re-investigates a solved
 //     problem.
-func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
-	root := repoRootFromCaller(t)
-
-	measured := map[string]string{} // file -> severity（**仅限直读 v1 底表**的读方）
-	viewArm := map[string]string{}  // file -> severity（经 canonical 视图读 v1 臂的读方）
+func measureV1ReadingExposure(t *testing.T, root string) (measured, viewArm map[string]string) {
+	t.Helper()
+	measured = map[string]string{} // file -> severity（**仅限直读 v1 底表**的读方）
+	viewArm = map[string]string{}  // file -> severity（经 canonical 视图读 v1 臂的读方）
 	for f := range requestLogsReadInventory {
 		// ⚠ 总体必须按「怎么读到的」分开（审计 §9.199）。
 		// 关系宇宙放宽前，经视图读的文件一个字面量都产不出来，
@@ -738,6 +737,12 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 			}
 		}
 	}
+	return measured, viewArm
+}
+
+func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
+	root := repoRootFromCaller(t)
+	measured, viewArm := measureV1ReadingExposure(t, root)
 
 	var unregistered, stale []string
 	for f := range measured {
