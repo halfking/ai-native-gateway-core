@@ -49,17 +49,22 @@ pnpm typecheck      # vue-tsc -b（strict + noUncheckedIndexedAccess + verbatimM
 pnpm build          # verify-css-media-syntax（范围语法=0）→ vue-tsc → vite build
 ```
 
-## 挂载（生产）
+## 挂载与统一入口（生产）
 
 仿 maintain 双 SPA 先例（`cmd/gateway/maintain_static.go`）：
 
 - Go 侧 `MobileStaticHandler`（`cmd/gateway/mobile_static.go`）：
-  - `/m/*` → `web-mobile/dist` 文件，缺省 SPA fallback 到 index.html；`/m/api/*`、`/m/v1/*` 404（防 SPA 遮蔽）
+  - `/m/*` → dist 文件，缺省 SPA fallback 到 index.html；`/m/api/*`、`/m/v1/*` 404（防 SPA 遮蔽）
   - `/m-assets/*` → `dist/assets/*`（扩展名白名单复用 streaming.IsAllowedStaticExt）
-- 配置：`MOBILE_WEB_DIST` env 指向 dist；缺省探测仓库根 `web-mobile/dist`（存在即挂载；容器镜像不带该目录时不注册，零影响）
+  - 统一入口：挂载存在时，GET/HEAD 裸入口（`/` 与 `/index.html`）移动端 UA → 302 `/m/`（`Cache-Control: no-store`）。深链与 API 永不切换；`?desktop` 参数存在即留 PC（与 `web/public/entry-switch.js` 客户端腿同判——iPadOS 桌面级 UA 由该腿补）；`MOBILE_WEB_ENTRY_REDIRECT=false|0|off` 停用分流但保留 /m 挂载
+- 配置：`MOBILE_WEB_DIST` env 指向 dist；缺省按 `web-mobile/dist` → `web-mobile` 双候选探测进程 cwd（repo 检出与 release bundle 平铺两种布局都命中）。dist 缺失（空目录）= /m 与入口分流整体不注册，零行为变化
 - 资产 base `/m-assets/`、路由 base `/m/`——开发与生产同路径
 
-deploy-local 蓝绿链把 `web-mobile/dist` 打进 release bundle 属后续轮（见 UI规范 17 §9）。
+### deploy 链路（2026-10-04 起）
+
+- `deploy-local.sh`：`build_frontend` 并列构建 web-mobile（失败即中止部署）；bundle 携带 `web-mobile/`；docker 运行镜像 `COPY web-mobile`（docker 模式 cwd=/opt/llm-gateway-go 探测命中）
+- `deploy-245.sh` / `deploy-154.sh`（deploy-seamless.sh）：同链路构建与 staging；`--no-frontend` 时 web-mobile 随 web 一起沿用线上 current；远端根软链 `web-mobile -> current/web-mobile` 在切换/回滚路径维护（两节点 unit WorkingDirectory=/opt/llm-gateway-go）
+- lockfile 守门：`scripts/check-frontend-lockfiles.sh` 以 **pnpm-only** 契约覆盖本目录（pnpm-lock.yaml 必须跟踪且与 package.json 声明区间一致）
 
 ## 鉴权
 
