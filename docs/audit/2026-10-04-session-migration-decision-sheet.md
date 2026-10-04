@@ -2281,6 +2281,22 @@ DDL/分区树/约束/索引（§9.185）。
     `credential_model_index` 30 MB 等各有各的迁移历史）。
     ⇒ 请把「回滚」的范围写清楚（只回 765？还是 7 族全回？），
     否则它不是一个可执行选项。
+  * ✅ **2026-10-05 范围已定为「只回 765 管的 bodies」，并给出正确形态**（§9.201.2）：
+    **3 GB 全表重写不需要做。** `drop_old_request_logs_bodies_partitions()`
+    对列存分区是**裸 `DROP TABLE`**（实测函数体，无数据搬迁）；
+    TTL 默认 7 天、`bg/partition_manager.go:1232` 周期调用；
+    `2026_09` 月末 = 2026-10-01 ⇒ **自 2026-10-08 起自动 DROP**。
+    而 765 作者当初就写了「仅转空分区（数据安全阀）……非空分区按 TTL 整分区 DROP 退役」。
+    ⇒ 新增 `sql/migrations/startup/829_bodies_columnar_rollback.sql`（+ down + embeddata 镜像），
+    三段：① **重定义 ensure 函数为恒 heap**（这才是止血，否则继续新建列存分区）；
+    ② **只转空分区**（本机 `2026_11`，0 行）；③ NOTICE 列出仍列存且有数据的分区与总 MB。
+    实测 NOTICE：`2026_09/2026_10 has rows, keep as-is` + `converted empty 2026_11`
+    + `3048 MB ... left, all data-bearing`。
+  * ⚠ **829 本机故意不应用**：应用后本机就不再是生产形态，
+    `TestColumnarParentTwoSurfaceSetopShape_RealDB` 与
+    `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 会**假绿**——
+    它们红的意义正是「这个库的存储形态与生产不一致」（D25-a 同款）。
+    ⇒ 829 随下次部署在生产执行；本机保持列存直到那两道门**有理由**转绿。
   * **我的建议改为**：倾向 ①，或 ② + 一条明确的编码约定
     （「读列存分区必须自带分区键谓词」）+ 门来兜。
     理由：这条约定**静态门判不了**（§9.197.6），只能靠真库逐条 EXPLAIN；
@@ -2340,6 +2356,8 @@ DDL/分区树/约束/索引（§9.185）。
   * 选项 ②：只补可复现性，保留 `source` 列；
     则 `source` 在列存布局上**继续不可投影**（潜伏），靠门盯着。
   * 选项 ③：先不动视图，只把「不可复现」记成新缺陷继续查来源。
-  * 我的建议：①。两件事一起做，且**顺序不能反**——
-    先让它可复现，再谈列不列存在。⚠ 本轮**未执行任何 DDL**：
-    删列是契约变更，超出原授权。
+  * ✅ **2026-10-05 已按选项 ① 落地**（§9.201.1）：新增
+    `sql/migrations/startup/828_supplier_errors_unified_tracked.sql`（+ down + embeddata 镜像），
+    视图 21 → 20 列、`security_invoker` 保留、行数 **2031 前后不变**（零丢失）。
+    `TestDeployedViewOverColumnarIsServable_RealDB` 由 **FAIL 1/147 转 PASS 0/146**。
+    `schema_migrations` 已登记 828。

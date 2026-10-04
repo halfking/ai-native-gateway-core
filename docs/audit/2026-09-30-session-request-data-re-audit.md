@@ -24030,3 +24030,95 @@ D30-d 选定的修法是「把 `'hot'::text AS source` 换成**基于基表列**
    「回滚列存转换」若按字面执行，范围远大于 765。
 
 ⇒ 决策表 D30-a 需要把「回滚」的范围写清楚，否则它不是一个可执行的选项。
+
+---
+
+## §9.201 D30-d 落地（828）+ D30-a 的正确形态（829，**本机故意不应用**）
+
+### §9.201.1 828：`supplier_errors_unified` 进受追踪链，并删掉 `source`
+
+新增 `sql/migrations/startup/828_supplier_errors_unified_tracked.sql`（+ `.down`，+ embeddata 镜像）。
+实测结果：
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 视图输出列 | 21 | **20** |
+| `TestDeployedViewOverColumnarIsServable_RealDB` | ❌ FAIL 1/147 | ✅ **PASS 0/146** |
+| 视图行数 | 2031 | **2031（零丢失）** |
+| `security_invoker` | true | true |
+| 现网真实形状（`errors_trend` 子查询包视图） | 正常 | 正常 |
+
+用 `DROP VIEW IF EXISTS` 而非 `CREATE OR REPLACE`（后者不能删列）；
+**不加 CASCADE**——实测无依赖视图，万一有没查到的，让它失败回滚而不是悄悄级联。
+
+`schema_migrations` 已登记 `828`（本机是手工应用的，runner 不应重复应用）。
+
+### §9.201.2 D30-a 的**正确形态**比「回滚」便宜得多
+
+属主拍板「只回 765 管的 bodies」。但按 §9.200.3 的事实重新推导后，
+**3 GB 全表重写根本不需要做**：
+
+1. `drop_old_request_logs_bodies_partitions()` 的函数体实测是**裸 `DROP TABLE`**，
+   对列存分区**无数据搬迁**（也不需要 UPDATE/DELETE 路径）。
+2. `lifecycle.request_logs_bodies_ttl_days` 默认 **7 天**（`settings/spec_lifecycle.go`，HotReload），
+   由 `bg/partition_manager.go:1232` 周期调用。
+3. `request_logs_bodies_2026_09` 月末 = 2026-10-01 ⇒ **自 2026-10-08 起自动 DROP**。
+4. 765 的作者当初就写了「仅转空分区（数据安全阀）……非空分区不动，
+   按 TTL 整分区 DROP 退役」。**本迁移沿用同一姿态**，不是新发明。
+
+⇒ 829 的三段：
+1. **重定义 `ensure_request_logs_bodies_partition` 为恒 heap**（这才是止血；
+   否则 765 的 A 段会继续新建列存分区）；
+2. **只转空分区**（本机 `2026_11`，0 行，零代价）；
+3. `RAISE NOTICE` 列出仍列存且有数据的分区与总 MB，不做任何重写。
+
+**本机实测行数**：`2026_09` = 2,219,097（3,026 MB）、`2026_10` = 25,675（23 MB）、
+`2026_11` = 0 ⇒ 829 的 NOTICE 实测输出：
+`2026_09/2026_10 has rows, keep as-is` + `converted empty 2026_11` +
+`3048 MB of columnar partitions left, all data-bearing`。
+
+### §9.201.3 ⚠ 我在验证 829 时**真的把它应用了**，已回退
+
+为了验证 829 而**不**动本机形态（动了会让两道红门**假绿**、毁掉它们的存在意义），
+我用 `{ echo BEGIN; cat 迁移文件; echo ROLLBACK; }` 包一层跑。
+**错在迁移文件自带 `BEGIN; … COMMIT;`**——文件里的 COMMIT **真的提交了**，
+外层 ROLLBACK 无对象可回（psql 打出 `there is already a transaction in progress`
+与 `there is no transaction in progress` 两行 WARNING，是证据）。
+
+⇒ `request_logs_bodies_2026_11` 被永久转成 heap，
+`ensure_request_logs_bodies_partition` 也被永久重定义。
+
+**回退过程**（含两次自己的操作错误）：
+1. 用 829 的 `.down.sql` 恢复 ensure 函数 ✅
+2. `docker exec -i psql -c <<EOF` 重跑分区恢复 ⇒ **静默无效果**
+   （`psql -c` 不读 stdin，缺 `-f -`）——**这一次「没报错」等于「没执行」**；
+3. 改用 `-f -` ⇒ `ERROR: LOCK TABLE can only be used in transaction blocks`
+   ⇒ 补 `BEGIN; … COMMIT;` ⇒ 成功。
+
+**回退后逐项核对**（必须与实验前一致）：
+- 3 个 bodies 分区**全 columnar** ✅
+- `bodies_total` = **2,244,772**（与实验前逐字一致）✅
+- ensure 函数 `prosrc LIKE '%USING columnar%'` = true ✅
+- `schema_migrations` 只有 `828`，**没有 `829`** ✅
+
+⇒ 本机回到生产形态，两道红门的信号保住了。
+
+**教训**：「想验证但不想改状态」时，**不能靠外层包事务**——
+被验证对象自带 `COMMIT` 时外层事务就是摆设。
+要么用**不含 COMMIT 的副本**跑，要么在**一次性库**上跑。
+⚠ 而 `psql -c` 配合 heredoc **静默失败**（无输出、无错误、也没执行）这件事
+单独就值得记：它和 §9.198 的「WITH 子句要求导致假零」是同一族——
+**一个没执行的操作，看起来和一个成功的操作一模一样**。
+
+### §9.201.4 本轮的门状态
+
+| 门 | 状态 |
+|---|---|
+| `TestDeployedViewOverColumnarIsServable_RealDB` | ✅ **PASS**（828 修掉了真缺陷，真库验证） |
+| `TestColumnarParentTwoSurfaceSetopShape_RealDB` | ❌ FAIL 7/7（**真故障**，等生产跑 829） |
+| `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` | ❌ FAIL 1/5（§9.196 起就是红的） |
+| `TestColumnarSetopSubqueryIsTheNarrowTrigger_RealDB` | ✅ PASS |
+| `TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB` | ✅ PASS |
+| `TestColumnarUniverseFromCatalog` | ✅ PASS |
+
+⇒ 带真库 `admin` FAIL 集合 **5 → 4**，减少的那一条是**真绿**。
