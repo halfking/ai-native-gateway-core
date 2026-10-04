@@ -146,17 +146,58 @@ func TestS4GateMeasurement(t *testing.T) {
 	def := results["7d"]
 	t.Logf("7d window: genuine_loss is %d. s4_ready would be %v.", def.genuine, def.genuine == 0)
 
-	// A freshness observation, reported rather than asserted: if the 1h window
-	// has genuine losses while the 30d window does not, the loss is ongoing; if
-	// 30d has more than 1h, it is decaying. Both are informative to whoever
-	// reads this, and neither is a threshold this test should own.
-	one := results["1h"]
-	if one.genuine > 0 && results["30d"].genuine > 0 {
-		t.Logf("ONGOING: genuine losses in the last hour (%d) — the mirror is losing terminal "+
+	// ---- the windows are nested, so the counts must be monotonic -----------
+	//
+	// All four windows are the same row source with the same predicate and a
+	// widening `ts` bound, so every row counted in 1h is also counted in 24h.
+	// A count that **decreased** as the window widened would mean a window is
+	// scoped differently from its neighbours, and every number derived from the
+	// set would then be about a different population than the one it claims.
+	// This is cheap and it is the property the rest of this block relies on.
+	ordered := []string{"1h", "24h", "7d", "30d"}
+	for i := 1; i < len(ordered); i++ {
+		prev, cur := results[ordered[i-1]], results[ordered[i]]
+		if cur.genuine < prev.genuine || cur.total < prev.total {
+			t.Errorf("window %s reports genuine_loss=%d total=%d, but the wider %s window reports "+
+				"genuine_loss=%d total=%d. These windows are nested (%s ⊂ %s), so the wider one "+
+				"cannot count fewer rows — one of them is scoped differently and the comparison "+
+				"below would be about two different populations",
+				ordered[i], cur.genuine, cur.total, ordered[i-1], prev.genuine, prev.total,
+				ordered[i-1], ordered[i])
+		}
+	}
+
+	// ---- is the loss ongoing, recent, or confined to history? --------------
+	//
+	// A freshness observation, reported rather than asserted: "is it safe to open
+	// S4" is a release decision that belongs in the decision sheet, not a
+	// threshold hidden in a test.
+	//
+	// ⚠ This used to be two branches keyed on the 1h and 30d windows only, and it
+	// **never looked at 24h**. So the state "no loss in the last hour, 4 in the
+	// last 24h" was reported as `historical … decaying` — which reads as "the
+	// mirror has recovered, go ahead", while 4 of the losses were inside the day.
+	// A single quiet hour is not evidence of decay. Measured on this database
+	// 2026-10-04: 1h=0, 24h=4, 7d=10, 30d=10, and the old wording still said
+	// "decaying".
+	//
+	// The three states are now all named, so the classification is **total** over
+	// the windows this test already measures.
+	one, day, month := results["1h"], results["24h"], results["30d"]
+	switch {
+	case one.genuine > 0:
+		t.Logf("ONGOING: %d genuine loss(es) in the last hour — the mirror is losing terminal "+
 			"failures right now, not just historically", one.genuine)
-	} else if results["30d"].genuine > one.genuine {
-		t.Logf("historical: genuine losses exist in 30d (%d) but none in the last hour — decaying",
-			results["30d"].genuine)
+	case day.genuine > 0:
+		t.Logf("RECENT, NOT YET HISTORICAL: no genuine loss in the last hour, but %d within the "+
+			"last 24h (30d total %d). One clean hour is not evidence that the mirror has "+
+			"recovered — a loss mechanism that fires a few times a day looks exactly like this "+
+			"between events. Treat s4_ready as blocked until the 24h window is also clean.",
+			day.genuine, month.genuine)
+	case month.genuine > 0:
+		t.Logf("historical: all %d genuine losses are older than 24h — decaying", month.genuine)
+	default:
+		t.Logf("clean: no genuine loss in any measured window")
 	}
 }
 
