@@ -32,6 +32,27 @@ function kindTone(kind: string): string {
 function alertKey(a: CandidateFailureAlert): string {
   return `${a.credential_id}-${a.raw_model_name}-${a.ts}`
 }
+
+/**
+ * 这条告警**有没有可展开的内容**。
+ *
+ * ⚠️ 为什么必须显式判：`expanded` 唯一驱动的渲染是
+ *   `<pre v-if="expanded === key && a.last_response_preview">`
+ * 原来卡片**无条件**渲染成 `<button>` + `cursor:pointer`，于是没有
+ * `last_response_preview` 的告警点下去什么都不发生 —— 实测属性、类名、高度、
+ * 文字、子节点**全部零变化**（`changed:false`），是一张骗人的可点卡片。
+ *
+ * ⇒ 修法是**撤掉假可供性**（渲染成 div、不给 pointer），而不是补一个箭头：
+ *   箭头会承诺「点开有东西」，而实际上仍然没有内容。
+ */
+function expandable(a: CandidateFailureAlert): boolean {
+  return !!a.last_response_preview
+}
+
+function toggle(a: CandidateFailureAlert): void {
+  if (!expandable(a)) return
+  expanded.value = expanded.value === alertKey(a) ? null : alertKey(a)
+}
 </script>
 
 <template>
@@ -41,7 +62,15 @@ function alertKey(a: CandidateFailureAlert): string {
     :empty-hint="t('alerts.emptyHint')"
   >
     <template #item="{ item: a }">
-      <button type="button" class="data-card alert-card" @click="expanded = expanded === alertKey(a) ? null : alertKey(a)">
+      <!-- 有内容才可点；否则是 div，不带 pointer、不带 active 反馈（见 expandable 注释） -->
+      <component
+        :is="expandable(a) ? 'button' : 'div'"
+        class="data-card alert-card"
+        :class="{ 'alert-card--expandable': expandable(a) }"
+        :type="expandable(a) ? 'button' : undefined"
+        :aria-expanded="expandable(a) ? expanded === alertKey(a) : undefined"
+        @click="toggle(a)"
+      >
         <div class="card-row">
           <span class="badge" :class="kindTone(a.error_kind)">{{ a.error_kind }}</span>
           <span class="alert-card__count num">×{{ a.count }}</span>
@@ -52,7 +81,7 @@ function alertKey(a: CandidateFailureAlert): string {
           <span>{{ fmtTime(a.ts) }}</span>
         </div>
         <pre v-if="expanded === alertKey(a) && a.last_response_preview" class="alert-card__body">{{ a.last_response_preview }}</pre>
-      </button>
+      </component>
     </template>
   </HyperList>
 </template>
@@ -64,12 +93,16 @@ function alertKey(a: CandidateFailureAlert): string {
   gap: var(--app-space-2);
   width: 100%;
   text-align: left;
-  cursor: pointer;
   font: inherit;
   color: inherit;
 }
 
-.alert-card:active {
+/* 只有真有内容可展开时才给可点的视觉暗示 —— 空白卡片挂着 pointer 就是骗人 */
+.alert-card--expandable {
+  cursor: pointer;
+}
+
+.alert-card--expandable:active {
   background: var(--app-primary-softer);
 }
 
