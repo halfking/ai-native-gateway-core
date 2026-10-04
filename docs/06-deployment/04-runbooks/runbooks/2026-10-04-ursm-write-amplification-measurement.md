@@ -1366,10 +1366,94 @@ env 解析 9 个用例、以及 **main.go 调用点**的行内断言。
 预期效果：245 不再启动 persist writer ⇒ INSERT 尝试从 4,680 万降到 ~2,721 万（**-42%**），
 `ursm_node_snapshot_min` 日增从 ~2.9M 降到 ~1.45M 行。
 
-★ **前提未核实**：`/metrics` 返回 **HTTP 401**，我**无法确认** 7 天比对数据
-是否已采集。指标实名 `llm_gateway_ursm_v2_shadow_records_total{result=...}`。
-本方案**不依赖**那个前提（证据照采），但若比对窗口尚未走完，
-应等窗口结束再切，否则 42% 的收益拿不到、证据却已中断。
+★ **前提已定论（§5.12）**：那个前提是「7 天比对数据是否已采集」。
+`/metrics` 本身返 401，但查 Prometheus 即可绕过 —— **245 的 gateway 指标采集
+一直是黑的**（target 指 8781、gateway 在 8782、`up=0`、30 天 TSDB 里
+`llm_gateway.*` 完全为空）。**该比对数据从未被采集**，
+所以 `URSM_V2_SHADOW_PERSIST=0` 的收益可以立即拿到、不损失任何证据。
+⚠️ 这只证明**文档指定的机制没产生数据**；若有人用别的办法做过比对，
+需要你确认。
+
+---
+
+## 5.12 ★★ 顺带查出：245 的 gateway 指标采集一直是黑的（2026-10-04 13:15~13:35）
+
+§5.11 留了个前提没核实——7 天 shadow 比对数据是否已采集。
+`/metrics` 返 401，我原打算就此打住。**换个路子查，结论比「查不到」严重得多。**
+
+### 5.12.1 我自己犯的两个错，先记下来
+
+1. **「没有监控栈」——错在搜 `docker ps`。** 245 的监控栈是
+   **systemd 服务**：`llmgo-prometheus.service`（active）、
+   `llmgo-alertmanager.service`（active）。
+2. **`MainPID=0` 读成「服务没跑」——错在 unit 名。**
+   245 的前缀是 `llmgo-245-canary@`，我照抄了 154 的 `llm-gateway-go-canary@`。
+
+★ 两次都是**用错误的检索方式得到「不存在」，再把「不存在」当结论**。
+（同族：[[断言「某来源没有数据」前先确认其可见性边界]]）
+
+### 5.12.2 实测：抓取目标指错端口，且 TSDB 里什么都没有
+
+```
+$ curl 'localhost:9090/api/v1/query?query=up'
+抓取目标数 = 2
+  job=llm-gateway   instance=127.0.0.1:8781   up=0     ← gateway 实际在 8782
+  job=prometheus    instance=127.0.0.1:9090   up=1
+
+$ curl --get --data-urlencode 'query={__name__=~"llm_gateway.*"}' …/api/v1/query
+{"status":"success","data":{"resultType":"vector","result":[]}}   ← 完全为空
+```
+
+配置原文（`/opt/monitoring/prometheus/prometheus.yml:55-58`）：
+
+```yaml
+  - job_name: 'llm-gateway'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['127.0.0.1:8781']
+    bearer_token_file: '/opt/monitoring/prometheus/secrets/admin_token'
+```
+
+`scrape_interval: 15s` + `retention.time=30d` ⇒ 若曾经工作过，TSDB 里该有 30 天数据。
+**结果是彻底空的 ⇒ 从来没有成功抓过一次。**
+
+### 5.12.3 根因比「端口写错」更深：蓝绿本来就会翻转端口
+
+154 同一个问题在两个小时内就换了边：04:17 我看到 `8781 active / 8782 failed`，
+13:20 实测**监听的是 8782**。
+
+⇒ **静态 target 在构造上就是错的**——蓝绿的角色就是要轮换 8781/8782。
+所以这不只会因为「当前恰好是 8782」而坏，**下一次蓝绿切换就会再次坏掉**。
+
+**154 上根本没有 Prometheus/Alertmanager**（`systemctl list-units` 只有无关的
+`lvm2-monitor`）⇒ 这套采集从设计上就只覆盖 245，而 245 恰好是它抓不到的那台。
+
+### 5.12.4 ⇒ 对 §5.11 决策的影响：前提消失了
+
+§5.11 留的未核实前提是「7 天比对数据是否已采集」，因为
+`llm_gateway_ursm_v2_shadow_records_total` 是那条比对的**唯一来源**。
+
+**现在可以定论了：这条数据从未被采集。** 因此：
+
+- 在 245 上保留 `SHADOW_DOUBLE_WRITE=1`，**每天付 42% 的写放大成本，
+  换来的「证据」是一堆从未被读走过的内存计数器。**
+- `URSM_V2_SHADOW_PERSIST=0` 的收益**可以立即拿到，且不损失任何证据**。
+  （仍需先部署 commit `0822ccc3c`。）
+
+**★ 但这不等于「比对已经做过了」。** 只能断定**文档指定的机制没产生数据**；
+若有人用别的办法（比如直接对比快照表与 legacy 计数）做过，那不在我可及范围内，
+需要你确认。
+
+### 5.12.5 建议的修法方向（未执行，需授权）
+
+1. **把 target 改成同时抓 8781 与 8782**，或按当前 active 的端口动态生成；
+   单改成一个端口只会把同一个 bug 推迟到下一次蓝绿切换。
+2. **给「gateway 指标采集是否在线」加一条自监控** ——
+   本次是靠人工翻日志才发现的，而 `up=0` 这种状态本可以自己报警
+   （`absent(up{job="llm-gateway"})` 之类）。
+3. **确认 154 是否也需要采集**：目前它一台都没有，两台的差异只能靠日志人工比对。
+
+⇒ 建议作为**独立小项**处理，不进 §10 分区化那一批。
 
 ---
 
