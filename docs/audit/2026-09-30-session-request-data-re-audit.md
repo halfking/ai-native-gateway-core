@@ -24586,3 +24586,103 @@ D29-a（§9.199）把读方分成两个总体：直读 v1 底表的（= breaker�
 ⚠ stale 分支**故意不自动销账**：实测不到可能是「它被修好了」，
 也可能是「依赖被重构成另一种形状、提取器看不见了」——
 后者意味着这道门正在对真实依赖**失明**，而「门还绿着」会被读成「没问题」。
+
+---
+
+## §9.207 D31-a：查完之后**结论翻转** —— 5 个函数里**一个缺口都没有**
+
+§9.202.2 报了「5 个函数在本库存在、全仓 `.sql` 与生产 `.go` 都搜不到」，
+并建议补进受追踪迁移，理由是「后果静默：全新安装有表但没 trigger，
+`updated_at` 停止维护，而没有任何门会报」。
+
+**本节逐个查证，那个推断有两处是错的。**
+
+### §9.207.1 逐个对象的三分类（2026-10-05 重测，5 个都还在）
+
+| 对象 | 挂载 | 归属判定 |
+|---|---|---|
+| `update_memora_session_summaries_updated_at` + trigger | `memora_session_summaries` | **另一个服务（memora）**。本库有 `memora_schema_migrations` 作为它的台账（§9.202.1 已把 memora 列为共用库里的外部服务） |
+| `update_session_summaries_updated_at` + trigger | `memora_session_summaries_orphan` | 同上 |
+| `update_conversation_updated_at` + trigger | `conversation_history` | 表**与** trigger **都不在链内**，也不在任何非测试 Go 代码里 ⇒ **一致缺席** |
+| `llm_hourly_stats_normalize_hour_trigger` + trigger | `llm_hourly_stats` | 表**在链内**（666/667），trigger 不在 |
+| `ensure_handoff_logs_partitions`（复数） | 无 trigger | **刻意排除**，见下 |
+
+### §9.207.2 复数版 `ensure_handoff_logs_partitions`：**刻意的，不是缺口**
+
+`sql/migrations/startup/baseline_ensure_functions_contract_test.go:88` 原文：
+
+> `ensure_handoff_logs_partition` is the authoritative NOOP body (R15 §6 #4);
+> **the plural `ensure_handoff_logs_partitions` (columnar, unpinned) is not wired to
+> any active caller and is deliberately NOT in the baseline.**
+
+实测确认：**零个非测试 Go 文件调用它**。⇒ §9.202 把它列为「缺口」是把
+**刻意的排除**读成了**遗漏**。
+
+⚠ 顺带查清一件更要紧的事：**单数版** `ensure_handoff_logs_partition`
+在 baseline 里是 `RAISE NOTICE 'noop'` 的**退化体**，而活库上是真实的
+上海时区 + 列存强制实现。**那个真实实现在仓库里**
+（`714_partition_timezone_pin_remaining.sql` / `534_handoff_logs_hot_columnar.sql`），
+所以它**不是缺口**，只是 baseline 文件与迁移链的分歧，且该分歧已被
+`baselineEnsureFunctionsUnpinned` 显式登记为「待 ≥702 的刻意迁移」。
+
+### §9.207.3 唯一「像缺口」的那个：链内**已有另一种解法**
+
+`llm_hourly_stats` 的 BEFORE INSERT OR UPDATE normalize trigger 在链内没有对应物。
+但 667 / 668 **已经在链内解决了同一个问题**：
+
+- `upsert_llm_hourly_stats(...)` —— 接受灵活 hour 格式的安全 upsert；
+- `llm_hourly_stats_flexible` 可写视图 + `llm_hourly_stats_flexible_insert()`
+  INSTEAD OF trigger；
+- 依赖的 `normalize_hour_timestamp` 也在 667 / 668 里。
+
+⇒ 活库那个 trigger 是**同问题的第二种、带外解法**，不是链的缺口。
+（两条路径在活库上并存且结果一致：视图的 INSTEAD OF trigger 落回基表的 INSERT
+仍会触发 BEFORE normalize，两者都做归一化。）
+
+### §9.207.4 决定性的一查：这 4 张表**本仓零引用**
+
+缺 trigger 之所以有后果，前提是**有人依赖那个 trigger 的行为**。
+而 `conversation_history` / `llm_hourly_stats` / `memora_session_summaries` /
+`memora_session_summaries_orphan` 在**全部非测试 `.go` 代码里零命中**
+（`upsert_llm_hourly_stats` 也只被一个 fresh-install 集成测试断言其存在）。
+`llm_hourly_stats` 活库有 3 行，时间戳已是规整的 timestamptz。
+
+⇒ **trigger 缺不缺，没有可观测后果。**
+
+### §9.207.5 处置：**不补**，并把它变成一道绊线
+
+把 5 个函数抄进迁移链是**错的处置**：那会把**死代码**（2 个别的服务的 +
+1 个链内已有解法的 + 1 个一致缺席的）引进全新安装，而死代码不会被任何门抓到，
+只会让下一个读 baseline 的人多一份困惑。
+
+⇒ 改为 `admin/live_only_object_ownership_gate_test.go`，钉住那个**前提**：
+「这 4 张表本仓没有非测试调用方」。哪天有人加了调用方，门变红，
+并在失败信息里指出**必须同时**补 trigger —— 因为到那时
+「缺 trigger」才**第一次**成为真缺口。
+
+判据细节：字面量匹配 `.go`、排除 `_test.go` 与 vendor；
+**先剥掉迁移文件名**再判，否则 667/668 的文件名（`go:embed` 指令与
+StartupFiles 清单，实测 6 处）会被误判成表访问。
+`TestGitRepoIsReachable` 单独守这道门自己的前提 ——
+walk 若解析到空目录，每张表都会「零调用方」，门会**恒绿**。
+
+### §9.207.6 ⚠⚠ 我第一版把门**写瞎了**，变异测试当场抓住
+
+`stripMigrationFilename` 处理**非文件名**出现时，用 `"\x00"` 就地替换，
+于是下一次 `strings.Index` 找不到该名字，函数返回一个**不再含该名字**的字符串。
+⇒ 它抹掉的是**全部**出现，不止文件名那一种。
+**结果：加一条 `SELECT … FROM conversation_history` 的真实访问，门仍然 PASS。**
+
+⇒ 这是本次任务里又一次「恒真的门」，但形态是新的：
+**不是读错对象，是判据把自己的信号删了。**
+它能跑完、能出数（报「0 个调用方」）、看不出异常 ——
+而它量的根本不是那件事。
+
+⇒ 修法：逐个 token 扫描，**只**删文件名那一种，裸出现原样保留。
+两个方向都经变异验证：真实 SQL 引用 ⇒ 红（精确到 `file:line`）、
+迁移文件名 ⇒ 绿。
+
+⇒ **方法论补丁**：「应用自有对象」这个判定**必须交叉核对归属** ——
+不能只看「名字在别的服务清单里没有」。本次任务里
+**同一个库、同一份扫描**（§9.202.1）已经列出了 memora 是共用库里的外部服务，
+却没有把那 5 个函数与那份清单对照 —— 两条结论挨在一起却没交叉。

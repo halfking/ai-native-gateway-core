@@ -2302,19 +2302,36 @@ DDL/分区树/约束/索引（§9.185）。
     理由：这条约定**静态门判不了**（§9.197.6），只能靠真库逐条 EXPLAIN；
     而「每个新增两腿读法都要记得给列存腿加谓词」是一个反复会忘的约定。
     ⚠ 但这是**属主决定**：列存收益是真的，7 个族里只有 bodies 是 S4 主线。
-- **D31-a**（2026-10-05 新增，§9.202）：**5 个函数在本库存在、但全仓 `.sql` 与生产 `.go`
-  里都搜不到**，要不要补进受追踪的 startup 迁移？
-  * 名单：`update_conversation_updated_at`（挂 `conversation_history`）、
-    `llm_hourly_stats_normalize_hour_trigger`（挂 `llm_hourly_stats`）、
-    `update_memora_session_summaries_updated_at`（挂 `memora_session_summaries`）、
-    `update_session_summaries_updated_at`（挂 `memora_session_summaries_orphan`）、
-    `ensure_handoff_logs_partitions`（ensure 函数）。
-  * ⚠ **后果是静默的**：全新安装会有那些**表**（表本身在链内），
-    但**不会**有这 4 个 trigger ⇒ `updated_at` 停止自动维护，
-    而**没有任何门会报**。查询照常成功，只是时间戳不再更新。
-  * 现状：其中 3 张被挂的表当前是**空表**（`reltuples = -1`），暂无实际损失。
-  * 我的建议：补，方式与 828 同款。但这是**本机库的独有状态**，
-    生产是否也有这 4 个 trigger **需 D30-b 只读确认**后才能排优先级。
+- **D31-a**（2026-10-05 新增于 §9.202，**2026-10-05 于 §9.207 关闭并翻转**）：
+  §9.202 报「5 个函数在本库存在、全仓搜不到」，建议补进受追踪迁移。
+  ✅ **查证后结论是「一个缺口都没有」，不补**：
+  * `update_memora_session_summaries_updated_at` / `update_session_summaries_updated_at`
+    ⇒ 挂的表是 **memora 服务的**（本库有 `memora_schema_migrations` 作其台账，
+    §9.202.1 已把 memora 列为共用库里的外部服务），本仓不负责。
+  * `update_conversation_updated_at` ⇒ 表**与** trigger **都不在链内**，
+    也不在任何非测试 Go 代码里 ⇒ **一致缺席**。
+  * `llm_hourly_stats_normalize_hour_trigger` ⇒ 表在链内（666/667），
+    trigger 不在；**但 667/668 已在链内解决同一问题**
+    （`upsert_llm_hourly_stats` + 可写视图 + INSTEAD OF trigger，
+    依赖的 `normalize_hour_timestamp` 也在 667/668）⇒ 它是**另一种带外解法**。
+  * `ensure_handoff_logs_partitions`（复数）⇒ **刻意排除**，
+    `baseline_ensure_functions_contract_test.go:88` 原文写明
+    「not wired to any active caller and is deliberately NOT in the baseline」；
+    实测零个非测试调用方。**§9.202 把刻意的排除读成了遗漏。**
+  * 顺带查清：单数版 `ensure_handoff_logs_partition` 在 baseline 里是
+    `RAISE NOTICE 'noop'` 的退化体，活库是真实实现 ——
+    **但那个真实实现在仓库里**（714 / 534）⇒ 也不是缺口。
+  * **决定性一查**：那 4 张表在**全部非测试 Go 代码里零引用**
+    ⇒ trigger 缺不缺**没有可观测后果**。
+  * ⇒ **不补**。把 5 个函数抄进迁移链会把**死代码**引进全新安装，
+    而死代码不会被任何门抓到。改为一道**绊线**
+    （`admin/live_only_object_ownership_gate_test.go`）：
+    钉住「这 4 张表本仓无调用方」这个前提；将来有人加了调用方，
+    门变红并要求**同时**补 trigger —— 那时才第一次成为真缺口。
+  * ⚠ **方法论补丁**：「应用自有对象」必须**交叉核对归属**。
+    同一个库、同一份扫描（§9.202.1）已经列出了 memora 是外部服务，
+    却没把那 5 个函数与那份清单对照 ——
+    **两条结论挨在一起却没交叉**。
 
 - **D30-b**：生产是否已受影响？`765` 是**生产迁移**，所以生产很可能也是列存，
   ⇒ `LoadV1Turns` 在生产**同样跑不起来**、`ExecuteRepair` **同样从未成功执行过**。
