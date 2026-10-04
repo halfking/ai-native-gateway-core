@@ -117,25 +117,25 @@ func Test825BootEnsureIsWired(t *testing.T) {
 			"on every boot until someone runs the manual 825", ensureURSMFunc)
 	}
 	// ★ 反向守卫：探针必须**先**判父表形态，再判函数。
-	//   只判函数存在会漏掉回滚方向——825.down 之后父表回到普通表、函数却可能
+	//   只判函数存在会漏掉回滚方向——830.down 之后父表回到普通表、函数却可能
 	//   还在；此时 ensure 会对非分区父表执行 PARTITION OF 而报错，冒到
-	//   db.Open 就是 no-DB 模式。写 825 的 down 脚本时才发现这个洞。
+	//   db.Open 就是 no-DB 模式。写 830 的 down 脚本时才发现这个洞。
 	if !strings.Contains(src, "relkind = 'p'") {
 		t.Fatal("db.go boot ensure must check the parent table's relkind before calling " +
-			ensureURSMFunc + " — after a 825.down rollback the function may survive while the " +
+			ensureURSMFunc + " — after a 830.down rollback the function may survive while the " +
 			"parent is no longer partitioned, and the resulting error takes the gateway down")
 	}
 }
 
-// 825 刻意**不**进 installer 自动启动序列。这条门把该决定钉成显式不变量：
+// 830 刻意**不**进 installer 自动启动序列。这条门把该决定钉成显式不变量：
 // 有人日后要注册它，必须先改这条门并在 runbook 里写清执行窗口。
-func Test825IsDeliberatelyNotInTheAutoStartupSequence(t *testing.T) {
+func Test830IsDeliberatelyNotInTheAutoStartupSequence(t *testing.T) {
 	runner, err := os.ReadFile("../installer/internal/dbinit/runner.go")
 	if err != nil {
 		t.Fatalf("read runner.go: %v", err)
 	}
 	if strings.Contains(string(runner), "830_ursm_node_snapshot_min_partitioned.sql") {
-		t.Fatal("825 is registered in the installer startup sequence. It was a deliberate " +
+		t.Fatal("830 is registered in the installer startup sequence. It was a deliberate " +
 			"manual-only migration: registering it makes any unattended installer upgrade " +
 			"RENAME a 10 GB live table with no human confirmation point. If this is now " +
 			"intentional, update the runbook's manual-execution instructions and this gate together.")
@@ -145,7 +145,7 @@ func Test825IsDeliberatelyNotInTheAutoStartupSequence(t *testing.T) {
 		t.Fatalf("read installer main.go: %v", err)
 	}
 	if strings.Contains(string(install), "830_ursm_node_snapshot_min_partitioned.sql") {
-		t.Fatal("825 is embedded in the installer's embeddedSQLFiles map — same reasoning as above")
+		t.Fatal("830 is embedded in the installer's embeddedSQLFiles map — same reasoning as above")
 	}
 }
 

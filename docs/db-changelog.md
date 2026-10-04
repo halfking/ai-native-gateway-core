@@ -877,9 +877,16 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 825 | `825_modality_graded_verification.sql` | `3af1b1801c36e015a5849bde261125c378129c46f5bdad703c186b85cc0b0eab` | pending deploy（245/154/252 未应用；本地 8782 已由启动自愈 ensureModalityGradedVerification 等价应用并 stamp） |
-| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | pending deploy（**手工执行**；`.down.sql` sha `ea378dac9f08ec1269504a562a470a7d1c647d25d8f89399fe377f6765f66ce7`）。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红） |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `58cff55138dd90466b7079dcabc9bc7163eb3dbb93f3d7069b27b78beb2b0d69` | pending deploy（**手工执行**；`.down.sql` sha `593464eec6397c5659e53f2e8ae3a5059d9f2911726c45870e3f08103b8014a8`）。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红）。**R45 sha 回写**：R45/D2 清扫把头部 psql 示例改指实名（825_→830_）、down 按 §R44/移交.5 补 817 同款台账条件删除+对称门 ⇒ 双文件字节变更，本行双 sha 为 R45 实测回写 |
 
 > **R44 复核：为什么 `825_ursm` 不改号（登记了撞号，但保留双 825）**
+>
+> 🔴 **R45 废止标记：本段结论已被 R44 自己推翻（见其审计文档 §5），改号已实际发生
+> （825_ursm → 830，de7656806），本段保留仅为方法论存档。** 推翻的机制：本段论证
+> 「编号不是应用顺序键」对**执行顺序**成立，但撞号的真正危害在**身份**——
+> `schema_migrations.version` 是主键，双 825 是抢主键的静默丢弃。R44 §5.2 原话：
+> 「编号在本仓同时是身份键，不只是标签」。若读到本段与上方 830 行并存而疑惑，
+> 以 830 行为准。
 >
 > R22「后提交方让号」（759→801、657/658）的前提是**编号是应用顺序键**。R44 实测该前提
 > **在当前架构下已不成立**：

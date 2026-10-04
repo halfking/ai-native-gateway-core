@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-printf 'apply-db-revision-sequence contract passed\n'
-
-#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -100,9 +97,6 @@ done
 # order-independent. The no-registration decision is pinned by
 # bg/partition_825_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence.
 # ⚠ This is the **channel-side copy** of the same decision; the Go-side copy is
-printf 'apply-db-revision-sequence contract passed\n'
-#!/usr/bin/env bash
-printf 'apply-db-revision-sequence contract passed\n'
 #   manualByDesign in installer/cmd/llm-gw-installer/stats_migrations_test.go.
 #   Editing one without the other leaves the other gate red — "已豁免" must hold
 #   on both sides at once (single-side green is not green).
