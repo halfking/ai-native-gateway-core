@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"sort"
@@ -276,6 +278,8 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 	}
 
 	// ---- report -------------------------------------------------------------
+	// measured is the per-column rate map the SSOT check compares against.
+	measured := map[string]ColumnFill{}
 	var goEmpty, muchEmptier, structural []string
 	t.Logf("session faces: %d rows total; v1 request_logs: %d rows; %d canonical columns",
 		sessTotal, v1Rows, len(canonicalColumnOrderV2))
@@ -290,6 +294,7 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 		sp := pct(sessNonNull[name], sessTotal)
 		vv, hasV1 := v1NonNull[name]
 		vp := pct(vv, v1Rows)
+		measured[name] = ColumnFill{SessionPct: sp, V1Pct: vp}
 
 		// The two flags are computed **independently**, not as a switch.
 		// A switch evaluates top-down, and "session >5pp emptier" matches
@@ -333,7 +338,73 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 	assertSameSet(t, "unservable", goEmpty, RetirementUnservableColumns)
 	assertSameSet(t, "degraded", muchEmptier, RetirementDegradedColumns)
 	assertSameSet(t, "structural gap", structural, RetirementStructuralGapColumns)
+
+	// And the fill table the repoint verdict is computed from.
+	//
+	// This check exists because the table was first written with **guessed**
+	// zeros for six columns — and five of the six guesses were wrong by wide
+	// margins (quality_fix_actions is 18.15/100, not 0/0; canonical_id is
+	// 0.07/9.79, not 0/0). A guessed zero is the most dangerous kind of wrong:
+	// it is indistinguishable from "measured, and empty", and the repoint
+	// verdict turns on exactly that difference. So the table is now derived from
+	// this measurement and fails when it stops matching.
+	var drift []string
+	for _, name := range canonicalColumnOrderV2 {
+		// Presence must be tested by **map membership**, never by comparing to
+		// the zero value. The first cut did `if want == (ColumnFill{}) { continue }`
+		// — and that silently exempts exactly the failure it was meant to catch:
+		// a guessed `{0, 0}` entry is indistinguishable from "not recorded", so
+		// re-introducing the original guess turned the drift check **off for that
+		// column** rather than failing it (mutation-verified, §9.164).
+		//
+		// A sentinel that shares a value with a legitimate measurement cannot
+		// guard that measurement.
+		want, recorded := RetirementColumnFill[name]
+		if !recorded {
+			// A column in one of the three non-baseline classes **must** carry a
+			// recorded rate, because the repoint verdict reads it and answers
+			// `unknown-column` when it is missing.
+			//
+			// This arm was absent at first, and the omission was invisible: a
+			// *wrong* entry failed the check, but a *missing* one passed
+			// silently. application_id was dropped from the table during an
+			// edit and the drift check stayed green while admin/logs.go came out
+			// labelled `unknown-column` — an entry missing from a validation
+			// table is the same shape as a measurement that was never taken.
+			// Structural gaps are decided by class alone — the verdict function
+			// handles them before it looks at any rate, because the view carries
+			// the column as a NULL placeholder. Only the two classes whose
+			// verdict *is* a rate need a recorded rate.
+			if class := RetirementExposureClassify(name); class == "degraded" || class == "unservable" {
+				drift = append(drift, fmt.Sprintf(
+					"%s: classified %q but has no entry in RetirementColumnFill, so the repoint "+
+						"verdict reports it as unknown-column", name, class))
+			}
+			continue
+		}
+		got := findFill(measured, name)
+		if math.Abs(got.SessionPct-want.SessionPct) > 0.01 || math.Abs(got.V1Pct-want.V1Pct) > 0.01 {
+			drift = append(drift, fmt.Sprintf("%s: table says %.2f/%.2f, measured %.2f/%.2f",
+				name, want.SessionPct, want.V1Pct, got.SessionPct, got.V1Pct))
+		}
+	}
+	for name := range RetirementColumnFill {
+		if !containsStr(canonicalColumnOrderV2, name) {
+			drift = append(drift, name+": recorded in RetirementColumnFill but not in the canonical contract")
+		}
+	}
+	if len(drift) > 0 {
+		sort.Strings(drift)
+		t.Errorf("db/retirement_column_exposure.go's RetirementColumnFill no longer matches the "+
+			"measurement on this database:\n  %s\nThe repoint verdict in that file is computed from "+
+			"this table, so a stale entry is a wrong answer presented with full confidence.",
+			strings.Join(drift, "\n  "))
+	}
 }
+
+// findFill looks a column's measured rates up in the per-column map the
+// fill-rate test builds.
+func findFill(m map[string]ColumnFill, name string) ColumnFill { return m[name] }
 
 // assertSameSet fails unless the two column sets are identical, naming both
 // sides so a drift report says which way it moved.
