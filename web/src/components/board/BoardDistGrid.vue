@@ -4,7 +4,7 @@
 // 供应商→成本采购区、模型→模型分布表，各自独立成块。
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { fetchBoardErrorDrill, type BoardPayload, type BoardPieItem } from '../../api/board'
+import { fetchBoardErrorDrill, isBoardPieDegraded, type BoardPayload, type BoardPieItem } from '../../api/board'
 
 const props = defineProps<{
   board: BoardPayload | null | undefined
@@ -24,14 +24,19 @@ interface RankCard {
   truncate?: boolean
   danger?: boolean
   clickable?: boolean
+  /**
+   * 该维度是否处于降级（服务端没算出来）。
+   * 与「空数组」严格区分：空数组是合法答案，降级不是。
+   */
+  degraded?: boolean
 }
 
 const cards = computed<RankCard[]>(() => [
-  { id: 'clients', titleKey: 'dashboard.board.pieClients', items: props.board?.pies?.clients ?? [] },
-  { id: 'errors', titleKey: 'dashboard.board.pieErrors', items: props.board?.pies?.errors ?? [], danger: true, clickable: true },
-  { id: 'identity', titleKey: 'dashboard.board.pieIdentity', items: props.board?.pies?.identity_hashes ?? [], truncate: true },
-  { id: 'tenants', titleKey: 'dashboard.board.pieTenants', items: props.board?.pies?.tenants ?? [] },
-  { id: 'ips', titleKey: 'dashboard.board.pieClientIp', items: props.board?.pies?.client_ips ?? [] },
+  { id: 'clients', titleKey: 'dashboard.board.pieClients', items: props.board?.pies?.clients ?? [], degraded: isBoardPieDegraded(props.board, 'clients') },
+  { id: 'errors', titleKey: 'dashboard.board.pieErrors', items: props.board?.pies?.errors ?? [], danger: true, clickable: true, degraded: isBoardPieDegraded(props.board, 'errors') },
+  { id: 'identity', titleKey: 'dashboard.board.pieIdentity', items: props.board?.pies?.identity_hashes ?? [], truncate: true, degraded: isBoardPieDegraded(props.board, 'identity_hashes') },
+  { id: 'tenants', titleKey: 'dashboard.board.pieTenants', items: props.board?.pies?.tenants ?? [], degraded: isBoardPieDegraded(props.board, 'tenants') },
+  { id: 'ips', titleKey: 'dashboard.board.pieClientIp', items: props.board?.pies?.client_ips ?? [], degraded: isBoardPieDegraded(props.board, 'client_ips') },
 ])
 
 function topItems(items: BoardPieItem[]) {
@@ -86,10 +91,26 @@ const errorDrillKind = ref<string | null>(null)
 const errorDrillDim = ref<'model' | 'provider' | 'client'>('model')
 const errorDrillItems = ref<BoardPieItem[]>([])
 const errorDrillLoading = ref(false)
+// 2026-10-03：原来这里是 `catch { errorDrillItems.value = [] }`。
+// 后端失败时写 500 + error.detail，前端却把它丢成空数组 ⇒
+// 下钻面板显示「暂无数据」——用户点开「错误下钻」看错误构成，
+// 看到的是「没有错误」，而真相是「这次查询失败了」。
+// 与本轮 pie 降级、credits 降级同族：把「不知道」渲染成「知道」。
+const errorDrillError = ref<string | null>(null)
 
 async function onErrorClick(kind: string) {
   errorDrillKind.value = kind
   errorDrillLoading.value = true
+  errorDrillError.value = null
+  // 这行清空在**当前模板下是冗余的**（2026-10-03 变异实测）：
+  // 面板分支是 v-if=loading → v-else-if=error → v-else-if=!items，
+  // 加载期间旧行被 loading 分支遮住，失败态也遮住，旧行泄漏**不可见**。
+  //
+  // 保留它是为了防一个具体的将来变化：若有人把 v-else-if 链改成
+  // 并列渲染（例如给 loading 加骨架屏而不隐藏列表），这行就是唯一的防线。
+  // 抽掉它的变异在**今天**不报红 —— 这不是判据失效，是判据选的维度
+  // （渲染结果）看不见它，而那正是它当前不承担风险的原因。
+  errorDrillItems.value = []
   try {
     const res = await fetchBoardErrorDrill({
       error_kind: kind,
@@ -97,8 +118,10 @@ async function onErrorClick(kind: string) {
       dimension: errorDrillDim.value,
     })
     errorDrillItems.value = res.items
-  } catch {
-    errorDrillItems.value = []
+  } catch (err) {
+    // 保留服务端给出的原因；只有拿不到可读原因时才退回通用文案。
+    const detail = (err as { detail?: string; message?: string } | null)
+    errorDrillError.value = detail?.detail || detail?.message || String(err || '')
   } finally {
     errorDrillLoading.value = false
   }
@@ -136,6 +159,9 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
           <span class="dist-card__cs">{{ t('dashboard.board.distTop', { n: TOP_N }) }}</span>
         </h6>
         <div v-if="loading && !card.items.length" class="dist-card__skeleton" />
+        <div v-else-if="card.degraded" class="dist-card__degraded">
+          {{ t('dashboard.board.pieDegraded', { reason: props.board?.degraded_pies?.reason || t('dashboard.board.pieDegradedGeneric') }) }}
+        </div>
         <div v-else-if="!card.items.length" class="dist-card__empty">{{ t('dashboard.board.empty') }}</div>
         <div v-else class="dist-card__rank">
           <div
@@ -173,6 +199,9 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
         </div>
       </div>
       <div v-if="errorDrillLoading" class="drill-panel__loading">{{ t('dashboard.loading') }}</div>
+      <div v-else-if="errorDrillError" class="drill-panel__error" role="alert">
+        {{ t('dashboard.board.drillFailed', { reason: errorDrillError }) }}
+      </div>
       <div v-else-if="!errorDrillItems.length" class="drill-panel__loading">{{ t('dashboard.board.empty') }}</div>
       <div v-else class="drill-panel__list">
         <div v-for="item in errorDrillItems.slice(0, 8)" :key="item.key" class="drill-row">
@@ -311,6 +340,14 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   color: var(--text-muted);
   padding: 10px 0;
 }
+/* 降级态刻意用 warning 色而非 muted：空态是「确实没有」，降级是「不知道」。
+   两者的视觉权重必须不同，否则用户读到的是同一个结论。 */
+.dist-card__degraded {
+  font-size: 12px;
+  color: var(--warning, #e6a23c);
+  padding: 10px 0;
+  line-height: 1.5;
+}
 .dist-card__skeleton {
   min-height: 90px;
   background: linear-gradient(90deg, var(--border) 25%, transparent 37%, var(--border) 63%);
@@ -358,6 +395,14 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   font-size: 12px;
   color: var(--text-muted);
   padding: 8px 0;
+}
+/* 失败态用 danger 而非 muted：下钻面板的「暂无数据」意味着「这类错误真的没有」，
+   与「查不出来」必须一眼可分。role="alert" 让读屏也会播报。 */
+.drill-panel__error {
+  font-size: 12px;
+  color: var(--danger, #f56c6c);
+  padding: 8px 0;
+  line-height: 1.5;
 }
 .drill-panel__list {
   display: grid;

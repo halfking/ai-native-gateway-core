@@ -74,6 +74,13 @@ const recordsPage = ref(1)
 const recordsTotal = ref(0)
 const recordsSize = ref(50)
 
+// 2026-10-03：原来 catch 只写 `records = []; recordsTotal = 0`。
+// 这是**合规页**，「0 条命中」是一句会被当作结论引用的事实陈述——
+// 查不到 ≠ 没有违规。原注释写「API不存在时使用空数据」，把一个
+// 取不到说成了「没有」。同时 `recordsTotal = 0` 还会把分页文案
+// 渲染成「共 0 条」，让同一句假话出现两次。
+const recordsError = ref('')
+
 const config = ref<OutputComplianceConfig>({
   enabled: true,
   redaction_mode: 'owner_mismatch',
@@ -167,10 +174,11 @@ async function loadRecords() {
     const data = await req<{ records: ComplianceRecord[]; total: number }>('GET', url)
     records.value = data.records || []
     recordsTotal.value = data.total || 0
+    recordsError.value = ''
   } catch (e: unknown) {
-    // API不存在时使用空数据
     records.value = []
     recordsTotal.value = 0
+    recordsError.value = e instanceof Error && e.message ? e.message : t('outputCompliance.recordsLoadFailed')
   } finally {
     recordsLoading.value = false
   }
@@ -385,6 +393,9 @@ onMounted(() => {
       </div>
 
       <!-- 记录列表 -->
+      <div v-if="recordsError" class="error-banner" role="alert">
+        ⚠️ {{ recordsError }}
+      </div>
       <div class="table-container">
         <table class="data-table">
           <thead>
@@ -405,6 +416,14 @@ onMounted(() => {
               <td colspan="9" class="loading-cell">
                 <AppSpinner inline :label="t('outputCompliance.loading')" />
               </td>
+            </tr>
+          </tbody>
+          <!-- ⚠️ 这里必须显式排除 recordsError：只加横幅而留着这一格，
+               页面会同时说「加载失败」和「没有命中记录」——两句互相矛盾，
+               而「没有命中」是会被当真结论引用的那一句。 -->
+          <tbody v-else-if="recordsError">
+            <tr>
+              <td colspan="9" class="empty-cell">{{ t('outputCompliance.recordsNotLoaded') }}</td>
             </tr>
           </tbody>
           <tbody v-else-if="records.length === 0">
@@ -438,8 +457,9 @@ onMounted(() => {
         </table>
       </div>
 
-      <!-- 分页 -->
-      <div class="pagination">
+      <!-- 分页：失败时不渲染。`count: recordsTotal` 在失败时被置 0，
+           留着就是「共 0 条」——同一句假话的第二次出现。 -->
+      <div v-if="!recordsError" class="pagination">
         <button class="btn-secondary" :disabled="recordsPage <= 1" @click="changeRecordsPage(-1)">
           {{ t('outputCompliance.pagination.previous') }}
         </button>

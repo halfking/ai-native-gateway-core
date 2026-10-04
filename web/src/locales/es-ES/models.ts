@@ -175,6 +175,11 @@ export default {
   },
   error: {
     loadFailed: 'Error al cargar',
+    filterMetaLoadFailed: 'No se pudieron cargar las opciones de filtro',
+    providersLoadFailed: 'No se pudo cargar la lista de proveedores',
+    tagsLoadFailed: 'No se pudo cargar la lista de etiquetas',
+    familiesLoadFailed: 'No se pudo cargar la lista de familias de modelos',
+    discoveryStatusLoadFailed: 'No se pudo cargar el estado del trabajo de descubrimiento',
     saveFailed: 'Error al guardar',
     resetFailed: 'Error al restablecer',
     loadDetailFailed: 'Error al cargar el detalle',

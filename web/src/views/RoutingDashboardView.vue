@@ -681,12 +681,44 @@ async function saveCandidatePriority(c: RoutingCandidate, value: boolean) {
   }
 }
 
+// 2026-10-03：原来 parse 失败只 `resolveLog.value = []`。
+//
+// ⚠️ 这一处不是「假话」那么简单，是**静默数据丢失**：
+//   loadResolveLog 把损坏的 JSON 变成 []
+//   → 用户下一次做一次解析，appendResolveLog → saveResolveLog
+//   → localStorage.setItem(写入 [新的一条])
+//   ⇒ 整段历史被一次普通操作抹掉，**没有任何提示**。
+// 触发场景很普通：半截写入（另一个标签页正写）、旧 schema、浏览器扩展改动。
+//
+// 现在：先把原始载荷另存到 `<key>.corrupt`（只在还没有备份时），
+// 再标记错误并让页面说明；写入照常进行，但原始数据已经不在被覆盖的位置上。
+const RESOLVE_LOG_CORRUPT_KEY = 'llmgw_resolve_log.corrupt'
+const resolveLogError = ref('')
+
 function loadResolveLog() {
   try {
     const raw = localStorage.getItem(RESOLVE_LOG_KEY)
     resolveLog.value = raw ? JSON.parse(raw) : []
-  } catch {
+    resolveLogError.value = ''
+  } catch (e) {
+    let raw = ''
+    try { raw = localStorage.getItem(RESOLVE_LOG_KEY) ?? '' } catch { /* 读不出来就算了 */ }
+    if (raw && !localStorage.getItem(RESOLVE_LOG_CORRUPT_KEY)) {
+      try {
+        localStorage.setItem(RESOLVE_LOG_CORRUPT_KEY, raw)
+      } catch (err) {
+        // 配额满/隐私模式：备份失败也要讲出来，不能装作已备份
+        console.error('Failed to back up corrupt resolve log:', err)
+        resolveLogError.value = '解析本地运行记录失败，且原始内容备份失败（浏览器存储可能已满）'
+        resolveLog.value = []
+        return
+      }
+    }
+    console.error('Failed to parse resolve log:', e)
     resolveLog.value = []
+    resolveLogError.value = raw
+      ? '解析本地运行记录失败：原始内容已另存到 llmgw_resolve_log.corrupt，界面上的空列表不是「没有记录」'
+      : '解析本地运行记录失败，界面上的空列表不是「没有记录」'
   }
 }
 
@@ -1507,6 +1539,10 @@ onUnmounted(() => stopPoll())
         <div class="section-head tight"><h3>本次 L2 漏斗</h3></div>
         <CredentialFunnel :stages="resolveFunnelStages" :model="modelInput" />
       </div>
+
+      <!-- 运行记录损坏时必须说清：空列表不是「没有记录」，
+           而且原始内容已另存（见 loadResolveLog 的注释）——数据没被静默抹掉。 -->
+      <div v-if="resolveLogError" class="alert alert-warning" role="status">{{ resolveLogError }}</div>
 
       <div v-if="resolveLog.length" class="card compact-card">
         <div class="card-toolbar">

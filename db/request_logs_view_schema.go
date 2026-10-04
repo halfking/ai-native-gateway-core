@@ -409,7 +409,7 @@ var projectionExprsV2 = []string{
 	"t.usage_source",
 	"(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)",
 	"NULL::text",
-	"(CASE WHEN t.success IS NULL THEN NULL WHEN t.success THEN 'success' WHEN t.status_code = 429 THEN 'rate_limited' ELSE 'failure' END)",
+	sessionRequestStatusExpr,
 	"NULL::text",
 	"NULL::text",
 	"NULL::text",
@@ -608,6 +608,72 @@ func (d *DB) middleWrapperCols(ctx context.Context) (string, error) {
 	return cols, nil
 }
 
+// sessionRequestStatusExpr is the session-leg expression for the frozen v1
+// `request_status` column. It is a package-level const (not a function) so that
+// the view-ensure chain, both native readers, and migration 824 all render the
+// identical text — the viewdef-equivalence contract in
+// db/view_schema_v2_contract_test.go compares the composed DDL verbatim.
+//
+// ── Why the error_kind branch exists (audit §9.160) ────────────────────────
+//
+// The previous expression classified a turn as `rate_limited` only via
+// `t.status_code = 429`. Measured on the local real database
+// (1,688,629 rows in session_turns, 2026-09/10):
+//
+//   - `status_code = 429` matches **0** rows. Not one, in the whole table.
+//   - 437,402 rows are genuine rate-limited turns, and every one of them
+//     carries `status_code = 500` on the session side.
+//   - So the `rate_limited` arm was **dead code on the session leg**: it could
+//     never fire. All 437,402 turns were reported as plain `failure`.
+//   - The only signal that survives the mirror is `error_kind`:
+//     `error_kind = 'rate_limit_exceeded'` ⟺ v1 `request_status =
+//     'rate_limited'` with **0 counterexamples in either direction**
+//     (394,614 twin rows) and 0 rows with `success = true`.
+//
+// Effect of the old expression on session_turns:
+//
+//	failure 1,358,245 / success 330,384 / rate_limited 0
+//	after:   failure   920,843 / success 330,384 / rate_limited 437,402
+//
+// i.e. the canonical view — and the eight native readers that share this
+// projection — overstated `failure` by 32% and under-reported `rate_limited`
+// as 0. This is not a retirement-only concern: it is wrong **today**, and once
+// request_logs is dropped the view would report zero rate-limited requests
+// system-wide.
+//
+// ── Why the status_code = 429 arm is kept ──────────────────────────────────
+//
+// It is dead on today's data but it is the shape a future upstream 429 would
+// take, and dropping it would make the expression silently narrower than the
+// one it replaces. Keeping it costs nothing and can only add correct rows.
+//
+// ── Why the NULL-success guard stays first ────────────────────────────────
+//
+// Unchanged contract, deliberately: `success IS NULL` still yields NULL rather
+// than a guessed label. Local data has 0 such rows, so this is latent, and
+// preserving it keeps the change provably scoped to the rate_limited arm.
+// (The admin session-detail reader had the matching latent hole — it scanned
+// `success` into a bare bool and dropped the whole row on NULL; fixed there.)
+//
+// ── Why the IN-set, not just 'rate_limit_exceeded' (R41 audit F1) ──────────
+//
+// The historical cross-tab above proved the single-value form only on
+// pre-823 data, where mirrors never recorded request_status at all. The
+// write side emits RequestStatusRateLimited with exactly two error_kind
+// literals: 'rate_limit_exceeded' (gateway RPM/concurrent rejections,
+// handler.go:3244 / messages.go:433 / responses.go) and 'key_throttled'
+// (handler.go:2376, api-key anomalous-usage throttle). Post-823 mirrors
+// carry the rate_limited label while keeping error_kind='key_throttled';
+// a single-value arm would file every such row under 'failure' forever —
+// and the view's session leg wins over the v1 leg, so nothing downstream
+// could correct it.
+const sessionRequestStatusExpr = `(CASE ` +
+	`WHEN t.success IS NULL THEN NULL ` +
+	`WHEN t.success THEN 'success' ` +
+	`WHEN t.error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited' ` +
+	`WHEN t.status_code = 429 THEN 'rate_limited' ` +
+	`ELSE 'failure' END)`
+
 // sessionFamilyProjectionFor renders the named projection (details-aware) for
 // an explicit canonical name list.
 func sessionFamilyProjectionFor(names []string, withDetails bool) string {
@@ -631,8 +697,10 @@ func sessionFamilyProjection(withDetails bool) string {
 }
 
 // canonicalV2Comment 与迁移 734 的 COMMENT ON VIEW 同文（COMMENT 的 IS 只收
-// 单个字面量，不能像 SQL 赋值那样 || 拼接）。
-const canonicalV2Comment = `'会话存储解耦 v3（813）: 710 拼装体 + 734 details 特征层 LEFT JOIN（733，键 tenant_id+request_id+partition_date）——30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。813 再追加 3 列（origin_stage/token_band/client_forwarded_for，session 侧直映 t.<col>、v1 侧 lateral），修掉 compression_stats 的 token_band 静默空。LEFT 语义：details 缺行时 NULL，与 710 逐位兼容。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
+// 单个字面量，不能像 SQL 赋值那样 || 拼接）。824 起补记 request_status 的分类
+// 口径（816/817 的两次 client_ip 改写当时未同步本常量，视图注释一度落后两代；
+// 这里补的是最新状态，不是逐版流水）。
+const canonicalV2Comment = `'会话存储解耦 v3（824）: 710 拼装体 + 734 details 特征层 LEFT JOIN（733，键 tenant_id+request_id+partition_date）——30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。813 再追加 3 列（origin_stage/token_band/client_forwarded_for，session 侧直映 t.<col>、v1 侧 lateral）。816/817 把 client_ip 从 NULL 补位改为有源投影并换成语义守卫。824 把 request_status 的会话腿改走 error_kind=''rate_limit_exceeded''（旧口径只看 status_code=429，而 session_turns 里 429 是 0 行，等于从未生效，审计 §9.160）。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model/credits_rate_multiplier，以及 client_ip 本身（字面量非法时落 NULL，不抛错）。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
 
 // canonicalColumnOrderV2 是 115 列的契约顺序（= 现网 canonical 视图列序：
 // 710 冻结 113 列 + 738 credits_rate_multiplier + 740 client_ip）。

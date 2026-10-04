@@ -844,3 +844,21 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 818 | `818_ursm_snapshot_typed_columns.sql` | `bb2493af5a160a8fd6df860c4117c8aeeb68212843394d74b1923ff8a30988b3` | applied+verified |
 | 819 | `819_request_abandoned.sql` | `08cf64b15be12f88e7e513449490df8eda136839663f052186a740ddb9b4b43a` | applied+verified |
 
+## 2026-10-03T22:50:46Z — deploy 245 build_seq 2442 (25a86439)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 820 | `820_audio_modality_backfill.sql` | `866f110ddb196e33fa111437f94982eed83ccea1ac90f004711c1dae6e5cb721` | applied+verified |
+| 821 | `821_session_turns_abandoned_marker.sql` | `dd72e3b91c98a6984744b477dc60b029ac892d0ccea927a18f2cb5a83af01529` | applied+verified |
+
+## 2026-10-04 — R41 审计登记（未随 deploy 下发；822/823 已在本地库带外应用）
+
+登记时点：R41 十二小时审计（docs/12小时内修订审计-20261004-1030.md §六）。822/823 由在制会话在本地真库带外应用（迁移账本只到 814 的实况见 §9.155 附注，bcd3fda18）；824 未应用于任何库——**冻结字节已在下发前修正**（R41 F1：判定臂改 `error_kind IN ('rate_limit_exceeded','key_throttled')`，两字面量均来自写侧 EmitRateLimited，单值臂会把 823 后所有 key_throttled 镜像行永久报成 failure）。本节 SHA 为修正后终值，应用时按此核对。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 822 | `822_session_summaries_health_pending_index.sql` | `504d181155fcf05dc67edd7eb213a0d628c983033c315a120308a9117c541b90` | pending deploy（本地库已带外应用，实测索引在位）⚠ 恢复口径订正（R41 F7）：CONCURRENTLY 中断留 INVALID 时复跑**不会**清掉，须先 `DROP INDEX CONCURRENTLY IF EXISTS idx_session_summaries_health_pending` 再重放 |
+| 823 | `823_session_turns_request_status.sql` | `334765edc40e44cfe9a48334127649eaa930f8fb81add3ed595ee4d8e6e67441` | pending deploy（本地库已带外应用，session_turns/_hot 两侧 request_status 列在位；R41 补对称 down 文件） |
+| 824 | `824_request_status_rate_limited_projection.sql` | `bb5a76be01cfa69ae6ffbfd510c3cc728d7605c702eec11ad337883b6f80c666` | pending deploy（未应用于任何库；R41 冻结前订正判定臂为 IN 集，Go 镜像 db/request_logs_view_schema.go 同步，离线门钉死） |
+
+

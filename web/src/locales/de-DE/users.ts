@@ -74,6 +74,7 @@ export default {
   loading: 'Loading…',
   error: {
     loadFailed: 'Failed to load',
+    tenantsLoadFailed: 'Mandantenliste konnte nicht geladen werden',
     usernamePasswordRequired: 'Username and password are required',
     createFailed: 'Operation failed',
     deleteFailed: 'Delete failed',

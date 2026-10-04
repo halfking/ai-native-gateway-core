@@ -88,8 +88,29 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 			len(goExprs), len(sqlExprs), len(registeredProjectionAppends))
 	}
 	for i := range sqlExprs {
-		if goExprs[i] != sqlExprs[i] {
-			t.Fatalf("projection expr %d drifted:\n  go  = %s\n  sql = %s", i+1, goExprs[i], sqlExprs[i])
+		want := sqlExprs[i]
+		// 冻结 113 列里被**后来某个迁移换掉表达式**的列：734 的 $proj$ 块必须
+		// 逐字保持原样（它是一次已发生的事实，改它会让文件不再描述自己实际做过
+		// 的事，down 链也会跟着失真），而 Go 镜像体必须带上现值。所以在这里
+		// 钉**一对**，而不是把两侧强行拉平。
+		//
+		// 位置靠 `AS <col>` 后缀解析，不靠行号/下标加减——表达式数量会随追加列
+		// 变化，按位置增量修补正是把「被引用的那一项」算错的那类操作。
+		if col, ok := projectionColumnName(want); ok {
+			if ov, overridden := registeredExpressionOverrides[col]; overridden {
+				// 登记表里存的是**裸表达式**（不含 ` AS <col>`），所以比之前先剥掉。
+				frozenEntry := ov.frozen + " AS " + col
+				if want != frozenEntry {
+					t.Fatalf("column %q: the frozen (734) expression drifted — migration 734 is a "+
+						"historical fact and must not be rewritten; if 734 itself ever changes, "+
+						"re-derive the frozen value here deliberately:\n  file = %s\n  want = %s",
+						col, want, frozenEntry)
+				}
+				want = ov.current + " AS " + col
+			}
+		}
+		if goExprs[i] != want {
+			t.Fatalf("projection expr %d drifted:\n  go  = %s\n  sql = %s", i+1, goExprs[i], want)
 		}
 	}
 	for i, want := range registeredProjectionAppends {
@@ -264,6 +285,44 @@ var registeredProjectionAppends = []string{
 	"t.origin_stage AS origin_stage",                 // 815
 	"t.token_band AS token_band",                     // 815
 	"t.client_forwarded_for AS client_forwarded_for", // 815
+}
+
+// registeredExpressionOverrides 登记「734 冻结 113 列之内、后来被某个迁移换掉
+// **表达式**」的列（不是增删列 —— 那种走 registeredProjectionAppends）。
+//
+// 为什么不能直接改 734 的 $proj$ 块：734 已经在每一套部署里跑过并登记进
+// schema_migrations，改它的文件内容会让「文件里写的」与「库里跑的」分叉，
+// 且 734 的 down 文件也会跟着说谎。新迁移是唯一诚实的做法，所以两侧各钉一个
+// 值：文件侧必须仍是 frozen，Go 侧必须已是 current。
+//
+// 纪律：先落迁移（824），再登记；frozen 值必须从 canonical 文件里**实测**得到
+// （本条即由 734 逐字读出），不得凭记忆手写——手写一个和文件差一个空格的
+// frozen 会让这条门变成恒红的噪音，而恒红等于没有门。
+var registeredExpressionOverrides = map[string]struct{ frozen, current string }{
+	"request_status": {
+		// 710/734 时代：只看 status_code = 429。而 session_turns 里 429 是 0 行
+		// （真限流在会话侧记 500），所以这一臂在会话腿上从未触发过——视图把
+		// 437,402 条真限流报成普通 failure（审计 §9.160）。
+		frozen: "(CASE WHEN t.success IS NULL THEN NULL WHEN t.success THEN 'success' WHEN t.status_code = 429 THEN 'rate_limited' ELSE 'failure' END)",
+		// 824：改走 error_kind（与 v1 权威标签双向零反例），保留 429 臂。
+		current: sessionRequestStatusExpr,
+	},
+}
+
+// projectionColumnName extracts the contract column name from a rendered
+// projection entry ("<expr> AS <name>"). Returns ok=false for an entry that
+// carries no alias, so a malformed entry falls through to the plain equality
+// comparison instead of silently matching an override.
+func projectionColumnName(entry string) (string, bool) {
+	i := strings.LastIndex(entry, " AS ")
+	if i < 0 {
+		return "", false
+	}
+	name := strings.TrimSpace(entry[i+len(" AS "):])
+	if name == "" || strings.ContainsAny(name, " \t\n") {
+		return "", false
+	}
+	return name, true
 }
 
 var registeredColumnAppends = []string{
@@ -513,9 +572,13 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	// pg_input_is_valid(v,'inet')。投影本身来自 816，守卫来自 817，所以
 	// 重放链必须**两个都跑**才等于 Go ensure 的形态——漏掉 817 会在这里现形。
 	applyMigration("817_request_logs_view_client_ip_semantic_guard.sql")
+	// 824（审计 §9.160）：request_status 会话腿改走 error_kind='rate_limit_exceeded'。
+	// Go 镜像体已带新表达式，所以重放链**必须**跟到 824，否则这条门会拿旧 viewdef
+	// 比新 viewdef —— 那正是它该抓的漂移，只是抓的会是测试自己没跟上。
+	applyMigration("824_request_status_rate_limited_projection.sql")
 	migrationViewdef := viewDefinition(t, ctx, pool)
 	if migrationViewdef != ensureViewdef {
-		t.Fatalf("ensure and migrations 710+734+738+740+815+816+817 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
+		t.Fatalf("ensure and migrations 710+734+738+740+815+816+817+824 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
 			ensureViewdef, migrationViewdef)
 	}
 
@@ -826,6 +889,12 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("clear 817 bookkeeping row: %v", err)
 	}
 	applyMigration("817_request_logs_view_client_ip_semantic_guard.sql")
+	// 824 同样必须跟着 re-up：Go ensure 是 824 形态。少了它，re-up 后的 viewdef
+	// 停在 823 时代，与 ensureViewdef 差 request_status 那一臂。
+	if _, err := pool.Exec(ctx, `DELETE FROM public.schema_migrations WHERE version = '824'`); err != nil {
+		t.Fatalf("clear 824 bookkeeping row: %v", err)
+	}
+	applyMigration("824_request_status_rate_limited_projection.sql")
 	reUp815 := viewDefinition(t, ctx, pool)
 	if reUp815 != ensureViewdef {
 		t.Fatalf("815+816+817 down 之后再 up，必须逐字节回到同一份 viewdef。\n"+

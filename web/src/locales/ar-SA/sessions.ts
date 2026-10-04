@@ -26,6 +26,7 @@ export default {
     },
   },
   userProfile: {
+    loadFailed: 'فشل تحميل ملف المستخدم',
     title: "ملفات المستخدمين",
     detailTitle: "تفاصيل ملف المستخدم",
     ownerUser: "معرف المستخدم",

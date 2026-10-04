@@ -103,6 +103,11 @@ type TurnRecord struct {
 	Success    bool
 	ErrorKind  string
 
+	// RequestStatus is the gateway-computed lifecycle label
+	// (success | failure | rate_limited | in_progress). Not derivable from
+	// Success/ErrorKind — see ProcessedRequest.RequestStatus (audit §9.155).
+	RequestStatus string
+
 	// Data quality
 	SourceKind string // live | backfill
 	Quality    string // verified | inferred | partial | rejected
@@ -147,21 +152,21 @@ type TurnRecord struct {
 	//
 	// 正文组：RequestDeltaJSON/ResponseDeltaJSON 由 writer 在
 	// storage.session_turns_bodies_enabled 开启时填入（nil 即 NULL，旧行为）。
-	RequestDeltaJSON   []byte
-	ResponseDeltaJSON  []byte
-	IsFinalSuccess     bool
+	RequestDeltaJSON  []byte
+	ResponseDeltaJSON []byte
+	IsFinalSuccess    bool
 
 	// 计费组
-	APIKeyID      string
-	ApplicationID string
-	EndUserID     string
-	CustomerID    int64
+	APIKeyID       string
+	ApplicationID  string
+	EndUserID      string
+	CustomerID     int64
 	CreditsCharged int64
-	CostDisplay   float64
-	CostCurrency  string
-	WorkType      string
-	TokenBand     string
-	UsageSource   string
+	CostDisplay    float64
+	CostCurrency   string
+	WorkType       string
+	TokenBand      string
+	UsageSource    string
 
 	// 路由组
 	IsAutoRequest   bool
@@ -175,36 +180,36 @@ type TurnRecord struct {
 	RawModelName    string
 
 	// 诊断组
-	TraceEvents         []byte
-	FailureStage        string
-	FailureDetailCode   string
-	UpstreamStatusCode  int
+	TraceEvents          []byte
+	FailureStage         string
+	FailureDetailCode    string
+	UpstreamStatusCode   int
 	UpstreamFinishReason string
-	StreamFirstChunkMs  int
-	StreamChunkCount    int
-	StreamInterrupted   bool
-	StreamDoneSent      bool
-	ClientRequestID     string
-	ClientEndpoint      string
-	ClientTimeout       bool
-	EgressProtocol      string
+	StreamFirstChunkMs   int
+	StreamChunkCount     int
+	StreamInterrupted    bool
+	StreamDoneSent       bool
+	ClientRequestID      string
+	ClientEndpoint       string
+	ClientTimeout        bool
+	EgressProtocol       string
 
 	// 检索/完整性组
-	SearchText        string
-	RequestPreview    string
-	ResponsePreview   string
-	TransformSummary  string
-	IdentityHash      string
-	RequestChecksum   string
-	ResponseChecksum  string
-	SystemFingerprint string
-	OriginStage       string
-	OriginActor       string
-	ClientIP          string
+	SearchText         string
+	RequestPreview     string
+	ResponsePreview    string
+	TransformSummary   string
+	IdentityHash       string
+	RequestChecksum    string
+	ResponseChecksum   string
+	SystemFingerprint  string
+	OriginStage        string
+	OriginActor        string
+	ClientIP           string
 	ClientForwardedFor string
-	AgentName         string
-	AgentType         string
-	VirtualClientID   string
+	AgentName          string
+	AgentType          string
+	VirtualClientID    string
 }
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
@@ -400,7 +405,8 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				search_text, request_preview, response_preview, transform_summary,
 				identity_hash, request_checksum, response_checksum, system_fingerprint,
 				origin_stage, origin_actor, client_ip, client_forwarded_for,
-				agent_name, agent_type, virtual_client_id
+				agent_name, agent_type, virtual_client_id,
+				request_status
 			) SELECT
 				$1, $2, $3, $4, $5,
 				$6, $7, $8, $9,
@@ -427,7 +433,8 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				$83, $84, $85, $86,
 				$87, $88, $89, $90,
 				$91, $92, $93, $94,
-				$95, $96, $97
+				$95, $96, $97,
+				$98
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM public.session_turns_with_current_month
@@ -465,6 +472,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		nilIfEmpty(rec.IdentityHash), nilIfEmpty(rec.RequestChecksum), nilIfEmpty(rec.ResponseChecksum), nilIfEmpty(rec.SystemFingerprint),
 		nilIfEmpty(rec.OriginStage), nilIfEmpty(rec.OriginActor), nilIfEmpty(rec.ClientIP), nilIfEmpty(rec.ClientForwardedFor),
 		nilIfEmpty(rec.AgentName), nilIfEmpty(rec.AgentType), nilIfEmpty(rec.VirtualClientID),
+		nilIfEmpty(rec.RequestStatus),
 	)
 
 	if err != nil {

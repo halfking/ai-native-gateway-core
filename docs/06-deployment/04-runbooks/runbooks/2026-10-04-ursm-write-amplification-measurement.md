@@ -19,6 +19,7 @@
 | 稳态容量承诺 | #3：3.6 GB 还是 4~7 GB | 两个都是错的。真值 **5.1 ~ 6.9 GB**（单写 + 7 天），**3.6 GB 低估了 40%~90%**。 |
 | **10-03 那个「25% 缺口」是什么** | ~~昼夜节律~~ | 🔴 **不是昼夜节律。** 是 **10-02 21:00 ~ 10-03 21:00 一次 24 小时的写入批量失败事件**：落库率 **28.3%**，缺口 **2,261,557 行**（约 1.33 GB）。详见 **§5.6**，原 §5.1 已推翻。 |
 | **部署后的慢速失败还在吗** | — | 还在，且横跨三个子系统：154 0.5% / 245 2.5%，`redis TYPE check failed: context deadline exceeded`，URSM persist + availability key counter + pending_sweeper 同时中招 ⇒ 共因是 db2 的 SCAN 成本（**§5.7.3**）。 |
+| **迁键（db2→db14）为什么失败** | ~~复制竞态~~ | 🔴 **不是竞态。** 是 6 处 URSM 组件接错 Redis client —— `bootstrap.Apply` 写网关 db 而 manager 校验专用 db。**其中一处是 persist writer 本身，即迁键的收益来源，所以即使侥幸启动成功也拿不到任何 SCAN relief**（**§5.7.8**，修复 commit `d0a353d53` + 本轮审计修复）。 |
 
 ---
 
@@ -828,6 +829,191 @@ MATCH 是服务端过滤，躲不掉遍历 —— 这就是 §5.3.1 路径 A 的
 
 ---
 
+#### 5.7.8 ★★ 迁键失败的根因：一行代码写错了库（2026-10-04 03:00~04:20）
+
+**这一节订正 §5.7.5~§5.7.7 的一个隐含前提**：那三节把失败归因于「复制竞态」，
+并为此量化了静默窗口。**竞态不是原因。**
+
+#### 5.7.8.1 直接原因：bootstrap 写 db2，coverage 校验读 db14
+
+`cmd/gateway/main.go` 把 `bootstrap.Apply` 接到 `redisClientForCache`（**网关共享
+client，db2**），而 v2 manager 用的是 `ursmRedis.Client()`（`URSM_V2_REDIS_DB`
+指定时是**专用 db**）。启动日志把这件事写得很清楚：
+
+```
+ursm.v2: using dedicated redis db  db=14  gateway_db=2
+ursm.v2 manager constructed        mode=authoritative ready=false
+ursm.v2: coverage validation failed ... coverage key missing:
+        ursm:v2:node:default:63:gpt-6-astra: coverage manifest incomplete
+```
+
+切到独立 db 后，Apply 把 692 个 node hash 和 coverage manifest **全部写进 db2**，
+`ValidateCoverage` 却从 db14 读复制过来的旧 manifest —— **两套数据永远对不上**。
+
+**最有力的旁证是失败日志里根本没有 bootstrap 这一行。** 对比同一台机器：
+
+| 时刻 | 日志 |
+|---|---|
+| 01:08（db2，成功） | `gate opened after bootstrap and coverage validation` `node_count=692 bootstrap_total=692 written=215 skipped=477` |
+| 02:52（db14，失败） | `using dedicated redis db` → `manager constructed` → **0.2 秒后** coverage failed，中间无任何 bootstrap |
+
+02:52 那次 bootstrap 确实跑了、也确实成功了（没报 bootstrap 错误）——
+**只不过它写的是另一个数据库**。
+
+#### 5.7.8.2 实测：db2 自己也在违约（这推翻了「只有迁键才会出事」）
+
+服务端用 Lua 逐条 EXISTS 判定 manifest 成员（实测 03:20）：
+
+| | manifest | 缺失成员 |
+|---|---|---|
+| **db2（当时正在正常服务）** | 702 | **16** |
+| db14（迁键目标） | 702 | 18 |
+
+db2 缺的 16 个键在 PG `node_probe_state` 里 **16/16 都有对应行**（逐条查实），
+既不是 PG 里的幽灵行，也不是 SCAN 幻影。
+
+**当时我给出的解释是错的，订正如下。** 我先说这是「每次重启都会降级」的定时炸弹——
+**不对。** `selectWrites`（`bootstrap.go:286`）的逻辑是：`exists==0` 的键**一定写**，
+跳过的只限「已存在**且** `manual_hold=1` 或 `generation≠1`」的键。
+所以每次启动的 `bootstrap.Apply` 都会把「PG 有行而 Redis 没有」的键补齐 ——
+db2 那 16 个正是 01:08 那次启动补上的。
+
+node 键确实带 TTL 且会自然衰减（db2 实测 1,258 个 hash 型 node 键里 **113 个 TTL<2h**，
+其中 `ursm:v2:node:default:29:kimi-k3` 只剩 **68 秒**；db14 上**无人使用**却从 1,273
+掉到 1,224，是纯粹的 TTL 到期），但**这种衰减在启动时是自愈的**，
+不构成重启即降级。真正缺的只有一件事：**bootstrap 跑在了错的库上**。
+
+> ★ 这条订正的教训：**「现象会在下次重启复发」不等于「机制是重启竞态」。**
+> 我是先看到 113 个 TTL<2h 才推出「重启会炸」的，而那个因果链的每一环都没验。
+
+#### 5.7.8.3 154 从不成功、245 却成功 —— 不是结构差异，是概率
+
+两台的 idle 节点分布不同，缺失成员数不同；`ValidateCoverage` 只在**每个 manifest
+成员都存在**时才通过，于是谁先撞上就降级。这是概率事件，不是「154 有 bug」。
+
+**判据本身只报第一个缺失键**（`for` 循环里 `return`），所以三次重启报出来的键
+各不相同（`63:gpt-6-astra` → `19:meta/muse-glimmer-30b` → `19:nvidia/nemotron-parse-2.0`）。
+**只读一条错误就下结论会得出错误的缺失集合** —— 真实缺失是一大片。
+
+#### 5.7.8.4 修复（commit `d0a353d53`，三层）
+
+1. **client 单一来源**：`ursmV2Redis` 捕获 manager 实际持有的 client，manager 构造
+   与 bootstrap 共用它。读写不可能再漂到两个库。
+2. **启动 bootstrap 重试一次**（`bootstrapAttempts=2`）再降级。此前一次瞬时失败
+   （PG 慢于 60s 预算、Redis 瞬断）会让进程**永久**降级，而运行期恢复路径一直有
+   rebuild 重试 —— 启动期没有。
+3. **manifest 契约根治**：此前 manifest 直接由「PG 声称应该存在」的列表构成，
+   从不核对 Redis，因此可以发布一份**下一次启动必然违约**的承诺。现在
+   ① 只把实测存在的键写进 manifest；② 发布时逐条验真（存在 + `generation` +
+   `available`），宁可拒绝发布；③ 拒绝路径清理 `:staging`；④ 把承重耦合写进
+   `Apply` 的契约注释。
+
+**判据写法**：第 1 层的门按**顶层逗号切分实参**做结构断言，而不是子串检查 ——
+子串检查会被「包一层函数」绕过（`redisClientForCache.Client()` 包成
+`tenantOr(...)` 之类，字符串还在，bug 还在）。变异验证 5/5 全部有牙。
+
+#### 5.7.8.5 由此产生的两条硬约束
+
+- **凡是把「读」和「写」分给两个 client 的地方，都要问一句「它们会不会漂到不同的库」。**
+  本次是 `RedisDB` 这个新配置项引入的：`URSM_V2_REDIS_DB=14` 之前两条路径共用
+  同一个 client，写错库是不可观测的。
+- **`ValidateCoverage` 的精确匹配之所以成立，只因为 `Apply` 每次启动都补齐缺失键。**
+  这是承重耦合，不是「顺便也能过」。任何绕过 `Apply` 直接校验 coverage 的新代码
+  路径，都会把衰减误判成故障。
+
+#### 5.7.8.6 ★★ 同一个错误还有另外 5 处，其中一处让整个迁键**本来就没有意义**
+
+§5.7.8.1~5.7.8.5 修的是「响的那一处」。随后做了全仓审计，结论是
+`bootstrap.Apply` 只是**六分之一**。
+
+先确认漂移面有多大：`URSM_V2_REDIS_DB` 是**全仓唯一**能分叉 db 的配置项
+（其余全部走 `cfg.RedisDB`），而 `main.go` 是 URSM 组件的**唯一装配点**，
+所以审计范围是封闭的。逐一核实键前缀（不靠命名猜）：
+
+| 键构造 | 前缀 | 定义处 |
+|---|---|---|
+| `StickyKey` | `ursm:v2:sticky:L%d:%s` | `cache/keys.go:31` |
+| `IntentKey` | `ursm:v2:intent:%s` | `cache/keys.go:36` |
+| `StickyLoadKey` | `ursm:v2:stickyload:%d` | `cache/sticky_load.go:13` |
+| `nodeMirrorKey` | `ursm:v2:node:...` | `cache/keys.go:23` |
+| persist writer | `ursmV2Cfg.RedisKeyPrefix` = `ursm:v2:` | `persist/writer.go:26` |
+
+而这 6 个 URSM 组件**全部**接在网关 client 上：
+
+| main.go | 组件 | 接错的后果 |
+|---|---|---|
+| 1280 | `persist.New` | **全库 SCAN 照旧扫 db2** —— 迁键的全部收益来源 |
+| 3556 | `adapter.withRebuild(rdb:)` | 运行时 coverage 自愈**写进错库**，等于空转 |
+| 1260 | `MigrateFpSlotsNodeStates` | shadow/canary 下 node 键写错库 |
+| 1346 | `NewStickyStore` | `sticky:` 键被劈成两个库 |
+| 1347 | `NewIntentStore` | `intent:` 键被劈成两个库 |
+| 1521 | `NewStickyLoadStore` | `stickyload:` ZSET 被劈成两个库 |
+
+**第 1280 行是整件事最要紧的一处。** `URSM_V2_REDIS_DB` 之所以被引入，
+就是因为 persist writer 的全键空间 SCAN 要走过 db2 的 ~158 万个会话键
+（实测 12.95s~30.40s，预算只有 30s）。**它自己却一直指着 db2** ——
+即使启动校验侥幸通过，这次迁键也**一分钱 SCAN  relief 都拿不到**，
+只是把 sticky / intent / stickyload 状态劈成两半。
+
+> ★ 回头看，§5.7.5 迁移预检里那句「16 个『只在 db2』的键，真实差异只有
+> 6 个 `sticky:` 小键 + 1 个 `stickyload:31` zset」我当成了 SCAN 幻影噪声。
+> **那不是噪声，那正是这条 bug 的指纹** —— 活着的进程一直在往 db2 写
+> `sticky:` / `stickyload:`，而复制出来的快照是旧的。
+
+#### 5.7.8.7 门怎么写的（以及一次「门是空转」的实录）
+
+新增两道门：① 扫 `main.go` 里**所有** URSM 包限定的调用，实参不得出现
+`redisClientForCache`；② persist / rebuild 两处承重点单独点名断言。
+
+**URSM 包清单从 `main.go` 自己的 import 块推导**，不手写名单 ——
+手写名单会静默腐烂：新子系统接进来，门照样绿，漂移照样发版。
+
+**变异验证第一轮 2/6 通过，M8~M10 全部漏掉。** 根因：检测用的
+`callHeadRe` 写成 `\b(\w+)\(`，只捕获 `(` 前**最后一段标识符**，
+于是 `ursmcache.NewStickyStore(` 的 head 是 `NewStickyStore`、不含点、
+`dot < 0` 直接 `continue` —— **带包限定的调用从来没被检查过**。
+门看起来是武装的，实际什么都没查。
+
+修法两条：① 正则改成 `\b(\w+(?:\.\w+)?)\(`；② **给检测器本身加一道
+自证门** —— 喂一个已知违规样例，断言它必须报出来；同时喂一个正确样例，
+断言它必须闭嘴（只会误报的检测器同样有害）。重跑后 **6/6 有牙**。
+累计 11/11。
+
+#### 5.7.8.8 顺带查实：`git stash -u` 在共享工作区不安全
+
+为区分 flaky 而做基线对比时用了 `git stash -u`，
+它会把**其他会话未提交的改动**一起暂存。本次已 `pop` 回来且文件完好，
+但这类操作在并发工作区应当改用 `git worktree`。记录备查。
+
+#### 5.7.8.9 附带发现（与本次改动无关，单独记账）
+
+跑整包时 `TestLiteRequestLogSink_IdempotentUpsert` 偶发红，失败原文：
+
+```
+async file writer: mkdir .../bodies/tenant-a/se: no such file or directory
+```
+
+`writeAtomic` 用的是幂等的 `os.MkdirAll`，报 ENOENT 只能说明**父目录在
+MkdirAll 执行期间被并发删除** —— 在途异步写入与 bodies trimmer / 测试
+cleanup 的竞态，属 lite 存储子系统的**既有问题**。
+
+**判定与本改动无因果关系**，两条机械理由：lite 模式**不执行 `main()`**
+的 Redis 接线；把 guard 从 `redisClientForCache != nil` 改成
+`ursmV2Redis != nil` 是**可证等价的**（`Client()` 仅在 receiver 为 nil 时
+返回 nil，而 `ursmV2Redis` 恰在 `redisClientForCache != nil` 分支内赋值）。
+
+统计上也不支持归因：带改动三轮 `-count=30` 分别 **2 / 0 / 0**，
+无改动基线 **0/12、0/30** —— 失败率随机器负载波动，不可区分。
+
+#### 5.7.8.10 db14 现状
+
+已清空：1,224 个残留键全部删除，`DBSIZE=0`（2026-10-04 04:05）。清空前核实
+db14 的 1,224 个键**全部**是 `ursm:v2:*`，无其他键污染。
+
+**迁键是否重试，取决于本次修复是否先部署** —— 未部署前重试必然复现同样的失败。
+
+---
+
 ## 6. 这对 §10 改造的实际影响
 
 1. **容量收益要按「单写」承诺，不能按「双写」。** 245 退出 shadow 是
@@ -1111,6 +1297,11 @@ CREATE INDEX ursm_node_snapshot_min_ts_idx
   （154 0.5% / 245 2.5%），且横跨 URSM persist、availability key counter、
   pending_sweeper 三个子系统，共因指向 db2 的 SCAN 成本。
   ⇒ 「迁 URSM 到独立 db」从优化项升为**止血项**。
+  **2026-10-04 04:20 补充（§5.7.8）**：迁键失败的真因已定位并修复
+  （`bootstrap.Apply` 写网关 db 而 manager 校验专用 db，commit `d0a353d53`），
+  **§5.7.5~§5.7.7 把失败归因于「复制竞态」是错的**，静默窗口的必要性论证不成立。
+  **但止血项的定性不变** —— db2 的 SCAN 成本依旧存在，迁键仍值得做。
+  尚未部署，迁键**暂缓**：未部署前重试必然复现同样的失败。
 - ~~★ `request_logs` 自 2026-10-03 17:24 起零写入（§5.7.2）~~ ——
   **已撤回，那不是缺陷。** `request_logs` 是带 **8 小时热窗**的分区父表
   （`promote_request_logs_hot_to_partition` 的 `p_retention DEFAULT '08:00:00'`），

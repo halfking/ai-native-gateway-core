@@ -240,24 +240,50 @@ const selectedModelDetail = ref<ModelDetail | null>(null)
 const loadingDetail = ref(false)
 
 // 获取供应商信息
+// 筛选元数据（供应商 / 标签命名空间 / 模型家族）的加载状态。
+//
+// 2026-10-03：这三处原本都是 `catch (e) { /* ignore */ }`。它们失败后页面
+// 不会说「加载失败」，而是把筛选下拉渲染成**空**——
+//   · families 空 ⇒ 家族筛选只有「全部」，且 modelVendorName 退化成无 vendor，
+//     列表里 vendor 列跟着变空；
+//   · namespaces 空 ⇒ 标签筛选整体消失。
+// 用户看到的是「这些筛选项不存在」，而真相是「没加载出来」。
+// 与 T1 的降级判据同源：不能把「不知道」渲染成「没有」。
+const filterMetaError = ref('')
+
 async function loadProviders() {
   try {
     providers.value = await getProviders()
-  } catch (e) { /* ignore */ }
+  } catch (e: unknown) {
+    providers.value = []
+    filterMetaError.value = e instanceof Error && e.message
+      ? e.message
+      : t('models.error.providersLoadFailed')
+  }
 }
 
 async function loadTags() {
   try {
     const r = await listTags()
     namespaces.value = r.namespaces
-  } catch (e) { /* ignore */ }
+  } catch (e: unknown) {
+    namespaces.value = []
+    filterMetaError.value = e instanceof Error && e.message
+      ? e.message
+      : t('models.error.tagsLoadFailed')
+  }
 }
 
 async function loadFamilies() {
   try {
     const r = await listModelFamilies()
     families.value = r.items
-  } catch (e) { /* ignore */ }
+  } catch (e: unknown) {
+    families.value = []
+    filterMetaError.value = e instanceof Error && e.message
+      ? e.message
+      : t('models.error.familiesLoadFailed')
+  }
 }
 
 async function loadModels() {
@@ -657,7 +683,12 @@ function refreshDiscoveryCardVisibility() {
   showDiscoveryCard.value = false
 }
 
+// 发现任务状态的加载错误。与 filterMetaError 分开：两者互不覆盖，
+// 同一时刻可能只失败一个，合到一个 ref 会让后到的把先到的抹掉。
+const discoveryStatusError = ref('')
+
 async function loadDiscoveryStatus() {
+  discoveryStatusError.value = ''
   try {
     const status = await getModelDiscoveryStatus()
     if (status.running?.trigger === 'manual') {
@@ -675,7 +706,14 @@ async function loadDiscoveryStatus() {
       discoverMessage.value = ''
     }
     refreshDiscoveryCardVisibility()
-  } catch (e) { /* ignore */ }
+  } catch (e: unknown) {
+    // 原来 `catch (e) { /* ignore */ }`：失败后用户看不到「有任务在跑」，
+    // 发现卡也就按 refreshDiscoveryCardVisibility 的空数据分支收起。
+    // 「没在跑」与「不知道有没有在跑」在这一页完全同形。
+    discoveryStatusError.value = e instanceof Error && e.message
+      ? e.message
+      : t('models.error.discoveryStatusLoadFailed')
+  }
 }
 
 async function openFeaturedDrawer() {
@@ -1030,6 +1068,16 @@ watch(activeTab, async (tab) => {
       </div>
       <div class="card-body">
         <div v-if="error" class="alert alert-error">{{ error }}</div>
+        <!--
+          筛选元数据加载失败与主列表失败是**两件事**：主列表照常可用，
+          只是筛选范围未知。用 warning 措辞，且不说「没有筛选项」。
+        -->
+        <div v-if="filterMetaError" class="alert alert-warning" role="status">
+          ⚠️ {{ t('models.error.filterMetaLoadFailed') }}（{{ filterMetaError }}）
+        </div>
+        <div v-if="discoveryStatusError" class="alert alert-warning" role="status">
+          ⚠️ {{ t('models.error.discoveryStatusLoadFailed') }}（{{ discoveryStatusError }}）
+        </div>
         <div v-if="loading" class="muted">加载中…</div>
         <table v-else class="table">
           <thead>

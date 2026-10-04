@@ -20,6 +20,7 @@ export default {
     summarizeFailed: '总结失败',
     sessionForbidden: '当前 API 密钥无法访问此会话，请选择正确的密钥',
     autoRoute: '自动路由 (auto)',
+    modelListFailed: '模型清单加载失败，模型下拉里只有「自动路由」不代表网关只支持自动路由',
     auto: '自动',
     needsKeyTitle: '请先申请 API 密钥',
     needsKeyDesc: '对话需要一把属于您且已启用的 API 密钥。您当前没有可用密钥，请先申请或创建。',

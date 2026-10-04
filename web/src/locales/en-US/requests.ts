@@ -62,6 +62,9 @@ export default {
       providerAll: 'All providers',
       credentialTitle: 'Credential',
       credentialAll: 'All credentials',
+      loadFailed: 'Provider/credential options failed to load — an empty dropdown does not mean there are none',
+      partialLoadFailed: 'Credentials for {count} provider(s) failed to load ({names}); filtering by them returns incomplete results',
+      keysLoadFailed: 'API key list failed to load — filtering by a key will return zero results',
       timeTitle: 'Time range',
       timeOptions: {
         h1: '1 hour',

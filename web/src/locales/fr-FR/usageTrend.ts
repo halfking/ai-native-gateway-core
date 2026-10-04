@@ -3,6 +3,7 @@ export default {
   pageTitle: 'Analyse des tendances d\'utilisation',
   pageSub: 'Usage par modèle dans le temps ; filtres par fournisseur / locataire / clé API / modèle / métrique',
   loadFailed: 'Échec du chargement',
+  degraded: "Données de tendance indisponibles (vue {view} non initialisée). La ligne plate signifie « non calculé », pas une utilisation nulle.",
   detailTimeoutHint: 'Le filtrage par clé d\'API analyse les journaux de requêtes et peut expirer sur de larges plages ; essayez une plage plus courte (ex. 7 jours)',
   filterProvider: 'Fournisseur',
   filterTenant: 'Locataire',
@@ -10,6 +11,8 @@ export default {
   filterModel: 'Modèle',
   filterMetric: 'Métrique',
   filterAll: 'Tous',
+  filterProviderKeyFailed: "Échec du chargement des options de filtre fournisseur / clé — une liste vide ne signifie pas qu'il n'y en a aucune",
+  filterTenantFailed: 'Échec du chargement des options de filtre des tenants',
   shareByMetric: 'Part (métrique)',
   sourceDetail: 'Détail des requêtes',
   // 2026-10-02 multi-sélection / tout effacer / actualisation auto

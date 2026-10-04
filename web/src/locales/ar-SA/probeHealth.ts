@@ -1,5 +1,6 @@
 // Auto-synced from en-US (ar-SA)
 export default {
+  monitorPartialFailed: "تعذّر جلب البيانات الحية لـ {count} من بيانات الاعتماد ({ids})؛ الأرقام أدناه أقل من الواقع",
   backLink: '← Routing overview',
   title: 'Probe health',
   autoRefresh: 'Auto refresh (30s)',

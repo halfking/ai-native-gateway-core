@@ -42,6 +42,8 @@ export default {
     createdAt: '时间',
   },
   empty: '暂无合规记录',
+  recordsLoadFailed: 'Échec du chargement des enregistrements de correspondances',
+  recordsNotLoaded: 'Enregistrements non chargés — le tableau ci-dessous n’est pas un résultat de requête',
   pagination: {
     previous: '上一页',
     next: '下一页',

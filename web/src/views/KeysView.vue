@@ -497,14 +497,38 @@ function rateLimitLabel(k: ApiKey): string {
   return parts.join(' / ')
 }
 
+// 2026-10-03：原来 `catch { /* use hardcoded fallback */ }`。
+// 那不是「兜底」，是**拿硬编码默认值冒充服务端当前配置**：
+// `defaultLimits` 的初值是 `{rpm:12, concurrent:6, tpm:null}`（见本文件 219 行），
+// 加载失败时表单原样显示这三个数，而保存按钮只在 saving 时禁用
+// （模板 955 行）⇒ 用户点开「默认限额」、改一个字段、保存，
+// `setDefaultLimits` 收到的就是一份 rpm=12/concurrent=6 的假配置。
+// 这次先核过可达性：初值在、mount 时加载、按钮未按加载态禁用。
+const defaultLimitsLoaded = ref(false)
+const defaultLimitsError = ref('')
+
 async function loadDefaultLimits() {
+  defaultLimitsError.value = ''
   try {
     defaultLimits.value = await getDefaultLimits()
-  } catch { /* use hardcoded fallback */ }
+    defaultLimitsLoaded.value = true
+  } catch (e: unknown) {
+    // 载入失败时不把初值当配置：表单禁用 + 说明原因。
+    // 「不显示」会让人以为限额是 12/6；「显示并可保存」会把假值写进服务端。
+    defaultLimitsLoaded.value = false
+    defaultLimitsError.value = e instanceof Error && e.message
+      ? e.message
+      : t('keys.list.limits.loadFailed')
+  }
 }
 
 async function saveDefaultLimits() {
   clearLimitsMsg()
+  // 兜底再拦一道：按钮已禁用，但 programmatic 调用仍可能进来。
+  if (!defaultLimitsLoaded.value) {
+    notifyLimitsErr(t('keys.list.limits.loadFailed'))
+    return
+  }
   limitsSaving.value = true
   try {
     const data = { ...defaultLimits.value }
@@ -938,21 +962,27 @@ onBeforeUnmount(() => {
         </p>
         <div v-if="limitsErr" class="alert alert-danger">{{ limitsErr }}</div>
         <div v-if="limitsSuccess" class="alert alert-success">{{ limitsSuccess }}</div>
+        <!--
+          2026-10-03：载入失败时下面三个输入框显示的是**硬编码初值**（12/6/null），
+          不是服务端配置。所以横幅 + 禁用输入与保存，缺一不可：
+          只禁保存，用户仍会读到假数字；只提示不禁，用户照样能把假值写回去。
+        -->
+        <div v-if="defaultLimitsError" class="alert alert-warning" role="status">{{ defaultLimitsError }}</div>
         <div class="form-group">
           <label>默认 RPM（每分钟请求数）</label>
-          <input v-model.number="defaultLimits.rate_limit_rpm" type="number" min="0" placeholder="0=不限制" />
+          <input v-model.number="defaultLimits.rate_limit_rpm" type="number" min="0" placeholder="0=不限制" :disabled="!defaultLimitsLoaded" />
         </div>
         <div class="form-group">
           <label>默认并发数</label>
-          <input v-model.number="defaultLimits.rate_limit_concurrent" type="number" min="0" placeholder="0=不限制" />
+          <input v-model.number="defaultLimits.rate_limit_concurrent" type="number" min="0" placeholder="0=不限制" :disabled="!defaultLimitsLoaded" />
         </div>
         <div class="form-group">
           <label>默认 TPM（每分钟 token 数）</label>
-          <input v-model.number="defaultLimits.rate_limit_tpm" type="number" min="0" placeholder="0=不限制" />
+          <input v-model.number="defaultLimits.rate_limit_tpm" type="number" min="0" placeholder="0=不限制" :disabled="!defaultLimitsLoaded" />
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button class="btn btn-ghost" @click="showDefaultLimits = false">取消</button>
-          <button class="btn btn-primary" @click="saveDefaultLimits" :disabled="limitsSaving">
+          <button class="btn btn-primary" @click="saveDefaultLimits" :disabled="limitsSaving || !defaultLimitsLoaded">
             {{ limitsSaving ? t('keys.saving') : t('keys.save') }}
           </button>
         </div>
