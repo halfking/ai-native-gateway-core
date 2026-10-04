@@ -25454,3 +25454,109 @@ if !EnqueueMirrorFailure(entry, req.SessionID, "write_failed") {
   本节对它们给的是「由同一机制推出、且与库中观测一致的解释」，
   **不是**逐行证明。若要坐实，需要在日志保留期内复现同类失败并抓日志。
 - 生产（252）**完全未验证**（D30-b 仍阻塞）。
+
+## §9.214 ⚠ 第二次修正 §9.213：丢行发生在**镜像上游**，镜像的失败恢复从未介入
+
+§9.213.4–9.213.5 说：镜像写失败后，记录失败也要写库（同样失败）
+⇒ 退到进程内 backlog ⇒ **无人排空** ⇒ 重启归零。
+**这条链在第 3–4 步是错的。**
+
+### §9.214.1 两条硬证据
+
+**(1) 入队降级路径从未被走过。**
+容器全量日志里 `degrading to in-process backlog` = **0** 次。
+⇒ 那 53 次 `V2 shadow write failed`，**每一次的 `EnqueueMirrorFailure` 都成功了** ——
+与 `outbox row dead = 0`、`n_tup_ins≈n_tup_del`（入出 1:1）完全一致。
+**「记录失败也要写库」这一步从未发生。**
+
+**(2) `59bf8998…` 自己没有 `V2 shadow write failed` 行。**
+10:35:31.77 那条属于**另一个** request（`384a9caa…`，
+`error: "write turn: acquire request advisory lock: conn closed"`），
+时间上与 `59bf8998` 的 `conn closed`（10:35:38）相邻，但**不是它**。
+
+⇒ 镜像写对 `59bf8998` **既没成功、也没报失败** ⇒ **它压根没被尝试。**
+
+### §9.214.2 读代码本体：`onPersisted` 只在成功时触发
+
+`domains/hooks/observability/telemetry/client.go`：
+
+```go
+} else if entry.Op == RequestLogUpdate {
+    err = c.updateRequestLog(entry)
+} else {
+    err = c.insertRequestLog(entry)
+}
+if err == nil {
+    c.firePersistedHooks(entry)      // ← 只在成功时
+    …
+}
+```
+
+而 **session v2 turn 镜像就是 `onPersisted`**（`main_v2_pipeline.go`：
+V2 write owner 由 telemetry 的 `onPersisted` 承担）。
+`firePersistedHooks` 全仓只有两处调用（client.go:783 / :1202），
+**两处都在成功路径**；fallback 路径（:1053–1057）与 degraded 路径（:1182–1187）
+都**直接 return，不触发**。
+
+⚠ 容易看错的一处：`persistRequestLog` 开头那条注释说
+「H3 请求侧镜像……**PG 不可用时镜像仍写入**」。⚠ **那不是 session turn 镜像**，
+是 `c.mirrorRequestBodies(entry)`——**正文**（bodies）家族，目标是
+`request_logs_bodies_*`。两者名字都叫「镜像」，很容易混。
+
+### §9.214.3 所以真正的因果链（比 §9.213 更短、也更上游）
+
+| # | 环节 | 证据 |
+|---|---|---|
+| 1 | DB 连接在终态 UPDATE 时死掉 | `error="conn closed"` |
+| 2 | v1 持久化失败，写 fallback | `telemetry request db persist failed; fallback written  op="update"` |
+| 3 | `err != nil` ⇒ **`onPersisted` 不触发** | `client.go:1202` 的 `if err == nil` |
+| 4 | ⇒ **session turn 镜像从未被调用** | 无 `V2 shadow write failed`、无 outbox 行 |
+| 5 | ⇒ 无 turn、无 details、v1 停在 `in_progress` | 实测三项全 0，与日志一致 |
+
+⇒ **丢行发生在镜像的上游**：v1 自己没写进去，于是「v1 有、session 没有」。
+镜像的失败恢复（outbox + replay）在设计上只覆盖
+「**v1 写成功了、镜像写失败**」这一种情况；
+**v1 自己写失败**这个类别**根本不在它的覆盖范围内**。
+
+⚠ 这与 §9.211 的 `s4_ready` 口径是一致的 —— 它量的正是
+「有 `gw_session_id` 的 v1 行没有 session 孪生行」，
+而这一类的成因**不在镜像内**，所以镜像自己的仪表**结构上看不见**。
+
+### §9.214.4 什么仍然成立、什么撤回
+
+**仍然成立：**
+- v1 终态 UPDATE 因 `conn closed` 失败、写了 fallback（**逐条日志直接证据**）
+- v1 那一行至今停在 `in_progress` / `success=false`（**库中实测一致**）
+- 无 turn、无 details、无 outbox 行（**库中实测一致**）
+- 10-02 这个起点与一次进程重启重合（`pg_stat_activity` 最老连接 10-02；
+  当前容器 17:29 重建）
+- 53 次 `V2 shadow write failed` **全部**被 outbox+replay 捞回
+
+**撤回：**
+- ❌「记录失败也要写库（同样失败）」—— 入队降级路径**一次都没走过**
+- ❌「退到进程内 backlog ⇒ 无人排空 ⇒ 重启归零」作为这 9 行的成因
+
+⚠ `appendBacklog` / `DrainBacklog` 生产零调用**仍然是一个真实的潜在缺口**
+（`backlog.go:108` 那句「counter 已经记录了每次丢弃」也不准确 ——
+记的是**失败**不是**丢弃**），但它**不是这 9 行的原因**。
+⇒ 我在 `40dfa7546` 里把两件事**混为一谈了**，这里分开。
+
+### §9.214.5 我这一轮第三次在同一条链上改结论——记下来
+
+三次分别是：
+① 「需要日志」而日志一直在我手上（§9.213.6）；
+② 「记录失败也要写库」而入队从未失败（本节）；
+③ 两次都是**在同一条链上把相邻的两个环节当成一个**。
+
+⇒ 通则：**因果链上每一步都要有独立的观测**，
+不能因为 A 和 B 相邻且时间接近就当作同一个事件。
+本轮 `59bf8998`（10:35:38 的 `conn closed`）与
+`384a9caa…`（10:35:31 的 shadow write failed）**只差 7 秒**，
+我第一反应就是把后者算成前者的一部分 —— **它们是两个不同的 request**。
+
+### §9.214.6 诚实的边界（与 §9.213.7 相同，不因修正而放宽）
+
+- 逐条日志直接证据：仅 `59bf8998` 一行；其余 8 行日志随上个容器销毁。
+- 生产（252）完全未验证（D30-b 阻塞）。
+- ⚠ **「v1 持久化失败 ⇒ 镜像不被调用」这条机制**现在有代码 + 日志双向支撑；
+  但**它是否就是其余 8 行的原因**，没有逐行证据。

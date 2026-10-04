@@ -10753,3 +10753,52 @@ D21-a/b、D20-a/c、D19-b。
   `outbound_model` 20% 下限复核；`RetirementColumnFill` 是否继续作为仓库内活库快照。
 沿用未决：D28-a/b、D27-a/b/c、D26-a/b、D25-a/b/c、D24 系列、D23 系列、
 D21-a/b、D20-a/c、D19-b。
+
+### ⑱ ⚠ 第二次修正 §9.213：丢行在**镜像上游**，镜像的失败恢复从未介入（§9.214）
+
+§9.213.4–5 说「镜像写失败 → 记录失败也要写库（同样失败）→ 退到进程内 backlog
+→ 无人排空 → 重启归零」。**第 3–4 步是错的。**
+
+**两条硬证据：**
+1. 容器全量日志里 `degrading to in-process backlog` = **0** ⇒ 那 53 次
+   `V2 shadow write failed` **每次入队都成功**（与 `outbox row dead=0`、
+   `n_tup_ins≈n_tup_del` 吻合）。
+2. `59bf8998…` **自己**没有 `V2 shadow write failed` 行；10:35:31.77 那条属于
+   **另一个** request `384a9caa…`（只差 7 秒，**极易误并**）。
+
+**读代码本体**（`telemetry/client.go`）：
+```go
+err = c.updateRequestLog(entry)   // … 或 insert / sink
+if err == nil { c.firePersistedHooks(entry) }   // ← 只在成功时
+```
+session turn 镜像**就是** `onPersisted`；`firePersistedHooks` 全仓两处调用
+（783 / 1202）**都在成功路径**；fallback 与 degraded 路径直接 return。
+⚠ 开头那句「H3……PG 不可用时镜像仍写入」指的是 `mirrorRequestBodies`
+——**正文**镜像，**不是** session turn 镜像。**同名，极易看错。**
+
+⇒ **真正的链（更短、也更上游）**：连接死 → v1 终态 UPDATE 失败 → 写 fallback
+→ `err != nil` ⇒ **`onPersisted` 不触发** ⇒ **镜像从未被调用**
+⇒ 无 turn、无 details、v1 停在 `in_progress`。
+⇒ 镜像的失败恢复只覆盖「**v1 写成功、镜像写失败**」；
+**「v1 自己写失败」根本不在它的覆盖范围内**，所以它的仪表**结构上看不见**。
+
+**仍成立**：v1 UPDATE 因 `conn closed` 失败（逐条日志）、那行停在 `in_progress`、
+三项全 0、10-02 与重启重合、53 次 shadow write 失败全被捞回。
+**撤回**：「记录失败也要写库」「进程内 backlog 无人排空」作为这 9 行的成因。
+⚠ `DrainBacklog` 生产零调用**仍是真实缺口**（且 `backlog.go:108` 那句
+「counter 已记录每次丢弃」不准确——记的是**失败**不是**丢弃**），
+但**不是这 9 行的原因**。我在 `40dfa7546` 把两件事混为一谈了。
+
+★ **我这一轮第三次在同一条链上改结论**，三次都是「把相邻环节当成一个」：
+① 日志一直在我手上；② 入队从未失败；③ `59bf8998` 与 `384a9caa…`
+**只差 7 秒但是两个 request**。
+⇒ **因果链每一步都要有独立观测**，不能因为相邻且时间接近就并成一个事件。
+
+### ⑲ 待拍板（更新）
+
+- ⚠ **「v1 持久化失败」这一类丢行要不要恢复**：它**不在镜像失败恢复的覆盖范围内**，
+  属设计问题（要么 v1 失败也走 onPersisted，要么显式承认这类丢行并给出口径）。
+- ⚠ **D30-b（252 只读凭据）**：生产完全未验证。
+- S4 开启时点；D32 + D29-d 切换时点；`client_model` 登记；`outbound_model` 下限；
+  `RetirementColumnFill` 快照去留。沿用未决：D28-a/b、D27-a/b/c、D26、D25-b/c、
+  D24 系列、D23 系列、D21、D20、D19-b。
