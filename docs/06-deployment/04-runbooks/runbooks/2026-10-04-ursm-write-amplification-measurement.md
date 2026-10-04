@@ -2274,3 +2274,51 @@ INSERT INTO credential_model_index_hot (...) SELECT ... ON CONFLICT DO UPDATE
 ★ 也不建议改回 IN(子查询) 形态：那是 2026-09-25 明确优化掉的（每轮把
   数据面最重的查询跑两遍）。
 
+### 10.15 空洞有**两个**来源，之前被我混成一个
+
+按表查回写路径后，`*_hot` 那一片之外还有两种**成因完全不同**的空洞：
+
+| 表 | ins | upd | del | 活行 | 空洞 | 来源 |
+|---|---|---|---|---|---|---|
+| `request_state_transitions` | 135 万 | 0 | **199 万** | 70 万 | 89 MB | **DELETE 冲刷**（TTL 清理，行为正确） |
+| `session_summaries` | 9.3 万 | **52.2 万** | 0 | 59 万 | 194 MB | **UPDATE 冲刷**（`n_tup_del = 0`） |
+
+★ `session_summaries` 的 `n_tup_del = 0` 却有 194 MB 空洞 ⇒
+**空洞不可能来自删除**，只能来自 52 万次 UPDATE 造成的死版本被 vacuum 回收后
+留下的空间。同族于 `assets`（§10.2，66 MB / 98.9%）。
+⇒ **判据若只问「删了多少行」，会把 UPDATE 冲刷的这一整类漏掉。**
+
+**`session_summaries` 的两条 UPDATE 路径都带 `IS NULL` 门**：
+
+```sql
+-- bg: SessionHealthWorker（每小时，cmd/gateway/main.go:7029 的 worker）
+UPDATE session_summaries SET health_score=$1, health_grade=$2, quality_score=$3,
+       outcome=$4, last_health_at=NOW(), updated_at=NOW() WHERE session_key=$5
+
+-- domains/sessionarchive/archiver.go:70
+UPDATE session_summaries SET archived_at=NOW()
+ WHERE archived_at IS NULL AND last_request_at < $1 AND (last_accessed_at IS NULL OR ...)
+```
+
+★ 两条都带 `last_*_at = NOW()` ⇒ **每次调用都产生真实行重写**，
+与 `assets` 的 `last_seen_at = now()` 同构。
+★ 但两条的 WHERE 都带 `IS NULL` ⇒ 理论上限是**每行只处理一次**。
+
+★ **未完全隔离的部分（如实标注，不要当结论用）**：
+`n_tup_upd = 522,484` 而 health worker 的 calls 只有 **89,700**、单行
+`WHERE session_key = $5` 最多改 1 行 ⇒ **两者的差额我没有解释清楚**。
+已排除：另一条 UPDATE 路径（archiver 那条在 `pg_stat_statements` 里
+没有独立的调用记录，calls ≈ 0）。
+未排除：`INSERT ... ON CONFLICT DO UPDATE` 计入 `n_tup_upd` 这条路径
+（其 calls 29,907 仍远不够 52 万），或存在未被 `pg_stat_statements`
+归一化捕获的语句。
+⇒ **需要 `pg_stat_user_tables` 的增量窗口 + 该表所有写路径的完整清单**，
+  属未决项，不写成结论。
+
+**另一笔独立发现**：`request_state_transitions` 的
+`INSERT INTO request_state_transitions (...)` 调用了 **5,449,219 次**
+（全库最高频），而 `n_tup_ins` 只有 135 万 ⇒ **约 60% 的插入没有产生新行**
+（重复请求重试 / 冲突丢弃）。活行 70 万、`del` 199 万 ⇒ 净积压 70 万行。
+★ 「545 万次调用只换来 135 万行」这个比例值得单独查（重试风暴？幂等键失效？），
+  本轮未查。
+
