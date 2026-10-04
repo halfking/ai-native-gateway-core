@@ -9619,3 +9619,99 @@ D23-c-1 / D23-c-3 / D21-a / D21-b / D19-b / D20-a / D20-c**。
 两次都是阳性对照 / 真库对照臂抓到的。
 
 ⇒ 累计四次假零/假阳，全是「先造量具再让结论跑在量具上」的不同变体。
+
+### ⑰ §70.53 D29-a 已获授权并完成（§9.199）
+
+**做了什么**：`v1TableRe` / `v1AliasRe` 从「4 张裸表写死」改为从 **§9.172 的同一份 SSOT**
+推导（5 底表 + 4 视图链 = 9 个关系名）。**没有第三份名单。**
+
+**盲区 63 → 0**，并新增门 `TestEveryV1ReaderIsAnalyzedByExtractor` 守住它
+（探针挡不住：它永不判红，回归的表现是 clean 桶悄悄变大）。
+
+**新旧数字并列**（详见审计 §9.199.2）：
+clean **70 → 42** / breaks-possibly **1 → 9** / undercounts-possibly **4 → 24** /
+判定分布 empty **5 → 6**、value-divergent **26 → 27** / 契约列合计 **540 → 568**。
+`TestReaderPopulationGroundTruth` **一行未动**——它用自己那对正则统计两族，
+测的不是同一件事，一个动一个不动是正确结果。
+
+### ⑱ 改完之后立刻暴露的真问题：两个总体被混成了一个
+
+关系宇宙一放宽，breaker 门就报「8 个文件不在册」。逐个查证后发现
+**这 8 个全部是经 710 视图读 v1 的、已经 repoint 完的读方**。
+它们依赖的是**视图的 v1 臂**（DROP 时要拆的东西），属于**切换时的迁移问题**，
+不是「这个文件必须在 DROP 之前改掉」。
+⇒ 塞进 `retirementBreakers` 会写出 `reads request_logs.work_type directly`
+这种**不属实**的条目，比缺一条登记更糟。
+
+已加 `viaBaseTable` / `viaCanonicalView` 两个标记，门分成两个总体：
+- `measured`（直读底表）= 恰好原来那 5 个已登记 breaker，**无新增、无 stale**；
+- `viewArm`（视图臂）= **10 个**，门内显式日志，**不进登记表**。处置 = 决策表 **D29-d**。
+
+顺带修掉 `sessionFamilyRe` 认不出包装视图的缺陷
+（`admin/auto_route.go` 曾因此被误判成 definite「只可能来自 v1」，
+而它读的是 `..._without_customer_id` 视图，是**已 repoint** 的读方）。
+
+### ⑲ 本次改动自身的四次错（都是门自己抓到的）
+
+1. **两总体写成二选一** ⇒ 混合读方从视图桶消失、视图侧暴露被丢。
+   抓到它的现象：`domains/sessionforensics/export.go` 在报告里 `breaks-possibly`，
+   两个桶里都找不到——因为它 `:416 FROM request_logs` **又**读视图。
+2. **`measured` 分支多加了 `inView` 条件** ⇒ 只读底表的字面量被整段跳过
+   ⇒ 5 个已登记 breaker 变成 stale。方向是**少报**，
+   而少报在这个门上表现为「有人修好了、该销账了」——看起来无害、实则错误的红。
+3. `t.Fatalf` 里 `0%` 未转义，vet 失败。
+4. 以为「8 个都要登记」，核到第 7 个才发现是视图读方
+   ——**差点写下一批不属实的登记**。
+
+⇒ 1、2 的共同点：**分总体时把「并集」写成「二选一」或叠加多余条件**。
+都不编译失败、不让测试变绿，只是**安静地少报**。
+
+### ⑳ §70.54 D30-d 授权修法实测**无效** + 一个更基础的发现
+
+**四种变体，真库事务内实测（ROLLBACK，不留痕）**：
+
+| 变体 | 结果 |
+|---|---|
+| `CASE WHEN <rel>.id IS NOT NULL THEN 'hot' … END::text AS source` | ❌ 仍 `cache lookup failed for attribute source` |
+| `tenant_id AS source`（纯改名，源列真实存在） | ❌ 同样报错 |
+| 两条腿各包一层 CTE | ❌ 换成 `invalid perminfoindex`（集合算子+列存） |
+| **删掉 `source` 列** | ✅ 正常返回行 |
+| `SELECT * FROM supplier_errors_unified` | ✅（planner 裁掉了用不到的视图列） |
+| `SELECT id, source` / `SELECT source, id` | ❌ 两种顺序都失败 |
+
+⇒ **触发条件不是「合成常量」，而是「视图输出列不是基表列的直接 Var」。**
+⇒ 唯一可行的修法是**删列**，属契约变更，**超出原授权，本轮未执行任何 DDL**。
+
+**🆕 更基础的发现**：这个视图**在仓库里根本不存在**。
+三份 schema 快照 + startup 链 + embeddata 链全部 0 处；
+唯一定义处 `deploy/sql/migrations/V371`，而 `schema_migrations` 里
+**V371 未被记录**（最高 V359）。视图却真实存在于本机库，且**无依赖视图**。
+⇒ **全新安装/重建的库不会有它**，而 admin 三个读端都查它。
+⇒ 即便修好 `source`，视图本身仍不可复现。**这是两件独立的事。**
+⇒ 也解释了 §9.198 的仓库 SQL 普查为什么一条都没命中它。
+
+### ㉑ §70.55 D30-a「回滚」的真实范围（本地实测）
+
+1. **回滚 765 不足以止血**——765 的 A 段让 `ensure_request_logs_bodies_partition`
+   在有 `citus_columnar` 时继续**新建列存分区**。
+2. **现有 `.down.sql` 根本不转分区**，它自己写着：
+   「columnar 分区一旦承接数据即**不可无损回转**（需重写全表，
+   且 columnar 无 UPDATE/DELETE 路径）……**不要在生产执行**」。
+3. **代价**：7 族列存分区合计 **3,359 MB**，`request_logs_bodies_2026_09`
+   单个 **3,026 MB**。转回 heap = 全表重写、需维护窗口。
+4. **另外 6 个族不由 765 管**（`routing_decision_log` 268 MB、
+   `credential_model_index` 30 MB 等各有各的迁移历史）。
+
+⇒ 「回滚」若按字面执行，范围远大于 765。**决策表 D30-a 需要把范围写清楚。**
+
+### ㉒ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
+2. 回归基线：带真库 `admin` FAIL = **5**（`TestProjectTasksSkipsNullTaskID` /
+   `TestReportRollup_HTTPContract` / `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable`
+   / `TestColumnarParentTwoSurfaceSetopShape_RealDB` /
+   `TestDeployedViewOverColumnarIsServable_RealDB`），**只看差集**。
+3. ⚠ **本机 Go 构建缓存近期被并发会话搞坏过**（`cannot open file .../go-build/...`）。
+   建议 `export GOCACHE=/tmp/gocache-<worktree名>` 隔离，否则会误判成代码坏了。
+4. D29-a 已完成，**不要**再改 `v1TableRe` 的族名来源——
+   它现在从 `v1BaseTableNames` + `viewChainNames(t)` 推导，是唯一真相源。
