@@ -751,8 +751,8 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		inferredModality := modelname.InferModality(rawName)
 
 		err := s.db.QueryRow(ctx, `
-		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
-		VALUES ($1, $2, ARRAY['family:' || $2]::text[], 'discovery', 'active', $4)
+		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality, modality_source)
+		VALUES ($1, $2, ARRAY['family:' || $2]::text[], 'discovery', 'active', $4, 'inferred')
 		ON CONFLICT (canonical_name) DO UPDATE SET
 			family = CASE
 				WHEN models_canonical.family = $2
@@ -810,11 +810,31 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 			   when the stored value is still the column default 'text' AND
 			   inference now claims a richer modality. This repairs stale rows
 			   while never downgrading a row and never trampling a Layer-3
-			   super_admin override (which always sets a non-'text' value; see
-			   admin/model_modality.go). There is no override-marker column, so
-			   "stored = 'text'" is the only safe repair predicate available. */
+			   super_admin override.
+
+			   2026-10-04 (migration 825): the sentence above used to end with
+			   "there is no override-marker column, so stored = 'text' is the
+			   only safe repair predicate available". modality_source is now
+			   that marker, so a second gate is added: annotations whose source
+			   is semantic or manual are IMMUNE to rule re-inference.
+
+			   Without it the two sides overwrite each other.
+			   bg/modality_verification downgrades a vision model to text on
+			   semantic negative evidence (source='semantic'); the next
+			   provider tick sees stored='text' with inferred='vision' and
+			   pushes it straight back. A downgrade would never survive one
+			   tick. The two rules make mutually exclusive demands on the
+			   same column. */
+
+modality_source = CASE
+				   WHEN COALESCE(models_canonical.modality_source, '') = 'inferred'
+				   THEN 'inferred'
+				   ELSE models_canonical.modality_source
+			   END,
 			modality = CASE
 				WHEN models_canonical.modality = 'text' AND $4 <> 'text'
+				 AND COALESCE(models_canonical.modality_source, '')
+					 NOT IN ('semantic', 'manual')
 				THEN $4
 				ELSE models_canonical.modality
 			END
@@ -938,8 +958,8 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	adoptFoldedExisting(ctx, db, &canonicalName, &family)
 
 	err = db.QueryRow(ctx, `
-		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
-		VALUES ($1, $2, ARRAY['family:' || $2]::text[], $4, 'active', $5)
+		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality, modality_source)
+		VALUES ($1, $2, ARRAY['family:' || $2]::text[], $4, 'active', $5, 'inferred')
 		ON CONFLICT (canonical_name) DO UPDATE SET
 			family = CASE
 				WHEN models_canonical.family = $2
@@ -978,8 +998,17 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 			status = CASE WHEN models_canonical.status = 'disabled'
 				THEN models_canonical.status
 				ELSE 'active' END,
+			-- 2026-10-04（迁移 825）：同上面的 $4 分支，semantic/manual
+			-- 来源的标注对规则重推免疫。逐字理由见该分支的注释。
+			modality_source = CASE
+				WHEN COALESCE(models_canonical.modality_source, '') = 'inferred'
+				THEN 'inferred'
+				ELSE models_canonical.modality_source
+			END,
 			modality = CASE
 				WHEN models_canonical.modality = 'text' AND $5 <> 'text'
+				 AND COALESCE(models_canonical.modality_source, '')
+					 NOT IN ('semantic', 'manual')
 				THEN $5
 				ELSE models_canonical.modality
 			END

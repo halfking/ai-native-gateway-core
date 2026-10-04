@@ -4568,6 +4568,47 @@ func main() {
 				capBackfill.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 				go capBackfill.Run(context.Background())
 				slog.Info("CHECKPOINT: capability_backfill started")
+
+				// modality_verification —— 多模态能力分级核实的定时任务
+				// （迁移 825）。与 capability_backfill 同构，因为两者是同一类
+				// 东西：一个会定期花真钱出网、且必须单跑的周期任务。
+				//
+				// 它与上面那个能力位回填的区别在**判据**：
+				//   - capability_backfill 判的是「上游支不支持 /v1/responses」，
+				//     2xx 即为支持。
+				//   - 本任务判的是「模型到底看不看得见图」，2xx 只算「载得下」
+				//     （carry），要再发一张随机色块挑战图并要求读对颜色
+				//     才算「真能读」（read）。两胜定论。
+				// 而且它是**唯一**能发现 text → 多模态 升级的机制：现状
+				// verifyTargetModality 在 modality=='text' 时直接 return。
+				//
+				// 出网比能力位回填贵（挑战带图），所以默认关闭由环境变量
+				// LLM_GATEWAY_MODALITY_VERIFY 显式 opt-in（与自检栈其余任务
+				// 的 shouldStartNewProbeWorkers 同一道门）。
+				if shouldStartNewProbeWorkers(selfCheckAPIKey) {
+					modalityVerify := bg.NewModalityVerification(dbConn.Pool(), fernetKey, keyring)
+					modalityVerify.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
+					go modalityVerify.Run(context.Background())
+					slog.Info("CHECKPOINT: modality_verification started",
+						"kill_switch", bg.ModalityVerifyEnvKillSwitch)
+				} else {
+					slog.Info("modality_verification skipped: new probe workers disabled")
+				}
+
+				// baseline_price_sync —— 把「原厂标准价」这份带出处的清单
+				// 写进 models_canonical（迁移 826）。零出网：它只读内嵌
+				// SSOT，不拉任何外部源。价差对账需要外部 observations，
+				// 由 ReconcileBaselinePrice 单独走，不在这条路径上。
+				go bg.RunBaselinePriceSync(context.Background(), dbConn.Pool())
+				slog.Info("CHECKPOINT: baseline_price_sync started",
+					"kill_switch", "LLM_GATEWAY_BASELINE_PRICE_SYNC")
+
+				// baseline_reconciliation —— SSOT（人确认过的原厂标准价）与
+				// 外部机读源逐模型对账，**只记账不改价**。漂移是给人看的
+				// 信号，不是让机器替运营决定「我们按这个价卖」。
+				go bg.RunBaselineReconciliation(context.Background(), dbConn.Pool(), nil)
+				slog.Info("CHECKPOINT: baseline_reconciliation started",
+					"source", bg.MachineReadablePricingURL)
 				dailyProbeAudit = bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbeWorker)
 				dailyProbeAudit.Start(context.Background())
 				slog.Info("CHECKPOINT: daily_probe_audit started")
