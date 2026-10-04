@@ -1043,3 +1043,88 @@ D16 说「12 个 `repoint-gap-only` 只差把 `id` 关联换成 `request_id`」�
   要么先把窗口拉到 3 天复测一次。
 - **D18-b**：把保真门**窗口拉到 3 天**并在 252 复测一次，再执行 D17-a？
   （本会话从未连接生产。）
+
+---
+
+## D19　**撤回 D18 / D17-a**：`repoint-safe` 归零，根因是别名正则（2026-10-06）
+
+### 更正
+
+**D18 与 D17-a 的前提不成立。** §9.166 说「3 个读方可无损改读，依据是视图逐值复现 v1，
+四项不符全为 0」——**其中两项是拿 v1 和它自己比出来的 0**。
+
+| 列 | §9.166 报的 | 视图真实输出 vs v1（会话腿） |
+|---|---:|---:|
+| `credential_id` | 0 | **0** ✓ |
+| `success` | 0 | **0** ✓ |
+| `client_model` | 0 | **153 / 295（51.9%）** ✗ |
+| `outbound_model` | 0 | **92 / 295（31.2%）** ✗ |
+
+### 两层根因（都不是「数据变了」）
+
+1. **保真门**：LATERAL 里 `SELECT ... client_model, outbound_model FROM session_turns`
+   —— `session_turns` **没有这两列**（它有 `model` / `raw_model_name` /
+   `canonical_model`），PostgreSQL **回退到外层作用域**取到了 `v1` 自己的值。
+   门在做 `v1.client_model IS DISTINCT FROM v1.client_model`。
+2. **判定地基**：`v1AliasRe` 的交替是 `(request_logs|request_logs_hot|…)`，
+   Go 正则**从左到短名优先**，于是 `FROM request_logs_hot rl` 只匹配到前缀
+   `request_logs`、**别名 `rl` 从未登记** ⇒ `columnAttribution` 判 `attrNone`
+   ⇒ **凡读 `request_logs_hot` 的读方，抽取列恒为空** ⇒
+   `RetirementRepointVerdictFor([])` 循环不执行、返回初值 `RepointSafe`。
+
+⇒ **§9.165 的「3 个可无损改读」从来没有列支撑。** §9.165 那次修正消除了 `id` 的
+假阳性，**同时消除了每一个热表读方的全部真实依赖**。
+
+### 修正后的判定（16 个已评估文件）
+
+| 判定 | 数量 |
+|---|---:|
+| **`repoint-safe`** | **0**（原 3） |
+| `repoint-value-divergent` | **8**（新增） |
+| `repoint-degraded` | 3（原 8） |
+| `repoint-empty` | 4 |
+| `repoint-gap-only` | 1 |
+
+**仍未阻断的 5 个不变**（`work_types` / `telemetry` / `db.go` /
+`dual_read_validator` / `logs.go`）——它们是靠别的列阻断的，与本次更正无关。
+
+### 影响不是报表漂移，是探活行为
+
+`bg/model_probe.go` 的 `EXISTS` 用**精确字符串相等**
+（`pm.raw_model_name = rl.client_model OR … = rl.outbound_model`），
+改读后约 **1/5 的行不再匹配** ⇒ 一些绑定不再被判定为「本凭证上有真实流量」
+⇒ **少发深探针**。
+
+### 需要你拍板
+
+- **D19-a（2026-10-06 已做成本判定，见审计 §9.169；原建议已更正）**
+  我原先写「先修会话侧的模型名归一」，**瞄错了层**。查清后：
+
+  | 列 | 视图取的源 | 实测 | 根因 |
+  |---|---|---|---|
+  | `outbound_model` | `t.model` | 对齐 59.5%–77.2% | **投影指错列**；`t.raw_model_name` 才是原样值，对齐 **100%** |
+  | `client_model` | `d.client_model` | 父面 **0%** 覆盖 | 父表 details **滞后 turns 约 4 小时**，会自愈，**不需要改** |
+
+  ⚠️ **不能**直接改成 `t.raw_model_name`：它只有 hot 面 100%、父面 **0.44%**
+  （7,411 / 1,688,629，且全部 ≥ 2026-10-01 07:25），会把父面 **1,688,218 行**清成 NULL。
+
+  ✅ **推荐修法**：会话腿 `outbound_model` ← **`COALESCE(t.raw_model_name, t.model)`**，
+  需落**迁移 825**（现网已是 v2 体，`db.ensure` 不自愈）。`t.model` 两面 100% 非空，
+  兜底**免费**。门：`db/session_model_name_sources_realdb_test.go`（承重断言就是
+  「`t.model` 两面必须 100% 非空」）。
+
+  **请拍板**：
+  - **D19-a-1**：批准 `COALESCE` + 迁移 825 吗？
+  - **D19-a-2**：父表 2026-09 那 **1,679,970 行**的 `outbound_model` 怎么办？
+    维持现状（`t.model`，与 v1 约 60% 对齐）、从 v1 按 `request_id` 反向回填
+    （09 月的 turn 有多少带孪生**未量**），还是接受？
+- **D19-b**：`admin/swim_lane_init.go` / `bg/today_success_probe.go` 是否改读？
+  这两个的后果较轻（展示 / 少 4 个分组），但**同样不是零变化**。
+- ~~**D19-c**~~ **已执行（2026-10-06，审计 §9.168）**：matcher 已扩到 **118 列全契约**
+  （exposure 33 / contract 118），判定输入的覆盖面补齐。
+  **结果**：`repoint-value-divergent` **8 → 9**、`repoint-degraded` **3 → 2**、
+  **`repoint-safe` 仍为 0**、**阻断的 5 个不变**。
+  移动的是 `admin/probe_history.go`，促成列 `outbound_model`（旧集合下它只抽到
+  `credential_id`）。
+  ⇒ **D19-a / D19-b 的答案不受影响**：`repoint-safe` 依然是 0。
+- **D19-d**：252 只读授权（D15-c）——真实分歧率必须在那里复测，本地数字是快照。

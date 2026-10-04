@@ -20273,3 +20273,416 @@ LATERAL 少复制一条臂——去掉 hot 面它仍能找到父表行，去掉�
   **这两件事必须一起说**：只说前者会得出「改读只会多不会少」的错误结论。
   我在本轮开头正是先假设了「月界会丢行」，去量了才发现方向反了。
 - 填充率与保真门都仍是**本地下界**（§9.163.2：本地写入者是 823 前旧二进制）。
+
+
+## §9.167　**撤回 §9.166 的头条结论，并退回两节**：三个读方的 `repoint-safe` 从来没有列支撑
+
+本节从一个**独立于门**的测量开始，最终结论是：§9.164/§9.165/§9.166 三节里
+**「3 个读方可无损改读」这个结论本身是错的**，而它错的方式极其安静。
+
+### §9.167.1 起点：不是门红了，是**另一条路**给出了矛盾的数字
+
+`bg/today_success_probe.go` 的聚合形状是 `GROUP BY credential_id, COALESCE(outbound_model,
+client_model)`。我拿它做了一次组数对比（**没有用保真门**）：
+
+```
+v1成功行=684   v1分组数=138   视图成功行=1406   视图分组数=154
+v1有而视图没有的分组=4
+```
+
+**4 个 `(credential_id, raw_model)` 分组在 v1 存在、在视图里消失**；而 §9.166 的门报的是
+「`outbound_model` 不符 **0**」。两条测量冲突，必有一条错。
+
+逐个分组读出来：
+
+| v1 的 `COALESCE(outbound, client)` | 视图里同一凭证的分组 |
+|---|---|
+| `MiniMax-M3` | `minimax-m3` |
+| `MiniMax-M2.5-highspeed` | `minimax-m2.5` |
+| `deepseek-v4-1-flash` | `deepseek-v4.1-flash` |
+
+⇒ **视图不按原样返回模型名**，会话侧做了归一（小写、连字符→点）。
+
+### §9.167.2 门为什么报 0：LATERAL 的**外层作用域回退**
+
+§9.166 的门在本地复现视图投影：
+
+```sql
+FROM v1 JOIN LATERAL (
+    SELECT credential_id, client_model, outbound_model, success
+    FROM public.session_turns WHERE request_id = v1.request_id
+) t ON TRUE
+```
+
+而 **`session_turns` 没有 `client_model` / `outbound_model` 两列**（它有 `model` /
+`raw_model_name` / `canonical_model`，106 列，`information_schema` 实测）。
+PostgreSQL 在 LATERAL 子查询里限定名先查内层 FROM，**查不到就回退到外层作用域**，
+于是这两列静默取到了 **`v1` 自己的值**：
+
+```
+外层 v1.client_model = minimax-m3
+LATERAL 取到的 t.client_model = minimax-m3      <- 来自外层，不是来自 session_turns
+两者相等（说明回退到外层）= true
+```
+
+⇒ 那两个 0 是 **`v1.client_model IS DISTINCT FROM v1.client_model`**。
+把同一条问句写成**非 LATERAL** 形式，它**立刻报错**——所以错误的形状是
+「一种写法下合法、另一种写法下报错」，而门恰好跑在会静默的那一种里。
+
+⚠️ 它**没有失败**。§9.163 那版至少报出了 745,385 这种一眼荒谬的值；这一版
+**安静地测错了东西，并同意自己**。
+
+### §9.167.3 更深的根因：别名正则丢了 `rl`，于是抽取列**恒为空**
+
+顺着 §9.167.1 回头查「为什么这三个文件的列是空的」，挖到的才是 §9.165 那个结论的
+真正地基：
+
+```go
+var v1AliasRe = regexp.MustCompile(`(?i)\b(?:from|join)\s+(request_logs|request_logs_hot|…)(\s+(\w+))?`)
+```
+
+Go 的正则交替是**从左到右首个匹配**，不是最长匹配。于是 `FROM request_logs_hot rl`
+先匹配到**前缀** `request_logs`，剩下 `_hot rl` 让可选的别名组匹配空 ⇒ **`rl` 从未登记**。
+实测：`v1al = map[request_logs:true]`，没有 `rl`。
+
+⇒ `columnAttribution` 看到 `rl.client_model`，发现 `rl` 不是已知 v1 限定符，判
+`attrNone` ⇒ **该列不计入**。**凡读 `request_logs_hot` 的读方，抽取列恒为空。**
+
+而 `RetirementRepointVerdictFor([])` 的循环体一次都不执行，`worst` 停在初值
+`RepointSafe` ⇒ **零证据被判成「安全」**。
+
+探针实测（修复前）：
+
+```
+admin/swim_lane_init.go     literals=1  definite=[]  possible=[]
+bg/model_probe.go           literals=3  definite=[]  possible=[]
+bg/today_success_probe.go   literals=1  definite=[]  possible=[]
+```
+
+⇒ **§9.165 的「16 个 blockers 塌成 5 个、3 个可无损改读」和 §9.166 的「逐值复现、
+四项不符全为 0」，都建立在一份空清单上。** §9.165 那次修正消除了 `id` 的假阳性，
+**同时消除了每一个热表读方的全部真实依赖**——修掉一个假阳性、同时造出一个静默假阴性，
+比原来的 bug 更坏。
+
+### §9.167.4 两处修正，以及为什么一个不够
+
+1. **正则**：`request_logs_bodies_hot|request_logs_bodies|request_logs_hot|request_logs`
+   **最长优先**，且表名**两侧 `\b` 锚定**。两处都承重，任一处写错都是静默失败。
+2. **零证据守卫**：新增 `RepointNoColumnsMeasured`——`len(cols)==0` 直接返回它，
+   排在最差。**正则修了，但「缺失的测量」与「干净的测量」仍然同形**，
+   下一个读方还会踩同一个坑。
+
+修复后：
+
+```
+admin/swim_lane_init.go     definite=[canonical_id client_model credential_id]
+bg/model_probe.go           definite=[client_model credential_id]
+bg/today_success_probe.go   definite=[credential_id]
+```
+
+**变异 MQ**（把交替顺序退回短的）⇒ 红，并**点名那 3 个文件**。
+⚠️ 注意：即使正则退回，`repoint-safe` 仍是 0——**零证据守卫独立地兜住了**。两层都必要。
+
+### §9.167.5 用视图的**真实输出**重测，并按腿拆开
+
+改法是结构性的：**不在本地复现投影**，直接读部署中的视图，把它的输出与 v1 比。
+这样没有「本地副本」可以漂移，也没有外层作用域可以利用。
+
+真库实测（24h；72h 数字完全相同）：
+
+| 路径 | 行数 | `client_model` 不符 | `outbound_model` 不符 | `credential_id` 不符 | `success` 不符 |
+|---|---:|---:|---:|---:|---:|
+| 无孪生（**v1 腿**） | 418 | **0** | **0** | **0** | **0** |
+| 有孪生（**会话腿**） | 295 | **153（51.9%）** | **92（31.2%）** | **0** | **0** |
+
+两件事同时成立，**必须一起说**：
+
+1. **v1 腿确实原样透传**——§9.166 关于「无孪生行走 v1 腿」那句话**是对的**，保留。
+2. **会话腿不复现 v1 的模型名**：孪生行里 **51.9%** 的 `client_model` 不同。
+   而 §9.166 的门量的**恰恰只有会话腿**，用的还是那两列。
+
+### §9.167.6 一个零必须有**阳性对照**
+
+新门每次运行先做**阳性对照**：同一条 join，故意拿 `client_model` 和 `outbound_model`
+比（按构造必错），**必须报出非零**（实测 192）。若为 0，说明这条查询没有分辨能力，
+上面所有 0 都只是「没测」而不是「一致」——此时**测试直接失败**，不报干净成绩单。
+
+本轮两条教训是同一件事：**一个 0 有「一致」和「测不到」两种成因，而它们在日志里
+长得一模一样。** §9.167.2/§9.167.3 是第二种成因被当成第一种发布了出去。
+
+### §9.167.7 判定改写：`repoint-safe` **归零**
+
+新增 `RetirementSessionLegDivergence`（`client_model` 下限 30%、`outbound_model` 下限 20%）
+与 `value-divergent` 分类、`repoint-value-divergent` 判定，**排在 `repoint-degraded` 之上**。
+
+理由：degraded 表现为**行变少**，那至少**看起来像出了事**；value-divergent 表现为
+**行数正确、说的是另一件事**，做精确字符串相等的读方直接**不再匹配**。
+
+⚠️ `value-divergent` 必须**排在 `degraded` 之前**：`client_model` 填充率 90.06%、
+**本来就在 degraded 表里**，若让 degraded 先赢，这个最有价值的发现永远走不到。
+**变异 MS**（把它移到 degraded 之后）⇒ `value-divergent` 桶**整个消失**、8 个文件退回
+`degraded`，而**其余测试全绿**——所以补了一张「每类取一列」的判定表钉住顺序。
+
+修正后的分布（16 个已评估文件）：
+
+| 判定 | 数量 | 变化 |
+|---|---:|---|
+| **`repoint-safe`** | **0** | 原 3 ⇒ **归零** |
+| `repoint-value-divergent` | **8** | 新增（含另外 5 个同样用了这两列的文件） |
+| `repoint-degraded` | 3 | 原 8 |
+| `repoint-empty` | 4 | 不变 |
+| `repoint-gap-only` | 1 | 不变 |
+
+登记的是**比率下限**而非计数：计数是某个窗口某一天的快照，库多一行就红
+（§9.166.4 已为此付过代价）。下限表达的是实质主张——「会话腿不复现这一列」。
+
+### §9.167.8 影响：不是报表漂移，是**探活行为**改变
+
+`bg/model_probe.go:905-911` 的 `EXISTS` 用**精确字符串相等**：
+
+```sql
+AND (pm.raw_model_name = rl.client_model
+     OR pm.raw_model_name = rl.outbound_model
+     OR pm.outbound_model_name = rl.outbound_model)
+```
+
+改读后约 **1/5 的行不再匹配** ⇒ 一些绑定**不再被判定为「本凭证上有真实流量」**
+⇒ **少发深探针**。这是**路由/探活口径**的改变，不是展示差异。
+
+`admin/swim_lane_init.go:94` 的
+`COALESCE(NULLIF(rl.client_model,''), mc.canonical_name, rl.outbound_model, 'unknown')`
+会让部分请求的 `model` 字段变样（展示层，较轻）。
+
+`bg/today_success_probe.go` 的 `GROUP BY` 实测少 4 个分组。
+
+### §9.167.9 附带发现：`ORDER BY … LIMIT` 的「无差异」成立，但依据不是我以为的
+
+四个窗口（1/6/24/72h）实测：`request_logs_hot` 的 newest-500 与视图的 newest-500
+**完全相同**。但我原以为成因是「会话侧写入者落后 v1 约 8.7 小时」（§9.163.2 的说法），
+**实测推翻**：
+
+- 两侧最新 `ts` 相差 **0.00 小时**（都是 `09:39:4x`）——**没有滞后**。
+- 24h 窗口内 v1 有 3,479 行、视图有 7,954 行，其中**会话侧独有行 4,475 条（占 56%）**。
+- 它们没进 top-500，纯粹因为**时间戳更旧**（最新一条 `01:14` vs v1 第 500 新的 `09:06`），
+  只有 **7.9 小时**余量。
+
+⇒ 会话侧那一大块是**某次批量镜像**留下的，实时同步正常。结论对 `swim_lane_init.go`
+仍成立，**但依据换了**。
+
+⚠️ 同时是一个具体证据：视图会话腿有 **4,475 条 v1 侧不存在的行**——
+「改读 canonical 视图 = 换数据源」不只是「少几行」，是**多出一大块**。
+
+### §9.167.10 诚实边界
+
+- 本节**推翻** §9.166 的头条结论（3 个 `repoint-safe`）与「四项不符全为 0」中的
+  **两项**；`credential_id` / `success` 的 0 是**有效测量**（这两列在 `session_turns`
+  上真实存在，没有回退）。
+- **撤回**的是 §9.164/§9.165/§9.166 共用的那个判定地基（别名正则），因此**这三节里
+  凡涉及 `request_logs_hot` 读方的列级结论都应视为失效**，需重算。
+  §9.162 的文件清单（106 文件 / 239 调用点）**不受影响**——它数的是字面量，不是列。
+- 「无孪生的行走 v1 腿原样透传」**经实测成立**，保留。
+- 抽取器的 matcher 仍**只从三张非 baseline 表建**，所以只使用 baseline 列的读方
+  仍可能抽出很少的列。零证据守卫会把它变成**显式判红**而不是 `safe`，
+  但**这不等于抽取覆盖完整**——要完整覆盖需把 matcher 扩到 118 列全契约（未做）。
+- 分歧率是**本地快照**（§9.163.2）。下限登记是为了不被漂移带红，**不是**把数字说成定论；
+  真实分歧率须在 252 复测（D19）。
+- `ts` 未纳入比较（它是 join 路径本身，比较它没有信息量）。
+
+## §9.168　D19-c：判定输入扩到 **118 列全契约**，覆盖度从 33 变 118
+
+§9.167.10 留了一条未做的边界：「抽取器的 matcher 仍只从三张非 baseline 表建，
+只用 baseline 列的读方仍可能抽出很少的列」。本节补上。
+
+### §9.168.1 问题：两个问题共用了一个**过滤后**的集合
+
+抽取器原来的 matcher 只从三张非 baseline 表建（structural-gap / unservable /
+degraded）。这对**暴露报告**是对的——baseline 列在那里是噪音，没人为 `ts` 开工作项。
+
+但**判定**问的是另一个问题：「改读这个读方会发生什么」。它必须知道读方碰到的**每一个**列：
+`latency_ms` 决定 safe，`work_type` 决定 empty，而一个**只用 baseline 列**的读方
+也必须产出非空输入。
+
+实测规模：exposure matcher **33** 列 / contract **118** 列。
+
+### §9.168.2 拆成两个集合，**判定读全契约那个**
+
+| 集合 | 覆盖 | 谁读 | 为什么 |
+|---|---:|---|---|
+| `exposureMatchers` | 33 | 暴露报告 | baseline 列在报告里是噪音 |
+| `contractMatchers` | **118** | **改读判定** | 判定必须看到读方碰到的每一个列 |
+
+实现上让**全契约那一遍先跑、exposure 那一遍从它的结果里过滤**，而不是两遍各自跑——
+两遍独立跑迟早会漂，而漂的方向正好是「少看到列」。
+
+⚠️ 这正是 §9.167 那个错误判定的**结构性来源**：判定被喂了报告的过滤集，
+所以别名 bug 下一丢就成空集，空集又被判成 `repoint-safe`。
+
+### §9.168.3 重出的判定表
+
+| 判定 | §9.167 | §9.168 | 变化 |
+|---|---:|---:|---|
+| **`repoint-safe`** | **0** | **0** | 不变 |
+| `repoint-value-divergent` | 8 | **9** | **+1** |
+| `repoint-degraded` | 3 | **2** | −1 |
+| `repoint-empty` | 4 | 4 | 不变 |
+| `repoint-gap-only` | 1 | 1 | 不变 |
+
+移动的那一个是 **`admin/probe_history.go`**，促成它的列是 **`outbound_model`**：
+旧集合下它只抽到 `credential_id`（degraded）⇒ degraded；全契约下 `outbound_model`
+（value-divergent）被看到 ⇒ 升为 value-divergent。
+
+`repoint-degraded` 现在只剩两个，都不含分歧列：
+`admin/providers.go [provider_id request_status success ts]`、
+`bg/today_success_probe.go [credential_id success ts]`。
+
+**结论方向不变**：`repoint-safe` 仍是 **0**，`work_types` / `telemetry` / `db.go` /
+`dual_read_validator` / `logs.go` **仍是阻断的 5 个**（它们靠别的列阻断）。
+
+### §9.168.4 覆盖度本身是一个声明，所以它有门
+
+「已扩到全契约」这句话如果没人守，下次重构收窄了也不会有人发现——而且**丢失的恰好是
+那些能决定 safe 比 safe 更糟的列**，表现为**安静的过度乐观**而不是失败。
+
+⇒ 断言 `len(contractMatchers) == len(db.CanonicalContractColumns())`（实测 118 = 118），
+外加一条：每个已登记的 `value-divergent` 列必须在 exposure 集里，
+否则「工作清单」和「判定」会对「哪些列是已知问题」产生分歧。
+
+**变异 MV**（把 contract 收窄回 exposure 集）⇒ 红：
+`covers 33 columns but the canonical contract has 118`。
+
+### §9.168.5 我在这轮犯的错（这一条与方法论同等重要）
+
+我用 `python` 做字符串手术重排函数，删除区间的起点用 `s.index('// value-divergent …')`
+定位。**那个注释串在两个函数里都出现**，`s.index` 命中了前一个，于是删除区间一路吃到
+下一个标记，**把 `exposureColumnMatchers` / `contractColumnMatchers` /
+`extractV1ReadingLiterals` 三个函数一起抹掉了**，而脚本在 `open(p,'w')` **之前**就抛异常，
+所以文件没被写坏——纯属运气。
+
+**恢复办法**：`git checkout --` 回 `origin/main`，改用 `edit` 工具逐处精确匹配重做
+（它匹配失败会**响亮**地失败，而不是静默删掉邻接内容）。
+
+⇒ **教训**：`s.index` 取的是**第一次**出现，注释是重复度最高的东西。
+**同一个标记出现两次时，`index` 选中的那个几乎永远不是你以为的那个。**
+`str.replace(a,b,1)` 至少只改一处；**区间删除没有这个保护**。
+
+### §9.168.6 诚实边界
+
+- 本节**只扩大了判定输入的覆盖面**，没有新增任何测量；所有数字仍来自本地库快照。
+- 118 列的 matcher 是**词法**的：`\b列名\b` + 限定符判定。它认不出
+  `SELECT *`、动态列名、或把列名拼进字符串的写法（§9.49 的盲区，D14-c 仍挂）。
+- 归类仍会把**同名不同义**的列混为一谈（`mc.client_model` 之类），这类需要逐点读。
+- `value-divergent` 的**分歧率下限**仍是本地快照，252 复测前不是定论（D19-d）。
+
+## §9.169　D19-a 的成本判定：**不是数据质量问题，是「投影指错列 + 那一列才刚开始写」**
+
+§9.167 建议「先修会话侧模型名归一」。本节去查这个修复**落在哪一层、要多少代价**，
+结论是**我那个建议瞄错了层**，而且差一步就推荐了一个会清空 168 万行的改法。
+
+### §9.169.1 先追源：视图的这两列各自取自哪里
+
+`db/request_logs_view_schema.go` 的投影表说得很清楚：
+
+- `outbound_model` ← **`t.model`**（`session_turns.model`）
+- `client_model` ← **`d.client_model`**（`session_turn_details`，734 引入的 **LEFT JOIN**）
+
+⇒ 归一**不在视图里**，在数据里。而 `session_turn_details` **没有** `outbound_model` 列，
+所以这两列的分歧**来源不同**。
+
+### §9.169.2 逐行取值：原样值**就在库里**
+
+分歧行（凭证 21）实测：
+
+```
+v1.client=minimax-m3            v1.outbound=MiniMax-M3
+t.model(→视图outbound_model)=minimax-m3      ← 归一后的
+t.raw_model_name=MiniMax-M3                   ← 原样值，一直都在
+details.client_model=NULL
+```
+
+⇒ 我原先说「会话侧把模型名归一了」**只对了一半**：`t.model` 确实被归一过，
+但**同一行里还存着未归一的 `raw_model_name`**。
+
+按存储面量「哪个源对得上 v1」：
+
+| 存储面 | 孪生行 | `t.model` 对齐 v1.outbound | **`t.raw_model_name` 对齐** | details 行存在 |
+|---|---:|---:|---:|---:|
+| hot | 167 | 129（77.2%） | **167（100%）** | 167（100%） |
+| 父表 | 121 | 72（59.5%） | **121（100%）** | **0（0%）** |
+
+### §9.169.3 `client_model` 的分歧是**details 层滞后**，不是归一
+
+父表 `session_turn_details` 最大 `ts` = **02:14**，父表 `session_turns` 最大 = **06:20**
+⇒ **details 落后 turns 约 4 小时**，这批 turn 尚无 details 行 ⇒ LEFT JOIN 给 NULL
+⇒ 视图的 `client_model` 是 NULL ⇒ 与 v1 不符。
+
+⚠️ 我一度以为「details 层停写了」，因为逐日行数里 10-04 看着偏少。**那是我查错了**：
+我先只查了 details **父表**、只 join 了 turns **父表**。逐日对齐后 **09-27…10-03
+details 与 turns 完全相同**（5088/8484/4490/3524/2452/3131/2283），且
+`details_hot` 与 `turns_hot` 最新 `ts` 都是 10:22:08 ⇒ **details 层覆盖完整、没有停写**。
+**我差点又一次把「我的查询错了」当成「产品有缺陷」。**
+
+### §9.169.4 那个「一行修复」会把 **1,688,218 行**清空
+
+`raw_model_name` 的覆盖（真库全表）：
+
+| 存储面 | 行数 | `model` 非空 | `raw_model_name` 非空 |
+|---|---:|---:|---:|
+| hot | 676 | 676 | **676（100%）** |
+| 父表 | 1,688,629 | 1,688,629 | **7,411（0.44%）** |
+
+且这 7,411 行的 `ts` 全部 ≥ **2026-10-01 07:25**——**那一列那时才刚开始写**，
+父表 2026-09 的 **1,679,970 行**全为 NULL。
+
+⇒ 24 小时样本里「`raw_model_name` 从不为空」是**真的**，但那个窗口的每一行都来自
+**只有 676 行的 hot 面**。**一个只碰到单个存储面的窗口，不能替另一个存储面说话。**
+（§9.166.4 已经因为同类原因付过一次代价。）
+
+### §9.169.5 迁移 710 的映射**当时是对的**
+
+710 头注明文：
+
+```
+--   派生映射    outbound_model←model；total_tokens←NULLIF(p+c,0)；
+```
+
+它不是笔误，也不是数据质量缺陷——**`raw_model_name` 当时还不存在**。
+一个月后写入侧开始产出更好的列，这个映射才变得不够好。
+
+### §9.169.6 因此 D19-a 的正确修法与代价
+
+| 方案 | 效果 | 代价 | 风险 |
+|---|---|---|---|
+| `outbound_model` ← **`t.raw_model_name`** | 10-01 起的行立刻正确 | 一行 | ❌ **父表 1,688,218 行变 NULL** |
+| **`COALESCE(t.raw_model_name, t.model)`** | 有 raw 的行正确，其余不变 | 一行 + **迁移 825** | 低。`t.model` 两面 100% 非空，是**免费**的兜底 |
+| 只改**读方**取 `raw_model_name` | ❌ 无效 | — | 视图的 `raw_model_name` 在 **v1 腿恒 NULL**（420/714），**没有一个视图列两边都对** |
+| 回填父表 `raw_model_name` | 让历史行也有忠实源 | **写侧改动 + 168 万行回填** | 大，且 09 月的 turn 无 v1 孪生可依据 |
+
+⚠️ 必须落**迁移**：现网已是 v2 体，`db.ensure` 的自愈条件是
+`canonicalExists && bodyIsV2` 就 return（§9.160 的同一条教训），只改 Go 镜像体无效。
+
+⚠️ `client_model` 的分歧**不在这次修复范围内**：它是 details 层滞后，**会随时间自愈**，
+不需要任何改动。
+
+### §9.169.7 钉成门
+
+`db/session_model_name_sources_realdb_test.go`：
+
+- **承重断言**：`t.model` 在**两个存储面**都必须 100% 非空。它是 COALESCE 的兜底，
+  一旦有 NULL，「一行修复」就不再免费。**这一条正是能抓住 §9.169.4 那个错建议的检查。**
+- **只报告不断言**：`raw_model_name` 覆盖率与它首次出现的 `ts`——
+  这是回填会移动的数字，把它钉死会让门变成数据作业进度的绊线，而不是对 schema 的陈述。
+- 视图必须仍含 `t.model AS outbound_model`，**否则上面所有数字描述的是一个已不存在的视图**。
+
+**变异 MP2**（把期望改成绝不可能出现的串）⇒ 红。
+
+### §9.169.8 我在这轮犯的错（三条，都是同一个形状）
+
+1. **24 小时样本 ⇒ 全表结论**。差点推荐把 `outbound_model` 直接换成 `raw_model_name`，
+   那会清空 168 万行。**窗口只碰到 hot 面（676 行），却替父面（169 万行）做了决定。**
+2. **把「我的查询错了」当成「产品有缺陷」**。先怀疑 details 层停写，
+   实际是我只查了父表、只用单键 join。**重新按三列键、两个存储面各测之后自己推翻了。**
+3. **把 skip 记成 pass**。第一次跑变异 MP 时我忘了 `export TEST_DATABASE_URL`，
+   测试直接 `t.Skip`、打印 `ok` + **0.579s**（真跑要 4.7s）。
+   **是耗时不对才看出来的**——`ok` 在「通过」与「跳过」之间不可区分，
+   而**跳过耗时短一个数量级**这个信号是免费的。
+   ⇒ **每次跑真库变异，都要同时看 `-v` 里的 SKIP 行和耗时。**

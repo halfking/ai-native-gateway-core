@@ -7538,3 +7538,185 @@ hot ∪ parent ⇒ **时间覆盖是超集**。
 ⚠️ **D18-a / D18-b 待拍板**：3 个 `repoint-safe` 是否现在改读？
 依据已升级，但**保真门只在 24h 窗口、只在本地库、只在这 5 列上测过**；
 `bg/model_probe.go` 的窗口是 **3 天**，**长窗口未测**。
+
+---
+
+### §70.22 第八十轮：**撤回上一轮的结论**——三个读方的 `repoint-safe` 从来没有列支撑
+
+#### ① 怎么发现的：不是门红了，是**另一条路**给出矛盾数字
+
+`bg/today_success_probe.go` 的 `GROUP BY credential_id, COALESCE(outbound_model, client_model)`
+做组数对比（**没经过保真门**）：**4 个分组在 v1 存在、在视图里消失**。
+而 §9.166 的门报「`outbound_model` 不符 **0**」。
+
+逐个读：`MiniMax-M3`→`minimax-m3`、`deepseek-v4-1-flash`→`deepseek-v4.1-flash`。
+**视图不按原样返回模型名。**
+
+#### ② 两层根因
+
+**第一层（保真门）**：`session_turns` **没有** `client_model` / `outbound_model`
+（它有 `model` / `raw_model_name` / `canonical_model`，106 列）。LATERAL 里限定名
+查不到内层就**回退外层作用域**，于是取到了 `v1` 自己的值 ⇒ 门在做 `v1 IS DISTINCT FROM v1`。
+同一条问句写成**非 LATERAL** 形式**立刻报错** ⇒ 错的形状是「一种写法静默、另一种报错」。
+
+**第二层（更深，判定地基）**：`v1AliasRe` 的交替是
+`(request_logs|request_logs_hot|…)`，Go 正则**从左到短名优先**，
+`FROM request_logs_hot rl` 只匹配到前缀 `request_logs`、**别名 `rl` 从未登记**
+⇒ `columnAttribution` 判 `attrNone` ⇒ **凡读 `request_logs_hot` 的读方抽取列恒为空**
+⇒ `RetirementRepointVerdictFor([])` 循环不执行、返回初值 `RepointSafe`。
+
+⚠️ **§9.165 那次修正消除了 `id` 假阳性，同时消除了每个热表读方的全部真实依赖。**
+修掉一个假阳性、造出一个静默假阴性，比原 bug 更坏。
+
+#### ③ 修完之后的真值（24h；72h 相同）
+
+| 路径 | 行数 | client_model 不符 | outbound_model 不符 | credential_id | success |
+|---|---:|---:|---:|---:|---:|
+| 无孪生（v1 腿） | 418 | **0** | **0** | 0 | 0 |
+| 有孪生（会话腿） | 295 | **153（51.9%）** | **92（31.2%）** | 0 | 0 |
+
+**v1 腿确实原样透传**（§9.166 那句保留）；**会话腿不复现 v1 的模型名**。
+
+判定分布：`repoint-safe` **3 → 0**、`repoint-value-divergent` **8**、degraded 3、
+empty 4、gap-only 1。**仍未阻断的 5 个不变。**
+
+#### ④ 四条承重的东西，缺一不可
+
+1. 正则**最长优先 + 两侧 `\b`**。
+2. **零证据守卫**：`len(cols)==0` ⇒ `RepointNoColumnsMeasured`（最差）。
+   ⚠️ 变异 MQ 下正则退回时 `repoint-safe` 仍是 0——**守卫独立兜住了**，两层都必要。
+3. **阳性对照**：同一条 join 故意错配，必须报非零（实测 192），否则全部 0 是「没测」。
+4. `value-divergent` 必须**排在 `degraded` 之前**（`client_model` 本来就在 degraded 表里）。
+   变异 MS 把桶清空、8 个文件退回 degraded，**而其余测试全绿** ⇒ 补了「每类取一列」判定表。
+
+#### ⑤ 影响不是报表漂移，是**探活行为**
+
+`bg/model_probe.go` 的 `EXISTS` 用**精确字符串相等**，改读后约 **1/5 的行不再匹配**
+⇒ 一些绑定不再被判定为「本凭证上有真实流量」⇒ **少发深探针**。
+
+#### ⑥ 附带：`ORDER BY … LIMIT` 的无差异成立，但依据换了
+
+1/6/24/72h 实测 newest-500 **完全相同**。但**不是我以为的写入者滞后**：
+两侧最新 `ts` 相差 **0.00 小时**。真因是会话侧有 **4,475 条 v1 侧不存在的行**
+（占视图 56%），因**时间戳更旧**（最新 `01:14` vs v1 第 500 新的 `09:06`）
+而落在 top-500 之外，余量只有 **7.9 小时**。
+⇒ 「改读视图 = 换数据源」不只是少几行，是**多出一大块**。
+
+#### ⑦ 我在这轮犯的错
+
+1. **先写结论再找根因**：我第一版 §9.167 写的是「LATERAL 回退是根因」，写完才挖到
+   **正则那层**。而正则那层才是 `repoint-safe: 3` 的真正地基。
+   ⇒ **根因要挖到「为什么这个结论会被发布出去」，不是停在「哪个查询写错了」。**
+2. **用 §9.163.2 的旧结论去解释新现象**：我以为 top-500 相同是「写入者滞后 8.7 小时」，
+   实测滞后 **0.00 小时**。**引用旧结论前先复测它是否还成立。**
+
+#### ⑧ 交付物
+
+`admin/request_logs_retirement_exposure_test.go`（正则修正 + 零证据判红 + 判定表）、
+`db/retirement_column_exposure.go`（`RetirementSessionLegDivergence` / `value-divergent` /
+`repoint-value-divergent` / `repoint-no-columns-measured`）、
+`db/repoint_value_fidelity_realdb_test.go`（重写：直读视图 + 按腿拆 + 阳性对照）、
+审计 §9.167、决策表 **D19**（**撤回 D18 与 D17-a**）。
+
+⚠️ **D19-c 未做**：抽取器 matcher 仍只从三张非 baseline 表建，只用 baseline 列的读方
+仍可能抽出很少的列（零证据守卫会显式判红，但**不等于覆盖完整**）。
+
+---
+
+### §70.23 第八十一轮：**D19-c 已执行**——判定输入扩到 118 列全契约
+
+#### ① 补的是 §9.167.10 自己留的洞
+
+抽取器 matcher 只从三张非 baseline 表建（**33** 列）。那对**暴露报告**是对的，
+但**判定**问的是「改读会发生什么」，必须看到读方碰到的**每一个**列：
+`latency_ms` 决定 safe、`work_type` 决定 empty，只用 baseline 列的读方也必须产出非空输入。
+
+拆成两个集合：`exposureMatchers`（33，报告读）/ `contractMatchers`（**118**，判定读）。
+实现上**全契约那遍先跑、exposure 那遍从结果里过滤**——两遍独立跑迟早漂，
+而漂的方向正好是「少看到列」。
+
+#### ② 重出的判定表
+
+| 判定 | §9.167 | §9.168 |
+|---|---:|---:|
+| **`repoint-safe`** | **0** | **0** |
+| `repoint-value-divergent` | 8 | **9** |
+| `repoint-degraded` | 3 | **2** |
+| `repoint-empty` / `gap-only` | 4 / 1 | 4 / 1 |
+
+移动的是 **`admin/probe_history.go`**，促成列 **`outbound_model`**（旧集合下只抽到
+`credential_id`）。`repoint-degraded` 现在只剩 `admin/providers.go` 与
+`bg/today_success_probe.go`。**阻断的 5 个不变。D19-a / D19-b 的答案不受影响。**
+
+#### ③ 覆盖度本身有门
+
+`len(contractMatchers) == len(db.CanonicalContractColumns())`（118 = 118），
+外加「每个已登记的 `value-divergent` 列必须在 exposure 集里」。
+**变异 MV**（把 contract 收窄回 exposure 集）⇒ 红
+（`covers 33 columns but the canonical contract has 118`）。
+
+#### ④ 我在这轮犯的错：字符串手术抹掉了三个函数
+
+用 `python` 重排函数时，删除区间起点用 `s.index('// value-disergent …')` 定位。
+**该注释串在两个函数里都出现**，`s.index` 命中前一个，区间一路吃到下一个标记，
+把 `exposureColumnMatchers` / `contractColumnMatchers` / `extractV1ReadingLiterals`
+**三个函数一起抹掉**。脚本在 `open(p,'w')` **之前**抛异常才没写坏文件——纯属运气。
+
+恢复：`git checkout --` 回 `origin/main`，改用 `edit` 逐处精确匹配重做
+（它匹配失败会**响亮**失败，不静默删邻接内容）。
+
+⚠️ **教训**：`s.index` 取**第一次**出现，而注释是重复度最高的东西；
+`str.replace(a,b,1)` 至少只改一处，**区间删除没有这个保护**。
+⇒ **同一标记出现两次时，`index` 选中的那个几乎永远不是你以为的那个。**
+
+#### ⑤ 交付物
+
+`admin/request_logs_retirement_exposure_test.go`（`allColumns` 字段 + 两个 matcher 集 +
+覆盖度断言 + `value-divergent` 进报告集）、
+`db/retirement_column_exposure.go`（`CanonicalContractColumns()` 访问器）、
+审计 §9.168、决策表 D19-c 就地标记为已执行。
+
+---
+
+### §70.24 第八十二轮：**D19-a 成本判定——我原先的建议瞄错了层**，且差一步清空 168 万行
+
+#### ① 追源
+
+视图 `outbound_model` ← **`t.model`**；`client_model` ← **`d.client_model`**（details LEFT JOIN）。
+逐行取值发现：**`session_turns.raw_model_name` 存的就是原样值**
+（`t.model=minimax-m3` 而 `t.raw_model_name=MiniMax-M3`，v1 侧是后者）。
+
+| 存储面 | 孪生行 | `t.model` 对齐 | **`t.raw_model_name` 对齐** | details 存在 |
+|---|---:|---:|---:|---:|
+| hot | 167 | 77.2% | **100%** | 100% |
+| 父 | 121 | 59.5% | **100%** | **0%** |
+
+#### ② `client_model` 的分歧是 **details 层滞后约 4 小时**（父表 details 最大 ts 02:14
+vs turns 06:20），**会自愈，不需要改**。
+
+#### ③ ⚠️ 那个「一行修复」会清空 **1,688,218 行**
+
+`raw_model_name`：hot **100%**（676/676）、父表 **0.44%**（7,411/1,688,629），
+且这 7,411 行**全部 ≥ 2026-10-01 07:25**——那一列那时才刚开始写。
+我 24h 样本里「从不为空」是真的，但**那个窗口的每行都来自只有 676 行的 hot 面**。
+
+**⇒ 一个只碰到单个存储面的窗口，不能替另一个存储面说话。**
+
+#### ④ 迁移 710 的 `outbound_model←model` **当时是对的**（头注明文「派生映射」），
+`raw_model_name` 当时还不存在。**不是笔误，不是数据质量缺陷。**
+
+#### ⑤ 推荐修法（待批）
+
+会话腿 `outbound_model` ← **`COALESCE(t.raw_model_name, t.model)`** + **迁移 825**
+（现网已是 v2 体，`db.ensure` 不自愈）。`t.model` 两面 100% 非空，兜底免费。
+门 `db/session_model_name_sources_realdb_test.go`，**承重断言就是「`t.model` 两面
+必须 100% 非空」**——正是能抓住 ③ 那个错建议的检查。变异 MP2 红。
+
+#### ⑥ 我犯的错（三条，同一个形状：拿一个窗口/一次查询替全部说话）
+
+1. **24h 样本 ⇒ 全表结论**，差一步清空 168 万行。
+2. **把「我的查询错了」当「产品有缺陷」**：先怀疑 details 停写，
+   实际是我只查了父表 + 单键 join；按三列键、两个存储面重测后自己推翻。
+3. **把 skip 记成 pass**：跑变异 MP 时忘 `export TEST_DATABASE_URL`，
+   测试 `t.Skip` 打印 `ok` + **0.579s**（真跑 4.7s）。**是耗时不对看出来的。**
+   ⇒ **真库变异必须同时看 `-v` 的 SKIP 行和耗时**；`ok` 在「通过」与「跳过」间不可区分。
