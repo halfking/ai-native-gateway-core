@@ -188,7 +188,42 @@ func contractColumnMatchers(exposure map[string]*regexp.Regexp) map[string]*rege
 // extractV1ReadingLiterals returns every SQL string literal in a Go file that
 // references the v1 family, together with the exposure classes of the canonical
 // columns it names.
+// extractV1ReadingLiterals 是**默认口径**：别名表按单个字面量建立。
+// 保持它作为薄封装，是为了让「翻默认值」成为一步操作（决策表 D29-a），
+// 而不是一次全量改写——后者会让「哪些数字变了」这件事无法核对。
 func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
+	t.Helper()
+	return extractV1ReadingLiteralsScoped(t, path, false)
+}
+
+// extractV1ReadingLiteralsScoped 是参数化版本（2026-10-04，审计 §9.195）。
+//
+// # fileScope=false（**默认，与改动前逐字等价**）
+//
+// 别名表按**单个字面量**建立。这是已发布口径（§9.161/§9.162）。
+//
+// # fileScope=true（D29-a 的候选口径）
+//
+// 别名表按**整个文件**建立：先扫该文件全部 SQL 字面量，把 `v1al` / `allAl`
+// 取**并集**，再逐字面量做 `columnAttribution`。
+//
+// 它针对的失效形状（审计 §9.193.2）：`admin/logs.go` 的主日志查询由三段常量
+// 拼接，含列名的投影段（`requestLogsListCols`）**自己不带 FROM** ⇒ 默认口径下
+// 别名表为空 ⇒ 该列**从未被归因**。
+//
+// # 为什么默认口径没有被改掉
+//
+// 改默认值 = 改 §9.161/§9.162 已公布的数字 ⇒ 属主决定（D29-a）。
+// 但「翻默认值」必须**一步可做、且结果可核对**，否则这个决定会被推迟成
+// 「以后有时间再说」。参数化让两个口径同时可测，差值由
+// `retirement_exposure_attribution_gap_probe_test.go` 直接给出。
+//
+// # ⚠ 修法**不是**「把文件内字面量合并成一段文本」
+//
+// 合并会造出**假语句**：真实查询的 `;` 不在字面量里，于是按 `;` 切出的
+// 「语句」里，读区的终止条件会跨字面量吞到末尾。
+// 那是本轮实测打掉过的判据（审计 §9.193.3 的 v4）。
+func extractV1ReadingLiteralsScoped(t *testing.T, path string, fileScope bool) []v1ReadingLiteral {
 	t.Helper()
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -208,6 +243,30 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 	// `is_final_success_v2` does not. Built once for the whole run.
 	exposureMatchers := exposureColumnMatchers()
 	contractMatchers := contractColumnMatchers(exposureMatchers)
+
+	// fileScope 预扫：把整个文件的别名与关系数先并起来。
+	var fileV1al, fileAllAl map[string]bool
+	fileRelCount := 0
+	if fileScope {
+		fileV1al, fileAllAl = map[string]bool{}, map[string]bool{}
+		for _, raw := range goStringLiterals(t, path) {
+			if !v1TableRe.MatchString(raw) {
+				continue
+			}
+			clean := sqlBlockCommentRe.ReplaceAllString(raw, " ")
+			clean = sqlLineCommentRe.ReplaceAllString(clean, " ")
+			v1al, allAl := aliasesIn(clean)
+			for k := range v1al {
+				fileV1al[k] = true
+			}
+			for k := range allAl {
+				fileAllAl[k] = true
+			}
+			if n := countRelations(clean); n > fileRelCount {
+				fileRelCount = n
+			}
+		}
+	}
 
 	var out []v1ReadingLiteral
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -235,6 +294,19 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 		}
 		v1al, allAl := aliasesIn(clean)
 		relCount := countRelations(clean)
+		if fileScope {
+			// 并集覆盖本段自己的解析结果：文件级作用域是**更宽**的，
+			// 只会让归因变多、不会变少（与 D29-a 的方向一致）。
+			for k := range fileV1al {
+				v1al[k] = true
+			}
+			for k := range fileAllAl {
+				allAl[k] = true
+			}
+			if fileRelCount > relCount {
+				relCount = fileRelCount
+			}
+		}
 		// The contract pass runs first and the exposure pass filters it down, so
 		// the two can never drift apart.
 		for col := range contractMatchers {
