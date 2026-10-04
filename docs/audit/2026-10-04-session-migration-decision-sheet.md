@@ -1705,7 +1705,14 @@ details 侧 8.6h 与此一致（**积压**，与 R51 的饥饿同族）。
 
 ---
 
-## D33：`session_bodies` 能不能替代 `request_logs_bodies`——**不能，至少现在不能**（新增，待拍板）
+## D33：`session_bodies` 能不能替代 `request_logs_bodies`——**本地可以，生产差一天**（新增，待拍板）
+
+> ⚠⚠ **就地更正（2026-10-05，§9.229）：本条原先的结论「不能，缺口 29,691」已撤回。**
+> 撤回理由是一个**总体选择错误**：原先以 `request_logs` 为总体，
+> 而导出/对比 API 的 FROM 是 `SessionFamilyTurnsForSessionSQL()`（会话族）。
+> 一个没有 `session_turns` 行的 turn **切不切 bodies 都从未被那些 API 看到**，
+> 不构成损失。**正确的损失是 0（本地）/ 1,113（生产，且全在 2026-09-30 一天）。**
+> 下面正文保留原文并逐条标注，**以便读者看到错在哪一维**；以 §9.229 的数为准。
 
 ### 现象（本地库实测，2026-10-05，808,556 个带会话头的 v1 turn）
 
@@ -1738,9 +1745,27 @@ details 侧 8.6h 与此一致（**积压**，与 R51 的饥饿同族）。
 v1：`request_body` / `response_body`；会话侧：**`request_delta` / `response_delta`**。
 `db` 包至今**没有** bodies 源的 SQL helper（turns 侧有两个）。
 
-### 建议的处置顺序
+### ⚠ 已撤回的部分（原文保留）
 
-1. **先回填**补齐 29,691 条：`go run ./cmd/tools/backfill_session_bodies`。
+以下三句**不成立**，不要照做：
+- 「29,691 条缺口」——总体错了，见 §9.229.1。**本地真实缺口是 0。**
+- 「1.59% 的会话受影响 / 单会话最多丢 1,365」——同一总体错误。**本地是 0 个会话受影响。**
+- 「收益上界 22、损失上界 1,365」——那两个数来自同一个错误总体。
+
+仍然成立的：
+- 「两表不是包含关系」——**对**。但它描述的是 **v1 turn 与 session_bodies 的关系**，
+  不是「导出 API 会看到什么」。
+- 「不是机械替换：列名 `request_body/response_body` vs `request_delta/response_delta`」
+  ——**对**，且与总体无关。
+- 「db 包没有 bodies 源的 SQL helper」——**对**。
+
+### 建议的处置顺序（按 §9.229 修正）
+
+0. **本地不需要回填**：`would_be_lost = 0`，门已绿（`db/bodies_cutover_gap_test.go`）。
+1. **生产只差 2026-09-30 一天**（1,113 条，695 个会话，单会话最多 152）：
+   `go run ./cmd/tools/backfill_session_bodies` 按天补边界日即可。
+   ⚠ 属生产数据变更，**需属主批准**。
+2. 补 `SessionFamilyBodiesSourceSQL()`（带显式列映射）。
 2. 等 `db/bodies_cutover_gap_test.go`（§9.228.4，**故意红**）转绿
    （`would_be_lost = 0`）再谈改读方。
 3. 补 `SessionFamilyBodiesSourceSQL()`，**带显式列映射**。
@@ -1748,10 +1773,15 @@ v1：`request_body` / `response_body`；会话侧：**`request_delta` / `respons
 5. 全程需灰度开关（参考 `storage.admin_logs_native_turns_read` 的形状），
    因为失效形态是 `COALESCE(…,'{}')` ⇒ **导出照常成功、正文为空**。
 
-### 边界
+### 边界（已按 §9.229 更新）
 
-- 数字**只对本地库成立**。生产的 bodies 覆盖与回填状态**未知**，
-  且无自动门（§9.223 记的同一缺口）。据此排生产切换前需在 252 只读复测。
+- **生产数字已实测**（252 只读 SELECT，2026-10-05）：
+  `session_turns` 817,674 / 有 v1 正文 24,191 / 有 session_bodies 23,145 /
+  **would_be_lost 1,113（全在 2026-09-30）** / 695 个会话（0.38%）/ 单会话最多 152。
+- ⚠ **生产无自动门**（§9.223 记的同一缺口），只能人工只读复测。
+- ⚠ 另一项**未闭合**的退役代价：`is_auto_request = t` 的探针/自动流量
+  **按设计**不进会话族（§9.215），所以只存在于 v1。退役 v1 = 失去它们的可审计性。
+  **这是属主决定，不是缺陷；本会话至今没有任何门覆盖它。**
 - 本地流程门（§9.226.4，26 个 bodies 读方未登记）**永远不会先变绿**；
   数据门才可能在回填后变绿。两者不是重复。
 
