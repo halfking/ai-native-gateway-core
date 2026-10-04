@@ -371,3 +371,60 @@ func check() error {
 			len(testFiles), testFiles)
 	}
 }
+
+// 门 7：`IS DISTINCT FROM` 不是 FROM 子句。
+//
+// 2026-10-05 实测：`fragmentTailRE` 是 `(?i)\b(from|join)\s+$`，
+// 它分不清两种 `from`：
+//
+//	… LEFT JOIN          + tbl     ← FROM 子句，拼的是**关系名**（要报）
+//	… IS DISTINCT FROM   + balArg  ← 比较运算符，拼的是**值**（不该报）
+//
+// 后果实测：admin/provider_credential.go:637 以「不可静态解析」进了全仓报告，
+// 而清单的 Consequence 那一栏要写「退役时会怎样」——
+// 对着一个比较运算符写不出有意义的话。
+//
+// 方向上这是多报（本工具自述的安全方向），所以它不会让人漏掉 v1 读点；
+// 但它让清单里多一条无法评估的条目 ⇒ 修工具。
+func TestIsDistinctFromIsNotARelationFragment(t *testing.T) {
+	// 负向：比较运算符不是关系名拼接点。
+	for _, frag := range []string{
+		"balance_usd IS DISTINCT FROM ",
+		"x IS NOT DISTINCT FROM\t",
+		"  IS DISTINCT FROM\n",
+	} {
+		if isRelationFragmentTail(frag) {
+			t.Errorf("isRelationFragmentTail(%q) = true，期望 false —— "+
+				"这是比较运算符，不是 FROM 子句", frag)
+		}
+	}
+	// 对照组：真正的 FROM/JOIN 子句必须仍然被认出来。
+	// 没有这一条，上面三条可以靠「永远返回 false」而全绿。
+	for _, frag := range []string{
+		"SELECT COUNT(*) FROM ",
+		"SELECT 1 FROM session_turns\n  LEFT JOIN ",
+		"DELETE FROM ",
+		"INSERT INTO x SELECT * FROM ",
+		"\n\t\tFROM ",
+	} {
+		if !isRelationFragmentTail(frag) {
+			t.Errorf("isRelationFragmentTail(%q) = false，期望 true —— "+
+				"这是真的 FROM/JOIN 子句", frag)
+		}
+	}
+	// 端到端：整段表达式里含 IS DISTINCT FROM 时，不应产出站点。
+	sites := auditOne(t, map[string]string{
+		"a.go": `package a
+
+func q(balArg string) {
+	// ① 比较运算符：不该报
+	_ = ¤balance_usd IS DISTINCT FROM ¤ + balArg
+	// ② 真的 FROM：该报
+	_ = ¤SELECT 1 FROM ¤ + ¤request_logs_hot¤ + ¤ WHERE x = 1¤
+}
+`,
+	})
+	if len(sites) != 1 {
+		t.Fatalf("sites = %d, want 1（只有 ②）\n%v", len(sites), sites)
+	}
+}

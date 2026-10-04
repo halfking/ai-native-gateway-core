@@ -55,6 +55,60 @@ var fragmentTailRE = regexp.MustCompile(`(?i)\b(from|join)\s+$`)
 // 而那个方向正是本工具自称的最坏失效方向（见 isV1Relation 的注释）。
 var fromRelationRE = regexp.MustCompile(`(?i)\b(?:from|join)\s+("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*)`)
 
+// isIdentByte 与 admin 包的同名函数同义，但**不复用**：
+// 那个函数在 admin 包的测试文件里，而本工具是独立的 main module，
+// 引用它要么把工具挂到 admin 上（错的依赖方向），要么复制（两份真相源）。
+// 一个字节级谓词，复制比接线便宜。
+func isIdentByte(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// isRelationFragmentTail 判断一段 SQL 片段是不是「FROM/JOIN 后面要拼关系名」。
+//
+// 它比 fragmentTailRE 多一步，而且那一步是**实测逼出来的**。
+//
+// `fragmentTailRE` 是 `(?i)\b(from|join)\s+$`。它分不清两种完全不同的 `from`：
+//
+//	… LEFT JOIN  + tbl            ← FROM 子句，这里拼的是**关系名**（要报）
+//	… IS DISTINCT FROM  + balArg   ← 比较运算符，这里拼的是**值**（不该报）
+//
+// 2026-10-05 实测到第二类进了报告：
+//
+//	admin/provider_credential.go:637
+//	  valueChanged := "balance_usd IS DISTINCT FROM " + balArg
+//	  → balArg 被当成关系名
+//
+// ⚠ 方向上这是**多报**（本工具自述的安全方向），所以它不会让人漏掉什么 v1 读点。
+// 但它会污染清单：27 个文件里有 1 个是被这条误报的，而清单的
+// `Consequence` 要写「退役时会怎样」——对着一个比较运算符写不出有意义的话。
+// ⇒ 清单要么登记一条「其实不是读点」，要么把工具修对。修工具更省事。
+//
+// Go 的 RE2 没有负向断言，所以「前面那个词是不是 distinct」在代码里判。
+func isRelationFragmentTail(frag string) bool {
+	if !fragmentTailRE.MatchString(frag) {
+		return false
+	}
+	// ⚠ **顺序是承重的，而且我第一版写反了。**
+	// 先按长度切尾部关键词的话，末 4 个字符是 `"ROM "`（`FROM ` 的后 4 个）
+	// 而不是 `"FROM"` ⇒ 等值比较永远不成立 ⇒ 这道过滤静默失效、
+	// `IS DISTINCT FROM` 仍然进报告。实测抓到的。
+	// ⇒ 必须**先** TrimRight 掉空白，**再**切关键词。
+	trimmed := strings.TrimRight(frag, " \t\n\r")
+	for _, kw := range []string{"from", "join"} {
+		if len(trimmed) >= len(kw) &&
+			strings.EqualFold(trimmed[len(trimmed)-len(kw):], kw) {
+			trimmed = strings.TrimRight(trimmed[:len(trimmed)-len(kw)], " \t\n\r")
+			break
+		}
+	}
+	i := len(trimmed)
+	for i > 0 && isIdentByte(trimmed[i-1]) {
+		i--
+	}
+	return !strings.EqualFold(trimmed[i:], "distinct")
+}
+
 // sqlLineCommentRE 剥掉解析结果里的 SQL 行注释。
 //
 // ⚠ **它今天不改变任何一条真实判定，别把它当门来依赖。**
@@ -346,7 +400,7 @@ func auditPackage(dir string, files []string) ([]Site, error) {
 				}
 				for i, o := range ops {
 					frag, ok := stringLit(o)
-					if !ok || !fragmentTailRE.MatchString(frag) {
+					if !ok || !isRelationFragmentTail(frag) {
 						continue
 					}
 					if i+1 >= len(ops) {
