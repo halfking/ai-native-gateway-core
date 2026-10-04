@@ -244,15 +244,24 @@ export function layoutAudit() {
   // ── ⑨ 近白屏 ───────────────────────────────────────────────
   I.stats.textChars = (document.body.innerText || '').trim().length
   I.stats.domNodes = document.querySelectorAll('*').length
-  // 「文字少」有两种完全不同的成因，只有一种是缺陷：
+  // 「页面几乎是空的」有两种完全不同的成因，只有一种是缺陷：
   //   · 终态视图（空态 / 错误态）本来就只有一句话 —— /alerts 的「暂无数据 | 近期无告警」实测 35 字符；
   //   · 骨架屏 / 挂起 —— 那才是白屏。
   // ⇒ 存在 .state-view（且不在 loading 态）时**不报** near-blank。
+  //
+  // ⚠️ 判据必须**与语言无关**，否则它跟着 i18n 走。实测反例（同一份 DOM、同样 34 个节点）：
+  //     zh-CN  28 字符：「登录网关 使用网关管理员账号登录 用户名 密码 登录」
+  //     en-US  77 字符：同一个登录页
+  //   旧的 `textChars < 40` 把 zh-CN 的登录页判成 near-blank（假阳性），
+  //   英文页则通过 —— 同一个缺陷在两种语言下结论相反。
+  // ⇒ 改用**节点数**判「空不空」：登录页 34 节点，真空白页 6 节点，门槛 20。
   const terminal = document.querySelector('.state-view:not([aria-busy="true"])')
   I.stats.terminalState = terminal ? (terminal.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60) : null
-  if (I.stats.textChars < 40 && !terminal) {
+  const STRUCT_FLOOR = 20
+  I.stats.structFloor = STRUCT_FLOOR
+  if (I.stats.domNodes < STRUCT_FLOOR && !terminal) {
     I.issues.push({ kind: 'near-blank', sev: 'high',
-      detail: '整页可见文字仅 ' + I.stats.textChars + ' 字符 / ' + I.stats.domNodes + ' 个节点（疑似白屏或挂起）' })
+      detail: `整页仅 ${I.stats.domNodes} 个节点 / ${I.stats.textChars} 个可见字符（门槛 ${STRUCT_FLOOR} 节点，疑似白屏或挂起）` })
   }
 
   // ── ⑩ 触控目标重叠（点 A 意外点到 B）────────────────────────
@@ -348,6 +357,14 @@ export async function waitForSettle(timeoutMs) {
     return `${t.length}:${document.querySelectorAll('*').length}:${t.slice(0, 40)}`
   }
   const chars = () => (document.body.innerText || '').replace(/\s+/g, ' ').trim().length
+  // ⚠️ 「这页有东西吗」**不能用文字字符数**判 —— 它随语言变：
+  //   同一个 /m/login，zh-CN 是 28 字符（登录网关 使用网关管理员账号登录 用户名 密码 登录），
+  //   en-US 是 77 字符（同一个 DOM、同样 34 个节点）。按字符数判 ⇒ 中文页被判白屏、
+  //   英文页通过，判据跟着 i18n 走。
+  // ⇒ 改用**结构**判：节点数与语言无关。
+  //   登录页 34 节点 / 真空白页 6 节点 —— 门槛取 20，两侧都留出余量。
+  const structFloor = 20
+  const nonBlank = () => document.querySelectorAll('*').length >= structFloor
 
   const probe = () => {
     if (isSkeleton()) return { settled: false, state: 'initialLoading', rows: 0, sig: sig() }
@@ -370,9 +387,9 @@ export async function waitForSettle(timeoutMs) {
     hits = prevSig != null && prevSig === s ? hits + 1 : 0
     prevSig = s
     last = probe()
-    // 终态 = 连续 3 个采样指纹一致（hits>=2）+ 页面不在忙态 + 不是空页。
-    // 「不是空页」保证真正挂住的空白页继续 pending，由 ⑨ near-blank 报而不是被这里吞掉。
-    if (!last.settled && hits >= 2 && !busy() && chars() >= 40) {
+    // 终态 = 连续 3 个采样指纹一致（hits>=2）+ 页面不在忙态 + **结构上非空**。
+    // 「非空」用节点数不用字符数（见 nonBlank 注释）—— 用字符数会让中文页永远 pending。
+    if (!last.settled && hits >= 2 && !busy() && nonBlank()) {
       last = { settled: true, state: 'stable', rows: rows(), sig: s }
       break
     }
