@@ -998,10 +998,39 @@ func SessionFamilyTurnsForSessionSQL() string {
 //
 // The returned source carries no alias — callers append one (e.g. `rb`).
 func SessionFamilyBodiesSourceSQL() string {
-	projection := "sb.request_id, sb.request_delta AS request_body, " +
-		"sb.response_delta AS response_body, sb.outbound_body"
-	return "(SELECT " + projection + " FROM public.session_bodies_hot sb" +
-		" UNION ALL SELECT " + projection + " FROM public.session_bodies sb)"
+	return "(SELECT " + sessionBodiesSourceProjection +
+		" FROM public.session_bodies_hot sb" +
+		" UNION ALL SELECT " + sessionBodiesSourceProjection +
+		" FROM public.session_bodies sb)"
+}
+
+// sessionBodiesSourceProjection 与 SessionFamilyBodiesSourceSQL 共用同一份字面量，
+// 拆出来是为了让**列集合成为可被引用的合同**（§9.231）。
+//
+// # 为什么要把列集合变成合同，而不是只写在注释里
+//
+// 这个源**不投影 `ts`**。于是「按 request_id 单键 JOIN」的读方可以直接换，
+// 而 `ON rb.request_id = rl.request_id AND rb.ts = rl.ts` 的读方换过去会
+// **解析期就报错**（42703）—— 那是好的，属响亮失败。
+// 但「响亮」不等于「已登记」：审计 §9.231 实测 25 个 v1 bodies 读方里有
+// 3 个是 ts 等值 JOIN（`admin/body_resolver.go`、`admin/compression_sessions.go`、
+// `cmd/compression-bench/main.go`），它们**不能**用这个 helper。
+// ⇒ 列集合必须能被别的包读到，才能让那道门按列名核对而不是按印象核对。
+//
+// ⚠ 别在这里加 `ts` 来「让大家都能用」：ts 在两侧的**相等率极低**
+// （`admin/session_bodies_batch.go` 的文件头实测 99.85% 不等），
+// 加上它会把一个解析期错误换成一个**静默的行数变化**。响亮失败优于静默改行。
+var sessionBodiesSourceProjection = "sb.request_id, sb.request_delta AS request_body, " +
+	"sb.response_delta AS response_body, sb.outbound_body"
+
+// SessionFamilyBodiesSourceColumns 是 SessionFamilyBodiesSourceSQL 对外暴露的
+// **全部**列名（已去掉 `sb.` 前缀与 `AS` 别名）。
+//
+// 它是 §9.231 那道门的判据来源。调用方（admin 包）用它在**源码文本**里核对
+// 「这个读方用到的 bodies 列是否都在合同内」—— 不能靠数投影个数，
+// 也不能靠「helper 里有这个字符串」。
+var SessionFamilyBodiesSourceColumns = []string{
+	"request_id", "request_body", "response_body", "outbound_body",
 }
 
 // MirrorDriftClassSQL classifies a V1 request_logs row into the three buckets

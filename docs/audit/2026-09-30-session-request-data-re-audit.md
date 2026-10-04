@@ -27585,6 +27585,13 @@ LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.reques
   会话侧是 `request_delta`/`response_delta`；db 包**仍没有** bodies 源 helper。
   ⇒ 那是**改读方**时的事，与数据是否够无关。
 
+> ⚠⚠ **就地更正（2026-10-05，§9.231）**：本条在写下时为真，但它**误导了后续动作** ——
+> 补上 `db.SessionFamilyBodiesSourceSQL()` 之后，很容易以为 25 个 bodies 读方
+> 可以一次性替换。**实测不是**：它们分 6 档，那个 helper **只 fit 其中 13 个**；
+> 另有 4 个用到 bodies 的 `ts`（helper 故意不投影）、2 个是刻意的 hot→view 延迟分层、
+> 3 个只读体量、**2 个工具读 v1 就是其职责且 v1 退役后无处可去**。
+> ⇒ 「补 helper」只是 6 件事里的第 1 件。见 §9.231 / §70.68。
+
 ### §9.229.7 方法论：这轮的三条
 
 1. **门的总体必须是被影响代码实际读的那张表**，不是「正在退役的那张表」。
@@ -27798,3 +27805,135 @@ M7 把 `request_logs_bodies` 改成 `request_logs`——**那仍然是一张合�
   `TestSessionFamilyBodiesSourceDoesNotDuplicateTurns` 把它变成被检查的事实，
   并在报错里写明处置方向（源里加 `DISTINCT ON` 或给 `session_bodies` 加唯一约束）。
 - **生产 09-30 那一天仍未补。** 属主未批准，本会话对此**零写入**。
+
+---
+
+## §9.231 bodies 读方的形状分类：**订正 §9.230 那个隐含的「一次机械替换」前提**
+
+> §9.230 补了 `db.SessionFamilyBodiesSourceSQL()`，handoff 里写的是
+> 「补了 helper 之后才谈改 bodies 腿」。那句话**隐含了一个错误前提**：
+> 仿佛那 25 个 bodies 读方是同一次替换。逐个读过真实 SQL 之后，不是。
+
+### §9.231.1 实测：25 个读方分 6 档，helper 只 fit 其中一档
+
+| 档位 | 数量 | 读方 | 能不能换 helper |
+|---|---|---|---|
+| **A 单键 JOIN + 列在合同内** | **13** | `admin/compression_stats.go`、`logs_summary.go`、`memora_handlers.go`、`no_topic_session.go`、`quality_correlations.go`、`session_sanitize_matches.go`、`session_title.go`、`auto_title_generator.go`、`domains/sessionforensics/export.go`、`domains/hooks/goal/history_store.go`、`bg/passive_probe_listener.go`、`domains/sessionsummary/summarizer.go`、`system_prompt_prefix.go` | **能**（直接换） |
+| **B 用到 bodies 的 `ts`** | **4** | `admin/body_resolver.go`、`admin/compression_sessions.go`、`admin/session_bodies_batch.go`、`cmd/compression-bench/main.go` | **不能**（helper 不投影 ts） |
+| **C 两次顺序查询（延迟分层）** | **2** | `admin/logs.go`、`admin/unified_detail.go` | **不该换**（会毁掉性能设计） |
+| **D 只读体量** | **3** | `admin/data_lifecycle.go`、`admin/data_lifecycle_blobs.go`、`cmd/scenario_driver/main.go` | 不是同一件事 |
+| **E 读 v1 就是其职责** | **2** | `cmd/tools/backfill_session_bodies/main.go`、`cmd/tools/validate_sessions_v2/loader.go` | **无处可去** |
+| **F 已建开关** | **1** | `admin/session_bodies_source.go` | §9.230 已处理 |
+
+### §9.231.2 三个「不能换」的理由都是**机制**，不是「懒得改」
+
+**B 类（ts）**：`SessionFamilyBodiesSourceSQL()` 故意**不投影 `ts`**。
+两侧 bodies 行的 ts 实测 **99.85% 不相等**（`admin/session_bodies_batch.go` 文件头）——
+加上 `ts` 会把一个**解析期 42703**（响亮）换成一个**静默的行数变化**（不响亮）。
+响亮失败优于静默改行，所以这条由 `TestV1BodiesHelperContractHasNoTs` 钉住：
+有人为了「让更多读方能换」而加 `ts`，门会红并要求显式改判。
+
+⚠ `admin/compression_sessions.go` 的 ts 等值**是指标语义本身**
+（压缩前后同一轮），改成单键会把「同一轮的压缩率」算成「任意一轮的压缩率」。
+⇒ 换源前必须先定新口径，否则指标定义被悄悄改掉。
+
+**C 类（两次顺序查询）**：`admin/logs.go` 与 `admin/unified_detail.go`
+都是「先 hot（3s 超时，命中即返回）→ 未命中再月分区（20s）」，
+文件注释明写这个分层是刻意的。换成 UNION 子查询会让**每条**请求都去扫分区父表。
+这是性能设计的改动，**必须自带前后延迟读数**，不能混在 repoint 里做。
+
+★ `admin/unified_detail.go` 的错误语义与 `admin/logs.go` **相反**：
+它的 `pgx.ErrNoRows` 会被翻成 `requestdetail.ErrNotFound` 并上抛 404。
+⇒ 换源后覆盖不到时是 404（响亮），但仍会改变「详情页能否打开」——属可见行为变更。
+
+**E 类（两个工具）**：★ **这是本节最要紧的结论。**
+
+- `cmd/tools/backfill_session_bodies` —— 它就是**从 v1 读、往 session_bodies 填**的那个工具。
+  换源 = 读自己写的表 = **自毁**。
+- `cmd/tools/validate_sessions_v2` —— 它的职责是 **v1 ↔ session 对拍判镜像漂移**。
+  它读 v1 **不是遗漏，是被测对象**。换到会话族 = **对着自己校验自己**。
+
+⇒ **`request_logs_bodies` 退役之后，这两个工具无处可去。**
+它们要么随 v1 一起退役（回填跑完 = backfill 的使命完成），
+要么重新设计成「对拍更老的一代」。
+**这条此前没有人写下来过，而它决定了回填完成的定义。**
+
+### §9.231.3 我自己的两个错，都是门抓到的
+
+**① 分类器把「最像可迁移的那个」判错了。**
+
+我先写了个正则分类器，它假设 bodies 别名是 `rb`。
+`cmd/compression-bench/main.go` 用的是 `b`：
+
+```sql
+JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts
+```
+
+⇒ 它被判成「单键 JOIN，可换」——而它正是 B 类里最典型的那个。
+**「ts 等值读方有 3 个」这个结论是读源码读出来的，不是分类器算出来的。**
+拿一个有已知盲区的分类器当门，等于把「量具测不到」记成「对象不存在」。
+
+**② 登记表里我把 `admin/session_bodies_batch.go` 归成了可迁移。**
+
+按文件名它最 trivial：纯点查助手、`FROM … rb`、`WHERE rb.request_id IN (unnest($1))`。
+`TestV1BodiesReaderShapeDecisionsAreSupported` 报它**用到了 `rb.ts`**：
+`sessionBodiesByRequestIDAndTSSQL`（:82-92）投影 `rb.ts` 并用
+`WHERE (rb.request_id, rb.ts) IN (SELECT * FROM unnest($1,$2) …)` 配对。
+
+⇒ **整个文件不能换**（不是「一半能换」，换源要改函数体）。
+已改判为 B 类。
+
+★ 第一版的 ts 判据只测 `ON rb.ts = rl.ts`，**漏了 WHERE 元组里的 ts** ——
+即漏掉的恰恰是上面这个最典型的形态。判据已改成
+「**用到 `ts` 就不可换**」，ON 形态只作为附加信息。
+
+### §9.231.4 为什么是「人写决策 + 机器交叉核对」，不是全自动分类
+
+上面两个错说明：形状判定里有**需要人判断的部分**
+（`admin/compression_sessions.go` 的 ts 是指标语义、
+`quality_correlations.go` 与 `bg/passive_probe_listener.go` 落在
+`is_auto_request` 那批流量上所以换源会**改口径**）。
+
+所以门的分工是：
+
+- **决策由人写**（6 档 + 每条写清机制），机器**不**去猜形状；
+- 机器只核对**一件它能可靠核对的事**，且只对**正向声明**生效：
+  声明 `helper-compatible` 的文件，机器必须确认它①绑了 bodies 别名
+  ②**没用到 `ts`** ③用到的列全在合同内。
+- **反方向不判红**（声明不可换、实测像可换）：那可能只是需要人判断，
+  把它判红等于逼人谎报以过门。
+
+总体沿用 `scanV1BodiesReaders` —— **同一个 SSOT**，不另抄一份名单。
+`admin/session_bodies_source.go` 那一档跳过形状核对
+（它的 v1 依赖在开关默认臂里，源码里没有可解析的 JOIN），
+但仍要写清 Reason。
+
+### §9.231.5 变异验证：7 条，全部转红
+
+| # | 变异 | 被哪道门抓住 |
+|---|---|---|
+| M20 | 把一个 ts 读方谎报成 `helper-compatible` | 形状判定交叉核对门 |
+| M21 | 删掉一条判定 | 双向覆盖门 |
+| M22 | 加一条指向空气的判定 | 双向覆盖门（stale 方向） |
+| M23 | 清空 `Reason` | 登记成色门 |
+| M24 | 给列合同加 `ts`（「让更多读方能换」） | 合同无 ts 门 |
+| M25 | 别名解析器整体失效（量具坏了） | 形状判定交叉核对门 |
+| M26 | 实测总体被改成 0 | 双向覆盖门（地板断言） |
+
+⚠ **这轮变异脚本本身出过一次错，值得单独记**：
+第一版 7 条变异**全部报「仍绿」**。原因是我的 `run` 只 `grep '^--- FAIL'`，
+而 `go test` **编译失败时只打 `FAIL <pkg>`、不打 `--- FAIL`**
+⇒ 7 条「仍绿」里有 6 条其实是**编译失败被读成了通过**。
+已改成同时匹配 `build failed|cannot use|undefined|syntax error`。
+★ 变异验证里最贵的两种错法之一：
+**「变异没生效」与「门没生效」看起来一模一样，而「编译失败」看起来像「门没咬住」。**
+
+### §9.231.6 由此得到的退役清单（回答「退役 request_logs_bodies 到底要付什么」）
+
+- **13 个**可以直接换源（但换完仍受 §9.229 的 1,113 条缺口约束 ⇒ 仍需开关 + 默认关）。
+- **4 个**要先定口径（ts 语义 / 指标定义），不是 repoint 能解决的。
+- **2 个**要重做延迟分层，必须带前后读数。
+- **3 个**换的是统计对象不是 JOIN，其中 `cmd/scenario_driver` 的正确终态是**随 v1 退役**
+  （留着它会在 v1 消失后恒返回 0，而「0」看起来像「v1 停了」）。
+- **2 个工具无处可去** ⇒ **回填完成的定义必须包含「它们已被处置」**。
+- **1 个**（开关本身）必须**最后**退役：它的默认臂反转之日就是 bodies 退役之日。
