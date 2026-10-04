@@ -768,6 +768,9 @@ var modalityGradedVerification825 []byte
 //go:embed embeddata/startup/826_model_baseline_price.sql
 var modelBaselinePrice826 []byte
 
+//go:embed embeddata/startup/827_modality_verification_progress_view.sql
+var modalityVerificationProgress827 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -998,6 +1001,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/824_request_status_rate_limited_projection.sql":                         requestStatusRateLimitedProjection824,
 	"startup/825_modality_graded_verification.sql":                                   modalityGradedVerification825,
 	"startup/826_model_baseline_price.sql":                                           modelBaselinePrice826,
+	"startup/827_modality_verification_progress_view.sql":                            modalityVerificationProgress827,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

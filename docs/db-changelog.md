@@ -887,6 +887,30 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 > d724c072d 引入的启动自锁（ensure 链在 db-open 期引用 825 列，先于迁移应用，账本 <825 的库
 > 在 migrate 门必炸 42703）。新哈希以本行为准。
 
+### 825 订正（2026-10-04，真 schema 实测）：判据全绿而迁移装不上——夹具替真表补了它缺的键
+
+原 SHA `d6eda2b8…` 在真 schema（`00-prereqs` + `01-schema` 灌出的 326 表）上第一句就失败：
+
+```
+ERROR:  there is no unique constraint matching given keys for
+        referenced table "models_canonical"   (SQLSTATE 42830)
+```
+
+**根因**：`models_canonical` 既没有主键、`id` 上也没有任何唯一约束或索引（约束只有 `UNIQUE (canonical_name)` 一条），而整个 schema 里没有任何一张表外键指向它——825 是第一个依赖方，第一个撞上。附带第二个后果：即使外键建得出来，`ON DELETE CASCADE` 作用在非唯一列上也是未定义语义。
+
+**为什么夹具判据没抓到**：`provider/modality_gate_alignment_test.go` 自己手写的替身表是 `id bigserial PRIMARY KEY`——**比真表更宽松，恰好补上真表缺的键**；更糟的是它还**手抄了 825 该建的 `model_modality_verification` 当替身**，于是 825 的 DDL 从来没被执行过。两个错误叠加，判据全绿而迁移在任何真实环境装不上。
+
+**订正内容**（先行修复已随统一入口审计轮入库，landed 字节即上行 SHA）：
+1. up 前置幂等 DO 块补 `models_canonical_pkey`（已存在则短路）；`db/db.go` 的 `ensureModalityGradedVerification` 在启动 ensure 链镜像同形 DDL。
+2. down **故意不摘**该主键：回滚时无法分辨它是本迁移加的还是环境上本来就有的，删一个本来就在的主键是破坏而不是回滚；`id` 本来就是代理键写法，留着无害。
+3. 判据改为**直接应用真 825 与真 827**，`models_canonical` 由新包 `internal/schemaobj` 从仓的逐对象 SSOT（`sql/objects/tables/` + `sequences/` + `constraints/`）推导，不再手抄；另加「夹具已过期」响亮告警：SSOT 的 `id` 上若哪天出现唯一约束，判据直接红并指明该重新推导。
+4. 同一遮蔽在 `bg/supplier_view_cardinality_test.go` 有**第二处**：脚手架 `provider_models` 曾写 `canonical_id REFERENCES models_canonical(id)`，把真表缺的键自己补上了。换真表后它立即以同一条报错失败——脚手架上只要有一根指向真表的外键，它就能补掉真表的缺陷，故脚手架**故意不带**这根外键。
+5. 顺带修掉两处判据自身缺陷：`setup()` 写在 `defer teardown()` **之前**（setup 失败 → defer 不注册 → 残桩留在库里 → 下轮安全闸直接 SKIP 假绿），改为先注册清理再建表并预清一次残桩；bg 判据的清理清单漏了 826 建的 `model_baseline_price_reconciliation`（826 用 `CREATE TABLE IF NOT EXISTS`，残留表会让 DDL 静默沿用旧形状——测试照样绿，绿的是一份旧结构），补齐后跑完库归零。
+
+**teeth 复验**（一次性 PG17 逐项实测，判据为最终入库字节）：撤掉 up 的 pkey 先决块 → 判据红并逐字复现 `SQLSTATE 42830`；825 全量重放幂等（`IF NOT EXISTS` 全 NOTICE + pkey 短路，真库二跑零错）；825/827 down→up LIFO 循环干净。
+
+**外键新带来的行为变化（有意保留，不是副作用）**：`provider_models.canonical_id` 与 `model_aliases.canonical_id` 都没有外键，悬空 id 此前静默可写（视图 LEFT JOIN 匹配不上，看不出来）；825 起证据表 FK **硬拒**。实际发生概率低：discovery 侧的 `canonical_id` 来自 `maintainMatchedCanonical` 的真实查表/插入结果，不是编出来的。万一发生的失败形态是良性的：`bg/modality_verification.go` 的 `persistTarget` 记 warning 后继续下一个 target，不会崩 worker。`NULLIF($1, 0)` 保证未解析的模型写 NULL 而不是 0，外键允许 NULL，解析不出来的模型不受影响。取舍是「响亮」那一侧：悬空引用从静默变成可见。
+
 ## 2026-10-04 — 模型基准价（原厂标准价）与供应商价差对账（迁移 826）
 
 登记时点：同 825 一批。826 **未应用于任何库**，字节已冻结并完成五点同步。
@@ -900,4 +924,55 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 826 | `826_model_baseline_price.sql` | `8c6f2b54745f2e6ae9f4b04f6180050904d55167fbd35c29cb047d06b24f1f84` | pending deploy（未应用于任何库；字节已冻结） |
+| 826 | `826_model_baseline_price.sql` | `4d2248de7a280cb6e0ff658880bd66dd136eb4cc84620dd77a63ff5bbc58ebdc` | pending deploy（未应用于任何库；字节已冻结） |
+
+**订正（2026-10-04，SHA 随之变更）**：`v_supplier_price_vs_baseline` 的
+canonical JOIN 原来写成 `ON mc.id = pm.canonical_id OR lower(mc.canonical_name) = lower(pm.canonical_raw_name)`，
+**真库实测把一条供应商绑定变成三行**，且同一个供应商价被同时报成「比基准贵
+20%」（基准 5.00 → 1.20）与「比基准便宜 40%」（基准 9.99 → 0.60）。运维拿到
+这两个数无从裁决；要是对这些行求和，成本就被计了两遍。
+
+成因：OR 两侧各自命中**不同的** canonical 行。`provider_models.canonical_id`
+与 `canonical_raw_name` 由**不同代码路径**写入，不一致是完全可能的状态；而仓里
+`modelname/normalize.go` 明确声明**不做** `claude-opus-4-8` ↔ `claude-opus-4.8`
+的跨形态归一，所以这两种写法可以在 `models_canonical` 里并存（`canonical_name`
+上有 UNIQUE 约束，但那约束管不住「点号 vs 横线」这种不同字符串）。
+
+修法：名字匹配那条路**只在 `canonical_id` 为空时**才走（canonical_id 是权威，
+名字是兜底），再用 `ORDER BY … DESC LIMIT 1` 保证恰好命中一行。修后判据真库
+实测 4 绑定 → 4 行（覆盖 id/名字分歧与只差大小写的对），且 id 路径胜出
+（m-split 取到基准 5.00 而不是 9.99）。
+
+本条为**真库发现**，原字节从未部署到任何库，故直接改正 826 而不是新增 828。
+
+teeth（一次性 PG17 逐项实测）：去 `LIMIT 1` → 判据红（4 绑定 → 5 行，
+`m-case-dup×2`）；退回 OR 联合 JOIN → 红（同上）；去 `ORDER BY` → **仍绿**——
+行序没有保证，它是对扫描顺序的保险而非可验证机制，判据因此**钉结果不钉实现**
+（钉「m-split 必须落到基准 5.00」，不钉某个机制名还在）。
+
+配套判据 `bg/supplier_view_cardinality_test.go`：真库钉住「一条绑定 ⇒ 一行」
+的行数与 id-权威归属，并带**量具自证**（视图 0 行即 Fatal，防种子写错后
+0==0 恒真）。
+
+### 827 · 多模态核实的进度可观测性（严格模式灰度的判据）
+
+严格档（`LLM_GATEWAY_MODALITY_ROUTING_STRICT`）默认关闭，因为它会把「没被语义确认过」的 (模型, 模态) 全排除 ⇒ 图片请求全量 503 no_candidate。灰度前要等「未核实队列排空」，但**队列这个量在库里查不出来**：
+
+- `model_modality_verification` 没有行的 (模型, 模态) 与「这一行是 unknown」不可区分，而「没有行」正是绝大多数未探测过的组合；
+- 825 建的 `v_model_modality_verdict` 从证据表出发 `GROUP BY`，未被探测过的模型**根本不出现在结果里**；
+- worker 的 `slog` 打的 `scanned` 是**本轮到期行数**（受 `batch_limit` 截断），不是全量待办量。
+
+⇒ 「等队列排空」没有分母。
+
+- `v_model_modality_verification_progress`：每个 (canonical 模型, **非文本模态**) 一行。粒度必须与闸门一致——闸门逐个模态求值，一个模型可以「vision 已确认、audio 未核实」。先 `CROSS JOIN` 出全部 (模型, 模态) 组合再 LEFT JOIN 证据聚合，「从未被探测」由此**可见**。`excluded_by_default_gate` / `excluded_by_strict_gate` 与 `provider/client.go` 的 `modalityVerdictGateSQL` **逐条对齐**。
+- `v_model_modality_verification_rollup`：全局一行的灰度判据。`models_blocked_by_strict` 降到 0 之前不要开严格档；`pairs_stale_or_never` 是下一轮探测的优先队列。
+
+只读，不改任何表。
+
+**本迁移在真库上抓到的自身缺陷**（第一版视图 vs 闸门，5 个用例里第 4 个当场打脸）：缺省档我写成 `read_negative > 0 AND read_confirmed = 0`，而闸门是 `EXISTS(negative) AND NOT EXISTS(任何非负的行)` —— 差 `read_unknown = 0`。于是「一负 + 一 unknown」被判成缺省档会排除，而闸门恰恰**不**排除它：unknown 意味着「还不能判定」，不能判定不构成「这个模型看不见」的证据。**负证据与没有反证是两件事。**
+
+配套判据 `provider/modality_gate_alignment_test.go`：把 `modalityVerdictGateSQL` 的片段接到最小 SELECT 上，与视图的布尔列在真库上**逐值比对**（无 `TEST_DATABASE_URL` 时跳过，且**已有 `models_canonical` 时也跳过**——它要 DROP 那两张表）。这条判据自己第一版也是恒真的：种子漏了 `canonical_id`，证据行全是 NULL，视图的 LEFT JOIN 永远匹配不上，于是每个用例都读到同一组常量。已在种子处补上，并加了一条 `evidence_rows` 自证断言。真库实测（一次性 PG17）：5 用例全过，含唯一能把该漂移抓出来的 `negative+unknown`。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 827 | `827_modality_verification_progress_view.sql` | `ba68e1b7fa292fe9d8dddf0bc86a769510fbdaa97655a50b52c0415053bdad09` | pending deploy（未应用于任何库；字节已冻结） |
