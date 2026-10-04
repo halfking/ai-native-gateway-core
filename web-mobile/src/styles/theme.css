@@ -1,0 +1,118 @@
+/* web-mobile theme.css — 设计 token（UI 规范 01 §5 + 17 §1）。
+   视觉体系沿用 NBJL --app-*/--kx-* token 命名与取值（浅色主色 #1e4fd6 /
+   暗色 #5b8cff），但本 SPA 不依赖 Element Plus——所有变量直接落值，
+   由 data-theme（entry-switch.js 首帧设置）切换亮暗。
+
+   断点 token（--app-bp-*）是文档化 SSOT；media query 无法引用 var()，
+   数值与本文件底部注释及 scripts 的 JS 镜像同步改。 */
+
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Semantic surfaces */
+  --app-bg: #f4f6f9;
+  --app-surface: #ffffff;
+  --app-surface-raised: #ffffff;
+  --app-surface-muted: #eef2f8;
+  --app-text: #152033;
+  --app-text-secondary: #5b6b82;
+  --app-text-muted: #8b9bb0;
+  --app-border: #dce3ee;
+  --app-border-subtle: #e8edf4;
+  --app-primary: #1e4fd6;
+  --app-on-primary: #ffffff;
+  --app-success: #16845b;
+  --app-warning: #b7791f;
+  --app-danger: #c2413b;
+  --app-info: #1e4fd6;
+  --app-focus: #1e4fd6;
+
+  /* Soft semantic fills (status chips — never color-only) */
+  --app-success-soft: #e6f7ef;
+  --app-warning-soft: #fff7e8;
+  --app-danger-soft: #fff1f1;
+  --app-info-soft: #eaf0ff;
+
+  /* App frame（compact 度量：顶栏 48 + 安全区，底栏 52 + 安全区） */
+  --app-header-bg: rgba(244, 246, 249, 0.92);
+  --app-header-border: var(--app-border);
+  --app-topbar-height: 48px;
+  --app-tabbar-height: 52px;
+
+  /* Elevation and shape */
+  --app-shadow-card: 0 1px 3px rgb(30 55 100 / 6%);
+  --app-shadow-dialog: 0 -8px 32px rgb(30 50 90 / 14%);
+  --app-shadow-focus: 0 12px 40px rgb(30 50 90 / 18%);
+  --app-radius-sm: 4px;
+  --app-radius: 8px;
+  --app-radius-lg: 12px;
+  --app-radius-pill: 999px;
+
+  /* Spacing / type / layers */
+  --app-space-1: 0.25rem;
+  --app-space-2: 0.5rem;
+  --app-space-3: 0.75rem;
+  --app-space-4: 1rem;
+  --app-space-content-x: 1rem;
+  --app-z-header: 10;
+  --app-z-sheet: 1000;
+  --app-z-focus: 1200;
+  --app-z-toast: 1400;
+  --app-transition: 200ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* Window class breakpoints（01 §2 SSOT 镜像） */
+  --app-bp-medium: 600px;
+  --app-bp-expanded: 960px;
+  --app-bp-large: 1280px;
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-left: env(safe-area-inset-left, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+
+  /* 中式表格语言（01 §5：全边框、斑马纹、数字右对齐） */
+  --cn-table-border: #dce3ee;
+  --cn-table-head-bg: #eef3fb;
+  --cn-table-zebra: #fafbfc;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --app-bg: #0f141c;
+  --app-surface: #1a222d;
+  --app-surface-raised: #1f2836;
+  --app-surface-muted: #121820;
+  --app-text: #e8eef7;
+  --app-text-secondary: #8b9bb0;
+  --app-text-muted: #6b7a90;
+  --app-border: #2a3544;
+  --app-border-subtle: #243040;
+  --app-primary: #5b8cff;
+  --app-on-primary: #0d1424;
+  --app-success: #3ecf8e;
+  --app-warning: #e0a53a;
+  --app-danger: #f07167;
+  --app-info: #5b8cff;
+  --app-focus: #5b8cff;
+  --app-success-soft: rgb(62 207 142 / 14%);
+  --app-warning-soft: rgb(224 165 58 / 14%);
+  --app-danger-soft: rgb(240 113 103 / 14%);
+  --app-info-soft: rgb(91 140 255 / 16%);
+  --app-header-bg: rgba(15, 20, 28, 0.92);
+  --cn-table-head-bg: #1c2736;
+  --cn-table-zebra: rgb(255 255 255 / 2.5%);
+  --app-shadow-card: 0 1px 4px rgb(0 0 0 / 30%);
+  --app-shadow-dialog: 0 -8px 32px rgb(0 0 0 / 52%);
+  --app-shadow-focus: 0 12px 40px rgb(0 0 0 / 60%);
+}
+
+/* ---- kx tokens（网关既有风格系统命名）---- */
+:root {
+  --kx-bg: var(--app-bg);
+  --kx-surface: var(--app-surface);
+  --kx-text: var(--app-text);
+  --kx-muted: var(--app-text-secondary);
+  --kx-border: var(--app-border);
+  --kx-primary: var(--app-primary);
+  --kx-primary-soft: var(--app-info-soft);
+}

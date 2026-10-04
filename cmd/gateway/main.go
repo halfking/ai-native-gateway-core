@@ -6030,6 +6030,16 @@ func main() {
 		slog.Info("maintain-web static handler configured", "dir", os.Getenv("MAINTAIN_WEB_DIST"))
 	}
 
+	// web-mobile SPA (Hyper mobile ops frontend) + assets. Same dual-SPA
+	// pattern as maintain: MOBILE_WEB_DIST points at the build, with a
+	// cwd-relative web-mobile/dist probe as the local default. When absent
+	// the /m/* and /m-assets/* routes simply aren't registered — bundles
+	// without a mobile build behave exactly as before.
+	mobileStatic := NewMobileStaticHandler(os.Getenv("MOBILE_WEB_DIST"))
+	if mobileStatic != nil {
+		slog.Info("web-mobile static handler configured", "dir", os.Getenv("MOBILE_WEB_DIST"))
+	}
+
 	slog.Info("CHECKPOINT: before router init")
 
 	// ── Router ────────────────────────────────────────────────────────────
@@ -6613,6 +6623,15 @@ func main() {
 		mux.Handle("/admin/config/reload",
 			middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(reloadHandler))
 		slog.Info("config: hot-reload endpoint enabled (admin auth required)", "path", configFile)
+	}
+
+	// web-mobile routes: register BEFORE the "/" SPA fallback so the desktop
+	// static handler never shadows them. /m/api/* and /m/v1/* 404 inside
+	// ServeSPA (never masked by index.html).
+	if mobileStatic != nil {
+		mux.Handle("/m-assets/", http.HandlerFunc(mobileStatic.ServeAssets))
+		mux.Handle("/m", http.HandlerFunc(mobileStatic.ServeSPA))
+		mux.Handle("/m/", http.HandlerFunc(mobileStatic.ServeSPA))
 	}
 
 	// Static files / SPA fallback

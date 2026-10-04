@@ -752,6 +752,19 @@ build_frontend() {
       fi
     else warn 'web/node_modules is missing; retaining existing web/dist'; fi
   fi
+  # web-mobile（Hyper 移动运维前端，挂 /m）：缺 web-mobile/ 目录时跳过
+  # （部署行为与引入前完全一致）；缺 node_modules 同样跳过并保留旧 dist。
+  # 失败语义与桌面端同门：响亮失败 + 证据日志，绝不静默部署陈旧移动端。
+  if [[ -f "$PROJECT_ROOT/web-mobile/package.json" ]]; then
+    if [[ -x "$PROJECT_ROOT/web-mobile/node_modules/.bin/vite" ]]; then
+      local mobile_log="$RUN_DIR/build-frontend-mobile.log"
+      if ! (cd "$PROJECT_ROOT/web-mobile" && npm run build) >"$mobile_log" 2>&1; then
+        printf '    [web-mobile] build failed; last 40 lines of %s:\n' "$mobile_log" >&2
+        tail -40 "$mobile_log" >&2 || true
+        die "web-mobile build failed (see $mobile_log) — refusing to deploy a release whose web-mobile/dist is stale"
+      fi
+    else warn 'web-mobile/node_modules is missing; retaining existing web-mobile/dist'; fi
+  fi
 }
 
 bump_local_version() {
@@ -785,7 +798,7 @@ stage_release() {
   # 给出明确错误，让后续 dl_verify_release 不会撞上 bash 自带的
   # 'SHA256SUMS: No such file or directory' 这种让人误以为是脚本 bug
   # 的晦涩信息。
-  dl_stage_release "$bundle" "$binary" "$PROJECT_ROOT/web/dist" "$VERSION_JSON" "$VERSION_FILE" "$RELEASE_VERSION" \
+  dl_stage_release "$bundle" "$binary" "$PROJECT_ROOT/web/dist" "$VERSION_JSON" "$VERSION_FILE" "$RELEASE_VERSION" "$PROJECT_ROOT/web-mobile/dist" \
     || die "release staging failed at $bundle — bundle is incomplete (no SHA256SUMS); the binary install or checksum generation failed. Check the [deploy-local] logs above for the failing step."
   dl_verify_release "$bundle" || die 'release checksum verification failed'
   printf '%s\n' "$bundle"
@@ -879,6 +892,7 @@ ARG BASE_IMAGE=alpine:3.22
 FROM ${BASE_IMAGE}
 COPY gateway /opt/llm-gateway-go/gateway
 COPY web /opt/llm-gateway-go/web
+COPY web-mobile /opt/llm-gateway-go/web-mobile
 COPY version.json /opt/llm-gateway-go/version.json
 WORKDIR /opt/llm-gateway-go
 ENTRYPOINT ["/opt/llm-gateway-go/gateway"]

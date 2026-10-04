@@ -82,6 +82,22 @@ if [[ $DRY_RUN == 0 ]]; then
     install -m 0755 "$cgo_out" "$BUILD_TMP/gateway" && rm -f "$cgo_out"
   fi
   [[ -s "$BUILD_TMP/gateway" ]] || { log "ERROR: 构建产物为空"; exit 1; }
+
+  # web-mobile（Hyper 移动端，挂 /m）：与桌面 web/ 同一进程同一端口。
+  # 缺 web-mobile/node_modules（未 install）时跳过——远端保留旧 dist，
+  # /m/* 行为不变；构建失败 fail-closed（与 binary 同门）。
+  mkdir -p "$ROOT_DIR/.build-local"
+  if [[ -f "$ROOT_DIR/web-mobile/package.json" && -x "$ROOT_DIR/web-mobile/node_modules/.bin/vite" ]]; then
+    log "构建 web-mobile..."
+    if ! (cd "$ROOT_DIR/web-mobile" && npm run build) > "$ROOT_DIR/.build-local/deploy-252-web-mobile.log" 2>&1; then
+      log "ERROR: web-mobile 构建失败（尾部日志）："
+      tail -30 "$ROOT_DIR/.build-local/deploy-252-web-mobile.log" >&2 || true
+      exit 1
+    fi
+    tar -C "$ROOT_DIR/web-mobile/dist" -czf "$BUILD_TMP/web-mobile.tgz" .
+  else
+    log "web-mobile 未构建（缺依赖），远端保留旧 dist"
+  fi
 fi
 
 # ── 生成实例 env（实例专属随机钥；不落日志）────────────────────────────────
@@ -143,6 +159,13 @@ scp -qi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new \
   "$ROOT_DIR/version.json" "root@$TARGET_HOST:$REMOTE_DIR/version.json"
 scp -qpi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new \
   "$BUILD_TMP/gateway.env" "root@$TARGET_HOST:$REMOTE_DIR/.env.dev.new"
+# web-mobile dist（若本轮构建了）：解包到 $REMOTE_DIR/web-mobile，供
+# gateway 的 cwd 探测（WorkingDirectory=$REMOTE_DIR）注册 /m/* 路由。
+if [[ -s "$BUILD_TMP/web-mobile.tgz" ]]; then
+  log "上传 web-mobile dist..."
+  scp -qi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new \
+    "$BUILD_TMP/web-mobile.tgz" "root@$TARGET_HOST:$REMOTE_DIR/web-mobile.tgz.new"
+fi
 
 log "安装 systemd 服务 $SERVICE..."
 ssh -qi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new "root@$TARGET_HOST" bash -s <<REMOTE
@@ -154,6 +177,13 @@ mv bin/gateway.new bin/gateway
 chmod 755 bin/gateway
 mv .env.dev.new .env.dev
 chmod 600 .env.dev
+if [ -f web-mobile.tgz.new ]; then
+  rm -rf web-mobile.new && mkdir web-mobile.new
+  tar -xzf web-mobile.tgz.new -C web-mobile.new
+  rm -f web-mobile.tgz.new
+  rm -rf web-mobile.prev && [ -d web-mobile ] && mv web-mobile web-mobile.prev
+  mv web-mobile.new web-mobile
+fi
 cat > /etc/systemd/system/$SERVICE.service <<UNIT
 [Unit]
 Description=LLM Gateway Go 252 dev (llmgo.itestu.cn backend)
@@ -164,6 +194,7 @@ Type=simple
 WorkingDirectory=$REMOTE_DIR
 EnvironmentFile=$REMOTE_DIR/.env.dev
 Environment=LLM_GATEWAY_LISTEN=$LISTEN
+Environment=MOBILE_WEB_DIST=$REMOTE_DIR/web-mobile
 ExecStart=$REMOTE_DIR/bin/gateway
 Restart=always
 RestartSec=5
