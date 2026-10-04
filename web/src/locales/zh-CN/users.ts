@@ -74,6 +74,7 @@ export default {
   loading: '加载中…',
   error: {
     loadFailed: '加载失败',
+    tenantsLoadFailed: '租户列表加载失败',
     usernamePasswordRequired: '用户名和密码不能为空',
     createFailed: '操作失败',
     deleteFailed: '删除失败',

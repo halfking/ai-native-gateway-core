@@ -274,6 +274,24 @@ type ProcessedRequest struct {
 	Success     bool
 	ErrorKind   string
 
+	// RequestStatus is the three-state lifecycle label the gateway already
+	// computes in telemetry (success | failure | rate_limited | in_progress),
+	// verbatim from RequestLogEntry.RequestStatus.
+	//
+	// It is NOT derivable from Success+ErrorKind: ResolveRequestStatus only ever
+	// returns success/failure/in_progress, while `rate_limited` is set explicitly
+	// by the rate-limit paths (request_log_pipeline.go, embeddings.go). The
+	// sessionv2mirror bridge used to drop it — the entry carried it, the mirror
+	// just never copied it — so public.session_turns could not tell a
+	// rate-limited rejection from a genuine upstream failure.
+	//
+	// Why this matters for the request_logs retirement: 394,614 rate_limited
+	// turns (≈446,819 including the stop-write window, audit §9.150) are already
+	// mirrored into session_turns. Once request_logs is gone, this field is the
+	// only surviving way to tell model-catalog scan traffic apart from real
+	// failures. See audit §9.150.4 / §9.155.
+	RequestStatus string
+
 	// V3.1 dispatch 9-stage (10 timestamps) queue timestamps (migration 513).
 	// Mirrors RequestLogEntry.T0ArrivedAt..T9ResponseEndAt from migration 491.
 	// Plumbed through to public.session_turns so the session timeline view
@@ -533,6 +551,10 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		StatusCode: req.StatusCode,
 		Success:    req.Success,
 		ErrorKind:  req.ErrorKind,
+		// Audit §9.150.4: the telemetry entry already carries this
+		// (including `rate_limited`); the mirror used to discard it. Pass it
+		// through verbatim — no derivation, no re-inference.
+		RequestStatus: req.RequestStatus,
 
 		// V3.2 dual-write (migration 513): copy the 10 dispatch queue
 		// timestamps from the ProcessedRequest (populated by the

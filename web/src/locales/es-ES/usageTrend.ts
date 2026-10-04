@@ -3,6 +3,7 @@ export default {
   pageTitle: 'Análisis de tendencias de uso',
   pageSub: 'Uso por modelo en el tiempo; filtra por proveedor / inquilino / clave API / modelo / métrica',
   loadFailed: 'Error al cargar',
+  degraded: "Datos de tendencia no disponibles (la vista {view} no está inicializada). La línea plana significa «no se calculó», no uso cero.",
   detailTimeoutHint: 'Al filtrar por clave de API se analizan los registros de solicitudes, lo que puede agotar el tiempo de espera en rangos amplios; prueba un rango más corto (p. ej., 7 días)',
   filterProvider: 'Proveedor',
   filterTenant: 'Inquilino',
@@ -10,6 +11,8 @@ export default {
   filterModel: 'Modelo',
   filterMetric: 'Métrica',
   filterAll: 'Todos',
+  filterProviderKeyFailed: "No se pudieron cargar las opciones de filtro de proveedor/clave: una lista vacía no significa que no haya ninguna",
+  filterTenantFailed: 'No se pudieron cargar las opciones de filtro de inquilinos',
   shareByMetric: 'Cuota (métrica)',
   sourceDetail: 'Detalle de solicitudes',
   // 2026-10-02 multiselección / borrar todo / actualización automática

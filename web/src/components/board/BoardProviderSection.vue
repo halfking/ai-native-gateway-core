@@ -11,7 +11,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import ProviderUsageExplorer from '../ProviderUsageExplorer.vue'
-import type { BoardPayload } from '../../api/board'
+import { isBoardPieDegraded, type BoardPayload } from '../../api/board'
 import { getUsageByProvider, downloadProviderUsageExport, type ProviderUsageRow } from '../../api/usage'
 import { getReportSummary } from '../../api/reportrollup'
 import { getProviderCredentials } from '../../api/providers'
@@ -33,6 +33,8 @@ const exportError = ref('')
 const usageRows = ref<ProviderUsageRow[]>([])
 const usageLoading = ref(false)
 const usageError = ref('')
+/** 降级原因（非空 = 聚合视图缺失，usageRows 不可当结论）。 */
+const usageDegraded = ref('')
 const qualityByName = ref<Map<string, number>>(new Map())
 /** provider_id → 余额合计（undefined = 无数据）。挂载后拉一次，随供应商集合变化补拉。 */
 const balanceById = ref<Map<number, number | 'plan' | undefined>>(new Map())
@@ -59,6 +61,16 @@ function pieFor(code: string, name: string) {
   return matchProviderPie(props.board?.pies?.providers ?? [], code, name)
 }
 
+/**
+ * providers 维度降级（服务端没算出来，而不是「真的没有供应商用量」）。
+ *
+ * 2026-10-03 补：前六个饼图维度都接了 degraded_pies，唯独 providers 这一格
+ * 没有 —— 它在 BoardDistGrid 之外单独渲染在 BoardProviderSection。
+ * 降级时 `pv-empty` 会显示「暂无数据」，与「这段时间真的没有供应商用量」同形。
+ * 这是本轮做维度名对账（Go 产出 7 个 vs 前端消费 6 个）才发现的遗漏。
+ */
+const providersDegraded = computed(() => isBoardPieDegraded(props.board, 'providers'))
+
 const providerCards = computed<ProviderCard[]>(() => {
   return buildProviderCards(usageRows.value, props.board?.pies?.providers ?? []).map((card) => ({
     ...card,
@@ -82,8 +94,13 @@ const tableRows = computed(() => {
 async function loadUsage() {
   usageLoading.value = true
   usageError.value = ''
+  usageDegraded.value = ''
   try {
-    usageRows.value = await getUsageByProvider(props.timeQuery, 50)
+    const res = await getUsageByProvider(props.timeQuery, 50)
+    // 2026-10-03: 后端由裸数组改为降级信封。降级时空列表不能当真值 ——
+    // 它说的是「聚合视图没迁移」，不是「这个窗口没有供应商用量」。
+    usageRows.value = res.items
+    usageDegraded.value = res.degraded ? res.reason : ''
   } catch (e: unknown) {
     usageRows.value = []
     usageError.value = e instanceof Error && e.message ? e.message : t('dashboard.loadError')
@@ -206,6 +223,14 @@ watch(usageRows, () => void loadBalances())
     </div>
 
     <p v-if="usageError" class="pv-export-error" role="alert">{{ usageError }}</p>
+    <!--
+      降级与 error 是两件事：error 是请求失败，degraded 是请求成功但服务端
+      没算出来。用 warning 措辞，且**抑制下面的空态** —— 「没有供应商用量」
+      是把「不知道」讲成「知道」。
+    -->
+    <p v-if="usageDegraded" class="pv-export-error" role="status">
+      ⚠️ {{ t('dataLifecycle.usageCost.degraded.title') }}（{{ usageDegraded }}）
+    </p>
     <div v-if="usageLoading && !providerCards.length" class="pv-grid">
       <div v-for="i in 5" :key="i" class="pv-card pv-card--skeleton" />
     </div>
@@ -238,6 +263,9 @@ watch(usageRows, () => void loadBalances())
           <i :style="{ width: Math.max(3, (card.costUsd / costMax) * 100).toFixed(1) + '%', background: avatarVar(i) }"></i>
         </div>
       </div>
+    </div>
+    <div v-else-if="providersDegraded" class="pv-empty" role="alert">
+      {{ t('dashboard.board.pieDegraded', { reason: props.board?.degraded_pies?.reason || t('dashboard.board.pieDegradedGeneric') }) }}
     </div>
     <div v-else class="pv-empty">{{ t('dashboard.board.empty') }}</div>
 

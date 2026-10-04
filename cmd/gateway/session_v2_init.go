@@ -198,6 +198,59 @@ func stopSessionDigestBackfill(job any) {
 	}
 }
 
+// startSessionRequestStatusBackfill boots the request_status backfill job
+// (migration 823 follow-up, 2026-10-04). Migration 823 added
+// session_turns.request_status and deliberately did NOT backfill it, so all
+// ~1.69M historical rows are NULL. The only authoritative source for those
+// labels is the retiring public.request_logs: once it is dropped the
+// rate_limited / success / failure / in_progress distinction is gone for good
+// (ResolveRequestStatus never emits rate_limited, so it cannot be re-derived).
+//
+// The job is a bounded one-time drain, NOT a migration: session_turns is 6.79 GB
+// across partitions (measured ~33 min / 1.52M row versions for a full
+// backfill), which would wedge startup.
+//
+// Retirement is a terminal state, not a failure: when the job detects that
+// request_logs no longer exists it logs one Info line and stops — it does not
+// retry or emit per-tick ERROR noise.
+//
+// Config (env, hot-reload not required for a bounded one-time drain):
+//
+//	SESSIONS_V2_REQUEST_STATUS_BACKFILL_ENABLED (default true) — kill switch
+//	SESSIONS_V2_REQUEST_STATUS_BACKFILL_RATE     (default 100)  — rows/second cap
+//	SESSIONS_V2_REQUEST_STATUS_BACKFILL_BATCH    (default 100)  — rows per tx batch
+//
+// Same lifecycle contract as startSessionDigestBackfill: the returned handle is
+// what stopSessionRequestStatusBackfill drains before the DB pool is closed.
+func startSessionRequestStatusBackfill(ctx context.Context, pool *pgxpool.Pool) any {
+	if pool == nil {
+		slog.Warn("session request_status backfill: nil pool, backfill disabled")
+		return nil
+	}
+	if !envBool("SESSIONS_V2_REQUEST_STATUS_BACKFILL_ENABLED", true) {
+		slog.Info("session request_status backfill disabled via SESSIONS_V2_REQUEST_STATUS_BACKFILL_ENABLED")
+		return nil
+	}
+	rate := envInt("SESSIONS_V2_REQUEST_STATUS_BACKFILL_RATE", 100)
+	batch := envInt("SESSIONS_V2_REQUEST_STATUS_BACKFILL_BATCH", 100)
+	slog.Info("session request_status backfill starting",
+		"rate_per_sec", rate, "batch", batch)
+	return v2.StartSessionRequestStatusBackfill(ctx, pool, batch, rate)
+}
+
+// stopSessionRequestStatusBackfill drains the backfill job's in-flight batch.
+// Nil-safe. Idempotent. MUST run before pools.CloseAll().
+func stopSessionRequestStatusBackfill(job any) {
+	if job == nil {
+		return
+	}
+	type stopper interface{ Stop() }
+	if s, ok := job.(stopper); ok {
+		s.Stop()
+		slog.Info("session request_status backfill stopped")
+	}
+}
+
 // stopSessionV2Writer drains the writer's lifecycle-managed aggregate
 // goroutine (spec §6.3). Nil-safe. Idempotent (writer.Stop is itself
 // sync.Once-guarded).

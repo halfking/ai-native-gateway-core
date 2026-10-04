@@ -91,7 +91,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"        //nolint:depguard // URSM v2 wiring (T20)
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api" //nolint:depguard // URSM v2 ModeOff constant (Task 8)
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/bootstrap"
 	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"         //nolint:depguard // URSM v2 persist writer
 	ursmstore "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store" //nolint:depguard // Lua script preload (2026-08-27 P1)
@@ -934,6 +933,14 @@ func main() {
 	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
 	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
 	var sessionDigestBackfillForShutdown any
+	// sessionRequestStatusBackfillForShutdown — request_status 存量回填
+	// (migration 823, 2026-10-04, 审计 §9.155/§9.156)：把
+	// request_logs.request_status 批量复制进 session_turns.request_status。
+	// 退役 request_logs 之后源表不复存在，存量标签就此定格，所以「回填
+	// 完成」是退役的前置条件（决策表 D9 第四条）。
+	// 作业在 request_logs 消失时安静停摆（不再重试、不刷 ERROR）。
+	// 与 digest 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空。
+	var sessionRequestStatusBackfillForShutdown any
 	// sessionMirrorOutboxReaperForShutdown — spec §12 GAP 2 closure (migration
 	// 712, 2026-09-15): durable replay for failed sessionv2mirror shadow
 	// writes. Same lifecycle as the aggregate outbox reaper.
@@ -1142,6 +1149,18 @@ func main() {
 		)
 		ursmV2Cfg.Mode = ursmv2api.ModeOff
 	}
+	// ursmV2Redis is the exact client the v2 manager was constructed on, and
+	// the exact client the coverage bootstrap must use.
+	//
+	// 2026-10-04 (db14 migration incident): bootstrap.Apply used to be handed
+	// redisClientForCache — the *gateway* client. As soon as URSM_V2_REDIS_DB
+	// pointed at a dedicated db, Apply wrote every node hash and the coverage
+	// manifest into the gateway db while the manager validated coverage in the
+	// dedicated one, so authoritative startup could never converge and always
+	// degraded to ModeOff. Reads and writes of one subsystem must not be able
+	// to drift onto two different databases, so the client is captured here and
+	// both consumers are wired from this single value.
+	var ursmV2Redis *redis.Client
 	if redisClientForCache != nil {
 		// 2026-10-03: URSM 可用独立 db（URSM_V2_REDIS_DB）。
 		//
@@ -1166,8 +1185,9 @@ func main() {
 					"db", ursmV2Cfg.RedisDB, "gateway_db", cfg.RedisDB)
 			}
 		}
+		ursmV2Redis = ursmRedis.Client()
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
-			Redis:  ursmRedis.Client(),
+			Redis:  ursmV2Redis,
 			Config: ursmV2Cfg,
 		})
 		// Shadow and canary cannot reject a route before their own guarded
@@ -1202,27 +1222,24 @@ func main() {
 	// begin accepting traffic.
 	if redisClientForCache != nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
 		if ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			result, bootstrapErr := bootstrap.Apply(ctx, bootstrap.Options{
-				Pool:        dbConn.Pool(),
-				Redis:       redisClientForCache.Client(),
-				KeyPrefix:   ursmV2Cfg.RedisKeyPrefix,
-				CoolSeconds: ursmV2Cfg.CoolSeconds,
-				SchemaMode:  ursmV2Cfg.KeySchemaMode,
-			})
+			// ursmV2Redis is non-nil whenever ursmV2Mgr is; the two are
+			// constructed together above. Passing the manager's own client is
+			// what keeps bootstrap writes and coverage validation on one db.
+			result, bootstrapErr := applyBootstrapWithRetry(dbConn.Pool(), ursmV2Redis, ursmV2Cfg)
 			if bootstrapErr != nil {
-				cancel()
 				if ursmStrictDeps {
 					slog.Error("ursm.v2: authoritative startup refused; legacy bootstrap failed", "error", bootstrapErr)
 					return
 				}
 				slog.Error("ursm.v2: authoritative bootstrap failed, degrading to ModeOff and continuing on legacy routing",
 					"error", bootstrapErr,
+					"attempts", bootstrapAttempts,
 					"hint", "set URSM_V2_STRICT_DEPS=true to fail fast instead of serving degraded",
 				)
 				ursmV2Cfg.Mode = ursmv2api.ModeOff
 				ursmV2Mgr = nil
 			} else {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				count, warmupErr := ursmV2Mgr.WarmupFromCoverage(ctx)
 				cancel()
 				if warmupErr != nil {
@@ -1248,7 +1265,7 @@ func main() {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
-				n, err := ursmcache.MigrateFpSlotsNodeStates(ctx, redisClientForCache.Client())
+				n, err := ursmcache.MigrateFpSlotsNodeStates(ctx, ursmV2Redis)
 				if err != nil {
 					slog.Warn("fpslots node-state migration failed", "error", err)
 					return
@@ -1268,7 +1285,7 @@ func main() {
 		persistEnabled := ursmV2Cfg.Mode != ursmv2api.ModeOff &&
 			(ursmV2Cfg.Mode != ursmv2api.ModeShadow || ursmV2Cfg.ShadowDoubleWrite)
 		if persistEnabled {
-			persistWriter := persist.New(redisClientForCache.Client(), ursmV2Cfg.RedisKeyPrefix, dbConn.Pool())
+			persistWriter := persist.New(ursmV2Redis, ursmV2Cfg.RedisKeyPrefix, dbConn.Pool())
 			persistInterval := time.Duration(ursmV2Cfg.PersistIntervalSec) * time.Second
 			if persistInterval == 0 {
 				persistInterval = 60 * time.Second // default 1 minute
@@ -1333,9 +1350,9 @@ func main() {
 		stickyStore *ursmcache.StickyStore
 		intentStore *ursmcache.IntentStore
 	)
-	if redisClientForCache != nil {
-		stickyStore = ursmcache.NewStickyStore(redisClientForCache.Client(), 100000, time.Hour)
-		intentStore = ursmcache.NewIntentStore(redisClientForCache.Client(), 50000, time.Minute)
+	if ursmV2Redis != nil {
+		stickyStore = ursmcache.NewStickyStore(ursmV2Redis, 100000, time.Hour)
+		intentStore = ursmcache.NewIntentStore(ursmV2Redis, 50000, time.Minute)
 	}
 
 	// V2-P3.2: turn_logs aggregator — flushes 24h-TTL per-stage logs into
@@ -1508,8 +1525,8 @@ func main() {
 		// 无 Redis 部署（252 形态）退化为纯本实例内存窗口。
 		stickyLoadTrackerForShutdown = executors.NewStickyLoadTracker()
 		stickyLoadTracker := stickyLoadTrackerForShutdown
-		if redisClientForCache != nil {
-			stickyLoadTracker.SetStore(ursmcache.NewStickyLoadStore(redisClientForCache.Client()))
+		if ursmV2Redis != nil {
+			stickyLoadTracker.SetStore(ursmcache.NewStickyLoadStore(ursmV2Redis))
 		}
 		router.StickyLoad = stickyLoadTracker
 
@@ -2732,6 +2749,11 @@ func main() {
 		// 守卫）、空闲指数退避；可通过 SESSIONS_V2_DIGEST_BACKFILL_ENABLED=false
 		// 关闭。与 reaper 同样绑定网关生命周期。
 		sessionDigestBackfillForShutdown = startSessionDigestBackfill(context.Background(), dbConn.Pool())
+		// request_status 存量回填：限速默认 100 rows/s、幂等
+		// （AND request_status IS NULL 守卫）、游标式分页；可通过
+		// SESSIONS_V2_REQUEST_STATUS_BACKFILL_ENABLED=false 关闭。
+		// 源表被删后自动安静停摆。
+		sessionRequestStatusBackfillForShutdown = startSessionRequestStatusBackfill(context.Background(), dbConn.Pool())
 	}
 
 	// v3 (2026-06-19) session-level intelligent compression.
@@ -3548,7 +3570,7 @@ func main() {
 					dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
 					adapter.withRebuild(rebuildOptions{
 						pool:        dbConn.Pool(),
-						rdb:         redisClientForCache.Client(),
+						rdb:         ursmV2Redis,
 						keyPrefix:   ursmV2Cfg.RedisKeyPrefix,
 						coolSeconds: ursmV2Cfg.CoolSeconds,
 						schemaMode:  ursmV2Cfg.KeySchemaMode,
@@ -7786,6 +7808,9 @@ func main() {
 		// turn-digest 第二阶段: 排空回填批。同样必须在 pools.CloseAll 之前，
 		// 让 in-flight 批的事务还能到达数据库。
 		stopSessionDigestBackfill(sessionDigestBackfillForShutdown)
+		// request_status 回填：同样必须在 pools.CloseAll 之前排空
+		// in-flight 批，让其事务还能到达数据库。
+		stopSessionRequestStatusBackfill(sessionRequestStatusBackfillForShutdown)
 		// P2.2 Track B: 排空异步路由反馈批量队列。必须在 pools.CloseAll 之前
 		// （批量 INSERT 要还能到达 DB）；约 5s 超时防慢库拖住退出——队列本身
 		// 满时丢弃计数，Flush 失败只会在 routingopt 内部 slog，绝不阻塞退出。

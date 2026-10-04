@@ -307,9 +307,16 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry, sessionID string)
 		ProviderID:      providerID(entry.ProviderID),
 		Success:         entry.Success,
 		ErrorKind:       strVal(entry.ErrorKind),
-		StatusCode:      statusCode(entry),
-		StartedAt:       eventTime,
-		CompletedAt:     eventTime,
+		// Audit §9.150.4 / §9.155: copy the lifecycle label verbatim. It is
+		// NOT recoverable from Success/ErrorKind — ResolveRequestStatus never
+		// returns `rate_limited`, that value is set explicitly by the
+		// rate-limit paths. Dropping it here is what made
+		// model-catalog scan traffic indistinguishable from real failures on
+		// the session side.
+		RequestStatus: strVal(entry.RequestStatus),
+		StatusCode:    statusCode(entry),
+		StartedAt:     eventTime,
+		CompletedAt:   eventTime,
 	}
 
 	// Usage & cost

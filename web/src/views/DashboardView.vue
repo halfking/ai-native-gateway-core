@@ -60,6 +60,8 @@ const boardState = useDashboardBoard()
 const drawerLoading = ref(false)
 const models = ref<ModelUsage[]>([])
 const hotKeys = ref<HotApiKeyEntry[]>([])
+/** 抽屉降级原因（非空 = 聚合视图缺失，下面两个列表不可当真值）。 */
+const drawerDegraded = ref('')
 
 onMounted(() => {
   const fromQuery = normalizeTab(route.query.tab)
@@ -134,8 +136,15 @@ async function loadDrawerData() {
       getUsageByModel(boardState.days.value),
       getHotApiKeys(boardState.days.value),
     ])
-    models.value = modelsData
-    hotKeys.value = hotKeysData
+    // 2026-10-03: 两个端点后端从裸数组改为降级信封。若任一为 degraded，
+    // 空列表就不是「没有数据」而是「聚合视图没迁移」—— 必须让用户看见，
+    // 否则抽屉照旧渲染成零行，与本轮修掉的缺陷同形。
+    const reason = modelsData.degraded
+      ? modelsData.reason
+      : hotKeysData.degraded ? hotKeysData.reason : ''
+    if (reason) drawerDegraded.value = reason
+    models.value = modelsData.items
+    hotKeys.value = hotKeysData.items
   } catch {
     /* non-blocking */
   } finally {
@@ -167,6 +176,7 @@ provide('dashboardDrawer', {
   models,
   hotKeys,
   drawerLoading,
+  drawerDegraded,
   loadDrawerData,
 })
 

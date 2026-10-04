@@ -42,6 +42,8 @@ export default {
     createdAt: '时间',
   },
   empty: '暂无合规记录',
+  recordsLoadFailed: 'Treffer-Datensätze konnten nicht geladen werden',
+  recordsNotLoaded: 'Treffer-Datensätze nicht geladen — die Tabelle unten ist kein Abfrageergebnis',
   pagination: {
     previous: '上一页',
     next: '下一页',

@@ -25,6 +25,23 @@ const sessions = ref<CompressionSessionItem[]>([])
 const sessionsCount = ref(0)
 const sessionsLoading = ref(false)
 
+// 2026-10-03：三处静默吞错的代价是页面在说假话。
+//   · loadStats 失败   → stats-row 整块不渲染（v-if="stats"），
+//                        页面看起来像「这段时间没有任何压缩」
+//   · loadSessions 失败 → empty-hint 显示「没有会话」，
+//                        这是**直接的事实错误**：不是没有，是没查到
+//   · loadCurrentConfig 失败 → 配置条停在硬编码默认值，
+//                        把默认值当成服务端当前配置讲出去
+// 三者互相独立，所以分开记；成功时各自清空。
+const statsError = ref('')
+const sessionsError = ref('')
+const configError = ref('')
+
+/** 合并成一句横幅：哪几块没查到要说清楚，不能只说「加载失败」。 */
+const loadError = computed(() =>
+  [statsError.value, sessionsError.value, configError.value].filter(Boolean).join('；'),
+)
+
 // Current compression configuration (read-only chips), kept in sync with
 // the editable copy in Session Configuration → Compression.
 const showCurrentConfig = ref(false)
@@ -66,8 +83,12 @@ async function loadStats() {
       params.hours = displayHours.value
     }
     stats.value = await getCompressionStats(params)
-  } catch {
-    // non-blocking
+    statsError.value = ''
+  } catch (e: unknown) {
+    // 原来只写 `// non-blocking`：面板整块消失，页面与「真的没有数据」同形。
+    statsError.value = e instanceof Error && e.message
+      ? e.message
+      : t('compression.load.statsFailed')
   } finally {
     loading.value = false
   }
@@ -92,8 +113,12 @@ async function loadSessions() {
     const resp = await getCompressionSessions(params)
     sessions.value = resp.items
     sessionsCount.value = resp.count
-  } catch {
-    // non-blocking
+    sessionsError.value = ''
+  } catch (e: unknown) {
+    // 原来只写 `// non-blocking`：随后渲染的是「没有会话」这句事实陈述。
+    sessionsError.value = e instanceof Error && e.message
+      ? e.message
+      : t('compression.load.sessionsFailed')
   } finally {
     sessionsLoading.value = false
   }
@@ -104,7 +129,11 @@ async function loadAll() {
 }
 
 // Load the current compression configuration for the read-only chip bar.
-// Failures are non-blocking — the bar simply stays at defaults.
+//
+// 2026-10-03：原来注释写「Failures are non-blocking — the bar simply stays
+// at defaults」。但这条配置条**不是装饰**：`getSetting` 返回的
+// `spec.default` 是**该设置的出厂默认值**，不是服务端当前值。
+// 读失败时把默认值当成「当前配置」讲出去，就是一句假话。
 async function loadCurrentConfig() {
   try {
     const [en, mode, win, model] = await Promise.all([
@@ -119,8 +148,11 @@ async function loadCurrentConfig() {
       window: win.value ?? win.spec.default ?? 0.8,
       model: model.value ?? model.spec.default ?? '',
     }
-  } catch {
-    // keep defaults
+    configError.value = ''
+  } catch (e: unknown) {
+    configError.value = e instanceof Error && e.message
+      ? e.message
+      : t('compression.load.configFailed')
   }
 }
 
@@ -291,6 +323,13 @@ watch(activeTab, loadAll)
       </button>
     </div>
 
+    <!--
+      2026-10-03：新增。三处加载失败原来都只写 `// non-blocking`，
+      页面因此把「没查到」讲成「没有」：统计块整块不渲染、会话表显示
+      「没有会话」、配置条显示出厂默认值。横幅要说清**哪几块**没查到。
+    -->
+    <div v-if="loadError" class="load-error-banner" role="status">{{ loadError }}</div>
+
     <!-- Current configuration chips (read-only; editable in Session Configuration → Compression) -->
     <div class="current-config-bar">
       <button class="config-toggle" @click="showCurrentConfig = !showCurrentConfig">
@@ -403,6 +442,8 @@ watch(activeTab, loadAll)
         <span class="count-badge">{{ t('compression.table.count', { n: sessionsCount }) }}</span>
       </div>
       <div v-if="sessionsLoading" class="loading-hint">{{ t('compression.loading') }}</div>
+      <!-- 降级时**不说「没有会话」**——那是「不知道」被讲成「知道」 -->
+      <div v-else-if="sessionsError" class="empty-hint load-error-hint">{{ sessionsError }}</div>
       <div v-else-if="!sessions.length" class="empty-hint">{{ t('compression.table.empty') }}</div>
       <div v-else class="table-wrap">
         <table class="data-table">
@@ -460,6 +501,18 @@ watch(activeTab, loadAll)
     </div>
   </div>
 </template>
+
+.load-error-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: var(--warning);
+  font-size: 12px;
+}
+.load-error-hint {
+  color: var(--warning);
+}
 
 <style scoped>
 .compression-view {

@@ -80,6 +80,18 @@ let errorTimer: number | null = null
 let messageTimer: number | null = null
 
 const status = ref<BootstrapStatus | null>(null)
+// 2026-10-03：原来 `catch { status.value = null }`，而模板有两处按
+// 「status 为空 ⇒ 未激活 / 离线」渲染，于是**同一个 null 造出两句断言**：
+//
+//   ① `status?.center_online ? '在线（可自动注册）' : '离线（不阻塞激活）'`
+//      ⇒ 本地 /api/system/bootstrap/status 取不到时，页面安慰用户「不阻塞激活」，
+//        而真相是「状态未知」。这是**首启向导**上的假话。
+//   ② `status?.message || '可以登录本地后台开始使用。联网后中心将自动同步实例状态。'`
+//      ⇒ 默认兜底文案在没有数据的情况下断言「已就绪」。
+//
+// 而 onMounted 里 `if (status.value?.activated)` 把「未知」当成「未激活」，
+// 会把一台**其实已激活**的机器重新领进激活流程 —— 那是本处最重的一条。
+const statusError = ref('')
 const fingerprint = ref<FingerprintInfo | null>(null)
 const hardwareHash = ref('')
 const networkSummary = ref('')
@@ -100,6 +112,7 @@ const canActivate = computed(() => {
 async function loadStatus() {
   try {
     status.value = await bootstrapApi.status()
+    statusError.value = ''
     if (status.value.instance_id) {
       setInstanceId(status.value.instance_id)
       instanceId.value = status.value.instance_id
@@ -111,8 +124,9 @@ async function loadStatus() {
       markBootstrapActivated()
       step.value = Math.max(step.value, 4)
     }
-  } catch {
+  } catch (e) {
     status.value = null
+    statusError.value = e instanceof Error && e.message ? e.message : '本机激活状态读取失败'
   }
 }
 
@@ -379,6 +393,13 @@ function skipToLogin() {
 
 onMounted(async () => {
   await loadStatus()
+  // ⚠️ 「状态未知」不等于「未激活」。原来 `status.value?.activated` 为假就往下走，
+  // 于是一次本地 status 失败会把一台**已经激活**的机器领进激活流程。
+  // 现在：状态未知时只报状态未知并停下，不替用户下「未激活」的结论。
+  if (statusError.value) {
+    error.value = `无法确认本机激活状态：${statusError.value}。请确认本机网关服务正常后刷新重试。`
+    return
+  }
   // 已激活且未点"重新激活"→ 直接到结束页，不要再弹协议。
   if (status.value?.activated) {
     step.value = 4
@@ -462,7 +483,10 @@ onMounted(async () => {
               <span class="mono">{{ fingerprint.os }} / {{ fingerprint.arch || '—' }}</span>
             </el-descriptions-item>
             <el-descriptions-item label="网络状态">
-              <el-tag :type="status?.center_online ? 'success' : 'info'" size="small">
+              <!-- 三态，不是两态。原来的二态把「本地 status 取不到」也渲染成
+                   「离线（不阻塞激活）」——用一句安慰话覆盖了一个未知的量。 -->
+              <el-tag v-if="statusError" :type="'danger'" size="small">状态未知</el-tag>
+              <el-tag v-else :type="status?.center_online ? 'success' : 'info'" size="small">
                 {{ status?.center_online ? '在线（可自动注册）' : '离线（不阻塞激活）' }}
               </el-tag>
             </el-descriptions-item>
@@ -571,7 +595,9 @@ onMounted(async () => {
         <template #header>激活完成</template>
         <p><strong>本机网关已就绪。</strong></p>
         <p class="muted">
-          {{ status?.message || '可以登录本地后台开始使用。联网后中心将自动同步实例状态。' }}
+          <!-- 同理：默认兜底文案在没有 status 时断言「已就绪」，那是拿不到时的编造 -->
+          <template v-if="statusError">本机状态未确认（{{ statusError }}），上面的「已就绪」不代表激活已完成。</template>
+          <template v-else>{{ status?.message || '可以登录本地后台开始使用。联网后中心将自动同步实例状态。' }}</template>
         </p>
         <el-descriptions v-if="hardwareHash" :column="1" size="small" class="mt" border>
           <el-descriptions-item label="实例 ID">{{ instanceId }}</el-descriptions-item>

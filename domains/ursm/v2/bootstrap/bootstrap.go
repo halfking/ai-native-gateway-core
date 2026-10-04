@@ -56,6 +56,23 @@ type mappedNode struct {
 // missing Redis nodes, and publishes the complete coverage manifest. Existing
 // admin overrides and live v2 records are never overwritten unless explicitly
 // requested by the standalone migration command.
+//
+// CONTRACT (2026-10-04, db14 migration incident). Node keys carry a TTL, so a
+// node that nobody routes to decays out of Redis on its own — a steady-state
+// namespace is therefore always *smaller* than the full set of PG-known nodes.
+// recovery.ValidateCoverage nevertheless demands that every manifest member
+// exist, and that exact-match contract is satisfiable only because Apply writes
+// every PG-known node that is missing (selectWrites treats exists==0 as always
+// writable, and only skips keys that are present *and* admin-held). Two
+// consequences callers must respect:
+//
+//  1. Never call ValidateCoverage / WarmupFromCoverage without a preceding
+//     Apply against the SAME redis.Client. A different client means the writes
+//     and the validation observe two different databases and coverage can
+//     never converge.
+//  2. Decay between restarts is expected and self-healing; a coverage failure
+//     right after a successful Apply on the same client is a real defect, not
+//     TTL noise, and must not be treated as routine.
 func Apply(ctx context.Context, opts Options) (Result, error) {
 	if opts.Pool == nil {
 		return Result{}, fmt.Errorf("legacy probe database is unavailable")
@@ -129,14 +146,54 @@ func Apply(ctx context.Context, opts Options) (Result, error) {
 		}
 	}
 
+	// 2026-10-04 (db14 migration incident): the manifest used to be built from
+	// the pre-write `mapped` list — i.e. from what PG *claims* should exist,
+	// never from what Redis actually holds. That let the manifest over-claim,
+	// and recovery.ValidateCoverage (which demands every member exist with
+	// generation+available) then failed on keys nobody had ever published.
+	// Deriving the manifest from a post-write EXISTS probe makes over-claiming
+	// structurally impossible instead of merely unlikely.
+	present, err := presentCoverage(ctx, opts.Redis, coverage)
+	if err != nil {
+		return Result{}, fmt.Errorf("verify URSM v2 coverage candidates: %w", err)
+	}
 	coverageKey := store.CoverageKey(opts.KeyPrefix)
 	if opts.TenantID != "" {
 		coverageKey += ":tenant:" + opts.TenantID
 	}
-	if err := replaceCoverageManifest(ctx, opts.Redis, coverageKey, coverage); err != nil {
+	if err := replaceCoverageManifest(ctx, opts.Redis, coverageKey, present); err != nil {
 		return Result{}, fmt.Errorf("publish URSM v2 coverage manifest: %w", err)
 	}
 	return Result{Total: len(nodes), Written: len(toWrite), Skipped: skipped}, nil
+}
+
+// presentCoverage keeps only the manifest candidates that really exist in
+// Redis, so the published manifest never claims a node state that is not
+// there. Batched to bound pipeline size; the caller already paid for a full
+// write phase, so this is a second cheap probe over the same key set.
+func presentCoverage(ctx context.Context, rdb *redis.Client, candidates []string) ([]string, error) {
+	present := make([]string, 0, len(candidates))
+	for start := 0; start < len(candidates); start += 500 {
+		end := start + 500
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		batch := candidates[start:end]
+		pipe := rdb.Pipeline()
+		exists := make([]*redis.IntCmd, len(batch))
+		for i, key := range batch {
+			exists[i] = pipe.Exists(ctx, key)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, err
+		}
+		for i, key := range batch {
+			if exists[i].Val() == 1 {
+				present = append(present, key)
+			}
+		}
+	}
+	return present, nil
 }
 
 func readProbeRows(ctx context.Context, pool *pgxpool.Pool, tenantID string) ([]probeRow, error) {
@@ -302,6 +359,16 @@ func replaceCoverageManifest(ctx context.Context, rdb *redis.Client, key string,
 	if err := rdb.Del(ctx, tmp).Err(); err != nil {
 		return err
 	}
+	// A refused publish must not leave the staging set behind: it is a full
+	// duplicate of the intended manifest, it is visible to any concurrent
+	// reader, and every refusal would add another copy. Cleanup runs on every
+	// path that does not end in the rename below.
+	published := false
+	defer func() {
+		if !published {
+			_ = rdb.Del(context.Background(), tmp).Err()
+		}
+	}()
 	args := make([]interface{}, 0, len(members))
 	for _, member := range members {
 		args = append(args, member)
@@ -318,7 +385,68 @@ func replaceCoverageManifest(ctx context.Context, rdb *redis.Client, key string,
 	if len(stored) != len(members) {
 		return fmt.Errorf("coverage manifest count mismatch: expected=%d got=%d", len(members), len(stored))
 	}
-	return rdb.Rename(ctx, tmp, key).Err()
+	// 2026-10-04 (db14 migration incident): the manifest is a *promise* that
+	// recovery.ValidateCoverage will enforce at the very next startup. Publishing
+	// a promise the namespace cannot keep turns the next restart into a silent
+	// degrade to ModeOff. Verify here — at the one place that still knows how
+	// to fix it — instead of letting it surface three layers away.
+	verified, err := verifyManifestMembers(ctx, rdb, members)
+	if err != nil {
+		return err
+	}
+	if len(verified) != len(members) {
+		return fmt.Errorf("coverage manifest over-claims: %d of %d members absent from Redis (first=%s)",
+			len(members)-len(verified), len(members), firstAbsent(members, verified))
+	}
+	if err := rdb.Rename(ctx, tmp, key).Err(); err != nil {
+		return err
+	}
+	published = true
+	return nil
+}
+
+// verifyManifestMembers returns the subset of members that exist as hashes
+// carrying the two fields recovery.ValidateCoverage reads. Membership is
+// compared as a set, so a caller may pass them in any order.
+func verifyManifestMembers(ctx context.Context, rdb *redis.Client, members []string) (map[string]struct{}, error) {
+	ok := make(map[string]struct{}, len(members))
+	for start := 0; start < len(members); start += 500 {
+		end := start + 500
+		if end > len(members) {
+			end = len(members)
+		}
+		batch := members[start:end]
+		pipe := rdb.Pipeline()
+		exists := make([]*redis.IntCmd, len(batch))
+		fields := make([]*redis.SliceCmd, len(batch))
+		for i, key := range batch {
+			exists[i] = pipe.Exists(ctx, key)
+			fields[i] = pipe.HMGet(ctx, key, "generation", "available")
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, err
+		}
+		for i, key := range batch {
+			if exists[i].Val() != 1 {
+				continue
+			}
+			values, err := fields[i].Result()
+			if err != nil || len(values) < 2 || values[0] == nil || values[1] == nil {
+				continue
+			}
+			ok[key] = struct{}{}
+		}
+	}
+	return ok, nil
+}
+
+func firstAbsent(members []string, present map[string]struct{}) string {
+	for _, key := range members {
+		if _, ok := present[key]; !ok {
+			return key
+		}
+	}
+	return ""
 }
 
 func boolString(value bool) string {

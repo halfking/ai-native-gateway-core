@@ -3,6 +3,11 @@ export default {
   title: '压缩概览',
   refresh: '更新',
   loading: '読み込み中…',
+  load: {
+    statsFailed: '圧縮統計の取得に失敗しました',
+    sessionsFailed: '圧縮セッション一覧の取得に失敗しました',
+    configFailed: '圧縮設定の取得に失敗しました。下の値は出荷時デフォルトであり現在の設定ではありません',
+  },
   tabs: {
     h24: '24時間',
     d7: '7日',

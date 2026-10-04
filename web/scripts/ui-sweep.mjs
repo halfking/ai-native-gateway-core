@@ -19,6 +19,12 @@
  *   node scripts/ui-sweep.mjs --only /providers,/tenants
  *   node scripts/ui-sweep.mjs --strict               # 有 P0/P1 时 exit 1
  *
+ * 两个可选环境变量（都默认关闭，用来做 A/B 与跨轮次对照）：
+ *   UI_SWEEP_SETTLE_MS=6000   拆除前沉降等待上限（0=不沉降，第五轮行为）
+ *   UI_SWEEP_BASELINE=reports/xxx.json  与该基线逐页对比，检出「渲染塌陷」
+ *   例：node scripts/ui-sweep.mjs --json reports/now.json \
+ *       && UI_SWEEP_BASELINE=reports/prev.json node scripts/ui-sweep.mjs ...
+ *
  * 鉴权：走 extraHTTPHeaders 注入 Authorization，**不碰 cookie / localStorage**。
  * 路由清单从 src/router.ts 直接解析，不另维护一份（避免清单漂移）。
  *
@@ -43,7 +49,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
-import { resolve, dirname, join } from 'node:path'
+import { resolve, dirname, join, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
@@ -1145,6 +1151,10 @@ if (args.includes('--selftest')) {
 }
 const BASE = (process.env.BASE_URL || 'http://127.0.0.1:5781').replace(/\/$/, '')
 const TOKEN = process.env.GATEWAY_DEV_AUTH_TOKEN || ''
+// T3：拆除前沉降毫秒上限。0 = 保持第五轮行为（固定等 3s 就拆）。
+// 设它是为了做 A/B 对照，不是为了「调大点说不定更稳」——
+// 第五轮正是因为样本量 1 才没敢动它。
+const SETTLE_MS = Number(process.env.UI_SWEEP_SETTLE_MS || '0')
 const STRICT = args.includes('--strict')
 if (args.includes('--overlays')) {
   await runOverlaySweep()
@@ -1189,19 +1199,47 @@ for (const r of routesList) {
   const page = await ctx.newPage()
   const errors = []
   const badReqs = []
+  const teardownAborted = []
+  // tearingDown 只在 page.close() 期间为真。做成每路由局部而不是模块级全局：
+  // 全局标志在并发扫多条路由时会把**别的**路由的中止也误算成自己的。
+  let tearingDown = false
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text().slice(0, 300))
   })
   page.on('pageerror', (e) => errors.push(`[pageerror] ${String(e).slice(0, 300)}`))
+  // T3：在途请求台账。沉降判据要靠它判断「网络是否已安静」，
+  // 拆除归因也要靠它区分「产品中止」与「我们拆页面中止」。
+  const inflight = new Set()
+  // 活动标记：任何请求的开始/结束都会置位，供沉降循环判断「网络是否真的安静」。
+  // 不用 size 变化代替活动，是因为「一个结束 + 一个开始」时 size 不变。
+  let sawActivity = false
+  page.on('request', (q) => { inflight.add(q); sawActivity = true })
+  const settleDone = (q) => { if (inflight.delete(q)) sawActivity = true }
+  page.on('requestfinished', settleDone)
+  page.on('requestfailed', (r) => {
+    const wasInflight = inflight.has(r)
+    settleDone(r)
+    const f = r.failure()?.errorText || 'unknown'
+    const u = r.url().replace(BASE, '').slice(0, 140)
+    // 拆除页面时浏览器会中止所有在途请求。这是量具的动作，不是产品缺陷 ——
+    // 第五轮 18:0x 那次 /dashboard 的 4 条 ERR_ABORTED 就是这么来的，
+    // 而沉降 6s 的独立探测显示 requestfailed=0。
+    // ⚠️ 三个条件必须同时成立才豁免：拆除期间 + ERR_ABORTED + 拆除瞬间确实在飞。
+    // 放宽任一条，就会把真实的产品侧中止重新藏进「已豁免」里。
+    // （第三条件看着近乎恒真——requestfailed 只对已发出的请求触发——
+    //  但它把「谁在什么时候在飞」钉死，将来若改成复用 inflight 台账做别的事，
+    //  这里不会默默变成一个空条件。）
+    if (tearingDown && /ERR_ABORTED/.test(f) && wasInflight) {
+      teardownAborted.push(`[teardown] ${f} ${u}`)
+      return
+    }
+    badReqs.push(`[requestfailed] ${f} ${u}`)
+  })
   page.on('response', (res) => {
     const u = res.url()
     // 记**所有**失败响应，不只 /api/。曾经只记 /api/，结果 console 报 500 而
     // badReqs 是空数组 —— 「没记到」和「没有」在报告上长得一样。
     if (res.status() >= 400) badReqs.push(`${res.status()} ${u.replace(BASE, '').slice(0, 160)}`)
-  })
-  page.on('requestfailed', (r) => {
-    const f = r.failure()?.errorText || 'unknown'
-    badReqs.push(`[requestfailed] ${f} ${r.url().replace(BASE, '').slice(0, 140)}`)
   })
 
   let probe = null
@@ -1214,11 +1252,38 @@ for (const r of routesList) {
     // 差点被当成「租户页没数据」去查数据问题。判据的阈值本身就是被测结论的一部分。
     await page.waitForSelector('.main-body > *', { timeout: 15000 }).catch(() => {})
     await page.waitForTimeout(3000)
+    if (SETTLE_MS > 0) {
+      // T3：让在途请求先落定再探针/拆除。
+      // 原来读完 DOM 固定等 3s 就 page.close()，此时仍在飞的请求被拆除动作
+      // 中止，报 net::ERR_ABORTED，被 requestfailed 收进 badReqs → 判 P1。
+      // 那是**量具自己造成的失败**，形状与产品缺陷一模一样。
+      // 用有界轮询而不是 networkidle：SSE/轮询页面永远等不到 networkidle。
+      const deadline = Date.now() + SETTLE_MS
+      let last = inflight.size
+      let stable = 0
+      while (Date.now() < deadline) {
+        await page.waitForTimeout(250)
+        // 比 size 而不是比内容：一个请求结束、另一个同时发起时 size 不变，
+        // 只看 size 会把这种「仍在活动」误判成已安静。
+        // 活动性用「两次快照之间是否有请求开始或结束」判定。
+        if (inflight.size === 0) break
+        if (inflight.size === last && !sawActivity) {
+          if (++stable >= 4) break // 连续 1s 无活动
+        } else {
+          stable = 0
+          last = inflight.size
+        }
+        sawActivity = false
+      }
+    }
     probe = await page.evaluate(PAGE_PROBE)
   } catch (e) {
     err = String(e).slice(0, 200)
   }
+  // 拆除前打标记：此后的 ERR_ABORTED 是**我们**拆页面造成的，不是产品失败。
+  tearingDown = true
   await page.close()
+  tearingDown = false
 
   // 判级
   const P0 = [] // 阻断级：页面没渲染 / 未捕获异常
@@ -1246,9 +1311,12 @@ for (const r of routesList) {
     scanned: probe?.scanned ?? 0, textLen: probe?.textLen ?? 0, visibleBlocks: probe?.visibleBlocks ?? 0,
     bodyWidth: probe?.bodyWidth ?? 0, rootWidth: probe?.rootWidth ?? 0,
     badReqs: [...new Set(badReqs)].slice(0, 5), errors: [...new Set(errors)].slice(0, 5),
+    // 豁免必须留痕。豁免本身是判据，藏起来就等于「没发生过」。
+    teardownAborted: teardownAborted.length,
   })
   const mark = P0.length ? '✗' : P1.length ? '!' : '✓'
-  process.stdout.write(`${mark} [${String(i).padStart(3)}/${routesList.length}] ${r.path}  (元素 ${probe?.scanned ?? 0} / 文本 ${probe?.textLen ?? 0} 字)\n`)
+  const td = teardownAborted.length ? `  [拆除中止 ${teardownAborted.length}]` : ''
+  process.stdout.write(`${mark} [${String(i).padStart(3)}/${routesList.length}] ${r.path}  (元素 ${probe?.scanned ?? 0} / 文本 ${probe?.textLen ?? 0} 字)${td}\n`)
 }
 
 await browser.close()
@@ -1260,27 +1328,98 @@ const clean = results.length - p0.length - p1.length
 // 空壳页：0 违规但几乎没有内容。分出来单列，避免混进「干净」计数里。
 const hollow = clean > 0 ? results.filter((r) => !r.p0.length && !r.p1.length && r.textLen < 120) : []
 
+// ── 塌陷判据：同一页面比上一轮少渲染了 ────────────────────────────
+//
+// ## 为什么要跨轮次比，而不是加个绝对阈值
+//
+// 「渲染得少」是**相对**概念。实测同一批 54 条路由的 scanned 跨路由差四个
+// 数量级（0 … 56038），所以任何单一绝对阈值都会误伤：
+// scanned<200 命中 21 条、<500 命中 26 条、<1000 命中 32 条真实页面。
+// 绝对阈值量的是「这页小不小」，而要抓的是「这页**比上次**小」。
+//
+// ## 真实漏网案例（本判据的由来）
+//
+// reports/final3.json 里 /dashboard 的 scanned=**141**、textLen=768，
+// 而同一页在 final.json / final-clean.json 分别是 1866 / 1861。
+// 少渲染 92%，但因为 768 > 120 的空壳阈值，它被算进「干净」。
+// 也就是说：**那一轮的 64 路由「干净」结论里，藏着一张没渲染出来的看板。**
+//
+// ## 阈值口径
+//
+// 相对跌幅 ≥ SHRINK_RATIO（0.5）且绝对少 ≥ SHRINK_MIN（50 个元素）才报。
+// 两个条件都要，是为了让「本来就只有 141 个元素的页面」不被反复报红。
+//
+// ## 实测校准（reports/final{,-2,-3,-clean}.json 四轮两两对比）
+//
+// 命中项逐个回查，**全部是真实的二态翻转**，不是阈值噪声：
+//   · /dashboard      1861 ↔ 141   （少 92%，旧判据放过了 141 那轮）
+//   · /               1861 ↔ 141
+//   · /routing-v2       57 ↔ 2259
+//   · /admin/proxy     344 ↔ 12
+// 也就是说这些页面在同样的代码上**本来就会时好时坏**——
+// 那正是「渲染得少无人管」一直在放过的东西。
+//
+// 反向对照：拿同一份报告自己当基线，命中 0 条（判据不会对着自己报）。
+const SHRINK_RATIO = 0.5
+const SHRINK_MIN = 50
+
+let baseline = null
+if (process.env.UI_SWEEP_BASELINE) {
+  try {
+    const raw = JSON.parse(readFileSync(process.env.UI_SWEEP_BASELINE, 'utf8'))
+    const rs = Array.isArray(raw) ? raw : raw.results
+    baseline = new Map(rs.map((r) => [r.path, r.scanned ?? 0]))
+  } catch (e) {
+    console.log(`⚠️ 基线读取失败（${String(e).slice(0, 80)}），跳过塌陷判据`)
+  }
+}
+
+const shrunk = []
+if (baseline) {
+  for (const r of results) {
+    const was = baseline.get(r.path)
+    if (was === undefined) continue
+    const drop = was - r.scanned
+    if (drop >= SHRINK_MIN && r.scanned <= was * (1 - SHRINK_RATIO)) {
+      shrunk.push({ ...r, was })
+      // 判为 P1：它没渲染完，就不该被算进「干净」。
+      r.p1.push(`渲染塌陷：scanned ${was} → ${r.scanned}（少 ${drop}，跌幅 ${(100 * drop / was).toFixed(0)}%），页面未渲染完整`)
+    }
+  }
+}
+// p1 可能在上面被追加过，重算一次以免统计与列表不一致。
+const p1Final = results.filter((r) => !r.p0.length && r.p1.length)
+const cleanFinal = results.length - p0.length - p1Final.length
+const hollowFinal = hollow.filter((r) => !r.p1.length)
+
 console.log(`\n══ 扫描结果（${BASE}，viewport 1440×900，共 ${results.length} 路由）══`)
 console.log(`✗ P0 阻断（未渲染/判据失效）: ${p0.length}`)
-console.log(`! P1 应修                   : ${p1.length}`)
-console.log(`✓ 干净                      : ${clean - hollow.length}`)
-console.log(`○ 内容可疑（<120 字，空壳）  : ${hollow.length}`)
+console.log(`! P1 应修                   : ${p1Final.length}`)
+console.log(`✓ 干净                      : ${cleanFinal - hollowFinal.length}`)
+console.log(`○ 内容可疑（<120 字，空壳）  : ${hollowFinal.length}`)
+if (baseline) {
+  console.log(`▼ 渲染塌陷（对比基线 ${basename(process.env.UI_SWEEP_BASELINE)}）: ${shrunk.length}（已计入 P1）`)
+}
+// 豁免条数与沉降上限都印出来：判据变了，读者必须能从报告本身看出来。
+const tdTotal = results.reduce((a, x) => a + (x.teardownAborted || 0), 0)
+const tdRoutes = results.filter((x) => (x.teardownAborted || 0) > 0).length
+console.log(`· 拆除期豁免                : ${tdTotal} 条 / ${tdRoutes} 路由（UI_SWEEP_SETTLE_MS=${SETTLE_MS}）`)
 
 if (p0.length) {
   console.log('\n── P0 ──')
   for (const r of p0) console.log(`  ${r.path}\n    ${r.p0.join('\n    ')}`)
 }
-if (p1.length) {
+if (p1Final.length) {
   console.log('\n── P1 ──')
-  for (const r of p1) {
+  for (const r of p1Final) {
     console.log(`  ${r.path}`)
     for (const m of r.p1) console.log(`    · ${m}`)
   }
 }
 
-if (hollow.length) {
+if (hollowFinal.length) {
   console.log('\n── ○ 内容可疑 ──')
-  for (const r of hollow) console.log(`  ${r.path}  文本仅 ${r.textLen} 字，块 ${r.visibleBlocks} 个`)
+  for (const r of hollowFinal) console.log(`  ${r.path}  文本仅 ${r.textLen} 字，块 ${r.visibleBlocks} 个`)
 }
 if (args.includes('--json')) {
   const outPath = args[args.indexOf('--json') + 1] || 'reports/ui-sweep.json'
@@ -1290,7 +1429,7 @@ if (args.includes('--json')) {
   console.log(`\nJSON：${outPath}`)
 }
 
-if (STRICT && p0.length + p1.length) {
-  console.error(`\n✗ 遍历扫描未通过（P0:${p0.length} P1:${p1.length}）`)
+if (STRICT && p0.length + p1Final.length) {
+  console.error(`\n✗ 遍历扫描未通过（P0:${p0.length} P1:${p1Final.length}）`)
   process.exit(1)
 }

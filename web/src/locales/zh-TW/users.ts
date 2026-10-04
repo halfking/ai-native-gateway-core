@@ -74,6 +74,7 @@ export default {
   loading: 'Loading…',
   error: {
     loadFailed: 'Failed to load',
+    tenantsLoadFailed: '租戶清單載入失敗',
     usernamePasswordRequired: 'Username and password are required',
     createFailed: 'Operation failed',
     deleteFailed: 'Delete failed',

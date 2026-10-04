@@ -1,5 +1,6 @@
 // probeHealth.ts — ProbeHealthView copy.
 export default {
+  monitorPartialFailed: "Live data for {count} credential(s) could not be fetched ({ids}); the figures below are undercounts",
   backLink: '← Routing overview',
   title: 'Probe health',
   autoRefresh: 'Auto refresh (30s)',

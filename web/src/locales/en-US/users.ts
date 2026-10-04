@@ -74,6 +74,7 @@ export default {
   loading: 'Loading…',
   error: {
     loadFailed: 'Failed to load',
+    tenantsLoadFailed: 'Failed to load tenant list',
     usernamePasswordRequired: 'Username and password are required',
     createFailed: 'Operation failed',
     deleteFailed: 'Delete failed',

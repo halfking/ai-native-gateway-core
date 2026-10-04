@@ -252,11 +252,27 @@ function clearAllFilters() {
   resetTimeFilter()
 }
 
+// 2026-10-03：原来 `catch { keys.value = [] }`。失败后 Key 下拉只剩「全部 Key」，
+// 用户按某个 Key 筛出零条日志，结论会是「这段时间没流量」，而真相是
+// 「Key 清单没加载出来」—— 与供应商/凭据下拉同一个病。
+//
+// ⚠️ 这一处原来**外面还包了一层** try/catch 打 console.error，
+// 但内层已经吞掉了 ⇒ 外层是**死代码**：它读起来像「loadKeys 可能抛出」的保护，
+// 实际永远不会触发，诊断信息也因此被埋在永不执行的那一段里。
+// 现在错误在函数内记账（状态 + console.error），外层死代码删掉。
+//
+// ⚠️ 不用 filterOptionsError 承载：loadCredentialOptions 开头会把它清零，
+// 而它在 loadKeys **之后**执行 ⇒ 写进去必被抹掉。两个下拉各有各的失败。
+const keysFilterError = ref('')
+
 async function loadKeys() {
+  keysFilterError.value = ''
   try {
     keys.value = await getKeys()
-  } catch {
+  } catch (e) {
+    console.error('Failed to load keys:', e)
     keys.value = []
+    keysFilterError.value = t('requests.list.filter.keysLoadFailed')
   }
 }
 
@@ -266,7 +282,19 @@ async function loadKeys() {
 //   - tenant_admin 调 /api/credentials/monitor-summary，后端对该端点加
 //     了 c.tenant_id 过滤，仅返回当前租户范围内的凭据；
 // 任一来源失败都不阻塞日志列表渲染，下拉回退为空。
+//
+// 2026-10-03：回退不再是**静默**的。原来两处 `catch {}` 把下拉清空就完事，
+// 页面上「没有可选供应商/凭据」与「真的一个都没有」完全同形 ——
+// 用户按某个供应商筛完发现一条日志都没有，结论会是「这段时间没流量」，
+// 而真相是「凭据没加载出来」。
+// 现在两种失败都记进 filterOptionsError，并在筛选区显示（见模板）。
+//
+// 刻意区分两种失败：整体失败（范围完全未知）与部分供应商失败
+// （范围已知但不完整）—— 对用户要说的是不同的话。
+const filterOptionsError = ref('')
+
 async function loadCredentialOptions() {
+  filterOptionsError.value = ''
   if (isSuperAdmin()) {
     try {
       const providers = await getProviders()
@@ -277,6 +305,7 @@ async function loadCredentialOptions() {
       // 这里全量加载与 /providers 页面策略一致。失败时该 provider 的凭据下拉
       // 退化为空，但其它 provider 不受影响。
       const allCreds: { id: number; providerId: number; label: string }[] = []
+      const failedProviders: string[] = []
       await Promise.all(
         providers.map(async (p) => {
           try {
@@ -286,13 +315,22 @@ async function loadCredentialOptions() {
             }
           } catch {
             // 单个 provider 的凭据失败不影响其它 provider；保持当前已收集项。
+            // 但必须**记账**：少掉的那些凭据如果不讲出来，按它们筛就是零结果。
+            failedProviders.push(p.display_name || p.catalog_code)
           }
         }),
       )
       credentialOptions.value = allCreds
+      if (failedProviders.length > 0) {
+        filterOptionsError.value = t('requests.list.filter.partialLoadFailed', {
+          count: failedProviders.length,
+          names: failedProviders.slice(0, 3).join('、'),
+        })
+      }
     } catch {
       providerOptions.value = []
       credentialOptions.value = []
+      filterOptionsError.value = t('requests.list.filter.loadFailed')
     }
     return
   }
@@ -318,6 +356,7 @@ async function loadCredentialOptions() {
   } catch {
     providerOptions.value = []
     credentialOptions.value = []
+    filterOptionsError.value = t('requests.list.filter.loadFailed')
   }
 }
 
@@ -1070,16 +1109,11 @@ onMounted(async () => {
     normalizeTimePresetForTenant()
     if (pageSize.value < 200) pageSize.value = 200
   }
-  // 2026-07-03: 添加错误处理，确保即使 API 失败页面也能正常显示
-  try {
-    await loadKeys()
-  } catch (e) {
-    console.error('Failed to load keys:', e)
-    keys.value = []
-  }
+  // Key 与供应商/凭据两个下拉的失败都在各自函数内部记账并展示（见模板），
+  // 调用方不包 try/catch —— 包了也是死代码（内层已吞）。
+  await loadKeys()
 
-  // 供应商/凭据下拉加载失败由 loadCredentialOptions() 内部兜底，
-  // 此处不需再包一层 try/catch。
+  // 供应商/凭据下拉加载失败由 loadCredentialOptions() 内部兜底。
   await loadCredentialOptions()
 
   try {
@@ -1357,6 +1391,26 @@ onMounted(async () => {
 
         <!-- 条件流式行：各控件按自然宽度排布，放满自动折行 -->
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <!--
+            2026-10-03：下拉为空有两种完全不同的含义 ——
+            「真的没有供应商/凭据」与「没加载出来」。修复前两者在页面上同形，
+            用户按某个供应商筛出零条日志，结论会是「这段时间没流量」。
+            alert-warning 而不是 danger：不是故障，是**这个列表的范围未知**。
+          -->
+          <span
+            v-if="filterOptionsError"
+            class="filter-error"
+            style="color:var(--warning);font-size:12px;flex-basis:100%"
+            role="status"
+          >{{ filterOptionsError }}</span>
+          <!-- Key 下拉是**另一个**数据源，失败要单独讲：共用一个状态的话，
+               loadCredentialOptions 开头的清零会把这里刚写的抹掉。 -->
+          <span
+            v-if="keysFilterError"
+            class="filter-error"
+            style="color:var(--warning);font-size:12px;flex-basis:100%"
+            role="status"
+          >{{ keysFilterError }}</span>
           <select v-model="apiKeyId" class="filter-select" style="width:180px" title="按API密钥筛选">
             <option value="">{{ t('requests.list.filter.keyAll') }}</option>
             <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>

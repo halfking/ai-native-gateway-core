@@ -1,5 +1,6 @@
 // Auto-synced from en-US (fr-FR)
 export default {
+  monitorPartialFailed: "Données live indisponibles pour {count} identifiants ({ids}) ; les chiffres ci-dessous sont sous-estimés",
   backLink: '← Routing overview',
   title: 'Probe health',
   autoRefresh: 'Auto refresh (30s)',

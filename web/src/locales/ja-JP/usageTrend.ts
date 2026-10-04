@@ -3,6 +3,7 @@ export default {
   pageTitle: '使用量トレンド分析',
   pageSub: 'モデル別の使用量推移。プロバイダー / テナント / APIキー / モデル / 指標で絞り込み',
   loadFailed: '読み込みに失敗しました',
+  degraded: "トレンドデータを取得できません（ビュー {view} が未初期化です）。下の水平線は「計算できなかった」を意味し、ゼロ使用量ではありません。",
   detailTimeoutHint: 'APIキーで絞り込む場合はリクエスト明細をスキャンするため、広い期間ではタイムアウトすることがあります。期間を短く（例：7日以内）して再試行してください',
   filterProvider: 'プロバイダー',
   filterTenant: 'テナント',
@@ -10,6 +11,8 @@ export default {
   filterModel: 'モデル',
   filterMetric: '指標',
   filterAll: 'すべて',
+  filterProviderKeyFailed: "プロバイダー/Key の絞り込み候補の取得に失敗しました。空は「該当なし」を意味しません",
+  filterTenantFailed: 'テナントの絞り込み候補の取得に失敗しました',
   shareByMetric: '指標シェア',
   sourceDetail: 'リクエスト明細',
   // 2026-10-02 複数選択/全消去/自動更新

@@ -63,6 +63,9 @@ export default {
       providerAll: 'Tous les fournisseurs',
       credentialTitle: 'Identifiant',
       credentialAll: 'Tous les identifiants',
+      loadFailed: 'Échec du chargement des options fournisseur/identifiants — une liste vide ne signifie pas qu\'il n\'y en a aucun',
+      partialLoadFailed: 'Identifiants de {count} fournisseur(s) non chargés ({names}) ; le filtrage dessus donne des résultats incomplets',
+      keysLoadFailed: 'Échec du chargement de la liste des clés API — filtrer par clé ne renverra aucun résultat',
       timeTitle: 'Plage horaire',
       timeOptions: {
         h1: '1 heure',

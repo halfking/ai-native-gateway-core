@@ -130,20 +130,45 @@ func TestLedgerReconciler_RunOnce_RealDB(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM maas_reconciliation_findings WHERE tenant_id = $1`, tenant)
 	}()
 
-	// Chain: 100 → 90 → (corrupt 200 instead of 190) → 150.
+	// Chain: 100 → 90 → (201, corrupt) → 151, then a consume row continuing it.
+	//
+	// 余额语义是 running balance，链断判据是
+	// `balance_after - (lag(balance_after) + amount) <> 0`。所以「种一个断点」
+	// 只能靠**改余额**、不能靠改金额：我第一版写 amounts 100/-10/110/-50 配
+	// balances 100/90/200/150 并注释成「corrupt 200 instead of 190」——
+	// 但 90+110 本来就等于 200，四行 drift 全是 0，**一个断点都没种下**。
+	// 现在把第三行余额改成 201（应为 200，drift=+1），第四行跟着改成 151
+	// 使其自洽（151-(201-50)=0），于是恰好一个断点。
+	//
+	// created_at 全部显式给出：不显式时依赖插入顺序（各自事务的 now()），
+	// 相等时 lag 顺序不确定，断点落在哪一行会飘。
 	rows := []struct {
-		amount int64
-		bal    int64
-	}{{100, 100}, {-10, 90}, {110, 200}, {-50, 150}}
+		amount    int64
+		bal       int64
+		createdAt time.Duration
+	}{
+		{100, 100, 90 * time.Minute}, // 起点
+		{-10, 90, 80 * time.Minute},  // 100-10=90 自洽
+		{110, 201, 70 * time.Minute}, // ← 唯一断点：应为 200
+		{-50, 151, 60 * time.Minute}, // 201-50=151 自洽
+	}
 	for _, rw := range rows {
 		if _, err := pool.Exec(ctx, `
-			INSERT INTO credit_ledger_hot (tenant_id, entry_type, amount, balance_after, note)
-			VALUES ($1, 'adjust', $2, $3, 'recon_it')
-		`, tenant, rw.amount, rw.bal); err != nil {
+			INSERT INTO credit_ledger_hot (tenant_id, entry_type, amount, balance_after, note, created_at)
+			VALUES ($1, 'adjust', $2, $3, 'recon_it', now() - $4::interval)
+		`, tenant, rw.amount, rw.bal, rw.createdAt); err != nil {
 			t.Fatalf("seed ledger: %v", err)
 		}
 	}
 	// usage charged 30, ledger debited 25 → mismatch finding.
+	//
+	// created_at 必须**显式早于 ledgerSettleLag（10 分钟）**：usageCreditSQL 的
+	// 两侧都有 `created_at < now() - $2` 上界，用来排除还在结算中的新行。
+	// 我第一版让账本行走默认 now()，于是它被上界排除、debited 变成 0，
+	// 门拿到的是 30 vs 0 —— 一条**由夹具制造的伪差异**，而不是注释声称的 30 vs 25。
+	// 这比断链更隐蔽：门确实是红的，但红的原因不是它声称要验的东西。
+	//
+	// 该 consume 行同时参与余额链，故 balance_after 取 126 = 151-25 保持自洽。
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO request_logs_hot (request_id, ts, tenant_id, credits_charged, total_tokens, success)
 		VALUES ('recon_it_req', now() - interval '1 hour', $1, 30, 10, TRUE)
@@ -151,8 +176,8 @@ func TestLedgerReconciler_RunOnce_RealDB(t *testing.T) {
 		t.Fatalf("seed usage: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO credit_ledger_hot (tenant_id, entry_type, amount, balance_after, ref_type, ref_id, note)
-		VALUES ($1, 'consume', -25, 125, 'request', 'recon_it_req', 'recon_it')
+		INSERT INTO credit_ledger_hot (tenant_id, entry_type, amount, balance_after, ref_type, ref_id, note, created_at)
+		VALUES ($1, 'consume', -25, 126, 'request', 'recon_it_req', 'recon_it', now() - interval '1 hour')
 	`, tenant); err != nil {
 		t.Fatalf("seed credit: %v", err)
 	}
@@ -162,12 +187,33 @@ func TestLedgerReconciler_RunOnce_RealDB(t *testing.T) {
 	if got := r.RunOnce(ctx); got < 2 {
 		t.Fatalf("RunOnce found %d differences, want >=2 (one chain break + one usage/credit mismatch)", got)
 	}
+	// 数量不够身份。「至少 2 条」可以被**两条错误类型的发现**满足 —— 而本门
+	// 存在的全部意义就是验这两个检查各自落地。所以断身份。
 	var n int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM maas_reconciliation_findings
-		WHERE tenant_id = $1
-	`, tenant).Scan(&n); err != nil {
-		t.Fatalf("count findings: %v", err)
+	byType := map[string]int{}
+	rowsF, err := pool.Query(ctx, `
+		SELECT check_kind FROM maas_reconciliation_findings WHERE tenant_id = $1
+	`, tenant)
+	if err != nil {
+		t.Fatalf("read findings: %v", err)
+	}
+	for rowsF.Next() {
+		var ck string
+		if err := rowsF.Scan(&ck); err != nil {
+			rowsF.Close()
+			t.Fatalf("scan finding: %v", err)
+		}
+		byType[ck]++
+		n++
+	}
+	rowsF.Close()
+	if err := rowsF.Err(); err != nil {
+		t.Fatalf("iterate findings: %v", err)
+	}
+	for _, want := range []string{"balance_chain", "usage_credit_mismatch"} {
+		if byType[want] == 0 {
+			t.Errorf("没有落地 %s 类发现：实际按类型 %v（n=%d）—— 数量达标不等于种类达标", want, byType, n)
+		}
 	}
 	if n < 2 {
 		t.Fatalf("findings persisted = %d, want >=2", n)

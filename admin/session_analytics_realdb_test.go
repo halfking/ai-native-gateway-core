@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"testing"
@@ -25,6 +26,15 @@ import (
 //
 // It reports whether this call created the row, so the caller can delete only
 // what it owns. A pre-existing tenant is production data.
+//
+// 2026-10-04: the "gate database is EMPTY" premise above stopped holding — the
+// local instance now carries 11 tenants including `default`, so the INSERT
+// takes the ON CONFLICT branch, and **`ON CONFLICT DO NOTHING ... RETURNING`
+// returns zero rows on conflict**. QueryRow then reports pgx.ErrNoRows and the
+// test dies with "seed tenant \"default\": no rows in result set" — i.e. the
+// helper only ever worked on a pristine database, and the two tests using it
+// have been red ever since. "Ensure" has to be idempotent: absent ⇒ create and
+// report true, present ⇒ leave the row alone and report false.
 func ensureFixtureTenant(t *testing.T, pool *pgxpool.Pool, tenant string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -34,6 +44,13 @@ func ensureFixtureTenant(t *testing.T, pool *pgxpool.Pool, tenant string) bool {
 		`INSERT INTO public.tenants (code, name) VALUES ($1, $2)
 		 ON CONFLICT (code) DO NOTHING RETURNING true`,
 		tenant, "fixture-"+tenant).Scan(&created); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Conflict: the tenant already exists. That is the normal path on any
+			// database that is not pristine, and it is success for an "ensure"
+			// helper — not an error. Do not touch the existing row: it may carry a
+			// real tenant's name and other tests may depend on it.
+			return false
+		}
 		t.Fatalf("seed tenant %q: %v", tenant, err)
 	}
 	return created
