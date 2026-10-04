@@ -2302,6 +2302,20 @@ DDL/分区树/约束/索引（§9.185）。
     理由：这条约定**静态门判不了**（§9.197.6），只能靠真库逐条 EXPLAIN；
     而「每个新增两腿读法都要记得给列存腿加谓词」是一个反复会忘的约定。
     ⚠ 但这是**属主决定**：列存收益是真的，7 个族里只有 bodies 是 S4 主线。
+- **D31-a**（2026-10-05 新增，§9.202）：**5 个函数在本库存在、但全仓 `.sql` 与生产 `.go`
+  里都搜不到**，要不要补进受追踪的 startup 迁移？
+  * 名单：`update_conversation_updated_at`（挂 `conversation_history`）、
+    `llm_hourly_stats_normalize_hour_trigger`（挂 `llm_hourly_stats`）、
+    `update_memora_session_summaries_updated_at`（挂 `memora_session_summaries`）、
+    `update_session_summaries_updated_at`（挂 `memora_session_summaries_orphan`）、
+    `ensure_handoff_logs_partitions`（ensure 函数）。
+  * ⚠ **后果是静默的**：全新安装会有那些**表**（表本身在链内），
+    但**不会**有这 4 个 trigger ⇒ `updated_at` 停止自动维护，
+    而**没有任何门会报**。查询照常成功，只是时间戳不再更新。
+  * 现状：其中 3 张被挂的表当前是**空表**（`reltuples = -1`），暂无实际损失。
+  * 我的建议：补，方式与 828 同款。但这是**本机库的独有状态**，
+    生产是否也有这 4 个 trigger **需 D30-b 只读确认**后才能排优先级。
+
 - **D30-b**：生产是否已受影响？`765` 是**生产迁移**，所以生产很可能也是列存，
   ⇒ `LoadV1Turns` 在生产**同样跑不起来**、`ExecuteRepair` **同样从未成功执行过**。
   这需要 252 **只读**确认（可并入 D24-d-3 申请）。

@@ -24122,3 +24122,76 @@ D30-d 选定的修法是「把 `'hot'::text AS source` 换成**基于基表列**
 | `TestColumnarUniverseFromCatalog` | ✅ PASS |
 
 ⇒ 带真库 `admin` FAIL 集合 **5 → 4**，减少的那一条是**真绿**。
+
+---
+
+## §9.202 「V371 从未被记录」是个例还是系统性缺陷？——**是个例**，但我为回答它写坏过四次量具
+
+### §9.202.1 结论
+
+`supplier_errors_unified` 在库里存在、`V371` 却从未进 `schema_migrations`（§9.200.2）。
+那是不是存在**一整条不可见的应用通道**？本节实测：**不是。**
+
+| 口径 | 分子/分母 | 查无此名 |
+|---|---|---|
+| 视图（排除 `citus_*` / `pg_stat*`） | 76 | **0**（828 之后） |
+| 应用自有函数（排除扩展成员） | 187 | **5** |
+| 应用自有基表（排除扩展 / `bak_*` / `_old_backup`） | 420 | **15** |
+
+15 张表的构成（**大部分不是本仓的**）：
+- 11 张属于**别的服务**：`agent_gateways` / `agent_migration_log` / `gateway_run_bindings` /
+  `industry_registry` / `mcp_registry` / `mcp_tools` / `orchestration_sessions` /
+  `task_assigner_agents` / `task_assigner_assignments` / `kxmemory_migration_ownership` /
+  `memora_schema_migrations`。
+  ⇒ 本库**多项目共用**（`kxmemory_migration_ownership` 21 行、`memora_schema_migrations` 1 行
+  是它们的台账），这些表不该由本仓负责复现。
+- 2 张是已 detach 的旧分区（`request_logs_archive_2026_07/08`，母表在链内）。
+- 1 张是**测试残留**：`pg_test_t`。
+- 1 张 legacy：`wiki_pages_legacy_v1`。
+
+⇒ **视图这一面现在是干净的**：`supplier_errors_unified` 是唯一一个真缺口，828 已补。
+
+### §9.202.2 真正值得跟进的：5 个函数
+
+| 函数 | 挂在哪 | 目标表行数 |
+|---|---|---|
+| `update_conversation_updated_at` | `conversation_history` trigger | — |
+| `llm_hourly_stats_normalize_hour_trigger` | `llm_hourly_stats` trigger | `reltuples = -1`（空） |
+| `update_memora_session_summaries_updated_at` | `memora_session_summaries` trigger | `reltuples = -1`（空） |
+| `update_session_summaries_updated_at` | `memora_session_summaries_orphan` trigger | 该表在链内 |
+| `ensure_handoff_logs_partitions` | （ensure 函数，无 trigger） | — |
+
+**全仓 `.sql` 与生产 `.go` 里都搜不到这 5 个名字。**
+
+⚠ **后果是静默的**：全新安装会有那些表（表本身在链内），
+但**不会**有这 4 个 `updated_at` trigger ⇒ `updated_at` 停止被自动维护，
+而**没有任何门会报**。这比「表缺了」更难发现：查询照常成功，只是时间戳不再更新。
+
+⇒ **处置建议（属主决定）**：把这 4 个 trigger 与 `ensure_handoff_logs_partitions`
+补进受追踪的 startup 迁移，与 828 同款做法。
+⚠ 本轮**未做**——它们挂着的三张表当前都是空的，优先级低于视图，
+但「静默行为差异」这个性质比「表缺了」更值得排期。
+
+### §9.202.3 ⚠ 我为回答这个问题，**把量具写坏了四次**
+
+这一节的价值可能高于结论本身。四次都是同一个错误：**扫错了对象**。
+
+| # | 错法 | 假结论 | 怎么暴露的 |
+|---|---|---|---|
+| 1 | 只并 `sql/migrations/startup/*.sql`，**漏了旧的扁平链** `sql/migrations/*.sql`（22 个文件） | 「视图有 1 个查无此名」 | 手工去查 `v_free_resource_summary` → 它在 `sql/migrations/075-omnifree-schema.sql` |
+| 2 | 只并 `sql/schema/01-schema.sql` **一个文件**，漏了同目录另外 2 个 | 5 个函数「查无此名」 | 逐个定位函数定义处 → 全仓 `.sql` 搜不到，才确认口径确实漏了 |
+| 3 | 函数表**没排除扩展成员** | 「383 个函数不可复现」 | 那 383 个里绝大多数是 `gbt_*` / `vector_*` / `pgp_*` / `pgstat*`——pg_trgm / pgvector / pgcrypto / pgstattuple |
+| 4 | `AND c.relispartition IS NOT TRUE` —— **保留的是分区、丢掉的是基表**，口径整个反了 | 基数与名单都错 | 分母 420 与「基表」这个标签对不上（988 个分区在库里） |
+
+⇒ 正确口径的最终定义（留给下一轮，别再重写）：
+- **可复现来源** = `sql/migrations/startup/*.sql` + `sql/migrations/*.sql` +
+  `sql/migrations/domain/*.sql` + `sql/schema/*.sql`（3 个文件全部）+
+  `deploy/sql/schemas/baseline/01-schema.sql` + `deploy/sql/migrations/*.sql` +
+  embeddata 快照 + **全部生产 `.go`（本项目有 Go 侧 schema 自举）**；
+- **对象口径** = 排除 `pg_depend.deptype='e'` 的扩展成员；表只看 `relispartition = false`；
+  视图排掉 `citus_*` / `pg_stat*`。
+
+⇒ 这是本次任务里**第 6 次**「量具读错了对象」（前 5 次：`EXCEPTION` 误配 `EXCEPT`、
+只收分区名致假零、`WITH` 子句要求致假零、仓库 SQL 普查手写族名单、
+「验证不改状态」靠外层包事务）。
+⇒ 共同的形状永远是同一句：**量具能跑完、能出数、看不出异常，而它量的不是那件事。**

@@ -9758,3 +9758,41 @@ ensure 函数含 `USING columnar`、`schema_migrations` **只有 828 没有 829*
 被验证对象自带 COMMIT 时外层事务就是摆设。要么用**不含 COMMIT 的副本**，要么在一次性库上跑。
 
 ⇒ 带真库 `admin` FAIL 集合 **5 → 4**，减少的那条是**真绿**。
+
+### ㉕ §70.57「V371 未被记录」是个例：全库可复现性普查
+
+实测口径：可复现来源 = startup 链 + 旧扁平链 + domain 链 + `sql/schema/*.sql`（3 个文件全部）
++ deploy baseline + deploy migrations + embeddata 快照 + **全部生产 `.go`**（本项目有 Go 侧 schema 自举）。
+
+| 口径 | 分母 | 查无此名 |
+|---|---|---|
+| 视图（排除 `citus_*`/`pg_stat*`） | 76 | **0**（828 之后干净） |
+| 应用自有函数（排除扩展成员） | 187 | **5** |
+| 应用自有基表 | 420 | **15** |
+
+15 张表里 11 张属于**别的服务**（agent/mcp/task_assigner/orchestration/kxmemory/memora，
+本库多项目共用，`kxmemory_migration_ownership` 21 行是它们的台账），
+2 张是已 detach 的旧分区，1 张 `pg_test_t` 是测试残留，1 张 legacy。
+⇒ **不是系统性缺陷**，`supplier_errors_unified` 是唯一一个真缺口，已由 828 补掉。
+
+**真正值得跟进的是 5 个函数**（→ 决策表 **D31-a**）：
+4 个 `updated_at`/normalize trigger + `ensure_handoff_logs_partitions`，
+全仓 `.sql` 与生产 `.go` 都搜不到。⚠ **后果静默**：全新安装会有那些表，
+但**没有** trigger ⇒ `updated_at` 停止维护，而**没有任何门会报**。
+其中 3 张挂着的表当前是空表，暂无实际损失。
+
+### ㉖ ⚠ 这一节我把量具写坏了**四次**（可能比结论更值得记）
+
+| # | 错法 | 假结论 | 怎么暴露 |
+|---|---|---|---|
+| 1 | 只并 `sql/migrations/startup/*.sql`，漏旧扁平链 `sql/migrations/*.sql`（22 个文件） | 「1 个视图查无此名」 | 手工查 `v_free_resource_summary` → 在 `sql/migrations/075-omnifree-schema.sql` |
+| 2 | 只并 `sql/schema/01-schema.sql` **一个**文件，漏同目录另 2 个 | 「5 个函数查无此名」 | 逐个定位定义处 |
+| 3 | 函数表**未排除扩展成员** | 「383 个函数不可复现」 | 那批是 `gbt_*`/`vector_*`/`pgp_*`/`pgstat*` |
+| 4 | `AND c.relispartition IS NOT TRUE` —— **留的是分区、丢的是基表**，口径反了 | 分子分母全错 | 分母 420 与「基表」标签对不上（库里有 988 个分区） |
+
+⇒ 本次任务里**第 6 次**「量具读错了对象」。
+前 5 次：`EXCEPTION` 误配 `EXCEPT`、只收分区名致假零、`WITH` 子句要求致假零、
+仓库 SQL 普查手写族名单、「验证不改状态」靠外层包事务。
+⇒ 共同形状永远是同一句：**量具能跑完、能出数、看不出异常，而它量的不是那件事。**
+
+⇒ 正确口径已写进审计 §9.202.3，下一轮**照抄，别重写**。
