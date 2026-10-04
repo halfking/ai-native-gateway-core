@@ -33,6 +33,8 @@ SAMPLE=${SAMPLE_ROWS:-5000}
 # 阈值。依据：818 之后 payload 稳定在 ~24 B；切换前 ~205 B。
 # 取 64 B 做线：既高于正常抖动（当前实测 23.7~25.2 B），又远低于异常态。
 BLOAT_BYTES=${BLOAT_BYTES:-64}
+# 判定阈值：超阈行占比上限（%）。见下方 SQL 注释里的实测依据。
+BLOAT_PCT=${BLOAT_PCT:-25}
 # 样本新鲜度上限（秒）。快照写入停了的时候，最新行会越来越旧；
 # 那时报告的是**陈旧**数据，必须报「没有结论」而不是「健康」。
 STALE_SECONDS=${STALE_SECONDS:-3600}
@@ -151,11 +153,28 @@ EOF
   exit 1
 fi
 
-# 判据 + 新鲜度 + 样本量，一次取回，字段数必须恰好 4。
+# 判据 + 新鲜度 + 样本量，一次取回，字段数必须恰好 5。
 #   1) n            样本行数
 #   2) newest_age_s 最新样本的年龄（秒）；NULL = 表为空
 #   3) avg_b        payload 平均字节
-#   4) p95_b        payload 95 分位字节
+#   4) p95_b        payload 95 分位字节（**只作诊断，不参与判定**，理由见下）
+#   5) pct_over     超过 BLOAT_BYTES 的行占比（%）
+#
+# ★★ 2026-10-05 修正：判定量从 p95 改成「超阈行占比」。
+# 这道巡检第一次在 252 上真跑就报 🔴（p95=213 B > 64 B），但那不是回归。
+# 实测 12 小时：超阈行占比稳定在 **8.98%~11.24%**，均值 20~25 B，**毫无恶化趋势**。
+#
+# 根因是这个总体是**双峰**的，不是长尾：
+#   p50 = 2 B（≈90% 的行，只带极少数键）
+#   p90 = p95 = p99 = 205 B（≈10% 的行，固定带 8 个聚合键）
+#   min 2 B / max 220 B
+# ⇒ p95 落在**第二个峰**上，它量的是「那 10% 的行有什么结构」，
+#   而不是「有没有变胖」。而 64 B 这个阈值当初是照着 818 后的**均值**
+#   基线（~24 B）定的 —— **拿均值推的基线去卡分位数，本来就会误报。**
+#
+# 818 那次真正要抓的回归形态是「81.7% 的行未剥离」，
+# 那是一个**占比**，所以判定量必须是占比。当前实测稳定在 ~10%，
+# 取 25% 作线（约为观测上限的 2.2 倍，818 的 81.7% 仍能抓住）。
 SQL=$(cat <<EOF
 WITH s AS (
   SELECT payload, snapshot_ts
@@ -166,7 +185,9 @@ WITH s AS (
 SELECT count(*)::text,
        coalesce(extract(epoch FROM (now() - max(snapshot_ts)))::int::text, ''),
        coalesce(round(avg(pg_column_size(payload)))::text, '0'),
-       coalesce(round(percentile_cont(0.95) WITHIN GROUP (ORDER BY pg_column_size(payload)))::text, '0')
+       coalesce(round(percentile_cont(0.95) WITHIN GROUP (ORDER BY pg_column_size(payload)))::text, '0'),
+       coalesce(round(100.0 * count(*) FILTER (WHERE pg_column_size(payload) > $BLOAT_BYTES)
+                      / count(*), 2)::text, '0')
 FROM s;
 EOF
 )
@@ -180,12 +201,13 @@ fi
 # 多行/空行都不能当健康：psql 输出意外换行时下游解析会取到空值并当成 0。
 n=$(printf '%s' "$rows" | head -1 | awk -F'|' '{print $1+0}')
 nfield=$(printf '%s' "$rows" | head -1 | awk -F'|' '{print NF}')
-[ "$nfield" = "4" ] || { echo "ABORT: 期望 4 个字段，实得 $nfield" >&2; exit 3; }
+[ "$nfield" = "5" ] || { echo "ABORT: 期望 5 个字段，实得 $nfield" >&2; exit 3; }
 [ "$n" -gt 0 ]    || { echo "ABORT: 样本为 0 行（表空？）—— 没有参照系，本次不出结论。" >&2; exit 3; }
 
 newest_age=$(printf '%s' "$rows" | head -1 | awk -F'|' '{print $2+0}')
 avg_b=$(printf '%s' "$rows"       | head -1 | awk -F'|' '{print $3+0}')
 p95_b=$(printf '%s' "$rows"       | head -1 | awk -F'|' '{print $4+0}')
+pct_over=$(printf '%s' "$rows"     | head -1 | awk -F'|' '{print $5+0}')
 
 if [ "$newest_age" -gt "$STALE_SECONDS" ] 2>/dev/null; then
   echo "ABORT: 最新样本已陈旧 ${newest_age}s（> ${STALE_SECONDS}s）—— 快照写入可能已停，" >&2
@@ -199,10 +221,15 @@ fi
 
 echo "===== URSM 快照 payload 膨胀巡检（最近 $n 行，最新样本 ${newest_age}s 前）====="
 printf '  payload 平均   : %s B   (818 后基线 ~24 B)\n' "$avg_b"
-printf '  payload p95    : %s B\n' "$p95_b"
-printf '  阈值           : %s B\n' "$BLOAT_BYTES"
+printf '  payload p95    : %s B   ← 仅诊断：总体双峰，p95 落在第二峰上\n' "$p95_b"
+printf '  单行阈值       : %s B\n' "$BLOAT_BYTES"
+printf '  超阈行占比     : %s%%  (12 小时实测稳定在 9.0~11.2%%)\n' "$pct_over"
+printf '  判定阈值       : > %s%%\n' "$BLOAT_PCT"
 
-if [ "$p95_b" -le "$BLOAT_BYTES" ]; then
+# ★ pct_over 是小数（SQL 里 round(...,2)），`[` 的 -le 只吃整数。
+#   第一次改成占比判定时直接用 `[ ... -le ... ]`，
+#   在 252 上炸出「第 229 行:[: 10.26: 需要整数表达式」。
+if awk -v a="$pct_over" -v b="$BLOAT_PCT" 'BEGIN{exit !(a<=b)}'; then
   echo "  判定           : OK（未检出膨胀）"
   exit 0
 fi
@@ -235,7 +262,7 @@ else
 fi
 
 echo
-echo "  判定           : 🔴 检出 payload 膨胀（p95 ${p95_b} B > ${BLOAT_BYTES} B）"
+echo "  判定           : 🔴 检出 payload 膨胀（超阈行占比 ${pct_over}% > ${BLOAT_PCT}%）"
 echo
 echo "  下一步：核对两台实例的二进制是否都含 818 的 payload 剥离"
 echo "        （writer.go payloadDuplicateKeys；实测 06:50:48 那次切换前是 81.7% 未剥离）。"
