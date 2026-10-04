@@ -609,6 +609,10 @@ func (m *ModalityVerification) dueTargets(ctx context.Context) ([]modalityVerify
 }
 
 // persistRow 把一次探测的分级结论 upsert 进 model_modality_verification。
+//
+// 证据列（carry_evidence/read_evidence）必须经 capabilityEvidenceParam：
+// 裸 []byte 在 SimpleProtocol 下内联为 bytea hex 字面量，jsonb 解析必炸
+// （2026-10-05 R24 审计：252 真库 6 次失败，245 预生产 19:05 起带病运行）。
 func (m *ModalityVerification) persistRow(ctx context.Context, t modalityVerifyTarget, res SemanticProbeResult) error {
 	level, pos, neg := applyStreak(t.ExistingRead, t.PosStreak, t.NegStreak, res.Read)
 
@@ -653,7 +657,8 @@ func (m *ModalityVerification) persistRow(ctx context.Context, t modalityVerifyT
 		   OR v.read_neg_streak IS DISTINCT FROM EXCLUDED.read_neg_streak
 	`,
 		t.CanonicalID, t.CanonicalName, t.CredentialID, t.RawModel,
-		t.Modality, res.Carry, level, pos, neg, carryEvidence, readEvidence)
+		t.Modality, res.Carry, level, pos, neg,
+		capabilityEvidenceParam(carryEvidence), capabilityEvidenceParam(readEvidence))
 	if err != nil {
 		return fmt.Errorf("persist modality verification: %w", err)
 	}
@@ -737,7 +742,7 @@ func (m *ModalityVerification) rollupVerdict(ctx context.Context, t modalityVeri
 		 WHERE canonical_name = $3
 		   AND COALESCE(modality_source, '') <> 'manual'
 		   AND modality IS DISTINCT FROM $1
-	`, newModality, evidence, t.CanonicalName)
+	`, newModality, capabilityEvidenceParam(evidence), t.CanonicalName)
 	if err != nil {
 		return fmt.Errorf("rollup modality: %w", err)
 	}

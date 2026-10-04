@@ -8,6 +8,9 @@ package bg
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"strings"
 	"sync"
@@ -453,5 +456,45 @@ func TestModalityVerifyBudgetEnv(t *testing.T) {
 	_ = os.Setenv(modalityVerifyBudgetEnv, "17")
 	if got := modalityVerifyDailyBudget(); got != 17 {
 		t.Errorf("budget = %d want 17", got)
+	}
+}
+
+// modality 证据列参数守卫（2026-10-05 R24 审计根修）。
+//
+// persistRow 的 $10/$11 与 rollupVerdict 的 $2（carry_evidence/read_evidence/
+// modality_evidence）不允许裸 []byte 进 Exec：SimpleProtocol 会把它内联为
+// bytea hex 字面量（'\x7b22…'），jsonb 解析必炸 —— 252 真库 4.4h 窗口 6 次
+// 失败，modality 判级与 canonical 回写一并丢失。与 capability_backfill 的
+// evidence_json 同根（R11 FIX-C / R22 第四断点家族）。判据钉在 AST 上不钉
+// 在源码子串上：注释里就写着「evidence」，子串门会被注释自己喂饱。
+// 变异验证：把任一处改回裸 evidence → 本用例红。
+func TestModalityRowEvidenceParamGuard(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "modality_verification.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse modality_verification.go: %v", err)
+	}
+	bare := map[string]bool{"carryEvidence": true, "readEvidence": true, "evidence": true}
+	var offenders []string
+	//nolint:staticcheck // 包内相对路径，bg 包 AST 守卫惯例
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Exec" {
+			return true
+		}
+		for _, arg := range call.Args {
+			if id, ok := arg.(*ast.Ident); ok && bare[id.Name] {
+				offenders = append(offenders, fset.Position(arg.Pos()).String())
+			}
+		}
+		return true
+	})
+	if len(offenders) > 0 {
+		t.Fatalf("Exec 直接传裸 []byte 证据参数于 %v；必须经 capabilityEvidenceParam "+
+			"（SimpleProtocol 会把 []byte 内联为 bytea hex 字面量，jsonb 解析必炸）", offenders)
 	}
 }
