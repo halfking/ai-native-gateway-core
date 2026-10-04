@@ -20071,3 +20071,80 @@ promote 之后被本作业扫到，且要覆盖 `_hot` 就得让批量 UPDATE �
   在 252 上 `work_type` / `attachments` 很可能**不是** 0% / 18% ⇒
   **本节的结论方向可能在生产上缓和，但不会反转**：`repoint-safe = 0` 里的
   `is_final_success`（v1 100%、本地会话侧 0%）除非有专门回填，否则改读后仍是空。
+
+---
+
+## §9.165　**列→关系归属修好之后：16 个 blockers 塌成 5 个，3 个可无损改读**
+
+§9.164 判定「`repoint-safe` = 0/16」，并把 12 个归为「只差把 `id` 关联换成
+`request_id`」。本节去**逐点读**那 12 个文件——**结论是我上两节都被自己的仪器骗了**。
+
+### §9.165.1 逐点读出来的事实：那 12 个文件**没有一个碰 `request_logs.id`**
+
+| 文件 | 它里面的 `id` 到底是什么 |
+|---|---|
+| `admin/data_lifecycle_attachments.go` | `att->>'id'` —— **`attachments` 列的 JSONB 取键**，压根不是列 |
+| `admin/providers.go` / `credential_selfcheck` / `model_probe` / `credential_recovery` | `p.id` / `c.id` = **providers / credentials** 的主键 |
+| `admin/routing.go` / `swim_lane_init` / `model_alternatives` / `probe_history` | `mc.id = rl.canonical_id` —— `models_canonical` 的主键 |
+| `bg/today_success_probe.go` | `rl.credential_id AS id` —— **输出别名** |
+
+§9.162 的抽取器问的是「`id` 这个词是否出现在读 v1 的字面量里」。这些字面量里
+**全是维表主键**。⇒ **`id` 作为「结构缺口」对这批文件是系统性假阳性**，
+而我基于它给出了两轮结论（§9.162 的登记表、§9.164 的 gap-only 判定）。
+
+### §9.165.2 仪器修法：按**出现位置**判定，不问「文本里有没有这个词」
+
+`columnAttribution` 逐个走该列的**每次出现**，看它前面的限定符是谁：
+
+| 形态 | 判定 |
+|---|---|
+| `rl.id`（限定符是 v1 别名） | **attrQualified** —— 算 |
+| 裸 `id` 且该字面量只读一个关系 | attrSoleRel —— 算（无歧义） |
+| 裸 `id` 且有竞争关系 | attrAmbiguous —— 算（多报方向安全） |
+| `mc.id` / `c.id`（限定符是别的关系） | **attrNone** —— 不算 |
+| `att->>'id'`（前一个是引号） | **attrNone** —— 不算 |
+| `credential_id AS id`（前一个是 `AS`） | **attrNone** —— 不算 |
+
+> **为什么必须逐次出现而不是问「有没有这个词」**：`mc.id = rl.canonical_id`
+> 这一行里 `id` 出现了**两次**，两次都与 `request_logs` 无关。任何「文本包含」
+> 型判据都无法区分它们和 `rl.id`。
+>
+> 这不是新发现的毛病——**它一直在那里**，只是 §9.162/§9.164 两节都建立在它之上。
+
+### §9.165.3 修正后的判定
+
+| 判定 | §9.164 | **§9.165** |
+|---|---:|---:|
+| `repoint-empty` | 4 | **4** |
+| `repoint-gap-only` | 12 | **1** |
+| `repoint-degraded` | — | **8** |
+| **`repoint-safe`** | **0** | **3** |
+
+**可无损改读的 3 个**（无任何暴露列）：
+`admin/swim_lane_init.go`、`bg/model_probe.go`、`bg/today_success_probe.go`
+
+**仍阻断的 5 个**：`admin/work_types.go`（`work_type` 0%）、
+`domains/hooks/observability/telemetry/client.go`（v1 写方）、
+`db/db.go`（视图体本身）、`cmd/gateway/dual_read_validator.go`（`work_type` 0%）、
+`admin/logs.go`（`provider_model` 结构缺口）
+
+登记表同步：真正 breaking 的从 16 降到 **5**；另 11 个进
+`retirementReattributed` **保留记录**（不是删掉）——
+「查过了，其实没问题」是信息，一份悄悄变短的清单和一份没人维护的清单长得一样。
+
+### §9.165.4 登记表在这里替我抓了两次账
+
+改完仪器后双向门立刻报：**1 个已登记项不再 breaking**（`admin/logs.go`）、
+**1 个新项变 breaking**（`domains/streaming/model_alternatives.go`）。
+两者都按测量结果互换位置。**这就是双向门的用途**：不是记录，是**逼我对账**。
+
+### §9.165.5 诚实边界
+
+- 本节只修正**列→关系的归属**。`repoint-degraded` 那 8 个的**数据损失**依然
+  存在（只是不再是「结构缺口」问题）——处置见 D17。
+- 归属判定仍是**词法**的：它认 `FROM/JOIN … 别名`，不认子查询作用域、
+  CTE 名字遮蔽、CTE 递归。`attribution` 不可判的仍按多报处理。
+- 填充率仍是**本地下界**（§9.163.2）。
+- ⚠️ **本节同时推翻 §9.164 的「12 个只剩键要换」**。那一节的**结论**（改读视图
+  不是修复）**仍然成立**，但**理由**从「`id` 是结构缺口」换成了「这些列在会话侧
+  真的更空」。**一个结论对、理由错，比理由对结论错更需要标注**，所以就地记在这里。

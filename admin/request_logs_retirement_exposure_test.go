@@ -82,9 +82,32 @@ type v1ReadingLiteral struct {
 	// session family or the canonical view. When true, a column name in this
 	// literal cannot be attributed to v1 alone.
 	alsoSessionFamily bool
-	// columns are the exposure-class columns named in this literal.
+	// columns are the exposure-class columns named in this literal, with each
+	// column carrying the strongest attribution the literal supports:
+	//
+	//   attrQualified — written as <v1alias>.<col>, so it provably comes from v1
+	//   attrSoleRel   — bare <col> in a literal that reads exactly one relation,
+	//                   so no other relation can be its source
+	//   attrAmbiguous — bare <col> alongside other relations; counted, because
+	//                   over-reporting is the safe direction for a checklist
+	//
+	// A column is **not** counted at all when every occurrence is qualified by
+	// some other alias (`mc.id`, `c.id`, `p.id`, …) or is a JSONB key access
+	// (`att->>'id'`). Those are the shape of dimension-table primary keys, and
+	// treating them as v1 dependencies is what made §9.162/§9.164 report `id`
+	// as the blocker for eleven files that never touch request_logs.id.
 	columns map[string]string // column -> class
 }
+
+// Attribution strengths, weakest to strongest. attrNone means "every occurrence
+// belongs to some other relation", which is the case that was silently
+// counting dimension-table primary keys as v1 dependencies.
+const (
+	attrNone = iota
+	attrAmbiguous
+	attrSoleRel
+	attrQualified
+)
 
 // extractV1ReadingLiterals returns every SQL string literal in a Go file that
 // references the v1 family, together with the exposure classes of the canonical
@@ -142,8 +165,19 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 			alsoSessionFamily: sessionFamilyRe.MatchString(clean),
 			columns:           map[string]string{},
 		}
-		for col, re := range matchers {
-			if re.MatchString(clean) {
+		v1al, allAl := aliasesIn(clean)
+		relCount := countRelations(clean)
+		for col := range matchers {
+			switch columnAttribution(clean, col, v1al, allAl, relCount) {
+			case attrNone:
+				// Every occurrence is qualified by a relation that is not the v1
+				// family — a dimension table's primary key, or a JSONB key
+				// access. **This is the case that makes `id` a false positive**
+				// for readers that join providers/credentials/models_canonical.
+				continue
+			case attrQualified:
+				l.columns[col] = db.RetirementExposureClassify(col)
+			case attrSoleRel, attrAmbiguous:
 				l.columns[col] = db.RetirementExposureClassify(col)
 			}
 		}
@@ -288,26 +322,48 @@ func TestRequestLogsRetirementExposure(t *testing.T) {
 // per-file column lists in TestRequestLogsRetirementExposure's report *do* show
 // the difference — read the report, not just the gate verdict.
 var retirementBreakers = map[string]string{
-	// ── unservable / structural-gap columns in v1-only SQL ────────────────
-	"admin/data_lifecycle_attachments.go":             "reads request_logs_bodies.attachments and .id; attachments is 18.19% on the session side and id is a structural gap (v1 request-row id != turn id)",
-	"admin/logs.go":                                   "the admin log list itself: id, provider_model (structural gap), credential_id, application_id, canonical_id, client_model, provider_id",
-	"admin/providers.go":                              "id (structural gap), credential_id, provider_id",
-	"admin/routing.go":                                "quality_flags and origin_stage are degraded, id/canonical_id/client_model too; routing views lose their failure dimension",
-	"admin/swim_lane_init.go":                         "id (structural gap), credential_id, provider_id, canonical_id, client_model",
-	"admin/work_types.go":                             "reads request_logs.work_type directly — the file's own comment calls it 'Direct work_type column'; work_type is 0.00% on the session side, so this reader returns nothing after retirement",
-	"bg/auto_index_refresher.go":                      "id (structural gap), total_tokens (58.36% session), credential_id, canonical_id, client_model",
-	"bg/credential_recovery.go":                       "id (structural gap), credential_id, provider_id, client_model",
-	"bg/credential_selfcheck.go":                      "id (structural gap), credential_id, canonical_id, client_model",
-	"bg/model_probe.go":                               "id (structural gap), credential_id, provider_id, client_model",
-	"bg/today_success_probe.go":                       "id (structural gap), credential_id",
-	"db/db.go":                                        "the canonical view DDL/ensure chain itself — it *defines* the 118-column projection, so it names every structural-gap and unservable column. Not an operational reader: retiring request_logs means replacing this body, not repairing a query",
-	"domains/hooks/observability/telemetry/client.go": "the v1 **writer** (insertRequestLog). Names every exposed column. An INSERT into a dropped table errors, so this must be removed or repointed, not merely tolerated",
-	"domains/streaming/model_alternatives.go":         "id (structural gap), credential_id, canonical_id",
+	// ── still blocking after column→relation attribution (§9.165) ──────────
+	"admin/work_types.go": "reads request_logs.work_type directly — the file's own comment calls it " +
+		"'Direct work_type column'; work_type is 0.00% on the session side, so repointing to the " +
+		"view returns an empty page",
+	"db/db.go": "defines the 118-column canonical projection itself, so it names every exposed " +
+		"column including work_type / is_final_success. Not an operational reader: retiring " +
+		"request_logs means replacing this body",
+	"domains/hooks/observability/telemetry/client.go": "the v1 **writer** (insertRequestLog). An " +
+		"INSERT into a dropped table errors, so it must be removed or repointed, not tolerated",
+	"domains/streaming/model_alternatives.go": "still blocked after §9.165's attribution fix: its " +
+		"remaining `id` occurrence is not models_canonical's. canonical_id is also effectively empty " +
+		"on the session side (0.07% vs 9.79% v1)",
+	"cmd/gateway/dual_read_validator.go": "reads v1 work_type / request_type / origin_actor as its " +
+		"V1-side inputs — legitimate in itself (§9.163.1), but work_type is 0% on the session side, " +
+		"so the validator's exclusion arm loses its discriminator after the v1 side is gone",
+}
 
-	// ── same severity, but the literal also reads the session family, so the
-	//    column could be coming from either leg ─────────────────────────────
-	"admin/probe_history.go":             "possible: id, credential_id, canonical_id — the literal reads both families, so attribute by reading the file before acting",
-	"cmd/gateway/dual_read_validator.go": "possible: work_type (0.00% session), request_type (18.15%), origin_actor. This is the **dual-read validator** — the thing that is supposed to prove the two families agree. It is the highest-value file to fix first, because it is the instrument the retirement would be judged with",
+// retirementReattributed records the eleven files that §9.162's registry listed
+// as breakers and that §9.165's attribution fix re-classified. They are kept
+// here as a record rather than deleted, because "we checked this and it is
+// actually fine" is information; a silently shrunken list is indistinguishable
+// from a list nobody maintained.
+//
+// The defect they share: the old extractor asked "does the substring `id` appear
+// in a v1-reading literal", and these files' literals are full of dimension-table
+// primary keys (`mc.id`, `c.id`, `p.id`), a JSONB key access (`att->>'id'`), and
+// an output alias (`credential_id AS id`). None of them is request_logs.id.
+var retirementReattributed = map[string]string{
+	"admin/data_lifecycle_attachments.go": "repoint-degraded: real dependency is `attachments` (18.19% session vs 100% v1). The `id` was `att->>'id'`, a JSONB key access on the attachments column",
+	"admin/probe_history.go":              "repoint-degraded: `credential_id` only. The `id` was `models_canonical.id`",
+	"admin/providers.go":                  "repoint-degraded: `provider_id` only. Every `p.id`/`c.id` belongs to the providers/credentials tables",
+	"admin/routing.go":                    "repoint-degraded: `canonical_id` only. The `id` was `models_canonical.id`",
+	"admin/swim_lane_init.go":             "**repoint-safe**: no exposure columns at all. The `id`s were models_canonical / model_families / credentials / providers primary keys",
+	"bg/auto_index_refresher.go":          "repoint-degraded: `canonical_id` only. The `id`s were credentials / models_canonical / provider_models / credential_model_bindings primary keys",
+	"bg/credential_recovery.go":           "repoint-degraded: `client_model` + `credential_id` only",
+	"bg/credential_selfcheck.go":          "repoint-degraded: `canonical_id` + `credential_id` only. The `id`s were `credentials.id`",
+	"bg/model_probe.go":                   "**repoint-safe**: no exposure columns at all",
+	"bg/today_success_probe.go":           "repoint-safe: its `id` was `rl.credential_id AS id` — an output alias. The real dependency, credential_id, is a *stronger* column than the list assumed and is not in the breaker set on its own",
+	"admin/logs.go": "repoint-degraded rather than blocked: with `id` and `provider_model` correctly " +
+		"attributed away, the only real v1 dependency left is the degraded set " +
+		"(client_model 90.06%, credential_id 62.65%, canonical_id 0.07%, provider_id 55.82%, " +
+		"application_id 3.51% on the session side)",
 }
 
 // TestRequestLogsRetirementBreakersRegistryIsConsistent gates the registry in
@@ -387,9 +443,22 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 // failure mode than a missing table, which at least announces itself.
 func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 	root := repoRootFromCaller(t)
-	files := make([]string, 0, len(retirementBreakers))
+	// Both registries, not just the blockers: the point of this report is the
+	// whole assessed set, and shrinking it to "the ones that break" would hide
+	// exactly the files §9.165 re-classified.
+	seen := map[string]bool{}
+	var files []string
 	for f := range retirementBreakers {
-		files = append(files, f)
+		if !seen[f] {
+			seen[f] = true
+			files = append(files, f)
+		}
+	}
+	for f := range retirementReattributed {
+		if !seen[f] {
+			seen[f] = true
+			files = append(files, f)
+		}
 	}
 	sort.Strings(files)
 
@@ -428,7 +497,7 @@ func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 	// the gate's value is that it keeps re-checking that assumption instead of
 	// letting it be made once and forgotten.
 	safe := len(byVerdict[string(db.RepointSafe)])
-	t.Logf("repoint-safe: %d of %d registered breakers", safe, len(retirementBreakers))
+	t.Logf("repoint-safe: %d of %d assessed files", safe, len(files))
 }
 
 func flatten(m map[string][]string) []string {
@@ -449,4 +518,144 @@ func countsBySeverity(exposures []fileExposure) map[string]int {
 		out[fe.severity()]++
 	}
 	return out
+}
+
+// v1AliasRe captures the alias bound to a v1 relation: `FROM request_logs_hot rl`
+// binds rl, while `FROM request_logs` with no alias leaves the table name itself
+// as the only valid qualifier.
+var v1AliasRe = regexp.MustCompile(`(?i)\b(?:from|join)\s+(request_logs|request_logs_hot|request_logs_bodies|request_logs_bodies_hot)(?:\s+(\w+))?`)
+
+// relationRe counts distinct relations named in FROM/JOIN, so a literal that
+// reads exactly one relation can be attributed with certainty.
+var relationRe = regexp.MustCompile(`(?i)\b(?:from|join)\s+([a-z_][a-z0-9_.]*)`)
+
+// aliasesIn returns (v1 qualifiers, all relation qualifiers) for a literal.
+//
+// The v1 set is what makes an occurrence provably a v1 dependency; the all set
+// is what lets a non-v1 qualifier be recognised and excluded.
+func aliasesIn(sql string) (v1al, allAl map[string]bool) {
+	v1al = map[string]bool{}
+	allAl = map[string]bool{}
+	for _, m := range relationRe.FindAllStringSubmatch(sql, -1) {
+		rel := strings.ToLower(m[1])
+		if rel == "" || rel == "lateral" || rel == "(" {
+			continue
+		}
+		allAl[rel] = true
+	}
+	for _, m := range v1AliasRe.FindAllStringSubmatch(sql, -1) {
+		table := strings.ToLower(m[1])
+		alias := ""
+		if m[2] != "" && !isSQLKeyword(m[2]) {
+			alias = strings.ToLower(m[2])
+			allAl[alias] = true
+		}
+		v1al[table] = true
+		if alias != "" {
+			v1al[alias] = true
+		}
+	}
+	return v1al, allAl
+}
+
+func isSQLKeyword(s string) bool {
+	switch strings.ToLower(s) {
+	case "where", "on", "group", "order", "limit", "and", "or", "select",
+		"join", "left", "right", "inner", "outer", "cross", "lateral", "as", "set":
+		return true
+	}
+	return false
+}
+
+// columnAttribution decides, for one column name in one literal, whether that
+// literal makes it a v1 dependency — and how confidently.
+//
+// It walks the **occurrences**, not the text. That distinction is the whole
+// point: `mc.id = rl.canonical_id` contains the substring "id" twice, and
+// neither occurrence has anything to do with request_logs. A regex that asks
+// "does the string id appear" cannot tell those from `rl.id`.
+//
+// For each occurrence the preceding token decides:
+//
+//	"rl.id"          → qualifier is a v1 alias      → attrQualified
+//	"mc.id" / "c.id" → qualifier is another relation → does not count
+//	"att->>'id'"     → preceded by a quote, not an identifier qualifier → does not count
+//	"id" bare        → counts (sole relation: certain; otherwise: ambiguous)
+func columnAttribution(sql, col string, v1al, allAl map[string]bool, relCount int) int {
+	colRe := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(col) + `\b`)
+	best := attrNone
+	for _, loc := range colRe.FindAllStringIndex(sql, -1) {
+		start := loc[0]
+		// Walk back over optional whitespace and a single '.' to find a
+		// qualifier.
+		i := start
+		for i > 0 && isSpaceByte(sql[i-1]) {
+			i--
+		}
+		if i > 0 && sql[i-1] == '.' {
+			// Qualified. Take the identifier immediately before the dot.
+			j := i - 1
+			for j > 0 && isIdentByte(sql[j-1]) {
+				j--
+			}
+			qual := strings.ToLower(sql[j : i-1])
+			if qual == "" {
+				// e.g. `att->>'id'`: the char before is a quote, not an
+				// identifier, so there is no relation qualifier at all.
+				continue
+			}
+			if v1al[qual] {
+				if attrQualified > best {
+					best = attrQualified
+				}
+			}
+			// Qualified by some other relation: not a v1 dependency.
+			continue
+		}
+		// Bare occurrence. Two shapes look like a bare column but are not one:
+		//   - a JSONB key access: `att->>'id'` — the char before is a quote;
+		//   - an **output alias**: `rl.credential_id AS id` — the identifier
+		//     before the dot-free `id` is the keyword AS. The aliased column is
+		//     credential_id (degraded), and `id` is the name the query gives it.
+		//     Counting the alias as a dependency on a v1 column named `id` is
+		//     the same category of error as counting `mc.id`.
+		if start > 0 && (sql[start-1] == '\'' || sql[start-1] == '"') {
+			continue
+		}
+		j := start
+		for j > 0 && isSpaceByte(sql[j-1]) {
+			j--
+		}
+		if j >= 2 && (strings.EqualFold(sql[j-2:j], "as")) {
+			continue
+		}
+		if relCount <= 1 {
+			if attrSoleRel > best {
+				best = attrSoleRel
+			}
+		} else if attrAmbiguous > best {
+			best = attrAmbiguous
+		}
+	}
+	_ = allAl
+	return best
+}
+
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+// countRelations counts how many distinct relations a literal names in
+// FROM/JOIN. Subquery aliases are not counted: they are not candidates for a
+// bare column's source in the way a real table is.
+func countRelations(sql string) int {
+	seen := map[string]bool{}
+	for _, m := range relationRe.FindAllStringSubmatch(sql, -1) {
+		r := strings.ToLower(m[1])
+		if r == "" || r == "lateral" || r == "(" {
+			continue
+		}
+		seen[r] = true
+	}
+	return len(seen)
 }
