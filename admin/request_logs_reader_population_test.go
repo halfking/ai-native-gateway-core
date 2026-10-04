@@ -277,7 +277,103 @@ func TestReaderPopulationGroundTruth(t *testing.T) {
 			"as a view read (or a relation fell through to no family at all), and the population this "+
 			"file measures stops meaning \"files that read the v1 base tables\".", strings.Join(familyFaults, "; "))
 	}
-	// Not asserted: the unjudged count. It is the work list.
+	// The unjudged list is the D20-c work list, and it is the one count here
+	// that is a ratchet rather than a reading: assessing a file only ever
+	// removes it. So it is asserted, while every other count in this file is
+	// deliberately not.
+	//
+	// What this catches is a *new* v1 reader landing in the inventory without
+	// anyone assessing it — which is the failure mode that made §9.162's
+	// "16 assessed files" read like a total. It does not enforce that anyone
+	// reaches zero; that is D20-c, and it is the owner's call.
+	if len(unjudged) > unjudgedBaseline {
+		t.Errorf("未判定 v1 读方 = %d，超过基线 %d（只许缩小）。清单里新出现一个 v1 读方时，"+
+			"它的退役风险必须被登记，不能靠「清单变大了」蒙过去。", len(unjudged), unjudgedBaseline)
+	}
+	// The count above is not enough on its own, and this is the same mistake the
+	// ledger gate made in §9.173: a count is satisfied by a swap. Removing one
+	// unjudged file while adding another leaves it at 47 and the ratchet silent.
+	// So the baseline is a **set**, and membership is asserted, not just size.
+	//
+	// The check is deliberately one-directional (current ⊆ baseline). Dropping a
+	// file from the baseline when it gets assessed is the normal way the list
+	// shrinks; forgetting to is harmless here and caught by the size gate.
+	var appeared []string
+	for _, f := range unjudged {
+		if !unjudgedBaselineFiles[f] {
+			appeared = append(appeared, f)
+		}
+	}
+	if len(appeared) > 0 {
+		sort.Strings(appeared)
+		t.Errorf("以下 v1 读方不在未判定基线里，共 %d 个：%s —— 清单总长未变（一个被判定、"+
+			"一个被新增）时只看数量会静默放过；每个新读方都必须走一次判定并登记。",
+			len(appeared), strings.Join(appeared, " "))
+	}
+	// Not asserted: the unjudged count against zero. It is the work list.
+}
+
+// unjudgedBaseline is the D20-c work-list size as of §9.174 (origin/main
+// 9187555f2): 47 v1 readers that no assessment has ever run against. Lower it
+// when the list shrinks; raising it needs a written reason, because raising it
+// means a new reader arrived unassessed.
+//
+// The baseline is a second number living outside the instrument, so it gets the
+// same treatment as every other hand-maintained list in this audit: it is
+// asserted to be consistent with what the instrument measured on the same
+// commit, rather than being trusted.
+var unjudgedBaseline = 47
+
+// unjudgedBaselineFiles is the membership that goes with unjudgedBaseline.
+// A set, not a count: see the swap case in TestReaderPopulationGroundTruth.
+var unjudgedBaselineFiles = map[string]bool{
+	"admin/analytics.go":                            true,
+	"admin/auto_route_outcome_freshness.go":         true,
+	"admin/body_resolver.go":                        true,
+	"admin/credential_success_rate.go":              true,
+	"admin/data_lifecycle.go":                       true,
+	"admin/data_lifecycle_blobs.go":                 true,
+	"admin/data_lifecycle_metrics.go":               true,
+	"admin/diagnostics_credential.go":               true,
+	"admin/provider_diagnose.go":                    true,
+	"admin/provider_models.go":                      true,
+	"admin/quality_correlations.go":                 true,
+	"admin/request_trace.go":                        true,
+	"admin/session_detail_v2.go":                    true,
+	"admin/session_sanitize_matches.go":             true,
+	"admin/session_tenant.go":                       true,
+	"admin/telemetry.go":                            true,
+	"admin/tenants.go":                              true,
+	"admin/unified_detail.go":                       true,
+	"autoroute/recommend_v2.go":                     true,
+	"bg/auto_route_affinity_worker.go":              true,
+	"bg/integrity_fingerprint_probe.go":             true,
+	"bg/ledger_reconciliation.go":                   true,
+	"bg/lite_retention_worker.go":                   true,
+	"bg/model_tier.go":                              true,
+	"cmd/compression-bench/main.go":                 true,
+	"cmd/gateway/main_v3_wiring.go":                 true,
+	"cmd/gateway/output_compliance_control.go":      true,
+	"cmd/gateway/waterfall_by_request.go":           true,
+	"cmd/gateway/waterfall_db.go":                   true,
+	"cmd/scenario_driver/main.go":                   true,
+	"cmd/tools/backfill_session_bodies/main.go":     true,
+	"cmd/tools/validate_sessions_v2/loader.go":      true,
+	"cmd/traffic-replay/main.go":                    true,
+	"discovery/discovery.go":                        true,
+	"domains/analysis/optimizer.go":                 true,
+	"domains/analysis/request_summary.go":           true,
+	"domains/credentialstate/popularity_tracker.go": true,
+	"domains/hooks/goal/history_store.go":           true,
+	"domains/providerprofile/adapters.go":           true,
+	"domains/sessionforensics/export.go":            true,
+	"domains/streaming/anomaly_harvester.go":        true,
+	"internal/quality/minute_aggregator.go":         true,
+	"internal/summarystore/store.go":                true,
+	"internal/trace/trace.go":                       true,
+	"storage/sqlite/request_log_store.go":           true,
+	"tests/session_audit/cmd/audit-test/main.go":    true,
+	"tests/test_popularity_tracker.go":              true,
 }
 
 // viewChainNames derives the canonical view chain from the schema SSOT rather
