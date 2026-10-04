@@ -843,6 +843,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"824_request_status_rate_limited_projection.sql",
 			"825_modality_graded_verification.sql",
 			"826_model_baseline_price.sql",
+			"827_modality_verification_progress_view.sql",
 		},
 	}
 }
