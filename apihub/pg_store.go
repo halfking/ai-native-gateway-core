@@ -178,17 +178,17 @@ func (s *pgStore) Upsert(ctx context.Context, a Asset) error {
 		// 2026-07-16: Force text protocol for metadata JSONB to avoid
 		// pgx binary encoding issues. Cast string → text → jsonb in SQL.
 		_, err := tx.Exec(ctx, upsertAssetSQL,
-			string(a.Kind),         // 1
-			a.RefID,                // 2
-			a.TenantID,             // 3
-			a.Name,                 // 4
-			nullable(a.Owner),      // 5
-			nullable(a.Team),       // 6
-			nullable(a.CostCenter), // 7
-			string(tagsJSON),       // 8 — text protocol
-			string(health),         // 9
-			version,                // 10
-			string(metadataJSON),   // 11 — text protocol
+			string(a.Kind),                          // 1
+			a.RefID,                                 // 2
+			a.TenantID,                              // 3
+			a.Name,                                  // 4
+			nullable(a.Owner),                       // 5
+			nullable(a.Team),                        // 6
+			nullable(a.CostCenter),                  // 7
+			string(tagsJSON),                        // 8 — text protocol
+			string(health),                          // 9
+			version,                                 // 10
+			string(metadataJSON),                    // 11 — text protocol
 			assetHeartbeatRefreshInterval.Seconds(), // 12
 		)
 		return err

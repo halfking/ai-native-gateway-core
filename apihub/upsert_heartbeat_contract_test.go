@@ -38,9 +38,9 @@ func TestUpsertSQLHasHeartbeatGuard(t *testing.T) {
 
 	// 第一半：业务字段真的变了 ⇒ 必须立刻落库
 	need := []string{
-		"IS DISTINCT FROM",         // 值比较必须是 NULL 安全的
-		"EXCLUDED.metadata",        // 必须覆盖全部业务字段中的最后一个
-		"public.assets.metadata",   // 必须与目标表逐字段配对
+		"IS DISTINCT FROM",       // 值比较必须是 NULL 安全的
+		"EXCLUDED.metadata",      // 必须覆盖全部业务字段中的最后一个
+		"public.assets.metadata", // 必须与目标表逐字段配对
 		"public.assets.health_state",
 		"public.assets.version",
 		"public.assets.name",
@@ -53,7 +53,7 @@ func TestUpsertSQLHasHeartbeatGuard(t *testing.T) {
 
 	// 绝不能出现 <> ：NULL 参与比较会得到 NULL，整行条件被吞。
 	if strings.Contains(q, "<>") {
-		t.Fatalf("upsertAssetSQL 出现 `<>`：owner/team/cost_center 可为 NULL，"+
+		t.Fatalf("upsertAssetSQL 出现 `<>`：owner/team/cost_center 可为 NULL，" +
 			"`NULL <> 'x'` 求值为 NULL 而不是 true ⇒ 本该落库的变更会被静默吞掉。必须用 IS DISTINCT FROM")
 	}
 }
@@ -87,7 +87,7 @@ func TestUpsertSQLHeartbeatWindowGuard(t *testing.T) {
 			"6 小时后全部资产会被误判为已消失。实际 SQL：\n%s", q)
 	}
 	if !strings.Contains(q, "interval '1 second'") {
-		t.Fatalf("心跳窗口没有用 $12 * interval '1 second' 表达 ⇒ "+
+		t.Fatalf("心跳窗口没有用 $12 * interval '1 second' 表达 ⇒ " +
 			"窗口值可能又被硬编码回去，Go 侧的 assetHeartbeatRefreshInterval 会变成死代码")
 	}
 	if !strings.Contains(q, "$12") {
