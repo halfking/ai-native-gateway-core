@@ -954,3 +954,51 @@ go test ./admin/ -run TestRequestLogsRetirementRepointVerdict -count=1 -v
 
 数据源 `db.RetirementColumnFill` 由 `TestSessionFamilyColumnAvailability_FillRates`
 **双向校验**（既验「值对不对」，也验「该有的条目在不在」——后者是补上的，见 §9.164.3）。
+
+---
+
+## ⚠️⚠️ D17（§9.165，**修正 D16 的数字**）：真正阻断的只有 **5** 个（原 16），**3 个可无损改读**
+
+D16 说「12 个 `repoint-gap-only` 只差把 `id` 关联换成 `request_id`」。
+本节去**逐点读**那 12 个文件——**它们没有一个碰 `request_logs.id`**：
+
+| 文件 | 它里面的 `id` 到底是什么 |
+|---|---|
+| `admin/data_lifecycle_attachments.go` | `att->>'id'` —— **`attachments` 列的 JSONB 取键**，不是列 |
+| `providers` / `credential_selfcheck` / `model_probe` / `credential_recovery` | `p.id` / `c.id` = **providers / credentials** 主键 |
+| `routing` / `swim_lane_init` / `model_alternatives` / `probe_history` | `mc.id = rl.canonical_id` —— `models_canonical` 主键 |
+| `bg/today_success_probe.go` | `rl.credential_id AS id` —— **输出别名** |
+
+⇒ `id` 作为「结构缺口」对这批文件是**系统性假阳性**，而 §9.162 登记表与
+§9.164 判定都建立在它之上。仪器已改为**逐次出现**判定归属
+（限定符是不是 v1 别名 / 是不是引号 / 前面是不是 `AS`）。
+
+### 修正后的判定（16 个已评估文件）
+
+| 判定 | 数量 | 处置方向 |
+|---|---:|---|
+| **`repoint-safe`** | **3** | ✅ **可无损改读**：`admin/swim_lane_init.go`、`bg/model_probe.go`、`bg/today_success_probe.go` |
+| `repoint-degraded` | 8 | ⚠️ 能跑但**只拿到一部分行**——静默部分缺失，比报错更危险 |
+| `repoint-gap-only` | 1 | `admin/logs.go`：`provider_model` 是结构缺口（镜像从不写） |
+| `repoint-empty` | 4 | 需要的列会话侧 **0%**，改读后返回空 |
+
+**仍阻断的 5 个**：`admin/work_types.go`（`work_type` 0%）、
+`domains/hooks/observability/telemetry/client.go`（v1 写方）、
+`db/db.go`（视图体本身）、`cmd/gateway/dual_read_validator.go`（`work_type` 0%）、
+`admin/logs.go`（`provider_model`）。
+
+### 需要你拍板
+
+- **D17-a**：**3 个 `repoint-safe`** 是否现在就改读 canonical 视图？
+  这是当前唯一**零数据损失**的机械改动，可立即执行。
+- **D17-b**：8 个 `repoint-degraded` 怎么处置？逐个确认「求和类 or 展示类」——
+  求和类必须补口径（否则数字静默变小），展示类可只改文案。
+- **D17-c**：`work_type` / `client_protocol` / `is_final_success` 三个 0% 列，
+  要专门回填还是接受功能退化？（D16-b/c 仍挂）
+
+⚠️ **D16 的结论方向不变、理由已换**：「改读视图不是修复」**仍然成立**，
+但理由从「`id` 是结构缺口」换成了「这些列在会话侧真的更空」。
+**一个结论对、理由错的更正，比理由对结论错更需要标注**（审计 §9.165.5）。
+
+⚠️ 归属判定仍是**词法**的：认 `FROM/JOIN … 别名`，不认子查询作用域、CTE 名字遮蔽。
+**填充率仍是本地下界**（§9.163.2）。
