@@ -1043,3 +1043,67 @@ D16 说「12 个 `repoint-gap-only` 只差把 `id` 关联换成 `request_id`」�
   要么先把窗口拉到 3 天复测一次。
 - **D18-b**：把保真门**窗口拉到 3 天**并在 252 复测一次，再执行 D17-a？
   （本会话从未连接生产。）
+
+---
+
+## D19　**撤回 D18 / D17-a**：`repoint-safe` 归零，根因是别名正则（2026-10-06）
+
+### 更正
+
+**D18 与 D17-a 的前提不成立。** §9.166 说「3 个读方可无损改读，依据是视图逐值复现 v1，
+四项不符全为 0」——**其中两项是拿 v1 和它自己比出来的 0**。
+
+| 列 | §9.166 报的 | 视图真实输出 vs v1（会话腿） |
+|---|---:|---:|
+| `credential_id` | 0 | **0** ✓ |
+| `success` | 0 | **0** ✓ |
+| `client_model` | 0 | **153 / 295（51.9%）** ✗ |
+| `outbound_model` | 0 | **92 / 295（31.2%）** ✗ |
+
+### 两层根因（都不是「数据变了」）
+
+1. **保真门**：LATERAL 里 `SELECT ... client_model, outbound_model FROM session_turns`
+   —— `session_turns` **没有这两列**（它有 `model` / `raw_model_name` /
+   `canonical_model`），PostgreSQL **回退到外层作用域**取到了 `v1` 自己的值。
+   门在做 `v1.client_model IS DISTINCT FROM v1.client_model`。
+2. **判定地基**：`v1AliasRe` 的交替是 `(request_logs|request_logs_hot|…)`，
+   Go 正则**从左到短名优先**，于是 `FROM request_logs_hot rl` 只匹配到前缀
+   `request_logs`、**别名 `rl` 从未登记** ⇒ `columnAttribution` 判 `attrNone`
+   ⇒ **凡读 `request_logs_hot` 的读方，抽取列恒为空** ⇒
+   `RetirementRepointVerdictFor([])` 循环不执行、返回初值 `RepointSafe`。
+
+⇒ **§9.165 的「3 个可无损改读」从来没有列支撑。** §9.165 那次修正消除了 `id` 的
+假阳性，**同时消除了每一个热表读方的全部真实依赖**。
+
+### 修正后的判定（16 个已评估文件）
+
+| 判定 | 数量 |
+|---|---:|
+| **`repoint-safe`** | **0**（原 3） |
+| `repoint-value-divergent` | **8**（新增） |
+| `repoint-degraded` | 3（原 8） |
+| `repoint-empty` | 4 |
+| `repoint-gap-only` | 1 |
+
+**仍未阻断的 5 个不变**（`work_types` / `telemetry` / `db.go` /
+`dual_read_validator` / `logs.go`）——它们是靠别的列阻断的，与本次更正无关。
+
+### 影响不是报表漂移，是探活行为
+
+`bg/model_probe.go` 的 `EXISTS` 用**精确字符串相等**
+（`pm.raw_model_name = rl.client_model OR … = rl.outbound_model`），
+改读后约 **1/5 的行不再匹配** ⇒ 一些绑定不再被判定为「本凭证上有真实流量」
+⇒ **少发深探针**。
+
+### 需要你拍板
+
+- **D19-a**：`bg/model_probe.go` 是否接受改读并接受「少发深探针」？
+  还是先修**会话侧的模型名归一**（让 `session_turns` 存 `provider_models.raw_model_name`
+  的原样值），修好后再改读？**我倾向后者**：现在改读等于把一个展示层的归一差异
+  升级成探活口径的差异。
+- **D19-b**：`admin/swim_lane_init.go` / `bg/today_success_probe.go` 是否改读？
+  这两个的后果较轻（展示 / 少 4 个分组），但**同样不是零变化**。
+- **D19-c**：§9.164 / §9.165 / §9.166 三节中**涉及 `request_logs_hot` 读方的列级结论
+  需要重算**——是否授权我下一轮把 matcher 扩到 118 列全契约后重出判定表？
+  （§9.162 的文件清单不受影响，它数的是字面量不是列。）
+- **D19-d**：252 只读授权（D15-c）——真实分歧率必须在那里复测，本地数字是快照。

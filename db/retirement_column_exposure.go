@@ -76,6 +76,61 @@ var retirementContractSet = func() map[string]bool {
 	return m
 }()
 
+// SessionLegDivergenceFloor records that the view's **session leg** renders a
+// column with a different value than the v1 row it replaces, and how far into
+// the twin population that happens.
+//
+// Why this is a separate list from RetirementColumnFill: a fill rate answers
+// "is the column populated", and a column can be 100% populated with a
+// **different string in every row**. `client_model` is 90.06% populated on the
+// session side and still diverges on 52.8% of twin rows — the session family
+// normalises the model name (`MiniMax-M3` → `minimax-m3`), so a reader doing
+// `pm.raw_model_name = rl.client_model` stops matching on a fifth of its rows.
+// A fill-rate verdict cannot see that, and §9.166 shipped a `repoint-safe`
+// grade built on exactly that blind spot.
+//
+// The registered value is a **rate floor, not a count**. A count would be a
+// snapshot of one window on one database and would go red every time the
+// database took a row — the same mistake §9.166.4 had to undo. The substantive
+// claim being registered is "the session leg does not reproduce this column",
+// and a floor expresses that without pinning a number that drifts.
+//
+// Verified bidirectionally by TestRepointValueFidelity: a registered column
+// that stops diverging fails (a stale "this is broken" claim trains people to
+// ignore it), and an unregistered column that starts diverging fails (a silent
+// behaviour change nobody was told about).
+type SessionLegDivergenceFloor struct {
+	Column  string
+	MinRate float64 // measured divergence must be at least this share of twin rows
+	Note    string
+}
+
+var RetirementSessionLegDivergence = []SessionLegDivergenceFloor{
+	{
+		Column:  "client_model",
+		MinRate: 0.30,
+		Note: "session family normalises the model name; measured 153/290 = 52.8% of twin " +
+			"rows differ. Breaks `pm.raw_model_name = rl.client_model` in bg/model_probe.go",
+	},
+	{
+		Column:  "outbound_model",
+		MinRate: 0.20,
+		Note: "same normalisation, smaller population; measured 92/290 = 31.7%. Breaks " +
+			"`pm.raw_model_name = rl.outbound_model` and the COALESCE(outbound, client) " +
+			"grouping in bg/today_success_probe.go",
+	},
+}
+
+// retirementSessionLegDivergent is the membership helper, so a column is decided
+// in one place and the two lists cannot overlap by accident.
+var retirementSessionLegDivergent = func() map[string]bool {
+	m := make(map[string]bool, len(RetirementSessionLegDivergence))
+	for _, d := range RetirementSessionLegDivergence {
+		m[d.Column] = true
+	}
+	return m
+}()
+
 // RetirementExposureClassify returns the exposure class of a canonical column.
 //
 // The classes are mutually exclusive and total over the contract, which is what
@@ -111,6 +166,17 @@ func RetirementExposureClassify(col string) string {
 		return "structural-gap"
 	case retiredColumnSet(RetirementUnservableColumns)[col]:
 		return "unservable"
+	case retirementSessionLegDivergent[col]:
+		// **Before** degraded, and that ordering is the whole point.
+		// `client_model` is 90.06% populated on the session side — it is in
+		// RetirementDegradedColumns — and it still diverges on 52.8% of twin
+		// rows. Checking degraded first would classify it `degraded` and the
+		// value finding would never be reached, which is exactly how §9.166
+		// graded these readers safe: the column that carries the most alarming
+		// fact about it is also the one an earlier list had already claimed.
+		// "Well populated" and "same value" are different properties, and only
+		// one of them used to be checked.
+		return "value-divergent"
 	case retiredColumnSet(RetirementDegradedColumns)[col]:
 		return "degraded"
 	default:
@@ -200,6 +266,34 @@ const (
 	// nonexistent one needs the reader rewritten against a different source.
 	// Loud beats silent, but only if you know which kind of loud you are buying.
 	RepointNoSuchColumn RetirementRepointVerdict = "repoint-no-such-column"
+	// RepointValueDivergent: every needed column exists and is well populated,
+	// but the session leg renders at least one of them with a **different value**
+	// than the v1 row it replaces (RetirementSessionLegDivergence).
+	//
+	// Ranked above RepointDegraded on purpose. Degradation shows up as fewer
+	// rows, which at least looks like something. Divergence shows up as the
+	// right number of rows saying the wrong thing — `MiniMax-M3` where v1 said
+	// `MiniMax-M3` and the session family says `minimax-m3` — and a reader doing
+	// exact string equality simply stops matching. §9.166 graded three readers
+	// `repoint-safe` on fill rate and shipped that grade; it was wrong for the
+	// two model columns, and this verdict exists so the next one cannot be.
+	RepointValueDivergent RetirementRepointVerdict = "repoint-value-divergent"
+	// RepointNoColumnsMeasured: the caller supplied no columns, so nothing was
+	// examined. This used to fall out of the function as RepointSafe, because
+	// `worst` starts at RepointSafe and a loop over an empty slice never runs —
+	// so a reader whose columns the extractor failed to find was graded
+	// **"safe" on zero evidence**.
+	//
+	// It reached that state through a silent extractor bug (§9.167: the alias
+	// regex preferred `request_logs` over `request_logs_hot`, dropping the
+	// `rl` alias, so every hot-table reader extracted zero columns and three
+	// files were published as `repoint-safe` in §9.165 and §9.166). The regex is
+	// fixed; this verdict is the part that stops the same class of failure from
+	// being invisible next time.
+	//
+	// A missing measurement and a clean measurement are the same shape. Only one
+	// of them is evidence.
+	RepointNoColumnsMeasured RetirementRepointVerdict = "repoint-no-columns-measured"
 )
 
 // RetirementRepointVerdictFor computes what repointing to the canonical view
@@ -210,10 +304,15 @@ const (
 // works". 5 percentage points is where a reader stops being a faithful
 // substitute and starts being a plausible-looking lie.
 func RetirementRepointVerdictFor(cols []string) RetirementRepointVerdict {
+	if len(cols) == 0 {
+		// Zero evidence is not evidence of zero problems. See the verdict's doc.
+		return RepointNoColumnsMeasured
+	}
 	worst := RepointSafe
 	rank := map[RetirementRepointVerdict]int{
-		RepointSafe: 0, RepointDegraded: 1, RepointGapOnly: 2,
-		UnknownColumn: 3, RepointEmpty: 4, RepointNoSuchColumn: 5,
+		RepointSafe: 0, RepointDegraded: 1, RepointValueDivergent: 2,
+		RepointGapOnly: 3, UnknownColumn: 4, RepointEmpty: 5,
+		RepointNoSuchColumn: 6, RepointNoColumnsMeasured: 7,
 	}
 	for _, c := range cols {
 		v := RepointSafe
@@ -223,6 +322,13 @@ func RetirementRepointVerdictFor(cols []string) RetirementRepointVerdict {
 			// outranks even `repoint-empty`: empty returns nothing, this fails
 			// to parse.
 			v = RepointNoSuchColumn
+		case "value-divergent":
+			// Checked before the rate lookup on purpose. `client_model` and
+			// `outbound_model` are not in RetirementColumnFill at all — they are
+			// at v1 parity, so they classify as baseline and never reach the rate
+			// table. Letting baseline win would reinstate exactly the §9.166
+			// verdict this class was added to correct.
+			v = RepointValueDivergent
 		case "baseline":
 			// Already at or above v1 parity by definition, so it needs no
 			// recorded rate. Without this arm, every parity column (latency_ms,
