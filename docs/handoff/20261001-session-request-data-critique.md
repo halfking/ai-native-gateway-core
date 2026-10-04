@@ -9904,3 +9904,66 @@ v1 认领在 telemetry 事务里，session turn 在镜像 hook 之后**异步**�
 ⚠ **`go test ./installer/...` 会报 `[setup failed]`**，那**不是回归**：
 `installer` 是独立 Go module，根模块的 `./...` 模式覆盖不到它。
 要在 `installer/` 目录里跑 `go test ./...`。
+
+---
+
+### ㉚ D32 实测完成：89s，形态定为 operator 脚本，工具已就绪（§9.204）
+
+上一轮我挂着「先实测 UPDATE 耗时」。**测完了，数字推翻了原建议。**
+
+| 面 | 行数 | 耗时 | 单行 |
+|---|---|---|---|
+| `session_turns_2026_09` | 107,756 | **76.4s** | 0.71 ms |
+| `session_turns_2026_10` | 2,328 | 0.50s | 0.21 ms |
+| `session_turns_hot` | 395 | 0.08s | 0.20 ms |
+| **脚本整体** | **110,479** | **89.0s** | — |
+
+★ **上一轮记的 5.1s 是 SELECT 的耗时，与 UPDATE 差 17 倍。**
+那是「同一个操作的两个阶段」被当成了同一件事 ——
+量具读错对象的又一种形态（错的是阶段，不是对象）。
+
+★ 成本集中在索引维护：`is_final_success` 在部分唯一索引的**谓词**里
+⇒ 每行非 HOT 更新，要重写该表所有索引。大分区 0.71 ms/行 vs 小面 0.20 ms/行
+的 3.5 倍差，不是「大表更慢」，是「大表索引更多、要重写的页更多」。
+★ 成本**随 v1 winner 数增长，不随 `session_turns` 体量增长** ⇒ 全新安装零工作量。
+
+**形态从 startup 迁移改成 operator 脚本**，理由：
+启动迁移链是 installer 逐文件串行同步 + `--single-transaction` 全量原子 + **无超时**
+（`installer/internal/dbinit/runner.go:883-890`）。
+把 89s、且**生产体量我从未测过**的数据 UPDATE 放进升级路径 = 拿没量过的环境赌启动预算。
+而这件事**必须发生**（v1 退役后永久不可恢复）⇒ **换载体，不是换时机**。
+形态与仓库既有 `sql/scripts/backfill_*.sql` 一致，不是我发明的。
+
+### ㉛ 两个实测陷阱（不查 catalog 看不见）
+
+1. **本库有第二个 schema**：`gateway.session_turns_2026_07/08/09` 是**空的**同名克隆。
+   `search_path = public, llm_gateway` ⇒ 未限定名恰好踩不到，
+   但上生产的脚本**不能依赖 search_path**。脚本每个标识符都显式限定。
+   ⚠ 只查 `relname` 会看到「同名两份」而不知道它们在不同 schema ——
+   必须 `pg_class` + `pg_namespace` 联查。
+2. **`request_logs_hot` / `session_turns_hot` 不是母表的分区**，是独立表。
+   忘了单独处理 ⇒ **静默漏掉最后 8 小时**，且不报错。
+
+### ㉜ 交付物
+
+- `sql/scripts/backfill_final_success_marks.sql` — **已端到端实跑验证**
+  （同一份内容外包 `BEGIN`/`ROLLBACK` 喂 `psql -f`，跑完逐面核对回到 0）。
+  自带 3 条核对，实测：逐会话唯一性 **0** ✅ / 残余缺口 **221**（镜像按设计排除，
+  **故意不计入判据**，否则造一个永远红的门）/ 回滚后全 **0** ✅。
+- `admin/session_final_success_backlog_realdb_test.go` — **把欠账变成会红的线**。
+  ⚠ **它现在就是红的，这是设计如此**（与 D30-a 故意红的门同款）；
+  回填执行后转绿，**那是预期，不是「被改绿」**。
+  三种零样本指名 Skip：未设 DSN / **v1 已退役**（窗口关闭，恰恰最该报警）/ v1 无 winner。
+
+★ 这道门补的是本审计反复遇到的那类洞：
+**「事实存在但没人消费，就不是守卫」**。
+`session_family_column_availability_test.go` 早就在**信息行**里报了
+`is_final_success` 是空的，但那是 `t.Log` 不是断言 ⇒ 没人读它指向哪里，
+这一空就是 **6 天**。
+
+### ⚠ 因此 admin 的 FAIL 由 4 条变 5 条
+
+第 5 条是 `TestSessionFinalSuccessBacklogIsClosed`，**故意红**（欠账未清）。
+判别方法：它形如「v1 有 110,084 个 winner…v2 只有 0 行带标记」并给出修复命令，
+与 `TestColumnarParentTwoSurfaceSetopShape_RealDB` /
+`TestSessionFamilyTwoSurfaceUnionShapeIsExecutable`（等 829 上生产才转绿）同类。
