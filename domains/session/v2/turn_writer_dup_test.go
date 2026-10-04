@@ -157,6 +157,8 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 			nilIfEmpty(rec.OriginStage), nilIfEmpty(rec.OriginActor), nilIfEmpty(rec.ClientIP), nilIfEmpty(rec.ClientForwardedFor),
 			nilIfEmpty(rec.AgentName), nilIfEmpty(rec.AgentType), nilIfEmpty(rec.VirtualClientID),
 			nilIfEmpty(rec.RequestStatus),
+			// $99 — §9.208: client_protocol，刻意追加在末尾（不重排既有编号）。
+			nilIfEmpty(rec.ClientProtocol),
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", rowsAffected))
 	if !inserted {
@@ -228,7 +230,7 @@ func TestTurnWriterAppendTurnRejectsRequestOwnedByAnotherSession(t *testing.T) {
 		WithArgs(rec.TenantID, rec.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(98)...).
+		WithArgs(anyArgs(99)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
 		WithArgs(rec.TenantID, rec.RequestID).
@@ -272,7 +274,7 @@ func TestTurnWriterAppendTurnSameRequestDifferentPartitionIsRejected(t *testing.
 		WithArgs(secondRec.TenantID, secondRec.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(98)...).
+		WithArgs(anyArgs(99)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
 		WithArgs(secondRec.TenantID, secondRec.RequestID).

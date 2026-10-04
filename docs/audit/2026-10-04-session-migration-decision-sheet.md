@@ -2069,6 +2069,32 @@ v1 的标记来自 v1 的写方。**一旦 S4 停写，连 v1 侧那 9,614 个�
   * `work_type` 仍见 D27-c（客户端头驱动、量大、影响一个 API 维度）。
   * 我的建议：两列都**留在清单里**，把「主日志列表的 `client_protocol` 今天就是空的」
     记为已知既有降级（与 D27 的 `work_type` 一起排期），**不要**用移出清单来「消掉」它。
+  * ⚠ **再次更正（§9.208）：上一条「今天就是空的」的分寸说错了。**
+    原判把空值归给「视图按 `request_id` 去重 + 业务行走 session 臂」，
+    即当作**读法**的既有降级。§9.208 实测证明**不是读法问题，是写方从未存在**：
+    ① `session_turns` 全表 `client_protocol` 非空 **0 / 1,659,271**（30 天），
+       同期 v1 `request_logs_hot` 为 1,455/4,081 ⇒ session 侧写方从未接线；
+    ② **从 710 视图读是好的**（该列填充 35,185/2,278,971），
+       **从原生投影读才恒空** —— 这正是它此前没被发现的原因：
+       旧的核对都走视图臂，看起来一直正常；
+    ③ 触发面是 `logsSourceFromSQL()`（`admin/logs_turns_source.go:62`）：
+       `admin_logs_native_turns_read = true` 时直读 session 原生投影，
+       而 `admin/logs.go:204` 选的 `rl.client_protocol` 投影列定义在
+       `db/request_logs_view_schema.go:457` ⇒ **该开关一开，admin 请求日志列表的
+       「客户端协议」列就恒空**。这是**读方一直存在**的路径，不是死代码。
+  * 处置随之从「排期」升级为**已修**：`ProcessedRequest.ClientProtocol` →
+    bridge → `TurnRecord` → `INSERT` 全链补齐（沿用 `agent_name` 样板，
+    `$99` 刻意追加末尾以免重排既有编号），真库门
+    `domains/session/v2/client_protocol_realdb_test.go` 覆盖
+    阳性（值落地）+ 阴性对照（空值必须落 `NULL`），已过 2 方向变异。
+    ⇒ `client_protocol` 与 `work_type` **关闭路径不同**：
+    前者是**纯实现缺口，已闭合**；后者仍卡 D27-c 的客户端头驱动，需要属主拍板。
+  * 连带一条**判据口径**修正：`admin/request_logs_retirement_column_reader_gate_test.go:25`
+    那条「无人 SELECT 读」的断言是 2026-10-04 用**逐行** grep 做的，
+    它 PASS 并不与本条冲突 —— 那一行只是常量名，不含列名字面量。
+    真正含列名的是被拼接出来的最终 SQL。
+    ⇒ 与 §9.207 的方法论补丁同源：**「用某个口径量出 0」不等于「不存在」，
+    先问清那个口径的边界，再问结论。**
 
 ---
 

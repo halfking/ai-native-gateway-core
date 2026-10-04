@@ -10083,3 +10083,103 @@ breaker 也放进切换清单 ⇒ 红。
 本次**同一个库、同一份扫描**（§9.202.1）已经列出了 memora 是外部服务，
 却没把那 5 个函数与那份清单对照 ——
 **两条结论挨在一起却没交叉**，这是比「扫错了对象」更隐蔽的一层。
+
+---
+
+## §70.49 `session_turns.client_protocol` 从未被写过，而 admin 主列表**正在读它**（D28-c 结案）
+
+### ① 本轮做了什么
+
+照 `agent_name` 的样板，把 `ClientProtocol` 接进 v2 写入链四处
+（bridge / `ProcessedRequest` / `TurnRecord` / INSERT），
+配真库门 `TestTurnWriterWritesClientProtocol_RealDB`，并经 2 方向变异验证有牙。
+D28-c 相应改写：从「排期」升级为「已修」。
+
+### ② 实测：与 `is_final_success` 同款，但这次**有人读**
+
+| 面 | 口径 | 结果 |
+|---|---|---|
+| `session_turns` | 近 30 天 `client_protocol` 非空 | **0** / **1,659,271** |
+| `request_logs_hot` | 近 30 天非空 | 1,455 / 4,081 |
+| `session_turns_hot` | `agent_name`（同族对照） | 1,455 / 1,473（98.8%） |
+
+区别于 `is_final_success`（列在 INSERT 清单里、只是没人置位）：
+`client_protocol` **连管道都没接**。
+
+### ③ 后果是用户可见的，且本机已经命中
+
+`storage.admin_logs_native_turns_read = true`（本机实测）⇒
+`logsSourceFromSQL()`（`admin/logs_turns_source.go:62`）直读
+`db.SessionFamilyTurnsSourceSQL()`，而 `admin/logs.go:204` 选 `rl.client_protocol`
+（投影列 `db/request_logs_view_schema.go:457`）。
+⇒ **admin 请求日志列表的「客户端协议」列恒空**；接口 200、页面正常、无错误日志。
+
+⚠ **710 视图该列填充 35,185 / 2,278,971** ⇒ 从视图读是好的、从原生投影读才空。
+这正是它此前没被发现的原因：**任何只测视图的核对都看不出问题。**
+这条要记住：切臂之后，同一列在两条路径上的质量可以差到「好 vs 恒空」。
+
+### ④ ⚠ D28-c 的前提是错的 —— 「没人读」是量具错了
+
+D28-c 写「`client_protocol` 全仓无人 SELECT 读」，
+`admin/request_logs_retirement_column_reader_gate_test.go:25` 记着该断言用**逐行 grep** 做。
+但 `admin/logs.go:204` 那行**确实含列名**（`rl.client_protocol,`），
+逐行 grep 本该命中 ⇒ **当时的断言口径比「逐行 grep」更窄**
+（多半只扫 v1 底表字面量，而该 SQL 来自拼接的 `logsFrom`）。
+
+★ 与 §9.202 / §70.47 同族：**被测对象经过拼接时，静态字面量扫描会漏**。
+⇒ 通则：「用某个口径量出 0」不等于「不存在」。先问清那个口径的边界，再问结论。
+
+### ⑤ `$99` 刻意追加在末尾
+
+参数列表是**位置编号**，插在 `agent_name` 旁边会重排其后每一个 `$N`，
+漏一个就是 `mismatched param and argument count` ——
+正是 `TestRequestLogInsertParamCount` 守着的那类事故。
+
+★ **我第一版真的漏了 SELECT 段的 `$99`**，被本轮临时写的参数计数检查抓到，
+**不是任何既有门**。⇒ 于是把「真跑一次」变成常规动作（真库门）。
+pgxmock 只要参数个数对就放行，**只有真库会炸**。
+
+### ⑥ 顺带修一句会误导人的过期注释
+
+`TurnRecord.DigestJSON` 原注释写「It is nil for rows that cannot produce a useful digest」——
+**不对**：nil ⇒ `''` ⇒ `''::jsonb` ⇒ **22P02**。本轮照这句注释构造零值记录，被打回来。
+生产侧不踩（唯一赋值点出错即 return），但注释会**主动**把人送进坑。
+
+### ⑦ 门与变异
+
+| 变异 | 结果 |
+|---|---|
+| SELECT 段删掉 `$99`（本轮亲手犯的错） | 红：`syntax error at or near "WHERE"` |
+| 映射写成常量 `nilIfEmpty("MUTATION-CONSTANT")` | 红（**阴性对照**抓的） |
+
+阴性对照是这道门的意义所在：没有「空值必须落 NULL」这一段，
+一个把该列写死的实现也能对有值用例报绿。
+
+⚠ **投影腿刻意不在本门考核**（`db.SessionFamilyTurnsSourceSQL()` 在 db 包，
+从 v2 引入会穿过 db→v2 的依赖方向）。这是**已知未覆盖**，不是「已验证没问题」。
+
+### ⑧ 回归与边界
+
+`domains/session/...`、`internal/sessionv2mirror`、`telemetry` 全绿；
+`go build ./...` 通过；gofmt 干净；`admin` 全量基线仍为 FAIL 5（同 base 实测）。
+
+### ⑨ 待拍板
+
+**D28-c 已结案**（`client_protocol` 已闭合）。
+⚠ 但它与 `work_type` **关闭路径不同**，不要一起「排期」：
+前者是纯实现缺口、已修；后者仍卡 **D27-c** 的客户端头驱动，需属主拍板。
+
+沿用未决：**D30-b**（252 只读凭据，唯一硬阻塞）、
+D32 + D29-d 的生产切换时点（建议同一次部署窗口，且必须赶在 `request_logs` 被 DROP 之前）、
+**D28-a / D28-b / D27-a / D27-b / D27-c / D26-a / D26-b / D25-a / D25-b / D25-c /
+D24 系列 / D23 系列 / D21-a / D21-b / D19-b / D20-a / D20-c**。
+
+### ⑩ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
+2. 每轮开头 `export GOCACHE=/tmp/gocache-<worktree名>`（本机共享缓存会被并发会话搞坏）。
+3. 剩余候选：`client_protocol` 之外，`db/session_family_column_availability_test.go`
+   的 `GO EMPTY ON THE SESSION SIDE` 若还有成员，逐个查**是否有活读方**——
+   本轮的教训是**「空」不等于「没人用」**。
+4. 回归只看差集；`installer` 是独立 module，须进目录跑 `go test ./...`。
+5. 文档 U+FFFD 基线：审计 2（历史遗留）、决策表 0、handoff 0，每轮写完必核零新增。
