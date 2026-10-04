@@ -23315,3 +23315,90 @@ S4 退役风险清单有三张表（`db/retirement_column_exposure.go`）：
   那种形态不受停写影响。
 - **未连接生产。** 但「`admin/logs.go` 的投影段没有被归因」与
   「`client_protocol` 在该查询里被 SELECT」都是**代码事实**，可直接外推。
+
+---
+
+## §9.194 D29-b 专项普查：把「可能少报」变成**确切的数字**
+
+### §9.194.1 目标
+
+§9.193 证明了 `extractV1ReadingLiterals` 在拼接式查询上会漏归因，
+但只给了一个样本（`admin/logs.go`）。D29-b 要求的是**范围**：
+这个漏报面到底有多大。好让属主能用数字拍板 D29-a。
+
+### §9.194.2 我先试了做成门，失败了——**记录这个失败**
+
+第一版是一道「默认拒绝 + 具名登记」的门（`concatenatedSqlExposure`），
+判据三次调整后的命中规模：
+
+| 版 | 判据 | 命中文件数 |
+|---|---|---|
+| v1 | 片段须含 SQL 关键词 | **12**（但**漏掉 `admin/logs.go` 的 `client_protocol`**——见下） |
+| v2 | 放宽到「片段只要含列名」 | **276**（绝大多数是结构体 tag 与单个裸列名常量） |
+| v3 | 收紧为「片段像查询的一部分」 | **171** |
+
+**v1 的失败值得单列**：它要求片段含 SQL 关键词，
+而 `requestLogsListCols`（纯投影清单、**一个 SQL 关键词都没有**）因此被滤掉，
+普查只报出 `total_tokens` 而漏掉 `client_protocol`
+⇒ **这道门在第一次运行时就复现了它自己要记录的那个失效形状。**
+这是本轮最刺眼的一次自我印证：判据与缺陷是同一种病。
+
+**v3 的 171 条为什么不能要**：没有人会维护 171 条登记；
+没有人维护的清单等于没有清单，而且它还会给人「已经管过了」的错觉。
+**正确做法是修掉整类（D29-a），不是枚举它。**
+
+⇒ 放弃这道门，改为**探针**：量一个数，不判红。
+
+### §9.194.3 探针与它唯一敢红的地方
+
+`admin/retirement_exposure_attribution_gap_probe_test.go`
+（**探针，不是门；刻意永不判红**）。理由写在文件头：
+漏归因的正确值是 0，把一个已知的坏值写成期望值
+**等于把缺陷冻进断言**——将来有人修好提取器，门会红而红原因是「变好了」。
+
+唯一的红条件是**探针自己坏了**：
+- 扫到 0 个读方文件 ⇒ Fatal（**「测出 0」与「读错了对象」必须能分开**）；
+- 分母低于 50 ⇒ Fatal。
+
+⚠ 这不是洁癖：本项目已栽过同族错误（§9.184，普查脚本的 `PGPASSWORD`
+从未赋值，12 次连接失败全被默认判 OK，整张矩阵作废）。
+
+### §9.194.4 普查结果（分母 = 读方清单 107 个文件）
+
+| 口径 | 文件 | 「列×文件」对 | 不同列 |
+|---|---|---|---|
+| A（含 `id`） | **29** | **66** | 20 |
+| B（剔除 `id`） | **21** | **49** | 19 |
+
+**`id` 必须单列**：提取器自己的注释写着
+「This is the case that makes `id` a false positive」——
+它常以派生名（`AS id`）出现，不是源列名，计进去会让数字虚高。
+
+`admin/logs.go` **一个人漏 13 列**
+（`attachments` / `client_protocol` / `compression_reason` / `credential_id` /
+`egress_protocol` / `failure_stage` / `outbound_msg_hashes` / `provider_id` /
+`provider_model` / `request_class` / `search_text` / `total_tokens` / `usage_source`）。
+
+汇总 B 的 19 个列：`application_id` `attachments` `canonical_id` `client_ip`
+`client_model` `client_protocol` `compression_reason` `credential_id`
+`egress_protocol` `failure_stage` `origin_actor` `outbound_msg_hashes`
+`provider_id` `provider_model` `request_class` `search_text` `total_tokens`
+`usage_source` `work_type`。
+
+⇒ **§9.161/§9.162 已公布的暴露报告，在这 21 个文件上少报了 49 个「列×文件」对。**
+这直接改写那份报告的严重度排序：`admin/logs.go`（暴露报告里 `definite` 只有
+`canonical_id` / `client_model` 两列）实际触及 13 个退役清单列。
+
+### §9.194.5 探针的变异验证
+
+- **M1**：让扫描一个文件都扫不到 ⇒ **Fatal**，红因是
+  「这不是『漏归因为 0』的结论，是探针读错了对象」。
+- **M2**：把分母地板抬到 1000 ⇒ **Fatal**，红因是「分母被悄悄换掉了」。
+
+### §9.194.6 诚实边界
+
+- **未改共享提取器、未改已公布数字。** 本节新增**一条探针**。
+- 分子是**上界**：判据（含逗号 + ` AS `/点号/`::`/括号）是启发式，
+  仍可能把非查询片段算进来。反过来它**不会**漏掉真正的拼接失效形状——
+  三轮迭代已把已知的那个样本（`client_protocol`）纳进来了。
+- **未连接生产。** 但「哪些文件的查询是拼接的」是**代码事实**，可直接外推。
