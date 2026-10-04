@@ -21940,3 +21940,199 @@ VALUES (..., $5 /* v1 原始 ts */, ..., 'backfill', 'verified', $16)
 - 「本地数据是谁写的、什么时候写的」**仍未定位**——但**已经不需要定位**：
   无论是谁写的，**它与当前代码不自洽**这一事实就足以否决「拿它当生产规模」。
 - **本节没有改任何代码、配置、视图或迁移。**
+
+---
+
+## §9.183 门上的洞：一个以错误理由排除的目录，藏着一个真的两面漏读
+
+### §9.183.1 起因：一次**几乎全错**的初筛
+
+§9.178 确立 `session_turns_hot` 是**独立堆表**、不是分区（本轮补的 §9.177）。
+既然是两个存储面，「只读父表 `session_turns`、不带 `_hot`」就应当是一条可疑清单。
+于是我做了机械初筛：列出所有引用 `session_turns`、而引用处**不带 `_hot`**
+的非测试 Go 文件，得 **14 个**（此前口头记的是 13，逐条重数后是 14，
+差的那 1 个是 `db/request_logs_view_schema.go`）。
+
+**这份清单几乎全是假的。** 逐个打开后：
+
+| 分类 | 个数 | 依据 |
+| --- | --- | --- |
+| 实际读两面或走合并视图 | 7 | `dual_read_validator.go:503/509`、`annotation_handler.go:688/692`、`session_catalog_usage.go:56/61`、`session_sanitize_matches.go:198/200`、`session_detail_v2.go:435/566/569`、`auto_route_affinity_worker.go:328/330`、`credential_selfcheck.go:309/311` |
+| SQLite 单文件库，非 PG 存储面 | 3 | `storage/sqlite/{turns_store,schema}.go`、`bg/lite_retention_worker.go`（`rowid` / `?` 占位符 / 单表 schema） |
+| 已具名登记的**有意**形态 | 3 | `session_request_status_backfill.go`（回填刻意父表-only）、`session_aggregator.go`（**父表优先**，对齐视图去重优先级）、`request_logs_view_schema.go`（视图体拼装器） |
+| **真实缺陷** | **1** | `cmd/tools/validate_sessions_v2/repair.go` |
+
+**假阳性 13 / 真 1。** 而这 13 个假阳性里，连「门已经存在」这件事都不是我查出来的——
+`admin/session_family_two_surface_test.go` 早在 2026-10-02 就立了这条门，
+门头注释里甚至已经写明了「逐字面量门看不见跨字面量的 UNION」这条盲区。
+⇒ **我这一轮的初筛，价值不在发现了缺陷，在于撞出了这道门的一个洞。**
+
+### §9.183.2 洞：`cmd/tools` 被以「SQLite」为由整目录排除
+
+`session_family_two_surface_test.go` 的排除清单是：
+
+```go
+var sessionFamilySQLiteDirs = []string{"storage/sqlite", "tests", "installer", "cmd/tools"}
+var sessionFamilySQLiteFiles = []string{"bg/lite_retention_worker.go"}
+```
+
+**`cmd/tools` 不是 SQLite 目录。** 该目录下引用 `session_turns` 的 6 个非测试文件，
+逐个量过：`sqlite/SQLite` 出现次数 **全为 0**；`pgx` 出现 2/5/5/2/2/0 次；
+`public.session*` 出现 1/10/0/5/1/1 次。
+
+```
+cmd/tools/migration-456-test/main.go              sqlite=0 public.=1  pgx=2
+cmd/tools/validate_sessions_v2/repair.go          sqlite=0 public.=10 pgx=5
+cmd/tools/validate_sessions_v2/validator.go       sqlite=0 public.=0  pgx=0
+cmd/tools/validate_sessions_v2/loader.go          sqlite=0 public.=5  pgx=5
+cmd/tools/backfill_session_bodies/main.go         sqlite=0 public.=1  pgx=2
+cmd/tools/backfill_sessions_v2_v2/main.go         sqlite=0 public.=1  pgx=2
+```
+
+⇒ **排除理由是假的。** 这不是「宽了一点」，是**一整个 PostgreSQL 目录不在门的覆盖内**。
+
+### §9.183.3 收窄排除后，门立刻报出 4 处
+
+把 `"cmd/tools"` 从 `sessionFamilySQLiteDirs` 去掉（其余不动），复跑：
+
+```
+--- FAIL: TestNoBareParentSessionFamilyRead
+    会话族出现未登记的裸父表读法（4 处）：
+      cmd/tools/validate_sessions_v2/repair.go :: public.session_bodies
+      cmd/tools/validate_sessions_v2/repair.go :: public.session_bodies
+      cmd/tools/validate_sessions_v2/repair.go :: public.session_turns
+      cmd/tools/validate_sessions_v2/repair.go :: public.session_turns
+```
+
+4 处全在 `repair.go`。逐条打开 `ExecuteRepair`：
+
+```go
+// Delete turn logs
+tag, err := tx.Exec(ctx, `DELETE FROM public.session_turn_logs ...`)
+
+// Delete bodies
+tag, err = tx.Exec(ctx, `DELETE FROM public.session_bodies WHERE tenant_id=$1 AND session_id=$2`)
+result.DeletedRows["session_bodies"] = int(tag.RowsAffected())   // ← 单面
+
+// Delete turns from both stores. ...
+hotTag, err := tx.Exec(ctx, `DELETE FROM public.session_turns_hot ...`)
+tag, err = tx.Exec(ctx, `DELETE FROM public.session_turns ...`)
+result.DeletedRows["session_turns"] = int(hotTag.RowsAffected() + tag.RowsAffected())
+```
+
+**`session_bodies` 有 `_hot` 孪生面**（`domains/session/v2/bodies_writer.go:310/368`
+的 `WriteBodies` 写的就是 `public.session_bodies_hot`），而这个 DELETE 一个字都没提到它。
+本机实测 `session_bodies_hot` 有 **1990 行**，不是空表。
+
+### §9.183.4 定性：疏漏，不是设计
+
+三条独立证据，同一个函数内部就能比出来：
+
+1. **不对称**。turns 的删除有明确注释「Delete turns from both stores」并把两面
+   `RowsAffected` **相加**；bodies 的注释只有「Delete bodies」，计数是单项。
+   同一个函数、相邻 20 行、同一批兄弟表，两种写法。
+2. **计数与动作用了不同的面**。`PlanRepair` 的
+   `plan.DeleteCounts["session_bodies"] = len(v2Bodies)`，其中 `LoadV2Bodies`
+   读的是**合并视图 `session_bodies_unified`**（`loader.go:348`，
+   定义为 `session_bodies_hot UNION ALL session_bodies`）⇒ **计划数的是两面，
+   删的是一面**，差额静默留在库里。修完之后这两侧才第一次口径一致。
+3. **紧接的重建只写父表**。`INSERT INTO public.session_bodies`（:310）只落分区父表。
+   ⇒ 残留的 hot 行 + 新插入的父表行，经 `session_bodies_unified` 读出来是**重复的**。
+
+⇒ **命中区间正是修复最常发生的区间**：会话最近一次写入 8 小时内，其 bodies 必然
+还在 hot 面上没被 promote 搬走。
+
+### §9.183.5 修复与登记：修一条，登记另一条，且登记**不是**那道修复的守卫
+
+**修**（`repair.go`）：bodies 删除补上 hot 腿，计数改为两面相加，与 turns 同款写法。
+
+**登记**（门）：`repair.go` 仍需留在 `sessionFamilyBareParentReaders` 里，因为剩下的
+3 个形状不是缺陷：
+
+- `DELETE FROM public.session_turns`（父表腿）：hot 对偶在**紧邻的上一条独立语句**，
+  判据单位是「一条 SQL」，跨语句配对它看不见（与门头已声明的盲区同一条）。
+- 两处 `INSERT INTO public.session_turns` / `session_bodies`：**写**方选择直落分区
+  父表，不是「漏读 `_hot`」——本工具按 v1 源全量重建、产出完整快照，promote 只搬
+  hot→父表、不搬父表→hot，不构成漏数据。
+
+**这里有一个必须写下来的结构问题：登记的粒度比要守的性质粗。**
+`sessionFamilyBareParentReaders` 是**按文件**索引的。为了放行上面 3 个形状，
+`repair.go` 整个文件被登记 ⇒ **§9.183.4 那条 bodies 修复在修完之后是无人看守的**：
+把 hot 腿删掉、把计数改回单项，`TestNoBareParentSessionFamilyRead` 依然全绿。
+
+⇒ 所以必须给那道修复**单独**的守卫，否则「修好了」和「修好了且回不去」是同一件事。
+
+### §9.183.6 新守卫 `repair_two_surface_test.go`，以及它自己踩的两个坑
+
+新守卫（`cmd/tools/validate_sessions_v2/repair_two_surface_test.go`）逐条断两件事：
+
+- `ExecuteRepair` 的 `tx.Exec` SQL 字面量里，**同时**存在
+  `DELETE FROM public.session_bodies_hot` 与 `DELETE FROM public.session_bodies`；
+- `result.DeletedRows["session_bodies"]` 的右值是两面的**相加**表达式
+  （只删两面却单面计数，删除对但计数与 `PlanRepair` 口径又不一致了）。
+
+**它自己写错了两次，两次都是「红得没有意义」：**
+
+**坑 1（第一次运行就撞上）**：`pgx.Exec(ctx, sql, args...)` 的 SQL 在 **args[1]**，
+我写成了 args[0]。args[0] 是 `ctx`，于是一条 SQL 都取不到，取到的全是
+`fmt.Errorf` 的格式串。**门红了，但红在「判据失效」而不是红在性质上。**
+处置：改成 args[1]，并保留「一条都没取到 ⇒ `t.Fatal`」而不是静默 0 命中。
+**这次是那条 Fatal 自己喊出来的**——「观察不到任何东西 ⇒ 无命中」是最危险的一种绿。
+
+**坑 2**：判据把 SQL 大写后拿去 `HasPrefix` **小写**的关系名 ⇒ 永远不成立
+⇒ 两个面都被报成「缺」，**一条完全正确的删除被报成两条缺失**。
+处置：两边同样大写。误报方向是「全红」而非「全绿」，方向是安全的。
+
+**坑 3（变异时撞上）**：`containsBinaryExpr` 无脑穿透所有 `CallExpr`，
+在 `int(tag.RowsAffected())` 这种**单面**写法上会下降进零参的 `RowsAffected()`
+并 **panic**。也就是说，「删除退回单面」这个恰恰要抓的变异，是以**崩溃**呈现的
+——崩溃也是红，但红不出「哪条性质被破坏」，会把人引去修判据而不是修代码。
+处置：只穿透**类型转换**（`Fun` 是标识符且恰一个实参），方法调用
+（`Fun` 是 `SelectorExpr`）天然被排除。
+
+### §9.183.7 变异：先证明「红的原因正确」，再相信它红
+
+| 变异 | 做法 | 结果 |
+| --- | --- | --- |
+| M1 | 删掉 `session_bodies_hot` 那条 DELETE（回到 §9.183.4 修前） | **红，且两条断言各自报出正确红因**（缺 hot 腿 / 不是求和），无 panic |
+| M2 | 删除仍两面，仅把计数改回单项（补 `_ = hotBodiesTag` 保证**可编译**） | **红，且只有计数那条红**，删除那条保持绿 |
+
+**M2 的「只有一条红」是有意义的**：它证明两条断言是**可区分的**，不是同一件事的
+两个写法。**M2 第一次尝试是编译失败**（`declared and not used: hotBodiesTag`）——
+编译失败也是红，但门根本没运行，那个红不作数，故重做到可编译才采信。
+
+**基线绿 + 两个变异红 + 两条断言可区分 + 还原后复绿**，这才是「有牙」的完整形态。
+
+### §9.183.8 回归：同环境量基线，不拿记忆里的数字当证据
+
+带真库（`TEST_DATABASE_URL`，本机 `llm_gateway` 库）：
+
+| 状态 | `admin` FAIL | `cmd/tools/...` |
+| --- | --- | --- |
+| 带本轮改动 | **2**：`TestReportRollup_HTTPContract`、`TestProjectTasksSkipsNullTaskID` | 全绿 |
+| `git stash` 后同环境基线 | **2**：**逐名相同**同两条 | — |
+
+⇒ **零回归**，且两条红都是已登记的 D21 环境缺口（迁移 762 未应用 /
+`report_snapshots` 0 行），与本轮无关。
+
+> 附一条环境事实：本机测试库的角色是 **`llm_gateway`**（凭据取
+> `envs/common/database.yaml` 的 `COMMON_PG_SUPERUSER` / `COMMON_PG_SUPERUSER_PASS`），
+> **不是** `postgres`，也不是 `kxuser`——后两者都认证失败。
+> 用错角色会得到 46 条 `password authentication failed`，
+> 看起来像大面积回归，**其实一条代码都没跑**。这是本轮第二次被凭证骗到
+> （上一次是连接串漏密码），故记在这里。
+
+### §9.183.9 诚实边界
+
+- **本节没有跑过一次真实的 `ExecuteRepair`。** 守卫是**静态源码判据**，
+  守的是「这段 SQL 被写出来了」，**不是**「运行时删干净了」。
+  「修复后同一会话的 bodies 在两个面上都不重」这个**端到端断言没有做**，
+  原因是它需要在真库里造出「同一会话两侧都有行」的夹具，属独立一轮工作。
+- **爆炸半径未量。** §9.182 已测得父表 `source_kind` 的 `backfill` 行数为 **0**，
+  提示这个工具在本机可能从未运行过 ⇒ **本节的缺陷是真的，但本机没有受害数据**；
+  生产是否跑过、跑过多少次，**未验证**。
+- **`cmd/tools` 里的其余文件本轮只做了「是否 PG」的分类，没有逐条审 SQL 语义。**
+  收窄排除后门绿 ⇒ 门看得见的形状都合法；**门看不见的形状（拼装、裸名、
+  跨语句配对）仍在盲区里**，其中跨语句配对本轮已知存在 1 处（turns 的 hot 对偶），
+  已具名登记。
+- **本节未连接生产。** 全部读数来自本地 `127.0.0.1:5432/llm_gateway`。
