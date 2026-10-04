@@ -10802,3 +10802,84 @@ session turn 镜像**就是** `onPersisted`；`firePersistedHooks` 全仓两处�
 - S4 开启时点；D32 + D29-d 切换时点；`client_model` 登记；`outbound_model` 下限；
   `RetirementColumnFill` 快照去留。沿用未决：D28-a/b、D27-a/b/c、D26、D25-b/c、
   D24 系列、D23 系列、D21、D20、D19-b。
+
+---
+
+## §70.54 我把 §9.213/§9.214 挂到了**错误的总体**上，而且方向是反的（§9.215）
+
+### ⑳ 撤回
+
+§9.213/§9.214 的整条链（「v1 持久化失败 ⇒ `onPersisted` 不触发 ⇒ 镜像从未被调用」）
+**不适用于 `genuine_loss`**，而 `genuine_loss` 才是 S4 门在管的总体。
+
+被挂错的那一环：**`59bf8998` 按生产分类器属于 `non_terminal`，不是 blocker。**
+`non_terminal`（30d 1,631 行）**按设计就不计入丢行** ——
+我拿一条门本来就不管的行，去解释门正在管的丢行。
+
+而且不是「缺证据」，是**方向相反**：`genuine_loss` 的 11 行**全部**是
+终态失败（`request_status='failure'` + `error_kind` 非空），
+即 **v1 写成功了** ⇒ `firePersistedHooks` 已触发。
+
+### ㉑ 为什么这是结构性的：门只报数，不报形状
+
+`hook.go:78` 第一道门 `if !entry.Success && !isTerminalFailure(entry) { return }`，
+而 `isTerminalFailure`（hook.go:1093）**在 `Success` 为真时直接返回 false**
+⇒ 成功行直接通过。
+`MirrorDriftClassSQL` 的 `ELSE` 臂按构造就是「success **或** 终态失败」。
+
+⇒ 两条 SSOT 合起来：**每一行 `genuine_loss` 都必然到过 `PersistHook`。**
+不需要任何日志。丢行只可能在 hook **之后**。
+
+而门只输出 `genuine_loss=11`，不输出这 11 行长什么样 ——
+所以「上游还是下游」在库里无法回答，我只能拿手边唯一有日志的行倒推，
+而那一行不在这个总体里。**这是判据缺形状，不是判据红。**
+
+### ㉒ 活体机制（方向相反的那条）
+
+查询时总体正在增长（30 分钟 +1），抓到带完整日志的 blocker `7204907f9c5f…`：
+
+```
+upstream_status=200 → audit: request completed success=true
+→ WARN sessionv2mirror: V2 shadow write failed
+    error="write turn: insert turn: timeout: context deadline exceeded"
+```
+
+- v1 写成功（三个 fallback 后端**全只写文件/环形缓冲，没有一个写 PG**
+  ⇒ PG 里有这行 ⇒ 主路径 `err==nil`）；
+- hook 被调用；
+- **turn 写超时**；
+- **恢复路径确实入队了**（`7b475e9e…` `status=pending` `attempts=2`，
+  错误是同一个超时）—— 与 §9.213 的猜测相反，reaper 在重试但**仍然超时**。
+
+当前容器 5h 内 `V2 shadow write failed` **82** 次，含
+`enqueue session aggregate outbox: context deadline exceeded` ×5
+⇒ **兜底与主路径抢同一个正在超时的资源**（该通则第四次印证）。
+
+⇒ **S4 卡住的是一条正在超时的会话写路径，不是镜像逻辑。**
+
+### ㉓ 改动
+
+`cmd/gateway/s4_gate_measurement_test.go` 新增 **blocker 形状剖面**：
+按 `origin_actor × request_status × error_kind × success` 分组，
+用**同一个** scope + **同一个** `mirrorDriftClassSQL`（不重抄），
+两条断言：① 剖面求和 == 报的计数；② **不允许出现
+`success=false 且无终态标记` 的行**（那种行按 hook 第一道门根本没到过镜像，
+是另一种缺陷）。真库实测通过，11 行 / 5 组，最新一行 7h8m 前。
+
+### ㉔ 遗留（本轮新增）
+
+- ✅ 断言 ② 的**阴性对照已补**：断言 ② 在数据上**不可证伪**（`ELSE` 臂本身
+  就是「success 或终态」，能触发它的行会被分成 `non_terminal`，进不了剖面），
+  所以它是**漂移绊线**而非数据探测器。正解同 §9.209 —— 抽出可测谓词
+  `blockerSkippedByFirstGate`，用 `TestBlockerSkippedByFirstGate_PositiveAndNegative`
+  打双向对照（4 阴 + 1 阳，阳性对照就是 `59bf8998` 的形状），5/5 通过。
+- ⚠ `get next turn_no`（`turn_writer.go:340`）用
+  `MAX(turn_no)+1` 从**分区视图** `session_turns_with_current_month` 算，
+  在**按 request** 的 advisory lock 事务内（该锁不串行化同 session 并发）。
+  实测最热 session **231ms**，`Merge Append` + top-N heapsort。
+  **这是水平读数，不是超时根因** —— 下一轮的活。
+- ⚠ 我自己交接里记的「30d = 14，含 node-probe-worker 4」是**错的**，
+  实测 **11**。那份 14 出自我手写预筛 SQL 漏了 `internal_loopback` 那条臂
+  —— **本轮第二次犯「手写预筛代替生产分类器」**。
+- 待拍板沿用 §⑲；并新增一条：**会话写路径的 deadline 与并发分布要不要治**
+  （它才是 S4 的实际阻塞项）。
