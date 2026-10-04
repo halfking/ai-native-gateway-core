@@ -1158,8 +1158,15 @@ do_deploy() {
   switch_start_ns=$(zd_now_ns)
   # The canary unit executes its slot directly. Pre-warming therefore never
   # mutates current, which remains the identity of the serving instance until
-  # Nginx has accepted the candidate.
-  remote_ssh "set -e; mkdir -p '$REMOTE_ROOT/run' '$REMOTE_ROOT/slots'; systemctl stop '$candidate_service' >/dev/null 2>&1 || true; deadline=\$((\$(date +%s)+45)); while systemctl is-active --quiet '$candidate_service'; do if [ \"\$(date +%s)\" -ge \"\$deadline\" ]; then echo 'candidate stop timed out after 45s' >&2; systemctl status '$candidate_service' --no-pager >&2 || true; journalctl -u '$candidate_service' -n 30 --no-pager >&2 || true; exit 1; fi; sleep 1; done; if ss -ltn | grep -q ':${candidate_port} '; then echo 'candidate port remains occupied after stop' >&2; ss -ltnp | grep ':${candidate_port} ' >&2 || true; exit 1; fi; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$candidate_port'; printf '%s\n' '$candidate_port' > '$REMOTE_ROOT/run/candidate-port'; printf '%s\n' '$candidate_service' > '$REMOTE_ROOT/run/candidate-service'; systemctl daemon-reload"
+  # Nginx has accepted the candidate. web-mobile is the one exception: the
+  # gateway resolves the mobile dist at process start (cwd-relative probe,
+  # cmd/gateway/mobile_static.go), so on the FIRST mobile-carrying deploy the
+  # top-level symlink does not exist yet when the candidate boots and the /m
+  # mount silently stays unconfigured until a manual restart. Pre-bind it to
+  # the candidate release; the switch and every rollback path re-point it at
+  # current/web-mobile, and a dangling target just probes nil (pre-mobile
+  # behavior), so this is safe to do before the candidate proves itself.
+  remote_ssh "set -e; mkdir -p '$REMOTE_ROOT/run' '$REMOTE_ROOT/slots'; systemctl stop '$candidate_service' >/dev/null 2>&1 || true; deadline=\$((\$(date +%s)+45)); while systemctl is-active --quiet '$candidate_service'; do if [ \"\$(date +%s)\" -ge \"\$deadline\" ]; then echo 'candidate stop timed out after 45s' >&2; systemctl status '$candidate_service' --no-pager >&2 || true; journalctl -u '$candidate_service' -n 30 --no-pager >&2 || true; exit 1; fi; sleep 1; done; if ss -ltn | grep -q ':${candidate_port} '; then echo 'candidate port remains occupied after stop' >&2; ss -ltnp | grep ':${candidate_port} ' >&2 || true; exit 1; fi; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$candidate_port'; if [ -d '$REMOTE_ROOT/releases/$version/web-mobile' ]; then ln -sfn '$REMOTE_ROOT/releases/$version/web-mobile' '$REMOTE_ROOT/web-mobile'; fi; printf '%s\n' '$candidate_port' > '$REMOTE_ROOT/run/candidate-port'; printf '%s\n' '$candidate_service' > '$REMOTE_ROOT/run/candidate-service'; systemctl daemon-reload"
   if ! remote_ssh "systemctl start '$candidate_service'"; then
     err "候选实例启动失败，旧实例保持服务"
     exit 1
