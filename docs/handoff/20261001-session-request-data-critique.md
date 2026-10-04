@@ -11413,3 +11413,57 @@ client_protocol          0.0000%  (0/1690372 rows)
   ⇒ 列入会产生**没人能行动的红**。
 - 门**只管本地/测试库**，**不会**在 252 上自动运行；
   生产的同一判断目前只存在于本文档的只读实测里。
+
+---
+
+## §70.62 `s4_ready` 变绿**不等于**可以退役——第二个阻塞项已贴到 S4 门的结论行（§9.225）
+
+### 㭓 陷阱的形状
+
+> 修好镜像 → 看着 S4 门变绿 → DROP v1 → **什么红都没有，列值永久丢失。**
+
+§70.61 那道硬门只在测试库跑，而操作者真正会看的是 **S4 那份报告** ——
+它原本**只字未提**第二个阻塞项。
+
+### 㭔 补法：只报告，不决策
+
+`cmd/gateway/s4_gate_measurement_test.go` 总结块现在紧接在
+`ONGOING / RECENT / historical / clean` 之后打印第二项前置条件：
+
+```
+RETIREMENT PREREQUISITE **NOT MET**: 2 of 2 column(s) are still empty on the session side
+(is_final_success, client_protocol, of 1690576 session_turns) and are fillable **only** from v1,
+by a one-shot idempotent script. s4_ready=false above says nothing about them: it measures drift,
+not copies. Dropping request_logs now makes these permanently unfillable.
+  ⇒ s4_ready is necessary but NOT sufficient. Read it together with the line above.
+```
+
+⚠ **为什么只报告**：§70.52 已把这条门定为**报告**
+（"S4 能不能开"是发布决定）。⇒ **报告负责「别把 s4_ready 单独读」，
+硬门负责「拦住顺序错误」**，分工不混。
+
+★ **措辞里嵌了真实的 `s4_ready` 值**，所以等镜像修好、它变成 `true` 时，
+同一句话自动变成「**`s4_ready=true` above says nothing about them**」——
+**那正是最危险的那一读法，而它不需要改代码就会自己出现。**
+
+⚠ 第一版我用 `month.genuine`（30d），而这条门自述**定义窗口是 7d**
+⇒ 两行引用**不同的 readiness**，**恰恰制造了它本该消除的割裂**。
+已改为 `def.genuine == 0` 并在注释里写明理由。
+
+### 㭕 两个门现在的分工
+
+| 门 | 形态 | 回答 | 跑在哪 |
+|---|---|---|---|
+| `TestS4GateMeasurement` | **报告** | 镜像有没有在丢行（drift） | 本地/测试库 |
+| `TestRetirementBlockedByUnrunBackfills` | **硬门（故意红）** | 能不能 DROP 源表（copies） | 本地/测试库 |
+| §70.60 的只读实测 | 文档 | 生产的同一判断 | 252 |
+
+⚠ **三者都不含 252 的自动执行** —— 生产的 S4 与回填状态
+**目前只能靠人工只读复测**。已知缺口。
+
+### 㭖 边界
+
+- 本轮改的是**测试的报告内容**，**不改变任何产品行为**。
+- 该块**不做决策、不影响退出码**，只让 `s4_ready` 不能被单独读。
+- 本机真库实跑确认打印了 `NOT MET`（`session_turns` 1,690,576 行、两条列均低于阈值）
+  —— **不是只在纸面上存在**。
