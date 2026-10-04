@@ -829,9 +829,28 @@ files=(
   # （252 SQL 日志审计 R23）。bg/session_health_worker（10-02 ece68f148 接入
   # 生产）每 60min/实例 tick，无索引支撑时对 58.6 万行表 Parallel Seq Scan
   # +Sort，252 真库实测 25.8-29.4s/次（>1s 慢日志 24h 28 条）。
-  # 带 dbinit:no-transaction 标记（CREATE INDEX CONCURRENTLY）；幂等，
-  # 失败留 INVALID 复跑即清。
+  # 带 dbinit:no-transaction 标记（CREATE INDEX CONCURRENTLY）；幂等。
+  # ⚠ 失败恢复（R41 审计 F7 订正，2026-10-04）：CONCURRENTLY 中断留下 INVALID
+  #   索引时，CREATE INDEX CONCURRENTLY IF NOT EXISTS 只会对同名关系发 NOTICE
+  #   跳过，**复跑不会清掉 INVALID**。恢复步骤是先
+  #   DROP INDEX CONCURRENTLY IF EXISTS idx_session_summaries_health_pending
+  #   再重放本迁移（迁移头注释同步口径）。
   "$ROOT_DIR/sql/migrations/startup/822_session_summaries_health_pending_index.sql"
+
+  # 2026-10-04（823）：session_turns/session_turns_hot 两侧同名加 request_status
+  # 列——把网关已算好的生命周期标签（success|failure|rate_limited|in_progress）
+  # 落进会话族；rate_limited 不可由 success/error_kind 推导（立项理由见迁移头
+  # ）。幂等（ADD COLUMN IF NOT EXISTS + hot/parent 列集全等自检）。存量回填
+  # 由后台作业（session_request_status_backfill）负责，不在本通道。
+  "$ROOT_DIR/sql/migrations/startup/823_session_turns_request_status.sql"
+
+  # 2026-10-04（824）：canonical 视图会话腿 request_status 改由 error_kind
+  # 判定——status_code=429 臂在 session_turns 上是死代码（0 行），437,402 条
+  # 真限流被报成 failure（§9.160）。幂等判据：viewdef 含 rate_limit_exceeded
+  # 字面量即 no-op（R41 冻结前订正：判定臂为 IN ('rate_limit_exceeded',
+  # 'key_throttled')，两字面量都来自写侧 EmitRateLimited，见 R41 审计 F1）。
+  # 依赖 817 链形与 session_turn_details 族，缺链时 NOTICE 跳过由 db.ensure 重建。
+  "$ROOT_DIR/sql/migrations/startup/824_request_status_rate_limited_projection.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

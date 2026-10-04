@@ -834,7 +834,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// `status_code = 429` 认限流，而 session_turns 全表 1,688,629 行里
 			// 429 是 **0 行**（真限流在会话侧记 500）⇒ 437,402 条真限流被报成
 			// 普通 failure，视图把 failure 高估 32%、rate_limited 报 0。
-			// 改走 `error_kind = 'rate_limit_exceeded'`：与 v1 权威标签在
+			// 改走 `error_kind IN ('rate_limit_exceeded','key_throttled')`
+			// （R41 F1：两字面量都来自写侧 EmitRateLimited，单值臂会把 823 后
+			// key_throttled 镜像行永久报成 failure）：与 v1 权威标签在
 			// 394,614 组孪生行上双向零反例。纯读侧表达式改写，118 列不变，
 			// 不碰任何行。注：823 那条 request_status 列**没有**被本迁移引用
 			// ——引用它会给「823 未跑的库」引入 undefined column 失败。

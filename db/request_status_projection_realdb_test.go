@@ -41,7 +41,7 @@ func TestRequestStatusProjectionArmOrder(t *testing.T) {
 	}
 	nullGuard := idx("WHEN t.success IS NULL THEN NULL")
 	successArm := idx("WHEN t.success THEN 'success'")
-	ekArm := idx("WHEN t.error_kind = 'rate_limit_exceeded' THEN 'rate_limited'")
+	ekArm := idx("WHEN t.error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited'")
 	codeArm := idx("WHEN t.status_code = 429 THEN 'rate_limited'")
 	failureArm := idx("ELSE 'failure'")
 
@@ -50,11 +50,15 @@ func TestRequestStatusProjectionArmOrder(t *testing.T) {
 			"got offsets: null=%d success=%d error_kind=%d status_code=%d failure=%d\n%s",
 			nullGuard, successArm, ekArm, codeArm, failureArm, expr)
 	}
-	// The error_kind arm must compare against the exact literal that the
-	// migration/session writers produce. A typo here is invisible offline and
-	// silently degrades to "rate_limited = 0" in production.
-	if !strings.Contains(expr, "= 'rate_limit_exceeded'") {
-		t.Errorf("error_kind arm must compare against the exact literal 'rate_limit_exceeded':\n%s", expr)
+	// The error_kind arm must carry the exact literals the write side produces:
+	// EmitRateLimited emits exactly these two error_kind values (R41 F1 — a
+	// single-value arm files every post-823 'key_throttled' mirror row under
+	// 'failure' forever). A typo here is invisible offline and silently
+	// degrades to "rate_limited = 0" in production.
+	for _, lit := range []string{"'rate_limit_exceeded'", "'key_throttled'"} {
+		if !strings.Contains(expr, lit) {
+			t.Errorf("error_kind arm must carry the write-side literal %s:\n%s", lit, expr)
+		}
 	}
 }
 
@@ -149,6 +153,8 @@ func TestRequestStatusProjection_RealDB(t *testing.T) {
 			"the shape §9.160 is about: session side records 500, not 429"},
 		{"rate_limited_no_twin", false, "rate_limit_exceeded", 200, "rate_limited",
 			"42,788 turns carry this error_kind with no v1 twin; they are still rate-limited"},
+		{"key_throttled", false, "key_throttled", 500, "rate_limited",
+			"handler.go:2376 emits this error_kind with the rate_limited label; a single-value arm files it under failure (R41 F1)"},
 		{"upstream_failure", false, "provider_error", 502, "failure",
 			"a genuine upstream failure must NOT be swept into rate_limited"},
 		{"probe_429", false, nil, 429, "rate_limited",
@@ -257,7 +263,7 @@ func TestRequestStatusProjectionMatchesShippedMigration(t *testing.T) {
 	if strings.Contains(proj, ov.frozen) {
 		t.Errorf("migration 824's $proj$ block still contains the pre-824 (dead-arm) projection shape:\n%s", ov.frozen)
 	}
-	if !strings.Contains(proj, "t.error_kind = 'rate_limit_exceeded'") {
-		t.Error("migration 824's $proj$ block is missing the error_kind arm")
+	if !strings.Contains(proj, "t.error_kind IN ('rate_limit_exceeded', 'key_throttled')") {
+		t.Error("migration 824's $proj$ block is missing the error_kind IN-set arm (write side emits both literals; R41 F1)")
 	}
 }

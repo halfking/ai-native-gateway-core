@@ -28,6 +28,18 @@
 --   交叉核对：394,614（有孪生）+ 42,788（无孪生）= 437,402，对得上。
 --   ⇒ 限流信号在镜像里**没有丢**，只是视图不去看它。
 --
+-- 为什么判据是 IN ('rate_limit_exceeded','key_throttled') 而非单值
+--   （R41 审计 F1 订正，2026-10-04，冻结字节在应用前修正）：
+--   上面的交叉表只在 **823 之前的数据**上成立——那时镜像根本不记
+--   request_status，所以 ek='key_throttled' 的行在 v1 腿之外没有落点。
+--   写侧 EmitRateLimited 实际携带**恰好两个** error_kind 字面量：
+--   'rate_limit_exceeded'（handler.go:3244 / messages.go:433 / responses.go，
+--   网关 RPM/并发闸拒绝）与 'key_throttled'（handler.go:2376，api-key
+--   异常用量节流）。823 之后的新镜像行带 rate_limited 标签、ek 保持
+--   'key_throttled'，单值臂会把它们永久报成 failure——而视图会话腿
+--   优先于 v1 腿（WHERE NOT EXISTS 去重），下游没有第二个纠错机会。
+--   幂等判据不受影响：IN 集合里 'rate_limit_exceeded' 字面量仍在。
+--
 -- 为什么不动 session_turns 的数据：
 --   `status_code=500` 是不是写方该改，属另一件事（可能上游确实回了 500，
 --   网关本地限流另记），本迁移只修**读侧分类**，不碰任何行。
@@ -206,7 +218,7 @@ NULL::bigint AS id
         , t.usage_source AS usage_source
         , (CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END) AS gw_session_id
         , d.gw_task_id AS gw_task_id
-        , (CASE WHEN t.success IS NULL THEN NULL WHEN t.success THEN 'success' WHEN t.error_kind = 'rate_limit_exceeded' THEN 'rate_limited' WHEN t.status_code = 429 THEN 'rate_limited' ELSE 'failure' END) AS request_status
+        , (CASE WHEN t.success IS NULL THEN NULL WHEN t.success THEN 'success' WHEN t.error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited' WHEN t.status_code = 429 THEN 'rate_limited' ELSE 'failure' END) AS request_status
         , d.api_key_prefix AS api_key_prefix
         , d.owner_user AS owner_user
         , d.application_code AS application_code
