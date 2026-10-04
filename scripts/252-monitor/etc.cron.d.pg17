@@ -25,7 +25,11 @@
 #   - pg17-drop-columnar.sh 每月 1 号 02:30  DROP 老分区 + VACUUM FULL 元数据
 #   - ursm-snapshot-health.sh   每小时 :17  快照写入健康三态判据
 #   - ursm-snapshot-payload-bloat.sh 每小时 :23  payload 膨胀（818 收益的回归防护）
+#   - pg-table-bloat-check.sh    每天 05:07  全库表空洞普查（只读）
 #
+#   2026-10-04 新增 pg-table-bloat-check.sh 时同步登记。理由见文件末尾注释：
+#   契约是整文件覆盖，漏一条 = 部署时删掉一条生产任务（本文件头部已记过两次
+#   因漏登记造成的事故）。门：scripts/ursmcheck/cron_registration_test.go。
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
@@ -66,3 +70,15 @@ MAILTO=""
 #   818 当初就是无声发生的——06:50:48 上线，直到逐 5 分钟统计 payload 才被发现。
 # ★ 退出码同样分级（0 健康 / 1 膨胀 / 3 没有结论），所以同样不能 >/dev/null。
 23 * * * * root llmgw-source /opt/scripts/ursm-snapshot-payload-bloat.sh 2>&1 | tee -a /var/log/ursm-snapshot-payload-bloat.log; find /var/log -maxdepth 1 -name "ursm-snapshot-payload-bloat.log.*" -mtime +7 -delete
+
+# === 每日全库表空洞普查（只读，2026-10-04 新增）===
+# 起因：2026-10-04 一次手工普查发现 18 张表空闲率 >20%，合计 845 MB 的空闲
+# 永远不会还给操作系统（VACUUM 只记进 FSM，不 shrink 文件）。这不是个别现象：
+# assets 98.9%、session_mirror_outbox 98.5%、analysis_events 85.8%，
+# 且一整片 *_hot 表落在 30~75%。没有巡检的话它只会无声地长。
+# ★ 用 pgstattuple_approx（采样）而不是 pgstattuple（精确全表扫）——
+#   快照表 10 GB，精确扫会跟线上 IO 抢资源。判断量级用采样精度完全够。
+# ★ 每天一次而非每小时：空洞是天级量，而每小时给全库加一轮采样没有必要。
+#   05:07 避开 :00/:10/:15 的高频点，也避开周级 03:15 / 04:40 那两个重任务。
+# ★ 退出码分级（0 无异常 / 1 检出空洞 / 3 量具不可用），同样不能 >/dev/null。
+07 5 * * * root llmgw-source /opt/scripts/pg-table-bloat-check.sh 2>&1 | tee -a /var/log/pg-table-bloat-check.log; find /var/log -maxdepth 1 -name "pg-table-bloat-check.log.*" -mtime +14 -delete

@@ -2151,3 +2151,75 @@ CREATE INDEX ursm_node_snapshot_min_ts_idx
 这张表几乎不删。两者都会让磁盘只增不减。
 ★ 未处理：加删除逻辑会牵动 `AssetHealthProbe` 的语义（`down` 是业务状态，
 不是「可安全删除」的标记），不该顺手做。
+
+### 10.13 ★★ 全库空洞普查：这不是个别现象，是本库的形态
+
+§10.2/§10.3 是逐表深查出来的。2026-10-04 22:25 做了一次**全库普查**
+（`pgstattuple_approx` 采样，`public` schema 的 heap 表），结论比预想的严重。
+
+**两个口径，别混**：
+
+| 口径 | 结果 |
+|---|---|
+| 空闲 > 2 MB 的表**全部** | 35 张，合计 **2,556 MB** |
+| 其中空闲率 **> 20%** 的（值得动手的） | 18 张，合计 **845 MB** |
+
+**> 20% 那批（前 8）**：
+
+| 表 | 总大小 | 空闲 | 空闲率 |
+|---|---|---|---|
+| `session_summaries` | 886 MB | 194 MB | 41.6% |
+| `analysis_events` | 237 MB | 141 MB | **85.8%** |
+| `node_probe_runs` | 618 MB | 102 MB | 21.3% |
+| `request_state_transitions` | 385 MB | 89 MB | 33.1% |
+| `assets` | 75 MB | 66 MB | **98.9%** |
+| `request_stage_events` | 197 MB | 62 MB | 34.7% |
+| `session_mirror_outbox` | 70 MB | 58 MB | **98.5%** |
+| `request_logs_bodies_hot` | 399 MB | 12 MB | **75.3%** |
+
+★ 两条比单表数字更重要的事实：
+
+① **一整片 `*_hot` 表**空闲率落在 30~75%
+   （`request_logs_bodies_hot` 75.3%、`routing_decision_log_hot` 58.4%、
+   `session_bodies_hot` 54.3%、`model_probe_runs_hot` 45.8%、
+   `credential_model_index_hot` 42.7%…）⇒ 这不是巧合，是一个**共同的表生命周期形态**。
+
+② 单表最高的是 `analysis_events` 的 **85.8%**，而它此前**从未出现在任何异常统计里**
+   —— `n_dead_tup` 只有 1,752（0.1%），从死元组角度看它完全健康。
+
+**`analysis_events` 深查**（本轮新查）：
+
+| 项 | 值 |
+|---|---|
+| 活行 / 死元组 | 57,036 / **1,752（0.1%）** |
+| `n_tup_ins` / `n_tup_upd` / `n_tup_del` | 90,349 / 180,698 / **292,915** |
+| `processed_at IS NULL` | **0**（全部已处理） |
+| 索引 | 6 个，含部分索引 `idx_analysis_events_unprocessed ... WHERE processed_at IS NULL` |
+
+- 它是个**任务队列**，且 `del(29.3万) > ins(9万)` ⇒ **它在删，但删不彻底**：
+  净积压 **5.7 万行已处理的僵尸记录**。
+- claim 查询**不慢**：`EXPLAIN` 走 `Index Scan using idx_analysis_events_unprocessed`，
+  cost 2.07 ⇒ 部分索引设计是对的。**所以这不是效率缺陷，是纯存储缺陷。**
+- 141 MB 空洞来自那 29.3 万次删除后文件永不收缩。
+- ★ 这解释了为什么 `n_dead_tup` 看不见它：**死元组指标衡量的是「还没被 vacuum 的行」，
+  而它的问题是「已经被删干净、行没了、但文件没还回去」**。
+  ⇒ **只盯 `n_dead_tup` 的巡检会系统性漏掉这一整类问题。**
+
+**已加巡检**：`scripts/252-monitor/pg-table-bloat-check.sh`
+- 按空闲率 + 绝对空闲量双阈值判定，输出可回收总量
+- 三态退出码 0/1/3（3 = 量具不可用，与 0 必须可区分）
+- 用 `pgstattuple_approx` 采样而非 `pgstattuple` 精确全表扫
+  —— 快照表 10 GB，精确扫会跟线上 IO 抢（§12.6 已定这条纪律）
+- **已同步登记进 `etc.cron.d.pg17`**（每天 05:07）。
+  ★ 这一步不是形式：cron 正典是**整文件覆盖**契约，漏一条 = 下次部署删掉一条，
+  本文件头部已记过**两次**因漏登记造成的事故。门
+  `scripts/ursmcheck/cron_registration_test.go` 断言每个巡检脚本都有 cron 行 ——
+  本次新增脚本后它仍全绿，说明登记到位。
+
+★ 本脚本开发期自己踩了两个坑，**都是真库实跑当场抓出来的**（不是靠读代码）：
+  1. `PSQL_CMD` 抄漏了 `-t`（tuples only）⇒ psql 输出带表头和 `(N rows)`，
+     按 4 段管道解析时表头被当成一条空洞记录 ⇒ 「一行都解析不出来」。
+  2. `while read` 的变量顺序与 SQL 的 SELECT 顺序**反了** ⇒ 每列显示成另一列的值。
+     ★ 写反了**不报错**，只会让输出错位 —— 而「有输出」看起来像「跑通了」，
+     最难被发现。判据是肉眼比对第一行的数字量级（`886MB` 出现在本该是表名的列）。
+
