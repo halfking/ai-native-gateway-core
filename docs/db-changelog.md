@@ -1009,3 +1009,9 @@ teeth（一次性 PG17 逐项实测）：去 `LIMIT 1` → 判据红（4 绑定 
 
 | 828 | `828_supplier_errors_unified_tracked.sql` | `196cb3830ce5d81b600c6a7dbd1bd9434a94df7336d1f96396e6c878971dd33a` | **已应用本机**（手工执行 + 已登记 `schema_migrations`）；生产未部署。删掉 `supplier_errors_unified` 的第 1 列 `source`：它在 Citus columnar 分区上不可投影（`cache lookup failed for attribute source`），且改为基表列表达式**实测无效**——触发条件是「视图输出列不是基表列的直接 Var」。同时让该视图**首次进入受追踪的 startup 链**（此前唯一定义处 V371 从未被 `schema_migrations` 记录，全新库不会有它，而 admin 三个读端都查它）。21 → 20 列，行数 2031 前后不变。审计 §9.200 / §9.201.1 |
 | 829 | `829_bodies_columnar_rollback.sql` | `0c7c75432abb58fdd77e577fd1069f53b8bd5d7c58cf274f51cb40b73b7c9edc` | pending deploy（**本机故意不应用**）。只回 765 管的 `request_logs_bodies`：① 重定义 `ensure_request_logs_bodies_partition` 为**恒 heap**（这才是止血，否则 765 的 A 段继续新建列存分区）；② **只转空分区**；③ NOTICE 列出仍列存且有数据的分区与总 MB。**不做 3 GB 重写**——`drop_old_request_logs_bodies_partitions()` 对列存分区是裸 `DROP TABLE`（无数据搬迁），TTL 默认 7 天且 `bg/partition_manager.go:1232` 周期调用，`2026_09`（月末 2026-10-01）自 **2026-10-08** 起自动 DROP。本机保持列存，使 `TestColumnarParentTwoSurfaceSetopShape_RealDB` / `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 不至于**假绿**。审计 §9.201.2 |
+## 2026-10-04T19:05:38Z — deploy 245 build_seq 2458 (0978171a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | applied+verified |
+
