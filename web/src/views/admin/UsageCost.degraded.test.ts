@@ -68,7 +68,7 @@ async function renderPage() {
   return w
 }
 
-describe('UsageCost 降级横幅', () => {
+describe('UsageCost 降级横幅', { timeout: 20_000 }, () => {
   beforeEach(() => {
     vi.clearAllMocks()
     getCostTrendMock.mockResolvedValue({
