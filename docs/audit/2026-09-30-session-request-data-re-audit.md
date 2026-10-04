@@ -24195,3 +24195,155 @@ D30-d 选定的修法是「把 `'hot'::text AS source` 换成**基于基表列**
 只收分区名致假零、`WITH` 子句要求致假零、仓库 SQL 普查手写族名单、
 「验证不改状态」靠外层包事务）。
 ⇒ 共同的形状永远是同一句：**量具能跑完、能出数、看不出异常，而它量的不是那件事。**
+
+---
+
+## §9.203 `session_turns.is_final_success` **从来没有被任何代码写过** —— 时间线的两个 outcome 已经死了 6 天
+
+### §9.203.1 结论
+
+本轮接着 §9.192（「`session_turns` 近 7 天 28,398 行中 `is_final_success` 为 0」）往下挖，
+结论比「读路好、写路没写」更具体，也更难看：
+
+**这不是「忘了加列」，是「整条 schema 都为它建好了，却没有任何写方」。**
+
+真库实测（`llm-gateway-pg` / `llm_gateway`，2026-10-05）：
+
+| 面 | 口径 | 结果 |
+|---|---|---|
+| v1 `request_logs_hot` | 近 7 天 `is_final_success = TRUE` | **463** / 4,532 行 |
+| v2 `session_turns` | 全表 `is_final_success IS NOT NULL` | **0** / **1,689,308** 行 |
+
+⚠ 注意第二个口径是 **NOT NULL** 而不是 TRUE：不是「写了 false」，是**这一列从未被写入过**。
+
+而 schema 侧该有的全有：
+
+| 对象 | 状态 |
+|---|---|
+| `session_turns.is_final_success` | 列存在，**可空，无默认值** |
+| `turn_writer.go:396` INSERT 列清单 | **已经包含** `is_final_success` |
+| `uq_session_turns_hot_final_success` | `UNIQUE (tenant_id, session_id, partition_date) WHERE is_final_success` ✅ |
+| `uq_session_turns_final_success` | 同款，**ONLY 母表**（声明式分区索引）✅ |
+| 各月分区 / default 分区 | 每张脸各一个同款部分唯一索引 ✅ |
+
+⇒ **唯一性约束一直在对一个永远为空的集合生效。** `boolOrNil(false)` 返回 `nil`，
+所以连一行 `false` 都没有。整条链上「列 → 唯一索引 → 写入点」只缺最后一项，
+而缺的恰好是**唯一**会产生数据的那一项。
+
+### §9.203.2 为什么这在 09-30 之前不显眼，之后致命
+
+`admin/session_online.go` 的会话时间线在 **2026-09-30 迁到了 session 族原生源**
+（`querySessionTimeline` → `dbpkg.SessionFamilyTurnsForSessionSQL()`）。它取
+`COALESCE(rl.is_final_success, FALSE)` 喂给 `deriveTurnOutcome`，而该函数的前两个分支是：
+
+```go
+case isFinalSuccess:  return "final_success", ""
+case status == "success":
+    if sessionHasFinalSuccess: return "superseded_success", "superseded_by_final_success"
+```
+
+⇒ 列恒为 NULL ⇒ `isFinalSuccess` 恒 false ⇒ **`sessionHasFinalSuccess` 恒 false**
+⇒ **`final_success` 与 `superseded_success` 两个 outcome 双双不可达**。
+
+用户可见后果：从 09-30 起，会话时间线里**每一个成功轮次都被标成普通的 `success`**，
+既没有「哪一轮是本会话的最终成功」，也没有「哪一轮被取代」。迁移本身是对的
+（原生源、零 unexplained 丢失，§querySessionTimeline 注释里的复核），但它读的
+那份数据从来没被生产出来过。**API 改对了，数据没跟上。**
+
+这与 goal 里那句「确保数据在更改前后一致」正面撞上：不是改后不一致，
+是**改之前就不一致，改完把这个不一致暴露成了用户可见的行为差异**。
+
+### §9.203.3 独立的旁证
+
+`db/session_family_column_availability_test.go` 早就把这件事记下来了，
+在 §9.203 之前就一直报：
+
+```
+GO EMPTY ON THE SESSION SIDE (2): client_protocol, is_final_success
+```
+
+⇒ 这不是新发现的新东西，是**一条一直亮着、但没人去读它指向哪里的告警**。
+（该测试整体在 origin/main 上就是 FAIL 的，见 §9.203.6。）
+
+### §9.203.4 修法：**镜像 v1 的裁决，绝不自己认领**
+
+落点与 `is_abandoned` 完全同款（`abandoned_turn.go`，migration 821），因为**机械原因一模一样**：
+v1 的认领是 telemetry 事务里的 SQL UPDATE，而 session 的 turn 是**镜像 hook 之后
+异步写的** ⇒ 从 telemetry 侧发标记必然与插入竞态，几乎每次都命中 0 行。
+
+所以：事实挂到 entry 上，标记在 `w.Write` 返回之后、同一 goroutine 里落。
+
+| 环节 | 文件 | 行为 |
+|---|---|---|
+| 认领成功才置标志 | `telemetry/client.go` | `RowsAffected() > 0` ⇒ `entry.FinalSuccessClaimed = true` |
+| 副本分支回拷 | `telemetry/client.go` | `updateRequestLog` 的 `fallback := *entry` 分支把标志同步回调用方 entry |
+| 镜像落点 | `sessionv2mirror/final_success_turn.go` | 新文件，与 `abandoned_turn.go` 同结构：自带事务 + `setBypassGUCs` + tenant GUC + 两张脸 + 幂等 + 指标 |
+| live hook | `sessionv2mirror/hook.go` | `w.Write` 之后，**与 `T0Missing` 分支并列**（不是 else-if） |
+| 补偿回放 | `sessionv2mirror/replay.go` | `replayOne` 在 `Write` 之后同样打标 |
+| 序列化 | `RequestLogEntry.FinalSuccessClaimed` | `json:"final_success_claimed,omitempty"` —— **与 `T0Missing` 的 `json:"-"` 不同** |
+
+**为什么必须序列化**（`T0Missing` 是 `json:"-"`）：outbox 是在认领成功的**同一事务**里
+登记的（`registerFinalSuccessClaimOutbox`），而 outbox 正是「认领了但镜像行从未落地」
+那个洞的修补路径。载荷不带这个字段，回放就永远不知道自己补写的这一行本该是最终成功。
+
+**为什么 session 侧不自己认领**：认领只有一个裁决者才谈得上一致。v1 的认领已经是
+race-proof 的（部分唯一索引 + savepoint 吸收 23505），每个会话至多一个 request_id
+能拿到授予 ⇒ session 侧不可能被这个标记违反唯一索引。反向也成立：万一真出现
+两个授予，`uq_session_turns_hot_final_success` 会挡下，落点函数把 23505 记成
+`mark_superseded` 而不是「瞬时故障」——因为那意味着两族对「谁赢了」有分歧。
+
+### §9.203.5 ⚠ 我把自己的门写坏了三次，外加一次假警报
+
+这一节比结论本身更值钱，因为三次全部是**同一族错误的不同变种**。
+
+| # | 错法 | 报出来的现象 | 真因 |
+|---|---|---|---|
+| 1 | 回读只查 `session_turns` 母表 | hot 行明明标上了，却报「仍非 TRUE」 | **`session_turns_hot` 不是 `session_turns` 的分区**（hot 是独立表，月度分区才是母表的子表）。量具读错了对象。 |
+| 2 | 给两张脸种**不同的 request_id** 却只调用一次标记，然后要求两次回读都真 | 父表腿报「没生效」 | 标记按 request_id 定位；一张行要么在 hot 要么已 promote，**不会同时在两处**。是我把量具建模错了。 |
+| 3 | 阴性对照 B：wrong-tenant 行种在 hot，回读只查母表 | 「通过」 | **这条对照是恒真的**——母表里永远查不到那行，于是无论 tenant 谓词多离谱都「通过」。**恒真的对照比没有对照更坏**：它让人以为这层被考核过。 |
+| 4 | 清理只删母表 | 门自己的残留复核抓到 1 行 | 同 #1 的根因，两张脸要一起删。 |
+| 5 | **阴性对照 B 复用了阳性行的 `session_id`** | 变异把 tenant 谓词换成恒真表达式，**本门仍然 PASS** | 标记 wrong-tenant 行时撞上 `uq_session_turns_hot_final_success`（阳性行已持有标记）⇒ 23505 ⇒ 函数走 `mark_superseded` **提前返回，根本没执行到 tenant 谓词**。**这是唯一一条靠变异测试才发现的缺陷**：肉眼读代码、跑测试、看残留，全部看不出来。 |
+
+第 4 项还牵出一个**生产代码的真缺陷**（不是门的问题）：第一版把「0 行」
+一律记成 `mark_no_row` + WARN，于是**幂等重跑会打出一条「v1 认领了但 turn 不在两张脸上」
+的假警**——而那正是这条告警要抓的真故障。告警一旦会说假话就等于没有告警。
+已改为：0 行时先探测行是否存在，行在且已标记 ⇒ `mark_noop`（Debug，不告警），
+行不在 ⇒ `mark_no_row`（Warn）。
+
+⇒ 这是本次任务里**第 7 次**「量具读错了对象」。
+⇒ 新变种值得单记：**#3 与 #5 是「对照本身恒真」**——前 6 次是量具读错对象，
+这两次是量具/对照**根本没在被检验的对象上**却仍然报绿。恒真的判据不会变红，
+所以它连「判据红了先怀疑判据」这条自救路径都用不上。
+
+★ **#5 补充一条方法论**：它是**唯一一条靠变异测试才发现**的。
+前三项在写门的过程中就被自己的断言抓住，#4 被门自带的残留复核抓住，
+而 #5 是在「验证这道门到底有没有牙」时才暴露的——
+**把 tenant 谓词换成恒真表达式，门照样绿。**
+⇒ 由此得到本轮最实用的一条：**阴性对照必须与阳性行解耦到不可能互相短路**。
+凡是需要「唯一索引 / 唯一键 / 排斥约束」来判定成败的对照，
+它的种子行必须避开阳性行触发该约束所需的**同一组键**，
+否则对照测的是「约束有没有挡住」，不是「谓词有没有生效」。
+
+### §9.203.6 门状态与回归基线
+
+新增 4 个测试（`internal/sessionv2mirror/`）：
+
+| 门 | 类型 | 结果 |
+|---|---|---|
+| `TestFinalSuccessFlagIsSetOnTheCallersEntry` | 静态接线 | PASS |
+| `TestFinalSuccessPadIsNotAnElseOfTheAbandonedPad` | 静态接线（含「必须在 `w.Write` 之后」） | PASS |
+| `TestFinalSuccessPadRunsOnTheReplayPath` | 静态接线（含「标志必须被序列化」） | PASS |
+| `TestFinalSuccessMarkLandsOnRealDB` | **真库**（种行 → 标记 → 回读 + 幂等 + 2 条阴性对照 + 残留复核） | PASS |
+
+⚠ 真库门的两点诚实边界：
+- **RLS 在本门连接下没有被考核**——本机 `llm_gateway` 是 `rolsuper` 且 `rolbypassrls`，
+  标记函数里那套 GUC 是否真的必要，本门证明不了（`abandoned_turn.go` 表头已实测过这一点）。
+  tenant 谓词仍被考核（阴性对照 B），因为那是 `WHERE` 子句，与角色无关。
+- 门的探针行会**短暂**写进正在被别的真库门测量的库。已实测未造成污染：
+  `db` 包在**有我的改动**与 **origin/main 干净基线**两次运行中，
+  `RetirementColumnFill` 的 7 个漂移数值**逐位相同**（12.28/18.80、90.12/100.00、
+  46.91/64.80、54.73/100.00、53.35/100.00、39.78/100.00）。
+
+**回归基线（同 base 实测，不凭记忆）**：`db` 包在 origin/main（`909b4b047`，无我的任何改动）
+上以**完全相同**的断言 FAIL（`work_type` unservable + 7 个 fill 漂移 + 5 个 structural gaps）。
+⇒ **本轮零新增 FAIL**。`installer` / `sqlguard` / `sessionv2mirror` / `telemetry` / `session` 全绿。
