@@ -2231,24 +2231,67 @@ DDL/分区树/约束/索引（§9.185）。
 
 ### 请拍板
 
-- **D30-a**：bodies 的列存转换怎么办？
-  * 选项 ①：**回滚 765**（`SET ACCESS METHOD heap` + `SET COMPRESSION default`，
-    仓库里已有 `765_bodies_columnar_storage.down.sql`）。
-    代价：bodies 存储变回堆表，压缩/列存收益归零。
-  * 选项 ②：**保留列存**，把列存分区移出未命名子查询。
-    本轮已改 `validate_sessions_v2/loader.go` 一处；**需要全仓普查还有谁这么读**
-    （见 D30-c）。
-  * 我的建议：**先做 D30-c 的普查再选**。若只有 loader 一处 ⇒ 选 ②，保留存储收益；
-    若还有多处 ⇒ 选 ①，否则每次新增读法都会再踩一次同一个坑。
+- **D30-a**：列存转换怎么办？⚠ **本条已在 §9.197 被 D30-c 的普查结果改写，请重读。**
+  * ⚠ **原措辞「bodies 的列存转换」已经不准确**。§9.197.4 实测：库里
+    **7 个带 `_hot` 孪生的母表**都有列存分区（`request_logs_bodies` /
+    `routing_decision_log` / `handoff_logs` / `supplier_errors` /
+    `credential_model_index` / `usage_ledger` / `request_wal`），
+    两腿 `UNION ALL` 形状 **7/7 全挂**；堆对照臂 `request_logs` 同形状返回
+    **2,184,300** 行 ⇒ 是 `columnar` 的性质，不是某张表。
+  * 选项 ①：**回滚列存转换**（仓库里已有 `765_bodies_columnar_storage.down.sql`）。
+    代价：这一族存储变回堆表，压缩/列存收益归零。
+  * 选项 ②：**保留列存**，要求所有读法满足「**列存腿自己**带分区键谓词」
+    或走顶层 `UNION ALL` / 两段式。
+  * **§9.197.6 补充的关键事实**：选项 ② 的门槛比看上去高。
+    `bg/supplier_error_stats_aggregator.go:64` 用的正是
+    「hot ∪ 父表 `UNION ALL` 放进子查询」，它**能跑**只是因为两条腿都带
+    分区键谓词（计划里出现 `Columnar Chunk Group Filters`）。
+    三臂对照：两条腿都无谓词 ❌ / 只给 hot 腿加谓词 ❌ / 两条腿都加谓词 ✅。
+    ⇒ 也就是说**已经有一条生产查询正踩在线上**，靠一个很容易被误删的
+    `WHERE` 苟着。谁把那个 `WHERE` 一改，聚合器就当场炸。
+  * **我的建议改为**：倾向 ①，或 ② + 一条明确的编码约定
+    （「读列存分区必须自带分区键谓词」）+ 门来兜。
+    理由：这条约定**静态门判不了**（§9.197.6），只能靠真库逐条 EXPLAIN；
+    而「每个新增两腿读法都要记得给列存腿加谓词」是一个反复会忘的约定。
+    ⚠ 但这是**属主决定**：列存收益是真的，7 个族里只有 bodies 是 S4 主线。
 - **D30-b**：生产是否已受影响？`765` 是**生产迁移**，所以生产很可能也是列存，
   ⇒ `LoadV1Turns` 在生产**同样跑不起来**、`ExecuteRepair` **同样从未成功执行过**。
   这需要 252 **只读**确认（可并入 D24-d-3 申请）。
   * 我的建议：并入同一次只读申请，**这是本次 D30 里最该先确认的一条**——
     它决定 D19-a-3-1（唯一最有把握的生产改动）是否也踩在这个坑上。
-- **D30-c**：全仓普查「还有谁在未命名子查询里 UNION ALL 读 bodies」。
-  判据可复用本轮那条：`SELECT count(*) FROM (SELECT <col> FROM <parent> UNION ALL
-  SELECT <col> FROM <parent>_hot) x` 对每个 bodies 相关的两表配对执行。
-  * 我的建议：**做**，并把结果落成一道常驻门（形如
-    `TestNoColumnarPartitionInUnnamedSubquery`），
-    否则这个坑会在下一个新增读法处复发，而它复发时的表现是**执行器报错**——
-    至少是响的那一侧，比静默好，但不能只靠人记得。
+- **D30-c**：⚠ **本条已在 §9.197 完成**，结论见下。原来的普查范围（只看 bodies）
+  太窄，实际危险类覆盖全部列存族。
+
+### ✅ D30-c 普查结果（§9.197，2026-10-05）
+
+| 面 | 结论 |
+|---|---|
+| 触发形状 | 列存关系 + **子查询内的 `UNION ALL`**；失败在**计划期**（`EXPLAIN` 即报错） |
+| 安全形状（实测通过） | 顶层 `UNION ALL`、CTE、普通/嵌套子查询、子查询内 JOIN / LEFT JOIN、`WHERE` 里的子查询、子查询内 `UNION`（去重）、子查询内 `EXCEPT` |
+| 列存母表 | 7 个带 `_hot` 孪生的**全部**失败；堆对照臂通过 |
+| 生产 Go SQL | 89 条提到列存关系；候选 **1 条**（`bg/supplier_error_stats_aggregator.go:64`），**真库裁决：可计划**（两腿都带分区键谓词） |
+| 已部署视图 | 8 视图 147 列，**1 列不可服务** → 转入 **D30-d** |
+| 已部署函数 | 8 个提到 bodies 的函数无真集合算子 |
+
+已落成常驻门 `admin/columnar_surface_servable_realdb_test.go`（5 个子测试），
+其中两道**故意保持红**（真实库级故障，见 D30-a / D30-d）。
+
+### 🆕 D30-d（新增）：视图的「合成输出列」在列存关系上不可投影
+
+- **现象**：`SELECT source FROM supplier_errors_unified` 抛
+  `cache lookup failed for attribute source of relation 12964345`
+  （12964345 = 列存分区 `supplier_errors_2026_09`）。
+  `SELECT id` / `SELECT count(*)` / 现网真实形状**都正常**。
+  8 视图 147 列中**只有这 1 列**失败。
+- **影响面**：`supplier_errors_unified` 是 admin 的读端入口
+  （`admin/errors_trend.go:12`、`admin/provider_credential.go:1243`、
+  `admin/handler.go:134`）。现网两处读法都只选基表列，**实测正常**
+  ⇒ **潜伏故障，不是正在冒烟**。但任何一处改成 `SELECT *`
+  或按 `source` 过滤就会当场炸。
+- **请拍板**：
+  * 选项 ①：改视图定义——去掉 `source` 合成列，或改成
+    `hot.request_id IS NOT NULL` 之类的**基于基表列**的表达式；
+  * 选项 ②：把 `supplier_errors` 的列存转换回滚（与 D30-a 合并处置）；
+  * 选项 ③：接受现状，靠门盯着。
+  * 我的建议：①。合成列是纯展示用的来源标记，用基表列表达即可，
+    代价接近零，且不必动存储形态。⚠ 改视图定义属**属主决定**，本轮未动。
