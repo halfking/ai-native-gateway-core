@@ -170,11 +170,18 @@ startup_files=$(grep -E '^[[:space:]]*"[0-9]{3}_.*\.sql",?$' "$ROOT_DIR/installe
 sequence_files=$(printf '%s\n' "$sequence" \
   | sed -nE 's#^[[:space:]]*"\$ROOT_DIR/sql/migrations/startup/([0-9]{3}_[^"]+)".*#\1#p' \
   | sort -u)
+# 820: mirrors db.ensureAudioModalityBackfill (db/db.go:641), called from the
+# ensure chain at db/db.go:624 **before traffic**, idempotent (WHERE
+# modality='text'/'vision' guards). Registering it in StartupFiles instead
+# would run the same backfill a second time on every install. The matching
+# reviewed exemption is installer/cmd/llm-gw-installer/stats_migrations_test.go
+# (goEnsureMirrored), which is the Go-side statement of the same decision.
 ensure_allowlist=$(cat <<'EOF'
 690_session_summaries_archived_ttl_index.sql
 704_plan_quota_probe_backoff.sql
 709_work_type_route_coverage.sql
 715_route_incidents_pending_state.sql
+820_audio_modality_backfill.sql
 EOF
 )
 canonical_files=$(find "$ROOT_DIR/sql/migrations/startup" -maxdepth 1 -type f -name '[0-9][0-9][0-9]_*.sql' \
