@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
@@ -143,7 +144,7 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 			rl.cost_usd, rl.request_status, rl.error_kind,
 			rl.work_type, rl.request_mode, rl.gw_session_id
 		FROM request_logs_with_current_month rl
-		LEFT JOIN `+sessionBodiesFromSQL()+`
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+`
 		  ON rb.request_id = rl.request_id
 		`+where+`
 		ORDER BY rl.ts ASC
@@ -318,7 +319,7 @@ func (h *Handler) loadNoTopicTaskLogsForTitle(ctx context.Context, prefix string
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
-		LEFT JOIN `+sessionBodiesFromSQL()+`
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+`
 		  ON rb.request_id = rl.request_id
 		`+where+`
 		ORDER BY rl.ts ASC

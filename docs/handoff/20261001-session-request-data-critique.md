@@ -12006,3 +12006,159 @@ Evidence 门两跳校验。
 7. `is_auto_request = t` 的可审计性要不要保留（属主决定，至今无门）。
 8. `admin/zz_tmp_crosstab_test.go` 是已提交的临时调试文件（改 `sourceFamilyOf`
    签名时必须连带修）—— 是否清理，属主决定。
+
+---
+
+## §70.70 切换层下沉到 `db`；13 个 A 类读方里 12 个已迁
+
+### 做了什么
+
+- 切换层从 `admin` 下沉到 **`db.SessionBodiesSourceSQL()`**（与
+  `SessionFamilyTurnsSourceSQL` 等同族 helper 同处），并**删掉 admin 侧薄包装**。
+- 开关 key 改名 `storage.admin_session_bodies_native_read` →
+  **`storage.session_bodies_native_read`**（不再只服务 admin）。
+- 迁移 4 个跨包读方：`domains/sessionforensics/export.go`(2)、
+  `domains/sessionsummary/summarizer.go`(2)、`system_prompt_prefix.go`(1，INNER)、
+  `bg/passive_probe_listener.go`(1)。
+- 消费点识别支持**导出符号全仓解析**（按大小写分流）。
+- 3 道新门 + 1 道改名残留门。
+
+### ★ 切换层「住哪个包」是会静默吃掉读方的决定
+
+迁完 4 个跨包读方后，bodies 总体从 **27 掉到 23** —— 4 个文件从退役证据里
+消失，而那道门**本来就故意红** ⇒ **零信号**。这与 §70.67 是同一失效模式的
+**跨包形态**：消费点识别当时只在切换层所在包内找 `fn(`。
+
+### ★ 薄包装是**有害**的，已删
+
+第一版让 `admin.sessionBodiesFromSQL()` 委托给 db 那一层。实测
+**只找到 5 个消费点，应有 14 个** —— 9 个 admin 消费点调的是那个只做
+`+ " rb"` 的包装，门按「谁调用了切换层」识别，看不见它。
+⇒ **门与 v1 字面量之间又隔了一层，而那层对门不透明。** 13 个调用点全部
+直接调 `dbpkg.SessionBodiesSourceSQL()`。
+
+### ★ 本轮我三次把自己的门写错
+
+1. **薄包装**让 9 个消费点隐形 ⇒ 层数即不透明度。
+2. **消费点识别把注释当调用** —— 我自己写的注释里含
+   `dbpkg.SessionBodiesSourceSQL()`，于是定义文件成了自己的消费点。
+   **注释不是调用。**
+3. **两跳校验第二版过宽** —— 把 `SessionFamilyTurnsSourceSQL()`
+   （会话族 raw helper，不需要登记）也当成切换层。
+   **一个必然误报的判据比没有判据更糟。**
+
+★ 2 和 3 同根：**在源码文本里找东西，却没先想清楚「什么不算」。**
+
+### 门
+
+`TestBodiesSwitchDefaultsToV1`、`TestBodiesSwitchKeyIsSingleSourced`（禁旧 key 残留）、
+`TestV1BodiesScanIncludesSwitchConsumers`。Evidence 锚点改用**函数名 token**
+（gofmt 会在两种拼接拼写间切换，锚拼接形态必然脆 —— 实测 3 个文件失配）。
+
+### 仍未迁的 A 类
+
+`admin/quality_correlations.go`、`domains/hooks/goal/history_store.go` ——
+读的是**基表** `request_logs_bodies`，视图 ⊋ 基表 ⇒ 换过去扩大覆盖 = 行为变更；
+前者还带 `is_auto_request = TRUE` ⇒ 换源同时改口径。
+**需属主拍板，不是技术阻塞。**
+
+### 下一轮第一件事（更新）
+
+1. ★ **先跑 `is_final_success` / `client_protocol` 两个回填**（需批准）。
+2. ★ 生产补 2026-09-30 bodies（1,113 条）——需批准。
+3. ★ **属主拍板**：读基表的那 2 个 A 类读方，迁（接受覆盖扩大）还是保持。
+4. ★ 定义「回填完成」：含 `backfill_session_bodies` 与 `validate_sessions_v2` 的处置。
+5. B 类 4 个先定口径（ts 语义 / 指标定义）；C 类 2 个重做延迟分层并带前后读数。
+6. `is_auto_request = t` 的可审计性要不要保留（属主决定，至今无门）。
+7. 清理 `admin` 包里两份「剥 Go 注释」的实现（本轮撞上，非本轮引入）。
+8. `admin/zz_tmp_crosstab_test.go` 是已提交的临时调试文件 —— 是否清理。
+
+---
+
+## §70.70b 收口阶段：连续三次自纠，机制化而非「我小心一点」
+
+上一节写的是功能，本节写的是**收口时才发现的东西** —— 三次全是我自己造成的。
+
+### ① gofmt 连带损伤**第二次**复发（§9.232 已犯过一次）
+
+提交前显式白名单差集：**预期 22 / 实际 87 ⇒ 多出 65 个**，
+其中 **64 个是我从未打算碰的文件**。形态：结构体列宽重排、doc 注释凭空插入
+`//` 空行，以及最阴的一种 ——
+`admin/models_alias_sql_live_test.go` 里 `COALESCE(quantization,'')`
+被 gofmt 智能引号化成 **`COALESCE(quantization,”)`**
+（Go 1.19+ 对 doc 注释里的 `''` 会做智能引号替换）。
+
+**第二次复发证明「我小心一点」不是解法。** 三个机制：
+
+- 只对**自己改过的文件**跑 `gofmt -w <file>`，绝不 `gofmt -w <包>`；
+- 提交前跑**显式白名单差集**，差集非空就逐个判，不靠「我记得改了哪些」；
+- 差集计算两侧**排序口径必须一致** —— 本轮 `comm` 两侧同时出现同一文件，
+  原因是清单用默认 locale 排序而 `git diff --name-only` 用另一套。
+  ⇒ `export LC_ALL=C`。**同一数据出矛盾，先怀疑排序口径再怀疑数据。**
+
+★ 反向发现：连带损伤**只落在我没碰的文件上** ——
+我改的 23 个文件在 HEAD 上**本来就 gofmt-clean**（逐个核实过）。
+⇒ 风险可以**预先判定**，不必事后逐个看 diff。
+
+### ② 我自己写坏了 3 处中文（U+FFFD），HEAD 侧全是 0
+
+`函<U+FFFD><U+FFFD>名数` / `db <U+FFFD><U+FFFD>是同族` / `切<U+FFFD><U+FFFD>层`。
+第 3 处是在**修完前两处之后、编辑别的文件时**又新坏的
+⇒ **「刚刚学到的检查」不会自动防止下一次**，必须有机械门。
+
+⇒ 提交前逐文件把 U+FFFD 计数与 HEAD 对照。文档另有基线
+（审计 2 行 / 决策表 0 / handoff 0）。
+⚠ **`grep -c` 数的是行、python `count()` 数的是出现次数**，别互相换算 ——
+本轮一度以为多出 3 处，其实是同一行里的 2 个字符。
+⚠ **文档里引用损坏字符时用码位记法**（`<U+FFFD>`），
+否则会**抬高基线**、把证据变成新的噪声。
+
+### ③ 改了函数名、删了文件，却没扫**引用面**
+
+`admin/session_bodies_source.go` 已删、`sessionBodiesFromSQL()` 已改名。
+我扫了 `SessionBodiesSourceSQL()` 的**调用点**（13 个，都对），
+**没扫提到旧名字符串的地方** ⇒ 漏掉
+`cmd/tools/sql_source_indirection_audit/manifest_test.go` 里 13 处旧函数名 +
+2 处指向已删文件的路径。
+
+★ 抓它的不是我自己的 grep，是
+`TestIndirectSiteManifestCoversEveryReportedFile` 报了 3 个文件
+「被审计报出但清单里没有判定」。这 3 条是**迁移的直接产物**：
+迁移前 bodies 腿是**字面量**（不进该工具），迁移后进 unresolved 桶。
+⇒ **清单 32 → 35 条是正确信号，不是误报。**
+
+★ 由此一条可复用的判读规则：
+**把字面量改成受管制的拼接，会让 unresolved 桶变大。**
+那不是退化，是「看不见」变成「看得见且已定级」。评审看到桶在涨，
+先查是**新读方**还是**老读方换了写法**。
+
+补的 3 条里有一条**降级形态与同批不同类**：
+`system_prompt_prefix.go` 是**唯一的 INNER JOIN** ⇒ 停写/DROP 后
+不是「字段变空」，而是**整个系统提示词前缀查不到任何一行**。
+
+### ④ 该工具的**结构性盲点**（读码确认，非推测）
+
+`domains/sessionforensics/export.go` 同批迁了 2 处却**没进清单** ——
+不是漏登记，是**工具看不见**：`resolve.go` 的点位枚举只遍历 `*ast.FuncDecl`，
+包级 `var` 只进 `env.globals` 供解析，**不进点位枚举**
+（`admin/compression_stats.go` 第 3 处同形态，清单早已注明）。
+⇒ **包级 `var` 的拼接点在该工具覆盖范围之外**，
+由 admin 侧三道门覆盖 —— **是另一组门在管，不是所有门都在管。**
+本轮不修（修工具不在范围），已写进代码注释。
+
+### 下一轮第一件事（§70.70b 更新）
+
+1. ★ **先跑 `is_final_success` / `client_protocol` 两个回填**（需批准），
+   后跑则 33,623 条永久丢失。
+2. ★ 生产补 2026-09-30 bodies（1,113 条）——需批准。
+3. ★ **属主拍板**：读基表的 2 个 A 类读方
+   （`quality_correlations.go` / `goal/history_store.go`）迁还是保持。
+4. ★ 定义「回填完成」：含 `backfill_session_bodies` 与 `validate_sessions_v2` 的处置
+   （v1 退役后这两个工具**无处可去**）。
+5. 部署 `e6193ea92` 到 252；给 `pg17-proactive-empty-table-cleanup.sh` 补会话族白名单。
+6. B 类 4 个先定口径；C 类 2 个重做延迟分层并带前后读数。
+7. `is_auto_request = t` 的可审计性要不要保留（属主决定，至今无门）。
+8. 清理 `admin` 包里两份「剥 Go 注释」的实现。
+9. `admin/zz_tmp_crosstab_test.go` 是已提交的临时调试文件 —— 是否清理。
+10. （新）是否修 `sql_source_indirection_audit` 的**包级 var 盲点** ——
+    漏扫的是包级 `var` 里的拼接点，不是漏扫读方。

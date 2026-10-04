@@ -28006,7 +28006,15 @@ JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts
 换源会同时**改口径**（§9.229 判定那 29,691 条探针流量按设计不进会话族）。
 
 **跨包那 4 个**的处置是把开关下沉到 `db` 包（那里已有
-`SessionFamilyTurnsSourceSQL` 等同族 helper）。这是下一步，**不在本轮**。
+`SessionFamilyTurnsSourceSQL` 等同族 helper）。
+
+> ⚠⚠ **就地更正（2026-10-05，§9.233）**：那句「把开关下沉到 db」**低估了难度**。
+> 实际做的时候发现：即使下沉了，**admin 侧那层薄包装**
+> （`sessionBodiesFromSQL()` 只做 `+ " rb"`）会让 **9 个 admin 消费点
+> 在一次全仓解析里全部消失**（实测 5 个 vs 应有的 14 个）——
+> 因为门按「谁调用了切换层」识别，而包装函数对它不透明。
+> ⇒ 那层包装**被删掉了**，13 个调用点全部直接调 `db.SessionBodiesSourceSQL()`。
+> ⇒ **层数即不透明度**。
 
 ### §9.232.3 一处真实的语义变化：`const` → `var`
 
@@ -28112,3 +28120,236 @@ M34 的第一版**极性写反**（在改之前它近乎恒真，§9.232.4b）�
 M33″ 的第一次尝试**锚点没匹配上、变异根本没写进去**，
 而那个「仍绿」一度看起来像一个真实的门失效。
 ⇒ 判据红了先怀疑判据；判据绿了**更要**先确认变异真的改到了东西。
+
+---
+
+## §9.233 切换层下沉到 `db`，解锁最后 4 个跨包读方
+
+> §9.232 判定 13 个 A 类读方「形状上可换」，实际只迁了 7 个 ——
+> 其余 4 个在 `domains/` 与 `bg/`，**看不见** `admin` 包的未导出切换层。
+> 本轮把切换层下沉到 `db`，那 4 个才真正迁掉。
+
+### §9.233.1 切换层搬了两次家，两次都是同一个原因
+
+| 版本 | 位置 | 能迁几个 | 为什么 |
+|---|---|---|---|
+| §9.230 | `admin/session_bodies_source.go` | 2（都在 admin 包） | 当时只有 2 个消费点 |
+| §9.232 | 同上 + 迁 7 个 | 9 | admin 包内自洽 |
+| **§9.233** | **`db/request_logs_view_schema.go`** | **13** | 跨包 |
+
+★ **「切换层住哪个包」不是风格问题，而是一个会静默吃掉读方的决定。**
+§9.233 的实测：把 4 个跨包读方迁完之后，bodies 总体从 **27 掉到 23** ——
+4 个文件**从退役证据里消失**，而那道门**本来就故意红**，所以**没有任何信号**。
+
+这与 §9.230.3 是同一个失效模式，只是这次是**跨包形态**：
+`indirectSourceConsumers` 第一版只在切换层所在包内找 `fn(` 调用点。
+⇒ 判据按「符号是否导出」分流：**导出（大写）⇒ 全仓解析**；
+未导出 ⇒ 只在本包内。分流依据不是「严不严」，是**它本来能被谁看见** ——
+未导出符号跨包不可见，全仓扫它只会把同名的别的函数算进来。
+
+### §9.233.2 ★ 那层薄包装是**有害**的，删掉
+
+第一版方案是让 `admin.sessionBodiesFromSQL()` **委托**给 `db` 那一层。
+实测：**只找到 5 个消费点，而应有 14 个** —— 9 个 admin 消费点调用的是
+那个只做 `+ " rb"` 的包装函数，而门按「谁调用了切换层」识别。
+
+⇒ 门与 v1 关系名字面量之间**又隔了一层**，而那一层对门是不透明的。
+**删掉包装**，13 个调用点全部直接调 `dbpkg.SessionBodiesSourceSQL()`。
+代价是 7 个文件要新增 `db` import，收益是**单一切换层、单一探测路径**。
+
+⚠ 顺带记录一个 gofmt 事实（§9.232.4 已记过一次，这里再确认）：
+`` `+fn()+` `` 与 `` ` + fn() + ` `` 两种拼写在**同一批文件里同时存在**，
+gofmt 会在它们之间切换。⇒ 任何锚在拼接形态上的 Evidence 都必然脆
+（实测 3 个文件的 Evidence 因此失配）。**锚到函数名 token 才稳定。**
+
+### §9.233.3 迁移 4 处（1 处 INNER JOIN）
+
+`domains/sessionforensics/export.go`(2) · `domains/sessionsummary/summarizer.go`(2) ·
+`domains/sessionsummary/system_prompt_prefix.go`(1，INNER) ·
+`bg/passive_probe_listener.go`(1)
+
+⚠ `domains/sessionforensics/export.go` 的两个 SQL 常量由 **const 改成 var**。
+那个文件**刻意**保留两份字面量并有门强制同步（文件头写着
+"Do not inline either one back"）—— **这个设计保留**：两份的 bodies 腿现在
+都调同一个函数 ⇒ 仍然不可能分叉。
+
+统一用 `dbpkg` 别名：`bg` 包里 `db` 已被用作变量名（实测 2 处）。
+`admin/session_compare.go` 例外 —— 它本来引的是**无别名** `db`，
+改它已有的 import 会牵连文件里其它 `db.` 引用，所以那一处用 `db.`。
+
+### §9.233.4 开关 key 改名，并加一道「僵尸配置项」门
+
+`storage.admin_session_bodies_native_read` → **`storage.session_bodies_native_read`**。
+改名是刻意的：它已不只服务 admin（domains/、bg/ 也在用）；
+旧名会让人以为「非 admin 的读方不受这个开关管」。
+
+★ **旧 key 不保留兼容项** —— 保留会变成**僵尸配置项**：
+界面上看得见、拨了什么都不发生。
+`TestBodiesSwitchKeyIsSingleSourced` 同时禁掉「旧 key 残留」与
+「db/admin 两侧各写一份字面量」。
+
+⚠ 该门第一版是 `strings.Contains`，结果把 spec 里那句
+「key 由 … 改名而来」的**注释**也判成残留 ⇒ 门逼人把改名的来龙去脉删掉。
+**删文档比门更坏**（下一个读 spec 的人会以为这个 key 从来没存在过，
+旧部署上的配置项也无法解释）。⇒ 改成先剥注释再查活代码。
+
+### §9.233.5 ★ 本轮我三次把自己的门写错，逐条记
+
+1. **薄包装让 9 个消费点隐形**（§9.233.2）—— 层数即不透明度。
+2. **消费点识别把注释当调用**：我自己写的注释
+   「全部调用点直接调 `dbpkg.SessionBodiesSourceSQL()`」里含有
+   `SessionBodiesSourceSQL(`，于是**定义文件被判成自己的消费点**
+   （报错 `总体里 "db/request_logs_view_schema.go" 出现两次`）。
+   ⇒ **注释不是调用**。与 §9.233.4 那次是同一个错误形状：
+   在源码文本里找标识符却不先排除注释。**两处都是我自己写的注释。**
+3. **两跳校验第二版过宽**：把「所有 `*SourceSQL(` 都是切换层」当判据，
+   于是 `admin/session_timeline_query.go` 调
+   `SessionFamilyTurnsSourceSQL()`（**会话族 raw helper**，永远返回会话族、
+   不需要登记）被判红。⇒ **一个必然误报的判据比没有判据更糟**
+   （会被绕过或被禁用）。⇒ 第三版只报「既不在 db 包里定义、又没登记」的。
+   判据用「db 包里有没有 `func <name>(`」这种**机械**判定，
+   **不需要任何手维护名单** —— 手名单会漂，且漂移方向是漏报。
+
+★ 三次里有两次是同一个根因：**在源码文本里找东西，却没先想清楚「什么不算」**
+（注释不算调用、raw helper 不算切换层、gofmt 拼写不算稳定形态）。
+
+### §9.233.5b ★ 我还引入了一个**门自身的性能缺陷**（实测 509s → 25 分钟+）
+
+「悬挂 `*SourceSQL(`」判据第一版里，`definedInDBPackage(fn)` 每问一个函数名
+就重做一次**全仓 WalkDir** + 重读 `db/` 下全部文件。而判据是对
+**每个已分类文件**、**每个调用到的 `*SourceSQL(`** 各问一次。
+
+⇒ 成本 = O(分类文件数 × 函数名数 × 全仓大小)。实测全量 admin 门
+从 **509s 涨到 25 分钟以上**（我一度以为是孤儿 backend 复发，
+先去查了 `pg_stat_activity`，结果活动查询为 0 —— **排除了那个解释**）。
+
+⇒ 加 `sync.Once` 缓存，db 函数名集合**每进程算一次**。该门现为 **0.854s**。
+结论不变，只是不再重复算。
+
+★ 教训与本项目记过的那条同族：**门也是代码，也会变慢，而变慢的表现
+（"跑很久"）会被误读成"环境问题"**。我当时的第一反应是去查数据库 ——
+方向对（排除法），但真正该先量的是**这个门自己花了多久**。
+
+### §9.233.6 顺带发现的既有问题（非本轮引入，未处置）
+
+`admin` 包里有**两份**「剥 Go 注释」的实现
+（`stripGoComments` / `stripGoCommentsKeepLines`），
+而我写第三份时才撞上。⇒ 已复用既有的那份，**不写第四份**；
+清理这两份属另一件事。
+
+### §9.233.7 本轮**没有**做到的事
+
+- **开关仍然是关的，行为零变化**（两处 `const`→`var` 是唯一的语义变化）。
+- A 类里**仍有 2 个没迁**：`admin/quality_correlations.go` 与
+  `domains/hooks/goal/history_store.go` —— 读的是**基表**
+  `request_logs_bodies`，而视图（hot ∪ 父表）⊋ 基表 ⇒ 换过去**扩大覆盖**，
+  是行为变更不是等价替换；前者还带 `WHERE is_auto_request = TRUE`
+  ⇒ 换源同时改口径。**这是一个需要属主拍板的决定，不是技术阻塞。**
+- B 类 4 个（ts）、C 类 2 个（延迟分层）未动 —— 理由见 §9.231.2。
+- `request_logs` **仍不能 DROP**（本地与生产都不行）。
+- 生产 09-30 的 1,113 条缺口**未补**（属主未批准，本会话零写入）。
+
+### §9.233.8 ★ 收口阶段复现了 §9.232 的同一个失误：gofmt 连带损伤
+
+本轮改完 23 个文件后准备提交，先做了显式白名单差集：
+
+```
+预期 22 / 实际 87  ⇒  多出 65 个
+```
+
+其中 **64 个是我从未打算碰的文件**：`admin/lru_cache.go`、`admin/ip_region.go`、
+`admin/providers.go` …… 形态是 gofmt 对齐（结构体字段列宽重排）、
+doc 注释重排（凭空插入 `//` 空行），以及最阴的一种：
+`admin/models_alias_sql_live_test.go` 里 `COALESCE(quantization,'')`
+被改写成 **`COALESCE(quantization,”)`** —— Go 1.19+ 的 gofmt 会把
+doc 注释里的 `''` 智能引号化成 `”`，于是一段 SQL 注释被静默改掉了。
+
+⚠ **§9.232 已经因此回退过一次，本轮又犯。** 记下来不是因为它新鲜，
+而是因为**第二次复发证明「我小心一点」不是解法，机制才是**：
+
+- 机制一：**只对自己改过的文件跑 `gofmt -w <file>`**，绝不 `gofmt -w <包>`；
+- 机制二：提交前跑**显式白名单差集**（预期清单 vs `git diff --name-only`），
+  差集非空就逐个判定，不靠「我记着我改了哪些」；
+- 机制三：白名单里那条 `comm` 两侧排序口径必须一致 ——
+  本轮第一次算出来 `admin/session_title.go` 同时出现在
+  「预期内没动」和「不在预期内」两侧，**因为 heredoc 写的清单用默认 locale 排序、
+  `git diff --name-only` 用另一套**。⇒ `export LC_ALL=C` 后两侧才可比。
+  ★ 同一份数据出现矛盾时，**先怀疑排序口径，再怀疑数据**。
+
+★ 顺带一个反向发现：这 65 个连带损伤**只落在我没碰的文件上**。
+我改过的那 23 个文件在 HEAD 上**本来就是 gofmt-clean**（逐个核实），
+所以它们没有混进任何连带改写。⇒ 连带损伤的**判据可以更省**：
+不必逐个看 diff 内容，只要「HEAD 上是否 gofmt-clean」就能预判哪些文件有风险。
+
+### §9.233.8b ★ 我自己写坏了 3 处中文（U+FFFD），全部由机械对照抓到
+
+```
+admin/request_logs_stop_write_classification_test.go:1197  「函<U+FFFD><U+FFFD>名数」→ 应为「函数名数」
+db/request_logs_view_schema.go:1036                        「db <U+FFFD><U+FFFD>是同族」→ 应为「db 才是同族」
+cmd/tools/sql_source_indirection_audit/manifest_test.go    「切<U+FFFD><U+FFFD>层」→ 应为「切换层」
+```
+
+三处都是**我这一轮新写进注释的中文**被写坏，HEAD 侧均为 0。
+第 3 处更荒唐：它是在我**修前两处之后、编辑 manifest 时**又新坏的 ——
+即「刚刚学到的检查」不会自动防止下一次。
+
+⇒ 落成机械门：**提交前逐文件把 U+FFFD 计数与 HEAD 对照**，
+不等则红。文档另有基线（审计 2 行 / 决策表 0 / handoff 0）。
+⚠ 别用 `grep -c`（数**行**）与 python `count()`（数**出现次数**）互相换算 ——
+本轮一度因此以为多出 3 处，其实是同一行里的 2 个字符。
+
+### §9.233.8c ★ 改了函数名、删了文件，却没扫**引用面** —— 门抓到了
+
+`admin/session_bodies_source.go` 本轮被删、`sessionBodiesFromSQL()` 被改名。
+扫引用时只查了 `SessionBodiesSourceSQL()` 的**调用点**（13 个，都对），
+**没查提到旧名字符串的地方**。漏掉的是
+`cmd/tools/sql_source_indirection_audit/manifest_test.go`：13 处仍写着
+`sessionBodiesFromSQL()`、2 处仍指向已删除的 `admin/session_bodies_source.go`。
+
+★ 抓它的不是我的 grep，是
+`TestIndirectSiteManifestCoversEveryReportedFile`：
+
+```
+bg/passive_probe_listener.go: 被审计报出 1 处（unresolved）但清单里没有判定
+domains/sessionsummary/summarizer.go: 被审计报出 2 处但清单里没有判定
+domains/sessionsummary/system_prompt_prefix.go: 被审计报出 1 处但清单里没有判定
+清单 32 条 / 实测 35 个文件
+```
+
+这 3 条是**迁移的直接产物**：迁移前它们的 bodies 腿是**字面量**，
+而该工具只管「关系名不是字面量的拼接点」⇒ 迁移前一条都不进清单；
+迁移成拼接后进了 unresolved 桶。
+⇒ **清单从 32 条长到 35 条是正确信号，不是工具误报。**
+
+★ 由此得到一条反直觉但可复用的判读规则：
+**把字面量改成受管制的拼接，会让审计工具的 unresolved 桶变大。**
+那不是退化，是**「看不见」变成了「看得见且已定级」**，方向上是变好。
+评审时若看到某个桶在涨，先查是「新读方」还是「老读方换了写法」。
+
+补的 3 条里有一条**降级形态与同批不同类**，已写进清单：
+`system_prompt_prefix.go` 是**唯一的 INNER JOIN** ⇒ 停写/DROP 后
+不是「字段变空」，而是**整个系统提示词前缀查不到任何一行**。
+
+### §9.233.8d 该工具的一个**结构性盲点**（读码确认，非推测）
+
+`domains/sessionforensics/export.go` 同批迁了 2 处，**却没出现在清单里**。
+不是漏登记，是**工具看不见**：`resolve.go` 的点位枚举只遍历 `*ast.FuncDecl`，
+包级 `var`（`GenDecl`/`token.VAR`）只被 `collectStringBindings` 收进
+`env.globals` 供**解析**，**不进点位枚举**。
+`admin/compression_stats.go` 第 3 处是同一形态，清单里早已注明过。
+
+⇒ **包级 `var` 的拼接点属于本工具的覆盖范围之外。**
+那两处由 admin 侧的 `allKnownRequestLogsReaderFiles` /
+`retirementExposurePopulation` 与 `TestV1BodiesScanIncludesSwitchConsumers` 覆盖 ——
+**覆盖它的是另一组门。** 不修（修工具不在本轮范围），但已写进代码注释，
+免得下一个人以为「进了这个包就等于进了所有门」。
+
+### §9.233.8e 又一处「陈述现状的句子」默默过期
+
+清单文件头写着 §9.226.3 的实测三行
+（「不可静态解析：35 处 / 20 个文件」），§9.232/§9.233 迁移后
+unresolved 桶已是 **25 个文件 / 50 处**。
+这类数字写在文件头、又没有任何门盯着，是典型的**过期陈述**。
+已按惯例**就地加更正标记**（保留原三行 + 标为 §9.226.3 快照 + 给出新值 + 解释差异），
+而不是直接改数 —— 直接改数会让下一个人以为这数字一直是这样，
+从而不知道「换写法会让桶变大」这条规律。
