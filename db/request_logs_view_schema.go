@@ -361,6 +361,33 @@ func (d *DB) baseWrapperShape(ctx context.Context) (fp, raw, credits, cip bool, 
 // canonicalColumnOrderV2 into `+"`"+`expr AS name`+"`"+` pairs — bare NULL casts would
 // otherwise name view columns after their type ("int8"/"text"), colliding
 // into 42701 duplicate column names.
+// sessionIsInternalSessionIDExpr is the **read layer's** definition of "this
+// row is not a user session": any session id starting with `sys:` is internal
+// (health probes, auto workers) and its projected gw_session_id is NULLed out
+// so it can never join to a user-facing session.
+//
+// ⚠ It is a named constant, not a literal repeated at each use site, because
+// the population measurement in session_dim_population_test.go has to classify
+// rows with **the same** predicate the read layer uses. A second copy of
+// `LIKE 'sys:%'` would be free to drift, and the direction it drifts in is
+// the misleading one: a gate that counts `sys:` traffic as user traffic
+// reports a dim-coverage number that is wrong in exactly the way nobody
+// re-checks. See that file for the measured consequence (0.00% vs 97.78%).
+//
+// ⚠ This is NOT the same thing as the `is_auto_request` column, which looks
+// interchangeable and is not. Measured 2026-10-05 on the local real database
+// over the full session family (parent ∪ hot, 1,693,480 rows):
+//
+//	sys:%    + is_auto_request=true  : 753,425
+//	sys:%    + is_auto_request=other :       0   ← the implication is exact
+//	non-sys: + is_auto_request=true  :   1,439
+//	non-sys: + is_auto_request=other : 938,616
+//
+// So `sys:%` implies auto, but auto does not imply `sys:%`. The read layer keys
+// off the id, and the gate must too — a measurement keyed off the column would
+// report a different population than the one production serves.
+const sessionIsInternalSessionIDExpr = "(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)"
+
 var projectionExprsV2 = []string{
 	"NULL::bigint",
 	"t.request_id",
@@ -408,7 +435,7 @@ var projectionExprsV2 = []string{
 	"t.cost_display::numeric(14,8)",
 	"t.cost_currency",
 	"t.usage_source",
-	"(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)",
+	sessionIsInternalSessionIDExpr,
 	"NULL::text",
 	sessionRequestStatusExpr,
 	"NULL::text",
