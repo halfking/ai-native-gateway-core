@@ -479,8 +479,8 @@ func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 		byVerdict[string(v)] = append(byVerdict[string(v)], rel+"  ["+strings.Join(names, " ")+"]")
 	}
 	for _, v := range []db.RetirementRepointVerdict{
-		db.RepointEmpty, db.RepointGapOnly, db.RepointDegraded,
-		db.UnknownColumn, db.RepointSafe,
+		db.RepointNoSuchColumn, db.RepointEmpty, db.RepointGapOnly,
+		db.RepointDegraded, db.UnknownColumn, db.RepointSafe,
 	} {
 		list := byVerdict[string(v)]
 		if len(list) == 0 {
