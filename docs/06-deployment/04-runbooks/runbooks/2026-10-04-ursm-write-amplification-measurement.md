@@ -2447,3 +2447,109 @@ B-tree 的正常叶页密度约 **90%**（默认 fillfactor 90）。实测：
 ★ 修复手段本身是现成的：`REINDEX INDEX CONCURRENTLY` 不阻塞读写，
   脚本的 `--fix` 模式已经封装好了。缺的是**判定面**。
 
+### 10.19 ★★ `analyze_llm_gateway_table_stats()` 的频率来源：D7' 的「拉长 cooldown」是一条**无效**处方
+
+慢查榜第 3 名（`pg_stat_statements`，`stats_reset = 2026-09-11 05:26:38+08`，
+窗口 **569.7 小时**）：
+
+```
+SELECT analyze_llm_gateway_table_stats( $1 )
+calls=874  total=86,950.7s  mean=99.5s  max=596.6s
+```
+
+调用链只有一条，无第二个入口：
+
+- `bg/partition_manager.go:1688` `promoteDefaultToPartitions()` 的**末尾**调
+  `pm.analyzePartitionStats(ctx)`（即每轮 promote 跑完一次）
+- `:1786` 发出 `SELECT analyze_llm_gateway_table_stats($1), 2`
+- `scripts/ops/analyze-partition-stats.sh:53` 是另一个入口，但 **252 的
+  `/etc/cron.d/pg17` 与 `crontab -l` 里都没有它** ⇒ 本窗口 874 次**不来自 cron**
+
+#### 🔴 我自己读错了一次字段绑定，值得记下来
+
+`cmd/gateway/main.go:4922` 写的是：
+
+```go
+partitionManager = bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
+```
+
+第一反应是「promote 周期 24h」。**错的。** `NewPartitionManager` 里那个
+`24*time.Hour` 落到结构体的**另一个字段**：
+
+```go
+return &PartitionManager{
+    db:              db,
+    interval:        interval,            // ← 24h 进这里
+    promoteInterval: DefaultPromoteInterval, // ← 这里被硬写成 1h
+```
+
+`pm.interval`（24h）只驱动 `mainTicker`（`:246`）即建分区/归档周期；
+**promote 与 analyze 走的是 `promoteInterval` = `DefaultPromoteInterval = 1 * time.Hour`
+（`:27`）**。构造函数签名只有一个 `interval` 参数、两个同义命名字段，
+且注释 `// DefaultPromoteInterval is how often the hot-table promote scheduler runs.`
+和 usage 示例 `pm := bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)` 并排放在一处
+⇒ **极易误读，我读错了一次。**
+
+#### 频率 = 1 小时 × 存活进程数
+
+`promoteDefaultToPartitions` 只被调两处：启动时立即一次（`:270`）+
+每 `promoteInterval` 一次（`:295`）。`SetPromoteInterval` 全仓无生产调用方
+（只有定义与注释，测试里用 `0` 关闭）。所以
+
+```
+每进程每小时 1 次  ⇒  N 个 gateway 进程 = 每小时 N 次
+```
+
+实测 874 / 569.7h = **1.534 次/小时** ⇒ 窗口内平均存活 PartitionManager 数 ≈ 1.5。
+（3 个实例并存时期，round16 记的「~3/h」正好落在这个模型上。）
+启动次数不是驱动因素：journal 只数出 10 次
+（154 `canary@8781` 5 次、`canary@8782` 2 次、252 `llmgo-252-dev` 3 次、245 为 0），
+与 874 差两个数量级 ⇒ **「重启触发」这个假设被证否。**
+
+#### 对 D7' 处方的影响：5 分钟 cooldown 从未生效，拉长它是空操作
+
+`:1759` 的冷却是 `time.Since(pm.lastAnalyzeAt) < 5 * time.Minute`。
+但实际周期是 **1 小时**，比 5 分钟松 12 倍
+⇒ **`lastAnalyzeAt` 判据从未真正挡住过任何一次调用**。
+D7' 建议的两个方向里，「**拉长 cooldown**」在当前结构下**至多把 1h 变成更大值**，
+不改变「每轮一次」这个结构；而真正能降频率的只有：降低 promote 周期、
+给 analyze 加**跨进程**互斥、或跳过冻结分区。
+
+#### ★ 与 promote 表路径的关键不对称
+
+promote 每一张表都取 `pg_try_advisory_xact_lock(lockKey)`（`:1583`，锁键由
+`promoteLockKey(label)`（`:1533`）派生，`:1530` 与 `:1578` 的注释明写
+「loser 跳过本表而不是等待」）⇒ **N 个实例天然互斥**。
+而 `analyzePartitionStats` 自开一个事务，**只设 `SET LOCAL statement_timeout = '10min'`
+（`:1779`），不取任何 advisory lock**（`:1773` 起的事务到 `:1786` 的查询）⇒ **N 个实例会把同一份全库
+ANALYZE 完整跑 N 遍**，且 `:112` 的 `lastAnalyzeAt` 是**进程内内存字段**，对多实例零约束。
+
+⇒ 补一条跨实例收敛的判据（与 §10.14 的 `*_hot` 同源问题不同，那次是频率 34 倍，
+这次是**完全没有互斥**）。
+
+#### 代价（三项，均实测）
+
+1. **CPU**：874 × 99.5s ≈ **24.2 CPU·小时 / 23.7 天 ≈ 1.02 核·小时/天**，
+   换算成常驻占用 ≈ **一个核的 4.2%**，全天不断。
+2. **锁**：`ANALYZE` 取 `ShareUpdateExclusive`，round22 已实测把它卷进 **2 次死锁**
+   （`17:31` 与 `05:25`，`pg_stat_statements`/`journal` 双向登记）。
+3. **上限**：`max = 596.6s`，而 `SET LOCAL statement_timeout = '10min'`（`:1779`）。
+   596.6s **紧贴** 600s ⇒ 单次调用已经吃掉整个预算；
+   FIX-3 的注释说 5 分钟冷却「形同虚设」，本节补上另一半：
+   **即便不超时，1h 周期也让这个函数持续占据预算上限**。
+
+#### 处置建议（**未实施，等拍板**）
+
+| 方案 | 收益 | 代价 / 风险 |
+|---|---|---|
+| 给 analyze 加 `pg_try_advisory_xact_lock`（与 promote 同键风格） | N 实例收敛为 1，不改单实例频率 | 改 Go 路径；loser 静默跳过需可观测 |
+| 冻结月分区不再 ANALYZE（`p_recent_months` 语义收窄） | 直接砍掉大部分耗时（promote 后月-1 已冻结） | **D7' 早就写了「TTL 删除语义未查透前不盲改」**，前置未完成 |
+| analyze 移出 promote 循环，改独立低频调度 | 结构上解耦，可独立设频率 | 改动面最大，且要重新验证 10min 预算 |
+
+★ **不擅自改**：三案都改变生产 ANALYZE 触发面（ANALYZE 直接影响优化器计划），
+按 §8 的既有纪律列入待拍板。
+★ 另记一条**不可证伪**的推论（标注为推断）：`p_recent_months=2` 实际 ANALYZE 的月分区
+里已冻结的那部分占了多少耗时，本轮**未量化**——`analyze_llm_gateway_table_stats` 只返回
+被 ANALYZE 的表数（`n`），不返回每张表的耗时分布 ⇒ 想判「冻结分区占几成」
+**必须改函数或上 `auto_explain`/`log_min_duration`**，不能用现有观测量倒推。
+
