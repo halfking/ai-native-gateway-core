@@ -390,6 +390,119 @@ describe('跨语言契约：manifest label_key → 8 locale', () => {
 })
 
 /**
+ * ## 手势仲裁必须单点（规范 12 §1 / §6 的可执行版）
+ *
+ * 规范 12 §6 结尾写着一句前瞻规则：
+ * > 「§1 与 §2 不完成前，不要在 compact 上加任何滑动交互。」
+ *
+ * 那是给人读的规矩，**没有门就会烂掉**。本门把它变成可执行的：
+ * 全仓的 `pointerdown` / `pointermove` / `pointerup` / `pointercancel` /
+ * `touchstart` 绑定**只允许出现在一个文件里** —— `components/ui/AppDrawer.vue`，
+ * 也就是把决策交给 `lib/shell/hyper/dragDismiss` 的那个仲裁点。
+ *
+ * ### 为什么必须是「单点」而不是「每个组件各管各的」
+ *
+ * 规范 12 §1 要求「必须显式仲裁，不得各自监听」。一旦允许第二个组件自己挂
+ * `pointerdown`，就会重演它自己列的失败模式：弹层拖拽与内容滚动各监听各的，
+ * 谁也不让谁，斜着划既不滚动也不关闭。**所以这不是风格偏好，是把 §1 钉住。**
+ *
+ * ### 这道门**不**管的事
+ *
+ * 桌面端与存量页面里已有的手势代码不在本门范围内 —— 全仓当前只有
+ * `components/detail/SessionTurnsSyncPane.vue` 用过 touch，与本专题无关。
+ * 本门盯的是**新增**的滑动交互别绕过仲裁点。
+ */
+describe('手势仲裁单点（规范 12 §1 / §6）', () => {
+  /**
+   * 已登记的**其它**指针手势消费者。沿用 `navCoverage.test.ts` 的 `KNOWN_ORPHANS`
+   * 形态：每条带具体理由，因为「白名单里写同上」等于没有约束。
+   */
+  const REGISTERED_OTHERS: Record<string, string> = {
+    'components/detail/SessionTurnsSyncPane.vue':
+      '面板 resize 分隔线的 pointer 拖拽（onDividerDown/Move/Up，挂在 window 上）。' +
+      '它不是 §1 仲裁表里的任何一格：不是弹层关闭、不是内容滚动、不是下拉刷新、' +
+      '也不是边缘侧滑返回。属桌面面板布局，与 compact 表面无关。',
+  }
+
+  /** 允许**直接**绑定指针事件的唯一仲裁点。 */
+  const ARBITRATION_FILES: readonly string[] = ['components/ui/AppDrawer.vue']
+
+  const POINTER_BINDINGS =
+    /@(?:pointerdown|pointermove|pointerup|pointercancel|touchstart|touchmove|touchend)(?:\.[\w.]+)?\s*=/
+  /** matchAll 必须用全局正则；另开一份而不是给 POINTER_BINDINGS 加 g
+   *  —— 带 g 的正则做 .test() 是**有状态**的（lastIndex 残留），会漏判。 */
+  const POINTER_BINDINGS_G = new RegExp(POINTER_BINDINGS.source, 'g')
+
+  const offenders = ALL_FILES.filter((f) => {
+    const rel = f.slice(SRC.length + 1)
+    if (ARBITRATION_FILES.includes(rel) || rel in REGISTERED_OTHERS) return false
+    return POINTER_BINDINGS.test(stripComments(readFileSync(f, 'utf8')))
+  }).map((f) => f.slice(SRC.length + 1))
+
+  it('量具自证：扫描器确实找到了仲裁点自己（防正则失效导致空集恒真）', () => {
+    const src = readFileSync(resolve(SRC, ARBITRATION_FILES[0]), 'utf8')
+    const hits = [...src.matchAll(POINTER_BINDINGS_G)].map((m) => m[0])
+    expect(
+      hits.length,
+      `${ARBITRATION_FILES[0]} 上一个指针事件绑定都没有 —— 扫描器多半已腐化，` +
+        '或仲裁点被误删。这道门会因为空集而假装通过。',
+    ).toBeGreaterThanOrEqual(3)
+  })
+
+  it('仲裁点必须真的走 dragDismiss，而不是自己手写阈值', () => {
+    const src = readFileSync(resolve(SRC, ARBITRATION_FILES[0]), 'utf8')
+    // ⚠️ 必须钉 **import 语句**，不能只匹配 `DragDismiss` 这个词。
+    // 变异 G2 实测：删掉 import 后，`let drag: DragDismiss | null` 与
+    // `new DragDismiss(` 仍在，裸词匹配照样通过 ⇒ 判据形同虚设。
+    expect(
+      src,
+      '仲裁点没 import DragDismiss ⇒ 它可能在别处就地手写了阈值，' +
+        '方向锁与速度判定就不再由唯一真源裁决。',
+    ).toMatch(/import\s*\{[^}]*\bDragDismiss\b[^}]*\}\s*from\s*['"][^'"]*dragDismiss/)
+    // 单一真源：阈值只能在 dragDismiss.ts 里定义一次
+    const core = readFileSync(resolve(SRC, 'lib/shell/hyper/dragDismiss.ts'), 'utf8')
+    expect(core, '阈值常量必须住在纯状态机里').toMatch(/thresholdRatio/)
+  })
+
+  it('仲裁点名单不得被悄悄扩容（新增仲裁点必须重新论证 §1 的争用顺序）', () => {
+    expect(
+      ARBITRATION_FILES.length,
+      '新增了第二个仲裁点。请先回答：它与既有仲裁点的优先级顺序是什么？' +
+        '规范 12 §1 要求「显式仲裁，不得各自监听」。',
+    ).toBe(1)
+  })
+
+  it('已登记条目必须仍然有效：文件还在、且理由仍然具体（防白名单腐烂）', () => {
+    const stale = Object.keys(REGISTERED_OTHERS).filter((rel) => !existsSync(resolve(SRC, rel)))
+    expect(stale, `登记的文件已不存在，应移除登记：${stale.join(', ')}`).toEqual([])
+    const weak = Object.entries(REGISTERED_OTHERS)
+      .filter(([, reason]) => reason.trim().length < 20)
+      .map(([rel, r]) => `${rel} → "${r}"（${r.trim().length} 字符）`)
+    expect(weak, `登记理由过短等于没有约束：\n${weak.join('\n')}`).toEqual([])
+  })
+
+  it('登记条目不得凭空登记：未被门覆盖的文件进白名单就等于关掉门', () => {
+    const notActuallyOffending = Object.keys(REGISTERED_OTHERS).filter(
+      (rel) => !POINTER_BINDINGS.test(stripComments(readFileSync(resolve(SRC, rel), 'utf8'))),
+    )
+    expect(
+      notActuallyOffending,
+      '这些文件已经不绑指针事件了，登记应移除（否则白名单会变成一张什么都豁免的废纸）：\n' +
+        notActuallyOffending.map((f) => `  ${f}`).join('\n'),
+    ).toEqual([])
+  })
+
+  it('全仓不得有第二个组件直接监听指针事件', () => {
+    expect(
+      offenders,
+      `这些文件直接绑了指针事件，绕过 ${ARBITRATION_FILES[0]} 的仲裁：\n` +
+        offenders.map((f) => `  ${f}`).join('\n') +
+        '\n请改为经由 lib/shell/hyper/dragDismiss，或按 §1 登记为具名消费者。',
+    ).toEqual([])
+  })
+})
+
+/**
  * ## 令牌存在性门禁（限本专题拥有的文件）
  *
  * 存在理由：真实踩过的坑，而且 `color:check` **结构上看不见**它。
