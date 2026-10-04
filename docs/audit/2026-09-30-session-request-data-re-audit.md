@@ -25330,3 +25330,127 @@ return syntheticKindOf(entry) == "probe"
 **它不能**。所以「这 9 行为什么没被镜像」**重新回到需要日志的状态**，
 只是现在我们知道**该找什么**：reaper 的 `skipped:` 删除行，
 以及 `semaphore_full` / `write_failed` 两条入队路径。
+## §9.213 破案：失败**记录**的那条路自己没有活过它要记录的那次失败
+
+§9.212.6 / §9.212.10 说「需要日志」而我当时拿不到。
+⚠ 那个说法是错的：**日志一直在我手上**——`docker logs llm-gateway-local-8782`。
+我只是先去找「哪台机器在写」，查到写入方是容器之后没有回头看容器日志。
+（写入方确认：`pg_stat_activity` 客户端全是 `172.18.0.x`；
+容器 `llm-gateway-local-8782` 跑镜像 `kx-llm-gateway-local:2.5.8.2449`，
+`StartedAt = 2026-10-04T09:29:10Z`。）
+
+### §9.213.1 九行里有一行落在当前容器日志的覆盖范围内
+
+容器启动 `09:29:10Z`；九行的 UTC 时刻里，**只有 `59bf8998…`（10:35:28Z）在它之后**
+（其余 8 行是 06:12–09:24Z，由**上一个**容器实例处理，日志已随容器销毁）。
+⇒ 只有这一行能拿到逐条日志。⚠ 下面第 1–3 节是**这一行的直接证据**，
+第 4 节起是**由它推出、并在代码与计数器上独立佐证**的结论。
+
+### §9.213.2 那一行的完整日志（无删减）
+
+```
+10:35:23  INFO  candidates_resolved        request_id=59bf8998…  candidates_count=16  err=null
+10:35:23  INFO  routing_resolve            client_model=deepseek-v4-flash  candidates_count=16
+10:35:28  INFO  session_compressor_prepare_done  has_session_id=true  ctx_window=131072
+10:35:29  INFO  upstream_call_starting     url=https://api.vapeur.ai/v1/chat/completions
+10:35:31  INFO  upstream_http_attempt      upstream_status=200
+10:35:35  WARN  auto_title: first-turn check unavailable; skipping title generation
+                error="timeout: context deadline exceeded"
+10:35:35  INFO  audit: request completed    success=true  latency_ms=2010
+10:35:35  INFO  http_request               status=200  duration_ms=16222
+10:35:38  WARN  final-success claim degraded (non-fatal)
+                error="timeout: context deadline exceeded"
+10:35:38  WARN  final-success claim: rollback to savepoint failed
+                error="conn closed"
+10:35:38  WARN  telemetry request db persist failed; fallback written
+                op="update"  error="conn closed"
+```
+
+⇒ **决定性的两行是最后两条。** `op="update"` 说明**终态**那一笔 UPDATE
+（把 `in_progress` 翻成 success/failure）**失败了**，所以库里那一行至今是
+`request_status='in_progress'` / `success=false`——**与实测一致**。
+而 `error="conn closed"` 说明**连接已经死了**。
+
+⚠ 顺带一个可疑的数：`latency_ms=2010`，而 `defaultShadowWriteTimeoutMs = 2000`
+（`hook.go`）。请求耗时刚好压着镜像写的预算线。
+
+### §9.213.3 镜像侧：写确实在失败，而且失败得很频繁
+
+当前容器日志全量（`09:29:10Z → 14:06:16Z`，约 **4.6 小时**）：
+
+| 模式 | 次数 |
+|---|---|
+| `V2 shadow write failed` | **53** |
+| `context deadline exceeded` | 132 |
+| `conn closed` | 13 |
+| `outbox row dead` | **0** |
+| `outbox skip-delete failed` | 0 |
+
+⇒ 镜像写**平均每小时失败约 11.5 次**；`outbox row dead = 0` 说明这些都**没有**
+耗尽重试次数——即 **replay 把它们捞回来了**。这与
+`session_mirror_outbox` 的 `n_tup_ins=2502 / n_tup_del=2498`（入出 1:1）吻合：
+被删掉的那 2,498 行是 replay 的 **skip-and-delete** 分支。
+
+### §9.213.4 ★ 断链的那一环：**记录失败的那条路，用的是同一条已死的连接**
+
+`hook.go:279` 的兜底是：
+
+```go
+if !EnqueueMirrorFailure(entry, req.SessionID, "write_failed") {
+    appendBacklog(BacklogItem{…})
+}
+```
+
+而 `EnqueueMirrorFailure` 往 `session_mirror_outbox` **INSERT**——
+⚠ **在连接已经 `conn closed` 的这一刻，这个 INSERT 必然也失败。**
+
+于是落到 `appendBacklog`。而 `appendBacklog`（`backlog.go:100`）是：
+
+- **进程内**的有界 slice；满了就 `backlog = backlog[1:]` **丢最老的**；
+- 注释自己写着「drain via `DrainBacklog` or a future background replayer
+  (spec §12 GAP 2)」——**排空器是还没建的未来功能**。
+
+⚠ **全仓核实**：`DrainBacklog(` 的调用者**只有 `backlog_test.go`**
+（4 处），**生产代码零调用**。⇒ **进程内存里的失败队列永远不会被重放。**
+
+### §9.213.5 于是这 9 行为什么「什么都没留下」——完整因果链
+
+| # | 环节 | 证据 |
+|---|---|---|
+| 1 | DB 连接死掉或超时 | `conn closed` / `context deadline exceeded` |
+| 2 | 镜像写失败 | `V2 shadow write failed`（4.6h 内 53 次） |
+| 3 | 记录失败要写库，而**连接已死** ⇒ 也失败 | `EnqueueMirrorFailure` 用同一池的连接 |
+| 4 | 退到**进程内**有界 backlog | `appendBacklog`，满了丢最老 |
+| 5 | **无人排空** | `DrainBacklog` 生产零调用（注释自认是 GAP 2） |
+| 6 | 进程重启（容器 17:29 重建；连接史始于 **10-02**）⇒ 内存队列消失 | `docker inspect StartedAt` |
+| 7 | ⇒ **无 turn、无 details、无 outbox 行** | 实测三项全 0 |
+
+⇒ 这**同时解释**了 2026-10-02 这个起点：**那天有一次进程重启**，
+把当时积在内存里的失败条目一次性清零。
+⚠ 也解释了为什么 outbox 里一条都没有：**它们从来没能在连接活着的时候被记下来。**
+
+⚠ **不是逻辑缺陷，是耐久性缺陷**：镜像的失败恢复依赖一条**必须先成功**的写路径，
+而它要记录的正是「写路径刚刚失败」这件事。
+
+### §9.213.6 我这轮的错，以及它为什么值得单独记
+
+§9.212.6 我写的是「本机**没有网关进程**在跑……我没有这些请求的日志」。
+前半句对（宿主机上没有），**后半句错**——写入方是**容器**，日志就在
+`docker logs` 里，一行命令。
+
+⚠ **错误的形状很典型**：我在**数据库**这条路上找证据找得很深
+（逐条排除 8 个分支、查 outbox 计数），却**没有先问一句「这个进程在哪儿、它的日志在哪儿」**。
+⇒ 通则：**当你说「我拿不到 X」之前，先确认 X 的载体是什么。**
+在数据库里找不到，不等于不存在；它可能在**进程边界之外**。
+
+⚠ 另一个更贵的点：我上一轮**把这个错误结论推了 main**
+（`591eaca20`），正文写得很确定。这轮的修正（`b451bd298`）只撤回了其中一条断言，
+**没有**指出「日志一直在手上」这一层——**回应的对象错了**。
+
+### §9.213.7 诚实的边界
+
+- 第 1–3 节：**逐条日志直接证据**，仅对 `59bf8998` 一行。
+- 其余 8 行：日志随上一个容器实例销毁 ⇒ **没有逐条证据**。
+  本节对它们给的是「由同一机制推出、且与库中观测一致的解释」，
+  **不是**逐行证明。若要坐实，需要在日志保留期内复现同类失败并抓日志。
+- 生产（252）**完全未验证**（D30-b 仍阻塞）。
