@@ -135,7 +135,6 @@ var paddedColumnVerdicts = map[string]paddedColumn{
 			"session_turn_details.rate_limit_status，是状态不是倍率）⇒ 整个会话族没有" +
 			"「这一行按什么倍率计价」这个事实，补不出有源的投影。",
 	},
-
 }
 
 // rejectedProjections 是「session 侧有同名列、但裁决为不投影」的清单。
