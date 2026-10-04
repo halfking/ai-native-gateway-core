@@ -47,6 +47,11 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run unified verification gate
+        env:
+          # R43 移交项 4：本作业是官方 pnpm 路径，pnpm/action-setup 一旦失效，
+          # lockfile 门的 pnpm 半边若按默认 skip 会静默放行、门照样绿。
+          # 置位后 pnpm 不在 PATH 直接 FAIL（verify-npm 作业不置位，仍允许 skip）。
+          LOCKFILES_REQUIRE_PNPM: '1'
         run: ./verify.sh --web
 
   # npm 并行支持路径。pnpm 仍是官方/CI 主路径，但 deploy-kaixuan1.sh 与
