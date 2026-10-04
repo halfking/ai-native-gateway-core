@@ -10277,3 +10277,92 @@ update it deliberately」——**照做会把 `work_type` 从注册表删掉**�
    同一门两次跑出的数字可以不同（lifetime 1691231 / 1691238 / 1691245 / 1691251）。
    任何 before/after 比较必须**同 base 同一次运行**内取两个数，不能跨运行比。
 5. 回归只看差集；`installer` 是独立 module，须进目录跑 `go test ./...`。
+
+---
+
+## §70.51 `client_model` 值分歧下限已过期 —— 补上判据缺口，但**不**单方面撤销登记（§9.210）
+
+### ① 本轮处理的是 `db` 包剩下的那条红
+
+`TestRepointValueFidelity` 报 `client_model diverges 0/457 = 0.0% (floor 30%)`。
+
+### ② 我一度判错：以为这个测量是恒真的
+
+看到视图定义尾部有 `WHERE NOT EXISTS(session_turns_hot …) AND NOT EXISTS(session_turns …)`，
+我以为视图把所有双生行都排除了 ⇒ session 腿计数在结构上恒为 0 ⇒ 一条恒真的测量。
+
+**错了。** 该视图是**三分支 UNION ALL**：① `session_turns_hot` ② `session_turns`
+③ `request_logs_hot`（**仅**无双生行的行）。排除条件只作用在第 ③ 个 v1 回退分支。
+session 腿比较的确实是 **session 臂 vs v1 臂**。
+
+★ 教训：**看定义只看尾部，会把三分支 UNION 读成单表。**
+一个差点被写进结论的「发现」，依据只是片段。
+
+### ③ 0.0% 是真一致，不是「两侧都是 NULL」
+
+`IS DISTINCT FROM` 认为 NULL = NULL，所以 0 分歧也是「两侧全空」的样子。
+实测 457 个 session 腿成功行：v1 侧 NULL **0**、视图侧 NULL **0**、
+两侧都非 NULL **457/457**、在其上分歧 **0**。
+
+### ④ ★ 门无法区分「已修好」与「测量失明」，我补上了
+
+原错误信息：*either the normalisation was fixed (drop the registration) or it regressed*
+——**点了两个相反结论却没给二选一的依据**，而真正的第三种可能
+（**比较器失明**）根本没被提及。两处缺口：
+
+1. **正向控制是整窗口算的**，不限腿 ⇒ 一个在 v1 腿活着、session 腿死掉的比较器
+   **能通过它**，然后把 session 腿全部分歧报成 0 —— 与「一致」不可区分。
+   而整个下限机制就活在这个区分上。
+2. **没有 NULL 剖面** ⇒ 0 分歧无法与「两侧全空」区分。
+
+两处都补（分腿控制为 0 直接 `Fatal`；NULL 剖面随行打印），
+并把错误信息改成**说清它证明了什么、没证明什么**。
+
+### ⑤ 我**没有**撤销那条登记
+
+实测只证明**本机 24h 窗口**上分歧归零。但那条登记是**关于生产的缺陷声明**
+（原注：52.8% 双生行不同，打断 `bg/model_probe.go` 的
+`pm.raw_model_name = rl.client_model`）。⚠ **本机窗口无法为生产结论背书**
+—— §9.157 的边界，也是 §9.209 刚吃过的亏。我**没有生产只读凭据**（D30-b 阻塞）。
+
+⇒ 不改注册表；让门**继续红**，但红得**可判读**：它现在问的是
+「这条声明在它被提出的那个地方还成立吗」，不是「有个数字动了」。
+
+★ **两种撤销方式的差别（变异实测过）**：`MinRate` 改 `0.0` 也能转绿，
+但那是**空条件**（"至少 0% 分歧"），不保证以后仍为 0；
+**从登记删除**会让 Direction 2 接管（未登记列必须为 0），把恒等式守死。
+⇒ **真要撤销，删除比置零强。**
+
+### ⑥ 变异验证（先 diff 确认落地再读结果）
+
+| 变异 | 结果 |
+|---|---|
+| 分腿正向控制改成恒等比较（模拟 session 腿失明） | **Fatal**：`POSITIVE CONTROL FAILED ON THE SESSION LEG … (0/102/0/0) are the absence of a measurement, not agreement` |
+| `client_model` 下限临时置 0（模拟「移除登记」） | **ok** 全绿 ⇒ 证明那条红**仅**由过期下限造成，撤销路径是通的 |
+
+### ⑦ 遗留
+
+- ⚠ **`client_model` 值分歧登记待撤销，需生产核对**（卡 D30-b）。撤销应**删除条目**。
+- ⚠ `outbound_model` 下限 20% 仍成立（实测 22.3%）但**已贴近下限**，
+  同一套归一化逻辑的另一面。
+- ⚠ 错误信息引用的 NULL 剖面**只对 `client_model` 测量**，代码已加保护：
+  仅当失败列就是它时才引用，**不虚假引用**。否则需另行补测。
+
+### ⑧ 待拍板
+
+**D30-b（252 只读凭据，唯一硬阻塞）** —— 现在它同时卡着
+`client_model` 登记的撤销判定、D30-a 列存形态、D31-a 生产核对、829 部署时机。
+D32 + D29-d 生产切换时点；`outbound_model` 20% 下限是否也该复核。
+沿用未决：D28-a/b、D27-a/b/c、D26-a/b、D25-a/b/c、D24 系列、D23 系列、
+D21-a/b、D20-a/c、D19-b、`RetirementColumnFill` 是否应作为仓库内活库快照。
+
+### ⑨ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`；`git worktree add --detach /tmp/<新> origin/main`。
+2. **所有编辑只在 worktree 里做**；共享主工作区此前处于未解决合并冲突。
+3. `export GOCACHE=/tmp/gocache-<worktree名>`。
+4. ⚠ SQL 在 Go raw string 里，**注释里不能出现反引号** —— 会截断字符串
+   （本轮踩到一次，报 `missing ',' in argument list`）。
+5. ⚠ 真库门跑在**共享的、持续被写入的库**上，同一门两次跑出的行数就不同；
+   before/after 必须**同一次运行**内取两个数。
+6. ⚠ **看视图定义要看全貌**：三分支 UNION 的排除条件常只作用在最后一个分支。
