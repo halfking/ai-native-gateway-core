@@ -10496,3 +10496,101 @@ D21-a/b、D20-a/c、D19-b。
 5. ⚠ SQL 在 Go raw string 里，注释中不能出现反引号。
 6. ⚠ 真库跑在**共享的、持续被写入的库**上；跨运行的数字会变，
    before/after 必须**同一次运行**内取两个数。
+
+---
+
+## §70.53 卡住 S4 的 10 次「真实丢行」：9 次是**带会话头的探针**，2026-10-02 起的新现象（§9.212）
+
+### ① 构成（用**生产分类器原样**分类）
+
+30d `genuine_loss` = **10 行**：
+
+| origin_actor | request_status | error_kind | 行数 | 首见 → 末见 |
+|---|---|---|---|---|
+| `probe-service` | failure | `no_candidate` | 7 | **10-02** → 10-04 |
+| `probe-service` | failure | `routing_schema_error` | 1 | 10-04 |
+| `probe-service` | failure | `no_candidates` | 1 | 10-03 |
+| (null) | failure | `session_unavailable` | 1 | 10-03 |
+
+⚠ **9/10 是 `probe-service`**，全部 `is_auto_request` NULL、`work_type` NULL、
+**全部始于 2026-10-02**（此前 30 天一天都没有）。
+
+⚠ **我第一次用手写预筛跑，得到「11,693 行」**，与门报的 10 差 1000 倍——
+因为预筛没排 `internal_loopback`。**这正是 §9.211.5 自己写下的教训，
+隔一轮又踩了一次。** 改用 `db.MirrorDriftClassSQL` 三条分支逐字复刻才对。
+
+### ② ★★ 我提的假设被**真实谓词**推翻了
+
+`hook.go:91` 有条早就在的探针门，注释写「**无会话头**的探针不进 mirror」，
+而 `MirrorDriftClassSQL` 的注释又警告「hook 跳过但 SQL 判成 genuine_loss 的行
+会让 s4_ready 永远为假」。⇒ 我形成假设：**SQL 与 Go 门不同步，缺第三条臂**。
+
+**错了。** `IsProbeSyntheticSession` 第一行：
+
+```go
+if entry.GwSessionID != nil && *entry.GwSessionID != "" { return false }  // 有会话头 ⇒ 不跳过
+```
+
+这 9 行**全部带 `gw_session_id`**（漂移口径本身就要求它非空）
+⇒ **hook 本该镜像它们 ⇒ 它们是真丢行，不是分类器漏了一条臂。**
+
+★★★ **注释与代码方向相反**：注释说「**无**会话头被排除」，
+谓词是「**有**会话头就 return false（不排除）」。
+**只读注释就动手，会做出一个把真实丢行藏起来的「修复」。**
+
+### ③ 异常的形状：探针轮次**获得了真实会话 id**
+
+| | 会话 id 形态 | 落点 |
+|---|---|---|
+| 正常探针（`probe-direct-*`，753,425 行） | **无** `gw_session_id` | 合成 `sys:probe*` 会话，**有 turn** |
+| 这 9 行 | **有** `gw_<uuid>` | 该 session_id 下 **0 turn** |
+
+且**连 details 层都是空的** ⇒ **不是写了一半，是什么都没写。**
+
+⚠ 30 天里 `auto-title/summary-generator` 的 11,000+ 行**全部**落进
+`internal_loopback` ⇒ **回环臂工作正常**；不正常的只有这一类。
+
+### ④ 我**没有**改分类器
+
+加一条探针排除臂能让 `s4_ready` 转绿，⚠ 但那是「放宽到刚好不红」，
+而且按 ② 这些行**本该被镜像**，排除它们等于**把真实丢行藏起来**。
+
+### ⑤ 我**查不到**的部分（不猜）
+
+无法判断是 **hook 没被调用**还是**调用了但写失败**：
+本机**没有网关进程**在跑（写入来自别处），我没有这些请求的日志。
+⇒ 需要属主提供 gateway 日志或确认写入来源。
+
+### ⑥ 修正 §9.211.6 的一半措辞
+
+§9.211.6 写「24h 仍有 4，今天还在丢」。**测量准确**，但「丢」易被读成
+「丢的是业务轮次」。**现在可以精确说**：卡住 S4 的 10 行里
+**9 行是 10-02 起新出现的「带会话头的探针」**，全在选型阶段失败
+（`no_candidate` / `routing_schema_error`），**没有任何 turn 或 details**；
+另 1 行 `(null)`/`session_unavailable`。
+**不是**回环误分类，**也不能**说它们「不算丢失」——按 hook 谓词它们**本该**被镜像。
+⇒ 要让 S4 转绿，答案是「这 9 行为什么没被镜像」，**不是**调整分类器。
+
+### ⑦ 待拍板
+
+- ⚠ **这 9 行为什么没被镜像** —— 需 gateway 日志 / 写入来源确认（本轮唯一新增的实质问题）；
+- ⚠ **D30-b（252 只读凭据）**：本机 9/10 是本机探针，**生产是否同样**无法回答；
+- S4 开启时点（其余事项的前置）；D32 + D29-d 切换时点；
+- `client_model` 登记是否删除 / `outbound_model` 20% 下限复核 /
+  `RetirementColumnFill` 是否继续作为仓库内活库快照。
+沿用未决：D28-a/b、D27-a/b/c、D26-a/b、D25-a/b/c、D24 系列、D23 系列、
+D21-a/b、D20-a/c、D19-b。
+
+### ⑧ 下一轮提示词
+
+1. `git fetch && git rev-parse origin/main`（当前 `0bbece77c`）；worktree 开工。
+2. **所有编辑只在 worktree 里做**；共享主工作区处于未解决合并冲突。
+3. `export GOCACHE=/tmp/gocache-<worktree名>`；**真库门必须同时导出
+   `TEST_DATABASE_URL`**，否则真库测试是 **skip 而非 fail**。
+4. ⚠ **注释可能与代码方向相反**：动手前读**谓词本体**。
+   本轮 `hook.go` 注释说「无会话头的探针被排除」，真实代码是
+   「**有**会话头就 return false（不排除）」。
+5. ⚠ **不要手写预筛替代生产分类器**（本轮两次踩到，量级差 100–1000 倍）。
+6. ⚠ SQL 在 Go raw string 里，注释中不能出现反引号。
+7. ⚠ 真库跑在**共享的、持续被写入的库**上；跨运行数字会变，
+   before/after 必须**同一次运行**内取两个数。
