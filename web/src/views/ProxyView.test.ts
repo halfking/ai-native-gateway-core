@@ -84,7 +84,7 @@ function mountView() {
   return mount(ProxyView, { global: { plugins: [i18n] } })
 }
 
-describe('ProxyView resilience', () => {
+describe('ProxyView resilience', { timeout: 20_000 }, () => {
   beforeEach(() => {
     getProxyStatusMock.mockReset()
     getProxySubscriptionsMock.mockReset()

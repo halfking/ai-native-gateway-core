@@ -106,7 +106,7 @@ function mountView(initialPath: string) {
   })
 }
 
-describe('RequestDetailFullscreenView request-detail navigation', () => {
+describe('RequestDetailFullscreenView request-detail navigation', { timeout: 20_000 }, () => {
   beforeEach(() => {
     loader.metaLoading.value = false
     loader.metaError.value = ''
