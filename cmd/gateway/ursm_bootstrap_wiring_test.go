@@ -229,3 +229,27 @@ func TestStartupBootstrapAttemptBudgetIsAtLeastTwo(t *testing.T) {
 		t.Fatalf("bootstrapAttempts=%d; a single attempt makes a transient failure a permanent degrade", bootstrapAttempts)
 	}
 }
+
+// The resolver's own unit tests cannot see main.go. Re-coupling the writer to
+// the sidecar switch at the call site would leave every one of them green
+// while 42% of the snapshot INSERTs come back — the same gap the bootstrap
+// wiring had (mutation M16 caught exactly this). The assignment is pinned
+// line-wise so a wrapped or reformatted variant cannot slip past.
+func TestPersistWriterGateGoesThroughTheResolver(t *testing.T) {
+	src := mainGoSource(t)
+	assigned := false
+	re := regexp.MustCompile(`^\s*persistEnabled\s*:=\s*ursmV2Cfg\.ResolvePersistEnabled\(\)\s*$`)
+	for _, line := range strings.Split(src, "\n") {
+		if !strings.Contains(line, "persistEnabled :=") {
+			continue
+		}
+		assigned = true
+		if !re.MatchString(line) {
+			t.Fatalf("persistEnabled must be resolved by Config.ResolvePersistEnabled; got: %s",
+				strings.TrimSpace(line))
+		}
+	}
+	if !assigned {
+		t.Fatal("persistEnabled assignment not found in main.go")
+	}
+}

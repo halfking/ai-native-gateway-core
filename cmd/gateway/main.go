@@ -1282,8 +1282,7 @@ func main() {
 	// its outcome double-write is enabled.
 	var persistWriterStop context.CancelFunc
 	if ursmV2Mgr != nil && dbConn != nil && dbConn.Enabled() {
-		persistEnabled := ursmV2Cfg.Mode != ursmv2api.ModeOff &&
-			(ursmV2Cfg.Mode != ursmv2api.ModeShadow || ursmV2Cfg.ShadowDoubleWrite)
+		persistEnabled := ursmV2Cfg.ResolvePersistEnabled()
 		if persistEnabled {
 			persistWriter := persist.New(ursmV2Redis, ursmV2Cfg.RedisKeyPrefix, dbConn.Pool())
 			persistInterval := time.Duration(ursmV2Cfg.PersistIntervalSec) * time.Second

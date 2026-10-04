@@ -123,12 +123,52 @@ type Config struct {
 	// matching rollout-layer knob — both must agree for the sidecar to
 	// fire. Loaded from URSM_V2_SHADOW_DOUBLE_WRITE (truthy 1/true/yes).
 	ShadowDoubleWrite bool
+	// ShadowPersist gates ONLY the snapshot writer, decoupled from
+	// ShadowDoubleWrite.
+	//
+	// 2026-10-04 (pg_stat_statements 实测): ShadowDoubleWrite was doing two
+	// unrelated jobs at once. (1) It makes the shadow sidecar record, which
+	// feeds llm_gateway_ursm_v2_shadow_records_total — the ONLY source of the
+	// 7-day legacy-vs-v2 drift evidence that cutover is gated on. (2) It also
+	// enables the persist writer (cmd/gateway/main.go), which snapshots
+	// Redis→ursm_node_snapshot_min. Measured cost of (2): 46,801,709 INSERT
+	// attempts against 27,208,769 rows that actually landed — ~42% of every
+	// write is a duplicate rejected by ON CONFLICT, because both gateways
+	// generate snapshot_ts from their own local clock ~30s apart. That table
+	// is 10 GB, 45% of the database.
+	//
+	// Turning ShadowDoubleWrite off to stop the waste would also destroy the
+	// drift evidence, so the two cannot be governed by one switch. This knob
+	// separates them: leave the sidecar recording (evidence preserved) and
+	// stop only the snapshot writer (waste removed).
+	//
+	// Default false = explicit opt-in only. ResolvePersistEnabled applies the
+	// back-compat rule: when this is left unset, persist follows
+	// ShadowDoubleWrite exactly as before, so existing deployments are
+	// unchanged until an operator sets URSM_V2_SHADOW_PERSIST explicitly.
+	ShadowPersist bool
+	// ShadowPersistSet records whether URSM_V2_SHADOW_PERSIST was present in
+	// the environment. Needed because false is both "operator said no" and
+	// "operator said nothing".
+	ShadowPersistSet bool
 	// KeySchemaMode selects the Redis key grammar(s) the store maintains
 	// (doc 14 §3): legacy (default), dual or canonical. It is boot-only
 	// via URSM_V2_KEY_SCHEMA_MODE, independent of Mode above, and any
 	// transition must close the recovery ready gate first. An invalid
 	// value fails Validate instead of silently booting legacy.
 	KeySchemaMode store.KeySchemaMode
+}
+
+func (c Config) ResolvePersistEnabled() bool {
+	if c.Mode != api.ModeShadow {
+		// Outside shadow mode the double-write flag is not the gate
+		// (authoritative and canary always persist).
+		return c.Mode != api.ModeOff
+	}
+	if c.ShadowPersistSet {
+		return c.ShadowPersist
+	}
+	return c.ShadowDoubleWrite
 }
 
 func DefaultConfig() Config {
@@ -281,6 +321,15 @@ func LoadFromEnv() Config {
 		if v == "1" || v == "true" || v == "yes" {
 			c.ShadowDoubleWrite = true
 		}
+	}
+	// 2026-10-04: shadow snapshot writer, decoupled from the sidecar switch
+	// (see Config.ShadowPersist). Only "0"/"false"/"no" turns it OFF; anything
+	// else is treated as "not stated" and leaves ResolvePersistEnabled
+	// following ShadowDoubleWrite. An operator therefore has to *spell out* a
+	// negative to change behaviour — a typo cannot silently stop snapshots.
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("URSM_V2_SHADOW_PERSIST"))); v != "" {
+		c.ShadowPersistSet = true
+		c.ShadowPersist = !(v == "0" || v == "false" || v == "no")
 	}
 	// 2026-09-04 availability gear: URSM_V2_OUTAGE_GRACE_SECONDS bounds the
 	// read-only mirror-serving window during a hard Redis outage. 0 or
