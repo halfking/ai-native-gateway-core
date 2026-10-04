@@ -361,6 +361,25 @@ var goEnsureMirrored = map[string]string{
 	"820_audio_modality_backfill.sql": "mirrored by db.ensureAudioModalityBackfill (db/db.go:631, called at db/db.go:624 before traffic); idempotent (WHERE modality='text'); registering it in StartupFiles would run the same backfill twice",
 }
 
+// supersededLedgerOnly 覆盖「**机制在部署前被后续正典迁移推翻、文件仅为
+// 校验和台账而留在正典目录**」这一类。
+//
+// 判据（加新条目前请照此核，三条缺一不可）：
+//  1. 推翻它的后续正典迁移已完整登记（embeddata 拷贝 + go:embed/embeddedSQLFiles
+//     + StartupFiles 三点齐全），被测机制确实有活着的落点；
+//  2. 全仓 Go 代码（非测试）没有任何一处读写被推翻迁移建的表——注册它只会
+//     给每个新环境造一张无人写入的孤儿表；
+//  3. 该文件的字节被 verify-migration-checksums 的台账锁定（db-changelog 的
+//     SHA 行与文件逐字节相等，删除或改字都会让那个门红），所以文件必须留在
+//     正典目录里，本门只能豁免、不能要求删除或登记。
+//
+// 819 是第一个成员：856628bac 用会话族 821 的 is_abandoned 标记推翻了 819
+// 独立表方案，251fc9a7a 又把两个文件按删除前字节恢复（verify-migration-checksums
+// rc 1→0）。恢复只服务台账一致性，不服务安装链：tsv 不登记它、全仓无写方。
+var supersededLedgerOnly = map[string]string{
+	"819_request_abandoned.sql": "superseded by 821_session_turns_abandoned_marker (856628bac) before any deploy; files restored byte-for-byte in 251fc9a7a only to keep verify-migration-checksums green; no Go writer remains, so registering it would create an orphan table on every fresh install",
+}
+
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
 // audit) closes the drift direction no test covered: a canonical migration
 // that never reached the installer (704/705/709/710 drifted out — R30
@@ -415,6 +434,10 @@ func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
 		}
 		if reason, exempt := goEnsureMirrored[name]; exempt {
 			t.Logf("canonical startup migration %q intentionally go-ensure-mirrored: %s", name, reason)
+			continue
+		}
+		if reason, exempt := supersededLedgerOnly[name]; exempt {
+			t.Logf("canonical startup migration %q intentionally superseded-ledger-only: %s", name, reason)
 			continue
 		}
 		if _, ok := registered[name]; !ok {
