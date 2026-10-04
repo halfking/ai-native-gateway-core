@@ -125,9 +125,9 @@ func TestAgentSignaturePrioritisesMostSpecificPattern(t *testing.T) {
 	t.Cleanup(ResetAgentPatterns)
 
 	cases := []struct {
-		name  string
+		name   string
 		prompt string
-		want  string
+		want   string
 	}{
 		{
 			name:   "ZCode before Claude",
