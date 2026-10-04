@@ -3232,6 +3232,42 @@ cohort 谓词 = `request_logs.is_auto_request IS TRUE` + `SQLExcludeSyntheticAct
 「cohort 词表与 settlement 词表几乎不重叠」这个静态事实仍成立，
 但含义变了：现在 auto 流量几乎全是探针，因为**真正的 auto 路由已两周半没产出 selection**。
 
+### 同 base / 同库 / 同时刻的 before-after（重要，别只读结论）
+
+用 `git worktree add --detach /tmp/wt-base origin/main` 建基线跑同一批门：
+
+| 门 | origin/main | 本轮 |
+|---|---|---|
+| `TestRequestLogsReadInventoryIsComplete` | **FAIL**（我 §9.222 弄红） | **PASS** ✅ |
+| `TestViewArmCutoverReadersRegistryIsConsistent` | PASS | FAIL → 已登记 → **PASS** ✅ |
+| `TestV1BodiesReadersAreAssessed` | 不存在 | **FAIL（故意红）** |
+| **合计** | **FAIL 6** | **FAIL 6**（−1 修好、+1 故意红、其余 5 条逐条相同） |
+| `TestColumnarParentTwoSurfaceSetopShape_RealDB` | FAIL | FAIL（既有，非回归） |
+| `TestReportRollup_HTTPContract` | FAIL | FAIL（既有，非回归） |
+| `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` | FAIL | FAIL（既有，非回归） |
+| `TestSessionFinalSuccessBacklogIsClosed` | FAIL | FAIL（既有，非回归） |
+| `TestProjectTasksSkipsNullTaskID` | FAIL | FAIL（既有，非回归） |
+
+★ **扩总体当场在另一张登记表上炸出一条真发现**：
+`admin/session_online.go` 进了 inventory，`TestViewArmCutover…` 立刻报它
+「不在 `viewArmCutoverReaders` 里」。已登记。
+它的失效形态与同表其它条目**不同类**：v1 臂消失后那个 JOIN 取不到 `id`，
+在线会话列表**整页为空**——不是缺一列，是连不上行。
+⇒ 「扩总体 ⇒ 漏登记被暴露」这条链是真跑通的，不是推理。
+
+### ⚠ 一条**假红**（记录它是因为它会再次发生）
+
+全量 `admin` 跑到一半时我做了 `git rebase origin/main`（他人推进 main，
+无文件重叠所以 rebase 干净）。而这一族门**在运行时读磁盘**
+（`TestEveryV1ReaderIsAnalyzedByExtractor` 扫 2,277 个生产文件）⇒ 跑一半的
+文件集与编译时不一致 ⇒ 报了一条新 FAIL。
+
+单跑复验：`PASS（2277 文件 / 149 个 v1 引用 / 盲区 0）`。
+
+⇒ 我**丢弃了那一整轮结果**，没有「取其中看起来没受影响的部分」——
+被污染的批次里任何一条绿都不能当证据。与 §9.216「运行中的二进制不是 HEAD」
+同族：**别在活动的东西上取读数，更别在活动的东西上跑一整轮测量。**
+
 ### 下一轮第一件事（本轮没查，也不猜）
 
 **为什么 auto-route 从 2026-09-15 起不再产出 selection。** 证据不足，
@@ -11467,3 +11503,76 @@ not copies. Dropping request_logs now makes these permanently unfillable.
 - 该块**不做决策、不影响退出码**，只让 `s4_ready` 不能被单独读。
 - 本机真库实跑确认打印了 `NOT MET`（`session_turns` 1,690,576 行、两条列均低于阈值）
   —— **不是只在纸面上存在**。
+
+---
+
+## §70.63 全面性有三层，每层各有一个洞——本轮把三层都验了（§9.226）
+
+### 结论先行
+
+- **我上一轮把 exposure 门记成「只数不断言」是错的。** 它有具名登记表 +
+  双向门，既数也判。那句英文是**上游** `requestLogsReadInventory` 的自述。
+  改正记录在审计 §9.226 开头。
+- **而且 `origin/main` 上 `TestRequestLogsReadInventoryIsComplete` 此刻就是红的**，
+  是 **§9.222（`fe5003034`）我自己弄红的**（`loader.go` 4→5）。
+  §9.222 那轮我核了 `cmd/gateway`、`validate_sessions_v2`、`db`，
+  **没把 `./admin/` 当包跑**。⇒ **交接里写的「门状态」只列我跑过的那几个，
+  读起来却像全仓。本轮起 `admin` 进固定核验清单。**
+- 本轮找到并修掉 3 个「全面性」漏洞，**都是量具的洞，不是产品的洞**。
+
+### 三个洞
+
+| # | 洞 | 后果 | 状态 |
+|---|---|---|---|
+| 1 | inventory 模式 `from` 独占 | **3 个活着的 API 读方对门完全不可见**；其中 2 个是会话导出/对比仍挂在 v1 上的**唯一原因** | 已修（扩 `from\|join`，106/240 → 109/271） |
+| 2 | `sql_source_indirection_audit` 把子查询取第一个 token | `admin/tenants.go` 读**两张 v1 底表**却被输出成「**退役安全**」 | 已修（4 处移出，18 → 5） |
+| 3 | bodies 列不在 canonical 合同里 | 26 文件 / 44 调用点的 bodies 依赖，exposure 门读成 **`clean`** | 已加**故意红**的门 |
+
+洞 2 与 §9.45 记的「把『不知道』报成安全」**不是同一件事**：
+那一类不可判定被当成安全、输出里还留着「不可静态解析」的标签；
+这一类是**解析成功了却解析错了**，错得**自信**，输出里没有任何视觉信号。
+**只写「不许把未知报成安全」的门挡不住它。**
+
+洞 3 的失效形态值得单独记：`admin/session_export.go:225` 写的是
+`COALESCE(rb.request_body, '{}'::jsonb)`，所以 DROP 之后
+**不报错、不返回空、照常导出一个完整会话包**，只是每条正文都是 `{}`。
+
+### 判据自证：三道变异，两道是我自己写的**恒真门**（已写进审计，此处只留一句）
+
+先写门、再做变异验证，是这一轮唯一没有被跳过的步骤。结果：
+变异 A（删子查询扫描）✅ 红、变异 C（去 `_test.go` 过滤）✅ 红、
+变异 D（不剥引号）首轮 ❌ 绿、变异 B（不剥 SQL 行注释）❌ 绿。
+
+- **B 绿暴露的是我的错**：我为「剥 SQL 行注释」配的门，夹具写成
+  `-- 历史实现读 request_logs，已改`。逐字 diff 全仓输出：
+  **剥与不剥完全相同** —— 仓库里唯一挂在解析结果上的注释里没有
+  `from`/`join` 加标识符。⇒ **那道门在测一个不存在的场景，已删**，
+  只留那一行归一化并注明「全仓实测零影响」。
+- **D 首轮绿**是因为我把 `"request_logs_hot"` 放进了「期望 false」那张表
+  （它期望 true），且夹具走的路径不经过被测代码。补对照组后转红。
+
+**两条新方法论**：
+1. **「判据红了」不等于「判据在拦」。** bodies 门若被收窄回 `from`，
+   26 个文件变 23 个，**门照样红**。⇒ 另配一条不依赖红绿的判据
+   （`TestV1BodiesScanSeesJoinOnlyReaders`：总体里必须存在只靠 JOIN
+   才被看见的读方）。**同一个坑在两个门上各踩了一次。**
+2. **夹具必须能失败**——先问「它在变异下真的会红吗」，而不是「它看起来在测什么」。
+
+### 未闭合项（本轮明确没做，不要当成已完成）
+
+- ★ **`AuditRepo` 至今没有被任何门跑过全仓。** `resolve_test.go` 只对临时夹具调它，
+  全仓无第二个调用点。**本轮修了它算错，没建那道门**——建门需要一份
+  「哪些间接读点已评估」的登记，工作量与本轮不成比例。**这是本轮最大缺口。**
+- `autoroute/metrics.go:382` 仍有一条英文散文落进「退役安全」桶（方向安全，不影响退役判断）。
+- `admin/usage_enhanced.go:120` 的裸表名字符串 `BaseTable: "request_logs_with_current_month rl"`
+  仍是 inventory 的已知盲区（扩到「裸表名」会把列注册表/配置键/分区管理一并扫进来，
+  §8.5 明令要先评估）。原注释已登记，本轮未动。
+- **bodies 侧没有 SQL helper**：turns 侧有
+  `SessionFamilyTurnsSourceSQL` / `SessionFamilyTurnsForSessionSQL`，
+  bodies 侧没有。⇒ 这是 bodies 退役的第一块砖，已写进新门的错误信息。
+
+### 下一轮第一件事
+
+**全量跑 `admin` 包**（本轮只跑了受影响的 6 道 + 新的 3 道）。
+在 §9.226.1 已确认「漏了一整个没跑的包」这个失效模式之后，
+再写一句「门状态」而不注明覆盖范围，就是同型复发。
