@@ -2322,3 +2322,44 @@ UPDATE session_summaries SET archived_at=NOW()
 ★ 「545 万次调用只换来 135 万行」这个比例值得单独查（重试风暴？幂等键失效？），
   本轮未查。
 
+### 10.16 🔴 撤回：「request_state_transitions 静默吞真冲突」不成立
+
+我一度判定 `request_state_transitions` 的写入是**数据完整性缺陷**：
+
+```go
+// domains/requestjourney/repository.go:84
+_, err := db.Exec(ctx, `INSERT INTO request_state_transitions (...) VALUES (...)
+    ON CONFLICT (tenant_id, request_id, seq) WHERE event_type IS NOT NULL DO NOTHING`, ...)
+return err            // ★ 返回值直接丢弃：不看 RowsAffected、不比对内容
+```
+
+理由是：同包里的 `ObservationOutbox.Enqueue` 在同样的 `DO NOTHING` 之后
+**会**查 `payload_hash`、不同则显式返回 `ErrSequenceConflict`，
+两处处理不一致 ⇒ 同一 seq 的不同内容会被静默吞掉。
+
+**这个判断是错的，追调用链后证否。** 完整链路：
+
+```
+ObservationOutbox.Enqueue   ← 入队：DO NOTHING 后查 payload_hash，
+    │                          不同即 ErrSequenceConflict（已挡住真冲突）
+    ▼
+  outbox 表
+    ▼  消费者 claim（含重试：首次成功但 ack 丢失会重投）
+ApplyTx → applyJourneyEvent → INSERT request_state_transitions  DO NOTHING
+```
+
+⇒ **进入投影层的事件已经通过了入队时的 hash 校验**
+⇒ 同一个 `(tenant_id, request_id, seq)` **必然是同一份 payload**
+⇒ 投影层的 `DO NOTHING` **只会命中幂等重放，永远不可能是真冲突**。
+
+★ 所以裸 `DO NOTHING` 在这里是**正确的**：幂等重放不该报错，
+  而真冲突早在入队阶段就被拦住了。
+★ 那 60% 的冲突是**正常的 outbox 重试**，不是浪费、更不是缺陷。
+
+★ 教训留档：**「A 处校验了、B 处没校验」不蕴含「B 处有缺陷」** ——
+  必须先确认 A 是否在 B 的**上游**。这里 A（入队校验）确实在 B（投影）上游，
+  所以 B 不需要重复校验。
+  我只看到两处代码长得不一样就判了缺陷，**没查调用顺序**。
+（同 [[因果链上相邻的两个环节极易被当成一个事件]]：
+  看着相邻的两个东西，可能一个有另一个兜着。）
+
