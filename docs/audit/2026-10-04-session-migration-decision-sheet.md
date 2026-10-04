@@ -2433,11 +2433,17 @@ DDL/分区树/约束/索引（§9.185）。
   上以**完全相同的错误**失败（同 base 实测，不是推理）。
 - ⚠ **它一直被「Skip 即绿」掩盖**：任何不带 DSN 的 `go test ./...` 都看不到它。
   这与「零行不是绿」「`ok` 不可区分通过/跳过」是同一族问题。
-- **本轮未修**：修它要先确认 bodies 面拆分后的正确契约
-  （`request_logs_bodies_hot` 里是否压缩、列名与语义是否仍对应、
-  原本「主表不保留完整 body」这条断言该怎么表达），属于 bodies 拆分那条线
-  （与 D30-a / 829 同一区域）的决策，不该在本轮顺手改。
-  ⇒ **请拍板**：单独排一轮修这条测试，还是并进 bodies 面拆分的收口。
+- ✅ **已修**（§9.205）：契约查清后重写验证段。
+  `request_logs_bodies_hot` 的 `request_body` / `response_body` 是
+  **未压缩的 `jsonb`**；主表只剩 `request_preview` / `response_preview`（截断文本）。
+  710 视图 `request_logs_with_current_month` **也不再暴露** body 列（实测 0 个）。
+  ⇒ 原来那条「主表不得保留完整 body」在拆分后已是**结构保证**，
+  所以把它改写成**显式断言两列不存在于主表**（不是「存在但为 NULL」——
+  那种写法只是碰巧成立，加回列就静默失效）。
+  ⚠ 修第一层后**立刻**炸出第二层：`persistRequestLog` 成功后会 `releaseBodies()`
+  把 entry 上的正文置 nil，而测试解引用了 `entry.RequestBody`
+  ⇒ **这条测试从来没跑到过那一行**。两层都修了。
+  ⇒ `telemetry` 包由 **FAIL 1 → ok**。D33 关闭。
 
 
 ### ✅ D32 实测与工具就绪（2026-10-05 第二次推进）

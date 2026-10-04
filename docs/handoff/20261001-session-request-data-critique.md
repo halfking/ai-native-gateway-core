@@ -9967,3 +9967,39 @@ v1 认领在 telemetry 事务里，session turn 在镜像 hook 之后**异步**�
 判别方法：它形如「v1 有 110,084 个 winner…v2 只有 0 行带标记」并给出修复命令，
 与 `TestColumnarParentTwoSurfaceSetopShape_RealDB` /
 `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable`（等 829 上生产才转绿）同类。
+
+---
+
+### ㉞ D33 关闭：一条**从来没跑通过**的测试，里面藏着**两层**缺陷（§9.205）
+
+上轮记下它恒红、被「Skip 即绿」掩盖，判为「按 bodies 拆分前的 schema 断言」。
+修掉之后的结论比那一句严重：**它从来没有跑到过终点。**
+
+**第一层**：验证段对主表 `SELECT request_body, response_body`，
+而拆分后这两列**已不在主表**（实测主表与 710 视图都只剩 preview）⇒ 42703。
+⚠ 这条测试是**部分迁移**的：第 3–5 段**已经**改用 `request_logs_bodies_hot`，
+只有**第一段**留在旧 schema。**「改了一半」最难发现**——读代码时每段单独看都合理。
+
+★ **关键判断**：不能只是把 SELECT 改掉。
+原断言 `if gotRequestBody != nil { fail }` 在拆分后是**结构保证**（列没了）；
+只改 SELECT 会让它变绿，但那条不变式从此**只是碰巧成立** ——
+哪天有人把列加回来就静默失效。
+⇒ 改成**显式断言两列不存在于主表**，并断言 preview 哨兵值真落库
+（`RequestPreview="hello"` 与完整 body 不同，能分辨「写进去的是 preview」）。
+
+**第二层**（被第一层挡住的）：修好后立刻 panic 在 `require.JSONEq(t, *entry.RequestBody, ...)`
+—— `persistRequestLog` 成功后调 `releaseBodies()` 把 entry 上正文**置 nil**（`client.go:1221`）。
+⇒ **这条测试从来没执行到过这一行。** 上层先炸，它就没机会。
+★ 这是「修好一层、下一层缺陷才现形」的教科书案例，
+也说明**「测试存在」与「测试跑通过终点」是两件事**。
+
+★ 顺带：失败信息里 `%v` 一个 `*string` 印的是**指针地址**
+（`request_preview = 0x62fddf94b980`）。**信息量为零的失败信息 = 让人从头再查一遍。**
+
+**同类清扫**：全仓 `*_test.go` 扫 `request_body`/`response_body`，
+其余引用**全部**已走 `request_logs_bodies_*` 或自建隔离 schema
+⇒ `TestRequestLogInsertParamCount` 是**最后一个**还在主表脸上选 body 列的测试。
+
+**门状态**：`telemetry` 包 **FAIL 1 → ok**；变异验证两条新断言都有牙
+（结构断言改指向真实列 ⇒ 红；preview 期望改错 ⇒ 红）；
+测试自清理经核对（三张表 0 残留）；无 DSN 时正常 Skip 而非红。
