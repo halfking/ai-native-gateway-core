@@ -10883,3 +10883,25 @@ upstream_status=200 → audit: request completed success=true
   —— **本轮第二次犯「手写预筛代替生产分类器」**。
 - 待拍板沿用 §⑲；并新增一条：**会话写路径的 deadline 与并发分布要不要治**
   （它才是 S4 的实际阻塞项）。
+
+### ㉕ 补记：恢复路径**有效**，永久丢行 = 「写超时 ∩ 入队也超时」
+
+rebase 后复验，`genuine_loss` 从 11 变 10。查差掉那行 `7b475e9e`：
+`session_turns_hot` 有 **1** 行、outbox 已清空 ⇒ **replay 重试成功救回**。
+
+outbox 全局 `dead=0 / pending=0 / live=0`，`n_tup_ins=2616 / n_tup_del=2612`
+⇒ **一条死信都没有**；`markDead` 是保留行的 UPDATE，真死过表不该是 0。
+
+⇒ **凡入队的都救回了** ⇒ 剩下 10 行**从未入队**，
+对应日志里的 `enqueue session aggregate outbox: context deadline exceeded`（5 次）。
+
+⇒ 完整链条（每环独立观测）：
+**v1 写成功 → hook 触发 → turn 写超时 → 入队成功则 replay 救回（实证） /
+入队也超时则永久丢行且零痕迹。**
+
+⇒ 决定性的是**交集**：「写超时」不够，「入队也超时」才丢。
+**兜底与主路径共享同一个正在超时的资源** —— 该通则第四次印证，
+这次带可测量后果（10 行永久丢行）。
+
+⚠ 未回答：turn 写为何超时。`MAX(turn_no)` 231ms 已测，
+**并发分布与 deadline 值未测** —— 下一轮的活。
