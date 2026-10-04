@@ -346,6 +346,66 @@ func TestS4GateMeasurement(t *testing.T) {
 			"that failed to recover) — it is not 'v1 failed so the mirror never ran'.")
 	}
 
+	// ---- is the whole SESSION unmirrored, or just this one turn? ------------
+	//
+	// ⚠️ §9.216. The shape above groups by error_kind, and that is not the cut
+	// that matters for remediation. Two blockers with the same error_kind can
+	// need opposite fixes:
+	//
+	//   · a blocker whose **session has other turns** = one turn lost inside a
+	//     session that otherwise mirrors fine ⇒ a write-path / timing problem;
+	//   · a blocker whose **session has zero turns** = the session was never
+	//     mirrored at all, typically a single-request session whose only
+	//     request was rejected before dispatch ⇒ an exclusion/classification
+	//     question, not a capacity problem.
+	//
+	// Measured 2026-10-04 (30d, production classifier verbatim): 9 of 10
+	// blockers sat in sessions with **zero** turns — 7 of them
+	// error_kind=no_candidate with exactly one v1 row in the whole session.
+	// So the S4 blocker population is dominated by "the session was never
+	// mirrored", and hardening the turn write would not have cleared it.
+	//
+	// The discriminator is a **count over the same blocker set**, so it must
+	// reconcile with the profile above exactly as that profile reconciles with
+	// the window count — otherwise this is a third number about a fourth
+	// population.
+	var sessionWideUnmirrored, singleTurnLost int64
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE session_turns = 0),
+		       count(*) FILTER (WHERE session_turns > 0)
+		FROM (
+		  SELECT rl.gw_session_id,
+		         (SELECT count(*) FROM session_turns_hot th WHERE th.session_id = rl.gw_session_id)
+		       + (SELECT count(*) FROM session_turns     tp WHERE tp.session_id = rl.gw_session_id)
+		         AS session_turns
+		  FROM (`+s4ScopeBody+`) rl
+		  WHERE ($1 = '' OR rl.tenant_id = $1)
+		    AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+		    AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
+		    AND `+mirrorDriftClassSQL+` = 'genuine_loss'
+		) s`, "", time.Now().Add(-defDur)).
+		Scan(&sessionWideUnmirrored, &singleTurnLost); err != nil {
+		t.Fatalf("session-wide attribution: %v", err)
+	}
+	if got := sessionWideUnmirrored + singleTurnLost; got != def.genuine {
+		t.Errorf("7d genuine_loss is %d, but the session-wide split sums to %d "+
+			"(%d session-wide unmirrored + %d single turn lost in a live session). Same scope and "+
+			"same production classifier as the count above — a mismatch means one of these queries "+
+			"is scoped differently, and the split below would be about a different population than "+
+			"the number it is explaining", def.genuine, got, sessionWideUnmirrored, singleTurnLost)
+	}
+	if def.genuine > 0 {
+		t.Logf("7d blocker attribution: %d in a session with **zero** turns (session never mirrored) "+
+			"vs %d in a session that has turns (a single turn lost inside a healthy session)",
+			sessionWideUnmirrored, singleTurnLost)
+		if sessionWideUnmirrored > singleTurnLost {
+			t.Logf("  ⇒ dominated by session-wide non-mirroring. Making the turn write faster or " +
+				"more reliable would NOT clear this population; the question is whether these " +
+				"sessions should be mirrored at all (see the exclusion notes in hook.go and " +
+				"db.MirrorDriftClassSQL — both key on attributes these rows do not have).")
+		}
+	}
+
 	// ---- is the loss ongoing, recent, or confined to history? --------------
 	// A freshness observation, reported rather than asserted: "is it safe to open
 	// S4" is a release decision that belongs in the decision sheet, not a
