@@ -27204,3 +27204,157 @@ rebase 把工作树换掉 ⇒ 跑到一半的文件集与编译时的不一致 �
   输出里带 `【预期红】` 标记，避免被读成回归。
 - `admin` 包的整体门状态本轮**未全量跑**（只跑了受影响的 6 道 + 新的 3 道）；
   全量跑留给下一轮，并在交接里列为第一件事。
+
+---
+
+## §9.227 间接读点审计从「不是门」变成门——它立刻叫出了 **4 个四道门全都看不见的计费读方**
+
+§9.226 的遗留项第一条是「`AuditRepo` 至今没有被任何门跑过全仓」。本轮把它关掉，
+关的过程里挖出本会话至今最要紧的一条发现。
+
+### §9.227.1 先说清楚：我没有推翻 §9.45 「它不是门」的理由
+
+`cmd/tools/sql_source_indirection_audit/main.go` 当时写「本工具不是门、不进 CI」，
+三条理由逐条可证。本轮**不是**删掉它们，而是**逐条回答**：
+
+| §9.45 的理由 | 本轮的回答 |
+|---|---|
+| ① 结论依赖 Go 层表达式解析；把输出**冻结**成登记表 = 给每个文件写一条「手验过」，而 §9.37 记的正是这种表静默腐烂 | 有 `manifest_test.go`，但它**不是冻结输出**。清单由人读源码写，与工具分类**双向交叉核对**；`still-unknown` 被 ratchet 禁止。**一张能和自己量具吵起来的表不会静默腐烂——它会当场变红。** |
+| ② 空库/一次性库上证明不了任何事（§9.34） | 这道门**不碰数据库**，走源码树。 objection 不适用。 |
+| ③ 进 CI 只会每周重印同样几十行，然后被人加豁免表 | 清单补齐后通过时只打 3 行汇总，**只在变化时红**。 |
+
+### §9.227.2 门的设计：清单与量具**互相监督**，不是单向抄表
+
+单向抄表是最容易写成的样子，也是最没用的：工具算错时表跟着错，两边一起绿。
+所以清单里每条都必须写 `Verdict`，而门做三向交叉核对：
+
+```
+① 工具说 reads-v1，清单说不是          → 红（工具更严重，人不能降级）
+② 清单说 reads-v1，工具说 canonical-only → 红（★ §9.226.3 那一类）
+③ 清单说 still-unknown，工具却能完全解析 → 红（判定过期）
+```
+
+反向（工具 `unresolved`、人给出更细结论）**允许** —— 那是「工具不知道、我查过了」，
+正是这道门存在的意义。工具对跨包调用永远返回 `unresolved`
+（`resolve.go` 的 `*ast.SelectorExpr` 分支明写「不猜」），本仓库最大的一批间接读点
+恰恰是跨包的（`db.SessionFamilyTurnsForSessionSQL()` 等），若要求两者相等，
+这批文件永远只能填 `still-unknown` ⇒ 门永远红 ⇒ 没人看。
+
+另有一道 **ratchet**：`still-unknown` 必须为空。
+「先填上以后再说」是这张表退化成抄表的入口，所以从结构上堵掉。
+
+### §9.227.3 ★ 门一开就报出来的 4 个文件：MaaS 计费/用量路径
+
+12 处 v1 拼接点分布在 6 个文件，其中 **4 个在 admin 侧四张登记表
+（`requestLogsReadInventory` / `indirectRequestLogsReaders` /
+`retirementBreakers` / `viewArmCutoverReaders`）里一处都没有**：
+
+```
+maas/usage.go  maas/consumption_detail.go  maas/credit_buckets.go
+admin/usage_credits.go
+```
+
+机制全部是切换层：
+
+```go
+// maas/usage.go:66
+func requestLogsSource(days int) (string, string) {
+	if days <= 7 { return "request_logs_hot AS r", "r" }
+	return "request_logs_with_current_month AS r", "r"
+}
+```
+
+**为什么四道门全都看不见它**，两道各自的原因都实测过：
+
+1. `requestLogsReadInventory` 按行扫 `from request_logs`。`maas/usage.go` 里
+   唯一的这串文本在**第 27 行的注释里**（`// UsageSummary aggregates … from request_logs.`），
+   注释被剔除 ⇒ 计数 0 ⇒ 不进总体。
+2. exposure 门按 AST 抽 **SQL 字面量里的 canonical 合同列**。这里关系名是
+   **Go 变量**（`FROM ` + logsTable），字面量里一个 v1 关系名都没有 ⇒ 零证据。
+
+**而且默认支就是 v1 底表**：`ClampUsageDays`（`maas/usage.go:39`）对 `days < 1`
+返回 **1** ⇒ 不传 `days` 或传 0 的调用**全部**落在 `request_logs_hot` 这一支。
+
+**退役后果按条目分开写，因为它们不是同一类**：
+
+| 文件 | 后果 |
+|---|---|
+| `maas/usage.go` / `admin/usage_credits.go` | 租户用量/计费 API 读不到 ⇒ `COALESCE(SUM(…),0)` 把它变成「这个租户没花过钱」，**对外仍 200 + 合法 JSON** |
+| `maas/consumption_detail.go` | 消费明细按小时/模型分组变空 ⇒ 页面显示「这段时间没有消费」 |
+| `admin/tenants.go` | 同上，租户 credits/tokens/latency 聚合 |
+| `maas/credit_buckets.go` | ⚠ **与其它几条不同类**：它不是读后展示，而是 `ON CONFLICT DO UPDATE` **写小时级 credit 桶** ⇒ DROP 后已有的小时桶被**覆盖成 0**，**不可逆** |
+| `cmd/tools/backfill_session_bodies/main.go` | ⚠ **迁移工具**，DROP 后 `session_bodies` 的回填**永久做不了**（不是「换个源」的问题） |
+
+⇒ 两条路径都伪造 0 的话，「这个租户从没调用过」会被当成事实。
+**这是本会话至今发现的、最接近「静默财务错误」的一条。**
+
+### §9.227.4 顺带修掉一个工具自己的假阳性
+
+全仓跑起来后 `admin/provider_credential.go:637` 进了报告：
+
+```go
+valueChanged := "balance_usd IS DISTINCT FROM " + balArg
+```
+
+`fragmentTailRE` 是 `(?i)\b(from|join)\s+$`，它分不清
+`… LEFT JOIN ` + tbl（FROM 子句，拼**关系名**）与
+`… IS DISTINCT FROM ` + balArg（**比较运算符**，拼**值**）。
+方向上是多报（本工具自述的安全方向），所以不会让人漏掉 v1 读点；
+但清单的 `Consequence` 要写「退役时会怎样」——对着一个比较运算符写不出有意义的话。
+
+新增 `isRelationFragmentTail`，在前一个词是 `distinct` 时判否。
+全仓 **35 → 34 处、27 → 26 文件**。
+
+⚠ **这一版我第一版写反了，而且它是静默失效的**：我先按长度切尾部关键词，
+可 `"… FROM "` 的**末 4 个字符是 `"ROM "`**（`FROM ` 的后 4 个）而不是 `"FROM"`
+⇒ 等值比较永远不成立 ⇒ 过滤从未生效、`IS DISTINCT FROM` 照旧进报告。
+**是我在变异验证时才发现的**（把顺序改回去 ⇒ 门 7 转红）。
+⇒ 与 §9.226.5 的教训同族，但更具体：**一个恒假的过滤器看起来和一个正确的过滤器一模一样。**
+
+### §9.227.5 判定结果
+
+清单 **26 条 / 实测 26 个文件**，工具判 `unresolved` 的 16 文件 / 34 处
+**全部已由人读源码定级**（跨包调用为主），`still-unknown` = **0**：
+
+- `reads-v1` 6 · `canonical-only` 4 · `nonv1-by-inspection` 15 · `still-unknown` 0
+  （`admin/tenants.go` 同时出现在 v1 与 canonical 两个桶，判定取更严的 `reads-v1`）
+
+⚠ **「canonical-only」不等于「退役后照常工作」**：canonical 视图的 **v1 臂**
+在 DROP 时会消失。`admin/logs.go`（`logsSourceFromSQL` 默认返回
+`request_logs_with_current_month rl`）与 `admin/usage_enhanced.go`
+（`BaseTable: "request_logs_with_current_month rl"`，裸表名字符串）
+都属于这一类，归 D29-d 切换清单，**不是** DROP 前的 blocker。
+
+### §9.227.6 判据自证：8 条变异全部转红
+
+| 变异 | 结果 |
+|---|---|
+| M1 删掉 `admin/tenants.go` 的登记（规则①） | ✅ 红 |
+| **M2 ★撤回 §9.226.3 的分类器修法**（tenants.go 回到「退役安全」） | ✅ **红**（`TestIndirectSiteManifest…` 报矛盾） |
+| M3 把 `maas/usage.go` 降级成 `still-unknown`（ratchet） | ✅ 红 |
+| M4 把 `tenants.go` 判定降级成 `canonical-only`（规则②） | ✅ 红 |
+| M5 清空 `Consequence` | ✅ 红 |
+| M6 清空 `Via` | ✅ 红 |
+| M7 删掉 `ResolvesTo`（reads-v1 必填） | ✅ 红 |
+| M8 `ResolvesTo` 填一个不存在的表名 | ✅ 红 |
+
+★ **M2 是这套设计存在的理由**：如果清单是单向抄表，
+撤掉分类器修法会让清单跟着改成 canonical-only ⇒ **两边一起绿**，
+而 `tenants.go` 会重新变成「读两张 v1 底表却报退役安全」。
+交叉核对把这条堵住了。
+
+⚠ **M5/M6 第一轮是绿的，但不是门没牙——是我的变异没生效**：
+那两个字段是多行字符串拼接，我只把第一行换成 `""`，后两段仍非空
+⇒ `TrimSpace(...) == ""` 自然不成立。改成整块清空后转红。
+**这与 §9.226.5 的 D 一样：先确认变异真的改了东西，再看门红不红。**
+
+### §9.227.7 边界
+
+- 本轮**没有改任何产品行为**：改动是审计工具的分类器（不在任何请求路径上）
+  + 它的测试 + 新增 `manifest_test.go`。
+- **零生产写入**：未连 252，未对本地库做任何写操作。
+- 清单里 15 条 `nonv1-by-inspection` 的依据是**读源码**（跨包调用 / 字面量表名列表），
+  不是工具输出；依据本身写进了 `Via` 字段，可被下一个人复核。
+- ⚠ `autoroute/metrics.go` 那条**仍不是读点**（Prometheus Gauge 的 Help 文本里
+  恰好出现 `from `）。本轮修了同族的 `IS DISTINCT FROM`，**没修这一条**——
+  它需要「拼接里有没有关系名形状」的判据，是另一个更大的改动。

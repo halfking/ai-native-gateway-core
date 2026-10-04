@@ -11576,3 +11576,76 @@ not copies. Dropping request_logs now makes these permanently unfillable.
 **全量跑 `admin` 包**（本轮只跑了受影响的 6 道 + 新的 3 道）。
 在 §9.226.1 已确认「漏了一整个没跑的包」这个失效模式之后，
 再写一句「门状态」而不注明覆盖范围，就是同型复发。
+
+---
+
+## §70.64 间接读点审计成了门，它叫出了 4 个**计费路径**读方（§9.227）
+
+### 结论先行
+
+- ★ **`maas/usage.go` / `maas/consumption_detail.go` / `maas/credit_buckets.go` /
+  `admin/usage_credits.go` 读 v1，而它们在四张登记表里一处都没有。**
+  默认支就是 v1 底表（`ClampUsageDays` 对 `days<1` 返回 1）。
+- ★ **`maas/credit_buckets.go` 与其它几条不同类**：它 `ON CONFLICT DO UPDATE`
+  **写**小时级 credit 桶 ⇒ DROP 后已有小时桶被**覆盖成 0**，**不可逆**。
+- ★ `admin/tenants.go` 与 `maas/usage.go` 叠加时，两条路径都把「读不到」
+  变成 0 ⇒ **「这个租户从没调用过」会被当成事实**。这是本会话至今
+  最接近「静默财务错误」的一条。
+
+### 为什么四道门全都看不见它（两道各自的原因都实测过）
+
+1. `requestLogsReadInventory` 按行扫 `from request_logs`。`maas/usage.go` 里唯一的
+   这串文本在**第 27 行的注释里**（`// … aggregates … from request_logs.`），
+   注释被剔除 ⇒ 计数 0 ⇒ 不进总体。
+2. exposure 门按 AST 抽 **SQL 字面量里的 canonical 合同列**。这里关系名是
+   **Go 变量**（`FROM ` + logsTable），字面量里一个 v1 关系名都没有 ⇒ 零证据。
+
+机制是切换层（`maas/usage.go:66` / `admin/usage_credits.go:120`）：
+
+```go
+func requestLogsSource(days int) (string, string) {
+	if days <= 7 { return "request_logs_hot AS r", "r" }          // ← 默认支，v1 底表
+	return "request_logs_with_current_month AS r", "r"
+}
+```
+
+### 门的设计要点
+
+不是「把工具输出冻结成表」——那正是 §9.37 记的静默腐烂路径。
+清单由人读源码写，与工具分类**双向交叉核对**（8 条变异全部转红）。
+其中最关键的一条：
+
+> ★ **把 §9.226.3 的分类器修法撤掉 ⇒ 门转红。**
+> 单向抄表的话，撤掉修法会让清单跟着改成 canonical-only ⇒ **两边一起绿**，
+> 而 `admin/tenants.go` 会重新变成「读两张 v1 底表却报退役安全」。
+
+另加一道 ratchet：`still-unknown` 必须为空 ⇒「先填上以后再说」从结构上堵死。
+判定结果：**26 条 / 实测 26 文件，still-unknown = 0**
+（工具判 unresolved 的 16 文件 / 34 处全部已由人读源码定级，跨包调用为主）。
+
+### 顺带修掉工具自己的一个假阳性
+
+`"balance_usd IS DISTINCT FROM " + balArg` 被 `fragmentTailRE` 当成 FROM 子句
+（它分不清 `LEFT JOIN ` + 表 与 `IS DISTINCT FROM ` + 值）。全仓 35→34 处、27→26 文件。
+
+⚠ **这一版我第一版写反了，而且是静默失效**：先按长度切尾部关键词的话，
+`"… FROM "` 的末 4 个字符是 `"ROM "` 而不是 `"FROM"` ⇒ 等值比较永不成立
+⇒ 过滤从未生效。**变异验证时才发现。**
+⇒ 一个恒假的过滤器看起来和一个正确的过滤器一模一样。
+
+### 边界
+
+- 无产品行为改动（审计工具，不在请求路径上）；零生产写入，未连 252。
+- 15 条 `nonv1-by-inspection` 的依据是**读源码**，依据本身写进 `Via` 字段可复核。
+- ⚠ `autoroute/metrics.go` 那条**仍不是读点**（Prometheus Help 文本里恰好有 `from `）。
+  本轮修了同族的 `IS DISTINCT FROM`，**没修这一条**——需要「拼接里有没有关系名形状」
+  的判据，是另一个更大的改动。
+
+### 下一轮第一件事（已更新）
+
+1. ★ **`maas/credit_buckets.go` 的桶覆盖不可逆**——它是本清单里唯一
+   「DROP 会**改写已有数据**」的一条，应与回填顺序放在一起排期。
+2. `SessionFamilyBodiesSourceSQL()`（bodies 侧至今没有这个 helper，§9.226.4）。
+3. 给 `AuditRepo` 的 `canonical-only` 里那 2 个「视图 v1 臂」条目
+   （`admin/logs.go` / `admin/usage_enhanced.go`）并入 D29-d 切换清单的复核。
+4. `autoroute/metrics.go` 的 Help 文本假阳性（见上）。
