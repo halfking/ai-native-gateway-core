@@ -230,19 +230,31 @@ var probeV1BaseTableRe = regexp.MustCompile(
 var currentMonthViewRe = regexp.MustCompile(`\b[a-z_]*_with_current_month\b`)
 
 // TestProbeRetirementExposureBlindSpotFiles 量**另一个**、更大的盲区：
-// 有多少文件只经由 `_with_current_month` 视图读 v1，
-// 而 `extractV1ReadingLiterals` 对它们**一个字面量都产不出来**
-// （它要求字面量里出现 4 张裸表之一，视图名不在名单里）。
+// 有文件读 v1（经底表或视图），而 `extractV1ReadingLiterals` 对它们
+// **一个字面量都产不出来**。
 //
 // ⇒ 这些文件在 `TestRequestLogsRetirementExposure` 的报告里落在
-// **「clean」**桶、且 `literals=0` —— 它们不是「查过了没问题」，
+// **「clean」** 桶、且 `literals=0` —— 它们不是「查过了没问题」，
 // 而是**「从来没被看过」**。两者在报告里长得一模一样。
 //
-// 同样是探针（不判红），同样带自检：扫到 0 个文件 ⇒ Fatal。
+// # ⚠ 2026-10-05（审计 §9.199，D29-a）：这个探针的**分子定义变了**
+//
+// 原版分子是「只经视图读 v1、且不碰 4 张裸表」——它量的是
+// `v1TableRe` 认不出视图这件**具体缺陷**，为此还刻意独立抄了一份
+// `probeV1BaseTableRe`（不复用被检验对象，免得断言恒真）。
+//
+// D29-a 把关系宇宙接上之后，**独立抄写的前提消失了**：
+// 要回答的问题已不是「旧正则认不认视图」，而是
+// 「**现在还有没有读 v1 却不被分析的文件**」。
+// ⇒ 分子改为「含 v1 族关系名的 SQL 字面量，但提取器产出 0 条」。
+// 这是**更强**的断言：它不再关心通过哪条路径读 v1。
+//
+// 同族提醒：独立抄写是**量缺陷时**的手段，不是常态。
+// 缺陷修好之后，继续抄一份只会让两个量具各自漂移。
 func TestProbeRetirementExposureBlindSpotFiles(t *testing.T) {
 	root := repoRootFromCaller(t)
-	scanned := 0
-	blind := []string{}
+	ensureV1RelationMatchers(t)
+	scanned, referenced, blind := 0, 0, []string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -260,22 +272,21 @@ func TestProbeRetirementExposureBlindSpotFiles(t *testing.T) {
 		rel, _ := filepath.Rel(root, path)
 		rel = filepath.ToSlash(rel)
 		scanned++
-		// 逐字面量判（而不是整文件 grep）：注释里提到视图名不算读它。
-		viaView, viaBase := false, false
+		// 逐字面量判（而不是整文件 grep）：注释里提到关系名不算读它。
+		mentions := false
 		for _, lit := range goStringLiterals(t, path) {
 			lit = sqlBlockCommentRe.ReplaceAllString(lit, " ")
 			lit = sqlLineCommentRe.ReplaceAllString(lit, " ")
-			if !selectRe.MatchString(lit) {
-				continue
-			}
-			if currentMonthViewRe.MatchString(lit) {
-				viaView = true
-			}
-			if probeV1BaseTableRe.MatchString(lit) {
-				viaBase = true
+			if v1TableRe.MatchString(lit) {
+				mentions = true
+				break
 			}
 		}
-		if viaView && !viaBase {
+		if !mentions {
+			return nil
+		}
+		referenced++
+		if len(extractV1ReadingLiterals(t, path)) == 0 {
 			blind = append(blind, rel)
 		}
 		return nil
@@ -283,14 +294,91 @@ func TestProbeRetirementExposureBlindSpotFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("扫描生产源码失败: %v", err)
 	}
+	// ★ 探针自检：扫到 0 个生产文件 ⇒ 我这个探针坏了自己，不是「盲区为 0」。
 	if scanned == 0 {
 		t.Fatalf("探针自检失败：扫到 0 个生产文件 —— 探针读错了对象，不是「盲区为 0」。")
 	}
+	if referenced == 0 {
+		t.Fatalf("探针自检失败：0 个文件引用 v1 族关系名 —— 族名推导坏了，"+
+			"此时报出的「盲区 %d」是空洞的", len(blind))
+	}
 	sort.Strings(blind)
-	t.Logf("扫描 %d 个生产文件", scanned)
-	t.Logf("=== 只经由 *_with_current_month 视图读 v1、分析一个字面量都产不出的文件：%d 个 ===",
-		len(blind))
+	t.Logf("扫描 %d 个生产文件，其中 %d 个引用 v1 族关系名", scanned, referenced)
+	t.Logf("=== 读了 v1 族、但提取器一个字面量都产不出的文件：%d 个 ===", len(blind))
 	for _, b := range blind {
 		t.Logf("  %s", b)
 	}
+}
+
+// TestEveryV1ReaderIsAnalyzedByExtractor 是**门**，不是探针：
+// 守住「凡读 v1 族者必被分析」这条不变量。
+//
+// 为什么探针挡不住回归：探针**永不判红**，所以「盲区从 0 涨回 63」
+// 在它那里只是一行日志。而回归的表现恰恰是
+// 「报告里的 clean 桶悄悄变大」——那正是这条不变量要拦的。
+//
+// 期望值 0 是**正确值**（不是把已知坏值冻进断言）：
+// D29-a 之后实测为 0，而任何非零都意味着
+// 「有文件读了 v1 但没被分析」——报告会把它们算成 clean。
+func TestEveryV1ReaderIsAnalyzedByExtractor(t *testing.T) {
+	root := repoRootFromCaller(t)
+	ensureV1RelationMatchers(t)
+	scanned, referenced := 0, 0
+	var blind []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules", "web":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		scanned++
+		mentions := false
+		for _, lit := range goStringLiterals(t, path) {
+			lit = sqlBlockCommentRe.ReplaceAllString(lit, " ")
+			lit = sqlLineCommentRe.ReplaceAllString(lit, " ")
+			if v1TableRe.MatchString(lit) {
+				mentions = true
+				break
+			}
+		}
+		if !mentions {
+			return nil
+		}
+		referenced++
+		if len(extractV1ReadingLiterals(t, path)) == 0 {
+			blind = append(blind, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("扫描生产源码失败: %v", err)
+	}
+	// 地板断言：分母被悄悄换掉时，这里必须先报红。
+	if scanned < 500 {
+		t.Fatalf("门自检失败：只扫到 %d 个生产文件（地板 500）—— 扫描范围被改小了", scanned)
+	}
+	if referenced < 20 {
+		t.Fatalf("门自检失败：只有 %d 个文件引用 v1 族关系名 —— 族名推导坏了，"+
+			"此时「0 盲区」是空洞的", referenced)
+	}
+	if len(blind) > 0 {
+		sort.Strings(blind)
+		t.Errorf("以下文件**读了 v1 族、却没有被暴露分析产出任何字面量**（%d 个）：\n  %s\n\n"+
+			"它们在 TestRequestLogsRetirementExposure 的报告里落进 **clean** 桶且 literals=0——\n"+
+			"那不是「查过了没问题」，是**「从来没被看过」**。审计 §9.199 实测这个集合是 63 个文件。\n"+
+			"成因通常是关系宇宙又变窄了：v1RelationNames 认得的族名比 SQL 里出现的少。\n"+
+			"修法：扩 SSOT 里的关系名，**不要**在报告侧加特例。",
+			len(blind), strings.Join(blind, "\n  "))
+	}
+	t.Logf("扫描 %d 个生产文件，%d 个引用 v1 族，全部被分析到（盲区 0）", scanned, referenced)
 }
