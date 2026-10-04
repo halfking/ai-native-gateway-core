@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- UI规范 01 §4：viewport-fit=cover 消费刘海/Home 指示条 insets -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f4f6f9" />
+    <title>LLM Gateway</title>
+    <script>
+      // 首帧防 FOUC（UI规范 14 §3）：读用户偏好 + 系统偏好，先于渲染落 class。
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('llmgw_mobile_theme')
+          var dark =
+            stored === 'dark' ||
+            (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) {
+            document.documentElement.classList.add('dark')
+            var meta = document.querySelector('meta[name="theme-color"]')
+            if (meta) meta.setAttribute('content', '#0f141c')
+          }
+        } catch (e) {
+          /* localStorage 不可用 — 按亮色渲染 */
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
