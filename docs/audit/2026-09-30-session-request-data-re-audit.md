@@ -21000,3 +21000,111 @@ M3 / M4 是绿的，我没有把它们写成有牙的判据。**M4 的后果是�
   本地是下界。
 - 关系名推导重放的是 `sql/migrations`；`installer/.../embeddata/` 下另有一份迁移副本，
   本轮**未纳入重放**。两者若不同步，本门看不见——**这是一条已知的覆盖缺口，不是已排除的**。
+
+---
+
+## §9.173 既有红门体检：4 个红，0 个产品缺陷
+
+§9.172 收口时留下一条尾巴：`origin/main` 上有 6 个既有红门（admin 4 / bg 1 / cmd/gateway 1），
+本会话一直以「与本轮无关」为由不动它们。本节把它们逐个查到底。
+
+结论先说：**6 个里 4 个已修，全部是量具或夹具的问题；剩下 2 个是环境缺口，不是代码缺陷；
+一个产品缺陷都没找到。** 本节**零生产代码改动**（`git diff --name-only` 除 `_test.go` 外为空）。
+
+### §9.173.1 分类一：量具坏了，门从未真正执行过
+
+**（a）`sessions_default` 让分区下界助手扫 NULL** —— 两份拷贝同一个 bug。
+
+`cmd/gateway` 与 `admin` 各有一个「取 `public.sessions` 分区月下界」的助手，都用
+`regexp_match(pg_get_expr(relpartbound), 'FROM \(''([0-9]{4}-..-..)''')[:1]` 抽下界。
+`public.sessions` 有 `sessions_default` 分区，其 `relpartbound` 是 `'DEFAULT'`、
+抽不出 `FROM (...)` ⇒ `lo` 为 NULL ⇒ 扫进 `*time.Time` 直接
+`cannot scan NULL into *time.Time`。
+
+**两个红门此前一直红在这一行上，断言从未执行。** 这比「门红」更糟：
+它们看起来在守跨月 flush / 跨月去重，实际上一行断言都没跑到。
+
+⚠️ 还有一个**更隐蔽**的隐患：`ORDER BY lo DESC` 在 PostgreSQL 里默认 **NULLS FIRST**。
+所以只要有人为了让扫描不崩而把 `lo` 改成可空（如 `COALESCE(lo,'-infinity')`），
+默认分区就会**被当成「最新分区」**，`bounds[0]` 指向一个并不存在的月份，
+夹具会往错分区写、断言会读错行，**且不报任何错**。两处都改成
+「WHERE 排掉无月下界的分区」+「ORDER BY … NULLS LAST 写死」。
+
+**（b）`bg` 账本夹具从未种下过它声称要种的断链。**
+
+原夹具注释写「Chain: 100 → 90 → (corrupt 200 instead of 190) → 150」。
+但链断判据是 `balance_after - (lag(balance_after) + amount) <> 0`，
+即余额是 running balance：`90 + 110 = 200`——**200 本来就是对的**。
+「190」只有在 `amount=100` 时才成立。四行 drift 全为 0，**一个断点都没种下**。
+⇒ 改为改**余额**不改编金额：第三行余额 201（应为 200，drift=+1），第四行跟着改 151
+保持自洽，于是恰好一个断点。
+
+同一夹具还有第二个问题：账本 `consume` 行走默认 `created_at = now()`，
+而 `usageCreditSQL` 两侧都有 `created_at < now() - ledgerSettleLag`（10 分钟）
+的结算延迟上界 ⇒ 该行被排除、`debited` 变 0。门于是拿到 `30 vs 0`——
+**一条由夹具自己制造的伪差异**，而不是注释声称的 `30 vs 25`。
+比断链更隐蔽：门确实是红的，但红的原因不是它声称要验的东西。
+⇒ 显式把 `created_at` 设到 1 小时前。
+
+**（c）`ensureFixtureTenant` 不可重入。**
+
+```go
+INSERT INTO public.tenants (code, name) VALUES ($1,$2)
+ON CONFLICT (code) DO NOTHING RETURNING true
+```
+`ON CONFLICT DO NOTHING` 命中冲突时 **RETURNING 返回零行** ⇒ `QueryRow` 报
+`pgx.ErrNoRows`。这个助手的 doc 写着「gate database is EMPTY（2026-10-02 实测
+`tenants` = 0）」——**那个前提早已不成立**，本地现有 11 个租户含 `default`。
+所以它只能在**纯净库**上能跑一次，此后永远红。
+⇒ 把 `ErrNoRows` 当作「已存在」正常路径，返回 `false`（调用方据此不删不是自己建的行）。
+
+### §9.173.2 分类二：环境缺口 —— 明确不改，交给属主
+
+**（d）`TestProjectTasksSkipsNullTaskID`：迁移 762 从未在本地库应用。**
+
+它卡在 `762 trigger should backfill both fixture rows, got 0`。
+查证链：触发器函数 `sync_session_project_attr` 在本地库**不存在**
+（只有无关的 `sync_session_task_id`）；`schema_migrations` 共 288 行、
+含 `762%` 的 **0 行**，最大连号是 817；`schema_migration_audit` 里 76x/82x 无记录。
+⇒ **不是回滚过，是从未应用。** 本地库是「部分迁移」实例：764/765 在，762 缺，818+ 缺。
+迁移 762 自身声明幂等（OR REPLACE / IF NOT EXISTS / DROP-then-CREATE），
+台账 `startup_rerun_known_gaps.tsv` 里也没有它。
+**我没有替属主应用它**——改共享库状态不在本轮授权内。
+
+**（e）`TestReportRollup_HTTPContract`：`report_snapshots` 0 行。**
+实测 `SELECT count(*) FROM report_snapshots` = **0**。
+该测试自己的报错就写明「要求有日聚合结果的库，空的 scratch 库会让它整条失效」。
+**我没有把它改成 skip**——那会把一条如实报红的门变成一条永不执行的门，
+与 §9.171 撤掉那道「清单全覆盖」门是同一类错误：**为了让门好看而让它不再说话**。
+
+### §9.173.3 变异验证
+
+| 变异 | 结果 | 证明了什么 |
+| --- | --- | --- |
+| M5 去掉 `flushUpdateQuery` 的 `partition_date` 谓词 | **红** | cmd/gateway 门重新有牙（旧分区行被写入 `turn_2`） |
+| M6 把 drift 表达式换成 `amount` | 绿 | ⚠️ **变异无效**：第三行 `amount=110≠0` 仍命中，**不是门无牙** |
+| M6b `WHERE drift <> 0 AND 1=0` | **红** | 链断断言确实承重 |
+| M7 `usageCreditSQL` 的 `<>` 改 `=` | **红** | 账务差异漏报被抓 |
+| M8 去掉种类断言 | 绿 | 证实**旧的「只数数量」对种类完全无牙** |
+| M9 期望一个永不出现的种类 | **红** | 新加的种类断言非恒真，诊断打出 `map[balance_chain:1 usage_credit_mismatch:1]` |
+| M10 去掉跨月去重谓词 | **红**（两条断言都报） | admin 跨月去重门有牙 |
+
+**M6 必须单独说**：它绿不是因为门没牙，而是**我写的变异不描述一个真缺陷**——
+把 drift 换成 `amount` 之后，被种下的那一行 `amount=110` 依然非零，发现照样落地。
+**「变异绿」和「门无牙」是两个不同结论，中间隔着「这个变异是否真的描述了一个坏法」。**
+
+### §9.173.4 本节新增的一处门强化
+
+原 bg 断言只要求 `findings >= 2`。**两条错误类型的发现也能满足它**——
+而这道门存在的全部意义就是验「链断检查」和「账务比对」各自落地。
+⇒ 补上按 `check_kind` 断身份的断言，并在失败时打出实际分布。
+（补的过程中我先猜了列名 `check_type`，实际是 `check_kind`——**查 schema 而不是猜第二次**。）
+
+### §9.173.5 诚实边界
+
+- **零生产代码改动**。本节只动了 4 个 `_test.go`。
+- §9.173.2 的两个门**仍然是红的**，且是**故意保持红的**。它们红的原因是环境，
+  改测试就是掩盖。
+- 本地库仍是**部分迁移实例**（缺 762、缺 818+）。本节的所有真库读数都建立在这个
+  事实上——**缺迁移可能让某些门永远红，也可能让某些缺陷永远测不到，两个方向都没排除**。
+- 生产 252 未获只读授权；本节未连接生产。
