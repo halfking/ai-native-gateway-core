@@ -39,11 +39,25 @@ STALE_SECONDS=${STALE_SECONDS:-3600}
 
 log() { printf '%s %s\n' "$(date -Is)" "$*" >&2; }
 
-# PSQL_CMD 可被测试覆盖（见 ../../scripts/252-monitor/ 下同名测试）。
-# 生产默认走 252 的既有形态：sudo -u postgres + 显式 conf。
-# ★ 保留成可注入的形式，是为了让「0 行 ⇒ exit 3」这类分支**真的被跑到**；
-#   否则它们只在真出故障时才第一次被执行。
-PSQL_CMD=${PSQL_CMD:-sudo -u postgres psql -X -q -A -t -F'|' -v ON_ERROR_STOP=1 --file "$CONF" -c}
+# ★★★ 2026-10-04 首次上机时改的。原来写的是
+#     sudo -u postgres psql ... --file "$CONF"
+#   注释自称「走 252 的既有形态」—— **这句是错的**，实测证否：
+#   252 的 PG17 跑在容器 pg-252-pg17 里，宿主机上既没有可 sudo 的 postgres
+#   角色，也不存在 /etc/llmgw/pg17.conf。仓库里唯一在 252 上被验证能跑通的
+#   写法是 pg17-vacuum-bloat.sh 那套 `docker exec "$CONTAINER" psql`。
+#
+#   ★ 为什么这个错误一直没被发现：这两个脚本**从来没在 252 上真跑过**。
+#     cron_registration_test.go 只断言「有对应 cron 行」，不执行脚本；
+#     本地单测全部用注入的假 PSQL_CMD，绕开了默认分支。
+#     ⇒ 「默认值从没被执行过」是一类特别隐蔽的缺陷：
+#        门是绿的、测试是绿的、注释还言之凿凿，只有真机第一次跑才炸。
+#     补门见 scripts/ursmcheck/monitor_script_exec_gate_test.go。
+#
+# 保留可注入：为了让「0 行 ⇒ exit 3」这类分支**真的被跑到**。
+CONTAINER=${PG17_CONTAINER:-pg-252-pg17}
+PG_USER=${PG17_USER:-postgres}
+DBNAME=${PG17_DB:-llm_gateway}
+PSQL_CMD=${PSQL_CMD:-docker exec -i "$CONTAINER" psql -U "$PG_USER" -X -q -A -t -F'|' -v ON_ERROR_STOP=1 -d "$DBNAME" -c}
 
 psql_17() {
   local sql=$1
