@@ -27,6 +27,10 @@ export const zhCN = {
     empty: '暂无数据',
     error: '加载失败',
     errorHint: '请检查网络后重试',
+    /** 2026-10-04：服务端 5xx 不该让用户去查自己的网络。
+     *  实测 /nodes 的 500 来自 admin/credential_monitor.go:657 的查询超时，
+     *  旧文案把排查方向指到了用户侧。 */
+    errorHintServer: '服务端暂时不可用，请稍后重试',
     logout: '登出',
     refresh: '刷新',
     refreshFailed: '刷新失败，内容为上次更新',
