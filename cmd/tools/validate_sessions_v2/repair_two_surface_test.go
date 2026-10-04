@@ -138,9 +138,14 @@ func mentionsRelationAsDeleteTarget(sql, rel string) bool {
 func TestExecuteRepairDeletesBodiesFromBothSurfaces(t *testing.T) {
 	stmts := execRepairSQLLiterals(t)
 
+	// R42 扩展（代理复审 P3）：turns 腿与 bodies 腿同形（session_turns 与
+	// session_turns_hot 互为孪生面），此前只靠 admin 门的按文件登记遮着——
+	// 登记粒度比性质粗，正是本提交自己论证过的形态。
 	for _, tc := range []struct{ surface string }{
 		{"public.session_bodies_hot"},
 		{"public.session_bodies"},
+		{"public.session_turns_hot"},
+		{"public.session_turns"},
 	} {
 		found := false
 		for _, s := range stmts {
@@ -150,8 +155,8 @@ func TestExecuteRepairDeletesBodiesFromBothSurfaces(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("ExecuteRepair 缺少 DELETE FROM %s —— session_bodies 有 _hot 孪生面，"+
-				"只删一个面会让另一面的行活过这次修复（§9.183）", tc.surface)
+			t.Errorf("ExecuteRepair 缺少 DELETE FROM %s —— session_bodies/session_turns 各有 "+
+				"_hot 孪生面，只删一个面会让另一面的行活过这次修复（§9.183）", tc.surface)
 		}
 	}
 }
@@ -202,35 +207,39 @@ func TestExecuteRepairCountsBothSurfaces(t *testing.T) {
 	}
 	// 找 `result.DeletedRows["session_bodies"] = <expr>`，要求 expr 是
 	// 形如 a + b 的 BinaryExpr（两面 RowsAffected 相加）。
-	found, isSum := false, false
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		as, ok := n.(*ast.AssignStmt)
-		if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+	// R42 扩展：bodies 与 turns 两个键都要求两面相加（同上 P3）。
+	for _, key := range []string{"session_bodies", "session_turns"} {
+		found, isSum := false, false
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+				return true
+			}
+			idx, ok := as.Lhs[0].(*ast.IndexExpr)
+			if !ok {
+				return true
+			}
+			lit, ok := idx.Index.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			k, err := strconv.Unquote(lit.Value)
+			if err != nil || k != key {
+				return true
+			}
+			found = true
+			if containsBinaryExpr(as.Rhs[0]) {
+				isSum = true
+			}
 			return true
+		})
+		if !found {
+			t.Errorf("ExecuteRepair 里找不到 result.DeletedRows[%q] = ... 赋值 —— 门守的代码被改写", key)
+			continue
 		}
-		idx, ok := as.Lhs[0].(*ast.IndexExpr)
-		if !ok {
-			return true
+		if !isSum {
+			t.Errorf("result.DeletedRows[%q] 不是两面相加表达式 —— "+
+				"删除行为可能正确但计数单面，与 PlanRepair（走合并视图数两面）口径不一致（§9.183）", key)
 		}
-		lit, ok := idx.Index.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return true
-		}
-		key, err := strconv.Unquote(lit.Value)
-		if err != nil || key != "session_bodies" {
-			return true
-		}
-		found = true
-		if containsBinaryExpr(as.Rhs[0]) {
-			isSum = true
-		}
-		return true
-	})
-	if !found {
-		t.Fatal("ExecuteRepair 里找不到 result.DeletedRows[\"session_bodies\"] = ... 赋值 —— 门守的代码被改写")
-	}
-	if !isSum {
-		t.Error("result.DeletedRows[\"session_bodies\"] 不是两面相加表达式 —— " +
-			"删除行为可能正确但计数单面，与 PlanRepair（走合并视图数两面）口径不一致（§9.183）")
 	}
 }

@@ -638,6 +638,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 // vision→audio（39 轮 2026-10-03 补）是白名单定向纠正
 // （^(gpt-4o(-mini)?|gpt)-transcribe），不触碰 audio/multimodal/真 vision
 // 行（含管理员手工覆盖）。
+//
+// 825 守卫闭环（R42）：本函数每次网关启动都跑（applyMigrationsOnce），
+// 是规则侧的第五个 modality 写点。语义核实（bg/modality_verification）
+// 把 whisper/-asr 族判负降级为 text 时会盖 'semantic' 章——没有
+// modality_source 豁免的话，下一次重启就把降级翻回 audio，语义负证据
+// 活不过一次重启（迁移 825 分层定义里的互斥写问题）。
 func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
 	if db == nil || db.pool == nil {
 		return nil
@@ -647,6 +653,7 @@ func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
 		   SET modality = 'audio', updated_at = now()
 		 WHERE modality = 'text'
 		   AND status = 'active'
+		   AND COALESCE(modality_source, '') NOT IN ('semantic', 'manual')
 		   AND (canonical_name ~ '-asr$' OR canonical_name ~ '-tts$'
 		        OR canonical_name ~ '-asr-' OR canonical_name ~ '-tts-'
 		        OR canonical_name ~ '-stt-' OR canonical_name ~ 'whisper'
@@ -655,6 +662,7 @@ func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
 		   SET modality = 'audio', updated_at = now()
 		 WHERE modality = 'vision'
 		   AND status = 'active'
+		   AND COALESCE(modality_source, '') NOT IN ('semantic', 'manual')
 		   AND canonical_name ~ '^(gpt-4o(-mini)?|gpt)-transcribe'`
 	if _, err := db.pool.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("ensure audio modality backfill: %w", err)

@@ -94,7 +94,9 @@ func TestFetchRequestBodies_HotMiss_FallsBackToBodiesView(t *testing.T) {
 	// and request_logs_bodies_hot will not have this request_id, so the
 	// helper must fall back to the bodies view.
 	require.NoError(t, insertBodyIntoPartitionedOnly(t, pool, requestID))
-	t.Cleanup(func() { cleanupColdBody(t, pool, requestID) })
+	// R65 同形修正（R41 R-1 漏网处）：t.Cleanup 晚于 defer pool.Close 执行，
+	// 清理打在已关池上静默漏行——defer 注册晚于 Close，LIFO 保证先清后关。
+	defer cleanupColdBody(t, pool, requestID)
 
 	h := &Handler{db: pool}
 	reqBody, respBody, err := h.fetchRequestBodies(ctx, requestID)
