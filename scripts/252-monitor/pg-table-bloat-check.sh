@@ -34,20 +34,45 @@ MIN_SIZE_MB=${MIN_SIZE_MB:-5}
 # 低于此值的空闲量不报（MB）。一张 2 MB 的表空闲 90% 也没必要停机。
 MIN_FREE_MB=${MIN_FREE_MB:-2}
 
-PSQL_CMD=${PSQL_CMD:-sudo -u postgres psql -X -q -A -t -F'|' -v ON_ERROR_STOP=1 --file "$CONF" -c}
+CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
+DBNAME=${PG17_DB:-llm_gateway}
+
+# ★★★ 这两行是 2026-10-04 首次上机时踩出来的，本脚本差点带着两个 bug 进生产 cron。
+#
+# 【bug 1｜未绑定变量】原写法把 PSQL_CMD 放在 CONF 之前：
+#     PSQL_CMD=${PSQL_CMD:-sudo ... --file "$CONF" -c}   # ← 这里引用了还没定义的 CONF
+#     CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}     # ← 下一行才定义
+#   配合 `set -u` ⇒ 每次执行都在这一行报「CONF: 未绑定的变量」并退出 1。
+#   而退出码 1 在本脚本的契约里是「检出显著空洞」
+#   ⇒ **一个首跑即崩的脚本会天天报空洞**，把告警变成噪音。
+#
+# 【bug 2｜环境模型错了】252 的 PG17 跑在容器 `pg-252-pg17` 里，不是宿主机。
+#   宿主机上不存在 `postgres` 角色可 sudo，`--file /etc/llmgw/pg17.conf` 也不存在。
+#   仓库里**唯一在 252 上被验证能跑**的写法是 pg17-vacuum-bloat.sh 那套：
+#       docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB"
+#
+# 【为什么这两个 bug 能过门】scripts/ursmcheck/cron_registration_test.go 只断言
+#   「本目录下每个巡检脚本都有对应 cron 行」，**它从不执行脚本**。
+#   ⇒ 「建了却忘了接线」能抓，「接了线但一跑就崩」抓不到。
+#   登记为门要补的第二条：至少跑一次 `bash -n` + 首次实跑并断言退出码属于 {0,1,3}。
+#
+# PSQL_CMD 保留可覆盖：154/245 若 PG 在宿主机，用
+#   PSQL_CMD='psql -X -q -A -t -F"|" -v ON_ERROR_STOP=1 -c' 覆盖即可。
+CONTAINER=${PG17_CONTAINER:-pg-252-pg17}
+PG_USER=${PG17_USER:-postgres}
+PSQL_CMD=${PSQL_CMD:-docker exec -i "$CONTAINER" psql -U "$PG_USER" -X -q -A -t -F'|' -v ON_ERROR_STOP=1 -d "$DBNAME" -c}
 # ★ -t（tuples only）不能省：没有它，psql 会输出表头行和末尾的 `(N rows)`，
 #   而下面那个 while 循环按 4 段管道解析 —— 表头会被当成一条空洞记录读进去。
 #   （本目录 ursm-snapshot-payload-bloat.sh 的 PSQL_CMD 里也有 -t，
 #     抄漏的代价就是「一行都解析不出来 ⇒ 报量具不可用」，
 #     而那句话会被读成「巡检说没问题」的反面 —— 幸好它 exit 3 不是 exit 0。）
-CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
-DBNAME=${PG17_DB:-llm_gateway}
 
 log() { printf '%s %s\n' "$(date -Is)" "$*" >&2; }
 
 SQL=$(cat <<EOF
 SELECT c.relname,
        pg_total_relation_size(c.oid),
+       pg_relation_size(c.oid),
        s.approx_free_space,
        s.approx_free_percent
 FROM pg_class c
@@ -87,7 +112,11 @@ if [ "$rc" -ne 0 ] || printf '%s' "$OUT" | grep -qiE 'pg_stat_statements|pgstatt
   exit 3
 fi
 
-LINES=$(printf '%s' "$OUT" | grep -cE '^[^|]+\|[0-9]+\|[0-9]+\|[0-9.]+$' || true)
+# ★ 字段数是 5（name | total_rel | heap | free | pct），与 7f47c8336 新增的
+#   「堆(空闲率分母)」列一致——**取远端的 5 字段形态，套 R44 的 0/3 判据**。
+#   两侧改的是同一段、各改一半：远端修「能跑起来 + 印对分母」，
+#   R44 修「查询成功但零行被误报成量具坏了」，合起来才是完整的量具语义。
+LINES=$(printf '%s' "$OUT" | grep -cE '^[^|]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9.]+$' || true)
 # 「成功但零行」= 没有表超过阈值 = 巡检通过，这是本脚本最常见的正常结局。
 # 只有「有输出却一行都解析不出」才是格式漂移（量具失效）。
 if [ "$LINES" -eq 0 ]; then
@@ -99,18 +128,26 @@ if [ "$LINES" -eq 0 ]; then
   exit 3
 fi
 
-printf '总大小 | 空闲 | 空闲率 | 表\n'
+# ★ 两列「大小」的分母不同，混着印会让人以为报告算错了：
+#     含TOAST/索引 = pg_total_relation_size   ← 磁盘上真正占的位置
+#     堆本身      = pg_relation_size          ← 空闲率的**分母**
+#   pgstattuple_approx 的 approx_free_percent 是相对**堆**算的。
+#   只印前者时，analysis_events 会显示成「236MB / 空闲141MB / 85.97%」，
+#   而 141/236 = 59.5%，读者会判定这份报告在乱报。
+#   ⇒ 两列都印，并把分母那一列标成「空闲率的分母」。
+printf '表 | 含TOAST/索引 | 堆(空闲率分母) | 空闲 | 空闲率\n'
 TOTAL=0
-while IFS='|' read -r name total free pct; do
+while IFS='|' read -r name total heap free pct; do
   [ -n "${name:-}" ] || continue
-  case "$total$free$pct" in *[!0-9.]*|'') continue ;; esac   # 跳过表头/杂行
+  case "$total$heap$free$pct" in *[!0-9.]*|'') continue ;; esac   # 跳过表头/杂行
   hs=$(numfmt --to=iec --suffix=B "$total" 2>/dev/null || echo "$total")
-  hf=$(numfmt --to=iec --suffix=B "$free" 2>/dev/null || echo "$free")
+  hh=$(numfmt --to=iec --suffix=B "$heap"  2>/dev/null || echo "$heap")
+  hf=$(numfmt --to=iec --suffix=B "$free"  2>/dev/null || echo "$free")
   # ★ read 的变量顺序必须与 SQL 的 SELECT 顺序逐字对应：
-  #     SELECT relname, pg_total_relation_size, approx_free_space, approx_free_percent
+  #     SELECT relname, total_rel, heap, approx_free_space, approx_free_percent
   #   写反了不会报错，只会让每列显示成另一列的值 —— 而那恰恰**最难**被发现，
   #   因为「有输出」看起来像「跑通了」。第一版就犯了这个错。
-  printf '%-10s | %-10s | %6s%% | %s\n' "$hs" "$hf" "$pct" "$name"
+  printf '%-36s | %-12s | %-16s | %-8s | %6s%%\n' "$name" "$hs" "$hh" "$hf" "$pct"
   TOTAL=$(( TOTAL + free ))
 done <<< "$OUT"
 

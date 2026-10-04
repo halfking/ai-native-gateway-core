@@ -26778,3 +26778,162 @@ FATAL: the requested window is wider than the v1 data that exists
   若有人在别处（应用写路径 `final_success_turn.go`）写过，
   那个数会非 0。⚠ 实测为 0，**所以这条依据成立**，
   但它是**间接证据**（结果侧），不是「我确认过没人跑过脚本」。
+
+---
+
+## §9.224 「先跑回填再 DROP」这个约束在仓库里**只存在于一句 SQL 注释**——补上门
+
+§9.223 查到两个回填在生产从未跑过之后，本轮去查**有没有任何机制拦得住**这个顺序错误。
+查了：没有。而**已有的判据是绿的**。
+
+### §9.224.1 已有判据为什么拦不住
+
+`db/session_family_column_availability_test.go` 早就把
+`client_protocol, is_final_success` 报进
+`GO EMPTY ON THE SESSION SIDE` —— D32 自己的备注就是
+「**一直亮着没人去读它指向哪里**」。
+
+看它的断言：
+
+```go
+t.Logf("GO EMPTY ON THE SESSION SIDE (%d): %s", len(goEmpty), ...)   // 只报
+...
+assertSameSet(t, "unservable", goEmpty, RetirementUnservableColumns)  // 断言的是「集合 == 注册表」
+```
+
+⇒ 它是**注册表一致性检查**：只要实测集合与 `RetirementUnservableColumns` 一致，
+**列变空它照样通过**。
+⇒ 而「**现在能不能 DROP 源表**」是**另一个问题**，此前**在仓库里没有家**。
+
+⚠ 这与本会话记过的那条同源：
+**一个只报不拦的信号，和没有这个信号，在决策链上是等价的。**
+
+### §9.224.2 新门：`TestRetirementBlockedByUnrunBackfills`
+
+新增 `db/retirement_backfill_gate_test.go`：
+
+- **纯谓词** `BackfillBlocksRetirement(col, sourceExists, nonNull, total, thresholdPP)`
+  ⇒ 不依赖数据库即可测两向；
+- **真库应用** `TestRetirementBlockedByUnrunBackfills`
+  ⇒ 探 `request_logs` 是否还在、量两列的会话侧填充率、逐列判定、聚合报错。
+
+报错**指名可执行命令**，而不是只给诊断：
+
+```
+retiring request_logs is blocked by 2 unrun backfill(s):
+  - is_final_success is 0.0000% filled on the session side (0/1690372 rows) while request_logs
+    still exists; its only source is the v1 copy, and the backfill is a one-shot repair that
+    becomes impossible once request_logs is dropped.
+    Run sql/scripts/backfill_final_success_marks.sql before retiring v1.
+  - client_protocol … Run sql/scripts/backfill_client_protocol.sql before retiring v1.
+```
+
+本机真库实跑（`TEST_DATABASE_URL` 已导出）：
+
+```
+request_logs still present: true   session_turns rows: 1690372
+is_final_success         0.0000%  (0/1690372 rows)
+client_protocol          0.0000%  (0/1690372 rows)
+```
+
+⇒ **门在真库上确实响了**，不是「看着严谨的装饰」。
+
+### §9.224.3 判据的双向对照（7 例）
+
+| 用例 | 期望 | 作用 |
+|---|---|---|
+| 未跑 + 源表还在（两条列各一例） | **拦** | 阳性对照 |
+| 已跑（覆盖 1.225%） | 不拦 | 阴性对照 —— **否则这条门永远清不掉** |
+| **源表已退役** | 不拦 | 阴性对照 —— 否则它在最该拦的时刻之前就无解 |
+| 会话族 0 行 | 不拦 | 阴性对照（空部署不报） |
+| 阈值下侧（4/817140 = 0.00049%） | **拦** | 边界 |
+| 阈值上侧（41/817140 = 0.00502%） | 不拦 | 边界 |
+
+7/7 通过。
+
+★ **两条阴性对照是这个门能不能用的关键**：
+「已跑但只覆盖 1.2%」**必须放过**，否则它是一条永远清不掉的门，
+训练所有人忽略它；「源表已退役」**必须放过**，否则它在最该拦的时刻之前
+就变成了无法清除的红。
+⇒ 与本会话记的「**一条永不可能绿的门，红着红着就被无视，那比没有更糟**」一致。
+
+⚠ 阈值用 `0.005` 与 §9.209 同源：**分类用的精度必须等于显示的精度**，
+否则「4 行 = 0.00049%」会同时读成「0.00%」与「没空」。
+
+### §9.224.4 这条门**故意红**，且它让 `db` 包从 FAIL 1 变成 FAIL 2
+
+| 红 | 性质 |
+|---|---|
+| `TestRepointValueFidelity` | 既有，§9.210 刻意留红（`client_model` 登记） |
+| **`TestRetirementBlockedByUnrunBackfills`** | **本轮新增，刻意红** |
+
+⚠ **这不是回归**，是**新加的阻塞项**。与 S4 门同一性质：
+它陈述一个**尚未满足的前置条件**，而不是一个可以靠改代码消掉的失败。
+⇒ 要转绿只有一条路：**在 DROP 源表之前把两个回填跑掉**（属主决定，见 §9.223.3）。
+
+### §9.224.5 边界
+
+- 门**只在 `TEST_DATABASE_URL` 存在时运行**，否则 `t.Skip`
+  ⇒ **全绿具有误导性**，本机实跑时**该变量已导出**（本轮实跑确认过它响了）。
+- `work_type` **刻意不在** `RetirementBackfilledColumns` 里：v1 侧自身只有 1.93%，
+  拷贝只能动 ~2% 的行，而该列**已经在注册表里被标为 unservable**；
+  把它列进来会产生一条**没人能行动的红**。
+- 门**只管本地/测试库**。它**不会**在 252 上自动运行 ——
+  生产的同一判断目前只存在于本文档的只读实测里。
+
+---
+
+## §9.225 `s4_ready` 变绿**不等于**可以退役——第二个阻塞项原本不在门的视野里
+
+§9.224 加了 `TestRetirementBlockedByUnrunBackfills`（会红的门）。但那道门
+**只在测试库上跑**，而 S4 门是操作者**真正会去看的那份报告** ——
+它只字未提第二个阻塞项。⇒ 陷阱的形状是：
+
+> 修好镜像 → 看着 S4 门变绿 → DROP v1 → **什么红都没有，列值永久丢失。**
+
+### §9.225.1 补在 S4 门的结论行上（**只报告，不决策**）
+
+`cmd/gateway/s4_gate_measurement_test.go` 的总结块现在紧接在
+`ONGOING / RECENT / historical / clean` 之后打印第二项前置条件：
+
+```
+RETIREMENT PREREQUISITE **NOT MET**: 2 of 2 column(s) are still empty on the session side
+(is_final_success, client_protocol, of 1690576 session_turns) and are fillable **only** from v1,
+by a one-shot idempotent script. s4_ready=false above says nothing about them: it measures drift,
+not copies. Dropping request_logs now makes these permanently unfillable.
+  ⇒ s4_ready is necessary but NOT sufficient. Read it together with the line above.
+```
+
+⚠ **为什么在这里只报告、不改成 fail**：§9.211 已把这条门定为
+**报告**（"S4 能不能开"是发布决定，不该由测试替属主下）。
+把第二个阻塞项做成硬红会改变它的性质。
+⇒ **报告负责「别把 s4_ready 单独读」，硬门负责「拦住顺序错误」**，
+两者分工明确。
+
+⚠ **措辞里嵌了真实的 `s4_ready` 值**（用 `def.genuine == 0`，7d 定义窗口）。
+所以今天它读作「`s4_ready=false` above says nothing about them」；
+**等镜像修好、它变成 `true` 时，同一句话会变成
+「`s4_ready=true` above says nothing about them」** ——
+**那正是最危险的那一读法**，而它不需要改代码就会自动出现。
+
+⚠ 第一版我在这行里用了 `month.genuine == 0`（**30d**），
+而这条门自述**定义窗口是 7d**（validator 的默认）⇒ 两行会引用**不同的 readiness**，
+**恰恰制造了它本该消除的割裂**。已改为 `def.genuine == 0` 并在注释里写明理由。
+
+### §9.225.2 两个门现在的分工
+
+| 门 | 形态 | 回答的问题 | 跑在哪 |
+|---|---|---|---|
+| `TestS4GateMeasurement` | **报告** | 镜像有没有在丢行（drift） | 本地/测试库 |
+| `TestRetirementBlockedByUnrunBackfills` | **硬门（故意红）** | 能不能 DROP 源表（copies） | 本地/测试库 |
+| §9.223 的只读实测 | 文档 | 生产的同一判断 | 252 |
+
+⚠ **三者的覆盖都不含 252 的自动执行**。生产的 S4 与回填状态
+**目前只能靠人工只读复测**。这是已知缺口，如实记下。
+
+### §9.225.3 边界
+
+- 本轮改的是**测试**（报告内容），**不改变任何产品行为**。
+- 该块**不做决策、不影响退出码**；它只让 `s4_ready` 不能被单独读。
+- 本机真库实跑确认它打印了 `NOT MET`（`session_turns` 1,690,576 行、
+  两条列均低于阈值）——**不是只在纸面上存在**。

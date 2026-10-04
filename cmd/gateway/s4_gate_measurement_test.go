@@ -4,7 +4,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -515,6 +517,76 @@ func TestS4GateMeasurement(t *testing.T) {
 	default:
 		t.Logf("clean: no genuine loss in any measured window")
 	}
+
+	// ---- ⚠️ s4_ready is NECESSARY, NOT SUFFICIENT for dropping request_logs ---
+	//
+	// §9.224. Everything above measures ONE blocker: v1 rows that have no
+	// session twin. A second, entirely independent blocker is not in its
+	// vocabulary — `is_final_success` and `client_protocol` are filled on the
+	// session side **only by copying from v1**, by two one-shot idempotent
+	// scripts whose headers say "run it before request_logs is dropped".
+	//
+	// Measured read-only on 252 on 2026-10-05 (§9.223): both columns were
+	// 100% NULL across all 817,140 session_turns while v1 was 100% populated
+	// and 100% matchable — the scripts had never been run there. And because v1
+	// is on a monthly DROP list while session_turns is on none, the coverage
+	// those scripts can ever reach **shrinks every day**: 1.225% and 2.890%
+	// at that measurement.
+	//
+	// So the shape of the trap is: fix the mirror, watch this gate go green,
+	// drop v1 — and lose the column values with nothing having gone red. The
+	// gate that does catch it lives in db/retirement_backfill_gate_test.go
+	// (TestRetirementBlockedByUnrunBackfills); it runs against the test
+	// database, not against 252, so nothing in the S4 report would otherwise
+	// mention it.
+	//
+	// This block therefore does not decide anything. It prints the second
+	// prerequisite next to the s4_ready line, so the two can never be read
+	// separately — "ready" on its own is the dangerous reading.
+	var v1Present bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM information_schema.tables
+		                WHERE table_schema='public' AND table_name='request_logs')`).
+		Scan(&v1Present); err != nil {
+		t.Logf("  (could not probe for request_logs: %v)", err)
+		return
+	}
+	if !v1Present {
+		t.Logf("RETIREMENT PREREQUISITE: request_logs is already absent — the backfill question " +
+			"is settled, one way or the other.")
+		return
+	}
+	var sessTotal int64
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM session_turns`).Scan(&sessTotal); err != nil {
+		t.Logf("  (could not count session_turns: %v)", err)
+		return
+	}
+	var unbackfilled []string
+	for _, col := range []string{"is_final_success", "client_protocol"} {
+		var nonNull int64
+		if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT count(%s) FROM session_turns`, col)).
+			Scan(&nonNull); err != nil {
+			t.Logf("  (could not count %s: %v)", col, err)
+			continue
+		}
+		if sessTotal > 0 && 100*float64(nonNull)/float64(sessTotal) < 0.005 {
+			unbackfilled = append(unbackfilled, col)
+		}
+	}
+	if len(unbackfilled) > 0 {
+		t.Logf("RETIREMENT PREREQUISITE **NOT MET**: %d of 2 column(s) are still empty on the "+
+			"session side (%s, of %d session_turns) and are fillable **only** from v1, by a one-shot "+
+			"idempotent script. s4_ready=%v above says nothing about them: it measures drift, not "+
+			"copies. Dropping request_logs now makes these permanently unfillable.",
+			// The defining window for s4_ready is the validator's own default (7d) —
+			// the same one the "s4_ready would be" line above uses. Reading 30d here
+			// would make the prerequisite line quote a different readiness than the
+			// rest of the report, which is exactly the split this line exists to stop.
+			len(unbackfilled), strings.Join(unbackfilled, ", "), sessTotal, def.genuine == 0)
+	} else {
+		t.Logf("RETIREMENT PREREQUISITE met: both backfilled columns are populated on the session side.")
+	}
+	t.Logf("  ⇒ s4_ready is necessary but NOT sufficient. Read it together with the line above.")
 }
 
 // blockerSkippedByFirstGate restates, in SQL terms, the one question the shape
