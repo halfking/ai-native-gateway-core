@@ -21576,3 +21576,94 @@ FROM v1 LEFT JOIN public.request_logs_with_current_month v ON v.request_id = v1.
   **历史行上 `COALESCE` 会回落到 `t.model`，即维持现状**——
   这是 §9.170 已定的「10-01 前是永久历史缺口，不阻断退役」。
 - ⚠️ **本节没有改任何代码或迁移。** 结论已备好，见 **D19-a-3**。
+
+---
+
+## §9.178 ⚠️ 作废 §9.176 的核心结论：那不是「写入缺口」，是**跨面错配**
+
+§9.177 发现「视图读两张独立的表（`session_turns` 与 `session_turns_hot`，
+后者不是分区）」。本节顺着这个线索查下去，**发现 §9.176 的结论是错的**。
+
+### §9.178.1 先做结构普查：视图的三对关系都是完整的
+
+`pg_get_viewdef` 实查，视图恰好读 **6 张表 = 3 对父子/冷热**：
+
+| 对 | 父 | hot | 是否成对 |
+| --- | --- | --- | :---: |
+| 会话主体 | `session_turns` | `session_turns_hot` | ✅ |
+| 特征层 | `session_turn_details` | `session_turn_details_hot` | ✅ |
+| v1 腿 | `request_logs` | `request_logs_hot` | ✅ |
+
+⇒ **视图结构本身是完整的，三对都覆盖了两边。**
+这修正了 §9.177 措辞里的一个隐含暗示：「两条腿」**不是结构缺陷**，
+而是这个视图的既定构造方式；风险只在于**改动时漏改一条**。
+
+### §9.178.2 视图的 details join 是「腿内配对」
+
+```sql
+-- hot 腿（第 147 行）
+LEFT JOIN session_turn_details_hot d ON d.tenant_id=t.tenant_id AND d.request_id=t.request_id AND d.partition_date=t.partition_date
+-- 父表腿（第 295 行）
+LEFT JOIN session_turn_details     d ON d.tenant_id=t.tenant_id AND d.request_id=t.request_id AND d.partition_date=t.partition_date
+```
+
+**每条腿只与同面的 details 配对，三键完全相同。**
+⇒ **若某个 turn 在父表、而它的 details 在 hot（或反过来），这个 join 必然扑空。**
+
+### §9.178.3 ⚠️ §9.176 查漏了一张表，结论因此反了
+
+§9.176 我断言「那 101 行的 `session_turn_details` 里一行都没有 ⇒ 写入缺口 ⇒ 已恢复」。
+**我只查了父表，没查 `session_turn_details_hot`。** 补查：
+
+| | 值 |
+| --- | ---: |
+| 分歧行（窗口已滑动，101 → **63**） | 63 |
+| 父表 `session_turn_details` 有行 | **0** |
+| **`session_turn_details_hot` 有行** | **63（全部）** |
+| 两张都没有 | **0** |
+
+⇒ **特征行是存在的。** §9.176 的「写入缺口」结论**作废**。
+
+### §9.178.4 机制：父表 turn + hot details 的跨面错配
+
+- 这 63 个 `request_id` **不在** `session_turns_hot`
+  （用 hot turn 做三键 join，产出 **0 行**）；
+- 而 `has_twin = EXISTS(hot) OR EXISTS(parent)` 是这些行**已成立的前提**
+  （否则它们根本不会进入会话腿）；
+- ⇒ **它们的 turn 必然在父表 `session_turns`**；
+- 而它们的 details **全部在 `session_turn_details_hot`**。
+
+⇒ **父表 turn 配 hot details = 跨面。视图的 join 是腿内配对 ⇒ 必然扑空
+⇒ `client_model` 及其余 29 个 details 特征列对这批行全部为 NULL。**
+
+⚠️ **这不是「写入缺口」，是 join 结构对跨面数据无效。**
+区别很实际：写入缺口会自愈（写侧恢复即可），**跨面错配不会**——
+只要父表与 hot 的分界与 details 的分界不一致，它就一直在那儿。
+
+⚠️ **诚实边界**：「turn 在父表」这一步是由「不在 hot」+「has_twin 成立」**推出**的，
+我没有再跑一条正面计数去独立确认它（那条查询在大表上超时了）。
+推出所用的两个前提都是**已完成的测量**，不是失败的查询，故仍成立；
+但**正面确认欠一次**。
+
+### §9.178.5 这解释了 §9.176 里那个我没能解释的观察
+
+§9.176 记录过一个反常现象：分歧行在 **06:18 之后归零**，而 07:00 之后仍有 264 个孪生行。
+当时我读成「写入缺口已恢复」。
+
+**跨面错配同样能解释它，而且解释得更自然**：
+分界点是**数据在父表与 hot 之间的落面时刻**。06:18 之后写入的数据，
+turn 与 details **同时**落在 hot ⇒ 同面 ⇒ join 命中。
+而 03:34–06:18 那段，turn 落父表、details 落 hot ⇒ 跨面 ⇒ 扑空。
+
+⇒ **所以「06:18 恢复」是分界点，不是修复点。** 只要父表/hot 的切分与
+details 的切分存在时间差，**同样的错配就会再次出现**——
+它不是一次性的历史事件。
+
+### §9.178.6 这改变了三件事的结论
+
+1. **§9.176 的「不阻断退役」判断作废**——那基于「已恢复」，现在不成立。
+2. **D23-c-2（回填那 101 行）不再是正确处置**——数据**已经存在**，
+   只是 join 找不到；回填不会解决任何问题（还会写出重复行）。
+3. **真正的修法是让 details join 跨面可用**（或保证 turn 与 details 同面落库）。
+   ⚠️ 这**改的是视图的 join 结构**，比 D19-a-1 的投影改动面更大，
+   且会影响全部 30 个 details 特征列，**必须由属主拍板**。见 **D24**。
