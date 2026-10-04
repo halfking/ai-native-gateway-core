@@ -154,18 +154,37 @@ func scanV1BodiesReaders(t *testing.T, root string) map[string]int {
 	// indirectRequestLogsReaders 登记并在这里并入。判据是 `ResolvesTo`
 	// 落在 v1 bodies 关系名集合里 —— 不是「文件名叫 session_bodies 就收」。
 	for file, e := range indirectRequestLogsReaders {
-		if out[file] > 0 {
-			continue // 字面量已计入，不重复
-		}
 		rel := strings.ToLower(e.ResolvesTo)
-		for _, n := range v1BodiesRelations(t) {
-			if rel == n || rel+"_with_current_month" == n || rel+"_hot" == n {
-				out[file] = 1
-				break
+		if !bodiesRelIsV1Bodies(t, rel) {
+			continue // 读的是 turns 族，与本门总体无关
+		}
+		if out[file] == 0 {
+			out[file] = 1
+		}
+		// ★ 消费点也要并进来（§9.232）。它们把 bodies 腿改走切换层后，
+		// 源码里不再有 bodies 关系名字面量 ⇒ 会**逐个**从本门总体里消失。
+		// 而本门**本来就故意红** ⇒ 少 11 个还是少 15 个都不改退出码。
+		// 这一段是 §9.230.3 那个坑的批量版本。
+		if e.SwitchFunc != "" {
+			for c := range indirectSourceConsumers(t, root) {
+				if out[c] == 0 && c != file {
+					out[c] = 1
+				}
 			}
 		}
 	}
 	return out
+}
+
+// bodiesRelIsV1Bodies 判断一个登记的 ResolvesTo 是否落在 v1 bodies 关系名集合里。
+func bodiesRelIsV1Bodies(t *testing.T, rel string) bool {
+	t.Helper()
+	for _, n := range v1BodiesRelations(t) {
+		if rel == n || rel+"_with_current_month" == n || rel+"_hot" == n {
+			return true
+		}
+	}
+	return false
 }
 
 // v1BodiesReaders 是**已复核**的 bodies 读方登记。

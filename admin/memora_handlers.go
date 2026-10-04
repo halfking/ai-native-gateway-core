@@ -808,7 +808,7 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			rl.request_mode,
 			rl.gw_session_id
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
+		LEFT JOIN `+sessionBodiesFromSQL()+`
 		  ON rb.request_id = rl.request_id
 		`+where+`
 		ORDER BY rl.ts ASC

@@ -27814,6 +27814,15 @@ M7 把 `request_logs_bodies` 改成 `request_logs`——**那仍然是一张合�
 > 「补了 helper 之后才谈改 bodies 腿」。那句话**隐含了一个错误前提**：
 > 仿佛那 25 个 bodies 读方是同一次替换。逐个读过真实 SQL 之后，不是。
 
+
+> ⚠⚠ **就地更正（2026-10-05，§9.232）**：本节 §9.231 说 A 类 13 个读方可换。
+> 实测**本轮只迁了 7 个文件 / 11 处**，其余 6 个各有理由未迁：
+> 2 个读的是**基表**（基表 ⊂ 视图，换过去会扩大覆盖 = 行为变更，其中
+> `quality_correlations.go` 还带 `is_auto_request = TRUE` ⇒ 换源同时改口径）；
+> 4 个在 `domains/` / `bg/` 包，**看不见** `admin` 包里的切换层
+> （处置是把开关下沉到 `db` 包，下一步）。
+> ⇒ 「13 个可换」应读作「13 个**形状上**可换，其中 7 个已换」。
+
 ### §9.231.1 实测：25 个读方分 6 档，helper 只 fit 其中一档
 
 | 档位 | 数量 | 读方 | 能不能换 helper |
@@ -27937,3 +27946,169 @@ JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts
   （留着它会在 v1 消失后恒返回 0，而「0」看起来像「v1 停了」）。
 - **2 个工具无处可去** ⇒ **回填完成的定义必须包含「它们已被处置」**。
 - **1 个**（开关本身）必须**最后**退役：它的默认臂反转之日就是 bodies 退役之日。
+
+---
+
+## §9.232 迁移 A 类的 7 个读方，以及**消费者必须成为机器可算的量**
+
+> §9.231 判定 13 个 A 类读方可换。本轮实际迁了 **7 个文件 / 11 处**，
+> 并在迁移之前先补齐了**消费者识别机制** —— 否则这就是 §9.230.3 那个坑放大 11 倍。
+
+### §9.232.0 为什么不能直接开迁
+
+§9.230 的教训：一段 SQL 改成经 Go 函数取源之后，它的文件会从
+「按字面量扫」的几道门里消失。§9.230 只有 2 个消费点，漏了还能手填。
+
+**13 个消费点就手填不动了**，而且失败形态完全一样：
+`scanV1BodiesReaders`（bodies 退役门总体）会逐个少 13 个，
+而那道门**本来就故意红** ⇒ 少 2 个还是少 13 个都不改退出码。
+
+实测验证了这个担心：把机制建好、还没迁任何文件时，bodies 总体从 **25 变成 27** ——
+多的正是 `admin/session_compare.go` 与 `admin/session_export.go`。
+
+★ **也就是说：§9.230 的修复是不完整的。**
+它把**切换层自己**（`admin/session_bodies_source.go`）加回了总体，
+**没有加它的两个消费点** ⇒ 全表最要紧的两个 v1 bodies 读方
+（会话导出 / 会话对比）**从 bodies 退役证据里消失了**。
+而当时那道自证门 `TestV1BodiesScanIncludesRegisteredIndirectReaders`
+**只检查登记条目本身** ⇒ 它是绿的。
+
+⇒ **这是一个新变体，值得单独记：「修复本身也需要门」——而第一版那道门
+比缺陷窄，于是漏掉了缺陷的一半。** 门必须覆盖**消费点**，
+而消费点必须是**机器算**的（`indirectSourceConsumers`），手填就会重演「忘了填 ⇒ 无声」。
+
+### §9.232.1 机制：三层
+
+1. `indirectReader` 新增 `SwitchFunc` 字段（切换层返回关系名的 Go 函数名）。
+2. `indirectSourceConsumers(t, root)` —— 在**同包**内找 `fn(` 调用点，
+   并**排除函数定义那一行**（否则切换层把自己算成自己的消费点）。
+3. 三处总体都并入消费点：
+   `allKnownRequestLogsReaderFiles`（退役清单证据）、
+   `scanV1BodiesReaders`（bodies 门总体）、
+   `sourceFamilyOf`（族分类器，加 `readsVBodies` 参数）。
+
+⚠ 消费点**不**登记进 `indirectRequestLogsReaders` —— 那张表装的是「切换层」，
+混进「调用方」会让 `ResolvesTo` 出现重复登记。
+
+### §9.232.2 只迁 7 个，不迁 6 个 —— 每一个都有理由
+
+| 类别 | 数量 | 文件 |
+|---|---|---|
+| **已迁**（读**视图**，默认臂逐字相同） | 7 | `compression_stats.go`(3)、`logs_summary.go`(2)、`memora_handlers.go`、`no_topic_session.go`(2)、`session_sanitize_matches.go`、`session_title.go`、`auto_title_generator.go` |
+| **不迁：读基表** | 2 | `quality_correlations.go`、`domains/hooks/goal/history_store.go` |
+| **不迁：跨包看不见切换层** | 4 | `domains/sessionforensics/export.go`、`bg/passive_probe_listener.go`、`domains/sessionsummary/summarizer.go`、`system_prompt_prefix.go` |
+| **不迁：INNER JOIN** | 1 | `domains/sessionsummary/system_prompt_prefix.go`（且它同时属于上一类） |
+
+★ **读基表那两个是本轮刻意不迁的**：`request_logs_bodies`（基表）⊂
+`request_logs_bodies_with_current_month`（视图 = hot ∪ 父表）。
+换过去会**扩大覆盖范围** —— 那不是等价替换，是行为变更。
+而且 `quality_correlations.go` 还有 `WHERE rl.is_auto_request = TRUE`，
+换源会同时**改口径**（§9.229 判定那 29,691 条探针流量按设计不进会话族）。
+
+**跨包那 4 个**的处置是把开关下沉到 `db` 包（那里已有
+`SessionFamilyTurnsSourceSQL` 等同族 helper）。这是下一步，**不在本轮**。
+
+### §9.232.3 一处真实的语义变化：`const` → `var`
+
+`admin/compression_stats.go` 的 `compressionStatsEstimatedOrigSQL` 原来是
+**编译期常量**。bodies 腿改成函数调用后**不再是常量**
+（编译器报 `is not constant`）⇒ 改成 `var`。
+
+- **值没变**（默认臂返回的字面量与原来逐字相同）。
+- **它从此每次读都是运行时求值。**
+- 已在该处写明：若将来把 `sessionBodiesFromSQL()` 改写成常量表达式，这处**可以**改回 `const`；
+  在那之前不要试图「优化」成常量。
+
+### §9.232.4 stop-write 的 Evidence 变成了**两跳**
+
+分级表的 `Evidence` 要求**逐字存在于该文件**。迁移后该文件里已没有
+v1 关系名 —— Evidence 只能锚在 `` LEFT JOIN `+sessionBodiesFromSQL()+` `` 上。
+
+⚠ 而「逐字存在」只证明了「这个文件**提到了**那个函数」，
+**不**证明「这个文件读 v1」—— v1 关系名在**另一个文件**里。
+
+⇒ 给 Evidence 门加**两跳校验**：Evidence 里出现某个已登记切换层的函数名时，
+必须确认那个切换层的 `ResolvesTo` 是 `v1DirectTables` 里的真表名，
+否则「停写后会退化」这个分级**没有事实基础**。
+
+同时两条分级的 **Note 补了性质变化**：
+后果现在**取决于开关** —— 默认臂读 v1 ⇒ 与原来完全一致；
+开关打开后 bodies 腿对停写免疫。而 bodies 退役门仍红 ⇒ 开关开不了 ⇒ 现状不变。
+
+⚠ 顺带记录一个 gofmt 事实：同一文件里 `LEFT JOIN ` + sessionBodiesFromSQL() + ``
+出现了**两种拼写**（第 62 行带空格、第 151 行不带）——
+因为前者横跨裸字符串边界、后者是单行拼接。锚在拼接形式上的 Evidence 因此脆弱。
+
+### §9.232.4b ★ 我自己那道「两跳校验」第一版**近乎恒真**，是变异抓出来的
+
+Evidence 门的第一版两跳校验是这样写的：遍历**已登记的**切换层，
+检查它的 `ResolvesTo` 是否是 v1 表名。
+
+⇒ 它能报的唯一情形是「某个已登记切换层的 ResolvesTo 不是 v1」，
+而那件事 `TestIndirectRequestLogsReadersAreDeclaredWell` **已经禁掉了**。
+⇒ **两版都是绿的，这段代码在功能上等价于注释。**
+
+而真正要拦的是**反方向**：Evidence 里出现 `join/from` + `fn()` 拼接点，
+但那个 `fn` **没有被登记**为切换层。那种情况下「停写后会退化」的分级
+**没有任何事实基础**（v1 关系名在哪、默认臂读什么，都无从核对），
+而第一版安静放行。
+
+★ 是变异 M34 的**配套阴性对照**抓到的：我把 Evidence 里的函数名改成
+`sessionBodiesFromSQLUnregistered()`，门**仍然绿** ——
+那一刻才证明「这道校验是唯一会拦它的东西，而它没在拦」。
+
+⇒ 判据改为：从 Evidence 里抽出「拼在 `from/join` 之后的 `标识符(`」，
+要求每个都必须是已登记的 `SwitchFunc`。改对极性后同一条变异转红。
+
+★ 这一条与本项目记过的「单向抄表时两边一起绿」「恒真判据」是同族，
+但**触发方式**值得记：它是**我自己**为了防一个真问题而写的，
+方向却写反了，于是变成一段看起来很用心的死代码。
+**没有阴性对照的门，连它是死是活都不知道。**
+
+### §9.232.5 新的门
+
+- `TestV1BodiesScanIncludesSwitchConsumers` —— 消费点必须在 bodies 实测总体里。
+  带**地板断言**：消费点集合为 0 ⇒ Fatal（「要么 `SwitchFunc` 被删，要么 `fn(` 检测失效」，
+  两种情况总体都会静悄悄少掉全部消费点而门仍绿）。
+- `TestV1BodiesSwitchConsumersHaveNoLeftoverLiteral` —— 抓「改到一半」：
+  同一行里既有切换层调用又直写 v1 bodies。
+  失败形态很具体：那个文件通过消费点被算成读方（**有它**），
+  同时残留字面量让扫描器也数到它（**也有它**），而实际上一半读法还在 v1。
+  切过去之后那一半会静默变空，接口与门都不报错。
+- Evidence 门两跳校验（§9.232.4 / §9.232.4b）。
+
+⚠ 半迁移判据也**演进过一次**：第一版只查「同一行既有切换层又直写 v1」，
+实测**抓不住**（M33）—— `v1BodiesReadPattern` 要求 `join` 后**紧跟**关系名，
+而迁移后的行 `JOIN` 后面是 `` `+sessionBodiesFromSQL()+` ``。
+而**半迁移的真实形态是分处两行**。⇒ 判据放宽为「消费点文件里不得存在
+任何匹配 v1 bodies 模式的非注释行」，三种形态（同行 / 分行 / 尾部注释）
+现在全部转红。
+
+### §9.232.6 这次迁移**没有**做到的事
+
+- **开关仍然是关的，行为零变化**（11 处默认臂字符串与原字面量逐字相同，
+  唯一的语义变化是那处 `const`→`var`）。
+- 6 个 A 类读方**未迁**（理由逐条写在 §9.232.2），跨包那 4 个要等开关下沉到 `db`。
+- `request_logs` **仍不能 DROP**（本地与生产都不行）。
+- 生产 09-30 的 1,113 条缺口**未补**（属主未批准，本会话零写入）。
+- 顺带发现：`admin/zz_tmp_crosstab_test.go` 是一个**已提交的**临时调试文件，
+  它也调用 `sourceFamilyOf`，所以改签名时必须连带修它。不是本会话产物，未处置。
+
+### §9.232.7 变异验证：8 条，全部转红
+
+| # | 变异 | 被哪道门抓住 |
+|---|---|---|
+| M30 | 删掉「消费点并入 bodies 总体」那段 | 消费点总体门 |
+| M31 | `SwitchFunc` 字段被清空（消费点集合变空） | 同上（**地板断言**） |
+| M32 | 消费点检测失效（`fn(` 写错） | 同上（**地板断言**） |
+| M33′ | 半迁移·同行（两处 JOIN 同一行） | 半迁移检测门 |
+| M33″ | 半迁移·分行（另一函数里还有一处真 JOIN） | 同上 |
+| M33‴ | 半迁移·尾部注释留旧关系名 | 同上 |
+| M34′ | Evidence 指向**未登记**的切换层 | Evidence 两跳校验 |
+| M35 | 族分类器忽略消费点（族被低估） | 族覆盖门 |
+
+★ 三条变异是**返工**换来的：M33 的第一版抓不住（判据太窄，已放宽），
+M34 的第一版**极性写反**（在改之前它近乎恒真，§9.232.4b），
+M33″ 的第一次尝试**锚点没匹配上、变异根本没写进去**，
+而那个「仍绿」一度看起来像一个真实的门失效。
+⇒ 判据红了先怀疑判据；判据绿了**更要**先确认变异真的改到了东西。

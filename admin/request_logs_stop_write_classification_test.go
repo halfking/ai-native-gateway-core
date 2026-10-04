@@ -356,8 +356,13 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/no_topic_session.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb",
-		Note:     "四个读点：:145-147 与 :320-322（710 + LEFT JOIN bodies）、:535（710 only，api_key_id/tenant_id）、:558（710 only，preview/work_type/request_mode）。**降级的是正文两列，不是行数**：:140-141 的 `COALESCE(rb.request_body::text,'')` / response_body 在 bodies 无 session 臂时对**新会话**恒为空串，而 message_count/request_count 仍非零、接口 200、消息列表结构齐全 ⇒ 消费方（前端消息列表 / 标题生成 / LLM）拿到「**有轮次、无正文**」的会话。:209-228 对 messages==nil 只降级为 `[]` 不报错；:339-341 Scan 失败 continue 也吞掉。判 degraded 而非 empty 的依据：710 的 session 臂继续供行，本文件的主谓词 `gw_task_id IS NULL AND api_key_prefix = $1` 在 session 臂上**今天仍能匹配**（实测近期 gw_task_id 填充 98.51%、api_key_prefix 100%，见 §9.36.2 的按天口径），所以不是恒 0 行。",
+		Evidence: "LEFT JOIN `+sessionBodiesFromSQL()+",
+		// ⚠ 2026-10-05（§9.232）：两处 bodies 腿改走切换层，Evidence 随之改写
+		// （原锚点 `LEFT JOIN request_logs_bodies_with_current_month rb` 已不存在）。
+		// 分级**不变，性质变了**：停写后果现在**取决于开关**——默认臂读 v1 ⇒
+		// 与原来完全一致；开关打开后 bodies 腿对停写免疫。
+		// 而 bodies 退役门仍红 ⇒ 开关开不了 ⇒ 现状后果不变。
+		Note: "四个读点：:145-147 与 :320-322（710 + LEFT JOIN bodies）、:535（710 only，api_key_id/tenant_id）、:558（710 only，preview/work_type/request_mode）。**降级的是正文两列，不是行数**：:140-141 的 `COALESCE(rb.request_body::text,'')` / response_body 在 bodies 无 session 臂时对**新会话**恒为空串，而 message_count/request_count 仍非零、接口 200、消息列表结构齐全 ⇒ 消费方（前端消息列表 / 标题生成 / LLM）拿到「**有轮次、无正文**」的会话。:209-228 对 messages==nil 只降级为 `[]` 不报错；:339-341 Scan 失败 continue 也吞掉。判 degraded 而非 empty 的依据：710 的 session 臂继续供行，本文件的主谓词 `gw_task_id IS NULL AND api_key_prefix = $1` 在 session 臂上**今天仍能匹配**（实测近期 gw_task_id 填充 98.51%、api_key_prefix 100%，见 §9.36.2 的按天口径），所以不是恒 0 行。",
 	},
 	"cmd/tools/backfill_session_bodies/main.go": {
 		Effect:   effectSilentlyEmpty,
@@ -667,8 +672,14 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/compression_stats.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id",
-		Note:     "4 个读点里 3 个把 bodies 腿挂在 LEFT JOIN request_logs_bodies_with_current_month 上（bodies 无 session 兜底）⇒ 停写后 710 的 rl 行照常增长，但 with_outbound / compressed / estimated_original_tokens / summary_mode_rows 全部静默归 0，压缩率与省 token 数变成 0%、而 total 与 strategy 分布仍有数，接口 200。只有纯 token_band 那个读点（无 bodies）不退化。",
+		Evidence: "LEFT JOIN `+sessionBodiesFromSQL()+` ON rb.request_id = rl.request_id",
+		// ⚠ 2026-10-05（§9.232）：3 处 bodies 腿改走切换层，Evidence 随之改写。
+		// 分级**不变但性质变了**：停写后果现在**取决于开关**——
+		// 默认臂（开）读 v1 ⇒ 后果与原来完全一致；
+		// 开关打开后读 session_bodies ⇒ bodies 腿**对停写免疫**。
+		// ⇒ 这不再是「一定会退化」，而是「未灰度时才会退化」。
+		// 而那道 bodies 退役门（TestV1BodiesReadersAreAssessed）仍红 ⇒ 开关开不了。
+		Note: "4 个读点里 3 个把 bodies 腿挂在 LEFT JOIN request_logs_bodies_with_current_month 上（bodies 无 session 兜底）⇒ 停写后 710 的 rl 行照常增长，但 with_outbound / compressed / estimated_original_tokens / summary_mode_rows 全部静默归 0，压缩率与省 token 数变成 0%、而 total 与 strategy 分布仍有数，接口 200。只有纯 token_band 那个读点（无 bodies）不退化。",
 	},
 	"admin/memora_handlers.go": {
 		Effect:   effectSilentlyDegradedContent,
@@ -1018,7 +1029,7 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 	// 间接读点（本条自己所在的 bg/auto_route_settle_sql.go）会被判成
 	// 「已不在读点清单中」——而它明明在读。
 	known := map[string]bool{}
-	for _, f := range allKnownRequestLogsReaderFiles() {
+	for _, f := range allKnownRequestLogsReaderFiles(t) {
 		known[f] = true
 	}
 	for file := range requestLogsStopWriteClassification {
@@ -1029,7 +1040,7 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 	}
 
 	var todo []string
-	for _, file := range allKnownRequestLogsReaderFiles() {
+	for _, file := range allKnownRequestLogsReaderFiles(t) {
 		c, ok := requestLogsStopWriteClassification[file]
 		switch {
 		case !ok, c.Effect == effectUnclassified:
@@ -1037,7 +1048,7 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 		}
 	}
 	sort.Strings(todo)
-	total := len(allKnownRequestLogsReaderFiles())
+	total := len(allKnownRequestLogsReaderFiles(t))
 	t.Logf("S4 停写逐点评估进度：%d/%d 已评估，未评估 %d 个 —— %s",
 		total-len(todo), total, len(todo), progressVerdict(len(todo)))
 	if len(todo) > 0 {
@@ -1105,8 +1116,59 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 			t.Errorf("%s: Evidence 在该文件中不存在：\n  %q\n"+
 				"分级必须锚在真实存在的代码上，否则「已评估」无法与「凭印象」区分",
 				file, c.Evidence)
+			continue
+		}
+		// ★ 两跳校验（§9.232）：Evidence 锚在**切换层调用**上时，
+		// 「逐字存在」只证明了「这个文件提到了那个函数」，
+		// **不**证明「这个文件读 v1」—— v1 关系名在**切换层那个文件**里。
+		//
+		// ⚠⚠ **第一版写反了检查方向，等于恒真。** 它遍历的是**已登记的**切换层，
+		// 于是只能报「某个已登记切换层的 ResolvesTo 不是 v1 表」——
+		// 而那件事 `TestIndirectRequestLogsReadersAreDeclaredWell` 已经禁掉了。
+		// ⇒ 两版都是绿的。
+		// 而**真正要拦的**是反方向：Evidence 里出现一个 `join`/`from` + `fn()` 的
+		// 拼接点，而那个 `fn` **没有**被登记为切换层。
+		// 那种情况下「停写后会退化」的分级**没有任何事实基础**，
+		// 而第一版会安静放行。变异 M34 的配套阴性对照实测确认了这一点。
+		for _, fn := range evidenceSwitchCalls(c.Evidence) {
+			if !isRegisteredSwitchFunc(fn) {
+				t.Errorf("%s: Evidence 里的 `join/from` + %q 拼接点，"+
+					"但 %q **不是已登记的切换层**（indirectRequestLogsReaders 里没有它的 SwitchFunc）。\n"+
+					"  Evidence: %q\n"+
+					"  ⇒ 「停写后会退化」这个分级没有事实基础：v1 关系名到底在哪、"+
+					"默认臂读什么，都无从核对。", file, fn, fn, c.Evidence)
+			}
 		}
 	}
+}
+
+// evidenceSwitchCalls 从一段 Evidence 里取出「拼在 from/join 之后的函数调用」名。
+//
+// 判据：`join`/`from` + 空白 + `标识符(`。这是切换层拼接点在代码里的**最短形态**
+// （`LEFT JOIN ` + sessionBodiesFromSQL() + ` `），也是能把它与「拼在 join 之后的
+// 表名字面量」区分开的唯一位置标记。
+func evidenceSwitchCalls(evidence string) []string {
+	re := regexp.MustCompile(`(?i)\b(?:from|join)\s+` + "`" + `\s*\+\s*` + "`" + `(\w+)\s*\(`)
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(evidence, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// isRegisteredSwitchFunc 报告 fn 是否是某个已登记切换层返回关系名的函数。
+func isRegisteredSwitchFunc(fn string) bool {
+	for _, e := range indirectRequestLogsReaders {
+		if e.SwitchFunc == fn {
+			return true
+		}
+	}
+	return false
 }
 
 // stopWriteSourceFamily 是**机械可判定**的那一维：直接看文件读的是哪一族表。
@@ -1554,7 +1616,18 @@ func nullPaddedPredicateHit(raw string) (hit bool, via string) {
 }
 
 // sourceFamilyOf 从文件源码机械判定它读哪一族。
-func sourceFamilyOf(code string) string {
+// sourceFamilyOf 按源码文本判定 v1 读法族。
+//
+// readsVBodies 用于**切换层消费点**（§9.232）：消费点的 bodies 腿走
+// `sessionBodiesFromSQL()`，源码里**没有 bodies 关系名字面量**，
+// 而它的默认臂读的是 v1 ⇒ `familyBodiesRE` 匹配不到 ⇒ 它会被判成
+// 「只读视图 / 只读基表」，**而这不属实**（它的 bodies 腿仍是 v1）。
+//
+// ⚠ 症状是「归族不报错、只是低估」：`admin/session_compare.go` 与
+// `admin/session_export.go` 迁移后直接变成 `undetermined`（它们只剩会话族
+// 腿），而那 7 个还读视图的读方从 `reads_bodies_plus_other` 掉到 `reads_710_view_only`
+// —— 两个方向都少算 bodies 依赖。
+func sourceFamilyOf(code string, readsVBodies bool) string {
 	// raw 保留未剥离的原文，供 nullPaddedPredicateHit 做 AST 解析。顺序很重要：
 	// 剥注释会吃掉字符串字面量里的 "//"（URL、SQL `--` 注释），把 Go 源码弄成
 	// 无法解析，于是 nullPaddedPredicateHit 会静默退回整文件口径。
@@ -1563,7 +1636,7 @@ func sourceFamilyOf(code string) string {
 	raw := code
 	code = gateStopWriteLineCommentRE.ReplaceAllString(code, " ")
 	code = gateStopWriteBlockCommentRE.ReplaceAllString(code, " ")
-	bo := familyBodiesRE.MatchString(code)
+	bo := familyBodiesRE.MatchString(code) || readsVBodies
 	vi, v1OnlyView := false, false
 	for _, m := range familyAnyViewRE.FindAllString(code, -1) {
 		if _, ok := requestLogsViewsWithSessionArm[strings.ToLower(m)]; ok {
@@ -1618,12 +1691,12 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 	// §9.49：遍历「直接表 ∪ 间接表」。只遍历直接表时，间接读点（表名是
 	// Go 表达式，见 indirectRequestLogsReaders）**从未进入过这个分类器**，
 	// 于是它报「未归入任何一族」——而它其实一直在读 v1。
-	for _, file := range allKnownRequestLogsReaderFiles() {
+	for _, file := range allKnownRequestLogsReaderFiles(t) {
 		raw, err := os.ReadFile(filepath.Join(root, file))
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		fam := sourceFamilyOf(string(raw))
+		fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, file))
 		if ind, isIndirect := indirectRequestLogsReaders[file]; isIndirect {
 			// 器眼看不见它，族由登记给定；登记里没有合法族时才算 undetermined。
 			if ind.Family == "" {
@@ -1650,9 +1723,9 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 	}
 	// §9.49：分母用「直接表 ∪ 间接表」。用 len(requestLogsReadInventory) 会让
 	// 每一个间接读点都算成一次「漏计」——而它既没漏也没重，是分母本身少算了一个。
-	if total != len(allKnownRequestLogsReaderFiles()) {
+	if total != len(allKnownRequestLogsReaderFiles(t)) {
 		t.Errorf("六族合计 %d ≠ 读点清单 %d（直接表 %d + 间接表 %d）—— 有文件被重复计数或漏计",
-			total, len(allKnownRequestLogsReaderFiles()),
+			total, len(allKnownRequestLogsReaderFiles(t)),
 			len(requestLogsReadInventory), len(indirectRequestLogsReaders))
 	}
 	t.Logf("S4 停写影响面（按读表族，机械判定）：\n"+
@@ -1703,7 +1776,7 @@ func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v", file, err)
 			continue
 		}
-		fam := sourceFamilyOf(string(raw))
+		fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, file))
 		if fam == familyViewNullPadded && c.Effect == effectUnaffected {
 			if reason, ok := nullPaddedUnaffectedJustification[file]; !ok || strings.TrimSpace(reason) == "" {
 				t.Errorf("%s（族=%s）判为「停写不受影响」，但它在 session 臂 NULL 补位的列上出现。\n"+

@@ -54,10 +54,10 @@ var requestLogsReadInventory = map[string]int{
 	"admin/auto_route.go":                   1,
 	"admin/auto_route_outcome_freshness.go": 1,
 	"admin/auto_route_correlations.go":      5,
-	"admin/auto_title_generator.go":         3,
+	"admin/auto_title_generator.go":         2,
 	"admin/body_resolver.go":                4,
 	"admin/compression_sessions.go":         5,
-	"admin/compression_stats.go":            7,
+	"admin/compression_stats.go":            4,
 	"admin/credential_monitor.go":           3,
 	"admin/credential_monitor_heatmap.go":   1,
 	"admin/credential_success_rate.go":      2,
@@ -68,11 +68,11 @@ var requestLogsReadInventory = map[string]int{
 	"admin/diagnostics_credential.go":       1,
 	"admin/live_stream_sse.go":              2,
 	"admin/logs.go":                         5,
-	"admin/logs_summary.go":                 4,
-	"admin/memora_handlers.go":              5,
+	"admin/logs_summary.go":                 2,
+	"admin/memora_handlers.go":              4,
 	"admin/model_routing_diagnostic.go":     1,
 	"admin/model_status.go":                 2,
-	"admin/no_topic_session.go":             6,
+	"admin/no_topic_session.go":             4,
 	"admin/probe_history.go":                1,
 	"admin/provider_diagnose.go":            2,
 	"admin/provider_models.go":              2,
@@ -97,11 +97,11 @@ var requestLogsReadInventory = map[string]int{
 	// 同上：`JOIN request_logs_with_current_month rl ON rl.id = slr.last_request_id`，
 	// 为在线会话列表补 tenant_id —— 走的是 canonical 视图的 v1 臂。
 	"admin/session_online.go":           1,
-	"admin/session_sanitize_matches.go": 3,
+	"admin/session_sanitize_matches.go": 2,
 	"admin/session_summary_v2.go":       1,
 	"admin/session_tenant.go":           2,
 	"admin/session_timeline_query.go":   1,
-	"admin/session_title.go":            2,
+	"admin/session_title.go":            1,
 	"admin/session_turns_tree.go":       1,
 	"admin/session_turns_unified.go":    1,
 	"admin/swim_lane_init.go":           1,
@@ -289,7 +289,7 @@ func sumInventory() int {
 //
 //	字面量读方 → requestLogsReadInventory（本表）
 //	间接读方   → indirectRequestLogsReaders（§9.49 建的那张）
-//	两者并集   → allKnownRequestLogsReaderFiles()
+//	两者并集   → allKnownRequestLogsReaderFiles(t) 〔§9.232 起并入切换层消费点〕
 //
 // 与 `bg/auto_route_settle_sql.go` 完全同形：那个文件同样因为关系名在 Go
 // 标识符里而不在本表，登记在间接表。⇒ 本表从 109 降到 107，**不是读方变少了**。
