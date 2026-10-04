@@ -51,6 +51,92 @@ psql_17() {
   $PSQL_CMD "$sql" 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# --footprint：稳态占用核验（设计稿 §12.6「待实测」那一条的可执行形态）
+#
+# 为什么要有这个模式：§12.6 算出「表内空闲约 5%，DROP 能回收约 0.4 GB」，
+# 那是**算术推演**不是实测；同节写明了 10-11 胖行滚出后该用什么办法验，
+# 但只留了一段散文。这里把它变成一条命令，避免"知道该验却没人验"。
+#
+# ★ 不注册进 cron：它是**一次性/周期性人工核验**，不是每小时告警。
+#   每小时告警由默认模式承担。少一条 cron 就少一分漂移面
+#   （见 etc.cron.d.pg17 头部的同步契约：漏一条 = 覆盖时删掉一条）。
+#
+# 三态同前：0 = 与解析期望一致 / 1 = 偏离超过容差 / 3 = 没有结论。
+# 分区化前后口径不同（父表 pg_total_relation_size 返回近乎 0），
+# 两种形态都算，取非零者。
+EXPECT_BYTES_PER_ROW=${EXPECT_BYTES_PER_ROW:-248}   # 213 数据 + 31 header/bitmap + 对齐
+TOLERANCE=${TOLERANCE:-0.20}                        # ±20%；超出即偏离
+
+if [ "${1:-}" = "--footprint" ]; then
+  FR_SQL=$(cat <<EOF
+SELECT count(*)::text,
+       -- ★ 分母用 pg_class.reltuples（VACUUM/ANALYZE 更新），**不是**
+       --   pg_stat_user_tables.n_live_tup。后者是统计采集器的估算，可能为 0
+       --   或滞后；拿它当分母、又用 greatest(...,1) 兜底，会把"统计没跟上"
+       --   放大成"每行字节巨大"，然后被报成「偏高 ⇒ 有空闲可回收」——
+       --   一个会误导人的结论。两者任一为 0 都判「没有结论」。
+       coalesce(round((pg_relation_size('public.ursm_node_snapshot_min')::numeric
+                      / greatest((SELECT c.reltuples::bigint FROM pg_class c
+                                   WHERE c.oid='public.ursm_node_snapshot_min'::regclass), 1)))::text, '0'),
+       coalesce((SELECT n_live_tup::text FROM pg_stat_user_tables
+                  WHERE relname='ursm_node_snapshot_min'), '-1'),
+       coalesce(pg_size_pretty(pg_relation_size('public.ursm_node_snapshot_min')), '?'),
+       coalesce(pg_size_pretty(pg_indexes_size('public.ursm_node_snapshot_min')), '?'),
+       coalesce((SELECT (c.relkind = 'p')::int::text
+                   FROM pg_class c WHERE c.oid='public.ursm_node_snapshot_min'::regclass), '?'),
+       coalesce((SELECT count(*)::text FROM pg_inherits
+                   WHERE inhparent='public.ursm_node_snapshot_min'::regclass), '0')
+FROM public.ursm_node_snapshot_min;
+EOF
+)
+  fr=$(psql_17 "$FR_SQL")
+  if [ $? -ne 0 ]; then
+    echo "ABORT: 占用核验查询失败: ${fr//$'\n'/ }" >&2
+    exit 3
+  fi
+  fr_n=$(printf '%s' "$fr" | head -1 | awk -F'|' '{print $1+0}')
+  fr_bpr=$(printf '%s' "$fr" | head -1 | awk -F'|' '{print $2+0}')
+  fr_heap=$(printf '%s' "$fr" | head -1 | awk -F'|' '{print $3}')
+  fr_idx=$(printf '%s' "$fr" | head -1 | awk -F'|' '{print $4}')
+  fr_ispart=$(printf '%s' "$fr" | head -1 | awk -F'|' '{print $5}')
+  fr_parts=$(printf '%s' "$fr" | head -1 | awk -F'|' '{print $6}')
+  fr_live=$(printf '%s' "$fr" | head -1 | awk -F'|' '{print $7+0}')
+  [ "$fr_n" -gt 0 ] || { echo "ABORT: 表里 0 行 —— 没有参照系，本次不出结论。" >&2; exit 3; }
+  # 行数估算不可用或两套统计严重不一致 ⇒ 分母不可信 ⇒ 判「没有结论」，
+  # 绝不拿一个坏分母去报「偏高/偏低」——那会把量具故障说成被测对象的性质。
+  if [ "$fr_bpr" -le 0 ] || [ "$fr_live" -le 0 ]; then
+    # ★ 必须写 ${fr_live} 而不是 $fr_live：`$fr_live` 紧跟全角「）」时，
+    #   bash 在 UTF-8 locale 下把括号的高位字节当成变量名合法字符，
+    #   变量名变成 `fr_live）` ⇒ set -u 报未绑定变量 ⇒ **本分支整个不执行**，
+    #   反而落到后面的偏离判定去报 exit 1（把「量具坏了」说成「行宽偏高」）。
+    #   这条是 7 条 --footprint 测试里「分母不可信」那条首次跑出来的。
+    echo "ABORT: 行数估算不可用（reltuples 推出的每行字节=${fr_bpr}, n_live_tup=${fr_live}）——" >&2
+    echo "      分母不可信时每行字节是除零产物，本次不出结论。" >&2
+    echo "      处理：ANALYZE public.ursm_node_snapshot_min; 后重跑。" >&2
+    exit 3
+  fi
+
+  echo "===== URSM 快照稳态占用核验（设计稿 §12.6 待实测项）====="
+  printf '  形态           : %s\n' "$([ "$fr_ispart" = 1 ] && echo "分区父表（$fr_parts 个分区，825 已落地）" || echo "普通表（825 未落地）")"
+  printf '  活行数         : %s\n' "$fr_n"
+  printf '  堆 / 索引      : %s / %s\n' "$fr_heap" "$fr_idx"
+  printf '  活行数(统计)   : %s   (n_live_tup，分母可靠性已校验)\n' "$fr_live"
+  printf '  堆每活行字节   : %s   (解析期望 %s ±%s%%)\n' "$fr_bpr" "$EXPECT_BYTES_PER_ROW" "$TOLERANCE"
+  dev=$(awk -v a="$fr_bpr" -v e="$EXPECT_BYTES_PER_ROW" 'BEGIN{if(e>0){d=(a-e)/e; if(d<0)d=-d; printf "%.1f", d*100}}')
+  echo
+  if awk -v d="$dev" -v t="$(awk -v t="$TOLERANCE" 'BEGIN{printf "%d", t*100}')" 'BEGIN{exit !(d<=t)}'; then
+    echo "  判定           : OK —— 与解析期望一致（偏离 ${dev}%）"
+    echo "  解读           : 堆里没有可观的空闲，825 能回收的字节确实很少（§12.6 推论成立）"
+    exit 0
+  fi
+  echo "  判定           : ⚠️ 偏离解析期望 ${dev}%（容差 ±$(awk -v t="$TOLERANCE" 'BEGIN{printf "%d", t*100}')%）"
+  echo "  解读           : 偏离方向决定结论——"
+  echo "                    偏高 ⇒ 堆里有可观空闲，825 的回收价值比 §12.6 估的大"
+  echo "                    偏低 ⇒ 行宽比解析值更小（例如 payload 进一步瘦身），不是坏事"
+  exit 1
+fi
+
 # 判据 + 新鲜度 + 样本量，一次取回，字段数必须恰好 4。
 #   1) n            样本行数
 #   2) newest_age_s 最新样本的年龄（秒）；NULL = 表为空
