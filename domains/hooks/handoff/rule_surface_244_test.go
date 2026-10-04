@@ -2,6 +2,7 @@ package handoff
 
 import (
 	"context"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -33,19 +34,21 @@ import (
 //	3. a MISS is a fact about the rules, not a broken probe
 //	   (Test244WideningRuleShrinksGap).
 func Test244RedactionLayerRuleSurface(t *testing.T) {
-	layers := req244Layers(t)
-
-	t.Log("case                 detector secretmask handoff   <- HIT/MISS per layer")
-	for _, c := range req244Cases() {
-		row := make([]string, 0, len(layers))
-		for _, l := range layers {
-			if l.hit(c.text) {
-				row = append(row, "HIT ")
-			} else {
-				row = append(row, "MISS")
+	for _, set := range req244RuleSets(t) {
+		layers := req244Layers(t, set.detector)
+		t.Logf("=== rule set: %s ===", set.name)
+		t.Log("case                 detector secretmask handoff   <- HIT/MISS per layer")
+		for _, c := range req244Cases() {
+			row := make([]string, 0, len(layers))
+			for _, l := range layers {
+				if l.hit(c.text) {
+					row = append(row, "HIT ")
+				} else {
+					row = append(row, "MISS")
+				}
 			}
+			t.Logf("%-20s %s", c.name, strings.Join(row, " "))
 		}
-		t.Logf("%-20s %s", c.name, strings.Join(row, " "))
 	}
 
 	// Guard against the failure mode where the case list is edited down until
@@ -63,17 +66,45 @@ func Test244RedactionLayerRuleSurface(t *testing.T) {
 	}
 }
 
+type req244RuleSet struct {
+	name     string
+	detector *sanitize.PatternDetector
+}
+
+// req244RuleSets enumerates BOTH rule sets the gateway can run with.
+//
+// Audit 245 corrected audit 244 here: the first version of this table measured
+// only sanitize.NewPatternDetector(), the built-in fallback. Production does not
+// construct that directly — cmd/gateway/goal_control.go:517-526 calls
+// NewPatternDetectorFromFile on a relative path and falls back to the built-in
+// set with only a slog.Warn. The two sets do not agree (ak- is caught only by
+// the built-in set; IBAN only by the file set), so a table pinned to one of them
+// describes a system that may not be the one running.
+//
+// A census whose denominator is one of two possible states of the subject is
+// itself the defect this repo keeps re-learning. Both are printed.
+func req244RuleSets(t *testing.T) []req244RuleSet {
+	t.Helper()
+	fromFile, err := sanitize.NewPatternDetectorFromFile(filepath.Join("..", "..", "..", "configs", "sensitive_patterns.yaml"))
+	if err != nil {
+		t.Fatalf("production rule set unavailable: %v", err)
+	}
+	return []req244RuleSet{
+		{"built-in fallback (NewPatternDetector)", sanitize.NewPatternDetector()},
+		{"configs/sensitive_patterns.yaml (production wiring)", fromFile},
+	}
+}
+
 type req244Layer struct {
 	name string
 	hit  func(string) bool
 }
 
-func req244Layers(t *testing.T) []req244Layer {
+func req244Layers(t *testing.T, detector *sanitize.PatternDetector) []req244Layer {
 	t.Helper()
-	det := sanitize.NewPatternDetector()
 	return []req244Layer{
 		{"detector", func(s string) bool {
-			frags, err := det.Detect(context.Background(), s)
+			frags, err := detector.Detect(context.Background(), s)
 			if err != nil {
 				t.Fatalf("detector: %v", err)
 			}
@@ -134,40 +165,44 @@ var req244RequiredCases = []string{
 //	- openai_sk_proj: secretmask MISS but handoff HIT — pins each probe to its
 //	  own rule set, and is the control that a degenerate probe actually trips.
 func Test244LayerProbeIsNotOneLayer(t *testing.T) {
-	layers := req244Layers(t)
-	byName := map[string]req244Layer{}
-	for _, l := range layers {
-		byName[l.name] = l
-	}
+	for _, set := range req244RuleSets(t) {
+		layers := req244Layers(t, set.detector)
+		byName := map[string]req244Layer{}
+		for _, l := range layers {
+			byName[l.name] = l
+		}
 
-	if !byName["detector"].hit("AKIAIOSFODNN7EXAMPLE") ||
-		!byName["secretmask"].hit("AKIAIOSFODNN7EXAMPLE") ||
-		!byName["handoff"].hit("AKIAIOSFODNN7EXAMPLE") {
-		t.Fatal("control failed: aws_akia must be seen by all three layers")
-	}
+		where := "rule set [" + set.name + "]: "
 
-	if !byName["detector"].hit("call 13800138000") {
-		t.Fatal("control failed: detector must see cn_phone")
-	}
-	if byName["secretmask"].hit("call 13800138000") {
-		t.Fatal("control failed: secretmask is expected NOT to see a bare phone number; " +
-			"if it now does, the layers converged and this test's premise needs revisiting")
-	}
-	if byName["handoff"].hit("call 13800138000") {
-		t.Fatal("control failed: handoff is expected NOT to see a bare phone number; " +
-			"if it now does, the layers converged and this test's premise needs revisiting")
-	}
+		if !byName["detector"].hit("AKIAIOSFODNN7EXAMPLE") ||
+			!byName["secretmask"].hit("AKIAIOSFODNN7EXAMPLE") ||
+			!byName["handoff"].hit("AKIAIOSFODNN7EXAMPLE") {
+			t.Fatalf("%scontrol failed: aws_akia must be seen by all three layers", where)
+		}
 
-	// The discriminating pair: this sample is invisible to secretmask and
-	// visible to handoff, so swapping one probe for the other is observable.
-	const proj = "sk-proj-T3BlbkFJc2VjcmV0S2V5MTIzNDU2Nzg5MA"
-	if byName["secretmask"].hit(proj) {
-		t.Fatal("control failed: secretmask is expected NOT to see openai_sk_proj")
-	}
-	if !byName["handoff"].hit(proj) {
-		t.Fatal("control failed: handoff must see openai_sk_proj — it is the only layer " +
-			"covering the sk- family with hyphens, and this is the control that catches a " +
-			"handoff probe that has silently collapsed onto the secretmask probe")
+		if !byName["detector"].hit("call 13800138000") {
+			t.Fatalf("%scontrol failed: detector must see cn_phone", where)
+		}
+		if byName["secretmask"].hit("call 13800138000") {
+			t.Fatalf("%scontrol failed: secretmask is expected NOT to see a bare phone number; "+
+				"if it now does, the layers converged and this test's premise needs revisiting", where)
+		}
+		if byName["handoff"].hit("call 13800138000") {
+			t.Fatalf("%scontrol failed: handoff is expected NOT to see a bare phone number; "+
+				"if it now does, the layers converged and this test's premise needs revisiting", where)
+		}
+
+		// The discriminating pair: this sample is invisible to secretmask and
+		// visible to handoff, so swapping one probe for the other is observable.
+		const proj = "sk-proj-T3BlbkFJc2VjcmV0S2V5MTIzNDU2Nzg5MA"
+		if byName["secretmask"].hit(proj) {
+			t.Fatalf("%scontrol failed: secretmask is expected NOT to see openai_sk_proj", where)
+		}
+		if !byName["handoff"].hit(proj) {
+			t.Fatalf("%scontrol failed: handoff must see openai_sk_proj — it is the only layer "+
+				"covering the sk- family with hyphens, and this is the control that catches a "+
+				"handoff probe that has silently collapsed onto the secretmask probe", where)
+		}
 	}
 }
 
@@ -194,8 +229,14 @@ func Test244WideningRuleShrinksGap(t *testing.T) {
 	if !wide.MatchString(proj) {
 		t.Fatalf("control failed: the widened rule is expected to match %q", proj)
 	}
-	if req244Layers(t)[0].hit(proj) {
-		t.Fatal("control failed: the production detector is expected to MISS openai_sk_proj; " +
-			"if it now matches, the gap in the table is stale and pending decision 106 needs revisiting")
+	// Asserted for EVERY rule set the gateway can run with, not just one.
+	// The point of the control is that the gap is a fact about the rules;
+	// pinning it to a single rule set would let the other one drift unnoticed.
+	for _, set := range req244RuleSets(t) {
+		if req244Layers(t, set.detector)[0].hit(proj) {
+			t.Fatalf("control failed: rule set [%s] is expected to MISS openai_sk_proj; "+
+				"if it now matches, the gap in the table is stale and pending decision 106 "+
+				"needs revisiting", set.name)
+		}
 	}
 }

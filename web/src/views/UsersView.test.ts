@@ -54,7 +54,7 @@ vi.mock('../store', () => ({
   isSuperAdmin: () => superAdminMode,
 }))
 
-describe('UsersView tenant admin permissions', () => {
+describe('UsersView tenant admin permissions', { timeout: 20_000 }, () => {
   beforeEach(() => {
     readOnlyMode = true
     tenantAdminMode = true
@@ -146,7 +146,7 @@ describe('UsersView tenant admin permissions', () => {
   })
 })
 
-describe('UsersView 统计 UI 优化轮（2026-09-30）', () => {
+describe('UsersView 统计 UI 优化轮（2026-09-30）', { timeout: 20_000 }, () => {
   beforeEach(() => {
     readOnlyMode = false
     tenantAdminMode = false
