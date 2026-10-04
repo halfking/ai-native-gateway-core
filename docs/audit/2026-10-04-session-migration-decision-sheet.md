@@ -901,3 +901,56 @@ TEST_DATABASE_URL='…' go test ./cmd/gateway/ -run TestS4GateMeasurement -count
   约束，但那是防停写后的恒真，不是防偶发为零）。
 - **D15-c**：授权 252 只读，一次覆盖三件事——① 本节的 S4 门复测；
   ② §9.160 的 445,819 限流量级；③ §9.161/§9.162 的填充率真值。
+
+---
+
+## ⚠️⚠️ D16（§9.164 新增，**修正 D14-a 的前提**）：**「统一改读 canonical 视图」不可行——0/16**
+
+D14-a 原本的问题是「14 个 breaks 读方：统一改读视图，还是逐个重写？」，
+并附带一个观察：「视图本身已经投影了那些列，改读很可能就够」。
+
+**这个观察不成立。** 视图的值来自会话族，所以「改读视图」不是修查询，
+是**换数据源**——而其中若干列在会话侧近乎为空。
+
+| 判定 | 文件数 | 含义 |
+|---|---:|---|
+| `repoint-empty` | **4** | 需要的列会话侧 **0%** ⇒ 改读后**返回空** |
+| `repoint-gap-only` | **12** | 唯一阻断是 `id`（视图有列但恒 NULL，v1 请求行 id ≠ turn id） |
+| **`repoint-safe`** | **0 / 16** | **不存在可安全改读的** |
+
+最刺眼的三条：
+
+- `admin/work_types.go` 要 `work_type`（**0.00%** vs 1.93%）⇒ **整页返回空**
+- `admin/data_lifecycle_attachments.go` 要 `attachments`（**18.19%** vs 100%）
+  ⇒ **82% 的附件凭空消失**
+- `bg/auto_index_refresher.go` 要 `total_tokens`（**58.36%** vs 100%）
+  ⇒ **索引少算 42%**
+
+⚠️ **最危险的是第二类**：一个返回 18% 行的查询，从外面看与「正常工作」无法区分。
+**这比「表不存在」的响亮报错更糟**——报错逼人处理，静默的部分缺失只会变成一个
+没人发现的指标。
+
+### D14-a 因此改写为
+
+- **D16-a（取代 D14-a）**：逐文件定处置。对 12 个 `repoint-gap-only`：
+  改读视图 + **把 `id` 关联换成 `request_id`**（`request_id` 在两侧都是 100%）。
+  对 4 个 `repoint-empty`：需要**重算或明确接受功能退化**，不能改读了事。
+- **D16-b**：`is_final_success`（v1 100%、本地会话侧 0%）需要专门回填吗？
+  它是 4 个 `repoint-empty` 之一，改读视图后仍为空。
+- **D16-c**：`work_type` / `client_protocol` 同上。
+
+⚠️ **12 个 `repoint-gap-only` 尚未逐文件确认它们是否只用 `id` 做关联**——
+「只剩键要换」这句话需要验证，不能由本节代答。
+
+⚠️ **填充率是本地下界**（§9.163.2：本地写入者是 823 之前旧二进制）。
+252 上 `work_type` / `attachments` 很可能**不是** 0% / 18% ⇒
+**结论方向可能缓和，但不会反转**。
+
+### 判定怎么复现
+
+```bash
+go test ./admin/ -run TestRequestLogsRetirementRepointVerdict -count=1 -v
+```
+
+数据源 `db.RetirementColumnFill` 由 `TestSessionFamilyColumnAvailability_FillRates`
+**双向校验**（既验「值对不对」，也验「该有的条目在不在」——后者是补上的，见 §9.164.3）。

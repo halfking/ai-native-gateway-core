@@ -370,6 +370,67 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 	}
 }
 
+// TestRequestLogsRetirementRepointVerdict answers D14-a with numbers instead of
+// intuition: for each registered breaker, what would actually happen if the
+// reader were repointed from the v1 base tables to the canonical view?
+//
+// The finding that motivates the test is that "just repoint it to the view" is
+// **not** a fix. The view's values come from the session family, and §9.161
+// measured that some of the columns these readers need are nearly empty there:
+//
+//	admin/work_types.go              work_type        0.00% vs 1.93%  → the page returns nothing
+//	admin/data_lifecycle_attachments.go  attachments 18.19% vs 100%  → 82% of attachments vanish
+//	bg/auto_index_refresher.go       total_tokens    58.36% vs 100%  → the index under-counts by 42%
+//
+// The third kind is the dangerous one: a query returning 18% of its rows is
+// indistinguishable, from the outside, from a query that works. That is a worse
+// failure mode than a missing table, which at least announces itself.
+func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
+	root := repoRootFromCaller(t)
+	files := make([]string, 0, len(retirementBreakers))
+	for f := range retirementBreakers {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+
+	byVerdict := map[string][]string{}
+	for _, rel := range files {
+		cols := map[string]bool{}
+		for _, l := range extractV1ReadingLiterals(t, filepath.Join(root, rel)) {
+			for c := range l.columns {
+				cols[c] = true
+			}
+		}
+		names := make([]string, 0, len(cols))
+		for c := range cols {
+			names = append(names, c)
+		}
+		sort.Strings(names)
+		v := db.RetirementRepointVerdictFor(names)
+		byVerdict[string(v)] = append(byVerdict[string(v)], rel+"  ["+strings.Join(names, " ")+"]")
+	}
+	for _, v := range []db.RetirementRepointVerdict{
+		db.RepointEmpty, db.RepointGapOnly, db.RepointDegraded,
+		db.UnknownColumn, db.RepointSafe,
+	} {
+		list := byVerdict[string(v)]
+		if len(list) == 0 {
+			continue
+		}
+		sort.Strings(list)
+		t.Logf("── %s (%d) ──", v, len(list))
+		for _, l := range list {
+			t.Logf("   %s", l)
+		}
+	}
+	// The point of the test: a blanket repoint is not available. If every breaker
+	// ever came out `repoint-safe`, D14-a would have a trivially correct answer;
+	// the gate's value is that it keeps re-checking that assumption instead of
+	// letting it be made once and forgotten.
+	safe := len(byVerdict[string(db.RepointSafe)])
+	t.Logf("repoint-safe: %d of %d registered breakers", safe, len(retirementBreakers))
+}
+
 func flatten(m map[string][]string) []string {
 	var out []string
 	for _, cols := range m {
