@@ -876,7 +876,16 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 825 | `825_modality_graded_verification.sql` | `d6eda2b84fc239db8954ee07a058551b0b737437f766d4a7470e23e4144fbdad` | pending deploy（未应用于任何库；字节已冻结） |
+| 825 | `825_modality_graded_verification.sql` | `3af1b1801c36e015a5849bde261125c378129c46f5bdad703c186b85cc0b0eab` | pending deploy（245/154/252 未应用；本地 8782 已由启动自愈 ensureModalityGradedVerification 等价应用并 stamp） |
+
+> **2026-10-04 字节解冻与重冻结（统一入口审计轮）**：825 原字节从未成功应用于任何库——
+> `model_modality_verification.canonical_id REFERENCES models_canonical(id)` 在 SSOT 01-schema
+> 上必炸 42830（01-schema 从未给 `models_canonical.id` 声明主键，只有 `canonical_name` 唯一键；
+> 本地 pg17 实测复现，id 列 bigint+序列、0 空 0 重）。本在「未应用」窗口内给文件补了同幂等
+> DO 块前置（存在 `models_canonical_pkey` 则短路），并在 `db/db.go` 启动 ensure 链加了
+> `ensureModalityGradedVerification`（825 全量 DDL 镜像 + 账本 stamp）——同时修复
+> d724c072d 引入的启动自锁（ensure 链在 db-open 期引用 825 列，先于迁移应用，账本 <825 的库
+> 在 migrate 门必炸 42703）。新哈希以本行为准。
 
 ## 2026-10-04 — 模型基准价（原厂标准价）与供应商价差对账（迁移 826）
 

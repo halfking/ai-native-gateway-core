@@ -621,10 +621,141 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// 先于流量：audio 请求的候选过滤只放行 modality IN ('audio','multimodal')，
 	// mimo-v2.5-asr/-tts 等后缀形态被旧 InferModality 标成 text，不回填则
 	// /v1/audio/* 端点与 chat+input_audio 双双 no_candidate。
+	// 2026-10-04 顺序修复：d724c072d 给本 ensure 的 WHERE 加了 modality_source
+	// 豁免（825 列），但 825 只由迁移文件创建，而本链在 db-open 期先于迁移
+	// 执行——账本 < 825 的库（本地实测 824、245/154 同险）在 ensure 期直接
+	// 42703，migrate 永远到不了应用 825 那步，形成启动自锁。先跑 825 的幂等
+	// DDL 镜像解锁（列/表/视图全量 IF NOT EXISTS，热迁移后重放为 no-op）。
+	if err := db.ensureModalityGradedVerification(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureAudioModalityBackfill(migCtx); err != nil {
 		return err
 	}
 	db.ensureProbeHealthDashboardViews(migCtx)
+	return nil
+}
+
+// ensureModalityGradedVerification mirrors sql/migrations/startup/
+// 825_modality_graded_verification.sql（models_canonical 三列 + 存量
+// 'inferred' 回填 + CHECK 约束 + model_modality_verification 证据表 +
+// 两索引 + v_model_modality_verdict 判词视图）。
+//
+// 为什么必须在启动 ensure 链里而不只靠迁移文件（2026-10-04 自锁修复）：
+// d724c072d 的 825 守卫闭环让 ensureAudioModalityBackfill 与 discovery 的
+// 升级守卫都引用 modality_source，但该列只由 825 创建；本链在 db-open 期
+// 运行、先于 migrate 应用迁移——账本 < 825 的库在 Open 期 42703，迁移永远
+// 应用不上（deploy-local 与 deploy-seamless 的 migrate 门双双必炸）。825 的
+// 全部 DDL 均幂等（IF NOT EXISTS / CREATE OR REPLACE / 幂等 UPDATE），先在
+// 此重放解锁；之后账本真正应用 825 时为 no-op。
+//
+// 账本 stamp（693/701 先例）：自愈补齐后把 825 记入 schema_migrations，
+// 防止「列在而账本缺行」的口径漂移；已 stamp 时为 no-op。
+func (db *DB) ensureModalityGradedVerification(ctx context.Context) error {
+	if db == nil || db.pool == nil {
+		return nil
+	}
+	// 前置自愈（与 825 文件内同名 DO 块一致）：SSOT 01-schema 从未给
+	// models_canonical.id 声明主键，FK canonical_id→id 在 SSOT 全新安装的
+	// 库上 42830；id 无空无重（bigint + 序列默认），补主键安全。
+	if _, err := db.pool.Exec(ctx, `
+		DO $mk$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1 FROM pg_constraint
+		         WHERE conrelid = 'public.models_canonical'::regclass
+		           AND conname = 'models_canonical_pkey'
+		    ) THEN
+		        ALTER TABLE public.models_canonical
+		            ADD CONSTRAINT models_canonical_pkey PRIMARY KEY (id);
+		    END IF;
+		END $mk$;
+	`); err != nil {
+		return fmt.Errorf("ensure models_canonical pkey (825 前置): %w", err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		ALTER TABLE public.models_canonical
+		    ADD COLUMN IF NOT EXISTS modality_source text,
+		    ADD COLUMN IF NOT EXISTS modality_verified_at timestamptz,
+		    ADD COLUMN IF NOT EXISTS modality_evidence jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+		UPDATE public.models_canonical
+		   SET modality_source = 'inferred'
+		 WHERE modality_source IS NULL;
+
+		ALTER TABLE public.models_canonical
+		    DROP CONSTRAINT IF EXISTS models_canonical_modality_source_check;
+		ALTER TABLE public.models_canonical
+		    ADD CONSTRAINT models_canonical_modality_source_check
+		    CHECK (modality_source IS NULL
+		           OR modality_source IN ('inferred', 'structural', 'semantic', 'manual'));
+
+		CREATE TABLE IF NOT EXISTS public.model_modality_verification (
+		    id              bigserial PRIMARY KEY,
+		    canonical_id    bigint REFERENCES public.models_canonical(id) ON DELETE CASCADE,
+		    canonical_name  text NOT NULL,
+		    credential_id   integer NOT NULL,
+		    raw_model_name  text NOT NULL,
+		    modality        text NOT NULL,
+		    carry_level     text NOT NULL DEFAULT 'unknown',
+		    read_level      text NOT NULL DEFAULT 'unknown',
+		    read_pos_streak smallint NOT NULL DEFAULT 0,
+		    read_neg_streak smallint NOT NULL DEFAULT 0,
+		    carry_evidence  jsonb NOT NULL DEFAULT '{}'::jsonb,
+		    read_evidence   jsonb NOT NULL DEFAULT '{}'::jsonb,
+		    checked_at      timestamptz NOT NULL DEFAULT now(),
+		    created_at      timestamptz NOT NULL DEFAULT now(),
+		    updated_at      timestamptz NOT NULL DEFAULT now(),
+		    CONSTRAINT model_modality_verification_modality_check
+		        CHECK (modality IN ('vision', 'audio', 'video')),
+		    CONSTRAINT model_modality_verification_carry_check
+		        CHECK (carry_level IN ('unknown', 'accepted', 'rejected')),
+		    CONSTRAINT model_modality_verification_read_check
+		        CHECK (read_level IN ('unknown', 'confirmed', 'negative')),
+		    CONSTRAINT model_modality_verification_key
+		        UNIQUE (credential_id, raw_model_name, modality)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_model_modality_verification_due
+		    ON public.model_modality_verification (modality, checked_at);
+		CREATE INDEX IF NOT EXISTS idx_model_modality_verification_canonical
+		    ON public.model_modality_verification (canonical_id, modality, read_level);
+	`); err != nil {
+		return fmt.Errorf("ensure modality graded verification (825): %w", err)
+	}
+	// 视图依赖上面的表，单独一段执行（CREATE OR REPLACE 幂等）。
+	if _, err := db.pool.Exec(ctx, `
+		CREATE OR REPLACE VIEW public.v_model_modality_verdict AS
+		SELECT
+		    v.canonical_id,
+		    v.canonical_name,
+		    v.modality,
+		    COUNT(*)::int                                                      AS bindings_probed,
+		    COUNT(*) FILTER (WHERE v.read_level = 'confirmed')::int            AS bindings_confirmed,
+		    COUNT(*) FILTER (WHERE v.read_level = 'negative')::int             AS bindings_negative,
+		    COUNT(*) FILTER (WHERE v.read_level = 'unknown')::int              AS bindings_unknown,
+		    COUNT(*) FILTER (WHERE v.carry_level = 'accepted')::int            AS carry_accepted,
+		    COUNT(*) FILTER (WHERE v.carry_level = 'rejected')::int            AS carry_rejected,
+		    MAX(v.checked_at)                                                  AS last_checked_at,
+		    CASE
+		        WHEN COUNT(*) FILTER (WHERE v.read_level = 'confirmed') > 0 THEN 'confirmed'
+		        WHEN COUNT(*) FILTER (WHERE v.read_level = 'unknown') = 0
+		         AND COUNT(*) FILTER (WHERE v.read_level = 'negative') > 0 THEN 'negative'
+		        ELSE 'unknown'
+		    END                                                               AS verdict
+		FROM public.model_modality_verification v
+		GROUP BY v.canonical_id, v.canonical_name, v.modality;
+	`); err != nil {
+		return fmt.Errorf("ensure v_model_modality_verdict (825): %w", err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('825', 'modality graded verification: canonical source columns + evidence table + verdict view')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return err
+	}
+	slog.Info("modality graded verification schema ensured (migration 825)")
 	return nil
 }
 
