@@ -2745,3 +2745,65 @@ A 方案的门控条件是 `last_seen_at < now() - 5min`。`last_seen_at` 是
 `substr($0,1,16)` 漏了 JSON 的 `{"time":"` 前缀导致时间窗一行没滤掉；
 awk 把**匹配行数**当总行数导致打出「100% 含该串」（实际 0.64%）；
 `grep -c` 整个文件却标「近 30 分钟」。已写进记忆。
+### 10.23 ★★★ `URSM_V2_REDIS_DB=14` 在 **shadow 模式下是不完整的**（2026-10-05 03:00 实测，已回滚）
+
+§5.7.8 定位过迁键失败的根因（bootstrap 写 db2 / manager 校验 db14），
+`d0a353d53` 已修。2026-10-05 按授权在 245 上重新加 `URSM_V2_REDIS_DB=14` 并部署，
+**启动干净，但仍不可用**：
+
+```
+ursm.v2: using dedicated redis db   db=14  gateway_db=2
+ursm.v2 manager constructed         mode=shadow ready=true
+ursm.v2: persist writer started     interval_sec=60
+ursm.v2: persist collect empty      pattern=ursm:v2:node:* recovery_epoch=0   ← 每分钟一次
+```
+
+**没有 `gate opened after bootstrap and coverage validation` 那一行。**
+
+#### 根因：bootstrap 只在 `ModeAuthoritative` 下跑（`cmd/gateway/main.go:1225`）
+
+```go
+if ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
+    result, bootstrapErr := applyBootstrapWithRetry(dbConn.Pool(), ursmV2Redis, ursmV2Cfg)
+    ...
+} else {
+    go func() { /* 异步 legacy 兼容迁移 */ }()
+}
+```
+
+245 的 `URSM_V2_MODE=shadow` ⇒ 走 else 分支 ⇒ **bootstrap 一次都不跑**。
+db14 起初是空的 ⇒ `persist collect empty`。
+
+#### 实测后果
+
+| | 改之前 | 加上 db14 之后 |
+|---|---|---|
+| `persist committed` | 每分钟 ~1,315 行 | **0** |
+| `persist collect empty` | 0 | **每分钟 1 次** |
+| db14 键数 | — | **1**（只有 `ursm:v2:meta:ready`） |
+
+PG 侧快照仍在写（`ursm_node_snapshot_min` 最新快照仅滞后 41 秒），
+因为 154 还在 db2 上正常供数 ⇒ **不是故障，是 245 的 v2 写入变成空操作**（降级）。
+
+#### 处置：已回滚并验证恢复
+
+移除该行 → 重新部署 → `persist committed rows=1263/1262` 恢复，
+`collect empty` 归零，且启动日志不再声明 dedicated db。
+
+#### ⇒ 迁键要真正成立，必须补上其中一样
+
+1. **切 authoritative 模式**（`URSM_V2_MODE=authoritative`）：bootstrap 会跑并把
+   node hash 写进 db14。这是**完整的切换**，代价与风险都远大于「加一行 env」。
+2. **先做 db2→db14 的键复制**：让 db14 先有数据，shadow 模式下的 writer
+   才有东西可收。竞态窗口与回退方案见 §5.7.5/§5.7.7。
+
+★ **教训**：上一轮我把这次失败归因为「变量被回滚了」，那是**表象**。
+  变量 23:52 确实被回滚过，但**即使不���滚，它也不会工作** ——
+  缺的不是那行 env，是 authoritative 模式或一份数据。
+  ⇒ 「上一轮失败的原因」和「这次一定会成功」是两件事，别把前者当后者的保证。
+
+#### 顺带一条：`shadow` 是不是正确的模式，本身要重新拍板
+
+`shadow_double_write=1`、`shadow_sample_rate=0.01` 意味着 v2 只以 1% 采样写影子，
+而**权威路径仍是 legacy**。既然 §10.19/§10.20 已把 monthly ANALYZE 的成本定位清楚，
+「URSM 到底在不在关键路径上」这个问题值得单独答一次，而不是默认沿用 shadow。
