@@ -10687,3 +10687,69 @@ reaper 的 `skipped:` 删除行，以及 `semaphore_full` / `write_failed` 两�
   `RetirementColumnFill` 是否继续作为仓库内活库快照。
 沿用未决：D28-a/b、D27-a/b/c、D26-a/b、D25-a/b/c、D24 系列、D23 系列、
 D21-a/b、D20-a/c、D19-b。
+
+### ⑮ ★★★ 破案（§9.213）：失败**记录**的那条路，没有活过它要记录的那次失败
+
+⑬ 我说「需要日志」。⚠ **那个说法是错的：日志一直在我手上**
+——`docker logs llm-gateway-local-8782`。我先去找「哪台机器在写」，
+查到写入方是容器之后**没有回头看容器日志**。
+
+写入方确认：`pg_stat_activity` 客户端全是 `172.18.0.x`；容器跑
+`kx-llm-gateway-local:2.5.8.2449`，`StartedAt = 2026-10-04T09:29:10Z`。
+九行里**只有 `59bf8998…`（10:35:28Z）在启动之后** ⇒ 只有它有逐条日志。
+
+**那一行的决定性两行**：
+```
+10:35:38 WARN final-success claim: rollback to savepoint failed  error="conn closed"
+10:35:38 WARN telemetry request db persist failed; fallback written  op="update"  error="conn closed"
+```
+`op="update"` = **终态**那一笔失败了 ⇒ 库里那行至今是 `in_progress`（**与实测一致**）。
+
+**镜像侧（当前容器 4.6 小时日志）**：`V2 shadow write failed` **53** 次
+（~11.5/h）、`context deadline exceeded` 132、`conn closed` 13、
+**`outbox row dead` 0** ⇒ 这些都被 replay 捞回来了，与
+`n_tup_ins=2502 / n_tup_del=2498`（入出 1:1）吻合。
+
+**★ 断链的那一环**：`hook.go:279` 兜底是
+`if !EnqueueMirrorFailure(...) { appendBacklog(...) }`，
+而 `EnqueueMirrorFailure` 要 **INSERT** 到 outbox ——
+**在 `conn closed` 的这一刻这个 INSERT 必然也失败**。
+`appendBacklog` 是**进程内**有界 slice，满了**丢最老的**；
+注释自认「drain via `DrainBacklog` or a future background reaper（spec §12 GAP 2）」。
+⚠ **全仓核实：`DrainBacklog(` 只有 `backlog_test.go` 4 处调用，生产零调用。**
+
+⇒ **完整因果链**：连接死 → 镜像写失败 → 记录失败也要写库（同样失败）
+→ 退到进程内队列 → **无人排空** → 进程重启（17:29 重建；连接史始于 **10-02**）
+→ **无 turn、无 details、无 outbox 行**。
+⇒ 这也解释了 **10-02 这个起点**：那天有一次重启，把内存里积的清零了。
+
+⚠ **不是逻辑缺陷，是耐久性缺陷**：失败恢复依赖一条**必须先成功**的写路径，
+而它要记录的正是「这条写路径刚刚失败」。
+
+**诚实边界**：第 1–3 节是 `59bf8998` 的**逐条日志直接证据**；其余 8 行日志已随
+上个容器销毁 ⇒ 本节给的是「由同一机制推出、且与库中观测一致」的解释，
+**不是**逐行证明。生产完全未验证（D30-b 阻塞）。
+
+### ⑯ 本轮我犯的错（值得单记）
+
+§9.212.6 我写「本机没有网关进程在跑……我没有这些请求的日志」。
+前半句对，**后半句错**——写入方是**容器**，日志就在 `docker logs` 里，一行命令。
+⚠ 形状很典型：我在**数据库**这条路上找证据找得极深（逐条排除 8 个分支、
+查 outbox 计数），却**没先问「这个进程在哪儿、它的日志在哪儿」**。
+⇒ 通则：**说「我拿不到 X」之前，先确认 X 的载体是什么**；
+在数据库里找不到不等于不存在，它可能在**进程边界之外**。
+
+⚠ 更贵的一层：我上一轮把这个错误结论**推了 main**（`591eaca20`），
+而修正（`b451bd298`）只撤回了其中一条断言，**没有**指出「日志一直在手上」——
+**回应的对象错了**。
+
+### ⑰ 待拍板（更新）
+
+- ⚠ **失败记录的耐久性**：兜底需要一条**不依赖那条已死连接**的路
+  （独立连接 / 本地 WAL / 换队列）。这是设计决定，需属主定。
+  现状是 GAP 2 未建 + `DrainBacklog` 生产零调用。
+- ⚠ **D30-b（252 只读凭据）**：本机 9/10 是本机探针，生产无法回答。
+- S4 开启时点；D32 + D29-d 切换时点；`client_model` 登记是否删除；
+  `outbound_model` 20% 下限复核；`RetirementColumnFill` 是否继续作为仓库内活库快照。
+沿用未决：D28-a/b、D27-a/b/c、D26-a/b、D25-a/b/c、D24 系列、D23 系列、
+D21-a/b、D20-a/c、D19-b。
