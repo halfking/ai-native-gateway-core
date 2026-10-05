@@ -1016,3 +1016,4738 @@ teeth（一次性 PG17 逐项实测）：去 `LIMIT 1` → 判据红（4 绑定 
 | 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | applied+verified |
 | 831 | `831_work_type_route_source.sql` | `bdb52ad1c68cdcda6b979c82b1c64cff90af8ef1c917062de5c224009a5f79a7` | **pending deploy**（`.down.sql` sha `fedddfd5d369e50b4e421c97e3dc848ceebf6515dad8fa78370edcf0951d7e0f`）（R46 补登记台账行——并行会话 fe703382b 落地迁移本体但未写台账，sqlguard 连续性门红）。`work_type_model_route.source ∈ {operator, acc}` 默认 'operator'：双写方（ACC sync / admin UI）DELETE+re-INSERT 互踩且无来源标记，ACC 种子 model_routes 全空 ⇒ 成功 sync 即静默清空运维配置的路由；与网关路径修复（/api/v2）成对落地。台账登记 ≠ 通道下发（通道门仍红 829+831，Owner 决策） |
 
+
+## 2026-10-04 — 外部机读观察源健康台账（迁移 832）
+
+承接 826 的漂移对账。**不改任何价格、不改任何表**，只加一张周期级事实表 + 一条健康检查。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 832 | `832_model_baseline_observation_health.sql` | `068dc768940b8c84c2ae75d45f57f48b91d66f39c435761d83cef2500af80aca` | pending deploy（未应用于任何库；字节已冻结） |
+| 833 | `833_supplier_price_nonneg_check.sql` | `5e4e4c1e11ffc11754bd90306157c4e0343e2660377425235dd151585061d40a` | pending deploy（未应用于任何库）。**2026-10-05 改写**：四个 CHECK 由「已验证」改为 `NOT VALID`。原写法在有存量负价的环境上会让 `apply-db-revision-sequence.sh`（`set -euo pipefail` + `psql -v ON_ERROR_STOP=1`）**整轮升级中止**；而初版盘点只在本机 5432 跑过（读数 0），252/245/154 未验。测试库 55432 实测四性质：新负价 INSERT 被拒 / 合法价仍能插入（阳性对照）/ UPDATE 成负价被拒 / 存量清干净后 `VALIDATE` 通过且 `convalidated` 由 f 变 t。同日订正文件头一处**假承诺**：初版 Purpose 写「并给 in>out 加一条健康面告警」，复核 `bg/routing_health_checks.go` 的 15 条 check_id 确认该告警从未实现。 |
+
+**为什么需要它（实测，不是推演）**：跑提案工具时观察到一次真实抓取失败
+
+```
+corroboration skipped: fetch observation source: Get "https://models.dev/api.json": EOF
+```
+
+同一时刻 `curl` 拿到 HTTP 200 / 5,317,334 字节，Go 客户端换三种 User-Agent（默认 / curl / 浏览器）也全部 200 —— 所以**不是** UA 拒绝、不是网络不可达，就是**瞬时断连**。这类失败会零星反复出现。
+
+**原有实现的洞**：`bg/pricing_baseline_reconcile.go` 在抓不到源时只打一行 `slog.Warn` 然后 return。「不写任何判词」这个决定是**对的**（原注释说得对：没有观察就没有对账结论，往台账写一堆 `missing` 会把「源挂了」与「价格真的不对」混成一类信号）—— 判词口径守住了。漏掉的是另一半：**不留痕**。于是漂移对账可以每 12h 抓一次、每次都失败、每次都不写任何东西，连续几周不被任何人发现，而报表照常出数（用的是几个月前的基准价）、台账里没有一行「本轮没做成」、健康面没有任何检查会响。**这比压根没有对账更坏**：后者让人知道自己在裸奔，前者让人以为自己在看仪表盘。
+
+**为什么单独一张表，而不是往 `model_baseline_price_reconciliation` 塞一行**：那张台账是**按模型**分粒度的（`canonical_name NOT NULL`），而「本轮观察源不可用」是**按周期**的事实。硬塞就得造一个 `__cycle__` 之类的假 canonical 名，那会污染每模型台账、并把按 `canonical_name` 聚合的判词统计算错。⇒ 周期级事实要有周期级的落点。
+
+配套改动：
+- `recordObservationFailure` / `recordObservationSuccess`：每次抓取（**成败都**）upsert 一行。三个不可让步的点：① 连续失败**累加**而不是覆盖（覆盖会让「连续」退化成「上一次」）；② **条数为 0 记成失败** —— 源答了 HTTP 200 但内容不再是能解析的形状时，错误路径一个都不触发，而所有价格都「对不上」，那是最像成功的一种失败，`observed_models` 是它唯一的信号；③ 仪表自己失败**绝不连累对账**，只 ERROR 级 log（表坏了不该让对账停摆）。
+- 换源（`LLM_GATEWAY_PRICE_OBSERVATION_URL`）是新的一行、旧行留成历史，而不是覆盖 —— 「我们换过源」本身要能查。
+- 健康面新增 `baseline_observation_stale`（warning）：正在连续失败 / 从没成功过 / 上次成功早于两个对账周期（24h）。**两个周期而不是一个**是为了容忍一次抖动。
+- `HealthCheckDef` 新增 `Optional`：828 未应用的环境上那张表不存在，而 `RunChecks` 原本对任何查询错误一律 `return` —— **一轮里任何一条检查失败，后面所有检查都不会跑**。所以标记为 Optional 的检查遇到 `42P01` 记 INFO 后跳过。判据是 **Optional + 42P01 两条同时成立**，不是「遇到 42P01 就跳过」：后者会把 `provider_models` 消失也说成一切正常。
+
+**真库实测**（本地 pg17，baseline+seed 全新库）：up / 重放 / down / down 重放 / 再 up 五步全干净；CHECK 约束拦得住负数失败次数（`model_baseline_price_observation_health_nonneg`）。
+
+**判据与变异验证**：`bg/observation_health_test.go` 两条真库判据 + 一条接线钉。
+- 一次变异验证**自身无效**并因此撞出真洞：T1（把 worker 里 `recordObservationFailure` 那行删掉）落地后判据**仍全绿** —— 因为真库判据直接调那两个函数，根本不经过 `RunBaselineReconciliation`。⇒ 「判据跑的是真函数」不等于「判据覆盖了真路径」，中间隔着调用关系时接线得单独钉。
+- 接线钉第一版用 `strings.Contains`，**仍挡不住**「把调用注释掉」这个最常见回退（注释掉之后那串文本还在原地）。改成逐行扫描并跳过注释行（`hasLiveCall`）。
+- 4 条变异逐条验 teeth，每条都先确认**真的落地且仍能编译**（前一轮有 3 条是空跑或编译失败，不算数）：注释掉失败侧接线 → RED；`consecutive_failures` 不累加 → RED；条数 0 当成功 → RED；`Optional` 跳过失效 → RED。
+
+**编号说明**：本迁移最初写成 828，但 `828_supplier_errors_unified_tracked.sql` 已被并发会话占用，故改为 **832**。注册时插在 `StartupFiles` **末尾**（829 之后）而不是 828 之后 —— 插进别人的迁移中间等于替别人改应用顺序。
+
+**改号遗漏订正（同一轮）**：改号只改了文件名与注册，**散文里 17 处仍写 828**，其中两处是真失败路径上的 log 文案（`bg/pricing_baseline_reconcile.go` 的 `"(migration 828 applied?)"`）。那不是笔误级问题：运维在「表不存在」时按提示去查 828，会落到**另一个迁移**（`828_supplier_errors_unified_tracked.sql`）上。四份 SQL 的 `-- File:` 头也仍自称 828（仓库惯例是该行自称文件名；实测**无任何 Go/shell 工具消费该行**，所以它不导致行为错误，但它是唯一能把人导向错文件的线索）。已全部改为 832，字节随之变化 ⇒ SHA 由 `69bf57e3…` 改为 `80812deb…`（上表已同步）。判定依据：仓内所有其它迁移（826/827/829）该行均自称自身；`grep -rn --include='*.go' --include='*.sh' -- 'File:'` 无人解析该头。
+
+配套 Go：`bg/pricing_baseline_reconcile.go`、`bg/routing_health_checks.go`。
+
+### 附带订正：互证路径的 `kept` 死变量（2026-10-04，纯 Go，无迁移）
+
+`cmd/tools/propose-baseline-prices/main.go` 的 `crossCheck` 有一条**从来没被执行过**的路径 —— 零测试覆盖（`grep -n corroborat main_test.go` 只在一条无关注释里命中），于是里面一个 bug 活了下来：
+
+```go
+var kept []vendorprice.Candidate
+for _, c := range p.ReadyToReview {
+    …三条分支全是 continue，没有一条把 c 放进 kept…
+    p.Corroborated = append(p.Corroborated, entry)
+}
+p.ReadyToReview = kept        // kept 恒为 nil
+```
+
+⇒ 互证一旦成功（观察源读到了），**`ready_to_review` 永远是空的**。而那份清单正是人要逐条过的东西（提案 notice：「ready_to_review 里的条目仍需逐条对照 source_url 核对」；SSOT 第三步：「人确认后搬进 models」）。互证是**附加证据**，不是入库许可，把它从待办里拿掉等于把待办删了。
+
+同轮修的两处「说得不清楚」：
+- `canonical == ""` 那条分支把候选挪进 `needs_human_eyes` 却**一声不吭**，而按 notice 那个桶是「**不可用**」—— 于是一个「名字没匹配上」的**好价**和一个「划线原价」的**废价**在产出里长得一模一样（旁边那条 `no observation` 分支反倒写了理由）。现在把「这不是价格的问题，是名字需要人裁决」写在条目上。
+- 「一条都没互证上」的告警原先用 `len(p.NeedsHumanEyes)` 当「过了多少条」，而那是**互证之后**的桶大小（混着本轮之前就在的 unusable 行），报出来的数偏大、看着像干了很多。而且它不区分两种成因：① `examined == 0`（候选在更早的名字解析那步就全被挡住，在 `unresolved_names` 里）② `examined > 0` 但源里查不到（在 `needs_human_eyes` 里）。两种指路不同，混成一句会让人以为工具坏了。现在分开指路。
+
+**判据**：`cmd/tools/propose-baseline-prices/crosscheck_test.go` 6 条，用 `httptest` + 仓里**已有**的 `LLM_GATEWAY_PRICE_OBSERVATION_URL` 覆盖驱动真实抓取路径（不改生产代码的注入面）。3 条变异验 teeth：撤掉 `kept = append`（原 bug 形态）→ RED；判词不上条目 → RED；`examined == 0` 的指路分支 → RED。
+
+**真链路首次跑通**（本地源喂真实 5.3MB models.dev 载荷，216 providers 解析成功）：种子 canonical 名单 19 条全是 gemini/glm/grok/kimi，与夹具里的展示名零重叠，7 条候选的 best_score 0.45–0.60 全部低于 0.90 下限 ⇒ 全进 `unresolved_names`，`ready_to_review` 为空**且**告警准确指路。这是正确结果，不是失败。
+
+### 附带订正二：两条实抓页面端到端判据**从来没跑过**（2026-10-04，纯 Go，无迁移）
+
+`cmd/tools/propose-baseline-prices/main_test.go` 里两条判据读实抓夹具时用的是 `../../internal/vendorprice/testdata/…`，而本包在 `cmd/tools/propose-baseline-prices/`（**深度 3**）—— `../..` 只到 `cmd/`，要到仓根得三级。后果不是报错，是：
+
+```
+--- SKIP: TestApplyUnitGate_EndToEndOnLiveXaiPage
+    live fixture unavailable: open ../../internal/vendorprice/testdata/live-xai-pricing.md: no such file or directory
+```
+
+而 **SKIP 在报告里长得和通过一模一样**。被吞掉的两条正是：
+
+- `TestApplyUnitGate_EndToEndOnLiveXaiPage`：「实抓的 xAI 页面里按图/按秒计费的价格一条都不许进 ready_to_review」——这是单位门唯一的端到端证据；
+- `TestApplyUnitGate` 之后的名单解析端到端（「手写名单一个都到不了下限」）。
+
+修法两条，缺一不可：① 层级改 `../../../`；② **`t.Skipf` 改 `t.Fatalf`** —— 夹具是仓里跟踪的文件，它不见了是**本仓的错**，不是「环境不具备条件」。只改层级而不改 Skipf，下次路径再写错还是安静跳过。
+
+**teeth**：把路径改回错的 → **红**（原来会是 SKIP）。
+
+全仓扫过一遍这个形态（`ReadFile("../../…")` 且后面跟 `t.Skip`）：修掉这两处后已无第二例。`bg/credential_probe_v2_recharge_recovery_test.go` 里那处 `../../cmd/gateway/main.go` 是**有意的 cwd 回退**（先试 `../cmd/gateway/main.go`，成功才用 `../../`），不是缺陷。
+
+修完 `cmd/tools/propose-baseline-prices` 全包 **19 条 PASS / 0 SKIP / 0 FAIL**（此前有 2 条是 SKIP）。
+
+### 附带订正三：提案的拒绝理由现在有聚合（2026-10-04，纯 Go，无迁移）
+
+实测一页实抓快照产出 112 条不可用、30 种散着的理由，没有聚合就只能逐条读 —— 而逐条读的代价正是「抓取 → 提案 → 人确认」要替人省掉的活。更麻烦的是人很容易**加总**，而加总会得到一个不存在的数：112 条里前六类就合计 **149**（一条候选可同时命中多类）。
+
+新增 `rejection_reasons`（按理由归类 + 计数 + 最多 3 个示例展示名，数量降序、同数按名稳定排序，这样两版提案能 diff）。归类键取 warning 的**前半句** —— 提取器已有「`<陈述> — <解释>`」的约定，前半句稳定、后半句是人话。外加三处归一化，缺一个就会把一类拆成两类（且**每类计数都变小、看着仍「正常」**，没人会发现归类已经碎了）：
+
+1. 剥括注（`(Short context)` / `(Long context)` 属同一类）；
+2. **数字串换成 n** —— 实测踩到：`row has 4 extra…` 与 `row has 3 extra…`、`column count 2…4` 与 `…3…5` 原本各被拆成独立的一类；
+3. 去开头的 `and `（有些 warning 是接在别的 warning 之后的续写）。
+
+35 类 → 32 类。⚠ **各类计数不可相加**，这句话既写进 `notice` 也立成常量（`rejectionReasonOverlapNote`）让判据能钉住它 —— 注释会被人跳过，写进 notice 才会跟着文件走。
+
+⚠ 归类键**依赖上面那条措辞约定**，不依赖某个结构体：有人改一句陈述的措辞，归类就会碎成两类而两类的计数各自变小、看着正常。长期稳要靠给 warning 配稳定的机器码，那是一次覆盖 20 处措辞的改造，不该夹在这次修复里。
+
+判据 `cmd/tools/propose-baseline-prices/rejection_reasons_test.go` 3 条。写第一版时踩了一个自己挖的坑：失败信息只说「counted 0 times」而**不打印实际产出了哪几类**，于是只能再写个临时测试打印、发现状态是对的、更困惑 —— 一条只会说「0」的断言是半个断言，已给失败信息加上实际归类列表。
+
+## 2026-10-04T23:2x:00Z — 健康面「查得到问题、报不出内容」（纯 Go，无迁移）
+
+### 缺陷：`runChecks` 的扫描 switch 缺 case ⇒ 插入全空行
+
+`bg/routing_health_checks.go` 的 `runChecks` 对每条检查**按 `CheckID` 逐个 `switch` 特判**扫描。缺 `case` 时 switch 走空，`entityID` / `entityName` / `detail` / `fixSQL` 保持零值，而循环**照样把这一行 `INSERT` 进 `routing_health_checks`**，并按声明的 `severity` 计一次告警。
+
+真库实测读数（查询命中 1 行时）：
+
+| | entity_id | entity_name | detail |
+|---|---|---|---|
+| 修前 | `0` | `""` | `""` |
+| 修后 | `1` | `"1:m-no"` | `"no vendor baseline price for canonical no-base — supplier 6.00/30.00 USD has nothing to compare against"` |
+
+**受影响的正是本轮前两次新增的检查**：`baseline_observation_stale`（832）与 `baseline_price_missing`（826/832，本轮新增）—— 两条都缺 `case`。⇒ 上一轮加的那条健康面告警**在真库上从未报出任何内容**，而它的判据是绿的。
+
+这类缺陷与「恒真的判据」同源：**不报错、不空集、计数照涨**。一轮全绿的健康检查可以同时是一条完全无法行动的信息（运维看到 `entity_id=0` 的空告警，点不开一键修复）。
+
+### 为什么前两轮没抓到
+
+判据验的是**查询**（命中几行、shape 对不对），而缺陷在**扫描分支**上。「查询正确」与「查询结果能被读出来」之间隔着那个 switch，中间没有任何断言 —— 与本轮早先发现的「判据跑的是真函数 ≠ 判据覆盖了真路径」同一族。
+
+### 修法
+
+- 补两条 `case`，与它们的查询**成对**（改查询列数必须改这里）。
+- `baseline_observation_stale` 的 `entity_id` 需要 bigint 而表按 `source_url`（文本）主键 ⇒ 新增 `textHash`（FNV-1a 64，纯标准库）。**必须是稳定哈希**：用长度会被等长 URL 互相覆盖；用序号则依赖扫描顺序 ⇒ 每轮刷新都插新行、旧行留在 `status='open'` 成僵尸告警。不用 `maphash.Hash`，它每次进程换种子。
+- 新增 `baseline_price_missing` 检查：盯成本核算的**基准侧**（`baseline_observation_stale` 盯观察侧）。数据源刻意用 `v_supplier_price_vs_baseline` 而不是直接读 `models_canonical` 的基线价列 —— 后者在 826 未应用时报 **42703 undefined_column**，而 `Optional` 只认 **42P01 undefined_table** ⇒ 那种环境下整轮健康检查会**中止**，恰是 `Optional` 要防的后果。视图是一个关系，缺它时报 42P01，落在已支持的那条路上。
+
+### 判据 `bg/health_check_scan_guard_test.go` 3 条
+
+- `TestEveryHealthCheckHasScanBranch`：钉「每条 `CheckID` 都有 `case`」，防再加第三条。文本扫描（Go 的 switch 不能反射枚举；真库行为判据要为 8 条各造一份命中数据）。
+- `TestBaselinePriceChecksReportNonEmptyRows`：真库，双向。**有量具自证**（查询必须命中 ≥1 行，否则断言全空转）与**双向**（`m-has` 有基准价 ⇒ 不得报；只测单向的话 `WHERE true` 也能过）。
+- `TestTextHashIsStableAndDistinct`：稳定性承重（不稳定 ⇒ UPSERT 收敛不了 ⇒ 僵尸告警）。
+
+**teeth 三条，逐条先确认落地且仍可编译**：撤掉 `baseline_price_missing` 分支 → RED；撤掉 `baseline_observation_stale` 分支 → RED；把 WHERE 改成恒真 → RED（报出 `m-has`，即防假阳性那半边生效）。
+
+### 过程中两次量具自己坏掉（非产品缺陷）
+
+① 探针里把 `runChecks` 的返回值写成 `(nw, nc)`，而它返回的是 `(newCritical, newWarning)` ⇒ 读出「warning 检查却计了 critical」这个**看似产品 bug 的假象**。加量具自证（打印 `def.CheckID`/`Severity` 并在取不到时 `Fatalf`）后才定位是命名反了，严重性计数本来就是对的。
+② `comm` 算 case 差集时两边 `sed` 规则不一致（一边残留引号）⇒ 差集等于全集，差点把「全部 8 条都缺 case」当真。修正归一后差集才是那 2 条。
+
+⚠ 顺带记一条仓库事实：`bg` 包有两条判据**要完整生产 schema**（`TestTaxonomyUpsertAlias_Live` 要 `models_canonical`、`TestReportRollupWorker_CatchUp_RealDB` 要 `report_snapshots`），在只有夹具的库上必红。已用 `git stash -u` 对照确认是**既存红、非本轮引入**（stash 复原后仍为 8 条）。
+
+## 2026-10-04T23:4x:00Z — 迁移 833：供应商价格列非负约束
+
+### 缺口：成本核算的两个前提，第二个当时完全没有约束
+
+目标原话是「拿到各模型标准价格作为模型基准价，**然后再根据供应商的实际计费方式与价格进行设置**，准确控制模型的实际成本」。两个前提里：
+
+- **基准价**（原厂标准价）：826 建了列，**带 `CHECK (>= 0)`**。
+- **供应商价**（实付价）：826 的偏差视图 `v_supplier_price_vs_baseline` 读它算倍率，而它**在全 schema 上零 CHECK、零 NOT NULL、零枚举**（`grep -rn 'CHECK.*unit_price' sql/` 空）。
+
+### 真库实测（不是推断）
+
+`credential_model_bindings` 建好后直接插入，rc=0，三条脏数据全部落库：负价 `-5.00/-25.00` + `billing_mode='asdf_not_a_mode'`、以及 `in=100.00 / out=1.00`。灌进 826 的偏差视图（基准价 5.00/25.00）后：
+
+| 供应商 in/out | 倍率 in | 倍率 out | 问题 |
+|---|---|---|---|
+| -5.00 / -25.00 | **-1.0000** | -1.0000 | 负倍率 = 「比原厂便宜 100%」 |
+| 100.00 / 1.00 | 20.0000 | **0.0400** | 同一行两个方向自相矛盾，无任何标记 |
+
+第二行是最坏的形态：`out` 报「便宜 96%」而 `in` 报「贵 1900%」，**同一行里两个数字互相打架**。SSOT 注释里那句「宁可少提，不可提错」是在**提取侧**说的；错价在这里换了个入口 —— 从**录入**进来，而录入侧当时一个约束都没有。
+
+### 833 做了什么，以及**刻意不**做什么
+
+加四个独立非负 CHECK（`cmb_price_nonneg_in / _out / _cache_read / _cache_write`）。用四个而不是一个大 CHECK：越界时 PG 直接报出是哪一列。
+
+**刻意不加的两条**（都不是省事，是加了会出事）：
+
+- **`out >= in`**：绝大多数模型成立，但仓里 `billing_mode` 取值散落 `free` / `token` / `per_token` / `keyless` / `token_plan` / `code_plan` / `agent_plan`…，**没有 SSOT 枚举**（全仓 grep 出来是一串硬编码字面量）⇒ 「哪些模式允许 out < in」**无法从仓内确定**。拿一条无法证伪的规则去挡生产写入，失败时是整轮迁移失败。
+- **`billing_mode` 枚举 CHECK**：同上，加了会误伤合法值（`admin/pricing.go:847` 的设置路径对 `billing_mode` **零校验**，任何字符串都能落库）。要收口得先给 `billing_mode` 建 SSOT 枚举，那是另一次改造。
+
+### 存量数据：迁移会**失败**，且这是刻意的
+
+833 **不自动 UPDATE** 抹掉脏行——价格是钱，自动改价等于机器替运营决定了「我们按这个价付」（与 826「只记账、不自动改价」同一条纪律）。迁移头里给了必做的盘点 SQL：
+
+```sql
+SELECT count(*) AS negative_price_rows
+  FROM public.credential_model_bindings
+ WHERE unit_price_in_per_1m < 0 OR unit_price_out_per_1m < 0
+    OR cache_read_price_per_1m < 0 OR cache_write_price_per_1m < 0;
+```
+
+**这段 SQL 已在真库上验过，不是写在注释里的猜测**：先在 down 态写一行 `-1.00`（约束已移除、写得进去），盘点得到 `1`，再 `ADD CONSTRAINT` 得到
+
+```
+ERROR:  check constraint "cmb_price_nonneg_in" of relation "credential_model_bindings" is violated by some row
+```
+
+即「上有脏数据 ⇒ 迁移整条失败」这件事被**自己撞出来过**，而不是推演出来的。⚠ 种子库该表 0 行，**不能**据此认为生产没脏数据 —— 上生产前必须先跑上面那段。
+
+### 判据 `bg/supplier_price_check_test.go` 2 条
+
+`TestSupplierPriceNonnegCheckRejectsDirtyAndAcceptsLegal`：应用 **833 的真实字节**（不手抄约束）、**量具自证**「四个约束确实在表上」（缺了它，「负价被拦」可能只是别的约束恰好也拦了）、四列**逐列**各测一次负价、合法价**三种形态**（正常 / 全 NULL / 全 0 免费档）都不得被拦、盘点 SQL 必须原样可跑且返回 0。
+
+`TestSupplierPriceNonnegCheckDownRemovesOnlyConstraints`：up → down → down（幂等重放）→ up 四步后仍是 4 个约束；再单独应用 **down 文件本身**（不手写 `DROP CONSTRAINT`，否则量的是我写的 SQL 而不是仓库里那份），证明负价**能**写了、且合法价格行**原样存活**（down 只回滚结构，绝不碰价格）。
+
+**teeth 两条**：把 `>= 0` 改成 `> 0` → RED（「全 0 免费档」被误拦，精确指向防误伤那半边）；删掉 out 列约束 → RED（量具自证的 `want 4` 先触发，说明「约束数不对就停下」这条设计生效）。
+
+五点同步已完成（embeddata 逐字节 IDENTICAL / `go:embed` + `embeddedSQLFiles` / `StartupFiles` 末尾 / tsv 第 226 行 / 本节），checksum `OK: 171 registered migrations verified`。安装器 `TestStatsStartupMigrationsMatchCanonicalSources` 仍红于 **824** 的 embeddata 副本，**已用 `git stash -u` 对照确认为既存红**（干净树同样红）。
+
+### 侦察结论：`billing_mode` 枚举 CHECK **不该做**（订正上一轮的说法）
+
+上一轮把「`billing_mode` 没有 SSOT 枚举」写成 `out>=in` 与枚举 CHECK 都做不了的根因，并说「要收口得先建枚举」。**这个判断错了一半**：建枚举不是解法，因为它与既有契约和真实数据都冲突。
+
+**证据一：派生规则是恒等的，取值集合天生开放。**
+`modelcatalog/upsert.go:64` 的 `DeriveBillingMode` 只把 `token`/`""` 映射成 `per_token`，**其余原样透传**；而 `credentials.plan_type` 是 `text`、**全 schema 无 CHECK**。⇒ `billing_mode` 的取值集合 = `plan_type` 的取值集合 = 开放的。
+
+**证据二：既有判据明确要求透传。**
+`modelcatalog/upsert_test.go:124` 断言 `DeriveBillingMode("unknown") == "unknown"`。加枚举 CHECK 会**直接推翻这条已存在的契约** —— 这不是可以单方面做的决定。
+
+**证据三：真实库里已有「越界」值。**
+`127.0.0.1:5432`（只读 SELECT，未写入）2045 行实测分布：
+`per_token` 1273 / `token_plan` 645 / `free` 105 / `code_plan` 17 / `token` 4 / `monthly` 1。
+`keyless`、`pay_as_you_go`、`agent_plan` 只出现在测试与注释里，**不在真库**。
+
+**那 5 行到底是什么（上一轮抛给用户的问题，本轮自己查清了）**
+`credential_model_bindings.plan_type_origin` 这个列直接回答了它：
+
+- 那 5 行的 origin = **`discovery`**，而全库 origin 只有 `auto`(1696) / `discovery`(299) / `NULL`(50)，**没有 `manual`**。
+- `grep -rn "plan_type_origin = 'discovery'"` 全仓**零命中** ⇒ `discovery` 是**已退役**的写入路径留下的历史值，不是运营手工设置。
+- 同 origin 的 299 行里 294 行与派生规则一致，只有这 5 行不一致。
+- 凭据侧 `plan_type_updated_at` 全为 NULL（对照：14 行一致的也是 `plan_type='token'`）⇒ 不是「凭据后来改了」造成的。
+
+⇒ 结论：**历史遗留脏数据，不是有意的人工覆盖。**
+
+**但它没有任何行为影响**（这条同样重要，否则会误判严重性）：
+
+- 4 行 `token` 的凭据 `status='disabled'`。
+- 排序 CASE（`provider/client.go:1886`）的分支是 `free|token_plan|code_plan|agent_plan|monthly` → 1，`ELSE` → 2。`token` **不在列表**里，落 `ELSE`=2；而它本应派生的 `per_token` **同样落 ELSE**=2。⇒ **两者排序结果完全相同**。
+- 那 1 行 `monthly` 落档 1，反而比其派生值 `per_token`（档 2）**更靠前**。
+
+**且它们永远不会被自动纠正**：`upsertCredentialModelSQL` 的 `ON CONFLICT ... DO UPDATE` 只更新 `available` / `unavailable_reason` / `unavailable_at`（`modelcatalog/upsert.go:117-150`），**不碰 `billing_mode`**；而 `admin/provider_credential.go:706` 改 plan_type 时只动 `plan_type_origin='auto'` 的行，这 5 行是 `discovery`，也够不着。
+
+⇒ **行动项：不需要做。** 这是数据卫生问题（5 行 / 2045 = 0.24%），无路由影响，且 833 的非负约束与它正交（这 5 行价格是 0 与 0.1，都合法）。真要清理只能一次性手工 UPDATE，而那属于「替运营改数据」，不做。
+
+**顺带确定的一件事**：`out >= in` 这条约束在 `monthly` / `free` / `*_plan` 上**本质不成立**（按月/包月计费本就没有每 token 单价的 in/out 对比）。所以该方向的正确终局就是 **833 已有的纯非负约束**，不要再加方向性判断。
+
+## 2026-10-05T00:0x:00Z — 健康面补上目标第一半（纯 Go，无迁移）
+
+### 缺口：「这个需要加入到自检任务中」在健康面是空的
+
+目标第一句要求「自动对未曾标注核实过的模型定时进行核实，**这个需要加入到自检任务中**」。盘点结果：
+
+- 核实 worker **早已接线**（`cmd/gateway/main.go:4589` `go modalityVerify.Run(...)`，经 `shouldStartNewProbeWorkers` opt-in）。
+- 827 **已经把判断所需的每个数都算好了**（`models_blocked_by_strict`、`pairs_never_probed`、`oldest_unconfirmed_age_days` …）。
+
+但健康面 8 条检查里**无一条覆盖多模态核实**（`grep -c modality bg/routing_health_checks.go` = 0），而 827 的两个视图**在生产侧无人读**。⇒「定时核实」在运维可见的界面上是隐形的，`models_blocked_by_strict`（严格档 `LLM_GATEWAY_MODALITY_ROUTING_STRICT` 的上线前置）只能靠人手动查。
+
+### 新增 `modality_verification_stale`
+
+按 **(canonical, modality) 逐行**报 `excluded_by_strict_gate` 的组合。逐行而非只报总数，因为总数不可行动：「有 57 个组合挡着」回答不了「先修哪个」。
+
+- 数据源用 827 的 progress 视图（一个**关系**）而非直接读 825 的列：827 未应用时报 42P01，落在 `Optional` 已支持的那条路上；若直接读列则 825 未应用时报 42703 `undefined_column`，而 `Optional` 只认 42P01 ⇒ **整轮健康检查中止**。与 `baseline_price_missing` 同一取舍。
+- 刻意不报 `excluded_by_default_gate`：那是默认档的既有口径，不是「坏了」。
+- **不提供一键修复**：这条要的是出网探测（带挑战图、消耗预算、两胜定论），一个 UPDATE 解决不了。给假 `fix_sql` 只会让运维点一个注定无效的按钮。
+
+### 判据在写的过程中撞出两个真缺陷
+
+**缺陷一：按模态上行会把三行撞成一行（丢行）。**
+`routing_health_checks` 的 UNIQUE 是 `(check_id, entity_type, entity_id)`。我第一版让 `entity_id = canonical_id`，而这条检查**对每个模态报一行** ⇒ 同一模型的 vision/audio/video 三行撞成同一行，UPSERT 的 `DO UPDATE` 互相覆盖。
+真库读数：**查询命中 5 行、warning 也计了 5，而表里只剩 2 行**（2 个模型各一行）。丢掉的正是「这个模型还差哪几个模态」这个信息 —— 而那正是这条检查存在的目的。
+⇒ 修法：实体是 **(模型, 模态)** 组合。新增 `composePairID(canonicalID, modality)` 与 `modalityOrdinal`，序号取自 827 视图枚举的**同一份** `unnest(ARRAY['vision','audio','video'])` 顺序（两边不一致会让「行数对得上但分组对不上」）。
+
+**缺陷二：`Fatalf` 传了参数却没有格式符。**
+`go vet` 直接报出（122:80）：夹具过期的告警里传了 `uniq` 却没有 `%d`。⇒ 失败时那个计数**永远不会被打印**。属「判据自己坏掉」的一类，与本轮记的另外两次同族。
+
+### 判据 `bg/modality_health_check_test.go`
+
+应用**真** 825 + **真** 827 的字节（不手抄 DDL），`models_canonical` 从仓的逐对象 SSOT 推导（`schemaobj.Table`）并保留「真表 id 上无主键」这一事实（手抄会写成 `PRIMARY KEY`，比真表更宽松），另带「夹具已过期」的响亮告警。
+
+承重的是**双向**（这条与两条价格检查的故障形态相反：它们坏在「查得到、报不出」，这条坏在 WHERE 恒真/恒假）：挡路的 5 组要报、已确认的那 1 组不得被报出来。
+
+⚠ **我第一版的期望值是错的**：以为只会命中 1 行，实测 5 行 —— progress 视图为每个 `(canonical, modality)` 都**先存在一行**，2 模型 × 3 模态 = 6 组，减 1 组已确认 = 5 组。这是视图的设计（让「没核实」可见），不是缺陷。判据改为从视图实算 `pairs - confirmed_pairs`，而不是写死数字。
+
+同样地，**刻意不断言「m-confirmed 一行都不许出现」**：它的 audio/video 组合确实零证据、被严格档挡住是**正确的**。对一个不成立的性质写断言，比不写更糟。
+
+**teeth**：`entity_id` 退回裸 `canonical_id` → RED（复现出 5→2 的塌缩）。
+⚠ 前两次尝试都是**空跑**：`mod` 声明未用、`0*mod` 类型不匹配，两次都编译失败。编译失败不算 teeth —— 第三版改用「ordinal 项相消」使 `mod` 仍被引用，既能编译又行为等价，才算数。
+
+### 顺带记一条夹具事实
+
+`runChecks` 收尾时会**无条件**调用 `autoFixCanonicalID`（`canonical_id_null` 检查的自动修复，与本次被测的那条无关），它 `UPDATE provider_models`。⇒ **即便只跑一条检查**，夹具里也必须有 `provider_models`（含 `canonical_cleared_at`），否则 `runChecks` 在最后一步以 42P01 失败，而那个报错与被测对象毫无关系。本轮两条判据都被它绊过一次。
+
+## 2026-10-05T00:2x:00Z — 修「检查自己变成噪声」：`baseline_price_missing` 按模型去重 + 大面积时只报一行
+
+### 缺陷：一条**永久**报满 50 行的检查
+
+上一轮加 `baseline_price_missing` 时我写了一条纪律 —— 「已经没人用的历史模型没有基准价，不构成成本风险，报它们只会淹没真信号」—— 然后**自己就犯了**：第一版是逐绑定 `LIMIT 50`。
+
+真库量出来（`127.0.0.1:5432`，只读）：
+
+| | 值 |
+|---|---|
+| 有价绑定 | 186 |
+| 去重模型 | 163 |
+| `canonical_name` 去重后仍缺基准价的模型 | 163（**全部**，因为 SSOT 尚空） |
+
+⇒ 这条检查会**每一轮健康检查都报满 50 行**，而那 50 行说的是同一件事「这个模型没有基准价」。50 行占满告警位，真正需要先修的反而被埋掉。而 SSOT 的 `models` 刻意为空是**当前设计**（等原厂页面逐个核实），所以这不是「暂时的脏数据」，是**长期形态** —— 一条在长期形态下恒定报 50 行的检查不是检查，是噪声。
+
+### 改法：按模型去重 + 分两档报法
+
+- **缺失模型 ≤ 20** ⇒ 逐个列名，运维能直接对着填。
+- **缺失模型 > 20** ⇒ 只报**一行**汇总：缺多少个、全部有价模型共多少个、这是「SSOT 尚未填充」的形态而非个例，并指明该填哪个文件。
+
+两种形态都**可行动**：前者给清单，后者给工作量。阈值 20 是运维口味、不是数据推出来的；小到「一次填 20 个价目」一下午可完成，大到不会让人误以为「只有这几个」。
+
+真库两侧都验过：
+- 163 缺失 ⇒ **1 行**：`(bulk) 163 model(s) have no baseline price` / `Tracked priced models: 163`
+- 15 缺失（取前 15 模拟）⇒ **15 行模型名**，无 bulk
+
+### 过程中被自己的判据抓出两个真缺陷
+
+**缺陷一：汇总行用 `entity_id = 0`，而 0 正是「扫描分支缺失」的特征值。**
+`health_check_scan_guard_test.go` 立刻红（`inserted entity_id=0 — that is the no-scan-branch signature`）。⇒ 汇总行改用哨兵 **-1**，把 0 留给它本来的含义。
+
+**缺陷二：826 的偏差视图**没有** `canonical_id` 列。**
+我按记忆写了 `SELECT DISTINCT canonical_id, canonical_name`，真库直接 `42703 column "canonical_id" does not exist` —— 视图实际暴露 18 列（`credential_id, raw_model_name, canonical_name, provider_name, …`），**没有 canonical_id**。
+⇒ 按 `canonical_name` 去重，`entity_id` 走 `textHash(name)`（与 `baseline_observation_stale` 同一套），保证同一模型跨轮落同一行、UPSERT 能收敛。
+
+★ 两次都是**「我以为视图/判据长什么样」**而不是**「我查过它长什么样」**导致的。与本轮早先那条「5 行 vs 1 行」的期望值错误同族：**写断言时对数据形状的假设，必须由真库读数确认。**
+
+### 判据
+
+`TestBaselinePriceMissingCollapsesToOneRowWhenGapIsSystemic`（新）：种 **25 个**模型全部无基准价（25 > 20 刻意贴着阈值 —— 阈值若被改成 24 这条会立刻红），断言**恰好 1 行**、entity_name 以 `(bulk) ` 开头且**带缺失数**、落库后 `entity_id != 0` 且 detail 非空。
+
+为什么必须单独一条：原先那条只种 2 个模型，走的是 ≤20 分支，**汇总分支零覆盖** —— 而它恰恰是本轮改动要解决的那半。
+
+**teeth**：把 `> 20` 的分支条件改成恒假 ⇒ RED（25 个模型退回逐个列出）。
+
+### 顺带把判据的 SELECT 写法修对
+
+那四个输出列**都是无名的**（没有 `AS`），原先写的 `SELECT entity_name FROM (查询)` 报 `column "entity_name" does not exist` ⇒ 改按位置取 `q.*`。又是一次「假设列名」的同类错误。
+
+## 2026-10-05T00:3x:00Z — 目标第一半的**写回**路径首次真跑，并抓出一条会撒谎的日志
+
+### 盘点：11 条核实判据全是纯单元测试，核心 SQL 一次都没跑过
+
+`bg/modality_verification_test.go` 的 11 条判据，**`grep -c TEST_DATABASE_URL` = 0** —— 全部走 `scan` / `probe` / `persist` / `rollup` 四个可注入接缝。
+
+最关键的一处：`TestVerifyOnce_UpgradesTextModelAfterTwoSemanticPasses` 里那个假 `persist` **自己重新实现了一遍 applyStreak**，注释原话是「复刻真实的连击口径」。⇒ 它验的是**接缝的调用与次数**，而：
+
+- `persistRow` 的 SQL（`INSERT … ON CONFLICT … WHERE`）**从未执行过**；
+- `rollupVerdict` 的两段 SQL（读 `v_model_modality_verdict`、写回 `models_canonical`）**从未执行过**。
+
+这两段 SQL 就是目标第一半「能**标注**各个模型的多模态能力」的**落点**。单元测试全绿、目标的核心动作却一次没跑过。
+
+### 真库端到端跑通：两次语义通过 ⇒ text 升到 vision
+
+`bg/modality_rollup_realdb_test.go`，应用**真** 825 的字节、`models_canonical` 从仓的逐对象 SSOT 推导（保留「真表 id 上无主键」这一事实）。承重的是两条不可让步的护栏：
+
+1. **一次通过不升级**（streakGoal=2）。单次假阳性率 1/1680 ≈ 0.06%，一次蒙对就把模型永久标成多模态是**不可逆的路由级后果**。真库验到中间态 `level=unknown pos=1`。
+2. **`modality_source='manual'` 绝不覆盖**。Layer 3 手工覆盖是运维的显式决定，探测结论无权推翻。
+
+### 撞出的真缺陷：日志会说「改了」而实际一行没改
+
+第一次真跑时日志输出是：
+
+```
+INFO … canonical modality changed by semantic verdict canonical_name=m-manual … from=text to=vision
+```
+
+而库里 `m-manual` 仍是 `text` / `manual`。⇒ `rollupVerdict` 的 UPDATE 带**三个可以否决它的 WHERE 条件**（手工覆盖守卫、`modality IS DISTINCT FROM $1`），而那条 `slog.Info` 是**无条件打印**的。
+
+**危害不是难看**：日志是运维判读「标注到底生效没有」的主要证据。对一个 `modality_source='manual'` 的模型喊 "changed"，会让人以为**运维的手工决定被探测推翻了**；对一个本来就等于目标值的组合喊 "changed"，会让人以为标注生效而其实没有。两种误读都导向错误处置。
+
+⇒ 改为看 `tag.RowsAffected()`：命中 0 行时打一条**如实说明没改**的日志（含 `stored_modality` / `would_be`），并把 0 行的原因说清楚。修后两条日志都诚实：`m-auto` 报 changed（确实改了），`m-manual` 报 no label change（确实没改）。
+
+### 判据 `TestRollupLogDoesNotClaimUnmadeChanges`
+
+抓**日志文本**，与上面那条抓**库里的值**互补 —— 库对了但日志说错了，同样是缺陷，而且更容易骗过人。
+
+### ⚠ 这一轮我自己踩了两次「判据其实没跑」
+
+**一、teeth 假绿。** 第一次跑变异验证时看到 `ok` 就当成了 RED 成立。实际输出是 `--- SKIP`：上一轮失败的运行**留下了夹具残桩**（`model_modality_verification` / `models_canonical`），安全闸看到「表已存在」直接 SKIP，而包级 `ok` 把 SKIP 盖住了。
+⇒ **读数必须是 `-- -v` 里的 `--- PASS/FAIL/SKIP` 那一行，不是包级 rc。** 清掉残桩后重跑，同一个变异确实 RED。
+
+**二、量具没按真实数据流喂输入。** 日志判据第一次抓到的是**空日志**。查下来不是被测代码的问题：连击计数必须**从库里读回来**再用（真实 worker 的 `dueTargets` 正是从 SQL 取 `read_level` / `read_pos_streak` / `read_neg_streak` 填进 target 的），而我第一版沿用了 target 上的零值 ⇒ 第二次 `persistRow` 从 pos=0 重算 ⇒ 证据永远停在 `unknown` ⇒ `rollupVerdict` 正确地提前 return。
+★ 症状是「测不到」，根因是**量具没按生产的数据流喂输入** —— 与本轮记的另外两次（期望值写 1 实际 5、视图没有 `canonical_id` 列）同族：**对数据形状/数据流的假设必须由真库读数确认。**
+
+### 顺带确认的一条既存红
+
+`TestRollupCredentialModelIndex_NoDuplicateKey`（`bg/auto_index_refresher_*_test.go`）在带库跑时红 —— 那些文件**本轮未改动**，且它要的是完整生产 schema；无 `TEST_DATABASE_URL` 时 SKIP，所以 8 包无库跑是绿的。属既存红，与本轮无关。
+
+## 2026-10-05T00:4x:00Z — `dueTargets` 真库判据：钉住「未核实队列不被饿死」
+
+### 缺口：选人的那条 SQL 零判据，而它正是目标第一半的「未曾标注核实过的」那半句
+
+上一轮钉的是**写回**（`rollupVerdict` 把判词写进 `models_canonical`）。本轮查**选人**：
+
+```
+grep -rn dueTargets --include='*.go'
+→ 只有定义处 + 一个 fallback 赋值，没有任何测试引用它
+```
+
+（对照：`defaultResidueTargets` 是另一个函数，它**有**真库判据 `bg/default_residue_realdb_test.go`。）
+
+而 `dueTargets` 里有一处**承重**排序，注释原话：
+
+> 排序刻意把「一条证据都没有」的行排在最前：存量模型的 `modality_verified_at` 恒 NULL，
+> 若按 checked_at 排，新老证据行会互相挤占额度，**未核实队列可能永远排不上** ——
+> 那正是本任务要修的缺口。
+
+这不是排序偏好，是**这个任务存在的前提**。若未核实队列被已核实（但已 stale）的行挤掉，
+「自动核实未曾核实过的模型」在生产上就是空的 —— 而它**不报错、不空集、每轮都正常返回行**，
+只是永远在核同一批老模型。
+
+### 判据 `bg/modality_due_targets_realdb_test.go`
+
+种 3 个绑定：`never-1` / `never-2`（零证据）、`stale-1`（40 天前的一条证据，超过 staleAfter=30 天）。
+`batchLimit=1` ⇒ 扫描窗口 `= 1 × 4 = 4`，**刚好**放得下 3 个。
+
+承重四条：① 两个未核实的都必须被选中；② 40 天的 stale 行也该被选中（stale 窗口在生效）；
+③ **未核实的必须排在 stale 之前**（★ 最承重）；④ `stored='text'` 的行走 `vision` 分支
+—— 那正是 text→多模态 升级唯一的发现入口（文件头第 2 条）。
+
+真库读数：`[never-1 never-2 stale-1]`。
+
+### teeth 第一次打偏了，而打偏这件事本身是结论
+
+第一版变异把 `checked_at ASC NULLS FIRST` 改成 `NULLS LAST`，跑出来**仍然绿**。
+⇒ 那说明 **`NULLS FIRST` 是冗余的**：第一个排序项 `(v.id IS NULL) DESC` 已经**完全**
+分开两组，组内 checked_at 全是 NULL，NULLS 的方向不影响任何相对次序。
+
+改变异真正承重的那一项 —— `(v.id IS NULL) DESC → ASC` ⇒ **RED**，顺序变成
+`[stale-1 never-1 never-2]`，判据报出「a never-probed model sorted at 1, after the stale row at 0」。
+
+★ 与 `bg/supplier_view_cardinality_test.go` 里那条「三道机制的分工」同一模式：
+**`LIMIT 1` 承重 / `canonical_id IS NULL` 冗余 / `ORDER BY` 未证明**。本条里
+`(v.id IS NULL) DESC` 承重、`NULLS FIRST` 冗余。⇒ 判据钉**结果**（谁排在前面）而不钉
+**实现**（哪一段 SQL 负责），这样冗余的那一段将来被删掉时测试仍如实绿，而承重的那一段
+被改坏时立刻红。
+
+### 过程中两次「我以为的形状」被真库否掉
+
+① 查 `dueTargets` 读到的列之前先核了 `models_canonical` 的 SSOT（`mc.id/canonical_name/
+modality/status` 四个都在），避免写完判据再返工 —— 这是本轮**第三次**同族错误的预防动作
+（前两次：期望值写 1 实际 5、826 视图没有 `canonical_id` 列）。
+② 脚手架表（providers/credentials/provider_models）必须带齐 dueTargets 真实 SELECT 读到的
+**每一个**列（`enabled` / `manual_disabled` / `status` / `lifecycle_status` / `catalog_code` /
+`outbound_model_name` / `modality` …）。少一列就是 `column … does not exist`，而那会让
+「SQL 能跑通」这个前提悄悄不成立。
+
+## 2026-10-05T00:5x:00Z — `SyncBaselinePricesToDB` 真库判据：钉住「设置基准价」这一步
+
+### 缺口：第二半的落库动作同样零真库覆盖
+
+上一轮钉完第一半的 `dueTargets`（选谁）与 `rollupVerdict`（写回）之后，本轮按同样
+方法查第二半：
+
+| 文件 | 判据数 | `TEST_DATABASE_URL` |
+|---|---:|---:|
+| `bg/pricing_baseline_sync_test.go` | 7 | **0** |
+| `bg/pricing_baseline_live_test.go` | 1 | **0** |
+
+那 7 条全是纯单元测试（`validate` / verdict / 漂移容差 / kill switch）。
+
+⇒ `SyncBaselinePricesToDB` 里那条
+`UPDATE models_canonical SET baseline_price_currency…, baseline_price_vendor…,
+baseline_price_source…, baseline_price_source_url…, baseline_price_fetched_at…
+WHERE canonical_name = $1`（连同它的 `RowsAffected()==0` 分支）**从未在真库上
+执行过一次**。
+
+而它是「基准价」这个概念**唯一**的落点：SSOT 是仓内 JSON，要变成
+`models_canonical.baseline_*` 那 9 列并让 826 的偏差视图算得出倍率，中间只有这一步。
+⇒ 「判据全绿、目标的核心动作没跑过」，与前两轮同族。
+
+### 判据 `bg/baseline_price_sync_realdb_test.go`
+
+应用**真** 826 的字节（不手抄那 9 列），`models_canonical` 走仓的逐对象 SSOT。
+清单里放两个模型：`m-in`（存在）与 `m-gone`（**不存在**于 `models_canonical`）。
+
+承重两条：
+
+1. **出处必须落库**（`vendor` / `source` / `source_url` / `fetched_at`）。基准价的
+   全部价值在于「它出自原厂哪一页、什么时候取的」；只落数字就退化成一个人工填的
+   数字，而 826 的 `stale_source` 判词、827 的陈旧性检查全都靠 `fetched_at`。
+2. **一条缺失不该中断其余**。清单覆盖的原厂模型可能一个都没被供应商接入。若那让
+   整轮 sync 失败，则「名单里有一个模型没接入」会阻塞**其余所有模型**的基准价设置。
+
+**teeth 两条**：
+- 把 `RowsAffected()==0` 分支改成 `return err` ⇒ RED（报出「aborts the whole sync and
+  blocks baseline prices for every other model」）。
+- 删掉 `baseline_price_vendor = $7` 那一行 ⇒ RED（出处丢一半）。
+
+### 顺带记一条夹具事实
+
+要把**真** 826 整个应用上去，`credential_model_bindings` / `provider_models` /
+`credentials` / `providers` 四张表必须在场 —— 826 还会建
+`v_supplier_price_vs_baseline`，它读这四张。只建 `models_canonical` 会得到
+`relation "credential_model_bindings" does not exist`。
+⇒ **清理清单与安全闸必须同步补全这四张**：漏一张，下一轮 `CREATE TABLE IF NOT EXISTS`
+会静默沿用旧形状，测试照样绿而绿的是一份旧结构。
+
+## 2026-10-05T01:0x:00Z — `RecordReconciliation` 真库判据：钉住 NULL / 空串 / 0 的分离
+
+### 缺口：对账台账那条写路径同样零真库覆盖
+
+本轮先按与前两轮相同的方法查第二半**剩下的**写路径。过程里我自己**判断错了一次**：
+
+```
+grep 'INSERT INTO model_baseline_price_reconciliation' bg/pricing_baseline_reconcile.go
+→ 空
+```
+
+我据此在下面写了「reconcile worker 根本没有 INSERT，这张表从没人写」——
+**错的**。写入点确实存在，只是在**另一个文件** `bg/pricing_baseline_sync.go:353`
+（`RecordReconciliation`），我只 grep 了 reconcile 那一个文件就下了结论。
+⇒ 与本轮前面记的几次同族：**「我搜的那个范围」不等于「不存在」。**
+
+真相：`RecordReconciliation` 与 `SyncBaselinePricesToDB` 同在 sync 文件，而那个文件
+的 7 条判据 `TEST_DATABASE_URL` = 0 ⇒ **两条落库写路径都从未在真库上跑过**。
+
+### 判据 `TestRecordReconciliationKeepsAbsentAndZeroApart`
+
+种三行台账，覆盖三种「缺失」形态：`full`（两侧有值，判词 drift 20%）、
+`empty`（SSOT 的 currency / source_url 是**空串**）、`none`（观察侧整个为 nil）。
+
+承重四条，核心是 **NULL / 空串 / 0 三者的分离** —— 这正是 826 自己写下的纪律
+（「这两者的区别在成本核算里是本质的，CHECK 约束保证 0 不会被当成缺省」）：
+
+1. **空串必须落成 NULL**，不是 `''`。下游 826 的偏差视图用
+   `COALESCE(currency,'USD')`，而 `'' IS DISTINCT FROM 'USD'` ⇒ 空串会让
+   「币种未知」被算成「币种与 USD 不同」，即**不可比**。那是错的：未知就是未知，
+   不该被当成另一种币种。
+2. 观察侧为 nil ⇒ `observed_*` 必须全 NULL，**不得凭空造观察值**；判词落 `missing`。
+3. drift 判词的漂移率必须落库（它是这张台账存在的全部理由）。
+4. 非法判词（枚举外）必须被表自己的 `verdict` CHECK 挡住。
+
+**teeth**：把 `if p.Currency != "" { ssotCurrency = &p.Currency }` 改成无条件
+`ssotCurrency = &p.Currency` ⇒ RED（`m-empty ssot_currency="", want NULL`）。
+
+### ⚠ 本轮有一次无法归因的 FAIL（照实记）
+
+在还原变异后立刻跑全量 8 包，`bg` 报了一次 FAIL —— 但我只保留了 `tail -10`，
+拿到的是**包级** `FAIL` 而**没有测试名**，所以无法归因。
+随后用**同一条命令**复跑 5 次（3 次单 `./bg/` + 2 次全量多包），全部 rc=0，
+未再复现。
+
+⚠ **不复现 ≠ 没有发生。** 按本包的纪律（「不一致先怀疑量具」「基线红则后面所有红因
+不可信」），在拿到 `-v` 输出与测试名之前，这条只能记成**「一次未复现的失败，原因
+未知」**，不能记成「偶发、已排除」。下次 `./bg/` 变红时先看 `-v` 的 `--- FAIL:` 行
+再下结论。
+
+### 两条落库写路径现已都有真库判据
+
+| 写路径 | 函数 | 判据 |
+|---|---|---|
+| 基准价 → `models_canonical` | `SyncBaselinePricesToDB` | `TestSyncBaselinePricesWritesProvenanceAndSkipsAbsentModels` |
+| 对账结论 → `model_baseline_price_reconciliation` | `RecordReconciliation` | `TestRecordReconciliationKeepsAbsentAndZeroApart` |
+| 语义证据 → `model_modality_verification` | `persistRow` | `TestRollupLabelsCanonicalAfterTwoSemanticPasses` |
+| 判词写回 → `models_canonical.modality` | `rollupVerdict` | 同上 + `TestRollupLogDoesNotClaimUnmadeChanges` |
+| 观察源健康 → `model_baseline_price_observation_health` | `recordObservationFailure/Success` | `bg/observation_health_test.go` |
+
+## 2026-10-05T01:2x:00Z — 补上成本控制闭环的最后一环：偏差被告警
+
+### 盘点：度量侧齐了，但**没有任何生产代码读它**
+
+前几轮验的都是**度量**：基准价落进 `models_canonical`（826 九列）、倍率算进
+`v_supplier_price_vs_baseline`、判词记进 `model_baseline_price_reconciliation`。
+本轮查「谁消费这些数据」，结果是：
+
+```
+grep -rn 'v_supplier_price_vs_baseline' --include='*.go' | grep -v _test
+→ 只有 bg/routing_health_checks.go（本会话自己加的两条检查）
+
+grep -rn 'model_baseline_price_reconciliation' --include='*.go' | grep -v _test
+→ 只有 pricing_baseline_sync.go 的那一条 INSERT —— **只写不读**
+```
+
+而仓里所有 drift 告警（`mv_consistency.go` / `materialized_view_refresher.go` /
+`columnar_invariant_check.go`）都只关于**物化视图**与**columnar**，与价格无关。
+
+⇒ **供应商把价悄悄调高 3 倍，台账里静静躺着一条 `verdict='drift'，没有人被告知。**
+而「准确控制模型的实际成本」要求的是闭环，不是记账。
+
+### 先分清「控制」与「度量」
+
+差点顺手把「偏差视图无人消费」当成缺陷去补路由。查了真正算成本的那段才停下：
+`provider/client.go:258 CalcCost` **只用供应商价**（`PriceInPer1M` /
+`PriceOutPer1M` / cache 价），从不碰基准价。
+
+这是**对的**：实际成本当然按「你实际付的供应商价」算；基准价是**尺子**，不是账单。
+用它算成本等于按挂牌价付钱。所以「视图无人读」不是缺陷，而是设计边界 ——
+**缺口只在「记录了但没人知道」这一段。**
+
+### 新增 `supplier_price_drift`（健康面第 10 条）
+
+比原厂贵 **1.5 倍以上**的绑定告警，带上倍率与两侧的数。
+
+阈值 1.5 与对账侧的 `baselineDriftTolerancePct = 2.0` **刻意不同**：
+
+- 2% 是**记账**口径，超过就留痕，天然很吵（任何舍入都可能触发）。
+- 1.5 是**告警**口径，意思是「贵到值得人去查一次」。把记账口径直接拿来告警，
+  结果是健康面长期泛黄，**而那比不告警更糟** —— 真信号会被埋掉。
+- 「贵五成」通常意味着换供应商/换档位/谈价，而不是一次调价失误。
+
+**币种不可比的行不报**（倍率是两种货币直接相除，没有意义）。那些行由台账的
+`not_comparable` 判词负责 —— 需要的是汇率决策，不是告警。
+
+不给一键修复：这条要的是与供应商谈价/换档位/换供应商，不是一个 UPDATE 能解决的。
+
+### 过程中被真库否掉两处「我以为的形状」
+
+① **826 视图的 `provider_name` 列其实是 `p.id::text`（id，不是名字）**。直接用它，
+运营看到的是「1:raw-pricey」这种没法据以行动的数字。⇒ 补一次
+`LEFT JOIN public.providers p ON p.id::text = v.provider_name` 取真正的 `code`。
+（不改正 826：它已登记且带 checksum。）
+
+② SQL 注释里写了反引号（`provider_name`）—— **Go raw string 会被它截断**，
+`gofmt` 立刻报 7 处语法错。⇒ raw string 里的注释只能用 `--` 且不得含反引号。
+（与「SQL raw string 内只能用 `--` 注释、不得出现 `//`」是同一条纪律的反面。）
+
+### teeth 第一次打偏：又一次「冗余的闸」
+
+第一版变异删掉 `AND v.currency_comparable` ⇒ **仍然绿**。查下来：826 的视图在币种
+不可比时把倍率算成 **NULL**（`… OR COALESCE(cmb.currency,'USD') IS DISTINCT FROM
+COALESCE(mc.baseline_price_currency,'USD') THEN NULL`），而 `NULL > 1.5` 不为真 ⇒
+**该闸是冗余的**，真正承重的是视图本身。
+
+与上一轮 `NULLS FIRST` 冗余、这轮 `currency_comparable` 冗余，是同一模式第三次出现。
+保留它是双保险，但必须**说清它不承担承重**。
+
+改变异真正承重的阈值 `1.5 → 1.0` ⇒ **RED**（`matched 2 rows` + 点名 `raw-slight`）。
+
+### 成本控制闭环现状
+
+| 环节 | 落点 | 判据 |
+|---|---|---|
+| 基准价设置 | `SyncBaselinePricesToDB` | ✅ 真库 |
+| 偏差计算 | `v_supplier_price_vs_baseline` | ✅ 真库（provider/supplier_view_cardinality_test.go） |
+| 偏差记账 | `RecordReconciliation` | ✅ 真库 |
+| **偏差告警** | **`supplier_price_drift`（本轮新增）** | ✅ 真库 |
+| 实际成本计算 | `CalcCost`（只用供应商价） | 既有 |
+
+## 2026-10-05T01:4x:00Z — 补上唯一一处「从未验过的组合」：`Optional` 跳过在整轮里混跑
+
+### 缺口：所有既有判据都是一次只跑一条
+
+本轮之前，`Optional`（缺表跳过）这件事**每条判据都只单独验过一条检查**：
+
+```go
+runChecks(ctx, pool, []HealthCheckDef{def})
+```
+
+而生产走的是 `RunChecks` → `runChecks(ctx, pool, AllHealthChecks())`：**10 条一次
+跑完**，任何一条**非 Optional** 的检查出错就 `return` 中止整轮。
+
+四条 Optional 检查的依赖分属三个迁移：
+
+| 检查 | 依赖对象 | 迁移 |
+|---|---|---|
+| `modality_verification_stale` | `v_model_modality_verification_progress` | 827 |
+| `baseline_observation_stale` | `model_baseline_price_observation_health` | 832 |
+| `baseline_price_missing` | `v_supplier_price_vs_baseline` | 826 |
+| `supplier_price_drift` | `v_supplier_price_vs_baseline` | 826 |
+
+真实环境里它们**不同步**（运维在 826/827/832 之间逐个发布），所以
+「一部分在、一部分不在」是常态而不是边角情况。此前**没有任何一条判据跑过这种
+组合**。若 skip 实现有下列任一形态，夹具库是绿的而生产整轮死掉：
+
+- 「遇到错误就跳过」（把 `Optional` + `42P01` 两个条件并成一个）；
+- 跳过之后**没有 `continue`**，或 `continue` 之后把整轮标成成功；
+- 跳过被实现成「这一轮不做了」（**中止**后面的检查）。
+
+### 判据：三段式 + 四条量具自证
+
+新文件 `bg/health_check_optional_skip_realdb_test.go`，用真库建出
+**只应用 826** 的形态（827 的视图与 832 的表真的不存在）：
+
+- **A 混合场景**：两条缺失（必须跳过）+ 一条非 Optional 有发现（必须照常落库）。
+  顺序**刻意**把缺失的两条排在前面 —— 跳过一旦被实现成中止，后面三条一行都不落。
+  同时断言 `newWarning==3` 与表里的行数对得上（挡住「计了数没落库」与反过来）。
+- **B 核心对象缺失且不 Optional** ⇒ 必须报错中止。「核心表消失」绝不能被说成一切正常。
+- **C Optional 但失败码是 42703** ⇒ **同样必须中止**。这半边才是牙齿：正是
+  「无条件跳过」这种改法能同时骗过 A 和 B。
+
+★ 最有分量的一条自证：缺的那两个对象，缺的方式必须**正是** `Optional` 放过的方式 ——
+直接跑每条缺失检查的**真实查询**、把 `PgError.Code` 打出来断言就是 `42P01`。
+
+这同时把源码注释里的一个前提从注释搬进判据：数据源必须是**关系**（视图/表）。
+若有人改成直接读 825 加的列，826/827 未应用时报的是 **42703 undefined_column** 而非
+42P01，跳过不成立 ⇒ 整轮中止。此前这个前提**只写在注释里，没有任何判据钉住**。
+
+### teeth 第一次打偏：变异红了，但红在**量具**上而不是承重处
+
+第一版在量具自证里写了 `if !def.Optional → t.Fatalf("...不是 Optional...")`。
+T1 变异（`modality_verification_stale` 的 `Optional: true → false`）确实红了 ——
+但红在**这条自证**上，`runChecks` 的跳过机制压根没被走到。
+
+更要紧的是它造出了**循环依赖**：本判据的前提是「这两条被声明为 Optional」，
+而 A 段要验的正是「声明了 Optional 就真的跳过」。于是生产里有人合法地改掉标志位时，
+先撞上的是「测试前提不成立」，而真实后果是**那些没应用 826/827/832 的环境整轮健康面
+死掉** —— 报出来的是量具的话，不是后果的话。
+
+删掉那条自证后，T1 落在 A 段承重处，判词直指生产后果：
+
+```
+a round with two missing optional objects returned an error: ... SQLSTATE 42P01 —
+an environment that has not applied 826/827/832 yet would lose its ENTIRE health
+surface, which is exactly what HealthCheckDef.Optional exists to prevent
+```
+
+★ 教训与本会话前几轮同族：**变异「红了」不等于它验证了目标。** 必须看红在**哪一行**。
+
+### 两条 teeth
+
+| 变异 | 结果 |
+|---|---|
+| T1 `modality_verification_stale` 的 `Optional: true → false` | **RED**（A 段，承重处） |
+| T2 去掉 skip 判据里的 `&& pgErr.Code == "42P01"` | **RED**（C 段） |
+
+T2 特别说明问题：A、B 两段**照绿**（B 根本不 Optional），只有 C 段抓到。而且当时
+日志里打出的是 `check_id=fixture_broken_optional_query ... code=42703`，**自称
+"optional object not present"** —— 一个查列的 bug 被这条改法说成了「对象不存在」。
+
+### 顺带清掉一处测试库残留
+
+`mig825` schema（5 张表，早前手工 up/down 演练留下，仓里**没有任何文件**提到它）。
+它正是「`CREATE ... IF NOT EXISTS` 静默沿用旧结构」那个陷阱的现成实例，已
+`DROP SCHEMA mig825 CASCADE`。`public` 现为 0 表 0 视图。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；`gofmt -l` 对新文件干净。
+- 无库 8 包全绿（`bg` / `db` / `internal/vendorprice` / `cmd/tools/propose-baseline-prices` /
+  `discovery` / `provider` / `modelname` / `modelcatalog`）。
+- 带库 `bg` 全量：**964 PASS / 6 FAIL / 16 SKIP**。6 个 FAIL **已 `git stash -u` 基线对照
+  确认为既存**（干净树跑同样 6 个红，报错均为「这个库没有 `credit_ledger_hot` /
+  `*_default` 分区」—— 测试库不是完整生产 schema）。本轮新增判据在带库集合里 PASS。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`。
+- stash 仍 8 条（基线对照用完已 pop）。
+
+## 2026-10-05T02:0x:00Z — 五个迁移在**真生产 schema** 上首次应用成功
+
+### 从未被回答过的问题
+
+本工作流此前所有真库判据都跑在**手工搭的最小夹具**上。那类夹具验的是「迁移的字节
+有没有产生它声称的效果」，但它**验不到迁移落到真表上会发生什么** —— 真表与夹具表的
+差别正是容易出事的地方：
+
+- 真 `models_canonical`：**25 列 / 4 个 CHECK / 4 个索引**（含一个既有的
+  `models_canonical_modality_check`），夹具表是空的；
+- 真 `models_canonical` **没有主键**（只有 `canonical_name` 的 UNIQUE）⇒ 825 补主键
+  这件事在夹具上永远是「本来就有」；
+- 真 `credential_model_bindings` 的列与默认值和夹具不同 ⇒ 833 的四个
+  `ADD CONSTRAINT` 只有落在真表上才算验过。
+
+### 实测结论：五个全部干净应用
+
+真库灌 `00-prereqs → 01-schema → 02-seed`（顺序不能换：01-schema 用到 columnar
+访问方法，那个 AM 由 00-prereqs 注册），再按序应用 825/826/827/832/833：
+
+| 迁移 | 真 schema 上的结果 |
+|---|---|
+| 825 | 三列到位；`models_canonical_pkey` 补上（真表原本无主键） |
+| 826 | 9 个 `baseline_*` 列；`models_canonical` 列数 25 → **37**、约束 6 → **9**、索引 5 → **6** |
+| 827 | 两个 progress / rollup 视图建成 |
+| 832 | 观察源健康表建成 |
+| 833 | 四个 `cmb_price_nonneg*` 落在**真** `credential_model_bindings` 上 |
+
+种子 19 行 `models_canonical` 全程完好。**逆序 down 干净回退**：三个对象消失、
+列数回到 25。
+
+另在「基线 + 全部 227 条已登记迁移」的库上复验一次，**五条同样全部成功**
+（212 条 ok，失败的 13 条全部是从两个缺失文件级联而来，见下）。
+
+### 一次撞出来的真结论：`01-schema.sql` 单独不是可部署形态
+
+第一版判据顺手也想在这条判据里跑整轮 `RunChecks`（生产入口、10 条一次）。**直接炸**：
+
+```
+RunChecks failed: query canonical_id_null: ERROR: column
+pm.canonical_cleared_at does not exist (SQLSTATE 42703)
+```
+
+那列由**迁移 693** 提供，而 `01-schema.sql` 里**没有**它（实测 grep = 0）。
+
+⇒ **基线不是任何已部署环境会有的形态**，真实环境一定是「基线 + 全部已登记的 startup
+迁移」。仓里本来就知道这件事：`scripts/audit/run-integration-gate.sh` 明确区分
+`installer`（baseline + 全链，真实安装器产物）与 `baseline`（只有基线，**中间态**）。
+
+**但它是一类很容易再犯的错**：任何新写的检查若读了一个「谁都没登记、谁都没发布」的
+对象，症状是运行时报 42703/42P01，而报错指向列名，不会告诉你是「这个对象根本没被
+交付」。⇒ 新增判据
+`TestHealthSurfaceOnlyDependsOnShippedMigrations`，把这条信息提前到**文本层**：
+被列出的对象，要么在基线里，要么在一条**已登记且磁盘上存在**的迁移文件里。
+
+### 「整轮 10 条在生产形态库上跑一遍」是一次性实测，不进集成门
+
+在「基线 + 227 条全链」的库上逐条执行 10 条健康检查查询：**10 条全部可解析并执行**，
+`modality_verification_stale` 报出 **50 行**（打满 `LIMIT 50`），其余 9 条 0 行
+（该库无凭据/无 provider_models 数据）。
+
+**刻意不加进集成门**：`sql/schema/integration_fixture_shapes.tsv` 自己写着
+**「a shape label is NOT a green light」**，且实测 `bg` 在 installer 形态上
+**已 14 FAIL**。往一个已红的包里加判据只会埋掉信号。
+
+### 顺带量到的既存问题（不在本工作流范围，未改）
+
+朴素重放整条已登记链会**级联炸掉 13 条迁移**，根因是两个**已登记但磁盘上不存在**的
+startup 文件：
+
+| seq | tsv 登记的文件 | 磁盘上的实际情况 |
+|---|---|---|
+| 9 | `session_turns_hot_bootstrap.sql` | **不存在** |
+| 62 | `600_outbound_body_to_bodies_hot.sql` | **只有 `.down.sql`，up 文件不存在** |
+
+由此 `session_turns_hot` 从未建成，级联拖垮 640 / 707 / 710 / 713 / 716 / 734 / 738 /
+740 / 757 / 815 / 821 / 823 / 828 共 13 条。
+
+⇒ **「已登记」不等于「已交付」**。集成门有 `startup_known_gaps.tsv` 棘轮兜着，所以
+门是红的但「已知」；朴素重放没有棘轮就直接炸。**未改**：修它要么补回缺失文件、
+要么改 tsv，两者都属于那份登记清单的属主。
+
+另：tsv 登记的 seq 62 那条，`scripts/audit/run-integration-gate.sh` 依赖
+`sql/schema/startup_rerun_known_gaps.tsv` 棘轮；本条不属于本工作流的五个迁移。
+
+### 两条 teeth
+
+| 变异 | 结果 |
+|---|---|
+| T1 从应用列表里去掉 832 | **RED**（`public.model_baseline_price_observation_health does not exist`） |
+| T2 把 693 从 `installed_startup_migrations.tsv` 里摘掉 | **RED**（`which is NOT in installed_startup_migrations.tsv`） |
+
+T2 就是上面那个既存问题的最小复现：**摘掉登记，健康面依赖的对象就没人交付了**，
+而错误信息在运行时会指向 `canonical_cleared_at` 这个列名，不会说「你少登记了一条迁移」。
+
+### 顺带修掉的一处文档缺陷
+
+`825_modality_graded_verification.down.sql` 的 `-- File:` 头写的是
+`825_modality_graded_verification.sql.down.sql` —— **一个不存在的文件名**。
+全仓扫 `-- File:` 头与真实 basename 的一致性，只有两处不一致：本条（已修）与
+seq 742 那条（`742_hosted_task_recalled_event.sql.down`，**别人既存且已登记带
+checksum，未动**）。仓里没有任何代码解析这个头，所以那处只是文档缺陷 ——
+而它指向一个不存在的文件，正是这个头唯一的作用所防的事。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` 文件 gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**966 PASS / 6 FAIL / 16 SKIP**（+2 新增判据）。6 个 FAIL 与上轮
+  相同，**已 `git stash -u` 基线对照确认为既存**。
+- 判据**自建自删** scratch 库：跑完全量后 `mavis_*` 库 0 个残留；测试库 `public`
+  仍为 0 表 0 视图。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`。
+
+## 2026-10-05T02:1x:00Z — **撤回**上一节的「已登记但磁盘缺失」结论
+
+上一节（02:0x）里我写了「两个已登记但磁盘上不存在的 startup 文件导致 13 条迁移级联
+失败」，并把它列成待你决定的事项。**那个结论是错的。** 本节逐条订正。
+
+### 错在哪
+
+我判定「缺失」时**只查了 `sql/migrations/startup/`**（deploy 线的 canonical 目录），
+然后宣布文件不存在。实测：
+
+```
+installer/cmd/llm-gw-installer/embeddata/startup/
+    600_outbound_body_to_bodies_hot.sql   3545 B
+    session_turns_hot_bootstrap.sql      30057 B
+```
+
+两个文件**都在**，而 `installer/cmd/llm-gw-installer/main.go:263` 直接
+`//go:embed` 它们。`installer/cmd/llm-gw-installer/stats_migrations_test.go:20-21`
+还写明了它们的来历（`session_turns_hot_bootstrap.sql` 是
+「installer-only 终态资产，无 canonical 副本」）。
+
+⇒ 那 13 条级联失败**全是我重放时用错源目录造成的**，不是仓库缺陷。真实安装器
+从 embeddata 读自己的副本，一直是好的。
+
+### 根因：清单文件旁边的目录 ≠ 清单条目解析的目录
+
+`installed_startup_migrations.tsv` 是 `Runner.StartupFiles` 的**派生产物**
+（由 `installer/internal/dbinit/startup_manifest_test.go` 生成），而
+`StartupFiles` 的源是安装器自己的有序清单，指向 **embeddata**，不是 deploy 线。
+tsv 头部自己就写着这点：deploy 目录有 **458** 个迁移号，只有约 **200** 个进
+安装器清单。
+
+我看到 tsv 在 `sql/schema/` 下，就默认它的条目也该在 `sql/migrations/startup/` 下解析。
+**「派生产物」这个性质本身就否定了这个默认。**
+
+### 连带修掉的东西
+
+判据 `TestHealthSurfaceOnlyDependsOnShippedMigrations` 第 (2) 步原先也只查
+deploy 一个目录 —— 那样它会对任何 installer-only 依赖**误报**。已改成两处都查
+（deploy 目录 + embeddata 目录），**不要求同时存在**（同一资产两处都有副本是常态）。
+
+同时给它加了**第二条真实依赖** `v_node_probe_state_compat`（由
+`716_unify_probe_health_views.sql` 提供），原先只有一条列依赖撑着。
+挑它是因为它是**视图**（关系）而不是列：只靠列依赖的话，「对象是列」就成了隐含
+前提，而那正是最小夹具造得出、真 schema 造不出的那类差别。
+
+⚠ 顺带一个 grep 教训：`716` 里那句是
+`CREATE OR REPLACE VIEW v_node_probe_state_compat`，**无 `public.` 前缀**。
+我按 `CREATE ... VIEW public\.` 去 grep，得出「716 不创建它」的错结论。
+查对象名要容忍限定前缀有无。
+
+### 第 (2) 步的三条分支逐条验到
+
+| 场景 | 构造方式 | 结果 |
+|---|---|---|
+| deploy 目录命中 | 正常状态（716） | **PASS** |
+| embeddata 回退命中 | 条目改指 embeddata-only 资产 | **PASS**（证明回退分支真的走通） |
+| 两处都没有 | 把 693 的**两份副本都**挪走 | **RED**，判词指名两处目录 + 缺的正是 `canonical_cleared_at` |
+
+第三条最初**没验到**：第一次只挪了 deploy 那份，测试仍然绿 —— 因为 embeddata 里
+本就有第二份副本。**「变异红了」之前得先确认变异真的落地到了承重的那一处。**
+
+还原后 checksum 仍 `OK: 171 registered migrations verified`，`git status` 中 693
+无改动（两份副本都回到原位）。
+
+## 2026-10-05T02:2x:00Z — `rejection_reasons` 从 32 类并到 5 类：把静默碎裂换成显式未归族桶
+
+### 起点：一处**当下就活着**的碎裂
+
+拿 4 份实抓夹具跑真实提取器，归类出 **32 类 / 112 条**。逐条看时发现同一个成因被拆成
+**两个**键：
+
+```
+7  prices in this row are billed per per_minute, not per nM tokens
+7  rejected by the proposal tool: unit is per_minute, and a baseline price column holds USD per nM tokens
+```
+
+「这一行的计价单位不是每百万 token」——行级判定与工具级判定说的是同一件事，却占两个类名。
+`warningReasonKey` 的数字归一化救不了它，因为**单位名是词不是数字**。5 个单位因此变成
+10 个键，4 个档位（Batch / Fast / Flex / Ultrafast）同理变成 8 个键。
+
+后果不是「多几行」：要答「因为单位是 per_minute 被拒的有多少条」的人必须自己 7+7，
+而输出里**没有任何东西**告诉他这是一类。而这一列存在的全部意义就是「决定先修哪一类」。
+
+### 做法：显式族表 + 未归族显式化
+
+新增 `reasonFamily` / `classifyReason` / `unclassifiedPrefix`，`groupWarnings` 变成三层：
+
+1. **归一化**（`warningReasonKey`）：截解释、剥括注、数字换 n、去 and。
+2. **归族**（`classifyReason`）：措辞不同、成因相同的并成一类。
+3. **未归族显式化**：表里没有的一律进 `unclassified: ` 前缀的独立桶。
+
+**为什么是显式表而不是再加一层归一化**：`warningReasonKey` 已经是文本启发式上叠归一化。
+再加「单位名换 u、档位名换 t」只会让启发式更长，而它的失效方式**仍然是静默的**。
+显式表把失效方式换掉了：新增的 warning 类型变成一个**看得见的桶**。
+
+结果（工具跑真实夹具）：**32 类 → 5 类，0 未归族**；类目之和 206 > 112（重叠仍存在，
+那句「不可相加」的提醒仍是真的，判据守住这一点）。
+
+| 类 | 计数 |
+|---|---|
+| column structure is not one price per (model, in/out) | 85 |
+| price is dimension-conditional (context length / modality / tier within one table) | 65 |
+| priced in a unit that is not per-1M-tokens | 25 |
+| table is a non-standard tier (Batch / Fast / Flex / Ultrafast) | 23 |
+| row is context-tiered or per-token mix | 8 |
+
+### 过程中我踩的坑：**照抄注释里的措辞**
+
+族表里一条 matcher 我是从 `rejectionReason` 的 doc 注释里抄的，而那段注释引的是一份
+**过期**快照。真实键是
+
+```
+the prose above this table names a non-standard **billing** dimension
+```
+
+我抄成了不带 `billing`，于是 28 条候选落进 `unclassified:` 桶。
+
+⇒ 已把那段注释**删掉**：它引的类目清单既会过期，又正是它误导了我。类表是唯一出处，
+清单随时可由 `go run ./cmd/tools/propose-baseline-prices -raw internal/vendorprice/testdata`
+重新生成，判据把它钉住。
+
+### 判据：真实提取器 + 真实夹具，且断言未归族为 0
+
+`rejection_families_test.go`。已有的三条判据都用**测试作者手写的 warning 字符串**，
+与「真实提取器今天发出什么措辞」无关 —— 碎裂就是这么溜过去的。
+
+- **夹具路径错 ⇒ Fatalf 而非 Skipf**。本轮我第一版把根写成 `../..`（这个包在深度 3，
+  根是 `../../..`），判据立刻响亮地红；写 Skipf 的话它会显示成「验过了」。
+- 承重处是**未归族桶数 = 0**，外加类目集合与计数逐条相同。
+- **探测器自证**：造一条谁都不匹配的 warning，断言它**确实**进 `unclassified` 桶。
+  不加这条，「未归族 = 0」可能只是探测器压根没被调用过。
+
+### teeth：在真实提取器里改一个词
+
+把 `extract.go` 里的 `the prose above this table names…` 改成
+`the prose **directly** above this table names…`（只插一个词），判据**四路齐红**：
+
+```
+28 candidate(s) fell into "unclassified: the prose directly above this table names …"
+class "price is dimension-conditional …" has 55 candidate(s), want 65
+unexpected class "unclassified: the prose directly above this table names …"
+class "unclassified: …" carries no Why — the operator is left with a label and no next action
+```
+
+**改之前**，同样的改动会产出一个叫「the prose directly above this table names a
+non-standard billing dimension」的类、28 行、**看着完全正常** —— 那正是这个缺陷
+在被消灭前的形态。
+
+还原后 checksum 与 8 包状态不变，`internal/vendorprice/extract.go` 无改动。
+
+### 连带修掉的一处耦合
+
+`TestGroupWarningsCountsReasonsNotRowsAndIsStable` 断的是**归族前**的形状（4 类），
+加族表后同一批输入正确并成 3 类。已把查找键换成族键、期望数改 3，并写明**为什么**
+4→3（那是这次改动的意图，不是「把期望数改成当前输出」）。
+
+### 顺带一个读数差异，别混着比
+
+判据这条路径实测 119 候选 / tier 类 26；真跑一次工具是 112 候选 / tier 类 23。
+差在工具比提取器多一道闸 —— 厂商认不出来的快照整页跳过。两者都对，判据注释里写明了
+「看到数不一样先确认走的是哪条路」。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**966 PASS / 6 FAIL / 16 SKIP**（6 个仍是前几轮已 `git stash -u`
+  基线对照确认的既存红，与本轮无关）。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`。
+
+## 2026-10-05T02:3x:00Z — 「自动核实」的**出网之前**那段：闸门真挡住了吗
+
+### 缺口：闸门判据验的是纯函数，没验调用点
+
+`modalityVerifyAdmit` 有判据（`TestModalityVerifyAdmit`），它是纯函数、逐条闸门可测。
+但**没有任何判据证明 `probeAndPersist` 真的停在那里**。这两件事之间可以差一个
+`return`：
+
+```go
+if admit, why := modalityVerifyAdmit(t); !admit {
+        slog.Debug(...)
+        return false, false, nil   // ← 删掉这一行，闸门判据依然全绿
+}
+```
+
+闸门函数写对了、调用点漏了 return ⇒ 软删除的凭据照样被解密、被发请求。
+这与本会话反复处理的「已实现 ≠ 已接线」是同一族，只不过这次漏的是**闸门**。
+
+同样没人验的是函数注释里那句承诺：「**记账在出网之前**，与 capability_backfill 同理：
+零出网路径（admission 拒绝 / 解密失败）不该进账单，也不该进退避台账」。
+
+### 判据：观测「有没有出网」，而不是 mock 探针的行为
+
+`modality_zero_egress_realdb_test.go`。⚠ **不验探针本身** ——
+`ModalityVerification` 的注释写明「probe 本身**不是**接缝 —— 那条路径必须是真的，
+否则测的就是 mock」。所以这里不注入一个假装会识别的探针，也不据此声称「自动核实有效」。
+
+可观测量是**探针被调用的次数**：被验对象是「有没有出网」这个事实，而「出网」在测试里
+是唯一必须被替换的东西。这与 mock 行为断言方向相反。
+
+三组场景，每组都断言：探针 0 次 / **解密 0 次** / 预算台账 0 条 / 退避台账 0 条 / 证据表 0 行。
+
+| 组 | 场景 |
+|---|---|
+| 准入拒绝（8 条逐个） | binding_unavailable / credential_manual_disabled / provider_manual_disabled / provider_disabled / lifecycle_cooling / credential_status_retired / modality_unresolved / modality=text |
+| 解密失败 | 必须**报错**（调用方要能区分「跳过」与「正常」），但仍零出网、零记账 |
+| 预算耗尽 | dailyBudget=1 且窗口已填满 ⇒ 不出网、**且台账不增长** |
+
+★ 顺带钉住一条此前只在注释里的承诺：准入闸门在**解密之前**，所以被拒的凭据
+**连解密都不该发生** —— 而 `decryptFn` 的字段注释正写着「一条软删除的凭据不该被解密，
+更不该被发请求」。
+
+### 正向对照：防止整段判据空过
+
+全是「应该没发生」的断言时，一个**永远提前 return** 的函数也能全绿。所以最后有一个
+必须发生的情形：闸门放行 + 预算充足 ⇒ 探针被调用**恰好一次**、预算台账 1 条、
+退避台账 1 条、真库多出一行证据、且该行**真的挂在这个 canonical 上**
+（`canonical_id` 非空 —— 夹具漏填 `CanonicalID` 时 `persistRow` 写的是
+`NULLIF($1, 0)`，会落成 NULL，而 827 的 progress 视图就看不见它）。
+
+### 我被真库判掉的一个期望
+
+正向对照里我第一版断言 `read_level == confirmed`，被真库判红：实际是 `unknown`。
+那不是缺陷，是 **streak 规则**（`applyStreak` 要 `modalityVerifyStreakGoal` 次才升级），
+而两胜升级已由 `TestRollupLabelsCanonicalAfterTwoSemanticPasses` 钉住，不该重复。
+
+已改成断言**真实的一次通过形态**：`read_level` 仍是 `unknown`（一次通过不升级，正是这条
+规则要防的假阳性）而 `read_pos_streak` 变成 **1**（证据被记下了，只是没到线）。
+顺带发现第二个夹具坑：`CanonicalID` 不取出来的话，最后那条按 `canonical_id` 关联的
+读回会报「no rows in result set」—— 那测的是「读不到行」，不是「关联没建立」。
+
+### 两条 teeth
+
+| 变异 | 结果 |
+|---|---|
+| T1 删掉准入闸门后的 `return` | **RED**，8 个场景 × 5 条断言全红（探针 1 次 / 解密 1 次 / 记账 1 条 / 退避 1 条 / verified 误报 true） |
+| T2 删掉预算闸门后的 `return` | **RED**：`the probe was invoked 1 time(s) with the daily budget already exhausted` |
+
+T1 的形态正是本节开头说的那个漏 —— 纯函数判据全绿，而生产会把软删除凭据发出去。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**967 PASS / 6 FAIL / 16 SKIP**（+1；6 个仍是已 `git stash -u` 基线
+  对照确认的既存红）。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`。
+- 变异还原后 `bg/modality_verification.go` 的 diff 与本会话原有改动一致（+23/-1）。
+
+## 2026-10-05T02:4x:00Z — 修两个「配成 0 反而更严」的真缺陷：日预算与 batchLimit 的零值语义
+
+### 缺口：调度循环里的两处阈值，零值含义从未被验
+
+`VerifyOnce` 的循环体里两处阈值直接参与控制流：
+
+```go
+if probed >= m.batchLimit { break }                       // ①
+...
+if rem := m.budgetRemaining(now); rem == 0 { budgetExhausted = true; break }   // ②
+```
+
+### 缺陷一：日预算配成 0 ⇒ 每轮只探一条 + 一条假日志
+
+`budgetRemaining` 在 `dailyBudget <= 0` 时返回 **0**，而 0 的含义本该是「额度用完」。
+`chargeProbe` 在同一条件下是**放行**（返回 true）。
+
+⇒ 两边不一致，而 `VerifyOnce` 读的是 `budgetRemaining`。运维把日预算配成 0
+（`LLM_GATEWAY_MODALITY_VERIFY_BUDGET=0`，意图几乎肯定是「不限制」）会得到：
+
+- 记账侧：无限制（`chargeProbe` 放行）；
+- 循环侧：**探完第一条就 break** ⇒ **每轮只探一条**；
+- 日志：`"daily probe budget exhausted, cycle stopped early"` —— **假的**，压根没配预算。
+
+真库实测（4 条全部通过闸门的目标）：
+
+```
+dailyBudget=0 probed 1 of 4 target(s)
+VerifyOnce reported written=1, want 4
+evidence rows = 1, want 4
+```
+
+`0` 是可达的：`modalityVerifyDailyBudget` 走 `strconv.Atoi`，`"0"` 是合法整数、
+**不触发**那条「不是整数」的告警。
+
+### 根因比症状深一层：两个同类函数的返回值约定不一致
+
+grep 抓到同族第二处 —— `bg/capability_backfill.go:428` 是一模一样的写法。
+但它**是对的**：
+
+| | 未设预算时的返回值 | 注释 |
+|---|---|---|
+| `CapabilityBackfill.budgetRemaining` | **-1** | 「`<=0` 表示『不设预算』，调用方按无限制处理」 |
+| `ModalityVerification.budgetRemaining` | **0** | 「与 chargeProbe 的语义对齐（调用方只把它当提前收尾的信号）」 |
+
+**「与 chargeProbe 的语义对齐」这个说法本身就是错的** —— `chargeProbe` 放行，
+返回 0 的 `budgetRemaining` 却把 `rem == 0` 变成恒真。同一个人写的两个函数，
+一个守住了「-1 = 不限」这个约定，另一个没守住，而它在注释里声称自己对齐了。
+
+⇒ 真修法是改 `budgetRemaining` 返回 -1（与同族一致、也与自己注释里「提前收尾信号」
+的本意一致），而不是只在调用点加守卫。调用点的 `m.dailyBudget > 0` 保留，
+但**明确标注它不承担承重**（本会话已第四次遇到冗余闸，这次同样写明）。
+
+### 缺陷二：batchLimit 为 0 ⇒ 整个核实 worker 静默什么都不做
+
+`probed >= m.batchLimit` 在 `batchLimit == 0` 时**首轮即 break**。
+构造器用的是包常量（非零），但任何**字面量构造**的路径都会拿到 0。
+失效形态极难发现：不报错，日志照样打 `cycle done`，只是 `scanned=4 probed=0`。
+
+实测：修前 `batchLimit=0 probed 0 target(s)`；修后 `probed 4`。
+
+### 判据：先写正确行为的断言，看它在修复前红
+
+`modality_verify_loop_realdb_test.go`，四个场景：
+
+| 场景 | 修前 | 修后 |
+|---|---|---|
+| dailyBudget=0（含义：不限） | 探 1/4，written=1 | 探 4/4，written=4 |
+| batchLimit=0（含义：未设置） | 探 0，且不报错 | 探 4 |
+| batchLimit=2（正数上限必须生效） | 探 2 ✓ | 探 2 ✓ |
+| 一条目标解密失败 | 整轮不崩，继续 ✓ | 同 |
+
+第三条与第四条**修前就绿** —— 它们是「别把这两处修坏」的护栏，不是这次的缺陷。
+
+⚠ 不验探针本身（同上一节的理由）；`scan` 与 `probe` 是结构体注释点名的接缝，
+`probeAndPersist` / `persistRow` / `rollupVerdict` 走真库真实代码。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿（`modality_verification_test.go` 里那条 `budgetRemaining != 100`
+  断的是「配了预算」的情形，不受 -1 改动影响，已跑过）。
+- 带库 `bg` 全量：**968 PASS / 6 FAIL / 16 SKIP**（+1；6 个仍是既存红）。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`。
+- 测试库 `public` 仍 0 表 0 视图；stash 仍 8 条。
+
+## 2026-10-05T02:5x:00Z — 同一个裸守卫的**第三处**：改成 ratchet + 行为判据
+
+### 上一节的方法有个洞：我只修了「被我看见的那一处」
+
+上一节修了 `modality_verification.go` 的 `if probed >= m.batchLimit { break }`。
+另一处我是**靠 grep 侥幸**撞见的（`capability_backfill.go:395`），而不是因为我知道
+它存在。第三次不能再靠运气 —— 任何**新增**的周期 worker 写裸守卫都得红。
+
+### 系统扫面结果
+
+```
+bg/capability_backfill.go:395   if probed >= b.batchLimit {        ← 裸守卫
+bg/modality_verification.go:318 同上（已修）
+```
+
+`capability_backfill.go` 构造器同样只喂包常量（50），所以生产不受影响；但它旁边
+还有一处更隐蔽的：
+
+```go
+func (b *CapabilityBackfill) scanLimit() int {
+	n := b.batchLimit * capabilityBackfillScanFactor
+	if n <= b.batchLimit || n < 0 { return b.batchLimit }   // batchLimit=0 ⇒ 返回 0
+	return n
+}
+```
+
+`batchLimit==0` ⇒ `n=0 <= 0` ⇒ 返回 **0**，而它的结果直接进 SQL 的 `LIMIT $3` ——
+**`LIMIT 0` 扫不出任何行**。⇒ 扫描窗口才是真正的限流器，**只修循环守卫是不够的**。
+
+★ 我第一版「修法」正是自己造出了这个洞：把 `scanLimit` 的 0 改成「返回 0 表示不限」，
+而 SQL 里 0 就是「不扫任何行」。改返回契约却没先看调用方 —— 这是本会话第 N 次
+「观测量必须落在被检验对象之外」：返回值是给**调用方**的约定，不是给作者的直觉。
+
+### 两条判据：形状 + 行为
+
+**`TestNoPeriodicWorkerBreaksOnANonPositiveBatchLimit`（形状，扫描式）**
+扫 `bg/*.go`（跳过 `_test.go` 与注释行），任何 `if X >= recv.batchLimit {` 同行必须带
+`batchLimit > 0`。新增 worker 写裸守卫立刻红，不必等有人再撞一次。
+
+两条自证（否则判据可能整体空转）：
+
+- 正则**不得**匹配 `if probed >= m.batchLimit > 0 &&`（合规写法）；
+- 正则**必须**匹配 `if probed >= m.batchLimit {`（目标形状）。
+
+豁免表 `batchLimitGuardAllowlist` 当前为空，且每条豁免必须带理由。
+⚠ 如实写明局限：**不**检查豁免条目是否已过期（那需要行号→内容的反向索引，写出来
+只会是一段看起来在检查、其实什么都不断言的代码）—— 改用 `grep -n` 清理。
+
+**`TestBatchLimitZeroFallsBackToTheDocumentedDefault`（行为，不需要数据库）**
+`effectiveBatchLimit` / `scanLimit` 是纯方法 ⇒ 这条**永远会跑**。ratchet 扫形状，
+但形状不保证语义（`if probed >= 0` 也是「带 0 判断」的一种，而它做的正是要修的事）。
+
+### 语义选择：**回落有界默认**，而不是「不限」
+
+我第一版把 `batchLimit<=0` 读成「不限」，随后自己否掉了：核实带挑战图、backfill 探
+capability，**都是花钱的**。把上限配成 0（多半是想「不限制」）换来的不该是「无上限
+出网」—— 那才是把一个配置失误变成开销失控。
+
+⇒ 定为：**非正 ⇒ 回落包常量**（50）。既修掉「静默什么都不做」，又保持有界。
+
+顺带钉住两条下游事实：
+
+- `scanLimit()` 必须 **> 0**（`LIMIT 0` 是「不扫任何行」）；
+- `scanLimit()` 必须 **> effectiveBatchLimit()**（窗口等于每轮上限就没法在
+  attempt 台账退避的行后面取到新行，反饥饿失效）；
+- nil 接收者（`VerifyOnce` 开头就有 `if m == nil`）也必须给有界默认。
+
+### teeth
+
+- **修前状态本身就是变异**：`capability_backfill.go:395` 的裸守则是 ratchet 写完后
+  第一次跑就报出来的**现存实例**（`capability_backfill.go:395: if probed >= b.batchLimit {`），
+  不需要人为制造。
+- 人为 teeth：把 `effectiveBatchLimit` 的回落删掉（只留 nil 判断）⇒ **RED**。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿（`bg` 整包 25s，rc=0）。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`。
+- teeth 还原后 `bg/capability_backfill.go` diff 为 +21/-4，无残留标记。
+
+## 2026-10-05T03:0x:00Z — 上一节那条教训，我自己在同一个文件里又犯了一次
+
+### 上一节我写下了结论，却没有在三行之外应用它
+
+上一节的核心发现是：**只修循环守卫不够**，`scanLimit()` 那种喂给 `LIMIT $n` 的函数
+才是真正的限流器（`LIMIT 0` = 扫不出任何行）。我在 `capability_backfill.go` 应用了
+它，并把它写进了 changelog ——
+**却在同一个文件里 300 行外的 `modality_verification.go` 忘了应用**：
+
+```go
+// dueTargets 的窗口：
+m.batchLimit*modalityVerifyScanFactor      // ← 0 * 4 == 0 ⇒ LIMIT 0
+```
+
+后果：`batchLimit==0` 时 `dueTargets` 返回**零行**。而循环侧上一节已经修好了（回落到
+包常量 50），于是**扫描侧说「一条都没有」、循环侧说「正常跑」** —— 两个地方对同一个
+零值的解释不一致，整轮依然静默停摆，日志照样打 `cycle done`。
+
+### 为什么上一节那条判据是绿的
+
+上一轮的 `TestVerifyOnceTreatsZeroBudgetAsUnlimitedAndZeroBatchLimitAsUnset` 用
+`scan` 接缝喂进 4 条目标，**完全绕过了真正的 SQL**。它量的是「循环在拿到目标之后
+怎么用 batchLimit」，而这个洞在「目标从哪来」那一层。
+
+⇒ 与本会话前几轮同族：**判据量的是我给的形状，不是真在跑的那条路径。**
+修法是让判据打在 `dueTargets` 上（真 SQL + 真库），而不是给循环塞现成的目标。
+
+### 两条判据：文本 ratchet + 真 SQL 行为
+
+**`TestSqlLimitIsNotBoundToARawBatchLimit`（文本 ratchet）**
+扫 `bg/*.go`，任何 `<recv>.batchLimit * …` 直接绑进 SQL 的形状都必须经由
+`effectiveBatchLimit()`。两条自证：正则**必须**匹配目标写法、**不得**匹配已修好的
+`m.effectiveBatchLimit()*factor`（否则每一条报告都是假的）。
+
+**`TestDueTargetsPicksNeverProbedFirst` 加了「承重之三」**（真库 + 真 SQL）
+在既有夹具上多跑一次 `batchLimit: 0` 的 `dueTargets`，断言窗口 **> 0** 且**至少**
+返回配置情形下那 3 条。改回原始绑定的实测结果：
+
+```
+dueTargets returned 0 targets with an unset batchLimit, although the fixture holds
+3 bindings (2 never-verified + 1 stale). With batchLimit<=0 the scan window
+collapsed to LIMIT 0 and the whole verification worker silently did nothing
+```
+
+而同一轮里 `batchLimit: 1` 那条**仍然过**（顺序仍是 `[never-1 never-2 stale-1]`）
+⇒ 判据有鉴别力，不是恒红。
+
+### 修法：新增 `ModalityVerification.scanLimit()`，与同族逐行同形
+
+```go
+func (m *ModalityVerification) scanLimit() int {
+	limit := m.effectiveBatchLimit()
+	n := limit * modalityVerifyScanFactor
+	if n <= limit || n < 0 { return limit }
+	return n
+}
+```
+
+保留 `n <= limit` 那道溢出防御，且 `scanLimit()` 恒为正（回落到有界默认）。
+
+顺带把行为判据 `TestBatchLimitZeroFallsBackToTheDocumentedDefault` 扩到
+`modality_verification` 的 `scanLimit`，钉三条：必须 > 0（`LIMIT 0` 不扫任何行）、
+必须 > `effectiveBatchLimit()`（窗口等于上限则 attempt 台账的反饥饿失效）、
+nil 接收者也给有界默认。
+
+### 教训
+
+上一节我**写下**了「扫描窗口才是真正的限流器」，却在同一文件里没扫到第三处。
+⇒ **写下结论之后还要问一句「这个结论我应用到全部同类位置了吗」** ——
+写下不等于应用，而「我刚写进 changelog 的那条」恰恰是最容易想当然认为自己已经
+做过的那一条。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0。
+- 修前状态即变异（ratchet 第一次跑就报出 `modality_verification.go:590`）。
+- teeth：把 `dueTargets` 改回 `m.batchLimit*factor` ⇒ **RED**（两条 dueTargets
+  断言红、ratchet 红），配置正常那条仍过；还原后无残留标记。
+- `bg/modality_verification.go` 累计 diff +76/-7。
+
+## 2026-10-05T03:1x:00Z — 把「零值塌成 LIMIT 0」从两个文件扩到**整个 bg/**，并逼出豁免表的一个洞
+
+### 扫面结果：5 个批次字段，2 坏 3 好
+
+| 站点 | 绑进 `LIMIT` 的值 | 零值是否归一 |
+|---|---|---|
+| `capability_backfill.go:639` | `b.scanLimit()` | ✅ 上一轮已修 |
+| `modality_verification.go:587` | `m.scanLimit()` | ✅ 上一节已修 |
+| `integrity_probe_planner.go:195` | `p.cfg.MaxPerTick` | ✅ 构造函数 `if cfg.MaxPerTick <= 0`（:81） |
+| `model_availability_backfill.go:177` | `w.batchSize` | ✅ 构造函数 `if cfg.BatchSize <= 0`（:61） |
+| `credential_autoheal.go:221` | `w.batchSize` | ✅ 包常量 `autoHealBatchSize` |
+| `session_lifecycle_worker.go:256/312` | `w.cleanupBatchSize` | ⚠ 默认 500，但 `WithRecycleConfig`（**test-only**）可传 0 覆盖 |
+
+**正确写法在仓里本就存在** —— 三处都是「在配置加载处归一」，与我在前两轮用的
+`effective*` 入口等价（前者在边界、后者在使用点）。
+
+`session_lifecycle_worker` 那处**刻意不改**：覆盖它的选项函数注释明写「测试用」，
+生产没有任何调用方传值，改它等于为一个测试脚的坑改生产代码。如实记下。
+
+### 判据：两条 ratchet（形状）+ 一条行为
+
+| 判据 | 扫什么 | 自证 |
+|---|---|---|
+| `TestNoPeriodicWorkerBreaksOnANonPositiveBatchLimit` | 裸 `if X >= recv.batchLimit {` | 不得匹配 `... >= m.batchLimit > 0 &&`；必须匹配裸形状 |
+| `TestSqlLimitIsNotBoundToARawBatchLimit` | `<recv>.batchLimit * …` 直接绑进 SQL | 必须匹配目标；**不得**匹配 `m.effectiveBatchLimit()*factor` |
+| `TestSqlLimitBatchFieldsAreNormalisedSomewhere` | 整个 `batch* / *Size / *Limit / topN / overflow` 字段族 | 能识别裸字段；**不得**把 `b.scanLimit()`（方法调用）算进去 |
+| `TestBatchLimitZeroFallsBackToTheDocumentedDefault` | 行为（纯函数，永远会跑） | `scanLimit` 必须 > 0 且 > `effectiveBatchLimit`；nil 接收者也有界 |
+
+### 实现过程中被自己的自证抓到的两个洞
+
+① **正则过宽**：`\w*[Ll]imit\w*` 把**合规的** `b.scanLimit()` 也匹配了 ⇒ ratchet 会把
+已修好的两处也报成缺陷。RE2 没有负向断言，改成在代码里后置过滤（匹配后紧跟 `(` 的
+是方法调用）。**一条永远误报的 ratchet 比没有 ratchet 更糟** —— 人会学会忽略它。
+
+② **注释里的 `LIMIT $3` 被当成 SQL**：我自己在解释「为什么它危险」时写的注释被
+匹配，ratchet 报了一个**不存在的缺陷**。判据红的理由指向了错误的对象。
+
+### ★ 最值得记的一个洞：**豁免表让 ratchet 失去牙齿**
+
+第一版豁免是 `map[string]string`（站点在表里就不报）。我据此以为 ratchet 有牙，
+把 `m.scanLimit()` 回退成 `m.batchLimit*factor`（**撤销本次修复**）——
+**ratchet 一声不吭**，因为那个站点还在表里。
+
+⇒ 豁免的正确形态是「因为它走了 X 所以没事」，而 ratchet 必须**验证 X 还在**。
+已改成带谓词：
+
+```go
+type batchFieldExemption struct {
+	reason    string
+	mustMatch *regexp.Regexp   // 站点实参行必须匹配它，豁免才有效
+}
+```
+
+谓词失配 ⇒ 豁免失效 ⇒ 照常报告，并说清「豁免的理由已失效」。改完立刻再跑同一个
+变异，判据红了：
+
+```
+modality_verification.go:587 — its exemption claims "m.scanLimit() → effectiveBatchLimit()"
+but the site no longer matches that claim (arg on :590: m.batchLimit*modalityVerifyScanFactor).
+The exemption is STALE: the zero value is no longer normalised anywhere, so LIMIT 0 would
+scan zero rows.
+```
+
+★ 这是本会话**第五次**「变异红了但没验它是否真落在承重处」的反面：**变异没红**。
+上次是我造了个恒过的判据（判据红了但量的是错的地方），这次是豁免把 ratchet 焊死了。
+两种都只能靠「真的把修复撤掉再跑一遍」发现。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0。
+- teeth：撤销 `dueTargets` 的修复 ⇒ 三条 ratchet 中两条同时红；还原后无残留标记。
+- `bg/modality_verification.go` 累计 diff +76/-7。
+
+## 2026-10-05T03:2x:00Z — 成本那半边的第一个真缺口：**「原厂免费而供应商收费」此前完全静默**
+
+### 用多模态那把尺子量了成本那半边
+
+前几轮的扫面（零值陷阱、限流参数、豁免焊死）都在**多模态**那半边。这一轮把同一把尺子
+对准 `bg/pricing_baseline_sync.go`（把基准价写进 `models_canonical` 的那一步），
+第一眼就落在 `driftPct`：
+
+```go
+if ssot == 0 { return nil }        // 清单侧为 0 ⇒ 百分比无定义
+```
+
+数学上正确（对 0 取百分比无定义）。**但 `validate` 只拒绝负数、允许 0**
+（`if *p.InputPer1M < 0`），而 0 是有意义的：**厂商把这一档列为免费**。
+真实库里 `billing_mode='free'` 有 105 行。
+
+### 缺口：三种结果塌成两种
+
+实测（基准 0/0）：
+
+| 观察侧 | 修复前判词 | 修复前 reason |
+|---|---|---|
+| 0/0（真免费，价一致） | `not_comparable` | `neither side has a comparable price` |
+| **5/25（免费→收费）** | `not_comparable` | `neither side has a comparable price` |
+
+**判词与 reason 完全一样。** 也就是说台账里**查不出免费→收费这件事发生过**。
+
+更严重的是它**也不告警**：
+
+- 826 视图的倍率对 0 分母给 NULL（视图里 `OR baseline = 0 THEN NULL`，**防除零是对的**），
+  而 `has_baseline` 判的是 `IS NOT NULL` ⇒ 0 基准也算「有基准价」；
+- ⇒ `supplier_price_drift` 的 `ratio > 1.5` 不成立（NULL）；
+- ⇒ `baseline_price_missing` 的 `NOT has_baseline` 也不成立。
+
+**两条检查都看不见，台账也不记。** 而「本该白给的东西在收钱」恰恰是成本核算里
+最可行动的一类偏差。
+
+### 修法：台账给独立判词 + 健康面纳入告警（不新增迁移）
+
+**台账**（`ReconcileBaselinePrice`）：新增 `baselineFreeButCharged`，命中时判成
+`PriceVerdictDrift` + 一条说清「原厂列为免费而观察非 0」的 reason。
+
+选 `drift` 而不是新增枚举值：它确实是对基准价的偏离；而 `drift` **已被对账侧的
+告警路径统计**（`counts[PriceVerdictDrift] > 0` ⇒ 健康面报），**不新增迁移即生效**
+（新增判词要改 826 的 CHECK、登记表、五点同步）。
+
+**健康面**（`supplier_price_drift`）：WHERE 加两条
+`COALESCE(baseline,0)=0 AND COALESCE(supplier,0)>0`，detail 用 CASE 分支出
+「FREE」形态，排序把它**排在最前** —— 它的倍率是 NULL（`GREATEST` 会把它甩到末尾），
+而可行动性最高，LIMIT 50 下沉底等于藏起来。
+
+★ 扫描分支**不用改**（仍是 4 列），`TestEveryHealthCheckHasScanBranch` 不受影响。
+
+### 两条判据 + 两条 teeth
+
+| 判据 | 覆盖 |
+|---|---|
+| `TestFreeBaselineChargedBySupplierIsAlerted`（真库 + 826 真视图） | 免费→收费**要报**且 detail 说清 FREE；真免费→免费、比原厂便宜**不报**；3.0x 仍报（护栏） |
+| `TestFreeBaselineGetsItsOwnLedgerVerdict`（纯函数） | 判成 drift 且 reason 提到 free；免费→免费**不得**报成 drift |
+
+承重是**双向**的：只测单向的话，把 WHERE 写成恒真也能过。
+
+teeth（两条都红在承重处，ledger 那条打出的正是修复前的真实行为）：
+
+- 撤掉 WHERE 的两条条件 ⇒ `did not report "raw-free-charged"`
+- `if false && baselineFreeButCharged(...)` ⇒ `verdict = "not_comparable" (detail map[reason:neither side has a comparable price])`
+
+### 判据自身踩到的两个夹具坑
+
+① `entity_name` 是 `provider_code:raw_model_name`（`p1:raw-free-charged`）——
+我第一版拿裸名直接比，报了一堆假红。**「报没报」必须按子串判。**
+
+② 只跑了查询、**没跑 `runChecks`**，所以健康表里没有行，最后那条读 detail 的断言
+报的是 `no rows in result set` —— 症状指向了「没落库」而不是断言本身。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**974 PASS / 6 FAIL / 16 SKIP**（+2；6 个仍是既存红）。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`。
+- teeth 还原后两文件无残留标记；测试库 `public` 0 表 0 视图；无 scratch 库残留。
+
+---
+
+## 2026-10-05T03:3x:00Z — 「币种未知」被**兜底成 USD**：写入侧拒绝，判定侧扫面补齐
+
+### 缺陷一：写入侧把「不知道」变成「USD」
+
+`BaselinePrice.validate` 原本要求 `source_url`、要求 `fetched_at`，**唯独不要求
+`currency`**；而 `SyncBaselinePricesToDB` 里有一句
+
+```go
+currency := p.Currency
+if currency == "" { currency = "USD" }   // ← 删掉了
+```
+
+这不是缺省默认值，而是**替源页面做了一个关于钱的断言**。后果两处，都静默：
+
+1. **826 视图**按 `COALESCE(mc.baseline_price_currency, 'USD')` 比币种（视图里
+   出现三次：两条倍率 CASE + `currency_comparable`）。真值是 EUR 而列里是 USD 时，
+   要么与同为 "USD" 的供应商价算出**看起来完全正常的错倍率**（7.2 CNY ÷ 3 USD
+   这类数在报表里和真偏差一模一样），要么 `currency_comparable=false` 于是
+   **永远算不出偏差** —— 后者更隐蔽：不是报错了，是**什么都不报**。
+2. **台账**记下的 `baseline_price_currency` 本身就是错的，而它就是权威面。
+
+真实可达：提取器 `currencyOf` 在价格行里找不到 `$/€/£/¥` 时返回 `""`，提案会
+带着空币种出来，人照抄进 SSOT 就中招。
+
+**修法：把 `currency` 提升为必填**，与 `source_url` 同一个理由 ——
+*无法核实的价不是价*。**不新增迁移**（只改 Go 侧校验，且删掉的那句回退正好在
+校验后面，本来就不可达）。
+
+### 缺陷二：判定侧同一类缺陷，扫面才找到（更严重）
+
+`ReconcileBaselinePrice` 里那条「币种不同 ⇒ 不可比」写的是
+
+```go
+if obs.Currency != "" && ssot.Currency != "" && obs.Currency != ssot.Currency { … }
+```
+
+**两个非空条件都在守卫里。** 任何一侧为空，这条检查被整个跳过 ⇒ *从未发生在
+同一种货币里*的比较照样给出判词。**实测（修前，同一 base 跑 before）**：
+
+| 场景 | 修前判词 | detail | 期望 |
+|---|---|---|---|
+| 观测币种空、价格一致（2.50/10.00 vs 2.50/10.00） | `match` | `{}` | `not_comparable` |
+| 观测币种空、99.00 vs 2.50 | `drift` | `{tolerance_pct:2}` | `not_comparable` |
+| 基准币种空 | `match` | `{}` | `not_comparable` |
+
+`match` 那一类最坏：源页面从没说过两个价一致，**台账替它说了**，而 detail 是空的
+—— 运营无从分辨它与真正的 match。（改代码前我先按这个表量了 before，没有靠推理
+下结论；`bg/pricing_baseline_sync_test.go` 原有 12 个用例的 `obs.Currency`
+**全部非空**，这条路径此前零覆盖。）
+
+**修法**：新增一道独立的闸门，判 `not_comparable` 并在 reason 里点名是哪一侧。
+**位置刻意排在 free-to-paid 之后**：`0` 在任何币种下都是 `0`，「本该免费却在收钱」
+与币种无关，判 drift 是对的；把它降级成不可比会让台账上最可行动的一类消失，而两条
+判词看起来都是"不可比"，台账里再也分不出。
+
+### 判据
+
+| 判据 | 覆盖 |
+|---|---|
+| `TestSyncRefusesAPriceWhoseCurrencyIsUnknown`（真库 + 826 真列） | 缺币种必须**被拒**且**一个字都不能落库**；给了 EUR 必须**原样**写入 |
+| `TestReconcileVerdicts` +4 例 | 观测空/基准空 ⇒ 不可比；free-to-paid **压过**币种闸门 |
+
+第一条是**双向**承重：只测单向的话，把 validate 的 currency 校验删掉、只测 EUR 那半
+也能过。4 例币种用例刻意分成「价格一致」与「偏差巨大」两半 —— 只钉"不可比"不钉
+"为什么不可比"的话，把闸门改成 `drift` 能过前者、过不了后者。
+
+### 四条 teeth
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 删 `validate` 的 currency 校验 | 三处全红：`accepted` / `written = 1, want 0` / `1 row got a baseline_price_currency` |
+| B | **只**把 USD 回退加回去 | **不红** —— 见下 |
+| C | 删整道币种闸门 | 4 例里 3 例红，打回 `match` / `drift{tolerance_pct:2}` / `match` |
+| D | 把闸门**前移**到 free-to-paid 之前 | 精确 1 例红：`not_comparable want drift` |
+
+★ **teeth B 是"不红"，这是结论不是失败**：validate 要求币种后，那句回退已经是
+**不可达的死代码**，所以它的删除**无法被独立观测**。真正承重的是 A。诚实地记下
+这一点，而不是把 B 说成"也验证了回退已删"。
+
+### 判据自身踩到的两个夹具坑（都在同一条判据上）
+
+① **抄夹具**：这个文件的 826 夹具已经被抄了两份，我第三份**只抄了
+`models_canonical`** 就去 apply 826 ⇒ `42P01 relation "credential_model_bindings"
+does not exist`。⇒ 抽成共享 `baselineFixture(t, ctx, pool)`，依赖清单集中一处，
+且**表名与 826 的 FROM 列表一一对应**。
+
+② **`defer` 搬进 helper 后语义变了**：`defer` 绑的是**本函数**返回，而 helper 在
+夹具建好的那一刻就返回 ⇒ 表格当场被删，三条判据同时报
+`relation "public.models_canonical" does not exist`。改用 `t.Cleanup`。
+连带的坑：`defer pool.Close()` 会在**所有** `t.Cleanup` **之前**跑 ⇒ 拿已关闭的
+池 DROP、err 被丢、**残桩静默留库** ⇒ 下一轮安全闸看到"表已存在"直接 SKIP（SKIP
+是"无结论"，人却会读成"通过"）。⇒ 三处都改成 `t.Cleanup(pool.Close)`，靠 LIFO
+让 DROP 先跑。
+
+③ 因此补了一条**量具自证**：夹具建完立刻查 `pg_class`，`Fatalf` 说清
+"every assertion below would fail with 42P01 for the wrong reason"。少了它，
+"夹具没建出来"会一路伪装成"断言红"。这条自证**当场抓到了我自己的 bug** ——
+我拿 `public.models_canonical` 去比 `c.relname`（后者不带 schema 前缀）。
+
+### 残留（未修，已知边界）
+
+826 视图里的 `COALESCE(mc.baseline_price_currency, 'USD')` **仍在**。写入侧封死
+后，产品代码路径已经造不出"有基准价但币种为空"的行；要造出来只能靠**运维手工
+SQL**。要彻底封需要新迁移（832）改视图 ⇒ 留作已知边界，不在本轮范围内动。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**975 PASS / 6 FAIL / 16 SKIP**（+1；6 个仍是既存红：
+  `TestRollupCredentialModelIndex_NoDuplicateKey` / `TestDefaultResidueTargets_ProductionIsClean` /
+  `TestHotTableOldestRowAge_RealDB` / `TestLedgerReconciler_RunOnce_RealDB` /
+  `TestReportRollupWorker_CatchUp_RealDB` / `TestTaxonomyUpsertAlias_Live`）。
+- teeth 全部还原；测试库 `public` 0 表 0 视图。
+
+---
+
+## 2026-10-05T03:4x:00Z — 第 11 条健康检查：币种不可比/未知从「只写不读」变成告警，并堵掉一个**伪造**的偏差告警
+
+### 上一轮那个残留，量完之后发现它比想象的严重
+
+上一节把「币种未知」在**写入侧**堵了，并把 826 视图里
+`COALESCE(baseline_price_currency,'USD')` 记成残留边界。本轮先量再说，量的结果
+推翻了「只能靠运维 SQL 才造得出」这个假设 —— 造它的是**视图自己**：
+
+- `currency_comparable` = `COALESCE(cmb.currency,'USD') IS NOT DISTINCT FROM
+  COALESCE(mc.baseline_price_currency,'USD')`；
+- ⇒ **基准侧币种为空时它被当成 USD**。若供应商也按 USD 计价，两侧就「可比」了，
+  视图照着两个数字算出一个 **3.0x 的倍率**；
+- ⇒ `supplier_price_drift` 把这个**伪造比较的结果**当成真偏差报出来，detail 里
+  还带着 ratio —— 它看起来比任何真告警都可信。
+
+**before 实测**（真库 + 真 826 视图，夹具种 5 种形态）：
+`supplier_price_drift reported raw-nofx … That is a fabricated number presented as
+a measured deviation (1 row(s))`。
+
+这比「算不出来」坏：**算不出来**至少是 NULL（像「没数据」），
+**伪造出来**是一个精确的错数字。
+
+### 第二个缺口：币种不可比的那批绑定，此前**根本没人知道**
+
+`supplier_price_drift` 的 WHERE 里有 `v.currency_comparable`，所以币种不同的行
+**刻意不报**。作者的注释把它委托给了台账：
+
+> 那些行由对账台账的 not_comparable 判词负责（需要的是汇率决策，不是告警）。
+
+★ **那个委托没有接收方** —— `model_baseline_price_reconciliation` 只写不读
+（与本会话早前实测的「deviation recorded but nobody told」同一族）。
+
+⇒ 供应商按 CNY 计价、原厂基准是 USD 时，**这条绑定的实际成本从此不受任何监控**，
+而它在两张报表里都看不见：偏差视图给 `currency_comparable=false`，两条检查都不
+提它。运营的仪表盘上这个模型「一切正常」，实际是在盲飞。
+
+### 修法（Go 侧，**不新增迁移**）
+
+826 视图的 `supplier_currency` 本身也是 `COALESCE(cmb.currency,'USD')`，所以 Go
+侧拿不到供应商侧的原始值 —— Go 侧守卫做不了。但 `baseline_currency` 是**原样
+投影**的，够用：
+
+1. **`supplier_price_drift` 加一道守卫**：
+   `v.baseline_currency IS NOT NULL AND btrim(v.baseline_currency) <> ''`。
+   排除掉的行**不是**被藏起来，由第 2 条报出来。
+2. **新增第 11 条检查 `supplier_price_currency_mismatch`**（`Optional`，依赖同
+   一个 826 视图，**扫描分支与 `supplier_price_drift` 共用**），两个分支：
+   - `NOT currency_comparable` ⇒ 已知币种不同，倍率无定义 ⇒ **这条绑定无监控**；
+   - 基准币种为空 ⇒ 视图当它是 USD ⇒ **它算出来的倍率是伪造的**。
+
+   逐**绑定**报（与 `supplier_price_drift` 同理由：按模型去重会让多绑定互相覆盖），
+   `detail` 必须带两个币种，否则运维不知道该核对哪一侧。
+   未知币种排最前：它不是「需要汇率决策」，而是「连是哪种货币都没人核实」。
+
+### 判据（真库 + 真 826 视图，五种形态的**真值表**）
+
+| 模型 | 基准币种 / 供应商币种 | 倍率 | `supplier_price_drift` | 新检查 |
+|---|---|---|---|---|
+| m-pricey | USD / USD | 3.0x | **报** | 不报 |
+| m-slight | USD / USD | 1.1x | 不报 | 不报 |
+| m-cheap | USD / USD | 0.2x | 不报 | 不报 |
+| m-fx | USD / **CNY** | 无定义 | 不报 | **报** |
+| m-nofx | **(空)** / USD | 伪造 3.0x | 不报（**守卫**） | **报** |
+
+- `TestUnknownBaselineCurrencyMustNotProduceAFabricatedDriftAlert` — 钉 m-nofx
+  **不得**被报；同时钉 m-pricey **必须**仍被报（防守卫写成恒假 / 全面静音）。
+- `TestCurrencyMismatchAndUnknownCurrencyAreSurfaced` — 钉恰好 2 行；三种同币种
+  形态一个都不许漏报（防它自己变成噪声）；detail 必须带 USD 与 CNY。
+
+夹具自证（`currencyFixture`）**当场确认了本节的前提**：视图真的把 NULL 币种判成
+`currency_comparable=true` 且算出 3.0x —— 也就是说「伪造倍率」不是推理，是实测。
+
+### 五条 teeth
+
+| # | 变异 | 结果 |
+|---|---|---|
+| E1 | 把多值 case 的第二个 ID 改错 | 守卫报 `supplier_price_currency_mismatch` 缺 case |
+| E2 | 把一个**单值** case 标签改错 | 守卫报 `canonical_id_null` 缺 case（确认改正则没伤原形态） |
+| F | 删掉漂移检查的币种守卫 | 1 条红，打回 `reported raw-nofx … fabricated number (1 row(s))` |
+| G | 新检查删掉「基准币种为空」那一支 | 1 条红：`1 row(s) reported, want exactly 2` |
+| H | 新检查写成「有基准价就报」 | 4 条红：`5 rows, want 2` + 三个 `stay quiet` 逐个点名 |
+
+### 顺带修掉一条**量具**的缺陷（它自己抓到了我）
+
+`TestEveryHealthCheckHasScanBranch` 的正则是
+`case\s+"([a-z_]+)"\s*:` —— 要求闭引号后**紧跟冒号**，所以 `case "a", "b":`
+**一个都读不到**。我把两个逐绑定聚合的检查合并成一个 case 之后，它把
+`supplier_price_drift` 与 `supplier_price_currency_mismatch` **双双报成缺 case**。
+
+⇒ 症状是**量具坏了而被测物是对的**。当时两个选择：把 case 拆成两份复制 body
+（迁就量具），或让量具认识多值形态（选后者）—— 判据的价值在于它测的是**真实
+dispatch 形状**，迁就它等于把量具的错误固化成代码形状。正则已改为
+`((?:"[a-z_]+"\s*,?\s*)+):` 并逐个取值，E1/E2 两条 teeth 就是为它写的。
+
+### 顺带量到一处**对象 SSOT 与真库的分歧**（未修，记为已知边界）
+
+`sql/objects/tables/credential_model_bindings.sql` 里：
+
+```
+currency text DEFAULT 'USD'::text,        -- 真库：NOT NULL
+unit_price_in_per_1m numeric,             -- 真库：NOT NULL
+unit_price_out_per_1m numeric,            -- 真库：NOT NULL
+pricing_source text,                       -- 真库：NOT NULL
+pricing_updated_at timestamp with time zone,  -- 真库：NOT NULL
+billing_mode text DEFAULT 'per_token'::text,  -- 真库：NOT NULL
+```
+
+真库这六列**全是 `NOT NULL`**，对象 SSOT **一个都没有** ⇒ 按仓里的对象 SSOT 装
+出来的新环境在这条轴上**比生产弱**。该文件是 pg_dump 产物（头部 `Name: …;
+Type: TABLE; Schema: public; Owner: -`），说明它是从**另一个**环境导出的。
+
+⚠ 因此本节那句「供应商侧空币种在真环境不可达」**只对现有这台库成立**
+（实测 2045 行、0 个 NULL、全是 CNY 或 USD）。在新装环境里它可达。
+未修：改对象 SSOT 等于改基线形态，属于本轮范围外，且没有对应的判据钉住
+「对象 SSOT ≡ 真库形态」这条不变量。
+
+### 我自己踩的两个坑
+
+① **在 SQL raw string 里写了反引号** —— 我自己的规则（「raw string 内不得出现
+反引号」），同一次编辑里违反。症状是编译错误落在**后面几十行**的 `func` 上
+（`expected '(', found runChecks`），病因在 300 行前。
+② **新元素加在了切片字面量已经闭合之后**（`LIMIT 50`}}` 那个 `}}` 已经把
+`[]HealthCheckDef{` 关掉了）⇒ 报 `expected operand, found '{'`。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**977 PASS / 6 FAIL / 16 SKIP**（+2；6 个仍是既存红：
+  `TestRollupCredentialModelIndex_NoDuplicateKey` / `TestDefaultResidueTargets_ProductionIsClean` /
+  `TestHotTableOldestRowAge_RealDB` / `TestLedgerReconciler_RunOnce_RealDB` /
+  `TestReportRollupWorker_CatchUp_RealDB` / `TestTaxonomyUpsertAlias_Live`）。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`（本轮
+  **未新增迁移**）。
+- teeth 全部还原且与修复版逐字节一致；测试库 `public` 0 表 0 视图。
+
+---
+
+## 2026-10-05T03:5x:00Z — 第 12 条健康检查：「等 models_blocked_by_strict 降到 0」这条判据**构造上达不到**
+
+### 先量，再下结论（真环境，127.0.0.1:5432，全程只读 SELECT）
+
+| 指标 | 值 |
+|---|---|
+| `models_canonical` 行数 | **960** |
+| `v_model_modality_verification_rollup` 的 `model_modality_pairs` | 2880（= 960 × 3） |
+| `pairs_confirmed` / `pairs_never_probed` | **0** / 2880 |
+| **`models_blocked_by_strict`（今天）** | **960** |
+| `models_canonical.family='unknown'` | 48 |
+| `modality` 分布 | text 765 / multimodal 151 / vision 19 / embedding 16 / audio 9 |
+| `model_modality_verification` 已有证据行 | **0** |
+| **有可用绑定、worker 能探到的模型** | **584** |
+| 可探目标（可用绑定数） | 1080 |
+| 默认日预算 `modalityVerifyDefaultDailyBudget` | 2000 |
+
+⚠ 第一版我用**手写的谓词**量「可寻址模型」，得 709 / 1576。换成 `dueTargets`
+的原样谓词后是 **584 / 1080** —— 漏了 `c.status IN ('active','cooling','degraded')`、
+`manual_disabled` 与 `p.enabled`。**量的是另一个集合，差 21%。** 这是本节所有
+数字的来源，所以先把它变成共享常量（见下）。
+
+### 缺陷：那个 0 不会来
+
+两个事实相乘：
+
+1. 827 视图的 `models_blocked_by_strict` 分母是 **models_canonical 全表**
+   （`per_pair` 枚举每个 canonical 模型的三个非文本模态）⇒ 今天 = 960。
+2. 核实 worker **只走绑定**（`dueTargets` 的 FROM 是 `credential_model_bindings`）
+   ⇒ 那 **376 个（39%）没有可用绑定的模型永远产生不了
+   `read_level='confirmed'`** ⇒ `excluded_by_strict_gate` 对它们恒为 true。
+
+⇒ **「等 `models_blocked_by_strict` 降到 0 再开 `LLM_GATEWAY_MODALITY_ROUTING_STRICT`」
+这条判据永远不会被满足。** 而它同时写在 827 视图的注释里和本会话前面几节的
+changelog 里 —— 我自己写下了它，然后一直以为它可达。
+
+★ 这不是 827 的缺陷：分母取全表是**刻意保守**的（今天没绑定的模型明天可能绑上，
+那时它理应被算进去）。缺的是**把地板说清楚**，否则运维会等一个不会来的 0，
+或者在没有真实信号的情况下开闸。
+
+### 修法：第 12 条检查 `modality_gate_readiness_floor`（Go 侧，**不新增迁移**）
+
+- **只报一行汇总**，且**只在「存在够不着的被挡模型」时**报 —— 那种情况下它才有话说。
+- 报三个数：被挡总数 / **够得着的**（能降到 0 的那个数）/ 地板。
+- detail 必须点明 `UNSATISFIABLE`、真正能降下去的是哪个数、以及**可探目标数**
+  （运维拿它和自己的 `LLM_GATEWAY_MODALITY_VERIFY_DAILY_BUDGET` 一比就知道还要
+  跑几天）。预算值刻意**不**写进 SQL：它是运维旋钮，钉死就成了第二份 SSOT。
+- `entity_id` 走 `textHash("modality_gate_readiness_floor")` 这个**常量键**，
+  **不**用查询给的 -1：entity_name 是含计数的句子，哈希它会让每轮读数变化时
+  堆出一串历史行而不是稳定刷新同一行。
+
+### 抽共享常量 `modalityVerifyAddressableSource`（承重的一部分）
+
+`reachable` 集合**必须**用与 `dueTargets` 同一份谓词，否则这条检查报出来的地板数
+是另一个集合的数，而它的全部价值就是「这个数永远降不下去」这个事实。
+⇒ 把 `dueTargets` 里那段 `FROM (…) pp` 抽成常量，两处引用。
+
+★ 抽出时踩了一个坑：常量**自带左括号**、**不带别名**（`)` 收尾），
+两个使用点各自写 `FROM ` + 常量 + ` pp`。第一版我把 `FROM (` 一起替换掉了
+⇒ `TestDueTargetsPicksNeverProbedFirst` 立刻以
+`syntax error at or near "cmb" (42601)` 失败 —— **这个判据正好是那条路径的唯一
+守卫**，所以重构的安全性是被测出来的，不是论证出来的。
+
+### 判据（真库 + 真 825 + 真 827，六模型夹具，`withBinding` 是唯一旋钮）
+
+| 用例 | withBinding | 期望 |
+|---|---|---|
+| `…IsReportedWhenUnreachableModelsExist` | 2 | 报一行：被挡 6 / 够得着 2 / 地板 4；detail 含 `UNSATISFIABLE`；连跑两轮仍只有 1 行 |
+| `…StaysQuietWhenEveryBlockedModelIsReachable` | 6 | **不报**（地板 0 ⇒ 「等 0」可达，本检查无话说） |
+| `…UsesTheProbersOwnPredicate` | — | 把共享常量从查询里抠掉后，剩余部分不得再出现 `credential_model_bindings` |
+
+### 三条 teeth
+
+| # | 变异 | 结果 |
+|---|---|---|
+| I | 删掉 `floor_n > 0` | 「必须闭嘴」那条红：`reported 1 row(s) with a floor of 0` |
+| K | 把地板硬写成 0 | 「必须报」那条红（行直接不出现了） |
+| L | 手抄第二份谓词、不引用共享常量 | 专属那条红：`does NOT embed the shared addressable source` |
+
+★ L 那条判据**第一版是错的**：我查 `def.Query` 里有没有 `credential_model_bindings`
+字面量 —— 可常量在**编译期**就插进字符串了，所以永远红。正确形状是**把常量抠掉**
+再查剩下的部分。这又是一次「先证明量具是好的，再用它」。
+
+### 顺带修掉 runChecks 里两段**孤儿注释**
+
+`baseline_price_missing` 的 case 末尾挂着两段不属于它的注释：一段讲
+`modality_verification_stale` 用 canonical_id（明说「不需要 textHash」），
+一段讲 `supplier_price_drift` 用 textHash。**第一段与它自己 case 里的
+`entityID = textHash(name)` 直接矛盾。** 各自归位。
+
+### 判据自身踩到的夹具坑（三轮才通，每个都值得记）
+
+① **清理清单漏依赖** ⇒ `DROP TABLE models_canonical` 因 825 建的
+`v_model_modality_verdict` 仍在而失败，而清理写成 `_, _ =` **把错误丢了**
+⇒ 残桩静默留库 ⇒ 下一轮安全闸直接 SKIP（"无结论"被读成"通过"）。
+⇒ 补上那个视图 + 全部 `CASCADE` + **清理失败要 `t.Errorf`，不许吞**。
+（这正是本会话早前记进 memory 的那条的复现，成因多了一个：被漏掉的是**依赖对象**。）
+
+② **后补的脚手架列默认 NULL** ⇒ `cmb.available` 补了但没给默认值，谓词要
+`= TRUE` 而 NULL ≠ TRUE ⇒ reachable=0 ⇒ 检查照常报出一行，只是三个数全错。
+**判据当时没红，因为它只钉了形状之外的东西还没跑到。**
+⇒ 加了 `available boolean DEFAULT TRUE`，并补一条**量具自证**把
+`models / provider_models / bindings / reachable` 四个计数一起打出来 ——
+没有它，「reachable=0」只告诉你结果，不告诉你是「绑定没种进去」「canonical_id
+没连上」还是「某条准入谓词不成立」，而这三种修法完全不同。
+
+③ **在 SQL raw string 里写反引号** —— **本会话第四次**（前三次在
+`routing_health_checks.go`、两次在测试夹具里）。症状永远是编译错误落在几十行
+之外的 `func` 上，而病因在更早的地方。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**980 PASS / 6 FAIL / 16 SKIP**（+3；6 个仍是既存红：
+  `TestRollupCredentialModelIndex_NoDuplicateKey` / `TestDefaultResidueTargets_ProductionIsClean` /
+  `TestHotTableOldestRowAge_RealDB` / `TestLedgerReconciler_RunOnce_RealDB` /
+  `TestReportRollupWorker_CatchUp_RealDB` / `TestTaxonomyUpsertAlias_Live`）。
+- `verify-migration-checksums.sh`：`OK: 171 registered migrations verified`（未新增迁移）。
+- teeth 全部还原且与修复版逐字节一致；测试库 `public` 0 表 0 视图 0 序列。
+
+---
+
+## 2026-10-05T04:0x:00Z — 接通「提案 → SSOT」这条**没人守的接缝**（成本那半边的最后一段路）
+
+### 缺口：两段都有测试，中间那段没有
+
+目标第二半是「按原厂拿标准价 → 设为基准价 → 控实际成本」。仓里分成两段：
+
+```
+抓取 → 提案（cmd/tools/propose-baseline-prices，产出 proposal JSON）
+                                        ↕  ← 这一段全靠人手抄 9 个字段
+SSOT（bg/data/model_baseline_prices.json）→ 写库（SyncBaselinePricesToDB）
+```
+
+两段各自都有判据，而**中间那一段没有任何东西守着** —— 与本会话反复撞到的
+「已实现 ≠ 已接线」同一族。
+
+具体的洞（读代码读出来的，随后被变异验证确认）：
+
+- `proposal` 里**唯一**带 canonical 名的一节是 `corroborated`（`ready_to_review`
+  只有厂商展示名）⇒ 它是唯一能当 SSOT **键**的那一节；
+- 而它此前只带 `input`/`output`（`baselineSide` 就这两个字段）——
+  **没有币种、没有缓存读写价、没有页面位置**；
+- ⇒ **证据最强的那一节，恰好写不出**一条能通过 `BaselinePrice.validate` 的条目。
+  2026-10-05 起 `currency` 必填，这条路是**必然**被堵死的。
+
+数据本来就在手上：构造这一节的 `Candidate` 上四个价 + `Currency` + `Row`/`LineNo`
+全都有，只是没往结构体里带。
+
+### 修法
+
+1. **`corroborated` 补齐** `currency` / `cache_read_per_1m` / `cache_write_per_1m` /
+   `row` / `line_no`，并从 `Candidate` 填上。
+2. **新增 `-emit-ssot <path>`**：从互证通过的那一节生成 **SSOT 草稿**
+   （`{"generated_at", "draft": true, "refused": [...], "models": {...}}`）。
+   `models` 子对象与 SSOT 的 `models` **同一形状** ⇒ 人确认后可直接落位。
+   另加 `--fetched-at`（RFC3339）。
+3. **新增 `bg.BaselinePrice.Validate`**：`validate` 的导出包装。它做不了别的事，
+   只是让**库外**消费者在写权威面之前能自检 —— 没有它，「草稿能不能过权威闸门」
+   只能在真库上、且要等有人真的合入并跑同步才知道，那是事故发现不是验证。
+
+### 每一处不确定都是**拒收并点名**
+
+`buildDraft` 的五条拒收规则，每条都进 `refused[]`（canonical 名 + 原因）：
+
+| 情形 | 为什么不猜 |
+|---|---|
+| 缺 `--fetched-at` | 快照文件名是 `{vendor}.md`（**无日期**，已量过），文件 mtime 记的是「文件什么时候被复制过」，不是「什么时候从原厂页取的」 |
+| 币种为空 | 与 `validate` 的 currency 必填同一理由：猜 USD 是替原厂页面做断言 |
+| `verdict=sources_disagree` | 两源不一致**正是**要人裁决的事 |
+| 缺 input/output | 没有可记的价 |
+| 同一个 canonical 被两条互证认领 | SSOT 是一模型一价，第二次写会**静默覆盖**第一条 |
+
+草稿恒带 `"draft": true`，且工具**永不**写 SSOT 本身。
+
+### 判据（四条）+ 四条 teeth
+
+| 判据 | 承重 |
+|---|---|
+| `TestDraftIsAcceptedByTheAuthoritativeGate` | 草稿 marshal 后，其 `models` 子对象用 **bg 自己的 SSOT 结构**反序列化，再逐条过 **bg 自己的 `Validate`**；且四个价**原样**传递、顶层键真的叫 `models` |
+| `TestDraftRefusesInsteadOfInventing` | 四种拒收各点名，且「没 fetched_at」时 `models` 必须为**空** |
+| `TestDraftRefusesASecondClaimOnTheSameCanonicalName` | 键重复必须拒 |
+| `TestCorroboratedCarriesEveryFieldTheSotEntryNeeds` | 走**真实 `crossCheck`**，断言 `corroborated` 带着币种/缓存价/页面位置，并一路走到 `Validate` |
+
+teeth（全部精确命中）：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| M | 删掉「币种为空」的拒收 | `no refusal mentions "no currency"` |
+| N | 删掉「没有 fetched_at 就全拒」 | `no refusal mentions "no --fetched-at given"` |
+| O | 断掉 `Currency: c.Currency` | `corroborated.Currency = "", want "USD"` |
+| P | 断掉缓存价接线 | `corroborated.CacheRead = <nil>, want 0.125` |
+
+★ **teeth O 第一轮没有红，这是本轮最有价值的一条。** 我第一版判据自己手搓
+`proposal`，只测了 `buildDraft`，**填充 `corroborated` 的那个构造点一次都没走过**
+⇒ 把那行删掉，判据全绿。**「已实现 ≠ 已接线」在我自己新写的判据里又发生了一次。**
+⇒ 补了 `TestCorroboratedCarriesEveryFieldTheSotEntryNeeds` 走真实 `crossCheck`，
+重做 teeth O 即红。
+
+★ 同源的第二处：那条端到端判据最后一步我先写成 `line.Validate(...)` ——
+`draftLine` 是**工具侧**的类型，没有这个方法。闸门在 `bg` 侧 ⇒ 必须**过一遍
+JSON** 才算真的验过，否则就是在拿自己家的类型问自己家的问题。
+
+### 仍然需要人做的那一步（未自动化，也不该自动化）
+
+草稿落进 `bg/data/model_baseline_prices.json` 之前要**人逐条对照 source_url 核对**。
+这与提案自己 notice 里写的一致，代码不替人做。但从「人抄 9 个字段」变成了
+「人确认工具已经提取好的 9 个字段，缺什么工具点名拒收」。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**980 PASS / 6 FAIL / 16 SKIP**（与上一节相同；6 个仍是既存红）。
+- 未新增迁移，`verify-migration-checksums.sh` 不受影响。
+- teeth 全部还原且与修复版逐字节一致；测试库 `public` 0 表 0 视图 0 序列。
+
+---
+
+## 2026-10-05T04:1x:00Z — **更正**：名单与原厂页不是零相交；整条链第一次在真数据上跑通
+
+### 先更正一条我说了两次的错结论
+
+前几节我一直写「互证零命中的根因是种子名单（19 行，全 gemini/glm/grok/kimi）
+与原厂页**零重叠**」，并把它列为「待人做：导出真环境 `models_canonical`」。
+
+**错。** 那个结论来自**种子测试库**里那 19 行，不是真名单。真环境实测
+（`SELECT DISTINCT canonical_name FROM models_canonical`，960 个）：
+
+| 展示名（厂商页） | 名单里的 canonical | 是否命中 |
+|---|---|---|
+| `Claude Opus 4.8` | `claude-opus-4-8` | ✅ |
+| `Claude Sonnet 4.6` | `claude-sonnet-4-6` | ✅ |
+| `Claude Haiku 4.5` | `claude-haiku-4-5` | ✅ |
+| `grok-4.3` | `grok-4.3` | ✅ |
+
+⇒ 真实名单**与**厂商页有交集。原来的「零命中」是 19 行名单的假象。
+（我上一轮还自己写下了「这条名单正是互证的必需输入」，却没试过能不能自己导。）
+
+### 名单不用等人导 —— 一条 SELECT 就够
+
+```sql
+SELECT DISTINCT btrim(canonical_name) FROM public.models_canonical
+ WHERE btrim(coalesce(canonical_name,'')) <> '' ORDER BY 1;
+```
+
+配上工具帮助文本里已经写好的三行元数据头（`# source:` / `# exported_at:` /
+`# count:`，**count 必须是去重后的数**）就是一份 `Verified()` 的名单。
+
+⇒ 「待人做：导出名单」这一项**本轮消掉**。名单里混着
+`zcode_nonexistent_model`、`文档智能` 这类合成条目，值得顺带清一下。
+
+### 整条链第一次在真数据上跑通
+
+```
+go run ./cmd/tools/propose-baseline-prices \
+  -raw docs/02-resources/research/pricing/raw \
+  -canonical /tmp/canonical_list.txt -corroborate \
+  -emit-ssot /tmp/ssot_draft.json -fetched-at <RFC3339>
+```
+
+- 观察源 models.dev 取到 **216 providers**（`observed_at` 由工具自己打）。
+  ⚠ 本机 `curl` 与 harness 的取数通道**都出不去**（SSL_ERROR_SYSCALL /
+  network request failed），**是 Go 的 HTTP 客户端通了** —— 所以"这台机没网"
+  这个结论对 curl 不成立、对 Go 成立。
+- 产出草稿 **10 条**，每条带真实原厂价、`currency=USD`、缓存读写价、以及
+  **厂商页那一整行原文**（`source` 字段，例如
+  `vendor pricing page row 159: | Claude Fable 5 | $10 / MTok | $12.50 / MTok | … |`）。
+  ★ 币种从真实原厂页**确实抽得出来** ⇒ 上一节把 `currency` 变成必填不会
+  把这条路堵死。
+
+提取侧的完整读数（8 个厂商页，462 个候选行）：
+
+| vendor | 候选 | 拒收 |
+|---|---|---|
+| **google** | **0** | **329** |
+| anthropic | 8 | 53 |
+| xai | 2 | 27 |
+| minimax | 0 | 35 |
+
+拒因（前两类是**设计如此**的正确拒收，不是缺陷）：
+「列结构对不上 一行一价」414、「价格是维度条件价（上下文/模态/档位）」350、
+「单位不是 per-1M」66、「行是上下文分档或 per-token 混合」28、
+**「unclassified: no input or output price found in the mapped columns」5**、
+「删除线（已废止）」4。
+
+⚠ **google 329 行拒收、0 候选** —— 最大的厂商一条价都出不来。这是下一处该查的，
+本轮没查（要先确认那 329 行落在哪张表、是不是同一种拒收）。
+
+### 8 条 `unresolved_names`：**4 条是假否定，4 条才是真拒收**（2026-10-06 订正）
+
+> ⚠ **本节标题原先写的是「工具的行为都是对的，分两类」—— 那是错的。**
+> 它与本节正文最后两行（「前 4 条是**系统性损失**」）自相矛盾，而我当时没有
+> 回头把标题改掉。2026-10-06 实测确认：8 条里**只有后 4 条**（3 个
+> `grok-4.20-*-0309` + `Claude Mythos 5`）是真拒收，前 4 条是**假否定** ——
+> 名字在目录里、剥掉尾部注解后 0.90 过线，却因为 0.90 下限被原样形态挡掉。
+> 已修，见文末「尾注解形态」一节。表里的「最接近的 canonical」与分数取自
+> 当时的**种子 19 条名单**；用 960 条真库名单重跑时 `grok-4.20-*` 的最近候选
+> 变成了 `grok-4.4`（0.84），**两列数字不可混用**。
+
+| 展示名 | 最接近的 canonical | 分 | 我的判断 |
+|---|---|---|---|
+| `Claude Opus 4 (deprecated)` | `claude-opus-4` 0.84 | 展示名带**状态后缀** | 解析器可改进（后缀是展示产物），但改 0.90 底线是语义决策，**本轮不动** |
+| `Claude Opus 4.1 (deprecated)` | `claude-opus-4` 0.84 | 同上 | 同上 |
+| `Claude Sonnet 4 (deprecated)` | `claude-sonnet-4` 0.84 | 同上 | 同上 |
+| `Claude Haiku 3.5 (retired, …)` | `claude-3-haiku` 0.84 | 同上 | 同上 |
+| `grok-4.20-0309-reasoning` | `grok-4-20-reasoning` 0.84 | 点→横线 + 少了 `-0309` 日期戳 | **名单缺条目**（2026-10-04 决策：不同模型名 = 不同 canonical） |
+| `grok-4.20-0309-non-reasoning` | `grok-4-20-non-reasoning` 0.84 | 同上 | 同上 |
+| `grok-4.20-multi-agent-0309` | `grok-4.20-multi-agent` 0.68 | 同上 | 同上 |
+| `Claude Mythos 5 (limited availability)` | `claude-opus-5-5` 0.68 | 名字真的不同 | 名单里可能没有 `claude-mythos-5` |
+
+⇒ 前 4 条是**系统性损失**：每家厂商都用同样的括号标注状态，所以这不是四个
+例外，是一整类。这条值得改，但改的是"展示名清洗"，要单独一轮 + 判据。
+
+### 顺手修掉**我自己刚写的代码**里的一个洞：空草稿不说话
+
+真跑一次整条链之后才发现：`-emit-ssot` 在 `models` 为空时，`refused` 也为空，
+于是「原厂页上一条可用价都没有」与「互证根本没跑成」在文件里**长得一模一样**。
+
+危害不是"不好看"：人打开一个空草稿会读成「这一家没有价」，于是把 SSOT 填成别的、
+或者干脆放弃这一家 —— 而真相是观察源没连上，价其实在那儿。
+
+⇒ 草稿新增**恒非空**的 `why` 字段，三种空因分别写明（互证没跑成 / 没给名单 /
+有候选但一个都没对上），并钉一条判据：空草稿的 `why` 必须点名原因，且**过一遍
+JSON 后仍在**（解释要落到文件里，因为读的是文件）。teeth：删掉整个 switch ⇒
+`Why="" does not say …` + `lost on the way to disk`。
+
+真实重跑确认：非空草稿 `why` = "each entry below … a human still has to check
+each source_url"；空草稿 `why` = "EMPTY because no canonical list was supplied
+(-canonical), so no vendor display name could be resolved to an SSOT key"。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。
+- 带库 `bg` 全量：**980 PASS / 6 FAIL / 16 SKIP**（与上一节相同）。
+- 未新增迁移。teeth 全部还原且与修复版逐字节一致。
+- 测试库 `public` 0 表 0 视图 0 序列；对 127.0.0.1:5432 **全程只有 SELECT**。
+
+---
+
+## 2026-10-05T04:2x:00Z — google 329 行 / 0 候选：**不是提取器的洞，是抓取把模型名丢了**
+
+### 查清了什么
+
+`google-gemini.md` 那 329 行拒收，此前报的是两条**误导性**的理由：
+「header does not map to both an input and an output column」与
+「the table header names a non-standard billing dimension (Tier)」。照着它去调列映射
+会把一张本来正确的表调坏。
+
+实际页形（实读 `docs/02-resources/research/pricing/raw/google-gemini.md`）：
+
+```
+[上一段营销文案里没有模型名]
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+| Input price                            | Free of charge | $1.50 |
+| Output price (including thinking tokens) | Free of charge | $9.00 |
+| Context caching price                  | Free of charge | $0.15 $1.00 / 1,000,000 tokens per hour (storage price) |
+```
+
+即 **「一个模型一张小表、维度在行、列是档位、模型名在章节标题里」** ——
+既不是提取器支持的「一行一模型、列是 input/output」，也不是它已支持的
+`extractColumnOriented`（模型在表头）。两条路都不覆盖。
+
+★ **更关键的是模型名在文档里根本不存在**：`185-650` 这一段（Gemini 3 家族，
+250 多行）**没有任何 `##` 标题**，`awk` 扫非表格行只有 3 句提到 "Gemini N"，
+而第一张表上方那句是
+`Our most intelligent model built for speed, combining frontier intelligence with
+superior search and grounding.` —— **一个模型名都没有**。页面顶部 TOC 里的锚点
+（`#gemini-2-5-flash-image` 等）没有留在正文。
+
+⇒ 提取器再强也捞不出文档里没有的名字。**修法在抓取那一步**
+（重新抓取并保留每模型锚点，或改从每个模型自己的锚点页取价），
+**不是**改列映射。本轮不做抓取改动：那会覆盖仓里已跟踪的实抓快照。
+
+### 所以本轮做的是：让工具说出真正的理由
+
+新增一条**可核验**的诊断（`buildCandidate` 内）：
+
+> this table has no model column and its columns are billing dimensions (…): it is a
+> per-model price block, so the model identity has to come from the section heading
+> rather than from the table. … the gap is in the FETCHED SNAPSHOT (per-model anchors
+> are not preserved), not in the column mapping — re-fetch the page keeping per-model
+> anchors, or price the model from its own anchor page
+
+条件是**两个都要**（表头里没有 `RoleModel` 列 **且** 列名是计费维度）——
+只用后者会对所有"分档表"开火。
+
+新增族 `per-model price block: the model name is not in the table (fetch lost the
+anchor)`，并写明**它与「列结构对不上」那族的下一步动作相反**（那族去调列映射，
+这一族去改抓取），所以两者**不能合并**。
+
+真跑一次的效果（462 个候选行）：
+
+| 族 | 之前 | 现在 |
+|---|---|---|
+| column structure is not one price per (model, in/out) | 414 | 414 |
+| price is dimension-conditional (…) | 350 | 350 |
+| **per-model price block (fetch lost the anchor)** | — | **329** |
+| priced in a unit that is not per-1M-tokens | 66 | 66 |
+| row is context-tiered or per-token mix | 28 | 28 |
+| unclassified: no input or output price found | 5 | 5 |
+| struck-through (superseded) price | 4 | 4 |
+
+⇒ 329 行从「一堆误导性的列映射错误」收成**一条有名字、有下一步动作的族**。
+
+### 判据（双向）+ 两条 teeth
+
+- `TestPerModelBlockDiagnosticIsBidirectional`：新加页形夹具
+  `internal/vendorprice/testdata/live-google-gemini-permodel-block.md`
+  （裁剪自实抓文件，**只固定页形**，不依赖会被重抓覆盖的活数据；文件里还故意放了
+  一张标准「一行一模型」表作对照）必须命中；
+  `live-anthropic-models-overview.md` 必须**一条都不命中** ——
+  一条对正确表格也说的告警，会让人开始无视整块 `rejection_reasons`。
+- 族计数判据随夹具从 4 份变 5 份重算：129 条候选、6 类、类目之和 244
+  （新夹具带来 10 条候选，落在 3 个族里，其中一个族是**新增**的）。
+  ⚠ 这是期望值更新，不是"为了让它绿"——数是跑出来的，注释里写明了来源。
+
+teeth（都落在族计数上）：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| R | 去掉 `hasModelRole` 守卫 | 新族 **8 → 48**，「列结构」85→94、「维度条件」65→74 |
+| S | 去掉 `headerDim` 条件 | 新族 **8 → 36**，另两类同样上移 |
+
+⇒ 两个守卫条件都在承重。（双向判据在 R/S 下仍绿 —— 它钉的是"对 anthropic 不
+误伤"，而这两个变体都不会让 anthropic 命中；守卫的承重由族计数判据承担。
+这里把两者的分工写明，不把双向判据说成覆盖了它们。）
+
+### ★ 一小时前加的 `why` 字段当场被真实验证
+
+本轮中途有一次重跑，草稿变成 **0 条**。原因是 `models.dev` 返回 `EOF`
+（网络抖动），不是代码问题。而草稿里写的是：
+
+> EMPTY because corroboration did not run: … Get "https://models.dev/api.json": EOF
+> — do NOT read this as "the vendor pages have no usable price"
+
+**这正是那个字段要防的事**：没有它，这一轮会被读成"厂商没有价"，
+于是去把 SSOT 填成别的、或放弃这一家。三次重跑后恢复 10 条。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。带库 `bg` 全量：**980 PASS / 6 FAIL / 16 SKIP**（不变）。
+- 未新增迁移。teeth 全部还原且与修复版逐字节一致。
+- 测试库 `public` 0 表 0 视图 0 序列；对 127.0.0.1:5432 **全程只有 SELECT**。
+
+---
+
+## 2026-10-05T04:3x:00Z — 量清「重抓 google 页」到底能救回多少：答案是**模型名救不回来**，而价格本身有**第二个**障碍
+
+### 为什么先量而不先问
+
+上一节把「重抓 google 页还是改用每模型锚点页」列成了待决策项。**决策所需的信息可以自己先取到**，
+所以本轮用一次性 Go 探针（写进 `/tmp`，**没有**落进仓）实测了四种抓取方式。
+
+### 抓取脚本 URL 早就不是价目页了（真缺陷）
+
+`docs/02-resources/research/pricing/scripts/fetch-pricing.sh` 里：
+
+```bash
+fetch google-gemini "https://ai.google.dev/gemini-api/docs/models"
+```
+
+实测该 URL 现在返回的是**模型列表页**：26.7KB、11 个 `##`（`## Gemini 3`、
+`## Gemini 2.5 Flash` …）、**零个 `Free Tier` 表**。而仓内快照 `google-gemini.md`
+是 60KB、**67 张档位表** —— 它是**价目页**的内容，来源 URL 与脚本现在抓的**不是同一个页面**。
+
+⇒ 跑一次脚本会拿一个模型列表页覆盖掉价目快照，且因为下面第二条（输出路径错）
+写到另一个目录，覆盖都不会发生 —— 两件坏事互相掩护。
+
+### 重抓四种方式，模型名一个都救不回来
+
+| 方式 | bytes | `##`（非 TOC） | `Gemini N` 出现 |
+|---|---|---|---|
+| default（脚本现在用的） | 26,742 | 11 | 56 |
+| `x-respond-with: html` | 184,400 | 0 | 74 |
+| `x-with-links-all: true` | 26,742 | 11 | 56 |
+| `x-retain-images: none` | 26,742 | 11 | 56 |
+
+而**正确的价目 URL**（`https://ai.google.dev/pricing`，重试 3 次才拿到）：
+**82,455 bytes、87 个 `Free Tier`、但只有 4 个 `##`**，其中三个还是
+`Pricing for tools` / `Pricing for agents` / `Notes`。
+
+⇒ **不是 jina 的选项问题**：即使抓到对的页面、即使页面上 87 张表都在，
+**模型名依然不在标题里**。它们在 TOC 的片段锚点（`#gemini-2-5-flash-image`）里，
+而片段不参与 HTTP 请求，静态抓取拿不到。
+
+★ 进一步量「模型名能不能靠邻近恢复」：**87 张表里只有 26 张（30%）** 的上方 4 行内
+出现 `Gemini N`；其余上方是不含模型名的营销文案
+（`Our most intelligent Flash model, engineered for long-horizon software engineering…`）。
+⇒ 30% 的邻近恢复率**不足以**用来填 SSOT 的键。
+
+### ★ 第二个、独立的障碍：价格本身不是单一值
+
+活的价目页上现在这样写：
+
+```
+| Input price   | Free of charge | $0.75 through December 31, 2026. $1.50 starting January 1, 2027. |
+| Output price  | Free of charge | $3.75 through December 31, 2026. $7.50 starting January 1, 2027. |
+```
+
+**一格里两个价 + 生效日期**，而基准价列的语义是**一个数**。
+⇒ 即使模型名救回来了，**「基准价取哪个」是定价决策**（当前挂牌价 / 调价后价 /
+暂不收这个模型），不是解析问题。任何自动化挑一个，都是替厂商做了那个决策。
+
+★ 这条**此前完全没有被报出来**：那一行的 warning 只有
+「tier」「无 model 列」「表头对不上」三条，没有一条提价格有两个值。
+⇒ 本轮新增第三条诊断，信号是**「一格里有金额」且「出现日期边界措辞 + 年份」**。
+
+⚠ **为什么不能只用「一格里有几个金额」当信号**：
+`$0.075 $1.00 / 1M tokens per hour` 是「缓存读 + 存储」两笔**不同**计费，
+一个金额都不多余。teeth T 实测：把条件退化成「一格有金额」，
+新族从 2 条命中涨到 **84 条** —— 它会把所有合法双金额一起扫进来。
+
+### 三个新判定 + 两条 teeth
+
+新增族 `cell states a price that changes on a date (baseline is a pricing decision)`，
+`Why` 写明「下一步是**定口径**并写进 SSOT 说明」—— 它与其它所有族的下一步动作
+都不同（其余是改代码或改抓取）。
+
+页形夹具 `internal/vendorprice/testdata/live-google-gemini-permodel-block.md`
+加了三行**故意**的样本：
+
+| 行 | 目的 |
+|---|---|
+| 两行带日期边界的价 | 新族必须命中 |
+| `Cache read price | $0.075 $1.00 … per hour` | **合法**双金额 ⇒ 新族**不得**命中 |
+| `Free tier | free through December 31, 2026 | …` | 有日期措辞但**没有金额** ⇒ 钉住「一格里必须有金额」这个前置 |
+
+teeth：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| T | 条件退化成「一格有金额」 | 新族 **2 → 84**（把合法双金额全扫进来） |
+| U | 去掉「一格里必须有金额」前置 | 当时**一条都不变** ⇒ 那个前置没人守 |
+
+★ teeth U 第一次**没红**，这是本轮最值得记的一条：我在写判据时以为
+「金额 + 日期」两个条件都在承重，变异告诉我**只有一个**在。
+⇒ 补了第三行样本（有日期措辞、无金额）让它可被观测，重做 teeth U 即红
+（新族 2 → 3）。**「没红」先当「这条没被测到」，不要当「这条不重要」。**
+
+族计数随夹具三次变化，全部**读出真值再改**并写明来源：
+5 份夹具 → 132 条候选、7 类、类目之和 256。
+
+### 顺带记下抓取脚本的另外两个缺陷（**本轮未改**）
+
+① `REPO_ROOT="$SCRIPT_DIR/../.."` 从 `docs/02-resources/research/pricing/scripts`
+只回到 `docs/02-resources`，于是 `OUT` 落在
+`docs/02-resources/services/llm-gateway-go/docs/pricing/raw` —— **不存在的路径**，
+而 `mkdir -p` 会把它建出来 ⇒ 脚本会**静默**把快照写到一个没人读的目录。
+② `set -e` + `curl` 失败会**中断整轮**，留下一半新一半旧的快照，
+且没有任何痕迹标明哪几个厂商失败 —— 对一个「快照」管道来说，那等于让下一次
+运行在**新旧混合**的数据上比较。
+
+**为什么本轮不改**：改 `OUT` 是一行，但它会改变脚本的实际落盘位置；
+配合②一起改还要定失败策略（重试几次、失败清单写哪）。
+两件都属于「让抓取步骤可运维」，与本轮量的结论（模型名救不回来、URL 已失效）
+是一组决策，**一起交给你拍**。
+
+### 结论（交给你决策用）
+
+Google 的 Gemini 家族**当前无法机械地进入基准价**，两个障碍相互独立：
+
+1. 模型身份在抓下来的文档里不存在（30% 靠邻近可恢复，不够）；
+2. 价格格子里是两个带生效日期的值，SSOT 的字段装不下。
+
+⇒ 可选的路径有三条：**(a)** 接受 Google 家族不在基准价覆盖内，把成本控制的
+覆盖面明说；**(b)** 定「基准价取当前价还是调价后价」的口径，并另找带模型名的
+数据源（例如每个模型自己的文档页）；**(c)** 改抓取 + 口径一起做，工作量最大。
+本轮**不做任何未经原厂页面核实的数字**，也没有覆盖仓里已跟踪的实抓快照。
+
+### 验证
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿。带库 `bg` 全量：**980 PASS / 6 FAIL / 16 SKIP**（不变）。
+- 未新增迁移。teeth 全部还原且与修复版逐字节一致。
+- 一次性探针只写在 `/tmp`，**未落进仓**（`git status` 已核）。
+- 测试库 `public` 0 表 0 视图 0 序列；对 127.0.0.1:5432 **全程只有 SELECT**。
+### 第 13 条健康检查 `supplier_price_missing_from_cost`：可路由流量里没有一条算得出成本
+
+**缺口**：`domains/streaming.CalcCost`（`domains/streaming/usage.go:208`，
+经 `AssignRequestCost` 调用）有守卫 `if priceIn == 0 && priceOut == 0 { return nil }`。
+⇒ **零价绑定的成本是「算不出来」而不是 0**，与「真的免费」在账上**完全分不开**。
+
+> ⚠️ **2026-10-06 更正归因**：本条原先把守卫归给
+> `provider.Candidate.CalcCost`（`provider/client.go:267`）。那个函数是
+> **死代码**（`grep -rn '\.CalcCost('` = 0）且语义不同（它 `return 0`）。
+> 价格列本身没错 —— 两条路径都读 Candidate 的 `PriceInPer1M` 等字段，
+> 所以本检查的总体与列都是对的，错的只是「去改哪个函数」。前面 12 条检查盯的都是「已记录的价对不对」，
+**没有一条问「这个模型到底有没有价」**。
+
+**真库读数**（`127.0.0.1:5432`，全程只有 SELECT）：
+
+| 项 | 值 |
+|---|---|
+| 全库绑定 | 2045 |
+| `billing_mode` 分布 | per_token 1273 / token_plan 645 / free 105 / code_plan 17 / token 4 / monthly 1 |
+| 价格列是 **NULL**（不是 0）的行 | 1859 / 2045 |
+| 可路由 + per_token + **有**有效价 | **0** |
+| 可路由 + per_token + 零价 | ≈150 绑定 / ≈129 模型 |
+| 可路由 + `token_plan` + 零价（**不报**，0 是对的） | 83 |
+
+⇒ 当前能被路由的按 token 计费流量，**没有一条算得出成本**。成本汇总看起来很小，
+是因为它**没算**，而不是因为便宜。
+
+⚠ 「≈150」这个数**会漂**：同一分钟连查三次是 146/126，两分钟后 149/129
+—— 视图的 `is_routable` 含 `next_retry_at > now()` 的探针退避（`node_probe_state`
+里 379 行在退避中）。所以代码注释里**只钉「有价的是 0 条」**，不钉具体数字。
+
+被视图排除在外的 per_token 零价绑定（这些**不会**产生成本）：配额永久耗尽 456、
+凭据手工禁用 270、探针失败 136、auth 失败 96、绑定不可用 39、不可达 27、
+供应商停用 20、凭据停用 18、生命周期停用 11、供应商手工禁用 8。
+
+#### 总体必须取视图，不能手抄谓词（第一版就抄错了）
+
+第一版按 `available + status + lifecycle + provider.enabled + 两个 manual_disabled`
+这 6 个谓词自己判「可路由」，量出 **858** 条。按视图的 `is_routable` 只有约 150 条 ——
+差的 700 多条是配额耗尽、手工禁用、探针失败、auth 失败，**根本不会被路由**。
+
+`provider/client.go:1873` 的候选查询就是 `AND v.is_routable = TRUE`，所以视图才是
+这份判定的 SSOT。仓库里**已经有一扇门把这个坑写成了判据**：
+`deploy/sql/verify/routing_gate_warning_pg_test.go` 的注释
+「status/lifecycle）挑「可路由」会选到实际不可路由的凭据」。这次是先撞上再写下来。
+
+#### 「没有价」要按候选查询真正取价的那条路判
+
+候选查询取价是 `COALESCE(mo.unit_price_in_per_1m, pp_fb.plan_in)` ——
+绑定价为 NULL 时会回落到 `pricing_plans` 的计划价（`_mc_id = COALESCE(pm.canonical_id,
+别名解析)`，配 credential > provider > global 的 scope 守卫）。
+所以查询里带一个**保守的 `EXISTS`**：只要存在任一命中该模型、当前生效、
+且 input/output 至少给了一个价的计划行，就算「有价」。
+这个 `EXISTS` 只会让本检查**少报**，不会多报（多计划行时生产侧按 `effective_from`
+取一条，这里按「有就算有」）—— 方向落在保守的那一侧。
+
+实测 `pricing_plans` 284 行 / 196 生效 / 52 行有 `input_per_1m`，但按**真实**的
+`_mc_id` 解析路径，当前 **0 条**命中（兜底救不回任何一个）。它仍是承重的：
+某天有人填了 `pricing_plans`，不含它的检查就会对着**有价**的绑定喊没价。
+
+#### 判据：五个形态一次种齐（`bg/supplier_price_missing_from_cost_test.go`）
+
+| 形态 | 期望 | 钉的是哪句话 |
+|---|---|---|
+| A 无价 + per_token + 可路由 | **必须报** | 这条检查存在的理由 |
+| B 有价 + per_token + 可路由 | 必须不报 | 「有价」不能被扫进来 |
+| C 无价 + `free` + 可路由 | 必须不报 | ★ **全部价值所在**：已知的 0 是对的 |
+| D 无价 + per_token + 不可路由 | 必须不报 | ★ 总体必须是 `is_routable` |
+| E 无价 + per_token + 可路由，但 `pricing_plans` 有兜底 | 必须不报 | ★ 兜底 `EXISTS` 是承重的 |
+
+夹具用**真视图定义**（`sql/objects/views/v_routable_credential_models.sql`）而不是
+手抄那份合取 —— 这条检查的价值恰恰是「总体取自路由 SSOT」，手抄等于把要证明的
+东西写进夹具。另加两条：>20 时只报一行汇总（跨过阈值的读数自报计数），
+以及扫描分支的落库稳定性。
+
+#### teeth
+
+| # | 变异 | 结果 |
+|---|---|---|
+| T1 | 去掉 `billing_mode='per_token'` | 红：多报 `model-c-free`（形态 C 被扫进来） |
+| T2 | 去掉 `is_routable` | 红：多报 `model-d-disabled`（形态 D 被扫进来） |
+| T3 | 去掉 `pricing_plans` 兜底守卫 | 红：多报 `model-e-planfallback`（形态 E） |
+| T4 | 让有价行不再算「有价」 | 红：多报 `model-b-priced`（形态 B） |
+| T5 | 汇总行改用 `textHash(name)` | 红：健康表堆出 3 行（单模型 + 21 的汇总 + 26 的汇总） |
+| T6 | 汇总阈值推远（20 → 1000） | 红：21 个模型时**报 0 行** |
+
+★ **teeth T5 第一次没红**，这是本轮最值得记的一条：第一版判据只跑到「跨过阈值」
+就断言健康表里有 2 行，而变异**同样**得到 2 行 —— 因为形态 A 那一行会一直留着，
+新增的汇总行正好补上第二行。**「常量键 vs 名字键」只有在两次读数不同的汇总行之间
+才可观测**（名字里带计数 ⇒ 名字变 ⇒ 哈希变）。补了第三次读数（21 → 26）后，
+teeth T5 即红，并给出精确症状。
+这是「teeth 没红」的第三种原因：不是变异没生效、也不是路径没经过，
+而是**夹具里没有能让该条件发挥作用的样本**。
+
+★ 另一条与 teeth 无关但同样值得记的坑：还原变异时我用「块内第一次出现的
+`textHash(name)`」做替换，而那个出现在**注释里** —— 结果注释被改、**两个代码分支
+都还留着变异体**。是靠 md5 与原始不一致当场抓到的（还原后必须逐字节比对，
+不能只看「跑通了」）。把判据里那句注释也写成 `textHash(name)` 之后，
+同一个替换就会同时命中注释和代码 —— 所以**注释里不要引用会被机械替换的标识符**。
+
+#### 顺带记下一处 SSOT 与真库的漂移（本轮未改）
+
+`sql/objects/views/v_routable_credential_models.sql:17` 的配额闸门里有**三个**状态
+（`permanently_exhausted` / `balance_exhausted` / `periodic_exhausted`），
+真库那个视图只有**两个**（少了 `periodic_exhausted`）。真库确有 2 个凭据处于
+`periodic_exhausted`、33 条绑定（其中 per_token 16 条）。
+
+**但当前 0 行受影响**：那 33 条绑定的 `is_routable` 全是 false（被别的子句挡住），
+所以这条漂移今天不改变任何读数。**记录它是因为它会变** —— 一旦某个
+`periodic_exhausted` 的凭据其它子句都正常，两边的可路由集合就会分叉。
+本轮不修：改视图会让生产多挡掉一批流量，属于需要你确认的运维口径变化。
+
+### 验证（本轮：第 13 条检查）
+
+- 全仓 `go build ./...` rc=0；改动集内每个 `.go` gofmt 干净。
+- 无库 8 包全绿（`bg` / `db` / `internal/vendorprice` /
+  `cmd/tools/propose-baseline-prices` / `discovery` / `provider` /
+  `modelname` / `modelcatalog`）。
+- 带库 `bg` 全量：**983 PASS / 6 FAIL / 16 SKIP**（此前 980/6/16，**+3 正是本轮
+  新增的三条判据**）。那 6 个 FAIL 是既有的（`TestRollupCredentialModelIndex_NoDuplicateKey`、
+  `TestDefaultResidueTargets_ProductionIsClean`、`TestHotTableOldestRowAge_RealDB`、
+  `TestLedgerReconciler_RunOnce_RealDB`、`TestReportRollupWorker_CatchUp_RealDB`、
+  `TestTaxonomyUpsertAlias_Live`），已用 `git stash -u` 做过基线对照，确认非本轮引入。
+- 未新增迁移。`verify-migration-checksums.sh`：
+  `OK: 171 registered migrations verified, 666 unregistered (warn-only)`。
+- teeth 六条**全部红**（T5 在补了「第二次读数」之后红）；六条全部还原，
+  `md5` 与变异前**逐字节一致**。
+- 测试库 `public` **0 表 0 视图 0 序列**（跑完核对过，所以下轮不会因「表已存在」
+  而 SKIP 成假绿）。
+- 对 `127.0.0.1:5432` **全程只有 SELECT**，未做任何写入。
+- 一次性探针与 teeth 脚本只写在 `/tmp`，**未落进仓**（`git status` 已核）。
+- 工作区改动 **43 个文件**（HEAD `14260af0f`），**未 commit**；仓内既存 stash 仍是 8 条。
+
+### 量清「供应商价能不能自动获取」：7/39 家可行，32 家只能手填
+
+第 13 条检查让缺口**可见**了，但它只回答「有没有价」，不回答「价**从哪来**」。
+本轮把这个问题量到底，因为它决定目标第二半是「自动化工程」还是「商务流程」。
+
+#### 1. models.dev 的 `cost` **确实是按供应商分维度**的
+
+结构实测：`{providerId: {name, api, npm, doc, env, models: {modelId: {cost: {input, output}}}}}`，
+226 个 provider、8393 个模型条目、7958 个带价。⇒ 从结构上它**能**当供应商价源。
+
+#### 2. 覆盖到本网关的 39 家（按绑定量）
+
+| provider | base_url | 绑定 | 在 models.dev | 带价模型数 |
+|---|---|---:|---|---:|
+| openrouter | openrouter.ai/api/v1 | 419 | ✔ `openrouter` | 386 |
+| nvidia | integrate.api.nvidia.com/v1 | 412 | ✔ `nvidia` | 106 |
+| minimax | api.minimaxi.com/v1 | 44 | ✔ `minimax` | 7 |
+| sensenova | token.sensenova.cn/v1 | 42 | ✔ `sensenova` | 5 |
+| xiaomi | token-plan-cn.xiaomimimo.com | 29 | ✔ `xiaomi` | 9 |
+| anthropic | api.anthropic.com | 7 | ✔ `anthropic` | 16 |
+| openai | api.openai.com/v1 | 3 | ✔ `openai` | 49 |
+
+**7 家 = 956 / 2045 绑定 = 46.8%**。按 (provider, model) 粒度再量一次：
+**393 / 565 对能拿到非空 cost（69.6%）** —— openrouter 327/419、nvidia 47/104。
+那 172 个 miss 里只有 4 个是**我们目录里的合成条目**（`anthropic/recov-*`，
+全库合成名一共 9 个），其余是 models.dev 侧确实没有该模型 ⇒ 69.6% 是站得住的数字，
+不是被我们的脏数据抬起来的。
+
+#### 3. ★ 更正一条我差点写进结论的错误结论
+
+我先拿库里已有的 **36 条有价行**（`manual`/`imported`/`inherited`/`pricing_plans`）
+去比对 models.dev，结果 **0/36 命中**。当时几乎就此断言「没有任何机器可读源」。
+
+**那个样本恰好全是中转商**（apiclaude / apigpt / evol / zhipu / zhima / 速云U站…），
+所以 0/36 只说明「这 36 行没有源」，不说明「网关的供应商没有源」。
+按 provider 覆盖率重测才发现 openrouter / nvidia 两家（占绑定量 41%）是覆盖的。
+⇒ **从「已填了价的那批」反推「能不能自动填」是个错位的外推**，
+要比就得按**总体**（39 家 × 全部绑定）去比。
+
+#### 4. 另外 32 家是私有中转/聚合渠道
+
+`apiclaude.cc` / `evolai.cn` / `othersapi.com` / `u.syapi.cn` / `apiclaude.cc/v1`… ——
+它们是**转售渠道**，价格是私下商务约定，既不在 models.dev，也没有任何公开机读价目。
+⇒ 「按供应商实际价格设置」这一半，**对 32 家是商务流程而不是工程问题**。
+可自动化的切片是那 7 家（约 47% 绑定）。
+
+#### 5. 顺带查清三件与「谁在写价」有关的事实
+
+- **仓里没有自动估价/回填价格的代码**（`estimate` / `backfill` 零命中）。
+  现有四条写入路径全是 admin 手动：`/api/pricing/import`（CSV）、
+  `bulk-update`、`copy`、`auto-inherit`。
+- **`catalog_estimate` 是迁移 565 写的一次性回填**，不是 Go 代码。它的写入语句
+  自带注释：`catalog_estimate for dominant gpt-5.6 aliases (KPI estimate, **not
+  billing truth**)`，且**硬编码 `2.5 / 15.0`** 给 `gpt-5.6-{terra,sol,luna}` ——
+  真库那 14 行全是同一个 2.5/15.0，跨 apigpt / evol / zhima / 速云U站 四个供应商。
+  565 第 4 步再用这些价回填了 `request_logs_hot.cost_usd`。
+- **那 14 行的当下量级可以忽略**：`request_logs_hot` 5126 行里只有 14 行有成本，
+  `session_summaries` 346,145 行合计 **0.018482 USD**。⇒ 它是**潜在**正确性问题
+  （成本台账里有一部分是用系统自己声明「不是账单真值」的占位价算的），
+  不是当下金额问题。**因此本轮不为它加健康检查** —— 报一条 0.00003 美元的告警
+  就是噪声（同一条纪律：宁可少报一条，也不把「故意关掉」说成故障）。
+
+#### 6. 删掉一个死常量 + 记下一处四处四写法
+
+`admin/plan_type_helpers.go` 的 `deriveBillingModeSQL`，注释写着
+「used in multiple UPDATEs」，实际**零使用者**；同一段字面量在
+`admin/provider_credential.go:704` 内联了一份。死代码 + 假陈述，删掉（零行为风险）。
+
+但删常量**不等于收口**：「`plan_type='token'` ⇒ `per_token`」这条语义在仓里有
+**一个被测的 Go 函数 + 三处 SQL 内联副本**，而副本并不都遵守那个函数：
+
+| 位置 | 写法 | `plan_type` 为空/NULL 时落成 |
+|---|---|---|
+| `modelcatalog.DeriveBillingMode()`（**Go 函数，有判据**） | switch | **`per_token`**（`{"", "per_token"}` 是钉住的用例） |
+| `modelcatalog/upsert.go:114` / `:240` | `… ELSE COALESCE(cred.plan_type,'per_token') END` | **`per_token`**（与函数一致） |
+| `admin/provider_credential.go:704` | `… ELSE $1 END` | 原样（空串→空串，NULL→NULL） |
+| `admin/pricing.go:1045` | `… ELSE c.plan_type END` | 原样（同上） |
+
+判据钉住的是 Go 函数那一份（`modelcatalog/upsert_test.go:112`
+`TestDeriveBillingMode`，含 `{"", "per_token"}` 与 `{"unknown","unknown"}` 两个
+边界用例），**两处 admin 的 SQL 副本不在任何判据覆盖内**，而它们落在承重轴上
+（`per_token` 决定第 13 条检查报不报、预付口径走不走）。
+
+**哪一侧是意图不归我单方决定**：把 admin 两处改成「空→per_token」会改变
+那些绑定当前的 `billing_mode`，从而让第 13 条检查开始报它们（等于凭空多出告警），
+反向改又会掩盖真实缺口。所以这里只把事实钉成表，**不做统一**。
+
+### 验证（供应商价可获取性量测 + 死常量清理）
+
+- 全仓 `go build ./...` rc=0；`admin/plan_type_helpers.go` 与
+  `bg/` 两个改动文件 gofmt 干净。
+- 删的是**零使用者**的常量（`deriveBillingModeSQL` 全仓仅声明处出现），
+  行为面不可能变化；`admin` / `modelcatalog` 包测试照跑。
+- 本轮**未新增健康检查**（理由见上文第 5 点：为 0.00003 美元的占位价报警是噪声）。
+- 四个 models.dev 探针与比对脚本全部只写在 `/tmp`，**未落进仓**。
+  探针当场复现过一次 EOF 重试才成功 —— 这正是 `baseline_observation_stale`
+  用「两个对账周期而不是一个」做容忍的同一个现象。
+- 对 `127.0.0.1:5432` **全程只有 SELECT**。
+### 新工具 `cmd/tools/propose-supplier-prices`：把观察源变成**可评审的**供应商价草稿
+
+上一节量清了「哪些供应商的价能自动拿到」，本节把那个结论变成一个工具。
+它是 `propose-baseline-prices` 在供应商侧的对应物：**只产出草稿，从不写库**。
+
+#### 为什么是这个形状
+
+第 13 条检查说「这些绑定没有价」，但**不回答「价该从哪来」**。量测的结论是：
+仓里**没有**任何自动估价/回填价格的代码（`estimate`/`backfill` 零命中），
+现有四条写入路径全是 admin 手动（`/api/pricing/import` 的 CSV、`bulk-update`、
+`copy`、`auto-inherit`）。
+
+⇒ 工具的产出刻意做成 **`admin/pricing.go` 的 `pricingImport` 已经能吃的 CSV**
+（`offer_id` + 三个价格列 + `currency`），这样不新增任何写入路径：人评审完，
+走既有那条已被审计过的导入路。工具本身**不碰数据库**。
+
+#### 三个刻意的「拒绝」
+
+| 拒绝 | 为什么必须拒 |
+|---|---|
+| 缺 `-fetched-at` | 没有观测时间的价不可复算、不可复查，草稿就不是评审物 |
+| 缺 `-currency` | ★ 观察源**根本不发布币种字段**（活载荷实测，2026-10-05）。所以币种是**运维声明**的，工具**没有 USD 默认值** —— 这与本会话早前在写入侧做的「币种未知拒绝而非兜底 USD」是同一条纪律 |
+| 源解析出 0 个 provider | 否则每一条 offer 都会被报成「源里没这个供应商」，把「我什么都没读到」说成「没有价」 |
+
+#### 六个拒收族，**下一步动作两两不同**
+
+族不能按「症状相似」合并，判据是**下一步动作相反**：
+
+| 族 | 下一步 |
+|---|---|
+| `provider_not_in_source` | 人工按报价单填（私有中转，无公开价目） |
+| `model_not_listed_for_provider` | 先核对模型名，再决定填价还是下架这条绑定 |
+| `no_price_published` | 人工填（源里**没有**价目条目） |
+| `published_price_is_zero` | ★ 这不是价格问题，是**计费方式**问题：显式设 `billing_mode`，让第 13 条检查不再把它当成「按 token 却没填价」 |
+| `price_is_conditional` | ★ **定价决策**：取哪一档、或者定按哪个上下文上限取 |
+| `duplicate_offer_id_in_input` | 修输入表（通常是导出 join 重复，不是价格问题） |
+
+#### ★ 条件价绝不被压平（最危险的一条）
+
+活载荷实测：`x-ai/grok-4.7` 的 `cost` 是
+`{input:2, output:6, cache_read:0.5, tiers:[…], context_over_200k:{input:4, output:12}}`
+—— **价格不是单值**。而 `credential_model_bindings` 只有两个标量价格列。
+
+若把基础值当价格写进去，长上下文流量会被**系统性少计费**，而草稿看起来完全正常：
+有一行、有数、没有异常。⇒ 工具对此**拒收**。
+
+同一族在原厂侧也出现过（Google 的「$0.75 through Dec 31 2026 / $1.50 from Jan 1 2027」）。
+两侧同一个「单价不是单值」的问题，但**下一步动作不同**（原厂侧是定基准价口径，
+供应商侧是定按什么上下文取），所以两边的族表**不共用**。
+
+实现上刻意把 `cost` 解析成 **map 而不是定长 struct**：`context_over_200k` 这种
+本工具没见过的键，用 struct 会**静默丢掉**，然后工具把基础价当成价格写出去。
+判据 `TestParseModelPrice_未知的_cost_键不许被静默丢掉` 钉的就是这一步。
+
+#### ★ 修掉一个自己写出来的真缺陷
+
+初版 `parseModelPrice` 对「有条目但没有 `cost` 对象」的模型 `continue` 掉了 ——
+于是它在 `Resolve` 里被报成 `model_not_listed_for_provider`：
+**把「价没公开」说成了「模型不存在」**，而这两件事的下一步完全不同。
+判据先红（`offer 5 应当归入 published_price_is_zero，实得 no_price_published`
+暴露了族定义与代码不一致，顺着才挖到这条），修法是加 `CostAbsent` 字段把
+「源里没有价目条目」与「源里说它是 0」分开 —— 后者是**计费方式**的事实。
+
+#### 真库首跑：143 条缺价 offer（总体与第 13 条检查逐字一致）
+
+```sql
+SELECT b.id AS offer_id, p.code AS provider_code, pm.raw_model_name
+  FROM v_routable_credential_models v
+  JOIN credential_model_bindings b ON b.id = v.binding_id
+  JOIN providers p ON p.id = v.provider_id
+  JOIN provider_models pm ON pm.id = b.provider_model_id
+ WHERE v.is_routable AND b.billing_mode = 'per_token'
+   AND COALESCE(b.unit_price_in_per_1m,0) = 0
+   AND COALESCE(b.unit_price_out_per_1m,0) = 0
+ ORDER BY p.code, pm.raw_model_name;
+```
+
+★ **又一次分母修正**：7 家已覆盖 provider 在**全部 2045 条绑定**里占 956（46.8%），
+但在这 **143 条真正缺价的 offer** 里只占 **11 条（7.7%）** —— 缺口高度集中在
+没有公开价目表的渠道（vapeur 101、baichuan 10、商汤-3 4、pulian 4、apigpt 3…）。
+
+⇒ 工具的真正价值因此**不在那 11 个价**，而在**那 132 条拒收台账**：
+每条带一个族 + 一个「下一步是什么」，正好是运维要的那份可行动清单。
+这也是为什么「族表要按下一步动作分组」在这里是承重的：把 7 个族压成 1 个
+「无法定价」，这份台账就退化成一句「价格缺失」。
+
+### 真库首跑 142 条缺价 offer：6 条能定价，136 条进了拒收台账
+
+```bash
+go run ./cmd/tools/propose-supplier-prices \
+  -offers /tmp/offers.csv -fetched-at 2026-10-05T00:00:00Z -currency USD \
+  -out /tmp/supp_draft.json -csv /tmp/supp_import.csv
+# offers=142 accepted=6 rejected=136
+```
+
+| 族 | 条数 |
+|---|---:|
+| `provider_not_in_source` | 131 |
+| `model_not_listed_for_provider` | 4 |
+| `price_is_conditional` | 1 |
+
+★ **又一次分母修正**：那 7 家已覆盖 provider 在**全部 2045 条绑定**里占 956（46.8%），
+但在这 **142 条真正缺价的 offer** 里只占 **6 条（4.2%）** —— 缺口高度集中在
+没有公开价目表的渠道（vapeur 101、baichuan 10、商汤-3 4、pulian 4、apigpt 3…）。
+
+⇒ 工具的真正价值因此**不在那 6 个价**，而在**那 136 条拒收台账**：
+每条带一个族 + 一句「源到底说了什么」，正好是运维要的那份可行动清单。
+这也是为什么「族表按下一步动作分组」在这里是承重的：把 3 个族压成 1 个
+「无法定价」，这份台账就退化成一句「价格缺失」。
+
+#### 真数据抓到的条件价：`minimax/MiniMax-M3`，条件 `context/512000`
+
+```
+#2475874 minimax/MiniMax-M3
+  the source publishes 1 conditional tier(s) (first condition: context/512000)
+```
+
+这是**活数据里的真命中**：网关名册里的这个模型，其价是带条件的，而
+`credential_model_bindings` 的两个标量价列装不下。若自动化挑一个基础值写进去，
+512K 以上的长上下文流量会被**系统性少计费**，而草稿看起来完全正常。
+
+#### 首跑真数据抓到的三个问题（都不是读代码看出来的）
+
+① **逐行证据没进 JSON**。初版把「源说了什么」存在平行切片里没序列化，于是评审者
+拿到 `price_is_conditional` 却不知道条件是什么，必须重跑才能行动。⇒ 加
+`Line.Detail` + 判据钉住。**是跑出来的**。
+
+② ★ **夹具与活载荷不同形**。`tiers` 的条件在真载荷里是**嵌套**的
+`"tier":{"type":…,"size":…}`，而我的 struct 把 `type`/`size` 读在顶层 ⇒
+detail 变成 `1 conditional tier(s) (first: )`，**条件是空的**。
+而判据当时只要求 `Contains(detail, "context")`，夹具又是照**我自己的 struct**
+写的扁平形状，所以**判据照样绿**。
+⇒ 三处一起改：struct 按活载荷重写、夹具改用唯一构造器（形状照抄源）、
+判据升级为「必须说出确切条件（类型/阈值）」。
+**这一条最值得记：夹具是照着被测对象写的，判据就只会验证「我理解得对」，
+不会验证「我读的是真的」。**
+
+③ **失败会把旧草稿留在原地**。一次 TLS 握手超时让工具 exit 2 且没写文件，
+而**上一轮**的草稿还在那儿、带着它自己的 `fetched_at` —— 评审者无从分辨它不是
+本轮的。⇒ 不删运维的文件（那是破坏性操作），改为在 stderr 明说
+「该文件已存在，只有本轮跑到写文件那步才会被覆盖；若本轮失败，那个文件是**陈旧的**」。
+
+#### 判据 11 条 + teeth 9 条
+
+teeth 全红，逐条的症状都指到具体形态：
+
+| # | 变异 | 症状 |
+|---|---|---|
+| V1 | 去掉重复 offer_id 守卫 | offer 9 落到 `model_not_listed_for_provider` |
+| V2 | 不拒条件价 | `vendor/tiered` 被**接受**，价 2/6 |
+| V3 | 去掉 provider 键归一 | `NVIDIA` 匹配不上，只接受 1 条而非 2 条 |
+| V4 | 去掉零价守卫 | `only-cache` 与 `free-ish` 被**接受**且价格列为 nil ⇒ 静默少计费 |
+| V5 | 去掉未知 cost 键扫描 | `context_over_200k` 被静默丢弃 |
+| V6 | 去掉 `-currency` 校验 | 币种缺失被放行（回到兜底 USD 的老毛病） |
+| V7 | 丢掉 `CostAbsent` | 「源里没价目」被误报成「没有这个模型」 |
+| V8 | 条件价读错层级 | 条件读不出来（②的复发形态） |
+| V9 | 清空逐行 `Detail` | 拒收行没有可行动证据 |
+
+★ **teeth V4 第一次没红**，原因值得记：零价判定当时写成**两个**守卫
+（三个全零 / input=0 且 output=0），而第一个**完全被第二个吞掉** ——
+删掉它，族计数一动不动。⇒ 一个永远不会是「触发的那一个」的守卫，就是一个
+没人测它的守卫。合并成 `zeroPriceRejection()`（一个族、两种措辞），
+重做 V4 即红：`only-cache` 与 `free-ish` 被接受且价格列为 nil。
+（同一轮里也顺手删掉了因此变成死代码的 `IsZero()` 方法。）
+#### teeth V8 的一次修正
+
+V8 第一次报「NOT LANDED：锚点出现 0 次」—— 那是我脚本的错，不是 teeth 无效：
+锚点 `t.Tier.Type = kind` 在**测试文件**的 `nestedTier` 构造器里，不在 main.go。
+改成等价形态的变异（让 `Conditional()` 不去读条件），立刻咬住，
+症状与原 bug **一字不差**：`first condition: )`。
+还原后 `md5` 与变异前逐字节一致。
+
+⇒ 「teeth 没红」与「teeth 没落地」必须分开报：前者是判据的问题，后者是脚本的问题，
+混起来会让「没红」被当成「不重要」。
+
+### 验证（本轮：propose-supplier-prices）
+
+- 全仓 `go build ./...` rc=0；新工具两个文件 gofmt 干净。
+- 新工具判据 **11 条全绿**；teeth **9 条全红**，全部还原且 md5 逐字节一致。
+- 无库 9 包全绿（新增 `cmd/tools/propose-supplier-prices`）。
+- 带库 `bg` 全量：**983 PASS / 6 FAIL / 16 SKIP**（6 个 FAIL 仍是既有的）。
+- 真库首跑：142 条 offer → 6 条接受、136 条拒收，导入 CSV 恰好 6 行数据。
+- 导出与工具读入行数已对账（142，无重复 offer_id、无空行）；早先看到的 143
+  是 `wc -l` 把末行算进去的假象。
+- 对 `127.0.0.1:5432` **全程只有 SELECT**；导出与草稿都只写在 `/tmp`。
+### 把「0 定价」量成**token 量**：30 天里多少流量根本没被计成本
+
+第 13 条检查说「可路由的 per_token 绑定没有一条有价」。那句话是真的，但它没有
+**分量** —— 读起来像「一个待修的整洁问题」。本节把它换成数字。
+
+#### 总体与量法
+
+`request_logs` 近 30 天 **2,184,994 行**（2026-09-03 → 2026-10-04）。
+先按 (credential, model) 聚合再 join `model_offers`（逐行 lateral 扫 218 万行太贵）：
+
+| 桶 | (凭据,模型) 对 | 请求数 | prompt token | completion token | 有成本记录的行 |
+|---|---:|---:|---:|---:|---:|
+| **per_token 但无价（盲区）** | 696 | 1,079,311 | 1,006,999,037 | 11,750,242 | **0** |
+| 匹配不到绑定 | 60 | 665,343 | 379,310,948 | 1,556 | 0 |
+| 零价但计价方式下 0 是对的 | 353 | 311,603 | 1,571,895,307 | 21,097,290 | 2,240 |
+| 有价 | 20 | 46,875 | 483,607,204 | 3,961,092 | 12,629 |
+
+#### ★ 探针流量占 95%，拆开后才是真的数
+
+上表第一行的 108 万请求里，**1,024,683 条是 `is_auto_request = t`**（请求数极高、
+token 量极小：3,646 万 prompt / 182 万 cache read —— 那是探活）。
+**真实业务流量**是：
+
+| `is_auto_request` | 请求数 | prompt token | completion | cache read |
+|---|---:|---:|---:|---:|
+| `t`（探针） | 1,024,683 | 36,464,109 | 3,730,103 | 1,820,083 |
+| **NULL（非探针，真实流量）** | **54,621** | **970,534,887** | 8,020,128 | **305,303,920** |
+
+⇒ **5.5 万次真实请求、9.70 亿 prompt + 802 万 completion + 3.05 亿 cache-read token，
+成本记录为 0。** 差 20 倍 —— 直接把 108 万报成「成本敞口」是错的。
+
+⚠ 顺带一个 SQL 陷阱（已量，**比「返回 0 行」更险**）：`is_auto_request` 可空，
+而 **`NOT is_auto_request` 对 NULL 求值为 NULL 而不是 true**。全表实测：
+
+| 过滤写法 | 返回行数 |
+|---|---:|
+| `NOT is_auto_request` | **46** |
+| `is_auto_request IS NOT TRUE` | **765,099** |
+| `is_auto_request IS NULL` | 765,053 |
+
+⇒ 写成 `NOT is_auto_request` 会丢掉 **99.994%** 的非探针流量，而且它返回的是
+**46 这样一个看起来正常的非零数**，不是 0 ⇒ **不会触发任何「数据不对」的直觉**，
+只会让读数变成「几乎没有真实流量」，而那完全是可以被相信的结论。
+必须写 `IS NOT TRUE`。
+（同族：`COALESCE(status,'active')='active'` 那类写法在这张表上是有意为之的，
+但那是因为配套的判定侧也做了同样的约定 —— 前提要对齐。）
+
+#### 按 provider 拆：前三家占 97%
+
+| provider | 请求数 | prompt token | cache read |
+|---|---:|---:|---:|
+| minimax | 15,800 | 666,571,940 | 136,700,404 |
+| 速云U站 | 6,743 | 155,890,825 | 76,098,561 |
+| apigpt | 3,893 | 119,526,988 | 90,611,622 |
+| apiclaude | 1,304 | 4,089,740 | 992,646 |
+| vapeur | 9,373 | 14,366,337 | 29,820 |
+| …（其余 18 家合计 < 2%） | | | |
+
+#### ★ 单模型黑洞：`MiniMax-M3` = 16.73 亿 prompt token，且卡在**定价决策**上
+
+`MiniMax-M3` 一个模型近 30 天 **39,279 次请求 / 1,673,368,097 prompt token**，
+`any_priced = false`（它的绑定是 `per_token` 与 `token_plan` 混合，都有 token 量）。
+
+而它正是新工具以 **`price_is_conditional`** 拒掉的那一条：观察源对它发布的是
+**带条件的价**（`context/512000` 一档）。
+
+⇒ **这个网关最大的成本黑洞，卡住的不是工程，是一次定价决策**：
+两列标量价装不下阶梯价，而「按哪个上下文上限取」是人和成本口径的事。
+这个结论只有把 token 量量出来才看得到 —— 上一轮那份「136 条拒收台账」里，
+它只是 136 条中的 1 条。
+
+#### ★ 顺带修掉导出查询的一个真缺陷：总体该由**消费**驱动，不是**可路由**驱动
+
+第一版的待定价清单按「**当前**可路由」取（与第 13 条检查的总体逐字一致），
+得 142 条。但实测这 6 行导入 CSV 只覆盖 **360 次请求 / 20.9 万 prompt token** ——
+几乎为零。
+
+原因：那些**现在不路由**的绑定（冷却中 / auth 失败 / 探针退避）**过去 30 天照样跑过
+真实流量**。「当前可路由」与「实际消耗过」是两个不同的集合，而要定价的是后者。
+
+⇒ 正确的待定价总体应由消费驱动：以 `request_logs`（近 N 天、排除探针）聚合出的
+token 量排序，取「跑过流量 ∧ 按 token 计费 ∧ 仍然无价」的绑定。
+**这不是把第 13 条检查的总体改掉** —— 检查报的是「现在会漏记成本的」，
+导出要的是「已经漏记了成本的」，两者本就该不同，且都该有。
+
+
+### ★ 消费驱动总体上的真跑：自动化关不掉 0.03% 的缺口
+
+把待定价总体换成消费驱动（先物化未定价绑定，再按键 hash join，避免相关子查询在
+1013 组上反复求值——见下一节的量具事故）后重跑：
+
+| | 可路由驱动（142 条） | **消费驱动（630 条）** |
+|---|---:|---:|
+| 能定价 | 6 | **14（2.2%）** |
+| `provider_not_in_source` | 131 | 413 |
+| `model_not_listed_for_provider` | 4 | 115 |
+| `published_price_is_zero` | 0 | **87** |
+| `price_is_conditional` | 1 | 1 |
+
+按 token 量排序的榜首（前 4）：
+
+| provider | model | 30 天 prompt token |
+|---|---|---:|
+| minimax | **MiniMax-M3** | **666,362,538** |
+| 速云U站 | grok-4.6 | 54,801,607 |
+| apigpt | grok-4.7 | 51,059,717 |
+| apigpt | gpt-6-sol | 49,306,421 |
+
+**那 14 行导入 CSV 关掉了多少？** 逐 offer 对回流量：
+
+| 桶 | 请求数 | prompt token | completion | cache read |
+|---|---:|---:|---:|---:|
+| 被 14 行 CSV 关掉 | **14** | **258,350** | 5,077 | 127,805 |
+| 仍然未计成本 | 616 | 970,276,065 | 8,014,991 | 305,176,115 |
+
+⇒ **0.03%。** 9.70 亿未计成本的 prompt token 里，自动化只能碰到 25.8 万。
+（可路由驱动那版更极端：6 行只覆盖 360 次请求 / 20.9 万 token。）
+
+★ 这个结论比「工具做好了」重要得多，它把问题的性质钉死了：
+**剩下的 99.97% 不是工程缺口，是「没有公开价目」与「定价决策」两件事**：
+
+- 413 条：provider 没有任何公开机读价目（私有中转/聚合渠道）⇒ 商务流程；
+- 115 条：源里没有这个模型（先核对模型名，再谈价）⇒ 目录/别名问题；
+- **87 条 `published_price_is_zero`**：源**明确说这些模型是 0 价** ⇒ 这批很可能
+  本就该是 `billing_mode='free'`/预付，把 0 价当成「缺价」报出去是**误判**；
+- 1 条 `price_is_conditional`（`MiniMax-M3`，条件 `context/512000`）
+  ⇒ 单模型 6.66 亿 token，卡在一次**定价决策**上。
+
+⇒ **在补自动化之前，先把 87 条 `published_price_is_zero` 的 `billing_mode` 纠正**
+—— 那一步不需要任何新数据，却可能一次性拿掉 87 条假缺口。
+
+### 量具事故：`timeout` 杀掉查询，空文件被读成「零条」
+
+第一次跑消费驱动导出时得到 **0 条**。那不是发现，是量具坏了：
+
+- `timeout 280 psql … > out.csv` 后面接 `wc -l`，**psql 的退出码被后续命令吞掉**；
+  被 kill（rc=124）就只留下一个空文件，而「0 条」看起来完全像一个真结论；
+- 真因是那个相关子查询 `b.provider_model_id IN (SELECT id FROM provider_models
+  WHERE raw_model_name = a.model)` 在 1013 组 (credential, model) 上被反复求值；
+- 改写成「先物化 `unpriced` CTE，再按 (credential_id, model) hash join」后
+  **rc=0 / 630 条**，且与另一条已验证可跑通的 LATERAL 写法数字一致（630 vs 630）。
+
+★ 记录它是因为形状很典型：**量具静默错比量具报错危险得多**。报错只浪费一次时间；
+静默错会产出一个**可以被相信的**结论。后来所有导出类命令都加了
+`set -o pipefail` + 显式打印 `rc=$?` 与 stderr。
+
+### 修自己那条检查的错误建议：per_token 且 0 价**可能本来就是对的**
+
+`published_price_is_zero` 那 87 条拆开看，**全部是 `nvidia`**，去重后 44 个模型：
+`llama-3.1-8b-instruct`、`gemma-3.1-8b-instruct`、`gemma-3-12b-it`、`gpt-oss-20b`、
+`nemotron-*`、`kimi-k3`、`glm-5.3-flash`… —— 正是 NVIDIA build API 上**按 token 计量
+但单价为 0** 的开放模型。
+
+⇒ **对这类绑定，`billing_mode='per_token'` 是诚实的描述**，边际成本确实是 0。
+而第 13 条检查原来在汇总行里写的是「Fill the two price columns, or record the
+intended mode explicitly」—— 对**供应商明确标 0 价**的模型，那是**错误建议**，
+而且会诱导运维**编一个假价**填进去（那是本会话一直在拒绝的事）。
+
+这条检查手里没有供应商价目，**分不开「价没填」与「供应商就免费」**。
+所以 detail 改成：
+- 承认这两种解释同样成立，并给出实测证据（208 条 nvidia 绑定 / 44 个开放模型）；
+- 明确说**不要因为这条告警就填数**；
+- 指向分类动作：`propose-supplier-prices` 的 `published_price_is_zero` 族
+  = 供应商说免费，剩下未分类的才是真的缺价。
+
+当前 208 条**全部不可路由**，所以今天不触发这条告警 —— 属于潜伏问题，
+但只要有一条恢复可路由就会对上它们。
+
+配套判据 `TestSupplierPriceMissingFromCost_BulkDetailMustNotTellYouToTypeANumber`
+是**纯文本 ratchet**：钉住 detail 必须提到「可能本来就对」与「先分类」，
+且不得再出现「Fill the two price columns」。teeth 已验：把措辞退回旧版即红
+（诊断里直接打出旧文案），还原后 md5 逐字节一致。
+
+### 验证（本轮：把「0 定价」量成 token 量 + 修检查的错误建议）
+
+- 全仓 `go build ./...` rc=0；`bg/` 两个改动文件 gofmt 干净。
+- `bg` 判据 4 条全绿（含新增的文本 ratchet），teeth 已验有牙。
+- 无库 9 包全绿；带库 `bg` 全量：**983 PASS / 6 FAIL / 16 SKIP**（6 个 FAIL 仍是既有的）。
+- 本轮**没有改动任何价格数字** —— 所有读数都来自只读 SELECT，导出与草稿只在 `/tmp`。
+- 一次量具事故已如实记录（`timeout` 杀掉查询 ⇒ 空文件被读成「零条」），
+  修法与验证都在上文；后续导出类命令一律打印 `rc` 与 stderr。
+
+### 查清剩下那 115 条：不是命名问题，是**源的目录覆盖不足**（且禁止模糊匹配）
+
+上一节留下 `model_not_listed_for_provider` 115 条。既然拒收台账是给人用的，
+那就要把「不可行动」变成「可行动」。逐条量过（一次性探针，只写 `/tmp`）：
+
+```
+model_not_listed: near-miss(去前缀同名)=0   完全不在源里=115
+```
+
+**0 个近似名。** 去掉 `vendor/` 前缀后逐条比对，115 个在源里**一个都不存在**
+⇒ 这不是命名约定不一致，是**观察源的 nvidia 目录比网关的 nvidia 名册小**。
+任何名称归一化都救不了这一族。
+
+但其中有两组**看起来**像改名/换版，很容易让人「顺手」去模糊匹配：
+
+| 网关名册 | 源里最像的 |
+|---|---|
+| `nvidia/llama-3.1-nemoguard-8b-content-safety` | `nvidia/llama-3.1-nemotron-safety-guard-8b-v3` |
+| `nvidia/riva-translate-4b-instruct-v2` | `nvidia/riva-translate-4b-instruct-v1.1` |
+
+★ **仓自己的身份表也不知道它们是同一个**：
+`model_aliases`（2816 行）里**没有这两行**；
+`model_name_mapping`（287 行）只是把每个名字**各自**映射到去掉前缀的自己。
+
+⇒ 那是一次**身份判定**，而仓里没有判据能替人判。
+**在判定完成前给它填另一个模型的价，等于把没核实过的数字写进计费路径** ——
+这正是本会话从头到尾在拒绝的那件事。
+
+因此这一族的解释被改写成**带禁令**的版本：写明「0 个近似名」、给出那两组
+易误配的例子、指出身份表查不到、并给出三条下一步
+（人工确认后把别名写进 `model_aliases` → 下次自动对上；换目录更全的源；或接受无价）。
+
+配套**纯文本 ratchet** `TestFamilies_不许有人偷偷用模糊匹配把名字对上` 钉住
+`不要模糊匹配` / `model_aliases` / `身份判定` 三个关键词必须出现在族解释里 ——
+哪天有人加一层模糊匹配，这条会挡下。teeth 已验：拿掉禁令即红，
+还原后 md5 与变异前逐字节一致（`cf62d517` 前后相同）。
+
+★ 顺带一个发现：nvidia 名下 51 个 `nvidia/%` 模型**全部**有非空 `canonical_id`
+⇒ 身份管道是通的，缺的是**价格映射**。这两件事在 827/826 之后可以分开推进，
+不要混成一件。
+
+### ★ 查出一处真正的接线缺口：在 URSM v2 authoritative 模式下，「定时核实」与「基准价落库」**从来没被启动过**
+
+这是本会话到目前为止最重要的一条，**而且它推翻了「多模态那块已经做完」的说法**。
+
+#### 实测症状（本地 authoritative 栈，全程只读）
+
+| 观察 | 读数 |
+|---|---|
+| `model_modality_verification` 行数 | **0** |
+| 827 进度视图 2880 个组合 | 全部 `verdict=unknown`、`evidence_rows=0` |
+| 日志 `CHECKPOINT: modality_verification started` | **0 行** |
+| 日志 `modality_verification skipped: new probe workers disabled` | **0 行** |
+| 日志 `new probe workers disabled` | **0 行** |
+| 容器里 `LLM_GATEWAY_SELF_CHECK_API_KEY` / `LLM_GATEWAY_MODALITY_VERIFY` | **都没设** |
+
+「连『被跳过』都没有一句日志」是关键：**不是被门挡住，是那段代码没被执行到**。
+
+#### 根因（用花括号配平定位，不是靠读缩进）
+
+- `stateManager` **只在 URSM v2 authoritative 模式下为 nil**（`main.go:1574`）；
+- 容器跑的正是 `URSM_V2_MODE=authoritative` ⇒ `stateManager == nil`；
+- `modality_verification`（`main.go:4588`）、`baseline_price_sync`（4603）、
+  `baseline_reconciliation`（4609）**全都在 `if stateManager != nil {`（4417，闭合于 4670）里面**；
+- 为 authoritative 准备的补偿块（`main.go:4726`→闭合 4818）里只有
+  `NewNodeProbeWorker` / `NewProbeService` / `NewCapabilityBackfill` / `credRecovery` ——
+  **没有这三个**。
+
+⇒ **这不是配置问题**：authoritative 模式下无论怎么设
+`LLM_GATEWAY_MODALITY_VERIFY` 或 `LLM_GATEWAY_SELF_CHECK_API_KEY` 都够不着它们，
+因为那段代码不在这条分支里。
+
+⇒ 后果直接命中目标两半：health 面上那两条多模态检查
+（`modality_verification_stale` / `modality_gate_readiness_floor`）是在
+**一张生产者从不写的表**上读数，读出来的是「核实过了但什么都没确认」，
+而真相是「**从没核实过**」。这与本会话早前那条「消费者接好了、生产者没接」是同一族，
+只是这次在**同一个人身上**同时犯了。
+
+#### 修法
+
+按仓里已有的范式（「两条路径各起一份」+ distlock 做蓝绿单跑选举，
+照 capability_backfill 那一段）在 authoritative 块里补上这三个装配点。
+
+★ **行为变化为零**：该块的外层条件已含 `shouldStartNewProbeWorkers(selfCheckAPIKey)`，
+而实测该环境**没设** `LLM_GATEWAY_SELF_CHECK_API_KEY` ⇒ 这三段永远进不来，
+除非有人显式 opt-in。核实 worker 另有一道 `LLM_GATEWAY_MODALITY_VERIFY`，
+基准价同步一道 `LLM_GATEWAY_BASELINE_PRICE_SYNC`。
+
+#### 判据（`cmd/gateway/main_authoritative_wiring_test.go`，源码形状 ratchet）
+
+两条：三个 worker 在**两条分支里都必须出现**；且 authoritative 那条必须仍在
+`shouldStartNewProbeWorkers` 门控之内、且核实 worker 必须带 distlock。
+判据读的是 `main.go` 源码，**先剥注释与字符串字面量** ——
+否则我自己写的那段解释性注释里提到的函数名就会让判据变绿。
+
+★ 这条判据自己踩了**两次量具坑**，都写进文件头：
+① `blockOf` 原本从 `{` 之后取块体，**判据行本身被排除**，于是紧接着的
+   「块里必须有 `ModeAuthoritative`」自证断言当场报「我数错了块」；
+② 原本用 `strings.Index` 取**第一个** `if stateManager != nil {`，而它在
+   main.go 里有 **7 处**（2183/3195/4174/4360/4417/5752/7850），
+   只有一处是 worker 组 ⇒ 数到了一个不含 worker 的块，报出
+   「legacy 分支里没有这三个 worker」这个**纯由量具造成的假结论**。
+   改法：取**全部**出现，authoritative 侧要求唯一（唯一才说明「数对了块」），
+   legacy 侧要求「至少一处含它」（这样既抓住「全删」，又不会因换块误报）。
+
+teeth：从 authoritative 块删掉核实 worker ⇒ 两条判据都红，诊断里直接点名
+「这就是实测到『定时核实从来没跑过』的那条接线缺口」。还原后 md5 与变异前
+**逐字节一致**（`4ca46f7b`）。
+
+#### 顺带查清：运行中的网关**不含**本会话任何一条检查
+
+| 项 | 值 |
+|---|---|
+| 容器镜像 | `kx-llm-gateway-local:2.5.8.2449`，建于 `2026-10-04T09:29:10Z` |
+| 二进制 `version.json` | `2.5.8-57d69f9c-20261004-2449`（git_sha `57d69f9c`） |
+| 工作树 HEAD | `14260af0f`（且落后 origin/main 87 个 commit） |
+| 二进制里有 `modality_verification started` / `skipped` / `new probe workers disabled` | 各 **1** |
+| 二进制里有 `modality_gate_readiness_floor` / `supplier_price_missing_from_cost` / `baseline_price_missing` / `supplier_price_drift` | 各 **0** |
+| `routing_health_checks` 里的 check_id | 只有 6 个最早的那批，共 1042 行，8 分钟前刚刷新 |
+
+⇒ 与预期一致：这些改动**从未提交、从未构建进镜像**。上面那条 authoritative 缺口
+是在**旧二进制**上测出来的，所以它**早于**本会话也存在 —— 也就是说，
+即使把这批改动提交并部署，**接线缺口也必须先修**（本节已修），否则「定时核实」
+依旧不会跑。
+
+★ 量具记录：第一次查二进制时 grep 的是 `/app/llm-gateway`，而容器里**没有 `/app`**
+（cwd 是 `/opt/llm-gateway-go`）⇒ 全部返回 0，连早就存在的
+`modality_verification started` 也是 0。**「全 0」先查路径存不存在**，
+再当成「代码不在」。
+
+---
+
+## 2026-10-06：成本链路 —— 负成本是真库事实，不是推理；以及一条死代码差点把人带错方向
+
+未新增迁移。`127.0.0.1:5432` 全程只有 SELECT；测试库 `public` 0 表 0 视图 0 序列。
+
+### 发现的缺陷：负成本被写进台账（`domains/streaming.CalcCost`）
+
+`CalcCost` 里那两段「cache 从 prompt 里减掉」的公式**假定 `prompt_tokens` 含
+cache token**（OpenAI 口径 `prompt_tokens ⊇ cached_tokens`）。但 **Anthropic
+口径相反**：`input_tokens` **不含** `cache_read_input_tokens`
+（`internal/ir/response.go` 抽的就是 `CacheReadInputTokens`）。同一份公式喂两种
+口径 ⇒ cache 一大，`promptCost` 就被减成负数，而**活的那条路径没有负值钳制**
+（只挡 NaN/Inf）。
+
+真库读数（`request_logs`）：
+
+| 项 | 值 |
+|---|---|
+| `cost_usd < 0` 的行 | **1,628** |
+| 其中满足 `cache_read_tokens > prompt_tokens` 的 | **1,628**（全部） |
+| 该口径的行数 | 11,837 |
+| 这批行里 cache 占 token 的比例 | **96.2%**（4,530,529 vs prompt 179,144） |
+| 归属 | 全部 `apiclaude`（Anthropic 协议的中转） |
+| 30 天负成本合计 | **−$4.79**（最差单行 −$0.742835） |
+| 时间跨度 | 2026-09-03 → 2026-10-04 |
+
+⇒ 量级不大，但**性质严重**：那 11,837 行里 4.53M cache token 在账上≈免费，
+而负值会让任何求和被污染，且**完全静默**（无日志、无检查）。
+
+### 修法：拦住负数，但**不**截到 0
+
+两种「修法」都是撒谎：
+
+- 截到 0 = 断言「这次请求免费」—— 变成一条**便宜的**记录，比错报高价更难发现
+  （毛利虚高、偏差视图看不出异常），而且 `supplier_price_missing_from_cost`
+  不会响，因为价格列是有值的。
+- 返回负数 = 让负值流进台账。
+
+⇒ 选 `nil`，与「没有价格」同一个出口，语义是「**算不出来**」。telemetry 记成
+`cost_usd IS NULL`，那一段没有成本记录因此**可查**。同时记一条带全部数字的
+Warn —— 这是该问题唯一可定位的信号（这个纯函数拿不到 provider 标识）。
+
+**真正的修法是按协议归一化 token 口径**，那会改动已记账的金额，属运营决定，
+本轮不做，只报给你。
+
+### 顺带：`provider.Candidate.CalcCost` 是死代码，且语义不同
+
+`grep -rn '\.CalcCost('` = **0**。它与活的那份**行为相反**：
+
+| | 零价时 | 负值时 |
+|---|---|---|
+| `provider.Candidate.CalcCost`（死） | `return 0` | 截到 0 |
+| `domains/streaming.CalcCost`（活） | `return nil` | （2026-10-06 起）`return nil` + 日志 |
+
+⇒ 谁照 `docs/db-changelog.md:1563,1617` 与
+`docs/archive/process/ir-format-optimization/01-现状审计与修正.md:46` 的旧描述
+去调用它，会得到与生产记账语义不同的答案，且没有任何判据会发现。已在函数头
+标注真实出口；**删不删留给你定**（导出符号，仓外可能有引用）。
+
+⚠️ 本会话前面把第 13 条健康检查的守卫归因到这个死函数 —— **归因错了**，
+已在 `bg/routing_health_checks.go`、`bg/supplier_price_missing_from_cost_test.go`
+与本文件对应条目更正。**检查的总体与价格列本身没错**（两条路径都读 Candidate
+的 `PriceInPer1M` 等字段），错的只是「该去改哪个函数」。
+
+### 判据
+
+新增 `domains/streaming/cost_calc_test.go` 5 条。**准确说法**（不是「零覆盖」）：
+既有 `usage_cost_test.go` 4 条覆盖的是币种与 nil 语义（USD / CNY+FX / 零价→nil /
+无 token→nil），而 **`CalcCost` 的 cache 分支与负值出口此前零覆盖**。
+
+承重：① 无价 ⇒ `nil` 而非 `0`（健康检查 `supplier_price_missing_from_cost` 的整个
+前提就是「零价 ⇒ 无成本记录」）；② 负值被拦成 `nil`；③ **对照组**：OpenAI 口径
+必须照常算出正数、cache 必须按折扣价计 —— 少了它，「一律返回 nil」也能让 ①② 全绿。
+
+teeth 3 条：拆掉负值守卫 ⇒ 复现出 `-0.55764216`（与真库最差行 −0.7428 同量级）；
+把守卫改成截到 0 ⇒ 判据点名「应被拦成 nil，实得 0」；把 nil 出口改成 0 ⇒ 判据点名
+「返回 0 会断言『这次免费』，而且那条检查的整个前提就变成假绿」。
+还原后 md5 与变异前**逐字节一致**。
+
+★ 两次**假红**记录：前两条 teeth 引用的 `zeroCost` 变量不存在，红在**编译错误**
+而不是缺陷被抓住；改用 `return new(float64)`（可编译、且正是「截到 0」的语义）
+重做才是真红。**判据红在编译错误上，等于没测。**
+
+---
+
+## 2026-10-06：第 14 条健康检查 `recorded_cost_is_negative` —— 补「已经记下来的成本对不对」这一问
+
+未新增迁移。`127.0.0.1:5432` 全程只有 SELECT；测试库 `public` 0 表 0 视图 0 序列。
+
+### 为什么是第 14 条
+
+前 13 条盯的都是**「会不会错」**：价格列有没有、基准价有没有、币种对不对、
+出处漂没漂、可路由的模型有没有价。**没有一条问「已经记下来的成本对不对」**。
+
+而上一节那个负成本缺陷暴露了这件事的性质差异：写入侧加守卫
+（`CalcCost` 返回 `nil`）只保证**将来**不再写负数，**已记账的历史行不会被改**，
+且下一个协议口径出现时仍会复发。⇒ 检查侧必须能自己发现。
+「写入侧加了守卫」不等于「台账是干净的」。
+
+### 污染已经扩散到哪（真库实测）
+
+| 层 | `cost_usd < 0` 行数 | 合计 |
+|---|---|---|
+| `request_logs` | **1,628** | **−$4.79** |
+| `usage_ledger` | **1,299** | **−$4.67** |
+| `stats_usage_daily` | 225（共 75,698） | — |
+| `stats_usage_monthly` | 12（共 13,612） | — |
+
+全部满足 `cache_read_tokens > prompt_tokens`；涉及 **22 天**（最差一天 −$2.5604）；
+全部来自 `apiclaude`（Anthropic 协议的中转）；`api_key_model_cost` 汇总表
+**352 行、合计 0.0000、0 负值**（该表未被污染，但也不可信 —— 352 行覆盖不了
+百万级流水）。
+`usage_ledger` 里 2,096,120 行中 `cost_usd IS NULL` 占 **2,081,597（99.3%）**。
+
+### 检查口径
+
+- **总体**：`request_logs` 里 `cost_usd < 0` 且 `ts > now() - 30 days`。
+  30 天窗口是承重的：负值集中在最近一个月，更早的已被日聚合吸收。
+- **粒度**：按 `(credential_id, raw_model)` 报，**不按模型去重** ——
+  真库已验 c-903 有一个与 c-901 **同名**但成本为正的模型，去重会把
+  「只有 901 在错」这个定位信息抹掉。判据为此专门种了同名正成本样本。
+- **detail 必含**：行数、美元偏移、`cache_read - prompt` 的超额 token 数。
+  **刻意不报「应该收多少钱」**：SSOT 的 `model_baseline_prices.json` 仍是
+  `models: []`，基准价 0 条 ⇒ 算不出金额。
+- **不 JOIN providers**：provider 名称只是好看，却会给这条检查添一个必须
+  存在的表依赖。判据第一版 JOIN 了它，夹具只建 `request_logs + credentials`
+  时整条检查红在 `relation "public.providers" does not exist` ——
+  与「有没有负成本」毫无关系。改成 `credential#<id>:<model>`。
+- **不给一键修复**：真修法是按协议归一化 token 口径，那会改动已记账金额。
+
+### 判据与 6 条 teeth
+
+`bg/recorded_cost_negative_realdb_test.go` 3 条。teeth：
+
+| 变异 | 判据诊断 |
+|---|---|
+| 判据取反 `>= 0` | 窗口边界断言：29 天那行**没**被报出来 |
+| 窗口 30 天 → 30 年 | 报出 4 条（`ancient-negative` 混进来了） |
+| 窗口反转 | 只报出 1 条（`ancient-negative`），窗口内三条全丢 |
+| 按模型去重 | `column "r.credential_id" must appear in GROUP BY` |
+| 实体键去掉凭据维度 | `entity key "claude-via-relay" must be 'credential_id|raw_model'` |
+| switch case 改名 | `no case "recorded_cost_is_negative" in the row-handling switch` |
+
+全部 rc=1、诊断各自指对、还原后 md5 与变异前**逐字节一致**。
+
+### ★ 判据恒绿被变异抓到两次（记在这里，别重踩）
+
+**第一次**：第一版夹具只种 1 天 / 2 天 / 40 天三行，断言「恰好 2 条」。
+把判据取反、把窗口改成 30 年、窗口反转、实体键去凭据维度 ——
+**五条变异全绿**。根因是 `got != 2` 这**一个数字在「报出的是哪几行」上毫无
+判别力**：取反后报出 3 行（healthy + free + c-903 的正成本行）也不等于 2，
+但**行数断言之前**的名字白名单循环先把它挡下了 ⇒ 变异在更早一步就被拦，
+看起来绿是因为它压根没走到承重处。
+⇒ 补了 29 天窗口边界样本 + 逐名白名单 + **两条专门的边界断言**
+（40 天那行必须缺席、29 天那行必须在），同一批变异才全部变红。
+
+**第二次**：teeth 脚本第一次跑 5 条全 rc=0。查下来是脚本自己的问题 ——
+`teeth3()` 从 `$GOOD` 复原时用的是一个**已经被上一次变异污染过的**文件，
+于是每条变异都跑在**别人的变异之上**，且复原后 md5 比对的对象也是污染品
+（全部「一致」）。真正的判据从来没被执行。
+⇒ 改成 `cp` 到**仓外常量路径** `/tmp/rhc.good` 作唯一基准，每条变异前打印
+变异后 md5 前 8 位以证明变异真的落盘。同一批变异随即全红。
+
+**教训**：`还原后 md5 一致` 只有在**基准文件本身没被污染**时才有意义；
+`变异后 md5` 的存在则证明变异落盘 —— 两者缺一，恒绿就无法与「判据无效」区分。
+
+带库 `bg` 全量仍是 **6 FAIL = 既定基线**（`TestRollupCredentialModelIndex_…`
+等，与本轮无关），夹具**零残留**已验。健康检查总数 **13 → 14**。
+
+---
+
+## 2026-10-06（补）：token 口径显式化 —— 负成本的**真修法**已在代码里，上不上线由你定
+
+未新增迁移。`127.0.0.1:5432` 全程只有 SELECT。
+
+### 为什么上一节的守卫不够
+
+上一节把 `total < 0` 拦成 `nil`，那是**止血**不是**修复**：那 11,837 行的
+4.53M cache token 仍然**一分钱没记**（nil = 算不出来）。正确答案其实是一个
+**正数** —— prompt 与 cache 是并列的两桶，各自按自己的单价计。
+
+### 改了什么
+
+1. 新增 `CacheTokenConvention` 三档枚举（`unset` / `prompt_includes_cache` /
+   `prompt_excludes_cache`），`CostInput` → `calcCostWithConvention` 显式带口径；
+   `CostPriceInput.Convention` 一路透传（`AssignRequestCost` 是 handler 唯一
+   能声明口径的入口）。
+2. **零值 = 不知道 = 退回 OpenAI 口径（原有行为）**。改默认口径就是静默改动
+   已记账金额，所以口径必须显式声明。
+3. **子集护栏**（承重）：原价扣减只在 `cache ≤ prompt` 时做。这是**纯算术
+   事实**而非厂商身份 —— OpenAI 口径下 cache ⊆ prompt 恒成立（真库对照组
+   6,061 行全部满足，cache 平均占 prompt 的 78.8%），而 `cache > prompt`
+   只可能出现在并列口径下（真库 11,837 行，cache 是 prompt 的 25 倍）。
+   ⇒ **未声明口径的生产路径现在也算得对**，不必等口径上线。
+4. cache 段的 `*price > 0` 改成 `!= nil`：负的缓存价原来被当成「没配价」
+   ⇒ 整段 cache 成本不计。OpenAI 口径下无害（cache ⊆ prompt），Anthropic
+   口径下等于**白送**。负价是数据错误（833 的 CHECK 未上生产时可能存在），
+   正确出口是 `total < 0` 守卫把它变成 nil，而不是静默免费。
+
+### 这一轮判据抓到的三个我自己的错（都记在文件头）
+
+① **把两件事当成一件**：起初只写 `applies := conv != Excludes` 一个条件，
+显式 Anthropic 档算出 0.02987484 而期望 0.07557984，差的正好是
+41550×1.10 = 0.045705（整段 cache 成本）⇒ 「不原价扣减」≠「不按缓存价计」。
+② **判据的输入挑错了**：用来区分 unset 与 Anthropic 的那个输入
+（prompt 41 / cache 41550）里 **cache ⊄ prompt** ⇒ 子集护栏已让它两档同解
+⇒ teeth 传不传 `Convention` **全绿**（14 条判据无一变红）。补了 subset=true
+的输入（1000/500，两档相差恰好 500×3.0）才抓住。
+③ **负 cache 价那条判据写错了**：第一版用 prompt=1000 / cache=500 /
+cachePrice=−1，算出 0.0025 是**正数**（守卫不触发），而判据期望 nil ⇒
+错的是判据不是代码。改成 cache=2000 让负项压过正项。
+
+### teeth 5 条（全部 rc=1、诊断指对、还原逐字节一致）
+
+| 变异 | 判据诊断 |
+|---|---|
+| subset 护栏去掉（回到无条件减原价） | Anthropic 档数值不符 |
+| cache 段整段跳过 | 负 cache 价那条：guard 未触发 |
+| 负值守卫拆掉 | `a negative unit price must yield nil, got -0.003` |
+| `AssignRequestCost` 不传 Convention | `unset=0.00165 and Anthropic=0.00165 are identical` |
+
+第 4 条是**补做**的：第一版 teeth 脚本跑它全绿（判据输入挑错，见上 ②）。
+
+### 影响面（要你拍板的部分）
+
+- **不改**已记账金额：默认口径未变，零值仍是 OpenAI。
+- **会变**的是那 11,837 行的**将来**成本：从 nil（免费）变成真实金额。
+  **实测重算**（真库 join 出当前单价，按修正口径把 prompt + cache + completion
+  各自入账）：这批行合计 **$4.1348**。绝对值不大，但它改变的是
+  「这批流量到底算不算钱」这个**性质** —— 账上从「倒贴 4.79」变成「收了 4.13」。
+- **已记账的历史行仍不回补**：`stats_usage_daily` 225 行、
+  `stats_usage_monthly` 12 行、`request_logs` 1,628 行、`usage_ledger`
+  1,299 行仍为负/NULL。回补是一次数据订正，属运营决定。
+
+带库 `bg` 全量 **6 FAIL = 既定基线**；`domains/streaming` 全量 rc=0。
+
+---
+
+## 2026-10-06（补）：`pricingImport` —— 供应商价落地口的静默丢行，以及占位符错位导致的串值
+
+未新增迁移。测试库夹具零残留已验。
+
+### 这个端点为什么重要
+
+`POST /api/pricing/import`（`admin/pricing.go:pricingImport`）是
+**目标第二半「根据供应商的实际计费方式与价格进行设置」的写侧终点** ——
+`cmd/tools/propose-supplier-prices` 产出的 CSV 唯一的去处就是这里。
+真库实测那批提案是 **630 offer / 14 接受 / 616 拒收**。
+
+而它此前**零真库判据**：`grep -rn pricingImport --include=*_test.go` = 4，
+全部是 cmd/tools 侧对自己 CSV 形状的断言，**没有一条真的走过这个 handler**。
+
+### 缺陷一：占位符与实参错位 ⇒ 静默串值 + 整行丢弃
+
+原来的列循环是「**先** append SET 子句（占掉 `$N`）、**再** ParseFloat，失败
+就 continue」：
+
+```go
+setClauses = append(setClauses, fmt.Sprintf("%s = $%d", col, argIdx))  // 占掉 $N
+if typ == "float" {
+    if f, err := strconv.ParseFloat(val, 64); err == nil {
+        args = append(args, f)
+    } else {
+        continue          // ← 子句已在 setClauses 里，实参没进 args，且 argIdx 没 ++
+    }
+}
+```
+
+⇒ SQL 占位符数与实参数对不上，bind 报 `expected N arguments, got M`；
+而紧接着的 `if err != nil { continue }` 把**整行静默丢弃**。
+
+★ teeth 变异把代码改回旧顺序后，判据报出的是：
+
+```
+the bad cell must be left untouched, got unit_price_in_per_1m=15 (want 0/NULL)
+```
+
+`unit_price_in_per_1m` 拿到了 **15** —— 那是 `unit_price_out_per_1m` 那一列的
+值。⇒ 不只是丢行，是**把别的列的价串进了这一列**，而库里看着「有价」、
+`supplier_price_drift` 不会响、`supplier_price_missing_from_cost` 也不会响
+（价格列非 NULL）。这是比「丢行」更坏的一种静默。
+
+**修法**：先解析成实参、**再** append SET 子句。脏值只让**那一列**不参与更新，
+同行其它列照写。被丢的列名记进日志。
+
+### 缺陷二：三类丢弃在响应里完全不可见
+
+原来只回 `{"updated": N}`。被丢的行与「本来就不该改的行」在响应里**一模一样**。
+运营看到 `updated: 14` 无从判断是「只该改 14 行」还是「丢了 616 行」。
+
+**修法**：响应按需带 `rejected_rows{bad_or_missing_offer_id, database_rejected}`
+与一句 `message` 明说「导入不完整，不要把 updated 当成整份文件」。DB 侧任何拒绝
+（约束/类型/权限）也各记一条 Warn，不再无声无息。
+
+### 判据
+
+`admin/pricing_import_realdb_test.go` 4 条（真库 multipart 打进去，走真 handler）：
+
+1. 正常导入：每列落库 + `pricing_source='imported'` + `pricing_updated_at` 有值
+   （staleness 检查读的就是这一列）。
+2. ★ 脏值只丢那一列，同行好列必须落库。
+3. ★ 丢弃必须出现在响应里（offer_id 非数字 / 空 / 指向不存在的行）。
+4. **对照组**：干净文件不得出现 `rejected_rows` / `message` —— 少了它，
+   一个「永远带 rejected_rows」的响应也会让 ③ 变绿。
+
+teeth 4 条全部 rc=1、诊断各自指对、还原后 md5 与变异前**逐字节一致**：
+
+| 变异 | 判据诊断 |
+|---|---|
+| 回到旧顺序（先 append 子句再解析） | `got unit_price_in_per_1m=15 (want 0/NULL)` —— 串值 |
+| 脏值改成 `break`（丢弃整行） | `the GOOD column next to the bad one was lost` |
+| 响应不再报 rejected_rows | `dropped rows are invisible to the operator: map[updated:1]` |
+| 不盖章 pricing_source | `pricing_source="", want "imported"` |
+
+★ 夹具记录：`sql/objects/tables/` 里**没有** `model_offers`（只有
+`model_offer_events.sql`），而这个 handler 只 UPDATE 8 列 ⇒ 夹具手抄这 8 列，
+无 FK 牵连。安全闸 + `t.Cleanup` 注册在建表之前。
+
+带库 `bg` 全量 **6 FAIL = 既定基线**；带库 `admin` 受影响范围里 5 个 FAIL 全是
+空测试库导致的 `42P01`（14 处，与前几轮基线对照一致）；夹具**零残留**。
+
+---
+
+## 2026-10-06（补）：提案链**接缝**的两侧各钉一条 —— 「产出格式的工具有判据」≠「消费它的端点认识它」
+
+未新增迁移。测试库夹具零残留已验。
+
+### 接缝的两个形态，都没有被任何判据覆盖
+
+`cmd/tools/propose-supplier-prices` 产出的 CSV 唯一的去处是
+`admin/pricing.go pricingImport`。两侧各有一条判据，但**中间那句接缝**没人管：
+
+1. **工具多写一列落地端不认识的** ⇒ `pricingImport` 按**列名**挑它认识的 6 列，
+   那一列在导入时**不报错、不生效**，价格就这么消失了。列名拼错（`per_1m` 写成
+   `per_m`）是最可能的形态。
+2. **nil 价格被渲染成 `0` 而不是空串** ⇒ 落地端会把它当成**真的 0 价**写进库
+   —— 而「per_token 有价但等于 0」正是第 13 条检查
+   `supplier_price_missing_from_cost` 专门盯的状态（真库实测当前
+   「可路由 + per_token + 有价」是 **0 条**）。⇒ 一次渲染改动就能凭空造出
+   那批告警，而且看不出来源。
+
+★ **实测证明了这个洞存在**（不是推理）：给工具的表头**多加一列**拼错的
+（保留 5 个正确列不动），然后分别跑两条判据：
+
+| 判据 | 结果 |
+|---|---|
+| 既有的 `TestImportCSV_形状必须与_admin_的_pricingImport_对得上` | **ok** —— 完全看不见 |
+| 新增的 `TestImportCSV_列名必须被落地端认识` | **红** —— `工具写出了落地端不认识的列 "unit_price_in_per_m"` |
+
+既有那条只查「这 5 个列名在不在」，对**多出来的**列毫无判别力。
+
+### 新增判据
+
+- 工具侧（`cmd/tools/propose-supplier-prices/main_test.go`）：
+  - 表头 ⊆ 落地端认识的列（从 `admin/pricing.go` 源码里抽出那个 `fields` map
+    的键）；反向：落地端认识的两个价格列工具必须还在用。
+  - `f64(nil)` 必须渲染成**空串**；而 `f64(0)` 必须渲染成 `0`（供应商真的免费
+    是合法价格，不能和 nil 混同）。
+- 落地侧（`admin/pricing_import_realdb_test.go`）：
+  - 空串格 ⇒ 该列不落库（**不是** 0）。
+  - **干净行不得有任何 Warn**；**真脏值必须留下 Warn 且点名是哪一列**。
+
+### teeth 7 条（全部 rc=1、诊断指对、还原逐字节一致）
+
+| 变异 | 判据诊断 |
+|---|---|
+| 回到旧顺序（先 append 子句再解析） | `got unit_price_in_per_1m=15` —— 串值 |
+| 脏值改成 `break`（丢弃整行） | `the GOOD column next to the bad one was lost` |
+| 响应不再报 rejected_rows | `dropped rows are invisible to the operator` |
+| 不盖章 pricing_source | `pricing_source="", want "imported"` |
+| 空串格不再显式跳过 | `a clean row must not be reported as "not importable"` |
+| 脏值日志被删 | `a genuinely unparsable cell must be logged` |
+| `f64(nil)` 渲染成 `"0"` | `f64(nil)="0", want ""` |
+
+### ★ 一条判据被自己的 teeth 证明「没牙」，然后补了
+
+第 5 条变异（把空串检查去掉）第一次跑**全绿**。查下来：`空串` 落进
+`ParseFloat("")` 失败那条路之后，**落库结果完全一样**（那一列不写）⇒
+「空串不落库」这条断言在两种实现下都成立，对这个差异**毫无判别力**。
+
+真正的差别是**日志**：走那条错路时，每个「价格未知」的行都会打出一条
+`not importable` 的 Warn —— 而价格未知是**条件价场景下的常态**。⇒ 每次正常
+导入都刷一批「有格不可导入」的告警，真脏值被淹没。**告警一旦例行触发就等于
+没有告警。**
+
+补了两条日志判据（干净行必须静默 / 真脏值必须点名）之后，同一条变异才变红。
+
+★ 另一条量具记录：新判据里读 `admin/pricing.go` 的相对路径写成
+`../../admin/...`，而 `go test` 的工作目录是**包目录**
+（`cmd/tools/propose-supplier-prices`），从那里往上两级是 `cmd/` ⇒ 要三级。
+报错是 `no such file`，看着像文件搬走了，实际是层级算错了一级。
+
+带库 `bg` 全量 **6 FAIL = 既定基线**；夹具**零残留**；checksum `OK: 171 verified`。
+
+---
+
+## 2026-10-06（补）：把「Convention 已铺好但没人能打开」钉成显式缺口 + 部署前的**产物门**
+
+未新增迁移。
+
+### 又是同一个形状：机制做完了，但没有人能打开它
+
+先构建了真正的 gateway 二进制（`go build -o /tmp/gwbin/gateway ./cmd/gateway`，
+91,929,698 bytes），然后用 `strings` 量产物：
+
+```
+recorded_cost_is_negative          1
+authoritative URSM v2 modality_verification started   1
+cost computation negative          1
+modality_source                    33
+prompt_includes_cache              0     ← ★
+prompt_excludes_cache              0     ← ★
+```
+
+`CacheTokenConvention.String()` 只有判据在调，生产代码**零调用者**；
+而 `Convention` 虽然铺到了 `CostPriceInput`，`handler.go` 的
+`AssignRequestCost` 调用**不传**它 ⇒ 永远是零值。
+
+⇒ 与本会话第一轮那个「三个 worker 从未启动」**完全同形**：上一轮我交付了
+「口径显式化」，而产品里**没有任何路径能设置那个口径**。
+
+**这一轮的处理不是把它接通**（那要一张新列或一次协议推断，属运营决定），
+而是让这个事实**可见且会红**：
+
+1. 负成本守卫的日志带上 `assumed_convention=unset` —— 读日志的人从此知道
+   这一笔是按哪个假定算的，不会误以为「已经按协议归一化过了」。
+2. 两条判据把它钉住：
+   - 日志必须说出假定口径（teeth：删掉该字段 / 让 `String()` 返回空串 → 都红）；
+   - `TestConvention_productionHasNoCallerYet` 断言**当前没有生产调用方**。
+     将来真的接上了它会红 —— 那是**应该**红的，届时请更新期望并写明
+     「谁在什么时候设它」。
+
+### 新增 `scripts/verify-build-contents.sh` —— 部署前的产物门
+
+**为什么需要它**：本会话前六轮的验证手段一直是**包级**测试。包级全绿
+**证明不了**改动进了可运行产物 —— 而 `strings` 量的是「这段代码**在不在**
+产物里」，两者不可互相代替。典型反例就在上面：`Convention` 全套判据都绿，
+产物里的相关字符串却是 0。
+
+它检查三样东西：
+
+1. **14 条健康检查的 check_id 全部在产物里**（少一条 = 那个缺陷部署后不会被看见）。
+2. **接线与日志文案**（`authoritative URSM v2 … started`、`cost computation
+   negative`、`assumed_convention`、`not importable`、`rejected_rows`、
+   三个出处列、两个口径串）—— 日志文案是**运维可判读**的证据。
+3. **应当缺席的东西**：`Candidate.CalcCost`（死代码且语义与活的那份相反）
+   不该出现在产物里；出现了说明有人重新接上了它，必须复核语义。
+
+### 门有没有牙：拿**运行中容器里那个已部署的二进制**验
+
+`docker cp llm-gateway-local-8782:/opt/llm-gateway-go/gateway` 取出来
+（59,637,920 bytes，即 `2.5.8-57d69f9c-20261004-2449`）跑这个门：
+
+```
+✗ modality_verification_stale / baseline_observation_stale / baseline_price_missing
+✗ supplier_price_drift / supplier_price_currency_mismatch
+✗ modality_gate_readiness_floor / supplier_price_missing_from_cost
+✗ recorded_cost_is_negative
+✗ 'authoritative URSM v2 modality_verification started'
+✗ 'authoritative URSM v2 baseline_price_sync started'
+✗ 'authoritative URSM v2 baseline_reconciliation started'
+✗ 'cost computation negative' / 'assumed_convention' / 'not importable' / 'rejected_rows'
+✗ 'prompt_includes_cache' / 'prompt_excludes_cache'
+build-gate: **不通过**
+```
+
+**17 项缺失，rc=1。** 而新构建的二进制同一个门 **rc=0**。
+
+⇒ 这不再是「我读了镜像里的字符串发现问题」这种一次性观察，而是一条
+**可重复执行**的门：它能区分「修复在产物里」与「修复只在某个人的工作树里」。
+
+用法：
+
+```bash
+go build -o /tmp/gwbin/gateway ./cmd/gateway
+bash scripts/verify-build-contents.sh /tmp/gwbin/gateway
+# rc=0 才继续镜像构建 / 部署
+```
+
+---
+
+## 2026-10-06（补）：尾注解形态 —— 提案里 22% 的可用基准价是因为名字尾巴被丢掉而拿不到
+
+**这不是迁移，是提案工具的一处修复。** 记在这里是因为它改的是
+`models_canonical` 基准价的**产出率**，而那正是「准确控制模型实际成本」这条
+目标的上游。
+
+### 先说清楚我先前那次跑漏了什么
+
+上一轮我跑 `propose-baseline-prices` 时**没有传 `-canonical`**，于是
+`resolveCanonical` 整段被跳过，18 条可用价原样躺在提案里，看着像「命名映射
+是下一步要做的」。真相是：**映射早就在代码里**（`main.go` 的
+`modelname.MatchStandardModels` + 0.90 下限 + 0.05 margin 两道判据），
+只是那个开关不传就不跑。⇒ 「代码里没有」和「我没开」在读数上长得一模一样。
+
+带上真库导出的 960 条名单（`SELECT canonical_name FROM models_canonical`，
+960 行 / 960 互异 / 0 空，provenance 头齐）重跑：
+
+```
+无 -canonical：  ready_to_review 18   unresolved 0
+有 -canonical：  ready_to_review 10   unresolved 8      ← 8 条其实没被解析
+```
+
+⇒ 开关本身把 8 条**移出**了可用集合。查这 8 条才发现真缺陷。
+
+### 缺陷：尾部成对括号是**注解**，但没有任何一层把它和名字分开
+
+原厂页面把状态注解直接写在模型名单元格里，**并且用 markdown 链接包着**：
+
+```
+| Claude Haiku 3.5 ([retired, except on Bedrock and Vertex AI](https://…/model-deprecations)) | $0.80 / MTok | … |
+```
+
+提取侧 `internal/vendorprice/splitIdent` 只认**前导** markdown 链接
+（`leadingLinkRE`），链接在尾部时整段落进标识：
+
+```
+c.Model = "Claude Haiku 3.5 (retired, except on Bedrock and Vertex AI)"
+c.Description = ""          ← 分不出来
+```
+
+★ `splitIdent` 自己的注释早就写下了这个失败模式：「分不开的结果是名字多出尾巴，
+canonical 解析永远失败，而失败原因看起来是『模型不在清单里』」—— 注释描述的
+正是这条，只是当年只在**前导链接**那个分支上生效。
+
+### 实测：8 条里 4 条是假否定，且其中一条原本正指着**另一个模型**
+
+| 展示名 | 原样最佳 | 剥掉尾注解后 | 目标 canonical 在 960 名单里？ |
+|---|---|---|---|
+| `Claude Opus 4 (deprecated)` | `claude-opus-4` 0.84 拒 | **0.90 `claude-opus-4`** | ✓ |
+| `Claude Opus 4.1 (deprecated)` | `claude-opus-4` 0.84 拒（与 `claude-opus-4.1` 同分） | **0.90 `claude-opus-4.1`** | ✓ |
+| `Claude Sonnet 4 (deprecated)` | `claude-sonnet-4` 0.84 拒 | **0.90 `claude-sonnet-4`** | ✓ |
+| `Claude Haiku 3.5 (retired, except…)` | **`claude-3-haiku` 0.84** 拒 | **0.90 `claude-haiku-3-5`** | ✓ |
+| `Claude Mythos 5 (limited availability)` | 0.68 | 0.68 | ✗ `claude-mythos-5` 不在名单 |
+| `grok-4.20-0309-reasoning` | 0.84 | 0.84 | ✗ 目录里是 `grok-4.20`，不带日期戳 |
+| `grok-4.20-0309-non-reasoning` | 0.84 | 0.84 | ✗ 同上 |
+| `grok-4.20-multi-agent-0309` | 0.84 | 0.84 | ✗ 同上 |
+
+★ **`Claude Haiku 3.5` 原样形态的最近候选是 `claude-3-haiku`** —— 那是
+Anthropic 的**另一个模型**。它没造成错挂，**只因为 0.90 下限挡住了**。
+
+⇒ 这条决定了修法落在哪：**放松下限去救这 4 条，会把价挂到错的模型上**。
+`Claude Opus 4.1` 那一行还多一层：原样形态下 `claude-opus-4` 与
+`claude-opus-4.1` **同为 0.84**，胜负只由字母序决定。
+
+⇒ 被挡掉的 4 个 canonical 全部真实存在于 `models_canonical`，而没有它们
+`claude-opus-4` / `claude-opus-4.1` / `claude-sonnet-4` / `claude-haiku-3-5`
+**永远拿不到基准价**。
+
+### 修法：把「哪个括号是注解」的决定权交给**打分器**，不是词表
+
+不是提取器按关键词判断，也不是解析器猜：
+
+- 若提取器按词表判（`deprecated`/`retired` 算注解、`30s` 不算），
+  下家厂商换一种措辞就静默失效，**失效方向是「该剥的没剥」** —— 价永远进不了
+  SSOT，而且现象与「模型不在清单里」完全一样。
+- 决定「括号算不算名字」的是**名单**，不是词表。实测两种看着相反的情形
+  都被同一个规则判对：
+
+  ```
+  Claude Haiku 3.5 (retired, except on Bedrock and Vertex AI) → claude-haiku-3-5
+  Lyria 3 Clip Preview (30s)                                   → lyria-3-clip-preview
+  ```
+
+  ★ 第二条我原本**担心**剥错了（`(30s)` 看着像产品名的一部分，剥掉会造出
+  另一个产品）。量完发现担心不成立：目录里确实有 `lyria-3-clip-preview`，
+  剥掉是对的。**假设被自己的量具推翻过一次。**
+
+⇒ `buildResolutionForms` 产出「原样」+「剥掉尾注解」两种形态，
+`scoreResolutionForm` 对**每种**各跑一遍原来那两道判据，然后：
+
+| 接受形态数 | 判词 |
+|---|---|
+| 0 | unresolved，理由里写明**试过哪两种形态**及各自分数 |
+| 1（或 2 个且指向**同一** canonical） | 接受；warning 追加「matched on X — the trailing Y is an annotation」 |
+| 2 个但指向**不同** canonical | **拒收**，理由点名两个候选 |
+
+### 实测产出
+
+```
+修复前  ready_to_review 10   unresolved 8
+修复后  ready_to_review 14   unresolved 4      （+40%）
+```
+
+原有 10 条**一条没丢**（单调变好），恢复的 4 条 canonical 全部正确，
+剩下的 4 条确实不在目录里，仍拒收。
+
+### 门有牙（5 组变异，编译通过才算数，还原后逐字节比对）
+
+| 变异 | 结果 |
+|---|---|
+| M1 `buildResolutionForms` 只回原样形态（= 撤回修复） | 红 3 条 |
+| M2 去掉「两形态不一致则拒收」 | 红 1 条 |
+| M3 去掉 warning 里的注解说明 | 红 1 条（5 个子用例） |
+| M4 改 warning 前缀措辞 | 红 2 条 |
+| M5 括号配对改成朴素 `strings.Index` | **首跑是绿的** ⇒ 判据没咬住，补样本后重做 → 红 |
+
+★ **M4 是最强的一条证据**：只把 `resolved to canonical` 改成
+`maps onto canonical`，`resolvedCanonical` 立刻回读出**空串** ⇒
+`buildDraft` 的 `models` 为空，而 `why` 读起来像「原厂页没有可用价」。
+⇒ 那句 warning 不是措辞，是**跨文件契约**（`resolvedCanonical` 靠
+`resolved to canonical "` 子串取 SSOT 键），已就地留下「不要改前缀」的注记。
+
+★ **M5 首跑绿**这件事本身是结论：我第一版夹具样本
+（`Model X (available (beta) today)`）在两种配对下**结果相同**，所以它
+**分不开**它们 —— 判据看着在钉规则，实际什么都没钉。补上
+`Model (preview) Opus 4 (deprecated)`（名字自带括号，尾部还有第二对）才
+分得开。
+
+### 如实标注：深度配对是**防御**，不是修已观测问题
+
+2026-10-06 实测真实总体（提案里 **2,002 条**带尾注解的展示名）：深度扫描与
+朴素「取第一个 `(`」两种配对**结果完全相同，0 处差异** —— 尾部那一对总是
+全串的第一个 `(`。两者才会分叉的形状（名字自带括号）真实页面 0 例。
+
+⇒ 保留深度扫描的理由是「按构造正确 + 分叉时方向是剥最后一对」，**不是**
+「它修了什么」。这条已写进代码注释，避免下一个读代码的人把它当成已验证的
+修复。同理，「两形态指向不同 canonical 则拒收」在 2,002 条真实总体上
+**触发 0 次**，它是**保险**：单看任一形态都「自信」，只有并排比才发现它们
+说的是两个模型。
+
+### 夹具自证当场抓了我自己一次
+
+`qualifierFixture` 第一版里手滑放了 `claude-mythos-5`（真库 960 里**没有**它），
+于是「非成员不得被解析出来」那条阴性对照会变成**恒真**而不是变红 ——
+是判据里的量具自证把它揪出来的。⇒ 夹具写错时，判据不会变红，它会**假装通过**。
+
+### 未变的东西
+
+- 提取侧 `splitIdent` **没动**（`Model`/`Description` 字段形状不变，提案里
+  展示名仍是原样，回页面核对时看得见）。
+- `resolvedCanonical` / `buildDraft` / warning 契约**没动**。
+- 剩下 4 条拒收是**正确的**，它们需要的是 `models_canonical` 里补条目
+  （`claude-mythos-5` 与三个带日期戳的 `grok-4.20-*`），不是改解析器。
+
+---
+
+## 2026-10-06（补）：整条链首次真跑通 + 互证覆盖率 9.1% 的**结构性上限**（以及一个看起来该修、其实不能修的缺口）
+
+### 整条链跑通了，SSOT 草稿 10 条、**0 拒收**
+
+```
+go run ./cmd/tools/propose-baseline-prices \
+  -raw docs/02-resources/research/pricing/raw \
+  -canonical <960 条真库名单> \
+  -corroborate -emit-ssot /tmp/ssot-draft.json -fetched-at 2026-08-25T13:43:00Z
+```
+
+- 观察源 `https://models.dev/api.json` **216 providers** 实抓成功
+  （⚠ 这台机抓取不稳：同一小时内 4 次里失败 2 次，`TLS handshake timeout` /
+  `EOF`。已在本节如实标注，任何依赖它的一次性读数都要说「重试过几次」。）
+- 14 条已解析 → **10 条逐价互证全中、零分歧**（8 anthropic + 2 xai），
+  `refused` **0 条**。10 条的 input/output 两价**全部**与观察源逐位相同。
+
+⚠ **快照是 2026-08-25 的，距今约 6 周。** 上面的「一致」是两源对同一批**旧**
+价格的一致，不是对今天的价格的验证。
+
+### ★ 上一节那个「+40%」只到解析层，可入库条目 +0 —— 订正
+
+上一节报「提案 10 → 14 条（+40%）」，那个读数是 `ready_to_review`，
+**不是**能进 SSOT 的条目数。带 `-corroborate` 真跑之后：
+
+```
+ready_to_review 14  →  corroborated 10  →  SSOT 草稿 10 条 / refused 0
+needs_human_eyes 444 → 448（+4）        ← 我修好的那 4 条落在这里
+```
+
+那 4 条（`claude-opus-4` / `claude-opus-4.1` / `claude-sonnet-4` /
+`claude-haiku-3-5`）解析成功、但观察源**没有它们**，工具给的判词是精确的：
+
+```
+no observation for anthropic/claude-opus-4 in the machine-readable source
+— single-sourced, not corroborated
+```
+
+⇒ **+40% 是解析层的，可入库是 +0。** 修复本身仍然正确（名字确实在目录里、
+价确实在页面上、失败原因从「看起来像模型不在清单里」变成「第二源没有这个
+模型」），但它**没有**多产出一条可入库条目。差的那 4 条要么是已废止模型
+（观察源不收），要么要人接受「单源价」。
+
+### 互证覆盖率的**结构性上限**：87 / 960 = 9.1%
+
+用**工具真实查找路径**（`bg.LookupObservation`，vendor 与 model 都 `ToLower`，
+外加一次 `vendor/model` 前缀键）对 960 条目录逐条查：
+
+| 口径 | 数字 |
+|---|---|
+| 目录总数 | 960 |
+| 家族属于 9 家原厂（仓里有其定价页快照） | **454（47.3%）** |
+| 家族不在 9 家原厂里（**工具连页面都没采**） | **506（52.7%）** |
+| **能按原厂键互证** | **87（占 960 的 9.1%；占 454 的 19.2%）** |
+
+分厂商：
+
+| vendor | 目录里 | 能互证 | 占比 | 缺口的形状 |
+|---|---|---|---|---|
+| doubao | **163** | **0** | **0%** | **观察源里没有 `doubao` 这个 provider 键** |
+| zhipu | 33 | **0** | **0%** | **观察源里没有 `zhipu` 这个 provider 键** |
+| openai | 81 | 39 | 48% | 源里没有的那些是旧代 |
+| google | 31 | 20 | 65% | 同上 |
+| anthropic | 35 | 13 | 37% | 同上（我修好的 4 条全在这一格） |
+| xai | 15 | 5 | 33% | 同上 |
+| mistral | 37 | 6 | 16% | 见下节 |
+| deepseek | 43 | 4 | 9% | 源里只有 4 个模型 |
+| minimax | 16 | 0 | 0% | ★ 纯**大小写**差异，源里是 `MiniMax-M3` |
+| openrouter | — | — | — | 仓里**故意**不采（聚合商价不是基准价） |
+
+观察源的 216 个 provider 里，**215 家是第三方中转/聚合商**
+（helicone / cortecs / opencode / azure / bedrock / alibaba…），
+原厂键只有十来个。对「基准价 = 原厂标准价」这个定义来说，这是**对的** ——
+中转加价不是基准价。
+
+⇒ **doubao 163 + zhipu 33 = 196 条（占目录 20.4%）在当前观察源下永远拿不到
+互证**，因为那两个原厂根本不在源里。这不是解析器的洞。
+
+### ★ 看起来该修、逐条查价后确认**不能修**的那 7 条
+
+`mistral` 6/37、`minimax` 0/16 摆在那里，很容易让人想「放宽查找提高覆盖率」。
+量出来的「只差前缀/后缀」共 7 条，**逐条查价后一条都不能合**：
+
+| 我们的名 | 源里的名 | 源里价(in/out) | 合了会怎样 |
+|---|---|---|---|
+| `codestral` | `codestral-latest` | 0.3 / 0.9 | **`-latest` 是会移动的别名**：厂商发下一版它就指向别的东西，基准价会**无声漂移** |
+| `ministral-8b` | `ministral-8b-latest` | 0.1 / 0.1 | 同上 |
+| `gpt-5.2-chat` | `gpt-5.2-chat-latest` | 1.75 / 14 | 同上（openai 同款 2 条） |
+| `mistral-large` | `mistral-large-latest` / `-2411` / `-2512` | 0.5/1.5 ・ 1.0/3.0 ・ 0.5/1.5 | 源里**三个**日期版本、三个价都不一样，我们的目录只有一行 ⇒ 合了等于**随便挑一个版本** |
+| `mixtral-8x22b` | `open-mixtral-8x22b` | 2.0 / 6.0 | `open-` 是**开源权重版**，和托管版**不是同一个产品** |
+
+⇒ **87/960 不是待修的缺口，是正确行为；严格键匹配是承重的。**
+`minimax` 那 16 条是**纯大小写**差异，而 `LookupObservation` 已经
+`ToLower` 了 —— 我一度把它们算成「漏掉的 9 条」，**那是错的**：其中 7 条
+根本不是缺口，剩下 2 条（`open-mixtral-*`）**不该**合。
+
+⇒ 判据：`bg/pricing_baseline_alias_test.go`
+`TestLookupObservationRefusesNearMissAliases` —— 承重的 4 个裸名必须查不到，
+且 4 个精确名必须**查得到**（阳性对照，否则「全查不到」与「表是空的」同形）。
+变异实测：把「查不到就补 `-latest` / `open-`」写进 `LookupObservation`
+（M6，编译通过）⇒ **4 个用例全红**，而
+`TestLookupObservationMisses` / `TestReconcileCatalogOnlyTouchesSSOTModels` /
+`TestFetchMachineReadablePrices` **全绿** ⇒ 这条是唯一守着它的东西。
+
+### 需要你拍板的设计上限（不是实现 bug）
+
+「互证才准入 SSOT」这条规则在当前观察源下最多产出 **87 条**，覆盖目录
+**9.1%**。三条路：
+
+- **(a) 加第二个观察源覆盖 doubao/zhipu**（196 条 / 20.4%）。
+  仓里已经留了口子：`machineReadablePricingURLEnv` 可把观察源指向别处。
+- **(b) 接受「单源价」**（原厂页一个信源，明确标 `single-sourced`），
+  覆盖能到 454 条里除 87 外的 367 条，但失去互证这道保险。
+- **(c) 采更多原厂页**：目录里 506 条（52.7%）的家族**连页面都没采**
+  （qwen / llama / moonshot / gemma / mimo / kimi / 传感器 nova…）。
+
+⇒ 我倾向 **(a) + (b) 组合**：先补 doubao/zhipu 的观察源（那 196 条是纯
+覆盖问题，收益最大且不牺牲可信度），再对剩下 367 条逐条人工确认后按单源
+入库并在权威面标出出处。**两者都改「入库规则」，需要你授权。**
+
+---
+
+## 2026-10-06（补）：抓取侧三处 URL 声明互不一致 ⇒ 快照抓到的是 models 页，且**出处会被冻结进权威面**
+
+### 起点：5 个原厂产出的是 **0 条候选**，不是 0 条通过
+
+分厂商逐条量（真实跑 `-canonical`）：
+
+| vendor | 目录里模型 | 候选总数 | 可用（table_row） | 快照字节 | 快照表格行 | 快照含 `$` 行 |
+|---|---|---|---|---|---|---|
+| anthropic | 35 | 73 | 16 | 35,638 | 有 | 有 |
+| xai | 15 | 31 | 4 | 8,091 | 有 | 有 |
+| google | 31 | 329 | 0 | 60,385 | 465 | 236 |
+| minimax | 16 | 35 | 0 | 5,019 | 有 | 无 |
+| **openai** | **81** | **0** | **0** | 47,490 | **0** | **1** |
+| **deepseek** | 43 | 0 | 0 | 2,464 | 0 | 有（压成 run-on） |
+| **doubao** | **163** | 0 | 0 | 27,937 | **0** | **0** |
+| **mistral** | 37 | 0 | 0 | 19,586 | 2 | **0** |
+| **zhipu** | 33 | 0 | 0 | 8,091 | **0** | **0** |
+
+★ 这 5 家不是「被拒收」，是**一条候选都没抽出来** —— 合计 357 条目录模型
+（37%）。openai 47,490 字节里**一张表格都没有**。
+
+### 根因：三处 URL 声明互不一致，而**只有一处会被检查**
+
+| vendor | 快照的 `URL Source` | 抓取脚本抓的 | `vendorPage` 声明 | 谁错了 |
+|---|---|---|---|---|
+| **openai** | `…/docs/**models**` | 同时抓了 models 和 pricing | `…/docs/**pricing**` | **快照错**（抓的是 models 页） |
+| google | `ai.google.dev/pricing` | `…/gemini-api/docs/**models**` | `…/gemini-api/docs/**pricing**` | 三处三个样 |
+| anthropic | `…/about-claude/**pricing**` | `…/models/overview` | `…/models/overview` | **映射错**（快照是对的） |
+
+★ **最严重的后果不是少抓，是出处会被冻结。**
+`buildDraft` 写进 SSOT 草稿的 `source_url` 取自 **`vendorPage`**，不是取自
+快照自己的 `URL Source`。⇒ anthropic 那 8 条已经互证通过、即将入 SSOT 的价，
+记下的出处是 `…/models/overview`（**模型总览页**），而价实际读自
+`…/about-claude/pricing`（**定价页**）。这正是工具自己注释里警告的
+「出处不可审计」，而且**发生在权威面上**。
+
+### 抓取脚本本身也是坏的，三处
+
+1. **输出路径不存在。** `REPO_ROOT` 从 `scripts/../..` 落到
+   `docs/02-resources/research`（不是仓根），再拼
+   `services/llm-gateway-go/docs/pricing/raw`。`mkdir -p` 会把它悄悄建出来，
+   于是脚本「成功」了而真正的 `raw/` 一个字节没变。**仓里那些快照不可能是
+   它抓的**（anthropic 的 `URL Source` 与脚本的 URL 不同，可证）。
+   脚本头注释里还写着**第三个**路径。
+2. **`--max-time 30` 太短，而 `-s` 让超时不响。** 实拍
+   `ai.google.dev/gemini-api/docs/pricing` 要 **52.679 秒**；超时后 curl 写出
+   **空文件**、退出码 0，脚本照样打印 `→ …（0 bytes）` 并继续 ⇒ **重跑一次
+   就用空快照盖掉好快照**。本次实测两次静默失败（`--max-time 40` 也一样）。
+3. **文件名与工具读的键对不上。** 脚本抓 `minimax` ⇒ 产出 `minimax.md`，
+   而 `vendorPage` 的键是 `MiniMax-paygo.md` ⇒ **重跑脚本永远不会更新工具读的
+   那一份**，而脚本对自己抓到的文件是满意的，**不会报这件事**。
+   （这一条是本轮新写的判据当场抓出来的，不是我想起来的。）
+
+### 修法与实测
+
+- `vendorPage` 三家 URL 改成各自的**定价页**（anthropic 改映射、openai 与
+  google 改快照）；
+- 重抓 `openai.md` / `google-gemini.md`（先落 `.partial`，HTTP 200 + 落地页
+  URL 相符才 `mv`）；
+- 抓取脚本：输出路径修正上溯四级、**超时 90s**、落地页 URL 不符即失败、
+  **失败绝不覆盖已有快照**、文件名与 `vendorPage` 对齐。
+
+**实测产出**：
+
+```
+快照换成正确的页后：候选 458 → 606，table_row 14 → 15（+1）
+端到端互证后  ：SSOT 草稿 10 条 → 11 条（新增 gpt-5.3-codex，$1.75/$14，双源一致）
+```
+
+⚠ **+1 条，别把它说成「修 URL 解决了 openai」**。逐条查拒因后真相是：
+openai 58 条候选里 31 条是「同一模型按上下文长短定价」、
+8 条是「按产品档位定价」、其余是 per-minute / per-image 单位 ——
+**这些拒收是正确的**（SSOT 按一个模型一个价建模），google 419 条同理。
+
+### 剩下的是**产品决策**，不是工程缺口
+
+- **openai**：同一个 `gpt-6-astra`，Short/Long context × Standard/Batch/Flex/
+  Fast/Ultrafast 共 10 个价。哪一档是基准价？
+- **google**：模型名在**表格上方的标题里**（表内没有），而且**每个价都带生效
+  日期**：`$0.75 through December 31, 2026. $1.50 starting January 1, 2027.`
+  今天是 2026-10-05 —— 基准价该记今天那个，还是记将来那个？
+- **deepseek**：页面上**没有 markdown 表格**，抓取器把定价压成一行
+  `PRICING 1M INPUT TOKENS (CACHE HIT)$0.0028$0.003625`，两个模型三行价挤在
+  一起。这条要新写一个布局解析器，且**价与模型的对应靠位置**。
+- **doubao / zhipu**：快照里连一个 `$` 都没有。
+
+⇒ 提取器能改的（deepseek 的非表格布局、google 的转置表）都**不是当前产出的
+主要瓶颈**；主要瓶颈是上面三条**要人定**的。动它们等于替厂商做定价决策。
+
+### 判据：`cmd/tools/propose-baseline-prices/url_consistency_test.go`
+
+核**三处**声明（快照 `URL Source` / `vendorPage` / 抓取脚本清单），另加一条
+「openrouter 故意不进原厂表」的钉子，和一条「URL 只差一个字符也算不符」的
+阴性对照。
+
+变异实测（runner 自证注入落地 + `-count=1` 破测试缓存）：
+
+| 变异 | 结果 |
+|---|---|
+| M7 `vendorPage` 的 anthropic URL 漂回 `models/overview` | **红 2 条**（快照侧 + 脚本侧各自点名） |
+| M8 把快照的 `URL Source` 改成 `…/docs/models` | **红 1 条** |
+
+⚠ **两条 M7 首跑都是「ok」，但那不是判据通过，是注入根本没发生** ——
+runner 里 `python3 -c "$2"` 而我传的 `$2` 本身就是 `python3 -c "..."`，
+于是只执行了一个空字符串。修 runner 时加了两道自证：**注入后 md5 必须变**、
+**`go test -count=1` 绕开测试缓存**。这是第三次踩「无效变异」，
+前两次分别是编译失败、以及样本分不开两种实现。
+
+---
+
+## 2026-10-06（补）：多模态 worker 的接线审计 + **订正「要设两个环境变量」这条错误指令**
+
+### 订正：让定时核实跑起来，只需要设**一个**环境变量
+
+★ **我先前口头报的是「需要配 `LLM_GATEWAY_MODALITY_VERIFY` /
+  `LLM_GATEWAY_SELF_CHECK_API_KEY` 两个环境变量」—— 后半句对，前半句错，
+  而且错的方向会让人做出危险动作。**
+
+逐条追完整门链（`cmd/gateway/main.go:4588` / `4828` 两条路径同款）：
+
+| 门 | 判据 | 不设时 |
+|---|---|---|
+| `useNewProbeMode()` | `LLM_GATEWAY_USE_NEW_PROBE_MODE` ∈ {1,true,yes,on} | **true**（`main_helpers.go:299` 显式 `return true`） |
+| `canStartGatewayDependentNewProbes(selfCheckAPIKey)` | `LLM_GATEWAY_SELF_CHECK_API_KEY` 非空 | **false**（空串直接 return false） |
+| `modalityVerifyEnabled()` | `LLM_GATEWAY_MODALITY_VERIFY` ∉ {0,false,off,no} | **true**（`modality_verification.go:266`） |
+
+⇒ **唯一的 opt-in 是 `LLM_GATEWAY_SELF_CHECK_API_KEY`。**
+`LLM_GATEWAY_MODALITY_VERIFY` 是 **kill switch（opt-out）**：
+- **不设 = 开着**（出网探测有日预算 2000 次上限）；
+- **设成 `0` / `false` / `off` / `no` 才是关**。
+
+判据 `TestModalityVerifyKillSwitch` 早就钉住了这一条，断言原文是
+`"empty kill switch should leave the task enabled (opt-out, not opt-in)"`。
+
+### ★ `cmd/gateway/main.go:4586` 的注释与被钉住的契约**相反**，已改
+
+原文：
+
+```
+// 出网比能力位回填贵（挑战带图），所以默认关闭由环境变量
+// LLM_GATEWAY_MODALITY_VERIFY 显式 opt-in（与自检栈其余任务
+// 的 shouldStartNewProbeWorkers 同一道门）。
+```
+
+两处都错：它**不是**默认关闭，也**不是** opt-in。
+
+危害不是措辞：一个**要花钱出网**的周期任务被代码注释说成默认关。照着它
+配置的人会得出「那它现在没跑是因为我没显式 opt-in」——于是去设
+`MODALITY_VERIFY=1`（无害），更可能的是**反过来**：以为默认关所以什么都不做，
+而它其实**已经在跑并出网**；或者为了「保险」设成 `0`，把一个已经正确的
+开关闭掉。已把注释改成如实描述（opt-out + 唯一需要设的是哪个变量 +
+判据在哪儿），并把「本注释原先写反了」留在原地。
+
+### 接线审计结论：两处 `NewModalityVerification` **不是**双跑
+
+`main.go:4589`（legacy `stateManager != nil` 分支）与 `main.go:4830`
+（authoritative 补偿块）形态完全相同，一度看着像同一个进程里起了两个
+worker（⇒ 出网开销翻倍、探测记录双写）。查证：**两条路径互斥**，4830 那段
+位于 `if stateManager == nil && ursmV2Mgr.Mode() == ModeAuthoritative` 内
+（`main.go:4726` 的外层条件），而 4588 那段在 `stateManager != nil` 内。
+代码注释（4800-4806）本来就把这件事记着。⇒ **没有双跑缺陷。**
+
+另核：kill switch 在 `Run()` 里**启动时读一次、每个 tick 再读一次**
+（`modality_verification.go:279` 与 `301`）⇒ 运行时改环境变量不需要重启。
+
+### 「就绪未部署」的证据（真库跑，不是夹具）
+
+用 55432 测试库跑多模态判据，**22 条单元 + 6 条真库全过**，其中 6 条真库：
+
+| 判据 | 覆盖的东西 |
+|---|---|
+| `TestDueTargetsPicksNeverProbedFirst` | 到期队列：未探过的优先 |
+| `TestVerifyOnceTreatsZeroBudgetAsUnlimitedAndZeroBatchLimitAsUnset` | `batchLimit=0` 当作未设（自证日志：`batchLimit=0 probed 4 target(s)`） |
+| `TestProbeAndPersistNeverLeavesTheMachineOnARejectedTarget` | 零出网保证（自证日志：`positive control: verified=true changed=true`） |
+| `TestRollupLabelsCanonicalAfterTwoSemanticPasses` | 两胜定论 |
+| `TestRollupLogDoesNotClaimUnmadeChanges` | 日志不谎报 |
+| `TestRollupDoesNotDowngradeMultimodalOnVisionOnlyNegative` | 缺陷 B 的修复（单模态负证据不得降级 multimodal） |
+
+⇒ 第一半的**代码侧已就绪**：唯一缺的是部署 + 设
+`LLM_GATEWAY_SELF_CHECK_API_KEY`。`model_modality_verification` 仍 0 行、
+960 个模型仍 100% `inferred`，都是「没部署」而不是「还有洞」。
+
+---
+
+## 2026-10-06（补）：★ 仓里**本来就有**一套定价 SSOT，而它 115 天没人核实过 ⇒ 第 16 条健康检查
+
+### 起点：写 runbook 时差点覆盖掉一个既有 README
+
+准备写「基准价方法 runbook」时用了 `write` 覆盖
+`docs/02-resources/research/pricing/README.md` —— 工具回报
+`(overwrote existing file)`，**我没当场反应**。那个 README 有 **122 行**，
+内容包括：
+
+> **所有国内厂商模型必须使用人民币(CNY)计价，不可标 USD。**
+
+以及 6 个脚本的索引，其中 `vendor-pricing-table.py` 自称
+**「Single source of truth for model pricing」**。
+
+已 `git checkout --` **按 HEAD 逐字节还原**（md5 `8097b4b7…`，git 状态 0 改动），
+runbook 改到别处。⚠ 这是本轮最该记住的一手：**写文件前先看它是不是已存在**，
+覆盖既有文档比写不出新文档贵得多。
+
+### 既有 SSOT 的实测状态（生产只读 5432）
+
+`CANONICAL_PRICING` **79 条**：**USD 19 / CNY 60**，
+vendor 分布 zhipu 12 / doubao 12 / openai 9 / deepseek 8 / qwen 6 / anthropic 5 /
+minimax 5 / xai 3 …；`billing_mode` token 79 + token_plan 14；10 条标 `estimated`。
+CNY 规则**被遵守**（0 违反）。
+
+落地表 `pricing_plans`：
+
+| 读数 | 值 |
+|---|---|
+| 行数 | **284**（CNY 152 / USD 132） |
+| `source` | 全部 `scraped`（1 种） |
+| `created_at` | **全部 2026-06-12**，最旧 **115 天** |
+| 超 30 天 / 超 90 天 | **284 / 284（全量）** |
+| 覆盖目录模型 | **39 / 960（4.1%）** |
+| **`model_canonical_id IS NULL`** | **116 / 284（41%）** |
+| `scraped_url` 为空 | 0 |
+
+★ **这才是缺口的确切形状**：这套 SSOT 存在、有规则、有 diff/apply 工具，
+但**一次性灌入后再没有任何东西核实过它**，而 15 条健康检查**没有一条问它新不新**。
+
+⇒ 危害不是「数据不准」而是**「没人知道它不准」**：`provider/client.go:1816`
+的 CalcCost 在计划价缺失时**回落到 pricing_plans**，
+也就是说**成本计算正在用一份 115 天前的价**。
+
+### 与本轮另一条产线的关系：**零重叠，不是重复**
+
+| | 条目 | 币种 | 厂商侧重 |
+|---|---|---|---|
+| 既有 `vendor-pricing-table.py` | 79 | CNY 60 / USD 19 | 国内为主（zhipu/doubao/deepseek/qwen…） |
+| 本轮 `propose-baseline-prices` 产出 | 11 | 全 USD | 全国外（anthropic 8 / xai 2 / openai 1） |
+
+**重叠 0 条。** ⇒ 不是「我做重复了」，是两条互补的产线：
+既有那条有 CNY 规则与双表落地，缺**自动核实**；本轮这条有
+抓取→抽取→解析→互证→草稿的**全链与门**，但**只出 USD**。
+⇒ 合并方向是**把本轮的产出喂进既有 SSOT**，而不是再建第三个面 ——
+**这条需要你拍板**，因为它改的是「哪个文件是定价权威面」。
+
+### 新增第 16 条健康检查：`pricing_plan_stale`
+
+`severity=warning`、`Optional=true`（缺表时按 42P01 跳过，不中止整轮）。
+报三件事，各自指向不同处置：① 全表最旧 `created_at` 的年龄；② 无 canonical
+指针的行数；③ **表为空时刻意不报**（「还没定价」不是故障）。
+
+**生产只读库实跑**：
+
+```
+(bulk) pricing_plans is 115 day(s) past its last load
+284 pricing plan row(s); 116 of them have model_canonical_id IS NULL, so they
+cannot be attributed to a model and cannot take part in per-model cost control.
+NOTE: created_at records the LOAD time, not the time the price was verified
+against the vendor page — treat it as an upper bound on freshness, not proof of it
+```
+
+`Optional=true` 是必需的：55432 测试库上 `pricing_plans` **不存在**，
+不设 Optional 会让那些没灌过价的库**整轮健康面中止**。
+
+判据 `bg/pricing_plan_stale_realdb_test.go`（建夹具表 → A/B/C 三段，清理注册在
+建表之前，自证每段种进去几行）：
+
+| 变异 | 结果 | 红的断言 |
+|---|---|---|
+| M9 30 天门槛 → 0 天（恒真嘶吼） | **红** | **B 段**（新鲜数据不得报）—— 不是 A 段 |
+| M11 孤儿计数硬编码为 0 | **红** | A 段 |
+| M10 去掉「表非空」守卫 | 绿 | — |
+| M12 去掉 COALESCE | 绿 | — |
+| M13 两个守卫同时去掉 | 绿 | — |
+
+★ **M10/M12/M13 全绿不是判据没牙，是「空表不报」压根不靠那两行代码**：
+空表上 `max()` 返回 NULL，`NULL < now() - interval '30 days'` 求值为
+**NULL 而不是 true**（实测 `(... ) IS NOT TRUE` = t），WHERE 永不通过
+⇒ 这是 **SQL 三值逻辑的结构性保证**。两个守卫**各自单独就足够**，
+它们是可读性不是承重。已把这个结论写进代码与判据注释，
+避免下一个读代码的人把功劳记到它们头上、然后"顺手优化"掉。
+
+M9 的归因也值得记一笔：恒真嘶吼这个变异，**A 段本来看不见**（陈旧数据本来就该报），
+只有 B 段能抓住 —— 阴性对照不是形式主义。
+
+### 加第 16 条时踩到的两件事（都是已有门抓的，都不是我自查出来的）
+
+**① `TestEveryHealthCheckHasScanBranch` 立刻转红 —— 我加了 CheckID 没加 `runChecks` 的 case。**
+后果按那条门自己的话是「检查发现问题、然后报一条空的」：
+`entity_id=0, entity_name=''、detail=''`。已补 `case "pricing_plan_stale":`
+（首列 -1 是 bulk 行的特征值，实体是**这张表**而不是某个模型，`entity_id` 走
+`textHash(entity_name)`；不给 `fix_sql` —— 处置是重抓重灌，不是一个 UPDATE）。
+
+**② `scripts/verify-build-contents.sh` 里有一份硬编码的 check_id 清单，我漏了。**
+那个脚本只断言「清单里的 id 都在二进制里」，**不查「在的都在清单里」** ⇒
+「新增检查忘了登记」是**静默**的：脚本照样 rc=0，而那条检查部署后没有产物门守着。
+本轮是 ① 顺手才发现的；**如果当时没有 ①，这就是一条静默缺口。**
+
+⇒ 新增判据 `bg/build_manifest_parity_test.go` `TestEveryCheckIDIsInTheBuildManifest`：
+把清单与 `AllHealthChecks()` **双向**对齐（少登记、多登记各红），
+与 `TestEveryHealthCheckHasScanBranch`（少写 case）合成一个**双向**的闭环。
+
+| 变异 | 结果 | 红的断言 |
+|---|---|---|
+| M14 从产物门清单删掉 `pricing_plan_stale` | **红** | 方向一：少登记 |
+| M15 清单里加一个不存在的 `pricing_plan_ghost` | **红** | 方向二：多登记 |
+
+两条还原后逐字节一致。
+
+---
+
+## 2026-10-06（补）：「115 天陈旧」底下是什么 —— 用重抓的页把 79 条 SSOT 逐条对了一遍
+
+`pricing_plan_stale` 报「115 天没重灌」。**但陈旧 ≠ 错。** 这一节用我这轮
+修好的抓取链（重抓国内 5 家）把既有 SSOT 的可对条目**逐条对价**，给出
+「它到底错了多少」这个决策需要的数字。
+
+### 差点报成「2/2 漂移」—— 差一个币种
+
+既有 SSOT 的 minimax 条目是 **2.1 / 8.4 CNY**；今天页面上 `MiniMax-M2.7`
+是 **$0.3 / $1.2**。差 7 倍，看着像「半年调价 7 倍」。
+
+**但 2.1 ÷ 0.3 = 7.00，8.4 ÷ 1.2 = 7.00** —— 同一个数。⇒ **价没变**，
+两边的币种不同而已（SSOT 按规则用 CNY，原厂页用 USD）。
+
+★ 这就是**为什么对账必须先统一币种**：不统一就报出一个 7 倍的假漂移，
+而真实漂移是 0。可比 2 条，**已变 0 条**。
+
+### 揭出来的三件，比陈旧本身更该报
+
+**(1) SSOT 里没有任何汇率字段，两条 note 用的还不是同一个率。**
+
+| 位置 | 隐含/写明的汇率 |
+|---|---|
+| `minimax-m2.5` / `m2.7` | **7.00**（由 2.1 CNY ÷ 0.30 USD 反推，两项都恰好 7.00） |
+| `glm-4.5` / `glm-4.5-air` / `bge-m3` / `mimo-v2.5-pro` 的 note | **`USD*7.2`** |
+
+同一个文件里 7.00 与 7.2 并存，而汇率只写在 **note 自由文本**里 ——
+任何自动对账都得先猜用哪个率，而猜错就是 ±3%。
+
+**(2) `estimated` 标记**只活在 .py 的 note 里，进库后**消失**。
+`CANONICAL_PRICING` 里有 **10 条 `source='estimated'`**（从别的价推出来的，
+不是从原厂页读的）。落地后 `pricing_plans` 的 284 行**全部**是
+`source='scraped'`。其中 3 条（`glm-4.5` / `glm-4.5-air` / `mimo-v2.5-pro`）
+在库里 `confidence=0.950`，**与真抓来的价一模一样** ⇒
+**推算值在权威面上被标成了事实，且机器挑不出来。**
+
+**(3) `confidence` 不是「是否推算」的标记，是「有没有模型指针」的标记。**
+
+| confidence | 行数 | 不同模型数 |
+|---|---|---|
+| 0.900 | **116** | **0** |
+| 0.950 | 168 | 39 |
+
+⇒ 那 **116 行（41%）** 全是 `model_canonical_id IS NULL` 的孤儿行
+（正是 `pricing_plan_stale` 报的那个数），它们连一个模型都指不到。
+
+### 顺带：国内两家的价在公开页上**根本取不到**
+
+重抓实测（2026-10-06）：
+
+| vendor | 字节 | markdown 表格 | 候选 | 可用 |
+|---|---|---|---|---|
+| minimax | 8,850 | **93** | 55 | **0** |
+| moonshot | 3,292 | 8 | — | 0（`vendorPage` 故意没有该键） |
+| **doubao** | 31,299 | **0** | — | — |
+| **zhipu** | 5,651 | **0** | — | — |
+| deepseek | 3,055 | 0 | — | — |
+
+★ **doubao 163 + zhipu 33 = 196 条（目录的 20.4%）的价在公开定价页上取不到** ——
+那两页是 JS 渲染的，Jina reader 只拿到骨架（一个 `$` 都没有）。这与
+「观察源里没有这两个原厂键」是**两个独立**的堵点：即使有了互证源，
+**页面这一侧仍然是空的**。
+
+minimax 有 93 张表却 0 可用，拒因是**对的**：`Permanent 50% off` 的划线原价
+不得采用、`Priority` 档位价不是平价、`per_second` 单位不同、
+以及 `input ≤512k / >512k` 的上下文分档 —— 全部是「不是一模型一价」。
+
+### 结论（按处置难度排序）
+
+1. **可对的那几条没漂移**（MiniMax 2/2 精确吻合在 7.00）。所以「115 天」
+   本身不是当前最痛的问题，不必为它先做紧急重灌。
+2. **真问题是 41% 的孤儿行**（116/284，指不到模型）与 **10 条推算值里
+   已入库的 3 条被标成 `scraped`**。前者让这些价**无法参与按模型的成本核算**，
+   后者让**推算值冒充事实**。两件都**不需要外部报价单**，是仓内可修的。
+3. **汇率需要变成结构化字段**（或至少在 `note` 之外落一列），
+   否则任何 CNY↔USD 对账都不可复现。
+4. ~~**doubao / zhipu 的 196 条需要页面侧的解法**（JS 渲染），
+   这是我这套方法当前**明确做不到**的，如实记下来而不是含糊过去。~~
+   **★ 2026-10-06 订正：这条是错的。** 详见下一节「0 表格 ≠ 页面取不到」：
+   doubao / zhipu / deepseek 三页的价格**都在 markdown 里**，只是排成竖排
+   run-on 而非 markdown 表格。堵点是**解析器不认识这种版式**，不是页面取不到。
+
+## 2026-10-06（补）：孤儿行归到**凭据**上之后，「116 行」这个数字就不再是工作量
+
+上一节把「116/284 行 `model_canonical_id IS NULL`」当成待处置项。**它本身
+是准确的，但作为工作量它是错的量纲。**
+
+### 按 `credential_id` 分层之后
+
+| 口径 | 值 | 是不是工作量 |
+|---|---|---|
+| 没有模型指针的行数 | **116** | ❌ 这 116 行是 7 个凭据的价目展开，**补 116 个指针不存在** |
+| 这些行挂在几个凭据上 | **7** | ✅ **可行动的工作量** |
+| 这 7 个凭据上的孤儿行 | 116 | 同一个事实的另一种数法 |
+
+7 个凭据中有 **6 个挂着 386 个已映射模型绑定**。而 `provider/client.go:1812-1839`
+的 CalcCost 用 `pp.model_canonical_id = mo._mc_id` 选计划价，**NULL 永不匹配**
+⇒ 那 386 个绑定拿不到该凭据级的价格，会回落到别的价源。
+
+**所以「补 116 行」是错的方向，「处理 7 个凭据」才是。** 告警 detail 现在两者
+都报，但措辞把 `across N credential(s)` 明确说成「this is the actionable
+size (a credential list), not the row count」—— 否则读到 116 的人会去排 116 个工单。
+
+### 判据与变异台账（真库 55432）
+
+夹具表 `public.pricing_plans` 之前**缺 `credential_id` 列**，加这个统计量的那一刻
+它就是假的。已补列，并让夹具**刻意**把「孤儿行数 ≠ 孤儿凭据数」（4 行 / 2 凭据）：
+
+- 数量相等时，一个写死的数字能同时蒙过两个断言，凭据数那栏就**看着有判据、实际没有**。
+- 变异 M17（把凭据数别名成孤儿数）实测红在凭据断言上 ⇒ 这个不对称是承重的。
+
+| 变异 | 内容 | 红在哪 |
+|---|---|---|
+| M9 | 30 天 → 0 天（陈旧恒真） | **B 段 :206**；A 段看不见这种缺陷 |
+| M11 | 孤儿**行数**硬编码 0 | **A 段 :185**；凭据断言 :193 **未报** |
+| M16 | 孤儿**凭据数**硬编码 0 | **A 段 :193**；行数断言 :185 **未报** |
+| M17 | 凭据数别名成行数 | **A 段 :193**，报出 `across 4 credential(s)` |
+| M18 | 30 天 → 365 天 | **A 段 :175**（0 行）；B 段未报 |
+
+★ **M11 与 M16 互为反向证明**：两个数各自独立承重，不是同一个数字报两遍。
+每条变异都自证 md5 变了 + `go vet` 通过 + `-count=1`，红都归因到具体断言行，
+还原后与基线**逐字节一致**（`a282585d4d6744ee5a411cd532e69393`）。
+
+夹具另加一层**量具自证**：`seed` 种完先回读「孤儿行数 / 孤儿凭据数」，
+不等就 `t.Fatalf` 并明说「fix the fixture, not the assertion」—— 否则某天
+`credential_id` 一起被写成 NULL，`orphan_cred` 变 0，而 `Contains` 断言可能照样过。
+
+⚠ 夹具表只建这条检查**读到的**那几列，比生产表（16 列）窄。**窄可以，少一列
+不行**：删掉 `model_canonical_id`/`credential_id`/`created_at` 任一列，查询报
+`42703 undefined_column`，而 `HealthCheckDef.Optional` 只兜 `42P01` ⇒ 直接红。
+
+
+## 2026-10-06（补）：把「要填多少个基准价」量对之后，发现真正的缺口不在覆盖率上
+
+上一节把 `pricing_plan_stale` 的量纲修对了。这一节反过来问一个更前置的问题：
+**要让成本对照真正跑起来，第一批到底要填多少个基准价？** 而这个问题一旦量对，
+真正的堵点就换了一个。
+
+### 漏斗（全部生产只读库实测，2026-10-06）
+
+| 层 | 数量 | 说明 |
+|---|---|---|
+| `models_canonical` 全量 | 960 | 目录里所有模型 |
+| 有供应商价（`v_supplier_price_vs_baseline.supplier_in_per_1m`） | 163 | 缺基准价才谈得上「对照」 |
+| 其中能映射到 canonical | **154** | 有 9 个对不上目录 |
+| ★ **近 30 天真的有流量** | **45** | 合计 126,095 次请求 |
+| 当前自动化能产出（真实查找路径） | **2 → 3** | 见下 |
+
+**「154」是待填数，「45」才是工作量。** 剩下 109 个模型近 30 天一次请求都没有 ——
+为它们填价不产生任何成本风险。★ 这正是上一节那条经验在**反方向**上的应用：
+我差点拿 154 当分母，而 154 与 45 差 3.4 倍。
+
+### 自动化的真实覆盖率：45 个热模型里 2 个（修完是 3 个）
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| `table_row` 候选 | 21 | **26** |
+| `ready_to_review`（可进账本） | 2 | **3**（`minimax-m2.5` $0.3/$1.2） |
+
+热模型前 3 名 `minimax-m3`（70,684）/ `deepseek-v4-flash`（10,890）/
+`deepseek-v4-pro`（9,252）合计 **72% 的流量**，一个价都没有。
+
+### 0 表格 ≠ 页面取不到（订正上一节）
+
+上一节写「doubao / zhipu 的价在 JS 页面上取不到」。**实测是错的**：
+
+| 快照 | 字节 | markdown 表格行 | 实际内容 |
+|---|---|---|---|
+| `doubao.md` | 27,937 | **0** | 价在里面，竖排 run-on：模型名 + `输入长度 [0, 32]` + 6 行单价 |
+| `zhipu.md` | 8,049 | **0** | 价在里面，run-on，且含**「限时免费」列**（折后价陷阱） |
+| `deepseek.md` | 2,464 | **0** | `1M INPUT TOKENS (CACHE MISS)$0.14$0.435` / `1M OUTPUT TOKENS$0.28$0.87` |
+
+**堵点是解析器不认识竖排版式，不是抓不到页面。** 这个区别决定处置完全不同：
+前者是仓内可做的工程，后者才是死路。
+
+> **2026-10-06 后续：deepseek 这一份已经建模了**（`internal/vendorprice/runsheet.go`），
+> 但**结论与预期相反** —— 重抓之后的页面是**峰谷分档**，而我们路由的
+> `deepseek-v4-flash` / `deepseek-v4-pro` **已经不在厂商当前价目页上了**。
+> 详见下一节。doubao / zhipu 仍未建模。
+
+⚠ 但即使补了解析器，doubao/zhipu 的多数行**按契约仍不可入库**：它们是
+**分段计费**（`输入长度 [0,32]` / `(32,128]` …）与**限时折扣**，
+而 SSOT 写明「分档价一律不进本文件」。28 个 doubao 模型里 19 个是多档。
+⇒ 这部分不是工程量，是**建模决策**。
+
+### ★ 真缺陷：`/ M tokens` 这个单位写法，两份词表只改了一份
+
+MiniMax paygo 页每个价格单元格都写 `$0.3 / M tokens`（斜杠 + **无数字**的
+M + tokens）。而 `internal/vendorprice/extract.go` 里「每 1M token」有
+**三份各自独立的正则**，其中 `perMillionRE`（块/页级单位声明）**没有**这一种
+写法，`unitPatterns` 末项（单元格级）**早就有**。
+
+后果不是「某一行没读出来」，而是**整张表读不出来**：M2.7 / M2.5 / M2.1 / M2
+全部落到 `no input or output price found in the mapped columns`，
+而它们的行里明明写着 `$0.3 / $1.2`。
+
+★ **三条独立证据交叉印证**：
+
+1. MiniMax-M3 / M2.7 / M2.5 都是近 30 天真实在跑的模型（70,684 / 1,996 / 234 次）。
+2. M3 那几行**同时**还因「划线原价 + 上下文分档」被正确拒收 —— 于是
+   「按契约拒收」的理由**掩盖**了「单位根本没读懂」。两种拒绝长得一模一样。
+3. 仓里既有的 `TestExtract_MiniMaxStrikethroughAndTiersAreUnusable` 断言
+   「这一页只有分档/折扣价，没有挂牌价」—— **这句话是错的**
+   （M2.7/M2.5/M2.1/M2 是干净挂牌价），而它**是靠这个 bug 才绿的**。
+   修好单位，它立刻转红。⇒ **一条靠 bug 才成立的断言，和它守护的缺陷是同一个东西。**
+
+**修法不是再补一次，是让三处共用一份 `perMillionSpelling` 定义** ——
+否则下一个厂商写法还会同样漂移。
+
+#### 判据与变异台账
+
+- `TestExtract_MiniMaxStrikethroughAndTiersAreUnusable` 第二段循环**重写**：
+  范围条件用**字面量 `"tokens"`**（刻意不引用被测的 `perMillionRE` ——
+  引用它就变成自证：正则坏掉时这些行不被选中，断言一个都不跑却全绿），
+  且断言的是「**价必须被解析出来**」而不是「confidence 必须是 table_row」
+  —— 「读进来」与「能进账本」是两件事，混在一个断言里正是当初让缺陷活下来的写法。
+- 量具自证 `selected >= 7`（真页 LLM 段是 4 个模型 7 行）。第一版写成全页通则，
+  把 Audio/Video（`$60/M characters`、`$0.19 per 768P, 6s video`）也算进来 ——
+  **判据过宽即恒真**。
+- 新增 `TestFootnoteAboveTheNextTableIsNotABillingDimensionOfIt`（最小夹具复现）。
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| T1 | 撤掉新增写法（**连分隔符一起去**） | **红**在 `:157`，逐行点名 7 个模型 |
+| T2 | 放宽成 `/\s*m\b` | **绿** —— 保护来自 `unitPatterns` 的**顺序**，不是词表；已写进注释 |
+| T3 | 量具阈值 7 → 100 | **红**（`selected only 7`） |
+| T4+T1 | 范围条件改引用被测正则 **且** 撤掉词表 | **红**（`selected only 0`）—— 单做任一个都抓不住 |
+
+⚠ 台账本身也翻过一次车，值得记：第一次的 T1 把
+`/\s*mtok|/\s*m\s*tokens?` 换成 `/\s*mtok|`，留下一个**空分支 `||`**。
+空分支匹配空串 ⇒ 正则对任何输入都 true ⇒ **6 条与 MiniMax 无关的既有判据
+被打红**。那个「红」不是「判据咬住了」，是「注入引入了另一个 bug」。
+**变异红同样必须归因。**
+
+### 剩下的缺口（按可行动量排序，不是按条数）
+
+| 缺口 | 涉及请求 | 性质 |
+|---|---|---|
+| `minimax-m3` 无基准价 | 70,684（56%） | **契约性**：厂商只发布分档+折扣价，没有挂牌价。需产品决定拿哪一档 |
+| `deepseek-v4-flash` / `-pro` 无价 | 20,142（16%） | **工程性**：竖排 run-on 版式未建模；且两个模型名挤在同一个表头格里，列归属需要仔细设计 |
+| 其它 42 个热模型 | 35,269（28%） | 混合：多为冷门或嵌入/语音类 |
+
+★ `minimax-m3` 那一行是**决策**不是缺陷：原厂把 M3 做成了
+「≤512k 一个价、>512k 一个价、且永久 50% off」，SSOT 的
+「一个模型一个价」装不下它。要么给基准价加维度，要么接受它**按契约不可入库**。
+
+## 2026-10-06（补）：deepseek 的价**取到了**，然后发现真正的答案是「厂商根本不发布挂牌价」
+
+上一节说 deepseek 是竖排 run-on、堵点在解析器。这一节把它建模了，
+**然后结论翻转了** —— 而且翻转得比预想的重要。
+
+### 快照本身就是过期的，这一步差点造成错价
+
+`raw/deepseek.md` 的内容对应页面 2026-06-02 的状态（`Published Time`），
+文件抓取于 8-25。新增 run-on 路径后，它产出 2 条干净的挂牌价：
+
+| 模型 | 输入 | 输出 | 缓存命中 |
+|---|---|---|---|
+| `deepseek-v4-flash` | $0.14 | $0.28 | $0.0028 |
+| `deepseek-v4-pro` | $0.435 | $0.87 | $0.003625 |
+
+`ready_to_review` 从 3 涨到 **5**，正好命中那 20,142 次请求的两个热模型。
+★ **但那两条不能入库。** 重新抓取该页（2026-10-05 15:50 实跑）得到的
+`URL Source` 与请求一致、内容 3,055 字节，显示的是**另一个版本**：
+
+```
+MODEL VERSION DeepSeek-V4.1-Flash DeepSeek-V4-Pro-0813
+(CACHE HIT)OFF-PEAK$0.003$0.022
+PEAK$0.006$0.044
+1M OUTPUT TOKENS OFF-PEAK$0.6$1.98
+PEAK$1.2$3.96
+```
+
+⇒ 两件事同时成立：**厂商改成了峰谷（peak/off-peak）分档**，
+且**我们路由的 `deepseek-v4-flash` / `deepseek-v4-pro` 根本不在当前价目页上**
+（页面现在是 `V4.1-Flash` / `V4-Pro-0813`）。所以对这两个模型
+**今天不存在可比对的原厂挂牌价** —— 不是没抓到，是**没有**。
+
+用过期快照算出来的覆盖率是**虚的**。重抓之后 `ready_to_review` 回到 **3**，
+而 deepseek 报出的是真理由：`time-of-day billing dimension (OFF-PEAK)`。
+
+### ★ 抓取脚本的 off-by-one 又长回来了（同一个坑，隔了一轮）
+
+跑 `fetch-pricing.sh` 时它把文件写到了 **`docs/docs/02-resources/...`** ——
+`REPO_ROOT` 上溯「四级」实际落在 `docs/` 而不是仓根。**讽刺的是该脚本
+第 1 条约束写的就是这个坑**（还举了旧版的 `services/llm-gateway-go/docs`）。
+
+真正该修的不是这一次，而是让失效**不可能发生**：
+
+- `REPO_ROOT` 改成上溯**五**级；
+- **删掉 `mkdir -p "$OUT"`**。快照目录是随仓存在的产物目录，现场创建它
+  只有一个后果：路径算错时不报错，而是造出一棵没人看的新树、同时打印
+  「抓取成功」。⇒ 目录不存在现在是**致命错误**；
+- 追加一道校验：`$OUT` 不等于预期的仓内路径就退出。
+
+已删除误建的 `docs/docs/`。★ 好消息是脚本自己的「抓取失败不覆盖已有快照」
+守卫生效了（deepseek 那次超时没有覆盖任何东西）。
+
+### 不变量在「整页没有表格」时是失效的
+
+`TestNoMoneyEverDisappears` 守的正是「钱永不消失」，但它的扫描范围是
+`strings.HasPrefix(line, "|")` —— **只看表格行**。而 doubao / zhipu /
+deepseek 三页**整页一个 `|` 都没有**，正好落在覆盖之外。
+
+实测（新增 run-on 路径之前）：`Extract("deepseek", …)` 返回**零候选** ——
+连 `orphanCandidate` 都不触发（它只对 `|` 开头的行调用）。而提案里其它行都
+好好地列着，看的人只会以为「原厂没公布」。
+
+新增 `TestEveryNoTableSnapshotWithMoneyIsEitherReadOrExplicitlyListed`：
+「无表格但带钱」的快照必须**要么被读出来、要么被显式列进 `notModelledYet`
+并写明为什么」。当前 `notModelledYet` = `doubao.md` / `zhipu.md`（版式未建模
+且多为分档/折扣）/ `openrouter.md`（设计上排除，聚合站是转售价）。
+★ 之所以不写「所有带钱的行都要有候选」：那会被 OpenAI 页那 1028 行导航栏
+淹没（导航里就有金额）。新页面进来会被这条判据拦下，逼人去决定。
+
+### 变异台账（run-on 路径，6 条）
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| R1 | 去掉「行内维度词就拒」 | **红**，且直接显示危险：`m-flash` 从 OFF-PEAK 表拿到 `table_row` |
+| R2 | 不按模型合并，退回每角色一条 | **红**（6 条而非 2 条，且 `cR=<nil>`） |
+| R3 | 去掉金额个数校验 | **红** |
+| R4 | 把裸 `INPUT` 提到 `CACHE HIT` 之前 | **红**（倒序后 CACHE HIT 被记成输入价） |
+| R5 | 去掉 `MODEL VERSION` 硬要求 | **红**，但方式是 **panic**（`models[0]` 下标越界），非判据红 |
+| R6 | 把整条路径从 `Extract` 摘掉（接线层） | **红**（0 候选） |
+
+⚠ R4 **第一次跑是假绿**：注入脚本写成 `replace(b, a+b)`，结果把 `CacheRead`
+插到 `Input` **前面**，顺序根本没倒过来。**和上一节 T1 的空分支同类 ——
+变异绿与变异红都必须先确认「注入做到了它声称的事」。**
+R4 重做后自证了注入后的角色顺序，再跑，才得到上表的结论。
+
+★ R1 还顺带验证了**失败方向是对的**：倒序后 `(CACHE HIT)` 与 `(CACHE MISS)`
+都落成 `Input` → 触发分档护栏 → **拒收而不是产出错价**。
+
+### 判据自身的两处修正
+
+- `TestRunOnSheetIsReadByModelNotByRow` 原本读 `raw/deepseek.md`，重抓后立刻
+  转红（那条红是**对的**：夹具形状确实变了）。但**测「一种版式能不能读」不该
+  钉在一个会合法变化的厂商快照上** —— 已改为内联固定夹具，并在注释里写明
+  「测版式用固定夹具，测厂商当前页面才读实抓文件」。两种问题混在一条判据里，
+  它就会在厂商改版时变成随机噪声。
+- `propose-baseline-prices` 的 `TestRejectionReasonFamiliesCoverRealFixtures`
+  把新出现的两条拒收理由暴露成 visible hole（132→134 候选、7→9 类）。
+  已补 `reasonFamilies` 两族（各带 `Why` = 运维下一步）与期望值。
+
+⚠ 另记一次自己的失误：临时手敲的变异只还原了两个被改文件中的**一个**，
+`extract_test.go` 留了变异残留（`XX-doubao`）。台账脚本用 `trap restore EXIT`
+正是为了这个 —— 手敲的没有。已当场还原并复跑确认 0 残留。
+
+## 2026-10-06（补）：把「我差一步就入了一个错价」变成一条门 —— 快照新鲜度
+
+上一节记了 deepseek 的近失：快照内容是 6 月的、操作员如实填了 8-25 的抓取日期、
+工具照单全收，产出两条**看起来完全正常**的价。★ 救我的是**人在几小时后复核时
+发现的**，不是任何机制。这一节把那个机制补上。
+
+### 查清三件事
+
+**(1) 现有的陈旧检查完全不覆盖这件事。**
+`baseline_observation_stale` 查的是 `model_baseline_price_observation_health`
+—— 那是**抓取 worker 的成功/失败**（`consecutive_failures` / `last_success_at`），
+与仓内 `docs/.../raw/*.md` 快照**毫无关系**。
+
+**(2) `-fetched-at` 是操作员手填的，且没有任何交叉校验。**
+快照文件名是 `{vendor}.md`（无日期），所以工具**没有任何办法**知道内容多旧。
+
+**(3) 机制是 r.jina.ai 会缓存。** 缓存命中时返回 HTTP 200、内容自洽
+（`URL Source` 对得上、内部无矛盾），只是**内容是旧的**。
+⇒ 原本只有「快照自洽」一道检查，而它恰好挡不住这类失效。
+
+### 实测：10 份快照的新鲜度
+
+| 快照 | 页面 `Published Time` | 与断言抓取时刻的**落差** | 结论 |
+|---|---|---|---|
+| `openai.md` | 2026-10-04 | 1 天 | fresh |
+| `deepseek.md` | 2026-09-24 | 11 天 | fresh |
+| `zhipu.md` | 2026-06-11 | **116 天** | **stale → 拒收** |
+| `xai.md` | 2026-05-27 | **131 天** | **stale → 拒收** |
+| anthropic / doubao / google-gemini / MiniMax / mistral | **无** | — | **no_evidence**（放行但记录） |
+
+★ 也就是说：**我这几轮一直当作证据用的快照里，有两份是 4 个月前的**，
+另有五份连日期都没有。
+
+### 门怎么设计的（`cmd/tools/propose-baseline-prices/snapshot_age.go`）
+
+判据量的是 **「你声称的抓取时刻」与「页面自己的发布时间」之间的落差**，
+**不是页面的绝对年龄**。区别很实际：一个价格页三个月没更新是**正常的**
+（静态页），若按绝对年龄拒收，这条门会拒掉几乎所有页面而变成噪声；
+真正可疑的是「你说你今天抓的，内容却是 84 天前的版本」。
+
+三种结论缺一不可：`fresh` / `stale`（拒）/ `no_published_time`（放行但记录）。
+第三种最容易被混掉 —— 实测 10 份里 5 份没有日期，那是**没有证据**，
+不是**有证据证明它新**。
+
+用 `Published Time`（页面内容版本的时间）而不是文件 mtime（下载时间）：
+我们要防的是**内容旧**。且 `Published Time` 缺失**不得当作新鲜**。
+
+`-max-snapshot-age-days` 默认 30，`0` 关闭。**默认失败关闭** ——
+过期价是**错价**，而错价比「没有价」坏得多：后者会触发
+`baseline_price_missing` 去报，前者会安静地进账本。
+
+### 判据与变异台账
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| F1 | 门永远判 fresh | **红**（3 条） |
+| F2 | 比较方向倒置 | **红**（3 条） |
+| F3 | 无日期当新鲜 | **红**（3 条） |
+| F4 | 摘掉 `main` 里的**调用点** | 第一次 **绿** ★ |
+
+★ **F4 第一次是绿的，而这是本节最要紧的一条。** F1–F3 证明判定函数有牙，
+但那几条判据**都直接调函数、从不经由接线**。⇒「函数有牙」与「门在跑」是两件事。
+
+补 `TestTheFreshnessGateIsActuallyWiredIntoTheRun`：**跑真正的二进制**，
+现场搭一个含「陈旧 / 新鲜 / 无日期」三份快照的 raw 目录，断言
+① 陈旧那份的价**没进** `ready_to_review`、② 新鲜那份**在**（否则恒真）、
+③ 结论**写进提案 JSON** 而不只是 stderr。重跑 F4 → **红**，归因清楚：
+「一个来自 84 天前快照的价进了 ready_to_review」。
+
+★ 端到端判据有个坑：夹具文件名必须是 `vendorPage` 登记过的真名，否则整页会以
+「not an originating vendor in the map」被跳过，那条判据就会因为
+「什么都没通过」而全绿 —— 最典型的假绿。
+
+### 一处我写错的断言
+
+`TestSnapshotAgeRefusesWhenNoFetchIsAsserted` 的后半段我原本断言
+「无 fetched_at **且**无日期 ⇒ `ageStale`」。**是我错了**：正确答案是
+`ageNoEvidence` —— 「没有日期」是更根本的事实，抱怨「你没填抓取时间」是次要的，
+而且会让人困惑（他确实填了，是页面根本没给日期）。已改断言，并把这个订正写进注释。
+
+## 2026-10-06（补）：跨厂商量一次「我们路由的模型，原厂还登不登在价目页上」
+
+前两节都在逐个厂商看。这一节把问题反过来问一遍，量一个**跨厂商**的数 ——
+它直接决定「成本对照」这件事的**上限**。
+
+### 量具（三次才做对，值得记）
+
+第一版用**分词 + 归一化**自己比对，快照文本 vs canonical 名。两处假阴性：
+
+- `vendor_of()` 返回 `minimax`，而文件叫 `MiniMax-paygo.md` ⇒ **键不匹配**，
+  `minimax-m3`（70,684 次，占热流量 56%）被误判成「页面上没有」；
+- 分词正则无法桥接 `Claude Fable 5` ↔ `claude-fable-5`。
+
+第二版改用「**页面上出现过的展示名**」，但只对着 45 个热模型的名字找 ⇒
+`grok-4.3` 的 best match 报成 `glm-4`（名单里压根没有 grok），「没解析成」把
+「页面上没有」与「不在我的名单里」混成一件。
+
+★ **第三版才对**：让解析器看到**完整 960 名单**，分类只用**解析器自己的判决**
+（`resolved to canonical "X"` 子串），再用前缀规则判「页面上有没有」。
+
+⚠ 前缀规则是**故意放松**的（吸收 `MiniMax-M3 ≤ 512k input tokens…` 这类档位
+后缀），所以 B 桶是**上界**。已知一个假阳性：`deepseek-v4-pro` 匹配上了
+`DeepSeek-V4-Pro-0813` —— 那是**另一个 SKU**，厂商已改名。C 桶是**下界**。
+两个桶都不精确，但 A 桶是解析器的判决，精确。
+
+### 结论（真实快照：deepseek/xai/zhipu 用今天重抓的版本，其余为仓内现有）
+
+| | 模型数 | 请求 | 占比 |
+|---|---|---|---|
+| **A** 解析器已把某个厂商展示名解析成它 | 3 | 5,491 | **4.4%** |
+| **B** 页面有，但没解析成 canonical | 4 | **83,757** | **66.4%** |
+| **C** 厂商当前价目页上**确实没有** | 38 | 36,847 | 29.2% |
+
+A = `claude-fable-5` / `claude-opus-4-8` / `minimax-m2.5`。
+
+B 里的 4 个性质**各不相同**，不能合并看：
+
+| 模型 | 请求 | 页面上是什么 | 为什么没解析成 |
+|---|---|---|---|
+| `minimax-m3` | 70,684 | `≤512k` / `>512k` 两档 + 永久 50% off | **按契约拒收**（分档价不是挂牌价） |
+| `minimax-m2.7` | 1,996 | 干净的 `$0.3 / $1.2` | **脚注语义未决**（见下一节） |
+| `gpt-5.6-sol` | 1,825 | 多层表头 / 档位 | 列语义未对齐 |
+| `deepseek-v4-pro` | 9,252 | `DeepSeek-V4-Pro-0813` | ★ **厂商已改名**，这是**另一个 SKU** |
+
+C 里 zhipu 一家占 12 个（`glm-4` / `glm-4-flash` / `glm-5.1` / `glm-5.2` …）：
+今天重抓的智谱页只登了 `GLM-5.3` / `GLM-5.3-Flash` 等少数几个，
+**我们路由的 GLM 系列绝大多数已不在它的价目页上**。
+
+### 这一节真正说明的事
+
+「让成本对照跑起来」这件事的**上限不是覆盖率问题，是三方对不上**：
+
+1. **原厂不发单一挂牌价**（minimax 上下文分档、deepseek 峰谷分档、openai 多层档位）——
+   占 B 桶的绝大部分，这是**建模决策**不是工程量；
+2. **原厂已改名或下架**（deepseek `-pro` → `-pro-0813`、智谱 GLM 系列大范围消失）——
+   这是**路由/目录**问题：我们路由的名字与厂商登的名字已经不是一套；
+3. 名字对得上、价也干净的那部分（`minimax-m2.7`）被一个**语义未决**的脚注规则挡着。
+
+⇒ 也就是说：**即使我把剩下 8 份快照全部重抽、给 doubao/zhipu 补上解析器，
+可入库的基准价也只会从 3 条变成个位数。** 这不是工作量不够，是**上游没有那个信息**。
+继续投入解析器之前，得先回答上面第 1、2 条。
+
+---
+
+## 2026-10-06 撞名不变量 + 一行多点名模型（6 倍误归因）
+
+上一节把「可入库基准价只有 3 条」的根因归到三方对不上。那一节的量具用**解析器
+自己的判决**，而判决本身有个洞，这一节量出来的就是它。
+
+### 一、SSOT 是「一个模型一个价」，撞名时正确答案是**缺一条**
+
+`-accept-dimension-prose-as-footnote` 打开时实测撞上：`Claude Opus 4.8` 在
+anthropic 那一页出现**两次**且价不同 —— 标准表 `$5/$25`，紧跟散文段
+「Fast mode pricing …」那张表 `$10/$50`。两条候选展示名一样、canonical 名一样。
+
+现状唯一的兜底在 `buildDraft`：`if _, dup := d.Models[canonical]; dup { refuse }`。
+它**位置太靠后**（在互证之后），而且「谁赢」由**文档顺序**决定：厂商把 Fast mode
+表放在后面，标准价就赢；哪天段落顺序变了，入库的基准价跟着变，**而页面上什么都没改**。
+一条会随排版漂移的基准价比没有基准价坏得多 —— 它看起来是对的。
+
+**修法**：新增 `withholdConflictingPrices`（`canonical_price_collision.go`），
+在**互证之前**整组扣下并点名，赢家由人选。扣下的两行连行号、原文行、URL 全部进
+提案的 `ambiguous_canonical_prices`。
+
+⚠ 三处**刻意**的设计，理由写在代码注释里：
+
+- **分档（`Tier`/`ProductTier`）不进价格指纹**：Standard 与 Batch 价格**相同**时
+  基准列没有歧义；把它们算进去会让报告里出现「两条一模一样的价」，读者会去查工具。
+- **币种与单位进指纹**：`$5` 与 `¥5` 是两个声明；同一串数字在 `per_1m` 与
+  `per_image` 下是两件事。
+- **`nil` 与 `0` 不可塌陷**：「没报输入价」与「输入价是 0」塌成一个键之后，一行
+  「只报了输出价」会与一行「输入输出都 0」被判成同价重复而放行。
+
+### 二、★ 真正的缺陷：一行点名两个模型，被静默归到其中一个
+
+不变量第一次实跑就抓出**两个** canonical，但**第二个不是价冲突**：
+
+| canonical | 报告出来的「价冲突」 | 真相 |
+|---|---|---|
+| `claude-opus-4-8` | $5/$25 vs $10/$50 | **真撞名**（同名两张表） |
+| `claude-opus-4-7` | $5/$25 vs $30/$150 | ★ **行归错了模型** |
+
+anthropic Fast mode 那张表有一行：
+
+```
+| Claude Opus 4.6 / Claude Opus 4.7 | $30 / MTok | $150 / MTok |
+```
+
+它的展示名原样进匹配器，得到 **`score=0.90 accepted=true reason=<空>`** ——
+**满分通过、零告警**，`claude-opus-4-6` 被静默丢掉，提案里看不出任何异常。
+
+后果是 **6 倍**：`claude-opus-4-7` 的基准价会记成 $30/$150，而同一页 line 162 的
+标准价是 $5/$25；`claude-opus-4-6` 仍从 line 163 拿 $5/$25 ⇒ 同一张页面里的两个
+模型被记成两套价，其中一套错了 6 倍。
+
+**为什么三道门都没抓到**：抓价那道只看**行**（格式干净、数字齐、没划线价 ⇒ 通过）；
+抓名字那道只看**能否解析**（解析成功了，分数还很高）；靠本轮的不变量也会「抓到」，
+但报出来的理由会是「同一个 canonical 有两个不同的价」—— 病因根本不是价冲突。
+**一个对的诊断换成另一个错的诊断，比没诊断更费时间。**
+
+**修法**（在解析层，不在提取器）：`multiModelCanonicals` 把单元格按 `" / "` 切开，
+每段各自走**原样形态**的匹配器，**≥2 段解析到不同 canonical** ⇒ 拒收并点名是哪两个。
+没有词表，所以「`/` 是不是分隔符」这个问题不存在；「哪一段是哪个模型」由**名单**决定，
+而名单是本工具已有的权威输入。
+
+⚠ **这条今天仍是潜伏的**：Fast mode 表在默认口径下被散文维度护栏拒收，只有那个
+flag 打开时才走到这里。但那是一个开关就能引爆的雷，而 6 倍误差正好打在
+「准确控制模型实际成本」这个目标上。
+
+### 三、真实语料上的 before/after（同一 base commit，10 份实抓快照）
+
+```
+go run ./cmd/tools/propose-baseline-prices \
+  -raw docs/02-resources/research/pricing/raw -canonical <960 名单> \
+  -max-snapshot-age-days 30 -accept-dimension-prose-as-footnote \
+  -fetched-at 2026-10-06T00:00:00Z -out <json>
+```
+
+| | before | after |
+|---|---|---|
+| `ready_to_review` | 18 | **19**（多的那条是 `Claude Opus 4.7` **5/25**，此前被 30/150 覆盖） |
+| `ambiguous_canonical_prices` | 2 个 | **1 个**（只剩真撞名的 `claude-opus-4-8`） |
+| `unresolved_names` | 3 | **4**（新增 `Claude Opus 4.6 / Claude Opus 4.7`，理由点名两个模型） |
+
+⚠ **订正上一节的一个读数**：上一节写「自动化产出 3 条」。今天用**完整 960 名单**
+实跑是 **18 条 ready**（默认口径）/ 19 条（带 flag）。3 那个数不是今天的命令能复现的，
+报数一律带命令。
+
+### 四、判据与变异台账
+
+19 条新判据（14 单元 + 1 端到端 + 4 解析层），该包 **61 条顶层全绿、0 FAIL、0 SKIP**。
+
+| 变异 | 注入 | 读数 | 归因 |
+|---|---|---|---|
+| **C1** | 调用点塞进恒假条件（同 F4 形状） | 红 | **只有**端到端那条红；14 条单元全绿 —— 「函数有牙」与「门在跑」第二次被分开 |
+| **C2** | 指纹只比 currency+unit+input | 红 | `TestOutputOnlyDifferenceIsAConflict`（**这条是先补出来的**：没有它 C2 是绿的，因为真实形状 5/25 vs 10/50 输入价也不同） |
+| **C3** | 撞名让第一行赢（= `buildDraft` 现在的行为） | 红 | 5 条，含对账恒等式与端到端 |
+| **C4** | `nil` 当 `0` | 红 | `TestNilAndZeroAreNotTheSamePriceSignature` |
+| **C5** | 去掉「一行多点名模型」的拒收 | 红 | `TestASlashJoinedRowNamingTwoModelsIsRefusedNotAttributedToOne` |
+
+★ **第一次的 C1 写成自赋值被 `go vet` 拦下（rc=1，台账记 ABORT）**。换成恒假条件
+才是「门在但没被调用」那个真实事故形态 —— 两个形状测的东西不一样。
+
+### 五、仍未解决（本节不掩盖）
+
+- `claude-opus-4-8` 的 Fast mode 价**按契约不可入库**（默认口径已拒收）；
+- 「一行多点名模型」目前是**拒收**而不是**按模型拆行**。拆行能让 Fast mode 的价
+  也进得来（两个模型各拿 $30/$150），但那是提取器改动，且会让当前 unusable 的
+  doubao `speech-2.6-turbo / speech-02-turbo`（同一形状）有机会变成 ready ——
+  **需要单独决策**；
+- `models_canonical` 基准价仍 **0 行**，`bg/data/model_baseline_prices.json` 的
+  `models` 仍为 `[]`。以上全部是**提案层**的修复，一行都没进 SSOT。

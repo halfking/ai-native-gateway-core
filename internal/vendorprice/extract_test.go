@@ -122,14 +122,54 @@ func TestExtract_MiniMaxStrikethroughAndTiersAreUnusable(t *testing.T) {
 			"either the page changed shape or the extraction no longer sees those rows")
 	}
 
-	// 反向钉：整份 MiniMax 页里**不得**出现任何 confidence=table_row 的行。
-	// 这一页全是「≤512k / >512k」分档 + 永久折扣，朴素价不存在。
+	// 反向钉：**没有**划线原价、**没有**分档后缀、且**按 token 计价**的行，
+	// 价必须被**读进来**。
+	//
+	// ★ 2026-10-06 订正：这一段原本断言「整份 MiniMax 页不得出现任何
+	// table_row，理由是这一页全是分档 + 永久折扣，没有朴素价」。**那是错的**，
+	// 而且是**靠 bug 通过的**：MiniMax paygo 页的 LLM 段里
+	// M2.7 / M2.5 / M2.1 / M2 及各自的 -highspeed 是**干净的挂牌价**
+	// （无 ~~、无 ≤512k、无 "Permanent 50% off"），只有 M3 那几行是分档+折扣。
+	// 旧断言之所以一直绿，是因为这些行写着 `$0.3 / M tokens`，而单位词表
+	// 不认这种写法 ⇒ 整张表落到 "no input or output price found"，
+	// 于是「因为分档被拒」与「因为没读进来」长得一模一样。
+	// MiniMax-M3 / M2.7 / M2.5 都是近 30 天真实在跑的模型（70,684 / 1,996 /
+	// 234 次），丢的就是这一家。
+	//
+	// ⚠ 范围条件用**字面量 "tokens"**，刻意**不**引用被测的 perMillionRE：
+	//   引用它就变成自证 —— 正则坏掉时这些行不会被选中，断言一个都不跑，
+	//   以「全绿」收场。字面量是独立的，第二版修的正是这个。
+	//
+	// ⚠ 也不能写成「无划线无分档 ⇒ 必须是挂牌价」这样的全页通则：第一版
+	//   这么写，把 Audio / Video 段（`$60/M characters`、`$0.19 per 768P, 6s
+	//   video`、`$1.5 per voice`）也算了进来 —— 那些行**本来就该被拒**，
+	//   它们不是 token 价。判据一旦写成通则就会变成恒真。
+	selected := 0
 	for _, c := range cands {
-		if c.Confidence == ConfidenceTableRow {
-			t.Errorf("row %q was graded table_row, but this page only publishes "+
-				"tiered/discounted prices — there is no flat list price to take",
-				truncate(c.Row, 70))
+		if strings.Contains(c.Row, "~~") || tierQualifierRE.MatchString(c.Row) {
+			continue
 		}
+		if !strings.Contains(strings.ToLower(c.Row), "tokens") {
+			continue // 按字符 / 按图像 / 按 voice 计的，不在本判据范围内
+		}
+		selected++
+		if c.Input == nil || c.Output == nil {
+			t.Errorf("row %q is a per-token row with no strikethrough and no tier, so its price "+
+				"is a flat list price and MUST be read — got input=%v output=%v (warnings=%v). "+
+				"A 'no price found' verdict on a row that has one is how this vendor's whole "+
+				"LLM table went missing without anyone noticing",
+				truncate(c.Row, 70), c.Input, c.Output, c.Warnings)
+		}
+	}
+	// 量具自证：这条规则必须**真的选中了行**。真页的 LLM 段是 M2.7 / M2.5 /
+	// M2.1 / M2 四个模型共 7 行（各含 highspeed 变体）。选不中就是两件事
+	// 之一 —— 页面改版了，或者「tokens」这个字面量与厂商写法对不上了 ——
+	// 两种都不该以「断言没报错」的形式蒙过去。
+	if selected < 7 {
+		t.Errorf("the per-token rule selected only %d row(s) from the real MiniMax snapshot, "+
+			"want >= 7 (M2.7 / M2.5 / M2.1 / M2 and their -highspeed variants). Zero or few "+
+			"means this assertion is vacuous — it is passing because it is not looking at "+
+			"anything", selected)
 	}
 }
 
@@ -915,7 +955,7 @@ func TestProductTierIgnoresNonTierHeadings(t *testing.T) {
 		strings.Repeat("x", 41),
 	} {
 		c := Candidate{Confidence: ConfidenceTableRow}
-		markUnusable(&c, "| gpt-5.1 | $1.25 | $10.00 |", UnitPer1M, 10, "", "", label)
+		markUnusable(&c, "| gpt-5.1 | $1.25 | $10.00 |", UnitPer1M, 10, "", "", label, Options{})
 		if c.ProductTier != "" {
 			t.Errorf("heading %q became product_tier=%q — only an actual product-tier label "+
 				"(Standard / Batch / Flex / Fast / Ultrafast / Priority …) may be recorded as one",
@@ -943,7 +983,7 @@ func TestProductTierIgnoresNonTierHeadings(t *testing.T) {
 		"Standard pricing >$5": "standard",
 	} {
 		c := Candidate{Confidence: ConfidenceTableRow}
-		markUnusable(&c, "| gpt-5.1 | $1.25 | $10.00 |", UnitPer1M, 10, "", "", label)
+		markUnusable(&c, "| gpt-5.1 | $1.25 | $10.00 |", UnitPer1M, 10, "", "", label, Options{})
 		if c.ProductTier != want {
 			t.Errorf("heading %q recorded product_tier=%q, want the normalized keyword %q",
 				label, c.ProductTier, want)
@@ -959,7 +999,7 @@ func TestProductTierIgnoresNonTierHeadings(t *testing.T) {
 	// 哪个产品档」。两者混进同一个字段，「维度」与「档位」就再也分不开，
 	// 而取哪一档当基准价恰好要靠这个区分。
 	c := Candidate{Confidence: ConfidenceTableRow}
-	markUnusable(&c, "| gpt-5.1 | $1.25 | $10.00 |", UnitPer1M, 10, "", "", "Regional")
+	markUnusable(&c, "| gpt-5.1 | $1.25 | $10.00 |", UnitPer1M, 10, "", "", "Regional", Options{})
 	if c.ProductTier != "" {
 		t.Errorf(`"Regional" recorded as product_tier=%q — it is a billing dimension `+
 			`(handled by dimensionRE), not a product tier`, c.ProductTier)
@@ -1211,5 +1251,317 @@ func TestProductTierLabelAloneClearsStaleUIProse(t *testing.T) {
 	// 量具自证：这条表确实带着 "Standard" 标签，说明机制被触发了。
 	if len(c[0].Warnings) == 0 || !strings.Contains(strings.Join(c[0].Warnings, " "), "Standard") {
 		t.Errorf("the tier label must be reported even for a usable row; warnings=%v", c[0].Warnings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P10：**脚注**被当成下一张表的维度声明 ⇒ 干净的挂牌价被假拒
+//
+// 与 TestHeaderDoesNotLeakAcrossParagraphs 同族但**形态相反**，所以那条守门
+// 拦不住：那条守的是「表头不跨段落」，这条是「散文跨表」。
+//
+// 2026-10-06 真页实测（docs/.../raw/MiniMax-paygo.md 第 27–36 行）：
+//
+//	27 | Model | Input | Output | Prompt caching Read |          ← Priority 档的表
+//	28 | --- | --- | --- | --- |
+//	29 | **MiniMax-M3** ≤ 512k ... Permanent 50% off | ... |
+//	30 | **MiniMax-M3** > 512k ... | ... |
+//	32 | * Priority provides priority admission ... Pricing is 1.5x standard.
+//	34 | Model | Input | Output | Prompt caching Read | Prompt caching Write |
+//	35 | --- | --- | --- | --- | --- |
+//	36 | **MiniMax-M2.7** | $0.3 / M tokens | $1.2 / M tokens | ... |   ← 干净的挂牌价
+//
+// 第 32 行是**上一张表的脚注**（解释 Priority 档怎么算），却在源码位置上正好
+// 落在「M2.7 那张表之前」。提取器按位置把散文贴给下一张表 ⇒ M2.7 被打上
+// "names a non-standard billing dimension (Priority)"。
+//
+// ★ 危害等级：M2.7 是**近 30 天真实在计费**的模型（1,996 次请求），而
+//
+//	MiniMax-M3 是热榜第一（70,684 次）。整条链在这里静默丢价，且理由字符串
+//	读起来完全合理 —— 这是最坏的一种错：不是报错，是**看起来对的说辞**。
+//
+// 判据钉两件事：
+//
+//	a) 脚注不得污染下一张表（干净的挂牌价必须是 table_row）；
+//	b) **上一张表的分档行仍必须被拒** —— 修 a 不能顺手把 M3 放进来。
+//
+// ---------------------------------------------------------------------------
+func TestFootnoteAboveTheNextTableIsNotABillingDimensionOfIt(t *testing.T) {
+	md := []byte(`| Model | Input | Output | Prompt caching Read |
+| --- | --- | --- | --- |
+| **MiniMax-M3** ≤ 512k input tokens Permanent 50% off | ~~$0.60~~ $0.30 / M tokens | ~~$2.40~~ $1.20 / M tokens | ~~$0.12~~ $0.06 / M tokens |
+| **MiniMax-M3** > 512k input tokens* Permanent 50% off | ~~$1.20~~ $0.60 / M tokens | ~~$4.80~~ $2.40 / M tokens | ~~$0.24~~ $0.12 / M tokens |
+
+* Priority provides priority admission for faster response times and improved request reliability. Set ` + "`service_tier`" + ` to ` + "`priority`" + ` to enable it. Pricing is 1.5x standard.
+
+| Model | Input | Output | Prompt caching Read | Prompt caching Write |
+| --- | --- | --- | --- | --- |
+| **MiniMax-M2.7** | $0.3 / M tokens | $1.2 / M tokens | $0.06 / M tokens | $0.375 / M tokens |
+`)
+	c := Extract("minimax", "https://platform.minimax.io/docs/guides/pricing-paygo", md)
+
+	var m27, m3 *Candidate
+	for i := range c {
+		switch c[i].Model {
+		case "MiniMax-M2.7":
+			m27 = &c[i]
+		case "MiniMax-M3 ≤ 512k input tokens Permanent 50% off":
+			m3 = &c[i]
+		}
+	}
+	// 量具自证：两行都得先被找到，否则下面的断言是在测「没找到」而不是测判定。
+	if m27 == nil {
+		t.Fatalf("MiniMax-M2.7 produced no candidate at all; got %d candidate(s): %+v", len(c), c)
+	}
+	if m3 == nil {
+		t.Errorf("the tiered MiniMax-M3 row disappeared — it must stay reported as unusable; got %+v", c)
+	}
+
+	if m27.Confidence != ConfidenceTableRow {
+		// 「读进来」与「进账本」分开断言。价**必须**被解析出来 —— 否则这条
+		// 判据守的就是「因为没读懂所以被拒」这种假正确。
+		if m27.Input == nil || m27.Output == nil {
+			t.Errorf("MiniMax-M2.7 row %q carries $0.3 / $1.2 but nothing was parsed "+
+				"(input=%v output=%v, warnings=%v) — that is the unit vocabulary missing "+
+				"the '/ M tokens' spelling, which silently zeroes out this vendor's whole table",
+				truncate(m27.Row, 70), m27.Input, m27.Output, m27.Warnings)
+		}
+		// ★ 这里**故意**不断言它必须变成 table_row。
+		//
+		// 「上一张表的脚注算不算下一张表的维度声明」是一个**语义问题**，
+		// 不是解析问题：判成维度（保守、按契约拒）会丢掉一个真挂牌价，
+		// 判成脚注（放行）则可能放进来一个 Priority 档的价。两者错的方向
+		// 相反，本包的原则是「宁可少提，不可提错」，所以现状（拒）是有意
+		// 的保守选择，**而它需要人来定，不该由解析器替产品做主**。
+		//
+		// 判据只钉住一件与语义无关的事：**它必须带着警告进 needs_human_eyes**，
+		// 也就是「它有争议」这件事必须可见，而不是变成一条看不出所以然的空价。
+		if len(m27.Warnings) == 0 {
+			t.Errorf("MiniMax-M2.7 is not table_row but carries no warning either — a rejected " +
+				"price with no stated reason is indistinguishable from a price that was never seen")
+		}
+	}
+	// 阳性对照：修 a 之后，M3 那两行**仍然**必须被拒。它们是分档价 + 划线原价，
+	// 与散文无关 —— 如果一条改动把它们放进来，那是拿「少拒」换「多提」。
+	if m3 != nil && m3.Confidence == ConfidenceTableRow {
+		t.Errorf("the struck-through + context-tiered MiniMax-M3 row became %q — the footnote fix "+
+			"must not relax tier/strikethrough rejection", m3.Confidence)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P11：规格表式（run-on）定价页 —— 整页**一个 markdown 表格都没有**
+//
+// 2026-10-06 实测：deepseek 那一页走块解析器得到**零候选** —— 连
+// orphanCandidate 都不触发（它只对 `|` 开头的行调用）。于是整页的钱静默
+// 消失，而本包写着「块外孤儿行必须报出来」与 `TestNoMoneyEverDisappeared`。
+// 那条不变量措辞是全局的，实现和测试却只覆盖 `|` 开头的行，三页正好落在
+// 覆盖之外（deepseek / doubao / zhipu）。
+//
+// 这里的关键是**轴是反的**：行=价格角色、列=模型，与「行=模型、列=角色」
+// 正交，所以必须按**模型**合并成一条候选，否则下游拿到的是三条各缺两项的
+// 残缺记录，而 SSOT 要求一条候选同时带 input 与 output。
+// ---------------------------------------------------------------------------
+func TestRunOnSheetIsReadByModelNotByRow(t *testing.T) {
+	// ★ 用**内联固定夹具**而不是 raw/deepseek.md。
+	//
+	// 第一版读的是实抓快照，于是 2026-10-05 重抓之后这条判据立刻转红
+	// （厂商把 deepseek 改成了 V4.1-Flash + 峰谷定价）。那条红是对的：
+	// 夹具形状确实变了。但**判据不该钉在一个会合法变化的厂商快照上** ——
+	// 测「一种版式能不能读」用固定夹具，测「厂商当前页面是什么」才读实抓文件。
+	// 两种问题混在一条判据里，它就会在厂商改版时变成随机噪声。
+	flat := []byte("**MODEL deepseek-v4-flash(1)deepseek-v4-pro\n" +
+		"MODEL VERSION DeepSeek-V4-Flash DeepSeek-V4-Pro\n" +
+		"CONTEXT LENGTH 1M\n" +
+		"PRICING 1M INPUT TOKENS (CACHE HIT)$0.0028$0.003625\n" +
+		"1M INPUT TOKENS (CACHE MISS)$0.14$0.435\n" +
+		"1M OUTPUT TOKENS$0.28$0.87\n" +
+		"Concurrency Limit(2)2500 500\n")
+	cands := Extract("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", flat)
+	if len(cands) != 2 {
+		t.Fatalf("candidates = %d want 2 (one per model, NOT one per price role): %+v", len(cands), cands)
+	}
+	want := map[string][3]float64{
+		"DeepSeek-V4-Flash": {0.14, 0.28, 0.0028},
+		"DeepSeek-V4-Pro":   {0.435, 0.87, 0.003625},
+	}
+	seen := map[string]bool{}
+	for _, c := range cands {
+		w, ok := want[c.Model]
+		if !ok {
+			t.Errorf("unexpected model %q", c.Model)
+			continue
+		}
+		seen[c.Model] = true
+		if c.Confidence != ConfidenceTableRow {
+			t.Errorf("%s confidence = %q want %q (warnings=%v)", c.Model, c.Confidence, ConfidenceTableRow, c.Warnings)
+		}
+		if c.Input == nil || c.Output == nil || c.CacheRead == nil {
+			t.Fatalf("%s must carry input, output AND cache read in ONE candidate; got in=%v out=%v cR=%v",
+				c.Model, c.Input, c.Output, c.CacheRead)
+		}
+		if *c.Input != w[0] || *c.Output != w[1] || *c.CacheRead != w[2] {
+			t.Errorf("%s = in %v / out %v / cacheRead %v, want %v / %v / %v",
+				c.Model, *c.Input, *c.Output, *c.CacheRead, w[0], w[1], w[2])
+		}
+		if c.Currency != "USD" || c.Unit != UnitPer1M {
+			t.Errorf("%s currency=%q unit=%q want USD / %q", c.Model, c.Currency, c.Unit, UnitPer1M)
+		}
+	}
+	// 量具自证：两份价格都真的出现了，否则「没报错」与「什么都没读到」同形。
+	for m := range want {
+		if !seen[m] {
+			t.Errorf("model %q produced no candidate — the fixture changed shape", m)
+		}
+	}
+}
+
+// ★ 最要紧的一条：峰谷分档**只出现一档**时也必须拒。
+//
+// 只堵「同角色出现两次」是不够的：厂商哪天把 PEAK 那一组撤掉、只留 OFF-PEAK，
+// 护栏就失效，**峰谷价会被当成挂牌价收进 SSOT** —— 那比读不出价坏得多，
+// 因为它是错的且看起来完全正常。
+func TestRunOnSheetRefusesAPriceThatIsTieredEvenWhenOnlyOneTierIsShown(t *testing.T) {
+	singleTier := []byte("**MODEL m-flash(1)m-pro\n" +
+		"MODEL VERSION m-flash m-pro\n" +
+		"PRICING 1M INPUT TOKENS\n" +
+		"(CACHE HIT)OFF-PEAK$0.003$0.022\n" +
+		"1M INPUT TOKENS (CACHE MISS)OFF-PEAK$0.15$0.66\n" +
+		"1M OUTPUT TOKENS OFF-PEAK$0.6$1.98\n")
+	for _, c := range Extract("deepseek", "https://example.invalid/p", singleTier) {
+		if c.Confidence == ConfidenceTableRow {
+			t.Errorf("model %q graded table_row from an OFF-PEAK-only sheet — a time-of-day "+
+				"price is not a flat list price (in=%v out=%v)", c.Model, c.Input, c.Output)
+		}
+	}
+}
+
+// 列数对不上时必须报诊断，**不许**按位置硬配。
+func TestRunOnSheetRefusesWhenColumnCountDoesNotMatchTheModelList(t *testing.T) {
+	bad := []byte("MODEL VERSION m-a m-b m-c\n" +
+		"1M OUTPUT TOKENS$1.0$2.0\n") // 只有 2 个金额，列头说 3 个模型
+	cands := Extract("deepseek", "https://example.invalid/p", bad)
+	found := false
+	for _, c := range cands {
+		if strings.Contains(strings.Join(c.Warnings, " "), "carries 2 amount(s)") {
+			found = true
+		}
+		if c.Confidence == ConfidenceTableRow {
+			t.Errorf("row %q graded table_row although the amount count cannot be attributed "+
+				"to the %d named models", c.Row, 3)
+		}
+	}
+	if !found {
+		t.Errorf("a money line that could not be attributed must still be REPORTED with that "+
+			"reason; got %d candidate(s): %+v", len(cands), cands)
+	}
+}
+
+// CACHE HIT 记成输入价是方向相反的错（两者在成本核算里不是一回事）。
+func TestRunOnSheetCacheHitIsNotRecordedAsInput(t *testing.T) {
+	md := []byte("MODEL VERSION m-a m-b\n" +
+		"1M INPUT TOKENS (CACHE HIT)$0.01$0.02\n" +
+		"1M INPUT TOKENS (CACHE MISS)$0.10$0.20\n" +
+		"1M OUTPUT TOKENS$1.00$2.00\n")
+	for _, c := range Extract("deepseek", "https://example.invalid/p", md) {
+		if c.Input == nil || c.Output == nil || c.CacheRead == nil {
+			t.Fatalf("%s: want all three roles populated, got in=%v out=%v cR=%v", c.Model, c.Input, c.Output, c.CacheRead)
+		}
+		if *c.Input <= *c.CacheRead {
+			t.Errorf("%s: input %v must exceed cache-read %v — the cache-hit row was recorded "+
+				"as the input price (they differ by ~10x here)", c.Model, *c.Input, *c.CacheRead)
+		}
+	}
+}
+
+// 没有 MODEL VERSION 列头的页面不属于这条路径，且**有表格的页面绝不能被它碰**。
+func TestRunOnSheetDoesNotTouchPagesThatHaveMarkdownTables(t *testing.T) {
+	// anthropic 那种标准表：列头行是 `| Model | ... |`，没有 MODEL VERSION。
+	raw := readRaw(t, "anthropic.md")
+	before := len(Extract("anthropic", "https://example.invalid/p", raw))
+	withMD := readRaw(t, "MiniMax-paygo.md")
+	after := len(Extract("minimax", "https://example.invalid/p", withMD))
+	if before == 0 || after == 0 {
+		t.Fatalf("a markdown-table page must still be read by the block extractor "+
+			"(anthropic=%d, minimax=%d candidates)", before, after)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P12：「钱永不消失」这条不变量在**整页没有表格**时是失效的
+//
+// `TestNoMoneyEverDisappears` 守的正是这条不变量，但它的扫描范围是
+// `strings.HasPrefix(line, "|")` —— **只看表格行**。而 doubao / zhipu /
+// deepseek 三页**整页一个 `|` 都没有**，正好落在覆盖之外。
+//
+// 后果实测（2026-10-06）：这三页的钱要么被静默丢掉（doubao / zhipu），
+// 要么靠 2026-10-06 新增的 run-on 路径才被读出来（deepseek）。在新增之前，
+// `Extract("deepseek", …)` 返回**零候选** —— 连 `orphanCandidate` 都不触发，
+// 因为它只对 `|` 开头的行调用。而提案里其它行都好好地列着，看的人只会以为
+// 「原厂没公布」。
+//
+// 这里不写「所有带钱的行都必须有候选」—— 那会被 OpenAI 页那 1028 行导航栏
+// 淹没（导航里就有金额）。写的是**逐快照**的形状判据，并对**尚未建模**的
+// 两份快照显式点名：新增一个「没有表格但带钱」的页面时，本判据会红，
+// 逼人去决定是建模还是登记。
+// ---------------------------------------------------------------------------
+func TestEveryNoTableSnapshotWithMoneyIsEitherReadOrExplicitlyListed(t *testing.T) {
+	// 尚未建模的快照，以及**为什么**。每一条都是一个待办，不是一个豁免。
+	// 删除某一条之前必须先让它真的被读出来。
+	notModelledYet := map[string]string{
+		"doubao.md": "2026-10-06：火山方舟的价是竖排 run-on，且**分段计费**" +
+			"（输入长度 [0,32] / (32,128] …）。没有 MODEL VERSION 那种有序列头，" +
+			"列归属要另设计；而分段价按 SSOT 契约本就不可入库 —— 建模前先要产品拍板。",
+		"zhipu.md": "2026-10-06：智谱的价是竖排 run-on，且带**「限时免费」列**" +
+			"（折后价与挂牌价同行，SSOT 明确拒收这一形态）。同样缺有序列头。",
+		"openrouter.md": "设计上就排除：聚合/中转站公布的是**转售价**而不是原厂标准价，" +
+			"它属于供应商侧，不是基准价。",
+	}
+
+	for _, dir := range []string{rawDir, liveDir} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		checked := 0
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatalf("read %s: %v", e.Name(), err)
+			}
+			if strings.Contains(string(raw), "\n|") {
+				continue // 有表格：由块解析器负责，已由上面那条判据覆盖
+			}
+			// 页面确实带钱？（不是每个无表格页面都含金额）
+			hasMoney := strings.ContainsAny(string(raw), "$€£¥") ||
+				strings.Contains(string(raw), "元")
+			if !hasMoney {
+				continue
+			}
+			checked++
+			if _, listed := notModelledYet[e.Name()]; listed {
+				continue
+			}
+			cands := Extract("v", "https://example.invalid/"+e.Name(), raw)
+			money := false
+			for _, c := range cands {
+				if c.Currency != "" {
+					money = true
+				}
+			}
+			if !money {
+				t.Errorf("%s carries money on a page with no markdown table but produced no "+
+					"candidate mentioning it — the money is accounted for NOWHERE in the proposal. "+
+					"Either model this layout, or add it to notModelledYet in this test together "+
+					"with the reason (a bare skip would hide a real gap)", e.Name())
+			}
+		}
+		if checked == 0 {
+			t.Fatalf("no no-table snapshot with money was examined in %s — this assertion is "+
+				"vacuous", dir)
+		}
 	}
 }

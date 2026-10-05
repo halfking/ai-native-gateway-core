@@ -564,7 +564,8 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 		       mcr.credits_per_1m_in, mcr.credits_per_1m_out,
 		       mcr.credits_per_1m_cache_in, mcr.credits_per_1m_cache_out,
 		       COALESCE(mcr.manual_in, FALSE), COALESCE(mcr.manual_out, FALSE),
-		       COALESCE(mcr.manual_cache_in, FALSE), COALESCE(mcr.manual_cache_out, FALSE)
+		       COALESCE(mcr.manual_cache_in, FALSE), COALESCE(mcr.manual_cache_out, FALSE),
+		       COALESCE(mc.modality_source, '')
 		FROM models_canonical mc
 		LEFT JOIN model_families mf ON mf.id = mc.family AND COALESCE(mf.status, 'active') = 'active'
 		LEFT JOIN model_credit_rates mcr ON mcr.canonical_id = mc.id
@@ -581,12 +582,14 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 		var r ModelRateRow
 		var stored storedModelRates
 		var dbVendor string
+		var modalitySource string
 		var family *string
 		if err := rows.Scan(
 			&r.CanonicalName, &r.DisplayName, &dbVendor, &family, &r.FamilyDisplayName,
 			&r.ContextWindow, &r.Modality,
 			&stored.In, &stored.Out, &stored.CacheIn, &stored.CacheOut,
 			&stored.ManualIn, &stored.ManualOut, &stored.ManualCacheIn, &stored.ManualCacheOut,
+			&modalitySource,
 		); err != nil {
 			return nil, err
 		}
@@ -596,7 +599,11 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 			r.Family = family
 		}
 		r.Vendor = catalog.ResolveVendor(r.CanonicalName, familyID, dbVendor)
-		r.Modality = catalog.EffectiveModality(r.CanonicalName, r.Modality)
+		// 租户看到的模态必须尊重盖章标注（semantic / manual）。不传
+		// modality_source 的话，按名字猜出来的结果会把「核实判负降级成
+		// text」与「运维手工设成 text」双双翻回 multimodal —— 租户看到
+		// 的与库里存的不是一回事。
+		r.Modality = catalog.EffectiveModality(r.CanonicalName, r.Modality, modalitySource)
 		eff := effectiveModelRates(stored, global)
 		r.CreditsPer1MIn = eff.In
 		r.CreditsPer1MOut = eff.Out

@@ -39,7 +39,20 @@ func TestEventFromTelemetryIsBodyFreeAndIdempotent(t *testing.T) {
 	if !ok || first.EventID != second.EventID {
 		t.Fatalf("event id is not stable: %q vs %q", first.EventID, second.EventID)
 	}
-	if first.TotalTokens != 17 || first.Traffic != TrafficBusiness {
+	// ★ 2026-10-06：这一行的期望值从 17 改成 15，请不要改回去。
+	//
+	// 原来写的是 17 = prompt(10) + completion(5) + cacheRead(2)，那正是被废掉的
+	// 旧口径（把子集列另加一遍）。cacheRead 是 prompt 的**子集** —— 上游把它放在
+	// `prompt_tokens_details` 里，而成本公式 calcCostWithConvention 也是这么
+	// 算的（先按原价减再按缓存价入账）。
+	//
+	// 证据：真库 `request_logs.total_tokens` 近 30 天 1,492,562 行**全部**严格
+	// 等于 prompt+completion，而那 87,888 行有 cache 读的请求里 cache 平均占总
+	// token 的 42.5% —— 它确实没被另加。usage_facts 必须与它同口径，因为它
+	// 经 daily_monthly_rollup.go:197/:207 直接 SUM 进看板。
+	//
+	// 完整论证与变异验证见 event.go:160 与 total_tokens_semantics_test.go。
+	if first.TotalTokens != 15 || first.Traffic != TrafficBusiness {
 		t.Fatalf("unexpected event totals/class: %+v", first)
 	}
 	if first.PersonHash == "" || first.PersonHash == owner || strings.Contains(first.PersonHash, "@") {

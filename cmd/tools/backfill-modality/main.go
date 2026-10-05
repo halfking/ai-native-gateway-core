@@ -67,11 +67,24 @@ func main() {
 	start := time.Now()
 
 	// Fetch all rows where modality='text' (candidate for upgrade).
+	//
+	// ★ 2026-10-05：加 modality_source 闸门。
+	//
+	// 本工具原先只按名字推断模态，既不看出处、也不盖出处，于是它是
+	// 「按名推断 vs 语义核实」这道老冲突的**第三处**（前两处是
+	// discovery 的 upsert 与 catalog.EffectiveModality，都已在迁移 825
+	// 之后带上闸门）。跑一次本工具会把
+	//   - 语义核实判负降级成 text 的行（source='semantic'）翻回 multimodal；
+	//   - 运维 PATCH 盖过 manual 章的 text 覆盖翻回去；
+	// 而且更糟：UPDATE 不写 modality_source，于是**值被按名换掉、章还留着**
+	// —— provenance 从此说谎，而读路径（catalog.EffectiveModality）正是按
+	// 章决定信不信值的那一处。
 	rows, err := pool.Query(ctx, `
-		SELECT id, canonical_name, modality
+		SELECT id, canonical_name, modality, COALESCE(modality_source, '')
 		FROM models_canonical
 		WHERE modality = 'text'
 		  AND status != 'disabled'
+		  AND COALESCE(modality_source, '') NOT IN ('semantic', 'manual')
 		ORDER BY id
 	`)
 	if err != nil {
@@ -83,11 +96,12 @@ func main() {
 		id              int
 		canonicalName   string
 		currentModality string
+		modalitySource  string
 	}
 	var candidates []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.canonicalName, &r.currentModality); err != nil {
+		if err := rows.Scan(&r.id, &r.canonicalName, &r.currentModality, &r.modalitySource); err != nil {
 			log.Fatalf("scan: %v", err)
 		}
 		candidates = append(candidates, r)
@@ -133,29 +147,53 @@ func main() {
 	}
 
 	// Execute upgrades in a single transaction.
+	//
+	// 闸门在 UPDATE 里**再写一遍**，不是为了防御性编程：SELECT 与 UPDATE 之间
+	// 隔着一次完整的推断循环，期间核实 worker 完全可能把同一行降级成 text
+	// 并盖上 semantic。只在 SELECT 筛的话，这个工具就是「读到候选之后、
+	// 写下去之前」的竞态窗口。
+	//
+	// modality_source='inferred' 一起写：本工具产出的是**按名推断**，不是核实
+	// 结论。让它留着一个 semantic/manual 的旧章，等于让出处对值说谎。
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		log.Fatalf("begin tx: %v", err)
 	}
 	defer tx.Rollback(ctx) // no-op if committed
 
-	var updated int
+	var updated, skippedStamped int
 	for _, u := range upgrades {
 		tag, err := tx.Exec(ctx, `
 			UPDATE models_canonical
-			SET modality = $1, updated_at = now()
+			SET modality = $1, modality_source = 'inferred', updated_at = now()
 			WHERE id = $2
 			  AND modality = 'text'
+			  AND COALESCE(modality_source, '') NOT IN ('semantic', 'manual')
 		`, u.newModality, u.id)
 		if err != nil {
 			log.Fatalf("update id=%d: %v", u.id, err)
 		}
-		updated += int(tag.RowsAffected())
+		if n := int(tag.RowsAffected()); n > 0 {
+			updated += n
+		} else {
+			// 只在真的没写进去时说。这不是理论分支：候选集是 SELECT 之前
+			// 算的，核实 worker 随时可能在中间把某一行判负并盖上 semantic。
+			// 不说的话，「updated=0」会被读成「没有可升级的模型」，
+			// 而真实原因可能是「有的，但都被标注保护住了」。
+			skippedStamped++
+			log.Printf("  skipped id=%d %s: 行已被 semantic/manual 标注保护，未改动",
+				u.id, u.name)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		log.Fatalf("commit: %v", err)
 	}
 
-	log.Printf("backfill complete: updated=%d elapsed=%s", updated, time.Since(start))
+	log.Printf("backfill complete: updated=%d skipped_annotated=%d elapsed=%s",
+		updated, skippedStamped, time.Since(start))
+	if skippedStamped > 0 {
+		log.Printf("skipped_annotated>0 说明有模型已被语义核实或人工标注，" +
+			"本工具不与它们争——那是刻意设计，不是失败")
+	}
 }

@@ -22,6 +22,7 @@ package bg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -193,6 +194,69 @@ func sortStrings(s []string) {
 
 // ReconcileInterval 是对账周期。它是出网项，所以比入库周期短、比探测短：
 // 12h。
+// recordObservationFailure 把一次失败的抓取落到 830 的健康表。
+//
+// 三条不可让步：
+//
+//  1. **失败要计数，但不吞**：consecutive_failures 累加，last_error 记原始错误。
+//  2. **它自己失败绝不能连带把对账弄挂**：这张表是「让人知道」的仪表，不是
+//     判据。所以这里只 slog，绝不返回错误——一张仪表坏了不该让对账停摆。
+//  3. 记不上也要**说出来**（ERROR 级），否则「仪表坏了」又变回静默。
+func recordObservationFailure(ctx context.Context, db *pgxpool.Pool, url string, cause error) {
+	if db == nil {
+		return
+	}
+	if _, err := db.Exec(ctx, `
+		INSERT INTO public.model_baseline_price_observation_health
+			(source_url, last_attempt_at, consecutive_failures, last_error, updated_at)
+		VALUES ($1, now(), 1, $2, now())
+		ON CONFLICT (source_url) DO UPDATE
+		   SET last_attempt_at      = now(),
+		       consecutive_failures = public.model_baseline_price_observation_health
+		                                  .consecutive_failures + 1,
+		       last_error            = EXCLUDED.last_error,
+		       updated_at            = now()`,
+		url, cause.Error()); err != nil {
+		// 表可能还没被 830 应用（账本落后）。这正是仪表本身要报告的状态。
+		slog.Error("baseline_reconciliation: could not record observation failure "+
+			"(migration 830 applied?) — the fetch failure is now invisible to the health surface",
+			"source_url", url, "fetch_error", cause, "record_error", err)
+	}
+}
+
+// recordObservationSuccess 记一次成功，并把连续失败归零。
+//
+// observed_models == 0 记成**失败**而不是成功：见函数调用处的说明——源答了
+// 200 但内容不再是能解析的形状时，这是最像成功的失败，而条数是它唯一的信号。
+func recordObservationSuccess(ctx context.Context, db *pgxpool.Pool, url string, models int) {
+	if db == nil {
+		return
+	}
+	if models == 0 {
+		recordObservationFailure(ctx, db, url,
+			errors.New("source returned no parsable model prices (HTTP success but the payload "+
+				"no longer has the shape we parse — the source changed, or it is serving a stub)"))
+		return
+	}
+	if _, err := db.Exec(ctx, `
+		INSERT INTO public.model_baseline_price_observation_health
+			(source_url, last_attempt_at, last_success_at, consecutive_failures,
+			 last_error, observed_models, updated_at)
+		VALUES ($1, now(), now(), 0, NULL, $2, now())
+		ON CONFLICT (source_url) DO UPDATE
+		   SET last_attempt_at      = now(),
+		       last_success_at      = now(),
+		       consecutive_failures = 0,
+		       last_error            = NULL,
+		       observed_models       = EXCLUDED.observed_models,
+		       updated_at            = now()`,
+		url, models); err != nil {
+		slog.Error("baseline_reconciliation: could not record observation success "+
+			"(migration 830 applied?) — successful cross-checks are now invisible to the health surface",
+			"source_url", url, "observed_models", models, "record_error", err)
+	}
+}
+
 const ReconcileInterval = 12 * time.Hour
 
 // RunBaselineReconciliation 周期性把 SSOT 与外部机读源对一遍。
@@ -224,11 +288,28 @@ func RunBaselineReconciliation(ctx context.Context, db *pgxpool.Pool, client *ht
 		if err != nil {
 			// 抓不到观察源**不写任何判词**：没有观察就没有对账结论，
 			// 往台账里写一堆 missing 会把「源挂了」与「价格真的不对」
-			// 混成一类信号。
+			// 混成一类信号。判词口径这一步必须守住。
+			//
+			// ★ 但「不写判词」不等于「不留痕」（迁移 830）。
+			//
+			// 原来这里只有一行 Warn 然后 return，于是「每 12h 抓一次、每次
+			// 都失败、每次都不写任何东西」可以连续几周不被任何人发现：报表
+			// 照常出数（用的是几个月前的基准价），台账里没有一行「本轮没
+			// 做成」，健康面也没有任何检查会响。这比压根没有对账更坏——
+			// 后者让人知道自己在裸奔，前者让人以为自己在看仪表盘。
+			//
+			// 2026-10-04 实测这类失败真的会发生：同一时刻 curl 与三种 UA 的
+			// Go 客户端全部 HTTP 200 / 5,317,334 字节，只有这一次 EOF。
+			// ⇒ 它是零星反复的，不是「一次就不会再有」。
 			slog.Warn("baseline_reconciliation: observation fetch failed, no verdicts written",
 				"source_url", url, "error", err)
+			recordObservationFailure(ctx, db, url, err)
 			return
 		}
+		// 成功侧也要记，且**条数为 0 算失败**：HTTP 200 但内容不再是能解析的
+		// 形状时，错误路径一个都不会触发，而所有价格都「对不上」——那是最像
+		// 成功的一种失败。见 observed_models 的列注释。
+		recordObservationSuccess(ctx, db, url, len(observed))
 		counts, err := ReconcileCatalog(ctx, func(r Reconciliation) error {
 			return RecordReconciliation(ctx, db, r)
 		}, catalog, observed, at)

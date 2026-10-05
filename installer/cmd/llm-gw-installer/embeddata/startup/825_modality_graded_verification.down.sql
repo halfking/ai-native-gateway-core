@@ -1,5 +1,5 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/825_modality_graded_verification.sql.down.sql
+-- File:          sql/migrations/startup/825_modality_graded_verification.down.sql
 -- Migration:     825 (down)
 -- Database:      llm_gateway
 --
