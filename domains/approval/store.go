@@ -88,20 +88,20 @@ func (s *pgApprovalStore) CreateRequest(ctx context.Context, req *ApprovalReques
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6,
-			$7, $8, $9, $10,
+			$7::jsonb, $8::jsonb, $9, $10,
 			$11, $12,
 			$13, $14, $15,
-			$16
+			$16::jsonb
 		)
 	`
 
 	_, err = s.pool.Exec(ctx, sql,
 		req.RequestID, req.SessionID, req.TenantID,
 		string(req.TriggerType), req.TriggerReason, string(req.RiskLevel),
-		sessionSummaryJSON, sensitiveInfoJSON, req.UserMessage, req.FullContext,
+		string(sessionSummaryJSON), string(sensitiveInfoJSON), req.UserMessage, req.FullContext,
 		req.EstimatedCost, req.EstimatedTokens,
 		string(req.Status), req.CreatedAt, req.ExpiresAt,
-		metadataJSON,
+		string(metadataJSON),
 	)
 
 	if err != nil {
@@ -214,7 +214,7 @@ func (s *pgApprovalStore) UpdateRequest(ctx context.Context, req *ApprovalReques
 			approval_note = $5,
 			rejected = $6,
 			rejection_reason = $7,
-			metadata = $8
+			metadata = $8::jsonb
 		WHERE request_id = $1
 	`
 
@@ -228,7 +228,7 @@ func (s *pgApprovalStore) UpdateRequest(ctx context.Context, req *ApprovalReques
 		pgNullString(req.ApprovalNote),
 		req.Rejected,
 		pgNullString(req.RejectionReason),
-		metadataJSON,
+		string(metadataJSON),
 	)
 
 	if err != nil {

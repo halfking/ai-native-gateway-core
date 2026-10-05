@@ -37,7 +37,7 @@ func (s *PgxStore) InsertRuntimeMetrics(ctx context.Context, instanceID string, 
 	`, instanceID, licenseID, ts,
 		metrics.CPUUsagePct, metrics.MemUsedMB, metrics.MemTotalMB, metrics.DiskUsedGB, metrics.DiskTotalGB, metrics.DBSizeMB, metrics.UptimeSecs,
 		metrics.CurrentConcurrency, metrics.Last5MinTPS, metrics.Last5MinP50Ms, metrics.Last5MinP99Ms, metrics.Last5MinSuccessPct,
-		modelUsage, metrics.TenantCount,
+		string(modelUsage), metrics.TenantCount,
 	)
 	return err
 }

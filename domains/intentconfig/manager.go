@@ -252,7 +252,7 @@ func (m *Manager) UpdateConfig(ctx context.Context, cfg *ClassifierConfig) error
 			patterns_config, confidence_thresholds, drift_threshold, 
 			multi_turn_memory, llm_fallback_enabled, llm_model, 
 			llm_confidence_threshold, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+		) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, NOW())
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			strategy = EXCLUDED.strategy,
 			enabled_layers = EXCLUDED.enabled_layers,
@@ -269,8 +269,8 @@ func (m *Manager) UpdateConfig(ctx context.Context, cfg *ClassifierConfig) error
 	`
 
 	_, err = m.pool.Exec(ctx, query,
-		tenantID, cfg.Strategy, enabledLayersJSON, keywordsConfigJSON,
-		patternsConfigJSON, confidenceThresholdsJSON, cfg.DriftThreshold,
+		tenantID, cfg.Strategy, string(enabledLayersJSON), string(keywordsConfigJSON),
+		string(patternsConfigJSON), string(confidenceThresholdsJSON), cfg.DriftThreshold,
 		cfg.MultiTurnMemory, cfg.LLMFallbackEnabled, cfg.LLMModel,
 		cfg.LLMConfidenceThreshold,
 	)
