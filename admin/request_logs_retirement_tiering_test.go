@@ -126,6 +126,7 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 	"cmd/gateway/dual_read_validator.go":              {Tier: "③", Reason: "双读校验器：存在的意义就是校验 v1 与 v2 读数一致"},
 	"cmd/gateway/main_v3_wiring.go":                   {Tier: "②", Reason: "进程装配：V3 接线引用 v1 读点"},
 	"cmd/gateway/output_compliance_control.go":        {Tier: "④", Reason: "output 出口合规控制：读 v1 判合规，合规门在退役后是否还有对象，需属主定"},
+	"cmd/gateway/v1_write_liveness.go":                {Tier: "③", Reason: "v1 写入腿存活读数（§9.264）：判据就是「v1 还在不在写」这个事实本身，观测面；⚠ §9.265 实测它让字面量总体从 107 变 108"},
 	"cmd/gateway/waterfall_by_request.go":             {Tier: "②", Reason: "对外功能：按请求的 waterfall"},
 	"cmd/gateway/waterfall_db.go":                     {Tier: "②", Reason: "对外功能：waterfall DB 侧"},
 	"cmd/scenario_driver/main.go":                     {Tier: "④", Reason: "scenario_driver / traffic-replay / compression-bench：压测与回放工具，读 v1 形态随工具定位"},
@@ -283,7 +284,7 @@ var v1ReaderIndirectPopulation = []string{
 // admin/dashboard_board_queries.go（§9.260 修好推导器之后它才变成 v1 读方）。
 // 两个总体各 7 个、总数差 1，**没有任何一道门会红** —— 114 就这么写进了文档。
 //
-// 实测：域 = 107 ∪ 22 − 14 = **115**。
+// 实测：域 = 108 ∪ 22 − 14 = **116**。
 func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 	literal := map[string]bool{}
 	for f := range requestLogsReadInventory {
@@ -355,10 +356,10 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		name     string
 		got, exp int
 	}{
-		{"字面量总体", len(literal), 107},
+		{"字面量总体", len(literal), 108},
 		{"间接总体", len(indirect), 22},
 		{"交集", inter, 14},
-		{"并集（域）", union, 115},
+		{"并集（域）", union, 116},
 	} {
 		if c.got != c.exp {
 			t.Errorf("%s = %d，期望 %d", c.name, c.got, c.exp)
@@ -386,7 +387,7 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 
 // TestV1ReaderTieringEveryFileProvenToReadV1 让分档表**自证**总体。
 //
-// 一张 115 行的手写表，最典型的腐烂形态是某个文件早就改指会话源了，
+// 一张 116 行的手写表，最典型的腐烂形态是某个文件早就改指会话源了，
 // 而它还留在表里被当成退役工作量。这里对每个文件独立取证：剥掉 Go 与 SQL 注释后，
 // 它必须仍然含 v1 关系的 `FROM/JOIN` 字面量，或含一个 v1 关系名字面量。
 //
@@ -514,6 +515,7 @@ func TestV1ReaderTiersAssertMembers(t *testing.T) {
 		"bg/passive_probe_listener.go",
 		"bg/today_success_probe.go",
 		"cmd/gateway/dual_read_validator.go",
+		"cmd/gateway/v1_write_liveness.go", "cmd/gateway/dual_read_validator.go",
 		"db/probe_views_unified.go",
 		"domains/providerprofile/adapters.go",
 		"domains/routeincident/store.go",

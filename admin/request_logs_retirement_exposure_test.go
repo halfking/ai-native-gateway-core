@@ -214,7 +214,7 @@ type v1ReadingLiteral struct {
 	// viaBaseTable / viaCanonicalView record **how** the literal reaches v1
 	// (审计 §9.199）。
 	//
-	// 在 D29-a 之前这两者**不可区分**：视图不在族名里，经视图读的���件一个字面量都
+	// 在 D29-a 之前这两者**不可区分**：视图不在族名里，经视图读的文件一个字面量都
 	// 产不出来，所以「从未被分析」与「已 repoint 完」长得一模一样。
 	// 关系宇宙一放宽，两者混进同一个桶，暴露出一个真实的分类缺陷：
 	// **已经走视图的读方不是 breaker**。它的依赖在「视图的 v1 臂」上，
@@ -642,15 +642,24 @@ var retirementBreakers = map[string]string{
 // an output alias (`credential_id AS id`). None of them is request_logs.id.
 var retirementReattributed = map[string]string{
 	"admin/data_lifecycle_attachments.go": "repoint-degraded: real dependency is `attachments` (18.19% session vs 100% v1). The `id` was `att->>'id'`, a JSONB key access on the attachments column",
-	"admin/probe_history.go":              "repoint-degraded: `credential_id` only. The `id` was `models_canonical.id`",
-	"admin/providers.go":                  "repoint-degraded: `provider_id` only. Every `p.id`/`c.id` belongs to the providers/credentials tables",
-	"admin/routing.go":                    "repoint-degraded: `canonical_id` only. The `id` was `models_canonical.id`",
-	"admin/swim_lane_init.go":             "**repoint-safe**: no exposure columns at all. The `id`s were models_canonical / model_families / credentials / providers primary keys",
-	"bg/auto_index_refresher.go":          "repoint-degraded: `canonical_id` only. The `id`s were credentials / models_canonical / provider_models / credential_model_bindings primary keys",
-	"bg/credential_recovery.go":           "repoint-degraded: `client_model` + `credential_id` only",
-	"bg/credential_selfcheck.go":          "repoint-degraded: `canonical_id` + `credential_id` only. The `id`s were `credentials.id`",
-	"bg/model_probe.go":                   "**repoint-safe**: no exposure columns at all",
-	"bg/today_success_probe.go":           "repoint-safe: its `id` was `rl.credential_id AS id` — an output alias. The real dependency, credential_id, is a *stronger* column than the list assumed and is not in the breaker set on its own",
+	"cmd/gateway/v1_write_liveness.go": "§9.264/§9.265 的 v1 写入腿存活读数。" +
+		"它**不指名任何 canonical 列** —— SQL 里只有 `COUNT(*)` 与 `ts`，" +
+		"没有 id / credential_id / work_type 之类。所以按列判定它是 repoint-safe（`RepointNoColumnsMeasured`）。\n" +
+		"⚠ 但**不要**把 repoint-safe 读成「退役后照常工作」：它唯一的依赖是 " +
+		"**v1 关系的行存在性**，而那正是退役会拿走的东西。" +
+		"⇒ DROP 之后它是 **42P01 直接报错**，不是静默空 —— 属主自己的口径是「报错是好事" +
+		"（灰度时立刻发现，不会悄悄给出错误答案）」，所以**可以容忍，但必须先退役或改指**。\n" +
+		"⇒ 消费面分档为 ③（按设计继续读 v1）：它的判据就是「v1 还在不在写」这件事本身。" +
+		"停写之后它要么退役、要么改观测对象，**不能留着一个永远 dead 的判据**。",
+	"admin/probe_history.go":     "repoint-degraded: `credential_id` only. The `id` was `models_canonical.id`",
+	"admin/providers.go":         "repoint-degraded: `provider_id` only. Every `p.id`/`c.id` belongs to the providers/credentials tables",
+	"admin/routing.go":           "repoint-degraded: `canonical_id` only. The `id` was `models_canonical.id`",
+	"admin/swim_lane_init.go":    "**repoint-safe**: no exposure columns at all. The `id`s were models_canonical / model_families / credentials / providers primary keys",
+	"bg/auto_index_refresher.go": "repoint-degraded: `canonical_id` only. The `id`s were credentials / models_canonical / provider_models / credential_model_bindings primary keys",
+	"bg/credential_recovery.go":  "repoint-degraded: `client_model` + `credential_id` only",
+	"bg/credential_selfcheck.go": "repoint-degraded: `canonical_id` + `credential_id` only. The `id`s were `credentials.id`",
+	"bg/model_probe.go":          "**repoint-safe**: no exposure columns at all",
+	"bg/today_success_probe.go":  "repoint-safe: its `id` was `rl.credential_id AS id` — an output alias. The real dependency, credential_id, is a *stronger* column than the list assumed and is not in the breaker set on its own",
 	"admin/logs.go": "repoint-degraded rather than blocked: with `id` and `provider_model` correctly " +
 		"attributed away, the only real v1 dependency left is the degraded set " +
 		"(client_model 90.06%, credential_id 62.65%, canonical_id 0.07%, provider_id 55.82%, " +

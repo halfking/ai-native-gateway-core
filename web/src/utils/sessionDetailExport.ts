@@ -7,6 +7,7 @@ import {
   extractAssistantReply,
   extractLastUserPrompt,
 } from '../components/detail/messageHelpers'
+import { exportFile } from './exportFile'
 
 export interface SessionExportInput {
   sessionId: string
@@ -168,13 +169,6 @@ export async function downloadSessionDetailMarkdown(input: SessionExportInput): 
   const day = new Date().toISOString().slice(0, 10)
   const name = `session-${safeFilename(input.title || input.sessionId)}-${day}.md`
   const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
+  await exportFile({ filename: name, blob })
 }

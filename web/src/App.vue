@@ -16,6 +16,10 @@ import AppTopbar from './components/shell/AppTopbar.vue'
 // 且取不到时也要显示（见 composable 的三态说明）。
 import V1DataFrozenBanner from './components/shell/V1DataFrozenBanner.vue'
 import { refreshV1DataHorizon } from './composables/useV1DataHorizon'
+// 2026-10-05 部署序号更新提示（docs/UI规范/18 §4 / §10.3 步骤 4）：
+// 桌面侧只接 deploy-seq 检查 + 非阻塞提示条，不接 SW。
+import DeploySeqUpdateBanner from './components/shell/DeploySeqUpdateBanner.vue'
+import { useDeploySeqUpdate } from './composables/useDeploySeqUpdate'
 // 2026-09-13 方案 §4.4：移动端抽屉导航，与 AppTopbar 汉堡按钮共享开关状态
 import AppNavDrawer from './components/ui/AppNavDrawer.vue'
 import { useBreakpoint } from './composables/useBreakpoint'
@@ -38,6 +42,7 @@ const { isCompact } = useWindowClass()
 const accountSheetOpen = ref(false)
 const shellHealth = ref<'ok' | 'down' | 'unknown'>('unknown')
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
+const deploySeqUpdate = useDeploySeqUpdate()
 const showChangePassword = ref(false)
 const showUserInfo = ref(false)
 const passwordSuccessMessage = ref('')
@@ -88,6 +93,9 @@ onMounted(async () => {
   // 拉一次「v1 数据地平线」告示。失败**不**阻塞挂载：横幅自己会显示
   // 「无法确认状态」而不是消失 —— 未确认不等于正常。
   void refreshV1DataHorizon()
+  // 部署序号检查（UI规范 18 §4）：首查延迟晚于首屏落地，检查失败不打断页面。
+  // 三态（登录/游客/hydrating）都检查——停在登录页的设备也该收到更新提示。
+  deploySeqUpdate.start()
   brandLogo.value = logoSrc(detectTheme())
   logoObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
@@ -267,7 +275,17 @@ async function handleChangePasswordSuccess() {
         <div class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
       </div>
       <section class="main-body" :class="{ 'main-body--fill': route.meta.fillViewport }">
-        <RouterView />
+        <!--
+          路由转场（docs/UI规范/12 §7）：compact 顶级目的地切换 fade 160ms；
+          medium+ 用 page-none —— 该名字刻意没有任何 CSS 规则，Transition 无匹配
+          样式时瞬时完成 ⇒ 桌面 DOM 与行为零变化。:key 同理只在 compact 绑定
+          route.path（桌面 key=undefined 维持既有「同组件不重挂」行为）。
+        -->
+        <RouterView v-slot="{ Component }">
+          <Transition :name="isCompact ? 'page-fade' : 'page-none'" mode="out-in">
+            <component :is="Component" :key="isCompact ? route.path : undefined" />
+          </Transition>
+        </RouterView>
       </section>
     </main>
     <!-- 移动导航抽屉挂载点（Teleport 到 body；遮罩 z-index 对齐既有弹层约定） -->
@@ -341,9 +359,33 @@ async function handleChangePasswordSuccess() {
   </div>
   <ChangePasswordDialog v-model="showChangePassword" :forced="mustChangePassword" @success="handleChangePasswordSuccess" />
   <UserInfoDialog v-model="showUserInfo" />
+  <!-- 部署序号更新提示条（fixed 悬浮，不参与布局流；三态布局共用一个实例） -->
+  <DeploySeqUpdateBanner />
 </template>
 
 <style scoped>
+/*
+ * compact 路由转场（docs/UI规范/12 §7，2026-10-05）。
+ * 只动 opacity（GPU 合成，禁 layout 属性）；160ms 与 web-mobile 的 page-fade 对齐。
+ * scoped 样式能命中子组件根节点（Vue 给子根挂父 scope 属性），Transition 类
+ * 恰好作用在子组件根上，所以这里匹配。page-none 刻意不定义 —— 见模板注释。
+ * prefers-reduced-motion 下转场取消（12 §4 契约）。
+ */
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 160ms ease;
+}
+.page-fade-enter-from,
+.page-fade-leave-to {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-fade-enter-active,
+  .page-fade-leave-active {
+    transition: none;
+  }
+}
+
 /* 2026-07-09: 首次进入时的 auth 探测加载中状态 */
 .auth-loading {
   display: flex;

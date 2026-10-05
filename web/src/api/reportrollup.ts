@@ -2,6 +2,7 @@
 // 供应商/内部双视角 × 六维筛选（供应商/凭据/模型/租户/用户/apikey）× 汇总/按天明细。
 // 数据来自每日凌晨聚合的 report_snapshots 最细粒度（grain）快照，区间查询不回扫原始日志。
 import { req, BASE, headers } from './_core'
+import { exportFile } from '../utils/exportFile'
 
 export type ReportView = 'provider' | 'internal'
 /** 分组维度：主表按此维度汇总（取代旧版四张固定表）。 */
@@ -222,13 +223,9 @@ export async function downloadReportExport(q: ReportQuery): Promise<void> {
   })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
+  // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
   const prefix = q.view === 'internal' ? 'reconciliation_internal' : 'reconciliation_provider'
-  a.download = `${prefix}_${q.start}_${q.end}.xlsx`
-  a.click()
-  URL.revokeObjectURL(url)
+  await exportFile({ filename: `${prefix}_${q.start}_${q.end}.xlsx`, blob })
 }
 
 export async function runReportRollup(date?: string): Promise<{ date: string; rows_written: number; requests_seen: number }> {

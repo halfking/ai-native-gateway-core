@@ -847,9 +847,12 @@ func (s *AudioService) synthesizeViaSpeech(ctx context.Context, cand provider.Ca
 // xiaomiVoices 是小米 TTS 的合法音色集合（上游 400 "Unknown voice" 的错误
 // 体里原样给出的清单，2026-10-03 实测）。之外的 voice（如 OpenAI 的
 // alloy 系）会被小米 400 拒收，归一到默认音色而不是让请求失败。
-var xiaomiVoices = map[string]bool{
-	"mimo_default": true, "冰糖": true, "茉莉": true, "苏打": true, "白桦": true,
-	"mia": true, "chloe": true, "milo": true, "dean": true,
+// key 是大小写不敏感的匹配键，value 是上游的规范形式（小米音色表
+// Mia/Chloe/Milo/Dean 首字母大写、mimo_default 全小写——2026-10-05
+// 实测上游大小写敏感，"mia" 会 400 "Unknown voice"）。
+var xiaomiVoices = map[string]string{
+	"mimo_default": "mimo_default", "冰糖": "冰糖", "茉莉": "茉莉", "苏打": "苏打", "白桦": "白桦",
+	"mia": "Mia", "chloe": "Chloe", "milo": "Milo", "dean": "Dean",
 }
 
 // normalizeTTSVoiceForCandidate 把客户端音色归一到候选供应商可接受的值。
@@ -859,11 +862,14 @@ var xiaomiVoices = map[string]bool{
 func normalizeTTSVoiceForCandidate(cand provider.Candidate, voice string) string {
 	v := strings.TrimSpace(voice)
 	if preferChatAudioBridge(cand) {
-		lv := strings.ToLower(v)
-		if v == "" || !xiaomiVoices[lv] {
-			return "mimo_default"
+		// 2026-10-05 实测回归修复：小米音色大小写敏感（Mia/Chloe/Milo/
+		// Dean 首字母大写，"mia" 400 "Unknown voice"）。匹配用小写键保持
+		// 大小写不敏感，回传一律用上游的规范形式——客户端传 "Mia" 或
+		// "mia" 都稳定命中 "Mia"，"MIMO_DEFAULT" 命中 "mimo_default"。
+		if canonical, ok := xiaomiVoices[strings.ToLower(v)]; ok {
+			return canonical
 		}
-		return lv
+		return "mimo_default"
 	}
 	return v
 }

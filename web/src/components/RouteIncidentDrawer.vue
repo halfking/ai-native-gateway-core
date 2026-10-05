@@ -47,6 +47,7 @@ import {
   type RouteIncidentFinding,
   type RouteIncidentTimelinePoint,
 } from '../types/routeIncident'
+import { exportFile } from '../utils/exportFile'
 
 const props = defineProps<{
   incidentId: string | null
@@ -388,18 +389,20 @@ async function exportRun(run: DiagnosticRun) {
 // the JSON exactly as the server returned it (the integrity
 // checksum is computed over the canonicalized fields, so any
 // in-place mutation would invalidate it).
-function downloadExport(exp: EvidenceExport) {
+async function downloadExport(exp: EvidenceExport) {
   const blob = new Blob([JSON.stringify(exp, null, 2)], {
     type: 'application/json',
   })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `route-incident-${exp.incident.id}-${exp.run.id.slice(0, 8)}.json`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）；
+  // 失败接既有 exportError 位（规则 4：失败可见）。
+  try {
+    await exportFile({
+      filename: `route-incident-${exp.incident.id}-${exp.run.id.slice(0, 8)}.json`,
+      blob,
+    })
+  } catch {
+    exportError.value = 'Export failed: no usable channel in this host'
+  }
 }
 
 // ─── Keyboard handling ───────────────────────────────────────────

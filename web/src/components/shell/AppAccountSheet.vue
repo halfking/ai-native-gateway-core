@@ -1,4 +1,5 @@
 <script setup lang="ts">
+// 2026-10-05：版本与更新区（UI规范 18 §4 手动检查面）接入 deploy-seq 检查。
 /**
  * AppAccountSheet — compact 账户面板（docs/UI规范/00 §5.2 · H2，参考规范 02 §5）。
  *
@@ -27,6 +28,7 @@ import { useFocusTrap } from '../../composables/useFocusTrap'
 import { lockBodyScroll, unlockBodyScroll } from '../../composables/useScrollLock'
 import { store, isSuperAdmin } from '../../store'
 import { back, overlays, presentOverlay } from '../../lib/shell/hyper'
+import { useDeploySeqUpdate } from '../../composables/useDeploySeqUpdate'
 import LanguageSelector from '../LanguageSelector.vue'
 import ThemeToggle from '../ThemeToggle.vue'
 
@@ -117,6 +119,34 @@ const healthText = () => {
   if (props.health === 'down') return t('hyper.account.unhealthy')
   return t('hyper.account.unknown')
 }
+
+// ── 版本与更新（UI规范 18 §4 手动检查面；compact 的系统设置唯一入口）────
+// 「不可判定」必须带原因展示，不得折叠成绿色徽标（18 §5 硬规则）。
+const {
+  status: deploySeqStatus,
+  reason: deploySeqReason,
+  checkCount: deploySeqChecks,
+  localSeq: deploySeqLocal,
+  checkNow: runDeploySeqCheck,
+} = useDeploySeqUpdate()
+
+const deploySeqText = () => {
+  if (deploySeqStatus.value === 'checking') return t('app.deploySeq.stateChecking')
+  if (deploySeqStatus.value === 'latest') return t('app.deploySeq.stateLatest')
+  if (deploySeqStatus.value === 'available') return t('app.deploySeq.stateAvailable')
+  if (deploySeqStatus.value === 'indeterminate') return t('app.deploySeq.stateIndeterminate')
+  return '—'
+}
+
+const deploySeqValue = () => deploySeqLocal.value?.seq ?? t('app.deploySeq.sourceUnknown')
+
+const deploySeqReasonText = () => {
+  if (deploySeqStatus.value !== 'indeterminate') return ''
+  if (deploySeqReason.value === 'no-local') return t('app.deploySeq.reasonNoLocal')
+  if (deploySeqReason.value === 'no-remote') return t('app.deploySeq.reasonNoRemote')
+  if (deploySeqReason.value === 'network') return t('app.deploySeq.reasonNetwork')
+  return ''
+}
 </script>
 
 <template>
@@ -156,6 +186,29 @@ const healthText = () => {
             role="status"
             aria-live="polite"
           >{{ healthText() }}</span>
+        </li>
+        <li class="account-sheet__row">
+          <span class="account-sheet__row-label">{{ t('app.deploySeq.currentSeq') }}</span>
+          <span class="account-sheet__seq" role="status">{{ deploySeqValue() }}</span>
+        </li>
+        <li class="account-sheet__row">
+          <span class="account-sheet__row-label">{{ t('app.deploySeq.state') }}</span>
+          <span
+            class="account-sheet__health"
+            :data-state="deploySeqStatus === 'latest' ? 'ok' : deploySeqStatus === 'available' ? 'down' : 'unknown'"
+          >{{ deploySeqText() }}</span>
+        </li>
+        <li v-if="deploySeqReasonText()" class="account-sheet__row account-sheet__row--reason">
+          <span class="account-sheet__reason">{{ deploySeqReasonText() }}</span>
+        </li>
+        <li class="account-sheet__row">
+          <span class="account-sheet__row-label">{{ t('app.deploySeq.checks') }}</span>
+          <span class="account-sheet__seq">{{ deploySeqChecks }}</span>
+        </li>
+        <li class="account-sheet__row">
+          <button type="button" class="account-sheet__action" @click="runDeploySeqCheck()">
+            {{ t('app.deploySeq.checkNow') }}
+          </button>
         </li>
         <li v-if="isSuperAdmin()" class="account-sheet__row">
           <button type="button" class="account-sheet__action" @click="emit('openAdmin')">
@@ -266,6 +319,21 @@ const healthText = () => {
 
 .account-sheet__row-label {
   font-size: 15px;
+}
+
+.account-sheet__seq {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.account-sheet__row--reason {
+  display: block;
+}
+
+.account-sheet__reason {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .account-sheet__health[data-state='ok'] {

@@ -18,6 +18,7 @@ import {
   type CorrectionStatsResponse,
 } from '../api/taskProfile'
 import DataTable from '../components/ui/DataTable.vue'
+import { exportFile } from '../utils/exportFile'
 
 const { t } = useI18n()
 
@@ -126,12 +127,8 @@ async function exportCsv() {
   try {
     const { filename, content } = await exportCorrections(sinceDays.value)
     const blob = new Blob([content], { type: 'text/csv; charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
+    // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
+    await exportFile({ filename, blob })
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
