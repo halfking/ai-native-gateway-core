@@ -13102,3 +13102,61 @@ fire#2 正常、**用例 A 的 title 断言未报**）· M-R2 ✅红(245) · M-R
 
 **仍未覆盖（§9.250.5 盲区 ②）**：`runShadowWrite` 的信号量分支、`replay.go`、
 telemetry 的 fire 次数。
+
+## §70.89 ★ 当前门基线**本轮实测**（终于不用再写「旧读数」了）+ 补上 replay 的缺失断言
+
+> 审计正文见 §9.252。**只改一个测试文件**，未改生产代码。**生产零写入。**
+
+### 1. ★ 门基线（全部带 `-v` 落**完整日志文件**，逐条列名核对）
+
+| 门 | PASS | SKIP | **FAIL** | 失败测试名 |
+|---|---:|---:|---:|---|
+| `./db/` | 91 | 8 | **2** | `TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` |
+| `./admin/` | 1582 | 41 | **6** | `TestColumnarParentTwoSurfaceSetopShape_RealDB` · `TestReportRollup_HTTPContract` · `TestV1BodiesReadersAreAssessed` · `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` · `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID` |
+| `./cmd/gateway/` | 327 | 0 | **0** | ok 60.596s |
+| `sql_source_indirection_audit` | — | — | **0** | exit 0 |
+| `./internal/sessionv2mirror/`（本轮改动包） | — | — | **0** | ok 0.324s |
+| `./domains/session/v2/`（上轮改动包） | — | — | **0** | ok 6.597s（带 DSN） |
+
+⇒ **基线无漂移**，8 个失败名与记录**逐条相同**，本轮与上轮的改动**未引入任何新失败**。
+
+⚠ **这 8 个「红」不等于「可接受的旧常态」**：
+`TestRetirementBlockedByUnrunBackfills` 恰恰是**目标未达成的证据** ——
+`is_final_success` 与 `client_protocol` 在本地 `session_turns` 上都是
+**0.0000%（0 / 1,693,242 行）**，两个回填脚本**一次都没跑过**。
+
+### 2. ★ 测基线时三次犯同一个错：把**截断的输出**当成全量
+
+1. 第一次跑 db 门用了 `| tail -15` ⇒ 差点宣称「基线变了，`TestRepointValueFidelity`
+   不红了」。改用 `-v > 文件` 后 grep 才看到它**仍在 FAIL**。
+2. 随后读**后台任务输出流**又被截断，看到 `exit=1` 而 grep「零个 `--- FAIL`」，
+   一度以为探针失灵、准备去查环境。**直接读日志文件**后立刻看到那两个名字。
+3. ⇒ ★ **规则：读门结果一律落文件、只从文件 grep，绝不从任何可能被截断的流里读。**
+   「grep 零命中」在截断的输出里与「真的零命中」**不可区分**。
+
+### 3. replay 侧：盲区 ② **大部分本来就关着**，只补了**一条缺失的断言**
+
+- 写失败已被检查（`replay.go:457`）· `deleteRow` 的 3 个调用点全是**刻意的门排除分支**
+  （non-terminal / 探针合成 / 内部 loopback，带 `skipped` 指标）· `replayOne` 已有 7 个测试。
+  ⇒ **没有新写 replay 判据**（那属于重复造门）。
+- ★ **但逐个读断言时发现缺口**：`TestReplayOne_FinalSuccessMarkFailKeepsCompensationRow`
+  断言得很完整（含反向对照），而 `TestReplayOne_WriteFailRequeuesThenDead`
+  **只查了 requeue / dead，没断言「写失败时没有删行」**。
+  ⇒ 「把 DELETE 提到写检查之前」或「requeue 顺手删行」都能照样通过。
+  而 `session_mirror_outbox` 是 GAP-2 **唯一的耐久重放载体**，删掉它 =
+  这次请求永久没有 turn、没有任何痕迹 —— **与 §9.249.2 生产那 1 行同形**。
+  已补两处（写失败不得删行 / 转 dead 也不得删行，死信留作人工取证）。
+  复核过 `requeue` 与 `markDead` **都只做 UPDATE，都不删行**，所以断言不是空的。
+
+### 4. 变异台账
+
+| # | 变异 | 实测 |
+|---|---|---|
+| M-P1 | 写失败分支里加 `r.deleteRow(...)` | ✅ 红，**只报第 377 行**（新增断言），SQL 合法（无 42601） |
+| — | 还原后复跑 7 个 `TestReplayOne_*` | ✅ 全 PASS，`git diff --stat` 为空 |
+
+反向对照**不需要新写**：`TestReplayOne_SuccessDeletesRow` 已断言成功时 DELETE
+**必须**出现且当前为绿，两边合起来证明新断言不是恒真。
+⚠ **M-P2 注入失败不作数**：想拿「删掉成功路径 DELETE」做第二变异，写成
+`nilDelete(...)` ⇒ **包编译不过** ⇒ 测试没跑。**没有拿它冒充阴性对照。**
+

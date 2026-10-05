@@ -30410,3 +30410,91 @@ go test ./domains/session/v2/（带 DSN）    → ok  6.597s
    （§9.250 的 M6）仍由**静态**判据 ③ 守，**两者互不重叠**。
 4. 全部操作发生在**本地真库**，探针行已清理；**生产零写入**。
 
+
+### §9.252 补 `replay.go` 侧：不重写已有门，只补**那条缺失的断言**
+
+> 本节兑现 §9.250.5 盲区 ②。**只改一个测试文件，未改任何生产代码路径。**
+
+#### §9.252.1 先问「这条路径是不是已经被守住了」——大部分是
+
+| 问题 | 结论 |
+|---|---|
+| 写失败是否被检查 | ✅ 是（`replay.go:457` `if err := r.writer.Write(...); err != nil { r.requeue(...); return }`） |
+| `deleteRow` 的 3 个调用点 | ✅ 全部是**刻意的门排除分支**（non-terminal / 探针合成 / 内部 loopback），带 `mirrorReplayTotal.WithLabelValues("skipped")`，不是失败路径 |
+| `replayOne` 已有测试 | 7 个：成功删除 / 合成会话 / 三个跳过类 / 坏载荷 dead / 标记失败保留 / 写失败 requeue→dead |
+
+⇒ **§9.250.5 的盲区 ② 其实已经基本关闭**，
+所以本节**没有新写 replay 判据** —— 那属于「重复造门」。
+
+#### §9.252.2 ★ 但逐个读断言时发现**一处真缺口**
+
+`TestReplayOne_FinalSuccessMarkFailKeepsCompensationRow` 断言得很完整：
+「标记失败必须保留补偿行」+ **反向对照**（无 claim 的载荷走正常删除）。
+而 `TestReplayOne_WriteFailRequeuesThenDead` 只断言了
+「requeue 了」「在上限内不死」「到上限转 dead」——
+**它没有断言「写失败时没有删行」。**
+
+⇒ **缺口的后果**：若有人把成功路径的 `DELETE FROM public.session_mirror_outbox`
+提到写检查之前，或让 requeue 分支顺手删行，**那个测试照样全绿**。
+而 `session_mirror_outbox` 是 GAP-2 唯一的耐久重放载体
+（`replay.go` 自述「this row is the replay path's only one」），
+删掉它 = 这次请求永久没有 turn、没有任何可重放的痕迹 ——
+**与 §9.249.2 生产上那 1 行「既没成功也没报错」同形。**
+
+已补两处断言（写失败不得删行 / 转 dead 也不得删行，死信要留作人工取证）。
+
+#### §9.252.3 变异台账
+
+| # | 变异 | 实测 |
+|---|---|---|
+| M-P1 | 在写失败分支里加 `r.deleteRow(ctx, row.id, "MUT-P1")` | ✅ 红，**且只报第 377 行**（新增的「write failure must keep the compensation row」），SQL 合法（无 42601） |
+| — | 还原后复跑 7 个 `TestReplayOne_*` | ✅ 全 PASS，`git diff --stat` 为空 |
+
+★ **反向对照不需要新写**：`TestReplayOne_SuccessDeletesRow` 已经断言
+**成功时 DELETE 必须出现**且当前为绿 ——
+它与新增断言合起来才能证明后者不是恒真。
+
+⚠ **M-P2 注入失败，不算证据**：我本想拿「删掉成功路径的 DELETE」做第二个变异，
+写成了 `nilDelete(...)` ⇒ **包编译不过** ⇒ 测试没跑。
+按本仓既有纪律（§9.250.3「编译失败 ≠ 判据转红」），
+**这条不作数，也没有拿它冒充阴性对照**。
+
+#### §9.252.4 ★★ 当前门基线（**本轮实测**，替换掉沿用多轮的 §9.240 旧读数）
+
+我连续四轮在报告里写「门基线仍是 §9.240 之后的读数」——
+那是一个**证据缺口**，本轮补上。三组门全部带 `-v` 落**完整日志文件**，
+按纪律**逐条列测试名**核对（只比数量会把新失败吸收成「旧常态」，
+本会话早期已犯过一次）。
+
+| 门 | PASS | SKIP | **FAIL** | 失败测试名（逐条） | 与记录基线 |
+|---|---:|---:|---:|---|---|
+| `./db/` | 91 | 8 | **2** | `TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` | **逐条相同** |
+| `./admin/` | 1582 | 41 | **6** | `TestColumnarParentTwoSurfaceSetopShape_RealDB` · `TestReportRollup_HTTPContract` · `TestV1BodiesReadersAreAssessed` · `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` · `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID` | **逐条相同** |
+| `./cmd/gateway/` | 327 | 0 | **0** | （ok 60.596s） | 相同 |
+| `cmd/tools/sql_source_indirection_audit` | — | — | **0** | （exit 0） | 相同 |
+| `./internal/sessionv2mirror/`（本轮改动包） | — | — | **0** | （ok 0.324s） | 本轮首次实跑 |
+| `./domains/session/v2/`（上轮改动包） | — | — | **0** | （ok 6.597s，带 DSN） | 上轮已实跑 |
+
+⇒ **基线无漂移**。8 个失败名与记录**逐条相同**，本轮两处改动
+（`internal/sessionv2mirror/outbox_replay_test.go` 补断言、
+上轮的 `domains/session/v2` 新真库门）**没有引入任何新失败**。
+
+★ **本轮在测基线的过程中又犯了两次同一个错，都记在这里**：
+1. 第一次跑 db 门时用了 `| tail -15` ⇒ **把截断的尾部当成了全量**，
+   据此差点宣称「基线变了，`TestRepointValueFidelity` 不红了」。
+   改用 `-v > 文件` 后 grep 才看到它仍在 FAIL。
+2. 随后读**后台任务输出流**时又被截断，看到 `exit=1` 而 grep「零个 `--- FAIL`」，
+   一度以为探针失灵。**直接读日志文件**后立刻看到那两个名字。
+⇒ ★ **三次同类**：截断的输出被当成全量。
+**读门结果一律落文件、只从文件 grep，不从任何可能被截断的流里读。**
+
+#### §9.252.5 本节不主张的事
+
+1. **不主张**这 8 个失败是「已知且可接受的旧常态」——它们**逐条**与记录一致，
+   但「与基线一致」不等于「应该红」。其中 `TestRetirementBlockedByUnrunBackfills`
+   恰恰是**目标未达成的证据**：`is_final_success` 与 `client_protocol`
+   在本地 `session_turns` 上都是 **0.0000%（0 / 1,693,242 行）**，
+   两个回填脚本**一次都没跑过**。
+2. **不主张** §9.249.2 生产那 1 行的成因因此更清楚 —— 本节只是补了防线与基线。
+3. 本节全部改动**只在一个测试文件里**；生产代码零改动，**生产零写入**。
+

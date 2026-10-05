@@ -362,6 +362,20 @@ func TestReplayOne_WriteFailRequeuesThenDead(t *testing.T) {
 	if strings.Contains(joined, "status = 'dead'") {
 		t.Fatalf("row below max attempts must not die, got %v", db.statements())
 	}
+	// §9.252：写失败**不得删掉补偿行**。这条断言此前缺失——本用例只查了
+	// requeue / dead 两个语句，因此「先把 DELETE 挪到写检查之前」或
+	// 「requeue 路径顺手删行」都能照样通过。
+	//
+	// 为什么重要：session_mirror_outbox 是 GAP-2 唯一的耐久重放载体
+	// （replay.go 的自述「this row is the replay path's only one」）。
+	// 删掉它 = 这次请求永久没有 turn、没有任何可重放的痕迹 ——
+	// 与 §9.249.2 生产上那 1 行「既没成功也没报错」同形。
+	//
+	// 反向对照在同文件的 TestReplayOne_SuccessDeletesRow：
+	// 写成功时**必须**删。两边合起来才能证明本断言不是恒真。
+	if strings.Contains(joined, "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("write failure must keep the compensation row, got delete: %v", db.statements())
+	}
 
 	db2 := &recordingDB{}
 	r2 := newTestReaper(db2, &capturingWriter{err: errors.New("simulated db down")})
@@ -371,5 +385,9 @@ func TestReplayOne_WriteFailRequeuesThenDead(t *testing.T) {
 	})
 	if !strings.Contains(strings.Join(db2.statements(), "\n"), "status = 'dead'") {
 		t.Fatalf("row at max attempts must die, got %v", db2.statements())
+	}
+	// dead 行仍然**保留**在表里（供人工取证），不是删除。
+	if strings.Contains(strings.Join(db2.statements(), "\n"), "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("dead-lettering must not delete the row, got %v", db2.statements())
 	}
 }
