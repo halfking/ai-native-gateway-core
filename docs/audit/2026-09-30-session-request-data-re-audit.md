@@ -31314,3 +31314,89 @@ cmd/tools/validate_sessions_v2/loader.go: table says 6, code has 5
 3. **19 处 bodies 读方仍是停写硬前置**（§9.256.3，视图无会话臂），
    且它们**全部在字面量那张表的覆盖范围内**（口径含 `request_logs_bodies_*`）——
    这说明停写前必须先处理的文件**远不止那 19 个拼接点**。
+
+### §9.260 ★ 推导器只认「仓库里有 DDL 文件的视图」——**漏了 2 个、误判了 1 个文件**
+
+> 本轮改 `cmd/tools/sql_source_indirection_audit/v1arm.go`（推导源 + 传递闭包）
+> + `manifest_test.go`（快照 + 1 条改判）+ 一道新门。
+> **没碰任何读方/写方**。生产 252 零写入。
+
+#### §9.260.0 起因：给 114 个读方分档时，发现 3 个文件「查不到任何 v1 关系」
+
+分档脚本把 114 个文件按「读 FROM/JOIN / 写 INTO/UPDATE / DDL」归类，
+`admin/attempt_quality_api.go` · `admin/usage_trend_series.go` ·
+`admin/auto_route_correlations.go` 三个**一格都没落**。打开看：
+
+```sql
+FROM request_logs_with_current_month_without_request_class_due_at   -- :139 / :129 / :171
+FROM request_logs_with_current_month_without_customer_id r          -- :407 / :588
+```
+
+★ **这两个视图名不在 `sql/objects/views/` 的 54 个 DDL 文件里** ——
+它们由 composer 在**运行时**创建（`db/request_logs_view_schema.go:128` 与 `:140`），
+仓库里只在测试里 dump 过。
+
+#### §9.260.1 真库实测：4 个 wrapper 视图**全部含 v1 臂**
+
+```sql
+             relname                             | mentions_v1 | mentions_session
+--------------------------------------+---------------+----------------
+ request_logs_bodies_with_current_month         | t             | f
+ request_logs_with_current_month               | t             | t
+ request_logs_with_current_month_without_customer_id           | t | f
+ request_logs_with_current_month_without_request_class_due_at | t | f
+```
+
+⇒ **§9.258 的推导器只认出 2 个。** 后果不是「少报两个视图」，
+而是**读它们的文件被判成 `canonical`** ——
+方向是**「把有风险的报成安全」**，正是 `resolve.go` 文件头说的最坏失效方向。
+（§9.258 门把 `admin/dashboard_board_queries.go` 记为 `canonical-only`，
+它读的就是 `…_without_customer_id`。）
+
+#### §9.260.2 修法：推导源换成「**谁在运行时真正定义它**」+ 传递闭包
+
+1. 推导源从「只读 `sql/objects/views/`」扩到**两个**：
+   ① 该目录的 54 个 `.sql`；② **composer 源文件**里的 `CREATE [OR REPLACE] VIEW`。
+2. ★ **传递闭包**：`…_without_request_class_due_at` 是从
+   `…_without_customer_id` 转包的，只看「直接 FROM 了基表」会漏掉整条包装链。
+   现在按引用图做可达性判定。
+
+**实测**：v1 臂桶 **25 → 26 处 / 14 → 15 个文件**；
+`canonical` 19 → 18 处。退役读方清单（拼接点部分）**37 → 38 处 / 21 个文件**。
+
+#### §9.260.3 门把那条降级逼出来了
+
+推导器一补全，`admin/dashboard_board_queries.go` 立刻从 `canonical-only` 变成
+`reads-v1-arm` ⇒ 与清单标签**矛盾** ⇒ 门红。
+★ 它的 `Via` / `Consequence` **原文就是对的**（「带 v1 臂 / 少掉 v1 那部分行」），
+只有 `Verdict` 标签是旧推导路径的产物 ⇒ 这次是**换标签**而不是**纠错**。
+
+#### §9.260.4 变异台账
+
+| 变异 | 实测 |
+|---|---|
+| **MUT-E** 从 `viewSourceFiles` 去掉 composer 来源 | ✅ 红 **3 道**：新门**逐个点名** `…_without_customer_id` 与 `…_without_request_class_due_at`「没被推出含 v1 臂」，快照门报 `v1 臂视图 处数: 文档 26 → 实测 25 (-1)`，清单门红；其余 **15 道 PASS** |
+| 还原 | ✅ 全 **18 道 PASS**（新增 1 道），`gofmt -l` 空输出 |
+
+#### §9.260.5 顺带产出的分档素材（**不是**分档结论）
+
+给 114 个文件做「读 / 写 / DDL」三分（按**非注释**文本里的
+`FROM|JOIN` = 读、`INTO|UPDATE|TRUNCATE` = 写、`DROP TABLE|ALTER TABLE|VACUUM|CLUSTER|REINDEX` = DDL）：
+
+| 桶 | 文件数 | 退役含义 |
+|---|---:|---|
+| **E DDL/生命周期** | **1** | `db/db.go`（12 条 v1 DDL）⇒ **随 v1 退役**，不是「读方」 |
+| **C 读写兼有** | **6** | 写侧在 S4 停写后自然无害；**读侧要迁** |
+| **A 只读** | **97** | 要迁 |
+| **Z 走切换层（静态看不见）** | **10** | 其中 8 个已由间接清单确认读 v1；`admin/attempt_quality_api.go` · `admin/usage_trend_series.go` · `admin/auto_route_correlations.go` 由 §9.260 查明也是读方 |
+
+⚠ **这只是机制分桶，不是退役分档。** 分档还要叠「消费面」，
+而**两张清单都不做自动分类**（字面量那张的注释记着
+「我试过按谓词自动分 A/B/C/D，**判错 5 个**」）。
+⇒ **114 个文件的退役分档仍是待属主拍板的活**，本节只把素材备齐。
+
+⚠ **分档时的一个探针事故（自查出）**：我第一版用
+「`select` 后面紧跟 `request_logs`」判读，**真 SQL 是 `SELECT … FROM request_logs`**，
+⇒ 读被系统性漏计 ⇒ 一批读方被误判成「纯写」。
+改用「`FROM`/`JOIN` = 读」后 `D_纯写` 从 8 个降到 **0**。
+★ **症状是「分类结果里有一类看起来不可能为空」，我据此回头查了探针，而不是接受结果。**

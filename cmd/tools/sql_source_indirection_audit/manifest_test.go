@@ -229,11 +229,20 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"真关系名，所以这条不是误报。",
 	},
 	"admin/dashboard_board_queries.go": {
-		Verdict: verdictCanonicalOnly,
+		// ★ §9.260：由 canonical-only 改为 reads-v1-arm。**不是原来写错了** ——
+		// 原文的 Via 与 Consequence 都准确地写着「带 v1 臂 / 少掉 v1 那部分行」，
+		// 只有 Verdict 标签是 §9.257 之前那条推导路径的产物。
+		// 改动理由：`…_without_customer_id` 是 composer **运行时**建的视图、
+		// 仓库里没有 DDL 文件 ⇒ §9.258 的推导器认不出它，这个文件被判成 canonical。
+		// 推导器补全后（§9.260）它正确落进 v1 臂桶，而清单标签与工具判定**矛盾** ⇒ 门红。
+		Verdict: verdictReadsV1Arm,
 		Via: "logsTable 解析为 `request_logs_with_current_month_without_customer_id AS r`" +
 			"（119 行）—— canonical 视图的包装视图，**带 v1 臂**。",
 		Consequence: "⚠ 视图的 v1 臂在 DROP 时消失 ⇒ 看板的这张表会少掉 v1 那部分行。" +
-			"归 D29-d 切换清单，**不是** DROP 前的 blocker。",
+			"归 D29-d 切换清单，**不是** DROP 前的 blocker。" +
+			"★ §9.260：这个包装视图由 composer 运行时创建、**仓库里没有 DDL 文件**，" +
+			"所以只看 sql/objects/views/ 的推导器认不出它 —— " +
+			"真库 pg_class 里有 4 个 request_logs*_with_current_month* 视图且**全部含 v1 臂**。",
 	},
 	"admin/provider_cred_lifecycle.go": {
 		Verdict:     verdictCanonicalOnly,
@@ -934,10 +943,16 @@ var documentedSnapshot = bucketSnapshot{
 	// ⚠ 这里的 25 处**不含** 3 处 `src.TurnsTable` —— 那个操作数是 struct 字段，
 	// 静态推不出，留在 unresolved 桶；但手验确认它读 v1 基表。
 	// ⇒ **真实退役读方清单 = 12 + 25 + 3 = 40 处**，不是 37。
-	V1ArmFiles: 14,
-	V1ArmSites: 25,
-	CanonFiles: 13,
-	CanonSites: 19,
+	// §9.260：v1 臂视图 25 → 26 处（14 → 15 文件）。
+	// 真因不是「多了一个读方」，而是**推导器补全了**：§9.258 只读
+	// sql/objects/views/，而 `request_logs_with_current_month_without_customer_id`
+	// 与 `…_without_request_class_due_at` 是 composer **运行时**建的、没有 DDL 文件
+	// ⇒ 读它们的读方被判成 canonical（把有风险的报成安全）。
+	// 真库 pg_class 里 4 个 request_logs*_with_current_month* 视图**全部含 v1 臂**。
+	V1ArmFiles: 15,
+	V1ArmSites: 26,
+	CanonFiles: 12,
+	CanonSites: 18,
 	UnresFiles: 7,
 	UnresSites: 14,
 }
