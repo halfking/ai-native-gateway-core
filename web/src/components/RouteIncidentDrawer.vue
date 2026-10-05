@@ -21,6 +21,7 @@
 //   - all interactive elements have aria-label / title
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import {
   dispatchAction,
@@ -48,6 +49,10 @@ import {
   type RouteIncidentTimelinePoint,
 } from '../types/routeIncident'
 import { exportFile } from '../utils/exportFile'
+
+// R48-D4（R48 报告 §五-6）：导出链失败文案接 i18n；组件其余存量硬编码串
+// 仍登记在 CJK 基线棘轮（scripts/i18n-cjk-baseline.json），逐批清偿。
+const { t } = useI18n()
 
 const props = defineProps<{
   incidentId: string | null
@@ -377,7 +382,7 @@ async function exportRun(run: DiagnosticRun) {
   )
   if (!out) {
     exportState.value = 'error'
-    exportError.value = '导出失败：详情加载或审计失败'
+    exportError.value = t('routeIncidentDrawer.exportFailedPrep')
     return
   }
   exportState.value = 'done'
@@ -401,7 +406,7 @@ async function downloadExport(exp: EvidenceExport) {
       blob,
     })
   } catch {
-    exportError.value = 'Export failed: no usable channel in this host'
+    exportError.value = t('routeIncidentDrawer.exportNoChannel')
   }
 }
 

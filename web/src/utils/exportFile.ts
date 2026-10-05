@@ -6,6 +6,11 @@
  *
  *   ① navigator.canShare({files}) → navigator.share({files}) 唤起系统分享面
  *      （含「存储到文件」）；用户取消（AbortError）= 'cancelled'，不算失败。
+ *      ★ 桌面指针宿主（hover:hover + pointer:fine）直接跳过本臂（R48-D1）：
+ *        canShare 的「桌面为 false」前提在 Windows Chrome/Edge 与 macOS
+ *        Safari 的 HTTPS 部署下不成立——不跳过会弹系统分享面而非落下载
+ *        目录，破坏 D-1「桌面零回归」红线。按 19 §6 规则 1 用交互能力
+ *        判定，禁 UA 嗅探。
  *   ② 壳下载桥（setFileExportBridge 注册，capabilities 判定宿主——禁止 UA
  *      嗅探，19 §6 规则 1）。⚠ 当前无人注册：04 §7.1 桥注入决策未落地前，
  *      壳内桥能力一律按不可用降级（19 §6 规则 3）。本臂保留接线位，
@@ -24,6 +29,17 @@ export interface ExportFileInput {
   filename: string
   blob: Blob
 }
+
+/**
+ * 导出体体积上限的**唯一权威源**（docs/UI规范 19 §4.3b C5）。
+ *
+ * ⚠️ 业务代码与 i18n 文案**都不得**再写死这个数字：
+ * 壳内若上报了真实上限（`appInfo().fileTransfer.maxUploadBytes`）则以其为准，
+ * 取不到才回落到这里。**回落不抛错**——拿不到上限不该让下载失败。
+ * 文案用 `formatBytes()` + `{max}` 插值，数字从运行时上限渲染。
+ * C5 门禁只扫生产代码，允许本文件的这一个常量。
+ */
+export const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024 // 50 MiB
 
 export type ExportOutcome = 'shared' | 'downloaded' | 'cancelled'
 
@@ -53,8 +69,24 @@ function buildShareFile(input: ExportFileInput): File | null {
   }
 }
 
+/**
+ * 桌面指针宿主判定（R48-D1）：hover:hover + pointer:fine ⇒ 鼠标/触控板环境。
+ * 触屏手机/平板（hover:none）返回 false，允许走系统分享面。
+ * matchMedia 不可用（极旧宿主/非浏览器环境）按「非桌面」处理——降级链自然落 ③。
+ */
+function hasDesktopPointer(): boolean {
+  try {
+    return typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(hover: hover) and (pointer: fine)').matches
+  } catch {
+    return false
+  }
+}
+
 /** ①系统分享面。返回 null 表示该臂不可用/被跳过。 */
 async function tryShare(input: ExportFileInput): Promise<ExportOutcome | null> {
+  if (hasDesktopPointer()) return null
   if (typeof navigator === 'undefined' || typeof navigator.canShare !== 'function') return null
   const file = buildShareFile(input)
   if (!file) return null

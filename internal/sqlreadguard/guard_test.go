@@ -52,14 +52,24 @@ var sqlReadGuardAllowFiles = map[string]string{
 		"③ 对最近 8h 的盲区在此**方向是保守的**：那批行由在线路径直接落标签、本就不该进回填集，漏读只会让 remaining 略被低估，不会虚报进度。",
 
 	// ---- LEGIT：引擎/DDL/维护/工具 ----
-	"bg/lite_retention_worker.go":               "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
-	"cmd/gateway/dual_read_validator.go":        "LEGIT: 专职双腿一致性校验器",
-	"db/db.go":                                  "LEGIT: routing_analytics_source DDL 体",
-	"db/request_logs_view_schema.go":            "LEGIT: 视图 DDL 体",
-	"admin/data_lifecycle.go":                   "LEGIT: 存储生命周期维护面（全历史体积/清理属设计语义）",
-	"admin/data_lifecycle_attachments.go":       "LEGIT: 存储生命周期维护面",
-	"admin/data_lifecycle_metrics.go":           "LEGIT: 存储生命周期维护面",
-	"bg/credential_recovery.go":                 "LEGIT: 恢复扫描需全历史窗口（404 二次确认 6h 终判的旧证据只在母表）",
+	"bg/lite_retention_worker.go":         "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
+	"cmd/gateway/dual_read_validator.go":  "LEGIT: 专职双腿一致性校验器",
+	"db/db.go":                            "LEGIT: routing_analytics_source DDL 体",
+	"db/request_logs_view_schema.go":      "LEGIT: 视图 DDL 体",
+	"admin/data_lifecycle.go":             "LEGIT: 存储生命周期维护面（全历史体积/清理属设计语义）",
+	"admin/data_lifecycle_attachments.go": "LEGIT: 存储生命周期维护面",
+	"admin/data_lifecycle_metrics.go":     "LEGIT: 存储生命周期维护面",
+	"bg/credential_recovery.go":           "LEGIT: 恢复扫描需全历史窗口（404 二次确认 6h 终判的旧证据只在母表）",
+	// 2026-10-05（832/833 收口轮）两条：
+	"cmd/gateway/v1_write_liveness.go": "LEGIT: §9.264 写入腿存活信号——hot 与母表在同一查询内**并列计数**，" +
+		"对照本身就是查询目的（父表落后 hot 是正常形态，见其文件头 §9.160.7 第四/五次命中记录）；" +
+		"四腿（request_logs_hot/request_logs/session_turns_hot/session_turns）缺一不可",
+	"bg/routing_health_checks.go": "DEBT(R47): recorded_cost_is_negative 巡检 30 天负成本审计单腿母表读——" +
+		"①为何暂不能双腿化：正确双腿必须走 request_logs_with_current_month 族视图并核对 promote 去重语义" +
+		"（§9.260 实测该族视图由 composer 运行时建、带 v1 臂，裸 UNION hot 会把 promote 前后重复行数两次，" +
+		"负价告警将系统性虚高），而核对需真库 promote 环境非本轮可得；" +
+		"②窗口论证：盲区≤晋级延迟，最新负价行最迟 8h 后进母表，warning 级 30 天窗口可容忍；" +
+		"③退役路径：双腿化后按 TestSQLReadGuardWhitelistCurrent 自清洁移除本条",
 	"cmd/tools/validate_sessions_v2/loader.go":  "TOOLING: 离线校验工具",
 	"cmd/tools/backfill_session_bodies/main.go": "TOOLING: 离线回填工具",
 	"cmd/traffic-replay/main.go":                "TOOLING: 离线回放工具",
@@ -232,6 +242,8 @@ var debtBaseline = map[string]bool{
 	"domains/hooks/observability/telemetry/client.go": true,
 	"autoroute/recommend_v2.go":                       true,
 	"discovery/discovery.go":                          true,
+	// 2026-10-05（832/833 收口轮）棘轮协议新增：见白名单 DEBT 条目的三点论证
+	"bg/routing_health_checks.go": true,
 	// SQL 读面（视图定义体 / 函数体）
 	"sql/objects/views/v_node_switch_analysis.sql":                                    true,
 	"sql/objects/views/customer_cost_view.sql":                                        true,
@@ -286,6 +298,85 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 			len(added), len(debt), len(debtBaseline), strings.Join(added, "\n  "))
 	}
 	t.Logf("DEBT(R47) 现状：%d 条（基线 %d），新增 %d 条", len(debt), len(debtBaseline), len(added))
+}
+
+// debtReasonPrefixRe —— DEBT 档的轮号前缀形态。
+var debtReasonPrefixRe = regexp.MustCompile(`^DEBT\(R\d+\):`)
+
+// allowlistReasonViolation 返回白名单理由的格式违规描述；空串=合规。
+// 三档合法前缀：LEGIT: / DEBT(R##): / TOOLING:，冒号后必须跟非空理由。
+func allowlistReasonViolation(reason string) string {
+	r := strings.TrimSpace(reason)
+	if r == "" {
+		return "理由为空"
+	}
+	var head string
+	switch {
+	case strings.HasPrefix(r, "LEGIT:"), strings.HasPrefix(r, "TOOLING:"):
+		head = r[:strings.Index(r, ":")+1]
+	case debtReasonPrefixRe.MatchString(r):
+		head = debtReasonPrefixRe.FindString(r)
+	default:
+		return "前缀必须是 LEGIT: / DEBT(R##): / TOOLING: 三档之一" +
+			"（R48 §五-4/E5：无档前缀的条目既不进 debtEntries 的 DEBT 桶、也不带 LEGIT 依据，" +
+			"棘轮与豁免两头都看不见——新债以此形态绕过棘轮零阻力）"
+	}
+	if strings.TrimSpace(strings.TrimPrefix(r, head)) == "" {
+		return "前缀 " + head + " 后没有非空理由（R48 §五-4/E5：豁免必须带依据）"
+	}
+	return ""
+}
+
+// TestAllowlistReasonsHaveJustifiedShape —— R48 §五-4（E5 软肋）的最小格式断言。
+//
+// debtEntries() 按 reason 含 "DEBT" 识别债务、进棘轮；其余条目落进 LEGIT 桶，
+// 而那个桶此前没有任何门——新债随手写个 "LEGIT"/"todo"/空串即可不进基线。
+// 本门给两个桶立最小格式（见 allowlistReasonViolation），把疏忽性绕过
+// （随手写个词）变成必须显式伪造依据的行为。
+//
+// 这是防绕过，不是内容审查："LEGIT: 裸母表" 在格式上仍合规——实质审查
+// 靠 review 与 TestNoBareRequestLogsMotherReads 本体。
+func TestAllowlistReasonsHaveJustifiedShape(t *testing.T) {
+	for name, m := range map[string]map[string]string{
+		"Go":  sqlReadGuardAllowFiles,
+		"SQL": sqlReadGuardAllowSQLFiles,
+	} {
+		for path, reason := range m {
+			if v := allowlistReasonViolation(reason); v != "" {
+				t.Errorf("%s 白名单 %s 的理由格式违规：%s", name, path, v)
+			}
+		}
+	}
+
+	// 负控制：违规形态必须被识别——空的探针列表会让上面那圈恒绿
+	// （201 号 §102 的教训：检查器失效与「全部合规」不可区分）。
+	for _, bad := range []string{
+		"",
+		"   ",
+		"LEGIT",
+		"LEGIT:",
+		"LEGIT:   ",
+		"TOOLING:",
+		"DEBT(R47):",
+		"todo",
+		"裸母表",
+		"DEBT(某轮): 轮号不是数字",
+	} {
+		if v := allowlistReasonViolation(bad); v == "" {
+			t.Errorf("违规理由 %q 未被识别（检查器失效）", bad)
+		}
+	}
+	// 正控制：三档合法形态必须通过。
+	for _, ok := range []string{
+		"LEGIT: 双腿之母表腿（hot 腿同查询内联）",
+		"DEBT(R47): 裸母表",
+		"TOOLING: 离线校验工具",
+		"DEBT(R7): 某轮登记的旧债",
+	} {
+		if v := allowlistReasonViolation(ok); v != "" {
+			t.Errorf("合法理由 %q 被误判：%s", ok, v)
+		}
+	}
 }
 
 func keysSorted(m map[string]bool) []string {

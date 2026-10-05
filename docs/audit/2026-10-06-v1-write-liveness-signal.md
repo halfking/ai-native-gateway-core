@@ -2,6 +2,7 @@
 
 > 生成时间：2026-10-06　起点提交：`f1f760227`（= `origin/main`）
 > 实现：`cmd/gateway/v1_write_liveness.go`　门：`cmd/gateway/v1_write_liveness_{test,realdb_test}.go`
+> **2026-10-06 R48 §五-1 接线落地**：`cmd/gateway/v1_write_liveness_worker.go`（常驻 worker + admin 拉取面）　门：`cmd/gateway/v1_write_liveness_worker_test.go`
 > 来源：审计 `docs/audit/2026-09-30-session-request-data-re-audit.md` §9.238.5 / §9.238.6
 
 ---
@@ -110,10 +111,16 @@ quiet  两侧都零行                          ← 什么都没证明
 
 ## 五、限度与未验项
 
-- **本轮没有接线。** `v1WriteLiveness()` 是一个可调用的函数，
-  **没有任何 HTTP 端点、后台 worker 或指标在用它** ——
-  「常驻信号」要接到哪里（admin 端点 / `/metrics` gauge / 告警）是**属主的决定**，
-  涉及新增对外表面，本轮不做。
+- ~~**本轮没有接线。**~~ → **已于 2026-10-06 R48 §五-1 接线落地**（R48-A5 催办，
+  用户拍板）：`cmd/gateway/v1_write_liveness_worker.go` 把判决接成
+  **常驻 worker**（每 5m 一 tick、窗口 30m、dead 每 tick 一条 ERROR、恢复一条
+  WARN、quiet 静默）+ **admin 拉取面** `GET /internal/v1-write-liveness`
+  （dead→503，鉴权同 `/internal/telemetry/fallback-buffer`）。接线守卫
+  `TestV1WriteLivenessWorkerIsWiredInMain` 钉住 main.go 三点接线
+  （构造/路由/停机）且不在 cred-recovery / data-plane / probe-worker
+  任何一个配置门内——「分类器存在但零调用点」（R48-A5 的原始发现形态）
+  复发即红，已做三点变异检验。刻意不做的事：不掺 `/healthz`（那是进程
+  活着的语义）、不挂 `/metrics` gauge（对外表面扩张仍属属主决定）。
 - **真库门会跳过**（`TEST_PG_DSN` 未设时），所以 CI 上默认只跑静态那两道。
 - 窗口取 30 分钟是本实现的选择，**没有论证**。父表晋级延迟、hot 窗口长度
   与它的关系没有量过 ⇒ 窗口太短会误报 `dead`，太长会延迟发现。

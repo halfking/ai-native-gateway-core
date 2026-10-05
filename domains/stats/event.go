@@ -180,7 +180,10 @@ func EventFromTelemetry(entry *telemetry.RequestLogEntry, now time.Time) (Event,
 	//         （87,888 行有 cache 读，avg 12,218.9）⇒ 它确实没被另加。
 	//       - `stats_usage_daily.total_tokens`：`daily_monthly_rollup.go:207`
 	//         是 `SUM(total_tokens)`，逐日核对同样等于 prompt+completion。
-	//     ⇒ 全仓既有口径就是「子集不另加」，只有这一行是异类。
+	//     ⇒ 全仓既有口径就是「子集不另加」。★ R48-F1 订正：写下这句话时
+	//       还有一处同族异类——`FromTelemetryEntry`（minute_entry.go）给
+	//       request_stats_minute / 看板缓存算 total 时另加了 cache 两列，
+	//       已于本轮（2026-10-06）同口径修掉；「只有这一行」自此成立。
 	//  3) 后果面。`daily_monthly_rollup.go:197` 的日聚合 **FROM usage_facts f**，
 	//     月聚合（`:114`）再从 stats_usage_daily 取 ⇒ 这一行的口径直接决定
 	//     **运营在看板和月报上看到的总量**，不是只脏一张明细表。

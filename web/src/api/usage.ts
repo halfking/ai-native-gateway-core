@@ -351,6 +351,7 @@ export interface ProviderDailyModelUsage {
 
 import type { BoardTimeQuery } from '../utils/boardTimeRange'
 import { exportFile } from '../utils/exportFile'
+import { readExportBlob } from '../utils/exportResponse'
 
 function usageTimeQs(q: BoardTimeQuery & { limit?: number }) {
   const qs = new URLSearchParams()
@@ -406,7 +407,11 @@ export async function downloadProviderUsageExport(time: BoardTimeQuery) {
   const qs = usageTimeQs(time)
   const res = await fetch(`${BASE}/api/usage/providers/export?${qs}`, { headers: headers('GET') })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
-  const blob = await res.blob()
+  // 2026-10-06（UI规范 10 §4.6.18）：经 readExportBlob 取体，超上限即拒。
+  // 此前是裸 res.blob()：整个文件先落进 WebView 堆，大报表在中低端机是 OOM 面。
+  // 该端点为 csv.NewWriter 流式，Go 在 >2048 字节后转 chunked ⇒ 拿不到 Content-Length，
+  // 故必须走边读边计数，不能照抄参考仓「读 Content-Length 设限」那条判据。
+  const blob = await readExportBlob(res)
   // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
   await exportFile({ filename: exportFilename('provider-usage', time), blob })
 }
@@ -416,7 +421,8 @@ export async function downloadProviderDetailExport(providerId: number, time: Boa
   const qs = usageTimeQs(time)
   const res = await fetch(`${BASE}/api/usage/providers/${providerId}/export?${qs}`, { headers: headers('GET') })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
-  const blob = await res.blob()
+  // 2026-10-06（UI规范 10 §4.6.18）：同上，经受控取流而非裸 blob()。
+  const blob = await readExportBlob(res)
   await exportFile({ filename: exportFilename(`provider-${providerId}-daily`, time), blob })
 }
 // ─── 2026-10-02 看板轮：按模型拆分的用量趋势序列 ───

@@ -250,10 +250,14 @@ func TestV1BodiesReadersAreAssessed(t *testing.T) {
 			"「返回 18%% 数据的查询和正常工作的查询看起来一样」在这里还要更糟一档。\n\n"+
 			"处置方向：会话族有 session_bodies 表"+
 			"（promote 函数见 db/db.go:3267，回填工具 cmd/tools/backfill_session_bodies）。"+
-			"但 db 包**没有** bodies 源的 SQL helper —— turns 侧有 "+
-			"SessionFamilyTurnsSourceSQL / SessionFamilyTurnsForSessionSQL，bodies 侧没有。"+
-			"⇒ 先补那个 helper，再逐个把 LEFT JOIN request_logs_bodies* 改指过去，"+
-			"然后在本表登记（含替代来源与充分性理由）。",
+			"★ 处置指引（R48-A11 订正，旧文本「先补 helper」已过期）："+
+			"bodies 源 helper **已存在**——turns 侧 SessionFamilyTurnsSourceSQL 同族，"+
+			"bodies 侧是 db/request_logs_view_schema.go 的 SessionFamilyBodiesSourceSQL "+
+			"（storage.session_bodies_native_read 开关，默认 v1 臂）。"+
+			"逐个把 LEFT JOIN request_logs_bodies* 改指切换层前，先读 "+
+			"docs/audit/2026-10-06-v1-bodies-read-path.md（§9.265）："+
+			"「只改指切换层但开关仍在 v1 臂」是假迁移，登记时须写明取源路径。"+
+			"★ 旧指引「先补那个 helper」已过期——helper 就是 SessionFamilyBodiesSourceSQL 本身，勿再造一个。",
 			len(unregistered), strings.Join(unregistered, "\n  "))
 	}
 	if len(stale) > 0 {

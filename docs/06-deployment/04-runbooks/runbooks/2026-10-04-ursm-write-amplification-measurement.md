@@ -3923,7 +3923,7 @@ ROLLBACK;
 `pg-table-bloat-check.sh` 那条最能说明问题：它**确实**会为这次停机报一次告警，
 只是报在第二天早上 05:07。**一道正确的门，装在错误的频率上，等于没有门。**
 
-#### 10.31.2 `pg17-pg-availability-check.sh`（每分钟 :59，只读）
+#### 10.31.2 `pg17-pg-availability-check.sh`（每分钟，只读）
 
 `scripts/252-monitor/pg17-pg-availability-check.sh`，退出码沿用本目录契约
 **0 / 1 / 3**。四个设计决定，每一个都有具体来由：
@@ -3954,6 +3954,14 @@ ROLLBACK;
 健康时脚本刻意**不输出**（每分钟一条 OK 只会把真事件淹掉），
 所以「巡检还在跑吗」只能问这个文件的 mtime ——
 问「日志里有没有新行」会与「一切正常」同形。
+
+**已知口径缺口：cron 行的 `| tee -a` 吃掉脚本 rc（C7-P3-2，2026-10-06）。**
+管道使 cron 层的 job 退出码是 `tee` 的 0，上面的 0/1/3 分级到不了 cron ——
+「丢退出码 = 没巡检」的说法在本行只对 log 文本/状态文件成立，对 cron 层
+不成立。判定为**无实害**：告警推送发生在脚本内（notify.sh，转换点去重），
+巡检存活看 lastrun mtime，两者都不消费 cron rc。若未来要把 cron rc 接进
+告警链，须改写管道形态并同步更新 scripts/ursmcheck 的 cron 注册门
+（`TestAvailabilityHeartbeatRunsEveryMinute` 等）——行为变更必须带门。
 
 #### 10.31.3 顺带查明的一件事：`docker` 是 `podman` 的软链
 

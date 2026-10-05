@@ -173,7 +173,7 @@ RUNTIME=""
 RUNTIME_FALLBACK=""
 for rt in podman docker; do
   command -v "$rt" >/dev/null 2>&1 || continue
-  if "$rt" inspect "$CONTAINER" >/dev/null 2>&1; then RUNTIME="$rt"; break; fi
+  if timeout 10 "$rt" inspect "$CONTAINER" >/dev/null 2>&1; then RUNTIME="$rt"; break; fi
   [ -n "$RUNTIME_FALLBACK" ] || RUNTIME_FALLBACK="$rt"
 done
 # 两个运行时都找不到这个容器时也得有名字可报：「PG 挂了」必须说清是
@@ -195,7 +195,9 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------- 1. 容器状态
-CSTATE=$("$RUNTIME" inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)
+# inspect 也包 timeout（R48-C7-P3-1）：分钟级任务里，第 2 步 psql 的 timeout
+# 防的是「容器内挂」，这里防的是「运行时（podman/docker）本身僵死」。
+CSTATE=$(timeout 10 "$RUNTIME" inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)
 if [ -z "$CSTATE" ]; then
   verdict_down "container_missing" "容器 $CONTAINER 在 $RUNTIME 下不存在"
   exit 1

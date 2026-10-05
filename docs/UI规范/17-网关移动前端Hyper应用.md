@@ -232,3 +232,15 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 > （`llmgw_ui_mode` 是唯一共享键，按 R11 属有意共享）；②`web/` 的 compact 档
 > 与 `web-mobile/` 是**两条独立交付物**，规范条目按各自载体核对实现状态，
 > 不得把一侧的「已交付」记到另一侧头上。
+
+> **本仓补记二（2026-10-05 深夜复验，修正上方补记的部分断言）**：以最新 origin/main
+> （含 `5f65feace` 2026-10-04 16:24 / `2ca4df36b` 2026-10-04 17:06）重新核验——
+> ①桌面侧 `web/public/entry-switch.js` **在 origin/main** ✓（内容为克制语义：只切裸入口、
+> 只补 iPadOS 缺口、`?desktop` 逃生口、不写 sessionStorage，见 §10 R11 偏差备案）；
+> ②deploy 接线**在 origin/main** ✓（`deploy-local.sh` 12 处 web-mobile 引用、
+> `dl_stage_release` 第 7 参、`MOBILE_WEB_DIST` 双候选探测）——上方补记「origin 全部分支
+> 零命中 / deploy-local.sh 无 web-mobile 字样」对当前 origin 不再成立（审计时点与推送时点
+> 的先后不再追认，以可复验的当前事实为准）；③**移动侧 `/m/entry-switch.js` 确实不存在**，
+> [部分落地] 判定维持；④行点击契约（上表末行）已按选项①销案——ModelsView 在落地线为
+> 家族卡片行 → 版本明细 Sheet，全视图静态复核通过，门禁（typecheck/vitest 44 用例/build）
+> 在 origin/main 临时检出实测全绿。

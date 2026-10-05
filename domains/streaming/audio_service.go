@@ -857,8 +857,8 @@ var xiaomiVoices = map[string]string{
 
 // normalizeTTSVoiceForCandidate 把客户端音色归一到候选供应商可接受的值。
 // 空值/未知值 → 该供应商默认（小米 mimo_default）；透传形态下保持原值
-// （空值让上游走默认）。命中集合时返回 map 键的规范小写形式——上游若按
-// 大小写敏感匹配，原始大小写（如 "Mia"）仍会 400（39 轮 P3-4）。
+// （空值让上游走默认）。命中集合时返回 map **值**（上游规范形式，如 "Mia"），
+// 任何大小写变体稳定命中——回传小写键会踩小米 400（R48-C2 订正残留）。
 func normalizeTTSVoiceForCandidate(cand provider.Candidate, voice string) string {
 	v := strings.TrimSpace(voice)
 	if preferChatAudioBridge(cand) {

@@ -138,6 +138,7 @@ export default {
   enabled: '启用',
   endDate: '结束日期',
   exportFailed: '导出失败',
+  exportTooLarge: '文件过大，导出上限为 {max}，请到桌面端导出',
   lastOccurred: '最后发生',
   loading: '加载中…',
   never: '从未',

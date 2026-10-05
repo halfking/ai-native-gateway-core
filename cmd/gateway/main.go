@@ -3798,6 +3798,9 @@ func main() {
 	var todaySuccessProbe *bg.TodaySuccessProbe
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
+	// R48 §五-1（§9.264 接线落地）：v1 写入腿存活信号 worker，
+	// 见 v1_write_liveness_worker.go。
+	var v1WriteLivenessWorker *V1WriteLivenessWorker
 	// 2026-08-31: Materialized view refresher for routing analytics performance
 	var materializedViewRefresher *bg.MaterializedViewRefresher
 
@@ -3948,6 +3951,20 @@ func main() {
 	// canaries are the only instances. The quota-probe family nested inside
 	// has its own gate + opt-out further down (LLM_GATEWAY_QUOTA_PROBE_DISABLED);
 	// see docs/audit/2026-09-10-selfcheck-recovery-gate-audit.md for the full
+	// R48 §五-1 / R48-A5（§9.264）接线落地：v1 写入腿存活信号——
+	// 分类器从「全仓零调用点」（R48-A5 的原始发现）接成常驻 worker +
+	// admin 拉取面（GET /internal/v1-write-liveness，dead→503）。
+	// 刻意独立成块（只看 dbConn）：不挂 cred-recovery / probe-worker /
+	// data-plane 任何一个配置门——§9.238 的失效形态（5 天中断零信号）
+	// 恰恰发生在「没人主动去看」的组合态。日志信号策略见
+	// v1_write_liveness_worker.go 文件头（dead 每 tick 一条 ERROR）。
+	// 只读、每 5m 一次计数查询，不加 kill switch。
+	if dbConn != nil && dbConn.Enabled() {
+		v1WriteLivenessWorker = NewV1WriteLivenessWorker(dbConn.Pool(),
+			v1WriteLivenessDefaultWindow, v1WriteLivenessDefaultInterval)
+		v1WriteLivenessWorker.Start(context.Background())
+	}
+
 	// worker/gate matrix and residual-risk notes.
 	if dbConn != nil && dbConn.Enabled() && !config.IsCredRecoveryDisabled() {
 		slog.Info("CHECKPOINT: inside bg services enabled block",
@@ -6245,6 +6262,16 @@ func main() {
 			middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(fbHandler))
 	}
 
+	// R48 §五-1 接线：v1 写入腿存活读数拉取面。鉴权与上方 fallback-buffer
+	// 一致（LLM_GATEWAY_ADMIN_API_KEY）；verdict=dead → 503，供 curl -f 族
+	// 零解析告警。worker 未启动（db 关闭模式）时不挂路由，fail-closed
+	// 惯例与上方 ringBuffer 相同。
+	if v1WriteLivenessWorker != nil {
+		mux.Handle("/internal/v1-write-liveness",
+			middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(
+				NewV1WriteLivenessHandler(v1WriteLivenessWorker)))
+	}
+
 	slog.Info("CHECKPOINT: healthz and metrics registered")
 
 	// plugin-runtime: scan installed plugins and serve /api/v1/plugin-nav.
@@ -7814,6 +7841,9 @@ func main() {
 		}
 		if systemHealthWorker != nil {
 			systemHealthWorker.Stop()
+		}
+		if v1WriteLivenessWorker != nil {
+			v1WriteLivenessWorker.Stop()
 		}
 		if materializedViewRefresher != nil {
 			materializedViewRefresher.Stop()

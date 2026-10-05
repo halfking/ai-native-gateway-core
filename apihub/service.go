@@ -25,8 +25,11 @@ type Store interface {
 	// （门控只管「写不写」，不管「发不发」）。批量把它降到每 tick 数条。
 	//
 	// 契约：① 跨租户由实现方自行分组（RLS 逐租户生效）；
-	// ② 单行坏数据不得中断整批 —— 实现方需隔离坏行并继续。
-	UpsertBatch(ctx context.Context, assets []Asset) error
+	// ② 单行坏数据不得中断整批 —— 实现方需隔离坏行并继续；
+	// ③ 返回值是「确认落库的行数」——分片失败退回逐行后，逐行成功的
+	//    行也要计入（err 非 nil 时照样返回已写行数），让上层能把
+	//    「源表条数 / 注册成功 / 跳过」三个数拆开报（R48-E1）。
+	UpsertBatch(ctx context.Context, assets []Asset) (int, error)
 	Get(ctx context.Context, tenantID string, k Kind, refID int64) (Asset, error)
 	List(ctx context.Context, f Filter) ([]Asset, error)
 	Link(ctx context.Context, tenantID string, rel Relationship) error
@@ -116,12 +119,16 @@ func (s *Service) Register(ctx context.Context, a Asset) error {
 // ★ 缓存失效必须逐条：assetCache 按 (tenant, kind, ref_id) 存，
 //
 //	批量写完只清一次会留下 N-1 条陈旧读。
-func (s *Service) RegisterBatch(ctx context.Context, assets []Asset) error {
+//
+// 返回值：确认落库的行数（不含被跳过的非法行）+ store 的错误。
+// 计数与错误**并存**（与 watcher 的 mcpAdded「逐条成功才计数」语义对齐）：
+// store 部分失败时返回已写行数且 err 非 nil，调用方两个都要用。
+func (s *Service) RegisterBatch(ctx context.Context, assets []Asset) (int64, error) {
 	if s.store == nil {
-		return errors.New("apihub: store is not configured")
+		return 0, errors.New("apihub: store is not configured")
 	}
 	if len(assets) == 0 {
-		return nil
+		return 0, nil
 	}
 	now := time.Now().UTC()
 	prepared := make([]Asset, 0, len(assets))
@@ -144,7 +151,7 @@ func (s *Service) RegisterBatch(ctx context.Context, assets []Asset) error {
 		prepared = append(prepared, a)
 	}
 	if len(prepared) == 0 {
-		return nil
+		return 0, nil
 	}
 	// ★ 缓存失效必须**无条件**逐条执行，不能放在「store 成功之后」。
 	//
@@ -160,11 +167,11 @@ func (s *Service) RegisterBatch(ctx context.Context, assets []Asset) error {
 	//
 	// 失效放在 err 检查**之前**：宁可多清几条不该清的缓存
 	// （代价是一次 cache miss + 一次回表），也不要留下读得到的陈旧值。
-	err := s.store.UpsertBatch(ctx, prepared)
+	n, err := s.store.UpsertBatch(ctx, prepared)
 	for _, a := range prepared {
 		s.cache.invalidate(a.Kind, a.RefID, a.TenantID)
 	}
-	return err
+	return int64(n), err
 }
 
 // Get returns a single asset, honoring tenant isolation.

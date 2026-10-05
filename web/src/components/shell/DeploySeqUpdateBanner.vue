@@ -45,7 +45,7 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
   left: 50%;
   transform: translateX(-50%);
   bottom: 24px;
-  z-index: 2100; /* 悬浮于内容之上、弹窗(2000+)档之下 */
+  z-index: 1990; /* 悬浮于内容之上、让位于弹窗(element-plus 自 2000 起递增) */
   display: flex;
   align-items: center;
   gap: 16px;
@@ -55,7 +55,10 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
   border: 1px solid var(--info-bd);
   background: var(--info-bg);
   color: var(--kx-text);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  /* 2026-10-06：原为 rgba(15, 23, 42, 0.16) 字面量，被 color:check --strict
+     记为基线外新增硬编码。改用既有阴影令牌（--shadow-color-light 同族的
+     kx-shadow-sm 形态），亮/暗两套主题各自生效，桌面臂零变化。 */
+  box-shadow: var(--kx-shadow-sm);
   backdrop-filter: blur(6px);
 }
 
@@ -73,7 +76,7 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
 .deploy-seq-banner__hint {
   margin: 0;
   font-size: 12px;
-  color: var(--kx-text-muted, inherit);
+  color: var(--muted); /* --kx-text-muted 全仓无定义（R48-D2），改用已定义令牌 */
 }
 
 .deploy-seq-banner__actions {
