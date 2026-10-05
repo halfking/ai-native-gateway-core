@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	migration825Path = "../sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql"
+	migration825Path = "../sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql"
 	ensureURSMFunc   = "ensure_ursm_node_snapshot_min_daily_partition"
 )
 
@@ -146,6 +146,53 @@ func Test830IsDeliberatelyNotInTheAutoStartupSequence(t *testing.T) {
 	}
 	if strings.Contains(string(install), "830_ursm_node_snapshot_min_partitioned.sql") {
 		t.Fatal("830 is embedded in the installer's embeddedSQLFiles map — same reasoning as above")
+	}
+}
+
+// ⚠️ 2026-10-06 补：上面那两条只钉住了 **installer** 的两条投递路径，
+// 而 deploy 走的是**另一个**自动扫描器 ——
+//
+//	scripts/deploy-lib.legacy/db-changelog.sh _deploy_pending_startup_migrations()
+//	    for f in sql/migrations/startup/[0-9]*.sql
+//
+// 它按目录扫文件，不看任何注册表。实测回归就是这样发生的：830 明明
+// 「刻意不进自动启动序列」，却一直躺在 sql/migrations/startup/ 里，
+// 于是**每次 deploy-245.sh 都把它当 pending 硬跑**，在 245 上稳定炸掉：
+//
+//	830_ursm_node_snapshot_min_partitioned.sql:75:
+//	  ERROR: public.ursm_node_snapshot_min 不存在 —— 期望它已由 01-schema.sql + 818 建立。
+//
+// 而 Test830IsDeliberatelyNotInTheAutoStartupSequence 全程**绿**：
+// 它查的两处都不含那个目录 ⇒ 门没有牙，回归从缺口溜过去。
+//
+// 这两条断言把「文件实际在哪」钉死，缺口才算补上。
+func Test830LivesInManualDirNotStartupDir(t *testing.T) {
+	const base = "830_ursm_node_snapshot_min_partitioned"
+
+	// ① startup/ 是 deploy 的自动扫描目录：830 出现在这里 = 每次部署必跑。
+	entries, err := os.ReadDir("../sql/migrations/startup")
+	if err != nil {
+		t.Fatalf("read sql/migrations/startup: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), base) {
+			t.Fatalf("830 出现在 deploy 的自动扫描目录 sql/migrations/startup/（%s）。\n"+
+				"该目录被 _deploy_pending_startup_migrations() 无条件扫描，不看任何注册表 ——\n"+
+				"830 的 RENAME + CREATE PARENT TABLE 会被每次 deploy 硬跑一遍。\n"+
+				"2026-10-06 实测：它已在 245 上稳定炸掉整个部署（符号链接未切换）。\n"+
+				"修法是移回 sql/migrations/manual/，不是往 startup/ 里加豁免。",
+				e.Name())
+		}
+	}
+
+	// ② 反向锚：光断言「不在 startup」在文件被整个删掉时也成立，
+	//    那样 830 就此静默消失而门仍然绿。必须同时钉住它确实在 manual/。
+	for _, name := range []string{base + ".sql", base + ".down.sql"} {
+		if _, err := os.Stat("../sql/migrations/manual/" + name); err != nil {
+			t.Fatalf("830 应当位于 sql/migrations/manual/%s，但读不到：%v\n"+
+				"（up 与 down 必须成对存在——down 承载 830 对 817 的台账对称性，\n"+
+				"  见 sql/migrations/startup/migration_817_test.go）", name, err)
+		}
 	}
 }
 

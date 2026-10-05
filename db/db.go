@@ -1635,7 +1635,7 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 }
 
 // ensureURSMNodeSnapshotMinDailyPartition mirrors the executable body of
-// sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql — the
+// sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql — the
 // post-migration half only. The RENAME + CREATE PARENT TABLE half is manual
 // and stays manual (see the migration header).
 //

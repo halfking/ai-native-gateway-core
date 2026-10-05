@@ -7,7 +7,7 @@
 --       · scripts/apply-db-revision-sequence.sh 的升级通道
 --     ⇒ 下次任何人跑 installer / 升级通道，本文件**不会**被自动应用。
 --     执行方式见设计稿 §5.2「迁移步骤」，由人在可控窗口手工跑：
---       psql "$DSN" -X -v ON_ERROR_STOP=1 -f sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql
+--       psql "$DSN" -X -v ON_ERROR_STOP=1 -f sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql
 --
 -- 为什么不自动应用（2026-10-04 决定）：步骤 1 会对一张 10 GB 的活表做
 -- RENAME。放进自动序列意味着 154/245 任何一次无人值守的 installer 升级

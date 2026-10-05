@@ -38,14 +38,40 @@ import (
 //   - 只认 `\d+_[a-zA-Z0-9_]+\.sql` 的行。
 const (
 	// 台账位置与迁移目录（相对仓库根）
-	registryPath  = "../../docs/db-changelog.md"
-	migrationsDir = "../../sql/migrations/startup"
+	registryPath = "../../docs/db-changelog.md"
 
 	// 近邻窗口宽度：只看台账最大登记编号往下的这一段。
 	// ⚠️ 刻意的窄口径：老文件未登记是**设计内**的（脚本明写），
 	// 对它们断言会制造 321 条假阳性 —— 一道会误报的门比没有门更坏。
 	windowSize = 20
 )
+
+// migrationsDirs 必须与 scripts/verify-migration-checksums.sh 的 MIG_DIRS 保持一致。
+//
+// ⚠️ 2026-10-06：830 被移进 manual/（手工执行，刻意不进自动序列），
+// 而本门与那个脚本原本都只扫 startup/ ⇒ 台账登记的 830 在磁盘上读不到，
+// 两边同时报 fatal。manual/ 里的文件是**人工**跑在生产上的那批，
+// sha 校验恰恰最该保留，所以两边都必须认这个目录。
+var migrationsDirs = []string{
+	"../../sql/migrations/startup",
+	"../../sql/migrations/manual",
+}
+
+// readMigration 按 basename 在各迁移目录里找文件并返回其内容。
+// 同名存在时优先 startup/（与脚本的目录顺序一致）。
+func readMigration(name string) ([]byte, error) {
+	var firstErr error
+	for _, d := range migrationsDirs {
+		b, err := os.ReadFile(filepath.Join(d, name))
+		if err == nil {
+			return b, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
+}
 
 // migFile 是迁移文件的最小信息（名字 + 编号）。
 type migFile struct {
@@ -62,6 +88,14 @@ type migFile struct {
 var knownUnregistered = map[string]string{
 	"802_session_turn_details_gw_task_id_index.sql": "2026-10-01 合入（907d67b85），台账无登记行。",
 	"820_audio_modality_backfill.sql":               "2026-10-03 并发会话合入（21e1d66cf），台账无登记行。",
+	// 2026-10-06：本门自此也扫 sql/migrations/manual/（830 移进去之后），
+	// 这两个 2026-07-19 的文件因此进入近邻窗口。刻意不登记的理由是**它们不是
+	// schema 迁移**：前者头部自称「验证脚本」，内容是对配置/错误响应的只读
+	// SELECT，用于排障定位；后者是给火山引擎提供商补 glm-5.2 模型的一次性数据
+	// 订正。docs/db-changelog.md 是 schema 迁移的 sha 台账，把它们登记进去
+	// 会让「有登记 = 有待部署的 schema 变更」这个含义失效。
+	"20260719_add_volcano_glm52.sql": "非 schema 迁移：火山引擎 glm-5.2 的一次性数据订正脚本（2026-07-19），刻意不进台账。",
+	"20260719_verify_config.sql":     "非 schema 迁移：智谱/火山引擎配置的只读排障验证脚本（2026-07-19），刻意不进台账。",
 }
 
 func TestMigrationRegistryStaysContinuous(t *testing.T) {
@@ -69,9 +103,13 @@ func TestMigrationRegistryStaysContinuous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读台账 %s：%v", registryPath, err)
 	}
-	files, err := os.ReadDir(migrationsDir)
-	if err != nil {
-		t.Fatalf("读迁移目录 %s：%v", migrationsDir, err)
+	var files []os.DirEntry
+	for _, d := range migrationsDirs {
+		fs, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatalf("读迁移目录 %s：%v", d, err)
+		}
+		files = append(files, fs...)
 	}
 
 	// 台账登记的文件名集合。
@@ -103,7 +141,7 @@ func TestMigrationRegistryStaysContinuous(t *testing.T) {
 		migs = append(migs, migFile{f.Name(), n})
 	}
 	if len(migs) == 0 {
-		t.Fatalf("迁移目录里没有编号迁移：%s", migrationsDir)
+		t.Fatalf("迁移目录里没有编号迁移：%v", migrationsDirs)
 	}
 
 	// 窗口的锚：**必须取自磁盘侧**（磁盘上的最大编号），不是台账侧。
@@ -191,8 +229,7 @@ func TestRegistryShaIsActuallyTheFile(t *testing.T) {
 
 	checked, mismatched := 0, 0
 	for name, shas := range recorded {
-		p := filepath.Join(migrationsDir, name)
-		b, err := os.ReadFile(p)
+		b, err := readMigration(name)
 		if err != nil {
 			// 台账有、磁盘无 —— 脚本 :113-123 判为 fatal。这里只报，不 exit。
 			t.Errorf("台账登记了 %s，但磁盘上读不到 ⇒ 脚本 verify-migration-checksums.sh:113-123 会判 fatal", name)
