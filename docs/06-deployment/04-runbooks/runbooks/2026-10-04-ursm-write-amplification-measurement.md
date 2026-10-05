@@ -4510,3 +4510,103 @@ Append
 
 评估：**值得做但不紧急**（占用率 0.6%~2.5%）。它是本轮唯一一个
 「单点、低风险、收益明确」的查询路径优化项。
+
+### 10.37 🔴 试了 `checkStaleness` 的窄化改写，**被自己的门挡回来**（已还原，未上线）
+
+§10.36 指出 `checkStaleness` 把 `max(ts)` 写在宽视图上、428 ms/次。
+本节是那次优化的**完整尝试记录**，结局是**放弃**。
+
+#### 10.37.1 改了什么（已还原）
+
+把
+
+```sql
+(SELECT max(ts) FROM request_logs_with_current_month
+  WHERE ts >= now() - interval '5 minutes')
+```
+
+换成只读 4 张 **ts 来源表**（`request_logs_hot` / `request_logs` /
+`session_turns_hot` / `session_turns`）的 `greatest(...)`。
+
+**等价性不是「大概」，是证明过的**：
+1. 两个 `LEFT JOIN` 的右表只补空、不产生新行；
+2. 视图输出的 `ts` 取自 `t.ts` / `v.ts`，**不是** `d.ts`
+   ⇒ `session_turn_details*` 对 `max(ts)` 不可能有贡献；
+3. 故宽视图的 `max(ts)` **恒等于**这 4 张表各自 max 的最大者。
+
+实测佐证：`session_turn_details_hot` 的 `max(ts)` 与 `session_turns_hot`
+**逐微秒相同**（2026-10-06 01:59:21.503879+08）。
+
+真库等价门跑在**同一条语句、同一个 MVCC 快照**里，3/3 `true`、逐微秒相同。
+
+#### 10.37.2 性能收益：只有 2.1×，**我 §10.36 的预估错了**
+
+| | 计划 | 执行 | 合计 |
+|---|---|---|---|
+| 宽视图（原） | 117.1 ms | 100.9 ms | **218 ms** |
+| 4 张表（改后） | 42.9 ms | 59.9 ms | **103 ms** |
+
+改后计划形状确实理想（四条分支全是 `Index Only Scan`，
+分区裁剪生效 `Subplans Removed: 2`），但**没有降到个位数毫秒**。
+§10.36 我写的是「预估 428ms → 个位数毫秒」，**这个预估是错的**：
+真正的开销不只在 details join，还在 `request_logs`/`session_turns` 父表
+的几十个分区与计划开销（42.9 ms 计划时间就是证据）。
+
+⇒ 实际省下 115 ms/次 × 每 21 秒 = **0.15% 占用率**。
+
+#### 10.37.3 挡回来的是哪道门
+
+`bg/recent_surface_reads_test.go: TestRecentWindowReadsUseCurrentMonthSurface`：
+
+```go
+re := regexp.MustCompile(`(?i)FROM\s+request_logs(\w*)`)
+// 每个匹配的后缀必须 == "_with_current_month"
+```
+
+它要求这几个文件的近期窗口读**必须走 `request_logs_with_current_month`**，
+来源是 **2026-09-10 minimax-prod-v2 生产事故**的教条：
+裸 `request_logs` 父表只存 promote 后的冷行（154 上 `max(ts)` 陈旧一天+），
+所以近期窗口读裸父表**结构性地瞎**。
+
+★ **我判断这道门是对的，我错了。** 三条理由：
+  1. **收益是 0.15% 占用率。** 为它放宽一道安全门，风险收益完全不成比例。
+  2. **这道门的作用恰恰是禁止我做的事**：它不让任何人手推「哪个面是全的」。
+     我做的事情就是手推 —— 我推对了（等价性有证明），但**门存在的意义
+     是让下一个不需要重推一遍**，而不是让这一次能通融。
+  3. 我的等价性证明建立在「当前 details 表不持有更新的 ts」这个**实测事实**上。
+     而 `session_turn_details` 是会被写入的表；一旦它某天独立产生更晚的 ts，
+     我的窄写法就静默给出更旧的答案 —— **而 09-12 那次事故正是这个形态
+     （max(ts) 陈旧、告警该不响乱响，且不报任何错）**。
+     换句话说：这个改法的正确性依赖一个**没有被任何门守着的事实**。
+
+⇒ 已 `git checkout` 还原 `bg/candidate_failure_monitor.go`，
+  配套测试文件也一并移出（它针对的改动已不存在）。
+  还原后 `TestRecentWindowReadsUseCurrentMonthSurface` 恢复绿。
+
+#### 10.37.4 若要继续，正确做法是**加一个窄视图**而不是改这几个查询
+
+用户若要这个优化，稳妥路径不是在 worker 里手拼表名，而是：
+
+1. 在 DB 层加一个**只投影 ts** 的窄视图，例如
+   `request_logs_recent_ts`（`SELECT ts FROM request_logs_hot UNION ALL SELECT ts FROM request_logs`）；
+2. 同步**放宽那道教条门**的正则，让它接受「经审计的窄视图白名单」，
+   而不是接受任意表名 —— 白名单必须显式、且新增条目要有人 review；
+3. 窄视图的 `max(ts)` 与宽视图的等价性，用**同一快照**的门钉住（我已跑通该测法）。
+
+⇒ 这三步都改到**生产契约**（DB schema + 一道事故教条门），必须你拍板。
+
+#### 10.37.5 附带的两条方法论
+
+1. **等价性必须在同一快照里比。** 我第一版把新旧两条查询**分两次跑**再比值，
+   结论是「不一致」—— 真因是两次执行相隔 16 秒，而这张表每时每刻都在被写入。
+   ⇒ 比的是两个时刻，不是两个写法。**跨时刻的两次查询不能用来证明等价。**
+2. ★ **变异 M29 在我自己新写的门上打出一个洞**：删掉 `FROM session_turns`
+   整行后门**全绿**。原因是 `strings.Contains(sql,"session_turns")` 会被
+   `session_turns_hot` 满足 —— 四张表两两互为子串，**纯子串匹配对它们完全失明**。
+   改用 `\bFROM\s+<表名>\b` 词边界后 M29 才红。
+   同时如实登记真库门的盲区：**删掉一个当前并不持有最新 ts 的来源时，
+   真库门抓不住**（值仍然相同）—— 那一类只能靠结构门逐个点名。
+3. 顺带发现一条**既有失败**（与本轮无关，`bg/` 与 HEAD 逐字节相同故可断定）：
+   `TestMigration762ProjectBackfillChain_RealDB` 在真库上失败
+   （`expected ≥1 backfilled row, got 0`）。它**只在设了 DSN 时才跑**，
+   所以此前所有「无 DSN 全绿」的记录都看不到它。
