@@ -34,6 +34,9 @@ type markCall struct {
 }
 
 func (s *probeStore) Upsert(context.Context, apihub.Asset) error { panic("probe 不应调 Upsert") }
+func (s *probeStore) UpsertBatch(context.Context, []apihub.Asset) error {
+	panic("probe 不应调 UpsertBatch")
+}
 
 func (s *probeStore) Get(context.Context, string, apihub.Kind, int64) (apihub.Asset, error) {
 	panic("probe 不应调 Get")

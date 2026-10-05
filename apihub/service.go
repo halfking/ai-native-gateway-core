@@ -18,6 +18,15 @@ import (
 // a database.
 type Store interface {
 	Upsert(ctx context.Context, a Asset) error
+	// UpsertBatch writes many assets in as few statements as possible.
+	//
+	// 2026-10-05（runbook §10.30）：AssetWatcher 每 60 秒把源表全量灌进来，
+	// 逐行 Upsert 让语句数达到 5,562,432 次/天而其中 93.7% 不改任何行
+	// （门控只管「写不写」，不管「发不发」）。批量把它降到每 tick 数条。
+	//
+	// 契约：① 跨租户由实现方自行分组（RLS 逐租户生效）；
+	// ② 单行坏数据不得中断整批 —— 实现方需隔离坏行并继续。
+	UpsertBatch(ctx context.Context, assets []Asset) error
 	Get(ctx context.Context, tenantID string, k Kind, refID int64) (Asset, error)
 	List(ctx context.Context, f Filter) ([]Asset, error)
 	Link(ctx context.Context, tenantID string, rel Relationship) error
@@ -89,6 +98,58 @@ func (s *Service) Register(ctx context.Context, a Asset) error {
 		return err
 	}
 	s.cache.invalidate(a.Kind, a.RefID, a.TenantID)
+	return nil
+}
+
+// RegisterBatch registers many assets at once, invalidating the cache for each.
+//
+// 2026-10-05（runbook §10.30）：语义与逐个 Register 一致 —— 同样补
+// RegisteredAt/LastSeenAt、同样逐条失效缓存。差别只在发往 DB 的**语句条数**。
+//
+// ★ 与 Register 的**唯一语义差异**：Register 对非法 kind/空 tenant **返回错误**；
+//   RegisterBatch **跳过并记日志**，因为一批里有一行坏的不该让另外 N-1 行失败
+//   —— 这正是改动前 watcher「log+continue」的语义，批量化不能把它丢掉。
+//   校验放在这一层（而不是只放在 pgStore）是为了让**所有** Store 实现
+//   都拿到同一个契约，也让这条契约不需要真库就能测。
+//
+// ★ 缓存失效必须逐条：assetCache 按 (tenant, kind, ref_id) 存，
+//   批量写完只清一次会留下 N-1 条陈旧读。
+func (s *Service) RegisterBatch(ctx context.Context, assets []Asset) error {
+	if s.store == nil {
+		return errors.New("apihub: store is not configured")
+	}
+	if len(assets) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	prepared := make([]Asset, 0, len(assets))
+	for _, a := range assets {
+		if !a.Kind.IsValid() {
+			slog.Warn("apihub: RegisterBatch 跳过非法 kind",
+				"kind", string(a.Kind), "ref_id", a.RefID, "tenant", a.TenantID)
+			continue
+		}
+		if a.TenantID == "" {
+			slog.Warn("apihub: RegisterBatch 跳过空 tenant",
+				"kind", string(a.Kind), "ref_id", a.RefID)
+			continue
+		}
+		if a.HealthState == "" {
+			a.HealthState = HealthUnknown
+		}
+		a.RegisteredAt = now
+		a.LastSeenAt = now
+		prepared = append(prepared, a)
+	}
+	if len(prepared) == 0 {
+		return nil
+	}
+	if err := s.store.UpsertBatch(ctx, prepared); err != nil {
+		return err
+	}
+	for _, a := range prepared {
+		s.cache.invalidate(a.Kind, a.RefID, a.TenantID)
+	}
 	return nil
 }
 
