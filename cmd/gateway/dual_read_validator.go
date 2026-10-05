@@ -355,6 +355,46 @@ func clampWindowHours(h int) int {
 	return h
 }
 
+// v1CoverageHoursSQL measures, per hour of the window, whether v1 has rows and
+// whether either side has rows (§9.235 rule 3). One statement so numerator and
+// denominator come from the same snapshot.
+//
+// ★ Both storage faces are read, and that is load-bearing, not stylistic.
+// `request_logs_hot` is a **separate, disjoint table** (§9.160.7): reading only
+// the parent misses the newest rows, so a window that ends in the last hours
+// would score V1CoveragePP ≈ 0 and the gate would report a *false* void.
+//
+// That failure is tempting to "fix" by lowering s4MinV1CoveragePP, which
+// destroys the rule instead of the bug. §9.238 re-measured this window on the
+// real database: v1 genuinely wrote **zero** rows for 5 days (2026-09-06
+// 21:00:27 → 2026-09-11 21:21:10) while session_turns and request_wal both
+// kept writing — i.e. the false void and the true void look identical from the
+// verdict string. Only the measurement tells them apart, so the measurement
+// must not be the thing that silently degrades.
+//
+// TestS4GateCoverageSQLReadsBothFaces pins the four relations.
+const v1CoverageHoursSQL = `
+		WITH h AS (
+			SELECT generate_series($2::timestamptz, $3::timestamptz, interval '1 hour') AS b
+		), per_hour AS (
+			SELECT
+			  EXISTS (SELECT 1 FROM (
+			        SELECT tenant_id FROM request_logs_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			        UNION ALL
+			        SELECT tenant_id FROM request_logs      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			      ) rv WHERE $1 = '' OR rv.tenant_id::text = $1) AS has_v1,
+			  EXISTS (SELECT 1 FROM (
+			        SELECT tenant_id FROM session_turns_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			        UNION ALL
+			        SELECT tenant_id FROM session_turns      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			      ) sv WHERE $1 = '' OR sv.tenant_id::text = $1) AS has_session
+			FROM h
+		)
+		SELECT
+		  count(*) FILTER (WHERE has_v1),
+		  count(*) FILTER (WHERE has_v1 OR has_session)
+		FROM per_hour`
+
 func (v *DualReadValidator) SummarizeFrom(ctx context.Context, tenant string, now time.Time, windowHours int) (*MirrorDriftSummary, error) {
 	if v == nil || v.db == nil {
 		return nil, errors.New("dual-read validator not configured")
@@ -419,27 +459,7 @@ func (v *DualReadValidator) SummarizeFrom(ctx context.Context, tenant string, no
 	// v1 traffic-hours are two different measurements; taking them at different
 	// instants can push the ratio across the floor.
 	var covered, trafficBearing int64
-	if err := v.db.QueryRow(ctx, `
-		WITH h AS (
-			SELECT generate_series($2::timestamptz, $3::timestamptz, interval '1 hour') AS b
-		), per_hour AS (
-			SELECT
-			  EXISTS (SELECT 1 FROM (
-			        SELECT tenant_id FROM request_logs_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
-			        UNION ALL
-			        SELECT tenant_id FROM request_logs      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
-			      ) rv WHERE $1 = '' OR rv.tenant_id::text = $1) AS has_v1,
-			  EXISTS (SELECT 1 FROM (
-			        SELECT tenant_id FROM session_turns_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
-			        UNION ALL
-			        SELECT tenant_id FROM session_turns      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
-			      ) sv WHERE $1 = '' OR sv.tenant_id::text = $1) AS has_session
-			FROM h
-		)
-		SELECT
-		  count(*) FILTER (WHERE has_v1),
-		  count(*) FILTER (WHERE has_v1 OR has_session)
-		FROM per_hour`, tenant, start, now).Scan(&covered, &trafficBearing); err != nil {
+	if err := v.db.QueryRow(ctx, v1CoverageHoursSQL, tenant, start, now).Scan(&covered, &trafficBearing); err != nil {
 		return nil, fmt.Errorf("v1 coverage: %w", err)
 	}
 	if trafficBearing > 0 {
