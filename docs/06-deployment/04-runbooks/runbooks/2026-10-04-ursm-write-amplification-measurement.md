@@ -5264,3 +5264,85 @@ Hash Join
 
 ⇒ 登记为**候选**，等 §10.43.3b 的当前速率确认它现在是否仍值得占 5% 的库时间；
 若当前速率远低于累计，则连候选都算不上。
+
+---
+
+## 10.45 ★★★ 效率侧最有行动价值的一项：取 turn 号的查询在**持锁事务内**打「宽视图 + 反连接」
+
+这一条把 §10.43 的锁成本解释清楚了，也是本轮效率普查里**唯一有明确改法**的项。
+
+#### 10.45.1 锁与这条查询是同一笔钱
+
+`domains/session/v2/turn_writer.go:47`：
+
+```sql
+const sessionAdvisoryLockSQL = `
+	SELECT set_config('max_parallel_workers_per_gather', '0', true),
+	       pg_advisory_xact_lock(public.session_turns_advisory_lock_key($1, $2))
+`
+```
+
+同一条语句里**先关并行、再取锁**。注释记着：关并行省了 **90 ms（2.7×）**，
+且是 `pg-252-pg17` 上 `could not map dynamic shared memory segment` ×338 与
+`parallel worker FATAL` ×654/45min 的主源。
+
+⇒ 因此 §10.43 里那个「均值 99.7 ms」**未必全是锁等待**，
+它同时包含了「为拿 turn 号而关掉并行」的代价。这点必须并进 10.43 的解读。
+
+#### 10.45.2 锁内执行的那条查询
+
+```sql
+SELECT COALESCE(MAX(turn_no), $1) + $2
+  FROM public.session_turns_with_current_month
+ WHERE tenant_id = $3 AND session_id = $4
+```
+
+累计 **95,520.2 s / 791,845 次 / 均值 120.6 ms**（pss 第 4 名）。
+索引是齐的（hot 与每个月分区各有 `(tenant_id, session_id, turn_no DESC)`），
+带过滤，本该是 0.1 ms 量级。**EXPLAIN ANALYZE 实测却是反连接：**
+
+```
+Result (actual rows=1)
+ └─ Limit → Merge Append → Sort
+      └─ Nested Loop Anti Join
+           ├─ Index Scan on session_turns_hot            (6 buffers)
+           └─ Append → Index Only Scan on session_turns_2026_07 archived_1
+                        Index Cond: (tenant_id = 'default')
+                        Filter:  (request_id = hot.request_id)
+```
+
+#### 10.45.3 视图为什么长这样
+
+```sql
+SELECT hot.* FROM session_turns_hot hot
+ WHERE NOT EXISTS (SELECT 1 FROM session_turns archived      -- ← 打全部分区表
+                    WHERE archived.tenant_id = hot.tenant_id
+                      AND archived.request_id = hot.request_id)
+UNION ALL
+SELECT session_turns.* FROM session_turns …
+```
+
+反连接是为了**同一个 turn 从 hot 归档到月分区后不在视图里出现两次**。
+
+★ **对 `MAX(turn_no)` 它在语义上完全无关**：同一行在两处的副本，
+`MAX` 取到的值一模一样；反连接只影响「返回哪一份副本」，不影响最大值。
+⇒ 它对纯聚合消费者是**纯开销**，且要为 hot 的每一行对整个分区表探一次。
+
+#### 10.45.4 为什么不能直接改（三条硬约束）
+
+1. **门钉住了 SQL 形状**：`domains/session/v2/session_writer_tx_test.go:25`
+   明写「fragments that matter (advisory lock, `MAX(turn_no)`, the two INSERTs…)」，
+   `turn_writer_dup_test.go:27` 也钉了 `SELECT COALESCE(MAX(turn_no), 0) + 1`。
+2. **视图本身有多个消费者**（`loader_test.go:166`、`message_source_*_test.go`），
+   改视图定义的影响面远大于改这一条查询。
+3. **§10.37 的教训**：这类改写必须**先证明等价、再看门**；
+   而且收益要能抵过「让下一个不必重推」的门槛。上次那条只值 0.15% 就被我挡回了。
+
+#### 10.45.5 该走的路径（不是现在就做）
+
+- **先证等价**：在同快照内比较「走视图」与「只读 hot + 当月分区」的 `MAX(turn_no)`
+  是否**逐会话逐值相同**。这一步是只读的，随时可做。
+- 再决定改**查询**还是改**视图**：改查询影响面小得多，且门只钉了查询片段。
+- 收益判据用**当前速率**（样点 B），不用累计值。
+
+⇒ 本节**只做定位与论证**，未改任何代码，未动生产。
