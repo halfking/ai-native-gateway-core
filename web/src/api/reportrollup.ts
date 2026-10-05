@@ -3,6 +3,7 @@
 // 数据来自每日凌晨聚合的 report_snapshots 最细粒度（grain）快照，区间查询不回扫原始日志。
 import { req, BASE, headers } from './_core'
 import { exportFile } from '../utils/exportFile'
+import { readExportBlob } from '../utils/exportResponse'
 
 export type ReportView = 'provider' | 'internal'
 /** 分组维度：主表按此维度汇总（取代旧版四张固定表）。 */
@@ -222,7 +223,9 @@ export async function downloadReportExport(q: ReportQuery): Promise<void> {
     headers: headers('GET'),
   })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
-  const blob = await res.blob()
+  // 2026-10-06（UI规范 10 §4.6.18）：经 readExportBlob 取体。该端点显式设了
+  // Content-Length（report_rollup.go:441），故命中「读之前就能判」那条路径。
+  const blob = await readExportBlob(res)
   // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
   const prefix = q.view === 'internal' ? 'reconciliation_internal' : 'reconciliation_provider'
   await exportFile({ filename: `${prefix}_${q.start}_${q.end}.xlsx`, blob })
