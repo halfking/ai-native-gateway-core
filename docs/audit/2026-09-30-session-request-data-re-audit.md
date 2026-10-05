@@ -30110,3 +30110,128 @@ outbox 无行）**落在 journal 保留期内**（保留起点 **2026-10-04 11:0
 与 §9.238 那次「查消失数据必须找写入侧证人」、§9.245 那次「断言不存在前先读汇总文档」同族，
 但这次更严重：**三处都进了已发布的文档。**
 
+
+### §9.249 ★ 把唯一那 1 行钉到「既没成功也没报错」，并发现**生产二进制不是从干净树构建的**
+
+> 本节兑现 §9.248.3 留下的入口（重新读 `SessionWriterV2.Write` 与 `turn_writer.go`）。
+> **只读，生产零写入。** §9.248 的三处撤回**不回滚**（本节再次印证：单网关进程成立）。
+
+#### §9.249.1 ★ 先给一个能直接用的数：journal 覆盖期的真实丢失率
+
+`journalctl` 保留起点 **2026-10-04 11:01:19**。在这个可归因窗口内
+（10-04 11:01 → 10-05 14:11，出货分类器逐字复用 + **两面** scope + `NOT EXISTS` 过滤）：
+
+| 指标 | 值 |
+|---|---|
+| 带会话头的 v1 终态行总数 | **≈ 6,350** |
+| `genuine_loss` **且两面都没有 turn** | **1** |
+| 丢失率 | **0.016 %** |
+
+唯一那一行就是 `a9e2dc006a62103b087999517bf765bd`。
+⇒ ★ **7 天窗口里的 11 行，绝大多数落在 journal 保留期外**（§9.248.4 已记录），
+所以「27 小时 1 行」与「7 天 11 行」**不矛盾**：后者约 0.4 行/天，本段约 0.9 行/天，
+同一量级。**生产镜像丢失是低频、不是系统性事件。**
+
+⚠ **本节我自己又犯了一次 §9.247.5 警告过的错**：我先跑了个「按小时分桶」的查询，
+**只做分类、没有加 `NOT EXISTS` 过滤**，得到「genuine_loss 占 95.9%（6,090 行）」——
+那个数字**根本不是丢失**（`genuine_loss` 是分类器的 ELSE 臂，含义是「不是 loopback、
+不是 non_terminal」）。**若把它当成丢失率发出去，会把一个 0.016% 的问题报成 96%。**
+是「两条查询放在一起看」才暴露的。**`MirrorDriftClassSQL` 的 `genuine_loss`
+不等于「丢了」，必须配 `NOT EXISTS` 才成立** —— 这一条此前只在夹具注释里写过，
+本节把它提升成**审计纪律**。
+
+#### §9.249.2 ★ `a9e2dc00` 的完整时间线与「既没成功也没报错」的证据链
+
+**时间线（T0–T9 生命周期戳 + dim 时间戳）**：
+
+```
+ts                  = 13:34:00.627   请求开始
+t0_arrived_at       = 13:34:00.488
+t7_forward_start_at = 13:34:00.512
+latency_ms          = 35058          ← 这次 transient 请求跑了 35 秒
+t9_response_end_at  = 13:34:34.270   终态
+session_dim.created_at = 13:34:34.662   ← 在 t9 之后 392 ms
+```
+
+⇒ ★ **§9.247.2 那个「dim 晚 33 秒」的疑点不成立**：那不是延迟，
+**是这次请求本身跑了 35 秒**。`session_dim.first_request_at` 取自
+`request_context_attrs.ts`，`created_at` 是 upsert 执行时刻，两者相差一个请求时长，
+完全正常。**dim 确实由这次终态写入。**
+
+**「既没成功也没报错」的四条独立证据**：
+
+| # | 证据 | 读数 |
+|---|---|---|
+| 1 | 全库按 `request_id` 扫 11 张表 | 只在 `request_logs_hot`（1）与 `session_dim`（1）命中；`session_turns_hot` / `session_turns` / `session_turns_with_current_month` / `session_bodies` / `session_turn_logs` / `session_turn_details` / `sessions` / `session_aggregate_outbox` / `session_mirror_outbox` / `request_wal` **全 0** |
+| 2 | **对照**（同窗口 5 个成功请求） | 每个都是 `agg_outbox=1 / sessions=1 / turns_hot=1`；且 `session_aggregate_outbox` 全表 **49,406 行、最早 09-28** ⇒ **它不是自消队列**，「0 行」是**有效证据**，不是被 reaper 排空 |
+| 3 | 日志 | `journalctl` 全文 grep 该 `request_id` **0 命中**；`V2 shadow write failed` 在保留期 10 次，其中当前进程（10-05 06:50:43 起）期内**恰好 2 次**（06:51:12、11:25:56） |
+| 4 | **Prometheus 交叉验证** | `llm_gateway_shadow_write_failed_total{kind="session_v2"}` = **2**，`sessions_v2_write_failure_total` = **2**，与 #3 的当前进程期计数**逐条吻合**；`a9e2dc00`(13:34) 之后**计数未增加** |
+
+⇒ ★★ **结论（比 §9.248.3 更硬）**：
+**`w.Write` 既没有成功（无 turn、无 aggregate outbox 行 ⇒ 事务未提交），
+也没有返回 error（计数与日志都没有它）。**
+而 `runShadowWrite` 的信号量满分支也会 `RecordShadowWriteFailure`（同一个计数器）
+⇒ **该分支同样没走**。
+
+#### §9.249.3 代码侧：`Write` 在 commit 之前**没有任何 `return nil`**
+
+把 `domains/session/v2/session_writer_v2.go` 的 `Write`（442–830 行）全部 return 点列出：
+
+```
+460 begin tx            473 set tenant GUC      476 LockSessionInTx
+519 marshal turn digest 693 write turn           717 write bodies
+735 write details       754 write final_full     764 write memora snapshot
+801 enqueue aggregate outbox                     805 commit tx
+```
+
+**11 个 return 全部返回 error；commit 成功之后函数继续走到末尾才 `return nil`。**
+⇒ **按源码，`Write` 返回 nil ⇒ 事务已提交 ⇒ `appendTurnInLockedTx` 要么插入了新行、
+要么在 `RowsAffected()==0` 时于 `session_turns_with_current_month` 查到了已有行
+（查不到会 `return 0, fmt.Errorf("read existing turn_no: …")`）** ⇒ **turn 必然可见**。
+
+另两条排除：
+- `session_turns` 的 6 个分区**全部 attached**（含 `session_turns_default`），
+  不存在「行写进了没挂载的分区」。
+- 252 上**没有**任何 cron/脚本对 `session_turns_hot` 做 DELETE/TRUNCATE；
+  仓库里的 DELETE 都在迁移与审计脚本内、252 未运行。
+
+**⇒ 源码与观测互相矛盾。** 而矛盾点在下一节。
+
+#### §9.249.4 ★★ 矛盾的根源：生产二进制是**从脏工作树构建**的
+
+```
+$ go version -m /opt/llm-gateway-go/bin/gateway
+  mod  github.com/kaixuan/llm-gateway-go  v0.0.0-20261004224118-8ab8a4fd696c+dirty
+  build vcs=git
+  build vcs.revision=8ab8a4fd696c06df51661b1a569a697b90b25375
+  build vcs.time=2026-10-04T22:41:18Z
+  build vcs.modified=true          ★
+```
+
+⇒ ★★ **运行中的二进制无法被验证等同于 commit `8ab8a4fd` 的源码。**
+`vcs.modified=true` 表示构建时工作树有未提交改动。
+
+**这条推翻的是「方法」而不是「结论」**：
+§9.247.4 的 6 条候选排除**全部是读仓库源码得出的**，
+它们隐含前提是「生产跑的代码 = 仓库里的代码」——**这个前提未经验证，且现在有反证**。
+
+⚠ **但不要过度解读**：`vcs.modified=true` 也可能是**无害**的 ——
+本仓发布流程会 bump `VERSION` / `version.json`（共享主工作区此刻就带着这两个文件的未提交改动），
+**改版本号同样会让树变脏**。`go version -m` **不记录 diff**，所以
+「镜像路径是否真的不同」**无法由此判定**。
+
+⇒ ★ **可执行的下一步（不需拍板）**：把 §9.249.3 的 11 个 return 点做成
+**出货夹具里的静态断言**（读 `session_writer_v2.go` 源码，断言
+`commit` 之前不存在 `return nil`），**一旦将来真的出现这种路径，门立刻转红**。
+这比继续在生产上找样本更可靠——**样本 27 小时才 1 行，等不起。**
+
+#### §9.249.5 本节不主张的事（不夸大）
+
+1. **不主张**「二进制里有仓库没有的代码」——`vcs.modified=true` 只证明**不等同**，
+   不证明**哪一行不同**，更不证明镜像路径不同。
+2. **不主张**这 1 行是 bug 而非运维事件——它与「构建自脏树」「构建与运行可能不一致」
+   都相容，也与「某个未知的无日志路径」相容。**只读数据无法分开。**
+3. **不主张** 27 小时的丢失率可以外推到 7 天或 30 天 —— 11 行里 9 行在 journal 保留期外，
+   **它们的成因可能与这 1 行不同**。
+4. 本节所有生产操作**只读**；未执行任何回填、重启、部署或配置变更。
+
