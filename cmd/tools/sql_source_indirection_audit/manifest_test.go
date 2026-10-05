@@ -22,11 +22,21 @@ import (
 //	本工具不是门、不进 CI；输出是证据，不是待维护的登记表。
 //
 // 这句话在 §9.45 当时是**诚实的**——工具算错没人拦（§9.226.3 修掉了算错），
-// 但「输出是证据」意味着**没有任何东西要求有人去看第二桶**。实测（2026-10-05）：
+// 但「输出是证据」意味着**没有任何东西要求有人去看第二桶**。§9.226.3 当时的实测：
 //
 //	解析到 canonical / 会话族（退役安全）:  5 处
 //	解析到 v1 宽族                        : 12 处 / 6 个文件
 //	不可静态解析（需手验）                : 35 处 / 20 个文件
+//
+// ⚠ **这三行是 §9.226.3 的快照，已过期**（2026-10-05 / §9.233 实测）：
+//
+//	全仓拼接点 67 处 / 35 文件（v1 6、canonical 5、unresolved 25）
+//
+// unresolved 那一桶从 20 个文件涨到 25 个，**涨的不是新读方，是老读方换了写法**：
+// §9.232 把 7 个 admin 内的 bodies 读方从**字面量**改成拼接调用、§9.233 又迁了 3 个
+// 跨包读方 ⇒ 它们从「字面量（不进本工具）」变成「拼接点不可判定（进 unresolved）」。
+// ⇒ **本工具只管关系名不是字面量的拼接点**；把字面量改成拼接会让桶看起来在恶化，
+// 但那是把「看不见」变成「看得见且已定级」，方向上是变好。
 //
 // 其中 6 个 v1 文件里有 **4 个在四张登记表里一处都没有**：
 //
@@ -236,12 +246,74 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "维度归因报表（用量趋势的成本拆分）会少掉 v1 臂的行。" +
 			"与 logs.go 同属切换清单项。",
 	},
+	// ── §9.232：bodies 腿改走切换层的消费点（7 文件 / 10 处）──────────────
+	// ⚠ §9.233 起这些调用**全部变成跨包**（切换层下沉到 db），原先「同包函数调用」
+	// 的说法不再成立；工具仍判 unresolved（`resolve` 的 CallExpr 只查 env.funcs），
+	// 但理由从「同包函数」变成「跨包函数」——结论不变，成因变了，必须改写而非留旧句。
+	"admin/auto_title_generator.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232 从字面量 v1 bodies 改走切换层）。" +
+			"跨包函数调用 ⇒ 工具判 unresolved（`resolve` 的 CallExpr 只查 env.funcs，" +
+			"而 §9.233 起切换层住在 db 包的 db.SessionBodiesSourceSQL()）。" +
+			"**默认支读 v1**（request_logs_bodies_with_current_month）⇒ 条件性读 v1。" +
+			"消费点由 admin 侧 indirectSourceConsumers 机器识别；切换层登记在" +
+			"admin/request_logs_indirect_readers_test.go（切换层在 db/request_logs_view_schema.go）。",
+		Consequence: "停写/DROP 后 bodies 腿静默变空、接口仍 200，与迁移前完全一致——" +
+			"开关默认关。开关打开后本条免疫，但 bodies 退役门仍红 ⇒ 开关开不了。",
+	},
+	"admin/compression_stats.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（3 处，§9.232/§9.237；" +
+			"第 3 处在**包级 var** compressionStatsEstimatedOrigSQL 里，该常量**因此由 const 改成 var**——" +
+			"函数调用不能出现在 const 声明中）。" +
+			"⚠ §9.237 起这一处**被工具看见了**：此前包级 var 的点位不在枚举范围内，" +
+			"清单只能靠人工注明；现在 3 与 2 都是工具自己数的。" +
+			"**默认支读 v1** ⇒ 条件性读 v1。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "停写后 with_outbound / compressed / estimated_original_tokens / " +
+			"summary_mode_rows 静默归 0（压缩率与省 token 数变 0%，而 total 与 strategy " +
+			"分布仍有数、接口 200）——停写分类表把本文件记为 silently_degraded_content。" +
+			"⚠ 换源时要连分项一起看，只看 total 会被骗过去。",
+	},
+	"admin/logs_summary.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处，§9.232）。" +
+			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "同 compression_stats：正文两列静默变空、计数类仍有数。",
+	},
+	"admin/memora_handlers.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232）。" +
+			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "停写分类表记 degraded_content，且该条目历史上因「同一文件取更危险档」" +
+			"被改判过一次（§9.35）——改它之前先读那条 Note。",
+	},
+	"admin/no_topic_session.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处，§9.232）。" +
+			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "降级的是**正文两列、不是行数**：bodies 无 session 臂时新会话的 " +
+			"request_body/response_body 恒为空串，而 message_count 仍非零、接口 200、" +
+			"消息列表结构齐全 ⇒ 消费方拿到「有轮次、无正文」的会话。",
+	},
+	"admin/session_sanitize_matches.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232）。" +
+			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
+		Consequence: "bodies 腿取不到时匹配依据变空 ⇒ 结果变少但不报错。",
+	},
 	"admin/session_compare.go": {
 		Verdict: verdictNonV1ByInspection,
-		Via: "221/902 行 `FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`。" +
-			"跨包调用 ⇒ 工具判 unresolved；读源码确认是会话族。",
-		Consequence: "与 v1 无关。⚠ 但同文件的 **bodies 腿**仍是 v1（见" +
-			"admin/request_logs_bodies_retirement_gate_test.go）。",
+		Via: "221/902 行 `FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
+			"跨包调用 ⇒ 工具判 unresolved；读源码确认是会话族。" +
+			"⚠ §9.230 起 **902 行那条 bodies 拼接点也进了 unresolved 桶**：",
+		Consequence: "turn 腿与 v1 无关。⚠ 但 **bodies 腿仍条件性读 v1**——" +
+			"§9.230 把它改成经 `dbpkg.SessionBodiesSourceSQL()` 取源，工具解析不出那个函数" +
+			"（它的一臂是跨包调用 `db.SessionFamilyBodiesSourceSQL() + \" rb\"`，" +
+			"`resolve` 对 *ast.SelectorExpr 返回 nil ⇒ 整个函数不进 env.funcs），" +
+			"所以是 unresolved 而非 reads-v1。" +
+			"**默认支是 v1**（`request_logs_bodies_with_current_month`）。" +
+			"已登记在 admin/request_logs_indirect_readers_test.go" +
+			"（切换层在 db/request_logs_view_schema.go）与 admin/request_logs_bodies_retirement_gate_test.go。",
 	},
 	"admin/session_list.go": {
 		Verdict: verdictNonV1ByInspection,
@@ -251,12 +323,16 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"admin/session_export.go": {
 		Verdict: verdictNonV1ByInspection,
-		Via: "227 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl` + " +
-			"`LEFT JOIN request_logs_bodies_with_current_month rb`（turn 腿是会话族）。" +
-			"跨包调用 ⇒ 工具判 unresolved。",
-		Consequence: "⚠ turn 腿与 v1 无关，但**bodies 腿是 v1**，且写法是 " +
-			"COALESCE(rb.request_body,'{}') ⇒ DROP 后**导出的会话包每条正文都是 {}**，" +
-			"而且**不报错**。已登记在 admin/request_logs_bodies_retirement_gate_test.go。",
+		Via: "227 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
+			"跨包调用 ⇒ 工具判 unresolved。" +
+			"⚠ §9.230 起同一行的 bodies 拼接点也进 unresolved 桶：",
+		Consequence: "turn 腿与 v1 无关。⚠ **bodies 腿仍条件性读 v1**——" +
+			"§9.230 把它改成经 `dbpkg.SessionBodiesSourceSQL()` 取源（默认支 = " +
+			"`request_logs_bodies_with_current_month`）。" +
+			"⚠ 写法是 COALESCE(rb.request_body,'{}') ⇒ 默认支下 DROP 后" +
+			"**导出的会话包每条正文都是 {}**，而且**不报错**。" +
+			"已登记在 admin/request_logs_indirect_readers_test.go" +
+			"与 admin/request_logs_bodies_retirement_gate_test.go。",
 	},
 	"admin/session_online.go": {
 		Verdict: verdictNonV1ByInspection,
@@ -267,9 +343,17 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关。",
 	},
 	"admin/session_title.go": {
-		Verdict:     verdictNonV1ByInspection,
-		Via:         "323 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` t`，会话族。",
-		Consequence: "与 v1 无关。",
+		Verdict: verdictUnresolvedTool,
+		Via: "**两个拼接点，一句话说不清所以必须写全**：\n" +
+			"  ① 323 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` t` → 会话族，与 v1 无关；\n" +
+			"  ② 189 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` ` → **条件性读 v1**（§9.232 从字面量迁移过来）。\n" +
+			"⚠ 原条目只写了 ①、结论是「与 v1 无关」——迁移前那**确实成立**（bodies 腿是字面量，\n" +
+			"由 exposure / bodies 退役门管，不在本清单范围）。\n" +
+			"迁移后 ② 进了本工具的 unresolved 桶，而**若仍沿用「与 v1 无关」就会让清单说谎**。\n" +
+			"⇒ 本条目已由 verdictNonV1ByInspection 改为 verdictUnresolvedTool。",
+		Consequence: "① 会话族腿不受影响。② 停写/DROP 后 bodies 腿静默变空、接口仍 200 —— " +
+			"语料从全文降级为 preview 片段（request_preview/response_preview 兜底），" +
+			"语料短到 40 rune 以下才显式 400。开关默认关 ⇒ 与迁移前完全一致。",
 	},
 	"admin/session_turns_tree.go": {
 		Verdict:     verdictNonV1ByInspection,
@@ -330,6 +414,69 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关。⚠ 但它**管理** v1 分区：" +
 			"DROP request_logs 时这套逻辑会因 to_regclass 为 NULL 而走空分支，" +
 			"不报错——与 §9.221 记的「视图被带外操作删除后没有机制重建」同族。",
+	},
+
+	// ── §9.233：切换层下沉到 db 之后**新进** unresolved 桶的跨包读方 ────────
+	// 这三个文件在 §9.232 结束时是「看得见但换不了」：它们在 admin 之外，
+	// 看不见 admin 包里未导出的 sessionBodiesFromSQL()。§9.233 把切换层
+	// 放进 db 包（无 import 环，已核实）之后才把它们迁过来 ⇒ 这三条是
+	// **迁移的直接产物**，不是新发现的读方。
+	//
+	// ⚠ 迁移前它们的 bodies 腿是**字面量** `request_logs_bodies_with_current_month`，
+	// 而本工具**只管关系名不是字面量的拼接点** ⇒ 迁移前它们一条都不进清单。
+	// 迁移后进 unresolved 桶，于是**清单从 32 条长到 35 条**。
+	// ⇒ 「清单条数增长」在这里是正确信号，不是工具误报。
+	//
+	// ★ 同一批迁的 `domains/sessionforensics/export.go`（2 处）**没有**出现在本清单，
+	// 这不是漏登记，而是**本工具看不见它**：resolve.go 的点位枚举只走 `*ast.FuncDecl`，
+	// 包级 `var`（GenDecl/VAR）只被 collectStringBindings 收进 env.globals 供**解析**，
+	// 不进点位枚举（admin/compression_stats.go 第 3 处是同一形态，清单里早已注明）。
+	// 那两处由 admin 侧 allKnownRequestLogsReaderFiles / retirementExposurePopulation
+	// 与 TestV1BodiesScanIncludesSwitchConsumers 覆盖——**但覆盖它的是另一组门，不是本工具**。
+	"bg/passive_probe_listener.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "183 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`" +
+			"（1 处，§9.233 从字面量 v1 bodies 改走切换层）。" +
+			"跨包调用（db 包）⇒ 工具判 unresolved。" +
+			"**默认支读 v1**（request_logs_bodies_with_current_month）⇒ 条件性读 v1。",
+		Consequence: "被动探针错误面板；`MAX(response_body)` 只取前 200 字符做卡片摘要。" +
+			"停写/DROP 后 bodies 腿变 NULL ⇒ COALESCE 到 ''，卡片照常渲染、摘要为空，**不报错**。" +
+			"开关默认关 ⇒ 与迁移前逐字一致。",
+	},
+	"domains/sessionsummary/summarizer.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "652/695 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`" +
+			"（2 处，§9.233 迁移）。跨包调用 ⇒ 工具判 unresolved。" +
+			"**默认支读 v1** ⇒ 条件性读 v1。",
+		Consequence: "会话摘要的语料源。停写/DROP 后 `request_body->'messages'->-1->>'content'`" +
+			"取不到 ⇒ COALESCE 到 ''，摘要退化成**只有元数据没有语料**，接口仍 200。" +
+			"开关默认关 ⇒ 与迁移前逐字一致。",
+	},
+	"domains/sessionsummary/system_prompt_prefix.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "178 行 `JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`（1 处，§9.233 迁移；" +
+			"注意是 **INNER** JOIN 不是 LEFT）。跨包调用 ⇒ 工具判 unresolved。" +
+			"**默认支读 v1** ⇒ 条件性读 v1。",
+		Consequence: "⚠ **这是本批里唯一的 INNER JOIN** ⇒ 停写/DROP 后不是「字段变空」，" +
+			"而是**整个系统提示词前缀查不到任何一行**（rl 有行但 rb 无行 ⇒ 被 JOIN 滤掉）。" +
+			"降级形态与其它 LEFT JOIN 的读方**不同类**：不会退化成空串，而是直接没有前缀。",
+	},
+	"domains/sessionforensics/export.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "**两处都在包级 `var` 里**（forensicsExportMessagesSQL 与 ...SQLAlt，各 1 处 bodies 腿，" +
+			"`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id`）。" +
+			"§9.232 前它们是 `const`；§9.233 因函数调用不能出现在 const 里改成 `var`，" +
+			"**就是这个形状让它们掉出了本工具的枚举范围**（点位只扫 FuncDecl）⇒ §9.237 才被重新看见。" +
+			"跨包调用 ⇒ 工具判 unresolved。**默认支读 v1** ⇒ 条件性读 v1。" +
+			"⚠ 文件刻意保留两份字面量并由 TestForensicsExportSQLVariantsStayInSync 强制同步，**该设计保留**。",
+		Consequence: "★ **本清单里后果描述最尖锐的一条**，且与 admin 侧停写分类" +
+			"（request_logs_stop_write_classification_test.go 里本文件的 Note）**独立得出同一结论**：" +
+			"停写/DROP 后 bodies 无 session 臂 ⇒ `COALESCE(rb.request_body,'{}')` 恒为字面量 `{}`，" +
+			"而 `respBody != nil && *respBody != \"\"` 仍然成立 ⇒ " +
+			"**产出一份结构自洽、逐轮齐全、正文全空的证据包**。" +
+			"不是导出失败、不是报错：710 的 session 臂保证 turn 编号连续，" +
+			"所以**跳过与报错都不触发**——这正是该文件注释自己判定「比导出失败危险得多」的那种形态。" +
+			"开关默认关 ⇒ 与迁移前逐字一致。",
 	},
 }
 

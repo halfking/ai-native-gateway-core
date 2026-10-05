@@ -347,7 +347,6 @@ func newPkgEnv() *pkgEnv {
 func (env *pkgEnv) enterFunc() { env.locals = map[string][]string{} }
 
 func auditPackage(dir string, files []string) ([]Site, error) {
-	env := newPkgEnv()
 	parsed := map[string]*ast.File{}
 	fset := token.NewFileSet()
 	for _, p := range files {
@@ -362,6 +361,17 @@ func auditPackage(dir string, files []string) ([]Site, error) {
 	//  1. 函数返回值（不依赖绑定）
 	//  2. 包级绑定（不依赖局部）
 	//  3. 逐函数：进函数 → 收集该函数体内的局部绑定 → 只在该函数体内找拼接点
+	return scanParsed(fset, parsed)
+}
+
+// scanParsed enumerates every concat site in an already-parsed set of files.
+//
+// It is separate from auditPackage so the enumeration can be exercised against
+// an in-memory fixture: the package-level `var` case that §9.237 fixed has no
+// cheap on-disk instance to point a test at, and a regression test that needs
+// the whole repository to run is a regression test that does not get run.
+func scanParsed(fset *token.FileSet, parsed map[string]*ast.File) ([]Site, error) {
+	env := newPkgEnv()
 	for _, f := range parsed {
 		collectFuncReturns(f, env)
 	}
@@ -379,42 +389,95 @@ func auditPackage(dir string, files []string) ([]Site, error) {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+	// scanConcat enumerates every `<string literal ending in a relation name>
+	// <operand>` pair inside n and records a Site for each.
+	//
+	// It is a closure over `out`/`p`/`env` so that the two container kinds below
+	// — function bodies and package-level var initialisers — go through exactly
+	// one implementation. A second copy of this loop is how the two would drift,
+	// and the drift is silent: one would keep finding sites the other misses.
+	scanConcat := func(p string, n ast.Node) {
+		ast.Inspect(n, func(node ast.Node) bool {
+			bin, ok := node.(*ast.BinaryExpr)
+			if !ok || bin.Op != token.ADD {
+				return true
+			}
+			var ops []ast.Node
+			flattenConcat(bin, &ops)
+			if countStringLits(ops) == 0 {
+				return true // 数值加法，与 SQL 无关
+			}
+			for i, o := range ops {
+				frag, ok := stringLit(o)
+				if !ok || !isRelationFragmentTail(frag) {
+					continue
+				}
+				if i+1 >= len(ops) {
+					continue
+				}
+				out = append(out, Site{
+					File:     p,
+					Line:     fset.Position(o.Pos()).Line,
+					Operand:  exprText(ops[i+1]),
+					Resolved: env.resolve(ops[i+1], 0),
+				})
+			}
+			return true
+		})
+	}
+
 	for _, p := range paths {
 		f := parsed[p]
-		for _, d := range f.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
-				continue
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				if d.Body == nil {
+					continue
+				}
+				env.enterFunc()
+				collectStringBindings(d.Body, env, env.locals)
+				scanConcat(p, d.Body)
+
+			case *ast.GenDecl:
+				// §9.237: package-level `var` SQL used to be invisible here.
+				//
+				// The bindings were already collected into env.globals for
+				// *resolution* (see the loop above), but the site enumeration
+				// only ever looked inside function bodies. A `const` or `var`
+				// holding a SQL string with a relation-name tail plus a call
+				// therefore resolved fine when reached from a function and was
+				// never reported on its own.
+				//
+				// The two known instances are the ones that had to be turned
+				// from `const` into `var` precisely because they call a switch
+				// layer: `admin/compression_stats.go`'s
+				// compressionStatsEstimatedOrigSQL (3rd concat site, already
+				// noted in the indirection manifest) and both SQL constants in
+				// `domains/sessionforensics/export.go` (§9.233.8d). They were
+				// covered by the admin-side reader inventory, so no read was
+				// missed — but a tool that is treated as the authority for
+				// "which files read v1 conditionally" would have said they do
+				// not, which is a false negative in a retirement audit.
+				//
+				// enterFunc() is called for the same reason it is above: it
+				// clears `locals`, and a package-level initialiser must resolve
+				// against globals only. Leaving the previous function's locals
+				// in scope would let a var resolve a name it could not actually
+				// see at package level.
+				if d.Tok != token.VAR {
+					continue
+				}
+				env.enterFunc()
+				for _, spec := range d.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for _, val := range vs.Values {
+						scanConcat(p, val)
+					}
+				}
 			}
-			env.enterFunc()
-			collectStringBindings(fd.Body, env, env.locals)
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				bin, ok := n.(*ast.BinaryExpr)
-				if !ok || bin.Op != token.ADD {
-					return true
-				}
-				var ops []ast.Node
-				flattenConcat(bin, &ops)
-				if countStringLits(ops) == 0 {
-					return true // 数值加法，与 SQL 无关
-				}
-				for i, o := range ops {
-					frag, ok := stringLit(o)
-					if !ok || !isRelationFragmentTail(frag) {
-						continue
-					}
-					if i+1 >= len(ops) {
-						continue
-					}
-					out = append(out, Site{
-						File:     p,
-						Line:     fset.Position(o.Pos()).Line,
-						Operand:  exprText(ops[i+1]),
-						Resolved: env.resolve(ops[i+1], 0),
-					})
-				}
-				return true
-			})
 		}
 	}
 	return out, nil

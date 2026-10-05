@@ -9,9 +9,9 @@ import (
 // It's designed for the actionTenantIndex use case where we need
 // bounded memory with better eviction strategy than random deletion.
 type lruCache struct {
-	mu       sync.Mutex
-	capacity int
-	items    map[string]*list.Element
+	mu        sync.Mutex
+	capacity  int
+	items     map[string]*list.Element
 	evictList *list.List
 }
 

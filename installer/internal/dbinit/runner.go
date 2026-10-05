@@ -846,6 +846,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"827_modality_verification_progress_view.sql",
 			"828_supplier_errors_unified_tracked.sql",
 			"829_bodies_columnar_rollback.sql",
+			"831_work_type_route_source.sql",
 		},
 	}
 }

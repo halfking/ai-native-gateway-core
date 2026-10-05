@@ -24,9 +24,9 @@ func TestFilterResolveCandidatesByCid_DropsForeignCanonical(t *testing.T) {
 	cands := []resolveCandidate{
 		makeC(int64Ptr(2716170), "glm-5.3-flash"),
 		makeC(int64Ptr(2716170), "z-ai/glm-5.3-flash"),
-		makeC(int64Ptr(2422803), "glm-5.3"),   // 污染：base 模型凭据
+		makeC(int64Ptr(2422803), "glm-5.3"),      // 污染：base 模型凭据
 		makeC(int64Ptr(2422803), "z-ai/glm-5.3"), // 污染
-		makeC(nil, "legacy/raw-uncategorized"), // NULL = legacy 保留
+		makeC(nil, "legacy/raw-uncategorized"),   // NULL = legacy 保留
 	}
 	filtered := filterResolveCandidatesByCid(cands, 2716170)
 	if got, want := len(filtered), 3; got != want {

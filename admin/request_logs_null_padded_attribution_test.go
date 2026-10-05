@@ -68,7 +68,7 @@ func TestNullPaddedJustificationIsNotStale(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v", file, err)
 			continue
 		}
-		if fam := sourceFamilyOf(string(raw)); fam != familyViewNullPadded {
+		if fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, file)); fam != familyViewNullPadded {
 			stale = append(stale, file+"（现族="+fam+"）")
 		}
 	}
@@ -137,7 +137,7 @@ func TestNullPaddedAttributionPinsKnownCases(t *testing.T) {
 			if err != nil {
 				t.Fatalf("读取失败: %v", err)
 			}
-			fam := sourceFamilyOf(string(raw))
+			fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, tc.file))
 			hit, via := nullPaddedPredicateHit(string(raw))
 			inFam := fam == familyViewNullPadded
 			if inFam != tc.inFam {

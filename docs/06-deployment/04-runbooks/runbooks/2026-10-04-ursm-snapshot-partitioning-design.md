@@ -1197,7 +1197,7 @@ WHERE i.inhparent='ursm_node_snapshot_min'::regclass
 
 **为什么手工化**：步骤 1 会对一张 10 GB 活表做 `RENAME`。放进 installer
 自动序列意味着 154/245 任何一次无人值守升级都会在**无人工确认点**的情况下执行它。
-`Test825IsDeliberatelyNotInTheAutoStartupSequence` 把这个决定钉成显式不变量。
+`Test830IsDeliberatelyNotInTheAutoStartupSequence` 把这个决定钉成显式不变量。
 
 **两个接线可以先于 825 上线**（顺序无关）：
 

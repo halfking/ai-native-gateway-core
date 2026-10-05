@@ -356,10 +356,10 @@ func RecordReconciliation(ctx context.Context, db *pgxpool.Pool, r Reconciliatio
 		        observed_input_price_per_1m, observed_output_price_per_1m,
 		        observed_currency, observed_source, observed_source_url,
 		        verdict, input_drift_pct, output_drift_pct, detail)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
 	`, r.Model, ssotIn, ssotOut, ssotCurrency, ssotURL, r.SSOTFetchedAt,
 		obsIn, obsOut, obsCurrency, obsSrc, obsURL,
-		r.Verdict, r.InputDriftPct, r.OutputDriftPct, detail)
+		r.Verdict, r.InputDriftPct, r.OutputDriftPct, string(detail))
 	if err != nil {
 		return fmt.Errorf("record reconciliation %q: %w", r.Model, err)
 	}

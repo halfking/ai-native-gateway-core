@@ -71,7 +71,7 @@ func TestPrepareConfirmation_PersistsBeforeReturningToken(t *testing.T) {
 	trigger.Observe("gw_old", TriggerSignal{Kind: SignalGoalFailed, Severity: 4, Reason: "manual"})
 
 	store := &goalConfirmationStore{
-		memoryStore:            &memoryStore{},
+		memoryStore:             &memoryStore{},
 		MemoryConfirmationStore: NewMemoryConfirmationStore(),
 		saveErr:                 errors.New("simulated DB outage"),
 	}
@@ -116,7 +116,7 @@ func TestPrepareConfirmation_HappyPathIssuesTokenAfterPersist(t *testing.T) {
 	trigger.Observe("gw_old", TriggerSignal{Kind: SignalGoalFailed, Severity: 4, Reason: "manual"})
 
 	store := &goalConfirmationStore{
-		memoryStore:            &memoryStore{},
+		memoryStore:             &memoryStore{},
 		MemoryConfirmationStore: NewMemoryConfirmationStore(),
 	}
 	hook := NewTriggerHook(TriggerConfig{
@@ -287,16 +287,16 @@ func TestPGStore_Confirm_RejectsCrossTenantAndAPIKey(t *testing.T) {
 // TestConfirmation_PG_DurableRestoreReplaysIdempotently verifies the
 // restart-restore contract on the PG store:
 //
-//   1. A first Confirm call writes the proposal to
-//      status=accounting_confirmed and restore_status=accounting_confirmed.
-//   2. The process "restarts" — the in-memory trigger binder is gone.
-//   3. A second Confirm with the same (proposal, idempotency_key,
-//      new_session_id) MUST be treated as an idempotent replay: it returns
-//      FirstConfirmation=false, does not reinsert into handoff_logs_hot,
-//      does not bump session_summaries.handoff_count, and the
-//      WHERE ... AND status='pending' guard in the UPDATE ensures that
-//      the second accounting attempt is dropped even if it raced the
-//      first transaction into the database.
+//  1. A first Confirm call writes the proposal to
+//     status=accounting_confirmed and restore_status=accounting_confirmed.
+//  2. The process "restarts" — the in-memory trigger binder is gone.
+//  3. A second Confirm with the same (proposal, idempotency_key,
+//     new_session_id) MUST be treated as an idempotent replay: it returns
+//     FirstConfirmation=false, does not reinsert into handoff_logs_hot,
+//     does not bump session_summaries.handoff_count, and the
+//     WHERE ... AND status='pending' guard in the UPDATE ensures that
+//     the second accounting attempt is dropped even if it raced the
+//     first transaction into the database.
 //
 // We assert this with two sqlmock scenarios chained in the same test.
 func TestConfirmation_PG_DurableRestoreReplaysIdempotently(t *testing.T) {
@@ -439,7 +439,7 @@ func TestGoalHandoff_DurableRestoreFromPG_PopulatesGoalSession(t *testing.T) {
 	record := &HandoffRecord{
 		SessionKey: "gw_old", TenantID: "tenant-a",
 		TriggerMode: "auto", TriggerReason: "context_pressure",
-		CreatedAt:   time.Now().UTC(),
+		CreatedAt: time.Now().UTC(),
 	}
 	proposal, token, err := NewConfirmationProposal(record, 42, time.Now().Add(time.Minute))
 	if err != nil {
@@ -472,7 +472,7 @@ func TestGoalHandoff_DurableRestoreFromPG_PopulatesGoalSession(t *testing.T) {
 	// the durable store, memory is the test backstop for the in-flight
 	// transaction).
 	comp := &compositeStore{
-		memoryStore: &memoryStore{},
+		memoryStore:  &memoryStore{},
 		confirmation: mem,
 		durable:      pg,
 	}
@@ -902,8 +902,8 @@ func TestTriggerHook_NotifyDoesNotLogTokenOrRawSummary(t *testing.T) {
 	// a record that contains both, and assert the captured log contains
 	// neither.
 	hook.notify(context.Background(), NotifyInfo, &HandoffRecord{
-		SessionKey:   "gw_old",
-		TenantID:     "tenant-a",
+		SessionKey:    "gw_old",
+		TenantID:      "tenant-a",
 		TriggerReason: "context_pressure",
 		SummaryText:   "secret token here that must not be logged",
 		NewSessionID:  "gw_new",

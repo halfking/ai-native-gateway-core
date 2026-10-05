@@ -20,14 +20,14 @@ import (
 
 // 环境变量名（配置契约，与 docs/hooks/prompt-optimization.md 保持一致）。
 const (
-	EnvEnabled         = "PROMPT_OPTIMIZATION_ENABLED"          // 默认 false
-	EnvOptimizerURL    = "PROMPT_OPTIMIZER_URL"                 // 默认 http://prompt-optimizer:8090
-	EnvCacheTTL        = "OPTIMIZATION_CACHE_TTL"               // 默认 24h
-	EnvTimeout         = "OPTIMIZATION_TIMEOUT"                 // 默认 5s
-	EnvMode            = "OPTIMIZATION_MODE"                    // system|user|both，默认 both
-	EnvModelWhitelist  = "OPTIMIZATION_MODEL_WHITELIST"         // 逗号分隔，空=全部允许
-	EnvModelBlacklist  = "OPTIMIZATION_MODEL_BLACKLIST"         // 逗号分隔，优先于白名单
-	EnvTenantAllowlist = "OPTIMIZATION_TENANTS"                 // 逗号分隔，空=所有租户
+	EnvEnabled         = "PROMPT_OPTIMIZATION_ENABLED"  // 默认 false
+	EnvOptimizerURL    = "PROMPT_OPTIMIZER_URL"         // 默认 http://prompt-optimizer:8090
+	EnvCacheTTL        = "OPTIMIZATION_CACHE_TTL"       // 默认 24h
+	EnvTimeout         = "OPTIMIZATION_TIMEOUT"         // 默认 5s
+	EnvMode            = "OPTIMIZATION_MODE"            // system|user|both，默认 both
+	EnvModelWhitelist  = "OPTIMIZATION_MODEL_WHITELIST" // 逗号分隔，空=全部允许
+	EnvModelBlacklist  = "OPTIMIZATION_MODEL_BLACKLIST" // 逗号分隔，优先于白名单
+	EnvTenantAllowlist = "OPTIMIZATION_TENANTS"         // 逗号分隔，空=所有租户
 )
 
 // Mode 控制优化哪些角色的 prompt。

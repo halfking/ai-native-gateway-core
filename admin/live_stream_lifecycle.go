@@ -255,7 +255,7 @@ func (h *LiveStreamSSEHub) rememberActionTenant(requestID, tenantID string) {
 	// at capacity. Redis detail fallback still re-resolves evicted entries.
 	normalized := normalizeLiveStreamTenant(tenantID)
 	h.actionTenantIndex.Set(requestID, normalized)
-	
+
 	h.actionMu.Lock()
 	delete(h.actionTenantMiss, requestID)
 	h.actionMu.Unlock()

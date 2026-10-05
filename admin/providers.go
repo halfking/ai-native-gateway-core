@@ -541,7 +541,7 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 // mockProbeHiddenCodes 是 Mock Probe 通道自带的进程内供应商精确集合
-//（internal/providers/mock 的 CodeFast / CodeSlow）。隐藏策略只作用于
+// （internal/providers/mock 的 CodeFast / CodeSlow）。隐藏策略只作用于
 // 这两个 code：历史种子（mock-openai / mock-anthropic 等）与运维自建的
 // mock-x 供应商不受影响，保持可见（audit P3：原 NOT LIKE 'mock-%' 前缀
 // 过滤爆炸半径过大，已收敛为精确集合）。
@@ -551,13 +551,13 @@ var mockProbeHiddenCodes = map[string]struct{}{
 }
 
 // mockProbeFilterClause 返回 listProviders 使用的 mock 隐藏 SQL 谓词
-//（与 mockProbeHiddenCodes 同一精确集合，两处须保持一致）。
+// （与 mockProbeHiddenCodes 同一精确集合，两处须保持一致）。
 func mockProbeFilterClause() string {
 	return fmt.Sprintf("p.code NOT IN ('%s', '%s')", mock.CodeFast, mock.CodeSlow)
 }
 
 // mockProviderHidden 判断供应商行是否因 Mock Probe 隐藏策略被过滤
-//（MockProbeHideInAdmin=true 且 code 属于探测通道自带供应商；listProviders
+// （MockProbeHideInAdmin=true 且 code 属于探测通道自带供应商；listProviders
 // 的应用层双保险分支）。每请求读 env，测试可用 t.Setenv 切换。
 func mockProviderHidden(code string) bool {
 	_, hit := mockProbeHiddenCodes[code]

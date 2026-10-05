@@ -237,6 +237,18 @@ func validateBatch(
 		log.Printf("FATAL: cannot measure the v1 data window: %v", rangeErr)
 		return 1
 	}
+	// §R44/移交.1 — measure the end boundary before trusting the window.
+	// -end-date is applied as that day's 00:00:00Z and the load is half-open
+	// (ts < end), so the rows inside the day the operator named are invisible
+	// to the report.
+	//
+	// §R45/M2 superseded: this block used to probe for family rows in
+	// [end, end-of-day) and fail closed when the window dropped them. That
+	// detector was sound but addressed the symptom: the half-open bound itself
+	// was the defect. The bound is now corrected in buildSessionRangeQuery, so
+	// the named day is actually loaded and there is nothing left to probe for.
+	// A probe retained alongside the fix would fire on every run whose named
+	// day holds data, i.e. refuse every legitimate run.
 	requested := startDate
 	if requested.IsZero() {
 		requested = v1range.MinTS
@@ -247,12 +259,12 @@ func validateBatch(
 	log.Printf("validation window requested:               %s .. %s",
 		requested.Format(time.RFC3339), endDate.Format(time.RFC3339))
 	if truncated {
-		log.Printf("FATAL: the requested window is wider than the v1 data that exists (%s). "+
+		log.Printf("FATAL: refusing to validate this window: %s. "+
 			"request_logs is not a permanent store — on 252 the monthly "+
 			"pg17-drop-old-columnar-partitions.sh drops partitions older than 2 months, "+
-			"while session_turns is on no rotation list. Re-run with a window inside the span "+
-			"above; a report over a truncated window is indistinguishable from one over the real "+
-			"window, and it is exactly the report that would be used to justify retiring the "+
+			"while session_turns is on no rotation list. A parity report over a window that "+
+			"does not match the data that exists is indistinguishable from one that does, "+
+			"and it is exactly the report that would be used to justify retiring the "+
 			"source table.", why)
 		return 1
 	}

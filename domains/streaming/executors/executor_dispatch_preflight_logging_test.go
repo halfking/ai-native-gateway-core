@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/redis/go-redis/v9"
-	"github.com/alicebob/miniredis/v2"
 )
 
 // recordingFailureDB is an in-memory candidateFailureDB that records every
@@ -47,7 +47,8 @@ func (r *recordingFailureDB) Exec(_ context.Context, _ string, args ...any) (pgc
 
 // findInsertByKind locates the first recorded INSERT whose error_kind
 // argument matches want. The arguments layout matches candidateFailureInsertSQL:
-//   $7  = attempt_index, $8 = error_kind
+//
+//	$7  = attempt_index, $8 = error_kind
 func (r *recordingFailureDB) findInsertByKind(want string) ([]any, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -90,10 +91,10 @@ func TestForwardForDispatch_LogsCircuitOpen(t *testing.T) {
 		AvailabilityState: "ready", CircuitState: "open",
 	}
 	params := &ExecParams{
-		R:                httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:        []byte(`{"model":"glm-5.2"}`),
-		ClientModel:      "glm-5.2", Model: "glm-5.2",
-		RequestID:        "circuit-open-test", TenantID: "default",
+		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:   []byte(`{"model":"glm-5.2"}`),
+		ClientModel: "glm-5.2", Model: "glm-5.2",
+		RequestID: "circuit-open-test", TenantID: "default",
 		UpstreamAttempts: NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit),
 	}
 	dctx := &dispatchCtx{
@@ -148,7 +149,7 @@ func TestForwardForDispatch_LogsRateLimitRejection(t *testing.T) {
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	params := &ExecParams{
-		R: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(canceledCtx),
+		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(canceledCtx),
 		BodyBytes:   []byte(`{"model":"glm-5.2"}`),
 		ClientModel: "glm-5.2", Model: "glm-5.2", RequestID: "rl-test", TenantID: "default",
 		UpstreamAttempts: NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit),
@@ -207,10 +208,10 @@ func TestForwardForDispatch_LogsFpSlotSaturation(t *testing.T) {
 		AvailabilityState: "ready", CircuitState: "closed",
 	}
 	params := &ExecParams{
-		R:                httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:        []byte(`{"model":"glm-5.2"}`),
-		ClientModel:      "glm-5.2", Model: "glm-5.2",
-		RequestID:        "fpslot-test", TenantID: "default",
+		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:   []byte(`{"model":"glm-5.2"}`),
+		ClientModel: "glm-5.2", Model: "glm-5.2",
+		RequestID: "fpslot-test", TenantID: "default",
 		UpstreamAttempts: NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit),
 	}
 	dctx := &dispatchCtx{
@@ -273,10 +274,10 @@ func TestForwardForDispatch_LogsKeyRotationExhausted(t *testing.T) {
 		AvailabilityState: "ready", CircuitState: "closed",
 	}
 	params := &ExecParams{
-		R:                httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:        []byte(`{"model":"glm-5.2"}`),
-		ClientModel:      "glm-5.2", Model: "glm-5.2",
-		RequestID:        "keys-exhausted-test", TenantID: "default",
+		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:   []byte(`{"model":"glm-5.2"}`),
+		ClientModel: "glm-5.2", Model: "glm-5.2",
+		RequestID: "keys-exhausted-test", TenantID: "default",
 		UpstreamAttempts: NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit),
 	}
 	dctx := &dispatchCtx{

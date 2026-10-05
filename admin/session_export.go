@@ -224,7 +224,7 @@ func sessionExportMessagesSQL() string {
 			COALESCE(rb.request_body, '{}'::jsonb) AS request_body,
 			COALESCE(rb.response_body, '{}'::jsonb) AS response_body
 		FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
 		WHERE 1 = 1
 		ORDER BY rl.ts ASC
 	`
@@ -377,8 +377,8 @@ func (api *SessionExportAPI) handleImport(w http.ResponseWriter, r *http.Request
 		packID = fmt.Sprintf("pack-%s-%d", pack.SessionMeta.ID, time.Now().UnixNano())
 		_, err := tx.Exec(r.Context(), `
 			INSERT INTO session_packs (pack_id, session_id, tenant_id, pack)
-			VALUES ($1, $2, $3, $4)
-		`, packID, pack.SessionMeta.ID, tenantID, packJSON)
+			VALUES ($1, $2, $3, $4::jsonb)
+		`, packID, pack.SessionMeta.ID, tenantID, string(packJSON))
 		return err
 	})
 	if err != nil {

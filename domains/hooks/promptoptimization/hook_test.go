@@ -17,7 +17,7 @@ import (
 func newTestEnv(t *testing.T, body string) *domain.PipelineRequest {
 	t.Helper()
 	return &domain.PipelineRequest{
-		TenantID:          "tenant-a",
+		TenantID:           "tenant-a",
 		TransformedRequest: []byte(body),
 	}
 }

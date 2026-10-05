@@ -529,12 +529,28 @@ func (l *SessionLoader) LoadV1TimeRange(ctx context.Context, tenantID string) (V
 	return r, nil
 }
 
-// WindowExceedsV1Data reports whether the window the operator asked for reaches
-// past the v1 rows that actually exist, and why.
+// WindowExceedsV1Data reports whether the window the operator asked for
+// reaches past the v1 rows that actually exist, and why.
 //
 // The check is deliberately split out from validateBatch so it can be tested in
 // both directions without a database: a guard that has only ever been observed
 // not firing is indistinguishable from a guard that cannot fire.
+//
+// §R45/M2 superseded: this guard briefly grew a third "end-day" arm backed by a
+// HasV1RowsInRange probe, because the half-open bound excluded the named day
+// and MaxTS alone could not see that. The bound is now corrected in
+// buildSessionRangeQuery, so the named day is actually loaded and MaxTS is
+// again sufficient to answer "is that day covered". The probe and the arm are
+// gone; keeping them would fire on every run whose named day holds data.
+//
+// Two arms, in the order the operator should read them:
+//
+//   - start arm (fe5003034/§9.222): the window claims data older than the
+//     oldest surviving v1 row — the retention trap.
+//   - end arm (fe5003034): the window promises a day beyond the newest v1 row.
+//     requestedEnd is the midnight of the last **named** day (the date flags
+//     parse with time.Parse("2006-01-02")), so "the newest v1 row is before it"
+//     is exactly "the named day holds no v1 row at all" — a whole day missing.
 //
 // A zero requestedStart means "unbounded below", which is what `-end-date`
 // alone produces; that case is never truncation.
@@ -548,20 +564,22 @@ func WindowExceedsV1Data(requestedStart, requestedEnd time.Time, actual V1TimeRa
 		return true, fmt.Sprintf("requested start %s precedes the oldest v1 row %s (%d rows)",
 			requestedStart.Format(time.RFC3339), actual.MinTS.Format(time.RFC3339), actual.Rows)
 	}
-	// requestedEnd is the last **named day** the operator asked for. Because
-	// the date flags parse with time.Parse("2006-01-02"), it is always that
-	// day's midnight, so "the newest v1 row is before it" is exactly "no v1
-	// row exists on the last named day" — a whole day missing, which is the
-	// thing worth reporting.
-	//
 	// A newest-day that is merely *partial* is not truncation: "up to today"
 	// is the common operator input, and refusing it would refuse nearly every
-	// legitimate run. The hours of the last named day that a query misses are
-	// not this guard's problem — they are fixed at the source, in
+	// legitimate run. The hours of the named day are not this guard's problem —
+	// they are loaded, and they are fixed at the source, in
 	// endDayExclusiveBound.
 	if !requestedEnd.IsZero() && actual.MaxTS.Before(requestedEnd) {
-		return true, fmt.Sprintf("requested end %s is after the newest v1 row %s (%d rows)",
-			requestedEnd.Format(time.RFC3339), actual.MaxTS.Format(time.RFC3339), actual.Rows)
+		// Hand the operator the flag value that would actually match the data.
+		// This is the one genuinely useful idea carried over from the superseded
+		// end-day arm: a diagnosis alone leaves the operator to guess which day
+		// to type. The suggested date comes from MaxTS — the newest day that
+		// holds rows — so it needs no probe.
+		return true, fmt.Sprintf(
+			"requested end %s is after the newest v1 row %s (%d rows): the named day holds no v1 rows at all, "+
+				"so the window is wider than the data — re-run with -end-date %s to name the last day that has data",
+			requestedEnd.Format(time.RFC3339), actual.MaxTS.Format(time.RFC3339), actual.Rows,
+			actual.MaxTS.UTC().Format("2006-01-02"))
 	}
 	return false, ""
 }
@@ -569,22 +587,20 @@ func WindowExceedsV1Data(requestedStart, requestedEnd time.Time, actual V1TimeRa
 // endDayExclusiveBound converts an inclusive end day into the half-open
 // upper bound the query needs.
 //
-// The date flags name calendar days, and an operator who passes
-// -end-date 2026-10-04 means "through the end of 2026-10-04". The query is
-// half-open (`ts < $3`), so feeding it the named day's own midnight excludes
-// the entire named day: the query returns rows through 2026-10-03T23:59:59Z
-// while the report still prints 2026-10-04. On 252 that silently dropped
-// 15h53m32s of v1 rows that did exist (newest row 2026-10-04 15:53:32Z).
+// §R45/M2 superseded the previous detector here. The flags name calendar days:
+// an operator who passes -end-date 2026-10-04 means "through the end of
+// 2026-10-04". The query is half-open (`ts < $3`), so feeding it the named
+// day's own midnight excluded the entire named day — the query returned rows
+// through 2026-10-03T23:59:59Z while the report still printed 2026-10-04. On
+// 252 that silently dropped 15h53m32s of v1 rows that did exist (newest row
+// 2026-10-04 15:53:32Z).
 //
 // That is the worst shape this tool has: a parity report over a window
 // narrower than the one requested is indistinguishable from a parity report
 // over the requested window, and §9.222's whole reason for existing is that
-// same report would be used to justify retiring request_logs. The truncation
-// guard cannot see it — the named day *is* present in the data, so from the
-// guard's point of view nothing is missing; the loss happens inside the
-// query's half-open bound.
+// same report being used to justify retiring request_logs.
 //
-// The named day itself is deliberately left untouched for display and for
+// The named day is deliberately left untouched for display and for
 // WindowExceedsV1Data; only the bound handed to SQL is shifted.
 func endDayExclusiveBound(namedEndDay time.Time) time.Time {
 	return namedEndDay.AddDate(0, 0, 1)
@@ -632,12 +648,11 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 // settled-session lookup.
 //
 // It is split out of LoadSessionsInRange so that the bound arguments can be
-// asserted without a database. The end bound is the whole point of this
-// function existing: the SQL is half-open, so $3 must be the start of the day
-// after the day the operator named (see endDayExclusiveBound). That argument
-// is the one thing here that a real run cannot easily show you, because the
-// damage is an absence — a dropped range of rows looks exactly like a window
-// that had none.
+// asserted without a database. The end bound is the whole point: the SQL is
+// half-open, so $3 must be the start of the day after the day the operator
+// named (see endDayExclusiveBound). That argument is the one thing a real run
+// cannot easily show you, because the damage is an absence — a dropped range
+// of rows looks exactly like a window that had none.
 func buildSessionRangeQuery(tenantID string, startDate, endDate, settleThreshold time.Time, maxSessions int) (string, []any) {
 	const query = `
 			SELECT gw_session_id

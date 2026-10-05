@@ -35,7 +35,7 @@ var lateralExposedCols = []string{
 // 出现在 LATERAL 的输出里，所以只有这两个会真的二义。
 var sharedWithSessions = []string{"status", "updated_at"}
 
-// 抽出 querySessionDetailV2 里那条 query 的 SELECT 列表（`` ` `` 之间的第一段）。
+// 抽出 querySessionDetailV2 里那条 query 的 SELECT 列表（“ ` “ 之间的第一段）。
 func sessionDetailSelectList(t *testing.T) string {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("session_detail_v2.go"))

@@ -30,7 +30,7 @@ func TestResponsesBridges_PostCommitUpstreamErrorFinishesIncomplete(t *testing.T
 			},
 		},
 		{
-			name:       "openai",
+			name: "openai",
 			// A-#14: in-band {"error":{...}} frames now parse as
 			// ir.ChunkTypeError, so the bridge classifies them as
 			// upstream_error (matching the anthropic case) instead of

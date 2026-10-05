@@ -54,10 +54,10 @@ var requestLogsReadInventory = map[string]int{
 	"admin/auto_route.go":                   1,
 	"admin/auto_route_outcome_freshness.go": 1,
 	"admin/auto_route_correlations.go":      5,
-	"admin/auto_title_generator.go":         3,
+	"admin/auto_title_generator.go":         2,
 	"admin/body_resolver.go":                4,
 	"admin/compression_sessions.go":         5,
-	"admin/compression_stats.go":            7,
+	"admin/compression_stats.go":            4,
 	"admin/credential_monitor.go":           3,
 	"admin/credential_monitor_heatmap.go":   1,
 	"admin/credential_success_rate.go":      2,
@@ -68,11 +68,11 @@ var requestLogsReadInventory = map[string]int{
 	"admin/diagnostics_credential.go":       1,
 	"admin/live_stream_sse.go":              2,
 	"admin/logs.go":                         5,
-	"admin/logs_summary.go":                 4,
-	"admin/memora_handlers.go":              5,
+	"admin/logs_summary.go":                 2,
+	"admin/memora_handlers.go":              4,
 	"admin/model_routing_diagnostic.go":     1,
 	"admin/model_status.go":                 2,
-	"admin/no_topic_session.go":             6,
+	"admin/no_topic_session.go":             4,
 	"admin/probe_history.go":                1,
 	"admin/provider_diagnose.go":            2,
 	"admin/provider_models.go":              2,
@@ -83,23 +83,25 @@ var requestLogsReadInventory = map[string]int{
 	"admin/routing.go":                      1,
 	// 2026-10-05：只 JOIN 不 FROM，此前对本门**完全不可见**（假零）。
 	// 会话对比 API 的 bodies 腿；turn 腿早已走会话族。
-	"admin/session_compare.go":              1,
 	"admin/session_analytics_breakdown.go":  2,
 	"admin/session_analytics_timeseries.go": 3,
 	"admin/session_bodies_batch.go":         2,
 	"admin/session_detail_v2.go":            2,
-	// 同上：会话导出 API 的 bodies 腿。
-	"admin/session_export.go":         1,
+	// 同上：只剩 JOIN 不 FROM。
+	// ⚠ §9.230 起**会话导出/对比那两个**（原 session_compare.go / session_export.go）
+	// 已不在本表：它们的 bodies 腿改走 db.SessionBodiesSourceSQL()，源码里不再有
+	// v1 关系名字面量。v1 那一臂的登记在 indirectRequestLogsReaders
+	// （admin/session_bodies_source.go）。
 	"admin/session_extract.go":        3,
 	"admin/session_management_api.go": 1,
 	// 同上：`JOIN request_logs_with_current_month rl ON rl.id = slr.last_request_id`，
 	// 为在线会话列表补 tenant_id —— 走的是 canonical 视图的 v1 臂。
 	"admin/session_online.go":           1,
-	"admin/session_sanitize_matches.go": 3,
+	"admin/session_sanitize_matches.go": 2,
 	"admin/session_summary_v2.go":       1,
 	"admin/session_tenant.go":           2,
 	"admin/session_timeline_query.go":   1,
-	"admin/session_title.go":            2,
+	"admin/session_title.go":            1,
 	"admin/session_turns_tree.go":       1,
 	"admin/session_turns_unified.go":    1,
 	"admin/swim_lane_init.go":           1,
@@ -125,35 +127,39 @@ var requestLogsReadInventory = map[string]int{
 	// 基表就是 request_logs rl，比 grep 计数强。扫描器看不见 ≠ 没有覆盖。
 	// 要把 ② 也数进来，得把模式扩到「裸表名字符串」，那会改动本表其余条目
 	// （审计 §8.5），留给需要它的那一轮单独评估。
-	"admin/usage_enhanced.go":                         1,
-	"admin/work_types.go":                             4,
-	"autoroute/recommend_v2.go":                       2,
-	"bg/auto_index_refresher.go":                      4,
-	"bg/auto_route_affinity_worker.go":                2,
-	"bg/candidate_failure_monitor.go":                 2,
-	"bg/credential_recovery.go":                       2,
-	"bg/credential_selfcheck.go":                      3,
-	"bg/daily_probe_audit.go":                         1,
-	"bg/integrity_fingerprint_drift.go":               1,
-	"bg/integrity_fingerprint_probe.go":               2,
-	"bg/ledger_reconciliation.go":                     1,
-	"bg/lite_retention_worker.go":                     2,
-	"bg/model_probe.go":                               3,
-	"bg/model_tier.go":                                1,
-	"bg/passive_probe_listener.go":                    5,
-	"bg/shared_pick.go":                               1,
-	"bg/stats_minute_rollup.go":                       3,
-	"bg/stats_minute_rollup_retire.go":                3,
-	"bg/today_success_probe.go":                       1,
-	"cmd/compression-bench/main.go":                   2,
-	"cmd/gateway/dual_read_validator.go":              4,
-	"cmd/gateway/main_v3_wiring.go":                   1,
-	"cmd/gateway/output_compliance_control.go":        1,
-	"cmd/gateway/waterfall_by_request.go":             1,
-	"cmd/gateway/waterfall_db.go":                     1,
-	"cmd/scenario_driver/main.go":                     4,
-	"cmd/tools/backfill_session_bodies/main.go":       2,
-	"cmd/tools/validate_sessions_v2/loader.go":        5,
+	"admin/usage_enhanced.go":                   1,
+	"admin/work_types.go":                       4,
+	"autoroute/recommend_v2.go":                 2,
+	"bg/auto_index_refresher.go":                4,
+	"bg/auto_route_affinity_worker.go":          2,
+	"bg/candidate_failure_monitor.go":           2,
+	"bg/credential_recovery.go":                 2,
+	"bg/credential_selfcheck.go":                3,
+	"bg/daily_probe_audit.go":                   1,
+	"bg/integrity_fingerprint_drift.go":         1,
+	"bg/integrity_fingerprint_probe.go":         2,
+	"bg/ledger_reconciliation.go":               1,
+	"bg/lite_retention_worker.go":               2,
+	"bg/model_probe.go":                         3,
+	"bg/model_tier.go":                          1,
+	"bg/passive_probe_listener.go":              4,
+	"bg/shared_pick.go":                         1,
+	"bg/stats_minute_rollup.go":                 3,
+	"bg/stats_minute_rollup_retire.go":          3,
+	"bg/today_success_probe.go":                 1,
+	"cmd/compression-bench/main.go":             2,
+	"cmd/gateway/dual_read_validator.go":        6, // 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
+	"cmd/gateway/main_v3_wiring.go":             1,
+	"cmd/gateway/output_compliance_control.go":  1,
+	"cmd/gateway/waterfall_by_request.go":       1,
+	"cmd/gateway/waterfall_db.go":               1,
+	"cmd/scenario_driver/main.go":               4,
+	"cmd/tools/backfill_session_bodies/main.go": 2,
+	// 第 6 处 = HasV1RowsInRange（§R44/移交.1 端边界守门的实测探测，R45 轮加入）：
+	// LIMIT 1，家族过滤（tenant + 会话头）与同文件 LoadV1TimeRange 逐字一致——
+	// 探测必须对「窗口声称要比对的行」作答，母表腿是有意的。生命周期与该 loader
+	// 其余 5 处同面：S4 停写 request_logs 时 v1 校验器连同探测一起退役。
+	"cmd/tools/validate_sessions_v2/loader.go":        6,
 	"cmd/traffic-replay/main.go":                      1,
 	"db/db.go":                                        3,
 	"db/probe_views_unified.go":                       3,
@@ -166,9 +172,9 @@ var requestLogsReadInventory = map[string]int{
 	"domains/hooks/observability/telemetry/client.go": 5,
 	"domains/providerprofile/adapters.go":             4,
 	"domains/routeincident/store.go":                  1,
-	"domains/sessionforensics/export.go":              5,
-	"domains/sessionsummary/summarizer.go":            5,
-	"domains/sessionsummary/system_prompt_prefix.go":  2,
+	"domains/sessionforensics/export.go":              3,
+	"domains/sessionsummary/summarizer.go":            3,
+	"domains/sessionsummary/system_prompt_prefix.go":  1,
 	"domains/streaming/anomaly_harvester.go":          1,
 	"domains/streaming/model_alternatives.go":         1,
 	"internal/collector/gateway_adapters.go":          3,
@@ -269,6 +275,24 @@ func sumInventory() int {
 // ⇒ 模式扩成 `from|join`。**不是**加一条「已知例外」清单——那只是把同一个洞
 // 从扫描器搬到登记表，而登记表需要人记得更新；JOIN 到 v1 关系**按定义**就是
 // 一个 v1 读点，没有误报空间。
+//
+// # 2026-10-05：同一批里的两个文件在本表**退场**（审计 §9.230）
+//
+// 上面那张名单里的 `admin/session_compare.go` / `admin/session_export.go`
+// 在本轮被改成经 `db.SessionBodiesSourceSQL()` 取 bodies 源，于是它们源码里
+// **不再有** v1 关系名的字面量 ⇒ 本表（按行正则扫字面量）测到 0 处。
+//
+// ⚠ **「本表测到 0」不等于「它不读 v1」**——开关默认那一臂就是
+// `return "request_logs_bodies_with_current_month rb"`。把这两条从本表删掉
+// 之前必须先确认它们在别处有家，否则就是 §9.45「把不知道报成安全」的同一次复发。
+// ⇒ 处置按本仓**已有**的两张表分工，不新造第三套：
+//
+//	字面量读方 → requestLogsReadInventory（本表）
+//	间接读方   → indirectRequestLogsReaders（§9.49 建的那张）
+//	两者并集   → allKnownRequestLogsReaderFiles(t) 〔§9.232 起并入切换层消费点〕
+//
+// 与 `bg/auto_route_settle_sql.go` 完全同形：那个文件同样因为关系名在 Go
+// 标识符里而不在本表，登记在间接表。⇒ 本表从 109 降到 107，**不是读方变少了**。
 var requestLogsReadPattern = regexp.MustCompile(`(?i)(from|join)\s+request_logs(_[a-z_]+)?\b`)
 
 func scanRequestLogsReaders(t *testing.T, root string) map[string]int {

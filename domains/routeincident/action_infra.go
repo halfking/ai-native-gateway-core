@@ -480,7 +480,7 @@ func (s *Store) persistRunInTx(ctx context.Context, tx pgx.Tx, run *DiagnosticRu
 			id, incident_id, tenant_id, kind, state,
 			route_key, parameters, started_at, finished_at, result,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now())
+		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10::jsonb, now(), now())
 		ON CONFLICT (id) DO UPDATE
 		SET state = EXCLUDED.state,
 		    finished_at = EXCLUDED.finished_at,
@@ -493,7 +493,7 @@ func (s *Store) persistRunInTx(ctx context.Context, tx pgx.Tx, run *DiagnosticRu
 	}
 	_, err := tx.Exec(ctx, sql,
 		run.ID, inc.ID, tenantID, string(run.Kind), string(state),
-		routeJSON, paramsJSON, startedAt, finished, resultJSON,
+		string(routeJSON), string(paramsJSON), startedAt, finished, string(resultJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("persist diagnostic run: %w", err)

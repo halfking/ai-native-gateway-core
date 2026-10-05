@@ -39,7 +39,7 @@ func TestMockProviderHidden(t *testing.T) {
 }
 
 // TestMockProviderFilterClause：SQL 侧 WHERE 谓词与隐藏集合一致性
-//（audit P3：必须是精确 NOT IN 集合，不得回退为前缀 NOT LIKE）。
+// （audit P3：必须是精确 NOT IN 集合，不得回退为前缀 NOT LIKE）。
 func TestMockProviderFilterClause(t *testing.T) {
 	clause := mockProbeFilterClause()
 	if !strings.Contains(clause, "NOT IN") {

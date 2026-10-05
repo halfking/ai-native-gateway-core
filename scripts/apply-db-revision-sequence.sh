@@ -895,6 +895,21 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/827_modality_verification_progress_view.sql"
   "$ROOT_DIR/sql/migrations/startup/828_supplier_errors_unified_tracked.sql"
 
+  # 2026-10-05：831 补登通道腿（本轮合并期间由并行线落地，第 N 次同型）
+  #
+  # 与 825-828 完全同型：work_type_model_route.source 列（区分 ACC 拥有与运维
+  # 拥有，让 ACC 同步不再抹掉运维在 UI 配的模型路由）带着完整 installer 腿落地
+  # （embeddata 副本 + StartupFiles map），却没有通道腿 ⇒ 全新安装拿得到，
+  # 在它之前装的库永远拿不到。而这列存在的**全部意义**就是让同步不再抹掉运维
+  # 配置，缺了投递腿等于这个修复对老库不生效。
+  #
+  # 可安全进通道的依据：纯 ADD COLUMN IF NOT EXISTS + CHECK 重建 + CREATE INDEX
+  # IF NOT EXISTS + 双账本自登记（ON CONFLICT DO UPDATE），幂等可重放；表只有
+  # 22 行；不定义任何函数（无 clobber 链问题）、不 RENAME、不重写大表。
+  # 文件自带 BEGIN/COMMIT 与通道内 71 个同类文件一致，psql --single-transaction
+  # 下只发 WARNING，不致命。
+  "$ROOT_DIR/sql/migrations/startup/831_work_type_route_source.sql"
+
   "$ROOT_DIR/sql/migrations/startup/829_bodies_columnar_rollback.sql"
 )
 

@@ -17,7 +17,8 @@
 // so operators can distinguish admin revocations from auto revocations) and
 // from then on the regular WriteOnError cooldown path is skipped because the
 // WHERE clause in writer.go includes
-//   AND COALESCE(manual_disabled, FALSE) = FALSE
+//
+//	AND COALESCE(manual_disabled, FALSE) = FALSE
 //
 // Safe-by-construction behaviour:
 //   - The auto-revoke sweep is OFF by default. Enable with
@@ -32,10 +33,11 @@
 //   - Already-disabled credentials are skipped (no-op UPDATE).
 //
 // Configuration knobs (env vars):
-//   LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE=on|off         — kill switch
-//   LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE_THRESHOLD=3     — N auth_failed cycles
-//   LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE_WINDOW_HOURS=24 — cycle-count window
-//   LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE_INTERVAL=5m    — sweep cadence
+//
+//	LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE=on|off         — kill switch
+//	LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE_THRESHOLD=3     — N auth_failed cycles
+//	LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE_WINDOW_HOURS=24 — cycle-count window
+//	LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE_INTERVAL=5m    — sweep cadence
 package credential
 
 import (

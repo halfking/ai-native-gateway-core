@@ -73,9 +73,9 @@ func TestBeginRefreshIsExclusive(t *testing.T) {
 	r.endRefresh()
 }
 
-// 2. 并发下有且只有一个人占上。
-//    这一条是第 1 条的真实并发形态：Go 的 -race 下跑，验证没有数据竞争，
-//    且成功次数恰好为 1。
+//  2. 并发下有且只有一个人占上。
+//     这一条是第 1 条的真实并发形态：Go 的 -race 下跑，验证没有数据竞争，
+//     且成功次数恰好为 1。
 func TestBeginRefreshConcurrentExactlyOneWins(t *testing.T) {
 	r := &AutoIndexRefresher{}
 
@@ -123,38 +123,45 @@ func TestBeginRefreshConcurrentExactlyOneWins(t *testing.T) {
 	r.endRefresh()
 }
 
-// 3. 契约门：RefreshOnce 必须真的调 beginRefresh/endRefresh。
-//    上面两条只测原语；若有人重构时忘了把 RefreshOnce 接到原语上，
-//    门会全绿而缺陷依旧存在 —— 这是「门只测了零件、没测装配」的老形态。
+//  3. 契约门：RefreshOnceStatus 必须真的调 tryBeginRefresh/endRefresh。
+//     上面两条只测原语；若有人重构时忘了把 RefreshOnce 接到原语上，
+//     门会全绿而缺陷依旧存在 —— 这是「门只测了零件、没测装配」的老形态。
+//
+//     2026-10-05 P2（R44 移交 §R44/移交.2）改写：旧门断言「跳过分支返回
+//     nil」，那正是缺陷 1 的病根 —— 跳过返回 nil error 后 LISTEN 监听器把
+//     「没执行」当「已处理」清掉 pending，该 NOTIFY 永不再重试，内存索引
+//     丢一次路由配置直到下个 ticker。新契约：跳过分支必须以 skipped 语义
+//     返回 (true, nil)，由调用方（listener / admin）区分执行与跳过。
 func TestRefreshOnceWiresTheSingleflightGuard(t *testing.T) {
 	src := refresherSource(t)
-	body := funcBody(t, src, "func (r *AutoIndexRefresher) RefreshOnce(")
+	body := funcBody(t, src, "func (r *AutoIndexRefresher) RefreshOnceStatus(")
 
-	if !strings.Contains(body, "r.beginRefresh()") {
-		t.Fatal("RefreshOnce 没有调用 beginRefresh ⇒ 互斥形同虚设，" +
-			"三个触发源仍会并发跑 rollup")
+	if !strings.Contains(body, "r.tryBeginRefresh(") {
+		t.Fatal("RefreshOnceStatus 没有调用 tryBeginRefresh ⇒ 互斥与同 bucket 合并形同虚设，" +
+			"三个触发源仍会并发/重复跑 rollup")
 	}
 	if !strings.Contains(body, "defer r.endRefresh()") {
-		t.Fatal("RefreshOnce 没有 defer endRefresh ⇒ 一旦 rollup 返回错误或 panic，" +
+		t.Fatal("RefreshOnceStatus 没有 defer endRefresh ⇒ 一旦 rollup 返回错误或 panic，" +
 			"inFlight 永远不会复位，refresher 从此永久跳过所有刷新（比原缺陷更糟：静默失效）")
 	}
-	// 跳过分支必须返回 nil 而不是错误：调用方（admin 手动接口、LISTEN 监听）
-	// 把这个返回值直接透给用户/日志，返回错误会变成「刷新失败」的假告警。
-	//
-	// ★ 这里**不能**用 `strings.Contains(整个函数体, "return nil")`：
-	//   函数里 `if r == nil { return nil }` 那行会让它恒真 —— 变异把跳过分支
-	//   改成 return fmt.Errorf(...) 之后，门照样全绿（实测：无牙）。
-	//   「有 return nil」与「跳过分支返回 nil」是两个量，必须截出分支单独判。
-	skip := branchBody(t, body, "if !r.beginRefresh() {")
-	if strings.Contains(skip, "return nil") == false {
-		t.Fatalf("跳过分支必须返回 nil（无错误），不该把「已在跑」表达成失败：\n%s", skip)
+	// 跳过分支必须返回 skipped 语义 (true, nil)：把「没执行」如实上报 ——
+	// 返回 error 会变成「刷新失败」的假告警，返回 (false, nil) 则是伪成功
+	// （缺陷 1 本体）。
+	skip := branchBody(t, body, "if !r.tryBeginRefresh(gateBucket) {")
+	if !strings.Contains(skip, "return true, nil") {
+		t.Fatalf("跳过分支必须返回 (skipped=true, nil) —— 没执行不是错误，但也绝不是已处理：\n%s", skip)
 	}
-	// 并且跳过分支里不得出现任何「带值的 return」
 	for _, line := range strings.Split(skip, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "return ") && trimmed != "return nil" && trimmed != "return nil {" {
-			t.Fatalf("跳过分支里出现了带值的 return %q —— 会被调用方当成刷新失败", trimmed)
+		if strings.HasPrefix(trimmed, "return ") && trimmed != "return true, nil" {
+			t.Fatalf("跳过分支里出现了其他返回形态 %q —— skipped 语义被破坏（伪成功或假失败）", trimmed)
 		}
+	}
+	// lastBucket 记账必须以 err==nil 为前提：失败不能被记成已执行，否则
+	// 失败后的同 bucket 重试（既有失败重试语义）会被合并节流挡住。
+	if !strings.Contains(body, "if err == nil") {
+		t.Fatal("RefreshOnceStatus 缺少 err==nil 守卫的 lastBucket 记账 ⇒ " +
+			"失败的执行也会被记成已执行，同 bucket 的后续重试会被合并挡住")
 	}
 }
 

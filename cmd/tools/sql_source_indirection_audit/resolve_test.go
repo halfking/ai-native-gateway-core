@@ -1,6 +1,9 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -426,5 +429,184 @@ func q(balArg string) {
 	})
 	if len(sites) != 1 {
 		t.Fatalf("sites = %d, want 1（只有 ②）\n%v", len(sites), sites)
+	}
+}
+
+// TestPackageLevelVarSitesAreEnumerated is the control pair for the §9.237 fix.
+//
+// Before it, a SQL string held in a package-level `var` was invisible to the
+// site enumeration: its bindings were collected into env.globals for
+// *resolution*, but only function bodies were scanned, so the site itself was
+// never reported. Two real instances existed and neither was reported —
+// `admin/compression_stats.go`'s compressionStatsEstimatedOrigSQL and both SQL
+// vars in `domains/sessionforensics/export.go`.
+//
+// The fixture is written so the two container kinds are the **only** difference
+// between the two cases below. If the function-body form is found and the
+// package-var form is not, the enumeration is still function-only and the
+// regression is back.
+//
+// The package-var case is deliberately built out of a concat whose operand is a
+// package-level function call, because that is the shape the retirement switch
+// layers produce (`const` → `var` happens precisely when a function call is
+// introduced).
+func TestPackageLevelVarSitesAreEnumerated(t *testing.T) {
+	// The literal must END with `FROM`/`JOIN` (trailing space trimmed) — that is
+	// what isRelationFragmentTail requires. My first fixture used
+	// "…FROM session_turns ", which ends with the *table name* rather than the
+	// keyword, so zero sites were found and the test failed for the wrong
+	// reason. A fixture that matches nothing cannot distinguish "the fix is
+	// gone" from "my fixture is wrong".
+	//
+	// And a real func declaration, not a variable holding a func literal:
+	// collectFuncReturns only records func declarations, so a var-held func
+	// literal would be unresolvable for reasons unrelated to what this test is
+	// about — while the second half asserts the var site *resolves*.
+	const src = `package fixture
+
+// A real func declaration: this is the shape production has
+// (dbpkg.SessionBodiesSourceSQL), not a var holding a func literal.
+func turnsSource() string { return "request_logs_hot" }
+
+var packageLevelSQL = "SELECT * FROM " + turnsSource() + " t"
+
+func inFunction() string {
+	return "SELECT * FROM " + turnsSource() + " t"
+}
+`
+	// Line numbers are derived from the fixture text, not hardcoded. An earlier
+	// version hardcoded them and went stale the moment a comment line was added
+	// to the fixture above — the test then failed for a reason that had nothing
+	// to do with the behaviour it exists to pin.
+	lineOf := func(marker string) int {
+		for i, ln := range strings.Split(src, "\n") {
+			if strings.Contains(ln, marker) {
+				return i + 1
+			}
+		}
+		t.Fatalf("fixture no longer contains %q — update the fixture, not the expectation", marker)
+		return 0
+	}
+	varLine, funcLine := lineOf("var packageLevelSQL"), lineOf(`return "SELECT * FROM "`)
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "fixture.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sites, err := scanParsed(fset, map[string]*ast.File{"fixture.go": file})
+	if err != nil {
+		t.Fatalf("scanParsed: %v", err)
+	}
+
+	seen := map[int]int{}
+	for _, s := range sites {
+		if s.File == "fixture.go" {
+			seen[s.Line]++
+		}
+	}
+
+	if seen[varLine] == 0 {
+		t.Errorf("包级 var 里的拼接点（第 %d 行）没有被枚举出来 —— "+
+			"§9.237 的修复回退了，或从未生效。实测点位：%+v", varLine, sites)
+	}
+	if seen[funcLine] == 0 {
+		t.Fatalf("函数体里的拼接点（第 %d 行）都没找到，fixture 本身失效：%+v", funcLine, sites)
+	}
+	// The var form must resolve, not merely be counted. A site reported with no
+	// resolved candidate lands in the unresolved bucket for the wrong reason,
+	// and the distinction between "unseen" and "seen but unresolvable" — which
+	// is exactly what the manifest gate exists to surface — would be lost.
+	for _, s := range sites {
+		if s.Line == varLine && len(s.Resolved) == 0 {
+			t.Errorf("包级 var 的点位被报告为不可判定（%+v）；它应当与函数体里的同形点位"+
+				"一样解析到关系名 —— 否则「看不见」与「看得见但解析不出」混成一类", s)
+		}
+	}
+}
+
+// TestPackageLevelVarResolvesAgainstGlobalsNotStaleLocals pins the enterFunc()
+// call that precedes the package-level var scan.
+//
+// Found by mutation Q4: removing it left every gate green, because the
+// single-file fixture has no name for a stale local to shadow. The hazard is
+// real though — resolve() consults `locals` before `globals`, files are scanned
+// in sorted order, and nothing else clears `locals` between them. A package
+// initialiser in file B can therefore resolve an identifier using a local left
+// behind by the last function of file A, and it will look resolved.
+//
+// That is the worst kind of wrong: a confident answer, produced from a binding
+// the initialiser could not actually see at package level. The two-file fixture
+// is the only way to exercise it, which is why this is a separate test rather
+// than an extra case in the one above.
+func TestPackageLevelVarResolvesAgainstGlobalsNotStaleLocals(t *testing.T) {
+	// Both files declare `tableFor`; the local inside a's function must not
+	// decide how b's package var resolves.
+	//
+	// ⚠ Two fixture properties are load-bearing, and I got both wrong first.
+	//
+	// 1. The shadowing local must be a **string** binding. `tableFor := func()
+	//    string {...}` is not recorded by collectStringBindings at all, so no
+	//    stale local ever existed and the test stayed green with the mutation
+	//    applied — it proved nothing.
+	// 2. b.go must reference `tableFor` as a **bare identifier**. With
+	//    `tableFor()` the operand is a CallExpr, and resolve() returns
+	//    env.funcs[name] without ever consulting locals or globals — so the
+	//    hazard cannot manifest at all, and again the test was vacuously
+	//    green. A func call is *immune* to stale locals; only a bare
+	//    identifier is exposed. That is why Q4 went uncaught twice.
+	//
+	// Sorted file order (a.go before b.go) plus locals-never-cleared-between-
+	// files is the mechanism; enterFunc() in the GenDecl branch is the fix.
+	srcA := `package fixture
+func a() string {
+	tableFor := "credential_model_bindings"
+	return "SELECT * FROM " + tableFor
+}
+`
+	srcB := `package fixture
+var tableFor = "session_turns_hot"
+var packageSQL = "SELECT * FROM " + tableFor
+`
+
+	fset := token.NewFileSet()
+	parsed := map[string]*ast.File{}
+	for name, src := range map[string]string{"a.go": srcA, "b.go": srcB} {
+		f, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		parsed[name] = f
+	}
+	sites, err := scanParsed(fset, parsed)
+	if err != nil {
+		t.Fatalf("scanParsed: %v", err)
+	}
+
+	bSites, hit := 0, false
+	for _, s := range sites {
+		if s.File != "b.go" {
+			continue
+		}
+		bSites++
+		for _, r := range s.Resolved {
+			if strings.Contains(r, "credential_model_bindings") {
+				t.Fatalf("b.go 的包级 var 被 a.go 留下的局部绑定解析成了 %q（%+v）—— "+
+					"它只能看到自己的包级 tableFor。跨文件的 stale locals 泄漏", r, s)
+			}
+			if r == "session_turns_hot" {
+				hit = true
+			}
+		}
+	}
+	if len(sites) == 0 {
+		t.Fatal("夹具没有产出任何点位，fixture 失效")
+	}
+	// 上行证人：断言「解析到了包级 tableFor」而不只是「没解析到脏值」。
+	// 只写否定断言的话，夹具哪天不再产出 b.go 点位也会照样绿 ——
+	// 那正是这个夹具已经栽过一次的形状。
+	if bSites == 0 || !hit {
+		t.Fatalf("b.go 的包级 var 点位没解析到自己的表名（bSites=%d sites=%+v）—— "+
+			"夹具失效，不能证明任何事", bSites, sites)
 	}
 }

@@ -39,7 +39,7 @@ func TestLocator_DBRetry_RecoversOnSecondAttempt(t *testing.T) {
 		meta:      Meta{RequestID: "req-retry-hit-001", TenantID: "t1"},
 	}
 	loc := &Locator{
-		Bodies:      flaky,
+		Bodies:       flaky,
 		DBRetryCount: 2,
 		DBRetryDelay: 10 * time.Millisecond,
 	}
@@ -60,7 +60,7 @@ func TestLocator_DBRetry_MissAfterExhaustion(t *testing.T) {
 		missCount: 5, // more misses than maxAttempts → still miss
 	}
 	loc := &Locator{
-		Bodies:      flaky,
+		Bodies:       flaky,
 		DBRetryCount: 2,
 		DBRetryDelay: 5 * time.Millisecond,
 	}
@@ -78,7 +78,7 @@ func TestLocator_DBRetry_DisabledByZeroCount(t *testing.T) {
 		missCount: 5,
 	}
 	loc := &Locator{
-		Bodies:      flaky,
+		Bodies:       flaky,
 		DBRetryCount: 0, // explicit disable
 	}
 	_, err := loc.Get(context.Background(), "req-retry-disabled-001", false)
@@ -109,7 +109,7 @@ func (f *failingBodies) ReadSessionTurnsBodies(_ context.Context, _ string, _ bo
 func TestLocator_DBRetry_NonNotFoundErrorNotRetried(t *testing.T) {
 	failing := &failingBodies{}
 	loc := &Locator{
-		Bodies:      failing,
+		Bodies:       failing,
 		DBRetryCount: 3,
 		DBRetryDelay: 5 * time.Millisecond,
 	}
@@ -127,7 +127,7 @@ func TestLocator_DBRetry_ContextCancellationStopsDelay(t *testing.T) {
 		missCount: 5,
 	}
 	loc := &Locator{
-		Bodies:      flaky,
+		Bodies:       flaky,
 		DBRetryCount: 5,
 		DBRetryDelay: 1 * time.Second, // long delay → cancellation kicks in
 	}

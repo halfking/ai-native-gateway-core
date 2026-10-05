@@ -204,9 +204,9 @@ func writeErrorJSON(w http.ResponseWriter, status int, code, message, details st
 		details = ""
 	}
 	resp := Response{
-		Success:   false,
-		Code:      code,
-		Message:   message,
+		Success: false,
+		Code:    code,
+		Message: message,
 		Error: &ErrorInfo{
 			Code:    code,
 			Message: message,

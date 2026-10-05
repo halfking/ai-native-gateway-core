@@ -1422,18 +1422,18 @@ func ensureSpecs() []archiveSpec {
 		// 与月分区同源 Asia/Shanghai 日历钉扎（防 UTC 会话在 +08 0-8h 把
 		// 次日误建为今日）。date 签名，与 sessions_v2_partitions 同款。
 		{fnName: "ensure_usage_facts_daily_partition", label: "usage_facts (daily)", argExpr: "$1::date", partitionUnit: "day"},
-		// 2026-10-04 (migration 825): ursm_node_snapshot_min 改为按日 RANGE
+		// 2026-10-04 (migration 830): ursm_node_snapshot_min 改为按日 RANGE
 		// 分区。★ 该表**没有 DEFAULT 分区**（全仓无 snapshot_ts 单列读路径，
 		// 有 DEFAULT 只会变成永远扫到的垃圾堆），所以「今天的分区不存在」
 		// 不是降级而是**全量写入失败**（no partition of relation found）。
 		// 因此这条接线与 750/706 同属可用性硬依赖，漏掉就是 473 同族的
-		// 「迁移建了分区但忘了接 ensureSpecs」——务必与 825 一起进。
+		// 「迁移建了分区但忘了接 ensureSpecs」——务必与 830 一起进。
 		//
-		// 825 是手工迁移、刻意不进 installer 启动序列，所以本函数在 825
+		// 830 是手工迁移、刻意不进 installer 启动序列，所以本函数在 830
 		// 执行前会一直不存在。ensureNextMonthPartitions 的错误处理是
 		// slog.Error + continue（每 24h 记一条，不打断进程），与 db.go 的
 		// boot ensure 容忍缺失一致 ⇒ 两个步骤的先后顺序无关。
-		{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day"}, // Migration 825
+		{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day"}, // Migration 830
 	}
 }
 

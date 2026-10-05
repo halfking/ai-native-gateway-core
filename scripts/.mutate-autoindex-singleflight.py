@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """AutoIndexRefresher singleflight 互斥的行为门变异验证。
 
+⚠️ 已被接替（R45/§四 连带，2026-10-04）：§R45/M3 修复（skipped 语义上浮 +
+同 bucket 合并节流 + busyDeferred 欠账）之后，本脚本的 M67/M68 变异锚点
+字面失配——其契约由 bg/auto_index_refresher 的常规测试族（含 -race 的
+18 条 + admin 4 条，负控 5 组在 R45 审计文档 §四 在案）接替。本文件保留
+为一次性验证器的历史存档，不再是 CI 门；若要复活，须先按新代码重锚。
+
 门：bg/auto_index_refresher_mutex_test.go（3 条）
 纪律同前：逐字节还原 / 目标门必须转红 / 打出实际跑的条数，0 条即不可判定。
 """

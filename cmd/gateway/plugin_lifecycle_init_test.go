@@ -75,8 +75,8 @@ func newReqWithPathValue(method, path, id string) *http.Request {
 
 func TestLifecycleHandlers_HappyPath(t *testing.T) {
 	cases := []struct {
-		action string
-		factory func(pluginLifecycle) http.HandlerFunc
+		action     string
+		factory    func(pluginLifecycle) http.HandlerFunc
 		wantStatus string
 	}{
 		{action: "activate", factory: makePluginActivateHandler, wantStatus: "activated"},

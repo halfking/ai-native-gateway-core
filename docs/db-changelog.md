@@ -877,9 +877,16 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 825 | `825_modality_graded_verification.sql` | `3af1b1801c36e015a5849bde261125c378129c46f5bdad703c186b85cc0b0eab` | pending deploy（245/154/252 未应用；本地 8782 已由启动自愈 ensureModalityGradedVerification 等价应用并 stamp） |
-| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | pending deploy（**手工执行**；`.down.sql` sha `ea378dac9f08ec1269504a562a470a7d1c647d25d8f89399fe377f6765f66ce7`）。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红） |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `58cff55138dd90466b7079dcabc9bc7163eb3dbb93f3d7069b27b78beb2b0d69` | pending deploy（**手工执行**；`.down.sql` sha `593464eec6397c5659e53f2e8ae3a5059d9f2911726c45870e3f08103b8014a8`）。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红）。**R45 sha 回写**：R45/D2 清扫把头部 psql 示例改指实名（825_→830_）、down 按 §R44/移交.5 补 817 同款台账条件删除+对称门 ⇒ 双文件字节变更，本行双 sha 为 R45 实测回写 |
 
 > **R44 复核：为什么 `825_ursm` 不改号（登记了撞号，但保留双 825）**
+>
+> 🔴 **R45 废止标记：本段结论已被 R44 自己推翻（见其审计文档 §5），改号已实际发生
+> （825_ursm → 830，de7656806），本段保留仅为方法论存档。** 推翻的机制：本段论证
+> 「编号不是应用顺序键」对**执行顺序**成立，但撞号的真正危害在**身份**——
+> `schema_migrations.version` 是主键，双 825 是抢主键的静默丢弃。R44 §5.2 原话：
+> 「编号在本仓同时是身份键，不只是标签」。若读到本段与上方 830 行并存而疑惑，
+> 以 830 行为准。
 >
 > R22「后提交方让号」（759→801、657/658）的前提是**编号是应用顺序键**。R44 实测该前提
 > **在当前架构下已不成立**：
@@ -1002,3 +1009,10 @@ teeth（一次性 PG17 逐项实测）：去 `LIMIT 1` → 判据红（4 绑定 
 
 | 828 | `828_supplier_errors_unified_tracked.sql` | `196cb3830ce5d81b600c6a7dbd1bd9434a94df7336d1f96396e6c878971dd33a` | **已应用本机**（手工执行 + 已登记 `schema_migrations`）；生产未部署。删掉 `supplier_errors_unified` 的第 1 列 `source`：它在 Citus columnar 分区上不可投影（`cache lookup failed for attribute source`），且改为基表列表达式**实测无效**——触发条件是「视图输出列不是基表列的直接 Var」。同时让该视图**首次进入受追踪的 startup 链**（此前唯一定义处 V371 从未被 `schema_migrations` 记录，全新库不会有它，而 admin 三个读端都查它）。21 → 20 列，行数 2031 前后不变。审计 §9.200 / §9.201.1 |
 | 829 | `829_bodies_columnar_rollback.sql` | `0c7c75432abb58fdd77e577fd1069f53b8bd5d7c58cf274f51cb40b73b7c9edc` | pending deploy（**本机故意不应用**）。只回 765 管的 `request_logs_bodies`：① 重定义 `ensure_request_logs_bodies_partition` 为**恒 heap**（这才是止血，否则 765 的 A 段继续新建列存分区）；② **只转空分区**；③ NOTICE 列出仍列存且有数据的分区与总 MB。**不做 3 GB 重写**——`drop_old_request_logs_bodies_partitions()` 对列存分区是裸 `DROP TABLE`（无数据搬迁），TTL 默认 7 天且 `bg/partition_manager.go:1232` 周期调用，`2026_09`（月末 2026-10-01）自 **2026-10-08** 起自动 DROP。本机保持列存，使 `TestColumnarParentTwoSurfaceSetopShape_RealDB` / `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 不至于**假绿**。审计 §9.201.2 |
+## 2026-10-04T19:05:38Z — deploy 245 build_seq 2458 (0978171a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | applied+verified |
+| 831 | `831_work_type_route_source.sql` | `bdb52ad1c68cdcda6b979c82b1c64cff90af8ef1c917062de5c224009a5f79a7` | **pending deploy**（`.down.sql` sha `fedddfd5d369e50b4e421c97e3dc848ceebf6515dad8fa78370edcf0951d7e0f`）（R46 补登记台账行——并行会话 fe703382b 落地迁移本体但未写台账，sqlguard 连续性门红）。`work_type_model_route.source ∈ {operator, acc}` 默认 'operator'：双写方（ACC sync / admin UI）DELETE+re-INSERT 互踩且无来源标记，ACC 种子 model_routes 全空 ⇒ 成功 sync 即静默清空运维配置的路由；与网关路径修复（/api/v2）成对落地。台账登记 ≠ 通道下发（通道门仍红 829+831，Owner 决策） |
+
