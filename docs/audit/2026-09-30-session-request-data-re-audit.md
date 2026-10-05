@@ -29127,3 +29127,85 @@ failure 每天 600–940，与 09-04/09-05 同量级）。
 
 ⇒ 这 5 天**不可用于任何 v1↔v2 一致性验收**，也不建议投入更多工时去复原机制；
 但「S4 停写演练必须另有独立信号（行存在性 + 演练记录）」这条已经足够改变做法。
+
+
+### §9.239 ★ 本地 v1↔v2 一致性实测：**10 行 blocker，10 行都是 `is_auto_request IS NULL`**
+
+§9.238 定位了 v1 的死亡区间之后，本地一直缺一份「v1 与 v2 都活着时它们一致吗」的读数。
+本节用出货夹具 `TestS4GateMeasurement` 补上（单快照、出货 scope、出货分类器）。
+
+#### §9.239.1 本地四个窗口的漂移读数
+
+| 窗口 | internal_loopback | non_terminal | **genuine_loss** | total | s4_ready |
+|---|---|---|---|---|---|
+| 1h | 0 | 0 | **0** | 0 | true |
+| 24h | 0 | 14 | **3** | 17 | false |
+| 7d | 966 | 207 | **10** | 1183 | false |
+| 30d | 30,645 | 1,636 | **10** | 32,291 | false |
+
+★ **7d 与 30d 的 `genuine_loss` 都是 10** ⇒ 这 10 行全部落在最近 7 天内，
+30 天窗口没有额外的历史欠账。24h 里 3 行、1h 里 0 行。
+**「1h 干净」不构成恢复证据**（夹具自己就写了这句）：一天发生几次的丢失机制，
+在两次事件之间长得一模一样。
+
+#### §9.239.2 10 行 blocker 的真实长相
+
+| 行数 | origin_actor | request_status | error_kind | is_auto_request | 若按 true 判 |
+|---|---|---|---|---|---|
+| 7 | `probe-service` | failure | `no_candidate` | **(null)** | internal_loopback |
+| 1 | `probe-service` | failure | `no_candidates` | **(null)** | internal_loopback |
+| 1 | `probe-service` | failure | `routing_schema_error` | **(null)** | internal_loopback |
+| 1 | `(null)` | failure | `session_unavailable` | **(null)** | internal_loopback |
+
+- **9 行是 `probe-service` 探针**，且全部因「没有候选 / 路由 schema 出错」而终止
+  ⇒ 它们本来就没有可路由的目标。
+- ★ **10 行的 `is_auto_request` 全是 NULL**。而 `db.MirrorDriftClassSQL` 的
+  `internal_loopback` 臂要求 `is_auto_request IS TRUE`，其注释写明
+  **「a NULL is NOT internal」** ⇒ 这些行没有被排除，**被计成了 genuine_loss**。
+- 夹具已有的归因：**9 行所在会话根本没有 turn（会话从未被镜像）**，
+  只有 1 行是在健康会话里丢了单个 turn。
+  ⇒ 按 §9.239.3 的口径，**「让 turn 写更快更稳」不会清掉这批**。
+
+#### §9.239.3 反事实：本地 `s4_ready` 的**唯一杠杆**就是这个待拍板问题
+
+反事实口径：只把 `is_auto_request` 由 NULL 视作 true，分类器其余部分逐字不动
+（`request_type`/`origin_actor`/`task_type` 三臂取自 SSOT
+`internal/internaltraffic`，已核对与 `GeneratorRequestTypesSQLList` /
+`GeneratorActorsSQLList` 逐字一致）。
+
+| 现状分类 | 行数 | 反事实后 |
+|---|---|---|
+| genuine_loss | **10** | **0**（10 行全部改判 internal_loopback） |
+| non_terminal | 207 | 0（probe-service 118 + 无 actor 68 + node-probe-worker 15 + credential-selfcheck-worker 6） |
+| internal_loopback | 966 | 1183 |
+
+⇒ **本地 `s4_ready` 会从 false 翻成 true。**
+而 207 的 non_terminal 恰好等于上面四组之和 ⇒ 口径自洽，total 仍为 1183。
+
+★ **但这不是建议改标记，理由写进代码注释了**：
+「把标记翻过来让门变绿」不是发现，那正是本审计一直在拒绝的形状 ——
+**把一个总体重新分类，好让仪器停止抱怨**。
+反事实测量存在的意义只有一个：**让属主看清那个待拍板问题值多少**。
+待拍板问题是「探针流量要不要保留可审计记录 / 要不要标 `is_auto_request`」；
+本节给出的答案是：**在本地，它单独决定 S4 能不能开。**
+
+#### §9.239.4 为什么这条读数以前拿不到（并已修）
+
+上面 §9.239.2 那张表原先**拿不到**：`s4GateMeasurement` 的 blocker shape 查询
+按 `origin_actor / request_status / error_kind / success` 分组，**不带 `is_auto_request`**。
+属主要为这个决定拍板，而支撑它的那个字段在出货测量里根本没输出 ——
+**一个只能靠手写 SQL 拿到的数字，不该用来支撑一个退役决定。**
+
+本节把它加进出货夹具（`s4_gate_measurement_test.go`）：
+- shape 查询增选 `is_auto_request`（`COALESCE(…::text,'(null)')`，避免为 NULL 语义新增 import）；
+- 增选**反事实分类**（只把 `is_auto_request` 的 NULL 当 true，其余逐字不动）；
+- 输出两条带警告的 `t.Logf`：**只报告、不断言、不参与任何判定**。
+  门仍然红在 10 行 genuine_loss 上，这正是它该有的样子。
+
+#### §9.239.5 顺带确认的硬阻塞仍然在
+
+夹具同时报告：
+**2 个列（`is_final_success`、`client_protocol`）在 session 侧仍全空**
+（1,692,578 条 `session_turns`），且**只能从 v1 一次性回填**。
+⇒ `s4_ready=false` 量的是漂移，不是拷贝；**现在 DROP v1 ⇒ 这两列永久不可填**。
+这一条的优先级高于本节讨论的标记问题。

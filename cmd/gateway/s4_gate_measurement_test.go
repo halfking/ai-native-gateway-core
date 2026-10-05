@@ -302,21 +302,35 @@ func TestS4GateMeasurement(t *testing.T) {
 	type blockerShape struct {
 		originActor, requestStatus, errorKind string
 		success                               bool
-		n                                     int64
-		newest                                time.Time
+		autoReq                               string
+		// cfClass is the bucket this row would fall into if `is_auto_request`
+		// were treated as TRUE when it is NULL (§9.239).
+		cfClass string
+		n       int64
+		newest  time.Time
 	}
 	shapeRows, err := tx.Query(ctx, `
 		SELECT COALESCE(rl.origin_actor, '(null)'),
 		       COALESCE(rl.request_status, '(null)'),
 		       COALESCE(NULLIF(TRIM(rl.error_kind), ''), '(null)'),
 		       COALESCE(rl.success, false),
+		       COALESCE(rl.is_auto_request::text, '(null)'),
+		       CASE
+		         WHEN TRIM(COALESCE(rl.request_type, '')) IN ('title_gen','summary')
+		           OR TRIM(COALESCE(rl.origin_actor, '')) IN ('auto-title-generator','auto-summary-generator','session-summary')
+		           OR TRIM(COALESCE(rl.task_type, '')) = ''  THEN 'internal_loopback'
+		         WHEN NOT COALESCE(rl.success, false)
+		           AND COALESCE(rl.request_status, '') NOT IN ('failure','rate_limited')
+		           AND COALESCE(rl.error_kind, '') = ''         THEN 'non_terminal'
+		         ELSE 'genuine_loss'
+		       END,
 		       count(*), max(rl.ts)
 		FROM (`+s4ScopeBody+`) rl
 		WHERE ($1 = '' OR rl.tenant_id = $1)
 		  AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
 		  AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)
 		  AND `+mirrorDriftClassSQL+` = 'genuine_loss'
-		GROUP BY 1, 2, 3, 4
+		GROUP BY 1, 2, 3, 4, 5, 6
 		ORDER BY count(*) DESC, 1`, "", time.Now().Add(-defDur))
 	if err != nil {
 		t.Fatalf("blocker shape: %v", err)
@@ -324,7 +338,8 @@ func TestS4GateMeasurement(t *testing.T) {
 	var shapes []blockerShape
 	for shapeRows.Next() {
 		var s blockerShape
-		if err := shapeRows.Scan(&s.originActor, &s.requestStatus, &s.errorKind, &s.success, &s.n, &s.newest); err != nil {
+		if err := shapeRows.Scan(&s.originActor, &s.requestStatus, &s.errorKind, &s.success,
+			&s.autoReq, &s.cfClass, &s.n, &s.newest); err != nil {
 			shapeRows.Close()
 			t.Fatalf("blocker shape scan: %v", err)
 		}
@@ -364,9 +379,37 @@ func TestS4GateMeasurement(t *testing.T) {
 		t.Logf("7d blocker shape (%d group(s), %d rows, newest %s ago):",
 			len(shapes), shapeTotal, time.Since(shapes[0].newest).Truncate(time.Second))
 		for _, s := range shapes {
-			t.Logf("    %-4d origin_actor=%-20s success=%-5v request_status=%-13s error_kind=%s",
-				s.n, s.originActor, s.success, s.requestStatus, s.errorKind)
+			t.Logf("    %-4d origin_actor=%-20s success=%-5v request_status=%-13s error_kind=%-22s is_auto_request=%-7s 若按true⇒%s",
+				s.n, s.originActor, s.success, s.requestStatus, s.errorKind, s.autoReq, s.cfClass)
 		}
+		// §9.239: how much of the local s4_ready=false is decided by the
+		// open question "should probe traffic be flagged is_auto_request".
+		//
+		// The internal_loopback arm requires is_auto_request IS TRUE and the
+		// comment on db.MirrorDriftClassSQL says it explicitly: a NULL is NOT
+		// internal. So probe rows that leave the column NULL are counted as
+		// loss even though nobody ever intended them to be mirrored.
+		//
+		// This is reported, never asserted and never used to clear the gate.
+		// "Flip the flag and the gate goes green" is not a finding, it is the
+		// shape of the exact mistake this audit keeps refusing: reclassifying
+		// a population so the instrument stops complaining. The counterfactual
+		// exists so the owner can see the size of the open decision, not so
+		// the test can argue for a side.
+		var wouldRelabel, stillLoss int64
+		for _, s := range shapes {
+			if s.cfClass == "internal_loopback" {
+				wouldRelabel += s.n
+			} else {
+				stillLoss += s.n
+			}
+		}
+		t.Logf("  ⇒ §9.239 反事实：若把 is_auto_request 为 NULL 的行也视作 true，"+
+			"这 %d 行 blocker 里有 %d 行会改判为 internal_loopback、%d 行仍是 genuine_loss。",
+			def.genuine, wouldRelabel, stillLoss)
+		t.Logf("  ⇒ ⚠ 这**不是**建议改标记。它只说明「探针要不要标 is_auto_request」" +
+			"这一个待拍板问题，在本地恰好是 s4_ready 的唯一杠杆；" +
+			"把仪器调绿和把数据改对是两件事，只有后者能作为验收依据。")
 		t.Logf("  ⇒ every row above is either successful or a terminal failure, so every one of " +
 			"them passed PersistHook's first gate: the mirror hook WAS reached. The loss is " +
 			"downstream of the hook (the turn write itself, a later gate, or a recovery path " +
