@@ -845,10 +845,21 @@ function onFreeModelChange(value: 'all' | 'yes' | 'no') {
   load()
 }
 
+// 2026-10-03：原来 `catch { /* ignore */ }`，而模板是 `v-if="bgStatus"`。
+// 后果是**状态条整条消失**：用户看到「没有后台任务在跑」，而真相是
+// 「状态端点挂了/没取到」。对一条健康指示条来说，缺席读起来就是「一切正常」——
+// 这是最不该被静默掉的一处。
+// 失败时保留上一次的数据并标记 stale；从来没有成功过时也把条子画出来，
+// 说清状态未知。瞬时失败不该让指示条闪烁，所以不清空旧值。
+const bgStatusStale = ref(false)
+
 async function loadBgStatus() {
   try {
     bgStatus.value = await getBackgroundTasksStatus()
-  } catch { /* ignore */ }
+    bgStatusStale.value = false
+  } catch {
+    bgStatusStale.value = true
+  }
 }
 
 onMounted(() => {
@@ -872,7 +883,13 @@ onUnmounted(() => {
       <button v-if="canManageProviders" class="btn btn-primary" @click="openAdd">{{ pm('page.addBtn') }}</button>
     </div>
 
-    <div class="bg-status-bar" v-if="bgStatus">
+    <!--
+      2026-10-03：状态条**不再因为取不到就消失**。
+      两个互斥块而不是 `v-if="bgStatus || bgStatusStale"`：
+      那样写会让 vue-tsc 失去非空收窄，下面所有 `bgStatus.discovery.…` 都报
+      TS18047（实测）。分开写既保住了类型，也保住了「未知」这个第三态。
+    -->
+    <div class="bg-status-bar" v-if="bgStatus" :class="{ 'bg-status-bar--stale': bgStatusStale }">
       <div class="bg-status-item">
         <span class="bg-dot" :class="bgStatus.discovery.alive ? 'dot-green' : 'dot-red'"></span>
         <span class="bg-label">{{ pm('bgStatus.task.discovery') }}</span>
@@ -904,6 +921,13 @@ onUnmounted(() => {
         <span class="bg-dot" :class="bgStatus.recovery.alive ? 'dot-green' : 'dot-red'"></span>
         <span class="bg-label">{{ pm('bgStatus.task.recovery') }}</span>
         <span class="badge" :class="bgStatus.recovery.alive ? 'badge-green' : 'badge-red'">{{ bgStatus.recovery.alive ? pm('bgStatus.task.recoveryRunning') : pm('bgStatus.task.recoveryStopped') }}</span>
+      </div>
+    </div>
+    <div v-else-if="bgStatusStale" class="bg-status-bar bg-status-bar--stale">
+      <div class="bg-status-item">
+        <span class="bg-dot dot-grey"></span>
+        <span class="bg-label">{{ pm('bgStatus.stale') }}</span>
+        <span class="bg-muted">{{ pm('bgStatus.staleHint') }}</span>
       </div>
     </div>
 
@@ -1582,6 +1606,9 @@ onUnmounted(() => {
     </AppModal>
   </div>
 </template>
+
+.dot-grey { background: var(--muted); }
+.bg-status-bar--stale { opacity: 0.75; }
 
 <style scoped>
 /* ── Table Base Styles ──────────────────────────────────────────────────── */

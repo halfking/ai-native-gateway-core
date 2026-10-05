@@ -1,0 +1,349 @@
+/* web-mobile 共享样式 — 复刻 nbjl-3 shared.css 的原语族（按钮/徽标/卡片/表格），
+   移动端为主战场：触控目标护栏按 UI规范 17 §4-R1 统一 ≥48px（新增控件），
+   :active 代替 hover，safe-area 由壳组件消费。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+html,
+body {
+  min-width: 320px;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  /* CJK 字体栈前置（nbjl-3 同源）：防 iOS tofu */
+  font-family:
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Noto Sans SC',
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  font-size: var(--app-font-body);
+  line-height: 1.45;
+  color: var(--app-text);
+  background: var(--app-bg);
+  -webkit-tap-highlight-color: transparent;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--app-primary);
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* 数字等宽（金额/统计右对齐场景） */
+.num,
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 按钮族 ---- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--app-space-2);
+  min-height: 44px;
+  padding: 0 var(--app-space-4);
+  border-radius: var(--app-radius);
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: var(--app-font-body);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color var(--app-transition),
+    border-color var(--app-transition),
+    opacity var(--app-transition);
+}
+
+/* 粗指针（触控）下新增控件抬到 48px（UI规范 17 §4-R1） */
+@media (pointer: coarse) {
+  .btn {
+    min-height: 48px;
+  }
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  border-color: var(--app-primary);
+  background: var(--app-primary);
+  /* 2026-10-04：不再写死 #fff。暗色主色是浅蓝 #5b8cff，白字只有 3.16:1；
+     前景色改由 --app-on-primary 按主题给（浅色白 / 暗色近黑）。 */
+  color: var(--app-on-primary);
+}
+
+.btn--primary:active {
+  background: var(--app-primary-strong);
+}
+
+.btn--ghost {
+  background: transparent;
+}
+
+.btn--danger {
+  border-color: var(--app-danger);
+  color: var(--app-danger);
+  background: var(--app-danger-soft);
+}
+
+.btn--danger:active {
+  opacity: 0.85;
+}
+
+.btn--sm {
+  /* 2026-10-04 实测改：36px 在真机上低于触控基线（/keys 页一把 242 个
+     btn--sm 被判定 < 44px，模拟器与 Chrome 双证）。小尺寸只缩 padding 与字号，
+     **不缩高度** —— 高度就是手指能落到的面积，缩它等于把可点区域拿走。 */
+  min-height: 44px;
+  padding: 0 var(--app-space-3);
+  font-size: 0.8125rem;
+}
+
+.btn--block {
+  width: 100%;
+}
+
+/* ---- 徽标（soft 色 + 文字，永不只用颜色区分） ---- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--app-radius-pill);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.badge--success {
+  background: var(--app-success-soft);
+  color: var(--app-success);
+}
+
+.badge--warning {
+  background: var(--app-warning-soft);
+  color: var(--app-warning);
+}
+
+.badge--danger {
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+
+.badge--info {
+  background: var(--app-info-soft);
+  color: var(--app-info);
+}
+
+.badge--muted {
+  background: var(--app-surface-muted);
+  color: var(--app-text-secondary);
+}
+
+/* ---- 卡片原语 ---- */
+
+.data-card {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-card);
+  padding: var(--app-space-3) var(--app-space-4);
+}
+
+.data-card + .data-card {
+  margin-top: var(--app-space-3);
+}
+
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-space-3);
+}
+
+.card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--app-space-2);
+}
+
+.card-field {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--app-space-3);
+  font-size: 0.8125rem;
+  color: var(--app-text-secondary);
+  padding-block: 3px;
+}
+
+.card-field__label {
+  flex-shrink: 0;
+}
+
+.card-field__value {
+  color: var(--app-text);
+  text-align: right;
+  word-break: break-all;
+}
+
+/* ---- 中式全边框表格（专注模式宽表） ---- */
+
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.table th,
+.table td {
+  border: 1px solid var(--cn-table-border);
+  padding: 6px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table th {
+  background: var(--cn-table-head-bg);
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.table tbody tr:nth-child(even) {
+  background: var(--cn-table-zebra);
+}
+
+.table .num {
+  text-align: right;
+}
+
+/* 页面单根容器：Transition 要求视图单根（多根 fragment 会让 out-in 转场
+   渲染成占位注释）。flex 链保持 HyperList/.page 的高度传递。 */
+.view-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- 页面壳（非列表页的滚动根：flex:1 + overflow-y:auto） ---- */
+
+.page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--app-space-content-y) var(--app-space-content-x) calc(var(--app-space-6) + var(--app-safe-bottom));
+}
+
+@media (min-width: 960px) {
+  .page {
+    max-width: 860px;
+    padding-inline: var(--app-space-5);
+  }
+}
+
+.page__section-title {
+  font-size: var(--app-section-title-size);
+  font-weight: 600;
+  margin: var(--app-space-4) 0 var(--app-space-2);
+}
+
+/* ---- 骨架 ---- */
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--app-surface-muted);
+  border-radius: var(--app-radius-sm);
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 45%), transparent);
+  animation: skeleton-shimmer 1.4s infinite;
+}
+
+html.dark .skeleton::after {
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 6%), transparent);
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* prefers-reduced-motion：取消位移类动画（UI规范 12 §4） */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+  }
+}
+
+/* ---- 焦点可见性 ---- */
+
+:focus-visible {
+  outline: 2px solid var(--app-focus);
+  outline-offset: 2px;
+  border-radius: var(--app-radius-sm);
+}
+
+/* 触控设备抑制粘滞焦点环 */
+@media (pointer: coarse) {
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+}

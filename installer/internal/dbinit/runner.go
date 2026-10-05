@@ -811,6 +811,42 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 紧接在 mirror 写完终态 turn 之后执行，fail-open，故本迁移未应用时
 			// 只是标记缺失，不会打挂镜像写链（审计 §9.93）。
 			"821_session_turns_abandoned_marker.sql",
+			// 822 (2026-10-04, 252 SQL 日志审计 R23): session_summaries 健康分
+			// 待评分捞取查询的部分索引 (last_request_at DESC) WHERE health_score
+			// IS NULL。bg/session_health_worker（10-02 ece68f148 接入生产）每
+			// 60min/实例 tick，无索引支撑时对 58.6 万行表 Parallel Seq Scan +
+			// Sort，252 真库实测 25.8-29.4s/次（>1s 慢日志 24h 28 条）。
+			// 带 dbinit:no-transaction 标记，走非事务通道。
+			"822_session_summaries_health_pending_index.sql",
+			// 823 (2026-10-04, 会话族退役审计 §9.155): session_turns.request_status
+			// —— 落网关已算好的四态标签 (success|failure|rate_limited|in_progress)。
+			// 该标签此前只存在于 telemetry entry，镜像链把它丢了（hook.go 的
+			// entryToProcessedRequest 没复制），而 ResolveRequestStatus 永远不产
+			// 出 rate_limited ⇒ 会话族无法区分「限流拒绝」与「真实上游失败」。
+			// 退役 request_logs 前必须补：394,614 行（连停写窗口 ≈446,819）扫描
+			// 噪声已在会话族内，v1 一删即永久失去标签，且 session_* 现有列筛不出
+			// 来（最优代理误报 41.2%）。纯加法、无回填。
+			// 母表 + hot 两侧必须对称加列 —— promote（707 起）入口强制
+			// (列名:类型:非空) 全等契约，不对称会直接 RAISE EXCEPTION。
+			"823_session_turns_request_status.sql",
+			// 824 (2026-10-04, 会话族退役审计 §9.160): 修 canonical 视图会话腿
+			// 的 request_status 分类**从未生效**。那条表达式靠
+			// `status_code = 429` 认限流，而 session_turns 全表 1,688,629 行里
+			// 429 是 **0 行**（真限流在会话侧记 500）⇒ 437,402 条真限流被报成
+			// 普通 failure，视图把 failure 高估 32%、rate_limited 报 0。
+			// 改走 `error_kind IN ('rate_limit_exceeded','key_throttled')`
+			// （R41 F1：两字面量都来自写侧 EmitRateLimited，单值臂会把 823 后
+			// key_throttled 镜像行永久报成 failure）：与 v1 权威标签在
+			// 394,614 组孪生行上双向零反例。纯读侧表达式改写，118 列不变，
+			// 不碰任何行。注：823 那条 request_status 列**没有**被本迁移引用
+			// ——引用它会给「823 未跑的库」引入 undefined column 失败。
+			"824_request_status_rate_limited_projection.sql",
+			"825_modality_graded_verification.sql",
+			"826_model_baseline_price.sql",
+			"827_modality_verification_progress_view.sql",
+			"828_supplier_errors_unified_tracked.sql",
+			"829_bodies_columnar_rollback.sql",
+			"831_work_type_route_source.sql",
 		},
 	}
 }

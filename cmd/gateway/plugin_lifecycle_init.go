@@ -32,9 +32,15 @@ type pluginLifecycle interface {
 // admin API can surface 503 without crashing the gateway.
 type noopPluginLifecycle struct{}
 
-func (noopPluginLifecycle) Activate(context.Context, string) error   { return errPluginLifecycleUnavailable }
-func (noopPluginLifecycle) Deactivate(context.Context, string) error { return errPluginLifecycleUnavailable }
-func (noopPluginLifecycle) Uninstall(context.Context, string) error  { return errPluginLifecycleUnavailable }
+func (noopPluginLifecycle) Activate(context.Context, string) error {
+	return errPluginLifecycleUnavailable
+}
+func (noopPluginLifecycle) Deactivate(context.Context, string) error {
+	return errPluginLifecycleUnavailable
+}
+func (noopPluginLifecycle) Uninstall(context.Context, string) error {
+	return errPluginLifecycleUnavailable
+}
 
 var errPluginLifecycleUnavailable = &pluginLifecycleError{code: "plugin.lifecycle_unavailable", msg: "plugin lifecycle API disabled (LLM_GATEWAY_PLUGINS_DIR not set)"}
 
@@ -168,7 +174,9 @@ var errPluginInvalidID = &pluginLifecycleError{code: "plugin.invalid_id", msg: "
 // the path value comes from the URL, but admin auth already gates the route.
 var pluginIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-func isValidPluginID(id string) bool { return id != "" && len(id) <= 64 && pluginIDPattern.MatchString(id) }
+func isValidPluginID(id string) bool {
+	return id != "" && len(id) <= 64 && pluginIDPattern.MatchString(id)
+}
 
 // makePluginActivateHandler: POST /api/v1/plugins/{id}/activate.
 // Admin-gating is applied by the caller via admin.AdminMiddleware.

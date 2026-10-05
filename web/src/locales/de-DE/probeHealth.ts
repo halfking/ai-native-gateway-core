@@ -1,5 +1,6 @@
 // Auto-synced from en-US (de-DE)
 export default {
+  monitorPartialFailed: "Für {count} Zugangsdaten konnten keine Live-Daten abgerufen werden ({ids}); die Zahlen unten sind zu niedrig",
   backLink: '← Routing overview',
   title: 'Probe health',
   autoRefresh: 'Auto refresh (30s)',

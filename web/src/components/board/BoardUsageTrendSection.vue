@@ -30,6 +30,21 @@ const series = ref<UsageTrendModelSeries[]>([])
 const bucketMinutes = ref(5)
 const seriesLoading = ref(false)
 const seriesError = ref<string | null>(null)
+/**
+ * 趋势序列降级（服务端没算出来，而不是「这段时间真的零用量」）。
+ *
+ * 2026-10-03 补：`usage_trend_series.go` 的两个端点早就恒发
+ * `degraded` / `missing_view`（T1 第一批就加了），类型里也声明了，
+ * 但这一格只读 `resp.series ?? []` —— 降级时空数组被**当真值**，
+ * 图表画成一条零线，用户读到「这段时间一点用量都没有」。
+ * 与饼图逐维度降级、错误下钻失败、credits 降级显示 0 全是同族：
+ * **把「不知道」渲染成「知道」比不显示更糟**。
+ *
+ * 与 seriesError 的区别：那是**请求失败**（HTTP 错误），
+ * 这是**请求成功但数据源缺失**（200 + degraded）。两者要分开显示。
+ */
+const seriesDegraded = ref(false)
+const seriesMissingView = ref<string>('')
 
 const periodLabel = computed(() => formatBoardRangeLabel(props.timeRange, t))
 
@@ -47,15 +62,24 @@ async function loadSeries(throttle = false) {
   const token = ++loadToken
   seriesLoading.value = true
   seriesError.value = null
+  seriesDegraded.value = false
+  seriesMissingView.value = ''
   try {
     const resp = await getUsageTrendSeries({ time: toBoardTimeQuery(props.timeRange), top: CARD_TOP_MODELS })
     if (token !== loadToken) return
     series.value = resp.series ?? []
     bucketMinutes.value = resp.bucket_minutes || boardTrendBucketMinutes(props.timeRange)
+    // 降级标记与空序列**必须分开读**：degraded 为真时空序列是
+    // 「没算出来」，不是「零用量」。判据只认服务端自报的 degraded，
+    // 不从数组长度推断 —— 那正是 T1 要挡的那个形状。
+    seriesDegraded.value = resp.degraded === true
+    seriesMissingView.value = resp.missing_view || ''
     lastLoadedAt = Date.now()
   } catch (err) {
     if (token !== loadToken) return
     series.value = []
+    seriesDegraded.value = false
+    seriesMissingView.value = ''
     seriesError.value = err instanceof Error ? err.message : String(err)
   } finally {
     if (token === loadToken) seriesLoading.value = false
@@ -88,6 +112,14 @@ onMounted(() => void loadSeries(false))
       :loading="seriesLoading"
       :height="268"
     />
+    <!--
+      降级与「请求失败」是两件不同的事，必须分开显示：
+      seriesError = HTTP 失败；seriesDegraded = 200 但数据源缺失。
+      两者都没显示的话，图表上的零线会被读成「这段时间零用量」。
+    -->
+    <div v-if="seriesDegraded" class="trend-sec__degraded" role="status">
+      {{ t('usageTrend.degraded', { view: seriesMissingView }) }}
+    </div>
     <div v-if="seriesError" class="trend-sec__err">{{ t('usageTrend.loadFailed') }}：{{ seriesError }}</div>
   </section>
 </template>
@@ -131,5 +163,12 @@ onMounted(() => void loadSeries(false))
 .trend-sec__err {
   font-size: 11px;
   color: var(--danger);
+}
+/* 降级用 warning 而非 danger：请求成功、数据源缺失。
+   刻意区别于 err（请求失败）——两者的排查方向完全不同。 */
+.trend-sec__degraded {
+  font-size: 11px;
+  color: var(--warning);
+  line-height: 1.5;
 }
 </style>

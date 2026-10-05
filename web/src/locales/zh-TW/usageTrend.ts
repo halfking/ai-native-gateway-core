@@ -3,6 +3,7 @@ export default {
   pageTitle: '用量趨勢分析',
   pageSub: '按模型拆分的用量變化；支援供應商 / 租戶 / API Key / 模型 / 指標過濾',
   loadFailed: '載入失敗',
+  degraded: "趨勢資料不可用（檢視 {view} 未初始化）。下方的平線表示「沒算出來」，而不是零用量。",
   detailTimeoutHint: '按 API Key 過濾時會掃描請求明細，大時間範圍可能逾時；請縮短時間範圍（如 7 天內）後重試',
   filterProvider: '供應商',
   filterTenant: '租戶',
@@ -10,6 +11,8 @@ export default {
   filterModel: '模型',
   filterMetric: '指標',
   filterAll: '全部',
+  filterProviderKeyFailed: "供應商/Key 篩選選項載入失敗，下拉為空不代表沒有",
+  filterTenantFailed: '租戶篩選選項載入失敗',
   shareByMetric: '當前指標佔比',
   sourceDetail: '請求明細',
   // 2026-10-02 多選/清除全部/自動重新整理

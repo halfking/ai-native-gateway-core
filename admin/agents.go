@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -299,19 +300,43 @@ func (h *AgentsHandler) Neighbors(w http.ResponseWriter, r *http.Request) {
 // Stats handles GET /api/agents/stats — overview aggregates across all
 // assets visible to the caller.
 //
-// One-shot implementation: pulls up to 1000 rows then groups in-memory.
-// For 10k+ asset deployments this should move to a SQL GROUP BY; tracked
-// as a follow-up since v1 totals are <500.
+// 2026-10-05（runbook §10.27）：原来是「一次拉 1000 行然后内存聚合」，
+// 注释还写着 `tracked as a follow-up since v1 totals are <500` —— **这个前提
+// 已经破了**：实测 4 个租户合计 2141 行，而 apihub.List 会把 limit 静默截到
+// 500（既不报错也不留痕）。于是这个端点一直在少报：default 租户 2021 行里
+// 只聚合了前 500 行，by_health 的 down 报 320 而实际是 396。
+//
+// 改成真正翻页。**没有改成「把 limit 调大」**：那只会把 500 变成 1000，
+// 仍然不是全量 —— 换个数字继续错，和 §10.27 修的探针是同一个病。
+//
+// 仍然保留原注释里的长期方向：10k+ 规模应该改成 SQL GROUP BY，
+// 不该在 HTTP 请求里拉全表做内存聚合。
 func (h *AgentsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	assets, err := h.svc.List(ctx, apihub.Filter{
-		TenantID: "default",
-		Limit:    1000,
-	})
-	if err != nil {
-		writeInternalTextErr(w, "internal error (see server logs)", err)
-		return
+	const pageSize = 500
+	const maxPages = 40 // 20,000 行上限；超过会在响应里标 truncated
+
+	var assets []apihub.Asset
+	truncated := false
+	for page := 0; page < maxPages; page++ {
+		batch, err := h.svc.List(ctx, apihub.Filter{
+			TenantID: "default",
+			Limit:    pageSize,
+			Offset:   len(assets),
+		})
+		if err != nil {
+			writeInternalTextErr(w, "internal error (see server logs)", err)
+			return
+		}
+		assets = append(assets, batch...)
+		if len(batch) < pageSize {
+			break
+		}
+		if page == maxPages-1 {
+			// 宁可显式告诉调用方「不全」，也不要像以前那样静默给一个偏小的数。
+			truncated = true
+		}
 	}
 
 	byKind := make(map[string]int)
@@ -325,13 +350,20 @@ func (h *AgentsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	out := map[string]interface{}{
 		"total":     len(assets),
 		"by_kind":   byKind,
 		"by_health": byHealth,
 		"by_owner":  byOwner,
-	})
+	}
+	if truncated {
+		out["truncated"] = true
+		slog.Warn("agents stats: 到达分页上界，返回的是不完整统计",
+			"rows", len(assets), "max_rows", maxPages*pageSize)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // ── Health (Phase 7) ─────────────────────────────────────────────────────

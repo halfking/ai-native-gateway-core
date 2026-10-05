@@ -69,6 +69,17 @@ func crossMonthRealDBPool(t *testing.T) *pgxpool.Pool {
 // bounds[0]/bounds[1] 的"最新/次新"标签会随机反转，于是本门会去断言一条
 // 根本没写的期望（我第一版就踩了：两个子场景都红，但红的原因是夹具标签
 // 反了，不是产品缺陷）。
+//
+// ⚠️ ORDER BY lo DESC 还带着一个更隐蔽的前提：PostgreSQL 的 DESC 默认
+// **NULLS FIRST**。`public.sessions` 有 `sessions_default` 分区，它的
+// relpartbound 是 'DEFAULT'、抽不出 `FROM ('...')` ⇒ lo 为 NULL，而 NULL
+// 在 DESC 下排在最前。所以不显式排掉它，默认分区会被当成"最新分区"，
+// 本门会去断言一个并不存在的最新月份。两个修法都要：
+// WHERE 排掉无月下界的分区（否则 Scan 直接炸在 NULL 上），
+// ORDER BY 写死 NULLS LAST（否则哪天 lo 变成可空就静默选错标签）。
+//
+// 与 cmd/gateway/turn_logs_aggregator_crossmonth_realdb_test.go 的
+// sessionsMonthBounds 是同一个 bug 的两份拷贝。
 func sessionsPartitionLowerBounds(t *testing.T, pool *pgxpool.Pool) []time.Time {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `
@@ -76,7 +87,9 @@ func sessionsPartitionLowerBounds(t *testing.T, pool *pgxpool.Pool) []time.Time 
 			'FROM \(''([0-9]{4}-[0-9]{2}-[0-9]{2})'''))[1]::date AS lo
 		FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid
 		WHERE i.inhparent = 'public.sessions'::regclass
-		ORDER BY lo DESC`)
+		  AND c.relpartbound IS NOT NULL
+		  AND pg_get_expr(c.relpartbound, c.oid) <> 'DEFAULT'
+		ORDER BY lo DESC NULLS LAST`)
 	if err != nil {
 		t.Fatalf("probe sessions partitions: %v", err)
 	}

@@ -578,7 +578,7 @@ func setupModelBreakdownTestData(t *testing.T, db *pgxpool.Pool) {
 			INSERT INTO request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
 			VALUES ($5, 'gw_test_1', $1, $2, $3, $4, 0.5, 100, 200, 1000, 'success', true)
 		`, breakdownTenant, now.Add(time.Duration(i)*time.Minute), model, provider,
-		   fmt.Sprintf("test-mbd-1-%d-%d", i, now.UnixNano()))
+			fmt.Sprintf("test-mbd-1-%d-%d", i, now.UnixNano()))
 		if err != nil {
 			t.Fatalf("failed to insert request_logs: %v", err)
 		}
@@ -596,7 +596,7 @@ func setupLongTailTestData(t *testing.T, db *pgxpool.Pool) {
 			INSERT INTO request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
 			VALUES ($4, $1, $2, $3, 'gpt-4o', 9010, 0.5, 100, 200, 1000, 'success', true)
 		`, fmt.Sprintf("gw_test_%d", i), breakdownTenant, now.Add(time.Duration(i)*time.Minute),
-		   fmt.Sprintf("test-ltl-m-%d-%d", i, now.UnixNano()))
+			fmt.Sprintf("test-ltl-m-%d-%d", i, now.UnixNano()))
 		if err != nil {
 			t.Fatalf("failed to insert request_logs: %v", err)
 		}
@@ -608,7 +608,7 @@ func setupLongTailTestData(t *testing.T, db *pgxpool.Pool) {
 			INSERT INTO request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
 			VALUES ($5, $1, $2, $3, $4, 9090, 0.1, 10, 20, 500, 'success', true)
 		`, fmt.Sprintf("gw_tiny_%d", i), breakdownTenant, now.Add(time.Duration(i)*time.Minute),
-		   fmt.Sprintf("tiny-model-%d", i), fmt.Sprintf("test-ltl-t-%d-%d", i, now.UnixNano()))
+			fmt.Sprintf("tiny-model-%d", i), fmt.Sprintf("test-ltl-t-%d-%d", i, now.UnixNano()))
 		if err != nil {
 			t.Fatalf("failed to insert request_logs: %v", err)
 		}

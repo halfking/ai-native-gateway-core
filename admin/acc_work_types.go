@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -13,7 +14,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const accWorkTypesPath = "/api/llm/work-types"
+// accWorkTypesPath is ACC's service-to-service work-type catalog.
+//
+// It was "/api/llm/work-types", the Node-era path, which acc-go no longer
+// serves — acc-go mounts this catalog at /api/v2/llm/work-types, so every
+// sync attempt 404'd and this path was never exercised in anger. That 404
+// was load-bearing: it was the only thing preventing the sync's
+// destructive DELETE from wiping operator-configured model routes. See
+// syncWorkTypesFromACC and migration 831 for the other half of that fix.
+//
+// The /api/v2/internal/llm/work-types path (rather than the user-facing
+// /api/v2/llm/work-types) is deliberate. The user-facing route is mounted
+// under RequireAuth, which verifies user JWTs (Casdoor / multi-issuer /
+// HS256) and rejects the opaque shared token this sync sends. ACC exposes
+// the same payload on a separate static-bearer route for exactly this
+// caller; one path can carry only one auth mode, so the two live at
+// different paths.
+const accWorkTypesPath = "/api/v2/internal/llm/work-types"
 
 type accSyncConfig struct {
 	BaseURL      string
@@ -115,8 +132,23 @@ func fetchACCWorkTypes(ctx context.Context, cfg accSyncConfig) ([]accWorkTypePay
 	if err := json.Unmarshal(body, &wrapped); err == nil && len(wrapped.WorkTypes) > 0 {
 		return wrapped.WorkTypes, nil
 	}
+	// ok:true with zero work types is not a legitimate "nothing to do" — it
+	// means ACC answered with a shape this parser understood but with no
+	// entries, and the previous code returned that as a success with a
+	// count of 0. The operator saw "已从 ACC 同步 0 个工作类型" and could
+	// not tell it apart from "the sync silently did not happen", which is
+	// the more likely explanation for a surprise zero. Failing here makes
+	// the two distinguishable, and it fails before any DB write, so a
+	// misbehaving or misrouted ACC cannot empty the work-type table.
+	//
+	// Note this is deliberately NOT the same as "entries whose model_routes
+	// are empty". Every ACC entry currently ships an empty model_routes
+	// and that is a valid, expected state — the catalog is configuration,
+	// routes are the optional per-type model hint. Only the entry list
+	// being empty is treated as a fault.
 	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.OK {
-		return wrapped.WorkTypes, nil
+		return nil, fmt.Errorf("ACC 返回 ok=true 但 work_types 为空（期望至少 1 条）；" +
+			"请核实 ACC 的 /api/v2/llm/work-types 是否真的挂载在该路径上")
 	}
 
 	var direct []accWorkTypePayload
@@ -203,7 +235,18 @@ func syncWorkTypesFromACC(ctx context.Context, db *pgxpool.Pool) (workTypeSyncRe
 		upserted++
 		syncedKeys = append(syncedKeys, key)
 
-		if _, err := tx.Exec(ctx, `DELETE FROM work_type_model_route WHERE work_type_key = $1`, key); err != nil {
+		// Delete only the rows a previous ACC sync wrote, never the
+		// operator's.
+		//
+		// This used to be an unqualified DELETE for the whole key, which
+		// made the sync a silent data-loss path: the ACC seed carries
+		// `model_routes: []` on every one of its 22 entries, so a
+		// successful sync removed every route for the key and reinserted
+		// nothing, wiping whatever an operator had configured through the
+		// admin UI. The result payload reported "0 routes" and nothing
+		// warned. Ownership is now tracked per row (migration 831), so a
+		// sync manages its own rows and leaves operator rows alone.
+		if _, err := tx.Exec(ctx, `DELETE FROM work_type_model_route WHERE work_type_key = $1 AND source = 'acc'`, key); err != nil {
 			return workTypeSyncResult{}, err
 		}
 		for _, rt := range item.ModelRoutes {
@@ -223,11 +266,18 @@ func syncWorkTypesFromACC(ctx context.Context, db *pgxpool.Pool) (workTypeSyncRe
 			if tier != "primary" && tier != "secondary" && tier != "fallback" {
 				return workTypeSyncResult{}, fmt.Errorf("sync %s: invalid tier %q for route %s", key, tier, name)
 			}
-			_, err := tx.Exec(ctx, `
-				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
-				VALUES ($1, $2, $3, $4, $5, $6)
-			`, key, name, wt, rt.MinScore, rt.Enabled, tier)
-			if err != nil {
+			// ON CONFLICT DO NOTHING, not DO UPDATE: when an operator has
+			// already routed this specific model, their row is the
+			// authoritative one and the sync must not overwrite it. The
+			// old INSERT would have aborted the whole transaction on the
+			// UNIQUE (work_type_key, canonical_name) violation, so this is
+			// also what keeps a sync from failing outright once operator
+			// and ACC route sets overlap.
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier, source)
+				VALUES ($1, $2, $3, $4, $5, $6, 'acc')
+				ON CONFLICT (work_type_key, canonical_name) DO NOTHING
+			`, key, name, wt, rt.MinScore, rt.Enabled, tier); err != nil {
 				return workTypeSyncResult{}, err
 			}
 			routes++
@@ -255,6 +305,21 @@ func syncWorkTypesFromACC(ctx context.Context, db *pgxpool.Pool) (workTypeSyncRe
 	msg := fmt.Sprintf("已从 ACC 同步 %d 个工作类型、%d 条模型映射", upserted, routes)
 	if disabled > 0 {
 		msg += fmt.Sprintf("；禁用 %d 个 ACC 已移除项", disabled)
+	}
+	// Zero routes is a valid state, not an error: the catalog is
+	// configuration and per-type model routes are an optional hint that
+	// ACC does not currently send. But "0 条模型映射" sitting in a success
+	// message reads like the sync found nothing to do, when what actually
+	// happened is that every work type will fall back to its l1_task_type
+	// aggregate (autoroute routesForPolicy). Saying so keeps the message
+	// honest and saves the next reader from hunting a routing bug that
+	// isn't there.
+	if routes == 0 && upserted > 0 {
+		msg += "（ACC 未提供模型映射，各类型当前回退到 l1_task_type 聚合）"
+		slog.Warn("ACC work_type sync completed with zero model routes; "+
+			"every work type falls back to its l1_task_type aggregate. "+
+			"This is expected while ACC ships an empty model_routes, but it means "+
+			"per-work_type tier policy has no effect.", "upserted", upserted)
 	}
 	return workTypeSyncResult{
 		Synced:   true,

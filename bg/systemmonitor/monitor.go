@@ -337,9 +337,9 @@ func (sm *SystemMonitor) publishFallbackDurable(ctx context.Context, task *Task)
 	_, err = sm.fallbackDB.Exec(insertCtx, `
 		INSERT INTO system_monitor_fallback_queue
 			(task_id, task_json, worker_id)
-		VALUES ($1, $2, $3)
+		VALUES ($1, $2::jsonb, $3)
 		ON CONFLICT (task_id) DO NOTHING
-	`, task.ID, payload, sm.workerID)
+	`, task.ID, string(payload), sm.workerID)
 	if err != nil {
 		slog.Warn("system_monitor: fallback durable insert failed",
 			"error", err, "task_id", task.ID)

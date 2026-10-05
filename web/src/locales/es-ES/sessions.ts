@@ -26,6 +26,7 @@ export default {
     },
   },
   userProfile: {
+    loadFailed: 'No se pudo cargar el perfil de usuario',
     title: "Perfiles de usuario",
     detailTitle: "Detalle del perfil de usuario",
     ownerUser: "Identificador de usuario",

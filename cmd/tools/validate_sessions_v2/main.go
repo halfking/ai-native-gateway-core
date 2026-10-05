@@ -217,6 +217,58 @@ func validateBatch(
 
 	minimumSessions := 100
 	batchSummary := BatchSummary{Candidates: len(sessionIDs)}
+
+	// §9.222 — refuse to validate a window wider than the data that exists.
+	//
+	// request_logs is not a permanent store: on 252 the monthly job
+	// pg17-drop-old-columnar-partitions.sh (RETAIN_MONTHS=2) DROPs every
+	// request_logs partition older than two months, and session_turns is on no
+	// rotation list. A window wider than that does not error and does not come
+	// back empty — it comes back **truncated**, and ≥100 sessions can still
+	// load from the surviving part, so the gate would report parity over a
+	// window that is not the one the operator asked for.
+	//
+	// The failure mode is asymmetric in the worst way: a parity report over a
+	// truncated window is indistinguishable from a parity report over the real
+	// one, and it is exactly the report that would be used to justify retiring
+	// the source table. So the range is measured and the run fails closed.
+	v1range, rangeErr := loader.LoadV1TimeRange(ctx, tenantID)
+	if rangeErr != nil {
+		log.Printf("FATAL: cannot measure the v1 data window: %v", rangeErr)
+		return 1
+	}
+	// §R44/移交.1 — measure the end boundary before trusting the window.
+	// -end-date is applied as that day's 00:00:00Z and the load is half-open
+	// (ts < end), so the rows inside the day the operator named are invisible
+	// to the report.
+	//
+	// §R45/M2 superseded: this block used to probe for family rows in
+	// [end, end-of-day) and fail closed when the window dropped them. That
+	// detector was sound but addressed the symptom: the half-open bound itself
+	// was the defect. The bound is now corrected in buildSessionRangeQuery, so
+	// the named day is actually loaded and there is nothing left to probe for.
+	// A probe retained alongside the fix would fire on every run whose named
+	// day holds data, i.e. refuse every legitimate run.
+	requested := startDate
+	if requested.IsZero() {
+		requested = v1range.MinTS
+	}
+	truncated, why := WindowExceedsV1Data(startDate, endDate, v1range)
+	log.Printf("v1 data actually present for this tenant: %d rows spanning %s .. %s",
+		v1range.Rows, v1range.MinTS.Format(time.RFC3339), v1range.MaxTS.Format(time.RFC3339))
+	log.Printf("validation window requested:               %s .. %s",
+		requested.Format(time.RFC3339), endDate.Format(time.RFC3339))
+	if truncated {
+		log.Printf("FATAL: refusing to validate this window: %s. "+
+			"request_logs is not a permanent store — on 252 the monthly "+
+			"pg17-drop-old-columnar-partitions.sh drops partitions older than 2 months, "+
+			"while session_turns is on no rotation list. A parity report over a window that "+
+			"does not match the data that exists is indistinguishable from one that does, "+
+			"and it is exactly the report that would be used to justify retiring the "+
+			"source table.", why)
+		return 1
+	}
+
 	if len(sessionIDs) == 0 {
 		log.Println("No settled sessions found in the specified range")
 	} else {

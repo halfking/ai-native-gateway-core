@@ -271,7 +271,7 @@ func TestHotZoneTrimmerTempFilesIgnored(t *testing.T) {
 }
 
 // TestHotZoneTrimmerStaleTempFilesSwept 崩溃孤儿的临时文件参与过期清扫
-//（2026-10-01 审计 F1：在飞写入存活毫秒级，mtime 早于 cutoff 的 .tmp 必然
+// （2026-10-01 审计 F1：在飞写入存活毫秒级，mtime 早于 cutoff 的 .tmp 必然
 // 是孤儿；此前全量豁免导致热区内无界累积且不进配额口径）。
 func TestHotZoneTrimmerStaleTempFilesSwept(t *testing.T) {
 	dir := newHotZoneDir(t)

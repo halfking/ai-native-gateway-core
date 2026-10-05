@@ -644,6 +644,13 @@ dl_load_env_file() {
 
 dl_stage_release() {
   local bundle="$1" binary="$2" web="$3" version_json="$4" version_file="$5" name="$6"
+  # 2026-10-04 统一入口轮：可选第 7 参 = web-mobile 构建产物（web-mobile/dist），
+  # 拷为 bundle/web-mobile/（dist 内容直装，与 web/ 同形）。缺省/不存在时也建
+  # 空目录——runtime.Dockerfile 的 COPY web-mobile 才不会因缺源失败，网关侧
+  # NewMobileStaticHandler 对无 index.html 的目录返回 nil（/m 与入口分流
+  # 一起静默不注册，零行为变化）。SHA256SUMS 覆盖在拷贝之后生成，web-mobile
+  # 与 web 一样进清单。老调用方只传 6 参 → "$7" 为空 → 与旧行为一致。
+  local mobile_web="${7:-}"
   # 本函数经 deploy-local.sh 的 var=$(stage_release ...) 赋值语境调用：
   # 该语境下 bash 不因函数内失败命令中断（2026-09-05 陈旧二进制事故的
   # set -e 怪癖），必须逐项显式检查。SHA256SUMS 放在最后生成——任一关键
@@ -669,6 +676,12 @@ dl_stage_release() {
     cp -R "$web" "$bundle/web" || return 1
   else
     mkdir -p "$bundle/web" || return 1
+  fi
+  if [[ -n "$mobile_web" && -d "$mobile_web" ]]; then
+    mkdir -p "$bundle/web-mobile" || return 1
+    cp -R "$mobile_web/." "$bundle/web-mobile/" || return 1
+  else
+    mkdir -p "$bundle/web-mobile" || return 1
   fi
   cp "$version_json" "$bundle/version.json" || return 1
   cp "$version_file" "$bundle/VERSION" 2>/dev/null || true

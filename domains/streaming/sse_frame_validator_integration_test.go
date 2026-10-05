@@ -71,15 +71,15 @@ func TestStreamOpenAI_MalformedFirstFrame(t *testing.T) {
 				ctx,
 				w,
 				resp,
-				"gpt-3.5-turbo",  // clientModel
-				"minimax-m3",     // outboundModel
-				nil,              // norm
+				"gpt-3.5-turbo", // clientModel
+				"minimax-m3",    // outboundModel
+				nil,             // norm
 				capture,
-				false,            // toolsRequested
-				nil,              // stripFn
-				"minimax",        // vendorCode
-				nil,              // pc
-				nil,              // diagnostics
+				false,     // toolsRequested
+				nil,       // stripFn
+				"minimax", // vendorCode
+				nil,       // pc
+				nil,       // diagnostics
 			)
 
 			// Verify outcome

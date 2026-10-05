@@ -18,6 +18,29 @@ const { t } = useI18n()
 
 const summary = computed(() => props.board?.summary)
 
+/**
+ * 积分是否降级（服务端没算出来）。
+ *
+ * 2026-10-03：credits 来自与主指标**不同的数据源**，它降级时服务端仍返回
+ * 真实的请求数/费用，只有 total_credits_charged 是 0。修复前这个高亮卡
+ * 会把 0 当成「这段时间没消耗积分」显示 —— 而真相是「没算出来」。
+ *
+ * ⚠ 判据只认 `credits_missing_view`，**不认 `degraded`**。
+ * `degraded` 在载荷顶层是 board 整体（pies/trends）的降级标记；
+ * 拿它当积分降级依据的话，整屏降级时这一卡也会写「不可信」，
+ * 可那一屏明明有真实数字可显示。作用域不同的标记必须用不同的键。
+ */
+const creditsDegraded = computed(() => !!summary.value?.credits_missing_view)
+
+/**
+ * 整屏汇总是否降级（请求/Token/费用全是 0 且不可作为结论）。
+ *
+ * 2026-10-03 新增：`fallbackBoardSummary` 在 42P01 时返回一张全 0 且带
+ * `degraded_summary` 的 summary。此前载荷有标记、前端没有类型也没有消费，
+ * 于是首屏把「没算出来」显示成「这个时段没有流量」。
+ */
+const summaryDegraded = computed(() => summary.value?.degraded_summary === true)
+
 const totalTokens = computed(() => {
   const s = summary.value
   if (!s) return undefined
@@ -85,6 +108,15 @@ function fmtTokensCompact(n: number | undefined) {
     <div v-for="i in 4" :key="i" class="hero-card hero-card--skeleton" />
   </div>
   <div v-else-if="summary" class="hero-row">
+    <!--
+      2026-10-03：整屏汇总降级横幅。
+      服务端在 42P01 时返回一张全 0 的 summary 并带 degraded_summary，
+      此前前端没有类型也没有消费 ⇒ 首屏把「没算出来」显示成
+      「这个时段没有流量」。这一屏是最不该骗人的地方。
+    -->
+    <div v-if="summaryDegraded" class="hero-summary-degraded" role="alert">
+      {{ t('dashboard.v2.summaryDegraded', { view: summary.summary_missing_view || '' }) }}
+    </div>
     <div class="hero-card">
       <div class="hero-card__label">{{ t('dashboard.stat.totalRequests') }}</div>
       <div class="hero-card__value">{{ fmt(summary.total_requests) }}</div>
@@ -118,8 +150,20 @@ function fmtTokensCompact(n: number | undefined) {
     </div>
     <div class="hero-card hero-card--highlight">
       <div class="hero-card__label">{{ t('dashboard.v2.totalCredits') }}</div>
-      <div class="hero-card__value">{{ fmt(summary.total_credits_charged) }}</div>
-      <div class="hero-card__sub">{{ t('dashboard.v2.creditsSub') }}</div>
+      <!--
+        降级时**不显示 0**：那是「没算出来」，不是「消耗为 0」。
+        改成一个明确的占位 + 说明，比让用户以为这个月不消耗积分要诚实。
+      -->
+      <div class="hero-card__value">
+        <template v-if="creditsDegraded">—</template>
+        <template v-else>{{ fmt(summary.total_credits_charged) }}</template>
+      </div>
+      <div class="hero-card__sub">
+        <span v-if="creditsDegraded" class="hero-card__degraded" role="status">
+          {{ t('dashboard.v2.creditsDegraded', { view: summary.credits_missing_view || '' }) }}
+        </span>
+        <span v-else>{{ t('dashboard.v2.creditsSub') }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -129,6 +173,16 @@ function fmtTokensCompact(n: number | undefined) {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
+}
+/* 整屏降级横幅跨满四列 —— 它说的不是某一张卡，是「这一屏都不可信」。 */
+.hero-summary-degraded {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--warning);
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
 }
 .hero-card {
   position: relative;
@@ -166,6 +220,11 @@ function fmtTokensCompact(n: number | undefined) {
   color: var(--text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+/* 降级说明用 warning 而非 danger：不是故障，是「这个数没算出来」。 */
+.hero-card__degraded {
+  color: color-mix(in srgb, var(--warning) 80%, var(--text));
 }
 .hero-card__drill {
   border: 0;

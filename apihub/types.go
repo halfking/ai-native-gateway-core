@@ -112,6 +112,15 @@ type Filter struct {
 	Tag      string      `json:"tag,omitempty"`    // optional: "key=value" match
 	Health   HealthState `json:"health,omitempty"` // optional
 	Limit    int         `json:"limit,omitempty"`  // default 100, max 500
+	// Offset 是分页游标，配合 Limit 使用。
+	//
+	// 2026-10-05（runbook §10.27）：这个字段之前**不存在**，而 Limit 被硬
+	// 截在 500 —— 于是「取第 501~1000 行」这件事**根本无法表达**。
+	// AssetHealthProbe 的 Step 2 写着 `// Fetch all assets with pagination`，
+	// 却因为写不出 OFFSET 而只能拿到前 500 行：2141 行里有 1521 行
+	// 从来没被检查过（实测 835 行不在 liveLookup，只有 396 行在前 500 内）。
+	// 排序键 (kind, ref_id) 是复合主键，租户内全序 ⇒ OFFSET 分页稳定。
+	Offset int `json:"offset,omitempty"`
 }
 
 // ErrNotFound is returned by Get when no asset matches (kind, ref_id).

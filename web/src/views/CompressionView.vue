@@ -34,6 +34,23 @@ const sessions = ref<CompressionSessionItem[]>([])
 const sessionsCount = ref(0)
 const sessionsLoading = ref(false)
 
+// 2026-10-03：三处静默吞错的代价是页面在说假话。
+//   · loadStats 失败   → stats-row 整块不渲染（v-if="stats"），
+//                        页面看起来像「这段时间没有任何压缩」
+//   · loadSessions 失败 → empty-hint 显示「没有会话」，
+//                        这是**直接的事实错误**：不是没有，是没查到
+//   · loadCurrentConfig 失败 → 配置条停在硬编码默认值，
+//                        把默认值当成服务端当前配置讲出去
+// 三者互相独立，所以分开记；成功时各自清空。
+const statsError = ref('')
+const sessionsError = ref('')
+const configError = ref('')
+
+/** 合并成一句横幅：哪几块没查到要说清楚，不能只说「加载失败」。 */
+const loadError = computed(() =>
+  [statsError.value, sessionsErrorText.value, configError.value].filter(Boolean).join('；'),
+)
+
 // Current compression configuration (read-only chips), kept in sync with
 // the editable copy in Session Configuration → Compression.
 const showCurrentConfig = ref(false)
@@ -87,8 +104,12 @@ async function loadStats() {
   loading.value = true
   try {
     stats.value = await getCompressionStats(timeRangeParams())
-  } catch {
-    // non-blocking
+    statsError.value = ''
+  } catch (e: unknown) {
+    // 原来只写 `// non-blocking`：面板整块消失，页面与「真的没有数据」同形。
+    statsError.value = e instanceof Error && e.message
+      ? e.message
+      : t('compression.load.statsFailed')
   } finally {
     loading.value = false
   }
@@ -105,8 +126,12 @@ async function loadSessions() {
     })
     sessions.value = resp.items
     sessionsCount.value = resp.count
-  } catch {
-    // non-blocking
+    sessionsError.value = ''
+  } catch (e: unknown) {
+    // 原来只写 `// non-blocking`：随后渲染的是「没有会话」这句事实陈述。
+    sessionsError.value = e instanceof Error && e.message
+      ? e.message
+      : t('compression.load.sessionsFailed')
   } finally {
     sessionsLoading.value = false
   }
@@ -116,7 +141,6 @@ async function loadSessions() {
 // 独立于上面的页码状态机：两者不共享 ref、不互相写。
 /** 服务端 count。页码路径有自己的 `sessionsCount` ref，两条路径不共享。 */
 const continuousCount = ref(0)
-
 const continuous = createHyperPages<CompressionSessionItem>({
   pageSize: sessionPageSize,
   // gw_session_id 是后端主键且稳定（表格的 :key 也是它）。
@@ -135,6 +159,18 @@ const continuous = createHyperPages<CompressionSessionItem>({
     return { rows: resp.items || [], total: resp.count || 0 }
   },
 })
+
+/** compact 失败态：容器此时不得宣称「空」（那是把「不知道」讲成「知道」），
+ *  错误呈现交给 Hyper 底栏的可重试提示；横幅侧由 sessionsErrorText 折算入列。 */
+const continuousFailed = computed(() => continuous.state.value === 'failed')
+
+/** 会话块的失败文案，两条加载路径共用一个出口：
+ *  桌面页码路径写 sessionsError；compact 连续路径不写它（Hyper 底栏自会呈现），
+ *  但横幅契约要求三块失败都入列，这里折算成同一句。 */
+const sessionsErrorText = computed(() =>
+  sessionsError.value
+    || (continuousFailed.value ? t('compression.load.sessionsFailed') : ''),
+)
 
 /** 实际展示的行：按档位二选一。 */
 const rows = computed<CompressionSessionItem[]>(() =>
@@ -225,7 +261,11 @@ async function reload() {
 }
 
 // Load the current compression configuration for the read-only chip bar.
-// Failures are non-blocking — the bar simply stays at defaults.
+//
+// 2026-10-03：原来注释写「Failures are non-blocking — the bar simply stays
+// at defaults」。但这条配置条**不是装饰**：`getSetting` 返回的
+// `spec.default` 是**该设置的出厂默认值**，不是服务端当前值。
+// 读失败时把默认值当成「当前配置」讲出去，就是一句假话。
 async function loadCurrentConfig() {
   try {
     const [en, mode, win, model] = await Promise.all([
@@ -240,8 +280,11 @@ async function loadCurrentConfig() {
       window: win.value ?? win.spec.default ?? 0.8,
       model: model.value ?? model.spec.default ?? '',
     }
-  } catch {
-    // keep defaults
+    configError.value = ''
+  } catch (e: unknown) {
+    configError.value = e instanceof Error && e.message
+      ? e.message
+      : t('compression.load.configFailed')
   }
 }
 
@@ -421,6 +464,13 @@ watch(activeTab, () => { void reload() })
       </button>
     </div>
 
+    <!--
+      2026-10-03：新增。三处加载失败原来都只写 `// non-blocking`，
+      页面因此把「没查到」讲成「没有」：统计块整块不渲染、会话表显示
+      「没有会话」、配置条显示出厂默认值。横幅要说清**哪几块**没查到。
+    -->
+    <div v-if="loadError" class="load-error-banner" role="status">{{ loadError }}</div>
+
     <!-- Current configuration chips (read-only; editable in Session Configuration → Compression) -->
     <div class="current-config-bar">
       <button class="config-toggle" @click="showCurrentConfig = !showCurrentConfig">
@@ -547,6 +597,8 @@ watch(activeTab, () => { void reload() })
           传组件默认的 720px 会在窄一点的桌面内容宽度上多出一条原本不存在的横滚动条。
       -->
       <div v-if="sessionsLoading && !isCompact" class="loading-hint">{{ t('compression.loading') }}</div>
+      <!-- 降级时**不说「没有会话」**——那是「不知道」被讲成「知道」；compact 也命中此分支，避免容器把错误裁成空态 -->
+      <div v-else-if="sessionsError || continuousFailed" class="empty-hint load-error-hint">{{ sessionsErrorText }}</div>
       <div v-else-if="!isCompact && !sessions.length" class="empty-hint">{{ t('compression.table.empty') }}</div>
       <ResponsiveDataView
         v-else
@@ -630,6 +682,18 @@ watch(activeTab, () => { void reload() })
     </div>
   </div>
 </template>
+
+.load-error-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: var(--warning);
+  font-size: 12px;
+}
+.load-error-hint {
+  color: var(--warning);
+}
 
 <style scoped>
 .compression-view {

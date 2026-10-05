@@ -58,7 +58,21 @@ func turnLogsRealDBPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// sessionsMonthBounds 返回 sessions 分区下界，降序。
+// sessionsMonthBounds returns sessions 分区下界，降序。
+//
+// 必须显式排除 DEFAULT 分区，两个原因，第二个更危险：
+//
+//  1. `public.sessions` 有 `sessions_default`（`relpartbound` = 'DEFAULT'），
+//     它的表达式里没有 `FROM ('...')`，regexp_match 返回 NULL ⇒ 扫进
+//     *time.Time 直接报 "cannot scan NULL"。这是本门此前红在上面的原因，
+//     **不是**产品缺陷：本门当时连断言都没跑到。
+//  2. 更隐蔽：`ORDER BY lo DESC` 在 PostgreSQL 里默认 **NULLS FIRST**。
+//     所以只要有人把 `lo` 改成可空（比如改成 COALESCE(lo, '-infinity')）
+//     让扫描不崩，默认分区就会**被当成最新分区**，`bounds[0]` 取到一个
+//     并不存在的「2026-11 之后的月份」，夹具把行写进去或读错行都不会报错。
+//
+// 所以过滤条件是「必须能抽出一个真实的月下界」，而不是「relpartbound 非空」——
+// 后者对 DEFAULT 分区是满足的。
 func sessionsMonthBounds(t *testing.T, pool *pgxpool.Pool) []time.Time {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `
@@ -66,7 +80,9 @@ func sessionsMonthBounds(t *testing.T, pool *pgxpool.Pool) []time.Time {
 			'FROM \(''([0-9]{4}-[0-9]{2}-[0-9]{2})'''))[1]::date AS lo
 		FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid
 		WHERE i.inhparent = 'public.sessions'::regclass
-		ORDER BY lo DESC`)
+		  AND c.relpartbound IS NOT NULL
+		  AND pg_get_expr(c.relpartbound, c.oid) <> 'DEFAULT'
+		ORDER BY lo DESC NULLS LAST`)
 	if err != nil {
 		t.Fatalf("probe sessions partitions: %v", err)
 	}

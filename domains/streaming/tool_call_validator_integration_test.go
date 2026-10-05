@@ -184,7 +184,7 @@ func TestToolCallValidator_PartiallyIncompleteMultipleTools(t *testing.T) {
 // tool_result; otherwise, ends after tool_use.
 func buildAnthropicStreamWithToolCall(complete bool) string {
 	var b strings.Builder
-	
+
 	// message_start
 	b.WriteString("event: message_start\n")
 	b.WriteString("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-4\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
@@ -233,7 +233,7 @@ func buildAnthropicStreamWithMultipleTools(count int, complete bool) string {
 
 	for i := 0; i < count; i++ {
 		toolID := "toolu_" + string('0'+rune(i+1))
-		
+
 		// tool_use
 		b.WriteString("event: content_block_start\n")
 		b.WriteString("data: {\"type\":\"content_block_start\",\"index\":")
@@ -278,7 +278,7 @@ func buildAnthropicStreamWithMultipleTools(count int, complete bool) string {
 // but no tool_result (assistant requesting tool execution).
 func buildAnthropicStreamWithToolCallRequestOnly() string {
 	var b strings.Builder
-	
+
 	// message_start
 	b.WriteString("event: message_start\n")
 	b.WriteString("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-4\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")

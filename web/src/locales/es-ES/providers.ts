@@ -295,6 +295,8 @@ export default {
   },
   bgStatus: {
     panelTitle: 'Estado de tareas en segundo plano',
+    stale: 'Estado de tareas en segundo plano desconocido',
+    staleHint: 'No se pudo obtener el estado; los valores de abajo son del último sondeo correcto',
     task: {
       discovery: 'Descubrimiento de modelos',
       discoveryRunning: 'En ejecución ({elapsed})',

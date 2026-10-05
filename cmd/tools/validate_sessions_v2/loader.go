@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -112,19 +113,56 @@ type sessionDB interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+// v1BodyQuery / v1BodyQueryParent 取代了原先那条「子查询内 UNION ALL」的查询。
+//
+// # 为什么必须改（审计 §9.196，因果已确证）
+//
+// migration 765 `bodies_columnar_storage` 把 `request_logs_bodies` 的
+// RANGE 分区转成了 **Citus `columnar`** 访问方法。**只要**该分区出现在
+// 一个**未命名子查询**（relid=0 的 RTE）里并参与 `UNION ALL`，
+// 执行器初始化就抛：
+//
+//	invalid perminfoindex 0 in RTE with relid 0
+//
+// 复现（干净库上，**0 行的分区**即可，审计 §9.196.4）：
+//
+//	ALTER TABLE request_logs_bodies_2026_11 SET ACCESS METHOD columnar;
+//	SELECT count(*) FROM (SELECT request_id FROM request_logs_bodies_hot
+//	                      UNION ALL SELECT request_id FROM request_logs_bodies) x;
+//	⇒ ERROR: invalid perminfoindex 0 in RTE with relid 0
+//
+// 它与行数、数据内容、统计信息、DDL 全部无关（已逐项实测排除）。
+//
+// # 为什么拆成两条，而不是给子查询补一个分区键谓词
+//
+// 两种改法都实测能通过。选前者是因为**补谓词会改语义**：谓词下推改变
+// 分区裁剪路径，而原查询的 `ts = $2` 本已足够定位；用两条顺序查询则
+// **逐字保留**「hot 优先、母表兜底」的择一规则，与原
+// `ORDER BY source_priority LIMIT 1` 的结果**完全一致**。
+//
+// # 代价（写明，不藏）
+//
+// 原本 1 次往返变成最多 2 次。`LoadV1Turns` 对每个轮次调用一次，
+// 命中率低时（多数行只在母表）**会变成 2 倍往返**。
+// 这是真实代价；但在「一条都查不出来」与「慢一倍」之间，前者不可接受。
+
+// v1BodyQuery 先查 hot 腿（原 source_priority=0）。
+// 未命名子查询的形状已实测会触发 perminfoindex 错误，
+// 因此这里**不**使用 `FROM ( ... UNION ALL ... )`。
 const v1BodyQuery = `
-		SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
-		FROM (
-			SELECT request_id, ts, request_body, response_body, 0 AS source_priority
-			FROM request_logs_bodies_hot
-			UNION ALL
-			SELECT request_id, ts, request_body, response_body, 1 AS source_priority
-			FROM request_logs_bodies
-		) AS bodies
-		WHERE request_id = $1 AND ts = $2
-		ORDER BY source_priority
-		LIMIT 1
-	`
+	SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
+	FROM request_logs_bodies_hot
+	WHERE request_id = $1 AND ts = $2
+	LIMIT 1
+`
+
+// v1BodyQueryParent 是 hot 未命中时的兜底腿（原 source_priority=1）。
+const v1BodyQueryParent = `
+	SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
+	FROM request_logs_bodies
+	WHERE request_id = $1 AND ts = $2
+	LIMIT 1
+`
 
 // NewSessionLoader creates a new session loader
 func NewSessionLoader(db sessionDB) *SessionLoader {
@@ -212,9 +250,19 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	// Bodies may still be in the hot table or already promoted to partitions. The
 	// timestamp is part of the body table key and prevents a reused request ID from
 	// receiving another turn's body.
+	//
+	// 两条腿**顺序**执行（审计 §9.196）：原来那条「子查询内 UNION ALL」的查询在
+	// `request_logs_bodies` 的 RANGE 分区是 Citus `columnar` 时会让执行器初始化
+	// 直接失败（invalid perminfoindex 0 in RTE with relid 0），而 migration 765
+	// `bodies_columnar_storage` 正是干这件事的。拆成两条后语义不变：hot 优先、
+	// 母表兜底，与原 `ORDER BY source_priority LIMIT 1` 一致。
 	for i := range turns {
 		var requestBody, responseBody json.RawMessage
 		err := l.db.QueryRow(ctx, v1BodyQuery, turns[i].RequestID, turns[i].Ts).Scan(&requestBody, &responseBody)
+		if err == pgx.ErrNoRows {
+			// hot 未命中 → 走已 promote 的母表分区。
+			err = l.db.QueryRow(ctx, v1BodyQueryParent, turns[i].RequestID, turns[i].Ts).Scan(&requestBody, &responseBody)
+		}
 		if err == pgx.ErrNoRows {
 			// No bodies for this request - keep empty defaults
 			continue
@@ -445,27 +493,135 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 	return &session, nil
 }
 
+// V1TimeRange is the span of v1 rows that actually exist for a tenant.
+type V1TimeRange struct {
+	MinTS, MaxTS time.Time
+	Rows         int64
+}
+
+// LoadV1TimeRange reports the real span of v1 data for a tenant.
+//
+// §9.222: batch validation is advertised as "compare v1 against v2 over a
+// window", but request_logs is **not** a permanent store. On 252 the monthly
+// job `pg17-drop-old-columnar-partitions.sh` (RETAIN_MONTHS=2) DETACHes and
+// DROPs every request_logs partition older than two months, while
+// session_turns is on no rotation list at all. So a window wider than two
+// months does not come back empty and does not error — it comes back
+// **silently truncated**, and a parity report over a truncated window reads
+// exactly like a parity report over the window that was asked for.
+//
+// The caller cannot detect that from the candidate count alone, because a
+// truncated window can still yield ≥100 sessions. This is the only place the
+// tool can tell the truth about it, so the range is measured here and
+// surfaced rather than inferred.
+func (l *SessionLoader) LoadV1TimeRange(ctx context.Context, tenantID string) (V1TimeRange, error) {
+	var r V1TimeRange
+	err := l.db.QueryRow(ctx, `
+		SELECT min(ts), max(ts), count(*)
+		FROM request_logs
+		WHERE tenant_id = $1
+		  AND gw_session_id IS NOT NULL
+		  AND gw_session_id <> ''
+	`, tenantID).Scan(&r.MinTS, &r.MaxTS, &r.Rows)
+	if err != nil {
+		return r, fmt.Errorf("query v1 time range: %w", err)
+	}
+	return r, nil
+}
+
+// WindowExceedsV1Data reports whether the window the operator asked for
+// reaches past the v1 rows that actually exist, and why.
+//
+// The check is deliberately split out from validateBatch so it can be tested in
+// both directions without a database: a guard that has only ever been observed
+// not firing is indistinguishable from a guard that cannot fire.
+//
+// §R45/M2 superseded: this guard briefly grew a third "end-day" arm backed by a
+// HasV1RowsInRange probe, because the half-open bound excluded the named day
+// and MaxTS alone could not see that. The bound is now corrected in
+// buildSessionRangeQuery, so the named day is actually loaded and MaxTS is
+// again sufficient to answer "is that day covered". The probe and the arm are
+// gone; keeping them would fire on every run whose named day holds data.
+//
+// Two arms, in the order the operator should read them:
+//
+//   - start arm (fe5003034/§9.222): the window claims data older than the
+//     oldest surviving v1 row — the retention trap.
+//   - end arm (fe5003034): the window promises a day beyond the newest v1 row.
+//     requestedEnd is the midnight of the last **named** day (the date flags
+//     parse with time.Parse("2006-01-02")), so "the newest v1 row is before it"
+//     is exactly "the named day holds no v1 row at all" — a whole day missing.
+//
+// A zero requestedStart means "unbounded below", which is what `-end-date`
+// alone produces; that case is never truncation.
+func WindowExceedsV1Data(requestedStart, requestedEnd time.Time, actual V1TimeRange) (bool, string) {
+	if actual.Rows == 0 {
+		// No v1 rows at all: reported as truncation would be wrong wording, and
+		// the zero-candidate path already fails the gate closed.
+		return false, ""
+	}
+	if !requestedStart.IsZero() && actual.MinTS.After(requestedStart) {
+		return true, fmt.Sprintf("requested start %s precedes the oldest v1 row %s (%d rows)",
+			requestedStart.Format(time.RFC3339), actual.MinTS.Format(time.RFC3339), actual.Rows)
+	}
+	// A newest-day that is merely *partial* is not truncation: "up to today"
+	// is the common operator input, and refusing it would refuse nearly every
+	// legitimate run. The hours of the named day are not this guard's problem —
+	// they are loaded, and they are fixed at the source, in
+	// endDayExclusiveBound.
+	if !requestedEnd.IsZero() && actual.MaxTS.Before(requestedEnd) {
+		// Hand the operator the flag value that would actually match the data.
+		// This is the one genuinely useful idea carried over from the superseded
+		// end-day arm: a diagnosis alone leaves the operator to guess which day
+		// to type. The suggested date comes from MaxTS — the newest day that
+		// holds rows — so it needs no probe.
+		return true, fmt.Sprintf(
+			"requested end %s is after the newest v1 row %s (%d rows): the named day holds no v1 rows at all, "+
+				"so the window is wider than the data — re-run with -end-date %s to name the last day that has data",
+			requestedEnd.Format(time.RFC3339), actual.MaxTS.Format(time.RFC3339), actual.Rows,
+			actual.MaxTS.UTC().Format("2006-01-02"))
+	}
+	return false, ""
+}
+
+// endDayExclusiveBound converts an inclusive end day into the half-open
+// upper bound the query needs.
+//
+// §R45/M2 superseded the previous detector here. The flags name calendar days:
+// an operator who passes -end-date 2026-10-04 means "through the end of
+// 2026-10-04". The query is half-open (`ts < $3`), so feeding it the named
+// day's own midnight excluded the entire named day — the query returned rows
+// through 2026-10-03T23:59:59Z while the report still printed 2026-10-04. On
+// 252 that silently dropped 15h53m32s of v1 rows that did exist (newest row
+// 2026-10-04 15:53:32Z).
+//
+// That is the worst shape this tool has: a parity report over a window
+// narrower than the one requested is indistinguishable from a parity report
+// over the requested window, and §9.222's whole reason for existing is that
+// same report being used to justify retiring request_logs.
+//
+// The named day is deliberately left untouched for display and for
+// WindowExceedsV1Data; only the bound handed to SQL is shifted.
+func endDayExclusiveBound(namedEndDay time.Time) time.Time {
+	return namedEndDay.AddDate(0, 0, 1)
+}
+
 // LoadSessionsInRange loads session IDs within a date range for batch validation
 func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
+	if endDate.IsZero() {
+		// ts < $3 with a zero time is `ts < year 1`: the query matches nothing
+		// and the tool reports "no settled sessions found", which points the
+		// operator at their data instead of at their flags. This used to be
+		// reachable by passing -start-date without -end-date.
+		return nil, errors.New("end of the validation window is unset: pass -end-date (YYYY-MM-DD); " +
+			"a zero end bound silently matches zero rows rather than reporting an error")
+	}
 	settleThreshold := time.Now().Add(-settleWindow)
-
-	query := `
-			SELECT gw_session_id
-			FROM request_logs
-			WHERE tenant_id = $1
-			  AND ts >= $2
-			  AND ts < $3
-			  AND gw_session_id IS NOT NULL
-			  AND gw_session_id != ''
-			GROUP BY gw_session_id
-			HAVING MAX(ts) < $4
-			ORDER BY gw_session_id
-			LIMIT $5
-		`
 
 	// For batch mode, we select from request_logs and filter by settle window
 	// We'll additionally filter by updated_at from sessions table if it exists
-	rows, err := l.db.Query(ctx, query, tenantID, startDate, endDate, settleThreshold, maxSessions)
+	query, args := buildSessionRangeQuery(tenantID, startDate, endDate, settleThreshold, maxSessions)
+	rows, err := l.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query session IDs: %w", err)
 	}
@@ -486,4 +642,31 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 	}
 
 	return sessionIDs, nil
+}
+
+// buildSessionRangeQuery returns the SQL and the bound arguments for the
+// settled-session lookup.
+//
+// It is split out of LoadSessionsInRange so that the bound arguments can be
+// asserted without a database. The end bound is the whole point: the SQL is
+// half-open, so $3 must be the start of the day after the day the operator
+// named (see endDayExclusiveBound). That argument is the one thing a real run
+// cannot easily show you, because the damage is an absence — a dropped range
+// of rows looks exactly like a window that had none.
+func buildSessionRangeQuery(tenantID string, startDate, endDate, settleThreshold time.Time, maxSessions int) (string, []any) {
+	const query = `
+			SELECT gw_session_id
+			FROM request_logs
+			WHERE tenant_id = $1
+			  AND ts >= $2
+			  AND ts < $3
+			  AND gw_session_id IS NOT NULL
+			  AND gw_session_id != ''
+			GROUP BY gw_session_id
+			HAVING MAX(ts) < $4
+			ORDER BY gw_session_id
+			LIMIT $5
+		`
+	args := []any{tenantID, startDate, endDayExclusiveBound(endDate), settleThreshold, maxSessions}
+	return query, args
 }

@@ -1,5 +1,6 @@
 // Auto-synced from en-US (ja-JP)
 export default {
+  monitorPartialFailed: "{count} 件の認証情報のライブデータを取得できませんでした（{ids}）。下の数値は不足しています",
   backLink: '← Routing overview',
   title: 'Probe health',
   autoRefresh: 'Auto refresh (30s)',

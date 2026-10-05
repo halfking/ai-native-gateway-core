@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"strings"
 
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/secretmask"
 )
 
@@ -174,7 +175,7 @@ func (m *pgRequestLogsSource) GetSystemPromptPrefix(ctx context.Context, tenantI
 	err := m.pool.QueryRow(ctx, `
 		SELECT rb.request_body::text
 		FROM request_logs_with_current_month rl
-		JOIN request_logs_bodies_with_current_month rb
+		JOIN `+dbpkg.SessionBodiesSourceSQL()+` rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.tenant_id = $1 AND rl.gw_session_id = $2
 		ORDER BY rl.ts ASC

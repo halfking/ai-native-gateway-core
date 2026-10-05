@@ -13,9 +13,9 @@ import (
 // （2026-09-24 252 SQL 日志审计第六轮）。727/728/729 只有 canonical .sql +
 // 当轮手工 psql 实跑，Go 侧 boot 收敛路径没有真库覆盖；本测试把它钉住：
 //
-//	1. DROP 掉 hot 侧索引（模拟尚未应用/中断残留），ensure 必须重建且
-//	   indisvalid=true（INVALID/缺失都会被 buildConcurrently 处理）；
-//	2. 第二次 ensure 必须幂等快返回（索引已 valid 时的 boot 路径）。
+//  1. DROP 掉 hot 侧索引（模拟尚未应用/中断残留），ensure 必须重建且
+//     indisvalid=true（INVALID/缺失都会被 buildConcurrently 处理）；
+//  2. 第二次 ensure 必须幂等快返回（索引已 valid 时的 boot 路径）。
 //
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过（与 bg 真库回归同门控）。
 // CONCURRENTLY 无法在事务内执行，pool.Exec 的 autocommit 天然满足。

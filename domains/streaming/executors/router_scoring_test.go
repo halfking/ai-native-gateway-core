@@ -248,8 +248,9 @@ func (f *fakeLiveLoad) GetLiveConcurrent(credID int64, model string) int64 {
 // TestConcurrencyScore_ReadsDispatchLiveLoad (regression, 2026-09-09 P0):
 //
 // 245 production log evidence:
-//   credential 42: 803 requests (57%), credential 21: 502 (36%),
-//   credential 45: 76 (5%),  credential 29: 22 (2%)
+//
+//	credential 42: 803 requests (57%), credential 21: 502 (36%),
+//	credential 45: 76 (5%),  credential 29: 22 (2%)
 //
 // All four had concurrency_score=0 in the LOAD_SCORE_V2 sample, so P2C
 // fell back to pickWeightedTie and stuck group A (weight=20) on group B

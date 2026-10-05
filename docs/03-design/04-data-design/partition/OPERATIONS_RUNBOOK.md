@@ -8,6 +8,7 @@
 | 版本 | 日期 | 变更 | 作者 |
 |------|------|------|------|
 | 1.0 | 2026-07-05 | 初始版本（合并自 OPERATIONS_GUIDE_PARTITION_ARCHIVE / data-lifecycle-partition-archive / data-lifecycle-management / data-lifecycle-partition-implementation-summary 四份旧文档） | Infrastructure Team |
+| 1.1 | 2026-10-04 | 新增第 9 节：`*_default` 分区残留行导致的**自锁**处置（会话族退役审计 §9.152/§9.153/§9.160，SQL 已实测验证） | Mavis |
 
 ---
 
@@ -614,5 +615,149 @@ pg_dump -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
 
 ---
 
+## 9. `*_default` 分区有残留行 ⇒ 该月分区永久建不出来（自锁）
+
+> 新增于 2026-10-04。来源：会话族退役审计
+> [`§9.152`](../../../audit/2026-09-30-session-request-data-re-audit.md)（判出）、
+> `§9.153`（全库实测）、`§9.154`（检测手段）、
+> `§9.160`（本节 SQL 的实测验证过程）。
+
+### 9.1 现象
+
+后台工日志反复出现：
+
+```
+partition_manager: ensure partition failed
+  fn=ensure_sessions_v2_partitions  error=ERROR: updated partition constraint
+  for default partition "session_turns_default" would be violated by some row
+```
+
+### 9.2 机理（为什么它是「锁」而不是「延迟」）
+
+- `session_turns` / `request_logs` 都带 `DEFAULT` 分区 ⇒ 某月没有专属分区时，
+  **写入不会报 `23514`**，而是**静默落进 `*_default`**。
+- 落进去的行**没有出口**：`promote_*_hot_to_partition` 搬的是 `*_hot` 表；
+  **没有任何 SQL 函数或 Go 代码引用 `*_default`** ⇒ 既不会被搬走，也不会被清掉。
+- 之后再建该月分区 ⇒ 上面那条 `ERROR`，**且不会自愈**。
+- 连带面：`ensure_sessions_v2_partitions` 在一个 plpgsql 块里**顺序**建
+  `sessions` / `session_turns` / `session_bodies`，**无 `EXCEPTION` 子句**
+  ⇒ `session_turns` 这条一失败，**`session_bodies` 的分区也永远建不出来**。
+
+### 9.3 先确认是不是这个（30 秒）
+
+```sql
+-- 只查「父表另有时间分区」的那一类；父表只有 default 一个分区的表不算残留
+SELECT d.relname, count(*) AS rows
+FROM pg_class d
+JOIN pg_namespace dn ON dn.oid = d.relnamespace AND dn.nspname = 'public'
+JOIN pg_inherits hi ON hi.inhrelid = d.oid
+JOIN pg_class p ON p.oid = hi.inhparent
+WHERE d.relispartition AND d.relkind = 'r' AND d.relname LIKE '%\_default'
+  AND EXISTS (SELECT 1 FROM pg_inherits i2
+              WHERE i2.inhparent = p.oid AND i2.inhrelid <> d.oid)
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+> 健康态应全部为 **0**。同时看指标
+> `llm_gateway_partition_default_residue_rows`（**> 0 即命中**，
+> `-1` 表示**测不到**，不等于健康）。
+> 两者任一命中才走下面的处置。
+
+### 9.4 处置（SQL 已实测验证，PG 17.10）
+
+> ⚠️ **这是 DDL，会短暂持有父表 `ACCESS EXCLUSIVE` 锁。**
+> 请在维护窗口执行；**执行前先暂停** `bg.PartitionManager` 的 promote/ensure
+> 与 `promote_session_turns_hot_to_partition`，避免与分区增删竞争。
+> ⚠️ 健康态下残留为 0，**本节通常不需要执行**；它的存在是为了「万一发生」时不用临场想。
+
+把 `<表>` 换成实际表名（`session_turns` / `sessions` / `session_bodies` …），
+`<目标月>` 换成形如 `2026_11` 的后缀：
+
+```sql
+BEGIN;
+
+-- 1) 摘下旧 default（它会连同里面的残留行一起保留，便于回滚）
+ALTER TABLE public.<表> DETACH PARTITION public.<表>_default;
+
+-- 2) 建一个空的 default 顶上（此时父表不能没有 default）
+CREATE TABLE public.<表>_default_new PARTITION OF public.<表> DEFAULT;
+
+-- 3) 现在目标月分区建得出来了
+CREATE TABLE public.<表>_<目标月> PARTITION OF public.<表>
+  FOR VALUES FROM ('<目标月>-01 00:00+08') TO ('<次月>-01 00:00+08');
+
+-- 4) 搬走目标范围内的行
+INSERT INTO public.<表>_<目标月>
+  SELECT * FROM public.<表>_default
+  WHERE ts >= '<目标月>-01 00:00+08' AND ts < '<次月>-01 00:00+08';
+
+-- 5) 搬走其余行（会落进第 2 步新建的空 default）
+INSERT INTO public.<表>
+  SELECT * FROM public.<表>_default
+  WHERE ts <  '<目标月>-01 00:00+08' OR ts >= '<次月>-01 00:00+08';
+
+-- 6) ★硬守卫：旧表必须已空，否则**中止**（否则第 8 步会静默丢数据）
+DO $$
+DECLARE n BIGINT;
+BEGIN
+  SELECT count(*) INTO n FROM public.<表>_default;
+  IF n > 0 THEN
+    RAISE EXCEPTION '旧 default 仍有 % 行未搬走，拒绝 DROP（否则静默丢数据）', n;
+  END IF;
+END $$;
+
+-- 7) 旧表已空，安全丢弃
+DROP TABLE public.<表>_default;
+
+-- 8) 把新 default 改回原名（注意：分区没有 RENAME PARTITION 语法）
+ALTER TABLE public.<表>_default_new RENAME TO <表>_default;
+
+COMMIT;
+```
+
+### 9.5 验证（三条都要过）
+
+```sql
+-- A. 行还在，且落点正确
+SELECT tableoid::regclass AS 落点, count(*)
+FROM public.<表> GROUP BY 1 ORDER BY 1;
+
+-- B. ★解锁判据：再建一次目标月分区
+--    解锁后应报 "would overlap partition <表>_<目标月>"（区间已被专属分区接管）
+--    若仍报 "default partition ... would be violated" ⇒ 没解开
+CREATE TABLE public.<表>_<目标月>_dup PARTITION OF public.<表>
+  FOR VALUES FROM ('<目标月>-01 00:00+08') TO ('<次月>-01 00:00+08');
+-- 验完 DROP 掉这个 _dup
+
+-- C. 新写入能自动进月分区
+INSERT INTO public.<表>(ts) VALUES ('<目标月>-20 12:00+08');
+SELECT tableoid::regclass FROM public.<表> WHERE ts = '<目标月>-20 12:00+08';
+-- 期望落在 <表>_<目标月>；验完 DELETE 掉这一行
+```
+
+⚠️ **不要用「下一个月的分区能建」当解锁判据** ——
+下个月的范围里通常本来就没有残留行，那个分区一直都能建，**与本症状无关**。
+（这是本节编写时实测踩到的坑。）
+
+### 9.6 三个写这份流程时踩到的坑（请勿"优化"掉）
+
+1. **`ALTER TABLE parent RENAME PARTITION a TO b` 在 PG 17.10 是语法错误** ——
+   分区改名只能用 `ALTER TABLE <新分区> RENAME TO <旧名>;`。
+2. **`INSERT … SELECT` 不删源行** —— 只复制不移除。
+   若跳过 `DELETE`，第 6 步守卫会中止（**这是好事**）；
+   若连守卫一起删掉，第 7 步 `DROP TABLE` 会**静默丢掉那些行**。
+3. **只搬「目标范围」的行是不够的** —— 落在 default 里但**不属于**目标月的行
+   （例如更晚的月份）必须由第 5 步搬进新 default。
+   ⚠️ 本节初稿漏了这一步，**夹具里那行 8 月的行就是这么消失的**。
+
+### 9.7 预防
+
+`llm_gateway_partition_default_residue_rows`（§9.154 已上线）应配一条告警：
+**任何 `table` 标签的值 > 0 即告警**（`-1` 视为未知，同样应告警，不应视为健康）。
+**只加检测不加告警，等于把自锁留给运气。**
+
+
+---
+
 **维护团队**: Infrastructure Team
-**最后更新**: 2026-07-05
+**最后更新**: 2026-10-04

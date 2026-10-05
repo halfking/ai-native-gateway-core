@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -212,7 +213,7 @@ type Candidate struct {
 	// json:"-" because this is a per-request routing artifact, not part of the
 	// candidate's persisted/SQL-projected shape.
 	RoutedNodeState *credentialfpslot.NodeState `json:"-"`
-	APIKey          string                     `json:"-"`
+	APIKey          string                      `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
 	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
@@ -1520,6 +1521,84 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 	return c.loadCandidatesByModalityDB(ctx, clientModel, tenantID, "")
 }
 
+// ModalityRoutingStrictEnv 把候选过滤从「语义负证据排除」升级为「只认
+// 语义正证据」。
+//
+// 默认关闭是有意的。打开它意味着：**一个模型必须拿到两轮语义正证据才会
+// 进图片/音频候选集**，而存量模型在核实任务跑完之前一条都不满足 ⇒ 全量
+// 图片请求 503 no_candidate。所以它是逐环境灰度的开关，不是默认终态。
+//
+// 默认档（关闭）已经实现了「路由不信任结构级」：结构级「可承载」从不
+// 提升路由信任，只有语义负证据能排除一个模型。缺省档与严格档的差别在于
+// **未核实**这一态怎么对待——缺省放行（保住可用性），严格档不放行。
+const ModalityRoutingStrictEnv = "LLM_GATEWAY_MODALITY_ROUTING_STRICT"
+
+// modalityRoutingStrict 读严格模式开关。缺省 false。
+func modalityRoutingStrict() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(ModalityRoutingStrictEnv)))
+	switch v {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// modalityVerdictGateSQL 是候选集上的多模态判词闸门（迁移 825）。
+//
+// 缺省档：排除「所有已探绑定都判负、且没有任何一条是 unknown」的模型。
+//
+//	read_level='negative' 说明这个模型在**这个供应商**上被实测过读不出内容
+//	（外层 NOT EXISTS：没有任何一条非 negative 的证据，含 confirmed 与
+//	 unknown）；内层 NOT EXISTS 守着「还有没探透的就不下判词」——一个绑定
+//	 超时留下的 unknown 不该把整个模型否掉。
+//
+//	这条只由语义负证据触发。结构级「可承载」永远不参与：它只说明上游收得
+//	下图片内容块，不说明模型看得见，而把后者当前者正是本项目要修的缺陷。
+//
+// 严格档：在上面那条之外，图片/音频请求还要求该模型该模态存在
+// read_level='confirmed' 的证据。$3 为空或为 'text' 的请求不受影响。
+func modalityVerdictGateSQL(strict bool) string {
+	// $3 is hard-coded rather than parameterised: the gate is only ever used
+	// inside candidateQuerySQL, and splicing a backtick-concatenation into
+	// the middle of this function would split its own literal into several
+	// raw strings, which is exactly the shape sql_comment_syntax_test.go
+	// scans for.
+	gate := `
+
+		  AND NOT (
+		      $3 IN ('vision', 'audio', 'video')
+		      AND EXISTS (
+		          SELECT 1
+		            FROM model_modality_verification mmv
+		           WHERE mmv.canonical_id = mc.id
+		             AND mmv.modality = $3
+		             AND mmv.read_level = 'negative'
+		             AND NOT EXISTS (
+		                 SELECT 1
+		                   FROM model_modality_verification mmv2
+		                  WHERE mmv2.canonical_id = mc.id
+		                    AND mmv2.modality = $3
+		                    AND mmv2.read_level <> 'negative'
+		             )
+		      )
+		  )`
+	if !strict {
+		return gate
+	}
+	return gate + `
+
+		  AND NOT (
+		      $3 IN ('vision', 'audio', 'video')
+		      AND NOT EXISTS (
+		          SELECT 1
+		            FROM model_modality_verification mmv3
+		           WHERE mmv3.canonical_id = mc.id
+		             AND mmv3.modality = $3
+		             AND mmv3.read_level = 'confirmed'
+		      )
+		  )`
+}
+
 // candidateQuerySQL returns the exact candidate-build SQL text (binding
 // params $1=lowercased client model, $2=tenant_id, $3=modality).
 //
@@ -1563,6 +1642,16 @@ func decodeNativeEndpoints(raw []byte, credentialID int) ([]endpointselect.Endpo
 }
 
 func candidateQuerySQL() string {
+	// The graded-modality gate is substituted in rather than inlined: it has
+	// two shapes (default / strict), and concatenating it into the middle of
+	// this raw string would split the literal in two, which makes every `//`
+	// comment below the split point look like a Go comment inside SQL
+	// (sql_comment_syntax_test.go) and hides the query's real shape.
+	return strings.Replace(candidateQuerySQLBase(),
+		"/*MODALITY_VERDICT_GATE*/", modalityVerdictGateSQL(modalityRoutingStrict()), 1)
+}
+
+func candidateQuerySQLBase() string {
 	return `
 		WITH matched AS MATERIALIZED (
 		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw
@@ -1603,6 +1692,7 @@ func candidateQuerySQL() string {
 			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
 			      OR COALESCE(mc.modality, 'text') = $3
 			  )
+			  /*MODALITY_VERDICT_GATE*/
 		)
 SELECT
 			c.id::int AS credential_id,

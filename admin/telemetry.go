@@ -340,7 +340,7 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 			e.ClientModel, e.ResolvedRawModel, e.StickyHit, e.ClientProfile,
 			e.OutboundModel, e.RequestMode, e.IdentityHash, e.TransformRuleID,
 			e.EgressProtocol, e.FailureStage, e.FailureDetailCode,
-			e.ResolutionPath, e.CanonicalModel, rawModelsJSON, traceJSON,
+			e.ResolutionPath, e.CanonicalModel, string(rawModelsJSON), string(traceJSON),
 		)
 		return err
 	})
@@ -750,7 +750,7 @@ func (h *Handler) handleTelemetryDecisionLog(w http.ResponseWriter, r *http.Requ
 			entry.ClientModel, entry.ResolvedRawModel, entry.StickyHit, entry.ClientProfile,
 			entry.OutboundModel, entry.RequestMode, entry.IdentityHash, entry.TransformRuleID,
 			entry.EgressProtocol, entry.FailureStage, entry.FailureDetailCode,
-			entry.ResolutionPath, entry.CanonicalModel, rawModelsJSON, traceJSON,
+			entry.ResolutionPath, entry.CanonicalModel, string(rawModelsJSON), string(traceJSON),
 		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "insert failed")

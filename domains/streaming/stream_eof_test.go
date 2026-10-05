@@ -835,22 +835,23 @@ func TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason(t *testing.T) {
 // is the 2026-09-24 r0924 regression钉桩 reproducing the EXACT chunk
 // sequence that shipped over the wire from api.minimaxi.com for
 // minimax-m3 tool-calling turns:
-//   1. role-only delta (first frame announces the assistant role)
-//   2. finish_reason:"tool_calls" delta with a fully-formed tool_calls[]
-//      carrying the actual function name + JSON arguments
-//   3. usage-only frame with empty choices (mirrors MiniMax's
-//      post-finish_reason accounting emission)
-//   4. EOF — no `data: [DONE]` sentinel (MiniMax relay omits it)
+//  1. role-only delta (first frame announces the assistant role)
+//  2. finish_reason:"tool_calls" delta with a fully-formed tool_calls[]
+//     carrying the actual function name + JSON arguments
+//  3. usage-only frame with empty choices (mirrors MiniMax's
+//     post-finish_reason accounting emission)
+//  4. EOF — no `data: [DONE]` sentinel (MiniMax relay omits it)
 //
 // Field-evidence raw frames (request c96df1a8a50154667e8f1d40fa64b2bd,
 // 2026-09-23T17:21):
-//   https://raw-logs/...: 3 upstream_response chunks, then EOF.
-//   Audit row recorded success=false, reason="eof_without_done",
-//   kind="upstream_down", chunk_count=6, resumable=false, which means
-//   the §11.6-pseudo-success branch ran instead of the benign-completion
-//   branch. The failing chunk boundary is the open question this test
-//   pins — if THIS test fails, the production path is missing a fix
-//   vs. the df60575b shape used in TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason.
+//
+//	https://raw-logs/...: 3 upstream_response chunks, then EOF.
+//	Audit row recorded success=false, reason="eof_without_done",
+//	kind="upstream_down", chunk_count=6, resumable=false, which means
+//	the §11.6-pseudo-success branch ran instead of the benign-completion
+//	branch. The failing chunk boundary is the open question this test
+//	pins — if THIS test fails, the production path is missing a fix
+//	vs. the df60575b shape used in TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason.
 func TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason_MiniMaxProductionShape(t *testing.T) {
 	counter := &countingRecorder{delegate: metrics.NewNoopRecorder()}
 	prev := metrics.Global()

@@ -9,16 +9,49 @@
 #        去掉后 5 条任务都会在缺环境下失败。
 #   改本文件后，务必 diff 服务器现网版本复核（见 README「cron 同步」一节）。
 #
+#   2026-10-04 复核发现第三处漂移，同样会直接删掉生产任务：
+#     3) 本模板缺 `17 * * * * ursm-snapshot-health.sh`（每小时快照写入健康巡检，
+#        服务器上一直在跑，带 2026-10-04 的注释）。按上面的整文件覆盖契约，
+#        **下一次部署就会把这条每小时巡检从生产删掉**。已回填。
+#   ⇒ 这不是"模板忘了更新"这么轻：契约是**整文件覆盖**，漏一条＝删一条。
+#     门：scripts/ursmcheck/cron_registration_test.go 断言本目录下每个
+#     巡检脚本都有对应 cron 行（473 同族：建了却忘了接线）。
+#
 # 触发频率（运行成本可控）：
+#   - pg17-pg-availability-check.sh 每分钟 :59  可用性心跳（唯一分钟级任务）
 #   - pg17-disk-watch.sh    每 10 分钟  采样 + 告警推送
 #   - pg17-emergency.sh     每 15 分钟  disk>=90% 自动 L2
 #   - pg17-vacuum-bloat.sh  周日 03:15  VACUUM FULL 防患于未然
 #   - pg17-index-bloat.sh   周日 04:40  只读巡检 + 超阈值告警（--report）
 #   - pg17-drop-columnar.sh 每月 1 号 02:30  DROP 老分区 + VACUUM FULL 元数据
+#   - ursm-snapshot-health.sh   每小时 :17  快照写入健康三态判据
+#   - ursm-snapshot-payload-bloat.sh 每小时 :23  payload 膨胀（818 收益的回归防护）
+#   - pg-table-bloat-check.sh    每天 05:07  全库表空洞普查（只读）
 #
+#   2026-10-04 新增 pg-table-bloat-check.sh 时同步登记。理由见文件末尾注释：
+#   契约是整文件覆盖，漏一条 = 部署时删掉一条生产任务（本文件头部已记过两次
+#   因漏登记造成的事故）。门：scripts/ursmcheck/cron_registration_test.go。
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
+
+# === 每分钟 PG 可用性心跳（2026-10-05 新增）===
+# 起因：2026-10-05 15:46 生产容器 pg-252-pg17 被误删，15:49:41 恢复，
+# 停机约 3~4 分钟，**全程无任何告警**。本文件里其余 8 个巡检全是「体检」
+# （10 分钟~每天一次），体检再密也答不了「PG 现在能不能用」。
+# ⇒ 补的不是第七个体检，是**心跳**：一分钟问一次。
+#
+# ★ 用 `59 * * * *` 而不是 `* * * * *`：本文件已有 */10、*/15 两族都压在
+#   :00，cron 同一分钟并发会互相对齐。再加一条 `*` 等于把 :00 的并发翻倍。
+#   心跳错开 1 分钟，观察上没有任何损失。
+#
+# ★ 退出码 0/1/3 分级，且**不能** >/dev/null 2>&1：
+#   0 健康（静默）/ 1 PG 不可用 / 3 巡检自己坏了。丢掉退出码等于没巡检。
+#   常态健康时脚本刻意不输出，所以这份 log 只在真事件时增长 ——
+#   「巡检还在跑吗」问 /var/lib/pg17-check/pg-availability.lastrun 的 mtime。
+# ★ 告警推送只发生在**首次不可用**与**恢复**两个转换点（脚本内去重），
+#   否则挂 30 分钟会推 30 条，告警就退化成噪音。
+59 * * * * root llmgw-source /opt/scripts/pg17-pg-availability-check.sh 2>&1 | tee -a /var/log/pg17-pg-availability.log; find /var/log -maxdepth 1 -name "pg17-pg-availability.log.*" -mtime +7 -delete
 
 # === 高频监控 ===
 */10 * * * * root llmgw-source /opt/scripts/pg17-disk-watch.sh >/dev/null 2>&1
@@ -41,3 +74,30 @@ MAILTO=""
 
 # === 预防性空表清理（2026-09-06 新增）===
 0 2 * * * root llmgw-source /opt/scripts/pg17-proactive-empty-table-cleanup.sh >/dev/null 2>&1
+
+# === 每小时 URSM 快照写入健康巡检（只读三态判据，2026-10-04 新增）===
+# 错开 17 分：避开整点、避开 */10 的 disk-watch 与 */15 的 emergency-cleanup。
+# ★ 不能写成 >/dev/null 2>&1：脚本的告警走 stderr，退出码 0/1/2/3 分级
+#   （1=降级 2=真空洞 3=量具不可用），全丢进 /dev/null 等于没巡检。
+# 保留最近 7 天巡检日志（每小时约 2 KB，可忽略）。
+17 * * * * root llmgw-source /opt/scripts/ursm-snapshot-health.sh 2>&1 | tee -a /var/log/ursm-snapshot-health.log; find /var/log -maxdepth 1 -name "ursm-snapshot-health.log.*" -mtime +7 -delete
+
+# === 每小时 URSM payload 膨胀巡检（818 收益的回归防护，2026-10-04 新增）===
+# 错开 23 分：与上面的 :17 分开，且仍避开 :00/:10/:15 那几个高频点。
+# ★ 这道巡检必须放在**二进制之外**：一旦回滚到 pre-818 的旧二进制，跑的就是
+#   那个不带检查的旧进程，把判据写进新二进制它自己永远不会被触发。
+#   818 当初就是无声发生的——06:50:48 上线，直到逐 5 分钟统计 payload 才被发现。
+# ★ 退出码同样分级（0 健康 / 1 膨胀 / 3 没有结论），所以同样不能 >/dev/null。
+23 * * * * root llmgw-source /opt/scripts/ursm-snapshot-payload-bloat.sh 2>&1 | tee -a /var/log/ursm-snapshot-payload-bloat.log; find /var/log -maxdepth 1 -name "ursm-snapshot-payload-bloat.log.*" -mtime +7 -delete
+
+# === 每日全库表空洞普查（只读，2026-10-04 新增）===
+# 起因：2026-10-04 一次手工普查发现 18 张表空闲率 >20%，合计 845 MB 的空闲
+# 永远不会还给操作系统（VACUUM 只记进 FSM，不 shrink 文件）。这不是个别现象：
+# assets 98.9%、session_mirror_outbox 98.5%、analysis_events 85.8%，
+# 且一整片 *_hot 表落在 30~75%。没有巡检的话它只会无声地长。
+# ★ 用 pgstattuple_approx（采样）而不是 pgstattuple（精确全表扫）——
+#   快照表 10 GB，精确扫会跟线上 IO 抢资源。判断量级用采样精度完全够。
+# ★ 每天一次而非每小时：空洞是天级量，而每小时给全库加一轮采样没有必要。
+#   05:07 避开 :00/:10/:15 的高频点，也避开周级 03:15 / 04:40 那两个重任务。
+# ★ 退出码分级（0 无异常 / 1 检出空洞 / 3 量具不可用），同样不能 >/dev/null。
+07 5 * * * root llmgw-source /opt/scripts/pg-table-bloat-check.sh 2>&1 | tee -a /var/log/pg-table-bloat-check.log; find /var/log -maxdepth 1 -name "pg-table-bloat-check.log.*" -mtime +14 -delete

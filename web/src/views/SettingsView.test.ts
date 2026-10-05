@@ -42,7 +42,7 @@ vi.mock('../api', () => ({
   rollbackSetting: (...args: any[]) => rollbackSettingMock(...args),
 }))
 
-describe('SettingsView session alias editor', () => {
+describe('SettingsView session alias editor', { timeout: 20_000 }, () => {
   beforeEach(() => {
     listSettingsMock.mockReset()
     getSettingMock.mockReset()

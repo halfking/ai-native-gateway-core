@@ -58,6 +58,9 @@ const filterOptions = ref<TurnsFilterOptions>({
 
 const childOpsMap = ref<Record<string, SessionTurnTreeItem[]>>({})
 const childOpsLoading = ref<Record<string, boolean>>({})
+// 失败原因必须单独存：不能靠「map 里没有这一项」来表示失败，
+// 那样和「还没加载」完全同形，页面只能说「没有子操作」。
+const childOpsError = ref<Record<string, string>>({})
 const summaryBusy = ref<Record<string, boolean>>({})
 const assetBusy = ref<Record<string, boolean>>({})
 const assetMsg = ref<Record<string, string>>({})
@@ -144,8 +147,21 @@ async function loadChildOps(sessionId: string) {
   try {
     const resp = await fetchSessionTurnsTree(sessionId, { limit: 100 })
     childOpsMap.value = { ...childOpsMap.value, [sessionId]: resp.turns || [] }
-  } catch {
-    childOpsMap.value = { ...childOpsMap.value, [sessionId]: [] }
+    childOpsError.value = { ...childOpsError.value, [sessionId]: '' }
+  } catch (e) {
+    // ⚠️ 原来写 `childOpsMap[sessionId] = []`，而入口的早退是
+    // `if (childOpsMap.value[sessionId] || …) return` —— **空数组是 truthy**
+    // ⇒ 一次失败之后这一项永久命中早退，展开再多次也永远不会重试。
+    // 失败必须**不进 map**（键缺席才是「还没取到」），
+    // 否则「取不到」被缓存成了「取到了，是空的」，两个错误合成一个永久的假。
+    const next = { ...childOpsMap.value }
+    delete next[sessionId]
+    childOpsMap.value = next
+    childOpsError.value = {
+      ...childOpsError.value,
+      // 本视图无 i18n（全文件硬编码中文，与既有文案一致），故不用 t()
+      [sessionId]: e instanceof Error && e.message ? e.message : '子操作加载失败',
+    }
   } finally {
     childOpsLoading.value = { ...childOpsLoading.value, [sessionId]: false }
   }
@@ -182,13 +198,20 @@ function openTurn(session: TurnsSessionGroup, turn: TurnGroupItem) {
   })
 }
 
-async function refreshSessionSummary(sessionId: string) {
+// 2026-10-03：原来 `catch { /* keep existing */ }`，调用方无条件显示
+// 「已触发重新归纳」。触发确实成功了，但**屏幕上那份归纳还是旧的**——
+// 用户会以为重新归纳没生效，或者更糟：以为新归纳就是这个样子。
+// 返回布尔，让调用方把「触发了但没刷新出来」说成另一句话。
+async function refreshSessionSummary(sessionId: string): Promise<boolean> {
   try {
     const resp = await listTurnsSessions({ search: sessionId, limit: 5 })
     const hit = resp.items.find(s => s.session_id === sessionId)
-    if (!hit) return
+    if (!hit) return false
     items.value = items.value.map(s => (s.session_id === sessionId ? { ...hit, turns: hit.turns?.length ? hit.turns : s.turns } : s))
-  } catch { /* keep existing */ }
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function resummarize(session: TurnsSessionGroup) {
@@ -196,8 +219,12 @@ async function resummarize(session: TurnsSessionGroup) {
   assetMsg.value = { ...assetMsg.value, [session.session_id]: '' }
   try {
     await triggerInstantSummary(session.session_id)
-    await refreshSessionSummary(session.session_id)
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: '已触发重新归纳' }
+    const refreshed = await refreshSessionSummary(session.session_id)
+    // 「触发了」与「刷新出来了」是两件事，混成一句就是在替用户下结论
+    assetMsg.value = {
+      ...assetMsg.value,
+      [session.session_id]: refreshed ? '已触发重新归纳' : '已触发重新归纳，但新归纳没取回来（当前显示的是旧内容）',
+    }
   } catch (cause) {
     assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '归纳失败' }
   } finally {
@@ -365,6 +392,7 @@ onBeforeUnmount(() => controller?.abort())
                   :asset-busy="!!assetBusy[session.session_id]"
                   :asset-msg="assetMsg[session.session_id]"
                   :child-ops="childOpsMap[session.session_id]"
+                  :child-ops-error="childOpsError[session.session_id]"
                   :child-ops-loading="!!childOpsLoading[session.session_id]"
                   :summary-expanded="summaryExpanded.has(session.session_id)"
                   @toggle="toggleSession(session.session_id)"

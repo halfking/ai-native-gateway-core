@@ -81,10 +81,10 @@ func (g *ABGate) Snapshot() map[string]any {
 		sharePct = float64(t) / float64(total) * 100
 	}
 	return map[string]any{
-		"treatment_count":     t,
-		"control_count":       c,
-		"evaluated":           g.evaluated.Load(),
-		"treatment_basis_bps": g.pctBasisPoints,
+		"treatment_count":        t,
+		"control_count":          c,
+		"evaluated":              g.evaluated.Load(),
+		"treatment_basis_bps":    g.pctBasisPoints,
 		"observed_treatment_pct": round2(sharePct),
 	}
 }
@@ -99,11 +99,11 @@ func round2(v float64) float64 {
 
 // MLStats aggregates the ML re-ranker's runtime behaviour for diagnostics.
 type MLStats struct {
-	Predictions   atomic.Int64 // successful ONNX inferences
-	Failures      atomic.Int64 // Predict errors (fallback to rule order)
-	LowConfidence atomic.Int64 // max(prob) below threshold, prediction ignored
-	NoMatch       atomic.Int64 // predicted label matched no candidate
-	Boosts        atomic.Int64 // candidates actually reordered
+	Predictions    atomic.Int64 // successful ONNX inferences
+	Failures       atomic.Int64 // Predict errors (fallback to rule order)
+	LowConfidence  atomic.Int64 // max(prob) below threshold, prediction ignored
+	NoMatch        atomic.Int64 // predicted label matched no candidate
+	Boosts         atomic.Int64 // candidates actually reordered
 	TotalLatencyNs atomic.Int64
 }
 

@@ -95,9 +95,9 @@ func readFallbackCount(t *testing.T, reason digestFallbackReason) int {
 
 func TestPersistedDigestOrFallback_CountsFallbackReasons(t *testing.T) {
 	cases := []struct {
-		name    string
-		raw     []byte
-		reason  digestFallbackReason
+		name   string
+		raw    []byte
+		reason digestFallbackReason
 	}{
 		{"missing null", []byte(`null`), digestFallbackMissing},
 		{"missing empty", nil, digestFallbackMissing},

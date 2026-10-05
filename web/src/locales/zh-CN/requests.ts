@@ -64,6 +64,9 @@ export default {
       providerAll: '全部供应商',
       credentialTitle: '凭据',
       credentialAll: '全部凭据',
+      loadFailed: '供应商/凭据选项加载失败，下拉为空不代表真的没有',
+      partialLoadFailed: '有 {count} 个供应商的凭据没加载出来（{names}），按它们筛选会得到不完整结果',
+      keysLoadFailed: 'API 密钥列表加载失败，按该密钥筛选会得到零结果',
       timeTitle: '时间范围',
       timeOptions: {
         h1: '1小时',

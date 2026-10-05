@@ -28,6 +28,8 @@ const PAGE_SIZE = 50
 
 const logs = ref<ProviderLogEntry[]>([])
 const credentials = ref<ProviderCredential[]>([])
+// 凭据下拉是**另一个**数据源，失败要单独讲（理由见 loadCredentials 的注释）
+const credentialsError = ref('')
 const total = ref(0)
 const page = ref(1)
 const loading = ref(false)
@@ -115,10 +117,18 @@ const rows = computed<ProviderLogEntry[]>(() => (isCompact.value ? continuous.ro
 const continuousState = computed(() => continuous.state.value)
 
 async function loadCredentials() {
+  credentialsError.value = ''
   try {
     credentials.value = await getProviderCredentials(props.providerId)
-  } catch {
+  } catch (e) {
+    // 2026-10-03：原来 `catch { credentials.value = [] }`。凭据下拉失败后
+    // 只剩「全部凭据」，用户按某个凭据筛出零条日志，结论会是
+    // 「这个凭据没有调用记录」——而真相是「凭据没加载出来」。
+    // 与 RequestLogsView.loadKeys 同一形状；那处已有 filter-error 横幅，这里同理。
+    // ⚠️ 不能复用 `error`：那个是主列表的错误，混在一起会让人以为日志列表也挂了。
     credentials.value = []
+    console.error('Failed to load provider credentials:', e)
+    credentialsError.value = pl('credentialsLoadFailed')
   }
 }
 
@@ -256,6 +266,9 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
+    <!-- 凭据下拉的范围未知：与上面的列表错误分开说，
+         否则「日志列表正常 + 凭据下拉空」会被读成「这个凭据没有记录」。 -->
+    <div v-if="credentialsError" class="alert alert-warning" role="status">{{ credentialsError }}</div>
 
     <!--
       页码条：仅桌面。compact 走连续加载，由底部 HyperLoadMore 承担，

@@ -296,6 +296,8 @@ export default {
   },
   bgStatus: {
     panelTitle: 'Status der Hintergrundaufgaben',
+    stale: 'Status der Hintergrundaufgaben unbekannt',
+    staleHint: 'Status konnte nicht abgerufen werden; die Werte stammen aus dem letzten erfolgreichen Abruf',
     task: {
       discovery: 'Modell-Discovery',
       discoveryRunning: 'Läuft ({elapsed})',

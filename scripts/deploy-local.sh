@@ -752,6 +752,19 @@ build_frontend() {
       fi
     else warn 'web/node_modules is missing; retaining existing web/dist'; fi
   fi
+  # 2026-10-04 统一入口轮：web-mobile（Hyper 移动前端）与 web 同链路构建。
+  # 同样的「响亮失败」契约——移动端构建挂了绝不能静默部署出没有 /m 的版本
+  # （入口 302 与 /m 挂载会一起消失，用户在手机上被扔回 PC 页面）。
+  if [[ -f "$PROJECT_ROOT/web-mobile/package.json" ]]; then
+    if [[ -x "$PROJECT_ROOT/web-mobile/node_modules/.bin/vite" ]]; then
+      local mobile_log="$RUN_DIR/build-frontend-mobile.log"
+      if ! (cd "$PROJECT_ROOT/web-mobile" && npm run build) >"$mobile_log" 2>&1; then
+        printf '    [frontend] web-mobile build failed; last 40 lines of %s:\n' "$mobile_log" >&2
+        tail -40 "$mobile_log" >&2 || true
+        die "web-mobile build failed (see $mobile_log) — refusing to deploy a release without the mobile surface"
+      fi
+    else warn 'web-mobile/node_modules is missing; bundle will stage an empty web-mobile (unified entry /m stays unregistered)'; fi
+  fi
 }
 
 bump_local_version() {
@@ -780,12 +793,18 @@ ensure_release_available() {
 stage_release() {
   local binary="$1" bundle="$BIN_DIR/$RELEASE_VERSION"
   ensure_release_available "$bundle"
+  # 2026-10-04 审计轮：web-mobile/dist 缺失时 dl_stage_release 会静默建空目录
+  # （网关侧 /m 与入口分流随之不注册）。--no-frontend 或脏检出行都可能踩到，
+  # 必须在 staging 前点名，不能让移动端无声消失。
+  if [[ ! -d "$PROJECT_ROOT/web-mobile/dist" ]]; then
+    warn "web-mobile/dist 缺失——本发布不含移动端（/m 与统一入口分流将不注册）；--no-frontend 复用检出产物时请先确认 web-mobile/dist 存在"
+  fi
   # dl_stage_release 的失败路径会主动 rm -f SHA256SUMS（2026-09-05
   # 陈旧二进制事故的 set -e 怪癖防御）。一旦失败，必须 fail closed 且
   # 给出明确错误，让后续 dl_verify_release 不会撞上 bash 自带的
   # 'SHA256SUMS: No such file or directory' 这种让人误以为是脚本 bug
   # 的晦涩信息。
-  dl_stage_release "$bundle" "$binary" "$PROJECT_ROOT/web/dist" "$VERSION_JSON" "$VERSION_FILE" "$RELEASE_VERSION" \
+  dl_stage_release "$bundle" "$binary" "$PROJECT_ROOT/web/dist" "$VERSION_JSON" "$VERSION_FILE" "$RELEASE_VERSION" "$PROJECT_ROOT/web-mobile/dist" \
     || die "release staging failed at $bundle — bundle is incomplete (no SHA256SUMS); the binary install or checksum generation failed. Check the [deploy-local] logs above for the failing step."
   dl_verify_release "$bundle" || die 'release checksum verification failed'
   printf '%s\n' "$bundle"
@@ -879,6 +898,7 @@ ARG BASE_IMAGE=alpine:3.22
 FROM ${BASE_IMAGE}
 COPY gateway /opt/llm-gateway-go/gateway
 COPY web /opt/llm-gateway-go/web
+COPY web-mobile /opt/llm-gateway-go/web-mobile
 COPY version.json /opt/llm-gateway-go/version.json
 WORKDIR /opt/llm-gateway-go
 ENTRYPOINT ["/opt/llm-gateway-go/gateway"]

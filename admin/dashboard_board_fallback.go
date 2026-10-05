@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -102,7 +103,28 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr b
 	return points, nil
 }
 
-func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
+// boardPieDegradation 记录哪些饼图维度没能算出来。
+//
+// 为什么需要它：2026-10-03 之前这里是一个 `err != nil → out[key] = []` 的静默吞错。
+// 某个维度查询失败（最典型是 42P01：聚合视图未迁移）时，页面拿到的是一个
+// **长度为零的数组**，与「这个维度真的没有任何客户端」在渲染上完全同形 ——
+// 排行榜卡会照常画出一张空表，顶部分布条停在 0%。
+//
+// 与第 17 节 credits 那处同型：**降级本身站得住，但载荷不能假装它是真值。**
+type boardPieDegradation struct {
+	// Keys 是算不出来的饼图维度名（clients/errors/models/...）。
+	Keys []string
+	// MissingView 是缺失的视图名（42P01 时非空），供前端显示可操作的提示。
+	MissingView string
+}
+
+func (d boardPieDegradation) Any() bool { return len(d.Keys) > 0 }
+
+// fallbackBoardPies 在日志回退路径上算出各维度饼图。
+//
+// 第二个返回值是降级账本：以前每个维度失败都只写一个空数组，
+// 整轮扫描下来「全部维度都缺」与「真的一个客户端都没有」产出完全相同的载荷。
+func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, boardPieDegradation, error) {
 	types := map[string]string{
 		"clients":         "agent_name",
 		"client_ips":      "client_ip",
@@ -113,10 +135,19 @@ func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boa
 		"providers":       "provider",
 	}
 	out := emptyBoardPies()
+	var degraded boardPieDegradation
 	for key, dimType := range types {
 		items, err := h.fallbackDimPie(ctx, tenantID, tr, dimType)
 		if err != nil {
+			// 仍然发出空数组（前端那些 `?? []` 兜底与既有渲染路径不变），
+			// 但把这一维度记进降级账本，让载荷能自报「这里不是 0，是没算出来」。
 			out[key] = []boardPieItem{}
+			degraded.Keys = append(degraded.Keys, key)
+			if degraded.MissingView == "" {
+				if IsMissingRelationError(err) {
+					degraded.MissingView = ExtractMissingRelationName(err)
+				}
+			}
 			continue
 		}
 		if dimType == "provider" {
@@ -127,7 +158,9 @@ func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boa
 		}
 		out[key] = items
 	}
-	return out, nil
+	// map 遍历顺序随机，报错与载荷的键序都必须稳定，否则「同一份降级」会有多种字节形态。
+	sort.Strings(degraded.Keys)
+	return out, degraded, nil
 }
 
 func (h *Handler) fallbackDimPie(ctx context.Context, tenantID string, tr boardTimeRange, dimType string) ([]boardPieItem, error) {

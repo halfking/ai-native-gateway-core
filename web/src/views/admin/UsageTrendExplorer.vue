@@ -108,21 +108,33 @@ const keyLabel = (k: ApiKey) => {
   return `${name} · ${k.key_prefix}…`
 }
 
+// 2026-10-03：原来两处 `catch { /* 不阻塞主图 */ }`。
+// 「不阻塞主图」是对的，但代价是**下拉变空**：页面上「没有供应商可选」
+// 与「供应商没加载出来」完全同形。用户选了供应商 A 却查不到数据，
+// 结论会是「这段时间 A 没有用量」，而真相是下拉里压根没有 A。
+// 「不阻塞」只该描述数据面板，不该顺带把筛选器变成一句假话。
+const filterOptionsError = ref('')
+
 async function loadFilterOptions() {
+  const problems: string[] = []
   try {
     const [p, k] = await Promise.all([getProviders(), getKeys()])
     providers.value = p ?? []
     keys.value = k ?? []
   } catch {
-    /* 过滤选项失败不阻塞主图 */
+    providers.value = []
+    keys.value = []
+    problems.push(t('usageTrend.filterProviderKeyFailed'))
   }
   if (showTenantFilter) {
     try {
       tenants.value = (await getTenants()) ?? []
     } catch {
-      /* non-blocking */
+      tenants.value = []
+      problems.push(t('usageTrend.filterTenantFailed'))
     }
   }
+  filterOptionsError.value = problems.join('；')
 }
 
 // ── 数据加载 ──
@@ -332,6 +344,8 @@ onBeforeUnmount(() => {
           @apply="range = $event"
         />
       </div>
+      <!-- 2026-10-03：筛选选项没加载出来时说清楚，别让空下拉冒充「没有供应商」 -->
+      <div v-if="filterOptionsError" class="ute__filter-error" role="status">{{ filterOptionsError }}</div>
       <div class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterProvider') }}</label>
         <el-select
@@ -456,6 +470,12 @@ onBeforeUnmount(() => {
 <script lang="ts">
 export default { name: 'UsageTrendExplorer' }
 </script>
+
+.ute__filter-error {
+  flex-basis: 100%;
+  color: var(--warning);
+  font-size: 12px;
+}
 
 <style scoped>
 .ute {

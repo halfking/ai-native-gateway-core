@@ -34,16 +34,32 @@
 //	unresolved      跨包调用 / struct 字段 / 运行时决定 ⇒ 机械判定不了，需要手验。
 //	                **本工具不猜**：宁可标记为不可判定，也不把它算进 reads-v1。
 //
-// # 它不是门，刻意不进 CI
+// # 它曾经**刻意**不是门：那三个理由仍然成立，但已被一一回答
 //
-// 三个理由，逐条都可证：
+// §9.45 当初写下「本工具不是门、不进 CI」，三个理由逐条都可证：
 //
-//  1. 它的结论依赖 **Go 层的表达式解析**，不是文本扫描。把它的输出冻结成一张
-//     登记表，就等于给 30 个文件各写一条「手验过」——而 §9.37 记录的正是这种
+//  1. 结论依赖 **Go 层的表达式解析**，不是文本扫描。把输出**冻结**成一张
+//     登记表，等于给每个文件各写一条「手验过」——§9.37 记录的正是这种
 //     登记表在代码演进后静默腐烂的过程。
-//  2. 空库 / 一次性库上它同样证明不了任何事（§9.34）。
-//  3. 它的正确用法是**按需运行**、把输出当证据读，而不是让 CI 每周报一次同样的
-//     48 行然后被人加进豁免表。
+//  2. 空库 / 一次性库上它证明不了任何事（§9.34）。
+//  3. 正确用法是按需运行、把输出当证据读；进 CI 只会每周重印同样的几十行，
+//     然后被人加进豁免表。
+//
+// **2026-10-05（§9.227）：第 1 条被回答，第 2、3 条本来就不适用于这道门。**
+//
+//   - 对 1：现在有 `manifest_test.go`，但它**不是把输出冻结成表**。
+//     清单是人读源码写的，与工具的分类**双向交叉核对**：
+//     工具说 v1 而清单说不是 ⇒ 红；清单说 v1 而工具说 canonical-only ⇒ 红；
+//     清单里出现 still-unknown ⇒ 红（ratchet，不许「先填上以后再说」）。
+//     **一张能和自己量具吵起来的表不会静默腐烂**——它会当场变红。
+//     反面教材就在同一份历史里：§9.226.3 的 `admin/tenants.go` 被工具自信地
+//     判成「退役安全」；若当时有这张表且是单向抄表，两边会一起绿。
+//   - 对 2：这道门**不碰数据库**。它走源码树，空库/一次性库上照样成立。
+//   - 对 3：清单补齐后，通过时只打 3 行汇总，不重印站点清单；
+//     它只在**变化**时红（新增未登记 / 判定与实测矛盾 / 字段为空 / 总体为 0）。
+//
+// ⇒ `go run` 仍然是它的正常用法；只是现在**有人欠了账会被 CI 叫住**。
+// 下面这三行收尾是**给人看**的输出摘要，不是门的判定——门在 `manifest_test.go`。
 //
 // 用法：
 //
@@ -72,11 +88,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	var v1s, other, unresolved []Site
+	var v1s, v1Arms, other, unresolved []Site
 	for _, s := range sites {
 		switch s.Classification() {
 		case ClassReadsV1:
 			v1s = append(v1s, s)
+		case ClassReadsV1Arm:
+			v1Arms = append(v1Arms, s)
 		case ClassUnresolved:
 			unresolved = append(unresolved, s)
 		default:
@@ -85,7 +103,7 @@ func main() {
 	}
 
 	if !*v1Only {
-		fmt.Printf("== 解析到 canonical 视图 / 会话族（退役安全）: %d 处 ==\n", len(other))
+		fmt.Printf("== 解析到 canonical 视图 / 会话族（关系名退役后仍在）: %d 处 ==\n", len(other))
 		for _, s := range other {
 			fmt.Printf("  %s\n", s)
 		}
@@ -97,6 +115,12 @@ func main() {
 		fmt.Printf("  %s\n", s)
 	}
 
+	// §9.258：第四桶。**它才是退役工作量的主体**，而前两桶都不是。
+	fmt.Printf("\n== 解析到含 v1 臂的视图（关系名还在，但行集会变小）: %d 处 ==\n", len(v1Arms))
+	for _, s := range v1Arms {
+		fmt.Printf("  %s\n", s)
+	}
+
 	fmt.Printf("\n== 不可静态解析（需手验）: %d 处 ==\n", len(unresolved))
 	for _, s := range unresolved {
 		fmt.Printf("  %s\n", s)
@@ -104,10 +128,14 @@ func main() {
 
 	fmt.Printf("\n合计 %d 处拼接点 / %d 个文件；其中解析到 v1 的 %d 处分布在 %d 个文件。\n",
 		len(sites), uniqueFiles(sites), len(v1s), uniqueFiles(v1s))
-	fmt.Println("本工具不是门、不进 CI；输出是证据，不是待维护的登记表。")
+	fmt.Printf("★ 退役读方清单 = v1 基表 %d 处 + v1 臂视图 %d 处 = **%d 处 / %d 个文件**\n",
+		len(v1s), len(v1Arms), len(v1s)+len(v1Arms), uniqueFiles(append(append([]Site{}, v1s...), v1Arms...)))
+	fmt.Println("  （§9.257 实测：只提高解析率不会让这个数变大——它需要的是这一类，而不是更好的解析。）")
+	fmt.Println("本工具的输出是证据；判定在 manifest_test.go（§9.227 起它**是**门）。")
+	fmt.Println("若上面出现 reads-v1 / v1-arm 却不在 indirectSiteAssessments 里，那道门会红。")
 
-	if len(v1s) > 0 && !*v1Only {
-		fmt.Fprintln(os.Stderr, "\n注意：存在解析到 v1 宽族的间接读点，请读 §9.45 的处置口径。")
+	if (len(v1s) > 0 || len(v1Arms) > 0) && !*v1Only {
+		fmt.Fprintln(os.Stderr, "\n注意：存在 v1 族的间接读点，请读 §9.45 的处置口径。")
 	}
 }
 

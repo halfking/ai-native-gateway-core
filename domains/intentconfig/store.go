@@ -65,7 +65,7 @@ func (s *PGEvolutionStore) Save(ctx context.Context, evo *IntentEvolution) error
 			user_content, user_content_hash, context_length, has_images, tool_count,
 			classified_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+			$1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 		)
 		ON CONFLICT (session_id, turn_number) DO UPDATE SET
 			intent_candidates = EXCLUDED.intent_candidates,
@@ -87,7 +87,7 @@ func (s *PGEvolutionStore) Save(ctx context.Context, evo *IntentEvolution) error
 
 	err = s.pool.QueryRow(ctx, query,
 		evo.SessionID, evo.TenantID, evo.RequestID, evo.TurnNumber,
-		candidatesJSON, evo.PrimaryIntent, evo.PrimaryConfidence,
+		string(candidatesJSON), evo.PrimaryIntent, evo.PrimaryConfidence,
 		evo.PreviousPrimaryIntent, evo.IntentDriftScore, evo.IsIntentChanged,
 		evo.ClassifierVersion, evo.ClassificationLatencyMs,
 		evo.UserContent, contentHash, evo.ContextLength, evo.HasImages, evo.ToolCount,
@@ -259,7 +259,7 @@ func (s *PGFeedbackStore) Save(ctx context.Context, fb *Feedback) error {
 			user_content_hash, classification_context, evolution_id,
 			created_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19
 		)
 		ON CONFLICT (request_id) DO UPDATE SET
 			actual_intent = EXCLUDED.actual_intent,
@@ -281,7 +281,7 @@ func (s *PGFeedbackStore) Save(ctx context.Context, fb *Feedback) error {
 		fb.ActualIntent, fb.IsCorrect, fb.AnnotatorID, fb.AnnotatedAt, fb.AnnotationNotes,
 		fb.UserAcceptedModel, fb.UserSwitchedToModel, fb.UserRetryCount,
 		fb.SessionDurationSec, fb.UserSatisfactionScore,
-		fb.UserContentHash, contextJSON, fb.EvolutionID,
+		fb.UserContentHash, string(contextJSON), fb.EvolutionID,
 		fb.CreatedAt,
 	).Scan(&fb.ID)
 

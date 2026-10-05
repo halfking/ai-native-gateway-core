@@ -289,10 +289,23 @@ function closeResetModal() {
   resetConfirmPwd.value = ''
 }
 
+// 租户下拉的加载状态。
+//
+// 2026-10-03：原来 `catch { /* ignore */ }`，失败后 allTenants 保持 []，
+// 页面把「租户下拉是空的」和「确实没有租户」渲染成同一个东西。
+// 用户会以为自己在「全部租户」范围内筛，而真实范围是**未知**。
+// 与 UserProfileListView 的「降级时不说『没有用户』」同一判据：
+// 把「不知道」讲成「知道」比不显示更糟。
+const tenantsError = ref('')
+
 async function loadTenants() {
+  tenantsError.value = ''
   try {
     allTenants.value = await getTenantsAdmin()
-  } catch { /* ignore */ }
+  } catch (e: unknown) {
+    allTenants.value = []
+    tenantsError.value = e instanceof Error && e.message ? e.message : t('users.error.tenantsLoadFailed')
+  }
 }
 onMounted(() => { load(); loadTenants() })
 </script>
@@ -327,6 +340,13 @@ onMounted(() => { load(); loadTenants() })
           {{ t.name }} ({{ t.code }})
         </option>
       </select>
+      <!--
+        加载失败时**不写**「没有租户」：筛选范围此时是未知的，
+        而空下拉会让人以为自己正在看「全部租户」。
+      -->
+      <p v-if="tenantsError" class="filter-error" role="status">
+        ⚠️ {{ t('users.error.tenantsLoadFailed') }}（{{ tenantsError }}）
+      </p>
       <select v-model="filterRole">
         <option value="">{{ t('users.filter.allRoles', '全部角色') }}</option>
         <option value="tenant_admin">{{ t('users.role.tenant_admin') }}</option>
@@ -455,6 +475,11 @@ onMounted(() => { load(); loadTenants() })
         </div>
         <div class="form-group">
           <label>{{ t('users.modal.create.tenant') }} *</label>
+          <!-- 必填项：租户列表加载失败时下拉是空的，表单无法提交。
+               不给提示的话，用户只会看到「required」校验失败，去检查自己填的字段。 -->
+          <p v-if="tenantsError" class="filter-error" role="status">
+            ⚠️ {{ t('users.error.tenantsLoadFailed') }}（{{ tenantsError }}）
+          </p>
           <select v-model="form.tenant_id" required>
             <option v-for="t in allTenants" :key="t.code" :value="t.code">
               {{ t.name }} ({{ t.code }}) - {{ t.status }}
@@ -550,6 +575,13 @@ onMounted(() => { load(); loadTenants() })
 .filters select {
   width: auto;
   max-width: 200px;
+}
+
+/* 加载失败提示用 warning 而非 danger：不是故障，是「这个列表的范围未知」。 */
+.filter-error {
+  margin: 0;
+  color: color-mix(in srgb, var(--warning) 80%, var(--text));
+  font-size: 12px;
 }
 .search-input {
   width: 220px;

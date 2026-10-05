@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // withV1WritesDisabled 让 currentV1WritesEnabled 返回 false，跑完后恢复。
@@ -46,17 +48,46 @@ func TestS4GateStopsClaimingReadyAfterStopWrite(t *testing.T) {
 	probeDualReadTables(t, pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	v := NewDualReadValidator(pool)
+
+	// ⚠ 两次 Summarize 必须在**同一个快照**里取（§9.235）。它们分别在切门控
+	// 前后各读一次库；用 pool 读就是两个瞬间，而本机库有活跃写入方
+	// —— 实测这个门在干净基线上**8 次里挂 1 次**，报的是
+	// 「门控改变了观测数字：v1 4773→4776」。断言的意图（门控只影响判定、
+	// 不影响度量）是对的，错在把它实现成了「两个时刻的读数必须逐字相等」。
+	//
+	// ⇒ REPEATABLE READ 把两次读钉在同一个快照上，断言强度一分不打折。
+	// 门控读数是 Go 层的 seam（withV1WritesDisabled），不是库里的设置，
+	// 所以同事务内切换它不会与快照冲突。
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatalf("begin repeatable-read tx: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	v := NewDualReadValidatorOn(tx)
+
+	// ⚠ 窗口起点也必须钉住（§9.235）。`Summarize` 内部用 Go 的 `time.Now()`
+	// 推 24h 窗口起点，两次调用相差几毫秒、边界就差几毫秒，会有一行从窗口
+	// 里掉出去 —— 实测「同事务、不同窗口」仍然约 3 次里挂 1 次。
+	// 快照相同、答案照样是错的，这是本节最反直觉的一处。
+	obsAt := time.Now()
 
 	// 基线：写入中。先确认它此刻**会**给出一个基于真实证据的答案，否则后面的
 	// 「翻转」就没有对照物（若基线本来就是 void，后面无从证明什么）。
-	on, err := v.Summarize(ctx, "", 24)
+	on, err := v.SummarizeFrom(ctx, "", obsAt, 24)
 	if err != nil {
 		t.Fatalf("baseline Summarize: %v", err)
 	}
-	t.Logf("基线(写入中): v1=%d noTurns=%d genuine=%d ready=%v void=%v reason=%q",
-		on.V1Rows, on.V1RowsWithoutTurns, on.GenuineLossRows,
+	t.Logf("基线(写入中): v1=%d noTurns=%d genuine=%d v1覆盖率=%.2f%% ready=%v void=%v reason=%q",
+		on.V1Rows, on.V1RowsWithoutTurns, on.GenuineLossRows, on.V1CoveragePP,
 		on.S4Ready, on.S4GateVoid, on.S4GateVoidReason)
+
+	// 覆盖率必须**真的被测出来**，而不是停在初值 -1（§9.235）。一个从未
+	// 测过的字段会让 rule 3 恒不触发，而 rule 3 恒不触发看起来和「覆盖率
+	// 一直达标」完全一样。
+	if on.V1CoveragePP < 0 {
+		t.Fatalf("v1 覆盖率从未被测量（V1CoveragePP=%v）—— rule 3 因此永远不会触发",
+			on.V1CoveragePP)
+	}
 	if !on.V1WritesEnabled {
 		t.Fatalf("基线就报 v1_writes_enabled=false：本机 settings 已把 S4 键设为 false，" +
 			"下面的对照失去意义（请复位该键或改用别的库）")
@@ -67,7 +98,7 @@ func TestS4GateStopsClaimingReadyAfterStopWrite(t *testing.T) {
 
 	// 关停态：同一个库、同一段 SQL、同一窗口，只把门控读数换成 false。
 	withV1WritesDisabled(t)
-	off, err := v.Summarize(ctx, "", 24)
+	off, err := v.SummarizeFrom(ctx, "", obsAt, 24)
 	if err != nil {
 		t.Fatalf("post-stop Summarize: %v", err)
 	}
@@ -153,5 +184,153 @@ func TestZeroDriftStopsClaimingDriftAfterStopWrite(t *testing.T) {
 	}
 	if off.ZeroDrift {
 		t.Error("不可评估时 zero_drift 不得报 true（那会声称「无漂移」而其实没测）")
+	}
+}
+
+// TestS4CoverageIsCrossValidated measures the same quantity a second, different
+// way and demands the two agree.
+//
+// Why this exists: mutation M6 divided the coverage ratio by the covered-hour
+// count instead of the traffic-bearing count, which makes the ratio a constant
+// 100%. Every other gate stayed green. The control pair could not catch it —
+// it feeds numbers into the verdict function and never computes one — and the
+// real-database assertion only checked that coverage was measured at all.
+//
+// That is a real hole, not a contrived one: anything that makes the reported
+// coverage *too high* is invisible, because the floor only rejects low values.
+// So the number itself needs a witness.
+//
+// The reference is written deliberately differently: it derives hour buckets
+// from the rows (`date_trunc`) instead of enumerating the window with
+// `generate_series` + EXISTS. The two disagree slightly on partial hours at
+// the window edges — measured 20.31% vs 19.69% on this window — hence the
+// tolerance. Agreeing to 2pp is still nowhere near the 100% that M6 produces.
+//
+// The window is historical and pinned via SummarizeFrom, for two reasons at
+// once: it is the one window whose true coverage is nowhere near 100% (every
+// live window measures 100%), and a past window cannot move under a
+// concurrent writer, so the reference and the gate see the same data.
+func TestS4CoverageIsCrossValidated(t *testing.T) {
+	dsn := resolveDualReadDSN()
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set — offline mode")
+	}
+	pool := openDualReadPool(t, dsn)
+	probeDualReadTables(t, pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// The local v1 write outage: v1 writes stop 09-06 22:00 and resume
+	// 09-11 21:00 while session_turns keeps recording.
+	const winStart = "2026-09-06 00:00:00+08"
+	// RFC3339 (with the T) so time.Parse can read it; the +08 offset matches the
+	// database's own timestamps, which are what the hour buckets are cut from.
+	const winEnd = "2026-09-12T00:00:00+08:00"
+	const hours = 144
+
+	// Reference: hour buckets derived from the rows, both storage faces.
+	var refCovered, refBearing int64
+	if err := pool.QueryRow(ctx, `
+		WITH v AS (
+		  SELECT date_trunc('hour', ts) h FROM request_logs_hot WHERE ts >= $1 AND ts < $2
+		  UNION ALL
+		  SELECT date_trunc('hour', ts) FROM request_logs      WHERE ts >= $1 AND ts < $2),
+		s AS (
+		  SELECT date_trunc('hour', ts) h FROM session_turns_hot WHERE ts >= $1 AND ts < $2
+		  UNION ALL
+		  SELECT date_trunc('hour', ts) FROM session_turns      WHERE ts >= $1 AND ts < $2)
+		SELECT (SELECT count(DISTINCT h) FROM v),
+		       (SELECT count(*) FROM (SELECT h FROM v UNION SELECT h FROM s) u)`,
+		winStart, "2026-09-12 00:00:00+08").Scan(&refCovered, &refBearing); err != nil {
+		t.Fatalf("reference coverage: %v", err)
+	}
+	if refBearing == 0 {
+		t.Skip("window has no traffic — nothing to cross-validate against")
+	}
+	want := 100 * float64(refCovered) / float64(refBearing)
+	t.Logf("参考口径（date_trunc 推小时桶）: %d/%d = %.2f%%", refCovered, refBearing, want)
+
+	now, err := time.Parse(time.RFC3339, winEnd)
+	if err != nil {
+		t.Fatalf("parse window end: %v", err)
+	}
+	sum, err := NewDualReadValidator(pool).SummarizeFrom(ctx, "", now, hours)
+	if err != nil {
+		t.Fatalf("SummarizeFrom: %v", err)
+	}
+	t.Logf("门内口径（generate_series 枚举小时）: %.2f%%  reason=%q", sum.V1CoveragePP, sum.S4GateVoidReason)
+
+	if diff := sum.V1CoveragePP - want; diff > 2 || diff < -2 {
+		t.Errorf("覆盖率两条口径不一致: 门内 %.2f%% vs 参考 %.2f%%（差 %.2fpp）。"+
+			"只核对「是否被测量过」是不够的 —— 让覆盖率**偏高**的变异（如 M6 那种"+
+			"除数写错）在任何门里都不会显形", sum.V1CoveragePP, want, diff)
+	}
+	// And the direction that matters: this window must be one rule 3 rejects.
+	// If the gate reported 100% here it would be permitting a cutover on the
+	// strength of a fifth of the window.
+	if sum.S4GateVoidReason != s4GateReasonInsufficientV1Coverage {
+		t.Errorf("跨 5 天写入中断的窗口应判 %q，实得 %q（s4_ready=%v）—— "+
+			"这条路径不成立，上面那个交叉校验也就没有意义了",
+			s4GateReasonInsufficientV1Coverage, sum.S4GateVoidReason, sum.S4Ready)
+	}
+}
+
+// TestS4WindowClampIsApplied pins that SummarizeFrom actually *calls* the clamp.
+//
+// The offline TestS4WindowClamp exercises clampWindowHours directly, which
+// proves the function behaves but says nothing about whether anything calls
+// it. Mutation P7 removed the call and left the function: every offline
+// assertion still passed while the real behaviour regressed — `?hours=0` would
+// produce a zero-length window whose coverage series has one bucket, i.e. 100%
+// coverage for any database that wrote anything.
+//
+// So this test goes through the real path and reads the field the clamp is
+// supposed to have written. Checking behaviour rather than source text is the
+// point: a text assertion here would just move the same blind spot one level up.
+func TestS4WindowClampIsApplied(t *testing.T) {
+	dsn := resolveDualReadDSN()
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set — offline mode")
+	}
+	pool := openDualReadPool(t, dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	v := NewDualReadValidator(pool)
+	now := time.Now()
+
+	// Only the LOWER clamp is verified through the real path, and the asymmetry
+	// is deliberate rather than an omission. The two bounds have different
+	// failure modes:
+	//
+	//	lower: window length 0 ⇒ the coverage series has one bucket ⇒
+	//	       coverage is 100% for any database that wrote anything.
+	//	       The number is WRONG.
+	//	upper: window length 9999 ⇒ the scan is slow and reaches further back
+	//	       than 30 days. The number is right; it is just expensive.
+	//
+	// Verifying the upper bound here cost 89.6s of the suite's runtime to
+	// establish that a window is merely expensive, so it is asserted as a pure
+	// function in TestS4WindowClamp instead. Spending a tenth of the gate's
+	// runtime to re-derive "720 is a number" is the same trade the miss-rate
+	// table in s4MinWindowHours exists to avoid.
+	for _, tc := range []struct {
+		name     string
+		in, want int
+	}{
+		{"0 被夹到 1", 0, 1},
+		{"负数被夹到 1", -5, 1},
+		{"区间内不动", 6, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sum, err := v.SummarizeFrom(ctx, "", now, tc.in)
+			if err != nil {
+				t.Fatalf("SummarizeFrom(%d): %v", tc.in, err)
+			}
+			if sum.WindowHours != tc.want {
+				t.Errorf("WindowHours = %d, want %d（输入 %d 未被夹取）—— "+
+					"未夹取时窗口长度会退化成 0，覆盖率序列只剩一个桶，"+
+					"于是什么都没验证却报 100%% 覆盖", sum.WindowHours, tc.want, tc.in)
+			}
+		})
 	}
 }

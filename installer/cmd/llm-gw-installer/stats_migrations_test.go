@@ -348,17 +348,64 @@ var sequenceChannelRepairs = map[string]string{
 // 只能落进「真漂移」分支报红。820 就是第一个撞上这条的。
 //
 // 为什么这**不是**漂移，也不该做五点同步：
-//   - 820 的效果由 `db.ensureAudioModalityBackfill`（db/db.go:631）应用，
+//   - 820 的效果由 `db.ensureAudioModalityBackfill`（db/db.go:641）应用，
 //     且调用点在**流量前**的 ensure 链里（db/db.go:624），注释自述
 //     「mirrors sql/migrations/startup/820_audio_modality_backfill.sql」。
-//   - 该 ensure 的 SQL 带 `WHERE modality = 'text'` 守卫，**幂等、二跑零行**。
+//   - 该 ensure 的 SQL 带 `WHERE modality = 'text'` / `'vision'` 守卫，
+//     **幂等、二跑零行**。
 //   - 注册进 StartupFiles 只会让每次安装在 ensure 链之前**把同一个回填再跑一遍**，
 //     即为了消一个红而制造一次重复 DML。
+//
+// ⚠ 与 shell 侧是**同一个决定的两个副本**，改一处必须同步另一处：
+// 本表是 Go 侧的登记判据，`scripts/apply-db-revision-sequence_test.sh` 的
+// `ensure_allowlist` 是通道侧的登记判据。2026-10-04 实测：只补其中一侧时，
+// 另一侧那条门（canonical_delivery_path_check）照样报红——它的报错文案
+// 自己就写着「or the reviewed Go-ensure allowlist」。
+// ⇒ 「已豁免」这个状态**必须两边同时成立**，单边绿不算绿。
 //
 // 登记项的判据（加新条目前请照此核）：能在 `db` 包的 ensure 链里找到
 // 逐字镜像该 .sql 的函数，且该函数在流量前被调用。缺任一条就不是本类。
 var goEnsureMirrored = map[string]string{
-	"820_audio_modality_backfill.sql": "mirrored by db.ensureAudioModalityBackfill (db/db.go:631, called at db/db.go:624 before traffic); idempotent (WHERE modality='text'); registering it in StartupFiles would run the same backfill twice",
+	"820_audio_modality_backfill.sql": "mirrored by db.ensureAudioModalityBackfill (db/db.go:641, called at db/db.go:624 before traffic); idempotent (WHERE modality='text'/'vision'); registering it in StartupFiles would run the same backfill twice; the same decision is registered in scripts/apply-db-revision-sequence_test.sh ensure_allowlist — both sides must list it",
+}
+
+// supersededLedgerOnly 覆盖「**机制在部署前被后续正典迁移推翻、文件仅为
+// 校验和台账而留在正典目录**」这一类。
+//
+// 判据（加新条目前请照此核，三条缺一不可）：
+//  1. 推翻它的后续正典迁移已完整登记（embeddata 拷贝 + go:embed/embeddedSQLFiles
+//     + StartupFiles 三点齐全），被测机制确实有活着的落点；
+//  2. 全仓 Go 代码（非测试）没有任何一处读写被推翻迁移建的表——注册它只会
+//     给每个新环境造一张无人写入的孤儿表；
+//  3. 该文件的字节被 verify-migration-checksums 的台账锁定（db-changelog 的
+//     SHA 行与文件逐字节相等，删除或改字都会让那个门红），所以文件必须留在
+//     正典目录里，本门只能豁免、不能要求删除或登记。
+//
+// 819 是第一个成员：856628bac 用会话族 821 的 is_abandoned 标记推翻了 819
+// 独立表方案，251fc9a7a 又把两个文件按删除前字节恢复（verify-migration-checksums
+// rc 1→0）。恢复只服务台账一致性，不服务安装链：tsv 不登记它、全仓无写方。
+var supersededLedgerOnly = map[string]string{
+	"819_request_abandoned.sql": "superseded by 821_session_turns_abandoned_marker (856628bac) before any deploy; files restored byte-for-byte in 251fc9a7a only to keep verify-migration-checksums green; no Go writer remains, so registering it would create an orphan table on every fresh install",
+}
+
+// manualByDesign 覆盖「**迁移的前半段必须人工执行，故整条都不进安装链**」这一类。
+//
+// 判据（加新条目前请照此核，三条缺一不可）：
+//  1. 迁移含**不可无人值守**的 DDL（RENAME 活表 / CREATE PARENT TABLE 换骨架），
+//     自动执行会造成停机或丢数据；
+//  2. Go 侧只镜像了**迁移的后半段**（幂等的 ensure 函数），且该镜像**显式容忍**
+//     前半段尚未执行（探针而非报错）——否则先发二进制会把网关带进 no-DB 模式；
+//  3. 「不注册」这个决定本身**被另一道门钉住**，不是没人想过就漏了。
+//
+// 830 是第一个成员：它把 ursm_node_snapshot_min 从普通表换成按日 RANGE 分区表，
+// 走的是「改名 + 新建空父表」而不是「搬数据」。注册进 StartupFiles ⇒ 无人值守
+// 升级会在安装时 RENAME 一张活表。
+//
+// ⚠ 与 shell 侧是**同一个决定的两个副本**（同 goEnsureMirrored 的告诫）：
+// `scripts/apply-db-revision-sequence_test.sh` 的 `channel_gap_allowlist` 是通道侧
+// 的登记判据，改一处必须同步另一处——单边绿不算绿。
+var manualByDesign = map[string]string{
+	"830_ursm_node_snapshot_min_partitioned.sql": "manual by design: the RENAME + CREATE PARENT TABLE half cannot run unattended (it renames a live 10GB+ table instead of copying rows), so registering it in StartupFiles would RENAME a live table during an unattended upgrade; db.ensureURSMNodeSnapshotMinDailyPartition mirrors only the post-migration half and *probes* (to_regprocedure) instead of erroring so the two steps stay order-independent — bg/partition_825_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence pins the no-registration decision; the same decision is registered in scripts/apply-db-revision-sequence_test.sh channel_gap_allowlist — both sides must list it",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
@@ -415,6 +462,14 @@ func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
 		}
 		if reason, exempt := goEnsureMirrored[name]; exempt {
 			t.Logf("canonical startup migration %q intentionally go-ensure-mirrored: %s", name, reason)
+			continue
+		}
+		if reason, exempt := supersededLedgerOnly[name]; exempt {
+			t.Logf("canonical startup migration %q intentionally superseded-ledger-only: %s", name, reason)
+			continue
+		}
+		if reason, exempt := manualByDesign[name]; exempt {
+			t.Logf("canonical startup migration %q intentionally manual-by-design: %s", name, reason)
 			continue
 		}
 		if _, ok := registered[name]; !ok {

@@ -78,12 +78,12 @@ func TestLiveNodeStatusDisableProjectionFieldContract(t *testing.T) {
 	lastErrAt := time.Date(2026, 8, 15, 11, 58, 0, 0, time.UTC)
 	trueVal := true
 	full := LiveNodeStatus{
-		CredentialID:      7,
-		FPDisabled:        &trueVal,
-		FPDisabledUntil:   &disabledAt,
-		DisableKind:       "system",
-		SystemRecoverAt:   &recoverAt,
-		LastErrorAt:       &lastErrAt,
+		CredentialID:    7,
+		FPDisabled:      &trueVal,
+		FPDisabledUntil: &disabledAt,
+		DisableKind:     "system",
+		SystemRecoverAt: &recoverAt,
+		LastErrorAt:     &lastErrAt,
 	}
 	b, err = json.Marshal(full)
 	if err != nil {
@@ -141,7 +141,7 @@ func TestLiveNodeStatusDisableProjectionThroughEnvelope(t *testing.T) {
 	until := time.Date(2026, 8, 15, 13, 0, 0, 0, time.UTC)
 	trueVal := true
 	env := LiveStreamEnvelope{
-		Type:  "node_update",
+		Type: "node_update",
 		Nodes: []LiveNodeStatus{{
 			CredentialID:    3,
 			FPDisabled:      &trueVal,

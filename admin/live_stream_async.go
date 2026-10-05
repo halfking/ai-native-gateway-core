@@ -3,15 +3,15 @@
 // 背景: Run() 的主事件循环此前同步执行两类慢操作, 会阻塞循环里的所有
 // case (注册/注销、普通 request 广播、心跳、queue/node 推送):
 //
-//   (a) actionTicker case 里同步跑 pollLiveActions → deliverNewActions →
-//       resolveActionTenants + fanOutLifecycleActions → CredentialLabelsFor。
-//       CredentialLabelsFor 冷缓存时要做一次 500ms 超时的 DB 批量查询
-//       (credentialLabelForSQL, WHERE id = ANY($1)); DB 抖动时 250ms 一次
-//       的 tick 会把主循环卡住最长 ~2.5s (actionReadTimeout 2s + 500ms),
-//       期间所有普通 request 广播全部排队。
-//   (b) Publish 先同步 store.Record (200ms 超时的 Redis 读改写 + per-request
-//       SETNX 锁重试) 再 enqueueBroadcast, Redis 慢时把 telemetry 侧的
-//       Publish 调用方也一起拖慢, 本地 SSE 可见性被 Redis 延迟。
+//	(a) actionTicker case 里同步跑 pollLiveActions → deliverNewActions →
+//	    resolveActionTenants + fanOutLifecycleActions → CredentialLabelsFor。
+//	    CredentialLabelsFor 冷缓存时要做一次 500ms 超时的 DB 批量查询
+//	    (credentialLabelForSQL, WHERE id = ANY($1)); DB 抖动时 250ms 一次
+//	    的 tick 会把主循环卡住最长 ~2.5s (actionReadTimeout 2s + 500ms),
+//	    期间所有普通 request 广播全部排队。
+//	(b) Publish 先同步 store.Record (200ms 超时的 Redis 读改写 + per-request
+//	    SETNX 锁重试) 再 enqueueBroadcast, Redis 慢时把 telemetry 侧的
+//	    Publish 调用方也一起拖慢, 本地 SSE 可见性被 Redis 延迟。
 //
 // 本文件的两个 worker 把这两条慢链移出主循环:
 //

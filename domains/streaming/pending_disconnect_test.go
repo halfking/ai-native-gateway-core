@@ -14,9 +14,9 @@ import (
 )
 
 type disconnectingStreamWriter struct {
-	header     http.Header
-	writes     int
-	failAfter  int // Fail after this many successful writes (0 = fail immediately)
+	header    http.Header
+	writes    int
+	failAfter int // Fail after this many successful writes (0 = fail immediately)
 }
 
 func (w *disconnectingStreamWriter) Header() http.Header { return w.header }

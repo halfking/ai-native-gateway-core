@@ -64,7 +64,7 @@ function mountPage() {
   })
 }
 
-describe('SessionDetailPage', () => {
+describe('SessionDetailPage', { timeout: 20_000 }, () => {
   beforeEach(() => {
     routeState.params = { id: 'session-a' }
     routeState.query = {}

@@ -185,6 +185,11 @@ export default {
   },
   error: {
     loadFailed: '加载失败',
+    filterMetaLoadFailed: '筛选条件加载失败',
+    providersLoadFailed: '供应商列表加载失败',
+    tagsLoadFailed: '标签列表加载失败',
+    familiesLoadFailed: '模型家族列表加载失败',
+    discoveryStatusLoadFailed: '发现任务状态加载失败',
     saveFailed: '保存失败',
     resetFailed: '重置失败',
     loadDetailFailed: '加载详情失败',

@@ -249,6 +249,14 @@ func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.Reque
 		markAbandonedTurnIfT0Missing(ctx, mirrorOutbox.Load(), entry.RequestID,
 			req.TenantID, req.SessionID)
 	}
+	// 2026-10-05 审计 §9.203: 同一 goroutine、同样在 w.Write 之后, 给 v1 已
+	// 认领的那一行在 session 族补上同一枚标记。与 T0Missing 分支**并列**而非
+	// 互斥 —— 一次请求可以既没有 t0 又赢得本会话的最终成功, 两个标志都必须
+	// 落到行上。
+	if err == nil && entry.FinalSuccessClaimed {
+		markTurnFinalSuccess(ctx, mirrorOutbox.Load(), entry.RequestID,
+			req.TenantID, req.SessionID)
+	}
 	if err != nil {
 		slog.Warn("sessionv2mirror: V2 shadow write failed",
 			"request_id", entry.RequestID,
@@ -307,9 +315,16 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry, sessionID string)
 		ProviderID:      providerID(entry.ProviderID),
 		Success:         entry.Success,
 		ErrorKind:       strVal(entry.ErrorKind),
-		StatusCode:      statusCode(entry),
-		StartedAt:       eventTime,
-		CompletedAt:     eventTime,
+		// Audit §9.150.4 / §9.155: copy the lifecycle label verbatim. It is
+		// NOT recoverable from Success/ErrorKind — ResolveRequestStatus never
+		// returns `rate_limited`, that value is set explicitly by the
+		// rate-limit paths. Dropping it here is what made
+		// model-catalog scan traffic indistinguishable from real failures on
+		// the session side.
+		RequestStatus: strVal(entry.RequestStatus),
+		StatusCode:    statusCode(entry),
+		StartedAt:     eventTime,
+		CompletedAt:   eventTime,
 	}
 
 	// Usage & cost

@@ -54,9 +54,9 @@ func seedCompletedAuditSession(t *testing.T, store *fakeStore) {
 
 func auditReq(action string) *response.InterceptRequest {
 	return &response.InterceptRequest{
-		TenantID:      "t1",
-		SessionID:     "s1",
-		ResponseBody:  []byte(`{}`),
+		TenantID:       "t1",
+		SessionID:      "s1",
+		ResponseBody:   []byte(`{}`),
 		FollowUpAction: action,
 	}
 }

@@ -186,6 +186,11 @@ export default {
   },
   error: {
     loadFailed: '読み込み失敗',
+    filterMetaLoadFailed: 'フィルタ選択肢の読み込みに失敗しました',
+    providersLoadFailed: 'プロバイダー一覧の読み込みに失敗しました',
+    tagsLoadFailed: 'タグ一覧の読み込みに失敗しました',
+    familiesLoadFailed: 'モデルファミリー一覧の読み込みに失敗しました',
+    discoveryStatusLoadFailed: 'ディスカバリジョブのステータスの読み込みに失敗しました',
     saveFailed: '保存失敗',
     resetFailed: 'リセット失敗',
     loadDetailFailed: '詳細読み込み失敗',

@@ -36,6 +36,7 @@ func (f *fakeSyncer) MCPServers(ctx context.Context) ([]apihub.Asset, error) {
 type okStore struct{}
 
 func (okStore) Upsert(_ context.Context, _ apihub.Asset) error { return nil }
+func (okStore) UpsertBatch(_ context.Context, _ []apihub.Asset) error { return nil }
 func (okStore) Get(_ context.Context, _ string, _ apihub.Kind, _ int64) (apihub.Asset, error) {
 	return apihub.Asset{}, nil
 }

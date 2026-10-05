@@ -72,8 +72,8 @@ func TestDetectEmptyNonStreamResponse(t *testing.T) {
 			wantTrue: false, // Not detected because success=false
 		},
 		{
-			name: "nil_reqLog",
-			reqLog: nil,
+			name:     "nil_reqLog",
+			reqLog:   nil,
 			wantTrue: false,
 		},
 		{
