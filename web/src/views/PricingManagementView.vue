@@ -486,6 +486,7 @@ import { formatDateTime } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { store, isReadOnlyMode, authBearer } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
+import { exportFile } from '../utils/exportFile'
 
 const { t } = useI18n()
 
@@ -1036,14 +1037,17 @@ async function confirmInherit() {
 }
 
 async function exportCsv() {
-  const res = await fetch(`${API}/export`, { headers: authHeaders() })
-  const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'pricing_export.csv'
-  a.click()
-  URL.revokeObjectURL(url)
+  // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）；
+  // 失败必须如实可见（此前 fetch/export 抛错是无声 rejection）。
+  try {
+    const res = await fetch(`${API}/export`, { headers: authHeaders() })
+    if (!res.ok) throw new Error(`export failed: ${res.status}`)
+    const blob = await res.blob()
+    await exportFile({ filename: 'pricing_export.csv', blob })
+  } catch (e: unknown) {
+    saveMsg.value = e instanceof Error ? `${t('common.exportFailed')}: ${e.message}` : t('common.exportFailed')
+    saveOk.value = false
+  }
 }
 
 function onFileChange(e: Event) {

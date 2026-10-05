@@ -43,6 +43,7 @@ const models = ref<ProviderModelUsage[]>([])
 const dailyModels = ref<ProviderDailyModelUsage[]>([])
 const detailLoading = ref(false)
 const exportLoading = ref(false)
+const exportError = ref('')
 
 const isDetailView = computed(() => selected.value != null)
 const periodLabel = computed(() => formatBoardRangeLabel(props.timeRange, t))
@@ -155,8 +156,11 @@ function backToList() {
 
 async function exportAll() {
   exportLoading.value = true
+  exportError.value = ''
   try {
     await downloadProviderUsageExport(props.timeQuery)
+  } catch (e: unknown) {
+    exportError.value = e instanceof Error ? `${t('common.exportFailed')}: ${e.message}` : t('common.exportFailed')
   } finally {
     exportLoading.value = false
   }
@@ -165,8 +169,11 @@ async function exportAll() {
 async function exportDetail() {
   if (!selected.value) return
   exportLoading.value = true
+  exportError.value = ''
   try {
     await downloadProviderDetailExport(selected.value.provider_id, props.timeQuery)
+  } catch (e: unknown) {
+    exportError.value = e instanceof Error ? `${t('common.exportFailed')}: ${e.message}` : t('common.exportFailed')
   } finally {
     exportLoading.value = false
   }
@@ -249,6 +256,8 @@ watch(() => props.timeQuery, () => {
                 </button>
                 <button type="button" class="pue-close" aria-label="关闭" @click="emit('close')">×</button>
               </div>
+              <!-- 19 §3.1 规则 4：导出失败必须如实可见，禁止静默 -->
+              <p v-if="exportError" class="pue-export-error" role="alert">{{ exportError }}</p>
             </header>
 
             <div class="pue-body">
@@ -718,5 +727,11 @@ watch(() => props.timeQuery, () => {
   .pue-pane-leave-active {
     transition: none;
   }
+}
+
+.pue-export-error {
+  margin: 4px 0 0;
+  color: var(--danger-h, #c0392b);
+  font-size: 12px;
 }
 </style>

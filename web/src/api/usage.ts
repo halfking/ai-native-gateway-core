@@ -350,6 +350,7 @@ export interface ProviderDailyModelUsage {
 }
 
 import type { BoardTimeQuery } from '../utils/boardTimeRange'
+import { exportFile } from '../utils/exportFile'
 
 function usageTimeQs(q: BoardTimeQuery & { limit?: number }) {
   const qs = new URLSearchParams()
@@ -406,12 +407,8 @@ export async function downloadProviderUsageExport(time: BoardTimeQuery) {
   const res = await fetch(`${BASE}/api/usage/providers/export?${qs}`, { headers: headers('GET') })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = exportFilename('provider-usage', time)
-  a.click()
-  URL.revokeObjectURL(url)
+  // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
+  await exportFile({ filename: exportFilename('provider-usage', time), blob })
 }
 
 export async function downloadProviderDetailExport(providerId: number, time: BoardTimeQuery) {
@@ -420,12 +417,7 @@ export async function downloadProviderDetailExport(providerId: number, time: Boa
   const res = await fetch(`${BASE}/api/usage/providers/${providerId}/export?${qs}`, { headers: headers('GET') })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = exportFilename(`provider-${providerId}-daily`, time)
-  a.click()
-  URL.revokeObjectURL(url)
+  await exportFile({ filename: exportFilename(`provider-${providerId}-daily`, time), blob })
 }
 // ─── 2026-10-02 看板轮：按模型拆分的用量趋势序列 ───
 // 后端 admin/usage_trend_series.go。trend-series 供看板「用量趋势」卡与全页
