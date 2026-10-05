@@ -1,5 +1,7 @@
 # 17 — 网关移动前端 Hyper 应用（llm-gateway `web-mobile/`）
 
+> 状态标记：**[部分落地]** —— 工程主体与 Go 接线已并入 `origin/main`；**R11 entry-switch 与部署管线接线在 origin 任何分支均不存在**（2026-10-05 审计实测，见 §10 本仓补记与 18 号 §10）。
+
 > **本仓收录说明（2026-10-05）**：本篇自参考仓 `~/workspace/yatao/nbjl3/docs/UI规范/17-网关移动前端Hyper应用.md`
 > 移植（参考仓提交 `f5fac05f` 新增、`9672f86e` 验收基线、`007496e3` 二轮复核），
 > 正文保持参考仓语义，仅头部加本仓定位。
@@ -211,8 +213,14 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 ⚠️ 上表「行点击详情契约」一行是 **2026-10-04 第二轮复核追加的**，**不在上述 11/11 验收基线内**——
 11/11 验的是静态 handler、SPA 接线、刷新/加载/专注恢复，不含行可点性。
 
-> **本仓补记（2026-10-05）**：`web-mobile/` 已随并行分支**并入 `origin/main`**（本专题主形态
-> 分支 `feat/hyper-mobile-ui-2026-10-04` 未检出该目录）。两架构并存期的互操作边界：
+> **本仓补记（2026-10-05，同日审计修正）**：`web-mobile/` **主体工程与 Go 接线
+> （`cmd/gateway/mobile_static.go`）已并入 `origin/main`**（本专题主形态分支
+> `feat/hyper-mobile-ui-2026-10-04` 未检出该目录）。⚠️ **本表 §10 有两行「已交付」
+> 在 origin 不可核验**：R11 entry-switch.js 与 deploy 管线接线（`dl_stage_release` /
+> `MOBILE_WEB_DIST`）在 origin 全部分支零命中，且所指的 `feat/web-mobile-hyper`
+> 分支不在 origin——这部分工作只存在于构建会话的本地工作区/部署机克隆。
+> 显示修复延续在 `feat/hyper-display-fixes`（未并入 main）。详见 18 号 §10.2。
+> 两架构并存期的互操作边界：
 > ①`/m` 与 `/` 共用同一后端与鉴权，互不写对方 localStorage 键
 > （`llmgw_ui_mode` 是唯一共享键，按 R11 属有意共享）；②`web/` 的 compact 档
 > 与 `web-mobile/` 是**两条独立交付物**，规范条目按各自载体核对实现状态，
