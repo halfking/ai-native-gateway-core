@@ -186,14 +186,21 @@ func TestSynthesizeBridgeWAVContentTypeSniff(t *testing.T) {
 	}
 }
 
-// TestNormalizeTTSVoiceCanonicalCase P3-4：命中音色集合时返回规范小写键。
+// TestNormalizeTTSVoiceCanonicalCase P3-4（2026-10-05 修正断言方向）：
+// 匹配保持大小写不敏感，但回传必须保留客户端原值——小米上游音色
+// 大小写敏感（Mia/Chloe/Milo/Dean 首字母大写），早先「归一到小写键」
+// 的断言把 Mia 写成 mia，上游 400 "Unknown voice: mia"，英文音色全族
+// 不可用（真实音频回环验证抓到）。中文音色无大小写问题不受影响。
 func TestNormalizeTTSVoiceCanonicalCase(t *testing.T) {
 	cand := provider.Candidate{CatalogCode: "xiaomi"}
-	if got := normalizeTTSVoiceForCandidate(cand, "Mia"); got != "mia" {
-		t.Fatalf("Mia must normalize to canonical key %q, got %q", "mia", got)
+	if got := normalizeTTSVoiceForCandidate(cand, "Mia"); got != "Mia" {
+		t.Fatalf("Mia must relay canonical %q, got %q", "Mia", got)
+	}
+	if got := normalizeTTSVoiceForCandidate(cand, "mia"); got != "Mia" {
+		t.Fatalf("lowercase client input must relay canonical %q, got %q", "Mia", got)
 	}
 	if got := normalizeTTSVoiceForCandidate(cand, "MIMO_DEFAULT"); got != "mimo_default" {
-		t.Fatalf("MIMO_DEFAULT must normalize to %q, got %q", "mimo_default", got)
+		t.Fatalf("must relay canonical %q, got %q", "mimo_default", got)
 	}
 	if got := normalizeTTSVoiceForCandidate(cand, "冰糖"); got != "冰糖" {
 		t.Fatalf("chinese voice must pass through, got %q", got)
