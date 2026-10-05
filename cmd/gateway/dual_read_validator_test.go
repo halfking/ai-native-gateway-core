@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestDualReadValidator_Constructor(t *testing.T) {
@@ -142,5 +144,32 @@ func TestMirrorDriftClassSQLHandlesNullWorkType(t *testing.T) {
 	// 显式禁止把排除条件写成可被 NULL 吞掉的形式。
 	if strings.Contains(mirrorDriftClassSQL, "NOT (") {
 		t.Fatal("class SQL must not use NOT (... IN ...) — NULL work_type would be silently dropped")
+	}
+}
+
+// TestDualReadValidator_NilStaysNil pins the typed-nil guard.
+//
+// `db` is an interface, so assigning a nil *pgxpool.Pool to it yields a
+// **non-nil interface holding a nil pointer** — `v.db == nil` is then false and
+// Summarize's "not configured" guard stops working, handing a nil pool to a
+// method call. Widening the field to an interface introduced exactly that
+// panic, and only the pre-existing nil-pool test caught it.
+//
+// Both constructors are covered because NewDualReadValidatorOn takes the
+// interface directly and can be handed a typed nil just as easily.
+func TestDualReadValidator_NilStaysNil(t *testing.T) {
+	fromPool := NewDualReadValidator(nil)
+	if fromPool.db != nil {
+		t.Errorf("NewDualReadValidator(nil) 装出了非 nil 的接口（%T），Summarize 的 "+
+			"未配置守卫会失效", fromPool.db)
+	}
+	var typedNil *pgxpool.Pool
+	fromIface := NewDualReadValidatorOn(typedNil)
+	if fromIface.db != nil {
+		t.Errorf("NewDualReadValidatorOn(typed nil) 同上（%T）", fromIface.db)
+	}
+	// And the observable consequence: Summarize must return the error, not panic.
+	if _, err := fromPool.Summarize(context.Background(), "", 24); err == nil {
+		t.Error("nil validator 的 Summarize 必须返回错误而不是崩溃")
 	}
 }
