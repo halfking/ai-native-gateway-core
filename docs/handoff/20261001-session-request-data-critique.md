@@ -12519,3 +12519,25 @@ N1「门槛 90→89.99」、N2「初值 -1→-1.0001」被我标成阴性对照�
   理由：少读 v1 侧 ⇒ **假 void** ⇒ 人最容易的「修复」是调低 `s4MinV1CoveragePP`，
   那会**毁掉这条规则**；少读 session 侧 ⇒ 分母变小 ⇒ **假 Ready**。
   变异（把 `request_logs_hot` 那一腿换成父表）转红，读数逐字如预期。
+
+#### §70.76 本地 v1↔v2 一致性实测：s4_ready 的**唯一杠杆**是探针标记那个待拍板问题
+
+- **本地四窗口**（出货夹具 `TestS4GateMeasurement`，单快照 / 出货 scope / 出货分类器）：
+  1h `genuine_loss=0`（s4_ready=true）· 24h `=3` · 7d `=10` · 30d `=10`。
+  **7d 与 30d 同为 10** ⇒ 这 10 行全在最近 7 天，没有历史欠账。
+- **10 行 blocker 全部 `is_auto_request = (null)`**，其中 **9 行是 `probe-service` 探针**
+  （`no_candidate`×7、`no_candidates`、`routing_schema_error`），1 行 `session_unavailable`。
+  而 `internal_loopback` 臂要求 `is_auto_request IS TRUE`，注释写明「a NULL is NOT internal」
+  ⇒ **探针没被排除掉，被计成了 genuine_loss**。
+- **反事实**（只把 NULL 当 true，其余逐字不动）：`genuine_loss` 10 → **0**，
+  `non_terminal` 207 → 0，total 1183 不变。
+  ⇒ **本地 `s4_ready` 会从 false 翻成 true**，而 207 恰等于
+  probe-service 118 + 无 actor 68 + node-probe-worker 15 + credential-selfcheck-worker 6 ⇒ 口径自洽。
+- ⚠ **这不等于建议改标记**。属主待拍板第 5 条（探针流量要不要保留可审计记录）
+  的答案在本地**单独决定 S4 能否开**；但「翻标记让门变绿」是把总体重新分类以便仪器闭嘴，
+  本审计不做这件事，只有把数据改对才能作为验收依据。
+- **顺带修的可复跑性**：那张表原先**拿不到** —— 夹具的 blocker shape 不输出 `is_auto_request`。
+  已加进出货测量（shape 查询增选该列 + 反事实分类 + 两条**只报告不断言**的 `t.Logf`）。
+  **一个只能靠手写 SQL 拿到的数字，不该用来支撑一个退役决定。**
+- **硬阻塞不变且优先级更高**：`is_final_success` / `client_protocol` 在 session 侧
+  仍全空（1,692,578 条 `session_turns`），只能从 v1 一次性回填；**现在 DROP v1 ⇒ 永久不可填**。
