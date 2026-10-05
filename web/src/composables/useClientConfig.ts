@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import { localeRef } from '../i18n'
 import { formatDateTime } from '../utils/datetime'
+import { exportFile } from '../utils/exportFile'
 
 export type ToolId = 'zcode' | 'opencode' | 'cursor' | 'cherry_studio' | 'roocode'
 export type OS = 'macos' | 'windows' | 'linux'
@@ -395,14 +396,10 @@ export function detectOS(): OS {
   return 'linux'
 }
 
+// 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
 export function downloadFile(content: string, filename: string, mimeType: string = 'text/plain') {
   const blob = new Blob([content], { type: mimeType })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
+  return exportFile({ filename, blob })
 }
 
 export async function auditAction(params: {
