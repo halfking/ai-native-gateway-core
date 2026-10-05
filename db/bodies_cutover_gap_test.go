@@ -54,6 +54,12 @@ func newBodiesCutoverPool(t *testing.T) *pgxpool.Pool {
 //
 // # 为什么这道门是**故意红**的，以及它红在哪个数上
 //
+// ⚠ 下面这组数字来自 §9.228 的**第一个总体**（request_logs 口径），
+// 已被 §9.229/D33 **撤回**（acc0511b0 的提交信息与 6d5b9196f 的就地更正）：
+// 总体应按被影响 SQL 的 FROM 选（session_turns 族）。数字留在这里只作
+// 历史测量记录，不再作为本门论据；现行判据用 bodiesGap.SessionTurns
+// 作总体（见下方 struct 注释）。
+//
 // 实测（本地库，2026-10-05，808,556 个带会话头的 v1 turn）：
 //
 //	in session_bodies            770,209  (95.26%)
@@ -287,7 +293,8 @@ func TestBodiesCutoverGapBlocksCutover(t *testing.T) {
 			"  2. 本门转绿（would_be_lost = 0）后再谈改 bodies 腿\n"+
 			"  3. 列名不同：v1 是 request_body/response_body，会话侧是\n"+
 			"     request_delta/response_delta ⇒ 需要显式列映射；"+
-			"db 包至今**没有** bodies 源的 SQL helper\n"+
+			"db 包的 bodies 源 SQL helper 已存在（SessionBodiesSourceSQL，e974a0d79；"+
+			"消费点必须自带 rb 别名，见 db/session_bodies_source_alias_gate_test.go）\n"+
 			"  4. 全程需灰度开关：失效形态是 COALESCE(…,'{}') ⇒ 导出照常成功、正文为空",
 			why, g.SessionTurns, g.WouldBeLost, bodiesPct(g.WouldBeLost, g.SessionTurns),
 			strings.Join(days, " "),

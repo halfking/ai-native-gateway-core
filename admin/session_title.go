@@ -189,7 +189,7 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
-		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` /* request_logs_bodies_with_current_month rb */
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` rb /* request_logs_bodies_with_current_month rb */
 		  ON rb.request_id = rl.request_id
 		`+where+`
 		ORDER BY rl.ts ASC
