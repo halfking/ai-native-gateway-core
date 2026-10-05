@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
 
@@ -34,7 +35,16 @@ import (
 // touches one but not the other is exactly the failure this gate exists to
 // catch; TestForensicsExportSQLVariantsStayInSync enforces they stay identical.
 // Do not inline either one back.
-const forensicsExportMessagesSQL = `
+// ⚠ **2026-10-05：这里由 `const` 改成 `var`**（§9.233）。
+// bodies 腿改走 `dbpkg.SessionBodiesSourceSQL()` 之后，这个 SQL 不再是编译期
+// 常量 —— **函数调用不能出现在 const 声明里**（编译器报 “is not constant”）。
+// 值本身没变（开关默认关时它返回的字符串与原字面量逐字相同），但**它从此
+// 每次求值都是运行时的**。
+//
+// ★ 「两份字面量 + 一道门强制同步」这个设计**刻意保留**（文件头写着
+// “Do not inline either one back”，TestForensicsExportSQLVariantsStayInSync
+// 在守）：两份的 bodies 腿现在都调用同一个函数 ⇒ 仍然不可能分叉。
+var forensicsExportMessagesSQL = `
 		SELECT
 			rl.id::text,
 			(CASE
@@ -49,12 +59,12 @@ const forensicsExportMessagesSQL = `
 			COALESCE(rb.response_body, '{}'::jsonb) AS response_body,
 			rl.client_model, rl.outbound_model
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.ts ASC, rl.id ASC
 	`
 
-const forensicsExportMessagesSQLAlt = `
+var forensicsExportMessagesSQLAlt = `
 		SELECT
 			rl.id::text,
 			(CASE
@@ -69,7 +79,7 @@ const forensicsExportMessagesSQLAlt = `
 			COALESCE(rb.response_body, '{}'::jsonb) AS response_body,
 			rl.client_model, rl.outbound_model
  		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.ts ASC, rl.id ASC
 	`

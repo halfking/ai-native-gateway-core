@@ -173,11 +173,11 @@ func (dao *OptimizationStateDAO) Create(ctx context.Context, state *Optimization
 			recommender_weights, exploration_rate, learning_rate, adaptation_window,
 			overall_accuracy, accuracy_by_task, accuracy_by_provider,
 			activated_at, created_by, notes
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12, $13)
 		RETURNING id
-	`, state.Version, classifierWeightsJSON, confidenceThresholdsJSON,
-		recommenderWeightsJSON, state.ExplorationRate, state.LearningRate, state.AdaptationWindow,
-		state.OverallAccuracy, accuracyByTaskJSON, accuracyByProviderJSON,
+	`, state.Version, string(classifierWeightsJSON), string(confidenceThresholdsJSON),
+		string(recommenderWeightsJSON), state.ExplorationRate, state.LearningRate, state.AdaptationWindow,
+		state.OverallAccuracy, string(accuracyByTaskJSON), string(accuracyByProviderJSON),
 		state.ActivatedAt, state.CreatedBy, state.Notes,
 	).Scan(&id)
 	if err != nil {
@@ -206,11 +206,11 @@ func (dao *OptimizationStateDAO) UpdateMetrics(ctx context.Context, overallAccur
 	_, err = dao.pool.Exec(ctx, `
 		UPDATE routing_optimization_state
 		SET overall_accuracy = $1,
-		    accuracy_by_task = $2,
-		    accuracy_by_provider = $3,
+		    accuracy_by_task = $2::jsonb,
+		    accuracy_by_provider = $3::jsonb,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE deactivated_at IS NULL
-	`, overallAccuracy, accuracyByTaskJSON, accuracyByProviderJSON)
+	`, overallAccuracy, string(accuracyByTaskJSON), string(accuracyByProviderJSON))
 
 	return err
 }
@@ -613,7 +613,7 @@ func (dao *UserAffinityDAO) Upsert(ctx context.Context, affinity *UserAffinity) 
 		INSERT INTO routing_user_affinity (
 			user_id, task_type_distribution, preferred_providers,
 			total_requests, last_request_at, session_pattern
-		) VALUES ($1, $2, $3, $4, $5, $6)
+		) VALUES ($1, $2::jsonb, $3::jsonb, $4, $5, $6)
 		ON CONFLICT (user_id) DO UPDATE SET
 			task_type_distribution = EXCLUDED.task_type_distribution,
 			preferred_providers = EXCLUDED.preferred_providers,
@@ -621,7 +621,7 @@ func (dao *UserAffinityDAO) Upsert(ctx context.Context, affinity *UserAffinity) 
 			last_request_at = EXCLUDED.last_request_at,
 			session_pattern = EXCLUDED.session_pattern,
 			updated_at = CURRENT_TIMESTAMP
-	`, affinity.UserID, taskTypeDistributionJSON, preferredProvidersJSON,
+	`, affinity.UserID, string(taskTypeDistributionJSON), string(preferredProvidersJSON),
 		affinity.TotalRequests, affinity.LastRequestAt, affinity.SessionPattern,
 	)
 

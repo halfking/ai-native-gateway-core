@@ -68,11 +68,11 @@ func TestABGateSnapshot(t *testing.T) {
 
 func TestMLStatsRecord(t *testing.T) {
 	var s MLStats
-	s.Record(true, false, false, true, time.Millisecond)    // served+boost
-	s.Record(true, false, false, false, time.Millisecond)   // served
-	s.Record(true, true, false, false, time.Millisecond)    // low confidence
-	s.Record(true, false, true, false, time.Millisecond)    // no match
-	s.Record(false, false, false, false, time.Millisecond)  // failure
+	s.Record(true, false, false, true, time.Millisecond)   // served+boost
+	s.Record(true, false, false, false, time.Millisecond)  // served
+	s.Record(true, true, false, false, time.Millisecond)   // low confidence
+	s.Record(true, false, true, false, time.Millisecond)   // no match
+	s.Record(false, false, false, false, time.Millisecond) // failure
 	snap := s.Snapshot()
 	if snap["predictions_served"].(int64) != 2 {
 		t.Errorf("predictions_served = %v", snap["predictions_served"])
@@ -188,8 +188,8 @@ func TestMLHotReload(t *testing.T) {
 	tmpManifest := filepath.Join(tmp, "manifest.json")
 	tmpModel := filepath.Join(tmp, "model.onnx")
 	for src, dst := range map[string]string{
-		fixture:                                        tmpManifest,
-		filepath.Join(mlFixtureDir, "model.onnx"):      tmpModel,
+		fixture: tmpManifest,
+		filepath.Join(mlFixtureDir, "model.onnx"): tmpModel,
 	} {
 		data, err := os.ReadFile(src)
 		if err != nil {

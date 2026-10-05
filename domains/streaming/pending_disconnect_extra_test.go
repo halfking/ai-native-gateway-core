@@ -204,16 +204,16 @@ func TestStreamAnthropicSSEToOpenAI_EarlyDisconnect(t *testing.T) {
 	assert.Equal(t, "client_disconnected", outcome.Reason,
 		"with pending capturer, early disconnect still results in client_disconnected because upstream completes")
 	assert.Equal(t, errorsx.KindCanceled, outcome.Kind)
-	
+
 	// The capturer receives the full stream because pending capturer allows
 	// the upstream to complete even after client disconnect.
 	bodyCaptured, state, ok := pc.Snapshot()
 	require.True(t, ok)
-	
+
 	// The upstream completed, so state.Status should be "completed".
 	assert.Equal(t, "completed", state.Status,
 		"pending capturer allows upstream to complete despite early client disconnect")
-	
+
 	// The captured body should contain [DONE] because the stream completed.
 	got := string(bodyCaptured)
 	assert.Contains(t, got, `data: [DONE]`,

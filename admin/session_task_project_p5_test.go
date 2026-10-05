@@ -12,10 +12,11 @@ import (
 )
 
 // TestTaskSummaryAggregatesModelsTagsAndWallClockDuration (R33 P-5，真库)：
-// 1. models_used / all_user_tags 必须是任务范围内 text[] 列的 DISTINCT 聚合
-//    （此前 SELECT 根本不查这两列，恒 null）；
-// 2. 任务级 duration_seconds 必须是 wall-clock 跨度（首会话 first_request_at
-//    → 末会话 last_request_at；此前为 MAX(单会话时长)，语义错位）。
+//  1. models_used / all_user_tags 必须是任务范围内 text[] 列的 DISTINCT 聚合
+//     （此前 SELECT 根本不查这两列，恒 null）；
+//  2. 任务级 duration_seconds 必须是 wall-clock 跨度（首会话 first_request_at
+//     → 末会话 last_request_at；此前为 MAX(单会话时长)，语义错位）。
+//
 // 门控：TEST_DATABASE_URL；-short 跳过。种子行带 r33-p5- 前缀并自清理。
 func TestTaskSummaryAggregatesModelsTagsAndWallClockDuration(t *testing.T) {
 	if testing.Short() {

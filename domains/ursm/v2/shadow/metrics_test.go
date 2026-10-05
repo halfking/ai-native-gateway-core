@@ -85,9 +85,9 @@ func TestShadowEnqueueTotal_ResultLabels(t *testing.T) {
 		t.Fatalf("gather metrics: %v", err)
 	}
 	want := map[string]bool{
-		"enqueued":      false,
-		"sampled_out":   false,
-		"queue_full":    false,
+		"enqueued":       false,
+		"sampled_out":    false,
+		"queue_full":     false,
 		"worker_stopped": false,
 	}
 	for _, family := range families {

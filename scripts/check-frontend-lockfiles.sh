@@ -26,6 +26,12 @@
 #
 # 同时实跑安装命令（--dry-run / --lockfile-only，不动 node_modules），
 # 确保不是"区间看起来一致但命令跑不通"。
+#
+# 2026-10-05（R43 移交项 4 收口）：pnpm 缺失默认仍是 skip —— npm-only 的开发机
+# 与 CI 的 verify-npm 作业刻意不装 pnpm，硬 fail 会误伤。但官方 pnpm 作业里
+# skip 等于把门的整半边静默放行（pnpm/action-setup 一旦失效，pnpm 那半边永远
+# 不再被验证而门照样绿）。因此提供 LOCKFILES_REQUIRE_PNPM=1：置位时 pnpm 不在
+# PATH 直接 FAIL。verify-ci.yml 的官方 pnpm 作业已置位。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -166,7 +172,14 @@ NODE
         note "ok  $dir_check pnpm install --frozen-lockfile"
       fi
     else
-      note "skip: pnpm 不在 PATH 上，$dir_check 只验证 npm 路径（若有）"
+      # R43 移交项 4：谁在跑这半边门，谁就必须声明 pnpm 可缺席。官方 pnpm
+      # 作业置 LOCKFILES_REQUIRE_PNPM=1 —— 那里 pnpm 缺失是环境坏了，必须红，
+      # 不能让「pnpm 半边没验」伪装成绿。
+      if [ "${LOCKFILES_REQUIRE_PNPM:-0}" = "1" ]; then
+        bad "pnpm 不在 PATH 上 —— LOCKFILES_REQUIRE_PNPM=1（官方 pnpm 作业）要求 pnpm 必须存在，skip 会把 pnpm 半边门静默放行"
+      else
+        note "skip: pnpm 不在 PATH 上，$dir_check 只验证 npm 路径（若有）"
+      fi
     fi
     return 0
 }

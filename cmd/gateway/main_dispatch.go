@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
-	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 

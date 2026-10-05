@@ -79,12 +79,12 @@ func TestSet_ThreeTierCheckSeesMergedTiers(t *testing.T) {
 
 	cache := NewSessionCache(&recordingBackend{}, nil)
 	state := &SessionState{
-		RawTokenEstimate:  1000,
-		RawMsgCount:       10,
-		CompressedTokens:  400,
-		CompressedMsgs:    4,
-		AlignmentMap:      []AlignmentInfo{{OriginalIndex: 1, CompressedIndex: 0, Hash: "h1"}},
-		SanitizeMapRef:    "session:san:ref",
+		RawTokenEstimate:    1000,
+		RawMsgCount:         10,
+		CompressedTokens:    400,
+		CompressedMsgs:      4,
+		AlignmentMap:        []AlignmentInfo{{OriginalIndex: 1, CompressedIndex: 0, Hash: "h1"}},
+		SanitizeMapRef:      "session:san:ref",
 		SanitizeMessageRefs: []SanitizedMessageRef{{RawIndex: 2, SanitizedIndex: 2}},
 	}
 	passBefore := ThreeTierCheckCount(ThreeTierResultPass)

@@ -30,12 +30,13 @@
 //     product.
 //
 // Configuration knobs (env vars):
-//   LLM_GATEWAY_CREDENTIAL_WEIGHT_NUDGE=on|off         — kill switch
-//   LLM_GATEWAY_CREDENTIAL_NUDGE_429=0.85              — rate-limit nudge
-//   LLM_GATEWAY_CREDENTIAL_NUDGE_EMPTY=0.7             — empty-response nudge
-//   LLM_GATEWAY_CREDENTIAL_NUDGE_TIMEOUT=0.6          — timeout nudge
-//   LLM_GATEWAY_CREDENTIAL_NUDGE_AUTH=0.9              — 401/403 nudge
-//   LLM_GATEWAY_CREDENTIAL_NUDGE_WINDOW=10m            — recent-observation window
+//
+//	LLM_GATEWAY_CREDENTIAL_WEIGHT_NUDGE=on|off         — kill switch
+//	LLM_GATEWAY_CREDENTIAL_NUDGE_429=0.85              — rate-limit nudge
+//	LLM_GATEWAY_CREDENTIAL_NUDGE_EMPTY=0.7             — empty-response nudge
+//	LLM_GATEWAY_CREDENTIAL_NUDGE_TIMEOUT=0.6          — timeout nudge
+//	LLM_GATEWAY_CREDENTIAL_NUDGE_AUTH=0.9              — 401/403 nudge
+//	LLM_GATEWAY_CREDENTIAL_NUDGE_WINDOW=10m            — recent-observation window
 package credential
 
 import (
@@ -52,13 +53,13 @@ import (
 type KindWindow struct {
 	// RateLimit is incremented for KindRateLimit, KindQuota*, and explicit
 	// 429s from upstream.
-RateLimit int
+	RateLimit int
 	// Empty is incremented for KindEmptyResponse and short zero-byte streams.
-Empty int
+	Empty int
 	// Timeout is incremented for KindTimeout, KindStreamTimeout, KindNetwork.
-Timeout int
+	Timeout int
 	// Auth is incremented for KindAuth, KindAuthRevoked.
-Auth int
+	Auth int
 }
 
 // Any returns true when at least one observation landed in the window.

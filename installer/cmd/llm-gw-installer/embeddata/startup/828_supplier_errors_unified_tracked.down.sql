@@ -4,12 +4,13 @@
 -- Database:      llm_gateway
 -- Purpose:        恢复 V371 形态的 supplier_errors_unified（21 列，含 source）。
 --
--- ⚠ **回滚它等于把故障装回去。** 恢复 `source` 列之后，
---   `SELECT source FROM supplier_errors_unified` 在本机会重新抛
---   `cache lookup failed for attribute source of relation <oid>`
---   （只要 supplier_errors 的月分区还是 Citus columnar —— 那是 813 之外的现状）。
---   保留这个 down 是为了在**列存形态尚未回滚**（决策表 D30-a 尚未执行）时有一条退路，
---   **不是**因为「恢复旧形态是好事」。
+-- ⚠ **回滚它等于把 828 刻意删掉的旧形态装回去。** 历史注（2026-10-05 修正）：
+--   本段曾警告恢复 `source` 列后 `SELECT source FROM supplier_errors_unified`
+--   会重新抛 `cache lookup failed for attribute source of relation <oid>` ——
+--   那个前提依赖 supplier_errors 月分区仍是 Citus columnar，而 813 已把全族
+--   转 heap，该投影失败模式不复存在。现在回滚的真实代价是契约回归：
+--   恢复 21 列 V371 形态会让视图与 828 的 20 列 tracked 契约分叉。
+--   保留这个 down 只是留一条经评估的退路，**不是**因为「恢复旧形态是好事」。
 --
 -- 幂等：DROP VIEW IF EXISTS + CREATE，可安全重放。
 -- 不加 CASCADE：若存在依赖视图，让它失败并回滚，而不是悄悄级联。

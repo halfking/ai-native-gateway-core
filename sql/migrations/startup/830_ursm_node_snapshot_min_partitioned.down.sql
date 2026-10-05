@@ -105,6 +105,25 @@ BEGIN
     END IF;
 END $$;
 
+-- 2c) ledger 只在**真的回滚了**时才删（817 同款守卫，2026-10-05 补）。
+--    '830' 的台账行由 db.ensureURSMNodeSnapshotMinDailyPartition 在 ensure
+--    成功后写入（up 是手工迁移，本身不写台账）。本 down 改名父表之后，这行
+--    applied 记录若无人清理，账本就继续声称「830 已应用」，而表其实是回滚后
+--    的普通表——下次重装 830 或评估回滚风险时被误导。也不能无条件 DELETE：
+--    回滚未收敛时删台账等于声称「830 没跑过」。这里按 817 的模式守一层：
+--    父表仍是分区表（relkind='p'）＝回滚没有收敛 ⇒ 保留 ledger 行并 NOTICE。
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_class
+                WHERE oid = 'public.ursm_node_snapshot_min'::regclass
+                  AND relkind = 'p') THEN
+        RAISE NOTICE '830 down: parent still partitioned; keeping the ledger row (rollback did not converge)';
+        RETURN;
+    END IF;
+    DELETE FROM public.schema_migrations WHERE version = '830';
+    RAISE NOTICE '830 down: ledger row for 830 removed';
+END $$;
+
 COMMIT;
 
 -- 3) ensure 函数可以留着（幂等、无人调用时无害），但分区表 _post825 还在占空间。

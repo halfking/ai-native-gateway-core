@@ -21,14 +21,17 @@ import (
 // Scan without a preceding Next (or a second Scan after one Next) returns an
 // error instead of panicking on f.rows[-1] or silently re-reading the row.
 type fakeRows struct {
-	rows    []struct{ id int; cnt int64 }
+	rows []struct {
+		id  int
+		cnt int64
+	}
 	pos     int
 	scanned bool
 }
 
 func (f *fakeRows) Close()                                       {}
-func (f *fakeRows) Err() error                                    { return nil }
-func (f *fakeRows) CommandTag() pgconn.CommandTag                 { return pgconn.CommandTag{} }
+func (f *fakeRows) Err() error                                   { return nil }
+func (f *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
 func (f *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
 func (f *fakeRows) Next() bool {
 	if f.pos >= len(f.rows) {
@@ -50,17 +53,17 @@ func (f *fakeRows) Scan(dest ...any) error {
 	f.scanned = false
 	return nil
 }
-func (f *fakeRows) Values() ([]any, error)                       { return nil, nil }
-func (f *fakeRows) RawValues() [][]byte                          { return nil }
-func (f *fakeRows) Conn() *pgx.Conn                               { return nil }
+func (f *fakeRows) Values() ([]any, error) { return nil, nil }
+func (f *fakeRows) RawValues() [][]byte    { return nil }
+func (f *fakeRows) Conn() *pgx.Conn        { return nil }
 
 // fakeAutoRevokeDB captures the SQL and args AutoRevoker passes to it and
 // records how many rows were affected on Exec calls. Tests assert on the
 // SQL pattern and arg values without booting PostgreSQL.
 type fakeAutoRevokeDB struct {
-	queries    []fakeQuery
-	execs      []fakeExec
-	queryIdx   int
+	queries  []fakeQuery
+	execs    []fakeExec
+	queryIdx int
 }
 
 type fakeQuery struct {
@@ -112,12 +115,21 @@ func (f *fakeAutoRevokeDB) Query(_ context.Context, sql string, args ...any) (pg
 // fakeRowsPayload decodes a fake query's rows. Tests register rows via
 // q.args[0] as []int (the credential IDs); the cycle count is faked as the
 // 1-based index so the test can assert ordering without caring.
-func fakeRowsPayload(q fakeQuery) []struct{ id int; cnt int64 } {
+func fakeRowsPayload(q fakeQuery) []struct {
+	id  int
+	cnt int64
+} {
 	if len(q.args) >= 1 {
 		if ids, ok := q.args[0].([]int); ok {
-			out := []struct{ id int; cnt int64 }{}
+			out := []struct {
+				id  int
+				cnt int64
+			}{}
 			for i, id := range ids {
-				out = append(out, struct{ id int; cnt int64 }{id, int64(i + 1)})
+				out = append(out, struct {
+					id  int
+					cnt int64
+				}{id, int64(i + 1)})
 			}
 			return out
 		}

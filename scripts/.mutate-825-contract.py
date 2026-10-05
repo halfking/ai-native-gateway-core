@@ -22,7 +22,7 @@ GATE_PKG = "./bg/"
 
 MUTATIONS = [
     ("M26", PM,
-     '\t\t{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day"}, // Migration 825\n',
+     '\t\t{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day"}, // Migration 830\n',
      '',
      "Test825EnsureFunctionIsWiredIntoEnsureSpecs",
      "★ 反 473 本体：迁移建了分区却忘了接 24h tick ⇒ 跨日 0 点全量写入失败"),
@@ -49,13 +49,13 @@ MUTATIONS = [
      "to_regprocedure('public.ensure_ursm_node_snapshot_min_daily_partition(date)') IS NOT NULL",
      "true",
      "Test825BootEnsureIsWired",
-     "去掉 to_regprocedure 探针 ⇒ 825 未跑时每次 boot 都从 db.Open 报错进 no-DB"),
+     "去掉 to_regprocedure 探针 ⇒ 830 未跑时每次 boot 都从 db.Open 报错进 no-DB"),
 
     ("M31", RUNNER,
      '\t\t\t"750_usage_facts_daily_partition.sql",',
      '\t\t\t"750_usage_facts_daily_partition.sql",\n\t\t\t"830_ursm_node_snapshot_min_partitioned.sql",',
-     "Test825IsDeliberatelyNotInTheAutoStartupSequence",
-     "把 825 注册进 installer 启动序列 ⇒ 无人值守升级会 RENAME 10 GB 活表"),
+     "Test830IsDeliberatelyNotInTheAutoStartupSequence",
+     "把 830 注册进 installer 启动序列 ⇒ 无人值守升级会 RENAME 10 GB 活表"),
 
     ("M32", SQL,
      "format('ursm_node_snapshot_min_%s', to_char(p_date, 'YYYYMMDD'))",
@@ -83,7 +83,7 @@ MUTATIONS = [
             '分区名 % 已被占用，但它不是 public.ursm_node_snapshot_min 的子分区。'
             '若直接跳过，新建的父表将没有任何分区，之后每次写入都会报 '
             'no partition of relation found，而迁移仍会报成功。'
-            '请先 DROP 或改名该对象（常见来源：825.down 保留的 _post825）。',
+            '请先 DROP 或改名该对象（常见来源：830.down 保留的 _post825）。',
             pname;
     END IF;""",
      """    -- (mutation M36: 恢复成最初的按名字短路)
@@ -107,7 +107,7 @@ MUTATIONS = [
      "AND c.relkind = 'p'),",
      "AND c.relkind <> 'p'),",
      "Test825BootEnsureIsWired",
-     "★ 反向守卫失效：825.down 回滚后父表已非分区，ensure 却照调 ⇒ 报错冒到 db.Open ⇒ no-DB"),
+     "★ 反向守卫失效：830.down 回滚后父表已非分区，ensure 却照调 ⇒ 报错冒到 db.Open ⇒ no-DB"),
 ]
 
 

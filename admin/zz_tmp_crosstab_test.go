@@ -16,7 +16,7 @@ func TestZZTmpCrossTab(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fam := sourceFamilyOf(string(raw))
+		fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, file))
 		if cross[c.Effect] == nil {
 			cross[c.Effect] = map[string]int{}
 		}

@@ -58,10 +58,10 @@ import (
 //
 // Ordering:
 //
-//	1. (sam.status = 'final') DESC — boolean ordering in PostgreSQL: 'final'
-//	   rows rank before 'provisional'. This guarantees a 'final' row beats a
-//	   'provisional' row that arrives (or is refreshed) later.
-//	2. sam.updated_at DESC — within the same status, pick the latest row.
+//  1. (sam.status = 'final') DESC — boolean ordering in PostgreSQL: 'final'
+//     rows rank before 'provisional'. This guarantees a 'final' row beats a
+//     'provisional' row that arrives (or is refreshed) later.
+//  2. sam.updated_at DESC — within the same status, pick the latest row.
 //
 // Placeholders: this function returns the subquery fragment (without the
 // `LEFT JOIN LATERAL (...) alias ON true` wrapper) so callers can append it
@@ -106,24 +106,24 @@ func sessionAnalysisSelectCols() string {
 
 // SessionAnalysisView is the read-side projection of session_analysis_metadata.
 //
-//	* All scalar columns are nullable so LEFT JOIN misses render as nil fields,
-//	  not zero values (a "missing updated_at" is meaningful — it means the
-//	  session was never analysed).
-//	* `Payload` is the decoded `sessionmeta.Result`. We surface it as the
-//	  canonical shape rather than re-marshalling the JSONB; consumers that
-//	  already render the payload (admin web, internal tooling) keep working
-//	  without a shape change.
-//	* `PayloadRaw []byte` keeps the raw bytes so internal callers can pass
-//	  them straight through (e.g. snapshot endpoint) without a re-marshal.
-//	  Always nil when Payload decodes successfully (decode is lossless).
+//   - All scalar columns are nullable so LEFT JOIN misses render as nil fields,
+//     not zero values (a "missing updated_at" is meaningful — it means the
+//     session was never analysed).
+//   - `Payload` is the decoded `sessionmeta.Result`. We surface it as the
+//     canonical shape rather than re-marshalling the JSONB; consumers that
+//     already render the payload (admin web, internal tooling) keep working
+//     without a shape change.
+//   - `PayloadRaw []byte` keeps the raw bytes so internal callers can pass
+//     them straight through (e.g. snapshot endpoint) without a re-marshal.
+//     Always nil when Payload decodes successfully (decode is lossless).
 type SessionAnalysisView struct {
-	Status        string             `json:"status"`
-	SchemaVersion string             `json:"schema_version,omitempty"`
-	InputHash     string             `json:"input_hash,omitempty"`
-	SourceTaskID  *string            `json:"source_task_id,omitempty"`
-	UpdatedAt     *time.Time         `json:"updated_at,omitempty"`
+	Status        string              `json:"status"`
+	SchemaVersion string              `json:"schema_version,omitempty"`
+	InputHash     string              `json:"input_hash,omitempty"`
+	SourceTaskID  *string             `json:"source_task_id,omitempty"`
+	UpdatedAt     *time.Time          `json:"updated_at,omitempty"`
 	Payload       *sessionmeta.Result `json:"payload,omitempty"`
-	PayloadRaw    []byte             `json:"-"`
+	PayloadRaw    []byte              `json:"-"`
 }
 
 // scanSessionAnalysis decodes the raw Scan values for a SessionAnalysisView.

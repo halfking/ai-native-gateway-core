@@ -43,14 +43,14 @@ func benchCandSet(n int) []provider.Candidate {
 	out := make([]provider.Candidate, 0, n)
 	for i := 0; i < n; i++ {
 		c := provider.Candidate{
-			CredentialID:    i + 1,
-			ProviderID:     1,
-			RawModel:       "m",
+			CredentialID:     i + 1,
+			ProviderID:       1,
+			RawModel:         "m",
 			StandardizedName: fmt.Sprintf("model-%d", i+1),
-			Tier:           2,
-			Weight:         100,
+			Tier:             2,
+			Weight:           100,
 			ConcurrencyLimit: &lim,
-			QuotaState:      "ok",
+			QuotaState:       "ok",
 		}
 		// ~2/3 priority, 1/3 standard — exercise the two-layer partition path
 		if i*3 < n*2 {
@@ -154,10 +154,11 @@ func buildBenchRouter(b *testing.B, n, s int) *Router {
 // 内循环——A2/B 改造前后 planByTier 自身 p99 是最干净的热路径指标。
 //
 // 用法：
-//   go test -bench=BenchmarkPlanByTier_n10_s50 -benchtime=10s -count=5 -run=^$ \
-//     ./domains/streaming/executors/
-//   go test -bench=BenchmarkPlanByTier_n10_s50 -benchtime=10s -count=5 -run=^$ \
-//     -cpuprofile=/tmp/pbby.cpu ./domains/streaming/executors/   # CPU profile
+//
+//	go test -bench=BenchmarkPlanByTier_n10_s50 -benchtime=10s -count=5 -run=^$ \
+//	  ./domains/streaming/executors/
+//	go test -bench=BenchmarkPlanByTier_n10_s50 -benchtime=10s -count=5 -run=^$ \
+//	  -cpuprofile=/tmp/pbby.cpu ./domains/streaming/executors/   # CPU profile
 func BenchmarkPlanByTier_n10_s50(b *testing.B) {
 	const n = 10
 	const s = 50
@@ -184,8 +185,9 @@ func BenchmarkPlanByTier_n10_s50(b *testing.B) {
 
 // BenchmarkPlanByTierScale 在 n=2/5/10/20 四档上跑，量化候选数×会话数对热路径的影响。
 // 用法：
-//   go test -bench=BenchmarkPlanByTierScale -benchtime=5s -count=3 -run=^$ \
-//     ./domains/streaming/executors/
+//
+//	go test -bench=BenchmarkPlanByTierScale -benchtime=5s -count=3 -run=^$ \
+//	  ./domains/streaming/executors/
 func BenchmarkPlanByTierScale(b *testing.B) {
 	policy := &provider.Policy{TierFallbackMax: 4}
 	stratIn := StrategyInput{

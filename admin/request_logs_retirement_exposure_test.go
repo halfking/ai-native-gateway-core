@@ -511,10 +511,12 @@ func (fe fileExposure) severity() string {
 func TestRequestLogsRetirementExposure(t *testing.T) {
 	root := repoRootFromCaller(t)
 
-	files := make([]string, 0, len(requestLogsReadInventory))
-	for f := range requestLogsReadInventory {
-		files = append(files, f)
-	}
+	// ⚠ 总体来自 retirementExposurePopulation（**不是** requestLogsReadInventory）。
+	// 只遍历字面量表 ⇒ 关系名收在 Go 函数里的读方**根本不被评估**，
+	// 退役清单上直接没有它们。实测 admin/session_bodies_source.go 在抽取器里
+	// **是看得见的**（产出 1 个字面量、判为 viewArm），
+	// 所以「测不到」纯粹是总体选错了，不是量具不行。
+	files := retirementExposurePopulation(t)
 	sort.Strings(files)
 
 	bySeverity := map[string][]string{}
@@ -664,11 +666,70 @@ var retirementReattributed = map[string]string{
 //   - a registered file the measurement no longer calls broken → somebody fixed
 //     it and left the entry, so every future reviewer re-investigates a solved
 //     problem.
+//
+// retirementExposurePopulation 是本门唯一的总体定义（审计 §9.230.3）。
+//
+// ⚠ **第一版没有这个函数**：测量循环和报告循环各自遍历
+// `requestLogsReadInventory`，我改了报告那个、忘了测量那个，
+// 于是「修复」只落在会打印的那一半上。**实测反向变异：把总体退回字面量表，
+// 没有任何一道门变红** —— 因为 viewArm 没有登记表、报告内容也没有门在核。
+// ⇒ 提成 SSOT，再加一道判据钉住它等于「直接表 ∪ 间接表」。
+func retirementExposurePopulation(t *testing.T) []string {
+	t.Helper()
+	// allKnownRequestLogsReaderFiles 已经排好序（§9.232 起它内部 sort），
+	// 这里再排一次是**冗余**——但保留它，因为「本函数返回一个有序切片」
+	// 曾经是隐含约定，而排序成本为零。删掉它的收益小于「有人依赖有序」
+	// 而无人察觉的概率。
+	files := allKnownRequestLogsReaderFiles(t)
+	sort.Strings(files)
+	return files
+}
+
+// TestRetirementExposurePopulationIsEveryKnownReader 钉住总体是「已知读方全集」。
+//
+// 判据是**集合相等**，不是数量，也不是「至少包含某一个」：
+// 少一个文件不会让任何别的门变红（§9.230.4 记的同一个坑，这一层又踩一次），
+// 所以必须有一条**显式**的集合判据在这里等着。
+func TestRetirementExposurePopulationIsEveryKnownReader(t *testing.T) {
+	got := map[string]bool{}
+	for _, f := range retirementExposurePopulation(t) {
+		if got[f] {
+			t.Errorf("总体里 %q 出现两次", f)
+		}
+		got[f] = true
+	}
+	var missing, extra []string
+	for _, f := range allKnownRequestLogsReaderFiles(t) {
+		if !got[f] {
+			missing = append(missing, f)
+		}
+	}
+	for f := range requestLogsReadInventory {
+		if !got[f] {
+			extra = append(extra, f)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	if len(missing) > 0 {
+		t.Errorf("这些已知 v1 读方不在 exposure 总体里：%v\n"+
+			"⇒ 它们在退役清单上**根本不出现**，而没有任何别的门会报。"+
+			"当前登记的间接读方：%v", missing, indirectRequestLogsReaders)
+	}
+	if len(extra) > 0 {
+		t.Errorf("exposure 总体里有字面量表之外的文件：%v", extra)
+	}
+	// 地板：总体为空 ⇒ 整道门无声通过。
+	if len(got) == 0 {
+		t.Fatal("exposure 总体为 0 个文件 —— 门会全绿而一个读方都没评估")
+	}
+}
+
 func measureV1ReadingExposure(t *testing.T, root string) (measured, viewArm map[string]string) {
 	t.Helper()
 	measured = map[string]string{} // file -> severity（**仅限直读 v1 底表**的读方）
 	viewArm = map[string]string{}  // file -> severity（经 canonical 视图读 v1 臂的读方）
-	for f := range requestLogsReadInventory {
+	for _, f := range retirementExposurePopulation(t) {
 		// ⚠ 总体必须按「怎么读到的」分开（审计 §9.199）。
 		// 关系宇宙放宽前，经视图读的文件一个字面量都产不出来，
 		// 于是「已 repoint 的读方」和「从未被分析的文件」混在同一个 clean 桶里。

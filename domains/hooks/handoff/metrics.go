@@ -34,12 +34,12 @@ import (
 // metrics holds the handoff Prometheus collectors. A single package-level
 // instance is registered in init(); tests reset values via ResetMetrics.
 type metrics struct {
-	proposals        *prometheus.CounterVec // labels: trigger_kind, result
-	confirmations    *prometheus.CounterVec // labels: result
-	restores         *prometheus.CounterVec // labels: result
-	restoreDuration  *prometheus.HistogramVec // labels: result
-	payloadBytes     *prometheus.HistogramVec // labels: kind
-	restoreFailures  *prometheus.CounterVec // labels: reason
+	proposals       *prometheus.CounterVec   // labels: trigger_kind, result
+	confirmations   *prometheus.CounterVec   // labels: result
+	restores        *prometheus.CounterVec   // labels: result
+	restoreDuration *prometheus.HistogramVec // labels: result
+	payloadBytes    *prometheus.HistogramVec // labels: kind
+	restoreFailures *prometheus.CounterVec   // labels: reason
 
 	mu sync.Mutex
 }

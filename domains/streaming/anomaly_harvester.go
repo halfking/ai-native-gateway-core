@@ -357,7 +357,7 @@ func (h *AnomalyHarvester) createFaultEvent(parent context.Context, a anomalyAle
 		), inserted AS (
 			INSERT INTO fault_events (rule_id, rule_name, severity, title, description, source,
 			                          status, metadata, detected_at, created_at)
-			SELECT 0, $1, $2, $3, $4, 'data_anomaly', 'new', $5, NOW(), NOW()
+			SELECT 0, $1, $2, $3, $4, 'data_anomaly', 'new', $5::jsonb, NOW(), NOW()
 			FROM lock
 			WHERE NOT EXISTS (
 				SELECT 1 FROM fault_events
@@ -368,7 +368,7 @@ func (h *AnomalyHarvester) createFaultEvent(parent context.Context, a anomalyAle
 			RETURNING id
 		)
 		SELECT id FROM inserted
-	`, ruleName, faultSev, title, description, metaJSON).Scan(&eventID)
+	`, ruleName, faultSev, title, description, string(metaJSON)).Scan(&eventID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return

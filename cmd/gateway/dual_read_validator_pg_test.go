@@ -258,9 +258,11 @@ func TestDualReadValidator_Summarize_RealDB(t *testing.T) {
 	// 现在复算完整契约：S4Ready 为真当且仅当（v1 写入中 ∧ 窗口扫到过东西 ∧
 	// 无真漏写）。三者缺一都必须为假，并按 s4GateVerdictOf 的分类给出 void 理由。
 	verdict := s4GateVerdictOf(s4GateInput{
-		v1Rows:      sum.V1Rows,
-		genuineLoss: sum.GenuineLossRows,
-		v1WritesOn:  currentV1WritesEnabled(),
+		v1Rows:       sum.V1Rows,
+		genuineLoss:  sum.GenuineLossRows,
+		v1WritesOn:   currentV1WritesEnabled(),
+		v1CoveragePP: sum.V1CoveragePP,
+		windowHours:  sum.WindowHours,
 	})
 	if sum.S4Ready != verdict.Ready {
 		t.Errorf("I5 S4Ready = %v, want %v (V1Rows=%d GenuineLossRows=%d v1WritesEnabled=%v)",
