@@ -30235,3 +30235,84 @@ $ go version -m /opt/llm-gateway-go/bin/gateway
    **它们的成因可能与这 1 行不同**。
 4. 本节所有生产操作**只读**；未执行任何回填、重启、部署或配置变更。
 
+
+### §9.250 ★ 把 §9.249 的不变量做成出货判据，**并用变异测出它自己的盲区**
+
+> §9.249.4 提出的「静态断言」入口。本节**第一次真的改了代码**。
+> 纯新增一个测试文件 + 文档，未改动任何生产代码路径。
+
+#### §9.250.1 落地的东西
+
+新增 `domains/session/v2/session_writer_v2_nil_before_commit_pin_test.go`，三条判据
+（全部走 `go/ast`，**不是文本匹配** —— 文本判据会被注释满足，
+「删掉接线只留注释」是判据静默失效最常见的形态）：
+
+| 判据 | 不变量 |
+|---|---|
+| `TestWriteNeverReturnsNilBeforeCommit` | `Write` 在 `tx.Commit` 之前**没有任何返回 nil 的语句**，且签名仍是单返回值 `error`，且 commit 点存在（找不到即判红） |
+| `TestAppendTurnInLockedTxNeverReturnsZeroNil` | `appendTurnInLockedTx` **不返回 `(0, nil)`** |
+| `TestWriteActuallyInsertsTheTurn` | `Write` **真的调用** `appendTurnInLockedTx`，并把它的 error 绑到具名变量后用 `if err != nil { … return … }` 检查 |
+
+三条都带**反向守卫**（commit 点找不到、方法找不到、return 数为 0 都判红），
+避免「因为没找到而通过」这种空洞绿。
+
+#### §9.250.2 ★★ 变异验证测出**我自己的判据有盲区**——这是本节最有价值的部分
+
+先写了两条判据，跑变异时发现：
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| **M6** | 把 `turnNo, err := w.turnWriter.appendTurnInLockedTx(lockCtx, tx, turnRec)` 整段换成 `turnNo, err := 1, error(nil)`（**跳过 turn 插入但不报错**） | ★ **判绿** |
+
+**M6 恰恰就是 §9.249.2 在生产上观测到的症状形状**：
+事务提交、调用方拿到 nil、库里没有这一轮 turn。
+⇒ **前两条判据是必要条件，不是充分条件。** 补了第三条
+`TestWriteActuallyInsertsTheTurn` 之后，M6 转红。
+
+**⇒ 教训：判据的强度只能靠变异测出来，不能靠「读一遍觉得够了」判断。**
+如果我做完前两条就收工交付，会留下一个**看起来在守、实际守不住**的门。
+
+#### §9.250.3 完整变异台账（全部基于**能编译**的变异）
+
+| # | 变异 | 期望 | 实测 |
+|---|---|---|---|
+| M1 | `Write` 在 commit 前加 `return nil` | 红 | ✅ 红（报出第 691 行） |
+| M2 | `appendTurnInLockedTx` 末尾加 `return 0, nil` | 红 | ✅ 红（报出第 597 行） |
+| M6 | 跳过 `appendTurnInLockedTx`，`turnNo, err := 1, error(nil)` | 红 | ✅ 红（报「没有调用」） |
+| M7 | 保留调用但写成 `turnNo, _ := …`（吞掉 error） | 红 | ✅ 红（报「error 没被检查」） |
+| M3'' | `tx.Commit` 前先 `conn := tx`，改用 `conn.Commit`（**能编译**） | 红（空洞守卫） | ✅ 红（报「找不到 tx.Commit」） |
+| M5 | 在 `committed = true` **之后**加 `return nil`（**合法**） | 绿 | ✅ 绿 |
+| — | 全部还原后复跑 | 绿 | ✅ 绿，`git diff --stat` 为空 |
+
+⚠ **两次失败的变异尝试必须记下来，否则下一轮会重蹈**：
+1. **M3/M4 第一版只证明了「编译失败」** —— 把 `tx.Commit` 改名、把方法改名都会让
+   包**编译不过**，测试根本没跑。**编译失败不是判据转红的证据**
+   （§9.237 已犯过一次，本轮又差点犯）。改成 `conn := tx` 后才是有效变异。
+2. **第三条判据第一版自身有 bug**：`a, b := f()` 的 `AssignStmt.Rhs` 长度是 **1** 不是 2，
+   我写成 `len(Rhs) != 2` ⇒ **基线就红**，而此时 M6/M7 的「红」全是这个假红。
+   修好之后才重跑了全部台账。**⇒ 变异台账里出现「基线也红」时，先怀疑判据本身。**
+
+#### §9.250.4 门结果
+
+```
+gofmt -l  <新文件>                → 无输出（已格式化）
+go vet ./domains/session/v2/      → 无输出
+go test ./domains/session/v2/     → ok  github.com/kaixuan/llm-gateway-go/domains/session/v2  1.544s
+go build ./...                    → 仅 vendored go-m1cpu 的既有 C 警告，与本次无关
+```
+
+**本节没有重跑 `db` / `admin` / `cmd/gateway` 三组全量门** ——
+本轮只新增了一个测试文件，**没有触碰任何被那三组门覆盖的代码**。
+门基线仍沿用 §9.240 之后的读数（db FAIL 2 / admin FAIL 6 / cmd/gateway ok / indirection ok），
+**那是旧读数，不是本轮实测**。
+
+#### §9.250.5 这条判据**不能**做什么（不夸大）
+
+1. **它不能复现 §9.249.2 那个现象** —— 生产二进制是 `vcs.modified=true` 的脏树构建，
+   **运行代码无法被验证等同于本文件**。本节做的是**在代码层立一道防线**，
+   不是证明那道防线能挡住已经在跑的那份代码。
+2. **它是源码形状判据，不是行为判据** —— 真出现「不插入 turn 也不报错」但形状不变的路径
+   （例如 SQL 里的 `WHERE` 被改空、或 `ON CONFLICT` 语义变化），**它照样绿**。
+3. **它只覆盖 `Write` 这一个函数**。`runShadowWrite` 的信号量分支、
+   replay 路径、以及 telemetry 侧的 fire 次数都**不在**本判据覆盖范围内。
+
