@@ -3234,19 +3234,38 @@ if limit > 500 { limit = 500 }
 > as a follow-up **since v1 totals are <500**.
 
 **那个前提已经破了**（现在 2141），而它依赖的 `Limit: 1000` 被静默截成 500。
-按租户拆开看它实际少报多少：
 
-| tenant | 实际行数 | Stats 实际聚合 | 漏报 | down 实为 | Stats 报 |
+⚠️ **订正（2026-10-05 上线后自查）**：我这一节原先写「`total` 报 620
+（实为 2141）」—— **那个数端点根本吐不出来**。`Service.List` 第一行就是
+`f.TenantID = tenantFromCtx(ctx)`，它**覆盖**了 handler 里写的
+`TenantID: "default"`（那行是死代码）⇒ **这个端点一次只返回一个租户**，
+永远不会给出跨租户合计。下表按「每个租户各调一次」重列：
+
+| tenant | 实际行数 | 修复前 Stats 报 | 漏报 | down 实为 | 修复前 Stats 报 |
 |---|---:|---:|---:|---:|---:|
-| default | 2,021 | 500 | **1,521** | 320 | 320 |
+| default | 2,021 | **500** | **1,521** | 320 | 320 |
 | acme | 74 | 74 | 0 | 59 | 59 |
 | hansi | 29 | 29 | 0 | 10 | 10 |
 | kevin | 17 | 17 | 0 | 7 | 7 |
-| **合计** | **2,141** | **620** | **1,521** | **396** | 396 |
 
-⇒ `total` 报 620（实为 2141）。`by_health` 的 down 恰好没少（396 都在前 500 内），
-但**一旦分页修好、439 行被标成 down，这个端点若不一起修就会少报 439**。
-所以两处必须**同一个 commit** 改，否则会造出一个新的「数字不一致」。
+⇒ **真正的漏报只有 `default` 一个租户**：`total` 报 500 而实为 2,021，
+少报 1,521 行；其余三个租户都在 500 以下，不受影响。
+`by_health.down` 各租户**恰好都没少**（down 行全落在前 500 内 ——
+§10.27.2 已解释为什么这是自我封闭的盲区）。
+
+**但两处仍必须同一个 commit 改**：分页修好后有 439 行会从 degraded 变成 down
+（其中大部分在 default 租户），若 Stats 不一起修，它会继续按「前 500 行」聚合，
+于是探针说 835、端点说 320 —— **造出一个新的「数字不一致」**。
+
+上线后各租户真值（已实测）：
+
+| tenant | total | down | degraded | unknown |
+|---|---:|---:|---:|---:|
+| default | 2,021 | 759 | 0 | 1,262 |
+| acme | 74 | 59 | 0 | 15 |
+| hansi | 29 | 10 | 0 | 19 |
+| kevin | 17 | 7 | 0 | 10 |
+| 合计 | 2,141 | **835** | **0** | 1,306 |
 
 #### 5. 偏离了一处：500 截断**保留**，改成真正翻页
 
@@ -3390,3 +3409,39 @@ MUST_NOT_EXIST_xyz                 0   ← 阴性对照
   （指向 `releases/2463-c5418460/llm-gateway-go`，而实际文件叫 `gateway`）。
   服务不受影响（systemd unit 直接指向 release 目录），但按 symlink 查二进制的
   任何脚本都会踩空。**未修**，仅登记。
+
+#### 9. 🔴 潜伏的同病：`listStaleSQL` 的 `LIMIT 1000` 同样没有分页（**当前未触发，余量 241 行**）
+
+§10.27 修的是 Step 2 的 `List`。**Step 1 走的 `listStaleSQL` 有一模一样的病灶**：
+
+```go
+// apihub/pg_store.go:757
+FROM public.assets
+WHERE tenant_id = $1
+  AND COALESCE(last_seen_at, registered_at) < now() - make_interval(secs => $2)
+ORDER BY COALESCE(last_seen_at, registered_at) ASC
+LIMIT 1000          // ← 写死 1000，无 OFFSET，且 Filter 也没有 Offset 字段
+```
+
+`probeOneTenant` 是**按租户**调它的，所以上限也要**按租户**算（不是总数）：
+
+| tenant | 总行数 | stale(6h) | 距 1000 的余量 |
+|---|---:|---:|---:|
+| default | 2,021 | **759** | **241** |
+| acme | 74 | 59 | 941 |
+| hansi | 29 | 10 | 990 |
+| kevin | 17 | 7 | 993 |
+
+⇒ **当前没有触发**（default 759 < 1000），但余量只有 **241 行**。
+一旦某租户的 stale 资产超过 1000，Step 1 会**静默**停止覆盖第 1001 行之后，
+且**没有任何报错或日志** —— 与 §10.27 那个 bug 同一形状。
+
+**本轮没有修**，理由与 §10.27.5 偏离那次同源：`listStaleSQL` 没有 `Offset`，
+要修就得再给读路径加一层（现在 `apihub.Filter.Offset` 只作用于 `List`，
+`ListStale` 是独立方法、独立签名）。在**尚未触发**、且 stale 计数由
+「永久失效的孤儿资产」主导（835 里绝大多数停在 2026-06-26）的情况下，
+这属于**登记待观察**而非紧急修复。
+
+**观察触发条件**（建议进巡检）：任一租户 `stale(6h) > 800`。
+Step 2 已有的分页机器（`Filter.Offset` + `maxPages` + 上界告警）可以直接复用，
+届时只需给 `ListStale` 补一个 `offset` 参数与循环。
