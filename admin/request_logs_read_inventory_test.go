@@ -41,6 +41,26 @@ import (
 // ⚠ 这两个数**都是历史值**：仓库每天在动，`TestRequestLogsReadInventoryIsComplete`
 // 的红绿以本门当前扫描结果为准，本注释只记录口径变更的历史与理由。
 //
+// ★★ **§9.259：这张表**不是**读方全集，别拿它当退役工作量。**
+//
+// 它只按 `(from|join)\s+request_logs…` **行扫描**，所以**看不见走切换层的读方** ——
+// 那些把表名当 Go 字符串返回的 `maas.requestLogsSource(days)`、
+// `db.SessionBodiesSourceSQL()`、`admin.logsSourceFromSQL()` 都在行扫描之外。
+//
+// 实测两个总体的关系（2026-10-06）：
+//
+//	本表（字面量）        107 文件 / 254 调用点
+//	间接读方（§9.258 桶）  21 文件（含 3 处手验的 src.TurnsTable）
+//	交集                   14 文件
+//	★ 并集               **114 文件**
+//
+// ⇒ **7 个读 v1 的文件不在这张表里**：`maas/usage.go`、`maas/consumption_detail.go`、
+// `maas/credit_buckets.go`、`admin/usage_credits.go`、`admin/session_compare.go`、
+// `admin/session_export.go`、`bg/auto_route_settle_sql.go`。
+// 它们登记在 `cmd/tools/sql_source_indirection_audit` 的 `indirectSiteAssessments`
+// （那是拼接点清单），**两张表各有各的口径，不是一张表的两半**。
+// ⇒ 退役排期要用**并集**，详见审计 §9.259。
+//
 // # 刻意不自动分类
 //
 // 我试过按「语句窗口内有无 gw_session_id / request_id =」自动分 A/B/C/D，
@@ -159,7 +179,16 @@ var requestLogsReadInventory = map[string]int{
 	// LIMIT 1，家族过滤（tenant + 会话头）与同文件 LoadV1TimeRange 逐字一致——
 	// 探测必须对「窗口声称要比对的行」作答，母表腿是有意的。生命周期与该 loader
 	// 其余 5 处同面：S4 停写 request_logs 时 v1 校验器连同探测一起退役。
-	"cmd/tools/validate_sessions_v2/loader.go":        6,
+	// ★ §9.259：原写 6，**复核后改为 5**。
+	// 复核过程（这张表的用途是逼人复核，不是照抄实测改数）：
+	//   1. 逐行数该文件的非注释 v1 FROM/JOIN 命中 = 5（154/162/193/521/659）；
+	//      另有 5 行是注释（13/130/131/172/621），必须剔除。
+	//   2. 在多个历史提交上各数一次（`263ee5d00` / `3a1a4846e`）**都是 5**
+	//      ⇒ 「过期」不是本轮引入的，这张表自 48h 审计线
+	//      （`e387213b3` 把 SQL 抽成 `buildSessionRangeQuery`）之后就一直是 5。
+	//   3. 性质：这是**一次性迁移工具**（§9.256 待拍板项 4），
+	//      S4 停写后应**随 v1 一起退役**，不是要迁的读方。
+	"cmd/tools/validate_sessions_v2/loader.go":        5,
 	"cmd/traffic-replay/main.go":                      1,
 	"db/db.go":                                        3,
 	"db/probe_views_unified.go":                       3,

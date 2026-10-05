@@ -13602,3 +13602,72 @@ v1 臂一处处都没有时红，并**指名最可能的原因**。
 ⇒ ★ **`git add -A` 会把构建产物一起提交**；裸 `go build <pkg>` 是惯犯。
 本轮已 `git rm --cached` + 移出仓库，并在 `.gitignore` 加 `/sql_source_indirection_audit`。
 ⇒ 之后构建一律 `go build -o /tmp/xxx` 或只用 `go vet` / `go test`。
+
+## §70.96 ★ 更正 §70.95 的「40 处是下界」—— **114 个文件才是读方全集**
+
+对应审计 §9.259。本轮只改 `admin/request_logs_read_inventory_test.go`
+（一个注释 + 一个计数）与文档，**没碰任何读方/写方**，生产 252 零写入。
+
+### ★ 我上一轮说错了一句
+
+我写「**40 处仍是下界**：8 个 v1 臂视图里 6 个只被**字面量**读法命中，
+而本工具只管拼接点」⇒ 暗示「还需要补一次字面量扫描」。
+
+★ **这个对象找错了。字面量扫描早就在跑，而且规模是 254 个调用点**，
+比间接那 40 处大一个量级；那张表（`requestLogsReadInventory`，107 文件）
+**本来就已经覆盖 v1 臂视图**（口径 `request_logs(_[a-z_]+)?`）。
+
+| 总体 | 口径 | 规模 |
+|---|---|---|
+| 字面量读方 | 行扫描 | **107 文件 / 254 调用点** |
+| 间接读方 | §9.258 三桶 + 3 处手验 | **21 文件** |
+| 交集 | | 14 文件 |
+| ★ **并集** | | **114 文件** |
+
+⇒ **两个总体不是「下界与全部」的关系。** 真正缺的不是扫描，是**并集**。
+
+### ★ 7 个读 v1 的文件不在任何一张读方清单里
+
+`maas/usage.go` · `maas/consumption_detail.go` · `maas/credit_buckets.go` ·
+`admin/usage_credits.go` · `admin/session_compare.go` · `admin/session_export.go` ·
+`bg/auto_route_settle_sql.go` —— 全部走切换层，**行扫描看不见**
+（表名以 Go 字符串返回）。它们登记在 `indirectSiteAssessments`（拼接点清单），
+**两张表各有各的口径，不是一张表的两半**。
+
+★ 这解释了为什么 §9.254–§9.258 一直只能拿「12 处」当读方数：
+**没有一处把两张表合起来数过。**
+
+### 顺手修掉一个过期红门
+
+`TestRequestLogsReadInventoryIsComplete` 一直在红（§9.256.7 我记成「基线上就红」，
+那是对的，但**没往下追**）。本轮追到底：
+`loader.go: table says 6, code has 5`。
+
+**按那张表自己的要求复核**（它的用途是逼人复核，不是照抄实测改数）：
+
+1. 逐行数非注释命中 = **5**（154/162/193/521/659）；另 5 行是注释，不剔会得 10。
+2. 在 `263ee5d00` 与 `3a1a4846e` 上各数一次，**都是 5** ⇒ **不是本轮引入的**。
+3. 成因：48h 审计线 `e387213b3` 把 SQL 抽成 `buildSessionRangeQuery` 时表没跟着更新。
+4. 性质：**一次性迁移工具**，停写后应随 v1 退役，不是要迁的读方。
+
+⇒ 表改 5，实测 `107 files / 254 call sites (table: 107 / 254)`，**门转绿**。
+⇒ ★ **admin 基线从 FAIL 7 回到 FAIL 6**（本轮唯一的门状态变化）。
+
+### 门基线（本轮实跑，逐条列名）
+
+| 包 | 结果 | 失败名 |
+|---|---|---|
+| `db` | **FAIL 2** | `TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` |
+| `admin` | **FAIL 6** | `TestColumnarParentTwoSurfaceSetopShape_RealDB` · `TestReportRollup_HTTPContract` · `TestV1BodiesReadersAreAssessed` · `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` · `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID`（~~`TestRequestLogsReadInventoryIsComplete`~~ **本轮转绿**） |
+| `sql_source_indirection_audit` | **PASS 17 / FAIL 0** | — |
+
+### 下一轮接力
+
+1. ★ **退役排期按 114 个文件**，且两张表都**不做自动分类**（字面量那张明写
+   「试过自动分 A/B/C/D，判错 5 个」）⇒ **114 个文件目前没有统一分档**，
+   D32/D35 的分档工作本身就是下一件大活。
+2. **19 处 bodies 读方是停写硬前置**（视图无会话臂），而它们**全在字面量表的覆盖范围内**
+   ⇒ 停写前要处理的文件**远不止那 19 个拼接点**。
+3. 沿用硬约束：门结果**落文件再 grep、失败数逐条列名**；
+   ★ **红门要往下追一层**（「基线上就红」不等于「不用管」——本轮往下追一层就找到一个
+   过期三个月的计数）；**改进/扩展量具前先查已有量具是不是已经在做同一件事**。
