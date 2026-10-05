@@ -221,3 +221,36 @@ P1+P2 第二轮批判式审计(2026-10-01): docs/audit/2026-10-01-hotzone-p1p2-c
 不生效→FileCache.SetTTL 接线收口 / G3 fakeFileInfo 死码删除 / G4 ResizeMax
 缩容口径两段式订正;§3-H4 改动2 的临时文件语义随之修订:**新鲜 .tmp 豁免
 配额相,过期 .tmp 参与过期清扫**——原"临时文件不参与 trimmer"口径作废)。
+
+---
+
+## 9. 全量复核审计轮(2026-10-05)
+
+按「双模式存储方案审计」任务对 §3 H1–H5 逐项实代码复核(非转述 §8 台账),
+结论:**实现与方案全部相符,未发现需修代码的缺陷**。复核方式与结果:
+
+| 项 | 复核锚点 | 结论 |
+|---|---|---|
+| H1 | `domains/session/v2/cache_v2_file.go`(索引 map/Set 登记与 Delete/removeExpired/removeIfUnchanged/ensureSpaceLocked 摘除同锁;Get 索引命中跳 Stat、漂移按 miss 摘除;resizeInHotzone 下 SetTTL/ResizeMax 热重载锁纪律) | ✅ 相符 |
+| H2 | `cmd/gateway/storage_mode_init.go`(dispatcher→initFullHotZoneStorageMode:hotZoneOnly runtime、config 通道装配门、symlink/非目录降级、不建 SQLite/不收口 Redis env/不启 lite worker)+ `main.go` 六处 `liteMode()` 门控 | ✅ 相符 |
+| H3 | `storage/file/request_mirror.go` + 三接线点:telemetry `persistRequestLog` 顶部(S4 停写门同键同门、degraded 早退前)、SessionWriterV2 `tx.Commit` 成功后(F-A 口径)、admin ingest(F5 第三落库点);换算经 `ConvertBodyPayload`/`MirrorablePayload` 单一事实源(telemetry strPtrToJSON 转调);MirrorAsync 走 TryEnqueue 非阻塞,Close 排空队列且 execute 保证 Done 必写必关——无 goroutine 泄漏 | ✅ 相符 |
+| H4 | `bg/hot_zone_trimmer.go`(30m、三受管子树白名单、过期相→配额相最旧先删、retention/maxBytes 非正 fail-safe、.tmp 新鲜豁免配额/过期清扫)+ `settings/spec_storage.go` 三 spec(1–100GB / 1–168h)+ WithReload 每 tick 直查 GetPlatform*(无缓存)驱动 ResizeMax+SetTTL | ✅ 相符 |
+| H5 | `monitoring/storage_metrics.go` Snapshot 键(`l1_5_by_mode`/`mirror.by_mode`/`hotzone.hit_total_by_mode`/`hotzone_enabled`/`mirror.hotzone_on`)与 deployment-guide §hotzone 配置矩阵、README 热区章节、ADR-0019 Amendment(2026-09-30) 逐键对账 | ✅ 相符 |
+
+**测试复核**(全部 `-count=1` 实跑):`domains/session/v2`、`bg`、`storage/file`、
+`config`、`settings`、`monitoring`、`cmd/gateway`(storage-mode 组)、
+`telemetry`(mirror/request-log 组)、`storage` 根包 9 项 lite
+consistency/repair 套件(R63 勘误后的 6+3 计数)——**全绿**。
+admin 包 `TestV1BodiesReadersAreAssessed`/`TestRequestLogsReadInventoryIsComplete`
+两个红门为 §9.262 有意设计(v1 退役判据拦未评估的 bodies 读方),与热区无关,不计入本方案回归面。
+
+**部署缺口 D1 确认已收口**:`scripts/deploy-local-lib.sh` dl_write_env 白名单
+已含 `LLM_GATEWAY_STORAGE_MODE` + `LLM_GATEWAY_HOTZONE_{ENABLED,DIR,RETENTION_HOURS,MAX_SIZE_GB,REQUEST_MIRROR}`
+六键(未设写空行=历史行为);data/ 挂载已按 R-9 勘误锚定
+`/opt/llm-gateway-go/data`;对账脚本 `scripts/hotzone-request-mirror-reconcile.sh` 在位。
+
+**文档引用勘误**:外部任务书把双模式存储设计文档引作
+`docs/design/sqlite-hybrid-storage-design.md`——该路径在仓库及其全部 git
+历史中不存在;实际权威设计文档为 `docs/design/lite-mode-storage-design.md`
+(「LLM Gateway 双模式存储架构设计文档」v1.0)。后续引用以后者为准,本方案
+不复保留该悬空路径(防僵尸引用,对齐 spec_storage.go 旧 key 不留兼容项的先例)。
