@@ -96,7 +96,8 @@ func normalizeWS(s string) string {
 // 门 4：RegisterBatch 与逐个 Register **最终状态等价**
 //
 // ★ 这条门存在的理由：memStore 的 UpsertBatch 如果图省事写成「只写最后一行」，
-//   绝大多数行为测试仍会绿（它们只断言最终状态）。这里显式对拍。
+//
+//	绝大多数行为测试仍会绿（它们只断言最终状态）。这里显式对拍。
 func TestRegisterBatchEquivalentToRepeatedRegister(t *testing.T) {
 	mk := func(n int) []Asset {
 		out := make([]Asset, 0, n)
@@ -150,8 +151,9 @@ func TestRegisterBatchEquivalentToRepeatedRegister(t *testing.T) {
 // 门 5：跨租户不得共用一条语句（RLS 会在事务级生效）
 //
 // ★ 这不是「性能」门而是「正确性」门：单行 Upsert 走
-//   withTenantTx(a.TenantID) 逐行设 RLS，若批量把两个租户塞进一个事务，
-//   第二组的行会被 RLS 策略挡掉 —— **而且不报错，只是静默不写**。
+//
+//	withTenantTx(a.TenantID) 逐行设 RLS，若批量把两个租户塞进一个事务，
+//	第二组的行会被 RLS 策略挡掉 —— **而且不报错，只是静默不写**。
 func TestBatchGroupsAcrossTenants(t *testing.T) {
 	m := newMemStore()
 	svc := New(m)

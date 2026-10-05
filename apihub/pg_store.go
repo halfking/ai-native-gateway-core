@@ -284,11 +284,11 @@ WHERE COALESCE(public.assets.last_seen_at, '-infinity'::timestamptz)
 
 // upsertRow 是把 Asset 拍平成绑定参数后的中间形态。
 type upsertRow struct {
-	asset     Asset
-	tagsJSON  string
-	metaJSON  string
-	health    HealthState
-	version   string
+	asset    Asset
+	tagsJSON string
+	metaJSON string
+	health   HealthState
+	version  string
 }
 
 // UpsertBatch writes many assets in as few statements as possible.
@@ -378,7 +378,8 @@ func (s *pgStore) execUpsertChunk(ctx context.Context, tenant string, rows []ups
 
 // upsertRowsIndividually 是分片失败后的退路：逐行执行并把失败行记下来。
 // ★ 必须真的隔离出坏行 —— 否则一个坏资产会让同租户其余 499 个
-//   在这一轮里全部同步失败，而这是**静默**的（watcher 只看总成功数）。
+//
+//	在这一轮里全部同步失败，而这是**静默**的（watcher 只看总成功数）。
 func (s *pgStore) upsertRowsIndividually(ctx context.Context, tenant string, rows []upsertRow, chunkErr error) {
 	okN := 0
 	for _, r := range rows {

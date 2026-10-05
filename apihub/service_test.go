@@ -49,7 +49,8 @@ func (m *memStore) Upsert(ctx context.Context, a Asset) error {
 // UpsertBatch 必须与逐个 Upsert **语义等价**（不是「更宽松的实现」）。
 // 它同时记录调用次数，用来钉住「watcher 走批量后语句条数塌缩」这条不变量。
 // ★ 若这里图省事写成「只写最后一行」，绝大多数行为测试仍会绿
-//   —— 因为它们只断言最终状态，不断言写入路径。calls 字段就是防这个的。
+//
+//	—— 因为它们只断言最终状态，不断言写入路径。calls 字段就是防这个的。
 func (m *memStore) UpsertBatch(ctx context.Context, assets []Asset) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
