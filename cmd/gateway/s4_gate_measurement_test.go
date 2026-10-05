@@ -901,23 +901,3 @@ func TestS4GateSourceMatchesValidator(t *testing.T) {
 			"then look mirrored and s4_ready would be true by construction")
 	}
 }
-
-// containsIdentifier reports whether needle appears in hay delimited by
-// identifier boundaries, so `client_model` does not match `client_model_v2`.
-func containsIdentifier(hay, needle string) bool {
-	for i := 0; i+len(needle) <= len(hay); i++ {
-		if hay[i:i+len(needle)] != needle {
-			continue
-		}
-		beforeOK := i == 0 || !isIdentByte(hay[i-1])
-		after := i + len(needle)
-		if beforeOK && (after >= len(hay) || !isIdentByte(hay[after])) {
-			return true
-		}
-	}
-	return false
-}
-
-func isIdentByte(b byte) bool {
-	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
-}
