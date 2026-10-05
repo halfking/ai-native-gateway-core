@@ -6,6 +6,39 @@ SCRIPT="$ROOT_DIR/scripts/apply-db-revision-sequence.sh"
 
 bash -n "$SCRIPT"
 
+# ── 失败收集器（2026-10-05 审计 §9.253，P1 可用性修复）────────────────────────
+#
+# 这条门此前有 17 个 `exit 1` 检查点，每个都**只报首个失败就退出**。
+# 后果在 R44/R45 两轮里被完整记录下来：门红在 829，于是「829 是唯一问题」
+# 被写进交接文档；修完 829，门换一张牌红在 819；再修，又红在 830……
+# 四层既有缺口被逐层揭开，**每一层都以为自己是全部**。
+#
+# 判据本身一直是对的，错的是**可观测性**：一次只给一个失败点，
+# 迫使每一轮审计只能揭一层。
+#
+# 现在：能累积的检查点累积成列表，最后一次报全，退出码语义不变
+# （仍有 clobber 违规 ⇒ 5；否则有任意其它失败 ⇒ 1；全通过 ⇒ 0）。
+# 「提取锚点漂移」这类**后续判据不可信**的硬失败仍立即退出——
+# 那不是「被观测对象有问题」，是「观测手段坏了」，两者处置方向相反。
+GATE_FAILURES=()
+GATE_SAW_CLOBBER=0
+
+gate_fail() { GATE_FAILURES+=("$1"); }
+
+gate_report() {
+  if (( ${#GATE_FAILURES[@]} == 0 )); then
+    return 0
+  fi
+  printf '\napply-db-revision-sequence contract FAILED: %d problem(s) found (all reported at once)\n' \
+    "${#GATE_FAILURES[@]}" >&2
+  local i=1 f
+  for f in "${GATE_FAILURES[@]}"; do
+    printf '  [%d] %s\n' "$i" "$f" >&2
+    i=$((i+1))
+  done
+  return 1
+}
+
 # canonical_delivery_path_check enforces the R30 migration-channel invariant:
 # high-numbered canonical migrations must reach either a fresh install, an
 # upgrade, or a reviewed Go startup ensure. The inputs stay text lists so the
@@ -17,7 +50,7 @@ canonical_delivery_path_check() {
   local ensure_files="$4"
   local superseded_files="${5:-}"
   local channel_gap_files="${6:-}"
-  local name version
+  local name version found=0
 
   while IFS= read -r name; do
     [[ "$name" == *.down.sql ]] && continue
@@ -33,9 +66,13 @@ canonical_delivery_path_check() {
       continue
     fi
 
-    printf 'canonical startup migration %s has no approved delivery path; register it in StartupFiles, the revision sequence, the reviewed Go-ensure allowlist, (installer-only by design) channel_gap_allowlist, or (overturned, must never run) superseded_migrations\n' "$name" >&2
-    return 1
+    # Printed to stdout (not stderr) and NOT terminated with a return: the
+    # caller captures this stream and folds every line into its own numbered
+    # report, so returning here would hide the 2nd..Nth uncovered migration.
+    printf 'canonical startup migration %s has no approved delivery path; register it in StartupFiles, the revision sequence, the reviewed Go-ensure allowlist, (installer-only by design) channel_gap_allowlist, or (overturned, must never run) superseded_migrations\n' "$name"
+    found=1
   done <<<"$canonical_files"
+  return $found
 }
 
 # Keep the helper independently regression-tested: a future edit must preserve
@@ -46,7 +83,15 @@ canonical_delivery_path_check \
   '691_upgrade.sql' \
   '692_ensure.sql' \
   '693_superseded.sql' \
-  '694_installer_only.sql'
+  '694_installer_only.sql' \
+  || {
+    # 这五类投递路径全部已覆盖，这里本不该失败。裸调用在 `set -e` 下会
+    # **静默**死掉（无任何输出、退出码非零）——那正是「校验器失败」与
+    # 「校验不通过」难以区分的来源。显式接住并说明是哪一步。
+    printf 'canonical delivery-path guard rejected a migration that IS covered by one of the five delivery paths\n' >&2
+    printf '    (self-test: fresh/upgrade/ensure/superseded/installer-only must all be accepted)\n' >&2
+    exit 1
+  }
 orphan_output=""
 if orphan_output=$(canonical_delivery_path_check '690_orphan.sql' '' '' '' '' '' 2>&1); then
   printf 'canonical delivery-path guard accepted orphaned migration\n' >&2
@@ -56,6 +101,47 @@ printf '%s\n' "$orphan_output" | grep -Fq '690_orphan.sql' || {
   printf 'canonical delivery-path guard did not identify the orphaned migration\n' >&2
   exit 1
 }
+
+# ★ 自测：多个缺口必须**一次报全**（§9.253 的承重判据）
+#
+# 旧行为是 `return 1`（首个失败即退出），所以「门只红在一条」这句话在四轮
+# 交接里被当成「只有一条问题」，实际每轮只揭开一层。
+#
+# 这条断言就是本轮修复的负控：若有人把 `found=1; return $found` 改回
+# `return 1`，下面这三行会立刻转红。
+multi_output=""
+if multi_output=$(canonical_delivery_path_check \
+    $'690_orphan_a.sql\n691_orphan_b.sql\n692_orphan_c.sql' '' '' '' '' '' 2>&1); then
+  printf 'canonical delivery-path guard accepted three orphaned migrations\n' >&2
+  exit 1
+fi
+for orphan in 690_orphan_a.sql 691_orphan_b.sql 692_orphan_c.sql; do
+  printf '%s\n' "$multi_output" | grep -Fq "$orphan" || {
+    printf 'canonical delivery-path guard stopped at the first failure: %s was never reported\n' "$orphan" >&2
+    printf '    (this is the exact "one failure at a time" behaviour §9.253 removed)\n' >&2
+    exit 1
+  }
+done
+
+# 收集器自身的负控：gate_fail 累积、gate_report 非零返回、且不吞条目。
+collector_probe=$(bash -c '
+  set -euo pipefail
+  GATE_FAILURES=()
+  GATE_SAW_CLOBBER=0
+  gate_fail() { GATE_FAILURES+=("$1"); }
+  '"$(sed -n '/^gate_report() {/,/^}/p' "$BASH_SOURCE")"'
+  gate_fail "first synthetic failure"
+  gate_fail "second synthetic failure"
+  if gate_report >/dev/null 2>&1; then
+    printf "COLLECTOR_DROPPED_SIGNAL"
+    exit 0
+  fi
+  printf "%s" "${#GATE_FAILURES[@]}"
+')
+if [[ "$collector_probe" != "2" ]]; then
+  printf 'failure collector is not accumulating: expected "2", got "%s"\n' "$collector_probe" >&2
+  exit 1
+fi
 
 for required in \
   "655_session_summaries_schema_reconcile.sql" \
@@ -83,10 +169,8 @@ sequence=$(awk '/^files=\(/{inside=1} inside{print} inside && /^\)/{exit}' "$SCR
 for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 656 659 660 661 662 663 664 V371 \
                 666 667 668 669 670 671 672 673 674 675 676 677 678 679 680 681 682 683 684 685 \
                 686 693 694 695 696 697 698 699 700 701 703 744 745 746 756 757 758 800; do
-  grep -q "${required}_" <<<"$sequence" || {
-    printf 'missing sequence entry: %s\n' "$required" >&2
-    exit 1
-  }
+  grep -q "${required}_" <<<"$sequence" || \
+    gate_fail "missing sequence entry: ${required}"
 done
 
 # 691/692: R16-documented installer-only window ("687-692 intentional sequence
@@ -174,10 +258,8 @@ top_startup=$(ls "$ROOT_DIR"/sql/migrations/startup/*.sql 2>/dev/null \
     done \
   | sed -E 's#.*/([0-9]{3})_.*#\1#' | sort -n | tail -1)
 if [[ -n "$top_startup" ]]; then
-  grep -q "${top_startup}_" <<<"$sequence" || {
-    printf 'startup migration %s exists but is missing from the channel files=(...) array\n' "$top_startup" >&2
-    exit 1
-  }
+  grep -q "${top_startup}_" <<<"$sequence" || \
+    gate_fail "startup migration ${top_startup} exists but is missing from the channel files=(...) array"
 fi
 
 # ── Reverse direction + full-coverage (2026-10-03 23:5x, audit §9.92.7d) ──
@@ -214,10 +296,7 @@ fi
 while IFS= read -r ref; do
   [[ -n "$ref" ]] || continue
   if [[ ! -f "$ref" ]]; then
-    printf 'channel files=(...) references a migration that does not exist: %s\n' "$ref" >&2
-    printf '    (apply-db-revision-sequence.sh exits 4 on a missing migration, so this breaks every upgrade run)\n' >&2
-    printf '    if this entry is intentionally disabled, comment the line out — a commented entry is not checked.\n' >&2
-    exit 1
+    gate_fail "channel files=(...) references a migration that does not exist: ${ref} (apply-db-revision-sequence.sh exits 4 on a missing migration, so this breaks every upgrade run; if this entry is intentionally disabled, comment the line out — a commented entry is not checked)"
   fi
 done < <(grep -v '^[[:space:]]*#' "$SCRIPT" \
          | sed -nE 's#.*\$ROOT_DIR/(sql/migrations/startup/[^"]+)"#\1#p' \
@@ -275,7 +354,16 @@ grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/script
 grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/deploy-lib.legacy/db-changelog.sh"
 grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/init-local-db.sh"
 grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/local-deploy-test.sh"
-canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_files" "$ensure_allowlist" "$superseded_migrations" "$channel_gap_allowlist"
+# `set -e` would abort here on the first unregistered migration, which is
+# exactly the "one failure at a time" behaviour this gate is being fixed for.
+# The helper now reports EVERY uncovered migration before returning non-zero,
+# so capture its output and fold it into the collected list.
+delivery_path_output=""
+if ! delivery_path_output=$(canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_files" "$ensure_allowlist" "$superseded_migrations" "$channel_gap_allowlist" 2>&1); then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && gate_fail "$line"
+  done <<<"$delivery_path_output"
+fi
 
 # R33 (2026-10-03) channel-leg completeness — structural closeout of the
 # five-recurrence class (693/699/701/703, then 815/816, then 817): each landed
@@ -302,8 +390,11 @@ while IFS= read -r name; do
     || printf '%s\n' "$superseded_migrations" | grep -Fxq "$name"; then
     continue
   fi
-  printf 'startup migration %s has an installer leg but no upgrade path; register it in the channel files array, the Go-ensure allowlist, (installer-only by design) channel_gap_allowlist, or (overturned, must never run) superseded_migrations\n' "$name" >&2
-  exit 1
+  # No bare printf here: the finding is collected and reported once, in the
+  # numbered summary at the end. Printing here as well produced every message
+  # twice — once unnumbered, once numbered — which is exactly the "which line
+  # is the real failure?" confusion this gate is being fixed for.
+  gate_fail "startup migration ${name} has an installer leg but no upgrade path; register it in the channel files array, the Go-ensure allowlist, (installer-only by design) channel_gap_allowlist, or (overturned, must never run) superseded_migrations"
 done <<<"$canonical_files"
 
 # Sequence-only migrations are valid fresh-install exceptions, but they must
@@ -312,10 +403,8 @@ done <<<"$canonical_files"
 for required in \
   '705_request_logs_reattach_detached_partitions.sql' \
   '710_request_logs_view_session_family_v2.sql'; do
-  grep -Fxq "$required" <<<"$sequence_files" || {
-    printf 'required sequence-only migration missing from revision sequence: %s\n' "$required" >&2
-    exit 1
-  }
+  grep -Fxq "$required" <<<"$sequence_files" || \
+    gate_fail "required sequence-only migration missing from revision sequence: ${required}"
 done
 
 # Ensure-only exceptions must not silently expand or disappear from the
@@ -324,10 +413,8 @@ for required in \
   '704_plan_quota_probe_backoff.sql' \
   '709_work_type_route_coverage.sql' \
   '715_route_incidents_pending_state.sql'; do
-  grep -Fxq "$required" <<<"$ensure_allowlist" || {
-    printf 'required Go-ensure migration missing from allowlist: %s\n' "$required" >&2
-    exit 1
-  }
+  grep -Fxq "$required" <<<"$ensure_allowlist" || \
+    gate_fail "required Go-ensure migration missing from allowlist: ${required}"
 done
 
 # Execute the REAL clobber guard (2026-09-14 audit F-P0-1 root cause):
@@ -356,8 +443,13 @@ chains_block="$(awk '/^intentional_function_chains=\(/{inside=1} inside{print} i
 eval "$chains_block"
 eval "$guard_block"
 if [[ -n "${guard_violations:-}" ]]; then
-  printf 'clobber guard violations (deploy would exit 5):\n%s\n' "$guard_violations" >&2
-  exit 5
+  # Clobber violations keep exit 5 (deploy-time parity) but no longer mask the
+  # other collected failures: the report below runs first, then the exit code
+  # is chosen from what was found.
+  GATE_SAW_CLOBBER=1
+  while IFS= read -r vline; do
+    [[ -n "$vline" ]] && gate_fail "clobber guard violation (deploy would exit 5): ${vline}"
+  done <<<"$guard_violations"
 fi
 
 # Function clobber guard (2026-09-05 PG log audit): 572→563 silently
@@ -367,27 +459,9 @@ for chain in \
   'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|661_session_summary_token_ratio_reassert.sql|' \
   'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|' \
   'ensure_request_logs_bodies_partition|694_partition_ensure_timezone.sql|765_bodies_columnar_storage.sql|829_bodies_columnar_rollback.sql|'; do
-  grep -qF -- "'$chain'" "$SCRIPT" || {
-    printf 'missing intentional function chain registration: %s\n' "$chain" >&2
-    exit 1
-  }
+  grep -qF -- "'$chain'" "$SCRIPT" || \
+    gate_fail "missing intentional function chain registration: ${chain}"
 done
-
-# 656 has no db.go ensure compensation; the sequence is its only存量 deployment
-# path besides the installer fresh-install runner.
-if ! grep -q '656_auto_route_selections_hot' "$ROOT_DIR/installer/internal/dbinit/runner.go"; then
-  printf 'installer runner is missing 656_auto_route_selections_hot\n' >&2
-  exit 1
-fi
-
-# 644's CHECK rebuild must be definition-aware: deploying must not re-run a
-# validated ADD CONSTRAINT (ACCESS EXCLUSIVE + full scan) when the canonical
-# taxonomy is already in place.
-if ! grep -q "position('no_eligible_model' in pg_get_constraintdef" \
-    "$ROOT_DIR/sql/migrations/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql"; then
-  printf '644 CHECK rebuild is not definition-aware\n' >&2
-  exit 1
-fi
 
 # 2026-09-21 内容指纹重放清单（纪律⑨，F4 机制债收口）三重自清洁：
 #   1. 条目格式必须为 "basename|sha256(64 hex)"；
@@ -401,24 +475,50 @@ for entry in "${legacy_content_replays[@]}"; do
   base="${entry%%|*}"
   sha="${entry##*|}"
   if [[ "$base" == "$entry" || "$sha" == "$entry" || "${#sha}" -ne 64 || ! "$sha" =~ ^[0-9a-f]+$ ]]; then
-    printf 'malformed legacy_content_replays entry (expected "basename|sha256"): %s\n' "$entry" >&2
-    exit 1
+    gate_fail "malformed legacy_content_replays entry (expected \"basename|sha256\"): ${entry}"
+    continue
   fi
   grep -qF "/${base}\"" <<<"$sequence" || {
-    printf 'legacy_content_replays target %s is not registered in the sequence files array\n' "$base" >&2
-    exit 1
+    gate_fail "legacy_content_replays target ${base} is not registered in the sequence files array"
+    continue
   }
   target="$ROOT_DIR/sql/migrations/startup/$base"
-  [[ -f "$target" ]] || { printf 'legacy_content_replays target missing: %s\n' "$base" >&2; exit 1; }
+  if [[ ! -f "$target" ]]; then
+    gate_fail "legacy_content_replays target missing: ${base}"
+    continue
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
     actual=$(sha256sum "$target" | cut -d' ' -f1)
   else
     actual=$(shasum -a 256 "$target" | cut -d' ' -f1)
   fi
   if [[ "$actual" != "$sha" ]]; then
-    printf 'stale legacy_content_replays fingerprint for %s: entry %.12s… actual %.12s… (update the entry to the actual sha)\n' "$base" "$sha" "$actual" >&2
-    exit 1
+    gate_fail "stale legacy_content_replays fingerprint for ${base}: entry ${sha:0:12}… actual ${actual:0:12}… (update the entry to the actual sha)"
   fi
 done
 
-printf 'apply-db-revision-sequence contract passed\n'
+# 656 has no db.go ensure compensation; the sequence is its only存量 deployment
+# path besides the installer fresh-install runner.
+if ! grep -q '656_auto_route_selections_hot' "$ROOT_DIR/installer/internal/dbinit/runner.go"; then
+  gate_fail "installer runner is missing 656_auto_route_selections_hot"
+fi
+
+# 644's CHECK rebuild must be definition-aware: deploying must not re-run a
+# validated ADD CONSTRAINT (ACCESS EXCLUSIVE + full scan) when the canonical
+# taxonomy is already in place.
+if ! grep -q "position('no_eligible_model' in pg_get_constraintdef" \
+    "$ROOT_DIR/sql/migrations/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql"; then
+  gate_fail "644 CHECK rebuild is not definition-aware"
+fi
+
+# ── 单次报全（2026-10-05 审计 §9.253）────────────────────────────────────────
+# 退出码语义保持不变：有 clobber 违规 ⇒ 5（与 deploy-time 对齐）；否则有任意
+# 其它失败 ⇒ 1；全通过 ⇒ 0。改变的只有**报告的完整度**，不是判据的严格度。
+if gate_report; then
+  printf 'apply-db-revision-sequence contract passed\n'
+  exit 0
+fi
+if (( GATE_SAW_CLOBBER )); then
+  exit 5
+fi
+exit 1
