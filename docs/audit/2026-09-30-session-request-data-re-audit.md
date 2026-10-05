@@ -30682,3 +30682,101 @@ v1  30 天：2,104,056 行  ← 其中【无会话头 1,332,665 = 63.3%】
 否则差值没有意义。**我用的是 `EXISTS` 去重，不是行数相减**，
 所以这条数字没有进文档。
 
+
+### §9.255 ★ 更正 §9.254.6：查清 `credits_charged` 为什么两面全 0 ——**不是写方坏了，是流量全是 `default` 租户**
+
+> 本节**就地更正 §9.254.6 第 1 条**的措辞（原文保留）。
+> 生产 252 **只读**；本地真库只读。**零写入。**
+
+#### §9.255.1 我自己先错了一次：**「结构性管道缺口」是假的**
+
+我先看到 `entryToProcessedRequest` 搬了 25 个 `entry.*` 字段、**`CreditsCharged` 不在其中**，
+而 `turn_writer.go:482` 确实写 `nilIfZeroI64(rec.CreditsCharged)`
+⇒ 我一度要断言「**会话侧采了没搬，结构上永远 NULL**」。
+
+**读到第二段就推翻了**：`applyStorageS1AFields`
+（`internal/sessionv2mirror/s1a_fields.go`）**由 `entryToProcessedRequest` 在 legacy
+字段之后调用**，其中第 62-64 行就是
+
+```go
+// 计费组（credits_charged 计费事实源，D7）
+if entry.CreditsCharged != nil {
+    req.CreditsCharged = *entry.CreditsCharged
+}
+```
+
+⇒ **管道是通的**：`entry` → 桥接 → S1a → `ProcessedRequest.CreditsCharged`
+→ `turnRec.CreditsCharged` → `session_turns.credits_charged`。
+★ 错因：我**只读了桥接函数的 legacy 段**就下结论。
+**与 §9.247.1 的「假证人」同族：探针只看到一半。**
+
+#### §9.255.2 真因：**生产流量 99.99% 是 `default` 租户，而计费路径按设计跳过它**
+
+`maas/service.go:144` `chargeTokensWithMultiplier` 的第一条：
+
+```go
+if !s.Enabled() || tenantID == "" || tenantID == "default" {
+    return 0, nil          // ← 不报错，返回 0
+}
+```
+
+而 `domains/streaming/handler.go:6670` 要求 `err == nil && charged > 0` 才
+`reqLog.CreditsCharged = &charged` ⇒ **`default` 租户的请求结构性地不写这一列**。
+
+**生产 252 实测（近 7 天，v1 两面都读）**：
+
+| tenant | 行数 | 有 `credits_charged` |
+|---|---:|---:|
+| **`default`** | **91,877** | **0** |
+| `chenb` | 8 | 0 |
+
+**本地真库 30 天同口径：0 行。** ⇒ `maas` 的
+`SUM(COALESCE(credits_charged, 0))` **恒为 0，这是该部署的正常状态**，
+**不是「计费失效」**。⇒ ★ **§9.254.6 第 1 条的「失效」措辞不准确，就地更正**：
+该列**接线正确、只是这个部署没有多租户计费流量**。
+
+#### §9.255.3 计费桶有数据，但它的 `credits` **不是** `credits_charged`
+
+`maas_credit_consumption_buckets`（生产）：
+
+| 指标 | 值 |
+|---|---|
+| 桶行数 / 租户数 | 266 / 4（`chenb` 220 · `hansi` 37 · `system` 7 · `test-tenant` 2） |
+| 时间跨度 | 2026-07-09 → **2026-10-04 00:00** |
+| `credits` 合计 / `request_count` 合计 | 128,836 / 3,674 |
+
+⇒ 桶里**有** credits，但它来自 `credit_buckets.go` 里那句
+`RequestLogCreditsSQL(alias, false)`（**token × 费率公式**），
+**与 `credits_charged` 是两个量**。
+★ **对 D32 的意义**：`maas` 改指会话族**不会威胁 `credits_charged`（两面都是 0）**；
+真正的数字变化只来自 §9.254.3 那几列（`cost_usd` / `cache_*_tokens` / `completion_tokens`）。
+
+#### §9.255.4 ★ 我又差点误判一次：「桶滞后 1.5 天」**不是作业卡住**
+
+看到「最新桶 = 2026-10-04 00:00，而今天 10-05」时我准备记「桶作业停了」。
+按天展开后才发现：
+
+```
+2026-09-29  1 桶  credits 24      2026-10-01  1 桶（最晚 09:00）credits 59
+2026-09-30  2 桶  credits 201     2026-10-04  1 桶 credits 14
+（10-02、10-03 完全没有桶）
+```
+
+而 `credit_buckets.go` 的 WHERE 里有
+**`AND tenant_id NOT IN ('', 'default')`** ——
+**桶按设计就不收 `default`** ⇒ 生产 99.99% 是 `default`
+⇒ **每天只有 0~5 行桶，日期出现空档是输入总体稀疏，不是作业不健康**。
+
+★ **这是 §9.254.7 那个陷阱的第四种形态**：
+前三种是「少读一面 / 两个总体相减 / 只看分类不看缺失」，
+**这次是「把稀疏的输出当成停摆的作业」**。
+⇒ **输出密度是输入总体的属性；判断作业健康度必须先确认它本来该产出多少。**
+
+#### §9.255.5 本节不主张的事
+
+1. **不主张** `credits_charged` 有缺陷 —— 它的接线经核对是**完整且正确**的。
+2. **不主张**「计费失效」—— 桶里的 credits 由 token 公式产出，数据是真的。
+3. **不主张** `default` 租户应该被计费 —— 那是**设计决定**（单租户内部流量不计费），
+   要不要改是**属主的商业决定**，不是缺陷。
+4. 全部为**只读**测量；**生产零写入**。
+
