@@ -3006,9 +3006,15 @@ DDL/分区树/约束/索引（§9.185）。
   `completion` 100% vs 70.98%）⇒ **改指后计费数字会变**。
   另 `outbound_model` 口径有 **8.7%** 会落到 `'unknown'`。
   ⇒ **这是用户可见的计费变更，不由我单方决定。**
-- ⚠ **顺带查出的失效项**：`credits_charged` **两面都是 0%** ⇒
+- 🛑 **顺带查出的失效项（原结论，2026-10-06 审计 §9.255 已更正）**：
+  `credits_charged` **两面都是 0%** ⇒
   `maas` 的 `SUM(credits_charged)` **恒为 0**，「按 credit 计费」目前实际走的是
   token 兜底口径。**这一条需要单独查写方**（不在 §9.254 范围）。
+  **更正**：**不是结构性管道缺口，也不是「计费失效」**——
+  `applyStorageS1AFields`（`internal/sessionv2mirror/s1a_fields.go:62-64`）确实搬该列。
+  真因是 `maas/service.go:144` 对 `tenant_id IN ('', 'default')` 直接 `return 0, nil`，
+  而生产 99.99% 流量是 `default` 租户（7 天 91,877 / 91,885 行）。
+  ⇒ **该列接线正确，只是没有多租户计费流量**。详见审计 §9.255。
 - **三条读方分档**：
   ① `maas/` 6 处 = **对外计费**，副作用最大；
   ② `admin/tenants.go` 4 处 + `usage_credits.go` 1 处 = **内部后台**，同类但风险低一档；
