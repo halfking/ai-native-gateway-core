@@ -30316,3 +30316,97 @@ go build ./...                    → 仅 vendored go-m1cpu 的既有 C 警告�
 3. **它只覆盖 `Write` 这一个函数**。`runShadowWrite` 的信号量分支、
    replay 路径、以及 telemetry 侧的 fire 次数都**不在**本判据覆盖范围内。
 
+
+### §9.251 ★ 补上 §9.250.5 盲区 ①：**重复 fire 的富化契约**从「mock 断言语句」升级为「真库断言值」
+
+> 本节**只新增一个测试文件**，未改任何生产代码路径。**本地真库**（非生产）。
+
+#### §9.251.1 先确认「已有门是不是真在守」——结论：**6 个重复写测试全是 pgxmock**
+
+`domains/session/v2/turn_writer_dup_test.go` 已有 6 个测试覆盖重复写
+（含 `TestTurnWriterAppendTurnRaceSameRequestId`），乍看之下这条路径已被守住。
+但逐个读下来，**它们全部用 pgxmock**：
+`WillReturnResult(pgxmock.NewResult("INSERT", 0))` 里的 `RowsAffected`
+**是 mock 说了算的**，`WillReturnRows(...).AddRow("session-existing", 9, partitionDate)`
+里的 `turn_no` 也是 mock 塞的。
+
+⇒ **它们能证明「语句按这个顺序、以这些参数发出了」，
+证明不了「值真的落进了行里」。**
+
+★ 而 §9.250.5 点名的盲区正是这一条：**AST 形状判据与 mock 调用序列判据
+都看不见 SQL 语义**。`COALESCE(NULLIF($10, ''), title)` 写成 `= $10` 时，
+参数个数对、语句照发 ⇒ **那 6 个 mock 测试全绿**，
+而真库上「一次全空的后续 fire」会把 `title` 抹成空串。
+
+#### §9.251.2 落地的门
+
+新增 `domains/session/v2/turn_writer_double_fire_realdb_test.go`
+（沿用 `client_protocol_realdb_test.go` 的接入约定：`//go:build !integration`、
+`TEST_DATABASE_URL` 未设即 `t.Skip`、**前提自证**先探视图与列的存在、收尾验残留）。
+
+契约来自 turn_writer.go 里 2026-08-05 那段注释：镜像对每个请求 **fire 两次**
+（INSERT-persist 一次、UPDATE-persist 一次），首 fire 的 `compression_strategy` 是空的
+（那时压缩器还没跑）。冲突路径上那一整段
+`COALESCE(NULLIF(...))` / `CASE WHEN ... <> '' ... END` 的承诺是
+**「后一次 fire 的空值永远不能抹掉前一次填好的值」（monotonic enrichment）**。
+
+| 用例 | 内容 | 作用 |
+|---|---|---|
+| **A（阳性）** | fire#1 全空 → fire#2 带 `zstd` / `title` / `summary` / `submit_mode=delta` | 晚到的非空字段**必须**落库；且 `turn_no` 不变、`session_turns_with_current_month` 恰好 1 行 |
+| **B（★ 阴性对照，本门重点）** | fire#3 **再次全空** | 行里**仍然是** fire#2 填进去的值 |
+
+读的是 `session_turns_with_current_month` 而非裸 hot 表 —— §9.248.3 已确认该视图
+= `session_turns_hot ∪ session_turns`，正是**对账侧能看到的那个面**。
+
+#### §9.251.3 ★★ 变异台账：以及**第一版台账全部无效**这件事
+
+先说无效的那一版。**第一版我把标记写成 Go 注释**：
+
+```
+title = COALESCE(NULLIF($10, ''), title),   →   title = $10, // M-R1
+```
+
+而这三行**位于反引号原始 SQL 字符串内部** ⇒ 注释被送进 PostgreSQL
+⇒ 真库报 `syntax error at or near "//" (SQLSTATE 42601)`，
+测试在 **fire#2** 就炸了。三条变异**都红了，但红的理由与判据无关**。
+
+⚠ ⇒ **「转红」还不够，必须核对它是在哪一条断言上红的。**
+与 §9.250.3 的「编译失败 ≠ 判据转红」同族，这里是
+**「SQL 语法失败 ≠ 语义判据转红」**。
+
+**去注释后重跑的有效台账**：
+
+| # | 变异 | 实测 |
+|---|---|---|
+| M-R1 | `title` 的 `COALESCE(NULLIF($10,''), title)` → `= $10` | ✅ 红，**且只报第 250 行**（fire#3 的 ★ 断言）；fire#2 正常，**用例 A 的 title 断言未报** |
+| M-R2 | `compression_strategy` 的 COALESCE → 裸赋值 | ✅ 红，第 245 行（★ strategy） |
+| M-R3 | `summary` 的 COALESCE → 裸赋值 | ✅ 红，第 254 行（★ summary） |
+| — | 还原后复跑 | ✅ PASS，`git diff --stat` 为空 |
+
+★ **M-R1 的这一条同时证实了「A 绿 / B 红」确实可分**：
+只测 A 的门会完全放过这个缺陷，**两个用例缺一不可**。
+
+#### §9.251.4 门结果
+
+```
+env -u TEST_DATABASE_URL go test -run …  → SKIP（"TEST_DATABASE_URL not set…"）
+TEST_DATABASE_URL=… go test -v           → PASS（1.26s）
+gofmt -l <新文件>                          → 无输出
+go vet ./domains/session/v2/              → 无输出
+go test ./domains/session/v2/（带 DSN）    → ok  6.597s
+探针残留（两张脸）                          → 各 0 行
+```
+
+**未重跑 `db` / `admin` / `cmd/gateway` 三组全量门** —— 本轮只新增一个测试文件，
+未触碰它们覆盖的代码。基线仍是 §9.240 之后的**旧读数**，不是本轮实测。
+
+#### §9.251.5 本节不主张的事
+
+1. **不主张**生产上存在这个缺陷。`COALESCE(NULLIF(...))` 在当前树上是对的，
+   本门是**防线**，不是 bug 报告。
+2. **不主张**这道门覆盖了 `runShadowWrite` 的信号量分支、`replay.go`、
+   或 telemetry 侧的 fire 次数（§9.250.5 盲区 ② 仍未覆盖）。
+3. 本门只覆盖 `AppendTurn` 的**冲突富化**面；turn 插入本身被跳过的那条
+   （§9.250 的 M6）仍由**静态**判据 ③ 守，**两者互不重叠**。
+4. 全部操作发生在**本地真库**，探针行已清理；**生产零写入**。
+

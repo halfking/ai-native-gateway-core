@@ -13067,3 +13067,38 @@ M6/M7 的「红」全是假红，修好后重跑了全部台账。
 是**源码形状**判据而非行为判据（改 SQL 的 `WHERE`/`ON CONFLICT` 它照样绿）；
 只覆盖 `Write` 一个函数，**不覆盖** `runShadowWrite` 的信号量分支、replay 路径、
 telemetry 的 fire 次数。
+
+## §70.88 补上 §70.87 的盲区 ①：重复 fire 富化从「mock 断言语句」升级为「真库断言值」
+
+> 审计正文见 §9.251。新增 `domains/session/v2/turn_writer_double_fire_realdb_test.go`。
+> **只新增测试**，未改生产代码。**本地真库**，生产零写入。
+
+**先查「已有门是不是真在守」**：`turn_writer_dup_test.go` 里 6 个重复写测试
+**全是 pgxmock** —— `RowsAffected` 与 `turn_no` 都是 mock 塞的，
+它们证明「语句按这个顺序发出了」，**证明不了「值真的落进了行里」**。
+而 `COALESCE(NULLIF($10,''), title)` 写成 `= $10` 时参数个数对、语句照发
+⇒ **那 6 个测试全绿**，真库上却会把 title 抹空。
+
+**新门**：fire#1 全空 → fire#2 带真实压缩结论与标题摘要（用例 A 阳性）
+→ fire#3 再次全空（★ 用例 B 阴性对照）。读
+`session_turns_with_current_month`（= hot ∪ archived，正是对账面）。
+接入沿用 `client_protocol_realdb_test.go`：`TEST_DATABASE_URL` 未设即 skip、
+**前提自证**先探视图与列、收尾验两张脸残留均为 0。
+
+**★★ 变异台账的教训比门本身更重要**：
+第一版我把标记写成 `title = $10, // M-R1`，而这三行**在反引号原始 SQL 字符串内部**
+⇒ 注释进了 PostgreSQL ⇒ `syntax error at or near "//" (42601)`，
+测试在 **fire#2** 就炸了，**三条变异全红但理由与判据无关**。
+⇒ **「转红」不够，必须核对它是在哪一条断言上红的。**
+去注释后重跑：M-R1 ✅红（**只报第 250 行 = fire#3 的 ★ 断言**，
+fire#2 正常、**用例 A 的 title 断言未报**）· M-R2 ✅红(245) · M-R3 ✅红(254) · 还原 ✅PASS。
+★ **M-R1 这一条同时证实「A 绿 / B 红」确实可分：只测 A 的门会完全放过这个缺陷。**
+
+**门结果**：无 DSN → SKIP；有 DSN → PASS (1.26s)；`gofmt -l` 空；
+`go vet ./domains/session/v2/` 空；`go test ./domains/session/v2/` ok (6.597s)；
+探针残留两张脸各 0 行。
+**未重跑 db/admin/cmd-gateway 三组全量门**（只新增测试文件，未触碰其覆盖代码）；
+基线仍是 §9.240 之后的**旧读数**。
+
+**仍未覆盖（§9.250.5 盲区 ②）**：`runShadowWrite` 的信号量分支、`replay.go`、
+telemetry 的 fire 次数。
