@@ -515,7 +515,7 @@ func TestV1ReaderTiersAssertMembers(t *testing.T) {
 		"bg/passive_probe_listener.go",
 		"bg/today_success_probe.go",
 		"cmd/gateway/dual_read_validator.go",
-		"cmd/gateway/v1_write_liveness.go", "cmd/gateway/dual_read_validator.go",
+		"cmd/gateway/v1_write_liveness.go",
 		"db/probe_views_unified.go",
 		"domains/providerprofile/adapters.go",
 		"domains/routeincident/store.go",
@@ -554,6 +554,25 @@ func TestV1ReaderTiersAssertMembers(t *testing.T) {
 // assertTierMembers 双向断言：期望集合里每个都在该档，且该档**没有多余**成员。
 func assertTierMembers(t *testing.T, byTier map[string][]string, tier string, want []string) {
 	t.Helper()
+	// ★ 期望名单自身必须无重复。下面的比较全是集合语义（have 是 map），
+	//   所以**名单里多写一遍同一个文件永远不会被下面任何一条抓到** ——
+	//   集合相等，缺 0 多 0，门照样绿，而「字面量 29 / 唯一 28」这种事就静默存在。
+	//   §9.265 追加 `cmd/gateway/v1_write_liveness.go` 时就是这么把
+	//   `cmd/gateway/dual_read_validator.go` 又写了一遍的。
+	seen := map[string]bool{}
+	var dup []string
+	for _, f := range want {
+		if seen[f] {
+			dup = append(dup, f)
+		}
+		seen[f] = true
+	}
+	if len(dup) > 0 {
+		sort.Strings(dup)
+		t.Errorf("档位 %s 的期望名单自身有 %d 个重复项（%d 项字面量 / %d 个唯一文件）：%s —— "+
+			"集合相等，下面两条比较抓不到这种错；名单必须逐个唯一",
+			tier, len(dup), len(want), len(seen), strings.Join(dup, " "))
+	}
 	have := map[string]bool{}
 	for _, f := range byTier[tier] {
 		have[f] = true
