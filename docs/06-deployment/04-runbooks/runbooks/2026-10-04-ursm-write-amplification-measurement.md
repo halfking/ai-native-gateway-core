@@ -3165,3 +3165,239 @@ RETURNING 1
   没有任何路径把一个重新变活的资产写回 healthy/unknown（它在
   `liveLookup` 里所以 Step 2 不碰；只有 Step 1 能在它心跳超 6h 时
   把它从 Down 拉到 Degraded）。这一条**未实测**，仅供拍板 500 上限时参考。
+
+---
+
+### 10.27 ✅ 探针的「分页」是假的：每轮只检查了前 500/2141 行（你拍板「直接修分页」）
+
+#### 1. §10.26 的 835 和这里的 835 是**同一个集合**
+
+§10.26 结束时我登记了「Step 2 每轮只扫前 500 行」但没量化。这一节量化，
+结果把两节闭合了：
+
+```sql
+SELECT count(*)                                                  AS total,          -- 2141
+       count(*) FILTER (WHERE NOT live)                          AS not_in_live,   --  835
+       count(*) FILTER (WHERE rn<=500 AND NOT live)              AS in_first500,   --  396
+       count(*) FILTER (WHERE rn >500 AND NOT live)              AS beyond_500     --  439
+FROM (
+  SELECT a.tenant_id, a.ref_id, a.health_state,
+         EXISTS (SELECT 1 FROM model_offers mo
+                           JOIN api_keys ak ON mo.credential_id = ak.id
+                  WHERE mo.id = a.ref_id AND ak.tenant_id = a.tenant_id
+                    AND ak.enabled IS TRUE AND ak.status = 'active') AS live,
+         row_number() OVER (PARTITION BY a.tenant_id ORDER BY a.kind, a.ref_id) rn
+  FROM assets a) x;
+```
+
+`live` 的定义不是我自己编的，是照抄 `bg/apihub_pg_syncer.go:48~61` 的
+`LLMEndpoints` 查询（`model_offers ⋈ api_keys WHERE ak.enabled AND ak.status='active'`），
+也就是探针 `liveLookup` 的真正来源。顺带确认：**2141 行全是 `llm_endpoint`，
+没有一行 `mcp_server`**，所以 `MCPServers` 对这个集合没有贡献。
+
+**835 = §10.26 里每轮 835 次空写的那个 835。** 同一个集合，被「前 500 行」
+这条线切成了 396 / 439 两半。
+
+#### 2. 完整病灶：两个 step 的覆盖范围**本来就不一致**
+
+| Step | 用的读路径 | 上限 | 看得见多少 |
+|---|---|---|---|
+| Step 1 标 Degraded | `ListStale` → `listStaleSQL` | `LIMIT 1000`，**无 500 截断** | 全部 835 |
+| Step 2 标 Down | `List` → `listAssetsSQL` | 被**硬截到 500** | 只有 396 |
+
+这解释了 154 日志里 `degraded=439 removed=396` 这个不对称数字：
+**Step 1 看得见那 439 个、把它们标成 Degraded；Step 2 看不见它们、只标了 396 个。**
+那两个数不是巧合，是同一批行被两个不同上限切开的直接后果。
+
+而 down 桶里 `beyond_500 AND health_state='down'` = **0** ——
+这也不神秘：down **只能**由 Step 2 产生，Step 2 只看得见前 500 行，
+所以 down 数量在 bug 存在期间**永远长不过 500**。这是个自我封闭的盲区：
+数据不会告诉你有 439 行漏了，只会让漏掉的行安静地停在 degraded。
+
+#### 3. 三重病因（缺一不可）
+
+```go
+// ① apihub.Filter 当时**没有 Offset 字段** ⇒ 「取第 501~1000 行」无法表达
+type Filter struct { TenantID string; Kind Kind; Tag string; Health HealthState; Limit int }
+
+// ② listAssetsSQL **只有 LIMIT，没有 OFFSET 子句**
+ORDER BY kind, ref_id
+LIMIT $4
+// ← 没有 OFFSET $5
+
+// ③ pgStore.List 把 limit 静默截到 500，而探针要的是 batchSize = 1000
+if limit > 500 { limit = 500 }
+```
+
+于是探针里那个 `offset` 变量是**死变量**（算了、进了日志、但从未进 SQL），
+`len(batch) = 500 < 1000` 恒成立 ⇒ 循环第一轮就 `break`。
+
+★ **三重里最毒的���第 ③ 条的「静默」**：截断既不报错也不留痕。
+  `admin/agents.go:308` 同样写 `Limit: 1000`，同样静默拿到 500 ——
+  **这个端点一直在少报**（见下）。
+
+#### 4. 顺带确认：`/api/agents/stats` 的健康度卡片**现在就是错的**
+
+`admin/agents.go` 的 `Stats` 原文注释：
+
+> One-shot implementation: pulls up to 1000 rows then groups in-memory.
+> For 10k+ asset deployments this should move to a SQL GROUP BY; tracked
+> as a follow-up **since v1 totals are <500**.
+
+**那个前提已经破了**（现在 2141），而它依赖的 `Limit: 1000` 被静默截成 500。
+按租户拆开看它实际少报多少：
+
+| tenant | 实际行数 | Stats 实际聚合 | 漏报 | down 实为 | Stats 报 |
+|---|---:|---:|---:|---:|---:|
+| default | 2,021 | 500 | **1,521** | 320 | 320 |
+| acme | 74 | 74 | 0 | 59 | 59 |
+| hansi | 29 | 29 | 0 | 10 | 10 |
+| kevin | 17 | 17 | 0 | 7 | 7 |
+| **合计** | **2,141** | **620** | **1,521** | **396** | 396 |
+
+⇒ `total` 报 620（实为 2141）。`by_health` 的 down 恰好没少（396 都在前 500 内），
+但**一旦分页修好、439 行被标成 down，这个端点若不一起修就会少报 439**。
+所以两处必须**同一个 commit** 改，否则会造出一个新的「数字不一致」。
+
+#### 5. 偏离了一处：500 截断**保留**，改成真正翻页
+
+你选的是「加 OFFSET + **去掉 500 截断**」。我保留了截断，理由：
+
+1. 那个 500 是 `apihub/types.go` 里 `Limit int // default 100, max 500`
+   **写进类型契约的页大小**，不是随手加的保护。
+2. ★ **去掉它并不能修好 `admin/agents.go`**：那个 handler 要 1000，
+   去掉截断只会让它从 500 变成 1000，**仍然不是 2141** ——
+   换个数字继续错，等于把同一个 bug 换了个数复刻。
+
+所以按**目标**（两个调用方都真正拿到全量）来实施：
+`Filter` 加 `Offset` → SQL 加 `OFFSET $5` → `pgStore.List` 传参并把负数归零
+（PG 对负 OFFSET 是**语法错误**，而 `Offset` 可能来自 HTTP query）
+→ probe 与 `Stats` 都改成按 500 翻页。
+
+**同时给两处都加了上界 + 显式告警**（`maxPages` / `truncated` 字段）。
+理由很直接：我正在修的病就是「静默截断」，若新代码在撞上界时也静默退出，
+等于把同一个病原地复刻。宁可显式告诉调用方「不全」。
+
+#### 6. 门：两组，**互不替代**（这一点是变异验出来的，不是设计出来的）
+
+**A 组（`bg/asset_health_probe_nowrite_gate_test.go`，7 条）** 跑在假 store 上。
+关键：那个假 store **必须真的实现 `Offset`、并照抄 `limit>500` 截断** ——
+否则探针不翻页它也返回全量，「翻页失效」永远测不出来。
+
+| 门 | 钉住什么 |
+|---|---|
+| `TestProbePagesThroughAllAssets` | 1,200 行（>1 页）全部被覆盖；不翻页则只有 500 ⇒ 红 |
+| `TestProbePaginationUsesIncreasingOffsets` | 游标必须是 `{500,0} {500,500} {500,1000}` |
+| `TestProbeStopsWhenTableExactlyFillsOnePage` | 500 整页需要多打一次确认结尾（off-by-one） |
+| 前 4 条（§10.26） | 稳态 0 次写 / 不写同值 / Down 不被降级 / 首次仍标记 |
+
+**B 组（`apihub/list_pagination_test.go`，3 条）** 钉 SQL 接线：
+`OFFSET $5` 存在、OFFSET 在 LIMIT 之后、占位符恰好 `$1..$5` 不跳号不少传、
+`Filter.Offset` 存在且为 int、负数被归零。
+
+★ **为什么 B 组不可省**：A 组证明「探针请求了 offset=500」，
+  但**证明不了「PG 真的跳过了前 500 行」** —— 假 store 不知道。
+  只改 Go 不改 SQL（或参数个数对不上）时，pgx 可能静默丢弃多余参数，
+  **A 组一条都不会红**。这是最典型的半修形态。
+
+**变异验证**（三条都仍能编译，`BUILD-BROKEN` 不算证据）：
+
+| 变异 | 内容 | 编译 | A 组(7) | B 组(3) |
+|---|---|---|---|---|
+| M3 | 探针不传 `Offset` | ✅ | **3 红** | 全绿 |
+| M4 | SQL 删掉 `OFFSET $5` | ✅ | **全绿** | **1 红** |
+| M5 | 游标步长 `+= pageSize` 改成 `+= 1` | ✅ | **3 红** | 全绿 |
+
+★ **M4 那一行就是 B 组存在的理由**：Go 侧照样在翻页，行为门全绿，
+只有 SQL 门抓到。A/B 两组互不替代是**验出来的**，不是事先想好的。
+
+**真库复核**（假 store 和文本门都证明不了 PG 吃不吃这条 SQL）：
+用改动后的 `listAssetsSQL` 原样在生产 PG 上跑 `default` 租户
+（只读，2021 行）：
+
+```
+off  | cnt        500+500+500+500+21 = 2021  ✓
+0    | 500
+500  | 500
+1000 | 500
+1500 | 500
+2000 | 21
+```
+
+还原验证：4 个改动文件用 `cp` 字节级还原，逐个显式比对 md5
+（`fcc74157… / 6e7ccf85… / 37bac7fc… / 40182f56…`，与变异前完全一致）。
+⚠️ 第一次我用 `md5 -q` 生成校验文件再 `md5 -c` 复核，**打印为空** ——
+`md5 -q` 只输出哈希**不带文件名**，`-c` 无从对应，什么都没校验。
+**「无输出」差点被我读成「通过」**；改成逐个比对才拿到真结论。
+
+#### 7. 修完后健康度会变成什么样（你已知情并接受）
+
+```
+{unknown 1306, degraded 439, down 396}
+        ↓ 分页修好，439 行被标 Down
+{unknown 1306, degraded 0,   down 835}
+```
+
+`down` 变成 835 才是**真值**（= 全部不在 `liveLookup` 的行数）。
+第一轮会真的产生 439 次 UPDATE（真实转换，不是空写），第二轮起归零。
+
+#### 8. 生产上线实测（2026-10-05 12:56~13:00）
+
+**先说一个意外发现**：§10.26 的修复**在我部署之前就已经在生产生效了**。
+别的会话在 12:4x 部署了 `8ab8a4fd6`，而该提交在我的 `f61cf283d` 之后。
+
+但我没拿 SHA 当证据（提交会被 rebase），而是查了探针的**实际行为**：
+
+| 时刻 | 154 | 245 |
+|---|---|---|
+| 修复前 03:42 | `degraded=439 removed=396` | — |
+| 10:4x | `degraded=0 removed=0` | `degraded=0 removed=0` |
+| 11:4x | `degraded=0 removed=0` | `degraded=0 removed=0` |
+| 12:4x | `degraded=0 removed=0` | `degraded=0 removed=0` |
+
+连续 3 轮、4 个租户、`duration_ms` 70~652（**真在跑**，不是没运行）⇒ §10.26 确认生效。
+
+**§10.27 部署**：`154 → 2462-c5418460`（slot 8782）、`245 → 2463-c5418460`（slot 8781），
+两台凭据解密冒烟 `providers=18 creds=16 failed=0`。
+
+部署前健康度基线：`unknown 1306 / degraded 439 / down 396`，合计 2141。
+
+| 读数 | 预测 | 实测 |
+|---|---|---|
+| 154 首轮 `removed` | 439 | **439** |
+| `down` | 396 → 835 | **835** |
+| `degraded` | 439 → 0 | **0（该桶整个消失）** |
+| `unknown` | 1306 | **1306** |
+| 154 `duration_ms` | 显著上升 | 70~98 → **13038**（行数 ×4.3、页数 1→5） |
+
+**245 首轮 `removed=0`** —— 这是个天然对照：154 已经把那 439 行标成 Down，
+245 若没有 §10.26 的门控就会再写一遍 439 次。它读到 0 ⇒ **两个修复协同生效**。
+
+★ **那 439 是我在改任何代码之前用 SQL 算出来的**（§10.27.1 的 `beyond_500`），
+  部署后逐位命中。预测与实测来自两条独立路径。
+
+★ **`removed=439` 本身就是 `OFFSET` 端到端生效的证明**：若 OFFSET 没真跳过
+  前 500 行，探针只看得到前 500，那 439 个在它后面的行永远不会被发现。
+  假 store 和文本门都证明不了这一点（见 §10.27.6 的 M4）。
+
+**二进制内容核验**（不靠 SHA，靠只属于本次改动的字符串）：
+
+```
+asset health probe: cycle complete   1   ← 阳性对照
+分页到达上界                        1   ← 探针分页上界告警
+stats: 到达分页上界                 1   ← admin Stats truncated
+MUST_NOT_EXIST_xyz                 0   ← 阴性对照
+```
+
+⚠️ 第一次核验用 `strings` 查中文串，**两条全返回 0**，看起来像「修复没进二进制」。
+   实际是**量具坏了**：`strings` 默认只认 ≥4 个可打印 ASCII，UTF-8 中文不在其中。
+   改用 `grep -a` 按字节匹配后立刻命中。
+   ★ 245 第一次核验**阳性对照也是 0** —— 那次是真的量具坏了（我查错了文件名：
+     245 的二进制叫 `gateway`，不叫 `llm-gateway-go`；且 `pgrep -f llm-gateway-go`
+     匹配到的是无关的 `quality-service`）。**阳性对照为 0 时整个读数无信息量**，
+     不能读成「修复缺失」。
+
+★ 顺带记一条：245 上 `/opt/llm-gateway-go/llm-gateway-go` 这个符号链接是**悬空的**
+  （指向 `releases/2463-c5418460/llm-gateway-go`，而实际文件叫 `gateway`）。
+  服务不受影响（systemd unit 直接指向 release 目录），但按 symlink 查二进制的
+  任何脚本都会踩空。**未修**，仅登记。

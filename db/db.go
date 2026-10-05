@@ -384,6 +384,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureWorkTypeRouteCoverage(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-05 migration 831: work_type 路由行增加 source 列，区分
+	// 「ACC 同步写的」与「运维在 admin UI 写的」。必须排在
+	// ensureWorkTypeRouteCoverage 之后：前者在该表上建索引，后者依赖
+	// source 列已存在才能建。
+	if err := db.ensureWorkTypeRouteSource(migCtx); err != nil {
+		return err
+	}
 	if err := db.EnsureTenantsTable(migCtx); err != nil {
 		return err
 	}
@@ -3823,6 +3830,60 @@ func (d *DB) ensureWorkTypeRouteCoverage(ctx context.Context) error {
 		return err
 	}
 	slog.Info("work_type route coverage ensured (migration 709)")
+	return nil
+}
+
+// ensureWorkTypeRouteSource mirrors sql/migrations/startup/
+// 831_work_type_route_source.sql.
+//
+// Why this exists: two writers replace a work type's full route set —
+// admin/acc_work_types.go syncWorkTypesFromACC and admin/work_types.go
+// putRoutes — and neither recorded ownership. The ACC seed carries
+// `model_routes: []` on all 22 entries, so a successful sync deleted
+// every route for a key and reinserted none, silently wiping routes an
+// operator had configured through the admin UI. The sync now deletes only
+// rows it owns (source='acc') and inserts with ON CONFLICT DO NOTHING, so
+// an operator's route for a model always wins.
+//
+// Ordering constraint: this must run after ensureWorkTypeRouteCoverage,
+// which seeds routes and is unaffected, and before any sync runs.
+//
+// The DEFAULT 'operator' backfill is deliberate, not a convenience: no ACC
+// sync has ever completed (the gateway requests /api/llm/work-types while
+// acc-go serves /api/v2/llm/work-types, so it 404s), which means every
+// existing row was written by the admin UI. Backfilling to 'acc' would
+// hand the next sync permission to delete them.
+//
+// Idempotent: ADD COLUMN IF NOT EXISTS, guarded UPDATE, drop/add CHECK.
+// Stamps schema_migrations version 831 (dual-ledger convention).
+func (d *DB) ensureWorkTypeRouteSource(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE work_type_model_route
+		    ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'operator';
+
+		UPDATE work_type_model_route SET source = 'operator' WHERE source IS NULL OR source = '';
+
+		ALTER TABLE work_type_model_route DROP CONSTRAINT IF EXISTS wtmr_source_check;
+		ALTER TABLE work_type_model_route
+		    ADD CONSTRAINT wtmr_source_check CHECK (source IN ('operator', 'acc'));
+
+		CREATE INDEX IF NOT EXISTS idx_wtmr_key_source
+		    ON work_type_model_route (work_type_key, source);
+
+		COMMENT ON COLUMN work_type_model_route.source IS
+		    'Which writer last wrote this row. The ACC sync only deletes its own (acc) rows; operator rows are never removed by a sync.';
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('831', 'work_type_model_route.source: separate ACC-owned routes from operator-owned so sync stops wiping operator config')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("work_type_model_route.source ensured (migration 831)")
 	return nil
 }
 
