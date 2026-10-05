@@ -1,6 +1,6 @@
 # 17 — 网关移动前端 Hyper 应用（llm-gateway `web-mobile/`）
 
-> 状态标记：**[部分落地]** —— 工程主体与 Go 接线已并入 `origin/main`；**R11 entry-switch 与部署管线接线在 origin 任何分支均不存在**（2026-10-05 审计实测，见 §10 本仓补记与 18 号 §10）。
+> 状态标记：**[部分落地]** —— 工程主体与 Go 接线已并入 `origin/main`；2026-10-05 深夜复验修正：桌面侧 entry-switch 与部署管线接线**已核验在 origin/main**（`5f65feace`/`2ca4df36b`，本标记初版「origin 任何分支均不存在」的断言被复验推翻，见 §10 本仓补记二）；**移动侧 entry-switch（large→/ 腿）仍未落地**。
 
 > **本仓收录说明（2026-10-05）**：本篇自参考仓 `~/workspace/yatao/nbjl3/docs/UI规范/17-网关移动前端Hyper应用.md`
 > 移植（参考仓提交 `f5fac05f` 新增、`9672f86e` 验收基线、`007496e3` 二轮复核），
@@ -178,7 +178,7 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 7. **鉴权代次**：登录态下拉刷新途中登出（另一标签页）→ 旧响应不回写，跳登录页（R2 sessionEpoch 校验）。
 8. **触控目标**：抽查底栏/菜单/关闭钮 ≥48px；输入框字号 16px（iOS 不缩放）。
 9. **降级**：`prefers-reduced-motion` 下刷新位移取消、文案保留；暗色下所有状态点/soft 色仍可辨（非仅色相区分）。
-10. **行点击详情（03 §3.1，2026-10-04 新增）**：点节点行进节点详情 Sheet；**模型版本行目前无详情目的地却有 chevron**，本轮记为不合规（见 §10 末行），落地前该行必须二选一：接上详情，或退回静态行。
+10. **行点击详情（03 §3.1，2026-10-04 新增；2026-10-05 销案）**：点节点行进节点详情 Sheet；模型版本行曾在首轮分支带 chevron 却无 @click（见 §10 末行）。落地线已按「二选一」的**选项①（接上详情）**销案：家族卡片行 `@click` 打开版本明细 Sheet（origin/main `ModelsView.vue:102`/`:119`），`ver-row` 死按钮不复存在，Sheet 内版本行为静态卡片（无 button 语义、无 chevron）。
 11. **可点性诚实（UI-L02/L03）**：有 chevron 的行必须点了有反应；没有 chevron 的行不是按钮、不进 Tab 序；读屏遍历每行只播报一次。
 12. **窄屏 320px（UI-L04）**：节点/模型/密钥列表在 320 CSS px 下无横向滚动，长模型名换行不断破；390px 为常见机型但 **320px 才是地板**（03 §3.2）。
 
@@ -194,6 +194,9 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 
 ## 10. 首个落地轮实现状态（2026-10-04，llm-gateway-go `feat/web-mobile-hyper`）
 
+> ⚠️ 该首轮分支**本地未推送、已被超越**：可核验落地线是 origin/main（`5f65feace` 起）与活跃分支
+> `feat/hyper-mobile-ui-2026-10-04`，下表「已交付」以两处为准核对；行点击契约销案与 R11 落地偏差见本节末两条记录。
+
 本篇从目标协议落为真实工程。已交付与偏差登记：
 
 | 项 | 状态 | 说明 |
@@ -206,12 +209,16 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 | 工程门禁 | ✅ 已交付 | `vue-tsc`（strict+noUncheckedIndexedAccess+verbatimModuleSyntax）、`scripts/verify-css-media-syntax.mjs` 范围语法门（含 `--self-test` 正/负对照）、vitest |
 | 视觉 token | ✅ 已交付 | `--app-*`/`--kx-*` 命名与取值沿用本专题 01 §5（浅 `#1e4fd6`/暗 `#5b8cff`），但直接落值不依赖 Element Plus 变量 |
 | 实现偏差 | ⚠️ 备案 | ①专注工作区以独立全屏覆盖层实现（`inert` 背景 + Esc/返回/退出三入口），工具浮层为简化版；②连续加载用于目录类长列表，总览/节点为整页拉取+下拉刷新；③「表格全页查看与编辑」覆盖节点每模型明细、密钥清单（可禁用/启用）、用量分布三处宽表 |
-| **行点击详情契约（03 §3.1）** | 🔴 **不合规，待落地** | 2026-10-04 按 03 §3.1 复核本应用列表行：✅ `NodesView.vue:86-92` 节点行为 `<button class="m-card node-card" @click="openId = node.id">`（进节点详情 Sheet），符合「行 = 详情入口」；🔴 `ModelsView.vue:97-114` 每个模型版本行是 `<button type="button" class="ver-row" :data-row-id=…>` **带 `<Icon name="chevron">` 但没有任何 `@click`**（该文件 script 只有 `onSearchInput`/`load`/`versionMatch`，无行处理器），且本应用**没有模型详情页**（无 Sheet/route）。这是**最强形态的可点性说谎**：按钮语义 + chevron 都宣称「点这行会跳走」，实际点了没反应。**处置需产品拍板**：①建模型详情 Sheet 并接上 `@click`（chevron 即诚实）；②无详情则去掉 `<button>` 与 chevron，退回静态行（行内信息仍可读）。二选一，**不得维持现状**。 |
+| **行点击详情契约（03 §3.1）** | ✅ **已销案（2026-10-05）** | 2026-10-04 复核记的不合规（`ver-row` 按钮 + chevron 无 @click、无详情目的地）经分支取证**只存在于从未推送的本地分支 `feat/web-mobile-hyper`**（`8347a388d`，不在 origin）。可核验落地线 origin/main 自 `5f65feace`（2026-10-04 16:24，早于二轮复核落档 7 小时）即按**选项①**交付：家族卡片行 `<button class="data-card family-card" @click="detail = f">`（`ModelsView.vue:102`）打开 AppSheet 版本明细（`:119`），Sheet 内版本行是静态卡片（无 button 语义、无 chevron）。全视图静态复核（2026-10-05）：NodesView `:123` 节点卡 → Sheet；AlertsView 无详情卡片退回静态行（`:41` 修复注释在案）；Keys/Login/Usage/NotFound 与壳层全部 button 均有 @click；AccountSheet 三处 chevron 行均有真实处理器（主题/语言/检查更新），信息行走 `--static` 无 chevron——**§8-11 可点性诚实同轮通过**。门禁（origin/main 临时检出实测）：vue-tsc 0 错、vitest 9 文件 44 用例全绿、`pnpm build`（含范围语法门）全绿；工作区 `ModelsView.vue` 与 origin/main 逐字节一致。 |
 
 验收基线（本地，2026-10-04 实测 11/11 通过）：`pnpm build`+`pnpm test`（36 用例）全绿；`go test ./cmd/gateway/ -run TestMobileStatic` 全绿（含真实文件内容与 MIME 断言）；部署后 `/m` 服务 SPA、`/m/api/*` 404、390px 视口 `/`→`/m`、1280px+ `/m` 根→`/`、`?ui=` 覆盖生效、登录→总览/密钥真实数据渲染、专注宽表全页查看+Esc 退出恢复。首部署实测抓出两真缺陷已修并留锚：①静态 handler 未剥挂载前缀致真实文件被 SPA fallback 遮蔽（200 假绿教训——文件类断言必须查内容与 MIME）；②专注层 Esc/系统返回关闭路径不清视图 ref 致覆盖层滞留（关闭通知必须经 runtime 订阅同步到视图）。工程全记录：llm-gateway-go `docs/plan/2026-10-04-web-mobile-hyper-unified-entry.md`。
 
 ⚠️ 上表「行点击详情契约」一行是 **2026-10-04 第二轮复核追加的**，**不在上述 11/11 验收基线内**——
 11/11 验的是静态 handler、SPA 接线、刷新/加载/专注恢复，不含行可点性。
+
+✅ **销案记录（2026-10-05）**：上行 🔴 项以**选项①（接上详情）**在可核验落地线销案，上表行已改写并附证据。分支取证补记：`feat/web-mobile-hyper`（本节表头所指首轮分支）止于 10-04 17:08 且**不在 origin**；origin/main 自 `5f65feace`（10-04 16:24）起即携带合规版 ModelsView，早于二轮复核落档（参考仓 `007496e3`，10-04 23:27）7 小时——二轮复核审到的是被超越分支的快照，🔴 结论对落地线不成立。2026-10-05 深夜复验：上述门禁与静态复核结论对 origin/main 最新 tip 仍成立。
+
+⚠️ **R11 统一入口落地偏差备案（2026-10-05 复验）**：§10 表「R11 ✅ 两侧外部 entry-switch.js」对落地线**只成立一半**——桌面侧 `web/public/entry-switch.js` 在 origin/main（`5f65feace`）✅，部署接线（`deploy-local.sh` 12 处 web-mobile 引用、`dl_stage_release` 第 7 参）在 origin/main ✅；但**移动侧 `/m/entry-switch.js`（large→/ 腿）未随落地线继承**（web-mobile 无 `public/entry-switch.js`，index.html 无引用）。落地实现改走「克制语义」：服务端 UA 302 只切裸入口（`/`、`/index.html`）+ 桌面客户端腿只补 iPadOS 缺口（`pointer:coarse` + 短边 ≤930）+ `?desktop` 逃生口 + `MOBILE_WEB_ENTRY_REDIRECT` kill-switch；**深链不切、不写 sessionStorage 模式键**——与 §4-R11 的「`?ui=`/`llmgw_ui_mode` 覆盖 + 双向 window class 弹跳」明确不同（2026-10-04 验收基线里的「1280px+ `/m` 根→`/`」依赖的正是未继承的移动侧腿）。是否补齐移动侧腿或修订 §4-R11 本身，留待产品拍板；在此之前 §4-R11 维持原裁决文本，落地状态以本备案为准。
 
 > **本仓补记（2026-10-05，同日审计修正）**：`web-mobile/` **主体工程与 Go 接线
 > （`cmd/gateway/mobile_static.go`）已并入 `origin/main`**（本专题主形态分支
