@@ -2863,5 +2863,36 @@ DDL/分区树/约束/索引（§9.185）。
   `v1CoverageHoursSQL` 并由 `TestS4GateCoverageSQLReadsBothFaces` 钉住**同时读四个面**
   （少读 v1 侧 ⇒ 假 void，且会诱使人调低 90% 阈值从而毁掉这条规则；
   少读 session 侧 ⇒ 分母变小 ⇒ 假 Ready）。
+> 🛑 **生产修正（2026-10-05，§9.246）：上面整段基于「本地」，生产 252 同口径复量后不成立。**
+>
+> 生产 7d、逐字出货分类器、v1 两面齐全、双向 `NOT EXISTS`（**只读**）：
+>
+> | 现状分类 | 行数 | `is_auto_request` NULL | 反事实后 |
+> |---|---:|---:|---|
+> | `genuine_loss` | **10** | **10（全部 NULL）** | 全部 → `internal_loopback` |
+> | `non_terminal` | **71** | 71 | → `internal_loopback` |
+> | `internal_loopback` | 8,102 | 0（全 TRUE） | 不变 |
+>
+> ★★ **但那 10 行的形状，生产与本地完全不同**：
+>
+> | origin_actor | request_status | error_kind | 行数 |
+> |---|---|---|---:|
+> | `(null)` | **success** | `(null)` | **4** |
+> | `(null)` | failure | `provider_error` | 3 |
+> | `(null)` | failure | `routing_database_error` | 1 |
+> | `(null)` | rate_limited | `rate_limit_exceeded` | 1 |
+> | `node-probe-worker` | failure | `transient` | **1** |
+>
+> ⇒ **生产只有 1 行是探针**（本地 9/10 是 `probe-service`，生产**不存在**这一类）；
+> **生产有 4 行是「成功但没有 session 对应行」**（本地 0）。
+> ⇒ ★ **探针那条杠杆在生产只能挪走 1 行，不是「唯一杠杆」。**
+> ⇒ 归属切分：生产 **6 个会话从未被镜像（零 turn）**、**4 个在健康会话里丢了单个 turn**；
+> 「让 turn 写更快更稳」在生产只覆盖 **4/10**。
+> ⇒ **本条里「修 turn 写」/「标探针」两条建议都不能照搬到生产** ——
+> 口径一致不代表读数一致，**只有生产读数能支撑生产的决定**。
+> ⇒ ⚠ **6 个「零 turn 会话」为什么没被镜像尚未查**（hook 未达 / 后续门挡住 /
+> 恢复路径没恢复 —— 生产侧 `session_dim` 与 `request_context_attrs` 的存在性可分离这三者）。
+> **这是下一个该查的问题**，且它才是生产侧 10 行里的主体。
+
 - **仍然独立于 s4_ready 的硬阻塞**：D32 的两列回填（见上）。
   **s4_ready 量的是漂移，不是拷贝** —— 把这两件事读成一件是最危险的读法。
