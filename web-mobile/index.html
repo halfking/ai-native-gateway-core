@@ -8,6 +8,15 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="theme-color" content="#f4f6f9" />
+    <!--
+      部署序号（UI规范 18 §3）：构建期由 vite.config.ts 的 llmgwDeploySeq 插件
+      替换占位符。取值优先 LLMGW_DEPLOY_SEQ / BUILD_SEQ（bump-version 管线
+      source 出的环境变量，接既有 build_seq 不新造序号源），其次 git 短 SHA，
+      都没有时 'unknown'——运行期按「不可判定」展示，不得谎报一致。
+      src meta 记录序号来源（build-seq / git-sha / unknown）。dev serve 同样注入。
+    -->
+    <meta name="llmgw:deploy-seq" content="__LLMGW_DEPLOY_SEQ__" />
+    <meta name="llmgw:deploy-seq-src" content="__LLMGW_DEPLOY_SEQ_SRC__" />
     <title>LLM Gateway</title>
     <script>
       // 首帧防 FOUC（UI规范 14 §3）：读用户偏好 + 系统偏好，先于渲染落 class。

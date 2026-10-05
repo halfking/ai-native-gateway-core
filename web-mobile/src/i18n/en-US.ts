@@ -194,6 +194,33 @@ export const enUS = {
     logoutConfirm: 'Sign out of this session?',
     versionInfo: 'Gateway {version}',
   },
+  update: {
+    // Deploy-seq update check (UI spec 18 §4). Copy must distinguish
+    // "update available" / "latest" / "indeterminate" — the last one must
+    // never collapse into a green badge (18 §3, third prohibition).
+    bannerTitle: 'New version available',
+    bannerHint: 'A newer build is deployed. Reload to switch.',
+    updateNow: 'Reload now',
+    later: 'Later',
+    section: 'Version & updates',
+    currentSeq: 'Page deploy seq',
+    seqSource: 'Seq source',
+    sourceBuildSeq: 'Build seq',
+    sourceGitSha: 'Git commit',
+    sourceUnknown: 'Not injected',
+    checks: 'Checks run',
+    lastCheck: 'Last check',
+    state: 'Update state',
+    stateLatest: 'Up to date',
+    stateAvailable: 'Update available',
+    stateIndeterminate: 'Indeterminate',
+    stateChecking: 'Checking…',
+    reasonNoLocal: 'This page carries no deploy seq (not injected at build time)',
+    reasonNoRemote: 'Server returned no deploy seq (old build or non-repo hosting)',
+    reasonNetwork: 'Check request failed; cannot determine',
+    checkNow: 'Check for updates',
+    never: 'Never checked',
+  },
   hyper: {
     refreshPulling: 'Pull to refresh',
     refreshArmed: 'Release to refresh',
