@@ -262,6 +262,7 @@ func TestDualReadValidator_Summarize_RealDB(t *testing.T) {
 		genuineLoss:  sum.GenuineLossRows,
 		v1WritesOn:   currentV1WritesEnabled(),
 		v1CoveragePP: sum.V1CoveragePP,
+		windowHours:  sum.WindowHours,
 	})
 	if sum.S4Ready != verdict.Ready {
 		t.Errorf("I5 S4Ready = %v, want %v (V1Rows=%d GenuineLossRows=%d v1WritesEnabled=%v)",
