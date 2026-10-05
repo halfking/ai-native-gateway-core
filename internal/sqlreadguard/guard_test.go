@@ -52,14 +52,24 @@ var sqlReadGuardAllowFiles = map[string]string{
 		"③ 对最近 8h 的盲区在此**方向是保守的**：那批行由在线路径直接落标签、本就不该进回填集，漏读只会让 remaining 略被低估，不会虚报进度。",
 
 	// ---- LEGIT：引擎/DDL/维护/工具 ----
-	"bg/lite_retention_worker.go":               "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
-	"cmd/gateway/dual_read_validator.go":        "LEGIT: 专职双腿一致性校验器",
-	"db/db.go":                                  "LEGIT: routing_analytics_source DDL 体",
-	"db/request_logs_view_schema.go":            "LEGIT: 视图 DDL 体",
-	"admin/data_lifecycle.go":                   "LEGIT: 存储生命周期维护面（全历史体积/清理属设计语义）",
-	"admin/data_lifecycle_attachments.go":       "LEGIT: 存储生命周期维护面",
-	"admin/data_lifecycle_metrics.go":           "LEGIT: 存储生命周期维护面",
-	"bg/credential_recovery.go":                 "LEGIT: 恢复扫描需全历史窗口（404 二次确认 6h 终判的旧证据只在母表）",
+	"bg/lite_retention_worker.go":         "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
+	"cmd/gateway/dual_read_validator.go":  "LEGIT: 专职双腿一致性校验器",
+	"db/db.go":                            "LEGIT: routing_analytics_source DDL 体",
+	"db/request_logs_view_schema.go":      "LEGIT: 视图 DDL 体",
+	"admin/data_lifecycle.go":             "LEGIT: 存储生命周期维护面（全历史体积/清理属设计语义）",
+	"admin/data_lifecycle_attachments.go": "LEGIT: 存储生命周期维护面",
+	"admin/data_lifecycle_metrics.go":     "LEGIT: 存储生命周期维护面",
+	"bg/credential_recovery.go":           "LEGIT: 恢复扫描需全历史窗口（404 二次确认 6h 终判的旧证据只在母表）",
+	// 2026-10-05（832/833 收口轮）两条：
+	"cmd/gateway/v1_write_liveness.go": "LEGIT: §9.264 写入腿存活信号——hot 与母表在同一查询内**并列计数**，" +
+		"对照本身就是查询目的（父表落后 hot 是正常形态，见其文件头 §9.160.7 第四/五次命中记录）；" +
+		"四腿（request_logs_hot/request_logs/session_turns_hot/session_turns）缺一不可",
+	"bg/routing_health_checks.go": "DEBT(R47): recorded_cost_is_negative 巡检 30 天负成本审计单腿母表读——" +
+		"①为何暂不能双腿化：正确双腿必须走 request_logs_with_current_month 族视图并核对 promote 去重语义" +
+		"（§9.260 实测该族视图由 composer 运行时建、带 v1 臂，裸 UNION hot 会把 promote 前后重复行数两次，" +
+		"负价告警将系统性虚高），而核对需真库 promote 环境非本轮可得；" +
+		"②窗口论证：盲区≤晋级延迟，最新负价行最迟 8h 后进母表，warning 级 30 天窗口可容忍；" +
+		"③退役路径：双腿化后按 TestSQLReadGuardWhitelistCurrent 自清洁移除本条",
 	"cmd/tools/validate_sessions_v2/loader.go":  "TOOLING: 离线校验工具",
 	"cmd/tools/backfill_session_bodies/main.go": "TOOLING: 离线回填工具",
 	"cmd/traffic-replay/main.go":                "TOOLING: 离线回放工具",
@@ -232,6 +242,8 @@ var debtBaseline = map[string]bool{
 	"domains/hooks/observability/telemetry/client.go": true,
 	"autoroute/recommend_v2.go":                       true,
 	"discovery/discovery.go":                          true,
+	// 2026-10-05（832/833 收口轮）棘轮协议新增：见白名单 DEBT 条目的三点论证
+	"bg/routing_health_checks.go": true,
 	// SQL 读面（视图定义体 / 函数体）
 	"sql/objects/views/v_node_switch_analysis.sql":                                    true,
 	"sql/objects/views/customer_cost_view.sql":                                        true,

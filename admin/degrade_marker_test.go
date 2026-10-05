@@ -136,6 +136,14 @@ var degradeMarkerOutOfScope = map[string]string{
 		"（node_probe_db 仅出现于其写入点），即「自报了但没人读」，详见第八轮 §3",
 	"db/db.go": "DB 层 schema 不匹配分类器 IsSchemaMismatchError 的 `case \"42P01\", \"42703\", \"42883\", \"42809\", \"0A000\"`" +
 		" —— 与 admin/dashboard_degrade.go 同角色的**机制定义处**，不产出页面载荷",
+
+	// 2026-10-05（832/833 收口轮）：runChecks 的 Optional+42P01 跳过分支是 bg
+	// 巡检 worker 的降级形态——跳过该条检查 + slog.Info 留痕（check_id/relation/
+	// code），**没有 HTTP 载荷可标**（调用方消费的是 newCritical/newWarning 计数
+	// 与整轮 err）；「算不出来 vs 真的没有数据」在该消费面上不混淆。行为由
+	// bg/health_check_optional_skip_realdb_test.go（真库 42P01 分支）与
+	// bg/health_check_scan_guard_test.go 把守。
+	"bg/routing_health_checks.go": "runChecks 的 Optional+42P01 跳过是 bg worker 降级：跳过+日志留痕，无 200+空载荷；经 health_check_optional_skip_realdb / health_check_scan_guard 两测试把守",
 }
 
 // markerPatterns 是「这个载荷带降级标记」的判定。
