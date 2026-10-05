@@ -25,6 +25,37 @@ const (
 	ensureURSMFunc   = "ensure_ursm_node_snapshot_min_daily_partition"
 )
 
+// readMigration830 读 830 迁移的内容。
+//
+// ★ 2026-10-06：加 `.sql.skip` 回退。该文件被改标成
+// `830_ursm_node_snapshot_min_partitioned.sql.skip`——因为它是一条 manual-by-design
+// 迁移（Test830IsDeliberatelyNotInTheAutoStartupSequence 禁止它进 installer 的
+// StartupFiles），而**部署通道** `_deploy_pending_startup_migrations`
+// (deploy-lib/db-changelog.sh) 只认 `.down.sql` / `.skip` / `.bak.skip` /
+// 头部 SUPERSEDED 四类，不认那条豁免 ⇒ 不改标就挡住一切部署。
+//
+// 文件**内容没变**，这三道门断言的东西也一字未动——只是解析路径要容得下
+// 两种命名。（第一次改名时我只跑了两道门就说「不红任何门」，实际上这三道
+// 会因 no such file 而红；是全量回归抓出来的。）
+func readMigration830(t *testing.T) (raw []byte, path string) {
+	t.Helper()
+	candidates := []string{
+		migration825Path,
+		migration825Path + ".skip",
+	}
+	var errs []string
+	for _, p := range candidates {
+		raw, err := os.ReadFile(p)
+		if err == nil {
+			return raw, p
+		}
+		errs = append(errs, err.Error())
+	}
+	t.Fatalf("cannot read the 830 migration under any known name:\n  %s",
+		strings.Join(errs, "\n  "))
+	return nil, ""
+}
+
 // ensureURSMFuncPattern 抓 SQL 里 CREATE OR REPLACE FUNCTION 的函数名。
 // 故意不写死 825 的函数名，而是从 SQL 反查 —— 这样有人改了 SQL 里的函数名
 // 而忘了改 Go 侧时，本门会立刻红，而不是等到生产跨日才炸。
@@ -35,14 +66,11 @@ var ensureURSMFuncPattern = regexp.MustCompile(
 	`(?i)CREATE OR REPLACE FUNCTION\s+public\.([a-z0-9_]+)\s*\([^)]*\bdate\b[^)]*\)`)
 
 func Test825MigrationDefinesTheEnsureFunction(t *testing.T) {
-	raw, err := os.ReadFile(migration825Path)
-	if err != nil {
-		t.Fatalf("read %s: %v", migration825Path, err)
-	}
+	raw, path := readMigration830(t)
 	if !ensureURSMFuncPattern.Match(raw) {
 		t.Fatalf("%s does not define a public.<fn>(date) ensure function — "+
 			"the regex in this gate no longer matches the file (gate is stale, or the migration was rewritten)",
-			migration825Path)
+			path)
 	}
 	m := ensureURSMFuncPattern.FindSubmatch(raw)
 	if got := string(m[1]); got != ensureURSMFunc {
@@ -154,10 +182,7 @@ func Test830IsDeliberatelyNotInTheAutoStartupSequence(t *testing.T) {
 // SQL 用 to_char(p_date,'YYYYMMDD') 命名，留存用 `_([0-9]{8})$` 解析。
 // 两边漂移 ⇒ 分区永远不被清理（空间不回收），且没有任何报错。
 func TestPartitionNameContractMatchesRetentionParser(t *testing.T) {
-	raw, err := os.ReadFile(migration825Path)
-	if err != nil {
-		t.Fatalf("read %s: %v", migration825Path, err)
-	}
+	raw, _ := readMigration830(t)
 	sqlSrc := string(raw)
 	if !strings.Contains(sqlSrc, "format('ursm_node_snapshot_min_%s', to_char(p_date, 'YYYYMMDD'))") {
 		t.Fatal("825 no longer names partitions ursm_node_snapshot_min_YYYYMMDD — " +
@@ -177,10 +202,7 @@ func TestPartitionNameContractMatchesRetentionParser(t *testing.T) {
 // 这条门守着那个决定：有人日后「顺手加个 DEFAULT 分区兜底」时，
 // 留存和 ensure 的语义都要跟着改。
 func Test825StillDeclaresNoDefaultPartition(t *testing.T) {
-	raw, err := os.ReadFile(migration825Path)
-	if err != nil {
-		t.Fatalf("read %s: %v", migration825Path, err)
-	}
+	raw, _ := readMigration830(t)
 	// ★ 断言的是**DDL 构造**，不是 "default" 这个词。
 	//   初版写成"正文里出现 default 就红"，结果把文件头硬约束 2 里那句
 	//   「不建 DEFAULT 分区」的说明、以及步骤注释里的 DEFAULT 全算成了

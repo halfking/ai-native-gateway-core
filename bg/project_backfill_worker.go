@@ -27,6 +27,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -47,6 +48,11 @@ const (
 	// defaultProjectBackfillTick is the cadence. Short enough that the
 	// 330k-row backlog drains in hours, long enough to be idle-cheap.
 	defaultProjectBackfillTick = 10 * time.Minute
+
+	// batchTimeoutSec overrides the role-level statement_timeout (30s on
+	// 252's llm_gateway) for one batch, via SET LOCAL. See BackfillOnce for
+	// the measurement and the lock-hold tradeoff.
+	batchTimeoutSec = 120
 )
 
 // sessionProjectBackfillSQL — one batch: pick NULL-project rows joinable to
@@ -107,7 +113,10 @@ func (w *SessionProjectBackfillWorker) Start(ctx context.Context) {
 	Go("project_backfill_worker.run", func() { w.run(ctx) })
 	slog.Info("session project backfill worker started",
 		"interval", w.tick.String(),
-		"batch_size", projectBackfillBatchSize)
+		"batch_size", projectBackfillBatchSize,
+		// 打出来是为了让「批次被超时杀掉」在日志里能一眼归因到预算值，
+		// 而不是只看到 SQLSTATE 57014 却不知道上限是多少。
+		"batch_statement_timeout_sec", batchTimeoutSec)
 }
 
 // Stop terminates the goroutine. Safe on a never-Started worker and safe to
@@ -142,8 +151,43 @@ func (w *SessionProjectBackfillWorker) BackfillOnce(ctx context.Context) (int64,
 	start := time.Now()
 	var total int64
 	for batch := 0; batch < maxBatches; batch++ {
-		rows, err := w.pool.Query(ctx, sessionProjectBackfillSQL, projectBackfillBatchSize)
+		// ★ 2026-10-06：每批走显式事务并本地抬高 statement_timeout。
+		//
+		// 为什么必须：本 worker 的连接带角色级 `statement_timeout=30s`
+		// （llm_gateway.rolconfig 实测）。而修好 §10.38 的选择谓词后，
+		// 窗口里装的第一次是**真的会干活**的行——2000 次
+		// UPDATE session_summaries + project_dim upsert + attribution insert。
+		// 实测（生产只读 + 回滚）：1000 行 7.5s ⇒ 2000 行约 15s，
+		// 安静时在 30s 内，但**有竞争时会越界**——实测 04:28 首轮就被
+		// SQLSTATE 57014 杀掉，backfilled_before_failure=0。
+		//
+		// 为什么是 SET LOCAL 而不是调大角色默认值：那是全库口径，
+		// 会连带放松所有在线查询的护栏（同 partition_manager.go:1778 的理由）。
+		// SET LOCAL 随事务结束自动还原，pooled 连接不残留。
+		//
+		// 代价要认：最坏情况这一批会持锁到 batchTimeoutSec。
+		// 选 120s 是「安静 15s + 4 倍余量」与「锁持有时间」的折中；
+		// 超时仍会回滚整批，不会留下半批状态。
+		tx, err := w.pool.Begin(ctx)
 		if err != nil {
+			slog.Error("session project backfill: batch begin failed",
+				"error", err, "backfilled_before_failure", total)
+			return total, err
+		}
+		// 用 set_config 而不是 `SET LOCAL statement_timeout = '120s'`：
+		// PG 的 SET 语句**不接受参数**（`SET LOCAL x = $1` 直接语法错，实测
+		// SQLSTATE 42601，由 TestBackfillBatchRaisesStatementTimeoutAbove…_RealDB
+		// 抓出来）。set_config(…, true) 是 SET LOCAL 的参数化等价物。
+		if _, err := tx.Exec(ctx, `SELECT set_config('statement_timeout', $1, true)`,
+			fmt.Sprintf("%ds", batchTimeoutSec)); err != nil {
+			tx.Rollback(ctx) //nolint:errcheck // best-effort
+			slog.Error("session project backfill: batch timeout setup failed",
+				"error", err, "backfilled_before_failure", total)
+			return total, err
+		}
+		rows, err := tx.Query(ctx, sessionProjectBackfillSQL, projectBackfillBatchSize)
+		if err != nil {
+			tx.Rollback(ctx) //nolint:errcheck // best-effort
 			slog.Error("session project backfill: batch query failed",
 				"error", err, "backfilled_before_failure", total)
 			return total, err
@@ -153,13 +197,20 @@ func (w *SessionProjectBackfillWorker) BackfillOnce(ctx context.Context) (int64,
 			var affected int
 			if err := rows.Scan(&affected); err != nil {
 				rows.Close()
+				tx.Rollback(ctx) //nolint:errcheck // best-effort
 				return total, err
 			}
 			n += int64(affected)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
+			tx.Rollback(ctx) //nolint:errcheck // best-effort
 			slog.Error("session project backfill: batch rows error",
+				"error", err, "backfilled_before_failure", total)
+			return total, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			slog.Error("session project backfill: batch commit failed",
 				"error", err, "backfilled_before_failure", total)
 			return total, err
 		}
