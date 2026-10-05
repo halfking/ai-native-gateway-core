@@ -21,6 +21,10 @@ const (
 	ClassUnresolved Class = iota
 	// ClassReadsV1 表示关系名解析到（或可能解析到）v1 宽族。
 	ClassReadsV1
+	// ClassReadsV1Arm 表示关系名解析到**体里含 v1 臂的视图**（§9.258）。
+	// 视图本身在 DROP 后还在，但它今天的体含 v1 臂 ⇒ 读到的**行集**会变小。
+	// 这与「关系名会消失」是不同的失效形态，所以单列一类。
+	ClassReadsV1Arm
 	// ClassReadsCanonical 表示关系名解析到 canonical 视图或会话族。
 	ClassReadsCanonical
 )
@@ -53,7 +57,15 @@ var fragmentTailRE = regexp.MustCompile(`(?i)\b(from|join)\s+$`)
 //
 // # 为什么需要它：isV1Relation 的「取第一个 token」在**子查询**上给错答案，
 // 而那个方向正是本工具自称的最坏失效方向（见 isV1Relation 的注释）。
-var fromRelationRE = regexp.MustCompile(`(?i)\b(?:from|join)\s+("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*)`)
+//
+// ⚠ §9.258：**schema 限定名必须在捕获范围内**（末尾那个 `(?:\.…)*`）。
+// 第一版只写 `[a-z_][a-z0-9_$]*`，于是 `FROM public.request_logs_bodies_hot`
+// 只捕获到 `public` —— 视图 DDL 里**每个**关系名都带 `public.` 前缀，
+// 于是「哪些视图含 v1 臂」一个都推不出来，第四桶恒为 0（实测卡在这里一轮）。
+// ⚠ 而这不只是推导器的问题：`FROM public.request_logs` 本来就是 v1 读点，
+// 旧口径把它当成一个叫「public」的非 v1 表 —— **漏报**，
+// 正是本文件头说的「最坏的失效方向」。
+var fromRelationRE = regexp.MustCompile(`(?i)\b(?:from|join)\s+("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*(?:\.[a-z_][a-z0-9_$]*)*)`)
 
 // isIdentByte 与 admin 包的同名函数同义，但**不复用**：
 // 那个函数在 admin 包的测试文件里，而本工具是独立的 main module，
@@ -132,6 +144,21 @@ type Site struct {
 	Line     int
 	Operand  string   // 操作数在源码里的文本，例如 src.TurnsTable
 	Resolved []string // 解析出的候选关系名；空 = 不可判定
+	// v1ArmViews 是「体里含 v1 臂的视图名」集合（§9.258，由 viewsWithV1Arm
+	// 从仓库的视图 DDL 推导）。为 nil 时**退回旧行为**：只按 v1Tables 判 v1。
+	//
+	// 之所以挂在 Site 上而不是做成 Classification() 的参数：那是既有签名，
+	// 十几个单元测试按它构造 Site 断言。改成参数会让「夹具里没有 DDL 目录」
+	// 和「真实调用没传集合」两种情况长得一样。
+	v1ArmViews map[string]bool
+}
+
+// ReadsV1ArmView 判断一个解析出的字符串是否指向「体里含 v1 臂」的视图。
+func (s Site) ReadsV1ArmView(name string) bool {
+	if s.v1ArmViews == nil {
+		return false
+	}
+	return s.v1ArmViews[firstRelationToken(name)]
 }
 
 // Classification 决定这个拼接点属于哪一类。
@@ -144,16 +171,26 @@ func (s Site) Classification() Class {
 	if len(s.Resolved) == 0 {
 		return ClassUnresolved
 	}
-	sawV1, sawOther := false, false
+	sawV1, sawV1Arm, sawOther := false, false, false
 	for _, r := range s.Resolved {
-		if isV1Relation(r) {
+		switch {
+		case isV1Relation(r):
+			// ★ 基表命中**优先于** v1 臂视图（§9.258）：`maas/usage.go` 那些点位的
+			// 解析结果是「request_logs_hot | request_logs_with_current_month」——
+			// 两臂都中。它们必须留在最严重的 reads-v1 桶里，
+			// 降级成 v1 臂会**把「直接读基表」说成「读视图」**。
 			sawV1 = true
-		} else {
+		case s.ReadsV1ArmView(r):
+			sawV1Arm = true
+		default:
 			sawOther = true
 		}
 	}
 	if sawV1 {
 		return ClassReadsV1
+	}
+	if sawV1Arm {
+		return ClassReadsV1Arm
 	}
 	_ = sawOther
 	return ClassReadsCanonical
@@ -235,7 +272,21 @@ func firstRelationToken(s string) string {
 	if i := strings.IndexAny(t, " \t\n("); i >= 0 {
 		t = t[:i]
 	}
-	return strings.Trim(t, `"`)
+	t = strings.Trim(t, `"`)
+	// §9.258：剥掉 schema 限定。视图 DDL 写的是 `FROM public.request_logs_bodies_hot`，
+	// 而 fromRelationRE 只捕获到 `public` —— 剥之前 `viewsWithV1Arm` 一个视图也认不出，
+	// 第四桶恒为 0。
+	//
+	// ★ 这不只是为了让推导器工作：**带 schema 的 `FROM public.request_logs` 本来就是
+	// v1 读点**，旧口径把它当成一个叫「public」的非 v1 表。方向是**漏报**，正是
+	// resolve.go 文件头说的「最坏的失效方向」那一类。
+	//
+	// ⚠ 只剥**最后一段之前**的限定，不动其余字符：`pg_temp.x` / `public.x` 都会变成 `x`，
+	// 而 `request_logs` 这种带 `_` 的名字不会被误剥。
+	if i := strings.LastIndex(t, "."); i >= 0 && i+1 < len(t) {
+		t = t[i+1:]
+	}
+	return t
 }
 
 // AuditRepo 扫描整个仓库，返回所有关系名不是字面量的 SQL 拼接点。
@@ -309,7 +360,15 @@ func AuditRepo(root string) ([]Site, error) {
 		}
 		return out[i].Line < out[j].Line
 	})
-	return dedupeSites(out), nil
+	// §9.258：把「含 v1 臂的视图」集合挂到每个点位上。
+	// 放在最后统一挂，而不是让 auditPackage 一路透传 —— 集合是**全仓**推导的
+	// （读 sql/objects/views/），与被扫的包无关。
+	arms := viewsWithV1Arm(root)
+	final := dedupeSites(out)
+	for i := range final {
+		final[i].v1ArmViews = arms
+	}
+	return final, nil
 }
 
 func dedupeSites(in []Site) []Site {

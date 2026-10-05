@@ -105,6 +105,14 @@ const (
 	// DROP 时会消失（§9.226.2 的 admin/session_online.go 就是这一类，
 	// 而且它是 JOIN，连不上行、整页空）。
 	verdictCanonicalOnly verdict = "canonical-only"
+	// verdictReadsV1Arm：读的是**体里含 v1 臂的视图**（§9.258）。
+	//
+	// ⚠ 它与 reads-v1 的区别是**失效形态**，不是严���程度：
+	// reads-v1 的关系名在 DROP 后**消失**（查询报错或拿 NULL）；
+	// 本类的关系名**还在**，但它今天的体含 v1 臂 ⇒ **行集会变小**，
+	// 而多数读法用 COALESCE/COUNT 包装过 ⇒ **静默少行，不报错**。
+	// 集合由 viewsWithV1Arm 从 sql/objects/views/ 的 DDL **推导**，不手写。
+	verdictReadsV1Arm verdict = "reads-v1-arm"
 	// verdictNonV1ByInspection：工具解析不出，但**人读过源码**，确认拼进去的
 	// 关系名不是 v1（跨包调用如 db.SessionFamilyTurnsForSessionSQL()、
 	// probemode.GuardStateTable()、字面量表名列表等）。
@@ -248,14 +256,19 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	// 绝大多数是**跨包调用**（db.SessionFamilyTurns*SQL / probemode.GuardStateTable），
 	// 工具的 *ast.SelectorExpr 分支明写「不猜」。
 	"admin/logs.go": {
-		Verdict: verdictCanonicalOnly,
+		Verdict: verdictReadsV1Arm,
 		Via: "logsFrom := logsSourceFromSQL()（logs.go:630）。logs_turns_source.go:62-68：" +
 			"`storage.admin_logs_native_turns_read` 平台开关为 **false（默认）** 时返回 " +
 			"`request_logs_with_current_month rl`，为 true 才返回会话族源。" +
 			"6 处拼接点（632/633/675/677/726/730）。",
 		Consequence: "⚠ **默认支是 canonical 视图的 v1 臂**。DROP 后日志列表的" +
 			"v1 那部分行消失（不是缺列，是少行）。" +
-			"归 D29-d 切换清单；灰度开关转 true 即可整体切到会话族。",
+			"归 D29-d 切换清单；灰度开关转 true 即可整体切到会话族。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_with_current_month`，" +
+			"部署形态是 `session_turns(_hot) 投影 UNION ALL frozen v1 臂`（三臂，db/request_logs_view_schema.go:207）。\n" +
+			"⇒ 退役后**关系名还在**、但 v1 臂的行消失 ⇒ 日志列表**少行**，不报错、不缺列。" +
+			"⚠ 本开关保持默认 false 的理由不是「镜像不完整」，而是原生源**不是全量日志视图的等价替代**" +
+			"（真库实测 27.6% 的 request_id 在原生源查不到，见 logs_turns_source.go 的注释）。",
 	},
 	"admin/usage_enhanced.go": {
 		Verdict: verdictCanonicalOnly,
@@ -271,7 +284,7 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	// 的说法不再成立；工具仍判 unresolved（`resolve` 的 CallExpr 只查 env.funcs），
 	// 但理由从「同包函数」变成「跨包函数」——结论不变，成因变了，必须改写而非留旧句。
 	"admin/auto_title_generator.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232 从字面量 v1 bodies 改走切换层）。" +
 			"跨包函数调用 ⇒ 工具判 unresolved（`resolve` 的 CallExpr 只查 env.funcs，" +
 			"而 §9.233 起切换层住在 db 包的 db.SessionBodiesSourceSQL()）。" +
@@ -279,10 +292,13 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"消费点由 admin 侧 indirectSourceConsumers 机器识别；切换层登记在" +
 			"admin/request_logs_indirect_readers_test.go（切换层在 db/request_logs_view_schema.go）。",
 		Consequence: "停写/DROP 后 bodies 腿静默变空、接口仍 200，与迁移前完全一致——" +
-			"开关默认关。开关打开后本条免疫，但 bodies 退役门仍红 ⇒ 开关开不了。",
+			"开关默认关。开关打开后本条免疫，但 bodies 退役门仍红 ⇒ 开关开不了。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/compression_stats.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（3 处，§9.232/§9.237；" +
 			"第 3 处在**包级 var** compressionStatsEstimatedOrigSQL 里，该常量**因此由 const 改成 var**——" +
 			"函数调用不能出现在 const 声明中）。" +
@@ -292,37 +308,52 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "停写后 with_outbound / compressed / estimated_original_tokens / " +
 			"summary_mode_rows 静默归 0（压缩率与省 token 数变 0%，而 total 与 strategy " +
 			"分布仍有数、接口 200）——停写分类表把本文件记为 silently_degraded_content。" +
-			"⚠ 换源时要连分项一起看，只看 total 会被骗过去。",
+			"⚠ 换源时要连分项一起看，只看 total 会被骗过去。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/logs_summary.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处，§9.232）。" +
 			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
-		Consequence: "同 compression_stats：正文两列静默变空、计数类仍有数。",
+		Consequence: "同 compression_stats：正文两列静默变空、计数类仍有数。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/memora_handlers.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232）。" +
 			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
 		Consequence: "停写分类表记 degraded_content，且该条目历史上因「同一文件取更危险档」" +
-			"被改判过一次（§9.35）——改它之前先读那条 Note。",
+			"被改判过一次（§9.35）——改它之前先读那条 Note。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/no_topic_session.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处，§9.232）。" +
 			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
 		Consequence: "降级的是**正文两列、不是行数**：bodies 无 session 臂时新会话的 " +
 			"request_body/response_body 恒为空串，而 message_count 仍非零、接口 200、" +
-			"消息列表结构齐全 ⇒ 消费方拿到「有轮次、无正文」的会话。",
+			"消息列表结构齐全 ⇒ 消费方拿到「有轮次、无正文」的会话。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/session_sanitize_matches.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（1 处，§9.232）。" +
 			"**默认支读 v1**。消费点机器识别；切换层见 admin 侧登记。",
-		Consequence: "bodies 腿取不到时匹配依据变空 ⇒ 结果变少但不报错。",
+		Consequence: "bodies 腿取不到时匹配依据变空 ⇒ 结果变少但不报错。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/session_compare.go": {
-		Verdict: verdictNonV1ByInspection,
+		Verdict: verdictReadsV1Arm,
 		Via: "221/902 行 `FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
 			"跨包调用 ⇒ 工具判 unresolved；读源码确认是会话族。" +
 			"⚠ §9.230 起 **902 行那条 bodies 拼接点也进了 unresolved 桶**：",
@@ -333,7 +364,10 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"所以是 unresolved 而非 reads-v1。" +
 			"**默认支是 v1**（`request_logs_bodies_with_current_month`）。" +
 			"已登记在 admin/request_logs_indirect_readers_test.go" +
-			"（切换层在 db/request_logs_view_schema.go）与 admin/request_logs_bodies_retirement_gate_test.go。",
+			"（切换层在 db/request_logs_view_schema.go）与 admin/request_logs_bodies_retirement_gate_test.go。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/session_list.go": {
 		Verdict: verdictNonV1ByInspection,
@@ -342,7 +376,7 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关。",
 	},
 	"admin/session_export.go": {
-		Verdict: verdictNonV1ByInspection,
+		Verdict: verdictReadsV1Arm,
 		Via: "227 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
 			"跨包调用 ⇒ 工具判 unresolved。" +
 			"⚠ §9.230 起同一行的 bodies 拼接点也进 unresolved 桶：",
@@ -352,7 +386,10 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"⚠ 写法是 COALESCE(rb.request_body,'{}') ⇒ 默认支下 DROP 后" +
 			"**导出的会话包每条正文都是 {}**，而且**不报错**。" +
 			"已登记在 admin/request_logs_indirect_readers_test.go" +
-			"与 admin/request_logs_bodies_retirement_gate_test.go。",
+			"与 admin/request_logs_bodies_retirement_gate_test.go。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/session_online.go": {
 		Verdict: verdictNonV1ByInspection,
@@ -363,7 +400,7 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关。",
 	},
 	"admin/session_title.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "**两个拼接点，一句话说不清所以必须写全**：\n" +
 			"  ① 323 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` t` → 会话族，与 v1 无关；\n" +
 			"  ② 189 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` ` → **条件性读 v1**（§9.232 从字面量迁移过来）。\n" +
@@ -373,7 +410,10 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"⇒ 本条目已由 verdictNonV1ByInspection 改为 verdictUnresolvedTool。",
 		Consequence: "① 会话族腿不受影响。② 停写/DROP 后 bodies 腿静默变空、接口仍 200 —— " +
 			"语料从全文降级为 preview 片段（request_preview/response_preview 兜底），" +
-			"语料短到 40 rune 以下才显式 400。开关默认关 ⇒ 与迁移前完全一致。",
+			"语料短到 40 rune 以下才显式 400。开关默认关 ⇒ 与迁移前完全一致。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"admin/session_turns_tree.go": {
 		Verdict:     verdictNonV1ByInspection,
@@ -454,35 +494,44 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	// 那两处由 admin 侧 allKnownRequestLogsReaderFiles / retirementExposurePopulation
 	// 与 TestV1BodiesScanIncludesSwitchConsumers 覆盖——**但覆盖它的是另一组门，不是本工具**。
 	"bg/passive_probe_listener.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "183 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`" +
 			"（1 处，§9.233 从字面量 v1 bodies 改走切换层）。" +
 			"跨包调用（db 包）⇒ 工具判 unresolved。" +
 			"**默认支读 v1**（request_logs_bodies_with_current_month）⇒ 条件性读 v1。",
 		Consequence: "被动探针错误面板；`MAX(response_body)` 只取前 200 字符做卡片摘要。" +
 			"停写/DROP 后 bodies 腿变 NULL ⇒ COALESCE 到 ''，卡片照常渲染、摘要为空，**不报错**。" +
-			"开关默认关 ⇒ 与迁移前逐字一致。",
+			"开关默认关 ⇒ 与迁移前逐字一致。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"domains/sessionsummary/summarizer.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "652/695 行 `LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`" +
 			"（2 处，§9.233 迁移）。跨包调用 ⇒ 工具判 unresolved。" +
 			"**默认支读 v1** ⇒ 条件性读 v1。",
 		Consequence: "会话摘要的语料源。停写/DROP 后 `request_body->'messages'->-1->>'content'`" +
 			"取不到 ⇒ COALESCE 到 ''，摘要退化成**只有元数据没有语料**，接口仍 200。" +
-			"开关默认关 ⇒ 与迁移前逐字一致。",
+			"开关默认关 ⇒ 与迁移前逐字一致。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"domains/sessionsummary/system_prompt_prefix.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "178 行 `JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb`（1 处，§9.233 迁移；" +
 			"注意是 **INNER** JOIN 不是 LEFT）。跨包调用 ⇒ 工具判 unresolved。" +
 			"**默认支读 v1** ⇒ 条件性读 v1。",
 		Consequence: "⚠ **这是本批里唯一的 INNER JOIN** ⇒ 停写/DROP 后不是「字段变空」，" +
 			"而是**整个系统提示词前缀查不到任何一行**（rl 有行但 rb 无行 ⇒ 被 JOIN 滤掉）。" +
-			"降级形态与其它 LEFT JOIN 的读方**不同类**：不会退化成空串，而是直接没有前缀。",
+			"降级形态与其它 LEFT JOIN 的读方**不同类**：不会退化成空串，而是直接没有前缀。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 	"domains/sessionforensics/export.go": {
-		Verdict: verdictUnresolvedTool,
+		Verdict: verdictReadsV1Arm,
 		Via: "**两处都在包级 `var` 里**（forensicsExportMessagesSQL 与 ...SQLAlt，各 1 处 bodies 腿，" +
 			"`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id`）。" +
 			"§9.232 前它们是 `const`；§9.233 因函数调用不能出现在 const 里改成 `var`，" +
@@ -496,7 +545,10 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"**产出一份结构自洽、逐轮齐全、正文全空的证据包**。" +
 			"不是导出失败、不是报错：710 的 session 臂保证 turn 编号连续，" +
 			"所以**跳过与报错都不触发**——这正是该文件注释自己判定「比导出失败危险得多」的那种形态。" +
-			"开关默认关 ⇒ 与迁移前逐字一致。",
+			"开关默认关 ⇒ 与迁移前逐字一致。" +
+			"★ §9.258 改判为 reads-v1-arm 的实测依据：默认支读 `request_logs_bodies_with_current_month`，而该视图**没有会话臂** —— 真库 `pg_get_viewdef` 实测 has_session_arm=0，只有 bodies_hot ∪ bodies 两臂。\n" +
+			"⇒ S4 停写后该视图停止增长且**无回退通道**，新请求的 body 会全部读不到；" +
+			"⚠ 本地真库实测：`session_turns` 1,693,480 行里有 **114,695（6.77%）在默认支下已经查不到 body**，而 `session_bodies` 缺 0 ⇒ 切到 session_bodies 是**修复**不是风险。",
 	},
 }
 
@@ -521,18 +573,24 @@ func repoRoot(t *testing.T) string {
 }
 
 // measureBuckets 跑一次全仓审计，返回「文件 → 三桶各自出现次数」。
-func measureBuckets(t *testing.T, root string) (v1, canonical, unresolved map[string]int, total int) {
+func measureBuckets(t *testing.T, root string) (v1, v1arm, canonical, unresolved map[string]int, total int) {
 	t.Helper()
 	sites, err := AuditRepo(root)
 	if err != nil {
 		t.Fatalf("AuditRepo(%s): %v", root, err)
 	}
-	v1, canonical, unresolved = map[string]int{}, map[string]int{}, map[string]int{}
+	v1, v1arm, canonical, unresolved = map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}
 	for _, s := range sites {
 		total++
 		switch s.Classification() {
 		case ClassReadsV1:
 			v1[s.File]++
+		case ClassReadsV1Arm:
+			// ★ §9.258：这一类**不能**并进 canonical。
+			// 第一版漏了它，于是第四桶只出现在报告里、
+			// 而 measureBuckets 的 default 分支把它算成 canonical
+			// ⇒ 清单门把 25 处「行集会变小」的读法判成「关系名还在」而**照样绿**。
+			v1arm[s.File]++
 		case ClassUnresolved:
 			unresolved[s.File]++
 		default:
@@ -551,7 +609,7 @@ func measureBuckets(t *testing.T, root string) (v1, canonical, unresolved map[st
 		}
 		return out
 	}
-	return norm(v1), norm(canonical), norm(unresolved), total
+	return norm(v1), norm(v1arm), norm(canonical), norm(unresolved), total
 }
 
 func mergeCounts(maps ...map[string]int) map[string]int {
@@ -564,14 +622,15 @@ func mergeCounts(maps ...map[string]int) map[string]int {
 	return out
 }
 
-func dumpBuckets(t *testing.T, v1, canonical, unresolved map[string]int, total int) {
+func dumpBuckets(t *testing.T, v1, v1arm, canonical, unresolved map[string]int, total int) {
 	t.Helper()
-	t.Logf("全仓拼接点：%d 处 / %d 文件（v1 %d、canonical %d、unresolved %d）",
-		total, len(mergeCounts(v1, canonical, unresolved)), len(v1), len(canonical), len(unresolved))
+	t.Logf("全仓拼接点：%d 处 / %d 文件（v1 %d、v1 臂 %d、canonical %d、unresolved %d）",
+		total, len(mergeCounts(v1, v1arm, canonical, unresolved)),
+		len(v1), len(v1arm), len(canonical), len(unresolved))
 	for _, b := range []struct {
 		name string
 		m    map[string]int
-	}{{"reads-v1", v1}, {"canonical-only", canonical}, {"unresolved", unresolved}} {
+	}{{"reads-v1", v1}, {"reads-v1-arm", v1arm}, {"canonical-only", canonical}, {"unresolved", unresolved}} {
 		var files []string
 		for f, n := range b.m {
 			files = append(files, f+"("+strconv.Itoa(n)+")")
@@ -581,17 +640,19 @@ func dumpBuckets(t *testing.T, v1, canonical, unresolved map[string]int, total i
 	}
 }
 
-// measuredVerdict 把一个文件的三桶计数折成「工具眼里的判定」。
+// measuredVerdict 把一个文件的四桶计数折成「工具眼里的判定」。
 //
 // unresolved 优先：只要还有一处不可判定，工具就**不敢**声称这个文件安全。
 // 这是本工具刻意的保守（resolve.go：「宁可不可判定也不猜」），
 // 所以工具的判定是**上界**而不是结论——结论由人给。
-func measuredVerdict(v1n, canonN, unresN int) verdict {
+func measuredVerdict(v1n, v1armN, canonN, unresN int) verdict {
 	switch {
 	case unresN > 0:
 		return verdictUnresolvedTool
 	case v1n > 0:
 		return verdictReadsV1
+	case v1armN > 0:
+		return verdictReadsV1Arm
 	case canonN > 0:
 		return verdictCanonicalOnly
 	default:
@@ -630,6 +691,41 @@ func checkVerdictAgreement(file string, mine, tool verdict) []string {
 		return []string{fmt.Sprintf(
 			"%s: 工具判定 reads-v1，清单判 %s —— 工具判得更严重时不能降级。"+
 				"请复核 %s 到底读不读 v1 宽族。", file, mine, file)}
+	case tool == verdictReadsV1Arm && mine == verdictCanonicalOnly:
+		// §9.258：**降级到 canonical-only 是这一类最危险的错**。
+		// canonical-only 在词表里只承诺「关系名还在」，
+		// 而本类的后果是「行集会变小且不报错」——
+		// 把它记成 canonical-only，等于把 25 处静默少行登记成「安全」。
+		return []string{fmt.Sprintf(
+			"%s: 工具判 reads-v1-arm，清单判 canonical-only —— **这是降级**。"+
+				"该文件读的是体里含 v1 臂的视图：DROP 后关系名还在、但行集变小，"+
+				"多数读法用 COALESCE/COUNT 包装过 ⇒ 静默少行而不是报错。"+
+				"请改成 verdictReadsV1Arm 并在 Consequence 里写清会少哪部分行。", file)}
+	case tool == verdictReadsV1Arm && mine == verdictNonV1ByInspection:
+		// ★ 这一条是**最严重的方向**：清单里写的是「人读过源码，确认不是 v1」，
+		// 而工具现在判它是 v1 臂读点。前者是**自信的否定**，不是「还不知道」。
+		// 极可能的原因：那条判定写于 bodies 读方还是**字面量**的年代，
+		// §9.232 把它们改成走 `dbpkg.SessionBodiesSourceSQL()` 之后就过期了，
+		// 而 nonv1-by-inspection **不会**像 unresolved 那样被规则 ③ 抓到。
+		return []string{fmt.Sprintf(
+			"%s: 清单判 nonv1-by-inspection（「人读过源码，确认不是 v1」），"+
+				"工具判 reads-v1-arm —— **这是自信的否定，且现在被证伪**。\n"+
+				"多半是该文件在 §9.232 把字面量改成走切换层之后，这条判定就过期了；"+
+				"nonv1-by-inspection 与 unresolved 的区别正是「查过没问题」与「还没查」，"+
+				"所以它不会被过期检测抓到。请重读源码并改成 verdictReadsV1Arm。", file)}
+	case tool == verdictReadsV1Arm && mine == verdictUnresolvedTool:
+		// §9.258：清单停在「工具查不出」而工具**现在查得出**，且答案是
+		// 「读 v1 臂的视图」⇒ 这不是「判定错误」，是**判定过期**，
+		// 而且过期方向是「从不知道变成了知道有风险」⇒ 必须更新。
+		return []string{fmt.Sprintf(
+			"%s: 清单判 unresolved(tool)，但工具**现在能解析**并判为 reads-v1-arm —— "+
+				"判定过期了（§9.257 修了跨包解析 + §9.258 加了 v1 臂这一类）。"+
+				"请把 Verdict 改成 verdictReadsV1Arm，并在 Consequence 里写清会少哪部分行。", file)}
+	case mine == verdictReadsV1Arm && tool == verdictCanonicalOnly:
+		return []string{fmt.Sprintf(
+			"%s: 清单判 reads-v1-arm，工具判 canonical-only —— **两者矛盾**。"+
+				"要么是 viewsWithV1Arm 认错了视图（检查该视图的 DDL 是否真含 v1 臂），"+
+				"要么是清单过期了（视图的 v1 臂已被去掉）。", file)}
 	case mine == verdictReadsV1 && tool == verdictCanonicalOnly:
 		return []string{fmt.Sprintf(
 			"%s: 清单判 reads-v1，工具判 canonical-only —— **两者矛盾**。"+
@@ -654,14 +750,14 @@ func checkVerdictAgreement(file string, mine, tool verdict) []string {
 //	④ 清单条目的必填字段为空 ⇒ 红（空理由的登记等于没有登记）
 func TestIndirectSiteManifestCoversEveryReportedFile(t *testing.T) {
 	root := repoRoot(t)
-	v1, canonical, unresolved, total := measureBuckets(t, root)
-	dumpBuckets(t, v1, canonical, unresolved, total)
+	v1, v1arm, canonical, unresolved, total := measureBuckets(t, root)
+	dumpBuckets(t, v1, v1arm, canonical, unresolved, total)
 
-	measured := mergeCounts(v1, canonical, unresolved)
+	measured := mergeCounts(v1, v1arm, canonical, unresolved)
 
 	var errs []string
 	for f, n := range measured {
-		got := measuredVerdict(v1[f], canonical[f], unresolved[f])
+		got := measuredVerdict(v1[f], v1arm[f], canonical[f], unresolved[f])
 		a, ok := indirectSiteAssessments[f]
 		if !ok {
 			errs = append(errs, fmt.Sprintf(
@@ -812,6 +908,8 @@ type bucketSnapshot struct {
 	TotalSites int
 	V1Files    int
 	V1Sites    int
+	V1ArmFiles int
+	V1ArmSites int
 	CanonFiles int
 	CanonSites int
 	UnresFiles int
@@ -832,18 +930,25 @@ var documentedSnapshot = bucketSnapshot{
 	TotalSites: 70,
 	V1Files:    6,
 	V1Sites:    12,
-	CanonFiles: 24,
-	CanonSites: 44,
+	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
+	// ⚠ 这里的 25 处**不含** 3 处 `src.TurnsTable` —— 那个操作数是 struct 字段，
+	// 静态推不出，留在 unresolved 桶；但手验确认它读 v1 基表。
+	// ⇒ **真实退役读方清单 = 12 + 25 + 3 = 40 处**，不是 37。
+	V1ArmFiles: 14,
+	V1ArmSites: 25,
+	CanonFiles: 13,
+	CanonSites: 19,
 	UnresFiles: 7,
 	UnresSites: 14,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {
 	root := repoRoot(t)
-	v1, canonical, unresolved, total := measureBuckets(t, root)
+	v1, v1arm, canonical, unresolved, total := measureBuckets(t, root)
 	got := bucketSnapshot{
 		TotalSites: total,
 		V1Files:    len(v1), V1Sites: sumMap(v1),
+		V1ArmFiles: len(v1arm), V1ArmSites: sumMap(v1arm),
 		CanonFiles: len(canonical), CanonSites: sumMap(canonical),
 		UnresFiles: len(unresolved), UnresSites: sumMap(unresolved),
 	}
@@ -863,6 +968,8 @@ func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {
 	cmp("拼接点总数", documentedSnapshot.TotalSites, got.TotalSites)
 	cmp("v1 文件数", documentedSnapshot.V1Files, got.V1Files)
 	cmp("v1 处数", documentedSnapshot.V1Sites, got.V1Sites)
+	cmp("v1 臂视图 文件数", documentedSnapshot.V1ArmFiles, got.V1ArmFiles)
+	cmp("v1 臂视图 处数", documentedSnapshot.V1ArmSites, got.V1ArmSites)
 	cmp("canonical 文件数", documentedSnapshot.CanonFiles, got.CanonFiles)
 	cmp("canonical 处数", documentedSnapshot.CanonSites, got.CanonSites)
 	cmp("unresolved 文件数", documentedSnapshot.UnresFiles, got.UnresFiles)
@@ -878,7 +985,7 @@ func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {
 
 func TestRepoAuditIsNotSilentlyVacuous(t *testing.T) {
 	root := repoRoot(t)
-	v1, canonical, unresolved, total := measureBuckets(t, root)
+	v1, v1arm, canonical, unresolved, total := measureBuckets(t, root)
 	if total == 0 {
 		t.Fatal("全仓审计报出 0 个拼接点 —— 这不是「仓库里没有间接读点」，" +
 			"是审计坏了（WalkDir 范围 / 解析失败被 continue 吞掉 / 模式被改）。" +
@@ -889,6 +996,13 @@ func TestRepoAuditIsNotSilentlyVacuous(t *testing.T) {
 		t.Errorf("全仓审计**一个 v1 读点都没解析出来**（%d 处全部落在 canonical/unresolved）—— "+
 			"要么仓库真的干净了（那要有人明确确认），要么 isV1Relation 又坏了。", total)
 	}
-	t.Logf("v1 %d 文件/%d 处，canonical %d 文件/%d 处，unresolved %d 文件/%d 处",
-		len(v1), sumMap(v1), len(canonical), sumMap(canonical), len(unresolved), sumMap(unresolved))
+	if len(v1arm) == 0 {
+		t.Errorf("全仓审计**一个 v1 臂视图读点都没解析出来**（%d 处全部落在 v1/canonical/unresolved）——\n"+
+			"要么 sql/objects/views/ 下的 DDL 真的一处 FROM v1 基表都没有（那要有人明确确认），\n"+
+			"要么 viewsWithV1Arm 坏了：最可能的是 fromRelationRE 的捕获范围被改窄、"+
+			"不再吃 schema 限定名（§9.258 踩过一次，第四桶恒为 0）。", total)
+	}
+	t.Logf("v1 %d 文件/%d 处，v1 臂 %d 文件/%d 处，canonical %d 文件/%d 处，unresolved %d 文件/%d 处",
+		len(v1), sumMap(v1), len(v1arm), sumMap(v1arm),
+		len(canonical), sumMap(canonical), len(unresolved), sumMap(unresolved))
 }

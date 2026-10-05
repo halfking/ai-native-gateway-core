@@ -719,3 +719,62 @@ func q() string {
 			"成功结果**，看起来完全正常。实际：%q", joined)
 	}
 }
+
+// 门 15（§9.258）：v1 臂视图集合必须从 DDL **推导**出来，且要认得 schema 限定名。
+//
+// # 为什么要单独一道
+//
+// 第四桶是在 `viewsWithV1Arm` 返回空时**恒为 0**的，而且那个 0 看起来
+// 和「仓库里真的没有 v1 臂视图」完全一样。本轮实测就在这里卡住过一轮：
+// `fromRelationRE` 的捕获范围不含 schema 限定，于是视图 DDL 里的
+// `FROM public.request_logs_bodies_hot` 只捕获到 `public` ⇒ 推导器认不出任何视图。
+//
+// # 夹具照着真实 DDL 抄（§9.257.3 的教训）
+//
+// 三条形态都照抄 `sql/objects/views/request_logs_bodies_with_current_month.sql`：
+//
+//	① `CREATE VIEW public.<name> AS`（带 schema）
+//	② `   FROM public.<v1 底表>`（**带 schema 的关系名**）
+//	③ 注释里提到 v1 表（**必须不算数**）
+func TestV1ArmViewsAreDerivedFromDDL(t *testing.T) {
+	dir := t.TempDir()
+	vdir := filepath.Join(dir, "sql", "objects", "views")
+	if err := os.MkdirAll(vdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(vdir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 真·有 v1 臂
+	write("request_logs_bodies_with_current_month.sql",
+		"--\n-- Name: x; Type: VIEW\n--\n\nCREATE VIEW public.request_logs_bodies_with_current_month AS\n"+
+			" SELECT request_logs_bodies_hot.request_id FROM public.request_logs_bodies_hot\n"+
+			"UNION ALL\n SELECT request_logs_bodies.request_id FROM public.request_logs_bodies;\n")
+	// 真·无 v1 臂（会话族投影）
+	write("session_only_view.sql",
+		"CREATE VIEW public.session_only_view AS\n SELECT 1 FROM public.session_turns t\n"+
+			" WHERE 'request_logs' <> ''; -- ← 注释/字面量里提到 v1 表，不该算数\n")
+	// ★ 纯字面量提及，**绝不能**被算成有臂
+	write("mentions_only.sql",
+		"-- 这个视图的历史实现读 request_logs，已改\nCREATE VIEW public.mentions_only AS SELECT 1;\n")
+
+	got := viewsWithV1Arm(dir)
+	if len(got) == 0 {
+		t.Fatalf("一个视图都没推出来 —— ★ 最可能的原因：`fromRelationRE` 的捕获范围被改窄、" +
+			"不再吃 schema 限定名（`FROM public.request_logs_bodies_hot` 只捕获到 `public`）。" +
+			"本轮就卡在这里一轮，而第四桶当时**恒为 0 且看起来正常**。")
+	}
+	if !got["request_logs_bodies_with_current_month"] {
+		t.Errorf("request_logs_bodies_with_current_month 应被判为含 v1 臂，实际集合=%v", v1ArmViewNames(got))
+	}
+	if got["session_only_view"] {
+		t.Errorf("session_only_view 的 body 里没有 FROM v1 底表（只有字面量与注释提及），"+
+			"不该被判成含 v1 臂。集合=%v", v1ArmViewNames(got))
+	}
+	if got["mentions_only"] {
+		t.Errorf("mentions_only 只在**注释**里提到 request_logs，不该被判成含 v1 臂。集合=%v",
+			v1ArmViewNames(got))
+	}
+}
