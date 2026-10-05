@@ -16,7 +16,8 @@ type flashBlipObserver struct {
 	*mockStateObserver
 }
 
-func (flashBlipObserver) OnNoCandidates(ctx context.Context, sig credentialstate.NoCandidatesSignal) {}
+func (flashBlipObserver) OnNoCandidates(ctx context.Context, sig credentialstate.NoCandidatesSignal) {
+}
 
 // Wave 3 B2② flash-blip double confirmation: the FIRST consecutive
 // network/timeout failure of a node defers its degrade-family state writes

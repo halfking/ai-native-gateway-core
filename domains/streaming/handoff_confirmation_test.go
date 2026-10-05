@@ -89,7 +89,7 @@ func buildConfirmationHarness(t *testing.T) (*ChatHandler, *handoff.MemoryConfir
 	trigger := handoff.NewMemoryHandoffTrigger(5 * time.Minute)
 	hook := handoff.NewTriggerHook(handoff.TriggerConfig{
 		Enabled: true, TriggerMode: handoff.TriggerModeAuto, MaxPerSession: 5,
-		GoalTrigger:          trigger,
+		GoalTrigger:         trigger,
 		GoalStateSerializer: stubGoalStateSerializer{},
 	}, db)
 	keyInfo := &authentication.KeyInfo{ID: 42, TenantID: "tenant-a"}

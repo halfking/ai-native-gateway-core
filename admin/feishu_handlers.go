@@ -218,9 +218,9 @@ func (h *Handler) handleFeishuRoutingCreate(w http.ResponseWriter, r *http.Reque
 	row := h.db.QueryRow(r.Context(), `
 		INSERT INTO feishu_bot_routing_rules
 		    (tenant_id, open_id, display_name, user_role, risk_levels, priority, enabled, note, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
 		RETURNING id, created_at, updated_at
-	`, req.TenantID, req.OpenID, req.DisplayName, req.UserRole, riskJSON,
+	`, req.TenantID, req.OpenID, req.DisplayName, req.UserRole, string(riskJSON),
 		req.Priority, enabled, req.Note, userFromContext(r))
 
 	var id int64
@@ -587,9 +587,9 @@ func (h *Handler) handleFeishuRoutingRulesImport(w http.ResponseWriter, r *http.
 		_, err := h.db.Exec(ctx, `
 			INSERT INTO feishu_bot_routing_rules
 			    (tenant_id, open_id, display_name, user_role, risk_levels, priority, enabled, note, created_by)
-			VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8)
+			VALUES ('default', $1, $2, $3, $4::jsonb, $5, $6, $7, $8)
 			ON CONFLICT (tenant_id, open_id) DO NOTHING
-		`, r.OpenID, r.DisplayName, r.UserRole, riskJSON, r.Priority, enabled, r.Note, currentUser)
+		`, r.OpenID, r.DisplayName, r.UserRole, string(riskJSON), r.Priority, enabled, r.Note, currentUser)
 		if err != nil {
 			errors = append(errors, rowErr{Row: i + 1, Err: "insert: " + err.Error(), Data: r})
 			skipped++

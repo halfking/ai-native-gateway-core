@@ -373,7 +373,7 @@ func TestHandleUnifiedRequestDetail_OversizedBodyReturns413(t *testing.T) {
 
 	// Replace the locator with one whose Get returns ErrBodyTooLarge.
 	h.requestDetailLocator = &requestdetail.Locator{
-		Store: store,
+		Store:  store,
 		Bodies: oversizedBodyReader{},
 	}
 

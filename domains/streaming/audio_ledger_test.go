@@ -23,9 +23,9 @@ import (
 
 // fakeCandidateFailureDB 捕获台账 INSERT 的参数（按 SQL 前缀过滤）。
 type fakeCandidateFailureDB struct {
-	mu     sync.Mutex
-	calls  []string          // 每次 Exec 的 SQL
-	rows   [][]any           // 与 calls 对齐的参数
+	mu    sync.Mutex
+	calls []string // 每次 Exec 的 SQL
+	rows  [][]any  // 与 calls 对齐的参数
 }
 
 func (f *fakeCandidateFailureDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {

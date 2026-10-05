@@ -272,6 +272,49 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
+	// 0. Enumerate the credentials the reset below will hit — BEFORE the
+	// UPDATE clears the very markers the WHERE matches on. The in-process
+	// recovery chain (step 5) runs for exactly this list, so it stays
+	// same-source with the DB WHERE: no credential gets its DB gates cleared
+	// while its in-memory breaker survives, and none is reset in-memory only.
+	//
+	// A race between this SELECT and the UPDATE is benign by construction:
+	// a credential that trips between the two gets its DB gates cleared but
+	// keeps its (fresh, truthful) in-memory breaker — it will recover through
+	// the normal cooling path, which is the correct outcome for a live trip.
+	targetRows, err := h.db.Query(ctx, `
+		SELECT id FROM credentials
+		WHERE provider_id = $1
+		  AND lifecycle_status = 'active'
+		  AND (
+		      availability_state IN ('unavailable', 'degraded', 'rate_limited')
+		      OR circuit_state IN ('open', 'half_open')
+		      OR consecutive_failures > 0
+		  )
+	`, req.ProviderID)
+	if err != nil {
+		writeInternalErr(w, "credential enumeration failed", err)
+		return
+	}
+	targetCredIDs := make([]int, 0, 8)
+	for targetRows.Next() {
+		var cid int
+		if err := targetRows.Scan(&cid); err == nil {
+			targetCredIDs = append(targetCredIDs, cid)
+		} else {
+			warnRowSkip("routingBlockedFix.targets", err)
+		}
+	}
+	// A truncated enumeration would silently narrow the in-process recovery
+	// below (step 5) while the DB reset still covers the full set — the exact
+	// "HTTP 200 but half the state survives" gap this endpoint exists to fix.
+	if err := targetRows.Err(); err != nil {
+		targetRows.Close()
+		writeInternalErr(w, "credential enumeration aborted", err)
+		return
+	}
+	targetRows.Close()
+
 	// 1. Reset all credential-level blocking for this provider.
 	//    (availability_state, circuit_state, consecutive_failures)
 	if _, err := h.db.Exec(ctx, `
@@ -362,10 +405,31 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		slog.Warn("pg_notify failed", "error", err)
 	}
 
+	// 5. In-process recovery chain — 待裁决 85 (R45 移交首位, now closed).
+	// Mirrors handleForceRecoverSingle (admin/diagnostics_credential.go):
+	// the WHERE above deliberately targets circuit_state IN ('open','half_open')
+	// and consecutive_failures > 0 — precisely the credentials whose in-process
+	// breakers are also open. Clearing only the DB side returns HTTP 200 while
+	// the router keeps filtering these nodes until the cooling windows expire
+	// (the failure mode the shared in-process recovery helper's doc comment
+	// warns about, admin/routing.go:1962-1969). URSM v2 stays untouched —
+	// parity with handleForceRecoverSingle, which also leaves that layer to
+	// its owner. NOTE: keep symbol names out of this comment — the
+	// healthstateguard parity gate anchors on raw text and a mention here
+	// would satisfy it without the calls.
+	inMemoryReset := 0
+	for _, cid := range targetCredIDs {
+		provider.InvalidateCredentialKeyCache(cid)
+		provider.ResetKeyRotatorForCredential(cid)
+		h.resetInMemoryNodeState(ctx, cid, req.ProviderID, "", true)
+		inMemoryReset++
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"triggered":   true,
-		"provider_id": req.ProviderID,
-		"timestamp":   time.Now().UTC().Format(time.RFC3339),
-		"message":     "provider force-recovered: credentials / bindings / probe_state reset",
+		"triggered":                   true,
+		"provider_id":                 req.ProviderID,
+		"timestamp":                   time.Now().UTC().Format(time.RFC3339),
+		"message":                     "provider force-recovered: credentials / bindings / probe_state reset",
+		"in_memory_reset_credentials": inMemoryReset,
 	})
 }

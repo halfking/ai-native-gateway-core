@@ -41,8 +41,8 @@ type ToolCallValidator struct {
 // ToolUseState tracks the lifecycle of a single tool_use block.
 type ToolUseState struct {
 	ID        string
-	Name      string    // Tool function name for logging
-	Index     int       // Content block index
+	Name      string // Tool function name for logging
+	Index     int    // Content block index
 	StartedAt time.Time
 	Completed bool // True when matching tool_result received
 }

@@ -101,7 +101,7 @@ func TestFoldCandidateOutcomesNoTrackerKeepsSynthesis(t *testing.T) {
 	// 无 tracker（durable 恢复等路径）时保持原合成行为：
 	// no_available_channel 单候选，聚合器看到 wait-recovery。
 	outcomes := foldCandidateOutcomes(&executors.ExecuteError{
-		LastErr:  fmt.Errorf("no route"),
+		LastErr:   fmt.Errorf("no route"),
 		Exhausted: true,
 	}, "req-fold-3", nil)
 	require.Len(t, outcomes, 1)

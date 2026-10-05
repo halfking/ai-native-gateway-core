@@ -98,7 +98,8 @@ var indirectRequestLogsReaders = map[string]indirectReader{
 			"**实测把它们从 bodies 总体里静默挤掉了 4 个**（27→23）——" +
 			"而那道门本来就故意红，不会有任何信号。\n" +
 			"⇒ 搬到 db（与 SessionFamilyTurnsSourceSQL 等同族 helper 同处）。\n" +
-			"消费点共 14 个（admin 11 + domains/sessionforensics 1 + domains/sessionsummary 2 + bg 1），" +
+			"消费点共 13 个文件（admin 9 + domains/sessionforensics 1 + domains/sessionsummary 2 + bg 1；" +
+			"R46 机器复测：13 文件 19 调用点——计数以门输出为准，勿手抄），" +
 			"由 indirectSourceConsumers 机器识别。",
 	},
 	"bg/auto_route_settle_sql.go": {

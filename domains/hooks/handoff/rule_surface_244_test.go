@@ -28,11 +28,11 @@ import (
 //
 // What is asserted is only that the report itself is trustworthy:
 //
-//	1. the table is a real cross-layer table, not one layer measured three
-//	   times — proved in both directions (see Test244LayerProbeIsNotOneLayer);
-//	2. the case list cannot be silently trimmed (req244RequiredCases);
-//	3. a MISS is a fact about the rules, not a broken probe
-//	   (Test244WideningRuleShrinksGap).
+//  1. the table is a real cross-layer table, not one layer measured three
+//     times — proved in both directions (see Test244LayerProbeIsNotOneLayer);
+//  2. the case list cannot be silently trimmed (req244RequiredCases);
+//  3. a MISS is a fact about the rules, not a broken probe
+//     (Test244WideningRuleShrinksGap).
 func Test244RedactionLayerRuleSurface(t *testing.T) {
 	for _, set := range req244RuleSets(t) {
 		layers := req244Layers(t, set.detector)
@@ -160,10 +160,10 @@ var req244RequiredCases = []string{
 // (all HIT) and cn_phone (secretmask+handoff both MISS) and passed with a
 // deliberately degenerate handoff probe — the control was unobservable.
 //
-//	- aws_akia: all three HIT — the layers do agree where they overlap;
-//	- cn_phone: detector HIT, both others MISS — divergence exists;
-//	- openai_sk_proj: secretmask MISS but handoff HIT — pins each probe to its
-//	  own rule set, and is the control that a degenerate probe actually trips.
+//   - aws_akia: all three HIT — the layers do agree where they overlap;
+//   - cn_phone: detector HIT, both others MISS — divergence exists;
+//   - openai_sk_proj: secretmask MISS but handoff HIT — pins each probe to its
+//     own rule set, and is the control that a degenerate probe actually trips.
 func Test244LayerProbeIsNotOneLayer(t *testing.T) {
 	for _, set := range req244RuleSets(t) {
 		layers := req244Layers(t, set.detector)

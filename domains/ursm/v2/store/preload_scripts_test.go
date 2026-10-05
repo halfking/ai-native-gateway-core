@@ -113,10 +113,10 @@ func TestScriptSizes(t *testing.T) {
 	// any regression here changes the fallback network cost. Sizes track the
 	// last intentional script change (error-watermark fields, 11af45216;
 	// final committed sizes 2026-09-11).
-		if s := sizes["record_request.lua"]; s != 12303 {
-			t.Errorf("record_request.lua size = %d, want 12303 (update if script changed intentionally)", s)
-		}
-		if s := sizes["record_request_dual.lua"]; s != 11227 {
-			t.Errorf("record_request_dual.lua size = %d, want 11227 (update if script changed intentionally)", s)
-		}
+	if s := sizes["record_request.lua"]; s != 12303 {
+		t.Errorf("record_request.lua size = %d, want 12303 (update if script changed intentionally)", s)
+	}
+	if s := sizes["record_request_dual.lua"]; s != 11227 {
+		t.Errorf("record_request_dual.lua size = %d, want 11227 (update if script changed intentionally)", s)
+	}
 }

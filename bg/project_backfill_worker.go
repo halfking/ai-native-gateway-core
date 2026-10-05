@@ -71,10 +71,10 @@ FROM targets t
 // SessionProjectBackfillWorker periodically backfills
 // session_summaries.gw_project_id for pre-762 sessions.
 type SessionProjectBackfillWorker struct {
-	pool *pgxpool.Pool
-	tick time.Duration
-	stop chan struct{}
-	done chan struct{}
+	pool     *pgxpool.Pool
+	tick     time.Duration
+	stop     chan struct{}
+	done     chan struct{}
 	stopOnce sync.Once
 }
 

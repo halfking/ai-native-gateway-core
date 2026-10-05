@@ -27,12 +27,12 @@ func TestScanSchedulerStatus_503WhenNotWired(t *testing.T) {
 func TestScanSchedulerStatus_OK(t *testing.T) {
 	snap := map[string]any{
 		"enabled":       true,
-		"interval":       "6h0m0s",
-		"last_sweep_at":  "2026-09-14T00:00:00Z",
-		"sweeps_total":   3,
-		"scans_total":    42,
-		"scans_failed":   1,
-		"scans_skipped":  0,
+		"interval":      "6h0m0s",
+		"last_sweep_at": "2026-09-14T00:00:00Z",
+		"sweeps_total":  3,
+		"scans_total":   42,
+		"scans_failed":  1,
+		"scans_skipped": 0,
 	}
 	h := &Handler{}
 	h.SetScanSchedulerStatus(stubScanSchedulerStatus{snap: snap})

@@ -838,7 +838,7 @@ func (g *AutoTitleGenerator) loadSessionLogsForTitle(ctx context.Context, sessio
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
-		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` ON rb.request_id = rl.request_id
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.ts ASC
 		LIMIT 5

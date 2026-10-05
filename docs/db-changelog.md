@@ -1014,4 +1014,5 @@ teeth（一次性 PG17 逐项实测）：去 `LIMIT 1` → 判据红（4 绑定 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | applied+verified |
+| 831 | `831_work_type_route_source.sql` | `bdb52ad1c68cdcda6b979c82b1c64cff90af8ef1c917062de5c224009a5f79a7` | **pending deploy**（`.down.sql` sha `fedddfd5d369e50b4e421c97e3dc848ceebf6515dad8fa78370edcf0951d7e0f`）（R46 补登记台账行——并行会话 fe703382b 落地迁移本体但未写台账，sqlguard 连续性门红）。`work_type_model_route.source ∈ {operator, acc}` 默认 'operator'：双写方（ACC sync / admin UI）DELETE+re-INSERT 互踩且无来源标记，ACC 种子 model_routes 全空 ⇒ 成功 sync 即静默清空运维配置的路由；与网关路径修复（/api/v2）成对落地。台账登记 ≠ 通道下发（通道门仍红 829+831，Owner 决策） |
 

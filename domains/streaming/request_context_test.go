@@ -36,12 +36,12 @@ func TestGWSessionTaskFromRequestSanitizesCorrelationIDs(t *testing.T) {
 // 空串（SQL 侧归一为 'main' 列默认），父会话 ID 走关联 ID 消毒。
 func TestGWAgentAttributionFromRequest(t *testing.T) {
 	cases := []struct {
-		name           string
-		role           string
-		actor          string
-		parent         string
-		wantRole       string
-		wantParent     string
+		name       string
+		role       string
+		actor      string
+		parent     string
+		wantRole   string
+		wantParent string
 	}{
 		{"declared worker", "Worker", "", "gw_p1", "worker", "gw_p1"},
 		{"actor inferred", "", "auto-title-generator", "", "worker", ""},

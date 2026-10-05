@@ -9,6 +9,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/storage"
 )
+
 // R31 tests: reader wired → list passthrough; reader absent (full mode) →
 // explicit 503 with the capability hint.
 func TestLiteSessionsEndpoint(t *testing.T) {

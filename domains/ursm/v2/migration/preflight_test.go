@@ -64,8 +64,8 @@ func TestIsLedgerID(t *testing.T) {
 		"k2.migration.2026_08_18",
 	}
 	bad := []string{
-		"",        // below the 4..64 envelope
-		"abc",     // length 3, below envelope
+		"",           // below the 4..64 envelope
+		"abc",        // length 3, below envelope
 		"with space", // space is not in the operator alphabet
 		"with/slash", // slash is not in the operator alphabet
 	}

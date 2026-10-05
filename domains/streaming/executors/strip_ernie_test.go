@@ -43,10 +43,10 @@ func TestErnieSearchInfo_NotStripped(t *testing.T) {
 
 	// Create executor with no strip functions (simulating Ernie path)
 	executor := &Executor{
-		StripMinimaxFields: nil,
-		StripZhipuFields:   nil,
+		StripMinimaxFields:  nil,
+		StripZhipuFields:    nil,
 		StripDeepSeekFields: nil,
-		StripDoubaoFields:  nil,
+		StripDoubaoFields:   nil,
 	}
 
 	// stripVendorFields with empty catalogCode (third-party) or "ernie"

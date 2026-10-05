@@ -3978,8 +3978,8 @@ func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Req
 
 		weightsJSON, _ := json.Marshal(current)
 		_, err := h.db.Exec(ctx, `
-			UPDATE routing_policy SET scoring_weights_json = $1 WHERE tenant_id = 'default'
-		`, weightsJSON)
+			UPDATE routing_policy SET scoring_weights_json = $1::jsonb WHERE tenant_id = 'default'
+		`, string(weightsJSON))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "update failed")
 			return

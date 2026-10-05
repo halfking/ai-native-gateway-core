@@ -188,9 +188,9 @@ func TestProbeNeverWritesTheSameValueTwice(t *testing.T) {
 	st := &probeStore{
 		tenants: []string{"t1"},
 		stale: []apihub.Asset{
-			asset(1, "t1", apihub.HealthUnknown), // 该变
+			asset(1, "t1", apihub.HealthUnknown),  // 该变
 			asset(2, "t1", apihub.HealthDegraded), // 不该变
-			asset(3, "t1", apihub.HealthUnknown), // 该变
+			asset(3, "t1", apihub.HealthUnknown),  // 该变
 		},
 		all: []apihub.Asset{
 			asset(1, "t1", apihub.HealthUnknown),
