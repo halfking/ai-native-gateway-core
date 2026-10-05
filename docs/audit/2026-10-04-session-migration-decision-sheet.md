@@ -2636,6 +2636,20 @@ DDL/分区树/约束/索引（§9.185）。
 > | 交集 | | 14 文件 |
 > | ★ **并集** | | **114 文件** |
 >
+> 🛑 **§9.262 + §9.265 更正：上面这张表的三个数已经过期。**
+> 实测（`f654124c1` → `8b76814ec`）：
+> **字面量 108 文件 / 256 调用点**（§9.264 新增的 `cmd/gateway/v1_write_liveness.go`
+> 是生产文件且含两处 `FROM request_logs…`，`TestRequestLogsReadInventoryIsComplete` 正确地抓了它）、
+> **间接 22**、**交集 14**、★ **并集 = 116**。
+>
+> ★ 而「114」这个数本身的错，**不是抄错，是两个总体被当成了一个**：
+> 上面的公式里那个「21」用的是拼接点工具的 v1∪v1臂 桶（**不含** `bg/auto_route_settle_sql.go`），
+> 同一段那份「7 个不在字面量表里」的手写清单**含**它、**不含** `admin/dashboard_board_queries.go`
+> （§9.260 修好推导器之后它才变成 v1 读方）。两个总体各 7 个、总数差 1，
+> 而**没有任何一道门会红**。
+> ⇒ 完整推导、三条取源路径分类与门见
+> [`2026-10-05-v1-reader-retirement-tiering.md`](2026-10-05-v1-reader-retirement-tiering.md)。
+>
 > ⇒ **字面量扫描不是缺口**（那张表本来就覆盖 v1 臂视图），
 > **缺的是把两张表合起来数**。且有 **7 个读 v1 的文件不在任何一张表里**
 > （`maas/usage.go` · `maas/consumption_detail.go` · `maas/credit_buckets.go` ·
