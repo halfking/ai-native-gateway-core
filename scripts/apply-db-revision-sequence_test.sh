@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-printf 'apply-db-revision-sequence contract passed\n'
-
-#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,6 +15,8 @@ canonical_delivery_path_check() {
   local startup_files="$2"
   local sequence_files="$3"
   local ensure_files="$4"
+  local superseded_files="${5:-}"
+  local channel_gap_files="${6:-}"
   local name version
 
   while IFS= read -r name; do
@@ -28,11 +27,13 @@ canonical_delivery_path_check() {
 
     if printf '%s\n' "$startup_files" | grep -Fxq "$name" \
       || printf '%s\n' "$sequence_files" | grep -Fxq "$name" \
-      || printf '%s\n' "$ensure_files" | grep -Fxq "$name"; then
+      || printf '%s\n' "$ensure_files" | grep -Fxq "$name" \
+      || printf '%s\n' "$superseded_files" | grep -Fxq "$name" \
+      || printf '%s\n' "$channel_gap_files" | grep -Fxq "$name"; then
       continue
     fi
 
-    printf 'canonical startup migration %s has no approved delivery path; register it in StartupFiles, the revision sequence, or the reviewed Go-ensure allowlist\n' "$name" >&2
+    printf 'canonical startup migration %s has no approved delivery path; register it in StartupFiles, the revision sequence, the reviewed Go-ensure allowlist, (installer-only by design) channel_gap_allowlist, or (overturned, must never run) superseded_migrations\n' "$name" >&2
     return 1
   done <<<"$canonical_files"
 }
@@ -40,12 +41,14 @@ canonical_delivery_path_check() {
 # Keep the helper independently regression-tested: a future edit must preserve
 # all three delivery paths and continue to reject an uncovered >=690 file.
 canonical_delivery_path_check \
-  $'690_fresh.sql\n691_upgrade.sql\n692_ensure.sql' \
+  $'690_fresh.sql\n691_upgrade.sql\n692_ensure.sql\n693_superseded.sql\n694_installer_only.sql' \
   '690_fresh.sql' \
   '691_upgrade.sql' \
-  '692_ensure.sql'
+  '692_ensure.sql' \
+  '693_superseded.sql' \
+  '694_installer_only.sql'
 orphan_output=""
-if orphan_output=$(canonical_delivery_path_check '690_orphan.sql' '' '' '' 2>&1); then
+if orphan_output=$(canonical_delivery_path_check '690_orphan.sql' '' '' '' '' '' 2>&1); then
   printf 'canonical delivery-path guard accepted orphaned migration\n' >&2
   exit 1
 fi
@@ -100,9 +103,6 @@ done
 # order-independent. The no-registration decision is pinned by
 # bg/partition_825_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence.
 # ⚠ This is the **channel-side copy** of the same decision; the Go-side copy is
-printf 'apply-db-revision-sequence contract passed\n'
-#!/usr/bin/env bash
-printf 'apply-db-revision-sequence contract passed\n'
 #   manualByDesign in installer/cmd/llm-gw-installer/stats_migrations_test.go.
 #   Editing one without the other leaves the other gate red — "已豁免" must hold
 #   on both sides at once (single-side green is not green).
@@ -113,6 +113,35 @@ channel_gap_allowlist=$(cat <<'EOF'
 748_selfcheck_system_key_tier.sql
 759_report_snapshots_grain_dims.sql
 830_ursm_node_snapshot_min_partitioned.sql
+EOF
+)
+
+# ── A third class, distinct from both lists above (2026-10-05) ──
+#
+# channel_gap_allowlist means "delivered out-of-band / installer-only": the
+# database HAS it and something else applied it. ensure_allowlist means "the Go
+# boot ensure chain applies it before traffic". Neither describes a migration
+# that must **never** run anywhere.
+#
+# 819_request_abandoned.sql is that third thing. Its own header records the
+# reason: the independent request_abandoned table was overturned in favour of
+# the 820/821 line (821 marks is_abandoned on session_turns instead), the Go
+# write path (markRequestAbandonedPending / clearRequestAbandonedPending) no
+# longer exists, and production *.go has **zero** references to the table. The
+# file was restored from the docs/db-changelog.md ledger SHA purely so the
+# migration-checksum gate keeps verifying it.
+#
+# Registering it in the channel array would create a table nothing writes to
+# and nothing reads — a dead surface that looks live in `\d\dt+request_abandoned`.
+# Listing it as "installer-only" would be a false claim about an installation
+# that does not have it. So it gets its own list, named for what it is.
+#
+# ⚠ 2026-10-05: this class exists because registering 829 (Owner decision) let
+# the gate run past its first failure and reach 819, which had been invisible
+# behind it. 819 was already unregistered on origin/main — this is a pre-existing
+# gap that the 829 fix unmasked, not a regression introduced by it.
+superseded_migrations=$(cat <<'EOF'
+819_request_abandoned.sql
 EOF
 )
 # Directory-driven channel invariant (2026-09-14 audit F-P2-1): the highest-
@@ -246,7 +275,7 @@ grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/script
 grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/deploy-lib.legacy/db-changelog.sh"
 grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/init-local-db.sh"
 grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/local-deploy-test.sh"
-canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_files" "$ensure_allowlist"
+canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_files" "$ensure_allowlist" "$superseded_migrations" "$channel_gap_allowlist"
 
 # R33 (2026-10-03) channel-leg completeness — structural closeout of the
 # five-recurrence class (693/699/701/703, then 815/816, then 817): each landed
@@ -269,10 +298,11 @@ while IFS= read -r name; do
   [[ "$name" == "755_drop_dead_cleanup_expired_session_turn_logs.sql" ]] && continue
   if printf '%s\n' "$sequence_files" | grep -Fxq "$name" \
     || printf '%s\n' "$ensure_allowlist" | grep -Fxq "$name" \
-    || printf '%s\n' "$channel_gap_allowlist" | grep -Fxq "$name"; then
+    || printf '%s\n' "$channel_gap_allowlist" | grep -Fxq "$name" \
+    || printf '%s\n' "$superseded_migrations" | grep -Fxq "$name"; then
     continue
   fi
-  printf 'startup migration %s has an installer leg but no upgrade path; register it in the channel files array, the Go-ensure allowlist, or (installer-only by design) channel_gap_allowlist\n' "$name" >&2
+  printf 'startup migration %s has an installer leg but no upgrade path; register it in the channel files array, the Go-ensure allowlist, (installer-only by design) channel_gap_allowlist, or (overturned, must never run) superseded_migrations\n' "$name" >&2
   exit 1
 done <<<"$canonical_files"
 
@@ -335,7 +365,8 @@ fi
 # stay registered in intentional_function_chains or deployment aborts.
 for chain in \
   'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|661_session_summary_token_ratio_reassert.sql|' \
-  'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|'; do
+  'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|' \
+  'ensure_request_logs_bodies_partition|694_partition_ensure_timezone.sql|765_bodies_columnar_storage.sql|829_bodies_columnar_rollback.sql|'; do
   grep -qF -- "'$chain'" "$SCRIPT" || {
     printf 'missing intentional function chain registration: %s\n' "$chain" >&2
     exit 1

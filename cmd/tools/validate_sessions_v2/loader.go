@@ -548,11 +548,46 @@ func WindowExceedsV1Data(requestedStart, requestedEnd time.Time, actual V1TimeRa
 		return true, fmt.Sprintf("requested start %s precedes the oldest v1 row %s (%d rows)",
 			requestedStart.Format(time.RFC3339), actual.MinTS.Format(time.RFC3339), actual.Rows)
 	}
+	// requestedEnd is the last **named day** the operator asked for. Because
+	// the date flags parse with time.Parse("2006-01-02"), it is always that
+	// day's midnight, so "the newest v1 row is before it" is exactly "no v1
+	// row exists on the last named day" — a whole day missing, which is the
+	// thing worth reporting.
+	//
+	// A newest-day that is merely *partial* is not truncation: "up to today"
+	// is the common operator input, and refusing it would refuse nearly every
+	// legitimate run. The hours of the last named day that a query misses are
+	// not this guard's problem — they are fixed at the source, in
+	// endDayExclusiveBound.
 	if !requestedEnd.IsZero() && actual.MaxTS.Before(requestedEnd) {
 		return true, fmt.Sprintf("requested end %s is after the newest v1 row %s (%d rows)",
 			requestedEnd.Format(time.RFC3339), actual.MaxTS.Format(time.RFC3339), actual.Rows)
 	}
 	return false, ""
+}
+
+// endDayExclusiveBound converts an inclusive end day into the half-open
+// upper bound the query needs.
+//
+// The date flags name calendar days, and an operator who passes
+// -end-date 2026-10-04 means "through the end of 2026-10-04". The query is
+// half-open (`ts < $3`), so feeding it the named day's own midnight excludes
+// the entire named day: the query returns rows through 2026-10-03T23:59:59Z
+// while the report still prints 2026-10-04. On 252 that silently dropped
+// 15h53m32s of v1 rows that did exist (newest row 2026-10-04 15:53:32Z).
+//
+// That is the worst shape this tool has: a parity report over a window
+// narrower than the one requested is indistinguishable from a parity report
+// over the requested window, and §9.222's whole reason for existing is that
+// same report would be used to justify retiring request_logs. The truncation
+// guard cannot see it — the named day *is* present in the data, so from the
+// guard's point of view nothing is missing; the loss happens inside the
+// query's half-open bound.
+//
+// The named day itself is deliberately left untouched for display and for
+// WindowExceedsV1Data; only the bound handed to SQL is shifted.
+func endDayExclusiveBound(namedEndDay time.Time) time.Time {
+	return namedEndDay.AddDate(0, 0, 1)
 }
 
 // LoadSessionsInRange loads session IDs within a date range for batch validation
@@ -567,23 +602,10 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 	}
 	settleThreshold := time.Now().Add(-settleWindow)
 
-	query := `
-			SELECT gw_session_id
-			FROM request_logs
-			WHERE tenant_id = $1
-			  AND ts >= $2
-			  AND ts < $3
-			  AND gw_session_id IS NOT NULL
-			  AND gw_session_id != ''
-			GROUP BY gw_session_id
-			HAVING MAX(ts) < $4
-			ORDER BY gw_session_id
-			LIMIT $5
-		`
-
 	// For batch mode, we select from request_logs and filter by settle window
 	// We'll additionally filter by updated_at from sessions table if it exists
-	rows, err := l.db.Query(ctx, query, tenantID, startDate, endDate, settleThreshold, maxSessions)
+	query, args := buildSessionRangeQuery(tenantID, startDate, endDate, settleThreshold, maxSessions)
+	rows, err := l.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query session IDs: %w", err)
 	}
@@ -604,4 +626,32 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 	}
 
 	return sessionIDs, nil
+}
+
+// buildSessionRangeQuery returns the SQL and the bound arguments for the
+// settled-session lookup.
+//
+// It is split out of LoadSessionsInRange so that the bound arguments can be
+// asserted without a database. The end bound is the whole point of this
+// function existing: the SQL is half-open, so $3 must be the start of the day
+// after the day the operator named (see endDayExclusiveBound). That argument
+// is the one thing here that a real run cannot easily show you, because the
+// damage is an absence — a dropped range of rows looks exactly like a window
+// that had none.
+func buildSessionRangeQuery(tenantID string, startDate, endDate, settleThreshold time.Time, maxSessions int) (string, []any) {
+	const query = `
+			SELECT gw_session_id
+			FROM request_logs
+			WHERE tenant_id = $1
+			  AND ts >= $2
+			  AND ts < $3
+			  AND gw_session_id IS NOT NULL
+			  AND gw_session_id != ''
+			GROUP BY gw_session_id
+			HAVING MAX(ts) < $4
+			ORDER BY gw_session_id
+			LIMIT $5
+		`
+	args := []any{tenantID, startDate, endDayExclusiveBound(endDate), settleThreshold, maxSessions}
+	return query, args
 }

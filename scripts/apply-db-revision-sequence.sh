@@ -851,6 +851,51 @@ files=(
   # 'key_throttled')，两字面量都来自写侧 EmitRateLimited，见 R41 审计 F1）。
   # 依赖 817 链形与 session_turn_details 族，缺链时 NOTICE 跳过由 db.ensure 重建。
   "$ROOT_DIR/sql/migrations/startup/824_request_status_rate_limited_projection.sql"
+
+  # 2026-10-05（829，Owner 拍板登记）：request_logs_bodies 从 Citus columnar
+  # 退回全 heap 的止血迁移。此前它是「有文件、无通道」——startup 通道数组里
+  # 没有它，`apply-db-revision-sequence_test.sh` 的目录驱动不变式因此常驻红
+  # （R44 移交第 2 项）。三臂里只有 embeddata/startup 副本是齐的，通道腿缺失。
+  #
+  # 为什么必须走通道而不是继续挂着：829 的头号作用是把
+  # ensure_request_logs_bodies_partition 重定义为**纯 heap**。只要这行改动不
+  # 下发，**新建的月分区就继续被建成列存**，而 §9.197.4 实测过 9 个列存分区
+  # 的 UNION ALL 子查询计划 **7/7 全部失败**（invalid perminfoindex 0 in RTE
+  # with relid 0），同形状的全 heap request_logs 正常返回 218 万行。也就是说
+  # 「不登记」不是一个中性的等待态，它是在持续生产新的故障面。
+  #
+  # 为什么这条可以安全进通道：幂等（CREATE OR REPLACE / IF EXISTS / DO 守卫，
+  # 可安全重放）；**不重写任何数据**——只转换**空**分区，非空分区一律
+  # `RAISE NOTICE` 保留并交给 TTL 按月 DROP 消化；锁在 ACCESS EXCLUSIVE 下
+  # 复核空值，避免与 promote 并发窗口互踩。代价是 request_logs_bodies 放弃
+  # 列存压缩、新分区按 heap 建，存储占用会上升——这是已知的、被接受的代价。
+  #
+  # ⚠ 与 830 的 manual-by-design **不是同一类**（R44 明确区分）：830 之所以不
+  # 登记，是因为它的 RENAME + CREATE PARENT TABLE 那一半会原地改名一张 10GB+
+  # 的活表，**无人值守的升级不该跑它**。829 不改名、不搬数据，所以不具备
+  # 「无人值守不可跑」的性质。不要拿 830 的理由来推迟 829。
+  # ── 2026-10-05：825-828 补登通道腿（R33 复发族的下一次实例）──
+  #
+  # 这四条带着**完整的 installer 腿**（go:embed + StartupFiles map，
+  # installer/cmd/llm-gw-installer/main.go:765-774 / 1008-1011）落地，却
+  # **没有通道腿**。后果不是报错，是静默不投递：**全新安装会拿到它们，
+  # 任何在它们之前安装的库永远拿不到**——新装与升级从此分叉。
+  #
+  # 这正是 R33 在本文件里点名并要求「deliberate, commented edit」的那一类
+  # （693/699/701/703 → 815/816 → 817 → 现在 825-828）。R44 记的「通道门
+  # 只红在 829 一条」是**首个失败点**，不是**唯一问题**：门在第一个失败处
+  # exit 1，829 挡住了 819，819 挡住了 830，830 挡住了 825-828。一次修一个
+  # 只会一层层揭开。
+  #
+  # 为什么可以安全进通道：它们跑的就是 installer 今天在全新安装时已经跑过的
+  # 同一批 SQL——不是新的代码路径，只是把同一条路径接到升级上，让升级库与
+  # 新装库对齐。这正是通道存在的意义。
+  "$ROOT_DIR/sql/migrations/startup/825_modality_graded_verification.sql"
+  "$ROOT_DIR/sql/migrations/startup/826_model_baseline_price.sql"
+  "$ROOT_DIR/sql/migrations/startup/827_modality_verification_progress_view.sql"
+  "$ROOT_DIR/sql/migrations/startup/828_supplier_errors_unified_tracked.sql"
+
+  "$ROOT_DIR/sql/migrations/startup/829_bodies_columnar_rollback.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -885,6 +930,14 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 829 (2026-10-05, Owner 拍板补登通道腿) 重定义
+  # ensure_request_logs_bodies_partition 为**纯 heap**，去掉 765 引入的
+  # citus_columnar/USING columnar 分支。链序必须是 694 → 765 → 829：
+  # 694 是 Asia/Shanghai 时区钉扎版，765 叠加列存分支，829 撤掉列存分支，
+  # **829 必须是最后一项**——它是活库里应有的最终体。少了这一行，
+  # 部署会在应用任何文件之前就 abort（exit 5），因为一个函数被三个
+  # 通道文件重定义而未登记为有意链。
+  'ensure_request_logs_bodies_partition|694_partition_ensure_timezone.sql|765_bodies_columnar_storage.sql|829_bodies_columnar_rollback.sql|'
   # 534 (24h 审计第二十八轮 canonical 收编) 引入 ensure_handoff_logs_partition
   # 的 columnar 体；714 的 handoff_logs 腿是同一函数的 Asia/Shanghai 时区钉扎版
   # （DECLARE 初始化器移入函数体）。714 必须保持为后项——与 699/703 的
