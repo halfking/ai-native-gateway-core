@@ -13160,3 +13160,47 @@ telemetry 的 fire 次数。
 ⚠ **M-P2 注入失败不作数**：想拿「删掉成功路径 DELETE」做第二变异，写成
 `nilDelete(...)` ⇒ **包编译不过** ⇒ 测试没跑。**没有拿它冒充阴性对照。**
 
+
+## §70.90 `runShadowWrite` 信号量 `default` 分支：此前**无人看守**，已补行为门
+
+> 审计正文见 §9.253。新增 `internal/sessionv2mirror/semaphore_full_degrades_to_backlog_test.go`。
+> **只新增测试**，未改生产代码。**生产零写入。**
+
+**★ 调查结论：这条路径此前完全没有判据。**
+`TestSilentMirrorDropPathsAreAllDocumented` 扫的是**纯丢弃 return**，
+而 `default` 分支不是纯丢弃（记指标 + 登记），**不进那张清单**；
+`TestEnqueueMirrorFailure_NilPoolReturnsFalse` 只验那个**函数**返回 false，
+不验调用方**用上了**它。全仓 grep `semaphore_full` / `shadowWriteSema`
+**只有 `hook.go` 自己命中，零个 `_test.go`**。
+⇒ **删掉 `default` 分支里的 `appendBacklog`，没有任何测试会红。**
+后果：8 槽全满时请求既不写 turn、也不落 outbox、也不在 backlog 里，
+**连 `V2 shadow write failed` 日志都不会有**（那条日志在 `runShadowWrite` 内，
+`default` 根本进不去）—— **比 §9.249.2 生产那 1 行更安静。**
+
+**新门**：手动填满 8 槽 ⇒ **用例 A** writer 0 次 / backlog 恰好 1 / `RequestID` 对得上；
+排空信号量 ⇒ **★ 用例 B** writer 被调用 / backlog 保持 0。
+三道**前提自证**（任一不成立就 `t.Fatal`，防恒绿）：开关真的为真
+（单测里 `settings.Global` 是 nil、默认读 false，hook 会提前 return）·
+`EnqueueMirrorFailure(nil pool)` 真的返回 false · 信号量真的填满/排空。
+
+**变异台账**：
+M-S1 删掉 `default` 分支的 `appendBacklog` ⇒ ✅红（第 143 行，用例 A）；
+M-S2 让**正常**路径也 `appendBacklog` ⇒ ✅红（第 176 行，★ 用例 B）；
+还原 ⇒ ✅PASS，`git diff --stat` 为空。
+★ **M-S2 证明反向对照不是装饰**：只写用例 A 的话，
+「backlog 任何时候都恰好 1 条」这种完全错误的实现也能过。
+
+**门结果**：`gofmt -l` 空 · `go vet ./internal/sessionv2mirror/` 空 ·
+`go test ./internal/sessionv2mirror/`（无 DSN）ok 0.326s。
+**未重跑三组全量门**（只新增测试文件）；**门基线沿用 §9.252.4 的本轮实测**
+（db FAIL 2 · admin FAIL 6 · cmd/gateway FAIL 0）。
+
+⚠ **本门动了 4 个包级 seam**（`shadowWriteDispatchAsync` / `InitMirrorOutbox` /
+`setShadowWriteEnabledForTest` / `shadowWriteSema`），全部在 `t.Cleanup` 里还原。
+**已确认本包没有 `t.Parallel()`**；将来有人加并行测试时**必须把本门改造成注入式**。
+
+**本节不主张**：① 生产上发生过信号量耗尽——生产 27 小时的
+`llm_gateway_shadow_write_failed_total{kind="session_v2"}`=2，
+且 §9.249.4 已证明那 2 次都不是信号量分支；本门是防线不是 bug 报告。
+② 本门验的是**退化契约**（最后一道兜底不能凭空消失）；
+真实生产里 pool 非 nil，走的是 outbox 而非 backlog。
