@@ -1173,7 +1173,7 @@ WHERE i.inhparent='ursm_node_snapshot_min'::regclass
 | 10 | `.db-audit/sql/{04_slow2,07_dist2,09_final,10_cols,23_crashlog}.sql`、`sql/fixes/2026-10-02-db-storage-reclaim.sql:269` | 适配分区表查询口径 | §5.1 / 风险 8 |
 | 11 | 部署清单 | 固化 `URSM_SNAPSHOT_RETENTION_DAYS` | 风险 2 |
 | 12 | ~~字段拆分（热/冷列分离）~~ | **不做** —— 已实测否证（净收益 ~19% / 21 处读路径 / 治不了病） | §4.5 |
-| 13 | `sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql` | **已写，刻意不注册**（手工执行） | §12.1 |
+| 13 | `sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql` | **已写，刻意不注册**（手工执行） | §12.1 |
 | 14 | `...825_...down.sql` | 已写，回滚（含 1b/2b 两个让名步骤） | §12.2 |
 | 15 | `bg/partition_manager.go` `ensureSpecs()` | 已接 `ursm_node_snapshot_min (daily)` | §4.4 / §12.1 |
 | 16 | `db/db.go` | 已接 `ensureURSMNodeSnapshotMinDailyPartition`（先判 relkind 再判函数） | §12.1 |
@@ -1189,7 +1189,7 @@ WHERE i.inhparent='ursm_node_snapshot_min'::regclass
 
 | 组件 | 文件 | 状态 |
 |---|---|---|
-| up | `sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql` | 已写，**刻意未注册** |
+| up | `sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql` | 已写，**刻意未注册** |
 | down | `...825_...down.sql` | 已写，手工 |
 | 24h tick 接线 | `bg/partition_manager.go` `ensureSpecs()` | 已接（函数不存在时 log-and-continue） |
 | boot ensure | `db/db.go` `ensureURSMNodeSnapshotMinDailyPartition` | 已接（**容忍缺失**） |

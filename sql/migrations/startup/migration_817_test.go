@@ -234,7 +234,9 @@ func TestMigration817DownRevertsWithWeaknessWarning(t *testing.T) {
 // Warning ④ 的同一判据：down 必须含条件 DELETE，且删除必须被
 // 「回滚未收敛 ⇒ 保留 ledger 行」的守卫包住。
 func TestMigration830DownDeletesLedgerRowSymmetricTo817(t *testing.T) {
-	b, err := os.ReadFile("830_ursm_node_snapshot_min_partitioned.down.sql")
+	// 830 是 manual 迁移，down 与 up 都不在 startup/（见 bg/partition_825_contract_test.go
+	// Test830IsDeliberatelyNotInTheAutoStartupSequence），所以要从 ../manual/ 取。
+	b, err := os.ReadFile("../manual/830_ursm_node_snapshot_min_partitioned.down.sql")
 	if err != nil {
 		t.Fatalf("读 830 down 失败：%v", err)
 	}

@@ -13,8 +13,8 @@ import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SQL = os.path.join(REPO, "sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql")
-SQL_DOWN = os.path.join(REPO, "sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.down.sql")
+SQL = os.path.join(REPO, "sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql")
+SQL_DOWN = os.path.join(REPO, "sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.down.sql")
 PM = os.path.join(REPO, "bg/partition_manager.go")
 DB = os.path.join(REPO, "db/db.go")
 RUNNER = os.path.join(REPO, "installer/internal/dbinit/runner.go")

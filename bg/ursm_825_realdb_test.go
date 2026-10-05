@@ -15,8 +15,11 @@ package bg
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +27,72 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const migration825SQL = "../sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql"
+const migration825SQL = "../sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql"
+
+// dsnDatabaseName 从 DSN 里取出库名。pgx 两种写法都要吃：
+// URL 形态（postgres://user:pw@host:5432/dbname?sslmode=disable）与
+// 关键字形态（host=… dbname=…）。取不到时返回 "" —— 宁可让下面的门
+// 拒绝，也不猜。
+func dsnDatabaseName(dsn string) string {
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" && u.Path != "" {
+		return strings.TrimPrefix(u.Path, "/")
+	}
+	// libpq 关键字形态的 dbname 可以带引号且引号内可含空格（dbname='my db'），
+	// 所以引号分支必须整体吃掉引号内的字符，不能用 [^\s']+ —— 那会在空格处截断。
+	if m := regexp.MustCompile(`(?:^|\s)dbname\s*=\s*(?:'([^']*)'|([^\s]+))`).FindStringSubmatch(dsn); m != nil {
+		if m[1] != "" {
+			return m[1]
+		}
+		return m[2]
+	}
+	return ""
+}
+
+// destructiveGate 是本文件唯一的准入门。返回 nil 表示放行。
+//
+// ⚠️ 2026-10-06 加固：此前本文件**只**按 env 变量是否存在放行，
+// 于是有人拿 TEST_DATABASE_URL 指向 245 跑它时，dropAll825Objects 把 245 上的
+// public.ursm_node_snapshot_min 连 CASCADE 删掉，而 schema_migrations 里
+// 453/818 的 applied 记录原封不动 —— 账本从此声称「表结构已建立」而真实表不存在。
+// 后果有两处，都不是显示问题：
+//
+//	① 245 每次 deploy 都被迁移 830 的前置守卫挡下（整次部署中止）；
+//	② 运行期 ursm.v2 快照留存清理每轮报
+//	   ERROR: relation "ursm_node_snapshot_min" does not exist (42P01)。
+//
+// 与同仓其它真库测试（db/db_750_ensure_realdb_test.go 等只判 env 变量）的区别：
+// **只有本文件会 DROP 生产表**，所以只有它需要这道库名门。其它测试不改 schema。
+func destructiveGate(dsn string) error {
+	if os.Getenv("URSM_825_ALLOW_ANY_DB") == "1" {
+		return nil
+	}
+	name := dsnDatabaseName(dsn)
+	if name == "" {
+		return fmt.Errorf("无法从 DSN 解析出库名（dsn=%s）。\n"+
+			"本测试会 DROP TABLE ... CASCADE，只允许对可丢弃的测试库运行。\n"+
+			"若你的 DSN 确实指向测试库，请显式设置 URSM_825_ALLOW_ANY_DB=1。", redactDSN(dsn))
+	}
+	if !strings.Contains(strings.ToLower(name), "test") {
+		return fmt.Errorf("库名 %q 不含 \"test\"。\n"+
+			"本测试会 DROP TABLE public.ursm_node_snapshot_min CASCADE 且不恢复。\n"+
+			"2026-10-06 实测事故：仅凭 TEST_DATABASE_URL 就放行，导致 245 上的该表被删、\n"+
+			"而 453/818 的台账未收口，随后每次部署与运行期留存清理都报错。\n"+
+			"确需对非 _test 库运行时，显式设置 URSM_825_ALLOW_ANY_DB=1。", name)
+	}
+	return nil
+}
+
+// redactDSN 只给日志看：保留 host 与库名，抹掉口令与整个 query。
+func redactDSN(dsn string) string {
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" {
+		if u.User != nil {
+			u.User = url.User("***")
+		}
+		u.RawQuery = ""
+		return u.String()
+	}
+	return regexp.MustCompile(`password\s*=\s*\S+`).ReplaceAllString(dsn, "password=***")
+}
 
 func connect825(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -34,6 +102,9 @@ func connect825(t *testing.T) *pgxpool.Pool {
 	}
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过 825 真库回归")
+	}
+	if err := destructiveGate(dsn); err != nil {
+		t.Skipf("拒绝执行：%v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
