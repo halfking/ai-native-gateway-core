@@ -15,7 +15,7 @@ import (
 //
 // # 它和已有那张表不是一回事
 //
-// `requestLogsReadInventory`（107 文件 / 254 调用点）答的是「谁在文本上写了
+// `requestLogsReadInventory`（108 文件 / 256 调用点，R48-A10 订正）答的是「谁在文本上写了
 // `from request_logs…`」；`cmd/tools/sql_source_indirection_audit` 答的是
 // 「哪些读点的关系名是 Go 标识符拼进去的」。**两张表是两个总体，不是一张表的两半**
 // —— 这正是 §9.259 那句「114」踩的坑，下面 TestV1ReaderTieringDomainIsBothPopulations
@@ -515,7 +515,7 @@ func TestV1ReaderTiersAssertMembers(t *testing.T) {
 		"bg/passive_probe_listener.go",
 		"bg/today_success_probe.go",
 		"cmd/gateway/dual_read_validator.go",
-		"cmd/gateway/v1_write_liveness.go", "cmd/gateway/dual_read_validator.go",
+		"cmd/gateway/v1_write_liveness.go",
 		"db/probe_views_unified.go",
 		"domains/providerprofile/adapters.go",
 		"domains/routeincident/store.go",
@@ -554,6 +554,25 @@ func TestV1ReaderTiersAssertMembers(t *testing.T) {
 // assertTierMembers 双向断言：期望集合里每个都在该档，且该档**没有多余**成员。
 func assertTierMembers(t *testing.T, byTier map[string][]string, tier string, want []string) {
 	t.Helper()
+	// ★ 期望名单自身必须无重复。下面的比较全是集合语义（have 是 map），
+	//   所以**名单里多写一遍同一个文件永远不会被下面任何一条抓到** ——
+	//   集合相等，缺 0 多 0，门照样绿，而「字面量 29 / 唯一 28」这种事就静默存在。
+	//   §9.265 追加 `cmd/gateway/v1_write_liveness.go` 时就是这么把
+	//   `cmd/gateway/dual_read_validator.go` 又写了一遍的。
+	seen := map[string]bool{}
+	var dup []string
+	for _, f := range want {
+		if seen[f] {
+			dup = append(dup, f)
+		}
+		seen[f] = true
+	}
+	if len(dup) > 0 {
+		sort.Strings(dup)
+		t.Errorf("档位 %s 的期望名单自身有 %d 个重复项（%d 项字面量 / %d 个唯一文件）：%s —— "+
+			"集合相等，下面两条比较抓不到这种错；名单必须逐个唯一",
+			tier, len(dup), len(want), len(seen), strings.Join(dup, " "))
+	}
 	have := map[string]bool{}
 	for _, f := range byTier[tier] {
 		have[f] = true

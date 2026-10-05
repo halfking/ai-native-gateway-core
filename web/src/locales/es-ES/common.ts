@@ -136,6 +136,7 @@ export default {
   enabled: 'Habilitado',
   endDate: 'Fecha de fin',
   exportFailed: 'Error al exportar',
+  exportTooLarge: 'El archivo es demasiado grande para exportarlo (límite {max}). Exporta desde el cliente de escritorio.',
   lastOccurred: 'Última ocurrencia',
   loading: 'Cargando…',
   never: 'Nunca',

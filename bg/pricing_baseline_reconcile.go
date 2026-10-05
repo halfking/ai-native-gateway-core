@@ -194,7 +194,7 @@ func sortStrings(s []string) {
 
 // ReconcileInterval 是对账周期。它是出网项，所以比入库周期短、比探测短：
 // 12h。
-// recordObservationFailure 把一次失败的抓取落到 830 的健康表。
+// recordObservationFailure 把一次失败的抓取落到 832 的健康表。
 //
 // 三条不可让步：
 //
@@ -217,9 +217,9 @@ func recordObservationFailure(ctx context.Context, db *pgxpool.Pool, url string,
 		       last_error            = EXCLUDED.last_error,
 		       updated_at            = now()`,
 		url, cause.Error()); err != nil {
-		// 表可能还没被 830 应用（账本落后）。这正是仪表本身要报告的状态。
+		// 表可能还没被 832 应用（账本落后）。这正是仪表本身要报告的状态。
 		slog.Error("baseline_reconciliation: could not record observation failure "+
-			"(migration 830 applied?) — the fetch failure is now invisible to the health surface",
+			"(migration 832 applied?) — the fetch failure is now invisible to the health surface",
 			"source_url", url, "fetch_error", cause, "record_error", err)
 	}
 }
@@ -252,7 +252,7 @@ func recordObservationSuccess(ctx context.Context, db *pgxpool.Pool, url string,
 		       updated_at            = now()`,
 		url, models); err != nil {
 		slog.Error("baseline_reconciliation: could not record observation success "+
-			"(migration 830 applied?) — successful cross-checks are now invisible to the health surface",
+			"(migration 832 applied?) — successful cross-checks are now invisible to the health surface",
 			"source_url", url, "observed_models", models, "record_error", err)
 	}
 }
@@ -290,7 +290,7 @@ func RunBaselineReconciliation(ctx context.Context, db *pgxpool.Pool, client *ht
 			// 往台账里写一堆 missing 会把「源挂了」与「价格真的不对」
 			// 混成一类信号。判词口径这一步必须守住。
 			//
-			// ★ 但「不写判词」不等于「不留痕」（迁移 830）。
+			// ★ 但「不写判词」不等于「不留痕」（迁移 832）。
 			//
 			// 原来这里只有一行 Warn 然后 return，于是「每 12h 抓一次、每次
 			// 都失败、每次都不写任何东西」可以连续几周不被任何人发现：报表

@@ -138,6 +138,7 @@ export default {
   enabled: 'Enabled',
   endDate: 'End date',
   exportFailed: 'Export failed',
+  exportTooLarge: 'File is too large to export (limit {max}). Please export from the desktop client.',
   lastOccurred: 'Last Occurred',
   loading: 'Loading…',
   never: 'Never',

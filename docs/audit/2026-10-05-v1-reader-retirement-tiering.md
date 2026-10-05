@@ -159,7 +159,7 @@
 ### ③ 按设计继续读 v1（28）
 
 这一档是本表**最需要属主确认**的一档：它的判据是「这个读的消费者是不是观测本身」。
-若属主认为这些观测面在 v1 退役后**没有存在意义**，整档 27 个都要按 ① 处理。
+若属主认为这些观测面在 v1 退役后**没有存在意义**，整档 28 个都要按 ① 处理。
 
 | 文件 | 机制 | 理由 |
 |---|---|---|
@@ -210,7 +210,7 @@
 
 ## 三、③ 档的判据，以及我做过的反向检查
 
-**正向**：这 27 个文件的读点，其消费者是探针 / 自检 / 巡检 / 事故 / 对账。
+**正向**：这 28 个文件的读点，其消费者是探针 / 自检 / 巡检 / 事故 / 对账。
 判据不是文件名里有没有 `probe` —— 那只是线索。
 
 **反向检查（本轮实际做了，结果记在这里）**：我先按「诊断性质」挑了一批
@@ -304,7 +304,7 @@
 
 ## 六、要属主拍的板
 
-1. **③ 档 27 个**：整体留在「按设计继续读 v1」，还是随 v1 一起退役？
+1. **③ 档 28 个**：整体留在「按设计继续读 v1」，还是随 v1 一起退役？
    若整体退役，探针/自检/巡检面要另找观测对象 —— 这是产品决定。
 2. **④ 档 8 个**：逐条给方向（每条的两种判据都写在表里）。
 3. **② 档 76 个**：是否认可「对外 API / 对外计费 / 聚合 / 会话读取」这四类消费者
@@ -346,7 +346,7 @@
 ## 八、限度与未验项
 
 - **本表没有改指任何读方，也没有跑任何回填**，② 档的迁移动作全部待属主决定。
-- **③ 档的 27 个是「按当前语义判的」**：`domains/streaming/anomaly_harvester.go` 与
+- **③ 档的 28 个是「按当前语义判的」**：`domains/streaming/anomaly_harvester.go` 与
   `domains/analysis/optimizer.go` 的「观测 vs 面向用户产出」边界最模糊，
   后者已放进 ④，前者按「异常收集＝观测」放在 ③，**若你认为不对请指出**。
 - **`bg/stats_minute_rollup_retire.go` 的 ② 归类有一处需要留意**：它 `DELETE FROM request_stats_minute`
@@ -356,3 +356,58 @@
 - **`cmd/tools/sql_source_indirection_audit` 本身的收尾行仍写着「退役读方清单」**，
   本轮**没有改它的输出文案**（那会动另一个工具的契约）。正确做法是让它显式声明
   「本工具只覆盖拼接点那一半」，或直接去掉那个措辞。**这一条留给属主定。**
+
+---
+
+## 九、门基线（2026-10-06 实跑，**带 HEAD**）
+
+⚠ **报基线必须带 HEAD sha。** 本轮同一个 admin 全量门在一天内出现过三个不同的数，
+**每一次在当时那棵树上都准确**，不可比的是它们之间：
+
+| HEAD | admin FAIL | 多出/变化的那条 |
+|---|---:|---|
+| `62e866ccc` | **6** | — |
+| `496a27314` | **7** | `TestDegradePayloadsCarryMarker`（zcode `d58a3c504` 改 `bg/routing_health_checks.go` 1078 行，带进 2 个未登记的降级站点） |
+| `b0bd6616c` | **6** | 上一条被 `b56f454cf` 登记豁免理由后转绿 |
+
+★ 我曾把 `62e866ccc` 上的 6 当成最终基线报出「零新增」，那在最终 HEAD 上不成立 ——
+`git merge-base --is-ancestor d58a3c504 62e866ccc` ⇒ **否**，那个提交当时还没进树。
+**base 之间不可比，且远端一天能往返两轮。**
+
+**`b0bd6616c` 上的权威基线（逐条列名）**
+
+- **admin FAIL 6**：`TestColumnarParentTwoSurfaceSetopShape_RealDB` ·
+  `TestReportRollup_HTTPContract`（含子测试 `credential_/_key_视角…`）·
+  `TestV1BodiesReadersAreAssessed`（**故意红**的基线门：27 个 bodies 读方未逐点评估）·
+  `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` ·
+  `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID`
+- **db FAIL 3**：`TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` ·
+  `TestSessionFamilyColumnAvailability_FillRates`
+  ⇒ db 门**两次独立运行逐条相同**（交叉确认，非单次读数）
+- 本轮新增/改动的 5 道 §9.262 门 + 4 道 §9.265 门：**逐条 `-v` 复跑全绿**
+
+### ★ db 第 3 条的真正触发点（我上一轮定位不准，此处更正）
+
+我上一轮说它是「纯数据漂移」。**漂移是原因，但门红在「登记 ↔ 实测的集合对账」上**，
+触发点是 `db/retirement_column_exposure.go` 的 `RetirementUnservableColumns`
+（该清单注释明写「Measured 2026-10-04 on the local real database」）。
+
+`client_protocol` 登记 `0.00% session vs 37.02% v1`，本次实测
+**lifetime 0.01% / recent 47.9%**（该列在共享本地库被回填），于是门逐字报出两条互为镜像的错位：
+
+```
+unservable: registered but not measured: [client_protocol]
+degraded:   measured but not registered: [client_protocol]
+```
+
+而我上一轮引的 `GO EMPTY ON THE SESSION SIDE (2): work_type, is_final_success`
+是**同一测试的分类输出**，不是触发点。找「这个 FAIL 是什么引起的」要落到
+**真正被断言的那一处**，不是同一份日志里最扎眼的那一行。
+
+⚠ **这个红是陷阱，不要按它的提示去改登记**（门自身注释已警告）：
+0.01% 虽高于 `effectivelyEmptyPP = 0.005%` 阈值而不再进 `goEmpty`，
+但它意味着 **99.99% 的历史行仍为空**，「退役后完全失去数据」这个实质声明依然成立。
+照错误信息「按本次实测重算登记名单」去做，会把 `client_protocol` 从
+`unservable` 悄悄降级成 `degraded`。**本轮不动这个文件**（不是我建的，
+`d58a3c504` 也没动它），处置留给属主，可选项：保留登记并给该测试加
+「共享库漂移」豁免 / 重测后重登记 / 调整阈值 —— 三者取舍属主定。

@@ -20,7 +20,7 @@ import (
 // 据此写下：**bodies 腿不需要独立前置，27 个 bodies 读方与 76 个「必须迁」读方共用同一条前置**。
 //
 // ★ 那句话在**数据**上成立，在**代码路径**上不成立：
-// 有 12 个 bodies 读方**只经切换层** `db.SessionBodiesSourceSQL()` 取源，
+// 有 13 个 bodies 读方**只经切换层** `db.SessionBodiesSourceSQL()` 取源，
 // 而该切换层的**默认支是 v1**：
 //
 //	func SessionBodiesSourceSQL() string {
@@ -34,7 +34,7 @@ import (
 // （同表的 `storage.session_turns_bodies_enabled` / `storage.admin_logs_native_turns_read` /
 // `storage.session_final_full_enabled` **都在**）⇒ `GetPlatformBool(…, false)` 恒取 false。
 //
-// ⇒ 那 12 个读方**此刻读的就是 v1**。停写之后它们会读到一份**冻结**的 v1 bodies，
+// ⇒ 那 13 个读方**此刻读的就是 v1**。停写之后它们会读到一份**冻结**的 v1 bodies，
 // 而且**不报错**（多数调用点写 `COALESCE(rb.request_body, '{}')`）。
 // §9.263 的「共用一条前置」漏了这一项。
 //

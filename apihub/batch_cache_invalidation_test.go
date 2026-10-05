@@ -39,10 +39,11 @@ type partialFailStore struct {
 	err error
 }
 
-func (p *partialFailStore) UpsertBatch(ctx context.Context, assets []Asset) error {
-	// 关键：先写入（与 pgStore 退回逐行后的实际效果一致），再返回错误
-	_ = p.memStore.UpsertBatch(ctx, assets)
-	return p.err
+func (p *partialFailStore) UpsertBatch(ctx context.Context, assets []Asset) (int, error) {
+	// 关键：先写入（与 pgStore 退回逐行后的实际效果一致），再返回错误。
+	// 计数语义与 pgStore 对齐：已写入的行照样计入返回值（err 并存）。
+	n, _ := p.memStore.UpsertBatch(ctx, assets)
+	return n, p.err
 }
 
 // 门：UpsertBatch 返回错误时，已写入的那些行**仍必须**逐条失效缓存。
@@ -56,7 +57,7 @@ func TestRegisterBatchInvalidatesCacheEvenWhenStoreReportsFailure(t *testing.T) 
 		{Kind: KindLLMEndpoint, RefID: 1, TenantID: "t1", Name: "a"},
 		{Kind: KindLLMEndpoint, RefID: 2, TenantID: "t1", Name: "b"},
 	}
-	if err := svc.RegisterBatch(ctx, assets); err == nil {
+	if _, err := svc.RegisterBatch(ctx, assets); err == nil {
 		t.Fatal("期望 RegisterBatch 返回错误（store 明确报失败），实际为 nil")
 	}
 
@@ -69,7 +70,7 @@ func TestRegisterBatchInvalidatesCacheEvenWhenStoreReportsFailure(t *testing.T) 
 
 	// 再跑一次失败批次：库里会写成 "a"/"b"，但缓存若是陈旧的，
 	// Get 就会返回 "stale-name"
-	if err := svc.RegisterBatch(ctx, assets); err == nil {
+	if _, err := svc.RegisterBatch(ctx, assets); err == nil {
 		t.Fatal("期望 RegisterBatch 返回错误")
 	}
 
@@ -89,12 +90,12 @@ func TestRegisterBatchInvalidatesCacheOnSuccess(t *testing.T) {
 	ctx := context.Background()
 	a := Asset{Kind: KindLLMEndpoint, RefID: 1, TenantID: "t1", Name: "a"}
 
-	if err := svc.RegisterBatch(ctx, []Asset{a}); err != nil {
+	if _, err := svc.RegisterBatch(ctx, []Asset{a}); err != nil {
 		t.Fatalf("RegisterBatch: %v", err)
 	}
 	svc.cache.put(Asset{Kind: a.Kind, RefID: a.RefID, TenantID: a.TenantID, Name: "stale"})
 
-	if err := svc.RegisterBatch(ctx, []Asset{a}); err != nil {
+	if _, err := svc.RegisterBatch(ctx, []Asset{a}); err != nil {
 		t.Fatalf("RegisterBatch: %v", err)
 	}
 	if got, ok := svc.cache.get(a.TenantID, a.Kind, a.RefID); ok {
@@ -113,13 +114,13 @@ func TestRegisterBatchFailureDoesNotStaleReads(t *testing.T) {
 	a := Asset{Kind: KindLLMEndpoint, RefID: 7, TenantID: "t1", Name: "new-name"}
 
 	// 第一轮：写进库，同时缓存被填成旧值
-	if err := svc.RegisterBatch(ctx, []Asset{a}); err == nil {
+	if _, err := svc.RegisterBatch(ctx, []Asset{a}); err == nil {
 		t.Fatal("期望错误")
 	}
 	svc.cache.put(Asset{Kind: a.Kind, RefID: a.RefID, TenantID: a.TenantID, Name: "old-name"})
 
 	// 第二轮：库里写 "new-name"，但返回错误
-	if err := svc.RegisterBatch(ctx, []Asset{a}); err == nil {
+	if _, err := svc.RegisterBatch(ctx, []Asset{a}); err == nil {
 		t.Fatal("期望错误")
 	}
 

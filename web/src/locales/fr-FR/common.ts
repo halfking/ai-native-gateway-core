@@ -137,6 +137,7 @@ export default {
   enabled: 'Activé',
   endDate: 'Date de fin',
   exportFailed: 'Échec de l’export',
+  exportTooLarge: 'Fichier trop volumineux pour l’export (limite {max}). Veuillez exporter depuis le client bureau.',
   lastOccurred: 'Dernière occurrence',
   loading: 'Chargement…',
   never: 'Jamais',

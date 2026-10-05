@@ -91,8 +91,8 @@ func TestBatchRealDBWritesAllRows(t *testing.T) {
 	for i := 1; i <= n; i++ {
 		assets = append(assets, mkBatchTestAsset(i))
 	}
-	if err := store.UpsertBatch(context.Background(), assets); err != nil {
-		t.Fatalf("UpsertBatch: %v", err)
+	if n, err := store.UpsertBatch(context.Background(), assets); err != nil || n != len(assets) {
+		t.Fatalf("UpsertBatch: n=%d want %d err=%v", n, len(assets), err)
 	}
 
 	ctx := context.Background()
@@ -161,8 +161,8 @@ func TestBatchRealDBGateBlocksSecondIdenticalRun(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if err := store.UpsertBatch(ctx, assets); err != nil {
-		t.Fatalf("首轮 UpsertBatch: %v", err)
+	if n, err := store.UpsertBatch(ctx, assets); err != nil || n != len(assets) {
+		t.Fatalf("首轮 UpsertBatch: n=%d want %d err=%v", n, len(assets), err)
 	}
 	// 等一帧，确保 now() 有可观测的推进（否则两次 last_seen_at 可能相同）
 	time.Sleep(1100 * time.Millisecond)
@@ -188,8 +188,8 @@ func TestBatchRealDBGateBlocksSecondIdenticalRun(t *testing.T) {
 	}
 
 	// 完全相同的一批再跑一次
-	if err := store.UpsertBatch(ctx, assets); err != nil {
-		t.Fatalf("次轮 UpsertBatch: %v", err)
+	if n, err := store.UpsertBatch(ctx, assets); err != nil || n != len(assets) {
+		t.Fatalf("次轮 UpsertBatch: n=%d want %d err=%v", n, len(assets), err)
 	}
 
 	changed := 0
@@ -230,15 +230,15 @@ func TestBatchRealDBWritesWhenBusinessFieldChanges(t *testing.T) {
 	store := NewPGStore(pool)
 	ctx := context.Background()
 	assets := []Asset{mkBatchTestAsset(1)}
-	if err := store.UpsertBatch(ctx, assets); err != nil {
-		t.Fatalf("首轮: %v", err)
+	if n, err := store.UpsertBatch(ctx, assets); err != nil || n != 1 {
+		t.Fatalf("首轮: n=%d err=%v", n, err)
 	}
 
 	// 只改 name，其余完全相同
 	changed := mkBatchTestAsset(1)
 	changed.Name = "batch-1-renamed"
-	if err := store.UpsertBatch(ctx, []Asset{changed}); err != nil {
-		t.Fatalf("次轮: %v", err)
+	if n, err := store.UpsertBatch(ctx, []Asset{changed}); err != nil || n != 1 {
+		t.Fatalf("次轮: n=%d err=%v", n, err)
 	}
 
 	var name string

@@ -137,6 +137,7 @@ export default {
   enabled: '啟用',
   endDate: '結束日期',
   exportFailed: '匯出失敗',
+  exportTooLarge: '檔案過大，匯出上限為 {max}，請到桌面端匯出',
   lastOccurred: '最後發生',
   loading: '載入中…',
   never: '從未',
