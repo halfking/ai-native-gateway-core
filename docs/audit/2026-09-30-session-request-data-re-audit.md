@@ -30498,3 +30498,78 @@ go test ./domains/session/v2/（带 DSN）    → ok  6.597s
 2. **不主张** §9.249.2 生产那 1 行的成因因此更清楚 —— 本节只是补了防线与基线。
 3. 本节全部改动**只在一个测试文件里**；生产代码零改动，**生产零写入**。
 
+
+### §9.253 `runShadowWrite` 信号量 `default` 分支：此前**无人看守**，已补行为门
+
+> 兑现 §9.250.5 盲区 ② 的最后一条。**只新增一个测试文件**，未改任何生产代码路径。
+
+#### §9.253.1 先查「是不是已经被守住了」——**不是**
+
+| 现有资产 | 覆盖了什么 | 为什么盖不住 `default` 分支 |
+|---|---|---|
+| `silent_drop_paths_test.go` → `TestSilentMirrorDropPathsAreAllDocumented` | `PersistHook` 的**所有纯丢弃 return**（分支体里只有 `return`），逐条要求写明理由 | `default` 分支**不是**纯丢弃（它 `RecordShadowWriteFailure` + `EnqueueMirrorFailure`），**不进那张清单** |
+| `outbox_replay_test.go` → `TestEnqueueMirrorFailure_NilPoolReturnsFalse` | `EnqueueMirrorFailure(nil pool) == false` 这个**函数** | 不验「信号量满时调用方**真的用上了**那个 false」 |
+| 全仓 grep `semaphore_full` / `shadowWriteSema` | — | **只有 `hook.go` 自己命中，零个 `_test.go`** |
+
+⇒ ★ **把 `default` 分支里的 `appendBacklog(…)` 整段删掉，仓库里没有任何一个测试会红。**
+后果：8 槽全满时那次请求**既不写 turn、也不落 outbox、也不在 backlog 里** ——
+**连 `V2 shadow write failed` 日志都不会有**（那条日志在 `runShadowWrite` 内，
+`default` 分支根本进不去）。
+**这与 §9.249.2 生产上那 1 行「既没成功也没报错」是同一种形状，而且更安静。**
+
+#### §9.253.2 落地的门
+
+新增 `internal/sessionv2mirror/semaphore_full_degrades_to_backlog_test.go`：
+
+| 用例 | 前置 | 断言 |
+|---|---|---|
+| **A（阳性）** | 手动把 `shadowWriteSema` 填到 `cap`（8 槽） | writer **0 次**、backlog **恰好 1**、且那条的 `RequestID` 是本次请求 |
+| **B（★ 反向对照）** | 排空信号量 | writer 被调用（3s 内收到信号）、backlog **保持 0** |
+
+三道**前提自证**（缺任一项本门会恒绿，逐条 `t.Fatal`）：
+① `setShadowWriteEnabledForTest(func() bool { return true })` 之后
+`shadowWriteEnabled()` 真的为真（单测二进制里 `settings.Global` 是 nil，默认读 false，
+hook 会在开关那一步就 return）；② `EnqueueMirrorFailure(nil pool)` 真的返回 false
+（否则走不到 `appendBacklog`）；③ 信号量真的被填满/排空到预期值。
+
+#### §9.253.3 变异台账
+
+| # | 变异 | 实测 |
+|---|---|---|
+| M-S1 | 删掉 `default` 分支里的 `appendBacklog` 整段 | ✅ 红，**第 143 行**（用例 A：backlog 0 条，应为 1），并连带第 153 行的 `RequestID` 断言 |
+| M-S2 | 让**正常**派发路径也 `appendBacklog` | ✅ 红，**第 176 行**（★ 用例 B：backlog 1 条，应为 0） |
+| — | 还原后复跑 | ✅ PASS，`git diff --stat` 为空 |
+
+★ **M-S2 证明反向对照不是装饰**：如果只写用例 A，
+「backlog 在任何时候都恰好 1 条」这种完全错误的实现也能通过。
+
+⚠ **查过本包没有 `t.Parallel()`** —— 我的测试动了四个包级 seam
+（`shadowWriteDispatchAsync`、`InitMirrorOutbox`、`setShadowWriteEnabledForTest`、
+`shadowWriteSema`）并全部在 `t.Cleanup` 里还原。
+若将来有人在本包加 `t.Parallel()`，**本门会与那些测试互相污染**，
+那时必须改造成注入式而不是包级。
+
+#### §9.253.4 门结果
+
+```
+gofmt -l <新文件>                  → 无输出
+go vet ./internal/sessionv2mirror/ → 无输出
+go test ./internal/sessionv2mirror/（无 DSN） → ok  0.326s
+```
+
+**未重跑三组全量门**：本轮只新增一个测试文件，未触碰 `db` / `admin` / `cmd/gateway`
+覆盖的代码。**门基线沿用 §9.252.4 的本轮实测读数**
+（db FAIL 2 · admin FAIL 6 · cmd/gateway FAIL 0）。
+
+#### §9.253.5 本节不主张的事
+
+1. **不主张**生产上发生过信号量耗尽。生产 27 小时的
+   `llm_gateway_shadow_write_failed_total{kind="session_v2"}` = 2，
+   且 §9.249.4 已证明那 2 次**都不是**信号量分支（该分支会打同一个计数器，
+   而两条日志都能对上 `V2 shadow write failed`）。**本节是防线，不是 bug 报告。**
+2. **不主张**盲区 ② 已完全关闭。`replay.go` 侧本轮已核过（§9.252.1）、
+   telemetry 侧的 fire 次数仍无判据。
+3. 本节的 `default` 分支行为门依赖 `mirrorOutbox` 为 nil 才会退到 backlog；
+   **真实生产里 pool 非 nil，走的是 outbox 而非 backlog** ——
+   本门验的是**退化契约**（最后一道兜底不能凭空消失），不是生产的常态路径。
+
