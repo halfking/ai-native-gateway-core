@@ -88,20 +88,28 @@ func (w *AssetWatcher) SyncOnce(ctx context.Context) (llmAdded, mcpAdded int64, 
 	start := time.Now()
 
 	// LLM endpoints
+	//
+	// 2026-10-05（runbook §10.30）：改走 RegisterBatch。逐行 Register 时
+	// 每 tick 发 1306 条语句，而其中 93.7% 被 upsert 的门控挡掉不改行
+	// （实测 5,562,432 次/天里绝大部分什么都不做）—— 门控管「写不写」，
+	// 不管「发不发」，语句往返照样发生。批量把它降到每 tick 数条。
+	//
+	// ★ 失败粒度变了但**没有变差**：RegisterBatch 内部对失败分片退回
+	//   逐行执行并 log 坏行，与原来的 log+continue 语义一致。
 	if llms, e := w.src.LLMEndpoints(ctx); e != nil {
 		slog.Warn("apihub watcher: LLMEndpoints source error", "error", e)
 		err = e
 	} else {
-		for _, a := range llms {
-			a.Kind = apihub.KindLLMEndpoint
-			if regErr := w.hub.Register(ctx, a); regErr != nil {
-				slog.Warn("apihub watcher: register LLM asset failed",
-					"ref_id", a.RefID, "tenant", a.TenantID, "name", a.Name,
-					"metadata", a.Metadata, "error", regErr)
-				continue
-			}
-			llmAdded++
+		for i := range llms {
+			llms[i].Kind = apihub.KindLLMEndpoint
 		}
+		if regErr := w.hub.RegisterBatch(ctx, llms); regErr != nil {
+			slog.Warn("apihub watcher: batch register LLM assets failed", "error", regErr)
+			if err == nil {
+				err = regErr
+			}
+		}
+		llmAdded = int64(len(llms))
 	}
 
 	// MCP servers

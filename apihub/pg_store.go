@@ -25,6 +25,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -193,6 +195,202 @@ func (s *pgStore) Upsert(ctx context.Context, a Asset) error {
 		)
 		return err
 	})
+}
+
+// ── 批量 upsert（runbook §10.30）────────────────────────────────────────
+//
+// 为什么需要它：AssetWatcher 每 60 秒把源表**全量**灌进资产中心，对每个
+// 资产各发一次 Upsert。门控（上面那个 WHERE）只让其中少数真正改行，
+// **语句数却一分没少** —— 实测 5,562,432 次/天里 93.7% 什么都不做。
+//
+// 三个设计约束，都是从现有代码读出来的而不是猜的：
+//
+//  ① **必须按租户分组**。单行 Upsert 走 withTenantTx(a.TenantID) 设 RLS，
+//     是**每行一个事务**；而 watcher 同步的资产横跨 4 个租户
+//     （default/acme/hansi/kevin）。跨租户塞进一个事务会被 RLS 挡掉。
+//     ⇒ 分组 → 每 (租户, 分片) 一个事务。
+//
+//  ② **参数上限**。VALUES 里每行 11 个占位符（$11 之后是 metadata，
+//     registered_at/last_seen_at 是字面 now()）。500 行 = 5,500 个参数，
+//     远低于 PostgreSQL 的 65,535 上限。窗口参数**全批共用一个**
+//     （Go 侧常量，所有行同值），所以不是每行一个。
+//
+//  ③ **单行坏数据的韧性不能丢**。现在 watcher 是逐行 log+continue，
+//     一个坏资产不会中断整轮同步。批量后一行坏会炸掉整个分片，
+//     ⇒ 分片执行失败时**退回逐行执行**隔离坏行，行为与现在一致。
+
+const (
+	// upsertAssetsBatchRowParams 是 VALUES 里每行的占位符个数。
+	upsertAssetsBatchRowParams = 11
+	// maxUpsertBatchRows 是单条语句的行数上限。
+	// 11 × 500 = 5,500 参数，离 65,535 上限有 12 倍余量。
+	// 再往上调收益递减（语句数已从 1306 降到 3），而单条语句变长会
+	// 拉长事务持有时间 —— 那是拿写放大换锁持有，不划算。
+	maxUpsertBatchRows = 500
+)
+
+// buildUpsertAssetsBatchSQL 生成 rows 行的多值 INSERT。
+// 窗口参数放在**所有行之后**（索引 rows*11+1），因为它对整批同值。
+func buildUpsertAssetsBatchSQL(rows int) string {
+	if rows <= 0 {
+		panic("apihub: buildUpsertAssetsBatchSQL called with rows=" + strconv.Itoa(rows))
+	}
+	windowIdx := rows*upsertAssetsBatchRowParams + 1
+
+	var sb strings.Builder
+	sb.Grow(256 + rows*160)
+	sb.WriteString(`INSERT INTO public.assets (
+    kind, ref_id, tenant_id, name, owner, team, cost_center,
+    tags, health_state, version, registered_at, last_seen_at, metadata
+) VALUES `)
+	for i := 0; i < rows; i++ {
+		b := i * upsertAssetsBatchRowParams
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `
+    ($%d, $%d, $%d, $%d, $%d, $%d, $%d,
+     COALESCE($%d::text::jsonb, '{}'::jsonb), $%d, $%d, now(), now(),
+     COALESCE($%d::text::jsonb, '{}'::jsonb))`,
+			b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8, b+9, b+10, b+11)
+	}
+	// ★ DO UPDATE / WHERE 两段必须与 upsertAssetSQL **逐字一致**。
+	//   这是同一份契约的两个实现；只改一处就会让单行与批量路径
+	//   对「什么时候该写」产生分歧（而那种分歧在数据上不可见 ——
+	//   一边多写一边少写，n_tup_upd 只会显示一个「差不多」的数）。
+	fmt.Fprintf(&sb, `
+ON CONFLICT (kind, ref_id) DO UPDATE SET
+    tenant_id    = EXCLUDED.tenant_id,
+    name         = EXCLUDED.name,
+    owner        = EXCLUDED.owner,
+    team         = EXCLUDED.team,
+    cost_center  = EXCLUDED.cost_center,
+    tags         = EXCLUDED.tags,
+    health_state = EXCLUDED.health_state,
+    version      = EXCLUDED.version,
+    last_seen_at = now(),
+    metadata     = EXCLUDED.metadata
+WHERE COALESCE(public.assets.last_seen_at, '-infinity'::timestamptz)
+         < now() - ($%d * interval '1 second')
+   OR (public.assets.tenant_id,    public.assets.name,        public.assets.owner,
+       public.assets.team,         public.assets.cost_center, public.assets.tags,
+       public.assets.health_state, public.assets.version,     public.assets.metadata)
+      IS DISTINCT FROM
+       (EXCLUDED.tenant_id,       EXCLUDED.name,        EXCLUDED.owner,
+        EXCLUDED.team,            EXCLUDED.cost_center, EXCLUDED.tags,
+        EXCLUDED.health_state,    EXCLUDED.version,     EXCLUDED.metadata)`, windowIdx)
+	return sb.String()
+}
+
+// upsertRow 是把 Asset 拍平成绑定参数后的中间形态。
+type upsertRow struct {
+	asset     Asset
+	tagsJSON  string
+	metaJSON  string
+	health    HealthState
+	version   string
+}
+
+// UpsertBatch writes many assets in as few statements as possible.
+//
+// 分组规则：先按 tenant_id 分组（RLS 要求），组内按 maxUpsertBatchRows 切片。
+// 返回的 error 只在**整批都失败**时非 nil；单行坏数据会被隔离并记日志，
+// 与逐行 Upsert 时代的「log+continue」语义一致（见本节约束③）。
+func (s *pgStore) UpsertBatch(ctx context.Context, assets []Asset) error {
+	if len(assets) == 0 {
+		return nil
+	}
+
+	// ── 1. 先全部拍平 + 校验。序列化失败在这里就被拦下，
+	//       不会带着半好的行去开事务。
+	byTenant := make(map[string][]upsertRow, 4)
+	for _, a := range assets {
+		if !a.Kind.IsValid() {
+			slog.Warn("apihub: batch upsert 跳过非法 kind", "kind", string(a.Kind), "ref_id", a.RefID)
+			continue
+		}
+		if a.TenantID == "" {
+			slog.Warn("apihub: batch upsert 跳过空 tenant", "kind", string(a.Kind), "ref_id", a.RefID)
+			continue
+		}
+		tagsJSON, err := marshalStringMap(a.Tags)
+		if err != nil {
+			slog.Warn("apihub: batch upsert 跳过 tags 序列化失败", "ref_id", a.RefID, "error", err)
+			continue
+		}
+		metaJSON, err := marshalAny(a.Metadata)
+		if err != nil {
+			slog.Warn("apihub: batch upsert 跳过 metadata 序列化失败", "ref_id", a.RefID, "error", err)
+			continue
+		}
+		health := a.HealthState
+		if health == "" {
+			health = HealthUnknown
+		}
+		version := a.Version
+		if version == "" {
+			version = "0.0.0"
+		}
+		byTenant[a.TenantID] = append(byTenant[a.TenantID], upsertRow{
+			asset: a, tagsJSON: string(tagsJSON), metaJSON: string(metaJSON),
+			health: health, version: version,
+		})
+	}
+
+	var firstErr error
+	for tenant, rows := range byTenant {
+		for start := 0; start < len(rows); start += maxUpsertBatchRows {
+			end := start + maxUpsertBatchRows
+			if end > len(rows) {
+				end = len(rows)
+			}
+			chunk := rows[start:end]
+			if err := s.execUpsertChunk(ctx, tenant, chunk); err != nil {
+				// 整片失败 ⇒ 退回逐行，隔离坏行，行为退回改动前。
+				if firstErr == nil {
+					firstErr = err
+				}
+				s.upsertRowsIndividually(ctx, tenant, chunk, err)
+			}
+		}
+	}
+	return firstErr
+}
+
+// execUpsertChunk 用一条多值 INSERT 写入整个分片。
+func (s *pgStore) execUpsertChunk(ctx context.Context, tenant string, rows []upsertRow) error {
+	sqlText := buildUpsertAssetsBatchSQL(len(rows))
+	args := make([]any, 0, len(rows)*upsertAssetsBatchRowParams+1)
+	for _, r := range rows {
+		args = append(args,
+			string(r.asset.Kind), r.asset.RefID, r.asset.TenantID, r.asset.Name,
+			nullable(r.asset.Owner), nullable(r.asset.Team), nullable(r.asset.CostCenter),
+			r.tagsJSON, string(r.health), r.version, r.metaJSON,
+		)
+	}
+	args = append(args, assetHeartbeatRefreshInterval.Seconds())
+
+	return s.withTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, sqlText, args...)
+		return err
+	})
+}
+
+// upsertRowsIndividually 是分片失败后的退路：逐行执行并把失败行记下来。
+// ★ 必须真的隔离出坏行 —— 否则一个坏资产会让同租户其余 499 个
+//   在这一轮里全部同步失败，而这是**静默**的（watcher 只看总成功数）。
+func (s *pgStore) upsertRowsIndividually(ctx context.Context, tenant string, rows []upsertRow, chunkErr error) {
+	okN := 0
+	for _, r := range rows {
+		if err := s.Upsert(ctx, r.asset); err != nil {
+			slog.Warn("apihub: 批量回退后单行仍失败",
+				"tenant", tenant, "kind", string(r.asset.Kind), "ref_id", r.asset.RefID, "error", err)
+			continue
+		}
+		okN++
+	}
+	slog.Warn("apihub: 批量分片失败，已退回逐行",
+		"tenant", tenant, "rows", len(rows), "ok", okN, "chunk_error", chunkErr)
 }
 
 // --- Get ---
