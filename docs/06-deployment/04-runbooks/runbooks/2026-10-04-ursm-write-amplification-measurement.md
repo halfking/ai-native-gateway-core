@@ -5513,3 +5513,105 @@ SELECT COALESCE(MAX(u.turn_no), $1) + $2
 3. **分区清单不能写死**：上面写死 `2026_10/2026_11` 只是为了量收益；
    真正落地必须用 `session_turns` 父表（分区裁剪照样生效），
    否则跨月时会静默漏读。
+
+---
+
+## §10.48 跨面 `SELECT *` 禁令：把「列序恰好相同」从约定降级为事实检查
+
+§10.46 顺带发现 `session_turns_hot` 与 `session_turns` **列序不同**，当时只把它记成
+一句提醒。本节把这件事查到底，并落成一道门。
+
+### §10.48.1 生产实测：11 个跨面视图全部是活的
+
+在 154 直连生产库，按 `pg_class`/`pg_attribute` 逐位比对
+`*_hot` 与其分区父表的 `attnum → attname`：
+
+| 视图 | 活? | hot 列数 | 父表列数 | 视图列数 | **按位不一致数** |
+|---|---|---|---|---|---|
+| `request_logs_with_current_month` | ✅ | 156 | 154 | 118 | **66** |
+| `session_turns_with_current_month`   | ✅ | 106 | 106 |  55 | **45** |
+| `usage_ledger_with_current_month`    | ✅ |  25 |  20 |  19 |  6 |
+| `candidate_failure_logs_with_current_month` | ✅ | 21 | 21 | 20 | 4 |
+| `credential_model_index_with_current_month`  | ✅ | 17 | 17 | 17 | **0** |
+| `credit_ledger_with_current_month`   | ✅ |  10 |  10 |  10 | **0** |
+| `model_probe_runs_with_current_month`| ✅ |  13 |  13 |  13 | **0** |
+| `request_logs_bodies_with_current_month` | ✅ | 5 | 5 | 5 | **0** |
+| `request_wal_with_current_month`     | ✅ |  17 |  17 |  17 | **0** |
+| `routing_decision_log_with_current_month` | ✅ | 36 | 36 | 36 | **0** |
+| `tool_usage_stats_with_current_month`| ✅ |  11 |  11 |  11 | **0** |
+
+### §10.48.2 关键分辨：源表错位 ≠ 视图错位（生产当前无错配）
+
+前 4 个「不一致数 > 0」的视图，恰好都是**视图列数 < hot 列数**的那 4 个 ——
+也就是后来被**显式列清单**重定义过的。逐条核实：
+
+- `pg_get_viewdef` 对这 4 个视图的 `select\s+\*` 匹配全部为 `false`；
+- 它们的每个投影列**在 hot 与父表上都能按名字找到**（`not_in_hot = 0`、
+  `not_in_parent = 0`，118/55/19/20 列全部命中）。
+
+⇒ **生产当前没有任何错配。** `request_logs` 两侧差 2 列、`usage_ledger` 差 5 列，
+这类数量差在 `UNION ALL` 里本会**响亮报错**（`each UNION query must have the
+same number of columns`），而列序差是**静默错投**。所以真正危险的是列序，
+也正是 §10.46 记下的 45~66 位。
+
+### §10.48.3 结论定性：潜藏陷阱，不是现行缺陷
+
+- 11 个活视图里，**仍用 `SELECT *` 的是那 7 个不一致数为 0 的** ——
+  它们今天恰好按位对齐，正确性完全押在这个**从未被任何门记录的巧合**上；
+- 会错的那 4 个已经改成显式清单，**本次未发现任何现行缺陷**。
+
+因此本节不修任何查询，只**把巧合钉成检查**。
+
+### §10.48.4 门
+
+`sql/migrations/startup/hot_surface_select_star_contract_test.go`
+
+- `TestHotSurfaceViewsMustEnumerateColumns`：扫 `sql/migrations/startup` 与
+  `sql/schema` 的**每条 `;` 语句**，命中「`SELECT *` + `UNION ALL` + 同一语句内
+  出现某个 `_hot` 及其父表名」即违规；不在登记表里就红。
+- `TestLegacyCrossSurfaceSelectStarRegistryIsExact`：反向门 ——
+  登记表里每一条都必须**真的命中**，否则红。防止迁移改名/删除后登记表空转，
+  让主门在「实际仍有违规」时也报绿。
+
+实现上刻意剥掉 `--` 与 `/* */` 注释：否则注释里的 `SELECT *` 会把门变成恒假
+（625 与其 down 文件都因此被误判过一次）。
+
+登记表 11 条，钉的是**迁移文件**（一次性应用、已被后续显式定义取代），
+不是活的视图。生产侧的现状核验留在本 runbook，因为 Go 测试连不上生产库。
+
+### §10.48.5 变异台账
+
+| 编号 | 变异 | 期望 | 实测 |
+|---|---|---|---|
+| M38 | 新增 `probe_hot/probe` 的跨面 `SELECT *` 视图 | 主门红 | ✅ 红，且点名 `probe_with_current_month` |
+| M39 | 抽掉登记表一条（`credit_ledger_…`） | 红 | ✅ 主门红（该视图失去豁免） |
+| M40 | 主门扫描面收窄到单个文件 | 反向门红 | ✅ 红（登记表 11 条全部失配） |
+
+⚠ **M39/M40 第一轮报绿，是变异根本没落进去**（对齐空格不匹配导致 `str.replace`
+空操作）。重做时加了 `changed: True` + `md5` 变化 + `grep -c` 归零三重自证，
+才确认是门在起作用。**绿色的变异结果必须先证明变异已落地。**
+
+⚠ 另有一个**等价变异体**：抽掉块注释剥离后仍绿 —— 因为多出来的命中来自
+625 的注释，视图名 `session_bodies_unified` 本就在登记表里。属正确结果，
+不是判据不够。
+
+### §10.48.6 复核配方（生产只读）
+
+```sql
+-- 逐位比对：mismatch_pos > 0 的视图必须逐列枚举
+WITH pairs(name, hot, parent) AS (VALUES …)
+SELECT p.name,
+       count(*) FILTER (WHERE h.attname IS DISTINCT FROM c.attname) AS mismatch_pos,
+       count(*) AS compared
+FROM pairs p
+JOIN pg_attribute h
+  ON h.attrelid = to_regclass('public.'||p.hot) AND h.attnum>0 AND NOT h.attisdropped
+LEFT JOIN pg_attribute c
+  ON c.attrelid = to_regclass('public.'||p.parent) AND c.attnum=h.attnum
+ AND c.attnum>0 AND NOT c.attisdropped
+GROUP BY p.name ORDER BY mismatch_pos DESC;
+
+-- 活视图是否仍为 SELECT *
+SELECT relname, pg_get_viewdef(oid,true) ~* 'select\s+\*' AS uses_star
+FROM pg_class WHERE relname LIKE '%_with_current_month';
+```
