@@ -131,6 +131,75 @@ func TestReconcileVerdicts(t *testing.T) {
 			want: PriceVerdictNotComparable,
 		},
 		{
+			// ★ 币种**未知**与币种**不同**是两件事，都得挡（2026-10-05 扫面）。
+			//
+			// 上一条那类判词之所以成立，靠的是 `obs.Currency != "" &&
+			// ssot.Currency != "" && obs.Currency != ssot.Currency` —— **两个非空
+			// 条件都在守卫里**。观测源抽不出币种（返回 ""）时整条检查被跳过，
+			// 于是这条**币种未知**的观测价被拿去和 USD 基准价算百分比：
+			// 3.00 → 2.50 是 -17%，判词写成 drift，reason 里一个字都不提币种。
+			//
+			// 它比「已知币种不一致」更早发生（抽取失败是常态，不是异常），
+			// 也更危险：数字看着完全正常，运营会照着它去谈价。
+			// 期望的「正确」表现是价格一字不差时也判不可比 —— 判据刻意**不给**
+			// 一个有偏差的价格，否则「因为偏差大才不可比」会读成「偏差小就可比」。
+			name: "unknown observation currency is not comparable even when the price agrees",
+			ssot: &fresh,
+			obs: &PriceObservation{
+				InputPer1M: f64(2.50), OutputPer1M: f64(10.00), Currency: "",
+				Source: "models.dev", ObservedAt: now,
+			},
+			want: PriceVerdictNotComparable,
+		},
+		{
+			// 同一缺陷的另一半：偏差**很大**时也不能判 drift。
+			// 数字越大越像一个真结论，所以这一条是上面那条的对照 ——
+			// 只钉「不可比」不钉「为什么不可比」的话，改成 drift 也能过上面那条。
+			name: "unknown observation currency is not drift however large the gap",
+			ssot: &fresh,
+			obs: &PriceObservation{
+				InputPer1M: f64(99.0), OutputPer1M: f64(99.0), Currency: "",
+				Source: "models.dev", ObservedAt: now,
+			},
+			want: PriceVerdictNotComparable,
+		},
+		{
+			// 基准侧币种未知：同一道闸的对称面。validate 现在挡住它入库，
+			// 但 ReconcileBaselinePrice 收的是内存里的清单，绕得过 validate。
+			name: "unknown baseline currency is not comparable",
+			ssot: func() *BaselinePrice {
+				p := fresh
+				p.Currency = ""
+				return &p
+			}(),
+			obs: &PriceObservation{
+				InputPer1M: f64(2.50), OutputPer1M: f64(10.00), Currency: "USD",
+				Source: "models.dev", ObservedAt: now,
+			},
+			want: PriceVerdictNotComparable,
+		},
+		{
+			// ★ 排序是承重的一部分：币种闸门**必须**排在 free-to-paid 之后。
+			//
+			// 0 在任何币种下都是 0，所以「本该免费、供应商却在收钱」这条与币种
+			// 无关，判 drift 是对的、也是最可行动的。若把币种闸门前移，这一行
+			// 会降级成 not_comparable —— 台账上「本该免费的东西在收钱」变成
+			// 「两个数没在同一种货币里」，运营读到的 actionable 信号消失了，
+			// 而两条判词看起来都是"不可比"，台账里再也分不出。
+			// 没有这一条的话，把闸门前移是**全绿**的改动。
+			name: "free to paid outranks the unknown currency gate",
+			ssot: func() *BaselinePrice {
+				p := fresh
+				p.InputPer1M, p.OutputPer1M = f64(0), f64(0)
+				return &p
+			}(),
+			obs: &PriceObservation{
+				InputPer1M: f64(5.0), OutputPer1M: f64(25.0), Currency: "",
+				Source: "models.dev", ObservedAt: now,
+			},
+			want: PriceVerdictDrift,
+		},
+		{
 			// 关键优先级：出处过期 > 漂移。过期来源算出来的偏差本身就是
 			// 过期数据的偏差，先修新鲜度再谈数字。
 			name: "stale source outranks drift",

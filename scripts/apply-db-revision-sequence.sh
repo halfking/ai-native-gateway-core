@@ -817,13 +817,30 @@ files=(
   # （R35 审计 B-F1 实证：本通道数组止于 817，已升级库永远收不到 818/819）。
   "$ROOT_DIR/sql/migrations/startup/818_ursm_snapshot_typed_columns.sql"
 
-  # 2026-10-03（820）：session_turns 补 is_abandoned 标记列——「开始了却没终态」
+  # 2026-10-05 补登 820（与末尾 825-833 一批补登同轮发现）：存量音频模型
+  # （ASR/TTS）modality 回填 audio。四个 UPDATE 分别覆盖后缀形态（*-asr /
+  # *-tts）、包含形态（*-asr-* / *-tts-* / *-stt-*）、whisper 家族、transcribe
+  # 家族。
+  #
+  # 为什么必须进通道而不只是留在台账：本迁移是**纯数据回填**，只把
+  # models_canonical 里 modality='text' 的行升级成 'audio'。已跑过的库不需要
+  # 再跑，但**任何从更早快照升级上来的库都需要它**——否则 audio 请求会被
+  # 候选过滤（COALESCE(mc.modality,'text') IN ('audio','multimodal')）挡掉，
+  # 表现为 503 no_candidate，而上游本身完全健康（小米端点 chat+input_audio
+  # 实测可用）。这是纯粹的标注错误，不是能力缺失。
+  # 幂等：四段都是 `WHERE modality='text'` 收敛式 UPDATE，重复执行不改变结果。
+  "$ROOT_DIR/sql/migrations/startup/820_audio_modality_backfill.sql"
+
+  # 2026-10-03（821）：session_turns 补 is_abandoned 标记列——「开始了却没终态」
   # 在**会话族内**的落点（审计 §9.92，取代被推翻的 819 独立表方案）。
   # 252 实测遗弃率 0.047%/天，丢的是已发生的上游消耗。
   # 不变式：is_abandoned=TRUE ⇔ 这是终态 turn，而其请求在 v1 侧无 t0。
   # 写方（telemetry markAbandonedTurn）fail-open，故本迁移未应用时只是标记缺失。
   # 幂等（ADD COLUMN IF NOT EXISTS + 列集守卫）；母表与 hot 两面都要有。
   "$ROOT_DIR/sql/migrations/startup/821_session_turns_abandoned_marker.sql"
+
+  # ⚠ 本条注释原先写作「（820）」，是 819→820→821 重编号时漏改的错标：820 是
+  # 上面的 audio_modality_backfill，与本条无关。2026-10-05 订正。
 
   # 2026-10-04（822）：session_summaries 健康分待评分捞取查询的部分索引
   # （252 SQL 日志审计 R23）。bg/session_health_worker（10-02 ece68f148 接入
@@ -911,6 +928,20 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/831_work_type_route_source.sql"
 
   "$ROOT_DIR/sql/migrations/startup/829_bodies_columnar_rollback.sql"
+
+  # 2026-10-04（832）：基准价观察源健康台账
+  # model_baseline_price_observation_health（连续失败数 / 观察到的模型数）。
+  # 缺失时 bg 的 baseline_observation_stale 检查报 42P01。
+  # 编号注：本文件落地时占用 830，与并行线的 830_ursm_node_snapshot_min_
+  # partitioned 撞号；编号是身份键（de7656806），2026-10-05 合并收口时重排
+  # 为 832。幂等：CREATE TABLE IF NOT EXISTS。
+  "$ROOT_DIR/sql/migrations/startup/832_model_baseline_observation_health.sql"
+
+  # 2026-10-04（833）：供应商侧四个价格列加非负 CHECK，关掉「负价录入」这个
+  # 入口（负价进 v_supplier_price_vs_baseline 会被读成「比原厂便宜 100%」）。
+  # 编号注：原占 831，与并行线的 831_work_type_route_source 撞号，同批重排
+  # 为 833。幂等 DROP + ADD。
+  "$ROOT_DIR/sql/migrations/startup/833_supplier_price_nonneg_check.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

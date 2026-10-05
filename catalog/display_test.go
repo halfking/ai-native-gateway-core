@@ -101,7 +101,8 @@ func TestInferVendor(t *testing.T) {
 }
 
 func TestEffectiveModality_minimaxM3(t *testing.T) {
-	if got := EffectiveModality("minimax-m3", "text"); got != "multimodal" {
+	// source='' 表示「不知道出处在哪」——退回纯按名推断的旧行为。
+	if got := EffectiveModality("minimax-m3", "text", ""); got != "multimodal" {
 		t.Fatalf("got %q want multimodal", got)
 	}
 }

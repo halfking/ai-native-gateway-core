@@ -223,7 +223,8 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		       mc.strengths,
 		       mc.version_rank,
 		       mc.cost_tier,
-		       mc.standard_iq::float8
+		       mc.standard_iq::float8,
+		       COALESCE(mc.modality_source, '')
 		FROM models_canonical mc
 		LEFT JOIN model_families mf ON mf.id = mc.family AND COALESCE(mf.status, 'active') = 'active'
 		LEFT JOIN LATERAL (
@@ -272,6 +273,10 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		CostTier    *string    `json:"cost_tier"`
 		// 2026-08-11: 标准智商（来自评测站点）
 		StandardIQ *float64 `json:"standard_iq"`
+		// 标注出处（迁移 825）。'inferred' = 按模型名猜的，'semantic' =
+		// 出网语义核实过的，'manual' = 运维手工盖的章。前两者与第三者
+		// 的可信度不是一回事，列表里必须能分开看。
+		ModalitySource string `json:"modality_source"`
 	}
 	models := make([]model, 0)
 	for rows.Next() {
@@ -284,7 +289,7 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 			&m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
 			&dbVendor, &m.AliasCount, &m.OfferCount,
 			&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier,
-			&m.StandardIQ,
+			&m.StandardIQ, &m.ModalitySource,
 		); err != nil {
 			warnRowSkip("models.list", err)
 			continue
@@ -301,7 +306,10 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 			familyID = *family
 		}
 		m.Vendor = catalog.ResolveVendor(m.CanonicalName, familyID, dbVendor)
-		m.Modality = catalog.EffectiveModality(m.CanonicalName, m.Modality)
+		// 出处必须一起传：否则按名推断会覆盖掉 semantic/manual 的标注
+		// （catalog.EffectiveModality 的注释写了病灶）。列表里出现
+		// 「库里 text、页面 multimodal」时，这一列就是判据。
+		m.Modality = catalog.EffectiveModality(m.CanonicalName, m.Modality, m.ModalitySource)
 		models = append(models, m)
 	}
 	if writeAggRowsErr(w, "models.list", rows.Err()) {
@@ -432,6 +440,19 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 		Strengths   json.RawMessage `json:"strengths"`
 		VersionRank *int            `json:"version_rank"`
 		CostTier    *string         `json:"cost_tier"`
+		// ★ 标注出处与证据（迁移 825）。这三个字段此前**一个读者都没有**：
+		// 写侧（核实 worker 的 rollup、人工 PATCH 覆盖）一直在认真盖章，
+		// 读侧只把 modality 本身吐出去，于是
+		//   - 分不出 vision 是猜的还是验的；
+		//   - modality_verified_at 恒不外露 ⇒ 「定时核实到底跑没跑过、
+		//     多久没更新了」在产品里无法回答 —— 而这正是需求里
+		//     「能自动对未曾标注核实过的模型定时进行核实」的可观测面；
+		//   - PATCH 盖了 manual 章之后没有任何出口能证明章还在。
+		// 真库实测：960 行 modality_source 全是 'inferred'，
+		// modality_evidence 全为 '{}'，modality_verified_at 全 NULL。
+		ModalitySource     *string         `json:"modality_source"`
+		ModalityVerifiedAt *time.Time      `json:"modality_verified_at"`
+		ModalityEvidence   json.RawMessage `json:"modality_evidence"`
 	}
 	m := modelRow{}
 	err := h.db.QueryRow(ctx, `
@@ -442,13 +463,15 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 		       created_at, updated_at,
 		       COALESCE(input_price_cny,0), COALESCE(output_price_cny,0),
 		       released_at, COALESCE(array_to_json(strengths)::jsonb, '[]'::jsonb),
-		       version_rank, cost_tier
+		       version_rank, cost_tier,
+		       modality_source, modality_verified_at, modality_evidence
 		FROM models_canonical WHERE id = $1
 	`, id).Scan(&m.ID, &m.CanonicalName, &m.DisplayName, &m.Family, &m.Modality,
 		&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason,
 		&m.Source, &m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.CreatedAt,
 		&m.UpdatedAt, &m.InputPriceCNY, &m.OutputPriceCNY,
-		&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier)
+		&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier,
+		&m.ModalitySource, &m.ModalityVerifiedAt, &m.ModalityEvidence)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "model not found")
 		return
@@ -588,8 +611,17 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 		"strengths":    m.Strengths,
 		"version_rank": m.VersionRank,
 		"cost_tier":    m.CostTier,
-		"aliases":      aliases,
-		"offers":       offers,
+		// ★ 标注出处与证据。**别只看上面那个 struct 就以为响应里有它们**：
+		// getModel 拼的是**显式 map**，不是把 modelRow 整个 marshal 出去 ⇒
+		// struct 上的 json tag 在这个 handler 里不生效，少写这三行就是
+		// 「查了库、没告诉任何人」。2026-10-06 实测：这三列此前零读者，
+		// 加上 struct 字段后第一次真库复跑仍然是「响应里没有」——是这个 map
+		// 吃掉的。
+		"modality_source":      m.ModalitySource,
+		"modality_verified_at": m.ModalityVerifiedAt,
+		"modality_evidence":    m.ModalityEvidence,
+		"aliases":              aliases,
+		"offers":               offers,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

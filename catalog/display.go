@@ -171,12 +171,65 @@ func HumanizeFamilyID(id string) string {
 	return strings.ToUpper(id[:1]) + id[1:]
 }
 
+// ModalitySource 是 models_canonical.modality_source 的取值（迁移 825）。
+//
+// 名字规则推断出的模态不是标注，是**猜测**；语义核实与人工覆盖才是标注。
+// 读路径必须能区分这两者，否则会把标注悄悄换回猜测。
+const (
+	// ModalitySourceInferred 来自 modelname.InferModality 的按名推断。
+	ModalitySourceInferred = "inferred"
+	// ModalitySourceSemantic 来自 bg 的分级语义核实（出网探测、带挑战图）。
+	ModalitySourceSemantic = "semantic"
+	// ModalitySourceManual 来自 admin 的 Layer 3 人工覆盖。
+	ModalitySourceManual = "manual"
+)
+
+// modalityIsAnnotated 报告这条标注是否已经由**证据或人**拍过板。
+//
+// ★ 这道闸门是 825 在**写侧**（discovery/discovery.go 的 upsert、
+// discovery/canonical_match.go 的重连判定）建立的那道，2026-10-05 被补到读侧。
+//
+// 迁移 825 的注释把病灶写得很清楚：按名字推断与语义核实「对同一列提出互斥的
+// 要求」，两侧会互相覆盖。写侧因此加了 `modality_source NOT IN
+// ('semantic','manual')`。但**读侧一直没跟上** —— 本函数原先只有
+// (canonicalName, stored) 两个入参，结构上就拿不到 source，于是：
+//
+//   - 语义核实把某模型判负降级为 text（source='semantic'），
+//     列表接口与**租户目录**都会按名字把它翻回 multimodal；
+//   - 运维用 PATCH /api/models/:id/modality 手工设成 text（source='manual'），
+//     同样在列表里被翻回去 —— 而 PATCH 明明盖了 manual 章。
+//
+// 症状与「核实没生效」完全同形：库里是 text，页面上是 multimodal。
+// 真库当前 960 行 modality_source 全是 'inferred'，所以这条缺陷今天还**看不出来**
+// —— 它会在核实 worker 第一次写出 semantic 的**那一刻**变成活的。
+func modalityIsAnnotated(source string) bool {
+	switch strings.TrimSpace(strings.ToLower(source)) {
+	case ModalitySourceSemantic, ModalitySourceManual:
+		return true
+	}
+	return false
+}
+
 // EffectiveModality returns the modality shown to tenants.
-func EffectiveModality(canonicalName, stored string) string {
+//
+// source 是 models_canonical.modality_source（迁移 825）。已盖章的标注
+// （semantic / manual）**原样返回**：按名字猜出来的模态没有资格推翻它。
+//
+// source 传空串等于「不知道出处在哪」，此时退回旧行为（纯按名推断），
+// 这样尚未补选出处列的调用点不会静默改成另一种答案。
+func EffectiveModality(canonicalName, stored, source string) string {
 	s := strings.TrimSpace(strings.ToLower(stored))
 	name := strings.ToLower(strings.TrimSpace(canonicalName))
+	if modalityIsAnnotated(source) {
+		if s == "" {
+			return "text"
+		}
+		return s
+	}
 	switch s {
-	case "multimodal", "vision", "audio", "embedding":
+	// 'video' 曾经在下面这个名单外面：stored='video' 的模型会掉进按名推断
+	// 分支，名字里带 gemini-/claude- 的就被报成 multimodal，'video' 丢失。
+	case "multimodal", "vision", "audio", "embedding", "video":
 		return s
 	}
 	if inferred := inferModalityFromName(name); inferred != "" {

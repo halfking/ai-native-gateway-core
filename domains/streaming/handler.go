@@ -6616,6 +6616,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	if reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil {
+		// ★ 2026-10-06 接线：口径由**上游协议**带下来，不再是「必须人工声明」。
+		// result.Candidate.Protocol 与四个价字段来自候选 SQL 的**同一行**
+		// （provider/client.go:1129，且 :1140 保证 protocol 非空）。
+		// 之前这里不传 Convention ⇒ 永远是零值 ⇒ 一律按 OpenAI 口径扣 cache
+		// ⇒ Anthropic 上游（input_tokens 不含 cache）被扣成负数。
+		// 非 anthropic 协议返回 Unset，行为与改动前**逐字节相同**。
 		reqLog.CostUSD, reqLog.CostDisplay, reqLog.CostCurrency = AssignRequestCost(CostPriceInput{
 			PromptTokens:     reqLog.PromptTokens,
 			CompletionTokens: reqLog.CompletionTokens,
@@ -6626,6 +6632,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
 			CacheWritePrice:  result.Candidate.CacheWritePricePer1M,
 			Currency:         result.Candidate.Currency,
+			Convention:       CacheTokenConventionForProtocol(result.Candidate.Protocol),
 		})
 	}
 

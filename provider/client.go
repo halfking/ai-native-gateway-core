@@ -255,6 +255,26 @@ type Candidate struct {
 	NativeEndpoints []endpointselect.EndpointLite `json:"native_endpoints,omitempty"`
 }
 
+// CalcCost 是**死代码**：全仓零调用者（`grep -rn '\.CalcCost('` = 0）。
+//
+// 真实的成本计算在 domains/streaming.CalcCost，经 AssignRequestCost 调用
+// （domains/streaming/handler.go:6619），价格同样取自本 Candidate 的
+// PriceInPer1M 等字段。
+//
+// ★ 为什么留着它是个坑而不只是冗余：它与活的那份**语义不同**。
+//
+//	本函数（死）：pIn==0 && pOut==0 → return 0（浮点零，不是 nil）
+//	             负值 → 截到 0
+//	活的那份：   同样条件 → return nil（=「算不出来」）
+//	             负值 → 2026-10-06 起同样 return nil + 记日志
+//
+// 「截到 0」与「算不出来」在账单上是两件相反的事：前者断言这次免费，
+// 后者承认算不出。谁要是照着 docs 里的旧描述调用这个函数，会得到一个
+// 与生产记账语义不同的答案，而且没有任何测试会发现（这里零判据覆盖）。
+//
+// 处置：删除与否是运营决定（它是导出符号，仓外可能有引用），先在此标注
+// 真实出口。引用它的文档：docs/db-changelog.md:1563,1617 与
+// docs/archive/process/ir-format-optimization/01-现状审计与修正.md:46。
 func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens, cacheWriteTokens *int) float64 {
 	pIn := float64(0)
 	if c.PriceInPer1M != nil {
