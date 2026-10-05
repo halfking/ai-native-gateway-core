@@ -445,3 +445,36 @@ func writePartTo(buf *strings.Builder, name, value string) {
 	buf.WriteString(value)
 	buf.WriteString("\r\n")
 }
+
+// 2026-10-05 实测回归：小米音色大小写敏感（Mia 非 mia）。normalizeTTSVoice-
+// ForCandidate 曾把合法音色小写化，上游 400 "Unknown voice: mia"，英文音色
+// 全族（Mia/Chloe/Milo/Dean）不可用。锁住「匹配不敏感、回传保真」两个面。
+func TestSpeechVoiceCasePreserved(t *testing.T) {
+	svc := newTestAudioService(t, "xiaomi", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed struct {
+			Audio struct {
+				Voice string `json:"voice"`
+			} `json:"audio"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Errorf("tts bridge body parse: %v", err)
+			return
+		}
+		if parsed.Audio.Voice != "Mia" {
+			t.Errorf("voice must be relayed verbatim (got %q, want %q)", parsed.Audio.Voice, "Mia")
+		}
+		fake := base64.StdEncoding.EncodeToString([]byte("RIFFfake"))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"choices":[{"message":{"audio":{"data":%q}}}]}`, fake)))
+	})
+	h := NewAudioSpeechHandler(svc)
+
+	payload := `{"model":"mimo-v2.5-tts","input":"Hello","voice":"Mia"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
