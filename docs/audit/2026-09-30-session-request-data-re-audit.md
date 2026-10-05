@@ -30110,3 +30110,303 @@ outbox 无行）**落在 journal 保留期内**（保留起点 **2026-10-04 11:0
 与 §9.238 那次「查消失数据必须找写入侧证人」、§9.245 那次「断言不存在前先读汇总文档」同族，
 但这次更严重：**三处都进了已发布的文档。**
 
+
+### §9.249 ★ 把唯一那 1 行钉到「既没成功也没报错」，并发现**生产二进制不是从干净树构建的**
+
+> 本节兑现 §9.248.3 留下的入口（重新读 `SessionWriterV2.Write` 与 `turn_writer.go`）。
+> **只读，生产零写入。** §9.248 的三处撤回**不回滚**（本节再次印证：单网关进程成立）。
+
+#### §9.249.1 ★ 先给一个能直接用的数：journal 覆盖期的真实丢失率
+
+`journalctl` 保留起点 **2026-10-04 11:01:19**。在这个可归因窗口内
+（10-04 11:01 → 10-05 14:11，出货分类器逐字复用 + **两面** scope + `NOT EXISTS` 过滤）：
+
+| 指标 | 值 |
+|---|---|
+| 带会话头的 v1 终态行总数 | **≈ 6,350** |
+| `genuine_loss` **且两面都没有 turn** | **1** |
+| 丢失率 | **0.016 %** |
+
+唯一那一行就是 `a9e2dc006a62103b087999517bf765bd`。
+⇒ ★ **7 天窗口里的 11 行，绝大多数落在 journal 保留期外**（§9.248.4 已记录），
+所以「27 小时 1 行」与「7 天 11 行」**不矛盾**：后者约 0.4 行/天，本段约 0.9 行/天，
+同一量级。**生产镜像丢失是低频、不是系统性事件。**
+
+⚠ **本节我自己又犯了一次 §9.247.5 警告过的错**：我先跑了个「按小时分桶」的查询，
+**只做分类、没有加 `NOT EXISTS` 过滤**，得到「genuine_loss 占 95.9%（6,090 行）」——
+那个数字**根本不是丢失**（`genuine_loss` 是分类器的 ELSE 臂，含义是「不是 loopback、
+不是 non_terminal」）。**若把它当成丢失率发出去，会把一个 0.016% 的问题报成 96%。**
+是「两条查询放在一起看」才暴露的。**`MirrorDriftClassSQL` 的 `genuine_loss`
+不等于「丢了」，必须配 `NOT EXISTS` 才成立** —— 这一条此前只在夹具注释里写过，
+本节把它提升成**审计纪律**。
+
+#### §9.249.2 ★ `a9e2dc00` 的完整时间线与「既没成功也没报错」的证据链
+
+**时间线（T0–T9 生命周期戳 + dim 时间戳）**：
+
+```
+ts                  = 13:34:00.627   请求开始
+t0_arrived_at       = 13:34:00.488
+t7_forward_start_at = 13:34:00.512
+latency_ms          = 35058          ← 这次 transient 请求跑了 35 秒
+t9_response_end_at  = 13:34:34.270   终态
+session_dim.created_at = 13:34:34.662   ← 在 t9 之后 392 ms
+```
+
+⇒ ★ **§9.247.2 那个「dim 晚 33 秒」的疑点不成立**：那不是延迟，
+**是这次请求本身跑了 35 秒**。`session_dim.first_request_at` 取自
+`request_context_attrs.ts`，`created_at` 是 upsert 执行时刻，两者相差一个请求时长，
+完全正常。**dim 确实由这次终态写入。**
+
+**「既没成功也没报错」的四条独立证据**：
+
+| # | 证据 | 读数 |
+|---|---|---|
+| 1 | 全库按 `request_id` 扫 11 张表 | 只在 `request_logs_hot`（1）与 `session_dim`（1）命中；`session_turns_hot` / `session_turns` / `session_turns_with_current_month` / `session_bodies` / `session_turn_logs` / `session_turn_details` / `sessions` / `session_aggregate_outbox` / `session_mirror_outbox` / `request_wal` **全 0** |
+| 2 | **对照**（同窗口 5 个成功请求） | 每个都是 `agg_outbox=1 / sessions=1 / turns_hot=1`；且 `session_aggregate_outbox` 全表 **49,406 行、最早 09-28** ⇒ **它不是自消队列**，「0 行」是**有效证据**，不是被 reaper 排空 |
+| 3 | 日志 | `journalctl` 全文 grep 该 `request_id` **0 命中**；`V2 shadow write failed` 在保留期 10 次，其中当前进程（10-05 06:50:43 起）期内**恰好 2 次**（06:51:12、11:25:56） |
+| 4 | **Prometheus 交叉验证** | `llm_gateway_shadow_write_failed_total{kind="session_v2"}` = **2**，`sessions_v2_write_failure_total` = **2**，与 #3 的当前进程期计数**逐条吻合**；`a9e2dc00`(13:34) 之后**计数未增加** |
+
+⇒ ★★ **结论（比 §9.248.3 更硬）**：
+**`w.Write` 既没有成功（无 turn、无 aggregate outbox 行 ⇒ 事务未提交），
+也没有返回 error（计数与日志都没有它）。**
+而 `runShadowWrite` 的信号量满分支也会 `RecordShadowWriteFailure`（同一个计数器）
+⇒ **该分支同样没走**。
+
+#### §9.249.3 代码侧：`Write` 在 commit 之前**没有任何 `return nil`**
+
+把 `domains/session/v2/session_writer_v2.go` 的 `Write`（442–830 行）全部 return 点列出：
+
+```
+460 begin tx            473 set tenant GUC      476 LockSessionInTx
+519 marshal turn digest 693 write turn           717 write bodies
+735 write details       754 write final_full     764 write memora snapshot
+801 enqueue aggregate outbox                     805 commit tx
+```
+
+**11 个 return 全部返回 error；commit 成功之后函数继续走到末尾才 `return nil`。**
+⇒ **按源码，`Write` 返回 nil ⇒ 事务已提交 ⇒ `appendTurnInLockedTx` 要么插入了新行、
+要么在 `RowsAffected()==0` 时于 `session_turns_with_current_month` 查到了已有行
+（查不到会 `return 0, fmt.Errorf("read existing turn_no: …")`）** ⇒ **turn 必然可见**。
+
+另两条排除：
+- `session_turns` 的 6 个分区**全部 attached**（含 `session_turns_default`），
+  不存在「行写进了没挂载的分区」。
+- 252 上**没有**任何 cron/脚本对 `session_turns_hot` 做 DELETE/TRUNCATE；
+  仓库里的 DELETE 都在迁移与审计脚本内、252 未运行。
+
+**⇒ 源码与观测互相矛盾。** 而矛盾点在下一节。
+
+#### §9.249.4 ★★ 矛盾的根源：生产二进制是**从脏工作树构建**的
+
+```
+$ go version -m /opt/llm-gateway-go/bin/gateway
+  mod  github.com/kaixuan/llm-gateway-go  v0.0.0-20261004224118-8ab8a4fd696c+dirty
+  build vcs=git
+  build vcs.revision=8ab8a4fd696c06df51661b1a569a697b90b25375
+  build vcs.time=2026-10-04T22:41:18Z
+  build vcs.modified=true          ★
+```
+
+⇒ ★★ **运行中的二进制无法被验证等同于 commit `8ab8a4fd` 的源码。**
+`vcs.modified=true` 表示构建时工作树有未提交改动。
+
+**这条推翻的是「方法」而不是「结论」**：
+§9.247.4 的 6 条候选排除**全部是读仓库源码得出的**，
+它们隐含前提是「生产跑的代码 = 仓库里的代码」——**这个前提未经验证，且现在有反证**。
+
+⚠ **但不要过度解读**：`vcs.modified=true` 也可能是**无害**的 ——
+本仓发布流程会 bump `VERSION` / `version.json`（共享主工作区此刻就带着这两个文件的未提交改动），
+**改版本号同样会让树变脏**。`go version -m` **不记录 diff**，所以
+「镜像路径是否真的不同」**无法由此判定**。
+
+⇒ ★ **可执行的下一步（不需拍板）**：把 §9.249.3 的 11 个 return 点做成
+**出货夹具里的静态断言**（读 `session_writer_v2.go` 源码，断言
+`commit` 之前不存在 `return nil`），**一旦将来真的出现这种路径，门立刻转红**。
+这比继续在生产上找样本更可靠——**样本 27 小时才 1 行，等不起。**
+
+#### §9.249.5 本节不主张的事（不夸大）
+
+1. **不主张**「二进制里有仓库没有的代码」——`vcs.modified=true` 只证明**不等同**，
+   不证明**哪一行不同**，更不证明镜像路径不同。
+2. **不主张**这 1 行是 bug 而非运维事件——它与「构建自脏树」「构建与运行可能不一致」
+   都相容，也与「某个未知的无日志路径」相容。**只读数据无法分开。**
+3. **不主张** 27 小时的丢失率可以外推到 7 天或 30 天 —— 11 行里 9 行在 journal 保留期外，
+   **它们的成因可能与这 1 行不同**。
+4. 本节所有生产操作**只读**；未执行任何回填、重启、部署或配置变更。
+
+
+### §9.250 ★ 把 §9.249 的不变量做成出货判据，**并用变异测出它自己的盲区**
+
+> §9.249.4 提出的「静态断言」入口。本节**第一次真的改了代码**。
+> 纯新增一个测试文件 + 文档，未改动任何生产代码路径。
+
+#### §9.250.1 落地的东西
+
+新增 `domains/session/v2/session_writer_v2_nil_before_commit_pin_test.go`，三条判据
+（全部走 `go/ast`，**不是文本匹配** —— 文本判据会被注释满足，
+「删掉接线只留注释」是判据静默失效最常见的形态）：
+
+| 判据 | 不变量 |
+|---|---|
+| `TestWriteNeverReturnsNilBeforeCommit` | `Write` 在 `tx.Commit` 之前**没有任何返回 nil 的语句**，且签名仍是单返回值 `error`，且 commit 点存在（找不到即判红） |
+| `TestAppendTurnInLockedTxNeverReturnsZeroNil` | `appendTurnInLockedTx` **不返回 `(0, nil)`** |
+| `TestWriteActuallyInsertsTheTurn` | `Write` **真的调用** `appendTurnInLockedTx`，并把它的 error 绑到具名变量后用 `if err != nil { … return … }` 检查 |
+
+三条都带**反向守卫**（commit 点找不到、方法找不到、return 数为 0 都判红），
+避免「因为没找到而通过」这种空洞绿。
+
+#### §9.250.2 ★★ 变异验证测出**我自己的判据有盲区**——这是本节最有价值的部分
+
+先写了两条判据，跑变异时发现：
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| **M6** | 把 `turnNo, err := w.turnWriter.appendTurnInLockedTx(lockCtx, tx, turnRec)` 整段换成 `turnNo, err := 1, error(nil)`（**跳过 turn 插入但不报错**） | ★ **判绿** |
+
+**M6 恰恰就是 §9.249.2 在生产上观测到的症状形状**：
+事务提交、调用方拿到 nil、库里没有这一轮 turn。
+⇒ **前两条判据是必要条件，不是充分条件。** 补了第三条
+`TestWriteActuallyInsertsTheTurn` 之后，M6 转红。
+
+**⇒ 教训：判据的强度只能靠变异测出来，不能靠「读一遍觉得够了」判断。**
+如果我做完前两条就收工交付，会留下一个**看起来在守、实际守不住**的门。
+
+#### §9.250.3 完整变异台账（全部基于**能编译**的变异）
+
+| # | 变异 | 期望 | 实测 |
+|---|---|---|---|
+| M1 | `Write` 在 commit 前加 `return nil` | 红 | ✅ 红（报出第 691 行） |
+| M2 | `appendTurnInLockedTx` 末尾加 `return 0, nil` | 红 | ✅ 红（报出第 597 行） |
+| M6 | 跳过 `appendTurnInLockedTx`，`turnNo, err := 1, error(nil)` | 红 | ✅ 红（报「没有调用」） |
+| M7 | 保留调用但写成 `turnNo, _ := …`（吞掉 error） | 红 | ✅ 红（报「error 没被检查」） |
+| M3'' | `tx.Commit` 前先 `conn := tx`，改用 `conn.Commit`（**能编译**） | 红（空洞守卫） | ✅ 红（报「找不到 tx.Commit」） |
+| M5 | 在 `committed = true` **之后**加 `return nil`（**合法**） | 绿 | ✅ 绿 |
+| — | 全部还原后复跑 | 绿 | ✅ 绿，`git diff --stat` 为空 |
+
+⚠ **两次失败的变异尝试必须记下来，否则下一轮会重蹈**：
+1. **M3/M4 第一版只证明了「编译失败」** —— 把 `tx.Commit` 改名、把方法改名都会让
+   包**编译不过**，测试根本没跑。**编译失败不是判据转红的证据**
+   （§9.237 已犯过一次，本轮又差点犯）。改成 `conn := tx` 后才是有效变异。
+2. **第三条判据第一版自身有 bug**：`a, b := f()` 的 `AssignStmt.Rhs` 长度是 **1** 不是 2，
+   我写成 `len(Rhs) != 2` ⇒ **基线就红**，而此时 M6/M7 的「红」全是这个假红。
+   修好之后才重跑了全部台账。**⇒ 变异台账里出现「基线也红」时，先怀疑判据本身。**
+
+#### §9.250.4 门结果
+
+```
+gofmt -l  <新文件>                → 无输出（已格式化）
+go vet ./domains/session/v2/      → 无输出
+go test ./domains/session/v2/     → ok  github.com/kaixuan/llm-gateway-go/domains/session/v2  1.544s
+go build ./...                    → 仅 vendored go-m1cpu 的既有 C 警告，与本次无关
+```
+
+**本节没有重跑 `db` / `admin` / `cmd/gateway` 三组全量门** ——
+本轮只新增了一个测试文件，**没有触碰任何被那三组门覆盖的代码**。
+门基线仍沿用 §9.240 之后的读数（db FAIL 2 / admin FAIL 6 / cmd/gateway ok / indirection ok），
+**那是旧读数，不是本轮实测**。
+
+#### §9.250.5 这条判据**不能**做什么（不夸大）
+
+1. **它不能复现 §9.249.2 那个现象** —— 生产二进制是 `vcs.modified=true` 的脏树构建，
+   **运行代码无法被验证等同于本文件**。本节做的是**在代码层立一道防线**，
+   不是证明那道防线能挡住已经在跑的那份代码。
+2. **它是源码形状判据，不是行为判据** —— 真出现「不插入 turn 也不报错」但形状不变的路径
+   （例如 SQL 里的 `WHERE` 被改空、或 `ON CONFLICT` 语义变化），**它照样绿**。
+3. **它只覆盖 `Write` 这一个函数**。`runShadowWrite` 的信号量分支、
+   replay 路径、以及 telemetry 侧的 fire 次数都**不在**本判据覆盖范围内。
+
+
+### §9.251 ★ 补上 §9.250.5 盲区 ①：**重复 fire 的富化契约**从「mock 断言语句」升级为「真库断言值」
+
+> 本节**只新增一个测试文件**，未改任何生产代码路径。**本地真库**（非生产）。
+
+#### §9.251.1 先确认「已有门是不是真在守」——结论：**6 个重复写测试全是 pgxmock**
+
+`domains/session/v2/turn_writer_dup_test.go` 已有 6 个测试覆盖重复写
+（含 `TestTurnWriterAppendTurnRaceSameRequestId`），乍看之下这条路径已被守住。
+但逐个读下来，**它们全部用 pgxmock**：
+`WillReturnResult(pgxmock.NewResult("INSERT", 0))` 里的 `RowsAffected`
+**是 mock 说了算的**，`WillReturnRows(...).AddRow("session-existing", 9, partitionDate)`
+里的 `turn_no` 也是 mock 塞的。
+
+⇒ **它们能证明「语句按这个顺序、以这些参数发出了」，
+证明不了「值真的落进了行里」。**
+
+★ 而 §9.250.5 点名的盲区正是这一条：**AST 形状判据与 mock 调用序列判据
+都看不见 SQL 语义**。`COALESCE(NULLIF($10, ''), title)` 写成 `= $10` 时，
+参数个数对、语句照发 ⇒ **那 6 个 mock 测试全绿**，
+而真库上「一次全空的后续 fire」会把 `title` 抹成空串。
+
+#### §9.251.2 落地的门
+
+新增 `domains/session/v2/turn_writer_double_fire_realdb_test.go`
+（沿用 `client_protocol_realdb_test.go` 的接入约定：`//go:build !integration`、
+`TEST_DATABASE_URL` 未设即 `t.Skip`、**前提自证**先探视图与列的存在、收尾验残留）。
+
+契约来自 turn_writer.go 里 2026-08-05 那段注释：镜像对每个请求 **fire 两次**
+（INSERT-persist 一次、UPDATE-persist 一次），首 fire 的 `compression_strategy` 是空的
+（那时压缩器还没跑）。冲突路径上那一整段
+`COALESCE(NULLIF(...))` / `CASE WHEN ... <> '' ... END` 的承诺是
+**「后一次 fire 的空值永远不能抹掉前一次填好的值」（monotonic enrichment）**。
+
+| 用例 | 内容 | 作用 |
+|---|---|---|
+| **A（阳性）** | fire#1 全空 → fire#2 带 `zstd` / `title` / `summary` / `submit_mode=delta` | 晚到的非空字段**必须**落库；且 `turn_no` 不变、`session_turns_with_current_month` 恰好 1 行 |
+| **B（★ 阴性对照，本门重点）** | fire#3 **再次全空** | 行里**仍然是** fire#2 填进去的值 |
+
+读的是 `session_turns_with_current_month` 而非裸 hot 表 —— §9.248.3 已确认该视图
+= `session_turns_hot ∪ session_turns`，正是**对账侧能看到的那个面**。
+
+#### §9.251.3 ★★ 变异台账：以及**第一版台账全部无效**这件事
+
+先说无效的那一版。**第一版我把标记写成 Go 注释**：
+
+```
+title = COALESCE(NULLIF($10, ''), title),   →   title = $10, // M-R1
+```
+
+而这三行**位于反引号原始 SQL 字符串内部** ⇒ 注释被送进 PostgreSQL
+⇒ 真库报 `syntax error at or near "//" (SQLSTATE 42601)`，
+测试在 **fire#2** 就炸了。三条变异**都红了，但红的理由与判据无关**。
+
+⚠ ⇒ **「转红」还不够，必须核对它是在哪一条断言上红的。**
+与 §9.250.3 的「编译失败 ≠ 判据转红」同族，这里是
+**「SQL 语法失败 ≠ 语义判据转红」**。
+
+**去注释后重跑的有效台账**：
+
+| # | 变异 | 实测 |
+|---|---|---|
+| M-R1 | `title` 的 `COALESCE(NULLIF($10,''), title)` → `= $10` | ✅ 红，**且只报第 250 行**（fire#3 的 ★ 断言）；fire#2 正常，**用例 A 的 title 断言未报** |
+| M-R2 | `compression_strategy` 的 COALESCE → 裸赋值 | ✅ 红，第 245 行（★ strategy） |
+| M-R3 | `summary` 的 COALESCE → 裸赋值 | ✅ 红，第 254 行（★ summary） |
+| — | 还原后复跑 | ✅ PASS，`git diff --stat` 为空 |
+
+★ **M-R1 的这一条同时证实了「A 绿 / B 红」确实可分**：
+只测 A 的门会完全放过这个缺陷，**两个用例缺一不可**。
+
+#### §9.251.4 门结果
+
+```
+env -u TEST_DATABASE_URL go test -run …  → SKIP（"TEST_DATABASE_URL not set…"）
+TEST_DATABASE_URL=… go test -v           → PASS（1.26s）
+gofmt -l <新文件>                          → 无输出
+go vet ./domains/session/v2/              → 无输出
+go test ./domains/session/v2/（带 DSN）    → ok  6.597s
+探针残留（两张脸）                          → 各 0 行
+```
+
+**未重跑 `db` / `admin` / `cmd/gateway` 三组全量门** —— 本轮只新增一个测试文件，
+未触碰它们覆盖的代码。基线仍是 §9.240 之后的**旧读数**，不是本轮实测。
+
+#### §9.251.5 本节不主张的事
+
+1. **不主张**生产上存在这个缺陷。`COALESCE(NULLIF(...))` 在当前树上是对的，
+   本门是**防线**，不是 bug 报告。
+2. **不主张**这道门覆盖了 `runShadowWrite` 的信号量分支、`replay.go`、
+   或 telemetry 侧的 fire 次数（§9.250.5 盲区 ② 仍未覆盖）。
+3. 本门只覆盖 `AppendTurn` 的**冲突富化**面；turn 插入本身被跳过的那条
+   （§9.250 的 M6）仍由**静态**判据 ③ 守，**两者互不重叠**。
+4. 全部操作发生在**本地真库**，探针行已清理；**生产零写入**。
+

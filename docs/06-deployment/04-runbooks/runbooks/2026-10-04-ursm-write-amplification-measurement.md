@@ -3245,19 +3245,38 @@ if limit > 500 { limit = 500 }
 > as a follow-up **since v1 totals are <500**.
 
 **那个前提已经破了**（现在 2141），而它依赖的 `Limit: 1000` 被静默截成 500。
-按租户拆开看它实际少报多少：
 
-| tenant | 实际行数 | Stats 实际聚合 | 漏报 | down 实为 | Stats 报 |
+⚠️ **订正（2026-10-05 上线后自查）**：我这一节原先写「`total` 报 620
+（实为 2141）」—— **那个数端点根本吐不出来**。`Service.List` 第一行就是
+`f.TenantID = tenantFromCtx(ctx)`，它**覆盖**了 handler 里写的
+`TenantID: "default"`（那行是死代码）⇒ **这个端点一次只返回一个租户**，
+永远不会给出跨租户合计。下表按「每个租户各调一次」重列：
+
+| tenant | 实际行数 | 修复前 Stats 报 | 漏报 | down 实为 | 修复前 Stats 报 |
 |---|---:|---:|---:|---:|---:|
-| default | 2,021 | 500 | **1,521** | 320 | 320 |
+| default | 2,021 | **500** | **1,521** | 320 | 320 |
 | acme | 74 | 74 | 0 | 59 | 59 |
 | hansi | 29 | 29 | 0 | 10 | 10 |
 | kevin | 17 | 17 | 0 | 7 | 7 |
-| **合计** | **2,141** | **620** | **1,521** | **396** | 396 |
 
-⇒ `total` 报 620（实为 2141）。`by_health` 的 down 恰好没少（396 都在前 500 内），
-但**一旦分页修好、439 行被标成 down，这个端点若不一起修就会少报 439**。
-所以两处必须**同一个 commit** 改，否则会造出一个新的「数字不一致」。
+⇒ **真正的漏报只有 `default` 一个租户**：`total` 报 500 而实为 2,021，
+少报 1,521 行；其余三个租户都在 500 以下，不受影响。
+`by_health.down` 各租户**恰好都没少**（down 行全落在前 500 内 ——
+§10.27.2 已解释为什么这是自我封闭的盲区）。
+
+**但两处仍必须同一个 commit 改**：分页修好后有 439 行会从 degraded 变成 down
+（其中大部分在 default 租户），若 Stats 不一起修，它会继续按「前 500 行」聚合，
+于是探针说 835、端点说 320 —— **造出一个新的「数字不一致」**。
+
+上线后各租户真值（已实测）：
+
+| tenant | total | down | degraded | unknown |
+|---|---:|---:|---:|---:|
+| default | 2,021 | 759 | 0 | 1,262 |
+| acme | 74 | 59 | 0 | 15 |
+| hansi | 29 | 10 | 0 | 19 |
+| kevin | 17 | 7 | 0 | 10 |
+| 合计 | 2,141 | **835** | **0** | 1,306 |
 
 #### 5. 偏离了一处：500 截断**保留**，改成真正翻页
 
@@ -3401,3 +3420,216 @@ MUST_NOT_EXIST_xyz                 0   ← 阴性对照
   （指向 `releases/2463-c5418460/llm-gateway-go`，而实际文件叫 `gateway`）。
   服务不受影响（systemd unit 直接指向 release 目录），但按 symlink 查二进制的
   任何脚本都会踩空。**未修**，仅登记。
+
+#### 9. 🔴 潜伏的同病：`listStaleSQL` 的 `LIMIT 1000` 同样没有分页（**当前未触发，余量 241 行**）
+
+§10.27 修的是 Step 2 的 `List`。**Step 1 走的 `listStaleSQL` 有一模一样的病灶**：
+
+```go
+// apihub/pg_store.go:757
+FROM public.assets
+WHERE tenant_id = $1
+  AND COALESCE(last_seen_at, registered_at) < now() - make_interval(secs => $2)
+ORDER BY COALESCE(last_seen_at, registered_at) ASC
+LIMIT 1000          // ← 写死 1000，无 OFFSET，且 Filter 也没有 Offset 字段
+```
+
+`probeOneTenant` 是**按租户**调它的，所以上限也要**按租户**算（不是总数）：
+
+| tenant | 总行数 | stale(6h) | 距 1000 的余量 |
+|---|---:|---:|---:|
+| default | 2,021 | **759** | **241** |
+| acme | 74 | 59 | 941 |
+| hansi | 29 | 10 | 990 |
+| kevin | 17 | 7 | 993 |
+
+⇒ **当前没有触发**（default 759 < 1000），但余量只有 **241 行**。
+一旦某租户的 stale 资产超过 1000，Step 1 会**静默**停止覆盖第 1001 行之后，
+且**没有任何报错或日志** —— 与 §10.27 那个 bug 同一形状。
+
+**本轮没有修**，理由与 §10.27.5 偏离那次同源：`listStaleSQL` 没有 `Offset`，
+要修就得再给读路径加一层（现在 `apihub.Filter.Offset` 只作用于 `List`，
+`ListStale` 是独立方法、独立签名）。在**尚未触发**、且 stale 计数由
+「永久失效的孤儿资产」主导（835 里绝大多数停在 2026-06-26）的情况下，
+这属于**登记待观察**而非紧急修复。
+
+**观察触发条件**（建议进巡检）：任一租户 `stale(6h) > 800`。
+Step 2 已有的分页机器（`Filter.Offset` + `maxPages` + 上界告警）可以直接复用，
+届时只需给 `ListStale` 补一个 `offset` 参数与循环。
+
+---
+
+### 10.28 ✅/🔴 存储侧体检：🔴 `n_dead_tup` **系统性高报 1.2×~44×**，据此建议 VACUUM FULL 会**方向反了**
+
+这一节起因是 §10.26 修完之后我想看 `assets` 的堆状态，顺手撞上一个
+**会误导所有后续存储决策的读数**。
+
+#### 1. `assets`：看着 65% 是死行，实测 **99% 是可复用空闲空间**
+
+`pg_stat_user_tables` 说：
+
+| 指标 | 值 |
+|---|---:|
+| 堆 / 索引 | 66 MB / 8.2 MB |
+| 活行 / 死行 | 2,141 / **4,043**（65.4%） |
+| 累计 upd / 其中 HOT | 64,569,717 / 53,302,650（**82.6%**） |
+| autovacuum 次数 | **17,636** |
+
+按这个读数，接下来应该是「65% 死行堆积 → 该做 VACUUM FULL 回收」。
+
+**但 `pgstattuple_approx`（采样）给出的完全是另一回事**：
+
+| 指标 | 值 |
+|---|---:|
+| `table_len` | 69,353,472（66 MB） |
+| `approx_tuple_len`（活元组总字节） | 685,936（**0.99%**） |
+| `dead_tuple_len` | 23,940（**0.03%**，124 个） |
+| `approx_free_space` | 68,599,208（**98.9%**） |
+
+内部自洽：`685,936 + 23,940 + 68,599,208 ≈ 69,353,472` = `table_len`。
+
+⇒ **那张表 99% 是引擎已经可复用的空闲空间**，不是死元组堆积。
+**autovacuum 跑了 17,636 次、把死元组都清掉了，只是页没还给操作系统。**
+
+★ **所以对 `assets` 做 VACUUM FULL 是错的**：空间**已经可复用**，
+  为纯磁盘占用去拿 ACCESS EXCLUSIVE 锁重写 66 MB，写性能收益为零。
+  真要还磁盘，只有 `VACUUM FULL` / `pg_repack` 能做到，而 66 MB 不值得。
+
+#### 2. 🔴 `n_dead_tup` 在**所有**表上都高报
+
+| 表 | total | live% | dead% | free% | `stat_dead` | 实测死元组 | **高报** |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `ursm_node_snapshot_min_legacy` | 10 GB | 81.9 | 0.14 | 17.9 | 557,161 | ~27,000 | **~20×** |
+| `session_turns_2026_09` | 2,634 MB | 93.7 | 0.03 | 5.4 | 4,359 | ~240 | **~18×** |
+| `session_summaries` | 888 MB | 57.3 | 1.29 | 41.0 | 51,733 | ~8,000 | **~6×** |
+| `route_incident_events` | 779 MB | 96.3 | 0.00 | 3.5 | 89 | ~0 | — |
+| `usage_ledger_2026_09` | 720 MB | 99.3 | 0.00 | 0.7 | 0 | 0 | — |
+| `node_probe_runs` | 618 MB | 76.7 | 1.50 | 21.8 | 17,516 | ~5,800 | ~3× |
+| `session_turn_details_2026_09` | 603 MB | 98.5 | 0.00 | 1.5 | 0 | 0 | — |
+| `ursm_node_snapshot_min_20261005` | 508 MB | 98.2 | 0.41 | 0.8 | 8,560 | ~7,000 | ~1.2× |
+| `request_state_transitions` | 385 MB | 60.0 | 0.45 | 39.4 | 40,621 | ~2,900 | **~14×** |
+| `session_dim` | 297 MB | 88.1 | 0.20 | 10.4 | 56,013 | ~1,276 | **~44×** |
+| `assets` | 66 MB | 0.99 | 0.03 | **98.9** | 4,135 | **124** | **~33×** |
+
+（"实测死元组" = `dead_tuple_percent` × `approx_tuple_count`，是**折算值不是精确值**。）
+
+**规律**：`n_dead_tup` 是**估算**且只在特定时机刷新；autovacuum 跑得越勤
+（`assets` 17,636 次、`naptime=1min`），估算值越难回落到真实值。
+⇒ **任何「`n_dead_tup` 高 ⇒ 该 VACUUM FULL」的推断都不成立。**
+  判据必须交叉到 `pgstattuple_approx`，而且**看 `free%` 而不是 `dead%`** ——
+  真正决定「表是不是虚胖」的是页里有多少空闲空间，不是里面躺着多少死元组。
+
+#### 3. ✅ 顺带查清：`assets` 的写**全部不碰索引**
+
+`assets` 只有 3 个索引：
+
+```
+pk_assets              (kind, ref_id)          -- 主键
+idx_assets_tenant_kind (tenant_id, kind)
+idx_assets_tags        GIN (tags jsonb_path_ops)
+```
+
+`last_seen_at` 与 `health_state` **都没有索引** ⇒ 心跳 upsert（改 `last_seen_at`）
+和探针 MarkHealth（改 `health_state`）**都可以走 HOT 更新**。
+实测近期窗口 `n_tup_hot_upd == n_tup_upd`（174/174 全 HOT），全局 82.6%。
+
+⇒ **这解释了为什么 §10.24/§10.26 的写放大只伤堆、不伤索引**：
+  那 37 万次/天的心跳是 HOT，**索引侧零膨胀**。
+  之前 §10.18 索引普查列的 11 个膨胀索引**没有一个是 `assets` 的**，
+  两者互不重叠 —— 这是「先量再动」的一个正面例子。
+
+#### 4. 🔴 `ursm_node_snapshot_min_legacy` = **10 GB**，是全库最大单项，且**已可安全 DROP**
+
+§10.13 的空洞普查之后一直没给 825 的 `_legacy` 定性。这一节补上：
+
+| 事实 | 证据 |
+|---|---|
+| 大小 | **10 GB**（比第二名 `session_turns_2026_09` 的 2.6 GB 大 4 倍） |
+| 还在被写吗 | **否**。20 秒窗口内 `n_tup_ins/upd/del` 三元组**逐字节不变**；`n_tup_upd` 累计为 0 |
+| 还在分区里吗 | **否**。`pg_inherits` 里**没有它** ⇒ 825 的 DETACH **已经做完了** |
+| 父表现在有哪些分区 | `20261005`（在写，1,724,796 行）/ `20261006` / `20261007`（预建空） |
+| 父表查询会扫到它吗 | **不会**。`EXPLAIN ANALYZE` 近 1 小时查询只出现这 3 个分区 |
+| 自身健康度 | 81.9% 活 / 0.14% 死 / 17.9% 空闲 —— 表本身很健康 |
+
+⇒ **技术上 `DROP TABLE ursm_node_snapshot_min_legacy` 已无障碍**：
+  不在任何查询路径上、不被写入、DETACH 已完成。
+  **回收 10 GB —— 比本节其余所有条目加起来还多一个数量级。**
+
+**仍需人来拍板的只剩两件**（都不是技术问题）：
+① **留存要求**：这 19,596,139 行历史快照有没有合规/审计留存期？
+② **执行时点与责任人**：§10 早前登记的「第 7 天 DROP」至今**没有责任人**。
+
+★ 这正是我早前决策里那条「迁移 DROP 必须退回 DELETE / 责任人要明确」的
+  适用场景：技术上可以删，不等于**应该**现在删。
+
+#### 5. 三次量具/口径失误（今天又各犯一次）
+
+1. **`strings` 查 UTF-8 中文** —— 返回 0 造成「修复没进二进制」的假阴性（§10.27.8）。
+2. **`md5 -q` 生成的校验文件没有文件名**，`md5 -c` 什么都没校验却**打印为空**，
+   差点把「无输出」读成「通过」（§10.27.6）。
+3. **今天这次：`approx_tuple_len` 我当成了「平均行长」**，
+   于是又乘了一次 `approx_tuple_count` → 算出 `live% = 1,600,782,280%`。
+   真相是它是**活元组总字节**，且 `pgstattuple_approx` **自带百分比列**
+   （`approx_tuple_percent` 等 3 个），根本不该自己算。
+   ★ 教训：**先读函数的输出列语义，再动手算**；
+     大多数扩展已经替你算好了，自己重算只会引入错误。
+
+#### 6. 补齐 DROP 的安全论证：生产代码零引用，且**没有任何自动路径会删它**
+
+为那个 10 GB 的决定做的前置排查：
+
+| 检查 | 结果 |
+|---|---|
+| 生产 Go 代码是否引用 `ursm_node_snapshot_min_legacy` | **零引用**。全仓唯一命中是 `bg/ursm_825_realdb_test.go`，且都在 `DROP TABLE IF EXISTS` / 建夹具的语境里 |
+| 252 `/etc/cron.d/pg17` 里有 legacy / `DROP TABLE` 任务吗 | **无** |
+| 仓库 `scripts/252-monitor/etc.cron.d.pg17` 里有吗 | **无** |
+| 825 迁移脚本自带 DROP 吗 | 无（`scripts/` 下只有 redis 迁键与 rollout 校验，没有 825 的清理脚本） |
+
+⇒ **技术侧的四道门全过**（不在分区里 / 不被写入 / 不在查询路径 / 无代码引用），
+  **但也因此：不会有人自动删它。** §10 早前登记的「第 7 天 DROP _legacy」
+  至今**没有责任人也没有自动化** —— 它会一直占着 10 GB  直到有人显式执行。
+
+★ 这条与我在 §10.13 记的决策同源：「DROP 失败必须退回 DELETE」
+  —— 迁移脚本**刻意不进 installer 自动序列**，是为了不让 DROP 变成
+  「装一次顺手把历史删了」。这个克制是对的，代价就是**必须有人负责执行**。
+  **回收 10 GB 的收益已经完全确认，缺的只是「谁在什么时候删」这一个决定。**
+
+#### 7. ✅ 交叉验证：常设巡检 `pg-table-bloat-check.sh` 的查询**独立复现**了 §10.28.1
+
+我上面那些是临时查询写的，**第一次还写错了两次**（漏了 `pg_am` 那一行 ⇒
+`only heap AM is supported`；把 `approx_tuple_len` 当平均行长 ⇒ 算出 1.6e9%）。
+用脚本自己的查询重跑，得到：
+
+```
+session_summaries               888 MB |  190 MB | 41.0%
+analysis_events                 236 MB |  142 MB | 86.7%
+request_state_transitions       385 MB |  105 MB | 39.3%
+node_probe_runs                 618 MB |  103 MB | 21.8%
+request_stage_events            196 MB |   72 MB | 40.7%
+assets                           74 MB |   65 MB | 98.8%   ← §10.28.1 的发现
+session_mirror_outbox            70 MB |   57 MB | 98.4%
+request_context_attrs            99 MB |   27 MB | 40.7%
+request_stats_dim_minute        211 MB |   26 MB | 25.4%
+request_stats_error_drill_minute 165 MB |   21 MB | 26.3%
+session_aggregate_outbox         81 MB |   14 MB | 21.4%
+journal_snapshot_receipts        44 MB |   13 MB | 56.6%
+stats_event_inbox_default        71 MB |   13 MB | 26.3%
+stats_usage_daily                68 MB |  9149 kB | 21.6%
+```
+
+⇒ **`assets` 98.8% 空闲这条是**常设巡检本来就能查出来的**，
+  不是我的一次性观测。§10.13 写这个脚本时选了
+  `approx_free_percent` 而不是 `n_dead_tup` —— **这次证明那个选择是对的**：
+  今天我自己在临时查询里踩了 `n_dead_tup` 的坑（高报 33×），
+  而脚��从头到尾没踩。
+
+**三张近空表**（free% > 85%）值得单列：
+`assets` 98.8%（65 MB）、`session_mirror_outbox` 98.4%（57 MB）、
+`analysis_events` 86.7%（142 MB）。
+⇒ **合计约 264 MB 空间已经可复用但没还给文件系统。**
+  这三张**都不该做 VACUUM FULL**（空间已可复用，见 §10.28.1），
+  真要还盘只能用 `pg_repack`（不拿 ACCESS EXCLUSIVE）—— 收益与成本都要单独算。
+
+★ 排名第二的存储项仍是 `ursm_node_snapshot_min_legacy` 的 **10 GB**，
+  比这张表里**全部**可回收空间加起来还多一个数量级。
+  §10.28.4/§10.28.6 的那个决定是**唯一**量级够大的动作。
