@@ -529,6 +529,7 @@ func containsKeyPoint(s string) bool {
 	}
 	return false
 }
+
 // safePrefix / safeSuffix were removed when summarizeDigestText switched to
 // rune-based truncation (truncateRunes / truncateTailRunes). The byte-then-
 // repair approach could emit invalid UTF-8 or under-deliver on CJK content.

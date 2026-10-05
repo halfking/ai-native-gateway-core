@@ -109,9 +109,9 @@ func TestIntegrationPipelineStageShape(t *testing.T) {
 	}
 
 	env := &domain.PipelineRequest{
-		TenantID:          "tenant-a",
+		TenantID:           "tenant-a",
 		TransformedRequest: []byte(testRequestBody),
-		Metadata:          make(map[string]any),
+		Metadata:           make(map[string]any),
 	}
 	if !hook.Enabled(ctx4test(), env) {
 		t.Fatal("hook should be enabled with config enabled and body present")

@@ -47,34 +47,34 @@ import (
 // The high-cardinality telemetry request_id (request_logs row) is unrelated
 // to this SSE key — it stays distinct and is recorded in auto_decision.
 type ProbeStreamTask struct {
-	ID           string  `json:"id"`        // stable lifecycle id (see conventions above)
-	TaskType     string  `json:"task_type"` // node_probe | integrity_verify | selfcheck
-	Source       string  `json:"source"`    // node_probe | integrity | selfcheck
-	Status       string  `json:"status"`    // pending | in-flight | ok | fail
-	CredentialID int64   `json:"credential_id"`
-	ProviderID   int64   `json:"provider_id,omitempty"`
-	ProviderCode string  `json:"provider_code,omitempty"`
+	ID           string `json:"id"`        // stable lifecycle id (see conventions above)
+	TaskType     string `json:"task_type"` // node_probe | integrity_verify | selfcheck
+	Source       string `json:"source"`    // node_probe | integrity | selfcheck
+	Status       string `json:"status"`    // pending | in-flight | ok | fail
+	CredentialID int64  `json:"credential_id"`
+	ProviderID   int64  `json:"provider_id,omitempty"`
+	ProviderCode string `json:"provider_code,omitempty"`
 	// ProviderName (2026-08-20): 自检 tab 卡片显示 供应商+凭据 所需的供应商显示名。
 	// optional / omitempty so older SSE clients keep working when the field is
 	// absent (the dashboard falls back to "凭据 #N" in that case).
-	ProviderName string  `json:"provider_name,omitempty"`
-	RawModel     string  `json:"raw_model,omitempty"`
-	Attempt      int     `json:"attempt,omitempty"`
-	LatencyMs    *int    `json:"latency_ms,omitempty"`
-	HTTPStatus   *int    `json:"http_status,omitempty"`
-	ErrCode      string  `json:"err_code,omitempty"`
-	ErrDetail    string  `json:"err_detail,omitempty"`
-	Scheduled    bool    `json:"scheduled,omitempty"` // 定时自检（不进待请求队列）
-	Reason       string  `json:"reason,omitempty"`    // 触发原因（request_failure / no_candidates / periodic ...）
+	ProviderName string `json:"provider_name,omitempty"`
+	RawModel     string `json:"raw_model,omitempty"`
+	Attempt      int    `json:"attempt,omitempty"`
+	LatencyMs    *int   `json:"latency_ms,omitempty"`
+	HTTPStatus   *int   `json:"http_status,omitempty"`
+	ErrCode      string `json:"err_code,omitempty"`
+	ErrDetail    string `json:"err_detail,omitempty"`
+	Scheduled    bool   `json:"scheduled,omitempty"` // 定时自检（不进待请求队列）
+	Reason       string `json:"reason,omitempty"`    // 触发原因（request_failure / no_candidates / periodic ...）
 	// Origin + NextRetryAtMs (OBS-BE5, 25 号 §6 / 26 号 §4): optional fields —
 	// old clients ignore them. Origin badges the tri-state queue card
 	// (scheduled/error/manual); NextRetryAtMs carries the 智能回退 next hop
 	// (unix milliseconds, 0/omitted = none) so the failed tile can render the
 	// backoff countdown.
-	Origin        string `json:"origin,omitempty"`         // scheduled | error | manual
-	NextRetryAtMs int64  `json:"next_retry_at_ms,omitempty"`
-	Timestamp     int64  `json:"ts"`                       // unix milliseconds
-	Flusher       func() `json:"-"`
+	Origin        string  `json:"origin,omitempty"` // scheduled | error | manual
+	NextRetryAtMs int64   `json:"next_retry_at_ms,omitempty"`
+	Timestamp     int64   `json:"ts"` // unix milliseconds
+	Flusher       func()  `json:"-"`
 	_             [0]int8 // disallow unkeyed struct literals
 }
 

@@ -69,7 +69,7 @@ func TestProjectTasksSkipsNullTaskID(t *testing.T) {
 			t.Fatalf("seed session_dim %s: %v", sess, err)
 		}
 	}
-	seed(sessA, "", app)  // NULL task → 762 触发器回填 gw_project_id='app:r34p1'
+	seed(sessA, "", app) // NULL task → 762 触发器回填 gw_project_id='app:r34p1'
 	seed(sessB, taskID, app)
 	defer func() {
 		dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)

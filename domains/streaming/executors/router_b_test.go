@@ -14,8 +14,10 @@ import (
 // 即读快照里的 Sessions/LastActivityMs，而不是 r.StickyLoad.Info。
 //
 // 验证方法：构造两个 candidate 相同的场景，分别用
-//   (a) 快照注入 Sessions=8, LastActivityMs=now-1s
-//   (b) r.StickyLoad 真实 Info() 返回 Sessions=0, LastActivityMs=0
+//
+//	(a) 快照注入 Sessions=8, LastActivityMs=now-1s
+//	(b) r.StickyLoad 真实 Info() 返回 Sessions=0, LastActivityMs=0
+//
 // 两个 score 必须显著不同——证明走快照路径生效。
 //
 // 注意：setenv 必须在 NewRouter 之前调用，否则 Router.EnvWeights（启动期预解析）
@@ -25,14 +27,14 @@ func TestCalculateLoadScore_StickySnapshot_Preferred(t *testing.T) {
 
 	lim := 4
 	c := provider.Candidate{
-		CredentialID:    1,
-		ProviderID:     1,
-		RawModel:       "m",
+		CredentialID:     1,
+		ProviderID:       1,
+		RawModel:         "m",
 		StandardizedName: "m",
-		Tier:           2,
-		Weight:         100,
+		Tier:             2,
+		Weight:           100,
 		ConcurrencyLimit: &lim,
-		QuotaState:      "ok",
+		QuotaState:       "ok",
 	}
 	r := NewRouter(nil, nil)
 	r.StickyLoad = &benchStickyLoad{
@@ -81,14 +83,14 @@ func TestCalculateLoadScore_StickySnapshot_RecencyPath(t *testing.T) {
 
 	lim := 4
 	c := provider.Candidate{
-		CredentialID:    1,
-		ProviderID:     1,
-		RawModel:       "m",
+		CredentialID:     1,
+		ProviderID:       1,
+		RawModel:         "m",
 		StandardizedName: "m",
-		Tier:           2,
-		Weight:         100,
+		Tier:             2,
+		Weight:           100,
 		ConcurrencyLimit: &lim,
-		QuotaState:      "ok",
+		QuotaState:       "ok",
 	}
 	r := NewRouter(nil, nil)
 	r.StickyLoad = &benchStickyLoad{

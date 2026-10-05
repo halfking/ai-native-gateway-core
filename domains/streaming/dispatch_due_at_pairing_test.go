@@ -38,14 +38,15 @@ import (
 // 判据 ① 抓这个；判据 ② 抓绕过 stamp 直接写 DueAt 的等价形态。
 //
 // 两条判据，各自对应一种破坏方式：
-//  ① **调用点配对**：每个 `X := parseDispatchDueAt(...)` 的 X 必须原样作为第二
-//     实参传给同函数里的 applyRequestClassToLogCtx。**按实参身份比，不只比次数**——
-//     只比次数抓不到 `a := parse...; apply(ctx, b)` 这种「次数对、对象错」的形态。
-//  ② **直写禁令**：形参类型是 *RequestLogContext 的函数，只允许在
-//     applyRequestClassToLogCtx 本体内给 `.DueAt` 赋值。判据认的是
-//     **接收者标识符**而不是「所有 .DueAt」——`reqLog.DueAt = requestDueAtPtr(logCtx)`
-//     是从 logCtx 取值写到另一个结构，那是正确写法，不该被扫进来
-//     （第一版把它报成红，判据错了，不是产品错了）。
+//
+//	① **调用点配对**：每个 `X := parseDispatchDueAt(...)` 的 X 必须原样作为第二
+//	   实参传给同函数里的 applyRequestClassToLogCtx。**按实参身份比，不只比次数**——
+//	   只比次数抓不到 `a := parse...; apply(ctx, b)` 这种「次数对、对象错」的形态。
+//	② **直写禁令**：形参类型是 *RequestLogContext 的函数，只允许在
+//	   applyRequestClassToLogCtx 本体内给 `.DueAt` 赋值。判据认的是
+//	   **接收者标识符**而不是「所有 .DueAt」——`reqLog.DueAt = requestDueAtPtr(logCtx)`
+//	   是从 logCtx 取值写到另一个结构，那是正确写法，不该被扫进来
+//	   （第一版把它报成红，判据错了，不是产品错了）。
 //
 // ── 为什么用「所在函数是不是 owner」而不是「位置在不在 owner 区间内」──
 // 位置比较要求 token.Pos 在**同一次解析**上取到；一旦对同一文件 parse 两次，
@@ -244,7 +245,7 @@ func TestDispatchDueAtIsAlwaysPairedWithRequestClass(t *testing.T) {
 			parseFn, parseN, stampFn, stampN)
 	}
 	if writes == 0 {
-		t.Fatalf("判据②在空集合上恒绿：没扫到任何 logCtx.DueAt 赋值。"+
+		t.Fatalf("判据②在空集合上恒绿：没扫到任何 logCtx.DueAt 赋值。" +
 			"若 owner 不再写 DueAt，请连同这条门一起改。")
 	}
 	t.Logf("判据① %s 命中 %d 处 / %s 命中 %d 处；判据② owner(%s) 形参 %v，"+

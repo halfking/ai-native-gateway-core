@@ -135,7 +135,7 @@ func TestCollectCredentialIDs_DedupesAndSkipsZero(t *testing.T) {
 	ts := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	actions := []liveactions.ActionEvent{
 		{RequestID: "r1", Seq: 1, Action: liveactions.ActionCredentialSelected, Ts: ts, CredentialID: 7},
-		{RequestID: "r1", Seq: 2, Action: liveactions.ActionReply, Ts: ts, CredentialID: 7}, // dup
+		{RequestID: "r1", Seq: 2, Action: liveactions.ActionReply, Ts: ts, CredentialID: 7},        // dup
 		{RequestID: "r2", Seq: 3, Action: liveactions.ActionNodeEnqueued, Ts: ts, CredentialID: 0}, // skipped
 		{RequestID: "r3", Seq: 4, Action: liveactions.ActionNodeSwitch, Ts: ts,
 			Detail: map[string]string{"from_credential_id": "9", "to_credential_id": "11"}},

@@ -51,12 +51,12 @@ const errLocalCredentialImmutable = "local provider credential is managed automa
 // 是经典 SSRF 目标，不得借"本地供应商"配置放行。
 var localPrivateCIDRs = func() []*net.IPNet {
 	blocks := []string{
-		"127.0.0.0/8",   // IPv4 loopback
-		"10.0.0.0/8",    // RFC1918
-		"172.16.0.0/12", // RFC1918
-		"192.168.0.0/16",// RFC1918
-		"::1/128",       // IPv6 loopback
-		"fc00::/7",      // IPv6 ULA
+		"127.0.0.0/8",    // IPv4 loopback
+		"10.0.0.0/8",     // RFC1918
+		"172.16.0.0/12",  // RFC1918
+		"192.168.0.0/16", // RFC1918
+		"::1/128",        // IPv6 loopback
+		"fc00::/7",       // IPv6 ULA
 	}
 	out := make([]*net.IPNet, 0, len(blocks))
 	for _, b := range blocks {

@@ -160,12 +160,12 @@ func main() {
 		go func() {
 			defer workerWG.Done()
 			for path := range work {
-			n, err := decodeFile(path, sinceT, batchCh, *dryRun, &count, &skipped)
-			if err != nil {
-				errors.Add(1)
-				log.Printf("decode %s: %v", path, err)
-				continue
-			}
+				n, err := decodeFile(path, sinceT, batchCh, *dryRun, &count, &skipped)
+				if err != nil {
+					errors.Add(1)
+					log.Printf("decode %s: %v", path, err)
+					continue
+				}
 				log.Printf("  %s: %d record(s)", filepath.Base(path), n)
 			}
 		}()

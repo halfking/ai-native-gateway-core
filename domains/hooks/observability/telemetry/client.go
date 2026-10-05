@@ -2712,6 +2712,7 @@ var systemFingerprintLastObserved atomic.Value // time.Time
 func markSystemFingerprintObserved() {
 	systemFingerprintLastObserved.Store(time.Now())
 }
+
 // SystemFingerprintObservedSince reports how long ago the last
 // fingerprint-carrying entry was persisted in this process, and whether any
 // was ever observed after startup. Zero ok means "never seen since boot" —

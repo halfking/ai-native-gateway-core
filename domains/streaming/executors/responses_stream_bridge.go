@@ -114,7 +114,7 @@ func (t *responsesToChatTranslator) frameUsage(delta chatDelta, finish *string, 
 		ID: t.chatID, Object: "chat.completion.chunk",
 		Created: t.created, Model: t.model,
 		Choices: []chatChoice{{Index: 0, Delta: delta, FinishReason: finish}},
-		Usage: usage,
+		Usage:   usage,
 	}
 	b, err := json.Marshal(c)
 	if err != nil {

@@ -13,10 +13,10 @@ import (
 func TestStickyPreserveBindingDecision(t *testing.T) {
 	stickyID := 100
 	tests := []struct {
-		name string
-		dctx *dispatchCtx
+		name   string
+		dctx   *dispatchCtx
 		served int
-		want  bool
+		want   bool
 	}{
 		{name: "nil dctx migrates", dctx: nil, served: 200, want: false},
 		{name: "no sticky pin migrates", dctx: &dispatchCtx{}, served: 200, want: false},

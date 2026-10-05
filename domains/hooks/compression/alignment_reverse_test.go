@@ -179,9 +179,9 @@ func TestReverseLookupAgreesWithForwardMap(t *testing.T) {
 // re-established here instead of by luck.
 func TestAlignmentBuilderKeepsCompressedIntoInvariant(t *testing.T) {
 	cases := []struct {
-		name      string
-		before    string
-		after     string
+		name       string
+		before     string
+		after      string
 		summaryIdx int
 	}{
 		{

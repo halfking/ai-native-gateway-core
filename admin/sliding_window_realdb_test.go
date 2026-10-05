@@ -7,6 +7,7 @@
 //   - 计划面：729 索引在库时断言 72h 长窗走
 //     *_credential_ts 索引而非分区顺序扫（索引缺席时跳过计划断言，
 //     只做语义执行——迁移未应用的库不误报）。
+//
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过。
 package admin
 
