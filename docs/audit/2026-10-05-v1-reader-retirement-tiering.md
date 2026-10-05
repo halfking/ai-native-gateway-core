@@ -1,7 +1,11 @@
-# v1 读方消费面分档（115 个文件）—— 待你拍板
+# v1 读方消费面分档（116 个文件）—— 待你拍板
 
 > 生成时间：2026-10-06　起点提交：`f654124c1`（= `origin/main`）
 > 门：`admin/request_logs_retirement_tiering_test.go`（5 道，常驻）
+> ⚠ **2026-10-06 更新（§9.265）**：总体已从 **115 变 116**、③ 档从 **27 变 28** ——
+> §9.264 新增的 `cmd/gateway/v1_write_liveness.go` 是**生产文件**且含两处
+> `FROM request_logs…`，`TestRequestLogsReadInventoryIsComplete` 正确地把它抓了出来
+> （字面量总体 107 → **108**）。本文所有数已同步；两处算式现在写的是 **108 + 22 − 14 = 116**。
 > 背景：`docs/audit/2026-10-04-session-migration-decision-sheet.md`（D32 段 §9.259 / §9.260）
 
 **本表只出表，不改指任何读方。** ② 档的迁移动作是属主的决定，不是本文档的。
@@ -10,13 +14,13 @@
 
 ## 零、一句话版
 
-退役读方的总体是 **115 个文件，不是 114**；按消费面分档为
-**① 随 v1 退役 4 · ② 必须迁 76 · ③ 按设计继续读 v1 27 · ④ 待拍板 8**。
+退役读方的总体是 **116 个文件，不是 114**（§9.265 又加了 1 个）；按消费面分档为
+**① 随 v1 退役 4 · ② 必须迁 76 · ③ 按设计继续读 v1 28 · ④ 待拍板 8**。
 其中 **39 个读 v1 臂视图的文件对拼接点工具完全不可见**（§9.260 登记的是 3 个）。
 
 ---
 
-## 一、总体：115，不是 114
+## 一、总体：116，不是 114
 
 §9.259 写下的「并集 114 文件」，公式与同一段的那份手写清单**用的是两个不同的总体**：
 
@@ -32,23 +36,23 @@
 `request_logs_with_current_month_without_customer_id AS r`），
 而 §9.260 只更新了「处数 37→38 / 文件 20→21」，**没回头重算 §9.259 的并集**。
 
-**实测（`f654124c1`）：**
+**实测（`f654124c1`；§9.265 后字面量那一行为 108）：**
 
 | 总体 | 规模 | 来源 |
 |---|---:|---|
-| 字面量读方 | **107 文件 / 254 调用点** | `requestLogsReadInventory`（门输出实测） |
+| 字面量读方 | **108 文件 / 256 调用点** | `requestLogsReadInventory`（门输出实测） |
 | 间接读方 | **22 文件** | 拼接点工具 21 + §9.258 表里 3 处手验所在的 `bg/auto_route_settle_sql.go` |
 | 交集 | **14** | — |
-| ★ **并集** | **115** | 107 + 22 − 14 |
+| ★ **并集** | **116** | 108 + 22 − 14 |
 
 只在间接总体、不在字面量总体的 **8 个**（§9.259 手写的是 7 个）：
 `admin/dashboard_board_queries.go` · `admin/session_compare.go` · `admin/session_export.go` ·
 `admin/usage_credits.go` · `bg/auto_route_settle_sql.go` · `maas/consumption_detail.go` ·
 `maas/credit_buckets.go` · `maas/usage.go`
 
-⇒ **退役排期按 115 个文件。** 门 `TestV1ReaderTieringDomainIsBothPopulations` 把
-两个总体各自的成员钉住，并对 107 / 22 / 14 / 115 四个数逐个断言 ——
-**并集算式与域实测不相等时，它会明确打印「★ 并集算式 115 ≠ 域实测 114」**。
+⇒ **退役排期按 116 个文件。** 门 `TestV1ReaderTieringDomainIsBothPopulations` 把
+两个总体各自的成员钉住，并对 108 / 22 / 14 / 116 四个数逐个断言 ——
+**并集算式与域实测不相等时，它会明确打印「★ 并集算式 116 ≠ 域实测 115」**。
 
 ---
 
@@ -152,10 +156,10 @@
 | `storage/sqlite/request_log_store.go` | 字面量 | ★ 对 v1 有写 + 读：lite 模式 SQLite 存储（WriteRequest/GetRequest） |
 | `tests/session_audit/cmd/audit-test/main.go` | 字面量 | 测试工具（build tag tools）：会话审计 |
 | `tests/test_popularity_tracker.go` | 字面量 | 测试：热度统计 |
-### ③ 按设计继续读 v1（27）
+### ③ 按设计继续读 v1（28）
 
 这一档是本表**最需要属主确认**的一档：它的判据是「这个读的消费者是不是观测本身」。
-若属主认为这些观测面在 v1 退役后**没有存在意义**，整档 27 个都要按 ① 处理。
+若属主认为这些观测面在 v1 退役后**没有存在意义**，整档 28 个都要按 ① 处理。
 
 | 文件 | 机制 | 理由 |
 |---|---|---|
@@ -206,7 +210,7 @@
 
 ## 三、③ 档的判据，以及我做过的反向检查
 
-**正向**：这 27 个文件的读点，其消费者是探针 / 自检 / 巡检 / 事故 / 对账。
+**正向**：这 28 个文件的读点，其消费者是探针 / 自检 / 巡检 / 事故 / 对账。
 判据不是文件名里有没有 `probe` —— 那只是线索。
 
 **反向检查（本轮实际做了，结果记在这里）**：我先按「诊断性质」挑了一批
@@ -236,16 +240,16 @@
 
 | | 文件数 |
 |---|---:|
-| 115 个读 v1 的文件里，读到 v1 臂视图的 | **55** |
+| 116 个读 v1 的文件里，读到 v1 臂视图的 | **55** |
 | 其中在拼接点工具输出里**完全不出现**的 | **39** |
 | 拼接点工具输出覆盖的文件 | 21 |
 
 ⇒ 工具收尾那行「★ 退役读方清单 = v1 基表 12 处 + v1 臂视图 26 处 = 38 处 / 21 个文件」
-**不是退役读方清单** —— 115 个里它只覆盖 21 个。
+**不是退役读方清单** —— 116 个里它只覆盖 21 个。
 §9.260 点名的 3 个（`attempt_quality_api` · `usage_trend_series` · `auto_route_correlations`）
 只是这 39 个里的三个。
 
-覆盖它们的是本表的 115 文件域，门 `TestV1ArmLiteralBlindSpotIsPinnedAndTiered`
+覆盖它们的是本表的 116 文件域，门 `TestV1ArmLiteralBlindSpotIsPinnedAndTiered`
 把 39 个**从源码树双向重算**并与声明清单比对（只做单向检查的话，
 删掉一个条目门照样绿，而「清单变小」正是少了一个有风险读方的方向）。
 
@@ -274,6 +278,11 @@
 | 剥 Go/SQL 注释后 | 1 | **13** | 96 | **5** | 115 |
 | §9.259 登记 | 1 | **6** | 97 | **10** | **114** |
 
+> ⚠ **本表三个「合计」不是消费面域，别拿它和 116 对账**（§9.265 补记）：
+> 机制桶按**机制角色**切，消费面域按**文件**切，两者的分母不是一个总体
+> —— 同一个文件可落进机制桶也可落进消费面档，反之亦然。
+> 上表的 114/115 是 §9.259–§9.262 当时的探针快照，**§9.265 的 115 → 116 不同步到这张表**。
+
 差异集中在 `C_读写` 与 `Z_切换层`：
 
 - `C_读写`：我用「`INSERT/UPDATE/DELETE` 后 400 字符窗口内出现 v1 关系名」，
@@ -295,7 +304,7 @@
 
 ## 六、要属主拍的板
 
-1. **③ 档 27 个**：整体留在「按设计继续读 v1」，还是随 v1 一起退役？
+1. **③ 档 28 个**：整体留在「按设计继续读 v1」，还是随 v1 一起退役？
    若整体退役，探针/自检/巡检面要另找观测对象 —— 这是产品决定。
 2. **④ 档 8 个**：逐条给方向（每条的两种判据都写在表里）。
 3. **② 档 76 个**：是否认可「对外 API / 对外计费 / 聚合 / 会话读取」这四类消费者
@@ -310,13 +319,13 @@
 
 | 门 | 断言什么 | 变异检验 |
 |---|---|---|
-| `TestV1ReaderTieringDomainIsBothPopulations` | 域 == 字面量 ∪ 间接（双向）；107/22/14/115 四个数 + 并集算式 | 删一个分档条目 → 红 |
+| `TestV1ReaderTieringDomainIsBothPopulations` | 域 == 字面量 ∪ 间接（双向）；108/22/14/116 四个数 + 并集算式 | 删一个分档条目 → 红 |
 | `TestV1ReaderTieringEveryFileProvenToReadV1` | 每个文件在当前源码里取得到 v1 读点证据；**带 4 组对照**（注释、字面量、拼接、会话族） | 剥注释退化 / 删运行时视图名 → 红 |
 | `TestV1ReaderTiersAssertMembers` | ①③④ **逐个点名**双向断言；每条 Reason 非空 | 把 `probe_history` ③→② → 红 |
 | `TestV1ArmViewSetMatchesRuntimeTruth` | composer 真的 `CREATE VIEW` 那两个无 DDL 文件的视图 | — |
 | `TestV1ArmLiteralBlindSpotIsPinnedAndTiered` | 39 个盲区**从源码树双向重算**；每个都有档位 | 删一个盲区条目 → 红 |
 
-7 个变异全部按预期让对应门变红（M1 精确打印出「并集算式 115 ≠ 域实测 114」）。
+7 个变异全部按预期让对应门变红（M1 精确打印出「并集算式 116 ≠ 域实测 115」（2026-10-06 rebase 后**重测**确认））。
 
 ⚠ **本轮我自己的探针错了三次，都被门抓住**（记录在此，因为它们是可复现的坑）：
 
@@ -337,7 +346,7 @@
 ## 八、限度与未验项
 
 - **本表没有改指任何读方，也没有跑任何回填**，② 档的迁移动作全部待属主决定。
-- **③ 档的 27 个是「按当前语义判的」**：`domains/streaming/anomaly_harvester.go` 与
+- **③ 档的 28 个是「按当前语义判的」**：`domains/streaming/anomaly_harvester.go` 与
   `domains/analysis/optimizer.go` 的「观测 vs 面向用户产出」边界最模糊，
   后者已放进 ④，前者按「异常收集＝观测」放在 ③，**若你认为不对请指出**。
 - **`bg/stats_minute_rollup_retire.go` 的 ② 归类有一处需要留意**：它 `DELETE FROM request_stats_minute`
@@ -347,3 +356,58 @@
 - **`cmd/tools/sql_source_indirection_audit` 本身的收尾行仍写着「退役读方清单」**，
   本轮**没有改它的输出文案**（那会动另一个工具的契约）。正确做法是让它显式声明
   「本工具只覆盖拼接点那一半」，或直接去掉那个措辞。**这一条留给属主定。**
+
+---
+
+## 九、门基线（2026-10-06 实跑，**带 HEAD**）
+
+⚠ **报基线必须带 HEAD sha。** 本轮同一个 admin 全量门在一天内出现过三个不同的数，
+**每一次在当时那棵树上都准确**，不可比的是它们之间：
+
+| HEAD | admin FAIL | 多出/变化的那条 |
+|---|---:|---|
+| `62e866ccc` | **6** | — |
+| `496a27314` | **7** | `TestDegradePayloadsCarryMarker`（zcode `d58a3c504` 改 `bg/routing_health_checks.go` 1078 行，带进 2 个未登记的降级站点） |
+| `b0bd6616c` | **6** | 上一条被 `b56f454cf` 登记豁免理由后转绿 |
+
+★ 我曾把 `62e866ccc` 上的 6 当成最终基线报出「零新增」，那在最终 HEAD 上不成立 ——
+`git merge-base --is-ancestor d58a3c504 62e866ccc` ⇒ **否**，那个提交当时还没进树。
+**base 之间不可比，且远端一天能往返两轮。**
+
+**`b0bd6616c` 上的权威基线（逐条列名）**
+
+- **admin FAIL 6**：`TestColumnarParentTwoSurfaceSetopShape_RealDB` ·
+  `TestReportRollup_HTTPContract`（含子测试 `credential_/_key_视角…`）·
+  `TestV1BodiesReadersAreAssessed`（**故意红**的基线门：27 个 bodies 读方未逐点评估）·
+  `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` ·
+  `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID`
+- **db FAIL 3**：`TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` ·
+  `TestSessionFamilyColumnAvailability_FillRates`
+  ⇒ db 门**两次独立运行逐条相同**（交叉确认，非单次读数）
+- 本轮新增/改动的 5 道 §9.262 门 + 4 道 §9.265 门：**逐条 `-v` 复跑全绿**
+
+### ★ db 第 3 条的真正触发点（我上一轮定位不准，此处更正）
+
+我上一轮说它是「纯数据漂移」。**漂移是原因，但门红在「登记 ↔ 实测的集合对账」上**，
+触发点是 `db/retirement_column_exposure.go` 的 `RetirementUnservableColumns`
+（该清单注释明写「Measured 2026-10-04 on the local real database」）。
+
+`client_protocol` 登记 `0.00% session vs 37.02% v1`，本次实测
+**lifetime 0.01% / recent 47.9%**（该列在共享本地库被回填），于是门逐字报出两条互为镜像的错位：
+
+```
+unservable: registered but not measured: [client_protocol]
+degraded:   measured but not registered: [client_protocol]
+```
+
+而我上一轮引的 `GO EMPTY ON THE SESSION SIDE (2): work_type, is_final_success`
+是**同一测试的分类输出**，不是触发点。找「这个 FAIL 是什么引起的」要落到
+**真正被断言的那一处**，不是同一份日志里最扎眼的那一行。
+
+⚠ **这个红是陷阱，不要按它的提示去改登记**（门自身注释已警告）：
+0.01% 虽高于 `effectivelyEmptyPP = 0.005%` 阈值而不再进 `goEmpty`，
+但它意味着 **99.99% 的历史行仍为空**，「退役后完全失去数据」这个实质声明依然成立。
+照错误信息「按本次实测重算登记名单」去做，会把 `client_protocol` 从
+`unservable` 悄悄降级成 `degraded`。**本轮不动这个文件**（不是我建的，
+`d58a3c504` 也没动它），处置留给属主，可选项：保留登记并给该测试加
+「共享库漂移」豁免 / 重测后重登记 / 调整阈值 —— 三者取舍属主定。

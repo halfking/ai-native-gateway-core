@@ -155,6 +155,21 @@ var separatorRowRE = regexp.MustCompile(`^\s*\|(\s*:?-{2,}:?\s*\|)+\s*$`)
 // moneyRE 匹配一个金额：$1.25 / $10 / €0.5 / 1.25（无符号时由列义兜底）。
 var moneyRE = regexp.MustCompile(`[$€£¥]?\s*([0-9]+(?:\.[0-9]+)?)`)
 
+// dateBoundedPriceRE 判断一格里是否出现了「带生效日期的调价」。
+//
+// 形态（2026-10-05 在活的 ai.google.dev/pricing 上实测）：
+//
+//	$0.75 through December 31, 2026. $1.50 starting January 1, 2027.
+//
+// 这一格里有**两个**价，而基准价列的语义是**一个**数。谁是基准价是一个**定价
+// 决策**（用当前价 / 用调价后的价 / 干脆不收这个模型），不是解析问题。
+// 提取器挑一个，就是在替厂商做那个决策。
+//
+// ⚠ 不能只用「一格里有几个金额」当信号：`$0.075 $1.00 / 1M tokens per hour` 是
+// 「缓存读 + 存储」两笔**不同**计费，一个金额都不是多余的。所以这里要求**同时**
+// 出现日期边界措辞与年份 —— 那才是「厂商说了这个价会变」的形状。
+var dateBoundedPriceRE = regexp.MustCompile(`(?i)\b(through|starting|until|ends?)\b[\s\S]{0,48}?\b(19|20)\d{2}\b`)
+
 // currencySymbolRE 判断一行/一格是否含有货币符号。含符号的表格行是
 // 「有金额的行」——TestNoMoneyEverDisappears 用它证明没有金额被吞掉。
 var currencySymbolRE = regexp.MustCompile(`[$€£¥]`)
@@ -220,8 +235,49 @@ var headingRE = regexp.MustCompile(`^#{1,6}\s`)
 
 var productTierRE = regexp.MustCompile(`(?i)^\s*(standard|batch|flex|priority|fast|ultrafast|premium|on-?demand|pay-?as-?you-?go|paygo|base|list)\b`)
 
+// perMillionSpelling 是「每 1M token」在各家页面上的**全部**写法。
+//
+// ★ 2026-10-06：这一份定义是被迫统一的，因为同一个概念在本文件里曾有**三份**
+// 各自独立的正则，而它们已经漂移：
+//
+//	perMillionRE（块/页级单位声明）      —— 缺 `/\s*m\s*tokens?`
+//	unitPatterns 末项（单元格级单位）    —— 早就有 `/\s*m\s*tokens?\b`
+//	labelledPriceRE（自带标签的金额）    —— 有 `m\s*tokens?`
+//
+// 后果不是「某一行没读出来」，而是**整张表读不出来**：MiniMax paygo 页的 LLM
+// 段每个单元格都写 `$0.3 / M tokens`（斜杠 + 无数字的 M + tokens），而块级
+// 词表不认这种形态 ⇒ M2.7 / M2.5 / M2.1 / M2 全部落到
+// "no input or output price found in the mapped columns"，而它们的行里明明写着
+// $0.3 / $1.2。
+//
+// ★ 为什么这比看起来严重：MiniMax-M3 / M2.7 / M2.5 都是近 30 天真实在跑的
+// 模型（70,684 / 1,996 / 234 次请求），而 M3 那几行**同时**还因
+// 「划线原价 + 上下文分档」被正确拒收 —— 于是「按契约拒收」的理由**掩盖**了
+// 「单位根本没读懂」这件事。分不清这两种拒绝，缺陷就能一直藏着：
+// 连仓库里那条 `TestExtract_MiniMaxStrikethroughAndTiersAreUnusable` 都是
+// **靠这个 bug 才绿的**（它断言「这一页只有分档/折扣价，没有挂牌价」——
+// 而 M2.7/M2.5/M2.1/M2 是干净的挂牌价）。
+//
+// ⚠ 为什么不能放宽成「见到 M 就当每百万」：`/ 1K tokens`、`/ M characters`、
+//
+//	`/ M images` 在同一批页面里并存，放宽会把每千与按字符的价记成每百万
+//	（偏差三个数量级）。所以每一种形态都**要求它自带 token 字样**。
+//	`unitPatterns` 里字符/图像/秒等更具体的单位排在前面，顺序即优先级。
+//
+// ⚠ 那个「更具体的形态先接住」是**顺序**在守，不是词表在守。变异实测把
+//
+//	`/\s*m\s*tokens?\b` 放宽成 `/\s*m\b`（任何 "/ M" 都算每百万），本包
+//	43 条判据**全绿** —— 因为按字符/按图像那几条在 unitPatterns 里排在
+//	每百万**之前**，单元格先被判走了。⇒ 别以为「词表够窄」本身在提供保护，
+//	真正承重的是**排列顺序**；调整 unitPatterns 的顺序时必须重跑这一条。
+//	残留风险：某个单元格自身单位认不出来、而它所在表/页的散文里又出现
+//	「/ M characters」时，块级单位会兜成每百万。罕见，但确实存在。
+const perMillionSpelling = `per\s*1m|/\s*1\s*m\b|/\s*mtok\b|/\s*m\s*tokens?\b|` +
+	`per\s*m\s*token|per\s*million\s*tokens?|1m\s*(?:input|output|token)|` +
+	`每\s*1\s*[mM]|元\s*/\s*[mM]`
+
 // perMillionRE 匹配「每 1M token」的单位声明（页眉或单元格里都算）。
-var perMillionRE = regexp.MustCompile(`(?i)(per\s*1m|/\s*mtok|per\s*m\s*token|1m\s*(input|output|token)|每\s*1\s*[mM]|元\s*/\s*[mM])`)
+var perMillionRE = regexp.MustCompile(`(?i)(` + perMillionSpelling + `)`)
 
 // markdownLinkRE 把 [text](url) 还原成 text。
 var markdownLinkRE = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
@@ -255,7 +311,11 @@ var unitPatterns = []struct {
 	{regexp.MustCompile(`(?i)/\s*(?:h|hr|hrs|hour|hours)\b`), UnitPerHour},
 	{regexp.MustCompile(`(?i)/\s*(?:img|image|images)\b`), UnitPerImage},
 	{regexp.MustCompile(`(?i)/\s*(?:msg|messages?|message)\b`), UnitPerMessage},
-	{regexp.MustCompile(`(?i)(/\s*1\s*m\b|/\s*mtok\b|/\s*m\s*tokens?\b|per\s*1m|per\s*million\s*tokens?|每\s*1\s*[mM])`), UnitPer1M},
+	// 末项刻意复用 perMillionSpelling：它与 perMillionRE 曾经是两份独立正则，
+	// 其中一份漏了 `/\s*m\s*tokens?`（MiniMax 的写法）而这一份早就有 ——
+	// 漂移的代价是整张 MiniMax 价目表读不出价。共用一份定义之后，
+	// 新增一种写法只需要改一处。
+	{regexp.MustCompile(`(?i)(` + perMillionSpelling + `)`), UnitPer1M},
 }
 
 // labelledPriceRE 匹配**自带标签**的金额：金额后面直接跟维度名与 token 单位。
@@ -443,9 +503,59 @@ type tableBlock struct {
 //
 // vendor 与 sourceURL 只是原样带进提案，供人回溯；本函数不做任何网络
 // 访问——抓取与解析分开，才可能对着历史快照测解析。
+// ProseDimensionPolicy 决定「表前散文里出现维度词」时怎么处理。
+//
+// ★ 为什么它是一个**策略**而不是一个判断：实测两种情况在位置上**完全一样**。
+//
+//	MiniMax（实测 2026-10-05）：
+//	  27| | Model | Input | Output | ... |          ← Priority 档的表
+//	  29| | **MiniMax-M3** ≤ 512k ... |
+//	  32| * Priority provides priority admission ... Pricing is 1.5x standard.
+//	  34| | Model | Input | Output | ... |          ← M2.7 的表（干净的挂牌价）
+//
+//	anthropic（同一条规则的正例）：
+//	  234| | Model | Base Input Tokens | Output Tokens |
+//	  236| | Claude Opus 4.8 | $5 / MTok | $25 / MTok |
+//	  238| Fast mode pricing, ... premium pricing.
+//	  240| | Model | Input | Output |
+//	  242| | Claude Opus 4.8 | $10 / MTok | $50 / MTok |
+//
+// 两例都是「散文夹在两张表之间」，**位置规则分不开**。MiniMax 那句是对**上一张**
+// 档位表的脚注，anthropic 那句是对**下一张**表的声明。判据靠位置会二选一地错。
+//
+// ⇒ 解析器**不替人决定**。默认 ProseDimensionReject（保守，与既有行为逐字节
+// 相同）；人看过页面、确认那句是脚注之后，用 ProseDimensionAcceptWithWarning
+// 显式打开 —— 即使打开，维度词**仍然写进 warnings**，不隐藏。
+type ProseDimensionPolicy int
+
+const (
+	// ProseDimensionReject：散文里出现维度词 ⇒ 整表判不可用（既有行为）。
+	ProseDimensionReject ProseDimensionPolicy = iota
+	// ProseDimensionAcceptWithWarning：仍然记一条 warning，但不降级。
+	// 「降不降级」是产品判断，不是解析判断。
+	ProseDimensionAcceptWithWarning
+)
+
+// Options 是 Extract 的可选行为。零值即既有行为。
+type Options struct {
+	ProseDimension ProseDimensionPolicy
+}
+
+// Extract 是既有入口，等价于 ExtractWithOptions(..., Options{})。
 func Extract(vendor, sourceURL string, markdown []byte) []Candidate {
+	return ExtractWithOptions(vendor, sourceURL, markdown, Options{})
+}
+
+// ExtractWithOptions 是带策略的入口。
+func ExtractWithOptions(vendor, sourceURL string, markdown []byte, opts Options) []Candidate {
 	lines := strings.Split(string(markdown), "\n")
 	var out []Candidate
+
+	// 规格表式（run-on）定价页：整页**一个 markdown 表格都没有**。这类页面
+	// 走下面的块解析器会得到**零候选** —— 连 orphanCandidate 都不会触发
+	// （它只对 `|` 开头的行调用），于是整页的钱静默消失。单独一条路径先处理
+	// 它，详见 runsheet.go。返回 nil 表示「不是它该管的页面」，不是「查过没有」。
+	out = append(out, extractRunOnSheet(vendor, sourceURL, lines)...)
 
 	pageUnit := UnitUnknown
 	if perMillionRE.MatchString(string(markdown)) {
@@ -522,7 +632,7 @@ func Extract(vendor, sourceURL string, markdown []byte) []Candidate {
 				}
 				i++
 			}
-			out = append(out, extractBlock(vendor, sourceURL, block, pageUnit)...)
+			out = append(out, extractBlock(vendor, sourceURL, block, pageUnit, opts)...)
 			continue
 		}
 
@@ -767,13 +877,13 @@ func priceColsSeen(roles []ColumnRole, n int) int {
 }
 
 // extractBlock 判定一张表的形态并逐行提出候选。
-func extractBlock(vendor, sourceURL string, b tableBlock, pageUnit string) []Candidate {
+func extractBlock(vendor, sourceURL string, b tableBlock, pageUnit string, opts Options) []Candidate {
 	var out []Candidate
 	if len(b.rows) == 0 {
 		return out
 	}
 	if isColumnOriented(b.headerCells) {
-		return extractColumnOriented(vendor, sourceURL, b, pageUnit)
+		return extractColumnOriented(vendor, sourceURL, b, pageUnit, opts)
 	}
 
 	roles := make([]ColumnRole, len(b.headerCells))
@@ -861,13 +971,13 @@ func extractBlock(vendor, sourceURL string, b tableBlock, pageUnit string) []Can
 			continue
 		}
 		out = append(out, buildCandidate(vendor, sourceURL, r.raw, r.lineNo, cells, rowRoles,
-			pageUnit, b.headerLine, b.prose, headerDim, b.label, rowTiers))
+			pageUnit, b.headerLine, b.prose, headerDim, b.label, rowTiers, opts))
 	}
 	return out
 }
 
 // extractColumnOriented 处理「模型在表头、价格在单元格」的那张表。
-func extractColumnOriented(vendor, sourceURL string, b tableBlock, pageUnit string) []Candidate {
+func extractColumnOriented(vendor, sourceURL string, b tableBlock, pageUnit string, opts Options) []Candidate {
 	var out []Candidate
 	names := make([]string, len(b.headerCells))
 	for j, c := range b.headerCells {
@@ -887,14 +997,14 @@ func extractColumnOriented(vendor, sourceURL string, b tableBlock, pageUnit stri
 				continue
 			}
 			out = append(out, buildColumnCandidate(vendor, sourceURL, r.raw, r.lineNo,
-				names[j], cell, pageUnit, b.headerLine, b.prose, headerDimensionRE.FindString(b.headerRaw), b.label))
+				names[j], cell, pageUnit, b.headerLine, b.prose, headerDimensionRE.FindString(b.headerRaw), b.label, opts))
 		}
 	}
 	return out
 }
 
 // buildColumnCandidate 从一个自带标签的单元格里造候选。
-func buildColumnCandidate(vendor, sourceURL, rawRowText string, lineNo int, model, cell, pageUnit string, headerLine int, sectionProse, headerDim, label string) Candidate {
+func buildColumnCandidate(vendor, sourceURL, rawRowText string, lineNo int, model, cell, pageUnit string, headerLine int, sectionProse, headerDim, label string, opts Options) Candidate {
 	c := Candidate{
 		Vendor: vendor, SourceURL: sourceURL, LineNo: lineNo, Row: rawRowText,
 		Model: model, Currency: currencyOf(cell), Unit: cellUnit(cell),
@@ -960,7 +1070,7 @@ func buildColumnCandidate(vendor, sourceURL, rawRowText string, lineNo int, mode
 				leftover.String()+") — attributing only part of a cell would hide the rest")
 	}
 
-	markUnusable(&c, cell, pageUnit, headerLine, sectionProse, headerDim, label)
+	markUnusable(&c, cell, pageUnit, headerLine, sectionProse, headerDim, label, opts)
 
 	if c.Confidence == "" {
 		if c.Input == nil && c.Output == nil {
@@ -974,14 +1084,28 @@ func buildColumnCandidate(vendor, sourceURL, rawRowText string, lineNo int, mode
 	return c
 }
 
+// hasModelRole 报出表头里有没有"模型"这一列。
+//
+// 与 buildCandidate 里那三个 has* 检查并列，但**语义不同**：那三个问的是
+// 「这一行能不能定位到某模型的输入/输出价」，这个问的是「这张表有没有把
+// 模型放在列上」—— 后者决定模型身份是不是根本不在表里。
+func hasModelRole(header []ColumnRole) bool {
+	for _, r := range header {
+		if r == RoleModel {
+			return true
+		}
+	}
+	return false
+}
+
 // buildCandidate 把一行数据行变成候选，并按失效原因定级。
-func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, header []ColumnRole, pageUnit string, headerLine int, sectionProse, headerDim, label string, tiers []string) Candidate {
+func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, header []ColumnRole, pageUnit string, headerLine int, sectionProse, headerDim, label string, tiers []string, opts Options) Candidate {
 	c := Candidate{
 		Vendor: vendor, SourceURL: sourceURL, LineNo: lineNo, Row: line,
 		Currency: currencyOf(line), Unit: UnitUnknown,
 	}
 
-	markUnusable(&c, line, pageUnit, headerLine, sectionProse, headerDim, label)
+	markUnusable(&c, line, pageUnit, headerLine, sectionProse, headerDim, label, opts)
 
 	// 表头里必须有明确的 input 与 output 列，否则这一行不能定位到
 	// 「某模型的输入价/输出价」——这是最根本的可归属性要求。
@@ -993,6 +1117,31 @@ func buildCandidate(vendor, sourceURL, line string, lineNo int, cells []string, 
 		case RoleOutput:
 			hasOutput = true
 		}
+	}
+	// ★ 「一模型一张表、模型名在章节标题里、列是计费档位」这一页形
+	//   （2026-10-05 在 google-gemini.md 上实测：329 行、0 候选）
+	//
+	// 这类表**没有** model 列，它的列是档位（Free Tier / Paid Tier），
+	// 模型身份只能来自章节标题。而 Gemini 3 家族那 250 多行，模型名在抓下来的
+	// markdown 里**根本不存在**（标题被 jina 转换压平成了营销文案，第一张表
+	// 上方那句 "Our most intelligent model built for speed…" 一个模型名都没有）。
+	//
+	// ⇒ 前面那条「header does not map to both an input and an output column」在
+	// 这里**是误导的**：它把人引去调列映射，而列映射是对的，缺的是抓取保真度。
+	// 人要照着它调表，只会把一张本来正确的表调坏。
+	//
+	// 所以单独报一条**可核验的**诊断：表头里没有 model 列、且列名是计费档位。
+	// 措辞只说能从文档里核实的事实，不猜「附近大概是有名字的」。
+	if !hasModelRole(header) && strings.TrimSpace(headerDim) != "" {
+		c.Confidence = ConfidenceUnusable
+		c.Warnings = append(c.Warnings,
+			"this table has no model column and its columns are billing dimensions ("+
+				strings.TrimSpace(headerDim)+"): it is a per-model price block, so the model "+
+				"identity has to come from the section heading rather than from the table. "+
+				"The extractor cannot attribute such a row to a model, and the gap is in the "+
+				"FETCHED SNAPSHOT (per-model anchors are not preserved), not in the column "+
+				"mapping — re-fetch the page keeping per-model anchors, or price the model "+
+				"from its own anchor page")
 	}
 	if !hasInput || !hasOutput {
 		c.Confidence = ConfidenceUnusable
@@ -1197,7 +1346,19 @@ func tierLabelWarning(label string) []string {
 
 // markUnusable 打上所有与列义无关的失效原因：删除线、计费维度、上下文分档、
 // 单位不是每 1M token。
-func markUnusable(c *Candidate, text, pageUnit string, headerLine int, sectionProse, headerDim, label string) {
+func markUnusable(c *Candidate, text, pageUnit string, headerLine int, sectionProse, headerDim, label string, opts Options) {
+	// 一格里有「带生效日期的调价」⇒ 这一格给不出唯一的基准价。
+	// 放在 markUnusable 而不是某一条提取路径上：行导向与列导向都会经过这里。
+	if currencySymbolRE.MatchString(text) && dateBoundedPriceRE.MatchString(text) {
+		c.Confidence = ConfidenceUnusable
+		c.Warnings = append(c.Warnings,
+			"this cell states a price that changes on a date ("+
+				strings.TrimSpace(dateBoundedPriceRE.FindString(text))+
+				"): the vendor lists the current price and the price from that date, while a "+
+				"baseline price column holds ONE number. Which one is the baseline is a pricing "+
+				"decision (current list price / post-change list price / do not price this model "+
+				"at all), not a parsing problem — the extractor must not pick")
+	}
 	// 产品档位**结构化落字段**，不只是报一句 warning。
 	//
 	// 这里必须在 markUnusable 里做，因为它是 label 的唯一收口：列向表格
@@ -1229,10 +1390,22 @@ func markUnusable(c *Candidate, text, pageUnit string, headerLine int, sectionPr
 				strings.TrimSpace(headerDim)+") — these prices are conditional, not a flat list price")
 	}
 	if m := dimensionRE.FindString(sectionProse); m != "" {
-		c.Confidence = ConfidenceUnusable
+		// ★ 这里**不替人决定**「这句散文是上一张表的脚注还是下一张表的维度声明」。
+		// 两种情况在页面上位置完全一样（见 ProseDimensionPolicy 的注释），
+		// 所以位置规则必然二选一地错。默认拒收（保守），人看过页面后用
+		// ProseDimensionAcceptWithWarning 显式打开 —— 打开时**仍然记这条
+		// warning**，维度词不隐藏，提案里看得见「这里有过一个维度词」。
 		c.Warnings = append(c.Warnings,
 			"the prose above this table names a non-standard billing dimension ("+
 				strings.TrimSpace(m)+") — not the model's flat list price")
+		if opts.ProseDimension != ProseDimensionAcceptWithWarning {
+			c.Confidence = ConfidenceUnusable
+		} else {
+			c.Warnings = append(c.Warnings,
+				"the prose-dimension check was DISABLED by an explicit flag, so this row is "+
+					"readable — verify on the page that the prose describes the PRECEDING table "+
+					"(a footnote) and not this one, because the extractor cannot tell them apart")
+		}
 	}
 	// 报出这张表的产品档位标签。OpenAI 一页四张同形状的表，原厂把档位写在
 	// 紧贴表格上方的一行裸文本里；不报出来，人在提案里分不清哪张是哪张。

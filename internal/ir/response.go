@@ -394,6 +394,67 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 
 	// audit-ir-multimodal (2026-07-13): Extract OpenAI detailed usage fields
 	// for accurate multimodal billing (vision, audio, video) and cache tokens.
+	//
+	// ⚠⚠ 2026-10-06 实测：**上面那句「for accurate multimodal billing」是假的。**
+	// 这几个字段解析出来之后就**再没有人读过**（除了同文件下面 ProtocolConvert
+	// 的协议互转，见 stream.go:823-837），断链发生在第一环：
+	//
+	//	ir.Usage.{Reasoning,Image,Audio,Video}Tokens
+	//	  →（缺）→ audit.StreamCapture：**没有这四个字段**
+	//	  →（缺）→ StreamCapture.SummaryAsMap()：只吐 prompt/completion/cache_read/
+	//	           cache_write/input/output 六个 key（domains/hooks/audit/audit.go:819）
+	//	  →（缺）→ handler.go:6234-6248：从那个 map 里取值的那段**没有这四个 key**
+	//	  →（缺）→ telemetry.RequestLogEntry 的同名字段（声明在 client.go:292-296，
+	//	           全树无赋值点）→ usage_facts / request_logs 的对应列
+	//
+	// 真库读数（2026-10-05，只读）：
+	//   - request_logs 近 30 天 2,101,395 行：image_tokens / audio_tokens /
+	//     video_tokens / reasoning_tokens **全部 NULL**（连非 NULL 的 0 都没有）；
+	//   - 而 cache_read_tokens 有 38,044 行为正 ⇒ 不是整条链没写，是**只断在这四个**；
+	//   - 量具自证：reasoning_tokens 在 deepseek-v4-pro(8,248 次)、
+	//     gpt-5.6-terra(6,192 次)、claude-sonnet-5(5,476 次) 这些确定是推理模型的
+	//     流量上也全空 ⇒ 是「没被写」，**不是「没有这种流量」**。
+	//     ⇒ 所以「近 30 天 0 次多模态请求」这句话**不可验证**，别当结论用。
+	//   - usage_facts 那 221 行 provider_tokens 也是 0（恒为 0，不是上游基准），
+	//     拿它对拍网关自算值会算出拿 0 当基准的假差值。
+	//
+	// 同一串 audit 的 e2e 工具（scripts/audit-ir-e2e）**只验到 IR 层就收工**，
+	// 它的头注自称「the end-to-end validation for the audit series」——IR 之后
+	// 的那一段从未被审。这就是「实现了」与「接线了」在这里是两件事的现场。
+	//
+	// ★ 要把这条链接上，**先改一处会立刻发作的账**（它现在被「列没数据」挡着）：
+	//   domains/stats/event.go:160 的 TotalTokens
+	//      —— 2026-10-06 **已修**：原来把 Prompt+Completion+CacheRead+CacheWrite+
+	//      Reasoning+Image+Audio+Video 全加起来，而按 OpenAI 口径
+	//      prompt_tokens_details.* 是 **prompt_tokens 的细分**、
+	//      completion_tokens_details.reasoning_tokens 是 completion 的细分
+	//      ⇒ 那样相加是重复计。成本公式 calcCostWithConvention 也是同一口径
+	//      （把 cache_read 当 prompt 的子集：先按原价减再按缓存价入账）。
+	//      现在口径是 prompt+completion，与 request_logs（1,492,562 行实测全部
+	//      相等）一致；判据与变异验证见 domains/stats/total_tokens_semantics_test.go。
+	//
+	// ⚠ 关于「成本少计」：**我一度在这里断言 image/audio/video 都会少计费，
+	// 那个说法是错的，已撤回。** 逐模态核对观察源（models.dev）的 cost 键
+	// 全表（只有 cache_read / cache_write / context_over_200k / input /
+	// input_audio / output / output_audio / reasoning / tiers）之后：
+	//   · image —— **没有** input_image 键 ⇒ 按输入文本价计，而它的 token
+	//     **已经含在** prompt_tokens 里 ⇒ promptCount*priceIn 已经计过了。
+	//   · reasoning —— reasoning 价 == output 价（deepseek 0.6/0.6、
+	//     v4-pro 1.98/1.98）⇒ 按输出价，已含在 completion_tokens ⇒ 已计过。
+	//   · video —— 源里无独立价 ⇒ 按文本价，与源一致。
+	//   · **audio —— 真的少计**：input_audio 是 input 的 2–3.3×
+	//     （gemini-2.5-flash 0.3→1.0、gemini-3-flash 0.5→1.0），
+	//     output_audio 中位 9.1×（18 个 provider/model 对；221 个对带 input_audio）。
+	//     CostPriceInput 没有音频价字段 ⇒ 音频按**文本价**计 ⇒ 少 2–10×。
+	//
+	// ★ 但 audio 少计**不构成接线的前置条件**，这是与上一版注释的关键差别：
+	// 音频 token 无论列接不接，都**已经**在 prompt_tokens 里按文本价计过了。
+	// ⇒ 那是**定价模型缺字段**的既存限制（要修得加价列 = schema 决策），
+	//   不是「把这条链接上」会引入的新错误。接上这条链只是让音频用量**可见**，
+	//   不会改变计费结果。
+	//
+	// ⇒ 结论：接上这条链现在**没有账务前置条件**。剩下的代价只是它会让
+	// 「音频按文本价计」这个既存偏差第一次变得可量化。
 	if src.Usage.PromptTokensDetails.CachedTokens > 0 {
 		v := src.Usage.PromptTokensDetails.CachedTokens
 		ir.Usage.CacheReadTokens = &v

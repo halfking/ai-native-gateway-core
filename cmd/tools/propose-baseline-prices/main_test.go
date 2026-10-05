@@ -83,9 +83,14 @@ func TestApplyUnitGate(t *testing.T) {
 // 端到端：实抓的 xAI 页面里那些按图/按秒计费的价格，一条都不许进
 // ready_to_review。
 func TestApplyUnitGate_EndToEndOnLiveXaiPage(t *testing.T) {
-	raw, err := os.ReadFile("../../internal/vendorprice/testdata/live-xai-pricing.md")
+	// 路径是 ../../../ 而不是 ../../：本包在 cmd/tools/propose-baseline-prices
+	// （深度 3），../.. 只到 cmd/。错一层的直接后果不是「路径解析失败」，
+	// 而是 t.Skip —— 于是「实抓页面端到端判据」**从来没跑过**，而 SKIP 在
+	// 报告里长得和通过一模一样。⇒ 修正层级，并改成 Fatalf：
+	// 夹具是仓里跟踪的文件，它不见了是**本仓的错**，不是「环境不具备条件」。
+	raw, err := os.ReadFile("../../../internal/vendorprice/testdata/live-xai-pricing.md")
 	if err != nil {
-		t.Skipf("live fixture unavailable: %v", err)
+		t.Fatalf("live fixture unavailable: %v", err)
 	}
 	var leaked []string
 	for _, c := range vendorprice.Extract("xai", "https://docs.x.ai/developers/models", raw) {
@@ -203,9 +208,11 @@ func TestStaleListProducesNoCorroborationVerdict(t *testing.T) {
 		t.Fatal("a hand-written list must not be treated as verified")
 	}
 	// 这份名单跑当前的实抓页面，展示名一个都到不了下限。
-	raw, err := os.ReadFile("../../internal/vendorprice/testdata/live-anthropic-models-overview.md")
+	// 同上：错一层会退化成 SKIP，而这条判据正是「手写名单一个都到不了下限」
+	// 的唯一端到端证据。
+	raw, err := os.ReadFile("../../../internal/vendorprice/testdata/live-anthropic-models-overview.md")
 	if err != nil {
-		t.Skipf("live fixture unavailable: %v", err)
+		t.Fatalf("live fixture unavailable: %v", err)
 	}
 	resolved := 0
 	for _, c := range vendorprice.Extract("anthropic", "https://example.invalid/p", raw) {
@@ -327,4 +334,250 @@ func TestNearDuplicateWarningsFindsCrossFormCollisions(t *testing.T) {
 	if got := nearDuplicateWarnings([]string{"claude-opus-4-7", "claude-opus-4-8"}); len(got) != 0 {
 		t.Errorf("different versions were reported as duplicates: %v", got)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 尾注解形态：展示名尾部成对的 (...) 是注解，不是名字的一部分
+//
+// ★ 这条是**实测出来的缺口**，不是设想出来的（2026-10-05，真实 960 名单
+// × docs/02-resources/research/pricing/raw 的 10 份原厂快照）：
+//
+//	提案 ready_to_review 10 条 → 加了这一条之后 14 条（+40%），
+//	unresolved 8 → 4，剩下的 4 条**确实不在目录里**。
+//
+// 原先 8 条 unresolved 里有 4 条是**假否定**：名字在目录里，分数也够
+// （剥掉注解后 0.90），只是尾部注解把分数压到 0.84，于是被下限拒掉。
+// 而它们的 canonical 永远拿不到基准价 —— claude-opus-4 / claude-opus-4.1 /
+// claude-sonnet-4 / claude-haiku-3-5 四行都真实存在于 models_canonical。
+//
+// ★ 其中一条原本正指着**另一个模型**：Claude Haiku 3.5 的原样形态最佳候选
+// 是 claude-3-haiku（0.84，Anthropic 另一个模型）。它没造成错挂，**只因为
+// 0.90 下限挡住了**。也就是说「放松下限去救这 4 条」会直接错挂一个价 ——
+// 这就是修法落在形态上、而不是落在阈值上的原因。
+//
+// 修法也不落在提取器上：`splitIdent` 只认**前导** markdown 链接，尾部链接
+// （`Claude Haiku 3.5 ([retired…](url))`）整个掉进标识里。让提取器去猜哪个
+// 括号是注解，等于把厂商措辞硬编码进仓库；而决定「括号算不算名字」的是
+// **名单**，不是词表 —— 见 buildResolutionForms 的注释与实测对照。
+// ---------------------------------------------------------------------------
+
+// qualifierFixture 是量具自证用的**真实**名单子集：只留下这四条要用到的
+// canonical，外加干扰项（claude-3-haiku 正是原先误指的那个模型）。
+//
+// ★ 每一项都**必须**在真库 960 名单里存在，而"非成员"那几个必须**不在**
+//
+//	—— 第一次写这份夹具时手滑把 claude-mythos-5 放了进去（真库里没有），
+//	而下面那条阴性对照的量具自证立刻把它揪了出来。这正是那条自证存在的
+//	理由：夹具写错时，判据会**变成恒真**而不是变红。
+var qualifierFixtureNonMembers = []string{
+	"claude-mythos-5", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning",
+	"grok-4.20-multi-agent-0309",
+}
+var qualifierFixture = []string{
+	"claude-opus-4", "claude-opus-4.1", "claude-opus-4-5", "claude-opus-4-8",
+	"claude-sonnet-4", "claude-sonnet-4-5", "claude-haiku-3-5", "claude-haiku-4-5",
+	"claude-3-haiku", "claude-3-5-haiku", "claude-fable-5",
+	"lyria-3-clip-preview", "lyria-3-pro-preview",
+	"grok-4.3", "grok-4.4", "grok-4.20", "grok-4.20-multi-agent",
+}
+
+func TestResolveCanonicalDropsTrailingQualifierAnnotation(t *testing.T) {
+	for _, tc := range []struct{ display, want string }{
+		{"Claude Opus 4.1 (deprecated)", "claude-opus-4.1"},
+		{"Claude Opus 4 (deprecated)", "claude-opus-4"},
+		{"Claude Sonnet 4 (deprecated)", "claude-sonnet-4"},
+		{"Claude Haiku 3.5 (retired, except on Bedrock and Vertex AI)", "claude-haiku-3-5"},
+		// 括号看着像产品名的一部分（30 秒片长），但名单里只有剥掉之后那个 ——
+		// 这条证明判据不是按「像不像注解」分的，而是按名单判的。
+		{"Lyria 3 Clip Preview (30s)", "lyria-3-clip-preview"},
+	} {
+		// 量具自证①：目标 canonical 真的在名单里，否则下面可能因为别的理由通过。
+		if !contains(qualifierFixture, tc.want) {
+			t.Fatalf("fixture lacks %q — this case would pass for the wrong reason", tc.want)
+		}
+		// 量具自证②：原样形态确实过不了下限，而剥掉之后确实过 —— 否则这条
+		// 判据证明的不是「剥掉注解救回了名字」。
+		qualifier, ident, ok := trailingQualifier(tc.display)
+		if !ok {
+			t.Fatalf("%q: trailingQualifier did not find an annotation to drop", tc.display)
+		}
+		rawBest := modelname.MatchStandardModels(tc.display, qualifierFixture)
+		if len(rawBest) == 0 || rawBest[0].Score >= resolutionScoreFloor {
+			t.Skipf("matcher behaviour changed: %q now scores %v on the raw display name — "+
+				"this test's premise (the annotation pushes it under the floor) no longer holds",
+				tc.display, rawBest)
+		}
+		strippedBest := modelname.MatchStandardModels(ident, qualifierFixture)
+		if len(strippedBest) == 0 || strippedBest[0].Score < resolutionScoreFloor {
+			t.Fatalf("%q: dropping %q does not clear the floor (%v) — the fix would not help",
+				tc.display, qualifier, strippedBest)
+		}
+
+		r, u := resolveCanonical(vendorprice.Candidate{Model: tc.display}, qualifierFixture)
+		if r == nil {
+			t.Fatalf("%q was not resolved: %s", tc.display, u.Reason)
+		}
+		if got := resolvedCanonical(*r); got != tc.want {
+			t.Errorf("%q resolved to %q, want %q", tc.display, got, tc.want)
+		}
+		// 人必须在提案里看得见「注解被丢了」——否则原展示名与 canonical 对不上，
+		// 而看提案的人只能逐条回页面才知道。
+		joined := strings.Join(r.Warnings, " | ")
+		if !strings.Contains(joined, "trailing") || !strings.Contains(joined, qualifier) {
+			t.Errorf("%q: the warning must name the dropped annotation %q, got %q",
+				tc.display, qualifier, joined)
+		}
+	}
+}
+
+// 阴性对照：剥形态**不许**造出匹配。四个确实不在目录里的名字，两个形态都
+// 必须落在下限之下。
+//
+// 这条是上面那条的牙齿：如果实现改成「剥不掉就编一个」，上面照样绿，
+// 只有这条会红。
+func TestResolveCanonicalKeepsNonMembersUnresolved(t *testing.T) {
+	for _, display := range []string{
+		"Claude Mythos 5 (limited availability)",
+		"grok-4.20-multi-agent-0309",
+		"grok-4.20-0309-reasoning",
+		"grok-4.20-0309-non-reasoning",
+	} {
+		// 量具自证：这些名字**整体**都不在夹具里（夹具刻意没放
+		// claude-mythos-5 / *-0309），否则这条就是在测别的东西。
+		// 写成查夹具而不是查真库，是为了让失败直接指向"夹具写错了"这一个
+		// 可改的地方。
+		if contains(qualifierFixture, display) {
+			t.Fatalf("fixture contains the non-member %q — this case no longer tests a "+
+				"non-member", display)
+		}
+		if _, bare, ok := trailingQualifier(display); ok {
+			slug := strings.ToLower(strings.ReplaceAll(bare, " ", "-"))
+			if contains(qualifierFixture, slug) {
+				t.Fatalf("%q: its bare form slugs to %q, which IS in the fixture — the "+
+					"catalog does contain this model, so it must resolve rather than stay "+
+					"unresolved", display, slug)
+			}
+			if !contains(qualifierFixtureNonMembers, slug) {
+				t.Errorf("%q slugs to %q, which is in neither list — add it to exactly one so "+
+					"this case keeps testing what it claims to", display, slug)
+			}
+		}
+		r, u := resolveCanonical(vendorprice.Candidate{Model: display}, qualifierFixture)
+		if r != nil {
+			t.Errorf("%q resolved to %q on a name that is not in the catalog — "+
+				"dropping the annotation must never manufacture a match",
+				display, resolvedCanonical(*r))
+		}
+		if u.Reason == "" {
+			t.Errorf("%q was dropped without a reason", display)
+		}
+	}
+}
+
+// 两个形态都过线却指向**不同** canonical 时必须拒收。
+//
+// ★ 如实标注：这条在真实总体里**没有观测到触发**（2026-10-05 实测 2,002 条
+// 带尾注解的展示名，冲突 0 次）。它是**保险**，不是对已发生问题的修复：
+// 单看任一个形态都是「自信」的，只有并排比才发现它们说的是两个模型，
+// 而那正是价挂到错模型上的那一种。失败方向是拒收。
+func TestResolveCanonicalRefusesWhenTheTwoFormsDisagree(t *testing.T) {
+	names := []string{"widget-classic", "widget-classic-30s"}
+	const display = "Widget Classic (30s)"
+
+	// 量具自证：两个形态必须**各自**都过下限，且指向不同名字。缺任何一条，
+	// 下面就可能是被下限或 margin 挡掉的，而不是被冲突判据挡掉的。
+	fullBest := modelname.MatchStandardModels(display, names)
+	if len(fullBest) == 0 || fullBest[0].Score < resolutionScoreFloor {
+		t.Skipf("raw form %q does not clear the floor (%v) — test premise changed", display, fullBest)
+	}
+	_, ident, ok := trailingQualifier(display)
+	if !ok {
+		t.Fatalf("%q has no droppable annotation", display)
+	}
+	strippedBest := modelname.MatchStandardModels(ident, names)
+	if len(strippedBest) == 0 || strippedBest[0].Score < resolutionScoreFloor {
+		t.Skipf("stripped form %q does not clear the floor (%v) — test premise changed", ident, strippedBest)
+	}
+	if fullBest[0].Name == strippedBest[0].Name {
+		t.Skipf("both forms resolve to %q — not a disagreement", fullBest[0].Name)
+	}
+
+	r, u := resolveCanonical(vendorprice.Candidate{Model: display}, names)
+	if r != nil {
+		t.Fatalf("a two-form disagreement was accepted as %q", resolvedCanonical(*r))
+	}
+	if !strings.Contains(u.Reason, "ambiguous") {
+		t.Errorf("reason must name the ambiguity, got %q", u.Reason)
+	}
+	for _, want := range []string{fullBest[0].Name, strippedBest[0].Name} {
+		if !strings.Contains(u.Reason, want) {
+			t.Errorf("reason must name %q so a human can adjudicate: %q", want, u.Reason)
+		}
+	}
+}
+
+// resolvedCanonical 是 buildDraft 取 SSOT 键的唯一通道，它靠 warning 里的
+// `resolved to canonical "` 子串回读。这条钉住「加了尾注解说明之后，回读
+// 仍然拿得到键」——warning 是跨文件契约，改它的措辞会让所有已解析条目
+// 静默丢掉 SSOT 键（models 为空，而 why 读起来像「原厂页没有可用价」）。
+func TestResolvedCanonicalRoundTripsTheQualifierForm(t *testing.T) {
+	display := "Claude Opus 4 (deprecated)"
+	r, u := resolveCanonical(vendorprice.Candidate{Model: display}, qualifierFixture)
+	if r == nil {
+		t.Fatalf("not resolved: %s", u.Reason)
+	}
+	if got := resolvedCanonical(*r); got != "claude-opus-4" {
+		t.Fatalf("round trip lost the SSOT key: got %q from warnings %v", got, r.Warnings)
+	}
+	// buildDraft 是按这个键写进 models 的；键为空时那一条会静默消失。
+	d := buildDraft(&proposal{
+		Corroborated: []corroborated{{
+			Canonical: resolvedCanonical(*r), DisplayName: display, Verdict: "corroborated",
+			Currency: "USD", VendorPage: &baselineSide{Input: ptr(15), Output: ptr(75)},
+		}},
+	}, "2026-10-05T00:00:00Z")
+	if _, ok := d.Models["claude-opus-4"]; !ok {
+		t.Errorf("SSOT draft lost the entry: models=%v refused=%v", d.Models, d.Refused)
+	}
+}
+
+// trailingQualifier 的配对守卫：注解里带括号、括号不成对、整串就是括号、
+// 括号里是空的 —— 这四种都不能被劈坏。
+func TestTrailingQualifierRefusesToChopNames(t *testing.T) {
+	for _, tc := range []struct{ display, wantIdent, wantQualifier string }{
+		{"Claude Haiku 3.5 (retired)", "Claude Haiku 3.5", "retired"},
+		// 注解内部自带成对括号：两种配对在这里**恰好**同解，所以这一条
+		// 分不开它们（第一版只有它，结果朴素配对的变异是绿的）。
+		{"Model X (available (beta) today)", "Model X", "available (beta) today"},
+		// ★ 这条才是分得开两种配对的样本：名字自己带括号，尾部还有第二个
+		// 括号组。朴素「取第一个 (」会剥掉 "(preview)" 那一对，把标识留成
+		// "Model "、注解留成 "preview) Opus 4 (deprecated" —— 名字被劈坏。
+		// 深度扫描剥的是**最后一对**。真实页面 0 例，但这是本判据存在的理由。
+		{"Model (preview) Opus 4 (deprecated)", "Model (preview) Opus 4", "deprecated"},
+		{"NoParens Here", "NoParens Here", ""},
+		{"(preview)", "(preview)", ""},         // 整串就是一个括号
+		{"Trailing (  )", "Trailing (  )", ""}, // 括号里只有空白
+		{"Unbalanced ( text", "Unbalanced ( text", ""},
+		{"Ends With ) Only", "Ends With ) Only", ""},
+	} {
+		q, ident, ok := trailingQualifier(tc.display)
+		if ident != tc.wantIdent {
+			t.Errorf("%q: ident = %q, want %q", tc.display, ident, tc.wantIdent)
+		}
+		if q != tc.wantQualifier {
+			t.Errorf("%q: qualifier = %q, want %q", tc.display, q, tc.wantQualifier)
+		}
+		if (q != "") != ok {
+			t.Errorf("%q: ok = %v but qualifier = %q", tc.display, ok, q)
+		}
+	}
+}
+
+func contains(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }

@@ -117,6 +117,20 @@ func TestModalityVerifyAdmit(t *testing.T) {
 		{"credential quarantined", func(t *modalityVerifyTarget) { t.CredentialStatus = "quarantine" }, false, "credential_status_quarantine"},
 		{"modality unresolved", func(t *modalityVerifyTarget) { t.Modality = "" }, false, "modality_unresolved"},
 		{"modality nonsense", func(t *modalityVerifyTarget) { t.Modality = "hologram" }, false, "modality_hologram"},
+
+		// ⚠ 2026-10-05 加的两个用例，钉的是**一个真实修掉的缺陷**。
+		//
+		// 本表初版对 audio/video 一律 wantOK=true，而当时唯一的探针实现
+		// ProbeVisionSemantics 把探针模态写死成 "vision"、**不接受 modality
+		// 参数**，生产接线也没把 t.Modality 传进去 ⇒ 放行 audio 的直接后果是
+		// 给 ASR/TTS 发图像挑战，并把结果记成「audio 被拒」。
+		// 真库实测有 12 绑定 / 8 个模型会走到这条路（gpt-audio、mimo-v2.5-asr、
+		// mimo-v2.5-tts …），其中两个正是迁移 820 刚纠正成 audio 的例子。
+		//
+		// 这条用例同时是**恒真防护**：把两个 case 写成同一个 why 也发现不了
+		// "放行"与"拒绝"被合并，所以 wantWhy 与 wantOK 都各自独立断言。
+		{"audio has no probe yet", func(t *modalityVerifyTarget) { t.Modality = "audio" }, false, "modality_no_probe_audio"},
+		{"video has no probe yet", func(t *modalityVerifyTarget) { t.Modality = "video" }, false, "modality_no_probe_video"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

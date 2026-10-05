@@ -4581,9 +4581,20 @@ func main() {
 				// 而且它是**唯一**能发现 text → 多模态 升级的机制：现状
 				// verifyTargetModality 在 modality=='text' 时直接 return。
 				//
-				// 出网比能力位回填贵（挑战带图），所以默认关闭由环境变量
-				// LLM_GATEWAY_MODALITY_VERIFY 显式 opt-in（与自检栈其余任务
-				// 的 shouldStartNewProbeWorkers 同一道门）。
+				// 出网比能力位回填贵（挑战带图），所以它自己另有一道
+				// **kill switch**：`LLM_GATEWAY_MODALITY_VERIFY`。
+				//
+				// ★ 这道开关是 **opt-out（不设 = 开）**，不是 opt-in。
+				//   `modalityVerifyEnabled()` 只在取值为 0/false/off/no 时才关，
+				//   并且 Run() 每轮都会重读一次（2026-10-06 实测：unset → true）。
+				//   判据 `TestModalityVerifyKillSwitch` 钉的就是这一条，注释里
+				//   写着 "opt-out, not opt-in"。
+				//   ⇒ **要让这个任务跑起来，唯一需要设的是
+				//   `LLM_GATEWAY_SELF_CHECK_API_KEY`（下面那道门）；
+				//   `LLM_GATEWAY_MODALITY_VERIFY` 不需要设成 1**，
+				//   设成 "0" 反而是把它关掉。
+				//   （本注释原先写的是「默认关闭…显式 opt-in」，与代码相反 ——
+				//   一个要花钱出网的任务被说成默认关，运维读它会做出错误判断。）
 				if shouldStartNewProbeWorkers(selfCheckAPIKey) {
 					modalityVerify := bg.NewModalityVerification(dbConn.Pool(), fernetKey, keyring)
 					modalityVerify.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
@@ -4793,6 +4804,53 @@ func main() {
 			capBackfillV2.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 			go capBackfillV2.Run(context.Background())
 			slog.Info("authoritative URSM v2 capability_backfill started")
+
+			// ★ 2026-10-05 补的接线缺口（实测，不是推理）。
+			//
+			// 下面这三个 worker 原本**只**装配在 `if stateManager != nil` 那条
+			// legacy 分支里（main.go 4588 起的 modality_verification、
+			// baseline_price_sync、baseline_reconciliation）。而 `stateManager`
+			// **只在 URSM v2 authoritative 模式下为 nil**（main.go:1574）。
+			//
+			// 实测（本地 authoritative 栈）：
+			//   - `model_modality_verification` **0 行**，
+			//     `v_model_modality_verification_progress` 2880 个组合
+			//     **全部 verdict=unknown / evidence_rows=0** ⇒ 「定时核实」从来没跑过；
+			//   - 日志里 `CHECKPOINT: modality_verification started`、
+			//     `… skipped`、`new probe workers disabled` **三条全是 0 行**
+			//     ⇒ 连「被跳过」都没有一句日志，是**静默**没启动；
+			//   - 本条补偿分支里**没有**这三个 worker，只有 nodeProbeWorker、
+			//     ProbeService、capability_backfill、credRecovery。
+			//
+			// ⇒ **这不是配置问题**：authoritative 模式下无论怎么设
+			// `LLM_GATEWAY_MODALITY_VERIFY` 或 `LLM_GATEWAY_SELF_CHECK_API_KEY`
+			// 都够不着它们，因为那条分支里就没有这段代码。health 面那两条
+			// 多模态检查（modality_verification_stale / readiness_floor）于是
+			// 在「生产者从不写」的表上读数，读出来的是「核实了但什么都没确认」。
+			//
+			// 装配范式照 capability_backfill（上面几行）：两条路径各起一份，
+			// distlock 做蓝绿单跑选举。
+			//
+			// ★ 行为变化为零的前提：本块的外层条件已经含
+			// `shouldStartNewProbeWorkers(selfCheckAPIKey)`，而实测该环境
+			// **没有**设 LLM_GATEWAY_SELF_CHECK_API_KEY ⇒ 这三段永远进不来，
+			// 除非有人显式 opt-in。核实 worker 另有一道 kill switch
+			// LLM_GATEWAY_MODALITY_VERIFY，基准价同步一道
+			// LLM_GATEWAY_BASELINE_PRICE_SYNC。
+			modalityVerifyV2 := bg.NewModalityVerification(dbConn.Pool(), fernetKey, keyring)
+			modalityVerifyV2.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
+			go modalityVerifyV2.Run(context.Background())
+			slog.Info("authoritative URSM v2 modality_verification started",
+				"kill_switch", bg.ModalityVerifyEnvKillSwitch)
+
+			go bg.RunBaselinePriceSync(context.Background(), dbConn.Pool())
+			slog.Info("authoritative URSM v2 baseline_price_sync started",
+				"kill_switch", "LLM_GATEWAY_BASELINE_PRICE_SYNC")
+
+			go bg.RunBaselineReconciliation(context.Background(), dbConn.Pool(), nil)
+			slog.Info("authoritative URSM v2 baseline_reconciliation started",
+				"source", bg.MachineReadablePricingURL)
+
 			// 2026-09-11 fix: mirror branch-1's credRecovery wiring. The
 			// authoritative fallback path starts its own nodeProbeWorker but
 			// never handed credRecovery a submitter, so after f56598b59

@@ -99,6 +99,19 @@ func loadBaselineCatalog(raw []byte) (map[string]BaselinePrice, error) {
 
 // validate 是清单的入口校验。**缺 source_url 一律拒绝**——没有出处的价格
 // 不可审计，而不可审计的价格正是现状那张表漂移到没人知道的原因。
+// Validate 是 validate 的导出包装，供**库外**消费者在写权威面之前自检。
+//
+// 为什么需要：SSOT 的唯一写入口 SyncBaselinePricesToDB 内部会调 validate，
+// 而提案工具导出的草稿（cmd/tools/propose-baseline-prices 的 -emit-ssot）在
+// 被人合入 bg/data/model_baseline_prices.json 之前**还没有走到那个函数**。
+// 没有这个包装，「草稿能不能过权威闸门」只能在真库上、而且要等有人真的
+// 合入并跑同步才知道 —— 那是事故发现，不是验证。
+//
+// 语义与 validate 完全一致；它不做任何事，只是让它可以被调用。
+func (p BaselinePrice) Validate(model string) error {
+	return p.validate(model)
+}
+
 func (p BaselinePrice) validate(model string) error {
 	if strings.TrimSpace(model) == "" {
 		return fmt.Errorf("baseline price entry has an empty model name")
@@ -114,6 +127,24 @@ func (p BaselinePrice) validate(model string) error {
 	}
 	if strings.TrimSpace(p.SourceURL) == "" {
 		return fmt.Errorf("baseline price %q: source_url is required — a price without provenance is not auditable", model)
+	}
+	// ★ currency 同样必填（2026-10-05 补）。
+	//
+	// 原先这里不校验，于是 `SyncBaselinePricesToDB` 里的 `currency == "" → "USD"`
+	// 会给一条**币种未知**的价格凭空贴上 USD：那不是缺省，而是一个关于钱的
+	// **断言**。后果有两处，且都静默：
+	//   · 826 视图按 `COALESCE(baseline_price_currency,'USD')` 比币种 ⇒ 真值是
+	//     EUR 却被当成 USD，要么 `currency_comparable=false` 永远算不出偏差，
+	//     要么与同为 "USD" 的供应商价算出**看起来正常的错倍率**；
+	//   · 台账记下的 `baseline_price_currency` 是错的，而它就是权威面。
+	//
+	// 提取器 `currencyOf` 在价格行里找不到 $/€/£/¥ 时会返回 ""，所以这条路径
+	// 真实可达：提案会带空币种，人照抄进 SSOT 就中招。正确做法是**拒绝**——
+	// 与 source_url 同一个理由：无法核实的价不是价。
+	if strings.TrimSpace(p.Currency) == "" {
+		return fmt.Errorf("baseline price %q: currency is required — a price whose currency is unknown "+
+			"cannot be compared against a supplier price, and defaulting it to USD would state a fact "+
+			"the source never said", model)
 	}
 	if _, err := p.FetchedAtTime(); err != nil {
 		return fmt.Errorf("baseline price %q: fetched_at: %w", model, err)
@@ -217,6 +248,58 @@ func ReconcileBaselinePrice(model string, ssot *BaselinePrice, obs *PriceObserva
 		return r
 	}
 
+	// ★ 基准侧是 0（厂商把这一档列为免费）而观察侧非 0：
+	// 「免费 → 收费」。百分比在这时候无定义（driftPct 返回 nil），但它**不是**
+	// 「两边不可比」—— 它恰恰是成本核算里最可行动的一类：本该白给的东西在收钱。
+	//
+	// 不显式判出来的话，它会落进下面那条泛泛的 not_comparable，与「两边都是 0
+	// （真免费、价一致）」**判词和 reason 完全一样**（2026-10-05 实测：两种都输出
+	// verdict=not_comparable / reason="neither side has a comparable price"）。
+	// 运营从台账里分不出这两者，而后者才是该立刻去谈价的那一条。
+	//
+	// 判成 drift 而不是新增一个枚举值：它确实是对基准价的偏离，且 drift 已被
+	// 对账侧的告警路径统计（counts[drift] > 0 ⇒ 健康面报），不新增迁移即生效。
+	if baselineFreeButCharged(*ssot, obs) {
+		r.Verdict = PriceVerdictDrift
+		r.Detail["reason"] = "the original vendor lists this model as free (baseline 0) while the " +
+			"observation is non-zero — a percentage is undefined here, so this is a free-to-paid " +
+			"change rather than a rounding disagreement"
+		return r
+	}
+
+	// ★ 币种**未知**是第三件事，与上面两条都不同（2026-10-05 扫面补的）。
+	//
+	// 「币种不同」那条之所以成立，靠的是 `obs.Currency != "" && ssot.Currency != ""
+	// && … != …` —— **两个非空条件都在守卫里**。任何一侧为空，这条检查被整个
+	// 跳过，于是**从未发生在同一种货币里**的比较照样给出判词。实测（修前）：
+	//   · 观测侧币种空、价格一致   ⇒ verdict=match    —— 台账谎称「与原厂价一致」
+	//   · 观测侧币种空、99 vs 2.50 ⇒ verdict=drift，detail 只剩 tolerance_pct=2
+	//   · 基准侧币种空             ⇒ verdict=match
+	// 「match」那一类最坏：源页面从没说过两个价一致，台账却替它说了，而且
+	// detail 是空的，运营无从分辨它与真正的 match。
+	//
+	// 真实可达：观测源抽不出 $/€/£/¥ 就返回 ""（抽取失败是常态不是异常）；
+	// 基准侧现在被 validate 挡住入库，但这个函数收的是**内存里的**清单，
+	// 绕得过 validate。
+	//
+	// 位置在 free-to-paid **之后**是刻意的：0 在任何币种下都是 0，「本该免费
+	// 却在收钱」与币种无关，判成不可比会把最可行动的一类降级掉。
+	if obs.Currency == "" || ssot.Currency == "" {
+		side := "the observation"
+		if ssot.Currency == "" {
+			side = "the baseline"
+		}
+		if obs.Currency == "" && ssot.Currency == "" {
+			side = "neither side"
+		}
+		r.Verdict = PriceVerdictNotComparable
+		r.Detail["reason"] = side + " has no currency, so these two numbers were never in the same " +
+			"currency — a percentage between them would be an artefact of the exchange rate, not a drift"
+		r.Detail["ssot_currency"] = ssot.Currency
+		r.Detail["observed_currency"] = obs.Currency
+		return r
+	}
+
 	if r.InputDriftPct == nil && r.OutputDriftPct == nil {
 		r.Verdict = PriceVerdictNotComparable
 		r.Detail["reason"] = "neither side has a comparable price"
@@ -229,6 +312,20 @@ func ReconcileBaselinePrice(model string, ssot *BaselinePrice, obs *PriceObserva
 	}
 	r.Verdict = PriceVerdictMatch
 	return r
+}
+
+// baselineFreeButCharged 报告「原厂基准 0 而观察非 0」。
+//
+// 逐侧判断：只要**任一侧**是「基准 0、观察非 0」就成立 —— 免的是一档而收的是
+// 另一档，运营照样需要知道。
+func baselineFreeButCharged(ssot BaselinePrice, obs *PriceObservation) bool {
+	if ssot.InputPer1M != nil && *ssot.InputPer1M == 0 && obs.InputPer1M != nil && *obs.InputPer1M != 0 {
+		return true
+	}
+	if ssot.OutputPer1M != nil && *ssot.OutputPer1M == 0 && obs.OutputPer1M != nil && *obs.OutputPer1M != 0 {
+		return true
+	}
+	return false
 }
 
 // driftPct 返回 (观察 - 清单)/清单 * 100。
@@ -280,10 +377,9 @@ func SyncBaselinePricesToDB(ctx context.Context, db *pgxpool.Pool, catalog map[s
 		if err != nil {
 			return written, err
 		}
+		// 非空由 validate 保证（上面那条 currency 校验）；刻意**不再**兜底成
+		// "USD" —— 那个回退正是把「未知」变成「断言」的动作。
 		currency := p.Currency
-		if strings.TrimSpace(currency) == "" {
-			currency = "USD"
-		}
 		tag, err := db.Exec(ctx, `
 			UPDATE models_canonical
 			   SET baseline_price_currency          = $2,
