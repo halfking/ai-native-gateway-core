@@ -12801,3 +12801,87 @@ D34 里「探针标记是 `s4_ready` 唯一杠杆」是**本地**读数。本节
   （hook 未达 / 后续门挡住 / 恢复路径没恢复 —— 生产侧
   `session_dim` 与 `request_context_attrs` 的存在性可以分离这三者，本轮没做）；
   **只读，未在生产执行任何回填或修复。**
+
+## §70.84 接力：`session_dim` 是唯一能当「hook 走到了吗」的证人；6 个候选排掉 4 个，**机制仍未定位**
+
+> 审计正文见 `docs/audit/2026-09-30-session-request-data-re-audit.md` §9.247。
+> 本节兑现 §70.83 留的账。**只读，生产零写入。**
+
+### 结论先行
+
+1. **`session_dim` 在运行期只有一个写方**（`UpsertSessionDim` 的唯一非测试调用点
+   是 `internal/sessionv2mirror/hook.go:234`，在 `runShadowWrite` 内）⇒
+   **「该会话有 dim 行」= 「某个请求真的进过 `runShadowWrite`」**。
+   ★ 反面教材：`request_context_attrs` **不能**当证人 ——
+   它由 telemetry client 自己在 `client.go:1065` 写，与镜像 hook 无关。
+   我差点拿它推出「hook 被到达了」，是错的。
+2. **受控样本 = 7 个「单行会话」**（`v1_rows_in_session=1`，这样 `dim=1` 只可能
+   是本行自己写的）。生产 7d 窗口劈成两半：
+   - **5 行 `dim=0`** ⇒ 从未进入 `runShadowWrite`；
+   - **2 行 `dim=1`** ⇒ 进了、维度写成功、紧接着的 `w.Write` 没产出 turn，
+     **且 `session_mirror_outbox` 里没有它的行**。
+3. ★ **新事实：hook 侧失败登记静默 13 天。**
+   `write_failed` 147 行全部产生于 **2026-09-23 09:11–16:46**（全 dead，
+   `attempts` 最高 9/10，`last_error` 是超时族），
+   此后到 10-05 13:46 **零登记**；而同一窗口里 11 行镜像丢失照常发生。
+   ⚠ 不能解释成「表/RLS/连接坏了」：`final_success_claim` 走的是
+   **另一条 INSERT**（`client.go:3027`，不经过 `EnqueueMirrorFailure`），
+   10-05 13:46 成功写进一行。**沉默只发生在 `EnqueueMirrorFailure` 这一个函数上。**
+4. ★ **附带：252 上同时跑着两个 gateway 进程**，
+   `508581`（10-04 03:05 起，`/usr/local/bin/gateway`，**该文件已从磁盘删除、进程仍在**）
+   与 `3933448`（10-05 06:50 起）。数据库侧有 3 个源 IP 的连接，
+   最早可追到 2026-09-29 09:37 的 idle backend。
+
+### 已排除的候选（每条带证据，别重做）
+
+| 候选 | 判决 | 一句话证据 |
+|---|---|---|
+| ① 终态门 `!Success && !isTerminalFailure` | 排除 | `genuine_loss` 是分类器 ELSE 臂，**按构造** = 终态；出货夹具已断言 |
+| ② `IsProbeSyntheticSession` | 排除 | 要求**无会话头**；7 行都有 |
+| ③ `IsInternalAutoEntry` | 排除 | `IsAutoRequest` 直接绑 SQL 参数，nil⇒NULL；7 行全 NULL |
+| ④ `shadowWriteEnabled()` | 排除 | `settings_kv` = true；同窗口 8,102 loopback 正常镜像 |
+| ⑤ `entryToProcessedRequest` nil | 排除 | 只在 `sessionID==""` 时 nil；有会话头即非空。**§70.83 当时仍列为候选** |
+| ⑥ `w.Write` 返回 nil 却无 turn | 排除 | `RowsAffected()==0` 必须查到行否则报错；`session_turns_with_current_month` 覆盖 S4 检查的两面 |
+| ⑦ 进程中途死掉 | 排除 | 同窗 ±10s 有 83/14/1/1 条 turn 在写，进程活着 |
+| ⑧ 剩下的 | **开放** | 见下 |
+
+### ★ 仍未定位的（下一轮的入口）
+
+- **5 行 `dim=0`**：四道门 + semaphore 分支逐条排除后，
+  **没有任何已知代码路径能同时满足「门全过」与「没进 `runShadowWrite`」**。
+- **2 行 `dim=1`**：`w.Write` 必被调用且（候选 ⑥ 排除后）**必返回 error**
+  ⇒ 必走 `EnqueueMirrorFailure` ⇒ 而 outbox 无行
+  ⇒ **要么登记函数在生产失效，要么「13 天零 write 失败」这个读法错了**。
+  **只读 DB 分不开这两条。**
+- **能一击定案的东西存在但拿不到**：那些日志行**带 `request_id`**
+  （`"V2 shadow write failed"` / `"outbox registration failed"`），
+  grep 一下就分开。**但 252 的 gateway stdout 没落任何文件**
+  （`logs/` 只有 `resource_monitor.log` 与 `shutdown.log`，
+  且不由 systemd 托管，`systemctl show llm-gateway` → `MainPID=0`）。
+  ⇒ **「拿不到日志」本身是可观测性缺口，不是取样失败。**
+
+### 下一轮直接可以做的
+
+1. **先解决日志**：确认 252 的 gateway stdout 去向（发布脚本？`nohup`？supervisor？），
+   或授权先把它落盘。**这是解开上面两条的唯一钥匙。**
+2. **对齐「出货构建是哪一份」**：两个进程并存 ⇒ 按当前树读代码做的排除
+   需要重新对齐到真正在写的那一份。
+3. **别重做的**：分类器一律引用 `db.MirrorDriftClassSQL`；
+   scope 一律用 `s4ScopeBody` 的**两面**；面数不一致时「0」不是读数。
+
+### ⚠ 本轮我自己踩的坑（下一轮直接规避）
+
+1. **§9.160.7 第二次中招，新变体**：查「同窗 ±10s 有没有别的 turn」时，
+   子查询**只读 `_hot` 一面**，而 scope 读两面 ⇒ 11 行全返回 0，
+   看起来像「那些时刻没流量」。**同一张表族在一条 SQL 的不同子查询里必须同一口径。**
+2. **差一步把「13 天零登记」写成「登记口已哑」**：第一次查看到 147 行全 dead，
+   第二次查表里已多一行（10-05 13:46）。**只发第一次读数就会把「表是活的」
+   误判成「登记口死了」。** ⇒ 判「某路径哑了」前先确认另一条路径同期是否活着，
+   **并查清它们是不是同一个函数**（这里不是）。
+
+### 新增属主拍板项（3 条，均未执行）
+
+1. 是否授权**先把 252 的 gateway stdout 落盘**（可观测性缺口 0 的修复）。
+2. **并存的第二个 gateway 进程（已删除二进制仍在跑）**是否为发布脚本漏停旧实例。
+3. 是否授权在生产 **grep 一次 gateway 日志**（只读）以分 §9.247.6 的两条假设。
+
