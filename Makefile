@@ -87,8 +87,16 @@ test-short: ## 短模式，跳过 -short=false 的测试
 GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./sql/schema
 
 .PHONY: guards
-guards: ## 运行全部审计守卫（快速、无外部依赖）
+guards: guards-installer ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+
+# R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录
+# `go test ./...` 永远不跑它的门——tsv 派生清单缺 831 的红因此在
+# 「根目录全绿」下潜伏了一个月量级。挂进 guards 主门闭合跨模块盲区。
+# 嵌套模块必须 cd 进去跑（R45 教训）。约 20~30s。
+.PHONY: guards-installer
+guards-installer: ## installer 子模块全量测试（独立 go.mod，跨模块门禁）
+	cd installer && $(GO) test ./... -count=1 -timeout=300s
 
 .PHONY: guards-sync
 guards-sync: ## 校验：internal/ 下每个 *guard 包都已被登记进 GUARD_PACKAGES

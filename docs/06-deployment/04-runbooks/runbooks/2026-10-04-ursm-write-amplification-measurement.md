@@ -3955,6 +3955,14 @@ ROLLBACK;
 所以「巡检还在跑吗」只能问这个文件的 mtime ——
 问「日志里有没有新行」会与「一切正常」同形。
 
+**已知口径缺口：cron 行的 `| tee -a` 吃掉脚本 rc（C7-P3-2，2026-10-06）。**
+管道使 cron 层的 job 退出码是 `tee` 的 0，上面的 0/1/3 分级到不了 cron ——
+「丢退出码 = 没巡检」的说法在本行只对 log 文本/状态文件成立，对 cron 层
+不成立。判定为**无实害**：告警推送发生在脚本内（notify.sh，转换点去重），
+巡检存活看 lastrun mtime，两者都不消费 cron rc。若未来要把 cron rc 接进
+告警链，须改写管道形态并同步更新 scripts/ursmcheck 的 cron 注册门
+（`TestAvailabilityHeartbeatRunsEveryMinute` 等）——行为变更必须带门。
+
 #### 10.31.3 顺带查明的一件事：`docker` 是 `podman` 的软链
 
 `/usr/local/bin/docker -> /usr/bin/podman`（252，2025-07-28 起）。

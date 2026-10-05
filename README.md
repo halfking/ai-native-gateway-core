@@ -113,7 +113,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 
-Scale snapshot (2026-10-05 code scan): **~4,900 Go files · 2,689 test files · 1,005 migration SQLs · 67 domain packages · 34 binaries** under `cmd/`.
+Scale snapshot (2026-10-05 code scan): **~4,900 Go files · 2,689 test files · 1,005 migration SQLs · 67 domain packages · 44 binaries** under `cmd/` (count = main packages per `go list`; the stale "34" was R48-B4, and `go list ./cmd/...`'s 46 includes 2 non-`main` helper packages — define the criterion before comparing numbers).
 
 **Deeper reading**
 

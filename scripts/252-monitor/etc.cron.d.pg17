@@ -51,6 +51,12 @@ MAILTO=""
 #   0 健康（静默）/ 1 PG 不可用 / 3 巡检自己坏了。丢掉退出码等于没巡检。
 #   常态健康时脚本刻意不输出，所以这份 log 只在真事件时增长 ——
 #   「巡检还在跑吗」问 /var/lib/pg17-check/pg-availability.lastrun 的 mtime。
+# ★ 已知口径缺口（C7-P3-2，2026-10-06 登记）：本行 `| tee -a` 使 cron 层
+#   拿到的 rc 是 tee 的 0，脚本的 0/1/3 到不了 cron 的 job 状态——分级只
+#   活在 log 文本与状态文件里。判无实害：告警不走 cron rc（notify.sh 在
+#   脚本内推），存活看 lastrun mtime。若未来要接 cron 层 rc 告警，须改
+#   管道形态（如先重定向后 cat，或 PIPESTATUS）并同步 ursmcheck 的
+#   cron 注册门——行为变更必须带门。
 # ★ 告警推送只发生在**首次不可用**与**恢复**两个转换点（脚本内去重），
 #   否则挂 30 分钟会推 30 条，告警就退化成噪音。
 * * * * * root llmgw-source /opt/scripts/pg17-pg-availability-check.sh 2>&1 | tee -a /var/log/pg17-pg-availability.log; find /var/log -maxdepth 1 -name "pg17-pg-availability.log.*" -mtime +7 -delete

@@ -1,5 +1,5 @@
 {
   "metric": "CJK runs after stripping parser-detected comments; src/**/*.{vue,ts,tsx,js,mjs}; excludes src/locales, src/i18n, *.test/spec",
-  "count": 5531,
-  "updated": "2026-10-04"
+  "count": 5529,
+  "updated": "2026-10-05"
 }
