@@ -128,13 +128,27 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`
   }
 
-  const r = await fetch(path, {
-    method,
-    headers,
-    credentials: 'same-origin',
-    body: hasBody ? JSON.stringify(body) : undefined,
-    signal: options?.signal,
-  })
+  // 网络层失败归一化（移植自 feat/web-mobile-hyper 的 _core.ts）。
+  // fetch 只在真正的传输层失败（断网 / DNS / CORS）时 reject，此时不存在
+  // HTTP 状态码。不归一的话上层拿到的是原生 TypeError，`status` 字段根本
+  // 不存在 —— HyperList.vue:56 的 `status === 0` 分支永远命中不了，用户在
+  // 断网时看到的是「加载失败，点击重试」而不是「请检查网络」，恰好与那段
+  // 注释的立意相反（别让用户朝错误方向排查）。
+  let r: Response
+  try {
+    r = await fetch(path, {
+      method,
+      headers,
+      credentials: 'same-origin',
+      body: hasBody ? JSON.stringify(body) : undefined,
+      signal: options?.signal,
+    })
+  } catch (err) {
+    // AbortError 是调用方主动取消（连续加载换页、组件卸载），不是故障：
+    // 原样抛出，否则会被上层计入错误态并弹出重试 UI。
+    if (err instanceof Error && err.name === 'AbortError') throw err
+    throw new ApiError(0, 'network_error')
+  }
 
   if (sessionEpoch !== epochAtStart) {
     throw new EpochError()

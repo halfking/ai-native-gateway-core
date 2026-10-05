@@ -49,7 +49,7 @@ const total = computed(() => {
  *   实测 /nodes 的失败是服务端 500（admin/credential_monitor.go:657 查询超时 15s），
  *   页面却让用户去查手机网络 —— 用户会照着错误方向排查半天，而真正的故障在服务器。
  *
- * 判据用 `status`：`_core.ts` 的 ApiError 对网络层失败给 status 0，
+ * 判据用 `status`：`api/client.ts` 的 ApiError 对网络层失败给 status 0，
  * 对 HTTP 失败给真实状态码。0 = 用户侧，其余（≥500）= 服务端。
  * 拿不到 status（不认识的对象）时退回中性文案，不猜。
  */
@@ -70,6 +70,9 @@ const gesture = usePullToRefreshGesture({
   },
   getScroller: () => rootRef.value,
   enabled: () => props.refreshable,
+  // 追加加载中不认领下拉（移植自 feat/web-mobile-hyper）：此前 enabled 只反映
+  // refreshable 这个静态开关，loadNext 与下拉刷新会并发争 sentinel 与滚动位置。
+  isLoadingMore: () => props.controller.state === 'loadingNext',
 })
 
 // ---- sentinel 预载（07 §3：距底 240px） ----

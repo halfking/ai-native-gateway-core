@@ -92,6 +92,25 @@ describe('api/client（17 §5 契约）', () => {
     expect((err as ApiError).status).toBe(400)
     expect((err as ApiError).detail).toBe('bad request')
   })
+
+  // ↓ 移植自 feat/web-mobile-hyper 的 _core.spec.ts 语义（断网归一化）
+
+  it('fetch reject（断网）→ ApiError status 0，供视图区分网络故障与服务端 500', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    const err = await req('GET', '/api/keys').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    // status 0 = 用户侧。HyperList.vue:56 的 status===0 分支靠它命中。
+    expect((err as ApiError).status).toBe(0)
+  })
+
+  it('AbortError 原样抛出，不计入错误态（对照组：取消≠故障）', async () => {
+    const abort = new Error('aborted')
+    abort.name = 'AbortError'
+    fetchMock.mockRejectedValue(abort)
+    const err = await req('GET', '/api/keys').catch((e: unknown) => e)
+    expect(err).toBe(abort)
+    expect(err).not.toBeInstanceOf(ApiError)
+  })
 })
 
 function jsonResponse(body: unknown, status = 200): Response {
