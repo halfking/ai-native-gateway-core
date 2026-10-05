@@ -4927,3 +4927,104 @@ env 里 `LLM_GATEWAY_ADMIN_PASSWORD` 与库中 admin bcrypt 不匹配），
   **不能 `source`**——口令含 shell 会展开的字符，会报 `9527: 未找到命令`）。
 - 部署脚本的 `--seq` 会被**漂移校正覆盖**：我指定 2466，脚本按当前值自行算成 2468，
   第二次又算成 2470（154）/ 2472（245）。**指定值不可靠，须以脚本输出为准。**
+
+---
+
+## 10.41 给 backfill worker 补每批事务预算 + ★ 更正 §10.40.1 的一条错误结论
+
+### 10.41.0 ★★ 先更正：`404050630` 的提交信息里有一句**我验证不足就写下的结论**
+
+那句话是「改名后实测……`bg/` 全量 ok」。
+
+**它不成立。** 实情：我在 worktree 里改完名后只跑了两道门
+（`apply-db-revision-sequence_test.sh`、`Test830…`），**随后把改名 revert 了，
+才跑的那次 `go test ./bg/`**。⇒ 那次全量绿测的是**没有改名的树**。
+
+全量回归在真实工作区上跑出来是 **3 条 FAIL**：
+
+```
+partition_825_contract_test.go:182: read ../sql/migrations/startup/
+  830_ursm_node_snapshot_min_partitioned.sql: no such file or directory
+  ⇒ Test825MigrationDefinesTheEnsureFunction
+    TestPartitionNameContractMatchesRetentionParser
+    Test825StillDeclaresNoDefaultPartition
+```
+
+★ 这三道门**硬编码**了 830 的路径常量 `migration825Path`，改名即断。
+
+⇒ 教训不是「改名要小心」，而是：**「我跑了全量」这句话，必须对应「改完之后的树」**。
+worktree 里 revert 之后跑的那次，量的是另一个状态。
+（本会话同类错已多次：先量后改、量 A 却报 B、两次跑比的是时钟。）
+
+修法（**只让路径解析容得下两种命名，断言逻辑一字未动，SQL 内容也未变**）：
+`readMigration830(t)` 依次尝试 `…partitioned.sql` 与 `…partitioned.sql.skip`，
+两个都找不到时把**两条错误一起打出来**（而不是只报第一条）。
+
+#### 10.41.1 为什么还要给 worker 补超时预算
+
+§10.38 的修复**提高了撞上 30s 角色级超时的概率**，所以收口是我的责任：
+修复前窗口里 2000 行全是空转（只要 22~26s，本来就贴着边，§10.40.2 记了旧二进制
+04:07 也超时过一次）；修复后每行真的要干活。实测单批：1000 行 7.5s ⇒ 2000 行约 15s。
+
+改法：每批走显式事务并 `set_config('statement_timeout', $1, true)`（= `SET LOCAL`），
+预算 `batchTimeoutSec = 120`。不调角色默认值——那是全库口径，会连带放松所有在线查询的
+护栏（同 `partition_manager.go:1778` 的理由）。启动日志多打一个
+`batch_statement_timeout_sec`，让「批次被杀」能一眼归因到预算值。
+
+★ 踩坑：PG 的 `SET` **不接受参数**，`SET LOCAL statement_timeout = $1` 直接
+语法错（SQLSTATE 42601）。参数化的正确形式是 `set_config(name, value, true)`。
+**是新增的真库门当场抓出来的。**
+
+#### 10.41.2 ★ 一次「造门失败」的实录
+
+我第一版真库门想把角色 `statement_timeout` 压到 10ms 来制造压力。三轮才做对：
+
+| 轮次 | 做法 | 结果 |
+|---|---|---|
+| 1 | 压到 10ms，用**已建立的** `conn` 验 | SKIP（`ALTER ROLE` 只对**新连接**生效，读到旧值） |
+| 2 | 改用新连接验压力 | 门**自己报「自己没有牙」**：批语句在 10ms 内跑完了 |
+| 3 | 补 2500 行「压力夹具」 | **方向是反的**——加了夹具查询**变快**了，10ms 下直接通过；反而**空表时**才会被杀 |
+
+对照实测（scratch762，同一条语句）：
+
+| 夹具 | 10ms 下 |
+|---|---|
+| 0 行 | **被杀**（SQLSTATE 57014） |
+| 2500 行陷阱 | **通过**（返回 0） |
+
+⇒ **墙钟压力在这个小库上不可靠**，拿它当证据就是自欺。
+最终改成两道诚实的门：
+
+1. **结构门** `TestBackfillBatchBudgetIsTransactionLocal`：按**函数体 + 顺序**断言
+   `pool.Begin < set_config('statement_timeout', $1, true) < 批语句 < tx.Commit`，
+   且预算取自 `batchTimeoutSec`。顺序才是要害——第三参不是 `true` 会漏到池化连接上，
+   放在批语句之后则来不及保护它。
+2. **真库门** `TestBackfillBatchCommitsThroughExplicitTransaction_RealDB`：
+   验显式事务**没有把结果吞掉**（漏 `Commit` 是静默的：日志照样打
+   `pass complete, backfilled=N`），用**换一条真连接重读**来判断提交与否。
+
+★ 另记一个格式坑：`set_config('statement_timeout','120s',true)` 的返回值是
+PG **规范化后的** `2min`，拿去和 `"120s"` 比必然对不上。断言改成
+「事务内 ≠ 事务外」+「回滚后复原」，与格式无关，且那才是 `LOCAL` 的含义。
+
+#### 10.41.3 变异（每条都是能编译的有效变异）
+
+| 变异 | 结果 |
+|---|---|
+| M33 `SET LOCAL = $1`（写 `SET` 而非 `set_config`） | 真库门红（42601）——**门当场抓到我自己写的 bug** |
+| M33b `set_config` 改设别的 GUC | 结构门红 |
+| M34 `set_config` 挪到批语句之后 | 结构门红（顺序） |
+| M35 第三参 `true` → `false` | 结构门红（会漏到池化连接） |
+| M36 预算降到 20s（低于角色默认 30s） | 值门红（`SET LOCAL` 变成空操作） |
+| M37 `tx.Commit` → `tx.Rollback` | 真库门红（`=<nil> on a FRESH connection`）+ 结构门红 |
+
+M33 若把整行删掉会 BUILD-BROKEN（`fmt` 成孤儿导入），按纪律不计入，改用 M33b。
+
+#### 10.41.4 状态
+
+- 全量：`bg` **PASS=983 FAIL=0 SKIP=66**、`apihub` 50/0/6、`ursmcheck` 39/0/0。
+- 825/830 相关门逐条 PASS（8 条中 6 PASS / 2 SKIP 真库门）。
+- ★ **未部署**。生产跑的还是没有 `SET LOCAL` 的 2470/2472。
+  当前风险已被实测化解——回填已排空、`n==0` 会立即 break，所以稳态下
+  根本没有批次可跑；但**下次出现新积压时**就会重新贴着 30s 走。
+  待与后续批次合并部署。
