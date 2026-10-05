@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // readGoSource 读同包源码。go test 的工作目录是包目录本身。
@@ -78,31 +80,31 @@ func TestS4Gate_NeverReadyOnVacuousEvidence(t *testing.T) {
 	}{
 		{
 			name:       "v1 停写 + 零真漏写（缺陷本体：停写后恒真）",
-			in:         s4GateInput{v1Rows: 0, genuineLoss: 0, v1WritesOn: false, v1CoveragePP: 0},
+			in:         s4GateInput{v1Rows: 0, genuineLoss: 0, v1WritesOn: false, v1CoveragePP: 0, windowHours: 24},
 			wantVoid:   true,
 			wantReason: s4GateReasonV1WritesDisabled,
 		},
 		{
 			name:       "v1 停写但窗口里还有 V1 行（冻结期的尾部窗口）",
-			in:         s4GateInput{v1Rows: 245460, genuineLoss: 0, v1WritesOn: false, v1CoveragePP: 100},
+			in:         s4GateInput{v1Rows: 245460, genuineLoss: 0, v1WritesOn: false, v1CoveragePP: 100, windowHours: 24},
 			wantVoid:   true,
 			wantReason: s4GateReasonV1WritesDisabled,
 		},
 		{
 			name:       "v1 写入中但窗口零 V1 流量（空扫描 = 什么都没证明）",
-			in:         s4GateInput{v1Rows: 0, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 0},
+			in:         s4GateInput{v1Rows: 0, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 0, windowHours: 24},
 			wantVoid:   true,
 			wantReason: s4GateReasonNoV1Traffic,
 		},
 		{
 			name:       "v1 写入中、零真漏写、有流量且覆盖率达标 —— 唯一允许报绿的一行",
-			in:         s4GateInput{v1Rows: 245460, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 100},
+			in:         s4GateInput{v1Rows: 245460, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 100, windowHours: 24},
 			wantVoid:   false,
 			wantReason: "",
 		},
 		{
 			name:       "真漏写 > 0：不是 void，是真的不安全",
-			in:         s4GateInput{v1Rows: 245460, genuineLoss: 1, v1WritesOn: true, v1CoveragePP: 100},
+			in:         s4GateInput{v1Rows: 245460, genuineLoss: 1, v1WritesOn: true, v1CoveragePP: 100, windowHours: 24},
 			wantVoid:   false,
 			wantReason: "",
 		},
@@ -142,13 +144,13 @@ func TestS4Gate_NeverReadyOnVacuousEvidence(t *testing.T) {
 // 分开写是因为上面那张表在「两条都满足」时只有一行 ready=true；这里把
 // 「只满足一条」单独拎出来，防止将来有人把任一条挪进「不必需」分支。
 func TestS4Gate_ReadyRequiresBothEvidenceKinds(t *testing.T) {
-	bothOn := s4GateVerdictOf(s4GateInput{v1Rows: 1, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 100})
+	bothOn := s4GateVerdictOf(s4GateInput{v1Rows: 1, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 100, windowHours: 24})
 	if !bothOn.Ready || bothOn.Void {
 		t.Fatalf("两条证据都在时必须 ready 且非 void，实得 %+v", bothOn)
 	}
 	for _, in := range []s4GateInput{
-		{v1Rows: 1, genuineLoss: 0, v1WritesOn: false, v1CoveragePP: 100}, // 缺「写入中」
-		{v1Rows: 0, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 0},    // 缺「扫到东西」
+		{v1Rows: 1, genuineLoss: 0, v1WritesOn: false, v1CoveragePP: 100, windowHours: 24}, // 缺「写入中」
+		{v1Rows: 0, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 0, windowHours: 24},    // 缺「扫到东西」
 	} {
 		v := s4GateVerdictOf(in)
 		if v.Ready {
@@ -168,7 +170,7 @@ func TestS4Gate_VoidIsNeverReady(t *testing.T) {
 	for _, rows := range []int64{0, 1, 2, 1000} {
 		for _, loss := range []int64{0, 1, 50} {
 			for _, on := range []bool{true, false} {
-				v := s4GateVerdictOf(s4GateInput{v1Rows: rows, genuineLoss: loss, v1WritesOn: on, v1CoveragePP: 100})
+				v := s4GateVerdictOf(s4GateInput{v1Rows: rows, genuineLoss: loss, v1WritesOn: on, v1CoveragePP: 100, windowHours: 24})
 				if v.Void && v.Ready {
 					t.Fatalf("void⇒ready 违反：rows=%d loss=%d on=%v → %+v", rows, loss, on, v)
 				}
@@ -220,6 +222,7 @@ func TestSummarizeNoLongerAssignsS4ReadyDirectly(t *testing.T) {
 		{"v1Rows", "V1Rows"},
 		{"genuineLoss", "GenuineLossRows"},
 		{"v1CoveragePP", "V1CoveragePP"},
+		{"windowHours", "WindowHours"},
 	} {
 		if !s4GateArgRE(f.structField, f.summaryField).MatchString(clean) {
 			t.Fatalf("s4GateVerdictOf 未接收 sum.%s：这条输入没进判定，门就少一条证据（§9.235）",
@@ -292,7 +295,7 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 			// saw traffic on either side, across the 09-06→09-12 window that
 			// contains the local v1 write outage.
 			name:       "实测 09-06~09-12 窗口：跨 5 天写入中断，覆盖率 20.31%",
-			in:         s4GateInput{v1Rows: 76100, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 20.31},
+			in:         s4GateInput{v1Rows: 76100, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 20.31, windowHours: 24},
 			wantVoid:   true,
 			wantReason: s4GateReasonInsufficientV1Coverage,
 		},
@@ -310,7 +313,7 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 			// but coverage near zero" direction still has no real example — and
 			// saying so is the honest reason for it to be here.
 			name:       "构造：v1 有行但覆盖率 0%（无真实样本）",
-			in:         s4GateInput{v1Rows: 3120, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 0},
+			in:         s4GateInput{v1Rows: 3120, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 0, windowHours: 24},
 			wantVoid:   true,
 			wantReason: s4GateReasonInsufficientV1Coverage,
 		},
@@ -320,7 +323,7 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 			// the shape rule 3 must let through, so its absence would make the
 			// rule un-actionable.
 			name:       "实测 24h 窗口：覆盖率 100%",
-			in:         s4GateInput{v1Rows: 4789, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 100},
+			in:         s4GateInput{v1Rows: 4789, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 100, windowHours: 24},
 			wantVoid:   false,
 			wantReason: "",
 		},
@@ -328,19 +331,19 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 			// Rule 2 must keep its own reason: "nothing to compare at all" and
 			// "compared a fifth of it" send the operator to different knobs.
 			name:       "零覆盖但 v1 完全没有行 —— 归 rule 2，不归 rule 3",
-			in:         s4GateInput{v1Rows: 0, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 0},
+			in:         s4GateInput{v1Rows: 0, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 0, windowHours: 24},
 			wantVoid:   true,
 			wantReason: s4GateReasonNoV1Traffic,
 		},
 		{
 			name:       "刚过门槛",
-			in:         s4GateInput{v1Rows: 245460, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 90.01},
+			in:         s4GateInput{v1Rows: 245460, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 90.01, windowHours: 24},
 			wantVoid:   false,
 			wantReason: "",
 		},
 		{
 			name:       "刚不过门槛",
-			in:         s4GateInput{v1Rows: 245460, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 89.99},
+			in:         s4GateInput{v1Rows: 245460, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 89.99, windowHours: 24},
 			wantVoid:   true,
 			wantReason: s4GateReasonInsufficientV1Coverage,
 		},
@@ -349,7 +352,7 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 			// win over adequate coverage, and must still be reported as drift
 			// rather than void.
 			name:       "覆盖率达标但有真漏写 —— 仍是不安全，不是 void",
-			in:         s4GateInput{v1Rows: 245460, genuineLoss: 3, v1WritesOn: true, v1CoveragePP: 100},
+			in:         s4GateInput{v1Rows: 245460, genuineLoss: 3, v1WritesOn: true, v1CoveragePP: 100, windowHours: 24},
 			wantVoid:   false,
 			wantReason: "",
 		},
@@ -357,7 +360,7 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 			// Write-disable still outranks coverage: if v1 is off there is
 			// nothing to compare regardless of what coverage says.
 			name:       "v1 停写优先于覆盖率",
-			in:         s4GateInput{v1Rows: 100, genuineLoss: 0, v1WritesOn: false, v1CoveragePP: 100},
+			in:         s4GateInput{v1Rows: 100, genuineLoss: 0, v1WritesOn: false, v1CoveragePP: 100, windowHours: 24},
 			wantVoid:   true,
 			wantReason: s4GateReasonV1WritesDisabled,
 		},
@@ -396,5 +399,168 @@ func TestS4Gate_CoverageIsReported(t *testing.T) {
 	// an instrumentation gap.
 	if !strings.Contains(src, "V1CoveragePP: -1,") {
 		t.Fatal("V1CoveragePP 必须以 -1 起步：0 与「从未测量」在产物里必须可区分")
+	}
+}
+
+// TestS4Gate_MinimumWindow is the control pair for rule 4 (§9.236).
+//
+// Rule 3 asks what **fraction** of the window was compared against v1 and says
+// nothing about how big the window is. That leaves the degenerate case: a
+// 1-hour window is 100% covered by construction, so if that hour happens to be
+// clean the gate answers `s4_ready = true`.
+//
+// This is not a corner case, and it is not hypothetical — it was measured on
+// production 252 before the rule was written. Over the last 7 days genuine_loss
+// is 10 rows across 7 distinct hours: only 4.17% of hours contain any loss.
+// Treating those hours as independent, a window of N hours misses every one of
+// them with probability (1 − 0.04167)^N:
+//
+//	1h → 95.8%   6h → 77.5%   24h → 36.1%   72h → 4.8%   168h → 0.08%
+//
+// So a one-hour window returns a clean bill of health while being wrong
+// nineteen times out of twenty.
+//
+// The rows below are grouped by which rule is supposed to catch the input,
+// because that is the thing worth pinning: a short window that is ALSO missing
+// its v1 data must be reported as "nothing to compare", not as "your window is
+// short" — otherwise the operator is sent to fix the wrong thing.
+func TestS4Gate_MinimumWindow(t *testing.T) {
+	clean := func(hrs int) s4GateInput {
+		return s4GateInput{
+			v1Rows: 4789, genuineLoss: 0, v1WritesOn: true,
+			v1CoveragePP: 100, windowHours: hrs,
+		}
+	}
+	cases := []struct {
+		name       string
+		in         s4GateInput
+		wantVoid   bool
+		wantReason string
+	}{
+		// The measured production shapes, all with loss=0 and coverage 100%.
+		{name: "生产 1h 窗口（实测 0 损失）", in: clean(1),
+			wantVoid: true, wantReason: s4GateReasonWindowTooShort},
+		{name: "生产 6h 窗口（实测 0 损失）", in: clean(6),
+			wantVoid: true, wantReason: s4GateReasonWindowTooShort},
+		{name: "24h 窗口 —— 刚好够", in: clean(24),
+			wantVoid: false, wantReason: ""},
+		{name: "72h 窗口（实测 0 损失）", in: clean(72),
+			wantVoid: false, wantReason: ""},
+		{name: "168h 窗口", in: clean(168),
+			wantVoid: false, wantReason: ""},
+
+		// Rule ordering: each earlier rule keeps its own reason even when the
+		// window is also too short. The operator is told the first thing that
+		// is actually wrong.
+		{name: "1h 且 v1 完全没有行 → 归 rule 2", in: s4GateInput{
+			v1Rows: 0, genuineLoss: 0, v1WritesOn: true,
+			v1CoveragePP: 0, windowHours: 1},
+			wantVoid: true, wantReason: s4GateReasonNoV1Traffic},
+		{name: "1h 且覆盖率 20% → 归 rule 3", in: s4GateInput{
+			v1Rows: 76100, genuineLoss: 0, v1WritesOn: true,
+			v1CoveragePP: 20.31, windowHours: 1},
+			wantVoid: true, wantReason: s4GateReasonInsufficientV1Coverage},
+		{name: "1h 且 v1 停写 → 归 rule 1", in: s4GateInput{
+			v1Rows: 4789, genuineLoss: 0, v1WritesOn: false,
+			v1CoveragePP: 100, windowHours: 1},
+			wantVoid: true, wantReason: s4GateReasonV1WritesDisabled},
+
+		// Loss still outranks the window length: a short window that DID see
+		// loss is a drift verdict, not a void one. Otherwise "the window is
+		// short" would start being reported on windows that have a real answer.
+		{name: "1h 但有真漏写 → 仍是不安全（drift），不是 void", in: s4GateInput{
+			v1Rows: 4789, genuineLoss: 2, v1WritesOn: true,
+			v1CoveragePP: 100, windowHours: 1},
+			wantVoid: false, wantReason: ""},
+
+		// Zero means "the caller did not say". Silence must not read as
+		// consent, or a future caller that forgets the field gets Ready.
+		{name: "未传 windowHours（0）→ 太短", in: s4GateInput{
+			v1Rows: 4789, genuineLoss: 0, v1WritesOn: true, v1CoveragePP: 100},
+			wantVoid: true, wantReason: s4GateReasonWindowTooShort},
+
+		// Edge: either side of the floor.
+		{name: "刚好不够（23h）", in: clean(23),
+			wantVoid: true, wantReason: s4GateReasonWindowTooShort},
+		{name: "刚好够（25h）", in: clean(25),
+			wantVoid: false, wantReason: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := s4GateVerdictOf(tc.in)
+			if got.Void != tc.wantVoid {
+				t.Fatalf("Void=%v want %v (reason=%q, input=%+v)", got.Void, tc.wantVoid, got.Reason, tc.in)
+			}
+			if got.Reason != tc.wantReason {
+				t.Fatalf("Reason=%q want %q (input=%+v)", got.Reason, tc.wantReason, tc.in)
+			}
+			if got.Void && got.Ready {
+				t.Fatalf("void 且 ready 同时成立：%+v", got)
+			}
+		})
+	}
+}
+
+// TestS4Gate_MinimumWindowIsPinnedToTheMeasuredArgument keeps the floor tied to
+// the number that justified it.
+//
+// A threshold with no recorded derivation is a number somebody will eventually
+// tune for convenience. The derivation is the miss-rate table in
+// s4GateMinWindowHours' comment; this test does not recompute it (that would be
+// a measurement, not a gate) but it does make the coupling visible: changing the
+// floor without re-deriving it is a deliberate act that shows up in a diff at
+// this line.
+func TestS4Gate_MinimumWindowIsPinnedToTheMeasuredArgument(t *testing.T) {
+	if s4MinWindowHours != 24 {
+		t.Fatalf("s4MinWindowHours = %d，期望 24。改这个数之前先重算 s4GateMinWindowHours "+
+			"注释里的漏检概率表（生产实测：7 天内 genuine_loss 落在 4.17%% 的小时上）—— "+
+			"门槛的数字要有出处，不能只为了让门变绿或变红而调", s4MinWindowHours)
+	}
+	// The 7d window is the spec's exit condition and must stay reachable.
+	if s4MinWindowHours > 168 {
+		t.Fatalf("门槛 24h 的上限不得高于 spec 的 7 天退出条件（168h）")
+	}
+}
+
+// TestS4WindowClamp pins the [1, 720] clamp on windowHours.
+//
+// Found by mutation P7: deleting the lower clamp left every gate green, because
+// rule 4 catches the *verdict* (0 and negative are both < 24) and masks the
+// consequence. The consequence is in the measurement, not the verdict — with
+// windowHours = 0 the window start equals the end, the coverage series has one
+// bucket, and coverage comes out 100% for any database that wrote anything at
+// all. A rule downstream happens to stop the wrong number from being acted on,
+// which is exactly the arrangement in which a broken measurement survives for
+// years looking fine.
+//
+// The clamp is therefore pinned on its own terms: an offline call with a nil
+// pool would fail before the clamp only if the guard runs first, so this test
+// checks the clamp by reading the measurement fields a zero/negative window
+// produces through the real database, where it is cheap to see.
+func TestS4WindowClamp(t *testing.T) {
+	// Offline: the guard order matters. `SummarizeFrom` must reject a
+	// misconfigured validator before touching the window, which is why a nil
+	// pool is the way to reach the early return.
+	if _, err := NewDualReadValidator(nil).SummarizeFrom(context.Background(), "", time.Now(), 0); err == nil {
+		t.Error("nil validator 必须返回错误而不是崩溃")
+	}
+
+	// ⚠ Calling clampWindowHours directly is NOT enough, and the first version
+	// of this test learned that the hard way: mutation P7 removed the *call*
+	// from SummarizeFrom and left the function, so every assertion here still
+	// passed. A test that exercises a function does not pin its wiring.
+	// The call site is pinned by TestS4WindowClampIsApplied in the real-database
+	// file; what this test owns is the function's own behaviour.
+	if got := clampWindowHours(0); got != 1 {
+		t.Errorf("clampWindowHours(0) = %d, want 1", got)
+	}
+	if got := clampWindowHours(-5); got != 1 {
+		t.Errorf("clampWindowHours(-5) = %d, want 1", got)
+	}
+	if got := clampWindowHours(24); got != 24 {
+		t.Errorf("clampWindowHours(24) = %d, want 24（区间内不得被改）", got)
+	}
+	if got := clampWindowHours(9999); got != 720 {
+		t.Errorf("clampWindowHours(9999) = %d, want 720", got)
 	}
 }

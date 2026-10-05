@@ -337,16 +337,29 @@ func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, window
 // So: same snapshot (a transaction) AND same window (this function). With only
 // the transaction, the S4 gate test failed roughly 1 run in 3 on the local real
 // database; before that, on two pool reads, roughly 1 in 8.
+// clampWindowHours bounds the requested window to [1, 720].
+//
+// Extracted as a named function so TestS4WindowClamp can pin it directly. It
+// was previously inline, and mutation P7 deleted it with every gate still
+// green: rule 4 catches the verdict for any value below 24, so nothing
+// downstream noticed that the *measurement* had degenerated to a
+// single-bucket window reporting 100% coverage. A rule masking a broken
+// measurement is worse than no rule, because it reads as coverage.
+func clampWindowHours(h int) int {
+	if h < 1 {
+		return 1
+	}
+	if h > 720 {
+		return 720
+	}
+	return h
+}
+
 func (v *DualReadValidator) SummarizeFrom(ctx context.Context, tenant string, now time.Time, windowHours int) (*MirrorDriftSummary, error) {
 	if v == nil || v.db == nil {
 		return nil, errors.New("dual-read validator not configured")
 	}
-	if windowHours < 1 {
-		windowHours = 1
-	}
-	if windowHours > 720 {
-		windowHours = 720
-	}
+	windowHours = clampWindowHours(windowHours)
 	start := now.Add(-time.Duration(windowHours) * time.Hour)
 
 	sum := &MirrorDriftSummary{
@@ -491,6 +504,7 @@ func (v *DualReadValidator) SummarizeFrom(ctx context.Context, tenant string, no
 		genuineLoss:  sum.GenuineLossRows,
 		v1WritesOn:   v1WritesOn,
 		v1CoveragePP: sum.V1CoveragePP,
+		windowHours:  sum.WindowHours,
 	})
 	sum.S4Ready = verdict.Ready
 	sum.S4GateVoid = verdict.Void

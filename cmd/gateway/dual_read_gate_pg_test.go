@@ -274,3 +274,63 @@ func TestS4CoverageIsCrossValidated(t *testing.T) {
 			s4GateReasonInsufficientV1Coverage, sum.S4GateVoidReason, sum.S4Ready)
 	}
 }
+
+// TestS4WindowClampIsApplied pins that SummarizeFrom actually *calls* the clamp.
+//
+// The offline TestS4WindowClamp exercises clampWindowHours directly, which
+// proves the function behaves but says nothing about whether anything calls
+// it. Mutation P7 removed the call and left the function: every offline
+// assertion still passed while the real behaviour regressed — `?hours=0` would
+// produce a zero-length window whose coverage series has one bucket, i.e. 100%
+// coverage for any database that wrote anything.
+//
+// So this test goes through the real path and reads the field the clamp is
+// supposed to have written. Checking behaviour rather than source text is the
+// point: a text assertion here would just move the same blind spot one level up.
+func TestS4WindowClampIsApplied(t *testing.T) {
+	dsn := resolveDualReadDSN()
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set — offline mode")
+	}
+	pool := openDualReadPool(t, dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	v := NewDualReadValidator(pool)
+	now := time.Now()
+
+	// Only the LOWER clamp is verified through the real path, and the asymmetry
+	// is deliberate rather than an omission. The two bounds have different
+	// failure modes:
+	//
+	//	lower: window length 0 ⇒ the coverage series has one bucket ⇒
+	//	       coverage is 100% for any database that wrote anything.
+	//	       The number is WRONG.
+	//	upper: window length 9999 ⇒ the scan is slow and reaches further back
+	//	       than 30 days. The number is right; it is just expensive.
+	//
+	// Verifying the upper bound here cost 89.6s of the suite's runtime to
+	// establish that a window is merely expensive, so it is asserted as a pure
+	// function in TestS4WindowClamp instead. Spending a tenth of the gate's
+	// runtime to re-derive "720 is a number" is the same trade the miss-rate
+	// table in s4MinWindowHours exists to avoid.
+	for _, tc := range []struct {
+		name     string
+		in, want int
+	}{
+		{"0 被夹到 1", 0, 1},
+		{"负数被夹到 1", -5, 1},
+		{"区间内不动", 6, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sum, err := v.SummarizeFrom(ctx, "", now, tc.in)
+			if err != nil {
+				t.Fatalf("SummarizeFrom(%d): %v", tc.in, err)
+			}
+			if sum.WindowHours != tc.want {
+				t.Errorf("WindowHours = %d, want %d（输入 %d 未被夹取）—— "+
+					"未夹取时窗口长度会退化成 0，覆盖率序列只剩一个桶，"+
+					"于是什么都没验证却报 100%% 覆盖", sum.WindowHours, tc.want, tc.in)
+			}
+		})
+	}
+}
