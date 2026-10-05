@@ -102,21 +102,44 @@ func (h *MobileStaticHandler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 		upath = "/" + upath
 	}
 
+	// The /m mount prefix must come off BEFORE the real path is built.
+	// filepath.Join treats a leading "/" in the second element as a plain
+	// separator, so Join(distDir, "/m/assets/app.js") resolves to
+	// distDir/m/assets/app.js — "m" is taken as a relative segment and the
+	// real vite output at distDir/assets/ is never found. Every such request
+	// then falls through to index.html, and because that fallback goes
+	// through http.ServeFile the Content-Type is text/html, which breaks
+	// module-script loading. Strip first, then join. (Ported from
+	// feat/web-mobile-hyper, whose first-deploy record documents this as a
+	// real production failure; see mobile_static_servespa_asset_regression_test.go.)
+	rel := strings.TrimPrefix(upath, "/m")
+	if rel == "" {
+		rel = "/"
+	}
+
 	// /m/api/* and /m/v1/* are not SPA routes and must not be masked by
 	// index.html (same rule as the maintain SPA).
-	stripped := strings.TrimPrefix(upath, "/m")
-	if strings.HasPrefix(stripped, "/api/") || strings.HasPrefix(stripped, "/v1/") {
+	if strings.HasPrefix(rel, "/api/") || strings.HasPrefix(rel, "/v1/") {
 		http.NotFound(w, r)
 		return
 	}
 
-	fpath := filepath.Join(h.distDir, filepath.Clean(upath))
+	fpath := filepath.Join(h.distDir, filepath.Clean(rel))
+	// Defense in depth: never serve anything outside distDir, even if the
+	// cleaned relative path still escapes (e.g. /m/../../etc/passwd).
+	if !h.withinDist(fpath) {
+		http.NotFound(w, r)
+		return
+	}
 	if info, err := os.Stat(fpath); err == nil && !info.IsDir() {
 		if !streaming.IsAllowedStaticExt(filepath.Ext(fpath)) {
 			http.NotFound(w, r)
 			return
 		}
-		h.fs.ServeHTTP(w, r)
+		// ServeFile, not h.fs.ServeHTTP: the FileServer resolves against
+		// r.URL.Path, which still carries the /m prefix, so it would look
+		// for the same non-existent distDir/m/... path we just rejected.
+		http.ServeFile(w, r, fpath)
 		return
 	}
 
@@ -125,6 +148,20 @@ func (h *MobileStaticHandler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// withinDist reports whether path stays inside the served dist directory.
+// filepath.Clean collapses ".." but does not stop it from walking above the
+// join root, so containment is asserted explicitly rather than assumed.
+func (h *MobileStaticHandler) withinDist(path string) bool {
+	rel, err := filepath.Rel(h.distDir, path)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 // newMobileGatewayHandler composes the legacy handler with the mobile static
